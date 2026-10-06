@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "modules": [
+    {
+      "file": "interpolation.js",
+      "sha256": "348d6cf7ecbd733bdc99f34c37baa072d84a5f5190632aee8e4c15bbd04ddc08"
+    },
+    {
+      "file": "rendering.js",
+      "sha256": "7f2c4de84238797165e234baf7056ca214a450b701fd9c440b30d9d03f96fdc8"
+    },
+    {
+      "file": "input.js",
+      "sha256": "bc0d99d27aead4649a4dd0ccc7248ae95b3d6f6f7fe41cb134d9f2641e37642e"
+    }
+  ]
+}
