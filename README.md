@@ -2,7 +2,7 @@
 
 브라우저 게임에서 공통으로 쓰는 보간·렌더링·입력·실행·결정론·전송·리플레이·롤백 기능을 독립 패키지로 개발하는 모노레포입니다. 필요한 기능만 골라 조합하며, 게임 전체를 소유하는 범용 엔진 클래스는 만들지 않습니다.
 
-**모든 공개 기능은 독립적인 plain JavaScript ESM입니다.** 소비자는 필요한 파일만 가져가며 외부 import나 공유 chunk를 요구하지 않습니다. 보간은 pose, WebGL renderer/device는 GPU 제출·자원, input은 장치 이벤트/action, simloop는 실행 스케줄, camera는 투영, presentation-events는 표현 자원, hud는 화면 anchor, debug-tools는 진단을 소유합니다. 결정론·전송·리플레이·rollback은 기존 SDK 구현을 그대로 책임별로 분리했습니다.
+**모든 공개 기능은 독립적인 plain JavaScript ESM입니다.** 소비자는 필요한 파일만 가져가며 외부 import나 공유 chunk를 요구하지 않습니다. 보간은 pose, WebGL renderer/device는 GPU 제출·자원, input은 장치 이벤트/action, simloop는 실행 스케줄, camera는 투영, presentation-events는 표현 자원, hud는 화면 anchor, debug-tools는 진단을 소유합니다. 결정론·전송·리플레이·rollback은 기존 SDK 구현을 책임별로 분리했으며, 이전 후 수정 이력은 SDK 출처 문서에 구분해 기록합니다.
 
 ## 시작하기
 

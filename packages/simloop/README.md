@@ -9,3 +9,11 @@
 ## 소유권과 비용
 
 pulse(timestampMs)는 자동 rAF와 같은 누적·pacing·maxCatchupSteps 경계를 사용합니다. getInput/onAdvance/beforeFrame/canAdvance/render를 사용하고 게임에 또 다른 accumulator를 만들지 않습니다. start만 전역 blur/visibility listener를 설치하며 stop이 해제합니다.
+
+## 실행 취소·pacing·backlog
+
+- `stop()`은 현재 pulse의 남은 callback/추가 tick/render를 취소합니다. callback 안에서 stop/start해도 이전 세대가 새 rAF 체인을 만들지 않습니다. 나중에 직접 부른 `pulse()`는 stopped 상태에서도 실행됩니다.
+- session의 공개 scalar `pace`를 우선 읽어 진단용 전체 `metrics` snapshot 할당을 피합니다. 기존 capability는 `metrics.pace` fallback을 유지하며 step 결정당 한 번 읽습니다. `RollbackSession.metrics`는 여전히 독립 snapshot입니다.
+- `backlogPolicy: 'drop'`이 기본값입니다. 기존 250ms elapsed clamp와 maxCatchupSteps 누적 한도를 유지합니다.
+- 명시적 `backlogPolicy: 'retain'`은 전체 elapsed와 미처리 debt를 보존하지만 pulse당 maxCatchupSteps만 실행합니다. held/stalled/canAdvance=false에서도 debt를 유지합니다. 큰 지연은 여러 pulse에 나눠 처리하며 render alpha는 최대 1입니다. safe millisecond 범위를 넘는 debt는 조용히 버리지 않고 오류로 중단합니다.
+- pause는 게임이 소유합니다. pause 전환과 resume에서 `resetTiming()`을 호출해 debt와 elapsed 기준을 지우면 pause 시간은 따라잡지 않습니다. `start()`도 timing을 초기화합니다. retain은 pause를 자동 추측하지 않습니다.

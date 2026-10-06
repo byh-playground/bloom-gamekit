@@ -89,7 +89,7 @@ export class RollbackSession {
   constructor(options: SessionOptions);
   readonly tick: number; readonly inputDelay: number; readonly requestedInputDelay: number; readonly confirmedTick: number;
   readonly ready: boolean; readonly resimulating: boolean; readonly closed: boolean; readonly status: SessionStatus;
-  readonly failure: Readonly<SessionFailure> | null; readonly metrics: SessionMetrics; readonly profile: Readonly<Profile>;
+  readonly failure: Readonly<SessionFailure> | null; readonly pace: number; readonly metrics: SessionMetrics; readonly profile: Readonly<Profile>;
   readonly players: readonly PlayerId[]; readonly localPlayerId: PlayerId; readonly inputSize: number; readonly authorityPlayerId: PlayerId;
   attachTransport(peerId: PlayerId, transport: Transport): () => void;
   receive(peerId: PlayerId, data: Bytes, now?: number): boolean;
@@ -190,7 +190,7 @@ export interface GroupRoom {
   close(): void;
 }
 export function createNostrGroupRoom(options: GroupRoomOptions): Promise<GroupRoom>;
-export function createLoop(options: { session: RollbackSession; getInput?: () => Bytes; beforeFrame?: (timestamp: number) => void; canAdvance?: () => boolean; onAdvance?: (result: AdvanceResult) => void; render?: (context: { session: RollbackSession; alpha: number; resimulating: boolean }) => void; onError?: (error: unknown) => void; onInputRelease?: () => void; requestFrame?: (callback: FrameRequestCallback) => number; cancelFrame?: (handle: number) => void }): { start(): void; stop(): void; pulse(timestamp: number): void; resetTiming(): void; readonly running: boolean };
+export function createLoop(options: { session: RollbackSession; backlogPolicy?: 'drop' | 'retain'; getInput?: () => Bytes; beforeFrame?: (timestamp: number) => void; canAdvance?: () => boolean; onAdvance?: (result: AdvanceResult) => void; render?: (context: { session: RollbackSession; alpha: number; resimulating: boolean }) => void; onError?: (error: unknown) => void; onInputRelease?: () => void; requestFrame?: (callback: FrameRequestCallback) => number; cancelFrame?: (handle: number) => void }): { start(): void; stop(): void; pulse(timestamp: number): void; resetTiming(): void; readonly running: boolean };
 export type CodecValue = null | boolean | number | string | Uint8Array | CodecValue[] | { [key: string]: CodecValue };
 export interface ValueCodec { readonly format: 'binary' | 'json'; encode(value: CodecValue): Uint8Array; decode(bytes: Bytes): CodecValue; }
 export function createValueCodec(options?: { format?: 'binary' | 'json'; maxBytes?: number; maxDepth?: number; maxEntries?: number }): ValueCodec;

@@ -9,3 +9,5 @@
 ## 소유권과 비용
 
 state history는 기존 full-copy snapshot ring이고 보관 예산·입력 정책은 그대로입니다. 요청된 FullCopy/NativeMemento/DirtyDelta/UndoLog/CheckpointDelta 전략은 이 이전에 구현하지 않았습니다. 공개 onEvent의 rollback은 load 이후 재실행 전에 발생하며 poll/advance가 반환되기 전에 재실행을 완료합니다. confirmedTick은 확정된 마지막 입력 tick이고 tick은 다음 실행 tick입니다.
+
+`session.pace`는 할당 없는 공개 scheduling multiplier입니다. 기존 `session.metrics.pace` 및 전체 snapshot API는 유지합니다. `attachTransport`가 돌려주는 detach는 반복 호출해도 같은 subscription만 한 번 해제하고 재연결된 peer를 지우지 않습니다. session.close도 같은 해제 경계를 사용하며 지연된 이전 transport callback은 무시합니다.

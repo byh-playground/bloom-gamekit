@@ -16,5 +16,15 @@
     "src/value-codec.js": "1eaa6c739370af64c25c5343efd8125d08f14e406d4f097026e6b12aa1d2f322",
     "src/webrtc.js": "d3f142f3b316b4ab31d92b8fc38dfdb4fe945beeaef8899987d49507ef76019f"
   },
-  "license": "No LICENSE file present at the pinned source commit; no new license is asserted."
+  "license": "No LICENSE file present at the pinned source commit; no new license is asserted.",
+  "modifiedFiles": {
+    "src/core.js": {
+      "normalizedSha256": "57ae54b02739dd9b64fbecb7c2505b89f99ebe37d3d3dd800e6a98d8ba0c9ece",
+      "reason": "bloom-gamekit: transport detach identity/idempotence and scalar pace capability"
+    },
+    "src/loop.js": {
+      "normalizedSha256": "d59550637e234142982d66e5708ca416da99ef17e05e376c21d34282bc9eed9a",
+      "reason": "bloom-gamekit: reentrant cancellation, scalar pacing reads, opt-in retained backlog"
+    }
+  }
 }

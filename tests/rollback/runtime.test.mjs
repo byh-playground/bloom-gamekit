@@ -144,3 +144,28 @@ test('costly polling does not postpone due ticks or queued commands',()=>{
     assert.equal(playReplay({adapter:world().adapter,replay:session.exportReplay()}).hash,session.getStateHash());
   }finally{session.close()}
 });
+
+test('transport detach is idempotent and stale callbacks cannot mutate a replacement peer',()=>{
+  const s=createSession({players:['a','b'],localPlayerId:'a',sessionId:'detach',simulationVersion:'1',inputSize:1,adapter:world().adapter});
+  function transport(){
+    const t={unsubscribed:0,statusUnsubscribed:0,send:()=>true,
+      subscribe(fn){this.packet=fn;return()=>this.unsubscribed++},
+      subscribeStatus(fn){this.status=fn;return()=>this.statusUnsubscribed++}};return t;
+  }
+  const a=transport(),detachA=s.attachTransport('b',a);detachA();
+  const b=transport(),detachB=s.attachTransport('b',b);detachA();
+  assert.ok(s.getPeerState('b'));assert.equal(a.unsubscribed,1);assert.equal(a.statusUnsubscribed,1);
+  const before=s.metrics.rejectedPackets;a.packet(new Uint8Array([1]));a.status('closed');
+  assert.equal(s.metrics.rejectedPackets,before);assert.equal(s.getPeerState('b').state,'connecting');
+  s.close();detachB();assert.equal(b.unsubscribed,1);assert.equal(b.statusUnsubscribed,1);
+});
+test('detach releases both subscriptions even if one unsubscribe throws',()=>{
+  const s=createSession({players:['a','b'],localPlayerId:'a',sessionId:'detach-throw',simulationVersion:'1',inputSize:1,adapter:world().adapter});
+  let packets=0,status=0;const detach=s.attachTransport('b',{send:()=>true,subscribe:()=>()=>{packets++;throw Error('unsubscribe')},subscribeStatus:()=>()=>status++});
+  assert.throws(detach,/unsubscribe/);assert.equal(s.getPeerState('b'),undefined);detach();
+  assert.equal(packets,1);assert.equal(status,1);s.close();
+});
+test('public scalar pace agrees with metrics without exposing its mutable snapshot',()=>{
+  const s=createSession({players:['a'],localPlayerId:'a',sessionId:'pace',simulationVersion:'1',inputSize:1,adapter:world().adapter});
+  assert.equal(s.pace,s.metrics.pace);const metrics=s.metrics;metrics.pace=99;assert.equal(s.pace,1);s.close();
+});

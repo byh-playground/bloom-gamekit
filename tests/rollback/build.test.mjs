@@ -26,7 +26,7 @@ test('independent bundles have no runtime import and no unrelated transport or s
   assert.deepEqual([...symbols].sort(),publicNames);
   const code=read('packages/rollback/src/core.js');assert.doesNotMatch(code,/nostr|WebSocket|RTCPeerConnection|\bdocument\.|\bwindow\./);
 });
-test('migration source is byte-identical to pinned upstream after only inverse relocation',()=>{
+test('unchanged migration source matches upstream; reviewed modifications have separate hashes',()=>{
   const provenance=JSON.parse(read('packages/rollback-netcode/provenance.json'));
   const owners={'core.js':'rollback','loop.js':'simloop','utilities.js':'deterministic','value-codec.js':'deterministic','synctest.js':'deterministic','protocol.js':'_rollback-shared','webrtc.js':'transport','nostr.js':'transport','nostr-crypto.js':'transport','room.js':'transport','group-room.js':'transport','star-transport.js':'transport'};
   for(const [file,owner] of Object.entries(owners)){
@@ -37,6 +37,8 @@ test('migration source is byte-identical to pinned upstream after only inverse r
     }
     if(file==='synctest.js')code=code.replace("from '../../_rollback-shared/src/history.js'","from './core.js'");
     code=code.replace(/from '\.\.\/\.\.\/[^/]+\/src\/([^']+)'/g,"from './$1'");
-    assert.equal(createHash('sha256').update(code).digest('hex'),provenance.files[`src/${file}`],file);
+    const original = provenance.files[`src/${file}`], modified = provenance.modifiedFiles?.[`src/${file}`];
+    if (modified) { assert.notEqual(modified.normalizedSha256, original, file); assert.ok(modified.reason, file); }
+    assert.equal(createHash('sha256').update(code).digest('hex'), modified?.normalizedSha256 ?? original, file);
   }
 });

@@ -54,6 +54,65 @@ let fail = true;
 const retry = new PresentationEventQueue({ adapters: { hit: { start() { if (fail) throw Error('temporary resource failure'); } } } });
 retry.confirmThrough(0); const retryEvent = { tick: 0, sequence: 0, entityId: 1, generation: 0, kind: 'hit' };
 assert.throws(() => retry.emit(retryEvent)); fail = false; retry.confirmThrough(0); assert.equal(retry.stats.started, 1);
+// Confirmation at an unchanged, fully processed watermark neither scans nor replaces tombstones.
+const retainedEvent = tombstone.event, instantStats = { ...instant.stats };
+let retainedScans = 0;
+const values = instant.records.values, entries = instant.records[Symbol.iterator];
+instant.records.values = function () { retainedScans++; return values.call(this); };
+instant.records[Symbol.iterator] = function () { retainedScans++; return entries.call(this); };
+for (let i = 0; i < 60; i++) instant.confirmThrough(0);
+assert.equal(tombstone.event, retainedEvent, 'released identity is compacted only once');
+assert.equal(retainedScans, 0, 'unchanged confirmation must skip retained journal scans');
+assert.deepEqual(instant.stats, instantStats);
+instant.confirmThrough(1); assert.equal(tombstone.event, retainedEvent, 'advancing confirmation reuses the compact identity');
+instant.confirmThrough(120); assert.equal(instant.size, 0); assert.equal(instant.stats.collected, 1);
+// A failed start interrupts the watermark pass; retry both it and the records after it.
+let failures = 2, retryStarts = 0, speculativeConfirms = 0;
+const interrupted = new PresentationEventQueue({ retentionTicks: 2, adapters: { hit: {
+  reversible: true, stop() {}, confirm() { speculativeConfirms++; },
+  start(event) { if (event.sequence === 1 && failures-- > 0) throw Error('retry start'); retryStarts++; return event.payload; },
+} } });
+const interruptedEvent = { tick: 10, sequence: 0, entityId: 'retry', generation: 0, kind: 'hit', durationMs: 0, payload: largePayload };
+for (let sequence = 0; sequence < 3; sequence++) interrupted.emit({ ...interruptedEvent, sequence });
+const activeSpeculation = { ...interruptedEvent, sequence: 3, policy: 'speculative', durationMs: 100 };
+interrupted.emit(activeSpeculation);
+assert.throws(() => interrupted.confirmThrough(10), /retry start/);
+assert.throws(() => interrupted.confirmThrough(10), /retry start/);
+interrupted.confirmThrough(10); interrupted.confirmThrough(10);
+assert.equal(retryStarts, 4); assert.equal(speculativeConfirms, 1); assert.equal(interrupted.active.size, 1);
+for (const record of interrupted.records.values()) if (record.state !== 'active') assert.equal(record.event.payload, undefined);
+interrupted.confirmThrough(12); assert.equal(interrupted.size, 1, 'active resource survives the retention cutoff');
+assert.equal(interrupted.finish(activeSpeculation), true); assert.equal(interrupted.size, 0, 'late finish collects at the current cutoff');
+let confirmAttempts = 0;
+const interruptedHook = new PresentationEventQueue({ adapters: { hit: { reversible: true, start() {}, stop() {}, confirm() { if (++confirmAttempts === 1) throw Error('confirm hook'); } } } });
+interruptedHook.emit({ ...retryEvent, policy: 'speculative' });
+interruptedHook.emit({ ...retryEvent, sequence: 1 });
+assert.throws(() => interruptedHook.confirmThrough(0), /confirm hook/);
+interruptedHook.confirmThrough(0); interruptedHook.confirmThrough(0);
+assert.equal(interruptedHook.stats.started, 2); assert.equal(confirmAttempts, 2, 'resume later records without replaying the interrupted hook');
+// Late confirmed emits can fail after a clean confirmation, and must reopen same-tick retry work.
+let lateFailures = 2;
+const lateRetry = new PresentationEventQueue({ adapters: { hit: { start() { if (lateFailures-- > 0) throw Error('late retry'); } } } });
+lateRetry.confirmThrough(0);
+assert.throws(() => lateRetry.emit({ ...retryEvent, durationMs: 0, payload: largePayload }), /late retry/);
+assert.throws(() => lateRetry.confirmThrough(0), /late retry/);
+lateRetry.confirmThrough(0); lateRetry.confirmThrough(0);
+assert.equal(lateRetry.stats.started, 1); assert.equal(lateRetry.active.size, 0);
+assert.equal([...lateRetry.records.values()][0].event.payload, undefined);
+// Finished or cancelled speculative identities compact on confirmation without replaying.
+let speculativeStarts = 0;
+const completedSpeculation = new PresentationEventQueue({ retentionTicks: 2, adapters: { hit: { reversible: true, stop() {}, start() { speculativeStarts++; } } } });
+const speculativeEvent = { ...retryEvent, tick: 1, policy: 'speculative', durationMs: 0, payload: largePayload };
+completedSpeculation.emit(speculativeEvent);
+completedSpeculation.emit({ ...speculativeEvent, sequence: 1, tick: 2, durationMs: 100 });
+completedSpeculation.beginRollback(2); completedSpeculation.endRollback();
+completedSpeculation.confirmThrough(2);
+const speculativeIdentities = [...completedSpeculation.records.values()].map(record => record.event);
+assert.ok(speculativeIdentities.every(event => event.payload === undefined));
+completedSpeculation.confirmThrough(2);
+for (const [index, record] of [...completedSpeculation.records.values()].entries()) assert.equal(record.event, speculativeIdentities[index]);
+completedSpeculation.emit(speculativeEvent); assert.equal(speculativeStarts, 2);
+completedSpeculation.confirmThrough(4); assert.equal(completedSpeculation.size, 0);
 const details = ring.report(new Error('metadata'), { source: 'https://secret.test', line: 42, column: 3, workerTimeMs: 9, cause: 'token=secret' });
 assert.equal(details.source, '[source]'); assert.equal(details.line, 42); assert.equal(details.workerTimeMs, 9); assert.ok(!details.cause.includes('secret'));
 // Dense-hit fixture: no arbitrary event cap/drop and no per-frame tombstone scan.

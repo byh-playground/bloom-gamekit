@@ -40,6 +40,6 @@ onEvent의 `rollback`은 state load 후, 동기적 재실행 전에 전달됩니
 
 ## 출처와 배포
 
-[provenance.json](provenance.json)에 원본 저장소·commit·파일 SHA-256을 고정합니다. 원본 commit에는 LICENSE 파일이 없습니다. 기존 저작권/참고 문구를 보존하며 임의의 라이선스를 부여하지 않습니다. BIP-340 fixture는 기존 테스트의 원본과 참조를 보존합니다. 기존 저장소와 과거 배포는 수정하거나 삭제하지 않습니다.
+[provenance.json](provenance.json)의 files에 원본 저장소·commit·파일 SHA-256을 보존합니다. 이전 후 core/loop 수정은 별도 modifiedFiles 해시와 사유로 기록하며 수정본과 원본의 byte-identical을 주장하지 않습니다. 원본 commit에는 LICENSE 파일이 없습니다. 기존 저작권/참고 문구를 보존하며 임의의 라이선스를 부여하지 않습니다. BIP-340 fixture는 기존 테스트의 원본과 참조를 보존합니다. 기존 저장소와 과거 배포는 수정하거나 삭제하지 않습니다.
 
 소스만 main에 커밋하고 GitHub Actions가 `dist` 브랜치에 독립 JS와 manifest를 생성합니다. dist commit SHA로 고정하고 manifest의 SHA-256을 검증하세요. 별도 Pages·Release·npm·artifact 저장·유료 runner를 추가하지 않습니다.

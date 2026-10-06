@@ -36,3 +36,63 @@ test('loop rejects invalid callbacks',()=>{
   const f=fixture();
   assert.throws(()=>createLoop({session:f.session,canAdvance:false}),/callback/);
 });
+
+test('reentrant restart owns exactly one RAF chain; stale callbacks cannot revive it',()=>{
+  const callbacks=new Map();let next=0,restart=true;
+  const f=fixture({requestFrame:callback=>{callbacks.set(++next,callback);return next},cancelFrame:id=>callbacks.delete(id),
+    render:()=>{if(restart){restart=false;f.loop.stop();f.loop.start()}}});
+  f.loop.start();const old=callbacks.get(1);callbacks.delete(1);old(0);
+  assert.equal(callbacks.size,1);assert.equal(next,2);
+  old(50);assert.equal(callbacks.size,1);assert.equal(f.tick,0);
+  f.loop.stop();assert.equal(callbacks.size,0);
+});
+test('stop cancels the current catchup pulse but later manual pulses remain supported',()=>{
+  let stop=true,renders=0;const f=fixture({onAdvance:()=>{if(stop)f.loop.stop()},render:()=>renders++});
+  f.loop.pulse(0);f.loop.pulse(250);assert.equal(f.tick,1);assert.equal(renders,1);
+  stop=false;f.loop.resetTiming();f.loop.pulse(300);f.loop.pulse(350);assert.equal(f.tick,2);assert.equal(renders,3);
+});
+test('each callback boundary cancels stale work, including beforeFrame, poll, input and canAdvance',()=>{
+  for(const boundary of ['beforeFrame','poll','canAdvance','getInput','advance']){
+    let cancel=false,renders=0;const f=fixture({render:()=>renders++});
+    const original=f.session[boundary];
+    const options={session:f.session,render:()=>renders++};
+    let loop;
+    const callback=()=>{if(cancel)loop.stop();return boundary==='getInput'?new Uint8Array(1):true};
+    if(boundary==='poll'||boundary==='advance') f.session[boundary]=(...args)=>{callback();return original.apply(f.session,args)};
+    else options[boundary]=callback;
+    loop=createLoop(options);loop.pulse(0);cancel=true;loop.pulse(250);
+    assert.equal(f.tick,boundary==='advance'?1:0,boundary);assert.equal(renders,1,boundary);
+  }
+});
+test('scalar pace avoids metrics snapshots; legacy pacing uses one read per step decision',()=>{
+  let reads=0;const f=fixture();Object.defineProperty(f.session,'metrics',{get(){reads++;return{pace:1}}});
+  Object.defineProperty(f.session,'pace',{get(){return 1}});
+  f.loop.pulse(0);f.loop.pulse(250);assert.equal(f.tick,5);assert.equal(reads,0);
+  const legacy=fixture();let legacyReads=0;Object.defineProperty(legacy.session,'metrics',{get(){legacyReads++;return{pace:1}}});
+  legacy.loop.pulse(0);legacy.loop.pulse(250);assert.equal(legacy.tick,5);assert.ok(legacyReads<=6);
+});
+
+test('retain backlog preserves elapsed debt in bounded batches; reset excludes pause duration',()=>{
+  let allowed=true;const f=fixture({backlogPolicy:'retain',canAdvance:()=>allowed});
+  f.loop.pulse(0);f.loop.pulse(1000);assert.equal(f.tick,5);
+  f.loop.pulse(1000);f.loop.pulse(1000);f.loop.pulse(1000);assert.equal(f.tick,20);
+  f.loop.pulse(1000);assert.equal(f.tick,20);
+  allowed=false;f.loop.pulse(1500);assert.equal(f.tick,20);allowed=true;
+  f.loop.pulse(1500);f.loop.pulse(1500);assert.equal(f.tick,30);
+  f.loop.resetTiming();f.loop.pulse(100000);assert.equal(f.tick,30);f.loop.pulse(100050);assert.equal(f.tick,31);
+  const drop=fixture();drop.loop.pulse(0);drop.loop.pulse(1000);drop.loop.pulse(1000);assert.equal(drop.tick,5);
+  assert.throws(()=>fixture({backlogPolicy:'unbounded'}),/backlogPolicy/);
+});
+test('retain uses the current pace each step and retains debt after a held result',()=>{
+  const f=fixture({backlogPolicy:'retain'});let steps=0,held=true;
+  Object.defineProperty(f.session,'pace',{get:()=>steps<2?2:1});
+  f.session.advance=()=>{if(held)return{status:'held'};steps++;return{status:'advanced'}};
+  f.loop.pulse(0);f.loop.pulse(500);assert.equal(steps,0);held=false;
+  f.loop.pulse(500);assert.equal(steps,5);f.loop.pulse(500);assert.equal(steps,8);
+});
+test('retain stop during catchup cancels remaining steps and start resets previous debt',()=>{
+  const callbacks=new Map();let next=0,stop=true;
+  const f=fixture({backlogPolicy:'retain',requestFrame:callback=>{callbacks.set(++next,callback);return next},cancelFrame:id=>callbacks.delete(id),onAdvance:()=>{if(stop)f.loop.stop()}});
+  f.loop.pulse(0);f.loop.pulse(1000);assert.equal(f.tick,1);
+  stop=false;f.loop.start();const cb=callbacks.get(next);cb(2000);assert.equal(f.tick,1);f.loop.stop();
+});
