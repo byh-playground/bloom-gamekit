@@ -197,8 +197,11 @@ try {
   });
   report.stages.push('DOM multi-pointer identity/coordinates/cancel/capture loss + keyboard aggregation + listener disposal');
 
-  report.presentation = await runPresentationChecks(page);
-  report.device = await exerciseWebGLDevice(page);
+  const moduleErrors = [];
+  for (const [name, check] of [['presentation', runPresentationChecks], ['device', exerciseWebGLDevice]]) {
+    try { report[name] = await check(page); }
+    catch (error) { console.error(`Browser module ${name}:`, error); moduleErrors.push(`${name}: ${error.message}`); }
+  }
   const disposal = await page.evaluate(() => {
     const { r } = renderProbe, gl = r.gl, buffer = r.buffer, program = r.program;
     r.dispose(); r.dispose(); const result = { state: r.state, bufferReleased: !gl.isBuffer(buffer), programReleased: !gl.isProgram(program), textures: r.stats.textureCount };
@@ -206,6 +209,7 @@ try {
   });
   assert.deepEqual(disposal, { state: 'disposed', bufferReleased: true, programReleased: true, textures: 0 });
   assert.equal(errors.length, 0, errors.join('\n'));
+  assert.equal(moduleErrors.length, 0, moduleErrors.join('\n'));
   report.browser = await browser.version(); report.contextLoss = supportsLoss;
   report.scope = 'Headless Chromium with actual WebGL1/SwiftShader pixels and built ESMs. CPU/interval observations are not mobile FPS or hardware-GPU certification. No screenshot/artifact retention.';
   console.log(JSON.stringify(report, null, 2));

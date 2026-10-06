@@ -7,7 +7,7 @@ export async function runPresentationChecks(page) {
     const { Renderer2D } = await import('/dist/rendering.js');
     const check = (condition, message) => { if (!condition) throw Error(message); };
     const host = document.createElement('div'); host.style.cssText = 'position:relative;width:100px;height:100px'; document.body.append(host);
-    const canvas = document.createElement('canvas'); host.append(canvas);
+    const canvas = document.createElement('canvas'); canvas.style.cssText = 'width:100px;height:100px;aspect-ratio:auto'; host.append(canvas);
     const renderer = new Renderer2D(canvas, { antialias: false, preserveDrawingBuffer: true });
     const camera = new CameraViewport({ projection: new OrthographicProjection(), width: 100, height: 100, dpr: 2, x: 20, y: 20, zoom: 1.5, rotation: .2 });
     camera.setShake(3, -2); camera.applyToRenderer(renderer, true);
@@ -16,7 +16,10 @@ export async function runPresentationChecks(page) {
     camera.projection.projectInto(world.x, world.y, world.z, plane); camera.worldToScreenInto(world.x, world.y, world.z, screen);
     renderer.beginFrame(); renderer.rect(plane.x, plane.y, 6, 6, [0, 1, 0, 1]); renderer.endFrame();
     const pixel = new Uint8Array(4); renderer.gl.readPixels(Math.floor(screen.x * 2), canvas.height - 1 - Math.floor(screen.y * 2), 1, 1, renderer.gl.RGBA, renderer.gl.UNSIGNED_BYTE, pixel);
-    check(pixel[1] === 255 && label.style.transform.includes(`${screen.x}px`), 'shared XYZ camera/HUD must coincide with actual WebGL pixels');
+    check(pixel[0] === 0 && pixel[1] === 255 && pixel[2] === 0 && pixel[3] === 255, `shared XYZ camera GPU pixel ${[...pixel]} at ${screen.x},${screen.y}`);
+    const labelBounds = label.getBoundingClientRect(), hostBounds = host.getBoundingClientRect();
+    const anchorX = labelBounds.left + labelBounds.width / 2 - hostBounds.left, anchorY = labelBounds.bottom - hostBounds.top;
+    check(Math.abs(anchorX - screen.x) < .02 && Math.abs(anchorY - screen.y) < .02, `shared XYZ HUD visible anchor ${anchorX},${anchorY} expected ${screen.x},${screen.y}; CSS ${label.style.transform}`);
     let starts = 0, sounds = 0, stops = 0;
     const queue = new PresentationEventQueue({ adapters: {
       text: { reversible: true, start: event => { starts++; return hud.add(event.sequence, { anchor: event.payload, text: 'hit' }); }, stop: (_, reason, event) => { stops++; hud.remove(event.sequence); } },
