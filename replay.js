@@ -38,6 +38,7 @@ var fixedPoint = Object.freeze({
 var VERSION = "0.2.0-dev";
 var CHUNK_SIZE = 16384;
 var defaults = {
+  mode: "rollback",
   tickRate: 60,
   baseInputDelayTicks: 2,
   minInputDelayTicks: 0,
@@ -78,6 +79,7 @@ var profiles = Object.freeze({
   }),
   lockstep: Object.freeze({
     ...defaults,
+    mode: "lockstep",
     tickRate: 20,
     baseInputDelayTicks: 4,
     maxInputDelayTicks: 20,
