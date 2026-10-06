@@ -43,3 +43,60 @@ session.pace=2;
 createLoop({session,backlogPolicy:'retain'});
 // @ts-expect-error backlog policies are explicit
 createLoop({session,backlogPolicy:'unbounded'});
+
+import {createBootstrapReplay,createRoomSession,createNostrDynamicRoom,ConfirmedBootstrap,
+  LocalCommandState,RoomSimulationAdapter,DynamicRoom,RoomSession} from '../../packages/rollback-netcode/rollback-netcode.js';
+const bootstrap:ConfirmedBootstrap=session.exportConfirmedBootstrap();
+const handoff:LocalCommandState=session.exportLocalCommandState();
+handoff.commands[0]?.payload.byteLength;
+createSession({players:['a'],localPlayerId:'a',sessionId:'next-epoch',simulationVersion:'1',inputSize:1,adapter,
+  profile:profiles.lockstep,localCommandState:handoff});
+const catchup=createBootstrapReplay({adapter,bootstrap,maxCatchupSteps:4,maxSuffixTicks:32,
+  simulationVersion:'1',inputSize:1,tickRate:20,players:['a'],seed:1});
+catchup.pulse().steps;catchup.result?.hash;catchup.failure?.message;catchup.cancel();
+// @ts-expect-error catch-up progress is owned by the replay job
+catchup.tick=2;
+// @ts-expect-error a confirmed bootstrap never contains predicted inputs
+bootstrap.frames[0].inputs[0].predicted=true;
+const roomAdapter:RoomSimulationAdapter={...adapter,
+  step:context=>{context.membershipEpoch;return context.tick;},
+  validateSnapshot:(_bytes,context)=>context.tick>=0,
+  applyMembership:context=>{context.joined.forEach(id=>id);context.coordinatorId;context.epoch;}};
+const localRoom:RoomSession=createRoomSession({mode:'local',simulationVersion:'room-v1',inputSize:1,adapter:roomAdapter,
+  membership:{maxPlayers:5,maxCatchupSteps:2},onEvent:context=>context.epoch});
+createLoop({session:localRoom,onAdvance:result=>result.status==='membership',render:context=>context.session.epoch}).pulse(50);
+localRoom.getStateHash();localRoom.metrics.bootstrapTicks;localRoom.queueCommand(new Uint8Array([1]));localRoom.leave();
+// @ts-expect-error a room adapter must apply deterministic membership changes
+createRoomSession({simulationVersion:'missing-membership',inputSize:1,adapter});
+// @ts-expect-error room modes are explicit
+createRoomSession({mode:'rollback',simulationVersion:'bad-mode',inputSize:1,adapter:roomAdapter});
+// @ts-expect-error membership roster is immutable
+localRoom.players.push('unadmitted');
+createNostrDynamicRoom({role:'host',maxPlayers:5,maxPendingPeers:3,onStatus:status=>status.transport?.state}).then((room:DynamicRoom)=>{
+  const online=createRoomSession({mode:'online',room,simulationVersion:'room-v1',inputSize:1,adapter:roomAdapter});
+  room.subscribe(event=>event.peerId);room.connectMesh([...room.players]);room.reconnect(room.coordinatorId);
+  room.setRoster({epoch:room.epoch+1,players:[...room.players],coordinatorId:room.coordinatorId});
+  room.metrics.signalBacklogBytes;room.peerConnections.get(room.coordinatorId)?.getStats();online.close();
+  // @ts-expect-error dynamic roster is immutable
+  room.players.push('unadmitted');
+});
+const sequenceBaselines:Record<string,number>=session.getCommandSequences();
+const lastExecuted:number=bootstrap.commandSequences.a;
+createSession({players:['a'],localPlayerId:'a',sessionId:'restored-epoch',simulationVersion:'1',inputSize:1,adapter,
+  profile:profiles.lockstep,initialCommandSequences:sequenceBaselines,localCommandState:handoff});
+createNostrDynamicRoom({role:'join',room:'1234',resume:{storage:sessionStorage,key:'room-tab',lifetimeMs:3600000},resumeProbeMs:500}).then(room=>{
+  const resumed:boolean=room.resumed;const donor:string|null=room.resumePeerId;
+  room.forgetResume();room.disconnect('departed');
+});
+// @ts-expect-error reload resume requires explicit storage
+createNostrDynamicRoom({role:'join',room:'1234',resume:{}});
+
+// 공개 Start도 같은 RoomSession adapter/loop 경계를 사용한다.
+async function publicRoomExample(adapter: import('../../packages/rollback-netcode/rollback-netcode.js').RoomSimulationAdapter) {
+  const sdk = await import('../../packages/rollback-netcode/rollback-netcode.js');
+  const room = await sdk.createNostrPublicRoom({ namespace: 'example-game', simulationVersion: 'rules-v1', maxPlayers: 5,
+    resume: { storage: sessionStorage, key: 'example-room', lifetimeMs: 3600000 } });
+  const session = sdk.createRoomSession({ mode: 'online', room, adapter, simulationVersion: 'rules-v1', inputSize: 1 });
+  sdk.createLoop({ session }); await session.leave();
+}
+void publicRoomExample;

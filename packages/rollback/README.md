@@ -43,3 +43,105 @@ const session = createSession({
 - `metrics.snapshotSaves`, `serializedSnapshotBytes`는 SDK 직렬화 횟수/바이트를 제공합니다. 기존 `retainedSnapshotBytes`, `stateHashComputations`, `hashedStateBytes`도 유지합니다. 이는 adapter 내부 할당/게임의 별도 저장 비용까지 측정하지 않습니다.
 
 HELLO는 양쪽 mode를 명시하며 lockstep에서는 초기 `baseInputDelayTicks`, `checksumInterval`도 일치해야 합니다. rollback의 peer별 delay 설정 및 런타임 delay 적응은 유지합니다. packet framing과 replay version은 유지하지만 이 handshake 필드가 없는 이전 bundle과 새 bundle을 섞으면 시작을 거절합니다. 함께 플레이할 소비자는 같은 검증된 dist pin으로 업데이트하세요.
+
+## 확정 bootstrap과 bounded catch-up
+
+`session.exportConfirmedBootstrap()`은 실행 중인 lockstep의 **현재 확정 경계**만 내보냅니다. rollback 모드, 복구/재실행 중, 실패/종료된 세션은 거절합니다. 반환값의 `version`은 1이며 `tick`, `checkpoint: { tick, bytes, hash }`, `players`, `frames`, 최종 `hash`, `inputSize`, `tickRate`, `simulationVersion`, `seed`를 포함합니다. checkpoint는 현재 tick 이하의 가장 가까운 보관 경계이고 suffix는 그 뒤 실행한 실제 입력만 포함합니다. 예측 입력과 아직 실행하지 않은 미래 명령은 넣지 않습니다.
+
+- `frames`는 checkpoint tick부터 현재 tick 직전까지 연속하며 길이는 `checksumInterval` 이내입니다. checkpoint 경계에서는 빈 배열입니다.
+- snapshot과 입력/명령 바이트는 복사하므로 호출자가 반환값을 바꾸어도 기존 Core는 바뀌지 않습니다.
+- 평상시 tick의 직렬화 횟수는 늘어나지 않습니다. export할 때 checkpoint hash와 현재 완료 경계의 snapshot/hash가 필요하며, 같은 경계의 반복 요청은 Core cache를 사용합니다. 매 tick export하면 그만큼 저장/해시 비용을 다시 지불합니다.
+- `createBootstrapReplay({ adapter, bootstrap, maxCatchupSteps: 8 })`는 후보를 검증하고 checkpoint를 load한 뒤 job을 반환합니다. `pulse()`마다 최대 지정한 tick 수를 동일 `runSimulationFrame` 경로로 실행합니다. 스케줄·렌더·전송은 호출자의 책임입니다.
+
+```js
+import { createBootstrapReplay } from './rollback.js';
+
+const job = createBootstrapReplay({
+  adapter: joiningGameAdapter,
+  bootstrap,
+  maxCatchupSteps: 4,
+  maxSnapshotBytes: 4 * 1024 * 1024,
+  maxSuffixTicks: 20,
+  simulationVersion: 'game-v1',
+});
+
+// 렌더 루프가 pulse를 한 번씩 호출한다. while로 끝까지 밀어 실행하지 않는다.
+function catchupPulse() {
+  const result = job.pulse();
+  if (result.status === 'done') console.log(job.result.tick, job.result.hash);
+}
+```
+
+job은 `tick`, `targetTick`, `status`, `done`, `result`, `failure`를 공개합니다. `pulse()` 결과의 `steps`는 이번 호출의 실제 재실행 수이고 완료하면 `hash`도 있습니다. frame에는 `resimulating`, `recovering`, `replaying`이 true로 전달되므로 게임은 표현 이펙트를 중복 발생시키지 않아야 합니다. bootstrap tick은 Core의 로컬 tick입니다. epoch 기준 tick을 쓰는 게임은 adapter 경계에서 변환하며 RoomSession은 이를 제공합니다.
+
+후보의 version·roster/순서·연속 tick·확정 입력·command sequence/executeTick·크기와 checkpoint hash를 load 전에 검사합니다. `simulationVersion`, `inputSize`, `tickRate`, `players`, `seed` 옵션은 기대값 대조에 사용합니다. `maxSnapshotBytes`, `maxSuffixTicks`, `maxCommandBytes`, `maxPendingCommands`, `maxReplayBytes`는 후보 보관 한도이고, maxReplayBytes는 checkpoint와 suffix의 추정 바이트 합을 제한합니다. suffix는 최대 8,192 tick, snapshot은 최대 64 MiB입니다. 수신측에는 송신측 profile과 맞는 한도를 넘겨야 합니다.
+
+load 후 checkpoint의 canonical round-trip과 최종 snapshot의 hash/`validateSnapshot`을 검사합니다. load/step/final 검증 실패는 job 생성 전 snapshot으로 복원하고 throw합니다. 진행 중 `cancel()`도 원래 snapshot으로 복원합니다. 완료된 job의 cancel은 완료 상태를 유지합니다. adapter 자체가 복원에도 실패하면 원래 실패와 복원 실패를 함께 보고합니다. job이 진행 중인 동안 같은 adapter를 다른 시뮬레이션에서 step하지 마세요. 이 rollback 보장은 성공적으로 완료한 뒤 별도 게임 동작까지 되돌리는 기능은 아닙니다.
+
+## epoch 사이 로컬 명령 보존
+
+`session.exportLocalCommandState()`는 `{ sequence, lastInput, commands }`를 복사합니다. 현재 tick 이후에 이미 capture된 로컬 frame과 아직 대기 중인 queue에서 **미실행 명령만** 모아 sequence 순으로 중복을 제거합니다. 이전 epoch의 executeTick은 버리고 payload와 stable sequence를 보존합니다.
+
+새 `createSession({ ..., localCommandState })`에 이 값을 전달하면 다음 명령의 sequence가 이어지며, 미실행 명령은 새 epoch의 입력 delay에 맞춰 다시 capture됩니다. 초기 delay 구간은 그대로 neutral이고 `advance()`의 기본 입력은 넘겨받은 lastInput입니다. 세계 snapshot을 load하거나 membership을 적용하는 것은 이 옵션의 역할이 아니며 게임/RoomSession이 먼저 그 경계를 준비해야 합니다.
+
+명령 전체가 한 tick에 실행된다고 가정하면 안 됩니다. 기존 frame 바이트 한도와 `maxPendingCommands` 개수 한도 안에서 차례로 나누어 capture합니다. handoff는 미래 delay frame과 대기 queue를 합한 기존 용량만 허용하고, 보존된 대기 명령 수가 일반 queue 한도 이상이면 새 `queueCommand()`는 이전 명령이 빠질 때까지 capacity 오류를 반환합니다. 이미 실행한 명령은 다시 넘기지 않으며, 새 epoch에서도 명령을 실행할 때의 tick은 해당 adapter context와 같습니다.
+
+`getCommandSequences()`와 bootstrap의 `commandSequences`는 현재 roster 전체의 **이미 실행한** sequence 최대값을 `{ [playerId]: sequence }`로 복사합니다. 아직 capture된 미래 명령이나 대기 명령은 포함하지 않으며 값이 없으면 0입니다. checkpoint 이후 suffix에 명령이 하나도 없어도 마지막 실행 sequence를 유지하므로 reload한 플레이어가 이전 이벤트 ID를 재사용하지 않습니다. 새 Core의 `initialCommandSequences`에는 새 roster의 모든 ID와 baseline을 넘깁니다. 로컬 다음 sequence는 이 baseline부터 이어지며, 함께 넘긴 localCommandState의 sequence는 baseline 이상, 미실행 명령은 baseline보다 커야 합니다. live 세션의 아직 실행하지 않은 명령 보존과, reload 클라이언트의 이미 실행한 sequence 복원은 서로 다른 입력이며 RoomSession이 epoch 경계에서 조합합니다.
+
+## 동적 방 세션: 같은 세계, 바뀌는 roster
+
+`createRoomSession`/`RoomSession`은 기존 lockstep Core를 epoch마다 조합합니다. 게임 세계를 새로 시작하거나 서로 다른 싱글/온라인 시뮬레이터를 만들지 않습니다. `mode: 'local'`은 전송 없이 1명, `mode: 'online'`은 transport의 `createNostrDynamicRoom` capability를 받습니다. 정원은 `membership.maxPlayers`(기본 5, 범위 1–8)입니다. 기존 `createSession`, 고정 `createNostrGroupRoom`, rollback 모드의 API는 유지합니다.
+
+```js
+const session = createRoomSession({
+  mode: room ? 'online' : 'local', room,
+  simulationVersion: 'my-game-rules-v1', seed: 1, inputSize: 8,
+  profile: { ...profiles.lockstep, baseInputDelayTicks: room ? 2 : 0 },
+  membership: { maxPlayers: 5, transitionTimeoutMs: 15000,
+    reconnectGraceMs: 10000, maxCatchupSteps: 4 },
+  adapter: {
+    save, load, validateSnapshot, step,
+    applyMembership({ epoch, tick, players, joined, left, coordinatorId, reason }) {
+      // canonical state만 변경합니다. spawn/despawn/재화/정책은 게임 소유입니다.
+      // appliedMembershipEpoch와 playerId→entity 매핑도 save/load에 포함합니다.
+    },
+  },
+});
+```
+
+`advance`, `poll`, `queueCommand`, `releaseInput`, `getStateHash`, `getPeerState`, `tick`, `confirmedTick`, `profile`, `pace`, `resimulating`, `failure`, `metrics`는 기존 loop capability와 연결됩니다. `tick`과 `adapter.step().tick`, command executeTick은 방 전체에서 단조 증가합니다. `membershipEpoch`는 step에 추가됩니다. Core 내부 tick 0 재생성은 게임 tick/세계 초기화가 아닙니다. 캡처했지만 아직 실행하지 않은 명령은 payload와 sequence를 보존해 새 epoch로 넘깁니다. held input도 이어집니다. 표현 이벤트는 `(playerId, command sequence)` 또는 `(global tick, game event sequence)`처럼 안정적인 키를 사용하세요.
+
+### 합의된 경계와 정확한 callback 계약
+
+1. coordinator가 한 번에 한 roster 변경만 제안합니다. 기존 참가자가 즉시 멈추고 모든 연결이 준비되면 그중 가장 앞선 tick을 공통 barrier로 선택합니다.
+2. 기존 roster 전원이 그 tick까지 기존 실제 입력으로 실행하고 동일한 상태 hash를 확인합니다. 새 참가자는 아직 입력을 제출하거나 게임 actor를 소유하지 않습니다.
+3. 새 참가자에게만 최근 sparse checkpoint와 그 뒤 확정 입력 suffix를 RTC reliable channel로 전송합니다. `poll` 한 번의 catch-up은 `membership.maxCatchupSteps` 이하입니다. 전체 세계를 매 tick 직렬화/방송하지 않습니다.
+4. 모든 참가자가 같은 `applyMembership`을 canonical boundary에서 실행해 다음 snapshot을 준비하고 hash를 비교합니다. 준비 중에는 기존 snapshot으로 복원하며, commit 때 준비된 완전한 snapshot을 원자적으로 load합니다. 따라서 callback은 외부 effect/UI/음향/네트워크를 실행하면 안 됩니다. commit 알림은 `membership-committed` observer로 받습니다.
+5. 전원 hash 일치와 commit 전달 확인 뒤 새 epoch 입력을 받습니다. 새 참가자의 callback은 가져온 기존 플레이어를 다시 spawn하지 않습니다. `joined`만 새 actor를 만들고 `left`에 대한 게임 정책을 적용하세요. initial callback은 host/local에만 있고, 새 참가자는 snapshot에 포함된 이전 membership을 반복 호출하지 않습니다.
+
+서로 다른 gameplay 설정은 `simulationVersion`에 포함하거나 그 digest를 version에 넣어야 합니다. SDK는 version/seed/inputSize/TPS/input delay/checkpoint interval/정원도 검증합니다. duration 설정 단위는 ms, checkpoint/입력 이력은 tick입니다. 공개 방 선택/지역/자리 UX와 전투·랜덤 지역 spawn은 이 세션의 책임이 아닙니다.
+
+### 퇴장, 복구, 분할 정책
+
+`await session.leave()`는 합의된 퇴장입니다. 기존 coordinator가 나가면 같은 commit에서 남은 정렬 roster의 첫 ID로 coordinator를 넘깁니다. 살아 있는 세계와 tick은 유지됩니다. `close()`는 즉시 자원 정리이며 합의된 퇴장의 대체가 아닙니다. 평상시 Exit는 leave를 사용하세요.
+
+끊긴 RTC는 같은 identity의 새 transport로 교체할 수 있습니다. 연결이 돌아올 때까지 lockstep은 누락 입력을 임의 no-op로 만들지 않습니다. 유예를 넘긴 partition은 `partition-failed`로 정지합니다. 정족수 없는 독립 선출·개별 timeout 강퇴·분할된 두 세계의 지속 실행은 하지 않습니다. 합의/전송/접속은 명시적인 deadline과 capacity를 넘기면 실패합니다. 정상 퇴장 중 누군가 응답하지 않는 경우도 무조건 성공했다고 보고하지 않습니다.
+
+진행 중인 transition에서는 명령을 정상 queue할 수 있지만 새 참가자는 admission 완료 전 queue할 수 없습니다. 동시에 도착한 admission은 정원 이내의 bounded FIFO에서 순서대로 처리하며, 기다리는 참가자는 새 proposal 전 현재 확정 roster/epoch를 전달받습니다. 정원 초과와 deadline 만료는 명시적으로 거절하며, 초기 RTC join 요청만 `membership.joinRetryMs`(기본 500ms) 간격으로 입장 deadline까지 멱등 재전송합니다. 외부 매칭 정책은 제한된 재시도나 다른 방 선택을 결정합니다. epoch는 0–65534이고 소진되면 명시적으로 실패합니다.
+
+### 비용과 검증 범위
+
+정상 실행에서는 원래 sparse checkpoint 빈도를 유지합니다. membership마다 pre/post snapshot, 신규 참가자 catch-up, 새 Core의 초기 snapshot이 추가됩니다. `metrics.snapshotSaves` 등은 epoch별 Core 합계이고, membership staging/codec 전송 비용을 전부 포함하는 CPU 수치가 아닙니다. `bootstrapBytes`, `bootstrapTicks`, control 송수신/보관 바이트는 별도입니다. 외부 `getStateHash()`를 매 tick 부르면 그 직렬화 비용은 다시 발생합니다.
+
+`tests/rollback/room-session.test.mjs`는 실제 Core와 in-memory transport의 연속 1→2→5/퇴장/복구/분할 검사입니다. `tests/rollback/dynamic-browser.mjs`는 signed local Nostr relay fixture와 실제 Chromium RTC mesh의 같은 순서를 검사하며 CI browser suite에 포함됩니다. 전자는 실제 RTC 검증이 아니고, 후자도 공용 relay/NAT/실기기 모바일 성능 보장이 아닙니다. 서버 없는 방은 마지막 참가자가 사라진 뒤 세계를 보존하지 않습니다. 32-bit 상태 hash는 버그 감지용이며 악의적 peer에 대한 인증·치트 방지 보장이 아닙니다.
+
+RoomSession의 전체 여러 epoch replay 파일 export는 아직 제공하지 않습니다. 기존 고정 Core의 replay API는 유지하고, 동적 입장/복구에는 명시적인 checkpoint+suffix만 사용합니다.
+
+
+### 새로고침 재접속
+
+transport에 opt-in `resume: { storage: sessionStorage, key, lifetimeMs }`를 주면 같은 탭의 room-scoped 서명 identity를 복원할 수 있습니다. storage 수명/증명/중복 탭 충돌 계약은 transport 문서를 따릅니다. RoomSession은 `room.resumed`를 보고 초기 actor 생성 대신 같은 roster의 `reason: 'reconnect'`, `joined: []`, `left: []` epoch를 준비합니다. coordinator 새로고침도 살아 있는 member가 discovery/상태 donor를 제공하며 coordinator를 임의로 바꾸지 않습니다.
+
+이미 멈춘 peer들의 실행 경계가 다를 수 있으므로 가장 앞선 확정 tick의 살아 있는 peer를 donor로 선택하고, 전원에게 그 checkpoint+확정 입력 suffix를 검증·bounded replay합니다. 새 epoch의 global tick은 모두의 이전 경계 이상입니다. donor가 이미 실행한 local command는 다시 queue하지 않고, player별 실행 command sequence baseline도 복원합니다. 임시 로컬 UI 입력·아직 어디에도 확정되지 않은 브라우저 내 queue는 새로고침으로 복원되지 않습니다.
+
+게임은 기존 canonical actor/진행 상태를 유지합니다. 새 방에 개인 save를 넣거나 종료된 방의 세계를 되살리는 기능은 아닙니다. 살아 있는 donor 없음, identity 만료, 정상 연결이 살아 있는 중복 탭, 복구 timeout은 명시적으로 실패합니다. partition 유예가 끝나 세션이 이미 실패한 뒤 복구한다고 약속하지 않습니다.

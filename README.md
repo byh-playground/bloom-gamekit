@@ -10,6 +10,7 @@
 - [WebGL 1 렌더링 API·texture·생명주기](packages/rendering/README.md)
 - [입력 action·DOM·tick 소비 계약](packages/input/README.md)
 - [카메라·표현 이벤트](packages/presentation-events/README.md) · [HUD](packages/hud/README.md) · [진단](packages/debug-tools/README.md) · [카메라](packages/camera/README.md)
+- [동적 방·공개 입장·새로고침 복구](packages/rollback/README.md) · [Nostr 디렉터리·전송](packages/transport/README.md)
 - [SDK 전체/분리 API와 이전](packages/rollback-netcode/README.md)
 - [실제 독립 번들을 연결하는 사용 예제](examples/interpolation/index.html)
 - [연속 E2E와 CPU 측정](tests/interpolation.e2e.mjs)
