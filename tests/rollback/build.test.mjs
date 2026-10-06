@@ -32,7 +32,7 @@ test('unchanged migration source matches upstream; reviewed modifications have s
   for(const [file,owner] of Object.entries(owners)){
     let code=read(`packages/${owner}/src/${file}`);
     if(file==='core.js'){
-      code=code.replace("import { StateHistory } from '../../_rollback-shared/src/history.js';\n",read('packages/_rollback-shared/src/history.js'));
+      code=code.replace("import { StateHistory, CheckpointHistory } from '../../_rollback-shared/src/history.js';\n",read('packages/_rollback-shared/src/history.js'));
       code+=read('packages/replay/src/index.js').replace(/^import[^\n]*\n/gm,'');
     }
     if(file==='synctest.js')code=code.replace("from '../../_rollback-shared/src/history.js'","from './core.js'");

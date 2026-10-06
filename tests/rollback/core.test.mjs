@@ -691,7 +691,7 @@ test('state history byte-budget exhaustion leaves the game state and logical tic
     load(b){size=b.length;tick=new DataView(b.buffer,b.byteOffset,b.byteLength).getUint32(0,true)},validateSnapshot:b=>b.length>=4,
     step(){tick++;size=40}};
   const session=createSession({players:['a'],localPlayerId:'a',sessionId:'growing',simulationVersion:'1',inputSize:1,adapter,
-    profile:{...profiles.lockstep,baseInputDelayTicks:0,stateHistorySize:4,maxHistoryBytes:64,adaptiveInputDelay:false}});
+    profile:{...profiles.lockstep,mode:'rollback',baseInputDelayTicks:0,stateHistorySize:4,maxHistoryBytes:64,adaptiveInputDelay:false}});
   session.advance(new Uint8Array(1));const originalHash=session.getStateHash();
   assert.throws(()=>session.advance(new Uint8Array(1)),error=>error.code==='history-capacity');
   assert.equal(tick,1);assert.equal(session.tick,1);assert.equal(session.status,'failed');

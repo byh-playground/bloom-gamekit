@@ -19,12 +19,16 @@
   "license": "No LICENSE file present at the pinned source commit; no new license is asserted.",
   "modifiedFiles": {
     "src/core.js": {
-      "normalizedSha256": "57ae54b02739dd9b64fbecb7c2505b89f99ebe37d3d3dd800e6a98d8ba0c9ece",
-      "reason": "bloom-gamekit: transport detach identity/idempotence and scalar pace capability"
+      "normalizedSha256": "ee7cefc048898276ed1ba3d79dc3f12a7941b2313cdb384a72f11158d16fdc97",
+      "reason": "bloom-gamekit: explicit lockstep mode, sparse confirmed checkpoints, compatible rollback default, verified replay and recovery"
     },
     "src/loop.js": {
       "normalizedSha256": "59021c852b47f331e3a00b156dcf6a3895b711ab382560e3dc639b3e00a1c05b",
       "reason": "bloom-gamekit: reentrant cancellation, scalar pacing reads, opt-in retained backlog"
+    },
+    "src/protocol.js": {
+      "normalizedSha256": "0c9e87c2c01855102d33d7b68b2ed6c68c847439f60f30f09a415ffbabf679d1",
+      "reason": "bloom-gamekit: explicit lockstep mode, sparse confirmed checkpoints, compatible rollback default, verified replay and recovery"
     }
   }
 }

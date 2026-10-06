@@ -86,50 +86,60 @@ try {
       metrics:result.metrics};
   });
   assert.ok(capabilities.loopPassed&&capabilities.metricsPassed&&capabilities.asyncPassed&&capabilities.boundedPassed, `browser capability verification: ${JSON.stringify(capabilities)}`);
-  await Promise.all(pages.map((page, index) => page.evaluate(({ id, initiator }) => window.harness.createPeer(id, initiator), { id: index ? 'b' : 'a', initiator: index === 0 })));
+  const modes = [];
+  for (const mode of ['rollback', 'lockstep']) {
+    if (mode === 'lockstep') {
+      await Promise.all(pages.map(page => page.evaluate(() => window.harness.close())));
+      await Promise.all(pages.map(page => page.reload()));
+      await Promise.all(pages.map(page => page.waitForFunction(() => Boolean(window.harness), null, { timeout })));
+    }
+    await Promise.all(pages.map((page, index) => page.evaluate(({ id, initiator }) => window.harness.createPeer(id, initiator), { id: index ? 'b' : 'a', initiator: index === 0 })));
 
-  // Node relays SDP and ICE candidates; all game traffic travels through WebRTC.
-  const offer = await pages[0].evaluate(() => window.harness.offer());
-  const answer = await pages[1].evaluate(offer => window.harness.answer(offer), offer);
-  await pages[0].evaluate(answer => window.harness.acceptAnswer(answer), answer);
-  const connectDeadline = Date.now() + timeout;
-  let relayedCandidates = 0;
-  while (true) {
-    const candidates = await Promise.all(pages.map(page => page.evaluate(() => window.harness.takeCandidates())));
-    relayedCandidates += candidates[0].length + candidates[1].length;
-    await Promise.all(pages.map((page, index) => page.evaluate(values => window.harness.addCandidates(values), candidates[1 - index])));
-    if ((await Promise.all(pages.map(page => page.evaluate(() => window.harness.channelsOpen())))).every(Boolean)) break;
-    assert.ok(Date.now() < connectDeadline, 'real WebRTC DataChannels did not open');
-    await new Promise(resolveWaiting => setTimeout(resolveWaiting, 25));
+    // Node relays SDP and ICE candidates; all game traffic travels through WebRTC.
+    const offer = await pages[0].evaluate(() => window.harness.offer());
+    const answer = await pages[1].evaluate(offer => window.harness.answer(offer), offer);
+    await pages[0].evaluate(answer => window.harness.acceptAnswer(answer), answer);
+    const connectDeadline = Date.now() + timeout;
+    let relayedCandidates = 0;
+    while (true) {
+      const candidates = await Promise.all(pages.map(page => page.evaluate(() => window.harness.takeCandidates())));
+      relayedCandidates += candidates[0].length + candidates[1].length;
+      await Promise.all(pages.map((page, index) => page.evaluate(values => window.harness.addCandidates(values), candidates[1 - index])));
+      if ((await Promise.all(pages.map(page => page.evaluate(() => window.harness.channelsOpen())))).every(Boolean)) break;
+      assert.ok(Date.now() < connectDeadline, 'real WebRTC DataChannels did not open');
+      await new Promise(resolveWaiting => setTimeout(resolveWaiting, 25));
+    }
+    await Promise.all(pages.map(page => page.evaluate(mode => window.harness.start(mode), mode)));
+    // The command is queued once before frame commitment, then transported with inputs.
+    await pages[0].evaluate(() => window.harness.command([17]));
+    const playDeadline = Date.now() + timeout;
+    let snapshots = [];
+    for (let round = 0; ; round++) {
+      // Uneven small bursts create late remote input while retaining a bounded lead.
+      snapshots = await Promise.all(pages.map((page, index) => page.evaluate(({ target, count }) => window.harness.step(target, count), {
+        target: targetTick, count: index === 0 ? (round % 5 === 0 ? 3 : 1) : (round % 5 === 0 ? 1 : 2),
+      })));
+      if (snapshots.every(snapshot => snapshot.tick === targetTick && snapshot.confirmedTick >= targetTick - 1 && !snapshot.resimulating)) break;
+      assert.ok(Date.now() < playDeadline, `sessions did not settle: ${JSON.stringify(snapshots)}`);
+      if (round % 8 === 0) await new Promise(resolveWaiting => setTimeout(resolveWaiting, 5));
+    }
+    // Let the final ACK and checksum messages reach both independent pages.
+    for (let round = 0; round < 12; round++) {
+      await Promise.all(pages.map(page => page.evaluate(() => window.harness.poll())));
+      await new Promise(resolveWaiting => setTimeout(resolveWaiting, 5));
+    }
+    const peers = await Promise.all(pages.map(page => page.evaluate(target => window.harness.report(target), targetTick)));
+    const modeReport = { mode, passed: peers.every(peer => peer.passed) && peers[0].hash === peers[1].hash && browserErrors.length === 0,
+      transport: 'two real RTCPeerConnections in separate browser contexts', relayedCandidates, peers };
+    modes.push(modeReport);
+    report = { passed: modes.length === 2 && modes.every(result => result.passed), browserErrors, capabilities, modes };
+    await mkdir(resultsDirectory, { recursive: true });
+    await writeFile(resolve(resultsDirectory, 'browser-report.json'), `${JSON.stringify(report, null, 2)}\n`);
+    await Promise.all(pages.map((page, index) => page.screenshot({ path: resolve(resultsDirectory, `browser-${mode}-peer-${index ? 'b' : 'a'}.png`), fullPage: true })));
+    assert.ok(relayedCandidates > 0, 'ICE candidates were relayed through the Node harness');
+    assert.ok(modeReport.passed, `real ${mode} WebRTC verification failed: ${JSON.stringify(report)}`);
+    console.log(JSON.stringify({ passed: true, mode, ticks: targetTick, hash: peers[0].hash, relayedCandidates, metrics: peers.map(peer => ({ player: peer.player, ...peer.metrics })), report: 'test-results/rollback/browser-report.json' }, null, 2));
   }
-  await Promise.all(pages.map(page => page.evaluate(() => window.harness.start())));
-  // The command is queued once before frame commitment, then transported with inputs.
-  await pages[0].evaluate(() => window.harness.command([17]));
-  const playDeadline = Date.now() + timeout;
-  let snapshots = [];
-  for (let round = 0; ; round++) {
-    // Uneven small bursts create late remote input while retaining a bounded lead.
-    snapshots = await Promise.all(pages.map((page, index) => page.evaluate(({ target, count }) => window.harness.step(target, count), {
-      target: targetTick, count: index === 0 ? (round % 5 === 0 ? 3 : 1) : (round % 5 === 0 ? 1 : 2),
-    })));
-    if (snapshots.every(snapshot => snapshot.tick === targetTick && snapshot.confirmedTick >= targetTick - 1 && !snapshot.resimulating)) break;
-    assert.ok(Date.now() < playDeadline, `sessions did not settle: ${JSON.stringify(snapshots)}`);
-    if (round % 8 === 0) await new Promise(resolveWaiting => setTimeout(resolveWaiting, 5));
-  }
-  // Let the final ACK and checksum messages reach both independent pages.
-  for (let round = 0; round < 12; round++) {
-    await Promise.all(pages.map(page => page.evaluate(() => window.harness.poll())));
-    await new Promise(resolveWaiting => setTimeout(resolveWaiting, 5));
-  }
-  const peers = await Promise.all(pages.map(page => page.evaluate(target => window.harness.report(target), targetTick)));
-  report = { passed: peers.every(peer => peer.passed) && peers[0].hash === peers[1].hash && browserErrors.length === 0,
-    transport: 'two real RTCPeerConnections in separate browser contexts', relayedCandidates, browserErrors, capabilities, peers };
-  await mkdir(resultsDirectory, { recursive: true });
-  await writeFile(resolve(resultsDirectory, 'browser-report.json'), `${JSON.stringify(report, null, 2)}\n`);
-  await Promise.all(pages.map((page, index) => page.screenshot({ path: resolve(resultsDirectory, `browser-peer-${index ? 'b' : 'a'}.png`), fullPage: true })));
-  assert.ok(relayedCandidates > 0, 'ICE candidates were relayed through the Node harness');
-  assert.ok(report.passed, `real WebRTC verification failed: ${JSON.stringify(report)}`);
-  console.log(JSON.stringify({ passed: true, ticks: targetTick, hash: peers[0].hash, relayedCandidates, metrics: peers.map(peer => ({ player: peer.player, ...peer.metrics })), report: 'test-results/browser-report.json' }, null, 2));
 } catch (error) {
   await mkdir(resultsDirectory, { recursive: true });
   await writeFile(resolve(resultsDirectory, 'browser-failure.json'), `${JSON.stringify({ message: error.message, browserErrors, report }, null, 2)}\n`);
