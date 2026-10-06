@@ -133,3 +133,12 @@ console.log(JSON.stringify({ densePresentation: { events: denseHits, emitAndConf
 projection.configure({ pixel2to1: true }); assert.equal(projection.K, .5); projection.configure({ pixel2to1: false }); assert.ok(Math.abs(projection.degrees - 40) < 1e-10);
 const tiny = new CameraViewport({ width: .1, height: .2, dpr: 1 }); assert.equal(tiny.screenToBackingInto(.1, .2, {}).x, 1);
 assert.throws(() => new PresentationEventQueue({ adapters: {}, retentionTicks: 0 }));
+
+// Explicit collection must retain a failed start, even below the retention cutoff.
+{
+  let fail=true,started=0;
+  const queue=new PresentationEventQueue({retentionTicks:2,adapters:{hit:{start(){if(fail)throw Error('retry');started++}}}});
+  queue.emit({tick:0,sequence:0,entityId:'retry',generation:0,kind:'hit',durationMs:0});
+  assert.throws(()=>queue.confirmThrough(2),/retry/);queue.collect();assert.equal(queue.size,1);
+  fail=false;queue.confirmThrough(2);assert.equal(started,1);assert.equal(queue.size,0);queue.dispose();
+}

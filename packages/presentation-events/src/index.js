@@ -112,7 +112,7 @@ export class PresentationEventQueue {
   finish(event) { this._ready(); const record = this.records.get(presentationEventKey(event)); if (!record || record.state !== 'active') return false; this._stop(record, 'expired'); this.stats.expired++; return true; }
   collect() {
     this._ready(); const cutoff = this.confirmedTick - this.retentionTicks;
-    for (const [key, record] of this.records) if (record.confirmed && record.event.tick <= cutoff && record.state !== 'active') { this.records.delete(key); this.stats.collected++; }
+    for (const [key, record] of this.records) if (record.confirmed && record.event.tick <= cutoff && record.state !== 'active' && record.state !== 'pending') { this.records.delete(key); this.stats.collected++; }
   }
   get size() { return this.records.size; }
   dispose() {

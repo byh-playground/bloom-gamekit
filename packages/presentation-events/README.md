@@ -10,7 +10,7 @@
 - speculative는 reversible=true와 stop이 있는 adapter만 허용합니다. start는 즉시, 동일 identity의 재실행은 reconcile만 호출합니다. 만료된 이벤트도 tombstone을 남겨 다시 재생하지 않습니다.
 - `beginRollback(fromTick)` 후 재실행 emit을 받고 `endRollback()`하면 재등장하지 않은 예측 자원을 취소합니다. 이미 확정한 tick의 rollback과 중첩 rollback은 거부합니다. 취소 identity가 이후 유효한 resim에서 돌아오면 새 자원으로 재개합니다.
 - `confirmThrough(tick)`은 단조 증가합니다. 같은 tick의 확정 처리를 이미 끝냈으면 journal 재순회를 생략합니다. adapter 오류로 중단된 확정이나 이미 확정된 tick에 늦게 emit한 이벤트의 start 실패는 같은 tick으로 재시도할 수 있습니다. `update(nowMs)`도 단조 증가하며 만료/adapter update를 처리합니다. `finish(event)`는 자연 종료 자원을 정리하면서 dedup identity는 유지합니다.
-- GC는 confirmedTick−retentionTicks 이하이면서 종료된 기록만 지웁니다. 그 이하의 늦은 emit은 거부합니다. 활성 장기 자원과 미확정 기록은 버리지 않습니다. maxPending 초과는 throw해 backpressure를 드러내며 실제 hit를 조용히 누락하지 않습니다. 게임은 확인 진행·활성 자원 수명·capacity를 설정해야 합니다.
+- GC는 confirmedTick−retentionTicks 이하이면서 종료된 기록만 지웁니다. 그 이하의 늦은 emit은 거부합니다. 활성 장기 자원·실패한 start의 pending 기록·미확정 기록은 버리지 않습니다. maxPending 초과는 throw해 backpressure를 드러내며 실제 hit를 조용히 누락하지 않습니다. 게임은 확인 진행·활성 자원 수명·capacity를 설정해야 합니다.
 - `dispose()`는 모든 자원을 정리하고 집계 오류를 반환하며 반복 호출은 안전합니다. replay seek/새 세션은 dispose 후 새 journal로 epoch를 분리합니다.
 
 ## 실제 SDK 연결

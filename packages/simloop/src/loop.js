@@ -9,8 +9,8 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
   }
   if (backlogPolicy !== 'drop' && backlogPolicy !== 'retain') throw new RangeError('backlogPolicy');
   const quantum = 1000 / session.profile.tickRate;
-  let running = false, handle, last, accumulator = 0, generation = 0;
-  const resetTiming = () => { last = undefined; accumulator = 0; };
+  let running = false, handle, last, accumulator = 0, generation = 0, timingGeneration = 0;
+  const resetTiming = () => { timingGeneration++; last = undefined; accumulator = 0; };
   const release = () => {
     try { onInputRelease(); session.releaseInput(); }
     catch (error) { stop(); onError(error); }
@@ -28,29 +28,32 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
       if (backlogPolicy === 'retain' && last !== undefined && timestamp < last) throw new RangeError('retained loop timestamp cannot regress');
       beforeFrame(timestamp);
       if (current !== generation) return;
+      const timing = timingGeneration;
       if (last === undefined) last = timestamp;
       const elapsed = Math.max(0, timestamp - last);
       accumulator = backlogPolicy === 'retain' ? accumulator + elapsed :
         Math.min(accumulator + Math.min(250, elapsed), quantum * session.profile.maxCatchupSteps);
       if (!Number.isFinite(accumulator) || accumulator > Number.MAX_SAFE_INTEGER) throw new RangeError('loop backlog exceeds safe milliseconds');
       last = timestamp; session.poll();
-      if (current !== generation) return;
+      if (current !== generation || timing !== timingGeneration) return;
       let work = 0;
       while (!session.closed && !session.resimulating && work < session.profile.maxCatchupSteps) {
         // Scalar capability avoids allocating a complete metrics snapshot per pacing read.
         const pace = session.pace ?? session.metrics.pace;
         if (accumulator < quantum * pace) break;
         const allowed = canAdvance();
-        if (current !== generation) return;
+        if (current !== generation || timing !== timingGeneration) return;
         if (!allowed) { if (backlogPolicy === 'drop') accumulator = Math.min(accumulator, quantum); break; }
         const input = getInput();
-        if (current !== generation) return;
+        if (current !== generation || timing !== timingGeneration) return;
         const result = session.advance(input); work++;
-        if (current !== generation) return;
+        // A completed tick still consumes debt after stop(), but never touches a reset/new run.
+        if (timing !== timingGeneration) return;
         if (result.status === 'advanced') accumulator = Math.max(0, accumulator - quantum * pace);
         else if (backlogPolicy === 'drop') accumulator = Math.min(accumulator, quantum);
-        onAdvance(result);
         if (current !== generation) return;
+        onAdvance(result);
+        if (current !== generation || timing !== timingGeneration) return;
         if (result.status !== 'advanced') break;
       }
       // Rendering continues when the session is waiting for input or connection recovery.

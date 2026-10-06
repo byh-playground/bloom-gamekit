@@ -103,3 +103,16 @@ test('retain rejects regressed or unsafe clocks instead of manufacturing or drop
   assert.throws(()=>f.loop.pulse(Number.MAX_SAFE_INTEGER+1),/safe milliseconds/);
   f.loop.resetTiming();f.loop.pulse(10);f.loop.pulse(60);assert.equal(f.tick,1);
 });
+test('advance-triggered stop debits a completed tick without touching a restarted timing epoch',()=>{
+  for(const backlogPolicy of ['drop','retain']){
+    const f=fixture({backlogPolicy});const advance=f.session.advance;
+    f.session.advance=input=>{const result=advance.call(f.session,input);f.loop.stop();return result};
+    f.loop.pulse(0);f.loop.pulse(50);assert.equal(f.tick,1);
+    f.loop.pulse(50);assert.equal(f.tick,1,backlogPolicy);
+    f.loop.pulse(100);assert.equal(f.tick,2);
+    const restarted=fixture({backlogPolicy,requestFrame:()=>1,cancelFrame:()=>{}}),next=restarted.session.advance;
+    restarted.session.advance=input=>{const result=next.call(restarted.session,input);restarted.loop.stop();restarted.loop.start();return result};
+    restarted.loop.pulse(0);restarted.loop.pulse(50);assert.equal(restarted.tick,1);
+    restarted.loop.pulse(50);assert.equal(restarted.tick,1);restarted.loop.stop();
+  }
+});
