@@ -275,3 +275,5 @@ export class Renderer2D {
     this.active = false; this.vertexCount = 0; this.state = 'disposed';
   }
 }
+
+export { WebGLDevice } from "./device.js";

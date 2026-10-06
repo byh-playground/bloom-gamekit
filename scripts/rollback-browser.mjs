@@ -1,26 +1,14 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
+import { chromium } from 'playwright';
 import { dirname, extname, resolve, sep } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const resultsDirectory = resolve(root, 'test-results/rollback');
 const timeout = 45_000;
 const targetTick = 240;
-
-async function loadPlaywright() {
-  if (process.env.PLAYWRIGHT_MODULE) return import(pathToFileURL(resolve(process.env.PLAYWRIGHT_MODULE)).href);
-  try {
-    const require = createRequire(import.meta.url);
-    return await import(pathToFileURL(require.resolve('playwright')).href);
-  } catch {
-    const bundled = resolve(process.env.USERPROFILE || '', '.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright/index.mjs');
-    try { return await import(pathToFileURL(bundled).href); }
-    catch { throw new Error('Playwright is required only for browser verification. Set PLAYWRIGHT_MODULE to its index.mjs path.'); }
-  }
-}
 
 async function launchBrowser(chromium) {
   if (process.env.CHROMIUM_EXECUTABLE_PATH) return chromium.launch({headless:true, executablePath:process.env.CHROMIUM_EXECUTABLE_PATH});
@@ -57,7 +45,6 @@ let pages = [];
 let report;
 const browserErrors = [];
 try {
-  const { chromium } = await loadPlaywright();
   browser = await launchBrowser(chromium);
   const contexts = await Promise.all([browser.newContext(), browser.newContext()]);
   pages = await Promise.all(contexts.map(context => context.newPage()));

@@ -1,18 +1,19 @@
-import { compileSchema, finite, ordinal, readValues } from './schema.js';
+import { compileSchema, finite, ordinal, readValues, readResetFields } from './schema.js';
 import { evaluate, fraction, retarget } from './tracks.js';
 
-/** @typedef {{id:string, generation:number, values:Record<string,number|string|boolean|null>, teleport?:boolean}} EntitySample */
+/** @typedef {{id:string, generation:number, values:Record<string,number|string|boolean|null>, teleport?:boolean, resetFields?:string[], initialValues?:Record<string,number|string|boolean|null>}} EntitySample */
 /** @typedef {{revision:number, sequence:number, timeMs:number, entities:EntitySample[], mode?:'continuous'|'reset'|'load'|'rollback'}} Snapshot */
 /**
  * A renderer-independent, full-snapshot presentation timeline.
  * The caller owns simulation, identity generations and the monotonic receipt/sample clock.
  */
 export class InterpolationTimeline {
-  #fields; #stepMs; #tracks = new Map(); #now = -Infinity;
+  #fields; #fieldIndices; #stepMs; #tracks = new Map(); #now = -Infinity;
   #revision = -1; #sequence = -1; #timeMs = -Infinity;
   /** @param {{schema:import('./schema.js').Schema, stepMs:number}} options */
   constructor({ schema, stepMs }) {
     this.#fields = compileSchema(schema);
+    this.#fieldIndices = new Map(this.#fields.map((field, index) => [field[0], index]));
     this.#stepMs = finite(stepMs, 'stepMs');
     if (stepMs <= 0) throw new RangeError('stepMs must be positive');
   }
@@ -25,6 +26,8 @@ export class InterpolationTimeline {
    * Accept one complete authoritative snapshot. Returns false for obsolete packets.
    * Invalid packets throw without changing tracks, revision, or presentation time.
    * timeMs is simulation time; nowMs is local receipt time. They are never subtracted.
+   * resetFields snaps only named fields. initialValues seeds new identities in continuous mode.
+   * Explicit teleport/reset/load/rollback overrides seeds; all supplied options are validated.
    * @param {Snapshot} packet @param {number} nowMs @returns {boolean}
    */
   accept(packet, nowMs) {
@@ -48,8 +51,11 @@ export class InterpolationTimeline {
       const generation = ordinal(entity.generation, 'generation');
       if (entity.teleport !== undefined && typeof entity.teleport !== 'boolean') throw new TypeError('teleport must be boolean');
       const target = readValues(this.#fields, entity.values);
+      const initial = entity.initialValues === undefined ? null : readValues(this.#fields, entity.initialValues);
+      const resetFields = readResetFields(this.#fieldIndices, entity.resetFields);
       const old = this.#tracks.get(entity.id);
-      next.set(entity.id, retarget(this.#fields, old, target, generation, nowMs, this.#stepMs, changedRevision || entity.teleport === true));
+      const snap = mode !== 'continuous' || entity.teleport === true;
+      next.set(entity.id, retarget(this.#fields, old, target, generation, nowMs, this.#stepMs, snap, initial, resetFields));
     }
     // Commit only after every entity has been validated and all new tracks prepared.
     this.#tracks = next;

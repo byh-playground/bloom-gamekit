@@ -58,7 +58,7 @@ export function pointerPositionInto(event, target, out) {
  * @param {{target:HTMLElement,state?:ActionState,keys?:Record<string,string>,pointerButtons?:Record<number,string>,keyboardTarget?:EventTarget,excludeTarget?:string|false|((target:EventTarget,event:Event)=>boolean),preventDefault?:boolean,touchAction?:string,gestures?:{tap?:string,doubleTap?:string,button?:number,tapMs?:number,doubleTapMs?:number,dragSlop?:number,doubleTapSlop?:number},onGesture?:(gesture:Object)=>void}} options
  * @returns {{state:ActionState,readonly disposed:boolean,samplePointerInto:Function,sampleLatestPointerInto:Function,releaseAll:Function,dispose:Function}}
  */
-export function createDOMInput({ target, state = new ActionState(), keys = {}, pointerButtons = {}, keyboardTarget = target?.ownerDocument, excludeTarget = UI_TARGETS, preventDefault = true, touchAction, gestures, onGesture } = {}) {
+export function createDOMInput({ target, state = new ActionState(), keys = {}, pointerButtons = {}, keyboardTarget = target?.ownerDocument, excludeTarget = UI_TARGETS, preventDefault = true, touchAction, gestures, onGesture, onPointer, onRelease } = {}) {
   const doc = target?.ownerDocument;
   if (!target?.addEventListener || !target?.getBoundingClientRect || !doc?.addEventListener || !keyboardTarget?.addEventListener) throw new TypeError('target needs a DOM ownerDocument; keyboardTarget must be an EventTarget');
   if (!(state instanceof ActionState)) throw new TypeError('state must be an ActionState');
@@ -66,6 +66,7 @@ export function createDOMInput({ target, state = new ActionState(), keys = {}, p
   if (typeof preventDefault !== 'boolean') throw new TypeError('preventDefault must be boolean');
   if (touchAction !== undefined && typeof touchAction !== 'string') throw new TypeError('touchAction must be a string');
   if (onGesture !== undefined && typeof onGesture !== 'function') throw new TypeError('onGesture must be a function');
+  for (const [name, callback] of Object.entries({onPointer,onRelease})) if (callback !== undefined && typeof callback !== 'function') throw new TypeError(`${name} must be a function`);
   const keyMap = bindings(keys, 'keys');
   const buttonMap = bindings(pointerButtons, 'pointerButtons', true);
   const gesture = gestureOptions(gestures);
@@ -96,6 +97,10 @@ export function createDOMInput({ target, state = new ActionState(), keys = {}, p
     out.x = record.x; out.y = record.y; out.u = record.u; out.v = record.v;
     out.buttons = record.buttons; out.timeMs = record.timeMs; out.active = record.active;
     return true;
+  };
+  const notifyPointer = (type, record, originalEvent, reason) => {
+    if (!onPointer) return;
+    const value={type,originalEvent,reason};sample(record,value);onPointer(value);
   };
   const updatePosition = (record, event) => {
     if (!pointerPositionInto(event, target, record)) return false;
@@ -129,11 +134,17 @@ export function createDOMInput({ target, state = new ActionState(), keys = {}, p
     record.sources.clear();
     releaseCapture(record.pointerId);
   };
-  const releaseAll = () => {
+  const releaseAll = event => {
+    const released = onPointer ? [...pointers.values()] : [];
     for (const source of activeKeys.values()) state.releaseSource(source);
     activeKeys.clear();
     for (const record of pointers.values()) dropPointer(record);
     lastTap = null; latest = null;
+    const reason=typeof event === 'string'?event:event?.type??'releaseAll';
+    const errors=[];
+    for(const record of released)try{notifyPointer('cancel',record,event?.type?event:null,reason)}catch(error){errors.push(error)}
+    try{onRelease?.({reason,originalEvent:event?.type?event:null})}catch(error){errors.push(error)}
+    if(errors.length)throw new AggregateError(errors,'input release callbacks failed');
   };
   const cancelGesture = record => { record.gestureCanceled = true; lastTap = null; };
   const moved = (record, event) => Math.hypot(event.clientX - record.startX, event.clientY - record.startY) > gesture.dragSlop;
@@ -171,13 +182,14 @@ export function createDOMInput({ target, state = new ActionState(), keys = {}, p
     checkGesture(record, event);
     try { target.setPointerCapture?.(event.pointerId); } catch { /* document listener가 capture 실패를 보완합니다. */ }
     prevent(event);
+    notifyPointer('down',record,event);
   };
   const pointermove = event => {
     const record = pointers.get(event.pointerId);
     if (!record) {
       if (inside(event) && !excluded(event)) {
         const hover = latest && !latest.active && latest.pointerId === event.pointerId ? latest : { pointerId: event.pointerId, pointerType: event.pointerType, active: false };
-        updatePosition(hover, event);
+        if(updatePosition(hover, event))notifyPointer('move',hover,event);
       }
       return;
     }
@@ -185,6 +197,7 @@ export function createDOMInput({ target, state = new ActionState(), keys = {}, p
     checkGesture(record, event);
     syncButtons(record, event);
     prevent(event);
+    notifyPointer('move',record,event);
   };
   const pointerend = (event, canceled) => {
     const record = pointers.get(event.pointerId);
@@ -194,6 +207,7 @@ export function createDOMInput({ target, state = new ActionState(), keys = {}, p
     // 삭제를 먼저 해서 정상 up 이후의 lostpointercapture가 다음 tap 후보를 지우지 않게 합니다.
     dropPointer(record);
     if (!canceled) prevent(event);
+    notifyPointer(canceled?'cancel':'up',record,event,canceled?'pointercancel':undefined);
     if (!gesture) return;
     const duration = event.timeStamp - record.startMs;
     if (canceled || !validPosition || record.gestureCanceled || !Number.isFinite(duration) || duration < 0 || duration > gesture.tapMs || record.u < 0 || record.u > 1 || record.v < 0 || record.v > 1) {
@@ -218,6 +232,7 @@ export function createDOMInput({ target, state = new ActionState(), keys = {}, p
     const record = pointers.get(event.pointerId);
     if (!record) return;
     dropPointer(record); lastTap = null;
+    notifyPointer('cancel',record,event,'lostpointercapture');
   };
 
   listen(keyboardTarget, 'keydown', keydown);
@@ -229,7 +244,7 @@ export function createDOMInput({ target, state = new ActionState(), keys = {}, p
   listen(doc, 'pointerup', event => pointerend(event, false), { capture: true, passive: false });
   listen(doc, 'pointercancel', event => pointerend(event, true), true);
   listen(target, 'lostpointercapture', lostcapture);
-  listen(doc, 'visibilitychange', () => { if (doc.hidden) releaseAll(); });
+  listen(doc, 'visibilitychange', event => { if (doc.hidden) releaseAll(event); });
   if (doc.defaultView) {
     listen(doc.defaultView, 'blur', releaseAll);
     listen(doc.defaultView, 'pagehide', releaseAll);
@@ -249,8 +264,9 @@ export function createDOMInput({ target, state = new ActionState(), keys = {}, p
       if (disposed) return;
       disposed = true;
       for (const remove of removers) remove();
-      releaseAll();
+      try { releaseAll('dispose'); } finally {
       if (touchAction !== undefined && target.style?.touchAction === touchAction) target.style.touchAction = oldTouchAction;
+      }
     },
   };
 }

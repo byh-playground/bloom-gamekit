@@ -111,3 +111,9 @@ input.dispose();
 입력 시 source Set/Map을 바꾸며 매 렌더에 큐를 지우거나 객체를 만들 필요가 없습니다. `sampleInto`는 out을 재사용합니다. 포인터 시작·gesture callback·`sample()`에는 객체 생성이 있습니다. `consume()`은 등록된 액션 수에 비례합니다. pointermove의 rect 읽기 비용도 남으므로 게임이 레이아웃 쓰기와 입력 수집을 불필요하게 교차시키지 않아야 합니다.
 
 게임패드·wheel·핀치·가상 조이스틱·월드 선택·navmesh·전투 규칙은 포함하지 않습니다. RALLY FRONTIER의 pointer capture/drag 경계와 Budmori.io의 순수 tap 판정/게임 투영 분리 사례를 참고했으며 기존 게임 코드를 복사하거나 그 게임에 적용했다고 주장하지 않습니다.
+
+### 선택적 포인터 정책 콜백
+
+`onPointer({type,originalEvent,reason,...position})`는 어댑터가 소유한 down/move/up/cancel 및 표면 hover move를 전달합니다. position은 samplePointerInto와 동일한 CSS 좌표 계약이며, originalEvent는 원래 DOM 이벤트입니다. up/cancel은 hold·capture 해제 후 전달됩니다. document fallback과 lost capture도 같은 경로입니다. 게임은 드래그·롱프레스·다중 선택 등 정책만 구현하며 별도 capture/listener를 중복 설치하지 않습니다.
+
+`onRelease({reason,originalEvent})`는 blur/pagehide/visibilitychange/명시 releaseAll/dispose 정리 후 호출합니다. 모든 포인터의 cancel도 전달되며 callback이 실패해도 나머지 hold/capture와 listener 정리는 완료합니다. dispose 이유의 originalEvent는 null입니다. 이 콜백은 tick마다 입력 edge를 소비하거나 게임 명령을 자동 제출하지 않습니다. 원래 UI 제외 정책을 적용하며 UI 입력을 가로채지 않습니다.
