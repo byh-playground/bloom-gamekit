@@ -29,15 +29,19 @@ var WebGLDevice = class {
     depth = true,
     stencil = true,
     preserveDrawingBuffer = false,
+    powerPreference = "default",
+    failIfMajorPerformanceCaveat = false,
     maxTextures = 8,
     maxBufferBytes = 128 * 1024 * 1024
   } = {}) {
     if (!canvas?.getContext || !canvas?.addEventListener) throw new TypeError("canvas required");
+    if (!["default", "low-power", "high-performance"].includes(powerPreference)) throw new TypeError("Invalid WebGL powerPreference");
+    if (typeof failIfMajorPerformanceCaveat !== "boolean") throw new TypeError("failIfMajorPerformanceCaveat must be boolean");
     integer(maxTextures, "maxTextures", 1, 32);
     integer(maxBufferBytes, "maxBufferBytes", 4);
     this.canvas = canvas;
     this.maxBufferBytes = maxBufferBytes;
-    this.gl = canvas.getContext("webgl", { alpha, antialias, depth, stencil, premultipliedAlpha: true, preserveDrawingBuffer });
+    this.gl = canvas.getContext("webgl", { alpha, antialias, depth, stencil, premultipliedAlpha: true, preserveDrawingBuffer, powerPreference, failIfMajorPerformanceCaveat });
     if (!this.gl) throw new Error("WebGL 1 required");
     this.maxTextures = Math.min(maxTextures, this.gl.getParameter(this.gl.MAX_TEXTURE_IMAGE_UNITS));
     this.maxTextureSize = this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE);
