@@ -55,10 +55,33 @@ export async function exerciseWebGLDevice(page) {
     const firstSolidBindings=bindings;d.draw({pipeline,buffer,count:6,uniforms,blend:false});
     check(firstSolidBindings===2&&bindings===firstSolidBindings,'two old texture units cleared once, none rebound on solid draw');near(pixel(),[255,0,0,255],'solid draw after texture shrink');d.endFrame();gl.bindTexture=nativeBind;
     check(gl.getError()===gl.NO_ERROR,'device GL errors');
+    // Production updates/copies do not synchronously poll GL errors after allocation.
+    const nativeGetError=gl.getError.bind(gl);let productionErrorPolls=0;
+    gl.getError=()=>{productionErrorPolls++;return nativeGetError();};
+    try {
+      for(let i=0;i<3;i++) { d.beginFrame();d.updateTexture(dark,{width:3,height:1,data:new Uint8Array([0,0,0])});d.copyFrameToTexture(copied);d.endFrame(); }
+      check(productionErrorPolls===0,'steady production upload/copy must not poll GL errors');
+    } finally { gl.getError=nativeGetError; }
+    check(gl.getError()===gl.NO_ERROR,'production operations remain GL-error free');
+    // Opt-in diagnostics still polls and reports a real incomplete-framebuffer error.
+    const diagnosticCanvas=document.createElement('canvas');diagnosticCanvas.width=diagnosticCanvas.height=4;
+    const diagnostic=new WebGLDevice(diagnosticCanvas,{alpha:false,antialias:false,checkGLErrors:true});const dg=diagnostic.gl;
+    const upload={width:4,height:4,data:new Uint8Array(64)},dt=diagnostic.createTexture(upload),dc=diagnostic.createTexture({width:4,height:4,data:null});
+    diagnostic.beginFrame();diagnostic.copyFrameToTexture(dc);diagnostic.endFrame();
+    const diagnosticGetError=dg.getError.bind(dg);let diagnosticErrorPolls=0;dg.getError=()=>{diagnosticErrorPolls++;return diagnosticGetError();};
+    diagnostic.beginFrame();diagnostic.updateTexture(dt,upload);diagnostic.copyFrameToTexture(dc);diagnostic.endFrame();
+    check(diagnosticErrorPolls===2,'opt-in diagnostics checks each upload/copy');
+    const incomplete=dg.createFramebuffer();let diagnosed=false;
+    try { dg.bindFramebuffer(dg.FRAMEBUFFER,incomplete);diagnostic.copyFrameToTexture(dc); }
+    catch(error) { diagnosed=/Framebuffer copy error/.test(error.message); }
+    finally { dg.bindFramebuffer(dg.FRAMEBUFFER,null);dg.deleteFramebuffer(incomplete);dg.getError=diagnosticGetError; }
+    check(diagnosed,'diagnostics must report real incomplete-framebuffer copy failure');
+    check(dg.getError()===dg.NO_ERROR,'diagnostic failure drained and isolated');diagnostic.dispose();
+
     const before=d.stats.bufferAllocations;d.beginFrame();d.uploadVertices(arena,quad(0,1,0));d.draw(command);const stats={...d.endFrame()};check(before===d.stats.bufferAllocations,'steady upload reuses GPU allocation');
     let invalidRejected=false;try{d.createPipeline({vertex:'invalid shader',fragment:'void main(){}',stride:8,attributes:[{name:'p',size:2,offset:0}]});}catch{invalidRejected=true;}check(invalidRejected,'shader failures must be explicit');
     window.deviceProbe={d,canvas,texture,command,arena,quad,pixel,full,domTexture};
-    return {contextOptions:contextRequest.options,depth:true,stencil:true,straightAlpha:true,multitexture:true,radialWhiteMask:true,partialAtlas:true,luminanceFog:true,frameCopy:true,stats,invalidRejected};
+    return {productionErrorPolls,diagnosticErrorPolls,diagnosed,contextOptions:contextRequest.options,depth:true,stencil:true,straightAlpha:true,multitexture:true,radialWhiteMask:true,partialAtlas:true,luminanceFog:true,frameCopy:true,stats,invalidRejected};
   });
   const loss=await page.evaluate(()=>{deviceProbe.loss=deviceProbe.d.gl.getExtension('WEBGL_lose_context');if(!deviceProbe.loss)return false;deviceProbe.loss.loseContext();return true;});
   if(loss){
