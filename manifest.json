@@ -23,7 +23,7 @@
     },
     {
       "file": "transport.js",
-      "sha256": "e1acfb4757689cb80a7dcbec6bb9bc2c7c39a85ae116866640522cbaf0e59188"
+      "sha256": "211708a85a648a00ac709290a31b2b2b8b11269659a4b34f9656ef99a5aa3ec4"
     },
     {
       "file": "replay.js",
@@ -31,11 +31,11 @@
     },
     {
       "file": "rollback.js",
-      "sha256": "c0fbe1ed0e975a56e4274827bc44d489e4019c69e163bea64af17cc44f465b00"
+      "sha256": "3f8c57a096668f4b4ed3ee05fbc1caeddda5fe26eb29ec405729f221423bb310"
     },
     {
       "file": "rollback-netcode.js",
-      "sha256": "e54edcf8c6310bbda6e35e99f7697691834b7699e1bc33e9041ee0773411e0a3"
+      "sha256": "80673a5c80ccab485551eacb841e2e3b2f2c616648421f4b966c738b105ad841"
     },
     {
       "file": "camera.js",

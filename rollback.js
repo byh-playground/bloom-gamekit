@@ -287,6 +287,31 @@ var CheckpointHistory = class {
 };
 
 // packages/rollback/src/core.js
+function copyLocalCommandState(state, inputSize, profile, executedSequence = 0) {
+  if (!state || typeof state !== "object") throw new TypeError("localCommandState");
+  const sequence = integer(state.sequence, "local command sequence", executedSequence);
+  const lastInput = bytes(state.lastInput, "local command lastInput");
+  if (lastInput.length !== inputSize) throw new RangeError("local command inputSize");
+  const maxCommands = profile.maxPendingCommands * (profile.maxInputDelayTicks + 2);
+  if (!Array.isArray(state.commands) || state.commands.length > maxCommands) throw new RangeError("local command capacity");
+  const maxPayload = Math.min(profile.maxCommandBytes, CHUNK_SIZE - 1024 - inputSize - 6);
+  const maxBytes = profile.maxPendingCommands * maxPayload + (profile.maxInputDelayTicks + 1) * (CHUNK_SIZE - 1024 - inputSize);
+  let previous = executedSequence, size = 0;
+  const commands = Array.from(state.commands, (command) => {
+    const next = integer(command?.sequence, "local command order", 1, sequence);
+    if (next <= previous) throw new RangeError("local command order");
+    const payload = bytes(command.payload, "local command payload");
+    if (!payload.length || payload.length > maxPayload || (size += payload.length) > maxBytes) throw new RangeError("local command capacity");
+    previous = next;
+    return { sequence: next, payload: payload.slice() };
+  });
+  return { sequence, lastInput: lastInput.slice(), commands };
+}
+function commandSequenceMap(players, initial) {
+  if (initial === void 0) return new Map(players.map((id) => [id, 0]));
+  if (!initial || typeof initial !== "object" || Array.isArray(initial) || Object.keys(initial).length !== players.length || players.some((id) => !Object.hasOwn(initial, id))) throw new TypeError("initial command sequences roster");
+  return new Map(players.map((id) => [id, integer(initial[id], "initial command sequence")]));
+}
 function profileOf(profile) {
   const p = { ...defaults, ...profile };
   if (!["rollback", "lockstep"].includes(p.mode)) throw new TypeError("session mode");
@@ -337,7 +362,9 @@ var RollbackSession = class {
     onEvent = () => {
     },
     recordReplay = true,
-    clock = nowMs
+    clock = nowMs,
+    localCommandState,
+    initialCommandSequences
   } = {}) {
     if (!Array.isArray(players) || players.length < 1 || players.length > 8 || players.some((p) => typeof p !== "string" || !p.length || p.length > 128) || new Set(players).size !== players.length) throw new TypeError("fixed player roster (1..8 unique IDs)");
     this.players = Object.freeze([...players].sort(compareIds));
@@ -368,10 +395,17 @@ var RollbackSession = class {
     this._used = /* @__PURE__ */ new Map();
     this._peers = /* @__PURE__ */ new Map();
     this._pendingCommands = [];
-    this._commandSequence = 0;
+    this._commandSequences = commandSequenceMap(this.players, initialCommandSequences);
+    this._commandSequence = this._commandSequences.get(localPlayerId);
     this._sequence = 0;
     this._captureTick = -1;
     this._lastLocalInput = new Uint8Array(this.inputSize);
+    if (localCommandState !== void 0) {
+      const carried = copyLocalCommandState(localCommandState, this.inputSize, this.profile, this._commandSequence);
+      this._commandSequence = carried.sequence;
+      this._lastLocalInput = carried.lastInput;
+      this._pendingCommands = carried.commands;
+    }
     this._rollbackFrom = Infinity;
     this._replaying = false;
     this._inputHash = 2166136261;
@@ -436,7 +470,8 @@ var RollbackSession = class {
       checksumInterval: this.profile.mode === "lockstep" ? this.profile.checksumInterval : null,
       initialHash: this._stateHash(initialRecord)
     }));
-    for (let t = 0; t < this.inputDelay; t++) this._commitLocal(t, this._lastLocalInput, []);
+    const neutral = new Uint8Array(this.inputSize);
+    for (let t = 0; t < this.inputDelay; t++) this._commitLocal(t, neutral, []);
   }
   get tick() {
     return this._tick;
@@ -675,6 +710,33 @@ var RollbackSession = class {
     this._pendingCommands.push({ sequence, payload: b });
     return sequence;
   }
+  /** Copy unexecuted local commands for a new fixed-roster epoch. */
+  exportLocalCommandState() {
+    if (this.closed || this.resimulating) throw new Error("local command state is unavailable");
+    const commands = /* @__PURE__ */ new Map();
+    const include = (command) => {
+      const prior = commands.get(command.sequence);
+      if (prior && !equalBytes(prior.payload, command.payload)) throw new Error("conflicting local command sequence");
+      if (!prior) commands.set(command.sequence, command);
+    };
+    for (const [tick, frame] of this._inputs.get(this.localPlayerId)) if (tick >= this.tick) for (const command of frame.commands) include(command);
+    for (const command of this._pendingCommands) include(command);
+    return copyLocalCommandState(
+      {
+        sequence: this._commandSequence,
+        lastInput: this._lastLocalInput,
+        commands: [...commands.values()].sort((a, b) => a.sequence - b.sequence)
+      },
+      this.inputSize,
+      this.profile,
+      this._commandSequences.get(this.localPlayerId)
+    );
+  }
+  /** Executed lockstep command maxima; future captured/queued commands are excluded. */
+  getCommandSequences() {
+    if (this.profile.mode !== "lockstep") throw new Error("confirmed lockstep command sequences are required");
+    return Object.fromEntries(this._commandSequences);
+  }
   setInputDelay(ticks) {
     integer(ticks, "input delay", this.profile.minInputDelayTicks, this.profile.maxInputDelayTicks);
     this._requestedInputDelay = ticks;
@@ -699,7 +761,7 @@ var RollbackSession = class {
     for (let t = through + 1; t < target; t++) this._commitLocal(t, previous, []);
     let budget = CHUNK_SIZE - 1024 - this.inputSize;
     const commands = [];
-    while (this._pendingCommands.length && this._pendingCommands[0].payload.length + 6 <= budget) {
+    while (this._pendingCommands.length && commands.length < this.profile.maxPendingCommands && this._pendingCommands[0].payload.length + 6 <= budget) {
       const c = this._pendingCommands.shift();
       budget -= c.payload.length + 6;
       commands.push({ ...c, executeTick: target });
@@ -1002,6 +1064,9 @@ var RollbackSession = class {
       this._tick++;
       this._inputHash = inputHash;
       this._currentState = null;
+      if (lockstep) for (const frame of inputs) for (const command of frame.commands) {
+        this._commandSequences.set(frame.playerId, Math.max(this._commandSequences.get(frame.playerId), command.sequence));
+      }
     } catch (error) {
       try {
         if (before) this.adapter.load(before.bytes.slice());
@@ -1173,6 +1238,54 @@ var RollbackSession = class {
   }
   getStateHash(tick = this.tick) {
     return this._stateHash(this._stateAt(tick));
+  }
+  /** Export a sparse, fully confirmed boundary without enabling per-tick saves. */
+  exportConfirmedBootstrap({ checkpointAtOrBefore = this.tick } = {}) {
+    if (this.profile.mode !== "lockstep" || this.closed || this._failure || this.resimulating || this._requestedRecovery || this.confirmedTick < this.tick - 1) throw new Error("confirmed lockstep boundary is required");
+    integer(checkpointAtOrBefore, "bootstrap checkpoint boundary", 0, this.tick);
+    const checkpoint = this._history.atOrBefore(checkpointAtOrBefore);
+    if (!checkpoint || this.tick - checkpoint.tick > this.profile.stateHistorySize) throw new Error("bootstrap checkpoint is unavailable");
+    const frames = [];
+    for (let tick = checkpoint.tick; tick < this.tick; tick++) {
+      const inputs = this.players.map((playerId) => {
+        const frame = this._inputs.get(playerId).get(tick);
+        if (!frame) throw new Error("confirmed bootstrap input is unavailable");
+        return { playerId, ...copyFrame(frame), predicted: false };
+      });
+      frames.push({ tick, inputs });
+    }
+    return {
+      version: 1,
+      tick: this.tick,
+      checkpoint: { tick: checkpoint.tick, bytes: checkpoint.bytes.slice(), hash: this._stateHash(checkpoint) },
+      players: [...this.players],
+      frames,
+      hash: this.getStateHash(),
+      inputSize: this.inputSize,
+      tickRate: this.profile.tickRate,
+      simulationVersion: this.simulationVersion,
+      seed: this.seed,
+      commandSequences: this.getCommandSequences()
+    };
+  }
+  /** Fence an external resume donor against this peer's retained agreed history. */
+  verifyConfirmedBootstrap(bootstrap) {
+    if (this.profile.mode !== "lockstep" || this.closed || this._failure || this.resimulating || !bootstrap || bootstrap.tick < this.tick || bootstrap.tick - bootstrap.checkpoint?.tick > this.profile.stateHistorySize || !Array.isArray(bootstrap.frames) || bootstrap.frames.length !== bootstrap.tick - bootstrap.checkpoint.tick || JSON.stringify(bootstrap.players) !== JSON.stringify(this.players)) throw new Error("resume bootstrap boundary");
+    const base = this._history.get(bootstrap.checkpoint.tick);
+    if (!base || this._stateHash(base) !== bootstrap.checkpoint.hash || !equalBytes(base.bytes, bytes(bootstrap.checkpoint.bytes))) throw new Error("resume checkpoint does not match retained agreement");
+    const sequences = new Map(this._commandSequences);
+    for (let i = 0; i < bootstrap.frames.length; i++) {
+      const frame = bootstrap.frames[i], tick = base.tick + i;
+      if (frame.tick !== tick || frame.inputs?.length !== this.players.length) throw new Error("resume input suffix shape");
+      for (let p = 0; p < this.players.length; p++) {
+        const id = this.players[p], incoming = frame.inputs[p], known = this._inputs.get(id).get(tick);
+        if (incoming?.playerId !== id || incoming.predicted || !Array.isArray(incoming.commands) || !known && (tick < this.tick || id === this.localPlayerId) || known && !frameEqual(known, incoming)) throw new Error("resume input conflicts with retained agreement");
+        if (tick >= this.tick) for (const command of incoming.commands) sequences.set(id, Math.max(sequences.get(id), command.sequence));
+      }
+    }
+    for (const id of this.players) if (bootstrap.commandSequences?.[id] !== sequences.get(id)) throw new Error("resume command sequence conflicts with retained agreement");
+    if (bootstrap.tick === this.tick && bootstrap.hash !== this.getStateHash()) throw new Error("resume final state conflicts with confirmed boundary");
+    return true;
   }
   requestResync(tick) {
     if (this.closed || this._failure) return false;
@@ -1424,12 +1537,1226 @@ var RollbackSession = class {
     this._event("closed");
   }
 };
+
+// packages/rollback/src/bootstrap.js
+var MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024;
+var MAX_SUFFIX_TICKS = 8192;
+function roster(value, name) {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 8 || Array.from(value).some((id) => typeof id !== "string" || !id.length || id.length > 128) || new Set(value).size !== value.length) throw new TypeError(name);
+  return value.slice();
+}
+function validateBootstrap(bootstrap, limits, expected) {
+  if (!bootstrap || bootstrap.version !== 1) throw new Error("bootstrap version");
+  const tick = integer(bootstrap.tick, "bootstrap tick", 0, MAX_TICK + 1);
+  const inputSize = integer(bootstrap.inputSize, "bootstrap inputSize", 1, 1024);
+  const tickRate = integer(bootstrap.tickRate, "bootstrap tickRate", 1, 240);
+  const seed = integer(bootstrap.seed, "bootstrap seed");
+  const simulationVersion = bootstrap.simulationVersion;
+  if (typeof simulationVersion !== "string" || !simulationVersion.length || simulationVersion.length > 128) throw new TypeError("bootstrap simulationVersion");
+  const players = roster(bootstrap.players, "bootstrap players");
+  if (players.some((id, index) => index > 0 && compareIds(players[index - 1], id) >= 0)) throw new Error("bootstrap player order");
+  const providedSequences = bootstrap.commandSequences;
+  if (!providedSequences || typeof providedSequences !== "object" || Array.isArray(providedSequences) || Object.keys(providedSequences).length !== players.length || players.some((id) => !Object.hasOwn(providedSequences, id))) throw new TypeError("bootstrap command sequences roster");
+  const commandSequences = Object.fromEntries(players.map((id) => [id, integer(providedSequences[id], "bootstrap command sequence boundary")]));
+  for (const field of ["simulationVersion", "inputSize", "tickRate", "seed"]) {
+    if (expected[field] !== void 0 && expected[field] !== bootstrap[field]) throw new Error(`bootstrap ${field} mismatch`);
+  }
+  if (expected.players !== void 0) {
+    const wanted = roster(expected.players, "expected players").sort(compareIds);
+    if (wanted.length !== players.length || wanted.some((id, index) => id !== players[index])) throw new Error("bootstrap players mismatch");
+  }
+  const checkpoint = bootstrap.checkpoint;
+  const start = integer(checkpoint?.tick, "bootstrap checkpoint tick", 0, tick);
+  const data = bytes(checkpoint?.bytes, "bootstrap checkpoint");
+  if (!data.length || data.length > limits.maxSnapshotBytes) throw new RangeError("bootstrap snapshot size");
+  const checkpointBytes = data.slice();
+  const checkpointHash = integer(checkpoint.hash, "bootstrap checkpoint hash");
+  if (hashBytes(checkpointBytes) !== checkpointHash) throw new Error("bootstrap checkpoint hash mismatch");
+  const hash = integer(bootstrap.hash, "bootstrap final hash");
+  if (!Array.isArray(bootstrap.frames) || bootstrap.frames.length !== tick - start || tick - start > limits.maxSuffixTicks) throw new RangeError("bootstrap suffix length");
+  if (start === tick && checkpointHash !== hash) throw new Error("bootstrap final hash mismatch");
+  let totalBytes = data.length;
+  if (totalBytes > limits.maxReplayBytes) throw new RangeError("bootstrap replay byte budget");
+  const sequences = new Map(players.map((id) => [id, 0]));
+  const frames = Array.from(bootstrap.frames, (frame, index) => {
+    const frameTick = start + index;
+    if (frame?.tick !== frameTick) throw new Error("non-contiguous bootstrap suffix");
+    if (!Array.isArray(frame.inputs) || frame.inputs.length !== players.length) throw new Error("bootstrap input roster");
+    totalBytes += 16;
+    const inputs = Array.from(frame.inputs, (inputFrame, player) => {
+      if (inputFrame?.playerId !== players[player] || inputFrame.predicted !== false) throw new Error("bootstrap confirmed input order");
+      const input = bytes(inputFrame.input, "bootstrap input");
+      if (input.length !== inputSize) throw new RangeError("bootstrap inputSize");
+      if (!Array.isArray(inputFrame.commands) || inputFrame.commands.length > limits.maxPendingCommands) throw new RangeError("bootstrap command count");
+      let commandBytes = 0;
+      totalBytes += inputSize;
+      const commands = Array.from(inputFrame.commands, (command) => {
+        const sequence = integer(command?.sequence, "bootstrap command sequence", 1);
+        if (sequence <= sequences.get(players[player]) || command.executeTick !== frameTick) throw new Error("bootstrap command order/tick");
+        sequences.set(players[player], sequence);
+        const payload = bytes(command.payload, "bootstrap command payload");
+        commandBytes += payload.length + 6;
+        totalBytes += payload.length + 12;
+        if (!payload.length || payload.length > limits.maxCommandBytes || commandBytes > CHUNK_SIZE - 1024 - inputSize) throw new RangeError("bootstrap command size");
+        if (totalBytes > limits.maxReplayBytes) throw new RangeError("bootstrap replay byte budget");
+        return { sequence, executeTick: frameTick, payload: payload.slice() };
+      });
+      if (totalBytes > limits.maxReplayBytes) throw new RangeError("bootstrap replay byte budget");
+      return { playerId: players[player], input: input.slice(), commands, predicted: false };
+    });
+    return { tick: frameTick, inputs };
+  });
+  for (const [id, sequence] of sequences) if (sequence && sequence !== commandSequences[id]) throw new Error("bootstrap command sequence boundary mismatch");
+  return {
+    version: 1,
+    tick,
+    checkpoint: { tick: start, bytes: checkpointBytes, hash: checkpointHash },
+    players,
+    frames,
+    hash,
+    inputSize,
+    tickRate,
+    simulationVersion,
+    seed,
+    commandSequences
+  };
+}
+function createBootstrapReplay({
+  adapter,
+  bootstrap,
+  maxCatchupSteps = 8,
+  maxSnapshotBytes = defaults.maxSnapshotBytes,
+  maxSuffixTicks = MAX_SUFFIX_TICKS,
+  maxCommandBytes = defaults.maxCommandBytes,
+  maxPendingCommands = defaults.maxPendingCommands,
+  maxReplayBytes = defaults.maxReplayBytes,
+  simulationVersion,
+  inputSize,
+  tickRate,
+  players,
+  seed
+} = {}) {
+  if (!adapter || ["save", "load", "step", "validateSnapshot"].some((name) => typeof adapter[name] !== "function")) throw new TypeError("Simulation Adapter must save, load, step, validateSnapshot");
+  integer(maxCatchupSteps, "maxCatchupSteps", 1, MAX_SUFFIX_TICKS);
+  integer(maxSnapshotBytes, "maxSnapshotBytes", 1, MAX_SNAPSHOT_BYTES);
+  integer(maxSuffixTicks, "maxSuffixTicks", 0, MAX_SUFFIX_TICKS);
+  integer(maxCommandBytes, "maxCommandBytes", 1, CHUNK_SIZE - 1024);
+  integer(maxPendingCommands, "maxPendingCommands", 1, 2147483647);
+  integer(maxReplayBytes, "maxReplayBytes", 1, 2147483647);
+  const candidate = validateBootstrap(
+    bootstrap,
+    { maxSnapshotBytes, maxSuffixTicks, maxCommandBytes, maxPendingCommands, maxReplayBytes },
+    { simulationVersion, inputSize, tickRate, players, seed }
+  );
+  const save = () => {
+    const data = bytes(adapter.save(), "bootstrap adapter snapshot");
+    if (!data.length || data.length > maxSnapshotBytes) throw new RangeError("bootstrap adapter snapshot size");
+    return data.slice();
+  };
+  const context = (tick2) => ({
+    tick: tick2,
+    tickRate: candidate.tickRate,
+    players: candidate.players.slice(),
+    simulationVersion: candidate.simulationVersion,
+    seed: candidate.seed
+  });
+  const original = save();
+  let tick = candidate.checkpoint.tick, status = "catching-up", result = null, failure = null;
+  const restore = (error) => {
+    failure = error instanceof Error ? error : new Error(String(error));
+    status = "failed";
+    try {
+      adapter.load(original.slice());
+    } catch (restoreError) {
+      failure = new AggregateError([failure, restoreError], "bootstrap replay failed and original snapshot restoration failed");
+    }
+    throw failure;
+  };
+  if (adapter.validateSnapshot(candidate.checkpoint.bytes.slice(), context(tick)) !== true) throw new Error("adapter rejected bootstrap checkpoint");
+  try {
+    adapter.load(candidate.checkpoint.bytes.slice());
+    if (!equalBytes(save(), candidate.checkpoint.bytes)) throw new Error("bootstrap checkpoint round-trip mismatch");
+  } catch (error) {
+    restore(error);
+  }
+  return Object.freeze({
+    get tick() {
+      return tick;
+    },
+    get targetTick() {
+      return candidate.tick;
+    },
+    get status() {
+      return status;
+    },
+    get done() {
+      return status === "done";
+    },
+    get result() {
+      return result;
+    },
+    get failure() {
+      return failure;
+    },
+    pulse() {
+      if (failure) throw failure;
+      if (status !== "catching-up") return Object.freeze({ status, tick, targetTick: candidate.tick, steps: 0, ...result ?? {} });
+      let steps = 0;
+      try {
+        while (tick < candidate.tick && steps < maxCatchupSteps) {
+          const frame = candidate.frames[tick - candidate.checkpoint.tick];
+          runSimulationFrame(adapter, {
+            tick,
+            tickRate: candidate.tickRate,
+            inputs: frame.inputs,
+            resimulating: true,
+            recovering: true,
+            replaying: true
+          });
+          tick++;
+          steps++;
+        }
+        if (tick === candidate.tick) {
+          const final = save();
+          if (hashBytes(final) !== candidate.hash) throw new Error("bootstrap final hash mismatch");
+          if (adapter.validateSnapshot(final.slice(), context(tick)) !== true) throw new Error("adapter rejected bootstrap final state");
+          status = "done";
+          result = Object.freeze({ tick, hash: candidate.hash });
+        }
+        return Object.freeze({ status, tick, targetTick: candidate.tick, steps, ...result ?? {} });
+      } catch (error) {
+        return restore(error);
+      }
+    },
+    cancel() {
+      if (failure) throw failure;
+      if (status === "catching-up") {
+        try {
+          adapter.load(original.slice());
+          status = "cancelled";
+        } catch (error) {
+          return restore(error);
+        }
+      }
+      return Object.freeze({ status, tick, targetTick: candidate.tick, steps: 0, ...result ?? {} });
+    }
+  });
+}
+
+// packages/deterministic/src/value-codec.js
+function createValueCodec({ format = "binary", maxBytes = 16 * 1024 * 1024, maxDepth = 128, maxEntries = 1e6 } = {}) {
+  if (!["binary", "json"].includes(format)) throw new TypeError("Unknown codec format");
+  for (const limit of [maxBytes, maxDepth, maxEntries]) if (!Number.isSafeInteger(limit) || limit < 1) throw new RangeError("Invalid codec limit");
+  const encoder2 = new TextEncoder(), decoder2 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+  function normalize(value, depth = 0, seen = /* @__PURE__ */ new Set(), budget = { count: 0 }) {
+    if (depth > maxDepth || ++budget.count > maxEntries) throw new RangeError("Value codec budget exceeded");
+    if (value === null || typeof value === "boolean") return value;
+    if (typeof value === "number") {
+      if (!Number.isFinite(value)) throw new TypeError("Finite numbers required");
+      return Object.is(value, -0) ? 0 : value;
+    }
+    if (typeof value === "string") {
+      if (decoder2.decode(encoder2.encode(value)) !== value) throw new TypeError("Invalid Unicode string");
+      return value;
+    }
+    if (!value || typeof value !== "object" || seen.has(value)) throw new TypeError("Unsupported or cyclic value");
+    seen.add(value);
+    let result;
+    if (value instanceof Uint8Array) {
+      if (format === "json") throw new TypeError("JSON codec does not support byte values");
+      result = value;
+    } else if (Array.isArray(value)) {
+      result = Array.from(value, (item) => normalize(item, depth + 1, seen, budget));
+    } else {
+      if (![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new TypeError("Plain records required");
+      result = {};
+      for (const key of Object.keys(value).sort()) {
+        normalize(key, depth + 1, seen, budget);
+        Object.defineProperty(result, key, { value: normalize(value[key], depth + 1, seen, budget), enumerable: true, writable: true, configurable: true });
+      }
+    }
+    seen.delete(value);
+    return result;
+  }
+  const stringCache = /* @__PURE__ */ new Map();
+  let cachedStringBytes = 0;
+  function stringBytes(value) {
+    let data = stringCache.get(value);
+    if (data) return data;
+    for (let i = 0; i < value.length; i++) {
+      const c = value.charCodeAt(i);
+      if (c >= 55296 && c <= 56319) {
+        const next = value.charCodeAt(++i);
+        if (!(next >= 56320 && next <= 57343)) throw new TypeError("Invalid Unicode string");
+      } else if (c >= 56320 && c <= 57343) throw new TypeError("Invalid Unicode string");
+    }
+    data = encoder2.encode(value);
+    if (data.length <= 256 && stringCache.size < 1024 && cachedStringBytes + data.length <= 131072) {
+      stringCache.set(value, data);
+      cachedStringBytes += data.length;
+    }
+    return data;
+  }
+  function encode(value) {
+    if (format === "json") {
+      const bytes3 = encoder2.encode(JSON.stringify(normalize(value)));
+      if (bytes3.length > maxBytes) throw new RangeError("Codec byte budget exceeded");
+      return bytes3;
+    }
+    let bytes2 = new Uint8Array(Math.min(1024, maxBytes)), offset = 0, view = new DataView(bytes2.buffer), entries = 0;
+    const seen = /* @__PURE__ */ new Set(), strings = /* @__PURE__ */ new Map();
+    function reserve(size) {
+      if (offset + size > maxBytes) throw new RangeError("Codec byte budget exceeded");
+      if (offset + size > bytes2.length) {
+        const next = new Uint8Array(Math.min(maxBytes, Math.max(offset + size, bytes2.length * 2)));
+        next.set(bytes2);
+        bytes2 = next;
+        view = new DataView(bytes2.buffer);
+      }
+    }
+    function byte(n) {
+      reserve(1);
+      bytes2[offset++] = n;
+    }
+    function length(n) {
+      reserve(4);
+      view.setUint32(offset, n, true);
+      offset += 4;
+    }
+    function raw(data) {
+      length(data.length);
+      reserve(data.length);
+      bytes2.set(data, offset);
+      offset += data.length;
+    }
+    function variable(n) {
+      while (n >= 128) {
+        byte(n % 128 + 128);
+        n = Math.floor(n / 128);
+      }
+      byte(n);
+    }
+    function write(v, depth = 0) {
+      if (depth > maxDepth || ++entries > maxEntries) throw new RangeError("Value codec budget exceeded");
+      if (v === null) byte(0);
+      else if (v === false) byte(1);
+      else if (v === true) byte(2);
+      else if (typeof v === "number") {
+        if (!Number.isFinite(v)) throw new TypeError("Finite numbers required");
+        if (Number.isInteger(v) && v >= -2147483648 && v <= 2147483647) {
+          byte(8);
+          variable(v < 0 ? -v * 2 - 1 : v * 2);
+        } else {
+          byte(3);
+          reserve(8);
+          view.setFloat64(offset, v, true);
+          offset += 8;
+        }
+      } else if (typeof v === "string") {
+        const ref = strings.get(v);
+        if (ref !== void 0) {
+          byte(9);
+          variable(ref);
+        } else {
+          strings.set(v, strings.size);
+          byte(4);
+          raw(stringBytes(v));
+        }
+      } else {
+        if (!v || typeof v !== "object" || seen.has(v)) throw new TypeError("Unsupported or cyclic value");
+        if (v instanceof Uint8Array) {
+          byte(7);
+          raw(v);
+          return;
+        }
+        seen.add(v);
+        if (Array.isArray(v)) {
+          byte(5);
+          length(v.length);
+          for (const item of v) write(item, depth + 1);
+        } else {
+          const prototype = Object.getPrototypeOf(v);
+          if (prototype !== Object.prototype && prototype !== null) throw new TypeError("Plain records required");
+          byte(6);
+          const keys = Object.keys(v).sort();
+          length(keys.length);
+          for (const key of keys) {
+            write(key, depth + 1);
+            write(v[key], depth + 1);
+          }
+        }
+        seen.delete(v);
+      }
+    }
+    byte(82);
+    byte(86);
+    byte(1);
+    write(value);
+    return bytes2.slice(0, offset);
+  }
+  function decode(input) {
+    const bytes2 = input instanceof Uint8Array ? input : input instanceof ArrayBuffer ? new Uint8Array(input) : ArrayBuffer.isView(input) ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength) : null;
+    if (!bytes2 || bytes2.length > maxBytes) throw new RangeError("Invalid codec bytes");
+    let result;
+    if (format === "json") result = normalize(JSON.parse(decoder2.decode(bytes2)));
+    else {
+      let need = function(n) {
+        if (n > bytes2.length - offset) throw new RangeError("Truncated codec bytes");
+      }, byte = function() {
+        need(1);
+        return bytes2[offset++];
+      }, length = function() {
+        need(4);
+        const n = view.getUint32(offset, true);
+        offset += 4;
+        return n;
+      }, raw = function() {
+        const n = length();
+        need(n);
+        const data = bytes2.subarray(offset, offset + n);
+        offset += n;
+        return data;
+      }, read = function(depth = 0) {
+        if (depth > maxDepth || ++entries > maxEntries) throw new RangeError("Value codec budget exceeded");
+        const tag = byte();
+        if (tag === 0) return null;
+        if (tag === 1) return false;
+        if (tag === 2) return true;
+        if (tag === 3) {
+          need(8);
+          const n2 = view.getFloat64(offset, true);
+          offset += 8;
+          if (!Number.isFinite(n2) || Object.is(n2, -0) || Number.isInteger(n2) && n2 >= -2147483648 && n2 <= 2147483647) throw new TypeError("Noncanonical number");
+          return n2;
+        }
+        if (tag === 8 || tag === 9) {
+          let n2 = 0, scale = 1, part;
+          for (let i = 0; i < 5; i++) {
+            part = byte();
+            n2 += (part & 127) * scale;
+            if (n2 > 4294967295) throw new TypeError("Integer overflow");
+            if (part < 128) {
+              if (i && part === 0) throw new TypeError("Noncanonical integer");
+              if (tag === 9) {
+                if (n2 >= strings.length) throw new TypeError("Invalid string reference");
+                return strings[n2];
+              }
+              return n2 % 2 ? -(n2 + 1) / 2 : n2 / 2;
+            }
+            scale *= 128;
+          }
+          throw new TypeError("Invalid integer");
+        }
+        if (tag === 4) {
+          const value = decoder2.decode(raw());
+          if (stringSet.has(value)) throw new TypeError("Noncanonical repeated string");
+          stringSet.add(value);
+          strings.push(value);
+          return value;
+        }
+        if (tag === 7) return raw().slice();
+        if (tag !== 5 && tag !== 6) throw new TypeError("Invalid codec tag");
+        const n = length();
+        if (n > maxEntries - entries) throw new RangeError("Value codec budget exceeded");
+        if (tag === 5) {
+          const arr = [];
+          for (let i = 0; i < n; i++) arr.push(read(depth + 1));
+          return arr;
+        }
+        const obj = {};
+        let previous;
+        for (let i = 0; i < n; i++) {
+          const key = read(depth + 1);
+          if (typeof key !== "string" || i && key <= previous) throw new TypeError("Noncanonical record key");
+          if (key === "__proto__") Object.defineProperty(obj, key, { value: read(depth + 1), enumerable: true, writable: true, configurable: true });
+          else obj[key] = read(depth + 1);
+          previous = key;
+        }
+        return obj;
+      };
+      let offset = 0, entries = 0;
+      const strings = [], stringSet = /* @__PURE__ */ new Set();
+      const view = new DataView(bytes2.buffer, bytes2.byteOffset, bytes2.byteLength);
+      if (byte() !== 82 || byte() !== 86 || byte() !== 1) throw new TypeError("Invalid codec header");
+      result = read();
+      if (offset !== bytes2.length) throw new TypeError("Trailing codec bytes");
+    }
+    if (format === "json") {
+      const canonical = encode(result);
+      if (canonical.length !== bytes2.length || canonical.some((v, i) => v !== bytes2[i])) throw new TypeError("Noncanonical codec bytes");
+    }
+    return result;
+  }
+  return Object.freeze({ format, encode, decode });
+}
+var binaryCodec = createValueCodec();
+var jsonCodec = createValueCodec({ format: "json" });
+
+// packages/rollback/src/room-session.js
+var ROOM_MAGIC = 827477316;
+var WIRE_HEADER = 24;
+var MAX_EPOCH = 65534;
+var ordered = (ids) => [...ids].sort(compareIds);
+var same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+var idValid = (id) => typeof id === "string" && id.length > 0 && id.length <= 128;
+function createRoomSession(options) {
+  return new RoomSession(options);
+}
+var RoomSession = class {
+  constructor({
+    mode = "local",
+    room,
+    localPlayerId = room?.localPlayerId ?? "local",
+    sessionId = room?.sessionId ?? "local",
+    simulationVersion,
+    seed = 1,
+    inputSize,
+    profile = profiles.lockstep,
+    adapter,
+    membership = {},
+    clock = nowMs,
+    onEvent = () => {
+    }
+  } = {}) {
+    if (!["local", "online"].includes(mode) || !idValid(localPlayerId) || !idValid(sessionId)) throw new TypeError("room session identity/mode");
+    integer(inputSize, "inputSize", 1, 1024);
+    if (!idValid(simulationVersion) || sessionId.length > 116) throw new TypeError("room simulationVersion/sessionId");
+    if (mode === "local" && room) throw new TypeError("local room cannot own online transport");
+    if (profile.mode && profile.mode !== "lockstep") throw new TypeError("dynamic membership requires lockstep");
+    if (!adapter || ["step", "save", "load", "validateSnapshot", "applyMembership"].some((k) => typeof adapter[k] !== "function")) throw new TypeError("room simulation adapter");
+    if (mode === "online" && (!room || typeof room.subscribe !== "function" || typeof room.connectMesh !== "function" || typeof room.setRoster !== "function")) throw new TypeError("dynamic room capability");
+    if (typeof clock !== "function" || typeof onEvent !== "function") throw new TypeError("room session capability");
+    this.mode = mode;
+    this.room = room;
+    this.localPlayerId = localPlayerId;
+    this.sessionId = sessionId;
+    this.simulationVersion = simulationVersion;
+    this.seed = seed;
+    this.inputSize = inputSize;
+    this.adapter = adapter;
+    this.clock = clock;
+    this.onEvent = onEvent;
+    this.membership = Object.freeze({
+      maxPlayers: 5,
+      transitionTimeoutMs: 15e3,
+      reconnectGraceMs: 1e4,
+      joinRetryMs: 500,
+      maxCatchupSteps: 4,
+      maxTransferBytes: 8 * 1024 * 1024,
+      maxControlMessagesPerPulse: 32,
+      ...membership
+    });
+    for (const [k, v] of Object.entries(this.membership)) integer(v, k, 1, 2147483647);
+    integer(this.membership.maxCatchupSteps, "maxCatchupSteps", 1, 8192);
+    integer(this.membership.maxPlayers, "maxPlayers", 1, 8);
+    integer(this.membership.maxTransferBytes, "maxTransferBytes", CHUNK_SIZE, 128 * 1024 * 1024);
+    this.profile = Object.freeze({ ...profiles.lockstep, ...profile, mode: "lockstep", adaptiveInputDelay: false });
+    this.codec = createValueCodec({ maxBytes: this.membership.maxTransferBytes, maxEntries: Math.min(this.membership.maxTransferBytes, 1e6), maxDepth: 32 });
+    this.contract = hashBytes(this.codec.encode({
+      version: 1,
+      simulationVersion,
+      seed,
+      inputSize,
+      maxPlayers: this.membership.maxPlayers,
+      tickRate: this.profile.tickRate,
+      baseInputDelayTicks: this.profile.baseInputDelayTicks,
+      checksumInterval: this.profile.checksumInterval
+    }));
+    this.epoch = room?.epoch ?? 0;
+    this.baseTick = 0;
+    this.coordinatorId = room?.coordinatorId ?? localPlayerId;
+    this.players = Object.freeze(ordered(mode === "online" ? room.players : [localPlayerId]));
+    this.closed = false;
+    this._failure = null;
+    this._core = null;
+    this._transition = null;
+    this._links = /* @__PURE__ */ new Map();
+    this._retirePeers = /* @__PURE__ */ new Map();
+    this._admissionQueue = /* @__PURE__ */ new Map();
+    this._incoming = [];
+    this._incomingBytes = 0;
+    this._lastInput = new Uint8Array(inputSize);
+    this._pendingBeforeJoin = [];
+    this._messageSequence = 0;
+    this._joinSent = false;
+    this._startedAt = clock();
+    this._interruptedAt = null;
+    this._leavePromise = null;
+    this._leaveResolve = null;
+    this._leaveReject = null;
+    this._stats = { transitions: 0, bootstrapBytes: 0, bootstrapTicks: 0, rejectedMessages: 0, sentControlBytes: 0, receivedControlBytes: 0 };
+    this._totals = { snapshotSaves: 0, serializedSnapshotBytes: 0, stateHashComputations: 0, hashedStateBytes: 0 };
+    if (mode === "local" || this.players.includes(localPlayerId) && !room?.resumed) {
+      this.adapter.applyMembership({ epoch: this.epoch, tick: 0, players: [...this.players], joined: [...this.players], left: [], coordinatorId: this.coordinatorId, reason: "initial" });
+      this._startCore();
+    }
+    if (room) {
+      this._unsubscribeRoom = room.subscribe((event) => {
+        if (this.closed || this.failure) return;
+        if (event.type === "peer-connected") this._attach(event.peerId, event.transport);
+        if (event.type === "peer-disconnected") {
+          if (!this.players.includes(event.peerId) && !this._transition?.participants.includes(event.peerId)) {
+            const link = this._links.get(event.peerId);
+            link?.unsubscribe?.();
+            link?.detachCore?.();
+            this._links.delete(event.peerId);
+          }
+          this._event("peer-disconnected", { peerId: event.peerId, reason: event.reason });
+        }
+        if (event.type === "room-failed") this._fail("transport-failed", { reason: event.reason });
+      });
+      for (const [id, transport] of room.transports) this._attach(id, transport);
+    }
+  }
+  get tick() {
+    return this.baseTick + (this._core?.tick ?? 0);
+  }
+  get confirmedTick() {
+    return this._core ? this.baseTick + Math.min(this._core.tick - 1, this._core.confirmedTick) : this.baseTick - 1;
+  }
+  get inputDelay() {
+    return this._core?.inputDelay ?? this.profile.baseInputDelayTicks;
+  }
+  get failure() {
+    return this._failure ?? this._core?.failure;
+  }
+  get ready() {
+    return !this.closed && !this.failure && !this._transition && !!this._core?.ready;
+  }
+  get resimulating() {
+    return this._transition?.proposal.reason === "reconnect" || !!this._transition?.replay || !!this._core?.resimulating;
+  }
+  get pace() {
+    return this._core?.pace ?? 1;
+  }
+  get status() {
+    if (this.closed) return "closed";
+    if (this.failure) return "failed";
+    if (this._transition?.replay) return "catching-up";
+    if (this._transition) return "membership";
+    return this._core?.status ?? "joining";
+  }
+  get metrics() {
+    const core = this._core?.metrics ?? {};
+    const sums = Object.fromEntries(Object.entries(this._totals).map(([k, v]) => [k, v + (core[k] ?? 0)]));
+    return {
+      ...core,
+      ...sums,
+      ...this._stats,
+      tick: this.tick,
+      confirmedTick: this.confirmedTick,
+      epoch: this.epoch,
+      pendingAdmissions: this._admissionQueue.size,
+      controlIncomingBytes: this._incomingBytes,
+      controlQueuedBytes: [...this._links.values()].reduce((n, l) => n + l.queuedBytes, 0),
+      controlReceivingBytes: [...this._links.values()].reduce((n, l) => n + (l.incoming?.bytes.length ?? 0), 0)
+    };
+  }
+  getPeerState(id) {
+    return this._core?.getPeerState(id);
+  }
+  getStateHash(tick = this.tick) {
+    return this.resimulating ? void 0 : this._core?.getStateHash(tick - this.baseTick);
+  }
+  _event(type, detail = {}) {
+    try {
+      this.onEvent({ type, tick: this.tick, epoch: this.epoch, ...detail });
+    } catch {
+    }
+  }
+  _fail(type, detail = {}) {
+    if (this.closed || this._failure) return;
+    this._failure = Object.freeze({ type, ...detail });
+    try {
+      this._transition?.replay?.cancel();
+    } catch {
+    }
+    this._leaveReject?.(new Error(type));
+    this._leaveResolve = this._leaveReject = null;
+    this._unsubscribeRoom?.();
+    for (const link of this._links.values()) {
+      link.unsubscribe?.();
+      link.detachCore?.();
+    }
+    this._links.clear();
+    this._incoming.length = 0;
+    this._incomingBytes = 0;
+    this.room?.close();
+    this._event(type, detail);
+  }
+  _adapter(baseTick = this.baseTick, epoch = this.epoch) {
+    const a = this.adapter;
+    return {
+      save: () => a.save(),
+      load: (data) => a.load(data),
+      validateSnapshot: (data, context = {}) => a.validateSnapshot(data, { ...context, tick: (context.tick ?? 0) + baseTick, membershipEpoch: epoch }),
+      step: (context) => {
+        context.tick += baseTick;
+        context.membershipEpoch = epoch;
+        for (const frame of context.inputs) for (const command of frame.commands) command.executeTick = context.tick;
+        return a.step(context);
+      }
+    };
+  }
+  _startCore(commandState, commandSequences) {
+    this._core = createSession({
+      players: [...this.players],
+      localPlayerId: this.localPlayerId,
+      authorityPlayerId: this.coordinatorId,
+      sessionId: this.sessionId + ":" + this.epoch,
+      simulationVersion: this.simulationVersion,
+      seed: this.seed,
+      inputSize: this.inputSize,
+      profile: this.profile,
+      adapter: this._adapter(),
+      localCommandState: commandState,
+      initialCommandSequences: commandSequences ? Object.fromEntries(this.players.map((id) => [id, commandSequences[id] ?? 0])) : void 0,
+      clock: this.clock,
+      recordReplay: false,
+      onEvent: (event) => {
+        if (event.type !== "closed") this._event(event.type, { ...event, tick: event.tick + this.baseTick });
+      }
+    });
+    this.profile = this._core.profile;
+    for (const [id, link] of this._links) this._attachCore(id, link);
+    for (const payload of this._pendingBeforeJoin.splice(0)) this._core.queueCommand(payload);
+  }
+  _attachCore(id, link) {
+    link.detachCore?.();
+    link.detachCore = null;
+    if (!this._core || !this.players.includes(id) || id === this.localPlayerId) return;
+    const epoch = this.epoch, session = this;
+    link.detachCore = this._core.attachTransport(id, {
+      get state() {
+        return link.transport.state ?? "open";
+      },
+      send(data) {
+        if (session.closed || epoch !== session.epoch) return false;
+        const out = data.slice();
+        new DataView(out.buffer).setUint16(6, epoch + 1, true);
+        return link.transport.send(out);
+      },
+      subscribe(fn) {
+        link.coreReceive = fn;
+        return () => {
+          if (link.coreReceive === fn) link.coreReceive = null;
+        };
+      },
+      subscribeStatus(fn) {
+        return link.transport.subscribeStatus?.(fn) ?? (() => {
+        });
+      }
+    });
+    for (const packet2 of link.future.splice(0)) this._receiveWire(id, link, packet2);
+  }
+  _attach(id, transport) {
+    if (!idValid(id) || id === this.localPlayerId || !transport?.send || !transport.subscribe) return;
+    const old = this._links.get(id);
+    if (old?.transport === transport) return;
+    old?.unsubscribe?.();
+    old?.detachCore?.();
+    const link = { transport, queue: [], queuedBytes: 0, incoming: null, coreReceive: null, future: [], detachCore: null };
+    this._links.set(id, link);
+    link.unsubscribe = transport.subscribe((data) => {
+      if (!this.closed && this._links.get(id) === link) this._receiveWire(id, link, data);
+    });
+    this._attachCore(id, link);
+    if (!this._core && id === this.coordinatorId) this._joinSent = false;
+  }
+  _receiveWire(id, link, raw) {
+    try {
+      const data = bytes(raw);
+      if (data.length < 12 || data.length > CHUNK_SIZE) throw new Error("room wire size");
+      const view = new DataView(data.buffer, data.byteOffset, data.length), magic = view.getUint32(0, true);
+      if (magic === MAGIC) {
+        const epoch = view.getUint16(6, true) - 1;
+        if (epoch === this.epoch && link.coreReceive && !(this._transition?.proposal.reason === "reconnect")) {
+          const copy = data.slice();
+          new DataView(copy.buffer).setUint16(6, 0, true);
+          link.coreReceive(copy);
+        } else if (epoch === this.epoch + 1 && this._transition && link.future.length < 64) link.future.push(data.slice());
+        return;
+      }
+      if (magic !== ROOM_MAGIC || data.length < WIRE_HEADER || data[4] !== 1 || data[5] !== 0) throw new Error("room wire protocol");
+      const serial = view.getUint32(8, true), total = view.getUint32(12, true), offset = view.getUint32(16, true), digest = view.getUint32(20, true);
+      if (!total || total > this.membership.maxTransferBytes || offset + data.length - WIRE_HEADER > total) throw new Error("room wire capacity");
+      if (offset === 0) {
+        if (link.incoming) throw new Error("overlapping room transfer");
+        link.incoming = { serial, bytes: new Uint8Array(total), offset: 0, digest, startedAt: this.clock() };
+      }
+      const incoming = link.incoming;
+      if (!incoming || incoming.serial !== serial || incoming.offset !== offset || incoming.digest !== digest || incoming.bytes.length !== total) throw new Error("room wire order");
+      incoming.bytes.set(data.subarray(WIRE_HEADER), offset);
+      incoming.offset += data.length - WIRE_HEADER;
+      this._stats.receivedControlBytes += data.length;
+      if (incoming.offset === total) {
+        link.incoming = null;
+        if (hashBytes(incoming.bytes) !== digest) throw new Error("room wire digest");
+        if (this._incoming.length >= 128 || this._incomingBytes + total > this.membership.maxTransferBytes * 2) throw new Error("room control backlog");
+        this._incoming.push({ from: id, value: this.codec.decode(incoming.bytes), size: total });
+        this._incomingBytes += total;
+      }
+    } catch (error) {
+      link.incoming = null;
+      this._stats.rejectedMessages++;
+      if (this.players.includes(id)) this._fail("room-protocol-error", { peerId: id, reason: error.message });
+    }
+  }
+  _send(to, op, detail = {}) {
+    if (to === this.localPlayerId) {
+      this._incoming.push({ from: to, value: { op, sessionId: this.sessionId, contract: this.contract, ...detail } });
+      return;
+    }
+    const link = this._links.get(to);
+    if (!link) throw new Error("room peer unavailable: " + to);
+    const body = this.codec.encode({ op, sessionId: this.sessionId, contract: this.contract, ...detail });
+    const chunks = Math.ceil(body.length / (CHUNK_SIZE - WIRE_HEADER)), budget = body.length + chunks * WIRE_HEADER;
+    if (link.queuedBytes + budget > this.membership.maxTransferBytes * 2) throw new Error("room send queue capacity");
+    const serial = ++this._messageSequence >>> 0, digest = hashBytes(body);
+    for (let offset = 0; offset < body.length; offset += CHUNK_SIZE - WIRE_HEADER) {
+      const slice = body.subarray(offset, offset + CHUNK_SIZE - WIRE_HEADER), packet2 = new Uint8Array(WIRE_HEADER + slice.length), view = new DataView(packet2.buffer);
+      view.setUint32(0, ROOM_MAGIC, true);
+      packet2[4] = 1;
+      view.setUint32(8, serial, true);
+      view.setUint32(12, body.length, true);
+      view.setUint32(16, offset, true);
+      view.setUint32(20, digest, true);
+      packet2.set(slice, WIRE_HEADER);
+      link.queue.push(packet2);
+      link.queuedBytes += packet2.length;
+    }
+  }
+  _broadcast(ids, op, detail = {}) {
+    for (const id of ids) this._send(id, op, detail);
+  }
+  _flush() {
+    for (const link of this._links.values()) {
+      let count = 0;
+      while (link.queue.length && count++ < 16) {
+        const data = link.queue[0];
+        if (link.transport.send(data) === false) break;
+        link.queue.shift();
+        link.queuedBytes -= data.length;
+        this._stats.sentControlBytes += data.length;
+      }
+    }
+  }
+  _proposal(joined, left, reason, resumingId = null) {
+    if (this._transition || this.localPlayerId !== this.coordinatorId) throw new Error("membership coordinator busy");
+    if (left.includes(this.localPlayerId)) {
+      for (const id of this._admissionQueue.keys()) this._send(id, "reject", { reason: "coordinator-changing" });
+      this._admissionQueue.clear();
+    }
+    if (this.epoch >= MAX_EPOCH) throw new Error("room epoch exhausted");
+    const players = ordered([...this.players.filter((id) => !left.includes(id)), ...joined]);
+    if (!players.length) {
+      this.close();
+      return;
+    }
+    if (players.length > this.membership.maxPlayers || new Set(players).size !== players.length) throw new Error("room capacity");
+    const proposal = {
+      epoch: this.epoch + 1,
+      oldPlayers: [...this.players],
+      players,
+      joined,
+      left,
+      reason,
+      resumingId,
+      coordinatorId: players.includes(this.coordinatorId) ? this.coordinatorId : players[0]
+    };
+    for (const id of joined) this._send(id, "welcome", { epoch: this.epoch, players: [...this.players] });
+    this._acceptProposal(this.localPlayerId, proposal);
+    const tr = this._transition;
+    Promise.resolve(this.room?.connectMesh(tr.participants)).then(() => {
+      if (this.closed || this.failure || this._transition !== tr) return;
+      for (const [id, transport] of this.room?.transports ?? []) this._attach(id, transport);
+      this._broadcast(tr.participants.filter((id) => id !== this.localPlayerId), "propose", { proposal });
+    }).catch((error) => this._fail("membership-connect-failed", { reason: error.message }));
+  }
+  _acceptProposal(from, proposal) {
+    if (from !== this.coordinatorId || this._transition || !proposal || proposal.epoch !== this.epoch + 1 || proposal.epoch > MAX_EPOCH) throw new Error("membership proposal authority/epoch");
+    if (!Array.isArray(proposal.oldPlayers) || !Array.isArray(proposal.players) || !Array.isArray(proposal.joined) || !Array.isArray(proposal.left)) throw new Error("membership roster shape");
+    if (!["join", "leave", "reconnect"].includes(proposal.reason) || proposal.reason === "reconnect" && (!proposal.oldPlayers.includes(proposal.resumingId) || proposal.joined.length || proposal.left.length)) throw new Error("membership reason");
+    if (!same(proposal.oldPlayers, this.players) || !same(ordered(proposal.players), proposal.players) || !proposal.players.length || proposal.players.length > this.membership.maxPlayers || new Set(proposal.players).size !== proposal.players.length || proposal.players.some((id) => !idValid(id)) || !proposal.players.includes(proposal.coordinatorId) || !same(ordered([...proposal.oldPlayers.filter((id) => !proposal.left.includes(id)), ...proposal.joined]), proposal.players) || proposal.joined.some((id) => proposal.oldPlayers.includes(id)) || proposal.left.some((id) => !proposal.oldPlayers.includes(id))) throw new Error("membership roster mismatch");
+    proposal = Object.freeze({ ...proposal, oldPlayers: Object.freeze([...proposal.oldPlayers]), players: Object.freeze([...proposal.players]), joined: Object.freeze([...proposal.joined]), left: Object.freeze([...proposal.left]) });
+    const participants = ordered([.../* @__PURE__ */ new Set([...proposal.oldPlayers, ...proposal.joined])]);
+    if (!participants.includes(this.localPlayerId)) throw new Error("membership local participant");
+    const tr = this._transition = {
+      proposal,
+      participants,
+      startedAt: this.clock(),
+      prepared: /* @__PURE__ */ new Map(),
+      reached: /* @__PURE__ */ new Map(),
+      installed: /* @__PURE__ */ new Map(),
+      target: null,
+      reachedSent: false,
+      installSent: false,
+      applied: false,
+      replay: null,
+      commitSent: false,
+      committed: /* @__PURE__ */ new Set()
+    };
+    this._event("membership-preparing", { proposal });
+    Promise.resolve(this.room?.connectMesh(participants)).then(() => {
+      if (this.closed || this.failure || this._transition !== tr) return;
+      for (const [id, transport] of this.room?.transports ?? []) this._attach(id, transport);
+      this._send(from, "prepared", { epoch: proposal.epoch, tick: this._core ? this.tick : -1 });
+    }).catch((error) => this._fail("membership-connect-failed", { reason: error.message }));
+  }
+  _handle(from, m) {
+    const participant = this.players.includes(from) || this._transition?.participants.includes(from);
+    if (!participant && m?.op !== "join") {
+      this._stats.rejectedMessages++;
+      return;
+    }
+    if (["propose", "barrier", "install", "bootstrap", "resume-install", "commit", "reject", "leave-busy", "welcome"].includes(m?.op) && from !== this.coordinatorId) {
+      this._stats.rejectedMessages++;
+      return;
+    }
+    if (!m || m.sessionId !== this.sessionId || m.contract !== this.contract) {
+      this._stats.rejectedMessages++;
+      if (m?.op === "join") this._send(from, "reject", { reason: "incompatible-session" });
+      return;
+    }
+    if (m.op === "welcome" && from === this.coordinatorId && !this._core && !this.room?.resumed && !this._transition) {
+      if (!Number.isInteger(m.epoch) || m.epoch < this.epoch || m.epoch > MAX_EPOCH || !Array.isArray(m.players) || m.players.length < 1 || m.players.length >= this.membership.maxPlayers || m.players.includes(this.localPlayerId) || !m.players.includes(from) || m.players.some((id) => !idValid(id)) || new Set(m.players).size !== m.players.length || !same(ordered(m.players), m.players)) return;
+      this.epoch = m.epoch;
+      this.players = Object.freeze([...m.players]);
+      this.room?.setRoster({ epoch: this.epoch, players: [...this.players], coordinatorId: this.coordinatorId });
+      return;
+    }
+    if (m.op === "retire" && this._departing && from === this.coordinatorId && m.epoch === this.epoch) {
+      this._retireApproved = true;
+      return;
+    }
+    if (m.op === "reject" && from === this.coordinatorId && !this._core) {
+      this._fail("join-rejected", { reason: m.reason });
+      return;
+    }
+    if (m.op === "join" && this.localPlayerId === this.coordinatorId) {
+      if (this.players.includes(from)) {
+        if (m.resume === true && !this._transition) this._proposal([], [], "reconnect", from);
+        return;
+      }
+      if (this._transition?.participants.includes(from)) return;
+      if (this._admissionQueue.has(from)) return;
+      const expectedCount = this._transition?.proposal.players.length ?? this.players.length;
+      if (expectedCount + this._admissionQueue.size >= this.membership.maxPlayers) {
+        this._send(from, "reject", { reason: "room-full" });
+        return;
+      }
+      this._admissionQueue.set(from, this.clock());
+      return;
+    }
+    if (m.op === "leave-request" && this.localPlayerId === this.coordinatorId && this.players.includes(from)) {
+      if (!this._transition) this._proposal([], [from], "leave");
+      else this._send(from, "leave-busy");
+      return;
+    }
+    if (m.op === "leave-busy" && from === this.coordinatorId) {
+      this._leaveReject?.(new Error("membership busy"));
+      this._leavePromise = this._leaveResolve = this._leaveReject = null;
+      return;
+    }
+    if (m.op === "propose") {
+      this._acceptProposal(from, m.proposal);
+      return;
+    }
+    const tr = this._transition;
+    if (!tr || m.epoch !== tr.proposal.epoch || !tr.participants.includes(from)) return;
+    const leader = this.coordinatorId === this.localPlayerId;
+    if (m.op === "prepared" && leader) {
+      if (!Number.isSafeInteger(m.tick) || m.tick > 2147483646 || (tr.proposal.oldPlayers.includes(from) && tr.proposal.resumingId !== from ? m.tick < this.baseTick : m.tick !== -1)) throw new Error("membership prepared tick");
+      tr.prepared.set(from, m.tick);
+      if (tr.prepared.size === tr.participants.length && tr.target === null) {
+        const target = Math.max(...tr.prepared.values()), minimum = Math.min(...[...tr.prepared.values()].filter((tick) => tick >= 0));
+        if (target - minimum > this.profile.stateHistorySize - this.profile.checksumInterval) throw new Error("resume boundary exceeds retained history");
+        const donor = [...tr.prepared].filter(([, tick]) => tick === target).map(([id]) => id).sort(compareIds)[0];
+        this._broadcast(tr.participants, "barrier", { epoch: m.epoch, tick: target, minimum, donor });
+      }
+    } else if (m.op === "barrier" && from === this.coordinatorId && tr.target === null) {
+      if (!Number.isSafeInteger(m.tick) || m.tick > 2147483646 || m.tick < this.tick || this._core && m.tick - this.tick > this.profile.stateHistorySize) throw new Error("membership barrier window");
+      tr.target = m.tick;
+      if (tr.proposal.reason === "reconnect") {
+        tr.donor = m.donor;
+        if (!tr.proposal.oldPlayers.includes(tr.donor) || tr.donor === tr.proposal.resumingId) throw new Error("invalid resume donor");
+        if (this.localPlayerId === tr.donor) this._send(this.coordinatorId, "resume-source", { epoch: m.epoch, baseTick: this.baseTick, bootstrap: this._core.exportConfirmedBootstrap({ checkpointAtOrBefore: m.minimum - this.baseTick }) });
+      }
+    } else if (m.op === "reached" && leader && tr.proposal.oldPlayers.includes(from)) {
+      if (m.tick !== tr.target || !Number.isInteger(m.hash)) throw new Error("membership checkpoint boundary");
+      tr.reached.set(from, m.hash);
+      if (tr.reached.size === tr.proposal.oldPlayers.length && !tr.installSent) {
+        if (new Set(tr.reached.values()).size !== 1) throw new Error("membership checkpoint mismatch");
+        tr.installSent = true;
+        const bootstrap = tr.proposal.joined.length ? this._core.exportConfirmedBootstrap() : null;
+        for (const id of tr.participants) {
+          if (tr.proposal.joined.includes(id)) {
+            this._send(id, "bootstrap", { epoch: m.epoch, baseTick: this.baseTick, bootstrap, target: tr.target });
+            this._stats.bootstrapBytes += bootstrap.checkpoint.bytes.length;
+          } else this._send(id, "install", { epoch: m.epoch, tick: tr.target });
+        }
+      }
+    } else if (m.op === "resume-source" && leader && from === tr.donor && tr.proposal.reason === "reconnect" && !tr.installSent) {
+      if (m.bootstrap.tick + m.baseTick !== tr.target) throw new Error("resume donor boundary");
+      tr.installSent = true;
+      this._broadcast(tr.participants, "resume-install", { epoch: m.epoch, baseTick: m.baseTick, bootstrap: m.bootstrap, target: tr.target });
+    } else if (m.op === "resume-install" && from === this.coordinatorId && tr.proposal.reason === "reconnect" && !tr.replay && !tr.applied) {
+      this._beginBootstrap(tr, m);
+    } else if (m.op === "bootstrap" && from === this.coordinatorId && !this._core && !tr.replay && !tr.applied) {
+      this._beginBootstrap(tr, m);
+    } else if (m.op === "install" && from === this.coordinatorId && this._core && !tr.applied) {
+      if (m.tick !== tr.target || this.tick !== tr.target) throw new Error("membership installation boundary");
+      this._applyMembership(tr);
+    } else if (m.op === "installed" && leader) {
+      if (!Number.isInteger(m.hash)) throw new Error("membership installed hash");
+      tr.installed.set(from, m.hash);
+      if (tr.installed.size === tr.participants.length && !tr.commitSent) {
+        if (new Set(tr.installed.values()).size !== 1) throw new Error("membership state mismatch");
+        tr.commitSent = true;
+        this._broadcast(tr.participants.filter((id) => id !== this.localPlayerId), "commit", { epoch: m.epoch, hash: m.hash });
+      }
+    } else if (m.op === "commit" && from === this.coordinatorId) {
+      if (!tr.applied || tr.postHash !== m.hash) throw new Error("membership commit without matching preparation");
+      this._send(this.coordinatorId, "committed", { epoch: m.epoch, hash: tr.postHash });
+      this._commit(tr);
+    } else if (m.op === "committed" && leader && tr.commitSent && m.hash === tr.postHash) {
+      tr.committed.add(from);
+    }
+  }
+  _beginBootstrap(tr, m) {
+    if (m.target !== tr.target || m.bootstrap.tick + m.baseTick !== tr.target || !Number.isSafeInteger(m.baseTick) || m.baseTick < 0 || this._core && m.baseTick !== this.baseTick) throw new Error("bootstrap epoch boundary");
+    if (!this._core) this.baseTick = m.baseTick;
+    if (this._core && tr.proposal.reason === "reconnect") this._core.verifyConfirmedBootstrap(m.bootstrap);
+    tr.commandSequences = m.bootstrap.commandSequences;
+    tr.replay = createBootstrapReplay({
+      adapter: this._adapter(m.baseTick, this.epoch),
+      bootstrap: m.bootstrap,
+      maxCatchupSteps: this.membership.maxCatchupSteps,
+      maxSnapshotBytes: this.profile.maxSnapshotBytes,
+      maxSuffixTicks: tr.proposal.reason === "reconnect" ? this.profile.stateHistorySize : this.profile.checksumInterval,
+      maxCommandBytes: this.profile.maxCommandBytes,
+      maxPendingCommands: this.profile.maxPendingCommands,
+      maxReplayBytes: this.membership.maxTransferBytes,
+      simulationVersion: this.simulationVersion,
+      inputSize: this.inputSize,
+      tickRate: this.profile.tickRate,
+      seed: this.seed,
+      players: [...this.players]
+    });
+    this._stats.bootstrapBytes += m.bootstrap.checkpoint.bytes.length;
+  }
+  _applyMembership(tr) {
+    const rollback = bytes(this.adapter.save()).slice();
+    try {
+      this.adapter.applyMembership({ ...tr.proposal, tick: tr.target });
+      const state = bytes(this.adapter.save());
+      if (state.length > this.profile.maxSnapshotBytes || !this.adapter.validateSnapshot(state, { tick: tr.target, membershipEpoch: tr.proposal.epoch })) throw new Error("invalid membership snapshot");
+      tr.postHash = hashBytes(state);
+      tr.postState = state.slice();
+      this.adapter.load(rollback);
+      tr.applied = true;
+      this._send(this.coordinatorId, "installed", { epoch: tr.proposal.epoch, hash: tr.postHash });
+    } catch (error) {
+      this.adapter.load(rollback);
+      throw error;
+    }
+  }
+  _commit(tr) {
+    const previousCoordinator = this.coordinatorId;
+    const commandSequences = tr.commandSequences ?? this._core?.getCommandSequences?.();
+    let commandState = this._core?.exportLocalCommandState() ?? (commandSequences ? { sequence: commandSequences[this.localPlayerId] ?? 0, lastInput: this._lastInput, commands: [] } : void 0);
+    if (commandState && commandSequences) {
+      const baseline = commandSequences[this.localPlayerId] ?? 0;
+      commandState = { ...commandState, sequence: Math.max(commandState.sequence, baseline), commands: commandState.commands.filter((command) => command.sequence > baseline) };
+    }
+    this.adapter.load(tr.postState);
+    if (this._core) {
+      const metrics = this._core.metrics;
+      for (const k of Object.keys(this._totals)) this._totals[k] += metrics[k] ?? 0;
+      this._core.close();
+      this._core = null;
+    }
+    this.epoch = tr.proposal.epoch;
+    this.baseTick = tr.target;
+    this.players = Object.freeze([...tr.proposal.players]);
+    this.coordinatorId = tr.proposal.coordinatorId;
+    this._transition = null;
+    this._interruptedAt = null;
+    this._stats.transitions++;
+    this._retireAfter = this.clock() + this.membership.transitionTimeoutMs;
+    for (const id of tr.proposal.left) if (id !== this.localPlayerId) this._retirePeers.set(id, this._retireAfter);
+    for (const id of this.players) this._retirePeers.delete(id);
+    this.room?.setRoster({ epoch: this.epoch, players: [...this.players], coordinatorId: this.coordinatorId });
+    this._event("membership-committed", { ...tr.proposal, tick: tr.target });
+    if (!this.players.includes(this.localPlayerId)) {
+      this._departing = true;
+      this._retireApproved = previousCoordinator === this.localPlayerId;
+      return;
+    }
+    this._startCore(commandState, commandSequences);
+  }
+  poll(now = this.clock()) {
+    if (this.closed || this.failure) return;
+    if (this._departing) {
+      while (this._incoming.length) {
+        const message = this._incoming.shift();
+        this._incomingBytes -= message.size ?? 0;
+        if (message.value?.op === "retire") this._handle(message.from, message.value);
+      }
+      this._flush();
+      if (now >= this._retireAfter && !this._retireApproved) {
+        this._fail("departure-timeout");
+        return;
+      }
+      if (this._retireApproved && [...this._links.values()].every((link) => !link.queue.length)) {
+        this._leaveResolve?.();
+        this._leaveResolve = this._leaveReject = null;
+        this.close();
+      }
+      return;
+    }
+    try {
+      if (!this._core && !this._transition && (!this._joinSent || now - this._lastJoinAt >= this.membership.joinRetryMs)) {
+        if (this.room?.resumed && this.localPlayerId === this.coordinatorId && this._links.size) {
+          this._joinSent = true;
+          this._proposal([], [], "reconnect", this.localPlayerId);
+        } else if (this._links.has(this.coordinatorId)) {
+          this._send(this.coordinatorId, "join", { resume: !!this.room?.resumed });
+          this._joinSent = true;
+          this._lastJoinAt = now;
+        }
+      }
+      let count = 0;
+      while (this._incoming.length && count++ < this.membership.maxControlMessagesPerPulse && !this.failure && !this.closed) {
+        const message = this._incoming.shift();
+        this._incomingBytes -= message.size ?? 0;
+        this._handle(message.from, message.value);
+      }
+      if (this._core && !this._transition && this.coordinatorId === this.localPlayerId) {
+        for (const [id, requestedAt] of this._admissionQueue) {
+          const link = this._links.get(id);
+          if (!link || now - requestedAt >= this.membership.transitionTimeoutMs) {
+            if (link) this._send(id, "reject", { reason: "admission-expired" });
+            this._admissionQueue.delete(id);
+            continue;
+          }
+          this._admissionQueue.delete(id);
+          this._proposal([id], [], "join");
+          break;
+        }
+      }
+      const tr = this._transition;
+      if (tr) {
+        if (now - tr.startedAt >= this.membership.transitionTimeoutMs) throw new Error("membership deadline exceeded");
+        if (tr.replay) {
+          const result = tr.replay.pulse();
+          this._stats.bootstrapTicks += result.steps ?? 0;
+          if (tr.replay.done) {
+            tr.replay = null;
+            this._applyMembership(tr);
+          }
+        }
+        if (this._core && tr.proposal.reason !== "reconnect" && tr.target !== null && this.tick === tr.target && !tr.reachedSent) {
+          tr.reachedSent = true;
+          this._send(this.coordinatorId, "reached", { epoch: tr.proposal.epoch, tick: this.tick, hash: this._core.getStateHash() });
+        }
+      } else if (!this._core && now - this._startedAt >= this.membership.transitionTimeoutMs) throw new Error("join deadline exceeded");
+      for (const [id, link] of this._links) if (link.incoming && now - link.incoming.startedAt >= this.membership.transitionTimeoutMs) throw new Error("room transfer timeout: " + id);
+      if (this._transition?.proposal.reason !== "reconnect") this._core?.poll(now);
+      if (this._core && !tr) {
+        if (["interrupted", "disconnected"].includes(this._core.status)) {
+          this._interruptedAt ??= now;
+          if (now - this._interruptedAt >= this.membership.reconnectGraceMs) this._fail("partition-failed", { policy: "fail-closed", coordinatorId: this.coordinatorId });
+        } else this._interruptedAt = null;
+      }
+      this._flush();
+      for (const [id, deadline] of this._retirePeers) {
+        const link = this._links.get(id);
+        if (link && !["closed", "failed"].includes(link.transport.state) && now < deadline) continue;
+        link?.unsubscribe?.();
+        link?.detachCore?.();
+        this._links.delete(id);
+        this.room?.disconnect?.(id);
+        this._retirePeers.delete(id);
+      }
+      if (tr && tr.commitSent && tr.applied && tr.committed.size === tr.participants.length - 1 && [...this._links.values()].every((link) => !link.queue.length)) {
+        for (const id of tr.proposal.left) if (id !== this.localPlayerId) this._send(id, "retire", { epoch: tr.proposal.epoch });
+        this._commit(tr);
+      }
+    } catch (error) {
+      this._fail("membership-failed", { reason: error.message });
+    }
+  }
+  advance(input = this._lastInput) {
+    if (this.closed) throw new Error("room session closed");
+    const sample = bytes(input);
+    if (sample.length !== this.inputSize) throw new RangeError("inputSize");
+    this._lastInput = sample.slice();
+    this.poll();
+    if (this.failure) return { status: "failed", tick: this.tick, failure: this.failure };
+    const tr = this._transition;
+    if (!this._core || tr && (tr.proposal.reason === "reconnect" || tr.target === null || this.tick >= tr.target)) return { status: this.status, tick: this.tick };
+    const result = this._core.advance(sample);
+    return { ...result, tick: this.tick };
+  }
+  queueCommand(payload) {
+    if (this.closed || this.failure) throw new Error("room session unavailable");
+    if (!this._core) throw new Error("player not admitted");
+    return this._core.queueCommand(payload);
+  }
+  releaseInput() {
+    this._lastInput = new Uint8Array(this.inputSize);
+    this._core?.releaseInput();
+  }
+  leave() {
+    if (this.closed) return Promise.resolve();
+    if (this.failure) return Promise.reject(new Error("room session failed"));
+    if (this._leavePromise) return this._leavePromise;
+    if (!this._core || this.players.length === 1) {
+      this.close();
+      return Promise.resolve();
+    }
+    this._leavePromise = new Promise((resolve, reject) => {
+      this._leaveResolve = resolve;
+      this._leaveReject = reject;
+    });
+    try {
+      this._send(this.coordinatorId, "leave-request");
+    } catch (error) {
+      this._leaveReject(error);
+    }
+    return this._leavePromise;
+  }
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    this._core?.close();
+    try {
+      this._transition?.replay?.cancel();
+    } catch {
+    }
+    this._unsubscribeRoom?.();
+    for (const link of this._links.values()) {
+      link.unsubscribe?.();
+      link.detachCore?.();
+    }
+    this._links.clear();
+    this._incoming.length = 0;
+    this.room?.close();
+    this._event("closed");
+    this._leaveReject?.(new Error("room closed before graceful departure"));
+    this._leaveResolve = this._leaveReject = null;
+  }
+};
 export {
   CHUNK_SIZE,
   MAX_TICK,
   PROTOCOL_VERSION,
   RollbackSession,
+  RoomSession,
   VERSION,
+  createBootstrapReplay,
+  createRoomSession,
   createSession,
   profiles
 };

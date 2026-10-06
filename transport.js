@@ -185,9 +185,9 @@ var WebRTCTransport = class {
     try {
       channel.send(b);
       return true;
-    } catch (error) {
-      if (error.name === "OperationError" || error.name === "InvalidStateError") return false;
-      throw error;
+    } catch (error2) {
+      if (error2.name === "OperationError" || error2.name === "InvalidStateError") return false;
+      throw error2;
     }
   }
   subscribe(handler) {
@@ -228,8 +228,8 @@ function createWebRTCPeer({
   try {
     integer(timeoutMs, "timeoutMs", 1, 12e4);
     pc = new RTCPeerConnectionImpl(rtcConfig);
-  } catch (error) {
-    return Promise.reject(error);
+  } catch (error2) {
+    return Promise.reject(error2);
   }
   let inputChannel, controlChannel, transport, unsubscribe, timer, disposed = false, settled = false;
   let chain = Promise.resolve();
@@ -260,11 +260,11 @@ function createWebRTCPeer({
       reject(new Error("WebRTC connection closed"));
     }
   };
-  const fail = (error) => {
-    status({ type: "connection-error", error });
+  const fail = (error2) => {
+    status({ type: "connection-error", error: error2 });
     if (!settled) {
       settled = true;
-      reject(error);
+      reject(error2);
     }
     close();
   };
@@ -584,7 +584,8 @@ async function createNostrSignaler({
   signal,
   publishIntervalMs = 500,
   maxVerificationsPerSecond = 16,
-  verificationBurst = 8
+  verificationBurst = 8,
+  identity
 } = {}) {
   if (signal?.aborted) throw new Error("Nostr signaler aborted");
   if (typeof room !== "string" || !/^\d{4}$/.test(room)) throw new TypeError("room must contain exactly four ASCII digits");
@@ -604,9 +605,10 @@ async function createNostrSignaler({
     return nostrUrl.href;
   }))];
   const nostrRandom = (nostrLength) => cryptoImpl.getRandomValues(new Uint8Array(nostrLength));
+  if (identity && (!nostrHex32.test(identity.id) || typeof identity.sign !== "function" || typeof identity.close !== "function")) throw new TypeError("Nostr identity capability");
   const nostrSecret = new Uint8Array(32);
-  let nostrSecretReady = false;
-  for (let nostrAttempt = 0; nostrAttempt < 16; nostrAttempt++) {
+  let nostrSecretReady = !!identity;
+  for (let nostrAttempt = 0; !nostrSecretReady && nostrAttempt < 16; nostrAttempt++) {
     nostrSecret.set(nostrRandom(32));
     const nostrValue = nostrBytesToNumber(nostrSecret);
     if (nostrValue > 0n && nostrValue < nostrOrder) {
@@ -618,7 +620,7 @@ async function createNostrSignaler({
     nostrSecret.fill(0);
     throw new Error("Secure random secret generation failed");
   }
-  const nostrId = nostrToHex(nostrPublicKey(nostrSecret));
+  const nostrId = identity?.id ?? nostrToHex(nostrPublicKey(nostrSecret));
   const nostrRoomTag = `${namespace}:${room}`;
   const nostrSubscription = `rn-${nostrToHex(nostrRandom(16))}`;
   const nostrListeners = /* @__PURE__ */ new Set();
@@ -819,6 +821,7 @@ async function createNostrSignaler({
       nostrReadyReject(new Error("Nostr signaler closed"));
     }
     nostrSecret.fill(0);
+    identity?.close();
     nostrListeners.clear();
     nostrBacklog.length = 0;
     nostrSeen.clear();
@@ -917,7 +920,7 @@ async function createNostrSignaler({
         if (nostrClosed) throw new Error("Nostr signaler closed");
         const nostrAuxiliary = nostrRandom(32);
         try {
-          nostrEvent.sig = nostrToHex(await nostrSign(nostrHashBytes, nostrSecret, nostrAuxiliary, cryptoImpl));
+          nostrEvent.sig = nostrToHex(await (identity ? identity.sign(nostrHashBytes, nostrAuxiliary, cryptoImpl) : nostrSign(nostrHashBytes, nostrSecret, nostrAuxiliary, cryptoImpl)));
         } finally {
           nostrAuxiliary.fill(0);
         }
@@ -1007,9 +1010,9 @@ async function createNostrRoom({
       onStatus,
       signal: roomSignal
     });
-  } catch (error) {
+  } catch (error2) {
     signal?.removeEventListener("abort", externalAbort);
-    throw error;
+    throw error2;
   }
   if (roomSignal.aborted) {
     signaler.close();
@@ -1041,10 +1044,10 @@ async function createNostrRoom({
       connection?.close();
       signaler.close();
     };
-    const fail = (error) => {
+    const fail = (error2) => {
       if (!completed) {
         completed = true;
-        reject(error);
+        reject(error2);
       }
       close();
     };
@@ -1203,8 +1206,8 @@ function createStarTransports({
         assemblies.delete(key);
         stats.assemblyBytes -= a.total;
       }
-    } catch (error) {
-      fail("star forwarding failed: " + error.message);
+    } catch (error2) {
+      fail("star forwarding failed: " + error2.message);
     } finally {
       pumping = false;
     }
@@ -1364,9 +1367,9 @@ function createStarTransports({
         }
       }));
     }
-  } catch (error) {
+  } catch (error2) {
     close();
-    throw error;
+    throw error2;
   }
   return { transports, close, get metrics() {
     return { ...stats };
@@ -1421,17 +1424,17 @@ async function createNostrGroupRoom({
     });
     if (!groupRoomId(signaler?.id) || typeof signaler.send !== "function" || typeof signaler.subscribe !== "function" || typeof signaler.close !== "function") throw new TypeError("group signaler capability");
     if (signal?.aborted || signalController.signal.aborted) throw new Error("group room aborted");
-  } catch (error) {
+  } catch (error2) {
     earlyAbort();
     signaler?.close?.();
     signal?.removeEventListener("abort", earlyAbort);
-    throw error;
+    throw error2;
   }
   signal?.removeEventListener("abort", earlyAbort);
   return new Promise((resolve, reject) => {
     const self = signaler.id, members = /* @__PURE__ */ new Set([self]), departed = /* @__PURE__ */ new Set(), acks = /* @__PURE__ */ new Set([self]), ready = /* @__PURE__ */ new Set(), starts = /* @__PURE__ */ new Set([self]);
     const peers = /* @__PURE__ */ new Map(), subscribers = /* @__PURE__ */ new Map(), backlog = /* @__PURE__ */ new Map(), controlPending = /* @__PURE__ */ new Map(), removers = [];
-    let host = role === "host" ? self : null, sessionId = role === "host" ? random() : null, roster = null, rosterKey = "";
+    let host = role === "host" ? self : null, sessionId = role === "host" ? random() : null, roster2 = null, rosterKey = "";
     let phase = role === "host" ? "checking" : "discovering", disposed = false, settled = false, connecting = false, localReady = false;
     let unsubscribe, interval, collisionTimer, deadline, router, backlogBytes = 0, startPublished = false;
     const status = (type, detail = {}) => {
@@ -1473,9 +1476,9 @@ async function createNostrGroupRoom({
         });
       } else finish2();
     }
-    function fail(error, notify = true) {
+    function fail(error2, notify = true) {
       if (disposed) return;
-      const value = error instanceof Error ? error : new Error(String(error));
+      const value = error2 instanceof Error ? error2 : new Error(String(error2));
       const former = phase;
       phase = "failed";
       dispose(value.message, notify);
@@ -1495,8 +1498,8 @@ async function createNostrGroupRoom({
       if (controlPending.size >= 32) return Promise.resolve();
       const pending = Promise.resolve().then(() => {
         if (!disposed) return signaler.send(to, message(op, extra));
-      }).catch((error) => {
-        fail(error);
+      }).catch((error2) => {
+        fail(error2);
       }).finally(() => controlPending.delete(key));
       controlPending.set(key, pending);
       return pending;
@@ -1519,7 +1522,7 @@ async function createNostrGroupRoom({
       clearTimeout(deadline);
       clearInterval(interval);
       const physical = new Map([...peers].map(([id, peer]) => [id, peer.transport]));
-      status("group-started", { players: [...roster], localPlayerId: self });
+      status("group-started", { players: [...roster2], localPlayerId: self });
       if (disposed) {
         reject(new Error("group room closed by observer"));
         return;
@@ -1529,7 +1532,7 @@ async function createNostrGroupRoom({
         sessionId,
         playerCount,
         topology,
-        players: Object.freeze([...roster]),
+        players: Object.freeze([...roster2]),
         localPlayerId: self,
         authorityPlayerId: host,
         hostPlayerId: host,
@@ -1545,7 +1548,7 @@ async function createNostrGroupRoom({
       });
     }
     function hostProgress() {
-      if (disposed || role !== "host" || !roster) return;
+      if (disposed || role !== "host" || !roster2) return;
       if (phase === "roster" && acks.size === playerCount) {
         phase = "connecting";
         connect();
@@ -1561,7 +1564,7 @@ async function createNostrGroupRoom({
       if (phase === "starting" && startPublished && starts.size === playerCount) finish();
     }
     function wantedPeers() {
-      return roster.filter((id) => id !== self && (topology === "mesh" || self === host || id === host));
+      return roster2.filter((id) => id !== self && (topology === "mesh" || self === host || id === host));
     }
     function scopedSignaler(remote) {
       return {
@@ -1587,10 +1590,10 @@ async function createNostrGroupRoom({
       };
     }
     function connect() {
-      if (disposed || connecting || !roster) return;
+      if (disposed || connecting || !roster2) return;
       connecting = true;
       phase = "connecting";
-      status("group-connecting", { players: [...roster] });
+      status("group-connecting", { players: [...roster2] });
       if (disposed) return;
       Promise.all(wantedPeers().map((remote) => Promise.resolve().then(() => {
         if (disposed) throw new Error("group room closed");
@@ -1617,7 +1620,7 @@ async function createNostrGroupRoom({
         if (disposed) return;
         if ([...peers.values()].some((p) => p.transport.state && p.transport.state !== "open")) throw new Error("group transport not open");
         if (topology === "star") router = createStarTransports({
-          players: roster,
+          players: roster2,
           localPlayerId: self,
           hostPlayerId: host,
           sessionId,
@@ -1625,7 +1628,7 @@ async function createNostrGroupRoom({
           onError: fail
         });
         localReady = true;
-        status("group-ready", { players: [...roster] });
+        status("group-ready", { players: [...roster2] });
         if (disposed) return;
         if (role === "host") {
           ready.add(self);
@@ -1634,7 +1637,7 @@ async function createNostrGroupRoom({
       }).catch(fail);
     }
     function publishRoster() {
-      send("*", "roster", { players: roster, rosterKey });
+      send("*", "roster", { players: roster2, rosterKey });
     }
     function advertise(to = "*") {
       send(to, "hello", { accepting: phase === "collecting", memberCount: members.size });
@@ -1644,15 +1647,15 @@ async function createNostrGroupRoom({
         fail(new Error("invalid group roster"));
         return;
       }
-      if (roster && rosterKey !== m.rosterKey) {
+      if (roster2 && rosterKey !== m.rosterKey) {
         fail(new Error("group roster changed"));
         return;
       }
-      if (!roster) {
-        roster = Object.freeze([...m.players]);
+      if (!roster2) {
+        roster2 = Object.freeze([...m.players]);
         rosterKey = m.rosterKey;
         phase = "roster";
-        status("group-roster", { players: [...roster] });
+        status("group-roster", { players: [...roster2] });
       }
       send(host, "ack", { rosterKey });
     }
@@ -1660,7 +1663,7 @@ async function createNostrGroupRoom({
       if (disposed || !envelope || envelope.from === self || !groupRoomId(envelope.from) || !["*", self].includes(envelope.to) || !envelope.message || typeof envelope.message !== "object") return;
       const { from, to, message: m } = envelope;
       if (["offer", "answer", "ice", "bye"].includes(m.type)) {
-        if (!roster || to !== self || m.groupSession !== sessionId || !wantedPeers().includes(from)) return;
+        if (!roster2 || to !== self || m.groupSession !== sessionId || !wantedPeers().includes(from)) return;
         const set = subscribers.get(from);
         if (set?.size) {
           for (const fn of set) fn(envelope);
@@ -1693,7 +1696,7 @@ async function createNostrGroupRoom({
           host = from;
           sessionId = m.sessionId;
         }
-        if (!roster) {
+        if (!roster2) {
           if (m.accepting === false && !selected) {
             fail(new Error("group room is full or already started"), false);
             return;
@@ -1710,7 +1713,7 @@ async function createNostrGroupRoom({
       if (role === "host") {
         if (m.op === "join") {
           if (members.has(from)) {
-            if (roster) publishRoster();
+            if (roster2) publishRoster();
             return;
           }
           if (phase !== "collecting" || departed.has(from)) {
@@ -1721,10 +1724,10 @@ async function createNostrGroupRoom({
           status("group-members", { players: [...members].sort(compareIds) });
           if (disposed) return;
           if (members.size === playerCount) {
-            roster = Object.freeze([...members].sort(compareIds));
-            rosterKey = roster.join("\n");
+            roster2 = Object.freeze([...members].sort(compareIds));
+            rosterKey = roster2.join("\n");
             phase = "roster";
-            status("group-roster", { players: [...roster] });
+            status("group-roster", { players: [...roster2] });
             publishRoster();
           }
         } else if (m.op === "leave" && members.has(from)) {
@@ -1734,7 +1737,7 @@ async function createNostrGroupRoom({
             if (departed.size > 64) fail(new Error("group membership churn limit"));
             else status("group-members", { players: [...members].sort(compareIds) });
           } else fail(new Error("group participant left"));
-        } else if (roster?.includes(from) && m.rosterKey === rosterKey) {
+        } else if (roster2?.includes(from) && m.rosterKey === rosterKey) {
           if (m.op === "ack") acks.add(from);
           if (m.op === "ready" && ["connecting", "starting"].includes(phase)) ready.add(from);
           if (m.op === "start-ack" && phase === "starting") starts.add(from);
@@ -1744,7 +1747,7 @@ async function createNostrGroupRoom({
         if (m.op === "reject") fail(new Error(String(m.reason || "group rejected")), false);
         else if (m.op === "leave") fail(new Error("group host left"), false);
         else if (m.op === "roster") acceptRoster(from, m);
-        else if (roster && m.rosterKey === rosterKey) {
+        else if (roster2 && m.rosterKey === rosterKey) {
           if (m.op === "connect") {
             connect();
             if (localReady) send(host, "ready", { rosterKey });
@@ -1780,7 +1783,7 @@ async function createNostrGroupRoom({
           hostProgress();
         });
       } else if (!host) send("*", "discover");
-      else if (!roster) send(host, "join");
+      else if (!roster2) send(host, "join");
       else if (!connecting) send(host, "ack", { rosterKey });
       else if (localReady) send(host, "ready", { rosterKey });
     }, 1e3);
@@ -1795,9 +1798,1456 @@ async function createNostrGroupRoom({
     else send("*", "discover");
   });
 }
+
+// packages/transport/src/room-resume-identity.js
+var hex32 = /^[0-9a-f]{64}$/;
+function createRoomResumeIdentity({ storage, key, lifetimeMs = 8 * 60 * 60 * 1e3, reset = false } = {}, { namespace, room }) {
+  if (!storage || ["getItem", "setItem", "removeItem"].some((name) => typeof storage[name] !== "function")) throw new TypeError("resume storage capability");
+  integer(lifetimeMs, "resume lifetimeMs", 1e3, 24 * 60 * 60 * 1e3);
+  key ??= `bloom-gamekit:dynamic-v1:${namespace}:${room}`;
+  if (typeof key !== "string" || !key.length || key.length > 512) throw new TypeError("resume storage key");
+  if (typeof reset !== "boolean") throw new TypeError("resume reset");
+  if (reset) storage.removeItem(key);
+  let saved, secret, forgotten = false, closed = false;
+  const raw = storage.getItem(key), now = Date.now();
+  if (raw != null) {
+    let expired = false;
+    try {
+      if (typeof raw !== "string" || raw.length > 8192) throw new Error("invalid record");
+      saved = JSON.parse(raw);
+      expired = Number.isSafeInteger(saved?.expiresAt) && saved.expiresAt <= now;
+      if (saved.version !== 1 || saved.namespace !== namespace || saved.room !== room || !hex32.test(saved.secret) || !Number.isSafeInteger(saved.createdAt) || !Number.isSafeInteger(saved.expiresAt) || saved.createdAt > now || saved.expiresAt <= now || saved.expiresAt - saved.createdAt > 24 * 60 * 60 * 1e3 || saved.sessionId !== null && (typeof saved.sessionId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(saved.sessionId)) || !Array.isArray(saved.players) || saved.players.length > 5 || saved.players.some((id2) => !hex32.test(id2)) || new Set(saved.players).size !== saved.players.length || !Number.isSafeInteger(saved.epoch) || saved.epoch < 0 || saved.epoch > 65534 || saved.coordinatorId !== null && !saved.players.includes(saved.coordinatorId)) throw new Error("invalid record");
+      secret = nostrFromHex(saved.secret);
+      const scalar = nostrBytesToNumber(secret);
+      if (scalar <= 0n || scalar >= nostrOrder || nostrToHex(nostrPublicKey(secret)) !== saved.id) throw new Error("invalid key");
+    } catch {
+      secret?.fill(0);
+      throw new Error(expired ? "resume record expired; explicitly reset for a fresh room" : "invalid resume record; explicitly reset for a fresh room");
+    }
+  }
+  if (!secret) {
+    secret = new Uint8Array(32);
+    let valid = false;
+    for (let attempt = 0; attempt < 16; attempt++) {
+      globalThis.crypto.getRandomValues(secret);
+      const value = nostrBytesToNumber(secret);
+      if (value > 0n && value < nostrOrder) {
+        valid = true;
+        break;
+      }
+    }
+    if (!valid) {
+      secret.fill(0);
+      throw new Error("resume identity generation failed");
+    }
+  }
+  const id = nostrToHex(nostrPublicKey(secret));
+  let record = saved ?? {
+    version: 1,
+    namespace,
+    room,
+    id,
+    secret: nostrToHex(secret),
+    createdAt: now,
+    expiresAt: now + lifetimeMs,
+    sessionId: null,
+    coordinatorId: null,
+    epoch: 0,
+    players: []
+  };
+  const metadata = saved ? { sessionId: saved.sessionId, coordinatorId: saved.coordinatorId, epoch: saved.epoch, players: [...saved.players] } : null;
+  function write() {
+    if (forgotten || closed) return;
+    try {
+      storage.setItem(key, JSON.stringify(record));
+    } catch {
+      secret.fill(0);
+      closed = true;
+      throw new Error("resume storage unavailable");
+    }
+  }
+  write();
+  return {
+    metadata,
+    identity: {
+      id,
+      sign(hash, auxiliary, cryptoImpl) {
+        if (closed) throw new Error("resume identity closed");
+        return nostrSign(hash, secret, auxiliary, cryptoImpl);
+      },
+      close() {
+        if (closed) return;
+        closed = true;
+        secret.fill(0);
+        record = null;
+      }
+    },
+    update(value) {
+      if (!forgotten && !closed) {
+        record = { ...record, ...value, players: [...value.players] };
+        write();
+      }
+    },
+    forget() {
+      storage.removeItem(key);
+      forgotten = true;
+    }
+  };
+}
+
+// packages/transport/src/dynamic-room.js
+var validId = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
+var signalTypes = /* @__PURE__ */ new Set(["offer", "answer", "ice", "bye"]);
+var PROBE_MAGIC = new Uint8Array([66, 77, 68, 89, 78, 80, 82, 49]);
+var MAX_SIGNAL_BYTES = 128 * 1024;
+var MAX_BACKLOG_BYTES = 2 * 1024 * 1024;
+var randomId = () => [...globalThis.crypto.getRandomValues(new Uint8Array(16))].map((n) => n.toString(16).padStart(2, "0")).join("");
+function roster(value, maxPlayers) {
+  if (!Array.isArray(value) || value.length < 1 || value.length > maxPlayers || value.some((id) => !validId(id)) || new Set(value).size !== value.length) throw new TypeError("dynamic room players");
+  return Object.freeze([...value].sort(compareIds));
+}
+async function createNostrDynamicRoom({
+  role,
+  room,
+  namespace = "rollback-netcode",
+  maxPlayers = 5,
+  maxPendingPeers = 5,
+  timeoutMs = 6e4,
+  peerTimeoutMs = 2e4,
+  retryMs = 1500,
+  advertiseIntervalMs = 5e3,
+  resume,
+  resumeProbeMs = 1500,
+  relays,
+  rtcConfig,
+  signal,
+  onStatus = () => {
+  },
+  signalerFactory = createNostrSignaler,
+  peerFactory = createWebRTCPeer,
+  expectedSessionId,
+  authorizeJoin = () => true
+} = {}) {
+  if (!["host", "join"].includes(role)) throw new TypeError("dynamic room role");
+  integer(maxPlayers, "maxPlayers", 1, 5);
+  integer(maxPendingPeers, "maxPendingPeers", 1, 5);
+  integer(timeoutMs, "timeoutMs", 1, 12e4);
+  integer(peerTimeoutMs, "peerTimeoutMs", 1, 12e4);
+  integer(resumeProbeMs, "resumeProbeMs", 10, 1e4);
+  integer(retryMs, "retryMs", 10, 1e4);
+  integer(advertiseIntervalMs, "advertiseIntervalMs", 10, 12e4);
+  if (typeof namespace !== "string" || !namespace.trim() || encoder.encode(namespace + ":dynamic-v1").length > 128) throw new TypeError("dynamic room namespace");
+  if (expectedSessionId !== void 0 && (!validId(expectedSessionId) || expectedSessionId.length > 116)) throw new TypeError("expectedSessionId");
+  if ([onStatus, signalerFactory, peerFactory, authorizeJoin].some((fn) => typeof fn !== "function")) throw new TypeError("dynamic room capability");
+  if (signal?.aborted) throw new Error("dynamic room aborted");
+  if (!room && role === "host") room = String(globalThis.crypto.getRandomValues(new Uint32Array(1))[0] % 1e4).padStart(4, "0");
+  if (!/^\d{4}$/.test(room ?? "")) throw new TypeError("four-digit room");
+  const resumeIdentity = resume ? createRoomResumeIdentity(resume, { namespace, room }) : null;
+  const startedAt = nowMs(), signalController = new AbortController();
+  let initializationReject;
+  const initializationFailure = new Promise((resolve, reject) => {
+    initializationReject = reject;
+  });
+  const initializationTimer = setTimeout(() => {
+    signalController.abort();
+    initializationReject(new Error("dynamic room signaling timeout"));
+  }, timeoutMs);
+  const earlyAbort = () => {
+    signalController.abort();
+    initializationReject(new Error("dynamic room aborted"));
+  };
+  signal?.addEventListener("abort", earlyAbort, { once: true });
+  let signaler;
+  try {
+    const setup = Promise.resolve().then(() => signalerFactory({
+      room,
+      namespace: namespace + ":dynamic-v1",
+      relays,
+      signal: signalController.signal,
+      timeoutMs: Math.min(timeoutMs, 1e4),
+      onStatus,
+      maxVerificationsPerSecond: 32,
+      verificationBurst: 20,
+      identity: resumeIdentity?.identity
+    })).then((value) => {
+      if (signalController.signal.aborted) value?.close?.();
+      return value;
+    });
+    signaler = await Promise.race([setup, initializationFailure]);
+    if (!validId(signaler?.id) || ["send", "subscribe", "close"].some((key) => typeof signaler?.[key] !== "function")) throw new TypeError("dynamic signaler capability");
+    if (signal?.aborted || signalController.signal.aborted) throw new Error("dynamic room aborted");
+  } catch (error2) {
+    signalController.abort();
+    signaler?.close?.();
+    resumeIdentity?.identity.close();
+    throw error2;
+  } finally {
+    clearTimeout(initializationTimer);
+    signal?.removeEventListener("abort", earlyAbort);
+  }
+  if (resumeIdentity && signaler.id !== resumeIdentity.identity.id) {
+    signaler.close();
+    resumeIdentity.identity.close();
+    throw new Error("resume signaler identity mismatch");
+  }
+  const self = signaler.id, incarnation = randomId(), transports = /* @__PURE__ */ new Map(), peerConnections = /* @__PURE__ */ new Map(), listeners = /* @__PURE__ */ new Set();
+  const links = /* @__PURE__ */ new Map(), generations = /* @__PURE__ */ new Map(), candidates = /* @__PURE__ */ new Map(), backlog = /* @__PURE__ */ new Map(), publications = /* @__PURE__ */ new Map();
+  const saved = resumeIdentity?.metadata, resumed = !!(saved?.sessionId && saved.players.includes(self));
+  if (saved?.sessionId && expectedSessionId !== void 0 && expectedSessionId !== saved.sessionId) {
+    signaler.close();
+    resumeIdentity.identity.close();
+    throw new Error("resume session does not match expectedSessionId; explicitly reset");
+  }
+  const resumeTargets = new Set(resumed ? saved.players : []);
+  const establishing = role === "join" || resumed, incarnations = /* @__PURE__ */ new Map([[self, incarnation]]), resumeApproved = /* @__PURE__ */ new Set(), resumeChecks = /* @__PURE__ */ new Map();
+  let resumePeerId = null;
+  let players = Object.freeze(resumed ? [...saved.players] : role === "host" ? [self] : []);
+  let coordinatorId = resumed ? saved.coordinatorId : role === "host" ? self : null;
+  let sessionId = resumed ? saved.sessionId : role === "host" ? randomId() : null;
+  let epoch = resumed ? saved.epoch : 0, meshPlayers = new Set(players), meshUntil = resumed ? Infinity : 0;
+  let hasBeenAdmitted = players.includes(self);
+  let disposed = false, settled = false, backlogBytes = 0, unsubscribe, interval, deadline, invitation, nextAdvertisement = 0;
+  let readyResolve, readyReject;
+  const ready = new Promise((resolve, reject) => {
+    readyResolve = resolve;
+    readyReject = reject;
+  });
+  const status = (type, detail = {}) => {
+    const event = { type, room, role, ...detail };
+    try {
+      onStatus(event);
+    } catch {
+    }
+    for (const fn of [...listeners]) {
+      try {
+        fn(event);
+      } catch {
+      }
+    }
+  };
+  const pendingCount = () => [...links.values()].filter((link) => !link.peer).length;
+  const accepted = (id) => players.includes(id) || meshPlayers.has(id) && meshUntil > nowMs() || candidates.has(id);
+  const leader = (id) => compareIds(self, id) > 0;
+  const control = (op, extra = {}) => ({
+    type: "group",
+    mode: "dynamic",
+    version: 1,
+    protocol: PROTOCOL_VERSION,
+    op,
+    sessionId,
+    coordinatorId,
+    epoch,
+    incarnation,
+    ...extra
+  });
+  function publish(to, payload, key = to + ":" + payload.op) {
+    if (disposed) return Promise.reject(new Error("dynamic room closed"));
+    if (publications.has(key)) return publications.get(key);
+    if (publications.size >= 32) return Promise.reject(new Error("dynamic signaling publication capacity"));
+    const promise = Promise.resolve().then(() => {
+      if (disposed) throw new Error("dynamic room closed");
+      return signaler.send(to, payload);
+    }).finally(() => {
+      if (publications.get(key) === promise) publications.delete(key);
+    });
+    publications.set(key, promise);
+    return promise;
+  }
+  function send(to, op, extra = {}) {
+    const promise = publish(to, control(op, { targetIncarnation: incarnations.get(to), ...extra }));
+    promise.catch((error2) => {
+      if (!disposed) status("signal-error", { peerId: to, reason: error2.message });
+    });
+    return promise;
+  }
+  function forgetBacklog(key) {
+    const queued = backlog.get(key);
+    if (!queued) return;
+    for (const item of queued.items) backlogBytes -= item.size;
+    backlog.delete(key);
+  }
+  function rememberGeneration(id, generation) {
+    generations.delete(id);
+    generations.set(id, generation);
+    for (const old of generations.keys()) {
+      if (generations.size <= 64) break;
+      if (!links.has(old) && !accepted(old)) generations.delete(old);
+    }
+  }
+  function destroyLink(link, reason, notify = true, preserveWaiter = false) {
+    if (links.get(link.id) !== link) return;
+    links.delete(link.id);
+    clearTimeout(link.deadline);
+    link.removeStatus?.();
+    link.removeRaw?.();
+    link.cancelProbe?.();
+    link.controller.abort();
+    const wasConnected = transports.delete(link.id);
+    peerConnections.delete(link.id);
+    link.peer?.close();
+    link.subscribers.clear();
+    link.outbound.clear();
+    if (!preserveWaiter) link.reject(new Error(reason));
+    if (wasConnected && notify && !disposed) status("peer-disconnected", { peerId: link.id, reason });
+  }
+  function finish() {
+    if (disposed || settled) return;
+    settled = true;
+    clearTimeout(deadline);
+    readyResolve(capability);
+  }
+  function close(reason = "dynamic room closed") {
+    if (disposed) return;
+    disposed = true;
+    clearInterval(interval);
+    clearTimeout(deadline);
+    unsubscribe?.();
+    signal?.removeEventListener("abort", abort);
+    for (const link of [...links.values()]) destroyLink(link, reason, false);
+    signalController.abort();
+    signaler.close();
+    resumeIdentity?.identity.close();
+    backlog.clear();
+    backlogBytes = 0;
+    candidates.clear();
+    publications.clear();
+    if (!settled) {
+      settled = true;
+      readyReject(new Error(reason));
+    }
+    status("room-closed", { reason });
+    listeners.clear();
+  }
+  function abort() {
+    close("dynamic room aborted");
+  }
+  function failLink(link, error2) {
+    if (disposed || links.get(link.id) !== link) return;
+    destroyLink(link, error2.message || String(error2));
+    status("peer-failed", { peerId: link.id, reason: error2.message || String(error2) });
+  }
+  function newLink(id, generation, connectionId, prior) {
+    if (!prior && (pendingCount() >= maxPendingPeers || links.size >= maxPlayers - 1 + maxPendingPeers)) throw new Error("dynamic pending peer capacity");
+    let resolve, reject, promise;
+    if (prior && !prior.peer) ({ resolve, reject, promise } = prior);
+    else {
+      promise = new Promise((yes, no) => {
+        resolve = yes;
+        reject = no;
+      });
+      promise.catch(() => {
+      });
+    }
+    if (prior) destroyLink(prior, "peer reconnecting", true, !prior.peer);
+    const link = {
+      id,
+      generation,
+      connectionId,
+      resolve,
+      reject,
+      promise,
+      controller: new AbortController(),
+      peer: null,
+      started: false,
+      subscribers: /* @__PURE__ */ new Set(),
+      outbound: /* @__PURE__ */ new Map(),
+      nextRetry: 0,
+      requestGeneration: generations.get(id) ?? 0,
+      force: false
+    };
+    links.set(id, link);
+    link.deadline = setTimeout(() => failLink(link, new Error("dynamic peer timeout")), peerTimeoutMs);
+    return link;
+  }
+  function scopedSignaler(link) {
+    return {
+      id: self,
+      close() {
+      },
+      send(to, payload) {
+        if (disposed || links.get(link.id) !== link || to !== link.id || !signalTypes.has(payload?.type)) return Promise.reject(new Error("dynamic peer scope"));
+        const message = { ...payload, dynamicSession: sessionId, dynamicGeneration: link.generation, dynamicConnection: link.connectionId, dynamicFrom: incarnation, dynamicTo: incarnations.get(to) };
+        if (encoder.encode(JSON.stringify(message)).length > MAX_SIGNAL_BYTES) return Promise.reject(new RangeError("dynamic signaling message capacity"));
+        if (payload.type === "offer" || payload.type === "answer") link.outbound.set(payload.type, message);
+        return Promise.resolve(link.announcement).then(() => {
+          if (disposed || links.get(link.id) !== link) throw new Error("dynamic peer scope");
+          return publish(to, message, `${to}:signal:${link.generation}:${payload.type}`);
+        });
+      },
+      subscribe(fn) {
+        if (typeof fn !== "function") throw new TypeError("dynamic signaling subscriber");
+        link.subscribers.add(fn);
+        const key = `${link.id}:${link.generation}:${link.connectionId}`, queued = backlog.get(key);
+        if (queued) {
+          const items = queued.items.slice();
+          forgetBacklog(key);
+          for (const item of items) if (!disposed) fn(item.envelope);
+        }
+        return () => link.subscribers.delete(fn);
+      }
+    };
+  }
+  function saveResume() {
+    if (!resumeIdentity || !sessionId) return;
+    if (hasBeenAdmitted && !players.includes(self)) {
+      resumeIdentity.forget();
+      return;
+    }
+    if (players.includes(self)) hasBeenAdmitted = true;
+    resumeIdentity.update({ sessionId, coordinatorId, epoch, players });
+  }
+  function acceptIncarnations(value, next) {
+    if (!value || typeof value !== "object") return;
+    for (const id of next) if (id !== self && validId(value[id])) {
+      if (!links.get(id)?.peer || !incarnations.has(id)) incarnations.set(id, value[id]);
+    }
+  }
+  function wrapTransport(link, raw) {
+    const handlers = /* @__PURE__ */ new Set();
+    link.removeRaw = raw.subscribe((bytes2) => {
+      if (bytes2.length === 25 && PROBE_MAGIC.every((value, i) => bytes2[i] === value)) {
+        if (bytes2[8] === 1) {
+          const reply = bytes2.slice();
+          reply[8] = 2;
+          raw.send(reply);
+        } else if (bytes2[8] === 2) link.onPong?.(bytes2.subarray(9));
+        return;
+      }
+      for (const fn of [...handlers]) fn(bytes2);
+    });
+    return {
+      get state() {
+        return raw.state;
+      },
+      get bufferedAmount() {
+        return raw.bufferedAmount ?? 0;
+      },
+      send: (data) => raw.send(data),
+      close: () => link.peer.close(),
+      subscribe(fn) {
+        if (typeof fn !== "function") throw new TypeError("dynamic transport subscriber");
+        handlers.add(fn);
+        return () => handlers.delete(fn);
+      },
+      subscribeStatus: (fn) => raw.subscribeStatus?.(fn) ?? (() => {
+      })
+    };
+  }
+  function probePeer(link) {
+    if (!link?.peer || link.peer.transport.state && link.peer.transport.state !== "open") return Promise.resolve(false);
+    return new Promise((resolve) => {
+      const bytes2 = new Uint8Array(25);
+      bytes2.set(PROBE_MAGIC);
+      bytes2[8] = 1;
+      const nonce = globalThis.crypto.getRandomValues(new Uint8Array(16));
+      bytes2.set(nonce, 9);
+      let done = false, timer;
+      const finish2 = (alive) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        link.onPong = null;
+        link.cancelProbe = null;
+        resolve(alive);
+      };
+      link.onPong = (response) => {
+        if (nonce.every((value, i) => response[i] === value)) finish2(true);
+      };
+      link.cancelProbe = () => finish2(false);
+      timer = setTimeout(() => finish2(false), resumeProbeMs);
+      if (!link.peer.transport.send(bytes2)) finish2(true);
+    });
+  }
+  function approveResume(id, requestedIncarnation) {
+    if (incarnations.get(id) === requestedIncarnation) {
+      send(id, "resume-accept", { generation: links.get(id)?.connectionId ? links.get(id).generation : (generations.get(id) ?? 0) + 1 });
+      return;
+    }
+    if (resumeChecks.has(id)) return;
+    const existing = links.get(id);
+    const check = probePeer(existing).then((alive) => {
+      if (disposed) return;
+      if (alive) {
+        send(id, "resume-reject", { targetIncarnation: requestedIncarnation });
+        return;
+      }
+      if (existing && links.get(id) === existing) destroyLink(existing, "peer resuming");
+      incarnations.set(id, requestedIncarnation);
+      const generation = (generations.get(id) ?? 0) + 1;
+      send(id, "resume-accept", { generation, targetIncarnation: requestedIncarnation });
+      status("peer-resuming", { peerId: id });
+      if (leader(id)) {
+        try {
+          startGeneration(id, generation);
+        } catch {
+        }
+      }
+    }).finally(() => resumeChecks.delete(id));
+    resumeChecks.set(id, check);
+  }
+  function startPeer(link) {
+    if (disposed || link.started || links.get(link.id) !== link) return;
+    link.started = true;
+    Promise.resolve().then(() => {
+      if (disposed || links.get(link.id) !== link) throw new Error("dynamic peer superseded");
+      return peerFactory({
+        initiator: leader(link.id),
+        signaler: scopedSignaler(link),
+        remoteId: link.id,
+        rtcConfig,
+        timeoutMs: peerTimeoutMs,
+        signal: link.controller.signal,
+        onStatus: (event) => status("peer-status", { peerId: link.id, event })
+      });
+    }).then((peer) => {
+      if (disposed || links.get(link.id) !== link) {
+        peer?.close?.();
+        return;
+      }
+      if (typeof peer?.transport?.send !== "function" || typeof peer.transport.subscribe !== "function" || typeof peer.close !== "function") {
+        peer?.close?.();
+        throw new TypeError("dynamic peer capability");
+      }
+      if (peer.transport.state && peer.transport.state !== "open") {
+        peer.close();
+        throw new Error("dynamic transport not open");
+      }
+      link.peer = peer;
+      clearTimeout(link.deadline);
+      link.outbound.clear();
+      const transport = wrapTransport(link, peer.transport);
+      transports.set(link.id, transport);
+      peerConnections.set(link.id, peer.peerConnection);
+      if (peer.transport.subscribeStatus) link.removeStatus = peer.transport.subscribeStatus((state) => {
+        if (state === "closed" || state === "failed" || state === "interrupted") failLink(link, new Error("dynamic peer " + state));
+      });
+      link.resolve(transport);
+      status("peer-connected", { peerId: link.id, transport, generation: link.generation });
+      if (!disposed && establishing && (link.id === coordinatorId || resumed && coordinatorId === self)) {
+        resumePeerId ??= link.id;
+        finish();
+      }
+    }).catch((error2) => failLink(link, error2));
+  }
+  function announceLink(link) {
+    return send(link.id, "link", { generation: link.generation, connectionId: link.connectionId });
+  }
+  function startGeneration(id, generation) {
+    const link = newLink(id, generation, randomId(), links.get(id));
+    rememberGeneration(id, generation);
+    link.announcement = announceLink(link);
+    link.announcement.catch((error2) => failLink(link, error2));
+    startPeer(link);
+    return link;
+  }
+  function ensurePeer(id, force = false) {
+    if (disposed) return Promise.reject(new Error("dynamic room closed"));
+    if (!validId(id) || id === self || !accepted(id)) return Promise.reject(new Error("dynamic peer is not invited"));
+    const old = links.get(id);
+    if (resumed && resumeTargets.has(id) && !resumeApproved.has(id)) {
+      try {
+        const waiting = old ?? newLink(id, 0, null);
+        waiting.resuming = true;
+        send(id, "resume-request", { resumeSession: sessionId });
+        return waiting.promise;
+      } catch (error2) {
+        return Promise.reject(error2);
+      }
+    }
+    if (!incarnations.has(id)) {
+      try {
+        const waiting = old ?? newLink(id, 0, null);
+        waiting.waitingIncarnation = true;
+        return waiting.promise;
+      } catch (error2) {
+        return Promise.reject(error2);
+      }
+    }
+    if (old && !old.waitingIncarnation && (!force || !old.peer)) return old.promise;
+    try {
+      if (leader(id)) return startGeneration(id, (generations.get(id) ?? 0) + 1).promise;
+      const link = newLink(id, 0, null, old);
+      link.force = force;
+      send(id, "request", { generation: link.requestGeneration, reconnect: force });
+      return link.promise;
+    } catch (error2) {
+      return Promise.reject(error2);
+    }
+  }
+  function advertise(to = "*") {
+    if (coordinatorId !== self || resumed && !settled) return;
+    send(to, "hello", { players, maxPlayers, accepting: players.length < maxPlayers });
+  }
+  function inviteMesh(value) {
+    const next = roster(value, maxPlayers);
+    if (!next.includes(self) || !next.includes(coordinatorId)) throw new TypeError("dynamic mesh requires local player and coordinator");
+    meshPlayers = new Set(next);
+    meshUntil = nowMs() + peerTimeoutMs;
+    if (coordinatorId === self) {
+      invitation = { players: next, until: meshUntil };
+      send("*", "mesh", { players: next, peerIncarnations: Object.fromEntries(incarnations) });
+    }
+    return next;
+  }
+  function setRoster(value) {
+    if (disposed) throw new Error("dynamic room closed");
+    const next = roster(value?.players, maxPlayers), nextEpoch = integer(value?.epoch, "epoch", 0, 65534);
+    if (!validId(value?.coordinatorId) || !next.includes(value.coordinatorId)) throw new TypeError("dynamic roster coordinator");
+    if (nextEpoch < epoch) throw new Error("stale dynamic room epoch");
+    if (nextEpoch === epoch && (players.join("\n") !== next.join("\n") || coordinatorId !== value.coordinatorId)) throw new Error("conflicting dynamic room epoch");
+    players = next;
+    epoch = nextEpoch;
+    coordinatorId = value.coordinatorId;
+    meshPlayers = new Set(next);
+    meshUntil = Infinity;
+    invitation = null;
+    for (const id of candidates.keys()) if (next.includes(id)) candidates.delete(id);
+    for (const id of incarnations.keys()) if (id !== self && !next.includes(id) && !links.has(id) && !candidates.has(id)) incarnations.delete(id);
+    saveResume();
+    if (coordinatorId === self) advertise();
+  }
+  const capability = {
+    room,
+    role,
+    maxPlayers,
+    resumed,
+    get resumePeerId() {
+      return resumePeerId;
+    },
+    localPlayerId: self,
+    transports,
+    peerConnections,
+    get sessionId() {
+      return sessionId;
+    },
+    get coordinatorId() {
+      return coordinatorId;
+    },
+    get players() {
+      return players;
+    },
+    get epoch() {
+      return epoch;
+    },
+    get joining() {
+      return !players.includes(self);
+    },
+    get closed() {
+      return disposed;
+    },
+    get metrics() {
+      return { activePeerCount: transports.size, pendingPeerCount: pendingCount(), signalBacklogBytes: backlogBytes };
+    },
+    subscribe(fn) {
+      if (disposed || typeof fn !== "function") throw new TypeError("dynamic room subscriber");
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
+    setRoster,
+    connectMesh(value) {
+      try {
+        if (disposed) throw new Error("dynamic room closed");
+        const next = inviteMesh(value);
+        return Promise.all(next.filter((id) => id !== self).map((id) => ensurePeer(id))).then(() => void 0);
+      } catch (error2) {
+        return Promise.reject(error2);
+      }
+    },
+    reconnect(id) {
+      return ensurePeer(id, true);
+    },
+    forgetResume() {
+      resumeIdentity?.forget();
+    },
+    disconnect(id) {
+      if (!validId(id) || id === self) throw new TypeError("dynamic peer id");
+      const link = links.get(id);
+      if (link) destroyLink(link, "peer disconnected by owner");
+      candidates.delete(id);
+      meshPlayers.delete(id);
+      if (!players.includes(id)) incarnations.delete(id);
+      for (const key of backlog.keys()) if (key.startsWith(id + ":")) forgetBacklog(key);
+      return !!link;
+    },
+    close
+  };
+  function routeSignal(envelope) {
+    const { from, to, message: m } = envelope;
+    if (to !== self || m.dynamicSession !== sessionId || m.dynamicTo !== incarnation || m.dynamicFrom !== incarnations.get(from) || !accepted(from) || !Number.isSafeInteger(m.dynamicGeneration) || m.dynamicGeneration < 1 || !validId(m.dynamicConnection)) return;
+    let size;
+    try {
+      size = encoder.encode(JSON.stringify(m)).length;
+    } catch {
+      return;
+    }
+    if (size > MAX_SIGNAL_BYTES) return;
+    const link = links.get(from);
+    if (link?.generation === m.dynamicGeneration && link.connectionId === m.dynamicConnection && link.subscribers.size) {
+      for (const fn of [...link.subscribers]) fn(envelope);
+      return;
+    }
+    const known = generations.get(from) ?? 0;
+    if (leader(from) || m.dynamicGeneration < known || m.dynamicGeneration === known && (!link || link.generation !== m.dynamicGeneration || link.connectionId !== m.dynamicConnection)) return;
+    const key = `${from}:${m.dynamicGeneration}:${m.dynamicConnection}`;
+    const queued = backlog.get(key) ?? { items: [], until: nowMs() + peerTimeoutMs };
+    if (queued.items.length >= 32 || !backlog.has(key) && backlog.size >= maxPendingPeers || backlogBytes + size > MAX_BACKLOG_BYTES) return;
+    queued.items.push({ envelope, size });
+    backlogBytes += size;
+    backlog.set(key, queued);
+  }
+  function receive(envelope) {
+    if (disposed || !envelope || !validId(envelope.from) || envelope.from === self || !["*", self].includes(envelope.to) || !envelope.message || typeof envelope.message !== "object") return;
+    const { from, message: m } = envelope;
+    if (signalTypes.has(m.type)) {
+      routeSignal(envelope);
+      return;
+    }
+    if (m.type !== "group" || m.mode !== "dynamic" || m.version !== 1 || m.protocol !== PROTOCOL_VERSION) return;
+    if (m.targetIncarnation && m.targetIncarnation !== incarnation) return;
+    if (m.op === "discover") {
+      if (m.resumeSession === sessionId && players.includes(from) && validId(m.incarnation)) {
+        send(from, "resume-hello", { targetIncarnation: m.incarnation, players, peerIncarnations: Object.fromEntries(incarnations) });
+      } else advertise(from);
+      return;
+    }
+    if (m.op === "resume-hello" && resumed && !settled && m.sessionId === sessionId && players.includes(from) && validId(m.incarnation)) {
+      let next;
+      try {
+        next = roster(m.players, maxPlayers);
+        integer(m.epoch, "epoch", epoch, 65534);
+      } catch {
+        return;
+      }
+      if (!next.includes(self) || !next.includes(from) || !next.includes(m.coordinatorId)) return;
+      players = next;
+      epoch = m.epoch;
+      coordinatorId = m.coordinatorId;
+      meshPlayers = new Set(next);
+      meshUntil = Infinity;
+      acceptIncarnations(m.peerIncarnations, next);
+      incarnations.set(from, m.incarnation);
+      saveResume();
+      const donor = coordinatorId === self ? from : coordinatorId;
+      if (incarnations.has(donor)) ensurePeer(donor).catch(() => {
+      });
+      return;
+    }
+    if (m.op === "hello" && expectedSessionId !== void 0 && m.sessionId !== expectedSessionId) return;
+    if (m.op === "hello" && !resumed && !settled && role === "join" && m.coordinatorId === from && validId(m.sessionId)) {
+      if (coordinatorId && (coordinatorId !== from || sessionId !== m.sessionId)) return;
+      let known;
+      try {
+        known = roster(m.players, maxPlayers);
+        integer(m.epoch, "epoch", 0, 65534);
+      } catch {
+        return;
+      }
+      if (!known.includes(from)) return;
+      if (m.maxPlayers !== maxPlayers) {
+        close("dynamic room maxPlayers mismatch");
+        return;
+      }
+      if (m.accepting === false && !known.includes(self)) {
+        close("dynamic room is full");
+        return;
+      }
+      coordinatorId = from;
+      sessionId = m.sessionId;
+      players = known;
+      epoch = m.epoch;
+      incarnations.set(from, m.incarnation);
+      meshPlayers = new Set(known);
+      meshUntil = Infinity;
+      saveResume();
+      send(from, "join");
+      ensurePeer(from).catch(() => {
+      });
+      return;
+    }
+    if (!sessionId || m.sessionId !== sessionId || m.coordinatorId !== coordinatorId) return;
+    if (m.op === "resume-request" && players.includes(from) && m.resumeSession === sessionId && validId(m.incarnation)) {
+      approveResume(from, m.incarnation);
+      return;
+    }
+    if (m.op === "resume-reject" && resumed && players.includes(from)) {
+      if (!settled) close("duplicate live resume identity");
+      else if (links.get(from)?.resuming) failLink(links.get(from), new Error("duplicate live resume identity"));
+      return;
+    }
+    if (m.op === "resume-accept" && resumed && players.includes(from) && validId(m.incarnation) && Number.isSafeInteger(m.generation) && m.generation > 0) {
+      if (resumeApproved.has(from)) return;
+      incarnations.set(from, m.incarnation);
+      resumeApproved.add(from);
+      if (leader(from)) {
+        try {
+          startGeneration(from, Math.max(m.generation, (generations.get(from) ?? 0) + 1));
+        } catch {
+        }
+      }
+      return;
+    }
+    if (m.op === "join" && coordinatorId === self) {
+      if (!validId(m.incarnation)) return;
+      if (incarnations.has(from) && incarnations.get(from) !== m.incarnation) {
+        send(from, "reject", { targetIncarnation: m.incarnation, reason: "duplicate live identity; use resume" });
+        return;
+      }
+      if (!players.includes(from) && !candidates.has(from)) {
+        let authorized = false;
+        try {
+          authorized = authorizeJoin(from, { sessionId, room }) === true;
+        } catch {
+        }
+        if (!authorized) {
+          send(from, "reject", { targetIncarnation: m.incarnation, reason: "dynamic room admission reservation required" });
+          return;
+        }
+        if (players.length + candidates.size >= maxPlayers || pendingCount() >= maxPendingPeers) {
+          send(from, "reject", { targetIncarnation: m.incarnation, reason: "dynamic room is full" });
+          return;
+        }
+        candidates.set(from, nowMs() + peerTimeoutMs);
+      }
+      incarnations.set(from, m.incarnation);
+      ensurePeer(from).catch(() => {
+      });
+      return;
+    }
+    if (m.op === "reject" && !settled && from === coordinatorId) {
+      close(typeof m.reason === "string" ? m.reason.slice(0, 256) : "dynamic room rejected");
+      return;
+    }
+    if (m.op === "mesh" && from === coordinatorId && m.incarnation === incarnations.get(from) && m.epoch === epoch) {
+      let next;
+      try {
+        next = roster(m.players, maxPlayers);
+      } catch {
+        return;
+      }
+      if (!next.includes(self) || !next.includes(coordinatorId)) return;
+      acceptIncarnations(m.peerIncarnations, next);
+      meshPlayers = new Set(next);
+      meshUntil = nowMs() + peerTimeoutMs;
+      for (const id of next) if (id !== self) ensurePeer(id).catch(() => {
+      });
+      return;
+    }
+    if (!accepted(from) || m.incarnation !== incarnations.get(from)) return;
+    if (m.op === "request" && leader(from) && Number.isSafeInteger(m.generation) && m.generation >= 0) {
+      const link = links.get(from), generation = generations.get(from) ?? 0;
+      if (m.generation > generation) return;
+      if (!link || m.reconnect === true && m.generation === generation && link.peer) {
+        try {
+          startGeneration(from, generation + 1);
+        } catch {
+        }
+      } else if (link.connectionId) announceLink(link);
+    } else if (m.op === "link" && !leader(from) && Number.isSafeInteger(m.generation) && m.generation > 0 && validId(m.connectionId)) {
+      const known = generations.get(from) ?? 0, current = links.get(from);
+      if (m.generation < known || m.generation === known && current?.connectionId !== m.connectionId) return;
+      if (current?.generation === m.generation && current.connectionId === m.connectionId) return;
+      try {
+        const link = newLink(from, m.generation, m.connectionId, current);
+        rememberGeneration(from, m.generation);
+        startPeer(link);
+      } catch {
+      }
+    }
+  }
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) {
+    abort();
+    return ready;
+  }
+  try {
+    unsubscribe = signaler.subscribe((envelope) => {
+      try {
+        receive(envelope);
+      } catch (error2) {
+        close(error2.message);
+      }
+    });
+  } catch (error2) {
+    close(error2.message);
+    return ready;
+  }
+  if (disposed) {
+    unsubscribe?.();
+    return ready;
+  }
+  const remaining = timeoutMs - (nowMs() - startedAt);
+  if (remaining <= 0) {
+    close("dynamic room timeout");
+    return ready;
+  }
+  if (establishing) deadline = setTimeout(() => close("dynamic room join timeout"), remaining);
+  interval = setInterval(() => {
+    const now = nowMs();
+    for (const [id, until] of candidates) if (until <= now && !players.includes(id)) {
+      candidates.delete(id);
+      incarnations.delete(id);
+      const link = links.get(id);
+      if (link) destroyLink(link, "dynamic admission timeout");
+    }
+    for (const [key, queued] of backlog) if (queued.until <= now) forgetBacklog(key);
+    if (coordinatorId === self && now >= nextAdvertisement) {
+      nextAdvertisement = now + advertiseIntervalMs;
+      advertise();
+    }
+    if (!settled && establishing) {
+      if (resumed) send("*", "discover", { resumeSession: sessionId });
+      else if (!coordinatorId) send("*", "discover");
+      else {
+        send(coordinatorId, "join");
+        ensurePeer(coordinatorId).catch(() => {
+        });
+      }
+    }
+    if (invitation && invitation.until > now) send("*", "mesh", { players: invitation.players, peerIncarnations: Object.fromEntries(incarnations) });
+    else invitation = null;
+    for (const link of links.values()) if (!link.peer && now >= link.nextRetry) {
+      link.nextRetry = now + retryMs;
+      if (link.waitingIncarnation) {
+        if (incarnations.has(link.id)) ensurePeer(link.id).catch(() => {
+        });
+        continue;
+      }
+      if (link.resuming && !resumeApproved.has(link.id)) {
+        send(link.id, "resume-request", { resumeSession: sessionId });
+        continue;
+      }
+      if (leader(link.id)) announceLink(link);
+      else if (!link.connectionId) send(link.id, "request", { generation: link.requestGeneration, reconnect: link.force });
+      for (const [type, message] of link.outbound) publish(link.id, message, `${link.id}:signal:${link.generation}:${type}`).catch(() => {
+      });
+    }
+  }, retryMs);
+  interval.unref?.();
+  status("room-ready", { localPlayerId: self });
+  if (!disposed) {
+    try {
+      saveResume();
+    } catch (error2) {
+      close(error2.message);
+      return ready;
+    }
+    if (!establishing) {
+      advertise();
+      finish();
+    } else send("*", "discover", resumed ? { resumeSession: sessionId } : {});
+  }
+  return ready;
+}
+
+// packages/transport/src/public-room.js
+var idValid = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
+var randomId2 = () => [...globalThis.crypto.getRandomValues(new Uint8Array(16))].map((n) => n.toString(16).padStart(2, "0")).join("");
+var randomRoom = () => String(globalThis.crypto.getRandomValues(new Uint32Array(1))[0] % 1e4).padStart(4, "0");
+var DIRECTORY_LIMIT = 64;
+var PUBLICATION_LIMIT = 16;
+var error = (code, message) => Object.assign(new Error(message), { code });
+async function createNostrPublicRoom({
+  namespace = "rollback-netcode",
+  simulationVersion,
+  maxPlayers = 5,
+  discoveryMs = 1500,
+  totalTimeoutMs = 6e4,
+  leaseMs = 15e3,
+  reservationMs = 3e4,
+  maxAttempts = 3,
+  relays,
+  rtcConfig,
+  resume,
+  signal,
+  onStatus = () => {
+  },
+  signalerFactory = createNostrSignaler,
+  dynamicRoomFactory = createNostrDynamicRoom,
+  ...dynamicOptions
+} = {}) {
+  if (typeof namespace !== "string" || !namespace.trim() || encoder.encode(namespace + ":public-v1").length > 128) throw new TypeError("public room namespace");
+  if (typeof simulationVersion !== "string" || !simulationVersion.length || encoder.encode(simulationVersion).length > 128) throw new TypeError("public simulationVersion");
+  integer(maxPlayers, "maxPlayers", 1, 5);
+  integer(discoveryMs, "discoveryMs", 10, 3e4);
+  integer(totalTimeoutMs, "totalTimeoutMs", 10, 12e4);
+  integer(leaseMs, "leaseMs", 100, 6e4);
+  integer(reservationMs, "reservationMs", 100, 12e4);
+  integer(maxAttempts, "maxAttempts", 1, 8);
+  if ([onStatus, signalerFactory, dynamicRoomFactory].some((fn) => typeof fn !== "function")) throw new TypeError("public room capability");
+  if (resume) {
+    if (!resume.storage || ["getItem", "setItem", "removeItem"].some((k) => typeof resume.storage[k] !== "function")) throw new TypeError("resume storage capability");
+    integer(resume.lifetimeMs ?? 8 * 60 * 60 * 1e3, "resume lifetimeMs", 1e3, 864e5);
+    if (resume.reset !== void 0 && typeof resume.reset !== "boolean") throw new TypeError("resume reset");
+    if (resume.key !== void 0 && (typeof resume.key !== "string" || !resume.key.length || resume.key.length > 500)) throw new TypeError("resume key");
+  }
+  if (signal?.aborted) throw error("PUBLIC_ABORTED", "public room aborted");
+  const started = nowMs(), startedWallAt = Date.now(), controller = new AbortController(), directory = /* @__PURE__ */ new Map(), reservations = /* @__PURE__ */ new Map(), publications = /* @__PURE__ */ new Map();
+  const ephemeralStore = /* @__PURE__ */ new Map();
+  const ephemeral = createRoomResumeIdentity({ storage: { getItem: (k) => ephemeralStore.get(k) ?? null, setItem: (k, v) => ephemeralStore.set(k, v), removeItem: (k) => ephemeralStore.delete(k) } }, { namespace, room: "0000" });
+  const shared = (identity) => ({ id: identity.id, sign: (...args) => identity.sign(...args), close() {
+  } });
+  let disposed = false, everAdmitted = false, resumeForgotten = false, room, directorySignaler, removeDirectory, removeRoom, interval, nextAdvertisement = 0;
+  let sequence = 0, reservationWaiter, selected, setupTimer, generation = 0, directoryId, pointer, pointerKey, storedUntil;
+  const timerWaiters = /* @__PURE__ */ new Map(), observers = /* @__PURE__ */ new Set();
+  const status = (type, detail = {}) => {
+    const event = { type, ...detail };
+    try {
+      onStatus(event);
+    } catch {
+    }
+    for (const fn of [...observers]) {
+      try {
+        fn(event);
+      } catch {
+      }
+    }
+  };
+  const remaining = () => Math.max(0, Math.floor(totalTimeoutMs - (nowMs() - started)));
+  const scopedResume = (code) => resume ? { ...resume, ...resume.key ? { key: `${resume.key}:${code}` } : {} } : void 0;
+  const roomStorageKey = (code) => scopedResume(code)?.key ?? `bloom-gamekit:dynamic-v1:${namespace}:${code}`;
+  if (resume) {
+    if (!resume.storage || ["getItem", "setItem", "removeItem"].some((k) => typeof resume.storage[k] !== "function")) throw new TypeError("resume storage capability");
+    pointerKey = `${resume.key ?? `bloom-gamekit:public-v1:${namespace}:${simulationVersion}`}:pointer`;
+    if (pointerKey.length > 512) throw new TypeError("public resume key");
+    const raw = resume.storage.getItem(pointerKey);
+    if (resume.reset) {
+      if (raw) {
+        try {
+          const old = JSON.parse(raw);
+          if (/^\d{4}$/.test(old?.room)) resume.storage.removeItem(roomStorageKey(old.room));
+        } catch {
+        }
+      }
+      resume.storage.removeItem(pointerKey);
+    } else if (raw != null) {
+      try {
+        if (typeof raw !== "string" || raw.length > 2048) throw Error();
+        pointer = JSON.parse(raw);
+        if (pointer.version !== 1 || pointer.namespace !== namespace || pointer.simulationVersion !== simulationVersion || !/^\d{4}$/.test(pointer.room) || !idValid(pointer.sessionId) || !Number.isSafeInteger(pointer.expiresAt) || pointer.expiresAt <= Date.now() || pointer.expiresAt > Date.now() + 864e5) throw Error();
+        storedUntil = pointer.expiresAt;
+      } catch {
+        ephemeral.identity.close();
+        throw error("PUBLIC_RESUME_INVALID", "invalid or expired public resume pointer; explicitly reset for a fresh room");
+      }
+    }
+  }
+  const fail = (message) => error("PUBLIC_TIMEOUT", message ?? "public room total timeout");
+  function wait(ms) {
+    if (disposed) return Promise.reject(error("PUBLIC_CLOSED", "public room closed"));
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        timerWaiters.delete(timer);
+        resolve();
+      }, Math.max(1, ms));
+      timerWaiters.set(timer, reject);
+    });
+  }
+  function bounded(promise, ms, reason) {
+    let timer;
+    const deadline = new Promise((resolve, reject) => {
+      timer = setTimeout(() => reject(reason), Math.max(1, ms));
+      timerWaiters.set(timer, reject);
+    });
+    return Promise.race([promise, deadline]).finally(() => {
+      clearTimeout(timer);
+      timerWaiters.delete(timer);
+    });
+  }
+  function close(reason = "public room closed") {
+    if (disposed) return;
+    disposed = true;
+    clearTimeout(setupTimer);
+    clearInterval(interval);
+    removeRoom?.();
+    removeDirectory?.();
+    controller.abort();
+    signal?.removeEventListener("abort", abort);
+    const pending = reservationWaiter;
+    reservationWaiter = null;
+    pending?.reject(error("PUBLIC_CLOSED", reason));
+    for (const [timer, reject] of timerWaiters) {
+      clearTimeout(timer);
+      reject(error("PUBLIC_CLOSED", reason));
+    }
+    timerWaiters.clear();
+    directorySignaler?.close();
+    room?.close();
+    ephemeral.identity.close();
+    ephemeralStore.clear();
+    directory.clear();
+    reservations.clear();
+    publications.clear();
+    status("public-room-closed", { reason });
+    observers.clear();
+  }
+  function abort() {
+    close("public room aborted");
+  }
+  signal?.addEventListener("abort", abort, { once: true });
+  setupTimer = setTimeout(() => close("public room total timeout"), totalTimeoutMs);
+  function publish(to, op, extra = {}, key = `${to}:${op}`) {
+    if (disposed || !directorySignaler) return Promise.reject(error("PUBLIC_CLOSED", "public directory closed"));
+    if (publications.has(key)) return publications.get(key);
+    if (publications.size >= PUBLICATION_LIMIT) return Promise.reject(error("PUBLIC_CAPACITY", "public directory publication capacity"));
+    const channel = directorySignaler, promise = Promise.resolve().then(() => channel.send(
+      to,
+      { type: "group", mode: "public-directory", version: 1, protocol: PROTOCOL_VERSION, simulationVersion, maxPlayers, op, ...extra }
+    )).finally(() => {
+      if (publications.get(key) === promise) publications.delete(key);
+    });
+    publications.set(key, promise);
+    return promise;
+  }
+  function prune() {
+    const now = Date.now();
+    for (const [id, lease] of directory) if ((lease.refreshUntil ?? lease.expiresAt) <= now) directory.delete(id);
+    for (const [id, seat] of reservations) if (!room || room.players.includes(id) || seat.expiresAt <= now || room.coordinatorId !== room.localPlayerId) {
+      reservations.delete(id);
+      if (room && !room.players.includes(id)) room.disconnect(id);
+    }
+  }
+  function advertise(to = "*") {
+    if (!room || room.closed || room.joining || room.coordinatorId !== room.localPlayerId) return Promise.resolve();
+    prune();
+    const issuedAt = Date.now();
+    return publish(to, "lease", {
+      room: room.room,
+      sessionId: room.sessionId,
+      coordinatorId: room.coordinatorId,
+      players: [...room.players],
+      epoch: room.epoch,
+      sequence: ++sequence,
+      issuedAt,
+      expiresAt: issuedAt + leaseMs,
+      committed: room.players.length,
+      pending: reservations.size
+    });
+  }
+  const background = (promise) => promise.catch((cause) => {
+    if (!disposed) status("public-directory-error", { reason: cause.message });
+  });
+  function receive({ from, to, message: m } = {}) {
+    if (disposed || !idValid(from) || from === directoryId || !["*", directoryId].includes(to) || !m || m.type !== "group" || m.mode !== "public-directory" || m.version !== 1 || m.protocol !== PROTOCOL_VERSION || m.simulationVersion !== simulationVersion || m.maxPlayers !== maxPlayers) return;
+    const now = Date.now();
+    if (m.op === "lease") {
+      if (!/^\d{4}$/.test(m.room) || !idValid(m.sessionId) || m.coordinatorId !== from || !Number.isSafeInteger(m.epoch) || m.epoch < 0 || m.epoch > 65534 || !Number.isSafeInteger(m.sequence) || m.sequence < 1 || !Number.isSafeInteger(m.issuedAt) || m.issuedAt > now + 1e3 || !Number.isSafeInteger(m.expiresAt) || m.expiresAt <= now || m.expiresAt <= m.issuedAt || m.expiresAt - m.issuedAt > 6e4 || !Array.isArray(m.players) || m.players.length < 1 || m.players.length > maxPlayers || m.players.some((id) => !idValid(id)) || new Set(m.players).size !== m.players.length || !m.players.includes(from) || m.committed !== m.players.length || !Number.isSafeInteger(m.pending) || m.pending < 0 || m.pending + m.committed > maxPlayers) return;
+      prune();
+      const prior = directory.get(m.sessionId);
+      if (prior && (m.room !== prior.room || m.epoch < prior.epoch || m.epoch === prior.epoch && (prior.refreshAfter || m.coordinatorId !== prior.coordinatorId || m.sequence <= prior.sequence))) return;
+      if (prior && m.epoch > prior.epoch && !prior.players.includes(from)) {
+        prior.refreshAfter ??= prior.expiresAt;
+        prior.refreshUntil ??= prior.refreshAfter + 6e4;
+        if (now < prior.refreshAfter || m.issuedAt < prior.refreshAfter) return;
+      }
+      if (!directory.has(m.sessionId) && directory.size >= DIRECTORY_LIMIT) return;
+      directory.set(m.sessionId, {
+        room: m.room,
+        sessionId: m.sessionId,
+        coordinatorId: from,
+        players: [...m.players],
+        epoch: m.epoch,
+        sequence: m.sequence,
+        issuedAt: m.issuedAt,
+        expiresAt: m.expiresAt,
+        committed: m.committed,
+        pending: m.pending
+      });
+      return;
+    }
+    if (m.op === "discover") {
+      background(advertise());
+      return;
+    }
+    if (m.op === "grant" || m.op === "deny") {
+      const pending = reservationWaiter;
+      if (!pending || to !== directoryId || from !== pending.lease.coordinatorId || m.sessionId !== pending.lease.sessionId || m.requestId !== pending.requestId || m.epoch !== pending.lease.epoch) return;
+      if (m.op === "deny") {
+        reservationWaiter = null;
+        pending.reject(m.reason === "stale-epoch" ? error("PUBLIC_STALE_LEASE", "public room lease advanced; retry discovery") : error("PUBLIC_RESERVED", "public room has no available reservation"));
+      } else if (Number.isSafeInteger(m.expiresAt) && m.expiresAt > now && m.expiresAt <= now + 12e4) {
+        reservationWaiter = null;
+        pending.resolve({ expiresAt: m.expiresAt });
+      }
+      return;
+    }
+    if (!room || room.closed || room.coordinatorId !== room.localPlayerId || m.sessionId !== room.sessionId || to !== directoryId || !idValid(m.requestId)) return;
+    prune();
+    if (m.op === "release") {
+      const seat2 = reservations.get(from);
+      if (seat2?.requestId === m.requestId) {
+        reservations.delete(from);
+        if (!room.players.includes(from)) room.disconnect(from);
+        background(advertise());
+      }
+      return;
+    }
+    if (m.op !== "reserve" || !Number.isSafeInteger(m.expiresAt) || m.expiresAt <= now || m.expiresAt > now + 12e4) return;
+    if (m.epoch !== room.epoch) {
+      if (Number.isSafeInteger(m.epoch) && m.epoch >= 0 && m.epoch < room.epoch) {
+        background(advertise(from));
+        background(publish(from, "deny", { sessionId: room.sessionId, epoch: m.epoch, requestId: m.requestId, reason: "stale-epoch" }));
+      }
+      return;
+    }
+    let seat = reservations.get(from);
+    if (room.players.includes(from)) {
+      background(publish(from, "grant", { sessionId: room.sessionId, epoch: room.epoch, requestId: m.requestId, expiresAt: now + reservationMs }));
+      return;
+    }
+    if (!seat && room.players.length + reservations.size < maxPlayers) {
+      seat = { requestId: m.requestId, expiresAt: Math.min(now + reservationMs, m.expiresAt), epoch: room.epoch };
+      reservations.set(from, seat);
+    }
+    if (seat) {
+      seat.requestId = m.requestId;
+      background(publish(from, "grant", { sessionId: room.sessionId, epoch: room.epoch, requestId: m.requestId, expiresAt: seat.expiresAt }));
+    } else background(publish(from, "deny", { sessionId: room.sessionId, epoch: room.epoch, requestId: m.requestId }));
+    background(advertise());
+  }
+  async function openDirectory(identity) {
+    if (directorySignaler && directoryId === identity.id) return;
+    removeDirectory?.();
+    directorySignaler?.close();
+    publications.clear();
+    const current = ++generation;
+    const setup = Promise.resolve().then(() => signalerFactory({
+      room: "0000",
+      namespace: namespace + ":public-v1",
+      relays,
+      timeoutMs: Math.max(1, Math.min(1e4, remaining())),
+      signal: controller.signal,
+      onStatus,
+      maxVerificationsPerSecond: 32,
+      verificationBurst: 20,
+      identity: shared(identity)
+    })).then((value) => {
+      if (disposed || current !== generation) {
+        value?.close?.();
+        throw error("PUBLIC_CLOSED", "public directory closed");
+      }
+      return value;
+    });
+    try {
+      directorySignaler = await bounded(setup, remaining(), fail());
+    } catch (cause) {
+      throw error("PUBLIC_RELAY_UNAVAILABLE", "public directory relay unavailable: " + cause.message);
+    }
+    if (directorySignaler?.id !== identity.id || ["send", "subscribe", "close"].some((k) => typeof directorySignaler?.[k] !== "function")) throw new TypeError("public signaler capability");
+    directoryId = identity.id;
+    removeDirectory = directorySignaler.subscribe((envelope) => {
+      try {
+        receive(envelope);
+      } catch (cause) {
+        status("public-directory-error", { reason: cause.message });
+      }
+    });
+  }
+  async function discover() {
+    status("public-discovering");
+    try {
+      await bounded(publish("*", "discover"), remaining(), fail());
+    } catch (cause) {
+      throw error("PUBLIC_RELAY_UNAVAILABLE", "public directory relay unavailable: " + cause.message);
+    }
+    await wait(Math.min(discoveryMs, remaining()));
+    try {
+      await bounded(publish("*", "discover"), remaining(), fail());
+    } catch (cause) {
+      throw error("PUBLIC_RELAY_UNAVAILABLE", "public directory relay unavailable: " + cause.message);
+    }
+    prune();
+    const available = [...directory.values()].filter((lease) => !lease.refreshAfter && lease.committed + lease.pending < maxPlayers).sort((a, b) => b.committed - a.committed || a.sessionId.localeCompare(b.sessionId));
+    if (!available.length && [...directory.values()].some((lease) => lease.refreshAfter)) {
+      throw error("PUBLIC_HANDOVER_PENDING", "public room coordinator changed; waiting for a fresh lease after prior expiry");
+    }
+    return available;
+  }
+  async function reserve(lease) {
+    const requestId = randomId2(), expiresAt = Date.now() + Math.min(remaining(), reservationMs);
+    let resolve, reject;
+    const response = new Promise((yes, no) => {
+      resolve = yes;
+      reject = no;
+    });
+    reservationWaiter = { lease, requestId, resolve, reject };
+    response.catch(() => {
+    });
+    selected = { ...lease, requestId };
+    const attemptMs = Math.min(remaining(), Math.max(250, discoveryMs * 2));
+    try {
+      await bounded(publish(lease.coordinatorId, "reserve", { sessionId: lease.sessionId, epoch: lease.epoch, requestId, expiresAt }), attemptMs, error("PUBLIC_RESERVATION_TIMEOUT", "public reservation timeout"));
+      await bounded(response, attemptMs, error("PUBLIC_RESERVATION_TIMEOUT", "public reservation timeout"));
+    } finally {
+      if (reservationWaiter?.requestId === requestId) reservationWaiter = null;
+    }
+  }
+  async function release() {
+    if (!selected?.requestId || disposed) return;
+    const prior = selected;
+    selected = null;
+    try {
+      await bounded(publish(prior.coordinatorId, "release", { sessionId: prior.sessionId, epoch: prior.epoch, requestId: prior.requestId }), Math.min(remaining(), 1e3), fail());
+    } catch {
+    }
+  }
+  function savePointer(committed = false) {
+    if (!resume || !room || resumeForgotten) return;
+    if (room.players.includes(room.localPlayerId)) everAdmitted = true;
+    if (committed && everAdmitted && !room.players.includes(room.localPlayerId)) {
+      resumeForgotten = true;
+      resume.storage.removeItem(pointerKey);
+      return;
+    }
+    if (room.joining) return;
+    storedUntil ??= startedWallAt + (resume.lifetimeMs ?? 8 * 60 * 60 * 1e3);
+    resume.storage.setItem(pointerKey, JSON.stringify({ version: 1, namespace, simulationVersion, room: room.room, sessionId: room.sessionId, expiresAt: storedUntil }));
+  }
+  async function connect(lease, restoring = false) {
+    const code = lease?.room ?? randomRoom();
+    let cancelled = false;
+    const attemptController = new AbortController(), abortAttempt = () => attemptController.abort();
+    controller.signal.addEventListener("abort", abortAttempt, { once: true });
+    if (controller.signal.aborted) abortAttempt();
+    const attemptTimeout = Math.max(1, Math.min(remaining(), restoring ? totalTimeoutMs : Math.max(discoveryMs * 2, dynamicOptions.peerTimeoutMs ?? 2e4)));
+    const pending = Promise.resolve().then(() => dynamicRoomFactory({
+      ...dynamicOptions,
+      role: lease ? "join" : "host",
+      room: code,
+      namespace,
+      maxPlayers,
+      timeoutMs: attemptTimeout,
+      relays,
+      rtcConfig,
+      resume: scopedResume(code),
+      signal: attemptController.signal,
+      onStatus,
+      expectedSessionId: lease?.sessionId,
+      authorizeJoin: (id) => {
+        prune();
+        return !!room && room.coordinatorId === room.localPlayerId && reservations.has(id);
+      },
+      signalerFactory: async (options) => {
+        const identity = options.identity ?? ephemeral.identity;
+        await openDirectory(identity);
+        if (attemptController.signal.aborted) throw error("PUBLIC_CLOSED", "public attempt aborted");
+        if (lease && !restoring) await reserve(lease);
+        const value = await signalerFactory({ ...options, identity: shared(identity) });
+        if (disposed) value?.close?.();
+        return value;
+      }
+    })).then((result2) => {
+      if (disposed || cancelled) result2?.close?.();
+      return result2;
+    });
+    let result;
+    try {
+      result = await bounded(pending, attemptTimeout, fail("public room connection attempt timeout"));
+    } catch (cause) {
+      cancelled = true;
+      attemptController.abort();
+      controller.signal.removeEventListener("abort", abortAttempt);
+      throw cause;
+    }
+    if (disposed) {
+      result?.close?.();
+      throw fail();
+    }
+    room = result;
+    if (lease && room.sessionId !== lease.sessionId || room.localPlayerId !== directoryId) {
+      room.close();
+      room = null;
+      throw error("PUBLIC_SCOPE", "public room identity/session mismatch");
+    }
+    return room;
+  }
+  try {
+    await openDirectory(ephemeral.identity);
+    if (pointer) {
+      status("public-resuming", { room: pointer.room });
+      await connect(pointer, true);
+    } else {
+      let lastError;
+      const tried = /* @__PURE__ */ new Set();
+      for (let attempt = 0; attempt < maxAttempts && !room; attempt++) {
+        const available = await discover(), lease = available.find((value) => !tried.has(`${value.sessionId}:${value.epoch}`));
+        if (!lease && available.length) {
+          lastError ??= error("PUBLIC_NO_ROOM", "available public rooms did not accept this connection");
+          break;
+        }
+        if (!lease) {
+          status("public-hosting");
+          await connect(null);
+          break;
+        }
+        tried.add(`${lease.sessionId}:${lease.epoch}`);
+        status("public-joining", { room: lease.room, sessionId: lease.sessionId });
+        try {
+          await connect(lease);
+        } catch (cause) {
+          lastError = cause;
+          await release();
+          await openDirectory(ephemeral.identity);
+          status("public-attempt-failed", { reason: cause.message });
+        }
+      }
+      if (!room) throw lastError ?? fail();
+    }
+    savePointer();
+    removeRoom = room.subscribe((event) => {
+      if (event.type === "peer-failed" || event.type === "peer-disconnected") {
+        if (reservations.delete(event.peerId)) background(advertise());
+      }
+      if (event.type === "room-closed") close(event.reason);
+    });
+    await bounded(advertise(), remaining(), fail());
+    clearTimeout(setupTimer);
+    interval = setInterval(() => {
+      if (disposed) return;
+      prune();
+      if (Date.now() >= nextAdvertisement) {
+        nextAdvertisement = Date.now() + Math.max(30, Math.floor(leaseMs / 3));
+        background(advertise());
+      }
+    }, Math.max(10, Math.min(1e3, Math.floor(leaseMs / 3))));
+    interval.unref?.();
+    const capability = {};
+    for (const key of Object.keys(room)) Object.defineProperty(capability, key, { enumerable: true, configurable: true, get: () => room[key] });
+    Object.defineProperties(capability, {
+      close: { enumerable: true, configurable: true, value: close },
+      setRoster: { enumerable: true, configurable: true, value(value) {
+        room.setRoster(value);
+        prune();
+        savePointer(true);
+        background(advertise());
+      } },
+      forgetResume: { enumerable: true, configurable: true, value() {
+        resumeForgotten = true;
+        room.forgetResume?.();
+        resume?.storage.removeItem(pointerKey);
+      } },
+      publicMetrics: { enumerable: true, get: () => ({ directoryEntries: directory.size, pendingReservations: reservations.size, pendingPublications: publications.size }) },
+      subscribe: { enumerable: true, configurable: true, value(fn) {
+        if (typeof fn !== "function" || disposed) throw new TypeError("public room subscriber");
+        const remove = room.subscribe(fn);
+        observers.add(fn);
+        return () => {
+          remove();
+          observers.delete(fn);
+        };
+      } }
+    });
+    status("public-room-ready", { room: room.room, sessionId: room.sessionId });
+    return capability;
+  } catch (cause) {
+    close(cause.message);
+    throw cause;
+  }
+}
 export {
   WebRTCTransport,
+  createNostrDynamicRoom,
   createNostrGroupRoom,
+  createNostrPublicRoom,
   createNostrRoom,
   createNostrSignaler,
   createWebRTCPeer,
