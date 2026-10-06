@@ -20,11 +20,13 @@ function compile(gl, type, source) {
  */
 export class WebGLDevice {
   constructor(canvas, { alpha = false, antialias = true, depth = true, stencil = true, preserveDrawingBuffer = false,
-    powerPreference = 'default', failIfMajorPerformanceCaveat = false,
+    powerPreference = 'default', failIfMajorPerformanceCaveat = false, checkGLErrors = false,
     maxTextures = 8, maxBufferBytes = 128 * 1024 * 1024 } = {}) {
     if (!canvas?.getContext || !canvas?.addEventListener) throw new TypeError('canvas required');
     if (!['default', 'low-power', 'high-performance'].includes(powerPreference)) throw new TypeError('Invalid WebGL powerPreference');
     if (typeof failIfMajorPerformanceCaveat !== 'boolean') throw new TypeError('failIfMajorPerformanceCaveat must be boolean');
+    if (typeof checkGLErrors !== 'boolean') throw new TypeError('checkGLErrors must be boolean');
+    this.checkGLErrors = checkGLErrors;
     integer(maxTextures, 'maxTextures', 1, 32); integer(maxBufferBytes, 'maxBufferBytes', 4);
     this.canvas = canvas; this.maxBufferBytes = maxBufferBytes;
     this.gl = canvas.getContext('webgl', { alpha, antialias, depth, stencil, premultipliedAlpha: true, preserveDrawingBuffer, powerPreference, failIfMajorPerformanceCaveat });
@@ -142,7 +144,7 @@ export class WebGLDevice {
     }
     gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,r.gpu);this.boundTextureCount=Math.max(1,this.boundTextureCount);gl.pixelStorei(gl.UNPACK_ALIGNMENT,1);
     if(pixels instanceof Uint8Array)gl.texSubImage2D(gl.TEXTURE_2D,0,x,y,width,height,format,gl.UNSIGNED_BYTE,pixels);else gl.texSubImage2D(gl.TEXTURE_2D,0,x,y,format,gl.UNSIGNED_BYTE,pixels);
-    const error=gl.getError();if(error!==gl.NO_ERROR)throw new Error(`Texture update error ${error}`);r.source=next.source;this.stats.textureUploads++;this.stats.textureBytes+=width*height*(r.format==='rgba'?4:1);
+    if(this.checkGLErrors){const error=gl.getError();if(error!==gl.NO_ERROR)throw new Error(`Texture update error ${error}`);}r.source=next.source;this.stats.textureUploads++;this.stats.textureBytes+=width*height*(r.format==='rgba'?4:1);
   }
   /** Copies the resolved framebuffer on-GPU. Recopy after restore; pixels are not CPU-retained. */
   copyFrameToTexture(handle,{x=0,y=0}={}){
@@ -150,11 +152,12 @@ export class WebGLDevice {
     const gl=this.gl;gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,r.gpu);this.boundTextureCount=Math.max(1,this.boundTextureCount);
     // WebGL 1 cannot copy RGB default-framebuffer pixels into RGBA storage.
     // Preserve RGB-only contexts (both games) without requesting an alpha buffer.
+    let allocated=false;
     if(!gl.getContextAttributes().alpha&&r.copyFormat!=='rgb'){
-      gl.texImage2D(gl.TEXTURE_2D,0,gl.RGB,r.width,r.height,0,gl.RGB,gl.UNSIGNED_BYTE,null);r.copyFormat='rgb';
+      gl.texImage2D(gl.TEXTURE_2D,0,gl.RGB,r.width,r.height,0,gl.RGB,gl.UNSIGNED_BYTE,null);r.copyFormat='rgb';allocated=true;
       this.stats.textureUploads++;this.stats.textureBytes+=r.width*r.height*3;
     }
-    gl.copyTexSubImage2D(gl.TEXTURE_2D,0,0,0,x,y,r.width,r.height);const error=gl.getError();if(error!==gl.NO_ERROR)throw new Error(`Framebuffer copy error ${error}`);r.source=null;this.stats.frameCopies++;
+    gl.copyTexSubImage2D(gl.TEXTURE_2D,0,0,0,x,y,r.width,r.height);if(allocated||this.checkGLErrors){const error=gl.getError();if(error!==gl.NO_ERROR)throw new Error(`Framebuffer copy error ${error}`);}r.source=null;this.stats.frameCopies++;
   }
   deleteTexture(handle){const r=this.textures.get(handle);if(!r)return false;this.gl.deleteTexture(r.gpu);this.textures.delete(handle);this.stats.textureCount=this.textures.size;return true;}
   beginFrame({width=this.canvas.width,height=this.canvas.height,clearColor=[0,0,0,0],clearDepth=1,clearStencil=0}={}){

@@ -26,5 +26,6 @@ test('invalid GPU preferences are rejected before context creation or listeners'
   const canvas = { addEventListener() { touched = true; }, getContext() { touched = true; } };
   for (const powerPreference of ['', 'fast', null, 1, {}, true]) assert.throws(() => new WebGLDevice(canvas, { powerPreference }), TypeError);
   for (const failIfMajorPerformanceCaveat of [null, 0, 1, 'false', {}]) assert.throws(() => new WebGLDevice(canvas, { failIfMajorPerformanceCaveat }), TypeError);
+  for (const checkGLErrors of [null, 0, 'false', {}]) assert.throws(() => new WebGLDevice(canvas, { checkGLErrors }), TypeError);
   assert.equal(touched, false);
 });
