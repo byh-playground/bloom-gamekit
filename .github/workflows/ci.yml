@@ -26,6 +26,14 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
+      - name: Require source-only checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "$(git ls-files -- dist/ interpolation.js)" ]; then
+            echo 'Generated bundles belong only on the dist branch.' >&2
+            exit 1
+          fi
       - name: Install locked tooling without lifecycle scripts
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Build and test the public bundle

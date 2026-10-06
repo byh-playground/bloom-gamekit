@@ -25,7 +25,7 @@ if (view.sampleInto('player', 0, now, pose)) {
 
 ## 공개 계약
 
-- `new InterpolationTimeline({schema, stepMs})`: stepMs는 양의 유한 ms이며 생성 후 고정됩니다. TPS 변경은 새 timeline과 초기 snapshot으로 명시적으로 전환합니다. schema는 평평한 필드 선언입니다. `number`는 선형 보간, `angle`은 radians 최단 회전(정확히 반 바퀴면 음의 방향), `discrete`는 수신 즉시 전환입니다. 각도 출력은 `[0, 2π)` 범위이므로 경계의 숫자 표기는 감깁니다.
+- `new InterpolationTimeline({schema, stepMs})`: stepMs는 양의 유한 ms이며 생성 후 고정됩니다. TPS 변경은 새 timeline과 초기 snapshot으로 명시적으로 전환합니다. schema는 평평한 필드 선언입니다. `number`는 선형 보간, `angle`은 radians 최단 회전(반 바퀴의 부동소수점 동률은 음의 방향, 허용 오차 `Number.EPSILON * 2π`), `discrete`는 수신 즉시 전환입니다. 각도 출력은 `[0, 2π)` 범위이므로 경계의 숫자 표기는 감깁니다.
 - `accept(packet, nowMs) → boolean`: packet은 `{revision, sequence, timeMs, entities, mode?}`입니다. revision·sequence·generation은 음이 아닌 safe integer, id는 비어 있지 않은 문자열입니다. timeMs는 유한 시뮬레이션 시각이며 음수도 허용됩니다. 서로 다른 revision 사이에서는 되감을 수 있습니다.
 - `entities`는 **전체 현재 생존 목록**입니다. 누락한 id는 즉시 despawn됩니다. 모든 선언 필드는 각 `values`에 반드시 있어야 합니다. sparse patch·deep path·object-valued discrete는 지원하지 않습니다. 게임의 기존 mirror에 delta를 반영한 후 이 계약으로 어댑트하세요. 추가 게임 필드는 무시하며 전체 엔티티를 clone하지 않습니다. discrete는 string/boolean/null/유한 number만 허용합니다.
 - `sampleInto(id, generation, nowMs, out) → boolean`: caller가 소유한 쓰기 가능한 일반 객체에 선언 필드만 기록합니다. 유효 identity가 없으면 false이며 out은 그대로입니다. 이전 out을 그리지 않도록 반드시 반환값을 확인하세요. frozen 객체·setter·Proxy·packet accessor 등의 사용자 코드 부작용은 지원 계약 밖입니다.

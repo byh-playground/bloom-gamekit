@@ -1,5 +1,9 @@
 const TAU = Math.PI * 2;
-function wrap(angle) { const value = angle % TAU; return value < 0 ? value + TAU : value === 0 ? 0 : value; }
+function wrap(angle) {
+  const value = angle % TAU;
+  const positive = value < 0 ? value + TAU : value;
+  return positive >= TAU || positive === 0 ? 0 : positive;
+}
 export function evaluate(kind, from, to, alpha) {
   if (kind === 'discrete') return to;
   if (alpha === 1) return kind === 'angle' ? wrap(to) : to;
@@ -7,7 +11,8 @@ export function evaluate(kind, from, to, alpha) {
   if (kind === 'angle') {
     const start = wrap(from);
     let delta = wrap(to) - start;
-    if (delta >= Math.PI) delta -= TAU;
+    if (Math.abs(Math.abs(delta) - Math.PI) <= Number.EPSILON * TAU) delta = -Math.PI;
+    else if (delta > Math.PI) delta -= TAU;
     else if (delta < -Math.PI) delta += TAU;
     return wrap(start + delta * alpha);
   }

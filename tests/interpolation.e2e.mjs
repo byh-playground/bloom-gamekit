@@ -40,9 +40,13 @@ const source = packet(0, 0); const before = JSON.stringify(source);
 app.receive(source, 0); assert.equal(app.frame(0), out);
 app.receive(packet(1, 14), 100); close(app.frame(150).x, 7);
 // Freeze only a game-owned body animation value; never replace root pose with raw authority.
-const bodyAnimationTime = 25;
+let bodyAnimationTime = 25;
 const pose = app.frame(180); const camera = pose.x, shadow = pose.x, bodyRoot = pose.x;
 assert.equal(camera, shadow); assert.equal(shadow, bodyRoot); assert.equal(bodyAnimationTime, 25);
+const heldRoot = app.frame(190).x; assert.ok(heldRoot > bodyRoot); assert.equal(bodyAnimationTime, 25);
+// Resume animation without resetting the moving root or switching it to authority.
+bodyAnimationTime += 5; const resumedRoot = app.frame(195).x;
+close(resumedRoot - heldRoot, 0.7); assert.equal(bodyAnimationTime, 30);
 // Irregular 130/70 ms arrivals: a 30ms hold is an honest underflow, no extrapolation.
 close(app.frame(200).x, 14); close(app.frame(225).x, 14);
 app.receive(packet(2, 28), 230); close(app.frame(230).x, 14);
@@ -76,6 +80,14 @@ app.receive(packet(0, 20, { revision: 3, mode: 'reset' }), 1100); close(app.fram
 app.receive(packet(1, 0, { revision: 3, entities: [] }), 1200); assert.equal(app.frame(1200), null);
 app.receive(packet(2, 0, { revision: 3, entities: [entity(500, 1)] }), 1300);
 assert.equal(app.frame(1300), null); assert.ok(app.timeline.sampleInto('actor', 1, 1300, out)); close(out.x, 500);
+const untouched = { x: 123 };
+assert.equal(app.timeline.sampleInto('actor', 0, 1300, untouched), false); close(untouched.x, 123);
+assert.equal(app.timeline.sampleInto('missing', 1, 1300, untouched), false); close(untouched.x, 123);
+app.receive(packet(3, 0, { revision: 3, entities: [entity(600, 2)] }), 1400);
+assert.ok(app.timeline.sampleInto('actor', 2, 1400, out)); close(out.x, 600);
+assert.equal(app.receive(packet(4, 0, { revision: 3, timeMs: 299, entities: [entity(800, 2)] }), 1500), false);
+assert.ok(app.timeline.sampleInto('actor', 2, 1410, out)); close(out.x, 600);
+assert.ok(app.receive(packet(4, 0, { revision: 3, timeMs: 300, entities: [entity(700, 2)] }), 1500));
 summary.stages.push('atomic finite validation, source immutability, rollback revision, teleport, load/reset, despawn/generation reuse');
 
 const timeline = new InterpolationTimeline({ stepMs: 100, schema: { angle: 'angle', health: 'number', progress: 'number', state: 'discrete' } });
@@ -89,6 +101,12 @@ const tieStart = scalarPacket(3, 1.72, 100, 0, 'idle'); tieStart.entities[0].tel
 timeline.accept(tieStart, 300);
 timeline.accept(scalarPacket(4, 1.72 + Math.PI, 100, 0, 'idle'), 300);
 timeline.sampleInto('a', 0, 350, out); close(out.angle, 1.72 - Math.PI / 2);
+const negativeTie = scalarPacket(5, -3.999, 100, 0, 'idle'); negativeTie.entities[0].teleport = true;
+timeline.accept(negativeTie, 360); timeline.accept(scalarPacket(6, -3.999 + Math.PI, 100, 0, 'idle'), 360);
+timeline.sampleInto('a', 0, 410, out); close(out.angle, -3.999 - Math.PI / 2 + Math.PI * 2);
+const tiny = scalarPacket(7, -1e-16, 100, 0, 'idle'); tiny.entities[0].teleport = true;
+timeline.accept(tiny, 420); timeline.sampleInto('a', 0, 420, out);
+assert.ok(out.angle >= 0 && out.angle < Math.PI * 2);
 const extremes = new InterpolationTimeline({ stepMs: 1, schema: { x: 'number' } });
 const extremep = (sequence, x) => ({ revision: 0, sequence, timeMs: sequence, entities: [{ id: 'a', generation: 0, values: { x } }] });
 extremes.accept(extremep(0, -Number.MAX_VALUE), 0); extremes.accept(extremep(1, Number.MAX_VALUE), 0); extremes.sampleInto('a', 0, 0.5, out); close(out.x, 0);
