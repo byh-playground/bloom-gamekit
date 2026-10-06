@@ -1,0 +1,85 @@
+{
+  "source": "https://github.com/byh-playground/budmori-io/commit/88c93e713d6bc2b4f081c24a99e536d497a5799b",
+  "sha256": "c31b02b717ea74f23378ed598a54cfd8102af1074ab1a3e49461d90893366751",
+  "scope": "Unmodified Worker + SDK, seed 12345, 10 TPS, keyboard right; authoritative movement samples only. No game code or art copied. Native V8 fixture, not device FPS.",
+  "samples": [
+    {
+      "tick": 0,
+      "x": 1800,
+      "time": 0,
+      "reset": true
+    },
+    {
+      "tick": 1,
+      "x": 1814,
+      "time": 0.1,
+      "reset": false
+    },
+    {
+      "tick": 2,
+      "x": 1828,
+      "time": 0.2,
+      "reset": false
+    },
+    {
+      "tick": 3,
+      "x": 1842,
+      "time": 0.30000000000000004,
+      "reset": false
+    },
+    {
+      "tick": 4,
+      "x": 1856,
+      "time": 0.4,
+      "reset": false
+    },
+    {
+      "tick": 5,
+      "x": 1870,
+      "time": 0.5,
+      "reset": false
+    },
+    {
+      "tick": 6,
+      "x": 1884,
+      "time": 0.6,
+      "reset": false
+    },
+    {
+      "tick": 7,
+      "x": 1898,
+      "time": 0.7,
+      "reset": false
+    },
+    {
+      "tick": 8,
+      "x": 1912,
+      "time": 0.7999999999999999,
+      "reset": false
+    },
+    {
+      "tick": 9,
+      "x": 1926,
+      "time": 0.8999999999999999,
+      "reset": false
+    },
+    {
+      "tick": 10,
+      "x": 1940,
+      "time": 0.9999999999999999,
+      "reset": false
+    },
+    {
+      "tick": 11,
+      "x": 1954,
+      "time": 1.0999999999999999,
+      "reset": false
+    },
+    {
+      "tick": 12,
+      "x": 1968,
+      "time": 1.2,
+      "reset": false
+    }
+  ]
+}

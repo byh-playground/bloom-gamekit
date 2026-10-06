@@ -1,0 +1,17 @@
+{
+  "name": "bloom-gamekit-tooling",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "npm run build && node tests/interpolation.e2e.mjs && node --test scripts/publish-dist.test.mjs",
+    "test:browser": "node tests/browser.e2e.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "playwright": "1.63.0"
+  }
+}
