@@ -3,7 +3,7 @@ import { lstat, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 // 빌드·검증·배포가 공유하는 고정 목록입니다. manifest의 경로를 실행 경로로 신뢰하지 않습니다.
-export const MODULES = Object.freeze(['interpolation', 'rendering', 'input']);
+export const MODULES = Object.freeze(['interpolation', 'rendering', 'input', 'deterministic', 'simloop', 'transport', 'replay', 'rollback', 'rollback-netcode']);
 export const BUNDLE_FILES = Object.freeze(MODULES.map((name) => `${name}.js`));
 export const MANIFEST_FILE = 'manifest.json';
 export const SHA256 = /^[a-f0-9]{64}$/;

@@ -30,7 +30,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ -n "$(git ls-files -- dist/ interpolation.js rendering.js input.js manifest.json)" ]; then
+          if [ -n "$(git ls-files -- dist/ interpolation.js rendering.js input.js deterministic.js simloop.js transport.js replay.js rollback.js rollback-netcode.js manifest.json)" ]; then
             echo 'Generated bundles belong only on the dist branch.' >&2
             exit 1
           fi

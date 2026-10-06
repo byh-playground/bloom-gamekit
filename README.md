@@ -1,6 +1,6 @@
 # bloom-gamekit
 
-브라우저 게임에서 공통으로 쓰는 보간·렌더링·입력 기능을 독립 패키지로 개발하는 모노레포입니다. 필요한 기능만 골라 조합하며, 게임 전체를 소유하는 범용 엔진 클래스는 만들지 않습니다.
+브라우저 게임에서 공통으로 쓰는 보간·렌더링·입력·실행·결정론·전송·리플레이·롤백 기능을 독립 패키지로 개발하는 모노레포입니다. 필요한 기능만 골라 조합하며, 게임 전체를 소유하는 범용 엔진 클래스는 만들지 않습니다.
 
 **interpolation · rendering · input은 각각 독립적인 plain JavaScript ESM입니다.** 소비자는 필요한 모듈만 외부 import 없는 `interpolation.js`, `rendering.js`, `input.js` 파일로 가져갑니다. 보간은 pose만, WebGL 1 renderer는 geometry 제출만, input은 장치 이벤트/action 상태만 소유합니다.
 
@@ -27,7 +27,7 @@ tests/                      연속 E2E·Worker 표본·Chromium 실행 검사
 
 ## GitHub 파일 배포
 
-PR에서는 빌드·Node E2E·Chromium 예제만 읽기 권한으로 검사합니다. main에 승인된 변경이 들어오면 GitHub Actions가 빌드·검사한 결과와 같은 번들을 확인한 후 `dist` 브랜치의 `interpolation.js`, `rendering.js`, `input.js`, `manifest.json`을 자동 갱신합니다. 생성 JS는 소스 커밋에 넣지 않습니다. 표준 `ubuntu-latest`만 사용하며 유료 runner·artifact 저장·Release·npm·Pages는 쓰지 않습니다. 공개 저장소의 무료 표준 runner 정책 범위에서 동작합니다.
+PR에서는 빌드·Node E2E·Chromium 예제만 읽기 권한으로 검사합니다. main에 승인된 변경이 들어오면 GitHub Actions가 빌드·검사한 결과와 같은 번들을 확인한 후 `dist` 브랜치의 `interpolation.js`, `rendering.js`, `input.js`, `manifest.json`을 자동 갱신합니다. 모듈의 정확한 목록은 scripts/distribution.mjs와 생성 manifest가 소유합니다. 생성 JS는 소스 커밋에 넣지 않습니다. 표준 `ubuntu-latest`만 사용하며 유료 runner·artifact 저장·Release·npm·Pages는 쓰지 않습니다. 공개 저장소의 무료 표준 runner 정책 범위에서 동작합니다.
 
 main 실행이 성공하면 [interpolation.js](https://github.com/byh-playground/bloom-gamekit/blob/dist/interpolation.js), [rendering.js](https://github.com/byh-playground/bloom-gamekit/blob/dist/rendering.js), [input.js](https://github.com/byh-playground/bloom-gamekit/blob/dist/input.js), [hash manifest](https://github.com/byh-playground/bloom-gamekit/blob/dist/manifest.json)에서 파일을 공유할 수 있습니다. GitHub Raw URL은 JS MIME/CORS를 보장하는 웹 호스팅 계약이 아니므로 브라우저의 직접 import 주소로 가정하지 마세요. 파일을 받아 게임과 함께 호스팅하고, 재현이 필요하면 dist 커밋 SHA를 고정하세요. dist 커밋 메시지에 source commit과 manifest/각 번들의 SHA-256이 기록됩니다. 검사 job의 manifest hash와 배포 직전 모든 재빌드 파일을 대조합니다. 기존 dist의 다른 파일은 보존하고, stale main 실행은 건너뛰며 경합 시 non-fast-forward로 중단합니다. 브랜치 게시의 실제 성공은 main 머지 후 별도로 확인해야 합니다.
 
@@ -44,7 +44,7 @@ main 실행이 성공하면 [interpolation.js](https://github.com/byh-playground
 
 ## 기존 rollback SDK와의 경계
 
-[rollback-netcode](https://github.com/byh-playground/rollback-netcode)는 별도 저장소로 유지합니다. 입력 순서·명령 sequence와 실행 tick·예측·롤백·복구·논리 틱 진행은 기존 SDK의 공개 계약을 사용하며 여기서 재구현하지 않습니다.
+기존 [rollback-netcode](https://github.com/byh-playground/rollback-netcode)의 검증된 소스를 이 저장소로 책임별 이전했습니다. [호환 API·출처·이전 방법](packages/rollback-netcode/README.md)을 참조하세요. 기존 저장소는 보존하며 입력 순서·명령 sequence·tick·예측·롤백·복구는 새로 구현하지 않습니다. `deterministic.js`, `simloop.js`, `transport.js`, `replay.js`, `rollback.js` 또는 전체 API 호환 `rollback-netcode.js`를 선택할 수 있습니다. 분리 모듈도 외부 runtime import가 없으며 dist commit SHA와 manifest hash로 고정합니다.
 
 게임은 자신의 Definition·규칙·권위 상태·완전한 snapshot과 결정론적 어댑터를 소유합니다. UI와 AI가 제출한 행동은 같은 명령 경로를 거쳐 SDK가 정한 tick에서 실행됩니다. input 패키지는 기기 이벤트를 정리할 뿐, 자체 타이머로 명령을 실행하거나 권위 상태를 직접 수정하지 않습니다. 포커스 상실과 입력 해제도 같은 입력 계약에 연결합니다.
 

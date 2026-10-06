@@ -7,8 +7,8 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "test": "npm run build && node tests/interpolation.e2e.mjs && node --test tests/input.test.mjs scripts/*.test.mjs",
-    "test:browser": "node tests/browser.e2e.mjs"
+    "test": "npm run build && node tests/interpolation.e2e.mjs && node --test tests/input.test.mjs scripts/*.test.mjs tests/rollback/*.test.mjs",
+    "test:browser": "node tests/browser.e2e.mjs && node scripts/rollback-browser.mjs"
   },
   "devDependencies": {
     "esbuild": "0.28.2",
