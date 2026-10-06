@@ -75,6 +75,15 @@ try {
   assert.equal(report.scene.error, 0); assert.equal(report.scene.stats.textureUploads, 0);
   assert.equal(report.scene.stats.bufferAllocations, 1);
   assert.ok(report.scene.stats.vertices > 500); assert.ok(report.scene.stats.uploadedBytes > 0);
+  report.scenePixels = await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => {
+    const r = demo.renderer, gl = r.gl, pixels = new Uint8Array(r.canvas.width * r.canvas.height * 4);
+    gl.readPixels(0, 0, r.canvas.width, r.canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    let colored = 0;
+    for (let i = 0; i < pixels.length; i += 4) if (pixels[i + 1] > 100 || pixels[i + 2] > 120) colored++;
+    resolve({ colored, error: gl.getError() });
+  })));
+  assert.ok(report.scenePixels.colored > 100, 'composed input/interpolation example must draw visible geometry');
+  assert.equal(report.scenePixels.error, 0);
   await page.evaluate(() => demo.pause());
 
   // Continue the same built-bundle/browser flow with focused pixel/lifecycle probes.
@@ -130,7 +139,7 @@ try {
     r.setCamera({ x: 12, y: 24, zoom: 2, rotation: Math.PI / 2 });
     const screen = {}, world = {}; r.worldToScreenInto(15, 28, screen); r.screenToWorldInto(screen.x, screen.y, world);
     check(Math.abs(world.x - 15) < 1e-6 && Math.abs(world.y - 28) < 1e-6, 'camera inverse roundtrip');
-    r.beginFrame(); r.rect(12, 24, 8, 8, green); r.endFrame(); near(pixel(32, 32), [0, 255, 0, 255], 'camera center at viewport center');
+    r.beginFrame(); r.rect(12, 24, 2, 2, green); r.rect(16, 24, 2, 2, green); r.endFrame(); near(pixel(32, 32), [0, 255, 0, 255], 'camera center at viewport center'); near(pixel(32, 24), [0, 255, 0, 255], 'camera rotation/zoom moves positive world x upward');
     r.beginFrame(); let resizeRejected = false; try { r.resize(20, 20); } catch { resizeRejected = true; } r.endFrame(); check(resizeRejected, 'active resize must not silently erase draws');
     check(gl.getError() === gl.NO_ERROR, 'actual GL error must be NO_ERROR');
     const version = gl.getParameter(gl.VERSION), shadingLanguage = gl.getParameter(gl.SHADING_LANGUAGE_VERSION);

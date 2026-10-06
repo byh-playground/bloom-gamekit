@@ -261,6 +261,8 @@ export class Renderer2D {
   endFrame() { this.flush(); this.active = false; this.batchTexture = null; return this.stats; }
   _deleteGPU() {
     const gl = this.gl;
+    // Bound programs otherwise remain delete-pending until another program is used.
+    gl.useProgram(null); gl.bindBuffer(gl.ARRAY_BUFFER, null); gl.bindTexture(gl.TEXTURE_2D, null);
     for (const record of this.textures.values()) if (record.texture) gl.deleteTexture(record.texture);
     if (this.white?.texture) gl.deleteTexture(this.white.texture);
     if (this.buffer) gl.deleteBuffer(this.buffer); if (this.program) gl.deleteProgram(this.program);

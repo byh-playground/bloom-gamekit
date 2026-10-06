@@ -23,7 +23,7 @@ const COLORS = Object.freeze({ clear: [0.035, 0.065, 0.09, 1], grid: [0.12, 0.2,
 export function startDemo(canvas, status, { autoStart = true } = {}) {
   const renderer = new Renderer2D(canvas);
   const app = createPresentation(STEP_MS), actions = new ActionState();
-  const sampled = { left: {}, right: {}, up: {}, down: {}, roll: {} }, pointer = {}, worldPoint = {};
+  const sampled = { left: {}, right: {}, up: {}, down: {}, roll: {} }, worldPoint = {};
   const actor = { x: 280, y: 210, z: 8, angle: 0, health: 100, state: 'idle' };
   const spriteOptions = { angle: 0 };
   // Small static RGBA asset uploaded once. Never uploads a rasterized world canvas.
