@@ -6,7 +6,10 @@ export async function exerciseWebGLDevice(page) {
     const { WebGLDevice } = await import('/dist/rendering.js');
     const check=(x,m)=>{if(!x)throw new Error(m);};
     const canvas=document.createElement('canvas');canvas.width=canvas.height=64;document.body.append(canvas);
-    const d=new WebGLDevice(canvas,{alpha:false,antialias:false,preserveDrawingBuffer:true,maxBufferBytes:65536});const gl=d.gl;
+    const nativeGetContext=canvas.getContext.bind(canvas);let contextRequest;
+    canvas.getContext=(kind,options)=>{contextRequest={kind,options};return nativeGetContext(kind,options);};
+    const d=new WebGLDevice(canvas,{alpha:false,antialias:false,preserveDrawingBuffer:true,maxBufferBytes:65536,powerPreference:'high-performance',failIfMajorPerformanceCaveat:false});const gl=d.gl;
+    check(contextRequest.kind==='webgl'&&contextRequest.options.powerPreference==='high-performance'&&contextRequest.options.failIfMajorPerformanceCaveat===false,'consumer GPU preference forwarded to real WebGL context');
     const pixel=(x=32,y=32)=>{const p=new Uint8Array(4);gl.readPixels(x,63-y,1,1,gl.RGBA,gl.UNSIGNED_BYTE,p);return [...p];};
     const near=(a,b,m)=>check(a.every((x,i)=>Math.abs(x-b[i])<3),`${m}: ${a} expected ${b}`);
     const pipeline=d.createPipeline({vertex:'attribute vec3 p;attribute vec4 c;uniform mat3 m;varying vec4 color;void main(){vec3 q=m*vec3(p.xy,1.0);gl_Position=vec4(q.xy,p.z,1.0);color=c;}',fragment:'precision mediump float;varying vec4 color;void main(){gl_FragColor=color;}',stride:28,attributes:[{name:'p',size:3,offset:0},{name:'c',size:4,offset:12}],uniforms:{m:'matrix3fv'}});
@@ -55,7 +58,7 @@ export async function exerciseWebGLDevice(page) {
     const before=d.stats.bufferAllocations;d.beginFrame();d.uploadVertices(arena,quad(0,1,0));d.draw(command);const stats={...d.endFrame()};check(before===d.stats.bufferAllocations,'steady upload reuses GPU allocation');
     let invalidRejected=false;try{d.createPipeline({vertex:'invalid shader',fragment:'void main(){}',stride:8,attributes:[{name:'p',size:2,offset:0}]});}catch{invalidRejected=true;}check(invalidRejected,'shader failures must be explicit');
     window.deviceProbe={d,canvas,texture,command,arena,quad,pixel,full,domTexture};
-    return {depth:true,stencil:true,straightAlpha:true,multitexture:true,radialWhiteMask:true,partialAtlas:true,luminanceFog:true,frameCopy:true,stats,invalidRejected};
+    return {contextOptions:contextRequest.options,depth:true,stencil:true,straightAlpha:true,multitexture:true,radialWhiteMask:true,partialAtlas:true,luminanceFog:true,frameCopy:true,stats,invalidRejected};
   });
   const loss=await page.evaluate(()=>{deviceProbe.loss=deviceProbe.d.gl.getExtension('WEBGL_lose_context');if(!deviceProbe.loss)return false;deviceProbe.loss.loseContext();return true;});
   if(loss){
