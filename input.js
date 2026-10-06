@@ -140,7 +140,7 @@ function pointerPositionInto(event, target, out) {
   out.v = out.y / rect.height;
   return true;
 }
-function createDOMInput({ target, state = new ActionState(), keys = {}, pointerButtons = {}, keyboardTarget = target?.ownerDocument, excludeTarget = UI_TARGETS, preventDefault = true, touchAction, gestures, onGesture } = {}) {
+function createDOMInput({ target, state = new ActionState(), keys = {}, pointerButtons = {}, keyboardTarget = target?.ownerDocument, excludeTarget = UI_TARGETS, preventDefault = true, touchAction, gestures, onGesture, onPointer, onRelease } = {}) {
   const doc = target?.ownerDocument;
   if (!target?.addEventListener || !target?.getBoundingClientRect || !doc?.addEventListener || !keyboardTarget?.addEventListener) throw new TypeError("target needs a DOM ownerDocument; keyboardTarget must be an EventTarget");
   if (!(state instanceof ActionState)) throw new TypeError("state must be an ActionState");
@@ -148,6 +148,7 @@ function createDOMInput({ target, state = new ActionState(), keys = {}, pointerB
   if (typeof preventDefault !== "boolean") throw new TypeError("preventDefault must be boolean");
   if (touchAction !== void 0 && typeof touchAction !== "string") throw new TypeError("touchAction must be a string");
   if (onGesture !== void 0 && typeof onGesture !== "function") throw new TypeError("onGesture must be a function");
+  for (const [name, callback] of Object.entries({ onPointer, onRelease })) if (callback !== void 0 && typeof callback !== "function") throw new TypeError(`${name} must be a function`);
   const keyMap = bindings(keys, "keys");
   const buttonMap = bindings(pointerButtons, "pointerButtons", true);
   const gesture = gestureOptions(gestures);
@@ -185,6 +186,12 @@ function createDOMInput({ target, state = new ActionState(), keys = {}, pointerB
     out.active = record.active;
     return true;
   };
+  const notifyPointer = (type, record, originalEvent, reason) => {
+    if (!onPointer) return;
+    const value = { type, originalEvent, reason };
+    sample(record, value);
+    onPointer(value);
+  };
   const updatePosition = (record, event) => {
     if (!pointerPositionInto(event, target, record)) return false;
     record.buttons = event.buttons;
@@ -219,12 +226,26 @@ function createDOMInput({ target, state = new ActionState(), keys = {}, pointerB
     record.sources.clear();
     releaseCapture(record.pointerId);
   };
-  const releaseAll = () => {
+  const releaseAll = (event) => {
+    const released = onPointer ? [...pointers.values()] : [];
     for (const source of activeKeys.values()) state.releaseSource(source);
     activeKeys.clear();
     for (const record of pointers.values()) dropPointer(record);
     lastTap = null;
     latest = null;
+    const reason = typeof event === "string" ? event : event?.type ?? "releaseAll";
+    const errors = [];
+    for (const record of released) try {
+      notifyPointer("cancel", record, event?.type ? event : null, reason);
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      onRelease?.({ reason, originalEvent: event?.type ? event : null });
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length) throw new AggregateError(errors, "input release callbacks failed");
   };
   const cancelGesture = (record) => {
     record.gestureCanceled = true;
@@ -267,13 +288,14 @@ function createDOMInput({ target, state = new ActionState(), keys = {}, pointerB
     } catch {
     }
     prevent(event);
+    notifyPointer("down", record, event);
   };
   const pointermove = (event) => {
     const record = pointers.get(event.pointerId);
     if (!record) {
       if (inside(event) && !excluded(event)) {
         const hover = latest && !latest.active && latest.pointerId === event.pointerId ? latest : { pointerId: event.pointerId, pointerType: event.pointerType, active: false };
-        updatePosition(hover, event);
+        if (updatePosition(hover, event)) notifyPointer("move", hover, event);
       }
       return;
     }
@@ -281,6 +303,7 @@ function createDOMInput({ target, state = new ActionState(), keys = {}, pointerB
     checkGesture(record, event);
     syncButtons(record, event);
     prevent(event);
+    notifyPointer("move", record, event);
   };
   const pointerend = (event, canceled) => {
     const record = pointers.get(event.pointerId);
@@ -289,6 +312,7 @@ function createDOMInput({ target, state = new ActionState(), keys = {}, pointerB
     checkGesture(record, event);
     dropPointer(record);
     if (!canceled) prevent(event);
+    notifyPointer(canceled ? "cancel" : "up", record, event, canceled ? "pointercancel" : void 0);
     if (!gesture) return;
     const duration = event.timeStamp - record.startMs;
     if (canceled || !validPosition || record.gestureCanceled || !Number.isFinite(duration) || duration < 0 || duration > gesture.tapMs || record.u < 0 || record.u > 1 || record.v < 0 || record.v > 1) {
@@ -314,6 +338,7 @@ function createDOMInput({ target, state = new ActionState(), keys = {}, pointerB
     if (!record) return;
     dropPointer(record);
     lastTap = null;
+    notifyPointer("cancel", record, event, "lostpointercapture");
   };
   listen(keyboardTarget, "keydown", keydown);
   listen(doc, "keyup", keyup, true);
@@ -323,8 +348,8 @@ function createDOMInput({ target, state = new ActionState(), keys = {}, pointerB
   listen(doc, "pointerup", (event) => pointerend(event, false), { capture: true, passive: false });
   listen(doc, "pointercancel", (event) => pointerend(event, true), true);
   listen(target, "lostpointercapture", lostcapture);
-  listen(doc, "visibilitychange", () => {
-    if (doc.hidden) releaseAll();
+  listen(doc, "visibilitychange", (event) => {
+    if (doc.hidden) releaseAll(event);
   });
   if (doc.defaultView) {
     listen(doc.defaultView, "blur", releaseAll);
@@ -352,8 +377,11 @@ function createDOMInput({ target, state = new ActionState(), keys = {}, pointerB
       if (disposed) return;
       disposed = true;
       for (const remove of removers) remove();
-      releaseAll();
-      if (touchAction !== void 0 && target.style?.touchAction === touchAction) target.style.touchAction = oldTouchAction;
+      try {
+        releaseAll("dispose");
+      } finally {
+        if (touchAction !== void 0 && target.style?.touchAction === touchAction) target.style.touchAction = oldTouchAction;
+      }
     }
   };
 }

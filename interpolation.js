@@ -28,6 +28,18 @@ function readValues(fields, values) {
     return value;
   });
 }
+function readResetFields(indices, names) {
+  if (names === void 0) return null;
+  if (!Array.isArray(names)) throw new TypeError("resetFields must be an array");
+  const reset = /* @__PURE__ */ new Set();
+  for (const name of names) {
+    if (typeof name !== "string" || !indices.has(name)) throw new TypeError("resetFields must name declared fields");
+    const index = indices.get(name);
+    if (reset.has(index)) throw new TypeError("duplicate resetFields field");
+    reset.add(index);
+  }
+  return reset;
+}
 
 // packages/interpolation/src/tracks.js
 var TAU = Math.PI * 2;
@@ -53,18 +65,21 @@ function evaluate(kind, from, to, alpha) {
 function fraction(track, now, stepMs) {
   return Math.min(1, Math.max(0, (now - track.startedAt) / stepMs));
 }
-function retarget(fields, old, target, generation, now, stepMs, snap) {
-  const from = target.slice();
-  if (old && old.generation === generation && !snap) {
+function retarget(fields, old, target, generation, now, stepMs, snap, initial, resetFields) {
+  const continued = old && old.generation === generation;
+  const from = !continued && !snap && initial ? initial : target.slice();
+  if (continued && !snap) {
     const alpha = fraction(old, now, stepMs);
     for (let i = 0; i < fields.length; i++) from[i] = evaluate(fields[i][1], old.from[i], old.target[i], alpha);
   }
+  if (resetFields) for (const index of resetFields) from[index] = target[index];
   return { generation, from, target, startedAt: now };
 }
 
 // packages/interpolation/src/timeline.js
 var InterpolationTimeline = class {
   #fields;
+  #fieldIndices;
   #stepMs;
   #tracks = /* @__PURE__ */ new Map();
   #now = -Infinity;
@@ -74,6 +89,7 @@ var InterpolationTimeline = class {
   /** @param {{schema:import('./schema.js').Schema, stepMs:number}} options */
   constructor({ schema, stepMs }) {
     this.#fields = compileSchema(schema);
+    this.#fieldIndices = new Map(this.#fields.map((field, index) => [field[0], index]));
     this.#stepMs = finite(stepMs, "stepMs");
     if (stepMs <= 0) throw new RangeError("stepMs must be positive");
   }
@@ -88,6 +104,8 @@ var InterpolationTimeline = class {
    * Accept one complete authoritative snapshot. Returns false for obsolete packets.
    * Invalid packets throw without changing tracks, revision, or presentation time.
    * timeMs is simulation time; nowMs is local receipt time. They are never subtracted.
+   * resetFields snaps only named fields. initialValues seeds new identities in continuous mode.
+   * Explicit teleport/reset/load/rollback overrides seeds; all supplied options are validated.
    * @param {Snapshot} packet @param {number} nowMs @returns {boolean}
    */
   accept(packet, nowMs) {
@@ -111,8 +129,11 @@ var InterpolationTimeline = class {
       const generation = ordinal(entity.generation, "generation");
       if (entity.teleport !== void 0 && typeof entity.teleport !== "boolean") throw new TypeError("teleport must be boolean");
       const target = readValues(this.#fields, entity.values);
+      const initial = entity.initialValues === void 0 ? null : readValues(this.#fields, entity.initialValues);
+      const resetFields = readResetFields(this.#fieldIndices, entity.resetFields);
       const old = this.#tracks.get(entity.id);
-      next.set(entity.id, retarget(this.#fields, old, target, generation, nowMs, this.#stepMs, changedRevision || entity.teleport === true));
+      const snap = mode !== "continuous" || entity.teleport === true;
+      next.set(entity.id, retarget(this.#fields, old, target, generation, nowMs, this.#stepMs, snap, initial, resetFields));
     }
     this.#tracks = next;
     this.#revision = revision;

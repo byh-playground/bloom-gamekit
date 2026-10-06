@@ -1,0 +1,3624 @@
+// packages/deterministic/src/utilities.js
+var nowMs = () => globalThis.performance?.now() ?? Date.now();
+var compareIds = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+function integer(value, name, min = 0, max = 4294967295) {
+  if (!Number.isSafeInteger(value) || value < min || value > max) throw new RangeError(name);
+  return value;
+}
+function bytes(value, name = "bytes") {
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  throw new TypeError(`${name} must be Uint8Array or ArrayBuffer`);
+}
+function equalBytes(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+function hashBytes(value, seed = 2166136261) {
+  let h = seed >>> 0;
+  for (const b of bytes(value)) h = Math.imul(h ^ b, 16777619) >>> 0;
+  return h;
+}
+function statelessRandom(seed, eventId) {
+  let x = (seed ^ Math.imul(integer(eventId, "eventId"), 2654435769)) >>> 0;
+  x = Math.imul(x ^ x >>> 16, 2246822507);
+  x = Math.imul(x ^ x >>> 13, 3266489909);
+  return (x ^ x >>> 16) >>> 0;
+}
+var SeededPRNG = class {
+  constructor(seed = 1) {
+    this.state = integer(seed, "seed") >>> 0;
+  }
+  nextUint32() {
+    this.state = this.state + 1831565813 >>> 0;
+    let t = this.state;
+    t = Math.imul(t ^ t >>> 15, t | 1);
+    t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+    return (t ^ t >>> 14) >>> 0;
+  }
+  nextInt(bound) {
+    integer(bound, "bound", 1, 4294967296);
+    const limit = Math.floor(4294967296 / bound) * bound;
+    let x;
+    do {
+      x = this.nextUint32();
+    } while (x >= limit);
+    return x % bound;
+  }
+};
+var signed = (x) => integer(x, "fixed-point result", -2147483648, 2147483647);
+var fixedPoint = Object.freeze({
+  scale: 1024,
+  fromNumber: (x) => signed(Math.round(x * 1024)),
+  toNumber: (x) => signed(x) / 1024,
+  add: (a, b) => signed(signed(a) + signed(b)),
+  sub: (a, b) => signed(signed(a) - signed(b)),
+  mul: (a, b) => {
+    signed(a);
+    signed(b);
+    const product = a * b;
+    if (Number.isSafeInteger(product)) return signed(Math.trunc(product / 1024) || 0);
+    return signed(Number(BigInt(a) * BigInt(b) / 1024n));
+  },
+  div: (a, b) => {
+    if (signed(b) === 0) throw new RangeError("fixed-point division by zero");
+    return signed(Number(BigInt(signed(a)) * 1024n / BigInt(b)));
+  }
+});
+
+// packages/_rollback-shared/src/protocol.js
+var VERSION = "0.2.0-dev";
+var PROTOCOL_VERSION = 1;
+var CHUNK_SIZE = 16384;
+var MAX_TICK = 2147483646;
+var defaults = {
+  tickRate: 60,
+  baseInputDelayTicks: 2,
+  minInputDelayTicks: 0,
+  maxInputDelayTicks: 8,
+  rollbackWindowTicks: 12,
+  stateHistorySize: 64,
+  predictionPolicy: "hold",
+  stallPolicy: "wait",
+  tickDriftThreshold: 2,
+  pacingPolicy: "hold",
+  checksumInterval: 30,
+  maxCatchupSteps: 4,
+  adaptiveInputDelay: true,
+  heartbeatMs: 100,
+  adaptationIntervalMs: 1e3,
+  maxSnapshotBytes: 4 * 1024 * 1024,
+  maxHistoryBytes: 64 * 1024 * 1024,
+  maxReplayBytes: 64 * 1024 * 1024,
+  maxCommandBytes: 2048,
+  maxPendingCommands: 256,
+  maxQueuedBytes: 5 * 1024 * 1024,
+  recoveryTimeoutMs: 1e4,
+  maxRecoveryAttempts: 3,
+  peerInterruptMs: 1e3,
+  peerTimeoutMs: 1e4
+};
+var profiles = Object.freeze({
+  action: Object.freeze({ ...defaults }),
+  rts: Object.freeze({
+    ...defaults,
+    tickRate: 20,
+    baseInputDelayTicks: 4,
+    maxInputDelayTicks: 12,
+    rollbackWindowTicks: 6,
+    stateHistorySize: 32,
+    predictionPolicy: "neutral",
+    checksumInterval: 20
+  }),
+  lockstep: Object.freeze({
+    ...defaults,
+    tickRate: 20,
+    baseInputDelayTicks: 4,
+    maxInputDelayTicks: 20,
+    rollbackWindowTicks: 0,
+    checksumInterval: 20,
+    stateHistorySize: 32,
+    predictionPolicy: "neutral"
+  })
+});
+var encoder = new TextEncoder();
+var decoder = new TextDecoder("utf-8", { fatal: true });
+var MAGIC = 827015762;
+var TYPE = Object.freeze({
+  HELLO: 1,
+  INPUT: 2,
+  CLOCK: 3,
+  HASH: 4,
+  REQUEST: 5,
+  BEGIN: 6,
+  CHUNK: 7
+});
+var HEADER = 12;
+var SNAP_CHUNK_BYTES = CHUNK_SIZE - HEADER - 8;
+var Writer = class {
+  constructor(size = CHUNK_SIZE) {
+    this.data = new Uint8Array(size);
+    this.view = new DataView(this.data.buffer);
+    this.offset = 0;
+  }
+  room(n) {
+    if (this.offset + n > this.data.length) throw new RangeError("packet capacity");
+  }
+  u8(n) {
+    this.room(1);
+    this.view.setUint8(this.offset++, n);
+  }
+  u16(n) {
+    this.room(2);
+    this.view.setUint16(this.offset, n, true);
+    this.offset += 2;
+  }
+  u32(n) {
+    this.room(4);
+    this.view.setUint32(this.offset, n, true);
+    this.offset += 4;
+  }
+  i32(n) {
+    this.room(4);
+    this.view.setInt32(this.offset, n, true);
+    this.offset += 4;
+  }
+  raw(b) {
+    this.room(b.length);
+    this.data.set(b, this.offset);
+    this.offset += b.length;
+  }
+  finish() {
+    return this.data.slice(0, this.offset);
+  }
+  reset() {
+    this.offset = 0;
+    return this;
+  }
+  usedBytes() {
+    return this.data.subarray(0, this.offset);
+  }
+};
+var Reader = class {
+  constructor(data) {
+    this.data = bytes(data);
+    this.view = new DataView(this.data.buffer, this.data.byteOffset, this.data.byteLength);
+    this.offset = 0;
+  }
+  room(n) {
+    if (this.offset + n > this.data.length) throw new RangeError("truncated packet");
+  }
+  u8() {
+    this.room(1);
+    return this.view.getUint8(this.offset++);
+  }
+  u16() {
+    this.room(2);
+    const n = this.view.getUint16(this.offset, true);
+    this.offset += 2;
+    return n;
+  }
+  u32() {
+    this.room(4);
+    const n = this.view.getUint32(this.offset, true);
+    this.offset += 4;
+    return n;
+  }
+  i32() {
+    this.room(4);
+    const n = this.view.getInt32(this.offset, true);
+    this.offset += 4;
+    return n;
+  }
+  raw(n) {
+    this.room(n);
+    const b = this.data.slice(this.offset, this.offset + n);
+    this.offset += n;
+    return b;
+  }
+  end() {
+    if (this.offset !== this.data.length) throw new RangeError("trailing packet bytes");
+  }
+};
+function packet(type, sequence, write) {
+  const w = new Writer();
+  w.u32(MAGIC);
+  w.u8(PROTOCOL_VERSION);
+  w.u8(type);
+  w.u16(0);
+  w.u32(sequence);
+  write(w);
+  return w.finish();
+}
+function frameEqual(a, b) {
+  if (!equalBytes(a.input, b.input) || a.commands.length !== b.commands.length) return false;
+  return a.commands.every((c, i) => c.sequence === b.commands[i].sequence && equalBytes(c.payload, b.commands[i].payload));
+}
+function copyFrame(frame) {
+  return { input: frame.input.slice(), commands: frame.commands.map((c) => ({ ...c, payload: c.payload.slice() })) };
+}
+function runSimulationFrame(adapter, context) {
+  return adapter.step({ ...context, inputs: context.inputs.map((frame) => ({
+    ...copyFrame(frame),
+    playerId: frame.playerId,
+    predicted: !!frame.predicted
+  })) });
+}
+
+// packages/_rollback-shared/src/history.js
+var StateHistory = class {
+  constructor(size, maxBytes = 64 * 1024 * 1024) {
+    this.slots = new Array(size);
+    this.size = size;
+    this.maxBytes = maxBytes;
+    this.byteLength = 0;
+  }
+  get(tick) {
+    const s = this.slots[tick % this.size];
+    return s?.tick === tick ? s : void 0;
+  }
+  put(state) {
+    const i = state.tick % this.size, next = this.byteLength - (this.slots[i]?.bytes.length ?? 0) + state.bytes.length;
+    if (next > this.maxBytes) throw Object.assign(new RangeError("state history byte budget"), { code: "history-capacity", requiredBytes: next, maxHistoryBytes: this.maxBytes, snapshotBytes: state.bytes.length });
+    this.slots[i] = state;
+    this.byteLength = next;
+  }
+  invalidateAfter(tick) {
+    for (let i = 0; i < this.size; i++) if (this.slots[i]?.tick > tick) {
+      this.byteLength -= this.slots[i].bytes.length;
+      this.slots[i] = void 0;
+    }
+  }
+};
+
+// packages/rollback/src/core.js
+function profileOf(profile) {
+  const p = { ...defaults, ...profile };
+  for (const field of [
+    "tickRate",
+    "stateHistorySize",
+    "checksumInterval",
+    "maxCatchupSteps",
+    "heartbeatMs",
+    "adaptationIntervalMs",
+    "maxSnapshotBytes",
+    "maxHistoryBytes",
+    "maxReplayBytes",
+    "maxCommandBytes",
+    "maxPendingCommands",
+    "maxQueuedBytes",
+    "recoveryTimeoutMs",
+    "maxRecoveryAttempts",
+    "peerInterruptMs",
+    "peerTimeoutMs"
+  ]) integer(p[field], field, 1, 2147483647);
+  for (const field of ["baseInputDelayTicks", "minInputDelayTicks", "maxInputDelayTicks", "rollbackWindowTicks", "tickDriftThreshold"]) integer(p[field], field, 0, 65535);
+  if (p.minInputDelayTicks > p.baseInputDelayTicks || p.baseInputDelayTicks > p.maxInputDelayTicks) throw new RangeError("input delay bounds");
+  if (p.peerTimeoutMs <= p.peerInterruptMs) throw new RangeError("peerTimeoutMs must exceed peerInterruptMs");
+  if (p.stateHistorySize < p.rollbackWindowTicks + 2) throw new RangeError("stateHistorySize must exceed rollback window by two");
+  if (p.stateHistorySize > 8192) throw new RangeError("stateHistorySize capacity (8192)");
+  if (p.tickRate > 240 || p.maxCommandBytes > CHUNK_SIZE - 1024 || p.maxSnapshotBytes > 64 * 1024 * 1024) throw new RangeError("profile size limit");
+  if (!["hold", "neutral"].includes(p.predictionPolicy) && typeof p.predictionPolicy !== "function") throw new TypeError("predictionPolicy");
+  if (!["none", "hold", "dilation"].includes(p.pacingPolicy) || p.stallPolicy !== "wait") throw new TypeError("pacing/stall policy");
+  return Object.freeze(p);
+}
+function createSession(options) {
+  return new RollbackSession(options);
+}
+var RollbackSession = class {
+  constructor({
+    players,
+    localPlayerId,
+    sessionId,
+    simulationVersion,
+    seed = 1,
+    inputSize,
+    profile = profiles.action,
+    adapter,
+    authorityPlayerId,
+    onEvent = () => {
+    },
+    recordReplay = true,
+    clock = nowMs
+  } = {}) {
+    if (!Array.isArray(players) || players.length < 1 || players.length > 8 || players.some((p) => typeof p !== "string" || !p.length || p.length > 128) || new Set(players).size !== players.length) throw new TypeError("fixed player roster (1..8 unique IDs)");
+    this.players = Object.freeze([...players].sort(compareIds));
+    if (!this.players.includes(localPlayerId)) throw new TypeError("localPlayerId");
+    if (typeof sessionId !== "string" || !sessionId.length || sessionId.length > 128 || typeof simulationVersion !== "string" || !simulationVersion.length || simulationVersion.length > 128) throw new TypeError("sessionId/simulationVersion");
+    if (!adapter || ["save", "load", "step", "validateSnapshot"].some((n) => typeof adapter[n] !== "function")) throw new TypeError("Simulation Adapter must save, load, step, validateSnapshot");
+    this.localPlayerId = localPlayerId;
+    this.sessionId = sessionId;
+    this.simulationVersion = simulationVersion;
+    this.seed = integer(seed, "seed");
+    this.inputSize = integer(inputSize, "inputSize", 1, 1024);
+    if (typeof clock !== "function") throw new TypeError("monotonic runtime clock");
+    this._clock = clock;
+    this.profile = profileOf(profile);
+    this.adapter = adapter;
+    this.onEvent = onEvent;
+    this.authorityPlayerId = authorityPlayerId ?? this.players[0];
+    if (!this.players.includes(this.authorityPlayerId)) throw new TypeError("authorityPlayerId");
+    this._tick = 0;
+    this._inputDelay = this.profile.baseInputDelayTicks;
+    this._requestedInputDelay = this._inputDelay;
+    this.closed = false;
+    this._failure = null;
+    this._history = new StateHistory(this.profile.stateHistorySize, this.profile.maxHistoryBytes);
+    this._inputWriter = new Writer(CHUNK_SIZE * this.players.length);
+    this._inputs = new Map(this.players.map((p) => [p, /* @__PURE__ */ new Map()]));
+    this._through = new Map(this.players.map((p) => [p, -1]));
+    this._used = /* @__PURE__ */ new Map();
+    this._peers = /* @__PURE__ */ new Map();
+    this._pendingCommands = [];
+    this._commandSequence = 0;
+    this._sequence = 0;
+    this._captureTick = -1;
+    this._lastLocalInput = new Uint8Array(this.inputSize);
+    this._rollbackFrom = Infinity;
+    this._replaying = false;
+    this._inputHash = 2166136261;
+    this._lastHashTick = -1;
+    this._nextTransfer = 0;
+    this._recoveryAttempts = 0;
+    this._incomingSnapshot = null;
+    this._requestedRecovery = null;
+    this._lastAdaptation = null;
+    this._stableWindows = 0;
+    this._pace = 1;
+    this._window = { advances: 0, received: 0, late: 0, depth: 0, rollback: 0, stall: 0, cost: 0, costSamples: 0 };
+    this._metrics = {
+      rollbacks: 0,
+      resimulatedTicks: 0,
+      maxRollbackDepth: 0,
+      stalls: 0,
+      holds: 0,
+      recoveries: 0,
+      rejectedSnapshots: 0,
+      rejectedPackets: 0,
+      sentBytes: 0,
+      receivedBytes: 0,
+      predictedTicks: 0,
+      hashMismatches: 0,
+      latestResimulationMs: 0,
+      smoothedRTT: 0,
+      jitter: 0,
+      lateInputRate: 0,
+      rollbackFrequency: 0,
+      stallFrequency: 0,
+      resimulationCostMs: 0,
+      stateHashComputations: 0,
+      hashedStateBytes: 0
+    };
+    this._recordReplay = recordReplay;
+    this._replayFrames = [];
+    this._replayBytes = 0;
+    this._replayFinalHash = void 0;
+    const initial = this._save();
+    const requiredBytes = initial.length * this.profile.stateHistorySize;
+    if (requiredBytes > this.profile.maxHistoryBytes) throw Object.assign(new RangeError("initial snapshot cannot fill state history byte budget"), { code: "history-capacity", snapshotBytes: initial.length, requiredBytes, maxHistoryBytes: this.profile.maxHistoryBytes });
+    this._initialState = initial.slice();
+    const initialRecord = { tick: 0, bytes: initial, inputHash: this._inputHash };
+    this._history.put(initialRecord);
+    this._hello = encoder.encode(JSON.stringify({
+      protocol: PROTOCOL_VERSION,
+      library: VERSION,
+      sessionId,
+      simulationVersion,
+      seed,
+      players: this.players,
+      tickRate: this.profile.tickRate,
+      inputSize,
+      authorityPlayerId: this.authorityPlayerId,
+      initialHash: this._stateHash(initialRecord)
+    }));
+    for (let t = 0; t < this.inputDelay; t++) this._commitLocal(t, this._lastLocalInput, []);
+  }
+  get tick() {
+    return this._tick;
+  }
+  get inputDelay() {
+    return this._inputDelay;
+  }
+  get confirmedTick() {
+    return Math.min(...this._through.values());
+  }
+  get resimulating() {
+    return this._replaying || this._rollbackFrom !== Infinity;
+  }
+  get failure() {
+    return this._failure;
+  }
+  get requestedInputDelay() {
+    return this._requestedInputDelay;
+  }
+  get ready() {
+    return !this.closed && !this._failure && this.players.every((p) => p === this.localPlayerId || this._peers.get(p)?.ready && this._peers.get(p).connectionState === "connected");
+  }
+  get status() {
+    if (this.closed) return "closed";
+    if (this._failure) return "failed";
+    const peers = [...this._peers.values()];
+    if (peers.some((p) => p.connectionState === "disconnected")) return "disconnected";
+    if (peers.some((p) => p.connectionState === "interrupted")) return "interrupted";
+    if (!this.ready) return "synchronizing";
+    if (this._requestedRecovery) return "recovering";
+    return this.resimulating ? "resimulating" : "running";
+  }
+  getPeerState(peerId) {
+    const peer = this._peers.get(peerId);
+    if (!peer) return void 0;
+    return Object.freeze({
+      peerId,
+      state: peer.connectionState,
+      handshakeComplete: peer.ready,
+      lastReceivedAt: peer.lastReceivedAt,
+      simTick: peer.tick,
+      confirmedInputTick: peer.confirmed,
+      ackTick: peer.ack,
+      rtt: peer.rtt,
+      jitter: peer.jitter
+    });
+  }
+  get metrics() {
+    return {
+      ...this._metrics,
+      inputDelay: this.inputDelay,
+      requestedInputDelay: this.requestedInputDelay,
+      confirmedTick: this.confirmedTick,
+      tick: this.tick,
+      pace: this._pace,
+      retainedSnapshotBytes: this._history.byteLength
+    };
+  }
+  _stateHash(state) {
+    if (!state) return void 0;
+    if (state.hash === void 0) {
+      state.hash = hashBytes(state.bytes);
+      this._metrics.stateHashComputations++;
+      this._metrics.hashedStateBytes += state.bytes.length;
+    }
+    return state.hash;
+  }
+  _hashInputFrame(tick, inputs, previousHash) {
+    const w = this._inputWriter.reset();
+    w.u32(tick);
+    for (const f of inputs) {
+      w.raw(f.input);
+      w.u16(f.commands.length);
+      for (const c of f.commands) {
+        w.u32(c.sequence);
+        w.u16(c.payload.length);
+        w.raw(c.payload);
+      }
+    }
+    return hashBytes(w.usedBytes(), previousHash);
+  }
+  _event(type, detail = {}) {
+    try {
+      this.onEvent({ type, tick: this.tick, ...detail });
+    } catch {
+    }
+  }
+  _fail(type, detail = {}) {
+    if (this._failure || this.closed) return;
+    this._failure = Object.freeze({ type, ...detail });
+    this._event(type, detail);
+  }
+  _peerTransition(peer, state, type, detail = {}) {
+    if (peer.connectionState === state) return;
+    const previous = peer.connectionState;
+    peer.connectionState = state;
+    if (type) this._event(type, { peerId: peer.id, previous, state, ...detail });
+  }
+  _transportStatus(peer, state) {
+    const value = typeof state === "string" ? state : state?.state;
+    peer.transportState = value;
+    if (value === "closed" || value === "failed") this._peerTransition(peer, "disconnected", "peer-disconnected", { reason: "transport-" + value });
+    else if (value === "interrupted") this._peerTransition(peer, "interrupted", "peer-interrupted", { reason: "transport-interrupted" });
+  }
+  _peerAlive(peer, sequence, now) {
+    if (["closed", "failed"].includes(peer.transportState)) return;
+    const delta = peer.lastReceivedSequence === null ? 1 : sequence - peer.lastReceivedSequence >>> 0;
+    if (delta === 0 || delta >= 2147483648) return;
+    peer.lastReceivedSequence = sequence;
+    peer.lastReceivedAt = now;
+    this._peerTransition(peer, "connected", peer.connectionState === "connecting" ? null : "peer-resumed");
+  }
+  _peerLiveness(peer, now) {
+    if (["closed", "failed"].includes(peer.transportState)) return;
+    const silence = Math.max(0, now - peer.lastReceivedAt);
+    if (silence >= this.profile.peerTimeoutMs) this._peerTransition(peer, "disconnected", "peer-timeout", { silenceMs: silence });
+    else if (silence >= this.profile.peerInterruptMs && peer.connectionState !== "disconnected") this._peerTransition(peer, "interrupted", "peer-interrupted", { reason: "silence", silenceMs: silence });
+  }
+  _save() {
+    const state = bytes(this.adapter.save(), "snapshot").slice();
+    if (!state.length || state.length > this.profile.maxSnapshotBytes) throw new RangeError("snapshot size");
+    return state;
+  }
+  _nextSequence() {
+    this._sequence = this._sequence + 1 >>> 0;
+    return this._sequence;
+  }
+  attachTransport(peerId, transport) {
+    if (this.closed) throw new Error("session closed");
+    if (this._failure) throw new Error("session failed: " + this._failure.type);
+    if (peerId === this.localPlayerId || !this.players.includes(peerId) || this._peers.has(peerId)) throw new TypeError("peerId already attached or outside roster");
+    if (typeof transport?.send !== "function" || typeof transport.subscribe !== "function") throw new TypeError("Transport capability: send and subscribe");
+    const peer = {
+      id: peerId,
+      transport,
+      ready: false,
+      ack: -1,
+      tick: 0,
+      confirmed: -1,
+      clockSequence: null,
+      clockAt: 0,
+      lastSent: -Infinity,
+      lastHello: -Infinity,
+      pendingPings: /* @__PURE__ */ new Map(),
+      echo: 0,
+      rtt: 0,
+      jitter: 0,
+      hashes: /* @__PURE__ */ new Map(),
+      controls: [],
+      queuedBytes: 0,
+      lastHashQueued: 0,
+      unsubscribe: null,
+      unsubscribeStatus: null,
+      connectionState: "connecting",
+      transportState: void 0,
+      lastReceivedAt: this._clock(),
+      lastReceivedSequence: null
+    };
+    this._peers.set(peerId, peer);
+    peer.unsubscribe = transport.subscribe((data) => this.receive(peerId, data));
+    peer.unsubscribeStatus = transport.subscribeStatus?.((state) => this._transportStatus(peer, state));
+    if (transport.state) this._transportStatus(peer, transport.state);
+    this._sendHello(peer, this._clock());
+    return () => {
+      peer.unsubscribe?.();
+      peer.unsubscribeStatus?.();
+      this._peers.delete(peerId);
+    };
+  }
+  _send(peer, data) {
+    try {
+      if (peer.transport.send(data) === false) return false;
+      this._metrics.sentBytes += data.length;
+      return true;
+    } catch (error) {
+      this._event("transport-error", { peerId: peer.id, error });
+      return false;
+    }
+  }
+  _sendHello(peer, now) {
+    if (this._send(peer, packet(TYPE.HELLO, this._nextSequence(), (w) => w.raw(this._hello)))) peer.lastHello = now;
+  }
+  _queue(peer, data) {
+    if (peer.queuedBytes + data.length > this.profile.maxQueuedBytes) return false;
+    peer.controls.push(data);
+    peer.queuedBytes += data.length;
+    return true;
+  }
+  _commitLocal(tick, input, commands) {
+    integer(tick, "session tick limit", 0, MAX_TICK);
+    const frame = { input: input.slice(), commands };
+    if (this._inputs.get(this.localPlayerId).has(tick)) throw new Error("committed input is immutable");
+    this._inputs.get(this.localPlayerId).set(tick, frame);
+    this._through.set(this.localPlayerId, tick);
+  }
+  queueCommand(payload) {
+    if (this.closed) throw new Error("session closed");
+    if (this._failure) throw new Error("session failed: " + this._failure.type);
+    const b = bytes(payload).slice();
+    if (!b.length || b.length > Math.min(this.profile.maxCommandBytes, CHUNK_SIZE - 1024 - this.inputSize - 6) || this._pendingCommands.length >= this.profile.maxPendingCommands) throw new RangeError("command capacity");
+    integer(this._commandSequence + 1, "command sequence", 1);
+    const sequence = ++this._commandSequence;
+    this._pendingCommands.push({ sequence, payload: b });
+    return sequence;
+  }
+  setInputDelay(ticks) {
+    integer(ticks, "input delay", this.profile.minInputDelayTicks, this.profile.maxInputDelayTicks);
+    this._requestedInputDelay = ticks;
+    if (ticks > this.inputDelay) this._applyInputDelay(ticks);
+  }
+  _applyInputDelay(ticks) {
+    const previous = this.inputDelay;
+    this._inputDelay = ticks;
+    this._event("input-delay", { previous, value: ticks });
+  }
+  _capture(input) {
+    const b = bytes(input);
+    if (b.length !== this.inputSize) throw new RangeError("inputSize");
+    const previous = this._inputs.get(this.localPlayerId).get(this._through.get(this.localPlayerId))?.input ?? this._lastLocalInput;
+    this._lastLocalInput = b.slice();
+    if (this._captureTick === this.tick) return;
+    this._captureTick = this.tick;
+    if (this._requestedInputDelay < this.inputDelay && equalBytes(b, previous) && !this._pendingCommands.length) this._applyInputDelay(this.inputDelay - 1);
+    const target = integer(this.tick + this.inputDelay, "session tick limit", 0, MAX_TICK);
+    const through = this._through.get(this.localPlayerId);
+    if (target <= through) return;
+    for (let t = through + 1; t < target; t++) this._commitLocal(t, previous, []);
+    let budget = CHUNK_SIZE - 1024 - this.inputSize;
+    const commands = [];
+    while (this._pendingCommands.length && this._pendingCommands[0].payload.length + 6 <= budget) {
+      const c = this._pendingCommands.shift();
+      budget -= c.payload.length + 6;
+      commands.push({ ...c, executeTick: target });
+    }
+    this._commitLocal(target, this._lastLocalInput, commands);
+  }
+  releaseInput() {
+    if (this.closed || this._failure) return;
+    this._lastLocalInput = new Uint8Array(this.inputSize);
+    const last = this._inputs.get(this.localPlayerId).get(this._through.get(this.localPlayerId));
+    if (last && equalBytes(last.input, this._lastLocalInput)) {
+      for (const peer of this._peers.values()) if (peer.ready) this._sendInputs(peer);
+      return;
+    }
+    const target = integer(Math.max(this.tick + this.inputDelay, this._through.get(this.localPlayerId) + 1), "session tick limit", 0, MAX_TICK);
+    for (let t = this._through.get(this.localPlayerId) + 1; t <= target; t++) this._commitLocal(t, this._lastLocalInput, []);
+    for (const peer of this._peers.values()) if (peer.ready) this._sendInputs(peer);
+    this._event("input-release", { executeTick: target });
+  }
+  _sendInputs(peer) {
+    const map = this._inputs.get(this.localPlayerId);
+    const first = peer.ack + 1;
+    if (!map.has(first)) return;
+    const frames = [];
+    let cost = HEADER + 16;
+    for (let t = first; frames.length < 128 && map.has(t); t++) {
+      const f = map.get(t);
+      const n = 7 + this.inputSize + f.commands.reduce((s, c) => s + 6 + c.payload.length, 0);
+      if (cost + n > CHUNK_SIZE) break;
+      frames.push(f);
+      cost += n;
+    }
+    if (!frames.length) return;
+    this._send(peer, packet(TYPE.INPUT, this._nextSequence(), (w) => {
+      w.u32(first);
+      w.u16(frames.length);
+      w.u16(this.inputSize);
+      w.i32(this._through.get(peer.id));
+      w.u32(this.tick);
+      for (let i = 0; i < frames.length; ) {
+        const f = frames[i];
+        let run = 1;
+        while (i + run < frames.length && !frames[i + run].commands.length && equalBytes(f.input, frames[i + run].input)) run++;
+        w.u16(run);
+        w.raw(f.input);
+        w.u16(f.commands.length);
+        for (const c of f.commands) {
+          w.u32(c.sequence);
+          w.u16(c.payload.length);
+          w.raw(c.payload);
+        }
+        i += run;
+      }
+    }));
+  }
+  _sendClock(peer, now, replyTo) {
+    const id = this._nextSequence();
+    const data = packet(TYPE.CLOCK, id, (w) => {
+      w.u32(this.tick);
+      w.i32(this.confirmedTick);
+      w.i32(this._through.get(peer.id));
+      w.u32(replyTo ?? 0);
+      w.u8(replyTo === void 0 ? 0 : 1);
+    });
+    if (this._send(peer, data)) {
+      if (replyTo === void 0) {
+        peer.pendingPings.set(id, now);
+        peer.lastSent = now;
+      }
+      while (peer.pendingPings.size > 32) peer.pendingPings.delete(peer.pendingPings.keys().next().value);
+    }
+  }
+  poll(now = this._clock()) {
+    if (this.closed || this._failure) return;
+    if (!Number.isFinite(now)) throw new TypeError("network time");
+    for (const peer of this._peers.values()) {
+      this._peerLiveness(peer, now);
+      if (!peer.ready) {
+        if (now - peer.lastHello >= this.profile.heartbeatMs) this._sendHello(peer, now);
+        continue;
+      }
+      if (now - peer.lastSent >= this.profile.heartbeatMs) {
+        this._sendInputs(peer);
+        this._sendClock(peer, now);
+      }
+      let sent = 0;
+      while (peer.controls.length && sent < 65536) {
+        const data = peer.controls[0];
+        if (!this._send(peer, data)) break;
+        peer.controls.shift();
+        peer.queuedBytes -= data.length;
+        sent += data.length;
+      }
+    }
+    if (this._incomingSnapshot && now - this._incomingSnapshot.started > this.profile.recoveryTimeoutMs) this._rejectSnapshot("snapshot timeout");
+    if (this._requestedRecovery && now - this._requestedRecovery.at > this.profile.recoveryTimeoutMs) {
+      this._requestedRecovery = null;
+      this._event("recovery-timeout");
+      this._recoveryExhausted("timeout");
+    }
+    if (this._failure) return;
+    if (this.resimulating) this._rollback();
+    if (this._failure) return;
+    this._adapt(now);
+    this._sendHashes();
+    this._checkHashes();
+    this._recordConfirmed();
+  }
+  receive(peerId, data, now = this._clock()) {
+    if (this.closed || this._failure) return false;
+    const peer = this._peers.get(peerId);
+    if (!peer || ["closed", "failed"].includes(peer.transportState)) return false;
+    try {
+      const b = bytes(data);
+      if (b.length < HEADER || b.length > CHUNK_SIZE) throw new RangeError("packet size");
+      const r = new Reader(b);
+      if (r.u32() !== MAGIC) throw new Error("protocol magic");
+      const protocolVersion = r.u8();
+      if (protocolVersion !== PROTOCOL_VERSION) {
+        this._event("version-mismatch", { peerId, field: "protocol", expected: PROTOCOL_VERSION, received: protocolVersion });
+        throw new Error("protocol version");
+      }
+      const type = r.u8();
+      if (r.u16() !== 0) throw new Error("reserved header");
+      const sequence = r.u32();
+      this._metrics.receivedBytes += b.length;
+      if (type === TYPE.HELLO) {
+        const hello = r.raw(b.length - HEADER);
+        r.end();
+        if (!equalBytes(hello, this._hello)) {
+          const expected = JSON.parse(decoder.decode(this._hello)), received = JSON.parse(decoder.decode(hello));
+          const fields = Object.keys(expected).filter((field) => JSON.stringify(expected[field]) !== JSON.stringify(received?.[field]));
+          if (!fields.length) throw new Error("noncanonical HELLO");
+          const type2 = fields.some((field) => ["protocol", "library", "simulationVersion"].includes(field)) ? "version-mismatch" : "handshake-mismatch";
+          this._fail(type2, { peerId, fields: Object.freeze(fields), mismatches: Object.freeze(fields.map((field) => Object.freeze({ field, expected: expected[field], received: received?.[field] }))) });
+          return false;
+        }
+        const wasReady = peer.ready;
+        peer.ready = true;
+        this._peerAlive(peer, sequence, now);
+        if (!wasReady) {
+          this._sendHello(peer, now);
+          this._event("peer-ready", { peerId });
+        }
+        return true;
+      }
+      if (!peer.ready) return false;
+      if (type === TYPE.INPUT) this._receiveInputs(peer, r, sequence, now);
+      else if (type === TYPE.CLOCK) this._receiveClock(peer, r, sequence, now);
+      else if (type === TYPE.HASH) {
+        const tick = r.u32(), hash = r.u32(), inputHash = r.u32();
+        r.end();
+        if (tick <= this.tick + this.profile.stateHistorySize && tick >= Math.max(0, this.tick - this.profile.stateHistorySize + 1)) peer.hashes.set(tick, { hash, inputHash });
+      } else if (type === TYPE.REQUEST) {
+        const tick = r.u32();
+        r.end();
+        this._sendSnapshot(peer, tick);
+      } else if (type === TYPE.BEGIN) this._beginSnapshot(peer, r, now);
+      else if (type === TYPE.CHUNK) this._snapshotChunk(peer, r);
+      else throw new Error("unknown packet type");
+      this._peerAlive(peer, sequence, now);
+      return true;
+    } catch (error) {
+      this._metrics.rejectedPackets++;
+      this._event("protocol-error", { peerId, error });
+      return false;
+    }
+  }
+  _receiveInputs(peer, r, sequence, now) {
+    const first = r.u32(), count = r.u16(), size = r.u16(), ack = r.i32(), simTick = r.u32();
+    if (!count || count > 128 || size !== this.inputSize || first + count - 1 > MAX_TICK || first + count > this.tick + this.profile.stateHistorySize * 4 + this.profile.maxInputDelayTicks + 1) throw new RangeError("input timeline");
+    if (ack < -1 || ack > this._through.get(this.localPlayerId)) throw new RangeError("ack");
+    const incoming = [];
+    while (incoming.length < count) {
+      const run = r.u16();
+      if (!run || incoming.length + run > count) throw new RangeError("input run");
+      const input = r.raw(size), n = r.u16(), commands = [];
+      if (n > this.profile.maxPendingCommands) throw new RangeError("command count");
+      let previous = 0;
+      for (let i = 0; i < n; i++) {
+        const sequence2 = r.u32(), len = r.u16();
+        if (!sequence2 || sequence2 <= previous || !len || len > this.profile.maxCommandBytes) throw new RangeError("command shape/order");
+        previous = sequence2;
+        commands.push({ sequence: sequence2, executeTick: first + incoming.length, payload: r.raw(len) });
+      }
+      incoming.push({ input, commands });
+      for (let j = 1; j < run; j++) incoming.push({ input: input.slice(), commands: [] });
+    }
+    r.end();
+    const map = this._inputs.get(peer.id);
+    for (let i = 0; i < count; i++) {
+      const old = map.get(first + i);
+      if (old && !frameEqual(old, incoming[i])) throw new Error("conflicting committed input");
+    }
+    peer.ack = Math.max(peer.ack, ack);
+    if (peer.progressSequence === void 0 || sequence - peer.progressSequence >>> 0 < 2147483648 && sequence !== peer.progressSequence) {
+      peer.progressSequence = sequence;
+      peer.tick = simTick;
+      peer.clockAt = now;
+    }
+    const oldest = Math.max(0, this.tick - this.profile.stateHistorySize + 1);
+    for (let i = 0; i < count; i++) {
+      const t = first + i;
+      if (map.has(t) || t < oldest) continue;
+      map.set(t, incoming[i]);
+      this._window.received++;
+      if (t < this.tick) this._window.late++;
+      const used = this._used.get(t)?.find((x) => x.playerId === peer.id);
+      if (used && t < this.tick && !frameEqual(used, incoming[i])) {
+        if (!this._history.get(t)) {
+          this._event("history-exhausted", { inputTick: t });
+          this.requestResync(Math.min(this.confirmedTick + 1, this.tick));
+        } else this._rollbackFrom = Math.min(this._rollbackFrom, t);
+      }
+    }
+    let through = this._through.get(peer.id);
+    while (map.has(through + 1)) through++;
+    this._through.set(peer.id, through);
+  }
+  _receiveClock(peer, r, sequence, now) {
+    const tick = r.u32(), confirmed = r.i32(), ack = r.i32(), echo = r.u32(), reply = r.u8();
+    r.end();
+    if (reply > 1) throw new RangeError("clock reply flag");
+    if (tick > MAX_TICK + 1 || confirmed < -1 || confirmed > ack || ack < -1 || ack > this._through.get(this.localPlayerId)) throw new RangeError("clock/ack");
+    const fresh = peer.clockSequence === null || sequence - peer.clockSequence >>> 0 < 2147483648 && sequence !== peer.clockSequence;
+    if (!fresh) return;
+    peer.clockSequence = sequence;
+    peer.confirmed = confirmed;
+    if (peer.progressSequence === void 0 || sequence - peer.progressSequence >>> 0 < 2147483648 && sequence !== peer.progressSequence) {
+      peer.progressSequence = sequence;
+      peer.tick = tick;
+      peer.clockAt = now;
+    }
+    peer.ack = Math.max(peer.ack, ack);
+    peer.echo = sequence;
+    if (!reply) this._sendClock(peer, now, sequence);
+    const sent = reply ? peer.pendingPings.get(echo) : void 0;
+    if (sent !== void 0 && now >= sent) {
+      const sample = now - sent;
+      peer.pendingPings.delete(echo);
+      const difference = Math.abs(sample - peer.rtt);
+      peer.rtt = peer.rtt ? peer.rtt * 0.875 + sample * 0.125 : sample;
+      peer.jitter = peer.jitter * 0.75 + (peer.rtt === sample ? 0 : difference * 0.25);
+      this._metrics.smoothedRTT = Math.max(...[...this._peers.values()].map((p) => p.rtt));
+      this._metrics.jitter = Math.max(...[...this._peers.values()].map((p) => p.jitter));
+    }
+  }
+  _resolve(tick) {
+    return this.players.map((playerId) => {
+      const map = this._inputs.get(playerId), actual = map.get(tick);
+      if (actual) return { playerId, ...copyFrame(actual), predicted: false };
+      let prior = this._used.get(tick - 1)?.find((f) => f.playerId === playerId)?.input ?? new Uint8Array(this.inputSize);
+      const policy = this.profile.predictionPolicy;
+      if (typeof policy === "function") prior = bytes(policy({ playerId, tick, previousInput: prior.slice(), lastConfirmedTick: this._through.get(playerId) }));
+      else if (policy === "neutral") prior = new Uint8Array(this.inputSize);
+      if (prior.length !== this.inputSize) throw new RangeError("predictor inputSize");
+      return { playerId, input: prior.slice(), commands: [], predicted: true };
+    });
+  }
+  _step(inputs, resimulating) {
+    const before = this._history.get(this.tick);
+    const tick = this.tick;
+    integer(tick, "session tick limit", 0, MAX_TICK);
+    try {
+      runSimulationFrame(this.adapter, { tick, tickRate: this.profile.tickRate, inputs, resimulating });
+      const inputHash = this._hashInputFrame(tick, inputs, this._inputHash);
+      const state = this._save();
+      this._history.put({ tick: tick + 1, bytes: state, inputHash });
+      this._used.set(tick, inputs.map((f) => ({ ...copyFrame(f), playerId: f.playerId, predicted: f.predicted })));
+      this._tick++;
+      this._inputHash = inputHash;
+    } catch (error) {
+      if (before) this.adapter.load(before.bytes.slice());
+      this._fail("fatal", { error });
+      throw error;
+    }
+  }
+  _rollback() {
+    const started = nowMs();
+    this._replaying = true;
+    try {
+      if (this._rollbackFrom !== Infinity) {
+        const target = this.tick, from = this._rollbackFrom;
+        const saved = this._history.get(from);
+        if (!saved) throw new Error("rollback state expired");
+        this.adapter.load(saved.bytes.slice());
+        this._tick = from;
+        this._inputHash = saved.inputHash;
+        this._history.invalidateAfter(from);
+        this._rollbackFrom = Infinity;
+        this._metrics.rollbacks++;
+        this._window.rollback++;
+        this._metrics.maxRollbackDepth = Math.max(this._metrics.maxRollbackDepth, target - from);
+        this._window.depth = Math.max(this._window.depth, target - from);
+        this._event("rollback", { from, target });
+        while (this.tick < target) {
+          this._step(this._resolve(this.tick), true);
+          this._metrics.resimulatedTicks++;
+        }
+      }
+      return true;
+    } finally {
+      this._replaying = false;
+      this._metrics.latestResimulationMs = nowMs() - started;
+      this._window.cost += this._metrics.latestResimulationMs;
+      this._window.costSamples++;
+    }
+  }
+  _frameAdvantage(now) {
+    let advantage = -Infinity;
+    for (const peer of this._peers.values()) if (peer.ready && peer.clockSequence !== null) {
+      const age = Math.max(0, Math.min(1e3 / this.profile.tickRate, now - peer.clockAt));
+      const estimated = peer.tick + (age + peer.rtt / 2) * this.profile.tickRate / 1e3;
+      advantage = Math.max(advantage, this.tick - estimated);
+    }
+    return Number.isFinite(advantage) ? advantage : 0;
+  }
+  advance(input = this._lastLocalInput) {
+    if (this.closed) throw new Error("session closed");
+    const now = this._clock();
+    this.poll(now);
+    if (this._failure) return { status: "failed", tick: this.tick, failure: this.failure };
+    if (["interrupted", "disconnected"].includes(this.status)) return { status: this.status, tick: this.tick };
+    if (this._requestedRecovery) return { status: "recovering", tick: this.tick };
+    if (this.resimulating) return { status: "resimulating", tick: this.tick };
+    this._capture(input);
+    for (const peer of this._peers.values()) if (peer.ready) this._sendInputs(peer);
+    if (!this.ready) return { status: "synchronizing", tick: this.tick };
+    const advantage = this._frameAdvantage(now);
+    const threshold = this.profile.tickDriftThreshold;
+    const hold = this.profile.pacingPolicy === "hold" && advantage > threshold || this.profile.pacingPolicy === "dilation" && advantage > Math.max(4, threshold * 3);
+    if (hold) {
+      this._metrics.holds++;
+      return { status: "held", tick: this.tick };
+    }
+    const inputs = this._resolve(this.tick), predicted = inputs.some((f) => f.predicted);
+    const minAck = this._peers.size ? Math.min(...[...this._peers.values()].map((p) => p.ack)) : this.tick;
+    if (predicted && this.tick - (this.confirmedTick + 1) >= this.profile.rollbackWindowTicks || this._through.get(this.localPlayerId) - minAck >= this.profile.stateHistorySize * 4) {
+      this._metrics.stalls++;
+      this._window.stall++;
+      return { status: "stalled", tick: this.tick };
+    }
+    this._step(inputs, false);
+    this._window.advances++;
+    if (predicted) this._metrics.predictedTicks++;
+    this._recordConfirmed();
+    this._sendHashes();
+    this._checkHashes();
+    this._prune();
+    return { status: "advanced", tick: this.tick };
+  }
+  _adapt(now) {
+    if (this._lastAdaptation === null) {
+      this._lastAdaptation = now;
+      return;
+    }
+    if (now - this._lastAdaptation < this.profile.adaptationIntervalMs) return;
+    const seconds = (now - this._lastAdaptation) / 1e3;
+    this._lastAdaptation = now;
+    const w = this._window;
+    const lateRate = w.received ? w.late / w.received : 0;
+    this._metrics.lateInputRate = this._metrics.lateInputRate * 0.75 + lateRate * 0.25;
+    this._metrics.rollbackFrequency = this._metrics.rollbackFrequency * 0.75 + w.rollback / seconds * 0.25;
+    this._metrics.stallFrequency = this._metrics.stallFrequency * 0.75 + w.stall / seconds * 0.25;
+    const cost = w.costSamples ? w.cost / w.costSamples : 0;
+    this._metrics.resimulationCostMs = this._metrics.resimulationCostMs * 0.75 + cost * 0.25;
+    if (this.profile.adaptiveInputDelay) {
+      const measured = Math.ceil((this._metrics.smoothedRTT / 2 + 2 * this._metrics.jitter) * this.profile.tickRate / 1e3);
+      const pressure = this._metrics.lateInputRate > 0.1 || this._metrics.rollbackFrequency > 2 || w.depth > 3 || this._metrics.stallFrequency > 2 || this._metrics.resimulationCostMs > 1e3 / this.profile.tickRate;
+      if (pressure || measured > this.inputDelay + 1) {
+        this.setInputDelay(Math.min(this.profile.maxInputDelayTicks, Math.max(this.inputDelay + 1, measured)));
+        this._stableWindows = 0;
+      } else if (w.advances > 0 && !w.late && !w.stall && measured <= this.inputDelay - 1) {
+        if (++this._stableWindows >= 3) {
+          this.setInputDelay(Math.max(this.profile.minInputDelayTicks, this.inputDelay - 1));
+          this._stableWindows = 0;
+        }
+      } else this._stableWindows = 0;
+    }
+    if (this.profile.pacingPolicy === "dilation") {
+      const drift = this._frameAdvantage(now);
+      const target = Math.abs(drift) < 0.5 ? 1 : Math.max(0.98, Math.min(1.05, 1 + drift * 5e-3));
+      const change = Math.max(-5e-3, Math.min(5e-3, (target - this._pace) * 0.2));
+      this._pace = Math.max(0.98, Math.min(1.05, this._pace + change));
+    }
+    this._window = { advances: 0, received: 0, late: 0, depth: 0, rollback: 0, stall: 0, cost: 0, costSamples: 0 };
+  }
+  _sendHashes() {
+    if (this.resimulating) return;
+    const upTo = Math.min(this.tick, this.confirmedTick + 1);
+    const t = Math.floor(upTo / this.profile.checksumInterval) * this.profile.checksumInterval;
+    if (!t) return;
+    const s = this._history.get(t);
+    if (!s) return;
+    for (const peer of this._peers.values()) if (peer.ready && peer.lastHashQueued < t) {
+      if (this._queue(peer, packet(TYPE.HASH, this._nextSequence(), (w) => {
+        w.u32(t);
+        w.u32(this._stateHash(s));
+        w.u32(s.inputHash);
+      }))) peer.lastHashQueued = t;
+    }
+  }
+  _checkHashes() {
+    if (this.resimulating) return;
+    for (const peer of this._peers.values()) for (const [tick, remote] of peer.hashes) {
+      if (tick > Math.min(this.tick, this.confirmedTick + 1)) continue;
+      const local = this._history.get(tick);
+      if (!local) {
+        peer.hashes.delete(tick);
+        continue;
+      }
+      if (local.inputHash !== remote.inputHash) {
+        peer.hashes.delete(tick);
+        this._event("input-history-mismatch", { peerId: peer.id, at: tick });
+        continue;
+      }
+      if (this._stateHash(local) !== remote.hash) {
+        if (!remote.notified) {
+          remote.notified = true;
+          this._metrics.hashMismatches++;
+          this._event("desync", { peerId: peer.id, at: tick });
+        }
+        if (this.localPlayerId === this.authorityPlayerId || this.requestResync(tick)) peer.hashes.delete(tick);
+      } else peer.hashes.delete(tick);
+    }
+  }
+  getStateHash(tick = this.tick) {
+    return this._stateHash(this._history.get(tick));
+  }
+  requestResync(tick) {
+    if (this.closed || this._failure) return false;
+    integer(tick, "recovery tick", 0, Math.min(this.tick, this.confirmedTick + 1));
+    if (this.localPlayerId === this.authorityPlayerId) return false;
+    const peer = this._peers.get(this.authorityPlayerId);
+    if (!peer?.ready || this._requestedRecovery) return false;
+    if (this._recoveryExhausted("attempt-limit")) return false;
+    const state = this._history.get(tick);
+    if (!state) return false;
+    if (!this._queue(peer, packet(TYPE.REQUEST, this._nextSequence(), (w) => w.u32(tick)))) return false;
+    this._requestedRecovery = { tick, inputHash: state.inputHash, at: this._clock() };
+    this._recoveryAttempts++;
+    return true;
+  }
+  _sendSnapshot(peer, tick) {
+    if (this.localPlayerId !== this.authorityPlayerId || this.resimulating || tick > this.confirmedTick + 1) return;
+    const state = this._history.get(tick);
+    if (!state) return;
+    const transfer = ++this._nextTransfer >>> 0, count = Math.ceil(state.bytes.length / SNAP_CHUNK_BYTES);
+    const packets = [packet(TYPE.BEGIN, this._nextSequence(), (w) => {
+      w.u32(transfer);
+      w.u32(tick);
+      w.u32(state.bytes.length);
+      w.u32(this._stateHash(state));
+      w.u32(state.inputHash);
+      w.u16(count);
+    })];
+    for (let i = 0; i < count; i++) packets.push(packet(TYPE.CHUNK, this._nextSequence(), (w) => {
+      w.u32(transfer);
+      w.u32(i);
+      w.raw(state.bytes.subarray(i * SNAP_CHUNK_BYTES, (i + 1) * SNAP_CHUNK_BYTES));
+    }));
+    if (peer.queuedBytes + packets.reduce((s, b) => s + b.length, 0) > this.profile.maxQueuedBytes) {
+      this._event("recovery-backpressure", { peerId: peer.id });
+      return;
+    }
+    for (const p of packets) this._queue(peer, p);
+  }
+  _beginSnapshot(peer, r, now) {
+    const transfer = r.u32(), tick = r.u32(), total = r.u32(), hash = r.u32(), inputHash = r.u32(), count = r.u16();
+    r.end();
+    const busy = this._incomingSnapshot;
+    if (busy) {
+      if (peer.id === this.authorityPlayerId && transfer === busy.transfer && tick === busy.tick && total === busy.total && hash === busy.hash && inputHash === busy.inputHash && count === busy.count) return;
+      throw new Error("another snapshot candidate is active");
+    }
+    if (peer.id !== this.authorityPlayerId || !this._requestedRecovery || this._requestedRecovery.tick !== tick || inputHash !== this._requestedRecovery.inputHash || !this._history.get(tick) || tick > this.confirmedTick + 1 || !total || total > this.profile.maxSnapshotBytes || count !== Math.ceil(total / SNAP_CHUNK_BYTES) || this._incomingSnapshot) throw new Error("snapshot candidate metadata");
+    this._incomingSnapshot = {
+      transfer,
+      tick,
+      total,
+      hash,
+      inputHash,
+      count,
+      bytes: new Uint8Array(total),
+      seen: new Uint8Array(count),
+      received: 0,
+      started: now
+    };
+  }
+  _snapshotChunk(peer, r) {
+    const transfer = r.u32(), index = r.u32(), candidate = this._incomingSnapshot;
+    if (peer.id !== this.authorityPlayerId || !candidate || transfer !== candidate.transfer || index >= candidate.count) throw new Error("snapshot transfer");
+    const chunk = r.raw(r.data.length - r.offset);
+    r.end();
+    const expected = Math.min(SNAP_CHUNK_BYTES, candidate.total - index * SNAP_CHUNK_BYTES);
+    if (chunk.length !== expected) throw new RangeError("snapshot chunk length");
+    const start = index * SNAP_CHUNK_BYTES;
+    if (candidate.seen[index]) {
+      if (!equalBytes(candidate.bytes.subarray(start, start + expected), chunk)) throw new Error("conflicting snapshot chunk");
+      return;
+    }
+    candidate.bytes.set(chunk, start);
+    candidate.seen[index] = 1;
+    candidate.received++;
+    if (candidate.received === candidate.count) this._commitSnapshot(candidate);
+  }
+  _rejectSnapshot(reason) {
+    this._incomingSnapshot = null;
+    this._requestedRecovery = null;
+    this._metrics.rejectedSnapshots++;
+    this._event("recovery-rejected", { reason });
+    this._recoveryExhausted(reason);
+  }
+  _recoveryExhausted(reason) {
+    if (this._recoveryAttempts < this.profile.maxRecoveryAttempts) return false;
+    this._fail("desync-unrecoverable", { reason, attempts: this._recoveryAttempts, authorityPlayerId: this.authorityPlayerId });
+    return true;
+  }
+  _commitSnapshot(candidate) {
+    if (this.resimulating || !this._history.get(candidate.tick) || hashBytes(candidate.bytes) !== candidate.hash) {
+      this._rejectSnapshot("expired or corrupt candidate");
+      return;
+    }
+    const started = nowMs(), original = this._save();
+    this._replaying = true;
+    try {
+      if (this.adapter.validateSnapshot(candidate.bytes.slice(), { tick: candidate.tick }) !== true) throw new Error("adapter rejected candidate");
+      this.adapter.load(candidate.bytes.slice());
+      if (!equalBytes(this._save(), candidate.bytes)) throw new Error("snapshot round-trip changed candidate");
+      const job = {
+        candidate,
+        original,
+        current: this.tick,
+        next: candidate.tick,
+        inputHash: candidate.inputHash,
+        state: candidate.bytes.slice(),
+        staged: [],
+        stagedInputs: [],
+        stageBytes: 0
+      };
+      this._incomingSnapshot = null;
+      while (job.next < job.current) {
+        const t = job.next, inputs = this._resolve(t);
+        runSimulationFrame(this.adapter, {
+          tick: t,
+          tickRate: this.profile.tickRate,
+          inputs,
+          resimulating: true,
+          recovering: true
+        });
+        job.inputHash = this._hashInputFrame(t, inputs, job.inputHash);
+        job.state = this._save();
+        job.staged.push({ tick: t + 1, bytes: job.state, inputHash: job.inputHash });
+        job.stagedInputs.push([t, inputs]);
+        job.next++;
+        this._metrics.resimulatedTicks++;
+        job.stageBytes += job.state.length;
+        if (job.stageBytes > this.profile.maxHistoryBytes) throw new RangeError("candidate replay byte budget");
+      }
+      const replacement = new StateHistory(this.profile.stateHistorySize, this.profile.maxHistoryBytes);
+      for (const state of this._history.slots) if (state && state.tick < job.candidate.tick) replacement.put(state);
+      replacement.put({
+        tick: job.candidate.tick,
+        bytes: job.candidate.bytes,
+        hash: job.candidate.hash,
+        inputHash: job.candidate.inputHash
+      });
+      for (const state of job.staged) replacement.put(state);
+      const used = new Map(this._used);
+      for (const [t, inputs] of job.stagedInputs) used.set(t, inputs);
+      this._history = replacement;
+      this._used = used;
+      this._inputHash = job.inputHash;
+      this._requestedRecovery = null;
+      this._recoveryAttempts = 0;
+      this._metrics.recoveries++;
+      this._event("recovered", { from: job.candidate.tick, target: job.current });
+    } catch (error) {
+      this.adapter.load(original.slice());
+      this._rejectSnapshot(error.message);
+    } finally {
+      this._replaying = false;
+      this._metrics.latestResimulationMs = nowMs() - started;
+      this._window.cost += this._metrics.latestResimulationMs;
+      this._window.costSamples++;
+    }
+  }
+  _recordConfirmed() {
+    if (!this._recordReplay || this.resimulating || this._failure) return;
+    this._replayFinalState = this._history.get(this._replayFrames.length) ?? this._replayFinalState;
+    const through = Math.min(this.confirmedTick, this.tick - 1);
+    for (let t = this._replayFrames.length; t <= through; t++) {
+      const inputs = this.players.map((playerId) => ({ playerId, ...copyFrame(this._inputs.get(playerId).get(t)), predicted: false }));
+      const n = inputs.reduce((s, f) => s + f.input.length + f.commands.reduce((k, c) => k + c.payload.length + 12, 0), 16);
+      if (this._replayBytes + n > this.profile.maxReplayBytes) {
+        this._replayFinalHash = this._stateHash(this._replayFinalState);
+        this._replayFinalState = null;
+        this._recordReplay = false;
+        this._event("replay-capacity");
+        return;
+      }
+      this._replayFrames.push({ tick: t, inputs });
+      this._replayBytes += n;
+      this._replayFinalState = this._history.get(t + 1);
+    }
+  }
+  exportSyncTestFrames({ maxFrames = 32 } = {}) {
+    integer(maxFrames, "maxFrames", 1, 256);
+    if (this.resimulating) throw new Error("finish rollback before exporting synctest frames");
+    this._recordConfirmed();
+    return {
+      initialState: this._initialState.slice(),
+      players: [...this.players],
+      inputSize: this.inputSize,
+      tickRate: this.profile.tickRate,
+      initialTick: 0,
+      frames: this._replayFrames.slice(0, maxFrames).map((f) => ({
+        tick: f.tick,
+        inputs: f.inputs.map((x) => ({ ...copyFrame(x), playerId: x.playerId, predicted: false }))
+      }))
+    };
+  }
+  exportReplay() {
+    if (this.resimulating) throw new Error("finish rollback before exporting replay");
+    this._recordConfirmed();
+    const tick = this._replayFrames.length;
+    return {
+      version: VERSION,
+      simulationVersion: this.simulationVersion,
+      seed: this.seed,
+      players: [...this.players],
+      inputSize: this.inputSize,
+      tickRate: this.profile.tickRate,
+      initialState: this._initialState.slice(),
+      frames: this._replayFrames.map((f) => ({
+        tick: f.tick,
+        inputs: f.inputs.map((x) => ({ ...copyFrame(x), playerId: x.playerId, predicted: false }))
+      })),
+      tick,
+      hash: this._stateHash(this._history.get(tick)) ?? this._stateHash(this._replayFinalState) ?? this._replayFinalHash ?? hashBytes(this._initialState),
+      truncated: !this._recordReplay
+    };
+  }
+  _prune() {
+    const oldest = Math.max(0, this.tick - this.profile.stateHistorySize + 1);
+    for (const t of this._used.keys()) if (t < oldest - 1) this._used.delete(t);
+    const minAck = this._peers.size ? Math.min(...[...this._peers.values()].map((p) => p.ack)) : this.tick;
+    for (const [playerId, map] of this._inputs) for (const t of map.keys()) if (t < oldest && (playerId !== this.localPlayerId || t <= minAck)) map.delete(t);
+  }
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    for (const peer of this._peers.values()) {
+      peer.unsubscribe?.();
+      peer.unsubscribeStatus?.();
+      peer.transport.close?.();
+    }
+    this._peers.clear();
+    this._incomingSnapshot = null;
+    this._pendingCommands.length = 0;
+    this._event("closed");
+  }
+};
+
+// packages/deterministic/src/value-codec.js
+function createValueCodec({ format = "binary", maxBytes = 16 * 1024 * 1024, maxDepth = 128, maxEntries = 1e6 } = {}) {
+  if (!["binary", "json"].includes(format)) throw new TypeError("Unknown codec format");
+  for (const limit of [maxBytes, maxDepth, maxEntries]) if (!Number.isSafeInteger(limit) || limit < 1) throw new RangeError("Invalid codec limit");
+  const encoder2 = new TextEncoder(), decoder2 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+  function normalize(value, depth = 0, seen = /* @__PURE__ */ new Set(), budget = { count: 0 }) {
+    if (depth > maxDepth || ++budget.count > maxEntries) throw new RangeError("Value codec budget exceeded");
+    if (value === null || typeof value === "boolean") return value;
+    if (typeof value === "number") {
+      if (!Number.isFinite(value)) throw new TypeError("Finite numbers required");
+      return Object.is(value, -0) ? 0 : value;
+    }
+    if (typeof value === "string") {
+      if (decoder2.decode(encoder2.encode(value)) !== value) throw new TypeError("Invalid Unicode string");
+      return value;
+    }
+    if (!value || typeof value !== "object" || seen.has(value)) throw new TypeError("Unsupported or cyclic value");
+    seen.add(value);
+    let result;
+    if (value instanceof Uint8Array) {
+      if (format === "json") throw new TypeError("JSON codec does not support byte values");
+      result = value;
+    } else if (Array.isArray(value)) {
+      result = Array.from(value, (item) => normalize(item, depth + 1, seen, budget));
+    } else {
+      if (![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new TypeError("Plain records required");
+      result = {};
+      for (const key of Object.keys(value).sort()) {
+        normalize(key, depth + 1, seen, budget);
+        Object.defineProperty(result, key, { value: normalize(value[key], depth + 1, seen, budget), enumerable: true, writable: true, configurable: true });
+      }
+    }
+    seen.delete(value);
+    return result;
+  }
+  const stringCache = /* @__PURE__ */ new Map();
+  let cachedStringBytes = 0;
+  function stringBytes(value) {
+    let data = stringCache.get(value);
+    if (data) return data;
+    for (let i = 0; i < value.length; i++) {
+      const c = value.charCodeAt(i);
+      if (c >= 55296 && c <= 56319) {
+        const next = value.charCodeAt(++i);
+        if (!(next >= 56320 && next <= 57343)) throw new TypeError("Invalid Unicode string");
+      } else if (c >= 56320 && c <= 57343) throw new TypeError("Invalid Unicode string");
+    }
+    data = encoder2.encode(value);
+    if (data.length <= 256 && stringCache.size < 1024 && cachedStringBytes + data.length <= 131072) {
+      stringCache.set(value, data);
+      cachedStringBytes += data.length;
+    }
+    return data;
+  }
+  function encode(value) {
+    if (format === "json") {
+      const bytes3 = encoder2.encode(JSON.stringify(normalize(value)));
+      if (bytes3.length > maxBytes) throw new RangeError("Codec byte budget exceeded");
+      return bytes3;
+    }
+    let bytes2 = new Uint8Array(Math.min(1024, maxBytes)), offset = 0, view = new DataView(bytes2.buffer), entries = 0;
+    const seen = /* @__PURE__ */ new Set(), strings = /* @__PURE__ */ new Map();
+    function reserve(size) {
+      if (offset + size > maxBytes) throw new RangeError("Codec byte budget exceeded");
+      if (offset + size > bytes2.length) {
+        const next = new Uint8Array(Math.min(maxBytes, Math.max(offset + size, bytes2.length * 2)));
+        next.set(bytes2);
+        bytes2 = next;
+        view = new DataView(bytes2.buffer);
+      }
+    }
+    function byte(n) {
+      reserve(1);
+      bytes2[offset++] = n;
+    }
+    function length(n) {
+      reserve(4);
+      view.setUint32(offset, n, true);
+      offset += 4;
+    }
+    function raw(data) {
+      length(data.length);
+      reserve(data.length);
+      bytes2.set(data, offset);
+      offset += data.length;
+    }
+    function variable(n) {
+      while (n >= 128) {
+        byte(n % 128 + 128);
+        n = Math.floor(n / 128);
+      }
+      byte(n);
+    }
+    function write(v, depth = 0) {
+      if (depth > maxDepth || ++entries > maxEntries) throw new RangeError("Value codec budget exceeded");
+      if (v === null) byte(0);
+      else if (v === false) byte(1);
+      else if (v === true) byte(2);
+      else if (typeof v === "number") {
+        if (!Number.isFinite(v)) throw new TypeError("Finite numbers required");
+        if (Number.isInteger(v) && v >= -2147483648 && v <= 2147483647) {
+          byte(8);
+          variable(v < 0 ? -v * 2 - 1 : v * 2);
+        } else {
+          byte(3);
+          reserve(8);
+          view.setFloat64(offset, v, true);
+          offset += 8;
+        }
+      } else if (typeof v === "string") {
+        const ref = strings.get(v);
+        if (ref !== void 0) {
+          byte(9);
+          variable(ref);
+        } else {
+          strings.set(v, strings.size);
+          byte(4);
+          raw(stringBytes(v));
+        }
+      } else {
+        if (!v || typeof v !== "object" || seen.has(v)) throw new TypeError("Unsupported or cyclic value");
+        if (v instanceof Uint8Array) {
+          byte(7);
+          raw(v);
+          return;
+        }
+        seen.add(v);
+        if (Array.isArray(v)) {
+          byte(5);
+          length(v.length);
+          for (const item of v) write(item, depth + 1);
+        } else {
+          const prototype = Object.getPrototypeOf(v);
+          if (prototype !== Object.prototype && prototype !== null) throw new TypeError("Plain records required");
+          byte(6);
+          const keys = Object.keys(v).sort();
+          length(keys.length);
+          for (const key of keys) {
+            write(key, depth + 1);
+            write(v[key], depth + 1);
+          }
+        }
+        seen.delete(v);
+      }
+    }
+    byte(82);
+    byte(86);
+    byte(1);
+    write(value);
+    return bytes2.slice(0, offset);
+  }
+  function decode(input) {
+    const bytes2 = input instanceof Uint8Array ? input : input instanceof ArrayBuffer ? new Uint8Array(input) : ArrayBuffer.isView(input) ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength) : null;
+    if (!bytes2 || bytes2.length > maxBytes) throw new RangeError("Invalid codec bytes");
+    let result;
+    if (format === "json") result = normalize(JSON.parse(decoder2.decode(bytes2)));
+    else {
+      let need = function(n) {
+        if (n > bytes2.length - offset) throw new RangeError("Truncated codec bytes");
+      }, byte = function() {
+        need(1);
+        return bytes2[offset++];
+      }, length = function() {
+        need(4);
+        const n = view.getUint32(offset, true);
+        offset += 4;
+        return n;
+      }, raw = function() {
+        const n = length();
+        need(n);
+        const data = bytes2.subarray(offset, offset + n);
+        offset += n;
+        return data;
+      }, read = function(depth = 0) {
+        if (depth > maxDepth || ++entries > maxEntries) throw new RangeError("Value codec budget exceeded");
+        const tag = byte();
+        if (tag === 0) return null;
+        if (tag === 1) return false;
+        if (tag === 2) return true;
+        if (tag === 3) {
+          need(8);
+          const n2 = view.getFloat64(offset, true);
+          offset += 8;
+          if (!Number.isFinite(n2) || Object.is(n2, -0) || Number.isInteger(n2) && n2 >= -2147483648 && n2 <= 2147483647) throw new TypeError("Noncanonical number");
+          return n2;
+        }
+        if (tag === 8 || tag === 9) {
+          let n2 = 0, scale = 1, part;
+          for (let i = 0; i < 5; i++) {
+            part = byte();
+            n2 += (part & 127) * scale;
+            if (n2 > 4294967295) throw new TypeError("Integer overflow");
+            if (part < 128) {
+              if (i && part === 0) throw new TypeError("Noncanonical integer");
+              if (tag === 9) {
+                if (n2 >= strings.length) throw new TypeError("Invalid string reference");
+                return strings[n2];
+              }
+              return n2 % 2 ? -(n2 + 1) / 2 : n2 / 2;
+            }
+            scale *= 128;
+          }
+          throw new TypeError("Invalid integer");
+        }
+        if (tag === 4) {
+          const value = decoder2.decode(raw());
+          if (stringSet.has(value)) throw new TypeError("Noncanonical repeated string");
+          stringSet.add(value);
+          strings.push(value);
+          return value;
+        }
+        if (tag === 7) return raw().slice();
+        if (tag !== 5 && tag !== 6) throw new TypeError("Invalid codec tag");
+        const n = length();
+        if (n > maxEntries - entries) throw new RangeError("Value codec budget exceeded");
+        if (tag === 5) {
+          const arr = [];
+          for (let i = 0; i < n; i++) arr.push(read(depth + 1));
+          return arr;
+        }
+        const obj = {};
+        let previous;
+        for (let i = 0; i < n; i++) {
+          const key = read(depth + 1);
+          if (typeof key !== "string" || i && key <= previous) throw new TypeError("Noncanonical record key");
+          if (key === "__proto__") Object.defineProperty(obj, key, { value: read(depth + 1), enumerable: true, writable: true, configurable: true });
+          else obj[key] = read(depth + 1);
+          previous = key;
+        }
+        return obj;
+      };
+      let offset = 0, entries = 0;
+      const strings = [], stringSet = /* @__PURE__ */ new Set();
+      const view = new DataView(bytes2.buffer, bytes2.byteOffset, bytes2.byteLength);
+      if (byte() !== 82 || byte() !== 86 || byte() !== 1) throw new TypeError("Invalid codec header");
+      result = read();
+      if (offset !== bytes2.length) throw new TypeError("Trailing codec bytes");
+    }
+    if (format === "json") {
+      const canonical = encode(result);
+      if (canonical.length !== bytes2.length || canonical.some((v, i) => v !== bytes2[i])) throw new TypeError("Noncanonical codec bytes");
+    }
+    return result;
+  }
+  return Object.freeze({ format, encode, decode });
+}
+var binaryCodec = createValueCodec();
+var jsonCodec = createValueCodec({ format: "json" });
+
+// packages/deterministic/src/synctest.js
+var DeterminismError = class extends Error {
+  constructor({ tick, checkpointTick, expected, actual, inputs }) {
+    let offset = 0;
+    while (offset < Math.min(expected.length, actual.length) && expected[offset] === actual[offset]) offset++;
+    super(`Determinism mismatch at state S[${tick}], first byte ${offset}, checkpoint S[${checkpointTick}]`);
+    this.name = "DeterminismError";
+    this.code = "determinism-mismatch";
+    this.tick = tick;
+    this.checkpointTick = checkpointTick;
+    this.firstDifference = offset;
+    this.expectedHash = hashBytes(expected);
+    this.actualHash = hashBytes(actual);
+    this.expectedState = expected.slice();
+    this.actualState = actual.slice();
+    this.inputs = inputs.map((frame) => ({ ...copyFrame(frame), playerId: frame.playerId, predicted: false }));
+  }
+};
+function createSyncTestSession(options) {
+  return new SyncTestSession(options);
+}
+var SyncTestSession = class {
+  constructor({
+    adapter,
+    players,
+    inputSize,
+    tickRate = 60,
+    initialTick = 0,
+    checkDistance = 1,
+    maxSnapshotBytes = 4 * 1024 * 1024,
+    maxHistoryBytes = 64 * 1024 * 1024,
+    now = () => globalThis.performance?.now() ?? Date.now()
+  } = {}) {
+    if (!adapter || ["save", "load", "step", "validateSnapshot"].some((key) => typeof adapter[key] !== "function")) throw new TypeError("Simulation Adapter capabilities");
+    if (!Array.isArray(players) || !players.length || players.length > 8 || players.some((id) => typeof id !== "string" || !id.length) || new Set(players).size !== players.length) throw new TypeError("fixed player roster");
+    if (typeof now !== "function") throw new TypeError("diagnostic clock");
+    this._now = now;
+    this._cost = { forwardCostMs: 0, resimulationCostMs: 0, totalCostMs: 0 };
+    this.adapter = adapter;
+    this.players = Object.freeze([...players].sort(compareIds));
+    this.inputSize = integer(inputSize, "inputSize", 1, 1024);
+    this.tickRate = integer(tickRate, "tickRate", 1, 240);
+    this.checkDistance = integer(checkDistance, "checkDistance", 1, 256);
+    this._tick = integer(initialTick, "initialTick", 0, MAX_TICK);
+    this.initialTick = this.tick;
+    this.maxSnapshotBytes = integer(maxSnapshotBytes, "maxSnapshotBytes", 1, 64 * 1024 * 1024);
+    integer(maxHistoryBytes, "maxHistoryBytes", 1, 2147483647);
+    this._history = new StateHistory(checkDistance + 1, maxHistoryBytes);
+    this._frames = /* @__PURE__ */ new Map();
+    this.failure = null;
+    this.closed = false;
+    this.resimulatedTicks = 0;
+    this.checkedTicks = 0;
+    const initial = this._save();
+    if (initial.length * (checkDistance + 1) > maxHistoryBytes) throw new RangeError("synctest history byte budget");
+    if (adapter.validateSnapshot(initial.slice(), { tick: this.tick }) !== true) throw new TypeError("initial snapshot validation");
+    this._history.put({ tick: this.tick, bytes: initial });
+  }
+  get tick() {
+    return this._tick;
+  }
+  get status() {
+    return this.closed ? "closed" : this.failure ? "failed" : "running";
+  }
+  get metrics() {
+    const error = this.failure;
+    const failure = error ? Object.freeze({
+      name: error.name ?? "Error",
+      message: String(error.message ?? error),
+      code: error.code ?? null,
+      tick: error.tick ?? null,
+      checkpointTick: error.checkpointTick ?? null,
+      firstDifference: error.firstDifference ?? null,
+      expectedHash: error.expectedHash ?? null,
+      actualHash: error.actualHash ?? null
+    }) : null;
+    return Object.freeze({
+      status: this.status,
+      tick: this.tick,
+      checkDistance: this.checkDistance,
+      checkedTicks: this.checkedTicks,
+      resimulatedTicks: this.resimulatedTicks,
+      stateHash: this.closed ? null : this.getStateHash() ?? null,
+      historyBytes: this._history.byteLength,
+      failure,
+      ...this._cost
+    });
+  }
+  _save() {
+    const value = bytes(this.adapter.save()).slice();
+    if (!value.length || value.length > this.maxSnapshotBytes) throw new RangeError("snapshot size");
+    return value;
+  }
+  _inputs(inputs) {
+    if (!Array.isArray(inputs) || inputs.length !== this.players.length) throw new TypeError("all local player inputs required");
+    const ordered = [...inputs].sort((a, b) => compareIds(a.playerId, b.playerId));
+    return ordered.map((frame, index) => {
+      if (frame.playerId !== this.players[index] || bytes(frame.input).length !== this.inputSize) throw new TypeError("player/inputSize");
+      const commands = frame.commands ?? [];
+      if (!Array.isArray(commands) || commands.length > 256) throw new TypeError("commands");
+      const sorted = [...commands].sort((a, b) => a.sequence - b.sequence);
+      let previous = 0;
+      for (const command of sorted) {
+        integer(command.sequence, "command sequence", 1);
+        if (command.sequence <= previous || command.executeTick !== this.tick) throw new TypeError("command ordering/executeTick");
+        const payload = bytes(command.payload);
+        if (!payload.length || payload.length > 15360) throw new RangeError("command payload");
+        previous = command.sequence;
+      }
+      return { ...copyFrame({ input: bytes(frame.input), commands: sorted }), playerId: frame.playerId, predicted: false };
+    });
+  }
+  advance(inputs) {
+    if (this.closed) throw new Error("sync test closed");
+    if (this.failure) throw this.failure;
+    integer(this.tick + 1, "tick limit", 0, MAX_TICK);
+    const frames = this._inputs(inputs), before = this._history.get(this.tick), frameTick = this.tick;
+    let forward = before.bytes;
+    const started = this._now();
+    let replayStarted;
+    try {
+      runSimulationFrame(this.adapter, { tick: frameTick, tickRate: this.tickRate, inputs: frames, resimulating: false, synctesting: true });
+      const next = this._save();
+      this._history.put({ tick: frameTick + 1, bytes: next });
+      forward = next;
+      this._frames.set(frameTick, frames);
+      this._tick++;
+      replayStarted = this._now();
+      this._cost.forwardCostMs += Math.max(0, replayStarted - started);
+      const from = Math.max(this.initialTick, this.tick - this.checkDistance);
+      this.adapter.load(this._history.get(from).bytes.slice());
+      for (let tick = from; tick < this.tick; tick++) {
+        const input = this._frames.get(tick);
+        runSimulationFrame(this.adapter, { tick, tickRate: this.tickRate, inputs: input, resimulating: true, synctesting: true });
+        const actual = this._save(), expected = this._history.get(tick + 1).bytes;
+        this.resimulatedTicks++;
+        if (!equalBytes(actual, expected)) throw new DeterminismError({ tick: tick + 1, checkpointTick: from, expected, actual, inputs: input });
+      }
+      this.checkedTicks++;
+      for (const tick of this._frames.keys()) if (tick < from) this._frames.delete(tick);
+    } catch (error) {
+      this.failure = error;
+      throw error;
+    } finally {
+      try {
+        this.adapter.load(forward.slice());
+      } catch (error) {
+        if (this.failure) this.failure.restoreError = error;
+        else {
+          this.failure = error;
+          throw error;
+        }
+      } finally {
+        const finished = this._now();
+        if (replayStarted !== void 0) this._cost.resimulationCostMs += Math.max(0, finished - replayStarted);
+        else this._cost.forwardCostMs += Math.max(0, finished - started);
+        this._cost.totalCostMs += Math.max(0, finished - started);
+      }
+    }
+    return { tick: this.tick, checkedTicks: this.checkedTicks, resimulatedTicks: this.resimulatedTicks };
+  }
+  getStateHash() {
+    const state = this._history.get(this.tick);
+    if (!state) return void 0;
+    if (state.hash === void 0) state.hash = hashBytes(state.bytes);
+    return state.hash;
+  }
+  close() {
+    this.closed = true;
+    this._frames.clear();
+    this._history.slots.fill(void 0);
+    this._history.byteLength = 0;
+  }
+};
+function beginSyncTestBatch(frames, options) {
+  if (!Array.isArray(frames)) throw new TypeError("frames");
+  return { initial: bytes(options.adapter.save()).slice(), session: createSyncTestSession(options) };
+}
+function advanceSyncTestBatch(session, frame) {
+  if (frame.tick !== session.tick) throw new TypeError("non-contiguous test frames");
+  session.advance(frame.inputs);
+}
+function syncTestBatchResult(session) {
+  return { tick: session.tick, checkedTicks: session.checkedTicks, resimulatedTicks: session.resimulatedTicks, hash: session.getStateHash(), metrics: session.metrics };
+}
+function syncTestBatchFailure(session, error) {
+  const failure = error instanceof Error ? error : new Error(String(error));
+  session.failure ??= failure;
+  failure.syncTestMetrics = session.metrics;
+  return failure;
+}
+function checkSyncTestAbort(signal) {
+  if (signal?.aborted) {
+    if (signal.reason instanceof Error) throw signal.reason;
+    const error = new Error(signal.reason === void 0 ? "Synctest aborted" : String(signal.reason));
+    error.name = "AbortError";
+    throw error;
+  }
+}
+function runSyncTest({ frames, ...options } = {}) {
+  const { initial, session } = beginSyncTestBatch(frames, options);
+  try {
+    for (const frame of frames) advanceSyncTestBatch(session, frame);
+    return syncTestBatchResult(session);
+  } catch (error) {
+    throw syncTestBatchFailure(session, error);
+  } finally {
+    session.close();
+    options.adapter.load(initial);
+  }
+}
+async function runSyncTestAsync({ frames, yieldControl = () => new Promise((resolve) => setTimeout(resolve, 0)), signal, ...options } = {}) {
+  if (typeof yieldControl !== "function") throw new TypeError("yieldControl");
+  const { initial, session } = beginSyncTestBatch(frames, options);
+  try {
+    checkSyncTestAbort(signal);
+    for (const frame of frames) {
+      await yieldControl();
+      checkSyncTestAbort(signal);
+      advanceSyncTestBatch(session, frame);
+      await yieldControl();
+      checkSyncTestAbort(signal);
+    }
+    return syncTestBatchResult(session);
+  } catch (error) {
+    throw syncTestBatchFailure(session, error);
+  } finally {
+    session.close();
+    options.adapter.load(initial);
+  }
+}
+
+// packages/simloop/src/loop.js
+function createLoop({
+  session,
+  getInput = () => new Uint8Array(session.inputSize),
+  render = () => {
+  },
+  beforeFrame = () => {
+  },
+  canAdvance = () => true,
+  onAdvance = () => {
+  },
+  onError = (error) => {
+    throw error;
+  },
+  onInputRelease = () => {
+  },
+  requestFrame = globalThis.requestAnimationFrame?.bind(globalThis),
+  cancelFrame = globalThis.cancelAnimationFrame?.bind(globalThis)
+} = {}) {
+  if (!session || typeof session.poll !== "function" || typeof session.advance !== "function") throw new TypeError("session capability");
+  for (const callback of [getInput, render, beforeFrame, canAdvance, onAdvance, onError, onInputRelease]) {
+    if (typeof callback !== "function") throw new TypeError("loop callback");
+  }
+  const quantum = 1e3 / session.profile.tickRate;
+  let running = false, handle, last, accumulator = 0;
+  const resetTiming = () => {
+    last = void 0;
+    accumulator = 0;
+  };
+  const release = () => {
+    try {
+      onInputRelease();
+      session.releaseInput();
+    } catch (error) {
+      stop();
+      onError(error);
+    }
+  };
+  const hidden = () => {
+    if (globalThis.document?.hidden) {
+      release();
+      resetTiming();
+    }
+  };
+  const stop = () => {
+    running = false;
+    if (handle !== void 0) cancelFrame?.(handle);
+    handle = void 0;
+    globalThis.removeEventListener?.("blur", release);
+    globalThis.document?.removeEventListener("visibilitychange", hidden);
+  };
+  const pulse = (timestamp) => {
+    try {
+      if (!Number.isFinite(timestamp)) throw new TypeError("frame timestamp");
+      beforeFrame(timestamp);
+      if (last === void 0) last = timestamp;
+      accumulator = Math.min(accumulator + Math.max(0, Math.min(250, timestamp - last)), quantum * session.profile.maxCatchupSteps);
+      last = timestamp;
+      session.poll();
+      let work = 0;
+      while (!session.closed && !session.resimulating && accumulator >= quantum * session.metrics.pace && work < session.profile.maxCatchupSteps) {
+        if (!canAdvance()) {
+          accumulator = Math.min(accumulator, quantum);
+          break;
+        }
+        const pace = session.metrics.pace;
+        const result = session.advance(getInput());
+        work++;
+        if (result.status === "advanced") accumulator = Math.max(0, accumulator - quantum * pace);
+        else accumulator = Math.min(accumulator, quantum);
+        onAdvance(result);
+        if (result.status !== "advanced") {
+          accumulator = Math.min(accumulator, quantum);
+          break;
+        }
+      }
+      render({ session, alpha: Math.min(1, accumulator / quantum), resimulating: session.resimulating });
+    } catch (error) {
+      stop();
+      onError(error);
+    }
+  };
+  const frame = (timestamp) => {
+    if (!running) return;
+    pulse(timestamp);
+    if (running) handle = requestFrame(frame);
+  };
+  const start = () => {
+    if (running) return;
+    if (typeof requestFrame !== "function" || typeof cancelFrame !== "function") throw new TypeError("frame scheduler");
+    running = true;
+    resetTiming();
+    globalThis.addEventListener?.("blur", release);
+    globalThis.document?.addEventListener("visibilitychange", hidden);
+    handle = requestFrame(frame);
+  };
+  return { start, stop, pulse, resetTiming, get running() {
+    return running;
+  } };
+}
+
+// packages/transport/src/webrtc.js
+var WebRTCTransport = class {
+  constructor({ inputChannel, controlChannel, highWaterMark = 262144, lowWaterMark = 65536 } = {}) {
+    if (!controlChannel || typeof controlChannel.send !== "function") throw new TypeError("controlChannel");
+    integer(highWaterMark, "highWaterMark", CHUNK_SIZE, 16 * 1024 * 1024);
+    integer(lowWaterMark, "lowWaterMark", 0, highWaterMark);
+    this.inputChannel = inputChannel ?? controlChannel;
+    this.controlChannel = controlChannel;
+    this.highWaterMark = highWaterMark;
+    this.listeners = /* @__PURE__ */ new Set();
+    this.statusListeners = /* @__PURE__ */ new Set();
+    this.closed = false;
+    this.connectionState = "connected";
+    this._lastStatus = null;
+    this.channels = [.../* @__PURE__ */ new Set([this.inputChannel, this.controlChannel])];
+    this._onMessage = async (event) => {
+      if (this.closed) return;
+      let data = event.data;
+      if (typeof Blob !== "undefined" && data instanceof Blob) {
+        if (data.size > CHUNK_SIZE) return;
+        data = await data.arrayBuffer();
+      }
+      if (this.closed) return;
+      try {
+        const b = bytes(data);
+        if (b.length > CHUNK_SIZE) return;
+        for (const listener of this.listeners) listener(b.slice());
+      } catch {
+      }
+    };
+    for (const channel of this.channels) {
+      channel.binaryType = "arraybuffer";
+      channel.bufferedAmountLowThreshold = lowWaterMark;
+      channel.addEventListener("message", this._onMessage);
+      channel.addEventListener("open", this._onStatus = this._onStatus ?? (() => this._notifyStatus()));
+      channel.addEventListener("close", this._onStatus);
+      channel.addEventListener("error", this._onChannelError = this._onChannelError ?? (() => {
+        this.connectionState = "failed";
+        this._notifyStatus();
+      }));
+    }
+  }
+  get state() {
+    if (this.closed || this.connectionState === "closed" || this.channels.some((c) => c.readyState === "closed" || c.readyState === "closing")) return "closed";
+    if (this.connectionState === "failed") return "failed";
+    if (this.connectionState === "disconnected") return "interrupted";
+    return this.channels.every((c) => c.readyState === "open") ? "open" : "connecting";
+  }
+  _notifyStatus() {
+    const state = this.state;
+    if (state === this._lastStatus) return;
+    this._lastStatus = state;
+    for (const listener of this.statusListeners) {
+      try {
+        listener(state);
+      } catch {
+      }
+    }
+  }
+  setConnectionState(state) {
+    this.connectionState = state;
+    this._notifyStatus();
+  }
+  subscribeStatus(listener) {
+    if (typeof listener !== "function") throw new TypeError("status subscriber");
+    this.statusListeners.add(listener);
+    return () => this.statusListeners.delete(listener);
+  }
+  get bufferedAmount() {
+    return this.channels.reduce((n, c) => n + c.bufferedAmount, 0);
+  }
+  send(data) {
+    const b = bytes(data);
+    if (b.length > CHUNK_SIZE) throw new RangeError("DataChannel chunk size");
+    const type = b.length >= HEADER ? b[5] : 0;
+    const channel = type === TYPE.INPUT || type === TYPE.CLOCK ? this.inputChannel : this.controlChannel;
+    if (this.closed || channel.readyState !== "open" || this.bufferedAmount + b.length > this.highWaterMark) return false;
+    try {
+      channel.send(b);
+      return true;
+    } catch (error) {
+      if (error.name === "OperationError" || error.name === "InvalidStateError") return false;
+      throw error;
+    }
+  }
+  subscribe(handler) {
+    if (this.closed || typeof handler !== "function") throw new TypeError("transport subscriber");
+    this.listeners.add(handler);
+    return () => this.listeners.delete(handler);
+  }
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    this._notifyStatus();
+    for (const channel of this.channels) {
+      channel.removeEventListener("message", this._onMessage);
+      channel.removeEventListener("open", this._onStatus);
+      channel.removeEventListener("close", this._onStatus);
+      channel.removeEventListener("error", this._onChannelError);
+      channel.close();
+    }
+    this.listeners.clear();
+    this.statusListeners.clear();
+  }
+};
+var DEFAULT_ICE = Object.freeze([{ urls: "stun:stun.l.google.com:19302" }]);
+function createWebRTCPeer({
+  initiator = false,
+  signaler,
+  remoteId,
+  rtcConfig = { iceServers: DEFAULT_ICE },
+  timeoutMs = 2e4,
+  RTCPeerConnectionImpl = globalThis.RTCPeerConnection,
+  onStatus = () => {
+  },
+  signal
+} = {}) {
+  if (signal?.aborted) return Promise.reject(new Error("connection aborted"));
+  if (typeof RTCPeerConnectionImpl !== "function" || typeof signaler?.send !== "function" || typeof signaler.subscribe !== "function" || !remoteId) return Promise.reject(new TypeError("WebRTC and Signaler capabilities required"));
+  let pc;
+  try {
+    integer(timeoutMs, "timeoutMs", 1, 12e4);
+    pc = new RTCPeerConnectionImpl(rtcConfig);
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  let inputChannel, controlChannel, transport, unsubscribe, timer, disposed = false, settled = false;
+  let chain = Promise.resolve();
+  const earlyIce = [], iceBatch = [];
+  let iceTimer;
+  const status = (value) => {
+    try {
+      onStatus(value);
+    } catch {
+    }
+  };
+  let resolve, reject;
+  const result = new Promise((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  const close = () => {
+    if (disposed) return;
+    disposed = true;
+    clearTimeout(timer);
+    clearTimeout(iceTimer);
+    unsubscribe?.();
+    signal?.removeEventListener("abort", close);
+    transport?.close();
+    pc.close();
+    if (!settled) {
+      settled = true;
+      reject(new Error("WebRTC connection closed"));
+    }
+  };
+  const fail = (error) => {
+    status({ type: "connection-error", error });
+    if (!settled) {
+      settled = true;
+      reject(error);
+    }
+    close();
+  };
+  signal?.addEventListener("abort", close, { once: true });
+  const send = (message) => Promise.resolve(signaler.send(remoteId, message));
+  const maybeReady = () => {
+    if (disposed || settled || inputChannel?.readyState !== "open" || controlChannel?.readyState !== "open") return;
+    clearTimeout(timer);
+    settled = true;
+    transport = new WebRTCTransport({ inputChannel, controlChannel });
+    status({ type: "connected" });
+    resolve({ transport, peerConnection: pc, close });
+  };
+  const channel = (value) => {
+    if (value.label === "inputs" && !inputChannel) inputChannel = value;
+    else if (value.label === "control" && !controlChannel) controlChannel = value;
+    else {
+      value.close();
+      return;
+    }
+    value.addEventListener("open", maybeReady);
+    maybeReady();
+  };
+  pc.addEventListener("datachannel", (event) => channel(event.channel));
+  const flushCandidates = () => {
+    clearTimeout(iceTimer);
+    if (disposed || !iceBatch.length) return;
+    send({ type: "ice", candidates: iceBatch.splice(0) }).catch(fail);
+  };
+  pc.addEventListener("icecandidate", (event) => {
+    if (disposed) return;
+    if (event.candidate) {
+      if (iceBatch.length >= 128) {
+        fail(new RangeError("ICE candidate batch capacity"));
+        return;
+      }
+      iceBatch.push(event.candidate.toJSON());
+      clearTimeout(iceTimer);
+      iceTimer = setTimeout(flushCandidates, 100);
+    } else flushCandidates();
+  });
+  pc.addEventListener("connectionstatechange", () => {
+    transport?.setConnectionState(pc.connectionState);
+    status({ type: "connection-state", state: pc.connectionState });
+    if (pc.connectionState === "failed") fail(new Error("P2P connection failed; no automatic TURN fallback"));
+  });
+  const flushIce = async () => {
+    while (earlyIce.length) await pc.addIceCandidate(earlyIce.shift());
+  };
+  unsubscribe = signaler.subscribe((event) => {
+    if (disposed || event.from !== remoteId || event.to !== signaler.id && event.to !== "*") return;
+    const message = event.message;
+    chain = chain.then(async () => {
+      if (disposed) return;
+      if (message?.type === "offer" && !initiator && !pc.remoteDescription) {
+        await pc.setRemoteDescription(message.description);
+        await flushIce();
+        await pc.setLocalDescription(await pc.createAnswer());
+        await send({ type: "answer", description: pc.localDescription.toJSON() });
+      } else if (message?.type === "answer" && initiator && !pc.remoteDescription) {
+        await pc.setRemoteDescription(message.description);
+        await flushIce();
+      } else if (message?.type === "ice") {
+        const candidates = message.candidates ?? (message.candidate ? [message.candidate] : []);
+        if (!Array.isArray(candidates) || candidates.length > 128) throw new RangeError("ICE candidate batch");
+        for (const candidate of candidates) {
+          if (pc.remoteDescription) await pc.addIceCandidate(candidate);
+          else if (earlyIce.length < 128) earlyIce.push(candidate);
+          else throw new RangeError("ICE queue capacity");
+        }
+      } else if (message?.type === "bye") close();
+    }).catch(fail);
+  });
+  timer = setTimeout(() => fail(new Error("P2P connection timeout")), integer(timeoutMs, "timeoutMs", 1, 12e4));
+  if (initiator) {
+    channel(pc.createDataChannel("inputs", { ordered: false, maxRetransmits: 0 }));
+    channel(pc.createDataChannel("control", { ordered: true }));
+    chain = chain.then(async () => {
+      await pc.setLocalDescription(await pc.createOffer());
+      await send({ type: "offer", description: pc.localDescription.toJSON() });
+    }).catch(fail);
+  }
+  return result;
+}
+
+// packages/transport/src/nostr-crypto.js
+var nostrField = 0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2fn;
+var nostrOrder = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+var nostrGenerator = [
+  0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798n,
+  0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8n,
+  1n
+];
+var nostrInfinity = [0n, 1n, 0n];
+var nostrEncoder = new TextEncoder();
+function nostrMod(nostrValue, nostrModulus = nostrField) {
+  const nostrRemainder = nostrValue % nostrModulus;
+  return nostrRemainder < 0n ? nostrRemainder + nostrModulus : nostrRemainder;
+}
+function nostrPow(nostrBase, nostrExponent) {
+  let nostrResult = 1n;
+  nostrBase = nostrMod(nostrBase);
+  while (nostrExponent > 0n) {
+    if (nostrExponent & 1n) nostrResult = nostrMod(nostrResult * nostrBase);
+    nostrBase = nostrMod(nostrBase * nostrBase);
+    nostrExponent >>= 1n;
+  }
+  return nostrResult;
+}
+function nostrDouble(nostrPoint) {
+  const [nostrX, nostrY, nostrZ] = nostrPoint;
+  if (nostrZ === 0n || nostrY === 0n) return nostrInfinity;
+  const nostrA = nostrMod(nostrX * nostrX);
+  const nostrB = nostrMod(nostrY * nostrY);
+  const nostrC = nostrMod(nostrB * nostrB);
+  const nostrD = nostrMod(2n * (nostrMod((nostrX + nostrB) ** 2n) - nostrA - nostrC));
+  const nostrE = nostrMod(3n * nostrA);
+  const nostrNextX = nostrMod(nostrE * nostrE - 2n * nostrD);
+  return [nostrNextX, nostrMod(nostrE * (nostrD - nostrNextX) - 8n * nostrC), nostrMod(2n * nostrY * nostrZ)];
+}
+function nostrAdd(nostrLeft, nostrRight) {
+  if (nostrLeft[2] === 0n) return nostrRight;
+  if (nostrRight[2] === 0n) return nostrLeft;
+  const [nostrX1, nostrY1, nostrZ1] = nostrLeft;
+  const [nostrX2, nostrY2, nostrZ2] = nostrRight;
+  const nostrZ1Squared = nostrMod(nostrZ1 * nostrZ1);
+  const nostrZ2Squared = nostrMod(nostrZ2 * nostrZ2);
+  const nostrU1 = nostrMod(nostrX1 * nostrZ2Squared);
+  const nostrU2 = nostrMod(nostrX2 * nostrZ1Squared);
+  const nostrS1 = nostrMod(nostrY1 * nostrZ2Squared * nostrZ2);
+  const nostrS2 = nostrMod(nostrY2 * nostrZ1Squared * nostrZ1);
+  if (nostrU1 === nostrU2) return nostrS1 === nostrS2 ? nostrDouble(nostrLeft) : nostrInfinity;
+  const nostrH = nostrMod(nostrU2 - nostrU1);
+  const nostrI = nostrMod(4n * nostrH * nostrH);
+  const nostrJ = nostrMod(nostrH * nostrI);
+  const nostrR = nostrMod(2n * (nostrS2 - nostrS1));
+  const nostrV = nostrMod(nostrU1 * nostrI);
+  const nostrNextX = nostrMod(nostrR * nostrR - nostrJ - 2n * nostrV);
+  return [
+    nostrNextX,
+    nostrMod(nostrR * (nostrV - nostrNextX) - 2n * nostrS1 * nostrJ),
+    nostrMod(((nostrZ1 + nostrZ2) ** 2n - nostrZ1Squared - nostrZ2Squared) * nostrH)
+  ];
+}
+function nostrMultiply(nostrScalar, nostrPoint = nostrGenerator) {
+  let nostrResult = nostrInfinity;
+  while (nostrScalar > 0n) {
+    if (nostrScalar & 1n) nostrResult = nostrAdd(nostrResult, nostrPoint);
+    nostrPoint = nostrDouble(nostrPoint);
+    nostrScalar >>= 1n;
+  }
+  return nostrResult;
+}
+function nostrAffine(nostrPoint) {
+  if (nostrPoint[2] === 0n) return null;
+  const nostrInverse = nostrPow(nostrPoint[2], nostrField - 2n);
+  const nostrInverseSquared = nostrMod(nostrInverse * nostrInverse);
+  return [nostrMod(nostrPoint[0] * nostrInverseSquared), nostrMod(nostrPoint[1] * nostrInverseSquared * nostrInverse)];
+}
+function nostrLiftX(nostrX) {
+  if (nostrX >= nostrField) return null;
+  const nostrC = nostrMod(nostrX ** 3n + 7n);
+  const nostrY = nostrPow(nostrC, (nostrField + 1n) / 4n);
+  if (nostrMod(nostrY * nostrY) !== nostrC) return null;
+  return [nostrX, nostrY & 1n ? nostrField - nostrY : nostrY, 1n];
+}
+function nostrRequireBytes(nostrValue, nostrLength, nostrName) {
+  if (!(nostrValue instanceof Uint8Array) || nostrValue.length !== nostrLength) {
+    throw new TypeError(`${nostrName} must be a ${nostrLength}-byte Uint8Array`);
+  }
+  return new Uint8Array(nostrValue);
+}
+function nostrBytesToNumber(nostrBytes) {
+  let nostrValue = 0n;
+  for (const nostrByte of nostrBytes) nostrValue = nostrValue << 8n | BigInt(nostrByte);
+  return nostrValue;
+}
+function nostrNumberToBytes(nostrValue) {
+  const nostrBytes = new Uint8Array(32);
+  for (let nostrIndex = 31; nostrIndex >= 0; nostrIndex--) {
+    nostrBytes[nostrIndex] = Number(nostrValue & 255n);
+    nostrValue >>= 8n;
+  }
+  return nostrBytes;
+}
+function nostrToHex(nostrBytes) {
+  return Array.from(nostrBytes, (nostrByte) => nostrByte.toString(16).padStart(2, "0")).join("");
+}
+function nostrFromHex(nostrHex) {
+  return Uint8Array.from(nostrHex.match(/../g), (nostrByte) => parseInt(nostrByte, 16));
+}
+function nostrConcat(...nostrParts) {
+  const nostrBytes = new Uint8Array(nostrParts.reduce((nostrSize, nostrPart) => nostrSize + nostrPart.length, 0));
+  let nostrOffset = 0;
+  for (const nostrPart of nostrParts) {
+    nostrBytes.set(nostrPart, nostrOffset);
+    nostrOffset += nostrPart.length;
+  }
+  return nostrBytes;
+}
+function nostrRequireCrypto(nostrCryptoImpl, nostrRandom = false) {
+  if (!nostrCryptoImpl?.subtle || typeof nostrCryptoImpl.subtle.digest !== "function" || nostrRandom && typeof nostrCryptoImpl.getRandomValues !== "function") {
+    throw new Error("Nostr signaling requires WebCrypto SHA-256 and secure randomness (use HTTPS)");
+  }
+}
+async function nostrHash(nostrBytes, nostrCryptoImpl) {
+  nostrRequireCrypto(nostrCryptoImpl);
+  return new Uint8Array(await nostrCryptoImpl.subtle.digest("SHA-256", nostrBytes));
+}
+async function nostrTaggedHash(nostrTag, nostrBytes, nostrCryptoImpl) {
+  const nostrTagHash = await nostrHash(nostrEncoder.encode(nostrTag), nostrCryptoImpl);
+  return nostrHash(nostrConcat(nostrTagHash, nostrTagHash, nostrBytes), nostrCryptoImpl);
+}
+function nostrPublicKey(nostrSecret) {
+  const nostrSecretCopy = nostrRequireBytes(nostrSecret, 32, "secret");
+  try {
+    const nostrScalar = nostrBytesToNumber(nostrSecretCopy);
+    if (nostrScalar === 0n || nostrScalar >= nostrOrder) throw new RangeError("Invalid secp256k1 secret");
+    return nostrNumberToBytes(nostrAffine(nostrMultiply(nostrScalar))[0]);
+  } finally {
+    nostrSecretCopy.fill(0);
+  }
+}
+async function nostrVerify(nostrSignature, nostrMessage, nostrPublic, nostrCryptoImpl) {
+  if (!(nostrSignature instanceof Uint8Array) || nostrSignature.length !== 64 || !(nostrMessage instanceof Uint8Array) || nostrMessage.length !== 32 || !(nostrPublic instanceof Uint8Array) || nostrPublic.length !== 32) return false;
+  const nostrSignatureCopy = new Uint8Array(nostrSignature);
+  const nostrMessageCopy = new Uint8Array(nostrMessage);
+  const nostrPublicCopy = new Uint8Array(nostrPublic);
+  const nostrPoint = nostrLiftX(nostrBytesToNumber(nostrPublicCopy));
+  const nostrR = nostrBytesToNumber(nostrSignatureCopy.subarray(0, 32));
+  const nostrS = nostrBytesToNumber(nostrSignatureCopy.subarray(32));
+  if (!nostrPoint || nostrR >= nostrField || nostrS >= nostrOrder) return false;
+  const nostrChallenge = nostrBytesToNumber(await nostrTaggedHash(
+    "BIP0340/challenge",
+    nostrConcat(nostrSignatureCopy.subarray(0, 32), nostrPublicCopy, nostrMessageCopy),
+    nostrCryptoImpl
+  )) % nostrOrder;
+  const nostrResult = nostrAffine(nostrAdd(nostrMultiply(nostrS), nostrMultiply(
+    nostrChallenge,
+    [nostrPoint[0], nostrMod(-nostrPoint[1]), 1n]
+  )));
+  return nostrResult !== null && (nostrResult[1] & 1n) === 0n && nostrResult[0] === nostrR;
+}
+async function nostrSign(nostrMessage, nostrSecret, nostrAuxiliary, nostrCryptoImpl) {
+  const nostrMessageCopy = nostrRequireBytes(nostrMessage, 32, "message");
+  const nostrAuxiliaryCopy = nostrRequireBytes(nostrAuxiliary, 32, "auxiliary randomness");
+  const nostrSecretCopy = nostrRequireBytes(nostrSecret, 32, "secret");
+  let nostrMaskedSecret;
+  try {
+    const nostrScalar = nostrBytesToNumber(nostrSecretCopy);
+    if (nostrScalar === 0n || nostrScalar >= nostrOrder) throw new RangeError("Invalid secp256k1 secret");
+    const nostrPoint = nostrAffine(nostrMultiply(nostrScalar));
+    const nostrNormalizedSecret = nostrPoint[1] & 1n ? nostrOrder - nostrScalar : nostrScalar;
+    const nostrPublic = nostrNumberToBytes(nostrPoint[0]);
+    const nostrAuxiliaryHash = await nostrTaggedHash("BIP0340/aux", nostrAuxiliaryCopy, nostrCryptoImpl);
+    nostrMaskedSecret = nostrNumberToBytes(nostrNormalizedSecret);
+    for (let nostrIndex = 0; nostrIndex < 32; nostrIndex++) nostrMaskedSecret[nostrIndex] ^= nostrAuxiliaryHash[nostrIndex];
+    const nostrNonce = nostrBytesToNumber(await nostrTaggedHash(
+      "BIP0340/nonce",
+      nostrConcat(nostrMaskedSecret, nostrPublic, nostrMessageCopy),
+      nostrCryptoImpl
+    )) % nostrOrder;
+    if (nostrNonce === 0n) throw new Error("BIP340 nonce generation failed");
+    const nostrNoncePoint = nostrAffine(nostrMultiply(nostrNonce));
+    const nostrNormalizedNonce = nostrNoncePoint[1] & 1n ? nostrOrder - nostrNonce : nostrNonce;
+    const nostrR = nostrNumberToBytes(nostrNoncePoint[0]);
+    const nostrChallenge = nostrBytesToNumber(await nostrTaggedHash(
+      "BIP0340/challenge",
+      nostrConcat(nostrR, nostrPublic, nostrMessageCopy),
+      nostrCryptoImpl
+    )) % nostrOrder;
+    const nostrSignature = nostrConcat(nostrR, nostrNumberToBytes(nostrMod(nostrNormalizedNonce + nostrChallenge * nostrNormalizedSecret, nostrOrder)));
+    if (!await nostrVerify(nostrSignature, nostrMessageCopy, nostrPublic, nostrCryptoImpl)) throw new Error("BIP340 signature self-check failed");
+    return nostrSignature;
+  } finally {
+    nostrSecretCopy.fill(0);
+    nostrAuxiliaryCopy.fill(0);
+    nostrMaskedSecret?.fill(0);
+  }
+}
+var nostrCrypto = Object.freeze({
+  publicKey: nostrPublicKey,
+  sign: (nostrMessage, nostrSecret, nostrAuxiliary) => nostrSign(nostrMessage, nostrSecret, nostrAuxiliary, globalThis.crypto),
+  verify: (nostrSignature, nostrMessage, nostrPublic) => nostrVerify(nostrSignature, nostrMessage, nostrPublic, globalThis.crypto)
+});
+
+// packages/transport/src/nostr.js
+var nostrHex32 = /^[0-9a-f]{64}$/;
+var nostrHex64 = /^[0-9a-f]{128}$/;
+var nostrSignalTypes = /* @__PURE__ */ new Set(["discover", "presence", "offer", "answer", "ice", "bye", "group"]);
+var nostrContentLimit = 128 * 1024;
+var nostrFreshSeconds = 120;
+var nostrFutureSeconds = 30;
+function nostrIsSignalMessage(nostrMessage) {
+  return nostrMessage !== null && typeof nostrMessage === "object" && !Array.isArray(nostrMessage) && Object.prototype.hasOwnProperty.call(nostrMessage, "type") && nostrSignalTypes.has(nostrMessage.type);
+}
+function nostrListen(nostrSocket, nostrType, nostrHandler) {
+  if (typeof nostrSocket.addEventListener === "function") {
+    nostrSocket.addEventListener(nostrType, nostrHandler);
+    return () => nostrSocket.removeEventListener(nostrType, nostrHandler);
+  }
+  const nostrProperty = `on${nostrType}`;
+  nostrSocket[nostrProperty] = nostrHandler;
+  return () => {
+    if (nostrSocket[nostrProperty] === nostrHandler) nostrSocket[nostrProperty] = null;
+  };
+}
+async function createNostrSignaler({
+  room,
+  namespace = "rollback-netcode",
+  relays = ["wss://relay.primal.net", "wss://relay.damus.io"],
+  timeoutMs = 1e4,
+  onStatus = () => {
+  },
+  WebSocketImpl = globalThis.WebSocket,
+  cryptoImpl = globalThis.crypto,
+  signal,
+  publishIntervalMs = 500,
+  maxVerificationsPerSecond = 16,
+  verificationBurst = 8
+} = {}) {
+  if (signal?.aborted) throw new Error("Nostr signaler aborted");
+  if (typeof room !== "string" || !/^\d{4}$/.test(room)) throw new TypeError("room must contain exactly four ASCII digits");
+  if (typeof namespace !== "string" || namespace.trim().length === 0 || nostrEncoder.encode(namespace).length > 128) throw new TypeError("namespace must be a nonempty string of at most 128 UTF-8 bytes");
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 12e4) throw new RangeError("timeoutMs must be greater than zero and at most 120000");
+  integer(publishIntervalMs, "publishIntervalMs", 0, 1e4);
+  integer(maxVerificationsPerSecond, "maxVerificationsPerSecond", 1, 1024);
+  integer(verificationBurst, "verificationBurst", 1, 32);
+  if (typeof WebSocketImpl !== "function") throw new Error("Nostr signaling requires WebSocket support");
+  if (typeof onStatus !== "function") throw new TypeError("onStatus must be a function");
+  nostrRequireCrypto(cryptoImpl, true);
+  if (!Array.isArray(relays) || relays.length === 0 || relays.length > 16) throw new TypeError("relays must contain between 1 and 16 WebSocket URLs");
+  const nostrUrls = [...new Set(relays.map((nostrRelay) => {
+    if (typeof nostrRelay !== "string") throw new TypeError("Relay URLs must be strings");
+    const nostrUrl = new URL(nostrRelay);
+    if (!["ws:", "wss:"].includes(nostrUrl.protocol) || nostrUrl.username || nostrUrl.password || nostrUrl.hash) throw new TypeError("Relays must be ws:// or wss:// URLs without credentials or fragments");
+    return nostrUrl.href;
+  }))];
+  const nostrRandom = (nostrLength) => cryptoImpl.getRandomValues(new Uint8Array(nostrLength));
+  const nostrSecret = new Uint8Array(32);
+  let nostrSecretReady = false;
+  for (let nostrAttempt = 0; nostrAttempt < 16; nostrAttempt++) {
+    nostrSecret.set(nostrRandom(32));
+    const nostrValue = nostrBytesToNumber(nostrSecret);
+    if (nostrValue > 0n && nostrValue < nostrOrder) {
+      nostrSecretReady = true;
+      break;
+    }
+  }
+  if (!nostrSecretReady) {
+    nostrSecret.fill(0);
+    throw new Error("Secure random secret generation failed");
+  }
+  const nostrId = nostrToHex(nostrPublicKey(nostrSecret));
+  const nostrRoomTag = `${namespace}:${room}`;
+  const nostrSubscription = `rn-${nostrToHex(nostrRandom(16))}`;
+  const nostrListeners = /* @__PURE__ */ new Set();
+  const nostrBacklog = [];
+  const nostrSeen = /* @__PURE__ */ new Map();
+  const nostrVerifying = /* @__PURE__ */ new Set();
+  const nostrPending = /* @__PURE__ */ new Map();
+  const nostrStates = [];
+  let verificationTokens = verificationBurst, verificationAt = nowMs();
+  const verificationMetrics = { attempted: 0, verified: 0, throttled: 0, totalVerificationMs: 0, maxVerificationMs: 0 };
+  let nostrClosed = false;
+  let nostrSending = 0;
+  let nostrSendTail = Promise.resolve(), nostrLastPublication = -Infinity;
+  const nostrWaiters = /* @__PURE__ */ new Map();
+  let nostrHasSubscriber = false;
+  let nostrReadyResolve;
+  let nostrReadyReject;
+  let nostrInitializationSettled = false;
+  const nostrReady = new Promise((nostrResolve, nostrReject) => {
+    nostrReadyResolve = nostrResolve;
+    nostrReadyReject = nostrReject;
+  });
+  const nostrStatus = (nostrStatusName, nostrRelay, nostrMessage) => {
+    if (nostrClosed && nostrStatusName !== "closed") return;
+    try {
+      onStatus({ type: "signaler", transport: "nostr", status: nostrStatusName, ...nostrRelay ? { relay: nostrRelay } : {}, ...nostrMessage ? { message: String(nostrMessage) } : {} });
+    } catch {
+    }
+  };
+  function nostrFinishPublication(nostrEventId, nostrError) {
+    const nostrPublication = nostrPending.get(nostrEventId);
+    if (!nostrPublication) return;
+    clearTimeout(nostrPublication.timer);
+    nostrPending.delete(nostrEventId);
+    if (nostrError) nostrPublication.reject(nostrError);
+    else nostrPublication.resolve();
+  }
+  function nostrPublicationFailure(nostrState, nostrEventId, nostrReason) {
+    const nostrPublication = nostrPending.get(nostrEventId);
+    if (!nostrPublication || !nostrPublication.remaining.delete(nostrState)) return;
+    nostrPublication.failures.push(`${nostrState.url}: ${nostrReason}`);
+    if (nostrPublication.remaining.size === 0 && !nostrStates.some((nostrRelay) => !nostrRelay.failed && !nostrRelay.ready)) nostrFinishPublication(
+      nostrEventId,
+      new Error(`No Nostr relay accepted the event: ${nostrPublication.failures.join("; ")}`)
+    );
+  }
+  function nostrFailRelay(nostrState, nostrReason) {
+    if (nostrState.failed || nostrClosed) return;
+    nostrState.failed = true;
+    nostrState.ready = false;
+    clearTimeout(nostrState.timer);
+    for (const nostrRemove of nostrState.remove) nostrRemove();
+    try {
+      nostrState.socket?.close();
+    } catch {
+    }
+    for (const nostrEventId of nostrPending.keys()) nostrPublicationFailure(nostrState, nostrEventId, nostrReason);
+    nostrStatus("error", nostrState.url, nostrReason);
+    if (!nostrInitializationSettled && nostrStates.length === nostrUrls.length && nostrStates.every((nostrRelay) => nostrRelay.failed)) {
+      nostrInitializationSettled = true;
+      nostrReadyReject(new Error(`No Nostr relay became ready: ${nostrReason}`));
+    }
+  }
+  function nostrDeliver(nostrEnvelope) {
+    if (nostrClosed) return;
+    if (!nostrHasSubscriber) {
+      if (nostrBacklog.length === 32) nostrBacklog.shift();
+      nostrBacklog.push(nostrEnvelope);
+      return;
+    }
+    for (const nostrHandler of [...nostrListeners]) {
+      if (nostrClosed) break;
+      try {
+        const nostrResult = nostrHandler(nostrEnvelope);
+        if (nostrResult && typeof nostrResult.then === "function") Promise.resolve(nostrResult).catch((nostrError) => nostrStatus("error", null, nostrError?.message || "Signaling subscriber failed"));
+      } catch (nostrError) {
+        nostrStatus("error", null, nostrError?.message || "Signaling subscriber failed");
+      }
+    }
+  }
+  async function nostrReceive(nostrEvent) {
+    if (nostrClosed || !nostrEvent || typeof nostrEvent !== "object" || Array.isArray(nostrEvent) || typeof nostrEvent.id !== "string" || typeof nostrEvent.pubkey !== "string" || typeof nostrEvent.sig !== "string" || !nostrHex32.test(nostrEvent.id) || !nostrHex32.test(nostrEvent.pubkey) || !nostrHex64.test(nostrEvent.sig) || nostrEvent.pubkey === nostrId || nostrEvent.kind !== 20078 || !Number.isSafeInteger(nostrEvent.created_at) || typeof nostrEvent.content !== "string" || nostrEvent.content.length > nostrContentLimit || !Array.isArray(nostrEvent.tags) || nostrEvent.tags.length > 16 || nostrVerifying.size >= 32) return;
+    const nostrNow = Date.now();
+    const nostrNowSeconds = Math.floor(nostrNow / 1e3);
+    if (nostrEvent.created_at < nostrNowSeconds - nostrFreshSeconds || nostrEvent.created_at > nostrNowSeconds + nostrFutureSeconds || nostrEncoder.encode(nostrEvent.content).length > nostrContentLimit) return;
+    for (const [nostrSeenId, nostrExpiry] of nostrSeen) {
+      if (nostrExpiry > nostrNow) break;
+      nostrSeen.delete(nostrSeenId);
+    }
+    if (nostrSeen.has(nostrEvent.id) || nostrVerifying.has(nostrEvent.id)) return;
+    if (!nostrEvent.tags.every((nostrTag) => Array.isArray(nostrTag) && nostrTag.length > 0 && nostrTag.length <= 4 && nostrTag.every((nostrValue) => typeof nostrValue === "string" && nostrEncoder.encode(nostrValue).length <= 256))) return;
+    const nostrRoomTags = nostrEvent.tags.filter((nostrTag) => nostrTag[0] === "d");
+    const nostrRecipientTags = nostrEvent.tags.filter((nostrTag) => nostrTag[0] === "p");
+    if (nostrRoomTags.length !== 1 || nostrRoomTags[0][1] !== nostrRoomTag) return;
+    let nostrContent;
+    try {
+      nostrContent = JSON.parse(nostrEvent.content);
+    } catch {
+      return;
+    }
+    if (!nostrContent || nostrContent.v !== 1 || nostrContent.namespace !== namespace || nostrContent.room !== room || nostrContent.from !== nostrEvent.pubkey || typeof nostrContent.nonce !== "string" || !/^[0-9a-f]{32}$/.test(nostrContent.nonce) || nostrContent.to !== "*" && nostrContent.to !== nostrId || !nostrIsSignalMessage(nostrContent.message)) return;
+    if (nostrContent.to === "*" ? nostrRecipientTags.length !== 0 : nostrRecipientTags.length !== 1 || nostrRecipientTags[0][1] !== nostrContent.to) return;
+    const measuredNow = nowMs();
+    verificationTokens = Math.min(verificationBurst, verificationTokens + Math.max(0, measuredNow - verificationAt) * maxVerificationsPerSecond / 1e3);
+    verificationAt = measuredNow;
+    if (verificationTokens < 1) {
+      verificationMetrics.throttled++;
+      return;
+    }
+    verificationTokens--;
+    verificationMetrics.attempted++;
+    nostrVerifying.add(nostrEvent.id);
+    try {
+      const nostrHashBytes = await nostrHash(nostrEncoder.encode(JSON.stringify([0, nostrEvent.pubkey, nostrEvent.created_at, nostrEvent.kind, nostrEvent.tags, nostrEvent.content])), cryptoImpl);
+      if (nostrToHex(nostrHashBytes) !== nostrEvent.id || !await nostrVerify(nostrFromHex(nostrEvent.sig), nostrHashBytes, nostrFromHex(nostrEvent.pubkey), cryptoImpl) || nostrClosed) return;
+      if (nostrSeen.size >= 2048) nostrSeen.delete(nostrSeen.keys().next().value);
+      nostrSeen.set(nostrEvent.id, nostrNow + 3e5);
+      verificationMetrics.verified++;
+      nostrDeliver({ from: nostrContent.from, to: nostrContent.to, message: nostrContent.message });
+    } catch (nostrError) {
+      nostrStatus("error", null, nostrError?.message || "Nostr verification failed");
+    } finally {
+      nostrVerifying.delete(nostrEvent.id);
+      const elapsed = nowMs() - measuredNow;
+      verificationMetrics.totalVerificationMs += elapsed;
+      verificationMetrics.maxVerificationMs = Math.max(verificationMetrics.maxVerificationMs, elapsed);
+    }
+  }
+  function nostrHandleMessage(nostrState, nostrData) {
+    if (nostrClosed || nostrState.failed || typeof nostrData !== "string" || nostrData.length > 1024 * 1024) return;
+    let nostrFrame;
+    try {
+      nostrFrame = JSON.parse(nostrData);
+    } catch {
+      return;
+    }
+    if (!Array.isArray(nostrFrame)) return;
+    if (nostrFrame[0] === "EOSE" && nostrFrame.length === 2 && nostrFrame[1] === nostrSubscription && nostrState.requested) {
+      if (nostrState.ready) return;
+      nostrState.ready = true;
+      clearTimeout(nostrState.timer);
+      nostrStatus("connected", nostrState.url);
+      if (!nostrInitializationSettled) {
+        nostrInitializationSettled = true;
+        nostrReadyResolve();
+      }
+      for (const nostrPublication of nostrPending.values()) if (!nostrPublication.attempted.has(nostrState)) {
+        nostrPublication.attempted.add(nostrState);
+        nostrPublication.remaining.add(nostrState);
+        try {
+          nostrState.socket.send(nostrPublication.frame);
+        } catch (nostrError) {
+          nostrFailRelay(nostrState, nostrError?.message || "Fallback publication failed");
+        }
+      }
+    } else if (nostrFrame[0] === "EVENT" && nostrFrame.length === 3 && nostrFrame[1] === nostrSubscription && nostrState.requested) {
+      void nostrReceive(nostrFrame[2]);
+    } else if (nostrFrame[0] === "OK" && nostrFrame.length === 4 && typeof nostrFrame[1] === "string" && typeof nostrFrame[2] === "boolean" && typeof nostrFrame[3] === "string") {
+      const nostrPublication = nostrPending.get(nostrFrame[1]);
+      if (!nostrPublication?.remaining.has(nostrState)) return;
+      if (nostrFrame[2]) {
+        nostrFinishPublication(nostrFrame[1]);
+        nostrStatus("published", nostrState.url);
+      } else nostrFailRelay(nostrState, nostrFrame[3].slice(0, 256) || "Relay rejected the event");
+    } else if (nostrFrame[0] === "CLOSED" && nostrFrame.length === 3 && nostrFrame[1] === nostrSubscription && typeof nostrFrame[2] === "string") {
+      nostrFailRelay(nostrState, `Relay ended the signaling subscription: ${nostrFrame[2].slice(0, 256)}`);
+    } else if (nostrFrame[0] === "NOTICE" && typeof nostrFrame[1] === "string") {
+      nostrStatus("notice", nostrState.url, nostrFrame[1].slice(0, 256));
+    }
+  }
+  function nostrClose() {
+    if (nostrClosed) return;
+    nostrClosed = true;
+    signal?.removeEventListener("abort", nostrClose);
+    for (const [nostrTimer, nostrReject] of nostrWaiters) {
+      clearTimeout(nostrTimer);
+      nostrReject(new Error("Nostr signaler closed"));
+    }
+    nostrWaiters.clear();
+    for (const nostrState of nostrStates) {
+      clearTimeout(nostrState.timer);
+      if (nostrState.socket?.readyState === 1 && nostrState.requested) {
+        try {
+          nostrState.socket.send(JSON.stringify(["CLOSE", nostrSubscription]));
+        } catch {
+        }
+      }
+      for (const nostrRemove of nostrState.remove) nostrRemove();
+      try {
+        nostrState.socket?.close();
+      } catch {
+      }
+      nostrState.ready = false;
+    }
+    for (const nostrEventId of nostrPending.keys()) nostrFinishPublication(nostrEventId, new Error("Nostr signaler closed"));
+    if (!nostrInitializationSettled) {
+      nostrInitializationSettled = true;
+      nostrReadyReject(new Error("Nostr signaler closed"));
+    }
+    nostrSecret.fill(0);
+    nostrListeners.clear();
+    nostrBacklog.length = 0;
+    nostrSeen.clear();
+    nostrVerifying.clear();
+    nostrStatus("closed");
+  }
+  signal?.addEventListener("abort", nostrClose, { once: true });
+  for (const nostrUrl of nostrUrls) {
+    if (nostrClosed) break;
+    const nostrState = { url: nostrUrl, socket: null, ready: false, requested: false, failed: false, remove: [], timer: null };
+    nostrStates.push(nostrState);
+    nostrStatus("connecting", nostrUrl);
+    if (nostrClosed) break;
+    try {
+      const nostrSocket = nostrState.socket = new WebSocketImpl(nostrUrl);
+      if (nostrClosed) {
+        try {
+          nostrSocket.close();
+        } catch {
+        }
+        break;
+      }
+      nostrState.timer = setTimeout(() => nostrFailRelay(nostrState, "Nostr connection/subscription timed out"), timeoutMs);
+      const nostrOpen = () => {
+        if (nostrClosed || nostrState.failed || nostrState.requested) return;
+        nostrState.requested = true;
+        try {
+          nostrSocket.send(JSON.stringify(["REQ", nostrSubscription, { kinds: [20078], "#d": [nostrRoomTag], since: Math.floor(Date.now() / 1e3) - nostrFreshSeconds, limit: 0 }]));
+        } catch (nostrError) {
+          nostrFailRelay(nostrState, nostrError?.message || "Nostr subscription failed");
+        }
+      };
+      nostrState.remove.push(
+        nostrListen(nostrSocket, "open", nostrOpen),
+        nostrListen(nostrSocket, "message", (nostrEvent) => nostrHandleMessage(nostrState, nostrEvent.data)),
+        nostrListen(nostrSocket, "error", () => nostrFailRelay(nostrState, "Nostr WebSocket error")),
+        nostrListen(nostrSocket, "close", () => nostrFailRelay(nostrState, "Nostr relay disconnected"))
+      );
+      if (nostrSocket.readyState === 1) nostrOpen();
+    } catch (nostrError) {
+      nostrFailRelay(nostrState, nostrError?.message || "Nostr connection failed");
+    }
+  }
+  try {
+    await nostrReady;
+  } catch (nostrError) {
+    nostrClose();
+    throw nostrError;
+  }
+  return {
+    id: nostrId,
+    room,
+    get metrics() {
+      return { ...verificationMetrics };
+    },
+    async send(nostrTo, nostrMessage) {
+      if (nostrClosed) throw new Error("Nostr signaler closed");
+      if (nostrTo !== "*" && (typeof nostrTo !== "string" || !nostrHex32.test(nostrTo))) throw new TypeError("Nostr recipient must be a lowercase public key or *");
+      if (!nostrIsSignalMessage(nostrMessage)) throw new TypeError("Nostr carries discovery, presence, offer, answer, ice, bye and group signaling only");
+      if (nostrSending >= 64) throw new Error("Too many pending Nostr publications");
+      if (!nostrStates.some((nostrState) => nostrState.ready && !nostrState.failed && nostrState.socket.readyState === 1)) throw new Error("No live Nostr relays");
+      nostrSending++;
+      const nostrPrevious = nostrSendTail;
+      let nostrUnlock;
+      nostrSendTail = new Promise((nostrResolve) => {
+        nostrUnlock = nostrResolve;
+      });
+      try {
+        let nostrContent;
+        try {
+          nostrContent = JSON.stringify({ v: 1, namespace, room, from: nostrId, to: nostrTo, nonce: nostrToHex(nostrRandom(16)), message: nostrMessage });
+        } catch {
+          throw new TypeError("Nostr signaling message must be JSON serializable");
+        }
+        if (nostrEncoder.encode(nostrContent).length > nostrContentLimit) throw new RangeError("Nostr signaling content exceeds 128 KiB");
+        if (!nostrIsSignalMessage(JSON.parse(nostrContent).message)) throw new TypeError("Nostr signaling message serialization changed its type");
+        await nostrPrevious;
+        if (nostrClosed) throw new Error("Nostr signaler closed");
+        const nostrWait = publishIntervalMs - (Date.now() - nostrLastPublication);
+        if (nostrWait > 0) await new Promise((nostrResolve, nostrReject) => {
+          const nostrTimer = setTimeout(() => {
+            nostrWaiters.delete(nostrTimer);
+            nostrResolve();
+          }, nostrWait);
+          nostrWaiters.set(nostrTimer, nostrReject);
+        });
+        if (nostrClosed) throw new Error("Nostr signaler closed");
+        const nostrEvent = {
+          pubkey: nostrId,
+          created_at: Math.floor(Date.now() / 1e3),
+          kind: 20078,
+          tags: [["d", nostrRoomTag], ...nostrTo === "*" ? [] : [["p", nostrTo]]],
+          content: nostrContent
+        };
+        const nostrHashBytes = await nostrHash(nostrEncoder.encode(JSON.stringify([0, nostrId, nostrEvent.created_at, nostrEvent.kind, nostrEvent.tags, nostrContent])), cryptoImpl);
+        if (nostrClosed) throw new Error("Nostr signaler closed");
+        const nostrAuxiliary = nostrRandom(32);
+        try {
+          nostrEvent.sig = nostrToHex(await nostrSign(nostrHashBytes, nostrSecret, nostrAuxiliary, cryptoImpl));
+        } finally {
+          nostrAuxiliary.fill(0);
+        }
+        nostrEvent.id = nostrToHex(nostrHashBytes);
+        if (nostrClosed) throw new Error("Nostr signaler closed");
+        const nostrAvailable = nostrStates.filter((nostrState) => nostrState.ready && !nostrState.failed && nostrState.socket.readyState === 1);
+        if (nostrAvailable.length === 0) throw new Error("No live Nostr relays");
+        const nostrFrame = JSON.stringify(["EVENT", nostrEvent]);
+        nostrLastPublication = Date.now();
+        await new Promise((nostrResolve, nostrReject) => {
+          const nostrPublication = {
+            resolve: nostrResolve,
+            reject: nostrReject,
+            remaining: new Set(nostrAvailable),
+            attempted: new Set(nostrAvailable),
+            frame: nostrFrame,
+            failures: [],
+            timer: null
+          };
+          nostrPending.set(nostrEvent.id, nostrPublication);
+          nostrPublication.timer = setTimeout(() => nostrFinishPublication(nostrEvent.id, new Error("Nostr publication timed out without a positive relay OK")), timeoutMs);
+          for (const nostrState of nostrAvailable) {
+            if (nostrClosed) break;
+            try {
+              nostrState.socket.send(nostrFrame);
+            } catch (nostrError) {
+              nostrFailRelay(nostrState, nostrError?.message || "Nostr publication failed");
+            }
+          }
+        });
+      } finally {
+        await nostrPrevious;
+        nostrSending--;
+        nostrUnlock();
+      }
+    },
+    subscribe(nostrHandler) {
+      if (nostrClosed) throw new Error("Nostr signaler closed");
+      if (typeof nostrHandler !== "function") throw new TypeError("Signaling subscriber must be a function");
+      nostrListeners.add(nostrHandler);
+      if (!nostrHasSubscriber) {
+        nostrHasSubscriber = true;
+        const nostrQueued = nostrBacklog.splice(0);
+        for (const nostrEnvelope of nostrQueued) nostrDeliver(nostrEnvelope);
+      }
+      return () => nostrListeners.delete(nostrHandler);
+    },
+    close: nostrClose
+  };
+}
+
+// packages/transport/src/room.js
+async function createNostrRoom({
+  role,
+  room,
+  namespace = "rollback-netcode",
+  relays,
+  rtcConfig,
+  timeoutMs = 3e4,
+  onStatus = () => {
+  },
+  signal,
+  signalerFactory = createNostrSignaler,
+  peerFactory = createWebRTCPeer
+} = {}) {
+  if (!["host", "join"].includes(role)) throw new TypeError("room role");
+  integer(timeoutMs, "timeoutMs", 1, 12e4);
+  if (typeof signalerFactory !== "function" || typeof peerFactory !== "function") throw new TypeError("room adapter factories");
+  if (signal?.aborted) throw new Error("room aborted");
+  if (!room && role === "host") {
+    const value = new Uint32Array(1);
+    globalThis.crypto.getRandomValues(value);
+    room = String(value[0] % 1e4).padStart(4, "0");
+  }
+  if (!/^\d{4}$/.test(room ?? "")) throw new TypeError("four-digit room");
+  const controller = new AbortController();
+  const externalAbort = () => controller.abort(signal?.reason);
+  signal?.addEventListener("abort", externalAbort, { once: true });
+  const roomSignal = controller.signal;
+  let signaler;
+  try {
+    signaler = await signalerFactory({
+      room,
+      namespace,
+      relays,
+      timeoutMs: Math.min(timeoutMs, 1e4),
+      onStatus,
+      signal: roomSignal
+    });
+  } catch (error) {
+    signal?.removeEventListener("abort", externalAbort);
+    throw error;
+  }
+  if (roomSignal.aborted) {
+    signaler.close();
+    signal?.removeEventListener("abort", externalAbort);
+    throw new Error("room aborted");
+  }
+  return new Promise((resolve, reject) => {
+    let connection, unsubscribe, pulse, deadline, collisionTimer;
+    let disposed = false, connecting = false, completed = false, selectedPeer, checking = role === "host";
+    const nonce = new Uint8Array(16);
+    globalThis.crypto.getRandomValues(nonce);
+    let sessionId = [...nonce].map((n) => n.toString(16).padStart(2, "0")).join("");
+    const status = (value) => {
+      try {
+        onStatus(value);
+      } catch {
+      }
+    };
+    const close = () => {
+      if (disposed) return;
+      disposed = true;
+      clearInterval(pulse);
+      clearTimeout(deadline);
+      clearTimeout(collisionTimer);
+      unsubscribe?.();
+      roomSignal.removeEventListener("abort", abort);
+      signal?.removeEventListener("abort", externalAbort);
+      controller.abort();
+      connection?.close();
+      signaler.close();
+    };
+    const fail = (error) => {
+      if (!completed) {
+        completed = true;
+        reject(error);
+      }
+      close();
+    };
+    const abort = () => fail(new Error("room aborted"));
+    roomSignal.addEventListener("abort", abort, { once: true });
+    const send = (to, message) => signaler.send(to, message).catch(fail);
+    const presence = (to) => send(to, { type: "presence", room, namespace, host: signaler.id, sessionId, protocol: PROTOCOL_VERSION });
+    const connect = (remoteId) => {
+      if (connecting || disposed) return;
+      connecting = true;
+      selectedPeer = remoteId;
+      Promise.resolve().then(() => peerFactory({
+        initiator: role === "join",
+        signaler,
+        remoteId,
+        rtcConfig,
+        timeoutMs: Math.min(timeoutMs, 2e4),
+        onStatus,
+        signal: roomSignal
+      })).then((value) => {
+        if (disposed) {
+          value.close();
+          return;
+        }
+        connection = value;
+        completed = true;
+        clearInterval(pulse);
+        clearTimeout(deadline);
+        clearTimeout(collisionTimer);
+        unsubscribe?.();
+        resolve({
+          room,
+          sessionId,
+          localPlayerId: role === "host" ? "a" : "b",
+          remotePlayerId: role === "host" ? "b" : "a",
+          transport: value.transport,
+          peerConnection: value.peerConnection,
+          close
+        });
+      }).catch(fail);
+    };
+    unsubscribe = signaler.subscribe(({ from, to, message }) => {
+      if (disposed || from === signaler.id) return;
+      if (role === "host") {
+        if (message.type === "presence" && message.host === from && message.protocol === PROTOCOL_VERSION) {
+          fail(new Error("room code is already in use; choose another four-digit code"));
+          return;
+        }
+        if (message.type === "discover" && !checking && (!selectedPeer || selectedPeer === from)) {
+          connect(from);
+          presence(from);
+        }
+      } else if (message.type === "presence" && message.host === from && message.protocol === PROTOCOL_VERSION && typeof message.sessionId === "string") {
+        if (selectedPeer && selectedPeer !== from) return;
+        selectedPeer = from;
+        if (to === signaler.id) {
+          sessionId = message.sessionId;
+          connect(from);
+        } else send(from, { type: "discover" });
+      }
+    });
+    if (disposed) {
+      unsubscribe?.();
+      return;
+    }
+    deadline = setTimeout(() => fail(new Error("room discovery timeout")), timeoutMs);
+    const advertise = () => {
+      if (disposed || connecting || checking) return;
+      if (role === "host") presence("*");
+      else send(selectedPeer ?? "*", { type: "discover" });
+    };
+    pulse = setInterval(advertise, 1e3);
+    status({ type: "room", room, role });
+    if (disposed) return;
+    if (checking) collisionTimer = setTimeout(() => {
+      checking = false;
+      advertise();
+    }, 1200);
+    else advertise();
+  });
+}
+
+// packages/transport/src/star-transport.js
+var starHeader = 24;
+var starPayload = CHUNK_SIZE - starHeader;
+var starMagic = 827544658;
+function createStarTransports({
+  players,
+  localPlayerId,
+  hostPlayerId,
+  sessionId,
+  physicalTransports,
+  onError = () => {
+  },
+  maxQueuedBytes = 5 * 1024 * 1024
+} = {}) {
+  if (!Array.isArray(players) || players.length < 2 || players.length > 8 || new Set(players).size !== players.length || !players.includes(localPlayerId) || !players.includes(hostPlayerId) || typeof sessionId !== "string" || !(physicalTransports instanceof Map) || typeof onError !== "function") throw new TypeError("star transport configuration");
+  integer(maxQueuedBytes, "star queue budget", CHUNK_SIZE * 2, 64 * 1024 * 1024);
+  const local = players.indexOf(localPlayerId), host = players.indexOf(hostPlayerId), isHost = local === host;
+  const required = isHost ? players.filter((id) => id !== localPlayerId) : [hostPlayerId];
+  if (required.some((id) => !physicalTransports.get(id)?.subscribe || !physicalTransports.get(id)?.send)) throw new TypeError("missing star physical transport");
+  const tag = hashBytes(new TextEncoder().encode(sessionId)), listeners = /* @__PURE__ */ new Map(), statusListeners = /* @__PURE__ */ new Map();
+  const queues = new Map(required.map((id) => [id, []])), assemblies = /* @__PURE__ */ new Map(), completed = /* @__PURE__ */ new Map();
+  const unsubs = [], stats = { sentFrames: 0, forwardedFrames: 0, rejectedFrames: 0, queuedBytes: 0, queuedFrames: 0, assemblyBytes: 0 };
+  let closed = false, sequence = 0, pumping = false;
+  function reject() {
+    stats.rejectedFrames++;
+  }
+  function close() {
+    if (closed) return;
+    closed = true;
+    clearInterval(timer);
+    for (const remove of unsubs.splice(0)) remove();
+    queues.forEach((q) => q.length = 0);
+    assemblies.clear();
+    completed.clear();
+    stats.queuedBytes = 0;
+    stats.queuedFrames = 0;
+    stats.assemblyBytes = 0;
+    for (const set of statusListeners.values()) for (const fn of set) {
+      try {
+        fn("closed");
+      } catch {
+      }
+    }
+    listeners.clear();
+    statusListeners.clear();
+  }
+  function fail(message) {
+    if (closed) return;
+    close();
+    try {
+      onError(new Error(message));
+    } catch {
+    }
+  }
+  function pump() {
+    if (closed || pumping) return;
+    pumping = true;
+    try {
+      const now = nowMs();
+      for (const [id, q] of queues) {
+        let work = 0;
+        while (q.length && work++ < 128 && !closed) {
+          if (now - q[0].at > 1e4) {
+            fail("star forwarding backpressure timeout");
+            break;
+          }
+          if (physicalTransports.get(id).send(q[0].bytes) === false) break;
+          stats.queuedBytes -= q.shift().bytes.length;
+          stats.queuedFrames--;
+          stats.sentFrames++;
+        }
+      }
+      for (const [key, a] of assemblies) if (now - a.at > 2e3) {
+        assemblies.delete(key);
+        stats.assemblyBytes -= a.total;
+      }
+    } catch (error) {
+      fail("star forwarding failed: " + error.message);
+    } finally {
+      pumping = false;
+    }
+  }
+  function enqueue(id, frames, forwarded) {
+    const size = frames.reduce((n, b) => n + b.length, 0), q = queues.get(id);
+    if (closed || !q || physicalTransports.get(id).state && physicalTransports.get(id).state !== "open") return false;
+    if (stats.queuedBytes + size > maxQueuedBytes || stats.queuedFrames + frames.length > 4096) {
+      if (forwarded) fail("star forwarding queue capacity");
+      return false;
+    }
+    const at = nowMs();
+    for (const b of frames) q.push({ bytes: b.slice(), at });
+    stats.queuedBytes += size;
+    stats.queuedFrames += frames.length;
+    if (forwarded) stats.forwardedFrames += frames.length;
+    pump();
+    return !closed;
+  }
+  function deliver(from, id, payload, lane) {
+    const actualLane = payload.length > 5 && [TYPE.INPUT, TYPE.CLOCK].includes(payload[5]) ? payload[5] : 1;
+    if (actualLane !== lane) {
+      reject();
+      return;
+    }
+    let seen = completed.get(from);
+    if (!seen) completed.set(from, seen = /* @__PURE__ */ new Set());
+    if (seen.has(id)) return;
+    seen.add(id);
+    if (seen.size > 256) seen.delete(seen.values().next().value);
+    const target = listeners.get(players[from]);
+    if (target?.size) for (const fn of target) fn(payload.slice());
+  }
+  function receive(physicalId, data) {
+    if (closed) return;
+    let b;
+    try {
+      b = bytes(data);
+    } catch {
+      reject();
+      return;
+    }
+    if (b.length < starHeader || b.length > CHUNK_SIZE) {
+      reject();
+      return;
+    }
+    const v = new DataView(b.buffer, b.byteOffset, b.byteLength), from = b[6], to = b[7], lane = b[5];
+    const id = v.getUint32(12, true), total = v.getUint16(16, true), offset = v.getUint16(18, true), length = v.getUint16(20, true);
+    if (v.getUint32(0, true) !== starMagic || b[4] !== 1 || v.getUint32(8, true) !== tag || v.getUint16(22, true) !== 0 || ![1, TYPE.INPUT, TYPE.CLOCK].includes(lane) || from >= players.length || to >= players.length || from === to || from === local || !id || !total || total > CHUNK_SIZE || ![0, starPayload].includes(offset) || offset >= total || length !== Math.min(starPayload, total - offset) || b.length !== starHeader + length || (isHost ? players[from] !== physicalId : physicalId !== hostPlayerId || to !== local)) {
+      reject();
+      return;
+    }
+    if (to !== local) {
+      if (!isHost || !enqueue(players[to], [b], true)) {
+        if (!closed) fail("star destination is not available");
+      }
+      return;
+    }
+    if (completed.get(from)?.has(id)) return;
+    if (total <= starPayload) {
+      deliver(from, id, b.slice(starHeader), lane);
+      return;
+    }
+    const key = from + ":" + id;
+    let a = assemblies.get(key);
+    if (!a) {
+      if (assemblies.size >= 32 || stats.assemblyBytes + total > 512 * 1024) {
+        reject();
+        return;
+      }
+      a = { total, lane, bytes: new Uint8Array(total), seen: /* @__PURE__ */ new Set(), at: nowMs() };
+      assemblies.set(key, a);
+      stats.assemblyBytes += total;
+    }
+    if (a.total !== total || a.lane !== lane) {
+      reject();
+      return;
+    }
+    if (a.seen.has(offset)) {
+      for (let i = 0; i < length; i++) if (a.bytes[offset + i] !== b[starHeader + i]) {
+        reject();
+        return;
+      }
+      return;
+    }
+    a.bytes.set(b.subarray(starHeader), offset);
+    a.seen.add(offset);
+    if (a.seen.size === 2) {
+      assemblies.delete(key);
+      stats.assemblyBytes -= total;
+      deliver(from, id, a.bytes, lane);
+    }
+  }
+  const timer = setInterval(pump, 16);
+  timer.unref?.();
+  const transports = /* @__PURE__ */ new Map();
+  for (const remote of players.filter((id) => id !== localPlayerId)) {
+    listeners.set(remote, /* @__PURE__ */ new Set());
+    statusListeners.set(remote, /* @__PURE__ */ new Set());
+    const physical = isHost ? remote : hostPlayerId;
+    transports.set(remote, {
+      get state() {
+        return closed ? "closed" : physicalTransports.get(physical).state ?? "open";
+      },
+      send(data) {
+        if (closed) return false;
+        const payload = bytes(data);
+        if (!payload.length || payload.length > CHUNK_SIZE) throw new RangeError("star packet size");
+        sequence = sequence + 1 >>> 0 || 1;
+        const id = sequence, frames = [];
+        const lane = payload.length > 5 && [TYPE.INPUT, TYPE.CLOCK].includes(payload[5]) ? payload[5] : 1;
+        for (let offset = 0; offset < payload.length; offset += starPayload) {
+          const length = Math.min(starPayload, payload.length - offset), b = new Uint8Array(starHeader + length), v = new DataView(b.buffer);
+          v.setUint32(0, starMagic, true);
+          b[4] = 1;
+          b[5] = lane;
+          b[6] = local;
+          b[7] = players.indexOf(remote);
+          v.setUint32(8, tag, true);
+          v.setUint32(12, id, true);
+          v.setUint16(16, payload.length, true);
+          v.setUint16(18, offset, true);
+          v.setUint16(20, length, true);
+          b.set(payload.subarray(offset, offset + length), starHeader);
+          frames.push(b);
+        }
+        return enqueue(physical, frames, false);
+      },
+      subscribe(fn) {
+        if (closed || typeof fn !== "function") throw new TypeError("star subscriber");
+        const set = listeners.get(remote);
+        set.add(fn);
+        return () => set.delete(fn);
+      },
+      subscribeStatus(fn) {
+        if (closed || typeof fn !== "function") throw new TypeError("star status subscriber");
+        const set = statusListeners.get(remote);
+        set.add(fn);
+        return () => set.delete(fn);
+      },
+      close() {
+        listeners.get(remote)?.clear();
+        statusListeners.get(remote)?.clear();
+      }
+    });
+  }
+  try {
+    for (const id of required) {
+      const raw = physicalTransports.get(id);
+      unsubs.push(raw.subscribe((data) => receive(id, data)));
+      if (raw.subscribeStatus) unsubs.push(raw.subscribeStatus((state) => {
+        for (const [remote, set] of statusListeners) if (!isHost || remote === id) for (const fn of set) {
+          try {
+            fn(state);
+          } catch {
+          }
+        }
+      }));
+    }
+  } catch (error) {
+    close();
+    throw error;
+  }
+  return { transports, close, get metrics() {
+    return { ...stats };
+  } };
+}
+
+// packages/transport/src/group-room.js
+function groupRoomId(value) {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
+}
+async function createNostrGroupRoom({
+  role,
+  room,
+  playerCount = 2,
+  topology = "mesh",
+  namespace = "rollback-netcode",
+  relays,
+  rtcConfig,
+  timeoutMs = 6e4,
+  onStatus = () => {
+  },
+  signal,
+  signalerFactory = createNostrSignaler,
+  peerFactory = createWebRTCPeer
+} = {}) {
+  if (!["host", "join"].includes(role) || !["mesh", "star"].includes(topology)) throw new TypeError("group room role/topology");
+  integer(playerCount, "playerCount", 2, 8);
+  integer(timeoutMs, "timeoutMs", 1, 12e4);
+  if (typeof namespace !== "string" || !namespace.trim() || new TextEncoder().encode(namespace + ":group-v1").length > 128) throw new TypeError("group namespace");
+  if ([onStatus, signalerFactory, peerFactory].some((fn) => typeof fn !== "function")) throw new TypeError("group room capability");
+  if (signal?.aborted) throw new Error("group room aborted");
+  const random = () => [...globalThis.crypto.getRandomValues(new Uint8Array(16))].map((v) => v.toString(16).padStart(2, "0")).join("");
+  if (!room && role === "host") room = String(globalThis.crypto.getRandomValues(new Uint32Array(1))[0] % 1e4).padStart(4, "0");
+  if (!/^\d{4}$/.test(room ?? "")) throw new TypeError("four-digit room");
+  const peerController = new AbortController(), signalController = new AbortController(), startedAt = nowMs();
+  const earlyAbort = () => {
+    peerController.abort();
+    signalController.abort();
+  };
+  signal?.addEventListener("abort", earlyAbort, { once: true });
+  let signaler;
+  try {
+    signaler = await signalerFactory({
+      room,
+      namespace: namespace + ":group-v1",
+      relays,
+      signal: signalController.signal,
+      timeoutMs: Math.min(timeoutMs, 1e4),
+      onStatus,
+      maxVerificationsPerSecond: Math.max(16, playerCount * 4),
+      verificationBurst: playerCount * 4
+    });
+    if (!groupRoomId(signaler?.id) || typeof signaler.send !== "function" || typeof signaler.subscribe !== "function" || typeof signaler.close !== "function") throw new TypeError("group signaler capability");
+    if (signal?.aborted || signalController.signal.aborted) throw new Error("group room aborted");
+  } catch (error) {
+    earlyAbort();
+    signaler?.close?.();
+    signal?.removeEventListener("abort", earlyAbort);
+    throw error;
+  }
+  signal?.removeEventListener("abort", earlyAbort);
+  return new Promise((resolve, reject) => {
+    const self = signaler.id, members = /* @__PURE__ */ new Set([self]), departed = /* @__PURE__ */ new Set(), acks = /* @__PURE__ */ new Set([self]), ready = /* @__PURE__ */ new Set(), starts = /* @__PURE__ */ new Set([self]);
+    const peers = /* @__PURE__ */ new Map(), subscribers = /* @__PURE__ */ new Map(), backlog = /* @__PURE__ */ new Map(), controlPending = /* @__PURE__ */ new Map(), removers = [];
+    let host = role === "host" ? self : null, sessionId = role === "host" ? random() : null, roster = null, rosterKey = "";
+    let phase = role === "host" ? "checking" : "discovering", disposed = false, settled = false, connecting = false, localReady = false;
+    let unsubscribe, interval, collisionTimer, deadline, router, backlogBytes = 0, startPublished = false;
+    const status = (type, detail = {}) => {
+      try {
+        onStatus({ type, room, role, playerCount, topology, phase, ...detail });
+      } catch {
+      }
+    };
+    function message(op, extra = {}) {
+      return { type: "group", version: 1, protocol: PROTOCOL_VERSION, op, host, sessionId, playerCount, topology, ...extra };
+    }
+    function dispose(reason, notify = true) {
+      if (disposed) return;
+      disposed = true;
+      clearInterval(interval);
+      clearTimeout(collisionTimer);
+      clearTimeout(deadline);
+      unsubscribe?.();
+      signal?.removeEventListener("abort", abort);
+      peerController.abort();
+      removers.splice(0).forEach((fn) => fn());
+      router?.close();
+      peers.forEach((p) => p.close());
+      peers.clear();
+      subscribers.clear();
+      backlog.clear();
+      backlogBytes = 0;
+      const finish2 = () => {
+        signalController.abort();
+        signaler.close();
+      };
+      if (notify && host && sessionId) {
+        const grace = setTimeout(finish2, 1500);
+        grace.unref?.();
+        Promise.resolve().then(() => signaler.send(role === "host" ? "*" : host, message("leave", { reason }))).catch(() => {
+        }).finally(() => {
+          clearTimeout(grace);
+          finish2();
+        });
+      } else finish2();
+    }
+    function fail(error, notify = true) {
+      if (disposed) return;
+      const value = error instanceof Error ? error : new Error(String(error));
+      const former = phase;
+      phase = "failed";
+      dispose(value.message, notify);
+      status("group-failed", { reason: value.message, previousPhase: former });
+      if (!settled) {
+        settled = true;
+        reject(value);
+      }
+    }
+    function abort() {
+      fail(new Error("group room aborted"));
+    }
+    function send(to, op, extra = {}) {
+      if (disposed) return Promise.resolve();
+      const key = to + ":" + op;
+      if (controlPending.has(key)) return controlPending.get(key);
+      if (controlPending.size >= 32) return Promise.resolve();
+      const pending = Promise.resolve().then(() => {
+        if (!disposed) return signaler.send(to, message(op, extra));
+      }).catch((error) => {
+        fail(error);
+      }).finally(() => controlPending.delete(key));
+      controlPending.set(key, pending);
+      return pending;
+    }
+    function close() {
+      if (disposed) return;
+      const pending = !settled;
+      phase = "closed";
+      dispose("room closed");
+      status("group-closed");
+      if (pending) {
+        settled = true;
+        reject(new Error("group room closed"));
+      }
+    }
+    function finish() {
+      if (disposed || settled || !localReady) return;
+      settled = true;
+      phase = "running";
+      clearTimeout(deadline);
+      clearInterval(interval);
+      const physical = new Map([...peers].map(([id, peer]) => [id, peer.transport]));
+      status("group-started", { players: [...roster], localPlayerId: self });
+      if (disposed) {
+        reject(new Error("group room closed by observer"));
+        return;
+      }
+      resolve({
+        room,
+        sessionId,
+        playerCount,
+        topology,
+        players: Object.freeze([...roster]),
+        localPlayerId: self,
+        authorityPlayerId: host,
+        hostPlayerId: host,
+        transports: new Map(router?.transports ?? physical),
+        peerConnections: new Map([...peers].map(([id, peer]) => [id, peer.peerConnection])),
+        get closed() {
+          return disposed;
+        },
+        get metrics() {
+          return router?.metrics ?? null;
+        },
+        close
+      });
+    }
+    function hostProgress() {
+      if (disposed || role !== "host" || !roster) return;
+      if (phase === "roster" && acks.size === playerCount) {
+        phase = "connecting";
+        connect();
+        send("*", "connect", { rosterKey });
+      }
+      if (phase === "connecting" && ready.size === playerCount) {
+        phase = "starting";
+        send("*", "start", { rosterKey }).then(() => {
+          startPublished = true;
+          hostProgress();
+        });
+      }
+      if (phase === "starting" && startPublished && starts.size === playerCount) finish();
+    }
+    function wantedPeers() {
+      return roster.filter((id) => id !== self && (topology === "mesh" || self === host || id === host));
+    }
+    function scopedSignaler(remote) {
+      return {
+        id: self,
+        send(to, payload) {
+          if (disposed || to !== remote) return Promise.reject(new Error("group peer scope"));
+          return signaler.send(to, { ...payload, groupSession: sessionId });
+        },
+        subscribe(fn) {
+          const set = subscribers.get(remote) ?? /* @__PURE__ */ new Set();
+          subscribers.set(remote, set);
+          set.add(fn);
+          const queued = backlog.get(remote) ?? [];
+          backlog.delete(remote);
+          for (const item of queued) {
+            backlogBytes -= item.size;
+            if (!disposed) fn(item.envelope);
+          }
+          return () => set.delete(fn);
+        },
+        close() {
+        }
+      };
+    }
+    function connect() {
+      if (disposed || connecting || !roster) return;
+      connecting = true;
+      phase = "connecting";
+      status("group-connecting", { players: [...roster] });
+      if (disposed) return;
+      Promise.all(wantedPeers().map((remote) => Promise.resolve().then(() => {
+        if (disposed) throw new Error("group room closed");
+        return peerFactory({
+          initiator: compareIds(self, remote) > 0,
+          signaler: scopedSignaler(remote),
+          remoteId: remote,
+          rtcConfig,
+          timeoutMs: Math.min(timeoutMs, 3e4),
+          onStatus: (event) => status("group-peer", { peerId: remote, event }),
+          signal: peerController.signal
+        });
+      }).then((peer) => {
+        if (disposed) {
+          peer.close();
+          return;
+        }
+        if (!peer?.transport?.send || !peer.transport.subscribe || typeof peer.close !== "function") throw new TypeError("group peer capability");
+        peers.set(remote, peer);
+        if (peer.transport.subscribeStatus) removers.push(peer.transport.subscribeStatus((state) => {
+          if (!disposed && (state === "closed" || state === "failed" || !settled && state === "interrupted")) fail(new Error("group peer unavailable: " + remote));
+        }));
+      }))).then(() => {
+        if (disposed) return;
+        if ([...peers.values()].some((p) => p.transport.state && p.transport.state !== "open")) throw new Error("group transport not open");
+        if (topology === "star") router = createStarTransports({
+          players: roster,
+          localPlayerId: self,
+          hostPlayerId: host,
+          sessionId,
+          physicalTransports: new Map([...peers].map(([id, p]) => [id, p.transport])),
+          onError: fail
+        });
+        localReady = true;
+        status("group-ready", { players: [...roster] });
+        if (disposed) return;
+        if (role === "host") {
+          ready.add(self);
+          hostProgress();
+        } else send(host, "ready", { rosterKey });
+      }).catch(fail);
+    }
+    function publishRoster() {
+      send("*", "roster", { players: roster, rosterKey });
+    }
+    function advertise(to = "*") {
+      send(to, "hello", { accepting: phase === "collecting", memberCount: members.size });
+    }
+    function acceptRoster(from, m) {
+      if (from !== host || !Array.isArray(m.players) || m.players.length !== playerCount || m.players.some((id) => !groupRoomId(id)) || new Set(m.players).size !== playerCount || !m.players.includes(self) || !m.players.includes(host) || m.players.join("\n") !== [...m.players].sort(compareIds).join("\n") || m.rosterKey !== m.players.join("\n")) {
+        fail(new Error("invalid group roster"));
+        return;
+      }
+      if (roster && rosterKey !== m.rosterKey) {
+        fail(new Error("group roster changed"));
+        return;
+      }
+      if (!roster) {
+        roster = Object.freeze([...m.players]);
+        rosterKey = m.rosterKey;
+        phase = "roster";
+        status("group-roster", { players: [...roster] });
+      }
+      send(host, "ack", { rosterKey });
+    }
+    function receive(envelope) {
+      if (disposed || !envelope || envelope.from === self || !groupRoomId(envelope.from) || !["*", self].includes(envelope.to) || !envelope.message || typeof envelope.message !== "object") return;
+      const { from, to, message: m } = envelope;
+      if (["offer", "answer", "ice", "bye"].includes(m.type)) {
+        if (!roster || to !== self || m.groupSession !== sessionId || !wantedPeers().includes(from)) return;
+        const set = subscribers.get(from);
+        if (set?.size) {
+          for (const fn of set) fn(envelope);
+          return;
+        }
+        const size = encoder.encode(JSON.stringify(m)).length, queued = backlog.get(from) ?? [];
+        if (queued.length >= 32 || backlogBytes + size > 2 * 1024 * 1024) {
+          fail(new Error("group signaling backlog capacity"));
+          return;
+        }
+        queued.push({ envelope, size });
+        backlog.set(from, queued);
+        backlogBytes += size;
+        return;
+      }
+      if (m.type !== "group" || m.version !== 1 || m.protocol !== PROTOCOL_VERSION) return;
+      if (role === "host" && m.op === "hello" && m.host === from) {
+        if (["checking", "collecting"].includes(phase)) fail(new Error("room code is already in use"));
+        else if (m.accepting !== false) advertise(from);
+        return;
+      }
+      if (role === "join" && m.op === "hello" && m.host === from && groupRoomId(m.sessionId)) {
+        if (host && (host !== from || sessionId !== m.sessionId)) return;
+        if (m.playerCount !== playerCount || m.topology !== topology) {
+          fail(new Error("group playerCount/topology mismatch"), false);
+          return;
+        }
+        const selected = !!host;
+        if (!host) {
+          host = from;
+          sessionId = m.sessionId;
+        }
+        if (!roster) {
+          if (m.accepting === false && !selected) {
+            fail(new Error("group room is full or already started"), false);
+            return;
+          }
+          send(host, "join");
+        }
+        return;
+      }
+      if (role === "host" && m.op === "discover") {
+        if (phase !== "checking") advertise(from);
+        return;
+      }
+      if (m.host !== host || m.sessionId !== sessionId || m.playerCount !== playerCount || m.topology !== topology) return;
+      if (role === "host") {
+        if (m.op === "join") {
+          if (members.has(from)) {
+            if (roster) publishRoster();
+            return;
+          }
+          if (phase !== "collecting" || departed.has(from)) {
+            send(from, "reject", { reason: "group room is full or already started" });
+            return;
+          }
+          members.add(from);
+          status("group-members", { players: [...members].sort(compareIds) });
+          if (disposed) return;
+          if (members.size === playerCount) {
+            roster = Object.freeze([...members].sort(compareIds));
+            rosterKey = roster.join("\n");
+            phase = "roster";
+            status("group-roster", { players: [...roster] });
+            publishRoster();
+          }
+        } else if (m.op === "leave" && members.has(from)) {
+          if (phase === "collecting") {
+            members.delete(from);
+            departed.add(from);
+            if (departed.size > 64) fail(new Error("group membership churn limit"));
+            else status("group-members", { players: [...members].sort(compareIds) });
+          } else fail(new Error("group participant left"));
+        } else if (roster?.includes(from) && m.rosterKey === rosterKey) {
+          if (m.op === "ack") acks.add(from);
+          if (m.op === "ready" && ["connecting", "starting"].includes(phase)) ready.add(from);
+          if (m.op === "start-ack" && phase === "starting") starts.add(from);
+          hostProgress();
+        }
+      } else if (from === host) {
+        if (m.op === "reject") fail(new Error(String(m.reason || "group rejected")), false);
+        else if (m.op === "leave") fail(new Error("group host left"), false);
+        else if (m.op === "roster") acceptRoster(from, m);
+        else if (roster && m.rosterKey === rosterKey) {
+          if (m.op === "connect") {
+            connect();
+            if (localReady) send(host, "ready", { rosterKey });
+          }
+          if (m.op === "start" && localReady) send(host, "start-ack", { rosterKey }).then(finish);
+        }
+      }
+    }
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) {
+      abort();
+      return;
+    }
+    unsubscribe = signaler.subscribe(receive);
+    if (disposed) {
+      unsubscribe?.();
+      return;
+    }
+    const remaining = timeoutMs - (nowMs() - startedAt);
+    if (remaining <= 0) {
+      fail(new Error("group room timeout"));
+      return;
+    }
+    deadline = setTimeout(() => fail(new Error("group room timeout: " + phase)), remaining);
+    interval = setInterval(() => {
+      if (disposed) return;
+      if (role === "host") {
+        if (phase === "collecting") advertise();
+        else if (phase === "roster") publishRoster();
+        else if (phase === "connecting") send("*", "connect", { rosterKey });
+        else if (phase === "starting") send("*", "start", { rosterKey }).then(() => {
+          startPublished = true;
+          hostProgress();
+        });
+      } else if (!host) send("*", "discover");
+      else if (!roster) send(host, "join");
+      else if (!connecting) send(host, "ack", { rosterKey });
+      else if (localReady) send(host, "ready", { rosterKey });
+    }, 1e3);
+    status("room");
+    if (disposed) return;
+    if (role === "host") collisionTimer = setTimeout(() => {
+      if (!disposed) {
+        phase = "collecting";
+        advertise();
+      }
+    }, 1200);
+    else send("*", "discover");
+  });
+}
+
+// packages/replay/src/index.js
+function playReplay({ adapter, replay, simulationVersion = replay?.simulationVersion } = {}) {
+  if (replay?.version !== VERSION || replay.simulationVersion !== simulationVersion || !Array.isArray(replay.frames)) throw new Error("replay compatibility");
+  adapter.load(bytes(replay.initialState).slice());
+  let tick = 0;
+  for (const f of replay.frames) {
+    if (f.tick !== tick) throw new Error("non-contiguous replay");
+    runSimulationFrame(adapter, { tick, tickRate: replay.tickRate, inputs: f.inputs.map((x) => ({ ...x, predicted: false })), resimulating: true, replaying: true });
+    tick++;
+  }
+  return { tick, hash: hashBytes(bytes(adapter.save())) };
+}
+export {
+  CHUNK_SIZE,
+  DeterminismError,
+  MAX_TICK,
+  PROTOCOL_VERSION,
+  RollbackSession,
+  SeededPRNG,
+  SyncTestSession,
+  VERSION,
+  WebRTCTransport,
+  binaryCodec,
+  createLoop,
+  createNostrGroupRoom,
+  createNostrRoom,
+  createNostrSignaler,
+  createSession,
+  createSyncTestSession,
+  createValueCodec,
+  createWebRTCPeer,
+  fixedPoint,
+  hashBytes,
+  jsonCodec,
+  nostrCrypto,
+  playReplay,
+  profiles,
+  runSyncTest,
+  runSyncTestAsync,
+  statelessRandom
+};

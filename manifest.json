@@ -3,15 +3,55 @@
   "modules": [
     {
       "file": "interpolation.js",
-      "sha256": "348d6cf7ecbd733bdc99f34c37baa072d84a5f5190632aee8e4c15bbd04ddc08"
+      "sha256": "f0affef627f5a6195892b80480ae2ffb28676f2526840f5a5c11e49b7ac08b1a"
     },
     {
       "file": "rendering.js",
-      "sha256": "7f2c4de84238797165e234baf7056ca214a450b701fd9c440b30d9d03f96fdc8"
+      "sha256": "a55fd8fff217de5021bcf6baecfbf1f9847bb41947697f9c744b561bc59fa4de"
     },
     {
       "file": "input.js",
-      "sha256": "bc0d99d27aead4649a4dd0ccc7248ae95b3d6f6f7fe41cb134d9f2641e37642e"
+      "sha256": "6cca8d6d870df9baed3b51c5cff2090746953a54f4cd1dc4a466475ec07e5c85"
+    },
+    {
+      "file": "deterministic.js",
+      "sha256": "921eb25f9a0e42bcfdd9c3a4bad4a4581dedf35f1bc3b85a9ff5ffc7ae30f072"
+    },
+    {
+      "file": "simloop.js",
+      "sha256": "e4f71d4edd68da7f93d5aea13a1de6fb4ff19c2f292c6005dab4f8ec7dc0dc8e"
+    },
+    {
+      "file": "transport.js",
+      "sha256": "2044d95fc6a9b6bb225a164b83ead88d5a5cf8a0ecf6b643fce91da0649b5df9"
+    },
+    {
+      "file": "replay.js",
+      "sha256": "e8c70ea864cbca52d3725ed9dc5ed935b642875ae88bd416d1f5344e6bd6e9b5"
+    },
+    {
+      "file": "rollback.js",
+      "sha256": "bac765ad45e0637358f359f72be3188ceeb101869fc07ef90edcbd826038debe"
+    },
+    {
+      "file": "rollback-netcode.js",
+      "sha256": "6fee0a08c86942c6e65196b0dd7e29fb88b7694e78f3a404b0646a3eec2af22a"
+    },
+    {
+      "file": "camera.js",
+      "sha256": "790fb684d67f73e7ab1636caa4afbf8ed0d0d54af9ac7c56a0d3f9fdba53dbcd"
+    },
+    {
+      "file": "presentation-events.js",
+      "sha256": "c0785f505a1d0ccb169074f513eca6a43e33b2f7dad1354b138ce81ee32ecec0"
+    },
+    {
+      "file": "hud.js",
+      "sha256": "2b0e09f4af78a0779308a5c50e7a2cf72264567e26a27bfc011cbb62ca83bb0b"
+    },
+    {
+      "file": "debug-tools.js",
+      "sha256": "50194cd84d8bdec147928afb429fe0aa0660bd68994a0120c9db7d1ce430d4e6"
     }
   ]
 }
