@@ -31,12 +31,15 @@ var WebGLDevice = class {
     preserveDrawingBuffer = false,
     powerPreference = "default",
     failIfMajorPerformanceCaveat = false,
+    checkGLErrors = false,
     maxTextures = 8,
     maxBufferBytes = 128 * 1024 * 1024
   } = {}) {
     if (!canvas?.getContext || !canvas?.addEventListener) throw new TypeError("canvas required");
     if (!["default", "low-power", "high-performance"].includes(powerPreference)) throw new TypeError("Invalid WebGL powerPreference");
     if (typeof failIfMajorPerformanceCaveat !== "boolean") throw new TypeError("failIfMajorPerformanceCaveat must be boolean");
+    if (typeof checkGLErrors !== "boolean") throw new TypeError("checkGLErrors must be boolean");
+    this.checkGLErrors = checkGLErrors;
     integer(maxTextures, "maxTextures", 1, 32);
     integer(maxBufferBytes, "maxBufferBytes", 4);
     this.canvas = canvas;
@@ -342,8 +345,10 @@ var WebGLDevice = class {
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     if (pixels instanceof Uint8Array) gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, width, height, format, gl.UNSIGNED_BYTE, pixels);
     else gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, format, gl.UNSIGNED_BYTE, pixels);
-    const error = gl.getError();
-    if (error !== gl.NO_ERROR) throw new Error(`Texture update error ${error}`);
+    if (this.checkGLErrors) {
+      const error = gl.getError();
+      if (error !== gl.NO_ERROR) throw new Error(`Texture update error ${error}`);
+    }
     r.source = next.source;
     this.stats.textureUploads++;
     this.stats.textureBytes += width * height * (r.format === "rgba" ? 4 : 1);
@@ -359,15 +364,19 @@ var WebGLDevice = class {
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, r.gpu);
     this.boundTextureCount = Math.max(1, this.boundTextureCount);
+    let allocated = false;
     if (!gl.getContextAttributes().alpha && r.copyFormat !== "rgb") {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, r.width, r.height, 0, gl.RGB, gl.UNSIGNED_BYTE, null);
       r.copyFormat = "rgb";
+      allocated = true;
       this.stats.textureUploads++;
       this.stats.textureBytes += r.width * r.height * 3;
     }
     gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, x, y, r.width, r.height);
-    const error = gl.getError();
-    if (error !== gl.NO_ERROR) throw new Error(`Framebuffer copy error ${error}`);
+    if (allocated || this.checkGLErrors) {
+      const error = gl.getError();
+      if (error !== gl.NO_ERROR) throw new Error(`Framebuffer copy error ${error}`);
+    }
     r.source = null;
     this.stats.frameCopies++;
   }
