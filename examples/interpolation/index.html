@@ -1,8 +1,22 @@
 <!doctype html>
 <html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Interpolation · bloom-gamekit</title>
-<style>body{font:16px system-ui;max-width:720px;margin:3rem auto;padding:0 1rem;color:#182431}canvas{width:100%;background:#f2f5f8;border:1px solid #c8d2dc}code{background:#eef1f4}</style>
-<h1>한 pose, 여러 표현</h1><p>10 TPS 권위 표본을 한 틱 동안 연결합니다. 몸체·그림자·체력바가 같은 pose를 읽습니다. 3초마다 명시적으로 순간이동합니다.</p>
-<canvas width="560" height="210" aria-label="보간된 이동 예제"></canvas><p id="status">Loading…</p>
-<p>개발: <code>npm test</code> 후 저장소 루트에서 정적 서버로 여세요. 예제는 소스 대신 실제 <code>dist/interpolation.js</code>를 import합니다.</p>
-<script type="module">import { startDemo } from './demo.js'; startDemo(document.querySelector('canvas'), document.querySelector('#status'));</script></html>
+<title>Input → Interpolation → WebGL · bloom-gamekit</title>
+<style>
+body{font:16px system-ui;max-width:960px;margin:2rem auto;padding:0 1rem;background:#111c24;color:#e6f1f3;line-height:1.6}
+canvas{display:block;width:100%;aspect-ratio:1.8;background:#091117;touch-action:none;outline:1px solid #40535e}
+canvas:focus-visible{outline:2px solid #86edc0}code{background:#24333b}label{display:inline-flex;gap:.7rem;align-items:center}#status{font:13px ui-monospace,monospace;min-height:3rem}small{color:#b4c6cc}
+</style>
+<h1>입력 한 번, 고정 틱, 부드러운 표현</h1>
+<p>캔버스를 누른 뒤 WASD/방향키로 이동하세요. 클릭·터치로 목적지를 정하고 Space 또는 가까운 위치 더블 탭으로 구릅니다. 그림자·몸체·체력바·카메라가 같은 보간 pose를 읽습니다.</p>
+<canvas width="720" height="400" tabindex="0" aria-label="키보드와 터치로 조작하는 WebGL 통합 예제"></canvas>
+<p id="status">Loading…</p>
+<label>게임 카메라 확대 <input id="zoom" type="range" min="0.5" max="2" step="0.1" value="1"></label>
+<p><small>실제 dist의 독립 ESM 3개를 사용합니다. 화면의 FPS는 이 장면·현재 브라우저 관찰값이며 모바일 성능 보증이 아닙니다. 텍스트/UI는 DOM, 전장 geometry는 WebGL 1입니다.</small></p>
+<p><small>개발: <code>npm test</code> 후 저장소 루트에서 정적 서버를 실행하세요.</small></p>
+<script type="module">
+import { startDemo } from './demo.js';
+const demo = startDemo(document.querySelector('canvas'), document.querySelector('#status'));
+window.demo = demo;
+document.querySelector('#zoom').addEventListener('input', event => demo.setZoom(Number(event.target.value)));
+window.addEventListener('pagehide', () => demo.dispose(), { once: true });
+</script></html>
