@@ -70,3 +70,7 @@ const denseUpdateMs = performance.now() - frameStart;
 assert.equal(denseHits, 20000); assert.equal(dense.active.size, 0); assert.equal(dense.size, 20000);
 dense.confirmThrough(220); assert.equal(dense.size, 0);
 console.log(JSON.stringify({ densePresentation: { events: denseHits, emitAndConfirmCpuMs: denseEmitMs, idle600UpdatesCpuMs: denseUpdateMs, environment: `Node ${process.version}`, scope: 'CPU fixture only; not mobile or browser FPS' } }));
+
+projection.configure({ pixel2to1: true }); assert.equal(projection.K, .5); projection.configure({ pixel2to1: false }); assert.ok(Math.abs(projection.degrees - 40) < 1e-10);
+const tiny = new CameraViewport({ width: .1, height: .2, dpr: 1 }); assert.equal(tiny.screenToBackingInto(.1, .2, {}).x, 1);
+assert.throws(() => new PresentationEventQueue({ adapters: {}, retentionTicks: 0 }));

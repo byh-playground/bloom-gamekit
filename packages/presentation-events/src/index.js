@@ -11,7 +11,7 @@ export function presentationEventKey(event) {
 export class PresentationEventQueue {
   constructor({ adapters, retentionTicks = 120, maxPending = 100000, nowMs = 0 } = {}) {
     if (!adapters || typeof adapters !== 'object') throw new TypeError('adapters required');
-    integer(retentionTicks, 'retentionTicks'); integer(maxPending, 'maxPending'); if (!maxPending) throw new RangeError('maxPending must be positive');
+    integer(retentionTicks, 'retentionTicks'); if (!retentionTicks) throw new RangeError('retentionTicks must be positive'); integer(maxPending, 'maxPending'); if (!maxPending) throw new RangeError('maxPending must be positive');
     this.adapters = new Map(Object.entries(adapters));
     for (const [kind, adapter] of this.adapters) {
       if (!kind || typeof adapter?.start !== 'function') throw new TypeError('adapter.start required');

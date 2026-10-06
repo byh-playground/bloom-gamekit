@@ -8,6 +8,6 @@
 
 브라우저는 원본 2-context 실제 RTCPeerConnection/DataChannel harness를 `scripts/rollback-browser.mjs`로 옮겨 같은 240tick 입력·command·late input·replay hash 흐름을 검사합니다. 기존 gamekit DOM→interpolation→실제 WebGL 검사 뒤 연속 실행하며 CI에서 빌드된 번들을 사용합니다. 공개 relay 통신·다른 엔진/모바일·기기 GPU FPS·기존 게임 자체 검증은 이 검사로 대체하지 않습니다.
 
-2026-10-06 로컬 npm ci 완료. SDK 출처/API 검사와 소비자 입력 확장을 포함한 Node 163건 및 보간·표현 연속 E2E 통과. 로컬 Chromium 실행은 socket() Operation not permitted로 시작이 차단되었고 sandbox escalation에서도 동일했습니다. 브라우저 통과로 기록하지 않습니다. Draft PR CI의 해당 source commit 검사 결과를 별도로 확인해야 합니다. 이후 추가된 출처/독립 모듈 검사는 최종 PR 결과에 기록합니다.
+2026-10-06 로컬 npm ci 완료. SDK 출처/API 검사와 소비자 입력 확장을 포함한 Node 163건 및 보간·표현 연속 E2E 통과. 로컬 Chromium 실행은 socket() Operation not permitted로 시작이 차단되었고 sandbox escalation에서도 동일했습니다. 브라우저 통과로 기록하지 않습니다. Draft PR CI의 해당 source commit 검사 결과를 별도로 확인해야 합니다. 기존 타입 fixture는 TypeScript 5.9.3의 strict/noEmit/ES2022/NodeNext로 로컬 검사하여 통과했습니다. 이후 추가된 출처/독립 모듈 검사는 최종 PR 결과에 기록합니다.
 
 개발 검사: `npm ci --ignore-scripts --no-audit --no-fund`, `npm test`, `npm run test:browser`. 필요한 경우 공식 Playwright Chromium을 설치합니다. 로컬에서 시스템 Chromium을 쓸 때 `CHROMIUM_EXECUTABLE_PATH`를 지정할 수 있습니다.

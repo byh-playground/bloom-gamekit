@@ -36,6 +36,10 @@ export async function runPresentationChecks(page) {
     check(!copy.copied && copy.method === 'selection' && textarea.selectionEnd === textarea.value.length, 'manual copy remains selected and truthful');
     const external = document.createElement('span'); external.textContent = 'original'; external.style.color = 'red'; host.append(external);
     hud.add('external', { element: external, anchor: { space: 'screen', x: 2, y: 2 }, text: 'changed' }); hud.update(); hud.remove('external'); check(external.textContent === 'original' && external.style.color === 'red' && !external.style.position, 'external DOM state restored');
+    const originalParent = document.createElement('div'); host.append(originalParent);
+    const a = document.createElement('span'), b = document.createElement('span'), c = document.createElement('span'); originalParent.append(a, b, c);
+    hud.add('a', { element: a, anchor: { space: 'screen', x: 1, y: 1 } }); hud.add('b', { element: b, anchor: { space: 'screen', x: 1, y: 1 } });
+    hud.remove('a'); hud.remove('b'); check(originalParent.children[0] === a && originalParent.children[1] === b && originalParent.children[2] === c && originalParent.childNodes.length === 3, 'multiple moved siblings restore exact order without leaked markers');
     queue.dispose(); hud.dispose(); ring.dispose(); renderer.dispose(); host.remove();
     return { cameraHudPixel: [...pixel], stationaryDomWrites: writes, speculativeStarts: starts, cancelledResources: stops, confirmedSoundStarts: sounds, globalErrors: 'redacted and detached', clipboardFallback: copy.method };
   });

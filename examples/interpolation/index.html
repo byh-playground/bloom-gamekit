@@ -11,7 +11,7 @@ canvas:focus-visible{outline:2px solid #86edc0}code{background:#24333b}label{dis
 <canvas width="720" height="400" tabindex="0" aria-label="키보드와 터치로 조작하는 WebGL 통합 예제"></canvas>
 <p id="status">Loading…</p>
 <label>게임 카메라 확대 <input id="zoom" type="range" min="0.5" max="2" step="0.1" value="1"></label>
-<p><small>실제 dist의 독립 ESM 3개를 사용합니다. 화면의 FPS는 이 장면·현재 브라우저 관찰값이며 모바일 성능 보증이 아닙니다. 텍스트/UI는 DOM, 전장 geometry는 WebGL 1입니다.</small></p>
+<p><small>실제 dist의 독립 입력·simloop·보간·렌더링·카메라·표현 이벤트·HUD·진단 ESM를 사용합니다. 화면의 FPS는 이 장면·현재 브라우저 관찰값이며 모바일 성능 보증이 아닙니다. 텍스트/UI는 DOM, 전장 geometry는 WebGL 1입니다.</small></p>
 <p><small>개발: <code>npm test</code> 후 저장소 루트에서 정적 서버를 실행하세요.</small></p>
 <script type="module">
 import { startDemo } from './demo.js';

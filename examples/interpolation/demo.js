@@ -141,7 +141,10 @@ export function startDemo(canvas, status, { autoStart = true } = {}) {
     advance() { authorityStep(); return { status: 'advanced', tick }; },
   };
   const loop = createLoop({ session: localSession, canAdvance: () => !paused,
-    beforeFrame(now) {
+    beforeFrame() {
+      // rAF timestamp may precede setup performed in the same frame. Presentation
+      // receipt and sampling keep the same performance.now() clock as initial state.
+      const now = performance.now();
       frameNow = now; stepped = false;
       if (!paused && diagnostics.frameIntervals.length < 180) diagnostics.frameIntervals.push(Math.max(0, Math.min(250, now - lastMs)));
       lastMs = now;

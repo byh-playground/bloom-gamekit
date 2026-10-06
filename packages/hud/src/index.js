@@ -27,6 +27,7 @@ export class DOMHud {
     if (!element.style || !element.setAttribute) throw new TypeError('DOM element required');
     const point = {}; resolveAnchorInto(this.camera, anchor, point);
     const previous = { css: element.getAttribute('style'), hidden: element.hidden, children: [...element.childNodes], parent: element.parentNode, next: element.nextSibling };
+    if (!owned && previous.parent) { previous.marker = element.ownerDocument.createComment('hud position'); previous.parent.insertBefore(previous.marker, element); }
     element.style.position = 'absolute'; element.style.left = '0'; element.style.top = '0'; element.style.pointerEvents = 'none';
     this.root.appendChild(element); this.entries.set(id, { element, anchor: { ...anchor }, point, owned, previous, x: NaN, y: NaN, visible: null, text: undefined });
     this.stats.nodes++; if (text !== undefined) this.setText(id, text); return element;
@@ -57,7 +58,8 @@ export class DOMHud {
     if (entry.owned) element.remove(); else {
       if (previous.css === null) element.removeAttribute('style'); else element.setAttribute('style', previous.css);
       element.hidden = previous.hidden; element.replaceChildren(...previous.children);
-      if (previous.parent) previous.parent.insertBefore(element, previous.next?.parentNode === previous.parent ? previous.next : null); else element.remove();
+      if (previous.parent) previous.parent.insertBefore(element, previous.marker?.parentNode === previous.parent ? previous.marker : previous.next?.parentNode === previous.parent ? previous.next : null); else element.remove();
+      previous.marker?.remove();
     }
     this.entries.delete(id); this.stats.nodes--; return true;
   }

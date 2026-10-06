@@ -3,10 +3,10 @@ const positive = (n, name) => { finite(n, name); if (n <= 0) throw new RangeErro
 /** XYZ pitch projection. Absolute Z; terrain offsets belong to the caller. */
 export class OrthographicProjection {
   constructor(options = {}) { this.configure({ degrees: 40, pixel2to1: false, ...options }); }
-  configure({ degrees = this.degrees, pixel2to1 = this.pixel2to1 } = {}) {
+  configure({ degrees = this._degrees, pixel2to1 = this.pixel2to1 } = {}) {
     finite(degrees, 'degrees'); if (degrees <= 0 || degrees > 90) throw new RangeError('degrees must be (0,90]');
     if (typeof pixel2to1 !== 'boolean') throw new TypeError('pixel2to1 must be boolean');
-    this.pixel2to1 = pixel2to1; this.K = pixel2to1 ? 0.5 : Math.sin(degrees * Math.PI / 180);
+    this._degrees = degrees; this.pixel2to1 = pixel2to1; this.K = pixel2to1 ? 0.5 : Math.sin(degrees * Math.PI / 180);
     this.H = Math.sqrt(Math.max(0, 1 - this.K * this.K)); this.degrees = Math.asin(this.K) * 180 / Math.PI; return this;
   }
   projectInto(x, y, z, out) { finite(x, 'x'); finite(y, 'y'); finite(z, 'z'); out.x = x; out.y = y * this.K - z * this.H; out.depth = y * this.H + z * this.K; return out; }
@@ -26,7 +26,7 @@ export class CameraViewport {
     this.shakeX = 0; this.shakeY = 0; this.setViewport({ width, height, dpr, left, top }); this.setCamera({ x, y, zoom, rotation });
   }
   setViewport({ width = this.width, height = this.height, dpr = this.dpr, left = this.left, top = this.top } = {}) {
-    positive(width, 'width'); positive(height, 'height'); positive(dpr, 'dpr'); finite(left, 'left'); finite(top, 'top');
+    positive(width, 'width'); positive(height, 'height'); positive(dpr, 'dpr'); positive(width * dpr, 'backing width'); positive(height * dpr, 'backing height'); finite(left, 'left'); finite(top, 'top');
     this.width = width; this.height = height; this.dpr = dpr; this.left = left; this.top = top; return this;
   }
   setCamera({ x = this.camera.x, y = this.camera.y, zoom = this.camera.zoom, rotation = this.camera.rotation } = {}) {
@@ -62,7 +62,7 @@ export class CameraViewport {
   worldToScreenInto(x, y, z, out) { this.projection.projectInto(x, y, z, this._point); return this.planeToScreenInto(this._point.x, this._point.y, out); }
   clientToScreenInto(x, y, out) { out.x = finite(x, 'x') - this.left; out.y = finite(y, 'y') - this.top; return out; }
   screenToClientInto(x, y, out) { out.x = finite(x, 'x') + this.left; out.y = finite(y, 'y') + this.top; return out; }
-  screenToBackingInto(x, y, out) { out.x = finite(x, 'x') * Math.round(this.width * this.dpr) / this.width; out.y = finite(y, 'y') * Math.round(this.height * this.dpr) / this.height; return out; }
+  screenToBackingInto(x, y, out) { out.x = finite(x, 'x') * Math.max(1, Math.round(this.width * this.dpr)) / this.width; out.y = finite(y, 'y') * Math.max(1, Math.round(this.height * this.dpr)) / this.height; return out; }
   /** Exact flat inverse, or caller terrain intersection hook (returns boolean). No hidden iterative solver. */
   screenToGroundInto(x, y, out, { z = 0, intersect = null } = {}) {
     this.screenToPlaneInto(x, y, this._point);
