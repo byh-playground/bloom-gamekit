@@ -2,28 +2,30 @@
 
 브라우저 게임에서 공통으로 쓰는 보간·렌더링·입력 기능을 독립 패키지로 개발하는 모노레포입니다. 필요한 기능만 골라 조합하며, 게임 전체를 소유하는 범용 엔진 클래스는 만들지 않습니다.
 
-**현재는 개발 원칙과 패키지 경계를 정리한 초기 저장소입니다. 실행 가능한 패키지·공개 API·배포물은 아직 없습니다.** 빈 런타임 API나 동작하지 않는 예제부터 만들지 않고, 실제 게임에서 확인한 문제를 하나씩 구현하고 검증합니다.
+**첫 구현은 interpolation입니다.** 분리한 plain JavaScript ESM 소스를 개발하고 소비자는 외부 import 없는 `interpolation.js` 한 파일을 가져갑니다. rendering/input은 후속 경계이며 아직 런타임 API를 만들지 않았습니다.
 
-## 패키지와 개발 순서
+## 시작하기
 
-1. **interpolation:** 시뮬레이션 결과를 화면에 표시할 pose로 연결합니다. DOM·WebGL·특정 게임 엔티티·넷코드 구현에 의존하지 않는 보간 패키지부터 개발합니다.
-2. **rendering:** 보간 결과를 소비하는 표현 capability와 WebGL 렌더링을 개발합니다. 권위 상태를 소유하거나 게임 규칙을 실행하지 않습니다.
-3. **input:** 기기 입력을 유지 상태와 action edge로 정리합니다. 입력 이벤트에서 시뮬레이션을 직접 변경하지 않으며, 게임 어댑터를 통해 기존 명령 경로에 연결합니다.
-
-아래는 구현이 생길 때 확장할 구조입니다. 현재 존재하는 파일은 이 README뿐이며, 패키지명과 세부 API는 각 패키지의 실제 통합 과정에서 확정합니다.
+- [보간 API·시간·생명주기 계약](packages/interpolation/README.md)
+- [실제 번들 사용 예제](examples/interpolation/index.html)
+- [연속 E2E와 CPU 측정](tests/interpolation.e2e.mjs)
 
 ```text
-bloom-gamekit/
-├── README.md
-├── packages/
-│   ├── interpolation/    # 첫 구현 대상: 렌더러 독립 보간
-│   ├── rendering/        # 후속: WebGL 표현
-│   └── input/            # 후속: 입력 상태와 action edge
-└── examples/
-    └── integrated/       # 실제 패키지를 연결하는 연속 E2E
+packages/interpolation/src/   schema.js · timeline.js · tracks.js · index.js
+packages/interpolation/README.md
+examples/interpolation/      실제 dist 번들을 소비하는 브라우저 예제
+scripts/                     빌드·배포 도구
+tests/                      연속 E2E·Worker 표본·Chromium 실행 검사
+.github/workflows/ci.yml      PR 검사 / main→dist 자동 생성
 ```
 
-개발 소스와 소비자 배포물을 구분합니다. 브라우저 소비자가 필요한 모듈만 사용할 수 있게 하고, 특정 게임의 단일 HTML 구성이나 개발용 도구를 모든 소비자의 실행 의존성으로 강제하지 않습니다. 빌드·검사·배포 명령은 실제 구현이 준비될 때 문서화합니다.
+개발 명령은 `npm ci`, `npm test`, `npm run test:browser`입니다. 브라우저 첫 설치는 `npx playwright install chromium`입니다. 루트 package.json은 개발 도구만 관리하며 모듈별 버전·workspace·npm 발행은 아직 도입하지 않았습니다.
+
+## GitHub 파일 배포
+
+PR에서는 빌드·Node E2E·Chromium 예제만 읽기 권한으로 검사합니다. main에 승인된 변경이 들어오면 GitHub Actions가 빌드·검사한 결과와 같은 번들을 확인한 후 `dist` 브랜치의 `interpolation.js`를 자동 갱신합니다. 생성 JS는 소스 커밋에 넣지 않습니다. 표준 `ubuntu-latest`만 사용하며 유료 runner·artifact 저장·Release·npm·Pages는 쓰지 않습니다. 공개 저장소의 무료 표준 runner 정책 범위에서 동작합니다.
+
+최초 main 실행이 성공한 뒤 `https://github.com/byh-playground/bloom-gamekit/blob/dist/interpolation.js`로 파일을 공유할 수 있습니다. GitHub Raw URL은 JS MIME/CORS를 보장하는 웹 호스팅 계약이 아니므로 브라우저의 직접 import 주소로 가정하지 마세요. 파일을 받아 게임과 함께 호스팅하고, 재현이 필요하면 dist 커밋 SHA를 고정하세요. dist 커밋 메시지에 source commit과 번들 SHA-256이 기록됩니다. 브랜치 게시의 실제 성공은 main 머지 후 별도로 확인해야 합니다.
 
 ## 공통 설계 원칙
 
@@ -54,7 +56,7 @@ bloom-gamekit/
 - hitstop은 권위 XYZ로 순간 이동했다가 이전 보간으로 돌아가는 방식으로 처리하지 않습니다. 표현 정지와 재개가 같은 pose·시간 정책을 따르게 하며, 순간이동·spawn/despawn·롤백 보정처럼 불연속이 필요한 경우는 명시적으로 구분합니다.
 - 기존 게임의 NavMesh·전투·성장·캠페인 규칙은 공통 패키지로 복사하지 않습니다. 게임별로 서로 다른 공간 탐색 정책을 하나로 강제하지 않습니다.
 
-이 항목은 구현·검증할 계약이며, 현재 게임의 지터가 해결됐다는 보고가 아닙니다.
+이 계약은 독립 모듈과 재현 fixture로 검사합니다. 기존 게임 자체에 적용하거나 그 게임의 지터를 해결했다는 보고는 아닙니다.
 
 ## 검증과 성능
 
@@ -62,11 +64,11 @@ bloom-gamekit/
 
 같은 입력·seed·규모에서 변경 전후를 비교하고, 보간 계산·할당·메모리와 실제 화면 갱신 간격을 구분해 기록합니다. CPU 렌더 제출 시간을 GPU 완료시간으로 부르지 않습니다. 개발 기기·브라우저·장면·측정 구간을 남기고 짧은 구간이나 한 기기의 결과를 전체 성능으로 일반화하지 않습니다.
 
-정적 검사나 모의 실행을 실제 브라우저·WebGL·기기 검증으로 대신하지 않습니다. 통과·실패·미실행 범위를 구별하고, 확인하지 않은 결과를 Stable 또는 VALIDATED라고 표시하지 않습니다. 초기 문서 등록에는 런타임 검증 결과가 없습니다.
+정적 검사나 모의 실행을 실제 브라우저·WebGL·기기 검증으로 대신하지 않습니다. 통과·실패·미실행 범위를 구별하고, 확인하지 않은 결과를 Stable 또는 VALIDATED라고 표시하지 않습니다. CI 로그에 해당 커밋의 실제 실행 결과를 남깁니다.
 
 ## 작업과 리뷰
 
-이 README가 초기 저장소의 개발 기준입니다. 관련 열린 PR과 기존 변경을 먼저 확인하고 다른 작업을 보존합니다. 최초 저장소 등록 이후의 변경은 `codex/` 작업 브랜치에서 진행하고 `main` 대상 PR로 리뷰합니다. 병렬 수정은 파일뿐 아니라 함수·상태 소유자·공통 계약·호출 관계의 겹침도 확인합니다.
+이 README와 모듈 문서가 저장소의 개발 기준입니다. 관련 열린 PR과 기존 변경을 먼저 확인하고 다른 작업을 보존합니다. 최초 저장소 등록 이후의 변경은 `codex/` 작업 브랜치에서 진행하고 `main` 대상 PR로 리뷰합니다. 병렬 수정은 파일뿐 아니라 함수·상태 소유자·공통 계약·호출 관계의 겹침도 확인합니다.
 
 개별 작업의 의도·담당·상태는 PR 본문에 관리하며 같은 계획을 여러 파일에 복제하지 않습니다. 변경 이유와 중요한 회귀 위험, 실제 검증 결과와 미검증 범위를 남깁니다. 코드 구현 완료와 패키지 공개 배포를 구분하고, 명시적인 사용자 지시 없이 머지하거나 배포 설정을 변경하지 않습니다.
 

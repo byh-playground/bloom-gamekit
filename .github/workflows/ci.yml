@@ -1,0 +1,77 @@
+name: interpolation CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Build and E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      bundle-sha256: ${{ steps.bundle.outputs.sha256 }}
+    steps:
+      # https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # https://github.com/actions/setup-node/releases/tag/v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install locked tooling without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Build and test the public bundle
+        run: npm test
+      - name: Verify deterministic output
+        id: bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$(sha256sum dist/interpolation.js | cut -d ' ' -f 1)"
+          npm run build
+          actual="$(sha256sum dist/interpolation.js | cut -d ' ' -f 1)"
+          test "$actual" = "$expected"
+          echo "sha256=$actual" >> "$GITHUB_OUTPUT"
+      - name: Install official Chromium
+        run: npx --no-install playwright install --with-deps chromium
+      - name: Exercise the browser example
+        run: npm run test:browser
+
+  publish-dist:
+    name: Update dist branch
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'byh-playground/bloom-gamekit'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: publish-dist
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install locked tooling without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      # Artifact 저장소 없이 같은 source를 재빌드하고 검사 job의 hash와 대조합니다.
+      - name: Rebuild the tested source
+        run: npm run build
+      - name: Publish only interpolation.js to dist
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          EXPECTED_BUNDLE_SHA256: ${{ needs.test.outputs.bundle-sha256 }}
+        run: node scripts/publish-dist.mjs
