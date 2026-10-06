@@ -364,3 +364,21 @@ test('pagehide releases state before a page enters the back-forward cache', () =
   assert.deepEqual(f.state.sample('point'), { held: false, pressed: false, released: true });
   f.input.dispose();
 });
+
+test('owned pointer callbacks retain raw event and normalized coordinates through document fallback',()=>{
+  const events=[],f=fixture({onPointer:e=>events.push(e)});f.target.setPointerCapture=()=>{throw Error('unavailable')};
+  const raw=f.pointer('pointerdown');f.pointer('pointermove',{target:f.doc,clientX:540});f.pointer('pointerup',{target:f.doc,clientX:540});
+  assert.deepEqual(events.map(e=>e.type),['down','move','up']);assert.equal(events[0].originalEvent,raw);assert.equal(events[1].u,1.1);assert.equal(events[2].active,false);assert.equal(f.state.sample('point').held,false);
+  f.input.dispose();
+});
+test('blur cancels all owned pointers once after releasing captures and preserves UI isolation',()=>{
+  const events=[],releases=[],f=fixture({onPointer:e=>events.push(e),onRelease:e=>releases.push(e)});
+  f.pointer('pointerdown',{pointerId:1});f.pointer('pointerdown',{pointerId:2});f.pointer('pointerdown',{pointerId:3,target:f.ui});
+  f.win.emit('blur',{type:'blur'});assert.deepEqual(events.map(e=>[e.type,e.pointerId]),[['down',1],['down',2],['cancel',1],['cancel',2]]);
+  assert.equal(f.captured.size,0);assert.equal(f.state.sample('point').held,false);assert.equal(releases[0].reason,'blur');f.input.dispose();
+});
+test('release callbacks cannot prevent remaining pointer ownership cleanup',()=>{
+  const f=fixture({onPointer:e=>{if(e.type==='cancel')throw Error('consumer failure')}});
+  f.pointer('pointerdown',{pointerId:1});f.pointer('pointerdown',{pointerId:2});assert.throws(()=>f.input.dispose(),AggregateError);
+  assert.equal(f.captured.size,0);assert.equal(f.state.sample('point').held,false);assert.equal(f.target.listenerCount,0);assert.equal(f.input.disposed,true);
+});

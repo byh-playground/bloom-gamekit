@@ -37,20 +37,22 @@ if (view.sampleInto('player', 0, now, pose)) {
 
 낮은 revision, 같은 revision의 중복/낮은 sequence, 뒤로 간 timeMs는 false로 거부합니다. sequence가 커도 timeMs가 같으면 허용합니다. 거부된 packet은 clock도 진행시키지 않습니다. malformed 신규 packet은 throw하며 전체 snapshot과 clock을 원자적으로 유지합니다. 정상 입력은 plain-data 객체여야 합니다.
 
-첫 표본은 snap합니다. 이후 수신 순간 기존 곡선을 평가한 위치부터 최신 목표까지 stepMs 동안 연결합니다. 마지막 rAF pose를 시작점으로 재사용하지 않습니다. 같은 시각의 coalesced packet들은 같은 출발점에서 최신 목표로 향합니다. 완료 후에는 대기하며 외삽하지 않습니다.
+첫 표본은 기본적으로 snap합니다. 새 identity의 명시적 `initialValues`가 있으면 아래 생명주기 계약대로 시작 pose를 연결합니다. 이후 수신 순간 기존 곡선을 평가한 위치부터 최신 목표까지 stepMs 동안 연결합니다. 마지막 rAF pose를 시작점으로 재사용하지 않습니다. 같은 시각의 coalesced packet들은 같은 출발점에서 최신 목표로 향합니다. 완료 후에는 대기하며 외삽하지 않습니다.
 
 이는 buffer 없는 chase 정책입니다. 130/70ms 지터나 누락 틱은 속도 변화·대기·빠른 따라잡기를 만들 수 있습니다. 목표가 멀리 도약해도 자동 teleport threshold는 없습니다. 숨은 500ms 지연, 등속 보장, 네트워크 지터 해결을 주장하지 않습니다.
 
 ### 생명주기와 게임 표현
 
-- 기존 id의 generation이 바뀌면 snap합니다. 생성 세대는 게임이 관리합니다. 삭제된 identity를 요청하면 false이고, 재등장에는 새 generation을 쓰세요.
-- 특정 entity의 `teleport: true`는 그 수신 순간 snap합니다.
+- 기존 id의 generation이 바뀌면 기본적으로 snap합니다. 생성 세대는 게임이 관리합니다. 삭제된 identity를 요청하면 false이고, 재등장에는 새 generation을 쓰세요.
+- `entity.resetFields: ['fieldA', 'fieldB']`는 그 필드만 수신 즉시 목표값으로 맞춥니다. 나머지 필드는 수신 시각의 기존 곡선에서 계속 연결합니다. 예를 들어 게임이 판단한 타이머 재시작·표현 세기 상승을 resetFields로 전달하면 위치 필드를 함께 순간이동시킬 필요가 없습니다. 알려진 schema key만 허용하며 중복·잘못된 형식·unknown key는 전체 packet을 원자적으로 거부합니다. 빈 배열은 아무 필드도 reset하지 않습니다.
+- `entity.initialValues`는 schema 전체 scalar 필드를 갖는 선택적 시작 pose입니다. track이 없거나 generation이 달라진 **새 identity**에만 적용하며, continuous packet 수신 시각부터 stepMs 동안 initialValues→values를 연결합니다. 게임이 정한 발사 시작점 등에서 첫 공개 표본까지 연결할 때 사용할 수 있습니다. 같은 generation의 기존 track에 전달하면 검증만 하고 무시하므로 진행 중 곡선을 되돌리지 않습니다. 삭제 후 재등장에도 사용할 수 있지만 새 generation 관리는 게임 책임입니다. sparse initialValues는 지원하지 않으며 값을 복사하므로 caller 변경이 진행 중 곡선을 바꾸지 않습니다.
+- 특정 entity의 `teleport: true`는 그 수신 순간 snap합니다. teleport와 전체 reset/load/rollback은 initialValues보다 우선해 목표 pose로 snap합니다. 이 경우에도 제공된 initialValues/resetFields는 검증합니다. initialValues와 resetFields를 함께 쓰면 선택된 필드는 처음부터 목표값이며 나머지는 seed에서 연결합니다. discrete 필드는 언제나 수신 시점의 목표값입니다.
 - 전체 load/reset/rollback은 **더 큰 revision**과 `mode: 'load' | 'reset' | 'rollback'`을 함께 전달합니다. 모든 track을 새 snapshot으로 교체하고 snap합니다. 이전 revision의 늦은 packet은 거부합니다. 초기 packet은 어느 mode든 가능합니다. 이후 revision 변경을 continuous로 처리하지 않습니다.
 - hitstop·공격 애니메이션·사망 표현은 게임 소유입니다. 몸체 애니메이션만 정지한다면 root pose는 계속 공유하고 애니메이션 phase만 멈추세요. 전체 presentation 시간을 멈출 때는 receipt와 sample 둘 모두에 동일하게 변환한 논리 presentation clock을 적용해야 합니다. raw authority XYZ로 바꿨다가 이전 보간으로 되돌리는 방식은 사용하지 않습니다.
 
 ## 비용과 확인 범위
 
-생존 entity 수 N, 선언 필드 수 F일 때 accept는 O(NF)이며 Map과 entity별 track·두 field 배열을 새로 만듭니다. 원자적 갱신을 위해 accept 중 이전/새 track이 잠시 함께 존재합니다. sample은 O(F)이고 caller out을 재사용하며 snapshot/pose 객체를 새로 만들지 않습니다. 성능이 필요한 게임은 전체 snapshot 어댑터 비용도 따로 측정해야 합니다. 이 첫 구현에 delta cache·history buffer·pool을 숨기지 않습니다.
+생존 entity 수 N, 선언 필드 수 F일 때 accept는 O(NF)이며 Map과 entity별 track·두 field 배열을 새로 만듭니다. 생성자에서 필드 인덱스 Map을 한 번 만들며, resetFields를 제공한 accept는 O(R) 검증/적용과 작은 Set을 추가합니다(R은 reset 필드 수). initialValues는 O(F) 검증과 복사 비용이 있고, 새 identity에서 그 배열을 시작 pose로 재사용합니다. 기존 identity나 강제 snap에서 제공한 불필요한 initialValues도 계약 검증을 위해 복사하므로 필요할 때만 전달하세요. 원자적 갱신을 위해 accept 중 이전/새 track이 잠시 함께 존재합니다. sample은 O(F)이고 caller out을 재사용하며 snapshot/pose 객체를 새로 만들지 않습니다. 성능이 필요한 게임은 전체 snapshot 어댑터 비용도 따로 측정해야 합니다. 이 첫 구현에 delta cache·history buffer·pool을 숨기지 않습니다.
 
 E2E는 실제 Worker 이동에서 추출한 표본, 10/20/30 TPS·60Hz 위상, 지터·coalescing·순서 거부·rollback·load·teleport·identity 재사용·원본 불변·유한 값·각도·discrete를 검사합니다. fixture의 출처와 범위는 JSON에 있습니다. 20/30 TPS는 표본의 시각을 재구성한 보간 검증이며 해당 게임을 그 TPS로 실행했다는 의미가 아닙니다.
 

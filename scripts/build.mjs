@@ -4,6 +4,12 @@ import { resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { MODULES, MANIFEST_FILE, createManifest, serializeManifest } from './distribution.mjs';
 
+const SDK_DEPENDENCIES = {
+  deterministic: ['_rollback-shared'], simloop: [], transport: ['_rollback-shared', 'deterministic'],
+  replay: ['_rollback-shared', 'deterministic'], rollback: ['_rollback-shared', 'deterministic'],
+  'rollback-netcode': ['_rollback-shared', 'deterministic', 'simloop', 'transport', 'replay', 'rollback'],
+};
+
 export async function buildDistribution(root) {
   const bundles = new Map();
   for (const name of MODULES) {
@@ -30,7 +36,7 @@ export async function buildDistribution(root) {
       throw new Error(`배포물은 외부 import가 없는 ${name}.js 하나여야 합니다.`);
     }
     for (const input of Object.keys(result.metafile.inputs)) {
-      if (!input.startsWith(`packages/${name}/src/`)) {
+      if (![name, ...(SDK_DEPENDENCIES[name] ?? [])].some(owner => input.startsWith(`packages/${owner}/src/`))) {
         throw new Error(`${name} 소스 밖의 런타임 의존성은 허용하지 않습니다: ${input}`);
       }
     }

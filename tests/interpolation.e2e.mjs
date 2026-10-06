@@ -112,6 +112,59 @@ const extremep = (sequence, x) => ({ revision: 0, sequence, timeMs: sequence, en
 extremes.accept(extremep(0, -Number.MAX_VALUE), 0); extremes.accept(extremep(1, Number.MAX_VALUE), 0); extremes.sampleInto('a', 0, 0.5, out); close(out.x, 0);
 summary.stages.push('shortest radian angle, discrete arrival switch, health/progress, finite extreme-number interpolation');
 
+// Game-owned field boundaries: restart presentation scalars without snapping XYZ.
+const boundaries = new InterpolationTimeline({ stepMs: 100,
+  schema: { x: 'number', y: 'number', z: 'number', intensity: 'number', timer: 'number', angle: 'angle', state: 'discrete' } });
+const boundaryValues = (x, intensity = 0, timer = 0) => ({ x, y: x * 2, z: x * 3, intensity, timer, angle: 0, state: 'current' });
+const boundaryPacket = (sequence, x, overrides = {}, packetOverrides = {}) => ({ revision: 0, sequence, timeMs: sequence * 100,
+  entities: [{ id: 'visual', generation: 0, values: boundaryValues(x), ...overrides }], ...packetOverrides });
+const seeded = boundaryPacket(0, 14, { initialValues: { ...boundaryValues(0), state: 'old' } });
+const seedBefore = JSON.stringify(seeded);
+boundaries.accept(seeded, 0); assert.equal(JSON.stringify(seeded), seedBefore);
+boundaries.sampleInto('visual', 0, 0, out); close(out.x, 0); assert.equal(out.state, 'current');
+seeded.entities[0].initialValues.x = 999; seeded.entities[0].values.x = 999;
+boundaries.sampleInto('visual', 0, 50, out); close(out.x, 7); close(out.y, 14); close(out.z, 21);
+const mask = Object.freeze(['intensity', 'timer', 'angle']);
+boundaries.accept(boundaryPacket(1, 28, { values: { ...boundaryValues(28, 1, 100), angle: Math.PI },
+  resetFields: mask, initialValues: boundaryValues(777) }), 100);
+boundaries.sampleInto('visual', 0, 100, out); close(out.x, 14); close(out.y, 28); close(out.z, 42);
+close(out.intensity, 1); close(out.timer, 100); close(out.angle, Math.PI);
+boundaries.sampleInto('visual', 0, 150, out); close(out.x, 21); close(out.y, 42); close(out.z, 63);
+close(out.intensity, 1); close(out.timer, 100);
+boundaries.accept(boundaryPacket(2, 42), 200);
+boundaries.sampleInto('visual', 0, 250, out); close(out.x, 35); close(out.intensity, 0.5); close(out.timer, 50);
+for (const badMask of [['unknown'], ['x', 'x'], [null], 'x', null]) {
+  assert.throws(() => boundaries.accept(boundaryPacket(3, 56, { resetFields: badMask }), 300), /resetFields/);
+}
+assert.throws(() => boundaries.accept(boundaryPacket(3, 56, { initialValues: { x: 0 } }), 300), /missing field/);
+assert.throws(() => boundaries.accept(boundaryPacket(3, 56, { initialValues: boundaryValues(Infinity) }), 300), /finite/);
+// A malformed later entity cannot commit an earlier seed/reset or advance the clock.
+const malformed = boundaryPacket(3, 56, { resetFields: ['x'] });
+malformed.entities.push({ id: 'bad', generation: 0, values: boundaryValues(0), resetFields: ['missing'] });
+assert.throws(() => boundaries.accept(malformed, 300), /resetFields/);
+boundaries.sampleInto('visual', 0, 255, out); close(out.x, 35.7);
+boundaries.accept(boundaryPacket(3, 114, { generation: 1, values: boundaryValues(114, 1, 100),
+  initialValues: boundaryValues(100), resetFields: ['timer'] }), 300);
+boundaries.sampleInto('visual', 1, 300, out); close(out.x, 100); close(out.timer, 100); close(out.intensity, 0);
+boundaries.sampleInto('visual', 1, 350, out); close(out.x, 107); close(out.intensity, 0.5);
+assert.equal(boundaries.sampleInto('visual', 0, 350, out), false);
+boundaries.accept(boundaryPacket(4, 1000, { generation: 1, teleport: true, initialValues: boundaryValues(0) }), 400);
+boundaries.sampleInto('visual', 1, 400, out); close(out.x, 1000);
+boundaries.accept(boundaryPacket(5, 10, { generation: 2, initialValues: boundaryValues(0), resetFields: [] }), 500);
+boundaries.sampleInto('visual', 2, 500, out); close(out.x, 0);
+boundaries.accept(boundaryPacket(6, 0, {}, { entities: [] }), 600);
+boundaries.accept(boundaryPacket(7, 30, { generation: 3, initialValues: boundaryValues(20) }), 700);
+boundaries.sampleInto('visual', 3, 750, out); close(out.x, 25);
+let boundaryRevision = 0;
+for (const mode of ['load', 'reset', 'rollback']) {
+  const revision = ++boundaryRevision, now = 700 + revision * 100, x = revision * 100;
+  boundaries.accept(boundaryPacket(0, x, { generation: 4, initialValues: boundaryValues(0), resetFields: ['intensity'] }, { revision, mode }), now);
+  boundaries.sampleInto('visual', 4, now, out); close(out.x, x);
+}
+assert.throws(() => boundaries.accept(boundaryPacket(0, 999, { initialValues: boundaryValues(NaN) }, { revision: 4, mode: 'reset' }), 1100), /finite/);
+boundaries.sampleInto('visual', 4, 1001, out); close(out.x, 300);
+summary.stages.push('field-only resets preserve XYZ; new-generation initial pose; scalar/discrete precedence; atomic masks/seeds; teleport and revision overrides');
+
 // Informational microbenchmark, not FPS. Includes Map lookup, sample writes and call overhead.
 const count = 256, frames = 2000;
 const bench = new InterpolationTimeline({ stepMs: 100, schema: { x: 'number', y: 'number', z: 'number' } });
@@ -150,4 +203,15 @@ function countAllocations(node, owner = null) {
 }
 countAllocations(profile.head);
 summary.benchmark.allocationSampling = { intervalBytes: 1024, accepts: 100, samples: 256000, estimatedBytesUnderLibraryStacks: allocation, caveat: 'V8 statistical estimates, including collected objects; a zero estimate is below sampling resolution, not a no-allocation guarantee.' };
+// Optional seed/mask accept cost is reported separately from unchanged sampling.
+const seededEntities = entities.map(entity => ({ ...entity, initialValues: entity.values, resetFields: ['z'] }));
+const seededAccepts = [];
+for (let generation = 0; generation < 100; generation++) {
+  for (const entity of seededEntities) entity.generation = generation + 1;
+  const snapshot = { revision: 0, sequence: 10000 + generation, timeMs: (10000 + generation) * 100, entities: seededEntities };
+  const start = performance.now(); const accepted = bench.accept(snapshot, 10000 + generation); seededAccepts.push(performance.now() - start);
+  assert.equal(accepted, true);
+}
+seededAccepts.sort((a, b) => a - b);
+summary.benchmark.newIdentityWithSeedAndMaskBatchMs = { entities: count, accepts: 100, p50: seededAccepts[50], p95: seededAccepts[95], scope: 'Optional feature cost; each entity has 3 seed fields and 1 reset field. Input preparation excluded; CPU only.' };
 console.log(JSON.stringify(summary, null, 2));

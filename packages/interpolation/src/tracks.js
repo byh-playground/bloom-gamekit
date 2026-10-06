@@ -22,11 +22,14 @@ export function evaluate(kind, from, to, alpha) {
 export function fraction(track, now, stepMs) {
   return Math.min(1, Math.max(0, (now - track.startedAt) / stepMs));
 }
-export function retarget(fields, old, target, generation, now, stepMs, snap) {
-  const from = target.slice();
-  if (old && old.generation === generation && !snap) {
+export function retarget(fields, old, target, generation, now, stepMs, snap, initial, resetFields) {
+  const continued = old && old.generation === generation;
+  // initial is already a private validated scalar copy; never retain input values.
+  const from = !continued && !snap && initial ? initial : target.slice();
+  if (continued && !snap) {
     const alpha = fraction(old, now, stepMs);
     for (let i = 0; i < fields.length; i++) from[i] = evaluate(fields[i][1], old.from[i], old.target[i], alpha);
   }
+  if (resetFields) for (const index of resetFields) from[index] = target[index];
   return { generation, from, target, startedAt: now };
 }

@@ -30,3 +30,17 @@ export function readValues(fields, values) {
     return value;
   });
 }
+
+/** Validate the optional field reset mask without retaining caller-owned arrays. */
+export function readResetFields(indices, names) {
+  if (names === undefined) return null;
+  if (!Array.isArray(names)) throw new TypeError('resetFields must be an array');
+  const reset = new Set();
+  for (const name of names) {
+    if (typeof name !== 'string' || !indices.has(name)) throw new TypeError('resetFields must name declared fields');
+    const index = indices.get(name);
+    if (reset.has(index)) throw new TypeError('duplicate resetFields field');
+    reset.add(index);
+  }
+  return reset;
+}

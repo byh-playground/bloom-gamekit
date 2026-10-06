@@ -1,15 +1,17 @@
 # bloom-gamekit
 
-브라우저 게임에서 공통으로 쓰는 보간·렌더링·입력 기능을 독립 패키지로 개발하는 모노레포입니다. 필요한 기능만 골라 조합하며, 게임 전체를 소유하는 범용 엔진 클래스는 만들지 않습니다.
+브라우저 게임에서 공통으로 쓰는 보간·렌더링·입력·실행·결정론·전송·리플레이·롤백 기능을 독립 패키지로 개발하는 모노레포입니다. 필요한 기능만 골라 조합하며, 게임 전체를 소유하는 범용 엔진 클래스는 만들지 않습니다.
 
-**interpolation · rendering · input은 각각 독립적인 plain JavaScript ESM입니다.** 소비자는 필요한 모듈만 외부 import 없는 `interpolation.js`, `rendering.js`, `input.js` 파일로 가져갑니다. 보간은 pose만, WebGL 1 renderer는 geometry 제출만, input은 장치 이벤트/action 상태만 소유합니다.
+**모든 공개 기능은 독립적인 plain JavaScript ESM입니다.** 소비자는 필요한 파일만 가져가며 외부 import나 공유 chunk를 요구하지 않습니다. 보간은 pose, WebGL renderer/device는 GPU 제출·자원, input은 장치 이벤트/action, simloop는 실행 스케줄, camera는 투영, presentation-events는 표현 자원, hud는 화면 anchor, debug-tools는 진단을 소유합니다. 결정론·전송·리플레이·rollback은 기존 SDK 구현을 그대로 책임별로 분리했습니다.
 
 ## 시작하기
 
 - [보간 API·시간·생명주기 계약](packages/interpolation/README.md)
 - [WebGL 1 렌더링 API·texture·생명주기](packages/rendering/README.md)
 - [입력 action·DOM·tick 소비 계약](packages/input/README.md)
-- [실제 번들 3개를 연결하는 사용 예제](examples/interpolation/index.html)
+- [카메라·표현 이벤트](packages/presentation-events/README.md) · [HUD](packages/hud/README.md) · [진단](packages/debug-tools/README.md) · [카메라](packages/camera/README.md)
+- [SDK 전체/분리 API와 이전](packages/rollback-netcode/README.md)
+- [실제 독립 번들을 연결하는 사용 예제](examples/interpolation/index.html)
 - [연속 E2E와 CPU 측정](tests/interpolation.e2e.mjs)
 
 ```text
@@ -27,7 +29,7 @@ tests/                      연속 E2E·Worker 표본·Chromium 실행 검사
 
 ## GitHub 파일 배포
 
-PR에서는 빌드·Node E2E·Chromium 예제만 읽기 권한으로 검사합니다. main에 승인된 변경이 들어오면 GitHub Actions가 빌드·검사한 결과와 같은 번들을 확인한 후 `dist` 브랜치의 `interpolation.js`, `rendering.js`, `input.js`, `manifest.json`을 자동 갱신합니다. 생성 JS는 소스 커밋에 넣지 않습니다. 표준 `ubuntu-latest`만 사용하며 유료 runner·artifact 저장·Release·npm·Pages는 쓰지 않습니다. 공개 저장소의 무료 표준 runner 정책 범위에서 동작합니다.
+PR에서는 빌드·Node E2E·Chromium 예제만 읽기 권한으로 검사합니다. main에 승인된 변경이 들어오면 GitHub Actions가 빌드·검사한 결과와 같은 번들을 확인한 후 `dist` 브랜치의 `interpolation.js`, `rendering.js`, `input.js`, `manifest.json`을 자동 갱신합니다. 모듈의 정확한 목록은 scripts/distribution.mjs와 생성 manifest가 소유합니다. 생성 JS는 소스 커밋에 넣지 않습니다. 표준 `ubuntu-latest`만 사용하며 유료 runner·artifact 저장·Release·npm·Pages는 쓰지 않습니다. 공개 저장소의 무료 표준 runner 정책 범위에서 동작합니다.
 
 main 실행이 성공하면 [interpolation.js](https://github.com/byh-playground/bloom-gamekit/blob/dist/interpolation.js), [rendering.js](https://github.com/byh-playground/bloom-gamekit/blob/dist/rendering.js), [input.js](https://github.com/byh-playground/bloom-gamekit/blob/dist/input.js), [hash manifest](https://github.com/byh-playground/bloom-gamekit/blob/dist/manifest.json)에서 파일을 공유할 수 있습니다. GitHub Raw URL은 JS MIME/CORS를 보장하는 웹 호스팅 계약이 아니므로 브라우저의 직접 import 주소로 가정하지 마세요. 파일을 받아 게임과 함께 호스팅하고, 재현이 필요하면 dist 커밋 SHA를 고정하세요. dist 커밋 메시지에 source commit과 manifest/각 번들의 SHA-256이 기록됩니다. 검사 job의 manifest hash와 배포 직전 모든 재빌드 파일을 대조합니다. 기존 dist의 다른 파일은 보존하고, stale main 실행은 건너뛰며 경합 시 non-fast-forward로 중단합니다. 브랜치 게시의 실제 성공은 main 머지 후 별도로 확인해야 합니다.
 
@@ -42,9 +44,9 @@ main 실행이 성공하면 [interpolation.js](https://github.com/byh-playground
 - 입력 → 결정론적 시뮬레이션 → 표현의 소유권을 분리합니다. 렌더 pose·보간 캐시·카메라·이펙트로 권위 상태를 재구성하거나 덮어쓰지 않습니다.
 - 패키지는 다른 패키지의 내부 상태를 읽지 않습니다. 필요한 데이터와 동작을 공개 계약으로 전달하며, 기능 하나를 사용하려고 나머지 패키지를 초기화하게 만들지 않습니다.
 
-## 기존 rollback SDK와의 경계
+## rollback SDK 이전과 게임 경계
 
-[rollback-netcode](https://github.com/byh-playground/rollback-netcode)는 별도 저장소로 유지합니다. 입력 순서·명령 sequence와 실행 tick·예측·롤백·복구·논리 틱 진행은 기존 SDK의 공개 계약을 사용하며 여기서 재구현하지 않습니다.
+기존 [rollback-netcode](https://github.com/byh-playground/rollback-netcode)의 검증된 소스를 이 저장소로 책임별 이전했습니다. [호환 API·출처·이전 방법](packages/rollback-netcode/README.md)을 참조하세요. 기존 저장소는 보존하며 입력 순서·명령 sequence·tick·예측·롤백·복구는 새로 구현하지 않습니다. `deterministic.js`, `simloop.js`, `transport.js`, `replay.js`, `rollback.js` 또는 전체 API 호환 `rollback-netcode.js`를 선택할 수 있습니다. 분리 모듈도 외부 runtime import가 없으며 dist commit SHA와 manifest hash로 고정합니다.
 
 게임은 자신의 Definition·규칙·권위 상태·완전한 snapshot과 결정론적 어댑터를 소유합니다. UI와 AI가 제출한 행동은 같은 명령 경로를 거쳐 SDK가 정한 tick에서 실행됩니다. input 패키지는 기기 이벤트를 정리할 뿐, 자체 타이머로 명령을 실행하거나 권위 상태를 직접 수정하지 않습니다. 포커스 상실과 입력 해제도 같은 입력 계약에 연결합니다.
 
@@ -72,9 +74,9 @@ main 실행이 성공하면 [interpolation.js](https://github.com/byh-playground
 
 ## 모듈을 조합하는 범위
 
-예제의 게임이 100ms 시뮬레이션·명령 소비·camera·y-sort·UI를 소유합니다. input의 sample은 edge를 지우지 않으며 게임/SDK가 명령을 수집한 뒤 consume합니다. rendering에는 interpolation import가 없고, 완성된 pose를 받은 게임이 body/shadow/health를 제출합니다. context 복구 시 texture handle은 유지되며 현재 프레임은 버립니다.
+예제의 게임이 100ms 시뮬레이션 규칙·명령 소비·y-sort·UI 내용을 소유합니다. simloop의 createLoop가 누적/프레임 실행을 맡고 camera·presentation-events·hud·debug-tools를 조합합니다. input의 sample은 edge를 지우지 않으며 게임/SDK가 명령을 수집한 뒤 consume합니다. rendering에는 interpolation import가 없고, 완성된 pose를 받은 게임이 body/shadow/health를 제출합니다. context 복구 시 texture handle은 유지되며 현재 프레임은 버립니다.
 
-이 범위는 최소 core를 완성한 것입니다. terrain/fog·게임 아트·전투·sprite animation·scenegraph·3D·arbitrary path·asset loading은 구현하지 않았습니다. 기존 Budmori/Rally 게임에는 아직 적용하지 않았습니다. 브라우저 CI는 실제 WebGL 1 shader와 픽셀을 SwiftShader로 검사하므로 Canvas2D 모의 검증이 아니지만, 모바일·기기 GPU FPS 검증도 아닙니다. 화면 metrics는 실제 draw/vertex/upload count와 관찰 interval/CPU 제출 시간이며 GPU 완료 시간으로 해석하지 않습니다.
+이 범위는 최소 core를 완성한 것입니다. terrain/fog·게임 아트·전투·sprite animation·scenegraph·게임별 투영/geometry·asset loading은 공통 게임 규칙으로 구현하지 않았습니다. WebGLDevice는 기존 게임이 제공하는 shader·geometry를 받아 자원·buffer·draw 호출을 관리합니다. 기존 Budmori/Rally 게임에는 아직 적용하지 않았습니다. 브라우저 CI는 실제 WebGL 1 shader와 픽셀을 SwiftShader로 검사하므로 Canvas2D 모의 검증이 아니지만, 모바일·기기 GPU FPS 검증도 아닙니다. 화면 metrics는 실제 draw/vertex/upload count와 관찰 interval/CPU 제출 시간이며 GPU 완료 시간으로 해석하지 않습니다.
 
 ## 작업과 리뷰
 

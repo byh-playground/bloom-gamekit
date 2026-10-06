@@ -1,3 +1,5 @@
+import { exerciseWebGLDevice } from './device.browser.mjs';
+import { runPresentationChecks } from './presentation.browser.js';
 import { chromium } from 'playwright';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -23,7 +25,7 @@ try {
   });
   const page = await browser.newPage({ viewport: { width: 1000, height: 800 }, hasTouch: true, deviceScaleFactor: 2 });
   const errors = [];
-  page.on('pageerror', error => errors.push(error.message));
+  page.on('pageerror', error => { errors.push(error.message); console.error('Browser runtime:', error.stack ?? error.message); });
   await page.goto(`http://127.0.0.1:${server.address().port}/examples/interpolation/index.html`);
   await page.waitForFunction(() => window.demo?.diagnostics.frames >= 30);
   assert.equal(await page.evaluate(() => demo.renderer.stats.backend), 'webgl1');
@@ -170,8 +172,9 @@ try {
   report.input = await page.evaluate(async () => {
     const { ActionState, createDOMInput } = await import('/dist/input.js');
     const check = (condition, message) => { if (!condition) throw new Error(message); };
-    const canvas = renderProbe.canvas, state = new ActionState();
-    const input = createDOMInput({ target: canvas, state, keys: { KeyQ: 'hold' }, pointerButtons: { 0: 'hold' } });
+    const canvas = renderProbe.canvas, state = new ActionState(), pointerEvents = [], releases = [];
+    const input = createDOMInput({ target: canvas, state, keys: { KeyQ: 'hold' }, pointerButtons: { 0: 'hold' },
+      onPointer: event => pointerEvents.push(event), onRelease: event => releases.push(event.reason) });
     const rect = canvas.getBoundingClientRect();
     const dispatch = (type, id, buttons) => canvas.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true,
       pointerId: id, pointerType: 'touch', button: 0, buttons, clientX: rect.left + 16, clientY: rect.top + 32 }));
@@ -182,14 +185,23 @@ try {
     canvas.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyQ', bubbles: true }));
     dispatch('lostpointercapture', 102, 0); check(state.sample('hold').held, 'keyboard source survives pointer cancel');
     window.dispatchEvent(new Event('blur')); check(!state.sample('hold').held && state.sample('hold').released, 'blur releases remaining source');
+    check(pointerEvents.map(event => `${event.type}:${event.pointerId}`).join(',') === 'down:101,down:102,cancel:101,cancel:102', 'callback identity and cancellation order');
+    check(pointerEvents[0].originalEvent instanceof PointerEvent && pointerEvents[0].u === .25, 'callback original DOM event and CSS sample');
+    check(releases.includes('blur'), 'callback blur reason');
     state.consume(); input.dispose(); input.dispose(); dispatch('pointerdown', 103, 1);
+    check(pointerEvents.length === 4, 'dispose removes pointer callbacks');
     canvas.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyQ', bubbles: true }));
     check(!state.sample('hold').held && !state.sample('hold').pressed, 'dispose removes listeners');
     return { coordinates: position, multisource: true, pointerCancel: true, captureLoss: true, disposal: true,
-      eventScope: 'Real DOM dispatch for deterministic multi-pointer cancellation; trusted touchscreen tap tested above.' };
+      ownedCallbacks: true, eventScope: 'Real DOM dispatch for deterministic multi-pointer cancellation; trusted touchscreen tap tested above.' };
   });
   report.stages.push('DOM multi-pointer identity/coordinates/cancel/capture loss + keyboard aggregation + listener disposal');
 
+  const moduleErrors = [];
+  for (const [name, check] of [['presentation', runPresentationChecks], ['device', exerciseWebGLDevice]]) {
+    try { report[name] = await check(page); }
+    catch (error) { console.error(`Browser module ${name}:`, error); moduleErrors.push(`${name}: ${error.message}`); }
+  }
   const disposal = await page.evaluate(() => {
     const { r } = renderProbe, gl = r.gl, buffer = r.buffer, program = r.program;
     r.dispose(); r.dispose(); const result = { state: r.state, bufferReleased: !gl.isBuffer(buffer), programReleased: !gl.isProgram(program), textures: r.stats.textureCount };
@@ -197,6 +209,7 @@ try {
   });
   assert.deepEqual(disposal, { state: 'disposed', bufferReleased: true, programReleased: true, textures: 0 });
   assert.equal(errors.length, 0, errors.join('\n'));
+  assert.equal(moduleErrors.length, 0, moduleErrors.join('\n'));
   report.browser = await browser.version(); report.contextLoss = supportsLoss;
   report.scope = 'Headless Chromium with actual WebGL1/SwiftShader pixels and built ESMs. CPU/interval observations are not mobile FPS or hardware-GPU certification. No screenshot/artifact retention.';
   console.log(JSON.stringify(report, null, 2));

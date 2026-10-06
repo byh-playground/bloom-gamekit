@@ -1,0 +1,20 @@
+{
+  "repository": "https://github.com/byh-playground/rollback-netcode",
+  "commit": "c3173914519a78834360430071e7a125736d86d5",
+  "files": {
+    "src/core.js": "c42172dfcf46bcd50bbeedcf7b48ad827bcb54e44c900c24926f69c11a942bf4",
+    "src/group-room.js": "80c93a4efc634725d4b71b0eb6135439886a40f75295d2959bc5b2fc084c1c25",
+    "src/index.js": "ed46d79b8c35da31493b0d20863b8b161a2a564d3517b92aad8d8ad1b49bdd9e",
+    "src/loop.js": "568ecfa102533ef0e7fc0ead30533be95f954bc2211017f0165e461f30be1187",
+    "src/nostr-crypto.js": "e02f0d8740773b64f09b4c9d1c20b84561d4663366e7df7a286ebab287d8120f",
+    "src/nostr.js": "a2aa77954bd3013c2655777557c974fe127210e48ca6ff99375b9551019d80f2",
+    "src/protocol.js": "8a3809c48b9b9531c84587f04cfb6c603d0d00d6d0dd478536bf79f3b484d093",
+    "src/room.js": "4c7e7befac8c28554005228bb332fe11300d3e3629290a25c56162ce661ee69c",
+    "src/star-transport.js": "abbf5875b3d904ccb633b4b6476d96025b4d27785a4d51ca762c94d525174c49",
+    "src/synctest.js": "4dfebedd03dce9b690c0dddf3ada702b688acdf3b0f9e815bc395b95826940e2",
+    "src/utilities.js": "7519e88cb7e10dd53d8392d10520a241fd7ff916a055aa53a05eeeea7c085991",
+    "src/value-codec.js": "1eaa6c739370af64c25c5343efd8125d08f14e406d4f097026e6b12aa1d2f322",
+    "src/webrtc.js": "d3f142f3b316b4ab31d92b8fc38dfdb4fe945beeaef8899987d49507ef76019f"
+  },
+  "license": "No LICENSE file present at the pinned source commit; no new license is asserted."
+}
