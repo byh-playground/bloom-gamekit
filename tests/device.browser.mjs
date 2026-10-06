@@ -45,7 +45,12 @@ export async function exerciseWebGLDevice(page) {
     const full=d.createVertexBuffer();d.uploadVertices(full,new Float32Array([-1,-1,1,-1,1,1,-1,-1,1,1,-1,1]));
     const dark=d.createTexture({width:3,height:1,data:new Uint8Array([0,0,0])},{format:'luminance'}),light=d.createTexture({width:3,height:1,data:new Uint8Array([255,255,255])},{format:'luminance'});
     d.beginFrame();d.draw({pipeline:fog,buffer:full,count:6,uniforms:{previous:0,next:1,transition:.5},textures:[dark,light]});near(pixel(),[128,0,0,255],'two NPOT luminance fog masks');
-    const copied=d.createTexture({width:64,height:64,data:null});d.copyFrameToTexture(copied);d.clear({color:[0,0,0,1]});command.textures[0]=copied;d.uploadVertices(arena,quad(0,1,0,.5));d.draw(command);near(pixel(),[128,0,0,255],'GPU-resolved frame composition copy');d.endFrame();
+    const copied=d.createTexture({width:64,height:64,data:null});d.copyFrameToTexture(copied);near(pixel(),[128,0,0,255],'framebuffer remains after GPU copy');d.clear({color:[0,0,0,1]});command.textures[0]=copied;d.uploadVertices(arena,quad(0,1,0,.5));d.draw(command);near(pixel(),[128,0,0,255],'GPU-resolved frame composition copy');d.endFrame();
+    // Texture shrink explicitly clears previous units; later solid-only draws bind none.
+    const nativeBind=gl.bindTexture.bind(gl);let bindings=0;gl.bindTexture=(...args)=>{bindings++;return nativeBind(...args);};
+    d.beginFrame();d.uploadVertices(buffer,red);d.draw({pipeline,buffer,count:6,uniforms,blend:false});
+    const firstSolidBindings=bindings;d.draw({pipeline,buffer,count:6,uniforms,blend:false});
+    check(firstSolidBindings===2&&bindings===firstSolidBindings,'two old texture units cleared once, none rebound on solid draw');near(pixel(),[255,0,0,255],'solid draw after texture shrink');d.endFrame();gl.bindTexture=nativeBind;
     check(gl.getError()===gl.NO_ERROR,'device GL errors');
     const before=d.stats.bufferAllocations;d.beginFrame();d.uploadVertices(arena,quad(0,1,0));d.draw(command);const stats={...d.endFrame()};check(before===d.stats.bufferAllocations,'steady upload reuses GPU allocation');
     let invalidRejected=false;try{d.createPipeline({vertex:'invalid shader',fragment:'void main(){}',stride:8,attributes:[{name:'p',size:2,offset:0}]});}catch{invalidRejected=true;}check(invalidRejected,'shader failures must be explicit');

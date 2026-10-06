@@ -197,8 +197,8 @@ try {
   });
   report.stages.push('DOM multi-pointer identity/coordinates/cancel/capture loss + keyboard aggregation + listener disposal');
 
-  report.device = await exerciseWebGLDevice(page);
   report.presentation = await runPresentationChecks(page);
+  report.device = await exerciseWebGLDevice(page);
   const disposal = await page.evaluate(() => {
     const { r } = renderProbe, gl = r.gl, buffer = r.buffer, program = r.program;
     r.dispose(); r.dispose(); const result = { state: r.state, bufferReleased: !gl.isBuffer(buffer), programReleased: !gl.isProgram(program), textures: r.stats.textureCount };

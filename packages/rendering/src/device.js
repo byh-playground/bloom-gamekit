@@ -29,7 +29,7 @@ export class WebGLDevice {
     this.maxTextures = Math.min(maxTextures, this.gl.getParameter(this.gl.MAX_TEXTURE_IMAGE_UNITS));
     this.maxTextureSize = this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE);
     this.depthAvailable = !!this.gl.getContextAttributes().depth; this.stencilAvailable = !!this.gl.getContextAttributes().stencil;
-    this.state = 'ready'; this.failure = null; this.active = false;
+    this.state = 'ready'; this.failure = null; this.active = false; this.boundTextureCount = 0;
     this.pipelines = new Map(); this.buffers = new Map(); this.textures = new Map(); this.enabledAttributes = new Set();
     this.stats = { frame:0, drawCalls:0, vertices:0, bufferUploads:0, bufferBytes:0, textureUploads:0, textureBytes:0,
       frameCopies:0, bufferAllocations:0, gpuBufferBytes:0, pipelineCount:0, bufferCount:0, textureCount:0, restores:0 };
@@ -37,7 +37,7 @@ export class WebGLDevice {
     this.onRestored = () => {
       if (this.state === 'disposed') return;
       try {
-        this.enabledAttributes.clear();
+        this.enabledAttributes.clear(); this.boundTextureCount = 0;
         for (const record of this.pipelines.values()) this._pipeline(record);
         for (const record of this.buffers.values()) { record.gpu = this.gl.createBuffer(); if (!record.gpu) throw new Error('Buffer allocation failed'); this.gl.bindBuffer(this.gl.ARRAY_BUFFER,record.gpu); this.gl.bufferData(this.gl.ARRAY_BUFFER,record.capacity,this.gl.DYNAMIC_DRAW); record.used = 0; this.stats.bufferAllocations++; }
         for (const record of this.textures.values()) { record.gpu = null; this._texture(record); }
@@ -105,8 +105,8 @@ export class WebGLDevice {
   _texture(record) {
     const gl=this.gl;record.gpu=gl.createTexture();if(!record.gpu)throw new Error('Texture allocation failed');
     try{
-      gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,record.gpu);gl.pixelStorei(gl.UNPACK_ALIGNMENT,1);gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,false);gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL,gl.NONE);
-      const pixels=record.source===null||record.source instanceof Uint8Array,format=record.format==='rgba'?gl.RGBA:gl.LUMINANCE;gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL,!pixels);
+      gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,record.gpu);this.boundTextureCount=Math.max(1,this.boundTextureCount);gl.pixelStorei(gl.UNPACK_ALIGNMENT,1);gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,false);gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL,gl.NONE);
+      const pixels=record.source===null||record.source instanceof Uint8Array,format=record.copyFormat==='rgb'?gl.RGB:record.format==='rgba'?gl.RGBA:gl.LUMINANCE;gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL,!pixels);
       if(pixels)gl.texImage2D(gl.TEXTURE_2D,0,format,record.width,record.height,0,format,gl.UNSIGNED_BYTE,record.source);
       else gl.texImage2D(gl.TEXTURE_2D,0,format,format,gl.UNSIGNED_BYTE,record.source);
       this._filter(record.filter);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
@@ -124,6 +124,7 @@ export class WebGLDevice {
     this._ready();const r=this._handle(this.textures,handle,'texture');integer(x,'x');integer(y,'y');integer(width,'width',1);integer(height,'height',1);
     if(x+width>r.width||y+height>r.height)throw new RangeError('Texture region outside bounds');
     const next=this._source(source,r.format,r.premultiplied);if(next.width!==r.width||next.height!==r.height||next.source===null)throw new RangeError('Update requires matching full source');
+    if(r.copyFormat){const replacement={...next,filter:r.filter,gpu:null};this._texture(replacement);this.gl.deleteTexture(r.gpu);Object.assign(r,replacement);delete r.copyFormat;return;}
     const gl=this.gl,format=r.format==='rgba'?gl.RGBA:gl.LUMINANCE;let pixels=next.source;
     if(pixels instanceof Uint8Array){
       const components=r.format==='rgba'?4:1;
@@ -136,14 +137,21 @@ export class WebGLDevice {
       }
       gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL,true);
     }
-    gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,r.gpu);gl.pixelStorei(gl.UNPACK_ALIGNMENT,1);
+    gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,r.gpu);this.boundTextureCount=Math.max(1,this.boundTextureCount);gl.pixelStorei(gl.UNPACK_ALIGNMENT,1);
     if(pixels instanceof Uint8Array)gl.texSubImage2D(gl.TEXTURE_2D,0,x,y,width,height,format,gl.UNSIGNED_BYTE,pixels);else gl.texSubImage2D(gl.TEXTURE_2D,0,x,y,format,gl.UNSIGNED_BYTE,pixels);
     const error=gl.getError();if(error!==gl.NO_ERROR)throw new Error(`Texture update error ${error}`);r.source=next.source;this.stats.textureUploads++;this.stats.textureBytes+=width*height*(r.format==='rgba'?4:1);
   }
   /** Copies the resolved framebuffer on-GPU. Recopy after restore; pixels are not CPU-retained. */
   copyFrameToTexture(handle,{x=0,y=0}={}){
     this._ready();const r=this._handle(this.textures,handle,'texture');integer(x,'x');integer(y,'y');if(r.format!=='rgba'||x+r.width>this.canvas.width||y+r.height>this.canvas.height)throw new RangeError('Framebuffer copy outside bounds');
-    const gl=this.gl;gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,r.gpu);gl.copyTexSubImage2D(gl.TEXTURE_2D,0,0,0,x,y,r.width,r.height);r.source=null;this.stats.frameCopies++;
+    const gl=this.gl;gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,r.gpu);this.boundTextureCount=Math.max(1,this.boundTextureCount);
+    // WebGL 1 cannot copy RGB default-framebuffer pixels into RGBA storage.
+    // Preserve RGB-only contexts (both games) without requesting an alpha buffer.
+    if(!gl.getContextAttributes().alpha&&r.copyFormat!=='rgb'){
+      gl.texImage2D(gl.TEXTURE_2D,0,gl.RGB,r.width,r.height,0,gl.RGB,gl.UNSIGNED_BYTE,null);r.copyFormat='rgb';
+      this.stats.textureUploads++;this.stats.textureBytes+=r.width*r.height*3;
+    }
+    gl.copyTexSubImage2D(gl.TEXTURE_2D,0,0,0,x,y,r.width,r.height);const error=gl.getError();if(error!==gl.NO_ERROR)throw new Error(`Framebuffer copy error ${error}`);r.source=null;this.stats.frameCopies++;
   }
   deleteTexture(handle){const r=this.textures.get(handle);if(!r)return false;this.gl.deleteTexture(r.gpu);this.textures.delete(handle);this.stats.textureCount=this.textures.size;return true;}
   beginFrame({width=this.canvas.width,height=this.canvas.height,clearColor=[0,0,0,0],clearDepth=1,clearStencil=0}={}){
@@ -180,7 +188,7 @@ export class WebGLDevice {
       else if(type[0]==='1')gl[`uniform${type}`](location,value);
       else gl[`uniform${type}`](location,...value);
     }
-    for(let i=0;i<this.maxTextures;i++){gl.activeTexture(gl.TEXTURE0+i);const r=i<textures.length?this.textures.get(textures[i]):null;gl.bindTexture(gl.TEXTURE_2D,r?.gpu??null);if(r)this._filter(filter??r.filter);}gl.activeTexture(gl.TEXTURE0);
+    const textureUnits=Math.max(this.boundTextureCount,textures.length);for(let i=0;i<textureUnits;i++){gl.activeTexture(gl.TEXTURE0+i);const r=i<textures.length?this.textures.get(textures[i]):null;gl.bindTexture(gl.TEXTURE_2D,r?.gpu??null);if(r)this._filter(filter??r.filter);}if(textureUnits)gl.activeTexture(gl.TEXTURE0);this.boundTextureCount=textures.length;
     if(blend===false)gl.disable(gl.BLEND);else{gl.enable(gl.BLEND);gl.blendEquation(gl.FUNC_ADD);const factors=blend==='source-over'?[gl.ONE,gl.ONE_MINUS_SRC_ALPHA]:blend==='straight-alpha'?[gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA]:blend==='copy'?[gl.ONE,gl.ZERO]:blend==='lighter'?[gl.ONE,gl.ONE]:blend==='source-in'?[gl.DST_ALPHA,gl.ZERO]:[gl.ZERO,gl.SRC_ALPHA];gl.blendFunc(...factors);}
     if(depth){gl.enable(gl.DEPTH_TEST);gl.depthFunc(gl[FUNCTIONS[depth.func??'lequal']]);gl.depthMask(depth.write??true);}else{gl.disable(gl.DEPTH_TEST);gl.depthMask(false);}
     if(stencil){gl.enable(gl.STENCIL_TEST);gl.stencilFunc(gl[FUNCTIONS[stencil.func??'always']],stencil.ref??0,stencil.mask??255);gl.stencilMask(stencil.writeMask??255);gl.stencilOp(gl[OPERATIONS[stencil.fail??'keep']],gl[OPERATIONS[stencil.zfail??'keep']],gl[OPERATIONS[stencil.pass??'keep']]);}else gl.disable(gl.STENCIL_TEST);
