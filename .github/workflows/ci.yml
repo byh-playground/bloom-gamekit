@@ -1,4 +1,4 @@
-name: interpolation CI
+name: gamekit CI
 
 on:
   pull_request:
@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
-      bundle-sha256: ${{ steps.bundle.outputs.sha256 }}
+      manifest-sha256: ${{ steps.manifest.outputs.sha256 }}
     steps:
       # https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -30,28 +30,28 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ -n "$(git ls-files -- dist/ interpolation.js)" ]; then
+          if [ -n "$(git ls-files -- dist/ interpolation.js rendering.js input.js manifest.json)" ]; then
             echo 'Generated bundles belong only on the dist branch.' >&2
             exit 1
           fi
       - name: Install locked tooling without lifecycle scripts
         run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Build and test the public bundle
+      - name: Build and test the independent bundles
         run: npm test
-      - name: Verify deterministic output
-        id: bundle
-        shell: bash
-        run: |
-          set -euo pipefail
-          expected="$(sha256sum dist/interpolation.js | cut -d ' ' -f 1)"
-          npm run build
-          actual="$(sha256sum dist/interpolation.js | cut -d ' ' -f 1)"
-          test "$actual" = "$expected"
-          echo "sha256=$actual" >> "$GITHUB_OUTPUT"
       - name: Install official Chromium
         run: npx --no-install playwright install --with-deps chromium
       - name: Exercise the browser example
         run: npm run test:browser
+      - name: Verify deterministic output
+        id: manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$(node scripts/verify-dist.mjs)"
+          npm run build
+          actual="$(node scripts/verify-dist.mjs)"
+          test "$actual" = "$expected"
+          echo "sha256=$actual" >> "$GITHUB_OUTPUT"
 
   publish-dist:
     name: Update dist branch
@@ -78,8 +78,8 @@ jobs:
       # Artifact 저장소 없이 같은 source를 재빌드하고 검사 job의 hash와 대조합니다.
       - name: Rebuild the tested source
         run: npm run build
-      - name: Publish only interpolation.js to dist
+      - name: Publish the verified modules and manifest to dist
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          EXPECTED_BUNDLE_SHA256: ${{ needs.test.outputs.bundle-sha256 }}
+          EXPECTED_MANIFEST_SHA256: ${{ needs.test.outputs.manifest-sha256 }}
         run: node scripts/publish-dist.mjs

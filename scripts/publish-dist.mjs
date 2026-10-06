@@ -1,20 +1,20 @@
-import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { MANIFEST_FILE, SHA256, readVerifiedDistribution } from './distribution.mjs';
+
 const SHA = /^[a-f0-9]{40}$/;
-const HASH = /^[a-f0-9]{64}$/;
 
 // export는 파일 시스템 안의 bare 저장소로 배포 절차를 회귀 검사하기 위한 경계입니다.
-export async function publishDist({ root, remote, sourceSha, expectedHash, env = process.env }) {
-  if (!SHA.test(sourceSha) || !HASH.test(expectedHash)) throw new Error('유효한 source SHA와 bundle hash가 필요합니다.');
-  const bundle = await readFile(resolve(root, 'dist/interpolation.js'));
-  if (createHash('sha256').update(bundle).digest('hex') !== expectedHash) {
-    throw new Error('검사를 통과한 배포물의 SHA-256과 재빌드 결과가 다릅니다.');
+export async function publishDist({ root, remote, sourceSha, expectedManifestHash, env = process.env }) {
+  if (typeof sourceSha !== 'string' || !SHA.test(sourceSha)
+      || typeof expectedManifestHash !== 'string' || !SHA256.test(expectedManifestHash)) {
+    throw new Error('유효한 source SHA와 manifest SHA-256이 필요합니다.');
   }
+  const { manifest, manifestBytes, manifestHash, bundles } = await readVerifiedDistribution(root, expectedManifestHash);
   const temporary = await mkdtemp(resolve(tmpdir(), 'gamekit-publish-'));
   const gitEnv = {
     ...env,
@@ -53,15 +53,18 @@ export async function publishDist({ root, remote, sourceSha, expectedHash, env =
       git(['read-tree', '--empty']);
     }
 
-    const blob = git(['hash-object', '-w', '--stdin'], bundle);
-    // 기존 tree에서 이 파일만 교체합니다. 다른 패키지·문서·기존 파일은 보존합니다.
-    git(['update-index', '--add', '--cacheinfo', `100644,${blob},interpolation.js`]);
+    // 고정 목록의 모듈과 manifest만 교체합니다. 관련 없는 기존 파일과 이력은 보존합니다.
+    for (const [file, bytes] of [...bundles, [MANIFEST_FILE, manifestBytes]]) {
+      const blob = git(['hash-object', '-w', '--stdin'], bytes);
+      git(['update-index', '--add', '--cacheinfo', `100644,${blob},${file}`]);
+    }
     const tree = git(['write-tree']);
     if (parent !== null && tree === git(['rev-parse', `${parent}^{tree}`])) return { status: 'unchanged', commit: parent };
 
     const args = ['commit-tree', tree];
     if (parent !== null) args.push('-p', parent);
-    const commit = git(args, `[chore] interpolation 배포물 갱신\n\nSource-Commit: ${sourceSha}\nBundle-SHA256: ${expectedHash}\n`);
+    const hashes = manifest.modules.map(({ file, sha256 }) => `Bundle-SHA256: ${file} ${sha256}`).join('\n');
+    const commit = git(args, `[chore] 독립 모듈 배포물 갱신\n\nSource-Commit: ${sourceSha}\nManifest-SHA256: ${manifestHash}\n${hashes}\n`);
 
     if (remoteHead('main') !== sourceSha) return { status: 'stale' };
     if (remoteHead('dist') !== parent) throw new Error('dist가 다른 실행에서 변경되었습니다. 덮어쓰지 않고 중단합니다.');
@@ -76,7 +79,7 @@ export async function publishDist({ root, remote, sourceSha, expectedHash, env =
 
 async function main() {
   const { GITHUB_ACTIONS, GITHUB_EVENT_NAME, GITHUB_REF, GITHUB_REPOSITORY, GITHUB_SHA,
-    GITHUB_SERVER_URL, GITHUB_TOKEN, EXPECTED_BUNDLE_SHA256 } = process.env;
+    GITHUB_SERVER_URL, GITHUB_TOKEN, EXPECTED_MANIFEST_SHA256 } = process.env;
   if (GITHUB_ACTIONS !== 'true' || GITHUB_EVENT_NAME !== 'push' || GITHUB_REF !== 'refs/heads/main'
       || GITHUB_REPOSITORY !== 'byh-playground/bloom-gamekit' || GITHUB_SERVER_URL !== 'https://github.com') {
     throw new Error('공식 저장소 main push의 GitHub Actions에서만 배포할 수 있습니다.');
@@ -95,7 +98,7 @@ async function main() {
     root: fileURLToPath(new URL('../', import.meta.url)),
     remote: `https://github.com/${GITHUB_REPOSITORY}.git`,
     sourceSha: GITHUB_SHA,
-    expectedHash: EXPECTED_BUNDLE_SHA256,
+    expectedManifestHash: EXPECTED_MANIFEST_SHA256,
     env,
   });
   console.log(`dist: ${result.status}${result.commit ? ` (${result.commit})` : ''}`);
