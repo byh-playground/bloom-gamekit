@@ -9,8 +9,8 @@
 - 기본 confirmed는 실제 confirmation 이후에만 start합니다. 재생한 소리는 취소해도 이미 들린 부분을 되돌릴 수 없으므로 one-shot SFX는 이 정책을 쓰세요.
 - speculative는 reversible=true와 stop이 있는 adapter만 허용합니다. start는 즉시, 동일 identity의 재실행은 reconcile만 호출합니다. 만료된 이벤트도 tombstone을 남겨 다시 재생하지 않습니다.
 - `beginRollback(fromTick)` 후 재실행 emit을 받고 `endRollback()`하면 재등장하지 않은 예측 자원을 취소합니다. 이미 확정한 tick의 rollback과 중첩 rollback은 거부합니다. 취소 identity가 이후 유효한 resim에서 돌아오면 새 자원으로 재개합니다.
-- `confirmThrough(tick)`은 단조 증가합니다. `update(nowMs)`도 단조 증가하며 만료/adapter update를 처리합니다. `finish(event)`는 자연 종료 자원을 정리하면서 dedup identity는 유지합니다.
-- GC는 confirmedTick−retentionTicks 이하이면서 종료된 기록만 지웁니다. 그 이하의 늦은 emit은 거부합니다. 활성 장기 자원과 미확정 기록은 버리지 않습니다. maxPending 초과는 throw해 backpressure를 드러내며 실제 hit를 조용히 누락하지 않습니다. 게임은 확인 진행·활성 자원 수명·capacity를 설정해야 합니다.
+- `confirmThrough(tick)`은 단조 증가합니다. 같은 tick의 확정 처리를 이미 끝냈으면 journal 재순회를 생략합니다. adapter 오류로 중단된 확정이나 이미 확정된 tick에 늦게 emit한 이벤트의 start 실패는 같은 tick으로 재시도할 수 있습니다. `update(nowMs)`도 단조 증가하며 만료/adapter update를 처리합니다. `finish(event)`는 자연 종료 자원을 정리하면서 dedup identity는 유지합니다.
+- GC는 confirmedTick−retentionTicks 이하이면서 종료된 기록만 지웁니다. 그 이하의 늦은 emit은 거부합니다. 활성 장기 자원·실패한 start의 pending 기록·미확정 기록은 버리지 않습니다. maxPending 초과는 throw해 backpressure를 드러내며 실제 hit를 조용히 누락하지 않습니다. 게임은 확인 진행·활성 자원 수명·capacity를 설정해야 합니다.
 - `dispose()`는 모든 자원을 정리하고 집계 오류를 반환하며 반복 호출은 안전합니다. replay seek/새 세션은 dispose 후 새 journal로 epoch를 분리합니다.
 
 ## 실제 SDK 연결
@@ -21,4 +21,4 @@ recovering 후보의 이벤트는 게임이 임시 저장하고 성공한 recove
 
 Budmori의 tick별 effect/damage feedback과 [Rally f6037f05](https://github.com/byh-playground/rally-frontier/tree/f6037f05)의 confirmed presentation journal 경계를 참고한 신규 구현입니다. 원본 게임의 효과·아트·라이선스를 복제하거나 바꾸지 않습니다.
 
-종료된 confirmed 자원은 payload/handle 참조를 즉시 해제하고 identity-only tombstone만 보관합니다. durationMs:0은 start 직후 만료하므로 큰 actor clone을 보관하지 않는 순간 feedback adapter에 적합합니다. frame update는 active Set만 순회하며 retained tombstone 전체를 매 frame 스캔하지 않습니다. confirmation/rollback은 해당 시점의 journal을 순회합니다. 새 이벤트·identity 문자열·map record는 할당되므로 0-allocation이라고 부르지 않습니다.
+종료된 confirmed 자원은 payload/handle 참조를 즉시 해제하고 identity-only tombstone만 보관합니다. 이 축약은 기록당 한 번만 수행하며 이후 확정 호출에서 tombstone 객체를 다시 할당하지 않습니다. durationMs:0은 start 직후 만료하므로 큰 actor clone을 보관하지 않는 순간 feedback adapter에 적합합니다. frame update는 active Set만 순회하며 retained tombstone 전체를 매 frame 스캔하지 않습니다. 확정 tick이 전진하거나 실패 처리를 재시도할 때와 rollback/명시적 collect는 해당 시점의 journal을 순회합니다. 같은 확정 tick의 완료된 호출은 O(1)이며 새 이벤트·identity 문자열·map record·최초 tombstone은 할당되므로 전체 API를 0-allocation이라고 부르지 않습니다.

@@ -85,6 +85,8 @@ export class RollbackSession {
     return Object.freeze({peerId,state:peer.connectionState,handshakeComplete:peer.ready,lastReceivedAt:peer.lastReceivedAt,
       simTick:peer.tick,confirmedInputTick:peer.confirmed,ackTick:peer.ack,rtt:peer.rtt,jitter:peer.jitter});
   }
+  /** Current scheduling multiplier without allocating a diagnostic metrics snapshot. */
+  get pace() { return this._pace; }
   get metrics() { return { ...this._metrics, inputDelay: this.inputDelay, requestedInputDelay:this.requestedInputDelay,
     confirmedTick: this.confirmedTick, tick: this.tick, pace: this._pace,retainedSnapshotBytes:this._history.byteLength }; }
   _stateHash(state) {
@@ -144,11 +146,22 @@ export class RollbackSession {
       controls: [], queuedBytes: 0, lastHashQueued: 0, unsubscribe: null, unsubscribeStatus: null,
       connectionState:'connecting',transportState:undefined,lastReceivedAt:this._clock(),lastReceivedSequence:null };
     this._peers.set(peerId, peer);
-    peer.unsubscribe = transport.subscribe(data => this.receive(peerId, data));
-    peer.unsubscribeStatus=transport.subscribeStatus?.(state=>this._transportStatus(peer,state));
+    let detached = false;
+    const current = () => !this.closed && !detached && this._peers.get(peerId) === peer;
+    peer.detach = () => {
+      if (detached) return;
+      detached = true;
+      if (this._peers.get(peerId) === peer) this._peers.delete(peerId);
+      // Clear first so reentrant cleanup and close never unsubscribe twice.
+      const unsubscribe = peer.unsubscribe, unsubscribeStatus = peer.unsubscribeStatus;
+      peer.unsubscribe = peer.unsubscribeStatus = null;
+      try { unsubscribe?.(); } finally { unsubscribeStatus?.(); }
+    };
+    peer.unsubscribe = transport.subscribe(data => { if (current()) this.receive(peerId, data); });
+    peer.unsubscribeStatus=transport.subscribeStatus?.(state=>{ if (current()) this._transportStatus(peer,state); });
     if(transport.state)this._transportStatus(peer,transport.state);
     this._sendHello(peer, this._clock());
-    return () => { peer.unsubscribe?.(); peer.unsubscribeStatus?.(); this._peers.delete(peerId); };
+    return peer.detach;
   }
   _send(peer, data) {
     try {
@@ -690,7 +703,7 @@ export class RollbackSession {
   close() {
     if (this.closed) return;
     this.closed = true;
-    for (const peer of this._peers.values()) { peer.unsubscribe?.(); peer.unsubscribeStatus?.(); peer.transport.close?.(); }
+    for (const peer of this._peers.values()) { try { peer.detach(); } finally { peer.transport.close?.(); } }
     this._peers.clear(); this._incomingSnapshot = null; this._pendingCommands.length = 0; this._event('closed');
   }
 }

@@ -19,18 +19,23 @@ export class PresentationEventQueue {
       for (const key of ['stop', 'update', 'reconcile', 'confirm']) if (adapter[key] !== undefined && typeof adapter[key] !== 'function') throw new TypeError(`adapter.${key} must be function`);
     }
     this.retentionTicks = retentionTicks; this.maxPending = maxPending; this.nowMs = time(nowMs, 'nowMs'); this.confirmedTick = -1;
-    this.records = new Map(); this.active = new Set(); this.rollbackFrom = null; this.disposed = false;
+    this.records = new Map(); this.active = new Set(); this.rollbackFrom = null; this.disposed = false; this.confirmationDirty = false;
     this.stats = { started: 0, duplicates: 0, cancelled: 0, expired: 0, collected: 0, rejectedOld: 0 };
   }
   _ready() { if (this.disposed) throw new Error('event queue disposed'); }
   _start(record) {
-    record.handle = record.adapter.start(record.event, this.nowMs); record.startedMs = this.nowMs; record.state = 'active'; this.active.add(record); this.stats.started++;
+    try { record.handle = record.adapter.start(record.event, this.nowMs); }
+    catch (error) { if (record.confirmed) this.confirmationDirty = true; throw error; }
+    record.startedMs = this.nowMs; record.state = 'active'; this.active.add(record); this.stats.started++;
     if (record.durationMs === 0) { this._stop(record, 'expired'); this.stats.expired++; }
   }
   _release(record) {
     if (!record.confirmed || record.state === 'active' || record.state === 'pending') return;
-    const { tick, sequence, entityId, generation, kind, policy } = record.event;
-    record.event = { tick, sequence, entityId, generation, kind, policy }; record.handle = undefined;
+    const { tick } = record.event;
+    if (!record.compacted) {
+      const { sequence, entityId, generation, kind, policy } = record.event;
+      record.event = { tick, sequence, entityId, generation, kind, policy }; record.handle = undefined; record.compacted = true;
+    }
     if (tick <= this.confirmedTick - this.retentionTicks && this.records.delete(record.key)) this.stats.collected++;
   }
   _stop(record, reason) {
@@ -63,7 +68,7 @@ export class PresentationEventQueue {
     }
     if (this.records.size >= this.maxPending) throw new RangeError('presentation journal capacity exceeded; confirm/collect or increase capacity explicitly');
     record = { key, event: { ...event, policy }, adapter, policy, durationMs, confirmed: event.tick <= this.confirmedTick,
-      state: 'pending', handle: undefined, startedMs: 0, seen: true };
+      state: 'pending', handle: undefined, startedMs: 0, seen: true, compacted: false };
     this.records.set(key, record);
     if (policy === 'speculative' || record.confirmed) this._start(record);
     return true;
@@ -83,14 +88,17 @@ export class PresentationEventQueue {
   }
   confirmThrough(tick) {
     this._ready(); integer(tick, 'tick'); if (this.rollbackFrom !== null) throw new Error('finish rollback before confirmation');
-    if (tick < this.confirmedTick) throw new RangeError('confirmed tick cannot regress'); this.confirmedTick = tick;
+    if (tick < this.confirmedTick) throw new RangeError('confirmed tick cannot regress');
+    if (tick === this.confirmedTick && !this.confirmationDirty) return;
+    // An interrupted pass or a failed late start must remain retryable at the same watermark.
+    this.confirmedTick = tick; this.confirmationDirty = true;
     for (const record of this.records.values()) if (record.event.tick <= tick) {
       const wasConfirmed = record.confirmed; record.confirmed = true;
       if (record.state === 'pending') this._start(record);
       if (!wasConfirmed && record.state === 'active') record.adapter.confirm?.(record.handle, record.event);
       this._release(record);
     }
-    this.collect();
+    this.collect(); this.confirmationDirty = false;
   }
   update(nowMs) {
     this._ready(); time(nowMs, 'nowMs'); if (nowMs < this.nowMs) throw new RangeError('presentation clock must be monotonic'); this.nowMs = nowMs;
@@ -104,7 +112,7 @@ export class PresentationEventQueue {
   finish(event) { this._ready(); const record = this.records.get(presentationEventKey(event)); if (!record || record.state !== 'active') return false; this._stop(record, 'expired'); this.stats.expired++; return true; }
   collect() {
     this._ready(); const cutoff = this.confirmedTick - this.retentionTicks;
-    for (const [key, record] of this.records) if (record.confirmed && record.event.tick <= cutoff && record.state !== 'active') { this.records.delete(key); this.stats.collected++; }
+    for (const [key, record] of this.records) if (record.confirmed && record.event.tick <= cutoff && record.state !== 'active' && record.state !== 'pending') { this.records.delete(key); this.stats.collected++; }
   }
   get size() { return this.records.size; }
   dispose() {

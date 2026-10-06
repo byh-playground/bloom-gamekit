@@ -36,3 +36,10 @@ createNostrGroupRoom({role:'host',playerCount:4,topology:'star',onStatus:s=>s.pl
 });
 // @ts-expect-error supported transport topologies are explicit
 createNostrGroupRoom({role:'host',topology:'server'});
+
+const scalarPace:number=session.pace;
+// @ts-expect-error pacing multiplier is readonly
+session.pace=2;
+createLoop({session,backlogPolicy:'retain'});
+// @ts-expect-error backlog policies are explicit
+createLoop({session,backlogPolicy:'unbounded'});
