@@ -5,6 +5,7 @@ export const CHUNK_SIZE = 16384;
 export const MAX_TICK = 0x7ffffffe; // Signed ACK fields reserve -1 for no confirmed input.
 
 export const defaults = {
+  mode: 'rollback',
   tickRate: 60, baseInputDelayTicks: 2, minInputDelayTicks: 0, maxInputDelayTicks: 8,
   rollbackWindowTicks: 12, stateHistorySize: 64, predictionPolicy: 'hold',
   stallPolicy: 'wait', tickDriftThreshold: 2, pacingPolicy: 'hold',
@@ -20,7 +21,7 @@ export const profiles = Object.freeze({
   rts: Object.freeze({ ...defaults, tickRate: 20, baseInputDelayTicks: 4,
     maxInputDelayTicks: 12, rollbackWindowTicks: 6, stateHistorySize: 32,
     predictionPolicy: 'neutral', checksumInterval: 20 }),
-  lockstep: Object.freeze({ ...defaults, tickRate: 20, baseInputDelayTicks: 4,
+  lockstep: Object.freeze({ ...defaults, mode: 'lockstep', tickRate: 20, baseInputDelayTicks: 4,
     maxInputDelayTicks: 20, rollbackWindowTicks: 0, checksumInterval: 20,
     stateHistorySize: 32, predictionPolicy: 'neutral' }),
 });

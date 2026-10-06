@@ -32,9 +32,9 @@ loop.start();
 
 ## 보존한 동작
 
-프로토콜 VERSION, save/load bytes, RV codec 형식, input/command sequence와 tick, snapshot 검증·복구 트랜잭션, replay schema를 바꾸지 않았습니다. 배포 파일 SHA는 번들러·경로 변경 때문에 달라집니다. 이 이유만으로 게임 simulationVersion을 바꾸거나 저장 파일을 변환하지 않습니다.
+프로토콜 VERSION과 packet framing, save/load bytes, RV codec 형식, input/command sequence와 tick, snapshot 검증·복구 트랜잭션, replay schema를 바꾸지 않았습니다. 새 모드 HELLO 필드가 없는 이전 bundle과의 혼합 연결은 거절합니다. 배포 파일 SHA는 번들러·경로 변경 때문에 달라집니다. 이 이유만으로 게임 simulationVersion을 바꾸거나 저장 파일을 변환하지 않습니다.
 
-StateHistory는 기존 full-copy snapshot ring입니다. FullCopy/NativeMemento/DirtyDelta/UndoLog/CheckpointDelta 전략은 이 이전에 새로 구현하지 않았습니다. `_rollback-shared`는 protocol/frame/StateHistory의 단일 내부 구현이며 별도 공개 SDK가 아닙니다. 재실행·진단·replay가 같은 frame 실행 경계를 재사용합니다.
+기본 rollback 모드의 StateHistory는 기존 full-copy snapshot ring입니다. 설정 가능한 효율적 lockstep 모드와 checkpoint·hash·복구의 비용/호환성은 [실행 모드 계약](../rollback/README.md#실행-모드-rollback--lockstep)을 따릅니다. FullCopy/NativeMemento/DirtyDelta/UndoLog/CheckpointDelta 전략은 이 이전에 새로 구현하지 않았습니다. `_rollback-shared`는 protocol/frame/StateHistory의 단일 내부 구현이며 별도 공개 SDK가 아닙니다. 재실행·진단·replay가 같은 frame 실행 경계를 재사용합니다.
 
 onEvent의 `rollback`은 state load 후, 동기적 재실행 전에 전달됩니다. poll/advance가 반환되면 재실행이 끝납니다. `confirmedTick`은 마지막 확정 입력 tick이고 `tick`은 다음 실행 tick입니다. 표현은 `Math.min(session.confirmedTick, session.tick - 1)`까지 확정할 수 있습니다. 복구 후보의 `recovering:true` 실행은 거절될 수 있으므로 확정 전 외부 효과를 발생시키면 안 됩니다.
 

@@ -27,6 +27,8 @@ export interface Transport {
 }
 export type PredictionPolicy = 'hold' | 'neutral' | ((context: { playerId: PlayerId; tick: number; previousInput: Uint8Array; lastConfirmedTick: number }) => Bytes);
 export interface Profile {
+  /** Omitted means rollback. Lockstep waits for all inputs and stores periodic checkpoints. */
+  mode?: 'rollback' | 'lockstep';
   tickRate: number; baseInputDelayTicks: number; minInputDelayTicks: number; maxInputDelayTicks: number;
   rollbackWindowTicks: number; stateHistorySize: number; predictionPolicy: PredictionPolicy; stallPolicy: 'wait';
   tickDriftThreshold: number; pacingPolicy: 'none' | 'hold' | 'dilation'; checksumInterval: number;
@@ -78,6 +80,7 @@ export interface SessionMetrics {
   predictedTicks: number; hashMismatches: number; latestResimulationMs: number; smoothedRTT: number; jitter: number;
   lateInputRate: number; rollbackFrequency: number; stallFrequency: number; resimulationCostMs: number;
   stateHashComputations: number; hashedStateBytes: number; retainedSnapshotBytes: number;
+  snapshotSaves: number; serializedSnapshotBytes: number;
   inputDelay: number; requestedInputDelay: number; confirmedTick: number; tick: number; pace: number;
 }
 export interface Replay {
@@ -99,7 +102,9 @@ export class RollbackSession {
   /** 증가 즉시 적용. 감소는 동일 샘플에 한 틱씩 적용하며 requestedInputDelay로 목표를 조회한다. */
   setInputDelay(ticks: number): void;
   releaseInput(): void;
+  /** In lockstep, uses the retained confirmed checkpoint at or before tick. */
   requestResync(tick: number): boolean;
+  /** Lockstep: current boundary is serialized on demand; past ticks require a retained checkpoint. */
   getStateHash(tick?: number): number | undefined;
   getPeerState(peerId: PlayerId): Readonly<PeerState> | undefined;
   exportReplay(): Replay;
