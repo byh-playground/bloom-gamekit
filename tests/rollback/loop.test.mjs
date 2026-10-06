@@ -96,3 +96,10 @@ test('retain stop during catchup cancels remaining steps and start resets previo
   f.loop.pulse(0);f.loop.pulse(1000);assert.equal(f.tick,1);
   stop=false;f.loop.start();const cb=callbacks.get(next);cb(2000);assert.equal(f.tick,1);f.loop.stop();
 });
+test('retain rejects regressed or unsafe clocks instead of manufacturing or dropping debt',()=>{
+  const f=fixture({backlogPolicy:'retain'});f.loop.pulse(1000);
+  assert.throws(()=>f.loop.pulse(999),/cannot regress/);
+  f.loop.resetTiming();f.loop.pulse(0);
+  assert.throws(()=>f.loop.pulse(Number.MAX_SAFE_INTEGER+1),/safe milliseconds/);
+  f.loop.resetTiming();f.loop.pulse(10);f.loop.pulse(60);assert.equal(f.tick,1);
+});

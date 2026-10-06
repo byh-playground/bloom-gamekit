@@ -23,7 +23,7 @@
       "reason": "bloom-gamekit: transport detach identity/idempotence and scalar pace capability"
     },
     "src/loop.js": {
-      "normalizedSha256": "d59550637e234142982d66e5708ca416da99ef17e05e376c21d34282bc9eed9a",
+      "normalizedSha256": "a782a4c1400c5625f8969593db8e7c73f12c42c159ee84b20c837dfc54b21e78",
       "reason": "bloom-gamekit: reentrant cancellation, scalar pacing reads, opt-in retained backlog"
     }
   }

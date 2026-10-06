@@ -25,6 +25,7 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
     const current = generation;
     try {
       if (!Number.isFinite(timestamp)) throw new TypeError('frame timestamp');
+      if (backlogPolicy === 'retain' && last !== undefined && timestamp < last) throw new RangeError('retained loop timestamp cannot regress');
       beforeFrame(timestamp);
       if (current !== generation) return;
       if (last === undefined) last = timestamp;
