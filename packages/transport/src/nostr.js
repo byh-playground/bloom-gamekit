@@ -33,7 +33,8 @@ export async function createNostrSignaler({
   signal,
   publishIntervalMs = 500,
   maxVerificationsPerSecond = 16,
-  verificationBurst = 8
+  verificationBurst = 8,
+  identity
 } = {}) {
   if (signal?.aborted) throw new Error('Nostr signaler aborted');
   if (typeof room !== 'string' || !/^\d{4}$/.test(room)) throw new TypeError('room must contain exactly four ASCII digits');
@@ -53,15 +54,16 @@ export async function createNostrSignaler({
     return nostrUrl.href;
   }))];
   const nostrRandom = nostrLength => cryptoImpl.getRandomValues(new Uint8Array(nostrLength));
+  if (identity && (!nostrHex32.test(identity.id) || typeof identity.sign !== 'function' || typeof identity.close !== 'function')) throw new TypeError('Nostr identity capability');
   const nostrSecret = new Uint8Array(32);
-  let nostrSecretReady = false;
-  for (let nostrAttempt = 0; nostrAttempt < 16; nostrAttempt++) {
+  let nostrSecretReady = !!identity;
+  for (let nostrAttempt = 0; !nostrSecretReady && nostrAttempt < 16; nostrAttempt++) {
     nostrSecret.set(nostrRandom(32));
     const nostrValue = nostrBytesToNumber(nostrSecret);
     if (nostrValue > 0n && nostrValue < nostrOrder) { nostrSecretReady = true; break; }
   }
   if (!nostrSecretReady) { nostrSecret.fill(0); throw new Error('Secure random secret generation failed'); }
-  const nostrId = nostrToHex(nostrPublicKey(nostrSecret));
+  const nostrId = identity?.id ?? nostrToHex(nostrPublicKey(nostrSecret));
   const nostrRoomTag = `${namespace}:${room}`;
   const nostrSubscription = `rn-${nostrToHex(nostrRandom(16))}`;
   const nostrListeners = new Set();
@@ -224,7 +226,7 @@ export async function createNostrSignaler({
     }
     for (const nostrEventId of nostrPending.keys()) nostrFinishPublication(nostrEventId, new Error('Nostr signaler closed'));
     if (!nostrInitializationSettled) { nostrInitializationSettled = true; nostrReadyReject(new Error('Nostr signaler closed')); }
-    nostrSecret.fill(0);
+    nostrSecret.fill(0); identity?.close();
     nostrListeners.clear();
     nostrBacklog.length = 0;
     nostrSeen.clear();
@@ -293,7 +295,7 @@ export async function createNostrSignaler({
         const nostrHashBytes = await nostrHash(nostrEncoder.encode(JSON.stringify([0, nostrId, nostrEvent.created_at, nostrEvent.kind, nostrEvent.tags, nostrContent])), cryptoImpl);
         if (nostrClosed) throw new Error('Nostr signaler closed');
         const nostrAuxiliary = nostrRandom(32);
-        try { nostrEvent.sig = nostrToHex(await nostrSign(nostrHashBytes, nostrSecret, nostrAuxiliary, cryptoImpl)); }
+        try { nostrEvent.sig = nostrToHex(await (identity ? identity.sign(nostrHashBytes, nostrAuxiliary, cryptoImpl) : nostrSign(nostrHashBytes, nostrSecret, nostrAuxiliary, cryptoImpl))); }
         finally { nostrAuxiliary.fill(0); }
         nostrEvent.id = nostrToHex(nostrHashBytes);
         if (nostrClosed) throw new Error('Nostr signaler closed');

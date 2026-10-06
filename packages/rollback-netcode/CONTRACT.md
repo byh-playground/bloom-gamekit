@@ -98,7 +98,7 @@ binary는 RV version 1 헤더, 타입 태그, little-endian 길이/유한 float6
 
 스타 전송은 원래 Core 패킷의 최대 16,384바이트를 보존한다. 라우팅 헤더 때문에 커진 물리 프레임은 16,384바이트 이하로 분할한다. 원격 패킷의 세션·발신자·목적지·범위·중복 조각을 검사하고, 호스트는 물리 채널의 상대가 다른 참가자를 사칭하지 못하게 한다. 전달 큐는 기본 5 MiB/4,096프레임, 조립은 32건/512 KiB로 제한한다. 불완전한 조립은 2초 후 버리고 Core의 재전송을 사용한다. 받아들인 중계 패킷은 backpressure 동안 보관하되 큐 한도 또는 10초 전달 대기를 넘기면 명시적으로 방을 실패시킨다. 전송 혼잡을 숨겨 성공으로 보고하지 않는다.
 
-진행 중 합류와 방장 승계는 지원하지 않는다. 형성 중 실패 또는 확정 명단의 물리 연결 종료는 부분 명단의 게임을 계속하지 않고 자원을 정리한다. 연결의 일시적인 interruption은 시작 후 기존 Transport/Core 상태를 통해 처리한다. `close()`는 멱등이며 RTC·큐·구독을 정리한다. 종료 통지는 최대 1.5초의 시그널링 정리 유예 안에서 시도하며 전달을 보장하지 않는다.
+이 고정 `createNostrGroupRoom` API는 진행 중 합류와 방장 승계를 지원하지 않는다. 형성 중 실패 또는 확정 명단의 물리 연결 종료는 부분 명단의 게임을 계속하지 않고 자원을 정리한다. 연결의 일시적인 interruption은 시작 후 기존 Transport/Core 상태를 통해 처리한다. `close()`는 멱등이며 RTC·큐·구독을 정리한다. 종료 통지는 최대 1.5초의 시그널링 정리 유예 안에서 시도하며 전달을 보장하지 않는다.
 
 N인 방은 기존 2인 `createNostrRoom`과 별도 `:group-v1` 시그널링 네임스페이스를 사용해 기존 소비자의 방 흐름을 보존한다. N인 연결의 초기 서명 메시지에 맞춰 검증 예산은 초당 `max(16, playerCount*4)`, burst는 `playerCount*4`로 한정한다. 참가자 수가 늘면 연결·서명·입력 복사·스타 중계 비용도 증가하므로 같은 어댑터와 조건에서 토폴로지별로 측정한다.
 
@@ -107,3 +107,14 @@ N인 방은 기존 2인 `createNostrRoom`과 별도 `:group-v1` 시그널링 네
 createLoop의 자동 frame과 수동 pulse는 같은 시간 누적·pacing·작업량 경계를 사용한다. 소비자는 beforeFrame으로 외부 clock을 연결하고 canAdvance로 경기 시작/종료 같은 애플리케이션 수명주기를 조정하며 onAdvance/render로 확정된 결과를 표현한다. 게임에 별도 accumulator나 따라잡기 알고리즘을 만들지 않는다. 실행이 보류돼도 poll과 render는 계속한다. Core는 롤백과 복구 재실행을 이전 현재 틱까지 동기적으로 완료한다. 시간 예산에 따라 정상 틱을 생략하거나 재실행을 여러 호출로 나누지 않는다.
 
 Synctest.metrics는 라이브러리가 소유하는 검사 틱·재실행 틱·거리·보관 bytes·상태 hash·실패 요약 및 검사 시간을 제공한다. runSyncTest 성공 결과와 실패 error.syncTestMetrics에도 같은 snapshot을 제공한다. 소비자가 자체 검사 엔진이나 카운터를 만들지 않는다. 이 메트릭은 실제 load/resimulation 검사한 입력 구간을 설명하며 온라인 peer 일치·서로 다른 엔진/기기 결정론을 대신 증명하지 않는다. 검사는 추가 저장/재실행 CPU를 사용하므로 소비자는 실행 범위와 발동을 명시해야 한다.
+
+
+## 동적 room composition
+
+`createRoomSession`은 lockstep만 사용하며 Core의 fixed roster를 epoch 동안 고정한다. epoch가 바뀌어도 canonical 세계, global tick, 미실행 명령 sequence를 유지한다. 기존 참가자 전원이 준비한 tick/hash와 신규 참가자의 checkpoint+확정 suffix 검증이 일치하기 전에는 새 roster의 입력을 실행하지 않는다. membership callback은 rollback 가능한 canonical state만 바꾸며, commit 전 준비 snapshot을 외부 effect로 사용하지 않는다.
+
+`createNostrDynamicRoom`은 ongoing mesh 연결과 room-scoped refresh identity를 소유한다. `createNostrPublicRoom`은 별도 Nostr namespace의 bounded discovery/lease/identity-bound 자리 예약을 조합한다. directory advertisement는 입장 허가나 세계 권위가 아니다. 실제 roster는 RoomSession의 확정 epoch만 따른다. 기존 고정 room과 wire namespace를 섞지 않는다.
+
+정상 coordinator 퇴장은 합의 후 남은 roster로 넘긴다. partition은 유예 동안 대기하고 복구하지 못하면 명시적으로 실패하며, 독립 선출/무응답 참가자의 임의 no-op 대체를 하지 않는다. 새로고침은 살아 있는 peer의 같은 session에서만 actor를 복구한다. 재접속 donor는 보관 중인 공유 checkpoint와 알려진 입력/command sequence로 검증하고, 전원이 bounded replay/hash를 확인한 뒤 commit한다. 마지막 peer까지 종료된 방은 복구할 수 없다.
+
+상세 API·용량·재시도·검증 범위는 [rollback](../rollback/README.md), [transport](../transport/README.md), [비용 측정](../../docs/room-session-benchmarks.md)을 따른다. 동적 여러 epoch 전체 replay export는 별도 미지원이며 fixed Core replay 계약을 변경하지 않는다.

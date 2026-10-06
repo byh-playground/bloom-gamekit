@@ -5,7 +5,7 @@ import {createHash} from 'node:crypto';
 import * as bundle from '../../dist/rollback-netcode.js';
 import * as source from '../../packages/rollback-netcode/src/index.js';
 const read=p=>readFileSync(p,'utf8');
-const publicNames=['VERSION','PROTOCOL_VERSION','CHUNK_SIZE','MAX_TICK','profiles','hashBytes','statelessRandom','SeededPRNG','fixedPoint','createSession','RollbackSession','playReplay','WebRTCTransport','createWebRTCPeer','createLoop','createNostrRoom','createNostrGroupRoom','nostrCrypto','createNostrSignaler','createSyncTestSession','SyncTestSession','runSyncTest','runSyncTestAsync','DeterminismError','createValueCodec','binaryCodec','jsonCodec'].sort();
+const publicNames=['VERSION','PROTOCOL_VERSION','CHUNK_SIZE','MAX_TICK','profiles','hashBytes','statelessRandom','SeededPRNG','fixedPoint','createSession','RollbackSession','playReplay','WebRTCTransport','createWebRTCPeer','createLoop','createNostrRoom','createNostrGroupRoom','createNostrDynamicRoom','createNostrPublicRoom','createRoomSession','RoomSession','createBootstrapReplay','nostrCrypto','createNostrSignaler','createSyncTestSession','SyncTestSession','runSyncTest','runSyncTestAsync','DeterminismError','createValueCodec','binaryCodec','jsonCodec'].sort();
 test('standalone compatibility bundle preserves every upstream public export and declarations',()=>{
   assert.deepEqual(Object.keys(bundle).sort(),publicNames);
   assert.deepEqual(Object.keys(source).sort(),publicNames);

@@ -6,6 +6,12 @@ export interface PlayerInput { playerId: PlayerId; input: Uint8Array; commands: 
 export interface StepContext {
   tick: number; tickRate: number; inputs: PlayerInput[]; resimulating: boolean;
   recovering?: boolean; replaying?: boolean; synctesting?: boolean;
+  /** RoomSession이 전역 tick과 함께 전달하는 확정 roster 세대. */
+  membershipEpoch?: number;
+}
+export interface SnapshotContext {
+  tick: number; membershipEpoch?: number; tickRate?: number;
+  players?: PlayerId[]; simulationVersion?: string; seed?: number;
 }
 export interface SimulationAdapter {
   /** 반환 버퍼를 재사용해도 된다. Core는 보관 전에 복사한다. */
@@ -13,7 +19,7 @@ export interface SimulationAdapter {
   load(snapshot: Uint8Array): void;
   step(context: StepContext): unknown;
   /** 현재 simulation을 변경하지 않는 후보 검증. */
-  validateSnapshot(snapshot: Uint8Array, context: { tick: number }): boolean;
+  validateSnapshot(snapshot: Uint8Array, context: SnapshotContext): boolean;
 }
 export type TransportState = 'connecting' | 'open' | 'interrupted' | 'closed' | 'failed';
 export interface Transport {
@@ -73,7 +79,41 @@ export interface SessionOptions {
   players: PlayerId[]; localPlayerId: PlayerId; sessionId: string; simulationVersion: string;
   seed?: number; inputSize: number; profile?: Partial<Profile>; adapter: SimulationAdapter;
   authorityPlayerId?: PlayerId; onEvent?: (event: SessionEvent) => void; recordReplay?: boolean; clock?: () => number;
+  /** 새 epoch에 아직 실행하지 않은 로컬 명령과 sequence를 넘긴다. 초기 delay 입력은 neutral이다. */
+  localCommandState?: LocalCommandState;
+  /** 현재 roster 각 플레이어가 이미 실행한 명령 sequence. 새 epoch와 reload 복원에 사용한다. */
+  initialCommandSequences?: Record<PlayerId, number>;
 }
+export interface PendingCommand { sequence: number; payload: Uint8Array; }
+export interface LocalCommandState { sequence: number; lastInput: Uint8Array; commands: PendingCommand[]; }
+export interface ConfirmedPlayerInput extends PlayerInput { predicted: false; }
+export interface ConfirmedBootstrap {
+  version: 1; tick: number; checkpoint: { tick: number; bytes: Uint8Array; hash: number };
+  players: PlayerId[]; frames: { tick: number; inputs: ConfirmedPlayerInput[] }[];
+  hash: number; inputSize: number; tickRate: number; simulationVersion: string; seed: number;
+  commandSequences: Record<PlayerId, number>;
+}
+export interface BootstrapReplayOptions {
+  adapter: SimulationAdapter; bootstrap: ConfirmedBootstrap; maxCatchupSteps?: number;
+  maxSnapshotBytes?: number; maxSuffixTicks?: number; maxCommandBytes?: number;
+  maxPendingCommands?: number; maxReplayBytes?: number;
+  /** 지정한 값은 snapshot을 load하기 전에 bootstrap metadata와 대조한다. */
+  simulationVersion?: string; inputSize?: number; tickRate?: number; players?: PlayerId[]; seed?: number;
+}
+export interface BootstrapReplayPulseResult {
+  readonly status: 'catching-up' | 'done' | 'cancelled'; readonly tick: number;
+  readonly targetTick: number; readonly steps: number; readonly hash?: number;
+}
+export interface BootstrapReplay {
+  readonly tick: number; readonly targetTick: number; readonly done: boolean;
+  readonly status: 'catching-up' | 'done' | 'cancelled' | 'failed'; readonly failure: Error | null;
+  readonly result: Readonly<{ tick: number; hash: number }> | null;
+  /** 한 번에 maxCatchupSteps 이하를 재실행한다. 실패하면 원래 snapshot을 복원하고 throw한다. */
+  pulse(): BootstrapReplayPulseResult;
+  /** 진행 중일 때만 원래 snapshot을 복원한다. 완료된 결과는 유지한다. */
+  cancel(): BootstrapReplayPulseResult;
+}
+export function createBootstrapReplay(options: BootstrapReplayOptions): BootstrapReplay;
 export interface SessionMetrics {
   rollbacks: number; resimulatedTicks: number; maxRollbackDepth: number; stalls: number; holds: number;
   recoveries: number; rejectedSnapshots: number; rejectedPackets: number; sentBytes: number; receivedBytes: number;
@@ -107,11 +147,74 @@ export class RollbackSession {
   /** Lockstep: current boundary is serialized on demand; past ticks require a retained checkpoint. */
   getStateHash(tick?: number): number | undefined;
   getPeerState(peerId: PlayerId): Readonly<PeerState> | undefined;
+  /** 현재 확정 lockstep 경계와 가장 가까운 보관 checkpoint/suffix를 복사한다. */
+  exportConfirmedBootstrap(options?: { checkpointAtOrBefore?: number }): ConfirmedBootstrap;
+  verifyConfirmedBootstrap(bootstrap: ConfirmedBootstrap): boolean;
+  /** 이미 실행한 명령은 제외하며 미래 frame과 대기 queue의 명령을 sequence 순으로 복사한다. */
+  exportLocalCommandState(): LocalCommandState;
+  /** lockstep에서만 지원하며 미래 명령을 제외한 실행 sequence를 복사한다. */
+  getCommandSequences(): Record<PlayerId, number>;
   exportReplay(): Replay;
   exportSyncTestFrames(options?: { maxFrames?: number }): { initialState: Uint8Array; players: PlayerId[]; inputSize: number; tickRate: number; initialTick: 0; frames: { tick: number; inputs: PlayerInput[] }[] };
   close(): void;
 }
 export function createSession(options: SessionOptions): RollbackSession;
+export interface MembershipProposal {
+  readonly epoch: number; readonly oldPlayers: readonly PlayerId[]; readonly players: readonly PlayerId[];
+  readonly joined: readonly PlayerId[]; readonly left: readonly PlayerId[];
+  readonly coordinatorId: PlayerId; readonly reason: string; readonly resumingId?: PlayerId | null;
+}
+export interface MembershipContext {
+  epoch: number; tick: number; players: readonly PlayerId[]; joined: readonly PlayerId[]; left: readonly PlayerId[];
+  coordinatorId: PlayerId; reason: string; oldPlayers?: readonly PlayerId[]; resumingId?: PlayerId | null;
+}
+export interface RoomSimulationAdapter extends SimulationAdapter {
+  /** 확정 tick 경계에서 게임이 roster 변경을 결정론적으로 적용한다. */
+  applyMembership(context: MembershipContext): unknown;
+}
+export interface MembershipOptions {
+  maxPlayers: number; transitionTimeoutMs: number; reconnectGraceMs: number; maxCatchupSteps: number;
+  maxTransferBytes: number; maxControlMessagesPerPulse: number; joinRetryMs: number;
+}
+export interface RoomSessionEvent {
+  type: string; tick: number; epoch: number; peerId?: PlayerId; reason?: string;
+  proposal?: MembershipProposal; [key: string]: unknown;
+}
+export interface RoomSessionOptions {
+  mode?: 'local' | 'online'; room?: RoomTransport; localPlayerId?: PlayerId; sessionId?: string;
+  simulationVersion: string; seed?: number; inputSize: number; profile?: Partial<Profile>;
+  adapter: RoomSimulationAdapter; membership?: Partial<MembershipOptions>; clock?: () => number;
+  onEvent?: (event: RoomSessionEvent) => void;
+}
+export interface RoomSessionFailure { readonly type: string; readonly reason?: string; readonly [key: string]: unknown; }
+export type RoomSessionStatus = SessionStatus | 'joining' | 'membership' | 'catching-up';
+export interface RoomAdvanceResult {
+  status: AdvanceResult['status'] | 'joining' | 'membership' | 'catching-up'; tick: number;
+  failure?: Readonly<SessionFailure> | RoomSessionFailure | null;
+}
+export interface RoomSessionMetrics extends Partial<SessionMetrics> {
+  tick: number; confirmedTick: number; epoch: number; transitions: number; bootstrapBytes: number;
+  bootstrapTicks: number; rejectedMessages: number; sentControlBytes: number; receivedControlBytes: number;
+  controlQueuedBytes: number; controlReceivingBytes: number; pendingAdmissions: number; controlIncomingBytes: number; snapshotSaves: number;
+  serializedSnapshotBytes: number; stateHashComputations: number; hashedStateBytes: number;
+}
+export class RoomSession {
+  constructor(options: RoomSessionOptions);
+  readonly mode: 'local' | 'online'; readonly room?: RoomTransport;
+  readonly localPlayerId: PlayerId; readonly sessionId: string; readonly inputSize: number;
+  readonly simulationVersion: string; readonly seed: number; readonly players: readonly PlayerId[];
+  readonly coordinatorId: PlayerId; readonly epoch: number; readonly baseTick: number;
+  readonly tick: number; readonly confirmedTick: number; readonly inputDelay: number; readonly pace: number;
+  readonly profile: Readonly<Profile>; readonly membership: Readonly<MembershipOptions>;
+  readonly closed: boolean; readonly ready: boolean; readonly resimulating: boolean; readonly status: RoomSessionStatus;
+  readonly failure: Readonly<SessionFailure> | RoomSessionFailure | null | undefined; readonly metrics: RoomSessionMetrics;
+  poll(now?: number): void; advance(input?: Bytes): RoomAdvanceResult; queueCommand(payload: Bytes): number;
+  releaseInput(): void; getPeerState(peerId: PlayerId): Readonly<PeerState> | undefined;
+  getStateHash(tick?: number): number | undefined;
+  /** 확정 roster 변경과 송신 완료까지 기다린다. 즉시 종료는 close()를 사용한다. */
+  leave(): Promise<void>; close(): void;
+}
+export function createRoomSession(options: RoomSessionOptions): RoomSession;
 export function playReplay(options: { adapter: SimulationAdapter; replay: Replay; simulationVersion?: string }): { tick: number; hash: number };
 export interface SyncTestOptions {
   adapter: SimulationAdapter; players: PlayerId[]; inputSize: number; tickRate?: number; initialTick?: number;
@@ -160,6 +263,12 @@ export interface NostrOptions {
   room: string; namespace?: string; relays?: string[]; timeoutMs?: number; onStatus?: (status: ConnectionStatus) => void;
   WebSocketImpl?: typeof WebSocket; cryptoImpl?: Crypto; signal?: AbortSignal; publishIntervalMs?: number;
   maxVerificationsPerSecond?: number; verificationBurst?: number;
+  identity?: NostrSigningIdentity;
+}
+export interface NostrSigningIdentity {
+  readonly id: string;
+  sign(hash: Uint8Array, auxiliary: Uint8Array, cryptoImpl: Crypto): Uint8Array | Promise<Uint8Array>;
+  close(): void;
 }
 export interface NostrSignaler extends Signaler { readonly room: string; readonly metrics: { attempted: number; verified: number; throttled: number; totalVerificationMs: number; maxVerificationMs: number }; }
 export function createNostrSignaler(options: NostrOptions): Promise<NostrSignaler>;
@@ -171,7 +280,7 @@ export interface RoomOptions { role: 'host' | 'join'; room?: string; namespace?:
 export function createNostrRoom(options: RoomOptions): Promise<PeerConnection & { room: string; sessionId: string; localPlayerId: string; remotePlayerId: string }>;
 export type RoomTopology = 'mesh' | 'star';
 export interface GroupRoomStatus extends ConnectionStatus {
-  type: string; room?: string; role?: 'host' | 'join'; playerCount?: number; topology?: RoomTopology;
+  type: string; room?: string; sessionId?: string; role?: 'host' | 'join'; playerCount?: number; topology?: RoomTopology;
   phase?: string; players?: readonly PlayerId[]; localPlayerId?: PlayerId; peerId?: PlayerId;
   reason?: string; previousPhase?: string; event?: ConnectionStatus;
 }
@@ -195,7 +304,64 @@ export interface GroupRoom {
   close(): void;
 }
 export function createNostrGroupRoom(options: GroupRoomOptions): Promise<GroupRoom>;
-export function createLoop(options: { session: RollbackSession; backlogPolicy?: 'drop' | 'retain'; getInput?: () => Bytes; beforeFrame?: (timestamp: number) => void; canAdvance?: () => boolean; onAdvance?: (result: AdvanceResult) => void; render?: (context: { session: RollbackSession; alpha: number; resimulating: boolean }) => void; onError?: (error: unknown) => void; onInputRelease?: () => void; requestFrame?: (callback: FrameRequestCallback) => number; cancelFrame?: (handle: number) => void }): { start(): void; stop(): void; pulse(timestamp: number): void; resetTiming(): void; readonly running: boolean };
+export interface DynamicRoomStatus extends ConnectionStatus {
+  type: string; room?: string; sessionId?: string; role?: 'host' | 'join'; localPlayerId?: PlayerId; peerId?: PlayerId;
+  transport?: Transport; generation?: number; reason?: string; event?: ConnectionStatus;
+}
+/** RoomSession이 사용하는 연결 capability. RTC 연결 자체는 roster 입장을 뜻하지 않는다. */
+export interface RoomTransport {
+  readonly sessionId: string; readonly localPlayerId: PlayerId; readonly coordinatorId: PlayerId;
+  readonly players: readonly PlayerId[]; readonly epoch: number; readonly transports: ReadonlyMap<PlayerId, Transport>;
+  readonly resumed?: boolean; readonly resumePeerId?: PlayerId | null;
+  subscribe(listener: (event: DynamicRoomStatus) => void): () => void;
+  setRoster(value: { epoch: number; players: PlayerId[]; coordinatorId: PlayerId }): void;
+  connectMesh(players: PlayerId[]): Promise<void>; disconnect?(peerId: PlayerId): boolean;
+  forgetResume?(): void; close(): void;
+}
+export interface DynamicRoom extends RoomTransport {
+  readonly room: string; readonly role: 'host' | 'join'; readonly maxPlayers: number;
+  readonly joining: boolean; readonly closed: boolean; readonly peerConnections: ReadonlyMap<PlayerId, RTCPeerConnection>;
+  readonly resumed: boolean; readonly resumePeerId: PlayerId | null;
+  readonly metrics: Readonly<{ activePeerCount: number; pendingPeerCount: number; signalBacklogBytes: number }>;
+  /** 같은 capability 수명 안에서만 동일 signaling identity를 유지한다. */
+  reconnect(peerId: PlayerId): Promise<Transport>;
+  disconnect(peerId: PlayerId): boolean;
+  /** 저장된 재접속 identity만 지우며 현재 연결을 종료하지 않는다. */
+  forgetResume(): void;
+  close(reason?: string): void;
+}
+export interface DynamicRoomOptions {
+  expectedSessionId?: string;
+  authorizeJoin?: (peerId: PlayerId, context: { sessionId: string; room: string }) => boolean;
+  role: 'host' | 'join'; room?: string; namespace?: string; maxPlayers?: number; maxPendingPeers?: number;
+  timeoutMs?: number; peerTimeoutMs?: number; retryMs?: number; advertiseIntervalMs?: number;
+  resume?: RoomResumeOptions | false; resumeProbeMs?: number;
+  relays?: string[]; rtcConfig?: RTCConfiguration; signal?: AbortSignal;
+  onStatus?: (status: DynamicRoomStatus) => void;
+  signalerFactory?: typeof createNostrSignaler; peerFactory?: typeof createWebRTCPeer;
+}
+export interface RoomResumeOptions {
+  /** 명시적으로 전달한 탭/브라우저 저장소에 재접속 identity를 저장한다. */
+  storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
+  key?: string; lifetimeMs?: number; reset?: boolean;
+}
+export function createNostrDynamicRoom(options: DynamicRoomOptions): Promise<DynamicRoom>;
+export interface PublicRoom extends DynamicRoom {
+  readonly publicMetrics: Readonly<{ directoryEntries: number; pendingReservations: number; pendingPublications: number }>;
+}
+export interface PublicRoomOptions extends Omit<DynamicRoomOptions, 'role' | 'room' | 'expectedSessionId' | 'authorizeJoin' | 'timeoutMs'> {
+  simulationVersion: string; discoveryMs?: number; totalTimeoutMs?: number; leaseMs?: number; reservationMs?: number; maxAttempts?: number;
+  dynamicRoomFactory?: typeof createNostrDynamicRoom;
+}
+export function createNostrPublicRoom(options: PublicRoomOptions): Promise<PublicRoom>;
+
+/** 고정 roster Core와 RoomSession 모두 같은 스케줄 capability를 제공한다. */
+export interface LoopSession {
+  readonly inputSize: number; readonly profile: Pick<Profile, 'tickRate' | 'maxCatchupSteps'>;
+  readonly closed: boolean; readonly resimulating: boolean; readonly pace: number;
+  poll(): void; advance(input?: Bytes): { status: string; tick: number }; releaseInput(): void;
+}
+export function createLoop<S extends LoopSession>(options: { session: S; backlogPolicy?: 'drop' | 'retain'; getInput?: () => Bytes; beforeFrame?: (timestamp: number) => void; canAdvance?: () => boolean; onAdvance?: (result: ReturnType<S['advance']>) => void; render?: (context: { session: S; alpha: number; resimulating: boolean }) => void; onError?: (error: unknown) => void; onInputRelease?: () => void; requestFrame?: (callback: FrameRequestCallback) => number; cancelFrame?: (handle: number) => void }): { start(): void; stop(): void; pulse(timestamp: number): void; resetTiming(): void; readonly running: boolean };
 export type CodecValue = null | boolean | number | string | Uint8Array | CodecValue[] | { [key: string]: CodecValue };
 export interface ValueCodec { readonly format: 'binary' | 'json'; encode(value: CodecValue): Uint8Array; decode(bytes: Bytes): CodecValue; }
 export function createValueCodec(options?: { format?: 'binary' | 'json'; maxBytes?: number; maxDepth?: number; maxEntries?: number }): ValueCodec;

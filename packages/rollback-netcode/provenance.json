@@ -19,8 +19,8 @@
   "license": "No LICENSE file present at the pinned source commit; no new license is asserted.",
   "modifiedFiles": {
     "src/core.js": {
-      "normalizedSha256": "ee7cefc048898276ed1ba3d79dc3f12a7941b2313cdb384a72f11158d16fdc97",
-      "reason": "bloom-gamekit: explicit lockstep mode, sparse confirmed checkpoints, compatible rollback default, verified replay and recovery"
+      "normalizedSha256": "8d76a917455e09e95462b15a3b203610e0ce45fd483c20cd12de1783b71b3fc8",
+      "reason": "기존 lockstep 계약에 확정 checkpoint+입력 suffix export/교차 검증, bounded bootstrap 및 epoch 간 미실행 명령·실행 sequence 인계를 추가했습니다. 기존 fixed match와 rollback 동작을 보존합니다."
     },
     "src/loop.js": {
       "normalizedSha256": "59021c852b47f331e3a00b156dcf6a3895b711ab382560e3dc639b3e00a1c05b",
@@ -29,6 +29,10 @@
     "src/protocol.js": {
       "normalizedSha256": "0c9e87c2c01855102d33d7b68b2ed6c68c847439f60f30f09a415ffbabf679d1",
       "reason": "bloom-gamekit: explicit lockstep mode, sparse confirmed checkpoints, compatible rollback default, verified replay and recovery"
+    },
+    "src/nostr.js": {
+      "normalizedSha256": "afdec80f4fb74e564dc7de8c32634a0558f3089a173683b57ca1f1780efde970",
+      "reason": "기존 임시 key 기본값을 유지하면서 room-scoped refresh identity의 선택적 signing capability를 조합했습니다. 개인 key를 공개 API/status/log에 반환하지 않습니다."
     }
   }
 }

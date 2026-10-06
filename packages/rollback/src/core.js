@@ -1,5 +1,34 @@
 import { VERSION, PROTOCOL_VERSION, CHUNK_SIZE, MAX_TICK, defaults, profiles, encoder, decoder, MAGIC, TYPE, HEADER, SNAP_CHUNK_BYTES, Writer, Reader, packet, frameEqual, copyFrame, runSimulationFrame } from '../../_rollback-shared/src/protocol.js';
 import { nowMs, compareIds, integer, bytes, equalBytes, hashBytes } from '../../deterministic/src/utilities.js';
+function copyLocalCommandState(state, inputSize, profile, executedSequence = 0) {
+  if (!state || typeof state !== 'object') throw new TypeError('localCommandState');
+  const sequence = integer(state.sequence, 'local command sequence', executedSequence);
+  const lastInput = bytes(state.lastInput, 'local command lastInput');
+  if (lastInput.length !== inputSize) throw new RangeError('local command inputSize');
+  // Already captured commands can occupy every delayed slot as well as the
+  // waiting queue. Importing them must not silently discard valid edge input.
+  const maxCommands = profile.maxPendingCommands * (profile.maxInputDelayTicks + 2);
+  if (!Array.isArray(state.commands) || state.commands.length > maxCommands) throw new RangeError('local command capacity');
+  const maxPayload = Math.min(profile.maxCommandBytes, CHUNK_SIZE - 1024 - inputSize - 6);
+  const maxBytes = profile.maxPendingCommands * maxPayload +
+    (profile.maxInputDelayTicks + 1) * (CHUNK_SIZE - 1024 - inputSize);
+  let previous = executedSequence, size = 0;
+  const commands = Array.from(state.commands, command => {
+    const next = integer(command?.sequence, 'local command order', 1, sequence);
+    if (next <= previous) throw new RangeError('local command order');
+    const payload = bytes(command.payload, 'local command payload');
+    if (!payload.length || payload.length > maxPayload || (size += payload.length) > maxBytes) throw new RangeError('local command capacity');
+    previous = next;
+    return { sequence: next, payload: payload.slice() };
+  });
+  return { sequence, lastInput: lastInput.slice(), commands };
+}
+function commandSequenceMap(players, initial) {
+  if (initial === undefined) return new Map(players.map(id => [id, 0]));
+  if (!initial || typeof initial !== 'object' || Array.isArray(initial) ||
+    Object.keys(initial).length !== players.length || players.some(id => !Object.hasOwn(initial, id))) throw new TypeError('initial command sequences roster');
+  return new Map(players.map(id => [id, integer(initial[id], 'initial command sequence')]));
+}
 function profileOf(profile) {
   const p = { ...defaults, ...profile };
   if (!['rollback', 'lockstep'].includes(p.mode)) throw new TypeError('session mode');
@@ -22,7 +51,8 @@ import { StateHistory, CheckpointHistory } from '../../_rollback-shared/src/hist
 export function createSession(options) { return new RollbackSession(options); }
 export class RollbackSession {
   constructor({ players, localPlayerId, sessionId, simulationVersion, seed = 1, inputSize,
-    profile = profiles.action, adapter, authorityPlayerId, onEvent = () => {}, recordReplay = true, clock = nowMs } = {}) {
+    profile = profiles.action, adapter, authorityPlayerId, onEvent = () => {}, recordReplay = true, clock = nowMs,
+    localCommandState, initialCommandSequences } = {}) {
     if (!Array.isArray(players) || players.length < 1 || players.length > 8 ||
       players.some(p => typeof p !== 'string' || !p.length || p.length > 128) || new Set(players).size !== players.length) throw new TypeError('fixed player roster (1..8 unique IDs)');
     this.players = Object.freeze([...players].sort(compareIds));
@@ -43,8 +73,14 @@ export class RollbackSession {
     this._inputs = new Map(this.players.map(p => [p, new Map()]));
     this._through = new Map(this.players.map(p => [p, -1]));
     this._used = new Map(); this._peers = new Map(); this._pendingCommands = [];
-    this._commandSequence = 0; this._sequence = 0; this._captureTick = -1;
+    this._commandSequences = commandSequenceMap(this.players, initialCommandSequences);
+    this._commandSequence = this._commandSequences.get(localPlayerId); this._sequence = 0; this._captureTick = -1;
     this._lastLocalInput = new Uint8Array(this.inputSize);
+    if (localCommandState !== undefined) {
+      const carried = copyLocalCommandState(localCommandState, this.inputSize, this.profile, this._commandSequence);
+      this._commandSequence = carried.sequence; this._lastLocalInput = carried.lastInput;
+      this._pendingCommands = carried.commands;
+    }
     this._rollbackFrom = Infinity; this._replaying = false; this._inputHash = 2166136261;
     this._lastHashTick = -1; this._nextTransfer = 0; this._recoveryAttempts = 0;
     this._incomingSnapshot = null; this._requestedRecovery = null;
@@ -68,7 +104,8 @@ export class RollbackSession {
       authorityPlayerId: this.authorityPlayerId, mode: this.profile.mode,
       baseInputDelayTicks: this.profile.mode === 'lockstep' ? this.profile.baseInputDelayTicks : null,
       checksumInterval: this.profile.mode === 'lockstep' ? this.profile.checksumInterval : null, initialHash: this._stateHash(initialRecord) }));
-    for (let t = 0; t < this.inputDelay; t++) this._commitLocal(t, this._lastLocalInput, []);
+    const neutral = new Uint8Array(this.inputSize);
+    for (let t = 0; t < this.inputDelay; t++) this._commitLocal(t, neutral, []);
   }
   get tick() { return this._tick; }
   get inputDelay() { return this._inputDelay; }
@@ -212,6 +249,26 @@ export class RollbackSession {
     const sequence = ++this._commandSequence;
     this._pendingCommands.push({ sequence, payload: b }); return sequence;
   }
+  /** Copy unexecuted local commands for a new fixed-roster epoch. */
+  exportLocalCommandState() {
+    if (this.closed || this.resimulating) throw new Error('local command state is unavailable');
+    const commands = new Map();
+    const include = command => {
+      const prior = commands.get(command.sequence);
+      if (prior && !equalBytes(prior.payload, command.payload)) throw new Error('conflicting local command sequence');
+      if (!prior) commands.set(command.sequence, command);
+    };
+    for (const [tick, frame] of this._inputs.get(this.localPlayerId)) if (tick >= this.tick) for (const command of frame.commands) include(command);
+    for (const command of this._pendingCommands) include(command);
+    return copyLocalCommandState({ sequence: this._commandSequence, lastInput: this._lastLocalInput,
+      commands: [...commands.values()].sort((a, b) => a.sequence - b.sequence) }, this.inputSize, this.profile,
+    this._commandSequences.get(this.localPlayerId));
+  }
+  /** Executed lockstep command maxima; future captured/queued commands are excluded. */
+  getCommandSequences() {
+    if (this.profile.mode !== 'lockstep') throw new Error('confirmed lockstep command sequences are required');
+    return Object.fromEntries(this._commandSequences);
+  }
   setInputDelay(ticks) {
     integer(ticks, 'input delay', this.profile.minInputDelayTicks, this.profile.maxInputDelayTicks);
     this._requestedInputDelay=ticks;
@@ -235,7 +292,7 @@ export class RollbackSession {
     for (let t = through + 1; t < target; t++) this._commitLocal(t, previous, []);
     let budget = CHUNK_SIZE - 1024 - this.inputSize;
     const commands = [];
-    while (this._pendingCommands.length && this._pendingCommands[0].payload.length + 6 <= budget) {
+    while (this._pendingCommands.length && commands.length < this.profile.maxPendingCommands && this._pendingCommands[0].payload.length + 6 <= budget) {
       const c = this._pendingCommands.shift(); budget -= c.payload.length + 6;
       commands.push({ ...c, executeTick: target });
     }
@@ -475,6 +532,9 @@ export class RollbackSession {
       }
       if (!lockstep) this._used.set(tick, inputs.map(f => ({ ...copyFrame(f), playerId: f.playerId, predicted: f.predicted })));
       this._tick++; this._inputHash = inputHash; this._currentState = null;
+      if (lockstep) for (const frame of inputs) for (const command of frame.commands) {
+        this._commandSequences.set(frame.playerId, Math.max(this._commandSequences.get(frame.playerId), command.sequence));
+      }
     } catch (error) {
       try {
         if (before) this.adapter.load(before.bytes.slice());
@@ -609,6 +669,51 @@ export class RollbackSession {
     }
   }
   getStateHash(tick = this.tick) { return this._stateHash(this._stateAt(tick)); }
+  /** Export a sparse, fully confirmed boundary without enabling per-tick saves. */
+  exportConfirmedBootstrap({ checkpointAtOrBefore = this.tick } = {}) {
+    if (this.profile.mode !== 'lockstep' || this.closed || this._failure || this.resimulating ||
+      this._requestedRecovery || this.confirmedTick < this.tick - 1) throw new Error('confirmed lockstep boundary is required');
+    integer(checkpointAtOrBefore, 'bootstrap checkpoint boundary', 0, this.tick);
+    const checkpoint = this._history.atOrBefore(checkpointAtOrBefore);
+    if (!checkpoint || this.tick - checkpoint.tick > this.profile.stateHistorySize) throw new Error('bootstrap checkpoint is unavailable');
+    const frames = [];
+    for (let tick = checkpoint.tick; tick < this.tick; tick++) {
+      const inputs = this.players.map(playerId => {
+        const frame = this._inputs.get(playerId).get(tick);
+        if (!frame) throw new Error('confirmed bootstrap input is unavailable');
+        return { playerId, ...copyFrame(frame), predicted: false };
+      });
+      frames.push({ tick, inputs });
+    }
+    return { version: 1, tick: this.tick,
+      checkpoint: { tick: checkpoint.tick, bytes: checkpoint.bytes.slice(), hash: this._stateHash(checkpoint) },
+      players: [...this.players], frames, hash: this.getStateHash(), inputSize: this.inputSize,
+      tickRate: this.profile.tickRate, simulationVersion: this.simulationVersion, seed: this.seed,
+      commandSequences: this.getCommandSequences() };
+  }
+  /** Fence an external resume donor against this peer's retained agreed history. */
+  verifyConfirmedBootstrap(bootstrap) {
+    if (this.profile.mode !== 'lockstep' || this.closed || this._failure || this.resimulating || !bootstrap ||
+      bootstrap.tick < this.tick || bootstrap.tick - bootstrap.checkpoint?.tick > this.profile.stateHistorySize ||
+      !Array.isArray(bootstrap.frames) || bootstrap.frames.length !== bootstrap.tick - bootstrap.checkpoint.tick ||
+      JSON.stringify(bootstrap.players) !== JSON.stringify(this.players)) throw new Error('resume bootstrap boundary');
+    const base = this._history.get(bootstrap.checkpoint.tick);
+    if (!base || this._stateHash(base) !== bootstrap.checkpoint.hash || !equalBytes(base.bytes, bytes(bootstrap.checkpoint.bytes))) throw new Error('resume checkpoint does not match retained agreement');
+    const sequences = new Map(this._commandSequences);
+    for (let i = 0; i < bootstrap.frames.length; i++) {
+      const frame = bootstrap.frames[i], tick = base.tick + i;
+      if (frame.tick !== tick || frame.inputs?.length !== this.players.length) throw new Error('resume input suffix shape');
+      for (let p = 0; p < this.players.length; p++) {
+        const id = this.players[p], incoming = frame.inputs[p], known = this._inputs.get(id).get(tick);
+        if (incoming?.playerId !== id || incoming.predicted || !Array.isArray(incoming.commands) ||
+          (!known && (tick < this.tick || id === this.localPlayerId)) || known && !frameEqual(known, incoming)) throw new Error('resume input conflicts with retained agreement');
+        if (tick >= this.tick) for (const command of incoming.commands) sequences.set(id, Math.max(sequences.get(id), command.sequence));
+      }
+    }
+    for (const id of this.players) if (bootstrap.commandSequences?.[id] !== sequences.get(id)) throw new Error('resume command sequence conflicts with retained agreement');
+    if (bootstrap.tick === this.tick && bootstrap.hash !== this.getStateHash()) throw new Error('resume final state conflicts with confirmed boundary');
+    return true;
+  }
   requestResync(tick) {
     if(this.closed||this._failure)return false;
     integer(tick, 'recovery tick', 0, Math.min(this.tick, this.confirmedTick + 1));
@@ -778,4 +883,3 @@ export class RollbackSession {
     this._peers.clear(); this._incomingSnapshot = null; this._pendingCommands.length = 0; this._event('closed');
   }
 }
-

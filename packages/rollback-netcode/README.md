@@ -6,10 +6,10 @@
 
 전체 기존 API를 유지하려면 외부 import 없는 `dist/rollback-netcode.js` 하나를 사용합니다. 필요한 기능만 선택하면 아래 독립 파일을 조합합니다.
 
-- `rollback.js`: createSession, RollbackSession, profiles, VERSION, PROTOCOL_VERSION, CHUNK_SIZE, MAX_TICK
+- `rollback.js`: createSession, RollbackSession, createRoomSession, RoomSession, createBootstrapReplay, profiles, VERSION, PROTOCOL_VERSION, CHUNK_SIZE, MAX_TICK
 - `deterministic.js`: hashBytes, statelessRandom, SeededPRNG, fixedPoint, createValueCodec, binaryCodec, jsonCodec, createSyncTestSession, SyncTestSession, runSyncTest, runSyncTestAsync, DeterminismError
 - `simloop.js`: createLoop
-- `transport.js`: WebRTCTransport, createWebRTCPeer, createNostrRoom, createNostrGroupRoom, createNostrSignaler, nostrCrypto
+- `transport.js`: WebRTCTransport, createWebRTCPeer, createNostrRoom, createNostrGroupRoom, createNostrDynamicRoom, createNostrPublicRoom, createNostrSignaler, nostrCrypto
 - `replay.js`: playReplay
 
 전체 번들과 분리 번들은 대안입니다. 동시에 가져오면 구현 코드가 중복 로드되므로 한 방식을 선택하세요. 분리 번들마다 필요한 순수 도우미가 포함되며 네트워크·세션을 자동 초기화하지 않습니다. 소비자는 npm·Node·bundler가 필요하지 않습니다.
@@ -43,3 +43,10 @@ onEvent의 `rollback`은 state load 후, 동기적 재실행 전에 전달됩니
 [provenance.json](provenance.json)의 files에 원본 저장소·commit·파일 SHA-256을 보존합니다. 이전 후 core/loop 수정은 별도 modifiedFiles 해시와 사유로 기록하며 수정본과 원본의 byte-identical을 주장하지 않습니다. 원본 commit에는 LICENSE 파일이 없습니다. 기존 저작권/참고 문구를 보존하며 임의의 라이선스를 부여하지 않습니다. BIP-340 fixture는 기존 테스트의 원본과 참조를 보존합니다. 기존 저장소와 과거 배포는 수정하거나 삭제하지 않습니다.
 
 소스만 main에 커밋하고 GitHub Actions가 `dist` 브랜치에 독립 JS와 manifest를 생성합니다. dist commit SHA로 고정하고 manifest의 SHA-256을 검증하세요. 별도 Pages·Release·npm·artifact 저장·유료 runner를 추가하지 않습니다.
+
+
+## 진행 중 합류와 공개 Start
+
+고정 매치 API는 그대로입니다. 새 게임이 같은 세계에서 1명부터 시작하고 실행 중 참가자 변경을 받아야 하면 [RoomSession 계약](../rollback/README.md#동적-방-세션-같은-세계-바뀌는-roster)과 [동적/공개 transport](../transport/README.md)를 사용합니다. `createNostrPublicRoom`은 서버 없는 Nostr 디렉터리/자리 예약을 처리하고, `createRoomSession`은 기존 lockstep Core를 membership epoch로 조합합니다. 실제 입장 commit과 세계 상태는 transport가 소유하지 않습니다.
+
+분할 네트워크에서 독립적으로 host를 선출하지 않으며, graceful coordinator 퇴장은 합의된 경계에서 승계합니다. 탭 새로고침은 opt-in room-scoped sessionStorage identity와 살아 있는 peer의 상태를 필요로 합니다. 공용 relay/NAT/모바일 성능은 Node fixture 통과만으로 검증되지 않습니다.
