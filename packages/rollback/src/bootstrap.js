@@ -1,5 +1,5 @@
 import { CHUNK_SIZE, MAX_TICK, defaults, runSimulationFrame } from '../../_rollback-shared/src/protocol.js';
-import { bytes, compareIds, equalBytes, hashBytes, integer } from '../../deterministic/src/utilities.js';
+import { bytes, compareIds, equalBytes, hashBytes, integer, nowMs } from '../../deterministic/src/utilities.js';
 
 const MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024;
 const MAX_SUFFIX_TICKS = 8192;
@@ -10,7 +10,7 @@ function roster(value, name) {
   return value.slice();
 }
 
-function validateBootstrap(bootstrap, limits, expected) {
+function validateBootstrap(bootstrap, limits, expected, deferCheckpointHash = false) {
   if (!bootstrap || bootstrap.version !== 1) throw new Error('bootstrap version');
   const tick = integer(bootstrap.tick, 'bootstrap tick', 0, MAX_TICK + 1);
   const inputSize = integer(bootstrap.inputSize, 'bootstrap inputSize', 1, 1024);
@@ -37,7 +37,7 @@ function validateBootstrap(bootstrap, limits, expected) {
   if (!data.length || data.length > limits.maxSnapshotBytes) throw new RangeError('bootstrap snapshot size');
   const checkpointBytes = data.slice();
   const checkpointHash = integer(checkpoint.hash, 'bootstrap checkpoint hash');
-  if (hashBytes(checkpointBytes) !== checkpointHash) throw new Error('bootstrap checkpoint hash mismatch');
+  if (!deferCheckpointHash && hashBytes(checkpointBytes) !== checkpointHash) throw new Error('bootstrap checkpoint hash mismatch');
   const hash = integer(bootstrap.hash, 'bootstrap final hash');
   if (!Array.isArray(bootstrap.frames) || bootstrap.frames.length !== tick - start || tick - start > limits.maxSuffixTicks) throw new RangeError('bootstrap suffix length');
   if (start === tick && checkpointHash !== hash) throw new Error('bootstrap final hash mismatch');
@@ -84,19 +84,21 @@ function validateBootstrap(bootstrap, limits, expected) {
  * Candidate data is copied before loading. Any load, replay, or final validation
  * failure restores the original snapshot and throws; cancel() also restores it.
  */
-export function createBootstrapReplay({ adapter, bootstrap, maxCatchupSteps = 8,
+export function createBootstrapReplay({ adapter, bootstrap, maxCatchupSteps = 8, maxCatchupMs = 8, clock = nowMs,
   maxSnapshotBytes = defaults.maxSnapshotBytes, maxSuffixTicks = MAX_SUFFIX_TICKS,
   maxCommandBytes = defaults.maxCommandBytes, maxPendingCommands = defaults.maxPendingCommands,
   maxReplayBytes = defaults.maxReplayBytes, simulationVersion, inputSize, tickRate, players, seed } = {}) {
   if (!adapter || ['save', 'load', 'step', 'validateSnapshot'].some(name => typeof adapter[name] !== 'function')) throw new TypeError('Simulation Adapter must save, load, step, validateSnapshot');
   integer(maxCatchupSteps, 'maxCatchupSteps', 1, MAX_SUFFIX_TICKS);
+  if (!Number.isFinite(maxCatchupMs) || maxCatchupMs <= 0 || typeof clock !== 'function') throw new TypeError('bootstrap time budget');
   integer(maxSnapshotBytes, 'maxSnapshotBytes', 1, MAX_SNAPSHOT_BYTES);
   integer(maxSuffixTicks, 'maxSuffixTicks', 0, MAX_SUFFIX_TICKS);
   integer(maxCommandBytes, 'maxCommandBytes', 1, CHUNK_SIZE - 1024);
   integer(maxPendingCommands, 'maxPendingCommands', 1, 0x7fffffff);
   integer(maxReplayBytes, 'maxReplayBytes', 1, 0x7fffffff);
+  const cooperative = typeof adapter.saveJob === 'function' && typeof adapter.prepareSnapshotJob === 'function' && typeof adapter.loadPreparedSnapshot === 'function';
   const candidate = validateBootstrap(bootstrap, { maxSnapshotBytes, maxSuffixTicks, maxCommandBytes, maxPendingCommands, maxReplayBytes },
-    { simulationVersion, inputSize, tickRate, players, seed });
+    { simulationVersion, inputSize, tickRate, players, seed }, cooperative);
   const save = () => {
     const data = bytes(adapter.save(), 'bootstrap adapter snapshot');
     if (!data.length || data.length > maxSnapshotBytes) throw new RangeError('bootstrap adapter snapshot size');
@@ -104,6 +106,9 @@ export function createBootstrapReplay({ adapter, bootstrap, maxCatchupSteps = 8,
   };
   const context = tick => ({ tick, tickRate: candidate.tickRate, players: candidate.players.slice(),
     simulationVersion: candidate.simulationVersion, seed: candidate.seed });
+  if (cooperative) {
+    return createCooperativeReplay({ adapter, candidate, context, maxSnapshotBytes, maxCatchupSteps, maxCatchupMs, clock });
+  }
   const original = save();
   let tick = candidate.checkpoint.tick, status = 'catching-up', result = null, failure = null;
   const restore = error => {
@@ -115,10 +120,17 @@ export function createBootstrapReplay({ adapter, bootstrap, maxCatchupSteps = 8,
   };
   // Shape, ordering, capacity and checkpoint hash checks above cannot load a
   // malformed candidate into the game. Validation also precedes the first load.
-  if (adapter.validateSnapshot(candidate.checkpoint.bytes.slice(), context(tick)) !== true) throw new Error('adapter rejected bootstrap checkpoint');
+  const preparedPath = typeof adapter.prepareSnapshot === 'function' && typeof adapter.loadPreparedSnapshot === 'function';
+  // prepareSnapshot must perform all existing validation, including canonical
+  // byte round-trip equivalence, and bind its owned state to this exact context.
+  const prepared = preparedPath ? adapter.prepareSnapshot(candidate.checkpoint.bytes.slice(), context(tick)) : null;
+  if (preparedPath ? !prepared : adapter.validateSnapshot(candidate.checkpoint.bytes.slice(), context(tick)) !== true) throw new Error('adapter rejected bootstrap checkpoint');
   try {
-    adapter.load(candidate.checkpoint.bytes.slice());
-    if (!equalBytes(save(), candidate.checkpoint.bytes)) throw new Error('bootstrap checkpoint round-trip mismatch');
+    if (preparedPath) adapter.loadPreparedSnapshot(prepared, context(tick));
+    else {
+      adapter.load(candidate.checkpoint.bytes.slice());
+      if (!equalBytes(save(), candidate.checkpoint.bytes)) throw new Error('bootstrap checkpoint round-trip mismatch');
+    }
   } catch (error) { restore(error); }
   return Object.freeze({
     get tick() { return tick; },
@@ -130,18 +142,19 @@ export function createBootstrapReplay({ adapter, bootstrap, maxCatchupSteps = 8,
     pulse() {
       if (failure) throw failure;
       if (status !== 'catching-up') return Object.freeze({ status, tick, targetTick: candidate.tick, steps: 0, ...(result ?? {}) });
-      let steps = 0;
+      let steps = 0; const started = clock();
       try {
-        while (tick < candidate.tick && steps < maxCatchupSteps) {
+        while (tick < candidate.tick && steps < maxCatchupSteps && (steps === 0 || clock() - started < maxCatchupMs)) {
           const frame = candidate.frames[tick - candidate.checkpoint.tick];
           runSimulationFrame(adapter, { tick, tickRate: candidate.tickRate, inputs: frame.inputs,
             resimulating: true, recovering: true, replaying: true });
           tick++; steps++;
         }
         if (tick === candidate.tick) {
-          const final = save();
-          if (hashBytes(final) !== candidate.hash) throw new Error('bootstrap final hash mismatch');
-          if (adapter.validateSnapshot(final.slice(), context(tick)) !== true) throw new Error('adapter rejected bootstrap final state');
+          const unchanged = preparedPath && candidate.tick === candidate.checkpoint.tick;
+          const final = unchanged ? candidate.checkpoint.bytes : save();
+          if (!unchanged && hashBytes(final) !== candidate.hash) throw new Error('bootstrap final hash mismatch');
+          if (!unchanged && adapter.validateSnapshot(final.slice(), context(tick)) !== true) throw new Error('adapter rejected bootstrap final state');
           status = 'done'; result = Object.freeze({ tick, hash: candidate.hash });
         }
         return Object.freeze({ status, tick, targetTick: candidate.tick, steps, ...(result ?? {}) });
@@ -154,6 +167,104 @@ export function createBootstrapReplay({ adapter, bootstrap, maxCatchupSteps = 8,
         catch (error) { return restore(error); }
       }
       return Object.freeze({ status, tick, targetTick: candidate.tick, steps: 0, ...(result ?? {}) });
+    },
+  });
+}
+
+// Cooperative path is opt-in: factories and every pulse must do bounded work.
+// The caller owns a paused adapter for the entire job, including original save.
+function createCooperativeReplay({ adapter, candidate, context, maxSnapshotBytes, maxCatchupSteps, maxCatchupMs, clock }) {
+  let tick = candidate.checkpoint.tick, status = 'catching-up', phase = 'checkpoint-hash', result = null, failure = null;
+  let original, final, loaded = false, job, hash = 2166136261, hashOffset = 0;
+  const own = value => {
+    const data = bytes(value, 'bootstrap job snapshot');
+    if (!data.length || data.length > maxSnapshotBytes) throw new RangeError('bootstrap adapter snapshot size');
+    return data.slice();
+  };
+  const checkJob = value => {
+    if (!value || typeof value.pulse !== 'function' || typeof value.cancel !== 'function') throw new TypeError('snapshot preparation job');
+    return value;
+  };
+  const fail = error => {
+    failure = error instanceof Error ? error : new Error(String(error)); status = 'failed';
+    try { job?.cancel(); } catch {}
+    job = null;
+    if (loaded && original) {
+      try { adapter.load(original.slice()); }
+      catch (restoreError) { failure = new AggregateError([failure, restoreError], 'bootstrap replay failed and original snapshot restoration failed'); }
+    }
+    original = final = null;
+    throw failure;
+  };
+  const finish = () => { status = 'done'; phase = 'done'; result = Object.freeze({ tick, hash: candidate.hash }); original = final = null; };
+  const response = steps => Object.freeze({ status, tick, targetTick: candidate.tick, steps, ...(result ?? {}) });
+  return Object.freeze({
+    get tick() { return tick; }, get targetTick() { return candidate.tick; },
+    get status() { return status; }, get done() { return status === 'done'; },
+    get result() { return result; }, get failure() { return failure; },
+    pulse() {
+      if (failure) throw failure;
+      if (status !== 'catching-up') return response(0);
+      let steps = 0; const started = clock();
+      try {
+        if (phase === 'checkpoint-hash') {
+          do {
+            const end = Math.min(candidate.checkpoint.bytes.length, hashOffset + 65536);
+            hash = hashBytes(candidate.checkpoint.bytes.subarray(hashOffset, end), hash); hashOffset = end;
+          } while (hashOffset < candidate.checkpoint.bytes.length && clock() - started < maxCatchupMs);
+          if (hashOffset === candidate.checkpoint.bytes.length) {
+            if (hash !== candidate.checkpoint.hash) throw new Error('bootstrap checkpoint hash mismatch');
+            hash = 2166136261; hashOffset = 0; phase = 'original';
+          }
+        } else if (phase === 'original' || phase === 'final') {
+          job ??= checkJob(adapter.saveJob());
+          job.pulse({ budgetMs: maxCatchupMs });
+          if (job.done) {
+            const data = own(job.result); job = null;
+            if (phase === 'original') { original = data; phase = 'prepare'; }
+            else { final = data; phase = 'hash'; }
+          }
+        } else if (phase === 'prepare' || phase === 'validate') {
+          job ??= checkJob(adapter.prepareSnapshotJob((phase === 'prepare' ? candidate.checkpoint.bytes : final).slice(), context(tick)));
+          job.pulse({ budgetMs: maxCatchupMs });
+          if (job.done) {
+            const token = job.result; job = null;
+            if (!token) throw new Error('adapter rejected bootstrap snapshot');
+            if (phase === 'validate') finish();
+            else { final = token; phase = 'install'; }
+          }
+        } else if (phase === 'install') {
+          const token = final; final = null; loaded = true;
+          adapter.loadPreparedSnapshot(token, context(tick));
+          if (tick === candidate.tick) finish(); else phase = 'replay';
+        } else if (phase === 'replay') {
+          while (tick < candidate.tick && steps < maxCatchupSteps && (steps === 0 || clock() - started < maxCatchupMs)) {
+            runSimulationFrame(adapter, { tick, tickRate: candidate.tickRate, inputs: candidate.frames[tick - candidate.checkpoint.tick].inputs,
+              resimulating: true, recovering: true, replaying: true });
+            tick++; steps++;
+          }
+          if (tick === candidate.tick) phase = 'final';
+        } else if (phase === 'hash') {
+          do {
+            const end = Math.min(final.length, hashOffset + 65536);
+            hash = hashBytes(final.subarray(hashOffset, end), hash); hashOffset = end;
+          } while (hashOffset < final.length && clock() - started < maxCatchupMs);
+          if (hashOffset === final.length) {
+            if (hash !== candidate.hash) throw new Error('bootstrap final hash mismatch');
+            phase = 'validate';
+          }
+        }
+        return response(steps);
+      } catch (error) { return fail(error); }
+    },
+    cancel() {
+      if (failure) throw failure;
+      if (status === 'catching-up') {
+        try { job?.cancel(); job = null; if (loaded) adapter.load(original.slice()); }
+        catch (error) { return fail(error); }
+        status = 'cancelled'; original = final = null;
+      }
+      return response(0);
     },
   });
 }

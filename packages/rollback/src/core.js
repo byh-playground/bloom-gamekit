@@ -49,10 +49,18 @@ function profileOf(profile) {
 }
 import { StateHistory, CheckpointHistory } from '../../_rollback-shared/src/history.js';
 export function createSession(options) { return new RollbackSession(options); }
+// Module-private, consume-once handoff. Public options cannot supply a trusted
+// checkpoint or bypass the normal initial save/hash path.
+const boundaries = new WeakMap();
+export function createSessionFromBoundary(options, state, hash) {
+  const token = {};
+  boundaries.set(token, { adapter: options.adapter, state, hash });
+  return new RollbackSession(options, token);
+}
 export class RollbackSession {
   constructor({ players, localPlayerId, sessionId, simulationVersion, seed = 1, inputSize,
     profile = profiles.action, adapter, authorityPlayerId, onEvent = () => {}, recordReplay = true, clock = nowMs,
-    localCommandState, initialCommandSequences } = {}) {
+    localCommandState, initialCommandSequences } = {}, boundaryToken) {
     if (!Array.isArray(players) || players.length < 1 || players.length > 8 ||
       players.some(p => typeof p !== 'string' || !p.length || p.length > 128) || new Set(players).size !== players.length) throw new TypeError('fixed player roster (1..8 unique IDs)');
     this.players = Object.freeze([...players].sort(compareIds));
@@ -92,12 +100,16 @@ export class RollbackSession {
       lateInputRate: 0, rollbackFrequency: 0, stallFrequency: 0, resimulationCostMs: 0,
       stateHashComputations:0,hashedStateBytes:0,snapshotSaves:0,serializedSnapshotBytes:0 };
     this._recordReplay = recordReplay; this._replayFrames = []; this._replayBytes = 0; this._replayFinalHash = undefined;
-    const initial = this._save();
+    const boundary = boundaries.get(boundaryToken);
+    if (boundary) boundaries.delete(boundaryToken);
+    if (boundary && boundary.adapter !== adapter) throw new Error('initial boundary adapter');
+    const initial = boundary ? boundary.state : this._save();
+    if (!initial.length || initial.length > this.profile.maxSnapshotBytes) throw new RangeError('snapshot size');
     const retainedCount = this.profile.mode === 'lockstep' ? Math.ceil(this.profile.stateHistorySize / this.profile.checksumInterval) + 2 : this.profile.stateHistorySize;
     const requiredBytes=initial.length*retainedCount;
     if(requiredBytes>this.profile.maxHistoryBytes)throw Object.assign(new RangeError('initial snapshot cannot fill retained history byte budget'),{code:'history-capacity',snapshotBytes:initial.length,requiredBytes,maxHistoryBytes:this.profile.maxHistoryBytes});
-    this._initialState = initial.slice();
-    const initialRecord={ tick: 0, bytes: initial, inputHash: this._inputHash };
+    this._initialState = boundary ? initial : initial.slice();
+    const initialRecord={ tick: 0, bytes: initial, inputHash: this._inputHash, ...(boundary ? { hash: boundary.hash } : {}) };
     this._history.put(initialRecord); this._currentState = initialRecord;
     this._hello = encoder.encode(JSON.stringify({ protocol: PROTOCOL_VERSION, library: VERSION, sessionId,
       simulationVersion, seed, players: this.players, tickRate: this.profile.tickRate, inputSize,

@@ -11,6 +11,8 @@ let browser;
 try{
  browser=await chromium.launch({headless:true,...(process.env.CHROMIUM_EXECUTABLE_PATH?{executablePath:process.env.CHROMIUM_EXECUTABLE_PATH}:process.env.BROWSER_CHANNEL?{channel:process.env.BROWSER_CHANNEL}:{})});
  const page=await browser.newPage();page.on('pageerror',e=>errors.push(e.message));await page.goto(`http://127.0.0.1:${server.address().port}/tests/rollback/dynamic-browser.html`);await page.waitForFunction(()=>typeof window.runDynamicRoomScenario==='function');
- const result=await page.evaluate(()=>window.runDynamicRoomScenario());assert.deepEqual(errors,[]);assert.equal(result.passed,true);
+ const legacy=await page.evaluate(()=>window.runDynamicRoomScenario());assert.deepEqual(errors,[]);assert.equal(legacy.passed,true);
+ const prepared=await page.evaluate(()=>window.runDynamicRoomScenario({prepared:true}));assert.deepEqual(errors,[]);assert.equal(prepared.passed,true);
+ const result={passed:true,legacy,prepared};
  await mkdir(resolve(root,'test-results/rollback'),{recursive:true});await writeFile(resolve(root,'test-results/rollback/dynamic-room-report.json'),JSON.stringify(result,null,2)+'\n');console.log(JSON.stringify(result,null,2));
 }finally{await browser?.close();await new Promise(ok=>server.close(ok));}

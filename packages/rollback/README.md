@@ -145,3 +145,27 @@ transport에 opt-in `resume: { storage: sessionStorage, key, lifetimeMs }`를 �
 이미 멈춘 peer들의 실행 경계가 다를 수 있으므로 가장 앞선 확정 tick의 살아 있는 peer를 donor로 선택하고, 전원에게 그 checkpoint+확정 입력 suffix를 검증·bounded replay합니다. 새 epoch의 global tick은 모두의 이전 경계 이상입니다. donor가 이미 실행한 local command는 다시 queue하지 않고, player별 실행 command sequence baseline도 복원합니다. 임시 로컬 UI 입력·아직 어디에도 확정되지 않은 브라우저 내 queue는 새로고침으로 복원되지 않습니다.
 
 게임은 기존 canonical actor/진행 상태를 유지합니다. 새 방에 개인 save를 넣거나 종료된 방의 세계를 되살리는 기능은 아닙니다. 살아 있는 donor 없음, identity 만료, 정상 연결이 살아 있는 중복 탭, 복구 timeout은 명시적으로 실패합니다. partition 유예가 끝나 세션이 이미 실패한 뒤 복구한다고 약속하지 않습니다.
+
+## 준비된 snapshot 경계와 비용
+
+기존 `save/load/validateSnapshot/applyMembership` 어댑터는 그대로 동작합니다. 큰 게임은 다음 선택적 capability를 쌍으로 제공할 수 있습니다.
+
+- `prepareSnapshot(bytes, context)`는 비신뢰 bytes의 크기·형식·정규성·게임 schema·tick·epoch·roster를 모두 확인하고, 외부에서 수정할 수 없는 owned decoded state의 일회용 token을 반환합니다. 실패하면 throw하며 live simulation은 변경하지 않습니다. token은 정확한 canonical bytes, schema와 context에 귀속합니다.
+- `loadPreparedSnapshot(token, context)`는 같은 어댑터가 만든 token과 정확히 일치하는 context만 허용합니다. 성공 시 token을 소비하여 이미 준비한 객체·Map·공간 참조를 원자적으로 설치합니다. 재사용·다른 epoch·다른 schema의 token은 거부해야 합니다. 설치된 상태의 `save()` 결과가 준비한 bytes와 같아야 합니다.
+- `prepareMembership(change, context)`는 합의된 tick에서 detached owned state에만 roster 변경을 적용합니다. 완전한 게임 검증 후 `{ bytes, prepared }`를 반환합니다. 완료·실패 모두 기존 live state와 참조를 유지해야 합니다. 게임은 공유 mutable 객체를 숨겨서 재사용하지 않습니다. `context`에는 전역 tick, `membershipEpoch`, `simulationVersion`, tickRate, seed, 새 players가 들어갑니다.
+
+SDK는 준비 bytes를 자체 소유하고 hash를 계산합니다. 모든 참가자의 installed/hash가 일치하기 전에는 token을 설치하지 않습니다. commit에서 token을 한 번 소비한 뒤 같은 bytes/hash를 새 Core의 초기 sparse checkpoint에 내부 전달하므로 경계 직후 다시 전체 save/hash하지 않습니다. 이 내부 경로는 공개 SessionOptions에 검증 우회 옵션을 추가하지 않습니다. prepared token은 wire·replay·공개 bootstrap 결과에 포함하지 않습니다.
+
+prepared bootstrap은 이미 검증한 token의 정확한 설치 계약을 사용하여 decode→validate→load→save 정규성 검사의 반복을 없앱니다. suffix가 비어 있으면 동일 canonical checkpoint를 최종 상태로 재사용합니다. suffix가 있으면 기존 최종 hash/게임 검증을 수행합니다. legacy 어댑터의 load/round-trip 검사는 유지합니다. 원래 상태의 취소/실패 복원도 유지합니다.
+
+`createBootstrapReplay`의 `maxCatchupMs` 기본값은 8ms이며 `maxCatchupSteps`와 함께 **완료된 tick 사이**에서 확인합니다. 개별 동기 step/save/load/codec을 선점하지 않으며, 이를 8ms 이하 전체 작업 보장으로 해석하지 않습니다. RoomSession metrics의 `membershipPrepareMs`, `membershipCommitMs`, `maxBoundaryTaskMs`, `boundaryLongTasks`는 실제 동기 경계 CPU 시간과 50ms 초과 관찰 횟수입니다. 게임의 매 tick deepcopy나 Worker는 추가하지 않습니다.
+
+### 실제 cooperative job
+
+`saveJob()`, `prepareSnapshotJob(bytes, context)`, `prepareMembershipJob(change, context)`를 제공하면 SDK가 각 단계의 job을 pulse로 진행합니다. job은 `pulse({budgetMs})`, `done`, `result`, `cancel()`을 제공하며, 결과는 각각 bytes, 준비 token, `{bytes, prepared}`입니다. factory 자체도 긴 동기 작업을 하지 않아야 합니다. SDK가 함수 호출 중간을 선점할 수 없으므로 게임은 clone·대형 문자열·typed array·검증 순회를 실제로 나누어 구현해야 합니다.
+
+bootstrap은 checkpoint hash → 이전 상태 save job → 후보 prepare job → 원자적 install → replay → 최종 save job → hash → 최종 prepare 검증 순서로 진행합니다. checkpoint/hash 검사는 64KiB 조각으로 나눕니다. 빈 suffix는 재검증 없이 검증된 checkpoint를 그대로 사용합니다. membership은 준비 job과 hash가 끝나야 installed를 전송하며, 합의 후에만 설치합니다. RoomSession의 `membership.snapshotBudgetMs` 기본값은 8ms입니다.
+
+job이 활성화된 동안 SDK는 합의 경계의 live tick뿐 아니라 이전 Core의 수신/복구/poll도 중지합니다. 다음 epoch 패킷의 기존 제한된 버퍼는 유지합니다. 그러므로 살아 있는 가변 상태를 여러 tick에 걸쳐 혼합 직렬화하지 않습니다. 취소/실패는 job을 취소하고, bootstrap이 이미 설치된 경우 원래 snapshot으로 복원합니다. 오류 경로 복원의 legacy `load`, wire envelope encode/decode, Core의 최초/주기 checkpoint save, 단일 replay tick은 여전히 동기입니다. 이 구간과 copy/GC 때문에 8ms 목표나 50ms 미초과를 보장하지 않습니다. `bootstrapPrepareMs`/`bootstrapPulseMs`도 경계 long-task metrics에 포함합니다.
+
+검증은 동일 1→5 합류·pending commands·재연결·guest/coordinator refresh·정상 coordinator 퇴장 흐름에 legacy/prepared/job 경로를 연결합니다. Chromium RTC fixture도 같은 시나리오를 legacy와 cooperative adapter로 실행합니다. 작은 fixture의 deferred job은 프로토콜 검증용이며 대형 게임 codec 성능 증거는 소비 게임의 별도 실제 측정입니다.
