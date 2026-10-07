@@ -77,6 +77,10 @@ async function stopLocal(page) {
   await page.click('#stop');
   await page.waitForFunction(() => document.querySelector('#connection-status').dataset.state === 'idle', null, { timeout });
   assert.equal(await page.locator('#start').isEnabled(), true);
+  // Native DataChannel.close() passes through 'closing' before its queued
+  // close event. UI idle/RTCPeerConnection closed is not that completion event.
+  await page.waitForFunction(() => window.__demoRtc.connections.every(peer => peer.connectionState === 'closed') &&
+    window.__demoRtc.channels.every(channel => channel.readyState === 'closed'), null, { timeout });
   const rtc = await rtcState(page);
   assert.ok(rtc.connections.every(state => state === 'closed'), 'stop must close every peer connection');
   assert.ok(rtc.channels.every(channel => channel.state === 'closed'), 'stop must close every DataChannel');
@@ -191,6 +195,7 @@ try {
     status: document.querySelector('#connection-status')?.textContent,
     error: document.querySelector('#error-log')?.textContent,
     state: document.querySelector('#debug-state')?.textContent,
+    rtc: { connections: window.__demoRtc?.connections.map(peer => peer.connectionState), channels: window.__demoRtc?.channels.map(channel => ({ label: channel.label, state: channel.readyState })) },
   })).catch(() => null)));
   await mkdir(resultsDirectory, { recursive: true });
   await writeFile(resolve(resultsDirectory, 'demo-failure.json'), `${JSON.stringify(report, null, 2)}\n`);
