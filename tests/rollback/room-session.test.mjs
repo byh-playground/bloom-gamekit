@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { createRoomSession } from '../../packages/rollback/src/room-session.js';
 import { profiles } from '../../packages/rollback/src/index.js';
 const encoder = new TextEncoder(), decoder = new TextDecoder();
-function actor() {
+function actor(prepared = false) {
   let state = { tick: 0, epoch: -1, players: [], value: 0, commands: [], membership: [] };
-  return { state: () => state, adapter: {
+  const actor = { state: () => state, adapter: {
     save: () => encoder.encode(JSON.stringify(state)), load: b => { state = JSON.parse(decoder.decode(b)); },
     validateSnapshot: (b, { tick }) => { try { return JSON.parse(decoder.decode(b)).tick === tick; } catch { return false; } },
     applyMembership({ epoch, tick, players, joined, left }) {
@@ -18,6 +18,45 @@ function actor() {
       state.tick++;
     }
   } };
+  if (prepared) {
+    const tokens = new WeakMap();
+    const key = context => JSON.stringify(context);
+    const prepare = (value, context) => {
+      assert.equal(value.tick, context.tick); assert.equal(value.epoch, context.membershipEpoch);
+      assert.deepEqual(value.players, context.players);
+      const token = {}; tokens.set(token, { value, context: key(context) }); return token;
+    };
+    actor.adapter.prepareSnapshot = (data, context) => {
+      const value = JSON.parse(decoder.decode(data));
+      assert.deepEqual(encoder.encode(JSON.stringify(value)), data);
+      return prepare(value, context);
+    };
+    actor.adapter.loadPreparedSnapshot = (token, context) => {
+      const owned = tokens.get(token); assert(owned, 'unconsumed owned token');
+      assert.equal(owned.context, key(context)); tokens.delete(token); state = owned.value;
+    };
+    actor.adapter.prepareMembership = (change, context) => {
+      assert.equal(state.tick, change.tick); assert.equal(state.epoch + 1, change.epoch);
+      const value = structuredClone(state);
+      value.epoch = change.epoch; value.players = [...change.players];
+      value.membership.push({ epoch: change.epoch, tick: change.tick, joined: change.joined, left: change.left });
+      return { bytes: encoder.encode(JSON.stringify(value)), prepared: prepare(value, context) };
+    };
+  }
+  if (prepared === 'jobs') {
+    const deferred = work => { let n = 0, result, done = false; return {
+      get done() { return done; }, get result() { return result; },
+      pulse({ budgetMs }) { assert(budgetMs > 0); if (!done && ++n === 3) { result = work(); done = true; } },
+      cancel() { done = true; },
+    }; };
+    actor.adapter.saveJob = () => deferred(() => actor.adapter.save());
+    actor.adapter.prepareSnapshotJob = (data, context) => deferred(() => actor.adapter.prepareSnapshot(data, context));
+    actor.adapter.prepareMembershipJob = (change, context) => {
+      const before = actor.adapter.save();
+      return deferred(() => { assert.deepEqual(actor.adapter.save(), before, 'world frozen through job'); return actor.adapter.prepareMembership(change, context); });
+    };
+  }
+  return actor;
 }
 function network() {
   const rooms = new Map(), packets = []; let initialId;
@@ -48,16 +87,16 @@ function network() {
   } };
 }
 const profile = { ...profiles.lockstep, baseInputDelayTicks: 2, checksumInterval: 8, stateHistorySize: 64, pacingPolicy: 'none', heartbeatMs: 10 };
-async function harness() {
+async function harness(prepared = false) {
   const net=network(), sessions=[], actors=[];let now=0;
-  const add=(id,resumed=false)=>{const a=actor(),s=createRoomSession({ mode:'online',room:net.add(id,resumed),simulationVersion:'test',inputSize:1,adapter:a.adapter,profile,clock:()=>now,
+  const add=(id,resumed=false)=>{const a=actor(prepared),s=createRoomSession({ mode:'online',room:net.add(id,resumed),simulationVersion:'test',inputSize:1,adapter:a.adapter,profile,clock:()=>now,
     membership:{maxCatchupSteps:2,transitionTimeoutMs:20000,reconnectGraceMs:500}});actors.push(a);sessions.push(s);return s;};
   async function pulse(advance=true) { now+=5;net.flush(); for(const s of sessions)if(!s.closed){s.poll(now);if(advance&&!s.closed)s.advance(new Uint8Array([1]));}net.flush();await Promise.resolve(); }
   async function until(fn,limit=3000) {for(let n=0;n<limit;n++){if(fn())return;await pulse();const failed=sessions.filter(s=>s.failure);assert.deepEqual(failed.map(s=>({id:s.localPlayerId,failure:s.failure})),[]);}assert.fail('condition timeout '+JSON.stringify(sessions.map(s=>({id:s.localPlayerId,tick:s.tick,epoch:s.epoch,status:s.status,tr:s._transition&&{target:s._transition.target,prepared:[...s._transition.prepared],reached:[...s._transition.reached],installed:[...s._transition.installed],committed:[...s._transition.committed]}}))));}
   return{net,sessions,actors,add,pulse,until,advanceClock:ms=>{now+=ms;}};
 }
-test('continuous 1 → 2 → 5, pending commands, late checkpoint, reconnect and coordinator departure', async()=>{
- const h=await harness(),first=h.add('a'); await h.until(()=>first.tick>=65);
+for (const prepared of [false, true, 'jobs']) test(`continuous 1 → 2 → 5, pending commands, late checkpoint, reconnect and coordinator departure (prepared=${prepared})`, async()=>{
+ const h=await harness(prepared),first=h.add('a'); await h.until(()=>first.tick>=65);
  for(const id of ['b','c','d','e']){first.queueCommand(new Uint8Array([7]));const s=h.add(id);await h.until(()=>s.ready&&first.players.length===h.sessions.length&&!first._transition);await h.until(()=>h.sessions.every(s=>s.tick>=first.baseTick+12));}
  const active=()=>h.sessions.filter(s=>!s.closed);let boundary=Math.max(...active().map(s=>s.tick));
  for(let i=0;i<100;i++){h.net.flush();for(const s of active()){s.poll();if(s.tick<boundary)s.advance(new Uint8Array([1]));}await Promise.resolve();}
@@ -81,16 +120,16 @@ test('abrupt partition pauses then fails closed without independently removing a
  b.close();await h.pulse();await h.pulse();const roster=[...a.players],epoch=a.epoch;h.advanceClock(10001);await h.pulse();h.advanceClock(501);await h.pulse();
  assert.equal(a.failure?.type,'partition-failed');assert.deepEqual(a.players,roster);assert.equal(a.epoch,epoch);const tick=a.tick;await h.pulse();assert.equal(a.tick,tick);a.close();
 });
-test('reload resumes the same actor using a highest confirmed donor and an empty roster delta',async()=>{
- const h=await harness(),a=h.add('a'),b=h.add('b');await h.until(()=>b.ready&&a.epoch===1);
+for (const prepared of [false, 'jobs']) test(`reload resumes the same actor using a highest confirmed donor and an empty roster delta (prepared=${prepared})`,async()=>{
+ const h=await harness(prepared),a=h.add('a'),b=h.add('b');await h.until(()=>b.ready&&a.epoch===1);
  b.queueCommand(new Uint8Array([9]));await h.until(()=>a.tick>40&&b.tick>40);const oldMembership=h.actors[0].state().membership.length;
  b.close();const resumed=h.add('b',true);await h.until(()=>resumed.ready&&a.epoch===2&&!a._transition);
  resumed.queueCommand(new Uint8Array([8]));await h.until(()=>a.tick>=a.baseTick+8&&resumed.tick>=a.baseTick+8);
  assert.equal(h.actors[0].state().membership.length,oldMembership+1);assert.deepEqual(h.actors[0].state().membership.at(-1).joined,[]);
  assert.deepEqual(h.actors[0].state().membership.at(-1).left,[]);assert.deepEqual(h.actors[0].state().commands,['b:1:9','b:2:8']);a.close();resumed.close();
 });
-test('coordinator reload resumes its room from a surviving member without election',async()=>{
- const h=await harness();let a=h.add('a');const b=h.add('b');await h.until(()=>b.ready&&a.epoch===1);await h.until(()=>a.tick>25&&b.tick>25);
+for (const prepared of [false, 'jobs']) test(`coordinator reload resumes its room from a surviving member without election (prepared=${prepared})`,async()=>{
+ const h=await harness(prepared);let a=h.add('a');const b=h.add('b');await h.until(()=>b.ready&&a.epoch===1);await h.until(()=>a.tick>25&&b.tick>25);
  a.close();a=h.add('a',true);await h.until(()=>a.ready&&b.ready&&a.epoch===2);assert.equal(a.coordinatorId,'a');assert.equal(b.coordinatorId,'a');
  assert.deepEqual(h.actors[1].state().membership.at(-1).joined,[]);a.close();b.close();
 });

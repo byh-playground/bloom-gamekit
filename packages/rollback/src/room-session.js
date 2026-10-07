@@ -1,4 +1,4 @@
-import { createSession } from './core.js';
+import { createSession, createSessionFromBoundary } from './core.js';
 import { createBootstrapReplay } from './bootstrap.js';
 import { profiles, CHUNK_SIZE, MAGIC } from '../../_rollback-shared/src/protocol.js';
 import { createValueCodec } from '../../deterministic/src/value-codec.js';
@@ -25,7 +25,7 @@ export class RoomSession {
     this.mode = mode; this.room = room; this.localPlayerId = localPlayerId; this.sessionId = sessionId;
     this.simulationVersion = simulationVersion; this.seed = seed; this.inputSize = inputSize; this.adapter = adapter; this.clock = clock; this.onEvent = onEvent;
     this.membership = Object.freeze({ maxPlayers: 5, transitionTimeoutMs: 15000, reconnectGraceMs: 10000, joinRetryMs: 500, maxCatchupSteps: 4,
-      maxTransferBytes: 8 * 1024 * 1024, maxControlMessagesPerPulse: 32, ...membership });
+      maxTransferBytes: 8 * 1024 * 1024, maxControlMessagesPerPulse: 32, snapshotBudgetMs: 8, ...membership });
     for (const [k, v] of Object.entries(this.membership)) integer(v, k, 1, 0x7fffffff);
     integer(this.membership.maxCatchupSteps, 'maxCatchupSteps', 1, 8192);
     integer(this.membership.maxPlayers, 'maxPlayers', 1, 8); integer(this.membership.maxTransferBytes, 'maxTransferBytes', CHUNK_SIZE, 128 * 1024 * 1024);
@@ -38,7 +38,7 @@ export class RoomSession {
     this.closed = false; this._failure = null; this._core = null; this._transition = null; this._links = new Map(); this._retirePeers = new Map(); this._admissionQueue = new Map(); this._incoming = []; this._incomingBytes = 0;
     this._lastInput = new Uint8Array(inputSize); this._pendingBeforeJoin = []; this._messageSequence = 0; this._joinSent = false;
     this._startedAt = clock(); this._interruptedAt = null; this._leavePromise = null; this._leaveResolve = null; this._leaveReject = null;
-    this._stats = { transitions: 0, bootstrapBytes: 0, bootstrapTicks: 0, rejectedMessages: 0, sentControlBytes: 0, receivedControlBytes: 0 };
+    this._stats = { transitions: 0, bootstrapBytes: 0, bootstrapTicks: 0, rejectedMessages: 0, sentControlBytes: 0, receivedControlBytes: 0, membershipPrepareMs: 0, membershipCommitMs: 0, bootstrapPrepareMs: 0, bootstrapPulseMs: 0, maxBoundaryTaskMs: 0, boundaryLongTasks: 0 };
     this._totals = { snapshotSaves: 0, serializedSnapshotBytes: 0, stateHashComputations: 0, hashedStateBytes: 0 };
     if (mode === 'local' || this.players.includes(localPlayerId) && !room?.resumed) {
       this.adapter.applyMembership({ epoch: this.epoch, tick: 0, players: [...this.players], joined: [...this.players], left: [], coordinatorId: this.coordinatorId, reason: 'initial' });
@@ -87,13 +87,25 @@ export class RoomSession {
     if (this.closed || this._failure) return;
     this._failure = Object.freeze({ type, ...detail });
     try { this._transition?.replay?.cancel(); } catch {}
+    try { this._transition?.stageJob?.cancel(); } catch {}
+    if (this._transition) { this._transition.preparedState = null; this._transition.stageJob = null; }
     this._leaveReject?.(new Error(type)); this._leaveResolve = this._leaveReject = null;
     this._unsubscribeRoom?.(); for (const link of this._links.values()) { link.unsubscribe?.(); link.detachCore?.(); }
     this._links.clear(); this._incoming.length = 0; this._incomingBytes = 0; this.room?.close(); this._event(type, detail);
   }
   _adapter(baseTick = this.baseTick, epoch = this.epoch) {
     const a = this.adapter;
+    const contextAt = (context = {}) => ({ ...context, tick: (context.tick ?? 0) + baseTick, membershipEpoch: epoch });
     return { save: () => a.save(), load: data => a.load(data),
+      ...(typeof a.saveJob === 'function' ? { saveJob: () => a.saveJob() } : {}),
+      ...(typeof a.prepareSnapshotJob === 'function' && typeof a.loadPreparedSnapshot === 'function' ? {
+        prepareSnapshotJob: (data, context) => a.prepareSnapshotJob(data, contextAt(context)),
+        loadPreparedSnapshot: (prepared, context) => a.loadPreparedSnapshot(prepared, contextAt(context)),
+      } : {}),
+      ...(typeof a.prepareSnapshot === 'function' && typeof a.loadPreparedSnapshot === 'function' ? {
+        prepareSnapshot: (data, context) => a.prepareSnapshot(data, contextAt(context)),
+        loadPreparedSnapshot: (prepared, context) => a.loadPreparedSnapshot(prepared, contextAt(context)),
+      } : {}),
       validateSnapshot: (data, context = {}) => a.validateSnapshot(data, { ...context, tick: (context.tick ?? 0) + baseTick, membershipEpoch: epoch }),
       step: context => {
         // runSimulationFrame already supplies owned frame/command copies.
@@ -102,11 +114,12 @@ export class RoomSession {
         return a.step(context);
       } };
   }
-  _startCore(commandState, commandSequences) {
-    this._core = createSession({ players: [...this.players], localPlayerId: this.localPlayerId, authorityPlayerId: this.coordinatorId,
+  _startCore(commandState, commandSequences, boundary) {
+    const options = { players: [...this.players], localPlayerId: this.localPlayerId, authorityPlayerId: this.coordinatorId,
       sessionId: this.sessionId + ':' + this.epoch, simulationVersion: this.simulationVersion, seed: this.seed, inputSize: this.inputSize,
       profile: this.profile, adapter: this._adapter(), localCommandState: commandState, initialCommandSequences: commandSequences ? Object.fromEntries(this.players.map(id => [id, commandSequences[id] ?? 0])) : undefined, clock: this.clock, recordReplay: false,
-      onEvent: event => { if (event.type !== 'closed') this._event(event.type, { ...event, tick: event.tick + this.baseTick }); } });
+      onEvent: event => { if (event.type !== 'closed') this._event(event.type, { ...event, tick: event.tick + this.baseTick }); } };
+    this._core = boundary ? createSessionFromBoundary(options, boundary.bytes, boundary.hash) : createSession(options);
     this.profile = this._core.profile;
     for (const [id, link] of this._links) this._attachCore(id, link);
     for (const payload of this._pendingBeforeJoin.splice(0)) this._core.queueCommand(payload);
@@ -138,13 +151,17 @@ export class RoomSession {
     // The retained Core performs a fresh handshake on a replacement transport.
     if (!this._core && id === this.coordinatorId) this._joinSent = false;
   }
+  _boundaryFrozen() {
+    const tr = this._transition;
+    return !!tr && (tr.proposal.reason === 'reconnect' || !!tr.stageJob || !!tr.preparedState || tr.applied || !!tr.replay);
+  }
   _receiveWire(id, link, raw) {
     try {
       const data = bytes(raw); if (data.length < 12 || data.length > CHUNK_SIZE) throw new Error('room wire size');
       const view = new DataView(data.buffer, data.byteOffset, data.length), magic = view.getUint32(0, true);
       if (magic === MAGIC) {
         const epoch = view.getUint16(6, true) - 1;
-        if (epoch === this.epoch && link.coreReceive && !(this._transition?.proposal.reason === 'reconnect')) { const copy = data.slice(); new DataView(copy.buffer).setUint16(6, 0, true); link.coreReceive(copy); }
+        if (epoch === this.epoch && link.coreReceive && !this._boundaryFrozen()) { const copy = data.slice(); new DataView(copy.buffer).setUint16(6, 0, true); link.coreReceive(copy); }
         else if (epoch === this.epoch + 1 && this._transition && link.future.length < 64) link.future.push(data.slice());
         return;
       }
@@ -294,9 +311,9 @@ export class RoomSession {
     } else if (m.op === 'resume-source' && leader && from === tr.donor && tr.proposal.reason === 'reconnect' && !tr.installSent) {
       if (m.bootstrap.tick + m.baseTick !== tr.target) throw new Error('resume donor boundary');
       tr.installSent = true; this._broadcast(tr.participants, 'resume-install', { epoch: m.epoch, baseTick: m.baseTick, bootstrap: m.bootstrap, target: tr.target });
-    } else if (m.op === 'resume-install' && from === this.coordinatorId && tr.proposal.reason === 'reconnect' && !tr.replay && !tr.applied) {
+    } else if (m.op === 'resume-install' && from === this.coordinatorId && tr.proposal.reason === 'reconnect' && !tr.replay && !tr.stageJob && !tr.preparedState && !tr.applied) {
       this._beginBootstrap(tr, m);
-    } else if (m.op === 'bootstrap' && from === this.coordinatorId && !this._core && !tr.replay && !tr.applied) {
+    } else if (m.op === 'bootstrap' && from === this.coordinatorId && !this._core && !tr.replay && !tr.stageJob && !tr.preparedState && !tr.applied) {
       this._beginBootstrap(tr, m);
     } else if (m.op === 'install' && from === this.coordinatorId && this._core && !tr.applied) {
       if (m.tick !== tr.target || this.tick !== tr.target) throw new Error('membership installation boundary');
@@ -317,19 +334,49 @@ export class RoomSession {
       tr.committed.add(from);
     }
   }
-  _beginBootstrap(tr, m) {
+  _beginBootstrap(tr, m) { return this._boundaryWork('bootstrapPrepareMs', () => this._prepareBootstrap(tr, m)); }
+  _prepareBootstrap(tr, m) {
     if (m.target !== tr.target || m.bootstrap.tick + m.baseTick !== tr.target || !Number.isSafeInteger(m.baseTick) || m.baseTick < 0 || this._core && m.baseTick !== this.baseTick) throw new Error('bootstrap epoch boundary');
     if (!this._core) this.baseTick = m.baseTick;
     if (this._core && tr.proposal.reason === 'reconnect') this._core.verifyConfirmedBootstrap(m.bootstrap);
     tr.commandSequences = m.bootstrap.commandSequences;
     tr.replay = createBootstrapReplay({ adapter: this._adapter(m.baseTick, this.epoch), bootstrap: m.bootstrap,
-      maxCatchupSteps: this.membership.maxCatchupSteps, maxSnapshotBytes: this.profile.maxSnapshotBytes,
+      maxCatchupSteps: this.membership.maxCatchupSteps, maxCatchupMs: this.membership.snapshotBudgetMs, maxSnapshotBytes: this.profile.maxSnapshotBytes,
       maxSuffixTicks: tr.proposal.reason === 'reconnect' ? this.profile.stateHistorySize : this.profile.checksumInterval, maxCommandBytes: this.profile.maxCommandBytes, maxPendingCommands: this.profile.maxPendingCommands,
       maxReplayBytes: this.membership.maxTransferBytes, simulationVersion: this.simulationVersion, inputSize: this.inputSize,
       tickRate: this.profile.tickRate, seed: this.seed, players: [...this.players] });
     this._stats.bootstrapBytes += m.bootstrap.checkpoint.bytes.length;
   }
-  _applyMembership(tr) {
+  _membershipContext(tr) {
+    return { tick: tr.target, membershipEpoch: tr.proposal.epoch, simulationVersion: this.simulationVersion,
+      tickRate: this.profile.tickRate, seed: this.seed, players: [...tr.proposal.players] };
+  }
+  _boundaryWork(name, work) {
+    const started = nowMs();
+    try { return work(); }
+    finally {
+      const elapsed = Math.max(0, nowMs() - started);
+      this._stats[name] = elapsed;
+      this._stats.maxBoundaryTaskMs = Math.max(this._stats.maxBoundaryTaskMs, elapsed);
+      if (elapsed > 50) this._stats.boundaryLongTasks++;
+    }
+  }
+  _applyMembership(tr) { return this._boundaryWork('membershipPrepareMs', () => this._prepareMembership(tr)); }
+  _prepareMembership(tr) {
+    if (tr.stageJob || tr.preparedState || tr.applied) return;
+    if (typeof this.adapter.prepareMembershipJob === 'function' && typeof this.adapter.loadPreparedSnapshot === 'function') {
+      tr.stageJob = this.adapter.prepareMembershipJob({ ...tr.proposal, tick: tr.target }, this._membershipContext(tr));
+      if (!tr.stageJob || typeof tr.stageJob.pulse !== 'function' || typeof tr.stageJob.cancel !== 'function') throw new TypeError('membership preparation job');
+      return;
+    }
+    if (typeof this.adapter.prepareMembership === 'function' && typeof this.adapter.loadPreparedSnapshot === 'function') {
+      const context = this._membershipContext(tr);
+      // The optional adapter capability validates a detached, canonical branch.
+      // Live state remains unchanged until the coordinator commits this epoch.
+      const staged = this.adapter.prepareMembership({ ...tr.proposal, tick: tr.target }, context);
+      this._acceptPreparedMembership(tr, staged);
+      return;
+    }
     const rollback = bytes(this.adapter.save()).slice();
     try {
       this.adapter.applyMembership({ ...tr.proposal, tick: tr.target });
@@ -339,7 +386,16 @@ export class RoomSession {
       this._send(this.coordinatorId, 'installed', { epoch: tr.proposal.epoch, hash: tr.postHash });
     } catch (error) { this.adapter.load(rollback); throw error; }
   }
-  _commit(tr) {
+  _acceptPreparedMembership(tr, staged, deferHash = false) {
+    const state = bytes(staged?.bytes, 'prepared membership snapshot').slice();
+    if (!state.length || state.length > this.profile.maxSnapshotBytes || !staged.prepared) throw new Error('invalid prepared membership snapshot');
+    tr.postState = state; tr.preparedState = staged.prepared;
+    if (deferHash) { tr.postHash = 2166136261; tr.hashOffset = 0; return; }
+    tr.postHash = hashBytes(state); tr.applied = true;
+    this._send(this.coordinatorId, 'installed', { epoch: tr.proposal.epoch, hash: tr.postHash });
+  }
+  _commit(tr) { return this._boundaryWork('membershipCommitMs', () => this._commitMembership(tr)); }
+  _commitMembership(tr) {
     const previousCoordinator = this.coordinatorId;
     const commandSequences = tr.commandSequences ?? this._core?.getCommandSequences?.();
     let commandState = this._core?.exportLocalCommandState() ?? (commandSequences ? { sequence: commandSequences[this.localPlayerId] ?? 0, lastInput: this._lastInput, commands: [] } : undefined);
@@ -347,7 +403,10 @@ export class RoomSession {
       const baseline = commandSequences[this.localPlayerId] ?? 0;
       commandState = { ...commandState, sequence: Math.max(commandState.sequence, baseline), commands: commandState.commands.filter(command => command.sequence > baseline) };
     }
-    this.adapter.load(tr.postState);
+    if (tr.preparedState) {
+      const prepared = tr.preparedState; tr.preparedState = null;
+      this.adapter.loadPreparedSnapshot(prepared, this._membershipContext(tr));
+    } else this.adapter.load(tr.postState.slice());
     if (this._core) {
       const metrics = this._core.metrics;
       for (const k of Object.keys(this._totals)) this._totals[k] += metrics[k] ?? 0;
@@ -361,7 +420,7 @@ export class RoomSession {
     this.room?.setRoster({ epoch: this.epoch, players: [...this.players], coordinatorId: this.coordinatorId });
     this._event('membership-committed', { ...tr.proposal, tick: tr.target });
     if (!this.players.includes(this.localPlayerId)) { this._departing = true; this._retireApproved = previousCoordinator === this.localPlayerId; return; }
-    this._startCore(commandState, commandSequences);
+    this._startCore(commandState, commandSequences, { bytes: tr.postState, hash: tr.postHash });
   }
   poll(now = this.clock()) {
     if (this.closed || this.failure) return;
@@ -393,8 +452,24 @@ export class RoomSession {
       const tr = this._transition;
       if (tr) {
         if (now - tr.startedAt >= this.membership.transitionTimeoutMs) throw new Error('membership deadline exceeded');
+        if (tr.preparedState && !tr.applied) {
+          this._boundaryWork('membershipPrepareMs', () => {
+            const started = nowMs();
+            do {
+              const end = Math.min(tr.postState.length, tr.hashOffset + 65536);
+              tr.postHash = hashBytes(tr.postState.subarray(tr.hashOffset, end), tr.postHash); tr.hashOffset = end;
+            } while (tr.hashOffset < tr.postState.length && nowMs() - started < this.membership.snapshotBudgetMs);
+            if (tr.hashOffset === tr.postState.length) { tr.applied = true; this._send(this.coordinatorId, 'installed', { epoch: tr.proposal.epoch, hash: tr.postHash }); }
+          });
+        }
+        if (tr.stageJob) {
+          this._boundaryWork('membershipPrepareMs', () => {
+            tr.stageJob.pulse({ budgetMs: this.membership.snapshotBudgetMs });
+            if (tr.stageJob.done) { const staged = tr.stageJob.result; tr.stageJob = null; this._acceptPreparedMembership(tr, staged, true); }
+          });
+        }
         if (tr.replay) {
-          const result = tr.replay.pulse(); this._stats.bootstrapTicks += result.steps ?? 0;
+          const result = this._boundaryWork('bootstrapPulseMs', () => tr.replay.pulse()); this._stats.bootstrapTicks += result.steps ?? 0;
           if (tr.replay.done) { tr.replay = null; this._applyMembership(tr); }
         }
         if (this._core && tr.proposal.reason !== 'reconnect' && tr.target !== null && this.tick === tr.target && !tr.reachedSent) {
@@ -402,7 +477,7 @@ export class RoomSession {
         }
       } else if (!this._core && now - this._startedAt >= this.membership.transitionTimeoutMs) throw new Error('join deadline exceeded');
       for (const [id, link] of this._links) if (link.incoming && now - link.incoming.startedAt >= this.membership.transitionTimeoutMs) throw new Error('room transfer timeout: ' + id);
-      if (this._transition?.proposal.reason !== 'reconnect') this._core?.poll(now);
+      if (!this._boundaryFrozen()) this._core?.poll(now);
       if (this._core && !tr) {
         if (['interrupted', 'disconnected'].includes(this._core.status)) {
           this._interruptedAt ??= now;
@@ -445,6 +520,8 @@ export class RoomSession {
   }
   close() {
     if (this.closed) return; this.closed = true; this._core?.close(); try { this._transition?.replay?.cancel(); } catch {}
+    try { this._transition?.stageJob?.cancel(); } catch {}
+    if (this._transition) { this._transition.preparedState = null; this._transition.stageJob = null; }
     this._unsubscribeRoom?.(); for (const link of this._links.values()) { link.unsubscribe?.(); link.detachCore?.(); }
     this._links.clear(); this._incoming.length = 0; this.room?.close(); this._event('closed');
     this._leaveReject?.(new Error('room closed before graceful departure')); this._leaveResolve = this._leaveReject = null;

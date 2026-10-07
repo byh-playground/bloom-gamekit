@@ -19,8 +19,8 @@
   "license": "No LICENSE file present at the pinned source commit; no new license is asserted.",
   "modifiedFiles": {
     "src/core.js": {
-      "normalizedSha256": "8d76a917455e09e95462b15a3b203610e0ce45fd483c20cd12de1783b71b3fc8",
-      "reason": "기존 lockstep 계약에 확정 checkpoint+입력 suffix export/교차 검증, bounded bootstrap 및 epoch 간 미실행 명령·실행 sequence 인계를 추가했습니다. 기존 fixed match와 rollback 동작을 보존합니다."
+      "normalizedSha256": "e1e972d7ef9d56c258642eb4501a9f585d454556a6b013a2a0e1dbb3b56c0558",
+      "reason": "기존 lockstep 계약에 확정 checkpoint+입력 suffix export/교차 검증, bounded bootstrap 및 epoch 간 미실행 명령·실행 sequence 인계를 추가했습니다. 기존 fixed match와 rollback 동작을 보존하며 membership의 canonical bytes/hash를 consume-once 내부 경로로 새 Core 초기 checkpoint에 전달합니다."
     },
     "src/loop.js": {
       "normalizedSha256": "59021c852b47f331e3a00b156dcf6a3895b711ab382560e3dc639b3e00a1c05b",

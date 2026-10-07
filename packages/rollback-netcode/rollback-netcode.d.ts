@@ -13,6 +13,12 @@ export interface SnapshotContext {
   tick: number; membershipEpoch?: number; tickRate?: number;
   players?: PlayerId[]; simulationVersion?: string; seed?: number;
 }
+export interface SnapshotJob<T> {
+  readonly done: boolean; readonly result: T | undefined | null;
+  /** 각 pulse가 실제 CPU 예산에 협력해야 한다. await와 live simulation 변경은 금지한다. */
+  pulse(options: { budgetMs: number }): unknown;
+  cancel(): unknown;
+}
 export interface SimulationAdapter {
   /** 반환 버퍼를 재사용해도 된다. Core는 보관 전에 복사한다. */
   save(): Bytes;
@@ -20,6 +26,14 @@ export interface SimulationAdapter {
   step(context: StepContext): unknown;
   /** 현재 simulation을 변경하지 않는 후보 검증. */
   validateSnapshot(snapshot: Uint8Array, context: SnapshotContext): boolean;
+  /** 선택적 원자적 준비: 비신뢰 bytes의 전체 검증과 canonical round-trip을 확인한다.
+   * 반환 token은 private owned state/bytes/context에 묶이며 live state를 바꾸지 않는다. */
+  prepareSnapshot?(snapshot: Uint8Array, context: SnapshotContext): object;
+  /** 동일 adapter/context의 token을 정확히 한 번 소비하여 그대로 설치한다. */
+  loadPreparedSnapshot?(prepared: object, context: SnapshotContext): void;
+  /** 호출자가 simulation을 멈춘 동안 canonical snapshot을 점진적으로 캡처한다. */
+  saveJob?(): SnapshotJob<Uint8Array>;
+  prepareSnapshotJob?(snapshot: Uint8Array, context: SnapshotContext): SnapshotJob<object>;
 }
 export type TransportState = 'connecting' | 'open' | 'interrupted' | 'closed' | 'failed';
 export interface Transport {
@@ -95,6 +109,8 @@ export interface ConfirmedBootstrap {
 }
 export interface BootstrapReplayOptions {
   adapter: SimulationAdapter; bootstrap: ConfirmedBootstrap; maxCatchupSteps?: number;
+  /** 틱 사이에서 확인하는 CPU 예산. 개별 동기 adapter/codec 작업을 선점하지 않는다. */
+  maxCatchupMs?: number; clock?: () => number;
   maxSnapshotBytes?: number; maxSuffixTicks?: number; maxCommandBytes?: number;
   maxPendingCommands?: number; maxReplayBytes?: number;
   /** 지정한 값은 snapshot을 load하기 전에 bootstrap metadata와 대조한다. */
@@ -171,10 +187,14 @@ export interface MembershipContext {
 export interface RoomSimulationAdapter extends SimulationAdapter {
   /** 확정 tick 경계에서 게임이 roster 변경을 결정론적으로 적용한다. */
   applyMembership(context: MembershipContext): unknown;
+  /** live state를 유지한 채 detached branch에 변경을 적용하고 완전 검증한다.
+   * bytes는 canonical encoding, prepared는 그 bytes와 context에 묶인 일회용 token이다. */
+  prepareMembership?(change: MembershipContext, context: SnapshotContext): { bytes: Uint8Array; prepared: object };
+  prepareMembershipJob?(change: MembershipContext, context: SnapshotContext): SnapshotJob<{ bytes: Uint8Array; prepared: object }>;
 }
 export interface MembershipOptions {
   maxPlayers: number; transitionTimeoutMs: number; reconnectGraceMs: number; maxCatchupSteps: number;
-  maxTransferBytes: number; maxControlMessagesPerPulse: number; joinRetryMs: number;
+  maxTransferBytes: number; maxControlMessagesPerPulse: number; joinRetryMs: number; snapshotBudgetMs: number;
 }
 export interface RoomSessionEvent {
   type: string; tick: number; epoch: number; peerId?: PlayerId; reason?: string;
@@ -197,6 +217,8 @@ export interface RoomSessionMetrics extends Partial<SessionMetrics> {
   bootstrapTicks: number; rejectedMessages: number; sentControlBytes: number; receivedControlBytes: number;
   controlQueuedBytes: number; controlReceivingBytes: number; pendingAdmissions: number; controlIncomingBytes: number; snapshotSaves: number;
   serializedSnapshotBytes: number; stateHashComputations: number; hashedStateBytes: number;
+  membershipPrepareMs: number; membershipCommitMs: number; bootstrapPrepareMs: number; bootstrapPulseMs: number;
+  maxBoundaryTaskMs: number; boundaryLongTasks: number;
 }
 export class RoomSession {
   constructor(options: RoomSessionOptions);

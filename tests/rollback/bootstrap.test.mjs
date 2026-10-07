@@ -298,3 +298,64 @@ test('resume donor is checked against surviving checkpoint, owned future input a
  const sequence=structuredClone(candidate);sequence.commandSequences.a++;assert.throws(()=>b.verifyConfirmedBootstrap(sequence),/sequence/);
  const final=structuredClone(candidate);final.hash^=1;assert.throws(()=>a.verifyConfirmedBootstrap(final),/final state/);a.close();b.close();
 });
+
+
+test('prepared checkpoint validates once, owns bytes/context, and consumes one install', () => {
+  const { core, bootstrap } = source(16), target = world();
+  const tokens = new WeakMap(); let prepares = 0, installs = 0;
+  target.adapter.prepareSnapshot = (data, context) => {
+    prepares++; assert(target.adapter.validateSnapshot(data, context));
+    const token = {}; tokens.set(token, { data: data.slice(), context: structuredClone(context) }); return token;
+  };
+  target.adapter.loadPreparedSnapshot = (token, context) => {
+    const owned = tokens.get(token); assert(owned); assert.deepEqual(owned.context, context);
+    tokens.delete(token); installs++; target.adapter.load(owned.data);
+  };
+  const job = createBootstrapReplay({ adapter: target.adapter, bootstrap });
+  bootstrap.checkpoint.bytes.fill(255);
+  job.pulse(); job.pulse(); job.cancel();
+  assert(job.done); assert.equal(prepares, 1); assert.equal(installs, 1);
+  assert.equal(target.stats.saves, 1, 'only rollback capture; no repeated checkpoint encode/decode');
+  assert.equal(target.state[0], 16); core.close();
+});
+
+test('bootstrap time budget yields only at complete deterministic tick boundaries', () => {
+  const { core, bootstrap } = source(23), target = world(); let now = 0;
+  const step = target.adapter.step;
+  target.adapter.step = context => { step(context); now += 5; };
+  const job = createBootstrapReplay({ adapter: target.adapter, bootstrap, maxCatchupSteps: 8, maxCatchupMs: 8, clock: () => now });
+  const steps = [];
+  while (!job.done) steps.push(job.pulse().steps);
+  assert.deepEqual(steps, [2, 2, 2, 1]); assert.equal(target.state[0], 23); core.close();
+});
+
+test('cooperative bootstrap owns the paused boundary and cancels or rejects without partial state', () => {
+  const { core, bootstrap } = source(23);
+  function target() {
+    const sim = world(), tokens = new WeakMap(); let cancelled = 0, installed = 0;
+    const job = work => { let pulses = 0, done = false, result; return {
+      get done() { return done; }, get result() { return result; },
+      pulse() { if (!done && ++pulses === 2) { result = work(); done = true; } },
+      cancel() { cancelled++; done = true; },
+    }; };
+    sim.adapter.saveJob = () => job(() => sim.adapter.save());
+    sim.adapter.prepareSnapshotJob = (data, context) => job(() => {
+      assert(sim.adapter.validateSnapshot(data, context)); const token = {}; tokens.set(token, data.slice()); return token;
+    });
+    sim.adapter.loadPreparedSnapshot = token => { const data = tokens.get(token); assert(data); tokens.delete(token); installed++; sim.adapter.load(data); };
+    return { ...sim, installed: () => installed, cancelled: () => cancelled };
+  }
+  const before = target(), first = createBootstrapReplay({ adapter: before.adapter, bootstrap });
+  first.pulse(); first.pulse(); first.cancel();
+  assert.equal(before.cancelled(), 1); assert.equal(before.installed(), 0); assert.equal(before.state[0], 0);
+  const after = target(), second = createBootstrapReplay({ adapter: after.adapter, bootstrap });
+  while (!after.installed()) second.pulse();
+  assert.equal(after.state[0], 16); second.cancel(); assert.equal(after.state[0], 0);
+  const corrupt = structuredClone(bootstrap); corrupt.checkpoint.bytes[0] ^= 1;
+  const rejected = target(), third = createBootstrapReplay({ adapter: rejected.adapter, bootstrap: corrupt });
+  assert.throws(() => third.pulse(), /checkpoint hash mismatch/); assert.equal(rejected.installed(), 0); assert.equal(rejected.stats.saves, 0);
+  const good = target(), fourth = createBootstrapReplay({ adapter: good.adapter, bootstrap, maxCatchupSteps: 2 });
+  for (let n = 0; n < 100 && !fourth.done; n++) fourth.pulse();
+  assert(fourth.done); assert.deepEqual(good.adapter.save(), core.adapter.save());
+  assert.equal(good.installed(), 1); assert.equal(fourth.cancel().status, 'done'); core.close();
+});
