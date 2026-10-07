@@ -1,0 +1,333 @@
+{
+  "repository": "byh-playground/rollback-netcode",
+  "commit": "c3173914519a78834360430071e7a125736d86d5",
+  "purpose": "Historical source snapshot; not the current runtime or current verification evidence. Original bytes retained for provenance and recovery.",
+  "archive": "rollback-netcode-c317391-source.zip",
+  "archiveSha256": "85b0b47785b78b3741e230c5c3d1eac851c1e381287e664a7a82ec265ded0130",
+  "files": [
+    {
+      "path": ".gitattributes",
+      "bytes": 95,
+      "sha256": "6ed1fc59b1cfe4dd1c7f045637ec92e084a38aea2e47115500a1007654cce6e4",
+      "gitBlobSha": "e0b547c8802aa9b10890f2574843d6c0bed80b15"
+    },
+    {
+      "path": ".github/workflows/verify.yml",
+      "bytes": 1027,
+      "sha256": "5587179aef43437c43298ad49f3f94146c62965bb07897b323ff2707b59f3e27",
+      "gitBlobSha": "6b1711b6c7b563b62852481eabdc57ec87b58154"
+    },
+    {
+      "path": ".gitignore",
+      "bytes": 35,
+      "sha256": "d6ac3fcd02aaa5dda61494ec42810c3b43c216dafcbae66e4f5cc88929c422a8",
+      "gitBlobSha": "b72be037c0c03e8aa2ab077abd8751754f7df1af"
+    },
+    {
+      "path": ".nojekyll",
+      "bytes": 1,
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "gitBlobSha": "8b137891791fe96927ad78e64b0aad7bded08bdc"
+    },
+    {
+      "path": "AGENTS.md",
+      "bytes": 758,
+      "sha256": "78936a9c711c0fb9cff3c3dbfafb93b63124a88b1a188690a3544bc7449abf8a",
+      "gitBlobSha": "6a418c87fcc68f5de26ce4bb4bdc4c2698862fa8"
+    },
+    {
+      "path": "CONTRACT.md",
+      "bytes": 21364,
+      "sha256": "23de4df05bd519362077f43153eb4a901586d3b3242c0a2525046c77e3570456",
+      "gitBlobSha": "b2d88a4df07e7432e7b3f4e440bd2ce9a9fe4201"
+    },
+    {
+      "path": "README.md",
+      "bytes": 22813,
+      "sha256": "bb99c1469da4f4169530c2bf0479e5aeb587a4ccfc8c7d8563838503ea153dfc",
+      "gitBlobSha": "c25598f0d1941b997ffdc9aea3ed93121565cfbc"
+    },
+    {
+      "path": "docs/verification.md",
+      "bytes": 20113,
+      "sha256": "bac25f4a19bf1bc0bd1bc4f119fd4981154c3f81991dd1236ffedee1e1f4de7b",
+      "gitBlobSha": "9d13080bb633f2510ffd62bb2c5a7db736b48510"
+    },
+    {
+      "path": "index.html",
+      "bytes": 36178,
+      "sha256": "4d08a0495ea4d287c9aea7575b1c13e4e14294980297bda1b9615e893a1cfc8e",
+      "gitBlobSha": "1aea5d261ff54bb6a49a369ea436f336799c424b"
+    },
+    {
+      "path": "package.json",
+      "bytes": 109,
+      "sha256": "f330655f6943b7330c4fdcbfd3bef2be0f5274a0fefe2c0232d5764ca4c2237a",
+      "gitBlobSha": "fb2a7da749954dece0b6feed54280cfd11a91240"
+    },
+    {
+      "path": "rollback-netcode.d.ts",
+      "bytes": 16131,
+      "sha256": "3ae291b89c589e2fd8021c8b4935765378a472e62413f3093c84864401bdcb0c",
+      "gitBlobSha": "9c7ed91cc67eaa6e8902404a97fa0c7fb474ff6d"
+    },
+    {
+      "path": "rollback-netcode.js",
+      "bytes": 144519,
+      "sha256": "335834b72a74c5716a40521eb8a98283b9ab11124c81eaf3bef523a3579191d6",
+      "gitBlobSha": "d7e382797bb273a5e189aae26fb397e74ecd4aee"
+    },
+    {
+      "path": "scripts/benchmark.mjs",
+      "bytes": 3028,
+      "sha256": "e0dfdbc7e1e6db3cb35ea7e1ae7db83136b0066be01948472bfa538d34e0b413",
+      "gitBlobSha": "536d5e69d5686c0913725e18a635309fbc6cd150"
+    },
+    {
+      "path": "scripts/browser-check.mjs",
+      "bytes": 10409,
+      "sha256": "9f0e028ee70a2a06e1061860ddb9258c638a57cbd08ff216f640705f72ea5faa",
+      "gitBlobSha": "6c54aac66740ade01fe5c5f168d732585d46f224"
+    },
+    {
+      "path": "scripts/build.mjs",
+      "bytes": 1741,
+      "sha256": "52a00b27b0a3fe7c6102e6f7067cf42a86a700b44bb0bb0bd96fd5e31f820ace",
+      "gitBlobSha": "09b616837a896d51e3428a113cefb3f89d97cb1c"
+    },
+    {
+      "path": "scripts/demo-check.mjs",
+      "bytes": 14277,
+      "sha256": "804715a9a304b209a5075ab45a844228678f69660f5cd602af7b8935cd42a8df",
+      "gitBlobSha": "3a5651df3f0127dab5adc853a8cfa72a7fa77495"
+    },
+    {
+      "path": "scripts/group-browser-serve.mjs",
+      "bytes": 993,
+      "sha256": "32d4d859591d281fa56e34100980757da5e8f66a14e1c43fbab7abb7f6f03285",
+      "gitBlobSha": "52b73bb323370e2518bfbde13052e1e820b1be6d"
+    },
+    {
+      "path": "scripts/live-room-check.mjs",
+      "bytes": 4954,
+      "sha256": "6e3c29cf4568e7be594c23d9f7586a1e60c3286fbdb1cb6bb146dcaf4ed091c2",
+      "gitBlobSha": "90c0cec2606d07202ed7eee8a362ec750d045b5e"
+    },
+    {
+      "path": "scripts/primitives-benchmark.mjs",
+      "bytes": 1780,
+      "sha256": "0c251220238b6417a3c8129ecdcabeabf58edc9f392b442c904fb80a351c44ce",
+      "gitBlobSha": "72f834d2b76b6377876be2c86bcccbbb3ef0a896"
+    },
+    {
+      "path": "scripts/rally-benchmark.mjs",
+      "bytes": 11549,
+      "sha256": "4029e0a99f85bf0459e4306d63989636854f029a4a4c64a68b165835e92258ea",
+      "gitBlobSha": "8af3a58100c06ebc29fff31bc0d928e0e1d99baa"
+    },
+    {
+      "path": "scripts/stage-version.mjs",
+      "bytes": 874,
+      "sha256": "77fc35439a801e685613014279650e5b8b6e682489eb104305b98d1705db350a",
+      "gitBlobSha": "0490216d83c536adc34a3665f2481cdaaa201c8a"
+    },
+    {
+      "path": "src/core.js",
+      "bytes": 46412,
+      "sha256": "c42172dfcf46bcd50bbeedcf7b48ad827bcb54e44c900c24926f69c11a942bf4",
+      "gitBlobSha": "b132d596f7b73630c0e4556013a9cced59ee10d5"
+    },
+    {
+      "path": "src/group-room.js",
+      "bytes": 15996,
+      "sha256": "80c93a4efc634725d4b71b0eb6135439886a40f75295d2959bc5b2fc084c1c25",
+      "gitBlobSha": "17aa8cb832c38c379166466514f2fb57c91a30e4"
+    },
+    {
+      "path": "src/index.js",
+      "bytes": 751,
+      "sha256": "ed46d79b8c35da31493b0d20863b8b161a2a564d3517b92aad8d8ad1b49bdd9e",
+      "gitBlobSha": "b760374c0d11c4cac17a6ff6b2f130c1bd023e86"
+    },
+    {
+      "path": "src/loop.js",
+      "bytes": 3306,
+      "sha256": "568ecfa102533ef0e7fc0ead30533be95f954bc2211017f0165e461f30be1187",
+      "gitBlobSha": "73e0df5ff03d2d172c1713548823553ea8d69ac6"
+    },
+    {
+      "path": "src/nostr-crypto.js",
+      "bytes": 10149,
+      "sha256": "e02f0d8740773b64f09b4c9d1c20b84561d4663366e7df7a286ebab287d8120f",
+      "gitBlobSha": "1b35c1d66f63bfefd2d6657c01d9214094e0ba17"
+    },
+    {
+      "path": "src/nostr.js",
+      "bytes": 21060,
+      "sha256": "a2aa77954bd3013c2655777557c974fe127210e48ca6ff99375b9551019d80f2",
+      "gitBlobSha": "130f2ee7b803a98f1bb172cfd025dc0677fcbb3b"
+    },
+    {
+      "path": "src/protocol.js",
+      "bytes": 4440,
+      "sha256": "8a3809c48b9b9531c84587f04cfb6c603d0d00d6d0dd478536bf79f3b484d093",
+      "gitBlobSha": "be189ec982f873a68122164e24326c74ea38f946"
+    },
+    {
+      "path": "src/room.js",
+      "bytes": 5235,
+      "sha256": "4c7e7befac8c28554005228bb332fe11300d3e3629290a25c56162ce661ee69c",
+      "gitBlobSha": "8f8ddab244798c63a78b2e5bad0b25011bda5177"
+    },
+    {
+      "path": "src/star-transport.js",
+      "bytes": 8725,
+      "sha256": "abbf5875b3d904ccb633b4b6476d96025b4d27785a4d51ca762c94d525174c49",
+      "gitBlobSha": "fb7081177782a231467ea15abba6650de1ff1cb5"
+    },
+    {
+      "path": "src/synctest.js",
+      "bytes": 9558,
+      "sha256": "4dfebedd03dce9b690c0dddf3ada702b688acdf3b0f9e815bc395b95826940e2",
+      "gitBlobSha": "6b2e20df75bfa89c346e68f074fdc9d537eb4d5b"
+    },
+    {
+      "path": "src/utilities.js",
+      "bytes": 2542,
+      "sha256": "7519e88cb7e10dd53d8392d10520a241fd7ff916a055aa53a05eeeea7c085991",
+      "gitBlobSha": "d5f4b42d3defb49e8a843daa5a595e0e33c063bb"
+    },
+    {
+      "path": "src/value-codec.js",
+      "bytes": 9107,
+      "sha256": "1eaa6c739370af64c25c5343efd8125d08f14e406d4f097026e6b12aa1d2f322",
+      "gitBlobSha": "8c901fa2fb64832e0e4fe565e6983dc3d704223b"
+    },
+    {
+      "path": "src/webrtc.js",
+      "bytes": 9371,
+      "sha256": "d3f142f3b316b4ab31d92b8fc38dfdb4fe945beeaef8899987d49507ef76019f",
+      "gitBlobSha": "59b84b43b0d5ca83ee3fbd5718362f1c90a0d960"
+    },
+    {
+      "path": "tests/browser.html",
+      "bytes": 9883,
+      "sha256": "ea553d6fbe14326a82658b9e41b24ae2196df7d43e88d5fd060361c1da951ac9",
+      "gitBlobSha": "9cb339a82dfebb48bb802111721f2bdc553b22b0"
+    },
+    {
+      "path": "tests/build.test.mjs",
+      "bytes": 1109,
+      "sha256": "f2b614693b884ebea4d051acaeed8b268d7c7cbbd3f23f72415a28db6623b48d",
+      "gitBlobSha": "1c18a96651a7784126c012bfa68eb3c7a63d100b"
+    },
+    {
+      "path": "tests/core.test.mjs",
+      "bytes": 36242,
+      "sha256": "84e4077a83f7df670cbd8cb266b7c5e775cf557764d83e33dd963fe961ec651a",
+      "gitBlobSha": "9ce8a825b53c04b0bf5808969fd1b2f651431651"
+    },
+    {
+      "path": "tests/fixtures/bip340-test-vectors.csv",
+      "bytes": 6872,
+      "sha256": "01c8cabba63b4c9b2f44c975902990086a4fe56eee9d265b187d1e2c1d98ccfb",
+      "gitBlobSha": "aa317a3b3d53aa904def8b5a625b13073898b349"
+    },
+    {
+      "path": "tests/group-browser.html",
+      "bytes": 1568,
+      "sha256": "50d2f096b9ff7df2624270513333925a419edabb875d399a7b1a435aedc575bb",
+      "gitBlobSha": "c750c4b2568f3f91f1e646506b0b44ce15903ba0"
+    },
+    {
+      "path": "tests/group-browser.mjs",
+      "bytes": 8195,
+      "sha256": "2543dc0ca1e5b65360120f85553925abf023f882b8a8340a89887b39c2677d76",
+      "gitBlobSha": "9120b076547b51938fccde8ef68887a942ea5fb1"
+    },
+    {
+      "path": "tests/group-room.test.mjs",
+      "bytes": 10678,
+      "sha256": "2cae3feb7618c30361a59408fe61895db33f954315a1aedeb34564b403ef1fed",
+      "gitBlobSha": "14e92b20aba20cbb9b2948fbffa8b81f9eb03d49"
+    },
+    {
+      "path": "tests/loop.test.mjs",
+      "bytes": 2539,
+      "sha256": "7b55c1612399d234d8161b76361e64935d39c2d489e6b10b2c27c795e125c31e",
+      "gitBlobSha": "8f45a31f78dc3b9ee5b78c2511205dcd7c5368d9"
+    },
+    {
+      "path": "tests/mesh-reliability.test.mjs",
+      "bytes": 7544,
+      "sha256": "031d9d45b5bd8ae7065496ff4ab43596548da0c4d230e7b5fe8ddc6becc23287",
+      "gitBlobSha": "9a8ce8446e3641e083581c6982d7fe294def0097"
+    },
+    {
+      "path": "tests/mesh.test.mjs",
+      "bytes": 2956,
+      "sha256": "371d45902fc61f4a0a8b23fc971cae5737560cff18f8f94cd65ed4b49db519c6",
+      "gitBlobSha": "0b7fdc5ae2038bbff4460e960c24b9d6e75909dd"
+    },
+    {
+      "path": "tests/nostr.test.mjs",
+      "bytes": 27787,
+      "sha256": "3b596d3ab253cac81a105a6d8ba3774a79b51a68574e69113b4fd182d96d9d0a",
+      "gitBlobSha": "22f9d7165846029789f045b1f130997b37d43b00"
+    },
+    {
+      "path": "tests/room.test.mjs",
+      "bytes": 3611,
+      "sha256": "65d159bcb9a11446621f44d48407c76b6cdfeb102ddaa72c876192227004b205",
+      "gitBlobSha": "36566794050d9ef76c89495a50353dfe090cb6a2"
+    },
+    {
+      "path": "tests/runtime.test.mjs",
+      "bytes": 10743,
+      "sha256": "10b0be702fa37f2cbb047f1ae65f39a9a6e84fca5d78392dd720ca6525531d08",
+      "gitBlobSha": "37466ad1068f2e8ed1d96889d4bfea796515c6bd"
+    },
+    {
+      "path": "tests/star-transport.test.mjs",
+      "bytes": 4801,
+      "sha256": "3c65775062f953bb170d3db2c90614605dfed4c8a6a11c78c4aee3fb775c6354",
+      "gitBlobSha": "26d39b965d068fba72b047669199f6afe95a0c01"
+    },
+    {
+      "path": "tests/synctest.test.mjs",
+      "bytes": 8021,
+      "sha256": "d680e99726ad384707bd22ac34a85efe3af5f57e0d1376e26a0b6b5e448db723",
+      "gitBlobSha": "f2797e6bede5d6e10e101df644a2bbc88c53921c"
+    },
+    {
+      "path": "tests/types.test.ts",
+      "bytes": 2951,
+      "sha256": "0203321cb31afea4b8214c6e6914fd0cd6fc6068adc1566ed9ea41b4c0124fa0",
+      "gitBlobSha": "0fbee3c73f7ff8b29c8282f202df7fd3f5c33de0"
+    },
+    {
+      "path": "tests/utilities.test.mjs",
+      "bytes": 2575,
+      "sha256": "2992e94f228f8fdad1af53856d0fc770fc7bb4b4a0028db845791c690cb5f339",
+      "gitBlobSha": "b29cfe108cf96740f5c263d1e0decd3bd23c999e"
+    },
+    {
+      "path": "tests/value-codec.test.mjs",
+      "bytes": 4963,
+      "sha256": "0da5505d66f0e4dc6de979d7a433963efb1a2d32188b6a6d47f77f79fd01f787",
+      "gitBlobSha": "72dd7d646776bca0a5b0eb4be1f2387da796b997"
+    },
+    {
+      "path": "tests/version.test.mjs",
+      "bytes": 593,
+      "sha256": "4f6dc0a70826a86fb2cda8c354b72a1aec2461618e6ffb4823fa13ccff57f771",
+      "gitBlobSha": "f85a68b947bb36c6c74bc47265588d5771380ebb"
+    },
+    {
+      "path": "versions/e577f63fc8f5e88e55202afbb354aa3f50e95f8847d04987a77d0211488ff77a/rollback-netcode.js",
+      "bytes": 107613,
+      "sha256": "e577f63fc8f5e88e55202afbb354aa3f50e95f8847d04987a77d0211488ff77a",
+      "gitBlobSha": "67f07e65ee061caa74ac9b7aaa7d8573748e1484"
+    }
+  ]
+}

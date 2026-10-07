@@ -16,7 +16,7 @@ export async function buildDistribution(root) {
     // 모듈마다 따로 빌드하여 공유 chunk와 외부 런타임 의존성을 만들지 않습니다.
     const result = await build({
       absWorkingDir: root,
-      entryPoints: [`packages/${name}/src/index.js`],
+      entryPoints: [`modules/${name}/index.js`],
       outfile: `dist/${name}.js`,
       bundle: true,
       format: 'esm',
@@ -36,7 +36,7 @@ export async function buildDistribution(root) {
       throw new Error(`배포물은 외부 import가 없는 ${name}.js 하나여야 합니다.`);
     }
     for (const input of Object.keys(result.metafile.inputs)) {
-      if (![name, ...(SDK_DEPENDENCIES[name] ?? [])].some(owner => input.startsWith(`packages/${owner}/src/`))) {
+      if (![name, ...(SDK_DEPENDENCIES[name] ?? [])].some(owner => input.startsWith(`modules/${owner}/`) && !input.slice(`modules/${owner}/`.length).includes('/'))) {
         throw new Error(`${name} 소스 밖의 런타임 의존성은 허용하지 않습니다: ${input}`);
       }
     }

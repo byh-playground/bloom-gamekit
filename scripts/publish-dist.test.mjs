@@ -20,7 +20,7 @@ async function writeDistribution(root, bundles) {
   return sha256(manifest);
 }
 
-test('dist는 최초 세 모듈과 manifest만 생성하고, 이후에는 관련 없는 파일과 이력을 보존한다', async () => {
+test('dist는 최초 공개 모듈과 manifest만 생성하고, 이후에는 관련 없는 파일과 이력을 보존한다', async () => {
   const temporary = await mkdtemp(resolve(tmpdir(), 'gamekit-publish-test-'));
   try {
     const root = resolve(temporary, 'source');

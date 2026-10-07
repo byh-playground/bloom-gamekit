@@ -66,9 +66,9 @@ test('manifest hash와 모든 실제 번들의 bytes를 검증하고 symlink를 
   await assert.rejects(readVerifiedDistribution(root), /일반 파일/);
 }));
 
-test('세 모듈은 독립 ESM 하나씩 빌드되며 재빌드 manifest와 bytes가 같다', async () => withRoot(async (root) => {
+test('모든 공개 모듈은 독립 ESM 하나씩 빌드되며 재빌드 manifest와 bytes가 같다', async () => withRoot(async (root) => {
   for (const [index, name] of MODULES.entries()) {
-    const directory = resolve(root, 'packages', name, 'src');
+    const directory = resolve(root, 'modules', name);
     await mkdir(directory, { recursive: true });
     await writeFile(resolve(directory, 'value.js'), `export const value = ${index};\n`);
     await writeFile(resolve(directory, 'index.js'), "export { value } from './value.js';\n");
@@ -84,14 +84,19 @@ test('세 모듈은 독립 ESM 하나씩 빌드되며 재빌드 manifest와 byte
     const imported = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
     assert.equal(imported.value, index);
   }
-  // 다른 package 소스나 외부 URL import를 bundle 하나에 숨길 수 없습니다.
-  await writeFile(resolve(root, 'packages/interpolation/src/index.js'), "export { value } from '../../input/src/value.js';\n");
+  // 모듈별 tests/examples/legacy는 같은 디렉터리에 있어도 배포 소스가 아닙니다.
+  await mkdir(resolve(root, 'modules/interpolation/tests'), { recursive: true });
+  await writeFile(resolve(root, 'modules/interpolation/tests/fixture.js'), 'export const value = 99;\n');
+  await writeFile(resolve(root, 'modules/interpolation/index.js'), "export { value } from './tests/fixture.js';\n");
   await assert.rejects(buildDistribution(root), /소스 밖/);
-  await writeFile(resolve(root, 'packages/interpolation/src/index.js'), "export { value } from 'https://example.invalid/value.js';\n");
+  // 다른 모듈 소스나 외부 URL import를 bundle 하나에 숨길 수 없습니다.
+  await writeFile(resolve(root, 'modules/interpolation/index.js'), "export { value } from '../input/value.js';\n");
+  await assert.rejects(buildDistribution(root), /소스 밖/);
+  await writeFile(resolve(root, 'modules/interpolation/index.js'), "export { value } from 'https://example.invalid/value.js';\n");
   await assert.rejects(buildDistribution(root), /외부 import/);
-  await writeFile(resolve(root, 'packages/interpolation/src/index.js'), 'export const load = (name) => import(name);\n');
+  await writeFile(resolve(root, 'modules/interpolation/index.js'), 'export const load = (name) => import(name);\n');
   await assert.rejects(buildDistribution(root), /not a string literal/);
-  await writeFile(resolve(root, 'packages/interpolation/src/index.js'), 'export const load = (name) => require(name);\n');
+  await writeFile(resolve(root, 'modules/interpolation/index.js'), 'export const load = (name) => require(name);\n');
   await assert.rejects(buildDistribution(root), /not a string literal/);
   // 실패한 재빌드가 직전의 검증된 배포물을 일부만 교체하지 않습니다.
   assert.deepEqual((await readVerifiedDistribution(root, first.manifestHash)).bundles, first.bundles);

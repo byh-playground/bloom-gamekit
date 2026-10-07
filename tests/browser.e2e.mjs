@@ -1,4 +1,4 @@
-import { exerciseWebGLDevice } from './device.browser.mjs';
+import { exerciseWebGLDevice } from '../modules/rendering/tests/device.browser.mjs';
 import { runPresentationChecks } from './presentation.browser.js';
 import { chromium } from 'playwright';
 import { createServer } from 'node:http';
