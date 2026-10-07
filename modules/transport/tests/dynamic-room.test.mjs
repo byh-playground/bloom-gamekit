@@ -486,3 +486,41 @@ test('queued dynamic candidate adopts newer welcome roster and accepts retried m
     assert.equal(restored.localPlayerId, id); assert.equal(restored.resumed, true); assert.equal(restored.epoch, 2);
   } finally { rooms.forEach(room => room.close()); }
 });
+
+test('dynamic resume: approval replaces pending mesh links without rejecting their admission waiters', async () => {
+  let hold = false, coordinator, held = [];
+  const f = fixture({ drop(envelope) {
+    if (hold && envelope.message.op === 'resume-request' && envelope.to !== coordinator) { held.push(envelope); return true; }
+    return false;
+  } });
+  const rooms = [], stores = Array.from({ length: 3 }, () => memoryStorage());
+  try {
+    for (let slot = 0; slot < 3; slot++) {
+      rooms.push(await createNostrDynamicRoom({ ...f.options, role: slot ? 'join' : 'host', resume: { storage: stores[slot] } }));
+      coordinator = rooms[0].localPlayerId;
+      const players = rooms.map(room => room.localPlayerId);
+      await Promise.all(rooms.map(room => room.connectMesh(players)));
+      for (const room of rooms) room.setRoster({ epoch: slot, players, coordinatorId: coordinator });
+    }
+    const players = rooms.map(room => room.localPlayerId), session = rooms[0].sessionId;
+    for (const slot of [1, 2]) {
+      rooms[slot].close(); hold = true; held = [];
+      rooms[slot] = await createNostrDynamicRoom({ ...f.options, role: 'join', resume: { storage: stores[slot] } });
+      assert.equal(rooms[slot].localPlayerId, players[slot]);
+      assert.equal(rooms[slot].sessionId, session);
+      // Production publications are serialized and rate limited. Resume control
+      // can reach a survivor after RoomSession has already begun connectMesh.
+      const mesh = Promise.all(rooms.map(room => room.connectMesh(players)));
+      mesh.catch(() => {});
+      await settle(); assert.ok(held.length, 'Hold a non-coordinator resume approval behind the pending mesh');
+      hold = false;
+      for (const envelope of held) await f.signals.get(envelope.from).send(envelope.to, envelope.message);
+      await mesh; await settle();
+      assert.ok(rooms.every(room => room.transports.size === 2));
+      const received = [];
+      for (const room of rooms) for (const transport of room.transports.values()) transport.subscribe(bytes => received.push(bytes[0]));
+      for (const room of rooms) for (const transport of room.transports.values()) assert.equal(transport.send(new Uint8Array([7])), true);
+      await settle(); assert.equal(received.length, 6, 'Every resumed mesh edge still carries data');
+    }
+  } finally { rooms.forEach(room => room.close()); }
+});

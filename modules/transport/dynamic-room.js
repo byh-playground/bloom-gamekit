@@ -186,8 +186,8 @@ export async function createNostrDynamicRoom({ role, room, namespace = 'rollback
   function acceptIncarnations(value, next) {
     if (!value || typeof value !== 'object') return;
     for (const id of next) if (id !== self && validId(value[id])) {
-      // Existing connections require their own resume challenge before replacement.
-      if (!links.get(id)?.peer || !incarnations.has(id)) incarnations.set(id, value[id]);
+      // Existing and pending connections require their own resume challenge before replacement.
+      if (!links.has(id) || !incarnations.has(id)) incarnations.set(id, value[id]);
     }
   }
   function wrapTransport(link, raw) {
@@ -226,14 +226,20 @@ export async function createNostrDynamicRoom({ role, room, namespace = 'rollback
     if (resumeChecks.has(id)) return;
     const existing = links.get(id);
     const check = probePeer(existing).then(alive => {
-      if (disposed) return;
+      if (disposed || links.get(id) !== existing) return;
       if (alive) { send(id, 'resume-reject', { targetIncarnation: requestedIncarnation }); return; }
-      if (existing && links.get(id) === existing) destroyLink(existing, 'peer resuming');
+      // A mesh transition may already be awaiting this reconnect. Keep that
+      // pending promise attached to its replacement; rejecting it would fail
+      // the whole RoomSession before the approved incarnation can connect.
+      if (existing?.peer && links.get(id) === existing) destroyLink(existing, 'peer resuming');
       incarnations.set(id, requestedIncarnation);
       const generation = (generations.get(id) ?? 0) + 1;
       send(id, 'resume-accept', { generation, targetIncarnation: requestedIncarnation });
       status('peer-resuming', { peerId: id });
       if (leader(id)) { try { startGeneration(id, generation); } catch {} }
+      else if (existing && links.get(id) === existing) {
+        try { newLink(id, 0, null, existing); } catch {}
+      }
     }).finally(() => resumeChecks.delete(id));
     resumeChecks.set(id, check);
   }
