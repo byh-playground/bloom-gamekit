@@ -8,6 +8,7 @@
 - `await copyDiagnostic(text,{clipboard,textarea})`: clipboard 성공은 copied:true. 거절되면 supplied textarea 선택 또는 portable text를 반환하며 copied:false입니다. DOM을 숨기거나 자동 다운로드하지 않습니다. UI 경합/패널의 focus 정책은 caller가 소유합니다.
 - `ReplayTimeline({read,seek,setPlaying})`: read는 `{tick,firstTick,lastTick,playing}`을 반환합니다. readInto(out), seek(tick), step(delta=1), setPlaying(boolean)이 실제 SDK replay adapter에 위임합니다. bounds clamp만 하고 snapshot/history를 저장하지 않습니다.
 - `compareStateFields(left,right,[{name,read,equal?}],{maxDifferences=100})`: 선택한 primitive 필드만 비교·마스킹합니다. 기본 Object.is, 구조화 값은 명시적 comparator가 필요합니다. 반환은 equal/mismatches/truncated/differences입니다. 완전한 state hash는 SDK 결정론 도구를 쓰세요.
+- `PerformanceProfiler({capacity=120,now,maxStages=64})`: **opt-in** 로컬 프레임 프로파일러입니다. `setEnabled(true)` 뒤 `beginFrame(meta)`, `stage(name,durationMs,metadata)`, `count(name,value)`, `measure(name,fn,metadata)`, `endFrame(meta)`를 사용합니다. `snapshot({limit=30})`은 최근 bounded samples와 frame/stage p50·p95·max 요약을 반환합니다. metadata는 redacted primitive 최대 8개만 허용하며 게임 상태·snapshot·DOM·네트워크 payload를 보관하지 않습니다. 꺼져 있을 때 `measure`는 clock을 읽지 않고 operation만 실행합니다. 게임은 실제 구간 이름을 소유하고, renderer는 필요할 때 이 plain hook을 선택적으로 연결합니다.
 
 Budmori의 local diagnostic bootstrap에서 입증된 오류 redaction/ring/copy-fallback 동작과 Rally replay-control 경계를 참고해 새로 작성했습니다. 기존 게임의 저장 정책·fatal UI를 가져오지 않습니다. 원본에 없는 라이선스를 새로 부여하지 않습니다.
 
