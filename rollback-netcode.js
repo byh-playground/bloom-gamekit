@@ -5517,7 +5517,7 @@ async function createNostrDynamicRoom({
   function acceptIncarnations(value, next) {
     if (!value || typeof value !== "object") return;
     for (const id of next) if (id !== self && validId(value[id])) {
-      if (!links.get(id)?.peer || !incarnations.has(id)) incarnations.set(id, value[id]);
+      if (!links.has(id) || !incarnations.has(id)) incarnations.set(id, value[id]);
     }
   }
   function wrapTransport(link, raw) {
@@ -5584,12 +5584,12 @@ async function createNostrDynamicRoom({
     if (resumeChecks.has(id)) return;
     const existing = links.get(id);
     const check = probePeer(existing).then((alive) => {
-      if (disposed) return;
+      if (disposed || links.get(id) !== existing) return;
       if (alive) {
         send(id, "resume-reject", { targetIncarnation: requestedIncarnation });
         return;
       }
-      if (existing && links.get(id) === existing) destroyLink(existing, "peer resuming");
+      if (existing?.peer && links.get(id) === existing) destroyLink(existing, "peer resuming");
       incarnations.set(id, requestedIncarnation);
       const generation = (generations.get(id) ?? 0) + 1;
       send(id, "resume-accept", { generation, targetIncarnation: requestedIncarnation });
@@ -5597,6 +5597,11 @@ async function createNostrDynamicRoom({
       if (leader(id)) {
         try {
           startGeneration(id, generation);
+        } catch {
+        }
+      } else if (existing && links.get(id) === existing) {
+        try {
+          newLink(id, 0, null, existing);
         } catch {
         }
       }
