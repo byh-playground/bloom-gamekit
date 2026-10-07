@@ -31,11 +31,11 @@
     },
     {
       "file": "rollback.js",
-      "sha256": "3f8c57a096668f4b4ed3ee05fbc1caeddda5fe26eb29ec405729f221423bb310"
+      "sha256": "5ee680c46c6a4c690a0de36f5988fd74dac6434cf5ccf5fd0a3c48de56867881"
     },
     {
       "file": "rollback-netcode.js",
-      "sha256": "80673a5c80ccab485551eacb841e2e3b2f2c616648421f4b966c738b105ad841"
+      "sha256": "f1155fc0a88b4055f04515f0e8c00c430d5c4ba365c87cda5ebccf9dea731ef9"
     },
     {
       "file": "camera.js",

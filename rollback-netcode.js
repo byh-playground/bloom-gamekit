@@ -375,6 +375,12 @@ function profileOf(profile) {
 function createSession(options) {
   return new RollbackSession(options);
 }
+var boundaries = /* @__PURE__ */ new WeakMap();
+function createSessionFromBoundary(options, state, hash) {
+  const token = {};
+  boundaries.set(token, { adapter: options.adapter, state, hash });
+  return new RollbackSession(options, token);
+}
 var RollbackSession = class {
   constructor({
     players,
@@ -392,7 +398,7 @@ var RollbackSession = class {
     clock = nowMs,
     localCommandState,
     initialCommandSequences
-  } = {}) {
+  } = {}, boundaryToken) {
     if (!Array.isArray(players) || players.length < 1 || players.length > 8 || players.some((p) => typeof p !== "string" || !p.length || p.length > 128) || new Set(players).size !== players.length) throw new TypeError("fixed player roster (1..8 unique IDs)");
     this.players = Object.freeze([...players].sort(compareIds));
     if (!this.players.includes(localPlayerId)) throw new TypeError("localPlayerId");
@@ -474,12 +480,16 @@ var RollbackSession = class {
     this._replayFrames = [];
     this._replayBytes = 0;
     this._replayFinalHash = void 0;
-    const initial = this._save();
+    const boundary = boundaries.get(boundaryToken);
+    if (boundary) boundaries.delete(boundaryToken);
+    if (boundary && boundary.adapter !== adapter) throw new Error("initial boundary adapter");
+    const initial = boundary ? boundary.state : this._save();
+    if (!initial.length || initial.length > this.profile.maxSnapshotBytes) throw new RangeError("snapshot size");
     const retainedCount = this.profile.mode === "lockstep" ? Math.ceil(this.profile.stateHistorySize / this.profile.checksumInterval) + 2 : this.profile.stateHistorySize;
     const requiredBytes = initial.length * retainedCount;
     if (requiredBytes > this.profile.maxHistoryBytes) throw Object.assign(new RangeError("initial snapshot cannot fill retained history byte budget"), { code: "history-capacity", snapshotBytes: initial.length, requiredBytes, maxHistoryBytes: this.profile.maxHistoryBytes });
-    this._initialState = initial.slice();
-    const initialRecord = { tick: 0, bytes: initial, inputHash: this._inputHash };
+    this._initialState = boundary ? initial : initial.slice();
+    const initialRecord = { tick: 0, bytes: initial, inputHash: this._inputHash, ...boundary ? { hash: boundary.hash } : {} };
     this._history.put(initialRecord);
     this._currentState = initialRecord;
     this._hello = encoder.encode(JSON.stringify({
@@ -1572,7 +1582,7 @@ function roster(value, name) {
   if (!Array.isArray(value) || value.length < 1 || value.length > 8 || Array.from(value).some((id) => typeof id !== "string" || !id.length || id.length > 128) || new Set(value).size !== value.length) throw new TypeError(name);
   return value.slice();
 }
-function validateBootstrap(bootstrap, limits, expected) {
+function validateBootstrap(bootstrap, limits, expected, deferCheckpointHash = false) {
   if (!bootstrap || bootstrap.version !== 1) throw new Error("bootstrap version");
   const tick = integer(bootstrap.tick, "bootstrap tick", 0, MAX_TICK + 1);
   const inputSize = integer(bootstrap.inputSize, "bootstrap inputSize", 1, 1024);
@@ -1598,7 +1608,7 @@ function validateBootstrap(bootstrap, limits, expected) {
   if (!data.length || data.length > limits.maxSnapshotBytes) throw new RangeError("bootstrap snapshot size");
   const checkpointBytes = data.slice();
   const checkpointHash = integer(checkpoint.hash, "bootstrap checkpoint hash");
-  if (hashBytes(checkpointBytes) !== checkpointHash) throw new Error("bootstrap checkpoint hash mismatch");
+  if (!deferCheckpointHash && hashBytes(checkpointBytes) !== checkpointHash) throw new Error("bootstrap checkpoint hash mismatch");
   const hash = integer(bootstrap.hash, "bootstrap final hash");
   if (!Array.isArray(bootstrap.frames) || bootstrap.frames.length !== tick - start || tick - start > limits.maxSuffixTicks) throw new RangeError("bootstrap suffix length");
   if (start === tick && checkpointHash !== hash) throw new Error("bootstrap final hash mismatch");
@@ -1652,6 +1662,8 @@ function createBootstrapReplay({
   adapter,
   bootstrap,
   maxCatchupSteps = 8,
+  maxCatchupMs = 8,
+  clock = nowMs,
   maxSnapshotBytes = defaults.maxSnapshotBytes,
   maxSuffixTicks = MAX_SUFFIX_TICKS,
   maxCommandBytes = defaults.maxCommandBytes,
@@ -1665,15 +1677,18 @@ function createBootstrapReplay({
 } = {}) {
   if (!adapter || ["save", "load", "step", "validateSnapshot"].some((name) => typeof adapter[name] !== "function")) throw new TypeError("Simulation Adapter must save, load, step, validateSnapshot");
   integer(maxCatchupSteps, "maxCatchupSteps", 1, MAX_SUFFIX_TICKS);
+  if (!Number.isFinite(maxCatchupMs) || maxCatchupMs <= 0 || typeof clock !== "function") throw new TypeError("bootstrap time budget");
   integer(maxSnapshotBytes, "maxSnapshotBytes", 1, MAX_SNAPSHOT_BYTES);
   integer(maxSuffixTicks, "maxSuffixTicks", 0, MAX_SUFFIX_TICKS);
   integer(maxCommandBytes, "maxCommandBytes", 1, CHUNK_SIZE - 1024);
   integer(maxPendingCommands, "maxPendingCommands", 1, 2147483647);
   integer(maxReplayBytes, "maxReplayBytes", 1, 2147483647);
+  const cooperative = typeof adapter.saveJob === "function" && typeof adapter.prepareSnapshotJob === "function" && typeof adapter.loadPreparedSnapshot === "function";
   const candidate = validateBootstrap(
     bootstrap,
     { maxSnapshotBytes, maxSuffixTicks, maxCommandBytes, maxPendingCommands, maxReplayBytes },
-    { simulationVersion, inputSize, tickRate, players, seed }
+    { simulationVersion, inputSize, tickRate, players, seed },
+    cooperative
   );
   const save = () => {
     const data = bytes(adapter.save(), "bootstrap adapter snapshot");
@@ -1687,6 +1702,9 @@ function createBootstrapReplay({
     simulationVersion: candidate.simulationVersion,
     seed: candidate.seed
   });
+  if (cooperative) {
+    return createCooperativeReplay({ adapter, candidate, context, maxSnapshotBytes, maxCatchupSteps, maxCatchupMs, clock });
+  }
   const original = save();
   let tick = candidate.checkpoint.tick, status = "catching-up", result = null, failure = null;
   const restore = (error2) => {
@@ -1699,10 +1717,15 @@ function createBootstrapReplay({
     }
     throw failure;
   };
-  if (adapter.validateSnapshot(candidate.checkpoint.bytes.slice(), context(tick)) !== true) throw new Error("adapter rejected bootstrap checkpoint");
+  const preparedPath = typeof adapter.prepareSnapshot === "function" && typeof adapter.loadPreparedSnapshot === "function";
+  const prepared = preparedPath ? adapter.prepareSnapshot(candidate.checkpoint.bytes.slice(), context(tick)) : null;
+  if (preparedPath ? !prepared : adapter.validateSnapshot(candidate.checkpoint.bytes.slice(), context(tick)) !== true) throw new Error("adapter rejected bootstrap checkpoint");
   try {
-    adapter.load(candidate.checkpoint.bytes.slice());
-    if (!equalBytes(save(), candidate.checkpoint.bytes)) throw new Error("bootstrap checkpoint round-trip mismatch");
+    if (preparedPath) adapter.loadPreparedSnapshot(prepared, context(tick));
+    else {
+      adapter.load(candidate.checkpoint.bytes.slice());
+      if (!equalBytes(save(), candidate.checkpoint.bytes)) throw new Error("bootstrap checkpoint round-trip mismatch");
+    }
   } catch (error2) {
     restore(error2);
   }
@@ -1729,8 +1752,9 @@ function createBootstrapReplay({
       if (failure) throw failure;
       if (status !== "catching-up") return Object.freeze({ status, tick, targetTick: candidate.tick, steps: 0, ...result ?? {} });
       let steps = 0;
+      const started = clock();
       try {
-        while (tick < candidate.tick && steps < maxCatchupSteps) {
+        while (tick < candidate.tick && steps < maxCatchupSteps && (steps === 0 || clock() - started < maxCatchupMs)) {
           const frame = candidate.frames[tick - candidate.checkpoint.tick];
           runSimulationFrame(adapter, {
             tick,
@@ -1744,9 +1768,10 @@ function createBootstrapReplay({
           steps++;
         }
         if (tick === candidate.tick) {
-          const final = save();
-          if (hashBytes(final) !== candidate.hash) throw new Error("bootstrap final hash mismatch");
-          if (adapter.validateSnapshot(final.slice(), context(tick)) !== true) throw new Error("adapter rejected bootstrap final state");
+          const unchanged = preparedPath && candidate.tick === candidate.checkpoint.tick;
+          const final = unchanged ? candidate.checkpoint.bytes : save();
+          if (!unchanged && hashBytes(final) !== candidate.hash) throw new Error("bootstrap final hash mismatch");
+          if (!unchanged && adapter.validateSnapshot(final.slice(), context(tick)) !== true) throw new Error("adapter rejected bootstrap final state");
           status = "done";
           result = Object.freeze({ tick, hash: candidate.hash });
         }
@@ -1766,6 +1791,161 @@ function createBootstrapReplay({
         }
       }
       return Object.freeze({ status, tick, targetTick: candidate.tick, steps: 0, ...result ?? {} });
+    }
+  });
+}
+function createCooperativeReplay({ adapter, candidate, context, maxSnapshotBytes, maxCatchupSteps, maxCatchupMs, clock }) {
+  let tick = candidate.checkpoint.tick, status = "catching-up", phase = "checkpoint-hash", result = null, failure = null;
+  let original, final, loaded = false, job, hash = 2166136261, hashOffset = 0;
+  const own = (value) => {
+    const data = bytes(value, "bootstrap job snapshot");
+    if (!data.length || data.length > maxSnapshotBytes) throw new RangeError("bootstrap adapter snapshot size");
+    return data.slice();
+  };
+  const checkJob = (value) => {
+    if (!value || typeof value.pulse !== "function" || typeof value.cancel !== "function") throw new TypeError("snapshot preparation job");
+    return value;
+  };
+  const fail = (error2) => {
+    failure = error2 instanceof Error ? error2 : new Error(String(error2));
+    status = "failed";
+    try {
+      job?.cancel();
+    } catch {
+    }
+    job = null;
+    if (loaded && original) {
+      try {
+        adapter.load(original.slice());
+      } catch (restoreError) {
+        failure = new AggregateError([failure, restoreError], "bootstrap replay failed and original snapshot restoration failed");
+      }
+    }
+    original = final = null;
+    throw failure;
+  };
+  const finish = () => {
+    status = "done";
+    phase = "done";
+    result = Object.freeze({ tick, hash: candidate.hash });
+    original = final = null;
+  };
+  const response = (steps) => Object.freeze({ status, tick, targetTick: candidate.tick, steps, ...result ?? {} });
+  return Object.freeze({
+    get tick() {
+      return tick;
+    },
+    get targetTick() {
+      return candidate.tick;
+    },
+    get status() {
+      return status;
+    },
+    get done() {
+      return status === "done";
+    },
+    get result() {
+      return result;
+    },
+    get failure() {
+      return failure;
+    },
+    pulse() {
+      if (failure) throw failure;
+      if (status !== "catching-up") return response(0);
+      let steps = 0;
+      const started = clock();
+      try {
+        if (phase === "checkpoint-hash") {
+          do {
+            const end = Math.min(candidate.checkpoint.bytes.length, hashOffset + 65536);
+            hash = hashBytes(candidate.checkpoint.bytes.subarray(hashOffset, end), hash);
+            hashOffset = end;
+          } while (hashOffset < candidate.checkpoint.bytes.length && clock() - started < maxCatchupMs);
+          if (hashOffset === candidate.checkpoint.bytes.length) {
+            if (hash !== candidate.checkpoint.hash) throw new Error("bootstrap checkpoint hash mismatch");
+            hash = 2166136261;
+            hashOffset = 0;
+            phase = "original";
+          }
+        } else if (phase === "original" || phase === "final") {
+          job ??= checkJob(adapter.saveJob());
+          job.pulse({ budgetMs: maxCatchupMs });
+          if (job.done) {
+            const data = own(job.result);
+            job = null;
+            if (phase === "original") {
+              original = data;
+              phase = "prepare";
+            } else {
+              final = data;
+              phase = "hash";
+            }
+          }
+        } else if (phase === "prepare" || phase === "validate") {
+          job ??= checkJob(adapter.prepareSnapshotJob((phase === "prepare" ? candidate.checkpoint.bytes : final).slice(), context(tick)));
+          job.pulse({ budgetMs: maxCatchupMs });
+          if (job.done) {
+            const token = job.result;
+            job = null;
+            if (!token) throw new Error("adapter rejected bootstrap snapshot");
+            if (phase === "validate") finish();
+            else {
+              final = token;
+              phase = "install";
+            }
+          }
+        } else if (phase === "install") {
+          const token = final;
+          final = null;
+          loaded = true;
+          adapter.loadPreparedSnapshot(token, context(tick));
+          if (tick === candidate.tick) finish();
+          else phase = "replay";
+        } else if (phase === "replay") {
+          while (tick < candidate.tick && steps < maxCatchupSteps && (steps === 0 || clock() - started < maxCatchupMs)) {
+            runSimulationFrame(adapter, {
+              tick,
+              tickRate: candidate.tickRate,
+              inputs: candidate.frames[tick - candidate.checkpoint.tick].inputs,
+              resimulating: true,
+              recovering: true,
+              replaying: true
+            });
+            tick++;
+            steps++;
+          }
+          if (tick === candidate.tick) phase = "final";
+        } else if (phase === "hash") {
+          do {
+            const end = Math.min(final.length, hashOffset + 65536);
+            hash = hashBytes(final.subarray(hashOffset, end), hash);
+            hashOffset = end;
+          } while (hashOffset < final.length && clock() - started < maxCatchupMs);
+          if (hashOffset === final.length) {
+            if (hash !== candidate.hash) throw new Error("bootstrap final hash mismatch");
+            phase = "validate";
+          }
+        }
+        return response(steps);
+      } catch (error2) {
+        return fail(error2);
+      }
+    },
+    cancel() {
+      if (failure) throw failure;
+      if (status === "catching-up") {
+        try {
+          job?.cancel();
+          job = null;
+          if (loaded) adapter.load(original.slice());
+        } catch (error2) {
+          return fail(error2);
+        }
+        status = "cancelled";
+        original = final = null;
+      }
+      return response(0);
     }
   });
 }
@@ -2071,6 +2251,7 @@ var RoomSession = class {
       maxCatchupSteps: 4,
       maxTransferBytes: 8 * 1024 * 1024,
       maxControlMessagesPerPulse: 32,
+      snapshotBudgetMs: 8,
       ...membership
     });
     for (const [k, v] of Object.entries(this.membership)) integer(v, k, 1, 2147483647);
@@ -2111,7 +2292,7 @@ var RoomSession = class {
     this._leavePromise = null;
     this._leaveResolve = null;
     this._leaveReject = null;
-    this._stats = { transitions: 0, bootstrapBytes: 0, bootstrapTicks: 0, rejectedMessages: 0, sentControlBytes: 0, receivedControlBytes: 0 };
+    this._stats = { transitions: 0, bootstrapBytes: 0, bootstrapTicks: 0, rejectedMessages: 0, sentControlBytes: 0, receivedControlBytes: 0, membershipPrepareMs: 0, membershipCommitMs: 0, bootstrapPrepareMs: 0, bootstrapPulseMs: 0, maxBoundaryTaskMs: 0, boundaryLongTasks: 0 };
     this._totals = { snapshotSaves: 0, serializedSnapshotBytes: 0, stateHashComputations: 0, hashedStateBytes: 0 };
     if (mode === "local" || this.players.includes(localPlayerId) && !room?.resumed) {
       this.adapter.applyMembership({ epoch: this.epoch, tick: 0, players: [...this.players], joined: [...this.players], left: [], coordinatorId: this.coordinatorId, reason: "initial" });
@@ -2198,6 +2379,14 @@ var RoomSession = class {
       this._transition?.replay?.cancel();
     } catch {
     }
+    try {
+      this._transition?.stageJob?.cancel();
+    } catch {
+    }
+    if (this._transition) {
+      this._transition.preparedState = null;
+      this._transition.stageJob = null;
+    }
     this._leaveReject?.(new Error(type));
     this._leaveResolve = this._leaveReject = null;
     this._unsubscribeRoom?.();
@@ -2213,9 +2402,19 @@ var RoomSession = class {
   }
   _adapter(baseTick = this.baseTick, epoch = this.epoch) {
     const a = this.adapter;
+    const contextAt = (context = {}) => ({ ...context, tick: (context.tick ?? 0) + baseTick, membershipEpoch: epoch });
     return {
       save: () => a.save(),
       load: (data) => a.load(data),
+      ...typeof a.saveJob === "function" ? { saveJob: () => a.saveJob() } : {},
+      ...typeof a.prepareSnapshotJob === "function" && typeof a.loadPreparedSnapshot === "function" ? {
+        prepareSnapshotJob: (data, context) => a.prepareSnapshotJob(data, contextAt(context)),
+        loadPreparedSnapshot: (prepared, context) => a.loadPreparedSnapshot(prepared, contextAt(context))
+      } : {},
+      ...typeof a.prepareSnapshot === "function" && typeof a.loadPreparedSnapshot === "function" ? {
+        prepareSnapshot: (data, context) => a.prepareSnapshot(data, contextAt(context)),
+        loadPreparedSnapshot: (prepared, context) => a.loadPreparedSnapshot(prepared, contextAt(context))
+      } : {},
       validateSnapshot: (data, context = {}) => a.validateSnapshot(data, { ...context, tick: (context.tick ?? 0) + baseTick, membershipEpoch: epoch }),
       step: (context) => {
         context.tick += baseTick;
@@ -2225,8 +2424,8 @@ var RoomSession = class {
       }
     };
   }
-  _startCore(commandState, commandSequences) {
-    this._core = createSession({
+  _startCore(commandState, commandSequences, boundary) {
+    const options = {
       players: [...this.players],
       localPlayerId: this.localPlayerId,
       authorityPlayerId: this.coordinatorId,
@@ -2243,7 +2442,8 @@ var RoomSession = class {
       onEvent: (event) => {
         if (event.type !== "closed") this._event(event.type, { ...event, tick: event.tick + this.baseTick });
       }
-    });
+    };
+    this._core = boundary ? createSessionFromBoundary(options, boundary.bytes, boundary.hash) : createSession(options);
     this.profile = this._core.profile;
     for (const [id, link] of this._links) this._attachCore(id, link);
     for (const payload of this._pendingBeforeJoin.splice(0)) this._core.queueCommand(payload);
@@ -2290,6 +2490,10 @@ var RoomSession = class {
     this._attachCore(id, link);
     if (!this._core && id === this.coordinatorId) this._joinSent = false;
   }
+  _boundaryFrozen() {
+    const tr = this._transition;
+    return !!tr && (tr.proposal.reason === "reconnect" || !!tr.stageJob || !!tr.preparedState || tr.applied || !!tr.replay);
+  }
   _receiveWire(id, link, raw) {
     try {
       const data = bytes(raw);
@@ -2297,7 +2501,7 @@ var RoomSession = class {
       const view = new DataView(data.buffer, data.byteOffset, data.length), magic = view.getUint32(0, true);
       if (magic === MAGIC) {
         const epoch = view.getUint16(6, true) - 1;
-        if (epoch === this.epoch && link.coreReceive && !(this._transition?.proposal.reason === "reconnect")) {
+        if (epoch === this.epoch && link.coreReceive && !this._boundaryFrozen()) {
           const copy = data.slice();
           new DataView(copy.buffer).setUint16(6, 0, true);
           link.coreReceive(copy);
@@ -2527,9 +2731,9 @@ var RoomSession = class {
       if (m.bootstrap.tick + m.baseTick !== tr.target) throw new Error("resume donor boundary");
       tr.installSent = true;
       this._broadcast(tr.participants, "resume-install", { epoch: m.epoch, baseTick: m.baseTick, bootstrap: m.bootstrap, target: tr.target });
-    } else if (m.op === "resume-install" && from === this.coordinatorId && tr.proposal.reason === "reconnect" && !tr.replay && !tr.applied) {
+    } else if (m.op === "resume-install" && from === this.coordinatorId && tr.proposal.reason === "reconnect" && !tr.replay && !tr.stageJob && !tr.preparedState && !tr.applied) {
       this._beginBootstrap(tr, m);
-    } else if (m.op === "bootstrap" && from === this.coordinatorId && !this._core && !tr.replay && !tr.applied) {
+    } else if (m.op === "bootstrap" && from === this.coordinatorId && !this._core && !tr.replay && !tr.stageJob && !tr.preparedState && !tr.applied) {
       this._beginBootstrap(tr, m);
     } else if (m.op === "install" && from === this.coordinatorId && this._core && !tr.applied) {
       if (m.tick !== tr.target || this.tick !== tr.target) throw new Error("membership installation boundary");
@@ -2551,6 +2755,9 @@ var RoomSession = class {
     }
   }
   _beginBootstrap(tr, m) {
+    return this._boundaryWork("bootstrapPrepareMs", () => this._prepareBootstrap(tr, m));
+  }
+  _prepareBootstrap(tr, m) {
     if (m.target !== tr.target || m.bootstrap.tick + m.baseTick !== tr.target || !Number.isSafeInteger(m.baseTick) || m.baseTick < 0 || this._core && m.baseTick !== this.baseTick) throw new Error("bootstrap epoch boundary");
     if (!this._core) this.baseTick = m.baseTick;
     if (this._core && tr.proposal.reason === "reconnect") this._core.verifyConfirmedBootstrap(m.bootstrap);
@@ -2559,6 +2766,7 @@ var RoomSession = class {
       adapter: this._adapter(m.baseTick, this.epoch),
       bootstrap: m.bootstrap,
       maxCatchupSteps: this.membership.maxCatchupSteps,
+      maxCatchupMs: this.membership.snapshotBudgetMs,
       maxSnapshotBytes: this.profile.maxSnapshotBytes,
       maxSuffixTicks: tr.proposal.reason === "reconnect" ? this.profile.stateHistorySize : this.profile.checksumInterval,
       maxCommandBytes: this.profile.maxCommandBytes,
@@ -2572,7 +2780,43 @@ var RoomSession = class {
     });
     this._stats.bootstrapBytes += m.bootstrap.checkpoint.bytes.length;
   }
+  _membershipContext(tr) {
+    return {
+      tick: tr.target,
+      membershipEpoch: tr.proposal.epoch,
+      simulationVersion: this.simulationVersion,
+      tickRate: this.profile.tickRate,
+      seed: this.seed,
+      players: [...tr.proposal.players]
+    };
+  }
+  _boundaryWork(name, work) {
+    const started = nowMs();
+    try {
+      return work();
+    } finally {
+      const elapsed = Math.max(0, nowMs() - started);
+      this._stats[name] = elapsed;
+      this._stats.maxBoundaryTaskMs = Math.max(this._stats.maxBoundaryTaskMs, elapsed);
+      if (elapsed > 50) this._stats.boundaryLongTasks++;
+    }
+  }
   _applyMembership(tr) {
+    return this._boundaryWork("membershipPrepareMs", () => this._prepareMembership(tr));
+  }
+  _prepareMembership(tr) {
+    if (tr.stageJob || tr.preparedState || tr.applied) return;
+    if (typeof this.adapter.prepareMembershipJob === "function" && typeof this.adapter.loadPreparedSnapshot === "function") {
+      tr.stageJob = this.adapter.prepareMembershipJob({ ...tr.proposal, tick: tr.target }, this._membershipContext(tr));
+      if (!tr.stageJob || typeof tr.stageJob.pulse !== "function" || typeof tr.stageJob.cancel !== "function") throw new TypeError("membership preparation job");
+      return;
+    }
+    if (typeof this.adapter.prepareMembership === "function" && typeof this.adapter.loadPreparedSnapshot === "function") {
+      const context = this._membershipContext(tr);
+      const staged = this.adapter.prepareMembership({ ...tr.proposal, tick: tr.target }, context);
+      this._acceptPreparedMembership(tr, staged);
+      return;
+    }
     const rollback = bytes(this.adapter.save()).slice();
     try {
       this.adapter.applyMembership({ ...tr.proposal, tick: tr.target });
@@ -2588,7 +2832,24 @@ var RoomSession = class {
       throw error2;
     }
   }
+  _acceptPreparedMembership(tr, staged, deferHash = false) {
+    const state = bytes(staged?.bytes, "prepared membership snapshot").slice();
+    if (!state.length || state.length > this.profile.maxSnapshotBytes || !staged.prepared) throw new Error("invalid prepared membership snapshot");
+    tr.postState = state;
+    tr.preparedState = staged.prepared;
+    if (deferHash) {
+      tr.postHash = 2166136261;
+      tr.hashOffset = 0;
+      return;
+    }
+    tr.postHash = hashBytes(state);
+    tr.applied = true;
+    this._send(this.coordinatorId, "installed", { epoch: tr.proposal.epoch, hash: tr.postHash });
+  }
   _commit(tr) {
+    return this._boundaryWork("membershipCommitMs", () => this._commitMembership(tr));
+  }
+  _commitMembership(tr) {
     const previousCoordinator = this.coordinatorId;
     const commandSequences = tr.commandSequences ?? this._core?.getCommandSequences?.();
     let commandState = this._core?.exportLocalCommandState() ?? (commandSequences ? { sequence: commandSequences[this.localPlayerId] ?? 0, lastInput: this._lastInput, commands: [] } : void 0);
@@ -2596,7 +2857,11 @@ var RoomSession = class {
       const baseline = commandSequences[this.localPlayerId] ?? 0;
       commandState = { ...commandState, sequence: Math.max(commandState.sequence, baseline), commands: commandState.commands.filter((command) => command.sequence > baseline) };
     }
-    this.adapter.load(tr.postState);
+    if (tr.preparedState) {
+      const prepared = tr.preparedState;
+      tr.preparedState = null;
+      this.adapter.loadPreparedSnapshot(prepared, this._membershipContext(tr));
+    } else this.adapter.load(tr.postState.slice());
     if (this._core) {
       const metrics = this._core.metrics;
       for (const k of Object.keys(this._totals)) this._totals[k] += metrics[k] ?? 0;
@@ -2620,7 +2885,7 @@ var RoomSession = class {
       this._retireApproved = previousCoordinator === this.localPlayerId;
       return;
     }
-    this._startCore(commandState, commandSequences);
+    this._startCore(commandState, commandSequences, { bytes: tr.postState, hash: tr.postHash });
   }
   poll(now = this.clock()) {
     if (this.closed || this.failure) return;
@@ -2675,8 +2940,32 @@ var RoomSession = class {
       const tr = this._transition;
       if (tr) {
         if (now - tr.startedAt >= this.membership.transitionTimeoutMs) throw new Error("membership deadline exceeded");
+        if (tr.preparedState && !tr.applied) {
+          this._boundaryWork("membershipPrepareMs", () => {
+            const started = nowMs();
+            do {
+              const end = Math.min(tr.postState.length, tr.hashOffset + 65536);
+              tr.postHash = hashBytes(tr.postState.subarray(tr.hashOffset, end), tr.postHash);
+              tr.hashOffset = end;
+            } while (tr.hashOffset < tr.postState.length && nowMs() - started < this.membership.snapshotBudgetMs);
+            if (tr.hashOffset === tr.postState.length) {
+              tr.applied = true;
+              this._send(this.coordinatorId, "installed", { epoch: tr.proposal.epoch, hash: tr.postHash });
+            }
+          });
+        }
+        if (tr.stageJob) {
+          this._boundaryWork("membershipPrepareMs", () => {
+            tr.stageJob.pulse({ budgetMs: this.membership.snapshotBudgetMs });
+            if (tr.stageJob.done) {
+              const staged = tr.stageJob.result;
+              tr.stageJob = null;
+              this._acceptPreparedMembership(tr, staged, true);
+            }
+          });
+        }
         if (tr.replay) {
-          const result = tr.replay.pulse();
+          const result = this._boundaryWork("bootstrapPulseMs", () => tr.replay.pulse());
           this._stats.bootstrapTicks += result.steps ?? 0;
           if (tr.replay.done) {
             tr.replay = null;
@@ -2689,7 +2978,7 @@ var RoomSession = class {
         }
       } else if (!this._core && now - this._startedAt >= this.membership.transitionTimeoutMs) throw new Error("join deadline exceeded");
       for (const [id, link] of this._links) if (link.incoming && now - link.incoming.startedAt >= this.membership.transitionTimeoutMs) throw new Error("room transfer timeout: " + id);
-      if (this._transition?.proposal.reason !== "reconnect") this._core?.poll(now);
+      if (!this._boundaryFrozen()) this._core?.poll(now);
       if (this._core && !tr) {
         if (["interrupted", "disconnected"].includes(this._core.status)) {
           this._interruptedAt ??= now;
@@ -2761,6 +3050,14 @@ var RoomSession = class {
     try {
       this._transition?.replay?.cancel();
     } catch {
+    }
+    try {
+      this._transition?.stageJob?.cancel();
+    } catch {
+    }
+    if (this._transition) {
+      this._transition.preparedState = null;
+      this._transition.stageJob = null;
     }
     this._unsubscribeRoom?.();
     for (const link of this._links.values()) {
