@@ -44,17 +44,17 @@ function actor(prepared = false) {
   }
   return actor;
 }
-export async function runDynamicRoomScenario({ prepared = false } = {}) {
+export async function runDynamicRoomScenario({ prepared = false, paced = false } = {}) {
   const sessions=[],rooms=[],actors=[],events=[], samples=[]; let timer, target=Infinity, failure=null, maxPulseMs=0, maxCatchupPerPulse=0;
   const namespace='dynamic-e2e-'+crypto.randomUUID(),roomCode=String(Math.floor(Math.random()*10000)).padStart(4,'0');
-  const options={room:roomCode,namespace,timeoutMs:30000,peerTimeoutMs:15000,retryMs:100,advertiseIntervalMs:1000,rtcConfig:{iceServers:[]},
-    signalerFactory:opts=>createNostrSignaler({...opts,relays:['wss://fixture.invalid'],WebSocketImpl:LocalRelay,publishIntervalMs:0}),
+  const options={room:roomCode,namespace,timeoutMs:60000,peerTimeoutMs:20000,retryMs:paced?1500:100,advertiseIntervalMs:paced?5000:1000,rtcConfig:{iceServers:[]},
+    signalerFactory:opts=>createNostrSignaler({...opts,relays:['wss://fixture.invalid'],WebSocketImpl:LocalRelay,publishIntervalMs:paced?500:0}),
     peerFactory:opts=>createWebRTCPeer({...opts,rtcConfig:{iceServers:[]}})};
   const profile={...profiles.lockstep,baseInputDelayTicks:2,pacingPolicy:'none',checksumInterval:20,stateHistorySize:96,heartbeatMs:30,peerInterruptMs:500,peerTimeoutMs:8000};
-  async function add(role, slot = rooms.length){const room=await createNostrPublicRoom({...options,simulationVersion:'dynamic-browser-v1',discoveryMs:150,totalTimeoutMs:30000,leaseMs:1500,reservationMs:15000,resume:{storage:sessionStorage,key:namespace+':actor:'+slot,lifetimeMs:120000}});rooms.push(room);const a=actor(prepared);actors.push(a);const s=createRoomSession({mode:'online',room,adapter:a.adapter,inputSize:1,simulationVersion:'dynamic-browser-v1',profile,
-    membership:{transitionTimeoutMs:30000,reconnectGraceMs:10000,maxCatchupSteps:2},onEvent:e=>{if(['membership-committed','membership-failed','partition-failed'].includes(e.type))events.push(e);}});sessions.push(s);return s;}
+  async function add(role, slot = rooms.length){const room=await createNostrPublicRoom({...options,simulationVersion:'dynamic-browser-v1',discoveryMs:paced?1500:150,totalTimeoutMs:60000,leaseMs:paced?15000:1500,reservationMs:30000,resume:{storage:sessionStorage,key:namespace+':actor:'+slot,lifetimeMs:600000}});rooms.push(room);const a=actor(prepared);actors.push(a);const s=createRoomSession({mode:'online',room,adapter:a.adapter,inputSize:1,simulationVersion:'dynamic-browser-v1',profile,
+    membership:{transitionTimeoutMs:60000,reconnectGraceMs:30000,maxCatchupSteps:2},onEvent:e=>{if(['membership-committed','membership-failed','partition-failed'].includes(e.type))events.push(e);}});sessions.push(s);return s;}
   function pulse(){const start=performance.now();try{for(const s of sessions)if(!s.closed){const before=s.metrics.bootstrapTicks;s.poll();maxCatchupPerPulse=Math.max(maxCatchupPerPulse,s.metrics.bootstrapTicks-before);if(!s.closed&&s.tick<target&&!s.resimulating)s.advance(new Uint8Array([1]));if(s.failure)throw new Error(JSON.stringify({player:s.localPlayerId,failure:s.failure}));}}catch(error){failure=error;}maxPulseMs=Math.max(maxPulseMs,performance.now()-start);}
-  async function until(predicate,label,timeoutMs=35000){const end=performance.now()+timeoutMs;while(!predicate()){if(failure)throw failure;if(performance.now()>end)throw new Error(label+' timeout '+JSON.stringify(sessions.map(s=>({tick:s.tick,epoch:s.epoch,status:s.status,transition:s._transition&&{target:s._transition.target,prepared:s._transition.prepared.size,reached:s._transition.reached.size,installed:s._transition.installed.size,committed:s._transition.committed.size}}))));await sleep(10);}}
+  async function until(predicate,label,timeoutMs=65000){const end=performance.now()+timeoutMs;while(!predicate()){if(failure)throw failure;if(performance.now()>end)throw new Error(label+' timeout '+JSON.stringify(sessions.map(s=>({tick:s.tick,epoch:s.epoch,status:s.status,transition:s._transition&&{target:s._transition.target,prepared:s._transition.prepared.size,reached:s._transition.reached.size,installed:s._transition.installed.size,committed:s._transition.committed.size}}))));await sleep(10);}}
   async function checkpoint(label){const active=sessions.filter(s=>!s.closed);target=Math.max(...active.map(s=>s.tick));await until(()=>active.every(s=>s.tick===target),'checkpoint '+label);const hashes=active.map(s=>s.getStateHash());assert(new Set(hashes).size===1,'hash mismatch '+label);samples.push({label,tick:target,hash:hashes[0],players:active.length});target=Infinity;}
   try{
     let host=await add('host');timer=setInterval(pulse,8);await until(()=>host.tick>=75,'single start');
@@ -75,7 +75,7 @@ export async function runDynamicRoomScenario({ prepared = false } = {}) {
     const departing=host.leave();await until(()=>host.closed&&sessions.filter(s=>!s.closed).every(s=>s.players.length===4&&s.coordinatorId!==host.localPlayerId),'coordinator succession');await departing;
     const prior=Math.max(...sessions.filter(s=>!s.closed).map(s=>s.tick));await until(()=>sessions.filter(s=>!s.closed).every(s=>s.tick>=prior+25),'successor simulation');await checkpoint('coordinator-left');
     assert(actors.filter((a,i)=>!sessions[i].closed).every(a=>a.state().joins===5&&a.state().leaves===1),'membership exactly-once');
-    return {passed:true,snapshotPath:prepared?'cooperative fixture':'legacy',transport:'real Chromium RTCPeerConnections; public directory/reservations via signed local Nostr relay fixture',samples,connections:connections/2,bytesSent,maxPulseMs,maxCatchupPerPulse,
+    return {passed:true,publishIntervalMs:paced?500:0,snapshotPath:prepared?'cooperative fixture':'legacy',transport:'real Chromium RTCPeerConnections; public directory/reservations via signed local Nostr relay fixture',samples,connections:connections/2,bytesSent,maxPulseMs,maxCatchupPerPulse,
       metrics:sessions.map(s=>s.metrics),snapshotSaves:actors.map(a=>a.saves),events};
   }finally{clearInterval(timer);sessions.forEach(s=>s.close());rooms.forEach(r=>r.close());}
 }
