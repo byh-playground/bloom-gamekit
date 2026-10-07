@@ -1,36 +1,42 @@
 # bloom-gamekit
 
-브라우저 게임에서 공통으로 쓰는 보간·렌더링·입력·실행·결정론·전송·리플레이·롤백 기능을 독립 패키지로 개발하는 모노레포입니다. 필요한 기능만 골라 조합하며, 게임 전체를 소유하는 범용 엔진 클래스는 만들지 않습니다.
+브라우저 게임에서 공통으로 쓰는 보간·렌더링·입력·실행·결정론·전송·리플레이·롤백 기능을 독립 모듈로 개발하는 저장소입니다. 필요한 기능만 골라 조합하며, 게임 전체를 소유하는 범용 엔진 클래스는 만들지 않습니다.
 
 **모든 공개 기능은 독립적인 plain JavaScript ESM입니다.** 소비자는 필요한 파일만 가져가며 외부 import나 공유 chunk를 요구하지 않습니다. 보간은 pose, WebGL renderer/device는 GPU 제출·자원, input은 장치 이벤트/action, simloop는 실행 스케줄, camera는 투영, presentation-events는 표현 자원, hud는 화면 anchor, debug-tools는 진단을 소유합니다. 결정론·전송·리플레이·rollback은 기존 SDK 구현을 책임별로 분리했으며, 이전 후 수정 이력은 SDK 출처 문서에 구분해 기록합니다.
 
 ## 시작하기
 
-- [보간 API·시간·생명주기 계약](packages/interpolation/README.md)
-- [WebGL 1 렌더링 API·texture·생명주기](packages/rendering/README.md)
-- [입력 action·DOM·tick 소비 계약](packages/input/README.md)
-- [카메라·표현 이벤트](packages/presentation-events/README.md) · [HUD](packages/hud/README.md) · [진단](packages/debug-tools/README.md) · [카메라](packages/camera/README.md)
-- [동적 방·공개 입장·새로고침 복구](packages/rollback/README.md) · [Nostr 디렉터리·전송](packages/transport/README.md)
-- [SDK 전체/분리 API와 이전](packages/rollback-netcode/README.md)
-- [실제 독립 번들을 연결하는 사용 예제](examples/interpolation/index.html)
-- [연속 E2E와 CPU 측정](tests/interpolation.e2e.mjs)
+- [보간 API·시간·생명주기 계약](./modules/interpolation/README.md)
+- [WebGL 1 렌더링 API·texture·생명주기](./modules/rendering/README.md)
+- [입력 action·DOM·tick 소비 계약](./modules/input/README.md)
+- [카메라·표현 이벤트](./modules/presentation-events/README.md) · [HUD](./modules/hud/README.md) · [진단](./modules/debug-tools/README.md) · [카메라](./modules/camera/README.md)
+- [동적 방·공개 입장·새로고침 복구](./modules/rollback/README.md) · [Nostr 디렉터리·전송](./modules/transport/README.md)
+- [SDK 전체/분리 API와 이전](./modules/rollback-netcode/README.md)
+- [실제 독립 번들을 연결하는 사용 예제](./examples/interpolation/index.html)
+- [연속 E2E와 CPU 측정](./tests/interpolation.e2e.mjs)
 
 ```text
-packages/interpolation/src/   schema.js · timeline.js · tracks.js · index.js
-packages/rendering/src/      index.js (WebGL 1 kernel)
-packages/input/src/          actions.js · dom.js · index.js
-packages/*/README.md         모듈별 API·비용·제한 계약
-examples/interpolation/      입력 → 고정 틱 → 보간 → WebGL 통합 예제
-scripts/                     빌드·배포 도구
-tests/                      연속 E2E·Worker 표본·Chromium 실행 검사
-.github/workflows/ci.yml      PR 검사 / main→dist 자동 생성
+modules/<module>/*.js            모듈의 runtime 소스 (중첩 src/ 없음)
+modules/<module>/README.md       모듈별 API·비용·제한 계약
+modules/<module>/tests/          모듈 소유 단위·회귀 검사와 fixture
+modules/<module>/docs/           모듈 설계·이전·측정 기록
+modules/<module>/examples/       해당 모듈의 실행 예제
+modules/<module>/scripts/        해당 모듈의 실행·검증·측정 도구
+modules/rollback-netcode/legacy/ 기존 SDK의 원본 snapshot·출처
+examples/interpolation/     입력 → 고정 틱 → 보간 → WebGL 통합 예제
+tests/                      여러 모듈을 연결하는 연속 E2E·Worker 표본
+docs/                       여러 모듈을 함께 다루는 리뷰·측정
+scripts/                    공통 빌드·배포·통합 검사 도구
+.github/workflows/ci.yml     PR 검사 / main→dist 자동 생성
 ```
 
-개발 명령은 `npm ci`, `npm test`, `npm run test:browser`입니다. 브라우저 첫 설치는 `npx playwright install chromium`입니다. 루트 package.json은 개발 도구만 관리하며 모듈별 버전·workspace·npm 발행은 아직 도입하지 않았습니다.
+개발 명령은 `npm ci`, `npm test`, `npm run test:browser`입니다. 브라우저 첫 설치는 `npx playwright install chromium`입니다. 소스·문서·검사·예제·도구는 기능을 소유한 모듈에 함께 둡니다. 루트의 docs/scripts/tests/examples는 여러 모듈을 실제로 함께 다루는 것만 유지합니다. `rollback-netcode`는 분리 모듈의 호환 진입점과 SDK 전체를 검증하는 예제·검사를 소유합니다.
+
+루트 package.json은 개발 도구만 관리하며 모듈별 버전·workspace·npm 발행은 아직 도입하지 않았습니다.
 
 ## GitHub 파일 배포
 
-PR에서는 빌드·Node E2E·Chromium 예제만 읽기 권한으로 검사합니다. main에 승인된 변경이 들어오면 GitHub Actions가 빌드·검사한 결과와 같은 번들을 확인한 후 `dist` 브랜치의 `interpolation.js`, `rendering.js`, `input.js`, `manifest.json`을 자동 갱신합니다. 모듈의 정확한 목록은 scripts/distribution.mjs와 생성 manifest가 소유합니다. 생성 JS는 소스 커밋에 넣지 않습니다. 표준 `ubuntu-latest`만 사용하며 유료 runner·artifact 저장·Release·npm·Pages는 쓰지 않습니다. 공개 저장소의 무료 표준 runner 정책 범위에서 동작합니다.
+PR에서는 빌드·Node E2E·Chromium 예제만 읽기 권한으로 검사합니다. main에 승인된 변경이 들어오면 GitHub Actions가 빌드·검사한 결과와 같은 번들을 확인한 후 `dist` 브랜치의 공개 13개 JavaScript 번들과 `manifest.json`을 자동 갱신합니다. 모듈의 정확한 목록은 scripts/distribution.mjs와 생성 manifest가 소유합니다. 생성 JS는 소스 커밋에 넣지 않습니다. 표준 `ubuntu-latest`만 사용하며 유료 runner·artifact 저장·Release·npm·Pages는 쓰지 않습니다. 공개 저장소의 무료 표준 runner 정책 범위에서 동작합니다.
 
 main 실행이 성공하면 [interpolation.js](https://github.com/byh-playground/bloom-gamekit/blob/dist/interpolation.js), [rendering.js](https://github.com/byh-playground/bloom-gamekit/blob/dist/rendering.js), [input.js](https://github.com/byh-playground/bloom-gamekit/blob/dist/input.js), [hash manifest](https://github.com/byh-playground/bloom-gamekit/blob/dist/manifest.json)에서 파일을 공유할 수 있습니다. GitHub Raw URL은 JS MIME/CORS를 보장하는 웹 호스팅 계약이 아니므로 브라우저의 직접 import 주소로 가정하지 마세요. 파일을 받아 게임과 함께 호스팅하고, 재현이 필요하면 dist 커밋 SHA를 고정하세요. dist 커밋 메시지에 source commit과 manifest/각 번들의 SHA-256이 기록됩니다. 검사 job의 manifest hash와 배포 직전 모든 재빌드 파일을 대조합니다. 기존 dist의 다른 파일은 보존하고, stale main 실행은 건너뛰며 경합 시 non-fast-forward로 중단합니다. 브랜치 게시의 실제 성공은 main 머지 후 별도로 확인해야 합니다.
 
@@ -47,7 +53,7 @@ main 실행이 성공하면 [interpolation.js](https://github.com/byh-playground
 
 ## rollback SDK 이전과 게임 경계
 
-기존 [rollback-netcode](https://github.com/byh-playground/rollback-netcode)의 검증된 소스를 이 저장소로 책임별 이전했습니다. [호환 API·출처·이전 방법](packages/rollback-netcode/README.md)을 참조하세요. 기존 저장소는 보존하며 입력 순서·명령 sequence·tick·예측·롤백·복구는 새로 구현하지 않습니다. `deterministic.js`, `simloop.js`, `transport.js`, `replay.js`, `rollback.js` 또는 전체 API 호환 `rollback-netcode.js`를 선택할 수 있습니다. 분리 모듈도 외부 runtime import가 없으며 dist commit SHA와 manifest hash로 고정합니다.
+기존 [rollback-netcode 보존 snapshot](modules/rollback-netcode/legacy/README.md)의 검증된 소스를 이 저장소로 책임별 이전했습니다. [호환 API·출처·이전 방법](./modules/rollback-netcode/README.md)을 참조하세요. 기존 저장소는 보존하며 입력 순서·명령 sequence·tick·예측·롤백·복구는 새로 구현하지 않습니다. `deterministic.js`, `simloop.js`, `transport.js`, `replay.js`, `rollback.js` 또는 전체 API 호환 `rollback-netcode.js`를 선택할 수 있습니다. 분리 모듈도 외부 runtime import가 없으며 dist commit SHA와 manifest hash로 고정합니다.
 
 게임은 자신의 Definition·규칙·권위 상태·완전한 snapshot과 결정론적 어댑터를 소유합니다. UI와 AI가 제출한 행동은 같은 명령 경로를 거쳐 SDK가 정한 tick에서 실행됩니다. input 패키지는 기기 이벤트를 정리할 뿐, 자체 타이머로 명령을 실행하거나 권위 상태를 직접 수정하지 않습니다. 포커스 상실과 입력 해제도 같은 입력 계약에 연결합니다.
 
@@ -99,6 +105,6 @@ main 실행이 성공하면 [interpolation.js](https://github.com/byh-playground
 
 - [RALLY FRONTIER](https://github.com/byh-playground/rally-frontier): 게임·SDK·표현의 경계와 공통 작업 운영
 - [Budmori.io](https://github.com/byh-playground/budmori-io): 최적화 우선, Definition, ms 시간, 실제 게임 E2E 기준
-- [rollback-netcode 개발 계약](https://github.com/byh-playground/rollback-netcode/blob/main/CONTRACT.md): 결정론·명령·틱·snapshot·복구의 기준
+- [rollback-netcode 개발 계약](modules/rollback-netcode/CONTRACT.md): 결정론·명령·틱·snapshot·복구의 기준
 
 게임별 README의 실행물 구성·길찾기·전투 규칙은 각 게임에 남깁니다. 이 저장소에는 함께 사용할 수 있는 공통 경계만 가져옵니다.

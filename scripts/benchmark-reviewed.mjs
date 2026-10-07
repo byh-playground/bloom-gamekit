@@ -1,18 +1,23 @@
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import { cpus, platform, arch } from 'node:os';
+import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 // Run: node --expose-gc scripts/benchmark-reviewed.mjs /path/to/baseline-checkout [current-checkout]
 if (!process.argv[2]) throw Error('Provide the baseline source checkout path');
 const baseline = resolve(process.argv[2]), current = resolve(process.argv[3] ?? '.');
-const load = (root, path) => import(pathToFileURL(resolve(root, path)).href);
-const beforeEvents = await load(baseline, 'packages/presentation-events/src/index.js');
-const afterEvents = await load(current, 'packages/presentation-events/src/index.js');
-const beforeLoop = await load(baseline, 'packages/simloop/src/loop.js');
-const afterLoop = await load(current, 'packages/simloop/src/loop.js');
-const { createSession } = await load(current, 'packages/rollback/src/core.js');
+// Accept both the pinned pre-restructure baseline and the module-first source tree.
+const load = (root, path) => {
+  const legacy = path.replace(/^modules\/([^/]+)\//, 'packages/$1/src/');
+  return import(pathToFileURL(resolve(root, existsSync(resolve(root, path)) ? path : legacy)).href);
+};
+const beforeEvents = await load(baseline, 'modules/presentation-events/index.js');
+const afterEvents = await load(current, 'modules/presentation-events/index.js');
+const beforeLoop = await load(baseline, 'modules/simloop/loop.js');
+const afterLoop = await load(current, 'modules/simloop/loop.js');
+const { createSession } = await load(current, 'modules/rollback/core.js');
 
 function presentation(Before, After) {
 

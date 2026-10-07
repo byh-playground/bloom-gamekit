@@ -38,9 +38,11 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Build and test the independent bundles
         run: npm test
+      - name: Check relocated SDK type declarations
+        run: npx --yes --package typescript@5.9.3 tsc --noEmit --strict --lib ES2022,DOM --module nodenext --moduleResolution nodenext modules/rollback-netcode/tests/types.test.ts
       - name: Install official Chromium
         run: npx --no-install playwright install --with-deps chromium
-      - name: Exercise the browser example
+      - name: Exercise integration and module browser examples
         run: npm run test:browser
       - name: Verify deterministic output
         id: manifest

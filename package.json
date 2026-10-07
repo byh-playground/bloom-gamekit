@@ -7,8 +7,15 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "test": "npm run build && node tests/interpolation.e2e.mjs && node --test tests/input.test.mjs tests/device-options.test.mjs scripts/*.test.mjs tests/rollback/*.test.mjs && node tests/presentation.e2e.mjs",
-    "test:browser": "node scripts/browser-tests.mjs"
+    "test": "npm run build && node tests/interpolation.e2e.mjs && node --test scripts/*.test.mjs modules/*/tests/*.test.mjs && node tests/presentation.e2e.mjs",
+    "test:browser": "node scripts/browser-tests.mjs",
+    "test:rollback-demo": "node modules/rollback-netcode/scripts/demo-check.mjs",
+    "test:rollback-live": "node modules/rollback-netcode/scripts/live-room-check.mjs",
+    "benchmark:rollback": "node modules/rollback-netcode/scripts/benchmark.mjs",
+    "benchmark:rollback-primitives": "node modules/rollback-netcode/scripts/primitives-benchmark.mjs",
+    "benchmark:rally": "node modules/rollback-netcode/scripts/rally-benchmark.mjs",
+    "serve:rollback-group": "node modules/rollback-netcode/scripts/group-browser-serve.mjs",
+    "serve:rollback-demo": "node modules/rollback-netcode/scripts/demo-serve.mjs"
   },
   "devDependencies": {
     "esbuild": "0.28.2",
