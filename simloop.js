@@ -1,4 +1,4 @@
-// packages/simloop/src/loop.js
+// modules/simloop/loop.js
 function createLoop({
   session,
   getInput = () => new Uint8Array(session.inputSize),

@@ -1,4 +1,4 @@
-// packages/debug-tools/src/index.js
+// modules/debug-tools/index.js
 var bound = (value, name, min = 1, max = 1e5) => {
   if (!Number.isInteger(value) || value < min || value > max) throw new RangeError(`${name} outside supported range`);
   return value;

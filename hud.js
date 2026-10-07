@@ -1,4 +1,4 @@
-// packages/hud/src/index.js
+// modules/hud/index.js
 var finite = (value, name) => {
   if (!Number.isFinite(value)) throw new TypeError(`${name} must be finite`);
   return value;

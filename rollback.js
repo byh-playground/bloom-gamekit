@@ -1,4 +1,4 @@
-// packages/deterministic/src/utilities.js
+// modules/deterministic/utilities.js
 var nowMs = () => globalThis.performance?.now() ?? Date.now();
 var compareIds = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 function integer(value, name, min = 0, max = 4294967295) {
@@ -41,7 +41,7 @@ var fixedPoint = Object.freeze({
   }
 });
 
-// packages/_rollback-shared/src/protocol.js
+// modules/_rollback-shared/protocol.js
 var VERSION = "0.2.0-dev";
 var PROTOCOL_VERSION = 1;
 var CHUNK_SIZE = 16384;
@@ -222,7 +222,7 @@ function runSimulationFrame(adapter, context) {
   })) });
 }
 
-// packages/_rollback-shared/src/history.js
+// modules/_rollback-shared/history.js
 var StateHistory = class {
   constructor(size, maxBytes = 64 * 1024 * 1024) {
     this.slots = new Array(size);
@@ -286,7 +286,7 @@ var CheckpointHistory = class {
   }
 };
 
-// packages/rollback/src/core.js
+// modules/rollback/core.js
 function copyLocalCommandState(state, inputSize, profile, executedSequence = 0) {
   if (!state || typeof state !== "object") throw new TypeError("localCommandState");
   const sequence = integer(state.sequence, "local command sequence", executedSequence);
@@ -1548,7 +1548,7 @@ var RollbackSession = class {
   }
 };
 
-// packages/rollback/src/bootstrap.js
+// modules/rollback/bootstrap.js
 var MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024;
 var MAX_SUFFIX_TICKS = 8192;
 function roster(value, name) {
@@ -1923,7 +1923,7 @@ function createCooperativeReplay({ adapter, candidate, context, maxSnapshotBytes
   });
 }
 
-// packages/deterministic/src/value-codec.js
+// modules/deterministic/value-codec.js
 function createValueCodec({ format = "binary", maxBytes = 16 * 1024 * 1024, maxDepth = 128, maxEntries = 1e6 } = {}) {
   if (!["binary", "json"].includes(format)) throw new TypeError("Unknown codec format");
   for (const limit of [maxBytes, maxDepth, maxEntries]) if (!Number.isSafeInteger(limit) || limit < 1) throw new RangeError("Invalid codec limit");
@@ -2172,7 +2172,7 @@ function createValueCodec({ format = "binary", maxBytes = 16 * 1024 * 1024, maxD
 var binaryCodec = createValueCodec();
 var jsonCodec = createValueCodec({ format: "json" });
 
-// packages/rollback/src/room-session.js
+// modules/rollback/room-session.js
 var ROOM_MAGIC = 827477316;
 var WIRE_HEADER = 24;
 var MAX_EPOCH = 65534;

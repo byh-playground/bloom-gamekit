@@ -1,4 +1,4 @@
-// packages/deterministic/src/utilities.js
+// modules/deterministic/utilities.js
 var compareIds = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 function integer(value, name, min = 0, max = 4294967295) {
   if (!Number.isSafeInteger(value) || value < min || value > max) throw new RangeError(name);
@@ -67,7 +67,7 @@ var fixedPoint = Object.freeze({
   }
 });
 
-// packages/deterministic/src/value-codec.js
+// modules/deterministic/value-codec.js
 function createValueCodec({ format = "binary", maxBytes = 16 * 1024 * 1024, maxDepth = 128, maxEntries = 1e6 } = {}) {
   if (!["binary", "json"].includes(format)) throw new TypeError("Unknown codec format");
   for (const limit of [maxBytes, maxDepth, maxEntries]) if (!Number.isSafeInteger(limit) || limit < 1) throw new RangeError("Invalid codec limit");
@@ -316,7 +316,7 @@ function createValueCodec({ format = "binary", maxBytes = 16 * 1024 * 1024, maxD
 var binaryCodec = createValueCodec();
 var jsonCodec = createValueCodec({ format: "json" });
 
-// packages/_rollback-shared/src/protocol.js
+// modules/_rollback-shared/protocol.js
 var CHUNK_SIZE = 16384;
 var MAX_TICK = 2147483646;
 var defaults = {
@@ -395,7 +395,7 @@ function runSimulationFrame(adapter, context) {
   })) });
 }
 
-// packages/_rollback-shared/src/history.js
+// modules/_rollback-shared/history.js
 var StateHistory = class {
   constructor(size, maxBytes = 64 * 1024 * 1024) {
     this.slots = new Array(size);
@@ -421,7 +421,7 @@ var StateHistory = class {
   }
 };
 
-// packages/deterministic/src/synctest.js
+// modules/deterministic/synctest.js
 var DeterminismError = class extends Error {
   constructor({ tick, checkpointTick, expected, actual, inputs }) {
     let offset = 0;

@@ -1,4 +1,4 @@
-// packages/deterministic/src/utilities.js
+// modules/deterministic/utilities.js
 var nowMs = () => globalThis.performance?.now() ?? Date.now();
 var compareIds = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 function integer(value, name, min = 0, max = 4294967295) {
@@ -36,7 +36,7 @@ var fixedPoint = Object.freeze({
   }
 });
 
-// packages/_rollback-shared/src/protocol.js
+// modules/_rollback-shared/protocol.js
 var PROTOCOL_VERSION = 1;
 var CHUNK_SIZE = 16384;
 var defaults = {
@@ -105,7 +105,7 @@ var TYPE = Object.freeze({
 var HEADER = 12;
 var SNAP_CHUNK_BYTES = CHUNK_SIZE - HEADER - 8;
 
-// packages/transport/src/webrtc.js
+// modules/transport/webrtc.js
 var WebRTCTransport = class {
   constructor({ inputChannel, controlChannel, highWaterMark = 262144, lowWaterMark = 65536 } = {}) {
     if (!controlChannel || typeof controlChannel.send !== "function") throw new TypeError("controlChannel");
@@ -350,7 +350,7 @@ function createWebRTCPeer({
   return result;
 }
 
-// packages/transport/src/nostr-crypto.js
+// modules/transport/nostr-crypto.js
 var nostrField = 0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2fn;
 var nostrOrder = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
 var nostrGenerator = [
@@ -551,7 +551,7 @@ var nostrCrypto = Object.freeze({
   verify: (nostrSignature, nostrMessage, nostrPublic) => nostrVerify(nostrSignature, nostrMessage, nostrPublic, globalThis.crypto)
 });
 
-// packages/transport/src/nostr.js
+// modules/transport/nostr.js
 var nostrHex32 = /^[0-9a-f]{64}$/;
 var nostrHex64 = /^[0-9a-f]{128}$/;
 var nostrSignalTypes = /* @__PURE__ */ new Set(["discover", "presence", "offer", "answer", "ice", "bye", "group"]);
@@ -972,7 +972,7 @@ async function createNostrSignaler({
   };
 }
 
-// packages/transport/src/room.js
+// modules/transport/room.js
 async function createNostrRoom({
   role,
   room,
@@ -1130,7 +1130,7 @@ async function createNostrRoom({
   });
 }
 
-// packages/transport/src/star-transport.js
+// modules/transport/star-transport.js
 var starHeader = 24;
 var starPayload = CHUNK_SIZE - starHeader;
 var starMagic = 827544658;
@@ -1376,7 +1376,7 @@ function createStarTransports({
   } };
 }
 
-// packages/transport/src/group-room.js
+// modules/transport/group-room.js
 function groupRoomId(value) {
   return typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 }
@@ -1799,7 +1799,7 @@ async function createNostrGroupRoom({
   });
 }
 
-// packages/transport/src/room-resume-identity.js
+// modules/transport/room-resume-identity.js
 var hex32 = /^[0-9a-f]{64}$/;
 function createRoomResumeIdentity({ storage, key, lifetimeMs = 8 * 60 * 60 * 1e3, reset = false } = {}, { namespace, room }) {
   if (!storage || ["getItem", "setItem", "removeItem"].some((name) => typeof storage[name] !== "function")) throw new TypeError("resume storage capability");
@@ -1895,7 +1895,7 @@ function createRoomResumeIdentity({ storage, key, lifetimeMs = 8 * 60 * 60 * 1e3
   };
 }
 
-// packages/transport/src/dynamic-room.js
+// modules/transport/dynamic-room.js
 var validId = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 var signalTypes = /* @__PURE__ */ new Set(["offer", "answer", "ice", "bye"]);
 var PROBE_MAGIC = new Uint8Array([66, 77, 68, 89, 78, 80, 82, 49]);
@@ -2739,7 +2739,7 @@ async function createNostrDynamicRoom({
   return ready;
 }
 
-// packages/transport/src/public-room.js
+// modules/transport/public-room.js
 var idValid = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 var randomId2 = () => [...globalThis.crypto.getRandomValues(new Uint8Array(16))].map((n) => n.toString(16).padStart(2, "0")).join("");
 var randomRoom = () => String(globalThis.crypto.getRandomValues(new Uint32Array(1))[0] % 1e4).padStart(4, "0");

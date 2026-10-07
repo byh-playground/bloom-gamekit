@@ -1,4 +1,4 @@
-// packages/deterministic/src/utilities.js
+// modules/deterministic/utilities.js
 var nowMs = () => globalThis.performance?.now() ?? Date.now();
 var compareIds = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 function integer(value, name, min = 0, max = 4294967295) {
@@ -68,7 +68,7 @@ var fixedPoint = Object.freeze({
   }
 });
 
-// packages/_rollback-shared/src/protocol.js
+// modules/_rollback-shared/protocol.js
 var VERSION = "0.2.0-dev";
 var PROTOCOL_VERSION = 1;
 var CHUNK_SIZE = 16384;
@@ -249,7 +249,7 @@ function runSimulationFrame(adapter, context) {
   })) });
 }
 
-// packages/_rollback-shared/src/history.js
+// modules/_rollback-shared/history.js
 var StateHistory = class {
   constructor(size, maxBytes = 64 * 1024 * 1024) {
     this.slots = new Array(size);
@@ -313,7 +313,7 @@ var CheckpointHistory = class {
   }
 };
 
-// packages/rollback/src/core.js
+// modules/rollback/core.js
 function copyLocalCommandState(state, inputSize, profile, executedSequence = 0) {
   if (!state || typeof state !== "object") throw new TypeError("localCommandState");
   const sequence = integer(state.sequence, "local command sequence", executedSequence);
@@ -1575,7 +1575,7 @@ var RollbackSession = class {
   }
 };
 
-// packages/rollback/src/bootstrap.js
+// modules/rollback/bootstrap.js
 var MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024;
 var MAX_SUFFIX_TICKS = 8192;
 function roster(value, name) {
@@ -1950,7 +1950,7 @@ function createCooperativeReplay({ adapter, candidate, context, maxSnapshotBytes
   });
 }
 
-// packages/deterministic/src/value-codec.js
+// modules/deterministic/value-codec.js
 function createValueCodec({ format = "binary", maxBytes = 16 * 1024 * 1024, maxDepth = 128, maxEntries = 1e6 } = {}) {
   if (!["binary", "json"].includes(format)) throw new TypeError("Unknown codec format");
   for (const limit of [maxBytes, maxDepth, maxEntries]) if (!Number.isSafeInteger(limit) || limit < 1) throw new RangeError("Invalid codec limit");
@@ -2199,7 +2199,7 @@ function createValueCodec({ format = "binary", maxBytes = 16 * 1024 * 1024, maxD
 var binaryCodec = createValueCodec();
 var jsonCodec = createValueCodec({ format: "json" });
 
-// packages/rollback/src/room-session.js
+// modules/rollback/room-session.js
 var ROOM_MAGIC = 827477316;
 var WIRE_HEADER = 24;
 var MAX_EPOCH = 65534;
@@ -3073,7 +3073,7 @@ var RoomSession = class {
   }
 };
 
-// packages/deterministic/src/synctest.js
+// modules/deterministic/synctest.js
 var DeterminismError = class extends Error {
   constructor({ tick, checkpointTick, expected, actual, inputs }) {
     let offset = 0;
@@ -3305,7 +3305,7 @@ async function runSyncTestAsync({ frames, yieldControl = () => new Promise((reso
   }
 }
 
-// packages/simloop/src/loop.js
+// modules/simloop/loop.js
 function createLoop({
   session,
   getInput = () => new Uint8Array(session.inputSize),
@@ -3423,7 +3423,7 @@ function createLoop({
   } };
 }
 
-// packages/transport/src/webrtc.js
+// modules/transport/webrtc.js
 var WebRTCTransport = class {
   constructor({ inputChannel, controlChannel, highWaterMark = 262144, lowWaterMark = 65536 } = {}) {
     if (!controlChannel || typeof controlChannel.send !== "function") throw new TypeError("controlChannel");
@@ -3668,7 +3668,7 @@ function createWebRTCPeer({
   return result;
 }
 
-// packages/transport/src/nostr-crypto.js
+// modules/transport/nostr-crypto.js
 var nostrField = 0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2fn;
 var nostrOrder = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
 var nostrGenerator = [
@@ -3869,7 +3869,7 @@ var nostrCrypto = Object.freeze({
   verify: (nostrSignature, nostrMessage, nostrPublic) => nostrVerify(nostrSignature, nostrMessage, nostrPublic, globalThis.crypto)
 });
 
-// packages/transport/src/nostr.js
+// modules/transport/nostr.js
 var nostrHex32 = /^[0-9a-f]{64}$/;
 var nostrHex64 = /^[0-9a-f]{128}$/;
 var nostrSignalTypes = /* @__PURE__ */ new Set(["discover", "presence", "offer", "answer", "ice", "bye", "group"]);
@@ -4290,7 +4290,7 @@ async function createNostrSignaler({
   };
 }
 
-// packages/transport/src/room.js
+// modules/transport/room.js
 async function createNostrRoom({
   role,
   room,
@@ -4448,7 +4448,7 @@ async function createNostrRoom({
   });
 }
 
-// packages/transport/src/star-transport.js
+// modules/transport/star-transport.js
 var starHeader = 24;
 var starPayload = CHUNK_SIZE - starHeader;
 var starMagic = 827544658;
@@ -4694,7 +4694,7 @@ function createStarTransports({
   } };
 }
 
-// packages/transport/src/group-room.js
+// modules/transport/group-room.js
 function groupRoomId(value) {
   return typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 }
@@ -5117,7 +5117,7 @@ async function createNostrGroupRoom({
   });
 }
 
-// packages/transport/src/room-resume-identity.js
+// modules/transport/room-resume-identity.js
 var hex32 = /^[0-9a-f]{64}$/;
 function createRoomResumeIdentity({ storage, key, lifetimeMs = 8 * 60 * 60 * 1e3, reset = false } = {}, { namespace, room }) {
   if (!storage || ["getItem", "setItem", "removeItem"].some((name) => typeof storage[name] !== "function")) throw new TypeError("resume storage capability");
@@ -5213,7 +5213,7 @@ function createRoomResumeIdentity({ storage, key, lifetimeMs = 8 * 60 * 60 * 1e3
   };
 }
 
-// packages/transport/src/dynamic-room.js
+// modules/transport/dynamic-room.js
 var validId = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 var signalTypes = /* @__PURE__ */ new Set(["offer", "answer", "ice", "bye"]);
 var PROBE_MAGIC = new Uint8Array([66, 77, 68, 89, 78, 80, 82, 49]);
@@ -6057,7 +6057,7 @@ async function createNostrDynamicRoom({
   return ready;
 }
 
-// packages/transport/src/public-room.js
+// modules/transport/public-room.js
 var idValid2 = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 var randomId2 = () => [...globalThis.crypto.getRandomValues(new Uint8Array(16))].map((n) => n.toString(16).padStart(2, "0")).join("");
 var randomRoom = () => String(globalThis.crypto.getRandomValues(new Uint32Array(1))[0] % 1e4).padStart(4, "0");
@@ -6562,7 +6562,7 @@ async function createNostrPublicRoom({
   }
 }
 
-// packages/replay/src/index.js
+// modules/replay/index.js
 function playReplay({ adapter, replay, simulationVersion = replay?.simulationVersion } = {}) {
   if (replay?.version !== VERSION || replay.simulationVersion !== simulationVersion || !Array.isArray(replay.frames)) throw new Error("replay compatibility");
   adapter.load(bytes(replay.initialState).slice());

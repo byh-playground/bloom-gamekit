@@ -1,4 +1,4 @@
-// packages/deterministic/src/utilities.js
+// modules/deterministic/utilities.js
 function integer(value, name, min = 0, max = 4294967295) {
   if (!Number.isSafeInteger(value) || value < min || value > max) throw new RangeError(name);
   return value;
@@ -34,7 +34,7 @@ var fixedPoint = Object.freeze({
   }
 });
 
-// packages/_rollback-shared/src/protocol.js
+// modules/_rollback-shared/protocol.js
 var VERSION = "0.2.0-dev";
 var CHUNK_SIZE = 16384;
 var defaults = {
@@ -113,7 +113,7 @@ function runSimulationFrame(adapter, context) {
   })) });
 }
 
-// packages/replay/src/index.js
+// modules/replay/index.js
 function playReplay({ adapter, replay, simulationVersion = replay?.simulationVersion } = {}) {
   if (replay?.version !== VERSION || replay.simulationVersion !== simulationVersion || !Array.isArray(replay.frames)) throw new Error("replay compatibility");
   adapter.load(bytes(replay.initialState).slice());

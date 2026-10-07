@@ -1,4 +1,4 @@
-// packages/camera/src/index.js
+// modules/camera/index.js
 var finite = (n, name) => {
   if (!Number.isFinite(n)) throw new TypeError(`${name} must be finite`);
   return n;

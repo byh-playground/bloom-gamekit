@@ -3,55 +3,55 @@
   "modules": [
     {
       "file": "interpolation.js",
-      "sha256": "f0affef627f5a6195892b80480ae2ffb28676f2526840f5a5c11e49b7ac08b1a"
+      "sha256": "23c90f377beb1fd2389023f42d11137c3c6e63ea148e07eb938882aeb9e9c45f"
     },
     {
       "file": "rendering.js",
-      "sha256": "6a8ca01bca9db3282ba3a66a9881ebcd4719df798f9ff0d471e5df23f471ccb1"
+      "sha256": "b6030b90345a31f7aad9cb832d3c47f775fff43f0990c7b925768a55a1a0017e"
     },
     {
       "file": "input.js",
-      "sha256": "6cca8d6d870df9baed3b51c5cff2090746953a54f4cd1dc4a466475ec07e5c85"
+      "sha256": "ae84399953c7e54c8d96408c97208f42b2246a8ac27ef5265053cb0beb306168"
     },
     {
       "file": "deterministic.js",
-      "sha256": "73220d0abc59460aec36b226042353359a084461bb425061a396c9ebee1ce573"
+      "sha256": "00ef12c8300fa6eda38d7a814bb136ecd6787d5f5cfbe620a123663528467654"
     },
     {
       "file": "simloop.js",
-      "sha256": "a348d2d6bf84779b1710391d4e8d4c790cb5c3899bc38fa635e03f7e0cf4548c"
+      "sha256": "8d5db14ef87387d4dfab5db025e28f5f78292a476792598b843d68d417054cee"
     },
     {
       "file": "transport.js",
-      "sha256": "211708a85a648a00ac709290a31b2b2b8b11269659a4b34f9656ef99a5aa3ec4"
+      "sha256": "c4a7e3138111e626f4e35f97135e6e5a3aa7f0d3e41fe8da8c8b27ecc0d8276a"
     },
     {
       "file": "replay.js",
-      "sha256": "e3bc407c634a49e6c9a2b4724efccd959ad91082474fe2c3848e7bdad46ee7b9"
+      "sha256": "869d9bbd3ebdf1d7de8859782266dd6d55d4ed3a7d913c94edcf0ad2a07a031c"
     },
     {
       "file": "rollback.js",
-      "sha256": "5ee680c46c6a4c690a0de36f5988fd74dac6434cf5ccf5fd0a3c48de56867881"
+      "sha256": "5a5032e7492195c63f15eed431eb122049e1e053677b342a639765c25f154c43"
     },
     {
       "file": "rollback-netcode.js",
-      "sha256": "f1155fc0a88b4055f04515f0e8c00c430d5c4ba365c87cda5ebccf9dea731ef9"
+      "sha256": "3d4b48acaa9131f71a20f72fac762ac7f9aca40f0e34a23c4936fa7b3f824399"
     },
     {
       "file": "camera.js",
-      "sha256": "790fb684d67f73e7ab1636caa4afbf8ed0d0d54af9ac7c56a0d3f9fdba53dbcd"
+      "sha256": "972268ad14de778f1dca437913cff576155754adf1195948897c0df3ff8f66de"
     },
     {
       "file": "presentation-events.js",
-      "sha256": "61d11a42d7edc72d8b9219902ed7e9d0025f05b77a9d681d21582767117af0e6"
+      "sha256": "30a1c9fd62f223998bba34e299b6f6baf0a789a4f09d468b62df87c8193930c5"
     },
     {
       "file": "hud.js",
-      "sha256": "2b0e09f4af78a0779308a5c50e7a2cf72264567e26a27bfc011cbb62ca83bb0b"
+      "sha256": "acec30fdab522ef151ab582113f26058aabb48a1d8d11cfe0ea640e1b61c86df"
     },
     {
       "file": "debug-tools.js",
-      "sha256": "50194cd84d8bdec147928afb429fe0aa0660bd68994a0120c9db7d1ce430d4e6"
+      "sha256": "b59fbea3f67144d8a58a73737984905e3f1003a54c26beb00ae4661f22e5fd29"
     }
   ]
 }

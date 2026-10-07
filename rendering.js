@@ -1,4 +1,4 @@
-// packages/rendering/src/device.js
+// modules/rendering/device.js
 var FUNCTIONS = Object.freeze({ never: "NEVER", less: "LESS", equal: "EQUAL", lequal: "LEQUAL", greater: "GREATER", notequal: "NOTEQUAL", gequal: "GEQUAL", always: "ALWAYS" });
 var OPERATIONS = Object.freeze({ keep: "KEEP", zero: "ZERO", replace: "REPLACE", increment: "INCR", decrement: "DECR", invert: "INVERT", "increment-wrap": "INCR_WRAP", "decrement-wrap": "DECR_WRAP" });
 var UNIFORMS = /* @__PURE__ */ new Set(["1f", "2f", "3f", "4f", "1i", "2i", "3i", "4i", "1iv", "1fv", "2fv", "3fv", "4fv", "matrix3fv", "matrix4fv"]);
@@ -544,7 +544,7 @@ var WebGLDevice = class {
   }
 };
 
-// packages/rendering/src/index.js
+// modules/rendering/index.js
 var WHITE = Object.freeze([1, 1, 1, 1]);
 var CLEAR = Object.freeze([0, 0, 0, 0]);
 var VERTEX = `

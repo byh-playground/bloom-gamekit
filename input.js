@@ -1,4 +1,4 @@
-// packages/input/src/actions.js
+// modules/input/actions.js
 function actionName(action) {
   if (typeof action !== "string" || !action.length) throw new TypeError("action must be a nonempty string");
 }
@@ -93,7 +93,7 @@ var ActionState = class {
   }
 };
 
-// packages/input/src/dom.js
+// modules/input/dom.js
 var UI_TARGETS = 'input, textarea, select, button, a[href], [contenteditable]:not([contenteditable="false"]), [data-gamekit-ui]';
 var BUTTON_BITS = [1, 4, 2, 8, 16];
 function bindings(value, name, pointer = false) {

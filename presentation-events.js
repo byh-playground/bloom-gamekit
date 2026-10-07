@@ -1,4 +1,4 @@
-// packages/presentation-events/src/index.js
+// modules/presentation-events/index.js
 var integer = (value, name) => {
   if (!Number.isSafeInteger(value) || value < 0) throw new RangeError(`${name} must be a nonnegative safe integer`);
   return value;

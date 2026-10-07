@@ -1,4 +1,4 @@
-// packages/interpolation/src/schema.js
+// modules/interpolation/schema.js
 function compileSchema(schema) {
   if (!schema || typeof schema !== "object" || Array.isArray(schema)) throw new TypeError("schema must be an object");
   const fields = Object.entries(schema);
@@ -41,7 +41,7 @@ function readResetFields(indices, names) {
   return reset;
 }
 
-// packages/interpolation/src/tracks.js
+// modules/interpolation/tracks.js
 var TAU = Math.PI * 2;
 function wrap(angle) {
   const value = angle % TAU;
@@ -76,7 +76,7 @@ function retarget(fields, old, target, generation, now, stepMs, snap, initial, r
   return { generation, from, target, startedAt: now };
 }
 
-// packages/interpolation/src/timeline.js
+// modules/interpolation/timeline.js
 var InterpolationTimeline = class {
   #fields;
   #fieldIndices;
