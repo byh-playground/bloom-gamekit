@@ -44,7 +44,7 @@ console.log(room.room, room.localPlayerId, room.players);
 
 기본 public Nostr relay가 서명을 검증하지만 방 코드는 비밀·인증 수단이 아닙니다. 동적 방은 `namespace + ':dynamic-v1'`으로 고정 방과 격리하며, 네 자리 코드의 전 세계 유일성이나 공개 방 목록을 보장하지 않습니다. roster 승인·게임 버전 확인·snapshot 검증·epoch 전환은 반드시 상위 세션이 수행해야 합니다.
 
-`modules/transport/tests/dynamic-room.test.mjs`는 주입된 메모리 signaler/peer capability로 1→5인 mesh, 연결과 admission 분리, coordinator 초대, generation 재연결, 정상 승계, 신호 손실, backlog 한도, 종료·abort·deadline을 검증합니다. 이 Node fixture를 실제 Nostr relay·브라우저 RTC·NAT/모바일 검증으로 부르지 않습니다.
+현재 장기 검증은 `npm test`의 실제 브라우저 시나리오와 `npm run test:network`의 RTC·방 수명주기 시나리오로 수행합니다. 이 절의 과거 단위 검증 코드는 개발 완료 시 제거했으며 결과·소스 해시는 Git 이력과 provenance 기록으로 확인합니다. 로컬 RTC 시나리오를 공용 relay/NAT·모바일 기기 검증으로 확대 해석하지 않습니다.
 
 
 ### 명시적인 탭 저장소 resume
@@ -89,6 +89,6 @@ const session = createRoomSession({ mode: 'online', room, simulationVersion: 'my
 
 복원 시 저장된 정확한 room/sessionId와 기존 live-peer challenge를 사용합니다. 살아 있는 방을 찾지 못하거나 저장 record가 손상·만료되면 새 세계나 identity로 자동 대체하지 않습니다. `forgetResume()`는 pointer와 해당 방 record를 지우고, 명시적인 `reset: true`는 새 선택을 시작합니다. `close()`만으로는 유효한 resume record를 지우지 않습니다. 개인 서명 키와 sessionStorage의 보안 한계는 위의 동적 방 resume 계약과 같습니다.
 
-`modules/transport/tests/public-room.test.mjs`는 메모리 signaling/RTC fixture로 건강한 빈 목록, relay 실패 구분, 1→5 연결과 admission 분리, 동시 예약, 만료·release, identity 귀속, 호환 버전, 목록 크기, 정상 승계, resume와 deadline/abort 정리를 검사합니다. 이 검사를 public relay·실제 인터넷·브라우저 RTC·모바일 NAT 검증으로 부르지 않습니다.
+현재 장기 검증은 `npm test`의 실제 브라우저 시나리오와 `npm run test:network`의 RTC·방 수명주기 시나리오로 수행합니다. 이 절의 과거 단위 검증 코드는 개발 완료 시 제거했으며 결과·소스 해시는 Git 이력과 provenance 기록으로 확인합니다. 로컬 RTC 시나리오를 공용 relay/NAT·모바일 기기 검증으로 확대 해석하지 않습니다.
 
 중간 roster 광고를 놓친 승계는 이전 lease를 후보에서 제외하고 원래 만료 뒤 새로 발행된 승계 광고를 기다리며, 그동안 `PUBLIC_HANDOVER_PENDING`으로 명시적으로 실패할 수 있습니다. 이를 빈 목록으로 보고 새 세계를 만들지 않습니다.

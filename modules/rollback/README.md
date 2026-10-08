@@ -133,7 +133,7 @@ const session = createRoomSession({
 
 정상 실행에서는 원래 sparse checkpoint 빈도를 유지합니다. membership마다 pre/post snapshot, 신규 참가자 catch-up, 새 Core의 초기 snapshot이 추가됩니다. `metrics.snapshotSaves` 등은 epoch별 Core 합계이고, membership staging/codec 전송 비용을 전부 포함하는 CPU 수치가 아닙니다. `bootstrapBytes`, `bootstrapTicks`, control 송수신/보관 바이트는 별도입니다. 외부 `getStateHash()`를 매 tick 부르면 그 직렬화 비용은 다시 발생합니다.
 
-`modules/rollback/tests/room-session.test.mjs`는 실제 Core와 in-memory transport의 연속 1→2→5/퇴장/복구/분할 검사입니다. `modules/rollback-netcode/tests/dynamic-browser.mjs`는 signed local Nostr relay fixture와 실제 Chromium RTC mesh의 같은 순서를 검사하며 CI browser suite에 포함됩니다. 전자는 실제 RTC 검증이 아니고, 후자도 공용 relay/NAT/실기기 모바일 성능 보장이 아닙니다. 서버 없는 방은 마지막 참가자가 사라진 뒤 세계를 보존하지 않습니다. 32-bit 상태 hash는 버그 감지용이며 악의적 peer에 대한 인증·치트 방지 보장이 아닙니다.
+현재 장기 검증은 `npm test`의 실제 브라우저 시나리오와 `npm run test:network`의 RTC·방 수명주기 시나리오로 수행합니다. 이 절의 과거 단위 검증 코드는 개발 완료 시 제거했으며 결과·소스 해시는 Git 이력과 provenance 기록으로 확인합니다. 로컬 RTC 시나리오를 공용 relay/NAT·모바일 기기 검증으로 확대 해석하지 않습니다.
 
 RoomSession의 전체 여러 epoch replay 파일 export는 아직 제공하지 않습니다. 기존 고정 Core의 replay API는 유지하고, 동적 입장/복구에는 명시적인 checkpoint+suffix만 사용합니다.
 

@@ -26,7 +26,7 @@ presentation.capture({ revision: 0, sequence: 0, timeMs: 0,
 presentation.render(unit, renderer, performance.now());
 ```
 
-- `LINEAR=0`, `ANGLE=1`, `STEP=2`, `DECAY=3`, `CYCLE=4`는 코드 상수입니다. DECAY는 값 상승을 새 flash/반동의 시작으로 간주해 해당 필드만 즉시 맞춥니다. CYCLE은 0..1 정규화 진행률이 감소하면 1을 지나 앞으로 순환합니다(0.75→0의 중간은 0.875). 일반 LINEAR 감소를 초기화로 추측하지 않습니다. 실제 취소·타이머 재시작 등은 기존 `resetFields` 계약으로 전달합니다.
+- `LINEAR=0`, `ANGLE=1`, `STEP=2`, `DECAY=3`, `CYCLE=4`는 코드 상수입니다. DECAY는 값 상승을 새 flash/반동의 시작으로 간주해 해당 필드만 즉시 맞춥니다. CYCLE은 0..1 정규화 진행률이 감소하면 1을 지나 앞으로 순환합니다(0.75→0의 중간은 0.875). 일반 LINEAR 감소를 초기화로 추측하지 않습니다. 타이머와 상태 전환도 아래 스키마 정책으로 선언하며, 소비자가 동작별 조건과 reset 필드 목록을 따로 관리하지 않습니다.
 - 경로는 타입당 한 번 컴파일하며 부모 스키마와 같은 경로는 하위 타입이 우선합니다. 부모 전체 경로와 자식 경로를 동시에 선언하는 충돌(`roll`과 `roll.progress`), 빈 구간, prototype 관련 키, getter는 거부합니다. 첫 사용 후 스키마 변경은 지원하지 않습니다. 새 스키마는 새 타입으로 명시적으로 전환합니다.
 - `roll.progress`는 원본과 모델에서 동일한 중첩 위치를 뜻합니다. null 부모는 null, 없는 필드는 부재로 유지하며 0으로 대체하지 않습니다. 생성된 모델은 일반 객체이고 원본 prototype·메서드·미등록 필드는 없습니다. Proxy와 this 교체는 사용하지 않습니다.
 - `STEP` scalar 외에 명시적으로 선언한 plain-data 배열/객체도 지원하지만 표본을 복사하며 렌더 모델과도 참조를 공유하지 않습니다. 순환/네이티브 객체/함수/accessor는 거부합니다. 객체 참조는 별도 렌더 identity의 ID로 전달하세요. 배열 전체 STEP은 불연속 교체이며 수치 보간이 아닙니다. `points.0.x`는 고정 슬롯입니다. 재정렬 가능한 배열을 인덱스 기반으로 보간하지 말고 항목별 안정적인 entity ID로 등록합니다. 동적 키 wildcard는 없습니다.
@@ -35,15 +35,34 @@ presentation.render(unit, renderer, performance.now());
 - `snapshotRenderModel(type, source)`는 죽은 객체의 고정 이펙트 anchor처럼 명시적으로 순간 표본이 필요한 곳에만 사용합니다. 선언된 필드만 분리하고 보간 이력이나 source 참조를 보관하지 않습니다. 생존 객체의 누락 track을 원본 값으로 대신 그리는 fallback이 아닙니다.
 - `render(source, context, nowMs)`는 **정상적인 source.render(context, model) 호출**입니다. private 필드와 arrow 메서드의 this를 바꾸지 않습니다. 임의의 JS 렌더 함수가 외부 원본을 직접 읽는 것까지 모듈이 차단하지는 못합니다. 소비자 렌더 함수는 모델만 읽도록 코드 검증해야 합니다.
 
+### 필드 정책으로 전환과 시작 표본 선언
+
+```js
+static renderSchema = {
+  x: this.POSITION_X, y: this.POSITION_Y,
+  'clip.key': this.STATE_KEY,
+  'clip.leftMs': this.COUNTDOWN_MS,
+  'clip.progress': this.CYCLE,
+};
+```
+
+`COUNTDOWN_MS=5`와 `COUNTDOWN_SECONDS=6`은 비음수 countdown을 표현합니다. 연속 표본에서 `max(0, 이전 값 − 시뮬 timeMs 차이 × 단위 비율)`과 일치하면 기존 곡선을 연결합니다. 예상 감소와 다른 값이면 새 timer 구간으로 간주해 **해당 필드 부모 경로 범위**의 표본을 새 값으로 맞춥니다. 고정 세계 시각에 대해 1ms/ms 또는 .001seconds/ms로 감소하는 필드만 선택하세요. 가변 로컬 시간 배율의 임의 수치를 countdown으로 추측하지 않습니다. float roundoff에는 단위별 1μs와 표현 정밀도 허용 오차를 사용합니다.
+
+`STATE_KEY=7`은 STEP과 같은 scalar 출력이지만 변경되면 같은 부모 범위의 표시 구간을 새로 시작합니다. `clip.key`는 `clip.*`만 새로 연결하고 root x/y는 계속 보간합니다. `clip.timer.leftMs`의 countdown은 `clip.timer.*`만 구분합니다. 상위 구간을 구분하려면 그 구간에 실제로 있는 키 필드를 STATE_KEY로 선언합니다. 경로 prefix는 문자열 부분 일치가 아니라 segment 경계로 컴파일합니다. 키는 finite number/string/boolean/null/undefined만 허용하며 순환 객체나 사용자 함수를 실행하지 않습니다. 모듈은 키 값의 이름이나 게임 동작을 해석하지 않습니다.
+
+`POSITION_X/Y/Z=8/9/10`, `ORIGIN_X/Y/Z=11/12/13`은 LINEAR과 같은 수치 보간에 축 역할을 부여합니다. 타입당 각 역할 축은 한 필드만 선언하며 duplicate는 거부합니다. 필드 경로 자체는 어떤 이름도 가능합니다. 새 continuous identity에서 대응 origin 값이 있으면 해당 position을 origin부터 이어 그립니다. `SPAWN_LINEAR=14`는 새 continuous identity의 해당 수치를 0부터 연결합니다. 기존 identity에는 다시 적용하지 않으며 명시 `initialSource`가 자동 seed보다 우선합니다. 초기 reset/load/rollback 또는 teleport는 모든 seed보다 우선하여 실제 표본으로 맞춥니다.
+
+`new PresentationRuntime({stepMs: 100, snapDistance: 160})`은 선언된 position 축의 이전/현재 차이가 임계치를 넘으면 그 identity를 snap합니다. position 역할이 없으면 적용하지 않고 미등록 x/y 속성을 읽지 않습니다. 이 옵션은 위치 불연속을 표현하는 정책이며 실제 이동/충돌을 판정하지 않습니다. 게임 어댑터는 source/type/identity와 세계 생명주기만 전달하고 timer/phase/발사 이름을 검사하거나 필드별 reset 목록을 만들 필요가 없습니다.
+
 ### 선택적 제한적 외삽
 
-`new PresentationRuntime({ stepMs: 100, extrapolation: { fields: ['x', 'y'], maxMs: 100 } })`는 지정한 LINEAR 필드만 최근 두 시뮬 표본의 속도로 예측합니다. 기본값은 꺼짐입니다. 수신 순간의 기존 표시와 새 예측의 차이는 stepMs 동안 줄이며, maxMs를 넘으면 마지막 예측 위치를 유지합니다. 보정이 한도 뒤에도 진행하지 않도록 `maxMs >= stepMs`를 요구합니다. HP·경험치를 자동 외삽하지 않고 ANGLE/STEP/DECAY 외삽은 거부합니다. teleport·세계 reset은 속도와 보정 이력을 초기화합니다.
+`new PresentationRuntime({ stepMs: 100, extrapolation: { fields: ['x', 'y'], maxMs: 100 } })`는 지정한 LINEAR 계열 필드(LINEAR/POSITION/ORIGIN/SPAWN_LINEAR)만 최근 두 시뮬 표본의 속도로 예측합니다. 기본값은 꺼짐입니다. 수신 순간의 기존 표시와 새 예측의 차이는 stepMs 동안 줄이며, maxMs를 넘으면 마지막 예측 위치를 유지합니다. 보정이 한도 뒤에도 진행하지 않도록 `maxMs >= stepMs`를 요구합니다. HP·경험치를 자동 외삽하지 않고 ANGLE/STEP/DECAY/CYCLE/countdown/key 외삽은 거부합니다. 필드 구간·teleport·세계 reset은 해당 속도와 보정 이력을 초기화합니다.
 
 이 기능은 충돌/급정지/최신 사용자 입력을 예측하지 않습니다. 입력 선반응은 독립 입력 표본과 복원 가능한 시뮬의 별도 계약이 필요하며 이 API로 구현했다고 주장하지 않습니다.
 
 ### 비용
 
-표본 수집과 sample은 선언 필드 수와 경로 구조에 비례합니다. 모델과 중첩 객체·STEP 출력은 재사용하지만 capture는 원자적 검증을 위해 Map/배열/STEP 표본을 할당합니다. 전체 원본 세계를 복사하지 않으나 큰 subtree를 STEP으로 선언하면 그 비용은 발생합니다. 함수/상수 선언 방식 자체의 속도 우위나 zero-allocation을 주장하지 않습니다. 집중 Node 검증과 실제 Chromium 입력→중첩 모델→WebGL 픽셀 경로를 로컬에서 실행합니다.
+표본 수집과 sample은 선언 필드 수와 경로 구조에 비례합니다. 모델과 중첩 객체·STEP 출력은 재사용하지만 capture는 원자적 검증을 위해 Map/배열/STEP 표본을 할당합니다. 전체 원본 세계를 복사하지 않으나 큰 subtree를 STEP으로 선언하면 그 비용은 발생합니다. 함수/상수 선언 방식 자체의 속도 우위나 zero-allocation을 주장하지 않습니다. 개발 중 임시 단위 검증 후 코드는 제거하고, 실제 Chromium 입력→중첩 모델→WebGL 픽셀의 고정 시나리오를 로컬에서 실행합니다.
 
 렌더러·DOM·Worker·넷코드와 독립적인 presentation timeline입니다. 시뮬레이션이나 자체 타이머를 실행하지 않습니다.
 
@@ -66,7 +85,7 @@ if (view.sampleInto('player', 0, now, pose)) {
 }
 ```
 
-실제 번들을 읽는 [실행 예제](../../examples/interpolation/index.html)와 [연속 E2E](../../tests/interpolation.e2e.mjs)가 같은 어댑터를 사용합니다. 프로젝트 루트에서 `npm ci`, `npm test` 후 정적 서버를 열어 예제를 확인하세요.
+실제 번들을 읽는 [실행 예제](../../examples/interpolation/index.html)와 [고정 브라우저 E2E](../../tests/browser.e2e.mjs)를 사용합니다. 프로젝트 루트에서 `npm ci`, `npm test` 후 정적 서버를 열어 예제를 확인하세요. 별도 CPU·할당 측정은 `npm run benchmark:interpolation`입니다.
 
 ## 공개 계약
 
@@ -101,4 +120,4 @@ if (view.sampleInto('player', 0, now, pose)) {
 
 E2E는 실제 Worker 이동에서 추출한 표본, 10/20/30 TPS·60Hz 위상, 지터·coalescing·순서 거부·rollback·load·teleport·identity 재사용·원본 불변·유한 값·각도·discrete를 검사합니다. fixture의 출처와 범위는 JSON에 있습니다. 20/30 TPS는 표본의 시각을 재구성한 보간 검증이며 해당 게임을 그 TPS로 실행했다는 의미가 아닙니다.
 
-Node benchmark는 256 entity의 sample/accept batch CPU p50/p95와 heap 변화, 재사용 output 수를 로그로 출력합니다. heap 변화는 GC가 포함된 관찰값이지 총 할당량이나 0-allocation 증명이 아닙니다. 별도 V8 통계 프로파일은 accept/sampleInto 호출 스택의 추정 할당 바이트를 기록하며 수집된 객체도 포함합니다. 샘플 간격은 1024 bytes이고 0 추정도 실제 0 할당을 증명하지 않습니다. Chromium 통합 검사는 실제 독립 ESM 3개와 DOM 입력·고정 틱·rAF·WebGL 픽셀·texture/alpha/order·생명주기를 확인합니다. 모바일·기기 FPS·GPU 성능·전체 게임 통합은 별도 검증 대상입니다.
+`npm run benchmark:interpolation`의 별도 Node benchmark는 256 entity의 sample/accept batch CPU p50/p95와 heap 변화, 재사용 output 수를 로그로 출력합니다. heap 변화는 GC가 포함된 관찰값이지 총 할당량이나 0-allocation 증명이 아닙니다. 별도 V8 통계 프로파일은 accept/sampleInto 호출 스택의 추정 할당 바이트를 기록하며 수집된 객체도 포함합니다. 샘플 간격은 1024 bytes이고 0 추정도 실제 0 할당을 증명하지 않습니다. Chromium 통합 검사는 실제 독립 ESM 3개와 DOM 입력·고정 틱·rAF·WebGL 픽셀·texture/alpha/order·생명주기를 확인합니다. 모바일·기기 FPS·GPU 성능·전체 게임 통합은 별도 검증 대상입니다.

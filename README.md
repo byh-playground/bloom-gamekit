@@ -13,12 +13,12 @@
 - [동적 방·공개 입장·새로고침 복구](./modules/rollback/README.md) · [Nostr 디렉터리·전송](./modules/transport/README.md)
 - [SDK 전체/분리 API와 이전](./modules/rollback-netcode/README.md)
 - [실제 독립 번들을 연결하는 사용 예제](./examples/interpolation/index.html)
-- [연속 E2E와 CPU 측정](./tests/interpolation.e2e.mjs)
+- [고정 브라우저 E2E](./tests/browser.e2e.mjs) · [별도 보간 벤치마크](./modules/interpolation/scripts/benchmark.mjs)
 
 ```text
 modules/<module>/*.js            모듈의 runtime 소스 (중첩 src/ 없음)
 modules/<module>/README.md       모듈별 API·비용·제한 계약
-modules/<module>/tests/          모듈 소유 단위·회귀 검사와 fixture
+modules/<module>/tests/          고정 브라우저 시나리오와 fixture
 modules/<module>/docs/           모듈 설계·이전·측정 기록
 modules/<module>/examples/       해당 모듈의 실행 예제
 modules/<module>/scripts/        해당 모듈의 실행·검증·측정 도구
@@ -31,6 +31,8 @@ scripts/                    공통 빌드·배포·통합 검사 도구
 ```
 
 개발 명령은 `npm ci`, `npm test`, `npm run test:browser`입니다. 브라우저 첫 설치는 `npx playwright install chromium`입니다. 소스·문서·검사·예제·도구는 기능을 소유한 모듈에 함께 둡니다. 루트의 docs/scripts/tests/examples는 여러 모듈을 실제로 함께 다루는 것만 유지합니다. `rollback-netcode`는 분리 모듈의 호환 진입점과 SDK 전체를 검증하는 예제·검사를 소유합니다.
+
+검증 정책 원본은 [공통 프로젝트 관리 규칙 §13](https://github.com/byh-playground/bloom-reference/blob/main/rules/project-management.html#verification)입니다. `npm test`는 실제 DOM 입력 → 시뮬 → 표시 모델 → WebGL·HUD·복구의 고정 시나리오를 실행합니다. `npm run test:network`는 RTC·방 수명주기 시나리오, `npm run test:scenarios`는 두 경로와 데모를 함께 선택합니다. 각 실행 전체 상한은 180초이며 초과하면 실패합니다. 개발 중 단위 검증 파일은 완료 시 제거하고 구현 내부에 맞춘 회귀 파일을 누적하지 않습니다. CPU·할당 측정은 `benchmark:interpolation`, `benchmark:presentation`, 기존 SDK benchmark 명령으로 따로 실행합니다.
 
 루트 package.json은 개발 도구만 관리하며 모듈별 버전·workspace·npm 발행은 아직 도입하지 않았습니다.
 

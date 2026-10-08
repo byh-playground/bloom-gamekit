@@ -2,7 +2,7 @@
 
 원본은 byh-playground/rollback-netcode commit `c3173914519a78834360430071e7a125736d86d5`입니다. 구현은 책임별 소스로 이동하고 import 경로를 바꿨으며 core의 StateHistory와 playReplay를 단일 공유 구현으로 분리했습니다. 새 알고리즘·history 전략·게임 규칙은 추가하지 않았습니다.
 
-`modules/rollback-netcode/tests/build.test.mjs`는 수정하지 않은 구현의 이동을 역변환한 SHA-256을 고정 upstream과 대조합니다. 이후 리뷰 수정된 core.js/loop.js는 provenance.json의 별도 modifiedFiles 해시와 대조합니다. files의 원본 해시는 바꾸지 않으며 수정본을 byte-identical이라고 부르지 않습니다. 현재 공개 export 전체/기존 타입·버전 계약과 분리 번들의 무외부 import·불필요한 transport/session 코드 제외도 검사합니다.
+현재 장기 검증은 `npm test`의 실제 브라우저 시나리오와 `npm run test:network`의 RTC·방 수명주기 시나리오로 수행합니다. 이 절의 과거 단위 검증 코드는 개발 완료 시 제거했으며 결과·소스 해시는 Git 이력과 provenance 기록으로 확인합니다. 로컬 RTC 시나리오를 공용 relay/NAT·모바일 기기 검증으로 확대 해석하지 않습니다.
 
 기존 core/runtime/mesh/mesh-reliability/room/group-room/star-transport/Nostr/synctest/utilities/value-codec/loop 회귀 테스트를 보존했습니다. 입력 지연·손실·중복·순서 변경, rollback 재실행, snapshot 거부·정규 왕복·복구 예산, replay 최종 hash·용량 제한, 타입 codec과 PRNG 상태, command 보존, 방/전송 cleanup이 대상입니다. 원본의 staged versions hash 검사 대신 이 저장소의 manifest·publisher 검사를 사용합니다.
 
