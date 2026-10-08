@@ -23,8 +23,8 @@
       "reason": "기존 lockstep 계약에 확정 checkpoint+입력 suffix export/교차 검증, bounded bootstrap 및 epoch 간 미실행 명령·실행 sequence 인계를 추가했습니다. 기존 fixed match와 rollback 동작을 보존하며 membership의 canonical bytes/hash를 consume-once 내부 경로로 새 Core 초기 checkpoint에 전달합니다."
     },
     "src/loop.js": {
-      "normalizedSha256": "59021c852b47f331e3a00b156dcf6a3895b711ab382560e3dc639b3e00a1c05b",
-      "reason": "bloom-gamekit: reentrant cancellation, scalar pacing reads, opt-in retained backlog"
+      "normalizedSha256": "0b271c9d9622c8d9cf0a257e5c7b7ff4b3cf7a9c12224118b5fbe1d53792058c",
+      "reason": "bloom-gamekit: reentrant cancellation, scalar pacing reads, bounded retained backlog with explicit stale-clock drop"
     },
     "src/protocol.js": {
       "normalizedSha256": "0c9e87c2c01855102d33d7b68b2ed6c68c847439f60f30f09a415ffbabf679d1",
