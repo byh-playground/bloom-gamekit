@@ -134,3 +134,64 @@ export async function exerciseVectorRenderer(page) {
   result.disposed=await page.evaluate(()=>{const p=vectorProbe;p.renderer.dispose();p.atlas.dispose();p.device.dispose();p.canvas.remove();return p.device.state==='disposed'&&p.device.stats.gpuRenderTargetBytes===0&&p.device.stats.renderTargetCount===0});assert.equal(result.disposed,true);
   return result;
 }
+
+/** Shared immutable font fetch/decode, per-device texture ownership, failure, retry, and cancel path. */
+export async function exerciseFontAssetLoader(page, origin) {
+  const manifest = JSON.parse(await (await fetch(`${origin}/dist/manifest.json`)).text());
+  const fontEntry = manifest.assets.find(asset => asset.file === 'assets/fonts/noto-sans-kr-700-v1.json');
+  assert.ok(fontEntry, 'published manifest contains the fixed font asset');
+  const source = { url: `${origin}/dist/${fontEntry.file}`, version: 'font-loader-browser-v1',
+    sha256: fontEntry.sha256, bytes: fontEntry.bytes };
+  const result = await page.evaluate(async ({ source, origin }) => {
+    const { WebGLDevice, FontAssetLoader } = await import('/dist/rendering.js');
+    const check = (condition, message) => { if (!condition) throw new Error(message); };
+    const canvas = document.createElement('canvas'); canvas.width = canvas.height = 8; document.body.append(canvas);
+    const device = new WebGLDevice(canvas, { antialias: false, preserveDrawingBuffer: true });
+    const phasesA = [], phasesB = [];
+    const a = new FontAssetLoader(device, source, { onProgress: progress => phasesA.push(progress.phase) });
+    const b = new FontAssetLoader(device, source, { onProgress: progress => phasesB.push(progress.phase) });
+    const [atlasA, atlasB] = await Promise.all([a.ready, b.ready]);
+    check(atlasA === atlasB, 'same asset and device share one GPU atlas');
+    check(device.stats.textureCount === 1, 'shared device owns one atlas texture');
+    check(phasesA.includes('download') && phasesA.includes('verify') && phasesA.includes('decode') && phasesA.includes('ready'), 'font readiness reports download, verification, decode, and ready phases');
+    check(phasesB.includes('ready'), 'concurrent consumer receives shared readiness progress');
+    check(atlasA.glyphs.size === 750, 'loaded font exposes the pinned glyph inventory');
+
+    const canvas2 = document.createElement('canvas'); canvas2.width = canvas2.height = 8; document.body.append(canvas2);
+    const device2 = new WebGLDevice(canvas2, { antialias: false });
+    const c = new FontAssetLoader(device2, source); const atlasC = await c.ready;
+    check(atlasC !== atlasA && device2.stats.textureCount === 1, 'each WebGLDevice owns its own recoverable atlas texture');
+    a.dispose(); check(device.stats.textureCount === 1, 'first lease keeps shared texture alive');
+    b.dispose(); check(device.stats.textureCount === 0, 'last lease releases shared texture');
+    c.dispose(); check(device2.stats.textureCount === 0, 'second device texture is released independently');
+
+    let mismatch;
+    try { await new FontAssetLoader(device, { ...source, version: 'font-wrong-hash-v1', sha256: '0'.repeat(64) }).ready; }
+    catch (error) { mismatch = error; }
+    check(mismatch?.message.includes('SHA-256 mismatch'), 'outer font hash mismatch is rejected');
+
+    let corsError;
+    const corsURL = new URL(source.url); corsURL.hostname = 'localhost';
+    try { await new FontAssetLoader(device, { ...source, url: corsURL.href, version: 'font-cors-v1' }).ready; }
+    catch (error) { corsError = error; }
+    check(corsError, 'a real cross-origin response without Access-Control-Allow-Origin is rejected');
+
+    const retry = new FontAssetLoader(device, { ...source, url: `${origin}/__font-retry`, version: 'font-retry-v1' });
+    let firstFailure;
+    try { await retry.ready; } catch (error) { firstFailure = error; }
+    check(retry.state === 'error' && firstFailure, 'failed HTTP request reports an error state');
+    const retried = new FontAssetLoader(device, { ...source, url: `${origin}/__font-retry`, version: 'font-retry-v1' });
+    await retried.ready; check(retried.state === 'ready', 'a new loader retries after a failed fetch'); retried.dispose();
+
+    const pending = new FontAssetLoader(device, { ...source, url: `${origin}/__font-delay`, version: 'font-cancel-v1' });
+    check(pending.cancel(), 'loading request can be cancelled');
+    let cancelled = false; try { await pending.ready; } catch (error) { cancelled = error.name === 'AbortError'; }
+    check(cancelled && pending.state === 'cancelled', 'cancelled loader never becomes ready');
+    pending.dispose(); device.dispose(); device2.dispose(); canvas.remove(); canvas2.remove();
+    return { assetBytes: source.bytes, textureBytesPerDevice: 2016 * 864 * 4, glyphs: atlasA.glyphs.size,
+      progress: [...new Set([...phasesA, ...phasesB])], sharedTexture: true, deviceIsolation: true,
+      hashMismatch: true, corsRejected: true, retry: true, cancel: true, disposal: true };
+  }, { source, origin });
+  assert.equal(result.glyphs, 750); assert.equal(result.textureBytesPerDevice, 6_967_296);
+  return result;
+}
