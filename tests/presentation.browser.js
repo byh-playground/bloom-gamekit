@@ -33,7 +33,10 @@ export async function runPresentationChecks(page) {
     queue.emit({ ...event, tick: 5, kind: 'sound', policy: 'confirmed' }); check(sounds === 1, 'confirmed sound cannot replay');
     const ring = new DiagnosticRing({ capacity: 2 }); const target = new EventTarget(); const cleanup = ring.installGlobal(target);
     target.dispatchEvent(new ErrorEvent('error', { message: 'password=private user@example.com https://private.test' }));
-    check(ring.total === 1 && !ring.format().includes('private'), 'global diagnostics redacted'); cleanup(); target.dispatchEvent(new ErrorEvent('error', { message: 'ignored' })); check(ring.total === 1, 'diagnostic listener restored');
+    check(ring.total === 1 && ring.snapshot().blockerCount === 1 && !ring.format().includes('private'), 'global diagnostics redacted and remain blocking by default');
+    ring.report('save recovered', { kind: 'save.load', visibility: 'notice' });
+    check(ring.snapshot().counts.notice === 1 && ring.snapshot().blockerCount === 1, 'notice is retained without increasing the visible blocker count');
+    cleanup(); target.dispatchEvent(new ErrorEvent('error', { message: 'ignored' })); check(ring.total === 2, 'diagnostic listener restored');
     const textarea = document.createElement('textarea'); host.append(textarea);
     const copy = await copyDiagnostic(ring.format(), { clipboard: { writeText: async () => { throw Error('denied'); } }, textarea });
     check(!copy.copied && copy.method === 'selection' && textarea.selectionEnd === textarea.value.length, 'manual copy remains selected and truthful');
