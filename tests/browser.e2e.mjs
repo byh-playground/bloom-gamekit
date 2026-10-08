@@ -5,6 +5,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { resolve, extname, sep } from 'node:path';
 import assert from 'node:assert/strict';
+import { runRenderObjectChecks } from './render-object.browser.js';
 
 const root = resolve('.');
 const server = createServer(async (req, res) => {
@@ -198,7 +199,7 @@ try {
   report.stages.push('DOM multi-pointer identity/coordinates/cancel/capture loss + keyboard aggregation + listener disposal');
 
   const moduleErrors = [];
-  for (const [name, check] of [['presentation', runPresentationChecks], ['device', exerciseWebGLDevice]]) {
+  for (const [name, check] of [['renderObject', runRenderObjectChecks], ['presentation', runPresentationChecks], ['device', exerciseWebGLDevice]]) {
     try { report[name] = await check(page); }
     catch (error) { console.error(`Browser module ${name}:`, error); moduleErrors.push(`${name}: ${error.message}`); }
   }

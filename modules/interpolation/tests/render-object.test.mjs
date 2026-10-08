@@ -39,6 +39,25 @@ const snapshot = (sequence, source, entityOptions = {}, packetOptions = {}) =>
   packet(sequence, [entity(source, entityOptions)], packetOptions);
 const runtime = options => new PresentationRuntime({ stepMs: 100, ...options });
 
+test('독립 리뷰: 짧은 외삽 한도·배열 length·primitive seed는 원자적으로 거부한다', () => {
+  assert.throws(() => runtime({ extrapolation: { fields: ['position.x'], maxMs: 25 } }), /stepMs/);
+  class Arrays extends RenderObject { static renderSchema = { 'items.length': this.LINEAR }; }
+  const arrays = new Arrays(); arrays.items = [1]; const view = runtime();
+  assert.throws(() => view.capture({ revision: 0, sequence: 0, timeMs: 0, entities: [{ id: 'a', generation: 0, source: arrays }] }, 100), /length/);
+  assert.equal(view.size, 0);
+  const source = new Actor();
+  assert.throws(() => view.capture({ revision: 0, sequence: 0, timeMs: 0, entities: [{ id: 'a', generation: 0, source, initialSource: 123 }] }, 100), /object/);
+  view.capture({ revision: 0, sequence: 0, timeMs: 0, entities: [{ id: 'a', generation: 0, source }] }, 0);
+  assert.equal(view.sample('a', 0, 0).position.x, 0);
+});
+
+test('독립 리뷰: plain source render 타입 오류는 모델과 clock을 진행시키지 않는다', () => {
+  const view = runtime(), source = { position: { x: 0, y: 0 }, angle: 0, state: 'idle', flash: 0 };
+  view.capture({ revision: 0, sequence: 0, timeMs: 0, entities: [{ id: 'a', generation: 0, source, type: Actor }] }, 0);
+  assert.throws(() => view.render(source, [], 100), /RenderObject/);
+  assert.equal(view.sample('a', 0, 1).position.x, 0);
+});
+
 test('RenderObject 공개 상수와 추상 render 계약', () => {
   assert.deepEqual(
     [RenderObject.LINEAR, RenderObject.ANGLE, RenderObject.STEP, RenderObject.DECAY, RenderObject.CYCLE],
