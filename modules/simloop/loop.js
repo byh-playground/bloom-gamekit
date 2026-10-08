@@ -62,7 +62,7 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
         if (current !== generation || timing !== timingGeneration) return;
         const packet = sampled && typeof sampled === 'object' && !ArrayBuffer.isView(sampled) && !(sampled instanceof ArrayBuffer) && Object.hasOwn(sampled, 'input');
         const inputValue = packet ? sampled.input : sampled;
-        const input = inputPreview && ArrayBuffer.isView(inputValue) ? new inputValue.constructor(inputValue) : inputValue;
+        const input = inputPreview?.enabled !== false && ArrayBuffer.isView(inputValue) ? new inputValue.constructor(inputValue) : inputValue;
         if (packet) {
           const commands = sampled.commands ?? [];
           if (!Array.isArray(commands)) throw new TypeError('input packet commands must be an array');
@@ -77,9 +77,12 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
         }
         const previousTick = session.tick;
         const result = session.advance(input); work++;
+        let submission;
         if (result.status === 'advanced' && inputPreview) {
-          try { inputPreview.submit(input, { sequence: ++inputSequence, tick: result.tick ?? session.tick ?? previousTick + 1,
-            epoch: session.epoch ?? 0, timeMs: Math.max(timestamp, globalThis.performance?.now?.() ?? timestamp), commands: pendingCommands }); }
+          submission = { sequence: ++inputSequence, tick: result.tick ?? session.tick ?? previousTick + 1, epoch: session.epoch ?? 0,
+            timeMs: Math.max(timestamp, globalThis.performance?.now?.() ?? timestamp), commands: pendingCommands.map(command => ({ sequence: command.sequence,
+              payload: ArrayBuffer.isView(command.payload) ? new command.payload.constructor(command.payload) : command.payload })) };
+          try { inputPreview.submit(input, submission); }
           catch (error) { inputPreview.clear?.(); onPreviewError(error); }
         }
         if (result.status === 'advanced') pendingCommands.length = 0;
@@ -88,7 +91,7 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
         if (result.status === 'advanced') accumulator = Math.max(0, accumulator - quantum * pace);
         else if (backlogPolicy === 'drop') accumulator = Math.min(accumulator, quantum);
         if (current !== generation) return;
-        onAdvance(result);
+        onAdvance(result, submission);
         if (current !== generation || timing !== timingGeneration) return;
         if (result.status !== 'advanced') break;
       }

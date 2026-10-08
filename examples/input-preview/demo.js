@@ -30,23 +30,24 @@ export function startInputPreviewDemo(canvas, status) {
   const presentation = new PresentationRuntime({ stepMs: DT, snapDistance: 180 });
   const authorityUnit = new Unit([.25, .55, 1, 1]), remoteUnit = new Unit([.9, .25, .25, 1]);
   remoteUnit.x = 575; remoteUnit.y = 150;
-  let revision = 0, sequence = 0, commandSequence = 0, confirmedCommandSequence = 0, tick = 0, epoch = 0, lastConfirm = 0, queue = [], queuedCommands = [], paused = false, frames = 0, predictionEnabled = true;
+  let revision = 0, captureSequence = 0, commandSequence = 0, confirmedCommandSequence = 0, tick = 0, epoch = 0, lastConfirm = 0, queue = [], queuedCommands = [], localSequences = new Map(), paused = false, frames = 0, predictionEnabled = true;
   const session = {
     inputSize: 1, profile: { tickRate: 1000 / DT, maxCatchupSteps: 4 }, pace: 1, tick: 0, epoch: 0, closed: false, resimulating: false,
     poll() {
       const now = performance.now();
       if (queue.length && now - queue[0].at >= 180) {
-        const item = queue.shift(); stepUnit(authorityUnit, item.input, item.commands); tick++; lastConfirm = item.sequence; sequence++;
+        const item = queue.shift(); stepUnit(authorityUnit, item.input, item.commands); tick++;
+        lastConfirm = localSequences.get(item.tick) ?? lastConfirm; localSequences.delete(item.tick);
         if (item.commands.length) confirmedCommandSequence = item.commands[item.commands.length - 1].sequence;
-        presentation.capture({ revision, sequence, timeMs: tick * DT, entities: [
+        presentation.capture({ revision, sequence: ++captureSequence, timeMs: tick * DT, entities: [
           { id: 'local', generation: 0, source: authorityUnit }, { id: 'remote', generation: 0, source: remoteUnit },
         ] }, now);
         preview.reconcile({ snapshot: { unit: bytes(authorityUnit) }, revision, tick, epoch, confirmedSequence: lastConfirm, confirmedCommandSequence, timeMs: now, mode: 'continuous' });
       }
     },
     queueCommand(payload) { const id = ++commandSequence; queuedCommands.push({ sequence: id, payload: payload.slice() }); return id; },
-    advance(input) { const id = ++sequence; queue.push({ sequence: id, input: Uint8Array.from(input), commands: queuedCommands.splice(0), at: performance.now() }); this.tick++; return { status: 'advanced', tick: this.tick }; },
-    releaseInput() { queue.length = 0; queuedCommands.length = 0; },
+    advance(input) { this.tick++; queue.push({ tick: this.tick, input: Uint8Array.from(input), commands: queuedCommands.splice(0), at: performance.now() }); return { status: 'advanced', tick: this.tick }; },
+    releaseInput() { queue.length = 0; queuedCommands.length = 0; localSequences.clear(); },
   };
   const preview = new LocalInputPreview({ presentation,
     createFork: snapshot => { const unit = Object.assign(new Unit([.15, 1, .55, 1]), snapshot.unit); return { unit, step: (input, context) => stepUnit(unit, input, context.commands) }; },
@@ -59,6 +60,7 @@ export function startInputPreviewDemo(canvas, status) {
   preview.reconcile({ snapshot: { unit: bytes(authorityUnit) }, revision: 0, tick: 0, epoch, confirmedCommandSequence, timeMs: performance.now(), mode: 'reset' });
   let pose = {};
   const loop = createLoop({ session, inputPreview: preview, canAdvance: () => !paused,
+    onAdvance(result, submission) { if (result.status === 'advanced' && submission) localSequences.set(submission.tick, submission.sequence); },
     getInput() { const left = inputState.sample('left').held, right = inputState.sample('right').held; const roll = inputState.sample('roll').pressed;
       inputState.consume(); return { input: Uint8Array.of(left === right ? 0 : left ? 1 : 2), commands: roll ? [{ payload: Uint8Array.of(1) }] : [] }; },
     render({ alpha }) {
@@ -74,13 +76,13 @@ export function startInputPreviewDemo(canvas, status) {
   return {
     renderer, presentation, preview, session, get diagnostics() { return { authorityX: authorityUnit.x, displayedX: pose.x, remoteX: remoteUnit.x, tick, pending: preview.pendingCount, frames, metrics: preview.metrics, presentationMetrics: presentation.previewMetrics, lastConfirm, confirmedCommandSequence }; },
     setPreview(enabled) { predictionEnabled = enabled; preview.setEnabled(enabled); if (enabled) preview.reconcile({ snapshot: { unit: bytes(authorityUnit) }, revision, tick, epoch, confirmedSequence: lastConfirm, confirmedCommandSequence, timeMs: performance.now(), mode: 'reset' }); },
-    forceCollision() { authorityUnit.x = MAX_X - 1; authorityUnit.direction = 1; stepUnit(authorityUnit, Uint8Array.of(2), []); tick++; sequence++; presentation.capture({ revision, sequence, timeMs: tick * DT, entities: [
+    forceCollision() { authorityUnit.x = MAX_X - 1; authorityUnit.direction = 1; stepUnit(authorityUnit, Uint8Array.of(2), []); tick++; presentation.capture({ revision, sequence: ++captureSequence, timeMs: tick * DT, entities: [
       { id: 'local', generation: 0, source: authorityUnit }, { id: 'remote', generation: 0, source: remoteUnit },
     ] }, performance.now()); preview.reconcile({ snapshot: { unit: bytes(authorityUnit) }, revision, tick, epoch, confirmedSequence: lastConfirm, confirmedCommandSequence, timeMs: performance.now(), mode: 'continuous' }); },
     clockGap() { loop.pulse(performance.now() + 5000); preview.reconcile({ snapshot: { unit: bytes(authorityUnit) }, revision, tick, epoch,
       confirmedSequence: lastConfirm, confirmedCommandSequence, timeMs: performance.now(), mode: 'resync' }); },
-    restart() { queue.length = 0; queuedCommands.length = 0; epoch++; session.epoch = epoch; revision++; sequence = 0; tick = 0; session.tick = 0; authorityUnit.x = 80; authorityUnit.direction = 1; authorityUnit.flash = 0;
-      loop.resetTiming(); presentation.capture({ revision, sequence, timeMs: 0, mode: 'reset', entities: [
+    restart() { queue.length = 0; queuedCommands.length = 0; localSequences.clear(); epoch++; session.epoch = epoch; revision++; captureSequence = 0; tick = 0; session.tick = 0; authorityUnit.x = 80; authorityUnit.direction = 1; authorityUnit.flash = 0;
+      loop.resetTiming(); presentation.capture({ revision, sequence: captureSequence, timeMs: 0, mode: 'reset', entities: [
         { id: 'local', generation: 0, source: authorityUnit }, { id: 'remote', generation: 0, source: remoteUnit },
       ] }, performance.now()); preview.reconcile({ snapshot: { unit: bytes(authorityUnit) }, revision, tick, epoch, confirmedCommandSequence, timeMs: performance.now(), mode: 'join' }); },
     dispose() { paused = true; loop.stop(); preview.dispose(); domInput.dispose(); renderer.dispose(); },

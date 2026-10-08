@@ -390,6 +390,7 @@ export interface LocalInputPreviewOptions {
   presentation?: { selectPreview(ids: Array<{ id: string; generation: number }>): void; capturePreview(packet: object, nowMs: number): boolean; clearPreview?(): void };
   maxPendingInputs?: number; maxFutureTicks?: number; maxAgeMs?: number;
 }
+export interface LoopInputSubmission { sequence: number; tick: number; epoch: number; timeMs: number; commands: Array<{ sequence: number; payload: Bytes }>; }
 export class LocalInputPreview {
   constructor(options: LocalInputPreviewOptions);
   readonly pendingCount: number; readonly enabled: boolean; readonly metrics: Readonly<Record<string, number>>;
@@ -397,7 +398,7 @@ export class LocalInputPreview {
   submit(input: unknown, metadata: { sequence: number; tick: number; epoch: number; timeMs: number; commands?: Array<{ sequence: number; payload: unknown }> }): boolean;
   clear(): void; setEnabled(enabled: boolean): void; dispose(): void;
 }
-export function createLoop<S extends LoopSession>(options: { session: S & { queueCommand?: (payload: Bytes) => number }; backlogPolicy?: 'drop' | 'retain'; getInput?: () => Bytes | { input: Bytes; commands?: Array<{ payload: Bytes }> }; beforeFrame?: (timestamp: number) => void; canAdvance?: () => boolean; onAdvance?: (result: ReturnType<S['advance']>) => void; onPreviewError?: (error: unknown) => void; inputPreview?: Pick<LocalInputPreview, 'submit' | 'clear'>; render?: (context: { session: S; alpha: number; resimulating: boolean }) => void; onError?: (error: unknown) => void; onInputRelease?: () => void; requestFrame?: (callback: FrameRequestCallback) => number; cancelFrame?: (handle: number) => void }): { start(): void; stop(): void; pulse(timestamp: number): void; resetTiming(): void; readonly running: boolean };
+export function createLoop<S extends LoopSession>(options: { session: S & { queueCommand?: (payload: Bytes) => number }; backlogPolicy?: 'drop' | 'retain'; getInput?: () => Bytes | { input: Bytes; commands?: Array<{ payload: Bytes }> }; beforeFrame?: (timestamp: number) => void; canAdvance?: () => boolean; onAdvance?: (result: ReturnType<S['advance']>, submission?: LoopInputSubmission) => void; onPreviewError?: (error: unknown) => void; inputPreview?: Pick<LocalInputPreview, 'submit' | 'clear' | 'enabled'>; render?: (context: { session: S; alpha: number; resimulating: boolean }) => void; onError?: (error: unknown) => void; onInputRelease?: () => void; requestFrame?: (callback: FrameRequestCallback) => number; cancelFrame?: (handle: number) => void }): { start(): void; stop(): void; pulse(timestamp: number): void; resetTiming(): void; readonly running: boolean };
 export type CodecValue = null | boolean | number | string | Uint8Array | CodecValue[] | { [key: string]: CodecValue };
 export interface ValueCodec { readonly format: 'binary' | 'json'; encode(value: CodecValue): Uint8Array; decode(bytes: Bytes): CodecValue; }
 export function createValueCodec(options?: { format?: 'binary' | 'json'; maxBytes?: number; maxDepth?: number; maxEntries?: number }): ValueCodec;
