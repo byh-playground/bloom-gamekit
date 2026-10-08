@@ -163,6 +163,352 @@ var InterpolationTimeline = class {
     return true;
   }
 };
+
+// modules/interpolation/render-object.js
+var RenderObject = class {
+  static LINEAR = 0;
+  static ANGLE = 1;
+  static STEP = 2;
+  // 타격 flash처럼 값이 증가하면 새 표현으로 즉시 시작합니다.
+  static DECAY = 3;
+  // 0..1 진행률이 1에서 0으로 순환하는 필드. 종료 때 역방향 보간하지 않습니다.
+  static CYCLE = 4;
+  static renderSchema = Object.freeze({});
+  /** @param {unknown} context @param {object} model */
+  render(context, model) {
+    throw new Error("RenderObject 하위 타입은 render(context, model)을 구현해야 합니다.");
+  }
+};
+
+// modules/interpolation/render-schema.js
+var unsafe = /* @__PURE__ */ new Set(["__proto__", "prototype", "constructor"]);
+var cache = /* @__PURE__ */ new WeakMap();
+var kinds = ["number", "angle", "discrete", "number", "cycle"];
+var arrayKey = /^(0|[1-9][0-9]*)$/;
+function copyRenderData(value, seen = /* @__PURE__ */ new Set()) {
+  if (value === null || value === void 0 || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "object" || !Array.isArray(value) && Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) {
+    throw new TypeError("Render STEP requires finite scalar or plain data");
+  }
+  if (seen.has(value)) throw new TypeError("Render STEP cannot contain cycles; use an entity ID");
+  seen.add(value);
+  const result = Array.isArray(value) ? new Array(value.length) : {};
+  for (const key of Object.keys(value)) {
+    if (unsafe.has(key)) throw new TypeError("Unsafe render data key: " + key);
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!Object.hasOwn(descriptor, "value")) throw new TypeError("Render data accessors are not supported");
+    result[key] = copyRenderData(descriptor.value, seen);
+  }
+  seen.delete(value);
+  return result;
+}
+function dataAt(source, key) {
+  const descriptor = Object.getOwnPropertyDescriptor(source, key);
+  if (!descriptor) return void 0;
+  if (!Object.hasOwn(descriptor, "value")) throw new TypeError("Render fields must be data properties: " + key);
+  return descriptor.value;
+}
+function compileRenderSchema(type) {
+  if (typeof type !== "function" || type !== RenderObject && !(type.prototype instanceof RenderObject)) {
+    throw new TypeError("Render type must extend RenderObject");
+  }
+  if (cache.has(type)) return cache.get(type);
+  const merged = {};
+  const chain = [];
+  for (let current = type; current && current !== Function.prototype; current = Object.getPrototypeOf(current)) chain.unshift(current);
+  for (const current of chain) {
+    if (!Object.hasOwn(current, "renderSchema")) continue;
+    const declaration = Object.getOwnPropertyDescriptor(current, "renderSchema");
+    if (!Object.hasOwn(declaration, "value")) throw new TypeError("renderSchema cannot be an accessor");
+    const schema = declaration.value;
+    if (!schema || typeof schema !== "object" || Array.isArray(schema)) throw new TypeError("renderSchema must be a field-path map");
+    for (const name of Object.keys(schema)) {
+      const descriptor = Object.getOwnPropertyDescriptor(schema, name);
+      if (!Object.hasOwn(descriptor, "value")) throw new TypeError("renderSchema cannot contain accessors");
+      Object.defineProperty(merged, name, { value: descriptor.value, enumerable: true, configurable: true });
+    }
+  }
+  const fields = [], nodes = [], indices = /* @__PURE__ */ new Map(), root = { children: /* @__PURE__ */ new Map() };
+  for (const [name, code] of Object.entries(merged)) {
+    const path = name.split(".");
+    if (path.some((key) => !key || unsafe.has(key))) throw new TypeError("Unsafe or empty render path: " + name);
+    if (!Number.isInteger(code) || code < 0 || code >= kinds.length) throw new TypeError("Unknown render interpolation: " + name);
+    let node = root;
+    for (const key of path) {
+      if (node.field !== void 0) throw new TypeError("Overlapping render paths: " + name);
+      if (!node.children.has(key)) {
+        const child = { key, children: /* @__PURE__ */ new Map(), index: nodes.length };
+        node.children.set(key, child);
+        nodes.push(child);
+      }
+      node = node.children.get(key);
+    }
+    if (node.children.size) throw new TypeError("Overlapping render paths: " + name);
+    node.field = fields.length;
+    indices.set(name, fields.length);
+    fields.push(Object.freeze({ name, code, kind: kinds[code], path: Object.freeze(path) }));
+  }
+  if (!fields.length) throw new TypeError("renderSchema must declare at least one field");
+  const plan = { fields: Object.freeze(fields), indices, root, nodes };
+  cache.set(type, plan);
+  return plan;
+}
+function captureRenderData(plan, source) {
+  if (!source || typeof source !== "object") throw new TypeError("Render source must be an object");
+  const values = new Array(plan.fields.length), shapes = new Array(plan.nodes.length);
+  function visit(node, value) {
+    if (node.field !== void 0) {
+      const field = plan.fields[node.field];
+      if (value == null) values[node.field] = value;
+      else if (field.code === RenderObject.STEP) values[node.field] = copyRenderData(value);
+      else {
+        if (typeof value !== "number" || !Number.isFinite(value)) throw new TypeError("Render field must be finite: " + field.name);
+        if (field.code === RenderObject.CYCLE && (value < 0 || value > 1)) throw new RangeError("Render CYCLE requires 0..1: " + field.name);
+        values[node.field] = value;
+      }
+      return;
+    }
+    if (value == null) {
+      shapes[node.index] = value;
+      return;
+    }
+    if (typeof value !== "object") throw new TypeError("Render parent must be an object: " + node.key);
+    shapes[node.index] = Array.isArray(value) ? value.length : -1;
+    for (const child of node.children.values()) {
+      if (Array.isArray(value) && child.key === "length") throw new TypeError("Array length belongs to render structure, not a field");
+      visit(child, dataAt(value, child.key));
+    }
+  }
+  for (const node of plan.root.children.values()) visit(node, dataAt(source, node.key));
+  return { values, shapes };
+}
+function snapshotRenderModel(type, source) {
+  const plan = compileRenderSchema(type), data = captureRenderData(plan, source);
+  return writeRenderModel(plan, {}, data.values, data.shapes);
+}
+function writeRenderModel(plan, model, values, shapes) {
+  function visit(parent, node) {
+    const { key } = node;
+    if (node.field !== void 0) {
+      const value = values[node.field];
+      if (value === void 0) delete parent[key];
+      else parent[key] = plan.fields[node.field].code === RenderObject.STEP ? reuseData(parent[key], value) : value;
+      return;
+    }
+    const shape = shapes[node.index];
+    if (shape === void 0) {
+      delete parent[key];
+      return;
+    }
+    if (shape === null) {
+      parent[key] = null;
+      return;
+    }
+    const array = shape >= 0;
+    let target = parent[key];
+    if (!target || typeof target !== "object" || Array.isArray(target) !== array) target = parent[key] = array ? [] : {};
+    if (array) target.length = shape;
+    for (const child of node.children.values()) {
+      if (!array || !arrayKey.test(child.key) || Number(child.key) < shape) visit(target, child);
+    }
+  }
+  for (const node of plan.root.children.values()) visit(model, node);
+  return model;
+}
+function reuseData(out, value) {
+  if (value === null || typeof value !== "object") return value;
+  const array = Array.isArray(value);
+  if (!out || typeof out !== "object" || Array.isArray(out) !== array) out = array ? [] : {};
+  for (const key of Object.keys(out)) if (!Object.hasOwn(value, key)) delete out[key];
+  if (array) out.length = value.length;
+  for (const key of Object.keys(value)) out[key] = reuseData(out[key], value[key]);
+  return out;
+}
+
+// modules/interpolation/presentation.js
+function fraction2(track, now, stepMs) {
+  return Math.min(1, Math.max(0, (now - track.at) / stepMs));
+}
+var PresentationRuntime = class {
+  #stepMs;
+  #tracks = /* @__PURE__ */ new Map();
+  #sources = /* @__PURE__ */ new WeakMap();
+  #models = /* @__PURE__ */ new WeakMap();
+  #now = -Infinity;
+  #revision = -1;
+  #sequence = -1;
+  #timeMs = -Infinity;
+  #extrapolation;
+  /** @param {{stepMs:number, extrapolation?:{fields:string[],maxMs:number}}} options */
+  constructor({ stepMs, extrapolation } = {}) {
+    this.#stepMs = finite(stepMs, "stepMs");
+    if (stepMs <= 0) throw new RangeError("stepMs must be positive");
+    if (extrapolation) {
+      if (!Array.isArray(extrapolation.fields) || new Set(extrapolation.fields).size !== extrapolation.fields.length || Array.from(extrapolation.fields).some((x) => typeof x !== "string")) throw new TypeError("extrapolation.fields must be unique paths");
+      if (finite(extrapolation.maxMs, "maxMs") <= 0) throw new RangeError("maxMs must be positive");
+      if (extrapolation.maxMs < stepMs) throw new RangeError("maxMs must cover the correction stepMs");
+      this.#extrapolation = { fields: new Set(extrapolation.fields), maxMs: extrapolation.maxMs };
+    }
+  }
+  get size() {
+    return this.#tracks.size;
+  }
+  isModel(value) {
+    const owner = value && this.#models.get(value);
+    const current = owner && this.#tracks.get(owner.id);
+    return !!current && current.generation === owner.generation && current.model === value;
+  }
+  #checkClock(now) {
+    finite(now, "nowMs");
+    if (now < this.#now) throw new RangeError("presentation clock must not go backwards");
+  }
+  /**
+   * @param {{revision:number,sequence:number,timeMs:number,mode?:string,entities:Array<{id:string,generation:number,source:object,type?:typeof RenderObject,teleport?:boolean,resetFields?:string[],initialSource?:object}>}} packet
+   * @param {number} nowMs
+   */
+  capture(packet, nowMs) {
+    this.#checkClock(nowMs);
+    if (!packet || typeof packet !== "object") throw new TypeError("packet must be an object");
+    const revision = ordinal(packet.revision, "revision"), sequence = ordinal(packet.sequence, "sequence"), timeMs = finite(packet.timeMs, "timeMs");
+    const mode = packet.mode ?? "continuous";
+    if (!["continuous", "reset", "load", "rollback"].includes(mode)) throw new TypeError("unknown capture mode");
+    if (revision < this.#revision || revision === this.#revision && sequence <= this.#sequence) return false;
+    const changed = revision !== this.#revision;
+    if (this.#revision >= 0 && changed && mode === "continuous") throw new RangeError("new revision requires reset, load or rollback");
+    if (!changed && mode !== "continuous") throw new RangeError("reset, load and rollback require a newer revision");
+    if (!changed && timeMs < this.#timeMs) return false;
+    if (!Array.isArray(packet.entities)) throw new TypeError("entities must be an array");
+    const next = /* @__PURE__ */ new Map(), sources = /* @__PURE__ */ new WeakMap();
+    for (const entity of packet.entities) {
+      if (!entity || typeof entity.id !== "string" || !entity.id || next.has(entity.id)) throw new TypeError("entity IDs must be nonempty and unique");
+      const generation = ordinal(entity.generation, "generation"), source = entity.source;
+      if (!source || typeof source !== "object" || sources.has(source)) throw new TypeError("entity sources must be unique objects");
+      if (entity.teleport !== void 0 && typeof entity.teleport !== "boolean") throw new TypeError("teleport must be boolean");
+      const plan = compileRenderSchema(entity.type ?? source.constructor);
+      if (this.#extrapolation) for (const field of plan.fields) {
+        if (this.#extrapolation.fields.has(field.name) && field.code !== RenderObject.LINEAR) throw new TypeError("extrapolation requires LINEAR: " + field.name);
+      }
+      const target = captureRenderData(plan, source);
+      const initial = entity.initialSource === void 0 ? null : captureRenderData(plan, entity.initialSource);
+      const reset = /* @__PURE__ */ new Set();
+      if (entity.resetFields !== void 0) {
+        if (!Array.isArray(entity.resetFields)) throw new TypeError("resetFields must be an array");
+        for (const name of entity.resetFields) {
+          if (!plan.indices.has(name) || reset.has(name)) throw new TypeError("resetFields must contain unique declared paths");
+          reset.add(name);
+        }
+      }
+      const old = this.#tracks.get(entity.id);
+      const same = mode === "continuous" && old && old.generation === generation && old.plan === plan;
+      const snap = mode !== "continuous" || entity.teleport === true;
+      const from = (!same && !snap && initial ? initial.values : target.values).slice();
+      const velocity = this.#extrapolation ? new Array(plan.fields.length).fill(0) : null;
+      for (let i = 0; i < plan.fields.length; i++) {
+        const field = plan.fields[i], value = target.values[i];
+        if (reset.has(field.name)) from[i] = value;
+        if (!same && !snap && initial && this.#extrapolation?.fields.has(field.name) && typeof from[i] === "number" && typeof value === "number") {
+          if (!Number.isFinite(from[i] - value)) throw new RangeError("extrapolation correction overflow: " + field.name);
+        }
+        if (same && !snap && !reset.has(field.name) && typeof value === "number" && typeof old.target.values[i] === "number") {
+          from[i] = this.#value(old, i, nowMs);
+          if (field.code === RenderObject.DECAY && value > old.target.values[i]) from[i] = value;
+          if (this.#extrapolation?.fields.has(field.name)) {
+            if (field.code !== RenderObject.LINEAR) throw new TypeError("extrapolation requires LINEAR: " + field.name);
+            const delta = timeMs - old.timeMs;
+            if (delta > 0) {
+              const distance = value - old.target.values[i];
+              velocity[i] = !Number.isFinite(delta) ? (value / 2 - old.target.values[i] / 2) / (timeMs / 2 - old.timeMs / 2) : !Number.isFinite(distance) ? (value / 2 - old.target.values[i] / 2) / delta * 2 : distance / delta;
+            } else velocity[i] = old.velocity[i];
+            if (!Number.isFinite(velocity[i])) throw new RangeError("extrapolation velocity overflow: " + field.name);
+            if (!Number.isFinite(from[i] - value)) throw new RangeError("extrapolation correction overflow: " + field.name);
+          }
+        }
+      }
+      const track = {
+        id: entity.id,
+        generation,
+        source,
+        plan,
+        target,
+        from,
+        velocity,
+        at: nowMs,
+        timeMs,
+        model: same ? old.model : {},
+        sampleValues: same ? old.sampleValues : void 0,
+        sampledAt: -Infinity
+      };
+      next.set(entity.id, track);
+      sources.set(source, track);
+    }
+    this.#tracks = next;
+    this.#sources = sources;
+    this.#revision = revision;
+    this.#sequence = sequence;
+    this.#timeMs = timeMs;
+    this.#now = nowMs;
+    return true;
+  }
+  #value(track, index, now) {
+    const field = track.plan.fields[index], from = track.from[index], to = track.target.values[index];
+    if (from == null || to == null || field.code === RenderObject.STEP) return to;
+    const alpha = fraction2(track, now, this.#stepMs);
+    if (this.#extrapolation?.fields.has(field.name)) {
+      const age = Math.min(this.#extrapolation.maxMs, Math.max(0, now - track.at));
+      const value = evaluate("number", from, to, alpha) + track.velocity[index] * age;
+      if (!Number.isFinite(value)) throw new RangeError("extrapolated render value overflow: " + field.name);
+      return value;
+    }
+    if (field.code === RenderObject.CYCLE) {
+      if (alpha === 1) return to;
+      const value = evaluate("number", from, to < from ? to + 1 : to, alpha);
+      return value > 1 ? value - 1 : value;
+    }
+    return evaluate(field.kind, from, to, alpha);
+  }
+  /** 유효 identity가 아니면 null. 원본 fallback은 없습니다. 모델은 프레임 간 재사용됩니다. */
+  sample(id, generation, nowMs) {
+    this.#checkClock(nowMs);
+    const track = this.#tracks.get(id);
+    if (!track || track.generation !== generation) {
+      this.#now = nowMs;
+      return null;
+    }
+    if (track.sampledAt !== nowMs) {
+      const values = track.sampleValues ??= new Array(track.plan.fields.length);
+      for (let i = 0; i < values.length; i++) values[i] = this.#value(track, i, nowMs);
+      writeRenderModel(track.plan, track.model, values, track.target.shapes);
+      track.sampledAt = nowMs;
+      this.#models.set(track.model, track);
+    }
+    this.#now = nowMs;
+    return track.model;
+  }
+  /** 등록된 원본 객체나 유효한 모델만 받습니다. 삭제·세대 변경된 모델은 다시 그리지 않습니다. */
+  modelFor(source, nowMs) {
+    this.#checkClock(nowMs);
+    if (this.isModel(source)) {
+      const owner = this.#models.get(source);
+      return this.sample(owner.id, owner.generation, nowMs);
+    }
+    const track = this.#sources.get(source);
+    if (track) return this.sample(track.id, track.generation, nowMs);
+    this.#now = nowMs;
+    return null;
+  }
+  /** 정상적인 객체 메서드 호출입니다. this/프로토타입을 바꾸지 않습니다. */
+  render(source, context, nowMs) {
+    if (!(source instanceof RenderObject)) throw new TypeError("render() requires a RenderObject");
+    const model = this.modelFor(source, nowMs);
+    if (!model) throw new Error("Render object has not been captured");
+    source.render(context, model);
+    return model;
+  }
+};
 export {
-  InterpolationTimeline
+  InterpolationTimeline,
+  PresentationRuntime,
+  RenderObject,
+  snapshotRenderModel
 };
