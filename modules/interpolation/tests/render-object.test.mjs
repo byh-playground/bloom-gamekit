@@ -497,7 +497,7 @@ test('명시적 RenderObject type으로 plain source도 수집하되 render는 �
 
 for (const [name, schema] of [
   ['빈 schema', {}], ['배열 schema', []], ['null schema', null],
-  ['잘못된 코드', { x: 5 }], ['문자열 코드', { x: 'LINEAR' }],
+  ['잘못된 코드', { x: 99 }], ['문자열 코드', { x: 'LINEAR' }],
   ['소수 코드', { x: 0.5 }], ['음수 코드', { x: -1 }],
   ['빈 경로', { '': 0 }], ['빈 중간 경로', { 'position..x': 0 }],
   ['선행 점', { '.x': 0 }], ['후행 점', { 'x.': 0 }],

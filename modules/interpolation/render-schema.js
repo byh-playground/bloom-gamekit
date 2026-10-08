@@ -1,8 +1,8 @@
 import { RenderObject } from './render-object.js';
+import { fieldKind, compileFieldPolicies } from './render-policies.js';
 
 const unsafe = new Set(['__proto__', 'prototype', 'constructor']);
 const cache = new WeakMap();
-const kinds = ['number', 'angle', 'discrete', 'number', 'cycle'];
 const arrayKey = /^(0|[1-9][0-9]*)$/;
 
 /** STEP는 원본 참조가 아닌 분리된 plain-data 표본입니다. getter와 순환 그래프는 거부합니다. */
@@ -57,12 +57,12 @@ export function compileRenderSchema(type) {
   for (const [name, code] of Object.entries(merged)) {
     const path = name.split('.');
     if (path.some(key => !key || unsafe.has(key))) throw new TypeError('Unsafe or empty render path: ' + name);
-    if (!Number.isInteger(code) || code < 0 || code >= kinds.length) throw new TypeError('Unknown render interpolation: ' + name);
+    if (!Number.isInteger(code) || !fieldKind(code)) throw new TypeError('Unknown render interpolation: ' + name);
     let node = root;
     for (const key of path) {
       if (node.field !== undefined) throw new TypeError('Overlapping render paths: ' + name);
       if (!node.children.has(key)) {
-        const child = { key, children: new Map(), index: nodes.length };
+        const child = { key, children: new Map(), index: nodes.length, parent: node };
         node.children.set(key, child); nodes.push(child);
       }
       node = node.children.get(key);
@@ -70,10 +70,11 @@ export function compileRenderSchema(type) {
     if (node.children.size) throw new TypeError('Overlapping render paths: ' + name);
     node.field = fields.length;
     indices.set(name, fields.length);
-    fields.push(Object.freeze({ name, code, kind: kinds[code], path: Object.freeze(path) }));
+    fields.push(Object.freeze({ name, code, kind: fieldKind(code), path: Object.freeze(path), owner: node.parent }));
   }
   if (!fields.length) throw new TypeError('renderSchema must declare at least one field');
-  const plan = { fields: Object.freeze(fields), indices, root, nodes };
+  const policies = compileFieldPolicies(root, fields);
+  const plan = { fields: Object.freeze(fields), indices, root, nodes, policies };
   cache.set(type, plan);
   return plan;
 }
@@ -86,10 +87,14 @@ export function captureRenderData(plan, source) {
     if (node.field !== undefined) {
       const field = plan.fields[node.field];
       if (value == null) values[node.field] = value;
-      else if (field.code === RenderObject.STEP) values[node.field] = copyRenderData(value);
+      else if (field.kind === 'discrete') {
+        if (field.code === RenderObject.STATE_KEY && !['number', 'boolean', 'string'].includes(typeof value)) throw new TypeError('STATE_KEY requires a scalar: ' + field.name);
+        values[node.field] = copyRenderData(value);
+      }
       else {
         if (typeof value !== 'number' || !Number.isFinite(value)) throw new TypeError('Render field must be finite: ' + field.name);
         if (field.code === RenderObject.CYCLE && (value < 0 || value > 1)) throw new RangeError('Render CYCLE requires 0..1: ' + field.name);
+        if ((field.code === RenderObject.COUNTDOWN_MS || field.code === RenderObject.COUNTDOWN_SECONDS) && value < 0) throw new RangeError('Render countdown must be nonnegative: ' + field.name);
         values[node.field] = value;
       }
       return;
@@ -122,7 +127,7 @@ export function writeRenderModel(plan, model, values, shapes) {
     if (node.field !== undefined) {
       const value = values[node.field];
       if (value === undefined) delete parent[key];
-      else parent[key] = plan.fields[node.field].code === RenderObject.STEP ? reuseData(parent[key], value) : value;
+      else parent[key] = plan.fields[node.field].kind === 'discrete' ? reuseData(parent[key], value) : value;
       return;
     }
     const shape = shapes[node.index];

@@ -2,6 +2,7 @@ import { RenderObject } from './render-object.js';
 import { compileRenderSchema, captureRenderData, writeRenderModel } from './render-schema.js';
 import { finite, ordinal } from './schema.js';
 import { evaluate } from './tracks.js';
+import { isLinearField, inferFieldResets, positionDiscontinuity, seedFieldValues } from './render-policies.js';
 
 function fraction(track, now, stepMs) {
   return Math.min(1, Math.max(0, (now - track.at) / stepMs));
@@ -15,11 +16,14 @@ export class PresentationRuntime {
   #stepMs; #tracks = new Map(); #sources = new WeakMap(); #models = new WeakMap();
   #now = -Infinity; #revision = -1; #sequence = -1; #timeMs = -Infinity;
   #extrapolation;
+  #snapDistance;
 
-  /** @param {{stepMs:number, extrapolation?:{fields:string[],maxMs:number}}} options */
-  constructor({ stepMs, extrapolation } = {}) {
+  /** @param {{stepMs:number, snapDistance?:number, extrapolation?:{fields:string[],maxMs:number}}} options */
+  constructor({ stepMs, snapDistance, extrapolation } = {}) {
     this.#stepMs = finite(stepMs, 'stepMs');
     if (stepMs <= 0) throw new RangeError('stepMs must be positive');
+    if (snapDistance !== undefined && finite(snapDistance, 'snapDistance') <= 0) throw new RangeError('snapDistance must be positive');
+    this.#snapDistance = snapDistance;
     if (extrapolation) {
       if (!Array.isArray(extrapolation.fields) || new Set(extrapolation.fields).size !== extrapolation.fields.length || Array.from(extrapolation.fields).some(x => typeof x !== 'string')) throw new TypeError('extrapolation.fields must be unique paths');
       if (finite(extrapolation.maxMs, 'maxMs') <= 0) throw new RangeError('maxMs must be positive');
@@ -62,7 +66,7 @@ export class PresentationRuntime {
       if (entity.teleport !== undefined && typeof entity.teleport !== 'boolean') throw new TypeError('teleport must be boolean');
       const plan = compileRenderSchema(entity.type ?? source.constructor);
       if (this.#extrapolation) for (const field of plan.fields) {
-        if (this.#extrapolation.fields.has(field.name) && field.code !== RenderObject.LINEAR) throw new TypeError('extrapolation requires LINEAR: ' + field.name);
+        if (this.#extrapolation.fields.has(field.name) && !isLinearField(field.code)) throw new TypeError('extrapolation requires LINEAR: ' + field.name);
       }
       const target = captureRenderData(plan, source);
       const initial = entity.initialSource === undefined ? null : captureRenderData(plan, entity.initialSource);
@@ -70,26 +74,28 @@ export class PresentationRuntime {
       if (entity.resetFields !== undefined) {
         if (!Array.isArray(entity.resetFields)) throw new TypeError('resetFields must be an array');
         for (const name of entity.resetFields) {
-          if (!plan.indices.has(name) || reset.has(name)) throw new TypeError('resetFields must contain unique declared paths');
-          reset.add(name);
+          const index = plan.indices.get(name);
+          if (index === undefined || reset.has(index)) throw new TypeError('resetFields must contain unique declared paths');
+          reset.add(index);
         }
       }
       const old = this.#tracks.get(entity.id);
       const same = mode === 'continuous' && old && old.generation === generation && old.plan === plan;
-      const snap = mode !== 'continuous' || entity.teleport === true;
-      const from = (!same && !snap && initial ? initial.values : target.values).slice();
+      const snap = mode !== 'continuous' || entity.teleport === true || !!same && positionDiscontinuity(plan.policies, old, target, this.#snapDistance);
+      if (same && !snap) inferFieldResets(plan.policies, old, target, timeMs, reset);
+      const from = !same && !snap ? (initial ? initial.values.slice() : seedFieldValues(plan.policies, target.values)) : target.values.slice();
       const velocity = this.#extrapolation ? new Array(plan.fields.length).fill(0) : null;
       for (let i = 0; i < plan.fields.length; i++) {
         const field = plan.fields[i], value = target.values[i];
-        if (reset.has(field.name)) from[i] = value;
+        if (reset.has(i)) from[i] = value;
         if (!same && !snap && initial && this.#extrapolation?.fields.has(field.name) && typeof from[i] === 'number' && typeof value === 'number') {
           if (!Number.isFinite(from[i] - value)) throw new RangeError('extrapolation correction overflow: ' + field.name);
         }
-        if (same && !snap && !reset.has(field.name) && typeof value === 'number' && typeof old.target.values[i] === 'number') {
+        if (same && !snap && !reset.has(i) && typeof value === 'number' && typeof old.target.values[i] === 'number') {
           from[i] = this.#value(old, i, nowMs);
           if (field.code === RenderObject.DECAY && value > old.target.values[i]) from[i] = value;
           if (this.#extrapolation?.fields.has(field.name)) {
-            if (field.code !== RenderObject.LINEAR) throw new TypeError('extrapolation requires LINEAR: ' + field.name);
+            if (!isLinearField(field.code)) throw new TypeError('extrapolation requires LINEAR: ' + field.name);
             const delta = timeMs - old.timeMs;
             if (delta > 0) {
               const distance = value - old.target.values[i];
@@ -114,7 +120,7 @@ export class PresentationRuntime {
 
   #value(track, index, now) {
     const field = track.plan.fields[index], from = track.from[index], to = track.target.values[index];
-    if (from == null || to == null || field.code === RenderObject.STEP) return to;
+    if (from == null || to == null || field.kind === 'discrete') return to;
     const alpha = fraction(track, now, this.#stepMs);
     if (this.#extrapolation?.fields.has(field.name)) {
       const age = Math.min(this.#extrapolation.maxMs, Math.max(0, now - track.at));
