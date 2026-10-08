@@ -1,0 +1,68 @@
+const IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
+const WHITE = Object.freeze([1, 1, 1, 1]);
+const VERTEX = `attribute vec2 a_position; attribute vec2 a_uv; attribute vec4 a_color;
+uniform mat3 u_projection; varying vec2 v_uv; varying vec4 v_color;
+void main(){vec3 p=u_projection*vec3(a_position,1.0);gl_Position=vec4(p.xy,0.0,1.0);v_uv=a_uv;v_color=a_color;}`;
+const FRAGMENT = `precision mediump float; uniform sampler2D u_texture; uniform float u_textured;
+varying vec2 v_uv; varying vec4 v_color; void main(){vec4 t=mix(vec4(1.0),texture2D(u_texture,v_uv),u_textured);float a=t.a*v_color.a;gl_FragColor=vec4(t.rgb*v_color.rgb*v_color.a,a);}`;
+const finite = (n, label) => { if (!Number.isFinite(n)) throw new TypeError(`${label} must be finite`); };
+function rgba(value) { if (!value || value.length !== 4 || Array.from(value).some(n => !Number.isFinite(n) || n < 0 || n > 1)) throw new TypeError('RGBA channels must be in [0,1]'); return value; }
+function point(m, x, y) { return { x: m[0] * x + m[2] * y + m[4], y: m[1] * x + m[3] * y + m[5] }; }
+function tessellate(contours,rule){
+  const edges=[],ys=[];
+  for(const contour of contours){if(contour.length<3)continue;for(let i=0;i<contour.length;i++){const a=contour[i],b=contour[(i+1)%contour.length];if(Math.abs(a.y-b.y)<1e-9)continue;edges.push({a,b,sign:b.y>a.y?1:-1});ys.push(a.y,b.y)}}
+  ys.sort((a,b)=>a-b);const levels=ys.filter((y,i)=>i===0||y-ys[i-1]>1e-8),triangles=[];
+  for(let band=0;band+1<levels.length;band++){const y0=levels[band],y1=levels[band+1],ym=(y0+y1)/2;if(y1-y0<1e-8)continue;
+    const active=edges.filter(e=>ym>Math.min(e.a.y,e.b.y)&&ym<Math.max(e.a.y,e.b.y)).map(e=>({edge:e,x:xAt(e,ym)})).sort((a,b)=>a.x-b.x);
+    let winding=0,inside=false,left=null;
+    for(const item of active){const before=rule==='evenodd'?inside:winding!==0;if(rule==='evenodd')inside=!inside;else winding+=item.edge.sign;const after=rule==='evenodd'?inside:winding!==0;
+      if(!before&&after)left=item.edge;else if(before&&!after&&left){const a={x:xAt(left,y0),y:y0},b={x:xAt(item.edge,y0),y:y0},c={x:xAt(item.edge,y1),y:y1},d={x:xAt(left,y1),y:y1};triangles.push(a,b,c,a,c,d);left=null}}
+  }
+  return triangles;
+}
+function xAt(edge,y){const {a,b}=edge;return a.x+(b.x-a.x)*(y-a.y)/(b.y-a.y)}
+
+/** Immediate vector/path submission over WebGLDevice. The caller owns art, projection and painter order. */
+export class VectorRenderer {
+  constructor(device, { initialVertices = 4096, maxVertices = 262144, glyphAtlas = null } = {}) {
+    if (!device?.createPipeline || !device?.draw) throw new TypeError('A WebGLDevice is required');
+    if (!Number.isSafeInteger(maxVertices) || maxVertices < 3 || !Number.isSafeInteger(initialVertices) || initialVertices < 3 || initialVertices > maxVertices) throw new RangeError('3 <= initialVertices <= maxVertices is required');
+    if (initialVertices*32>device.maxBufferBytes) throw new RangeError('initial vector buffer exceeds the device byte limit');
+    this.device=device;this.gl=device.gl;this.canvas=device.canvas;this.glyphAtlas=glyphAtlas;this.maxVertices=maxVertices;
+    this.pipeline=device.createPipeline({vertex:VERTEX,fragment:FRAGMENT,stride:32,attributes:[{name:'a_position',size:2,offset:0},{name:'a_uv',size:2,offset:8},{name:'a_color',size:4,offset:16}],uniforms:{u_projection:'matrix3fv',u_texture:'1i',u_textured:'1f'}});
+    this.buffer=device.createVertexBuffer({capacityBytes:initialVertices*32});
+    this.white=device.createTexture({width:1,height:1,data:new Uint8Array([255,255,255,255])},{format:'rgba',premultiplied:true,filter:'nearest'});
+    this.vertices=new Float32Array(initialVertices*8);this.count=0;this.matrix=IDENTITY.slice();this.stack=[];this.path=[];this.cursor=null;this.subpath=null;this.clips=[];this.groups=[];this.groupTargets=[];this.activeTexture=this.white;this.state='ready';
+    this.projection=new Float32Array([2/this.canvas.width,0,0,0,-2/this.canvas.height,0,-1,1,1]);
+  }
+  _frame(){if(this.state!=='ready')throw new Error(`VectorRenderer is ${this.state}`);if(!this.device.active)throw new Error('WebGLDevice.beginFrame is required');const g=[...this.groups].reverse().find(group=>!group.direct);if(g)this._setProjection(g.bounds,g.target);else this._setProjection(null);}
+  _setProjection(bounds,target=null){const w=target?.width??this.canvas.width,h=target?.height??this.canvas.height,x=bounds?.x??0,y=bounds?.y??0;this.projection[0]=2/w;this.projection[1]=0;this.projection[2]=0;this.projection[3]=0;this.projection[4]=-2/h;this.projection[5]=0;this.projection[6]=-1-2*x/w;this.projection[7]=1+2*y/h;this.projection[8]=1;}
+  beginPath(){this._frame();this.path=[];this.cursor=this.subpath=null;}
+  moveTo(x,y){this._frame();finite(x,'x');finite(y,'y');const p=point(this.matrix,x,y);this.path.push([p]);this.cursor=this.subpath=p;}
+  lineTo(x,y){this._frame();finite(x,'x');finite(y,'y');if(!this.cursor)return this.moveTo(x,y);const p=point(this.matrix,x,y);this.path.at(-1).push(p);this.cursor=p;}
+  quadraticCurveTo(cx,cy,x,y,segments=12){this._curve([cx,cy,x,y],segments,false);}
+  bezierCurveTo(a,b,c,d,x,y,segments=16){this._curve([a,b,c,d,x,y],segments,true);}
+  _curve(v,n,cubic){this._frame();if(!Number.isSafeInteger(n)||n<2||n>256)throw new RangeError('curve segments must be 2..256');if(!this.cursor)return this.moveTo(v[0],v[1]);const start=this.cursor,p=cubic?[point(this.matrix,v[0],v[1]),point(this.matrix,v[2],v[3]),point(this.matrix,v[4],v[5])]:[point(this.matrix,v[0],v[1]),point(this.matrix,v[2],v[3])];for(let i=1;i<=n;i++){const t=i/n,q=1-t;let x,y;if(cubic){x=q*q*q*start.x+3*q*q*t*p[0].x+3*q*t*t*p[1].x+t*t*t*p[2].x;y=q*q*q*start.y+3*q*q*t*p[0].y+3*q*t*t*p[1].y+t*t*t*p[2].y}else{x=q*q*start.x+2*q*t*p[0].x+t*t*p[1].x;y=q*q*start.y+2*q*t*p[0].y+t*t*p[1].y}this.path.at(-1).push({x,y})}this.cursor=this.path.at(-1).at(-1);}
+  closePath(){if(this.cursor&&this.subpath){const p=this.path.at(-1);if(p.at(-1)!==this.subpath)p.push(this.subpath);this.cursor=this.subpath}}
+  save(){this._frame();this.stack.push({matrix:this.matrix.slice(),clips:this.clips.map(polygon=>polygon.map(p=>({...p})))});}
+  restore(){this._frame();const s=this.stack.pop();if(!s)throw new Error('restore without save');this.matrix=s.matrix;this.clips=s.clips;}
+  setTransform(a,b,c,d,e,f){this._frame();[a,b,c,d,e,f].forEach((n,i)=>finite(n,`transform[${i}]`));this.matrix=[a,b,c,d,e,f];}
+  transform(a,b,c,d,e,f){const m=this.matrix;this.setTransform(m[0]*a+m[2]*b,m[1]*a+m[3]*b,m[0]*c+m[2]*d,m[1]*c+m[3]*d,m[0]*e+m[2]*f+m[4],m[1]*e+m[3]*f+m[5]);}
+  translate(x,y){this.transform(1,0,0,1,x,y)} rotate(angle){this.transform(Math.cos(angle),Math.sin(angle),-Math.sin(angle),Math.cos(angle),0,0)} scale(x,y=x){this.transform(x,0,0,y,0,0)}
+  clipRect(x,y,width,height){this._frame();if(width<0||height<0)throw new RangeError('clip size must be non-negative');this.clips.push([point(this.matrix,x,y),point(this.matrix,x+width,y),point(this.matrix,x+width,y+height),point(this.matrix,x,y+height)]);}
+  _clipTriangle(a,b,c,uv){let poly=[a,b,c].map((p,i)=>uv?{...p,u:uv[i][0],v:uv[i][1]}:p);for(const clip of this.clips){let orientation=0;for(let i=0;i<clip.length;i++)orientation+=clip[i].x*clip[(i+1)%clip.length].y-clip[(i+1)%clip.length].x*clip[i].y;const direction=orientation>=0?1:-1;for(let i=0;i<clip.length;i++){const p=clip[i],q=clip[(i+1)%clip.length],side=v=>direction*((q.x-p.x)*(v.y-p.y)-(q.y-p.y)*(v.x-p.x)),out=[];let prev=poly.at(-1),pv=side(prev);for(const cur of poly){const cv=side(cur);if((pv< -1e-8)!==(cv< -1e-8)){const t=pv/(pv-cv),vertex={x:prev.x+(cur.x-prev.x)*t,y:prev.y+(cur.y-prev.y)*t};if(uv){vertex.u=prev.u+(cur.u-prev.u)*t;vertex.v=prev.v+(cur.v-prev.v)*t}out.push(vertex)}if(cv>=-1e-8)out.push(cur);prev=cur;pv=cv}poly=out;if(!poly.length)return poly}}return poly;}
+  _emitTriangle(a,b,c,color,uv=null){rgba(color);const poly=this.clips.length?this._clipTriangle(a,b,c,uv):(uv?[a,b,c].map((p,i)=>({...p,u:uv[i][0],v:uv[i][1]})):[a,b,c]);for(let i=1;i+1<poly.length;i++){if(this.count+3>this.maxVertices)throw new RangeError('VectorRenderer vertex capacity exceeded');if(this.count+3>this.vertices.length/8){const size=Math.min(this.maxVertices,Math.max(this.count+3,this.vertices.length/4));const next=new Float32Array(size*8);next.set(this.vertices);this.vertices=next}for(const p of [poly[0],poly[i],poly[i+1]]){const k=this.count++*8;this.vertices[k]=p.x;this.vertices[k+1]=p.y;this.vertices[k+2]=p.u??0;this.vertices[k+3]=p.v??0;this.vertices.set(color,k+4)}}}
+  _submit(){if(!this.count)return;const texture=this.activeTexture??this.white;this.device.uploadVertices(this.buffer,this.vertices.subarray(0,this.count*8));this.device.draw({pipeline:this.pipeline,buffer:this.buffer,count:this.count,uniforms:{u_projection:this.projection,u_texture:0,u_textured:texture===this.white?0:1},textures:[texture],blend:'source-over'});this.count=0;}
+  _useTexture(texture){if(this.activeTexture&&this.activeTexture!==texture)this._submit();this.activeTexture=texture;}
+  fill(colorValue=[0,0,0,1],rule='nonzero'){this._frame();if(rule!=='nonzero'&&rule!=='evenodd')throw new TypeError('rule must be nonzero or evenodd');this._useTexture(this.white);const col=rgba(colorValue),vertices=tessellate(this.path,rule);for(let i=0;i+2<vertices.length;i+=3)this._emitTriangle(vertices[i],vertices[i+1],vertices[i+2],col);this._submit();}
+  stroke(colorValue=[0,0,0,1],width=1){this._frame();this._useTexture(this.white);rgba(colorValue);if(!Number.isFinite(width)||width<=0)throw new RangeError('line width must be positive');for(const contour of this.path)for(let i=1;i<contour.length;i++){const a=contour[i-1],b=contour[i],dx=b.x-a.x,dy=b.y-a.y,l=Math.hypot(dx,dy);if(!l)continue;const nx=-dy*width/(2*l),ny=dx*width/(2*l),p={x:a.x+nx,y:a.y+ny},q={x:b.x+nx,y:b.y+ny},r={x:b.x-nx,y:b.y-ny},s={x:a.x-nx,y:a.y-ny};this._emitTriangle(p,q,r,colorValue);this._emitTriangle(p,r,s,colorValue)}this._submit();}
+  polygon(points,colorValue=[0,0,0,1]){this.beginPath();points.forEach((p,i)=>i?this.lineTo(p[0],p[1]):this.moveTo(p[0],p[1]));this.closePath();this.fill(colorValue);}
+  fillText(text,x,y,options={}){this._frame();if(!this.glyphAtlas)throw new Error('GlyphAtlas is not configured');return this.glyphAtlas.fillText(this,text,x,y,options)}
+  strokeText(text,x,y,options={}){this._frame();if(!this.glyphAtlas)throw new Error('GlyphAtlas is not configured');return this.glyphAtlas.strokeText(this,text,x,y,options)}
+  measureText(text,options={}){if(!this.glyphAtlas)throw new Error('GlyphAtlas is not configured');return this.glyphAtlas.measureText(text,options)}
+  drawGlyphQuad(texture,x,y,width,height,uv,colorValue){this._frame();this._useTexture(texture);const a={...point(this.matrix,x,y)},b={...point(this.matrix,x+width,y)},c={...point(this.matrix,x+width,y+height)},d={...point(this.matrix,x,y+height)};this._emitTriangle(a,b,c,colorValue,[[uv.u0,uv.v0],[uv.u1,uv.v0],[uv.u1,uv.v1]]);this._emitTriangle(a,c,d,colorValue,[[uv.u0,uv.v0],[uv.u1,uv.v1],[uv.u0,uv.v1]]);}
+  flush(){this._frame();this._submit();}
+  beginGroup(opacity=1,bounds=null){this._frame();if(!Number.isFinite(opacity)||opacity<0||opacity>1)throw new RangeError('group opacity must be in [0,1]');this._submit();if(opacity===1){this.groups.push({direct:true});return}const requested=bounds??{x:0,y:0,width:this.canvas.width,height:this.canvas.height};for(const key of ['x','y','width','height'])if(!Number.isFinite(requested[key]))throw new TypeError(`group bounds.${key} must be finite`);if(requested.width<=0||requested.height<=0)throw new RangeError('group bounds must have positive size');const x=Math.max(0,Math.floor(requested.x)),y=Math.max(0,Math.floor(requested.y)),right=Math.min(this.canvas.width,Math.ceil(requested.x+requested.width)),bottom=Math.min(this.canvas.height,Math.ceil(requested.y+requested.height)),width=right-x,height=bottom-y;if(width<=0||height<=0){this.groups.push({direct:true,empty:true});return}const depth=this.groups.filter(g=>!g.direct).length;let target=this.groupTargets[depth];const allocation=n=>Math.min(this.device.maxTextureSize,2**Math.ceil(Math.log2(n)));const needW=allocation(width),needH=allocation(height);if(!target||target.width<width||target.height<height){if(target)this.device.deleteRenderTarget(target);target=this.groupTargets[depth]=this.device.createRenderTarget(needW,needH,{filter:'nearest'})}const group={target,opacity,bounds:{x,y,width,height},matrix:this.matrix.slice(),clips:this.clips,projection:this.projection.slice()};this.device.bindRenderTarget(target);this.device.clear({color:[0,0,0,0]});this.groups.push(group);this.clips=[...this.clips,[{x,y},{x:right,y},{x:right,y:bottom},{x,y:bottom}]];this._setProjection(group.bounds,target);}
+  endGroup(){this._frame();const group=this.groups.pop();if(!group)throw new Error('endGroup without beginGroup');this._submit();if(group.direct)return;this.device.unbindRenderTarget(group.target);this.matrix=group.matrix;this.clips=group.clips;this.projection.set(group.projection);this.activeTexture=group.target;const {x,y,width,height}=group.bounds,u=width/group.target.width,v=height/group.target.height,a={x,y},b={x:x+width,y},c={x:x+width,y:y+height},d={x,y:y+height},alpha=[1,1,1,group.opacity];this._emitTriangle(a,b,c,alpha,[[0,1],[u,1],[u,1-v]]);this._emitTriangle(a,c,d,alpha,[[0,1],[u,1-v],[0,1-v]]);this._submit();this.activeTexture=this.white;}
+  dispose(){if(this.state==='disposed')return;for(const target of this.groupTargets)this.device.deleteRenderTarget(target);this.device.deleteVertexBuffer(this.buffer);this.device.deletePipeline(this.pipeline);this.device.deleteTexture(this.white);this.buffer=this.pipeline=this.white=null;this.state='disposed'}
+}

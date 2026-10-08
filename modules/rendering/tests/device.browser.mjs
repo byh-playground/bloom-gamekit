@@ -93,3 +93,44 @@ export async function exerciseWebGLDevice(page) {
   result.restoration=loss;result.disposed=await page.evaluate(()=>{const d=deviceProbe.d;d.dispose();d.dispose();deviceProbe.canvas.remove();return d.state==='disposed'&&d.stats.pipelineCount===0&&d.stats.gpuBufferBytes===0;});assert.equal(result.disposed,true);
   return result;
 }
+
+/** Stable path/text/group-opacity scenario over an actual WebGL1 framebuffer. */
+export async function exerciseVectorRenderer(page) {
+  const result = await page.evaluate(async () => {
+    const { WebGLDevice, VectorRenderer, GlyphAtlas } = await import('/dist/rendering.js');
+    const canvas=document.createElement('canvas');canvas.width=canvas.height=64;document.body.append(canvas);
+    const device=new WebGLDevice(canvas,{alpha:true,antialias:false,preserveDrawingBuffer:true,stencil:true});
+    const atlas=new GlyphAtlas(device,{width:1,height:1,data:new Uint8Array([255,255,255,255]),unitsPerEm:1,ascent:1,descent:0,
+      glyphs:{'U+41':{x:0,y:0,width:1,height:1,advance:1,bearingY:1}}});
+    const renderer=new VectorRenderer(device,{glyphAtlas:atlas,initialVertices:128,maxVertices:2048});
+    const pixel=(x,y)=>{const p=new Uint8Array(4);device.gl.readPixels(x,63-y,1,1,device.gl.RGBA,device.gl.UNSIGNED_BYTE,p);return [...p]};
+    device.beginFrame({clearColor:[0,0,1,1]});
+    renderer.beginGroup(.5,{x:12,y:12,width:44,height:32});
+    renderer.polygon([[12,12],[44,12],[44,44],[12,44]],[1,0,0,1]);
+    renderer.polygon([[24,12],[56,12],[56,44],[24,44]],[1,0,0,1]);
+    renderer.beginGroup(.5,{x:24,y:12,width:8,height:8});renderer.polygon([[24,12],[32,12],[32,20],[24,20]],[0,1,0,1]);const nestedTarget=new Uint8Array(4);device.gl.readPixels(4,3,1,1,device.gl.RGBA,device.gl.UNSIGNED_BYTE,nestedTarget);renderer.endGroup();const parentTarget=new Uint8Array(4);device.gl.readPixels(16,27,1,1,device.gl.RGBA,device.gl.UNSIGNED_BYTE,parentTarget);
+    renderer.endGroup();
+    renderer.save();renderer.clipRect(2,48,24,12);renderer.beginPath();renderer.moveTo(2,60);renderer.quadraticCurveTo(16,42,30,60,16);renderer.stroke([0,1,0,1],2);renderer.restore();
+    renderer.beginPath();renderer.moveTo(2,2);renderer.lineTo(20,2);renderer.lineTo(20,20);renderer.lineTo(2,20);renderer.closePath();renderer.moveTo(6,6);renderer.lineTo(16,6);renderer.lineTo(16,16);renderer.lineTo(6,16);renderer.closePath();renderer.fill([0,1,0,1],'evenodd');
+    renderer.fillText('A',48,50,{fontSize:8,align:'center',baseline:'top',color:[1,1,1,1]});
+    renderer.flush();
+    const stats={...device.stats},overlap=pixel(30,24),outer=pixel(16,24),nested=pixel(28,16),label=pixel(48,53),clipped=pixel(28,55),hole=pixel(10,10),measure=renderer.measureText('A',{fontSize:8,align:'center'}),error=device.gl.getError();
+    device.endFrame();window.vectorProbe={device,renderer,atlas,canvas,pixel};
+    return{overlap,outer,nested,label,clipped,hole,error,stats,measure,nestedTarget:[...nestedTarget],parentTarget:[...parentTarget]};
+  });
+  assert.ok(Math.abs(result.overlap[0]-128)<=3&&result.overlap[1]<=2&&Math.abs(result.overlap[2]-127)<=3,'overlapping opaque polygons must be composited once at group opacity .5');
+  assert.ok(Math.abs(result.outer[0]-128)<=3&&Math.abs(result.outer[2]-127)<=3,'group alpha applies outside overlap');
+  assert.ok(result.nested[0]>60&&result.nested[0]<68&&result.nested[1]>60&&result.nested[1]<68&&result.nested[2]>124&&result.nested[2]<132,`nested groups apply alpha once per completed group: ${result.nested}; FBOs ${result.nestedTarget}/${result.parentTarget}`);
+  assert.deepEqual(result.nestedTarget,[0,255,0,255]);assert.deepEqual(result.parentTarget,[128,128,0,255]);
+  assert.ok(result.label[0]>200&&result.label[1]>200&&result.label[2]>200,'prebaked glyph atlas produces WebGL text pixels');
+  assert.deepEqual(result.clipped,[0,0,255,255],'clip rectangles exclude geometry beyond their bounds');assert.deepEqual(result.hole,[0,0,255,255],'evenodd tessellation preserves path holes');
+  assert.equal(result.measure.width,8);assert.equal(result.stats.renderTargetCount,2);
+  assert.equal(result.error,0);assert.equal(result.stats.gpuRenderTargetBytes,(64*32+8*8)*4);assert.ok(result.stats.drawCalls>=5);
+  const loss=await page.evaluate(()=>{const p=vectorProbe;p.loss=p.device.gl.getExtension('WEBGL_lose_context');if(!p.loss)return false;p.loss.loseContext();return true;});
+  if(loss){await page.waitForFunction(()=>vectorProbe.device.state==='lost');assert.equal(await page.evaluate(()=>vectorProbe.device.beginFrame()),false);await page.evaluate(()=>vectorProbe.loss.restoreContext());await page.waitForFunction(()=>vectorProbe.device.state==='ready');
+    const restored=await page.evaluate(()=>{const p=vectorProbe;p.device.beginFrame({clearColor:[0,0,1,1]});p.renderer.beginGroup(.5,{x:12,y:12,width:44,height:32});p.renderer.polygon([[12,12],[44,12],[44,44],[12,44]],[1,0,0,1]);p.renderer.endGroup();p.device.endFrame();return{pixel:p.pixel(30,24),bytes:p.device.stats.gpuRenderTargetBytes,error:p.device.gl.getError()}});
+    assert.ok(Math.abs(restored.pixel[0]-128)<=3&&Math.abs(restored.pixel[2]-127)<=3,'restored target retains its identity and can composite');assert.equal(restored.bytes,(64*32+8*8)*4);assert.equal(restored.error,0);result.targetRestoration=restored;
+  }else result.targetRestoration='WEBGL_lose_context unavailable';
+  result.disposed=await page.evaluate(()=>{const p=vectorProbe;p.renderer.dispose();p.atlas.dispose();p.device.dispose();p.canvas.remove();return p.device.state==='disposed'&&p.device.stats.gpuRenderTargetBytes===0&&p.device.stats.renderTargetCount===0});assert.equal(result.disposed,true);
+  return result;
+}

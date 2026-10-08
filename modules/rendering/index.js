@@ -277,3 +277,5 @@ export class Renderer2D {
 }
 
 export { WebGLDevice } from "./device.js";
+export { VectorRenderer } from "./vector-renderer.js";
+export { GlyphAtlas } from "./glyph-atlas.js";

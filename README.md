@@ -12,7 +12,7 @@
 - [카메라·표현 이벤트](./modules/presentation-events/README.md) · [HUD](./modules/hud/README.md) · [진단](./modules/debug-tools/README.md) · [카메라](./modules/camera/README.md)
 - [동적 방·공개 입장·새로고침 복구](./modules/rollback/README.md) · [Nostr 디렉터리·전송](./modules/transport/README.md)
 - [SDK 전체/분리 API와 이전](./modules/rollback-netcode/README.md)
-- [실제 독립 번들을 연결하는 사용 예제](./examples/interpolation/index.html)
+- [실제 독립 번들을 연결하는 보간 예제](./examples/interpolation/index.html) · [WebGL 벡터·텍스트·그룹 합성 예제](./modules/rendering/examples/vector/index.html)
 - [고정 브라우저 E2E](./tests/browser.e2e.mjs) · [별도 보간 벤치마크](./modules/interpolation/scripts/benchmark.mjs)
 
 ```text

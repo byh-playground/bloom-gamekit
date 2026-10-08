@@ -1,4 +1,4 @@
-import { exerciseWebGLDevice } from '../modules/rendering/tests/device.browser.mjs';
+import { exerciseWebGLDevice, exerciseVectorRenderer } from '../modules/rendering/tests/device.browser.mjs';
 import { runPresentationChecks } from './presentation.browser.js';
 import { chromium } from 'playwright';
 import { createServer } from 'node:http';
@@ -199,7 +199,7 @@ try {
   report.stages.push('DOM multi-pointer identity/coordinates/cancel/capture loss + keyboard aggregation + listener disposal');
 
   const moduleErrors = [];
-  for (const [name, check] of [['renderObject', runRenderObjectChecks], ['presentation', runPresentationChecks], ['device', exerciseWebGLDevice]]) {
+  for (const [name, check] of [['renderObject', runRenderObjectChecks], ['presentation', runPresentationChecks], ['device', exerciseWebGLDevice], ['vectorRenderer', exerciseVectorRenderer]]) {
     try { report[name] = await check(page); }
     catch (error) { console.error(`Browser module ${name}:`, error); moduleErrors.push(`${name}: ${error.message}`); }
   }
@@ -211,6 +211,14 @@ try {
   assert.deepEqual(disposal, { state: 'disposed', bufferReleased: true, programReleased: true, textures: 0 });
   assert.equal(errors.length, 0, errors.join('\n'));
   assert.equal(moduleErrors.length, 0, moduleErrors.join('\n'));
+  const vectorExample=await browser.newPage({viewport:{width:1000,height:700}}),exampleErrors=[];
+  vectorExample.on('pageerror',error=>exampleErrors.push(error.message));
+  await vectorExample.goto(`http://127.0.0.1:${server.address().port}/modules/rendering/examples/vector/index.html`);
+  await vectorExample.waitForFunction(()=>document.querySelector('#stats')?.textContent.includes('draw calls'));
+  report.vectorExample=await vectorExample.evaluate(()=>{const {device,cpuSubmitMs}=window.vectorExample,gl=device.gl,pixel=new Uint8Array(4);gl.readPixels(450,499-200,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel);return{pixels:[...pixel],stats:{...device.stats},cpuSubmitMs,text:document.querySelector('#stats').textContent,error:gl.getError()}});
+  assert.ok(report.vectorExample.pixels[0]>100&&report.vectorExample.pixels[0]>report.vectorExample.pixels[1]*3,'native example has group-composited red pixels');
+  assert.equal(report.vectorExample.error,0);assert.ok(report.vectorExample.stats.gpuRenderTargetBytes>0);assert.equal(exampleErrors.length,0,exampleErrors.join('\n'));
+  await vectorExample.close();report.stages.push('native vector/text/group-opacity example draws WebGL pixels');
   report.browser = await browser.version(); report.contextLoss = supportsLoss;
   report.scope = 'Headless Chromium with actual WebGL1/SwiftShader pixels and built ESMs. CPU/interval observations are not mobile FPS or hardware-GPU certification. No screenshot/artifact retention.';
   console.log(JSON.stringify(report, null, 2));
