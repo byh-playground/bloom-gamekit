@@ -15,15 +15,20 @@ function createLoop({
   },
   onInputRelease = () => {
   },
+  onBacklogDrop = () => {
+  },
+  maxBacklogTicks = 8,
   requestFrame = globalThis.requestAnimationFrame?.bind(globalThis),
   cancelFrame = globalThis.cancelAnimationFrame?.bind(globalThis)
 } = {}) {
   if (!session || typeof session.poll !== "function" || typeof session.advance !== "function") throw new TypeError("session capability");
-  for (const callback of [getInput, render, beforeFrame, canAdvance, onAdvance, onError, onInputRelease]) {
+  for (const callback of [getInput, render, beforeFrame, canAdvance, onAdvance, onError, onInputRelease, onBacklogDrop]) {
     if (typeof callback !== "function") throw new TypeError("loop callback");
   }
   if (backlogPolicy !== "drop" && backlogPolicy !== "retain") throw new RangeError("backlogPolicy");
+  if (!Number.isInteger(maxBacklogTicks) || maxBacklogTicks < 1 || maxBacklogTicks > 8192) throw new RangeError("maxBacklogTicks");
   const quantum = 1e3 / session.profile.tickRate;
+  const maxBacklogMs = quantum * maxBacklogTicks;
   let running = false, handle, last, accumulator = 0, generation = 0, timingGeneration = 0;
   const resetTiming = () => {
     timingGeneration++;
@@ -63,9 +68,15 @@ function createLoop({
       const timing = timingGeneration;
       if (last === void 0) last = timestamp;
       const elapsed = Math.max(0, timestamp - last);
-      accumulator = backlogPolicy === "retain" ? accumulator + elapsed : Math.min(accumulator + Math.min(250, elapsed), quantum * session.profile.maxCatchupSteps);
+      if (elapsed > maxBacklogMs) {
+        accumulator = 0;
+        last = timestamp;
+        onBacklogDrop({ elapsedMs: elapsed, droppedTicks: Math.floor(elapsed / quantum), timestamp });
+      } else {
+        accumulator = backlogPolicy === "retain" ? accumulator + elapsed : Math.min(accumulator + Math.min(250, elapsed), quantum * session.profile.maxCatchupSteps);
+        last = timestamp;
+      }
       if (!Number.isFinite(accumulator) || accumulator > Number.MAX_SAFE_INTEGER) throw new RangeError("loop backlog exceeds safe milliseconds");
-      last = timestamp;
       session.poll();
       if (current !== generation || timing !== timingGeneration) return;
       let work = 0;

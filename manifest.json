@@ -19,7 +19,7 @@
     },
     {
       "file": "simloop.js",
-      "sha256": "8d5db14ef87387d4dfab5db025e28f5f78292a476792598b843d68d417054cee"
+      "sha256": "8a89d888ffaf164be37200d250d6939cc221dcd651aabeb5810a659669e4225c"
     },
     {
       "file": "transport.js",
@@ -35,7 +35,7 @@
     },
     {
       "file": "rollback-netcode.js",
-      "sha256": "12230e5e08ecdfefb0fd19203f52bcdd5249143dbccb5e8c5bdd7b2d30af3ce4"
+      "sha256": "a89aa5a50c9315cd7583e97126a26f10b3a48483e9d33619998f7c57a1a2b61b"
     },
     {
       "file": "camera.js",
