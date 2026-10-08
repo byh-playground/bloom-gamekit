@@ -14,7 +14,7 @@ export async function publishDist({ root, remote, sourceSha, expectedManifestHas
       || typeof expectedManifestHash !== 'string' || !SHA256.test(expectedManifestHash)) {
     throw new Error('유효한 source SHA와 manifest SHA-256이 필요합니다.');
   }
-  const { manifest, manifestBytes, manifestHash, bundles } = await readVerifiedDistribution(root, expectedManifestHash);
+  const { manifest, manifestBytes, manifestHash, bundles, assets } = await readVerifiedDistribution(root, expectedManifestHash);
   const temporary = await mkdtemp(resolve(tmpdir(), 'gamekit-publish-'));
   const gitEnv = {
     ...env,
@@ -54,7 +54,7 @@ export async function publishDist({ root, remote, sourceSha, expectedManifestHas
     }
 
     // 고정 목록의 모듈과 manifest만 교체합니다. 관련 없는 기존 파일과 이력은 보존합니다.
-    for (const [file, bytes] of [...bundles, [MANIFEST_FILE, manifestBytes]]) {
+    for (const [file, bytes] of [...bundles, ...assets, [MANIFEST_FILE, manifestBytes]]) {
       const blob = git(['hash-object', '-w', '--stdin'], bytes);
       git(['update-index', '--add', '--cacheinfo', `100644,${blob},${file}`]);
     }
@@ -64,7 +64,8 @@ export async function publishDist({ root, remote, sourceSha, expectedManifestHas
     const args = ['commit-tree', tree];
     if (parent !== null) args.push('-p', parent);
     const hashes = manifest.modules.map(({ file, sha256 }) => `Bundle-SHA256: ${file} ${sha256}`).join('\n');
-    const commit = git(args, `[chore] 독립 모듈 배포물 갱신\n\nSource-Commit: ${sourceSha}\nManifest-SHA256: ${manifestHash}\n${hashes}\n`);
+    const assetMetadata = manifest.assets.map(({ file, bytes, sha256 }) => `Asset-SHA256: ${file} ${sha256}\nAsset-Bytes: ${file} ${bytes}`).join('\n');
+    const commit = git(args, `[chore] 독립 모듈 배포물 갱신\n\nSource-Commit: ${sourceSha}\nManifest-SHA256: ${manifestHash}\n${hashes}\n${assetMetadata}\n`);
 
     if (remoteHead('main') !== sourceSha) return { status: 'stale' };
     if (remoteHead('dist') !== parent) throw new Error('dist가 다른 실행에서 변경되었습니다. 덮어쓰지 않고 중단합니다.');
