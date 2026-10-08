@@ -23,7 +23,14 @@ test('loop executes due fixed ticks and caps accumulated wall-clock catchup',()=
   const f=fixture();
   f.loop.pulse(0);f.loop.pulse(250);assert.equal(f.tick,5);
   f.loop.pulse(300);assert.equal(f.tick,6);
-  f.loop.pulse(10000);assert.equal(f.tick,11);
+  f.loop.pulse(10000);assert.equal(f.tick,6);
+});
+
+test('large clock gaps discard backlog once instead of replaying it across pulses',()=>{
+  let dropped=null;const f=fixture({onBacklogDrop:event=>{dropped=event}});
+  f.loop.pulse(0);f.loop.pulse(1000);
+  assert.equal(f.tick,0);assert.equal(dropped.elapsedMs,1000);assert.equal(dropped.droppedTicks,20);
+  f.loop.pulse(1050);assert.equal(f.tick,1);
 });
 test('automatic RAF start/stop is idempotent and errors stop scheduling',()=>{
   const callbacks=new Map();let next=0,cancelled=0,error;
@@ -72,19 +79,19 @@ test('scalar pace avoids metrics snapshots; legacy pacing uses one read per step
   legacy.loop.pulse(0);legacy.loop.pulse(250);assert.equal(legacy.tick,5);assert.ok(legacyReads<=6);
 });
 
-test('retain backlog preserves elapsed debt in bounded batches; reset excludes pause duration',()=>{
-  let allowed=true;const f=fixture({backlogPolicy:'retain',canAdvance:()=>allowed});
+test('retain backlog preserves short elapsed debt in bounded batches; reset excludes pause duration',()=>{
+  let allowed=true;const f=fixture({backlogPolicy:'retain',maxBacklogTicks:20,canAdvance:()=>allowed});
   f.loop.pulse(0);f.loop.pulse(1000);assert.equal(f.tick,5);
   f.loop.pulse(1000);f.loop.pulse(1000);f.loop.pulse(1000);assert.equal(f.tick,20);
   f.loop.pulse(1000);assert.equal(f.tick,20);
   allowed=false;f.loop.pulse(1500);assert.equal(f.tick,20);allowed=true;
   f.loop.pulse(1500);f.loop.pulse(1500);assert.equal(f.tick,30);
   f.loop.resetTiming();f.loop.pulse(100000);assert.equal(f.tick,30);f.loop.pulse(100050);assert.equal(f.tick,31);
-  const drop=fixture();drop.loop.pulse(0);drop.loop.pulse(1000);drop.loop.pulse(1000);assert.equal(drop.tick,5);
+  const drop=fixture({maxBacklogTicks:20});drop.loop.pulse(0);drop.loop.pulse(1000);drop.loop.pulse(1000);assert.equal(drop.tick,5);
   assert.throws(()=>fixture({backlogPolicy:'unbounded'}),/backlogPolicy/);
 });
 test('retain uses the current pace each step and retains debt after a held result',()=>{
-  const f=fixture({backlogPolicy:'retain'});let steps=0,held=true;
+  const f=fixture({backlogPolicy:'retain',maxBacklogTicks:20});let steps=0,held=true;
   Object.defineProperty(f.session,'pace',{get:()=>steps<2?2:1});
   f.session.advance=()=>{if(held)return{status:'held'};steps++;return{status:'advanced'}};
   f.loop.pulse(0);f.loop.pulse(500);assert.equal(steps,0);held=false;
@@ -92,15 +99,15 @@ test('retain uses the current pace each step and retains debt after a held resul
 });
 test('retain stop during catchup cancels remaining steps and start resets previous debt',()=>{
   const callbacks=new Map();let next=0,stop=true;
-  const f=fixture({backlogPolicy:'retain',requestFrame:callback=>{callbacks.set(++next,callback);return next},cancelFrame:id=>callbacks.delete(id),onAdvance:()=>{if(stop)f.loop.stop()}});
+  const f=fixture({backlogPolicy:'retain',maxBacklogTicks:20,requestFrame:callback=>{callbacks.set(++next,callback);return next},cancelFrame:id=>callbacks.delete(id),onAdvance:()=>{if(stop)f.loop.stop()}});
   f.loop.pulse(0);f.loop.pulse(1000);assert.equal(f.tick,1);
   stop=false;f.loop.start();const cb=callbacks.get(next);cb(2000);assert.equal(f.tick,1);f.loop.stop();
 });
-test('retain rejects regressed or unsafe clocks instead of manufacturing or dropping debt',()=>{
+test('retain rejects regressed clocks and drops unsafe-sized gaps through the backlog boundary',()=>{
   const f=fixture({backlogPolicy:'retain'});f.loop.pulse(1000);
   assert.throws(()=>f.loop.pulse(999),/cannot regress/);
   f.loop.resetTiming();f.loop.pulse(0);
-  assert.throws(()=>f.loop.pulse(Number.MAX_SAFE_INTEGER+1),/safe milliseconds/);
+  assert.doesNotThrow(()=>f.loop.pulse(Number.MAX_SAFE_INTEGER+1));
   f.loop.resetTiming();f.loop.pulse(10);f.loop.pulse(60);assert.equal(f.tick,1);
 });
 test('advance-triggered stop debits a completed tick without touching a restarted timing epoch',()=>{

@@ -1,14 +1,17 @@
 /** Fixed Simulation dt, separately adjustable real-time scheduling. No import side effects. */
 export function createLoop({ session, getInput = () => new Uint8Array(session.inputSize), render = () => {},
   backlogPolicy = 'drop', beforeFrame = () => {}, canAdvance = () => true, onAdvance = () => {},
-  onError = error => { throw error; }, onInputRelease = () => {}, requestFrame = globalThis.requestAnimationFrame?.bind(globalThis),
+  onError = error => { throw error; }, onInputRelease = () => {}, onBacklogDrop = () => {}, maxBacklogTicks = 8,
+  requestFrame = globalThis.requestAnimationFrame?.bind(globalThis),
   cancelFrame = globalThis.cancelAnimationFrame?.bind(globalThis) } = {}) {
   if (!session || typeof session.poll !== 'function' || typeof session.advance !== 'function') throw new TypeError('session capability');
-  for (const callback of [getInput, render, beforeFrame, canAdvance, onAdvance, onError, onInputRelease]) {
+  for (const callback of [getInput, render, beforeFrame, canAdvance, onAdvance, onError, onInputRelease, onBacklogDrop]) {
     if (typeof callback !== 'function') throw new TypeError('loop callback');
   }
   if (backlogPolicy !== 'drop' && backlogPolicy !== 'retain') throw new RangeError('backlogPolicy');
+  if (!Number.isInteger(maxBacklogTicks) || maxBacklogTicks < 1 || maxBacklogTicks > 8192) throw new RangeError('maxBacklogTicks');
   const quantum = 1000 / session.profile.tickRate;
+  const maxBacklogMs = quantum * maxBacklogTicks;
   let running = false, handle, last, accumulator = 0, generation = 0, timingGeneration = 0;
   const resetTiming = () => { timingGeneration++; last = undefined; accumulator = 0; };
   const release = () => {
@@ -31,10 +34,17 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
       const timing = timingGeneration;
       if (last === undefined) last = timestamp;
       const elapsed = Math.max(0, timestamp - last);
-      accumulator = backlogPolicy === 'retain' ? accumulator + elapsed :
-        Math.min(accumulator + Math.min(250, elapsed), quantum * session.profile.maxCatchupSteps);
+      if (elapsed > maxBacklogMs) {
+        accumulator = 0;
+        last = timestamp;
+        onBacklogDrop({ elapsedMs: elapsed, droppedTicks: Math.floor(elapsed / quantum), timestamp });
+      } else {
+        accumulator = backlogPolicy === 'retain' ? accumulator + elapsed :
+          Math.min(accumulator + Math.min(250, elapsed), quantum * session.profile.maxCatchupSteps);
+        last = timestamp;
+      }
       if (!Number.isFinite(accumulator) || accumulator > Number.MAX_SAFE_INTEGER) throw new RangeError('loop backlog exceeds safe milliseconds');
-      last = timestamp; session.poll();
+      session.poll();
       if (current !== generation || timing !== timingGeneration) return;
       let work = 0;
       while (!session.closed && !session.resimulating && work < session.profile.maxCatchupSteps) {
