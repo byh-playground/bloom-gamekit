@@ -1,5 +1,50 @@
 # interpolation
 
+## RenderObject와 점 경로 표시 모델
+
+`RenderObject`는 그려지는 객체의 좁은 슈퍼클래스입니다. 타이머·입력·게임 규칙을 소유하지 않습니다. 하위 타입은 `static renderSchema`와 `render(context, model)`만 작성합니다. 스키마는 중첩 트리가 아니라 **필드 경로 → 상속된 보간 상수**의 1:1 맵입니다.
+
+```js
+import { RenderObject, PresentationRuntime } from './interpolation.js';
+class Unit extends RenderObject {
+  x = 0; y = 0; angle = 0; hp = 100; roll = { progress: 0 }; kind = 'unit';
+  static renderSchema = {
+    x: this.LINEAR, y: this.LINEAR, angle: this.ANGLE,
+    hp: this.LINEAR, 'roll.progress': this.LINEAR, kind: this.STEP,
+  };
+  render(renderer, model) {
+    renderer.rect(model.x, model.y, 20, 20, [0, 1, 0, 1], model.angle);
+  }
+}
+const unit = new Unit();
+const presentation = new PresentationRuntime({ stepMs: 100 });
+// 기존 시뮬 틱 이후 한 번. 전체 생존 목록입니다.
+presentation.capture({ revision: 0, sequence: 0, timeMs: 0,
+  entities: [{ id: 'u', generation: 0, source: unit }],
+}, performance.now());
+// 프레임 시각을 한 번 읽고 몸체/그림자/HUD에 같은 모델을 공유합니다.
+presentation.render(unit, renderer, performance.now());
+```
+
+- `LINEAR=0`, `ANGLE=1`, `STEP=2`, `DECAY=3`, `CYCLE=4`는 코드 상수입니다. DECAY는 값 상승을 새 flash/반동의 시작으로 간주해 해당 필드만 즉시 맞춥니다. CYCLE은 0..1 정규화 진행률이 감소하면 1을 지나 앞으로 순환합니다(0.75→0의 중간은 0.875). 일반 LINEAR 감소를 초기화로 추측하지 않습니다. 실제 취소·타이머 재시작 등은 기존 `resetFields` 계약으로 전달합니다.
+- 경로는 타입당 한 번 컴파일하며 부모 스키마와 같은 경로는 하위 타입이 우선합니다. 부모 전체 경로와 자식 경로를 동시에 선언하는 충돌(`roll`과 `roll.progress`), 빈 구간, prototype 관련 키, getter는 거부합니다. 첫 사용 후 스키마 변경은 지원하지 않습니다. 새 스키마는 새 타입으로 명시적으로 전환합니다.
+- `roll.progress`는 원본과 모델에서 동일한 중첩 위치를 뜻합니다. null 부모는 null, 없는 필드는 부재로 유지하며 0으로 대체하지 않습니다. 생성된 모델은 일반 객체이고 원본 prototype·메서드·미등록 필드는 없습니다. Proxy와 this 교체는 사용하지 않습니다.
+- `STEP` scalar 외에 명시적으로 선언한 plain-data 배열/객체도 지원하지만 표본을 복사하며 렌더 모델과도 참조를 공유하지 않습니다. 순환/네이티브 객체/함수/accessor는 거부합니다. 객체 참조는 별도 렌더 identity의 ID로 전달하세요. 배열 전체 STEP은 불연속 교체이며 수치 보간이 아닙니다. `points.0.x`는 고정 슬롯입니다. 재정렬 가능한 배열을 인덱스 기반으로 보간하지 말고 항목별 안정적인 entity ID로 등록합니다. 동적 키 wildcard는 없습니다.
+- `capture`의 revision/sequence/timeMs/mode, generation, teleport, resetFields는 아래 timeline과 같은 계약입니다. `initialSource`는 새 identity의 명시적 전체 시작 source이며 불연속 reset/teleport가 우선합니다. 입력 검증은 전체 packet을 준비한 뒤 원자적으로 반영합니다.
+- `sample(id, generation, nowMs)`는 재사용하는 중첩 모델 또는 null을 반환합니다. null이면 그리지 않습니다. `modelFor(source, nowMs)`는 등록한 객체/현재 유효 모델만 받으며 복사한 원본이나 삭제된 모델을 원본 fallback으로 그리지 않습니다. 명시적인 `entity.type`으로 기존 plain-data 시뮬을 RenderObject 하위 타입의 스키마에 연결할 수도 있습니다. 모델 쓰기는 권위 상태를 바꾸지 않지만 호출자는 표시 모델을 영구 상태로 저장하지 않습니다.
+- `snapshotRenderModel(type, source)`는 죽은 객체의 고정 이펙트 anchor처럼 명시적으로 순간 표본이 필요한 곳에만 사용합니다. 선언된 필드만 분리하고 보간 이력이나 source 참조를 보관하지 않습니다. 생존 객체의 누락 track을 원본 값으로 대신 그리는 fallback이 아닙니다.
+- `render(source, context, nowMs)`는 **정상적인 source.render(context, model) 호출**입니다. private 필드와 arrow 메서드의 this를 바꾸지 않습니다. 임의의 JS 렌더 함수가 외부 원본을 직접 읽는 것까지 모듈이 차단하지는 못합니다. 소비자 렌더 함수는 모델만 읽도록 코드 검증해야 합니다.
+
+### 선택적 제한적 외삽
+
+`new PresentationRuntime({ stepMs: 100, extrapolation: { fields: ['x', 'y'], maxMs: 100 } })`는 지정한 LINEAR 필드만 최근 두 시뮬 표본의 속도로 예측합니다. 기본값은 꺼짐입니다. 수신 순간의 기존 표시와 새 예측의 차이는 stepMs 동안 줄이며, maxMs를 넘으면 마지막 예측 위치를 유지합니다. 보정이 한도 뒤에도 진행하지 않도록 `maxMs >= stepMs`를 요구합니다. HP·경험치를 자동 외삽하지 않고 ANGLE/STEP/DECAY 외삽은 거부합니다. teleport·세계 reset은 속도와 보정 이력을 초기화합니다.
+
+이 기능은 충돌/급정지/최신 사용자 입력을 예측하지 않습니다. 입력 선반응은 독립 입력 표본과 복원 가능한 시뮬의 별도 계약이 필요하며 이 API로 구현했다고 주장하지 않습니다.
+
+### 비용
+
+표본 수집과 sample은 선언 필드 수와 경로 구조에 비례합니다. 모델과 중첩 객체·STEP 출력은 재사용하지만 capture는 원자적 검증을 위해 Map/배열/STEP 표본을 할당합니다. 전체 원본 세계를 복사하지 않으나 큰 subtree를 STEP으로 선언하면 그 비용은 발생합니다. 함수/상수 선언 방식 자체의 속도 우위나 zero-allocation을 주장하지 않습니다. 집중 Node 검증과 실제 Chromium 입력→중첩 모델→WebGL 픽셀 경로를 로컬에서 실행합니다.
+
 렌더러·DOM·Worker·넷코드와 독립적인 presentation timeline입니다. 시뮬레이션이나 자체 타이머를 실행하지 않습니다.
 
 ## 최소 사용
