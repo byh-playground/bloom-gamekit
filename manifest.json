@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "modules": [
     {
       "file": "interpolation.js",
@@ -7,7 +7,7 @@
     },
     {
       "file": "rendering.js",
-      "sha256": "a5f7439c7c3e99dee8d378e8f51872203df92d5b8938218c56a4f201bf603146"
+      "sha256": "bdd2976df6105acf5a908e9d449bcb023b5c66a4fa40b4dab4f2dea97c4f774a"
     },
     {
       "file": "input.js",
@@ -52,6 +52,14 @@
     {
       "file": "debug-tools.js",
       "sha256": "ff8c87307a2d26da23ecf2f5133f65ebb809c78c1fcbf9f59aa56f2dedc4697b"
+    }
+  ],
+  "assets": [
+    {
+      "file": "assets/fonts/noto-sans-kr-700-v1.json",
+      "version": "noto-sans-kr-700-v1",
+      "bytes": 514988,
+      "sha256": "d1f0d1b14015d3f417f9552d1f650c8585a71e4d67e13c667a1cca0aca3fc310"
     }
   ]
 }
