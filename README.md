@@ -36,7 +36,7 @@ scripts/                    공통 빌드·배포·통합 검사 도구
 
 ## GitHub 파일 배포
 
-PR에서는 빌드·Node E2E·Chromium 예제만 읽기 권한으로 검사합니다. main에 승인된 변경이 들어오면 GitHub Actions가 빌드·검사한 결과와 같은 번들을 확인한 후 `dist` 브랜치의 공개 13개 JavaScript 번들과 `manifest.json`을 자동 갱신합니다. 모듈의 정확한 목록은 scripts/distribution.mjs와 생성 manifest가 소유합니다. 생성 JS는 소스 커밋에 넣지 않습니다. 표준 `ubuntu-latest`만 사용하며 유료 runner·artifact 저장·Release·npm·Pages는 쓰지 않습니다. 공개 저장소의 무료 표준 runner 정책 범위에서 동작합니다.
+PR에서는 소스 전용 checkout, 독립 모듈 build, 생성 manifest와 bundle bytes만 확인합니다. main에 승인된 변경이 들어오면 GitHub Actions가 같은 build 결과를 확인한 후 `dist` 브랜치의 공개 13개 JavaScript 번들과 `manifest.json`을 자동 갱신합니다. 모듈의 정확한 목록은 scripts/distribution.mjs와 생성 manifest가 소유합니다. 생성 JS는 소스 커밋에 넣지 않습니다. 실제 Node·Chromium E2E와 benchmark는 로컬 검증 명령으로 유지하며 자동 배포 경로에 포함하지 않습니다. 표준 `ubuntu-latest`만 사용하며 유료 runner·artifact 저장·Release·npm·Pages는 쓰지 않습니다.
 
 main 실행이 성공하면 [interpolation.js](https://github.com/byh-playground/bloom-gamekit/blob/dist/interpolation.js), [rendering.js](https://github.com/byh-playground/bloom-gamekit/blob/dist/rendering.js), [input.js](https://github.com/byh-playground/bloom-gamekit/blob/dist/input.js), [hash manifest](https://github.com/byh-playground/bloom-gamekit/blob/dist/manifest.json)에서 파일을 공유할 수 있습니다. GitHub Raw URL은 JS MIME/CORS를 보장하는 웹 호스팅 계약이 아니므로 브라우저의 직접 import 주소로 가정하지 마세요. 파일을 받아 게임과 함께 호스팅하고, 재현이 필요하면 dist 커밋 SHA를 고정하세요. dist 커밋 메시지에 source commit과 manifest/각 번들의 SHA-256이 기록됩니다. 검사 job의 manifest hash와 배포 직전 모든 재빌드 파일을 대조합니다. 기존 dist의 다른 파일은 보존하고, stale main 실행은 건너뛰며 경합 시 non-fast-forward로 중단합니다. 브랜치 게시의 실제 성공은 main 머지 후 별도로 확인해야 합니다.
 

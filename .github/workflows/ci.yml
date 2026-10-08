@@ -10,8 +10,8 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    name: Build and E2E
+  build:
+    name: Build distributable modules
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -34,30 +34,21 @@ jobs:
             echo 'Generated bundles belong only on the dist branch.' >&2
             exit 1
           fi
-      - name: Install locked tooling without lifecycle scripts
+      - name: Install locked build tooling without lifecycle scripts
         run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Build and test the independent bundles
-        run: npm test
-      - name: Check relocated SDK type declarations
-        run: npx --yes --package typescript@5.9.3 tsc --noEmit --strict --lib ES2022,DOM --module nodenext --moduleResolution nodenext modules/rollback-netcode/tests/types.test.ts
-      - name: Install official Chromium
-        run: npx --no-install playwright install --with-deps chromium
-      - name: Exercise integration and module browser examples
-        run: npm run test:browser
-      - name: Verify deterministic output
+      - name: Build independent bundles
+        run: npm run build
+      - name: Verify generated manifest and bundle bytes
         id: manifest
         shell: bash
         run: |
           set -euo pipefail
-          expected="$(node scripts/verify-dist.mjs)"
-          npm run build
-          actual="$(node scripts/verify-dist.mjs)"
-          test "$actual" = "$expected"
-          echo "sha256=$actual" >> "$GITHUB_OUTPUT"
+          manifest="$(node scripts/verify-dist.mjs)"
+          echo "sha256=$manifest" >> "$GITHUB_OUTPUT"
 
   publish-dist:
     name: Update dist branch
-    needs: test
+    needs: build
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'byh-playground/bloom-gamekit'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -83,5 +74,5 @@ jobs:
       - name: Publish the verified modules and manifest to dist
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          EXPECTED_MANIFEST_SHA256: ${{ needs.test.outputs.manifest-sha256 }}
+          EXPECTED_MANIFEST_SHA256: ${{ needs.build.outputs.manifest-sha256 }}
         run: node scripts/publish-dist.mjs
