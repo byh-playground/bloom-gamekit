@@ -57,6 +57,9 @@ var WebGLDevice = class {
     this.pipelines = /* @__PURE__ */ new Map();
     this.buffers = /* @__PURE__ */ new Map();
     this.textures = /* @__PURE__ */ new Map();
+    this.renderTargets = /* @__PURE__ */ new Map();
+    this.renderTargetStack = [];
+    this.activeRenderTarget = null;
     this.enabledAttributes = /* @__PURE__ */ new Set();
     this.stats = {
       frame: 0,
@@ -69,14 +72,18 @@ var WebGLDevice = class {
       frameCopies: 0,
       bufferAllocations: 0,
       gpuBufferBytes: 0,
+      gpuRenderTargetBytes: 0,
       pipelineCount: 0,
       bufferCount: 0,
       textureCount: 0,
+      renderTargetCount: 0,
       restores: 0
     };
     this.onLost = (event) => {
       event.preventDefault();
       this.active = false;
+      this.renderTargetStack.length = 0;
+      this.activeRenderTarget = null;
       this.state = "lost";
     };
     this.onRestored = () => {
@@ -97,6 +104,7 @@ var WebGLDevice = class {
           record.gpu = null;
           this._texture(record);
         }
+        for (const record of this.renderTargets.values()) this._renderTarget(record);
         this.state = "ready";
         this.failure = null;
         this.stats.restores++;
@@ -277,6 +285,83 @@ var WebGLDevice = class {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, value);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, value);
   }
+  _renderTarget(record) {
+    const gl = this.gl, previous = gl.getParameter(gl.FRAMEBUFFER_BINDING), framebuffer = gl.createFramebuffer();
+    if (!framebuffer) throw new Error("Render target framebuffer allocation failed");
+    try {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, record.gpu, 0);
+      const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+      if (status !== gl.FRAMEBUFFER_COMPLETE) throw new Error(`Render target framebuffer incomplete: ${status}`);
+      record.framebuffer = framebuffer;
+    } catch (error) {
+      gl.deleteFramebuffer(framebuffer);
+      throw error;
+    } finally {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, previous);
+    }
+  }
+  /** Creates a reusable, premultiplied RGBA texture/FBO pair; the handle is also a draw texture. */
+  createRenderTarget(width, height, { filter = "linear" } = {}) {
+    this._ready();
+    integer(width, "render target width", 1, this.maxTextureSize);
+    integer(height, "render target height", 1, this.maxTextureSize);
+    if (filter !== "nearest" && filter !== "linear") throw new TypeError("filter must be nearest or linear");
+    const record = { width, height, format: "rgba", premultiplied: true, source: null, filter, gpu: null, framebuffer: null };
+    this._texture(record);
+    try {
+      this._renderTarget(record);
+    } catch (error) {
+      this.gl.deleteTexture(record.gpu);
+      record.gpu = null;
+      throw error;
+    }
+    const handle = Object.freeze({ width, height });
+    this.textures.set(handle, record);
+    this.renderTargets.set(handle, record);
+    this.stats.textureCount = this.textures.size;
+    this.stats.renderTargetCount = this.renderTargets.size;
+    this.stats.gpuRenderTargetBytes += width * height * 4;
+    return handle;
+  }
+  /** Binds a target inside an active frame. Bindings may nest and must unwind in LIFO order. */
+  bindRenderTarget(handle) {
+    this._ready();
+    if (!this.active) throw new Error("beginFrame required");
+    const record = this._handle(this.renderTargets, handle, "render target");
+    if (this.activeRenderTarget === handle || this.renderTargetStack.some((entry) => entry.handle === handle)) throw new Error("Render target is already bound");
+    const gl = this.gl;
+    this.renderTargetStack.push({ handle: this.activeRenderTarget, framebuffer: gl.getParameter(gl.FRAMEBUFFER_BINDING), viewport: gl.getParameter(gl.VIEWPORT) });
+    gl.bindFramebuffer(gl.FRAMEBUFFER, record.framebuffer);
+    gl.viewport(0, 0, record.width, record.height);
+    this.activeRenderTarget = handle;
+    return handle;
+  }
+  /** Completes the target pass and restores the previous framebuffer and viewport. */
+  unbindRenderTarget(handle) {
+    this._ready();
+    if (!this.active) throw new Error("beginFrame required");
+    if (!this.renderTargetStack.length) throw new Error("No render target is bound");
+    if (handle !== void 0 && handle !== this.activeRenderTarget) throw new Error("Render targets must be unbound in LIFO order");
+    const previous = this.renderTargetStack.pop(), gl = this.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, previous.framebuffer);
+    gl.viewport(...previous.viewport);
+    this.activeRenderTarget = previous.handle;
+    return this.activeRenderTarget;
+  }
+  deleteRenderTarget(handle) {
+    const record = this.renderTargets.get(handle);
+    if (!record) return false;
+    if (this.renderTargetStack.some((entry) => entry.handle === handle) || this.activeRenderTarget === handle) throw new Error("Cannot delete a bound render target");
+    this.gl.deleteFramebuffer(record.framebuffer);
+    this.gl.deleteTexture(record.gpu);
+    this.renderTargets.delete(handle);
+    this.textures.delete(handle);
+    this.stats.textureCount = this.textures.size;
+    this.stats.renderTargetCount = this.renderTargets.size;
+    this.stats.gpuRenderTargetBytes -= record.width * record.height * 4;
+    return true;
+  }
   createTexture(source, { format = "rgba", premultiplied = false, filter = "linear" } = {}) {
     this._ready();
     if (filter !== "nearest" && filter !== "linear") throw new TypeError("Invalid filter");
@@ -291,6 +376,7 @@ var WebGLDevice = class {
   updateTexture(handle, source, { x = 0, y = 0, width = handle.width, height = handle.height } = {}) {
     this._ready();
     const r = this._handle(this.textures, handle, "texture");
+    if (this.renderTargets.has(handle)) throw new Error("Render targets cannot be updated from CPU pixels");
     integer(x, "x");
     integer(y, "y");
     integer(width, "width", 1);
@@ -357,6 +443,7 @@ var WebGLDevice = class {
   copyFrameToTexture(handle, { x = 0, y = 0 } = {}) {
     this._ready();
     const r = this._handle(this.textures, handle, "texture");
+    if (this.renderTargets.has(handle)) throw new Error("Render targets cannot be copied from the default framebuffer");
     integer(x, "x");
     integer(y, "y");
     if (r.format !== "rgba" || x + r.width > this.canvas.width || y + r.height > this.canvas.height) throw new RangeError("Framebuffer copy outside bounds");
@@ -383,6 +470,7 @@ var WebGLDevice = class {
   deleteTexture(handle) {
     const r = this.textures.get(handle);
     if (!r) return false;
+    if (this.renderTargets.has(handle)) throw new Error("Use deleteRenderTarget for render targets");
     this.gl.deleteTexture(r.gpu);
     this.textures.delete(handle);
     this.stats.textureCount = this.textures.size;
@@ -398,7 +486,10 @@ var WebGLDevice = class {
     if (width > limit[0] || height > limit[1]) throw new RangeError("Viewport exceeds WebGL limit");
     if (this.canvas.width !== width) this.canvas.width = width;
     if (this.canvas.height !== height) this.canvas.height = height;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, width, height);
+    this.renderTargetStack.length = 0;
+    this.activeRenderTarget = null;
     this.stats.frame++;
     for (const name of ["drawCalls", "vertices", "bufferUploads", "bufferBytes", "textureUploads", "textureBytes", "frameCopies"]) this.stats[name] = 0;
     this.active = true;
@@ -449,7 +540,10 @@ var WebGLDevice = class {
     }
     if (!colorMask || colorMask.length !== 4 || !Array.from(colorMask).every((v) => typeof v === "boolean")) throw new TypeError("colorMask must contain booleans");
     if (!Array.isArray(textures) || textures.length > this.maxTextures) throw new RangeError("Too many textures");
-    for (const handle of textures) this._handle(this.textures, handle, "texture");
+    for (const handle of textures) {
+      this._handle(this.textures, handle, "texture");
+      if (handle === this.activeRenderTarget) throw new Error("Cannot sample the active render target");
+    }
     if (filter !== void 0 && filter !== "nearest" && filter !== "linear") throw new TypeError("Unsupported filter");
     const gl = this.gl;
     gl.useProgram(p.gpu);
@@ -512,6 +606,7 @@ var WebGLDevice = class {
   endFrame() {
     this._ready();
     if (!this.active) throw new Error("beginFrame required");
+    if (this.renderTargetStack.length) throw new Error("Unbind render targets before endFrame");
     this.active = false;
     return this.stats;
   }
@@ -526,6 +621,7 @@ var WebGLDevice = class {
     gl.activeTexture(gl.TEXTURE0);
     for (const r of this.pipelines.values()) gl.deleteProgram(r.gpu);
     for (const r of this.buffers.values()) gl.deleteBuffer(r.gpu);
+    for (const r of this.renderTargets.values()) gl.deleteFramebuffer(r.framebuffer);
     for (const r of this.textures.values()) gl.deleteTexture(r.gpu);
   }
   dispose() {
@@ -536,18 +632,611 @@ var WebGLDevice = class {
     this.pipelines.clear();
     this.buffers.clear();
     this.textures.clear();
+    this.renderTargets.clear();
+    this.renderTargetStack.length = 0;
+    this.activeRenderTarget = null;
     this.enabledAttributes.clear();
     this.regionCanvas = this.regionContext = this.regionBytes = null;
-    this.stats.pipelineCount = this.stats.bufferCount = this.stats.textureCount = this.stats.gpuBufferBytes = 0;
+    this.stats.pipelineCount = this.stats.bufferCount = this.stats.textureCount = this.stats.renderTargetCount = this.stats.gpuBufferBytes = this.stats.gpuRenderTargetBytes = 0;
     this.active = false;
     this.state = "disposed";
   }
 };
 
-// modules/rendering/index.js
+// modules/rendering/vector-renderer.js
+var IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
 var WHITE = Object.freeze([1, 1, 1, 1]);
+var VERTEX = `attribute vec2 a_position; attribute vec2 a_uv; attribute vec4 a_color;
+uniform mat3 u_projection; varying vec2 v_uv; varying vec4 v_color;
+void main(){vec3 p=u_projection*vec3(a_position,1.0);gl_Position=vec4(p.xy,0.0,1.0);v_uv=a_uv;v_color=a_color;}`;
+var FRAGMENT = `precision mediump float; uniform sampler2D u_texture; uniform float u_textured;
+varying vec2 v_uv; varying vec4 v_color; void main(){vec4 t=mix(vec4(1.0),texture2D(u_texture,v_uv),u_textured);float a=t.a*v_color.a;gl_FragColor=vec4(t.rgb*v_color.rgb*v_color.a,a);}`;
+var finite = (n, label) => {
+  if (!Number.isFinite(n)) throw new TypeError(`${label} must be finite`);
+};
+function rgba(value) {
+  if (!value || value.length !== 4 || Array.from(value).some((n) => !Number.isFinite(n) || n < 0 || n > 1)) throw new TypeError("RGBA channels must be in [0,1]");
+  return value;
+}
+function point(m, x, y) {
+  return { x: m[0] * x + m[2] * y + m[4], y: m[1] * x + m[3] * y + m[5] };
+}
+function tessellate(contours, rule) {
+  const edges = [], ys = [];
+  for (const contour of contours) {
+    if (contour.length < 3) continue;
+    for (let i = 0; i < contour.length; i++) {
+      const a = contour[i], b = contour[(i + 1) % contour.length];
+      if (Math.abs(a.y - b.y) < 1e-9) continue;
+      edges.push({ a, b, sign: b.y > a.y ? 1 : -1 });
+      ys.push(a.y, b.y);
+    }
+  }
+  ys.sort((a, b) => a - b);
+  const levels = ys.filter((y, i) => i === 0 || y - ys[i - 1] > 1e-8), triangles = [];
+  for (let band = 0; band + 1 < levels.length; band++) {
+    const y0 = levels[band], y1 = levels[band + 1], ym = (y0 + y1) / 2;
+    if (y1 - y0 < 1e-8) continue;
+    const active = edges.filter((e) => ym > Math.min(e.a.y, e.b.y) && ym < Math.max(e.a.y, e.b.y)).map((e) => ({ edge: e, x: xAt(e, ym) })).sort((a, b) => a.x - b.x);
+    let winding = 0, inside = false, left = null;
+    for (const item of active) {
+      const before = rule === "evenodd" ? inside : winding !== 0;
+      if (rule === "evenodd") inside = !inside;
+      else winding += item.edge.sign;
+      const after = rule === "evenodd" ? inside : winding !== 0;
+      if (!before && after) left = item.edge;
+      else if (before && !after && left) {
+        const a = { x: xAt(left, y0), y: y0 }, b = { x: xAt(item.edge, y0), y: y0 }, c = { x: xAt(item.edge, y1), y: y1 }, d = { x: xAt(left, y1), y: y1 };
+        triangles.push(a, b, c, a, c, d);
+        left = null;
+      }
+    }
+  }
+  return triangles;
+}
+function xAt(edge, y) {
+  const { a, b } = edge;
+  return a.x + (b.x - a.x) * (y - a.y) / (b.y - a.y);
+}
+var VectorRenderer = class {
+  constructor(device, { initialVertices = 4096, maxVertices = 262144, glyphAtlas = null } = {}) {
+    if (!device?.createPipeline || !device?.draw) throw new TypeError("A WebGLDevice is required");
+    if (!Number.isSafeInteger(maxVertices) || maxVertices < 3 || !Number.isSafeInteger(initialVertices) || initialVertices < 3 || initialVertices > maxVertices) throw new RangeError("3 <= initialVertices <= maxVertices is required");
+    if (initialVertices * 32 > device.maxBufferBytes) throw new RangeError("initial vector buffer exceeds the device byte limit");
+    this.device = device;
+    this.gl = device.gl;
+    this.canvas = device.canvas;
+    this.glyphAtlas = glyphAtlas;
+    this.maxVertices = maxVertices;
+    this.pipeline = device.createPipeline({ vertex: VERTEX, fragment: FRAGMENT, stride: 32, attributes: [{ name: "a_position", size: 2, offset: 0 }, { name: "a_uv", size: 2, offset: 8 }, { name: "a_color", size: 4, offset: 16 }], uniforms: { u_projection: "matrix3fv", u_texture: "1i", u_textured: "1f" } });
+    this.buffer = device.createVertexBuffer({ capacityBytes: initialVertices * 32 });
+    this.white = device.createTexture({ width: 1, height: 1, data: new Uint8Array([255, 255, 255, 255]) }, { format: "rgba", premultiplied: true, filter: "nearest" });
+    this.vertices = new Float32Array(initialVertices * 8);
+    this.count = 0;
+    this.matrix = IDENTITY.slice();
+    this.stack = [];
+    this.path = [];
+    this.cursor = null;
+    this.subpath = null;
+    this.clips = [];
+    this.groups = [];
+    this.groupTargets = [];
+    this.activeTexture = this.white;
+    this.state = "ready";
+    this.projection = new Float32Array([2 / this.canvas.width, 0, 0, 0, -2 / this.canvas.height, 0, -1, 1, 1]);
+  }
+  _frame() {
+    if (this.state !== "ready") throw new Error(`VectorRenderer is ${this.state}`);
+    if (!this.device.active) throw new Error("WebGLDevice.beginFrame is required");
+    const g = [...this.groups].reverse().find((group) => !group.direct);
+    if (g) this._setProjection(g.bounds, g.target);
+    else this._setProjection(null);
+  }
+  _setProjection(bounds, target = null) {
+    const w = target?.width ?? this.canvas.width, h = target?.height ?? this.canvas.height, x = bounds?.x ?? 0, y = bounds?.y ?? 0;
+    this.projection[0] = 2 / w;
+    this.projection[1] = 0;
+    this.projection[2] = 0;
+    this.projection[3] = 0;
+    this.projection[4] = -2 / h;
+    this.projection[5] = 0;
+    this.projection[6] = -1 - 2 * x / w;
+    this.projection[7] = 1 + 2 * y / h;
+    this.projection[8] = 1;
+  }
+  beginPath() {
+    this._frame();
+    this.path = [];
+    this.cursor = this.subpath = null;
+  }
+  moveTo(x, y) {
+    this._frame();
+    finite(x, "x");
+    finite(y, "y");
+    const p = point(this.matrix, x, y);
+    this.path.push([p]);
+    this.cursor = this.subpath = p;
+  }
+  lineTo(x, y) {
+    this._frame();
+    finite(x, "x");
+    finite(y, "y");
+    if (!this.cursor) return this.moveTo(x, y);
+    const p = point(this.matrix, x, y);
+    this.path.at(-1).push(p);
+    this.cursor = p;
+  }
+  quadraticCurveTo(cx, cy, x, y, segments = 12) {
+    this._curve([cx, cy, x, y], segments, false);
+  }
+  bezierCurveTo(a, b, c, d, x, y, segments = 16) {
+    this._curve([a, b, c, d, x, y], segments, true);
+  }
+  _curve(v, n, cubic) {
+    this._frame();
+    if (!Number.isSafeInteger(n) || n < 2 || n > 256) throw new RangeError("curve segments must be 2..256");
+    if (!this.cursor) return this.moveTo(v[0], v[1]);
+    const start = this.cursor, p = cubic ? [point(this.matrix, v[0], v[1]), point(this.matrix, v[2], v[3]), point(this.matrix, v[4], v[5])] : [point(this.matrix, v[0], v[1]), point(this.matrix, v[2], v[3])];
+    for (let i = 1; i <= n; i++) {
+      const t = i / n, q = 1 - t;
+      let x, y;
+      if (cubic) {
+        x = q * q * q * start.x + 3 * q * q * t * p[0].x + 3 * q * t * t * p[1].x + t * t * t * p[2].x;
+        y = q * q * q * start.y + 3 * q * q * t * p[0].y + 3 * q * t * t * p[1].y + t * t * t * p[2].y;
+      } else {
+        x = q * q * start.x + 2 * q * t * p[0].x + t * t * p[1].x;
+        y = q * q * start.y + 2 * q * t * p[0].y + t * t * p[1].y;
+      }
+      this.path.at(-1).push({ x, y });
+    }
+    this.cursor = this.path.at(-1).at(-1);
+  }
+  closePath() {
+    if (this.cursor && this.subpath) {
+      const p = this.path.at(-1);
+      if (p.at(-1) !== this.subpath) p.push(this.subpath);
+      this.cursor = this.subpath;
+    }
+  }
+  save() {
+    this._frame();
+    this.stack.push({ matrix: this.matrix.slice(), clips: this.clips.map((polygon) => polygon.map((p) => ({ ...p }))) });
+  }
+  restore() {
+    this._frame();
+    const s = this.stack.pop();
+    if (!s) throw new Error("restore without save");
+    this.matrix = s.matrix;
+    this.clips = s.clips;
+  }
+  setTransform(a, b, c, d, e, f) {
+    this._frame();
+    [a, b, c, d, e, f].forEach((n, i) => finite(n, `transform[${i}]`));
+    this.matrix = [a, b, c, d, e, f];
+  }
+  transform(a, b, c, d, e, f) {
+    const m = this.matrix;
+    this.setTransform(m[0] * a + m[2] * b, m[1] * a + m[3] * b, m[0] * c + m[2] * d, m[1] * c + m[3] * d, m[0] * e + m[2] * f + m[4], m[1] * e + m[3] * f + m[5]);
+  }
+  translate(x, y) {
+    this.transform(1, 0, 0, 1, x, y);
+  }
+  rotate(angle) {
+    this.transform(Math.cos(angle), Math.sin(angle), -Math.sin(angle), Math.cos(angle), 0, 0);
+  }
+  scale(x, y = x) {
+    this.transform(x, 0, 0, y, 0, 0);
+  }
+  clipRect(x, y, width, height) {
+    this._frame();
+    if (width < 0 || height < 0) throw new RangeError("clip size must be non-negative");
+    this.clips.push([point(this.matrix, x, y), point(this.matrix, x + width, y), point(this.matrix, x + width, y + height), point(this.matrix, x, y + height)]);
+  }
+  _clipTriangle(a, b, c, uv) {
+    let poly = [a, b, c].map((p, i) => uv ? { ...p, u: uv[i][0], v: uv[i][1] } : p);
+    for (const clip of this.clips) {
+      let orientation = 0;
+      for (let i = 0; i < clip.length; i++) orientation += clip[i].x * clip[(i + 1) % clip.length].y - clip[(i + 1) % clip.length].x * clip[i].y;
+      const direction = orientation >= 0 ? 1 : -1;
+      for (let i = 0; i < clip.length; i++) {
+        const p = clip[i], q = clip[(i + 1) % clip.length], side = (v) => direction * ((q.x - p.x) * (v.y - p.y) - (q.y - p.y) * (v.x - p.x)), out = [];
+        let prev = poly.at(-1), pv = side(prev);
+        for (const cur of poly) {
+          const cv = side(cur);
+          if (pv < -1e-8 !== cv < -1e-8) {
+            const t = pv / (pv - cv), vertex = { x: prev.x + (cur.x - prev.x) * t, y: prev.y + (cur.y - prev.y) * t };
+            if (uv) {
+              vertex.u = prev.u + (cur.u - prev.u) * t;
+              vertex.v = prev.v + (cur.v - prev.v) * t;
+            }
+            out.push(vertex);
+          }
+          if (cv >= -1e-8) out.push(cur);
+          prev = cur;
+          pv = cv;
+        }
+        poly = out;
+        if (!poly.length) return poly;
+      }
+    }
+    return poly;
+  }
+  _emitTriangle(a, b, c, color2, uv = null) {
+    rgba(color2);
+    const poly = this.clips.length ? this._clipTriangle(a, b, c, uv) : uv ? [a, b, c].map((p, i) => ({ ...p, u: uv[i][0], v: uv[i][1] })) : [a, b, c];
+    for (let i = 1; i + 1 < poly.length; i++) {
+      if (this.count + 3 > this.maxVertices) throw new RangeError("VectorRenderer vertex capacity exceeded");
+      if (this.count + 3 > this.vertices.length / 8) {
+        const size = Math.min(this.maxVertices, Math.max(this.count + 3, this.vertices.length / 4));
+        const next = new Float32Array(size * 8);
+        next.set(this.vertices);
+        this.vertices = next;
+      }
+      for (const p of [poly[0], poly[i], poly[i + 1]]) {
+        const k = this.count++ * 8;
+        this.vertices[k] = p.x;
+        this.vertices[k + 1] = p.y;
+        this.vertices[k + 2] = p.u ?? 0;
+        this.vertices[k + 3] = p.v ?? 0;
+        this.vertices.set(color2, k + 4);
+      }
+    }
+  }
+  _submit() {
+    if (!this.count) return;
+    const texture = this.activeTexture ?? this.white;
+    this.device.uploadVertices(this.buffer, this.vertices.subarray(0, this.count * 8));
+    this.device.draw({ pipeline: this.pipeline, buffer: this.buffer, count: this.count, uniforms: { u_projection: this.projection, u_texture: 0, u_textured: texture === this.white ? 0 : 1 }, textures: [texture], blend: "source-over" });
+    this.count = 0;
+  }
+  _useTexture(texture) {
+    if (this.activeTexture && this.activeTexture !== texture) this._submit();
+    this.activeTexture = texture;
+  }
+  fill(colorValue = [0, 0, 0, 1], rule = "nonzero") {
+    this._frame();
+    if (rule !== "nonzero" && rule !== "evenodd") throw new TypeError("rule must be nonzero or evenodd");
+    this._useTexture(this.white);
+    const col = rgba(colorValue), vertices = tessellate(this.path, rule);
+    for (let i = 0; i + 2 < vertices.length; i += 3) this._emitTriangle(vertices[i], vertices[i + 1], vertices[i + 2], col);
+    this._submit();
+  }
+  stroke(colorValue = [0, 0, 0, 1], width = 1) {
+    this._frame();
+    this._useTexture(this.white);
+    rgba(colorValue);
+    if (!Number.isFinite(width) || width <= 0) throw new RangeError("line width must be positive");
+    for (const contour of this.path) for (let i = 1; i < contour.length; i++) {
+      const a = contour[i - 1], b = contour[i], dx = b.x - a.x, dy = b.y - a.y, l = Math.hypot(dx, dy);
+      if (!l) continue;
+      const nx = -dy * width / (2 * l), ny = dx * width / (2 * l), p = { x: a.x + nx, y: a.y + ny }, q = { x: b.x + nx, y: b.y + ny }, r = { x: b.x - nx, y: b.y - ny }, s = { x: a.x - nx, y: a.y - ny };
+      this._emitTriangle(p, q, r, colorValue);
+      this._emitTriangle(p, r, s, colorValue);
+    }
+    this._submit();
+  }
+  polygon(points, colorValue = [0, 0, 0, 1]) {
+    this.beginPath();
+    points.forEach((p, i) => i ? this.lineTo(p[0], p[1]) : this.moveTo(p[0], p[1]));
+    this.closePath();
+    this.fill(colorValue);
+  }
+  fillText(text, x, y, options = {}) {
+    this._frame();
+    if (!this.glyphAtlas) throw new Error("GlyphAtlas is not configured");
+    return this.glyphAtlas.fillText(this, text, x, y, options);
+  }
+  strokeText(text, x, y, options = {}) {
+    this._frame();
+    if (!this.glyphAtlas) throw new Error("GlyphAtlas is not configured");
+    return this.glyphAtlas.strokeText(this, text, x, y, options);
+  }
+  measureText(text, options = {}) {
+    if (!this.glyphAtlas) throw new Error("GlyphAtlas is not configured");
+    return this.glyphAtlas.measureText(text, options);
+  }
+  drawGlyphQuad(texture, x, y, width, height, uv, colorValue) {
+    this._frame();
+    this._useTexture(texture);
+    const a = { ...point(this.matrix, x, y) }, b = { ...point(this.matrix, x + width, y) }, c = { ...point(this.matrix, x + width, y + height) }, d = { ...point(this.matrix, x, y + height) };
+    this._emitTriangle(a, b, c, colorValue, [[uv.u0, uv.v0], [uv.u1, uv.v0], [uv.u1, uv.v1]]);
+    this._emitTriangle(a, c, d, colorValue, [[uv.u0, uv.v0], [uv.u1, uv.v1], [uv.u0, uv.v1]]);
+  }
+  flush() {
+    this._frame();
+    this._submit();
+  }
+  beginGroup(opacity = 1, bounds = null) {
+    this._frame();
+    if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) throw new RangeError("group opacity must be in [0,1]");
+    this._submit();
+    if (opacity === 1) {
+      this.groups.push({ direct: true });
+      return;
+    }
+    const requested = bounds ?? { x: 0, y: 0, width: this.canvas.width, height: this.canvas.height };
+    for (const key of ["x", "y", "width", "height"]) if (!Number.isFinite(requested[key])) throw new TypeError(`group bounds.${key} must be finite`);
+    if (requested.width <= 0 || requested.height <= 0) throw new RangeError("group bounds must have positive size");
+    const x = Math.max(0, Math.floor(requested.x)), y = Math.max(0, Math.floor(requested.y)), right = Math.min(this.canvas.width, Math.ceil(requested.x + requested.width)), bottom = Math.min(this.canvas.height, Math.ceil(requested.y + requested.height)), width = right - x, height = bottom - y;
+    if (width <= 0 || height <= 0) {
+      this.groups.push({ direct: true, empty: true });
+      return;
+    }
+    const depth = this.groups.filter((g) => !g.direct).length;
+    let target = this.groupTargets[depth];
+    const allocation = (n) => Math.min(this.device.maxTextureSize, 2 ** Math.ceil(Math.log2(n)));
+    const needW = allocation(width), needH = allocation(height);
+    if (!target || target.width < width || target.height < height) {
+      if (target) this.device.deleteRenderTarget(target);
+      target = this.groupTargets[depth] = this.device.createRenderTarget(needW, needH, { filter: "nearest" });
+    }
+    const group = { target, opacity, bounds: { x, y, width, height }, matrix: this.matrix.slice(), clips: this.clips, projection: this.projection.slice() };
+    this.device.bindRenderTarget(target);
+    this.device.clear({ color: [0, 0, 0, 0] });
+    this.groups.push(group);
+    this.clips = [...this.clips, [{ x, y }, { x: right, y }, { x: right, y: bottom }, { x, y: bottom }]];
+    this._setProjection(group.bounds, target);
+  }
+  endGroup() {
+    this._frame();
+    const group = this.groups.pop();
+    if (!group) throw new Error("endGroup without beginGroup");
+    this._submit();
+    if (group.direct) return;
+    this.device.unbindRenderTarget(group.target);
+    this.matrix = group.matrix;
+    this.clips = group.clips;
+    this.projection.set(group.projection);
+    this.activeTexture = group.target;
+    const { x, y, width, height } = group.bounds, u = width / group.target.width, v = height / group.target.height, a = { x, y }, b = { x: x + width, y }, c = { x: x + width, y: y + height }, d = { x, y: y + height }, alpha = [1, 1, 1, group.opacity];
+    this._emitTriangle(a, b, c, alpha, [[0, 1], [u, 1], [u, 1 - v]]);
+    this._emitTriangle(a, c, d, alpha, [[0, 1], [u, 1 - v], [0, 1 - v]]);
+    this._submit();
+    this.activeTexture = this.white;
+  }
+  dispose() {
+    if (this.state === "disposed") return;
+    for (const target of this.groupTargets) this.device.deleteRenderTarget(target);
+    this.device.deleteVertexBuffer(this.buffer);
+    this.device.deletePipeline(this.pipeline);
+    this.device.deleteTexture(this.white);
+    this.buffer = this.pipeline = this.white = null;
+    this.state = "disposed";
+  }
+};
+
+// modules/rendering/glyph-atlas.js
+var GlyphAtlas = class {
+  constructor(device, {
+    width,
+    height,
+    data,
+    glyphs,
+    unitsPerEm = 1,
+    ascent = 0.8,
+    descent = 0.2,
+    filter = "linear",
+    missingGlyph = "error",
+    replacement = "�"
+  } = {}) {
+    if (!device || typeof device.createTexture !== "function" || typeof device.deleteTexture !== "function") {
+      throw new TypeError("device must provide WebGLDevice createTexture/deleteTexture");
+    }
+    positiveInteger(width, "width");
+    positiveInteger(height, "height");
+    positive(unitsPerEm, "unitsPerEm");
+    nonNegative(ascent, "ascent");
+    nonNegative(descent, "descent");
+    if (!(data instanceof Uint8Array || data instanceof Uint8ClampedArray) || data.length !== width * height * 4) {
+      throw new TypeError("data must contain width*height*4 RGBA bytes");
+    }
+    if (!glyphs || typeof glyphs !== "object") throw new TypeError("glyphs must be a code-point keyed metric object");
+    if (!["error", "skip", "replacement"].includes(missingGlyph)) throw new RangeError("missingGlyph must be error, skip, or replacement");
+    if (typeof replacement !== "string" || [...replacement].length !== 1) throw new TypeError("replacement must be one Unicode code point");
+    this.device = device;
+    this.width = width;
+    this.height = height;
+    this.unitsPerEm = unitsPerEm;
+    this.ascent = ascent;
+    this.descent = descent;
+    this.missingGlyph = missingGlyph;
+    this.replacement = replacement;
+    this.glyphs = /* @__PURE__ */ new Map();
+    for (const [key, value] of Object.entries(glyphs)) {
+      const codePoint = normalizeCodePoint(key);
+      this.glyphs.set(codePoint, validateGlyph(value, width, height, codePoint));
+    }
+    if (filter !== "nearest" && filter !== "linear") throw new RangeError("filter must be nearest or linear");
+    this.texture = device.createTexture({ width, height, data }, { format: "rgba", filter });
+    this.disposed = false;
+  }
+  /** Returns the metrics in the same units as the requested fontSize. */
+  measureText(text, { fontSize = this.unitsPerEm, align = "left" } = {}) {
+    this._live();
+    validateText(text);
+    positive(fontSize, "fontSize");
+    validateAlign(align);
+    const glyphs = this._resolve(text);
+    const width = glyphs.reduce((sum, glyph) => sum + glyph.advance, 0) * fontSize / this.unitsPerEm;
+    return {
+      width,
+      ascent: this.ascent * fontSize / this.unitsPerEm,
+      descent: this.descent * fontSize / this.unitsPerEm,
+      actualBoundingBoxLeft: 0,
+      actualBoundingBoxRight: width
+    };
+  }
+  /**
+   * Emits one callback per visible glyph. The callback receives texture, atlas
+   * UVs, destination rectangle, RGBA color, and operation='fill'.
+   * Also accepts `(renderer, text, x, y, options)` when renderer provides
+   * `drawGlyphQuad(texture, x, y, width, height, uv, color)`.
+   */
+  fillText(textOrRenderer, xOrText, yOrX, optionsOrY = {}, drawGlyphOrOptions = {}) {
+    const args = normalizeDrawArguments(textOrRenderer, xOrText, yOrX, optionsOrY, drawGlyphOrOptions);
+    return this._draw("fill", args.text, args.x, args.y, args.options, args.drawGlyph);
+  }
+  /**
+   * Emits an outline as eight offset glyph passes. This is a
+   * geometric atlas outline; it does not modify or rasterize atlas pixels.
+   * `lineWidth` is in destination units.
+   */
+  strokeText(textOrRenderer, xOrText, yOrX, optionsOrY = {}, drawGlyphOrOptions = {}) {
+    const args = normalizeDrawArguments(textOrRenderer, xOrText, yOrX, optionsOrY, drawGlyphOrOptions);
+    const { text, x, y, options, drawGlyph } = args;
+    const { lineWidth = 1, strokeColor = options.color ?? [0, 0, 0, 1] } = options;
+    positive(lineWidth, "lineWidth");
+    validateColor(strokeColor, "strokeColor");
+    return this._draw("stroke", text, x, y, { ...options, color: strokeColor }, drawGlyph, lineWidth);
+  }
+  _draw(operation, text, x, y, options, drawGlyph, lineWidth = 0) {
+    this._live();
+    validateText(text);
+    finite2(x, "x");
+    finite2(y, "y");
+    if (typeof drawGlyph !== "function") throw new TypeError("drawGlyph callback is required");
+    const { fontSize = this.unitsPerEm, align = "left", baseline = "alphabetic", color: color2 = [1, 1, 1, 1] } = options;
+    positive(fontSize, "fontSize");
+    validateAlign(align);
+    validateColor(color2, "color");
+    const resolved = this._resolve(text);
+    const scale = fontSize / this.unitsPerEm;
+    const advance = resolved.reduce((sum, glyph) => sum + glyph.advance, 0) * scale;
+    let penX = x - (align === "center" ? advance / 2 : align === "right" ? advance : 0);
+    const baselineY = baselineOffset(baseline, fontSize, this.unitsPerEm, this.ascent, this.descent, y);
+    const offsets = lineWidth ? [[-1, -1], [0, -1], [1, -1], [-1, 0], [1, 0], [-1, 1], [0, 1], [1, 1]] : [[0, 0]];
+    for (const glyph of resolved) {
+      if (glyph.width > 0 && glyph.height > 0) {
+        const left = penX + glyph.bearingX * scale;
+        const top = baselineY - glyph.bearingY * scale;
+        for (const [ox, oy] of offsets) drawGlyph({
+          texture: this.texture,
+          glyph,
+          codePoint: glyph.codePoint,
+          x: left + ox * lineWidth,
+          y: top + oy * lineWidth,
+          width: glyph.width * scale,
+          height: glyph.height * scale,
+          u0: glyph.x / this.width,
+          v0: glyph.y / this.height,
+          u1: (glyph.x + glyph.width) / this.width,
+          v1: (glyph.y + glyph.height) / this.height,
+          color: color2,
+          operation: lineWidth ? "stroke" : operation
+        });
+      }
+      penX += glyph.advance * scale;
+    }
+    return {
+      x: x - (align === "center" ? advance / 2 : align === "right" ? advance : 0),
+      y: baselineY,
+      width: advance,
+      glyphCount: resolved.length
+    };
+  }
+  _resolve(text) {
+    const result = [];
+    for (const character of text) {
+      let glyph = this.glyphs.get(character.codePointAt(0));
+      if (!glyph) {
+        if (this.missingGlyph === "skip") continue;
+        if (this.missingGlyph === "replacement") glyph = this.glyphs.get(this.replacement.codePointAt(0));
+        if (!glyph) throw new RangeError(`missing glyph U+${character.codePointAt(0).toString(16).toUpperCase()}`);
+      }
+      result.push(glyph);
+    }
+    return result;
+  }
+  _live() {
+    if (this.disposed) throw new Error("GlyphAtlas is disposed");
+  }
+  /** Idempotently releases the atlas texture through its owning device. */
+  dispose() {
+    if (this.disposed) return false;
+    this.disposed = true;
+    this.device.deleteTexture(this.texture);
+    this.texture = null;
+    return true;
+  }
+};
+function normalizeCodePoint(key) {
+  if (/^U\+[0-9a-f]{1,6}$/i.test(key)) return Number.parseInt(key.slice(2), 16);
+  const chars = [...key];
+  if (chars.length === 1) return chars[0].codePointAt(0);
+  if (/^0x[0-9a-f]+$/i.test(key)) return Number.parseInt(key.slice(2), 16);
+  throw new TypeError(`invalid glyph key: ${key}`);
+}
+function normalizeDrawArguments(first, second, third, fourth, fifth) {
+  if (first && typeof first.drawGlyphQuad === "function") {
+    const renderer = first, text2 = second, x2 = third, y2 = fourth, options2 = fifth ?? {};
+    return { text: text2, x: x2, y: y2, options: options2, drawGlyph: (glyph) => renderer.drawGlyphQuad(
+      glyph.texture,
+      glyph.x,
+      glyph.y,
+      glyph.width,
+      glyph.height,
+      { u0: glyph.u0, v0: glyph.v0, u1: glyph.u1, v1: glyph.v1 },
+      glyph.color
+    ) };
+  }
+  const text = first, x = second, y = third, options = fourth ?? {};
+  return { text, x, y, options, drawGlyph: fifth ?? options.drawGlyph };
+}
+function validateGlyph(value, atlasWidth, atlasHeight, codePoint) {
+  if (!value || typeof value !== "object") throw new TypeError(`glyph U+${codePoint.toString(16)} must be a metric object`);
+  const { x, y, width, height, advance, bearingX = 0, bearingY = 0 } = value;
+  for (const [name, number] of Object.entries({ x, y, width, height, advance, bearingX, bearingY })) finite2(number, `glyph.${name}`);
+  if (x < 0 || y < 0 || width < 0 || height < 0 || x + width > atlasWidth || y + height > atlasHeight || advance < 0) {
+    throw new RangeError(`glyph U+${codePoint.toString(16)} has invalid atlas bounds or advance`);
+  }
+  return Object.freeze({ codePoint, x, y, width, height, advance, bearingX, bearingY });
+}
+function baselineOffset(baseline, fontSize, units, ascent, descent, y) {
+  const scale = fontSize / units;
+  switch (baseline) {
+    case "alphabetic":
+      return y;
+    case "top":
+    case "hanging":
+      return y + ascent * scale;
+    case "middle":
+      return y + (ascent - descent) * scale / 2;
+    case "bottom":
+    case "ideographic":
+      return y - descent * scale;
+    default:
+      throw new RangeError("baseline must be top, hanging, middle, alphabetic, ideographic, or bottom");
+  }
+}
+function validateAlign(value) {
+  if (!["left", "center", "right"].includes(value)) throw new RangeError("align must be left, center, or right");
+}
+function validateColor(value, name) {
+  if (!value || value.length !== 4) throw new TypeError(`${name} must be [r,g,b,a]`);
+  for (let i = 0; i < 4; i++) if (!Number.isFinite(value[i]) || value[i] < 0 || value[i] > 1) throw new RangeError(`${name} channels must be in [0,1]`);
+}
+function validateText(text) {
+  if (typeof text !== "string") throw new TypeError("text must be a string");
+}
+function finite2(value, name) {
+  if (!Number.isFinite(value)) throw new TypeError(`${name} must be finite`);
+}
+function positive(value, name) {
+  finite2(value, name);
+  if (value <= 0) throw new RangeError(`${name} must be positive`);
+}
+function nonNegative(value, name) {
+  finite2(value, name);
+  if (value < 0) throw new RangeError(`${name} must be non-negative`);
+}
+function positiveInteger(value, name) {
+  if (!Number.isSafeInteger(value) || value < 1) throw new RangeError(`${name} must be a positive integer`);
+}
+
+// modules/rendering/index.js
+var WHITE2 = Object.freeze([1, 1, 1, 1]);
 var CLEAR = Object.freeze([0, 0, 0, 0]);
-var VERTEX = `
+var VERTEX2 = `
 attribute vec2 a_position;
 attribute vec2 a_uv;
 attribute vec4 a_color;
@@ -559,7 +1248,7 @@ void main() {
   gl_Position = vec4(p.xy, 0.0, 1.0);
   v_uv = a_uv; v_color = a_color;
 }`;
-var FRAGMENT = `
+var FRAGMENT2 = `
 precision mediump float;
 uniform sampler2D u_texture;
 varying vec2 v_uv;
@@ -569,11 +1258,11 @@ void main() {
   float alpha = t.a * v_color.a;
   gl_FragColor = vec4(t.rgb * v_color.rgb * v_color.a, alpha);
 }`;
-function finite(value, name) {
+function finite3(value, name) {
   if (!Number.isFinite(value)) throw new TypeError(`${name} must be finite`);
 }
-function positive(value, name) {
-  finite(value, name);
+function positive2(value, name) {
+  finite3(value, name);
   if (value <= 0) throw new RangeError(`${name} must be positive`);
 }
 function color(value) {
@@ -663,8 +1352,8 @@ var Renderer2D = class {
     const gl = this.gl;
     let vertex, fragment;
     try {
-      vertex = compile2(gl, gl.VERTEX_SHADER, VERTEX);
-      fragment = compile2(gl, gl.FRAGMENT_SHADER, FRAGMENT);
+      vertex = compile2(gl, gl.VERTEX_SHADER, VERTEX2);
+      fragment = compile2(gl, gl.FRAGMENT_SHADER, FRAGMENT2);
       this.program = gl.createProgram();
       if (!this.program) throw new Error("WebGL program allocation failed");
       gl.attachShader(this.program, vertex);
@@ -727,9 +1416,9 @@ var Renderer2D = class {
   /** CSS viewport dimensions; does not change CSS style. Game controls camera separately. */
   resize(width, height, dpr = 1) {
     this._ready();
-    positive(width, "width");
-    positive(height, "height");
-    positive(dpr, "dpr");
+    positive2(width, "width");
+    positive2(height, "height");
+    positive2(dpr, "dpr");
     const pixelWidth = Math.max(1, Math.round(width * dpr)), pixelHeight = Math.max(1, Math.round(height * dpr));
     const limit = this.gl.getParameter(this.gl.MAX_VIEWPORT_DIMS);
     if (pixelWidth > limit[0] || pixelHeight > limit[1]) throw new RangeError("viewport exceeds WebGL limits");
@@ -745,10 +1434,10 @@ var Renderer2D = class {
   /** Camera center in world units; zoom is CSS pixels per world unit. */
   setCamera({ x = this.camera.x, y = this.camera.y, zoom = this.camera.zoom, rotation = this.camera.rotation } = {}) {
     this._ready();
-    finite(x, "x");
-    finite(y, "y");
-    positive(zoom, "zoom");
-    finite(rotation, "rotation");
+    finite3(x, "x");
+    finite3(y, "y");
+    positive2(zoom, "zoom");
+    finite3(rotation, "rotation");
     if (this.active) this.flush();
     this.camera.x = x;
     this.camera.y = y;
@@ -758,8 +1447,8 @@ var Renderer2D = class {
   }
   /** Caller-owned output; no world/simulation state is read or changed. */
   worldToScreenInto(x, y, out) {
-    finite(x, "x");
-    finite(y, "y");
+    finite3(x, "x");
+    finite3(y, "y");
     const camera = this.camera;
     const c = Math.cos(camera.rotation), s = Math.sin(camera.rotation), dx = x - camera.x, dy = y - camera.y;
     out.x = (c * dx + s * dy) * camera.zoom + this.width / 2;
@@ -767,8 +1456,8 @@ var Renderer2D = class {
     return out;
   }
   screenToWorldInto(x, y, out) {
-    finite(x, "x");
-    finite(y, "y");
+    finite3(x, "x");
+    finite3(y, "y");
     const camera = this.camera;
     const c = Math.cos(camera.rotation), s = Math.sin(camera.rotation), dx = (x - this.width / 2) / camera.zoom, dy = (y - this.height / 2) / camera.zoom;
     out.x = c * dx - s * dy + camera.x;
@@ -887,13 +1576,13 @@ var Renderer2D = class {
     data[i++] = tint[2];
     data[i] = tint[3];
   }
-  triangle(x0, y0, x1, y1, x2, y2, tint = WHITE) {
-    finite(x0, "x0");
-    finite(y0, "y0");
-    finite(x1, "x1");
-    finite(y1, "y1");
-    finite(x2, "x2");
-    finite(y2, "y2");
+  triangle(x0, y0, x1, y1, x2, y2, tint = WHITE2) {
+    finite3(x0, "x0");
+    finite3(y0, "y0");
+    finite3(x1, "x1");
+    finite3(y1, "y1");
+    finite3(x2, "x2");
+    finite3(y2, "y2");
     color(tint);
     this._reserve(3, this.white.texture);
     this._vertex(x0, y0, 0, 0, tint);
@@ -901,11 +1590,11 @@ var Renderer2D = class {
     this._vertex(x2, y2, 0, 0, tint);
   }
   _quad(texture, x, y, width, height, angle, tint, u0, v0, u1, v1) {
-    finite(x, "x");
-    finite(y, "y");
-    positive(width, "width");
-    positive(height, "height");
-    finite(angle, "angle");
+    finite3(x, "x");
+    finite3(y, "y");
+    positive2(width, "width");
+    positive2(height, "height");
+    finite3(angle, "angle");
     color(tint);
     this._reserve(6, texture);
     const c = Math.cos(angle), s = Math.sin(angle), hx = width / 2, hy = height / 2;
@@ -921,22 +1610,22 @@ var Renderer2D = class {
     this._vertex(dx, dy, u0, v1, tint);
   }
   /** Center-anchored rectangle, positive size, clockwise rotation in y-down world. */
-  rect(x, y, width, height, tint = WHITE, angle = 0) {
+  rect(x, y, width, height, tint = WHITE2, angle = 0) {
     this._quad(this.white.texture, x, y, width, height, angle, tint, 0, 0, 1, 1);
   }
   /** Atlas UV edges are top-left based; reversing endpoints flips the image. */
-  sprite(texture, x, y, width = texture.width, height = texture.height, { angle = 0, tint = WHITE, u0 = 0, v0 = 0, u1 = 1, v1 = 1 } = {}) {
+  sprite(texture, x, y, width = texture.width, height = texture.height, { angle = 0, tint = WHITE2, u0 = 0, v0 = 0, u1 = 1, v1 = 1 } = {}) {
     const record = this.textures.get(texture);
     if (!record) throw new Error("unknown/deleted texture");
     if (!Number.isFinite(u0) || !Number.isFinite(v0) || !Number.isFinite(u1) || !Number.isFinite(v1) || Math.min(u0, v0, u1, v1) < 0 || Math.max(u0, v0, u1, v1) > 1) throw new RangeError("UV must be in [0,1]");
     this._quad(record.texture, x, y, width, height, angle, tint, u0, v0, u1, v1);
   }
   /** Bounded fan tessellation; game chooses quality. No path/tessellation engine. */
-  ellipse(x, y, radiusX, radiusY, tint = WHITE, segments = 24) {
-    finite(x, "x");
-    finite(y, "y");
-    positive(radiusX, "radiusX");
-    positive(radiusY, "radiusY");
+  ellipse(x, y, radiusX, radiusY, tint = WHITE2, segments = 24) {
+    finite3(x, "x");
+    finite3(y, "y");
+    positive2(radiusX, "radiusX");
+    positive2(radiusY, "radiusY");
     color(tint);
     if (!Number.isSafeInteger(segments) || segments < 3 || segments > 256) throw new RangeError("segments must be 3..256");
     for (let i = 0; i < segments; i++) {
@@ -947,12 +1636,12 @@ var Renderer2D = class {
       this._vertex(x + Math.cos(b) * radiusX, y + Math.sin(b) * radiusY, 0, 0, tint);
     }
   }
-  line(x0, y0, x1, y1, width, tint = WHITE) {
-    finite(x0, "x0");
-    finite(y0, "y0");
-    finite(x1, "x1");
-    finite(y1, "y1");
-    positive(width, "width");
+  line(x0, y0, x1, y1, width, tint = WHITE2) {
+    finite3(x0, "x0");
+    finite3(y0, "y0");
+    finite3(x1, "x1");
+    finite3(y1, "y1");
+    positive2(width, "width");
     color(tint);
     this._frame();
     const length = Math.hypot(x1 - x0, y1 - y0);
@@ -1005,6 +1694,8 @@ var Renderer2D = class {
   }
 };
 export {
+  GlyphAtlas,
   Renderer2D,
+  VectorRenderer,
   WebGLDevice
 };
