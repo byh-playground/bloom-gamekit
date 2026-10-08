@@ -10,6 +10,13 @@ var field = (object, key) => {
     return void 0;
   }
 };
+var DIAGNOSTIC_VISIBILITIES = /* @__PURE__ */ new Set(["log", "notice", "blocking", "fatal"]);
+var diagnosticVisibility = (visibility, fatal) => {
+  if (visibility !== void 0 && !DIAGNOSTIC_VISIBILITIES.has(visibility)) {
+    throw new TypeError("visibility must be log, notice, blocking, or fatal");
+  }
+  return fatal || visibility === "fatal" ? "fatal" : visibility ?? "blocking";
+};
 function redactDiagnostic(value, limit = 1600) {
   bound(limit, "limit");
   const text = typeof value === "string" ? value : typeof value === "number" || typeof value === "boolean" ? String(value) : "";
@@ -31,19 +38,22 @@ var DiagnosticRing = class {
     this._busy = false;
     this._listeners = /* @__PURE__ */ new Set();
   }
-  report(error, { kind = "exception", fatal = false, origin = "main", source = "", line = 0, column = 0, workerTimeMs = null, cause = "" } = {}) {
+  /** @param {unknown} error @param {{kind?: string, visibility?: DiagnosticVisibility, fatal?: boolean, origin?: string, source?: string, line?: number, column?: number, workerTimeMs?: number|null, cause?: unknown}} options */
+  report(error, { kind = "exception", visibility, fatal = false, origin = "main", source = "", line = 0, column = 0, workerTimeMs = null, cause = "" } = {}) {
     if (this._busy) {
       this.dropped++;
       return null;
     }
     this._busy = true;
     try {
+      const severity = diagnosticVisibility(visibility, Boolean(fatal));
       const at = this.now();
       if (!Number.isFinite(at)) throw new TypeError("diagnostic clock must be finite");
       this._lastMs = Math.max(this._lastMs, at);
       const record = {
         kind: redactDiagnostic(kind, 64),
-        fatal: Boolean(fatal),
+        visibility: severity,
+        fatal: severity === "fatal",
         origin: redactDiagnostic(origin, 64),
         message: redactDiagnostic(typeof error === "string" ? error : field(error, "message") ?? "Non-text error omitted", 500),
         stack: redactDiagnostic(field(error, "stack"), 1800),
@@ -59,7 +69,7 @@ var DiagnosticRing = class {
       this.total++;
       for (let i = 0; i < this.size; i++) {
         const old = this.records[(this.start + i) % this.capacity];
-        if (old.kind === record.kind && old.message === record.message && old.stack === record.stack && old.fatal === record.fatal && old.origin === record.origin && old.source === record.source && old.line === record.line && old.column === record.column) {
+        if (old.kind === record.kind && old.message === record.message && old.stack === record.stack && old.visibility === record.visibility && old.origin === record.origin && old.source === record.source && old.line === record.line && old.column === record.column) {
           old.count++;
           old.lastMs = record.lastMs;
           return { ...old };
@@ -81,7 +91,17 @@ var DiagnosticRing = class {
   snapshot() {
     const errors = [];
     for (let i = 0; i < this.size; i++) errors.push({ ...this.records[(this.start + i) % this.capacity] });
-    return { format: "bloom-gamekit diagnostics v1", release: this.release, total: this.total, dropped: this.dropped, errors };
+    const counts = { log: 0, notice: 0, blocking: 0, fatal: 0 };
+    for (const record of errors) counts[record.visibility] += record.count;
+    return {
+      format: "bloom-gamekit diagnostics v2",
+      release: this.release,
+      total: this.total,
+      dropped: this.dropped,
+      counts: { total: this.total, retained: Object.values(counts).reduce((sum, count) => sum + count, 0), ...counts },
+      blockerCount: counts.blocking + counts.fatal,
+      errors
+    };
   }
   format() {
     return JSON.stringify(this.snapshot(), null, 2);
