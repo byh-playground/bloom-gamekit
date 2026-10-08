@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Detached local input preview · bloom-gamekit</title>
+<style>
+body{font:16px system-ui;max-width:900px;margin:2rem auto;padding:0 1rem;background:#111c24;color:#e6f1f3;line-height:1.55}canvas{display:block;width:100%;height:auto;background:#091117;touch-action:none;border:1px solid #40535e}button,label{margin:.35rem;padding:.35rem .6rem}#status{font:13px ui-monospace,monospace;white-space:pre-wrap;min-height:4em}
+</style>
+<h1>Detached local-input preview</h1>
+<p>Move with A/D or ←/→; press Space for an edge-triggered roll. The local fork uses the same simulation update as authority but advances immediately. Authority confirms after a short delay. The green unit is the selected local preview; the blue unit is a remote authoritative track.</p>
+<canvas width="720" height="240" tabindex="0" aria-label="Input preview demonstration"></canvas>
+<div><label><input id="preview" type="checkbox" checked> Enable local preview</label><button id="collision">Confirm collision correction</button><button id="gap">Simulate clock gap</button><button id="restart">Restart / rebase</button></div>
+<pre id="status">Loading…</pre>
+<script type="module">
+import { startInputPreviewDemo } from './demo.js';
+const demo = startInputPreviewDemo(document.querySelector('canvas'), document.querySelector('#status'));
+window.inputPreviewDemo = demo;
+document.querySelector('#preview').addEventListener('change', event => demo.setPreview(event.target.checked));
+document.querySelector('#collision').addEventListener('click', () => demo.forceCollision());
+document.querySelector('#gap').addEventListener('click', () => demo.clockGap());
+document.querySelector('#restart').addEventListener('click', () => demo.restart());
+window.addEventListener('pagehide', () => demo.dispose(), { once: true });
+</script></html>
