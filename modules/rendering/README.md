@@ -47,7 +47,34 @@ if (renderer.beginFrame([0.03, 0.05, 0.08, 1])) {
 
 `stats`는 재사용 객체입니다. frame/drawCalls/vertices/uploadedBytes/bufferViews/textureUploads는 실제 제출과 연결되고, totalTextureUploads/bufferAllocations는 수명 누적입니다. textureCount는 caller texture만 셉니다(내부 white texture 제외). stagingBytes는 고정 CPU staging 크기입니다. textureUploads에는 흰 texture와 복구 upload가 포함되며 frame 시작 때 해당 frame counter가 0으로 초기화됩니다. CPU submit 시간은 예제 caller가 측정하며 GPU 완료시간이 아닙니다.
 
-지원하지 않는 기능: arbitrary canvas paths·곡선·clip/stencil·filter·blend mode 확장·text rasterization·자동 atlas·sprite animation·terrain/fog·scenegraph·3D/depth·game art·asset loader. DOM UI 또는 게임별 layer/투영으로 조합하세요. 이 모듈이 기존 게임 renderer 전체를 대체했다고 주장하지 않습니다.
+`Renderer2D`는 의도적으로 단순한 primitive 편의 API입니다. path·곡선·clip·group opacity와 사전 생성 glyph 텍스트는 아래 `VectorRenderer`/`GlyphAtlas` 조합을 사용합니다. 자동 asset loading·sprite animation·terrain/fog·scenegraph·game art·기본 3D scene 처리는 여전히 게임 소유입니다. DOM UI 또는 게임별 projection/layer로 조합하세요.
+
+## VectorRenderer와 prebaked GlyphAtlas
+
+`VectorRenderer`는 같은 canvas를 소유한 `WebGLDevice` 위에서 path tessellation·transform·clip·painter-order stream·textured glyph 제출을 제공합니다. 프레임·projection·정렬과 그림 내용은 caller가 소유합니다. 불투명 draw는 재사용 geometry buffer에 직접 제출합니다. CPU/GPU vertex storage는 기본 4096 vertices(각 128 KiB)에서 시작해 필요할 때 2배로 자라며 기본 상한은 262144 vertices(각 최대 8 MiB)입니다. `beginGroup(opacity,bounds)`는 불투명 기본값 `1`이면 target 없이 직접 경로를 유지하고, 반투명 그룹은 canvas-screen bounds의 RGBA target에 그린 뒤 한 번 합성합니다. 생략한 bounds는 viewport 전체입니다. target은 중첩 깊이별로 보관되고 필요한 크기의 다음 power-of-two 버킷으로 할당되어 작아지는 bounds와 인접한 크기에서는 재사용됩니다. bounds보다 바깥의 입력은 잘립니다. `stats.gpuRenderTargetBytes`로 실제 target byte 수를 확인하세요.
+
+```js
+import { WebGLDevice, VectorRenderer, GlyphAtlas } from './rendering.js';
+const device = new WebGLDevice(canvas, { alpha: true, depth: false, stencil: false });
+const atlas = new GlyphAtlas(device, { width, height, data: rgbaBytes, glyphs,
+  unitsPerEm: 32, ascent: 25, descent: 7, missingGlyph: 'error' });
+const vector = new VectorRenderer(device, { glyphAtlas: atlas });
+device.beginFrame({ clearColor: [0, 0, 0, 0] });
+vector.beginGroup(0.5, { x: 80, y: 60, width: 240, height: 160 });
+vector.polygon([[90, 80], [200, 80], [170, 170], [100, 150]], [1, 0.2, 0.1, 1]);
+vector.endGroup();
+vector.beginPath(); vector.moveTo(80, 200); vector.quadraticCurveTo(160, 130, 240, 200);
+vector.stroke([0.3, 0.9, 0.6, 1], 3);
+vector.fillText('label', 200, 250, { fontSize: 18, align: 'center', baseline: 'alphabetic', color: [1, 1, 1, 1] });
+vector.flush(); device.endFrame();
+```
+
+- Paths use pixel coordinates in the device backing viewport. `moveTo`/`lineTo`, quadratic/cubic Bezier sampling, `closePath`, `fill` (`nonzero`/`evenodd`), `stroke(width)`, `polygon`, affine transforms, save/restore, and nested rectangular clips are supported. Curves default to 12/16 segments and accept an explicit 2..256 segment count. Fills use scanline trapezoid tessellation over flattened contours; inputs should be finite, non-self-intersecting contours. It supports holes with even-odd winding, not self-intersection repair.
+- `beginGroup(opacity,bounds)` bounds are in the renderer's pixel coordinate space. A target is bucketed to power-of-two dimensions and reused by depth; content is clipped to requested viewport intersection. Worst-case allocation may approach 4× requested area due to independent width/height buckets. Target texture memory is RGBA8 (`4 × allocated width × allocated height` bytes per nesting depth); there is no CPU readback. Targets are color-only; game depth/stencil passes remain separate. Allocation and clear bandwidth are additional costs and target creation is a cold path.
+- `GlyphAtlas(device,{width,height,data,glyphs,unitsPerEm,ascent,descent,filter,missingGlyph,replacement})` takes retained top-left-origin RGBA bytes and code-point-keyed metrics `{x,y,width,height,advance,bearingX,bearingY}`. Metrics are atlas pixels plus font-relative units. It uploads once and performs no runtime Canvas2D measurement/rasterization, crop, or pixel readback. `measureText` reports width/ascent/descent. `fillText` and `strokeText` accept `fontSize`, `align` (`left|center|right`), `baseline` (`top|hanging|middle|alphabetic|ideographic|bottom`), and RGBA color. The default missing-glyph mode throws; `skip` and explicit replacement are opt-in. Text draw calls batch adjacent glyphs from the same atlas.
+- `VectorRenderer.flush()` submits queued glyph vertices at frame boundaries or before switching to another texture. `dispose()` releases its pipeline, stream buffer, white texture, and group targets. Dispose `GlyphAtlas` separately. The shared `WebGLDevice` remains caller-owned.
+
+The [native rendering example](./examples/vector/index.html) demonstrates polygon/curve/text/clip/group composition. The browser E2E reads actual WebGL pixels for alpha 128, fill holes, clipping, glyphs, nested opacity, bounded target allocation and target restoration. This validates the reference Chromium WebGL1/SwiftShader path, not mobile GPU performance. Path flattening, scanline tessellation, clip-polygon intersections, geometric glyph outlines, staging growth, uploaded vertex bytes and render-target clears add CPU/GPU work; the example reports CPU submission time (not GPU completion) and counters for its one small scene, not a device-wide benchmark.
 
 요구 근거는 [Budmori 88c93e7](https://github.com/byh-playground/budmori-io/blob/88c93e713d6bc2b4f081c24a99e536d497a5799b/index.html)의 geometry stream·명시적 texture invalidation·painter order와 [Rally f6037f0](https://github.com/byh-playground/rally-frontier/blob/f6037f05e0ff2163fc11cf0f770e2bc071eaa291/index.html)의 game-owned projection·presentation-only buffer입니다. 해당 게임 코드를 변경하거나 통째로 복사하지 않았습니다. 통합 검사는 [실제 브라우저 E2E](../../tests/browser.e2e.mjs)를 보세요.
 
@@ -96,9 +123,10 @@ if (device.beginFrame({ width: canvas.width, height: canvas.height })) {
 - blend: source-over(premultiplied ONE/ONE_MINUS_SRC_ALPHA), straight-alpha(SRC_ALPHA/ONE_MINUS_SRC_ALPHA, Rally 기존 출력 보존), copy, lighter, source-in, destination-in, false. shader output alpha 형식에 맞게 게임이 정합니다. straight-alpha는 alpha 채널도 같은 factor로 계산합니다.
 - depth: false 또는 `{func='lequal',write=true}`. func는 never/less/equal/lequal/greater/notequal/gequal/always. true depth가 없는 context에 요청하면 throw합니다.
 - stencil: false 또는 `{func='always',ref=0,mask=255,writeMask=255,fail='keep',zfail='keep',pass='keep'}`. func는 depth와 같은 enum; operation은 keep/zero/replace/increment/decrement/invert/increment-wrap/decrement-wrap. 각 draw는 state를 완전히 지정하므로 클립·silhouette·다음 color pass 사이에 숨은 상태 의존이 없습니다. stencil 없는 context에 요청하면 throw합니다.
+- `createRenderTarget(width,height,{filter='linear'})`: 검증된 RGBA8 color texture/FBO를 만들며 반환 handle은 `draw({textures:[target]})`에 사용할 수 있습니다. active frame에서 `bindRenderTarget(target)` / `unbindRenderTarget(target)`은 framebuffer와 viewport를 LIFO로 저장·복구합니다. target은 nesting, context loss/restore, disposal에 참여하고 현재 바인딩된 target을 sampler에 전달하면 throw합니다. target은 WebGL 1 color-only이며 depth/stencil attachment가 없습니다. `deleteRenderTarget`로 명시 해제합니다. `stats.gpuRenderTargetBytes`와 `renderTargetCount`는 현재 GPU 할당량을 나타냅니다.
 - cull/dither/scissor는 매 draw 꺼집니다. draw는 정렬·게임 loop·카메라·시뮬레이션 tick을 소유하지 않습니다.
 - `endFrame() → stats`, `dispose()`와 state ready/lost/failed/disposed, failure 문자열. context 복구에서 pipeline·texture handle identity를 보존하며 GPU 자원을 재생성합니다. **dynamic vertex buffer는 빈 상태로 복구하므로 게임이 다음 frame의 geometry를 다시 upload해야 합니다.** DOM source는 복구 때의 현재 pixels를 사용하므로 살아 있는 로딩 완료 source를 유지하세요.
 
-`stats`는 재사용 객체이며 frame/drawCalls/vertices/bufferUploads/bufferBytes/textureUploads/textureBytes/frameCopies는 프레임 값입니다. bufferAllocations/restores는 누적, gpuBufferBytes/pipelineCount/bufferCount/textureCount는 현재 자원량입니다. 초기 texture 생성과 frame 밖 upload는 다음 beginFrame에서 프레임 counter가 초기화됩니다. draw option 객체·uniform entries·attribute set 작업과 region copy에는 CPU 비용/작은 할당이 있으며 0-allocation 주장이 아닙니다. shader compile과 texture creation은 cold path로 두세요.
+`stats`는 재사용 객체이며 frame/drawCalls/vertices/bufferUploads/bufferBytes/textureUploads/textureBytes/frameCopies는 프레임 값입니다. bufferAllocations/restores는 누적, gpuBufferBytes/gpuRenderTargetBytes/pipelineCount/bufferCount/textureCount/renderTargetCount는 현재 자원량입니다. 초기 texture 생성과 frame 밖 upload는 다음 beginFrame에서 프레임 counter가 초기화됩니다. draw option 객체·uniform entries·attribute set 작업과 region copy에는 CPU 비용/작은 할당이 있으며 0-allocation 주장이 아닙니다. shader compile과 texture creation은 cold path로 두세요.
 
 [device browser 회귀](./tests/device.browser.mjs)는 실제 built ESM과 Chromium/WebGL에서 depth LEQUAL/GREATER, stencil write/read/clear, FPV11 두 texture·radial·white mask, straight/premultiplied alpha, 부분 atlas update, NPOT luminance fog, GPU frame copy, bounded buffer 재사용, context 복구 및 해제를 검증합니다. 게임 전체 parity는 각 migration의 게임 E2E가 별도로 확인해야 합니다.

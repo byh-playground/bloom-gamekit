@@ -1,0 +1,34 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GameKit vector rendering</title>
+<style>
+  body{margin:0;background:#101923;color:#dce8f1;font:15px system-ui,sans-serif}main{max-width:960px;margin:32px auto;padding:0 18px}canvas{display:block;width:100%;height:auto;border:1px solid #526374;border-radius:12px}p{color:#a9bdcb;line-height:1.5}
+</style>
+<main>
+  <h1>WebGL vector rendering</h1>
+  <p>Concave polygon fill, quadratic curve stroke, nested clip, prebaked bitmap glyphs, and an RGBA group at 50% opacity. The two red polygons are composed once as a group.</p>
+  <canvas id="scene" width="900" height="500"></canvas>
+  <p id="stats" aria-live="polite"></p>
+</main>
+<script type="module">
+  import { WebGLDevice, VectorRenderer, GlyphAtlas } from '/dist/rendering.js';
+  const canvas=document.querySelector('#scene');
+  const device=new WebGLDevice(canvas,{alpha:true,antialias:true,depth:false,stencil:false,preserveDrawingBuffer:true});
+  // Prebaked 5x7 bitmap cells: G, F, X. No font rasterization or pixel readback.
+  const bitmap={G:[14,17,16,23,17,17,14],F:[31,16,16,30,16,16,16],X:[17,17,10,4,10,17,17]},chars=Object.keys(bitmap),cellW=6,height=7,width=chars.length*cellW,data=new Uint8Array(width*height*4),glyphs={};
+  chars.forEach((ch,index)=>{for(let y=0;y<7;y++)for(let x=0;x<5;x++)if(bitmap[ch][y]&(1<<(4-x))){const i=(y*width+index*cellW+x)*4;data.set([255,255,255,255],i)}glyphs[`U+${ch.codePointAt(0).toString(16)}`]={x:index*cellW,y:0,width:5,height:7,advance:6,bearingY:7}});
+  const atlas=new GlyphAtlas(device,{width,height,data,glyphs,unitsPerEm:7,ascent:7,descent:0,filter:'nearest'});
+  const renderer=new VectorRenderer(device,{glyphAtlas:atlas});
+  const submitStarted=performance.now();device.beginFrame({clearColor:[.035,.055,.075,1]});
+  renderer.beginGroup(.5,{x:200,y:80,width:500,height:300});
+  renderer.polygon([[290,155],[480,155],[480,335],[290,335]],[.98,.14,.12,1]);
+  renderer.polygon([[420,155],[610,155],[610,335],[420,335]],[.98,.14,.12,1]);
+  renderer.endGroup();
+  renderer.beginPath();renderer.moveTo(190,380);renderer.bezierCurveTo(280,270,380,465,485,350,18);renderer.stroke([.36,.89,.68,1],6);
+  renderer.save();renderer.clipRect(660,100,160,250);renderer.beginPath();renderer.moveTo(650,125);renderer.lineTo(840,125);renderer.lineTo(785,305);renderer.lineTo(685,305);renderer.closePath();renderer.fill([.31,.63,.92,1],'evenodd');renderer.restore();
+  renderer.fillText('GFX',690,365,{fontSize:56,align:'center',baseline:'alphabetic',color:[.94,.91,.64,1]});renderer.flush();device.endFrame();const cpuSubmitMs=performance.now()-submitStarted;
+  document.querySelector('#stats').textContent=`${device.stats.drawCalls} draw calls · ${device.stats.vertices} vertices · ${device.stats.bufferBytes.toLocaleString()} uploaded bytes · ${device.stats.gpuRenderTargetBytes.toLocaleString()} bytes of reusable offscreen RGBA targets · ${cpuSubmitMs.toFixed(2)} ms CPU submission`;
+  window.vectorExample={device,renderer,atlas,cpuSubmitMs};
+  window.addEventListener('pagehide',()=>{renderer.dispose();atlas.dispose();device.dispose()},{once:true});
+</script>
