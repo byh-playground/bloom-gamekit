@@ -9,10 +9,10 @@
 - [보간 API·시간·생명주기 계약](./modules/interpolation/README.md)
 - [WebGL 1 렌더링 API·texture·생명주기](./modules/rendering/README.md)
 - [입력 action·DOM·tick 소비 계약](./modules/input/README.md)
-- [카메라·표현 이벤트](./modules/presentation-events/README.md) · [HUD](./modules/hud/README.md) · [진단](./modules/debug-tools/README.md) · [카메라](./modules/camera/README.md)
+- [고정 실행과 선택적 detached local input preview](./modules/simloop/README.md) · [카메라·표현 이벤트](./modules/presentation-events/README.md) · [HUD](./modules/hud/README.md) · [진단](./modules/debug-tools/README.md) · [카메라](./modules/camera/README.md)
 - [동적 방·공개 입장·새로고침 복구](./modules/rollback/README.md) · [Nostr 디렉터리·전송](./modules/transport/README.md)
 - [SDK 전체/분리 API와 이전](./modules/rollback-netcode/README.md)
-- [실제 독립 번들을 연결하는 보간 예제](./examples/interpolation/index.html) · [WebGL 벡터·텍스트·그룹 합성 예제](./modules/rendering/examples/vector/index.html)
+- [실제 독립 번들을 연결하는 보간 예제](./examples/interpolation/index.html) · [detached 입력 preview 예제](./examples/input-preview/index.html) · [WebGL 벡터·텍스트·그룹 합성 예제](./modules/rendering/examples/vector/index.html)
 - [고정 브라우저 E2E](./tests/browser.e2e.mjs) · [별도 보간 벤치마크](./modules/interpolation/scripts/benchmark.mjs)
 
 ```text

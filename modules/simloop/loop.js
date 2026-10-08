@@ -1,11 +1,11 @@
 /** Fixed Simulation dt, separately adjustable real-time scheduling. No import side effects. */
-export function createLoop({ session, getInput = () => new Uint8Array(session.inputSize), render = () => {},
-  backlogPolicy = 'drop', beforeFrame = () => {}, canAdvance = () => true, onAdvance = () => {},
+export function createLoop({ session, getInput = () => new Uint8Array(session.inputSize), render = () => {}, inputPreview,
+  backlogPolicy = 'drop', beforeFrame = () => {}, canAdvance = () => true, onAdvance = () => {}, onPreviewError = () => {},
   onError = error => { throw error; }, onInputRelease = () => {}, onBacklogDrop = () => {}, maxBacklogTicks = 8,
   requestFrame = globalThis.requestAnimationFrame?.bind(globalThis),
   cancelFrame = globalThis.cancelAnimationFrame?.bind(globalThis) } = {}) {
   if (!session || typeof session.poll !== 'function' || typeof session.advance !== 'function') throw new TypeError('session capability');
-  for (const callback of [getInput, render, beforeFrame, canAdvance, onAdvance, onError, onInputRelease, onBacklogDrop]) {
+  for (const callback of [getInput, render, beforeFrame, canAdvance, onAdvance, onPreviewError, onError, onInputRelease, onBacklogDrop]) {
     if (typeof callback !== 'function') throw new TypeError('loop callback');
   }
   if (backlogPolicy !== 'drop' && backlogPolicy !== 'retain') throw new RangeError('backlogPolicy');
@@ -13,14 +13,17 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
   const quantum = 1000 / session.profile.tickRate;
   const maxBacklogMs = quantum * maxBacklogTicks;
   let running = false, handle, last, accumulator = 0, generation = 0, timingGeneration = 0;
-  const resetTiming = () => { timingGeneration++; last = undefined; accumulator = 0; };
+  if (inputPreview && typeof inputPreview.submit !== 'function') throw new TypeError('inputPreview capability');
+  let inputSequence = 0; const pendingCommands = [];
+  const resetTiming = (clearPreview = true) => { timingGeneration++; last = undefined; accumulator = 0; if (clearPreview) inputPreview?.clear?.(); };
   const release = () => {
-    try { onInputRelease(); session.releaseInput(); }
+    try { onInputRelease(); session.releaseInput(); inputPreview?.clear?.(); }
     catch (error) { stop(); onError(error); }
   };
   const hidden = () => { if (globalThis.document?.hidden) { release(); resetTiming(); } };
   const stop = () => {
     generation++; running = false; if (handle !== undefined) cancelFrame?.(handle); handle = undefined;
+    inputPreview?.clear?.();
     globalThis.removeEventListener?.('blur', release);
     globalThis.document?.removeEventListener('visibilitychange', hidden);
   };
@@ -37,6 +40,7 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
       if (elapsed > maxBacklogMs) {
         accumulator = 0;
         last = timestamp;
+        inputPreview?.clear?.();
         onBacklogDrop({ elapsedMs: elapsed, droppedTicks: Math.floor(elapsed / quantum), timestamp });
       } else {
         accumulator = backlogPolicy === 'retain' ? accumulator + elapsed :
@@ -54,9 +58,31 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
         const allowed = canAdvance();
         if (current !== generation || timing !== timingGeneration) return;
         if (!allowed) { if (backlogPolicy === 'drop') accumulator = Math.min(accumulator, quantum); break; }
-        const input = getInput();
+        const sampled = getInput();
         if (current !== generation || timing !== timingGeneration) return;
+        const packet = sampled && typeof sampled === 'object' && !ArrayBuffer.isView(sampled) && !(sampled instanceof ArrayBuffer) && Object.hasOwn(sampled, 'input');
+        const inputValue = packet ? sampled.input : sampled;
+        const input = inputPreview && ArrayBuffer.isView(inputValue) ? new inputValue.constructor(inputValue) : inputValue;
+        if (packet) {
+          const commands = sampled.commands ?? [];
+          if (!Array.isArray(commands)) throw new TypeError('input packet commands must be an array');
+          if (commands.length && typeof session.queueCommand !== 'function') throw new TypeError('session does not support queued input commands');
+          for (const command of commands) {
+            if (!command || command.payload === undefined) throw new TypeError('input command payload required');
+            const payload = ArrayBuffer.isView(command.payload) ? new command.payload.constructor(command.payload) : command.payload;
+            const sequence = session.queueCommand(payload);
+            if (!Number.isSafeInteger(sequence) || sequence < 0) throw new TypeError('session command sequence');
+            pendingCommands.push({ sequence, payload });
+          }
+        }
+        const previousTick = session.tick;
         const result = session.advance(input); work++;
+        if (result.status === 'advanced' && inputPreview) {
+          try { inputPreview.submit(input, { sequence: ++inputSequence, tick: result.tick ?? session.tick ?? previousTick + 1,
+            epoch: session.epoch ?? 0, timeMs: Math.max(timestamp, globalThis.performance?.now?.() ?? timestamp), commands: pendingCommands }); }
+          catch (error) { inputPreview.clear?.(); onPreviewError(error); }
+        }
+        if (result.status === 'advanced') pendingCommands.length = 0;
         // A completed tick still consumes debt after stop(), but never touches a reset/new run.
         if (timing !== timingGeneration) return;
         if (result.status === 'advanced') accumulator = Math.max(0, accumulator - quantum * pace);
@@ -73,7 +99,7 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
   const start = () => {
     if (running) return;
     if (typeof requestFrame !== 'function' || typeof cancelFrame !== 'function') throw new TypeError('frame scheduler');
-    running = true; resetTiming();
+    running = true; resetTiming(false);
     const current = ++generation;
     const frame = timestamp => {
       if (!running || current !== generation) return;

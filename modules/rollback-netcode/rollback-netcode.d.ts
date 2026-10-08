@@ -383,7 +383,21 @@ export interface LoopSession {
   readonly closed: boolean; readonly resimulating: boolean; readonly pace: number;
   poll(): void; advance(input?: Bytes): { status: string; tick: number }; releaseInput(): void;
 }
-export function createLoop<S extends LoopSession>(options: { session: S; backlogPolicy?: 'drop' | 'retain'; getInput?: () => Bytes; beforeFrame?: (timestamp: number) => void; canAdvance?: () => boolean; onAdvance?: (result: ReturnType<S['advance']>) => void; render?: (context: { session: S; alpha: number; resimulating: boolean }) => void; onError?: (error: unknown) => void; onInputRelease?: () => void; requestFrame?: (callback: FrameRequestCallback) => number; cancelFrame?: (handle: number) => void }): { start(): void; stop(): void; pulse(timestamp: number): void; resetTiming(): void; readonly running: boolean };
+export interface PreviewEntity { id: string; generation: number; source: object; type?: Function; }
+export interface PreviewFork { step(input: unknown, context: { sequence: number; tick: number; epoch: number; commands: Array<{ sequence: number; payload: unknown }>; speculative: true; replay?: boolean }): void; }
+export interface LocalInputPreviewOptions {
+  createFork(snapshot: unknown): PreviewFork; cloneSnapshot?(snapshot: unknown): unknown; readEntities(fork: PreviewFork): PreviewEntity[];
+  presentation?: { selectPreview(ids: Array<{ id: string; generation: number }>): void; capturePreview(packet: object, nowMs: number): boolean; clearPreview?(): void };
+  maxPendingInputs?: number; maxFutureTicks?: number; maxAgeMs?: number;
+}
+export class LocalInputPreview {
+  constructor(options: LocalInputPreviewOptions);
+  readonly pendingCount: number; readonly enabled: boolean; readonly metrics: Readonly<Record<string, number>>;
+  reconcile(checkpoint: { snapshot: unknown; revision: number; tick: number; epoch: number; confirmedSequence?: number; confirmedCommandSequence?: number; timeMs: number; mode?: 'continuous' | 'rollback' | 'load' | 'reset' | 'teleport' | 'join' | 'resync'; reset?: boolean }): boolean;
+  submit(input: unknown, metadata: { sequence: number; tick: number; epoch: number; timeMs: number; commands?: Array<{ sequence: number; payload: unknown }> }): boolean;
+  clear(): void; setEnabled(enabled: boolean): void; dispose(): void;
+}
+export function createLoop<S extends LoopSession>(options: { session: S & { queueCommand?: (payload: Bytes) => number }; backlogPolicy?: 'drop' | 'retain'; getInput?: () => Bytes | { input: Bytes; commands?: Array<{ payload: Bytes }> }; beforeFrame?: (timestamp: number) => void; canAdvance?: () => boolean; onAdvance?: (result: ReturnType<S['advance']>) => void; onPreviewError?: (error: unknown) => void; inputPreview?: Pick<LocalInputPreview, 'submit' | 'clear'>; render?: (context: { session: S; alpha: number; resimulating: boolean }) => void; onError?: (error: unknown) => void; onInputRelease?: () => void; requestFrame?: (callback: FrameRequestCallback) => number; cancelFrame?: (handle: number) => void }): { start(): void; stop(): void; pulse(timestamp: number): void; resetTiming(): void; readonly running: boolean };
 export type CodecValue = null | boolean | number | string | Uint8Array | CodecValue[] | { [key: string]: CodecValue };
 export interface ValueCodec { readonly format: 'binary' | 'json'; encode(value: CodecValue): Uint8Array; decode(bytes: Bytes): CodecValue; }
 export function createValueCodec(options?: { format?: 'binary' | 'json'; maxBytes?: number; maxDepth?: number; maxEntries?: number }): ValueCodec;

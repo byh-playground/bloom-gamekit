@@ -58,7 +58,7 @@ static renderSchema = {
 
 `new PresentationRuntime({ stepMs: 100, extrapolation: { fields: ['x', 'y'], maxMs: 100 } })`는 지정한 LINEAR 계열 필드(LINEAR/POSITION/ORIGIN/SPAWN_LINEAR)만 최근 두 시뮬 표본의 속도로 예측합니다. 기본값은 꺼짐입니다. 수신 순간의 기존 표시와 새 예측의 차이는 stepMs 동안 줄이며, maxMs를 넘으면 마지막 예측 위치를 유지합니다. 보정이 한도 뒤에도 진행하지 않도록 `maxMs >= stepMs`를 요구합니다. HP·경험치를 자동 외삽하지 않고 ANGLE/STEP/DECAY/CYCLE/countdown/key 외삽은 거부합니다. 필드 구간·teleport·세계 reset은 해당 속도와 보정 이력을 초기화합니다.
 
-이 기능은 충돌/급정지/최신 사용자 입력을 예측하지 않습니다. 입력 선반응은 독립 입력 표본과 복원 가능한 시뮬의 별도 계약이 필요하며 이 API로 구현했다고 주장하지 않습니다.
+이 기능은 충돌/급정지/최신 사용자 입력을 예측하지 않습니다. fresh local input response는 [simloop LocalInputPreview](../simloop/README.md#선택적-로컬-입력-미리보기)의 별도 opt-in capability입니다. 이 PresentationRuntime는 그 capability가 전달한 선택 local schema model을 즉시 읽고, confirmed capture에서 이전 preview pose를 reconciliation 시작점으로 사용합니다. remote tracks는 덮어쓰지 않습니다.
 
 ### 비용
 

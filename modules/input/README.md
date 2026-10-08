@@ -117,3 +117,5 @@ input.dispose();
 `onPointer({type,originalEvent,reason,...position})`는 어댑터가 소유한 down/move/up/cancel 및 표면 hover move를 전달합니다. position은 samplePointerInto와 동일한 CSS 좌표 계약이며, originalEvent는 원래 DOM 이벤트입니다. up/cancel은 hold·capture 해제 후 전달됩니다. document fallback과 lost capture도 같은 경로입니다. 게임은 드래그·롱프레스·다중 선택 등 정책만 구현하며 별도 capture/listener를 중복 설치하지 않습니다.
 
 `onRelease({reason,originalEvent})`는 blur/pagehide/visibilitychange/명시 releaseAll/dispose 정리 후 호출합니다. 모든 포인터의 cancel도 전달되며 callback이 실패해도 나머지 hold/capture와 listener 정리는 완료합니다. dispose 이유의 originalEvent는 null입니다. 이 콜백은 tick마다 입력 edge를 소비하거나 게임 명령을 자동 제출하지 않습니다. 원래 UI 제외 정책을 적용하며 UI 입력을 가로채지 않습니다.
+
+입력 계층은 디바이스/action state 수집까지만 책임집니다. 선택적 local prediction이 필요하면 이 동일 입력 sample을 simloop의 `LocalInputPreview`에 연결합니다. input 모듈은 simulation step, preview fork, authoritative submit을 실행하지 않으며 DOM callback에서 게임 update를 호출하지 않습니다.
