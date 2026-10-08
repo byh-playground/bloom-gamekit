@@ -1,4 +1,4 @@
-import { exerciseWebGLDevice, exerciseVectorRenderer } from '../modules/rendering/tests/device.browser.mjs';
+import { exerciseWebGLDevice, exerciseVectorRenderer, exerciseFontAssetLoader } from '../modules/rendering/tests/device.browser.mjs';
 import { runPresentationChecks } from './presentation.browser.js';
 import { chromium } from 'playwright';
 import { createServer } from 'node:http';
@@ -8,14 +8,26 @@ import assert from 'node:assert/strict';
 import { runRenderObjectChecks } from './render-object.browser.js';
 
 const root = resolve('.');
+let retryFontRequests = 0;
+let sharedFontRequests = 0;
 const server = createServer(async (req, res) => {
   try {
-    const path = resolve(root, '.' + decodeURIComponent(new URL(req.url, 'http://localhost').pathname));
+    const pathname = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
+    if (pathname === '/__font-retry' && ++retryFontRequests === 1) { res.writeHead(503, { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }).end(); return; }
+    if (pathname === '/__font-delay') { setTimeout(() => serveFont(res), 200); return; }
+    if (pathname === '/__font-retry') { await serveFont(res); return; }
+    const path = resolve(root, '.' + pathname);
     if (!path.startsWith(root + sep)) { res.writeHead(403).end(); return; }
     res.setHeader('Content-Type', { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json' }[extname(path)] ?? 'application/octet-stream');
+    if (pathname === '/dist/assets/fonts/noto-sans-kr-700-v1.json' && req.headers.host?.startsWith('127.0.0.1:')) sharedFontRequests++;
+    if (pathname.startsWith('/dist/assets/fonts/') && !req.headers.host?.startsWith('localhost:')) res.setHeader('Access-Control-Allow-Origin', '*');
     res.end(await readFile(path));
   } catch { res.writeHead(404).end(); }
 });
+async function serveFont(res) {
+  res.setHeader('Content-Type', 'application/json'); res.setHeader('Access-Control-Allow-Origin', '*');
+  res.end(await readFile(resolve(root, 'dist/assets/fonts/noto-sans-kr-700-v1.json')));
+}
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 let browser;
 const report = { stages: [] };
@@ -199,10 +211,12 @@ try {
   report.stages.push('DOM multi-pointer identity/coordinates/cancel/capture loss + keyboard aggregation + listener disposal');
 
   const moduleErrors = [];
-  for (const [name, check] of [['renderObject', runRenderObjectChecks], ['presentation', runPresentationChecks], ['device', exerciseWebGLDevice], ['vectorRenderer', exerciseVectorRenderer]]) {
+  for (const [name, check] of [['renderObject', runRenderObjectChecks], ['presentation', runPresentationChecks], ['device', exerciseWebGLDevice], ['vectorRenderer', exerciseVectorRenderer],
+    ['fontAssets', p => exerciseFontAssetLoader(p, `http://127.0.0.1:${server.address().port}`)]]) {
     try { report[name] = await check(page); }
     catch (error) { console.error(`Browser module ${name}:`, error); moduleErrors.push(`${name}: ${error.message}`); }
   }
+  assert.equal(sharedFontRequests, 1, 'concurrent devices and loaders share one fetch and CPU decode in this JavaScript realm');
   const disposal = await page.evaluate(() => {
     const { r } = renderProbe, gl = r.gl, buffer = r.buffer, program = r.program;
     r.dispose(); r.dispose(); const result = { state: r.state, bufferReleased: !gl.isBuffer(buffer), programReleased: !gl.isProgram(program), textures: r.stats.textureCount };

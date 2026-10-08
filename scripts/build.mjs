@@ -1,8 +1,8 @@
 import { build } from 'esbuild';
-import { mkdir, writeFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { MODULES, MANIFEST_FILE, createManifest, serializeManifest } from './distribution.mjs';
+import { MODULES, FONT_ASSETS, MANIFEST_FILE, createManifest, serializeManifest } from './distribution.mjs';
 
 const SDK_DEPENDENCIES = {
   deterministic: ['_rollback-shared'], simloop: [], transport: ['_rollback-shared', 'deterministic'],
@@ -48,7 +48,16 @@ export async function buildDistribution(root) {
     await writeFile(resolve(root, 'dist', file), bytes);
     console.log(`Built dist/${file} (${bytes.length} bytes)`);
   }
-  const manifest = createManifest(bundles);
+  const assets = new Map();
+  for (const asset of FONT_ASSETS) {
+    const bytes = await readFile(resolve(root, asset.source));
+    assets.set(asset.file, bytes);
+    const output = resolve(root, 'dist', ...asset.file.split('/'));
+    await mkdir(dirname(output), { recursive: true });
+    await writeFile(output, bytes);
+    console.log(`Copied dist/${asset.file} (${bytes.length} bytes)`);
+  }
+  const manifest = createManifest(bundles, assets);
   await writeFile(resolve(root, 'dist', MANIFEST_FILE), serializeManifest(manifest));
   return manifest;
 }
