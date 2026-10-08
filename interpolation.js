@@ -173,6 +173,17 @@ var RenderObject = class {
   static DECAY = 3;
   // 0..1 진행률이 1에서 0으로 순환하는 필드. 종료 때 역방향 보간하지 않습니다.
   static CYCLE = 4;
+  static COUNTDOWN_MS = 5;
+  static COUNTDOWN_SECONDS = 6;
+  // 해당 필드의 부모 객체가 어떤 표시 상태인지 구분하는 scalar 키입니다.
+  static STATE_KEY = 7;
+  static POSITION_X = 8;
+  static POSITION_Y = 9;
+  static POSITION_Z = 10;
+  static ORIGIN_X = 11;
+  static ORIGIN_Y = 12;
+  static ORIGIN_Z = 13;
+  static SPAWN_LINEAR = 14;
   static renderSchema = Object.freeze({});
   /** @param {unknown} context @param {object} model */
   render(context, model) {
@@ -180,10 +191,103 @@ var RenderObject = class {
   }
 };
 
+// modules/interpolation/render-policies.js
+var kinds = [
+  "number",
+  "angle",
+  "discrete",
+  "number",
+  "cycle",
+  "number",
+  "number",
+  "discrete",
+  "number",
+  "number",
+  "number",
+  "number",
+  "number",
+  "number",
+  "number"
+];
+function fieldKind(code) {
+  return kinds[code];
+}
+function isLinearField(code) {
+  return code === RenderObject.LINEAR || code >= RenderObject.POSITION_X && code <= RenderObject.SPAWN_LINEAR;
+}
+function compileFieldPolicies(root, fields) {
+  function descendants(node) {
+    node.fields = node.field === void 0 ? [] : [node.field];
+    for (const child of node.children.values()) node.fields.push(...descendants(child));
+    return node.fields;
+  }
+  descendants(root);
+  const keys = [], clocks = [], positions = new Array(3), origins = new Array(3), births = [];
+  for (let index = 0; index < fields.length; index++) {
+    const field = fields[index];
+    if (field.code === RenderObject.STATE_KEY) keys.push({ index, scope: field.owner.fields });
+    if (field.code === RenderObject.COUNTDOWN_MS || field.code === RenderObject.COUNTDOWN_SECONDS) clocks.push({
+      index,
+      scope: field.owner.fields,
+      unitsPerMs: field.code === RenderObject.COUNTDOWN_MS ? 1 : 1e-3
+    });
+    if (field.code >= RenderObject.POSITION_X && field.code <= RenderObject.POSITION_Z) {
+      const axis = field.code - RenderObject.POSITION_X;
+      if (positions[axis] !== void 0) throw new TypeError("Duplicate render position axis");
+      positions[axis] = index;
+    }
+    if (field.code >= RenderObject.ORIGIN_X && field.code <= RenderObject.ORIGIN_Z) {
+      const axis = field.code - RenderObject.ORIGIN_X;
+      if (origins[axis] !== void 0) throw new TypeError("Duplicate render origin axis");
+      origins[axis] = index;
+    }
+    if (field.code === RenderObject.SPAWN_LINEAR) births.push(index);
+  }
+  return { keys, clocks, positions, origins, births };
+}
+function inferFieldResets(policies, previous, target, timeMs, reset) {
+  for (const key of policies.keys) if (!Object.is(previous.target.values[key.index], target.values[key.index])) {
+    for (const index of key.scope) reset.add(index);
+  }
+  const elapsed = timeMs - previous.timeMs;
+  for (const clock of policies.clocks) {
+    const from = previous.target.values[clock.index], to = target.values[clock.index];
+    if (typeof from !== "number" || typeof to !== "number") continue;
+    const passed = Number.isFinite(elapsed) ? elapsed * clock.unitsPerMs : timeMs * clock.unitsPerMs - previous.timeMs * clock.unitsPerMs;
+    const expected = Math.max(0, from - passed);
+    const tolerance = 1e-6 * clock.unitsPerMs + Number.EPSILON * 16 * Math.max(1, from, to) + Number.EPSILON * 16 * Math.max(Math.abs(timeMs), Math.abs(previous.timeMs)) * clock.unitsPerMs;
+    if (Math.abs(to - expected) > tolerance) for (const index of clock.scope) reset.add(index);
+  }
+}
+function positionDiscontinuity(policies, previous, target, distance) {
+  if (distance === void 0) return false;
+  let count = 0, a = 0, b = 0, c = 0;
+  for (let axis = 0; axis < 3; axis++) {
+    const index = policies.positions[axis];
+    if (index === void 0) continue;
+    const from = previous.target.values[index], to = target.values[index];
+    if (typeof from !== "number" || typeof to !== "number") continue;
+    const delta = to - from;
+    if (axis === 0) a = delta;
+    else if (axis === 1) b = delta;
+    else c = delta;
+    count++;
+  }
+  return count > 0 && Math.hypot(a, b, c) > distance;
+}
+function seedFieldValues(policies, values) {
+  const from = values.slice();
+  for (let axis = 0; axis < 3; axis++) {
+    const position = policies.positions[axis], origin = policies.origins[axis];
+    if (position !== void 0 && origin !== void 0 && typeof values[position] === "number" && typeof values[origin] === "number") from[position] = values[origin];
+  }
+  for (const index of policies.births) if (typeof values[index] === "number") from[index] = 0;
+  return from;
+}
+
 // modules/interpolation/render-schema.js
 var unsafe = /* @__PURE__ */ new Set(["__proto__", "prototype", "constructor"]);
 var cache = /* @__PURE__ */ new WeakMap();
-var kinds = ["number", "angle", "discrete", "number", "cycle"];
 var arrayKey = /^(0|[1-9][0-9]*)$/;
 function copyRenderData(value, seen = /* @__PURE__ */ new Set()) {
   if (value === null || value === void 0 || typeof value === "string" || typeof value === "boolean") return value;
@@ -233,12 +337,12 @@ function compileRenderSchema(type) {
   for (const [name, code] of Object.entries(merged)) {
     const path = name.split(".");
     if (path.some((key) => !key || unsafe.has(key))) throw new TypeError("Unsafe or empty render path: " + name);
-    if (!Number.isInteger(code) || code < 0 || code >= kinds.length) throw new TypeError("Unknown render interpolation: " + name);
+    if (!Number.isInteger(code) || !fieldKind(code)) throw new TypeError("Unknown render interpolation: " + name);
     let node = root;
     for (const key of path) {
       if (node.field !== void 0) throw new TypeError("Overlapping render paths: " + name);
       if (!node.children.has(key)) {
-        const child = { key, children: /* @__PURE__ */ new Map(), index: nodes.length };
+        const child = { key, children: /* @__PURE__ */ new Map(), index: nodes.length, parent: node };
         node.children.set(key, child);
         nodes.push(child);
       }
@@ -247,10 +351,11 @@ function compileRenderSchema(type) {
     if (node.children.size) throw new TypeError("Overlapping render paths: " + name);
     node.field = fields.length;
     indices.set(name, fields.length);
-    fields.push(Object.freeze({ name, code, kind: kinds[code], path: Object.freeze(path) }));
+    fields.push(Object.freeze({ name, code, kind: fieldKind(code), path: Object.freeze(path), owner: node.parent }));
   }
   if (!fields.length) throw new TypeError("renderSchema must declare at least one field");
-  const plan = { fields: Object.freeze(fields), indices, root, nodes };
+  const policies = compileFieldPolicies(root, fields);
+  const plan = { fields: Object.freeze(fields), indices, root, nodes, policies };
   cache.set(type, plan);
   return plan;
 }
@@ -261,10 +366,13 @@ function captureRenderData(plan, source) {
     if (node.field !== void 0) {
       const field = plan.fields[node.field];
       if (value == null) values[node.field] = value;
-      else if (field.code === RenderObject.STEP) values[node.field] = copyRenderData(value);
-      else {
+      else if (field.kind === "discrete") {
+        if (field.code === RenderObject.STATE_KEY && !["number", "boolean", "string"].includes(typeof value)) throw new TypeError("STATE_KEY requires a scalar: " + field.name);
+        values[node.field] = copyRenderData(value);
+      } else {
         if (typeof value !== "number" || !Number.isFinite(value)) throw new TypeError("Render field must be finite: " + field.name);
         if (field.code === RenderObject.CYCLE && (value < 0 || value > 1)) throw new RangeError("Render CYCLE requires 0..1: " + field.name);
+        if ((field.code === RenderObject.COUNTDOWN_MS || field.code === RenderObject.COUNTDOWN_SECONDS) && value < 0) throw new RangeError("Render countdown must be nonnegative: " + field.name);
         values[node.field] = value;
       }
       return;
@@ -293,7 +401,7 @@ function writeRenderModel(plan, model, values, shapes) {
     if (node.field !== void 0) {
       const value = values[node.field];
       if (value === void 0) delete parent[key];
-      else parent[key] = plan.fields[node.field].code === RenderObject.STEP ? reuseData(parent[key], value) : value;
+      else parent[key] = plan.fields[node.field].kind === "discrete" ? reuseData(parent[key], value) : value;
       return;
     }
     const shape = shapes[node.index];
@@ -340,10 +448,13 @@ var PresentationRuntime = class {
   #sequence = -1;
   #timeMs = -Infinity;
   #extrapolation;
-  /** @param {{stepMs:number, extrapolation?:{fields:string[],maxMs:number}}} options */
-  constructor({ stepMs, extrapolation } = {}) {
+  #snapDistance;
+  /** @param {{stepMs:number, snapDistance?:number, extrapolation?:{fields:string[],maxMs:number}}} options */
+  constructor({ stepMs, snapDistance, extrapolation } = {}) {
     this.#stepMs = finite(stepMs, "stepMs");
     if (stepMs <= 0) throw new RangeError("stepMs must be positive");
+    if (snapDistance !== void 0 && finite(snapDistance, "snapDistance") <= 0) throw new RangeError("snapDistance must be positive");
+    this.#snapDistance = snapDistance;
     if (extrapolation) {
       if (!Array.isArray(extrapolation.fields) || new Set(extrapolation.fields).size !== extrapolation.fields.length || Array.from(extrapolation.fields).some((x) => typeof x !== "string")) throw new TypeError("extrapolation.fields must be unique paths");
       if (finite(extrapolation.maxMs, "maxMs") <= 0) throw new RangeError("maxMs must be positive");
@@ -387,7 +498,7 @@ var PresentationRuntime = class {
       if (entity.teleport !== void 0 && typeof entity.teleport !== "boolean") throw new TypeError("teleport must be boolean");
       const plan = compileRenderSchema(entity.type ?? source.constructor);
       if (this.#extrapolation) for (const field of plan.fields) {
-        if (this.#extrapolation.fields.has(field.name) && field.code !== RenderObject.LINEAR) throw new TypeError("extrapolation requires LINEAR: " + field.name);
+        if (this.#extrapolation.fields.has(field.name) && !isLinearField(field.code)) throw new TypeError("extrapolation requires LINEAR: " + field.name);
       }
       const target = captureRenderData(plan, source);
       const initial = entity.initialSource === void 0 ? null : captureRenderData(plan, entity.initialSource);
@@ -395,26 +506,28 @@ var PresentationRuntime = class {
       if (entity.resetFields !== void 0) {
         if (!Array.isArray(entity.resetFields)) throw new TypeError("resetFields must be an array");
         for (const name of entity.resetFields) {
-          if (!plan.indices.has(name) || reset.has(name)) throw new TypeError("resetFields must contain unique declared paths");
-          reset.add(name);
+          const index = plan.indices.get(name);
+          if (index === void 0 || reset.has(index)) throw new TypeError("resetFields must contain unique declared paths");
+          reset.add(index);
         }
       }
       const old = this.#tracks.get(entity.id);
       const same = mode === "continuous" && old && old.generation === generation && old.plan === plan;
-      const snap = mode !== "continuous" || entity.teleport === true;
-      const from = (!same && !snap && initial ? initial.values : target.values).slice();
+      const snap = mode !== "continuous" || entity.teleport === true || !!same && positionDiscontinuity(plan.policies, old, target, this.#snapDistance);
+      if (same && !snap) inferFieldResets(plan.policies, old, target, timeMs, reset);
+      const from = !same && !snap ? initial ? initial.values.slice() : seedFieldValues(plan.policies, target.values) : target.values.slice();
       const velocity = this.#extrapolation ? new Array(plan.fields.length).fill(0) : null;
       for (let i = 0; i < plan.fields.length; i++) {
         const field = plan.fields[i], value = target.values[i];
-        if (reset.has(field.name)) from[i] = value;
+        if (reset.has(i)) from[i] = value;
         if (!same && !snap && initial && this.#extrapolation?.fields.has(field.name) && typeof from[i] === "number" && typeof value === "number") {
           if (!Number.isFinite(from[i] - value)) throw new RangeError("extrapolation correction overflow: " + field.name);
         }
-        if (same && !snap && !reset.has(field.name) && typeof value === "number" && typeof old.target.values[i] === "number") {
+        if (same && !snap && !reset.has(i) && typeof value === "number" && typeof old.target.values[i] === "number") {
           from[i] = this.#value(old, i, nowMs);
           if (field.code === RenderObject.DECAY && value > old.target.values[i]) from[i] = value;
           if (this.#extrapolation?.fields.has(field.name)) {
-            if (field.code !== RenderObject.LINEAR) throw new TypeError("extrapolation requires LINEAR: " + field.name);
+            if (!isLinearField(field.code)) throw new TypeError("extrapolation requires LINEAR: " + field.name);
             const delta = timeMs - old.timeMs;
             if (delta > 0) {
               const distance = value - old.target.values[i];
@@ -452,7 +565,7 @@ var PresentationRuntime = class {
   }
   #value(track, index, now) {
     const field = track.plan.fields[index], from = track.from[index], to = track.target.values[index];
-    if (from == null || to == null || field.code === RenderObject.STEP) return to;
+    if (from == null || to == null || field.kind === "discrete") return to;
     const alpha = fraction2(track, now, this.#stepMs);
     if (this.#extrapolation?.fields.has(field.name)) {
       const age = Math.min(this.#extrapolation.maxMs, Math.max(0, now - track.at));
