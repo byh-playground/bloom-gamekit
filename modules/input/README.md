@@ -106,7 +106,7 @@ input.dispose();
 
 ## 검증·비용·경계
 
-`node --test modules/input/tests/input.test.mjs`는 DOM 없는 상태, 다중 source, 짧은 클릭 보존, CSS 좌표, gesture 취소, focus/visibility/pagehide, listener/capture 정리를 검사합니다. 테스트의 fake DOM은 실제 브라우저 event 전파·capture 또는 물리 터치 기기 검증을 대신하지 않습니다. 실제 브라우저 범위는 루트 연속 E2E 결과와 함께 확인합니다.
+현재 장기 검증은 `npm test`의 실제 브라우저 시나리오와 `npm run test:network`의 RTC·방 수명주기 시나리오로 수행합니다. 이 절의 과거 단위 검증 코드는 개발 완료 시 제거했으며 결과·소스 해시는 Git 이력과 provenance 기록으로 확인합니다. 로컬 RTC 시나리오를 공용 relay/NAT·모바일 기기 검증으로 확대 해석하지 않습니다.
 
 입력 시 source Set/Map을 바꾸며 매 렌더에 큐를 지우거나 객체를 만들 필요가 없습니다. `sampleInto`는 out을 재사용합니다. 포인터 시작·gesture callback·`sample()`에는 객체 생성이 있습니다. `consume()`은 등록된 액션 수에 비례합니다. pointermove의 rect 읽기 비용도 남으므로 게임이 레이아웃 쓰기와 입력 수집을 불필요하게 교차시키지 않아야 합니다.
 

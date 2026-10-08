@@ -62,7 +62,7 @@ static renderSchema = {
 
 ### 비용
 
-표본 수집과 sample은 선언 필드 수와 경로 구조에 비례합니다. 모델과 중첩 객체·STEP 출력은 재사용하지만 capture는 원자적 검증을 위해 Map/배열/STEP 표본을 할당합니다. 전체 원본 세계를 복사하지 않으나 큰 subtree를 STEP으로 선언하면 그 비용은 발생합니다. 함수/상수 선언 방식 자체의 속도 우위나 zero-allocation을 주장하지 않습니다. 집중 Node 검증과 실제 Chromium 입력→중첩 모델→WebGL 픽셀 경로를 로컬에서 실행합니다.
+표본 수집과 sample은 선언 필드 수와 경로 구조에 비례합니다. 모델과 중첩 객체·STEP 출력은 재사용하지만 capture는 원자적 검증을 위해 Map/배열/STEP 표본을 할당합니다. 전체 원본 세계를 복사하지 않으나 큰 subtree를 STEP으로 선언하면 그 비용은 발생합니다. 함수/상수 선언 방식 자체의 속도 우위나 zero-allocation을 주장하지 않습니다. 개발 중 임시 단위 검증 후 코드는 제거하고, 실제 Chromium 입력→중첩 모델→WebGL 픽셀의 고정 시나리오를 로컬에서 실행합니다.
 
 렌더러·DOM·Worker·넷코드와 독립적인 presentation timeline입니다. 시뮬레이션이나 자체 타이머를 실행하지 않습니다.
 
@@ -85,7 +85,7 @@ if (view.sampleInto('player', 0, now, pose)) {
 }
 ```
 
-실제 번들을 읽는 [실행 예제](../../examples/interpolation/index.html)와 [연속 E2E](../../tests/interpolation.e2e.mjs)가 같은 어댑터를 사용합니다. 프로젝트 루트에서 `npm ci`, `npm test` 후 정적 서버를 열어 예제를 확인하세요.
+실제 번들을 읽는 [실행 예제](../../examples/interpolation/index.html)와 [고정 브라우저 E2E](../../tests/browser.e2e.mjs)를 사용합니다. 프로젝트 루트에서 `npm ci`, `npm test` 후 정적 서버를 열어 예제를 확인하세요. 별도 CPU·할당 측정은 `npm run benchmark:interpolation`입니다.
 
 ## 공개 계약
 
@@ -120,4 +120,4 @@ if (view.sampleInto('player', 0, now, pose)) {
 
 E2E는 실제 Worker 이동에서 추출한 표본, 10/20/30 TPS·60Hz 위상, 지터·coalescing·순서 거부·rollback·load·teleport·identity 재사용·원본 불변·유한 값·각도·discrete를 검사합니다. fixture의 출처와 범위는 JSON에 있습니다. 20/30 TPS는 표본의 시각을 재구성한 보간 검증이며 해당 게임을 그 TPS로 실행했다는 의미가 아닙니다.
 
-Node benchmark는 256 entity의 sample/accept batch CPU p50/p95와 heap 변화, 재사용 output 수를 로그로 출력합니다. heap 변화는 GC가 포함된 관찰값이지 총 할당량이나 0-allocation 증명이 아닙니다. 별도 V8 통계 프로파일은 accept/sampleInto 호출 스택의 추정 할당 바이트를 기록하며 수집된 객체도 포함합니다. 샘플 간격은 1024 bytes이고 0 추정도 실제 0 할당을 증명하지 않습니다. Chromium 통합 검사는 실제 독립 ESM 3개와 DOM 입력·고정 틱·rAF·WebGL 픽셀·texture/alpha/order·생명주기를 확인합니다. 모바일·기기 FPS·GPU 성능·전체 게임 통합은 별도 검증 대상입니다.
+`npm run benchmark:interpolation`의 별도 Node benchmark는 256 entity의 sample/accept batch CPU p50/p95와 heap 변화, 재사용 output 수를 로그로 출력합니다. heap 변화는 GC가 포함된 관찰값이지 총 할당량이나 0-allocation 증명이 아닙니다. 별도 V8 통계 프로파일은 accept/sampleInto 호출 스택의 추정 할당 바이트를 기록하며 수집된 객체도 포함합니다. 샘플 간격은 1024 bytes이고 0 추정도 실제 0 할당을 증명하지 않습니다. Chromium 통합 검사는 실제 독립 ESM 3개와 DOM 입력·고정 틱·rAF·WebGL 픽셀·texture/alpha/order·생명주기를 확인합니다. 모바일·기기 FPS·GPU 성능·전체 게임 통합은 별도 검증 대상입니다.
