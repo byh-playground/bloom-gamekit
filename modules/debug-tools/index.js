@@ -1,5 +1,13 @@
 const bound = (value, name, min = 1, max = 100000) => { if (!Number.isInteger(value) || value < min || value > max) throw new RangeError(`${name} outside supported range`); return value; };
 const field = (object, key) => { try { return object?.[key]; } catch { return undefined; } };
+const DIAGNOSTIC_VISIBILITIES = new Set(['log', 'notice', 'blocking', 'fatal']);
+const diagnosticVisibility = (visibility, fatal) => {
+  if (visibility !== undefined && !DIAGNOSTIC_VISIBILITIES.has(visibility)) {
+    throw new TypeError('visibility must be log, notice, blocking, or fatal');
+  }
+  // `fatal` predates visibility and remains authoritative for existing consumers.
+  return fatal || visibility === 'fatal' ? 'fatal' : visibility ?? 'blocking';
+};
 /** Best-effort text redaction, not a guarantee that a report is safe to publish. Review before sharing. */
 export function redactDiagnostic(value, limit = 1600) {
   bound(limit, 'limit'); const text = typeof value === 'string' ? value : typeof value === 'number' || typeof value === 'boolean' ? String(value) : '';
@@ -11,18 +19,24 @@ export function redactDiagnostic(value, limit = 1600) {
     .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[email]')
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').slice(0, limit);
 }
-/** Fixed-capacity local error ring. No storage, network, game state, or automatic global installation. */
+/** @typedef {'log'|'notice'|'blocking'|'fatal'} DiagnosticVisibility */
+/**
+ * Fixed-capacity local diagnostic ring. No storage, network, game state, or automatic global installation.
+ * Reports without visibility remain blocking for compatibility; `fatal: true` remains fatal.
+ */
 export class DiagnosticRing {
   constructor({ capacity = 20, now = () => performance.now(), release = '' } = {}) {
     bound(capacity, 'capacity', 1, 1000); if (typeof now !== 'function') throw new TypeError('now must be function');
     this.capacity = capacity; this.now = now; this.release = redactDiagnostic(release, 160); this.records = new Array(capacity); this.start = 0; this.size = 0;
     this.total = 0; this.dropped = 0; this._lastMs = 0; this._busy = false; this._listeners = new Set();
   }
-  report(error, { kind = 'exception', fatal = false, origin = 'main', source = '', line = 0, column = 0, workerTimeMs = null, cause = '' } = {}) {
+  /** @param {unknown} error @param {{kind?: string, visibility?: DiagnosticVisibility, fatal?: boolean, origin?: string, source?: string, line?: number, column?: number, workerTimeMs?: number|null, cause?: unknown}} options */
+  report(error, { kind = 'exception', visibility, fatal = false, origin = 'main', source = '', line = 0, column = 0, workerTimeMs = null, cause = '' } = {}) {
     if (this._busy) { this.dropped++; return null; } this._busy = true;
     try {
+      const severity = diagnosticVisibility(visibility, Boolean(fatal));
       const at = this.now(); if (!Number.isFinite(at)) throw new TypeError('diagnostic clock must be finite'); this._lastMs = Math.max(this._lastMs, at);
-      const record = { kind: redactDiagnostic(kind, 64), fatal: Boolean(fatal), origin: redactDiagnostic(origin, 64),
+      const record = { kind: redactDiagnostic(kind, 64), visibility: severity, fatal: severity === 'fatal', origin: redactDiagnostic(origin, 64),
         message: redactDiagnostic(typeof error === 'string' ? error : field(error, 'message') ?? 'Non-text error omitted', 500),
         stack: redactDiagnostic(field(error, 'stack'), 1800), source: redactDiagnostic(source, 160),
         line: Number.isSafeInteger(line) && line >= 0 ? line : 0, column: Number.isSafeInteger(column) && column >= 0 ? column : 0,
@@ -31,14 +45,23 @@ export class DiagnosticRing {
       this.total++;
       for (let i = 0; i < this.size; i++) {
         const old = this.records[(this.start + i) % this.capacity];
-        if (old.kind === record.kind && old.message === record.message && old.stack === record.stack && old.fatal === record.fatal && old.origin === record.origin && old.source === record.source && old.line === record.line && old.column === record.column) { old.count++; old.lastMs = record.lastMs; return { ...old }; }
+        if (old.kind === record.kind && old.message === record.message && old.stack === record.stack && old.visibility === record.visibility && old.origin === record.origin && old.source === record.source && old.line === record.line && old.column === record.column) { old.count++; old.lastMs = record.lastMs; return { ...old }; }
       }
       if (this.size === this.capacity) { this.records[this.start] = record; this.start = (this.start + 1) % this.capacity; this.dropped++; }
       else { this.records[(this.start + this.size) % this.capacity] = record; this.size++; }
       return { ...record };
     } finally { this._busy = false; }
   }
-  snapshot() { const errors = []; for (let i = 0; i < this.size; i++) errors.push({ ...this.records[(this.start + i) % this.capacity] }); return { format: 'bloom-gamekit diagnostics v1', release: this.release, total: this.total, dropped: this.dropped, errors }; }
+  snapshot() {
+    const errors = []; for (let i = 0; i < this.size; i++) errors.push({ ...this.records[(this.start + i) % this.capacity] });
+    const counts = { log: 0, notice: 0, blocking: 0, fatal: 0 };
+    for (const record of errors) counts[record.visibility] += record.count;
+    return {
+      format: 'bloom-gamekit diagnostics v2', release: this.release, total: this.total, dropped: this.dropped,
+      counts: { total: this.total, retained: Object.values(counts).reduce((sum, count) => sum + count, 0), ...counts },
+      blockerCount: counts.blocking + counts.fatal, errors,
+    };
+  }
   format() { return JSON.stringify(this.snapshot(), null, 2); }
   /** Does not swallow errors or replace onerror. Caller decides whether a fatal error should halt gameplay. */
   installGlobal(target, { onReport } = {}) {

@@ -2,7 +2,12 @@
 
 로컬 진단과 SDK replay adapter만 제공합니다. 네트워크·telemetry·storage·자동 저장파일 수집·시뮬레이션 history를 만들지 않습니다.
 
-- `DiagnosticRing({capacity=20,now=()=>performance.now(),release=''})`: 고정 배열 오류 ring, 동일 오류 집계, report(error,{kind,fatal,origin}), snapshot(), format(), clear(), dispose(). 기본 문자열·stack만 기록하며 arbitrary object는 직렬화하지 않습니다. dropped와 total을 보고합니다.
+TypeScript 공개 선언은 [index.d.ts](./index.d.ts)에 있습니다.
+
+- `DiagnosticRing({capacity=20,now=()=>performance.now(),release=''})`: 고정 배열 진단 ring입니다. `report(error,{kind,visibility,fatal,origin,...})`, `snapshot()`, `format()`, `clear()`, `dispose()`를 제공합니다. 기본 문자열·stack만 기록하며 arbitrary object는 직렬화하지 않습니다.
+  - `visibility`는 `log | notice | blocking | fatal` 중 하나입니다. 생략하면 기존 report 호출과의 호환을 위해 `blocking`이며, `fatal: true`는 항상 `fatal`로 분류합니다. `visibility: 'fatal'`도 기존 소비자가 보는 `record.fatal: true`를 설정합니다.
+  - 네 분류는 모두 ring에 기록됩니다. snapshot v2의 `counts.total`은 수락된 report 수(밀려난 record 포함), `counts.retained`와 `counts.log/notice/blocking/fatal`은 ring에 남은 report 수(동일 진단의 `count` 포함)입니다. `blockerCount`는 retained `blocking + fatal` 수로, `log`와 `notice`는 포함하지 않습니다. 기존 `total`, `dropped`, `errors` 키와 각 record의 `fatal`은 유지됩니다. `dropped`는 용량 초과로 밀려난 record와 재진입으로 기록을 버린 수입니다.
+  - 분류와 카운트는 진단 데이터만 제공합니다. badge·패널 표시와 gameplay 중단은 소비자가 결정하며 `log`/`notice`를 자동으로 숨기거나 `fatal`에서 자동 정지하지 않습니다.
 - `installGlobal(eventTarget,{onReport?}) → cleanup`: error/unhandledrejection listener만 추가합니다. 기존 onerror를 덮어쓰거나 preventDefault 하지 않습니다. fatal 상태에서 게임을 정지할지는 게임이 결정합니다. cleanup/dispose가 listener를 제거합니다.
 - `redactDiagnostic(text,limit=1600)`: URL/로컬 경로/email/token/password 키를 best-effort 마스킹합니다. 완전한 개인정보 제거 보증이 아니므로 공유 전 사용자가 내용을 확인해야 합니다. 외부 전송은 하지 않습니다.
 - `await copyDiagnostic(text,{clipboard,textarea})`: clipboard 성공은 copied:true. 거절되면 supplied textarea 선택 또는 portable text를 반환하며 copied:false입니다. DOM을 숨기거나 자동 다운로드하지 않습니다. UI 경합/패널의 focus 정책은 caller가 소유합니다.
