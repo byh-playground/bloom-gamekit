@@ -135,5 +135,5 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
     handle = requestFrame(frame);
   };
   const flushInput = timestamp => { accumulator=Math.max(accumulator,quantum*(session.pace??1));pulse(timestamp); };
-  return { start, stop, pulse, observeInput, flushInput, resetTiming, get running() { return running; } };
+  return { start, stop, pulse, observeInput, flushInput, releaseInput:release, resetTiming, get running() { return running; } };
 }

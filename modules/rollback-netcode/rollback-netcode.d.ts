@@ -394,7 +394,7 @@ export interface LocalInputPreviewOptions {
   maxPendingInputs?: number; maxFutureTicks?: number; maxAgeMs?: number;
 }
 export interface LoopInputSubmission {sequence:number;captureTick:number;executeTick:number;boundaryTick:number;epoch:number;timeMs:number;commands:Array<{observationId?:number;sequence:number;executeTick:number;payload:Bytes}>;}
-export interface ObservingLoop {start():void;stop():void;pulse(timestamp:number):void;observeInput(timestamp:number):unknown;flushInput(timestamp:number):void;resetTiming():void;readonly running:boolean;}
+export interface ObservingLoop {start():void;stop():void;pulse(timestamp:number):void;observeInput(timestamp:number):unknown;flushInput(timestamp:number):void;releaseInput():void;resetTiming():void;readonly running:boolean;}
 export interface LocalInputState { epoch:number; baseTick:number; tick:number; confirmedTick:number; inputDelay:number; commandSequence:number;executedInput:Bytes|null;replayInput:Bytes|null;executedCommandSequence:number|null;capture:null|{sequence:number;captureTick:number;executeTick:number;input:Bytes;commands:Array<{sequence:number;executeTick:number;payload:Bytes}>}; }
 export class LocalInputPreview {
   constructor(options: LocalInputPreviewOptions);

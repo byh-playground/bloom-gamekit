@@ -27,6 +27,8 @@ pulse(timestampMs)는 자동 rAF와 같은 누적·pacing·maxCatchupSteps 경�
 
 `createDeadlineScheduler({getIntervalMs,pulse,maxBacklogTicks,onGap})`가 단일 timeout과 deadline cadence를 소유합니다. start/stop, wake(즉시 전달하되 deadline 유지), rebase(pause/resume/TPS 이후), running/deadlineMs를 제공합니다. 게임은 UI·persist·session gating만 결정합니다. 큰 gap은 미처리 deadline을 버리고 다시 기준을 잡으며 timer 지연과 게임 step을 선점할 수는 없습니다.
 
+수동 deadline owner가 loop.start를 사용하지 않으면 자동 blur/visibility listener도 설치되지 않습니다. 그 owner의 기존 device/UI 해제 listener 다음에 window blur 및 document.hidden 경계에서 `loop.releaseInput()`을 호출하세요. 이 공개 API는 cached 관찰·SDK held input·preview를 함께 지우며 다음 pulse는 같은 getInput 경로에서 neutral을 다시 관찰합니다. UI command를 중복 제출하지 않고 별도 RAF loop를 시작하지 않습니다.
+
 입력 지연·room baseTick으로 capture 사이의 실행 tick이 떨어져 있으면 그 간격도 실제 fork step으로 재생합니다. `reconcile({input,...})`에 게임이 확인한 baseline held bytes를 명시합니다(`localInputState.replayInput`이 현재 immutable frame을 알고 있으면 사용 가능). 없으면 gap prediction은 오류로 중단하며 입력이나 게임 규칙을 추측하지 않습니다. `executedInput`은 실제 step이 없었던 새 core에서는 null입니다. canonical command의 executeTick은 그대로 유지하고 provisional observation만 그 뒤의 제한된 미래 slot에서 평가합니다. gap tick도 maxFutureTicks와 비용 계측에 포함합니다.
 
 게임이 `{input,commands,predict:false}`를 관찰하면 미확정 canonical command를 보존하면서 coalesced prediction slot을 해제합니다. idle/자동 실행 등 새 로컬 intent가 없을 때 매 authority tick마다 세계를 복제할 필요가 없으며, 다음 실제 intent에서 현재 완료 snapshot으로 rebase할 수 있습니다. `submit` 별칭은 제공하지 않습니다.

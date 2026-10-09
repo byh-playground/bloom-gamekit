@@ -289,7 +289,28 @@ try {
   report.inputPreview.inputToFirstDisplayMs=inputToDisplayMs;report.inputPreview.webglPixel=renderedPreviewPixel;report.inputPreview.lastConfirmBeforeCollision=rollCountBefore;
   report.inputPreview.preTick={tick:beforePreview.authorityTick,hash:beforePreview.authorityHash,smoothHold};report.inputPreview.capture={captureTick:captureMetadata.capture.captureTick,executeTick:captureMetadata.capture.executeTick,commandSequence:captureMetadata.commandSequence};
   report.stages.push('detached same-update input fork → first sampled schema render → delayed authority correction → collision/roll/press-release/direction/off/blur/gap/restart');
-  await previewPage.evaluate(()=>window.inputPreviewDemo.dispose());await previewPage.close();
+  await previewPage.evaluate(()=>window.inputPreviewDemo.dispose());
+  report.manualOwnerRelease=await previewPage.evaluate(async()=>{
+    const {createLoop,LocalInputPreview,createSession,profiles}=await import('/dist/rollback-netcode.js');
+    const {ActionState,createDOMInput}=await import('/dist/input.js');
+    const state={x:0,tick:0},update=(world,input)=>{world.x+=input[0];world.tick++};
+    const adapter={save:()=>Uint8Array.of(state.x,state.tick),load:bytes=>{state.x=bytes[0];state.tick=bytes[1]},validateSnapshot:bytes=>bytes.length===2,step:frame=>update(state,frame.inputs[0].input)};
+    const session=createSession({players:['local'],localPlayerId:'local',sessionId:'manual-blur',simulationVersion:'manual-v1',seed:1,inputSize:1,adapter,profile:{...profiles.lockstep,tickRate:10,maxCatchupSteps:1,baseInputDelayTicks:0,minInputDelayTicks:0,maxInputDelayTicks:0,adaptiveInputDelay:false,pacingPolicy:'none'}});
+    const actions=new ActionState(),canvas=document.querySelector('canvas'),input=createDOMInput({target:canvas,state:actions,keys:{KeyQ:'hold'}});
+    const preview=new LocalInputPreview({createFork:bytes=>{const fork={x:bytes[0],tick:bytes[1]};return{step:input=>update(fork,input)}},readEntities:()=>[]});
+    const now=performance.now();preview.reconcile({snapshot:adapter.save(),input:Uint8Array.of(0),revision:0,tick:0,epoch:0,timeMs:now,mode:'reset'});
+    const loop=createLoop({session,inputPreview:preview,getInput:()=>Uint8Array.of(actions.sample('hold').held?1:0)});
+    const release=()=>loop.releaseInput();window.addEventListener('blur',release);
+    try{loop.pulse(now);canvas.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyQ',bubbles:true}));loop.observeInput(performance.now());
+      if(state.x!==0)throw Error('manual observation advanced authority');loop.pulse(now+100);const heldX=state.x;
+      window.dispatchEvent(new Event('blur'));loop.pulse(now+200);loop.pulse(now+300);
+      if(state.x!==heldX||session.localInputState.capture.input[0]!==0||session.localInputState.executedInput[0]!==0)throw Error('manual owner retained stale held cache after the reserved release frame');
+      return{heldX,afterBlurX:state.x,neutral:session.localInputState.capture.input[0],automaticRafStarted:loop.running};
+    }finally{window.removeEventListener('blur',release);loop.stop();preview.dispose();session.close();input.dispose();}
+  });
+  assert.equal(report.manualOwnerRelease.automaticRafStarted,false);
+  report.stages.push('manual deadline/RAF owner native blur release clears cached hold and captures neutral without loop.start');
+  await previewPage.close();
   report.browser = await browser.version(); report.contextLoss = supportsLoss;
   report.scope = 'Headless Chromium with actual WebGL1/SwiftShader pixels and built ESMs. CPU/interval observations are not mobile FPS or hardware-GPU certification. No screenshot/artifact retention.';
   console.log(JSON.stringify(report, null, 2));
