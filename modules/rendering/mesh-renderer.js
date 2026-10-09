@@ -9,8 +9,9 @@ function shader(instanced) {
   const inputs = ['i_row0', 'i_row1', 'i_color', 'i_params'].map(name => `${instanced ? 'attribute' : 'uniform'} vec4 ${name};`).join('\n');
   return `attribute vec2 a_position; attribute vec4 a_color; attribute vec4 a_morph; attribute float a_part;
 ${inputs}
-uniform mat3 u_projection; uniform vec4 u_parts[48]; varying vec4 v_color; varying vec2 v_position;
-void main(){int index=int(a_part)*3;vec4 row0=u_parts[index];vec4 row1=u_parts[index+1];vec4 pose=u_parts[index+2];
+uniform mat3 u_projection; uniform vec4 u_parts[48]; uniform int u_partCount; varying vec4 v_color; varying vec2 v_position;
+void main(){vec4 row0=u_parts[0];vec4 row1=u_parts[1];vec4 pose=u_parts[2];
+if(u_partCount>1){int index=int(a_part)*3;row0=u_parts[index];row1=u_parts[index+1];pose=u_parts[index+2];}
 vec2 local=a_position+a_morph.xy*(i_params.x+pose.x)+a_morph.zw*(i_params.y+pose.y);
 vec2 p=vec2(dot(row0.xyz,vec3(local,1.0)),dot(row1.xyz,vec3(local,1.0)));
 vec2 world=vec2(dot(i_row0.xyz,vec3(p,1.0)),dot(i_row1.xyz,vec3(p,1.0)));
@@ -21,7 +22,7 @@ color.rgb=mix(color.rgb,vec3(1.0),i_params.z);v_color=vec4(color.rgb*color.a,col
 function fragment(maxPlanes) {
   return `precision mediump float; varying vec4 v_color; varying vec2 v_position;
 uniform vec3 u_planes[${maxPlanes}]; uniform int u_planeCount;
-void main(){for(int i=0;i<${maxPlanes};i++){if(i<u_planeCount&&dot(u_planes[i],vec3(v_position,1.0))<0.0)discard;}gl_FragColor=v_color;}`;
+void main(){if(u_planeCount>0){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_planes[i],vec3(v_position,1.0))<0.0)discard;}}gl_FragColor=v_color;}`;
 }
 function finiteArray(value, size, name) {
   if (!value || value.length !== size || Array.from(value).some(n => !Number.isFinite(n))) throw new TypeError(`${name}: ${size} finite numbers required`);
@@ -66,7 +67,7 @@ export class MeshRenderer {
     if (maxInstances * 64 > device.maxBufferBytes) throw new RangeError('Mesh instance buffer exceeds device byte limit');
     this.maxPlanes = Math.max(1, Math.min(32, device.gl.getParameter(device.gl.MAX_FRAGMENT_UNIFORM_VECTORS) - 2));
     this.instanced = device.instancingSupported === true;
-    const uniforms = { u_projection: 'matrix3fv', 'u_planes[0]': '3fv', u_planeCount: '1i', 'u_parts[0]': '4fv' };
+    const uniforms = { u_projection: 'matrix3fv', 'u_planes[0]': '3fv', u_planeCount: '1i', 'u_parts[0]': '4fv', u_partCount: '1i' };
     if (!this.instanced) for (const name of ['i_row0', 'i_row1', 'i_color', 'i_params']) uniforms[name] = '4f';
     this.instances = new Float32Array(maxInstances * 16);
     this.pipeline = device.createPipeline({ vertex: shader(this.instanced), fragment: fragment(this.maxPlanes), stride: 44,
@@ -132,7 +133,7 @@ export class MeshRenderer {
     this._ready();
     const { mesh, projection, clip, parts } = this.pending;
     this.planes.fill(0); if (clip.values) this.planes.set(clip.values);
-    const uniforms = { u_projection: projection, 'u_planes[0]': this.planes, u_planeCount: clip.count, 'u_parts[0]': parts };
+    const uniforms = { u_projection: projection, 'u_planes[0]': this.planes, u_planeCount: clip.count, 'u_parts[0]': parts, u_partCount: mesh.partCount };
     if (this.instanced) {
       this.device.uploadVertices(this.instanceBuffer, this.instances.subarray(0, this.count * 16));
       this.device.draw({ pipeline: this.pipeline, buffer: mesh.buffer, count: mesh.count, instanceBuffer: this.instanceBuffer, instances: this.count, uniforms });
