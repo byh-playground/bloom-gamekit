@@ -28,8 +28,10 @@ function clipState(clips, maxPlanes) {
   if (!clips?.length) return { key: '', values: null, count: 0 };
   const values = [], key = [];
   for (const polygon of clips) {
+    if (!Array.isArray(polygon) || polygon.length < 3 || polygon.some(p => !Number.isFinite(p?.x) || !Number.isFinite(p?.y))) throw new TypeError('Finite convex clip polygons required');
     let area = 0;
     for (let i = 0; i < polygon.length; i++) { const p = polygon[i], q = polygon[(i + 1) % polygon.length]; area += p.x * q.y - q.x * p.y; }
+    if (Math.abs(area) < 1e-12) return { key: 'empty', values: [0, 0, -1], count: 1 };
     const sign = area >= 0 ? 1 : -1;
     for (let i = 0; i < polygon.length; i++) {
       const p = polygon[i], q = polygon[(i + 1) % polygon.length], dx = q.x - p.x, dy = q.y - p.y, length = Math.hypot(dx, dy);
@@ -53,10 +55,11 @@ export class MeshRenderer {
     this.instanced = device.instancingSupported === true;
     const uniforms = { u_projection: 'matrix3fv', 'u_planes[0]': '3fv', u_planeCount: '1i' };
     if (!this.instanced) for (const name of ['i_row0', 'i_row1', 'i_color', 'i_params']) uniforms[name] = '4f';
+    this.instances = new Float32Array(maxInstances * 16);
     this.pipeline = device.createPipeline({ vertex: shader(this.instanced), fragment: fragment(this.maxPlanes), stride: 40,
       ...(this.instanced ? { instanceStride: 64 } : {}), attributes: [...ATTRIBUTES, ...(this.instanced ? INSTANCE_ATTRIBUTES : [])], uniforms });
-    this.instances = new Float32Array(maxInstances * 16);
-    this.instanceBuffer = this.instanced ? device.createVertexBuffer({ capacityBytes: this.instances.byteLength }) : null;
+    try { this.instanceBuffer = this.instanced ? device.createVertexBuffer({ capacityBytes: this.instances.byteLength }) : null; }
+    catch (error) { device.deletePipeline(this.pipeline); throw error; }
     this.meshes = new Set(); this.bytes = 0; this.count = 0; this.pending = null;
     this.planes = new Float32Array(this.maxPlanes * 3);
     this.metrics = { draws: 0, instances: 0, geometryUploads: 0, geometryBytesUploaded: 0, instanceBytesUploaded: 0 };
@@ -77,6 +80,7 @@ export class MeshRenderer {
     this._ready();
     if (!(data?.vertices instanceof Float32Array) || data.vertices.length % 30 || data.strideFloats !== 10) throw new TypeError('MeshBuilder geometry required');
     if (data.vertices.some(n => !Number.isFinite(n))) throw new TypeError('Mesh values must be finite');
+    for (let i = 0; i < data.vertices.length; i++) if (i % 10 >= 2 && i % 10 < 6 && (data.vertices[i] < 0 || data.vertices[i] > 1)) throw new RangeError('Mesh RGBA channels must be in [0,1]');
     if (this.meshes.size >= this.maxMeshes || this.bytes + data.vertices.byteLength > this.maxMeshBytes) throw new RangeError('Retained mesh budget exceeded');
     const vertices = data.vertices.slice(), buffer = this.device.createVertexBuffer({ capacityBytes: vertices.byteLength });
     try { this.device.uploadVertices(buffer, vertices); } catch (error) { this.device.deleteVertexBuffer(buffer); throw error; }
