@@ -70,6 +70,21 @@ export async function exerciseReusableMeshes(page) {
         near(pixel(80, 40), [128, 0, 0, 255], 'first morph expands rotated right edge');
         near(pixel(90, 32), [0, 0, 0, 255], 'animated mesh retains its exact boundary');
 
+        begin();ctx.save();ctx.translate(20,20);ctx.rotate(Math.PI/2);
+        const singlePose=[{transform:[2,0,0,.5,12,0],morph:[.5,.25]}];
+        ctx.drawMesh(mesh,{parts:singlePose,morph:[.25,.25]});
+        singlePose[0].transform[4]=60;
+        ctx.drawMesh(mesh,{parts:singlePose,morph:[.25,.25]});
+        singlePose[0].transform[4]=95;singlePose[0].visible=false;
+        ctx.drawMesh(mesh,{parts:singlePose,morph:[.25,.25]});
+        ctx.restore();const singlePoseStats=ctx.endFrame();
+        near(pixel(22,24),[128,0,0,255],'single-part pose retains its original non-identity transform');
+        near(pixel(22,54),[128,0,0,255],'single-part pose adds local and instance morph weights');
+        near(pixel(22,72),[128,0,0,255],'in-place single-part transform change affects only the next instance');
+        near(pixel(22,110),[0,0,0,255],'hidden single part remains absent after pose mutation');
+        check(singlePoseStats.mesh.draws===(withoutANGLE?3:1)&&singlePoseStats.mesh.partUniformBytesSubmitted===0,
+          'single-part pose is folded into adjacent instances, not per-vertex uniforms');
+
         begin(); ctx.globalAlpha = .5;
         ctx.drawMesh(mesh, { transform: [1, 0, 0, 1, 16, 24] });
         ctx.withColor([0, 1, 0, .5], () => ctx.drawMesh(mesh, { transform: [1, 0, 0, 1, 48, 24] }));
