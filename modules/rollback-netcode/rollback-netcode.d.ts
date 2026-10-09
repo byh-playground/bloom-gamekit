@@ -401,7 +401,7 @@ export class LocalInputPreview {
   readonly pendingCount: number; readonly enabled: boolean; readonly ready:boolean; readonly metrics: Readonly<Record<string, number>>;
   reconcile(checkpoint: {snapshot:unknown;input?:unknown;revision:number;tick:number;epoch:number;confirmedCommandSequence?:number;timeMs:number;mode?:'continuous'|'rollback'|'load'|'reset'|'teleport'|'join'|'resync';reset?:boolean}):boolean;
   observe(input:unknown,metadata:{sequence:number;tick:number;epoch:number;timeMs:number;commands?:Array<{observationId:number;sequence:number|null;payload:Bytes}>}):boolean;
-  commit(capture:NonNullable<LocalInputState['capture']>,nowMs:number):boolean;
+  commit(capture:NonNullable<LocalInputState['capture']>&{boundaryTick?:number;predict?:boolean},nowMs:number):boolean;
   cancelObservation(nowMs:number):void;
   clear(): void; setEnabled(enabled: boolean): void; dispose(): void;
 }
