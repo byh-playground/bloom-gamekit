@@ -1252,6 +1252,7 @@ var VectorContext = class {
       event.preventDefault();
       this.active = false;
       this.state = "lost";
+      this._releaseGradientTextures();
     };
     this.onRestored = () => {
       if (this.state === "disposed") return;
@@ -1394,6 +1395,21 @@ var VectorContext = class {
     color2[3] *= this._globalAlpha;
     return { texture: cached.texture, centerX: gradient.x, centerY: gradient.y, radius: gradient.r1, matrixInverse, color: color2, whiteFlash: this._filter === "brightness(0) invert(1)" };
   }
+  _releaseGradientTextures() {
+    for (const [gradient, cached] of this.gradientTextures) {
+      try {
+        this.device.deleteTexture(cached.texture);
+      } catch (error) {
+        try {
+          this.onError?.(error, { phase: "gradient-release" });
+        } catch {
+        }
+      } finally {
+        gradient.pixels = null;
+      }
+    }
+    this.gradientTextures.clear();
+  }
   beginFrame({ width = this.canvas.width, height = this.canvas.height, clearColor = [0, 0, 0, 0] } = {}) {
     if (this.active) throw new Error("endFrame is required before beginFrame");
     if (this.state === "lost" || this.device.state === "lost") return false;
@@ -1423,9 +1439,11 @@ var VectorContext = class {
       this.total.drawCalls += this.frameStats.drawCalls;
       this.total.vertices += this.frameStats.vertices;
       this.total.uploadedBytes += this.frameStats.uploadedBytes;
+      this._releaseGradientTextures();
       return this.stats();
     } catch (error) {
       this.active = false;
+      this._releaseGradientTextures();
       this.onError?.(error, { phase: "endFrame" });
       throw error;
     }
@@ -1755,15 +1773,14 @@ var VectorContext = class {
     this.device.draw({ pipeline, buffer: mesh.buffer, count: mesh.count, uniforms: values, textures, blend, depth });
   }
   stats() {
-    return { backend: "webgl1", available: this.device.state === "ready", contextLost: this.device.state === "lost", failure: this.device.failure ?? null, frame: this.frame, ...this.frameStats, stagingBytes: this.vector.vertices.byteLength, gpuBufferBytes: this.device.stats.gpuBufferBytes ?? 0, gpuRenderTargetBytes: this.device.stats.gpuRenderTargetBytes ?? 0, textureCount: this.device.stats.textureCount ?? 0, renderTargetCount: this.device.stats.renderTargetCount ?? 0, bufferAllocations: this.device.stats.bufferAllocations ?? 0, totals: { ...this.total } };
+    return { backend: "webgl1", available: this.device.state === "ready", contextLost: this.device.state === "lost", failure: this.device.failure ?? null, frame: this.frame, ...this.frameStats, stagingBytes: this.vector.vertices.byteLength, gpuBufferBytes: this.device.stats.gpuBufferBytes ?? 0, gpuRenderTargetBytes: this.device.stats.gpuRenderTargetBytes ?? 0, textureCount: this.device.stats.textureCount ?? 0, activeGradientTextureCount: this.gradientTextures.size, renderTargetCount: this.device.stats.renderTargetCount ?? 0, bufferAllocations: this.device.stats.bufferAllocations ?? 0, totals: { ...this.total } };
   }
   dispose() {
     if (this.state === "disposed") return;
     this.canvas.removeEventListener("webglcontextlost", this.onLost);
     this.canvas.removeEventListener("webglcontextrestored", this.onRestored);
     for (const mesh of this.staticMeshes) this.device.deleteVertexBuffer(mesh.buffer);
-    for (const cached of this.gradientTextures.values()) this.device.deleteTexture(cached.texture);
-    this.gradientTextures.clear();
+    this._releaseGradientTextures();
     this.staticMeshes.clear();
     this.deferredMeshes.length = 0;
     if (this.ownsVector) this.vector.dispose();
