@@ -101,7 +101,7 @@ export class VectorContext {
   clip(rule='nonzero'){this._frame();if(this.vector.path.filter(p=>p.length>=3).length>1)throw new RangeError('clip supports one contour per clip call');this.vector.clip(rule)}
   clipRect(x,y,w,h){this._frame();this.vector.clipRect(x,y,w,h)}
   fillTriangleFan(points,paint=this._fillStyle){this._frame();this.meshRenderer?.flush();if(points.length<3)return;this.vector.triangleFan(points,this._paint(paint))}
-  beginGroup(opacity=1,bounds=null){this._frame();this.meshRenderer?.flush();this.vector.beginGroup(opacity,bounds)} endGroup(){this.meshRenderer?.flush();this.vector.endGroup()}
+  beginGroup(opacity=1,bounds=null){this._frame();if(opacity!==1)this.meshRenderer?.flush();this.vector.beginGroup(opacity,bounds)} endGroup(){if(!this.vector.groups.at(-1)?.direct)this.meshRenderer?.flush();this.vector.endGroup()}
   withGroupOpacity(opacity,callback,bounds=null){this._frame();const previous=this._globalAlpha;this.beginGroup(opacity,bounds);this._globalAlpha=1;try{return callback()}finally{try{this.endGroup()}finally{this._globalAlpha=previous}}}
   groupBounds(x,y,radius){const m=this.vector.matrix,p=transformed(m,x,y),r=radius*Math.max(Math.hypot(m[0],m[1]),Math.hypot(m[2],m[3]));return{x:p.x-r,y:p.y-r,width:r*2,height:r*2}}
   withColor(color,callback){const previous=this.forceColor;this.forceColor=normalizeColor(color);try{return callback()}finally{this.forceColor=previous}}

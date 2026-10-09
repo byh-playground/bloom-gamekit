@@ -48,6 +48,7 @@ export async function exerciseReusableMeshes(page) {
         near(pixel(24, 24), [128, 127, 0, 255], 'body follows forced-color silhouette');
         check(cold.mesh.geometryUploads === 1 && cold.mesh.geometryBytesUploaded === data.vertices.byteLength, 'cold geometry uploaded exactly once');
         check(cold.mesh.instances === 20, 'two silhouettes reuse one mesh for all twenty passes');
+        check(cold.mesh.draws === (withoutANGLE ? 20 : 1), 'opaque group boundaries preserve adjacent same-mesh unit batching');
         check(cold.uploadedBytes === data.vertices.byteLength + (withoutANGLE ? 0 : 20 * 64), 'cold bytes are geometry plus instance records only');
 
         begin();
