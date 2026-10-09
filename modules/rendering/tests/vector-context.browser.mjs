@@ -17,7 +17,7 @@ export async function exerciseVectorContext(page){
     ctx.save();ctx.beginPath();ctx.moveTo(2,44);ctx.lineTo(18,44);ctx.lineTo(18,60);ctx.lineTo(2,60);ctx.closePath();ctx.clip();
     ctx.fillTriangleFan([[2,44],[30,44],[30,48],[2,48]],'#00ff00');const fanBounds=vector.vertices.slice(0,vector.count*8).reduce((b,_,i,a)=>{if(i%8===0){b.minX=Math.min(b.minX,a[i]);b.maxX=Math.max(b.maxX,a[i]);}return b;},{minX:Infinity,maxX:-Infinity});ctx.restore();
     ctx.strokeStyle='#ffffff';ctx.lineWidth=4;ctx.lineCap='round';ctx.lineJoin='round';ctx.setLineDash([8,8]);ctx.beginPath();ctx.moveTo(4,52);ctx.lineTo(60,52);ctx.stroke();
-    primitive.regularPolygon(48,52,6,6,'#ffffff',0);
+    primitive.regularPolygon(48,52,6,'#ffffff',6,0);
     ctx.fillStyle='#ffffff';ctx.font='8px sans-serif';ctx.textAlign='center';ctx.textBaseline='top';ctx.fillText('A',32,4);
     ctx.drawStaticMesh(mesh,{pipeline});
     const stats=ctx.endFrame();const pixels={groupOuter:pixel(12,12),groupOverlap:pixel(28,12),clipInside:pixel(10,46),clipOutside:pixel(24,46),dash:pixel(8,52),dashGap:pixel(16,52),roundCap:pixel(3,52),primitive:pixel(48,52),glyph:pixel(32,7),staticMesh:pixel(6,6)};
@@ -28,7 +28,7 @@ export async function exerciseVectorContext(page){
   assert.ok(Math.abs(result.pixels.groupOverlap[0]-128)<=3&&Math.abs(result.pixels.groupOverlap[2]-127)<=3,'overlapping fills composite once inside a group');
   assert.deepEqual(result.pixels.clipInside,[0,255,0,255],JSON.stringify({pixels:result.pixels,fanBounds:result.fanBounds}));assert.deepEqual(result.pixels.clipOutside,[0,0,255,255],JSON.stringify({pixels:result.pixels,fanBounds:result.fanBounds}));
   assert.ok(result.pixels.dash[0]>240&&result.pixels.dash[1]>240,'dashed path paints in its on interval');assert.deepEqual(result.pixels.dashGap,[0,0,255,255]);assert.ok(result.pixels.roundCap[0]>240,'round line cap extends beyond the endpoint');
-  assert.ok(result.pixels.primitive[0]>240&&result.pixels.primitive[1]>240,'public primitive painter emits WebGL fan geometry');
+  assert.ok(result.pixels.primitive[0]>240&&result.pixels.primitive[1]>240,`public primitive painter emits WebGL fan geometry: ${JSON.stringify(result.pixels)}`);
   assert.ok(result.pixels.glyph[0]>240,'text keeps the caller-provided prebaked glyph atlas');assert.deepEqual(result.pixels.staticMesh,[255,0,0,255]);assert.equal(result.error,0);
   assert.equal(result.textureBytes,64*64*4);assert.ok(result.stats.vertices>0&&result.stats.drawCalls>0);
   result.restored=await page.evaluate(()=>{const p=vectorContextProbe;p.loss=p.device.gl.getExtension('WEBGL_lose_context');if(!p.loss)return false;p.loss.loseContext();return true;});

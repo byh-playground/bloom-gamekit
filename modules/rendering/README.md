@@ -58,21 +58,30 @@ import { WebGLDevice, VectorRenderer, VectorContext, PrimitivePainter } from './
 const device = new WebGLDevice(canvas, { depth: false, stencil: false });
 const vector = new VectorRenderer(device, { glyphAtlas });
 const ctx = new VectorContext(device, { vectorRenderer: vector, glyphAtlas, onError: reportRenderError });
-const primitive = new PrimitivePainter(ctx);
+const primitive = new PrimitivePainter(ctx, { point: transformArtPoint, alphaMultiplier: () => artAlpha });
 if (ctx.beginFrame({ width: canvas.width, height: canvas.height, clearColor: [0, 0, 0, 0] })) {
   ctx.fillStyle = 'rgba(32, 78, 54, .8)'; ctx.beginPath();
   ctx.roundRect(24, 20, 110, 52, 8); ctx.fill();
   ctx.strokeStyle = '#d9f3ad'; ctx.setLineDash([6, 3]); ctx.stroke();
-  primitive.circle(80, 100, 12, '#f1f8d7', 12); // 직접 정의한 fan을 painter 순서대로 queue
+  const glow = ctx.createRadialGradient(80, 100, 0, 80, 100, 18);
+  glow.addColorStop(0, '#fff8d0'); glow.addColorStop(1, '#fff8d000');
+  ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(80, 100, 18, 0, Math.PI * 2); ctx.fill();
+  primitive.circle(80, 100, 12, '#f1f8d7', 12); // 원래 authored fan topology 유지
   ctx.endFrame();
 }
 ```
 
-- path/state API는 CSS hex/rgb(a)/hsl(a)/named paint, alpha, affine transform, curve, arc/ellipse/rect/roundRect, fill/stroke, dash, clip, scoped color, silhouette/group, prebaked atlas text의 metrics와 그리기를 제공합니다. `fillTriangleFan(points,paint)`는 caller가 정의한 fan topology를 받아 삼각형을 재삼각화하지 않고 공통 clip/group 경로로 제출하며, `VectorRenderer` private method를 호출하지 않습니다. `PrimitivePainter`는 generic circle·regular polygon·line·fan emitter를 제공합니다. facing·palette·animation·형상 레시피는 caller 정책입니다.
+- path/state API는 CSS hex/rgb(a)/hsl(a)/named paint, alpha, affine transform, curve, arc/ellipse/rect/roundRect, fill/stroke, dash, clip, scoped color, silhouette/group, prebaked atlas text의 metrics와 그리기를 제공합니다. `filter`는 `none`과 게임 white-flash 값 `brightness(0) invert(1)`을 지원하며 save/restore에 포함됩니다. 흰색 변환은 강제색을 결정한 뒤 RGB만 흰색으로 바꾸고 alpha는 보존합니다.
+- `createRadialGradient(x0,y0,r0,x1,y1,r1)`는 concentric circle만 지원하고, creation transform과 sorted color stops를 보존합니다. `addColorStop()`의 premultiplied 256×1 ramp를 처음 fill할 때 한 번 올리고 texture sampling으로 radial radius를 평가합니다. stop을 더한 뒤 다음 fill에서 기존 texture를 갱신합니다. filter white-flash, forceColor, globalAlpha와 clip/group 안에서도 alpha와 painter order를 유지합니다. 비동심 원과 singular transform은 오류로 명시합니다.
+- `fillTriangleFan(points,paint)`는 caller가 정의한 fan topology를 삼각형 재분할 없이 공통 clip/group 경로로 제출하고, `VectorRenderer` private method를 호출하지 않습니다. `PrimitivePainter(target,{point,alphaMultiplier})`는 WebGL `VectorContext`와 caller가 전달한 native Canvas2D paint target 양쪽에 `poly/tri/quad/regularPolygon/circle/hex/line/fan`을 제공합니다. target 쪽에서는 하나의 path fill로 원래 fan을 그리고, `point(x,y)` hook은 caller의 authored facing만 반영합니다. UI thumbnail은 기존의 명시적인 native Canvas2D target을 전달할 수 있습니다. world draw는 WebGLContext가 담당합니다.
+- `withGroupOpacity(opacity,callback,bounds)`는 그룹 opacity를 딱 한 번 합성하고 callback 안에서 globalAlpha를 1로 둔 뒤 원래 상태를 복구합니다. `withSilhouette(color,width,paint,radius)`는 opacity-bounded group 안에서 강제색 offset fan과 중심 pass를 그리고, forceColor를 복구한 뒤 원래 body를 한 번 더 그립니다. 기존 clip/filter와 draw order를 보존합니다.
+- Stroke 폭은 기존 게임 adapter와 같이 변환 행렬 basis 중 큰 크기에 맞춰 조정합니다. dash 길이와 phase는 변환된 path 공간에 적용합니다. 공통 vector stroke는 butt/round/square cap, miter/round/bevel join을 그리며 miter 길이는 `miterLimit`으로 제한합니다. clip 호출 하나에는 contour 하나를 받습니다. path hole은 clip 대신 `fill(rule)`로 처리합니다.
 - Stroke 폭은 기존 게임 adapter와 같이 변환 행렬 basis 중 큰 크기에 맞춰 조정합니다. dash 길이와 phase는 변환된 path 공간에 적용합니다. 공통 vector stroke는 butt/round/square cap, miter/round/bevel join을 그리며 miter 길이는 `miterLimit`으로 제한합니다. clip 호출 하나에는 contour 하나를 받습니다. path hole은 clip 대신 `fill(rule)`로 처리합니다. radial gradient는 지원하지 않음을 명시적으로 오류 처리합니다.
-- `beginFrame({width,height,clearColor})`와 `endFrame()`은 caller 소유 `WebGLDevice` 프레임을 감쌉니다. begin이 false이면 context loss 등으로 해당 프레임을 건너뜁니다. `stats()`는 실제 device draw/vertex/upload counter, GPU buffer/target byte와 개수, vector staging byte를 보고합니다. `dispose()`는 이 context가 생성한 VectorRenderer와 static vertex buffer만 해제하며 device나 주입받은 atlas/renderer는 해제하지 않습니다. static vertex 데이터는 context 복구 후 다시 upload합니다. `onError(error,details)`는 caller callback이며 프레임 오류는 다시 throw됩니다.
+- `beginFrame({width,height,clearColor})`와 `endFrame()`은 caller 소유 `WebGLDevice` 프레임을 감쌉니다. begin이 false이면 context loss 등으로 해당 프레임을 건너뜁니다. `stats()`는 실제 device draw/vertex/upload counter, GPU buffer/target byte와 개수, vector staging byte를 보고합니다. `dispose()`는 이 context가 생성한 VectorRenderer, gradient texture, static vertex buffer만 해제하며 device나 주입받은 atlas/renderer는 해제하지 않습니다. static vertex 데이터는 context 복구 후 다시 upload합니다. `onError(error,details)`는 caller callback이며 프레임 오류는 다시 throw됩니다.
 - `createStaticMesh(vertices,{strideFloats})`는 재사용할 CPU vertex를 보관하고 device buffer에 upload합니다. `drawStaticMesh(mesh,{pipeline,projection,uniforms,textures,blend,depth})`는 caller draw 전에 공통 painter queue를 flush합니다. shader/material, projection uniform, depth/stencil 설정, pass 순서와 mesh geometry는 caller가 공급합니다. generic context는 terrain 정책을 정하지 않습니다.
-- world Canvas2D fallback, 숨겨진 raster canvas, CPU readback, runtime text rasterization, font metric/kerning 변경은 없습니다. CSS named color는 browser document가 있을 때만 일시적인 DOM style element로 해석하며, 문서가 없어도 모듈을 import할 수 있습니다.
+- radial gradient는 context마다 256×1 RGBA ramp 1KiB를 CPU에 유지하고 GPU texture 1KiB를 사용합니다. 첫 사용은 texture upload가 발생하며 기존 stop을 늘리면 같은 handle에 1KiB update를 합니다. texture sampling으로 각 fragment의 반경을 계산합니다. stop raster 생성은 첫 paint와 stop 변경 때만 CPU 비용이 발생합니다.
+- `PrimitivePainter`는 authored fan을 Canvas2D target에서 한 번의 path fill로 제출하고, WebGL target에서는 원래 fan 삼각형을 공용 vector buffer에 queue합니다. 실제 game-shaped browser helper에서 WebGL 26 draw calls / 1,170 vertices / 37,440 uploaded vertex bytes, 19,456 texture upload bytes, vector staging/GPU buffer 각 8KiB, opacity target 16KiB를 관찰했습니다. CPU submit은 이 작은 SwiftShader scene에서 12.3ms였고, GPU 완료시간은 아닙니다. UI Canvas2D primitive 두 개의 CPU submit은 0.8ms, 40×40 RGBA reference와 pixel 차이 0이며 해당 paint target의 GPU upload는 0입니다. 모든 시간은 한 표본이며 게임 전후 FPS 비교가 아닙니다.
+- world Canvas2D fallback, 숨겨진 raster canvas, CPU readback, runtime text rasterization, font metric/kerning 변경은 없습니다. PrimitivePainter의 native target은 caller가 건넨 canvas의 draw API에 직접 path를 내보내며 숨겨진 canvas나 GPU staging을 만들지 않습니다. CSS named color는 browser document가 있을 때만 일시적인 DOM style element로 해석하며, 문서가 없어도 모듈을 import할 수 있습니다.
 
 Static mesh는 별도 GPU vertex buffer와 caller 소유 shader pipeline을 사용합니다. VectorRenderer stream에 더해지는 GPU memory이며 `deleteStaticMesh()` 또는 `dispose()`로 해제됩니다.
 
