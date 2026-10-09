@@ -1136,28 +1136,52 @@ var WHITE2 = Object.freeze([1, 1, 1, 1]);
 var ATTRIBUTES = [
   { name: "a_position", size: 2, offset: 0 },
   { name: "a_color", size: 4, offset: 8 },
-  { name: "a_morph0", size: 2, offset: 24 },
-  { name: "a_morph1", size: 2, offset: 32 }
+  { name: "a_morph", size: 4, offset: 24 },
+  { name: "a_part", size: 1, offset: 40 }
 ];
 var INSTANCE_ATTRIBUTES = ["i_row0", "i_row1", "i_color", "i_params"].map((name, i) => ({ name, size: 4, offset: i * 16, source: "instance" }));
-function shader(instanced) {
+function shader(instanced, partCount, morphCount, clipped) {
   const inputs = ["i_row0", "i_row1", "i_color", "i_params"].map((name) => `${instanced ? "attribute" : "uniform"} vec4 ${name};`).join("\n");
-  return `attribute vec2 a_position; attribute vec4 a_color; attribute vec2 a_morph0; attribute vec2 a_morph1;
+  const local = morphCount ? "a_position+a_morph.xy*(i_params.x" + (partCount > 1 ? "+pose.x" : "") + ")" + (morphCount > 1 ? "+a_morph.zw*(i_params.y" + (partCount > 1 ? "+pose.y" : "") + ")" : "") : "a_position";
+  return `attribute vec2 a_position; attribute vec4 a_color; ${morphCount ? "attribute vec4 a_morph;" : ""} ${partCount > 1 ? "attribute float a_part;uniform vec4 u_parts[" + partCount * 3 + "];" : ""}
 ${inputs}
-uniform mat3 u_projection; varying vec4 v_color; varying vec2 v_position;
-void main(){vec2 p=a_position+a_morph0*i_params.x+a_morph1*i_params.y;
+uniform mat3 u_projection; varying vec4 v_color; ${clipped ? "varying vec2 v_position;" : ""}
+void main(){${partCount > 1 ? "int index=int(a_part)*3;vec4 row0=u_parts[index];vec4 row1=u_parts[index+1];vec4 pose=u_parts[index+2];" : ""}
+vec2 local=${local};vec2 p=${partCount > 1 ? "vec2(dot(row0.xyz,vec3(local,1.0)),dot(row1.xyz,vec3(local,1.0)))" : "local"};
 vec2 world=vec2(dot(i_row0.xyz,vec3(p,1.0)),dot(i_row1.xyz,vec3(p,1.0)));
-vec3 projected=u_projection*vec3(world,1.0);gl_Position=vec4(projected.xy,0.0,1.0);v_position=world;
-vec4 color=mix(a_color*i_color,i_color,i_row1.w);color.a*=i_row0.w;
+vec3 projected=u_projection*vec3(world,1.0);gl_Position=vec4(projected.xy,0.0,1.0);${clipped ? "v_position=world;" : ""}
+vec4 color=mix(a_color*i_color,i_color,i_row1.w);color.a*=i_row0.w${partCount > 1 ? "*pose.z" : ""};
 color.rgb=mix(color.rgb,vec3(1.0),i_params.z);v_color=vec4(color.rgb*color.a,color.a);}`;
 }
-function fragment(maxPlanes) {
+function fragment(maxPlanes, clipped) {
+  if (!clipped) return "precision mediump float;varying vec4 v_color;void main(){gl_FragColor=v_color;}";
   return `precision mediump float; varying vec4 v_color; varying vec2 v_position;
 uniform vec3 u_planes[${maxPlanes}]; uniform int u_planeCount;
-void main(){for(int i=0;i<${maxPlanes};i++){if(i<u_planeCount&&dot(u_planes[i],vec3(v_position,1.0))<0.0)discard;}gl_FragColor=v_color;}`;
+void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_planes[i],vec3(v_position,1.0))<0.0)discard;}gl_FragColor=v_color;}`;
 }
 function finiteArray2(value, size, name) {
   if (!value || value.length !== size || Array.from(value).some((n) => !Number.isFinite(n))) throw new TypeError(`${name}: ${size} finite numbers required`);
+}
+function packParts(parts, count, output) {
+  if (parts !== null && (!Array.isArray(parts) || parts.length !== count)) throw new TypeError("One pose per authored mesh part required");
+  for (let i = 0; i < count; i++) {
+    const part = parts?.[i], m = part?.transform ?? IDENTITY2, morph = part?.morph ?? [0, 0];
+    finiteArray2(m, 6, "part transform");
+    finiteArray2(morph, 2, "part morph");
+    const at = i * 12;
+    output[at] = m[0];
+    output[at + 1] = m[2];
+    output[at + 2] = m[4];
+    output[at + 3] = 0;
+    output[at + 4] = m[1];
+    output[at + 5] = m[3];
+    output[at + 6] = m[5];
+    output[at + 7] = 0;
+    output[at + 8] = morph[0];
+    output[at + 9] = morph[1];
+    output[at + 10] = part?.visible === false ? 0 : 1;
+    output[at + 11] = 0;
+  }
 }
 function clipState(clips, maxPlanes) {
   if (!clips?.length) return { key: "", values: null, count: 0 };
@@ -1192,29 +1216,16 @@ var MeshRenderer = class {
     if (maxInstances * 64 > device.maxBufferBytes) throw new RangeError("Mesh instance buffer exceeds device byte limit");
     this.maxPlanes = Math.max(1, Math.min(32, device.gl.getParameter(device.gl.MAX_FRAGMENT_UNIFORM_VECTORS) - 2));
     this.instanced = device.instancingSupported === true;
-    const uniforms = { u_projection: "matrix3fv", "u_planes[0]": "3fv", u_planeCount: "1i" };
-    if (!this.instanced) for (const name of ["i_row0", "i_row1", "i_color", "i_params"]) uniforms[name] = "4f";
     this.instances = new Float32Array(maxInstances * 16);
-    this.pipeline = device.createPipeline({
-      vertex: shader(this.instanced),
-      fragment: fragment(this.maxPlanes),
-      stride: 40,
-      ...this.instanced ? { instanceStride: 64 } : {},
-      attributes: [...ATTRIBUTES, ...this.instanced ? INSTANCE_ATTRIBUTES : []],
-      uniforms
-    });
-    try {
-      this.instanceBuffer = this.instanced ? device.createVertexBuffer({ capacityBytes: this.instances.byteLength }) : null;
-    } catch (error) {
-      device.deletePipeline(this.pipeline);
-      throw error;
-    }
+    this.instanceBuffer = this.instanced ? device.createVertexBuffer({ capacityBytes: this.instances.byteLength }) : null;
+    this.pipelines = /* @__PURE__ */ new Map();
     this.meshes = /* @__PURE__ */ new Set();
     this.bytes = 0;
     this.count = 0;
     this.pending = null;
     this.planes = new Float32Array(this.maxPlanes * 3);
-    this.metrics = { draws: 0, instances: 0, geometryUploads: 0, geometryBytesUploaded: 0, instanceBytesUploaded: 0 };
+    this.partScratch = new Float32Array(16 * 12);
+    this.metrics = { draws: 0, instances: 0, geometryUploads: 0, geometryBytesUploaded: 0, instanceBytesUploaded: 0, partUniformBytesSubmitted: 0 };
     this.state = "ready";
     this.failure = null;
     this.onLost = () => {
@@ -1236,11 +1247,34 @@ var MeshRenderer = class {
     device.canvas.addEventListener("webglcontextrestored", this.onRestored);
     this.disposed = false;
   }
+  _pipeline(mesh, clipped) {
+    const key = mesh.partCount + ":" + mesh.morphCount + ":" + Number(clipped);
+    let pipeline = this.pipelines.get(key);
+    if (pipeline) return pipeline;
+    const uniforms = { u_projection: "matrix3fv" };
+    if (clipped) Object.assign(uniforms, { "u_planes[0]": "3fv", u_planeCount: "1i" });
+    if (mesh.partCount > 1) uniforms["u_parts[0]"] = "4fv";
+    if (!this.instanced) for (const name of ["i_row0", "i_row1", "i_color", "i_params"]) uniforms[name] = "4f";
+    pipeline = this.device.createPipeline({
+      vertex: shader(this.instanced, mesh.partCount, mesh.morphCount, clipped),
+      fragment: fragment(this.maxPlanes, clipped),
+      stride: 44,
+      ...this.instanced ? { instanceStride: 64 } : {},
+      attributes: [...ATTRIBUTES, ...this.instanced ? INSTANCE_ATTRIBUTES : []],
+      uniforms
+    });
+    this.pipelines.set(key, pipeline);
+    return pipeline;
+  }
   createMesh(data) {
     this._ready();
-    if (!(data?.vertices instanceof Float32Array) || data.vertices.length % 30 || data.strideFloats !== 10) throw new TypeError("MeshBuilder geometry required");
+    if (!(data?.vertices instanceof Float32Array) || data.vertices.length % 33 || data.strideFloats !== 11 || !Number.isSafeInteger(data.partCount) || data.partCount < 1 || data.partCount > 16 || !Number.isSafeInteger(data.morphCount) || data.morphCount < 0 || data.morphCount > 2) throw new TypeError("MeshBuilder geometry with 1..16 parts required");
     if (data.vertices.some((n) => !Number.isFinite(n))) throw new TypeError("Mesh values must be finite");
-    for (let i = 0; i < data.vertices.length; i++) if (i % 10 >= 2 && i % 10 < 6 && (data.vertices[i] < 0 || data.vertices[i] > 1)) throw new RangeError("Mesh RGBA channels must be in [0,1]");
+    for (let i = 0; i < data.vertices.length; i++) {
+      if (i % 11 >= 2 && i % 11 < 6 && (data.vertices[i] < 0 || data.vertices[i] > 1)) throw new RangeError("Mesh RGBA channels must be in [0,1]");
+      if (i % 11 === 10 && (!Number.isSafeInteger(data.vertices[i]) || data.vertices[i] < 0 || data.vertices[i] >= data.partCount)) throw new RangeError("Mesh part index outside partCount");
+      if (i % 11 >= 6 + data.morphCount * 2 && i % 11 < 10 && data.vertices[i] !== 0) throw new RangeError("Mesh deltas exceed declared morphCount");
+    }
     if (this.meshes.size >= this.maxMeshes || this.bytes + data.vertices.byteLength > this.maxMeshBytes) throw new RangeError("Retained mesh budget exceeded");
     const vertices = data.vertices.slice(), buffer = this.device.createVertexBuffer({ capacityBytes: vertices.byteLength });
     try {
@@ -1249,7 +1283,7 @@ var MeshRenderer = class {
       this.device.deleteVertexBuffer(buffer);
       throw error;
     }
-    const mesh = Object.freeze({ renderer: this, buffer, vertices, count: vertices.length / 10, byteLength: vertices.byteLength });
+    const mesh = Object.freeze({ renderer: this, buffer, vertices, count: vertices.length / 11, byteLength: vertices.byteLength, partCount: data.partCount, morphCount: data.morphCount });
     this.meshes.add(mesh);
     this.bytes += vertices.byteLength;
     this.metrics.geometryUploads++;
@@ -1265,7 +1299,7 @@ var MeshRenderer = class {
     return true;
   }
   /** Captures state by value; subsequent transform/paint changes do not alter queued instances. */
-  drawMesh(mesh, { matrix = IDENTITY2, projection, morph = [0, 0], color: color2 = WHITE2, forceColor = false, alpha = 1, whiteFlash = false, clips = [] } = {}) {
+  drawMesh(mesh, { matrix = IDENTITY2, projection, morph = [0, 0], parts = null, color: color2 = WHITE2, forceColor = false, alpha = 1, whiteFlash = false, clips = [] } = {}) {
     this._ready();
     if (!this.meshes.has(mesh)) throw new TypeError("Mesh owned by this renderer required");
     if (!this.device.active) throw new Error("beginFrame required");
@@ -1275,21 +1309,37 @@ var MeshRenderer = class {
     finiteArray2(color2, 4, "color");
     if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1 || color2.some((n) => n < 0 || n > 1)) throw new RangeError("RGBA/alpha in [0,1] required");
     const clip = clipState(clips, this.maxPlanes), pending = this.pending;
-    if (pending && (pending.mesh !== mesh || pending.clip.key !== clip.key || projection.some((n, i) => n !== pending.projection[i]) || this.count === this.maxInstances)) this.flush();
-    if (!this.pending) this.pending = { mesh, projection: Float32Array.from(projection), clip };
+    packParts(parts, mesh.partCount, this.partScratch);
+    if (pending && (pending.mesh !== mesh || pending.clip.key !== clip.key || projection.some((n, i) => n !== pending.projection[i]) || mesh.partCount > 1 && pending.parts.some((n, i) => n !== this.partScratch[i]) || this.count === this.maxInstances)) this.flush();
+    if (!this.pending) this.pending = { mesh, projection: Float32Array.from(projection), clip, parts: this.partScratch.slice(0, mesh.partCount > 1 ? mesh.partCount * 12 : 0) };
+    let m = matrix, weight0 = morph[0], weight1 = morph[1];
+    if (mesh.partCount === 1) {
+      const p = this.partScratch;
+      m = [
+        matrix[0] * p[0] + matrix[2] * p[4],
+        matrix[1] * p[0] + matrix[3] * p[4],
+        matrix[0] * p[1] + matrix[2] * p[5],
+        matrix[1] * p[1] + matrix[3] * p[5],
+        matrix[0] * p[2] + matrix[2] * p[6] + matrix[4],
+        matrix[1] * p[2] + matrix[3] * p[6] + matrix[5]
+      ];
+      alpha *= p[10];
+      weight0 += p[8];
+      weight1 += p[9];
+    }
     const at = this.count++ * 16;
     this.instances.set([
-      matrix[0],
-      matrix[2],
-      matrix[4],
+      m[0],
+      m[2],
+      m[4],
       alpha,
-      matrix[1],
-      matrix[3],
-      matrix[5],
+      m[1],
+      m[3],
+      m[5],
       forceColor ? 1 : 0,
       ...color2,
-      morph[0],
-      morph[1],
+      weight0,
+      weight1,
       whiteFlash ? 1 : 0,
       0
     ], at);
@@ -1297,20 +1347,24 @@ var MeshRenderer = class {
   flush() {
     if (!this.count) return;
     this._ready();
-    const { mesh, projection, clip } = this.pending;
+    const { mesh, projection, clip, parts } = this.pending;
     this.planes.fill(0);
     if (clip.values) this.planes.set(clip.values);
-    const uniforms = { u_projection: projection, "u_planes[0]": this.planes, u_planeCount: clip.count };
+    const pipeline = this._pipeline(mesh, clip.count > 0), uniforms = { u_projection: projection };
+    if (clip.count) Object.assign(uniforms, { "u_planes[0]": this.planes, u_planeCount: clip.count });
+    if (mesh.partCount > 1) uniforms["u_parts[0]"] = parts;
     if (this.instanced) {
       this.device.uploadVertices(this.instanceBuffer, this.instances.subarray(0, this.count * 16));
-      this.device.draw({ pipeline: this.pipeline, buffer: mesh.buffer, count: mesh.count, instanceBuffer: this.instanceBuffer, instances: this.count, uniforms });
+      this.device.draw({ pipeline, buffer: mesh.buffer, count: mesh.count, instanceBuffer: this.instanceBuffer, instances: this.count, uniforms });
       this.metrics.instanceBytesUploaded += this.count * 64;
       this.metrics.draws++;
+      this.metrics.partUniformBytesSubmitted += parts.byteLength;
     } else {
       for (let i = 0; i < this.count; i++) {
         for (let j = 0; j < 4; j++) uniforms[["i_row0", "i_row1", "i_color", "i_params"][j]] = this.instances.subarray(i * 16 + j * 4, i * 16 + j * 4 + 4);
-        this.device.draw({ pipeline: this.pipeline, buffer: mesh.buffer, count: mesh.count, uniforms });
+        this.device.draw({ pipeline, buffer: mesh.buffer, count: mesh.count, uniforms });
         this.metrics.draws++;
+        this.metrics.partUniformBytesSubmitted += parts.byteLength;
       }
     }
     this.metrics.instances += this.count;
@@ -1328,7 +1382,7 @@ var MeshRenderer = class {
     for (const key of Object.keys(this.metrics)) this.metrics[key] = 0;
   }
   stats() {
-    return { ...this.metrics, state: this.state, failure: this.failure, meshCount: this.meshes.size, retainedBytes: this.bytes, stagingBytes: this.instances.byteLength, instanced: this.instanced, maxClipPlanes: this.maxPlanes };
+    return { ...this.metrics, state: this.state, failure: this.failure, pipelineCount: this.pipelines.size, meshCount: this.meshes.size, retainedBytes: this.bytes, stagingBytes: this.instances.byteLength + this.planes.byteLength + this.partScratch.byteLength, instanced: this.instanced, maxClipPlanes: this.maxPlanes };
   }
   dispose() {
     if (this.disposed) return;
@@ -1339,7 +1393,8 @@ var MeshRenderer = class {
     this.meshes.clear();
     this.bytes = 0;
     if (this.instanceBuffer) this.device.deleteVertexBuffer(this.instanceBuffer);
-    this.device.deletePipeline(this.pipeline);
+    for (const pipeline of this.pipelines.values()) this.device.deletePipeline(pipeline);
+    this.pipelines.clear();
     this.disposed = true;
     this.state = "disposed";
   }
@@ -1896,11 +1951,11 @@ var VectorContext = class {
   }
   beginGroup(opacity = 1, bounds = null) {
     this._frame();
-    this.meshRenderer?.flush();
+    if (opacity !== 1) this.meshRenderer?.flush();
     this.vector.beginGroup(opacity, bounds);
   }
   endGroup() {
-    this.meshRenderer?.flush();
+    if (!this.vector.groups.at(-1)?.direct) this.meshRenderer?.flush();
     this.vector.endGroup();
   }
   withGroupOpacity(opacity, callback, bounds = null) {
@@ -2010,7 +2065,7 @@ var VectorContext = class {
     return this.meshRenderer?.deleteMesh(mesh) ?? false;
   }
   /** Local transform composes with current Canvas-style transform; all paint state is captured by value. */
-  drawMesh(mesh, { transform = null, morph = [0, 0] } = {}) {
+  drawMesh(mesh, { transform = null, morph = [0, 0], parts = null } = {}) {
     this._frame();
     if (!this.meshRenderer) throw new TypeError("createMesh required");
     this.vector.flush();
@@ -2020,7 +2075,7 @@ var VectorContext = class {
       const m = matrix, [a, b, c, d, e, f] = transform;
       matrix = [m[0] * a + m[2] * b, m[1] * a + m[3] * b, m[0] * c + m[2] * d, m[1] * c + m[3] * d, m[0] * e + m[2] * f + m[4], m[1] * e + m[3] * f + m[5]];
     }
-    this.meshRenderer.drawMesh(mesh, { matrix, projection: this.vector.projection, clips: this.vector.clips, morph, color: this.forceColor ?? [1, 1, 1, 1], forceColor: this.forceColor !== null, alpha: this._globalAlpha, whiteFlash: this._filter === "brightness(0) invert(1)" });
+    this.meshRenderer.drawMesh(mesh, { matrix, projection: this.vector.projection, clips: this.vector.clips, morph, parts, color: this.forceColor ?? [1, 1, 1, 1], forceColor: this.forceColor !== null, alpha: this._globalAlpha, whiteFlash: this._filter === "brightness(0) invert(1)" });
   }
   flush() {
     this._frame();
@@ -2169,15 +2224,27 @@ var MeshBuilder = class _MeshBuilder {
       if (target.vertices.length !== base.length) throw new RangeError("Morph topology differs");
       for (let i = 0; i < base.length; i++) if (i % 6 >= 2 && target.vertices[i] !== base[i]) throw new RangeError("Morph colors differ");
     }
-    const vertices = new Float32Array(count * 10);
+    const vertices = new Float32Array(count * 11);
     for (let i = 0; i < count; i++) {
-      vertices.set(base.slice(i * 6, i * 6 + 6), i * 10);
+      vertices.set(base.slice(i * 6, i * 6 + 6), i * 11);
       for (let j = 0; j < morphs.length; j++) {
-        vertices[i * 10 + 6 + j * 2] = morphs[j].vertices[i * 6] - base[i * 6];
-        vertices[i * 10 + 7 + j * 2] = morphs[j].vertices[i * 6 + 1] - base[i * 6 + 1];
+        vertices[i * 11 + 6 + j * 2] = morphs[j].vertices[i * 6] - base[i * 6];
+        vertices[i * 11 + 7 + j * 2] = morphs[j].vertices[i * 6 + 1] - base[i * 6 + 1];
       }
     }
-    return Object.freeze({ vertices, count, strideFloats: 10, morphCount: morphs.length });
+    return Object.freeze({ vertices, count, strideFloats: 11, morphCount: morphs.length, partCount: 1 });
+  }
+  /** Packs authored parts in their original painter order, never one GPU buffer per animated part. */
+  static combine(parts) {
+    if (!Array.isArray(parts) || !parts.length || parts.length > 16 || parts.some((p) => p?.partCount !== 1 || p.strideFloats !== 11 || !(p.vertices instanceof Float32Array) || p.vertices.length % 33)) throw new TypeError("1..16 single-part MeshBuilder geometries required");
+    const vertices = new Float32Array(parts.reduce((n, part) => n + part.vertices.length, 0));
+    let offset = 0;
+    for (let part = 0; part < parts.length; part++) {
+      vertices.set(parts[part].vertices, offset);
+      for (let i = 10; i < parts[part].vertices.length; i += 11) vertices[offset + i] = part;
+      offset += parts[part].vertices.length;
+    }
+    return Object.freeze({ vertices, count: vertices.length / 11, strideFloats: 11, partCount: parts.length, morphCount: Math.max(...parts.map((p) => p.morphCount)) });
   }
 };
 
