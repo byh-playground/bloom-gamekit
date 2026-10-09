@@ -1,4 +1,5 @@
 import { exerciseWebGLDevice, exerciseVectorRenderer, exerciseFontAssetLoader } from '../modules/rendering/tests/device.browser.mjs';
+import { exerciseReusableMeshes } from '../modules/rendering/tests/mesh.browser.mjs';
 import { runPresentationChecks } from './presentation.browser.js';
 import { chromium } from 'playwright';
 import { createServer } from 'node:http';
@@ -211,7 +212,7 @@ try {
   report.stages.push('DOM multi-pointer identity/coordinates/cancel/capture loss + keyboard aggregation + listener disposal');
 
   const moduleErrors = [];
-  for (const [name, check] of [['renderObject', runRenderObjectChecks], ['presentation', runPresentationChecks], ['device', exerciseWebGLDevice], ['vectorRenderer', exerciseVectorRenderer],
+  for (const [name, check] of [['renderObject', runRenderObjectChecks], ['presentation', runPresentationChecks], ['device', exerciseWebGLDevice], ['vectorRenderer', exerciseVectorRenderer], ['reusableMeshes', exerciseReusableMeshes],
     ['fontAssets', p => exerciseFontAssetLoader(p, `http://127.0.0.1:${server.address().port}`)]]) {
     try { report[name] = await check(page); }
     catch (error) { console.error(`Browser module ${name}:`, error); moduleErrors.push(`${name}: ${error.message}`); }
