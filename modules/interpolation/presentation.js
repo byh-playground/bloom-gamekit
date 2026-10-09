@@ -47,6 +47,14 @@ export class PresentationRuntime {
     for (const id of this.#preview.keys()) if (!next.has(id) || next.get(id) !== this.#preview.get(id).generation) this.#preview.delete(id);
   }
   clearPreview() { this.#preview.clear(); this.#previewSelection.clear(); this.#previewSources = new WeakMap(); }
+  releasePreview(nowMs){this.#checkClock(nowMs);for(const [id,preview]of this.#preview){const track=this.#tracks.get(id);if(!track||track.generation!==preview.generation)continue;track.from=track.plan.fields.map((_,i)=>this.#value(preview,i,nowMs));track.at=nowMs;track.sampledAt=-Infinity;}this.clearPreview();this.#now=nowMs;}
+  /** Detached declared-field baselines for the next fork step; no source references retained. */
+  snapshotPreview(entities) {
+    return entities.map(entity => {
+      const type=entity.type ?? entity.source.constructor, plan=compileRenderSchema(type), data=captureRenderData(plan,entity.source);
+      return {id:entity.id,generation:entity.generation,type,source:writeRenderModel(plan,{},data.values,data.shapes)};
+    });
+  }
   /** Publish immediate schema-only local fork models. This never replaces authoritative tracks. */
   capturePreview(packet, nowMs) {
     const started = performance.now(); let bytes = 0;
@@ -62,10 +70,17 @@ export class PresentationRuntime {
       if (!entity.source || typeof entity.source !== 'object') throw new TypeError('preview source required');
       const plan = compileRenderSchema(entity.type ?? entity.source.constructor), authority = this.#tracks.get(entity.id);
       if (!authority || authority.generation !== entity.generation || authority.plan !== plan) throw new TypeError('preview must match a live authoritative render identity and schema');
-      const data = captureRenderData(plan, entity.source), model = {};
+      const data = captureRenderData(plan, entity.source), old=this.#preview.get(entity.id);
+      const initial=entity.initialSource ? captureRenderData(plan,entity.initialSource) : authority.target;
+      const same=old && old.generation===entity.generation && old.plan===plan;
+      const from=same ? plan.fields.map((_,i)=>this.#value(old,i,nowMs)) : plan.fields.map((_,i)=>this.#value(authority,i,nowMs));
+      const at=same ? nowMs : Math.min(nowMs,finite(packet.phaseStartMs ?? nowMs,'phaseStartMs'));
+      const end=Math.max(nowMs+1,finite(packet.phaseStartMs ?? nowMs,'phaseStartMs')+(packet.stepMs ?? this.#stepMs));
+      const model=same ? old.model : {};
       bytes += data.values.length * 8 + data.shapes.length * 4;
       writeRenderModel(plan, model, data.values, data.shapes);
-      const entry = { id: entity.id, generation: entity.generation, plan, data, model, source: entity.source, sequence };
+      const entry = { id: entity.id, generation: entity.generation, plan, data, target:data, from,at,durationMs:end-at,preview:true,
+        model,source:entity.source,sequence,sampledAt:-Infinity,sampleValues:same?old.sampleValues:undefined };
       next.set(entity.id, entry); sources.set(entity.source, entry);
     }
     this.#preview = next; this.#previewSources = sources; this.#previewRevision = revision; this.#previewSequence = sequence; this.#previewTimeMs = timeMs; this.#now = nowMs;
@@ -74,6 +89,8 @@ export class PresentationRuntime {
   }
   isModel(value) {
     const owner = value && this.#models.get(value);
+    const preview=owner&&this.#preview.get(owner.id);
+    if(preview?.model===value&&this.#previewSelection.get(owner.id)===owner.generation)return true;
     const current = owner && this.#tracks.get(owner.id);
     return !!current && current.generation === owner.generation && current.model === value;
   }
@@ -123,8 +140,8 @@ export class PresentationRuntime {
       const same = mode === 'continuous' && old && old.generation === generation && old.plan === plan;
       const snap = mode !== 'continuous' || entity.teleport === true || !!same && positionDiscontinuity(plan.policies, old, target, this.#snapDistance);
       if (same && !snap) inferFieldResets(plan.policies, old, target, timeMs, reset);
-      const from = same && preview?.generation === generation && this.#previewSelection.get(entity.id) === generation
-        ? preview.data.values.slice()
+      const from = same && !snap && preview?.generation === generation && this.#previewSelection.get(entity.id) === generation
+        ? plan.fields.map((_,i)=>this.#value(preview,i,nowMs))
         : !same && !snap ? (initial ? initial.values.slice() : seedFieldValues(plan.policies, target.values)) : target.values.slice();
       const velocity = this.#extrapolation ? new Array(plan.fields.length).fill(0) : null;
       for (let i = 0; i < plan.fields.length; i++) {
@@ -134,7 +151,7 @@ export class PresentationRuntime {
           if (!Number.isFinite(from[i] - value)) throw new RangeError('extrapolation correction overflow: ' + field.name);
         }
         if (same && !snap && !reset.has(i) && typeof value === 'number' && typeof old.target.values[i] === 'number') {
-          from[i] = this.#value(old, i, nowMs);
+          if (!preview || preview.generation!==generation) from[i] = this.#value(old, i, nowMs);
           if (field.code === RenderObject.DECAY && value > old.target.values[i]) from[i] = value;
           if (this.#extrapolation?.fields.has(field.name)) {
             if (!isLinearField(field.code)) throw new TypeError('extrapolation requires LINEAR: ' + field.name);
@@ -163,8 +180,8 @@ export class PresentationRuntime {
   #value(track, index, now) {
     const field = track.plan.fields[index], from = track.from[index], to = track.target.values[index];
     if (from == null || to == null || field.kind === 'discrete') return to;
-    const alpha = fraction(track, now, this.#stepMs);
-    if (this.#extrapolation?.fields.has(field.name)) {
+    const alpha = fraction(track, now, track.durationMs ?? this.#stepMs);
+    if (!track.preview && this.#extrapolation?.fields.has(field.name)) {
       const age = Math.min(this.#extrapolation.maxMs, Math.max(0, now - track.at));
       // 같은 표현이지만 to + (from-to)는 큰 목표에서 작은 from을 잃습니다.
       const value = evaluate('number', from, to, alpha) + track.velocity[index] * age;
@@ -183,7 +200,11 @@ export class PresentationRuntime {
   sample(id, generation, nowMs) {
     this.#checkClock(nowMs);
     const preview = this.#preview.get(id);
-    if (preview && preview.generation === generation && this.#previewSelection.get(id) === generation) { this.#now = nowMs; return preview.model; }
+    if (preview && preview.generation === generation && this.#previewSelection.get(id) === generation) {
+      const values=preview.sampleValues ??= new Array(preview.plan.fields.length);
+      for(let i=0;i<values.length;i++)values[i]=this.#value(preview,i,nowMs);
+      writeRenderModel(preview.plan,preview.model,values,preview.target.shapes);this.#models.set(preview.model,preview);this.#now=nowMs;return preview.model;
+    }
     const track = this.#tracks.get(id);
     if (!track || track.generation !== generation) { this.#now = nowMs; return null; }
     if (track.sampledAt !== nowMs) {
@@ -204,7 +225,7 @@ export class PresentationRuntime {
       return this.sample(owner.id, owner.generation, nowMs);
     }
     const preview = source && typeof source === 'object' ? this.#previewSources.get(source) : null;
-    if (preview && this.#previewSelection.get(preview.id) === preview.generation) { this.#now = nowMs; return preview.model; }
+    if (preview && this.#previewSelection.get(preview.id) === preview.generation) return this.sample(preview.id,preview.generation,nowMs);
     const track = this.#sources.get(source);
     if (track) return this.sample(track.id, track.generation, nowMs);
     this.#now = nowMs; return null;

@@ -21,6 +21,16 @@ pulse(timestampMs)는 자동 rAF와 같은 누적·pacing·maxCatchupSteps 경�
 
 ## 선택적 로컬 입력 미리보기
 
+`loop.observeInput(timestamp)`가 권위 틱 전에 같은 `getInput()`을 관찰합니다. 자동 RAF loop는 프레임마다 이 경로를 사용하고, 외부 RAF와 deadline timer를 조합할 때는 RAF에서 observeInput, timer에서 pulse를 호출합니다. pulse는 관찰된 held bytes를 사용하며 명령을 canonical queue에 한 번만 제출합니다. 틱 사이의 held 변경은 하나의 미래 표본을 교체하고 edge 명령은 순서대로 축적합니다. provisional `observationId`와 `sequence:null`은 실제 SDK command sequence가 아닙니다. SDK queue 결과로 한 번 묶이고 `session.localInputState.capture`의 정확한 executeTick에서만 확인합니다. RoomSession의 metadata tick은 baseTick을 포함한 global tick입니다.
+
+`LocalInputPreview.observe()`는 별도 scope에서 같은 update로 미래 표본을 계산하고 `PresentationRuntime`는 그 표본을 schema/time으로 매 RAF 평가합니다. 동일 입력/명령 관찰은 캐시되어 fork를 실행하지 않습니다. 변경된 held 관찰은 기존 미래 한 틱을 다시 계산하며 RAF 수만큼 세계 시간을 증가시키지 않습니다. `fork.restore(snapshot)`를 제공하면 명시적 detached scope를 재사용합니다. 실제 authority에 snapshot을 설치하지 않습니다.
+
+`createDeadlineScheduler({getIntervalMs,pulse,maxBacklogTicks,onGap})`가 단일 timeout과 deadline cadence를 소유합니다. start/stop, wake(즉시 전달하되 deadline 유지), rebase(pause/resume/TPS 이후), running/deadlineMs를 제공합니다. 게임은 UI·persist·session gating만 결정합니다. 큰 gap은 미처리 deadline을 버리고 다시 기준을 잡으며 timer 지연과 게임 step을 선점할 수는 없습니다.
+
+입력 지연·room baseTick으로 capture 사이의 실행 tick이 떨어져 있으면 그 간격도 실제 fork step으로 재생합니다. `reconcile({input,...})`에 게임이 확인한 baseline held bytes를 명시합니다(`localInputState.replayInput`이 현재 immutable frame을 알고 있으면 사용 가능). 없으면 gap prediction은 오류로 중단하며 입력이나 게임 규칙을 추측하지 않습니다. `executedInput`은 실제 step이 없었던 새 core에서는 null입니다. canonical command의 executeTick은 그대로 유지하고 provisional observation만 그 뒤의 제한된 미래 slot에서 평가합니다. gap tick도 maxFutureTicks와 비용 계측에 포함합니다.
+
+게임이 `{input,commands,predict:false}`를 관찰하면 미확정 canonical command를 보존하면서 coalesced prediction slot을 해제합니다. idle/자동 실행 등 새 로컬 intent가 없을 때 매 authority tick마다 세계를 복제할 필요가 없으며, 다음 실제 intent에서 현재 완료 snapshot으로 rebase할 수 있습니다. `submit` 별칭은 제공하지 않습니다.
+
 `LocalInputPreview`는 권위 simulation이 아니라, 앱이 준 확정 snapshot에서 만든 **명시적 detached fork**에만 `step(input, context)`를 호출합니다. 어댑터의 fork step은 기존 게임 update 함수를 재사용하고 모든 외부 효과를 억제해야 합니다. 라이브 session의 save/load 왕복, live closure, 행동 이름별 분기, DOM callback의 게임 로직 실행은 지원하지 않습니다. snapshot cloning/forking은 어댑터 경계에 있으며 실패해도 `createLoop`는 이미 수행한 단일 `session.advance(input)`을 취소하거나 두 번 제출하지 않습니다.
 
 ```js
@@ -38,8 +48,8 @@ preview.reconcile({ snapshot, revision, tick, epoch, confirmedSequence, timeMs, 
 
 `createLoop`은 일반 입력 bytes 또는 `{input, commands:[{payload}]}` sample을 받습니다. 둘 다 **같은 getInput/sample 경로**에서 왔으며, packet의 각 command는 `session.queueCommand(payload)`로 한 번 제출하고 SDK가 반환한 원래 command sequence와 detached payload를 그 tick의 fork step context에 함께 전달합니다. input submission sequence와 SDK command sequence는 별도 namespace로 확인·보관합니다. commands가 있는 packet은 해당 session이 `queueCommand`를 제공해야 합니다. 기존 raw-bytes `getInput`은 그대로 동작합니다. pending 이력은 기본 최대 8개이며 tick horizon도 기본 8, 확인 snapshot의 유효 기간은 기본 250ms입니다. 초과·epoch 변경·큰 clock gap·blur·visibility 숨김·stop은 prediction을 지웁니다. load/reset/teleport/join/resync는 pending 입력을 버리고 새 checkpoint를 요구하며 rollback은 확인된 input/command sequence까지 제거한 뒤 나머지를 checkpoint부터 재생합니다. 재활성화와 lifecycle 이후에는 새로운 확인 checkpoint를 reconcile하세요.
 
-`onAdvance(result, submission)`의 두 번째 값은 advanced tick에서만 `{sequence,tick,epoch,timeMs,commands}`를 제공합니다. 소비자는 자신의 authoritative confirmed tick/command maxima를 이 submission ID에 연결해 `reconcile({confirmedSequence,confirmedCommandSequence,...})`에 전달할 수 있습니다. 두 번째 인자를 사용하지 않는 기존 callback은 그대로 호환됩니다.
+`onAdvance(result, submission)`의 두 번째 값은 새로운 immutable capture에서 `{sequence,captureTick,executeTick,epoch,timeMs,commands}`를 제공합니다. held/stalled에서도 로컬 입력이 이미 capture될 수 있으므로 advanced 결과로 확인하지 않습니다. `reconcile`의 tick은 실제 snapshot boundary이며 그보다 앞에서 실행된 capture만 제거합니다. `confirmedCommandSequence`는 실행한 SDK command maxima입니다. `flushInput(timestamp)`는 suspended UI/save 명령을 같은 관찰·제출 경로에서 한 번 실행할 때 사용합니다.
 
-`PresentationRuntime`에 선택된 local identity만 즉시 preview schema model로 겹칩니다. 매 RAF에서 세계를 복제·재실행하지 않습니다. 입력 제출마다 fork를 한 번 증분 실행하고 authoritative 확인 때만 checkpoint clone/fork/replay를 합니다. 확인 capture는 기존 preview pose를 correction 출발점으로 사용해 공통 schema 곡선으로 잔차를 줄입니다. remote ID는 선택하지 않으면 authoritative track만 표시합니다. 원본 상태 대신 렌더 model을 직접 사용하며 preview 없는 객체를 위한 source fallback은 없습니다.
+`PresentationRuntime`는 선택된 local identity의 현재 표시에서 실제 fork 미래 표본까지 schema 곡선을 매 RAF 평가합니다. 입력이 바뀌거나 canonical 경계가 바뀔 때만 bounded restore/replay를 하고, 동일 held 관찰에는 저장한 미래 표본을 재사용합니다. remote ID는 선택하지 않으면 authoritative track만 표시합니다. timer/step callback은 협력형이며 거대한 게임 update를 하드 실시간으로 선점하지 않습니다.
 
 `metrics`는 추정 snapshot clone/correction bytes, replay 입력 bytes, clone/fork/replay/correction 시간을 구분합니다. `PresentationRuntime.previewMetrics`는 schema capture 시간과 선언-field/shape 기준 추정 capture bytes를 계측합니다. 이는 정밀 heap allocation/전송 bytes나 FPS 개선 증명이 아닙니다. preview OFF는 기존 input/session 경로를 그대로 쓰며, 선택 기능은 [실제 입력/WebGL 예제](../../examples/input-preview/index.html)와 browser E2E에서 별도로 확인합니다.

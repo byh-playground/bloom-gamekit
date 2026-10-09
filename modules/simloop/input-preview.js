@@ -1,4 +1,10 @@
 const MODES = new Set(['continuous', 'rollback', 'load', 'reset', 'teleport', 'join', 'resync']);
+function equalInput(a,b) {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+  if (ArrayBuffer.isView(a) && ArrayBuffer.isView(b)) { if(a.byteLength!==b.byteLength)return false;const x=new Uint8Array(a.buffer,a.byteOffset,a.byteLength),y=new Uint8Array(b.buffer,b.byteOffset,b.byteLength);return x.every((v,i)=>v===y[i]); }
+  const keys=Object.keys(a);return keys.length===Object.keys(b).length&&keys.every(key=>Object.hasOwn(b,key)&&equalInput(a[key],b[key]));
+}
 
 function copyInput(input, seen = new Set()) {
   if (input instanceof Uint8Array) return input.slice();
@@ -40,30 +46,33 @@ function byteLength(value, seen = new Set()) {
  * the same game simulation update while suppressing all external side effects.
  */
 export class LocalInputPreview {
-  #forkFactory; #cloneSnapshot; #readEntities; #presentation; #maxPending; #maxFutureTicks; #maxAgeMs;
-  #snapshot = null; #fork = null; #pending = []; #revision = -1; #tick = -1; #epoch = -1; #generation = 0;
-  #sequence = 0; #timeMs = -Infinity; #disposed = false; #enabled = true;
-  #metrics = { snapshotBytes: 0, correctionBytes: 0, replayBytes: 0, snapshotCloneMs: 0, forkMs: 0, replayMs: 0, replayedInputs: 0, corrections: 0, correctionMs: 0, previewPublishes: 0, rejectedEpoch: 0, rejectedHorizon: 0, rejectedAge: 0, rejectedCapacity: 0 };
+  #forkFactory; #cloneSnapshot; #readEntities; #presentation; #maxPending; #maxFutureTicks; #maxAgeMs; #stepMs;
+  #snapshot = null; #fork = null; #pending = []; #observed = null; #baseInput; #revision = -1; #tick = -1; #epoch = -1; #generation = 0;
+  #sequence = 0; #timeMs = -Infinity; #disposed = false; #enabled = true; #captureSequence = -1;
+  #metrics = { snapshotBytes: 0, correctionBytes: 0, replayBytes: 0, snapshotCloneMs: 0, forkMs: 0, replayMs: 0, replayedInputs: 0, replayGapSteps:0, corrections: 0, correctionMs: 0, previewPublishes: 0, rejectedEpoch: 0, rejectedHorizon: 0, rejectedAge: 0, rejectedCapacity: 0 };
 
   /** @param {{createFork:(snapshot:unknown)=>{step:(input:unknown,context:object)=>void},cloneSnapshot?:(snapshot:unknown)=>unknown,readEntities:(fork:unknown)=>Array, presentation?:{selectPreview:(ids:Array)=>void,capturePreview:(packet:object,nowMs:number)=>boolean,clearPreview?:()=>void},maxPendingInputs?:number,maxFutureTicks?:number,maxAgeMs?:number}} options */
   constructor({ createFork, cloneSnapshot = value => structuredClone(value), readEntities, presentation,
-    maxPendingInputs = 8, maxFutureTicks = 8, maxAgeMs = 250 } = {}) {
+    maxPendingInputs = 8, maxFutureTicks = 8, maxAgeMs = 250, stepMs = 100 } = {}) {
     if (typeof createFork !== 'function' || typeof readEntities !== 'function') throw new TypeError('preview fork and entity reader are required');
     if (presentation && (typeof presentation.selectPreview !== 'function' || typeof presentation.capturePreview !== 'function')) throw new TypeError('presentation preview capability');
     if (!Number.isInteger(maxPendingInputs) || maxPendingInputs < 1 || maxPendingInputs > 64) throw new RangeError('maxPendingInputs');
     if (!Number.isInteger(maxFutureTicks) || maxFutureTicks < 1 || maxFutureTicks > 64) throw new RangeError('maxFutureTicks');
     if (!Number.isFinite(maxAgeMs) || maxAgeMs <= 0 || maxAgeMs > 2000) throw new RangeError('maxAgeMs');
+    if (!Number.isFinite(stepMs) || stepMs <= 0) throw new RangeError('stepMs');
     this.#forkFactory = createFork; this.#cloneSnapshot = cloneSnapshot; this.#readEntities = readEntities;
     this.#presentation = presentation; this.#maxPending = maxPendingInputs; this.#maxFutureTicks = maxFutureTicks; this.#maxAgeMs = maxAgeMs;
+    this.#stepMs = stepMs;
     if (typeof cloneSnapshot !== 'function') throw new TypeError('cloneSnapshot');
   }
 
   get pendingCount() { return this.#pending.length; }
   get enabled() { return this.#enabled; }
+  get ready() { return !!this.#snapshot && !!this.#fork && this.#enabled && !this.#disposed && performance.now()-this.#timeMs<=this.#maxAgeMs; }
   get metrics() { return { ...this.#metrics, pendingCount: this.#pending.length, epoch: this.#epoch, generation: this.#generation }; }
 
   #clear() {
-    this.#pending.length = 0; this.#fork = null; this.#snapshot = null;
+    this.#pending.length = 0; this.#observed = null; this.#fork = null; this.#snapshot = null; this.#baseInput=undefined; this.#captureSequence = -1;
     this.#presentation?.clearPreview?.();
     this.#presentation?.selectPreview([]);
   }
@@ -85,25 +94,25 @@ export class LocalInputPreview {
     if (changedRevision && !['rollback', 'load', 'reset', 'teleport', 'join', 'resync'].includes(mode)) throw new RangeError('new preview revision requires an explicit lifecycle mode');
     for (const key of ['confirmedSequence', 'confirmedCommandSequence']) if (checkpoint[key] !== undefined && (!Number.isSafeInteger(checkpoint[key]) || checkpoint[key] < 0)) throw new RangeError('checkpoint ' + key);
     const discontinuity = checkpoint.reset || ['load', 'reset', 'teleport', 'join', 'resync'].includes(mode) || (this.#epoch >= 0 && checkpoint.epoch !== this.#epoch);
-    if (discontinuity) this.#pending.length = 0;
-    else this.#pending = this.#pending.filter(input => (checkpoint.confirmedSequence === undefined || input.sequence > checkpoint.confirmedSequence) &&
-      input.tick > checkpoint.tick && input.tick - checkpoint.tick <= this.#maxFutureTicks && checkpoint.timeMs - input.timeMs <= this.#maxAgeMs).map(input => ({ ...input,
-        commands: checkpoint.confirmedCommandSequence === undefined ? input.commands : input.commands.filter(command => command.sequence > checkpoint.confirmedCommandSequence) }));
+    if (discontinuity) { this.#pending.length = 0; this.#observed = null; this.#captureSequence = -1; }
+    else this.#pending = this.#pending.filter(input => input.executeTick >= checkpoint.tick && input.executeTick - checkpoint.tick < this.#maxFutureTicks).map(input => ({ ...input,
+      commands: checkpoint.confirmedCommandSequence === undefined ? input.commands : input.commands.filter(command => command.sequence > checkpoint.confirmedCommandSequence) }));
     const clonedAt = performance.now();
     const snapshot = this.#cloneSnapshot(checkpoint.snapshot);
     this.#metrics.snapshotCloneMs += performance.now() - clonedAt;
     const snapshotSize = byteLength(snapshot);
     this.#metrics.snapshotBytes += snapshotSize; this.#metrics.correctionBytes += snapshotSize;
     this.#snapshot = snapshot; this.#revision = checkpoint.revision; this.#tick = checkpoint.tick; this.#epoch = checkpoint.epoch;
+    this.#baseInput=checkpoint.input===undefined?undefined:copyInput(checkpoint.input);
     this.#timeMs = checkpoint.timeMs; this.#generation++;
-    this.#rebuild(checkpoint.timeMs);
+    if(this.#pending.length||this.#observed||!this.#fork)this.#rebuild(checkpoint.timeMs);
     this.#metrics.corrections++; this.#metrics.correctionMs += performance.now() - start;
-    if (!this.#pending.length) { this.#presentation?.selectPreview([]); this.#presentation?.clearPreview?.(); return true; }
-    return this.#publish(checkpoint.timeMs, mode === 'teleport');
+    if (!this.#pending.length && !this.#observed) { this.#presentation?.clearPreview?.(); return true; }
+    return true;
   }
 
-  /** Called by createLoop after the single successful authoritative submission. */
-  submit(input, { sequence, tick, epoch, timeMs, commands = [] }) {
+  /** Observe a coalesced future frame BEFORE authority advances. Provisional IDs are not SDK command sequences. */
+  observe(input, { sequence, tick, epoch, timeMs, commands = [] }) {
     this.#assertLive();
     if (!this.#enabled) return false;
     if (!this.#snapshot || !this.#fork) return false;
@@ -111,43 +120,72 @@ export class LocalInputPreview {
       if (name === 'timeMs' ? !Number.isFinite(value) : !Number.isSafeInteger(value) || value < 0) throw new RangeError('preview submission ' + name);
     }
     if (epoch !== this.#epoch) { this.#metrics.rejectedEpoch++; this.#clear(); return false; }
-    if (tick <= this.#tick || tick - this.#tick > this.#maxFutureTicks) { this.#metrics.rejectedHorizon++; this.#clear(); return false; }
+    const futureEnd=Math.max(this.#tick,...this.#pending.map(frame=>frame.executeTick+1));
+    if (tick < this.#tick || futureEnd-this.#tick+1 > this.#maxFutureTicks) { this.#metrics.rejectedHorizon++; this.#clear(); return false; }
     if (timeMs - this.#timeMs > this.#maxAgeMs) { this.#metrics.rejectedAge++; this.#clear(); return false; }
     if (this.#pending.length >= this.#maxPending) { this.#metrics.rejectedCapacity++; this.#clear(); return false; }
     if (!Array.isArray(commands)) throw new TypeError('preview commands must be an array');
-    const immutableCommands = commands.map(command => {
-      if (!command || !Number.isSafeInteger(command.sequence) || command.sequence < 0 || command.payload === undefined) throw new TypeError('preview command must retain SDK sequence and payload');
-      return { sequence: command.sequence, payload: copyInput(command.payload) };
-    });
-    const owned = { sequence, tick, epoch, timeMs, input: copyInput(input), commands: immutableCommands };
-    const started = performance.now();
-    this.#fork.step(copyInput(owned.input), { sequence, tick, epoch, commands: copyInput(owned.commands), speculative: true });
-    this.#metrics.replayMs += performance.now() - started; this.#metrics.replayBytes += byteLength(owned.input) + byteLength(owned.commands); this.#metrics.replayedInputs++;
-    this.#pending.push(owned); this.#sequence = Math.max(this.#sequence, sequence);
-    return this.#publish(timeMs, false);
+    const owned = { sequence, tick, epoch, timeMs, input: copyInput(input), commands: copyInput(commands) };
+    const same = this.#observed && equalInput(this.#observed.input, owned.input) && equalInput(this.#observed.commands, owned.commands);
+    if (same) return true;
+    this.#observed = owned; this.#rebuild(timeMs); return true;
   }
+
+  /** Bind provisional observations once to immutable SDK captures, including their real execution ticks. */
+  commit(capture, nowMs) {
+    this.#assertLive();
+    if (!this.#enabled) return false;
+    if (!this.#snapshot || !capture || capture.sequence === this.#captureSequence) return false;
+    if (!Number.isSafeInteger(capture.executeTick) || capture.executeTick < this.#tick) return false;
+    if(capture.executeTick-this.#tick>=this.#maxFutureTicks){this.#metrics.rejectedHorizon++;this.#clear();return false;}
+    this.#captureSequence = capture.sequence;
+    this.#pending = this.#pending.filter(frame => frame.executeTick !== capture.executeTick);
+    if(capture.predict!==false||capture.commands?.length)this.#pending.push({ ...capture, input: copyInput(capture.input), commands: copyInput(capture.commands ?? []), timeMs: nowMs });
+    if(Number.isSafeInteger(capture.boundaryTick))this.#pending=this.#pending.filter(frame=>frame.executeTick>=capture.boundaryTick);
+    this.#observed = null;
+    if (this.#pending.length > this.#maxPending) { this.#metrics.rejectedCapacity++; this.#clear(); return false; }
+    return true;
+  }
+  /** No active device intent: preserve immutable future captures and release the coalesced slot smoothly. */
+  cancelObservation(nowMs){const changed=!!this.#observed;this.#observed=null;if(!this.#pending.length)this.#presentation?.releasePreview?.(nowMs);else if(changed)this.#rebuild(nowMs);}
 
   #rebuild(timeMs) {
     if (!this.#snapshot) { this.#fork = null; return; }
     const started = performance.now();
-    this.#fork = this.#forkFactory(this.#cloneSnapshot(this.#snapshot));
+    if (this.#fork?.restore) this.#fork.restore(this.#cloneSnapshot(this.#snapshot));
+    else this.#fork = this.#forkFactory(this.#cloneSnapshot(this.#snapshot));
     if (!this.#fork || typeof this.#fork.step !== 'function') throw new TypeError('fork must expose step(input, context)');
     this.#metrics.forkMs += performance.now() - started;
-    for (const entry of this.#pending) {
-      if (entry.epoch !== this.#epoch || entry.tick <= this.#tick || entry.tick - this.#tick > this.#maxFutureTicks || timeMs - entry.timeMs > this.#maxAgeMs) continue;
+    let tick = this.#tick,held=this.#baseInput;
+    for (const entry of this.#pending.slice().sort((a,b) => a.executeTick-b.executeTick)) {
+      while(tick<entry.executeTick){
+        if(held===undefined)throw new TypeError('Replay gaps require explicit confirmed checkpoint input');
+        const gapAt=performance.now();this.#fork.step(copyInput(held),{tick:tick++,epoch:this.#epoch,commands:[],speculative:true,replay:true,gap:true});
+        this.#metrics.replayMs+=performance.now()-gapAt;this.#metrics.replayedInputs++;this.#metrics.replayGapSteps++;this.#metrics.replayBytes+=byteLength(held);
+      }
       const replayAt = performance.now();
-      this.#fork.step(copyInput(entry.input), { sequence: entry.sequence, tick: entry.tick, epoch: entry.epoch, commands: copyInput(entry.commands), speculative: true, replay: true });
+      this.#fork.step(copyInput(entry.input), { sequence: entry.sequence, tick: tick++, executeTick: entry.executeTick, epoch: this.#epoch, commands: copyInput(entry.commands), speculative: true, replay: true });
+      held=entry.input;
       this.#metrics.replayMs += performance.now() - replayAt; this.#metrics.replayBytes += byteLength(entry.input) + byteLength(entry.commands); this.#metrics.replayedInputs++;
     }
+    if (this.#observed) {
+      const entry = this.#observed, replayAt = performance.now();
+      this.#fork.step(copyInput(entry.input), { sequence: entry.sequence, tick, epoch: this.#epoch, commands: copyInput(entry.commands), speculative: true });
+      this.#metrics.replayMs += performance.now()-replayAt; this.#metrics.replayedInputs++; this.#metrics.replayBytes += byteLength(entry.input)+byteLength(entry.commands);
+    }
+    if (this.#pending.length || this.#observed) this.#publish(timeMs);
   }
 
-  #publish(timeMs, teleport) {
+  #publish(timeMs, initial) {
+    if (!this.#enabled) return false;
     if (!this.#presentation || !this.#fork) return true;
     const entities = this.#readEntities(this.#fork);
     if (!Array.isArray(entities) || entities.some(entity => !entity || typeof entity.id !== 'string' || !Number.isSafeInteger(entity.generation) || !entity.source)) throw new TypeError('preview entities must be schema-backed identities');
     this.#presentation.selectPreview(entities.map(({ id, generation }) => ({ id, generation })));
+    const starts = new Map((initial ?? []).map(entity => [entity.id, entity.source]));
     const accepted = this.#presentation.capturePreview({ revision: this.#revision, sequence: ++this.#sequence,
-      timeMs, entities: entities.map(entity => ({ ...entity, ...(teleport ? { teleport: true } : {}) })) }, timeMs);
+      timeMs, phaseStartMs: this.#timeMs, stepMs: this.#stepMs,
+      entities: entities.map(entity => ({ ...entity, initialSource: starts.get(entity.id) })) }, timeMs);
     if (accepted) this.#metrics.previewPublishes++;
     return accepted;
   }

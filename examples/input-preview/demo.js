@@ -2,89 +2,47 @@ import { ActionState, createDOMInput } from '../../dist/input.js';
 import { Renderer2D } from '../../dist/rendering.js';
 import { PresentationRuntime, RenderObject } from '../../dist/interpolation.js';
 import { LocalInputPreview, createLoop } from '../../dist/simloop.js';
-
-const DT = 1000 / 60, MIN_X = 24, MAX_X = 696;
+import { createSession, hashBytes, profiles } from '../../dist/rollback-netcode.js';
+const DT=100,encoder=new TextEncoder(),decoder=new TextDecoder();
 class Unit extends RenderObject {
-  constructor(color) { super(); this.x = 80; this.y = 100; this.direction = 1; this.roll = { progress: 0 }; this.flash = 0; this.color = color; }
-  static renderSchema = { x: this.POSITION_X, y: this.POSITION_Y, direction: this.STEP, 'roll.progress': this.CYCLE, flash: this.DECAY, color: this.STEP };
-  render(renderer, model) {
-    renderer.rect(model.x, model.y, 24, 28, model.flash ? [1, .65, .2, 1] : model.color, 0);
-    renderer.rect(model.x + model.direction * 13, model.y - 19, 11, 3, [1, 1, 1, .85], 0);
-  }
+ constructor(color){super();this.x=80;this.y=100;this.direction=1;this.roll={progress:0};this.flash=0;this.color=color;}
+ static renderSchema={x:this.POSITION_X,y:this.POSITION_Y,direction:this.STEP,'roll.progress':this.CYCLE,flash:this.DECAY,color:this.STEP};
+ render(r,m){r.rect(m.x,m.y,24,28,m.flash?[1,.65,.2,1]:m.color);r.rect(m.x+m.direction*13,m.y-19,11,3,[1,1,1,.85]);}
 }
-function stepUnit(unit, input, commands = []) {
-  const axis = input[0] === 1 ? -1 : input[0] === 2 ? 1 : 0;
-  if (axis) unit.direction = axis;
-  unit.x += axis * 1.2;
-  if (commands.some(command => command.payload[0] === 1)) { unit.x += unit.direction * 22; unit.roll.progress = .01; unit.flash = 1; }
-  else { unit.roll.progress = (unit.roll.progress + .18) % 1; unit.flash = Math.max(0, unit.flash - .2); }
-  if (unit.x < MIN_X || unit.x > MAX_X) { unit.x = Math.max(MIN_X, Math.min(MAX_X, unit.x)); unit.direction *= -1; unit.flash = 1; }
-}
-function bytes(state) { return { x: state.x, y: state.y, direction: state.direction, roll: { ...state.roll }, flash: state.flash }; }
-
-export function startInputPreviewDemo(canvas, status) {
-  const renderer = new Renderer2D(canvas, { antialias: false, preserveDrawingBuffer: true });
-  renderer.resize(canvas.clientWidth, canvas.clientHeight, devicePixelRatio || 1);
-  const inputState = new ActionState();
-  const domInput = createDOMInput({ target: canvas, state: inputState, keys: { KeyA: 'left', ArrowLeft: 'left', KeyD: 'right', ArrowRight: 'right', Space: 'roll' } });
-  const presentation = new PresentationRuntime({ stepMs: DT, snapDistance: 180 });
-  const authorityUnit = new Unit([.25, .55, 1, 1]), remoteUnit = new Unit([.9, .25, .25, 1]);
-  remoteUnit.x = 575; remoteUnit.y = 150;
-  let revision = 0, captureSequence = 0, commandSequence = 0, confirmedCommandSequence = 0, tick = 0, epoch = 0, lastConfirm = 0, queue = [], queuedCommands = [], localSequences = new Map(), paused = false, frames = 0, predictionEnabled = true;
-  const session = {
-    inputSize: 1, profile: { tickRate: 1000 / DT, maxCatchupSteps: 4 }, pace: 1, tick: 0, epoch: 0, closed: false, resimulating: false,
-    poll() {
-      const now = performance.now();
-      if (queue.length && now - queue[0].at >= 180) {
-        const item = queue.shift(); stepUnit(authorityUnit, item.input, item.commands); tick++;
-        lastConfirm = localSequences.get(item.tick) ?? lastConfirm; localSequences.delete(item.tick);
-        if (item.commands.length) confirmedCommandSequence = item.commands[item.commands.length - 1].sequence;
-        presentation.capture({ revision, sequence: ++captureSequence, timeMs: tick * DT, entities: [
-          { id: 'local', generation: 0, source: authorityUnit }, { id: 'remote', generation: 0, source: remoteUnit },
-        ] }, now);
-        preview.reconcile({ snapshot: { unit: bytes(authorityUnit) }, revision, tick, epoch, confirmedSequence: lastConfirm, confirmedCommandSequence, timeMs: now, mode: 'continuous' });
-      }
-    },
-    queueCommand(payload) { const id = ++commandSequence; queuedCommands.push({ sequence: id, payload: payload.slice() }); return id; },
-    advance(input) { this.tick++; queue.push({ tick: this.tick, input: Uint8Array.from(input), commands: queuedCommands.splice(0), at: performance.now() }); return { status: 'advanced', tick: this.tick }; },
-    releaseInput() { queue.length = 0; queuedCommands.length = 0; localSequences.clear(); },
-  };
-  const preview = new LocalInputPreview({ presentation,
-    createFork: snapshot => { const unit = Object.assign(new Unit([.15, 1, .55, 1]), snapshot.unit); return { unit, step: (input, context) => stepUnit(unit, input, context.commands) }; },
-    cloneSnapshot: snapshot => structuredClone(snapshot), readEntities: fork => [{ id: 'local', generation: 0, source: fork.unit }],
-    maxPendingInputs: 64, maxFutureTicks: 64, maxAgeMs: 1500,
-  });
-  presentation.capture({ revision: 0, sequence: 0, timeMs: 0, entities: [
-    { id: 'local', generation: 0, source: authorityUnit }, { id: 'remote', generation: 0, source: remoteUnit },
-  ] }, performance.now());
-  preview.reconcile({ snapshot: { unit: bytes(authorityUnit) }, revision: 0, tick: 0, epoch, confirmedCommandSequence, timeMs: performance.now(), mode: 'reset' });
-  let pose = {};
-  const loop = createLoop({ session, inputPreview: preview, canAdvance: () => !paused,
-    onAdvance(result, submission) { if (result.status === 'advanced' && submission) localSequences.set(submission.tick, submission.sequence); },
-    getInput() { const left = inputState.sample('left').held, right = inputState.sample('right').held; const roll = inputState.sample('roll').pressed;
-      inputState.consume(); return { input: Uint8Array.of(left === right ? 0 : left ? 1 : 2), commands: roll ? [{ payload: Uint8Array.of(1) }] : [] }; },
-    render({ alpha }) {
-      frames++; const now = performance.now(); renderer.beginFrame([.035, .07, .09, 1]);
-      renderer.rect(360, 115, 650, 2, [.25, .36, .4, 1]);
-      presentation.render(authorityUnit, renderer, now); presentation.render(remoteUnit, renderer, now);
-      renderer.endFrame(); const model = presentation.modelFor(authorityUnit, now); if (model) pose = model;
-      status.textContent = `authority x=${authorityUnit.x.toFixed(1)} · displayed x=${pose.x?.toFixed(1) ?? '—'} · tick=${tick} · pending=${preview.pendingCount}\npreview=${predictionEnabled ? 'on' : 'off'} · frame=${frames} · alpha=${alpha.toFixed(2)} · correction=${preview.metrics.corrections} · snapshot bytes=${preview.metrics.snapshotBytes}`;
-    },
-  });
-  preview.reconcile({ snapshot: { unit: bytes(authorityUnit) }, revision: 0, tick: 0, epoch, confirmedCommandSequence, timeMs: performance.now(), mode: 'reset' });
+function stepUnit(unit,input,commands=[]){const axis=input[0]===1?-1:input[0]===2?1:0;if(axis)unit.direction=axis;unit.x+=axis*20;
+ if(commands.some(c=>c.payload[0]===1)){unit.x+=unit.direction*22;unit.roll.progress=.01;unit.flash=1}else{unit.roll.progress=(unit.roll.progress+.18)%1;unit.flash=Math.max(0,unit.flash-.2)}
+ if(unit.x<24||unit.x>696){unit.x=Math.max(24,Math.min(696,unit.x));unit.direction*=-1;unit.flash=1;}}
+export function startInputPreviewDemo(canvas,status){
+ const renderer=new Renderer2D(canvas,{antialias:false,preserveDrawingBuffer:true});renderer.resize(canvas.clientWidth,canvas.clientHeight,devicePixelRatio||1);
+ const actions=new ActionState(),input=createDOMInput({target:canvas,state:actions,keys:{KeyA:'left',ArrowLeft:'left',KeyD:'right',ArrowRight:'right',Space:'roll'}});
+ let unit,remote,presentation,preview,session,loop,enabled=true,frames=0,pose={},captureSequence=0,worldTick=0;
+ const snapshot=()=>encoder.encode(JSON.stringify({unit,tick:worldTick}));
+ const checkpoint=mode=>preview.reconcile({snapshot:snapshot(),input:session.localInputState.replayInput??session.localInputState.executedInput,revision:0,tick:session.tick,epoch:0,timeMs:performance.now(),mode,
+   confirmedCommandSequence:session.localInputState.executedCommandSequence});
+ function start(){
+  unit=new Unit([.25,.55,1,1]);remote=new Unit([.9,.25,.25,1]);remote.x=575;remote.y=150;captureSequence=0;worldTick=0;
+  presentation=new PresentationRuntime({stepMs:DT,snapDistance:180});
+  const adapter={save:snapshot,validateSnapshot(bytes){try{const data=JSON.parse(decoder.decode(bytes)),u=data.unit;return Number.isSafeInteger(data.tick)&&data.tick>=0&&[u.x,u.y,u.direction,u.roll?.progress,u.flash].every(Number.isFinite)&&Array.isArray(u.color)&&u.color.length===4&&u.color.every(Number.isFinite)}catch{return false}},load(bytes){const data=JSON.parse(decoder.decode(bytes));Object.assign(unit,data.unit);worldTick=data.tick},step(frame){if(frame.tick!==worldTick)throw Error('Authority tick boundary');stepUnit(unit,frame.inputs[0].input,frame.inputs[0].commands);worldTick++;}};
+  session=createSession({players:['local'],localPlayerId:'local',sessionId:'preview',simulationVersion:'preview-v2',seed:1,inputSize:1,adapter,recordReplay:false,
+    profile:{...profiles.lockstep,tickRate:10,maxCatchupSteps:1,baseInputDelayTicks:2,minInputDelayTicks:2,maxInputDelayTicks:2,adaptiveInputDelay:false,pacingPolicy:'none',checksumInterval:1}});
+  const entities=()=>[{id:'local',generation:0,source:unit},{id:'remote',generation:0,source:remote}];
+  presentation.capture({revision:0,sequence:0,timeMs:0,entities:entities()},performance.now());
+  preview=new LocalInputPreview({presentation,stepMs:DT,maxPendingInputs:8,maxFutureTicks:8,maxAgeMs:1500,
+    createFork:bytes=>{const fork=new Unit([.15,1,.55,1]);let forkTick;const restore=b=>{const data=JSON.parse(decoder.decode(b));Object.assign(fork,data.unit);forkTick=data.tick;fork.color=[.15,1,.55,1]};restore(bytes);return{unit:fork,restore,step:(bytes,ctx)=>{if(ctx.tick!==forkTick)throw Error('Detached replay compressed a tick gap');for(const command of ctx.commands)if(command.executeTick!==undefined&&command.executeTick!==forkTick)throw Error('Canonical command executed at wrong preview tick');stepUnit(fork,bytes,ctx.commands);forkTick++}}},
+    readEntities:fork=>[{id:'local',generation:0,source:fork.unit}]});
+  checkpoint('reset');
+  loop=createLoop({session,inputPreview:preview,
+   getInput(){const left=actions.sample('left').held,right=actions.sample('right').held,roll=actions.sample('roll').pressed;actions.consume();return{input:Uint8Array.of(left===right?0:left?1:2),commands:roll?[{payload:Uint8Array.of(1)}]:[]}},
+   onPreviewError:error=>{throw error},
+   onAdvance(result){if(result.status!=='advanced')return;presentation.capture({revision:0,sequence:++captureSequence,timeMs:session.tick*DT,entities:entities()},performance.now());checkpoint('continuous')},
+   render(){frames++;const now=performance.now();renderer.beginFrame([.035,.07,.09,1]);renderer.rect(360,115,650,2,[.25,.36,.4,1]);presentation.render(unit,renderer,now);presentation.render(remote,renderer,now);renderer.endFrame();pose=presentation.modelFor(unit,now);status.textContent=`authority tick=${session.tick} · x=${unit.x.toFixed(1)} · displayed=${pose.x.toFixed(1)} · pending=${preview.pendingCount} · preview=${enabled}`;}});
   loop.start();
-  return {
-    renderer, presentation, preview, session, get diagnostics() { return { authorityX: authorityUnit.x, displayedX: pose.x, remoteX: remoteUnit.x, tick, pending: preview.pendingCount, frames, metrics: preview.metrics, presentationMetrics: presentation.previewMetrics, lastConfirm, confirmedCommandSequence }; },
-    setPreview(enabled) { predictionEnabled = enabled; preview.setEnabled(enabled); if (enabled) preview.reconcile({ snapshot: { unit: bytes(authorityUnit) }, revision, tick, epoch, confirmedSequence: lastConfirm, confirmedCommandSequence, timeMs: performance.now(), mode: 'reset' }); },
-    forceCollision() { authorityUnit.x = MAX_X - 1; authorityUnit.direction = 1; stepUnit(authorityUnit, Uint8Array.of(2), []); tick++; presentation.capture({ revision, sequence: ++captureSequence, timeMs: tick * DT, entities: [
-      { id: 'local', generation: 0, source: authorityUnit }, { id: 'remote', generation: 0, source: remoteUnit },
-    ] }, performance.now()); preview.reconcile({ snapshot: { unit: bytes(authorityUnit) }, revision, tick, epoch, confirmedSequence: lastConfirm, confirmedCommandSequence, timeMs: performance.now(), mode: 'continuous' }); },
-    clockGap() { loop.pulse(performance.now() + 5000); preview.reconcile({ snapshot: { unit: bytes(authorityUnit) }, revision, tick, epoch,
-      confirmedSequence: lastConfirm, confirmedCommandSequence, timeMs: performance.now(), mode: 'resync' }); },
-    restart() { queue.length = 0; queuedCommands.length = 0; localSequences.clear(); epoch++; session.epoch = epoch; revision++; captureSequence = 0; tick = 0; session.tick = 0; authorityUnit.x = 80; authorityUnit.direction = 1; authorityUnit.flash = 0;
-      loop.resetTiming(); presentation.capture({ revision, sequence: captureSequence, timeMs: 0, mode: 'reset', entities: [
-        { id: 'local', generation: 0, source: authorityUnit }, { id: 'remote', generation: 0, source: remoteUnit },
-      ] }, performance.now()); preview.reconcile({ snapshot: { unit: bytes(authorityUnit) }, revision, tick, epoch, confirmedCommandSequence, timeMs: performance.now(), mode: 'join' }); },
-    dispose() { paused = true; loop.stop(); preview.dispose(); domInput.dispose(); renderer.dispose(); },
-  };
+ }
+ start();
+ return{renderer,get presentation(){return presentation},get preview(){return preview},get session(){return session},
+  get diagnostics(){return{authorityX:unit.x,displayedX:pose.x,displayFlash:pose.flash,remoteX:remote.x,authorityTick:session.tick,authorityHash:hashBytes(snapshot()),frames,pending:preview.pendingCount,metrics:preview.metrics,presentationMetrics:presentation.previewMetrics,confirmedCommandSequence:session.localInputState.executedCommandSequence}},
+  setPreview(value){enabled=!!value;preview.setEnabled(enabled);if(enabled)checkpoint('reset')},
+  forceCollision(){unit.x=695;presentation.capture({revision:0,sequence:++captureSequence,timeMs:session.tick*DT,entities:[{id:'local',generation:0,source:unit},{id:'remote',generation:0,source:remote}]},performance.now());checkpoint('reset')},clockGap(){loop.resetTiming();checkpoint('resync')},
+  restart(){loop.stop();preview.dispose();session.close();start()},
+  dispose(){loop.stop();preview.dispose();session.close();input.dispose();renderer.dispose()}};
 }
