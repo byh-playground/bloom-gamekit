@@ -212,7 +212,7 @@ try {
   report.stages.push('DOM multi-pointer identity/coordinates/cancel/capture loss + keyboard aggregation + listener disposal');
 
   const moduleErrors = [];
-  for (const [name, check] of [['renderObject', runRenderObjectChecks], ['presentation', runPresentationChecks], ['device', exerciseWebGLDevice], ['vectorRenderer', exerciseVectorRenderer], ['reusableMeshes', exerciseReusableMeshes],
+  for (const [name, check] of [['renderObject', runRenderObjectChecks], ['presentation', runPresentationChecks], ['device', exerciseWebGLDevice], ['vectorRenderer', exerciseVectorRenderer], ['reusableMeshes', p => exerciseReusableMeshes(p)],
     ['fontAssets', p => exerciseFontAssetLoader(p, `http://127.0.0.1:${server.address().port}`)]]) {
     try { report[name] = await check(page); }
     catch (error) { console.error(`Browser module ${name}:`, error); moduleErrors.push(`${name}: ${error.message}`); }
@@ -226,6 +226,8 @@ try {
   assert.deepEqual(disposal, { state: 'disposed', bufferReleased: true, programReleased: true, textures: 0 });
   assert.equal(errors.length, 0, errors.join('\n'));
   assert.equal(moduleErrors.length, 0, moduleErrors.join('\n'));
+  assert.equal(report.reusableMeshes?.scenes.length, 4, 'reusable mesh helper must execute both native backends with and without MSAA');
+  report.stages.push('retained animated mesh → silhouette/instance batching → vector painter order → nested/rotated clipping → native context restoration/disposal, ANGLE and uniform backends, MSAA off/on');
   const vectorExample=await browser.newPage({viewport:{width:1000,height:700}}),exampleErrors=[];
   vectorExample.on('pageerror',error=>exampleErrors.push(error.message));
   await vectorExample.goto(`http://127.0.0.1:${server.address().port}/modules/rendering/examples/vector/index.html`);
