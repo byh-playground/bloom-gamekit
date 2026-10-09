@@ -649,8 +649,8 @@ var WHITE = Object.freeze([1, 1, 1, 1]);
 var VERTEX = `attribute vec2 a_position; attribute vec2 a_uv; attribute vec4 a_color;
 uniform mat3 u_projection; varying vec2 v_uv; varying vec4 v_color;
 void main(){vec3 p=u_projection*vec3(a_position,1.0);gl_Position=vec4(p.xy,0.0,1.0);v_uv=a_uv;v_color=a_color;}`;
-var FRAGMENT = `precision mediump float; uniform sampler2D u_texture; uniform float u_textured;
-varying vec2 v_uv; varying vec4 v_color; void main(){vec4 t=mix(vec4(1.0),texture2D(u_texture,v_uv),u_textured);float a=t.a*v_color.a;gl_FragColor=vec4(t.rgb*v_color.rgb*v_color.a,a);}`;
+var FRAGMENT = `precision mediump float; uniform sampler2D u_texture; uniform float u_textured; uniform float u_radial; uniform float u_whiteFlash;
+varying vec2 v_uv; varying vec4 v_color; void main(){vec2 uv=u_radial>0.5?vec2(clamp(length(v_uv),0.0,1.0),0.5):v_uv;vec4 t=mix(vec4(1.0),texture2D(u_texture,uv),u_textured);float a=t.a*v_color.a;vec3 rgb=mix(t.rgb*v_color.rgb*v_color.a,vec3(a),u_whiteFlash);gl_FragColor=vec4(rgb,a);}`;
 var finite = (n, label) => {
   if (!Number.isFinite(n)) throw new TypeError(`${label} must be finite`);
 };
@@ -708,7 +708,7 @@ var VectorRenderer = class {
     this.canvas = device.canvas;
     this.glyphAtlas = glyphAtlas;
     this.maxVertices = maxVertices;
-    this.pipeline = device.createPipeline({ vertex: VERTEX, fragment: FRAGMENT, stride: 32, attributes: [{ name: "a_position", size: 2, offset: 0 }, { name: "a_uv", size: 2, offset: 8 }, { name: "a_color", size: 4, offset: 16 }], uniforms: { u_projection: "matrix3fv", u_texture: "1i", u_textured: "1f" } });
+    this.pipeline = device.createPipeline({ vertex: VERTEX, fragment: FRAGMENT, stride: 32, attributes: [{ name: "a_position", size: 2, offset: 0 }, { name: "a_uv", size: 2, offset: 8 }, { name: "a_color", size: 4, offset: 16 }], uniforms: { u_projection: "matrix3fv", u_texture: "1i", u_textured: "1f", u_radial: "1f", u_whiteFlash: "1f" } });
     this.buffer = device.createVertexBuffer({ capacityBytes: initialVertices * 32 });
     this.white = device.createTexture({ width: 1, height: 1, data: new Uint8Array([255, 255, 255, 255]) }, { format: "rgba", premultiplied: true, filter: "nearest" });
     this.vertices = new Float32Array(initialVertices * 8);
@@ -722,6 +722,8 @@ var VectorRenderer = class {
     this.groups = [];
     this.groupTargets = [];
     this.activeTexture = this.white;
+    this.activeRadial = false;
+    this.activeWhiteFlash = false;
     this.state = "ready";
     this.projection = new Float32Array([2 / this.canvas.width, 0, 0, 0, -2 / this.canvas.height, 0, -1, 1, 1]);
   }
@@ -894,12 +896,14 @@ var VectorRenderer = class {
     if (!this.count) return;
     const texture = this.activeTexture ?? this.white;
     this.device.uploadVertices(this.buffer, this.vertices.subarray(0, this.count * 8));
-    this.device.draw({ pipeline: this.pipeline, buffer: this.buffer, count: this.count, uniforms: { u_projection: this.projection, u_texture: 0, u_textured: texture === this.white ? 0 : 1 }, textures: [texture], blend: "source-over" });
+    this.device.draw({ pipeline: this.pipeline, buffer: this.buffer, count: this.count, uniforms: { u_projection: this.projection, u_texture: 0, u_textured: texture === this.white ? 0 : 1, u_radial: this.activeRadial ? 1 : 0, u_whiteFlash: this.activeWhiteFlash ? 1 : 0 }, textures: [texture], blend: "source-over" });
     this.count = 0;
   }
-  _useTexture(texture) {
-    if (this.activeTexture && this.activeTexture !== texture) this._submit();
+  _useTexture(texture, { radial = false, whiteFlash = false } = {}) {
+    if (this.activeTexture !== texture || this.activeRadial !== radial || this.activeWhiteFlash !== whiteFlash) this._submit();
     this.activeTexture = texture;
+    this.activeRadial = radial;
+    this.activeWhiteFlash = whiteFlash;
   }
   fill(colorValue = [0, 0, 0, 1], rule = "nonzero") {
     this._frame();
@@ -907,6 +911,20 @@ var VectorRenderer = class {
     this._useTexture(this.white);
     const col = rgba(colorValue), vertices = tessellate(this.path, rule);
     for (let i = 0; i + 2 < vertices.length; i += 3) this._emitTriangle(vertices[i], vertices[i + 1], vertices[i + 2], col);
+    this._submit();
+  }
+  fillRadialGradient({ texture, centerX, centerY, radius, matrixInverse, color: color2 = [1, 1, 1, 1], whiteFlash = false, rule = "nonzero" } = {}) {
+    this._frame();
+    if (!texture || !Number.isFinite(radius) || radius < 0 || !matrixInverse) throw new TypeError("valid radial gradient texture and transform are required");
+    this._useTexture(texture, { radial: true, whiteFlash });
+    const vertices = tessellate(this.path, rule), uv = (p) => {
+      const m = matrixInverse, x = m[0] * p.x + m[2] * p.y + m[4], y = m[1] * p.x + m[3] * p.y + m[5], r = Math.max(1e-8, radius);
+      return [(x - centerX) / r, (y - centerY) / r];
+    };
+    for (let i = 0; i + 2 < vertices.length; i += 3) {
+      const a = vertices[i], b = vertices[i + 1], c = vertices[i + 2];
+      this._emitTriangle(a, b, c, color2, [uv(a), uv(b), uv(c)]);
+    }
     this._submit();
   }
   stroke(colorValue = [0, 0, 0, 1], width = 1, { lineCap = "butt", lineJoin = "miter", miterLimit = 10 } = {}) {
@@ -1063,12 +1081,12 @@ var VectorRenderer = class {
     this.matrix = group.matrix;
     this.clips = group.clips;
     this.projection.set(group.projection);
-    this.activeTexture = group.target;
+    this._useTexture(group.target);
     const { x, y, width, height } = group.bounds, u = width / group.target.width, v = height / group.target.height, a = { x, y }, b = { x: x + width, y }, c = { x: x + width, y: y + height }, d = { x, y: y + height }, alpha = [1, 1, 1, group.opacity];
     this._emitTriangle(a, b, c, alpha, [[0, 1], [u, 1], [u, 1 - v]]);
     this._emitTriangle(a, c, d, alpha, [[0, 1], [u, 1 - v], [0, 1 - v]]);
     this._submit();
-    this.activeTexture = this.white;
+    this._useTexture(this.white);
   }
   dispose() {
     if (this.state === "disposed") return;
@@ -1168,6 +1186,51 @@ function normalizeColor(value) {
 function transformed(matrix, x, y) {
   return { x: matrix[0] * x + matrix[2] * y + matrix[4], y: matrix[1] * x + matrix[3] * y + matrix[5] };
 }
+function invert(matrix) {
+  const d = matrix[0] * matrix[3] - matrix[1] * matrix[2];
+  if (Math.abs(d) < 1e-15) return null;
+  return [matrix[3] / d, -matrix[1] / d, -matrix[2] / d, matrix[0] / d, (matrix[2] * matrix[5] - matrix[3] * matrix[4]) / d, (matrix[1] * matrix[4] - matrix[0] * matrix[5]) / d];
+}
+var RadialGradient = class {
+  constructor(matrix, x0, y0, r0, x1, y1, r1) {
+    if (Math.hypot(x1 - x0, y1 - y0) > 1e-8) throw new Error("Radial gradients require concentric circles");
+    for (const [n, v] of Object.entries({ x0, y0, r0, x1, y1, r1 })) finite2(v, n);
+    if (r0 < 0 || r1 < 0) throw new RangeError("Gradient radii must be non-negative");
+    this.matrix = matrix.slice();
+    this.x = x1;
+    this.y = y1;
+    this.r0 = r0;
+    this.r1 = r1;
+    this.stops = [];
+    this.pixels = null;
+    this.revision = 0;
+  }
+  addColorStop(offset, value) {
+    if (!Number.isFinite(offset) || offset < 0 || offset > 1) throw new RangeError("Invalid gradient stop");
+    this.stops.push({ offset, color: normalizeColor(value) });
+    this.stops.sort((a, b) => a.offset - b.offset);
+    this.pixels = null;
+    this.revision++;
+  }
+  raster() {
+    if (this.pixels) return this.pixels;
+    const data = new Uint8Array(256 * 4), stops = this.stops.length ? this.stops : [{ offset: 0, color: [0, 0, 0, 0] }];
+    for (let i = 0; i < 256; i++) {
+      const t = (i / 255 * this.r1 - this.r0) / Math.max(1e-8, this.r1 - this.r0);
+      let lo = stops[0], hi = stops.at(-1);
+      for (let j = 1; j < stops.length; j++) if (t < stops[j].offset) {
+        lo = stops[j - 1];
+        hi = stops[j];
+        break;
+      }
+      const q = clamp((t - lo.offset) / (hi.offset - lo.offset || 1)), alpha = lo.color[3] + (hi.color[3] - lo.color[3]) * q;
+      for (let k = 0; k < 3; k++) data[i * 4 + k] = Math.round((lo.color[k] + (hi.color[k] - lo.color[k]) * q) * alpha * 255);
+      data[i * 4 + 3] = Math.round(alpha * 255);
+    }
+    this.pixels = data;
+    return data;
+  }
+};
 var VectorContext = class {
   constructor(device, { vectorRenderer = null, glyphAtlas = vectorRenderer?.glyphAtlas ?? null, initialVertices = 4096, maxVertices = 262144, onError = null } = {}) {
     if (!device?.beginFrame || !device?.endFrame || !device?.createVertexBuffer) throw new TypeError("WebGLDevice is required");
@@ -1184,6 +1247,7 @@ var VectorContext = class {
     this.pathCount = 0;
     this.staticMeshes = /* @__PURE__ */ new Set();
     this.deferredMeshes = [];
+    this.gradientTextures = /* @__PURE__ */ new Map();
     this.onLost = (event) => {
       event.preventDefault();
       this.active = false;
@@ -1214,6 +1278,7 @@ var VectorContext = class {
     this._textAlign = "start";
     this._textBaseline = "alphabetic";
     this._direction = "inherit";
+    this._filter = "none";
     this.forceColor = null;
     this.stack = [];
     this.frameStats = {};
@@ -1230,7 +1295,7 @@ var VectorContext = class {
     return this._fillStyle;
   }
   set fillStyle(v) {
-    normalizeColor(v);
+    if (!(v instanceof RadialGradient)) normalizeColor(v);
     this._fillStyle = v;
   }
   get strokeStyle() {
@@ -1297,13 +1362,37 @@ var VectorContext = class {
   set direction(v) {
     if (["ltr", "rtl", "inherit"].includes(v)) this._direction = v;
   }
+  get filter() {
+    return this._filter;
+  }
+  set filter(v) {
+    if (v !== "none" && v !== "brightness(0) invert(1)") throw new RangeError("VectorContext supports only none and brightness(0) invert(1) filters");
+    this._filter = v;
+  }
   _frame() {
     if (!this.active || this.device.state !== "ready") throw new Error("VectorContext frame is unavailable");
   }
   _paint(style) {
+    if (style instanceof RadialGradient) throw new TypeError("RadialGradient paint must be submitted through fill()");
     const color2 = normalizeColor(this.forceColor ?? style);
     color2[3] *= this._globalAlpha;
+    if (this._filter === "brightness(0) invert(1)") color2[0] = color2[1] = color2[2] = 1;
     return color2;
+  }
+  _gradientPaint(gradient) {
+    let cached = this.gradientTextures.get(gradient);
+    if (!cached) {
+      cached = { texture: this.device.createTexture({ width: 256, height: 1, data: gradient.raster() }, { format: "rgba", premultiplied: true, filter: "linear" }), revision: gradient.revision };
+      this.gradientTextures.set(gradient, cached);
+    } else if (cached.revision !== gradient.revision) {
+      this.device.updateTexture(cached.texture, { width: 256, height: 1, data: gradient.raster() });
+      cached.revision = gradient.revision;
+    }
+    const matrixInverse = invert(gradient.matrix);
+    if (!matrixInverse) throw new RangeError("Radial gradient transform is singular");
+    const color2 = normalizeColor(this.forceColor ?? [1, 1, 1, 1]);
+    color2[3] *= this._globalAlpha;
+    return { texture: cached.texture, centerX: gradient.x, centerY: gradient.y, radius: gradient.r1, matrixInverse, color: color2, whiteFlash: this._filter === "brightness(0) invert(1)" };
   }
   beginFrame({ width = this.canvas.width, height = this.canvas.height, clearColor = [0, 0, 0, 0] } = {}) {
     if (this.active) throw new Error("endFrame is required before beginFrame");
@@ -1329,7 +1418,7 @@ var VectorContext = class {
       const stats = this.device.endFrame();
       this.active = false;
       for (const mesh of this.deferredMeshes.splice(0)) this.deleteStaticMesh(mesh);
-      this.frameStats = { drawCalls: stats.drawCalls, vertices: stats.vertices, uploadedBytes: stats.bufferBytes ?? stats.uploadedBytes ?? 0, textureUploads: stats.textureUploads ?? 0, gpuRenderTargetBytes: stats.gpuRenderTargetBytes ?? 0, paths: this.pathCount };
+      this.frameStats = { drawCalls: stats.drawCalls, vertices: stats.vertices, uploadedBytes: stats.bufferBytes ?? stats.uploadedBytes ?? 0, textureUploads: stats.textureUploads ?? 0, textureBytes: stats.textureBytes ?? 0, gpuRenderTargetBytes: stats.gpuRenderTargetBytes ?? 0, paths: this.pathCount };
       this.total.frames++;
       this.total.drawCalls += this.frameStats.drawCalls;
       this.total.vertices += this.frameStats.vertices;
@@ -1343,7 +1432,7 @@ var VectorContext = class {
   }
   save() {
     this._frame();
-    this.stack.push({ fillStyle: this._fillStyle, strokeStyle: this._strokeStyle, globalAlpha: this._globalAlpha, lineWidth: this._lineWidth, lineCap: this._lineCap, lineJoin: this._lineJoin, miterLimit: this._miterLimit, lineDash: this._lineDash.slice(), lineDashOffset: this._lineDashOffset, font: this._font, textAlign: this._textAlign, textBaseline: this._textBaseline, direction: this._direction, forceColor: this.forceColor });
+    this.stack.push({ fillStyle: this._fillStyle, strokeStyle: this._strokeStyle, globalAlpha: this._globalAlpha, lineWidth: this._lineWidth, lineCap: this._lineCap, lineJoin: this._lineJoin, miterLimit: this._miterLimit, lineDash: this._lineDash.slice(), lineDashOffset: this._lineDashOffset, font: this._font, textAlign: this._textAlign, textBaseline: this._textBaseline, direction: this._direction, filter: this._filter, forceColor: this.forceColor });
     this.vector.save();
   }
   restore() {
@@ -1351,7 +1440,7 @@ var VectorContext = class {
     const s = this.stack.pop();
     if (!s) return;
     this.vector.restore();
-    Object.assign(this, { _fillStyle: s.fillStyle, _strokeStyle: s.strokeStyle, _globalAlpha: s.globalAlpha, _lineWidth: s.lineWidth, _lineCap: s.lineCap, _lineJoin: s.lineJoin, _miterLimit: s.miterLimit, _lineDash: s.lineDash, _lineDashOffset: s.lineDashOffset, _font: s.font, _textAlign: s.textAlign, _textBaseline: s.textBaseline, _direction: s.direction, forceColor: s.forceColor });
+    Object.assign(this, { _fillStyle: s.fillStyle, _strokeStyle: s.strokeStyle, _globalAlpha: s.globalAlpha, _lineWidth: s.lineWidth, _lineCap: s.lineCap, _lineJoin: s.lineJoin, _miterLimit: s.miterLimit, _lineDash: s.lineDash, _lineDashOffset: s.lineDashOffset, _font: s.font, _textAlign: s.textAlign, _textBaseline: s.textBaseline, _direction: s.direction, _filter: s.filter, forceColor: s.forceColor });
   }
   setTransform(a, b, c, d, e, f) {
     this.vector.setTransform(a, b, c, d, e, f);
@@ -1453,7 +1542,8 @@ var VectorContext = class {
   }
   fill(rule = "nonzero") {
     this._frame();
-    this.vector.fill(this._paint(this._fillStyle), rule);
+    if (this._fillStyle instanceof RadialGradient) this.vector.fillRadialGradient({ ...this._gradientPaint(this._fillStyle), rule });
+    else this.vector.fill(this._paint(this._fillStyle), rule);
   }
   fillRect(x, y, w, h) {
     this._frame();
@@ -1541,6 +1631,21 @@ var VectorContext = class {
   endGroup() {
     this.vector.endGroup();
   }
+  withGroupOpacity(opacity, callback, bounds = null) {
+    this._frame();
+    const previous = this._globalAlpha;
+    this.beginGroup(opacity, bounds);
+    this._globalAlpha = 1;
+    try {
+      return callback();
+    } finally {
+      try {
+        this.endGroup();
+      } finally {
+        this._globalAlpha = previous;
+      }
+    }
+  }
   groupBounds(x, y, radius) {
     const m = this.vector.matrix, p = transformed(m, x, y), r = radius * Math.max(Math.hypot(m[0], m[1]), Math.hypot(m[2], m[3]));
     return { x: p.x - r, y: p.y - r, width: r * 2, height: r * 2 };
@@ -1556,23 +1661,22 @@ var VectorContext = class {
   }
   withSilhouette(color2, width, paint, radius = 128) {
     const alpha = this._globalAlpha, bounds = this.groupBounds(0, 0, radius + width);
-    this.beginGroup(alpha, bounds);
-    this._globalAlpha = 1;
-    try {
+    return this.withGroupOpacity(alpha, () => {
       this.withColor(color2, () => {
         for (let i = 0; i < 8; i++) {
           this.save();
           const a = i * TAU / 8;
           this.translate(Math.cos(a) * width, Math.sin(a) * width);
-          paint();
-          this.restore();
+          try {
+            paint();
+          } finally {
+            this.restore();
+          }
         }
         paint();
       });
-    } finally {
-      this.endGroup();
-      this._globalAlpha = alpha;
-    }
+      paint();
+    }, bounds);
   }
   _fontSize() {
     const m = this._font.match(/(?:^|\s)(\d+(?:\.\d+)?)px(?:\s|\/|$)/);
@@ -1619,8 +1723,8 @@ var VectorContext = class {
       this.vector.restore();
     }
   }
-  createRadialGradient() {
-    throw new Error("Radial gradients are not supported by VectorContext");
+  createRadialGradient(x0, y0, r0, x1, y1, r1) {
+    return new RadialGradient(this.vector.matrix, x0, y0, r0, x1, y1, r1);
   }
   createStaticMesh(vertices, { strideFloats = 6 } = {}) {
     if (this.state !== "ready" || this.device.state !== "ready") throw new Error("VectorContext is not ready");
@@ -1658,6 +1762,8 @@ var VectorContext = class {
     this.canvas.removeEventListener("webglcontextlost", this.onLost);
     this.canvas.removeEventListener("webglcontextrestored", this.onRestored);
     for (const mesh of this.staticMeshes) this.device.deleteVertexBuffer(mesh.buffer);
+    for (const cached of this.gradientTextures.values()) this.device.deleteTexture(cached.texture);
+    this.gradientTextures.clear();
     this.staticMeshes.clear();
     this.deferredMeshes.length = 0;
     if (this.ownsVector) this.vector.dispose();
@@ -1666,39 +1772,74 @@ var VectorContext = class {
   }
 };
 var PrimitivePainter = class {
-  constructor(context) {
-    if (!context?.fillTriangleFan) throw new TypeError("VectorContext is required");
-    this.context = context;
+  constructor(target, { point: point2 = null, alphaMultiplier = 1 } = {}) {
+    if (!target?.fillTriangleFan && !(target?.beginPath && target?.fill)) throw new TypeError("VectorContext or native Canvas2D context is required");
+    this.context = target;
+    this.pointTransform = point2;
+    this.alphaMultiplier = alphaMultiplier;
   }
-  circle(x, y, radius, paint, segments = 24) {
-    if (!Number.isSafeInteger(segments) || segments < 3 || segments > 256) throw new RangeError("segments must be 3..256");
-    const points = [[x, y]];
-    for (let i = 0; i < segments; i++) {
-      const a = i / segments * TAU;
-      points.push([x + Math.cos(a) * radius, y + Math.sin(a) * radius]);
-    }
-    points.push(points[1]);
-    this.context.fillTriangleFan(points, paint);
+  point(x, y) {
+    const result = this.pointTransform ? this.pointTransform(x, y) : [x, y];
+    return Array.isArray(result) ? result : [result.x, result.y];
   }
-  regularPolygon(x, y, radius, sides, paint, rotation = 0) {
-    if (!Number.isSafeInteger(sides) || sides < 3 || sides > 256) throw new RangeError("sides must be 3..256");
-    const points = [[x, y]];
-    for (let i = 0; i <= sides; i++) {
-      const a = rotation + i / sides * TAU;
-      points.push([x + Math.cos(a) * radius, y + Math.sin(a) * radius]);
+  _paint(points, paint) {
+    if (points.length < 3) return;
+    const ctx = this.context, oldAlpha = ctx.globalAlpha ?? 1, mul = typeof this.alphaMultiplier === "function" ? this.alphaMultiplier() : this.alphaMultiplier;
+    ctx.globalAlpha = oldAlpha * clamp(mul);
+    try {
+      if (typeof ctx.fillTriangleFan === "function") {
+        ctx.fillTriangleFan(points.map((p) => this.point(p[0], p[1])), paint);
+        return;
+      }
+      const rgba2 = normalizeColor(paint);
+      ctx.fillStyle = `rgba(${Math.round(rgba2[0] * 255)},${Math.round(rgba2[1] * 255)},${Math.round(rgba2[2] * 255)},${rgba2[3]})`;
+      ctx.beginPath();
+      const a = this.point(points[0][0], points[0][1]);
+      for (let i = 1; i < points.length - 1; i++) {
+        const b = this.point(points[i][0], points[i][1]), c = this.point(points[i + 1][0], points[i + 1][1]);
+        ctx.moveTo(a[0], a[1]);
+        ctx.lineTo(b[0], b[1]);
+        ctx.lineTo(c[0], c[1]);
+        ctx.closePath();
+      }
+      ctx.fill();
+    } finally {
+      ctx.globalAlpha = oldAlpha;
     }
-    this.context.fillTriangleFan(points, paint);
+  }
+  poly(points, paint) {
+    this._paint(points, paint);
+  }
+  tri(x1, y1, x2, y2, x3, y3, paint) {
+    this.poly([[x1, y1], [x2, y2], [x3, y3]], paint);
+  }
+  quad(x1, y1, x2, y2, x3, y3, x4, y4, paint) {
+    this.poly([[x1, y1], [x2, y2], [x3, y3], [x4, y4]], paint);
+  }
+  regularPolygon(x, y, radius, paint, sides = 10, rotation = 0) {
+    if (sides < 3 || radius <= 0) return;
+    let unit = PRIMITIVE_DIRECTIONS.get(`${sides}|${rotation}`);
+    if (!unit) {
+      unit = Array.from({ length: sides }, (_, i) => [Math.cos(rotation + i / sides * TAU), Math.sin(rotation + i / sides * TAU)]);
+      PRIMITIVE_DIRECTIONS.set(`${sides}|${rotation}`, unit);
+    }
+    this.poly(unit.map((p) => [x + p[0] * radius, y + p[1] * radius]), paint);
+  }
+  circle(x, y, radius, paint, segments = 10) {
+    this.regularPolygon(x, y, radius, paint, segments, 0);
+  }
+  hex(x, y, radius, paint) {
+    this.regularPolygon(x, y, radius, paint, 6, Math.PI / 6);
   }
   line(x0, y0, x1, y1, width, paint) {
-    const dx = x1 - x0, dy = y1 - y0, length = Math.hypot(dx, dy);
-    if (!length || width <= 0) return;
-    const nx = -dy * width / (2 * length), ny = dx * width / (2 * length);
-    this.context.fillTriangleFan([[x0 + nx, y0 + ny], [x1 + nx, y1 + ny], [x1 - nx, y1 - ny], [x0 - nx, y0 - ny]], paint);
+    const dx = x1 - x0, dy = y1 - y0, length = Math.hypot(dx, dy) || 1, nx = -dy / length * width / 2, ny = dx / length * width / 2;
+    this.quad(x0 + nx, y0 + ny, x1 + nx, y1 + ny, x1 - nx, y1 - ny, x0 - nx, y0 - ny, paint);
   }
   fan(points, paint) {
-    this.context.fillTriangleFan(points, paint);
+    this.poly(points, paint);
   }
 };
+var PRIMITIVE_DIRECTIONS = /* @__PURE__ */ new Map();
 
 // modules/rendering/glyph-atlas.js
 var GlyphAtlas = class {
