@@ -23,6 +23,8 @@ pulse(timestampMs)는 자동 rAF와 같은 누적·pacing·maxCatchupSteps 경�
 
 `loop.observeInput(timestamp)`가 권위 틱 전에 같은 `getInput()`을 관찰합니다. 자동 RAF loop는 프레임마다 이 경로를 사용하고, 외부 RAF와 deadline timer를 조합할 때는 RAF에서 observeInput, timer에서 pulse를 호출합니다. pulse는 관찰된 held bytes를 사용하며 명령을 canonical queue에 한 번만 제출합니다. 틱 사이의 held 변경은 하나의 미래 표본을 교체하고 edge 명령은 순서대로 축적합니다. provisional `observationId`와 `sequence:null`은 실제 SDK command sequence가 아닙니다. SDK queue 결과로 한 번 묶이고 `session.localInputState.capture`의 정확한 executeTick에서만 확인합니다. RoomSession의 metadata tick은 baseTick을 포함한 global tick입니다.
 
+RAF가 deadline보다 느리거나 정지해도 pulse는 관찰 cache의 나이가 한 simulation quantum(`1000/tickRate` ms) 이상이면 canonical advance 전에 같은 observeInput/getInput 경로로 갱신합니다. quantum 안의 최근 관찰과 동일 timestamp는 재사용합니다. device edge의 수집·소비도 getInput 안의 이 단일 경로에서 수행해야 하며 별도 RAF collector를 중복 호출하지 않습니다. deadline fallback은 관찰만 추가하고 authority/command를 두 번 실행하지 않습니다.
+
 `LocalInputPreview.observe()`는 별도 scope에서 같은 update로 미래 표본을 계산하고 `PresentationRuntime`는 그 표본을 schema/time으로 매 RAF 평가합니다. 동일 입력/명령 관찰은 캐시되어 fork를 실행하지 않습니다. 변경된 held 관찰은 기존 미래 한 틱을 다시 계산하며 RAF 수만큼 세계 시간을 증가시키지 않습니다. `fork.restore(snapshot)`를 제공하면 명시적 detached scope를 재사용합니다. 실제 authority에 snapshot을 설치하지 않습니다.
 
 `createDeadlineScheduler({getIntervalMs,pulse,maxBacklogTicks,onGap})`가 단일 timeout과 deadline cadence를 소유합니다. start/stop, wake(즉시 전달하되 deadline 유지), rebase(pause/resume/TPS 이후), running/deadlineMs를 제공합니다. 게임은 UI·persist·session gating만 결정합니다. 큰 gap은 미처리 deadline을 버리고 다시 기준을 잡으며 timer 지연과 게임 step을 선점할 수는 없습니다.
