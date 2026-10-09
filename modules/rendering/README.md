@@ -85,6 +85,29 @@ if (ctx.beginFrame({ width: canvas.width, height: canvas.height, clearColor: [0,
 
 Static mesh는 별도 GPU vertex buffer와 caller 소유 shader pipeline을 사용합니다. VectorRenderer stream에 더해지는 GPU memory이며 `deleteStaticMesh()` 또는 `dispose()`로 해제됩니다.
 
+### 재사용 MeshBuilder / MeshRenderer
+
+같은 authored 도형을 여러 객체·프레임에서 그릴 때 `MeshBuilder`로 한 번 만들고 `VectorContext.createMesh()`로 GPU에 보관합니다. `PrimitivePainter`는 builder에도 직접 그립니다. 이미지·Canvas2D raster·시뮬레이션 상태·내부 시계는 사용하지 않습니다.
+
+```js
+const shape = new MeshBuilder();
+new PrimitivePainter(shape).circle(0, 0, 12, '#a8c991', 10);
+const mesh = ctx.createMesh(shape.build()); // cold path, 프레임 밖에서도 가능
+ctx.beginFrame();
+for (const pose of depthSortedPoses) {
+  ctx.drawMesh(mesh, { transform: [1, 0, 0, 1, pose.x, pose.y] });
+}
+ctx.endFrame();
+ctx.deleteMesh(mesh);
+```
+
+- `MeshBuilder({maxVertices=262144})`는 local-space `fillTriangleFan(points,paint)`와 `globalAlpha`를 받습니다. `build({morphs=[]})`의 최대 두 target은 같은 삼각형·색 순서여야 하며 다른 위치만 허용합니다. 결과의 vertex stride는 position2 + RGBA4 + 두 position delta2, 40 bytes입니다. 애니메이션 시각을 양자화하거나 프레임별 메시를 만들지 않고 `drawMesh(mesh,{morph:[weight0,weight1]})`로 연속 변형합니다. 회전·날개 같은 비선형 동작의 분할과 값은 게임 아트가 정의합니다.
+- `VectorContext.createMesh(data)` / `drawMesh(mesh,{transform,morph})` / `deleteMesh(mesh)`는 이 context의 handle만 받습니다. 선택적 local affine transform은 현재 context transform과 합성합니다. globalAlpha·forceColor·white-flash·clip·opacity group을 캡처하며, 벡터 path/text/static mesh와 섞어도 호출 순서를 유지합니다. 외부 pass나 readPixels 전에 `ctx.flush()`를 사용합니다. `ctx.vector.flush()`는 vector 소유 queue만 제출하므로 mesh를 포함하는 프레임 경계로 사용하지 않습니다.
+- 내부 `MeshRenderer(device,{maxMeshes=512,maxMeshBytes=33554432,maxInstances=2048})`는 같은 mesh·projection·clip의 **인접 호출만** 합칩니다. 게임의 y-sort를 바꾸거나 다른 메시를 재정렬하지 않습니다. 직접 사용할 때 `drawMesh(mesh,{matrix,projection,morph,color,forceColor,alpha,whiteFlash,clips})`와 `flush()`를 호출하고 외부 pass 전 flush 책임을 집니다. clip은 기존 vector와 같은 convex half-plane 교집합이며, edge plane 상한은 `min(32, MAX_FRAGMENT_UNIFORM_VECTORS-2)`입니다. 넘으면 명시적으로 거부하고 clip을 무시하지 않습니다.
+- ANGLE_instanced_arrays 지원 시 static geometry + 64-byte/instance 값만 올립니다. 미지원 시 **같은 retained GPU geometry**를 instance uniform별로 제출하며 도형을 다시 만들지 않습니다. 이 경로는 draw call을 합치지 않습니다. 정렬·서로 다른 part·벡터 text·opacity target 경계는 batch를 끊으므로 모든 유닛이 한 draw call이라는 보장은 없습니다.
+- 기본 최대 retained vertex payload는 CPU 32MiB + GPU 32MiB이며 instance staging CPU 128KiB와 지원 시 GPU 128KiB가 추가됩니다. 실제 GPU allocation은 device counter를 확인합니다. 초기 build/upload·shader compile·캐시 miss는 cold 비용이고, 게임이 종류/스타일별 bounded cache와 eviction을 소유합니다. SDK는 살아 있는 handle을 임의로 지우지 않고 예산 초과를 거부합니다. createMesh는 caller geometry를 복사해 보관하고 복구 시 한 번 재업로드합니다. 삭제는 해당 pending draw를 먼저 제출하고 자원을 해제합니다. dispose는 잔여 queue를 버리고 모든 메시와 listener를 해제합니다.
+- `ctx.stats().mesh`는 실제 mesh draw/instance 수, 프레임별 geometry/instance upload bytes, meshCount, retainedBytes, stagingBytes, instanced, state/failure를 보고합니다. `device.stats.vertices`는 실제 instance 수를 포함한 제출 vertex 수이지 retained 고유 vertex 수가 아닙니다. 재사용은 GPU geometry·픽셀 fill 비용을 없애는 것이 아니라 반복 CPU 생성과 geometry upload를 줄입니다. 측정 전 FPS 개선을 단정하지 않습니다.
+
 ### VectorRenderer와 prebaked GlyphAtlas
 
 `VectorRenderer`는 같은 canvas를 소유한 `WebGLDevice` 위에서 path tessellation·transform·clip·painter-order stream·textured glyph 제출을 제공합니다. 프레임·projection·정렬과 그림 내용은 caller가 소유합니다. 불투명 draw는 재사용 geometry buffer에 직접 제출합니다. CPU/GPU vertex storage는 기본 4096 vertices(각 128 KiB)에서 시작해 필요할 때 2배로 자라며 기본 상한은 262144 vertices(각 최대 8 MiB)입니다. `beginGroup(opacity,bounds)`는 불투명 기본값 `1`이면 target 없이 직접 경로를 유지하고, 반투명 그룹은 canvas-screen bounds의 RGBA target에 그린 뒤 한 번 합성합니다. 생략한 bounds는 viewport 전체입니다. target은 중첩 깊이별로 보관되고 필요한 크기의 다음 power-of-two 버킷으로 할당되어 작아지는 bounds와 인접한 크기에서는 재사용됩니다. bounds보다 바깥의 입력은 잘립니다. `stats.gpuRenderTargetBytes`로 실제 target byte 수를 확인하세요.
