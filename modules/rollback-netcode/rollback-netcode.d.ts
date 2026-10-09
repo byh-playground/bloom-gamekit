@@ -145,6 +145,7 @@ export interface Replay {
 }
 export interface AdvanceResult { status: 'advanced' | 'held' | 'stalled' | 'synchronizing' | 'resimulating' | 'recovering' | 'interrupted' | 'disconnected' | 'failed'; tick: number; failure?: Readonly<SessionFailure> | null; }
 export class RollbackSession {
+  readonly localInputState: LocalInputState;
   constructor(options: SessionOptions);
   readonly tick: number; readonly inputDelay: number; readonly requestedInputDelay: number; readonly confirmedTick: number;
   readonly ready: boolean; readonly resimulating: boolean; readonly closed: boolean; readonly status: SessionStatus;
@@ -221,6 +222,7 @@ export interface RoomSessionMetrics extends Partial<SessionMetrics> {
   maxBoundaryTaskMs: number; boundaryLongTasks: number;
 }
 export class RoomSession {
+  readonly localInputState: LocalInputState | null;
   constructor(options: RoomSessionOptions);
   readonly mode: 'local' | 'online'; readonly room?: RoomTransport;
   readonly localPlayerId: PlayerId; readonly sessionId: string; readonly inputSize: number;
@@ -384,21 +386,27 @@ export interface LoopSession {
   poll(): void; advance(input?: Bytes): { status: string; tick: number }; releaseInput(): void;
 }
 export interface PreviewEntity { id: string; generation: number; source: object; type?: Function; }
-export interface PreviewFork { step(input: unknown, context: { sequence: number; tick: number; epoch: number; commands: Array<{ sequence: number; payload: unknown }>; speculative: true; replay?: boolean }): void; }
+export interface PreviewFork {restore?(snapshot:unknown):void;step(input: unknown, context: { sequence?: number; tick: number; epoch: number; commands: Array<{observationId?:number;sequence:number|null;executeTick?:number;payload: unknown}>; speculative: true; replay?: boolean;gap?:boolean }): void; }
 export interface LocalInputPreviewOptions {
+  stepMs?: number;
   createFork(snapshot: unknown): PreviewFork; cloneSnapshot?(snapshot: unknown): unknown; readEntities(fork: PreviewFork): PreviewEntity[];
   presentation?: { selectPreview(ids: Array<{ id: string; generation: number }>): void; capturePreview(packet: object, nowMs: number): boolean; clearPreview?(): void };
   maxPendingInputs?: number; maxFutureTicks?: number; maxAgeMs?: number;
 }
-export interface LoopInputSubmission { sequence: number; tick: number; epoch: number; timeMs: number; commands: Array<{ sequence: number; payload: Bytes }>; }
+export interface LoopInputSubmission {sequence:number;captureTick:number;executeTick:number;boundaryTick:number;epoch:number;timeMs:number;commands:Array<{observationId?:number;sequence:number;executeTick:number;payload:Bytes}>;}
+export interface ObservingLoop {start():void;stop():void;pulse(timestamp:number):void;observeInput(timestamp:number):unknown;flushInput(timestamp:number):void;releaseInput():void;resetTiming():void;readonly running:boolean;}
+export interface LocalInputState { epoch:number; baseTick:number; tick:number; confirmedTick:number; inputDelay:number; commandSequence:number;executedInput:Bytes|null;replayInput:Bytes|null;executedCommandSequence:number|null;capture:null|{sequence:number;captureTick:number;executeTick:number;input:Bytes;commands:Array<{sequence:number;executeTick:number;payload:Bytes}>}; }
 export class LocalInputPreview {
   constructor(options: LocalInputPreviewOptions);
-  readonly pendingCount: number; readonly enabled: boolean; readonly metrics: Readonly<Record<string, number>>;
-  reconcile(checkpoint: { snapshot: unknown; revision: number; tick: number; epoch: number; confirmedSequence?: number; confirmedCommandSequence?: number; timeMs: number; mode?: 'continuous' | 'rollback' | 'load' | 'reset' | 'teleport' | 'join' | 'resync'; reset?: boolean }): boolean;
-  submit(input: unknown, metadata: { sequence: number; tick: number; epoch: number; timeMs: number; commands?: Array<{ sequence: number; payload: unknown }> }): boolean;
+  readonly pendingCount: number; readonly enabled: boolean; readonly ready:boolean; readonly metrics: Readonly<Record<string, number>>;
+  reconcile(checkpoint: {snapshot:unknown;input?:unknown;revision:number;tick:number;epoch:number;confirmedCommandSequence?:number;timeMs:number;mode?:'continuous'|'rollback'|'load'|'reset'|'teleport'|'join'|'resync';reset?:boolean}):boolean;
+  observe(input:unknown,metadata:{sequence:number;tick:number;epoch:number;timeMs:number;commands?:Array<{observationId:number;sequence:number|null;payload:Bytes}>}):boolean;
+  commit(capture:NonNullable<LocalInputState['capture']>&{boundaryTick?:number;predict?:boolean},nowMs:number):boolean;
+  cancelObservation(nowMs:number):void;
   clear(): void; setEnabled(enabled: boolean): void; dispose(): void;
 }
-export function createLoop<S extends LoopSession>(options: { session: S & { queueCommand?: (payload: Bytes) => number }; backlogPolicy?: 'drop' | 'retain'; getInput?: () => Bytes | { input: Bytes; commands?: Array<{ payload: Bytes }> }; beforeFrame?: (timestamp: number) => void; canAdvance?: () => boolean; onAdvance?: (result: ReturnType<S['advance']>, submission?: LoopInputSubmission) => void; onPreviewError?: (error: unknown) => void; inputPreview?: Pick<LocalInputPreview, 'submit' | 'clear' | 'enabled'>; render?: (context: { session: S; alpha: number; resimulating: boolean }) => void; onError?: (error: unknown) => void; onInputRelease?: () => void; requestFrame?: (callback: FrameRequestCallback) => number; cancelFrame?: (handle: number) => void }): { start(): void; stop(): void; pulse(timestamp: number): void; resetTiming(): void; readonly running: boolean };
+export function createLoop<S extends LoopSession>(options: { session: S & { queueCommand?: (payload: Bytes) => number }; backlogPolicy?: 'drop' | 'retain'; getInput?: () => Bytes | { input: Bytes; commands?: Array<{ payload: Bytes }> }; beforeFrame?: (timestamp: number) => void; canAdvance?: () => boolean; canObserveInput?:()=>boolean; onAdvance?: (result: ReturnType<S['advance']>, submission?: LoopInputSubmission) => void; onPreviewError?: (error: unknown) => void; inputPreview?: Pick<LocalInputPreview, 'observe' | 'commit' | 'clear' | 'enabled'>; render?: (context: { session: S; alpha: number; resimulating: boolean }) => void; onError?: (error: unknown) => void; onInputRelease?: () => void; requestFrame?: (callback: FrameRequestCallback) => number; cancelFrame?: (handle: number) => void }): ObservingLoop;
+export function createDeadlineScheduler(options:{getIntervalMs:()=>number;pulse:(timestamp:number,info:{due:number;scheduledAtMs:number|null})=>void;maxBacklogTicks?:number;now?:()=>number;setTimer?:(callback:()=>void,delayMs:number)=>unknown;clearTimer?:(handle:unknown)=>void;onGap?:(gap:{elapsedMs:number;droppedTicks:number;timestamp:number;scheduledAtMs:number})=>void}):{start():void;stop():void;wake():void;rebase(nowMs?:number):void;readonly running:boolean;readonly deadlineMs:number|null};
 export type CodecValue = null | boolean | number | string | Uint8Array | CodecValue[] | { [key: string]: CodecValue };
 export interface ValueCodec { readonly format: 'binary' | 'json'; encode(value: CodecValue): Uint8Array; decode(bytes: Bytes): CodecValue; }
 export function createValueCodec(options?: { format?: 'binary' | 'json'; maxBytes?: number; maxDepth?: number; maxEntries?: number }): ValueCodec;

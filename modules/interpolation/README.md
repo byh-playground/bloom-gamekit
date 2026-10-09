@@ -56,6 +56,8 @@ static renderSchema = {
 
 ### 선택적 제한적 외삽
 
+입력 preview의 `snapshotPreview(entities)`는 선언 필드의 detached 시작 model을 만듭니다. `capturePreview({revision,sequence,timeMs,phaseStartMs,stepMs,entities},nowMs)`는 실제 fork의 다음 표본을 저장하며 `sample/modelFor/render`가 같은 시간 곡선을 읽습니다. 고정 미래 pose를 RAF마다 그대로 반환하지 않습니다. 방향/상태 교체도 Unit 조건문 없이 같은 schema 정책을 따르고 authority capture에서 그 시각 preview pose로 correction을 연결합니다.
+
 `new PresentationRuntime({ stepMs: 100, extrapolation: { fields: ['x', 'y'], maxMs: 100 } })`는 지정한 LINEAR 계열 필드(LINEAR/POSITION/ORIGIN/SPAWN_LINEAR)만 최근 두 시뮬 표본의 속도로 예측합니다. 기본값은 꺼짐입니다. 수신 순간의 기존 표시와 새 예측의 차이는 stepMs 동안 줄이며, maxMs를 넘으면 마지막 예측 위치를 유지합니다. 보정이 한도 뒤에도 진행하지 않도록 `maxMs >= stepMs`를 요구합니다. HP·경험치를 자동 외삽하지 않고 ANGLE/STEP/DECAY/CYCLE/countdown/key 외삽은 거부합니다. 필드 구간·teleport·세계 reset은 해당 속도와 보정 이력을 초기화합니다.
 
 이 기능은 충돌/급정지/최신 사용자 입력을 예측하지 않습니다. fresh local input response는 [simloop LocalInputPreview](../simloop/README.md#선택적-로컬-입력-미리보기)의 별도 opt-in capability입니다. 이 PresentationRuntime는 그 capability가 전달한 선택 local schema model을 즉시 읽고, confirmed capture에서 이전 preview pose를 reconciliation 시작점으로 사용합니다. remote tracks는 덮어쓰지 않습니다.

@@ -62,6 +62,15 @@ export class RoomSession {
   get tick() { return this.baseTick + (this._core?.tick ?? 0); }
   get confirmedTick() { return this._core ? this.baseTick + Math.min(this._core.tick - 1, this._core.confirmedTick) : this.baseTick - 1; }
   get inputDelay() { return this._core?.inputDelay ?? this.profile.baseInputDelayTicks; }
+  /** Global tick metadata; command sequences retain their core-assigned values. */
+  get localInputState() {
+    const state = this._core?.localInputState;
+    if (!state) return null;
+    return { ...state, epoch: this.epoch, baseTick: this.baseTick, tick: this.tick, confirmedTick: this.confirmedTick,
+      capture: state.capture ? { ...state.capture, captureTick: state.capture.captureTick + this.baseTick,
+        executeTick: state.capture.executeTick + this.baseTick,
+        commands: state.capture.commands.map(c => ({ ...c, executeTick: c.executeTick + this.baseTick })) } : null };
+  }
   get failure() { return this._failure ?? this._core?.failure; }
   get ready() { return !this.closed && !this.failure && !this._transition && !!this._core?.ready; }
   get resimulating() { return this._transition?.proposal.reason === 'reconnect' || !!this._transition?.replay || !!this._core?.resimulating; }

@@ -84,6 +84,8 @@ export class RollbackSession {
     this._commandSequences = commandSequenceMap(this.players, initialCommandSequences);
     this._commandSequence = this._commandSequences.get(localPlayerId); this._sequence = 0; this._captureTick = -1;
     this._lastLocalInput = new Uint8Array(this.inputSize);
+    this._localCapture = null; this._localCaptureSequence = 0;
+    this._localExecutedInput = null;
     if (localCommandState !== undefined) {
       const carried = copyLocalCommandState(localCommandState, this.inputSize, this.profile, this._commandSequence);
       this._commandSequence = carried.sequence; this._lastLocalInput = carried.lastInput;
@@ -122,6 +124,16 @@ export class RollbackSession {
   get tick() { return this._tick; }
   get inputDelay() { return this._inputDelay; }
   get confirmedTick() { return Math.min(...this._through.values()); }
+  /** Detached metadata about immutable local captures, not a simulation snapshot. */
+  get localInputState() {
+    const frame = this._localCapture;
+    return { epoch: 0, baseTick: 0, tick: this.tick, confirmedTick: Math.min(this.tick - 1, this.confirmedTick),
+      inputDelay: this.inputDelay, commandSequence: this._commandSequence,
+      executedInput:this._localExecutedInput?.slice()??null,
+      replayInput:(this._inputs.get(this.localPlayerId).get(this.tick)?.input??this._localExecutedInput)?.slice()??null,
+      executedCommandSequence: this.profile.mode === 'lockstep' ? this._commandSequences.get(this.localPlayerId) : null,
+      capture: frame ? { ...frame, input: frame.input.slice(), commands: frame.commands.map(c => ({ ...c, payload: c.payload.slice() })) } : null };
+  }
   get resimulating() { return this._replaying || this._rollbackFrom !== Infinity; }
   get failure() { return this._failure; }
   get requestedInputDelay() { return this._requestedInputDelay; }
@@ -309,6 +321,8 @@ export class RollbackSession {
       commands.push({ ...c, executeTick: target });
     }
     this._commitLocal(target, this._lastLocalInput, commands);
+    this._localCapture = { sequence: ++this._localCaptureSequence, captureTick: this.tick, executeTick: target,
+      input: this._lastLocalInput.slice(), commands: commands.map(c => ({ ...c, payload: c.payload.slice() })) };
   }
   releaseInput() {
     if (this.closed || this._failure) return;
@@ -544,6 +558,7 @@ export class RollbackSession {
       }
       if (!lockstep) this._used.set(tick, inputs.map(f => ({ ...copyFrame(f), playerId: f.playerId, predicted: f.predicted })));
       this._tick++; this._inputHash = inputHash; this._currentState = null;
+      const localFrame=inputs.find(frame=>frame.playerId===this.localPlayerId);if(localFrame)this._localExecutedInput=localFrame.input.slice();
       if (lockstep) for (const frame of inputs) for (const command of frame.commands) {
         this._commandSequences.set(frame.playerId, Math.max(this._commandSequences.get(frame.playerId), command.sequence));
       }
