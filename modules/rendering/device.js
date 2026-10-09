@@ -31,18 +31,22 @@ export class WebGLDevice {
     this.canvas = canvas; this.maxBufferBytes = maxBufferBytes;
     this.gl = canvas.getContext('webgl', { alpha, antialias, depth, stencil, premultipliedAlpha: true, preserveDrawingBuffer, powerPreference, failIfMajorPerformanceCaveat });
     if (!this.gl) throw new Error('WebGL 1 required');
+    this._instancingExtension = this.gl.getExtension('ANGLE_instanced_arrays');
+    this.instancingSupported = !!this._instancingExtension;
     this.maxTextures = Math.min(maxTextures, this.gl.getParameter(this.gl.MAX_TEXTURE_IMAGE_UNITS));
     this.maxTextureSize = this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE);
     this.depthAvailable = !!this.gl.getContextAttributes().depth; this.stencilAvailable = !!this.gl.getContextAttributes().stencil;
     this.state = 'ready'; this.failure = null; this.active = false; this.boundTextureCount = 0;
     this.pipelines = new Map(); this.buffers = new Map(); this.textures = new Map(); this.renderTargets = new Map(); this.renderTargetStack = []; this.activeRenderTarget = null; this.enabledAttributes = new Set();
-    this.stats = { frame:0, drawCalls:0, vertices:0, bufferUploads:0, bufferBytes:0, textureUploads:0, textureBytes:0,
+    this.stats = { frame:0, drawCalls:0, instancedDrawCalls:0, vertices:0, bufferUploads:0, bufferBytes:0, textureUploads:0, textureBytes:0,
       frameCopies:0, bufferAllocations:0, gpuBufferBytes:0, gpuRenderTargetBytes:0, pipelineCount:0, bufferCount:0, textureCount:0, renderTargetCount:0, restores:0 };
     this.onLost = event => { event.preventDefault(); this.active = false; this.renderTargetStack.length = 0; this.activeRenderTarget = null; this.state = 'lost'; };
     this.onRestored = () => {
       if (this.state === 'disposed') return;
       try {
         this.enabledAttributes.clear(); this.boundTextureCount = 0;
+        this._instancingExtension = this.gl.getExtension('ANGLE_instanced_arrays');
+        this.instancingSupported = !!this._instancingExtension;
         for (const record of this.pipelines.values()) this._pipeline(record);
         for (const record of this.buffers.values()) { record.gpu = this.gl.createBuffer(); if (!record.gpu) throw new Error('Buffer allocation failed'); this.gl.bindBuffer(this.gl.ARRAY_BUFFER,record.gpu); this.gl.bufferData(this.gl.ARRAY_BUFFER,record.capacity,this.gl.DYNAMIC_DRAW); record.used = 0; this.stats.bufferAllocations++; }
         for (const record of this.textures.values()) { record.gpu = null; this._texture(record); }
@@ -67,17 +71,25 @@ export class WebGLDevice {
     } catch(error) { if (program) gl.deleteProgram(program); throw error; }
     finally { if(vertex)gl.deleteShader(vertex);if(fragment)gl.deleteShader(fragment); }
   }
-  /** Attributes use interleaved FLOAT components, byte offsets and byte stride. */
-  createPipeline({ vertex, fragment, stride, attributes, uniforms = {} }) {
+  /** Attributes use interleaved FLOAT components and byte offsets in their vertex/instance source. */
+  createPipeline({ vertex, fragment, stride, instanceStride = 0, attributes, uniforms = {} }) {
     this._ready(); if (typeof vertex !== 'string' || typeof fragment !== 'string') throw new TypeError('Shader sources required');
     integer(stride,'stride',4,255); if (stride % 4) throw new RangeError('stride must align to FLOAT');
+    integer(instanceStride,'instanceStride',0,255); if (instanceStride % 4) throw new RangeError('instanceStride must align to FLOAT');
     if (!Array.isArray(attributes) || !attributes.length) throw new TypeError('attributes required');
     const names = new Set();
-    for (const a of attributes) { if (typeof a.name !== 'string' || !a.name || names.has(a.name)) throw new TypeError('Unique attribute names required'); names.add(a.name); integer(a.size,'attribute size',1,4); integer(a.offset,'attribute offset',0,stride-4); if(a.offset%4 || a.offset+a.size*4>stride) throw new RangeError('attribute outside stride'); }
+    for (const a of attributes) {
+      if (!a || typeof a.name !== 'string' || !a.name || names.has(a.name)) throw new TypeError('Unique attribute names required');
+      names.add(a.name); integer(a.size,'attribute size',1,4);
+      const source=a.source??'vertex'; if(source!=='vertex'&&source!=='instance')throw new TypeError('attribute source must be vertex or instance');
+      const sourceStride=source==='instance'?instanceStride:stride;
+      if(!sourceStride)throw new RangeError('instance attributes require instanceStride');
+      integer(a.offset,'attribute offset',0,sourceStride-4); if(a.offset%4 || a.offset+a.size*4>sourceStride) throw new RangeError('attribute outside source stride');
+    }
     if (!uniforms || typeof uniforms !== 'object') throw new TypeError('uniform descriptors required');
     for (const type of Object.values(uniforms)) if (!UNIFORMS.has(type)) throw new TypeError(`Unsupported uniform ${type}`);
-    const record = {vertex,fragment,stride,attributes:attributes.map(a=>({...a})),uniforms:{...uniforms},gpu:null}; this._pipeline(record);
-    const handle = Object.freeze({stride}); this.pipelines.set(handle,record); this.stats.pipelineCount=this.pipelines.size; return handle;
+    const record = {vertex,fragment,stride,instanceStride,instanced:attributes.some(a=>a.source==='instance'),attributes:attributes.map(a=>({...a,source:a.source??'vertex'})),uniforms:{...uniforms},gpu:null}; this._pipeline(record);
+    const handle = Object.freeze({stride,instanceStride}); this.pipelines.set(handle,record); this.stats.pipelineCount=this.pipelines.size; return handle;
   }
   deletePipeline(handle) { const r=this.pipelines.get(handle); if(!r)return false; this.gl.useProgram(null);this.gl.deleteProgram(r.gpu);this.pipelines.delete(handle);this.stats.pipelineCount=this.pipelines.size;return true; }
   createVertexBuffer({capacityBytes=0}={}) {
@@ -203,7 +215,7 @@ export class WebGLDevice {
     if(this.state==='lost')return false;this._ready();if(this.active)throw new Error('endFrame required');integer(width,'width',1);integer(height,'height',1);
     const gl=this.gl,limit=gl.getParameter(gl.MAX_VIEWPORT_DIMS);if(width>limit[0]||height>limit[1])throw new RangeError('Viewport exceeds WebGL limit');
     if(this.canvas.width!==width)this.canvas.width=width;if(this.canvas.height!==height)this.canvas.height=height;gl.bindFramebuffer(gl.FRAMEBUFFER,null);gl.viewport(0,0,width,height);this.renderTargetStack.length=0;this.activeRenderTarget=null;
-    this.stats.frame++;for(const name of ['drawCalls','vertices','bufferUploads','bufferBytes','textureUploads','textureBytes','frameCopies'])this.stats[name]=0;
+    this.stats.frame++;for(const name of ['drawCalls','instancedDrawCalls','vertices','bufferUploads','bufferBytes','textureUploads','textureBytes','frameCopies'])this.stats[name]=0;
     this.active=true;this.clear({color:clearColor,depth:clearDepth,stencil:clearStencil});return true;
   }
   clear({color,depth,stencil}={}){
@@ -214,18 +226,32 @@ export class WebGLDevice {
     gl.disable(gl.SCISSOR_TEST);gl.clear(flags);
   }
   /** Full pass state is explicit per draw; no state leakage between game materials. */
-  draw({pipeline,buffer,first=0,count,uniforms={},textures=[],blend='source-over',depth=false,stencil=false,colorMask=ALL_COLOR,filter}={}){
+  draw({pipeline,buffer,instanceBuffer,instances=1,first=0,count,uniforms={},textures=[],blend='source-over',depth=false,stencil=false,colorMask=ALL_COLOR,filter}={}){
     this._ready();if(!this.active)throw new Error('beginFrame required');const p=this._handle(this.pipelines,pipeline,'pipeline'),b=this._handle(this.buffers,buffer,'buffer');
     integer(first,'first');integer(count,'count');if(first+count>b.used/p.stride)throw new RangeError('draw exceeds uploaded vertices');
+    integer(instances,'instances',1);
+    let instanceRecord;
+    if(p.instanced){
+      if(!this._instancingExtension)throw new Error('ANGLE_instanced_arrays required for instance attributes');
+      instanceRecord=this._handle(this.buffers,instanceBuffer,'instance buffer');
+      if(instances>instanceRecord.used/p.instanceStride)throw new RangeError('draw exceeds uploaded instances');
+    }else if(instances!==1)throw new RangeError('Multiple instances require instance attributes');
+    if(!Number.isSafeInteger(count*instances))throw new RangeError('draw vertex count exceeds safe integer range');
     if(depth&&!this.depthAvailable)throw new Error('Context has no depth buffer');if(stencil&&!this.stencilAvailable)throw new Error('Context has no stencil buffer');
     if(blend!==false&&!BLENDS.has(blend))throw new TypeError('Unsupported blend');if(depth&&!FUNCTIONS[depth.func??'lequal'])throw new TypeError('Unsupported depth function');
     if(stencil){if(!FUNCTIONS[stencil.func??'always'])throw new TypeError('Unsupported stencil function');for(const key of ['fail','zfail','pass'])if(!OPERATIONS[stencil[key]??'keep'])throw new TypeError('Unsupported stencil operation');for(const key of ['ref','mask','writeMask'])integer(stencil[key]??(key==='ref'?0:255),key,0,255);}
     if(!colorMask||colorMask.length!==4||!Array.from(colorMask).every(v=>typeof v==='boolean'))throw new TypeError('colorMask must contain booleans');
     if(!Array.isArray(textures)||textures.length>this.maxTextures)throw new RangeError('Too many textures');for(const handle of textures){this._handle(this.textures,handle,'texture');if(handle===this.activeRenderTarget)throw new Error('Cannot sample the active render target');}
     if(filter!==undefined&&filter!=='nearest'&&filter!=='linear')throw new TypeError('Unsupported filter');
-    const gl=this.gl;gl.useProgram(p.gpu);gl.bindBuffer(gl.ARRAY_BUFFER,b.gpu);
-    for(const index of this.enabledAttributes)gl.disableVertexAttribArray(index);this.enabledAttributes.clear();
-    for(const a of p.locations)if(a.location>=0){gl.enableVertexAttribArray(a.location);gl.vertexAttribPointer(a.location,a.size,gl.FLOAT,false,p.stride,a.offset);this.enabledAttributes.add(a.location);}
+    const gl=this.gl,instancing=this._instancingExtension;gl.useProgram(p.gpu);
+    for(const index of this.enabledAttributes){if(instancing)instancing.vertexAttribDivisorANGLE(index,0);gl.disableVertexAttribArray(index);}this.enabledAttributes.clear();
+    let boundBuffer=null;
+    for(const a of p.locations)if(a.location>=0){
+      const isInstance=a.source==='instance',sourceBuffer=isInstance?instanceRecord:b;
+      if(boundBuffer!==sourceBuffer.gpu){gl.bindBuffer(gl.ARRAY_BUFFER,sourceBuffer.gpu);boundBuffer=sourceBuffer.gpu;}
+      gl.enableVertexAttribArray(a.location);gl.vertexAttribPointer(a.location,a.size,gl.FLOAT,false,isInstance?p.instanceStride:p.stride,a.offset);
+      if(instancing)instancing.vertexAttribDivisorANGLE(a.location,isInstance?1:0);this.enabledAttributes.add(a.location);
+    }
     for(const [name,value]of Object.entries(uniforms)){
       const type=p.uniforms[name];if(!type)throw new TypeError(`Undeclared uniform ${name}`);const location=p.uniformLocations.get(name);if(location===null)continue;
       if(type.startsWith('matrix'))gl[`uniformMatrix${type[6]}fv`](location,false,value);
@@ -237,7 +263,10 @@ export class WebGLDevice {
     if(blend===false)gl.disable(gl.BLEND);else{gl.enable(gl.BLEND);gl.blendEquation(gl.FUNC_ADD);const factors=blend==='source-over'?[gl.ONE,gl.ONE_MINUS_SRC_ALPHA]:blend==='straight-alpha'?[gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA]:blend==='copy'?[gl.ONE,gl.ZERO]:blend==='lighter'?[gl.ONE,gl.ONE]:blend==='source-in'?[gl.DST_ALPHA,gl.ZERO]:[gl.ZERO,gl.SRC_ALPHA];gl.blendFunc(...factors);}
     if(depth){gl.enable(gl.DEPTH_TEST);gl.depthFunc(gl[FUNCTIONS[depth.func??'lequal']]);gl.depthMask(depth.write??true);}else{gl.disable(gl.DEPTH_TEST);gl.depthMask(false);}
     if(stencil){gl.enable(gl.STENCIL_TEST);gl.stencilFunc(gl[FUNCTIONS[stencil.func??'always']],stencil.ref??0,stencil.mask??255);gl.stencilMask(stencil.writeMask??255);gl.stencilOp(gl[OPERATIONS[stencil.fail??'keep']],gl[OPERATIONS[stencil.zfail??'keep']],gl[OPERATIONS[stencil.pass??'keep']]);}else gl.disable(gl.STENCIL_TEST);
-    gl.colorMask(...colorMask);gl.disable(gl.CULL_FACE);gl.disable(gl.DITHER);gl.disable(gl.SCISSOR_TEST);gl.drawArrays(gl.TRIANGLES,first,count);this.stats.drawCalls++;this.stats.vertices+=count;
+    gl.colorMask(...colorMask);gl.disable(gl.CULL_FACE);gl.disable(gl.DITHER);gl.disable(gl.SCISSOR_TEST);
+    if(p.instanced){instancing.drawArraysInstancedANGLE(gl.TRIANGLES,first,count,instances);this.stats.instancedDrawCalls++;}
+    else gl.drawArrays(gl.TRIANGLES,first,count);
+    this.stats.drawCalls++;this.stats.vertices+=count*instances;
   }
   endFrame(){this._ready();if(!this.active)throw new Error('beginFrame required');if(this.renderTargetStack.length)throw new Error('Unbind render targets before endFrame');this.active=false;return this.stats;}
   _deleteGPU(){const gl=this.gl;gl.useProgram(null);gl.bindBuffer(gl.ARRAY_BUFFER,null);for(let i=0;i<this.maxTextures;i++){gl.activeTexture(gl.TEXTURE0+i);gl.bindTexture(gl.TEXTURE_2D,null);}gl.activeTexture(gl.TEXTURE0);for(const r of this.pipelines.values())gl.deleteProgram(r.gpu);for(const r of this.buffers.values())gl.deleteBuffer(r.gpu);for(const r of this.renderTargets.values())gl.deleteFramebuffer(r.framebuffer);for(const r of this.textures.values())gl.deleteTexture(r.gpu);}
