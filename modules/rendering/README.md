@@ -49,7 +49,34 @@ if (renderer.beginFrame([0.03, 0.05, 0.08, 1])) {
 
 `Renderer2D`는 의도적으로 단순한 primitive 편의 API입니다. path·곡선·clip·group opacity와 사전 생성 glyph 텍스트는 아래 `VectorRenderer`/`GlyphAtlas` 조합을 사용합니다. 자동 asset loading·sprite animation·terrain/fog·scenegraph·game art·기본 3D scene 처리는 여전히 게임 소유입니다. DOM UI 또는 게임별 projection/layer로 조합하세요.
 
-## VectorRenderer와 prebaked GlyphAtlas
+## VectorContext와 재사용 primitive painter
+
+`VectorContext(device,{vectorRenderer,glyphAtlas,onError,initialVertices,maxVertices})`는 게임의 2D draw adapter에서 반복되기 쉬운 paint/state/path 알고리즘을 공개합니다. canvas와 WebGL context, 프레임 자원은 caller가 만들고, 이미 사용하는 `VectorRenderer`와 `GlyphAtlas`를 주입하면 같은 painter queue와 glyph texture를 공유합니다. vector를 생략한 경우에만 context가 VectorRenderer를 만들고 해제합니다. WebGLDevice와 GlyphAtlas는 항상 caller 소유이며 import만으로 DOM·GPU·asset 작업을 하지 않습니다.
+
+```js
+import { WebGLDevice, VectorRenderer, VectorContext, PrimitivePainter } from './rendering.js';
+const device = new WebGLDevice(canvas, { depth: false, stencil: false });
+const vector = new VectorRenderer(device, { glyphAtlas });
+const ctx = new VectorContext(device, { vectorRenderer: vector, glyphAtlas, onError: reportRenderError });
+const primitive = new PrimitivePainter(ctx);
+if (ctx.beginFrame({ width: canvas.width, height: canvas.height, clearColor: [0, 0, 0, 0] })) {
+  ctx.fillStyle = 'rgba(32, 78, 54, .8)'; ctx.beginPath();
+  ctx.roundRect(24, 20, 110, 52, 8); ctx.fill();
+  ctx.strokeStyle = '#d9f3ad'; ctx.setLineDash([6, 3]); ctx.stroke();
+  primitive.circle(80, 100, 12, '#f1f8d7', 12); // 직접 정의한 fan을 painter 순서대로 queue
+  ctx.endFrame();
+}
+```
+
+- path/state API는 CSS hex/rgb(a)/hsl(a)/named paint, alpha, affine transform, curve, arc/ellipse/rect/roundRect, fill/stroke, dash, clip, scoped color, silhouette/group, prebaked atlas text의 metrics와 그리기를 제공합니다. `fillTriangleFan(points,paint)`는 caller가 정의한 fan topology를 받아 삼각형을 재삼각화하지 않고 공통 clip/group 경로로 제출하며, `VectorRenderer` private method를 호출하지 않습니다. `PrimitivePainter`는 generic circle·regular polygon·line·fan emitter를 제공합니다. facing·palette·animation·형상 레시피는 caller 정책입니다.
+- Stroke 폭은 기존 게임 adapter와 같이 변환 행렬 basis 중 큰 크기에 맞춰 조정합니다. dash 길이와 phase는 변환된 path 공간에 적용합니다. 공통 vector stroke는 butt/round/square cap, miter/round/bevel join을 그리며 miter 길이는 `miterLimit`으로 제한합니다. clip 호출 하나에는 contour 하나를 받습니다. path hole은 clip 대신 `fill(rule)`로 처리합니다. radial gradient는 지원하지 않음을 명시적으로 오류 처리합니다.
+- `beginFrame({width,height,clearColor})`와 `endFrame()`은 caller 소유 `WebGLDevice` 프레임을 감쌉니다. begin이 false이면 context loss 등으로 해당 프레임을 건너뜁니다. `stats()`는 실제 device draw/vertex/upload counter, GPU buffer/target byte와 개수, vector staging byte를 보고합니다. `dispose()`는 이 context가 생성한 VectorRenderer와 static vertex buffer만 해제하며 device나 주입받은 atlas/renderer는 해제하지 않습니다. static vertex 데이터는 context 복구 후 다시 upload합니다. `onError(error,details)`는 caller callback이며 프레임 오류는 다시 throw됩니다.
+- `createStaticMesh(vertices,{strideFloats})`는 재사용할 CPU vertex를 보관하고 device buffer에 upload합니다. `drawStaticMesh(mesh,{pipeline,projection,uniforms,textures,blend,depth})`는 caller draw 전에 공통 painter queue를 flush합니다. shader/material, projection uniform, depth/stencil 설정, pass 순서와 mesh geometry는 caller가 공급합니다. generic context는 terrain 정책을 정하지 않습니다.
+- world Canvas2D fallback, 숨겨진 raster canvas, CPU readback, runtime text rasterization, font metric/kerning 변경은 없습니다. CSS named color는 browser document가 있을 때만 일시적인 DOM style element로 해석하며, 문서가 없어도 모듈을 import할 수 있습니다.
+
+Static mesh는 별도 GPU vertex buffer와 caller 소유 shader pipeline을 사용합니다. VectorRenderer stream에 더해지는 GPU memory이며 `deleteStaticMesh()` 또는 `dispose()`로 해제됩니다.
+
+### VectorRenderer와 prebaked GlyphAtlas
 
 `VectorRenderer`는 같은 canvas를 소유한 `WebGLDevice` 위에서 path tessellation·transform·clip·painter-order stream·textured glyph 제출을 제공합니다. 프레임·projection·정렬과 그림 내용은 caller가 소유합니다. 불투명 draw는 재사용 geometry buffer에 직접 제출합니다. CPU/GPU vertex storage는 기본 4096 vertices(각 128 KiB)에서 시작해 필요할 때 2배로 자라며 기본 상한은 262144 vertices(각 최대 8 MiB)입니다. `beginGroup(opacity,bounds)`는 불투명 기본값 `1`이면 target 없이 직접 경로를 유지하고, 반투명 그룹은 canvas-screen bounds의 RGBA target에 그린 뒤 한 번 합성합니다. 생략한 bounds는 viewport 전체입니다. target은 중첩 깊이별로 보관되고 필요한 크기의 다음 power-of-two 버킷으로 할당되어 작아지는 bounds와 인접한 크기에서는 재사용됩니다. bounds보다 바깥의 입력은 잘립니다. `stats.gpuRenderTargetBytes`로 실제 target byte 수를 확인하세요.
 
