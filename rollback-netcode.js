@@ -3483,7 +3483,7 @@ function createLoop({
       if (!Number.isFinite(accumulator) || accumulator > Number.MAX_SAFE_INTEGER) throw new RangeError("loop backlog exceeds safe milliseconds");
       session.poll();
       if (current !== generation || timing !== timingGeneration) return;
-      if (inputPreview && !cached) observeInput(timestamp);
+      if (inputPreview && (!cached || timestamp - observedAt >= quantum)) observeInput(timestamp);
       let work = 0;
       while (!session.closed && !session.resimulating && work < session.profile.maxCatchupSteps) {
         const pace = session.pace ?? session.metrics.pace;
