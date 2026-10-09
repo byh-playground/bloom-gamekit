@@ -406,6 +406,9 @@ var RollbackSession = class {
     this._sequence = 0;
     this._captureTick = -1;
     this._lastLocalInput = new Uint8Array(this.inputSize);
+    this._localCapture = null;
+    this._localCaptureSequence = 0;
+    this._localExecutedInput = null;
     if (localCommandState !== void 0) {
       const carried = copyLocalCommandState(localCommandState, this.inputSize, this.profile, this._commandSequence);
       this._commandSequence = carried.sequence;
@@ -491,6 +494,22 @@ var RollbackSession = class {
   }
   get confirmedTick() {
     return Math.min(...this._through.values());
+  }
+  /** Detached metadata about immutable local captures, not a simulation snapshot. */
+  get localInputState() {
+    const frame = this._localCapture;
+    return {
+      epoch: 0,
+      baseTick: 0,
+      tick: this.tick,
+      confirmedTick: Math.min(this.tick - 1, this.confirmedTick),
+      inputDelay: this.inputDelay,
+      commandSequence: this._commandSequence,
+      executedInput: this._localExecutedInput?.slice() ?? null,
+      replayInput: (this._inputs.get(this.localPlayerId).get(this.tick)?.input ?? this._localExecutedInput)?.slice() ?? null,
+      executedCommandSequence: this.profile.mode === "lockstep" ? this._commandSequences.get(this.localPlayerId) : null,
+      capture: frame ? { ...frame, input: frame.input.slice(), commands: frame.commands.map((c) => ({ ...c, payload: c.payload.slice() })) } : null
+    };
   }
   get resimulating() {
     return this._replaying || this._rollbackFrom !== Infinity;
@@ -777,6 +796,13 @@ var RollbackSession = class {
       commands.push({ ...c, executeTick: target });
     }
     this._commitLocal(target, this._lastLocalInput, commands);
+    this._localCapture = {
+      sequence: ++this._localCaptureSequence,
+      captureTick: this.tick,
+      executeTick: target,
+      input: this._lastLocalInput.slice(),
+      commands: commands.map((c) => ({ ...c, payload: c.payload.slice() }))
+    };
   }
   releaseInput() {
     if (this.closed || this._failure) return;
@@ -1074,6 +1100,8 @@ var RollbackSession = class {
       this._tick++;
       this._inputHash = inputHash;
       this._currentState = null;
+      const localFrame = inputs.find((frame) => frame.playerId === this.localPlayerId);
+      if (localFrame) this._localExecutedInput = localFrame.input.slice();
       if (lockstep) for (const frame of inputs) for (const command of frame.commands) {
         this._commandSequences.set(frame.playerId, Math.max(this._commandSequences.get(frame.playerId), command.sequence));
       }
@@ -2297,6 +2325,24 @@ var RoomSession = class {
   }
   get inputDelay() {
     return this._core?.inputDelay ?? this.profile.baseInputDelayTicks;
+  }
+  /** Global tick metadata; command sequences retain their core-assigned values. */
+  get localInputState() {
+    const state = this._core?.localInputState;
+    if (!state) return null;
+    return {
+      ...state,
+      epoch: this.epoch,
+      baseTick: this.baseTick,
+      tick: this.tick,
+      confirmedTick: this.confirmedTick,
+      capture: state.capture ? {
+        ...state.capture,
+        captureTick: state.capture.captureTick + this.baseTick,
+        executeTick: state.capture.executeTick + this.baseTick,
+        commands: state.capture.commands.map((c) => ({ ...c, executeTick: c.executeTick + this.baseTick }))
+      } : null
+    };
   }
   get failure() {
     return this._failure ?? this._core?.failure;
