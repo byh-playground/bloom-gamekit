@@ -48,6 +48,7 @@ export async function exerciseReusableMeshes(page) {
         near(pixel(24, 24), [128, 127, 0, 255], 'body follows forced-color silhouette');
         check(cold.mesh.geometryUploads === 1 && cold.mesh.geometryBytesUploaded === data.vertices.byteLength, 'cold geometry uploaded exactly once');
         check(cold.mesh.instances === 20, 'two silhouettes reuse one mesh for all twenty passes');
+        check(cold.mesh.draws === (withoutANGLE ? 20 : 1), 'opaque group boundaries preserve adjacent same-mesh unit batching');
         check(cold.uploadedBytes === data.vertices.byteLength + (withoutANGLE ? 0 : 20 * 64), 'cold bytes are geometry plus instance records only');
 
         begin();
@@ -68,6 +69,21 @@ export async function exerciseReusableMeshes(page) {
         near(pixel(88, 32), [128, 0, 0, 255], 'second morph expands rotated top edge');
         near(pixel(80, 40), [128, 0, 0, 255], 'first morph expands rotated right edge');
         near(pixel(90, 32), [0, 0, 0, 255], 'animated mesh retains its exact boundary');
+
+        begin();ctx.save();ctx.translate(20,20);ctx.rotate(Math.PI/2);
+        const singlePose=[{transform:[2,0,0,.5,12,0],morph:[.5,.25]}];
+        ctx.drawMesh(mesh,{parts:singlePose,morph:[.25,.25]});
+        singlePose[0].transform[4]=60;
+        ctx.drawMesh(mesh,{parts:singlePose,morph:[.25,.25]});
+        singlePose[0].transform[4]=95;singlePose[0].visible=false;
+        ctx.drawMesh(mesh,{parts:singlePose,morph:[.25,.25]});
+        ctx.restore();const singlePoseStats=ctx.endFrame();
+        near(pixel(22,24),[128,0,0,255],'single-part pose retains its original non-identity transform');
+        near(pixel(22,54),[128,0,0,255],'single-part pose adds local and instance morph weights');
+        near(pixel(22,72),[128,0,0,255],'in-place single-part transform change affects only the next instance');
+        near(pixel(22,110),[0,0,0,255],'hidden single part remains absent after pose mutation');
+        check(singlePoseStats.mesh.draws===(withoutANGLE?3:1)&&singlePoseStats.mesh.partUniformBytesSubmitted===0,
+          'single-part pose is folded into adjacent instances, not per-vertex uniforms');
 
         begin(); ctx.globalAlpha = .5;
         ctx.drawMesh(mesh, { transform: [1, 0, 0, 1, 16, 24] });
@@ -147,7 +163,110 @@ export async function exerciseReusableMeshes(page) {
         check(directInteriorDifference === 0 && directExteriorDifference === 0, `default-framebuffer rotated clip interior/exterior parity: ${directInteriorDifference}/${directExteriorDifference}`);
         check(antialias || directEdgeDifference === 0, 'non-MSAA direct clip has exact vector edge coverage');
 
+        // Three authored overlapping translucent parts stay one ordered mesh, even
+        // when independent part animation and silhouette instances are combined.
+        const authored = [
+          { points: [[-12, -8], [12, -8], [12, 8], [-12, 8]], color: [1, 0, 0, .5],
+            targets: [[[-12, -8], [20, -8], [20, 8], [-12, 8]], [[-12, -12], [12, -12], [12, 8], [-12, 8]]] },
+          { points: [[-9, -11], [9, -11], [9, 11], [-9, 11]], color: [0, 1, 0, .4],
+            targets: [[[-9, -11], [14, -11], [14, 11], [-9, 11]], [[-9, -11], [9, -11], [9, 17], [-9, 17]]] },
+          { points: [[-8, -8], [10, -6], [0, 12]], color: [0, 0, 1, .6],
+            targets: [[[-8, -8], [10, -6], [6, 12]], [[-8, -8], [10, -6], [0, 20]]] }
+        ];
+        const buildPart = (points, color) => { const b = new MeshBuilder(); new PrimitivePainter(b).poly(points, color); return b; };
+        const packedData = MeshBuilder.combine(authored.map(a => buildPart(a.points, a.color).build({ morphs: a.targets.map(p => buildPart(p, a.color)) })));
+        check(packedData.strideFloats === 11 && packedData.partCount === 3, 'packed authored schema');
+        const rotation = (angle, x, y) => [Math.cos(angle), Math.sin(angle), -Math.sin(angle), Math.cos(angle), x, y];
+        const poses = () => [
+          { transform: [1, 0, 0, 1, 0, 0], morph: [.25, .1], visible: true },
+          { transform: rotation(Math.PI / 6, 2, 1), morph: [.2, .3], visible: true },
+          { transform: rotation(-Math.PI / 5, -2, -1), morph: [.1, .2], visible: false }
+        ];
+        const globalMorph = [.125, .1];
+        const partPoints = (a, part) => a.points.map((p, i) => p.map((v, axis) => v +
+          (a.targets[0][i][axis] - v) * (globalMorph[0] + part.morph[0]) +
+          (a.targets[1][i][axis] - v) * (globalMorph[1] + part.morph[1])));
+        const reference = parts => {
+          for (let i = 0; i < authored.length; i++) {
+            const part = parts[i]; if (part.visible === false) continue;
+            ctx.save(); ctx.transform(...part.transform);
+            ctx.fillTriangleFan(partPoints(authored[i], part), authored[i].color); ctx.restore();
+          }
+        };
+        begin();
+        const packedMesh = ctx.createMesh(packedData), initialParts = poses();
+        ctx.drawMesh(packedMesh, { transform: [1, 0, 0, 1, 34, 64], parts: initialParts, morph: globalMorph });
+        const packedCold = ctx.endFrame();
+        check(packedCold.mesh.geometryUploads === 1 && packedCold.mesh.geometryBytesUploaded === packedData.vertices.byteLength, 'combined geometry uploaded once');
+        near(pixel(34, 64), [77, 102, 0, 255], 'original red then green order, hidden blue part absent');
+
+        const paintPackedScene = (retained, draws, silhouette = false) => {
+          begin(); let callbacks = 0;
+          for (const { x, y, parts } of draws) {
+            ctx.save(); ctx.translate(x, y);
+            const paint = () => { callbacks++; if (retained) ctx.drawMesh(packedMesh, { parts, morph: globalMorph }); else reference(parts); };
+            if (silhouette) ctx.withSilhouette('#ffe000', 3, paint, 40); else paint();
+            ctx.restore();
+          }
+          const stats = ctx.endFrame(); return { bytes: pixels(), stats, callbacks };
+        };
+        const polygonPoints = draws => draws.flatMap(draw => authored.flatMap((a, i) => {
+          const part = draw.parts[i]; if (part.visible === false) return [];
+          const m = part.transform;
+          return [partPoints(a, part).map(([x, y]) => [m[0] * x + m[2] * y + m[4] + draw.x, m[1] * x + m[3] * y + m[5] + draw.y])];
+        }));
+        const comparePacked = (actual, expected, draws, silhouette = false) => {
+          let differentChannels = 0, interiorDifferentChannels = 0, maxDifference = 0;
+          const polygons = polygonPoints(draws), offsets = [[0, 0]];
+          if (silhouette) for (let i = 0; i < 8; i++) offsets.push([Math.cos(i * Math.PI / 4) * 3, Math.sin(i * Math.PI / 4) * 3]);
+          for (let p = 0; p < 128 * 128; p++) {
+            const x = p % 128 + .5, y = 127 - Math.floor(p / 128) + .5;
+            let distance = Infinity;
+            for (const polygon of polygons) for (const [ox, oy] of offsets) for (let j = 0; j < polygon.length; j++) {
+              const a = polygon[j], b = polygon[(j + 1) % polygon.length], dx = b[0] - a[0], dy = b[1] - a[1];
+              const t = Math.max(0, Math.min(1, ((x - ox - a[0]) * dx + (y - oy - a[1]) * dy) / (dx * dx + dy * dy)));
+              distance = Math.min(distance, Math.hypot(x - ox - a[0] - t * dx, y - oy - a[1] - t * dy));
+            }
+            for (let c = 0; c < 4; c++) {
+              const delta = Math.abs(actual[p * 4 + c] - expected[p * 4 + c]); maxDifference = Math.max(maxDifference, delta);
+              if (delta > 2) { differentChannels++; if (distance > 1.5) interiorDifferentChannels++; }
+            }
+          }
+          check(interiorDifferentChannels === 0, `packed authored order/animation interior parity: ${interiorDifferentChannels} channels`);
+          check(antialias || differentChannels === 0, `non-MSAA packed scene pixel parity: ${differentChannels} channels, max ${maxDifference}`);
+          return { differentChannels, interiorDifferentChannels, maxDifference };
+        };
+
+        const animatedParts = poses(), beforeMutation = structuredClone(animatedParts);
+        begin(); ctx.drawMesh(packedMesh, { transform: [1, 0, 0, 1, 34, 64], parts: animatedParts, morph: globalMorph });
+        animatedParts[0].transform[4] = 7;
+        animatedParts[1].transform.splice(0, 4, ...rotation(-Math.PI / 7, 0, 0).slice(0, 4));
+        animatedParts[1].morph[0] = .75; animatedParts[2].visible = true; animatedParts[2].morph[1] = .5;
+        const afterMutation = structuredClone(animatedParts);
+        ctx.drawMesh(packedMesh, { transform: [1, 0, 0, 1, 94, 64], parts: animatedParts, morph: globalMorph });
+        check(device.stats.drawCalls === 1, 'in-place part mutation flushes the earlier captured instance immediately');
+        near(pixel(34, 64), [77, 102, 0, 255], 'first submitted instance keeps pre-mutation colors/visibility/pose');
+        animatedParts[2].visible = false;
+        for (const part of animatedParts) part.transform[4] += 1000;
+        const mutationStats = ctx.endFrame(), mutationPixels = pixels();
+        near(pixel(94, 64), [31, 41, 153, 255], 'second queued instance keeps captured pose after caller mutates again');
+        check(mutationStats.mesh.draws === 2 && mutationStats.mesh.geometryUploads === 0, 'part-state boundary uses two ordered draws without geometry upload');
+        const mutationDraws = [{ x: 34, y: 64, parts: beforeMutation }, { x: 94, y: 64, parts: afterMutation }];
+        const mutationReference = paintPackedScene(false, mutationDraws);
+        const mutationParity = comparePacked(mutationPixels, mutationReference.bytes, mutationDraws);
+
+        const silhouetteParts = poses(); silhouetteParts[2].visible = true;
+        const silhouetteDraws = [{ x: 64, y: 64, parts: silhouetteParts }];
+        const silhouettePacked = paintPackedScene(true, silhouetteDraws, true);
+        check(silhouettePacked.callbacks === 10 && silhouettePacked.stats.mesh.instances === 10, 'three-part silhouette submits exactly ten whole-mesh instances');
+        check(silhouettePacked.stats.mesh.draws === (withoutANGLE ? 10 : 1), 'ten combined silhouette instances use one ANGLE draw');
+        check(device.stats.instancedDrawCalls === (withoutANGLE ? 0 : 1), 'actual device confirms combined silhouette instancing');
+        check(silhouettePacked.stats.mesh.geometryUploads === 0 && silhouettePacked.stats.uploadedBytes === (withoutANGLE ? 0 : 640), 'warm combined silhouette only uploads instance records');
+        const silhouetteReference = paintPackedScene(false, silhouetteDraws, true);
+        const silhouetteParity = comparePacked(silhouettePacked.bytes, silhouetteReference.bytes, silhouetteDraws, true);
+
         const beforeRestore = clippedScene(true), loss = gl.getExtension('WEBGL_lose_context');
+        const combinedBeforeRestore = paintPackedScene(true, silhouetteDraws, true).bytes;
         check(loss, 'real context-loss extension available');
         const lost = new Promise(resolve => canvas.addEventListener('webglcontextlost', resolve, { once: true }));
         loss.loseContext(); await lost;
@@ -158,10 +277,13 @@ export async function exerciseReusableMeshes(page) {
         check(device.state === 'ready' && ctx.state === 'ready', 'scene/device restored');
         const afterRestore = clippedScene(true);
         check(beforeRestore.every((v, i) => v === afterRestore[i]), 'same retained handle restores identical scene pixels');
+        const combinedAfterRestore = paintPackedScene(true, silhouetteDraws, true).bytes;
+        check(combinedBeforeRestore.every((v, i) => v === combinedAfterRestore[i]), 'same combined mesh handle restores identical animated silhouette pixels');
         check(gl.getError() === gl.NO_ERROR, 'actual WebGL path has no GL errors');
 
         begin(); ctx.drawMesh(mesh, { transform: [1, 0, 0, 1, 24, 24] });
         check(ctx.deleteMesh(mesh) && !ctx.deleteMesh(mesh), 'deletion flushes queued drawing and is idempotent');
+        check(ctx.deleteMesh(packedMesh), 'combined geometry is explicitly released');
         ctx.endFrame(); near(pixel(24, 24), [128, 0, 0, 255], 'queued last use remains visible after deletion');
         check(ctx.stats().mesh.meshCount === 0 && ctx.stats().mesh.retainedBytes === 0, 'deleted geometry leaves no retained allocation');
         ctx.dispose(); ctx.dispose();
@@ -169,6 +291,11 @@ export async function exerciseReusableMeshes(page) {
         return { backend: withoutANGLE ? 'uniform-retained-mesh' : 'ANGLE-instanced-mesh', antialias, samples, cold: cold.mesh, coldUploadedBytes: cold.uploadedBytes,
           warm: warm.mesh, warmUploadedBytes: warm.uploadedBytes, clipDifference, maxClipDifference, clipInteriorDifference, clipExteriorDifference, maxClipEdgeDifference,
           directClip: { interiorDifference: directInteriorDifference, exteriorDifference: directExteriorDifference, edgeDifference: directEdgeDifference, maxEdgeDifference: directMaxEdgeDifference },
+          packedParts: { partCount: packedData.partCount, coldGeometryBytes: packedCold.mesh.geometryBytesUploaded,
+            mutationDraws: mutationStats.mesh.draws, mutationParity, silhouetteDraws: silhouettePacked.stats.mesh.draws,
+            silhouetteInstances: silhouettePacked.stats.mesh.instances, silhouetteUploadedBytes: silhouettePacked.stats.uploadedBytes,
+            silhouetteGeometryUploads: silhouettePacked.stats.mesh.geometryUploads, silhouetteParity, sameHandleRestoration: true,
+            maxVertexAttributes: gl.getParameter(gl.MAX_VERTEX_ATTRIBS), maxVertexUniformVectors: gl.getParameter(gl.MAX_VERTEX_UNIFORM_VECTORS) },
           transformsAndTwoMorphs: true, silhouette: true, whiteFlashAlpha: true, painterOrder: true,
           nestedOpacityRotatedClip: true, sameHandleRestoration: true, deletionAndDisposal: true };
       } finally { ctx.dispose(); device.dispose(); canvas.remove(); }
