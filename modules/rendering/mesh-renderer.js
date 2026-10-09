@@ -77,7 +77,7 @@ export class MeshRenderer {
     this.meshes = new Set(); this.bytes = 0; this.count = 0; this.pending = null;
     this.planes = new Float32Array(this.maxPlanes * 3);
     this.partScratch = new Float32Array(16 * 12);
-    this.metrics = { draws: 0, instances: 0, geometryUploads: 0, geometryBytesUploaded: 0, instanceBytesUploaded: 0 };
+    this.metrics = { draws: 0, instances: 0, geometryUploads: 0, geometryBytesUploaded: 0, instanceBytesUploaded: 0, partUniformBytesSubmitted: 0 };
     this.state = 'ready'; this.failure = null;
     this.onLost = () => { this.discard(); this.state = 'lost'; };
     this.onRestored = () => {
@@ -138,10 +138,12 @@ export class MeshRenderer {
       this.device.uploadVertices(this.instanceBuffer, this.instances.subarray(0, this.count * 16));
       this.device.draw({ pipeline: this.pipeline, buffer: mesh.buffer, count: mesh.count, instanceBuffer: this.instanceBuffer, instances: this.count, uniforms });
       this.metrics.instanceBytesUploaded += this.count * 64; this.metrics.draws++;
+      this.metrics.partUniformBytesSubmitted += parts.byteLength;
     } else {
       for (let i = 0; i < this.count; i++) {
         for (let j = 0; j < 4; j++) uniforms[['i_row0', 'i_row1', 'i_color', 'i_params'][j]] = this.instances.subarray(i * 16 + j * 4, i * 16 + j * 4 + 4);
         this.device.draw({ pipeline: this.pipeline, buffer: mesh.buffer, count: mesh.count, uniforms }); this.metrics.draws++;
+        this.metrics.partUniformBytesSubmitted += parts.byteLength;
       }
     }
     this.metrics.instances += this.count; this.discard();
@@ -149,7 +151,7 @@ export class MeshRenderer {
   discard() { this.count = 0; this.pending = null; }
   _ready() { if (this.state !== 'ready' || this.disposed) throw new Error(`MeshRenderer is ${this.state}${this.failure ? ': ' + this.failure : ''}`); }
   beginFrame() { this.discard(); for (const key of Object.keys(this.metrics)) this.metrics[key] = 0; }
-  stats() { return { ...this.metrics, state: this.state, failure: this.failure, meshCount: this.meshes.size, retainedBytes: this.bytes, stagingBytes: this.instances.byteLength, instanced: this.instanced, maxClipPlanes: this.maxPlanes }; }
+  stats() { return { ...this.metrics, state: this.state, failure: this.failure, meshCount: this.meshes.size, retainedBytes: this.bytes, stagingBytes: this.instances.byteLength + this.planes.byteLength + this.partScratch.byteLength, instanced: this.instanced, maxClipPlanes: this.maxPlanes }; }
   dispose() {
     if (this.disposed) return;
     this.discard(); this.device.canvas.removeEventListener('webglcontextlost', this.onLost); this.device.canvas.removeEventListener('webglcontextrestored', this.onRestored);
