@@ -409,7 +409,7 @@ export interface PreviewEntity { id: string; generation: number; source: object;
 export interface PreviewFork {restore?(snapshot:unknown):void;step(input: unknown, context: { sequence?: number; tick: number; epoch: number; commands: Array<{observationId?:number;sequence:number|null;executeTick?:number;payload: unknown}>; speculative: true; replay?: boolean;gap?:boolean }): void; }
 export interface LocalInputPreviewOptions {
   stepMs?: number;
-  createFork(snapshot: unknown): PreviewFork; cloneSnapshot?(snapshot: unknown): unknown; readEntities(fork: PreviewFork): PreviewEntity[];
+  createFork(snapshot: unknown): PreviewFork; cloneSnapshot?(snapshot: unknown): unknown; captureSnapshot?(): unknown; readEntities(fork: PreviewFork): PreviewEntity[];
   presentation?: { selectPreview(ids: Array<{ id: string; generation: number }>): void; capturePreview(packet: object, nowMs: number): boolean; clearPreview?(): void };
   maxPendingInputs?: number; maxFutureTicks?: number; maxAgeMs?: number;
 }
@@ -419,8 +419,9 @@ export interface LocalInputState { epoch:number; baseTick:number; tick:number; c
 export class LocalInputPreview {
   constructor(options: LocalInputPreviewOptions);
   readonly pendingCount: number; readonly enabled: boolean; readonly ready:boolean; readonly metrics: Readonly<Record<string, number>>;
-  reconcile(checkpoint: {snapshot:unknown;input?:unknown;revision:number;tick:number;epoch:number;confirmedCommandSequence?:number;timeMs:number;mode?:'continuous'|'rollback'|'load'|'reset'|'teleport'|'join'|'resync';reset?:boolean}):boolean;
-  observe(input:unknown,metadata:{sequence:number;tick:number;epoch:number;timeMs:number;commands?:Array<{observationId:number;sequence:number|null;payload:Bytes}>}):boolean;
+  reconcile(checkpoint: {snapshot:unknown;input?:unknown;revision:number;tick:number;epoch:number;continuationKey?:string;confirmedCommandSequence?:number;timeMs:number;mode?:'continuous'|'rollback'|'load'|'reset'|'teleport'|'join'|'resync';reset?:boolean}):boolean;
+  continueFromCheckpoint(checkpoint:{input:unknown;revision:number;tick:number;epoch:number;continuationKey:string;confirmedCommandSequence?:number;timeMs:number}):boolean;
+  observe(input:unknown,metadata:{sequence:number;tick:number;epoch:number;timeMs:number;continuationKey?:string;commands?:Array<{observationId:number;sequence:number|null;payload:Bytes}>}):boolean;
   commit(capture:NonNullable<LocalInputState['capture']>&{boundaryTick?:number;predict?:boolean},nowMs:number):boolean;
   cancelObservation(nowMs:number):void;
   clear(): void; setEnabled(enabled: boolean): void; dispose(): void;
