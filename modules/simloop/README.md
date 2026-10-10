@@ -33,6 +33,8 @@ scope가 authority tick마다 전체 checkpoint를 다시 설치하지 않도록
 
 새 입력 관찰 없이 deadline이 진행된 경우에는 선택적 `advanceConfirmedCheckpoint()`으로 detached local fork를 한 번만 따라잡을 수 있습니다. 직전 checkpoint와 연속된 tick·revision·epoch·remote key, 같은 confirmed command maximum, 현재 fork 위치, 정확한 immutable input을 요구하며, 미확인 명령이나 pending/observed forecast가 있으면 거부합니다. 연속해서 여러 tick을 추측하지 않도록 full snapshot rebase 전에 최대 한 confirmed-only step만 허용합니다. 이 경로도 authority 상태를 수정하지 않습니다. 조건이 맞지 않으면 `false`를 처리하고 기존 `reconcile(snapshot, ...)`로 복구하세요.
 
+`metrics.confirmedAdvances`, `confirmedAdvanceMs`, aggregate reject 및 `confirmedAdvanceRejected*` reason counters로 실제 사용 여부·CPU 비용·fallback 조건을 분리해 확인할 수 있습니다.
+
 `createDeadlineScheduler({getIntervalMs,pulse,maxBacklogTicks,onGap})`가 단일 timeout과 deadline cadence를 소유합니다. start/stop, wake(즉시 전달하되 deadline 유지), rebase(pause/resume/TPS 이후), running/deadlineMs를 제공합니다. 게임은 UI·persist·session gating만 결정합니다. 큰 gap은 미처리 deadline을 버리고 다시 기준을 잡으며 timer 지연과 게임 step을 선점할 수는 없습니다.
 
 수동 deadline owner가 loop.start를 사용하지 않으면 자동 blur/visibility listener도 설치되지 않습니다. 그 owner의 기존 device/UI 해제 listener 다음에 window blur 및 document.hidden 경계에서 `loop.releaseInput()`을 호출하세요. 이 공개 API는 cached 관찰·SDK held input·preview를 함께 지우며 다음 pulse는 같은 getInput 경로에서 neutral을 다시 관찰합니다. UI command를 중복 제출하지 않고 별도 RAF loop를 시작하지 않습니다.

@@ -328,13 +328,14 @@ try {
       window.dispatchEvent(new Event('blur'));loop.pulse(now+400);loop.pulse(now+500);
       if(state.x!==heldX||session.localInputState.capture.input[0]!==0||session.localInputState.executedInput[0]!==0)throw Error('manual owner retained stale held cache after the reserved release frame');
       if(state.edges!==1||session.localInputState.commandSequence!==1||session.localInputState.executedCommandSequence!==1)throw Error('deadline refresh duplicated or lost edge command');
-      return{deadlineHeldX,heldX,afterBlurX:state.x,edges:state.edges,observationReads:observations,neutral:session.localInputState.capture.input[0],automaticRafStarted:loop.running,confirmedAdvances:preview.metrics.confirmedAdvances,confirmedAdvanceRejected:preview.metrics.confirmedAdvanceRejected,confirmedAdvanceResults,confirmedAdvanceRestoreDeltas,confirmedReplaySteps,forkRestores};
+      return{deadlineHeldX,heldX,afterBlurX:state.x,edges:state.edges,observationReads:observations,neutral:session.localInputState.capture.input[0],automaticRafStarted:loop.running,confirmedAdvances:preview.metrics.confirmedAdvances,confirmedAdvanceRejected:preview.metrics.confirmedAdvanceRejected,confirmedAdvanceRejectedLimit:preview.metrics.confirmedAdvanceRejectedLimit,confirmedAdvanceResults,confirmedAdvanceRestoreDeltas,confirmedReplaySteps,forkRestores};
     }finally{window.removeEventListener('blur',release);loop.stop();preview.dispose();session.close();input.dispose();}
   });
   assert.equal(report.manualOwnerRelease.automaticRafStarted,false);
   assert.equal(report.manualOwnerRelease.confirmedAdvances,1,'one exact idle frame advances the detached local fork without a checkpoint restore');
   assert.equal(report.manualOwnerRelease.confirmedReplaySteps,1,'confirmed-only continuation still executes the same detached game step');
   assert.ok(report.manualOwnerRelease.confirmedAdvanceRejected>=1,'a second speculative confirmed-only step is rejected until another prediction or snapshot rebase');
+  assert.ok(report.manualOwnerRelease.confirmedAdvanceRejectedLimit>=1,'the confirmed-only horizon rejects a second consecutive step');
   assert.deepEqual(report.manualOwnerRelease.confirmedAdvanceRestoreDeltas,[0],'the bounded confirmed-only step avoids reinstalling the full snapshot');
   report.stages.push('manual deadline refreshes held/quick edges without RAF, reuses recent observations, binds edge once, advances one exact confirmed-only fork step, bounds it, and stays neutral after blur');
   await previewPage.close();

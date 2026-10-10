@@ -60,7 +60,7 @@ export class LocalInputPreview {
   #sequence = 0; #timeMs = -Infinity; #disposed = false; #enabled = true; #captureSequence = -1; #confirmedCommandSequence; #confirmedOnlySteps = 0;
   #metrics = { snapshotBytes: 0, correctionBytes: 0, replayBytes: 0, snapshotCloneMs: 0, forkMs: 0, replayMs: 0, replayedInputs: 0, replayGapSteps:0, corrections: 0, correctionMs: 0, continuedCheckpoints: 0,
     continuationRejectedDisabled:0,continuationRejectedTick:0,continuationRejectedRevision:0,continuationRejectedEpoch:0,continuationRejectedKey:0,continuationRejectedObserved:0,continuationRejectedForecast:0,continuationRejectedInput:0,continuationRejectedFork:0,continuationRejectedCommands:0,
-    forkRebuilds:0,snapshotRefreshes:0,forecastReuses:0,forecastExtensions:0,currentForkExtensions:0,clockGaps:0,confirmedAdvances:0,confirmedAdvanceRejected:0,confirmedAdvanceMs:0,
+    forkRebuilds:0,snapshotRefreshes:0,forecastReuses:0,forecastExtensions:0,currentForkExtensions:0,clockGaps:0,confirmedAdvances:0,confirmedAdvanceRejected:0,confirmedAdvanceRejectedDisabled:0,confirmedAdvanceRejectedKey:0,confirmedAdvanceRejectedTick:0,confirmedAdvanceRejectedRevision:0,confirmedAdvanceRejectedEpoch:0,confirmedAdvanceRejectedInput:0,confirmedAdvanceRejectedCommands:0,confirmedAdvanceRejectedFork:0,confirmedAdvanceRejectedPending:0,confirmedAdvanceRejectedLimit:0,confirmedAdvanceMs:0,
     previewPublishes: 0, rejectedEpoch: 0, rejectedHorizon: 0, rejectedAge: 0, rejectedCapacity: 0 };
 
   /** @param {{createFork:(snapshot:unknown)=>{step:(input:unknown,context:object)=>void},cloneSnapshot?:(snapshot:unknown)=>unknown,captureSnapshot?:()=>unknown,readEntities:(fork:unknown)=>Array, presentation?:{selectPreview:(ids:Array)=>void,capturePreview:(packet:object,nowMs:number)=>boolean,clearPreview?:()=>void},maxPendingInputs?:number,maxFutureTicks?:number,maxAgeMs?:number}} options */
@@ -175,13 +175,21 @@ export class LocalInputPreview {
    */
   advanceConfirmedCheckpoint(checkpoint) {
     this.#assertLive();
-    const reject=()=>{this.#metrics.confirmedAdvanceRejected++;return false};
-    if(!this.#enabled||!checkpoint||typeof checkpoint.continuationKey!=='string')return reject();
+    const reject=reason=>{this.#metrics.confirmedAdvanceRejected++;this.#metrics['confirmedAdvanceRejected'+reason]++;return false};
+    if(!this.#enabled)return reject('Disabled');
+    if(!checkpoint||typeof checkpoint.continuationKey!=='string')return reject('Key');
     for(const key of ['revision','tick','epoch'])if(!Number.isSafeInteger(checkpoint[key])||checkpoint[key]<0)throw new RangeError('checkpoint '+key);
     if(!Number.isFinite(checkpoint.timeMs)||checkpoint.timeMs<this.#timeMs)throw new RangeError('checkpoint timeMs must be monotonic');
     if(checkpoint.confirmedCommandSequence!==undefined&&(!Number.isSafeInteger(checkpoint.confirmedCommandSequence)||checkpoint.confirmedCommandSequence<0))throw new RangeError('checkpoint confirmedCommandSequence');
-    if(checkpoint.tick!==this.#tick+1||checkpoint.revision!==this.#revision||checkpoint.epoch!==this.#epoch||checkpoint.continuationKey!==this.#continuationKey)return reject();
-    if(checkpoint.input===undefined||checkpoint.confirmedCommandSequence!==this.#confirmedCommandSequence||!this.#fork||!this.#forkCurrent||this.#forkTick!==this.#tick||this.#pending.length||this.#observed||this.#forecast.length||this.#confirmedOnlySteps>=1)return reject();
+    if(checkpoint.tick!==this.#tick+1)return reject('Tick');
+    if(checkpoint.revision!==this.#revision)return reject('Revision');
+    if(checkpoint.epoch!==this.#epoch)return reject('Epoch');
+    if(checkpoint.continuationKey!==this.#continuationKey)return reject('Key');
+    if(checkpoint.input===undefined)return reject('Input');
+    if(checkpoint.confirmedCommandSequence!==this.#confirmedCommandSequence)return reject('Commands');
+    if(!this.#fork||!this.#forkCurrent||this.#forkTick!==this.#tick)return reject('Fork');
+    if(this.#pending.length||this.#observed||this.#forecast.length)return reject('Pending');
+    if(this.#confirmedOnlySteps>=1)return reject('Limit');
     const started=performance.now(),input=copyInput(checkpoint.input);
     this.#fork.step(copyInput(input),{tick:this.#tick,epoch:this.#epoch,commands:[],speculative:true,confirmedReplay:true});
     this.#metrics.confirmedAdvanceMs+=performance.now()-started;this.#metrics.confirmedAdvances++;
