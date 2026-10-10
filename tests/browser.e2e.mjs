@@ -307,14 +307,14 @@ try {
   report.manualOwnerRelease=await previewPage.evaluate(async()=>{
     const {createLoop,LocalInputPreview,createSession,profiles}=await import('/dist/rollback-netcode.js');
     const {ActionState,createDOMInput}=await import('/dist/input.js');
-    const state={x:0,tick:0,edges:0},update=(world,input,commands=[])=>{world.x+=input[0];world.edges+=commands.length;world.tick++};
+    const state={x:0,tick:0,edges:0},update=(world,input,commands=[])=>{world.x+=input[0];world.edges+=commands.length;world.tick++};let forkRestores=0,confirmedReplaySteps=0,confirmedAdvanceResults=[],confirmedAdvanceRestoreDeltas=[];
     const adapter={save:()=>Uint8Array.of(state.x,state.tick,state.edges),load:bytes=>{state.x=bytes[0];state.tick=bytes[1];state.edges=bytes[2]},validateSnapshot:bytes=>bytes.length===3,step:frame=>update(state,frame.inputs[0].input,frame.inputs[0].commands)};
     const session=createSession({players:['local'],localPlayerId:'local',sessionId:'manual-blur',simulationVersion:'manual-v1',seed:1,inputSize:1,adapter,profile:{...profiles.lockstep,tickRate:10,maxCatchupSteps:1,baseInputDelayTicks:0,minInputDelayTicks:0,maxInputDelayTicks:0,adaptiveInputDelay:false,pacingPolicy:'none'}});
     const actions=new ActionState(),canvas=document.querySelector('canvas'),input=createDOMInput({target:canvas,state:actions,keys:{KeyQ:'hold',KeyE:'tap'}});
-    const preview=new LocalInputPreview({maxAgeMs:1000,createFork:bytes=>{const fork={x:bytes[0],tick:bytes[1],edges:bytes[2]};return{step:(input,context)=>update(fork,input,context.commands)}},readEntities:()=>[]});
-    const now=performance.now();preview.reconcile({snapshot:adapter.save(),input:Uint8Array.of(0),revision:0,tick:0,epoch:0,timeMs:now,mode:'reset'});
+    const preview=new LocalInputPreview({maxAgeMs:1000,createFork:bytes=>{const fork={x:bytes[0],tick:bytes[1],edges:bytes[2]};return{restore(snapshot){fork.x=snapshot[0];fork.tick=snapshot[1];fork.edges=snapshot[2];forkRestores++},step:(input,context)=>{if(context.confirmedReplay)confirmedReplaySteps++;update(fork,input,context.commands)}}},readEntities:()=>[]});
+    const now=performance.now(),continuationKey='manual-blur';preview.reconcile({snapshot:adapter.save(),input:Uint8Array.of(0),revision:0,tick:0,epoch:0,continuationKey,confirmedCommandSequence:0,timeMs:now,mode:'reset'});let previewCheckpointTime=now;
     let observations=0;
-    const loop=createLoop({session,inputPreview:preview,getInput(){observations++;const held=actions.sample('hold').held,edge=actions.sample('tap').pressed;actions.consume();return{input:Uint8Array.of(held?1:0),commands:edge?[{payload:Uint8Array.of(7)}]:[]}}});
+    const loop=createLoop({session,inputPreview:preview,getInput(){observations++;const held=actions.sample('hold').held,edge=actions.sample('tap').pressed;actions.consume();return{input:Uint8Array.of(held?1:0),commands:edge?[{payload:Uint8Array.of(7)}]:[],predict:held||edge,continuationKey}},onAdvance(result,submission){if(result.status!=='advanced')return;const metadata=session.localInputState,checkpoint={input:metadata.replayInput??metadata.executedInput??Uint8Array.of(0),revision:0,tick:session.tick,epoch:metadata.epoch??0,continuationKey,confirmedCommandSequence:metadata.executedCommandSequence??0,timeMs:previewCheckpointTime=Math.max(previewCheckpointTime+1,submission?.timeMs??performance.now())};if(submission?.predict){if(!preview.continueFromCheckpoint(checkpoint))throw Error('predicted confirmation did not continue its exact fork')}else{const restores=forkRestores;if(preview.advanceConfirmedCheckpoint(checkpoint)){confirmedAdvanceResults.push(checkpoint.tick);confirmedAdvanceRestoreDeltas.push(forkRestores-restores);if(preview.advanceConfirmedCheckpoint({...checkpoint,tick:checkpoint.tick+1,timeMs:checkpoint.timeMs+1}))throw Error('confirmed-only continuation exceeded its one-step bound')}}}});
     const release=()=>loop.releaseInput();window.addEventListener('blur',release);
     try{loop.pulse(now);canvas.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyQ',bubbles:true}));
       canvas.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyE',bubbles:true}));canvas.dispatchEvent(new KeyboardEvent('keyup',{code:'KeyE',bubbles:true}));
@@ -328,6 +328,7 @@ try {
       window.dispatchEvent(new Event('blur'));loop.pulse(now+400);loop.pulse(now+500);
       if(state.x!==heldX||session.localInputState.capture.input[0]!==0||session.localInputState.executedInput[0]!==0)throw Error('manual owner retained stale held cache after the reserved release frame');
       if(state.edges!==1||session.localInputState.commandSequence!==1||session.localInputState.executedCommandSequence!==1)throw Error('deadline refresh duplicated or lost edge command');
+      const confirmedState = {confirmedAdvances:preview.metrics.confirmedAdvances,confirmedAdvanceRejected:preview.metrics.confirmedAdvanceRejected,confirmedAdvanceRejectedLimit:preview.metrics.confirmedAdvanceRejectedLimit,confirmedAdvanceResults:[...confirmedAdvanceResults],confirmedAdvanceRestoreDeltas:[...confirmedAdvanceRestoreDeltas],confirmedReplaySteps,forkRestores};
       const retainedEdges = [];
       for (const [index, boundary] of ['blur', 'resetTiming', 'stop'].entries()) {
         const at = now + 550 + index * 400, previousEdges = state.edges;
@@ -340,16 +341,22 @@ try {
         if (state.x !== heldX) throw Error(boundary + ' restored stale held input');
         retainedEdges.push(boundary);
       }
-      return{deadlineHeldX,heldX,afterBlurX:state.x,edges:state.edges,retainedEdges,observationReads:observations,neutral:session.localInputState.capture.input[0],automaticRafStarted:loop.running};
+      return{deadlineHeldX,heldX,afterBlurX:state.x,edges:state.edges,retainedEdges,observationReads:observations,neutral:session.localInputState.capture.input[0],automaticRafStarted:loop.running,...confirmedState};
     }finally{window.removeEventListener('blur',release);loop.stop();preview.dispose();session.close();input.dispose();}
   });
   assert.equal(report.manualOwnerRelease.automaticRafStarted,false);
+  assert.equal(report.manualOwnerRelease.confirmedAdvances,1,'one exact idle frame advances the detached local fork without a checkpoint restore');
+  assert.equal(report.manualOwnerRelease.confirmedReplaySteps,1,'confirmed-only continuation still executes the same detached game step');
+  assert.ok(report.manualOwnerRelease.confirmedAdvanceRejected>=1,'a second speculative confirmed-only step is rejected until another prediction or snapshot rebase');
+  assert.ok(report.manualOwnerRelease.confirmedAdvanceRejectedLimit>=1,'the confirmed-only horizon rejects a second consecutive step');
+  assert.deepEqual(report.manualOwnerRelease.confirmedAdvanceRestoreDeltas,[0],'the bounded confirmed-only step avoids reinstalling the full snapshot');
   report.stages.push('manual deadline refreshes held/quick edges without RAF, reuses observations, stays neutral and retains one edge across blur/resetTiming/stop until tick consumption');
   await previewPage.evaluate(()=>{
     window.inputPreviewDemo.dispose();
     window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: false }));
   });
   assert.equal(previewErrors.length,0,previewErrors.join('\n'));
+
   await previewPage.close();
   assert.equal(previewErrors.length,0,previewErrors.join('\n'));
   report.stages.push('explicit disposal, repeated disposal and pagehide release the demo once without lifecycle errors');
