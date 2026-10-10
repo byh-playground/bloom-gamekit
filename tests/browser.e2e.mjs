@@ -312,9 +312,15 @@ try {
     const session=createSession({players:['local'],localPlayerId:'local',sessionId:'manual-blur',simulationVersion:'manual-v1',seed:1,inputSize:1,adapter,profile:{...profiles.lockstep,tickRate:10,maxCatchupSteps:1,baseInputDelayTicks:0,minInputDelayTicks:0,maxInputDelayTicks:0,adaptiveInputDelay:false,pacingPolicy:'none'}});
     const actions=new ActionState(),canvas=document.querySelector('canvas'),input=createDOMInput({target:canvas,state:actions,keys:{KeyQ:'hold',KeyE:'tap'}});
     const preview=new LocalInputPreview({maxAgeMs:1000,createFork:bytes=>{const fork={x:bytes[0],tick:bytes[1],edges:bytes[2]};return{restore(snapshot){fork.x=snapshot[0];fork.tick=snapshot[1];fork.edges=snapshot[2];forkRestores++},step:(input,context)=>{if(context.confirmedReplay)confirmedReplaySteps++;update(fork,input,context.commands)}}},readEntities:()=>[]});
-    const now=performance.now(),continuationKey='manual-blur';preview.reconcile({snapshot:adapter.save(),input:Uint8Array.of(0),revision:0,tick:0,epoch:0,continuationKey,confirmedCommandSequence:0,timeMs:now,mode:'reset'});let previewCheckpointTime=now;
-    let observations=0;
-    const loop=createLoop({session,inputPreview:preview,getInput(){observations++;const held=actions.sample('hold').held,edge=actions.sample('tap').pressed;actions.consume();return{input:Uint8Array.of(held?1:0),commands:edge?[{payload:Uint8Array.of(7)}]:[],predict:held||edge,continuationKey}},onAdvance(result,submission){if(result.status!=='advanced')return;const metadata=session.localInputState,checkpoint={input:metadata.replayInput??metadata.executedInput??Uint8Array.of(0),revision:0,tick:session.tick,epoch:metadata.epoch??0,continuationKey,confirmedCommandSequence:metadata.executedCommandSequence??0,timeMs:previewCheckpointTime=Math.max(previewCheckpointTime+1,submission?.timeMs??performance.now())};if(submission?.predict){if(!preview.continueFromCheckpoint(checkpoint))throw Error('predicted confirmation did not continue its exact fork')}else{const restores=forkRestores;if(preview.advanceConfirmedCheckpoint(checkpoint)){confirmedAdvanceResults.push(checkpoint.tick);confirmedAdvanceRestoreDeltas.push(forkRestores-restores);if(preview.advanceConfirmedCheckpoint({...checkpoint,tick:checkpoint.tick+1,timeMs:checkpoint.timeMs+1}))throw Error('confirmed-only continuation exceeded its one-step bound')}}}});
+    // Integer fixture times keep exact 100ms deadlines free of floating subtraction jitter.
+    const now=Math.ceil(performance.now()),continuationKey='manual-blur';preview.reconcile({snapshot:adapter.save(),input:Uint8Array.of(0),revision:0,tick:0,epoch:0,continuationKey,confirmedCommandSequence:0,timeMs:now,mode:'reset'});let previewCheckpointTime=now;
+    let observations=0, lifecycleBoundary=null; const lifecycleRebases=[];
+    const loop=createLoop({session,inputPreview:preview,getInput(){observations++;const held=actions.sample('hold').held,edge=actions.sample('tap').pressed;actions.consume();return{input:Uint8Array.of(held?1:0),commands:edge?[{payload:Uint8Array.of(7)}]:[],predict:held||edge,continuationKey}},onAdvance(result,submission){if(result.status!=='advanced')return;const metadata=session.localInputState,checkpoint={input:metadata.replayInput??metadata.executedInput??Uint8Array.of(0),revision:0,tick:session.tick,epoch:metadata.epoch??0,continuationKey,confirmedCommandSequence:metadata.executedCommandSequence??0,timeMs:previewCheckpointTime=Math.max(previewCheckpointTime+1,submission?.timeMs??performance.now())};
+      if(lifecycleBoundary){
+        if(preview.continueFromCheckpoint(checkpoint))throw Error('cleared lifecycle fork unexpectedly continued');
+        preview.reconcile({...checkpoint,snapshot:adapter.save(),mode:'reset'});
+        lifecycleRebases.push(lifecycleBoundary);lifecycleBoundary=null;
+      }else if(submission?.predict){if(!preview.continueFromCheckpoint(checkpoint))throw Error('predicted confirmation did not continue its exact fork')}else{const restores=forkRestores;if(preview.advanceConfirmedCheckpoint(checkpoint)){confirmedAdvanceResults.push(checkpoint.tick);confirmedAdvanceRestoreDeltas.push(forkRestores-restores);if(preview.advanceConfirmedCheckpoint({...checkpoint,tick:checkpoint.tick+1,timeMs:checkpoint.timeMs+1}))throw Error('confirmed-only continuation exceeded its one-step bound')}}}});
     const release=()=>loop.releaseInput();window.addEventListener('blur',release);
     try{loop.pulse(now);canvas.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyQ',bubbles:true}));
       canvas.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyE',bubbles:true}));canvas.dispatchEvent(new KeyboardEvent('keyup',{code:'KeyE',bubbles:true}));
@@ -325,26 +331,29 @@ try {
       if(observations!==3||state.x!==1)throw Error('recent RAF observation was not reused by deadline');
       canvas.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyQ',bubbles:true}));loop.pulse(now+300);const heldX=state.x;
       if(heldX!==2)throw Error('later held change stayed stale without RAF');
+      const confirmedState = {confirmedAdvances:preview.metrics.confirmedAdvances,confirmedAdvanceRejected:preview.metrics.confirmedAdvanceRejected,confirmedAdvanceRejectedLimit:preview.metrics.confirmedAdvanceRejectedLimit,confirmedAdvanceResults:[...confirmedAdvanceResults],confirmedAdvanceRestoreDeltas:[...confirmedAdvanceRestoreDeltas],confirmedReplaySteps,forkRestores};
+      lifecycleBoundary='blur';
       window.dispatchEvent(new Event('blur'));loop.pulse(now+400);loop.pulse(now+500);
       if(state.x!==heldX||session.localInputState.capture.input[0]!==0||session.localInputState.executedInput[0]!==0)throw Error('manual owner retained stale held cache after the reserved release frame');
       if(state.edges!==1||session.localInputState.commandSequence!==1||session.localInputState.executedCommandSequence!==1)throw Error('deadline refresh duplicated or lost edge command');
-      const confirmedState = {confirmedAdvances:preview.metrics.confirmedAdvances,confirmedAdvanceRejected:preview.metrics.confirmedAdvanceRejected,confirmedAdvanceRejectedLimit:preview.metrics.confirmedAdvanceRejectedLimit,confirmedAdvanceResults:[...confirmedAdvanceResults],confirmedAdvanceRestoreDeltas:[...confirmedAdvanceRestoreDeltas],confirmedReplaySteps,forkRestores};
       const retainedEdges = [];
       for (const [index, boundary] of ['blur', 'resetTiming', 'stop'].entries()) {
         const at = now + 550 + index * 400, previousEdges = state.edges;
         canvas.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyE',bubbles:true}));
         canvas.dispatchEvent(new KeyboardEvent('keyup',{code:'KeyE',bubbles:true}));
         loop.observeInput(at);
+        lifecycleBoundary=boundary;
         if (boundary === 'blur') window.dispatchEvent(new Event('blur')); else loop[boundary]();
         loop.pulse(at + 50); loop.pulse(at + 150); loop.pulse(at + 250);
         if (state.edges !== previousEdges + 1 || session.localInputState.executedCommandSequence !== state.edges) throw Error(boundary + ' lost or duplicated an observed edge before tick consumption');
         if (state.x !== heldX) throw Error(boundary + ' restored stale held input');
         retainedEdges.push(boundary);
       }
-      return{deadlineHeldX,heldX,afterBlurX:state.x,edges:state.edges,retainedEdges,observationReads:observations,neutral:session.localInputState.capture.input[0],automaticRafStarted:loop.running,...confirmedState};
+      return{deadlineHeldX,heldX,afterBlurX:state.x,edges:state.edges,retainedEdges,lifecycleRebases,observationReads:observations,neutral:session.localInputState.capture.input[0],automaticRafStarted:loop.running,...confirmedState};
     }finally{window.removeEventListener('blur',release);loop.stop();preview.dispose();session.close();input.dispose();}
   });
   assert.equal(report.manualOwnerRelease.automaticRafStarted,false);
+  assert.deepEqual(report.manualOwnerRelease.lifecycleRebases,['blur','blur','resetTiming','stop'],'each lifecycle clear rejects continuation and installs a fresh authority checkpoint');
   assert.equal(report.manualOwnerRelease.confirmedAdvances,1,'one exact idle frame advances the detached local fork without a checkpoint restore');
   assert.equal(report.manualOwnerRelease.confirmedReplaySteps,1,'confirmed-only continuation still executes the same detached game step');
   assert.ok(report.manualOwnerRelease.confirmedAdvanceRejected>=1,'a second speculative confirmed-only step is rejected until another prediction or snapshot rebase');

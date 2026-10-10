@@ -463,22 +463,23 @@ export class RoomSession {
     this._installed(tr);
   }
   _pulseMembershipPreparation(tr) {
-    if (tr.preparedState && !tr.applied) {
-      this._boundaryWork('membershipPrepareMs', () => {
-        const started = nowMs();
+    if (!tr.stageJob && (!tr.preparedState || tr.applied)) return;
+    this._boundaryWork('membershipPrepareMs', () => {
+      const started = nowMs(), budgetMs = this.membership.snapshotBudgetMs;
+      if (tr.stageJob) {
+        tr.stageJob.pulse({ budgetMs });
+        if (tr.stageJob.done) { const staged = tr.stageJob.result; tr.stageJob = null; this._acceptPreparedMembership(tr, staged, true); }
+      }
+      // Use the remainder of this pulse for hashing a completed preparation.
+      // For slow pumps, a cheap state must not incur another whole timer interval.
+      if (tr.preparedState && !tr.applied && nowMs() - started < budgetMs) {
         do {
           const end = Math.min(tr.postState.length, tr.hashOffset + 65536);
           tr.postHash = hashBytes(tr.postState.subarray(tr.hashOffset, end), tr.postHash); tr.hashOffset = end;
-        } while (tr.hashOffset < tr.postState.length && nowMs() - started < this.membership.snapshotBudgetMs);
+        } while (tr.hashOffset < tr.postState.length && nowMs() - started < budgetMs);
         if (tr.hashOffset === tr.postState.length) { tr.applied = true; this._installed(tr); }
-      });
-    }
-    if (tr.stageJob) {
-      this._boundaryWork('membershipPrepareMs', () => {
-        tr.stageJob.pulse({ budgetMs: this.membership.snapshotBudgetMs });
-        if (tr.stageJob.done) { const staged = tr.stageJob.result; tr.stageJob = null; this._acceptPreparedMembership(tr, staged, true); }
-      });
-    }
+      }
+    });
   }
   _installed(tr) {
     if (tr.availability) this._availability.installed(tr.postHash);
