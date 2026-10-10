@@ -4,13 +4,14 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const suites = {
   core: ['tests/browser.e2e.mjs'],
+  audio: ['modules/audio/scripts/check.mjs'],
   network: ['modules/rollback-netcode/scripts/rollback-browser.mjs', 'modules/rollback-netcode/scripts/dynamic-room-browser.mjs'],
   availability: ['modules/rollback-netcode/scripts/availability-browser.mjs'],
   demo: ['modules/rollback-netcode/scripts/demo-check.mjs'],
   live: ['modules/rollback-netcode/scripts/live-room-check.mjs'],
 };
 const suite = process.argv[2] ?? 'core';
-const scenarios = suite === 'all' ? [...suites.core, ...suites.network, ...suites.availability, ...suites.demo] : suites[suite];
+const scenarios = suite === 'all' ? [...suites.core, ...suites.audio, ...suites.network, ...suites.availability, ...suites.demo] : suites[suite];
 if (!scenarios) throw new Error('Unknown scenario suite: ' + suite);
 const budgetMs = 180000, started = performance.now();
 const active = new Set();

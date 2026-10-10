@@ -1,0 +1,634 @@
+{
+  "baseCommit": "b02fecf8a13cf056dc489ed2e17733b4c8de5c5e",
+  "scope": "Reusable event audio; consumer owns definitions; existing confirmed PresentationEventQueue adapter; no second journal.",
+  "runtimeSha256": "f6ec8a7d3093e8a0d22c11c77a58108b093cbe70e2e3b714e8f96ac210241484",
+  "bundleSha256": "7e3e16d34ce88124e6ba7699f16d23107a3e42ee93ea5a16691e856e5865c14a",
+  "bundleBytes": 14098,
+  "manifestSha256": "bd9ec9295a09741569d9a586de2fb9421332ef6d984d8cf743ca155b09418b27",
+  "dependencyInstall": "npm ci PASS; 0 audit findings",
+  "runs": {
+    "initialAudio": {
+      "startedAt": "2026-10-10T12:48:58.032Z",
+      "scenario": "unlock → live waveform → confirmed journal → dense budget → mute/save → reload/resume → disposal",
+      "errors": [],
+      "checks": [
+        "Offline real tone/noise/registered AudioBuffer, finite samples and dense peak"
+      ],
+      "browser": "155.0.4283.45",
+      "offline": [
+        {
+          "dense": false,
+          "peak": 0.017191581428050995,
+          "rms": 0.002375378048625802,
+          "finite": true,
+          "ended": 2,
+          "expectedEnded": 2
+        },
+        {
+          "dense": true,
+          "peak": 0.04622352868318558,
+          "rms": 0.0034541697329832284,
+          "finite": true,
+          "ended": 13,
+          "expectedEnded": 13
+        }
+      ],
+      "live": {
+        "peak": 0,
+        "rms": 0,
+        "state": {
+          "state": "running",
+          "volume": 0.7,
+          "muted": false,
+          "voices": 1,
+          "categoryVolumes": {
+            "impact": 1,
+            "danger": 0.8
+          },
+          "lastError": null,
+          "played": 1,
+          "dropped": 0,
+          "blocked": 0,
+          "maxObserved": 1,
+          "bySound": {
+            "hit": 1
+          }
+        }
+      },
+      "result": "FAIL",
+      "failure": "Error: Live graph stayed silent\n    at assert (file:///C:/projects/bloom-gamekit-audio/modules/audio/scripts/check.mjs:3:34)\n    at file:///C:/projects/bloom-gamekit-audio/modules/audio/scripts/check.mjs:12:332",
+      "elapsedMs": 4161
+    },
+    "resumedAudio": {
+      "startedAt": "2026-10-10T12:51:25.741Z",
+      "scenario": "unlock → live waveform → confirmed journal → dense budget → mute/save → reload/resume → disposal",
+      "errors": [],
+      "checks": [
+        "Offline real tone/noise/registered AudioBuffer, finite samples and dense peak",
+        "Actual gesture unlock and nonzero live analyser; natural ended cleanup",
+        "Existing confirmed journal adapter: duplicate one-shot not replayed; natural finish",
+        "Category/global voice budget, drops and higher-priority admission",
+        "Mute is measured silent; master controls persist; reload stays locked",
+        "Actual AudioContext suspend clears voices; next gesture resumes same context without stale playback"
+      ],
+      "browser": "155.0.4283.45",
+      "offline": [
+        {
+          "dense": false,
+          "peak": 0.017191581428050995,
+          "rms": 0.002375378048625802,
+          "finite": true,
+          "ended": 2,
+          "expectedEnded": 2
+        },
+        {
+          "dense": true,
+          "peak": 0.04622352868318558,
+          "rms": 0.0034541697329832284,
+          "finite": true,
+          "ended": 13,
+          "expectedEnded": 13
+        }
+      ],
+      "live": {
+        "peak": 0.021716972813010216,
+        "rms": 0.0143516251785679,
+        "currentTime": 0.64,
+        "baseLatency": 0.01,
+        "outputLatency": 0.04,
+        "state": {
+          "state": "running",
+          "volume": 0.7,
+          "muted": false,
+          "voices": 0,
+          "categoryVolumes": {
+            "impact": 1,
+            "danger": 0.8
+          },
+          "lastError": null,
+          "played": 1,
+          "dropped": 0,
+          "blocked": 0,
+          "maxObserved": 1,
+          "bySound": {
+            "hit": 1
+          }
+        }
+      },
+      "journal": {
+        "audio": {
+          "state": "running",
+          "volume": 0.7,
+          "muted": false,
+          "voices": 0,
+          "categoryVolumes": {
+            "impact": 1,
+            "danger": 0.8
+          },
+          "lastError": null,
+          "played": 2,
+          "dropped": 0,
+          "blocked": 0,
+          "maxObserved": 1,
+          "bySound": {
+            "hit": 2
+          }
+        },
+        "stats": {
+          "started": 1,
+          "duplicates": 1,
+          "cancelled": 0,
+          "expired": 1,
+          "collected": 0,
+          "rejectedOld": 0
+        },
+        "active": 0
+      },
+      "dense": {
+        "state": "running",
+        "volume": 0.7,
+        "muted": false,
+        "voices": 4,
+        "categoryVolumes": {
+          "impact": 1,
+          "danger": 0.8
+        },
+        "lastError": null,
+        "played": 8,
+        "dropped": 17,
+        "blocked": 0,
+        "maxObserved": 4,
+        "bySound": {
+          "hit": 5,
+          "warning": 3
+        }
+      },
+      "muted": {
+        "state": {
+          "state": "running",
+          "volume": 0.7,
+          "muted": true,
+          "voices": 0,
+          "categoryVolumes": {
+            "impact": 1,
+            "danger": 0.8
+          },
+          "lastError": null,
+          "played": 8,
+          "dropped": 17,
+          "blocked": 0,
+          "maxObserved": 4,
+          "bySound": {
+            "hit": 5,
+            "warning": 3
+          }
+        },
+        "meter": {
+          "peak": 0,
+          "rms": 0
+        }
+      },
+      "restored": {
+        "state": "locked",
+        "volume": 0.33,
+        "muted": true,
+        "voices": 0,
+        "categoryVolumes": {
+          "impact": 1,
+          "danger": 0.8
+        },
+        "lastError": null,
+        "played": 0,
+        "dropped": 0,
+        "blocked": 0,
+        "maxObserved": 0,
+        "bySound": {}
+      },
+      "suspended": {
+        "state": "suspended",
+        "volume": 0.33,
+        "muted": false,
+        "voices": 0,
+        "categoryVolumes": {
+          "impact": 1,
+          "danger": 0.8
+        },
+        "lastError": null,
+        "played": 1,
+        "dropped": 0,
+        "blocked": 0,
+        "maxObserved": 1,
+        "bySound": {
+          "hit": 1
+        }
+      },
+      "resumed": {
+        "state": {
+          "state": "running",
+          "volume": 0.33,
+          "muted": false,
+          "voices": 1,
+          "categoryVolumes": {
+            "impact": 1,
+            "danger": 0.8
+          },
+          "lastError": null,
+          "played": 2,
+          "dropped": 0,
+          "blocked": 0,
+          "maxObserved": 1,
+          "bySound": {
+            "hit": 2
+          }
+        },
+        "meter": {
+          "peak": 0.031341422349214554,
+          "rms": 0.018230690026969833
+        }
+      },
+      "disposed": {
+        "state": "disposed",
+        "volume": 0.33,
+        "muted": false,
+        "voices": 0,
+        "categoryVolumes": {
+          "impact": 1,
+          "danger": 0.8
+        },
+        "lastError": null,
+        "played": 2,
+        "dropped": 0,
+        "blocked": 0,
+        "maxObserved": 1,
+        "bySound": {
+          "hit": 2
+        }
+      },
+      "result": "PASS",
+      "limits": [
+        "Waveform/analyser results verify generated graph output, not speakers or subjective punch.",
+        "Suspend was an actual AudioContext API lifecycle exercise; iOS/Android hardware interruption and document-background behavior were not repeated.",
+        "No CPU benchmark or long listening test."
+      ],
+      "elapsedMs": 4443
+    },
+    "audioWrapper": {
+      "result": "PASS",
+      "elapsedMs": 5303
+    },
+    "core": {
+      "command": "npm test (same core as test:browser; not repeated)",
+      "result": "PASS",
+      "elapsedMs": 9962,
+      "browser": "153.0.8010.12",
+      "actualWebGL1": true
+    },
+    "distribution": {
+      "command": "node scripts/verify-dist.mjs",
+      "result": "PASS",
+      "bundles": 14
+    },
+    "finalAudio": {
+      "startedAt": "2026-10-10T12:55:57.474Z",
+      "scenario": "unlock → live waveform → confirmed journal → dense budget → mute/save → reload/resume → disposal",
+      "errors": [],
+      "checks": [
+        "Offline real tone/noise/registered AudioBuffer, finite samples and dense peak",
+        "Actual gesture unlock and nonzero live analyser; natural ended cleanup",
+        "Existing confirmed journal adapter: duplicate one-shot not replayed; natural finish",
+        "Category/global voice budget, drops and higher-priority admission",
+        "Mute is measured silent; master controls persist; reload stays locked"
+      ],
+      "browser": "155.0.4283.45",
+      "offline": [
+        {
+          "dense": false,
+          "peak": 0.017191581428050995,
+          "rms": 0.002375378048625802,
+          "finite": true,
+          "ended": 2,
+          "expectedEnded": 2
+        },
+        {
+          "dense": true,
+          "peak": 0.046223532408475876,
+          "rms": 0.00345416970017084,
+          "finite": true,
+          "ended": 13,
+          "expectedEnded": 13
+        }
+      ],
+      "live": {
+        "peak": 0.021716972813010216,
+        "rms": 0.0143516251785679,
+        "currentTime": 0.6613333333333333,
+        "baseLatency": 0.01,
+        "outputLatency": 0.04,
+        "state": {
+          "state": "running",
+          "volume": 0.7,
+          "muted": false,
+          "voices": 0,
+          "categoryVolumes": {
+            "impact": 1,
+            "danger": 0.8
+          },
+          "lastError": null,
+          "played": 1,
+          "dropped": 0,
+          "blocked": 0,
+          "maxObserved": 1,
+          "bySound": {
+            "hit": 1
+          }
+        }
+      },
+      "journal": {
+        "audio": {
+          "state": "running",
+          "volume": 0.7,
+          "muted": false,
+          "voices": 0,
+          "categoryVolumes": {
+            "impact": 1,
+            "danger": 0.8
+          },
+          "lastError": null,
+          "played": 2,
+          "dropped": 0,
+          "blocked": 0,
+          "maxObserved": 1,
+          "bySound": {
+            "hit": 2
+          }
+        },
+        "stats": {
+          "started": 1,
+          "duplicates": 1,
+          "cancelled": 0,
+          "expired": 1,
+          "collected": 0,
+          "rejectedOld": 0
+        },
+        "active": 0
+      },
+      "dense": {
+        "state": "running",
+        "volume": 0.7,
+        "muted": false,
+        "voices": 4,
+        "categoryVolumes": {
+          "impact": 1,
+          "danger": 0.8
+        },
+        "lastError": null,
+        "played": 8,
+        "dropped": 17,
+        "blocked": 0,
+        "maxObserved": 4,
+        "bySound": {
+          "hit": 5,
+          "warning": 3
+        }
+      },
+      "muted": {
+        "state": {
+          "state": "running",
+          "volume": 0.7,
+          "muted": true,
+          "voices": 0,
+          "categoryVolumes": {
+            "impact": 1,
+            "danger": 0.8
+          },
+          "lastError": null,
+          "played": 8,
+          "dropped": 17,
+          "blocked": 0,
+          "maxObserved": 4,
+          "bySound": {
+            "hit": 5,
+            "warning": 3
+          }
+        },
+        "meter": {
+          "peak": 0,
+          "rms": 0
+        }
+      },
+      "restored": {
+        "state": "locked",
+        "volume": 0.33,
+        "muted": true,
+        "voices": 0,
+        "categoryVolumes": {
+          "impact": 1,
+          "danger": 0.8
+        },
+        "lastError": null,
+        "played": 0,
+        "dropped": 0,
+        "blocked": 0,
+        "maxObserved": 0,
+        "bySound": {}
+      },
+      "suspended": {
+        "state": "suspended",
+        "volume": 0.33,
+        "muted": false,
+        "voices": 0,
+        "categoryVolumes": {
+          "impact": 1,
+          "danger": 0.8
+        },
+        "lastError": null,
+        "played": 1,
+        "dropped": 0,
+        "blocked": 0,
+        "maxObserved": 1,
+        "bySound": {
+          "hit": 1
+        }
+      },
+      "resumed": {
+        "state": {
+          "state": "suspended",
+          "volume": 0.33,
+          "muted": false,
+          "voices": 0,
+          "categoryVolumes": {
+            "impact": 1,
+            "danger": 0.8
+          },
+          "lastError": null,
+          "played": 1,
+          "dropped": 0,
+          "blocked": 0,
+          "maxObserved": 1,
+          "bySound": {
+            "hit": 1
+          }
+        },
+        "meter": {
+          "peak": 0.008557412773370743,
+          "rms": 0.005738279340809904
+        }
+      },
+      "result": "FAIL",
+      "failure": "Error: Gesture resume silent\n    at assert (file:///C:/projects/bloom-gamekit-audio/modules/audio/scripts/check.mjs:3:34)\n    at file:///C:/projects/bloom-gamekit-audio/modules/audio/scripts/check.mjs:16:552",
+      "elapsedMs": 4469
+    },
+    "finalAudioWrapper": {
+      "result": "FAIL",
+      "note": "Fixed scenario stopped at a too-short 35ms asynchronous resume expectation; previous completed output/budget/mute steps are preserved."
+    },
+    "focusedResume": {
+      "scope": "Only failed asynchronous resume and active confirmed dispose; completed offline/core/volume/budget not repeated",
+      "errors": [],
+      "resumed": {
+        "peak": 0.026701288297772408,
+        "rms": 0.01648683715502376,
+        "state": {
+          "state": "running",
+          "volume": 0.7,
+          "muted": false,
+          "voices": 0,
+          "categoryVolumes": {
+            "impact": 1,
+            "danger": 0.8
+          },
+          "lastError": null,
+          "played": 2,
+          "dropped": 0,
+          "blocked": 0,
+          "maxObserved": 1,
+          "bySound": {
+            "hit": 2
+          }
+        }
+      },
+      "activeBefore": 1,
+      "disposed": {
+        "state": "disposed",
+        "volume": 0.7,
+        "muted": false,
+        "voices": 0,
+        "categoryVolumes": {
+          "impact": 1,
+          "danger": 0.8
+        },
+        "lastError": null,
+        "played": 3,
+        "dropped": 0,
+        "blocked": 0,
+        "maxObserved": 1,
+        "bySound": {
+          "hit": 3
+        }
+      },
+      "result": "PASS",
+      "elapsedMs": 2543
+    },
+    "parentReviewSkippedCleanup": {
+      "startedAt": "2026-10-10T13:13:14.130Z",
+      "scope": "Parent-review regression only: skipped confirmed cleanup under locked/muted/budget, retention/maxPending churn, cancelled cleanup, successful natural end",
+      "errors": [],
+      "browser": "155.0.4283.45",
+      "locked": {
+        "label": "locked",
+        "size": 0,
+        "active": 0,
+        "processed": 32,
+        "collected": 32,
+        "maxSize": 1,
+        "actualPlayed": 0
+      },
+      "budgetBefore": {
+        "state": "running",
+        "volume": 0.7,
+        "muted": false,
+        "voices": 4,
+        "categoryVolumes": {
+          "impact": 1,
+          "danger": 0.8
+        },
+        "lastError": null,
+        "played": 7,
+        "dropped": 17,
+        "blocked": 32,
+        "maxObserved": 4,
+        "bySound": {
+          "hit": 4,
+          "warning": 3
+        }
+      },
+      "budget": {
+        "label": "budget",
+        "size": 0,
+        "active": 0,
+        "processed": 32,
+        "collected": 32,
+        "maxSize": 1,
+        "actualPlayed": 0
+      },
+      "muted": {
+        "label": "muted",
+        "size": 0,
+        "active": 0,
+        "processed": 32,
+        "collected": 32,
+        "maxSize": 1,
+        "actualPlayed": 0
+      },
+      "cancelled": {
+        "activeBefore": 1,
+        "activeAfter": 0,
+        "callbacks": 0
+      },
+      "natural": {
+        "active": 0,
+        "stats": {
+          "started": 1,
+          "duplicates": 1,
+          "cancelled": 0,
+          "expired": 1,
+          "collected": 0,
+          "rejectedOld": 0
+        },
+        "audio": {
+          "state": "running",
+          "volume": 0.7,
+          "muted": false,
+          "voices": 0,
+          "categoryVolumes": {
+            "impact": 1,
+            "danger": 0.8
+          },
+          "lastError": null,
+          "played": 8,
+          "dropped": 49,
+          "blocked": 32,
+          "maxObserved": 4,
+          "bySound": {
+            "hit": 5,
+            "warning": 3
+          }
+        }
+      },
+      "result": "PASS",
+      "elapsedMs": 2583
+    }
+  },
+  "evidenceReuse": "First OfflineAudioContext graph/render helpers and recipes were unchanged. Failed first 100ms live observation was resumed with 600ms sampling; no full core rerun. Temporary resume option was removed from the permanent fixed scenario after verification; runtime bytes unchanged.",
+  "limits": [
+    "Waveform/analyser results verify generated graph output, not speakers or subjective punch.",
+    "Suspend was an actual AudioContext API lifecycle exercise; iOS/Android hardware interruption and document-background behavior were not repeated.",
+    "No CPU benchmark or long listening test."
+  ],
+  "finalChange": "Adapter cancellation now suppresses natural finish callback after journal dispose. Final fixed audio scenario includes disposal of an active confirmed voice; full core was not repeated because its owned runtime inputs were unchanged.",
+  "finalCandidateResult": "PASS",
+  "finalCandidateCoverage": "Final runtime passed fresh output/confirmed/budget/mute/save steps; only async resume and active confirmed dispose were continued with a promise/state wait. The permanent fixed script uses the same state/played wait; runtime unchanged. Parent-review cleanup verified on the current runtime in Edge in 2583ms. Synthesis/mix helpers are unchanged; completed offline/core/volume/resume checks were not repeated. Permanent resume observation now uses the same bounded 600ms sampling as the focused successful verification.",
+  "priorRuntimeSha256": "133e1899edb686db82320cc25497c9cb5a1ba70fd9967c11a73b5c03510fc612",
+  "priorBundleSha256": "87bf6eaa3021b0cf36ff2319b310f3914f65fb532448b6b71fae8d99600daf34",
+  "parentReviewFix": "createAdapter requires onEnded; skipped source schedules cancellable cleanup microtask after journal active registration. Existing journal semantics stay unchanged. Locked/muted/budget each churn 32 confirmed events with retentionTicks=1 and maxPending=8; active/size end at 0 and max retained size 1. Dispose cancels scheduled cleanup callback. Natural and duplicate confirmed playback remain valid."
+}
