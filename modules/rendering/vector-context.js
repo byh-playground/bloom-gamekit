@@ -51,7 +51,7 @@ export class VectorContext {
     this.device=device;this.canvas=device.canvas;this.vector=vectorRenderer??new VectorRenderer(device,{initialVertices,maxVertices,glyphAtlas});this.ownsVector=!vectorRenderer;
     this.glyphAtlas=glyphAtlas??this.vector.glyphAtlas;this.onError=typeof onError==='function'?onError:null;
     this.meshRenderer=null;this.active=false;this.state='ready';this.frame=0;this.pathCount=0;this.staticMeshes=new Set();this.deferredMeshes=[];this.gradientTextures=new Map();
-    this._silhouetteMatrices=new Float32Array(60);this._silhouetteColorCache=new Map();
+    this._silhouetteMatrices=new Float32Array(60);this._scaledSilhouetteMatrices=new Float32Array(12);this._silhouetteColorCache=new Map();
     this.onLost=event=>{event.preventDefault();this.active=false;this.state='lost';this.meshRenderer?.discard();this._releaseGradientTextures();};
     this.onRestored=()=>{if(this.state==='disposed')return;try{for(const mesh of this.staticMeshes)this.device.uploadVertices(mesh.buffer,mesh.vertices);this.state='ready';}catch(error){this.state='failed';this.onError?.(error,{phase:'restore'});}};
     this.canvas.addEventListener('webglcontextlost',this.onLost);this.canvas.addEventListener('webglcontextrestored',this.onRestored);
@@ -120,20 +120,21 @@ export class VectorContext {
   deleteMesh(mesh){return this.meshRenderer?.deleteMesh(mesh)??false}
   /** Local transform composes with current Canvas-style transform; all paint state is captured by value. */
   drawMesh(mesh,{transform=null,morph=[0,0],parts=null}={}){this._frame();if(!this.meshRenderer)throw new TypeError('createMesh required');this.vector.flush();let matrix=this.vector.matrix;if(transform){if(transform.length!==6||Array.from(transform).some(n=>!Number.isFinite(n)))throw new TypeError('Six finite transform values required');const m=matrix,[a,b,c,d,e,f]=transform;matrix=[m[0]*a+m[2]*b,m[1]*a+m[3]*b,m[0]*c+m[2]*d,m[1]*c+m[3]*d,m[0]*e+m[2]*f+m[4],m[1]*e+m[3]*f+m[5]]}this.meshRenderer.drawMesh(mesh,{matrix,projection:this.vector.projection,clips:this.vector.clips,morph,parts,color:this.forceColor??[1,1,1,1],forceColor:this.forceColor!==null,alpha:this._globalAlpha,whiteFlash:this._filter==='brightness(0) invert(1)'})}
-  /** Draw a retained mesh with the existing eight-offset silhouette and body in one ordered instance batch. */
-  drawMeshSilhouette(mesh,{transform=null,morph=[0,0],parts=null,color='black',width,radius=128}={}){
+  /** Draw a retained mesh silhouette and body in one ordered instance batch. */
+  drawMeshSilhouette(mesh,{transform=null,morph=[0,0],parts=null,color='black',width,radius=128,outlineScale=null}={}){
     this._frame();if(!this.meshRenderer)throw new TypeError('createMesh required');finite(width,'silhouette width');finite(radius,'silhouette radius');if(width<0||radius<0)throw new RangeError('silhouette dimensions must be non-negative');
+    if(outlineScale!==null){finite(outlineScale,'silhouette outlineScale');if(outlineScale<1)throw new RangeError('silhouette outlineScale must be at least one')}
     let outline;if(typeof color==='string'&&color[0]==='#'){outline=this._silhouetteColorCache.get(color);if(!outline){outline=normalizeColor(color);if(this._silhouetteColorCache.size===16)this._silhouetteColorCache.delete(this._silhouetteColorCache.keys().next().value);this._silhouetteColorCache.set(color,outline)}}else outline=normalizeColor(color);
-    const matrices=this._silhouetteMatrices;
-    const bounds=this.groupBounds(0,0,radius+width);
+    const outlineInstances=outlineScale===null?9:1,count=outlineInstances+1,matrices=outlineScale===null?this._silhouetteMatrices:this._scaledSilhouetteMatrices;
+    const bounds=this.groupBounds(0,0,Math.max(radius+width,radius*(outlineScale??1)));
     return this.withGroupOpacity(this._globalAlpha,()=>{
       this.vector.flush();const source=this.vector.matrix,a=source[0],b=source[1],c=source[2],d=source[3],e=source[4],f=source[5];let ta=1,tb=0,tc=0,td=1,te=0,tf=0;
       if(transform){if(transform.length!==6||Array.from(transform).some(n=>!Number.isFinite(n)))throw new TypeError('Six finite transform values required');[ta,tb,tc,td,te,tf]=transform}
-      for(let i=0;i<10;i++){
-        const outlinePass=i<9,offset=outlinePass&&i<8,direction=offset?SILHOUETTE_OFFSETS[i]:null,dx=direction?direction[0]*width:0,dy=direction?direction[1]*width:0,at=i*6;
-        const eOffset=e+a*dx+c*dy,fOffset=f+b*dx+d*dy;matrices[at]=a*ta+c*tb;matrices[at+1]=b*ta+d*tb;matrices[at+2]=a*tc+c*td;matrices[at+3]=b*tc+d*td;matrices[at+4]=a*te+c*tf+eOffset;matrices[at+5]=b*te+d*tf+fOffset;
+      for(let i=0;i<count;i++){
+        const outlinePass=i<outlineInstances,offset=outlineScale===null&&outlinePass&&i<8,direction=offset?SILHOUETTE_OFFSETS[i]:null,dx=direction?direction[0]*width:0,dy=direction?direction[1]*width:0,scale=outlineScale!==null&&i===0?outlineScale:1,at=i*6;
+        const eOffset=e+a*dx+c*dy,fOffset=f+b*dx+d*dy;matrices[at]=(a*ta+c*tb)*scale;matrices[at+1]=(b*ta+d*tb)*scale;matrices[at+2]=(a*tc+c*td)*scale;matrices[at+3]=(b*tc+d*td)*scale;matrices[at+4]=a*te+c*tf+eOffset;matrices[at+5]=b*te+d*tf+fOffset;
       }
-      this.meshRenderer._drawMeshInstances(mesh,{matrices,count:10,projection:this.vector.projection,morph,parts,color:this.forceColor??WHITE,forceColor:this.forceColor!==null,prefixColor:outline,prefixCount:9,forceColorPrefixCount:9,alpha:this._globalAlpha,whiteFlash:this._filter==='brightness(0) invert(1)',clips:this.vector.clips});
+      this.meshRenderer._drawMeshInstances(mesh,{matrices,count,projection:this.vector.projection,morph,parts,color:this.forceColor??WHITE,forceColor:this.forceColor!==null,prefixColor:outline,prefixCount:outlineInstances,forceColorPrefixCount:outlineInstances,alpha:this._globalAlpha,whiteFlash:this._filter==='brightness(0) invert(1)',clips:this.vector.clips});
     },bounds);
   }
   flush(){this._frame();this.meshRenderer?.flush();this.vector.flush()}

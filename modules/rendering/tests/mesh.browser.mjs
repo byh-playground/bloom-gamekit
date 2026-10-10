@@ -272,6 +272,16 @@ export async function exerciseReusableMeshes(page) {
         check(batchedSilhouettePixels.every((value, i) => value === silhouettePacked.bytes[i]), 'mesh silhouette batching is pixel-identical to the repeated WebGL draw path');
         check(batchedSilhouetteStats.mesh.instances === 10 && batchedSilhouetteStats.mesh.draws === (withoutANGLE ? 10 : 1), 'one silhouette API preserves ten ordered instances and the non-instanced fallback');
         check(batchedSilhouetteStats.mesh.geometryUploads === 0 && batchedSilhouetteStats.uploadedBytes === (withoutANGLE ? 0 : 640), 'batched silhouette uploads instance records only');
+        const paintScaledSilhouette = () => {
+          begin(); ctx.save(); ctx.translate(64, 64);
+          ctx.drawMeshSilhouette(packedMesh, { parts: silhouetteParts, morph: globalMorph, color: '#ffe000', width: 3, radius: 40, outlineScale: 1.12 });
+          ctx.restore(); const stats = ctx.endFrame(); return { stats, bytes: pixels() };
+        };
+        const scaledSilhouette = paintScaledSilhouette(); let scaledOutlineColorPixels = 0;
+        for (let i = 0; i < scaledSilhouette.bytes.length; i += 4) if (scaledSilhouette.bytes[i] > 200 && scaledSilhouette.bytes[i + 1] > 150 && scaledSilhouette.bytes[i + 2] < 80 && scaledSilhouette.bytes[i + 3] > 0) scaledOutlineColorPixels++;
+        check(scaledSilhouette.stats.mesh.instances === 2 && scaledSilhouette.stats.mesh.draws === (withoutANGLE ? 2 : 1), 'outlineScale submits one scaled silhouette and one body instance');
+        check(scaledSilhouette.stats.mesh.geometryUploads === 0 && scaledSilhouette.stats.uploadedBytes === (withoutANGLE ? 0 : 128), 'scaled outline reuses retained geometry and uploads only two instance records');
+        check(scaledOutlineColorPixels > 0, 'scaled silhouette preserves the requested rarity outline color');
         const renderOrderedSilhouette = batched => {
           begin(); ctx.fillStyle = '#202020'; ctx.fillRect(0, 0, 128, 128);
           ctx.save(); ctx.translate(64, 64);
@@ -315,6 +325,8 @@ export async function exerciseReusableMeshes(page) {
         check(beforeRestore.every((v, i) => v === afterRestore[i]), 'same retained handle restores identical scene pixels');
         const combinedAfterRestore = paintPackedScene(true, silhouetteDraws, true).bytes;
         check(combinedBeforeRestore.every((v, i) => v === combinedAfterRestore[i]), 'same combined mesh handle restores identical animated silhouette pixels');
+        const scaledAfterRestore = paintScaledSilhouette().bytes;
+        check(scaledSilhouette.bytes.every((v, i) => v === scaledAfterRestore[i]), 'scaled silhouette reuses the same retained pose after context restoration');
         check(gl.getError() === gl.NO_ERROR, 'actual WebGL path has no GL errors');
 
         begin(); ctx.drawMesh(mesh, { transform: [1, 0, 0, 1, 24, 24] });
