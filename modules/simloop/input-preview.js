@@ -161,7 +161,10 @@ export class LocalInputPreview {
     this.#forkCurrent = this.#forkTick === this.#tick && !this.#pending.length;
     this.#clockGap=false;
     this.#metrics.continuedCheckpoints++;
-    if (!this.#pending.length && !this.#observed) this.#presentation?.clearPreview?.();
+    if (!this.#pending.length && !this.#observed) {
+      if(this.#forecast.some(step=>step.kind==='observed'&&step.tick>=checkpoint.tick))this.#publish(checkpoint.timeMs);
+      else this.#presentation?.clearPreview?.();
+    }
     return true;
   }
 
@@ -184,7 +187,7 @@ export class LocalInputPreview {
     const same = this.#observed && equalInput(this.#observed.input, owned.input) && equalInput(this.#observed.commands, owned.commands);
     if (same) {if(this.#clockGap){this.#clockGap=false;this.#publish(timeMs)}return true}
     let conflictingObserved=false;
-    for(let i=this.#forecast.length-1;i>=0;i--){const step=this.#forecast[i];if(step.kind==='observed'&&step.tick>=tick){if(equalInput(step.input,owned.input)&&equalCommands(step.commands,owned.commands)){this.#observed=owned;step.sequence=owned.sequence;this.#metrics.forecastReuses++;if(this.#clockGap){this.#clockGap=false;this.#publish(timeMs)}return true}conflictingObserved=true;break}}
+    for(let i=this.#forecast.length-1;i>=0;i--){const step=this.#forecast[i];if(step.kind==='observed'&&step.tick>=tick){if(equalInput(step.input,owned.input)&&equalCommands(step.commands,owned.commands)){this.#observed=owned;step.sequence=owned.sequence;this.#metrics.forecastReuses++;this.#clockGap=false;this.#publish(timeMs);return true}conflictingObserved=true;break}}
     if(this.#forkCurrent&&this.#forkTick===this.#tick&&!this.#pending.length){
       const started=performance.now(),stepInput=copyInput(owned.input),stepCommands=copyInput(owned.commands);
       this.#fork.step(stepInput,{sequence:owned.sequence,tick:this.#tick,epoch:this.#epoch,commands:stepCommands,speculative:true});
