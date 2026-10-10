@@ -1,0 +1,13 @@
+<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>GameKit 오디오</title><style>body{background:#102025;color:#d8efe5;font:16px system-ui;max-width:720px;margin:50px auto;padding:20px}button,input{margin:8px;padding:12px}pre{white-space:pre-wrap}label{display:block}</style><h1>이벤트 오디오</h1><p>재생 제스처로 잠금을 해제합니다. 직접 재생과 confirmed journal을 같은 player에 연결합니다.</p><button id="tap">직접 타격</button><button id="confirmed">확정 타격</button><button id="dense">밀집 + 중요 경고</button><button id="mute">음소거</button><label>음량 <input id="volume" type="range" min="0" max="100" value="70"></label><pre id="status"></pre><script type="module">
+import {AudioPlayer} from '../../../dist/audio.js';import {PresentationEventQueue} from '../../../dist/presentation-events.js';
+const config={storageKey:'gamekit-audio-example',maxVoices:4,categories:{impact:{volume:1,max:3,gapMs:0,priority:1},danger:{volume:.8,max:3,gapMs:0,priority:5}},sounds:{
+ hit:{category:'impact',layers:[{kind:'tone',hz:180,end:50,ms:260,gain:.22,type:'sine'},{kind:'noise',hz:2200,ms:80,gain:.13}]},
+ warning:{category:'danger',priority:8,layers:[{kind:'tone',hz:660,end:880,ms:300,gain:.18,type:'triangle'}]}}};
+const player=new AudioPlayer(config);let tick=0;const journal=new PresentationEventQueue({adapters:{sfx:player.createAdapter({onEnded:event=>journal.finish(event)})}});
+const status=()=>{document.querySelector('#status').textContent=JSON.stringify(player.snapshot(),null,2);document.querySelector('#volume').value=Math.round(player.volume*100);document.querySelector('#mute').textContent=player.muted?'음소거 해제':'음소거';};
+document.querySelector('#tap').onclick=async()=>{await player.unlock();player.play('hit');status();setTimeout(status,400);};
+document.querySelector('#confirmed').onclick=async()=>{await player.unlock();const event={tick:tick++,sequence:0,entityId:'demo',generation:0,kind:'sfx',payload:{soundId:'hit'},policy:'confirmed'};journal.emit(event);journal.confirmThrough(event.tick);journal.emit(event);status();setTimeout(status,400);};
+document.querySelector('#dense').onclick=async()=>{await player.unlock();for(let i=0;i<20;i++)player.play('hit');for(let i=0;i<3;i++)player.play('warning');status();setTimeout(status,450);};
+document.querySelector('#mute').onclick=()=>{player.setMuted(!player.muted);status();};document.querySelector('#volume').oninput=e=>{player.setVolume(Number(e.target.value)/100);status();};
+window.audioExample={player,journal,config};window.addEventListener('pagehide',()=>{journal.dispose();void player.dispose();});status();
+</script></html>

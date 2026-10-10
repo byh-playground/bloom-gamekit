@@ -20,7 +20,8 @@
     "benchmark:rollback-primitives": "node modules/rollback-netcode/scripts/primitives-benchmark.mjs",
     "benchmark:rally": "node modules/rollback-netcode/scripts/rally-benchmark.mjs",
     "serve:rollback-group": "node modules/rollback-netcode/scripts/group-browser-serve.mjs",
-    "serve:rollback-demo": "node modules/rollback-netcode/scripts/demo-serve.mjs"
+    "serve:rollback-demo": "node modules/rollback-netcode/scripts/demo-serve.mjs",
+    "test:audio": "node scripts/test-scenarios.mjs audio"
   },
   "devDependencies": {
     "esbuild": "0.28.2",

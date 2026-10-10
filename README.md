@@ -2,12 +2,13 @@
 
 브라우저 게임에서 공통으로 쓰는 보간·렌더링·입력·실행·결정론·전송·리플레이·롤백 기능을 독립 모듈로 개발하는 저장소입니다. 필요한 기능만 골라 조합하며, 게임 전체를 소유하는 범용 엔진 클래스는 만들지 않습니다.
 
-**모든 공개 기능은 독립적인 plain JavaScript ESM입니다.** 소비자는 필요한 파일만 가져가며 외부 import나 공유 chunk를 요구하지 않습니다. 보간은 pose, WebGL renderer/device는 GPU 제출·자원, input은 장치 이벤트/action, simloop는 실행 스케줄, camera는 투영, presentation-events는 표현 자원, hud는 화면 anchor, debug-tools는 진단을 소유합니다. 결정론·전송·리플레이·rollback은 기존 SDK 구현을 책임별로 분리했으며, 이전 후 수정 이력은 SDK 출처 문서에 구분해 기록합니다.
+**모든 공개 기능은 독립적인 plain JavaScript ESM입니다.** 소비자는 필요한 파일만 가져가며 외부 import나 공유 chunk를 요구하지 않습니다. 보간은 pose, WebGL renderer/device는 GPU 제출·자원, input은 장치 이벤트/action, simloop는 실행 스케줄, camera는 투영, presentation-events는 표현 자원, hud는 화면 anchor, debug-tools는 진단, audio는 실제 오디오 자원과 재생 예산을 소유합니다. 결정론·전송·리플레이·rollback은 기존 SDK 구현을 책임별로 분리했으며, 이전 후 수정 이력은 SDK 출처 문서에 구분해 기록합니다.
 
 ## 시작하기
 
 - [보간 API·시간·생명주기 계약](./modules/interpolation/README.md)
 - [WebGL 1 렌더링 API·texture·생명주기](./modules/rendering/README.md)
+- [Web Audio 재생·음량·confirmed SFX adapter](./modules/audio/README.md) · [실제 합성·출력 예제](./modules/audio/examples/index.html) · `npm run test:audio`
 - [입력 action·DOM·tick 소비 계약](./modules/input/README.md)
 - [고정 실행과 선택적 detached local input preview](./modules/simloop/README.md) · [카메라·표현 이벤트](./modules/presentation-events/README.md) · [HUD](./modules/hud/README.md) · [진단](./modules/debug-tools/README.md) · [카메라](./modules/camera/README.md)
 - [동적 방·공개 입장·새로고침 복구](./modules/rollback/README.md) · [Nostr 디렉터리·전송](./modules/transport/README.md)
@@ -39,7 +40,7 @@ scripts/                    공통 빌드·배포·통합 검사 도구
 
 ## GitHub 파일 배포
 
-PR에서는 소스 전용 checkout, 독립 모듈 build, 생성 manifest, bundle bytes와 고정 목록의 font assets를 확인합니다. main에 승인된 변경이 들어오면 GitHub Actions가 같은 build 결과를 확인한 후 `dist` 브랜치의 공개 13개 JavaScript 번들, `manifest.json`, 명시된 font assets를 자동 갱신합니다. modules/assets의 정확한 목록과 자산 경계는 scripts/distribution.mjs와 생성 manifest가 소유합니다. 생성 JS와 asset 복사본은 소스 커밋에 넣지 않습니다. 실제 Node·Chromium E2E와 benchmark는 로컬 검증 명령으로 유지하며 자동 배포 경로에 포함하지 않습니다. 표준 `ubuntu-latest`만 사용하며 유료 runner·artifact 저장·Release·npm·Pages는 쓰지 않습니다.
+PR에서는 소스 전용 checkout, 독립 모듈 build, 생성 manifest, bundle bytes와 고정 목록의 font assets를 확인합니다. main에 승인된 변경이 들어오면 GitHub Actions가 같은 build 결과를 확인한 후 `dist` 브랜치의 공개 14개 JavaScript 번들, `manifest.json`, 명시된 font assets를 자동 갱신합니다. modules/assets의 정확한 목록과 자산 경계는 scripts/distribution.mjs와 생성 manifest가 소유합니다. 생성 JS와 asset 복사본은 소스 커밋에 넣지 않습니다. 실제 Node·Chromium E2E와 benchmark는 로컬 검증 명령으로 유지하며 자동 배포 경로에 포함하지 않습니다. 표준 `ubuntu-latest`만 사용하며 유료 runner·artifact 저장·Release·npm·Pages는 쓰지 않습니다.
 
 main 실행이 성공하면 [interpolation.js](https://github.com/byh-playground/bloom-gamekit/blob/dist/interpolation.js), [rendering.js](https://github.com/byh-playground/bloom-gamekit/blob/dist/rendering.js), [input.js](https://github.com/byh-playground/bloom-gamekit/blob/dist/input.js), [hash manifest](https://github.com/byh-playground/bloom-gamekit/blob/dist/manifest.json)에서 파일을 공유할 수 있습니다. GitHub Raw URL은 JS MIME/CORS를 보장하는 웹 호스팅 계약이 아니므로 브라우저의 직접 import 주소로 가정하지 마세요. **CORS-enabled font assets**는 `https://cdn.jsdelivr.net/gh/byh-playground/bloom-gamekit@<dist-commit>/assets/fonts/<file>`처럼 정확한 공개 dist commit을 고정해 가져오고 manifest의 byte length/SHA-256을 적용합니다. 버전 별칭이나 branch-latest 주소를 사용하지 마세요. dist 커밋 메시지에 source commit과 manifest의 bundle/asset SHA-256 및 asset byte length가 기록됩니다. 검사 job의 manifest hash와 배포 직전 모든 재빌드 파일을 대조합니다. 기존 dist의 다른 파일은 보존하고, stale main 실행은 건너뛰며 경합 시 non-fast-forward로 중단합니다. 브랜치 게시의 실제 성공은 main 머지 후 별도로 확인해야 합니다.
 
