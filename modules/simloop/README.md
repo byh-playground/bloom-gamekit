@@ -31,6 +31,10 @@ RAF가 deadline보다 느리거나 정지해도 pulse는 관찰 cache의 나이�
 
 scope가 authority tick마다 전체 checkpoint를 다시 설치하지 않도록 선택적 `continueFromCheckpoint()`을 제공합니다. 게임은 `continuationKey`를 이전 snapshot 이후의 원격 입력·명령이 동일할 때만 재사용되는 정확한 stable key로 만들어야 합니다. API는 바로 전 authority tick에 예측 fork가 실행한 local input과 confirmed command sequence도 일치할 때만 snapshot 없이 경계를 확정하고, 하나라도 다르면 `false`를 반환해 일반 `reconcile(snapshot, ...)` fallback을 사용합니다. 이때 예측 branch가 예상한 다음 tick과 정확히 일치해야 하며 추정이나 hash 유사성만으로 이어가지 않습니다. confirm 이후 실제 입력 관찰은 현재 fork에서 이어서 한 번 실행합니다. 입력 변경으로 이전 미래 표본을 되감아야 하고 저장 snapshot이 오래됐다면 생성자에 전달한 선택적 `captureSnapshot()`을 불러 현재 권위 상태에서 rebase합니다. 변경된 remote key, 명령 미확정, revision/epoch/tick gap, rollback, pause 또는 lifecycle 전환은 fast continuation을 거부합니다.
 
+새 입력 관찰 없이 deadline이 진행된 경우에는 선택적 `advanceConfirmedCheckpoint()`으로 detached local fork를 한 번만 따라잡을 수 있습니다. 직전 checkpoint와 연속된 tick·revision·epoch·remote key, 같은 confirmed command maximum, 현재 fork 위치, 정확한 immutable input을 요구하며, 미확인 명령이나 pending/observed forecast가 있으면 거부합니다. 연속해서 여러 tick을 추측하지 않도록 full snapshot rebase 전에 최대 한 confirmed-only step만 허용합니다. 이 경로도 authority 상태를 수정하지 않습니다. 조건이 맞지 않으면 `false`를 처리하고 기존 `reconcile(snapshot, ...)`로 복구하세요.
+
+`metrics.confirmedAdvances`, `confirmedAdvanceMs`, aggregate reject 및 `confirmedAdvanceRejected*` reason counters로 실제 사용 여부·CPU 비용·fallback 조건을 분리해 확인할 수 있습니다.
+
 `createDeadlineScheduler({getIntervalMs,pulse,maxBacklogTicks,onGap})`가 단일 timeout과 deadline cadence를 소유합니다. start/stop, wake(즉시 전달하되 deadline 유지), rebase(pause/resume/TPS 이후), running/deadlineMs를 제공합니다. 게임은 UI·persist·session gating만 결정합니다. 큰 gap은 미처리 deadline을 버리고 다시 기준을 잡으며 timer 지연과 게임 step을 선점할 수는 없습니다.
 
 수동 deadline owner가 loop.start를 사용하지 않으면 자동 blur/visibility listener도 설치되지 않습니다. 그 owner의 기존 device/UI 해제 listener 다음에 window blur 및 document.hidden 경계에서 `loop.releaseInput()`을 호출하세요. 이 공개 API는 cached 관찰·SDK held input·preview를 함께 지우며 다음 pulse는 같은 getInput 경로에서 neutral을 다시 관찰합니다. UI command를 중복 제출하지 않고 별도 RAF loop를 시작하지 않습니다.
