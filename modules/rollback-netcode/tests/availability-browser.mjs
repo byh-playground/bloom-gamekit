@@ -5,7 +5,8 @@ let session, loop, scheduler, frame, draw, state, renderedFrames = 0, input = 1,
 const room = { localPlayerId: '', sessionId: 'availability-browser', coordinatorId: 'A', epoch: 0, players: [], transports: new Map(),
   subscribe() { return () => {}; }, connectMesh() { return Promise.resolve(); },
   setRoster(value) { Object.assign(this, value); }, close() {} };
-function adapter() { return {
+function adapter(cooperative = false) {
+  const implementation = {
   save: () => codec.encode(state), load: data => { state = codec.decode(data); },
   validateSnapshot: (data, context) => { try { const candidate = codec.decode(data); return candidate.tick === context.tick && candidate.players.every(id => typeof id === 'string'); } catch { return false; } },
   applyMembership(change) {
@@ -19,11 +20,34 @@ function adapter() { return {
     if (tick === corruptTick) state.value += 7;
     state.tick++;
   },
-}; }
-window.setup = async (id, players, available = true, autoTransfer = false) => {
+  };
+  if (cooperative) {
+    const tokens = new WeakMap();
+    implementation.prepareMembershipJob = (change, context) => {
+      const original = state; let pulses = 0, done = false, result;
+      return { get done() { return done; }, get result() { return result; }, cancel() { done = true; },
+        pulse() {
+          if (done || ++pulses < 2) return;
+          if (state !== original || state.tick !== change.tick) throw new Error('membership job mutated live boundary');
+          const candidate = structuredClone(state);
+          candidate.epoch = change.epoch; candidate.players = [...change.players]; candidate.activePlayers = [...(change.activePlayers ?? change.players)];
+          const prepared = {}; tokens.set(prepared, { candidate, context: structuredClone(context) });
+          result = { bytes: codec.encode(candidate), prepared }; done = true; membershipJobs++;
+        } };
+    };
+    implementation.loadPreparedSnapshot = (prepared, context) => {
+      const owned = tokens.get(prepared);
+      if (!owned || JSON.stringify(owned.context) !== JSON.stringify(context)) throw new Error('membership token context');
+      tokens.delete(prepared); state = owned.candidate; membershipInstalls++;
+    };
+  }
+  return implementation;
+}
+let membershipJobs = 0, membershipInstalls = 0;
+window.setup = async (id, players, available = true, autoTransfer = false, cooperative = false) => {
   state = { tick: 0, epoch: -1, players: [], activePlayers: [], value: 0, commands: [] };
   room.localPlayerId = id; room.players = players;
-  session = createRoomSession({ mode: 'online', room, simulationVersion: 'availability-v1', inputSize: 1, adapter: adapter(),
+  session = createRoomSession({ mode: 'online', room, simulationVersion: 'availability-v1', inputSize: 1, adapter: adapter(cooperative),
     profile: { ...profiles.lockstep, tickRate: 20, baseInputDelayTicks: 2, pacingPolicy: 'none', checksumInterval: 10,
       heartbeatMs: 100, peerInterruptMs: 3000, peerTimeoutMs: 15000 }, membership: { reconnectGraceMs: 15000 },
     availability: available ? { mode: 'available', heartbeatMs: 100, silenceMs: 1600, inputGraceMs: 1600, resumeGapMs: 1600,
@@ -42,6 +66,7 @@ window.setup = async (id, players, available = true, autoTransfer = false) => {
   });
   window.snapshot = () => ({ state: structuredClone(state), tick: session.tick, hash: session.getStateHash(), status: session.status,
     failure: session.failure ?? window.failure, activePlayers: session.activePlayers, coordinatorId: session.coordinatorId, epoch: session.epoch,
+    membershipJobs, membershipInstalls, membershipPrepareMs: session.metrics.membershipPrepareMs, maxBoundaryTaskMs: session.metrics.maxBoundaryTaskMs,
     branch: session.metrics.branch, baseTick: session.baseTick, events: events.slice(-24), hidden: document.hidden, renderedFrames, probePaused, stepMs: session.metrics.simulationStepMs });
   window.diagnostics = () => {
     const a = session._availability, r = a?.round, tr = session._transition, now = performance.now();

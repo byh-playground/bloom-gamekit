@@ -462,6 +462,25 @@ export class RoomSession {
     tr.postHash = hashBytes(state); tr.applied = true;
     this._installed(tr);
   }
+  _pulseMembershipPreparation(tr) {
+    if (!tr.stageJob && (!tr.preparedState || tr.applied)) return;
+    this._boundaryWork('membershipPrepareMs', () => {
+      const started = nowMs(), budgetMs = this.membership.snapshotBudgetMs;
+      if (tr.stageJob) {
+        tr.stageJob.pulse({ budgetMs });
+        if (tr.stageJob.done) { const staged = tr.stageJob.result; tr.stageJob = null; this._acceptPreparedMembership(tr, staged, true); }
+      }
+      // Use the remainder of this pulse for hashing a completed preparation.
+      // For slow pumps, a cheap state must not incur another whole timer interval.
+      if (tr.preparedState && !tr.applied && nowMs() - started < budgetMs) {
+        do {
+          const end = Math.min(tr.postState.length, tr.hashOffset + 65536);
+          tr.postHash = hashBytes(tr.postState.subarray(tr.hashOffset, end), tr.postHash); tr.hashOffset = end;
+        } while (tr.hashOffset < tr.postState.length && nowMs() - started < budgetMs);
+        if (tr.hashOffset === tr.postState.length) { tr.applied = true; this._installed(tr); }
+      }
+    });
+  }
   _installed(tr) {
     if (tr.availability) this._availability.installed(tr.postHash);
     else this._send(this.coordinatorId, 'installed', { epoch: tr.proposal.epoch, hash: tr.postHash });
@@ -537,22 +556,7 @@ export class RoomSession {
       const tr = this._transition;
       if (tr && !tr.availability) {
         if (now - tr.startedAt >= this.membership.transitionTimeoutMs) throw new Error('membership deadline exceeded');
-        if (tr.preparedState && !tr.applied) {
-          this._boundaryWork('membershipPrepareMs', () => {
-            const started = nowMs();
-            do {
-              const end = Math.min(tr.postState.length, tr.hashOffset + 65536);
-              tr.postHash = hashBytes(tr.postState.subarray(tr.hashOffset, end), tr.postHash); tr.hashOffset = end;
-            } while (tr.hashOffset < tr.postState.length && nowMs() - started < this.membership.snapshotBudgetMs);
-            if (tr.hashOffset === tr.postState.length) { tr.applied = true; this._installed(tr); }
-          });
-        }
-        if (tr.stageJob) {
-          this._boundaryWork('membershipPrepareMs', () => {
-            tr.stageJob.pulse({ budgetMs: this.membership.snapshotBudgetMs });
-            if (tr.stageJob.done) { const staged = tr.stageJob.result; tr.stageJob = null; this._acceptPreparedMembership(tr, staged, true); }
-          });
-        }
+        this._pulseMembershipPreparation(tr);
         if (tr.replay) {
           const result = this._boundaryWork('bootstrapPulseMs', () => tr.replay.pulse()); this._stats.bootstrapTicks += result.steps ?? 0;
           if (tr.replay.done) { tr.replay = null; this._applyMembership(tr); }
@@ -561,10 +565,7 @@ export class RoomSession {
           tr.reachedSent = true; this._send(this.coordinatorId, 'reached', { epoch: tr.proposal.epoch, tick: this.tick, hash: this._core.getStateHash() });
         }
       } else if (!this._core && !this._suspendedBootstrap && now - this._startedAt >= this.membership.transitionTimeoutMs) throw new Error('join deadline exceeded');
-      if (tr?.availability && tr.stageJob) {
-        tr.stageJob.pulse({ budgetMs: this.membership.snapshotBudgetMs });
-        if (tr.stageJob.done) { const staged = tr.stageJob.result; tr.stageJob = null; this._acceptPreparedMembership(tr, staged); }
-      }
+      if (tr?.availability) this._pulseMembershipPreparation(tr);
       for (const [id, link] of this._links) if (link.incoming && now - link.incoming.startedAt >= this.membership.transitionTimeoutMs) throw new Error('room transfer timeout: ' + id);
       for (const link of this._links.values()) if (link.branchIncoming && now - link.branchIncoming.at >= this.membership.transitionTimeoutMs) link.branchIncoming = null;
       if (!this._boundaryFrozen()) this._core?.poll(now);

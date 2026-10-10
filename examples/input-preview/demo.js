@@ -15,7 +15,7 @@ function stepUnit(unit,input,commands=[]){const axis=input[0]===1?-1:input[0]===
 export function startInputPreviewDemo(canvas,status){
  const renderer=new Renderer2D(canvas,{antialias:false,preserveDrawingBuffer:true});renderer.resize(canvas.clientWidth,canvas.clientHeight,devicePixelRatio||1);
  const actions=new ActionState(),input=createDOMInput({target:canvas,state:actions,keys:{KeyA:'left',ArrowLeft:'left',KeyD:'right',ArrowRight:'right',Space:'roll'}});
- let unit,remote,presentation,preview,session,loop,enabled=true,frames=0,pose={},captureSequence=0,worldTick=0,forkCreates=0,forkRestores=0;
+ let unit,remote,presentation,preview,session,loop,disposed=false,enabled=true,frames=0,pose={},captureSequence=0,worldTick=0,forkCreates=0,forkRestores=0;
  const snapshot=()=>encoder.encode(JSON.stringify({unit,tick:worldTick}));
  const continuationKey='remote-inputs:stable';
  const checkpoint=mode=>preview.reconcile({snapshot:snapshot(),input:session.localInputState.replayInput??session.localInputState.executedInput,revision:0,tick:session.tick,epoch:0,continuationKey,timeMs:performance.now(),mode,
@@ -47,5 +47,10 @@ export function startInputPreviewDemo(canvas,status){
   setPreview(value){enabled=!!value;preview.setEnabled(enabled);if(enabled)checkpoint('reset')},
   forceCollision(){unit.x=695;presentation.capture({revision:0,sequence:++captureSequence,timeMs:session.tick*DT,entities:[{id:'local',generation:0,source:unit},{id:'remote',generation:0,source:remote}]},performance.now());checkpoint('reset')},clockGap(){loop.resetTiming(false);preview.clockGap()},
   restart(){loop.stop();preview.dispose();session.close();start()},
-  dispose(){loop.stop();preview.dispose();session.close();input.dispose();renderer.dispose()}};
+  dispose(){
+   // The owner can be disposed explicitly before pagehide calls it again.
+   // Stop the loop while its preview is live; never clear a disposed preview.
+   if(disposed)return;disposed=true;
+   loop.stop();preview.dispose();session.close();input.dispose();renderer.dispose()
+  }};
 }

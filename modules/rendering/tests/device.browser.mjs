@@ -108,7 +108,7 @@ export async function exerciseVectorRenderer(page) {
     renderer.beginGroup(.5,{x:12,y:12,width:44,height:32});
     renderer.polygon([[12,12],[44,12],[44,44],[12,44]],[1,0,0,1]);
     renderer.polygon([[24,12],[56,12],[56,44],[24,44]],[1,0,0,1]);
-    renderer.beginGroup(.5,{x:24,y:12,width:8,height:8});renderer.polygon([[24,12],[32,12],[32,20],[24,20]],[0,1,0,1]);const nestedTarget=new Uint8Array(4);device.gl.readPixels(4,3,1,1,device.gl.RGBA,device.gl.UNSIGNED_BYTE,nestedTarget);renderer.endGroup();const parentTarget=new Uint8Array(4);device.gl.readPixels(16,27,1,1,device.gl.RGBA,device.gl.UNSIGNED_BYTE,parentTarget);
+    renderer.beginGroup(.5,{x:24,y:12,width:8,height:8});renderer.polygon([[24,12],[32,12],[32,20],[24,20]],[0,1,0,1]);renderer.flush();const nestedTarget=new Uint8Array(4);device.gl.readPixels(4,3,1,1,device.gl.RGBA,device.gl.UNSIGNED_BYTE,nestedTarget);renderer.endGroup();const parentTarget=new Uint8Array(4);device.gl.readPixels(16,27,1,1,device.gl.RGBA,device.gl.UNSIGNED_BYTE,parentTarget);
     renderer.endGroup();
     renderer.save();renderer.clipRect(2,48,24,12);renderer.beginPath();renderer.moveTo(2,60);renderer.quadraticCurveTo(16,42,30,60,16);renderer.stroke([0,1,0,1],2);renderer.restore();
     renderer.beginPath();renderer.moveTo(2,2);renderer.lineTo(20,2);renderer.lineTo(20,20);renderer.lineTo(2,20);renderer.closePath();renderer.moveTo(6,6);renderer.lineTo(16,6);renderer.lineTo(16,16);renderer.lineTo(6,16);renderer.closePath();renderer.fill([0,1,0,1],'evenodd');

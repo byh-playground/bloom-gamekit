@@ -79,6 +79,7 @@ export type ProfileMetadata = Record<string, ProfilePrimitive>;
 export interface PerformanceProfilerOptions {
   capacity?: number;
   now?: () => number;
+  /** Independent per-frame limits for distinct stage names and counter names. */
   maxStages?: number;
 }
 export interface ProfileSummary {
@@ -118,6 +119,7 @@ export class PerformanceProfiler {
   measure<T>(name: string, operation: () => T, metadata?: ProfileMetadata): T;
   endFrame(metadata?: ProfileMetadata): ProfileFrame | null;
   clear(): void;
+  /** limit affects returned frames only; zero still summarizes all retained frames. */
   snapshot(options?: { limit?: number }): PerformanceProfileSnapshot;
   dispose(): void;
 }

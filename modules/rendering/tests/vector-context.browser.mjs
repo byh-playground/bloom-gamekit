@@ -21,8 +21,12 @@ export async function exerciseVectorContext(page){
     ctx.fillStyle='#ffffff';ctx.font='8px sans-serif';ctx.textAlign='center';ctx.textBaseline='top';ctx.fillText('A',32,4);
     ctx.drawStaticMesh(mesh,{pipeline});
     const stats=ctx.endFrame();const pixels={groupOuter:pixel(12,12),groupOverlap:pixel(28,12),clipInside:pixel(10,46),clipOutside:pixel(24,46),dash:pixel(8,52),dashGap:pixel(16,52),roundCap:pixel(3,52),primitive:pixel(48,52),glyph:pixel(32,7),staticMesh:pixel(6,6)};
+    ctx.beginFrame();ctx.setLineDash([]);ctx.strokeStyle='white';ctx.lineWidth=2;
+    for(let i=0;i<1000;i++){ctx.fillStyle=i===999?'blue':'red';ctx.fillRect(20,20,20,20);}
+    ctx.beginPath();ctx.moveTo(4,4);ctx.lineTo(12,4);ctx.stroke();
+    const batched=ctx.endFrame(),batchPixel=pixel(30,30),strokePixel=pixel(8,4);
     const error=gl.getError();window.vectorContextProbe={device,vector,atlas,ctx,canvas,pipeline,mesh};
-    return{pixels,fanBounds,stats,error,vertexCapacity:vector.vertices.length,textureBytes:device.stats.gpuRenderTargetBytes};
+    return{pixels,fanBounds,stats,batched,batchPixel,strokePixel,error,vertexCapacity:vector.vertices.length,textureBytes:device.stats.gpuRenderTargetBytes};
   });
   assert.ok(Math.abs(result.pixels.groupOuter[0]-128)<=3&&Math.abs(result.pixels.groupOuter[2]-127)<=3,'group opacity applies once to a path fill');
   assert.ok(Math.abs(result.pixels.groupOverlap[0]-128)<=3&&Math.abs(result.pixels.groupOverlap[2]-127)<=3,'overlapping fills composite once inside a group');
@@ -31,6 +35,8 @@ export async function exerciseVectorContext(page){
   assert.ok(result.pixels.primitive[0]>240&&result.pixels.primitive[1]>240,`public primitive painter emits WebGL fan geometry: ${JSON.stringify(result.pixels)}`);
   assert.ok(result.pixels.glyph[0]>240,'text keeps the caller-provided prebaked glyph atlas');assert.deepEqual(result.pixels.staticMesh,[255,0,0,255]);assert.equal(result.error,0);
   assert.equal(result.textureBytes,64*64*4);assert.ok(result.stats.vertices>0&&result.stats.drawCalls>0);
+  assert.equal(result.batched.drawCalls,2,'adjacent fill/stroke submits only at bounded capacity and frame end');
+  assert.deepEqual(result.batchPixel,[0,0,255,255],'capacity flush preserves painter order');assert.deepEqual(result.strokePixel,[255,255,255,255]);
   result.restored=await page.evaluate(()=>{const p=vectorContextProbe;p.loss=p.device.gl.getExtension('WEBGL_lose_context');if(!p.loss)return false;p.loss.loseContext();return true;});
   if(result.restored){await page.waitForFunction(()=>vectorContextProbe.ctx.state==='lost');assert.equal(await page.evaluate(()=>vectorContextProbe.ctx.beginFrame()),false);await page.evaluate(()=>vectorContextProbe.loss.restoreContext());await page.waitForFunction(()=>vectorContextProbe.ctx.state==='ready');result.restoredPixel=await page.evaluate(()=>{const p=vectorContextProbe;p.ctx.beginFrame({clearColor:[0,0,1,1]});p.ctx.drawStaticMesh(p.mesh,{pipeline:p.pipeline});p.ctx.endFrame();return{pixel:p.ctx.device.gl.getError(),red:p.ctx.device.stats.drawCalls>0}});assert.deepEqual(result.restoredPixel,{pixel:0,red:true});}
   result.disposed=await page.evaluate(()=>{const p=vectorContextProbe;p.ctx.dispose();p.vector.dispose();p.atlas.dispose();p.device.dispose();p.canvas.remove();return p.device.state==='disposed'&&p.device.stats.gpuRenderTargetBytes===0&&p.device.stats.gpuBufferBytes===0});

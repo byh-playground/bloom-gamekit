@@ -21,4 +21,6 @@ recovering 후보의 이벤트는 게임이 임시 저장하고 성공한 recove
 
 Budmori의 tick별 effect/damage feedback과 [Rally f6037f05](https://github.com/byh-playground/rally-frontier/tree/f6037f05)의 confirmed presentation journal 경계를 참고한 신규 구현입니다. 원본 게임의 효과·아트·라이선스를 복제하거나 바꾸지 않습니다.
 
-종료된 confirmed 자원은 payload/handle 참조를 즉시 해제하고 identity-only tombstone만 보관합니다. 이 축약은 기록당 한 번만 수행하며 이후 확정 호출에서 tombstone 객체를 다시 할당하지 않습니다. durationMs:0은 start 직후 만료하므로 큰 actor clone을 보관하지 않는 순간 feedback adapter에 적합합니다. frame update는 active Set만 순회하며 retained tombstone 전체를 매 frame 스캔하지 않습니다. 확정 tick이 전진하거나 실패 처리를 재시도할 때와 rollback/명시적 collect는 해당 시점의 journal을 순회합니다. 같은 확정 tick의 완료된 호출은 O(1)이며 새 이벤트·identity 문자열·map record·최초 tombstone은 할당되므로 전체 API를 0-allocation이라고 부르지 않습니다.
+종료된 confirmed 자원은 payload/handle 참조를 즉시 해제하고 identity-only tombstone만 보관합니다. 이 축약은 기록당 한 번만 수행하며 이후 확정 호출에서 tombstone 객체를 다시 할당하지 않습니다. durationMs:0은 start 직후 만료하므로 큰 actor clone을 보관하지 않는 순간 feedback adapter에 적합합니다. frame update는 active Set만 순회하며 retained tombstone 전체를 매 frame 스캔하지 않습니다. 확정 tick 전진·실패 재시도와 rollback은 미확정/재시도 집합만 순회하며 확정된 장기 활성 자원과 tombstone은 재순회하지 않습니다. collect는 종료된 confirmed 기록의 tick별 bucket을 검사하고 cutoff 이하 bucket만 제거합니다. bucket에는 compact 시 기록당 참조 하나를 넣으며 별도의 payload나 history를 복제하지 않습니다. adapter가 확정 중 throw하면 이전 tombstone의 GC는 성공한 재시도 또는 명시적 collect까지 지연될 수 있으며, 활성·pending 기록은 그대로 유지합니다. 같은 확정 tick의 완료된 호출은 O(1)이며 새 이벤트·identity 문자열·map record·최초 tombstone은 할당되므로 전체 API를 0-allocation이라고 부르지 않습니다.
+
+CPU·보유 heap의 전후 비교와 재현 명령은 [비용 측정](./docs/cost-measurement.md)에 있습니다.
