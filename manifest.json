@@ -52,6 +52,10 @@
     {
       "file": "debug-tools.js",
       "sha256": "72260336a6c3f2ee0357a303fa8943dd8cfa4f7deea5d9517d311d4cd8796a71"
+    },
+    {
+      "file": "audio.js",
+      "sha256": "7e3e16d34ce88124e6ba7699f16d23107a3e42ee93ea5a16691e856e5865c14a"
     }
   ],
   "assets": [
