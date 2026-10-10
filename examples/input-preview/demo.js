@@ -33,7 +33,7 @@ export function startInputPreviewDemo(canvas,status){
     readEntities:fork=>[{id:'local',generation:0,source:fork.unit}]});
   checkpoint('reset');
   loop=createLoop({session,inputPreview:preview,
-   getInput(){const left=actions.sample('left').held,right=actions.sample('right').held,roll=actions.sample('roll').pressed;actions.consume();return{input:Uint8Array.of(left===right?0:left?1:2),commands:roll?[{payload:Uint8Array.of(1)}]:[]}},
+   getInput(){const left=actions.sample('left').held,right=actions.sample('right').held,roll=actions.sample('roll').pressed;actions.consume();return{input:Uint8Array.of(left===right?0:left?1:2),commands:roll?[{payload:Uint8Array.of(1)}]:[],continuationKey}},
    onPreviewError:error=>{throw error},
    onAdvance(result){if(result.status!=='advanced')return;presentation.capture({revision:0,sequence:++captureSequence,timeMs:session.tick*DT,entities:entities()},performance.now());const metadata=session.localInputState;
     const continued=preview.continueFromCheckpoint({input:metadata.replayInput??metadata.executedInput,revision:0,tick:session.tick,epoch:metadata.epoch,continuationKey,timeMs:performance.now(),confirmedCommandSequence:metadata.executedCommandSequence??undefined});
@@ -45,7 +45,7 @@ export function startInputPreviewDemo(canvas,status){
  return{renderer,get presentation(){return presentation},get preview(){return preview},get session(){return session},
   get diagnostics(){return{authorityX:unit.x,displayedX:pose.x,displayFlash:pose.flash,remoteX:remote.x,authorityTick:session.tick,authorityHash:hashBytes(snapshot()),frames,pending:preview.pendingCount,forkCreates,forkRestores,metrics:preview.metrics,presentationMetrics:presentation.previewMetrics,confirmedCommandSequence:session.localInputState.executedCommandSequence}},
   setPreview(value){enabled=!!value;preview.setEnabled(enabled);if(enabled)checkpoint('reset')},
-  forceCollision(){unit.x=695;presentation.capture({revision:0,sequence:++captureSequence,timeMs:session.tick*DT,entities:[{id:'local',generation:0,source:unit},{id:'remote',generation:0,source:remote}]},performance.now());checkpoint('reset')},clockGap(){loop.resetTiming();checkpoint('resync')},
+  forceCollision(){unit.x=695;presentation.capture({revision:0,sequence:++captureSequence,timeMs:session.tick*DT,entities:[{id:'local',generation:0,source:unit},{id:'remote',generation:0,source:remote}]},performance.now());checkpoint('reset')},clockGap(){loop.resetTiming(false);preview.clockGap()},
   restart(){loop.stop();preview.dispose();session.close();start()},
   dispose(){loop.stop();preview.dispose();session.close();input.dispose();renderer.dispose()}};
 }

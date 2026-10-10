@@ -263,6 +263,12 @@ try {
   const steadyHold=await previewPage.evaluate(()=>inputPreviewDemo.diagnostics);
   assert.ok(steadyHold.metrics.continuedCheckpoints>=continuedBeforeSteadyHold+4,'matching confirmed ticks continue the existing prediction fork');
   assert.ok(steadyHold.forkRestores<=restoreCountBeforeSteadyHold+2,'steady held input does not reinstall the full preview snapshot each authority tick');
+  await previewPage.evaluate(()=>inputPreviewDemo.clockGap());
+  await previewPage.waitForFunction(t=>inputPreviewDemo.diagnostics.authorityTick>=t+2,steadyHold.authorityTick,{timeout:1500,polling:'raf'});
+  const afterClockGap=await previewPage.evaluate(()=>inputPreviewDemo.diagnostics);
+  assert.ok(afterClockGap.metrics.clockGaps>steadyHold.metrics.clockGaps,'clock gap clears the stale rendered sample');
+  assert.ok(afterClockGap.metrics.continuedCheckpoints>steadyHold.metrics.continuedCheckpoints,'exact current input continues the same fork after an active clock gap');
+  assert.ok(afterClockGap.forkRestores<=steadyHold.forkRestores+1,'valid clock-gap continuation avoids full snapshot reinstall');
   await previewPage.evaluate(()=>document.querySelector('canvas').dispatchEvent(new KeyboardEvent('keyup',{code:'KeyD',bubbles:true})));
   const beforeRoll=await previewPage.evaluate(()=>window.inputPreviewDemo.diagnostics.displayedX);
   await previewPage.keyboard.press('Space');
