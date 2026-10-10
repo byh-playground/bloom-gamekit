@@ -265,6 +265,42 @@ export async function exerciseReusableMeshes(page) {
         const silhouetteReference = paintPackedScene(false, silhouetteDraws, true);
         const silhouetteParity = comparePacked(silhouettePacked.bytes, silhouetteReference.bytes, silhouetteDraws, true);
 
+        begin(); ctx.save(); ctx.translate(64, 64);
+        ctx.drawMeshSilhouette(packedMesh, { parts: silhouetteParts, morph: globalMorph, color: '#ffe000', width: 3, radius: 40 });
+        ctx.restore(); const batchedSilhouetteStats = ctx.endFrame(), batchedSilhouettePixels = pixels();
+        const batchedSilhouetteParity = comparePacked(batchedSilhouettePixels, silhouetteReference.bytes, silhouetteDraws, true);
+        check(batchedSilhouettePixels.every((value, i) => value === silhouettePacked.bytes[i]), 'mesh silhouette batching is pixel-identical to the repeated WebGL draw path');
+        check(batchedSilhouetteStats.mesh.instances === 10 && batchedSilhouetteStats.mesh.draws === (withoutANGLE ? 10 : 1), 'one silhouette API preserves ten ordered instances and the non-instanced fallback');
+        check(batchedSilhouetteStats.mesh.geometryUploads === 0 && batchedSilhouetteStats.uploadedBytes === (withoutANGLE ? 0 : 640), 'batched silhouette uploads instance records only');
+        const renderOrderedSilhouette = batched => {
+          begin(); ctx.fillStyle = '#202020'; ctx.fillRect(0, 0, 128, 128);
+          ctx.save(); ctx.translate(64, 64);
+          if (batched) ctx.drawMeshSilhouette(packedMesh, { parts: silhouetteParts, morph: globalMorph, color: '#ffe000', width: 3, radius: 40 });
+          else ctx.withSilhouette('#ffe000', 3, () => ctx.drawMesh(packedMesh, { parts: silhouetteParts, morph: globalMorph }), 40);
+          ctx.restore(); ctx.fillStyle = '#00ccff'; ctx.fillRect(60, 60, 8, 8); ctx.endFrame(); return pixels();
+        };
+        const orderedSilhouetteReference = renderOrderedSilhouette(false), orderedSilhouetteBatch = renderOrderedSilhouette(true);
+        check(orderedSilhouetteBatch.every((value, i) => value === orderedSilhouetteReference[i]), 'batched silhouette preserves painter order against surrounding vector draws');
+        const renderTransformedSilhouette = batched => {
+          begin(); ctx.save(); ctx.translate(62, 61); ctx.rotate(Math.PI / 7); ctx.globalAlpha = .5;
+          const transform = [.9, 0, 0, 1.1, 2, -1];
+          if (batched) ctx.drawMeshSilhouette(packedMesh, { transform, parts: silhouetteParts, morph: globalMorph, color: '#ffe000', width: 3, radius: 40 });
+          else ctx.withSilhouette('#ffe000', 3, () => ctx.drawMesh(packedMesh, { transform, parts: silhouetteParts, morph: globalMorph }), 40);
+          ctx.restore(); ctx.endFrame(); return pixels();
+        };
+        const transformedSilhouetteReference = renderTransformedSilhouette(false), transformedSilhouetteBatch = renderTransformedSilhouette(true);
+        check(transformedSilhouetteBatch.every((value, i) => value === transformedSilhouetteReference[i]), 'batched silhouette preserves local/context transforms and outer group alpha');
+        const renderForcedFlashSilhouette = batched => {
+          begin(); ctx.save(); ctx.translate(64, 64); ctx.filter = 'brightness(0) invert(1)';
+          ctx.withColor([.2, .8, .3, .35], () => {
+            if (batched) ctx.drawMeshSilhouette(packedMesh, { parts: silhouetteParts, morph: globalMorph, color: '#ffe000', width: 3, radius: 40 });
+            else ctx.withSilhouette('#ffe000', 3, () => ctx.drawMesh(packedMesh, { parts: silhouetteParts, morph: globalMorph }), 40);
+          });
+          ctx.restore(); ctx.endFrame(); return pixels();
+        };
+        const forcedFlashReference = renderForcedFlashSilhouette(false), forcedFlashBatch = renderForcedFlashSilhouette(true);
+        check(forcedFlashBatch.every((value, i) => value === forcedFlashReference[i]), 'batched silhouette preserves outer forceColor and white-flash alpha');
+
         const beforeRestore = clippedScene(true), loss = gl.getExtension('WEBGL_lose_context');
         const combinedBeforeRestore = paintPackedScene(true, silhouetteDraws, true).bytes;
         check(loss, 'real context-loss extension available');
@@ -294,7 +330,10 @@ export async function exerciseReusableMeshes(page) {
           packedParts: { partCount: packedData.partCount, coldGeometryBytes: packedCold.mesh.geometryBytesUploaded,
             mutationDraws: mutationStats.mesh.draws, mutationParity, silhouetteDraws: silhouettePacked.stats.mesh.draws,
             silhouetteInstances: silhouettePacked.stats.mesh.instances, silhouetteUploadedBytes: silhouettePacked.stats.uploadedBytes,
-            silhouetteGeometryUploads: silhouettePacked.stats.mesh.geometryUploads, silhouetteParity, sameHandleRestoration: true,
+            silhouetteGeometryUploads: silhouettePacked.stats.mesh.geometryUploads, silhouetteParity,
+            batchedSilhouette: { draws: batchedSilhouetteStats.mesh.draws, instances: batchedSilhouetteStats.mesh.instances,
+              uploadedBytes: batchedSilhouetteStats.uploadedBytes, parity: batchedSilhouetteParity,
+              transformedAlphaParity: true, forcedFlashParity: true }, sameHandleRestoration: true,
             maxVertexAttributes: gl.getParameter(gl.MAX_VERTEX_ATTRIBS), maxVertexUniformVectors: gl.getParameter(gl.MAX_VERTEX_UNIFORM_VECTORS) },
           transformsAndTwoMorphs: true, silhouette: true, whiteFlashAlpha: true, painterOrder: true,
           nestedOpacityRotatedClip: true, sameHandleRestoration: true, deletionAndDisposal: true };
