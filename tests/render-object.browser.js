@@ -33,8 +33,23 @@ export async function runRenderObjectChecks(page) {
     check(actor.renders === 1 && actor.x === 48, 'normal this retains private fields and authority');
     check(runtime.modelFor({ ...actor }, 150) === null, 'copied authority cannot bypass capture');
     window.dispatchEvent(new Event('blur')); check(!state.sample('move').held, 'independent input blur release');
-    runtime.capture({ revision: 0, sequence: 2, timeMs: 200, entities: [] }, 200);
-    check(runtime.modelFor(model, 200) === null, 'despawned model cannot render');
+    const predicted = new Actor(); predicted.x = 64;
+    runtime.selectPreview([{ id: 'actor', generation: 0 }]);
+    runtime.capturePreview({ revision: 0, sequence: 0, timeMs: 150,
+      entities: [{ id: 'actor', generation: 0, source: predicted }] }, 150);
+    const previewModel = runtime.sample('actor', 0, 175);
+    check(previewModel.x === 40 && runtime.modelFor(predicted, 175) === previewModel && runtime.sample('actor', 0, 175).x === 40, 'body/HUD share same-time preview value and model');
+    predicted.x = 56;
+    runtime.capturePreview({ revision: 0, sequence: 1, timeMs: 175,
+      entities: [{ id: 'actor', generation: 0, source: predicted }] }, 175);
+    check(runtime.sample('actor', 0, 175) === previewModel && previewModel.x === 40, 'same-time preview recapture starts at displayed pose');
+    renderer.beginFrame([0, 0, 0, 1]); runtime.render(actor, renderer, 225); renderer.endFrame();
+    const previewPixel = new Uint8Array(4); renderer.gl.readPixels(48, 32, 1, 1, renderer.gl.RGBA, renderer.gl.UNSIGNED_BYTE, previewPixel);
+    check(previewModel.x === 48 && previewPixel[1] > 240 && actor.x === 48, 'recaptured preview reaches new midpoint through WebGL without changing authority');
+    runtime.releasePreview(225);
+    check(runtime.sample('actor', 0, 225).x === 48, 'same-time preview release preserves displayed pose');
+    runtime.capture({ revision: 0, sequence: 2, timeMs: 250, entities: [] }, 250);
+    check(runtime.modelFor(model, 250) === null, 'despawned model cannot render');
     class Spark extends RenderObject {
       static renderSchema = { 'point.u': this.POSITION_X, 'point.v': this.POSITION_Y,
         'launch.a': this.ORIGIN_X, 'launch.b': this.ORIGIN_Y, extent: this.SPAWN_LINEAR };
@@ -46,7 +61,7 @@ export async function runRenderObjectChecks(page) {
     renderer.beginFrame([0, 0, 0, 1]); sparks.render(spark, renderer, 50); renderer.endFrame();
     const spawned = new Uint8Array(4); renderer.gl.readPixels(32, 32, 1, 1, renderer.gl.RGBA, renderer.gl.UNSIGNED_BYTE, spawned);
     check(spawned[2] > 240 && spawned[0] < 10, 'generic origin roles draw newborn midpoint with foreign field names');
-    const result = { pixel: [...pixel], spawnPixel: [...spawned], fieldPolicies: true, nested: true, privateThis: true, detached: true, input: true, despawn: true };
+    const result = { pixel: [...pixel], spawnPixel: [...spawned], previewPixel: [...previewPixel], previewRecapture: true, fieldPolicies: true, nested: true, privateThis: true, detached: true, input: true, despawn: true };
     input.dispose(); renderer.dispose(); canvas.remove(); return result;
   });
 }

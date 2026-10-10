@@ -64,7 +64,7 @@ static renderSchema = {
 
 ### 비용
 
-표본 수집과 sample은 선언 필드 수와 경로 구조에 비례합니다. 모델과 중첩 객체·STEP 출력은 재사용하지만 capture는 원자적 검증을 위해 Map/배열/STEP 표본을 할당합니다. 전체 원본 세계를 복사하지 않으나 큰 subtree를 STEP으로 선언하면 그 비용은 발생합니다. 함수/상수 선언 방식 자체의 속도 우위나 zero-allocation을 주장하지 않습니다. 개발 중 임시 단위 검증 후 코드는 제거하고, 실제 Chromium 입력→중첩 모델→WebGL 픽셀의 고정 시나리오를 로컬에서 실행합니다.
+표본 수집과 새로운 시각의 sample은 선언 필드 수와 경로 구조에 비례합니다. authority와 preview 모두 같은 identity·nowMs의 반복 sample/modelFor는 이미 계산한 모델을 재사용합니다. 몸체·그림자·HUD는 한 프레임 시각을 공유하며 모델을 수정하지 마세요. 같은 시각의 새 capture/capturePreview나 preview 해제는 해당 캐시를 무효화합니다. 모델과 중첩 객체·STEP 출력은 재사용하지만 capture는 원자적 검증을 위해 Map/배열/STEP 표본을 할당합니다. 전체 원본 세계를 복사하지 않으나 큰 subtree를 STEP으로 선언하면 그 비용은 발생합니다. 함수/상수 선언 방식 자체의 속도 우위나 zero-allocation을 주장하지 않습니다. 개발 중 임시 단위 검증 후 코드는 제거하고, 실제 Chromium 입력→중첩 모델→WebGL 픽셀의 고정 시나리오를 로컬에서 실행합니다.
 
 렌더러·DOM·Worker·넷코드와 독립적인 presentation timeline입니다. 시뮬레이션이나 자체 타이머를 실행하지 않습니다.
 

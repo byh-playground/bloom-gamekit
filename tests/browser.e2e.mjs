@@ -328,12 +328,31 @@ try {
       window.dispatchEvent(new Event('blur'));loop.pulse(now+400);loop.pulse(now+500);
       if(state.x!==heldX||session.localInputState.capture.input[0]!==0||session.localInputState.executedInput[0]!==0)throw Error('manual owner retained stale held cache after the reserved release frame');
       if(state.edges!==1||session.localInputState.commandSequence!==1||session.localInputState.executedCommandSequence!==1)throw Error('deadline refresh duplicated or lost edge command');
-      return{deadlineHeldX,heldX,afterBlurX:state.x,edges:state.edges,observationReads:observations,neutral:session.localInputState.capture.input[0],automaticRafStarted:loop.running};
+      const retainedEdges = [];
+      for (const [index, boundary] of ['blur', 'resetTiming', 'stop'].entries()) {
+        const at = now + 550 + index * 400, previousEdges = state.edges;
+        canvas.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyE',bubbles:true}));
+        canvas.dispatchEvent(new KeyboardEvent('keyup',{code:'KeyE',bubbles:true}));
+        loop.observeInput(at);
+        if (boundary === 'blur') window.dispatchEvent(new Event('blur')); else loop[boundary]();
+        loop.pulse(at + 50); loop.pulse(at + 150); loop.pulse(at + 250);
+        if (state.edges !== previousEdges + 1 || session.localInputState.executedCommandSequence !== state.edges) throw Error(boundary + ' lost or duplicated an observed edge before tick consumption');
+        if (state.x !== heldX) throw Error(boundary + ' restored stale held input');
+        retainedEdges.push(boundary);
+      }
+      return{deadlineHeldX,heldX,afterBlurX:state.x,edges:state.edges,retainedEdges,observationReads:observations,neutral:session.localInputState.capture.input[0],automaticRafStarted:loop.running};
     }finally{window.removeEventListener('blur',release);loop.stop();preview.dispose();session.close();input.dispose();}
   });
   assert.equal(report.manualOwnerRelease.automaticRafStarted,false);
-  report.stages.push('manual deadline refreshes held/quick edges without RAF, reuses recent observations, binds edge once and stays neutral after blur');
+  report.stages.push('manual deadline refreshes held/quick edges without RAF, reuses observations, stays neutral and retains one edge across blur/resetTiming/stop until tick consumption');
+  await previewPage.evaluate(()=>{
+    window.inputPreviewDemo.dispose();
+    window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: false }));
+  });
+  assert.equal(previewErrors.length,0,previewErrors.join('\n'));
   await previewPage.close();
+  assert.equal(previewErrors.length,0,previewErrors.join('\n'));
+  report.stages.push('explicit disposal, repeated disposal and pagehide release the demo once without lifecycle errors');
   report.browser = await browser.version(); report.contextLoss = supportsLoss;
   report.scope = 'Headless Chromium with actual WebGL1/SwiftShader pixels and built ESMs. CPU/interval observations are not mobile FPS or hardware-GPU certification. No screenshot/artifact retention.';
   console.log(JSON.stringify(report, null, 2));

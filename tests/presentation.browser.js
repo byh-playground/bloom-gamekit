@@ -3,7 +3,7 @@ export async function runPresentationChecks(page) {
     const { CameraViewport, OrthographicProjection } = await import('/dist/camera.js');
     const { PresentationEventQueue } = await import('/dist/presentation-events.js');
     const { DOMHud } = await import('/dist/hud.js');
-    const { DiagnosticRing, copyDiagnostic } = await import('/dist/debug-tools.js');
+    const { DiagnosticRing, PerformanceProfiler, copyDiagnostic } = await import('/dist/debug-tools.js');
     const { Renderer2D } = await import('/dist/rendering.js');
     const check = (condition, message) => { if (!condition) throw Error(message); };
     const host = document.createElement('div'); host.style.cssText = 'position:relative;width:100px;height:100px'; document.body.append(host);
@@ -20,9 +20,9 @@ export async function runPresentationChecks(page) {
     const labelBounds = label.getBoundingClientRect(), hostBounds = host.getBoundingClientRect();
     const anchorX = labelBounds.left + labelBounds.width / 2 - hostBounds.left, anchorY = labelBounds.bottom - hostBounds.top;
     check(Math.abs(anchorX - screen.x) < .02 && Math.abs(anchorY - screen.y) < .02, `shared XYZ HUD visible anchor ${anchorX},${anchorY} expected ${screen.x},${screen.y}; CSS ${label.style.transform}`);
-    let starts = 0, sounds = 0, stops = 0;
-    const queue = new PresentationEventQueue({ adapters: {
-      text: { reversible: true, start: event => { starts++; return hud.add(event.sequence, { anchor: event.payload, text: 'hit' }); }, stop: (_, reason, event) => { stops++; hud.remove(event.sequence); } },
+    let starts = 0, sounds = 0, stops = 0, failLateText = true;
+    const queue = new PresentationEventQueue({ retentionTicks: 3, adapters: {
+      text: { reversible: true, start: event => { if (event.sequence === 3 && failLateText) { failLateText = false; throw Error('temporary text allocation failure'); } starts++; return hud.add(event.sequence, { anchor: event.payload, text: 'hit' }); }, stop: (_, reason, event) => { stops++; hud.remove(event.sequence); } },
       sound: { start: () => { sounds++; } },
     } });
     const event = { tick: 4, sequence: 1, entityId: 'actor', generation: 0, kind: 'text', policy: 'speculative', durationMs: 300, payload: world };
@@ -31,6 +31,29 @@ export async function runPresentationChecks(page) {
     queue.beginRollback(4); queue.endRollback(); check(stops === 1 && hud.stats.nodes === 1, 'absent speculative resource cancelled');
     queue.emit({ ...event, tick: 5, kind: 'sound', policy: 'confirmed' }); queue.confirmThrough(5); check(sounds === 1, 'only valid confirmed sound starts');
     queue.emit({ ...event, tick: 5, kind: 'sound', policy: 'confirmed' }); check(sounds === 1, 'confirmed sound cannot replay');
+    // The same visible hit flow survives late delivery, retry, rollback and a long-lived label.
+    let failedLateStart = false;
+    try { queue.emit({ ...event, tick: 5, sequence: 3, policy: 'confirmed', durationMs: 0 }); } catch { failedLateStart = true; }
+    queue.confirmThrough(5);
+    check(failedLateStart && starts === 2 && hud.stats.nodes === 1, 'late confirmed start retries at same watermark and expires once');
+    const longHit = { ...event, tick: 6, sequence: 2, durationMs: 100000 };
+    queue.emit(longHit); queue.beginRollback(6); queue.endRollback(); queue.emit(longHit);
+    check(starts === 4 && hud.stats.nodes === 2, 'cancelled speculative identity restarts its visible resource');
+    queue.confirmThrough(20); queue.collect(); queue.update(500);
+    check(hud.stats.nodes === 2, 'retention cutoff must not remove a long-running confirmed label');
+    const profiler = new PerformanceProfiler({ capacity: 3, maxStages: 2 }); profiler.setEnabled(true);
+    for (let frame = 0; frame < 5; frame++) {
+      profiler.beginFrame({ frame });
+      profiler.measure('hud', () => hud.update());
+      profiler.measure('render', () => { renderer.beginFrame(); renderer.rect(plane.x, plane.y, 6, 6, [0, 1, 0, 1]); renderer.endFrame(); });
+      check(profiler.count('frames') && profiler.count('labels', hud.stats.nodes) && !profiler.count('overflow') && profiler.count('frames'), 'counter names bounded while existing counters accumulate');
+      profiler.endFrame();
+    }
+    const profile = profiler.snapshot(), summaryOnly = profiler.snapshot({ limit: 0 });
+    check(profile.frames.map(frame => frame.sequence).join(',') === '3,4,5' && profile.frames.every(frame => frame.counts.frames === 2), 'wrapped profiler keeps recent frames in chronological order');
+    check(summaryOnly.frames.length === 0 && summaryOnly.retainedFrames === 3 && summaryOnly.summary.frames.count === 3 && summaryOnly.summary.stages.render.count === 3, 'zero sample limit retains the full measured summary');
+    check(queue.finish(longHit) && hud.stats.nodes === 1, 'natural completion releases long-running label after cutoff');
+    profiler.clear(); check(profiler.snapshot().retainedFrames === 0, 'cleared profiler releases samples'); profiler.dispose();
     const ring = new DiagnosticRing({ capacity: 2 }); const target = new EventTarget(); const cleanup = ring.installGlobal(target);
     target.dispatchEvent(new ErrorEvent('error', { message: 'password=private user@example.com https://private.test' }));
     check(ring.total === 1 && ring.snapshot().blockerCount === 1 && !ring.format().includes('private'), 'global diagnostics redacted and remain blocking by default');
@@ -47,6 +70,6 @@ export async function runPresentationChecks(page) {
     hud.add('a', { element: a, anchor: { space: 'screen', x: 1, y: 1 } }); hud.add('b', { element: b, anchor: { space: 'screen', x: 1, y: 1 } });
     hud.remove('a'); hud.remove('b'); check(originalParent.children[0] === a && originalParent.children[1] === b && originalParent.children[2] === c && originalParent.childNodes.length === 3, 'multiple moved siblings restore exact order without leaked markers');
     queue.dispose(); hud.dispose(); ring.dispose(); renderer.dispose(); host.remove();
-    return { cameraHudPixel: [...pixel], stationaryDomWrites: writes, speculativeStarts: starts, cancelledResources: stops, confirmedSoundStarts: sounds, globalErrors: 'redacted and detached', clipboardFallback: copy.method };
+    return { cameraHudPixel: [...pixel], stationaryDomWrites: writes, speculativeStarts: starts, cancelledResources: stops, confirmedSoundStarts: sounds, profilerRetainedFrames: profile.retainedFrames, lateRetryAndLongResource: true, globalErrors: 'redacted and detached', clipboardFallback: copy.method };
   });
 }

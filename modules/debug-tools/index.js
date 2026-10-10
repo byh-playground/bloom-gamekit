@@ -92,10 +92,11 @@ const profileMeta = value => {
   }
   return result;
 };
-const percentile = (values, fraction) => { if (!values.length) return 0; const sorted = values.slice().sort((a, b) => a - b); return sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * fraction))]; };
 const profileSummary = values => {
   if (!values.length) return { count: 0, totalMs: 0, minMs: 0, maxMs: 0, p50Ms: 0, p95Ms: 0 };
-  return { count: values.length, totalMs: values.reduce((sum, value) => sum + value, 0), minMs: Math.min(...values), maxMs: Math.max(...values), p50Ms: percentile(values, .5), p95Ms: percentile(values, .95) };
+  const totalMs = values.reduce((sum, value) => sum + value, 0);
+  values.sort((a, b) => a - b);
+  return { count: values.length, totalMs, minMs: values[0], maxMs: values[values.length - 1], p50Ms: values[Math.floor((values.length - 1) * .5)], p95Ms: values[Math.floor((values.length - 1) * .95)] };
 };
 /**
  * Bounded, opt-in synchronous performance samples for local diagnostics.
@@ -105,7 +106,7 @@ const profileSummary = values => {
 export class PerformanceProfiler {
   constructor({ capacity = 120, now = () => performance.now(), maxStages = 64 } = {}) {
     bound(capacity, 'capacity', 1, 1000); bound(maxStages, 'maxStages', 1, 256); if (typeof now !== 'function') throw new TypeError('now must be function');
-    this.capacity = capacity; this.maxStages = maxStages; this.now = now; this.enabled = false; this.frames = []; this.current = null; this.sequence = 0;
+    this.capacity = capacity; this.maxStages = maxStages; this.now = now; this.enabled = false; this.frames = new Array(capacity); this.frameStart = 0; this.frameCount = 0; this.current = null; this.sequence = 0;
   }
   setEnabled(enabled) { if (typeof enabled !== 'boolean') throw new TypeError('enabled must be boolean'); this.enabled = enabled; if (!enabled) this.current = null; return enabled; }
   beginFrame(meta = {}) {
@@ -120,7 +121,9 @@ export class PerformanceProfiler {
   }
   count(name, value = 1) {
     if (!this.enabled || !this.current) return false; const key = profileName(name), amount = Number(value);
-    if (!Number.isFinite(amount) || amount < 0) throw new RangeError('profile count must be finite and non-negative'); this.current.counts.set(key, (this.current.counts.get(key) || 0) + amount); return true;
+    if (!Number.isFinite(amount) || amount < 0) throw new RangeError('profile count must be finite and non-negative');
+    if (!this.current.counts.has(key) && this.current.counts.size >= this.maxStages) return false;
+    this.current.counts.set(key, (this.current.counts.get(key) || 0) + amount); return true;
   }
   measure(name, operation, metadata = {}) {
     if (typeof operation !== 'function') throw new TypeError('profile operation must be function'); if (!this.enabled || !this.current) return operation();
@@ -129,13 +132,17 @@ export class PerformanceProfiler {
   endFrame(meta = {}) {
     if (!this.enabled || !this.current) return null; const current = this.current; this.current = null; const endedAtMs = this.now();
     if (!Number.isFinite(endedAtMs)) throw new TypeError('profile clock must be finite'); const frame = { sequence: current.sequence, durationMs: Math.max(0, endedAtMs - current.startedAtMs), meta: { ...current.meta, ...profileMeta(meta) }, stages: Object.fromEntries([...current.stages].map(([name, value]) => [name, { ms: value.ms, calls: value.calls, maxMs: value.maxMs, metadata: { ...value.metadata } }])), counts: Object.fromEntries(current.counts) };
-    this.frames.push(frame); if (this.frames.length > this.capacity) this.frames.splice(0, this.frames.length - this.capacity); return frame;
+    if (this.frameCount === this.capacity) { this.frames[this.frameStart] = frame; this.frameStart = (this.frameStart + 1) % this.capacity; }
+    else { this.frames[(this.frameStart + this.frameCount) % this.capacity] = frame; this.frameCount++; }
+    return frame;
   }
-  clear() { this.frames.length = 0; this.current = null; }
+  clear() { this.frames.fill(undefined); this.frameStart = this.frameCount = 0; this.current = null; }
   snapshot({ limit = Math.min(30, this.capacity) } = {}) {
-    bound(limit, 'limit', 0, this.capacity); const frames = this.frames.slice(-limit).map(frame => ({ sequence: frame.sequence, durationMs: frame.durationMs, meta: { ...frame.meta }, stages: Object.fromEntries(Object.entries(frame.stages).map(([name, value]) => [name, { ms: value.ms, calls: value.calls, maxMs: value.maxMs, metadata: { ...value.metadata } }])), counts: { ...frame.counts } }));
-    const stageValues = new Map(); for (const frame of this.frames) { for (const [name, stage] of Object.entries(frame.stages)) { const values = stageValues.get(name) || []; values.push(stage.ms); stageValues.set(name, values); } }
-    return { enabled: this.enabled, capacity: this.capacity, retainedFrames: this.frames.length, frames, summary: { frames: profileSummary(this.frames.map(frame => frame.durationMs)), stages: Object.fromEntries([...stageValues].map(([name, values]) => [name, profileSummary(values)])) } };
+    bound(limit, 'limit', 0, this.capacity);
+    const retained = Array.from({ length: this.frameCount }, (_, index) => this.frames[(this.frameStart + index) % this.capacity]);
+    const frames = retained.slice(retained.length - Math.min(limit, retained.length)).map(frame => ({ sequence: frame.sequence, durationMs: frame.durationMs, meta: { ...frame.meta }, stages: Object.fromEntries(Object.entries(frame.stages).map(([name, value]) => [name, { ms: value.ms, calls: value.calls, maxMs: value.maxMs, metadata: { ...value.metadata } }])), counts: { ...frame.counts } }));
+    const stageValues = new Map(); for (const frame of retained) { for (const [name, stage] of Object.entries(frame.stages)) { const values = stageValues.get(name) || []; values.push(stage.ms); stageValues.set(name, values); } }
+    return { enabled: this.enabled, capacity: this.capacity, retainedFrames: this.frameCount, frames, summary: { frames: profileSummary(retained.map(frame => frame.durationMs)), stages: Object.fromEntries([...stageValues].map(([name, values]) => [name, profileSummary(values)])) } };
   }
   dispose() { this.enabled = false; this.clear(); }
 }

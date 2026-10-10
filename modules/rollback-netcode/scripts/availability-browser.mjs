@@ -15,9 +15,9 @@ async function until(pages, predicate, label, timeout = 18000) {
   while (Date.now() < end) { const values = await snapshots(pages); if (values.some(s => s.failure)) throw new Error(label + ': ' + JSON.stringify(values)); if (predicate(values)) return values; await sleep(80); }
   throw new Error(label + ' timeout: ' + JSON.stringify(await Promise.all(pages.map(p => p.evaluate(() => window.diagnostics())))));
 }
-async function room(count, available = true, transfer = false) {
+async function room(count, available = true, transfer = false, cooperative = false) {
   const context = await browser.newContext(), pages = [], players = ['A', 'B', 'C', 'D'].slice(0, count);
-  for (const id of players) { const page = await context.newPage(); page.on('pageerror', e => errors.push(e.message)); await page.goto(`http://127.0.0.1:${server.address().port}/modules/rollback-netcode/tests/availability-browser.html`); await page.waitForFunction(() => typeof window.setup === 'function'); await page.evaluate(({ id, players, available, transfer }) => window.setup(id, players, available, transfer), { id, players, available, transfer }); pages.push(page); }
+  for (const id of players) { const page = await context.newPage(); page.on('pageerror', e => errors.push(e.message)); await page.goto(`http://127.0.0.1:${server.address().port}/modules/rollback-netcode/tests/availability-browser.html`); await page.waitForFunction(() => typeof window.setup === 'function'); await page.evaluate(({ id, players, available, transfer, cooperative }) => window.setup(id, players, available, transfer, cooperative), { id, players, available, transfer, cooperative }); pages.push(page); }
   for (let a = 0; a < count; a++) for (let b = a + 1; b < count; b++) { const offer = await pages[a].evaluate(id => window.offer(id), players[b]); const answer = await pages[b].evaluate(({ id, offer }) => window.answer(id, offer), { id: players[a], offer }); await pages[a].evaluate(({ id, answer }) => window.accept(id, answer), { id: players[b], answer }); }
   await Promise.all(pages.map(p => p.evaluate(() => window.startPump())));
   await until(pages, values => values.every(s => s.tick >= 15 && s.status === 'running' && s.activePlayers.length === count) && new Set(values.map(s => s.branch)).size === 1, 'initial play');
@@ -34,7 +34,7 @@ async function checkpoint(pages, label) {
 async function closeRoom(value) { await Promise.all(value.pages.map(p => p.evaluate(() => window.stop()).catch(() => {}))); await value.context.close(); }
 try {
   browser = await chromium.launch({ headless: process.env.AVAILABILITY_HEADED !== '1', ignoreDefaultArgs: ['--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'], ...(process.env.CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.CHROMIUM_EXECUTABLE_PATH } : process.env.BROWSER_CHANNEL ? { channel: process.env.BROWSER_CHANNEL } : {}) });
-  const two = await room(2), [host, guest] = two.pages;
+  const two = await room(2, true, false, true), [host, guest] = two.pages;
   await Promise.all(two.pages.map(p => p.evaluate(() => window.stopRender())));
   const beforeRenderStop = await snapshots(two.pages);
   await sleep(700);
@@ -82,6 +82,13 @@ try {
   results.push({label:'room-wide gap; slow voter confirms checkpoint without input',fault:'fixture timer interval 1000ms, not natural browser throttling',diagnostics:await Promise.all(two.pages.map(p=>p.evaluate(()=>window.diagnostics())))});
   await guest.evaluate(()=>{window.setPulseInterval(50);window.resumePump();});
   await checkpoint(two.pages,'room-wide resume state');
+  const cooperative = await snapshots(two.pages);
+  for (const peer of cooperative) {
+    assert.ok(peer.membershipInstalls > 0, 'cooperative availability prepared state committed');
+    assert.ok(peer.membershipInstalls <= peer.membershipJobs, 'only completed recovery jobs install; canceled rounds may leave unused tokens');
+    assert.ok(peer.membershipPrepareMs > 0 && peer.maxBoundaryTaskMs >= peer.membershipPrepareMs, 'cooperative availability boundary costs measured');
+  }
+  results.push({ label: 'cooperative membership through guest/coordinator/room-wide resume', peers: cooperative.map(({ membershipJobs, membershipInstalls, membershipPrepareMs, maxBoundaryTaskMs }) => ({ membershipJobs, membershipInstalls, membershipPrepareMs, maxBoundaryTaskMs })) });
   results.push({ label: 'RTC two player', ...(await guest.evaluate(() => window.rtcStats())) }); await closeRoom(two);
   const four = await room(4);
   await Promise.all(four.pages.map((p, i) => p.evaluate(ids => window.block(ids, true), i === 3 ? ['A', 'B', 'C'] : ['D'])));

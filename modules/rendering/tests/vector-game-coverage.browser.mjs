@@ -24,7 +24,12 @@ export async function exerciseVectorGameCoverage(page){
     const poly=polygon(20,20,13,7,.2),nativeStarted=performance.now();painter.regularPolygon(20,20,13,colors,7,.2);
     const dx=9,dy=-4,w=6,l=Math.hypot(dx,dy)||1,nx=-dy/l*w/2,ny=dx/l*w/2;const quad=[[9+nx,12+ny],[18+nx,8+ny],[18-nx,8-ny],[9-nx,12-ny]];painter.line(9,12,18,8,w,[.9,.35,.12,.7]);const nativePainterMs=performance.now()-nativeStarted;oldPoly(reference,poly,colors);oldPoly(reference,quad,[.9,.35,.12,.7]);
     const a=target.getImageData(0,0,40,40).data,b=reference.getImageData(0,0,40,40).data;let canvasDiff=0;for(let i=0;i<a.length;i++)if(a[i]!==b[i])canvasDiff++;const canvasGpuUploads=device.stats.textureUploads-uploadsBeforeNative;
-    const glError=gl.getError(),radialLifetime=[];const textureBaseline=device.stats.textureCount;
+    const glError=gl.getError(),radialLifetime=[];
+    const check=(ok,message)=>{if(!ok)throw new Error(message)};
+    // A revision must not recolor geometry queued before addColorStop().
+    ctx.beginFrame();const revised=ctx.createRadialGradient(0,0,0,0,0,1);revised.addColorStop(0,'red');ctx.fillStyle=revised;ctx.fillRect(0,0,16,16);revised.addColorStop(1,'blue');ctx.fillRect(16,0,16,16);ctx.endFrame();
+    check(pixel(8,8).join()=== '255,0,0,255'&&pixel(24,8).join()==='0,0,255,255','gradient revision preserves queued painter order');
+    const textureBaseline=device.stats.textureCount;
     for(let frame=0;frame<4;frame++){
       ctx.beginFrame({clearColor:[0,0,0,0]});
       for(let i=0;i<4;i++){
@@ -34,7 +39,7 @@ export async function exerciseVectorGameCoverage(page){
       }
       ctx.endFrame();radialLifetime.at(-1).textureAfterEnd=device.stats.textureCount;radialLifetime.at(-1).cacheAfterEnd=ctx.stats().activeGradientTextureCount;radialLifetime.at(-1).textureBaseline=textureBaseline;
     }
-    const disposedGradientPixelsCleared=gradient.pixels===null&&flashGradient.pixels===null;window.vectorGameCoverageProbe={device,vector,ctx,canvas};
+    const disposedGradientPixelsCleared=gradient.pixels===null&&flashGradient.pixels===null;window.vectorGameCoverageProbe={device,vector,ctx,canvas,gradient};
     return{pixels,stats,glError,renderSubmitMs,nativePainterMs,canvasDiff,canvasBytes:a.byteLength,canvasGpuUploads,gradientRampBytes:2*256*4,radialLifetime,disposedGradientPixelsCleared};
   });
   assert.deepEqual(result.pixels.body,[24,63,206,255]);assert.deepEqual(result.pixels.outline,[22,226,119,255]);
@@ -49,6 +54,13 @@ export async function exerciseVectorGameCoverage(page){
   assert.equal(result.canvasGpuUploads,0,'native UI paint target does not upload or rasterize through WebGL');
   assert.ok(result.radialLifetime.length===16&&result.radialLifetime.every(x=>x.textureAfterCreate===x.textureBaseline+x.withinFrameIndex&&x.textureAfterUpdate===x.textureAfterCreate&&x.cacheAfterUpdate===x.withinFrameIndex)&&[0,4,8,12].every(i=>result.radialLifetime[i+3].textureAfterEnd===result.radialLifetime[i].textureBaseline&&result.radialLifetime[i+3].cacheAfterEnd===0),`gradient handles are reused for repeated fills and released at every frame boundary: ${JSON.stringify(result.radialLifetime)}`);
   assert.equal(result.disposedGradientPixelsCleared,true,'frame eviction releases retained CPU ramps');
-  result.disposed=await page.evaluate(()=>{const p=vectorGameCoverageProbe;p.ctx.dispose();p.vector.dispose();p.device.dispose();p.canvas.remove();return p.device.state==='disposed'&&p.device.stats.gpuBufferBytes===0&&p.device.stats.textureCount===0&&p.device.stats.gpuRenderTargetBytes===0});
+  result.restored=await page.evaluate(()=>{const p=vectorGameCoverageProbe;p.ctx.beginFrame();p.ctx.fillStyle=p.gradient;p.ctx.fillRect(0,0,16,16);p.loss=p.device.gl.getExtension('WEBGL_lose_context');if(!p.loss){p.ctx.endFrame();return false;}p.loss.loseContext();return true;});
+  if(result.restored){
+    await page.waitForFunction(()=>vectorGameCoverageProbe.ctx.state==='lost');
+    assert.deepEqual(await page.evaluate(()=>({cache:vectorGameCoverageProbe.ctx.gradientTextures.size,queued:vectorGameCoverageProbe.vector.count})),{cache:0,queued:0});
+    await page.evaluate(()=>vectorGameCoverageProbe.loss.restoreContext());await page.waitForFunction(()=>vectorGameCoverageProbe.ctx.state==='ready');
+    assert.equal(await page.evaluate(()=>{const p=vectorGameCoverageProbe;p.ctx.beginFrame();p.ctx.fillStyle=p.gradient;p.ctx.fillRect(0,0,16,16);p.ctx.endFrame();return p.device.stats.textureUploads===1&&p.device.gl.getError()===0;}),true);
+  }
+  result.disposed=await page.evaluate(()=>{const p=vectorGameCoverageProbe;const gradients=[...p.ctx.gradientTextures.keys()];p.ctx.dispose();if(gradients.some(g=>g.pixels!==null))throw new Error('dispose must release gradient rasters');p.vector.dispose();p.device.dispose();p.canvas.remove();return p.device.state==='disposed'&&p.device.stats.gpuBufferBytes===0&&p.device.stats.textureCount===0&&p.device.stats.gpuRenderTargetBytes===0});
   assert.equal(result.disposed,true);return result;
 }
