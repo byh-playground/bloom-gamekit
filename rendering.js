@@ -1132,6 +1132,8 @@ var VectorRenderer = class {
 
 // modules/rendering/mesh-renderer.js
 var IDENTITY2 = Object.freeze([1, 0, 0, 1, 0, 0]);
+var ZERO_MORPH = Object.freeze([0, 0]);
+var EMPTY_CLIP = Object.freeze({ key: "", values: null, count: 0 });
 var WHITE2 = Object.freeze([1, 1, 1, 1]);
 var ATTRIBUTES = [
   { name: "a_position", size: 2, offset: 0 },
@@ -1160,12 +1162,13 @@ uniform vec3 u_planes[${maxPlanes}]; uniform int u_planeCount;
 void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_planes[i],vec3(v_position,1.0))<0.0)discard;}gl_FragColor=v_color;}`;
 }
 function finiteArray2(value, size, name) {
-  if (!value || value.length !== size || Array.from(value).some((n) => !Number.isFinite(n))) throw new TypeError(`${name}: ${size} finite numbers required`);
+  if (!value || value.length !== size) throw new TypeError(`${name}: ${size} finite numbers required`);
+  for (let i = 0; i < size; i++) if (!Number.isFinite(value[i])) throw new TypeError(`${name}: ${size} finite numbers required`);
 }
 function packParts(parts, count, output) {
   if (parts !== null && (!Array.isArray(parts) || parts.length !== count)) throw new TypeError("One pose per authored mesh part required");
   for (let i = 0; i < count; i++) {
-    const part = parts?.[i], m = part?.transform ?? IDENTITY2, morph = part?.morph ?? [0, 0];
+    const part = parts?.[i], m = part?.transform ?? IDENTITY2, morph = part?.morph ?? ZERO_MORPH;
     finiteArray2(m, 6, "part transform");
     finiteArray2(morph, 2, "part morph");
     const at = i * 12;
@@ -1184,7 +1187,7 @@ function packParts(parts, count, output) {
   }
 }
 function clipState(clips, maxPlanes) {
-  if (!clips?.length) return { key: "", values: null, count: 0 };
+  if (!clips?.length) return EMPTY_CLIP;
   const values = [], key = [];
   for (const polygon of clips) {
     if (!Array.isArray(polygon) || polygon.length < 3 || polygon.some((p) => !Number.isFinite(p?.x) || !Number.isFinite(p?.y))) throw new TypeError("Finite convex clip polygons required");
@@ -1325,8 +1328,9 @@ var MeshRenderer = class {
     alpha = 1,
     whiteFlash = false,
     clips = [],
-    colors = null,
-    forceColors = null
+    prefixColor = null,
+    prefixCount = 0,
+    forceColorPrefixCount = 0
   } = {}) {
     this._ready();
     if (!this.meshes.has(mesh)) throw new TypeError("Mesh owned by this renderer required");
@@ -1337,13 +1341,11 @@ var MeshRenderer = class {
     finiteArray2(morph, 2, "morph");
     finiteArray2(color2, 4, "color");
     if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1 || color2.some((n) => n < 0 || n > 1)) throw new RangeError("RGBA/alpha in [0,1] required");
-    if (colors !== null) {
-      if (!colors || colors.length !== count * 4) throw new TypeError("One RGBA color per mesh instance required");
-      for (let i = 0; i < colors.length; i++) if (!Number.isFinite(colors[i]) || colors[i] < 0 || colors[i] > 1) throw new RangeError("Instance RGBA channels must be in [0,1]");
-    }
-    if (forceColors !== null) {
-      if (!forceColors || forceColors.length !== count) throw new TypeError("One force-color flag per mesh instance required");
-      for (let i = 0; i < forceColors.length; i++) if (forceColors[i] !== 0 && forceColors[i] !== 1 && forceColors[i] !== false && forceColors[i] !== true) throw new TypeError("Mesh force-color flags must be boolean");
+    if (!Number.isSafeInteger(prefixCount) || prefixCount < 0 || prefixCount > count || !Number.isSafeInteger(forceColorPrefixCount) || forceColorPrefixCount < 0 || forceColorPrefixCount > count) throw new RangeError("Instance color prefix count is invalid");
+    if (prefixCount && !prefixColor) throw new TypeError("A prefix color is required for colored mesh instances");
+    if (prefixColor !== null) {
+      finiteArray2(prefixColor, 4, "prefix color");
+      if (prefixColor.some((n) => n < 0 || n > 1)) throw new RangeError("RGBA channels must be in [0,1]");
     }
     const clip = clipState(clips, this.maxPlanes), pending = this.pending;
     packParts(parts, mesh.partCount, this.partScratch);
@@ -1367,8 +1369,8 @@ var MeshRenderer = class {
         weight0 += part[8];
         weight1 += part[9];
       }
-      const colorAt = i * 4, instanceColor = colors ?? color2, colorOffset = colors ? colorAt : 0;
-      const instanceForceColor = forceColors === null ? forceColor : !!forceColors[i], at = this.count++ * 16, data = this.instances;
+      const instanceColor = i < prefixCount ? prefixColor : color2;
+      const instanceForceColor = i < forceColorPrefixCount ? true : forceColor, at = this.count++ * 16, data = this.instances;
       data[at] = m0;
       data[at + 1] = m2;
       data[at + 2] = m4;
@@ -1377,10 +1379,10 @@ var MeshRenderer = class {
       data[at + 5] = m3;
       data[at + 6] = m5;
       data[at + 7] = instanceForceColor ? 1 : 0;
-      data[at + 8] = instanceColor[colorOffset];
-      data[at + 9] = instanceColor[colorOffset + 1];
-      data[at + 10] = instanceColor[colorOffset + 2];
-      data[at + 11] = instanceColor[colorOffset + 3];
+      data[at + 8] = instanceColor[0];
+      data[at + 9] = instanceColor[1];
+      data[at + 10] = instanceColor[2];
+      data[at + 11] = instanceColor[3];
       data[at + 12] = weight0;
       data[at + 13] = weight1;
       data[at + 14] = whiteFlash ? 1 : 0;
@@ -1445,6 +1447,7 @@ var MeshRenderer = class {
 
 // modules/rendering/vector-context.js
 var TAU = Math.PI * 2;
+var SILHOUETTE_OFFSETS = Object.freeze(Array.from({ length: 8 }, (_, i) => Object.freeze([Math.cos(i * TAU / 8), Math.sin(i * TAU / 8)])));
 var IDENTITY3 = Object.freeze([1, 0, 0, 1, 0, 0]);
 var WHITE3 = Object.freeze([1, 1, 1, 1]);
 var NAMED = Object.freeze({
@@ -1595,8 +1598,7 @@ var VectorContext = class {
     this.deferredMeshes = [];
     this.gradientTextures = /* @__PURE__ */ new Map();
     this._silhouetteMatrices = new Float32Array(60);
-    this._silhouetteColors = new Float32Array(40);
-    this._silhouetteForceColors = new Uint8Array(10);
+    this._silhouetteColorCache = /* @__PURE__ */ new Map();
     this.onLost = (event) => {
       event.preventDefault();
       this.active = false;
@@ -2131,7 +2133,16 @@ var VectorContext = class {
     finite2(width, "silhouette width");
     finite2(radius, "silhouette radius");
     if (width < 0 || radius < 0) throw new RangeError("silhouette dimensions must be non-negative");
-    const outline = normalizeColor(color2), baseColor = this.forceColor ?? WHITE3, forceColors = this._silhouetteForceColors, colors = this._silhouetteColors, matrices = this._silhouetteMatrices;
+    let outline;
+    if (typeof color2 === "string" && color2[0] === "#") {
+      outline = this._silhouetteColorCache.get(color2);
+      if (!outline) {
+        outline = normalizeColor(color2);
+        if (this._silhouetteColorCache.size === 16) this._silhouetteColorCache.delete(this._silhouetteColorCache.keys().next().value);
+        this._silhouetteColorCache.set(color2, outline);
+      }
+    } else outline = normalizeColor(color2);
+    const matrices = this._silhouetteMatrices;
     const bounds = this.groupBounds(0, 0, radius + width);
     return this.withGroupOpacity(this._globalAlpha, () => {
       this.vector.flush();
@@ -2142,7 +2153,7 @@ var VectorContext = class {
         [ta, tb, tc, td, te, tf] = transform;
       }
       for (let i = 0; i < 10; i++) {
-        const outlinePass = i < 9, offset = i < 8, angle = offset ? i * TAU / 8 : 0, dx = offset ? Math.cos(angle) * width : 0, dy = offset ? Math.sin(angle) * width : 0, at = i * 6;
+        const outlinePass = i < 9, offset = outlinePass && i < 8, direction = offset ? SILHOUETTE_OFFSETS[i] : null, dx = direction ? direction[0] * width : 0, dy = direction ? direction[1] * width : 0, at = i * 6;
         const eOffset = e + a * dx + c * dy, fOffset = f + b * dx + d * dy;
         matrices[at] = a * ta + c * tb;
         matrices[at + 1] = b * ta + d * tb;
@@ -2150,14 +2161,8 @@ var VectorContext = class {
         matrices[at + 3] = b * tc + d * td;
         matrices[at + 4] = a * te + c * tf + eOffset;
         matrices[at + 5] = b * te + d * tf + fOffset;
-        const paint = outlinePass ? outline : baseColor, paintAt = i * 4;
-        colors[paintAt] = paint[0];
-        colors[paintAt + 1] = paint[1];
-        colors[paintAt + 2] = paint[2];
-        colors[paintAt + 3] = paint[3];
-        forceColors[i] = outlinePass ? 1 : this.forceColor === null ? 0 : 1;
       }
-      this.meshRenderer._drawMeshInstances(mesh, { matrices, count: 10, projection: this.vector.projection, morph, parts, colors, forceColors, alpha: this._globalAlpha, whiteFlash: this._filter === "brightness(0) invert(1)", clips: this.vector.clips });
+      this.meshRenderer._drawMeshInstances(mesh, { matrices, count: 10, projection: this.vector.projection, morph, parts, color: this.forceColor ?? WHITE3, forceColor: this.forceColor !== null, prefixColor: outline, prefixCount: 9, forceColorPrefixCount: 9, alpha: this._globalAlpha, whiteFlash: this._filter === "brightness(0) invert(1)", clips: this.vector.clips });
     }, bounds);
   }
   flush() {
