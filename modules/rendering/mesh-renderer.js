@@ -1,4 +1,6 @@
 const IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
+const ZERO_MORPH = Object.freeze([0, 0]);
+const EMPTY_CLIP = Object.freeze({ key: '', values: null, count: 0 });
 const WHITE = Object.freeze([1, 1, 1, 1]);
 const ATTRIBUTES = [
   { name: 'a_position', size: 2, offset: 0 }, { name: 'a_color', size: 4, offset: 8 },
@@ -25,12 +27,13 @@ uniform vec3 u_planes[${maxPlanes}]; uniform int u_planeCount;
 void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_planes[i],vec3(v_position,1.0))<0.0)discard;}gl_FragColor=v_color;}`;
 }
 function finiteArray(value, size, name) {
-  if (!value || value.length !== size || Array.from(value).some(n => !Number.isFinite(n))) throw new TypeError(`${name}: ${size} finite numbers required`);
+  if (!value || value.length !== size) throw new TypeError(`${name}: ${size} finite numbers required`);
+  for (let i = 0; i < size; i++) if (!Number.isFinite(value[i])) throw new TypeError(`${name}: ${size} finite numbers required`);
 }
 function packParts(parts, count, output) {
   if (parts !== null && (!Array.isArray(parts) || parts.length !== count)) throw new TypeError('One pose per authored mesh part required');
   for (let i = 0; i < count; i++) {
-    const part = parts?.[i], m = part?.transform ?? IDENTITY, morph = part?.morph ?? [0, 0];
+    const part = parts?.[i], m = part?.transform ?? IDENTITY, morph = part?.morph ?? ZERO_MORPH;
     finiteArray(m, 6, 'part transform'); finiteArray(morph, 2, 'part morph');
     const at = i * 12;
     output[at] = m[0]; output[at+1] = m[2]; output[at+2] = m[4]; output[at+3] = 0;
@@ -39,7 +42,7 @@ function packParts(parts, count, output) {
   }
 }
 function clipState(clips, maxPlanes) {
-  if (!clips?.length) return { key: '', values: null, count: 0 };
+  if (!clips?.length) return EMPTY_CLIP;
   const values = [], key = [];
   for (const polygon of clips) {
     if (!Array.isArray(polygon) || polygon.length < 3 || polygon.some(p => !Number.isFinite(p?.x) || !Number.isFinite(p?.y))) throw new TypeError('Finite convex clip polygons required');
@@ -133,7 +136,8 @@ export class MeshRenderer {
   }
   /** Internal ordered instance append used when one retained pose has several transforms. */
   _drawMeshInstances(mesh, { matrices, count, projection, morph = [0, 0], parts = null, color = WHITE,
-    forceColor = false, alpha = 1, whiteFlash = false, clips = [], colors = null, forceColors = null } = {}) {
+    forceColor = false, alpha = 1, whiteFlash = false, clips = [], prefixColor = null,
+    prefixCount = 0, forceColorPrefixCount = 0 } = {}) {
     this._ready();
     if (!this.meshes.has(mesh)) throw new TypeError('Mesh owned by this renderer required');
     if (!this.device.active) throw new Error('beginFrame required');
@@ -141,13 +145,12 @@ export class MeshRenderer {
     for (let i = 0; i < matrices.length; i++) if (!Number.isFinite(matrices[i])) throw new TypeError('Mesh matrix values must be finite');
     finiteArray(projection, 9, 'projection'); finiteArray(morph, 2, 'morph'); finiteArray(color, 4, 'color');
     if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1 || color.some(n => n < 0 || n > 1)) throw new RangeError('RGBA/alpha in [0,1] required');
-    if (colors !== null) {
-      if (!colors || colors.length !== count * 4) throw new TypeError('One RGBA color per mesh instance required');
-      for (let i = 0; i < colors.length; i++) if (!Number.isFinite(colors[i]) || colors[i] < 0 || colors[i] > 1) throw new RangeError('Instance RGBA channels must be in [0,1]');
-    }
-    if (forceColors !== null) {
-      if (!forceColors || forceColors.length !== count) throw new TypeError('One force-color flag per mesh instance required');
-      for (let i = 0; i < forceColors.length; i++) if (forceColors[i] !== 0 && forceColors[i] !== 1 && forceColors[i] !== false && forceColors[i] !== true) throw new TypeError('Mesh force-color flags must be boolean');
+    if (!Number.isSafeInteger(prefixCount) || prefixCount < 0 || prefixCount > count ||
+      !Number.isSafeInteger(forceColorPrefixCount) || forceColorPrefixCount < 0 || forceColorPrefixCount > count) throw new RangeError('Instance color prefix count is invalid');
+    if (prefixCount && !prefixColor) throw new TypeError('A prefix color is required for colored mesh instances');
+    if (prefixColor !== null) {
+      finiteArray(prefixColor, 4, 'prefix color');
+      if (prefixColor.some(n => n < 0 || n > 1)) throw new RangeError('RGBA channels must be in [0,1]');
     }
     const clip = clipState(clips, this.maxPlanes), pending = this.pending;
     packParts(parts, mesh.partCount, this.partScratch);
@@ -166,12 +169,12 @@ export class MeshRenderer {
         m4 = a * part[2] + c * part[6] + m4; m5 = b * part[2] + d * part[6] + m5;
         instanceAlpha *= part[10]; weight0 += part[8]; weight1 += part[9];
       }
-      const colorAt = i * 4, instanceColor = colors ?? color, colorOffset = colors ? colorAt : 0;
-      const instanceForceColor = forceColors === null ? forceColor : !!forceColors[i], at = this.count++ * 16, data = this.instances;
+      const instanceColor = i < prefixCount ? prefixColor : color;
+      const instanceForceColor = i < forceColorPrefixCount ? true : forceColor, at = this.count++ * 16, data = this.instances;
       data[at] = m0; data[at + 1] = m2; data[at + 2] = m4; data[at + 3] = instanceAlpha;
       data[at + 4] = m1; data[at + 5] = m3; data[at + 6] = m5; data[at + 7] = instanceForceColor ? 1 : 0;
-      data[at + 8] = instanceColor[colorOffset]; data[at + 9] = instanceColor[colorOffset + 1];
-      data[at + 10] = instanceColor[colorOffset + 2]; data[at + 11] = instanceColor[colorOffset + 3];
+      data[at + 8] = instanceColor[0]; data[at + 9] = instanceColor[1];
+      data[at + 10] = instanceColor[2]; data[at + 11] = instanceColor[3];
       data[at + 12] = weight0; data[at + 13] = weight1; data[at + 14] = whiteFlash ? 1 : 0; data[at + 15] = 0;
     }
   }
