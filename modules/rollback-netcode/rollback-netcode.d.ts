@@ -10,6 +10,7 @@ export interface StepContext {
   membershipEpoch?: number;
 }
 export interface SnapshotContext {
+  activePlayers?: PlayerId[];
   tick: number; membershipEpoch?: number; tickRate?: number;
   players?: PlayerId[]; simulationVersion?: string; seed?: number;
 }
@@ -177,11 +178,13 @@ export class RollbackSession {
 }
 export function createSession(options: SessionOptions): RollbackSession;
 export interface MembershipProposal {
+  readonly activePlayers?: readonly PlayerId[]; readonly branch?: string;
   readonly epoch: number; readonly oldPlayers: readonly PlayerId[]; readonly players: readonly PlayerId[];
   readonly joined: readonly PlayerId[]; readonly left: readonly PlayerId[];
   readonly coordinatorId: PlayerId; readonly reason: string; readonly resumingId?: PlayerId | null;
 }
 export interface MembershipContext {
+  activePlayers?: readonly PlayerId[]; branch?: string;
   epoch: number; tick: number; players: readonly PlayerId[]; joined: readonly PlayerId[]; left: readonly PlayerId[];
   coordinatorId: PlayerId; reason: string; oldPlayers?: readonly PlayerId[]; resumingId?: PlayerId | null;
 }
@@ -202,18 +205,33 @@ export interface RoomSessionEvent {
   proposal?: MembershipProposal; [key: string]: unknown;
 }
 export interface RoomSessionOptions {
+  /** strict 기본. available은 재결합 시 한 분기의 진행을 버릴 수 있다. */
+  availability?: Partial<AvailabilityOptions> & { autoTransfer?: Partial<CoordinatorTransferOptions> };
+  /** 게임 방 소유자 식별. coordinator 이관으로 변경되지 않는다. */
+  roomOwnerId?: PlayerId;
   mode?: 'local' | 'online'; room?: RoomTransport; localPlayerId?: PlayerId; sessionId?: string;
   simulationVersion: string; seed?: number; inputSize: number; profile?: Partial<Profile>;
   adapter: RoomSimulationAdapter; membership?: Partial<MembershipOptions>; clock?: () => number;
   onEvent?: (event: RoomSessionEvent) => void;
 }
 export interface RoomSessionFailure { readonly type: string; readonly reason?: string; readonly [key: string]: unknown; }
-export type RoomSessionStatus = SessionStatus | 'joining' | 'membership' | 'catching-up';
+export interface CoordinatorTransferOptions {
+  enabled: boolean; intervalMs: number; minTenureMs: number; minImprovementMs: number; minSamples: number;
+  rttWeight: number; jitterWeight: number; stepWeight: number; stepEmaAlpha: number;
+}
+export interface AvailabilityOptions {
+  mode: 'strict' | 'available'; heartbeatMs: number; silenceMs: number; inputGraceMs: number; resumeGapMs: number;
+  roundTimeoutMs: number; retryMs: number;
+}
+export type RoomSessionStatus = SessionStatus | 'joining' | 'membership' | 'catching-up' | 'suspended' | 'resynchronizing';
 export interface RoomAdvanceResult {
-  status: AdvanceResult['status'] | 'joining' | 'membership' | 'catching-up'; tick: number;
+  status: AdvanceResult['status'] | 'joining' | 'membership' | 'catching-up' | 'suspended' | 'resynchronizing'; tick: number;
   failure?: Readonly<SessionFailure> | RoomSessionFailure | null;
 }
 export interface RoomSessionMetrics extends Partial<SessionMetrics> {
+  branch?: string; coordinatorId?: PlayerId; activePlayers?: PlayerId[]; suspendedPlayers?: PlayerId[];
+  recoveryRequired?: boolean; availabilityDeadlineMs?: number | null; simulationStepMs?: number; simulationSamples?: number;
+  availabilityPeers?: Array<{peerId: PlayerId; state?: string; observedAtMs: number; silenceDeadlineMs: number; rttMs: number; jitterMs: number; stepMs: number; samples: number}>;
   tick: number; confirmedTick: number; epoch: number; transitions: number; bootstrapBytes: number;
   bootstrapTicks: number; rejectedMessages: number; sentControlBytes: number; receivedControlBytes: number;
   controlQueuedBytes: number; controlReceivingBytes: number; pendingAdmissions: number; controlIncomingBytes: number; snapshotSaves: number;
@@ -228,6 +246,8 @@ export class RoomSession {
   readonly localPlayerId: PlayerId; readonly sessionId: string; readonly inputSize: number;
   readonly simulationVersion: string; readonly seed: number; readonly players: readonly PlayerId[];
   readonly coordinatorId: PlayerId; readonly epoch: number; readonly baseTick: number;
+  readonly roomOwnerId: PlayerId; readonly activePlayers: readonly PlayerId[];
+  readonly availability: Readonly<AvailabilityOptions & { autoTransfer: Readonly<CoordinatorTransferOptions> }>;
   readonly tick: number; readonly confirmedTick: number; readonly inputDelay: number; readonly pace: number;
   readonly profile: Readonly<Profile>; readonly membership: Readonly<MembershipOptions>;
   readonly closed: boolean; readonly ready: boolean; readonly resimulating: boolean; readonly status: RoomSessionStatus;
@@ -338,7 +358,7 @@ export interface RoomTransport {
   readonly players: readonly PlayerId[]; readonly epoch: number; readonly transports: ReadonlyMap<PlayerId, Transport>;
   readonly resumed?: boolean; readonly resumePeerId?: PlayerId | null;
   subscribe(listener: (event: DynamicRoomStatus) => void): () => void;
-  setRoster(value: { epoch: number; players: PlayerId[]; coordinatorId: PlayerId }): void;
+  setRoster(value: { epoch: number; players: PlayerId[]; coordinatorId: PlayerId; allowBranchReconnect?: boolean }): void;
   connectMesh(players: PlayerId[]): Promise<void>; disconnect?(peerId: PlayerId): boolean;
   forgetResume?(): void; close(): void;
 }
@@ -394,7 +414,7 @@ export interface LocalInputPreviewOptions {
   maxPendingInputs?: number; maxFutureTicks?: number; maxAgeMs?: number;
 }
 export interface LoopInputSubmission {sequence:number;captureTick:number;executeTick:number;boundaryTick:number;epoch:number;timeMs:number;commands:Array<{observationId?:number;sequence:number;executeTick:number;payload:Bytes}>;}
-export interface ObservingLoop {start():void;stop():void;pulse(timestamp:number):void;observeInput(timestamp:number):unknown;flushInput(timestamp:number):void;releaseInput():void;resetTiming():void;readonly running:boolean;}
+export interface ObservingLoop {start():void;stop():void;pulse(timestamp:number, options?:{render?:boolean}):void;render():void;observeInput(timestamp:number):unknown;flushInput(timestamp:number):void;releaseInput():void;resetTiming():void;readonly running:boolean;}
 export interface LocalInputState { epoch:number; baseTick:number; tick:number; confirmedTick:number; inputDelay:number; commandSequence:number;executedInput:Bytes|null;replayInput:Bytes|null;executedCommandSequence:number|null;capture:null|{sequence:number;captureTick:number;executeTick:number;input:Bytes;commands:Array<{sequence:number;executeTick:number;payload:Bytes}>}; }
 export class LocalInputPreview {
   constructor(options: LocalInputPreviewOptions);

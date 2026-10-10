@@ -49,6 +49,8 @@ function profileOf(profile) {
 }
 import { StateHistory, CheckpointHistory } from '../_rollback-shared/history.js';
 export function createSession(options) { return new RollbackSession(options); }
+// RoomSession owns optional multi-peer snapshot selection. Not a public Core option.
+export function delegateRoomRecovery(session, selectBoundary) { session._roomRecovery = selectBoundary; }
 // Module-private, consume-once handoff. Public options cannot supply a trusted
 // checkpoint or bypass the normal initial save/hash path.
 const boundaries = new WeakMap();
@@ -691,7 +693,8 @@ export class RollbackSession {
       }
       if (this._stateHash(local) !== remote.hash) {
         if (!remote.notified) { remote.notified = true; this._metrics.hashMismatches++; this._event('desync', { peerId: peer.id, at: tick }); }
-        if (this.localPlayerId === this.authorityPlayerId || this.requestResync(tick)) peer.hashes.delete(tick);
+        if (this._roomRecovery) { this._roomRecovery(tick); peer.hashes.delete(tick); }
+        else if (this.localPlayerId === this.authorityPlayerId || this.requestResync(tick)) peer.hashes.delete(tick);
       } else peer.hashes.delete(tick);
     }
   }

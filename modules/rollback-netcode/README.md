@@ -57,4 +57,4 @@ onEvent의 `rollback`은 state load 후, 동기적 재실행 전에 전달됩니
 
 고정 매치 API는 그대로입니다. 새 게임이 같은 세계에서 1명부터 시작하고 실행 중 참가자 변경을 받아야 하면 [RoomSession 계약](../rollback/README.md#동적-방-세션-같은-세계-바뀌는-roster)과 [동적/공개 transport](../transport/README.md)를 사용합니다. `createNostrPublicRoom`은 서버 없는 Nostr 디렉터리/자리 예약을 처리하고, `createRoomSession`은 기존 lockstep Core를 membership epoch로 조합합니다. 실제 입장 commit과 세계 상태는 transport가 소유하지 않습니다.
 
-분할 네트워크에서 독립적으로 host를 선출하지 않으며, graceful coordinator 퇴장은 합의된 경계에서 승계합니다. 탭 새로고침은 opt-in room-scoped sessionStorage identity와 살아 있는 peer의 상태를 필요로 합니다. 공용 relay/NAT/모바일 성능은 Node fixture 통과만으로 검증되지 않습니다.
+기본 strict는 분할 네트워크에서 독립적으로 coordinator를 선출하지 않으며, graceful coordinator 퇴장은 합의된 경계에서 승계합니다. [선택형 가용성 정책](../rollback/README.md#비활성-참가자와-선택형-가용성)은 무응답 grace 뒤 활성 참가자의 임시 진행을 허용하고, 재결합 때 다른 분기의 진행을 버릴 수 있습니다. 렌더링과 deadline pump 분리·자동 coordinator 이관도 같은 예제로 제공합니다. 탭 새로고침은 opt-in room-scoped sessionStorage identity와 살아 있는 peer의 상태를 필요로 합니다. 공용 relay/NAT/모바일 성능은 fixture 통과만으로 검증되지 않습니다.

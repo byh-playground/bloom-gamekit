@@ -111,10 +111,28 @@ Synctest.metrics는 라이브러리가 소유하는 검사 틱·재실행 틱·�
 
 ## 동적 room composition
 
-`createRoomSession`은 lockstep만 사용하며 Core의 fixed roster를 epoch 동안 고정한다. epoch가 바뀌어도 canonical 세계, global tick, 미실행 명령 sequence를 유지한다. 기존 참가자 전원이 준비한 tick/hash와 신규 참가자의 checkpoint+확정 suffix 검증이 일치하기 전에는 새 roster의 입력을 실행하지 않는다. membership callback은 rollback 가능한 canonical state만 바꾸며, commit 전 준비 snapshot을 외부 effect로 사용하지 않는다.
+`createRoomSession`은 lockstep Core의 fixed roster를 epoch 동안 고정한다. 기본 `availability.mode: 'strict'`에서는 epoch가 바뀌어도 canonical 세계, global tick, 미실행 명령 sequence를 유지한다. 기존 참가자 전원이 준비한 tick/hash와 신규 참가자의 checkpoint+확정 suffix 검증이 일치하기 전에는 새 roster의 입력을 실행하지 않는다. membership callback은 rollback 가능한 canonical state만 바꾸며, commit 전 준비 snapshot을 외부 effect로 사용하지 않는다.
 
 `createNostrDynamicRoom`은 ongoing mesh 연결과 room-scoped refresh identity를 소유한다. `createNostrPublicRoom`은 별도 Nostr namespace의 bounded discovery/lease/identity-bound 자리 예약을 조합한다. directory advertisement는 입장 허가나 세계 권위가 아니다. 실제 roster는 RoomSession의 확정 epoch만 따른다. 기존 고정 room과 wire namespace를 섞지 않는다.
 
-정상 coordinator 퇴장은 합의 후 남은 roster로 넘긴다. partition은 유예 동안 대기하고 복구하지 못하면 명시적으로 실패하며, 독립 선출/무응답 참가자의 임의 no-op 대체를 하지 않는다. 새로고침은 살아 있는 peer의 같은 session에서만 actor를 복구한다. 재접속 donor는 보관 중인 공유 checkpoint와 알려진 입력/command sequence로 검증하고, 전원이 bounded replay/hash를 확인한 뒤 commit한다. 마지막 peer까지 종료된 방은 복구할 수 없다.
+정상 coordinator 퇴장은 합의 후 남은 roster로 넘긴다. strict의 partition은 유예 동안 대기하고 복구하지 못하면 명시적으로 실패하며, 독립 선출/무응답 참가자의 임의 no-op 대체를 하지 않는다. 새로고침은 살아 있는 peer의 같은 session에서만 actor를 복구한다. strict의 재접속 donor는 보관 중인 공유 checkpoint와 알려진 입력/command sequence로 검증하고, 전원이 bounded replay/hash를 확인한 뒤 commit한다. 마지막 peer까지 종료된 방은 복구할 수 없다.
+
+### 선택형 가용성 정책
+
+`availability.mode: 'available'`은 **가용성을 우선하며 재결합 때 진행을 버릴 수 있는 정책**이다. 모든 참가자는 같은 config/SDK를 사용한다. strict와 계약 hash가 다르며 혼합 입장은 거절한다. `players`는 마지막 확정 방 명단으로 유지하고 `activePlayers`만 Core 입력 합의 명단으로 사용한다. 무응답은 상태 불일치의 증거가 아니다. visibility 자체도 disconnect로 해석하지 않는다. 새 유효 heartbeat의 도착과 최근 `advance()` 시도 여부를 각각 `silenceMs`, `inputGraceMs`로 관측한다. deadline 뒤 응답하는 부분집합이 freeze된 확정 checkpoint에서 새 Core를 만든다. 빠진 참가자의 입력을 위조하거나 기존 입력을 소급 변경하지 않는다. adapter의 `applyMembership`에는 같은 `players`, 빈 joined/left, 새 `activePlayers`, epoch/coordinator/reason/branch가 들어간다. 게임은 suspended actor의 게임 규칙을 이 경계에서 정의한다.
+
+응답자들은 경계를 동결하고 각자의 **같은 tick/hash** 확인을 직접 교환한다. 마지막 확정 `players.length`의 절반을 넘는 일치가 확인되면 그 snapshot을 선택한다. 응답자끼리의 과반은 전체 명단의 과반으로 부르지 않으며, 다른 tick의 hash와 branch 인원수도 snapshot 과반으로 세지 않는다. 전체 과반이 없으면 마지막 공동 coordinator가 현재 응답·진행 중일 때 그 참가자를 따른다. 그 coordinator가 무응답이거나 pump gap 뒤 복구를 기다리면 활성 donor의 가장 앞선 경계, ID 사전순으로 결정한다. 자동 이관 또는 전원 재결합 경계를 확정하면 공동 coordinator 기준을 갱신한다. 2인에서 coordinator 자체가 멈추면 활성 guest가 단독 진행하고, 멈췄던 coordinator는 복귀 checkpoint를 따라간다.
+
+모든 pump가 clock gap으로 동시에 복귀하면 계속 실행 중이던 donor가 없을 수 있다. 이때는 마지막 확정 방 명단 **전원**이 새 heartbeat로 응답하고 각자 확정 boundary를 보관하며, 적어도 한 복귀 참가자가 `advance()`를 시도할 때만 `all-resume` 경계를 시작한다. 느린 참가자도 보관 상태를 확인하는 투표에 참여할 수 있지만 입력 시도가 없으면 새 active 명단에는 들어가지 않는다. 직접 받은 같은 tick/hash의 전체 명단 과반을 먼저 선택하며, 없으면 가장 앞선 보관 tick을 선택하고 같은 tick의 동률만 공동 coordinator로 푼다. 계속 실행하던 eligible donor가 하나라도 있으면 이 복귀 후보보다 우선한다. 옛 coordinator 한 명의 복귀나 메모리 없는 새 세션을 근거로 독립 복구하지 않는다. 전원 상태 선택 뒤에도 기존 checkpoint 검증·동일 staged hash·commit 절차를 통과해야 한다. 전원 응답이나 보관 상태가 없으면 이 복구 경계의 진행을 보장하지 않는다.
+
+완전한 통신 분할에서는 양쪽 부분집합이 각각 **임시 분기**를 진행할 수 있다. 전역 단일 세계·상호 배제·양쪽 진행 보존을 보장하지 않는다. 재연결하면 응답 경계와 위 기준으로 한 분기를 선택하고 다른 쪽의 실행 결과와 미확정 intent를 버릴 수 있다. 가용성 경계의 global tick은 선택한 donor를 따르므로 패배한 분기의 tick보다 작아질 수 있다. epoch는 관측한 후보 중 최대값 뒤로 증가하지만 고립된 옛 coordinator의 실행을 차단하는 lease가 아니다. Core 데이터마다 session과 별개인 128-bit branch 식별자를 붙여 **재결합 후** 옛 입력을 거른다. 지연된 control sequence도 새 liveness를 만들지 않는다. snapshot hash는 비악의적 peer의 불일치 진단이며 Byzantine 합의나 치트 방지 증명이 아니다.
+
+선택된 donor의 기존 sparse checkpoint+확정 suffix를 동일 bounded bootstrap으로 검증한다. `all-resume`에서는 동결한 현재 확정 상태를 한 번 checkpoint로 저장하고 hash를 확인해 전달하므로, 느린 투표자가 상태를 설치하려고 simulation 속도로 suffix를 재실행할 필요가 없다. 전송 용량·snapshot 검증·정규 왕복·최종 hash를 지키며, 새 membership snapshot을 모든 round 응답자가 준비하고 같은 hash를 확인한 뒤 commit한다. 타임아웃은 후보를 취소·복원하고 관측을 다시 수집하며 무제한 대기 큐를 만들지 않는다. 하나의 동기 step/codec을 선점하지 않는다. active roster 일부가 suspended 상태이면 신규 입장을 `suspended-members`로 거절하며 suspended 자리도 방 용량에 포함한다. 정상 퇴장은 모든 참가자가 응답하는 기존 membership 경계로 처리한다.
+
+`roomOwnerId`는 게임의 방 소유자 식별 정보다. 시뮬레이션 `coordinatorId`의 변경은 그 소유권·관리 권한을 이전하지 않는다. transport의 coordinator는 시뮬레이션 discovery/연결 조정용이며 게임 소유권 권한 모델을 제공하지 않는다. 가용성 commit 뒤 transport는 이미 확정 명단에 속한 같은 session의 서명 identity가 다른 coordinator를 보고하더라도 연결 복구 request/link/resume challenge를 허용할 수 있다. roster 입장·세계 선택은 여전히 RoomSession 경계의 책임이다.
+
+자동 이관은 opt-in `autoTransfer.enabled`로 선택한다. 실제 Core peer RTT·jitter와 비재실행 adapter step CPU의 EMA, 측정 sample 수를 사용한다. 최소 sample·평가 간격·최소 tenure·충분한 score 개선을 만족해야 이관 round를 시작한다. score는 `rtt*rttWeight + jitter*jitterWeight + stepMs*stepWeight`이고 낮을수록 좋다. `stepMs`는 simulation quantum 대비 처리 여유를 판단하는 관측이며 CPU·배터리·FPS·NAT 품질 전체를 추측하지 않는다. 새 coordinator는 같은 검증 checkpoint의 membership commit에서만 확정되며 최소 유지 시간을 다시 시작한다. 모든 수치와 가중치는 config이다.
+
+`createLoop.pulse(timestamp, {render:false})`는 timer의 poll/advance를 수행하고 `loop.render()`는 rAF 표현만 수행한다. `createDeadlineScheduler`는 단일 timer/deadline을 소유한다. 숨김은 held input 해제이며, 큰 clock gap 뒤 debt를 폐기하고 timing을 재설정한다. 가용성 RoomSession은 `resumeGapMs`를 넘은 pump 복귀 또는 첫 수신부터 낡은 Core 실행을 동결하고 새 checkpoint를 요청한다. 브라우저 throttling·freeze·OS suspend 중 실행을 보장하지 않는다. 장기 CPU 정지/완전 분할에서 전역 진행을 보장하지 않으며 단조 clock, 신뢰할 수 있는 adapter와 결국 전달되는 제어 메시지를 전제로 재결합한다.
 
 상세 API·용량·재시도·검증 범위는 [rollback](../rollback/README.md), [transport](../transport/README.md), [비용 측정](../rollback/docs/room-session-benchmarks.md)을 따른다. 동적 여러 epoch 전체 replay export는 별도 미지원이며 fixed Core replay 계약을 변경하지 않는다.

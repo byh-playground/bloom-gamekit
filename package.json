@@ -10,6 +10,7 @@
     "test": "node scripts/test-scenarios.mjs core",
     "test:browser": "node scripts/test-scenarios.mjs core",
     "test:network": "node scripts/test-scenarios.mjs network",
+    "test:availability": "node scripts/test-scenarios.mjs availability",
     "test:scenarios": "node scripts/test-scenarios.mjs all",
     "test:rollback-demo": "node scripts/test-scenarios.mjs demo",
     "test:rollback-live": "node scripts/test-scenarios.mjs live",

@@ -1,0 +1,9 @@
+<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>RoomSession 비활성 참가자 복귀 예제</title>
+<style>body{font:16px system-ui;max-width:800px;margin:32px auto;padding:16px}button,input,select{font:inherit;margin:4px;padding:8px}canvas{width:100%;background:#e9f1f2;border-radius:12px}pre{white-space:pre-wrap}</style>
+<h1>비활성 참가자와 함께 플레이</h1>
+<p>같은 네 자리 방에 두 탭으로 접속하고 방향키로 움직이세요. 숨김은 입력을 해제하며 렌더링과 별도의 타이머가 통신·시뮬레이션을 진행합니다. 브라우저 freeze·OS suspend 동안 실행을 보장하지 않습니다. 복귀하면 활성 분기의 상태를 따릅니다.</p>
+<input id="code" value="2828" maxlength="4" aria-label="방 번호"><select id="policy"><option value="available">가용성 우선</option><option value="strict">strict</option></select>
+<button id="host">방 만들기</button><button id="join">참가</button><button id="leave" disabled>정상 퇴장</button>
+<canvas id="view" width="760" height="180"></canvas><pre id="status">연결 전</pre>
+<script type="module" src="./main.js"></script></html>

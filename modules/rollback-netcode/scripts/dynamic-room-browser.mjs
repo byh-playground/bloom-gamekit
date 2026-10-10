@@ -14,6 +14,7 @@ try{
  const legacy=await page.evaluate(()=>window.runDynamicRoomScenario());assert.deepEqual(errors,[]);assert.equal(legacy.passed,true);
  const prepared=await page.evaluate(()=>window.runDynamicRoomScenario({prepared:true}));assert.deepEqual(errors,[]);assert.equal(prepared.passed,true);
  const paced=await page.evaluate(()=>window.runDynamicRoomScenario({prepared:true,paced:true}));assert.deepEqual(errors,[]);assert.equal(paced.passed,true);
- const result={passed:true,legacy,prepared,paced};
+ const available=await page.evaluate(()=>window.runDynamicRoomScenario({available:true}));assert.deepEqual(errors,[]);assert.equal(available.passed,true);
+ const result={passed:true,legacy,prepared,paced,available};
  await mkdir(resolve(root,'test-results/rollback'),{recursive:true});await writeFile(resolve(root,'test-results/rollback/dynamic-room-report.json'),JSON.stringify(result,null,2)+'\n');console.log(JSON.stringify(result,null,2));
 }finally{await browser?.close();await new Promise(ok=>server.close(ok));}

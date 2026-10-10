@@ -2,11 +2,65 @@
 
 입력 확정·예측·동기적 롤백·검증된 snapshot 복구를 소유합니다.
 
-공개 API: `createSession, RollbackSession, VERSION, PROTOCOL_VERSION, CHUNK_SIZE, MAX_TICK, profiles`. 외부 import가 없는 `dist/rollback.js` 하나로 사용할 수 있습니다. 도구 설치나 다른 모듈 초기화는 필요하지 않습니다.
+공개 API: `createSession, RollbackSession, createRoomSession, RoomSession, createBootstrapReplay, VERSION, PROTOCOL_VERSION, CHUNK_SIZE, MAX_TICK, profiles`. 외부 import가 없는 `dist/rollback.js` 하나로 사용할 수 있습니다. 도구 설치나 다른 모듈 초기화는 필요하지 않습니다.
 
 기존 rollback-netcode의 동일 함수를 책임별로 이동했습니다. [공개 타입](../rollback-netcode/rollback-netcode.d.ts), [개발 계약](../rollback-netcode/CONTRACT.md), [상세 사용법과 이전](../rollback-netcode/README.md)을 따릅니다. 이 모듈은 게임 규칙·권위 상태를 정의하지 않습니다.
 
-## 소유권과 비용
+## 비활성 참가자와 선택형 가용성
+
+기본 RoomSession은 strict입니다. 활성 참가자의 진행을 우선하려면 같은 방의 모든 참가자가 아래 config를 선택합니다. [정책 계약](../rollback-netcode/CONTRACT.md#선택형-가용성-정책)과 [실행 예제](./examples/availability/index.html)를 함께 확인하세요.
+
+```js
+const session = createRoomSession({
+  mode: 'online', room, adapter: gameAdapter, inputSize: 1,
+  simulationVersion: 'game-v1', profile: profiles.lockstep,
+  roomOwnerId: gameRoomOwnerId,
+  availability: {
+    mode: 'available', heartbeatMs: 250,
+    silenceMs: 3000, inputGraceMs: 3000, resumeGapMs: 3000,
+    roundTimeoutMs: 5000, retryMs: 500,
+    autoTransfer: {
+      enabled: true, intervalMs: 10000, minTenureMs: 30000,
+      minImprovementMs: 10, minSamples: 10,
+      rttWeight: 1, jitterWeight: 2, stepWeight: 4, stepEmaAlpha: 0.1,
+    },
+  },
+  onEvent: event => updateRoomUI(event),
+});
+```
+
+위 수치는 기본값이며 자동 이관의 기본 `enabled`만 false입니다. heartbeat 간격보다 충분히 큰 silence/input grace를 선택하세요(최소 두 heartbeat). RTT/jitter/step 가중치는 공통 score의 ms 비용에 사용하고 `stepEmaAlpha`(0 초과, 1 이하)는 step EMA의 최신 sample 비중입니다. API는 `roomOwnerId`를 소유권 식별로 유지하며 `coordinatorId`만 시뮬레이션 이관에 따라 변경합니다.
+
+`players`는 방 명단, `activePlayers`는 이번 epoch의 입력 합의 명단입니다. suspended 참가자의 자리는 계속 방 용량을 사용합니다. `adapter.applyMembership({players, activePlayers, joined:[], left:[], ...})`에서 inactive actor 처리를 정의하고 `step.inputs`가 active 명단에 대해서만 오는 것을 지원하세요. 참가자를 삭제할지, 위치를 유지할지, 보호 상태로 바꿀지는 게임 규칙입니다. SDK는 입력을 위조하지 않습니다. 전원 복귀 전 새 입장은 `suspended-members`로 거절합니다.
+
+UI는 `participant-state`(active/suspended/unresponsive/resynchronizing), `availability-preparing`, `branch-selected`, `availability-retry`, `membership-committed`, `coordinator-changed` 이벤트와 `metrics.activePlayers`, `suspendedPlayers`, `availabilityDeadlineMs`, `recoveryRequired`, `branch`, `simulationStepMs`, `simulationSamples`, `availabilityPeers`를 사용합니다. step/sample은 로컬 simulation 관측이고 availabilityPeers는 peer별 RTT·jitter·step 관측입니다. 이벤트의 tick/epoch는 RoomSession 전역 경계입니다. 무응답 deadline은 관측 지표이며 승패·강퇴 판정이 아닙니다. `branch-selected.basis`는 전체 명단의 `roster-majority`, `responsive-coordinator`, `active-branch`를 구별합니다.
+
+같은 틱의 전체 명단 과반 snapshot이 있으면 그 상태를 선택합니다. 기준이 모호하면 응답하며 진행 중인 공동 coordinator를 따르고, coordinator도 멈췄으면 활성 guest가 진행합니다. 분할 중에는 임시 분기 둘 이상이 생길 수 있으며 재결합 때 한쪽 진행과 intent를 버립니다. 패배한 branch의 tick은 감소할 수 있으므로 표현 이력·미리보기·외부 저장 시계를 `membership-committed`에서 reset하세요. 이 정책은 전역 합의나 OS suspend 중 실행을 보장하지 않습니다.
+
+방 전체가 clock gap으로 복귀해 active donor가 없으면 확정 명단 전원의 새 heartbeat와 보관 boundary, 최소 한 복귀 참가자의 입력 시도를 확인할 때만 `reason:'all-resume'`으로 복구합니다. 느린 참가자는 보관 상태를 투표해도 입력 시도가 없으면 active 명단에서 제외됩니다. 같은 tick/hash의 전체 과반을 먼저 선택하고, 없으면 가장 앞선 보관 tick과 같은 tick의 coordinator 동률 기준을 사용합니다. 이 복귀 경계는 현재 확정 상태를 한 번 checkpoint로 저장해 기존 검증·staged hash·commit을 거칩니다. 아직 실행 중인 donor가 있으면 그 참가자가 복귀 후보보다 우선하므로 멈췄던 coordinator가 활성 guest의 진행을 덮어쓰지 않습니다. 전원 응답·보관 상태가 없는 방 전체 복귀는 대기하며, 브라우저가 정지한 동안의 실행을 보장하는 기능이 아닙니다.
+
+```js
+const loop = createLoop({ session, getInput, render });
+const pump = createDeadlineScheduler({
+  getIntervalMs: () => 1000 / session.profile.tickRate,
+  pulse: now => loop.pulse(now, { render: false }),
+  onGap: () => loop.resetTiming(),
+});
+function frame(now) {
+  loop.observeInput(now); loop.render(); requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame); pump.start();
+window.addEventListener('blur', () => loop.releaseInput());
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) loop.releaseInput();
+  else { loop.resetTiming(); pump.rebase(); pump.wake(); }
+});
+// 종료 시 pump.stop(), loop.stop(), session.close()와 앱의 listener/RAF를 정리합니다.
+```
+
+렌더링이 멈춰도 timer가 전달되는 동안 poll/advance는 별도로 진행합니다. 타이머가 정지했던 복귀는 debt 폐기와 canonical checkpoint 설치를 거칩니다. `npm run test:availability`는 180초 상한 안에서 실제 Chromium RTC DataChannel 사용자 흐름을 실행합니다. public relay/NAT 검증과, fixture 전송 경계에 주입한 partition 및 CDP script 중단은 보고서에서 구분합니다.
+
+## Core 소유권과 비용
 
 기본 rollback 모드의 state history는 기존 full-copy snapshot ring이고 보관 예산·입력 정책은 그대로입니다. 요청된 FullCopy/NativeMemento/DirtyDelta/UndoLog/CheckpointDelta 전략은 이 이전에 구현하지 않았습니다. 공개 onEvent의 rollback은 load 이후 재실행 전에 발생하며 poll/advance가 반환되기 전에 재실행을 완료합니다. confirmedTick은 확정된 마지막 입력 tick이고 tick은 다음 실행 tick입니다.
 
@@ -125,7 +179,7 @@ const session = createRoomSession({
 
 `await session.leave()`는 합의된 퇴장입니다. 기존 coordinator가 나가면 같은 commit에서 남은 정렬 roster의 첫 ID로 coordinator를 넘깁니다. 살아 있는 세계와 tick은 유지됩니다. `close()`는 즉시 자원 정리이며 합의된 퇴장의 대체가 아닙니다. 평상시 Exit는 leave를 사용하세요.
 
-끊긴 RTC는 같은 identity의 새 transport로 교체할 수 있습니다. 연결이 돌아올 때까지 lockstep은 누락 입력을 임의 no-op로 만들지 않습니다. 유예를 넘긴 partition은 `partition-failed`로 정지합니다. 정족수 없는 독립 선출·개별 timeout 강퇴·분할된 두 세계의 지속 실행은 하지 않습니다. 합의/전송/접속은 명시적인 deadline과 capacity를 넘기면 실패합니다. 정상 퇴장 중 누군가 응답하지 않는 경우도 무조건 성공했다고 보고하지 않습니다.
+끊긴 RTC는 같은 identity의 새 transport로 교체할 수 있습니다. 기본 strict는 연결이 돌아올 때까지 누락 입력을 임의 no-op로 만들지 않고 유예를 넘긴 partition을 `partition-failed`로 정지합니다. strict에서는 정족수 없는 독립 선출·개별 timeout 강퇴를 하지 않습니다. 선택형 available의 임시 분기와 재결합 계약은 위 가용성 절을 따릅니다. 합의/전송/접속은 명시적인 deadline과 capacity를 넘기면 실패합니다. 정상 퇴장 중 누군가 응답하지 않는 경우도 무조건 성공했다고 보고하지 않습니다.
 
 진행 중인 transition에서는 명령을 정상 queue할 수 있지만 새 참가자는 admission 완료 전 queue할 수 없습니다. 동시에 도착한 admission은 정원 이내의 bounded FIFO에서 순서대로 처리하며, 기다리는 참가자는 새 proposal 전 현재 확정 roster/epoch를 전달받습니다. 정원 초과와 deadline 만료는 명시적으로 거절하며, 초기 RTC join 요청만 `membership.joinRetryMs`(기본 500ms) 간격으로 입장 deadline까지 멱등 재전송합니다. 외부 매칭 정책은 제한된 재시도나 다른 방 선택을 결정합니다. epoch는 0–65534이고 소진되면 명시적으로 실패합니다.
 
@@ -139,6 +193,8 @@ RoomSession의 전체 여러 epoch replay 파일 export는 아직 제공하지 �
 
 
 ### 새로고침 재접속
+
+아래 shared-checkpoint·global tick 유지·coordinator 유지 설명은 기본 strict 재접속 계약입니다. available은 위 가용성 정책의 분기 선택·복귀 checkpoint·coordinator 변경 계약을 따릅니다.
 
 transport에 opt-in `resume: { storage: sessionStorage, key, lifetimeMs }`를 주면 같은 탭의 room-scoped 서명 identity를 복원할 수 있습니다. storage 수명/증명/중복 탭 충돌 계약은 transport 문서를 따릅니다. RoomSession은 `room.resumed`를 보고 초기 actor 생성 대신 같은 roster의 `reason: 'reconnect'`, `joined: []`, `left: []` epoch를 준비합니다. coordinator 새로고침도 살아 있는 member가 discovery/상태 donor를 제공하며 coordinator를 임의로 바꾸지 않습니다.
 

@@ -4,6 +4,8 @@
 
 공개 API: `createLoop`, 선택 기능 `LocalInputPreview`. 외부 import가 없는 `dist/simloop.js` 하나로 사용할 수 있습니다. 도구 설치나 다른 모듈 초기화는 필요하지 않습니다.
 
+`loop.pulse(timestamp, {render:false})`와 `loop.render()`로 timer pump와 rAF 표현을 분리할 수 있습니다. 기존 `pulse(timestamp)`는 계속 render를 호출합니다. `loop.render()`는 poll/advance/input 제출을 실행하지 않습니다. [RoomSession 예제](../rollback/examples/availability/index.html)는 단일 deadline scheduler와 rAF를 사용합니다. 숨김은 입력 해제이며, 큰 gap 뒤 timing을 초기화하고 RoomSession이 복귀 checkpoint를 처리합니다. 브라우저 freeze·OS suspend 중 실행을 보장하지 않습니다.
+
 기존 rollback-netcode의 동일 함수를 책임별로 이동했습니다. [공개 타입](../rollback-netcode/rollback-netcode.d.ts), [개발 계약](../rollback-netcode/CONTRACT.md), [상세 사용법과 이전](../rollback-netcode/README.md)을 따릅니다. 이 모듈은 게임 규칙·권위 상태를 정의하지 않습니다.
 
 ## 소유권과 비용

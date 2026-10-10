@@ -1,10 +1,12 @@
-import { createSession, createSessionFromBoundary } from './core.js';
+import { createSession, createSessionFromBoundary, delegateRoomRecovery } from './core.js';
+import { Availability, availabilityConfig } from './availability.js';
 import { createBootstrapReplay } from './bootstrap.js';
 import { profiles, CHUNK_SIZE, MAGIC } from '../_rollback-shared/protocol.js';
 import { createValueCodec } from '../deterministic/value-codec.js';
 import { bytes, compareIds, hashBytes, integer, nowMs } from '../deterministic/utilities.js';
 
 const ROOM_MAGIC = 0x31524d44, WIRE_HEADER = 24, MAX_EPOCH = 65534;
+const BRANCH_MAGIC = 0x32424d44, BRANCH_HEADER = 36;
 const ordered = ids => [...ids].sort(compareIds);
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const idValid = id => typeof id === 'string' && id.length > 0 && id.length <= 128;
@@ -13,7 +15,7 @@ export function createRoomSession(options) { return new RoomSession(options); }
 export class RoomSession {
   constructor({ mode = 'local', room, localPlayerId = room?.localPlayerId ?? 'local', sessionId = room?.sessionId ?? 'local',
     simulationVersion, seed = 1, inputSize, profile = profiles.lockstep, adapter, membership = {}, clock = nowMs,
-    onEvent = () => {} } = {}) {
+    onEvent = () => {}, availability = {}, roomOwnerId = room?.coordinatorId ?? localPlayerId } = {}) {
     if (!['local', 'online'].includes(mode) || !idValid(localPlayerId) || !idValid(sessionId)) throw new TypeError('room session identity/mode');
     integer(inputSize, 'inputSize', 1, 1024);
     if (!idValid(simulationVersion) || sessionId.length > 116) throw new TypeError('room simulationVersion/sessionId');
@@ -30,11 +32,15 @@ export class RoomSession {
     integer(this.membership.maxCatchupSteps, 'maxCatchupSteps', 1, 8192);
     integer(this.membership.maxPlayers, 'maxPlayers', 1, 8); integer(this.membership.maxTransferBytes, 'maxTransferBytes', CHUNK_SIZE, 128 * 1024 * 1024);
     this.profile = Object.freeze({ ...profiles.lockstep, ...profile, mode: 'lockstep', adaptiveInputDelay: false });
+    this.availability = availabilityConfig(availability); if (!idValid(roomOwnerId)) throw new TypeError('roomOwnerId'); this.roomOwnerId = roomOwnerId;
     this.codec = createValueCodec({ maxBytes: this.membership.maxTransferBytes, maxEntries: Math.min(this.membership.maxTransferBytes, 1000000), maxDepth: 32 });
     this.contract = hashBytes(this.codec.encode({ version: 1, simulationVersion, seed, inputSize, maxPlayers: this.membership.maxPlayers,
-      tickRate: this.profile.tickRate, baseInputDelayTicks: this.profile.baseInputDelayTicks, checksumInterval: this.profile.checksumInterval }));
+      tickRate: this.profile.tickRate, baseInputDelayTicks: this.profile.baseInputDelayTicks, checksumInterval: this.profile.checksumInterval,
+      ...(this.availability.mode === 'available' ? { availability: this.availability } : {}) }));
     this.epoch = room?.epoch ?? 0; this.baseTick = 0; this.coordinatorId = room?.coordinatorId ?? localPlayerId;
     this.players = Object.freeze(ordered(mode === 'online' ? room.players : [localPlayerId]));
+    this.activePlayers = this.players;
+    this._availability = this.availability.mode === 'available' ? new Availability(this) : null;
     this.closed = false; this._failure = null; this._core = null; this._transition = null; this._links = new Map(); this._retirePeers = new Map(); this._admissionQueue = new Map(); this._incoming = []; this._incomingBytes = 0;
     this._lastInput = new Uint8Array(inputSize); this._pendingBeforeJoin = []; this._messageSequence = 0; this._joinSent = false;
     this._startedAt = clock(); this._interruptedAt = null; this._leavePromise = null; this._leaveResolve = null; this._leaveReject = null;
@@ -72,11 +78,13 @@ export class RoomSession {
         commands: state.capture.commands.map(c => ({ ...c, executeTick: c.executeTick + this.baseTick })) } : null };
   }
   get failure() { return this._failure ?? this._core?.failure; }
-  get ready() { return !this.closed && !this.failure && !this._transition && !!this._core?.ready; }
-  get resimulating() { return this._transition?.proposal.reason === 'reconnect' || !!this._transition?.replay || !!this._core?.resimulating; }
+  get ready() { return !this.closed && !this.failure && !this._availability?.round && !this._availability?.recovering && this._availability?.requested !== 'state-mismatch' && !this._transition && !!this._core?.ready; }
+  get resimulating() { return !!this._availability?.round || this._transition?.proposal.reason === 'reconnect' || !!this._transition?.replay || !!this._core?.resimulating; }
   get pace() { return this._core?.pace ?? 1; }
   get status() {
     if (this.closed) return 'closed'; if (this.failure) return 'failed';
+    if (this._availability?.round || this._availability?.recovering || this._availability?.requested === 'state-mismatch') return 'resynchronizing';
+    if (!this.activePlayers.includes(this.localPlayerId) && this.players.includes(this.localPlayerId)) return 'suspended';
     if (this._transition?.replay) return 'catching-up';
     if (this._transition) return 'membership';
     return this._core?.status ?? 'joining';
@@ -84,7 +92,7 @@ export class RoomSession {
   get metrics() {
     const core = this._core?.metrics ?? {};
     const sums = Object.fromEntries(Object.entries(this._totals).map(([k, v]) => [k, v + (core[k] ?? 0)]));
-    return { ...core, ...sums, ...this._stats, tick: this.tick, confirmedTick: this.confirmedTick, epoch: this.epoch,
+    return { ...core, ...sums, ...this._stats, ...this._availability?.metrics, tick: this.tick, confirmedTick: this.confirmedTick, epoch: this.epoch,
       pendingAdmissions: this._admissionQueue.size, controlIncomingBytes: this._incomingBytes,
       controlQueuedBytes: [...this._links.values()].reduce((n, l) => n + l.queuedBytes, 0),
       controlReceivingBytes: [...this._links.values()].reduce((n, l) => n + (l.incoming?.bytes.length ?? 0), 0) };
@@ -95,6 +103,7 @@ export class RoomSession {
   _fail(type, detail = {}) {
     if (this.closed || this._failure) return;
     this._failure = Object.freeze({ type, ...detail });
+    try { this._availability?.cancel(); } catch (error) { this._failure = Object.freeze({ type, ...detail, restoreError: error.message }); }
     try { this._transition?.replay?.cancel(); } catch {}
     try { this._transition?.stageJob?.cancel(); } catch {}
     if (this._transition) { this._transition.preparedState = null; this._transition.stageJob = null; }
@@ -104,7 +113,8 @@ export class RoomSession {
   }
   _adapter(baseTick = this.baseTick, epoch = this.epoch) {
     const a = this.adapter;
-    const contextAt = (context = {}) => ({ ...context, tick: (context.tick ?? 0) + baseTick, membershipEpoch: epoch });
+    const contextAt = (context = {}) => ({ ...context, tick: (context.tick ?? 0) + baseTick, membershipEpoch: epoch,
+      ...(this._availability ? { players: [...this.players], activePlayers: context.players ?? [...this.activePlayers] } : {}) });
     return { save: () => a.save(), load: data => a.load(data),
       ...(typeof a.saveJob === 'function' ? { saveJob: () => a.saveJob() } : {}),
       ...(typeof a.prepareSnapshotJob === 'function' && typeof a.loadPreparedSnapshot === 'function' ? {
@@ -115,33 +125,46 @@ export class RoomSession {
         prepareSnapshot: (data, context) => a.prepareSnapshot(data, contextAt(context)),
         loadPreparedSnapshot: (prepared, context) => a.loadPreparedSnapshot(prepared, contextAt(context)),
       } : {}),
-      validateSnapshot: (data, context = {}) => a.validateSnapshot(data, { ...context, tick: (context.tick ?? 0) + baseTick, membershipEpoch: epoch }),
+      validateSnapshot: (data, context = {}) => a.validateSnapshot(data, contextAt(context)),
       step: context => {
         // runSimulationFrame already supplies owned frame/command copies.
         context.tick += baseTick; context.membershipEpoch = epoch;
         for (const frame of context.inputs) for (const command of frame.commands) command.executeTick = context.tick;
-        return a.step(context);
+        const start = this._availability ? nowMs() : 0;
+        try { return a.step(context); }
+        finally { if (this._availability && !context.resimulating) this._availability.measureStep(Math.max(0, nowMs() - start)); }
       } };
   }
   _startCore(commandState, commandSequences, boundary) {
-    const options = { players: [...this.players], localPlayerId: this.localPlayerId, authorityPlayerId: this.coordinatorId,
+    const options = { players: [...this.activePlayers], localPlayerId: this.localPlayerId, authorityPlayerId: this.coordinatorId,
       sessionId: this.sessionId + ':' + this.epoch, simulationVersion: this.simulationVersion, seed: this.seed, inputSize: this.inputSize,
-      profile: this.profile, adapter: this._adapter(), localCommandState: commandState, initialCommandSequences: commandSequences ? Object.fromEntries(this.players.map(id => [id, commandSequences[id] ?? 0])) : undefined, clock: this.clock, recordReplay: false,
+      profile: this.profile, adapter: this._adapter(), localCommandState: commandState, initialCommandSequences: commandSequences ? Object.fromEntries(this.activePlayers.map(id => [id, commandSequences[id] ?? 0])) : undefined, clock: this.clock, recordReplay: false,
       onEvent: event => { if (event.type !== 'closed') this._event(event.type, { ...event, tick: event.tick + this.baseTick }); } };
     this._core = boundary ? createSessionFromBoundary(options, boundary.bytes, boundary.hash) : createSession(options);
+    if (this._availability) delegateRoomRecovery(this._core, () => { this._availability.requested = 'state-mismatch'; });
     this.profile = this._core.profile;
     for (const [id, link] of this._links) this._attachCore(id, link);
     for (const payload of this._pendingBeforeJoin.splice(0)) this._core.queueCommand(payload);
   }
   _attachCore(id, link) {
     link.detachCore?.(); link.detachCore = null;
-    if (!this._core || !this.players.includes(id) || id === this.localPlayerId) return;
+    if (!this._core || !this.activePlayers.includes(id) || id === this.localPlayerId) return;
     const epoch = this.epoch, session = this;
     link.detachCore = this._core.attachTransport(id, {
       get state() { return link.transport.state ?? 'open'; },
       send(data) {
         if (session.closed || epoch !== session.epoch) return false;
-        const out = data.slice(); new DataView(out.buffer).setUint16(6, epoch + 1, true); return link.transport.send(out);
+        const out = data.slice(); new DataView(out.buffer).setUint16(6, epoch + 1, true);
+        if (!session._availability) return link.transport.send(out);
+        const capacity = CHUNK_SIZE - BRANCH_HEADER, fragmented = out.length > capacity;
+        for (let offset = 0; offset < out.length; offset += capacity) {
+          const part = out.subarray(offset, offset + capacity), envelope = new Uint8Array(part.length + BRANCH_HEADER), view = new DataView(envelope.buffer);
+          view.setUint32(0, BRANCH_MAGIC, true); envelope[4] = 1; envelope[5] = fragmented ? 1 : out[5];
+          view.setUint32(8, new DataView(out.buffer).getUint32(8, true), true); view.setUint32(12, offset, true); view.setUint32(16, out.length, true);
+          envelope.set(session._availability.wireBranch, 20); envelope.set(part, BRANCH_HEADER);
+          if (link.transport.send(envelope) === false) return false;
+        }
+        return true;
       },
       subscribe(fn) { link.coreReceive = fn; return () => { if (link.coreReceive === fn) link.coreReceive = null; }; },
       subscribeStatus(fn) { return link.transport.subscribeStatus?.(fn) ?? (() => {}); }
@@ -153,7 +176,7 @@ export class RoomSession {
     const old = this._links.get(id);
     if (old?.transport === transport) return;
     old?.unsubscribe?.(); old?.detachCore?.();
-    const link = { transport, queue: [], queuedBytes: 0, incoming: null, coreReceive: null, future: [], detachCore: null };
+    const link = { transport, queue: [], queuedBytes: 0, incoming: null, coreReceive: null, future: [], detachCore: null, lastControlSerial: 0 };
     this._links.set(id, link);
     link.unsubscribe = transport.subscribe(data => { if (!this.closed && this._links.get(id) === link) this._receiveWire(id, link, data); });
     this._attachCore(id, link);
@@ -161,14 +184,34 @@ export class RoomSession {
     if (!this._core && id === this.coordinatorId) this._joinSent = false;
   }
   _boundaryFrozen() {
+    if (this._availability?.round || this._availability?.recovering || this._availability?.requested === 'state-mismatch') return true;
     const tr = this._transition;
     return !!tr && (tr.proposal.reason === 'reconnect' || !!tr.stageJob || !!tr.preparedState || tr.applied || !!tr.replay);
   }
   _receiveWire(id, link, raw) {
     try {
-      const data = bytes(raw); if (data.length < 12 || data.length > CHUNK_SIZE) throw new Error('room wire size');
+      let data = bytes(raw);
+      if (this._availability && data.length >= BRANCH_HEADER && new DataView(data.buffer, data.byteOffset).getUint32(0, true) === BRANCH_MAGIC) {
+        if (data.length > CHUNK_SIZE || data[4] !== 1 || this._availability.wireBranch.some((n, i) => data[20 + i] !== n)) return;
+        const envelope = new DataView(data.buffer, data.byteOffset), serial = envelope.getUint32(8, true), offset = envelope.getUint32(12, true), total = envelope.getUint32(16, true);
+        const part = data.subarray(BRANCH_HEADER);
+        if (!total || total > CHUNK_SIZE || offset + part.length > total) throw new Error('branch wire capacity');
+        if (!offset && total === part.length) data = part;
+        else {
+          if (!offset) link.branchIncoming = { serial, bytes: new Uint8Array(total), offset: 0, at: this.clock() };
+          const pending = link.branchIncoming;
+          if (!pending || pending.serial !== serial || pending.bytes.length !== total || offset !== pending.offset) return;
+          pending.bytes.set(part, offset); pending.offset += part.length;
+          if (pending.offset !== total) return;
+          data = pending.bytes; link.branchIncoming = null;
+        }
+      } else if (this._availability && data.length >= 4 && new DataView(data.buffer, data.byteOffset).getUint32(0, true) === MAGIC) return;
+      if (data.length < 12 || data.length > CHUNK_SIZE) throw new Error('room wire size');
       const view = new DataView(data.buffer, data.byteOffset, data.length), magic = view.getUint32(0, true);
       if (magic === MAGIC) {
+        if (this._availability?.polled && this.clock() - this._availability.lastPoll > this.availability.resumeGapMs) {
+          this._availability.recovering = true; this._availability.requested = 'resume';
+        }
         const epoch = view.getUint16(6, true) - 1;
         if (epoch === this.epoch && link.coreReceive && !this._boundaryFrozen()) { const copy = data.slice(); new DataView(copy.buffer).setUint16(6, 0, true); link.coreReceive(copy); }
         else if (epoch === this.epoch + 1 && this._transition && link.future.length < 64) link.future.push(data.slice());
@@ -176,8 +219,10 @@ export class RoomSession {
       }
       if (magic !== ROOM_MAGIC || data.length < WIRE_HEADER || data[4] !== 1 || data[5] !== 0) throw new Error('room wire protocol');
       const serial = view.getUint32(8, true), total = view.getUint32(12, true), offset = view.getUint32(16, true), digest = view.getUint32(20, true);
+      if (this._availability && serial <= link.lastControlSerial) return;
       if (!total || total > this.membership.maxTransferBytes || offset + data.length - WIRE_HEADER > total) throw new Error('room wire capacity');
       if (offset === 0) {
+        if (this._availability && serial <= link.lastControlSerial) return;
         if (link.incoming) throw new Error('overlapping room transfer');
         link.incoming = { serial, bytes: new Uint8Array(total), offset: 0, digest, startedAt: this.clock() };
       }
@@ -187,8 +232,16 @@ export class RoomSession {
       this._stats.receivedControlBytes += data.length;
       if (incoming.offset === total) {
         link.incoming = null; if (hashBytes(incoming.bytes) !== digest) throw new Error('room wire digest');
+        link.lastControlSerial = serial;
+        const value = this.codec.decode(incoming.bytes);
+        // A frozen browser can deliver many heartbeat tasks before its first poll.
+        // Keep one newest observation per sender, within the same queue budget.
+        if (this._availability && value?.op === 'availability-activity') {
+          const previous = this._incoming.findIndex(m => m.from === id && m.value?.op === value.op);
+          if (previous >= 0) { this._incomingBytes -= this._incoming[previous].size; this._incoming.splice(previous, 1); }
+        }
         if (this._incoming.length >= 128 || this._incomingBytes + total > this.membership.maxTransferBytes * 2) throw new Error('room control backlog');
-        this._incoming.push({ from: id, value: this.codec.decode(incoming.bytes), size: total }); this._incomingBytes += total;
+        this._incoming.push({ from: id, value, size: total }); this._incomingBytes += total;
       }
     } catch (error) { link.incoming = null; this._stats.rejectedMessages++; if (this.players.includes(id)) this._fail('room-protocol-error', { peerId: id, reason: error.message }); }
   }
@@ -217,7 +270,7 @@ export class RoomSession {
     }
   }
   _proposal(joined, left, reason, resumingId = null) {
-    if (this._transition || this.localPlayerId !== this.coordinatorId) throw new Error('membership coordinator busy');
+    if (this._transition || this._availability?.round || this.localPlayerId !== this.coordinatorId) throw new Error('membership coordinator busy');
     if (left.includes(this.localPlayerId)) {
       for (const id of this._admissionQueue.keys()) this._send(id, 'reject', { reason: 'coordinator-changing' });
       this._admissionQueue.clear();
@@ -259,13 +312,17 @@ export class RoomSession {
     }).catch(error => this._fail('membership-connect-failed', { reason: error.message }));
   }
   _handle(from, m) {
+    if (this._availability && m?.op?.startsWith('availability-') && m.sessionId === this.sessionId && m.contract === this.contract) {
+      if (this._transition && !this._transition.availability) return;
+      this._availability.handle(from, m, this.clock()); return;
+    }
     const participant = this.players.includes(from) || this._transition?.participants.includes(from);
     if (!participant && m?.op !== 'join') { this._stats.rejectedMessages++; return; }
     if (['propose', 'barrier', 'install', 'bootstrap', 'resume-install', 'commit', 'reject', 'leave-busy', 'welcome'].includes(m?.op) && from !== this.coordinatorId) { this._stats.rejectedMessages++; return; }
     if (!m || m.sessionId !== this.sessionId || m.contract !== this.contract) { this._stats.rejectedMessages++; if (m?.op === 'join') this._send(from, 'reject', { reason: 'incompatible-session' }); return; }
     if (m.op === 'welcome' && from === this.coordinatorId && !this._core && !this.room?.resumed && !this._transition) {
       if (!Number.isInteger(m.epoch) || m.epoch < this.epoch || m.epoch > MAX_EPOCH || !Array.isArray(m.players) || m.players.length < 1 || m.players.length >= this.membership.maxPlayers || m.players.includes(this.localPlayerId) || !m.players.includes(from) || m.players.some(id => !idValid(id)) || new Set(m.players).size !== m.players.length || !same(ordered(m.players), m.players)) return;
-      this.epoch = m.epoch; this.players = Object.freeze([...m.players]); this.room?.setRoster({ epoch: this.epoch, players: [...this.players], coordinatorId: this.coordinatorId }); return;
+      this.epoch = m.epoch; this.players = Object.freeze([...m.players]); this.activePlayers = this.players; this.room?.setRoster({ epoch: this.epoch, players: [...this.players], coordinatorId: this.coordinatorId }); return;
     }
     if (m.op === 'retire' && this._departing && from === this.coordinatorId && m.epoch === this.epoch) { this._retireApproved = true; return; }
     if (m.op === 'reject' && from === this.coordinatorId && !this._core) { this._fail('join-rejected', { reason: m.reason }); return; }
@@ -275,13 +332,14 @@ export class RoomSession {
         return;
       }
       if (this._transition?.participants.includes(from)) return;
+      if (this._availability && this.activePlayers.length !== this.players.length) { this._send(from, 'reject', { reason: 'suspended-members' }); return; }
       if (this._admissionQueue.has(from)) return;
       const expectedCount = this._transition?.proposal.players.length ?? this.players.length;
       if (expectedCount + this._admissionQueue.size >= this.membership.maxPlayers) { this._send(from, 'reject', { reason: 'room-full' }); return; }
       this._admissionQueue.set(from, this.clock()); return;
     }
     if (m.op === 'leave-request' && this.localPlayerId === this.coordinatorId && this.players.includes(from)) {
-      if (!this._transition) this._proposal([], [from], 'leave'); else this._send(from, 'leave-busy'); return;
+      if (!this._transition && !this._availability?.round) this._proposal([], [from], 'leave'); else this._send(from, 'leave-busy'); return;
     }
     if (m.op === 'leave-busy' && from === this.coordinatorId) { this._leaveReject?.(new Error('membership busy')); this._leavePromise = this._leaveResolve = this._leaveReject = null; return; }
     if (m.op === 'propose') { this._acceptProposal(from, m.proposal); return; }
@@ -358,7 +416,8 @@ export class RoomSession {
   }
   _membershipContext(tr) {
     return { tick: tr.target, membershipEpoch: tr.proposal.epoch, simulationVersion: this.simulationVersion,
-      tickRate: this.profile.tickRate, seed: this.seed, players: [...tr.proposal.players] };
+      tickRate: this.profile.tickRate, seed: this.seed, players: [...tr.proposal.players],
+      ...(tr.proposal.activePlayers ? { activePlayers: [...tr.proposal.activePlayers] } : {}) };
   }
   _boundaryWork(name, work) {
     const started = nowMs();
@@ -392,7 +451,7 @@ export class RoomSession {
       const state = bytes(this.adapter.save());
       if (state.length > this.profile.maxSnapshotBytes || !this.adapter.validateSnapshot(state, { tick: tr.target, membershipEpoch: tr.proposal.epoch })) throw new Error('invalid membership snapshot');
       tr.postHash = hashBytes(state); tr.postState = state.slice(); this.adapter.load(rollback); tr.applied = true;
-      this._send(this.coordinatorId, 'installed', { epoch: tr.proposal.epoch, hash: tr.postHash });
+      this._installed(tr);
     } catch (error) { this.adapter.load(rollback); throw error; }
   }
   _acceptPreparedMembership(tr, staged, deferHash = false) {
@@ -401,13 +460,18 @@ export class RoomSession {
     tr.postState = state; tr.preparedState = staged.prepared;
     if (deferHash) { tr.postHash = 2166136261; tr.hashOffset = 0; return; }
     tr.postHash = hashBytes(state); tr.applied = true;
-    this._send(this.coordinatorId, 'installed', { epoch: tr.proposal.epoch, hash: tr.postHash });
+    this._installed(tr);
+  }
+  _installed(tr) {
+    if (tr.availability) this._availability.installed(tr.postHash);
+    else this._send(this.coordinatorId, 'installed', { epoch: tr.proposal.epoch, hash: tr.postHash });
   }
   _commit(tr) { return this._boundaryWork('membershipCommitMs', () => this._commitMembership(tr)); }
   _commitMembership(tr) {
     const previousCoordinator = this.coordinatorId;
     const commandSequences = tr.commandSequences ?? this._core?.getCommandSequences?.();
-    let commandState = this._core?.exportLocalCommandState() ?? (commandSequences ? { sequence: commandSequences[this.localPlayerId] ?? 0, lastInput: this._lastInput, commands: [] } : undefined);
+    let commandState = !tr.discardCommands ? this._core?.exportLocalCommandState() : undefined;
+    commandState ??= commandSequences ? { sequence: commandSequences[this.localPlayerId] ?? 0, lastInput: new Uint8Array(this.inputSize), commands: [] } : undefined;
     if (commandState && commandSequences) {
       const baseline = commandSequences[this.localPlayerId] ?? 0;
       commandState = { ...commandState, sequence: Math.max(commandState.sequence, baseline), commands: commandState.commands.filter(command => command.sequence > baseline) };
@@ -422,13 +486,24 @@ export class RoomSession {
       this._core.close(); this._core = null;
     }
     this.epoch = tr.proposal.epoch; this.baseTick = tr.target; this.players = Object.freeze([...tr.proposal.players]); this.coordinatorId = tr.proposal.coordinatorId;
+    this.activePlayers = Object.freeze([...(tr.proposal.activePlayers ?? tr.proposal.players)]);
+    if (this._availability) for (const id of this._availability.peers.keys()) if (!this.players.includes(id)) { this._availability.peers.delete(id); this._availability.states.delete(id); }
+    if (this._availability && !tr.availability) { this._availability.tenureAt = this.clock(); this._availability.anchorId = this.coordinatorId; }
     this._transition = null; this._interruptedAt = null; this._stats.transitions++;
     this._retireAfter = this.clock() + this.membership.transitionTimeoutMs;
     for (const id of tr.proposal.left) if (id !== this.localPlayerId) this._retirePeers.set(id, this._retireAfter);
     for (const id of this.players) this._retirePeers.delete(id);
-    this.room?.setRoster({ epoch: this.epoch, players: [...this.players], coordinatorId: this.coordinatorId });
+    this.room?.setRoster({ epoch: this.epoch, players: [...this.players], coordinatorId: this.coordinatorId,
+      ...(this._availability ? { allowBranchReconnect: true } : {}) });
     this._event('membership-committed', { ...tr.proposal, tick: tr.target });
     if (!this.players.includes(this.localPlayerId)) { this._departing = true; this._retireApproved = previousCoordinator === this.localPlayerId; return; }
+    if (!this.activePlayers.includes(this.localPlayerId)) {
+      this._suspendedBootstrap = { version: 1, tick: 0, checkpoint: { tick: 0, bytes: tr.postState.slice(), hash: tr.postHash },
+        players: [...this.activePlayers], frames: [], hash: tr.postHash, inputSize: this.inputSize, tickRate: this.profile.tickRate,
+        simulationVersion: this.simulationVersion, seed: this.seed, commandSequences: Object.fromEntries(this.activePlayers.map(id => [id, commandSequences?.[id] ?? 0])) };
+      return;
+    }
+    this._suspendedBootstrap = null;
     this._startCore(commandState, commandSequences, { bytes: tr.postState, hash: tr.postHash });
   }
   poll(now = this.clock()) {
@@ -441,7 +516,8 @@ export class RoomSession {
       return;
     }
     try {
-      if (!this._core && !this._transition && (!this._joinSent || now - this._lastJoinAt >= this.membership.joinRetryMs)) {
+      this._availability?.poll(now);
+      if (!this._core && !this._transition && !(this._availability && this.room?.resumed) && (!this._joinSent || now - this._lastJoinAt >= this.membership.joinRetryMs)) {
         if (this.room?.resumed && this.localPlayerId === this.coordinatorId && this._links.size) { this._joinSent = true; this._proposal([], [], 'reconnect', this.localPlayerId); }
         else if (this._links.has(this.coordinatorId)) { this._send(this.coordinatorId, 'join', { resume: !!this.room?.resumed }); this._joinSent = true; this._lastJoinAt = now; }
       }
@@ -449,7 +525,7 @@ export class RoomSession {
       while (this._incoming.length && count++ < this.membership.maxControlMessagesPerPulse && !this.failure && !this.closed) {
         const message = this._incoming.shift(); this._incomingBytes -= message.size ?? 0; this._handle(message.from, message.value);
       }
-      if (this._core && !this._transition && this.coordinatorId === this.localPlayerId) {
+      if (this._core && !this._transition && !this._availability?.round && this.coordinatorId === this.localPlayerId && this.activePlayers.length === this.players.length) {
         for (const [id, requestedAt] of this._admissionQueue) {
           const link = this._links.get(id);
           if (!link || now - requestedAt >= this.membership.transitionTimeoutMs) {
@@ -459,7 +535,7 @@ export class RoomSession {
         }
       }
       const tr = this._transition;
-      if (tr) {
+      if (tr && !tr.availability) {
         if (now - tr.startedAt >= this.membership.transitionTimeoutMs) throw new Error('membership deadline exceeded');
         if (tr.preparedState && !tr.applied) {
           this._boundaryWork('membershipPrepareMs', () => {
@@ -468,7 +544,7 @@ export class RoomSession {
               const end = Math.min(tr.postState.length, tr.hashOffset + 65536);
               tr.postHash = hashBytes(tr.postState.subarray(tr.hashOffset, end), tr.postHash); tr.hashOffset = end;
             } while (tr.hashOffset < tr.postState.length && nowMs() - started < this.membership.snapshotBudgetMs);
-            if (tr.hashOffset === tr.postState.length) { tr.applied = true; this._send(this.coordinatorId, 'installed', { epoch: tr.proposal.epoch, hash: tr.postHash }); }
+            if (tr.hashOffset === tr.postState.length) { tr.applied = true; this._installed(tr); }
           });
         }
         if (tr.stageJob) {
@@ -484,10 +560,15 @@ export class RoomSession {
         if (this._core && tr.proposal.reason !== 'reconnect' && tr.target !== null && this.tick === tr.target && !tr.reachedSent) {
           tr.reachedSent = true; this._send(this.coordinatorId, 'reached', { epoch: tr.proposal.epoch, tick: this.tick, hash: this._core.getStateHash() });
         }
-      } else if (!this._core && now - this._startedAt >= this.membership.transitionTimeoutMs) throw new Error('join deadline exceeded');
+      } else if (!this._core && !this._suspendedBootstrap && now - this._startedAt >= this.membership.transitionTimeoutMs) throw new Error('join deadline exceeded');
+      if (tr?.availability && tr.stageJob) {
+        tr.stageJob.pulse({ budgetMs: this.membership.snapshotBudgetMs });
+        if (tr.stageJob.done) { const staged = tr.stageJob.result; tr.stageJob = null; this._acceptPreparedMembership(tr, staged); }
+      }
       for (const [id, link] of this._links) if (link.incoming && now - link.incoming.startedAt >= this.membership.transitionTimeoutMs) throw new Error('room transfer timeout: ' + id);
+      for (const link of this._links.values()) if (link.branchIncoming && now - link.branchIncoming.at >= this.membership.transitionTimeoutMs) link.branchIncoming = null;
       if (!this._boundaryFrozen()) this._core?.poll(now);
-      if (this._core && !tr) {
+      if (this._core && !tr && !this._availability) {
         if (['interrupted', 'disconnected'].includes(this._core.status)) {
           this._interruptedAt ??= now;
           if (now - this._interruptedAt >= this.membership.reconnectGraceMs) this._fail('partition-failed', { policy: 'fail-closed', coordinatorId: this.coordinatorId });
@@ -498,7 +579,7 @@ export class RoomSession {
         const link = this._links.get(id); if (link && !['closed', 'failed'].includes(link.transport.state) && now < deadline) continue;
         link?.unsubscribe?.(); link?.detachCore?.(); this._links.delete(id); this.room?.disconnect?.(id); this._retirePeers.delete(id);
       }
-      if (tr && tr.commitSent && tr.applied && tr.committed.size === tr.participants.length - 1 && [...this._links.values()].every(link => !link.queue.length)) {
+      if (tr && !tr.availability && tr.commitSent && tr.applied && tr.committed.size === tr.participants.length - 1 && [...this._links.values()].every(link => !link.queue.length)) {
         for (const id of tr.proposal.left) if (id !== this.localPlayerId) this._send(id, 'retire', { epoch: tr.proposal.epoch });
         this._commit(tr);
       }
@@ -507,10 +588,11 @@ export class RoomSession {
   advance(input = this._lastInput) {
     if (this.closed) throw new Error('room session closed');
     const sample = bytes(input); if (sample.length !== this.inputSize) throw new RangeError('inputSize'); this._lastInput = sample.slice();
+    if (this._availability) { this._availability.lastAdvance = this.clock(); if (!this.activePlayers.includes(this.localPlayerId)) { this._availability.recovering = true; this._availability.requested = 'resume'; } }
     this.poll();
     if (this.failure) return { status: 'failed', tick: this.tick, failure: this.failure };
     const tr = this._transition;
-    if (!this._core || tr && (tr.proposal.reason === 'reconnect' || tr.target === null || this.tick >= tr.target)) return { status: this.status, tick: this.tick };
+    if (!this._core || this._availability?.round || this._availability?.recovering || this._availability?.requested === 'state-mismatch' || tr && (tr.proposal.reason === 'reconnect' || tr.target === null || this.tick >= tr.target)) return { status: this.status, tick: this.tick };
     const result = this._core.advance(sample); return { ...result, tick: this.tick };
   }
   queueCommand(payload) {
@@ -528,7 +610,7 @@ export class RoomSession {
     return this._leavePromise;
   }
   close() {
-    if (this.closed) return; this.closed = true; this._core?.close(); try { this._transition?.replay?.cancel(); } catch {}
+    if (this.closed) return; this._availability?.cancel(); this.closed = true; this._core?.close(); try { this._transition?.replay?.cancel(); } catch {}
     try { this._transition?.stageJob?.cancel(); } catch {}
     if (this._transition) { this._transition.preparedState = null; this._transition.stageJob = null; }
     this._unsubscribeRoom?.(); for (const link of this._links.values()) { link.unsubscribe?.(); link.detachCore?.(); }
