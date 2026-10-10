@@ -13,7 +13,7 @@ async function snapshots(pages) { return Promise.all(pages.map(p => p.evaluate((
 async function until(pages, predicate, label, timeout = 18000) {
   const end = Date.now() + timeout;
   while (Date.now() < end) { const values = await snapshots(pages); if (values.some(s => s.failure)) throw new Error(label + ': ' + JSON.stringify(values)); if (predicate(values)) return values; await sleep(80); }
-  throw new Error(label + ' timeout: ' + JSON.stringify(await snapshots(pages)));
+  throw new Error(label + ' timeout: ' + JSON.stringify(await Promise.all(pages.map(p => p.evaluate(() => window.diagnostics())))));
 }
 async function room(count, available = true, transfer = false) {
   const context = await browser.newContext(), pages = [], players = ['A', 'B', 'C', 'D'].slice(0, count);
@@ -71,6 +71,17 @@ try {
   const hostCDP = await two.context.newCDPSession(host); await hostCDP.send('Emulation.setScriptExecutionDisabled', { value: true });
   await until([guest], v => v[0].tick >= beforeHostFreeze + 10 && v[0].coordinatorId === 'B', 'inactive coordinator');
   await hostCDP.send('Emulation.setScriptExecutionDisabled', { value: false }); await host.evaluate(() => window.resumePump()); await checkpoint(two.pages, 'coordinator resume follows active guest');
+  const heldTick = Math.max(...(await snapshots(two.pages)).map(s=>s.tick))+4;
+  await Promise.all(two.pages.map(p=>p.evaluate(t=>window.setTarget(t),heldTick)));
+  await until(two.pages,v=>v.every(s=>s.tick===heldTick&&s.status==='running'),'common boundary before room-wide pause');
+  await Promise.all(two.pages.map(p=>p.evaluate(()=>window.stopPump()))); await sleep(1900);
+  console.log(JSON.stringify({label:'room-wide pause before resume',peers:await Promise.all(two.pages.map(p=>p.evaluate(()=>window.diagnostics())))}));
+  await host.evaluate(()=>{window.setTarget(Infinity);window.resumePump();});
+  await guest.evaluate(()=>{window.setTarget(Infinity);window.setPulseInterval(1000);});
+  await until([host],v=>v[0].tick>=heldTick+10&&v[0].status==='running'&&v[0].activePlayers.length===1,'foreground resume with slow retained voter');
+  results.push({label:'room-wide gap; slow voter confirms checkpoint without input',fault:'fixture timer interval 1000ms, not natural browser throttling',diagnostics:await Promise.all(two.pages.map(p=>p.evaluate(()=>window.diagnostics())))});
+  await guest.evaluate(()=>{window.setPulseInterval(50);window.resumePump();});
+  await checkpoint(two.pages,'room-wide resume state');
   results.push({ label: 'RTC two player', ...(await guest.evaluate(() => window.rtcStats())) }); await closeRoom(two);
   const four = await room(4);
   await Promise.all(four.pages.map((p, i) => p.evaluate(ids => window.block(ids, true), i === 3 ? ['A', 'B', 'C'] : ['D'])));
@@ -84,7 +95,15 @@ try {
   await Promise.all(four.pages.map((p, i) => p.evaluate(ids => window.block(ids, false, true), i < 2 ? ['C', 'D'] : ['A', 'B'])));
   await checkpoint(four.pages, 'partition rejoin discards losing branch and stale traffic');
   results.push({ label: 'RTC four player', ...(await four.pages[0].evaluate(() => window.rtcStats())) }); await closeRoom(four);
-  const auto = await room(2, true, true); await auto.pages[0].evaluate(() => window.setCost(3));
+  const auto = await room(2, true, true);
+  await auto.pages[1].evaluate(() => window.pausePumpOnProbe());
+  await auto.pages[0].evaluate(() => window.setCost(3));
+  await until([auto.pages[1]], v => v[0].probePaused, 'transfer probe received');
+  await until([auto.pages[0]], v => v[0].events.some(e=>e.type==='availability-retry'), 'transfer timeout retry');
+  const timeoutTick = (await snapshots([auto.pages[0]]))[0].tick;
+  await until([auto.pages[0]], v => v[0].tick >= timeoutTick+10 && v[0].activePlayers.length===1, 'active pump continues after interrupted transfer');
+  results.push({label:'interrupted transfer checkpoint retry',diagnostic:await auto.pages[0].evaluate(()=>window.diagnostics())});
+  await auto.pages[1].evaluate(() => window.resumePump());
   await until(auto.pages, v => v.every(s => s.coordinatorId === 'B'), 'quality coordinator transfer'); await checkpoint(auto.pages, 'automatic transfer checkpoint');
   results.push({ label: 'automatic transfer', observations: (await snapshots(auto.pages)).map(s => ({ coordinatorId: s.coordinatorId, stepMs: s.stepMs })) }); await closeRoom(auto);
   for (const count of [3, 2]) {
@@ -101,6 +120,6 @@ try {
   await sleep(2100); assert.equal((await snapshots([strict.pages[0]]))[0].tick, held, 'strict holds absent input');
   await strictGuestCDP.send('Emulation.setScriptExecutionDisabled', { value: false }); await strict.pages[1].evaluate(() => window.resumePump()); await checkpoint(strict.pages, 'strict resume regression'); await closeRoom(strict);
   assert.deepEqual(errors, []);
-  const report = { passed: true, browser: browser.version(), transport: 'actual Chromium RTCPeerConnection data channels across 2/4 pages; in-process RoomTransport fixture, no public relay/NAT', faults: 'CDP script-execution suspension; partition injected at transport send/receive, retained stale packets replayed; not OS suspend', results };
+  const report = { passed: true, browser: browser.version(), transport: 'actual Chromium RTCPeerConnection data channels across 2/4 pages; in-process RoomTransport fixture, no public relay/NAT', faults: 'CDP script-execution suspension; explicit timer gap/1000ms interval; pump stops during transfer probe; partition injected at transport send/receive, retained stale packets replayed; not OS suspend', results };
   await mkdir(resolve(root, 'test-results/rollback'), { recursive: true }); await writeFile(resolve(root, 'test-results/rollback/availability-report.json'), JSON.stringify(report, null, 2)); console.log(JSON.stringify(report, null, 2));
 } finally { await browser?.close(); await new Promise(ok => server.close(ok)); }

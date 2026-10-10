@@ -37,6 +37,8 @@ UI는 `participant-state`(active/suspended/unresponsive/resynchronizing), `avail
 
 같은 틱의 전체 명단 과반 snapshot이 있으면 그 상태를 선택합니다. 기준이 모호하면 응답하며 진행 중인 공동 coordinator를 따르고, coordinator도 멈췄으면 활성 guest가 진행합니다. 분할 중에는 임시 분기 둘 이상이 생길 수 있으며 재결합 때 한쪽 진행과 intent를 버립니다. 패배한 branch의 tick은 감소할 수 있으므로 표현 이력·미리보기·외부 저장 시계를 `membership-committed`에서 reset하세요. 이 정책은 전역 합의나 OS suspend 중 실행을 보장하지 않습니다.
 
+방 전체가 clock gap으로 복귀해 active donor가 없으면 확정 명단 전원의 새 heartbeat와 보관 boundary, 최소 한 복귀 참가자의 입력 시도를 확인할 때만 `reason:'all-resume'`으로 복구합니다. 느린 참가자는 보관 상태를 투표해도 입력 시도가 없으면 active 명단에서 제외됩니다. 같은 tick/hash의 전체 과반을 먼저 선택하고, 없으면 가장 앞선 보관 tick과 같은 tick의 coordinator 동률 기준을 사용합니다. 이 복귀 경계는 현재 확정 상태를 한 번 checkpoint로 저장해 기존 검증·staged hash·commit을 거칩니다. 아직 실행 중인 donor가 있으면 그 참가자가 복귀 후보보다 우선하므로 멈췄던 coordinator가 활성 guest의 진행을 덮어쓰지 않습니다. 전원 응답·보관 상태가 없는 방 전체 복귀는 대기하며, 브라우저가 정지한 동안의 실행을 보장하는 기능이 아닙니다.
+
 ```js
 const loop = createLoop({ session, getInput, render });
 const pump = createDeadlineScheduler({

@@ -1,7 +1,7 @@
 import { createRoomSession, profiles, createValueCodec, createLoop, createDeadlineScheduler } from '../../../dist/rollback-netcode.js';
 
 const codec = createValueCodec(), links = new Map(), events = [];
-let session, loop, scheduler, frame, draw, state, renderedFrames = 0, input = 1, costMs = 0, stopped = false, target = Infinity, corruptTick = -1;
+let session, loop, scheduler, frame, draw, state, renderedFrames = 0, input = 1, costMs = 0, stopped = false, target = Infinity, corruptTick = -1, pauseOnProbe = false, probePaused = false, pulseIntervalMs = 0;
 const room = { localPlayerId: '', sessionId: 'availability-browser', coordinatorId: 'A', epoch: 0, players: [], transports: new Map(),
   subscribe() { return () => {}; }, connectMesh() { return Promise.resolve(); },
   setRoster(value) { Object.assign(this, value); }, close() {} };
@@ -31,7 +31,7 @@ window.setup = async (id, players, available = true, autoTransfer = false) => {
     onEvent: event => events.push(event) });
   loop = createLoop({ session, getInput: () => new Uint8Array([input]), canAdvance: () => session.tick < target,
     render: () => { renderedFrames++; document.querySelector('#state').value = `${session.tick}: ${state.value}`; }, onError: error => { window.failure = error.stack; } });
-  scheduler = createDeadlineScheduler({ getIntervalMs: () => 50, pulse: timestamp => loop.pulse(timestamp, { render: false }),
+  scheduler = createDeadlineScheduler({ getIntervalMs: () => 50, setTimer: (fn, ms) => setTimeout(fn, Math.max(ms, pulseIntervalMs)), pulse: timestamp => loop.pulse(timestamp, { render: false }),
     onGap: () => loop.resetTiming() });
   draw = timestamp => { if (!stopped) { loop.observeInput(timestamp); loop.render(); frame = requestAnimationFrame(draw); } };
   frame = requestAnimationFrame(draw);
@@ -42,7 +42,16 @@ window.setup = async (id, players, available = true, autoTransfer = false) => {
   });
   window.snapshot = () => ({ state: structuredClone(state), tick: session.tick, hash: session.getStateHash(), status: session.status,
     failure: session.failure ?? window.failure, activePlayers: session.activePlayers, coordinatorId: session.coordinatorId, epoch: session.epoch,
-    branch: session.metrics.branch, baseTick: session.baseTick, events: events.slice(-24), hidden: document.hidden, renderedFrames, stepMs: session.metrics.simulationStepMs });
+    branch: session.metrics.branch, baseTick: session.baseTick, events: events.slice(-24), hidden: document.hidden, renderedFrames, probePaused, stepMs: session.metrics.simulationStepMs });
+  window.diagnostics = () => {
+    const a = session._availability, r = a?.round, tr = session._transition, now = performance.now();
+    return { ...window.snapshot(), pollIdleMs: a ? now - a.lastPoll : null, inputIdleMs: a ? now - a.lastAdvance : null,
+      requested: a?.requested, recovering: a?.recovering, pumping: a?.summary(now).pumping, probePaused,
+      round: r ? { ageMs: now-r.started, reason:r.reason, participants:r.participants, votes:[...r.votes].map(([id,v])=>({id,tick:v.tick,hash:v.hash,epoch:v.epoch,pumping:v.pumping,eligible:v.eligible})), staged:[...r.staged], decision:r.decision } : null,
+      checkpoint: tr ? { target:tr.target, epoch:tr.proposal.epoch, applied:tr.applied, postHash:tr.postHash } : null,
+      control: { incoming:session._incoming.length, queuedBytes:session.metrics.controlQueuedBytes, sentBytes:session.metrics.sentControlBytes, receivedBytes:session.metrics.receivedControlBytes },
+      links:[...links].map(([id,l])=>({id,connection:l.pc.connectionState,channel:l.channel?.readyState,buffered:l.channel?.bufferedAmount})) };
+  };
 };
 function attach(peerId, channel, pc) {
   const listeners = new Set();
@@ -50,7 +59,13 @@ function attach(peerId, channel, pc) {
   const transport = { get state() { return channel.readyState === 'open' ? 'open' : 'connecting'; },
     send(data) { if (channel.readyState !== 'open') return false; const link = links.get(peerId); if (link.blocked) { if (link.saved.length < 64) link.saved.push(data.slice()); return true; } channel.send(data); return true; },
     subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); } };
-  channel.onmessage = event => { if (!links.get(peerId).blocked) for (const fn of listeners) fn(new Uint8Array(event.data)); };
+  channel.onmessage = event => {
+    const data = new Uint8Array(event.data), view = new DataView(data.buffer);
+    if (pauseOnProbe && data.length >= 24 && view.getUint32(0,true) === 0x31524d44 && view.getUint32(16,true) === 0 && view.getUint32(12,true) === data.length-24 && codec.decode(data.subarray(24)).op === 'availability-probe') {
+      pauseOnProbe = false; probePaused = true; scheduler.stop();
+    }
+    if (!links.get(peerId).blocked) for (const fn of listeners) fn(data);
+  };
   links.set(peerId, { pc, channel, blocked: false, saved: [] }); room.transports.set(peerId, transport); session._attach(peerId, transport);
 }
 window.offer = async peerId => { const pc = new RTCPeerConnection({ iceServers: [] }); attach(peerId, pc.createDataChannel('room', { ordered: true }), pc); await pc.setLocalDescription(await pc.createOffer()); await gathered(pc); return pc.localDescription.toJSON(); };
@@ -62,6 +77,8 @@ window.setTarget = tick => { target = tick; };
 window.setCost = ms => { costMs = ms; };
 window.corruptAt = tick => { corruptTick = tick; };
 window.stopPump = () => { scheduler.stop(); };
+window.setPulseInterval = ms => { scheduler.stop(); pulseIntervalMs = ms; scheduler.start(); };
+window.pausePumpOnProbe = () => { pauseOnProbe = true; };
 window.stopRender = () => cancelAnimationFrame(frame);
 window.resumeRender = () => { frame = requestAnimationFrame(draw); };
 window.resumePump = () => { scheduler.stop(); loop.resetTiming(); scheduler.start(); };

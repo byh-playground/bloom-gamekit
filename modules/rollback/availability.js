@@ -1,4 +1,4 @@
-import { bytes, compareIds, integer } from '../deterministic/utilities.js';
+import { bytes, compareIds, hashBytes, integer } from '../deterministic/utilities.js';
 import { createBootstrapReplay } from './bootstrap.js';
 
 const sorted = ids => [...ids].sort(compareIds);
@@ -44,6 +44,7 @@ export class Availability {
   summary(now) {
     const s = this.session, network = s.activePlayers.filter(id => id !== s.localPlayerId).map(id => s._core?.getPeerState(id)).filter(p => p?.handshakeComplete);
     return { branch: this.branch, epoch: s.epoch, tick: s.tick, coordinatorId: s.coordinatorId, anchorId: this.anchorId,
+      retainedBoundary: !!s._suspendedBootstrap || !!s._core && !s._core.failure && !s._core.resimulating && s._core.confirmedTick >= s._core.tick - 1,
       activePlayers: [...s.activePlayers], pumping: now - this.lastAdvance <= this.config.inputGraceMs,
       eligible: !this.recovering && now - this.lastAdvance <= this.config.inputGraceMs,
       requested: this.requested, recovering: this.recovering, inputIdleMs: Math.max(0, now - this.lastAdvance),
@@ -94,9 +95,16 @@ export class Availability {
     }
     const eligible = live.filter(id => summaries.get(id)?.eligible);
     const participants = live.filter(id => summaries.get(id)?.pumping);
-    if (!eligible.length || now < this.retryAt) return;
+    // A room-wide clock gap must not wait forever for an unpaused donor that
+    // cannot exist. Only the entire confirmed roster may restart from retained
+    // boundaries; a single stale coordinator still follows an active guest.
+    const allResumed = !eligible.length && live.length === s.players.length &&
+      live.every(id => summaries.get(id)?.retainedBoundary) &&
+      participants.some(id => summaries.get(id)?.recovering);
+    const leaders = allResumed ? participants : eligible;
+    if (!leaders.length || now < this.retryAt) return;
     if (s.players.some(id => id !== s.localPlayerId && !this.peers.has(id)) && now - this.tenureAt < this.config.silenceMs) return;
-    let reason = this.requested;
+    let reason = allResumed ? 'all-resume' : this.requested;
     reason ??= participants.map(id => summaries.get(id)?.requested).find(Boolean);
     if (!equal(eligible, s.activePlayers) || participants.some(id => summaries.get(id)?.branch !== this.branch)) reason ??= 'liveness';
     let transferTo = null;
@@ -110,22 +118,34 @@ export class Availability {
         reason = 'auto-transfer'; transferTo = best;
       }
     }
-    if (reason && eligible[0] === s.localPlayerId) {
-      this.requested = null; this.send(participants, 'probe', { round: nonce(), participants, leader: s.localPlayerId, reason, transferTo });
+    if (reason && leaders[0] === s.localPlayerId) {
+      const voters = allResumed ? live : participants;
+      this.requested = null; this.send(voters, 'probe', { round: nonce(), participants: voters, leader: s.localPlayerId, reason, transferTo });
     }
   }
   choose(round) {
-    const s = this.session, votes = [...round.votes].filter(([, v]) => v.eligible);
-    if (!votes.length) throw new Error('availability has no active donor');
+    const s = this.session;
+    let votes = [...round.votes].filter(([, v]) => v.eligible);
+    const allResumed = !votes.length;
+    if (allResumed) {
+      if (round.reason !== 'all-resume' || round.votes.size !== s.players.length ||
+        [...round.votes.values()].some(v => !v.retainedBoundary) ||
+        ![...round.votes.values()].some(v => v.pumping && v.recovering)) throw new Error('availability has no active donor');
+      votes = [...round.votes];
+    }
     const groups = new Map();
     for (const [id, v] of votes) { const key = v.tick + ':' + v.hash; if (!groups.has(key)) groups.set(key, []); groups.get(key).push(id); }
     const majority = [...groups.values()].filter(ids => ids.length > s.players.length / 2).sort((a, b) => b.length - a.length)[0];
     let donor = majority?.sort(compareIds)[0];
-    if (!donor) donor = votes.find(([id]) => id === this.anchorId)?.[0] ?? votes.sort((a, b) => b[1].tick - a[1].tick || compareIds(a[0], b[0]))[0][0];
+    const latestTick = Math.max(...votes.map(([,v])=>v.tick));
+    // After *all* pumps paused, prefer the furthest retained progress. The
+    // shared coordinator breaks an equal-tick tie, not a stale branch's lead.
+    const anchor = votes.find(([id,v]) => id === this.anchorId && (!allResumed || v.tick === latestTick))?.[0];
+    if (!donor) donor = anchor ?? votes.sort((a, b) => b[1].tick - a[1].tick || compareIds(a[0], b[0]))[0][0];
     const v = round.votes.get(donor), activePlayers = sorted([...round.votes].filter(([, value]) => value.pumping).map(([id]) => id));
-    const coordinatorId = round.transferTo && activePlayers.includes(round.transferTo) ? round.transferTo : activePlayers.includes(v.coordinatorId) ? v.coordinatorId : donor;
+    const coordinatorId = round.transferTo && activePlayers.includes(round.transferTo) ? round.transferTo : activePlayers.includes(v.coordinatorId) ? v.coordinatorId : activePlayers.includes(donor) ? donor : activePlayers[0];
     return { donor, tick: v.tick, hash: v.hash, coordinatorId, activePlayers,
-      basis: majority ? 'roster-majority' : votes.some(([id]) => id === this.anchorId) ? 'responsive-coordinator' : 'active-branch',
+      basis: majority ? 'roster-majority' : anchor ? 'responsive-coordinator' : 'active-branch',
       votes: majority?.length ?? 0, rosterSize: s.players.length };
   }
   handle(from, m, now) {
@@ -133,7 +153,7 @@ export class Availability {
     if (!s.players.includes(from)) return;
     if (op === 'activity') {
       if (!branchValid(m.branch) || !Number.isSafeInteger(m.tick) || m.tick < 0 || !Number.isInteger(m.epoch) || m.epoch < 0 ||
-        !Array.isArray(m.activePlayers) || m.activePlayers.length > s.membership.maxPlayers || typeof m.eligible !== 'boolean' ||
+        !Array.isArray(m.activePlayers) || m.activePlayers.length > s.membership.maxPlayers || typeof m.eligible !== 'boolean' || typeof m.retainedBoundary !== 'boolean' ||
         ['stepMs', 'rtt', 'jitter', 'samples', 'inputIdleMs'].some(k => !Number.isFinite(m[k]) || m[k] < 0)) throw new Error('invalid availability observation');
       if (!s.players.includes(m.coordinatorId) || m.activePlayers.some(id => !s.players.includes(id))) return;
       this.peers.set(from, { at: now, value: m }); return;
@@ -150,6 +170,13 @@ export class Availability {
       // Captured once at the frozen, confirmed boundary; never exported per heartbeat.
       round.bootstrap = s._core?.exportConfirmedBootstrap() ?? s._suspendedBootstrap; round.sourceBaseTick = s.baseTick; round.sourceEpoch = s.epoch;
       round.original = bytes(s.adapter.save()).slice();
+      // Slow resumed voters can confirm a retained state without supplying new
+      // input. Capture its confirmed current checkpoint once, so suffix replay
+      // does not require a simulation-rate pump just to install that state.
+      if (round.reason === 'all-resume' && vote.retainedBoundary) {
+        if (!round.bootstrap || hashBytes(round.original) !== vote.hash) throw new Error('availability retained boundary changed');
+        round.bootstrap = { ...round.bootstrap, checkpoint: { tick: round.bootstrap.tick, bytes: round.original.slice(), hash: vote.hash }, frames: [] };
+      }
       this.send(round.participants, 'vote', { round: round.id, vote });
       s._event('availability-preparing', { reason: round.reason, deadlineMs: now + this.config.roundTimeoutMs }); return;
     }
@@ -157,7 +184,7 @@ export class Availability {
     if (!round || m.round !== round.id || !round.participants.includes(from)) return;
     if (op === 'vote') {
       const v = m.vote;
-      if (!branchValid(v?.branch) || !Number.isSafeInteger(v.tick) || v.tick < 0 || !Number.isInteger(v.hash) || v.hash < 0 || v.hash > 0xffffffff || !Number.isInteger(v.epoch) || v.epoch < 0 || v.epoch > 65534 || typeof v.eligible !== 'boolean' || typeof v.pumping !== 'boolean' || v.eligible && !v.pumping || !Array.isArray(v.activePlayers) || v.activePlayers.some(id => !s.players.includes(id)) || !s.players.includes(v.coordinatorId)) throw new Error('invalid availability vote');
+      if (!branchValid(v?.branch) || !Number.isSafeInteger(v.tick) || v.tick < 0 || !Number.isInteger(v.hash) || v.hash < 0 || v.hash > 0xffffffff || !Number.isInteger(v.epoch) || v.epoch < 0 || v.epoch > 65534 || typeof v.eligible !== 'boolean' || typeof v.pumping !== 'boolean' || typeof v.recovering !== 'boolean' || typeof v.retainedBoundary !== 'boolean' || v.eligible && !v.pumping || !Array.isArray(v.activePlayers) || v.activePlayers.some(id => !s.players.includes(id)) || !s.players.includes(v.coordinatorId)) throw new Error('invalid availability vote');
       round.votes.set(from, v); return;
     }
     if (op === 'decision' && from === round.leader && !s._transition) {
