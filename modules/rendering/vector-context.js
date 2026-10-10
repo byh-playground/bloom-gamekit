@@ -2,6 +2,7 @@ import { VectorRenderer } from './vector-renderer.js';
 import { MeshRenderer } from './mesh-renderer.js';
 
 const TAU = Math.PI * 2;
+const SILHOUETTE_OFFSETS = Object.freeze(Array.from({ length: 8 }, (_, i) => Object.freeze([Math.cos(i * TAU / 8), Math.sin(i * TAU / 8)])));
 const IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
 const WHITE = Object.freeze([1, 1, 1, 1]);
 const NAMED = Object.freeze({
@@ -50,7 +51,7 @@ export class VectorContext {
     this.device=device;this.canvas=device.canvas;this.vector=vectorRenderer??new VectorRenderer(device,{initialVertices,maxVertices,glyphAtlas});this.ownsVector=!vectorRenderer;
     this.glyphAtlas=glyphAtlas??this.vector.glyphAtlas;this.onError=typeof onError==='function'?onError:null;
     this.meshRenderer=null;this.active=false;this.state='ready';this.frame=0;this.pathCount=0;this.staticMeshes=new Set();this.deferredMeshes=[];this.gradientTextures=new Map();
-    this._silhouetteMatrices=new Float32Array(60);this._silhouetteColors=new Float32Array(40);this._silhouetteForceColors=new Uint8Array(10);
+    this._silhouetteMatrices=new Float32Array(60);this._silhouetteColorCache=new Map();
     this.onLost=event=>{event.preventDefault();this.active=false;this.state='lost';this.meshRenderer?.discard();this._releaseGradientTextures();};
     this.onRestored=()=>{if(this.state==='disposed')return;try{for(const mesh of this.staticMeshes)this.device.uploadVertices(mesh.buffer,mesh.vertices);this.state='ready';}catch(error){this.state='failed';this.onError?.(error,{phase:'restore'});}};
     this.canvas.addEventListener('webglcontextlost',this.onLost);this.canvas.addEventListener('webglcontextrestored',this.onRestored);
@@ -122,17 +123,17 @@ export class VectorContext {
   /** Draw a retained mesh with the existing eight-offset silhouette and body in one ordered instance batch. */
   drawMeshSilhouette(mesh,{transform=null,morph=[0,0],parts=null,color='black',width,radius=128}={}){
     this._frame();if(!this.meshRenderer)throw new TypeError('createMesh required');finite(width,'silhouette width');finite(radius,'silhouette radius');if(width<0||radius<0)throw new RangeError('silhouette dimensions must be non-negative');
-    const outline=normalizeColor(color),baseColor=this.forceColor??WHITE,forceColors=this._silhouetteForceColors,colors=this._silhouetteColors,matrices=this._silhouetteMatrices;
+    let outline;if(typeof color==='string'&&color[0]==='#'){outline=this._silhouetteColorCache.get(color);if(!outline){outline=normalizeColor(color);if(this._silhouetteColorCache.size===16)this._silhouetteColorCache.delete(this._silhouetteColorCache.keys().next().value);this._silhouetteColorCache.set(color,outline)}}else outline=normalizeColor(color);
+    const matrices=this._silhouetteMatrices;
     const bounds=this.groupBounds(0,0,radius+width);
     return this.withGroupOpacity(this._globalAlpha,()=>{
       this.vector.flush();const source=this.vector.matrix,a=source[0],b=source[1],c=source[2],d=source[3],e=source[4],f=source[5];let ta=1,tb=0,tc=0,td=1,te=0,tf=0;
       if(transform){if(transform.length!==6||Array.from(transform).some(n=>!Number.isFinite(n)))throw new TypeError('Six finite transform values required');[ta,tb,tc,td,te,tf]=transform}
       for(let i=0;i<10;i++){
-        const outlinePass=i<9,offset=i<8,angle=offset?i*TAU/8:0,dx=offset?Math.cos(angle)*width:0,dy=offset?Math.sin(angle)*width:0,at=i*6;
+        const outlinePass=i<9,offset=outlinePass&&i<8,direction=offset?SILHOUETTE_OFFSETS[i]:null,dx=direction?direction[0]*width:0,dy=direction?direction[1]*width:0,at=i*6;
         const eOffset=e+a*dx+c*dy,fOffset=f+b*dx+d*dy;matrices[at]=a*ta+c*tb;matrices[at+1]=b*ta+d*tb;matrices[at+2]=a*tc+c*td;matrices[at+3]=b*tc+d*td;matrices[at+4]=a*te+c*tf+eOffset;matrices[at+5]=b*te+d*tf+fOffset;
-        const paint=outlinePass?outline:baseColor,paintAt=i*4;colors[paintAt]=paint[0];colors[paintAt+1]=paint[1];colors[paintAt+2]=paint[2];colors[paintAt+3]=paint[3];forceColors[i]=outlinePass?1:this.forceColor===null?0:1;
       }
-      this.meshRenderer._drawMeshInstances(mesh,{matrices,count:10,projection:this.vector.projection,morph,parts,colors,forceColors,alpha:this._globalAlpha,whiteFlash:this._filter==='brightness(0) invert(1)',clips:this.vector.clips});
+      this.meshRenderer._drawMeshInstances(mesh,{matrices,count:10,projection:this.vector.projection,morph,parts,color:this.forceColor??WHITE,forceColor:this.forceColor!==null,prefixColor:outline,prefixCount:9,forceColorPrefixCount:9,alpha:this._globalAlpha,whiteFlash:this._filter==='brightness(0) invert(1)',clips:this.vector.clips});
     },bounds);
   }
   flush(){this._frame();this.meshRenderer?.flush();this.vector.flush()}
