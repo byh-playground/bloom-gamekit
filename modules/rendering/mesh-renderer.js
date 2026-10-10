@@ -126,27 +126,54 @@ export class MeshRenderer {
     return true;
   }
   /** Captures state by value; subsequent transform/paint changes do not alter queued instances. */
-  drawMesh(mesh, { matrix = IDENTITY, projection, morph = [0, 0], parts = null, color = WHITE, forceColor = false, alpha = 1, whiteFlash = false, clips = [] } = {}) {
+  drawMesh(mesh, options = {}) {
+    const { matrix = IDENTITY, projection, morph = [0, 0], parts = null, color = WHITE,
+      forceColor = false, alpha = 1, whiteFlash = false, clips = [] } = options;
+    this._drawMeshInstances(mesh, { matrices: matrix, count: 1, projection, morph, parts, color, forceColor, alpha, whiteFlash, clips });
+  }
+  /** Internal ordered instance append used when one retained pose has several transforms. */
+  _drawMeshInstances(mesh, { matrices, count, projection, morph = [0, 0], parts = null, color = WHITE,
+    forceColor = false, alpha = 1, whiteFlash = false, clips = [], colors = null, forceColors = null } = {}) {
     this._ready();
     if (!this.meshes.has(mesh)) throw new TypeError('Mesh owned by this renderer required');
     if (!this.device.active) throw new Error('beginFrame required');
-    finiteArray(matrix, 6, 'matrix'); finiteArray(projection, 9, 'projection'); finiteArray(morph, 2, 'morph'); finiteArray(color, 4, 'color');
+    if (!Number.isSafeInteger(count) || count < 1 || !matrices || matrices.length !== count * 6) throw new TypeError('Packed mesh instance matrices required');
+    for (let i = 0; i < matrices.length; i++) if (!Number.isFinite(matrices[i])) throw new TypeError('Mesh matrix values must be finite');
+    finiteArray(projection, 9, 'projection'); finiteArray(morph, 2, 'morph'); finiteArray(color, 4, 'color');
     if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1 || color.some(n => n < 0 || n > 1)) throw new RangeError('RGBA/alpha in [0,1] required');
+    if (colors !== null) {
+      if (!colors || colors.length !== count * 4) throw new TypeError('One RGBA color per mesh instance required');
+      for (let i = 0; i < colors.length; i++) if (!Number.isFinite(colors[i]) || colors[i] < 0 || colors[i] > 1) throw new RangeError('Instance RGBA channels must be in [0,1]');
+    }
+    if (forceColors !== null) {
+      if (!forceColors || forceColors.length !== count) throw new TypeError('One force-color flag per mesh instance required');
+      for (let i = 0; i < forceColors.length; i++) if (forceColors[i] !== 0 && forceColors[i] !== 1 && forceColors[i] !== false && forceColors[i] !== true) throw new TypeError('Mesh force-color flags must be boolean');
+    }
     const clip = clipState(clips, this.maxPlanes), pending = this.pending;
     packParts(parts, mesh.partCount, this.partScratch);
     if (pending && (pending.mesh !== mesh || pending.clip.key !== clip.key || projection.some((n, i) => n !== pending.projection[i]) || (mesh.partCount > 1 && pending.parts.some((n, i) => n !== this.partScratch[i])) || this.count === this.maxInstances)) this.flush();
-    if (!this.pending) this.pending = { mesh, projection: Float32Array.from(projection), clip, parts: this.partScratch.slice(0, mesh.partCount > 1 ? mesh.partCount * 12 : 0) };
-    let m = matrix, weight0 = morph[0], weight1 = morph[1];
-    if (mesh.partCount === 1) {
-      const p = this.partScratch;
-      m = [matrix[0]*p[0]+matrix[2]*p[4], matrix[1]*p[0]+matrix[3]*p[4],
-        matrix[0]*p[1]+matrix[2]*p[5], matrix[1]*p[1]+matrix[3]*p[5],
-        matrix[0]*p[2]+matrix[2]*p[6]+matrix[4], matrix[1]*p[2]+matrix[3]*p[6]+matrix[5]];
-      alpha *= p[10]; weight0 += p[8]; weight1 += p[9];
+    const part = this.partScratch, singlePart = mesh.partCount === 1;
+    for (let i = 0; i < count; i++) {
+      if (this.count === this.maxInstances) this.flush();
+      if (!this.pending) this.pending = { mesh, projection: Float32Array.from(projection), clip, parts: this.partScratch.slice(0, mesh.partCount > 1 ? mesh.partCount * 12 : 0) };
+      const offset = i * 6;
+      let m0 = matrices[offset], m1 = matrices[offset + 1], m2 = matrices[offset + 2], m3 = matrices[offset + 3], m4 = matrices[offset + 4], m5 = matrices[offset + 5];
+      let weight0 = morph[0], weight1 = morph[1], instanceAlpha = alpha;
+      if (singlePart) {
+        const a = m0, b = m1, c = m2, d = m3;
+        m0 = a * part[0] + c * part[4]; m1 = b * part[0] + d * part[4];
+        m2 = a * part[1] + c * part[5]; m3 = b * part[1] + d * part[5];
+        m4 = a * part[2] + c * part[6] + m4; m5 = b * part[2] + d * part[6] + m5;
+        instanceAlpha *= part[10]; weight0 += part[8]; weight1 += part[9];
+      }
+      const colorAt = i * 4, instanceColor = colors ?? color, colorOffset = colors ? colorAt : 0;
+      const instanceForceColor = forceColors === null ? forceColor : !!forceColors[i], at = this.count++ * 16, data = this.instances;
+      data[at] = m0; data[at + 1] = m2; data[at + 2] = m4; data[at + 3] = instanceAlpha;
+      data[at + 4] = m1; data[at + 5] = m3; data[at + 6] = m5; data[at + 7] = instanceForceColor ? 1 : 0;
+      data[at + 8] = instanceColor[colorOffset]; data[at + 9] = instanceColor[colorOffset + 1];
+      data[at + 10] = instanceColor[colorOffset + 2]; data[at + 11] = instanceColor[colorOffset + 3];
+      data[at + 12] = weight0; data[at + 13] = weight1; data[at + 14] = whiteFlash ? 1 : 0; data[at + 15] = 0;
     }
-    const at = this.count++ * 16;
-    this.instances.set([m[0], m[2], m[4], alpha, m[1], m[3], m[5], forceColor ? 1 : 0,
-      ...color, weight0, weight1, whiteFlash ? 1 : 0, 0], at);
   }
   flush() {
     if (!this.count) return;

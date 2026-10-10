@@ -3,6 +3,7 @@ import { MeshRenderer } from './mesh-renderer.js';
 
 const TAU = Math.PI * 2;
 const IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
+const WHITE = Object.freeze([1, 1, 1, 1]);
 const NAMED = Object.freeze({
   black:'#000000', white:'#ffffff', red:'#ff0000', green:'#008000', blue:'#0000ff',
   yellow:'#ffff00', orange:'#ffa500', purple:'#800080', pink:'#ffc0cb', gray:'#808080',
@@ -49,6 +50,7 @@ export class VectorContext {
     this.device=device;this.canvas=device.canvas;this.vector=vectorRenderer??new VectorRenderer(device,{initialVertices,maxVertices,glyphAtlas});this.ownsVector=!vectorRenderer;
     this.glyphAtlas=glyphAtlas??this.vector.glyphAtlas;this.onError=typeof onError==='function'?onError:null;
     this.meshRenderer=null;this.active=false;this.state='ready';this.frame=0;this.pathCount=0;this.staticMeshes=new Set();this.deferredMeshes=[];this.gradientTextures=new Map();
+    this._silhouetteMatrices=new Float32Array(60);this._silhouetteColors=new Float32Array(40);this._silhouetteForceColors=new Uint8Array(10);
     this.onLost=event=>{event.preventDefault();this.active=false;this.state='lost';this.meshRenderer?.discard();this._releaseGradientTextures();};
     this.onRestored=()=>{if(this.state==='disposed')return;try{for(const mesh of this.staticMeshes)this.device.uploadVertices(mesh.buffer,mesh.vertices);this.state='ready';}catch(error){this.state='failed';this.onError?.(error,{phase:'restore'});}};
     this.canvas.addEventListener('webglcontextlost',this.onLost);this.canvas.addEventListener('webglcontextrestored',this.onRestored);
@@ -117,6 +119,22 @@ export class VectorContext {
   deleteMesh(mesh){return this.meshRenderer?.deleteMesh(mesh)??false}
   /** Local transform composes with current Canvas-style transform; all paint state is captured by value. */
   drawMesh(mesh,{transform=null,morph=[0,0],parts=null}={}){this._frame();if(!this.meshRenderer)throw new TypeError('createMesh required');this.vector.flush();let matrix=this.vector.matrix;if(transform){if(transform.length!==6||Array.from(transform).some(n=>!Number.isFinite(n)))throw new TypeError('Six finite transform values required');const m=matrix,[a,b,c,d,e,f]=transform;matrix=[m[0]*a+m[2]*b,m[1]*a+m[3]*b,m[0]*c+m[2]*d,m[1]*c+m[3]*d,m[0]*e+m[2]*f+m[4],m[1]*e+m[3]*f+m[5]]}this.meshRenderer.drawMesh(mesh,{matrix,projection:this.vector.projection,clips:this.vector.clips,morph,parts,color:this.forceColor??[1,1,1,1],forceColor:this.forceColor!==null,alpha:this._globalAlpha,whiteFlash:this._filter==='brightness(0) invert(1)'})}
+  /** Draw a retained mesh with the existing eight-offset silhouette and body in one ordered instance batch. */
+  drawMeshSilhouette(mesh,{transform=null,morph=[0,0],parts=null,color='black',width,radius=128}={}){
+    this._frame();if(!this.meshRenderer)throw new TypeError('createMesh required');finite(width,'silhouette width');finite(radius,'silhouette radius');if(width<0||radius<0)throw new RangeError('silhouette dimensions must be non-negative');
+    const outline=normalizeColor(color),baseColor=this.forceColor??WHITE,forceColors=this._silhouetteForceColors,colors=this._silhouetteColors,matrices=this._silhouetteMatrices;
+    const bounds=this.groupBounds(0,0,radius+width);
+    return this.withGroupOpacity(this._globalAlpha,()=>{
+      this.vector.flush();const source=this.vector.matrix,a=source[0],b=source[1],c=source[2],d=source[3],e=source[4],f=source[5];let ta=1,tb=0,tc=0,td=1,te=0,tf=0;
+      if(transform){if(transform.length!==6||Array.from(transform).some(n=>!Number.isFinite(n)))throw new TypeError('Six finite transform values required');[ta,tb,tc,td,te,tf]=transform}
+      for(let i=0;i<10;i++){
+        const outlinePass=i<9,offset=i<8,angle=offset?i*TAU/8:0,dx=offset?Math.cos(angle)*width:0,dy=offset?Math.sin(angle)*width:0,at=i*6;
+        const eOffset=e+a*dx+c*dy,fOffset=f+b*dx+d*dy;matrices[at]=a*ta+c*tb;matrices[at+1]=b*ta+d*tb;matrices[at+2]=a*tc+c*td;matrices[at+3]=b*tc+d*td;matrices[at+4]=a*te+c*tf+eOffset;matrices[at+5]=b*te+d*tf+fOffset;
+        const paint=outlinePass?outline:baseColor,paintAt=i*4;colors[paintAt]=paint[0];colors[paintAt+1]=paint[1];colors[paintAt+2]=paint[2];colors[paintAt+3]=paint[3];forceColors[i]=outlinePass?1:this.forceColor===null?0:1;
+      }
+      this.meshRenderer._drawMeshInstances(mesh,{matrices,count:10,projection:this.vector.projection,morph,parts,colors,forceColors,alpha:this._globalAlpha,whiteFlash:this._filter==='brightness(0) invert(1)',clips:this.vector.clips});
+    },bounds);
+  }
   flush(){this._frame();this.meshRenderer?.flush();this.vector.flush()}
   createStaticMesh(vertices,{strideFloats=6}={}){if(this.state!=='ready'||this.device.state!=='ready')throw new Error('VectorContext is not ready');if(!(vertices instanceof Float32Array)||!Number.isSafeInteger(strideFloats)||strideFloats<2||vertices.length%strideFloats)throw new TypeError('mesh requires Float32Array and a matching strideFloats');const buffer=this.device.createVertexBuffer({capacityBytes:vertices.byteLength});this.device.uploadVertices(buffer,vertices);const mesh={context:this,buffer,vertices,count:vertices.length/strideFloats,strideFloats};this.staticMeshes.add(mesh);return mesh;}
   deleteStaticMesh(mesh){if(!mesh||mesh.context!==this||!this.staticMeshes.has(mesh))return false;this.device.deleteVertexBuffer(mesh.buffer);this.staticMeshes.delete(mesh);return true;}
