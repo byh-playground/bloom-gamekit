@@ -1,10 +1,10 @@
 {
   "baseCommit": "b02fecf8a13cf056dc489ed2e17733b4c8de5c5e",
   "scope": "Reusable event audio; consumer owns definitions; existing confirmed PresentationEventQueue adapter; no second journal.",
-  "runtimeSha256": "133e1899edb686db82320cc25497c9cb5a1ba70fd9967c11a73b5c03510fc612",
-  "bundleSha256": "87bf6eaa3021b0cf36ff2319b310f3914f65fb532448b6b71fae8d99600daf34",
-  "bundleBytes": 13922,
-  "manifestSha256": "a5454f198a7050f7ecba67cc75d3fdfe81384c2232cafdc4426b82774a75eae6",
+  "runtimeSha256": "f6ec8a7d3093e8a0d22c11c77a58108b093cbe70e2e3b714e8f96ac210241484",
+  "bundleSha256": "7e3e16d34ce88124e6ba7699f16d23107a3e42ee93ea5a16691e856e5865c14a",
+  "bundleBytes": 14098,
+  "manifestSha256": "bd9ec9295a09741569d9a586de2fb9421332ef6d984d8cf743ca155b09418b27",
   "dependencyInstall": "npm ci PASS; 0 audit findings",
   "runs": {
     "initialAudio": {
@@ -528,6 +528,95 @@
       },
       "result": "PASS",
       "elapsedMs": 2543
+    },
+    "parentReviewSkippedCleanup": {
+      "startedAt": "2026-10-10T13:13:14.130Z",
+      "scope": "Parent-review regression only: skipped confirmed cleanup under locked/muted/budget, retention/maxPending churn, cancelled cleanup, successful natural end",
+      "errors": [],
+      "browser": "155.0.4283.45",
+      "locked": {
+        "label": "locked",
+        "size": 0,
+        "active": 0,
+        "processed": 32,
+        "collected": 32,
+        "maxSize": 1,
+        "actualPlayed": 0
+      },
+      "budgetBefore": {
+        "state": "running",
+        "volume": 0.7,
+        "muted": false,
+        "voices": 4,
+        "categoryVolumes": {
+          "impact": 1,
+          "danger": 0.8
+        },
+        "lastError": null,
+        "played": 7,
+        "dropped": 17,
+        "blocked": 32,
+        "maxObserved": 4,
+        "bySound": {
+          "hit": 4,
+          "warning": 3
+        }
+      },
+      "budget": {
+        "label": "budget",
+        "size": 0,
+        "active": 0,
+        "processed": 32,
+        "collected": 32,
+        "maxSize": 1,
+        "actualPlayed": 0
+      },
+      "muted": {
+        "label": "muted",
+        "size": 0,
+        "active": 0,
+        "processed": 32,
+        "collected": 32,
+        "maxSize": 1,
+        "actualPlayed": 0
+      },
+      "cancelled": {
+        "activeBefore": 1,
+        "activeAfter": 0,
+        "callbacks": 0
+      },
+      "natural": {
+        "active": 0,
+        "stats": {
+          "started": 1,
+          "duplicates": 1,
+          "cancelled": 0,
+          "expired": 1,
+          "collected": 0,
+          "rejectedOld": 0
+        },
+        "audio": {
+          "state": "running",
+          "volume": 0.7,
+          "muted": false,
+          "voices": 0,
+          "categoryVolumes": {
+            "impact": 1,
+            "danger": 0.8
+          },
+          "lastError": null,
+          "played": 8,
+          "dropped": 49,
+          "blocked": 32,
+          "maxObserved": 4,
+          "bySound": {
+            "hit": 5,
+            "warning": 3
+          }
+        }
+      },
+      "result": "PASS",
+      "elapsedMs": 2583
     }
   },
   "evidenceReuse": "First OfflineAudioContext graph/render helpers and recipes were unchanged. Failed first 100ms live observation was resumed with 600ms sampling; no full core rerun. Temporary resume option was removed from the permanent fixed scenario after verification; runtime bytes unchanged.",
@@ -538,5 +627,8 @@
   ],
   "finalChange": "Adapter cancellation now suppresses natural finish callback after journal dispose. Final fixed audio scenario includes disposal of an active confirmed voice; full core was not repeated because its owned runtime inputs were unchanged.",
   "finalCandidateResult": "PASS",
-  "finalCandidateCoverage": "Final runtime passed fresh output/confirmed/budget/mute/save steps; only async resume and active confirmed dispose were continued with a promise/state wait. The permanent fixed script uses the same state/played wait; runtime unchanged."
+  "finalCandidateCoverage": "Final runtime passed fresh output/confirmed/budget/mute/save steps; only async resume and active confirmed dispose were continued with a promise/state wait. The permanent fixed script uses the same state/played wait; runtime unchanged. Parent-review cleanup verified on the current runtime in Edge in 2583ms. Synthesis/mix helpers are unchanged; completed offline/core/volume/resume checks were not repeated. Permanent resume observation now uses the same bounded 600ms sampling as the focused successful verification.",
+  "priorRuntimeSha256": "133e1899edb686db82320cc25497c9cb5a1ba70fd9967c11a73b5c03510fc612",
+  "priorBundleSha256": "87bf6eaa3021b0cf36ff2319b310f3914f65fb532448b6b71fae8d99600daf34",
+  "parentReviewFix": "createAdapter requires onEnded; skipped source schedules cancellable cleanup microtask after journal active registration. Existing journal semantics stay unchanged. Locked/muted/budget each churn 32 confirmed events with retentionTicks=1 and maxPending=8; active/size end at 0 and max retained size 1. Dispose cancels scheduled cleanup callback. Natural and duplicate confirmed playback remain valid."
 }

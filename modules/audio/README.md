@@ -23,9 +23,9 @@
 
 ## 표현 journal과 조합
 
-`player.createAdapter({onEnded?})`는 presentation-events의 `{start,stop,reversible:false}` adapter입니다. payload는 `{soundId,strength?}`이고 one-shot은 기존 journal의 **confirmed** 정책을 사용합니다. speculative를 요청하면 거부합니다. 모듈에 두 번째 identity/tick/rollback history는 없습니다.
+`player.createAdapter({onEnded})`는 presentation-events의 `{start,stop,reversible:false}` adapter입니다. payload는 `{soundId,strength?}`이고 one-shot은 기존 journal의 **confirmed** 정책을 사용합니다. speculative를 요청하면 거부합니다. 모듈에 두 번째 identity/tick/rollback history는 없습니다.
 
-소비자가 `onEnded:event => journal.finish(event)`를 연결해 자연 종료 시 자원을 해제합니다. replay seek/새 세션은 journal과 player를 dispose합니다. 확인 후 브라우저가 잠겨 소리를 시작하지 못하면 null로 끝나며 오래된 소리를 재생 큐에 쌓지 않습니다. 바운코 같은 단일 게임은 journal 없이 `player.play()`를 바로 사용할 수 있습니다.
+소비자는 필수 `onEnded:event => journal.finish(event)`를 연결해 자연 종료 시 자원을 해제합니다. 재생이 mute/lock/예산 때문에 생략되면 정리 microtask가 start 등록 이후 동일한 finish 경로를 호출합니다. source 없는 confirmed 기록도 active로 영구 남지 않습니다. 그 전에 journal을 dispose하면 반환 handle의 stop이 정리 callback을 취소합니다. replay seek/새 세션은 journal과 player를 dispose합니다. 확인 후 브라우저가 잠겨 소리를 시작하지 못하면 source 없이 정상 종료하며 오래된 소리를 재생 큐에 쌓지 않습니다. 바운코 같은 단일 게임은 journal 없이 `player.play()`를 바로 사용할 수 있습니다.
 
 ## 예제·실제 검증
 
