@@ -43,7 +43,8 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
     globalThis.removeEventListener?.('blur', release);
     globalThis.document?.removeEventListener('visibilitychange', hidden);
   };
-  const pulse = timestamp => {
+  const renderFrame = () => render({ session, alpha: Math.min(1, accumulator / quantum), resimulating: session.resimulating });
+  const pulse = (timestamp, { render: shouldRender = true } = {}) => {
     const current = generation;
     try {
       if (!Number.isFinite(timestamp)) throw new TypeError('frame timestamp');
@@ -117,7 +118,7 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
         if (result.status !== 'advanced') break;
       }
       // Rendering continues when the session is waiting for input or connection recovery.
-      render({ session, alpha: Math.min(1, accumulator / quantum), resimulating: session.resimulating });
+      if (shouldRender) renderFrame();
     } catch (error) { if (current === generation) stop(); onError(error); }
   };
   const start = () => {
@@ -136,5 +137,5 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
     handle = requestFrame(frame);
   };
   const flushInput = timestamp => { accumulator=Math.max(accumulator,quantum*(session.pace??1));pulse(timestamp); };
-  return { start, stop, pulse, observeInput, flushInput, releaseInput:release, resetTiming, get running() { return running; } };
+  return { start, stop, pulse, render: renderFrame, observeInput, flushInput, releaseInput:release, resetTiming, get running() { return running; } };
 }

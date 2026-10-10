@@ -71,7 +71,7 @@ export async function createNostrDynamicRoom({ role, room, namespace = 'rollback
   let coordinatorId = resumed ? saved.coordinatorId : role === 'host' ? self : null;
   let sessionId = resumed ? saved.sessionId : role === 'host' ? randomId() : null;
   let epoch = resumed ? saved.epoch : 0, meshPlayers = new Set(players), meshUntil = resumed ? Infinity : 0;
-  let hasBeenAdmitted = players.includes(self);
+  let hasBeenAdmitted = players.includes(self), allowBranchReconnect = false;
   let disposed = false, settled = false, backlogBytes = 0, unsubscribe, interval, deadline, invitation, nextAdvertisement = 0;
   let readyResolve, readyReject;
   const ready = new Promise((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
@@ -318,6 +318,7 @@ export async function createNostrDynamicRoom({ role, room, namespace = 'rollback
     if (nextEpoch < epoch) throw new Error('stale dynamic room epoch');
     if (nextEpoch === epoch && (players.join('\n') !== next.join('\n') || coordinatorId !== value.coordinatorId)) throw new Error('conflicting dynamic room epoch');
     players = next; epoch = nextEpoch; coordinatorId = value.coordinatorId;
+    if (value.allowBranchReconnect === true) allowBranchReconnect = true;
     meshPlayers = new Set(next); meshUntil = Infinity; invitation = null;
     for (const id of candidates.keys()) if (next.includes(id)) candidates.delete(id);
     for (const id of incarnations.keys()) if (id !== self && !next.includes(id) && !links.has(id) && !candidates.has(id)) incarnations.delete(id);
@@ -400,7 +401,9 @@ export async function createNostrDynamicRoom({ role, room, namespace = 'rollback
       meshPlayers = new Set(known); meshUntil = Infinity;
       saveResume(); send(from, 'join'); ensurePeer(from).catch(() => {}); return;
     }
-    if (!sessionId || m.sessionId !== sessionId || m.coordinatorId !== coordinatorId) return;
+    const branchReconnect = allowBranchReconnect && players.includes(from) &&
+      ['request', 'link', 'resume-request', 'resume-accept', 'resume-reject'].includes(m.op);
+    if (!sessionId || m.sessionId !== sessionId || m.coordinatorId !== coordinatorId && !branchReconnect) return;
     if (m.op === 'resume-request' && players.includes(from) && m.resumeSession === sessionId && validId(m.incarnation)) {
       approveResume(from, m.incarnation); return;
     }
