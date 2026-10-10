@@ -57,10 +57,10 @@ function byteLength(value, seen = new Set()) {
 export class LocalInputPreview {
   #forkFactory; #cloneSnapshot; #captureSnapshot; #readEntities; #presentation; #maxPending; #maxFutureTicks; #maxAgeMs; #stepMs;
   #snapshot = null; #snapshotTick = -1; #fork = null; #forkTick = -1; #forkCurrent = false; #clockGap = false; #forecast = []; #pending = []; #observed = null; #baseInput; #continuationKey; #revision = -1; #tick = -1; #epoch = -1; #generation = 0;
-  #sequence = 0; #timeMs = -Infinity; #disposed = false; #enabled = true; #captureSequence = -1;
+  #sequence = 0; #timeMs = -Infinity; #disposed = false; #enabled = true; #captureSequence = -1; #confirmedCommandSequence; #confirmedOnlySteps = 0;
   #metrics = { snapshotBytes: 0, correctionBytes: 0, replayBytes: 0, snapshotCloneMs: 0, forkMs: 0, replayMs: 0, replayedInputs: 0, replayGapSteps:0, corrections: 0, correctionMs: 0, continuedCheckpoints: 0,
     continuationRejectedDisabled:0,continuationRejectedTick:0,continuationRejectedRevision:0,continuationRejectedEpoch:0,continuationRejectedKey:0,continuationRejectedObserved:0,continuationRejectedForecast:0,continuationRejectedInput:0,continuationRejectedFork:0,continuationRejectedCommands:0,
-    forkRebuilds:0,snapshotRefreshes:0,forecastReuses:0,forecastExtensions:0,currentForkExtensions:0,clockGaps:0,
+    forkRebuilds:0,snapshotRefreshes:0,forecastReuses:0,forecastExtensions:0,currentForkExtensions:0,clockGaps:0,confirmedAdvances:0,confirmedAdvanceRejected:0,confirmedAdvanceMs:0,
     previewPublishes: 0, rejectedEpoch: 0, rejectedHorizon: 0, rejectedAge: 0, rejectedCapacity: 0 };
 
   /** @param {{createFork:(snapshot:unknown)=>{step:(input:unknown,context:object)=>void},cloneSnapshot?:(snapshot:unknown)=>unknown,captureSnapshot?:()=>unknown,readEntities:(fork:unknown)=>Array, presentation?:{selectPreview:(ids:Array)=>void,capturePreview:(packet:object,nowMs:number)=>boolean,clearPreview?:()=>void},maxPendingInputs?:number,maxFutureTicks?:number,maxAgeMs?:number}} options */
@@ -86,7 +86,7 @@ export class LocalInputPreview {
 
   #clear() {
     this.#pending.length = 0; this.#observed = null; this.#forecast.length = 0; this.#fork = null; this.#snapshot = null;
-    this.#snapshotTick = this.#forkTick = -1; this.#forkCurrent = false; this.#clockGap=false; this.#baseInput=undefined; this.#continuationKey=undefined; this.#captureSequence = -1;
+    this.#snapshotTick = this.#forkTick = -1; this.#forkCurrent = false; this.#clockGap=false; this.#baseInput=undefined; this.#continuationKey=undefined;this.#confirmedCommandSequence=undefined;this.#confirmedOnlySteps=0; this.#captureSequence = -1;
     this.#presentation?.clearPreview?.();
     this.#presentation?.selectPreview([]);
   }
@@ -119,7 +119,7 @@ export class LocalInputPreview {
     this.#metrics.snapshotBytes += snapshotSize; this.#metrics.correctionBytes += snapshotSize;
     this.#snapshot = snapshot; this.#snapshotTick = checkpoint.tick; this.#continuationKey=checkpoint.continuationKey;this.#clockGap=false;
     this.#revision = checkpoint.revision; this.#tick = checkpoint.tick; this.#epoch = checkpoint.epoch;this.#forkCurrent=false;this.#forkTick=-1;this.#forecast.length=0;
-    this.#baseInput=checkpoint.input===undefined?undefined:copyInput(checkpoint.input);
+    this.#baseInput=checkpoint.input===undefined?undefined:copyInput(checkpoint.input);this.#confirmedCommandSequence=checkpoint.confirmedCommandSequence;this.#confirmedOnlySteps=0;
     this.#timeMs = checkpoint.timeMs; this.#generation++;
     if(this.#pending.length||this.#observed||!this.#fork)this.#rebuild(checkpoint.timeMs);
     this.#metrics.corrections++; this.#metrics.correctionMs += performance.now() - start;
@@ -158,11 +158,36 @@ export class LocalInputPreview {
     this.#tick = checkpoint.tick; this.#epoch = checkpoint.epoch; this.#revision = checkpoint.revision;
     this.#baseInput = copyInput(checkpoint.input); this.#timeMs = checkpoint.timeMs; this.#generation++;
     this.#continuationKey = checkpoint.continuationKey;
+    this.#confirmedCommandSequence=checkpoint.confirmedCommandSequence??this.#confirmedCommandSequence;this.#confirmedOnlySteps=0;
     this.#forkCurrent = this.#forkTick === this.#tick && !this.#pending.length;
     this.#clockGap=false;
     this.#metrics.continuedCheckpoints++;
     if (!this.#pending.length && !this.#observed) this.#presentation?.clearPreview?.();
     return true;
+  }
+
+  /**
+   * Advance one exact confirmed local frame when no speculative frame was available.
+   * Only a contiguous fork with no pending work or newly confirmed command can use this path;
+   * one step maximum keeps non-local state staleness bounded before snapshot rebase.
+   * @param {{input:unknown,revision:number,tick:number,epoch:number,continuationKey:string,confirmedCommandSequence?:number,timeMs:number}} checkpoint
+   * @returns {boolean} Whether the detached fork advanced without installing a full snapshot.
+   */
+  advanceConfirmedCheckpoint(checkpoint) {
+    this.#assertLive();
+    const reject=()=>{this.#metrics.confirmedAdvanceRejected++;return false};
+    if(!this.#enabled||!checkpoint||typeof checkpoint.continuationKey!=='string')return reject();
+    for(const key of ['revision','tick','epoch'])if(!Number.isSafeInteger(checkpoint[key])||checkpoint[key]<0)throw new RangeError('checkpoint '+key);
+    if(!Number.isFinite(checkpoint.timeMs)||checkpoint.timeMs<this.#timeMs)throw new RangeError('checkpoint timeMs must be monotonic');
+    if(checkpoint.confirmedCommandSequence!==undefined&&(!Number.isSafeInteger(checkpoint.confirmedCommandSequence)||checkpoint.confirmedCommandSequence<0))throw new RangeError('checkpoint confirmedCommandSequence');
+    if(checkpoint.tick!==this.#tick+1||checkpoint.revision!==this.#revision||checkpoint.epoch!==this.#epoch||checkpoint.continuationKey!==this.#continuationKey)return reject();
+    if(checkpoint.input===undefined||checkpoint.confirmedCommandSequence!==this.#confirmedCommandSequence||!this.#fork||!this.#forkCurrent||this.#forkTick!==this.#tick||this.#pending.length||this.#observed||this.#forecast.length||this.#confirmedOnlySteps>=1)return reject();
+    const started=performance.now(),input=copyInput(checkpoint.input);
+    this.#fork.step(copyInput(input),{tick:this.#tick,epoch:this.#epoch,commands:[],speculative:true,confirmedReplay:true});
+    this.#metrics.confirmedAdvanceMs+=performance.now()-started;this.#metrics.confirmedAdvances++;
+    this.#baseInput=copyInput(input);this.#tick=checkpoint.tick;this.#epoch=checkpoint.epoch;this.#revision=checkpoint.revision;this.#timeMs=checkpoint.timeMs;
+    this.#continuationKey=checkpoint.continuationKey;this.#forkTick=checkpoint.tick;this.#forkCurrent=true;this.#confirmedOnlySteps++;this.#generation++;
+    this.#presentation?.clearPreview?.();return true;
   }
 
   /** Observe a coalesced future frame BEFORE authority advances. Provisional IDs are not SDK command sequences. */
