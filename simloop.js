@@ -499,7 +499,10 @@ var LocalInputPreview = class {
     this.#forkCurrent = this.#forkTick === this.#tick && !this.#pending.length;
     this.#clockGap = false;
     this.#metrics.continuedCheckpoints++;
-    if (!this.#pending.length && !this.#observed) this.#presentation?.clearPreview?.();
+    if (!this.#pending.length && !this.#observed) {
+      if (this.#forecast.some((step) => step.kind === "observed" && step.tick >= checkpoint.tick)) this.#publish(checkpoint.timeMs);
+      else this.#presentation?.clearPreview?.();
+    }
     return true;
   }
   /** Observe a coalesced future frame BEFORE authority advances. Provisional IDs are not SDK command sequences. */
@@ -550,10 +553,8 @@ var LocalInputPreview = class {
           this.#observed = owned;
           step.sequence = owned.sequence;
           this.#metrics.forecastReuses++;
-          if (this.#clockGap) {
-            this.#clockGap = false;
-            this.#publish(timeMs);
-          }
+          this.#clockGap = false;
+          this.#publish(timeMs);
           return true;
         }
         conflictingObserved = true;
