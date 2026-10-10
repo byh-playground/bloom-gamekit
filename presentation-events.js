@@ -34,6 +34,8 @@ var PresentationEventQueue = class {
     this.confirmedTick = -1;
     this.records = /* @__PURE__ */ new Map();
     this.active = /* @__PURE__ */ new Set();
+    this.awaitingConfirmation = /* @__PURE__ */ new Set();
+    this.collectibleTicks = /* @__PURE__ */ new Map();
     this.rollbackFrom = null;
     this.disposed = false;
     this.confirmationDirty = false;
@@ -46,7 +48,10 @@ var PresentationEventQueue = class {
     try {
       record.handle = record.adapter.start(record.event, this.nowMs);
     } catch (error) {
-      if (record.confirmed) this.confirmationDirty = true;
+      if (record.confirmed) {
+        this.confirmationDirty = true;
+        this.awaitingConfirmation.add(record);
+      }
       throw error;
     }
     record.startedMs = this.nowMs;
@@ -66,6 +71,11 @@ var PresentationEventQueue = class {
       record.event = { tick, sequence, entityId, generation, kind, policy };
       record.handle = void 0;
       record.compacted = true;
+      if (tick > this.confirmedTick - this.retentionTicks) {
+        let bucket = this.collectibleTicks.get(tick);
+        if (!bucket) this.collectibleTicks.set(tick, bucket = []);
+        bucket.push(record);
+      }
     }
     if (tick <= this.confirmedTick - this.retentionTicks && this.records.delete(record.key)) this.stats.collected++;
   }
@@ -130,6 +140,7 @@ var PresentationEventQueue = class {
       compacted: false
     };
     this.records.set(key, record);
+    if (!record.confirmed) this.awaitingConfirmation.add(record);
     if (policy === "speculative" || record.confirmed) this._start(record);
     return true;
   }
@@ -139,14 +150,14 @@ var PresentationEventQueue = class {
     if (this.rollbackFrom !== null) throw new Error("rollback already active");
     if (fromTick <= this.confirmedTick) throw new RangeError("cannot rollback confirmed presentation");
     this.rollbackFrom = fromTick;
-    for (const record of this.records.values()) if (record.event.tick >= fromTick && !record.confirmed) record.seen = false;
+    for (const record of this.awaitingConfirmation) if (record.event.tick >= fromTick && !record.confirmed) record.seen = false;
   }
   endRollback() {
     this._ready();
     if (this.rollbackFrom === null) throw new Error("no rollback active");
     this.rollbackFrom = null;
     const errors = [];
-    for (const record of this.records.values()) if (!record.seen && !record.confirmed && record.state !== "cancelled") {
+    for (const record of this.awaitingConfirmation) if (!record.seen && !record.confirmed && record.state !== "cancelled") {
       try {
         this._stop(record, "cancelled");
       } catch (error) {
@@ -164,12 +175,13 @@ var PresentationEventQueue = class {
     if (tick === this.confirmedTick && !this.confirmationDirty) return;
     this.confirmedTick = tick;
     this.confirmationDirty = true;
-    for (const record of this.records.values()) if (record.event.tick <= tick) {
+    for (const record of this.awaitingConfirmation) if (record.event.tick <= tick) {
       const wasConfirmed = record.confirmed;
       record.confirmed = true;
       if (record.state === "pending") this._start(record);
       if (!wasConfirmed && record.state === "active") record.adapter.confirm?.(record.handle, record.event);
       this._release(record);
+      this.awaitingConfirmation.delete(record);
     }
     this.collect();
     this.confirmationDirty = false;
@@ -199,9 +211,9 @@ var PresentationEventQueue = class {
   collect() {
     this._ready();
     const cutoff = this.confirmedTick - this.retentionTicks;
-    for (const [key, record] of this.records) if (record.confirmed && record.event.tick <= cutoff && record.state !== "active" && record.state !== "pending") {
-      this.records.delete(key);
-      this.stats.collected++;
+    for (const [tick, bucket] of this.collectibleTicks) if (tick <= cutoff) {
+      for (const record of bucket) if (this.records.delete(record.key)) this.stats.collected++;
+      this.collectibleTicks.delete(tick);
     }
   }
   get size() {
@@ -218,6 +230,8 @@ var PresentationEventQueue = class {
     }
     this.records.clear();
     this.active.clear();
+    this.awaitingConfirmation.clear();
+    this.collectibleTicks.clear();
     this.rollbackFrom = null;
     if (errors.length) throw new AggregateError(errors, "presentation cleanup failed");
   }

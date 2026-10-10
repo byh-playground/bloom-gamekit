@@ -3,11 +3,11 @@
   "modules": [
     {
       "file": "interpolation.js",
-      "sha256": "e3aa7bca322450d706dab37f33d56debd3b41b698e41b98104d82b134935ffe5"
+      "sha256": "d1f1c9c4502b97154c524fbdd4c1feb3d69d4dffb477a8585f51e124a9821ffe"
     },
     {
       "file": "rendering.js",
-      "sha256": "a4d0578d1365e139ce017d3266fbb115cdd66a05a253b897da0bcbe702c9a5eb"
+      "sha256": "45d11133ea1256b0cc16a4e0180228d4ecf6d91a6777014bf0983dccb29d26ac"
     },
     {
       "file": "input.js",
@@ -31,11 +31,11 @@
     },
     {
       "file": "rollback.js",
-      "sha256": "a6d2461d9e68dfcf8ec0294396bb129ad074e623c2cd7ff8c481d5b921176d1a"
+      "sha256": "6703a23c283fc3f173b9a0ec7fcacc7467f20e15141ca399bb1c90c3df831d8c"
     },
     {
       "file": "rollback-netcode.js",
-      "sha256": "8f5aaaea35a70d82ea5d50e2ab62c817e5eac4bb30374c23d73ec7f4590cc8dc"
+      "sha256": "f56208894baea7c38f96bf16099dc901fca7d903758d55c1fe4465c9aeb9f617"
     },
     {
       "file": "camera.js",
@@ -43,7 +43,7 @@
     },
     {
       "file": "presentation-events.js",
-      "sha256": "30a1c9fd62f223998bba34e299b6f6baf0a789a4f09d468b62df87c8193930c5"
+      "sha256": "469a820e22730cdff9a0e4cd37fcbbfa4ffc9af3e39eab6d9a784e1d544caf84"
     },
     {
       "file": "hud.js",
@@ -51,7 +51,7 @@
     },
     {
       "file": "debug-tools.js",
-      "sha256": "ff8c87307a2d26da23ecf2f5133f65ebb809c78c1fcbf9f59aa56f2dedc4697b"
+      "sha256": "72260336a6c3f2ee0357a303fa8943dd8cfa4f7deea5d9517d311d4cd8796a71"
     }
   ],
   "assets": [

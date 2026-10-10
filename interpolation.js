@@ -689,10 +689,13 @@ var PresentationRuntime = class {
     this.#checkClock(nowMs);
     const preview = this.#preview.get(id);
     if (preview && preview.generation === generation && this.#previewSelection.get(id) === generation) {
-      const values = preview.sampleValues ??= new Array(preview.plan.fields.length);
-      for (let i = 0; i < values.length; i++) values[i] = this.#value(preview, i, nowMs);
-      writeRenderModel(preview.plan, preview.model, values, preview.target.shapes);
-      this.#models.set(preview.model, preview);
+      if (preview.sampledAt !== nowMs) {
+        const values = preview.sampleValues ??= new Array(preview.plan.fields.length);
+        for (let i = 0; i < values.length; i++) values[i] = this.#value(preview, i, nowMs);
+        writeRenderModel(preview.plan, preview.model, values, preview.target.shapes);
+        preview.sampledAt = nowMs;
+        this.#models.set(preview.model, preview);
+      }
       this.#now = nowMs;
       return preview.model;
     }
