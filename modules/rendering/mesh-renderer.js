@@ -1,4 +1,6 @@
 const IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
+const ZERO_MORPH = Object.freeze([0, 0]);
+const EMPTY_CLIP = Object.freeze({ key: '', values: null, count: 0 });
 const WHITE = Object.freeze([1, 1, 1, 1]);
 const ATTRIBUTES = [
   { name: 'a_position', size: 2, offset: 0 }, { name: 'a_color', size: 4, offset: 8 },
@@ -25,12 +27,13 @@ uniform vec3 u_planes[${maxPlanes}]; uniform int u_planeCount;
 void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_planes[i],vec3(v_position,1.0))<0.0)discard;}gl_FragColor=v_color;}`;
 }
 function finiteArray(value, size, name) {
-  if (!value || value.length !== size || Array.from(value).some(n => !Number.isFinite(n))) throw new TypeError(`${name}: ${size} finite numbers required`);
+  if (!value || value.length !== size) throw new TypeError(`${name}: ${size} finite numbers required`);
+  for (let i = 0; i < size; i++) if (!Number.isFinite(value[i])) throw new TypeError(`${name}: ${size} finite numbers required`);
 }
 function packParts(parts, count, output) {
   if (parts !== null && (!Array.isArray(parts) || parts.length !== count)) throw new TypeError('One pose per authored mesh part required');
   for (let i = 0; i < count; i++) {
-    const part = parts?.[i], m = part?.transform ?? IDENTITY, morph = part?.morph ?? [0, 0];
+    const part = parts?.[i], m = part?.transform ?? IDENTITY, morph = part?.morph ?? ZERO_MORPH;
     finiteArray(m, 6, 'part transform'); finiteArray(morph, 2, 'part morph');
     const at = i * 12;
     output[at] = m[0]; output[at+1] = m[2]; output[at+2] = m[4]; output[at+3] = 0;
@@ -39,7 +42,7 @@ function packParts(parts, count, output) {
   }
 }
 function clipState(clips, maxPlanes) {
-  if (!clips?.length) return { key: '', values: null, count: 0 };
+  if (!clips?.length) return EMPTY_CLIP;
   const values = [], key = [];
   for (const polygon of clips) {
     if (!Array.isArray(polygon) || polygon.length < 3 || polygon.some(p => !Number.isFinite(p?.x) || !Number.isFinite(p?.y))) throw new TypeError('Finite convex clip polygons required');
