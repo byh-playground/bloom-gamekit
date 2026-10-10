@@ -308,6 +308,8 @@ var LocalInputPreview = class {
   #disposed = false;
   #enabled = true;
   #captureSequence = -1;
+  #confirmedCommandSequence;
+  #confirmedOnlySteps = 0;
   #metrics = {
     snapshotBytes: 0,
     correctionBytes: 0,
@@ -336,6 +338,19 @@ var LocalInputPreview = class {
     forecastExtensions: 0,
     currentForkExtensions: 0,
     clockGaps: 0,
+    confirmedAdvances: 0,
+    confirmedAdvanceRejected: 0,
+    confirmedAdvanceRejectedDisabled: 0,
+    confirmedAdvanceRejectedKey: 0,
+    confirmedAdvanceRejectedTick: 0,
+    confirmedAdvanceRejectedRevision: 0,
+    confirmedAdvanceRejectedEpoch: 0,
+    confirmedAdvanceRejectedInput: 0,
+    confirmedAdvanceRejectedCommands: 0,
+    confirmedAdvanceRejectedFork: 0,
+    confirmedAdvanceRejectedPending: 0,
+    confirmedAdvanceRejectedLimit: 0,
+    confirmedAdvanceMs: 0,
     previewPublishes: 0,
     rejectedEpoch: 0,
     rejectedHorizon: 0,
@@ -395,6 +410,8 @@ var LocalInputPreview = class {
     this.#clockGap = false;
     this.#baseInput = void 0;
     this.#continuationKey = void 0;
+    this.#confirmedCommandSequence = void 0;
+    this.#confirmedOnlySteps = 0;
     this.#captureSequence = -1;
     this.#presentation?.clearPreview?.();
     this.#presentation?.selectPreview([]);
@@ -444,6 +461,8 @@ var LocalInputPreview = class {
     this.#forkTick = -1;
     this.#forecast.length = 0;
     this.#baseInput = checkpoint.input === void 0 ? void 0 : copyInput(checkpoint.input);
+    this.#confirmedCommandSequence = checkpoint.confirmedCommandSequence;
+    this.#confirmedOnlySteps = 0;
     this.#timeMs = checkpoint.timeMs;
     this.#generation++;
     if (this.#pending.length || this.#observed || !this.#fork) this.#rebuild(checkpoint.timeMs);
@@ -496,6 +515,8 @@ var LocalInputPreview = class {
     this.#timeMs = checkpoint.timeMs;
     this.#generation++;
     this.#continuationKey = checkpoint.continuationKey;
+    this.#confirmedCommandSequence = checkpoint.confirmedCommandSequence ?? this.#confirmedCommandSequence;
+    this.#confirmedOnlySteps = 0;
     this.#forkCurrent = this.#forkTick === this.#tick && !this.#pending.length;
     this.#clockGap = false;
     this.#metrics.continuedCheckpoints++;
@@ -503,6 +524,51 @@ var LocalInputPreview = class {
       if (this.#forecast.some((step) => step.kind === "observed" && step.tick >= checkpoint.tick)) this.#publish(checkpoint.timeMs);
       else this.#presentation?.clearPreview?.();
     }
+    return true;
+  }
+  /**
+   * Advance one exact confirmed local frame when no speculative frame was available.
+   * Only a contiguous fork with no pending work or newly confirmed command can use this path;
+   * one step maximum keeps non-local state staleness bounded before snapshot rebase.
+   * @param {{input:unknown,revision:number,tick:number,epoch:number,continuationKey:string,confirmedCommandSequence?:number,timeMs:number}} checkpoint
+   * @returns {boolean} Whether the detached fork advanced without installing a full snapshot.
+   */
+  advanceConfirmedCheckpoint(checkpoint) {
+    this.#assertLive();
+    const reject = (reason) => {
+      this.#metrics.confirmedAdvanceRejected++;
+      this.#metrics["confirmedAdvanceRejected" + reason]++;
+      return false;
+    };
+    if (!this.#enabled) return reject("Disabled");
+    if (!checkpoint || typeof checkpoint.continuationKey !== "string") return reject("Key");
+    for (const key of ["revision", "tick", "epoch"]) if (!Number.isSafeInteger(checkpoint[key]) || checkpoint[key] < 0) throw new RangeError("checkpoint " + key);
+    if (!Number.isFinite(checkpoint.timeMs) || checkpoint.timeMs < this.#timeMs) throw new RangeError("checkpoint timeMs must be monotonic");
+    if (checkpoint.confirmedCommandSequence !== void 0 && (!Number.isSafeInteger(checkpoint.confirmedCommandSequence) || checkpoint.confirmedCommandSequence < 0)) throw new RangeError("checkpoint confirmedCommandSequence");
+    if (checkpoint.tick !== this.#tick + 1) return reject("Tick");
+    if (checkpoint.revision !== this.#revision) return reject("Revision");
+    if (checkpoint.epoch !== this.#epoch) return reject("Epoch");
+    if (checkpoint.continuationKey !== this.#continuationKey) return reject("Key");
+    if (checkpoint.input === void 0) return reject("Input");
+    if (checkpoint.confirmedCommandSequence !== this.#confirmedCommandSequence) return reject("Commands");
+    if (!this.#fork || !this.#forkCurrent || this.#forkTick !== this.#tick) return reject("Fork");
+    if (this.#pending.length || this.#observed || this.#forecast.length) return reject("Pending");
+    if (this.#confirmedOnlySteps >= 1) return reject("Limit");
+    const started = performance.now(), input = copyInput(checkpoint.input);
+    this.#fork.step(copyInput(input), { tick: this.#tick, epoch: this.#epoch, commands: [], speculative: true, confirmedReplay: true });
+    this.#metrics.confirmedAdvanceMs += performance.now() - started;
+    this.#metrics.confirmedAdvances++;
+    this.#baseInput = copyInput(input);
+    this.#tick = checkpoint.tick;
+    this.#epoch = checkpoint.epoch;
+    this.#revision = checkpoint.revision;
+    this.#timeMs = checkpoint.timeMs;
+    this.#continuationKey = checkpoint.continuationKey;
+    this.#forkTick = checkpoint.tick;
+    this.#forkCurrent = true;
+    this.#confirmedOnlySteps++;
+    this.#generation++;
+    this.#presentation?.clearPreview?.();
     return true;
   }
   /** Observe a coalesced future frame BEFORE authority advances. Provisional IDs are not SDK command sequences. */
