@@ -2005,7 +2005,7 @@ async function createNostrDynamicRoom({
   let coordinatorId = resumed ? saved.coordinatorId : role === "host" ? self : null;
   let sessionId = resumed ? saved.sessionId : role === "host" ? randomId() : null;
   let epoch = resumed ? saved.epoch : 0, meshPlayers = new Set(players), meshUntil = resumed ? Infinity : 0;
-  let hasBeenAdmitted = players.includes(self);
+  let hasBeenAdmitted = players.includes(self), allowBranchReconnect = false;
   let disposed = false, settled = false, backlogBytes = 0, unsubscribe, interval, deadline, invitation, nextAdvertisement = 0;
   let readyResolve, readyReject;
   const ready = new Promise((resolve, reject) => {
@@ -2403,6 +2403,7 @@ async function createNostrDynamicRoom({
     players = next;
     epoch = nextEpoch;
     coordinatorId = value.coordinatorId;
+    if (value.allowBranchReconnect === true) allowBranchReconnect = true;
     meshPlayers = new Set(next);
     meshUntil = Infinity;
     invitation = null;
@@ -2569,7 +2570,8 @@ async function createNostrDynamicRoom({
       });
       return;
     }
-    if (!sessionId || m.sessionId !== sessionId || m.coordinatorId !== coordinatorId) return;
+    const branchReconnect = allowBranchReconnect && players.includes(from) && ["request", "link", "resume-request", "resume-accept", "resume-reject"].includes(m.op);
+    if (!sessionId || m.sessionId !== sessionId || m.coordinatorId !== coordinatorId && !branchReconnect) return;
     if (m.op === "resume-request" && players.includes(from) && m.resumeSession === sessionId && validId(m.incarnation)) {
       approveResume(from, m.incarnation);
       return;

@@ -108,7 +108,8 @@ function createLoop({
     globalThis.removeEventListener?.("blur", release);
     globalThis.document?.removeEventListener("visibilitychange", hidden);
   };
-  const pulse = (timestamp) => {
+  const renderFrame = () => render({ session, alpha: Math.min(1, accumulator / quantum), resimulating: session.resimulating });
+  const pulse = (timestamp, { render: shouldRender = true } = {}) => {
     const current = generation;
     try {
       if (!Number.isFinite(timestamp)) throw new TypeError("frame timestamp");
@@ -189,7 +190,7 @@ function createLoop({
         if (current !== generation || timing !== timingGeneration) return;
         if (result.status !== "advanced") break;
       }
-      render({ session, alpha: Math.min(1, accumulator / quantum), resimulating: session.resimulating });
+      if (shouldRender) renderFrame();
     } catch (error) {
       if (current === generation) stop();
       onError(error);
@@ -215,7 +216,7 @@ function createLoop({
     accumulator = Math.max(accumulator, quantum * (session.pace ?? 1));
     pulse(timestamp);
   };
-  return { start, stop, pulse, observeInput, flushInput, releaseInput: release, resetTiming, get running() {
+  return { start, stop, pulse, render: renderFrame, observeInput, flushInput, releaseInput: release, resetTiming, get running() {
     return running;
   } };
 }
