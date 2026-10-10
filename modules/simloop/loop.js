@@ -25,9 +25,9 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
     const held=observedCommands;
     if(held.length+commands.length>64)throw new RangeError('unsubmitted input command capacity');
     for(const command of commands){if(!command||command.payload===undefined)throw new TypeError('command payload required');held.push({observationId:++commandObservation,sequence:null,payload:command.payload.slice?.()??structuredClone(command.payload)});}
-    cached={input:input.slice?.()??structuredClone(input),commands:held,predict:!packet||sampled.predict!==false||held.length>0,sequence:++inputSequence};observedAt=timestamp;
+    cached={input:input.slice?.()??structuredClone(input),commands:held,predict:!packet||sampled.predict!==false||held.length>0,continuationKey:packet?sampled.continuationKey:undefined,sequence:++inputSequence};observedAt=timestamp;
     if(inputPreview&&packet&&sampled.predict===false&&!held.length)inputPreview.cancelObservation?.(Math.max(timestamp,performance.now()));
-    else if(inputPreview?.enabled!==false && inputPreview)try{inputPreview.observe(cached.input,{sequence:cached.sequence,tick:session.tick,epoch:session.epoch??0,
+    else if(inputPreview?.enabled!==false && inputPreview)try{inputPreview.observe(cached.input,{sequence:cached.sequence,tick:session.tick,epoch:session.epoch??0,continuationKey:cached.continuationKey,
       timeMs:Math.max(timestamp,globalThis.performance?.now?.()??timestamp),commands:cached.commands});}catch(error){inputPreview.clear?.();onPreviewError(error);}
     return cached;
   };
@@ -57,7 +57,7 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
       if (elapsed > maxBacklogMs) {
         accumulator = 0;
         last = timestamp;
-        inputPreview?.clear?.();
+        if (typeof inputPreview?.clockGap === 'function') inputPreview.clockGap(); else inputPreview?.clear?.();
         onBacklogDrop({ elapsedMs: elapsed, droppedTicks: Math.floor(elapsed / quantum), timestamp });
       } else {
         accumulator = backlogPolicy === 'retain' ? accumulator + elapsed :
