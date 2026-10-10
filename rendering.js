@@ -1601,6 +1601,7 @@ var VectorContext = class {
     this.deferredMeshes = [];
     this.gradientTextures = /* @__PURE__ */ new Map();
     this._silhouetteMatrices = new Float32Array(60);
+    this._scaledSilhouetteMatrices = new Float32Array(12);
     this._silhouetteColorCache = /* @__PURE__ */ new Map();
     this.onLost = (event) => {
       event.preventDefault();
@@ -2131,13 +2132,17 @@ var VectorContext = class {
     }
     this.meshRenderer.drawMesh(mesh, { matrix, projection: this.vector.projection, clips: this.vector.clips, morph, parts, color: this.forceColor ?? [1, 1, 1, 1], forceColor: this.forceColor !== null, alpha: this._globalAlpha, whiteFlash: this._filter === "brightness(0) invert(1)" });
   }
-  /** Draw a retained mesh with the existing eight-offset silhouette and body in one ordered instance batch. */
-  drawMeshSilhouette(mesh, { transform = null, morph = [0, 0], parts = null, color: color2 = "black", width, radius = 128 } = {}) {
+  /** Draw a retained mesh silhouette and body in one ordered instance batch. */
+  drawMeshSilhouette(mesh, { transform = null, morph = [0, 0], parts = null, color: color2 = "black", width, radius = 128, outlineScale = null } = {}) {
     this._frame();
     if (!this.meshRenderer) throw new TypeError("createMesh required");
     finite2(width, "silhouette width");
     finite2(radius, "silhouette radius");
     if (width < 0 || radius < 0) throw new RangeError("silhouette dimensions must be non-negative");
+    if (outlineScale !== null) {
+      finite2(outlineScale, "silhouette outlineScale");
+      if (outlineScale < 1) throw new RangeError("silhouette outlineScale must be at least one");
+    }
     let outline;
     if (typeof color2 === "string" && color2[0] === "#") {
       outline = this._silhouetteColorCache.get(color2);
@@ -2147,8 +2152,8 @@ var VectorContext = class {
         this._silhouetteColorCache.set(color2, outline);
       }
     } else outline = normalizeColor(color2);
-    const matrices = this._silhouetteMatrices;
-    const bounds = this.groupBounds(0, 0, radius + width);
+    const outlineInstances = outlineScale === null ? 9 : 1, count = outlineInstances + 1, matrices = outlineScale === null ? this._silhouetteMatrices : this._scaledSilhouetteMatrices;
+    const bounds = this.groupBounds(0, 0, Math.max(radius + width, radius * (outlineScale ?? 1)));
     return this.withGroupOpacity(this._globalAlpha, () => {
       this.vector.flush();
       const source = this.vector.matrix, a = source[0], b = source[1], c = source[2], d = source[3], e = source[4], f = source[5];
@@ -2157,17 +2162,17 @@ var VectorContext = class {
         if (transform.length !== 6 || Array.from(transform).some((n) => !Number.isFinite(n))) throw new TypeError("Six finite transform values required");
         [ta, tb, tc, td, te, tf] = transform;
       }
-      for (let i = 0; i < 10; i++) {
-        const outlinePass = i < 9, offset = outlinePass && i < 8, direction = offset ? SILHOUETTE_OFFSETS[i] : null, dx = direction ? direction[0] * width : 0, dy = direction ? direction[1] * width : 0, at = i * 6;
+      for (let i = 0; i < count; i++) {
+        const outlinePass = i < outlineInstances, offset = outlineScale === null && outlinePass && i < 8, direction = offset ? SILHOUETTE_OFFSETS[i] : null, dx = direction ? direction[0] * width : 0, dy = direction ? direction[1] * width : 0, scale = outlineScale !== null && i === 0 ? outlineScale : 1, at = i * 6;
         const eOffset = e + a * dx + c * dy, fOffset = f + b * dx + d * dy;
-        matrices[at] = a * ta + c * tb;
-        matrices[at + 1] = b * ta + d * tb;
-        matrices[at + 2] = a * tc + c * td;
-        matrices[at + 3] = b * tc + d * td;
+        matrices[at] = (a * ta + c * tb) * scale;
+        matrices[at + 1] = (b * ta + d * tb) * scale;
+        matrices[at + 2] = (a * tc + c * td) * scale;
+        matrices[at + 3] = (b * tc + d * td) * scale;
         matrices[at + 4] = a * te + c * tf + eOffset;
         matrices[at + 5] = b * te + d * tf + fOffset;
       }
-      this.meshRenderer._drawMeshInstances(mesh, { matrices, count: 10, projection: this.vector.projection, morph, parts, color: this.forceColor ?? WHITE3, forceColor: this.forceColor !== null, prefixColor: outline, prefixCount: 9, forceColorPrefixCount: 9, alpha: this._globalAlpha, whiteFlash: this._filter === "brightness(0) invert(1)", clips: this.vector.clips });
+      this.meshRenderer._drawMeshInstances(mesh, { matrices, count, projection: this.vector.projection, morph, parts, color: this.forceColor ?? WHITE3, forceColor: this.forceColor !== null, prefixColor: outline, prefixCount: outlineInstances, forceColorPrefixCount: outlineInstances, alpha: this._globalAlpha, whiteFlash: this._filter === "brightness(0) invert(1)", clips: this.vector.clips });
     }, bounds);
   }
   flush() {
