@@ -19,6 +19,7 @@ lockstep snapshot 빈도는 유지합니다. 테스트 중 sparse checkpoint 사
 - dynamic fixture는 실제 `PresentationEventQueue`를 사용합니다. global rollback 경계, epoch commit의 journal 교체, bootstrap 외부 효과 억제, 확정 command 효과 중복 방지를 검사합니다.
 - `npm test`: 8.7초 PASS. 실제 DOM과 WebGL1/SwiftShader 픽셀, 독립 ESM 소비 경로를 검사합니다.
 - `npm run test:network`: 80.8초 PASS. 기본 lockstep 5인 합류/refresh/이탈, legacy/cooperative snapshot 경로와 paced directory, available 복귀, fixed Core 두 모드의 실제 RTC 회귀입니다.
+- `npm run test:availability`: 최종 소스 67.4초 PASS. 기본 lockstep의 두/네 페이지 복귀·partition·자동 이관·명령 순번을 재검증했습니다.
 - Bounko consumer: 9.6초 PASS. 390px/1280px에서 직접 URL·F5·뒤/앞 이동, 스킬 프리뷰 일시정지/재시작/종료, 소개 재생, 전투 설정 복귀, 저장/구매 상태 불변을 확인했습니다. Bounko `4719e0d`를 사용했고 기존 배포 핀을 변경하지 않았습니다.
 
 suite 전체 상한은 각각 180초입니다. 실행 결과는 `test-results/rollback/room-modes-report.json`, `availability-rollback-report.json`, `availability-lockstep-report.json`, `dynamic-room-report.json`에 생성됩니다. 별도 Node 집중 검사는 sparse checkpoint 사이의 command baseline/이월을 확인한 후 저장소에 남기지 않았습니다.
