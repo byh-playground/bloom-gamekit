@@ -27,3 +27,5 @@ createRun({seed,initialState,scene,signal,iteration})은 **격리된** 게임 �
 이번 모듈은 인코더를 포함하지 않습니다. 소비자가 실제 renderer canvas의 captureStream과 MediaRecorder 지원·isTypeSupported를 검사하고 별도의 녹화 수명주기를 연결할 수 있습니다. 녹화 종료 시 recorder와 stream track을 닫고 생성 URL을 해제하세요. 미지원 브라우저/코덱을 지원한다고 가정하지 않습니다. 프레임 정확한 오프라인 인코딩·실제 영상 파일 검증은 이번 범위 밖입니다.
 
 [실행 예제](examples/index.html)와 `npm run test:execution`은 DOM 재생/일시정지/재시작/반복/종료와 실제 WebGL 출력을 연결합니다. 별도 전투/물리/카메라 엔진은 없습니다. timeline은 생성 시 정렬, 진행은 cursor 순회이며 빈 tick에 명령 목록을 복제하지 않습니다.
+
+`npm run test:consumer`는 Bounko의 실제 공개 게임을 기본 대상으로 사용하며 `BOUNKO_URL`로 검증 서버를 지정할 수 있습니다. 외부 게임/라이브러리를 실제로 로드하므로 네트워크가 필요하며 build 포함 180초 상한입니다. 모바일/PC 직접 URL·이력·저장 불변·프리뷰·소개·전투 중 설정 복귀의 고정 흐름을 검사합니다.

@@ -39,8 +39,8 @@ export function createScenario({ definition, createRun, requestFrame, cancelFram
     if (token !== generation) return { status: 'advanced', tick };
     if (tick === endTick || scope.isComplete?.()) {
       state = 'ended'; scheduler.stop();
-      scope.render?.({ tick, timeMs: tick * dtMs, alpha: 0, iteration });
       scope.pause?.(); onEnd(snapshot());
+      if (token === generation && scope) scope.render?.({ tick, timeMs: tick * dtMs, alpha: 0, iteration });
       if (token === generation && state === 'ended' && repeat) {
         const automatic = driving; release(); iteration++; initialize(); state = 'playing';
         if (automatic) scheduler.start();
@@ -67,7 +67,10 @@ export function createScenario({ definition, createRun, requestFrame, cancelFram
     restart({ automatic = true } = {}) { if (state === 'disposed') return; state = 'stopped'; release(); iteration = 0; this.play({ automatic }); },
     stop() { if (state === 'disposed') return; state = 'stopped'; release(); },
     // Manual QA/export driver: exactly one fixed tick, no wall-clock accumulator.
-    step() { if (driving && scheduler.running) throw new Error('pause automatic scheduling before manual stepping'); return advance(); },
+    step() {
+      if (driving && scheduler.running) throw new Error('pause automatic scheduling before manual stepping');
+      try { return advance(); } catch (error) { state = 'stopped'; release(); throw error; }
+    },
     pulse(timestamp, options) { if (state === 'playing' && !driving) scheduler.pulse(timestamp, options); },
     render() { if (scope) scheduler.render(); },
     snapshot,

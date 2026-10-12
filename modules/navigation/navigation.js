@@ -2,7 +2,7 @@
 export function createNavigation({ window: host = globalThis.window, normalize = route => route } = {}) {
   if (!host?.history || typeof normalize !== 'function') throw new TypeError('navigation host/normalize');
   const subscribers = new Set();
-  let disposed = false;
+  let disposed = false, revision = 0;
   const copy = route => ({ screen: route.screen, item: route.item, query: new URLSearchParams(route.query) });
   const canonical = route => {
     const value = normalize(copy({ screen: route.screen || 'main', item: route.item ?? null, query: route.query }));
@@ -20,9 +20,9 @@ export function createNavigation({ window: host = globalThis.window, normalize =
   let current = read();
   function publish(next, source, force = false) {
     if (disposed || (!force && hash(next) === hash(current))) return;
-    const previous = current; current = next;
+    const previous = current, token = ++revision; current = next;
     for (const listener of [...subscribers]) {
-      if (disposed) break;
+      if (disposed || token !== revision) break;
       if (subscribers.has(listener)) listener(copy(next), { previous: copy(previous), source });
     }
   }
