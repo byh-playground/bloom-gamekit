@@ -7,11 +7,11 @@ function copyLocalCommandState(state, inputSize, profile, executedSequence = 0) 
   if (lastInput.length !== inputSize) throw new RangeError('local command inputSize');
   // Already captured commands can occupy every delayed slot as well as the
   // waiting queue. Importing them must not silently discard valid edge input.
-  const maxCommands = profile.maxPendingCommands * (profile.maxInputDelayTicks + profile.rollbackWindowTicks + 2);
+  const maxCommands = profile.maxPendingCommands * (profile.maxInputDelayTicks + profile.stateHistorySize + 2);
   if (!Array.isArray(state.commands) || state.commands.length > maxCommands) throw new RangeError('local command capacity');
   const maxPayload = Math.min(profile.maxCommandBytes, CHUNK_SIZE - 1024 - inputSize - 6);
   const maxBytes = profile.maxPendingCommands * maxPayload +
-    (profile.maxInputDelayTicks + profile.rollbackWindowTicks + 1) * (CHUNK_SIZE - 1024 - inputSize);
+    (profile.maxInputDelayTicks + profile.stateHistorySize + 1) * (CHUNK_SIZE - 1024 - inputSize);
   let previous = executedSequence, size = 0;
   const commands = Array.from(state.commands, command => {
     const next = integer(command?.sequence, 'local command order', 1, sequence);
@@ -305,7 +305,18 @@ export class RollbackSession {
   getCommandSequences(tick = this.confirmedBoundary) {
     integer(tick, 'confirmed command boundary', 0, this.confirmedBoundary);
     if (this.resimulating) throw new Error('confirmed command boundary is unavailable');
-    const sequences = tick === this.tick ? this._commandSequences : this._history.get(tick)?.commandSequences;
+    let sequences = tick === this.tick ? this._commandSequences : this._history.get(tick)?.commandSequences;
+    if (!sequences && this.profile.mode === 'lockstep') {
+      const base = this._history.atOrBefore(tick);
+      if (base) {
+        sequences = base.commandSequences;
+        for (let t = base.tick; t < tick; t++) {
+          const inputs = this.players.map(id => { const frame = this._inputs.get(id).get(t); return frame ? { ...frame, playerId: id } : undefined; });
+          if (inputs.some(frame => !frame)) throw new Error('command boundary inputs expired');
+          sequences = executedSequences(sequences, inputs);
+        }
+      }
+    }
     if (!sequences) throw new Error('command boundary expired');
     return Object.fromEntries(sequences);
   }

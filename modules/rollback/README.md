@@ -237,3 +237,5 @@ lockstep은 기존 sparse checkpoint와 고정 입력 delay를 유지합니다. 
 표현은 게임 소유입니다. `rollback`/`recovered` 이벤트의 `from`/`target`은 RoomSession 전체 tick입니다. 보통 rollback은 기존 presentation-events의 beginRollback/endRollback과 연결하고 확인된 tick만 confirm합니다. 멤버십 경계에서 예측 꼬리를 버릴 때도 rollback 알림을 보냅니다. `membership-committed`/available 분기 교체에서는 이전 표현 journal을 dispose/reset하고 canonical state에서 화면을 복원합니다. bootstrap의 recovering/replaying step에서는 소리·DOM·외부 효과를 발생시키지 않습니다.
 
 [실행 예제](./examples/availability/index.html)는 입장 전에 모드와 가용성을 고르며 입장 후 선택을 잠급니다. `npm run test:room`은 실제 Chromium/Edge RTC에서 rollback 참가·재연결·refresh 및 두 페이지 지연/중단/복귀를 180초 상한으로 검사합니다. lockstep 회귀는 `test:network`, `test:availability`로 분리합니다.
+
+실제 시나리오 결과, 발견 후 수정한 경계 오류, 전후 CPU/초기화/snapshot 비용과 미검증 범위는 [모드 확장 검증 기록](./docs/room-modes-verification.md)에 정리했습니다.

@@ -638,7 +638,7 @@ export class RoomSession {
     try { this._transition?.stageJob?.cancel(); } catch {}
     if (this._transition) { this._transition.preparedState = null; this._transition.stageJob = null; }
     this._unsubscribeRoom?.(); for (const link of this._links.values()) { link.unsubscribe?.(); link.detachCore?.(); }
-    this._links.clear(); this._incoming.length = 0; this.room?.close(); this._event('closed');
+    this._links.clear(); this._incoming.length = 0; this._suspendedCommands = null; this._suspendedBootstrap = null; this.room?.close(); this._event('closed');
     this._leaveReject?.(new Error('room closed before graceful departure')); this._leaveResolve = this._leaveReject = null;
   }
 }
