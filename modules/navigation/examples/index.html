@@ -1,0 +1,12 @@
+<!doctype html><meta charset="utf-8"><title>Navigation example</title>
+<h1>화면 이동</h1><button id="wiki">위키</button><button id="skill">기술</button><button id="main">메인</button><button id="back">뒤로</button><output id="screen"></output>
+<script type="module">
+import {createNavigation} from '../../../dist/navigation.js';
+const nav=createNavigation();window.navigationDemo=nav;
+nav.subscribe(route=>{document.querySelector('#screen').textContent=route.screen+'/'+(route.item??'')+'?'+route.query;},{immediate:true});
+document.querySelector('#wiki').onclick=()=>nav.navigate({screen:'wiki',query:'section=rules'});
+document.querySelector('#skill').onclick=()=>nav.navigate({screen:'tech',item:'iceGarden'});
+document.querySelector('#main').onclick=()=>nav.replace({screen:'main'});
+document.querySelector('#back').onclick=()=>nav.back();
+addEventListener('pagehide',()=>nav.dispose(),{once:true});
+</script>

@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { MODULES, FONT_ASSETS, MANIFEST_FILE, createManifest, serializeManifest } from './distribution.mjs';
 
 const SDK_DEPENDENCIES = {
+  scenario: ['simloop'],
   deterministic: ['_rollback-shared'], simloop: [], transport: ['_rollback-shared', 'deterministic'],
   replay: ['_rollback-shared', 'deterministic'], rollback: ['_rollback-shared', 'deterministic'],
   'rollback-netcode': ['_rollback-shared', 'deterministic', 'simloop', 'transport', 'replay', 'rollback'],
