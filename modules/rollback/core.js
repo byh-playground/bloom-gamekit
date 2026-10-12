@@ -7,11 +7,11 @@ function copyLocalCommandState(state, inputSize, profile, executedSequence = 0) 
   if (lastInput.length !== inputSize) throw new RangeError('local command inputSize');
   // Already captured commands can occupy every delayed slot as well as the
   // waiting queue. Importing them must not silently discard valid edge input.
-  const maxCommands = profile.maxPendingCommands * (profile.maxInputDelayTicks + 2);
+  const maxCommands = profile.maxPendingCommands * (profile.maxInputDelayTicks + profile.stateHistorySize + 2);
   if (!Array.isArray(state.commands) || state.commands.length > maxCommands) throw new RangeError('local command capacity');
   const maxPayload = Math.min(profile.maxCommandBytes, CHUNK_SIZE - 1024 - inputSize - 6);
   const maxBytes = profile.maxPendingCommands * maxPayload +
-    (profile.maxInputDelayTicks + 1) * (CHUNK_SIZE - 1024 - inputSize);
+    (profile.maxInputDelayTicks + profile.stateHistorySize + 1) * (CHUNK_SIZE - 1024 - inputSize);
   let previous = executedSequence, size = 0;
   const commands = Array.from(state.commands, command => {
     const next = integer(command?.sequence, 'local command order', 1, sequence);
@@ -28,6 +28,15 @@ function commandSequenceMap(players, initial) {
   if (!initial || typeof initial !== 'object' || Array.isArray(initial) ||
     Object.keys(initial).length !== players.length || players.some(id => !Object.hasOwn(initial, id))) throw new TypeError('initial command sequences roster');
   return new Map(players.map(id => [id, integer(initial[id], 'initial command sequence')]));
+}
+// Snapshot records share a command map until a command executes.
+function executedSequences(previous, inputs) {
+  let next = previous;
+  for (const frame of inputs) for (const command of frame.commands) {
+    if (next === previous) next = new Map(previous);
+    next.set(frame.playerId, Math.max(next.get(frame.playerId), command.sequence));
+  }
+  return next;
 }
 function profileOf(profile) {
   const p = { ...defaults, ...profile };
@@ -113,7 +122,7 @@ export class RollbackSession {
     const requiredBytes=initial.length*retainedCount;
     if(requiredBytes>this.profile.maxHistoryBytes)throw Object.assign(new RangeError('initial snapshot cannot fill retained history byte budget'),{code:'history-capacity',snapshotBytes:initial.length,requiredBytes,maxHistoryBytes:this.profile.maxHistoryBytes});
     this._initialState = boundary ? initial : initial.slice();
-    const initialRecord={ tick: 0, bytes: initial, inputHash: this._inputHash, ...(boundary ? { hash: boundary.hash } : {}) };
+    const initialRecord={ tick: 0, bytes: initial, inputHash: this._inputHash, commandSequences: this._commandSequences, ...(boundary ? { hash: boundary.hash } : {}) };
     this._history.put(initialRecord); this._currentState = initialRecord;
     this._hello = encoder.encode(JSON.stringify({ protocol: PROTOCOL_VERSION, library: VERSION, sessionId,
       simulationVersion, seed, players: this.players, tickRate: this.profile.tickRate, inputSize,
@@ -126,6 +135,7 @@ export class RollbackSession {
   get tick() { return this._tick; }
   get inputDelay() { return this._inputDelay; }
   get confirmedTick() { return Math.min(...this._through.values()); }
+  get confirmedBoundary() { return Math.min(this.tick, this.confirmedTick + 1); }
   /** Detached metadata about immutable local captures, not a simulation snapshot. */
   get localInputState() {
     const frame = this._localCapture;
@@ -168,7 +178,7 @@ export class RollbackSession {
     if (this.profile.mode !== 'lockstep' || tick !== this.tick || this.resimulating) return undefined;
     if (this._currentState?.tick === tick) return this._currentState;
     if (this._failure?.type === 'fatal') return undefined;
-    if (this._currentState?.tick !== tick) this._currentState = { tick, bytes: this._save(), inputHash: this._inputHash };
+    if (this._currentState?.tick !== tick) this._currentState = { tick, bytes: this._save(), inputHash: this._inputHash, commandSequences: this._commandSequences };
     return this._currentState;
   }
   _stateHash(state) {
@@ -276,24 +286,39 @@ export class RollbackSession {
     this._pendingCommands.push({ sequence, payload: b }); return sequence;
   }
   /** Copy unexecuted local commands for a new fixed-roster epoch. */
-  exportLocalCommandState() {
+  exportLocalCommandState({ fromTick = this.confirmedBoundary } = {}) {
     if (this.closed || this.resimulating) throw new Error('local command state is unavailable');
+    const baseline = this.getCommandSequences(fromTick)[this.localPlayerId];
     const commands = new Map();
     const include = command => {
       const prior = commands.get(command.sequence);
       if (prior && !equalBytes(prior.payload, command.payload)) throw new Error('conflicting local command sequence');
       if (!prior) commands.set(command.sequence, command);
     };
-    for (const [tick, frame] of this._inputs.get(this.localPlayerId)) if (tick >= this.tick) for (const command of frame.commands) include(command);
+    for (const [tick, frame] of this._inputs.get(this.localPlayerId)) if (tick >= fromTick) for (const command of frame.commands) include(command);
     for (const command of this._pendingCommands) include(command);
     return copyLocalCommandState({ sequence: this._commandSequence, lastInput: this._lastLocalInput,
       commands: [...commands.values()].sort((a, b) => a.sequence - b.sequence) }, this.inputSize, this.profile,
-    this._commandSequences.get(this.localPlayerId));
+    baseline);
   }
-  /** Executed lockstep command maxima; future captured/queued commands are excluded. */
-  getCommandSequences() {
-    if (this.profile.mode !== 'lockstep') throw new Error('confirmed lockstep command sequences are required');
-    return Object.fromEntries(this._commandSequences);
+  /** Command maxima immediately before a confirmed boundary in either mode. */
+  getCommandSequences(tick = this.confirmedBoundary) {
+    integer(tick, 'confirmed command boundary', 0, this.confirmedBoundary);
+    if (this.resimulating) throw new Error('confirmed command boundary is unavailable');
+    let sequences = tick === this.tick ? this._commandSequences : this._history.get(tick)?.commandSequences;
+    if (!sequences && this.profile.mode === 'lockstep') {
+      const base = this._history.atOrBefore(tick);
+      if (base) {
+        sequences = base.commandSequences;
+        for (let t = base.tick; t < tick; t++) {
+          const inputs = this.players.map(id => { const frame = this._inputs.get(id).get(t); return frame ? { ...frame, playerId: id } : undefined; });
+          if (inputs.some(frame => !frame)) throw new Error('command boundary inputs expired');
+          sequences = executedSequences(sequences, inputs);
+        }
+      }
+    }
+    if (!sequences) throw new Error('command boundary expired');
+    return Object.fromEntries(sequences);
   }
   setInputDelay(ticks) {
     integer(ticks, 'input delay', this.profile.minInputDelayTicks, this.profile.maxInputDelayTicks);
@@ -554,16 +579,15 @@ export class RollbackSession {
     try {
       runSimulationFrame(this.adapter, { tick, tickRate: this.profile.tickRate, inputs, resimulating });
       const inputHash = this._hashInputFrame(tick,inputs,this._inputHash);
+      const commandSequences = executedSequences(this._commandSequences, inputs);
       if (!lockstep || (tick + 1) % this.profile.checksumInterval === 0) {
         const state = this._save();
-        this._history.put({ tick: tick + 1, bytes: state, inputHash });
+        this._history.put({ tick: tick + 1, bytes: state, inputHash, commandSequences });
       }
       if (!lockstep) this._used.set(tick, inputs.map(f => ({ ...copyFrame(f), playerId: f.playerId, predicted: f.predicted })));
       this._tick++; this._inputHash = inputHash; this._currentState = null;
       const localFrame=inputs.find(frame=>frame.playerId===this.localPlayerId);if(localFrame)this._localExecutedInput=localFrame.input.slice();
-      if (lockstep) for (const frame of inputs) for (const command of frame.commands) {
-        this._commandSequences.set(frame.playerId, Math.max(this._commandSequences.get(frame.playerId), command.sequence));
-      }
+      this._commandSequences = commandSequences;
     } catch (error) {
       try {
         if (before) this.adapter.load(before.bytes.slice());
@@ -582,6 +606,7 @@ export class RollbackSession {
         const saved = this._history.get(from);
         if (!saved) throw new Error('rollback state expired');
         this.adapter.load(saved.bytes.slice()); this._tick = from; this._inputHash = saved.inputHash;
+        this._commandSequences = saved.commandSequences;
         this._history.invalidateAfter(from); this._rollbackFrom = Infinity;
         this._metrics.rollbacks++; this._window.rollback++;
         this._metrics.maxRollbackDepth = Math.max(this._metrics.maxRollbackDepth, target - from);
@@ -699,49 +724,49 @@ export class RollbackSession {
     }
   }
   getStateHash(tick = this.tick) { return this._stateHash(this._stateAt(tick)); }
-  /** Export a sparse, fully confirmed boundary without enabling per-tick saves. */
-  exportConfirmedBootstrap({ checkpointAtOrBefore = this.tick } = {}) {
-    if (this.profile.mode !== 'lockstep' || this.closed || this._failure || this.resimulating ||
-      this._requestedRecovery || this.confirmedTick < this.tick - 1) throw new Error('confirmed lockstep boundary is required');
-    integer(checkpointAtOrBefore, 'bootstrap checkpoint boundary', 0, this.tick);
-    const checkpoint = this._history.atOrBefore(checkpointAtOrBefore);
-    if (!checkpoint || this.tick - checkpoint.tick > this.profile.stateHistorySize) throw new Error('bootstrap checkpoint is unavailable');
+  /** Export the requested confirmed boundary, never the predicted present. */
+  exportConfirmedBootstrap({ tick = this.confirmedBoundary, checkpointAtOrBefore = tick } = {}) {
+    if (this.closed || this._failure || this.resimulating || this._requestedRecovery) throw new Error('confirmed boundary is required');
+    integer(tick, 'bootstrap confirmed boundary', 0, this.confirmedBoundary);
+    integer(checkpointAtOrBefore, 'bootstrap checkpoint boundary', 0, tick);
+    const checkpoint = this.profile.mode === 'lockstep' ? this._history.atOrBefore(checkpointAtOrBefore) : this._history.get(checkpointAtOrBefore);
+    if (!checkpoint || tick - checkpoint.tick > this.profile.stateHistorySize) throw new Error('bootstrap checkpoint is unavailable');
     const frames = [];
-    for (let tick = checkpoint.tick; tick < this.tick; tick++) {
+    for (let frameTick = checkpoint.tick; frameTick < tick; frameTick++) {
       const inputs = this.players.map(playerId => {
-        const frame = this._inputs.get(playerId).get(tick);
+        const frame = this._inputs.get(playerId).get(frameTick);
         if (!frame) throw new Error('confirmed bootstrap input is unavailable');
         return { playerId, ...copyFrame(frame), predicted: false };
       });
-      frames.push({ tick, inputs });
+      frames.push({ tick: frameTick, inputs });
     }
-    return { version: 1, tick: this.tick,
+    return { version: 1, tick,
       checkpoint: { tick: checkpoint.tick, bytes: checkpoint.bytes.slice(), hash: this._stateHash(checkpoint) },
-      players: [...this.players], frames, hash: this.getStateHash(), inputSize: this.inputSize,
+      players: [...this.players], frames, hash: this.getStateHash(tick), inputSize: this.inputSize,
       tickRate: this.profile.tickRate, simulationVersion: this.simulationVersion, seed: this.seed,
-      commandSequences: this.getCommandSequences() };
+      commandSequences: this.getCommandSequences(tick) };
   }
-  /** Fence an external resume donor against this peer's retained agreed history. */
+  /** Fence a donor against retained confirmed history and immutable local inputs. */
   verifyConfirmedBootstrap(bootstrap) {
-    if (this.profile.mode !== 'lockstep' || this.closed || this._failure || this.resimulating || !bootstrap ||
-      bootstrap.tick < this.tick || bootstrap.tick - bootstrap.checkpoint?.tick > this.profile.stateHistorySize ||
+    if (this.closed || this._failure || this.resimulating || !bootstrap ||
+      bootstrap.tick < this.confirmedBoundary || bootstrap.tick - bootstrap.checkpoint?.tick > this.profile.stateHistorySize ||
       !Array.isArray(bootstrap.frames) || bootstrap.frames.length !== bootstrap.tick - bootstrap.checkpoint.tick ||
       JSON.stringify(bootstrap.players) !== JSON.stringify(this.players)) throw new Error('resume bootstrap boundary');
     const base = this._history.get(bootstrap.checkpoint.tick);
-    if (!base || this._stateHash(base) !== bootstrap.checkpoint.hash || !equalBytes(base.bytes, bytes(bootstrap.checkpoint.bytes))) throw new Error('resume checkpoint does not match retained agreement');
-    const sequences = new Map(this._commandSequences);
+    if (!base || base.tick > this.confirmedBoundary || this._stateHash(base) !== bootstrap.checkpoint.hash || !equalBytes(base.bytes, bytes(bootstrap.checkpoint.bytes))) throw new Error('resume checkpoint does not match retained agreement');
+    const sequences = new Map(base.commandSequences);
     for (let i = 0; i < bootstrap.frames.length; i++) {
       const frame = bootstrap.frames[i], tick = base.tick + i;
       if (frame.tick !== tick || frame.inputs?.length !== this.players.length) throw new Error('resume input suffix shape');
       for (let p = 0; p < this.players.length; p++) {
         const id = this.players[p], incoming = frame.inputs[p], known = this._inputs.get(id).get(tick);
         if (incoming?.playerId !== id || incoming.predicted || !Array.isArray(incoming.commands) ||
-          (!known && (tick < this.tick || id === this.localPlayerId)) || known && !frameEqual(known, incoming)) throw new Error('resume input conflicts with retained agreement');
-        if (tick >= this.tick) for (const command of incoming.commands) sequences.set(id, Math.max(sequences.get(id), command.sequence));
+          (!known && (tick < this.confirmedBoundary || id === this.localPlayerId)) || known && !frameEqual(known, incoming)) throw new Error('resume input conflicts with retained agreement');
+        for (const command of incoming.commands) sequences.set(id, Math.max(sequences.get(id), command.sequence));
       }
     }
     for (const id of this.players) if (bootstrap.commandSequences?.[id] !== sequences.get(id)) throw new Error('resume command sequence conflicts with retained agreement');
-    if (bootstrap.tick === this.tick && bootstrap.hash !== this.getStateHash()) throw new Error('resume final state conflicts with confirmed boundary');
+    if (bootstrap.tick === this.confirmedBoundary && bootstrap.hash !== this.getStateHash(bootstrap.tick)) throw new Error('resume final state conflicts with confirmed boundary');
     return true;
   }
   requestResync(tick) {
@@ -816,17 +841,18 @@ export class RollbackSession {
       this.adapter.load(candidate.bytes.slice());
       if (!equalBytes(this._save(), candidate.bytes)) throw new Error('snapshot round-trip changed candidate');
       const job = { candidate, original, current: this.tick, next: candidate.tick,
-        inputHash: candidate.inputHash, state: candidate.bytes.slice(), staged: [], stagedInputs: [], stageBytes: 0 };
+        inputHash: candidate.inputHash, commandSequences: this._history.get(candidate.tick).commandSequences, state: candidate.bytes.slice(), staged: [], stagedInputs: [], stageBytes: 0 };
       this._incomingSnapshot = null;
       while (job.next < job.current) {
         const t = job.next, inputs = this._resolve(t);
         runSimulationFrame(this.adapter, { tick: t, tickRate: this.profile.tickRate, inputs,
           resimulating: true, recovering: true });
         job.inputHash = this._hashInputFrame(t,inputs,job.inputHash);
+        job.commandSequences = executedSequences(job.commandSequences, inputs);
         const lockstep = this.profile.mode === 'lockstep';
         if (!lockstep || (t + 1) % this.profile.checksumInterval === 0) {
           job.state = this._save();
-          job.staged.push({ tick: t + 1, bytes: job.state, inputHash: job.inputHash });
+          job.staged.push({ tick: t + 1, bytes: job.state, inputHash: job.inputHash, commandSequences: job.commandSequences });
           job.stageBytes += job.state.length;
         }
         if (!lockstep) job.stagedInputs.push([t, inputs]);
@@ -838,11 +864,11 @@ export class RollbackSession {
       const replacement = this._newHistory();
       for (const state of this._history.slots) if (state && state.tick < job.candidate.tick) replacement.put(state);
       replacement.put({ tick: job.candidate.tick, bytes: job.candidate.bytes,
-        hash: job.candidate.hash, inputHash: job.candidate.inputHash });
+        hash: job.candidate.hash, inputHash: job.candidate.inputHash, commandSequences: this._history.get(job.candidate.tick).commandSequences });
       for (const state of job.staged) replacement.put(state);
       const used = new Map(this._used);
       for (const [t, inputs] of job.stagedInputs) used.set(t, inputs);
-      this._history = replacement; this._used = used; this._inputHash = job.inputHash; this._currentState = null;
+      this._commandSequences = job.commandSequences; this._history = replacement; this._used = used; this._inputHash = job.inputHash; this._currentState = null;
       if (this.profile.mode === 'lockstep') {
         this._replayFinalState = null;
         if (!this._recordReplay && job.candidate.tick === this._replayFrames.length) this._replayFinalHash = job.candidate.hash;

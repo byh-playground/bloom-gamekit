@@ -4,6 +4,7 @@ import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { chromium } from 'playwright';
 import { dirname, extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+const simulationMode = process.env.ROOM_SIMULATION_MODE ?? 'lockstep';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..'), errors = [], results = [];
 const server = createServer(async (req, res) => { try { const path = resolve(root, '.' + new URL(req.url, 'http://localhost').pathname); if (!path.startsWith(root + sep)) { res.writeHead(403).end(); return; } const data = await readFile(path); res.writeHead(200, { 'content-type': extname(path) === '.html' ? 'text/html' : 'text/javascript', 'cache-control': 'no-store' }).end(data); } catch { res.writeHead(404).end(); } });
 await new Promise(ok => server.listen(0, '127.0.0.1', ok));
@@ -17,7 +18,7 @@ async function until(pages, predicate, label, timeout = 18000) {
 }
 async function room(count, available = true, transfer = false, cooperative = false) {
   const context = await browser.newContext(), pages = [], players = ['A', 'B', 'C', 'D'].slice(0, count);
-  for (const id of players) { const page = await context.newPage(); page.on('pageerror', e => errors.push(e.message)); await page.goto(`http://127.0.0.1:${server.address().port}/modules/rollback-netcode/tests/availability-browser.html`); await page.waitForFunction(() => typeof window.setup === 'function'); await page.evaluate(({ id, players, available, transfer, cooperative }) => window.setup(id, players, available, transfer, cooperative), { id, players, available, transfer, cooperative }); pages.push(page); }
+  for (const id of players) { const page = await context.newPage(); page.on('pageerror', e => errors.push(e.message)); await page.goto(`http://127.0.0.1:${server.address().port}/modules/rollback-netcode/tests/availability-browser.html`); await page.waitForFunction(() => typeof window.setup === 'function'); await page.evaluate(({ id, players, available, transfer, cooperative, simulationMode }) => window.setup(id, players, available, transfer, cooperative, simulationMode), { id, players, available, transfer, cooperative, simulationMode }); pages.push(page); }
   for (let a = 0; a < count; a++) for (let b = a + 1; b < count; b++) { const offer = await pages[a].evaluate(id => window.offer(id), players[b]); const answer = await pages[b].evaluate(({ id, offer }) => window.answer(id, offer), { id: players[a], offer }); await pages[a].evaluate(({ id, answer }) => window.accept(id, answer), { id: players[b], answer }); }
   await Promise.all(pages.map(p => p.evaluate(() => window.startPump())));
   await until(pages, values => values.every(s => s.tick >= 15 && s.status === 'running' && s.activePlayers.length === count) && new Set(values.map(s => s.branch)).size === 1, 'initial play');
@@ -27,13 +28,24 @@ async function checkpoint(pages, label) {
   await until(pages, values => values.every(s => s.status === 'running' && s.activePlayers.length === pages.length) && new Set(values.map(s => s.branch)).size === 1, label + ' reconnect ready');
   const values = await snapshots(pages), tick = Math.max(...values.map(s => s.tick)) + 4;
   await Promise.all(pages.map(p => p.evaluate(t => window.setTarget(t), tick)));
-  const same = await until(pages, values => values.every(s => s.tick === tick && s.status === 'running'), label);
+  const same = await until(pages, values => values.every(s => s.tick === tick && s.confirmedTick + 1 >= tick && !s.resimulating && s.status === 'running'), label);
   assert.equal(new Set(same.map(s => s.hash)).size, 1, label + ' same state'); results.push({ label, tick, hash: same[0].hash, coordinatorId: same[0].coordinatorId });
   await Promise.all(pages.map(p => p.evaluate(() => window.setTarget(Infinity))));
 }
 async function closeRoom(value) { await Promise.all(value.pages.map(p => p.evaluate(() => window.stop()).catch(() => {}))); await value.context.close(); }
 try {
   browser = await chromium.launch({ headless: process.env.AVAILABILITY_HEADED !== '1', ignoreDefaultArgs: ['--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'], ...(process.env.CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.CHROMIUM_EXECUTABLE_PATH } : process.env.BROWSER_CHANNEL ? { channel: process.env.BROWSER_CHANNEL } : {}) });
+  const delayed = await room(2, false);
+  await delayed.pages[0].evaluate(() => window.block(['B'], true));
+  await delayed.pages[0].locator('#move').click();
+  await sleep(350);
+  await delayed.pages[0].evaluate(() => window.block(['B'], false, true));
+  await checkpoint(delayed.pages, 'delayed input and command converge');
+  const delayedState = await snapshots(delayed.pages);
+  assert.ok(delayedState.every(s => s.state.commands.filter(c => c === 'A:1:7').length === 1), 'delayed command exactly once');
+  if (simulationMode === 'rollback') assert.ok(delayedState.some(s => s.metrics.rollbacks > 0), 'delayed real RTC input exercised rollback');
+  results.push({label:'delayed input',simulationMode,peers:delayedState.map(s=>({metrics:s.metrics,commands:s.state.commands}))});
+  await closeRoom(delayed);
   const two = await room(2, true, false, true), [host, guest] = two.pages;
   await Promise.all(two.pages.map(p => p.evaluate(() => window.stopRender())));
   const beforeRenderStop = await snapshots(two.pages);
@@ -62,15 +74,20 @@ try {
     await visibility.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } });
     await visibility.send('Emulation.setFocusEmulationEnabled', { enabled: true });
   }
+  await guest.locator('#move').click(); await checkpoint(two.pages, 'guest command before suspension');
   const beforeGuestFreeze = (await host.evaluate(() => window.snapshot())).tick;
   const guestCDP = await two.context.newCDPSession(guest); await guestCDP.send('Emulation.setScriptExecutionDisabled', { value: true });
   await until([host], v => v[0].tick >= beforeGuestFreeze + 10 && v[0].activePlayers.length === 1, 'inactive guest');
   await host.locator('#move').click(); await until([host], v => v[0].state.commands.includes('A:1:7'), 'active input while guest frozen');
   await guestCDP.send('Emulation.setScriptExecutionDisabled', { value: false }); await guest.evaluate(() => window.resumePump()); await checkpoint(two.pages, 'guest resume state');
+  await guest.locator('#move').click(); await checkpoint(two.pages, 'guest sequence after suspension');
+  assert.ok((await snapshots(two.pages)).every(s => s.state.commands.includes('B:1:7') && s.state.commands.includes('B:2:7') && new Set(s.state.commands).size === s.state.commands.length), 'suspended guest command sequence retained');
   const beforeHostFreeze = (await guest.evaluate(() => window.snapshot())).tick;
   const hostCDP = await two.context.newCDPSession(host); await hostCDP.send('Emulation.setScriptExecutionDisabled', { value: true });
   await until([guest], v => v[0].tick >= beforeHostFreeze + 10 && v[0].coordinatorId === 'B', 'inactive coordinator');
   await hostCDP.send('Emulation.setScriptExecutionDisabled', { value: false }); await host.evaluate(() => window.resumePump()); await checkpoint(two.pages, 'coordinator resume follows active guest');
+  await host.locator('#move').click(); await checkpoint(two.pages, 'coordinator sequence after suspension');
+  assert.ok((await snapshots(two.pages)).every(s => s.state.commands.includes('A:1:7') && s.state.commands.includes('A:2:7') && new Set(s.state.commands).size === s.state.commands.length), 'suspended coordinator command sequence retained');
   const heldTick = Math.max(...(await snapshots(two.pages)).map(s=>s.tick))+4;
   await Promise.all(two.pages.map(p=>p.evaluate(t=>window.setTarget(t),heldTick)));
   await until(two.pages,v=>v.every(s=>s.tick===heldTick&&s.status==='running'),'common boundary before room-wide pause');
@@ -128,5 +145,5 @@ try {
   await strictGuestCDP.send('Emulation.setScriptExecutionDisabled', { value: false }); await strict.pages[1].evaluate(() => window.resumePump()); await checkpoint(strict.pages, 'strict resume regression'); await closeRoom(strict);
   assert.deepEqual(errors, []);
   const report = { passed: true, browser: browser.version(), transport: 'actual Chromium RTCPeerConnection data channels across 2/4 pages; in-process RoomTransport fixture, no public relay/NAT', faults: 'CDP script-execution suspension; explicit timer gap/1000ms interval; pump stops during transfer probe; partition injected at transport send/receive, retained stale packets replayed; not OS suspend', results };
-  await mkdir(resolve(root, 'test-results/rollback'), { recursive: true }); await writeFile(resolve(root, 'test-results/rollback/availability-report.json'), JSON.stringify(report, null, 2)); console.log(JSON.stringify(report, null, 2));
+  await mkdir(resolve(root, 'test-results/rollback'), { recursive: true }); await writeFile(resolve(root, 'test-results/rollback/availability-'+simulationMode+'-report.json'), JSON.stringify(report, null, 2)); console.log(JSON.stringify(report, null, 2));
 } finally { await browser?.close(); await new Promise(ok => server.close(ok)); }

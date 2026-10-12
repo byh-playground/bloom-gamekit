@@ -111,7 +111,7 @@ Synctest.metrics는 라이브러리가 소유하는 검사 틱·재실행 틱·�
 
 ## 동적 room composition
 
-`createRoomSession`은 lockstep Core의 fixed roster를 epoch 동안 고정한다. 기본 `availability.mode: 'strict'`에서는 epoch가 바뀌어도 canonical 세계, global tick, 미실행 명령 sequence를 유지한다. 기존 참가자 전원이 준비한 tick/hash와 신규 참가자의 checkpoint+확정 suffix 검증이 일치하기 전에는 새 roster의 입력을 실행하지 않는다. membership callback은 rollback 가능한 canonical state만 바꾸며, commit 전 준비 snapshot을 외부 effect로 사용하지 않는다.
+`createRoomSession`은 생성 시 선택한 lockstep(기본)/rollback Core의 fixed roster를 epoch 동안 고정한다. 모드 변경은 새 세션을 생성해야 한다. membership은 실행된 확정 경계에서만 적용하고 rollback의 예측 snapshot을 확정 상태로 배포하지 않는다. 기본 `availability.mode: 'strict'`에서는 epoch가 바뀌어도 canonical 세계, global tick, 미실행 명령 sequence를 유지한다. 기존 참가자 전원이 준비한 tick/hash와 신규 참가자의 checkpoint+확정 suffix 검증이 일치하기 전에는 새 roster의 입력을 실행하지 않는다. membership callback은 rollback 가능한 canonical state만 바꾸며, commit 전 준비 snapshot을 외부 effect로 사용하지 않는다.
 
 `createNostrDynamicRoom`은 ongoing mesh 연결과 room-scoped refresh identity를 소유한다. `createNostrPublicRoom`은 별도 Nostr namespace의 bounded discovery/lease/identity-bound 자리 예약을 조합한다. directory advertisement는 입장 허가나 세계 권위가 아니다. 실제 roster는 RoomSession의 확정 epoch만 따른다. 기존 고정 room과 wire namespace를 섞지 않는다.
 
