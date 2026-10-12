@@ -56,6 +56,14 @@
     {
       "file": "audio.js",
       "sha256": "7e3e16d34ce88124e6ba7699f16d23107a3e42ee93ea5a16691e856e5865c14a"
+    },
+    {
+      "file": "navigation.js",
+      "sha256": "92c387dcfa8af47beb3544f4a16121bbfc8fa9831052b33ce07076dd733c81d3"
+    },
+    {
+      "file": "scenario.js",
+      "sha256": "93fd504ad62a2d23691f9afeb897abb10b3f871a4aa0a5cfadec762cf4bd24b8"
     }
   ],
   "assets": [
