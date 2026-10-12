@@ -8,6 +8,7 @@ const suites = {
   execution: ['modules/scenario/tests/browser.mjs'],
   audio: ['modules/audio/scripts/check.mjs'],
   network: ['modules/rollback-netcode/scripts/rollback-browser.mjs', 'modules/rollback-netcode/scripts/dynamic-room-browser.mjs'],
+  room: ['modules/rollback/scripts/room-modes-browser.mjs', 'modules/rollback-netcode/scripts/availability-browser.mjs'],
   availability: ['modules/rollback-netcode/scripts/availability-browser.mjs'],
   demo: ['modules/rollback-netcode/scripts/demo-check.mjs'],
   live: ['modules/rollback-netcode/scripts/live-room-check.mjs'],
@@ -29,7 +30,7 @@ async function run(file) {
   if (remaining <= 0) throw new Error('Scenario verification exceeded 180 seconds; unfinished coverage is NOT PASS');
   console.log('Scenario:', file);
   await new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [file], { cwd: root, stdio: 'inherit', windowsHide: true, detached: process.platform !== 'win32' });
+    const child = spawn(process.execPath, [file], { cwd: root, env: { ...process.env, ...(suite === 'room' ? { ROOM_SIMULATION_MODE: 'rollback' } : {}) }, stdio: 'inherit', windowsHide: true, detached: process.platform !== 'win32' });
     active.add(child);
     let timedOut = false;
     const timer = setTimeout(() => { timedOut = true; stopChild(child); }, remaining);

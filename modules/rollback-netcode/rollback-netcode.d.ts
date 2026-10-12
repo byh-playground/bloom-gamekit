@@ -48,7 +48,7 @@ export interface Transport {
 }
 export type PredictionPolicy = 'hold' | 'neutral' | ((context: { playerId: PlayerId; tick: number; previousInput: Uint8Array; lastConfirmedTick: number }) => Bytes);
 export interface Profile {
-  /** Omitted means rollback. Lockstep waits for all inputs and stores periodic checkpoints. */
+  /** Core defaults to rollback; RoomSession defaults to lockstep. Lockstep waits for all inputs and stores periodic checkpoints. */
   mode?: 'rollback' | 'lockstep';
   tickRate: number; baseInputDelayTicks: number; minInputDelayTicks: number; maxInputDelayTicks: number;
   rollbackWindowTicks: number; stateHistorySize: number; predictionPolicy: PredictionPolicy; stallPolicy: 'wait';
@@ -149,6 +149,8 @@ export class RollbackSession {
   readonly localInputState: LocalInputState;
   constructor(options: SessionOptions);
   readonly tick: number; readonly inputDelay: number; readonly requestedInputDelay: number; readonly confirmedTick: number;
+  /** Executed confirmed boundary, before the next tick. */
+  readonly confirmedBoundary: number;
   readonly ready: boolean; readonly resimulating: boolean; readonly closed: boolean; readonly status: SessionStatus;
   readonly failure: Readonly<SessionFailure> | null; readonly pace: number; readonly metrics: SessionMetrics; readonly profile: Readonly<Profile>;
   readonly players: readonly PlayerId[]; readonly localPlayerId: PlayerId; readonly inputSize: number; readonly authorityPlayerId: PlayerId;
@@ -165,13 +167,13 @@ export class RollbackSession {
   /** Lockstep: current boundary is serialized on demand; past ticks require a retained checkpoint. */
   getStateHash(tick?: number): number | undefined;
   getPeerState(peerId: PlayerId): Readonly<PeerState> | undefined;
-  /** 현재 확정 lockstep 경계와 가장 가까운 보관 checkpoint/suffix를 복사한다. */
-  exportConfirmedBootstrap(options?: { checkpointAtOrBefore?: number }): ConfirmedBootstrap;
+  /** Copies a retained confirmed boundary. Defaults to confirmedBoundary in both modes. */
+  exportConfirmedBootstrap(options?: { tick?: number; checkpointAtOrBefore?: number }): ConfirmedBootstrap;
   verifyConfirmedBootstrap(bootstrap: ConfirmedBootstrap): boolean;
-  /** 이미 실행한 명령은 제외하며 미래 frame과 대기 queue의 명령을 sequence 순으로 복사한다. */
-  exportLocalCommandState(): LocalCommandState;
-  /** lockstep에서만 지원하며 미래 명령을 제외한 실행 sequence를 복사한다. */
-  getCommandSequences(): Record<PlayerId, number>;
+  /** Copies commands at/after fromTick (default confirmedBoundary), including predicted execution. */
+  exportLocalCommandState(options?: { fromTick?: number }): LocalCommandState;
+  /** Copies executed sequence baselines at a retained confirmed boundary. */
+  getCommandSequences(tick?: number): Record<PlayerId, number>;
   exportReplay(): Replay;
   exportSyncTestFrames(options?: { maxFrames?: number }): { initialState: Uint8Array; players: PlayerId[]; inputSize: number; tickRate: number; initialTick: 0; frames: { tick: number; inputs: PlayerInput[] }[] };
   close(): void;

@@ -10,7 +10,7 @@ const BRANCH_MAGIC = 0x32424d44, BRANCH_HEADER = 36;
 const ordered = ids => [...ids].sort(compareIds);
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const idValid = id => typeof id === 'string' && id.length > 0 && id.length <= 128;
-/** A membership boundary composes fixed-roster lockstep sessions, never game worlds. */
+/** A membership boundary composes fixed-roster sessions, never game worlds. */
 export function createRoomSession(options) { return new RoomSession(options); }
 export class RoomSession {
   constructor({ mode = 'local', room, localPlayerId = room?.localPlayerId ?? 'local', sessionId = room?.sessionId ?? 'local',
@@ -20,7 +20,7 @@ export class RoomSession {
     integer(inputSize, 'inputSize', 1, 1024);
     if (!idValid(simulationVersion) || sessionId.length > 116) throw new TypeError('room simulationVersion/sessionId');
     if (mode === 'local' && room) throw new TypeError('local room cannot own online transport');
-    if (profile.mode && profile.mode !== 'lockstep') throw new TypeError('dynamic membership requires lockstep');
+    if (profile.mode && !['lockstep', 'rollback'].includes(profile.mode)) throw new TypeError('session mode');
     if (!adapter || ['step', 'save', 'load', 'validateSnapshot', 'applyMembership'].some(k => typeof adapter[k] !== 'function')) throw new TypeError('room simulation adapter');
     if (mode === 'online' && (!room || typeof room.subscribe !== 'function' || typeof room.connectMesh !== 'function' || typeof room.setRoster !== 'function')) throw new TypeError('dynamic room capability');
     if (typeof clock !== 'function' || typeof onEvent !== 'function') throw new TypeError('room session capability');
@@ -31,16 +31,19 @@ export class RoomSession {
     for (const [k, v] of Object.entries(this.membership)) integer(v, k, 1, 0x7fffffff);
     integer(this.membership.maxCatchupSteps, 'maxCatchupSteps', 1, 8192);
     integer(this.membership.maxPlayers, 'maxPlayers', 1, 8); integer(this.membership.maxTransferBytes, 'maxTransferBytes', CHUNK_SIZE, 128 * 1024 * 1024);
-    this.profile = Object.freeze({ ...profiles.lockstep, ...profile, mode: 'lockstep', adaptiveInputDelay: false });
+    const simulationMode = profile.mode ?? 'lockstep';
+    this.profile = Object.freeze({ ...(simulationMode === 'rollback' ? profiles.action : profiles.lockstep), ...profile, mode: simulationMode,
+      adaptiveInputDelay: simulationMode === 'rollback' ? profile.adaptiveInputDelay ?? true : false });
     this.availability = availabilityConfig(availability); if (!idValid(roomOwnerId)) throw new TypeError('roomOwnerId'); this.roomOwnerId = roomOwnerId;
     this.codec = createValueCodec({ maxBytes: this.membership.maxTransferBytes, maxEntries: Math.min(this.membership.maxTransferBytes, 1000000), maxDepth: 32 });
-    this.contract = hashBytes(this.codec.encode({ version: 1, simulationVersion, seed, inputSize, maxPlayers: this.membership.maxPlayers,
+    this.contract = hashBytes(this.codec.encode({ version: 2, mode: this.profile.mode, rollbackWindowTicks: this.profile.rollbackWindowTicks, stateHistorySize: this.profile.stateHistorySize, simulationVersion, seed, inputSize, maxPlayers: this.membership.maxPlayers,
       tickRate: this.profile.tickRate, baseInputDelayTicks: this.profile.baseInputDelayTicks, checksumInterval: this.profile.checksumInterval,
       ...(this.availability.mode === 'available' ? { availability: this.availability } : {}) }));
     this.epoch = room?.epoch ?? 0; this.baseTick = 0; this.coordinatorId = room?.coordinatorId ?? localPlayerId;
     this.players = Object.freeze(ordered(mode === 'online' ? room.players : [localPlayerId]));
     this.activePlayers = this.players;
     this._availability = this.availability.mode === 'available' ? new Availability(this) : null;
+    this._retainedCommandSequences = Object.fromEntries(this.players.map(id => [id, 0])); this._suspendedCommands = null;
     this.closed = false; this._failure = null; this._core = null; this._transition = null; this._links = new Map(); this._retirePeers = new Map(); this._admissionQueue = new Map(); this._incoming = []; this._incomingBytes = 0;
     this._lastInput = new Uint8Array(inputSize); this._pendingBeforeJoin = []; this._messageSequence = 0; this._joinSent = false;
     this._startedAt = clock(); this._interruptedAt = null; this._leavePromise = null; this._leaveResolve = null; this._leaveReject = null;
@@ -135,11 +138,22 @@ export class RoomSession {
         finally { if (this._availability && !context.resimulating) this._availability.measureStep(Math.max(0, nowMs() - start)); }
       } };
   }
+  _exportBootstrap(options) {
+    const bootstrap = this._core.exportConfirmedBootstrap(options);
+    return { ...bootstrap, roomCommandSequences: { ...this._retainedCommandSequences, ...bootstrap.commandSequences } };
+  }
+  _bootstrapCommandSequences(bootstrap, players) {
+    const sequences = bootstrap.roomCommandSequences;
+    if (!sequences || Object.keys(sequences).length !== players.length || players.some(id => !Object.hasOwn(sequences, id))) throw new Error('room command sequence roster');
+    for (const id of players) integer(sequences[id], 'room command sequence');
+    for (const id of bootstrap.players) if (sequences[id] !== bootstrap.commandSequences[id]) throw new Error('room command sequence baseline');
+    return sequences;
+  }
   _startCore(commandState, commandSequences, boundary) {
     const options = { players: [...this.activePlayers], localPlayerId: this.localPlayerId, authorityPlayerId: this.coordinatorId,
       sessionId: this.sessionId + ':' + this.epoch, simulationVersion: this.simulationVersion, seed: this.seed, inputSize: this.inputSize,
       profile: this.profile, adapter: this._adapter(), localCommandState: commandState, initialCommandSequences: commandSequences ? Object.fromEntries(this.activePlayers.map(id => [id, commandSequences[id] ?? 0])) : undefined, clock: this.clock, recordReplay: false,
-      onEvent: event => { if (event.type !== 'closed') this._event(event.type, { ...event, tick: event.tick + this.baseTick }); } };
+      onEvent: event => { if (event.type !== 'closed') this._event(event.type, { ...event, tick: event.tick + this.baseTick, ...(['rollback', 'recovered'].includes(event.type) ? { from: event.from + this.baseTick, target: event.target + this.baseTick } : {}) }); } };
     this._core = boundary ? createSessionFromBoundary(options, boundary.bytes, boundary.hash) : createSession(options);
     if (this._availability) delegateRoomRecovery(this._core, () => { this._availability.requested = 'state-mismatch'; });
     this.profile = this._core.profile;
@@ -308,7 +322,8 @@ export class RoomSession {
     Promise.resolve(this.room?.connectMesh(participants)).then(() => {
       if (this.closed || this.failure || this._transition !== tr) return;
       for (const [id, transport] of this.room?.transports ?? []) this._attach(id, transport);
-      this._send(from, 'prepared', { epoch: proposal.epoch, tick: this._core ? this.tick : -1 });
+      if (this._core?.resimulating) this._core.poll();
+      this._send(from, 'prepared', { epoch: proposal.epoch, tick: this._core ? this.confirmedTick + 1 : -1 });
     }).catch(error => this._fail('membership-connect-failed', { reason: error.message }));
   }
   _handle(from, m) {
@@ -356,12 +371,12 @@ export class RoomSession {
         this._broadcast(tr.participants, 'barrier', { epoch: m.epoch, tick: target, minimum, donor });
       }
     } else if (m.op === 'barrier' && from === this.coordinatorId && tr.target === null) {
-      if (!Number.isSafeInteger(m.tick) || m.tick > 0x7ffffffe || m.tick < this.tick || this._core && m.tick - this.tick > this.profile.stateHistorySize) throw new Error('membership barrier window');
+      if (!Number.isSafeInteger(m.tick) || m.tick > 0x7ffffffe || m.tick < this.baseTick || this._core && Math.abs(m.tick - this.tick) > this.profile.stateHistorySize - 1) throw new Error('membership barrier window');
       tr.target = m.tick;
       if (tr.proposal.reason === 'reconnect') {
         tr.donor = m.donor;
         if (!tr.proposal.oldPlayers.includes(tr.donor) || tr.donor === tr.proposal.resumingId) throw new Error('invalid resume donor');
-        if (this.localPlayerId === tr.donor) this._send(this.coordinatorId, 'resume-source', { epoch: m.epoch, baseTick: this.baseTick, bootstrap: this._core.exportConfirmedBootstrap({ checkpointAtOrBefore: m.minimum - this.baseTick }) });
+        if (this.localPlayerId === tr.donor) this._send(this.coordinatorId, 'resume-source', { epoch: m.epoch, baseTick: this.baseTick, bootstrap: this._exportBootstrap({ tick: tr.target - this.baseTick, checkpointAtOrBefore: m.minimum - this.baseTick }) });
       }
     } else if (m.op === 'reached' && leader && tr.proposal.oldPlayers.includes(from)) {
       if (m.tick !== tr.target || !Number.isInteger(m.hash)) throw new Error('membership checkpoint boundary');
@@ -369,7 +384,7 @@ export class RoomSession {
       if (tr.reached.size === tr.proposal.oldPlayers.length && !tr.installSent) {
         if (new Set(tr.reached.values()).size !== 1) throw new Error('membership checkpoint mismatch');
         tr.installSent = true;
-        const bootstrap = tr.proposal.joined.length ? this._core.exportConfirmedBootstrap() : null;
+        const bootstrap = tr.proposal.joined.length ? this._exportBootstrap({ tick: tr.target - this.baseTick }) : null;
         for (const id of tr.participants) {
           if (tr.proposal.joined.includes(id)) { this._send(id, 'bootstrap', { epoch: m.epoch, baseTick: this.baseTick, bootstrap, target: tr.target }); this._stats.bootstrapBytes += bootstrap.checkpoint.bytes.length; }
           else this._send(id, 'install', { epoch: m.epoch, tick: tr.target });
@@ -383,7 +398,7 @@ export class RoomSession {
     } else if (m.op === 'bootstrap' && from === this.coordinatorId && !this._core && !tr.replay && !tr.stageJob && !tr.preparedState && !tr.applied) {
       this._beginBootstrap(tr, m);
     } else if (m.op === 'install' && from === this.coordinatorId && this._core && !tr.applied) {
-      if (m.tick !== tr.target || this.tick !== tr.target) throw new Error('membership installation boundary');
+      if (m.tick !== tr.target || this.tick < tr.target || this.confirmedTick + 1 < tr.target) throw new Error('membership installation boundary');
       this._applyMembership(tr);
     } else if (m.op === 'installed' && leader) {
       if (!Number.isInteger(m.hash)) throw new Error('membership installed hash');
@@ -406,7 +421,7 @@ export class RoomSession {
     if (m.target !== tr.target || m.bootstrap.tick + m.baseTick !== tr.target || !Number.isSafeInteger(m.baseTick) || m.baseTick < 0 || this._core && m.baseTick !== this.baseTick) throw new Error('bootstrap epoch boundary');
     if (!this._core) this.baseTick = m.baseTick;
     if (this._core && tr.proposal.reason === 'reconnect') this._core.verifyConfirmedBootstrap(m.bootstrap);
-    tr.commandSequences = m.bootstrap.commandSequences;
+    tr.commandSequences = this._bootstrapCommandSequences(m.bootstrap, tr.proposal.oldPlayers); tr.boundaryLoaded = true;
     tr.replay = createBootstrapReplay({ adapter: this._adapter(m.baseTick, this.epoch), bootstrap: m.bootstrap,
       maxCatchupSteps: this.membership.maxCatchupSteps, maxCatchupMs: this.membership.snapshotBudgetMs, maxSnapshotBytes: this.profile.maxSnapshotBytes,
       maxSuffixTicks: tr.proposal.reason === 'reconnect' ? this.profile.stateHistorySize : this.profile.checksumInterval, maxCommandBytes: this.profile.maxCommandBytes, maxPendingCommands: this.profile.maxPendingCommands,
@@ -432,6 +447,12 @@ export class RoomSession {
   _applyMembership(tr) { return this._boundaryWork('membershipPrepareMs', () => this._prepareMembership(tr)); }
   _prepareMembership(tr) {
     if (tr.stageJob || tr.preparedState || tr.applied) return;
+    if (!tr.boundaryLoaded && this._core && this.tick > tr.target) {
+      const boundary = this._exportBootstrap({ tick: tr.target - this.baseTick });
+      if (boundary.checkpoint.tick !== boundary.tick) throw new Error('membership boundary snapshot missing');
+      this.adapter.load(boundary.checkpoint.bytes.slice()); tr.boundaryLoaded = true;
+      this._event('rollback', { from: tr.target, target: this.tick, reason: 'membership' });
+    }
     if (typeof this.adapter.prepareMembershipJob === 'function' && typeof this.adapter.loadPreparedSnapshot === 'function') {
       tr.stageJob = this.adapter.prepareMembershipJob({ ...tr.proposal, tick: tr.target }, this._membershipContext(tr));
       if (!tr.stageJob || typeof tr.stageJob.pulse !== 'function' || typeof tr.stageJob.cancel !== 'function') throw new TypeError('membership preparation job');
@@ -488,8 +509,8 @@ export class RoomSession {
   _commit(tr) { return this._boundaryWork('membershipCommitMs', () => this._commitMembership(tr)); }
   _commitMembership(tr) {
     const previousCoordinator = this.coordinatorId;
-    const commandSequences = tr.commandSequences ?? this._core?.getCommandSequences?.();
-    let commandState = !tr.discardCommands ? this._core?.exportLocalCommandState() : undefined;
+    const commandSequences = tr.commandSequences ?? { ...this._retainedCommandSequences, ...this._core?.getCommandSequences(tr.target - this.baseTick) };
+    let commandState = !tr.discardCommands ? this._core?.exportLocalCommandState({ fromTick: Math.min(tr.target - this.baseTick, this._core.confirmedBoundary) }) ?? this._suspendedCommands : undefined;
     commandState ??= commandSequences ? { sequence: commandSequences[this.localPlayerId] ?? 0, lastInput: new Uint8Array(this.inputSize), commands: [] } : undefined;
     if (commandState && commandSequences) {
       const baseline = commandSequences[this.localPlayerId] ?? 0;
@@ -506,6 +527,7 @@ export class RoomSession {
     }
     this.epoch = tr.proposal.epoch; this.baseTick = tr.target; this.players = Object.freeze([...tr.proposal.players]); this.coordinatorId = tr.proposal.coordinatorId;
     this.activePlayers = Object.freeze([...(tr.proposal.activePlayers ?? tr.proposal.players)]);
+    this._retainedCommandSequences = Object.fromEntries(this.players.map(id => [id, commandSequences?.[id] ?? 0]));
     if (this._availability) for (const id of this._availability.peers.keys()) if (!this.players.includes(id)) { this._availability.peers.delete(id); this._availability.states.delete(id); }
     if (this._availability && !tr.availability) { this._availability.tenureAt = this.clock(); this._availability.anchorId = this.coordinatorId; }
     this._transition = null; this._interruptedAt = null; this._stats.transitions++;
@@ -517,12 +539,13 @@ export class RoomSession {
     this._event('membership-committed', { ...tr.proposal, tick: tr.target });
     if (!this.players.includes(this.localPlayerId)) { this._departing = true; this._retireApproved = previousCoordinator === this.localPlayerId; return; }
     if (!this.activePlayers.includes(this.localPlayerId)) {
-      this._suspendedBootstrap = { version: 1, tick: 0, checkpoint: { tick: 0, bytes: tr.postState.slice(), hash: tr.postHash },
+      this._suspendedCommands = commandState;
+      this._suspendedBootstrap = { roomCommandSequences: { ...this._retainedCommandSequences }, version: 1, tick: 0, checkpoint: { tick: 0, bytes: tr.postState.slice(), hash: tr.postHash },
         players: [...this.activePlayers], frames: [], hash: tr.postHash, inputSize: this.inputSize, tickRate: this.profile.tickRate,
         simulationVersion: this.simulationVersion, seed: this.seed, commandSequences: Object.fromEntries(this.activePlayers.map(id => [id, commandSequences?.[id] ?? 0])) };
       return;
     }
-    this._suspendedBootstrap = null;
+    this._suspendedBootstrap = null; this._suspendedCommands = null;
     this._startCore(commandState, commandSequences, { bytes: tr.postState, hash: tr.postHash });
   }
   poll(now = this.clock()) {
@@ -561,8 +584,8 @@ export class RoomSession {
           const result = this._boundaryWork('bootstrapPulseMs', () => tr.replay.pulse()); this._stats.bootstrapTicks += result.steps ?? 0;
           if (tr.replay.done) { tr.replay = null; this._applyMembership(tr); }
         }
-        if (this._core && tr.proposal.reason !== 'reconnect' && tr.target !== null && this.tick === tr.target && !tr.reachedSent) {
-          tr.reachedSent = true; this._send(this.coordinatorId, 'reached', { epoch: tr.proposal.epoch, tick: this.tick, hash: this._core.getStateHash() });
+        if (this._core && tr.proposal.reason !== 'reconnect' && tr.target !== null && this.tick >= tr.target && this.confirmedTick + 1 >= tr.target && !this._core.resimulating && !tr.reachedSent) {
+          tr.reachedSent = true; this._send(this.coordinatorId, 'reached', { epoch: tr.proposal.epoch, tick: tr.target, hash: this._core.getStateHash(tr.target - this.baseTick) });
         }
       } else if (!this._core && !this._suspendedBootstrap && now - this._startedAt >= this.membership.transitionTimeoutMs) throw new Error('join deadline exceeded');
       if (tr?.availability) this._pulseMembershipPreparation(tr);

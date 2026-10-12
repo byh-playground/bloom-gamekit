@@ -44,23 +44,32 @@ function actor(prepared = false, available = false) {
   }
   return actor;
 }
-export async function runDynamicRoomScenario({ prepared = false, paced = false, available = false } = {}) {
-  const sessions=[],rooms=[],actors=[],events=[], samples=[], interrupted=new Set(); let timer, target=Infinity, failure=null, maxPulseMs=0, maxCatchupPerPulse=0;
+export async function runDynamicRoomScenario({ prepared = false, paced = false, available = false, simulationMode = 'lockstep' } = {}) {
+  const sessions=[],rooms=[],actors=[],events=[], samples=[], interrupted=new Set(); let timer, target=Infinity, failure=null, maxPulseMs=0, maxCatchupPerPulse=0, handoffCommands=0;
   const namespace='dynamic-e2e-'+crypto.randomUUID(),roomCode=String(Math.floor(Math.random()*10000)).padStart(4,'0');
   const options={room:roomCode,namespace,timeoutMs:60000,peerTimeoutMs:20000,retryMs:paced?1500:100,advertiseIntervalMs:paced?5000:1000,rtcConfig:{iceServers:[]},
     signalerFactory:opts=>createNostrSignaler({...opts,relays:['wss://fixture.invalid'],WebSocketImpl:LocalRelay,publishIntervalMs:paced?500:0}),
     peerFactory:opts=>createWebRTCPeer({...opts,rtcConfig:{iceServers:[]}})};
-  const profile={...profiles.lockstep,baseInputDelayTicks:2,pacingPolicy:'none',checksumInterval:20,stateHistorySize:96,heartbeatMs:30,peerInterruptMs:500,peerTimeoutMs:8000};
+  const profile={...(simulationMode==='rollback'?profiles.action:profiles.lockstep),baseInputDelayTicks:2,pacingPolicy:'none',checksumInterval:20,stateHistorySize:96,heartbeatMs:30,peerInterruptMs:500,peerTimeoutMs:8000};
   async function add(role, slot = rooms.length){const room=await createNostrPublicRoom({...options,simulationVersion:'dynamic-browser-v1',discoveryMs:paced?1500:150,totalTimeoutMs:60000,leaseMs:paced?15000:1500,reservationMs:30000,resume:{storage:sessionStorage,key:namespace+':actor:'+slot,lifetimeMs:600000}});rooms.push(room);const a=actor(prepared,available);actors.push(a);const s=createRoomSession({mode:'online',room,adapter:a.adapter,inputSize:1,simulationVersion:'dynamic-browser-v1',profile,
     ...(available?{availability:{mode:'available',heartbeatMs:100,silenceMs:1600,inputGraceMs:1600,resumeGapMs:1600,roundTimeoutMs:5000}}:{}),
     membership:{transitionTimeoutMs:60000,reconnectGraceMs:30000,maxCatchupSteps:2},onEvent:e=>{if(['membership-committed','membership-failed','partition-failed'].includes(e.type))events.push(e);}});sessions.push(s);return s;}
   function pulse(){const start=performance.now();try{for(const s of sessions)if(!s.closed&&!interrupted.has(s)){const before=s.metrics.bootstrapTicks;s.poll();maxCatchupPerPulse=Math.max(maxCatchupPerPulse,s.metrics.bootstrapTicks-before);if(!s.closed&&s.tick<target&&!s.resimulating)s.advance(new Uint8Array([1]));if(s.failure)throw new Error(JSON.stringify({player:s.localPlayerId,failure:s.failure}));}}catch(error){failure=error;}maxPulseMs=Math.max(maxPulseMs,performance.now()-start);}
   async function until(predicate,label,timeoutMs=65000){const end=performance.now()+timeoutMs;while(!predicate()){if(failure)throw failure;if(performance.now()>end)throw new Error(label+' timeout '+JSON.stringify(sessions.map(s=>({tick:s.tick,epoch:s.epoch,status:s.status,transition:s._transition&&{target:s._transition.target,prepared:s._transition.prepared.size,reached:s._transition.reached.size,installed:s._transition.installed.size,committed:s._transition.committed.size}}))));await sleep(10);}}
-  async function checkpoint(label){const active=sessions.filter(s=>!s.closed);target=Math.max(...active.map(s=>s.tick));await until(()=>active.every(s=>s.tick===target),'checkpoint '+label);const hashes=active.map(s=>s.getStateHash());assert(new Set(hashes).size===1,'hash mismatch '+label);samples.push({label,tick:target,hash:hashes[0],players:active.length});target=Infinity;}
+  async function checkpoint(label){const active=sessions.filter(s=>!s.closed);target=Math.max(...active.map(s=>s.tick));await until(()=>active.every(s=>s.tick===target&&s.confirmedTick+1>=target&&!s.resimulating),'checkpoint '+label);const hashes=active.map(s=>s.getStateHash());assert(new Set(hashes).size===1,'hash mismatch '+label);samples.push({label,tick:target,hash:hashes[0],players:active.length});target=Infinity;}
   try{
     let host=await add('host');timer=setInterval(pulse,8);await until(()=>host.tick>=75,'single start');
-    for(let i=1;i<5;i++){host.queueCommand(new Uint8Array([i]));const joined=await add('join');await until(()=>joined.ready&&host.players.length===i+1&&!host._transition,'sequential join '+(i+1));await until(()=>sessions.every(s=>s.tick>=host.baseTick+25),'post admission advance');await checkpoint('players-'+(i+1));}
-    assert(actors.every(a=>a.state().commands.length===4),'pending commands duplicated or lost');
+    for(let i=1;i<5;i++){host.queueCommand(new Uint8Array([i]));const joined=await add('join');await until(()=>joined.ready&&host.players.length===i+1&&!host._transition,'sequential join '+(i+1));await until(()=>sessions.every(s=>s.tick>=host.baseTick+25),'post admission advance');await checkpoint('players-'+(i+1));
+      if(i===1 && simulationMode==='rollback' && !available){
+        interrupted.add(sessions[1]);host.queueCommand(new Uint8Array([99]));
+        await until(()=>actors[0].state().commands.some(c=>c.endsWith(':99')), 'predicted command before reconnect');
+        assert(host.confirmedTick+1<host.tick, 'handoff actually has an unconfirmed tail');
+        const reconnect=rooms[0].reconnect(rooms[1].localPlayerId);interrupted.clear();await reconnect;
+        await until(()=>sessions.every(s=>s.ready), 'predicted command reconnect');await checkpoint('predicted-command-handoff');
+        assert(actors.every(a=>a.state().commands.filter(c=>c.endsWith(':99')).length===1), 'predicted command lost or duplicated');handoffCommands++;
+      }
+    }
+    assert(actors.every(a=>a.state().commands.length===4+handoffCommands),'pending commands duplicated or lost');
     assert(maxCatchupPerPulse<=2,'bootstrap work exceeded per-pulse bound');
     if(available){
       interrupted.add(sessions[2]);let prior=host.tick;
@@ -77,10 +86,10 @@ export async function runDynamicRoomScenario({ prepared = false, paced = false, 
     }
     await rooms[0].reconnect(rooms[2].localPlayerId);await until(()=>sessions.every(s=>s.ready),'retained identity reconnect');await checkpoint('reconnect');
     const oldGuest=sessions[2], guestId=oldGuest.localPlayerId;oldGuest.queueCommand(new Uint8Array([9]));
-    await until(()=>actors[0].state().commands.length===5,'pre-refresh command');oldGuest.close();
+    await until(()=>actors[0].state().commands.length===5+handoffCommands,'pre-refresh command');oldGuest.close();
     const resumedGuest=await add('join',2);assert(resumedGuest.localPlayerId===guestId,'refresh identity changed');
     await until(()=>resumedGuest.ready&&!host._transition,'guest refresh admission');resumedGuest.queueCommand(new Uint8Array([8]));
-    await until(()=>actors[0].state().commands.length===6,'post-refresh command');await checkpoint('guest-refresh');
+    await until(()=>actors[0].state().commands.length===6+handoffCommands,'post-refresh command');await checkpoint('guest-refresh');
     const oldHostId=host.localPlayerId;host.close();host=await add('host',0);assert(host.localPlayerId===oldHostId,'coordinator refresh identity changed');
     await until(()=>host.ready&&sessions.filter(s=>!s.closed).every(s=>s.ready),'coordinator refresh');await checkpoint('coordinator-refresh');
     // Collect physical RTC traffic while all ten mesh edges still exist.

@@ -12,6 +12,7 @@ function display() {
 }
 async function connect(role) {
   document.querySelector('#host').disabled = document.querySelector('#join').disabled = true;
+  document.querySelector('#simulation').disabled = document.querySelector('#policy').disabled = true;
   try {
     room = await createNostrDynamicRoom({ role, room: document.querySelector('#code').value, namespace: 'bloom-gamekit-availability-example', maxPlayers: 4 });
     state = { tick: 0, epoch: -1, players: [], activePlayers: [], positions: {} };
@@ -28,7 +29,7 @@ async function connect(role) {
         state.tick = tick + 1;
       },
     };
-    session = createRoomSession({ mode: 'online', room, adapter, inputSize: 1, simulationVersion: 'availability-example-v1', profile: profiles.lockstep,
+    session = createRoomSession({ mode: 'online', room, adapter, inputSize: 1, simulationVersion: 'availability-example-v1', profile: document.querySelector('#simulation').value === 'rollback' ? profiles.action : profiles.lockstep,
       membership: { maxPlayers: 4 }, roomOwnerId: room.coordinatorId,
       availability: { mode: document.querySelector('#policy').value, autoTransfer: { enabled: true } },
       onEvent: event => { lastEvent = `${event.type} ${event.reason ?? ''}`; } });
@@ -38,7 +39,7 @@ async function connect(role) {
       pulse: timestamp => loop.pulse(timestamp, { render: false }), onGap: () => loop.resetTiming() });
     const render = timestamp => { loop.observeInput(timestamp); loop.render(); animation = requestAnimationFrame(render); };
     animation = requestAnimationFrame(render); scheduler.start(); document.querySelector('#leave').disabled = false;
-  } catch (error) { status.textContent = error.message; room?.close(); document.querySelector('#host').disabled = document.querySelector('#join').disabled = false; }
+  } catch (error) { status.textContent = error.message; room?.close(); document.querySelector('#simulation').disabled = document.querySelector('#policy').disabled = false; document.querySelector('#host').disabled = document.querySelector('#join').disabled = false; }
 }
 document.querySelector('#host').onclick = () => connect('host'); document.querySelector('#join').onclick = () => connect('join');
 document.querySelector('#leave').onclick = async () => { try { await session.leave(); scheduler.stop(); cancelAnimationFrame(animation); loop.stop(); display(); } catch (error) { status.textContent = error.message; } };

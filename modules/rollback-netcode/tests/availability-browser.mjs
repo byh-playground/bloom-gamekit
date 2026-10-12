@@ -44,11 +44,11 @@ function adapter(cooperative = false) {
   return implementation;
 }
 let membershipJobs = 0, membershipInstalls = 0;
-window.setup = async (id, players, available = true, autoTransfer = false, cooperative = false) => {
+window.setup = async (id, players, available = true, autoTransfer = false, cooperative = false, simulationMode = 'lockstep') => {
   state = { tick: 0, epoch: -1, players: [], activePlayers: [], value: 0, commands: [] };
   room.localPlayerId = id; room.players = players;
   session = createRoomSession({ mode: 'online', room, simulationVersion: 'availability-v1', inputSize: 1, adapter: adapter(cooperative),
-    profile: { ...profiles.lockstep, tickRate: 20, baseInputDelayTicks: 2, pacingPolicy: 'none', checksumInterval: 10,
+    profile: { ...(simulationMode === 'rollback' ? profiles.action : profiles.lockstep), tickRate: 20, baseInputDelayTicks: 2, pacingPolicy: 'none', checksumInterval: 10,
       heartbeatMs: 100, peerInterruptMs: 3000, peerTimeoutMs: 15000 }, membership: { reconnectGraceMs: 15000 },
     availability: available ? { mode: 'available', heartbeatMs: 100, silenceMs: 1600, inputGraceMs: 1600, resumeGapMs: 1600,
       roundTimeoutMs: 4500, retryMs: 300, autoTransfer: { enabled: autoTransfer, intervalMs: 600, minTenureMs: 1600, minImprovementMs: 2, minSamples: 8, rttWeight: 0, jitterWeight: 0, stepWeight: 4 } } : {},
@@ -64,7 +64,7 @@ window.setup = async (id, players, available = true, autoTransfer = false, coope
     if (document.hidden) loop.releaseInput();
     else { loop.resetTiming(); scheduler.rebase(); scheduler.wake(); }
   });
-  window.snapshot = () => ({ state: structuredClone(state), tick: session.tick, hash: session.getStateHash(), status: session.status,
+  window.snapshot = () => ({ state: structuredClone(state), tick: session.tick, hash: session.getStateHash(), confirmedTick: session.confirmedTick, resimulating: session.resimulating, metrics: session.metrics, status: session.status,
     failure: session.failure ?? window.failure, activePlayers: session.activePlayers, coordinatorId: session.coordinatorId, epoch: session.epoch,
     membershipJobs, membershipInstalls, membershipPrepareMs: session.metrics.membershipPrepareMs, maxBoundaryTaskMs: session.metrics.maxBoundaryTaskMs,
     branch: session.metrics.branch, baseTick: session.baseTick, events: events.slice(-24), hidden: document.hidden, renderedFrames, probePaused, stepMs: session.metrics.simulationStepMs });

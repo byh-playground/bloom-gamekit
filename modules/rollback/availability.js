@@ -43,8 +43,8 @@ export class Availability {
   measureStep(elapsed) { const alpha = this.config.autoTransfer.stepEmaAlpha; this.stepMs = this.samples ? this.stepMs * (1 - alpha) + elapsed * alpha : elapsed; this.samples++; }
   summary(now) {
     const s = this.session, network = s.activePlayers.filter(id => id !== s.localPlayerId).map(id => s._core?.getPeerState(id)).filter(p => p?.handshakeComplete);
-    return { branch: this.branch, epoch: s.epoch, tick: s.tick, coordinatorId: s.coordinatorId, anchorId: this.anchorId,
-      retainedBoundary: !!s._suspendedBootstrap || !!s._core && !s._core.failure && !s._core.resimulating && s._core.confirmedTick >= s._core.tick - 1,
+    return { branch: this.branch, epoch: s.epoch, tick: s.confirmedTick + 1, coordinatorId: s.coordinatorId, anchorId: this.anchorId,
+      retainedBoundary: !!s._suspendedBootstrap || !!s._core && !s._core.failure && !s._core.resimulating && s._core.confirmedBoundary >= 0,
       activePlayers: [...s.activePlayers], pumping: now - this.lastAdvance <= this.config.inputGraceMs,
       eligible: !this.recovering && now - this.lastAdvance <= this.config.inputGraceMs,
       requested: this.requested, recovering: this.recovering, inputIdleMs: Math.max(0, now - this.lastAdvance),
@@ -164,16 +164,17 @@ export class Availability {
       if (s._transition && !s._transition.availability) return;
       if (this.round?.id === m.round || this.round && compareIds(this.round.leader, from) <= 0) return;
       this.cancel();
+      if (s._core?.resimulating) s._core.poll();
       const round = this.round = { id: m.round, leader: from, participants: m.participants, reason: m.reason, transferTo: m.transferTo,
         started: now, votes: new Map(), staged: new Map(), decision: null, replay: null };
-      const vote = { ...this.summary(now), hash: s._core?.getStateHash() ?? s._suspendedBootstrap?.hash ?? 0 };
+      const vote = { ...this.summary(now), hash: s._core?.getStateHash(s._core.confirmedBoundary) ?? s._suspendedBootstrap?.hash ?? 0 };
       // Captured once at the frozen, confirmed boundary; never exported per heartbeat.
-      round.bootstrap = s._core?.exportConfirmedBootstrap() ?? s._suspendedBootstrap; round.sourceBaseTick = s.baseTick; round.sourceEpoch = s.epoch;
+      round.bootstrap = s._core ? s._exportBootstrap() : s._suspendedBootstrap; round.sourceBaseTick = s.baseTick; round.sourceEpoch = s.epoch;
       round.original = bytes(s.adapter.save()).slice();
       // Slow resumed voters can confirm a retained state without supplying new
       // input. Capture its confirmed current checkpoint once, so suffix replay
       // does not require a simulation-rate pump just to install that state.
-      if (round.reason === 'all-resume' && vote.retainedBoundary) {
+      if (round.reason === 'all-resume' && vote.retainedBoundary && vote.tick === s.tick) {
         if (!round.bootstrap || hashBytes(round.original) !== vote.hash) throw new Error('availability retained boundary changed');
         round.bootstrap = { ...round.bootstrap, checkpoint: { tick: round.bootstrap.tick, bytes: round.original.slice(), hash: vote.hash }, frames: [] };
       }
@@ -202,7 +203,7 @@ export class Availability {
         !equal(m.bootstrap.players, round.votes.get(from).activePlayers)) throw new Error('availability checkpoint certificate');
       const tr = s._transition = { availability: true, proposal: { epoch: d.epoch, oldPlayers: [...s.players], players: [...s.players],
         joined: [], left: [], activePlayers: d.activePlayers, coordinatorId: d.coordinatorId, reason: round.reason, branch: d.branch },
-        participants: round.participants, target: d.tick, startedAt: now, applied: false, commandSequences: m.bootstrap.commandSequences };
+        participants: round.participants, target: d.tick, startedAt: now, applied: false, boundaryLoaded: true, commandSequences: s._bootstrapCommandSequences(m.bootstrap, s.players) };
       round.replay = createBootstrapReplay({ adapter: s._adapter(m.baseTick, m.sourceEpoch), bootstrap: m.bootstrap,
         maxCatchupSteps: s.membership.maxCatchupSteps, maxCatchupMs: s.membership.snapshotBudgetMs,
         maxSnapshotBytes: s.profile.maxSnapshotBytes, maxSuffixTicks: s.profile.checksumInterval,
@@ -223,7 +224,7 @@ export class Availability {
       this.requested = null;
       if (round.votes.get(s.localPlayerId).pumping) this.lastAdvance = now;
       // Losing branches discard their pending intent as well as executed progress.
-      tr.discardCommands = round.votes.get(s.localPlayerId).branch !== round.votes.get(round.decision.donor).branch || round.votes.get(s.localPlayerId).hash !== round.decision.hash;
+      tr.discardCommands = round.votes.get(s.localPlayerId).branch !== round.votes.get(round.decision.donor).branch || round.votes.get(s.localPlayerId).tick === round.decision.tick && round.votes.get(s.localPlayerId).hash !== round.decision.hash;
       const previousCoordinator = s.coordinatorId;
       this.round = null; s._commit(tr);
       if (s.coordinatorId !== previousCoordinator) s._event('coordinator-changed', { previousCoordinatorId: previousCoordinator, coordinatorId: s.coordinatorId, reason: round.reason }); return;
