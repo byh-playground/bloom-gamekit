@@ -54,7 +54,7 @@ function createLoop({
       if (!command || command.payload === void 0) throw new TypeError("command payload required");
       held.push({ observationId: ++commandObservation, sequence: null, payload: command.payload.slice?.() ?? structuredClone(command.payload) });
     }
-    cached = { input: input.slice?.() ?? structuredClone(input), commands: held, predict: !packet || sampled.predict !== false || held.length > 0, continuationKey: packet ? sampled.continuationKey : void 0, sequence: ++inputSequence };
+    cached = { input: input.slice?.() ?? structuredClone(input), commands: held, predict: !packet || sampled.predict !== false || held.length > 0 || inputPreview?.active === true, continuationKey: packet ? sampled.continuationKey : void 0, sequence: ++inputSequence };
     observedAt = timestamp;
     if (hasSubmission) {
       const pending = held.filter((command) => command.sequence === null);
@@ -62,7 +62,7 @@ function createLoop({
       if (submission.commandSequences.length !== pending.length) throw new Error("input submission command receipt");
       for (let i = 0; i < pending.length; i++) pending[i].sequence = submission.commandSequences[i];
     }
-    if (inputPreview && packet && sampled.predict === false && !held.length) inputPreview.cancelObservation?.(Math.max(timestamp, performance.now()));
+    if (inputPreview && packet && sampled.predict === false && !held.length && !inputPreview.active) inputPreview.cancelObservation?.(Math.max(timestamp, performance.now()));
     else if (inputPreview?.enabled !== false && inputPreview) try {
       inputPreview.observe(cached.input, {
         sequence: cached.sequence,
@@ -292,6 +292,7 @@ function byteLength(value, seen = /* @__PURE__ */ new Set()) {
   return size;
 }
 var LocalInputPreview = class {
+  #isActive;
   #forkFactory;
   #cloneSnapshot;
   #captureSnapshot;
@@ -370,13 +371,14 @@ var LocalInputPreview = class {
     rejectedAge: 0,
     rejectedCapacity: 0
   };
-  /** @param {{createFork:(snapshot:unknown)=>{step:(input:unknown,context:object)=>void},cloneSnapshot?:(snapshot:unknown)=>unknown,captureSnapshot?:()=>unknown,readEntities:(fork:unknown)=>Array, presentation?:{selectPreview:(ids:Array)=>void,capturePreview:(packet:object,nowMs:number)=>boolean,clearPreview?:()=>void},maxPendingInputs?:number,maxFutureTicks?:number,maxAgeMs?:number}} options */
+  /** @param {{createFork:(snapshot:unknown)=>{step:(input:unknown,context:object)=>void},cloneSnapshot?:(snapshot:unknown)=>unknown,captureSnapshot?:()=>unknown,isActive?:(fork:unknown)=>boolean,readEntities:(fork:unknown)=>Array, presentation?:{selectPreview:(ids:Array)=>void,capturePreview:(packet:object,nowMs:number)=>boolean,clearPreview?:()=>void},maxPendingInputs?:number,maxFutureTicks?:number,maxAgeMs?:number}} options */
   constructor({
     createFork,
     cloneSnapshot = (value) => structuredClone(value),
     captureSnapshot,
     readEntities,
     presentation,
+    isActive,
     maxPendingInputs = 8,
     maxFutureTicks = 8,
     maxAgeMs = 250,
@@ -397,8 +399,14 @@ var LocalInputPreview = class {
     this.#maxFutureTicks = maxFutureTicks;
     this.#maxAgeMs = maxAgeMs;
     this.#stepMs = stepMs;
+    if (isActive !== void 0 && typeof isActive !== "function") throw new TypeError("isActive");
+    this.#isActive = isActive;
     if (typeof cloneSnapshot !== "function") throw new TypeError("cloneSnapshot");
     if (captureSnapshot !== void 0 && typeof captureSnapshot !== "function") throw new TypeError("captureSnapshot");
+  }
+  /** Ongoing detached action intent, independent of newly observed device commands. */
+  get active() {
+    return this.ready && !!this.#isActive && (this.#isActive(this.#fork) || this.#pending.some((frame) => frame.commands?.length) || !!this.#observed?.commands.length);
   }
   get pendingCount() {
     return this.#pending.length;
