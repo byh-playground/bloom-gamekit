@@ -81,7 +81,7 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
       while (!session.closed && !session.resimulating && work < session.profile.maxCatchupSteps) {
         // Scalar capability avoids allocating a complete metrics snapshot per pacing read.
         const pace = session.pace ?? session.metrics.pace;
-        if (accumulator < quantum * pace) break;
+        if (accumulator + 1e-7 < quantum * pace) break;
         const allowed = canAdvance();
         if (current !== generation || timing !== timingGeneration) return;
         if (!allowed) { if (backlogPolicy === 'drop') accumulator = Math.min(accumulator, quantum); break; }
@@ -149,5 +149,5 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
   };
   const flushInput = timestamp => observeInput(timestamp);
   const pollInput = timestamp => { const sample=observeInput(timestamp); session.poll(); return sample; };
-  return { get rates(){return configuredRates;}, get nextDeadlineMs(){return last === undefined ? null : last + Math.max(0, quantum * (session.pace ?? session.metrics.pace) - accumulator);}, start, stop, pulse, render: renderFrame, observeInput, flushInput, pollInput, releaseInput:release, resetTiming, get running() { return running; } };
+  return { get simulationTimeMs(){return last===undefined?null:last-accumulator;}, get rates(){return configuredRates;}, get nextDeadlineMs(){return last === undefined ? null : last + Math.max(0, quantum * (session.pace ?? session.metrics.pace) - accumulator);}, start, stop, pulse, render: renderFrame, observeInput, flushInput, pollInput, releaseInput:release, resetTiming, get running() { return running; } };
 }

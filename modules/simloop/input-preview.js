@@ -57,7 +57,8 @@ function byteLength(value, seen = new Set()) {
 export class LocalInputPreview {
   #isActive; #forkFactory; #cloneSnapshot; #captureSnapshot; #readEntities; #presentation; #maxPending; #maxFutureTicks; #maxAgeMs; #stepMs;
   #snapshot = null; #snapshotTick = -1; #fork = null; #forkTick = -1; #forkCurrent = false; #clockGap = false; #forecast = []; #pending = []; #observed = null; #baseInput; #continuationKey; #revision = -1; #tick = -1; #epoch = -1; #generation = 0;
-  #sequence = 0; #timeMs = -Infinity; #disposed = false; #enabled = true; #captureSequence = -1; #confirmedCommandSequence; #confirmedOnlySteps = 0;
+  #sequence = 0; #phaseStartMs = 0;
+  #timeMs = -Infinity; #disposed = false; #enabled = true; #captureSequence = -1; #confirmedCommandSequence; #confirmedOnlySteps = 0;
   #metrics = { snapshotBytes: 0, correctionBytes: 0, replayBytes: 0, snapshotCloneMs: 0, forkMs: 0, replayMs: 0, replayedInputs: 0, replayGapSteps:0, corrections: 0, correctionMs: 0, continuedCheckpoints: 0,
     continuationRejectedDisabled:0,continuationRejectedTick:0,continuationRejectedRevision:0,continuationRejectedEpoch:0,continuationRejectedKey:0,continuationRejectedObserved:0,continuationRejectedForecast:0,continuationRejectedInput:0,continuationRejectedFork:0,continuationRejectedCommands:0,
     forkRebuilds:0,snapshotRefreshes:0,forecastReuses:0,forecastExtensions:0,currentForkExtensions:0,clockGaps:0,confirmedAdvances:0,confirmedAdvanceRejected:0,confirmedAdvanceRejectedDisabled:0,confirmedAdvanceRejectedKey:0,confirmedAdvanceRejectedTick:0,confirmedAdvanceRejectedRevision:0,confirmedAdvanceRejectedEpoch:0,confirmedAdvanceRejectedInput:0,confirmedAdvanceRejectedCommands:0,confirmedAdvanceRejectedFork:0,confirmedAdvanceRejectedPending:0,confirmedAdvanceRejectedLimit:0,confirmedAdvanceMs:0,
@@ -106,6 +107,7 @@ export class LocalInputPreview {
     if (!checkpoint || !MODES.has(checkpoint.mode ?? 'continuous')) throw new TypeError('preview reconciliation mode');
     for (const key of ['revision', 'tick', 'epoch']) if (!Number.isSafeInteger(checkpoint[key]) || checkpoint[key] < 0) throw new RangeError('checkpoint ' + key);
     if (!Number.isFinite(checkpoint.timeMs) || checkpoint.timeMs < this.#timeMs) throw new RangeError('checkpoint timeMs must be monotonic');
+    if(checkpoint.phaseStartMs!==undefined&&(!Number.isFinite(checkpoint.phaseStartMs)||checkpoint.phaseStartMs>checkpoint.timeMs))throw new RangeError('checkpoint phaseStartMs must not exceed timeMs');
     const mode = checkpoint.mode ?? 'continuous';
     if (checkpoint.revision < this.#revision) throw new RangeError('checkpoint revision cannot regress');
     if (checkpoint.continuationKey !== undefined && (typeof checkpoint.continuationKey !== 'string' || checkpoint.continuationKey.length > 65536)) throw new TypeError('checkpoint continuationKey');
@@ -124,7 +126,8 @@ export class LocalInputPreview {
     this.#snapshot = snapshot; this.#snapshotTick = checkpoint.tick; this.#continuationKey=checkpoint.continuationKey;this.#clockGap=false;
     this.#revision = checkpoint.revision; this.#tick = checkpoint.tick; this.#epoch = checkpoint.epoch;this.#forkCurrent=false;this.#forkTick=-1;this.#forecast.length=0;
     this.#baseInput=checkpoint.input===undefined?undefined:copyInput(checkpoint.input);this.#confirmedCommandSequence=checkpoint.confirmedCommandSequence;this.#confirmedOnlySteps=0;
-    this.#timeMs = checkpoint.timeMs; this.#generation++;
+    this.#timeMs = checkpoint.timeMs;
+    this.#phaseStartMs = checkpoint.phaseStartMs ?? checkpoint.timeMs; this.#generation++;
     if(this.#pending.length||this.#observed||!this.#fork)this.#rebuild(checkpoint.timeMs);
     this.#metrics.corrections++; this.#metrics.correctionMs += performance.now() - start;
     if (!this.#pending.length && !this.#observed) { this.#forecast.length=0;this.#forkCurrent=false;this.#presentation?.clearPreview?.(); return true; }
@@ -160,7 +163,8 @@ export class LocalInputPreview {
       commands: checkpoint.confirmedCommandSequence === undefined ? input.commands : input.commands.filter(command => command.sequence > checkpoint.confirmedCommandSequence) }));
     this.#forecast = this.#forecast.filter(step => step.tick >= checkpoint.tick);
     this.#tick = checkpoint.tick; this.#epoch = checkpoint.epoch; this.#revision = checkpoint.revision;
-    this.#baseInput = copyInput(checkpoint.input); this.#timeMs = checkpoint.timeMs; this.#generation++;
+    this.#baseInput = copyInput(checkpoint.input); this.#timeMs = checkpoint.timeMs;
+    this.#phaseStartMs = checkpoint.phaseStartMs ?? checkpoint.timeMs; this.#generation++;
     this.#continuationKey = checkpoint.continuationKey;
     this.#confirmedCommandSequence=checkpoint.confirmedCommandSequence??this.#confirmedCommandSequence;this.#confirmedOnlySteps=0;
     this.#forkCurrent = this.#forkTick === this.#tick && !this.#pending.length;
@@ -308,7 +312,7 @@ export class LocalInputPreview {
     this.#presentation.selectPreview(entities.map(({ id, generation }) => ({ id, generation })));
     const starts = new Map((initial ?? []).map(entity => [entity.id, entity.source]));
     const accepted = this.#presentation.capturePreview({ revision: this.#revision, sequence: ++this.#sequence,
-      timeMs, phaseStartMs: this.#timeMs, stepMs: Math.max(1,this.#forkTick-this.#tick)*this.#stepMs,
+      timeMs, phaseStartMs: this.#phaseStartMs, stepMs: Math.max(1,this.#forkTick-this.#tick)*this.#stepMs,
       entities: entities.map(entity => ({ ...entity, initialSource: starts.get(entity.id) })) }, timeMs);
     if (accepted) this.#metrics.previewPublishes++;
     return accepted;
