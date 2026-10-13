@@ -131,7 +131,9 @@ export interface BootstrapReplay {
   cancel(): BootstrapReplayPulseResult;
 }
 export function createBootstrapReplay(options: BootstrapReplayOptions): BootstrapReplay;
+export interface InputSubmission { status: 'submitted' | 'unchanged' | 'waiting'; tick: number; executeTick?: number; commandSequences: number[]; }
 export interface SessionMetrics {
+  inputDrafts: number; inputDraftSentBytes: number; inputDraftReceivedBytes: number;
   rollbacks: number; resimulatedTicks: number; maxRollbackDepth: number; stalls: number; holds: number;
   recoveries: number; rejectedSnapshots: number; rejectedPackets: number; sentBytes: number; receivedBytes: number;
   predictedTicks: number; hashMismatches: number; latestResimulationMs: number; smoothedRTT: number; jitter: number;
@@ -158,7 +160,7 @@ export class RollbackSession {
   receive(peerId: PlayerId, data: Bytes, now?: number): boolean;
   poll(now?: number): void;
   advance(input?: Bytes): AdvanceResult;
-  queueCommand(payload: Bytes): number;
+  submitInput(input: Bytes, options?: {commands?: Bytes[]}): InputSubmission; queueCommand(payload: Bytes): number;
   /** 증가 즉시 적용. 감소는 동일 샘플에 한 틱씩 적용하며 requestedInputDelay로 목표를 조회한다. */
   setInputDelay(ticks: number): void;
   releaseInput(): void;
@@ -254,7 +256,7 @@ export class RoomSession {
   readonly profile: Readonly<Profile>; readonly membership: Readonly<MembershipOptions>;
   readonly closed: boolean; readonly ready: boolean; readonly resimulating: boolean; readonly status: RoomSessionStatus;
   readonly failure: Readonly<SessionFailure> | RoomSessionFailure | null | undefined; readonly metrics: RoomSessionMetrics;
-  poll(now?: number): void; advance(input?: Bytes): RoomAdvanceResult; queueCommand(payload: Bytes): number;
+  poll(now?: number): void; advance(input?: Bytes): RoomAdvanceResult; submitInput(input: Bytes, options?: {commands?: Bytes[]}): InputSubmission; queueCommand(payload: Bytes): number;
   releaseInput(): void; getPeerState(peerId: PlayerId): Readonly<PeerState> | undefined;
   getStateHash(tick?: number): number | undefined;
   /** 확정 roster 변경과 송신 완료까지 기다린다. 즉시 종료는 close()를 사용한다. */
@@ -416,7 +418,7 @@ export interface LocalInputPreviewOptions {
   maxPendingInputs?: number; maxFutureTicks?: number; maxAgeMs?: number;
 }
 export interface LoopInputSubmission {sequence:number;captureTick:number;executeTick:number;boundaryTick:number;epoch:number;timeMs:number;commands:Array<{observationId?:number;sequence:number;executeTick:number;payload:Bytes}>;}
-export interface ObservingLoop {start():void;stop():void;pulse(timestamp:number, options?:{render?:boolean}):void;render():void;observeInput(timestamp:number):unknown;flushInput(timestamp:number):void;releaseInput():void;resetTiming():void;readonly running:boolean;}
+export interface ObservingLoop {start():void;stop():void;pulse(timestamp:number, options?:{render?:boolean;input?:boolean}):void;render():void;observeInput(timestamp:number):unknown;flushInput(timestamp:number):unknown;pollInput(timestamp:number):unknown;releaseInput():void;resetTiming():void;readonly running:boolean;}
 export interface LocalInputState { epoch:number; baseTick:number; tick:number; confirmedTick:number; inputDelay:number; commandSequence:number;executedInput:Bytes|null;replayInput:Bytes|null;executedCommandSequence:number|null;capture:null|{sequence:number;captureTick:number;executeTick:number;input:Bytes;commands:Array<{sequence:number;executeTick:number;payload:Bytes}>}; }
 export class LocalInputPreview {
   constructor(options: LocalInputPreviewOptions);

@@ -96,7 +96,7 @@ const session = createSession({
 - replay schema와 codec은 그대로입니다. 최종 hash는 export 때 현재 경계에서 계산하고 replay 용량에 도달할 때는 마지막 기록 경계를 미리 hash하여 보존합니다. 완료된 입력만 기록하며 초기 상태 이후 replay로 재현합니다.
 - `metrics.snapshotSaves`, `serializedSnapshotBytes`는 SDK 직렬화 횟수/바이트를 제공합니다. 기존 `retainedSnapshotBytes`, `stateHashComputations`, `hashedStateBytes`도 유지합니다. 이는 adapter 내부 할당/게임의 별도 저장 비용까지 측정하지 않습니다.
 
-HELLO는 양쪽 mode를 명시하며 lockstep에서는 초기 `baseInputDelayTicks`, `checksumInterval`도 일치해야 합니다. rollback의 peer별 delay 설정 및 런타임 delay 적응은 유지합니다. packet framing과 replay version은 유지하지만 이 handshake 필드가 없는 이전 bundle과 새 bundle을 섞으면 시작을 거절합니다. 함께 플레이할 소비자는 같은 검증된 dist pin으로 업데이트하세요.
+HELLO는 양쪽 mode를 명시하며 lockstep에서는 초기 `baseInputDelayTicks`, `checksumInterval`도 일치해야 합니다. rollback의 peer별 delay 설정 및 런타임 delay 적응은 유지합니다. replay version은 유지하며 protocol 2를 사용합니다. 이 handshake 필드가 없는 이전 bundle과 새 bundle을 섞으면 시작을 거절합니다. 함께 플레이할 소비자는 같은 검증된 dist pin으로 업데이트하세요.
 
 ## 확정 bootstrap과 bounded catch-up
 
@@ -239,3 +239,13 @@ lockstep은 기존 sparse checkpoint와 고정 입력 delay를 유지합니다. 
 [실행 예제](./examples/availability/index.html)는 입장 전에 모드와 가용성을 고르며 입장 후 선택을 잠급니다. `npm run test:room`은 실제 Chromium/Edge RTC에서 rollback 참가·재연결·refresh 및 두 페이지 지연/중단/복귀를 180초 상한으로 검사합니다. lockstep 회귀는 `test:network`, `test:availability`로 분리합니다.
 
 실제 시나리오 결과, 발견 후 수정한 경계 오류, 전후 CPU/초기화/snapshot 비용과 미검증 범위는 [모드 확장 검증 기록](./docs/room-modes-verification.md)에 정리했습니다.
+
+## 이벤트 즉시 입력 제출 (protocol 2)
+
+`submitInput(input, {commands: [payload, ...]})`은 held bytes와 edge 명령을 소유 복사하고 단조 command sequence를 반환합니다. 반환값은 `{status,tick,executeTick,commandSequences}`입니다. status는 submitted/unchanged이며 RoomSession 입장 전 명령 없는 입력은 waiting입니다. 반환 executeTick은 열린 미래 slot의 후보이고 immutable 실행 tick은 localInputState.capture에서 확인합니다. 이 API는 advance, adapter.step/save/load, confirmed boundary 변경을 실행하지 않습니다. 단독 queueCommand도 즉시 전송을 요청합니다.
+
+INPUT_DRAFT/ACK에서 같은 열린 slot의 수정은 증가하는 revision으로 교체하며, 상대는 최신 초안 하나만 유지합니다. rollback 예측에만 사용하고 lockstep은 확정 프레임을 기다립니다. 초안은 confirmation, bootstrap, replay log의 근거가 아닙니다. 확정 INPUT이 있으면 늦은 초안을 무시합니다. 확정 입력과 예측이 다르면 기존 rollback으로 복구합니다. 명령은 기존 frame 바이트/개수 한도 안의 순서 있는 prefix를 전송하며 초과분은 다음 frame에서 처리합니다.
+
+ACK 전 초안은 기존 heartbeat에서 재전송합니다. unchanged 입력은 새 revision/packet을 만들지 않습니다. 수정은 확정 frame을 덮어쓰지 않습니다. 최종 명령 순서·executeTick·중복 처리·재연결 handoff는 기존 계약을 유지합니다. `metrics.inputDrafts/inputDraftSentBytes/inputDraftReceivedBytes`로 추가 트래픽을 구분합니다. close는 초안을 해제합니다.
+
+protocol 1/2 혼용은 Core HELLO 및 RoomSession 계약 digest에서 거절합니다. 같은 방의 클라이언트는 동일 검증 dist SHA로 배포하세요. snapshot codec, 저장/리플레이 형식, 기본 TPS/inputDelay/prediction window는 변경하지 않았습니다.

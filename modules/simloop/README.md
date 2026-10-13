@@ -23,7 +23,7 @@ pulse(timestampMs)는 자동 rAF와 같은 누적·pacing·maxCatchupSteps 경�
 
 ## 선택적 로컬 입력 미리보기
 
-`loop.observeInput(timestamp)`가 권위 틱 전에 같은 `getInput()`을 관찰합니다. 자동 RAF loop는 프레임마다 이 경로를 사용하고, 외부 RAF와 deadline timer를 조합할 때는 RAF에서 observeInput, timer에서 pulse를 호출합니다. pulse는 관찰된 held bytes를 사용하며 명령을 canonical queue에 한 번만 제출합니다. 틱 사이의 held 변경은 하나의 미래 표본을 교체하고 edge 명령은 순서대로 축적합니다. provisional `observationId`와 `sequence:null`은 실제 SDK command sequence가 아닙니다. SDK queue 결과로 한 번 묶이고 `session.localInputState.capture`의 정확한 executeTick에서만 확인합니다. RoomSession의 metadata tick은 baseTick을 포함한 global tick입니다.
+`loop.observeInput(timestamp)`가 권위 틱 전에 같은 `getInput()`을 관찰합니다. 자동 RAF loop는 프레임마다 이 경로를 사용하고, 외부 RAF와 deadline timer를 조합할 때는 RAF에서 observeInput, timer에서 pulse를 호출합니다. pulse는 관찰된 held bytes를 사용하며 명령을 canonical queue에 한 번만 제출합니다. 틱 사이의 held 변경은 하나의 미래 표본을 교체하고 edge 명령은 순서대로 축적합니다. `observationId`는 preview 관측 식별자입니다. submitInput 지원 session은 관측 즉시 SDK command sequence를 할당하고 `session.localInputState.capture`의 정확한 executeTick에서만 확인합니다. RoomSession의 metadata tick은 baseTick을 포함한 global tick입니다.
 
 RAF가 deadline보다 느리거나 정지해도 pulse는 관찰 cache의 나이가 한 simulation quantum(`1000/tickRate` ms) 이상이면 canonical advance 전에 같은 observeInput/getInput 경로로 갱신합니다. quantum 안의 최근 관찰과 동일 timestamp는 재사용합니다. device edge의 수집·소비도 getInput 안의 이 단일 경로에서 수행해야 하며 별도 RAF collector를 중복 호출하지 않습니다. deadline fallback은 관찰만 추가하고 authority/command를 두 번 실행하지 않습니다.
 
@@ -60,8 +60,18 @@ preview.reconcile({ snapshot, revision, tick, epoch, confirmedSequence, timeMs, 
 
 `createLoop`은 일반 입력 bytes 또는 `{input, commands:[{payload}]}` sample을 받습니다. 둘 다 **같은 getInput/sample 경로**에서 왔으며, packet의 각 command는 `session.queueCommand(payload)`로 한 번 제출하고 SDK가 반환한 원래 command sequence와 detached payload를 그 tick의 fork step context에 함께 전달합니다. input submission sequence와 SDK command sequence는 별도 namespace로 확인·보관합니다. commands가 있는 packet은 해당 session이 `queueCommand`를 제공해야 합니다. 기존 raw-bytes `getInput`은 그대로 동작합니다. pending 이력은 기본 최대 8개이며 tick horizon도 기본 8, 확인 snapshot의 유효 기간은 기본 250ms입니다. epoch/lifecycle reset·blur·visibility 숨김·stop은 prediction을 지웁니다. 큰 clock gap에서는 선택 capability의 `clockGap()`이 표시 preview만 해제하고, 다음 정확한 tick·input·remote continuation key 확인을 통과한 경우에만 기존 fork를 이어갑니다. 불일치하면 새 authority snapshot으로 rebase하고 `clockGap()`이 없는 capability는 기존처럼 clear합니다. load/reset/teleport/join/resync는 pending 입력을 버리고 새 checkpoint를 요구하며 rollback은 확인된 input/command sequence까지 제거한 뒤 나머지를 checkpoint부터 재생합니다. 재활성화와 lifecycle 이후에는 새로운 확인 checkpoint를 reconcile하세요.
 
-`onAdvance(result, submission)`의 두 번째 값은 새로운 immutable capture에서 `{sequence,captureTick,executeTick,epoch,timeMs,commands}`를 제공합니다. held/stalled에서도 로컬 입력이 이미 capture될 수 있으므로 advanced 결과로 확인하지 않습니다. `reconcile`의 tick은 실제 snapshot boundary이며 그보다 앞에서 실행된 capture만 제거합니다. `confirmedCommandSequence`는 실행한 SDK command maxima입니다. `flushInput(timestamp)`는 suspended UI/save 명령을 같은 관찰·제출 경로에서 한 번 실행할 때 사용합니다.
+`onAdvance(result, submission)`의 두 번째 값은 새로운 immutable capture에서 `{sequence,captureTick,executeTick,epoch,timeMs,commands}`를 제공합니다. held/stalled에서도 로컬 입력이 이미 capture될 수 있으므로 advanced 결과로 확인하지 않습니다. `reconcile`의 tick은 실제 snapshot boundary이며 그보다 앞에서 실행된 capture만 제거합니다. `confirmedCommandSequence`는 실행한 SDK command maxima입니다. `flushInput(timestamp)`는 같은 관찰·제출 경로를 실행하며 권위 tick을 강제로 진행하지 않습니다.
 
 `PresentationRuntime`는 선택된 local identity의 현재 표시에서 실제 fork 미래 표본까지 schema 곡선을 매 RAF 평가합니다. 입력이 바뀌거나 canonical 경계가 바뀔 때만 bounded restore/replay를 하고, 동일 held 관찰에는 저장한 미래 표본을 재사용합니다. remote ID는 선택하지 않으면 authoritative track만 표시합니다. timer/step callback은 협력형이며 거대한 게임 update를 하드 실시간으로 선점하지 않습니다.
 
 `metrics`는 추정 snapshot clone/correction bytes, replay 입력 bytes, clone/fork/replay/correction 시간을 구분합니다. `PresentationRuntime.previewMetrics`는 schema capture 시간과 선언-field/shape 기준 추정 capture bytes를 계측합니다. 이는 정밀 heap allocation/전송 bytes나 FPS 개선 증명이 아닙니다. preview OFF는 기존 input/session 경로를 그대로 쓰며, 선택 기능은 [실제 입력/WebGL 예제](../../examples/input-preview/index.html)와 browser E2E에서 별도로 확인합니다.
+
+## 입력 수집·제출 주기 분리
+
+장치 이벤트에서 상태와 edge queue를 갱신한 뒤 `loop.observeInput(performance.now())`을 호출합니다. `submitInput` capability가 있는 session은 held input과 미제출 명령을 즉시 전송합니다. 기존 LocalInputPreview도 같은 호출에서 관측하며 ACK나 다음 tick을 기다리지 않습니다. 명시적인 observeInput은 같은 timestamp에도 새 이벤트를 읽습니다.
+
+주기적인 장치 수집·네트워크 정비는 `loop.pollInput(timestamp)`, simulation pump는 `loop.pulse(timestamp,{render:false,input:false})`, RAF는 `loop.render()`로 분리합니다. input:false는 pulse의 장치 재수집을 막으며 session.poll/advance의 기존 정비는 유지합니다. 처음에는 observeInput으로 샘플을 준비하세요. 명령은 getInput packet에서 한 번만 반환합니다.
+
+flushInput은 관측·제출만 실행하며 accumulator나 simulation tick을 강제로 진행하지 않습니다. 저장 완료가 권위 실행을 요구하면 명령의 확정 경계를 기다려야 합니다. 일반 simulation capability에는 submitInput이 필요 없습니다.
+
+[실행 예제](../rollback/examples/availability/index.html)는 이벤트 즉시 제출, 60Hz 장치 정비, profile의 고정 simulation TPS, 독립 RAF를 사용합니다. 60Hz는 예제의 장치 주기이며 SDK 기본 TPS가 아닙니다. [측정과 한계](./docs/input-latency.md)를 참고하세요.

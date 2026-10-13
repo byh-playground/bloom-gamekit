@@ -1,7 +1,7 @@
 import { createSession, createSessionFromBoundary, delegateRoomRecovery } from './core.js';
 import { Availability, availabilityConfig } from './availability.js';
 import { createBootstrapReplay } from './bootstrap.js';
-import { profiles, CHUNK_SIZE, MAGIC } from '../_rollback-shared/protocol.js';
+import { profiles, PROTOCOL_VERSION, CHUNK_SIZE, MAGIC } from '../_rollback-shared/protocol.js';
 import { createValueCodec } from '../deterministic/value-codec.js';
 import { bytes, compareIds, hashBytes, integer, nowMs } from '../deterministic/utilities.js';
 
@@ -36,7 +36,7 @@ export class RoomSession {
       adaptiveInputDelay: simulationMode === 'rollback' ? profile.adaptiveInputDelay ?? true : false });
     this.availability = availabilityConfig(availability); if (!idValid(roomOwnerId)) throw new TypeError('roomOwnerId'); this.roomOwnerId = roomOwnerId;
     this.codec = createValueCodec({ maxBytes: this.membership.maxTransferBytes, maxEntries: Math.min(this.membership.maxTransferBytes, 1000000), maxDepth: 32 });
-    this.contract = hashBytes(this.codec.encode({ version: 2, mode: this.profile.mode, rollbackWindowTicks: this.profile.rollbackWindowTicks, stateHistorySize: this.profile.stateHistorySize, simulationVersion, seed, inputSize, maxPlayers: this.membership.maxPlayers,
+    this.contract = hashBytes(this.codec.encode({ version: 2, protocol: PROTOCOL_VERSION, mode: this.profile.mode, rollbackWindowTicks: this.profile.rollbackWindowTicks, stateHistorySize: this.profile.stateHistorySize, simulationVersion, seed, inputSize, maxPlayers: this.membership.maxPlayers,
       tickRate: this.profile.tickRate, baseInputDelayTicks: this.profile.baseInputDelayTicks, checksumInterval: this.profile.checksumInterval,
       ...(this.availability.mode === 'available' ? { availability: this.availability } : {}) }));
     this.epoch = room?.epoch ?? 0; this.baseTick = 0; this.coordinatorId = room?.coordinatorId ?? localPlayerId;
@@ -153,7 +153,7 @@ export class RoomSession {
     const options = { players: [...this.activePlayers], localPlayerId: this.localPlayerId, authorityPlayerId: this.coordinatorId,
       sessionId: this.sessionId + ':' + this.epoch, simulationVersion: this.simulationVersion, seed: this.seed, inputSize: this.inputSize,
       profile: this.profile, adapter: this._adapter(), localCommandState: commandState, initialCommandSequences: commandSequences ? Object.fromEntries(this.activePlayers.map(id => [id, commandSequences[id] ?? 0])) : undefined, clock: this.clock, recordReplay: false,
-      onEvent: event => { if (event.type !== 'closed') this._event(event.type, { ...event, tick: event.tick + this.baseTick, ...(['rollback', 'recovered'].includes(event.type) ? { from: event.from + this.baseTick, target: event.target + this.baseTick } : {}) }); } };
+      onEvent: event => { if (event.type !== 'closed') this._event(event.type, { ...event, tick: event.tick + this.baseTick, ...(Number.isSafeInteger(event.executeTick) ? { executeTick: event.executeTick + this.baseTick } : {}), ...(['rollback', 'recovered'].includes(event.type) ? { from: event.from + this.baseTick, target: event.target + this.baseTick } : {}) }); } };
     this._core = boundary ? createSessionFromBoundary(options, boundary.bytes, boundary.hash) : createSession(options);
     if (this._availability) delegateRoomRecovery(this._core, () => { this._availability.requested = 'state-mismatch'; });
     this.profile = this._core.profile;
@@ -618,6 +618,14 @@ export class RoomSession {
     const tr = this._transition;
     if (!this._core || this._availability?.round || this._availability?.recovering || this._availability?.requested === 'state-mismatch' || tr && (tr.proposal.reason === 'reconnect' || tr.target === null || this.tick >= tr.target)) return { status: this.status, tick: this.tick };
     const result = this._core.advance(sample); return { ...result, tick: this.tick };
+  }
+  submitInput(input, options) {
+    if (this.closed || this.failure) throw new Error('room session unavailable');
+    const sample = bytes(input); if (sample.length !== this.inputSize) throw new RangeError('inputSize');
+    this._lastInput = sample.slice();
+    if (!this._core) { if (options?.commands?.length) throw new Error('player not admitted'); return { status: 'waiting', tick: this.tick, commandSequences: [] }; }
+    const result = this._core.submitInput(sample, options);
+    return { ...result, tick: this.tick, executeTick: result.executeTick + this.baseTick };
   }
   queueCommand(payload) {
     if (this.closed || this.failure) throw new Error('room session unavailable');

@@ -136,3 +136,7 @@ Synctest.metrics는 라이브러리가 소유하는 검사 틱·재실행 틱·�
 `createLoop.pulse(timestamp, {render:false})`는 timer의 poll/advance를 수행하고 `loop.render()`는 rAF 표현만 수행한다. `createDeadlineScheduler`는 단일 timer/deadline을 소유한다. 숨김은 held input 해제이며, 큰 clock gap 뒤 debt를 폐기하고 timing을 재설정한다. 가용성 RoomSession은 `resumeGapMs`를 넘은 pump 복귀 또는 첫 수신부터 낡은 Core 실행을 동결하고 새 checkpoint를 요청한다. 브라우저 throttling·freeze·OS suspend 중 실행을 보장하지 않는다. 장기 CPU 정지/완전 분할에서 전역 진행을 보장하지 않으며 단조 clock, 신뢰할 수 있는 adapter와 결국 전달되는 제어 메시지를 전제로 재결합한다.
 
 상세 API·용량·재시도·검증 범위는 [rollback](../rollback/README.md), [transport](../transport/README.md), [비용 측정](../rollback/docs/room-session-benchmarks.md)을 따른다. 동적 여러 epoch 전체 replay export는 별도 미지원이며 fixed Core replay 계약을 변경하지 않는다.
+
+## 즉시 제출과 protocol 2
+
+submitInput은 다음 simulation tick 전에 이벤트 입력을 전송합니다. INPUT_DRAFT revision은 미확정 예측 힌트이며 authoritative input/executeTick/confirmed boundary를 변경하지 않습니다. 확정 INPUT이 우선하며 ACK는 전송 확인일 뿐 게임 실행 확인이 아닙니다. 한 peer당 최신 초안 하나, 기존 queue/frame 용량과 heartbeat 재전송을 사용합니다. protocol 1/2 혼용은 거절하며 소비자는 동일 dist SHA를 고정합니다. [API](../rollback/README.md), [실행 주기](../simloop/README.md)를 참고하세요.
