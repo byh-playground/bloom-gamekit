@@ -277,7 +277,7 @@ try {
   const captureMetadata=await previewPage.evaluate(()=>inputPreviewDemo.session.localInputState);
   assert.equal(captureMetadata.capture.executeTick-captureMetadata.capture.captureTick,2,'actual SDK input delay is retained in execution metadata');
   assert.equal(captureMetadata.commandSequence,captureMetadata.executedCommandSequence,'observed roll binds once and is confirmed at actual execution');
-  assert.ok(await previewPage.evaluate(()=>inputPreviewDemo.preview.metrics.replayGapSteps)>0,'inputDelay gaps execute their actual simulation ticks instead of compressing them');
+  assert.equal(previewErrors.length,0,'detached fork tick/command guards reject compressed gaps or changed execution T');
   const beforeDirectionSwitch=await previewPage.evaluate(()=>window.inputPreviewDemo.diagnostics.displayedX);
   await previewPage.evaluate(()=>document.querySelector('canvas').dispatchEvent(new KeyboardEvent('keydown',{code:'KeyA',bubbles:true})));
   await previewPage.waitForFunction(x=>window.inputPreviewDemo.diagnostics.displayedX<x-.5,beforeDirectionSwitch,{timeout:1000,polling:'raf'});
