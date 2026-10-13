@@ -81,3 +81,15 @@ protocol 3은 이벤트에서 명령별 불변 T를 예약합니다. 한 pump가
 ### 진행 중 액션의 예측 수명
 
 `LocalInputPreview({isActive: fork => fork.hasActiveAction})`는 새 장치 입력과 별개인 detached 액션의 수명을 선언합니다. 옵션이 없으면 기존 동작을 유지합니다. `createLoop`는 `predict:false`인 neutral sample에서도 `preview.active`가 참이면 같은 입력 바이트로 예측을 이어갑니다. 이미 제출된 one-shot Command는 다시 제출하지 않습니다. pending 명령과 활성 액션이 끝나면 기존 release/reconcile 경로로 권위 표시에 복귀합니다. callback은 fork만 읽으며 게임 TPS나 액션 종류는 모듈이 알지 않습니다. lifecycle clear/reset과 rollback 규칙은 그대로 적용됩니다.
+
+
+### 공통 기준 주파수와 루프 소유 마감
+
+`createLoop({rates:{baseHz:60,inputHz:60,renderHz:60},session,...})`는 session의 tickRate까지 기준 주파수의 정수 분주인지 검사합니다. 양의 정수 주파수만 허용하며 60/30/60/60은 가능하고 60/45/60/60은 RangeError입니다. `clockRates`를 별도로 호출할 수도 있습니다. 물리 디스플레이 주파수나 타이머 정확도를 요구하지 않습니다.
+
+시뮬레이션 timer는 `createDeadlineScheduler({getDeadlineMs:()=>loop.nextDeadlineMs,pulse:now=>loop.pulse(now,{render:false,input:false})})`로 연결합니다. 루프만 실제 경과시간과 다음 tick을 계산하며 timer는 별도 주기를 누적하거나 backlog를 버리지 않습니다. 초기/타이밍 reset의 null deadline은 즉시 초기화 pulse로 처리합니다. 입력 이벤트는 계속 observeInput을 즉시 호출하고 input polling/RAF는 독립 실행합니다. renderHz는 소비자의 표시 상한 설정입니다.
+
+`backlogPolicy:'retain'`은 긴 지연에도 누적 시간을 보존하며 maxCatchupSteps씩 나누어 실제 catch-up합니다. 명시적인 pause/reset은 별도 lifecycle입니다. preview의 표시 구간은 fork가 전진한 전체 미래 tick 길이를 사용하여 held 입력의 한 틱/두 틱 예측이 같은 1틱 길이로 압축되지 않게 합니다.
+
+
+`loop.simulationTimeMs`는 현재 완료된 경계의 로컬 단조 시각입니다(null은 초기화 전). preview reconcile에 `phaseStartMs:loop.simulationTimeMs`를 전달하면 snapshot을 실제 게시한 `timeMs`와 tick의 표시 시작 시각을 분리할 수 있습니다. `phaseStartMs`는 유한하고 timeMs보다 미래가 아니어야 합니다. `nextDeadlineMs`는 초기화 전 null이며, 지연된 backlog가 있으면 즉시 다시 깨울 시각을 반환합니다. deadline scheduler의 getDeadlineMs 모드는 getIntervalMs와 함께 사용할 수 없습니다.

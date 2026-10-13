@@ -43,6 +43,32 @@ try {
   await page.goto(`http://127.0.0.1:${server.address().port}/examples/interpolation/index.html`);
   await page.waitForFunction(() => window.demo?.diagnostics.frames >= 30);
   assert.equal(await page.evaluate(() => demo.renderer.stats.backend), 'webgl1');
+  const clockCheck=await page.evaluate(async()=>{
+    const {createLoop,createDeadlineScheduler,clockRates}=await import('/dist/simloop.js');
+    const {InterpolationTimeline}=await import('/dist/interpolation.js');
+    let rejected=false;try{clockRates({baseHz:60,tickRate:45,inputHz:60,renderHz:60});}catch(e){rejected=e instanceof RangeError;}
+    const valid=clockRates({baseHz:60,tickRate:30,inputHz:60,renderHz:60});
+    const session={inputSize:1,tick:0,pace:1,closed:false,resimulating:false,profile:{tickRate:30,maxCatchupSteps:2},poll(){},releaseInput(){},advance(){this.tick++;return {status:'advanced'};}};
+    const loop=createLoop({session,backlogPolicy:'retain',maxBacklogTicks:2,rates:valid});
+    let now=0,callback=null,delay=0;loop.observeInput(0);loop.pulse(0,{render:false,input:false});
+    const timer=createDeadlineScheduler({getDeadlineMs:()=>loop.nextDeadlineMs,pulse:t=>loop.pulse(t,{render:false,input:false}),now:()=>now,setTimer:(cb,ms)=>{callback=cb;delay=ms;return 1;},clearTimer(){callback=null;}});
+    timer.start();const advances=[];
+    for(let i=0;i<12;i++){now+=delay+(i%2?0.1:2);const before=session.tick;callback();advances.push(session.tick-before);}
+    now+=1000;callback();for(let i=0;i<20&&loop.nextDeadlineMs<=now;i++){now+=delay;callback();}
+    const caughtUp=session.tick>=40;timer.stop();
+    const timeline=new InterpolationTimeline({stepMs:1000/30,delayMs:2000/30,schema:{x:'number'}});
+    const packet=(tick,x)=>({revision:0,sequence:tick,timeMs:tick*1000/30,entities:[{id:'u',generation:0,values:{x}}]});
+    timeline.accept(packet(0,0),0);timeline.accept(packet(1,10),38);timeline.accept(packet(2,20),70);
+    const out={};timeline.sampleInto('u',0,83.3333333333,out);const x=out.x;
+    timeline.accept(packet(3,30),103);timeline.accept(packet(4,40),134);
+    timeline.sampleInto('u',0,150,out);
+    return {rejected,divisor:valid.simulationDivisor,advances,caughtUp,x,end:out.x};
+  });
+  assert.equal(clockCheck.rejected,true);assert.equal(clockCheck.divisor,2);
+  assert.deepEqual(clockCheck.advances,Array(12).fill(1));assert.equal(clockCheck.caughtUp,true);
+  assert.ok(Math.abs(clockCheck.x-5)<1e-6);assert.ok(Math.abs(clockCheck.end-25)<1e-6);
+  report.stages.push('integer clock divisors, loop-owned jittered deadlines, retained long-gap catch-up and simulation-time interpolation');
+
   const initialX = await page.evaluate(() => demo.diagnostics.authorityX);
   await page.keyboard.down('KeyD');
   await page.waitForFunction(x => demo.diagnostics.authorityX > x + 25, initialX);

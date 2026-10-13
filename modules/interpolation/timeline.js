@@ -9,13 +9,16 @@ import { evaluate, fraction, retarget } from './tracks.js';
  */
 export class InterpolationTimeline {
   #fields; #fieldIndices; #stepMs; #tracks = new Map(); #now = -Infinity;
+  #delayMs; #origin = 0;
   #revision = -1; #sequence = -1; #timeMs = -Infinity;
   /** @param {{schema:import('./schema.js').Schema, stepMs:number}} options */
-  constructor({ schema, stepMs }) {
+  constructor({ schema, stepMs, delayMs = 0 }) {
     this.#fields = compileSchema(schema);
     this.#fieldIndices = new Map(this.#fields.map((field, index) => [field[0], index]));
     this.#stepMs = finite(stepMs, 'stepMs');
     if (stepMs <= 0) throw new RangeError('stepMs must be positive');
+    this.#delayMs=finite(delayMs,'delayMs');
+    if(delayMs<0||delayMs>stepMs*16)throw new RangeError('delayMs must be between 0 and 16 steps');
   }
   get size() { return this.#tracks.size; }
   #checkClock(nowMs) {
@@ -25,7 +28,7 @@ export class InterpolationTimeline {
   /**
    * Accept one complete authoritative snapshot. Returns false for obsolete packets.
    * Invalid packets throw without changing tracks, revision, or presentation time.
-   * timeMs is simulation time; nowMs is local receipt time. They are never subtracted.
+   * timeMs is simulation time; nowMs is local receipt time. delayMs establishes a per-revision clock mapping.
    * resetFields snaps only named fields. initialValues seeds new identities in continuous mode.
    * Explicit teleport/reset/load/rollback overrides seeds; all supplied options are validated.
    * @param {Snapshot} packet @param {number} nowMs @returns {boolean}
@@ -45,6 +48,7 @@ export class InterpolationTimeline {
     if (!changedRevision && timeMs < this.#timeMs) return false;
     if (!Array.isArray(packet.entities)) throw new TypeError('entities must be an array');
     const next = new Map();
+    const origin=changedRevision?nowMs-timeMs:this.#origin;
     for (const entity of packet.entities) {
       if (!entity || typeof entity.id !== 'string' || !entity.id.length) throw new TypeError('id must be a nonempty string');
       if (next.has(entity.id)) throw new TypeError('duplicate entity id');
@@ -55,10 +59,21 @@ export class InterpolationTimeline {
       const resetFields = readResetFields(this.#fieldIndices, entity.resetFields);
       const old = this.#tracks.get(entity.id);
       const snap = mode !== 'continuous' || entity.teleport === true;
-      next.set(entity.id, retarget(this.#fields, old, target, generation, nowMs, this.#stepMs, snap, initial, resetFields));
+      const track=retarget(this.#fields, old, target, generation, nowMs, this.#stepMs, snap, initial, resetFields);
+      if(this.#delayMs>0){
+        const continued=old&&old.generation===generation&&!snap&&!changedRevision;
+        track.startedAt=origin+(continued?this.#timeMs:timeMs);
+        track.durationMs=continued?Math.max(0,timeMs-this.#timeMs):0;
+        if(continued){track.from=old.target.slice();if(resetFields)for(const i of resetFields)track.from[i]=target[i];}
+        // Preserve completed intervals when several ticks arrive in the same callback.
+        track.history=continued?[...(old.history??[]),old].slice(-Math.ceil(this.#delayMs/this.#stepMs)-2):[];
+        // History stores flat intervals, never recursively retains past histories.
+        track.history=track.history.map(({history,...interval})=>interval);
+      }
+      next.set(entity.id,track);
     }
     // Commit only after every entity has been validated and all new tracks prepared.
-    this.#tracks = next;
+    this.#tracks = next; this.#origin=origin;
     this.#revision = revision; this.#sequence = sequence; this.#timeMs = timeMs; this.#now = nowMs;
     return true;
   }
@@ -72,10 +87,15 @@ export class InterpolationTimeline {
   sampleInto(id, generation, nowMs, out) {
     this.#checkClock(nowMs);
     if (!out || typeof out !== 'object') throw new TypeError('out must be a writable object');
-    const track = this.#tracks.get(id);
+    let track = this.#tracks.get(id);
     this.#now = nowMs;
     if (!track || track.generation !== generation) return false;
-    const alpha = fraction(track, nowMs, this.#stepMs);
+    const sampleAt=nowMs-this.#delayMs;
+    if(this.#delayMs>0&&sampleAt<track.startedAt){
+      const history=track.history;
+      track=history.find(interval=>sampleAt<=interval.startedAt+interval.durationMs)??history.at(-1)??track;
+    }
+    const alpha=track.durationMs===0?1:fraction(track,sampleAt,track.durationMs??this.#stepMs);
     for (let i = 0; i < this.#fields.length; i++) {
       const field = this.#fields[i];
       out[field[0]] = evaluate(field[1], track.from[i], track.target[i], alpha);
