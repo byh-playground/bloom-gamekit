@@ -28,12 +28,12 @@ export function startInputPreviewDemo(canvas,status){
     profile:{...profiles.lockstep,tickRate:10,maxCatchupSteps:1,baseInputDelayTicks:2,minInputDelayTicks:2,maxInputDelayTicks:2,adaptiveInputDelay:false,pacingPolicy:'none',checksumInterval:1}});
   const entities=()=>[{id:'local',generation:0,source:unit},{id:'remote',generation:0,source:remote}];
   presentation.capture({revision:0,sequence:0,timeMs:0,entities:entities()},performance.now());
-  preview=new LocalInputPreview({presentation,stepMs:DT,maxPendingInputs:8,maxFutureTicks:8,maxAgeMs:1500,captureSnapshot:snapshot,
+  preview=new LocalInputPreview({presentation,isActive:fork=>fork.unit.flash>0,stepMs:DT,maxPendingInputs:8,maxFutureTicks:8,maxAgeMs:1500,captureSnapshot:snapshot,
     createFork:bytes=>{forkCreates++;const fork=new Unit([.15,1,.55,1]);let forkTick;const restore=b=>{forkRestores++;const data=JSON.parse(decoder.decode(b));Object.assign(fork,data.unit);forkTick=data.tick;fork.color=[.15,1,.55,1]};restore(bytes);return{unit:fork,restore,step:(bytes,ctx)=>{if(ctx.tick!==forkTick)throw Error('Detached replay compressed a tick gap');for(const command of ctx.commands)if(command.executeTick!==undefined&&command.executeTick!==forkTick)throw Error('Canonical command executed at wrong preview tick');stepUnit(fork,bytes,ctx.commands);forkTick++}}},
     readEntities:fork=>[{id:'local',generation:0,source:fork.unit}]});
   checkpoint('reset');
   loop=createLoop({session,inputPreview:preview,
-   getInput(){const left=actions.sample('left').held,right=actions.sample('right').held,roll=actions.sample('roll').pressed;actions.consume();return{input:Uint8Array.of(left===right?0:left?1:2),commands:roll?[{payload:Uint8Array.of(1)}]:[],continuationKey}},
+   getInput(){const left=actions.sample('left').held,right=actions.sample('right').held,roll=actions.sample('roll').pressed;actions.consume();return{input:Uint8Array.of(left===right?0:left?1:2),commands:roll?[{payload:Uint8Array.of(1)}]:[],predict:left||right||roll,continuationKey}},
    onPreviewError:error=>{throw error},
    onAdvance(result){if(result.status!=='advanced')return;presentation.capture({revision:0,sequence:++captureSequence,timeMs:session.tick*DT,entities:entities()},performance.now());const metadata=session.localInputState;
     const continued=preview.continueFromCheckpoint({input:metadata.replayInput??metadata.executedInput,revision:0,tick:session.tick,epoch:metadata.epoch,continuationKey,timeMs:performance.now(),confirmedCommandSequence:metadata.executedCommandSequence??undefined});

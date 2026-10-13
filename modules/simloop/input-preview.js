@@ -55,7 +55,7 @@ function byteLength(value, seen = new Set()) {
  * the same game simulation update while suppressing all external side effects.
  */
 export class LocalInputPreview {
-  #forkFactory; #cloneSnapshot; #captureSnapshot; #readEntities; #presentation; #maxPending; #maxFutureTicks; #maxAgeMs; #stepMs;
+  #isActive; #forkFactory; #cloneSnapshot; #captureSnapshot; #readEntities; #presentation; #maxPending; #maxFutureTicks; #maxAgeMs; #stepMs;
   #snapshot = null; #snapshotTick = -1; #fork = null; #forkTick = -1; #forkCurrent = false; #clockGap = false; #forecast = []; #pending = []; #observed = null; #baseInput; #continuationKey; #revision = -1; #tick = -1; #epoch = -1; #generation = 0;
   #sequence = 0; #timeMs = -Infinity; #disposed = false; #enabled = true; #captureSequence = -1; #confirmedCommandSequence; #confirmedOnlySteps = 0;
   #metrics = { snapshotBytes: 0, correctionBytes: 0, replayBytes: 0, snapshotCloneMs: 0, forkMs: 0, replayMs: 0, replayedInputs: 0, replayGapSteps:0, corrections: 0, correctionMs: 0, continuedCheckpoints: 0,
@@ -63,8 +63,8 @@ export class LocalInputPreview {
     forkRebuilds:0,snapshotRefreshes:0,forecastReuses:0,forecastExtensions:0,currentForkExtensions:0,clockGaps:0,confirmedAdvances:0,confirmedAdvanceRejected:0,confirmedAdvanceRejectedDisabled:0,confirmedAdvanceRejectedKey:0,confirmedAdvanceRejectedTick:0,confirmedAdvanceRejectedRevision:0,confirmedAdvanceRejectedEpoch:0,confirmedAdvanceRejectedInput:0,confirmedAdvanceRejectedCommands:0,confirmedAdvanceRejectedFork:0,confirmedAdvanceRejectedPending:0,confirmedAdvanceRejectedLimit:0,confirmedAdvanceMs:0,
     previewPublishes: 0, rejectedEpoch: 0, rejectedHorizon: 0, rejectedAge: 0, rejectedCapacity: 0 };
 
-  /** @param {{createFork:(snapshot:unknown)=>{step:(input:unknown,context:object)=>void},cloneSnapshot?:(snapshot:unknown)=>unknown,captureSnapshot?:()=>unknown,readEntities:(fork:unknown)=>Array, presentation?:{selectPreview:(ids:Array)=>void,capturePreview:(packet:object,nowMs:number)=>boolean,clearPreview?:()=>void},maxPendingInputs?:number,maxFutureTicks?:number,maxAgeMs?:number}} options */
-  constructor({ createFork, cloneSnapshot = value => structuredClone(value), captureSnapshot, readEntities, presentation,
+  /** @param {{createFork:(snapshot:unknown)=>{step:(input:unknown,context:object)=>void},cloneSnapshot?:(snapshot:unknown)=>unknown,captureSnapshot?:()=>unknown,isActive?:(fork:unknown)=>boolean,readEntities:(fork:unknown)=>Array, presentation?:{selectPreview:(ids:Array)=>void,capturePreview:(packet:object,nowMs:number)=>boolean,clearPreview?:()=>void},maxPendingInputs?:number,maxFutureTicks?:number,maxAgeMs?:number}} options */
+  constructor({ createFork, cloneSnapshot = value => structuredClone(value), captureSnapshot, readEntities, presentation, isActive,
     maxPendingInputs = 8, maxFutureTicks = 8, maxAgeMs = 250, stepMs = 100 } = {}) {
     if (typeof createFork !== 'function' || typeof readEntities !== 'function') throw new TypeError('preview fork and entity reader are required');
     if (presentation && (typeof presentation.selectPreview !== 'function' || typeof presentation.capturePreview !== 'function')) throw new TypeError('presentation preview capability');
@@ -75,10 +75,14 @@ export class LocalInputPreview {
     this.#forkFactory = createFork; this.#cloneSnapshot = cloneSnapshot; this.#captureSnapshot = captureSnapshot; this.#readEntities = readEntities;
     this.#presentation = presentation; this.#maxPending = maxPendingInputs; this.#maxFutureTicks = maxFutureTicks; this.#maxAgeMs = maxAgeMs;
     this.#stepMs = stepMs;
+    if (isActive !== undefined && typeof isActive !== 'function') throw new TypeError('isActive');
+    this.#isActive = isActive;
     if (typeof cloneSnapshot !== 'function') throw new TypeError('cloneSnapshot');
     if (captureSnapshot !== undefined && typeof captureSnapshot !== 'function') throw new TypeError('captureSnapshot');
   }
 
+  /** Ongoing detached action intent, independent of newly observed device commands. */
+  get active() { return this.ready && !!this.#isActive && (this.#isActive(this.#fork) || this.#pending.some(frame => frame.commands?.length) || !!this.#observed?.commands.length); }
   get pendingCount() { return this.#pending.length; }
   get enabled() { return this.#enabled; }
   get ready() { return !!this.#snapshot && !!this.#fork && this.#enabled && !this.#disposed && performance.now()-this.#timeMs<=this.#maxAgeMs; }
