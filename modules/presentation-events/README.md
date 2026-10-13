@@ -15,7 +15,7 @@
 
 ## 실제 SDK 연결
 
-기존 SDK의 `adapter.step({tick,inputs,resimulating,recovering,replaying})`에서 게임이 이벤트를 생성합니다. `onEvent({type:'rollback',tick})`은 상태 복구 후 resim 전에 발생하므로 beginRollback을 연결하고, 동기 `poll()/advance()`가 반환한 뒤 endRollback을 호출합니다. 확정은 `Math.min(session.confirmedTick,session.tick-1)`가 0 이상일 때 confirmThrough합니다. SDK에는 rollback-end callback이 없습니다.
+기존 SDK의 `adapter.step({tick,inputs,resimulating,recovering,replaying})`에서 게임이 이벤트를 생성합니다. `onEvent({type:'rollback',from,target})`은 상태 복구 후 resim 전에 발생하므로 beginRollback을 연결하고, `onEvent({type:'reconciled'})`에서 endRollback을 호출합니다. 수신 callback에서도 동기 rollback이 완료되므로 다음 poll까지 미루지 않습니다. 확정은 `Math.min(session.confirmedTick,session.tick-1)`가 0 이상일 때 confirmThrough합니다. 멤버십 경계 복원은 membership-committed에서 journal을 재설정하는 별도 생명주기입니다. reason:membership은 Math.max(from,journal.confirmedTick+1)부터 예측 꼬리만 취소합니다. bootstrap은 외부 효과를 생성하지 않습니다.
 
 recovering 후보의 이벤트는 게임이 임시 저장하고 성공한 recovered 이후에만 journal에 전달해야 합니다. 실패한 recovery나 replay 검사용 step에서 실제 외부 자원을 만들면 안 됩니다. 이 모듈이 SDK private 상태나 별도 history를 읽지 않습니다.
 

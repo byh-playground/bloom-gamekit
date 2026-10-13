@@ -75,3 +75,5 @@ preview.reconcile({ snapshot, revision, tick, epoch, confirmedSequence, timeMs, 
 flushInput은 관측·제출만 실행하며 accumulator나 simulation tick을 강제로 진행하지 않습니다. 저장 완료가 권위 실행을 요구하면 명령의 확정 경계를 기다려야 합니다. 일반 simulation capability에는 submitInput이 필요 없습니다.
 
 [실행 예제](../rollback/examples/availability/index.html)는 이벤트 즉시 제출, 60Hz 장치 정비, profile의 고정 simulation TPS, 독립 RAF를 사용합니다. 60Hz는 예제의 장치 주기이며 SDK 기본 TPS가 아닙니다. [측정과 한계](./docs/input-latency.md)를 참고하세요.
+
+protocol 3은 이벤트에서 명령별 불변 T를 예약합니다. 한 pump가 여러 프레임을 봉인하면 localInputState.captures를 sequence별로 한 번씩 기존 LocalInputPreview에 전달합니다. 게임은 reconciled 이벤트에서 원격 보정을 PresentationRuntime에 publish합니다. [원격 적용 검사](./docs/remote-input-application.md).

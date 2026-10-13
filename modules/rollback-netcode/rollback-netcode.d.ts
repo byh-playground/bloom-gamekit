@@ -50,6 +50,7 @@ export type PredictionPolicy = 'hold' | 'neutral' | ((context: { playerId: Playe
 export interface Profile {
   /** Core defaults to rollback; RoomSession defaults to lockstep. Lockstep waits for all inputs and stores periodic checkpoints. */
   mode?: 'rollback' | 'lockstep';
+  inputScheduling: 'configured' | 'network'; inputSafetyMarginMs: number; inputJitterMultiplier: number;
   tickRate: number; baseInputDelayTicks: number; minInputDelayTicks: number; maxInputDelayTicks: number;
   rollbackWindowTicks: number; stateHistorySize: number; predictionPolicy: PredictionPolicy; stallPolicy: 'wait';
   tickDriftThreshold: number; pacingPolicy: 'none' | 'hold' | 'dilation'; checksumInterval: number;
@@ -82,7 +83,9 @@ export type SessionEvent = { tick: number } & (
   | { type: 'peer-interrupted' | 'peer-disconnected' | 'peer-timeout' | 'peer-resumed'; peerId: PlayerId; previous: PeerConnectionState; state: PeerConnectionState; reason?: string; silenceMs?: number }
   | { type: 'input-delay'; previous: number; value: number }
   | { type: 'input-release'; executeTick: number }
-  | { type: 'rollback' | 'recovered'; from: number; target: number }
+  | { type: 'input-submitted'; executeTick: number; revision: number; commands: Array<{sequence:number;executeTick:number}>; schedule?: InputSchedule }
+  | { type: 'input-received'; peerId: PlayerId; executeTick: number; revision:number; provisional:true }
+  | { type: 'rollback' | 'recovered' | 'reconciled'; from: number; target: number }
   | { type: 'desync' | 'input-history-mismatch'; peerId: PlayerId; at: number }
   | { type: 'recovery-rejected'; reason: string }
   | { type: 'protocol-error' | 'transport-error'; peerId: PlayerId; error: unknown }
@@ -99,8 +102,8 @@ export interface SessionOptions {
   /** 현재 roster 각 플레이어가 이미 실행한 명령 sequence. 새 epoch와 reload 복원에 사용한다. */
   initialCommandSequences?: Record<PlayerId, number>;
 }
-export interface PendingCommand { sequence: number; payload: Uint8Array; }
-export interface LocalCommandState { sequence: number; lastInput: Uint8Array; commands: PendingCommand[]; }
+export interface PendingCommand { sequence: number; executeTick: number; payload: Uint8Array; }
+export interface LocalCommandState { sequence: number; lastInput: Uint8Array; commands: PendingCommand[]; inputs?: Array<{tick:number;input:Uint8Array}>; sealedThrough?: number; tickOffset?:number; }
 export interface ConfirmedPlayerInput extends PlayerInput { predicted: false; }
 export interface ConfirmedBootstrap {
   version: 1; tick: number; checkpoint: { tick: number; bytes: Uint8Array; hash: number };
@@ -131,9 +134,10 @@ export interface BootstrapReplay {
   cancel(): BootstrapReplayPulseResult;
 }
 export function createBootstrapReplay(options: BootstrapReplayOptions): BootstrapReplay;
-export interface InputSubmission { status: 'submitted' | 'unchanged' | 'waiting'; tick: number; executeTick?: number; commandSequences: number[]; }
+export interface InputSchedule { policy: 'configured' | 'network'; localTick: number; nextOpenTick: number; lastReservedTick: number; delayTicks: number; executeTick: number; baseTick?:number; peers: Array<{peerId:PlayerId;rttMs:number;oneWayMs:number;rttJitterMs:number;jitterMarginMs:number;safetyMarginMs:number;reportedTick:number;reportAgeMs:number;estimatedPeerTick:number;integerPeerTick:number;leadTicks:number;peerLeadTicks:number}>; }
+export interface InputSubmission { status: 'submitted' | 'unchanged' | 'waiting'; tick: number; executeTick?: number; commandSequences: number[]; commands: Array<{sequence:number;executeTick:number}>; }
 export interface SessionMetrics {
-  inputDrafts: number; inputDraftSentBytes: number; inputDraftReceivedBytes: number;
+  inputReservations: number; inputReservationSentBytes: number; inputReservationReceivedBytes: number;
   rollbacks: number; resimulatedTicks: number; maxRollbackDepth: number; stalls: number; holds: number;
   recoveries: number; rejectedSnapshots: number; rejectedPackets: number; sentBytes: number; receivedBytes: number;
   predictedTicks: number; hashMismatches: number; latestResimulationMs: number; smoothedRTT: number; jitter: number;
@@ -419,7 +423,7 @@ export interface LocalInputPreviewOptions {
 }
 export interface LoopInputSubmission {sequence:number;captureTick:number;executeTick:number;boundaryTick:number;epoch:number;timeMs:number;commands:Array<{observationId?:number;sequence:number;executeTick:number;payload:Bytes}>;}
 export interface ObservingLoop {start():void;stop():void;pulse(timestamp:number, options?:{render?:boolean;input?:boolean}):void;render():void;observeInput(timestamp:number):unknown;flushInput(timestamp:number):unknown;pollInput(timestamp:number):unknown;releaseInput():void;resetTiming():void;readonly running:boolean;}
-export interface LocalInputState { epoch:number; baseTick:number; tick:number; confirmedTick:number; inputDelay:number; commandSequence:number;executedInput:Bytes|null;replayInput:Bytes|null;executedCommandSequence:number|null;capture:null|{sequence:number;captureTick:number;executeTick:number;input:Bytes;commands:Array<{sequence:number;executeTick:number;payload:Bytes}>}; }
+export interface LocalInputState { epoch:number; baseTick:number; tick:number; confirmedTick:number; inputDelay:number; commandSequence:number;executedInput:Bytes|null;replayInput:Bytes|null;executedCommandSequence:number|null;captures:Array<NonNullable<LocalInputState['capture']>>;capture:null|{sequence:number;captureTick:number;executeTick:number;input:Bytes;commands:Array<{sequence:number;executeTick:number;payload:Bytes}>}; }
 export class LocalInputPreview {
   constructor(options: LocalInputPreviewOptions);
   readonly pendingCount: number; readonly enabled: boolean; readonly ready:boolean; readonly metrics: Readonly<Record<string, number>>;

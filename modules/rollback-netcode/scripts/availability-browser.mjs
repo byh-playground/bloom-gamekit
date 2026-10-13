@@ -20,12 +20,12 @@ async function until(pages, predicate, label, timeout = 18000) {
   throw new Error(label + ' timeout: ' + JSON.stringify(await Promise.all(pages.map(p => p.evaluate(() => window.diagnostics())))));
 }
 async function room(count, available = true, transfer = false, cooperative = false, rates = null) {
-  const context = await browser.newContext(), pages = [], players = ['A', 'B', 'C', 'D'].slice(0, count);
-  for (const id of players) { const page = await context.newPage(); page.on('pageerror', e => errors.push(e.message)); await page.goto(`http://127.0.0.1:${server.address().port}/modules/rollback-netcode/tests/availability-browser.html`); await page.waitForFunction(() => typeof window.setup === 'function'); await page.evaluate(({ id, players, available, transfer, cooperative, simulationMode, rates }) => rates ? window.setupLatency(id, players, rates) : window.setup(id, players, available, transfer, cooperative, simulationMode), { id, players, available, transfer, cooperative, simulationMode, rates }); pages.push(page); }
+  const context = await browser.newContext(), contexts=[context], pages = [], players = ['A', 'B', 'C', 'D'].slice(0, count);
+  for (const id of players) { const owner = rates?.remote && pages.length ? await browser.newContext() : context; if(owner!==context)contexts.push(owner); const page = await owner.newPage(); page.on('pageerror', e => errors.push(e.message)); await page.goto(`http://127.0.0.1:${server.address().port}/modules/rollback-netcode/tests/availability-browser.html`); await page.waitForFunction(() => typeof window.setup === 'function'); if(rates?.remote){const cdp=await owner.newCDPSession(page);await cdp.send('Emulation.setFocusEmulationEnabled',{enabled:true});} await page.evaluate(({ id, players, available, transfer, cooperative, simulationMode, rates }) => rates ? window.setupLatency(id, players, rates) : window.setup(id, players, available, transfer, cooperative, simulationMode), { id, players, available, transfer, cooperative, simulationMode, rates }); pages.push(page); }
   for (let a = 0; a < count; a++) for (let b = a + 1; b < count; b++) { const offer = await pages[a].evaluate(id => window.offer(id), players[b]); const answer = await pages[b].evaluate(({ id, offer }) => window.answer(id, offer), { id: players[a], offer }); await pages[a].evaluate(({ id, answer }) => window.accept(id, answer), { id: players[b], answer }); }
   await Promise.all(pages.map(p => p.evaluate(() => window.startPump())));
   await until(pages, values => values.every(s => s.tick >= 15 && s.status === 'running' && s.activePlayers.length === count) && new Set(values.map(s => s.branch)).size === 1, 'initial play');
-  return { pages, context, players };
+  return { pages, context, contexts, players };
 }
 async function checkpoint(pages, label, resume = true) {
   await until(pages, values => values.every(s => s.status === 'running' && s.activePlayers.length === pages.length) && new Set(values.map(s => s.branch)).size === 1, label + ' reconnect ready');
@@ -35,14 +35,51 @@ async function checkpoint(pages, label, resume = true) {
   assert.equal(new Set(same.map(s => s.hash)).size, 1, label + ' same state'); results.push({ label, tick, hash: same[0].hash, coordinatorId: same[0].coordinatorId });
   if(resume)await Promise.all(pages.map(p => p.evaluate(() => window.setTarget(Infinity))));
 }
-async function closeRoom(value) { await Promise.all(value.pages.map(p => p.evaluate(() => window.stop()).catch(() => {}))); await value.context.close(); }
+async function closeRoom(value) { await Promise.all(value.pages.map(p => p.evaluate(() => window.stop()).catch(() => {}))); await Promise.all((value.contexts??[value.context]).map(c=>c.close())); }
 try {
-  browser = await chromium.launch({ headless: process.env.AVAILABILITY_HEADED !== '1', ignoreDefaultArgs: ['--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'], ...(process.env.CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.CHROMIUM_EXECUTABLE_PATH } : process.env.BROWSER_CHANNEL ? { channel: process.env.BROWSER_CHANNEL } : {}) });
+  browser = await chromium.launch({ headless: process.env.AVAILABILITY_HEADED !== '1', ignoreDefaultArgs: process.env.REMOTE_INPUT_LATENCY ? [] : ['--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'], ...(process.env.CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.CHROMIUM_EXECUTABLE_PATH } : process.env.BROWSER_CHANNEL ? { channel: process.env.BROWSER_CHANNEL } : {}) });
   if(process.env.INPUT_LATENCY){
     const samples=[];
-    for(const rates of [{simulationHz:5,inputHz:30,renderHz:60},{simulationHz:15,inputHz:40,renderHz:30}]){
+    const configurations=process.env.INPUT_POLICY_EXPERIMENT ? [
+      {label:'aggressive',inputSafetyMarginMs:0,inputJitterMultiplier:0},
+      {label:'balanced',inputSafetyMarginMs:8,inputJitterMultiplier:2},
+      {label:'conservative',inputSafetyMarginMs:40,inputJitterMultiplier:3},
+    ].map(({label,...policy})=>({simulationHz:15,inputHz:60,renderHz:60,label,policy:{inputScheduling:'network',...policy}})) : [{simulationHz:5,inputHz:30,renderHz:60},{simulationHz:15,inputHz:40,renderHz:30}];
+    for(const rates of configurations){
+      rates.remote=process.env.REMOTE_INPUT_LATENCY==='1';
       const pair=await room(2,false,false,false,rates),host=pair.pages[0];
+      if(rates.policy){await Promise.all(pair.pages.map(p=>p.evaluate(()=>window.networkDelay(35,[0,0,3,0,0,12,0,0,0,80,0,0]))));const warm=await snapshots(pair.pages);await until(pair.pages,v=>v.every((s,i)=>s.tick>=warm[i].tick+20&&s.metrics.smoothedRTT>40),'network estimate warmup');}
+      await host.bringToFront();
       await Promise.all(pair.pages.map(p=>p.evaluate(()=>window.beginMeasurement())));
+      if(rates.remote){
+        const clockBefore=await host.evaluate(()=>window.synchronizeClock());
+        const commandCount=rates.policy?24:8;
+        for(let id=1;id<=commandCount;id++){
+          const delayMs=id<=4?10:3500/rates.simulationHz;
+          await host.evaluate(({id,delayMs,network})=>{if(!network)window.networkDelay(delayMs);window.inputEvent(id);},{id,delayMs,network:!!rates.policy});
+          await pair.pages[1].waitForFunction(id=>window.latencyReport().remoteTraces.some(t=>t.id===id&&t.screen!==undefined),id,{timeout:6000});
+        }
+        await checkpoint(pair.pages,'remote application '+rates.simulationHz,false);
+        const clockAfter=await host.evaluate(()=>window.synchronizeClock());
+        const peers=await Promise.all(pair.pages.map(p=>p.evaluate(()=>window.latencyReport())));
+        assert.ok(peers.every(p=>!p.failure));assert.ok(peers.every(p=>p.visibility==='visible'&&p.focused),'remote measurement active pages');assert.equal(peers[0].hash,peers[1].hash);
+        assert.deepEqual(peers[0].commands,Array.from({length:commandCount},(_,i)=>'A:'+(i+1)+':'+(i+1)));
+        for(let id=1;id<=commandCount;id++){const a=peers[0].remoteTraces.find(t=>t.id===id),b=peers[1].remoteTraces.find(t=>t.id===id);assert.ok(b.screen!==undefined);assert.ok(b.applications.every(x=>x.tick===a.applications[0].tick),'shared execution tick');const submitted=peers[0].traces.find(t=>t.id===id);if(submitted.assignedTick!==undefined)assert.ok(a.applications.every(x=>x.tick===submitted.assignedTick),'immutable submitted execution tick');}
+        let invariants;
+        if(!rates.policy&&!process.env.INPUT_BASELINE_DIST){
+          await Promise.all(pair.pages.map(p=>p.evaluate(()=>{window.networkDelay(0);window.setTarget(Infinity);})));
+          await host.evaluate(()=>{window.inputFault('hold');window.inputEvent(9);window.changeInputDelay(6);});
+          await host.evaluate(()=>window.inputFault('reverse'));
+          await checkpoint(pair.pages,'reserved T after delay growth',false);
+          const before=await Promise.all(pair.pages.map(p=>p.evaluate(()=>window.latencyReport())));
+          const submitted=before[0].traces.find(t=>t.id===9);assert.ok(before.every(p=>p.remoteTraces.find(t=>t.id===9).applications.every(a=>a.tick===submitted.assignedTick)),'delay growth preserves initial T');
+          await host.evaluate(()=>window.inputFault('reverse'));await sleep(250);
+          const after=await Promise.all(pair.pages.map(p=>p.evaluate(()=>window.latencyReport())));
+          assert.deepEqual(after.map(p=>p.sessionMetrics.rollbacks),before.map(p=>p.sessionMetrics.rollbacks),'duplicate packets cannot replay');assert.deepEqual(after.map(p=>p.hash),before.map(p=>p.hash));
+          invariants={assignedTick:submitted.assignedTick,delayGrowth:true,duplicateRollbacks:0};
+        }
+        samples.push({rates,clockBefore,clockAfter,peers,invariants});await closeRoom(pair);continue;
+      }
       for(let id=1;id<=24;id++){await host.evaluate(id=>window.inputEvent(id),id);await sleep(73+(id*17)%51);}
       await checkpoint(pair.pages,'latency final '+rates.simulationHz,false);
       const peers=await Promise.all(pair.pages.map(p=>p.evaluate(()=>window.latencyReport())));
@@ -52,7 +89,7 @@ try {
       await Promise.all(pair.pages.map(p=>p.evaluate(()=>window.setTarget(Infinity))));
       await host.evaluate(()=>{window.inputFault('hold');for(const id of [25,26,27])window.inputEvent(id);});
       const revisions=await host.evaluate(()=>window.inputFault('reverse'));
-      if(!process.env.INPUT_BASELINE_DIST){assert.equal(peers[0].sessionMetrics.inputDrafts,24);assert.equal(revisions.length,3);assert.equal(new Set(revisions.map(p=>p.tick)).size,1);assert.ok(revisions.every(p=>p.type===8));}
+      if(!process.env.INPUT_BASELINE_DIST){assert.equal(peers[0].sessionMetrics.inputReservations,24);assert.equal(revisions.length,3);assert.equal(new Set(revisions.map(p=>p.tick)).size,1);assert.ok(revisions.every(p=>p.type===8));}
       await checkpoint(pair.pages,'same tick revisions '+rates.simulationHz);
       await host.evaluate(()=>window.inputFault('reverse')); // duplicates arriving after canonical confirmation
       await host.evaluate(()=>{window.inputFault('hold');window.inputEvent(28);});await sleep(550);
@@ -67,7 +104,7 @@ try {
       assert.ok(faultPeers.every(p=>!p.failure));
       samples.push({rates,peers,revisions,lateRevisions,faultPeers});await closeRoom(pair);
     }
-    assert.deepEqual(errors,[]);const report={passed:true,browser:browser.version(),label:process.env.INPUT_LATENCY,samples};
+    assert.deepEqual(errors,[]);const report={passed:true,browser:browser.version(),backgroundThrottlingDisabled:!!process.env.REMOTE_INPUT_LATENCY,label:process.env.INPUT_LATENCY,samples};
     await mkdir(resolve(root,'test-results/rollback'),{recursive:true});await writeFile(resolve(root,'test-results/rollback/input-latency-'+process.env.INPUT_LATENCY+'.json'),JSON.stringify(report,null,2));console.log(JSON.stringify({passed:true,label:report.label,samples:samples.map(s=>({rates:s.rates,traces:s.peers[0].traces}))}));
   } else {
   const delayed = await room(2, false);

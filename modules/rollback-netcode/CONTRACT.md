@@ -137,6 +137,6 @@ Synctest.metrics는 라이브러리가 소유하는 검사 틱·재실행 틱·�
 
 상세 API·용량·재시도·검증 범위는 [rollback](../rollback/README.md), [transport](../transport/README.md), [비용 측정](../rollback/docs/room-session-benchmarks.md)을 따른다. 동적 여러 epoch 전체 replay export는 별도 미지원이며 fixed Core replay 계약을 변경하지 않는다.
 
-## 즉시 제출과 protocol 2
+## 즉시 예약과 protocol 3
 
-submitInput은 다음 simulation tick 전에 이벤트 입력을 전송합니다. INPUT_DRAFT revision은 미확정 예측 힌트이며 authoritative input/executeTick/confirmed boundary를 변경하지 않습니다. 확정 INPUT이 우선하며 ACK는 전송 확인일 뿐 게임 실행 확인이 아닙니다. 한 peer당 최신 초안 하나, 기존 queue/frame 용량과 heartbeat 재전송을 사용합니다. protocol 1/2 혼용은 거절하며 소비자는 동일 dist SHA를 고정합니다. [API](../rollback/README.md), [실행 주기](../simloop/README.md)를 참고하세요.
+submitInput은 이벤트에서 명령별 불변 실행 T를 정하고 INPUT_RESERVATION revision을 전송합니다. 열린 held 입력의 수정은 허용하지만 명령의 T/payload는 바꾸지 않습니다. 예약은 rollback 예측에 사용하며 확정 경계는 canonical INPUT만 전진시킵니다. 미래 T는 기다리고 지난 T는 수신 시 기존 rollback 엔진으로 재실행합니다. 완료는 reconciled 이벤트로 알립니다. ACK는 실행 확인이 아닙니다. protocol 1/2와 혼용하지 않으며 소비자는 같은 dist SHA를 고정합니다. [API·네트워크 예약식](../rollback/README.md), [실행 주기](../simloop/README.md)를 참고하세요.
