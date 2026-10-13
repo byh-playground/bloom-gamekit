@@ -96,6 +96,7 @@ export class RollbackSession {
     this._commandSequence = this._commandSequences.get(localPlayerId); this._sequence = 0; this._captureTick = -1;
     this._lastLocalInput = new Uint8Array(this.inputSize);
     this._localCapture = null; this._localCaptureSequence = 0;
+    this._localDraft = null; this._draftRevision = 0;
     this._localExecutedInput = null;
     if (localCommandState !== undefined) {
       const carried = copyLocalCommandState(localCommandState, this.inputSize, this.profile, this._commandSequence);
@@ -111,7 +112,8 @@ export class RollbackSession {
       recoveries: 0, rejectedSnapshots: 0, rejectedPackets: 0, sentBytes: 0, receivedBytes: 0,
       predictedTicks: 0, hashMismatches: 0, latestResimulationMs: 0, smoothedRTT: 0, jitter: 0,
       lateInputRate: 0, rollbackFrequency: 0, stallFrequency: 0, resimulationCostMs: 0,
-      stateHashComputations:0,hashedStateBytes:0,snapshotSaves:0,serializedSnapshotBytes:0 };
+      stateHashComputations:0,hashedStateBytes:0,snapshotSaves:0,serializedSnapshotBytes:0,
+      inputDrafts:0,inputDraftSentBytes:0,inputDraftReceivedBytes:0 };
     this._recordReplay = recordReplay; this._replayFrames = []; this._replayBytes = 0; this._replayFinalHash = undefined;
     const boundary = boundaries.get(boundaryToken);
     if (boundary) boundaries.delete(boundaryToken);
@@ -283,7 +285,77 @@ export class RollbackSession {
     if (!b.length || b.length > Math.min(this.profile.maxCommandBytes,CHUNK_SIZE-1024-this.inputSize-6) || this._pendingCommands.length >= this.profile.maxPendingCommands) throw new RangeError('command capacity');
     integer(this._commandSequence + 1, 'command sequence', 1);
     const sequence = ++this._commandSequence;
-    this._pendingCommands.push({ sequence, payload: b }); return sequence;
+    this._pendingCommands.push({ sequence, payload: b });
+    this._publishInputDraft(); return sequence;
+  }
+  /** Stage held input and edge commands immediately; never advances or seals a tick. */
+  submitInput(input, { commands = [] } = {}) {
+    if (this.closed || this._failure) throw new Error('session unavailable');
+    const held = bytes(input);
+    if (held.length !== this.inputSize) throw new RangeError('inputSize');
+    if (!Array.isArray(commands) || this._pendingCommands.length + commands.length > this.profile.maxPendingCommands) throw new RangeError('command capacity');
+    const payloads = commands.map(payload => {
+      const value = bytes(payload);
+      if (!value.length || value.length > Math.min(this.profile.maxCommandBytes, CHUNK_SIZE - 1024 - this.inputSize - 6)) throw new RangeError('command capacity');
+      return value.slice();
+    });
+    integer(this._commandSequence + payloads.length, 'command sequence');
+    const commandSequences = payloads.map(payload => { const sequence = ++this._commandSequence; this._pendingCommands.push({ sequence, payload }); return sequence; });
+    if (!equalBytes(held, this._lastLocalInput)) this._lastLocalInput = held.slice();
+    const changed = this._publishInputDraft();
+    return { status: changed ? 'submitted' : 'unchanged', tick: this.tick,
+      executeTick: this._localDraft?.tick ?? Math.max(this.tick + this.inputDelay, this._through.get(this.localPlayerId) + 1), commandSequences };
+  }
+  _publishInputDraft() {
+    const tick = integer(Math.max(this.tick + this.inputDelay, this._through.get(this.localPlayerId) + 1), 'input draft tick', 0, MAX_TICK);
+    const old = this._localDraft;
+    if (old?.tick === tick && old.queuedSequence === this._commandSequence && equalBytes(old.input, this._lastLocalInput)) return false;
+    if (!old && !this._pendingCommands.length && equalBytes(this._lastLocalInput, this._inputs.get(this.localPlayerId).get(this._through.get(this.localPlayerId))?.input ?? new Uint8Array(this.inputSize))) return false;
+    let budget = CHUNK_SIZE - 1024 - this.inputSize;
+    const commands = [];
+    for (const command of this._pendingCommands) {
+      if (commands.length === this.profile.maxPendingCommands || command.payload.length + 6 > budget) break;
+      budget -= command.payload.length + 6; commands.push({ ...command, executeTick: tick });
+    }
+    const frame = { input: this._lastLocalInput, commands };
+    if (old?.tick === tick && frameEqual(old, frame)) return false;
+    const revision = integer(this._draftRevision + 1, 'input draft revision', 1, MAX_TICK);
+    this._draftRevision = revision; this._localDraft = { ...frame, tick, revision, queuedSequence: this._commandSequence, packet: null };
+    this._metrics.inputDrafts++;
+    for (const peer of this._peers.values()) if (peer.ready) this._sendInputDraft(peer, this._clock());
+    this._event('input-submitted', { executeTick: tick, revision });
+    return true;
+  }
+  _sendInputDraft(peer, now) {
+    const draft = this._localDraft;
+    if (!draft || (peer.inputDraftAck ?? 0) >= draft.revision) return;
+    draft.packet ??= packet(TYPE.INPUT_DRAFT, this._nextSequence(), w => {
+      w.u32(draft.tick); w.u32(draft.revision); w.u16(this.inputSize); w.raw(draft.input); w.u16(draft.commands.length);
+      for (const command of draft.commands) { w.u32(command.sequence); w.u16(command.payload.length); w.raw(command.payload); }
+    });
+    if (this._send(peer, draft.packet)) { peer.lastDraftSent = now; this._metrics.inputDraftSentBytes += draft.packet.length; }
+  }
+  _receiveInputDraft(peer, r) {
+    const tick = r.u32(), revision = r.u32(), size = r.u16();
+    if (!revision || revision > MAX_TICK || size !== this.inputSize || tick > MAX_TICK || tick > this.tick + this.profile.stateHistorySize * 4 + this.profile.maxInputDelayTicks) throw new RangeError('input draft timeline');
+    const input = r.raw(size), count = r.u16(), commands = [];
+    if (count > this.profile.maxPendingCommands) throw new RangeError('input draft commands');
+    let previous = 0;
+    for (let n = 0; n < count; n++) {
+      const sequence = r.u32(), length = r.u16();
+      if (!sequence || sequence <= previous || !length || length > this.profile.maxCommandBytes) throw new RangeError('input draft command order');
+      previous = sequence; commands.push({ sequence, executeTick: tick, payload: r.raw(length) });
+    }
+    r.end();
+    this._send(peer, packet(TYPE.INPUT_DRAFT_ACK, this._nextSequence(), w => w.u32(revision)));
+    if (revision <= (peer.inputDraftRevision ?? 0)) return;
+    peer.inputDraftRevision = revision;
+    if (this._inputs.get(peer.id).has(tick) || tick < Math.max(0, this.tick - this.profile.stateHistorySize + 1)) return;
+    const draft = { tick, input, commands };
+    peer.inputDraft = draft;
+    const used = this._used.get(tick)?.find(frame => frame.playerId === peer.id);
+    if (used && !frameEqual(used, draft) && this._history.get(tick)) this._rollbackFrom = Math.min(this._rollbackFrom, tick);
+    this._event('input-received', { peerId: peer.id, executeTick: tick, revision, provisional: true });
   }
   /** Copy unexecuted local commands for a new fixed-roster epoch. */
   exportLocalCommandState({ fromTick = this.confirmedBoundary } = {}) {
@@ -348,6 +420,7 @@ export class RollbackSession {
       commands.push({ ...c, executeTick: target });
     }
     this._commitLocal(target, this._lastLocalInput, commands);
+    if (this._localDraft && this._localDraft.tick <= target) this._localDraft = null;
     this._localCapture = { sequence: ++this._localCaptureSequence, captureTick: this.tick, executeTick: target,
       input: this._lastLocalInput.slice(), commands: commands.map(c => ({ ...c, payload: c.payload.slice() })) };
   }
@@ -356,12 +429,15 @@ export class RollbackSession {
     this._lastLocalInput = new Uint8Array(this.inputSize);
     const last = this._inputs.get(this.localPlayerId).get(this._through.get(this.localPlayerId));
     if (last && equalBytes(last.input, this._lastLocalInput)) {
+      this._publishInputDraft();
       for (const peer of this._peers.values()) if (peer.ready) this._sendInputs(peer);
       return;
     }
     const target = integer(Math.max(this.tick + this.inputDelay, this._through.get(this.localPlayerId) + 1), 'session tick limit', 0, MAX_TICK);
     for (let t = this._through.get(this.localPlayerId) + 1; t <= target; t++) this._commitLocal(t, this._lastLocalInput, []);
     for (const peer of this._peers.values()) if (peer.ready) this._sendInputs(peer);
+    if(this._localDraft?.tick <= target)this._localDraft = null;
+    this._publishInputDraft();
     this._event('input-release', { executeTick: target });
   }
   _sendInputs(peer) {
@@ -404,6 +480,7 @@ export class RollbackSession {
     for (const peer of this._peers.values()) {
       this._peerLiveness(peer,now);
       if (!peer.ready) { if (now - peer.lastHello >= this.profile.heartbeatMs) this._sendHello(peer, now); continue; }
+      if (now - (peer.lastDraftSent ?? -Infinity) >= this.profile.heartbeatMs) this._sendInputDraft(peer, now);
       if (now - peer.lastSent >= this.profile.heartbeatMs) { this._sendInputs(peer); this._sendClock(peer, now); }
       let sent = 0;
       while (peer.controls.length && sent < 65536) {
@@ -454,6 +531,12 @@ export class RollbackSession {
       }
       if (!peer.ready) return false;
       if (type === TYPE.INPUT) this._receiveInputs(peer, r, sequence, now);
+      else if (type === TYPE.INPUT_DRAFT) { this._receiveInputDraft(peer, r); this._metrics.inputDraftReceivedBytes += b.length; }
+      else if (type === TYPE.INPUT_DRAFT_ACK) {
+        const revision = r.u32(); r.end();
+        if (!revision || revision > this._draftRevision) throw new RangeError('input draft acknowledgement');
+        peer.inputDraftAck = Math.max(peer.inputDraftAck ?? 0, revision);
+      }
       else if (type === TYPE.CLOCK) this._receiveClock(peer, r, sequence, now);
       else if (type === TYPE.HASH) {
         const tick = r.u32(), hash = r.u32(), inputHash = r.u32(); r.end();
@@ -506,6 +589,7 @@ export class RollbackSession {
       const t = first + i;
       if (map.has(t) || t < oldest) continue;
       map.set(t, incoming[i]);
+      if (peer.inputDraft?.tick === t) peer.inputDraft = null;
       this._window.received++;
       if (t < this.tick) this._window.late++;
       const used = this._used.get(t)?.find(x => x.playerId === peer.id);
@@ -546,6 +630,8 @@ export class RollbackSession {
       const map = this._inputs.get(playerId), actual = map.get(tick);
       if (actual) return { playerId, ...copyFrame(actual), predicted: false };
       if (this.profile.mode === 'lockstep') throw new Error('lockstep input is not confirmed');
+      const draft = this._peers.get(playerId)?.inputDraft;
+      if (draft?.tick === tick) return { playerId, ...copyFrame(draft), predicted: true };
       let prior = this._used.get(tick - 1)?.find(f => f.playerId === playerId)?.input ?? new Uint8Array(this.inputSize);
       const policy = this.profile.predictionPolicy;
       if (typeof policy === 'function') prior = bytes(policy({ playerId, tick, previousInput: prior.slice(), lastConfirmedTick: this._through.get(playerId) }));
@@ -936,6 +1022,6 @@ export class RollbackSession {
     if (this.closed) return;
     this.closed = true;
     for (const peer of this._peers.values()) { try { peer.detach(); } finally { peer.transport.close?.(); } }
-    this._peers.clear(); this._incomingSnapshot = null; this._pendingCommands.length = 0; this._event('closed');
+    this._peers.clear(); this._localDraft = null; this._incomingSnapshot = null; this._pendingCommands.length = 0; this._event('closed');
   }
 }

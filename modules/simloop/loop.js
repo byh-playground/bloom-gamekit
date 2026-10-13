@@ -10,6 +10,7 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
   }
   if (backlogPolicy !== 'drop' && backlogPolicy !== 'retain') throw new RangeError('backlogPolicy');
   if (!Number.isInteger(maxBacklogTicks) || maxBacklogTicks < 1 || maxBacklogTicks > 8192) throw new RangeError('maxBacklogTicks');
+  const hasSubmission = typeof session.submitInput === 'function';
   const quantum = 1000 / session.profile.tickRate;
   const maxBacklogMs = quantum * maxBacklogTicks;
   let running = false, handle, last, accumulator = 0, generation = 0, timingGeneration = 0;
@@ -18,7 +19,6 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
   const observeInput = timestamp => {
     if (!Number.isFinite(timestamp)) throw new TypeError('input observation timestamp');
     if (!canObserveInput()) { cached=null;inputPreview?.clear?.();return null; }
-    if(timestamp===observedAt && cached)return cached;
     const sampled=getInput(),packet=sampled&&typeof sampled==='object'&&!ArrayBuffer.isView(sampled)&&Object.hasOwn(sampled,'input');
     const input=packet?sampled.input:sampled,commands=packet?(sampled.commands??[]):[];
     if(!Array.isArray(commands))throw new TypeError('input packet commands');
@@ -26,6 +26,12 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
     if(held.length+commands.length>64)throw new RangeError('unsubmitted input command capacity');
     for(const command of commands){if(!command||command.payload===undefined)throw new TypeError('command payload required');held.push({observationId:++commandObservation,sequence:null,payload:command.payload.slice?.()??structuredClone(command.payload)});}
     cached={input:input.slice?.()??structuredClone(input),commands:held,predict:!packet||sampled.predict!==false||held.length>0,continuationKey:packet?sampled.continuationKey:undefined,sequence:++inputSequence};observedAt=timestamp;
+    if(hasSubmission){
+      const pending=held.filter(command=>command.sequence===null);
+      const submission=session.submitInput(cached.input,{commands:pending.map(command=>command.payload)});
+      if(submission.commandSequences.length!==pending.length)throw new Error('input submission command receipt');
+      for(let i=0;i<pending.length;i++)pending[i].sequence=submission.commandSequences[i];
+    }
     if(inputPreview&&packet&&sampled.predict===false&&!held.length)inputPreview.cancelObservation?.(Math.max(timestamp,performance.now()));
     else if(inputPreview?.enabled!==false && inputPreview)try{inputPreview.observe(cached.input,{sequence:cached.sequence,tick:session.tick,epoch:session.epoch??0,continuationKey:cached.continuationKey,
       timeMs:Math.max(timestamp,globalThis.performance?.now?.()??timestamp),commands:cached.commands});}catch(error){inputPreview.clear?.();onPreviewError(error);}
@@ -44,7 +50,7 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
     globalThis.document?.removeEventListener('visibilitychange', hidden);
   };
   const renderFrame = () => render({ session, alpha: Math.min(1, accumulator / quantum), resimulating: session.resimulating });
-  const pulse = (timestamp, { render: shouldRender = true } = {}) => {
+  const pulse = (timestamp, { render: shouldRender = true, input: shouldSampleInput = true } = {}) => {
     const current = generation;
     try {
       if (!Number.isFinite(timestamp)) throw new TypeError('frame timestamp');
@@ -68,7 +74,7 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
       session.poll();
       if (current !== generation || timing !== timingGeneration) return;
       // A manual deadline must not depend on another RAF arriving to refresh devices.
-      if(inputPreview&&(!cached||timestamp-observedAt>=quantum))observeInput(timestamp);
+      if(shouldSampleInput&&(inputPreview||hasSubmission)&&(!cached||timestamp-observedAt>=quantum))observeInput(timestamp);
       let work = 0;
       while (!session.closed && !session.resimulating && work < session.profile.maxCatchupSteps) {
         // Scalar capability avoids allocating a complete metrics snapshot per pacing read.
@@ -77,7 +83,7 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
         const allowed = canAdvance();
         if (current !== generation || timing !== timingGeneration) return;
         if (!allowed) { if (backlogPolicy === 'drop') accumulator = Math.min(accumulator, quantum); break; }
-        const sampled = inputPreview ? (cached??observeInput(timestamp)) : getInput();
+        const sampled = inputPreview || hasSubmission || !shouldSampleInput ? (cached ?? (shouldSampleInput ? observeInput(timestamp) : null)) : getInput();
         if(!sampled)break;
         if (current !== generation || timing !== timingGeneration) return;
         const packet = sampled && typeof sampled === 'object' && !ArrayBuffer.isView(sampled) && !(sampled instanceof ArrayBuffer) && Object.hasOwn(sampled, 'input');
@@ -90,21 +96,21 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
           for (const command of commands) {
             if (!command || command.payload === undefined) throw new TypeError('input command payload required');
             const payload = ArrayBuffer.isView(command.payload) ? new command.payload.constructor(command.payload) : command.payload;
-            if(inputPreview&&command.sequence!==null&&command.sequence!==undefined)continue;
+            if((inputPreview||hasSubmission||!shouldSampleInput)&&command.sequence!==null&&command.sequence!==undefined)continue;
             const sequence = session.queueCommand(payload);
             if (!Number.isSafeInteger(sequence) || sequence < 0) throw new TypeError('session command sequence');
-            if(inputPreview)command.sequence=sequence;
+            if(inputPreview||hasSubmission||!shouldSampleInput)command.sequence=sequence;
           }
         }
-        const previousTick = session.tick;
+        if (!inputPreview && !hasSubmission && !shouldSampleInput) observedCommands.length = 0;
         const result = session.advance(input); work++;
         let submission;
-        if(inputPreview){
+        if(inputPreview||hasSubmission){
           const metadata=session.localInputState,capture=metadata?.capture;
           const key=capture?`${metadata.epoch}:${metadata.baseTick}:${capture.sequence}`:'';
           if(capture && key!==captureKey){captureKey=key;submission={...capture,predict:cached?.predict!==false,boundaryTick:metadata.tick,epoch:metadata.epoch,timeMs:Math.max(timestamp,performance.now())};
             submission.commands=capture.commands.map(command=>({...command,observationId:cached?.commands.find(c=>c.sequence===command.sequence)?.observationId}));
-            try{inputPreview.commit(submission,submission.timeMs)}catch(error){inputPreview.clear?.();onPreviewError(error)}
+            try{inputPreview?.commit(submission,submission.timeMs)}catch(error){inputPreview.clear?.();onPreviewError(error)}
             const assigned=new Set(capture.commands.map(c=>c.sequence));for(let i=observedCommands.length-1;i>=0;i--)if(assigned.has(observedCommands[i].sequence))observedCommands.splice(i,1);
           }
         }
@@ -128,7 +134,7 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
     const current = ++generation;
     const frame = timestamp => {
       if (!running || current !== generation) return;
-      if(inputPreview)observeInput(timestamp);
+      if(inputPreview||hasSubmission)observeInput(timestamp);
       pulse(timestamp);
       if (running && current === generation) handle = requestFrame(frame);
     };
@@ -136,6 +142,7 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
     globalThis.document?.addEventListener('visibilitychange', hidden);
     handle = requestFrame(frame);
   };
-  const flushInput = timestamp => { accumulator=Math.max(accumulator,quantum*(session.pace??1));pulse(timestamp); };
-  return { start, stop, pulse, render: renderFrame, observeInput, flushInput, releaseInput:release, resetTiming, get running() { return running; } };
+  const flushInput = timestamp => observeInput(timestamp);
+  const pollInput = timestamp => { const sample=observeInput(timestamp); session.poll(); return sample; };
+  return { start, stop, pulse, render: renderFrame, observeInput, flushInput, pollInput, releaseInput:release, resetTiming, get running() { return running; } };
 }

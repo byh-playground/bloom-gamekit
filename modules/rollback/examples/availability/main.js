@@ -35,16 +35,17 @@ async function connect(role) {
       onEvent: event => { lastEvent = `${event.type} ${event.reason ?? ''}`; } });
     loop = createLoop({ session, getInput: () => new Uint8Array([keys.has('ArrowLeft') ? 1 : keys.has('ArrowRight') ? 2 : 0]), render: display,
       onInputRelease: () => keys.clear(), onError: error => { status.textContent = error.message; } });
-    scheduler = createDeadlineScheduler({ getIntervalMs: () => 1000 / session.profile.tickRate,
-      pulse: timestamp => loop.pulse(timestamp, { render: false }), onGap: () => loop.resetTiming() });
-    const render = timestamp => { loop.observeInput(timestamp); loop.render(); animation = requestAnimationFrame(render); };
+    // Device maintenance runs at its own cadence; the loop retains the configured simulation TPS.
+    scheduler = createDeadlineScheduler({ getIntervalMs: () => 1000 / 60,
+      pulse: timestamp => { loop.pollInput(timestamp); loop.pulse(timestamp, { render: false, input: false }); }, onGap: () => loop.resetTiming() });
+    const render = () => { loop.render(); animation = requestAnimationFrame(render); };
     animation = requestAnimationFrame(render); scheduler.start(); document.querySelector('#leave').disabled = false;
   } catch (error) { status.textContent = error.message; room?.close(); document.querySelector('#simulation').disabled = document.querySelector('#policy').disabled = false; document.querySelector('#host').disabled = document.querySelector('#join').disabled = false; }
 }
 document.querySelector('#host').onclick = () => connect('host'); document.querySelector('#join').onclick = () => connect('join');
 document.querySelector('#leave').onclick = async () => { try { await session.leave(); scheduler.stop(); cancelAnimationFrame(animation); loop.stop(); display(); } catch (error) { status.textContent = error.message; } };
-window.addEventListener('keydown', e => { if (e.key.startsWith('Arrow')) { e.preventDefault(); keys.add(e.key); } });
-window.addEventListener('keyup', e => keys.delete(e.key)); window.addEventListener('blur', () => loop?.releaseInput());
+window.addEventListener('keydown', e => { if (e.key.startsWith('Arrow')) { e.preventDefault(); keys.add(e.key); if (scheduler?.running) loop.observeInput(performance.now()); } });
+window.addEventListener('keyup', e => { keys.delete(e.key); if (scheduler?.running) loop.observeInput(performance.now()); }); window.addEventListener('blur', () => loop?.releaseInput());
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) loop?.releaseInput();
   else if (scheduler?.running) { loop.resetTiming(); scheduler.rebase(); scheduler.wake(); }

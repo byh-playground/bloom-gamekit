@@ -1,6 +1,6 @@
 import { bytes, equalBytes } from '../deterministic/utilities.js';
 export const VERSION = '0.2.0-dev';
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 export const CHUNK_SIZE = 16384;
 export const MAX_TICK = 0x7ffffffe; // Signed ACK fields reserve -1 for no confirmed input.
 
@@ -31,7 +31,7 @@ export const decoder = new TextDecoder('utf-8', { fatal: true });
 // Gameplay packets use explicitly defined little-endian fields, not JS object serialization.
 export const MAGIC = 0x314b4252;
 export const TYPE = Object.freeze({ HELLO: 1, INPUT: 2, CLOCK: 3, HASH: 4,
-  REQUEST: 5, BEGIN: 6, CHUNK: 7 });
+  REQUEST: 5, BEGIN: 6, CHUNK: 7, INPUT_DRAFT: 8, INPUT_DRAFT_ACK: 9 });
 export const HEADER = 12;
 export const SNAP_CHUNK_BYTES = CHUNK_SIZE - HEADER - 8;
 export class Writer {

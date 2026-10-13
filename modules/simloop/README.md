@@ -65,3 +65,13 @@ preview.reconcile({ snapshot, revision, tick, epoch, confirmedSequence, timeMs, 
 `PresentationRuntime`는 선택된 local identity의 현재 표시에서 실제 fork 미래 표본까지 schema 곡선을 매 RAF 평가합니다. 입력이 바뀌거나 canonical 경계가 바뀔 때만 bounded restore/replay를 하고, 동일 held 관찰에는 저장한 미래 표본을 재사용합니다. remote ID는 선택하지 않으면 authoritative track만 표시합니다. timer/step callback은 협력형이며 거대한 게임 update를 하드 실시간으로 선점하지 않습니다.
 
 `metrics`는 추정 snapshot clone/correction bytes, replay 입력 bytes, clone/fork/replay/correction 시간을 구분합니다. `PresentationRuntime.previewMetrics`는 schema capture 시간과 선언-field/shape 기준 추정 capture bytes를 계측합니다. 이는 정밀 heap allocation/전송 bytes나 FPS 개선 증명이 아닙니다. preview OFF는 기존 input/session 경로를 그대로 쓰며, 선택 기능은 [실제 입력/WebGL 예제](../../examples/input-preview/index.html)와 browser E2E에서 별도로 확인합니다.
+
+## 입력 수집·제출 주기 분리
+
+장치 이벤트에서 상태와 edge queue를 갱신한 뒤 `loop.observeInput(performance.now())`을 호출합니다. `submitInput` capability가 있는 session은 held input과 미제출 명령을 즉시 전송합니다. 기존 LocalInputPreview도 같은 호출에서 관측하며 ACK나 다음 tick을 기다리지 않습니다. 명시적인 observeInput은 같은 timestamp에도 새 이벤트를 읽습니다.
+
+주기적인 장치 수집·네트워크 정비는 `loop.pollInput(timestamp)`, simulation pump는 `loop.pulse(timestamp,{render:false,input:false})`, RAF는 `loop.render()`로 분리합니다. input:false는 pulse의 장치 재수집을 막으며 session.poll/advance의 기존 정비는 유지합니다. 처음에는 observeInput으로 샘플을 준비하세요. 명령은 getInput packet에서 한 번만 반환합니다.
+
+flushInput은 관측·제출만 실행하며 accumulator나 simulation tick을 강제로 진행하지 않습니다. 저장 완료가 권위 실행을 요구하면 명령의 확정 경계를 기다려야 합니다. 일반 simulation capability에는 submitInput이 필요 없습니다.
+
+[실행 예제](../rollback/examples/availability/index.html)는 이벤트 즉시 제출, 60Hz 장치 정비, profile의 고정 simulation TPS, 독립 RAF를 사용합니다. 60Hz는 예제의 장치 주기이며 SDK 기본 TPS가 아닙니다. [측정과 한계](./docs/input-latency.md)를 참고하세요.

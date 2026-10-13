@@ -6,7 +6,10 @@ import { dirname, extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 const simulationMode = process.env.ROOM_SIMULATION_MODE ?? 'lockstep';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..'), errors = [], results = [];
-const server = createServer(async (req, res) => { try { const path = resolve(root, '.' + new URL(req.url, 'http://localhost').pathname); if (!path.startsWith(root + sep)) { res.writeHead(403).end(); return; } const data = await readFile(path); res.writeHead(200, { 'content-type': extname(path) === '.html' ? 'text/html' : 'text/javascript', 'cache-control': 'no-store' }).end(data); } catch { res.writeHead(404).end(); } });
+const server = createServer(async (req, res) => { try { const url = new URL(req.url, 'http://localhost').pathname;
+  const base = process.env.INPUT_BASELINE_DIST && url.startsWith('/dist/') ? resolve(process.env.INPUT_BASELINE_DIST) : root;
+  const path = resolve(base, '.' + (base === root ? url : url.slice(5)));
+  if (!path.startsWith(base + sep)) { res.writeHead(403).end(); return; } const data = await readFile(path); res.writeHead(200, { 'content-type': extname(path) === '.html' ? 'text/html' : 'text/javascript', 'cache-control': 'no-store' }).end(data); } catch { res.writeHead(404).end(); } });
 await new Promise(ok => server.listen(0, '127.0.0.1', ok));
 let browser;
 const sleep = ms => new Promise(ok => setTimeout(ok, ms));
@@ -16,25 +19,56 @@ async function until(pages, predicate, label, timeout = 18000) {
   while (Date.now() < end) { const values = await snapshots(pages); if (values.some(s => s.failure)) throw new Error(label + ': ' + JSON.stringify(values)); if (predicate(values)) return values; await sleep(80); }
   throw new Error(label + ' timeout: ' + JSON.stringify(await Promise.all(pages.map(p => p.evaluate(() => window.diagnostics())))));
 }
-async function room(count, available = true, transfer = false, cooperative = false) {
+async function room(count, available = true, transfer = false, cooperative = false, rates = null) {
   const context = await browser.newContext(), pages = [], players = ['A', 'B', 'C', 'D'].slice(0, count);
-  for (const id of players) { const page = await context.newPage(); page.on('pageerror', e => errors.push(e.message)); await page.goto(`http://127.0.0.1:${server.address().port}/modules/rollback-netcode/tests/availability-browser.html`); await page.waitForFunction(() => typeof window.setup === 'function'); await page.evaluate(({ id, players, available, transfer, cooperative, simulationMode }) => window.setup(id, players, available, transfer, cooperative, simulationMode), { id, players, available, transfer, cooperative, simulationMode }); pages.push(page); }
+  for (const id of players) { const page = await context.newPage(); page.on('pageerror', e => errors.push(e.message)); await page.goto(`http://127.0.0.1:${server.address().port}/modules/rollback-netcode/tests/availability-browser.html`); await page.waitForFunction(() => typeof window.setup === 'function'); await page.evaluate(({ id, players, available, transfer, cooperative, simulationMode, rates }) => rates ? window.setupLatency(id, players, rates) : window.setup(id, players, available, transfer, cooperative, simulationMode), { id, players, available, transfer, cooperative, simulationMode, rates }); pages.push(page); }
   for (let a = 0; a < count; a++) for (let b = a + 1; b < count; b++) { const offer = await pages[a].evaluate(id => window.offer(id), players[b]); const answer = await pages[b].evaluate(({ id, offer }) => window.answer(id, offer), { id: players[a], offer }); await pages[a].evaluate(({ id, answer }) => window.accept(id, answer), { id: players[b], answer }); }
   await Promise.all(pages.map(p => p.evaluate(() => window.startPump())));
   await until(pages, values => values.every(s => s.tick >= 15 && s.status === 'running' && s.activePlayers.length === count) && new Set(values.map(s => s.branch)).size === 1, 'initial play');
   return { pages, context, players };
 }
-async function checkpoint(pages, label) {
+async function checkpoint(pages, label, resume = true) {
   await until(pages, values => values.every(s => s.status === 'running' && s.activePlayers.length === pages.length) && new Set(values.map(s => s.branch)).size === 1, label + ' reconnect ready');
   const values = await snapshots(pages), tick = Math.max(...values.map(s => s.tick)) + 4;
   await Promise.all(pages.map(p => p.evaluate(t => window.setTarget(t), tick)));
   const same = await until(pages, values => values.every(s => s.tick === tick && s.confirmedTick + 1 >= tick && !s.resimulating && s.status === 'running'), label);
   assert.equal(new Set(same.map(s => s.hash)).size, 1, label + ' same state'); results.push({ label, tick, hash: same[0].hash, coordinatorId: same[0].coordinatorId });
-  await Promise.all(pages.map(p => p.evaluate(() => window.setTarget(Infinity))));
+  if(resume)await Promise.all(pages.map(p => p.evaluate(() => window.setTarget(Infinity))));
 }
 async function closeRoom(value) { await Promise.all(value.pages.map(p => p.evaluate(() => window.stop()).catch(() => {}))); await value.context.close(); }
 try {
   browser = await chromium.launch({ headless: process.env.AVAILABILITY_HEADED !== '1', ignoreDefaultArgs: ['--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'], ...(process.env.CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.CHROMIUM_EXECUTABLE_PATH } : process.env.BROWSER_CHANNEL ? { channel: process.env.BROWSER_CHANNEL } : {}) });
+  if(process.env.INPUT_LATENCY){
+    const samples=[];
+    for(const rates of [{simulationHz:5,inputHz:30,renderHz:60},{simulationHz:15,inputHz:40,renderHz:30}]){
+      const pair=await room(2,false,false,false,rates),host=pair.pages[0];
+      await Promise.all(pair.pages.map(p=>p.evaluate(()=>window.beginMeasurement())));
+      for(let id=1;id<=24;id++){await host.evaluate(id=>window.inputEvent(id),id);await sleep(73+(id*17)%51);}
+      await checkpoint(pair.pages,'latency final '+rates.simulationHz,false);
+      const peers=await Promise.all(pair.pages.map(p=>p.evaluate(()=>window.latencyReport())));
+      assert.ok(peers.every(p=>!p.failure));assert.equal(peers[0].hash,peers[1].hash);assert.equal(peers[0].commands.length,24);assert.equal(new Set(peers[0].commands).size,24);
+      assert.ok(peers[0].traces.every(t=>t.tickBefore===t.tickAfter),'event must not advance simulation');
+      assert.ok(peers[0].traces.every(t=>t.savesBefore===t.savesAfter),'event must not save authority');
+      await Promise.all(pair.pages.map(p=>p.evaluate(()=>window.setTarget(Infinity))));
+      await host.evaluate(()=>{window.inputFault('hold');for(const id of [25,26,27])window.inputEvent(id);});
+      const revisions=await host.evaluate(()=>window.inputFault('reverse'));
+      if(!process.env.INPUT_BASELINE_DIST){assert.equal(peers[0].sessionMetrics.inputDrafts,24);assert.equal(revisions.length,3);assert.equal(new Set(revisions.map(p=>p.tick)).size,1);assert.ok(revisions.every(p=>p.type===8));}
+      await checkpoint(pair.pages,'same tick revisions '+rates.simulationHz);
+      await host.evaluate(()=>window.inputFault('reverse')); // duplicates arriving after canonical confirmation
+      await host.evaluate(()=>{window.inputFault('hold');window.inputEvent(28);});await sleep(550);
+      await host.evaluate(()=>window.inputFault('reverse'));
+      await checkpoint(pair.pages,'delayed duplicate commands '+rates.simulationHz);
+      await host.evaluate(()=>{window.inputFault('drafts');window.inputEvent(29);});await sleep(4000/rates.simulationHz);
+      const lateRevisions=await host.evaluate(()=>window.inputFault('reverse'));
+      await checkpoint(pair.pages,'draft after canonical '+rates.simulationHz,false);
+      const faultPeers=await Promise.all(pair.pages.map(p=>p.evaluate(()=>window.latencyReport())));
+      assert.equal(faultPeers[0].hash,faultPeers[1].hash);assert.deepEqual(faultPeers[0].commands,Array.from({length:29},(_,i)=>`A:${i+1}:${i+1}`));
+      assert.ok(faultPeers.every(p=>!p.failure));
+      samples.push({rates,peers,revisions,lateRevisions,faultPeers});await closeRoom(pair);
+    }
+    assert.deepEqual(errors,[]);const report={passed:true,browser:browser.version(),label:process.env.INPUT_LATENCY,samples};
+    await mkdir(resolve(root,'test-results/rollback'),{recursive:true});await writeFile(resolve(root,'test-results/rollback/input-latency-'+process.env.INPUT_LATENCY+'.json'),JSON.stringify(report,null,2));console.log(JSON.stringify({passed:true,label:report.label,samples:samples.map(s=>({rates:s.rates,traces:s.peers[0].traces}))}));
+  } else {
   const delayed = await room(2, false);
   await delayed.pages[0].evaluate(() => window.block(['B'], true));
   await delayed.pages[0].locator('#move').click();
@@ -146,4 +180,5 @@ try {
   assert.deepEqual(errors, []);
   const report = { passed: true, browser: browser.version(), transport: 'actual Chromium RTCPeerConnection data channels across 2/4 pages; in-process RoomTransport fixture, no public relay/NAT', faults: 'CDP script-execution suspension; explicit timer gap/1000ms interval; pump stops during transfer probe; partition injected at transport send/receive, retained stale packets replayed; not OS suspend', results };
   await mkdir(resolve(root, 'test-results/rollback'), { recursive: true }); await writeFile(resolve(root, 'test-results/rollback/availability-'+simulationMode+'-report.json'), JSON.stringify(report, null, 2)); console.log(JSON.stringify(report, null, 2));
+  }
 } finally { await browser?.close(); await new Promise(ok => server.close(ok)); }
