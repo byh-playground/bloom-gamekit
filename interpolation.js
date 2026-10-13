@@ -1,3 +1,28 @@
+// modules/interpolation/intervals.js
+function bufferInterval(track, old, { origin, timeMs, previousTimeMs, stepMs, delayMs, continuous, seeded, initialTimeMs, reset }) {
+  const start = continuous ? previousTimeMs : seeded ? initialTimeMs ?? timeMs - stepMs : timeMs;
+  if (!Number.isFinite(start) || start > timeMs) throw new RangeError("initialTimeMs must be finite and <= timeMs");
+  track.startedAt = track.at = origin + start;
+  track.durationMs = timeMs - start;
+  track.bornAt = continuous ? old.bornAt : reset ? origin + timeMs - delayMs : origin + start;
+  track.removedAt = Infinity;
+  track.buffered = true;
+  const history = continuous ? [...old.history ?? [], old] : [];
+  track.history = history.slice(-Math.ceil(delayMs / stepMs) - 2).map(({ history: history2, ...item }) => item);
+}
+function intervalAt(track, at) {
+  if (!track || at < track.bornAt || at >= track.removedAt) return null;
+  if (at >= track.startedAt) return track;
+  return track.history.find((item) => at <= item.startedAt + item.durationMs) ?? track.history.at(-1) ?? track;
+}
+function retainRemoved(next, previous, { origin, timeMs, nowMs, delayMs }) {
+  if (!delayMs) return;
+  for (const [id, old] of previous) if (!next.has(id)) {
+    const removedAt = Number.isFinite(old.removedAt) ? old.removedAt : origin + timeMs;
+    if (nowMs - delayMs < removedAt) next.set(id, { ...old, removedAt });
+  }
+}
+
 // modules/interpolation/schema.js
 function compileSchema(schema) {
   if (!schema || typeof schema !== "object" || Array.isArray(schema)) throw new TypeError("schema must be an object");
@@ -88,7 +113,7 @@ var InterpolationTimeline = class {
   #revision = -1;
   #sequence = -1;
   #timeMs = -Infinity;
-  /** @param {{schema:import('./schema.js').Schema, stepMs:number}} options */
+  /** @param {{schema:import('./schema.js').Schema, stepMs:number,delayMs?:number}} options */
   constructor({ schema, stepMs, delayMs = 0 }) {
     this.#fields = compileSchema(schema);
     this.#fieldIndices = new Map(this.#fields.map((field, index) => [field[0], index]));
@@ -140,18 +165,26 @@ var InterpolationTimeline = class {
       const snap = mode !== "continuous" || entity.teleport === true;
       const track = retarget(this.#fields, old, target, generation, nowMs, this.#stepMs, snap, initial, resetFields);
       if (this.#delayMs > 0) {
-        const continued = old && old.generation === generation && !snap && !changedRevision;
-        track.startedAt = origin + (continued ? this.#timeMs : timeMs);
-        track.durationMs = continued ? Math.max(0, timeMs - this.#timeMs) : 0;
+        const continued = old && old.generation === generation && !snap && !changedRevision && !Number.isFinite(old.removedAt);
         if (continued) {
           track.from = old.target.slice();
           if (resetFields) for (const i of resetFields) track.from[i] = target[i];
         }
-        track.history = continued ? [...old.history ?? [], old].slice(-Math.ceil(this.#delayMs / this.#stepMs) - 2) : [];
-        track.history = track.history.map(({ history, ...interval }) => interval);
+        bufferInterval(track, old, {
+          origin,
+          timeMs,
+          previousTimeMs: this.#timeMs,
+          stepMs: this.#stepMs,
+          delayMs: this.#delayMs,
+          continuous: continued,
+          reset: snap,
+          seeded: !!initial && !snap,
+          initialTimeMs: entity.initialTimeMs
+        });
       }
       next.set(entity.id, track);
     }
+    if (!changedRevision && mode === "continuous") retainRemoved(next, this.#tracks, { origin, timeMs, nowMs, delayMs: this.#delayMs });
     this.#tracks = next;
     this.#origin = origin;
     this.#revision = revision;
@@ -174,14 +207,14 @@ var InterpolationTimeline = class {
     this.#now = nowMs;
     if (!track || track.generation !== generation) return false;
     const sampleAt = nowMs - this.#delayMs;
-    if (this.#delayMs > 0 && sampleAt < track.startedAt) {
-      const history = track.history;
-      track = history.find((interval) => sampleAt <= interval.startedAt + interval.durationMs) ?? history.at(-1) ?? track;
+    if (this.#delayMs > 0) {
+      track = intervalAt(track, sampleAt);
+      if (!track) return false;
     }
     const alpha = track.durationMs === 0 ? 1 : fraction(track, sampleAt, track.durationMs ?? this.#stepMs);
     for (let i = 0; i < this.#fields.length; i++) {
       const field = this.#fields[i];
-      out[field[0]] = evaluate(field[1], track.from[i], track.target[i], alpha);
+      out[field[0]] = this.#delayMs > 0 && field[1] === "discrete" && alpha < 1 ? track.from[i] : evaluate(field[1], track.from[i], track.target[i], alpha);
     }
     return true;
   }
@@ -207,12 +240,82 @@ var RenderObject = class {
   static ORIGIN_Y = 12;
   static ORIGIN_Z = 13;
   static SPAWN_LINEAR = 14;
+  /** Optional bounded world-space path: {x:'x',y:'y',durationMs:400,maxPoints:64}.
+   * Position fields must be declared. Shape/attachments remain game-owned. */
+  static renderPath = null;
   static renderSchema = Object.freeze({});
   /** @param {unknown} context @param {object} model */
   render(context, model) {
     throw new Error("RenderObject 하위 타입은 render(context, model)을 구현해야 합니다.");
   }
 };
+
+// modules/interpolation/path.js
+function pathPlan(declaration, indices) {
+  if (!declaration) return null;
+  const x = indices.get(declaration.x), y = indices.get(declaration.y), durationMs = finite(declaration.durationMs, "renderPath.durationMs");
+  const maxPoints = declaration.maxPoints ?? 64;
+  if (x === void 0 || y === void 0 || durationMs <= 0 || !Number.isSafeInteger(maxPoints) || maxPoints < 2 || maxPoints > 4096) throw new TypeError("invalid renderPath");
+  return { x, y, durationMs, maxPoints };
+}
+function capturePath(plan, old, from, target, startMs, timeMs, points, reset, delayMs, stepMs) {
+  if (!plan) return null;
+  const path = reset ? [] : (old ?? []).slice();
+  const add = (timeMs2, x, y) => {
+    finite(timeMs2, "path timeMs");
+    finite(x, "path x");
+    finite(y, "path y");
+    if (path.length && timeMs2 < path.at(-1).timeMs) throw new RangeError("path points must be ordered");
+    if (path.length && timeMs2 === path.at(-1).timeMs) path[path.length - 1] = { timeMs: timeMs2, x, y };
+    else path.push({ timeMs: timeMs2, x, y });
+  };
+  if (!path.length) add(startMs, from[plan.x], from[plan.y]);
+  if (points !== void 0) {
+    if (!Array.isArray(points)) throw new TypeError("pathPoints must be an array");
+    for (const point of points) {
+      if (point.timeMs < startMs || point.timeMs > timeMs) throw new RangeError("pathPoints must be inside this capture interval");
+      add(point.timeMs, point.x, point.y);
+    }
+  }
+  add(timeMs, target[plan.x], target[plan.y]);
+  const floor = timeMs - plan.durationMs - delayMs - stepMs;
+  while (path.length > 2 && path[1].timeMs < floor) path.shift();
+  return path.slice(-plan.maxPoints);
+}
+function pointAt(path, timeMs, out) {
+  if (!path?.length) return false;
+  let a = path[0], b = a;
+  for (let i = 1; i < path.length; i++) {
+    b = path[i];
+    if (timeMs <= b.timeMs) break;
+    a = b;
+  }
+  const t = b.timeMs === a.timeMs ? 1 : Math.max(0, Math.min(1, (timeMs - a.timeMs) / (b.timeMs - a.timeMs)));
+  out.timeMs = Math.max(path[0].timeMs, Math.min(timeMs, path.at(-1).timeMs));
+  out.x = a.x + (b.x - a.x) * t;
+  out.y = a.y + (b.y - a.y) * t;
+  return true;
+}
+function samplePath(path, timeMs, durationMs, out) {
+  let count = 0;
+  const write = (point) => {
+    const item = out[count] ?? (out[count] = {});
+    Object.assign(item, point);
+    count++;
+  };
+  const head = {};
+  if (!pointAt(path, timeMs, head)) {
+    out.length = 0;
+    return out;
+  }
+  const floor = Math.max(path[0].timeMs, head.timeMs - durationMs), tail = {};
+  pointAt(path, floor, tail);
+  write(tail);
+  for (const point of path) if (point.timeMs > floor && point.timeMs < head.timeMs) write(point);
+  if (head.timeMs > floor) write(head);
+  out.length = count;
+  return out;
+}
 
 // modules/interpolation/render-policies.js
 var kinds = [
@@ -358,11 +461,11 @@ function compileRenderSchema(type) {
   }
   const fields = [], nodes = [], indices = /* @__PURE__ */ new Map(), root = { children: /* @__PURE__ */ new Map() };
   for (const [name, code] of Object.entries(merged)) {
-    const path = name.split(".");
-    if (path.some((key) => !key || unsafe.has(key))) throw new TypeError("Unsafe or empty render path: " + name);
+    const path2 = name.split(".");
+    if (path2.some((key) => !key || unsafe.has(key))) throw new TypeError("Unsafe or empty render path: " + name);
     if (!Number.isInteger(code) || !fieldKind(code)) throw new TypeError("Unknown render interpolation: " + name);
     let node = root;
-    for (const key of path) {
+    for (const key of path2) {
       if (node.field !== void 0) throw new TypeError("Overlapping render paths: " + name);
       if (!node.children.has(key)) {
         const child = { key, children: /* @__PURE__ */ new Map(), index: nodes.length, parent: node };
@@ -374,11 +477,12 @@ function compileRenderSchema(type) {
     if (node.children.size) throw new TypeError("Overlapping render paths: " + name);
     node.field = fields.length;
     indices.set(name, fields.length);
-    fields.push(Object.freeze({ name, code, kind: fieldKind(code), path: Object.freeze(path), owner: node.parent }));
+    fields.push(Object.freeze({ name, code, kind: fieldKind(code), path: Object.freeze(path2), owner: node.parent }));
   }
   if (!fields.length) throw new TypeError("renderSchema must declare at least one field");
   const policies = compileFieldPolicies(root, fields);
-  const plan = { fields: Object.freeze(fields), indices, root, nodes, policies };
+  const path = pathPlan(type.renderPath, indices);
+  const plan = { path, fields: Object.freeze(fields), indices, root, nodes, policies };
   cache.set(type, plan);
   return plan;
 }
@@ -459,7 +563,7 @@ function reuseData(out, value) {
 
 // modules/interpolation/presentation.js
 function fraction2(track, now, stepMs) {
-  return Math.min(1, Math.max(0, (now - track.at) / stepMs));
+  return stepMs === 0 ? 1 : Math.min(1, Math.max(0, (now - track.at) / stepMs));
 }
 var PresentationRuntime = class {
   #stepMs;
@@ -479,9 +583,15 @@ var PresentationRuntime = class {
   #previewMetrics = { captureMs: 0, captureBytes: 0, captures: 0 };
   #extrapolation;
   #snapDistance;
-  /** @param {{stepMs:number, snapDistance?:number, extrapolation?:{fields:string[],maxMs:number}}} options */
-  constructor({ stepMs, snapDistance, extrapolation } = {}) {
+  #delayMs;
+  #origin = 0;
+  #frameSerial = 0;
+  /** @param {{stepMs:number, delayMs?:number, snapDistance?:number, extrapolation?:{fields:string[],maxMs:number}}} options */
+  constructor({ stepMs, snapDistance, extrapolation, delayMs = 0 } = {}) {
     this.#stepMs = finite(stepMs, "stepMs");
+    this.#delayMs = finite(delayMs, "delayMs");
+    if (delayMs < 0 || delayMs > stepMs * 16) throw new RangeError("delayMs must be between 0 and 16 steps");
+    if (delayMs && extrapolation) throw new TypeError("delayed authority cannot also extrapolate");
     if (stepMs <= 0) throw new RangeError("stepMs must be positive");
     if (snapDistance !== void 0 && finite(snapDistance, "snapDistance") <= 0) throw new RangeError("snapDistance must be positive");
     this.#snapDistance = snapDistance;
@@ -506,10 +616,12 @@ var PresentationRuntime = class {
       if (!identity || typeof identity.id !== "string" || !identity.id || !Number.isSafeInteger(identity.generation) || identity.generation < 0 || next.has(identity.id)) throw new TypeError("invalid preview identity");
       next.set(identity.id, identity.generation);
     }
+    this.#frameSerial++;
     this.#previewSelection = next;
     for (const id of this.#preview.keys()) if (!next.has(id) || next.get(id) !== this.#preview.get(id).generation) this.#preview.delete(id);
   }
   clearPreview() {
+    this.#frameSerial++;
     this.#preview.clear();
     this.#previewSelection.clear();
     this.#previewSources = /* @__PURE__ */ new WeakMap();
@@ -577,6 +689,7 @@ var PresentationRuntime = class {
       next.set(entity.id, entry);
       sources.set(entity.source, entry);
     }
+    this.#frameSerial++;
     this.#preview = next;
     this.#previewSources = sources;
     this.#previewRevision = revision;
@@ -600,7 +713,14 @@ var PresentationRuntime = class {
     if (now < this.#now) throw new RangeError("presentation clock must not go backwards");
   }
   /**
-   * @param {{revision:number,sequence:number,timeMs:number,mode?:string,entities:Array<{id:string,generation:number,source:object,type?:typeof RenderObject,teleport?:boolean,resetFields?:string[],initialSource?:object}>}} packet
+   * Full authoritative snapshot. timeMs/initialTimeMs/pathPoints use simulation milliseconds.
+   * delayMs buffers intervals and removal; a continuous new identity may seed its first interval
+   * with initialSource at initialTimeMs (default timeMs-stepMs). Reset/rollback/teleport discard history.
+   * renderPath captures endpoints automatically. Supply within-tick bends as ordered pathPoints;
+   * the module cannot infer a collision/orbit curve between simulation endpoints.
+   * An entity born and removed between captures is unobservable here: the game must emit
+   * its timed visual event/anchors through presentation-events, not expect snapshot inference.
+   * @param {{revision:number,sequence:number,timeMs:number,mode?:string,entities:Array<{id:string,generation:number,source:object,type?:typeof RenderObject,teleport?:boolean,resetFields?:string[],initialSource?:object,initialTimeMs?:number,pathPoints?:Array<{timeMs:number,x:number,y:number}>}>}} packet
    * @param {number} nowMs
    */
   capture(packet, nowMs) {
@@ -615,6 +735,7 @@ var PresentationRuntime = class {
     if (!changed && mode !== "continuous") throw new RangeError("reset, load and rollback require a newer revision");
     if (!changed && timeMs < this.#timeMs) return false;
     if (!Array.isArray(packet.entities)) throw new TypeError("entities must be an array");
+    const origin = changed ? nowMs - timeMs : this.#origin;
     const next = /* @__PURE__ */ new Map(), sources = /* @__PURE__ */ new WeakMap();
     for (const entity of packet.entities) {
       if (!entity || typeof entity.id !== "string" || !entity.id || next.has(entity.id)) throw new TypeError("entity IDs must be nonempty and unique");
@@ -637,10 +758,11 @@ var PresentationRuntime = class {
         }
       }
       const old = this.#tracks.get(entity.id), preview = this.#preview.get(entity.id);
-      const same = mode === "continuous" && old && old.generation === generation && old.plan === plan;
+      const same = mode === "continuous" && old && old.generation === generation && old.plan === plan && !Number.isFinite(old.removedAt);
       const snap = mode !== "continuous" || entity.teleport === true || !!same && positionDiscontinuity(plan.policies, old, target, this.#snapDistance);
       if (same && !snap) inferFieldResets(plan.policies, old, target, timeMs, reset);
       const from = same && !snap && preview?.generation === generation && this.#previewSelection.get(entity.id) === generation ? plan.fields.map((_, i) => this.#value(preview, i, nowMs)) : !same && !snap ? initial ? initial.values.slice() : seedFieldValues(plan.policies, target.values) : target.values.slice();
+      if (this.#delayMs && same && !snap) for (let i = 0; i < from.length; i++) from[i] = old.target.values[i];
       const velocity = this.#extrapolation ? new Array(plan.fields.length).fill(0) : null;
       for (let i = 0; i < plan.fields.length; i++) {
         const field = plan.fields[i], value = target.values[i];
@@ -649,7 +771,8 @@ var PresentationRuntime = class {
           if (!Number.isFinite(from[i] - value)) throw new RangeError("extrapolation correction overflow: " + field.name);
         }
         if (same && !snap && !reset.has(i) && typeof value === "number" && typeof old.target.values[i] === "number") {
-          if (!preview || preview.generation !== generation) from[i] = this.#value(old, i, nowMs);
+          if (this.#delayMs) from[i] = old.target.values[i];
+          else if (!preview || preview.generation !== generation) from[i] = this.#value(old, i, nowMs);
           if (field.code === RenderObject.DECAY && value > old.target.values[i]) from[i] = value;
           if (this.#extrapolation?.fields.has(field.name)) {
             if (!isLinearField(field.code)) throw new TypeError("extrapolation requires LINEAR: " + field.name);
@@ -677,9 +800,28 @@ var PresentationRuntime = class {
         sampleValues: same ? old.sampleValues : void 0,
         sampledAt: -Infinity
       };
+      if (this.#delayMs) {
+        bufferInterval(track, old, {
+          origin,
+          timeMs,
+          previousTimeMs: this.#timeMs,
+          stepMs: this.#stepMs,
+          delayMs: this.#delayMs,
+          continuous: same && !snap,
+          reset: snap,
+          seeded: !snap && (!!initial || plan.policies.origins.some((i) => i !== void 0)),
+          initialTimeMs: entity.initialTimeMs
+        });
+        track.initialShapes = same && !snap ? old.target.shapes : target.shapes;
+      }
+      const pathStart = this.#delayMs ? track.startedAt - origin : same && !snap ? old.timeMs : !snap && initial ? entity.initialTimeMs ?? timeMs - this.#stepMs : timeMs;
+      track.path = capturePath(plan.path, old?.path, from, target.values, pathStart, timeMs, entity.pathPoints, !same || snap, this.#delayMs, this.#stepMs);
       next.set(entity.id, track);
       sources.set(source, track);
     }
+    if (!changed && mode === "continuous") retainRemoved(next, this.#tracks, { origin, timeMs, nowMs, delayMs: this.#delayMs });
+    this.#origin = origin;
+    this.#frameSerial++;
     this.#tracks = next;
     this.#sources = sources;
     this.#preview.clear();
@@ -692,7 +834,7 @@ var PresentationRuntime = class {
   }
   #value(track, index, now) {
     const field = track.plan.fields[index], from = track.from[index], to = track.target.values[index];
-    if (from == null || to == null || field.kind === "discrete") return to;
+    if (from == null || to == null || field.kind === "discrete") return track.buffered && now < track.at + track.durationMs ? from : to;
     const alpha = fraction2(track, now, track.durationMs ?? this.#stepMs);
     if (!track.preview && this.#extrapolation?.fields.has(field.name)) {
       const age = Math.min(this.#extrapolation.maxMs, Math.max(0, now - track.at));
@@ -723,14 +865,22 @@ var PresentationRuntime = class {
       return preview.model;
     }
     const track = this.#tracks.get(id);
-    if (!track || track.generation !== generation) {
+    const at = nowMs - this.#delayMs;
+    const interval = this.#delayMs ? intervalAt(track, at) : track;
+    if (!interval || !track || track.generation !== generation) {
       this.#now = nowMs;
       return null;
     }
     if (track.sampledAt !== nowMs) {
       const values = track.sampleValues ??= new Array(track.plan.fields.length);
-      for (let i = 0; i < values.length; i++) values[i] = this.#value(track, i, nowMs);
-      writeRenderModel(track.plan, track.model, values, track.target.shapes);
+      for (let i = 0; i < values.length; i++) values[i] = this.#value(interval, i, at);
+      if (track.plan.path) {
+        const point = track.pathHead ?? (track.pathHead = {});
+        pointAt(track.path, at - this.#origin, point);
+        values[track.plan.path.x] = point.x;
+        values[track.plan.path.y] = point.y;
+      }
+      writeRenderModel(track.plan, track.model, values, interval.buffered && at < interval.at + interval.durationMs ? interval.initialShapes : interval.target.shapes);
       track.sampledAt = nowMs;
       this.#models.set(track.model, track);
     }
@@ -750,6 +900,50 @@ var PresentationRuntime = class {
     if (track) return this.sample(track.id, track.generation, nowMs);
     this.#now = nowMs;
     return null;
+  }
+  /**
+   * One synchronous display frame. All reads share one nowMs and preview selection.
+   * Enumerate this frame, not the current simulation collection: delayed removals stay visible.
+   * Models are reused, declared data only; do not retain/mutate them or read raw simulation in draw code.
+   * A new frame/capture invalidates this handle. No per-field proxy or deep copy on RAF.
+   */
+  frame(nowMs) {
+    this.#checkClock(nowMs);
+    this.#now = nowMs;
+    const serial = ++this.#frameSerial, check = () => {
+      if (serial !== this.#frameSerial) throw new Error("Presentation frame expired");
+    };
+    return Object.freeze({
+      nowMs,
+      timeMs: nowMs - this.#delayMs - this.#origin,
+      sample: (id, generation) => {
+        check();
+        return this.sample(id, generation, nowMs);
+      },
+      modelFor: (source) => {
+        check();
+        return this.modelFor(source, nowMs);
+      },
+      forEach: (visit) => {
+        check();
+        for (const [id, track] of this.#tracks) {
+          const model = this.sample(id, track.generation, nowMs);
+          if (model) visit(model, id, track.generation);
+        }
+      },
+      pathInto: (id, generation, out) => {
+        check();
+        if (!Array.isArray(out)) throw new TypeError("path output must be an array");
+        const track = this.#tracks.get(id);
+        if (!track || track.generation !== generation || !this.sample(id, generation, nowMs)) {
+          out.length = 0;
+          return out;
+        }
+        if (!track.plan.path) throw new Error("Declare renderPath before reading a path");
+        if (this.#preview.has(id) && this.#previewSelection.get(id) === generation) throw new Error("Preview path is not supported; attach visuals to the selected model");
+        return samplePath(track.path, nowMs - this.#delayMs - this.#origin, track.plan.path.durationMs, out);
+      }
+    });
   }
   /** 정상적인 객체 메서드 호출입니다. this/프로토타입을 바꾸지 않습니다. */
   render(source, context, nowMs) {
