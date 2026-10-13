@@ -3,7 +3,7 @@
   "modules": [
     {
       "file": "interpolation.js",
-      "sha256": "55a6d7907e5e7e29882311d9a61d0c05453132abc38526b8bfb2f637018130c7"
+      "sha256": "bf6c8737ef48ca327814cf7326406025c2ece6c49a690ca7652cac2cc6af2562"
     },
     {
       "file": "rendering.js",

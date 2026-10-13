@@ -628,7 +628,7 @@ var PresentationRuntime = class {
   }
   releasePreview(nowMs) {
     this.#checkClock(nowMs);
-    for (const [id, preview] of this.#preview) {
+    if (!this.#delayMs) for (const [id, preview] of this.#preview) {
       const track = this.#tracks.get(id);
       if (!track || track.generation !== preview.generation) continue;
       track.from = track.plan.fields.map((_, i) => this.#value(preview, i, nowMs));
