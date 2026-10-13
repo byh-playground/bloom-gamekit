@@ -1,7 +1,8 @@
+import { bufferInterval, intervalAt, retainRemoved } from './intervals.js';
 import { compileSchema, finite, ordinal, readValues, readResetFields } from './schema.js';
 import { evaluate, fraction, retarget } from './tracks.js';
 
-/** @typedef {{id:string, generation:number, values:Record<string,number|string|boolean|null>, teleport?:boolean, resetFields?:string[], initialValues?:Record<string,number|string|boolean|null>}} EntitySample */
+/** @typedef {{id:string, generation:number, values:Record<string,number|string|boolean|null>, teleport?:boolean, resetFields?:string[], initialTimeMs?:number, initialValues?:Record<string,number|string|boolean|null>}} EntitySample */
 /** @typedef {{revision:number, sequence:number, timeMs:number, entities:EntitySample[], mode?:'continuous'|'reset'|'load'|'rollback'}} Snapshot */
 /**
  * A renderer-independent, full-snapshot presentation timeline.
@@ -11,7 +12,7 @@ export class InterpolationTimeline {
   #fields; #fieldIndices; #stepMs; #tracks = new Map(); #now = -Infinity;
   #delayMs; #origin = 0;
   #revision = -1; #sequence = -1; #timeMs = -Infinity;
-  /** @param {{schema:import('./schema.js').Schema, stepMs:number}} options */
+  /** @param {{schema:import('./schema.js').Schema, stepMs:number,delayMs?:number}} options */
   constructor({ schema, stepMs, delayMs = 0 }) {
     this.#fields = compileSchema(schema);
     this.#fieldIndices = new Map(this.#fields.map((field, index) => [field[0], index]));
@@ -61,17 +62,14 @@ export class InterpolationTimeline {
       const snap = mode !== 'continuous' || entity.teleport === true;
       const track=retarget(this.#fields, old, target, generation, nowMs, this.#stepMs, snap, initial, resetFields);
       if(this.#delayMs>0){
-        const continued=old&&old.generation===generation&&!snap&&!changedRevision;
-        track.startedAt=origin+(continued?this.#timeMs:timeMs);
-        track.durationMs=continued?Math.max(0,timeMs-this.#timeMs):0;
+        const continued=old&&old.generation===generation&&!snap&&!changedRevision&&!Number.isFinite(old.removedAt);
         if(continued){track.from=old.target.slice();if(resetFields)for(const i of resetFields)track.from[i]=target[i];}
-        // Preserve completed intervals when several ticks arrive in the same callback.
-        track.history=continued?[...(old.history??[]),old].slice(-Math.ceil(this.#delayMs/this.#stepMs)-2):[];
-        // History stores flat intervals, never recursively retains past histories.
-        track.history=track.history.map(({history,...interval})=>interval);
+        bufferInterval(track,old,{origin,timeMs,previousTimeMs:this.#timeMs,stepMs:this.#stepMs,delayMs:this.#delayMs,
+          continuous:continued,reset:snap,seeded:!!initial&&!snap,initialTimeMs:entity.initialTimeMs});
       }
       next.set(entity.id,track);
     }
+    if(!changedRevision&&mode==='continuous')retainRemoved(next,this.#tracks,{origin,timeMs,nowMs,delayMs:this.#delayMs});
     // Commit only after every entity has been validated and all new tracks prepared.
     this.#tracks = next; this.#origin=origin;
     this.#revision = revision; this.#sequence = sequence; this.#timeMs = timeMs; this.#now = nowMs;
@@ -91,14 +89,11 @@ export class InterpolationTimeline {
     this.#now = nowMs;
     if (!track || track.generation !== generation) return false;
     const sampleAt=nowMs-this.#delayMs;
-    if(this.#delayMs>0&&sampleAt<track.startedAt){
-      const history=track.history;
-      track=history.find(interval=>sampleAt<=interval.startedAt+interval.durationMs)??history.at(-1)??track;
-    }
+    if(this.#delayMs>0){track=intervalAt(track,sampleAt);if(!track)return false;}
     const alpha=track.durationMs===0?1:fraction(track,sampleAt,track.durationMs??this.#stepMs);
     for (let i = 0; i < this.#fields.length; i++) {
       const field = this.#fields[i];
-      out[field[0]] = evaluate(field[1], track.from[i], track.target[i], alpha);
+      out[field[0]] = this.#delayMs>0&&field[1]==='discrete'&&alpha<1 ? track.from[i] : evaluate(field[1], track.from[i], track.target[i], alpha);
     }
     return true;
   }

@@ -1,3 +1,4 @@
+import { pathPlan } from './path.js';
 import { RenderObject } from './render-object.js';
 import { fieldKind, compileFieldPolicies } from './render-policies.js';
 
@@ -74,7 +75,8 @@ export function compileRenderSchema(type) {
   }
   if (!fields.length) throw new TypeError('renderSchema must declare at least one field');
   const policies = compileFieldPolicies(root, fields);
-  const plan = { fields: Object.freeze(fields), indices, root, nodes, policies };
+  const path = pathPlan(type.renderPath, indices);
+  const plan = { path, fields: Object.freeze(fields), indices, root, nodes, policies };
   cache.set(type, plan);
   return plan;
 }

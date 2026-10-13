@@ -1,0 +1,5 @@
+<!doctype html><meta charset="utf-8"><title>GameKit 표시 프레임</title>
+<style>body{font:16px system-ui;background:#15212b;color:#eee;margin:30px}canvas{width:640px;height:320px;display:block}button{margin:12px}</style>
+<h1>생성 · 경로 · 지연 제거 · rollback</h1><p>시뮬레이션 10TPS, 표시 지연 200ms. 본체와 잔상이 같은 표시 시간을 사용합니다. 게임의 TPS 설정을 바꿔도 API는 같습니다.</p>
+<canvas width="640" height="320"></canvas><button id="spawn">생성</button><button id="rollback">rollback / 새 revision</button><p id="status"></p>
+<script type="module">import{startFrameDemo}from'./frame-demo.js';const demo=startFrameDemo(document.querySelector('canvas'),document.querySelector('#status'));document.querySelector('#spawn').onclick=demo.spawn;document.querySelector('#rollback').onclick=demo.rollback;window.addEventListener('pagehide',()=>demo.dispose(),{once:true});window.frameDemo=demo;</script>
