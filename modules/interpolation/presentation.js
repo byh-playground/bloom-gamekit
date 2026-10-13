@@ -160,7 +160,8 @@ export class PresentationRuntime {
       const velocity = this.#extrapolation ? new Array(plan.fields.length).fill(0) : null;
       for (let i = 0; i < plan.fields.length; i++) {
         const field = plan.fields[i], value = target.values[i];
-        if (reset.has(i)) from[i] = value;
+        // Buffered state changes occur at the target simulation time, not receipt time.
+        if (reset.has(i) && !this.#delayMs) from[i] = value;
         if (!same && !snap && initial && this.#extrapolation?.fields.has(field.name) && typeof from[i] === 'number' && typeof value === 'number') {
           if (!Number.isFinite(from[i] - value)) throw new RangeError('extrapolation correction overflow: ' + field.name);
         }
@@ -188,7 +189,15 @@ export class PresentationRuntime {
       if(this.#delayMs){
         bufferInterval(track,old,{origin,timeMs,previousTimeMs:this.#timeMs,stepMs:this.#stepMs,delayMs:this.#delayMs,
           continuous:same&&!snap,reset:snap,seeded:!snap&&(!!initial||plan.policies.origins.some(i=>i!==undefined)),initialTimeMs:entity.initialTimeMs});
-        track.initialShapes=same&&!snap?old.target.shapes:target.shapes;
+        track.initialShapes=same&&!snap?old.target.shapes:!snap&&initial?initial.shapes:target.shapes;
+        // Shape and descendants are one state. Holding only the old shape with reset
+        // target fields can expose {}, or interpolate fields from different phases.
+        track.heldFields=reset;
+        for(const node of plan.nodes)if(node.field===undefined&&!Object.is(track.initialShapes[node.index],target.shapes[node.index])){
+          for(const index of node.fields)track.heldFields.add(index);
+        }
+        const prior=same&&!snap?old.target.values:!snap&&initial?initial.values:target.values;
+        for(const index of track.heldFields)from[index]=prior[index];
       }
       const pathStart=this.#delayMs?track.startedAt-origin:same&&!snap?old.timeMs:(!snap&&initial?(entity.initialTimeMs??timeMs-this.#stepMs):timeMs);
       track.path=capturePath(plan.path,old?.path,from,target.values,pathStart,timeMs,entity.pathPoints,!same||snap,this.#delayMs,this.#stepMs);
@@ -203,7 +212,7 @@ export class PresentationRuntime {
 
   #value(track, index, now) {
     const field = track.plan.fields[index], from = track.from[index], to = track.target.values[index];
-    if (from == null || to == null || field.kind === 'discrete') return track.buffered&&now<track.at+track.durationMs?from:to;
+    if (from == null || to == null || field.kind === 'discrete' || track.heldFields?.has(index)) return track.buffered&&now<track.at+track.durationMs?from:to;
     const alpha = fraction(track, now, track.durationMs ?? this.#stepMs);
     if (!track.preview && this.#extrapolation?.fields.has(field.name)) {
       const age = Math.min(this.#extrapolation.maxMs, Math.max(0, now - track.at));
