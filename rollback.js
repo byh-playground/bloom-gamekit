@@ -43,11 +43,14 @@ var fixedPoint = Object.freeze({
 
 // modules/_rollback-shared/protocol.js
 var VERSION = "0.2.0-dev";
-var PROTOCOL_VERSION = 2;
+var PROTOCOL_VERSION = 3;
 var CHUNK_SIZE = 16384;
 var MAX_TICK = 2147483646;
 var defaults = {
   mode: "rollback",
+  inputScheduling: "configured",
+  inputSafetyMarginMs: 8,
+  inputJitterMultiplier: 2,
   tickRate: 60,
   baseInputDelayTicks: 2,
   minInputDelayTicks: 0,
@@ -109,8 +112,8 @@ var TYPE = Object.freeze({
   REQUEST: 5,
   BEGIN: 6,
   CHUNK: 7,
-  INPUT_DRAFT: 8,
-  INPUT_DRAFT_ACK: 9
+  INPUT_RESERVATION: 8,
+  INPUT_RESERVATION_ACK: 9
 });
 var HEADER = 12;
 var SNAP_CHUNK_BYTES = CHUNK_SIZE - HEADER - 8;
@@ -298,16 +301,29 @@ function copyLocalCommandState(state, inputSize, profile, executedSequence = 0) 
   if (!Array.isArray(state.commands) || state.commands.length > maxCommands) throw new RangeError("local command capacity");
   const maxPayload = Math.min(profile.maxCommandBytes, CHUNK_SIZE - 1024 - inputSize - 6);
   const maxBytes = profile.maxPendingCommands * maxPayload + (profile.maxInputDelayTicks + profile.stateHistorySize + 1) * (CHUNK_SIZE - 1024 - inputSize);
-  let previous = executedSequence, size = 0;
+  let previous = executedSequence, previousTick = -1, size = 0;
   const commands = Array.from(state.commands, (command) => {
     const next = integer(command?.sequence, "local command order", 1, sequence);
     if (next <= previous) throw new RangeError("local command order");
     const payload = bytes(command.payload, "local command payload");
     if (!payload.length || payload.length > maxPayload || (size += payload.length) > maxBytes) throw new RangeError("local command capacity");
+    const executeTick = integer(command.executeTick, "reserved execution tick", 0, MAX_TICK);
+    if (executeTick < previousTick) throw new RangeError("reserved execution order");
     previous = next;
-    return { sequence: next, payload: payload.slice() };
+    previousTick = executeTick;
+    return { sequence: next, executeTick, payload: payload.slice() };
   });
-  return { sequence, lastInput: lastInput.slice(), commands };
+  let inputTick = -1;
+  const frames = state.inputs ?? [];
+  if (!Array.isArray(frames) || frames.length > profile.stateHistorySize * 4 + profile.maxInputDelayTicks + 1) throw new RangeError("reserved input capacity");
+  const inputs = frames.map((frame) => {
+    const tick = integer(frame.tick, "reserved input tick", 0, MAX_TICK), input = bytes(frame.input);
+    if (tick <= inputTick || input.length !== inputSize) throw new RangeError("reserved input order/size");
+    inputTick = tick;
+    return { tick, input: input.slice() };
+  });
+  const sealedThrough = integer(state.sealedThrough ?? -1, "sealed input boundary", -1, MAX_TICK);
+  return { sequence, lastInput: lastInput.slice(), commands, inputs, sealedThrough, tickOffset: 0 };
 }
 function commandSequenceMap(players, initial) {
   if (initial === void 0) return new Map(players.map((id) => [id, 0]));
@@ -324,6 +340,8 @@ function executedSequences(previous, inputs) {
 }
 function profileOf(profile) {
   const p = { ...defaults, ...profile };
+  for (const [key, max] of [["inputSafetyMarginMs", 1e3], ["inputJitterMultiplier", 8]]) if (!Number.isFinite(p[key]) || p[key] < 0 || p[key] > max) throw new RangeError(key);
+  if (!["configured", "network"].includes(p.inputScheduling)) throw new TypeError("inputScheduling");
   if (!["rollback", "lockstep"].includes(p.mode)) throw new TypeError("session mode");
   if (p.mode === "lockstep") p.rollbackWindowTicks = 0;
   for (const field of [
@@ -403,7 +421,7 @@ var RollbackSession = class {
     this.authorityPlayerId = authorityPlayerId ?? this.players[0];
     if (!this.players.includes(this.authorityPlayerId)) throw new TypeError("authorityPlayerId");
     this._tick = 0;
-    this._inputDelay = this.profile.baseInputDelayTicks;
+    this._inputDelay = this.profile.inputScheduling === "network" ? this.profile.minInputDelayTicks : this.profile.baseInputDelayTicks;
     this._requestedInputDelay = this._inputDelay;
     this.closed = false;
     this._failure = null;
@@ -421,14 +439,20 @@ var RollbackSession = class {
     this._lastLocalInput = new Uint8Array(this.inputSize);
     this._localCapture = null;
     this._localCaptureSequence = 0;
-    this._localDraft = null;
-    this._draftRevision = 0;
+    this._localReservations = /* @__PURE__ */ new Map();
+    this._reservationRevision = 0;
+    this._localCaptures = [];
     this._localExecutedInput = null;
+    let carriedInputs = [], carriedThrough = -1;
     if (localCommandState !== void 0) {
       const carried = copyLocalCommandState(localCommandState, this.inputSize, this.profile, this._commandSequence);
       this._commandSequence = carried.sequence;
       this._lastLocalInput = carried.lastInput;
       this._pendingCommands = carried.commands;
+      carriedInputs = carried.inputs;
+      carriedThrough = carried.sealedThrough;
+      integer(carriedThrough, "sealed input horizon", -1, this.profile.stateHistorySize * 4 + this.profile.maxInputDelayTicks);
+      for (let tick = 0; tick <= carriedThrough; tick++) if (carriedInputs[tick]?.tick !== tick) throw new RangeError("missing sealed input");
     }
     this._rollbackFrom = Infinity;
     this._replaying = false;
@@ -466,9 +490,9 @@ var RollbackSession = class {
       hashedStateBytes: 0,
       snapshotSaves: 0,
       serializedSnapshotBytes: 0,
-      inputDrafts: 0,
-      inputDraftSentBytes: 0,
-      inputDraftReceivedBytes: 0
+      inputReservations: 0,
+      inputReservationSentBytes: 0,
+      inputReservationReceivedBytes: 0
     };
     this._recordReplay = recordReplay;
     this._replayFrames = [];
@@ -502,7 +526,14 @@ var RollbackSession = class {
       initialHash: this._stateHash(initialRecord)
     }));
     const neutral = new Uint8Array(this.inputSize);
-    for (let t = 0; t < this.inputDelay; t++) this._commitLocal(t, neutral, []);
+    if (localCommandState) {
+      for (const entry of carriedInputs) this._localReservations.set(entry.tick, { tick: entry.tick, input: bytes(entry.input).slice(), commands: [], revision: ++this._reservationRevision, packet: null });
+      for (const command of this._pendingCommands) {
+        if (!this._localReservations.has(command.executeTick)) this._localReservations.set(command.executeTick, { tick: command.executeTick, input: this._lastLocalInput.slice(), commands: [], revision: ++this._reservationRevision, packet: null });
+        this._localReservations.get(command.executeTick).commands.push(command);
+      }
+    }
+    for (let t = 0; t <= Math.max(this.inputDelay - 1, carriedThrough); t++) this._sealLocal(t, neutral);
   }
   get tick() {
     return this._tick;
@@ -529,6 +560,7 @@ var RollbackSession = class {
       executedInput: this._localExecutedInput?.slice() ?? null,
       replayInput: (this._inputs.get(this.localPlayerId).get(this.tick)?.input ?? this._localExecutedInput)?.slice() ?? null,
       executedCommandSequence: this.profile.mode === "lockstep" ? this._commandSequences.get(this.localPlayerId) : null,
+      captures: this._localCaptures.map((c) => ({ ...c, input: c.input.slice(), commands: c.commands.map((command) => ({ ...command, payload: command.payload.slice() })) })),
       capture: frame ? { ...frame, input: frame.input.slice(), commands: frame.commands.map((c) => ({ ...c, payload: c.payload.slice() })) } : null
     };
   }
@@ -751,105 +783,151 @@ var RollbackSession = class {
     this._through.set(this.localPlayerId, tick);
   }
   queueCommand(payload) {
-    if (this.closed) throw new Error("session closed");
-    if (this._failure) throw new Error("session failed: " + this._failure.type);
-    const b = bytes(payload).slice();
-    if (!b.length || b.length > Math.min(this.profile.maxCommandBytes, CHUNK_SIZE - 1024 - this.inputSize - 6) || this._pendingCommands.length >= this.profile.maxPendingCommands) throw new RangeError("command capacity");
-    integer(this._commandSequence + 1, "command sequence", 1);
-    const sequence = ++this._commandSequence;
-    this._pendingCommands.push({ sequence, payload: b });
-    this._publishInputDraft();
-    return sequence;
+    return this.submitInput(this._lastLocalInput, { commands: [payload] }).commandSequences[0];
   }
-  /** Stage held input and edge commands immediately; never advances or seals a tick. */
+  _schedulingDelay(now = this._clock(), details) {
+    if (this.profile.inputScheduling !== "network") return this.inputDelay;
+    const rate = this.profile.tickRate / 1e3;
+    let delay = this.profile.minInputDelayTicks;
+    for (const peer of this._peers.values()) if (peer.ready) {
+      const oneWayMs = peer.rtt / 2, jitterMarginMs = peer.jitter / 2 * this.profile.inputJitterMultiplier;
+      const lead = (oneWayMs + jitterMarginMs + this.profile.inputSafetyMarginMs) * rate;
+      const age = peer.clockSequence === null ? 0 : Math.min(Math.max(0, now - peer.clockAt), this.profile.heartbeatMs * 2) * rate;
+      const remoteTick = peer.clockSequence === null ? this.tick : peer.tick + age + peer.rtt / 2 * rate;
+      const peerLeadTicks = Math.ceil(Math.floor(remoteTick) + lead - this.tick);
+      delay = Math.max(delay, Math.ceil(lead), peerLeadTicks);
+      details?.push({ peerId: peer.id, rttMs: peer.rtt, oneWayMs, rttJitterMs: peer.jitter, jitterMarginMs, safetyMarginMs: this.profile.inputSafetyMarginMs, reportedTick: peer.tick, reportAgeMs: age / rate, estimatedPeerTick: remoteTick, integerPeerTick: Math.floor(remoteTick), leadTicks: lead, peerLeadTicks });
+    }
+    return Math.min(this.profile.maxInputDelayTicks, delay);
+  }
+  /** Reserve execution ticks at the event boundary; frame sealing cannot move them. */
   submitInput(input, { commands = [] } = {}) {
     if (this.closed || this._failure) throw new Error("session unavailable");
     const held = bytes(input);
     if (held.length !== this.inputSize) throw new RangeError("inputSize");
-    if (!Array.isArray(commands) || this._pendingCommands.length + commands.length > this.profile.maxPendingCommands) throw new RangeError("command capacity");
+    if (!Array.isArray(commands) || commands.length > 0 && this._pendingCommands.length + commands.length > this.profile.maxPendingCommands) throw new RangeError("command capacity");
     const payloads = commands.map((payload) => {
       const value = bytes(payload);
       if (!value.length || value.length > Math.min(this.profile.maxCommandBytes, CHUNK_SIZE - 1024 - this.inputSize - 6)) throw new RangeError("command capacity");
       return value.slice();
     });
     integer(this._commandSequence + payloads.length, "command sequence");
-    const commandSequences = payloads.map((payload) => {
-      const sequence = ++this._commandSequence;
-      this._pendingCommands.push({ sequence, payload });
-      return sequence;
-    });
-    if (!equalBytes(held, this._lastLocalInput)) this._lastLocalInput = held.slice();
-    const changed = this._publishInputDraft();
+    const changed = payloads.length > 0 || !equalBytes(held, this._lastLocalInput);
+    const schedule = changed ? { policy: this.profile.inputScheduling, localTick: this.tick, nextOpenTick: this._through.get(this.localPlayerId) + 1, lastReservedTick: Math.max(-1, ...this._localReservations.keys()), peers: [] } : void 0;
+    const delay = this._schedulingDelay(this._clock(), schedule?.peers);
+    if (schedule) schedule.delayTicks = delay;
+    if (this.profile.inputScheduling === "network") {
+      this._requestedInputDelay = delay;
+      if (delay !== this.inputDelay) this._applyInputDelay(delay);
+    }
+    const tick = integer(Math.max(
+      this.tick + delay,
+      this._through.get(this.localPlayerId) + 1,
+      ...this._localReservations.keys()
+    ), "input reservation tick", 0, MAX_TICK);
+    if (!payloads.length && equalBytes(held, this._lastLocalInput)) {
+      return { status: "unchanged", tick: this.tick, executeTick: tick, commandSequences: [], commands: [] };
+    }
+    const updates = /* @__PURE__ */ new Map(), scheduled = [];
+    const frameAt = (t) => {
+      if (!updates.has(t)) {
+        const prior = this._localReservations.get(t);
+        updates.set(t, { tick: t, input: held.slice(), commands: prior?.commands.slice() ?? [], schedule: { ...schedule, executeTick: t } });
+      }
+      return updates.get(t);
+    };
+    frameAt(tick);
+    let target = tick, sequence = this._commandSequence;
+    for (const payload of payloads) {
+      let frame = frameAt(target);
+      while (frame.commands.length >= this.profile.maxPendingCommands || frame.commands.reduce((n, c) => n + c.payload.length + 6, 0) + payload.length + 6 > CHUNK_SIZE - 1024 - this.inputSize) {
+        target = integer(target + 1, "command reservation horizon", 0, Math.min(MAX_TICK, this.tick + this.profile.stateHistorySize * 4 + this.profile.maxInputDelayTicks));
+        frame = frameAt(target);
+      }
+      const command = { sequence: ++sequence, executeTick: target, payload };
+      frame.commands.push(command);
+      scheduled.push(command);
+    }
+    this._commandSequence = sequence;
+    this._lastLocalInput = held.slice();
+    this._pendingCommands.push(...scheduled);
+    for (const frame of updates.values()) this._publishReservation(frame);
     return {
-      status: changed ? "submitted" : "unchanged",
+      status: "submitted",
       tick: this.tick,
-      executeTick: this._localDraft?.tick ?? Math.max(this.tick + this.inputDelay, this._through.get(this.localPlayerId) + 1),
-      commandSequences
+      executeTick: tick,
+      commandSequences: scheduled.map((c) => c.sequence),
+      commands: scheduled.map(({ sequence: sequence2, executeTick }) => ({ sequence: sequence2, executeTick }))
     };
   }
-  _publishInputDraft() {
-    const tick = integer(Math.max(this.tick + this.inputDelay, this._through.get(this.localPlayerId) + 1), "input draft tick", 0, MAX_TICK);
-    const old = this._localDraft;
-    if (old?.tick === tick && old.queuedSequence === this._commandSequence && equalBytes(old.input, this._lastLocalInput)) return false;
-    if (!old && !this._pendingCommands.length && equalBytes(this._lastLocalInput, this._inputs.get(this.localPlayerId).get(this._through.get(this.localPlayerId))?.input ?? new Uint8Array(this.inputSize))) return false;
-    let budget = CHUNK_SIZE - 1024 - this.inputSize;
-    const commands = [];
-    for (const command of this._pendingCommands) {
-      if (commands.length === this.profile.maxPendingCommands || command.payload.length + 6 > budget) break;
-      budget -= command.payload.length + 6;
-      commands.push({ ...command, executeTick: tick });
-    }
-    const frame = { input: this._lastLocalInput, commands };
-    if (old?.tick === tick && frameEqual(old, frame)) return false;
-    const revision = integer(this._draftRevision + 1, "input draft revision", 1, MAX_TICK);
-    this._draftRevision = revision;
-    this._localDraft = { ...frame, tick, revision, queuedSequence: this._commandSequence, packet: null };
-    this._metrics.inputDrafts++;
-    for (const peer of this._peers.values()) if (peer.ready) this._sendInputDraft(peer, this._clock());
-    this._event("input-submitted", { executeTick: tick, revision });
-    return true;
+  _publishReservation(frame) {
+    frame.revision = integer(++this._reservationRevision, "input reservation revision", 1, MAX_TICK);
+    frame.packet = null;
+    this._localReservations.set(frame.tick, frame);
+    this._metrics.inputReservations++;
+    for (const peer of this._peers.values()) if (peer.ready) this._sendReservation(peer, frame, this._clock());
+    this._event("input-submitted", {
+      executeTick: frame.tick,
+      revision: frame.revision,
+      schedule: frame.schedule,
+      commands: frame.commands.map(({ sequence, executeTick }) => ({ sequence, executeTick }))
+    });
   }
-  _sendInputDraft(peer, now) {
-    const draft = this._localDraft;
-    if (!draft || (peer.inputDraftAck ?? 0) >= draft.revision) return;
-    draft.packet ??= packet(TYPE.INPUT_DRAFT, this._nextSequence(), (w) => {
-      w.u32(draft.tick);
-      w.u32(draft.revision);
+  _sendReservation(peer, frame, now) {
+    if ((peer.reservationAcks?.get(frame.tick) ?? 0) >= frame.revision) return;
+    frame.packet ??= packet(TYPE.INPUT_RESERVATION, this._nextSequence(), (w) => {
+      w.u32(frame.tick);
+      w.u32(frame.revision);
       w.u16(this.inputSize);
-      w.raw(draft.input);
-      w.u16(draft.commands.length);
-      for (const command of draft.commands) {
+      w.raw(frame.input);
+      w.u16(frame.commands.length);
+      for (const command of frame.commands) {
         w.u32(command.sequence);
         w.u16(command.payload.length);
         w.raw(command.payload);
       }
     });
-    if (this._send(peer, draft.packet)) {
-      peer.lastDraftSent = now;
-      this._metrics.inputDraftSentBytes += draft.packet.length;
+    if (this._send(peer, frame.packet)) {
+      peer.lastReservationSent = now;
+      this._metrics.inputReservationSentBytes += frame.packet.length;
     }
   }
-  _receiveInputDraft(peer, r) {
+  _receiveReservation(peer, r) {
     const tick = r.u32(), revision = r.u32(), size = r.u16();
-    if (!revision || revision > MAX_TICK || size !== this.inputSize || tick > MAX_TICK || tick > this.tick + this.profile.stateHistorySize * 4 + this.profile.maxInputDelayTicks) throw new RangeError("input draft timeline");
+    if (!revision || revision > MAX_TICK || size !== this.inputSize || tick > MAX_TICK || tick > this.tick + this.profile.stateHistorySize * 4 + this.profile.maxInputDelayTicks) throw new RangeError("input reservation timeline");
     const input = r.raw(size), count = r.u16(), commands = [];
-    if (count > this.profile.maxPendingCommands) throw new RangeError("input draft commands");
+    if (count > this.profile.maxPendingCommands) throw new RangeError("input reservation commands");
     let previous = 0;
     for (let n = 0; n < count; n++) {
       const sequence = r.u32(), length = r.u16();
-      if (!sequence || sequence <= previous || !length || length > this.profile.maxCommandBytes) throw new RangeError("input draft command order");
+      if (!sequence || sequence <= previous || !length || length > this.profile.maxCommandBytes) throw new RangeError("input reservation command order");
       previous = sequence;
       commands.push({ sequence, executeTick: tick, payload: r.raw(length) });
     }
     r.end();
-    this._send(peer, packet(TYPE.INPUT_DRAFT_ACK, this._nextSequence(), (w) => w.u32(revision)));
-    if (revision <= (peer.inputDraftRevision ?? 0)) return;
-    peer.inputDraftRevision = revision;
-    if (this._inputs.get(peer.id).has(tick) || tick < Math.max(0, this.tick - this.profile.stateHistorySize + 1)) return;
-    const draft = { tick, input, commands };
-    peer.inputDraft = draft;
-    const used = this._used.get(tick)?.find((frame) => frame.playerId === peer.id);
-    if (used && !frameEqual(used, draft) && this._history.get(tick)) this._rollbackFrom = Math.min(this._rollbackFrom, tick);
+    this._send(peer, packet(TYPE.INPUT_RESERVATION_ACK, this._nextSequence(), (w) => {
+      w.u32(tick);
+      w.u32(revision);
+    }));
+    const actual = this._inputs.get(peer.id).get(tick);
+    if (actual || tick < Math.max(0, this.tick - this.profile.stateHistorySize + 1)) return;
+    peer.reservations ??= /* @__PURE__ */ new Map();
+    peer.reservedCommands ??= /* @__PURE__ */ new Map();
+    const prior = peer.reservations.get(tick);
+    if (prior && revision <= prior.revision) return;
+    for (const command of commands) {
+      const known = peer.reservedCommands.get(command.sequence);
+      if (known && (known.executeTick !== tick || !equalBytes(known.payload, command.payload))) throw new Error("reserved command is immutable");
+    }
+    if (prior && prior.commands.some((c) => !commands.some((n) => n.sequence === c.sequence && equalBytes(n.payload, c.payload)))) throw new Error("reserved command cannot be removed");
+    const frame = { tick, input, commands, revision };
+    peer.reservations.set(tick, frame);
+    for (const command of commands) peer.reservedCommands.set(command.sequence, command);
+    const used = this._used.get(tick)?.find((frame2) => frame2.playerId === peer.id);
+    if (used && !frameEqual(used, frame)) {
+      if (!this._history.get(tick)) this.requestResync(this.confirmedBoundary);
+      else this._rollbackFrom = Math.min(this._rollbackFrom, tick);
+    }
     this._event("input-received", { peerId: peer.id, executeTick: tick, revision, provisional: true });
   }
   /** Copy unexecuted local commands for a new fixed-roster epoch. */
@@ -859,15 +937,19 @@ var RollbackSession = class {
     const commands = /* @__PURE__ */ new Map();
     const include = (command) => {
       const prior = commands.get(command.sequence);
-      if (prior && !equalBytes(prior.payload, command.payload)) throw new Error("conflicting local command sequence");
+      if (prior && (prior.executeTick !== command.executeTick || !equalBytes(prior.payload, command.payload))) throw new Error("conflicting local command sequence");
       if (!prior) commands.set(command.sequence, command);
     };
     for (const [tick, frame] of this._inputs.get(this.localPlayerId)) if (tick >= fromTick) for (const command of frame.commands) include(command);
     for (const command of this._pendingCommands) include(command);
+    const inputs = new Map([...this._inputs.get(this.localPlayerId)].filter(([tick]) => tick >= fromTick).map(([tick, frame]) => [tick, { tick, input: frame.input }]));
+    for (const [tick, frame] of this._localReservations) if (tick >= fromTick) inputs.set(tick, { tick, input: frame.input });
     return copyLocalCommandState(
       {
         sequence: this._commandSequence,
         lastInput: this._lastLocalInput,
+        sealedThrough: this._through.get(this.localPlayerId),
+        inputs: [...inputs.values()].sort((a, b) => a.tick - b.tick),
         commands: [...commands.values()].sort((a, b) => a.sequence - b.sequence)
       },
       this.inputSize,
@@ -907,50 +989,42 @@ var RollbackSession = class {
     this._inputDelay = ticks;
     this._event("input-delay", { previous, value: ticks });
   }
-  _capture(input) {
-    const b = bytes(input);
-    if (b.length !== this.inputSize) throw new RangeError("inputSize");
-    const previous = this._inputs.get(this.localPlayerId).get(this._through.get(this.localPlayerId))?.input ?? this._lastLocalInput;
-    this._lastLocalInput = b.slice();
-    if (this._captureTick === this.tick) return;
-    this._captureTick = this.tick;
-    if (this._requestedInputDelay < this.inputDelay && equalBytes(b, previous) && !this._pendingCommands.length) this._applyInputDelay(this.inputDelay - 1);
-    const target = integer(this.tick + this.inputDelay, "session tick limit", 0, MAX_TICK);
-    const through = this._through.get(this.localPlayerId);
-    if (target <= through) return;
-    for (let t = through + 1; t < target; t++) this._commitLocal(t, previous, []);
-    let budget = CHUNK_SIZE - 1024 - this.inputSize;
-    const commands = [];
-    while (this._pendingCommands.length && commands.length < this.profile.maxPendingCommands && this._pendingCommands[0].payload.length + 6 <= budget) {
-      const c = this._pendingCommands.shift();
-      budget -= c.payload.length + 6;
-      commands.push({ ...c, executeTick: target });
-    }
-    this._commitLocal(target, this._lastLocalInput, commands);
-    if (this._localDraft && this._localDraft.tick <= target) this._localDraft = null;
+  _sealLocal(tick, fallback) {
+    const reserved = this._localReservations.get(tick);
+    const input = reserved?.input ?? fallback;
+    const commands = this._pendingCommands.filter((c) => c.executeTick === tick);
+    if (this._pendingCommands.some((c) => c.executeTick < tick)) throw new Error("reserved command missed its execution tick");
+    this._pendingCommands = this._pendingCommands.filter((c) => c.executeTick !== tick);
+    this._commitLocal(tick, input, commands);
+    this._localReservations.delete(tick);
     this._localCapture = {
       sequence: ++this._localCaptureSequence,
       captureTick: this.tick,
-      executeTick: target,
-      input: this._lastLocalInput.slice(),
+      executeTick: tick,
+      input: input.slice(),
       commands: commands.map((c) => ({ ...c, payload: c.payload.slice() }))
     };
+    this._localCaptures.push(this._localCapture);
+    this._localCaptures = this._localCaptures.filter((c) => c.executeTick >= Math.max(0, this.tick - 1));
+    return input;
+  }
+  _capture(input) {
+    this.submitInput(input);
+    if (this._captureTick === this.tick) return;
+    this._captureTick = this.tick;
+    const through = this._through.get(this.localPlayerId);
+    let held = this._inputs.get(this.localPlayerId).get(through)?.input ?? this._lastLocalInput;
+    if (this.profile.inputScheduling === "configured" && this._requestedInputDelay < this.inputDelay && equalBytes(this._lastLocalInput, held) && !this._pendingCommands.length) this._applyInputDelay(this.inputDelay - 1);
+    const target = integer(this.tick + this.inputDelay, "session tick limit", 0, MAX_TICK);
+    for (let t = through + 1; t <= target; t++) held = this._sealLocal(t, held);
   }
   releaseInput() {
     if (this.closed || this._failure) return;
-    this._lastLocalInput = new Uint8Array(this.inputSize);
-    const last = this._inputs.get(this.localPlayerId).get(this._through.get(this.localPlayerId));
-    if (last && equalBytes(last.input, this._lastLocalInput)) {
-      this._publishInputDraft();
-      for (const peer of this._peers.values()) if (peer.ready) this._sendInputs(peer);
-      return;
-    }
-    const target = integer(Math.max(this.tick + this.inputDelay, this._through.get(this.localPlayerId) + 1), "session tick limit", 0, MAX_TICK);
-    for (let t = this._through.get(this.localPlayerId) + 1; t <= target; t++) this._commitLocal(t, this._lastLocalInput, []);
+    const receipt = this.submitInput(new Uint8Array(this.inputSize));
+    let held = this._inputs.get(this.localPlayerId).get(this._through.get(this.localPlayerId))?.input ?? this._lastLocalInput;
+    for (let t = this._through.get(this.localPlayerId) + 1; t <= receipt.executeTick; t++) held = this._sealLocal(t, held);
     for (const peer of this._peers.values()) if (peer.ready) this._sendInputs(peer);
-    if (this._localDraft?.tick <= target) this._localDraft = null;
-    this._publishInputDraft();
-    this._event("input-release", { executeTick: target });
+    this._event("input-release", { executeTick: receipt.executeTick });
   }
   _sendInputs(peer) {
     const map = this._inputs.get(this.localPlayerId);
@@ -1014,7 +1088,7 @@ var RollbackSession = class {
         if (now - peer.lastHello >= this.profile.heartbeatMs) this._sendHello(peer, now);
         continue;
       }
-      if (now - (peer.lastDraftSent ?? -Infinity) >= this.profile.heartbeatMs) this._sendInputDraft(peer, now);
+      if (now - (peer.lastReservationSent ?? -Infinity) >= this.profile.heartbeatMs) for (const frame of this._localReservations.values()) this._sendReservation(peer, frame, now);
       if (now - peer.lastSent >= this.profile.heartbeatMs) {
         this._sendInputs(peer);
         this._sendClock(peer, now);
@@ -1082,14 +1156,15 @@ var RollbackSession = class {
       }
       if (!peer.ready) return false;
       if (type === TYPE.INPUT) this._receiveInputs(peer, r, sequence, now);
-      else if (type === TYPE.INPUT_DRAFT) {
-        this._receiveInputDraft(peer, r);
-        this._metrics.inputDraftReceivedBytes += b.length;
-      } else if (type === TYPE.INPUT_DRAFT_ACK) {
-        const revision = r.u32();
+      else if (type === TYPE.INPUT_RESERVATION) {
+        this._receiveReservation(peer, r);
+        this._metrics.inputReservationReceivedBytes += b.length;
+      } else if (type === TYPE.INPUT_RESERVATION_ACK) {
+        const tick = r.u32(), revision = r.u32();
         r.end();
-        if (!revision || revision > this._draftRevision) throw new RangeError("input draft acknowledgement");
-        peer.inputDraftAck = Math.max(peer.inputDraftAck ?? 0, revision);
+        if (!revision || revision > this._reservationRevision || tick > MAX_TICK) throw new RangeError("input reservation acknowledgement");
+        peer.reservationAcks ??= /* @__PURE__ */ new Map();
+        peer.reservationAcks.set(tick, Math.max(peer.reservationAcks.get(tick) ?? 0, revision));
       } else if (type === TYPE.CLOCK) this._receiveClock(peer, r, sequence, now);
       else if (type === TYPE.HASH) {
         const tick = r.u32(), hash = r.u32(), inputHash = r.u32();
@@ -1103,6 +1178,7 @@ var RollbackSession = class {
       else if (type === TYPE.CHUNK) this._snapshotChunk(peer, r);
       else throw new Error("unknown packet type");
       this._peerAlive(peer, sequence, now);
+      if (this._rollbackFrom !== Infinity && !this._replaying && !this._requestedRecovery) this._rollback();
       return true;
     } catch (error) {
       this._metrics.rejectedPackets++;
@@ -1133,6 +1209,12 @@ var RollbackSession = class {
     r.end();
     const map = this._inputs.get(peer.id);
     for (let i = 0; i < count; i++) {
+      for (const command of incoming[i].commands) {
+        const reserved = peer.reservedCommands?.get(command.sequence);
+        if (reserved && (reserved.executeTick !== first + i || !equalBytes(reserved.payload, command.payload))) throw new Error("canonical command moved its reserved tick");
+      }
+      const priorReservation = peer.reservations?.get(first + i);
+      if (priorReservation?.commands.some((c) => !incoming[i].commands.some((n) => n.sequence === c.sequence && equalBytes(n.payload, c.payload)))) throw new Error("canonical command missing reservation");
       const old = map.get(first + i);
       if (old && !frameEqual(old, incoming[i])) {
         if (this.profile.mode === "lockstep" && first + i < this.tick) this._fail("desync-unrecoverable", { reason: "conflicting-confirmed-input", peerId: peer.id, inputTick: first + i });
@@ -1149,8 +1231,10 @@ var RollbackSession = class {
     for (let i = 0; i < count; i++) {
       const t = first + i;
       if (map.has(t) || t < oldest) continue;
+      peer.reservedCommands ??= /* @__PURE__ */ new Map();
+      for (const command of incoming[i].commands) peer.reservedCommands.set(command.sequence, command);
       map.set(t, incoming[i]);
-      if (peer.inputDraft?.tick === t) peer.inputDraft = null;
+      peer.reservations?.delete(t);
       this._window.received++;
       if (t < this.tick) this._window.late++;
       const used = this._used.get(t)?.find((x) => x.playerId === peer.id);
@@ -1202,8 +1286,8 @@ var RollbackSession = class {
       const map = this._inputs.get(playerId), actual = map.get(tick);
       if (actual) return { playerId, ...copyFrame(actual), predicted: false };
       if (this.profile.mode === "lockstep") throw new Error("lockstep input is not confirmed");
-      const draft = this._peers.get(playerId)?.inputDraft;
-      if (draft?.tick === tick) return { playerId, ...copyFrame(draft), predicted: true };
+      const reserved = this._peers.get(playerId)?.reservations?.get(tick);
+      if (reserved) return { playerId, ...copyFrame(reserved), predicted: true };
       let prior = this._used.get(tick - 1)?.find((f) => f.playerId === playerId)?.input ?? new Uint8Array(this.inputSize);
       const policy = this.profile.predictionPolicy;
       if (typeof policy === "function") prior = bytes(policy({ playerId, tick, previousInput: prior.slice(), lastConfirmedTick: this._through.get(playerId) }));
@@ -1267,6 +1351,7 @@ var RollbackSession = class {
   }
   _rollback() {
     const started = nowMs();
+    let reconciled;
     this._replaying = true;
     try {
       if (this._rollbackFrom !== Infinity) {
@@ -1288,6 +1373,7 @@ var RollbackSession = class {
           this._step(this._resolve(this.tick), true);
           this._metrics.resimulatedTicks++;
         }
+        reconciled = { from, target };
       }
       return true;
     } finally {
@@ -1295,6 +1381,7 @@ var RollbackSession = class {
       this._metrics.latestResimulationMs = nowMs() - started;
       this._window.cost += this._metrics.latestResimulationMs;
       this._window.costSamples++;
+      if (reconciled) this._event("reconciled", reconciled);
     }
   }
   _frameAdvantage(now) {
@@ -1360,7 +1447,7 @@ var RollbackSession = class {
     this._metrics.stallFrequency = this._metrics.stallFrequency * 0.75 + w.stall / seconds * 0.25;
     const cost = w.costSamples ? w.cost / w.costSamples : 0;
     this._metrics.resimulationCostMs = this._metrics.resimulationCostMs * 0.75 + cost * 0.25;
-    if (this.profile.adaptiveInputDelay) {
+    if (this.profile.adaptiveInputDelay && this.profile.inputScheduling === "configured") {
       const measured = Math.ceil((this._metrics.smoothedRTT / 2 + 2 * this._metrics.jitter) * this.profile.tickRate / 1e3);
       const pressure = this._metrics.lateInputRate > 0.1 || this._metrics.rollbackFrequency > 2 || w.depth > 3 || this._metrics.stallFrequency > 2 || this._metrics.resimulationCostMs > 1e3 / this.profile.tickRate;
       if (pressure || measured > this.inputDelay + 1) {
@@ -1711,6 +1798,11 @@ var RollbackSession = class {
     const windowOldest = Math.max(0, this.tick - this.profile.stateHistorySize + 1);
     const oldest = this.profile.mode === "lockstep" ? Math.min(windowOldest, this._history.oldestTick) : windowOldest;
     for (const t of this._used.keys()) if (t < oldest - 1) this._used.delete(t);
+    for (const peer of this._peers.values()) {
+      for (const t of peer.reservations?.keys() ?? []) if (t < oldest) peer.reservations.delete(t);
+      for (const [seq, c] of peer.reservedCommands ?? []) if (c.executeTick < oldest) peer.reservedCommands.delete(seq);
+      for (const t of peer.reservationAcks?.keys() ?? []) if (t < oldest) peer.reservationAcks.delete(t);
+    }
     const minAck = this._peers.size ? Math.min(...[...this._peers.values()].map((p) => p.ack)) : this.tick;
     for (const [playerId, map] of this._inputs) for (const t of map.keys()) if (t < oldest && (playerId !== this.localPlayerId || t <= minAck)) map.delete(t);
   }
@@ -1725,7 +1817,8 @@ var RollbackSession = class {
       }
     }
     this._peers.clear();
-    this._localDraft = null;
+    this._localReservations.clear();
+    this._localCaptures.length = 0;
     this._incomingSnapshot = null;
     this._pendingCommands.length = 0;
     this._event("closed");
@@ -2913,6 +3006,7 @@ var RoomSession = class {
       baseTick: this.baseTick,
       tick: this.tick,
       confirmedTick: this.confirmedTick,
+      captures: state.captures.map((c) => ({ ...c, captureTick: c.captureTick + this.baseTick, executeTick: c.executeTick + this.baseTick, commands: c.commands.map((command) => ({ ...command, executeTick: command.executeTick + this.baseTick })) })),
       capture: state.capture ? {
         ...state.capture,
         captureTick: state.capture.captureTick + this.baseTick,
@@ -3028,7 +3122,10 @@ var RoomSession = class {
       step: (context) => {
         context.tick += baseTick;
         context.membershipEpoch = epoch;
-        for (const frame of context.inputs) for (const command of frame.commands) command.executeTick = context.tick;
+        for (const frame of context.inputs) for (const command of frame.commands) {
+          command.executeTick += baseTick;
+          if (command.executeTick !== context.tick) throw new Error("reserved command execution tick");
+        }
         const start = this._availability ? nowMs() : 0;
         try {
           return a.step(context);
@@ -3050,6 +3147,11 @@ var RoomSession = class {
     return sequences;
   }
   _startCore(commandState, commandSequences, boundary) {
+    if (commandState) {
+      const offset = (commandState.tickOffset ?? 0) - this.baseTick;
+      commandState = { ...commandState, sealedThrough: Math.max(-1, (commandState.sealedThrough ?? -1) + offset), commands: commandState.commands.map((c) => ({ ...c, executeTick: c.executeTick + offset })), inputs: (commandState.inputs ?? []).filter((f) => f.tick + offset >= 0).map((f) => ({ ...f, tick: f.tick + offset })), tickOffset: 0 };
+      if (commandState.commands.some((c) => c.executeTick < 0)) throw new Error("reserved command precedes accepted boundary; resynchronization required");
+    }
     const options = {
       players: [...this.activePlayers],
       localPlayerId: this.localPlayerId,
@@ -3065,7 +3167,7 @@ var RoomSession = class {
       clock: this.clock,
       recordReplay: false,
       onEvent: (event) => {
-        if (event.type !== "closed") this._event(event.type, { ...event, tick: event.tick + this.baseTick, ...Number.isSafeInteger(event.executeTick) ? { executeTick: event.executeTick + this.baseTick } : {}, ...["rollback", "recovered"].includes(event.type) ? { from: event.from + this.baseTick, target: event.target + this.baseTick } : {} });
+        if (event.type !== "closed") this._event(event.type, { ...event, tick: event.tick + this.baseTick, ...event.schedule ? { schedule: { ...event.schedule, baseTick: this.baseTick } } : {}, ...Array.isArray(event.commands) ? { commands: event.commands.map((c) => ({ ...c, executeTick: c.executeTick + this.baseTick })) } : {}, ...Number.isSafeInteger(event.executeTick) ? { executeTick: event.executeTick + this.baseTick } : {}, ...["rollback", "recovered", "reconciled"].includes(event.type) ? { from: event.from + this.baseTick, target: event.target + this.baseTick } : {} });
       }
     };
     this._core = boundary ? createSessionFromBoundary(options, boundary.bytes, boundary.hash) : createSession(options);
@@ -3577,6 +3679,7 @@ var RoomSession = class {
     const previousCoordinator = this.coordinatorId;
     const commandSequences = tr.commandSequences ?? { ...this._retainedCommandSequences, ...this._core?.getCommandSequences(tr.target - this.baseTick) };
     let commandState = !tr.discardCommands ? this._core?.exportLocalCommandState({ fromTick: Math.min(tr.target - this.baseTick, this._core.confirmedBoundary) }) ?? this._suspendedCommands : void 0;
+    if (commandState && this._core) commandState = { ...commandState, tickOffset: this.baseTick };
     commandState ??= commandSequences ? { sequence: commandSequences[this.localPlayerId] ?? 0, lastInput: new Uint8Array(this.inputSize), commands: [] } : void 0;
     if (commandState && commandSequences) {
       const baseline = commandSequences[this.localPlayerId] ?? 0;
@@ -3771,10 +3874,10 @@ var RoomSession = class {
     this._lastInput = sample.slice();
     if (!this._core) {
       if (options?.commands?.length) throw new Error("player not admitted");
-      return { status: "waiting", tick: this.tick, commandSequences: [] };
+      return { status: "waiting", tick: this.tick, commandSequences: [], commands: [] };
     }
     const result = this._core.submitInput(sample, options);
-    return { ...result, tick: this.tick, executeTick: result.executeTick + this.baseTick };
+    return { ...result, tick: this.tick, executeTick: result.executeTick + this.baseTick, commands: result.commands.map((c) => ({ ...c, executeTick: c.executeTick + this.baseTick })) };
   }
   queueCommand(payload) {
     if (this.closed || this.failure) throw new Error("room session unavailable");
