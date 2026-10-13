@@ -128,3 +128,85 @@ E2E는 실제 Worker 이동에서 추출한 표본, 10/20/30 TPS·60Hz 위상, �
 ### 일정한 시뮬레이션 시각의 snapshot 표시
 
 `InterpolationTimeline({schema,stepMs,delayMs:stepMs*2})`는 revision 시작에서 로컬 표시 clock과 simulation time을 대응시키고, 고정 지연을 둔 시뮬레이션 시각의 두 snapshot 사이를 표시합니다. 수신 때마다 1틱 보간을 재시작하지 않으며 같은 callback에 여러 tick이 도착해도 중간 구간을 보존합니다. 지연은 0~16틱이며 0은 기존 즉시 retarget 방식입니다. 순간이동·revision reset은 이전 history를 끊습니다. 없는 미래는 추정하지 않고 마지막 snapshot에서 멈춥니다. 입력 송신이나 권위 시뮬레이션에는 지연을 추가하지 않습니다.
+
+
+## 권장 진입점: 한 표시 프레임
+
+[실행 예제](../../examples/interpolation/frame.html) · [예제 코드](../../examples/interpolation/frame-demo.js)
+
+생성·이동·경로·제거는 게임에서 다시 보간하지 않습니다. `PresentationRuntime`의
+`capture`로 전체 표시 스냅샷을 주고, RAF마다 `frame(nowMs)`를 한 번 열어 그 프레임만 읽습니다.
+기존 `InterpolationTimeline`은 작은 scalar 전용 API이며 동일한 내부 지연 구간 처리를 사용합니다.
+Runtime에 `delayMs`가 없으면 기존 수신 시각 기반 동작을 유지합니다. TPS와 표시 지연은 게임 설정입니다.
+
+```js
+class ShotView extends RenderObject {
+  static renderSchema = { x:this.POSITION_X, y:this.POSITION_Y, color:this.STEP };
+  static renderPath = { x:'x', y:'y', durationMs:400, maxPoints:64 };
+}
+const view = new PresentationRuntime({stepMs:1000/30, delayMs:2000/30});
+// 먼저 빈 전체 스냅샷으로 시계 기준을 정한 뒤, 매 완료 tick마다 capture합니다.
+view.capture({revision:0,sequence:0,timeMs:0,entities:[]}, receiptNow);
+view.capture({revision:0,sequence:1,timeMs:stepMs,entities:[{
+  id:'shot-1', generation:0, type:ShotView, source:shot,
+  initialSource:launchPose, initialTimeMs:0,
+  // 한 tick 내부 반사/굴절이 있을 때만 게임이 실제 경유점을 제공합니다.
+  pathPoints:[{timeMs:stepMs/2,x:collisionX,y:collisionY}]
+}]}, nextReceiptNow);
+const frame=view.frame(performance.now());
+frame.forEach((model,id,generation)=>{
+  frame.pathInto(id,generation,reusablePoints);
+  drawTrail(reusablePoints); drawBody(model); drawShadow(model);
+});
+```
+
+- `frame.nowMs`는 호출자의 단조 로컬 시각, `frame.timeMs`는 권위 상태의 표시 시뮬레이션 시각입니다.
+- `frame.sample(id,generation)`, `modelFor(source)`, `forEach(visit)`, `pathInto(id,generation,out)`는 추가 시각 인자를 받지 않습니다.
+- 생성: `initialSource`와 `initialTimeMs`로 첫 구간을 선언합니다. 기본 시작은 `timeMs-stepMs`입니다. 선언한 생성 시각 전에는 표시하지 않습니다. seed가 없으면 처음 포착된 시각부터 표시합니다.
+- 이동: 같은 ID/generation의 완료 tick 사이를 보간합니다. 위치·각도·타이머의 기존 schema 정책을 그대로 사용합니다.
+- 경로: `renderPath`를 선언하면 tick 끝점을 자동 수집합니다. `pathPoints`는 해당 구간 안의 시뮬레이션 ms 순서이며, 본체도 이 경로를 따라 보간합니다. 미래 표본은 표시하지 않고 끝점을 본체와 일치시킵니다. 과거 꺾인 점을 현재 좌표로 덮어쓰지 않습니다.
+- 보관 상한은 `durationMs`와 `maxPoints`입니다. maxPoints가 먼저 차면 가장 오래된 점을 버리므로 아주 조밀한 경로는 더 짧게 보일 수 있습니다. 두 끝점 사이 곡선이나 충돌 지점은 추측하지 않습니다.
+- 제거: 다음 전체 스냅샷에서 빠진 객체는 표시 시간이 제거 시각에 도달할 때까지 남습니다. **현재 시뮬레이션 배열이 아니라 `frame.forEach`를 순회**해야 이 수명을 지킬 수 있습니다.
+- generation 교체·teleport·reset/load/rollback은 기존 경로를 이어 붙이지 않습니다. reset/load/rollback은 새 revision, 낮아진 sequence로 명시합니다. 전환 시 스냅 정책이며 과거 효과를 보존하는 임의 추정은 하지 않습니다.
+- 한 프레임에서 모듈 모델은 빌려 읽는 데이터입니다. 다음 프레임/캡처 이후 보관하거나 수정하지 마세요. 게임이 추가 외형 필드를 합치려면 게임 소유의 재사용 표시 객체에 복사합니다.
+
+### 로컬 preview·부착물·카메라
+
+`selectPreview` + 기존 `LocalInputPreview`의 `presentation` 연결을 사용합니다.
+`frame.sample/modelFor/forEach`는 선택된 로컬 ID에서 preview를 먼저 반환하고,
+나머지 ID는 지연된 권위 상태를 반환합니다. 따라서 같은 RAF라고 모든 객체의
+시뮬레이션 시간을 같게 만들거나 로컬 입력에 `delayMs`를 강제하지 않습니다.
+
+```js
+presentation.selectPreview([{id:'local-actor',generation:0}]);
+// LocalInputPreview({presentation, ...})가 capturePreview를 게시합니다.
+const frame=presentation.frame(now);
+const actor=frame.sample('local-actor',0);
+if(actor){
+  drawActor(actor); drawAttachedLight(actor.x,actor.y); camera.follow(actor);
+}
+```
+
+부착 관계와 상대 위치, 색·굵기·모양은 게임 소유입니다. 예측 분기와 권위 상태의
+schema/ID/generation이 일치해야 합니다. preview 경로의 예측 생성·제거는 현재 지원하지 않습니다.
+선택된 preview에 `pathInto`를 요청하면 오류입니다. 즉시 preview는 캐릭터와 그 부착 외형에
+사용하고, 확정 투사체는 권위 표시 경로에 둡니다. 별도 preview Runtime이 필요한 게임도
+같은 RAF `now`로 프레임을 열고 선택된 모델 하나를 본체·부착물·카메라에 함께 전달합니다.
+
+### 누락 방지의 범위
+
+모듈은 선언된 필드만 분리하며 raw source prototype/미선언 필드로 fallback하지 않습니다.
+등록되지 않은 객체는 null, 경로 미선언은 오류, 다른 프레임/캡처 이후 사용한 프레임은 오류입니다.
+이 검사는 프레임 경계의 작은 검사이며 매 프레임 전체 상태 복사나 필드 Proxy를 사용하지 않습니다.
+렌더 함수가 전역/클로저/`this`로 시뮬레이션을 직접 읽는 것까지 JavaScript API가 차단하지는 않습니다.
+소비 코드 검토·기존 검사에서 동적 렌더 배열의 raw 참조와 `Object.create(simObject)` fallback을 금지하세요.
+정적 배경 데이터와 HUD의 현재 gameplay 값은 게임이 별도로 소유할 수 있습니다.
+
+검증은 기존 `npm test`의 실제 브라우저 시나리오에 통합되어 있습니다. 생성 첫 구간,
+굴절점/미래 경로, 지연 제거, rollback/generation/teleport, preview 선택과 프레임 만료를 확인합니다.
+
+한 tick 안에서 생성과 제거가 모두 끝나 전체 스냅샷에 한 번도 나타나지 않는 객체는
+이 API가 존재를 추론할 수 없습니다. 게임이 생성·종료 시각과 필요한 경로/충돌 anchor를
+명시적으로 기록하고 기존 `PresentationEventQueue`로 짧은 외형 이벤트를 전달해야 합니다.
+현재 `capture`는 전체 스냅샷 API이며, 보이지 않았던 객체를 되살리는 암묵적 이벤트 API가 아닙니다.
+빔이 명중 흔적인지 지속 부착물인지도 게임 규칙입니다. 동일 표시 시각만으로 그 의미가 결정되지는 않습니다.

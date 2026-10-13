@@ -18,6 +18,9 @@ export class RenderObject {
   static ORIGIN_Y = 12;
   static ORIGIN_Z = 13;
   static SPAWN_LINEAR = 14;
+  /** Optional bounded world-space path: {x:'x',y:'y',durationMs:400,maxPoints:64}.
+   * Position fields must be declared. Shape/attachments remain game-owned. */
+  static renderPath = null;
   static renderSchema = Object.freeze({});
 
   /** @param {unknown} context @param {object} model */

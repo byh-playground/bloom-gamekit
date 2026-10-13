@@ -1,3 +1,4 @@
+import { runFrameChecks } from './presentation-frame.browser.js';
 import { exerciseWebGLDevice, exerciseVectorRenderer, exerciseFontAssetLoader } from '../modules/rendering/tests/device.browser.mjs';
 import { exerciseReusableMeshes } from '../modules/rendering/tests/mesh.browser.mjs';
 import { runPresentationChecks } from './presentation.browser.js';
@@ -69,6 +70,12 @@ try {
   assert.ok(Math.abs(clockCheck.x-5)<1e-6);assert.ok(Math.abs(clockCheck.end-25)<1e-6);
   report.stages.push('integer clock divisors, loop-owned jittered deadlines, retained long-gap catch-up and simulation-time interpolation');
 
+  report.presentationFrame=await runFrameChecks(page);
+  const framePage=await browser.newPage();const frameErrors=[];framePage.on('pageerror',e=>frameErrors.push(e.message));
+  await framePage.goto(`http://127.0.0.1:${server.address().port}/examples/interpolation/frame.html`);
+  await framePage.waitForFunction(()=>document.querySelector('#status').textContent.includes('displayed: 1'));
+  await framePage.locator('#rollback').click();await framePage.locator('#spawn').click();
+  assert.deepEqual(frameErrors,[]);await framePage.close();
   const initialX = await page.evaluate(() => demo.diagnostics.authorityX);
   await page.keyboard.down('KeyD');
   await page.waitForFunction(x => demo.diagnostics.authorityX > x + 25, initialX);
