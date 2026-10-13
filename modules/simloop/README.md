@@ -77,3 +77,7 @@ flushInput은 관측·제출만 실행하며 accumulator나 simulation tick을 �
 [실행 예제](../rollback/examples/availability/index.html)는 이벤트 즉시 제출, 60Hz 장치 정비, profile의 고정 simulation TPS, 독립 RAF를 사용합니다. 60Hz는 예제의 장치 주기이며 SDK 기본 TPS가 아닙니다. [측정과 한계](./docs/input-latency.md)를 참고하세요.
 
 protocol 3은 이벤트에서 명령별 불변 T를 예약합니다. 한 pump가 여러 프레임을 봉인하면 localInputState.captures를 sequence별로 한 번씩 기존 LocalInputPreview에 전달합니다. 게임은 reconciled 이벤트에서 원격 보정을 PresentationRuntime에 publish합니다. [원격 적용 검사](./docs/remote-input-application.md).
+
+### 진행 중 액션의 예측 수명
+
+`LocalInputPreview({isActive: fork => fork.hasActiveAction})`는 새 장치 입력과 별개인 detached 액션의 수명을 선언합니다. 옵션이 없으면 기존 동작을 유지합니다. `createLoop`는 `predict:false`인 neutral sample에서도 `preview.active`가 참이면 같은 입력 바이트로 예측을 이어갑니다. 이미 제출된 one-shot Command는 다시 제출하지 않습니다. pending 명령과 활성 액션이 끝나면 기존 release/reconcile 경로로 권위 표시에 복귀합니다. callback은 fork만 읽으며 게임 TPS나 액션 종류는 모듈이 알지 않습니다. lifecycle clear/reset과 rollback 규칙은 그대로 적용됩니다.
