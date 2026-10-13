@@ -21,7 +21,7 @@
  * delivery can be late; it provides no frame-rate or real-time guarantee.
  */
 export function createDeadlineScheduler({
-  getIntervalMs,
+  getIntervalMs, getDeadlineMs,
   pulse,
   maxBacklogTicks = 8,
   now = () => performance.now(),
@@ -29,6 +29,10 @@ export function createDeadlineScheduler({
   clearTimer = clearTimeout,
   onGap,
 } = {}) {
+  if (getDeadlineMs !== undefined) {
+    if(getIntervalMs!==undefined)throw new TypeError('choose getDeadlineMs or getIntervalMs');
+    return ownedDeadline({getDeadlineMs,pulse,now,setTimer,clearTimer});
+  }
   if (typeof getIntervalMs !== 'function') throw new TypeError('getIntervalMs must be a function');
   if (typeof pulse !== 'function') throw new TypeError('pulse must be a function');
   if (!Number.isSafeInteger(maxBacklogTicks) || maxBacklogTicks < 1) {
@@ -171,4 +175,23 @@ export function createDeadlineScheduler({
     get running() { return active; },
     get deadlineMs() { return deadline; },
   };
+}
+
+/** The loop owns elapsed time and backlog. This timer only wakes at its next deadline. */
+function ownedDeadline({getDeadlineMs,pulse,now,setTimer,clearTimer}) {
+  for(const callback of [getDeadlineMs,pulse,now,setTimer,clearTimer])if(typeof callback!=='function')throw new TypeError('deadline callback');
+  let active=false,handle,generation=0,deadline=null,last=-Infinity,dispatching=false;
+  const readNow=()=>{const t=now();if(!Number.isFinite(t)||t<last)throw new RangeError('now must be finite and monotonic');last=t;return t;};
+  const clear=()=>{if(handle!==undefined)clearTimer(handle);handle=undefined;};
+  const arm=()=>{if(!active)return;clear();const t=readNow(),next=getDeadlineMs();
+    if(next!==null&&!Number.isFinite(next))throw new RangeError('deadline must be finite or null');
+    deadline=next??t;const token=generation;
+    handle=setTimer(()=>{if(!active||token!==generation)return;handle=undefined;const at=readNow();
+      if(at<deadline){arm();return;}dispatching=true;
+      try{pulse(at,{due:0,scheduledAtMs:deadline});}finally{dispatching=false;if(active&&token===generation)arm();}
+    },Math.max(1,deadline-t));
+  };
+  return {start(){if(active)return;active=true;generation++;arm();},stop(){active=false;generation++;clear();deadline=null;},
+    rebase(){generation++;if(active)arm();},wake(){if(!active||dispatching)return;dispatching=true;try{pulse(readNow(),{due:0,scheduledAtMs:null});}finally{dispatching=false;arm();}},
+    get running(){return active;},get deadlineMs(){return deadline;}};
 }

@@ -308,7 +308,7 @@ export class LocalInputPreview {
     this.#presentation.selectPreview(entities.map(({ id, generation }) => ({ id, generation })));
     const starts = new Map((initial ?? []).map(entity => [entity.id, entity.source]));
     const accepted = this.#presentation.capturePreview({ revision: this.#revision, sequence: ++this.#sequence,
-      timeMs, phaseStartMs: this.#timeMs, stepMs: this.#stepMs,
+      timeMs, phaseStartMs: this.#timeMs, stepMs: Math.max(1,this.#forkTick-this.#tick)*this.#stepMs,
       entities: entities.map(entity => ({ ...entity, initialSource: starts.get(entity.id) })) }, timeMs);
     if (accepted) this.#metrics.previewPublishes++;
     return accepted;
