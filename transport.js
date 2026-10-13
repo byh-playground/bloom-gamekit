@@ -37,7 +37,7 @@ var fixedPoint = Object.freeze({
 });
 
 // modules/_rollback-shared/protocol.js
-var PROTOCOL_VERSION = 1;
+var PROTOCOL_VERSION = 2;
 var CHUNK_SIZE = 16384;
 var defaults = {
   mode: "rollback",
@@ -100,7 +100,9 @@ var TYPE = Object.freeze({
   HASH: 4,
   REQUEST: 5,
   BEGIN: 6,
-  CHUNK: 7
+  CHUNK: 7,
+  INPUT_DRAFT: 8,
+  INPUT_DRAFT_ACK: 9
 });
 var HEADER = 12;
 var SNAP_CHUNK_BYTES = CHUNK_SIZE - HEADER - 8;

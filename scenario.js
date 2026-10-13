@@ -31,6 +31,7 @@ function createLoop({
   }
   if (backlogPolicy !== "drop" && backlogPolicy !== "retain") throw new RangeError("backlogPolicy");
   if (!Number.isInteger(maxBacklogTicks) || maxBacklogTicks < 1 || maxBacklogTicks > 8192) throw new RangeError("maxBacklogTicks");
+  const hasSubmission = typeof session.submitInput === "function";
   const quantum = 1e3 / session.profile.tickRate;
   const maxBacklogMs = quantum * maxBacklogTicks;
   let running = false, handle, last, accumulator = 0, generation = 0, timingGeneration = 0;
@@ -44,7 +45,6 @@ function createLoop({
       inputPreview?.clear?.();
       return null;
     }
-    if (timestamp === observedAt && cached) return cached;
     const sampled = getInput(), packet = sampled && typeof sampled === "object" && !ArrayBuffer.isView(sampled) && Object.hasOwn(sampled, "input");
     const input = packet ? sampled.input : sampled, commands = packet ? sampled.commands ?? [] : [];
     if (!Array.isArray(commands)) throw new TypeError("input packet commands");
@@ -56,6 +56,12 @@ function createLoop({
     }
     cached = { input: input.slice?.() ?? structuredClone(input), commands: held, predict: !packet || sampled.predict !== false || held.length > 0, continuationKey: packet ? sampled.continuationKey : void 0, sequence: ++inputSequence };
     observedAt = timestamp;
+    if (hasSubmission) {
+      const pending = held.filter((command) => command.sequence === null);
+      const submission = session.submitInput(cached.input, { commands: pending.map((command) => command.payload) });
+      if (submission.commandSequences.length !== pending.length) throw new Error("input submission command receipt");
+      for (let i = 0; i < pending.length; i++) pending[i].sequence = submission.commandSequences[i];
+    }
     if (inputPreview && packet && sampled.predict === false && !held.length) inputPreview.cancelObservation?.(Math.max(timestamp, performance.now()));
     else if (inputPreview?.enabled !== false && inputPreview) try {
       inputPreview.observe(cached.input, {
@@ -110,7 +116,7 @@ function createLoop({
     globalThis.document?.removeEventListener("visibilitychange", hidden);
   };
   const renderFrame = () => render({ session, alpha: Math.min(1, accumulator / quantum), resimulating: session.resimulating });
-  const pulse = (timestamp, { render: shouldRender = true } = {}) => {
+  const pulse = (timestamp, { render: shouldRender = true, input: shouldSampleInput = true } = {}) => {
     const current = generation;
     try {
       if (!Number.isFinite(timestamp)) throw new TypeError("frame timestamp");
@@ -133,7 +139,7 @@ function createLoop({
       if (!Number.isFinite(accumulator) || accumulator > Number.MAX_SAFE_INTEGER) throw new RangeError("loop backlog exceeds safe milliseconds");
       session.poll();
       if (current !== generation || timing !== timingGeneration) return;
-      if (inputPreview && (!cached || timestamp - observedAt >= quantum)) observeInput(timestamp);
+      if (shouldSampleInput && (inputPreview || hasSubmission) && (!cached || timestamp - observedAt >= quantum)) observeInput(timestamp);
       let work = 0;
       while (!session.closed && !session.resimulating && work < session.profile.maxCatchupSteps) {
         const pace = session.pace ?? session.metrics.pace;
@@ -144,7 +150,7 @@ function createLoop({
           if (backlogPolicy === "drop") accumulator = Math.min(accumulator, quantum);
           break;
         }
-        const sampled = inputPreview ? cached ?? observeInput(timestamp) : getInput();
+        const sampled = inputPreview || hasSubmission || !shouldSampleInput ? cached ?? (shouldSampleInput ? observeInput(timestamp) : null) : getInput();
         if (!sampled) break;
         if (current !== generation || timing !== timingGeneration) return;
         const packet = sampled && typeof sampled === "object" && !ArrayBuffer.isView(sampled) && !(sampled instanceof ArrayBuffer) && Object.hasOwn(sampled, "input");
@@ -157,17 +163,17 @@ function createLoop({
           for (const command of commands) {
             if (!command || command.payload === void 0) throw new TypeError("input command payload required");
             const payload = ArrayBuffer.isView(command.payload) ? new command.payload.constructor(command.payload) : command.payload;
-            if (inputPreview && command.sequence !== null && command.sequence !== void 0) continue;
+            if ((inputPreview || hasSubmission || !shouldSampleInput) && command.sequence !== null && command.sequence !== void 0) continue;
             const sequence = session.queueCommand(payload);
             if (!Number.isSafeInteger(sequence) || sequence < 0) throw new TypeError("session command sequence");
-            if (inputPreview) command.sequence = sequence;
+            if (inputPreview || hasSubmission || !shouldSampleInput) command.sequence = sequence;
           }
         }
-        const previousTick = session.tick;
+        if (!inputPreview && !hasSubmission && !shouldSampleInput) observedCommands.length = 0;
         const result = session.advance(input);
         work++;
         let submission;
-        if (inputPreview) {
+        if (inputPreview || hasSubmission) {
           const metadata = session.localInputState, capture = metadata?.capture;
           const key = capture ? `${metadata.epoch}:${metadata.baseTick}:${capture.sequence}` : "";
           if (capture && key !== captureKey) {
@@ -175,7 +181,7 @@ function createLoop({
             submission = { ...capture, predict: cached?.predict !== false, boundaryTick: metadata.tick, epoch: metadata.epoch, timeMs: Math.max(timestamp, performance.now()) };
             submission.commands = capture.commands.map((command) => ({ ...command, observationId: cached?.commands.find((c) => c.sequence === command.sequence)?.observationId }));
             try {
-              inputPreview.commit(submission, submission.timeMs);
+              inputPreview?.commit(submission, submission.timeMs);
             } catch (error) {
               inputPreview.clear?.();
               onPreviewError(error);
@@ -206,7 +212,7 @@ function createLoop({
     const current = ++generation;
     const frame = (timestamp) => {
       if (!running || current !== generation) return;
-      if (inputPreview) observeInput(timestamp);
+      if (inputPreview || hasSubmission) observeInput(timestamp);
       pulse(timestamp);
       if (running && current === generation) handle = requestFrame(frame);
     };
@@ -214,11 +220,13 @@ function createLoop({
     globalThis.document?.addEventListener("visibilitychange", hidden);
     handle = requestFrame(frame);
   };
-  const flushInput = (timestamp) => {
-    accumulator = Math.max(accumulator, quantum * (session.pace ?? 1));
-    pulse(timestamp);
+  const flushInput = (timestamp) => observeInput(timestamp);
+  const pollInput = (timestamp) => {
+    const sample = observeInput(timestamp);
+    session.poll();
+    return sample;
   };
-  return { start, stop, pulse, render: renderFrame, observeInput, flushInput, releaseInput: release, resetTiming, get running() {
+  return { start, stop, pulse, render: renderFrame, observeInput, flushInput, pollInput, releaseInput: release, resetTiming, get running() {
     return running;
   } };
 }
