@@ -52,7 +52,16 @@ export class PresentationRuntime {
     for (const id of this.#preview.keys()) if (!next.has(id) || next.get(id) !== this.#preview.get(id).generation) this.#preview.delete(id);
   }
   clearPreview() { this.#frameSerial++; this.#preview.clear(); this.#previewSelection.clear(); this.#previewSources = new WeakMap(); }
-  releasePreview(nowMs){this.#checkClock(nowMs);for(const [id,preview]of this.#preview){const track=this.#tracks.get(id);if(!track||track.generation!==preview.generation)continue;track.from=track.plan.fields.map((_,i)=>this.#value(preview,i,nowMs));track.at=nowMs;track.sampledAt=-Infinity;}this.clearPreview();this.#now=nowMs;}
+  releasePreview(nowMs){
+    this.#checkClock(nowMs);
+    // Delayed authority already owns a simulation-time interval (including its
+    // shapes/history). A receipt-time preview cannot replace half of that state.
+    if(!this.#delayMs)for(const [id,preview]of this.#preview){
+      const track=this.#tracks.get(id);if(!track||track.generation!==preview.generation)continue;
+      track.from=track.plan.fields.map((_,i)=>this.#value(preview,i,nowMs));track.at=nowMs;track.sampledAt=-Infinity;
+    }
+    this.clearPreview();this.#now=nowMs;
+  }
   /** Detached declared-field baselines for the next fork step; no source references retained. */
   snapshotPreview(entities) {
     return entities.map(entity => {

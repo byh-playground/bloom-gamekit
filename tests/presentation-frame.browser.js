@@ -52,5 +52,15 @@ export async function runFrameChecks(page){return page.evaluate(async()=>{
   seeded.capture({revision:0,sequence:0,timeMs:100,entities:[{id:'a',generation:0,type:Attacker,source:a,initialTimeMs:0,initialSource:{x:0,y:0,pending:null}}]},100);
   check(seeded.frame(150).sample('a',0).pending===null,'explicit birth source keeps its initial optional shape');
   check(seeded.frame(200).sample('a',0).pending.total===.6,'explicit birth shape reaches target at display time');
+  const released=new PresentationRuntime({stepMs:100,delayMs:100}),owner={x:0,y:0,pending:{left:.1,total:.2,target:2}};
+  released.capture({revision:0,sequence:0,timeMs:0,mode:'reset',entities:[{id:'a',generation:0,type:Attacker,source:owner}]},0);
+  owner.x=10;owner.pending=null;
+  released.capture({revision:0,sequence:1,timeMs:100,entities:[{id:'a',generation:0,type:Attacker,source:owner}]},100);
+  released.selectPreview([{id:'a',generation:0}]);
+  released.capturePreview({revision:0,sequence:0,timeMs:110,phaseStartMs:100,stepMs:100,entities:[{id:'a',generation:0,type:Attacker,source:{...owner,x:20}}]},110);
+  check(released.frame(115).sample('a',0).pending===null,'immediate preview has its complete target structure');
+  released.releasePreview(120);
+  p=released.frame(150).sample('a',0);check(p.x===5&&p.pending?.total===.2&&p.pending.left===.1,'preview release preserves buffered authority clock and complete state');
+  p=released.frame(200).sample('a',0);check(p.x===10&&p.pending===null,'released authority reaches its original display boundary');
   return {birth:'PASS',pathCorner:'PASS',lifetime:'PASS',rollback:'PASS',teleport:'PASS',preview:'PASS',frameGuard:'PASS',atomicAttackState:'PASS'};
 });}

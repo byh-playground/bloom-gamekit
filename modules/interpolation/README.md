@@ -217,3 +217,6 @@ schema/ID/generation이 일치해야 합니다. preview 경로의 예측 생성�
 관계없는 위치 필드는 계속 보간합니다. 명시적 `initialSource`는 필드값과 초기 구조를
 함께 제공합니다. 이 정책은 지연 authority에 적용되며 즉시 preview와 기본 수신 시각
 모드의 기존 타이밍은 유지합니다.
+지연 모드의 `releasePreview(nowMs)`는 preview 선택을 해제하고 기존 authority 표시
+구간으로 복귀합니다. preview의 수신 시각/필드를 authority의 시뮬레이션 구간에
+덮어쓰지 않습니다. 지연 없는 모드의 preview→authority 보정은 유지합니다.
