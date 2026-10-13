@@ -18,7 +18,7 @@ export function startFrameDemo(canvas,status){
     view.capture({revision,sequence,timeMs,entities:alive?[{id:'shot',generation,type:Shot,source:shot,
       ...(age===100?{initialSource:initial,initialTimeMs:timeMs-100}:{})}]:[]},performance.now());
   },100);
-  function paint(now){if(stopped)return;const frame=view.frame(now);let count=0;
+  function paint(){if(stopped)return;const now=performance.now(),frame=view.frame(now);let count=0;
     if(renderer.beginFrame([.03,.06,.09,1])){
       frame.forEach((model,id,generation)=>{count++;frame.pathInto(id,generation,path);
         for(let i=1;i<path.length;i++)renderer.line(path[i-1].x,path[i-1].y,path[i].x,path[i].y,3,[.2,.7,.9,.7]);

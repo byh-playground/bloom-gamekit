@@ -8,10 +8,10 @@ export async function runFrameChecks(page){return page.evaluate(async()=>{
   capture(0,0,[]);
   capture(1,100,[{id:'shot',generation:0,type:Shot,source:{x:10,y:10,color:'red',secret:99},initialSource:{x:0,y:0,color:'red'},initialTimeMs:0,pathPoints:[{timeMs:50,x:0,y:10}]}]);
   check(runtime.frame(150).sample('shot',0)===null,'birth hidden before its display time');
-  capture(2,200,[{id:'shot',generation:0,type:Shot,source:{x:20,y:10,color:'red'}}]);
+  capture(2,200,[{id:'shot',generation:0,type:Shot,source:{x:20,y:10,color:'blue'}}]);
   let frame=runtime.frame(225),model=frame.sample('shot',0),path=[];
   frame.pathInto('shot',0,path);
-  check(model.x===0&&model.y===5&&path.at(-1).y===5,'birth first interval and path share a clock');
+  check(model.x===0&&model.y===5&&model.color==='red'&&path.at(-1).y===5,'birth first interval and path share a clock');
   check(!('secret'in model)&&Object.getPrototypeOf(model)===Object.prototype,'detached declared data');
   frame=runtime.frame(275);model=frame.sample('shot',0);frame.pathInto('shot',0,path);
   check(model.x===5&&model.y===10&&path.some(p=>p.timeMs===50&&p.x===0&&p.y===10),'within-tick corner retained');

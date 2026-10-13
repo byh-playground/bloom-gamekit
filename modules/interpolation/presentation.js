@@ -156,6 +156,7 @@ export class PresentationRuntime {
       const from = same && !snap && preview?.generation === generation && this.#previewSelection.get(entity.id) === generation
         ? plan.fields.map((_,i)=>this.#value(preview,i,nowMs))
         : !same && !snap ? (initial ? initial.values.slice() : seedFieldValues(plan.policies, target.values)) : target.values.slice();
+      if(this.#delayMs&&same&&!snap)for(let i=0;i<from.length;i++)from[i]=old.target.values[i];
       const velocity = this.#extrapolation ? new Array(plan.fields.length).fill(0) : null;
       for (let i = 0; i < plan.fields.length; i++) {
         const field = plan.fields[i], value = target.values[i];
