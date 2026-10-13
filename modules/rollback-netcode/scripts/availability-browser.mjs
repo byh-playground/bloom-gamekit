@@ -61,6 +61,7 @@ try {
       await host.evaluate(()=>{window.inputFault('drafts');window.inputEvent(29);});await sleep(4000/rates.simulationHz);
       const lateRevisions=await host.evaluate(()=>window.inputFault('reverse'));
       await checkpoint(pair.pages,'draft after canonical '+rates.simulationHz,false);
+      if(!process.env.INPUT_BASELINE_DIST){await host.evaluate(()=>window.inputFault('protocol1'));await pair.pages[1].waitForFunction(()=>window.snapshot().events.some(e=>e.type==='version-mismatch'&&e.field==='protocol'));}
       const faultPeers=await Promise.all(pair.pages.map(p=>p.evaluate(()=>window.latencyReport())));
       assert.equal(faultPeers[0].hash,faultPeers[1].hash);assert.deepEqual(faultPeers[0].commands,Array.from({length:29},(_,i)=>`A:${i+1}:${i+1}`));
       assert.ok(faultPeers.every(p=>!p.failure));
