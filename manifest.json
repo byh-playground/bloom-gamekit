@@ -3,7 +3,7 @@
   "modules": [
     {
       "file": "interpolation.js",
-      "sha256": "d1f1c9c4502b97154c524fbdd4c1feb3d69d4dffb477a8585f51e124a9821ffe"
+      "sha256": "4c27cb71b9ab07ef29058e4e863846d00953c5395ef480b6a52ed4ed5378f8da"
     },
     {
       "file": "rendering.js",
@@ -19,7 +19,7 @@
     },
     {
       "file": "simloop.js",
-      "sha256": "a6491227f2bd3126ee18531321bf4e59c11dd687bc5d4d02ea12ae9d994dad70"
+      "sha256": "6d8c3462ac01b0af967b3c259eede2b85e2f2f3f6813217391e6c322a7d10007"
     },
     {
       "file": "transport.js",
@@ -35,7 +35,7 @@
     },
     {
       "file": "rollback-netcode.js",
-      "sha256": "3af97a2d5333de97a0049af41d9ee8e1646b54517b98ba00b85764de84f65da2"
+      "sha256": "e54794c5fff1fccf5325fe517a25bab6b61848d62276e1e9f9300dcf00aa2be2"
     },
     {
       "file": "camera.js",
@@ -63,7 +63,7 @@
     },
     {
       "file": "scenario.js",
-      "sha256": "2e025f356f9f8e8605bf7f16dec20b0e1f02900bc799d6326359c94cad4ae627"
+      "sha256": "bf13eb4a859e052487fe5b43c46ccb4d4b7523db4bb13032a8942283be4cc386"
     }
   ],
   "assets": [

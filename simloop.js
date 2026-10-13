@@ -1,3 +1,12 @@
+// modules/simloop/rates.js
+function clockRates({ baseHz, tickRate, inputHz, renderHz } = {}) {
+  for (const [name, value] of Object.entries({ baseHz, tickRate, inputHz, renderHz })) {
+    if (!Number.isSafeInteger(value) || value <= 0) throw new RangeError(`${name} must be a positive integer frequency`);
+    if (name !== "baseHz" && baseHz % value !== 0) throw new RangeError(`${name} (${value}) must divide baseHz (${baseHz}) exactly`);
+  }
+  return Object.freeze({ baseHz, tickRate, inputHz, renderHz, simulationDivisor: baseHz / tickRate, inputDivisor: baseHz / inputHz, renderDivisor: baseHz / renderHz });
+}
+
 // modules/simloop/loop.js
 function createLoop({
   session,
@@ -5,6 +14,7 @@ function createLoop({
   render = () => {
   },
   inputPreview,
+  rates,
   backlogPolicy = "drop",
   beforeFrame = () => {
   },
@@ -32,6 +42,7 @@ function createLoop({
   if (backlogPolicy !== "drop" && backlogPolicy !== "retain") throw new RangeError("backlogPolicy");
   if (!Number.isInteger(maxBacklogTicks) || maxBacklogTicks < 1 || maxBacklogTicks > 8192) throw new RangeError("maxBacklogTicks");
   const hasSubmission = typeof session.submitInput === "function";
+  const configuredRates = rates === void 0 ? null : clockRates({ ...rates, tickRate: session.profile.tickRate });
   const quantum = 1e3 / session.profile.tickRate;
   const maxBacklogMs = quantum * maxBacklogTicks;
   let running = false, handle, last, accumulator = 0, generation = 0, timingGeneration = 0;
@@ -126,7 +137,7 @@ function createLoop({
       const timing = timingGeneration;
       if (last === void 0) last = timestamp;
       const elapsed = Math.max(0, timestamp - last);
-      if (elapsed > maxBacklogMs) {
+      if (backlogPolicy === "drop" && elapsed > maxBacklogMs) {
         accumulator = 0;
         last = timestamp;
         if (typeof inputPreview?.clockGap === "function") inputPreview.clockGap();
@@ -143,7 +154,7 @@ function createLoop({
       let work = 0;
       while (!session.closed && !session.resimulating && work < session.profile.maxCatchupSteps) {
         const pace = session.pace ?? session.metrics.pace;
-        if (accumulator < quantum * pace) break;
+        if (accumulator + 1e-7 < quantum * pace) break;
         const allowed = canAdvance();
         if (current !== generation || timing !== timingGeneration) return;
         if (!allowed) {
@@ -231,7 +242,13 @@ function createLoop({
     session.poll();
     return sample;
   };
-  return { start, stop, pulse, render: renderFrame, observeInput, flushInput, pollInput, releaseInput: release, resetTiming, get running() {
+  return { get simulationTimeMs() {
+    return last === void 0 ? null : last - accumulator;
+  }, get rates() {
+    return configuredRates;
+  }, get nextDeadlineMs() {
+    return last === void 0 ? null : last + Math.max(0, quantum * (session.pace ?? session.metrics.pace) - accumulator);
+  }, start, stop, pulse, render: renderFrame, observeInput, flushInput, pollInput, releaseInput: release, resetTiming, get running() {
     return running;
   } };
 }
@@ -318,6 +335,7 @@ var LocalInputPreview = class {
   #epoch = -1;
   #generation = 0;
   #sequence = 0;
+  #phaseStartMs = 0;
   #timeMs = -Infinity;
   #disposed = false;
   #enabled = true;
@@ -448,6 +466,7 @@ var LocalInputPreview = class {
     if (!checkpoint || !MODES.has(checkpoint.mode ?? "continuous")) throw new TypeError("preview reconciliation mode");
     for (const key of ["revision", "tick", "epoch"]) if (!Number.isSafeInteger(checkpoint[key]) || checkpoint[key] < 0) throw new RangeError("checkpoint " + key);
     if (!Number.isFinite(checkpoint.timeMs) || checkpoint.timeMs < this.#timeMs) throw new RangeError("checkpoint timeMs must be monotonic");
+    if (checkpoint.phaseStartMs !== void 0 && (!Number.isFinite(checkpoint.phaseStartMs) || checkpoint.phaseStartMs > checkpoint.timeMs)) throw new RangeError("checkpoint phaseStartMs must not exceed timeMs");
     const mode = checkpoint.mode ?? "continuous";
     if (checkpoint.revision < this.#revision) throw new RangeError("checkpoint revision cannot regress");
     if (checkpoint.continuationKey !== void 0 && (typeof checkpoint.continuationKey !== "string" || checkpoint.continuationKey.length > 65536)) throw new TypeError("checkpoint continuationKey");
@@ -485,6 +504,7 @@ var LocalInputPreview = class {
     this.#confirmedCommandSequence = checkpoint.confirmedCommandSequence;
     this.#confirmedOnlySteps = 0;
     this.#timeMs = checkpoint.timeMs;
+    this.#phaseStartMs = checkpoint.phaseStartMs ?? checkpoint.timeMs;
     this.#generation++;
     if (this.#pending.length || this.#observed || !this.#fork) this.#rebuild(checkpoint.timeMs);
     this.#metrics.corrections++;
@@ -534,6 +554,7 @@ var LocalInputPreview = class {
     this.#revision = checkpoint.revision;
     this.#baseInput = copyInput(checkpoint.input);
     this.#timeMs = checkpoint.timeMs;
+    this.#phaseStartMs = checkpoint.phaseStartMs ?? checkpoint.timeMs;
     this.#generation++;
     this.#continuationKey = checkpoint.continuationKey;
     this.#confirmedCommandSequence = checkpoint.confirmedCommandSequence ?? this.#confirmedCommandSequence;
@@ -803,8 +824,8 @@ var LocalInputPreview = class {
       revision: this.#revision,
       sequence: ++this.#sequence,
       timeMs,
-      phaseStartMs: this.#timeMs,
-      stepMs: this.#stepMs,
+      phaseStartMs: this.#phaseStartMs,
+      stepMs: Math.max(1, this.#forkTick - this.#tick) * this.#stepMs,
       entities: entities.map((entity) => ({ ...entity, initialSource: starts.get(entity.id) }))
     }, timeMs);
     if (accepted) this.#metrics.previewPublishes++;
@@ -834,6 +855,7 @@ var LocalInputPreview = class {
 // modules/simloop/deadline.js
 function createDeadlineScheduler({
   getIntervalMs,
+  getDeadlineMs,
   pulse,
   maxBacklogTicks = 8,
   now = () => performance.now(),
@@ -841,6 +863,10 @@ function createDeadlineScheduler({
   clearTimer = clearTimeout,
   onGap
 } = {}) {
+  if (getDeadlineMs !== void 0) {
+    if (getIntervalMs !== void 0) throw new TypeError("choose getDeadlineMs or getIntervalMs");
+    return ownedDeadline({ getDeadlineMs, pulse, now, setTimer, clearTimer });
+  }
   if (typeof getIntervalMs !== "function") throw new TypeError("getIntervalMs must be a function");
   if (typeof pulse !== "function") throw new TypeError("pulse must be a function");
   if (!Number.isSafeInteger(maxBacklogTicks) || maxBacklogTicks < 1) {
@@ -974,8 +1000,81 @@ function createDeadlineScheduler({
     }
   };
 }
+function ownedDeadline({ getDeadlineMs, pulse, now, setTimer, clearTimer }) {
+  for (const callback of [getDeadlineMs, pulse, now, setTimer, clearTimer]) if (typeof callback !== "function") throw new TypeError("deadline callback");
+  let active = false, handle, generation = 0, deadline = null, last = -Infinity, dispatching = false;
+  const readNow = () => {
+    const t = now();
+    if (!Number.isFinite(t) || t < last) throw new RangeError("now must be finite and monotonic");
+    last = t;
+    return t;
+  };
+  const clear = () => {
+    if (handle !== void 0) clearTimer(handle);
+    handle = void 0;
+  };
+  const arm = () => {
+    if (!active) return;
+    clear();
+    const t = readNow(), next = getDeadlineMs();
+    if (next !== null && !Number.isFinite(next)) throw new RangeError("deadline must be finite or null");
+    deadline = next ?? t;
+    const token = generation;
+    handle = setTimer(() => {
+      if (!active || token !== generation) return;
+      handle = void 0;
+      const at = readNow();
+      if (at < deadline) {
+        arm();
+        return;
+      }
+      dispatching = true;
+      try {
+        pulse(at, { due: 0, scheduledAtMs: deadline });
+      } finally {
+        dispatching = false;
+        if (active && token === generation) arm();
+      }
+    }, Math.max(1, deadline - t));
+  };
+  return {
+    start() {
+      if (active) return;
+      active = true;
+      generation++;
+      arm();
+    },
+    stop() {
+      active = false;
+      generation++;
+      clear();
+      deadline = null;
+    },
+    rebase() {
+      generation++;
+      if (active) arm();
+    },
+    wake() {
+      if (!active || dispatching) return;
+      dispatching = true;
+      try {
+        pulse(readNow(), { due: 0, scheduledAtMs: null });
+      } finally {
+        dispatching = false;
+        arm();
+      }
+    },
+    get running() {
+      return active;
+    },
+    get deadlineMs() {
+      return deadline;
+    }
+  };
+}
 export {
   LocalInputPreview,
+  clockRates,
   createDeadlineScheduler,
   createLoop
 };

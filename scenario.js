@@ -1,3 +1,12 @@
+// modules/simloop/rates.js
+function clockRates({ baseHz, tickRate, inputHz, renderHz } = {}) {
+  for (const [name, value] of Object.entries({ baseHz, tickRate, inputHz, renderHz })) {
+    if (!Number.isSafeInteger(value) || value <= 0) throw new RangeError(`${name} must be a positive integer frequency`);
+    if (name !== "baseHz" && baseHz % value !== 0) throw new RangeError(`${name} (${value}) must divide baseHz (${baseHz}) exactly`);
+  }
+  return Object.freeze({ baseHz, tickRate, inputHz, renderHz, simulationDivisor: baseHz / tickRate, inputDivisor: baseHz / inputHz, renderDivisor: baseHz / renderHz });
+}
+
 // modules/simloop/loop.js
 function createLoop({
   session,
@@ -5,6 +14,7 @@ function createLoop({
   render = () => {
   },
   inputPreview,
+  rates,
   backlogPolicy = "drop",
   beforeFrame = () => {
   },
@@ -32,6 +42,7 @@ function createLoop({
   if (backlogPolicy !== "drop" && backlogPolicy !== "retain") throw new RangeError("backlogPolicy");
   if (!Number.isInteger(maxBacklogTicks) || maxBacklogTicks < 1 || maxBacklogTicks > 8192) throw new RangeError("maxBacklogTicks");
   const hasSubmission = typeof session.submitInput === "function";
+  const configuredRates = rates === void 0 ? null : clockRates({ ...rates, tickRate: session.profile.tickRate });
   const quantum = 1e3 / session.profile.tickRate;
   const maxBacklogMs = quantum * maxBacklogTicks;
   let running = false, handle, last, accumulator = 0, generation = 0, timingGeneration = 0;
@@ -126,7 +137,7 @@ function createLoop({
       const timing = timingGeneration;
       if (last === void 0) last = timestamp;
       const elapsed = Math.max(0, timestamp - last);
-      if (elapsed > maxBacklogMs) {
+      if (backlogPolicy === "drop" && elapsed > maxBacklogMs) {
         accumulator = 0;
         last = timestamp;
         if (typeof inputPreview?.clockGap === "function") inputPreview.clockGap();
@@ -143,7 +154,7 @@ function createLoop({
       let work = 0;
       while (!session.closed && !session.resimulating && work < session.profile.maxCatchupSteps) {
         const pace = session.pace ?? session.metrics.pace;
-        if (accumulator < quantum * pace) break;
+        if (accumulator + 1e-7 < quantum * pace) break;
         const allowed = canAdvance();
         if (current !== generation || timing !== timingGeneration) return;
         if (!allowed) {
@@ -231,7 +242,13 @@ function createLoop({
     session.poll();
     return sample;
   };
-  return { start, stop, pulse, render: renderFrame, observeInput, flushInput, pollInput, releaseInput: release, resetTiming, get running() {
+  return { get simulationTimeMs() {
+    return last === void 0 ? null : last - accumulator;
+  }, get rates() {
+    return configuredRates;
+  }, get nextDeadlineMs() {
+    return last === void 0 ? null : last + Math.max(0, quantum * (session.pace ?? session.metrics.pace) - accumulator);
+  }, start, stop, pulse, render: renderFrame, observeInput, flushInput, pollInput, releaseInput: release, resetTiming, get running() {
     return running;
   } };
 }
