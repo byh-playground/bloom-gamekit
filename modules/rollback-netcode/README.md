@@ -14,7 +14,7 @@
 
 전체 번들과 분리 번들은 대안입니다. 동시에 가져오면 구현 코드가 중복 로드되므로 한 방식을 선택하세요. 분리 번들마다 필요한 순수 도우미가 포함되며 네트워크·세션을 자동 초기화하지 않습니다. 소비자는 npm·Node·bundler가 필요하지 않습니다.
 
-[공개 타입](./rollback-netcode.d.ts), [개발 계약](./CONTRACT.md), [이전 검증](./docs/rollback-migration.md)을 참조하세요. 기존 옵션 설명과 사용 예제는 [보존 snapshot](./legacy/README.md)에 포함된 원본 README.md에 남아 있습니다. 현재 [한국어 실행 예제](./examples/index.html)는 gamekit의 빌드 결과를 사용합니다. 원본 README의 배포·빌드 명령은 원본 저장소 기준이며 이 저장소는 루트 README의 main→dist CI 정책을 따릅니다.
+[공개 타입](./rollback-netcode.d.ts), [개발 계약](./CONTRACT.md), [이전 검증](./docs/rollback-migration.md)을 참조하세요. 기존 옵션 설명과 사용 예제는 [보존 snapshot](./legacy/README.md)에 포함된 원본 README.md에 남아 있습니다. 현재 [한국어 실행 예제](./examples/index.html)는 RoomSession·createLoop·LocalInputPreview·표시 frame·연출 journal을 연결한 작은 전투 예제입니다. [복사 순서와 필수 게임 데이터](./examples/README.md)를 함께 읽으세요. 원본 README의 배포·빌드 명령은 원본 저장소 기준이며 이 저장소는 루트 README의 main→dist CI 정책을 따릅니다.
 
 ```js
 import { createSession, profiles } from './rollback.js';
@@ -34,7 +34,7 @@ loop.start();
 
 `index.js`는 형제 모듈의 공개 API를 조합합니다. `tests/`는 전체 SDK의 API·출처·실제 RTC 통합과 실행 도구를 검사합니다. 기능 단위 검사는 각 소유 모듈의 `tests/`에 둡니다. `docs/`는 이전 검증, `legacy/`는 고정 원본 자료를 소유합니다.
 
-프로젝트 루트에서 `npm run build` 후 `npm run serve:rollback-demo`로 예제를 엽니다. `npm run serve:rollback-group`은 고정 그룹 RTC harness를 엽니다. `npm run test:rollback-demo`는 실제 Chromium 두 페이지를 사용하며 `npm run test:browser`에도 포함됩니다. 공용 relay를 쓰는 `npm run test:rollback-live`는 `RUN_LIVE_ROOM_CHECK=1`을 명시한 경우에만 실행하고 기본 CI에는 포함하지 않습니다.
+프로젝트 루트에서 `npm run build` 후 `npm run serve:rollback-demo`로 예제를 엽니다. `npm run serve:rollback-group`은 고정 그룹 RTC harness를 엽니다. `npm run test:rollback-demo`는 한 화면의 두 독립 RoomSession과 실제 WebRTC를 사용해 10→30TPS 재시작까지 검사합니다. 기존 180초 suite 상한을 사용하며 `npm run test:scenarios`에도 포함됩니다. 공용 relay를 쓰는 `npm run test:rollback-live`는 `RUN_LIVE_ROOM_CHECK=1`을 명시한 경우에만 실행하고 기본 CI에는 포함하지 않습니다.
 
 측정 도구는 `npm run benchmark:rollback`, `npm run benchmark:rollback-primitives`, `npm run benchmark:rally`입니다. Rally 측정은 외부 소비자 fixture를 명시적으로 지정해야 하며 원본 게임 상태를 이 모듈이 소유하지 않습니다. 각 도구의 과거 결과와 현재 실행 결과를 구분하세요.
 

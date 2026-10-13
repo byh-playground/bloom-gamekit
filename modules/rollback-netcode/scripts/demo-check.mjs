@@ -1,207 +1,25 @@
-// Optional UI verification only. Consumers need neither Node.js nor Playwright.
 import assert from 'node:assert/strict';
-import { mkdir, writeFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
-import { demoPath, resultsDirectory, launchBrowser, serveRepository } from './browser-helpers.mjs';
-
-const timeout = 20_000;
-
-async function readState(page) {
-  return JSON.parse(await page.locator('#debug-state').textContent());
-}
-
-async function settle(page, commandCount) {
-  // Allow the held-input release to travel and pass the slowest preset's delay.
-  await page.waitForTimeout(850);
-  await page.waitForFunction(expected => {
-    try {
-      const peers = JSON.parse(document.querySelector('#debug-state').textContent).peers;
-      return peers.length === 2 && peers.every(peer => peer.tick > 0 && peer.commandCount === expected) &&
-        JSON.stringify(peers[0].positions) === JSON.stringify(peers[1].positions) &&
-        JSON.stringify(peers[0].scores) === JSON.stringify(peers[1].scores);
-    } catch { return false; }
-  }, commandCount, { timeout });
-  const state = await readState(page);
-  await page.waitForTimeout(350);
-  const next = await readState(page);
-  assert.deepEqual(next.peers.map(peer => peer.positions), state.peers.map(peer => peer.positions), 'released input must stop both simulations');
-  return next;
-}
-
-async function assertNoErrors(page, pageErrors) {
-  assert.deepEqual(pageErrors, [], 'demo must have no uncaught browser errors');
-  assert.equal(await page.locator('#error-log').evaluate(element => element.hidden && !element.textContent.trim()), true, 'demo error log must stay empty and hidden');
-}
-
-async function checkKoreanGuide(page) {
-  assert.equal(await page.locator('html').getAttribute('lang'), 'ko');
-  assert.equal(await page.locator('#quick-guide').isVisible(), true, 'first-time walkthrough must be visible');
-  const guide = await page.locator('#quick-guide').textContent();
-  for (const [topic, pattern] of [['start', /시작/], ['movement', /이동|움직/], ['score', /점수/], ['replay', /리플레이/], ['recovery', /복구/]]) {
-    assert.match(guide, pattern, `Korean guide must explain ${topic}`);
-  }
-  assert.match(await page.locator('#start').textContent(), /[가-힣]/, 'primary action must be in Korean');
-}
-
-async function rtcState(page) {
-  return page.evaluate(() => ({
-    connections: window.__demoRtc.connections.map(connection => connection.connectionState),
-    channels: window.__demoRtc.channels.map(channel => ({ label: channel.label, state: channel.readyState })),
-  }));
-}
-
-async function startLocal(page, profile) {
-  await page.selectOption('#mode', 'local');
-  await page.selectOption('#profile', profile);
-  await page.click('#start');
-  await page.waitForFunction(() => document.querySelector('#connection-status').dataset.state === 'connected', null, { timeout });
-  await page.waitForFunction(() => {
-    try { return JSON.parse(document.querySelector('#debug-state').textContent).peers.length === 2; }
-    catch { return false; }
-  }, null, { timeout });
-  const rtc = await rtcState(page);
-  assert.equal(rtc.connections.filter(state => state === 'connected').length, 2, 'local mode must open two native RTCPeerConnections');
-  assert.equal(rtc.channels.filter(channel => channel.state === 'open').length, 4, 'both peers must open input and control DataChannels');
-  const state = await readState(page);
-  assert.deepEqual(state.peers.map(peer => peer.peer), ['a', 'b']);
-  return state;
-}
-
-async function checkReplay(page) {
-  await page.click('#replay');
-  await page.waitForFunction(() => document.querySelector('#replay-result').dataset.result === 'matched', null, { timeout });
-  assert.match(await page.locator('#replay-result').textContent(), /리플레이/, 'replay feedback must be in Korean');
-}
-
-async function stopLocal(page) {
-  await page.click('#stop');
-  await page.waitForFunction(() => document.querySelector('#connection-status').dataset.state === 'idle', null, { timeout });
-  assert.equal(await page.locator('#start').isEnabled(), true);
-  // Native DataChannel.close() passes through 'closing' before its queued
-  // close event. UI idle/RTCPeerConnection closed is not that completion event.
-  await page.waitForFunction(() => window.__demoRtc.connections.every(peer => peer.connectionState === 'closed') &&
-    window.__demoRtc.channels.every(channel => channel.readyState === 'closed'), null, { timeout });
-  const rtc = await rtcState(page);
-  assert.ok(rtc.connections.every(state => state === 'closed'), 'stop must close every peer connection');
-  assert.ok(rtc.channels.every(channel => channel.state === 'closed'), 'stop must close every DataChannel');
-}
-
-let server, browser;
-const pages = [];
-const pageErrors = [];
-const report = { passed: false, profiles: [], pageErrors };
-try {
-  await mkdir(resultsDirectory, { recursive: true });
-  if (!process.env.BASE_URL) server = await serveRepository();
-  const base = process.env.BASE_URL || `http://127.0.0.1:${server.address().port}${demoPath}`;
-  browser = await launchBrowser();
-  report.browser = browser.version(); report.url = base;
-  const context = await browser.newContext({ viewport: { width: 1100, height: 1050 } });
-  // Observe real browser objects without replacing their network behavior.
-  await context.addInitScript(() => {
-    const NativePeerConnection = window.RTCPeerConnection;
-    const tracked = window.__demoRtc = { connections: [], channels: [] };
-    function TrackedPeerConnection(...args) {
-      const peer = new NativePeerConnection(...args);
-      tracked.connections.push(peer);
-      const createChannel = peer.createDataChannel.bind(peer);
-      peer.createDataChannel = (...channelArgs) => {
-        const channel = createChannel(...channelArgs); tracked.channels.push(channel); return channel;
-      };
-      peer.addEventListener('datachannel', event => tracked.channels.push(event.channel));
-      return peer;
-    }
-    Object.setPrototypeOf(TrackedPeerConnection, NativePeerConnection);
-    TrackedPeerConnection.prototype = NativePeerConnection.prototype;
-    window.RTCPeerConnection = TrackedPeerConnection;
-  });
-  const page = await context.newPage(); pages.push(page);
-  page.on('pageerror', error => pageErrors.push(error.message));
-  await page.goto(base);
-  await checkKoreanGuide(page);
-  await page.locator('#debug summary').click();
-  await page.click('#synctest');
-  await page.waitForFunction(()=>document.querySelector('#replay-result').dataset.result==='synctest-passed');
-  assert.match(await page.locator('#replay-result').textContent(),/결정론 검사 통과/);
-  await page.locator('#debug summary').click();
-  for (const profile of ['action', 'rts', 'lockstep']) {
-    const initial = await startLocal(page, profile);
-    // Native keyboard events exercise the tutorial's A-player movement.
-    await page.click('#simulation');
-    await page.keyboard.down('ArrowRight'); await page.waitForTimeout(350); await page.keyboard.up('ArrowRight');
-    const keyboard = await settle(page, 0);
-    assert.ok(keyboard.peers[0].positions[0] > initial.peers[0].positions[0], `${profile}: keyboard must move A right`);
-    assert.equal(await page.locator('.direction.active').count(), 0, 'keyup must clear the held direction');
-    // Pointer capture must release B even when the mouse leaves its button.
-    const left = page.locator('.direction[data-player="b"][data-input="1"]');
-    await left.scrollIntoViewIfNeeded();
-    const bounds = await left.boundingBox();
-    await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
-    await page.mouse.down(); await page.waitForTimeout(350); await page.mouse.move(5, 5); await page.mouse.up();
-    const pointer = await settle(page, 0);
-    assert.ok(pointer.peers[0].positions[1] < keyboard.peers[0].positions[1], `${profile}: pointer must move B left`);
-    assert.equal(await page.locator('.direction.active').count(), 0, 'pointerup outside the button must clear the direction');
-    await page.keyboard.down('ArrowLeft'); await page.waitForTimeout(180); await page.click('#release'); await page.keyboard.up('ArrowLeft');
-    assert.equal(await page.locator('.direction.active').count(), 0, 'release action must clear all held directions');
-    await settle(page, 0);
-    await page.click('#command-a'); await page.click('#command-b');
-    const scored = await settle(page, 2);
-    assert.ok(scored.peers[0].scores.every(score => score > 0), `${profile}: both score commands must execute`);
-    await checkReplay(page);
-    if (profile === 'action') {
-      await page.screenshot({ path: resolve(resultsDirectory, 'demo-ko-desktop.png'), fullPage: true });
-      const beforeRecovery = scored.peers.find(peer => peer.peer === 'b').metrics.recoveries;
-      await page.locator('#debug summary').click();
-      await page.click('#desync');
-      await page.waitForFunction(previous => {
-        try { return JSON.parse(document.querySelector('#debug-state').textContent).peers.find(peer => peer.peer === 'b').metrics.recoveries > previous; }
-        catch { return false; }
-      }, beforeRecovery, { timeout });
-      const recovered = await settle(page, 2);
-      assert.deepEqual(recovered.peers[0].scores, scored.peers[0].scores, 'snapshot recovery must preserve both executed commands');
-      report.recovery = recovered.peers.map(peer => ({ peer: peer.peer, positions: peer.positions, scores: peer.scores, recoveries: peer.metrics.recoveries }));
-      await page.locator('#debug summary').click();
-    }
-    report.profiles.push({ profile, positions: scored.peers[0].positions, scores: scored.peers[0].scores, commandCount: scored.peers[0].commandCount, replay: 'matched', actualWebRTC: true });
-    await assertNoErrors(page, pageErrors);
-    await stopLocal(page);
-  }
-  await page.setViewportSize({ width: 390, height: 844 });
-  await checkKoreanGuide(page);
-  await startLocal(page, 'action');
-  await page.click('#command-a'); await page.click('#command-b');
-  await settle(page, 2); await checkReplay(page);
-  const layout = await page.evaluate(() => ({ viewport: innerWidth, document: document.documentElement.scrollWidth, body: document.body.scrollWidth }));
-  assert.ok(layout.document <= layout.viewport && layout.body <= layout.viewport, `390px layout must not overflow: ${JSON.stringify(layout)}`);
-  await page.screenshot({ path: resolve(resultsDirectory, 'demo-ko-mobile.png'), fullPage: true });
-  await assertNoErrors(page, pageErrors);
-  await page.evaluate(()=>window.__demoRtc.connections.find(peer=>peer.connectionState==='connected').close());
-  await page.waitForFunction(()=>{
-    try{return JSON.parse(document.querySelector('#debug-state').textContent).peers.every(peer=>peer.status==='disconnected')}
-    catch{return false}
-  },null,{timeout});
-  const stoppedTicks=(await readState(page)).peers.map(peer=>peer.tick);
-  await page.waitForTimeout(300);
-  assert.deepEqual((await readState(page)).peers.map(peer=>peer.tick),stoppedTicks,'Native connection closure stops logical advancement');
-  report.disconnect={actualNativeClose:true,ticks:stoppedTicks,state:'disconnected'};
-  await stopLocal(page);
-  report.mobile = { ...layout, screenshot: 'test-results/rollback/demo-ko-mobile.png' };
-  report.passed = true;
-  await writeFile(resolve(resultsDirectory, 'demo-report.json'), `${JSON.stringify(report, null, 2)}\n`);
-  console.log(JSON.stringify(report, null, 2));
-} catch (error) {
-  report.failure = error.message;
-  report.diagnostics = await Promise.all(pages.map(page => page.evaluate(() => ({
-    status: document.querySelector('#connection-status')?.textContent,
-    error: document.querySelector('#error-log')?.textContent,
-    state: document.querySelector('#debug-state')?.textContent,
-    rtc: { connections: window.__demoRtc?.connections.map(peer => peer.connectionState), channels: window.__demoRtc?.channels.map(channel => ({ label: channel.label, state: channel.readyState })) },
-  })).catch(() => null)));
-  await mkdir(resultsDirectory, { recursive: true });
-  await writeFile(resolve(resultsDirectory, 'demo-failure.json'), `${JSON.stringify(report, null, 2)}\n`);
-  await Promise.allSettled(pages.map((page, index) => page.screenshot({ path: resolve(resultsDirectory, `demo-failure-${index}.png`), fullPage: true })));
-  console.error(error); process.exitCode = 1;
-} finally {
-  await browser?.close();
-  if (server) await new Promise(done => server.close(done));
-}
+import {mkdir,writeFile} from 'node:fs/promises';
+import {resolve} from 'node:path';
+import {demoPath,resultsDirectory,launchBrowser,serveRepository} from './browser-helpers.mjs';
+const server=await serveRepository();let browser,page;const report={checks:[]},started=performance.now();
+try{
+ browser=await launchBrowser();page=await browser.newPage({viewport:{width:1000,height:1100}});const errors=[];
+ page.on('pageerror',e=>errors.push(e.message));await page.goto(`http://127.0.0.1:${server.address().port}${demoPath}`);
+ const read=()=>page.evaluate(()=>reference.diagnostics);
+ const healthy=async()=>{const d=await read();assert.deepEqual(d.errors,[]);assert.deepEqual(errors,[]);return d;};
+ const start=async tps=>{await page.selectOption('#tps',String(tps));await page.click('#start');await page.waitForFunction(()=>reference.diagnostics.peers.length===2&&reference.diagnostics.peers.every(p=>p.tick>5),null,{timeout:20000});assert.equal(await page.locator('#tps').isDisabled(),true);const d=await healthy();assert.equal(d.tps,tps);assert.equal(d.connections.filter(x=>x==='connected').length,2);};
+ const compare=async()=>{await page.click('#compare');await page.waitForFunction(()=>document.querySelector('#comparison').dataset.result==='matched',null,{timeout:15000});const d=await page.evaluate(()=>reference.lastComparison);assert.equal(d.peers[0].hash,d.peers[1].hash);await healthy();return d;};
+ await start(10);report.checks.push('10 TPS: two RoomSessions, actual native WebRTC, TPS locked');
+ const before=await read();await page.keyboard.down('ArrowRight');await page.waitForTimeout(400);await page.keyboard.up('ArrowRight');await page.keyboard.down('KeyA');await page.waitForTimeout(350);await page.keyboard.up('KeyA');
+ await page.click('[data-player="a"][data-command="1"]');await page.waitForTimeout(90);await page.click('[data-player="b"][data-command="2"]');await page.waitForTimeout(450);await mkdir(resultsDirectory,{recursive:true});await page.screenshot({path:resolve(resultsDirectory,'reference-active.png'),fullPage:true});await page.waitForTimeout(950);
+ let d=await compare();for(const p of d.peers){assert.equal(p.counts.a.dash,1);assert.equal(p.counts.b.fire,1);assert.equal(p.counts.b.dash,0);assert.equal(p.counts.a.fire,0);assert(p.actors.a.x>before.peers[0].actors.a.x);assert(p.actors.b.x<before.peers[0].actors.b.x);assert(p.stats.projectileFrames>0);assert(p.stats.previewFrames>0);assert(p.stats.optionalFrames>0);assert.equal(p.stats.duplicateSounds,0);assert.equal(p.stats.duplicateParticles,0);}report.checks.push('held movement, owned one-shot dash/fire, preview lifetime, optional state, seeded XYZ projectile');
+ await page.click('#delay');const rollback=d.peers.reduce((n,p)=>n+p.rollback,0);
+ await page.keyboard.down('ArrowLeft');await page.click('[data-player="a"][data-command="2"]');await page.waitForTimeout(350);await page.keyboard.up('ArrowLeft');await page.click('[data-player="a"][data-command="4"]');await page.waitForTimeout(1300);await page.click('#delay');await page.waitForTimeout(400);
+ d=await compare();assert(d.peers.reduce((n,p)=>n+p.rollback,0)>rollback);for(const p of d.peers){assert.equal(p.counts.a.fire,1);assert.equal(p.counts.a.spark,1);assert.equal(p.stats.duplicateSounds,0);assert.equal(p.stats.duplicateParticles,0);assert.equal(p.stats.soundStarts,4);assert.equal(new Set(p.commands.map(c=>c.owner+':'+c.sequence)).size,p.commands.length);for(const c of p.commands){const submit=p.submissions.flatMap(s=>s.commands).find(s=>s.sequence===c.sequence&&c.owner===p.id);if(submit)assert.equal(c.tick,submit.executeTick);}}report.checks.push('late RTC input rolls back/replays; immutable command T; confirmed sound and speculative particles do not duplicate');
+ await page.click('[data-player="a"][data-command="3"]');await page.click('[data-player="b"][data-command="2"]');await page.waitForTimeout(1400);report.first=await compare();assert(report.first.peers.every(p=>p.stats.pathCorners>0&&p.stats.retainedFrames>0&&p.stats.releases>0&&p.actors.a.action===null&&p.actors.b.action===null));assert(report.first.peers.every(p=>p.actors.b.shotGeneration===2&&p.actors.a.teleportSerial===1));report.checks.push('teleport, expired shot ID reused with new generation, same-frame path/target assertions');
+ await page.click('#stop');assert.equal((await read()).peers.length,0);await start(30);await page.click('[data-player="a"][data-command="1"]');await page.click('[data-player="b"][data-command="2"]');await page.waitForTimeout(1200);report.restarted=await compare();assert(report.restarted.peers.every(p=>p.counts.a.dash===1&&p.counts.b.fire===1&&p.stats.duplicateSounds===0));report.checks.push('whole-room stop, 30 TPS restart, fresh ownership/events/hash agreement');
+ await mkdir(resultsDirectory,{recursive:true});await page.screenshot({path:resolve(resultsDirectory,'reference-example.png'),fullPage:true});await page.click('#stop');await page.waitForTimeout(80);d=await healthy();assert.equal(d.peers.length,0);assert.equal(d.connections.length,0);report.checks.push('loop, preview, journal, timers and native connections disposed');
+ report.status='PASS';report.browser=browser.version();
+}catch(error){report.status='FAIL';report.error=error.stack;report.diagnostics=await page?.evaluate(()=>({state:window.reference?.diagnostics,error:document.querySelector('#error-log')?.textContent})).catch(()=>null);throw error;}
+finally{report.elapsedMs=Math.round(performance.now()-started);await mkdir(resultsDirectory,{recursive:true});await writeFile(resolve(resultsDirectory,'reference-example-report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report));await browser?.close();await new Promise(r=>server.close(r));}
