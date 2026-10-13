@@ -96,7 +96,7 @@ const session = createSession({
 - replay schema와 codec은 그대로입니다. 최종 hash는 export 때 현재 경계에서 계산하고 replay 용량에 도달할 때는 마지막 기록 경계를 미리 hash하여 보존합니다. 완료된 입력만 기록하며 초기 상태 이후 replay로 재현합니다.
 - `metrics.snapshotSaves`, `serializedSnapshotBytes`는 SDK 직렬화 횟수/바이트를 제공합니다. 기존 `retainedSnapshotBytes`, `stateHashComputations`, `hashedStateBytes`도 유지합니다. 이는 adapter 내부 할당/게임의 별도 저장 비용까지 측정하지 않습니다.
 
-HELLO는 양쪽 mode를 명시하며 lockstep에서는 초기 `baseInputDelayTicks`, `checksumInterval`도 일치해야 합니다. rollback의 peer별 delay 설정 및 런타임 delay 적응은 유지합니다. replay version은 유지하며 protocol 2를 사용합니다. 이 handshake 필드가 없는 이전 bundle과 새 bundle을 섞으면 시작을 거절합니다. 함께 플레이할 소비자는 같은 검증된 dist pin으로 업데이트하세요.
+HELLO는 양쪽 mode를 명시하며 lockstep에서는 초기 `baseInputDelayTicks`, `checksumInterval`도 일치해야 합니다. rollback의 peer별 delay 설정 및 런타임 delay 적응은 유지합니다. replay version은 유지하며 protocol 3을 사용합니다. 이 handshake 필드가 없는 이전 bundle과 새 bundle을 섞으면 시작을 거절합니다. 함께 플레이할 소비자는 같은 검증된 dist pin으로 업데이트하세요.
 
 ## 확정 bootstrap과 bounded catch-up
 
@@ -240,12 +240,26 @@ lockstep은 기존 sparse checkpoint와 고정 입력 delay를 유지합니다. 
 
 실제 시나리오 결과, 발견 후 수정한 경계 오류, 전후 CPU/초기화/snapshot 비용과 미검증 범위는 [모드 확장 검증 기록](./docs/room-modes-verification.md)에 정리했습니다.
 
-## 이벤트 즉시 입력 제출 (protocol 2)
+## 이벤트 즉시 실행 예약 (protocol 3)
 
-`submitInput(input, {commands: [payload, ...]})`은 held bytes와 edge 명령을 소유 복사하고 단조 command sequence를 반환합니다. 반환값은 `{status,tick,executeTick,commandSequences}`입니다. status는 submitted/unchanged이며 RoomSession 입장 전 명령 없는 입력은 waiting입니다. 반환 executeTick은 열린 미래 slot의 후보이고 immutable 실행 tick은 localInputState.capture에서 확인합니다. 이 API는 advance, adapter.step/save/load, confirmed boundary 변경을 실행하지 않습니다. 단독 queueCommand도 즉시 전송을 요청합니다.
+`submitInput(input, {commands: [payload, ...]})`는 입력 이벤트에서 bytes를 복사하고 명령 sequence와 실행 tick T를 즉시 예약합니다. 반환값은 `{status,tick,executeTick,commandSequences,commands:[{sequence,executeTick}]}`입니다. status는 submitted/unchanged이며 RoomSession 입장 전 명령 없는 입력은 waiting입니다. frame 용량을 넘는 명령은 다음 tick에 예약하며 각 명령의 T를 반환합니다. 이후 capture, 지연 설정 변경, 패킷 도착 시각, 재연결이 T를 다시 정하지 않습니다. 이 API 자체는 시뮬레이션을 진행하거나 snapshot을 저장하지 않습니다. queueCommand도 같은 예약 경로를 사용합니다.
 
-INPUT_DRAFT/ACK에서 같은 열린 slot의 수정은 증가하는 revision으로 교체하며, 상대는 최신 초안 하나만 유지합니다. rollback 예측에만 사용하고 lockstep은 확정 프레임을 기다립니다. 초안은 confirmation, bootstrap, replay log의 근거가 아닙니다. 확정 INPUT이 있으면 늦은 초안을 무시합니다. 확정 입력과 예측이 다르면 기존 rollback으로 복구합니다. 명령은 기존 frame 바이트/개수 한도 안의 순서 있는 prefix를 전송하며 초과분은 다음 frame에서 처리합니다.
+INPUT_RESERVATION/ACK는 tick별 revision을 사용합니다. 열린 slot의 held bytes는 갱신할 수 있지만 예약 명령의 T·payload·순서는 바꿀 수 없습니다. rollback에서는 정확한 T의 예약을 사용하고 lockstep은 확정 INPUT을 기다립니다. 예약은 confirmation의 근거가 아니며 canonical INPUT이 우선합니다. T가 미래이면 기다리고, 이미 지나갔으면 수신 처리에서 기존 rollback 엔진으로 T 직전 상태를 복원하여 이전 현재 tick까지 재실행합니다. 동일 예약/이미 사용한 입력/중복 canonical 패킷은 추가 replay를 만들지 않습니다. 한 canonical 패킷의 여러 변경은 가장 이른 T부터 한 번 재실행합니다.
 
-ACK 전 초안은 기존 heartbeat에서 재전송합니다. unchanged 입력은 새 revision/packet을 만들지 않습니다. 수정은 확정 frame을 덮어쓰지 않습니다. 최종 명령 순서·executeTick·중복 처리·재연결 handoff는 기존 계약을 유지합니다. `metrics.inputDrafts/inputDraftSentBytes/inputDraftReceivedBytes`로 추가 트래픽을 구분합니다. close는 초안을 해제합니다.
+`rollback({from,target})`는 재실행 직전, `reconciled({from,target})`는 동기 재실행 완료 후 발생합니다. 수신 callback에서도 발생하므로 poll 반환을 기다려 표현을 갱신하지 마세요. 게임은 완료 이벤트에서 기존 PresentationRuntime의 rollback publish와 PresentationEventQueue.endRollback을 연결합니다. 렌더링과 GPU 작업은 게임 소유입니다. 재실행은 동기 작업이므로 큰 게임 상태의 CPU 비용을 숨기지 않습니다.
 
-protocol 1/2 혼용은 Core HELLO 및 RoomSession 계약 digest에서 거절합니다. 같은 방의 클라이언트는 동일 검증 dist SHA로 배포하세요. snapshot codec, 저장/리플레이 형식, 기본 TPS/inputDelay/prediction window는 변경하지 않았습니다.
+ACK가 없는 예약은 기존 heartbeat로 재전송합니다. unchanged 입력은 새 패킷을 만들지 않습니다. `metrics.inputReservations/inputReservationSentBytes/inputReservationReceivedBytes`가 예약 트래픽을 표시합니다. close는 예약을 비웁니다. `localInputState.captures`는 한 capture 구간에서 봉인된 모든 프레임을 전달하며 simloop는 각 sequence를 한 번 소비합니다. `capture`는 그중 최신 프레임입니다.
+
+재연결 handoff는 미래 held 입력·봉인 경계·명령의 원래 T를 보존합니다. RoomSession은 epoch의 baseTick만 변환합니다. 승인된 새 경계보다 앞선 미실행 명령은 다른 T로 옮기지 않고 실패 처리하여 재동기화를 요구합니다. bootstrap의 recovering/replaying step에서는 외부 효과를 실행하지 않습니다.
+
+### 지연 정책
+
+기본 `inputScheduling:'configured'`는 기존 baseInputDelayTicks/adaptiveInputDelay 설정을 그대로 사용합니다. 고정 지연은 adaptiveInputDelay:false로 지정합니다. 네트워크 기반 예약은 명시적으로 다음처럼 선택합니다.
+
+`{inputScheduling:'network', inputSafetyMarginMs:8, inputJitterMultiplier:2}`
+
+편도 추정 = RTT/2, 편도 지터 여유 = RTT 지터/2 × multiplier입니다. 여기에 safetyMarginMs를 더해 전송 여유를 계산합니다. 상대의 마지막 tick은 보고서 수신 후 경과 시간과 보고서의 편도 전송 시간으로 현재 시점까지 추정합니다. 상대 정수 tick + 전송 여유, 로컬 tick + 전송 여유 중 늦은 것을 min/maxInputDelayTicks 범위에서 사용합니다. 이미 봉인된 slot과 먼저 예약한 명령보다 앞설 수 없습니다. 보고서의 전송 시간 보정과 앞으로 보낼 입력의 전송 시간은 서로 다른 구간입니다. `input-submitted.schedule`은 이 항목과 최종 T를 노출합니다. RoomSession schedule의 수식 항은 Core 상대 tick이며 baseTick을 더하면 전역 tick입니다.
+
+RTT의 비대칭 경로와 급격한 지터를 완벽히 예측할 수는 없습니다. 미래 T 대기는 의도한 안전 여유이고, 늦은 수신의 rollback 비용 및 적용 후 렌더 대기와 별도로 측정합니다. [실측과 한계](../simloop/docs/remote-input-application.md)를 참고하세요.
+
+protocol 1/2와 3의 혼용은 거절합니다. 함께 플레이할 클라이언트는 같은 검증된 dist SHA를 고정하세요. 기본 TPS·지연·prediction window, snapshot codec과 저장/replay 포맷은 유지합니다.

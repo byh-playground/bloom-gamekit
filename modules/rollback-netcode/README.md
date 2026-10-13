@@ -60,3 +60,5 @@ onEvent의 `rollback`은 state load 후, 동기적 재실행 전에 전달됩니
 기본 strict는 분할 네트워크에서 독립적으로 coordinator를 선출하지 않으며, graceful coordinator 퇴장은 합의된 경계에서 승계합니다. [선택형 가용성 정책](../rollback/README.md#비활성-참가자와-선택형-가용성)은 무응답 grace 뒤 활성 참가자의 임시 진행을 허용하고, 재결합 때 다른 분기의 진행을 버릴 수 있습니다. 렌더링과 deadline pump 분리·자동 coordinator 이관도 같은 예제로 제공합니다. 탭 새로고침은 opt-in room-scoped sessionStorage identity와 살아 있는 peer의 상태를 필요로 합니다. 공용 relay/NAT/모바일 성능은 fixture 통과만으로 검증되지 않습니다.
 
 RoomSession의 생성 시 모드 선택과 확정 경계/명령 보존 계약은 [rollback 문서](../rollback/README.md#roomsession-생성-시-시뮬레이션-모드-선택)를 따릅니다. 기본값은 lockstep이며 실행 중 전환하지 않습니다.
+
+불변 실행 T, 선택적 네트워크 예약 정책과 reconciled 이벤트는 [rollback API](../rollback/README.md)를 참고하세요. protocol 3은 이전 bundle과 혼용하지 않습니다. [원격 적용 검증](../simloop/docs/remote-input-application.md).

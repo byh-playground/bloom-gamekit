@@ -76,6 +76,7 @@ export class RoomSession {
     const state = this._core?.localInputState;
     if (!state) return null;
     return { ...state, epoch: this.epoch, baseTick: this.baseTick, tick: this.tick, confirmedTick: this.confirmedTick,
+      captures: state.captures.map(c=>({...c,captureTick:c.captureTick+this.baseTick,executeTick:c.executeTick+this.baseTick,commands:c.commands.map(command=>({...command,executeTick:command.executeTick+this.baseTick}))})),
       capture: state.capture ? { ...state.capture, captureTick: state.capture.captureTick + this.baseTick,
         executeTick: state.capture.executeTick + this.baseTick,
         commands: state.capture.commands.map(c => ({ ...c, executeTick: c.executeTick + this.baseTick })) } : null };
@@ -132,7 +133,7 @@ export class RoomSession {
       step: context => {
         // runSimulationFrame already supplies owned frame/command copies.
         context.tick += baseTick; context.membershipEpoch = epoch;
-        for (const frame of context.inputs) for (const command of frame.commands) command.executeTick = context.tick;
+        for (const frame of context.inputs) for (const command of frame.commands) { command.executeTick += baseTick; if(command.executeTick!==context.tick)throw new Error('reserved command execution tick'); }
         const start = this._availability ? nowMs() : 0;
         try { return a.step(context); }
         finally { if (this._availability && !context.resimulating) this._availability.measureStep(Math.max(0, nowMs() - start)); }
@@ -150,10 +151,13 @@ export class RoomSession {
     return sequences;
   }
   _startCore(commandState, commandSequences, boundary) {
+    if(commandState){const offset=(commandState.tickOffset??0)-this.baseTick;commandState={...commandState,sealedThrough:Math.max(-1,(commandState.sealedThrough??-1)+offset),commands:commandState.commands.map(c=>({...c,executeTick:c.executeTick+offset})),inputs:(commandState.inputs??[]).filter(f=>f.tick+offset>=0).map(f=>({...f,tick:f.tick+offset})),tickOffset:0};
+      if(commandState.commands.some(c=>c.executeTick<0))throw new Error('reserved command precedes accepted boundary; resynchronization required');
+    }
     const options = { players: [...this.activePlayers], localPlayerId: this.localPlayerId, authorityPlayerId: this.coordinatorId,
       sessionId: this.sessionId + ':' + this.epoch, simulationVersion: this.simulationVersion, seed: this.seed, inputSize: this.inputSize,
       profile: this.profile, adapter: this._adapter(), localCommandState: commandState, initialCommandSequences: commandSequences ? Object.fromEntries(this.activePlayers.map(id => [id, commandSequences[id] ?? 0])) : undefined, clock: this.clock, recordReplay: false,
-      onEvent: event => { if (event.type !== 'closed') this._event(event.type, { ...event, tick: event.tick + this.baseTick, ...(Number.isSafeInteger(event.executeTick) ? { executeTick: event.executeTick + this.baseTick } : {}), ...(['rollback', 'recovered'].includes(event.type) ? { from: event.from + this.baseTick, target: event.target + this.baseTick } : {}) }); } };
+      onEvent: event => { if (event.type !== 'closed') this._event(event.type, { ...event, tick: event.tick + this.baseTick, ...(event.schedule?{schedule:{...event.schedule,baseTick:this.baseTick}}:{}), ...(Array.isArray(event.commands)?{commands:event.commands.map(c=>({...c,executeTick:c.executeTick+this.baseTick}))}:{}), ...(Number.isSafeInteger(event.executeTick) ? { executeTick: event.executeTick + this.baseTick } : {}), ...(['rollback', 'recovered', 'reconciled'].includes(event.type) ? { from: event.from + this.baseTick, target: event.target + this.baseTick } : {}) }); } };
     this._core = boundary ? createSessionFromBoundary(options, boundary.bytes, boundary.hash) : createSession(options);
     if (this._availability) delegateRoomRecovery(this._core, () => { this._availability.requested = 'state-mismatch'; });
     this.profile = this._core.profile;
@@ -511,6 +515,7 @@ export class RoomSession {
     const previousCoordinator = this.coordinatorId;
     const commandSequences = tr.commandSequences ?? { ...this._retainedCommandSequences, ...this._core?.getCommandSequences(tr.target - this.baseTick) };
     let commandState = !tr.discardCommands ? this._core?.exportLocalCommandState({ fromTick: Math.min(tr.target - this.baseTick, this._core.confirmedBoundary) }) ?? this._suspendedCommands : undefined;
+    if(commandState&&this._core)commandState={...commandState,tickOffset:this.baseTick};
     commandState ??= commandSequences ? { sequence: commandSequences[this.localPlayerId] ?? 0, lastInput: new Uint8Array(this.inputSize), commands: [] } : undefined;
     if (commandState && commandSequences) {
       const baseline = commandSequences[this.localPlayerId] ?? 0;
@@ -623,9 +628,9 @@ export class RoomSession {
     if (this.closed || this.failure) throw new Error('room session unavailable');
     const sample = bytes(input); if (sample.length !== this.inputSize) throw new RangeError('inputSize');
     this._lastInput = sample.slice();
-    if (!this._core) { if (options?.commands?.length) throw new Error('player not admitted'); return { status: 'waiting', tick: this.tick, commandSequences: [] }; }
+    if (!this._core) { if (options?.commands?.length) throw new Error('player not admitted'); return { status: 'waiting', tick: this.tick, commandSequences: [], commands: [] }; }
     const result = this._core.submitInput(sample, options);
-    return { ...result, tick: this.tick, executeTick: result.executeTick + this.baseTick };
+    return { ...result, tick: this.tick, executeTick: result.executeTick + this.baseTick, commands:result.commands.map(c=>({...c,executeTick:c.executeTick+this.baseTick})) };
   }
   queueCommand(payload) {
     if (this.closed || this.failure) throw new Error('room session unavailable');

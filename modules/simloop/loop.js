@@ -15,7 +15,7 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
   const maxBacklogMs = quantum * maxBacklogTicks;
   let running = false, handle, last, accumulator = 0, generation = 0, timingGeneration = 0;
   if (inputPreview && typeof inputPreview.observe !== 'function') throw new TypeError('inputPreview observation capability');
-  let inputSequence = 0, commandObservation=0, observedAt=-Infinity, cached=null, captureKey=''; const observedCommands=[];
+  let inputSequence = 0, commandObservation=0, observedAt=-Infinity, cached=null, captureEpoch='',captureSequence=-1; const observedCommands=[];
   const observeInput = timestamp => {
     if (!Number.isFinite(timestamp)) throw new TypeError('input observation timestamp');
     if (!canObserveInput()) { cached=null;inputPreview?.clear?.();return null; }
@@ -106,9 +106,12 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
         const result = session.advance(input); work++;
         let submission;
         if(inputPreview||hasSubmission){
-          const metadata=session.localInputState,capture=metadata?.capture;
-          const key=capture?`${metadata.epoch}:${metadata.baseTick}:${capture.sequence}`:'';
-          if(capture && key!==captureKey){captureKey=key;submission={...capture,predict:cached?.predict!==false,boundaryTick:metadata.tick,epoch:metadata.epoch,timeMs:Math.max(timestamp,performance.now())};
+          const metadata=session.localInputState;
+          const epoch=metadata?metadata.epoch+':'+metadata.baseTick:'';
+          if(epoch!==captureEpoch){captureEpoch=epoch;captureSequence=-1;}
+          for(const capture of metadata?.captures??(metadata?.capture?[metadata.capture]:[])){
+            if(capture.sequence<=captureSequence)continue;
+            captureSequence=capture.sequence;submission={...capture,predict:cached?.predict!==false,boundaryTick:metadata.tick,epoch:metadata.epoch,timeMs:Math.max(timestamp,performance.now())};
             submission.commands=capture.commands.map(command=>({...command,observationId:cached?.commands.find(c=>c.sequence===command.sequence)?.observationId}));
             try{inputPreview?.commit(submission,submission.timeMs)}catch(error){inputPreview.clear?.();onPreviewError(error)}
             const assigned=new Set(capture.commands.map(c=>c.sequence));for(let i=observedCommands.length-1;i>=0;i--)if(assigned.has(observedCommands[i].sequence))observedCommands.splice(i,1);
