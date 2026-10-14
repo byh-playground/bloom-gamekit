@@ -31,11 +31,11 @@
     },
     {
       "file": "rollback.js",
-      "sha256": "2c64772369f1bb110a7d5d7f090f687115ca42f9219edf957e1af87e56348696"
+      "sha256": "ed0dff4d77be1219a30d9ae6de1d0fdf91c9f3fafd63bdda058b6ed160784d6b"
     },
     {
       "file": "camera.js",
-      "sha256": "972268ad14de778f1dca437913cff576155754adf1195948897c0df3ff8f66de"
+      "sha256": "3fd1c8a61b49e22b50606dbf472495775419640a8487f3a0ec079cb4d3522cb7"
     },
     {
       "file": "presentation-events.js",
