@@ -1,5 +1,7 @@
 # interpolation
 
+**HTML 실행 프리뷰:** [interpolation](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/interpolation.html) · [interpolation-frame](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/interpolation-frame.html)
+
 ## RenderObject와 점 경로 표시 모델
 
 `RenderObject`는 그려지는 객체의 좁은 슈퍼클래스입니다. 타이머·입력·게임 규칙을 소유하지 않습니다. 하위 타입은 `static renderSchema`와 `render(context, model)`만 작성합니다. 스키마는 중첩 트리가 아니라 **필드 경로 → 상속된 보간 상수**의 1:1 맵입니다.
@@ -87,7 +89,7 @@ if (view.sampleInto('player', 0, now, pose)) {
 }
 ```
 
-실제 번들을 읽는 [실행 예제](../../examples/interpolation/index.html)와 [고정 브라우저 E2E](../../tests/browser.e2e.mjs)를 사용합니다. 프로젝트 루트에서 `npm ci`, `npm test` 후 정적 서버를 열어 예제를 확인하세요. 별도 CPU·할당 측정은 `npm run benchmark:interpolation`입니다.
+실제 번들을 읽는 [실행 예제](./examples/index.html)와 [고정 브라우저 E2E](../../project/tests/browser.e2e.mjs)를 사용합니다. 프로젝트 루트에서 `npm ci`, `npm test` 후 정적 서버를 열어 예제를 확인하세요. 별도 CPU·할당 측정은 `npm run benchmark:interpolation`입니다.
 
 ## 공개 계약
 
@@ -132,7 +134,7 @@ E2E는 실제 Worker 이동에서 추출한 표본, 10/20/30 TPS·60Hz 위상, �
 
 ## 권장 진입점: 한 표시 프레임
 
-[실행 예제](../../examples/interpolation/frame.html) · [예제 코드](../../examples/interpolation/frame-demo.js)
+[실행 예제](./examples/frame.html) · [예제 코드](./examples/frame-demo.js)
 
 생성·이동·경로·제거는 게임에서 다시 보간하지 않습니다. `PresentationRuntime`의
 `capture`로 전체 표시 스냅샷을 주고, RAF마다 `frame(nowMs)`를 한 번 열어 그 프레임만 읽습니다.

@@ -6,7 +6,7 @@
 
 ```sh
 git worktree add --detach /tmp/gamekit-before b822ec6463ab7c018d440ba87c16c0d87fccecb2
-node --expose-gc scripts/benchmark-reviewed.mjs /tmp/gamekit-before > benchmark.json
+node --expose-gc project/benchmarks/reviewed.mjs /tmp/gamekit-before > benchmark.json
 ```
 
 외부 서비스나 게임 상태를 바꾸지 않는 Node fixture입니다. 렌더러·GPU·브라우저·실기기 FPS나 전체 게임의 향상률을 의미하지 않습니다. 정확한 객체 교체/metrics getter 횟수는 timing과 분리한 동등 fixture에서 계수합니다. post-GC retained heap은 총 할당량이 아닙니다.

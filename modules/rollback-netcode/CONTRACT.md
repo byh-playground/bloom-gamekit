@@ -48,7 +48,7 @@
 
 ## 소스와 배포
 
-구현은 bloom-gamekit의 modules/{rollback,deterministic,simloop,transport,replay} 및 modules/_rollback-shared에 단일 소스로 관리한다. modules/rollback-netcode/index.js가 호환 공개 API를 조합한다. 루트 scripts/build.mjs가 각 독립 번들과 외부 import 없는 rollback-netcode.js를 생성한다. 생성 파일을 직접 수정하지 않고 main→dist CI 배포 계약을 따른다. 소비자에게 npm/Node/번들러를 요구하지 않는다.
+구현은 bloom-gamekit의 modules/{rollback,deterministic,simloop,transport,replay} 및 modules/_rollback-shared에 단일 소스로 관리한다. modules/rollback-netcode/index.js가 호환 공개 API를 조합한다. 루트 project/build.mjs가 각 독립 번들과 외부 import 없는 rollback-netcode.js를 생성한다. 생성 파일을 직접 수정하지 않고 main→dist CI 배포 계약을 따른다. 소비자에게 npm/Node/번들러를 요구하지 않는다.
 
 Core는 게임 Adapter·History·Transport·Policy를 Has-a로 소유한다. 방 연결 조정자가 Signaler와 RTC 연결을 소유하며 Core는 Nostr·DOM·암호 구현에 의존하지 않는다. Nostr/Crypto는 discovery와 SDP/ICE 이벤트 서명·검증만 담당한다. Nostr 내용은 서명된 공개 JSON이다. 게임 패킷에 별도 애플리케이션 암호화 계층을 추가하지 않으며 WebRTC의 기본 보안 전송은 브라우저가 처리한다.
 

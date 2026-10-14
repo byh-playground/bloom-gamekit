@@ -1,4 +1,4 @@
-import { VERSION, PROTOCOL_VERSION, CHUNK_SIZE, MAX_TICK, defaults, profiles, encoder, decoder, MAGIC, TYPE, HEADER, SNAP_CHUNK_BYTES, Writer, Reader, packet, frameEqual, copyFrame, runSimulationFrame } from '../_rollback-shared/protocol.js';
+import { REPLAY_FORMAT_VERSION, VERSION, PROTOCOL_VERSION, CHUNK_SIZE, MAX_TICK, defaults, profiles, encoder, decoder, MAGIC, TYPE, HEADER, SNAP_CHUNK_BYTES, Writer, Reader, packet, frameEqual, copyFrame, runSimulationFrame } from '../_rollback-shared/protocol.js';
 import { nowMs, compareIds, integer, bytes, equalBytes, hashBytes } from '../deterministic/utilities.js';
 function copyLocalCommandState(state, inputSize, profile, executedSequence = 0) {
   if (!state || typeof state !== 'object') throw new TypeError('localCommandState');
@@ -1063,7 +1063,7 @@ export class RollbackSession {
     const tick = this._replayFrames.length;
     const hash = this._stateHash(this._stateAt(tick)) ?? this._stateHash(this._replayFinalState) ?? this._replayFinalHash;
     if (tick > 0 && hash === undefined) throw new Error('replay final boundary is unavailable after fatal restoration failure');
-    return { version: VERSION, simulationVersion: this.simulationVersion, seed: this.seed,
+    return { version: REPLAY_FORMAT_VERSION, simulationVersion: this.simulationVersion, seed: this.seed,
       players: [...this.players], inputSize: this.inputSize, tickRate: this.profile.tickRate,
       initialState: this._initialState.slice(), frames: this._replayFrames.map(f => ({ tick: f.tick,
         inputs: f.inputs.map(x => ({ ...copyFrame(x), playerId: x.playerId, predicted: false })) })),

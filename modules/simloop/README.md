@@ -1,5 +1,7 @@
 # simloop
 
+**HTML 실행 프리뷰:** [simloop-input-preview](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/simloop-input-preview.html)
+
 고정 논리 tick과 실제 시간 누적을 분리합니다. session capability를 받아 poll/advance/render를 조합합니다.
 
 공개 API: `createLoop`, 선택 기능 `LocalInputPreview`. 외부 import가 없는 `dist/simloop.js` 하나로 사용할 수 있습니다. 도구 설치나 다른 모듈 초기화는 필요하지 않습니다.
@@ -64,7 +66,7 @@ preview.reconcile({ snapshot, revision, tick, epoch, confirmedSequence, timeMs, 
 
 `PresentationRuntime`는 선택된 local identity의 현재 표시에서 실제 fork 미래 표본까지 schema 곡선을 매 RAF 평가합니다. 입력이 바뀌거나 canonical 경계가 바뀔 때만 bounded restore/replay를 하고, 동일 held 관찰에는 저장한 미래 표본을 재사용합니다. remote ID는 선택하지 않으면 authoritative track만 표시합니다. timer/step callback은 협력형이며 거대한 게임 update를 하드 실시간으로 선점하지 않습니다.
 
-`metrics`는 추정 snapshot clone/correction bytes, replay 입력 bytes, clone/fork/replay/correction 시간을 구분합니다. `PresentationRuntime.previewMetrics`는 schema capture 시간과 선언-field/shape 기준 추정 capture bytes를 계측합니다. 이는 정밀 heap allocation/전송 bytes나 FPS 개선 증명이 아닙니다. preview OFF는 기존 input/session 경로를 그대로 쓰며, 선택 기능은 [실제 입력/WebGL 예제](../../examples/input-preview/index.html)와 browser E2E에서 별도로 확인합니다.
+`metrics`는 추정 snapshot clone/correction bytes, replay 입력 bytes, clone/fork/replay/correction 시간을 구분합니다. `PresentationRuntime.previewMetrics`는 schema capture 시간과 선언-field/shape 기준 추정 capture bytes를 계측합니다. 이는 정밀 heap allocation/전송 bytes나 FPS 개선 증명이 아닙니다. preview OFF는 기존 input/session 경로를 그대로 쓰며, 선택 기능은 [실제 입력/WebGL 예제](./examples/input-preview/index.html)와 browser E2E에서 별도로 확인합니다.
 
 ## 입력 수집·제출 주기 분리
 

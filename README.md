@@ -1,5 +1,7 @@
 # bloom-gamekit
 
+**HTML 실행 프리뷰:** [interpolation](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/interpolation.html) · [interpolation-frame](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/interpolation-frame.html) · [simloop-input-preview](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/simloop-input-preview.html) · [audio](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/audio.html) · [navigation](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/navigation.html) · [rendering-vector](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rendering-vector.html) · [rollback-availability](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rollback-availability.html) · [rollback-netcode](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rollback-netcode.html) · [scenario](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/scenario.html)
+
 브라우저 게임에서 공통으로 쓰는 보간·렌더링·입력·실행·결정론·전송·리플레이·롤백 기능을 독립 모듈로 개발하는 저장소입니다. 필요한 기능만 골라 조합하며, 게임 전체를 소유하는 범용 엔진 클래스는 만들지 않습니다.
 
 **모든 공개 기능은 독립적인 plain JavaScript ESM입니다.** 소비자는 필요한 파일만 가져가며 외부 import나 공유 chunk를 요구하지 않습니다. 보간은 pose, WebGL renderer/device는 GPU 제출·자원, input은 장치 이벤트/action, simloop는 실행 스케줄, camera는 투영, presentation-events는 표현 자원, hud는 화면 anchor, debug-tools는 진단, audio는 실제 오디오 자원과 재생 예산을 소유합니다. 결정론·전송·리플레이·rollback은 기존 SDK 구현을 책임별로 분리했으며, 이전 후 수정 이력은 SDK 출처 문서에 구분해 기록합니다.
@@ -16,25 +18,21 @@
 - [동적 방·공개 입장·새로고침 복구](./modules/rollback/README.md) · [Nostr 디렉터리·전송](./modules/transport/README.md)
 - [SDK 전체/분리 API와 이전](./modules/rollback-netcode/README.md)
 - [비활성 참가자·가용성 정책·자동 coordinator 이관](./modules/rollback/README.md#비활성-참가자와-선택형-가용성) · [독립 deadline pump 예제](./modules/rollback/examples/availability/index.html)
-- [실제 독립 번들을 연결하는 보간 예제](./examples/interpolation/index.html) · [detached 입력 preview 예제](./examples/input-preview/index.html) · [WebGL 벡터·텍스트·그룹 합성 예제](./modules/rendering/examples/vector/index.html)
-- [고정 브라우저 E2E](./tests/browser.e2e.mjs) · [별도 보간 벤치마크](./modules/interpolation/scripts/benchmark.mjs)
+- [실제 독립 번들을 연결하는 보간 예제](./modules/interpolation/examples/index.html) · [detached 입력 preview 예제](./modules/simloop/examples/input-preview/index.html) · [WebGL 벡터·텍스트·그룹 합성 예제](./modules/rendering/examples/vector/index.html)
+- [고정 브라우저 E2E](./project/tests/browser.e2e.mjs) · [별도 보간 벤치마크](./modules/interpolation/scripts/benchmark.mjs)
 
 ```text
-modules/<module>/*.js            모듈의 runtime 소스 (중첩 src/ 없음)
-modules/<module>/README.md       모듈별 API·비용·제한 계약
-modules/<module>/tests/          고정 브라우저 시나리오와 fixture
-modules/<module>/docs/           모듈 설계·이전·측정 기록
-modules/<module>/examples/       해당 모듈의 실행 예제
-modules/<module>/scripts/        해당 모듈의 실행·검증·측정 도구
-modules/rollback-netcode/legacy/ 기존 SDK의 원본 snapshot·출처
-examples/interpolation/     입력 → 고정 틱 → 보간 → WebGL 통합 예제
-tests/                      여러 모듈을 연결하는 연속 E2E·Worker 표본
-docs/                       여러 모듈을 함께 다루는 리뷰·측정
-scripts/                    공통 빌드·배포·통합 검사 도구
-.github/workflows/ci.yml     PR 검사 / main→dist 자동 생성
+modules/<module>/*.js              공개 모듈 runtime 소스
+modules/<module>/README.md         API·비용·제한
+modules/<module>/{docs,examples,tests,scripts}/  해당 모듈 소유 자료
+modules/_rollback-shared/          rollback 계열의 내부 공유 구현·SDK 버전 단일 원본
+modules/rollback-netcode/docs/provenance/  원본 zip·manifest·출처
+project/                         저장소 공통 빌드·배포·프리뷰 생성
+project/{tests,docs,benchmarks}/  통합 검증·측정 기록
+.github/workflows/ci.yml           PR 검사 / main→dist·불변 태그·previews
 ```
 
-개발 명령은 `npm ci`, `npm test`, `npm run test:browser`입니다. 브라우저 첫 설치는 `npx playwright install chromium`입니다. 소스·문서·검사·예제·도구는 기능을 소유한 모듈에 함께 둡니다. 루트의 docs/scripts/tests/examples는 여러 모듈을 실제로 함께 다루는 것만 유지합니다. `rollback-netcode`는 분리 모듈의 호환 진입점과 SDK 전체를 검증하는 예제·검사를 소유합니다.
+개발 명령은 `npm ci`, `npm test`, `npm run test:browser`입니다. 브라우저 첫 설치는 `npx playwright install chromium`입니다. 소스·문서·검사·예제·도구는 기능을 소유한 모듈에 함께 둡니다. 저장소 공통 자료는 project 아래로 모으며 루트에 docs/scripts/tests/examples를 두지 않습니다. `rollback-netcode`는 분리 모듈의 호환 진입점과 SDK 전체를 검증하는 예제·검사를 소유합니다.
 
 검증 정책 원본은 [공통 프로젝트 관리 규칙 §13](https://github.com/byh-playground/bloom-reference/blob/main/rules/project-management.html#verification)입니다. `npm test`는 실제 DOM 입력 → 시뮬 → 표시 모델 → WebGL·HUD·복구의 고정 시나리오를 실행합니다. `npm run test:network`는 RTC·방 수명주기, `npm run test:availability`는 가용성·복귀·분할 시나리오입니다. `npm run test:scenarios`는 build 후 독립 시나리오를 최대 두 개씩 실행하고 데모까지 포함합니다. 각 실행 전체 상한은 180초이며 초과하거나 한 경로가 실패하면 남은 자식 프로세스도 정리하고 실패합니다. 개발 중 단위 검증 파일은 완료 시 제거하고 구현 내부에 맞춘 회귀 파일을 누적하지 않습니다. CPU·할당 측정은 `benchmark:interpolation`, `benchmark:presentation`, 기존 SDK benchmark 명령으로 따로 실행합니다.
 
@@ -42,9 +40,11 @@ scripts/                    공통 빌드·배포·통합 검사 도구
 
 ## GitHub 파일 배포
 
-PR에서는 소스 전용 checkout, 독립 모듈 build, 생성 manifest, bundle bytes와 고정 목록의 font assets를 확인합니다. main에 승인된 변경이 들어오면 GitHub Actions가 같은 build 결과를 확인한 후 `dist` 브랜치의 공개 16개 JavaScript 번들, `manifest.json`, 명시된 font assets를 자동 갱신합니다. modules/assets의 정확한 목록과 자산 경계는 scripts/distribution.mjs와 생성 manifest가 소유합니다. 생성 JS와 asset 복사본은 소스 커밋에 넣지 않습니다. 실제 Node·Chromium E2E와 benchmark는 로컬 검증 명령으로 유지하며 자동 배포 경로에 포함하지 않습니다. 표준 `ubuntu-latest`만 사용하며 유료 runner·artifact 저장·Release·npm·Pages는 쓰지 않습니다.
+PR에서는 소스 전용 checkout, 독립 모듈 build, 생성 manifest, bundle bytes와 고정 목록의 font assets를 확인합니다. main에 승인된 변경이 들어오면 GitHub Actions가 같은 build 결과를 확인한 후 `dist` 브랜치의 공개 16개 JavaScript 번들, `manifest.json`, 명시된 font assets를 자동 갱신합니다. modules/assets의 정확한 목록과 자산 경계는 project/distribution.mjs와 생성 manifest가 소유합니다. 생성 JS와 asset 복사본은 소스 커밋에 넣지 않습니다. 실제 Node·Chromium E2E와 benchmark는 로컬 검증 명령으로 유지하며 자동 배포 경로에 포함하지 않습니다. 표준 `ubuntu-latest`만 사용하며 유료 runner·artifact 저장·Release·npm·Pages는 쓰지 않습니다. HTML Preview용 단일 HTML은 같은 CI 권한으로 별도 previews 브랜치에 배포합니다.
 
-main 실행이 성공하면 [interpolation.js](https://github.com/byh-playground/bloom-gamekit/blob/dist/interpolation.js), [rendering.js](https://github.com/byh-playground/bloom-gamekit/blob/dist/rendering.js), [input.js](https://github.com/byh-playground/bloom-gamekit/blob/dist/input.js), [hash manifest](https://github.com/byh-playground/bloom-gamekit/blob/dist/manifest.json)에서 파일을 공유할 수 있습니다. GitHub Raw URL은 JS MIME/CORS를 보장하는 웹 호스팅 계약이 아니므로 브라우저의 직접 import 주소로 가정하지 마세요. **CORS-enabled font assets**는 `https://cdn.jsdelivr.net/gh/byh-playground/bloom-gamekit@<dist-commit>/assets/fonts/<file>`처럼 정확한 공개 dist commit을 고정해 가져오고 manifest의 byte length/SHA-256을 적용합니다. 버전 별칭이나 branch-latest 주소를 사용하지 마세요. dist 커밋 메시지에 source commit과 manifest의 bundle/asset SHA-256 및 asset byte length가 기록됩니다. 검사 job의 manifest hash와 배포 직전 모든 재빌드 파일을 대조합니다. 기존 dist의 다른 파일은 보존하고, stale main 실행은 건너뛰며 경합 시 non-fast-forward로 중단합니다. 브랜치 게시의 실제 성공은 main 머지 후 별도로 확인해야 합니다.
+main 실행이 성공하면 [interpolation.js](https://github.com/byh-playground/bloom-gamekit/blob/dist/interpolation.js), [rendering.js](https://github.com/byh-playground/bloom-gamekit/blob/dist/rendering.js), [input.js](https://github.com/byh-playground/bloom-gamekit/blob/dist/input.js), [hash manifest](https://github.com/byh-playground/bloom-gamekit/blob/dist/manifest.json)에서 파일을 공유할 수 있습니다. GitHub Raw URL은 JS MIME/CORS를 보장하는 웹 호스팅 계약이 아니므로 브라우저의 직접 import 주소로 가정하지 마세요. **CORS-enabled font assets**는 `https://cdn.jsdelivr.net/gh/byh-playground/bloom-gamekit@<dist-commit>/assets/fonts/<file>`처럼 정확한 공개 dist commit을 고정해 가져오고 manifest의 byte length/SHA-256을 적용합니다. 정확한 불변 버전 태그 또는 dist commit SHA를 사용하고 branch-latest 주소는 사용하지 마세요. dist 커밋 메시지에 source commit과 manifest의 bundle/asset SHA-256 및 asset byte length가 기록됩니다. 검사 job의 manifest hash와 배포 직전 모든 재빌드 파일을 대조합니다. 기존 dist의 다른 파일은 보존하고, stale main 실행은 건너뛰며 경합 시 non-fast-forward로 중단합니다. 브랜치 게시의 실제 성공은 main 머지 후 별도로 확인해야 합니다.
+
+자세한 [버전·배포·프리뷰 계약](./project/docs/releases.md)과 [실제 검사 범위](./project/docs/verification.md)를 참고하세요.
 
 ## 공통 설계 원칙
 
@@ -59,7 +59,7 @@ main 실행이 성공하면 [interpolation.js](https://github.com/byh-playground
 
 ## rollback SDK 이전과 게임 경계
 
-기존 [rollback-netcode 보존 snapshot](modules/rollback-netcode/legacy/README.md)의 검증된 소스를 이 저장소로 책임별 이전했습니다. [호환 API·출처·이전 방법](./modules/rollback-netcode/README.md)을 참조하세요. 기존 저장소는 보존하며 입력 순서·명령 sequence·tick·예측·롤백·복구는 새로 구현하지 않습니다. `deterministic.js`, `simloop.js`, `transport.js`, `replay.js`, `rollback.js` 또는 전체 API 호환 `rollback-netcode.js`를 선택할 수 있습니다. 분리 모듈도 외부 runtime import가 없으며 dist commit SHA와 manifest hash로 고정합니다.
+기존 [rollback-netcode 보존 snapshot](modules/rollback-netcode/docs/provenance/README.md)의 검증된 소스를 이 저장소로 책임별 이전했습니다. [호환 API·출처·이전 방법](./modules/rollback-netcode/README.md)을 참조하세요. 기존 저장소는 보존하며 입력 순서·명령 sequence·tick·예측·롤백·복구는 새로 구현하지 않습니다. `deterministic.js`, `simloop.js`, `transport.js`, `replay.js`, `rollback.js` 또는 전체 API 호환 `rollback-netcode.js`를 선택할 수 있습니다. 분리 모듈도 외부 runtime import가 없으며 dist commit SHA와 manifest hash로 고정합니다.
 
 게임은 자신의 Definition·규칙·권위 상태·완전한 snapshot과 결정론적 어댑터를 소유합니다. UI와 AI가 제출한 행동은 같은 명령 경로를 거쳐 SDK가 정한 tick에서 실행됩니다. input 패키지는 기기 이벤트를 정리할 뿐, 자체 타이머로 명령을 실행하거나 권위 상태를 직접 수정하지 않습니다. 포커스 상실과 입력 해제도 같은 입력 계약에 연결합니다.
 
@@ -83,13 +83,13 @@ main 실행이 성공하면 [interpolation.js](https://github.com/byh-playground
 
 같은 입력·seed·규모에서 변경 전후를 비교하고, 보간 계산·할당·메모리와 실제 화면 갱신 간격을 구분해 기록합니다. CPU 렌더 제출 시간을 GPU 완료시간으로 부르지 않습니다. 개발 기기·브라우저·장면·측정 구간을 남기고 짧은 구간이나 한 기기의 결과를 전체 성능으로 일반화하지 않습니다.
 
-정적 검사나 모의 실행을 실제 브라우저·WebGL·기기 검증으로 대신하지 않습니다. 통과·실패·미실행 범위를 구별하고, 확인하지 않은 결과를 Stable 또는 VALIDATED라고 표시하지 않습니다. CI 로그에 해당 커밋의 실제 실행 결과를 남깁니다.
+정적 검사나 모의 실행을 실제 브라우저·WebGL·기기 검증으로 대신하지 않습니다. 통과·실패·미실행 범위를 구별하고, 확인하지 않은 결과를 Stable 또는 VALIDATED라고 표시하지 않습니다. 실제 실행한 환경과 커밋을 PR 검증 기록에 남깁니다. 현재 CI는 소스·빌드·배포 검증이며 브라우저 E2E는 로컬 명령입니다.
 
 ## 모듈을 조합하는 범위
 
 예제의 게임이 100ms 시뮬레이션 규칙·명령 소비·y-sort·UI 내용을 소유합니다. simloop의 createLoop가 누적/프레임 실행을 맡고 camera·presentation-events·hud·debug-tools를 조합합니다. input의 sample은 edge를 지우지 않으며 게임/SDK가 명령을 수집한 뒤 consume합니다. rendering에는 interpolation import가 없고, 완성된 pose를 받은 게임이 body/shadow/health를 제출합니다. context 복구 시 texture handle은 유지되며 현재 프레임은 버립니다.
 
-이 범위는 최소 core를 완성한 것입니다. terrain/fog·게임 아트·전투·sprite animation·scenegraph·게임별 투영/geometry·asset loading은 공통 게임 규칙으로 구현하지 않았습니다. WebGLDevice는 기존 게임이 제공하는 shader·geometry를 받아 자원·buffer·draw 호출을 관리합니다. 기존 Budmori/Rally 게임에는 아직 적용하지 않았습니다. 브라우저 CI는 실제 WebGL 1 shader와 픽셀을 SwiftShader로 검사하므로 Canvas2D 모의 검증이 아니지만, 모바일·기기 GPU FPS 검증도 아닙니다. 화면 metrics는 실제 draw/vertex/upload count와 관찰 interval/CPU 제출 시간이며 GPU 완료 시간으로 해석하지 않습니다.
+이 범위는 최소 core를 완성한 것입니다. terrain/fog·게임 아트·전투·sprite animation·scenegraph·게임별 투영/geometry·asset loading은 공통 게임 규칙으로 구현하지 않았습니다. WebGLDevice는 기존 게임이 제공하는 shader·geometry를 받아 자원·buffer·draw 호출을 관리합니다. 기존 Budmori/Rally 게임에는 아직 적용하지 않았습니다. 로컬 브라우저 E2E는 실제 WebGL 1 shader와 픽셀을 SwiftShader로 검사하므로 Canvas2D 모의 검증이 아니지만, 모바일·기기 GPU FPS 검증도 아닙니다. 화면 metrics는 실제 draw/vertex/upload count와 관찰 interval/CPU 제출 시간이며 GPU 완료 시간으로 해석하지 않습니다.
 
 ## 작업과 리뷰
 

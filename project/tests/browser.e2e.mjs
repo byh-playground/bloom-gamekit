@@ -1,13 +1,13 @@
-import { runFrameChecks } from './presentation-frame.browser.js';
-import { exerciseWebGLDevice, exerciseVectorRenderer, exerciseFontAssetLoader } from '../modules/rendering/tests/device.browser.mjs';
-import { exerciseReusableMeshes } from '../modules/rendering/tests/mesh.browser.mjs';
+import { runFrameChecks } from '../../modules/interpolation/tests/presentation-frame.browser.js';
+import { exerciseWebGLDevice, exerciseVectorRenderer, exerciseFontAssetLoader } from '../../modules/rendering/tests/device.browser.mjs';
+import { exerciseReusableMeshes } from '../../modules/rendering/tests/mesh.browser.mjs';
 import { runPresentationChecks } from './presentation.browser.js';
 import { chromium } from 'playwright';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { resolve, extname, sep } from 'node:path';
 import assert from 'node:assert/strict';
-import { runRenderObjectChecks } from './render-object.browser.js';
+import { runRenderObjectChecks } from '../../modules/interpolation/tests/render-object.browser.js';
 
 const root = resolve('.');
 let retryFontRequests = 0;
@@ -41,7 +41,7 @@ try {
   const page = await browser.newPage({ viewport: { width: 1000, height: 800 }, hasTouch: true, deviceScaleFactor: 2 });
   const errors = [];
   page.on('pageerror', error => { errors.push(error.message); console.error('Browser runtime:', error.stack ?? error.message); });
-  await page.goto(`http://127.0.0.1:${server.address().port}/examples/interpolation/index.html`);
+  await page.goto(`http://127.0.0.1:${server.address().port}/modules/interpolation/examples/index.html`);
   await page.waitForFunction(() => window.demo?.diagnostics.frames >= 30);
   assert.equal(await page.evaluate(() => demo.renderer.stats.backend), 'webgl1');
   const clockCheck=await page.evaluate(async()=>{
@@ -72,7 +72,7 @@ try {
 
   report.presentationFrame=await runFrameChecks(page);
   const framePage=await browser.newPage();const frameErrors=[];framePage.on('pageerror',e=>frameErrors.push(e.message));
-  await framePage.goto(`http://127.0.0.1:${server.address().port}/examples/interpolation/frame.html`);
+  await framePage.goto(`http://127.0.0.1:${server.address().port}/modules/interpolation/examples/frame.html`);
   await framePage.waitForFunction(()=>document.querySelector('#status').textContent.includes('displayed: 1'));
   await framePage.locator('#rollback').click();await framePage.locator('#spawn').click();
   assert.deepEqual(frameErrors,[]);await framePage.close();
@@ -271,7 +271,7 @@ try {
   await vectorExample.close();report.stages.push('native vector/text/group-opacity example draws WebGL pixels');
   const previewPage=await browser.newPage({viewport:{width:900,height:620},deviceScaleFactor:1}),previewErrors=[];
   previewPage.on('pageerror',error=>{previewErrors.push(error.message);console.error('Input preview scenario:',error.stack)});
-  await previewPage.goto(`http://127.0.0.1:${server.address().port}/examples/input-preview/index.html`);
+  await previewPage.goto(`http://127.0.0.1:${server.address().port}/modules/simloop/examples/input-preview/index.html`);
   await previewPage.waitForFunction(()=>window.inputPreviewDemo?.diagnostics.frames>10);
   await previewPage.locator('canvas').focus();
   const nextBoundary=await previewPage.evaluate(()=>inputPreviewDemo.diagnostics.authorityTick);

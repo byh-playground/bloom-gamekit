@@ -3,7 +3,8 @@ import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const suites = {
-  core: ['tests/browser.e2e.mjs'],
+  previews: ['project/tests/previews.mjs'],
+  core: ['project/tests/browser.e2e.mjs'],
   consumer: ['modules/scenario/tests/bounko.mjs'],
   execution: ['modules/scenario/tests/browser.mjs'],
   audio: ['modules/audio/scripts/check.mjs'],
@@ -44,7 +45,7 @@ async function run(file) {
   });
 }
 try {
-  await run('scripts/build.mjs');
+  await run('project/build.mjs');
   if (suite === 'all') {
     // Independent servers/browser profiles/report files; bounded concurrency,
     // with one shared whole-run deadline and fail-fast child cleanup.

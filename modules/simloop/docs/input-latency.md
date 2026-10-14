@@ -19,7 +19,7 @@ PowerShell:
 ```powershell
 $env:CHROMIUM_EXECUTABLE_PATH='C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'
 $env:INPUT_LATENCY='after'
-node scripts/test-scenarios.mjs availability
+node project/test-scenarios.mjs availability
 ```
 
 이전 소스에서 같은 `buildDistribution(root)`로 만든 dist 디렉터리를 INPUT_BASELINE_DIST로 지정하면 같은 fixture가 이전 번들을 사용합니다. 테스트·빌드 전체 상한은 기존 180초입니다. 이전 소스 SHA는 `55c6345fa2f2c1d506f3002eb3e14e1f4c6d06df`입니다.

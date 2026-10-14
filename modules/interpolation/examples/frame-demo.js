@@ -1,5 +1,5 @@
-import {RenderObject as R,PresentationRuntime} from '../../dist/interpolation.js';
-import {Renderer2D} from '../../dist/rendering.js';
+import {RenderObject as R,PresentationRuntime} from '../../../dist/interpolation.js';
+import {Renderer2D} from '../../../dist/rendering.js';
 class Shot extends R {
   static renderSchema={x:R.POSITION_X,y:R.POSITION_Y,color:R.STEP};
   static renderPath={x:'x',y:'y',durationMs:600,maxPoints:64};

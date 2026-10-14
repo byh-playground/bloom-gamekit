@@ -1,7 +1,7 @@
-import { VERSION, runSimulationFrame } from '../_rollback-shared/protocol.js';
+import { REPLAY_FORMAT_VERSION, runSimulationFrame } from '../_rollback-shared/protocol.js';
 import { bytes, hashBytes } from '../deterministic/utilities.js';
 export function playReplay({ adapter, replay, simulationVersion = replay?.simulationVersion } = {}) {
-  if (replay?.version !== VERSION || replay.simulationVersion !== simulationVersion || !Array.isArray(replay.frames)) throw new Error('replay compatibility');
+  if (replay?.version !== REPLAY_FORMAT_VERSION || replay.simulationVersion !== simulationVersion || !Array.isArray(replay.frames)) throw new Error('replay compatibility');
   adapter.load(bytes(replay.initialState).slice());
   let tick = 0;
   for (const f of replay.frames) {

@@ -5,11 +5,14 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { MANIFEST_FILE, SHA256, readVerifiedDistribution } from './distribution.mjs';
+import { VERSION } from '../modules/_rollback-shared/version.js';
+import { inspectRelease } from './release.mjs';
+import { publishPreviews } from './publish-previews.mjs';
 
 const SHA = /^[a-f0-9]{40}$/;
 
 // export는 파일 시스템 안의 bare 저장소로 배포 절차를 회귀 검사하기 위한 경계입니다.
-export async function publishDist({ root, remote, sourceSha, expectedManifestHash, env = process.env }) {
+export async function publishDist({ root, remote, sourceSha, expectedManifestHash, version = VERSION, env = process.env }) {
   if (typeof sourceSha !== 'string' || !SHA.test(sourceSha)
       || typeof expectedManifestHash !== 'string' || !SHA256.test(expectedManifestHash)) {
     throw new Error('유효한 source SHA와 manifest SHA-256이 필요합니다.');
@@ -44,6 +47,10 @@ export async function publishDist({ root, remote, sourceSha, expectedManifestHas
     // 오래된 실행을 다시 실행해도 최신 main의 배포물을 되돌리지 않습니다.
     if (remoteHead('main') !== sourceSha) return { status: 'stale' };
 
+    const files = [...bundles, ...assets, [MANIFEST_FILE, manifestBytes]];
+    const release = inspectRelease({ git, remote, version, files });
+    if (release.commit) return { status: 'unchanged', commit: release.commit, tag: release.tag };
+
     let parent = remoteHead('dist');
     if (parent !== null) {
       git(['fetch', '--no-tags', remote, 'refs/heads/dist']);
@@ -54,25 +61,26 @@ export async function publishDist({ root, remote, sourceSha, expectedManifestHas
     }
 
     // 고정 목록의 모듈과 manifest만 교체합니다. 관련 없는 기존 파일과 이력은 보존합니다.
-    for (const [file, bytes] of [...bundles, ...assets, [MANIFEST_FILE, manifestBytes]]) {
+    for (const [file, bytes] of files) {
       const blob = git(['hash-object', '-w', '--stdin'], bytes);
       git(['update-index', '--add', '--cacheinfo', `100644,${blob},${file}`]);
     }
     const tree = git(['write-tree']);
-    if (parent !== null && tree === git(['rev-parse', `${parent}^{tree}`])) return { status: 'unchanged', commit: parent };
+    const unchanged = parent !== null && tree === git(['rev-parse', `${parent}^{tree}`]);
 
     const args = ['commit-tree', tree];
     if (parent !== null) args.push('-p', parent);
     const hashes = manifest.modules.map(({ file, sha256 }) => `Bundle-SHA256: ${file} ${sha256}`).join('\n');
     const assetMetadata = manifest.assets.map(({ file, bytes, sha256 }) => `Asset-SHA256: ${file} ${sha256}\nAsset-Bytes: ${file} ${bytes}`).join('\n');
-    const commit = git(args, `[chore] 독립 모듈 배포물 갱신\n\nSource-Commit: ${sourceSha}\nManifest-SHA256: ${manifestHash}\n${hashes}\n${assetMetadata}\n`);
+    const commit = unchanged ? parent : git(args, `[chore] 독립 모듈 배포물 갱신\n\nSDK-Version: ${version}\nSource-Commit: ${sourceSha}\nManifest-SHA256: ${manifestHash}\n${hashes}\n${assetMetadata}\n`);
 
     if (remoteHead('main') !== sourceSha) return { status: 'stale' };
     if (remoteHead('dist') !== parent) throw new Error('dist가 다른 실행에서 변경되었습니다. 덮어쓰지 않고 중단합니다.');
     // force/force-with-lease를 사용하지 않습니다. 경합은 non-fast-forward로 실패합니다.
-    git(['push', remote, `${commit}:refs/heads/dist`]);
+    git(['push', '--atomic', remote, `${commit}:refs/heads/dist`, `${commit}:refs/tags/${release.tag}`]);
     if (remoteHead('dist') !== commit) throw new Error('원격 dist의 commit을 확인할 수 없습니다.');
-    return { status: 'published', commit };
+    if (git(['ls-remote', '--refs', remote, `refs/tags/${release.tag}`]).split(/\s+/)[0] !== commit) throw new Error('Release tag verification failed');
+    return { status: 'published', commit, tag: release.tag };
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }
@@ -103,6 +111,10 @@ async function main() {
     env,
   });
   console.log(`dist: ${result.status}${result.commit ? ` (${result.commit})` : ''}`);
+  if (result.status !== 'stale') {
+    const previews = await publishPreviews({ root: fileURLToPath(new URL('../', import.meta.url)), remote: `https://github.com/${GITHUB_REPOSITORY}.git`, sourceSha: GITHUB_SHA, env });
+    console.log(`previews: ${previews.status}${previews.commit ? ` (${previews.commit})` : ''}`);
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

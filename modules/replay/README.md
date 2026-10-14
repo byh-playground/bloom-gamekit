@@ -9,3 +9,7 @@
 ## 소유권과 비용
 
 replay.frames는 연속 확정 입력의 기록이며 truncated:true는 기록 예산의 한도로 뒤쪽이 빠졌음을 뜻합니다. replay.hash와 반환 hash를 비교하세요. playReplay는 주어진 adapter를 초기 snapshot으로 load한 뒤 실행하므로 별도 진단 adapter를 쓰거나 호출자가 기존 상태를 보존해야 합니다.
+
+## SDK 버전과 기록 형식
+
+SDK 제품 버전은 내부 공유 version.js 한 곳에서 관리합니다. replay.version은 기존 기록을 그대로 읽기 위한 REPLAY_FORMAT_VERSION 식별자이며 SDK 표시 버전과 분리합니다. simulationVersion은 게임 규칙·snapshot 호환성을 게임이 정의합니다. SDK 버전이 같다는 이유만으로 멀티플레이나 게임 리플레이 호환성을 보장하지 않습니다.

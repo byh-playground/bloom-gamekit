@@ -1,5 +1,7 @@
 # scenario
 
+**HTML 실행 프리뷰:** [scenario](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/scenario.html)
+
 실제 게임 실행을 재사용하는 독립 `scenario.js`. 시간 누적과 RAF 취소는 기존 simloop.createLoop를 번들에 포함해 재사용합니다. LocalInputPreview(넷코드 예측), replay(기록), deterministic(PRNG/codec), presentation-events(표현 자원), audio(재생)는 다시 구현하지 않습니다.
 
 ## Definition과 실행

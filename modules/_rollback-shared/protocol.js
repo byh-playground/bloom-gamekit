@@ -1,5 +1,7 @@
 import { bytes, equalBytes } from '../deterministic/utilities.js';
-export const VERSION = '0.2.0-dev';
+export { VERSION } from './version.js';
+// 기존 기록의 형식 식별자입니다. SDK 표시 버전 변경으로 저장 기록을 무효화하지 않습니다.
+export const REPLAY_FORMAT_VERSION = '0.2.0-dev';
 export const PROTOCOL_VERSION = 3;
 export const CHUNK_SIZE = 16384;
 export const MAX_TICK = 0x7ffffffe; // Signed ACK fields reserve -1 for no confirmed input.

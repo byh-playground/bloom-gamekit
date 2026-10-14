@@ -1,6 +1,8 @@
 # rollback-netcode 호환 모듈
 
-기존 SDK [보존 snapshot c3173914519a78834360430071e7a125736d86d5](./legacy/README.md)의 plain JavaScript 구현을 기능 소유자별로 옮겼습니다. VERSION은 기존 `0.2.0-dev`, PROTOCOL_VERSION은 1입니다. 새로운 게임 엔진이나 동기화 엔진을 만들지 않았습니다.
+**HTML 실행 프리뷰:** [rollback-netcode](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rollback-netcode.html)
+
+기존 SDK [보존 snapshot c3173914519a78834360430071e7a125736d86d5](./docs/provenance/README.md)의 plain JavaScript 구현을 기능 소유자별로 옮겼습니다. SDK VERSION의 단일 원본은 [version.js](../_rollback-shared/version.js)이며 wire PROTOCOL_VERSION은 3입니다. 새로운 게임 엔진이나 동기화 엔진을 만들지 않았습니다.
 
 ## 사용과 계약
 
@@ -14,7 +16,7 @@
 
 전체 번들과 분리 번들은 대안입니다. 동시에 가져오면 구현 코드가 중복 로드되므로 한 방식을 선택하세요. 분리 번들마다 필요한 순수 도우미가 포함되며 네트워크·세션을 자동 초기화하지 않습니다. 소비자는 npm·Node·bundler가 필요하지 않습니다.
 
-[공개 타입](./rollback-netcode.d.ts), [개발 계약](./CONTRACT.md), [이전 검증](./docs/rollback-migration.md)을 참조하세요. 기존 옵션 설명과 사용 예제는 [보존 snapshot](./legacy/README.md)에 포함된 원본 README.md에 남아 있습니다. 현재 [한국어 실행 예제](./examples/index.html)는 RoomSession·createLoop·LocalInputPreview·표시 frame·연출 journal을 연결한 작은 전투 예제입니다. [복사 순서와 필수 게임 데이터](./examples/README.md)를 함께 읽으세요. 원본 README의 배포·빌드 명령은 원본 저장소 기준이며 이 저장소는 루트 README의 main→dist CI 정책을 따릅니다.
+[공개 타입](./rollback-netcode.d.ts), [개발 계약](./CONTRACT.md), [이전 검증](./docs/rollback-migration.md)을 참조하세요. 기존 옵션 설명과 사용 예제는 [보존 snapshot](./docs/provenance/README.md)에 포함된 원본 README.md에 남아 있습니다. 현재 [한국어 실행 예제](./examples/index.html)는 RoomSession·createLoop·LocalInputPreview·표시 frame·연출 journal을 연결한 작은 전투 예제입니다. [복사 순서와 필수 게임 데이터](./examples/README.md)를 함께 읽으세요. 원본 README의 배포·빌드 명령은 원본 저장소 기준이며 이 저장소는 루트 README의 main→dist CI 정책을 따릅니다.
 
 ```js
 import { createSession, profiles } from './rollback.js';
@@ -32,7 +34,7 @@ loop.start();
 
 ## 모듈 구성과 실행
 
-`index.js`는 형제 모듈의 공개 API를 조합합니다. `tests/`는 전체 SDK의 API·출처·실제 RTC 통합과 실행 도구를 검사합니다. 기능 단위 검사는 각 소유 모듈의 `tests/`에 둡니다. `docs/`는 이전 검증, `legacy/`는 고정 원본 자료를 소유합니다.
+`index.js`는 형제 모듈의 공개 API를 조합합니다. `tests/`는 실제 RTC·동적 방·가용성 브라우저 harness입니다. API 전체나 출처 파일의 자동 검증을 뜻하지 않습니다. 기능 단위 검사는 각 소유 모듈의 `tests/`에 둡니다. `docs/`는 이전 검증, `docs/provenance/`는 고정 원본 자료를 소유합니다.
 
 프로젝트 루트에서 `npm run build` 후 `npm run serve:rollback-demo`로 예제를 엽니다. `npm run serve:rollback-group`은 고정 그룹 RTC harness를 엽니다. `npm run test:rollback-demo`는 한 화면의 두 독립 RoomSession과 실제 WebRTC를 사용해 10→30TPS 재시작까지 검사합니다. 기존 180초 suite 상한을 사용하며 `npm run test:scenarios`에도 포함됩니다. 공용 relay를 쓰는 `npm run test:rollback-live`는 `RUN_LIVE_ROOM_CHECK=1`을 명시한 경우에만 실행하고 기본 CI에는 포함하지 않습니다.
 
@@ -40,7 +42,7 @@ loop.start();
 
 ## 보존한 동작
 
-프로토콜 VERSION과 packet framing, save/load bytes, RV codec 형식, input/command sequence와 tick, snapshot 검증·복구 트랜잭션, replay schema를 바꾸지 않았습니다. 새 모드 HELLO 필드가 없는 이전 bundle과의 혼합 연결은 거절합니다. 배포 파일 SHA는 번들러·경로 변경 때문에 달라집니다. 이 이유만으로 게임 simulationVersion을 바꾸거나 저장 파일을 변환하지 않습니다.
+최초 책임별 이전 당시에는 프로토콜과 packet framing, save/load bytes, RV codec 형식, input/command sequence와 tick, snapshot 검증·복구 트랜잭션, replay schema를 바꾸지 않았습니다. 새 모드 HELLO 필드가 없는 이전 bundle과의 혼합 연결은 거절합니다. 배포 파일 SHA는 번들러·경로 변경 때문에 달라집니다. 이 이유만으로 게임 simulationVersion을 바꾸거나 저장 파일을 변환하지 않습니다.
 
 기본 rollback 모드의 StateHistory는 기존 full-copy snapshot ring입니다. 설정 가능한 효율적 lockstep 모드와 checkpoint·hash·복구의 비용/호환성은 [실행 모드 계약](../rollback/README.md#실행-모드-rollback--lockstep)을 따릅니다. FullCopy/NativeMemento/DirtyDelta/UndoLog/CheckpointDelta 전략은 이 이전에 새로 구현하지 않았습니다. `_rollback-shared`는 protocol/frame/StateHistory의 단일 내부 구현이며 별도 공개 SDK가 아닙니다. 재실행·진단·replay가 같은 frame 실행 경계를 재사용합니다.
 
@@ -48,7 +50,7 @@ onEvent의 `rollback`은 state load 후, 동기적 재실행 전에 전달됩니
 
 ## 출처와 배포
 
-[provenance.json](./provenance.json)의 files에 원본 저장소·commit·파일 SHA-256을 보존합니다. 이전 후 core/loop 수정은 별도 modifiedFiles 해시와 사유로 기록하며 수정본과 원본의 byte-identical을 주장하지 않습니다. 원본 commit에는 LICENSE 파일이 없습니다. 기존 저작권/참고 문구를 보존하며 임의의 라이선스를 부여하지 않습니다. BIP-340 fixture는 기존 테스트의 원본과 참조를 보존합니다. 기존 저장소와 과거 배포는 수정하거나 삭제하지 않습니다.
+[출처 source.json](./docs/provenance/source.json)의 files에 원본 저장소·commit·파일 SHA-256을 보존합니다. 이전 후 core/loop 수정은 별도 modifiedFiles 해시와 사유로 기록하며 수정본과 원본의 byte-identical을 주장하지 않습니다. 원본 commit에는 LICENSE 파일이 없습니다. 기존 저작권/참고 문구를 보존하며 임의의 라이선스를 부여하지 않습니다. BIP-340 fixture는 기존 테스트의 원본과 참조를 보존합니다. 기존 저장소와 과거 배포는 수정하거나 삭제하지 않습니다.
 
 소스만 main에 커밋하고 GitHub Actions가 `dist` 브랜치에 독립 JS와 manifest를 생성합니다. dist commit SHA로 고정하고 manifest의 SHA-256을 검증하세요. 별도 Pages·Release·npm·artifact 저장·유료 runner를 추가하지 않습니다.
 

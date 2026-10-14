@@ -1,6 +1,6 @@
 # 기존 rollback-netcode 보존 자료
 
-현재 구현·사용법은 [호환 모듈 README](../README.md), 실행 예제는 [examples](../examples/)를 따릅니다. 이 디렉터리는 최신 런타임을 복제하거나 과거 검사 결과를 현재 검증으로 제시하지 않습니다.
+현재 구현·사용법은 [호환 모듈 README](../../README.md), 실행 예제는 [examples](../../examples/)를 따릅니다. 이 디렉터리는 최신 런타임을 복제하거나 과거 검사 결과를 현재 검증으로 제시하지 않습니다.
 
 ## 원본 스냅샷
 
@@ -22,9 +22,4 @@
 
 현재 gamekit 배포는 기존대로 `dist` 브랜치 루트의 JS 파일들과 `manifest.json`만 사용합니다. 이 역사 자료를 배포 브랜치에 추가하거나 옛 호스팅 설정을 옮기지 않습니다.
 
-## 읽기 쉬운 역사 문서
-
-- [기존 SDK 사용법](usage.md): 원본 README의 API 사용 예제·옵션·개발 안내
-- [당시 검증 기록](verification.md): 원본 docs/verification.md의 환경·측정·미검증 범위
-
-두 문서는 c317391 시점의 읽기용 사본이며 현재 계약이나 새 검증 결과가 아닙니다. 제목·역사 안내·문서 링크만 조정했으며 원본 바이트는 위 zip과 manifest에 보존합니다. 현재 사용법과 실행은 [모듈 README](../README.md)와 [실행 예제](../examples/index.html)를 따릅니다.
+원본 README와 검증 기록은 zip에 보존합니다. 제목과 링크만 바꾼 중복 읽기용 사본은 제거했습니다. [source.json](./source.json)의 modifiedFiles는 당시 이전 시점의 이력이며 현재 파일과 바이트가 같다는 의미가 아닙니다.
