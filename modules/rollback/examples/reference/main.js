@@ -1,6 +1,8 @@
-import {RoomSession,createNostrDynamicRoom,createWebRTCPeer,profiles,createLoop,createDeadlineScheduler,LocalInputPreview} from '../../../dist/rollback-netcode.js';
-import {PresentationRuntime} from '../../../dist/interpolation.js';
-import {PresentationEventQueue} from '../../../dist/presentation-events.js';
+import { RoomSession, profiles } from '../../../../dist/rollback.js';
+import { createNostrDynamicRoom, createWebRTCPeer } from '../../../../dist/transport.js';
+import { createLoop, createDeadlineScheduler, LocalInputPreview } from '../../../../dist/simloop.js';
+import {PresentationRuntime} from '../../../../dist/interpolation.js';
+import {PresentationEventQueue} from '../../../../dist/presentation-events.js';
 import {Actor,codec,createGame,stepWorld,entities,WIDTH,HEIGHT} from './game.js';
 
 const $=id=>document.getElementById(id),canvas=$('simulation'),ctx=canvas.getContext('2d');

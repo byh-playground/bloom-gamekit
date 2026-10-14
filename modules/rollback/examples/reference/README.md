@@ -1,7 +1,7 @@
 # 작은 롤백 연결 기준 예제
 
 루트에서 `npm ci`, `npm run build`, `npm run serve:rollback-demo`를 실행한 뒤
-<http://127.0.0.1:8771/modules/rollback-netcode/examples/index.html>을 엽니다.
+<http://127.0.0.1:8771/modules/rollback/examples/reference/index.html>을 엽니다.
 브라우저는 빌드된 세 개의 독립 ESM만 가져옵니다. 소비 게임에 Node/bundler는 필요 없습니다.
 
 - [main.js](./main.js): 공식 방·루프·preview·표시·연출의 기본 연결 순서.

@@ -1,16 +1,16 @@
 # rollback
 
-**HTML 실행 프리뷰:** [rollback-availability](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rollback-availability.html)
+**HTML 실행 프리뷰:** [rollback-reference](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rollback-reference.html) · [rollback-availability](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rollback-availability.html)
 
 입력 확정·예측·동기적 롤백·검증된 snapshot 복구를 소유합니다.
 
 공개 API: `createSession, RollbackSession, createRoomSession, RoomSession, createBootstrapReplay, VERSION, PROTOCOL_VERSION, CHUNK_SIZE, MAX_TICK, profiles`. 외부 import가 없는 `dist/rollback.js` 하나로 사용할 수 있습니다. 도구 설치나 다른 모듈 초기화는 필요하지 않습니다.
 
-기존 rollback-netcode의 동일 함수를 책임별로 이동했습니다. [공개 타입](../rollback-netcode/rollback-netcode.d.ts), [개발 계약](../rollback-netcode/CONTRACT.md), [상세 사용법과 이전](../rollback-netcode/README.md)을 따릅니다. 이 모듈은 게임 규칙·권위 상태를 정의하지 않습니다.
+기존 rollback-netcode의 동일 함수를 책임별로 이동했습니다. [공개 타입](./index.d.ts), [개발 계약](./CONTRACT.md), [상세 사용법과 이전](./docs/api-migration.md)을 따릅니다. 이 모듈은 게임 규칙·권위 상태를 정의하지 않습니다.
 
 ## 비활성 참가자와 선택형 가용성
 
-기본 RoomSession은 strict입니다. 활성 참가자의 진행을 우선하려면 같은 방의 모든 참가자가 아래 config를 선택합니다. [정책 계약](../rollback-netcode/CONTRACT.md#선택형-가용성-정책)과 [실행 예제](./examples/availability/index.html)를 함께 확인하세요.
+기본 RoomSession은 strict입니다. 활성 참가자의 진행을 우선하려면 같은 방의 모든 참가자가 아래 config를 선택합니다. [정책 계약](./CONTRACT.md#선택형-가용성-정책)과 [실행 예제](./examples/availability/index.html)를 함께 확인하세요.
 
 ```js
 const session = createRoomSession({

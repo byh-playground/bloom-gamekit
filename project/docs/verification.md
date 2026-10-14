@@ -22,4 +22,4 @@
 
 interpolation/tests/fixtures/worker-motion.json은 현재 runner가 읽지 않는 역사적 표본입니다. transport의 BIP-340 fixture와 provenance zip/manifest/source.json도 출처 보존 자료입니다. 과거 결과 문서의 명령·해시는 당시 실행 기록으로 보존하며 현재 검사 결과로 재사용하지 않습니다.
 
-rollback은 공개 session 실행 API, _rollback-shared는 내부 공유 구현, rollback-netcode는 독립 API를 한 파일로 제공하는 통합 진입점과 SDK 전체 예제를 소유합니다. 이 세 역할을 같은 이름의 중복 엔진으로 합치지 않습니다.
+rollback은 공개 session 실행 API와 종합 예제, _rollback-shared는 실제 protocol/history 내부 공유 구현입니다. 호환 집계 진입점은 제거했으며 기능 소유 모듈에서 직접 import합니다.

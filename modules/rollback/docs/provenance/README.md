@@ -1,6 +1,6 @@
 # 기존 rollback-netcode 보존 자료
 
-현재 구현·사용법은 [호환 모듈 README](../../README.md), 실행 예제는 [examples](../../examples/)를 따릅니다. 이 디렉터리는 최신 런타임을 복제하거나 과거 검사 결과를 현재 검증으로 제시하지 않습니다.
+현재 구현·사용법은 [rollback README](../api-migration.md), 실행 예제는 [examples](../../examples/reference/)를 따릅니다. 이 디렉터리는 최신 런타임을 복제하거나 과거 검사 결과를 현재 검증으로 제시하지 않습니다.
 
 ## 원본 스냅샷
 

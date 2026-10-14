@@ -12,7 +12,7 @@ simulation TPS, 장치 수집·네트워크 정비 주기, render FPS는 서로 
 
 ## 기존 RTC 시나리오에서 재현
 
-`modules/rollback-netcode/scripts/availability-browser.mjs`의 INPUT_LATENCY 분기를 사용합니다. 기존 두 실제 RTC 클라이언트와 같은 simulation step, LocalInputPreview, 실제 WebGL renderer를 사용하며 새 테스트 엔진을 만들지 않습니다.
+`modules/rollback/scripts/availability-browser.mjs`의 INPUT_LATENCY 분기를 사용합니다. 기존 두 실제 RTC 클라이언트와 같은 simulation step, LocalInputPreview, 실제 WebGL renderer를 사용하며 새 테스트 엔진을 만들지 않습니다.
 
 PowerShell:
 

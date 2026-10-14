@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 
 export const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
-export const demoPath = '/modules/rollback-netcode/examples/index.html';
+export const demoPath = '/modules/rollback/examples/reference/index.html';
 export const resultsDirectory = resolve(root, 'test-results/rollback');
 
 export async function launchBrowser() {

@@ -1,5 +1,5 @@
-import {createValueCodec} from '../../../dist/rollback-netcode.js';
-import {RenderObject as R} from '../../../dist/interpolation.js';
+import { createValueCodec } from '../../../../dist/deterministic.js';
+import {RenderObject as R} from '../../../../dist/interpolation.js';
 
 // Game-owned rules/data only. No clock, DOM, network, audio or live-world preview writes.
 export const codec=createValueCodec(), WIDTH=720, HEIGHT=280;

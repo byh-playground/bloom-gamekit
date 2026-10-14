@@ -1,5 +1,5 @@
 import { build } from 'esbuild';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, readdir, unlink } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { MODULES, FONT_ASSETS, MANIFEST_FILE, createManifest, serializeManifest } from './distribution.mjs';
@@ -8,7 +8,6 @@ const SDK_DEPENDENCIES = {
   scenario: ['simloop'],
   deterministic: ['_rollback-shared'], simloop: [], transport: ['_rollback-shared', 'deterministic'],
   replay: ['_rollback-shared', 'deterministic'], rollback: ['_rollback-shared', 'deterministic'],
-  'rollback-netcode': ['_rollback-shared', 'deterministic', 'simloop', 'transport', 'replay', 'rollback'],
 };
 
 export async function buildDistribution(root) {
@@ -45,6 +44,9 @@ export async function buildDistribution(root) {
   }
   // 모든 모듈의 검사가 끝난 뒤에만 배포물을 갱신합니다.
   await mkdir(resolve(root, 'dist'), { recursive: true });
+  for (const file of await readdir(resolve(root, 'dist'))) {
+    if (/^[a-z][a-z-]*\.js$/.test(file) && !bundles.has(file)) await unlink(resolve(root, 'dist', file));
+  }
   for (const [file, bytes] of bundles) {
     await writeFile(resolve(root, 'dist', file), bytes);
     console.log(`Built dist/${file} (${bytes.length} bytes)`);

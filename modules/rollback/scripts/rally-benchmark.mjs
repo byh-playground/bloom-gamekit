@@ -13,7 +13,8 @@ const htmlPath=path.resolve(process.env.RALLY_HTML),gameRoot=fs.realpathSync(pat
 const currentHtml=fs.readFileSync(htmlPath,'utf8');
 const legacyPath=process.env.RALLY_BASELINE_HTML?path.resolve(process.env.RALLY_BASELINE_HTML):null;
 const legacyHtml=legacyPath?fs.readFileSync(legacyPath,'utf8'):null;
-const sdkSource=fs.readFileSync(path.join(root,'dist/rollback-netcode.js'),'utf8');
+const sdkSource=fs.readFileSync(path.join(root,'dist/rollback.js'),'utf8');
+const deterministicSource=fs.readFileSync(path.join(root,'dist/deterministic.js'),'utf8');
 const baselineSource=process.env.RALLY_BASELINE_MODULE?fs.readFileSync(path.resolve(process.env.RALLY_BASELINE_MODULE),'utf8'):null;
 const counts=(process.env.RALLY_COUNTS||'20,60,200').split(',').map(Number),steps=Number(process.env.RALLY_STEPS||60),warmup=12;
 assert.ok(counts.length&&counts.every(count=>Number.isSafeInteger(count)&&count>0),'RALLY_COUNTS must contain positive integers');
@@ -25,11 +26,10 @@ async function prepare(html,name,assetRoot=gameRoot){
   let body=html.slice(0,at)+`window.__rallyPerf={StrategySim,GameRuleDefinition,HashUtil,StableSerializationUtil,
     RallySimulationAdapter:typeof RallySimulationAdapter==='undefined'?null:RallySimulationAdapter,
     RallyCommandCodec:typeof RallyCommandCodec==='undefined'?null:RallyCommandCodec};`+html.slice(at);
-  // 기존 단일 SDK import만 현재 kit 번들로 연결한다. 외부 릴레이나 가짜 게임 구현을 주입하지 않는다.
-  body=body.replace(/https:\/\/[^\s'"<>]+\/rollback-netcode\.js/g,'http://rally-perf.local/candidate.mjs');
   page.on('pageerror',error=>pageErrors.push({page:name,message:error.message}));
   await page.route('http://rally-perf.local/**',async route=>{
     const pathname=new URL(route.request().url()).pathname;
+    if(pathname==='/deterministic.mjs')return route.fulfill({contentType:'text/javascript',body:deterministicSource});
     if(pathname==='/candidate.mjs')return route.fulfill({contentType:'text/javascript',body:sdkSource});
     if(pathname==='/baseline.mjs'&&baselineSource)return route.fulfill({contentType:'text/javascript',body:baselineSource});
     if(pathname===`/game/${name}.html`)return route.fulfill({contentType:'text/html',body});
@@ -47,6 +47,7 @@ async function prepare(html,name,assetRoot=gameRoot){
   if(name==='current'){
     await page.evaluate(async hasBaseline=>{
       window.__newSDK=await import('/candidate.mjs');
+      window.__hashBytes=(await import('/deterministic.mjs')).hashBytes;
       window.__baselineSDK=hasBaseline?await import('/baseline.mjs'):null;
       const q=window.__rallyPerf;
       if(typeof q.RallySimulationAdapter!=='function'||typeof q.RallyCommandCodec?.encode!=='function')throw Error('RALLY_HTML must provide RallySimulationAdapter and RallyCommandCodec.encode');
@@ -88,7 +89,7 @@ async function measure({mode,count,steps,warmup,round}){
     }
     const stats=list=>{const sorted=list.slice(-steps).sort((a,b)=>a-b);return {p50:sorted[Math.floor(sorted.length*.5)]||0,p95:sorted[Math.floor(sorted.length*.95)]||0,total:list.reduce((a,b)=>a+b,0)}};
     const finalGameplayHash=sim.checksumBundle({includeScheduled:false}).root;
-    const stateHash=adapter?window.__newSDK.hashBytes(adapter.save()):null;
+    const stateHash=adapter?window.__hashBytes(adapter.save()):null;
     const snapshot=adapter?.save();if(snapshot)for(let i=0;i<8;i++)adapter.load(snapshot);
     return {round,mode,initialUnits,finalUnits:sim.units.length,tps:sim.tps,ticks:sim.tick,setupMs,snapshotBytes:initialBytes,totalMs:stats(totals),gameStepMs:stats(stepCosts),adapterSaveMs:stats(saveCosts),adapterLoadMs:stats(loadCosts),finalGameplayHash,stateHash,coreMetrics:core?.metrics||null};
   }finally{proto.step=originalStep;core?.close();sim.dispose('benchmark')}
@@ -128,7 +129,7 @@ async function measurePaired({count,steps,warmup}){
     }
     const report=cases.map(row=>({mode:row.mode,initialUnits:row.initialUnits,finalUnits:row.sim.units.length,snapshotBytes:row.snapshotBytes??null,
       ticks:row.sim.tick,tps:row.sim.tps,totalMs:sample(row.total),gameStepMs:sample(row.game),adapterSaveMs:sample(row.save),runtimeResidualMs:sample(row.coreOnly),
-      finalGameplayHash:row.sim.checksumBundle({includeScheduled:false}).root,stateHash:row.adapter?window.__newSDK.hashBytes(row.adapter.save()):null}));
+      finalGameplayHash:row.sim.checksumBundle({includeScheduled:false}).root,stateHash:row.adapter?window.__hashBytes(row.adapter.save()):null}));
     if(new Set(report.map(r=>r.finalGameplayHash)).size!==1||new Set(report.filter(r=>r.stateHash!==null).map(r=>r.stateHash)).size!==1)throw Error('Paired gameplay/state mismatch');
     return report;
   }finally{active=null;q.StrategySim.prototype.step=original;for(const row of cases){row.core?.close();row.sim.dispose('paired-benchmark')}}

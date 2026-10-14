@@ -10,7 +10,7 @@ await new Promise((ok,no)=>{server.once('error',no);server.listen(0,'127.0.0.1',
 let browser;
 try{
  browser=await chromium.launch({headless:true,...(process.env.CHROMIUM_EXECUTABLE_PATH?{executablePath:process.env.CHROMIUM_EXECUTABLE_PATH}:process.env.BROWSER_CHANNEL?{channel:process.env.BROWSER_CHANNEL}:{})});
- const page=await browser.newPage();page.on('pageerror',e=>errors.push(e.message));await page.goto(`http://127.0.0.1:${server.address().port}/modules/rollback-netcode/tests/dynamic-browser.html`);await page.waitForFunction(()=>typeof window.runDynamicRoomScenario==='function');
+ const page=await browser.newPage();page.on('pageerror',e=>errors.push(e.message));await page.goto(`http://127.0.0.1:${server.address().port}/modules/transport/tests/dynamic-browser.html`);await page.waitForFunction(()=>typeof window.runDynamicRoomScenario==='function');
  const legacy=await page.evaluate(()=>window.runDynamicRoomScenario());assert.deepEqual(errors,[]);assert.equal(legacy.passed,true);
  const prepared=await page.evaluate(()=>window.runDynamicRoomScenario({prepared:true}));assert.deepEqual(errors,[]);assert.equal(prepared.passed,true);
  const paced=await page.evaluate(()=>window.runDynamicRoomScenario({prepared:true,paced:true}));assert.deepEqual(errors,[]);assert.equal(paced.passed,true);

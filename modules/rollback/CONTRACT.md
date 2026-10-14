@@ -135,8 +135,8 @@ Synctest.metrics는 라이브러리가 소유하는 검사 틱·재실행 틱·�
 
 `createLoop.pulse(timestamp, {render:false})`는 timer의 poll/advance를 수행하고 `loop.render()`는 rAF 표현만 수행한다. `createDeadlineScheduler`는 단일 timer/deadline을 소유한다. 숨김은 held input 해제이며, 큰 clock gap 뒤 debt를 폐기하고 timing을 재설정한다. 가용성 RoomSession은 `resumeGapMs`를 넘은 pump 복귀 또는 첫 수신부터 낡은 Core 실행을 동결하고 새 checkpoint를 요청한다. 브라우저 throttling·freeze·OS suspend 중 실행을 보장하지 않는다. 장기 CPU 정지/완전 분할에서 전역 진행을 보장하지 않으며 단조 clock, 신뢰할 수 있는 adapter와 결국 전달되는 제어 메시지를 전제로 재결합한다.
 
-상세 API·용량·재시도·검증 범위는 [rollback](../rollback/README.md), [transport](../transport/README.md), [비용 측정](../rollback/docs/room-session-benchmarks.md)을 따른다. 동적 여러 epoch 전체 replay export는 별도 미지원이며 fixed Core replay 계약을 변경하지 않는다.
+상세 API·용량·재시도·검증 범위는 [rollback](./README.md), [transport](../transport/README.md), [비용 측정](./docs/room-session-benchmarks.md)을 따른다. 동적 여러 epoch 전체 replay export는 별도 미지원이며 fixed Core replay 계약을 변경하지 않는다.
 
 ## 즉시 예약과 protocol 3
 
-submitInput은 이벤트에서 명령별 불변 실행 T를 정하고 INPUT_RESERVATION revision을 전송합니다. 열린 held 입력의 수정은 허용하지만 명령의 T/payload는 바꾸지 않습니다. 예약은 rollback 예측에 사용하며 확정 경계는 canonical INPUT만 전진시킵니다. 미래 T는 기다리고 지난 T는 수신 시 기존 rollback 엔진으로 재실행합니다. 완료는 reconciled 이벤트로 알립니다. ACK는 실행 확인이 아닙니다. protocol 1/2와 혼용하지 않으며 소비자는 같은 dist SHA를 고정합니다. [API·네트워크 예약식](../rollback/README.md), [실행 주기](../simloop/README.md)를 참고하세요.
+submitInput은 이벤트에서 명령별 불변 실행 T를 정하고 INPUT_RESERVATION revision을 전송합니다. 열린 held 입력의 수정은 허용하지만 명령의 T/payload는 바꾸지 않습니다. 예약은 rollback 예측에 사용하며 확정 경계는 canonical INPUT만 전진시킵니다. 미래 T는 기다리고 지난 T는 수신 시 기존 rollback 엔진으로 재실행합니다. 완료는 reconciled 이벤트로 알립니다. ACK는 실행 확인이 아닙니다. protocol 1/2와 혼용하지 않으며 소비자는 같은 dist SHA를 고정합니다. [API·네트워크 예약식](./README.md), [실행 주기](../simloop/README.md)를 참고하세요.

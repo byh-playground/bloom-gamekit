@@ -30,7 +30,7 @@ try {
     const url = publicMode ? previewURL(name) : `http://127.0.0.1:${server.address().port}/${name}.html`;
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
     await page.waitForFunction(name => {
-      const globals = { interpolation: 'demo', 'interpolation-frame': 'frameDemo', 'simloop-input-preview': 'inputPreviewDemo', audio: 'audioExample', navigation: 'navigationDemo', 'rendering-vector': 'vectorExample', 'rollback-netcode': 'reference', scenario: 'scenarioDemo' };
+      const globals = { interpolation: 'demo', 'interpolation-frame': 'frameDemo', 'simloop-input-preview': 'inputPreviewDemo', audio: 'audioExample', navigation: 'navigationDemo', 'rendering-vector': 'vectorExample', 'rollback-reference': 'reference', scenario: 'scenarioDemo' };
       return name === 'rollback-availability' ? typeof document.querySelector('#host')?.onclick === 'function' : !!window[globals[name]];
     }, name, { timeout: 25000 });
     if (name === 'interpolation') await page.waitForFunction(() => demo.diagnostics.frames > 5);
@@ -39,7 +39,7 @@ try {
     if (name === 'navigation') { await page.click('#wiki'); await page.waitForFunction(() => document.querySelector('#screen').textContent.startsWith('wiki/')); }
     if (name === 'scenario') { await page.click('#play'); await page.waitForFunction(() => scenarioDemo.value > 7); await page.click('#stop'); }
     if (name === 'rendering-vector') assert(await page.evaluate(() => vectorExample.device.stats.drawCalls > 0 && vectorExample.device.gl.getError() === 0));
-    if (name === 'rollback-netcode') {
+    if (name === 'rollback-reference') {
       await page.click('#start');
       await page.waitForFunction(() => reference.diagnostics.peers.length === 2 && reference.diagnostics.peers.every(p => p.tick > 5), null, { timeout: 20000 });
       await page.click('[data-player="a"][data-command="2"]');

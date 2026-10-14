@@ -1,7 +1,9 @@
 import { LocalInputPreview } from '../../../dist/simloop.js';
 import { PresentationRuntime, RenderObject } from '../../../dist/interpolation.js';
 import { Renderer2D } from '../../../dist/rendering.js';
-import { createRoomSession, profiles, createValueCodec, createLoop, createDeadlineScheduler } from '../../../dist/rollback-netcode.js';
+import { createRoomSession, profiles } from '../../../dist/rollback.js';
+import { createValueCodec } from '../../../dist/deterministic.js';
+import { createLoop, createDeadlineScheduler } from '../../../dist/simloop.js';
 
 const codec = createValueCodec(), links = new Map(), events = [];
 let session, loop, scheduler, frame, draw, state, renderedFrames = 0, input = 1, costMs = 0, stopped = false, target = Infinity, corruptTick = -1, pauseOnProbe = false, probePaused = false, pulseIntervalMs = 0;

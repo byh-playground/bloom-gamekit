@@ -8,11 +8,11 @@ const suites = {
   consumer: ['modules/scenario/tests/bounko.mjs'],
   execution: ['modules/scenario/tests/browser.mjs'],
   audio: ['modules/audio/scripts/check.mjs'],
-  network: ['modules/rollback-netcode/scripts/rollback-browser.mjs', 'modules/rollback-netcode/scripts/dynamic-room-browser.mjs'],
-  room: ['modules/rollback/scripts/room-modes-browser.mjs', 'modules/rollback-netcode/scripts/availability-browser.mjs'],
-  availability: ['modules/rollback-netcode/scripts/availability-browser.mjs'],
-  demo: ['modules/rollback-netcode/scripts/demo-check.mjs'],
-  live: ['modules/rollback-netcode/scripts/live-room-check.mjs'],
+  network: ['modules/rollback/scripts/rollback-browser.mjs', 'modules/transport/scripts/dynamic-room-browser.mjs'],
+  room: ['modules/rollback/scripts/room-modes-browser.mjs', 'modules/rollback/scripts/availability-browser.mjs'],
+  availability: ['modules/rollback/scripts/availability-browser.mjs'],
+  demo: ['modules/rollback/scripts/demo-check.mjs'],
+  live: ['modules/rollback/scripts/live-room-check.mjs'],
 };
 const suite = process.argv[2] ?? 'core';
 const scenarios = suite === 'all' ? [...suites.core, ...suites.execution, ...suites.audio, ...suites.network, ...suites.availability, ...suites.demo] : suites[suite];

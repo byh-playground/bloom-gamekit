@@ -1,6 +1,7 @@
 // 최적화 채택 전 정확한 BigInt 기준과 안전 범위의 후보를 비교한다.
 import {performance} from 'node:perf_hooks';
-import {fixedPoint,nostrCrypto} from '../../../dist/rollback-netcode.js';
+import { fixedPoint } from '../../../dist/deterministic.js';
+import { nostrCrypto } from '../../../dist/transport.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { resolve } from 'node:path';
