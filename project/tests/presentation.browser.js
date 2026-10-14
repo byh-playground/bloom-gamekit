@@ -1,6 +1,6 @@
 export async function runPresentationChecks(page) {
   return page.evaluate(async () => {
-    const { CameraViewport, OrthographicProjection } = await import('/dist/camera.js');
+    const { CameraViewport, OrthographicProjection, CollisionBoom } = await import('/dist/camera.js');
     const { PresentationEventQueue } = await import('/dist/presentation-events.js');
     const { DOMHud } = await import('/dist/hud.js');
     const { DiagnosticRing, PerformanceProfiler, copyDiagnostic } = await import('/dist/debug-tools.js');
@@ -20,6 +20,34 @@ export async function runPresentationChecks(page) {
     const labelBounds = label.getBoundingClientRect(), hostBounds = host.getBoundingClientRect();
     const anchorX = labelBounds.left + labelBounds.width / 2 - hostBounds.left, anchorY = labelBounds.bottom - hostBounds.top;
     check(Math.abs(anchorX - screen.x) < .02 && Math.abs(anchorY - screen.y) < .02, `shared XYZ HUD visible anchor ${anchorX},${anchorY} expected ${screen.x},${screen.y}; CSS ${label.style.transform}`);
+    // 같은 화면에서 벽 접근 → 모서리 통과 → 복원 → 재시작을 재생합니다.
+    // 장애물 거리는 게임 fixture 소유이며, boom 거리를 viewport 배율에 적용합니다.
+    // 실제 3D sphere cast와 방향 선택은 소비자 게임 E2E의 책임입니다.
+    const boom = new CollisionBoom({ distance: 6, holdMs: 150, releaseHalfLifeMs: 180 });
+    const boomDistances = [];
+    const drawBoomFrame = async (clearDistance, elapsedMs) => {
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      const distance = boom.update(6, clearDistance, elapsedMs);
+      check(distance <= Math.min(6, clearDistance), 'boom never exceeds the current probe clearance');
+      camera.setCamera({ zoom: 3 / distance }); camera.applyToRenderer(renderer); hud.update();
+      camera.worldToScreenInto(world.x, world.y, world.z, screen);
+      renderer.beginFrame(); renderer.rect(plane.x, plane.y, 6, 6, [0, 1, 0, 1]); renderer.endFrame();
+      const rgba = new Uint8Array(4);
+      renderer.gl.readPixels(Math.floor(screen.x * 2), canvas.height - 1 - Math.floor(screen.y * 2), 1, 1, renderer.gl.RGBA, renderer.gl.UNSIGNED_BYTE, rgba);
+      check(rgba[1] === 255 && rgba[3] === 255, 'boom frame must draw the target at its projected GPU pixel');
+      const bounds = label.getBoundingClientRect(), hostBox = host.getBoundingClientRect();
+      check(Math.abs(bounds.left + bounds.width / 2 - hostBox.left - screen.x) < .02 && Math.abs(bounds.bottom - hostBox.top - screen.y) < .02, 'boom frame keeps HUD on the rendered target');
+      boomDistances.push(distance); return distance;
+    };
+    check(await drawBoomFrame(2, 0) === 2, 'new wall retracts even while paused');
+    check(await drawBoomFrame(4, 70) === 2, 'brief corner clearance holds the nearest point');
+    check(await drawBoomFrame(2, 70) === 2, 'nearest corner re-observation refreshes hold');
+    check(await drawBoomFrame(6, 100) === 2, 'camera stays held immediately after leaving the corner');
+    const recovered = await drawBoomFrame(6, 230);
+    check(Math.abs(recovered - 4) < 1e-10, 'only time after the hold contributes to camera recovery');
+    check(await drawBoomFrame(1, 0) === 1, 'a second wall safely interrupts recovery');
+    boom.reset(6); check(await drawBoomFrame(6, 0) === 6, 'restart discards the old wall hold');
+    camera.setCamera({ zoom: 1.5 }); camera.applyToRenderer(renderer); hud.update();
     let starts = 0, sounds = 0, stops = 0, failLateText = true;
     const queue = new PresentationEventQueue({ retentionTicks: 3, adapters: {
       text: { reversible: true, start: event => { if (event.sequence === 3 && failLateText) { failLateText = false; throw Error('temporary text allocation failure'); } starts++; return hud.add(event.sequence, { anchor: event.payload, text: 'hit' }); }, stop: (_, reason, event) => { stops++; hud.remove(event.sequence); } },
@@ -70,6 +98,6 @@ export async function runPresentationChecks(page) {
     hud.add('a', { element: a, anchor: { space: 'screen', x: 1, y: 1 } }); hud.add('b', { element: b, anchor: { space: 'screen', x: 1, y: 1 } });
     hud.remove('a'); hud.remove('b'); check(originalParent.children[0] === a && originalParent.children[1] === b && originalParent.children[2] === c && originalParent.childNodes.length === 3, 'multiple moved siblings restore exact order without leaked markers');
     queue.dispose(); hud.dispose(); ring.dispose(); renderer.dispose(); host.remove();
-    return { cameraHudPixel: [...pixel], stationaryDomWrites: writes, speculativeStarts: starts, cancelledResources: stops, confirmedSoundStarts: sounds, profilerRetainedFrames: profile.retainedFrames, lateRetryAndLongResource: true, globalErrors: 'redacted and detached', clipboardFallback: copy.method };
+    return { cameraHudPixel: [...pixel], collisionBoomDistances: boomDistances, stationaryDomWrites: writes, speculativeStarts: starts, cancelledResources: stops, confirmedSoundStarts: sounds, profilerRetainedFrames: profile.retainedFrames, lateRetryAndLongResource: true, globalErrors: 'redacted and detached', clipboardFallback: copy.method };
   });
 }
