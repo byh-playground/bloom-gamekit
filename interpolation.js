@@ -371,10 +371,13 @@ function compileFieldPolicies(root, fields) {
   }
   return { keys, clocks, positions, origins, births };
 }
-function inferFieldResets(policies, previous, target, timeMs, reset) {
-  for (const key of policies.keys) if (!Object.is(previous.target.values[key.index], target.values[key.index])) {
+function inferStateResets(policies, previous, target, reset) {
+  for (const key of policies.keys) if (!Object.is(previous.values[key.index], target.values[key.index])) {
     for (const index of key.scope) reset.add(index);
   }
+}
+function inferFieldResets(policies, previous, target, timeMs, reset) {
+  inferStateResets(policies, previous.target, target, reset);
   const elapsed = timeMs - previous.timeMs;
   for (const clock of policies.clocks) {
     const from = previous.target.values[clock.index], to = target.values[clock.index];
@@ -628,7 +631,22 @@ var PresentationRuntime = class {
   }
   releasePreview(nowMs) {
     this.#checkClock(nowMs);
-    if (!this.#delayMs) for (const [id, preview] of this.#preview) {
+    if (this.#delayMs) {
+      for (const [id, preview] of this.#preview) {
+        if (preview.releaseAt !== void 0) continue;
+        const track = this.#tracks.get(id);
+        if (!track || track.generation !== preview.generation) continue;
+        const from = preview.plan.fields.map((_, i) => this.#value(preview, i, nowMs)), reset = /* @__PURE__ */ new Set();
+        inferStateResets(preview.plan.policies, preview.target, track.target, reset);
+        for (const i of reset) from[i] = track.target.values[i];
+        const releaseAt = Math.max(nowMs, this.#origin + track.timeMs + this.#delayMs);
+        this.#preview.set(id, { ...preview, from, target: track.target, at: nowMs, durationMs: releaseAt - nowMs, releaseAt, sampledAt: -Infinity });
+      }
+      this.#frameSerial++;
+      this.#now = nowMs;
+      return;
+    }
+    for (const [id, preview] of this.#preview) {
       const track = this.#tracks.get(id);
       if (!track || track.generation !== preview.generation) continue;
       track.from = track.plan.fields.map((_, i) => this.#value(preview, i, nowMs));
@@ -665,6 +683,9 @@ var PresentationRuntime = class {
       const initial = entity.initialSource ? captureRenderData(plan, entity.initialSource) : authority.target;
       const same = old && old.generation === entity.generation && old.plan === plan;
       const from = same ? plan.fields.map((_, i) => this.#value(old, i, nowMs)) : plan.fields.map((_, i) => this.#value(authority, i, nowMs));
+      const reset = /* @__PURE__ */ new Set();
+      inferStateResets(plan.policies, same ? old.target : initial, data, reset);
+      for (const index of reset) from[index] = data.values[index];
       const at = same ? nowMs : Math.min(nowMs, finite(packet.phaseStartMs ?? nowMs, "phaseStartMs"));
       const end = Math.max(nowMs + 1, finite(packet.phaseStartMs ?? nowMs, "phaseStartMs") + (packet.stepMs ?? this.#stepMs));
       const model = same ? old.model : {};
@@ -736,7 +757,7 @@ var PresentationRuntime = class {
     if (!changed && timeMs < this.#timeMs) return false;
     if (!Array.isArray(packet.entities)) throw new TypeError("entities must be an array");
     const origin = changed ? nowMs - timeMs : this.#origin;
-    const next = /* @__PURE__ */ new Map(), sources = /* @__PURE__ */ new WeakMap();
+    const next = /* @__PURE__ */ new Map(), sources = /* @__PURE__ */ new WeakMap(), previews = /* @__PURE__ */ new Map(), previewSources = /* @__PURE__ */ new WeakMap();
     for (const entity of packet.entities) {
       if (!entity || typeof entity.id !== "string" || !entity.id || next.has(entity.id)) throw new TypeError("entity IDs must be nonempty and unique");
       const generation = ordinal(entity.generation, "generation"), source = entity.source;
@@ -760,6 +781,10 @@ var PresentationRuntime = class {
       const old = this.#tracks.get(entity.id), preview = this.#preview.get(entity.id);
       const same = mode === "continuous" && old && old.generation === generation && old.plan === plan && !Number.isFinite(old.removedAt);
       const snap = mode !== "continuous" || entity.teleport === true || !!same && positionDiscontinuity(plan.policies, old, target, this.#snapDistance);
+      if (this.#delayMs && same && !snap && preview?.generation === generation && preview.plan === plan) {
+        previews.set(entity.id, preview);
+        previewSources.set(preview.source, preview);
+      }
       if (same && !snap) inferFieldResets(plan.policies, old, target, timeMs, reset);
       const from = same && !snap && preview?.generation === generation && this.#previewSelection.get(entity.id) === generation ? plan.fields.map((_, i) => this.#value(preview, i, nowMs)) : !same && !snap ? initial ? initial.values.slice() : seedFieldValues(plan.policies, target.values) : target.values.slice();
       if (this.#delayMs && same && !snap) for (let i = 0; i < from.length; i++) from[i] = old.target.values[i];
@@ -830,8 +855,8 @@ var PresentationRuntime = class {
     this.#frameSerial++;
     this.#tracks = next;
     this.#sources = sources;
-    this.#preview.clear();
-    this.#previewSources = /* @__PURE__ */ new WeakMap();
+    this.#preview = previews;
+    this.#previewSources = previewSources;
     this.#revision = revision;
     this.#sequence = sequence;
     this.#timeMs = timeMs;
@@ -858,7 +883,11 @@ var PresentationRuntime = class {
   /** 유효 identity가 아니면 null. 원본 fallback은 없습니다. 모델은 프레임 간 재사용됩니다. */
   sample(id, generation, nowMs) {
     this.#checkClock(nowMs);
-    const preview = this.#preview.get(id);
+    let preview = this.#preview.get(id);
+    if (preview?.releaseAt !== void 0 && nowMs >= preview.releaseAt) {
+      this.#preview.delete(id);
+      preview = null;
+    }
     if (preview && preview.generation === generation && this.#previewSelection.get(id) === generation) {
       if (preview.sampledAt !== nowMs) {
         const values = preview.sampleValues ??= new Array(preview.plan.fields.length);

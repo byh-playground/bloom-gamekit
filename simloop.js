@@ -512,7 +512,8 @@ var LocalInputPreview = class {
     if (!this.#pending.length && !this.#observed) {
       this.#forecast.length = 0;
       this.#forkCurrent = false;
-      this.#presentation?.clearPreview?.();
+      if (discontinuity || mode === "rollback") this.#presentation?.clearPreview?.();
+      else this.#presentation?.releasePreview?.(checkpoint.timeMs);
       return true;
     }
     return true;
