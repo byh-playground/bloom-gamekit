@@ -1364,7 +1364,7 @@ void main() {
     /** Publish immediate schema-only local fork models. This never replaces authoritative tracks. */
     capturePreview(packet2, nowMs2) {
       const started = performance.now();
-      let bytes2 = 0;
+      let bytes3 = 0;
       this.#checkClock(nowMs2);
       if (!packet2 || !Array.isArray(packet2.entities)) throw new TypeError("preview packet entities");
       const revision = ordinal(packet2.revision, "preview revision"), sequence = ordinal(packet2.sequence, "preview sequence"), timeMs = finite(packet2.timeMs, "preview timeMs");
@@ -1384,7 +1384,7 @@ void main() {
         const at = same ? nowMs2 : Math.min(nowMs2, finite(packet2.phaseStartMs ?? nowMs2, "phaseStartMs"));
         const end = Math.max(nowMs2 + 1, finite(packet2.phaseStartMs ?? nowMs2, "phaseStartMs") + (packet2.stepMs ?? this.#stepMs));
         const model = same ? old.model : {};
-        bytes2 += data.values.length * 8 + data.shapes.length * 4;
+        bytes3 += data.values.length * 8 + data.shapes.length * 4;
         writeRenderModel(plan, model, data.values, data.shapes);
         const entry = {
           id: entity.id,
@@ -1413,7 +1413,7 @@ void main() {
       this.#previewTimeMs = timeMs;
       this.#now = nowMs2;
       this.#previewMetrics.captureMs += performance.now() - started;
-      this.#previewMetrics.captureBytes += bytes2;
+      this.#previewMetrics.captureBytes += bytes3;
       this.#previewMetrics.captures++;
       return true;
     }
@@ -2527,7 +2527,7 @@ void main() {
     }
   };
 
-  // dist/rollback-netcode.js
+  // dist/rollback.js
   var nowMs = () => globalThis.performance?.now() ?? Date.now();
   var compareIds = (a, b) => a < b ? -1 : a > b ? 1 : 0;
   function integer(value, name, min = 0, max = 4294967295) {
@@ -2569,7 +2569,7 @@ void main() {
       return signed(Number(BigInt(signed(a)) * 1024n / BigInt(b)));
     }
   });
-  var VERSION = "0.2.0";
+  var VERSION = "0.3.0";
   var REPLAY_FORMAT_VERSION = "0.2.0-dev";
   var PROTOCOL_VERSION = 3;
   var CHUNK_SIZE = 16384;
@@ -3277,8 +3277,8 @@ void main() {
         if (peer.transport.send(data) === false) return false;
         this._metrics.sentBytes += data.length;
         return true;
-      } catch (error2) {
-        this._event("transport-error", { peerId: peer.id, error: error2 });
+      } catch (error) {
+        this._event("transport-error", { peerId: peer.id, error });
         return false;
       }
     }
@@ -3696,9 +3696,9 @@ void main() {
         this._peerAlive(peer, sequence, now);
         if (this._rollbackFrom !== Infinity && !this._replaying && !this._requestedRecovery) this._rollback();
         return true;
-      } catch (error2) {
+      } catch (error) {
         this._metrics.rejectedPackets++;
-        this._event("protocol-error", { peerId, error: error2 });
+        this._event("protocol-error", { peerId, error });
         return false;
       }
     }
@@ -3851,18 +3851,18 @@ void main() {
         const localFrame = inputs.find((frame) => frame.playerId === this.localPlayerId);
         if (localFrame) this._localExecutedInput = localFrame.input.slice();
         this._commandSequences = commandSequences;
-      } catch (error2) {
+      } catch (error) {
         try {
           if (before) this.adapter.load(before.bytes.slice());
           else if (lockstep) this._restoreConfirmedBoundary(tick);
           if (lockstep) this._currentState = { tick, bytes: this._save(), inputHash: this._inputHash };
         } catch (restoreError) {
           this._currentState = null;
-          this._fail("fatal", { error: error2, restoreError });
-          throw error2;
+          this._fail("fatal", { error, restoreError });
+          throw error;
         }
-        this._fail("fatal", { error: error2 });
-        throw error2;
+        this._fail("fatal", { error });
+        throw error;
       }
     }
     _rollback() {
@@ -4242,9 +4242,9 @@ void main() {
         this._recoveryAttempts = 0;
         this._metrics.recoveries++;
         this._event("recovered", { from: job.candidate.tick, target: job.current });
-      } catch (error2) {
+      } catch (error) {
         this.adapter.load(original.slice());
-        this._rejectSnapshot(error2.message);
+        this._rejectSnapshot(error.message);
       } finally {
         this._replaying = false;
         this._metrics.latestResimulationMs = nowMs() - started;
@@ -4400,20 +4400,20 @@ void main() {
         if (bytes3.length > maxBytes) throw new RangeError("Codec byte budget exceeded");
         return bytes3;
       }
-      let bytes2 = new Uint8Array(Math.min(1024, maxBytes)), offset = 0, view = new DataView(bytes2.buffer), entries = 0;
+      let bytes22 = new Uint8Array(Math.min(1024, maxBytes)), offset = 0, view = new DataView(bytes22.buffer), entries = 0;
       const seen = /* @__PURE__ */ new Set(), strings = /* @__PURE__ */ new Map();
       function reserve(size) {
         if (offset + size > maxBytes) throw new RangeError("Codec byte budget exceeded");
-        if (offset + size > bytes2.length) {
-          const next = new Uint8Array(Math.min(maxBytes, Math.max(offset + size, bytes2.length * 2)));
-          next.set(bytes2);
-          bytes2 = next;
-          view = new DataView(bytes2.buffer);
+        if (offset + size > bytes22.length) {
+          const next = new Uint8Array(Math.min(maxBytes, Math.max(offset + size, bytes22.length * 2)));
+          next.set(bytes22);
+          bytes22 = next;
+          view = new DataView(bytes22.buffer);
         }
       }
       function byte(n) {
         reserve(1);
-        bytes2[offset++] = n;
+        bytes22[offset++] = n;
       }
       function length(n) {
         reserve(4);
@@ -4423,7 +4423,7 @@ void main() {
       function raw(data) {
         length(data.length);
         reserve(data.length);
-        bytes2.set(data, offset);
+        bytes22.set(data, offset);
         offset += data.length;
       }
       function variable(n) {
@@ -4489,19 +4489,19 @@ void main() {
       byte(86);
       byte(1);
       write(value);
-      return bytes2.slice(0, offset);
+      return bytes22.slice(0, offset);
     }
     function decode(input) {
-      const bytes2 = input instanceof Uint8Array ? input : input instanceof ArrayBuffer ? new Uint8Array(input) : ArrayBuffer.isView(input) ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength) : null;
-      if (!bytes2 || bytes2.length > maxBytes) throw new RangeError("Invalid codec bytes");
+      const bytes22 = input instanceof Uint8Array ? input : input instanceof ArrayBuffer ? new Uint8Array(input) : ArrayBuffer.isView(input) ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength) : null;
+      if (!bytes22 || bytes22.length > maxBytes) throw new RangeError("Invalid codec bytes");
       let result;
-      if (format === "json") result = normalize(JSON.parse(decoder22.decode(bytes2)));
+      if (format === "json") result = normalize(JSON.parse(decoder22.decode(bytes22)));
       else {
         let need = function(n) {
-          if (n > bytes2.length - offset) throw new RangeError("Truncated codec bytes");
+          if (n > bytes22.length - offset) throw new RangeError("Truncated codec bytes");
         }, byte = function() {
           need(1);
-          return bytes2[offset++];
+          return bytes22[offset++];
         }, length = function() {
           need(4);
           const n = view.getUint32(offset, true);
@@ -4510,7 +4510,7 @@ void main() {
         }, raw = function() {
           const n = length();
           need(n);
-          const data = bytes2.subarray(offset, offset + n);
+          const data = bytes22.subarray(offset, offset + n);
           offset += n;
           return data;
         }, read = function(depth = 0) {
@@ -4573,14 +4573,14 @@ void main() {
         };
         let offset = 0, entries = 0;
         const strings = [], stringSet = /* @__PURE__ */ new Set();
-        const view = new DataView(bytes2.buffer, bytes2.byteOffset, bytes2.byteLength);
+        const view = new DataView(bytes22.buffer, bytes22.byteOffset, bytes22.byteLength);
         if (byte() !== 82 || byte() !== 86 || byte() !== 1) throw new TypeError("Invalid codec header");
         result = read();
-        if (offset !== bytes2.length) throw new TypeError("Trailing codec bytes");
+        if (offset !== bytes22.length) throw new TypeError("Trailing codec bytes");
       }
       if (format === "json") {
         const canonical = encode(result);
-        if (canonical.length !== bytes2.length || canonical.some((v, i) => v !== bytes2[i])) throw new TypeError("Noncanonical codec bytes");
+        if (canonical.length !== bytes22.length || canonical.some((v, i) => v !== bytes22[i])) throw new TypeError("Noncanonical codec bytes");
       }
       return result;
     }
@@ -4588,211 +4588,365 @@ void main() {
   }
   var binaryCodec = createValueCodec();
   var jsonCodec = createValueCodec({ format: "json" });
-  var DEFAULT_ICE = Object.freeze([{ urls: "stun:stun.l.google.com:19302" }]);
-  var nostrField = 0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2fn;
-  var nostrOrder = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
-  var nostrGenerator = [
-    0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798n,
-    0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8n,
-    1n
-  ];
-  var nostrInfinity = [0n, 1n, 0n];
-  var nostrEncoder = new TextEncoder();
-  function nostrMod(nostrValue, nostrModulus = nostrField) {
-    const nostrRemainder = nostrValue % nostrModulus;
-    return nostrRemainder < 0n ? nostrRemainder + nostrModulus : nostrRemainder;
+
+  // dist/deterministic.js
+  function integer2(value, name, min = 0, max = 4294967295) {
+    if (!Number.isSafeInteger(value) || value < min || value > max) throw new RangeError(name);
+    return value;
   }
-  function nostrPow(nostrBase, nostrExponent) {
-    let nostrResult = 1n;
-    nostrBase = nostrMod(nostrBase);
-    while (nostrExponent > 0n) {
-      if (nostrExponent & 1n) nostrResult = nostrMod(nostrResult * nostrBase);
-      nostrBase = nostrMod(nostrBase * nostrBase);
-      nostrExponent >>= 1n;
+  function bytes2(value, name = "bytes") {
+    if (value instanceof Uint8Array) return value;
+    if (value instanceof ArrayBuffer) return new Uint8Array(value);
+    if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    throw new TypeError(`${name} must be Uint8Array or ArrayBuffer`);
+  }
+  function hashBytes2(value, seed = 2166136261) {
+    let h = seed >>> 0;
+    for (const b of bytes2(value)) h = Math.imul(h ^ b, 16777619) >>> 0;
+    return h;
+  }
+  var signed2 = (x) => integer2(x, "fixed-point result", -2147483648, 2147483647);
+  var fixedPoint2 = Object.freeze({
+    scale: 1024,
+    fromNumber: (x) => signed2(Math.round(x * 1024)),
+    toNumber: (x) => signed2(x) / 1024,
+    add: (a, b) => signed2(signed2(a) + signed2(b)),
+    sub: (a, b) => signed2(signed2(a) - signed2(b)),
+    mul: (a, b) => {
+      signed2(a);
+      signed2(b);
+      const product = a * b;
+      if (Number.isSafeInteger(product)) return signed2(Math.trunc(product / 1024) || 0);
+      return signed2(Number(BigInt(a) * BigInt(b) / 1024n));
+    },
+    div: (a, b) => {
+      if (signed2(b) === 0) throw new RangeError("fixed-point division by zero");
+      return signed2(Number(BigInt(signed2(a)) * 1024n / BigInt(b)));
     }
-    return nostrResult;
-  }
-  function nostrDouble(nostrPoint) {
-    const [nostrX, nostrY, nostrZ] = nostrPoint;
-    if (nostrZ === 0n || nostrY === 0n) return nostrInfinity;
-    const nostrA = nostrMod(nostrX * nostrX);
-    const nostrB = nostrMod(nostrY * nostrY);
-    const nostrC = nostrMod(nostrB * nostrB);
-    const nostrD = nostrMod(2n * (nostrMod((nostrX + nostrB) ** 2n) - nostrA - nostrC));
-    const nostrE = nostrMod(3n * nostrA);
-    const nostrNextX = nostrMod(nostrE * nostrE - 2n * nostrD);
-    return [nostrNextX, nostrMod(nostrE * (nostrD - nostrNextX) - 8n * nostrC), nostrMod(2n * nostrY * nostrZ)];
-  }
-  function nostrAdd(nostrLeft, nostrRight) {
-    if (nostrLeft[2] === 0n) return nostrRight;
-    if (nostrRight[2] === 0n) return nostrLeft;
-    const [nostrX1, nostrY1, nostrZ1] = nostrLeft;
-    const [nostrX2, nostrY2, nostrZ2] = nostrRight;
-    const nostrZ1Squared = nostrMod(nostrZ1 * nostrZ1);
-    const nostrZ2Squared = nostrMod(nostrZ2 * nostrZ2);
-    const nostrU1 = nostrMod(nostrX1 * nostrZ2Squared);
-    const nostrU2 = nostrMod(nostrX2 * nostrZ1Squared);
-    const nostrS1 = nostrMod(nostrY1 * nostrZ2Squared * nostrZ2);
-    const nostrS2 = nostrMod(nostrY2 * nostrZ1Squared * nostrZ1);
-    if (nostrU1 === nostrU2) return nostrS1 === nostrS2 ? nostrDouble(nostrLeft) : nostrInfinity;
-    const nostrH = nostrMod(nostrU2 - nostrU1);
-    const nostrI = nostrMod(4n * nostrH * nostrH);
-    const nostrJ = nostrMod(nostrH * nostrI);
-    const nostrR = nostrMod(2n * (nostrS2 - nostrS1));
-    const nostrV = nostrMod(nostrU1 * nostrI);
-    const nostrNextX = nostrMod(nostrR * nostrR - nostrJ - 2n * nostrV);
-    return [
-      nostrNextX,
-      nostrMod(nostrR * (nostrV - nostrNextX) - 2n * nostrS1 * nostrJ),
-      nostrMod(((nostrZ1 + nostrZ2) ** 2n - nostrZ1Squared - nostrZ2Squared) * nostrH)
-    ];
-  }
-  function nostrMultiply(nostrScalar, nostrPoint = nostrGenerator) {
-    let nostrResult = nostrInfinity;
-    while (nostrScalar > 0n) {
-      if (nostrScalar & 1n) nostrResult = nostrAdd(nostrResult, nostrPoint);
-      nostrPoint = nostrDouble(nostrPoint);
-      nostrScalar >>= 1n;
-    }
-    return nostrResult;
-  }
-  function nostrAffine(nostrPoint) {
-    if (nostrPoint[2] === 0n) return null;
-    const nostrInverse = nostrPow(nostrPoint[2], nostrField - 2n);
-    const nostrInverseSquared = nostrMod(nostrInverse * nostrInverse);
-    return [nostrMod(nostrPoint[0] * nostrInverseSquared), nostrMod(nostrPoint[1] * nostrInverseSquared * nostrInverse)];
-  }
-  function nostrLiftX(nostrX) {
-    if (nostrX >= nostrField) return null;
-    const nostrC = nostrMod(nostrX ** 3n + 7n);
-    const nostrY = nostrPow(nostrC, (nostrField + 1n) / 4n);
-    if (nostrMod(nostrY * nostrY) !== nostrC) return null;
-    return [nostrX, nostrY & 1n ? nostrField - nostrY : nostrY, 1n];
-  }
-  function nostrRequireBytes(nostrValue, nostrLength, nostrName) {
-    if (!(nostrValue instanceof Uint8Array) || nostrValue.length !== nostrLength) {
-      throw new TypeError(`${nostrName} must be a ${nostrLength}-byte Uint8Array`);
-    }
-    return new Uint8Array(nostrValue);
-  }
-  function nostrBytesToNumber(nostrBytes) {
-    let nostrValue = 0n;
-    for (const nostrByte of nostrBytes) nostrValue = nostrValue << 8n | BigInt(nostrByte);
-    return nostrValue;
-  }
-  function nostrNumberToBytes(nostrValue) {
-    const nostrBytes = new Uint8Array(32);
-    for (let nostrIndex = 31; nostrIndex >= 0; nostrIndex--) {
-      nostrBytes[nostrIndex] = Number(nostrValue & 255n);
-      nostrValue >>= 8n;
-    }
-    return nostrBytes;
-  }
-  function nostrConcat(...nostrParts) {
-    const nostrBytes = new Uint8Array(nostrParts.reduce((nostrSize, nostrPart) => nostrSize + nostrPart.length, 0));
-    let nostrOffset = 0;
-    for (const nostrPart of nostrParts) {
-      nostrBytes.set(nostrPart, nostrOffset);
-      nostrOffset += nostrPart.length;
-    }
-    return nostrBytes;
-  }
-  function nostrRequireCrypto(nostrCryptoImpl, nostrRandom = false) {
-    if (!nostrCryptoImpl?.subtle || typeof nostrCryptoImpl.subtle.digest !== "function" || nostrRandom && typeof nostrCryptoImpl.getRandomValues !== "function") {
-      throw new Error("Nostr signaling requires WebCrypto SHA-256 and secure randomness (use HTTPS)");
-    }
-  }
-  async function nostrHash(nostrBytes, nostrCryptoImpl) {
-    nostrRequireCrypto(nostrCryptoImpl);
-    return new Uint8Array(await nostrCryptoImpl.subtle.digest("SHA-256", nostrBytes));
-  }
-  async function nostrTaggedHash(nostrTag, nostrBytes, nostrCryptoImpl) {
-    const nostrTagHash = await nostrHash(nostrEncoder.encode(nostrTag), nostrCryptoImpl);
-    return nostrHash(nostrConcat(nostrTagHash, nostrTagHash, nostrBytes), nostrCryptoImpl);
-  }
-  function nostrPublicKey(nostrSecret) {
-    const nostrSecretCopy = nostrRequireBytes(nostrSecret, 32, "secret");
-    try {
-      const nostrScalar = nostrBytesToNumber(nostrSecretCopy);
-      if (nostrScalar === 0n || nostrScalar >= nostrOrder) throw new RangeError("Invalid secp256k1 secret");
-      return nostrNumberToBytes(nostrAffine(nostrMultiply(nostrScalar))[0]);
-    } finally {
-      nostrSecretCopy.fill(0);
-    }
-  }
-  async function nostrVerify(nostrSignature, nostrMessage, nostrPublic, nostrCryptoImpl) {
-    if (!(nostrSignature instanceof Uint8Array) || nostrSignature.length !== 64 || !(nostrMessage instanceof Uint8Array) || nostrMessage.length !== 32 || !(nostrPublic instanceof Uint8Array) || nostrPublic.length !== 32) return false;
-    const nostrSignatureCopy = new Uint8Array(nostrSignature);
-    const nostrMessageCopy = new Uint8Array(nostrMessage);
-    const nostrPublicCopy = new Uint8Array(nostrPublic);
-    const nostrPoint = nostrLiftX(nostrBytesToNumber(nostrPublicCopy));
-    const nostrR = nostrBytesToNumber(nostrSignatureCopy.subarray(0, 32));
-    const nostrS = nostrBytesToNumber(nostrSignatureCopy.subarray(32));
-    if (!nostrPoint || nostrR >= nostrField || nostrS >= nostrOrder) return false;
-    const nostrChallenge = nostrBytesToNumber(await nostrTaggedHash(
-      "BIP0340/challenge",
-      nostrConcat(nostrSignatureCopy.subarray(0, 32), nostrPublicCopy, nostrMessageCopy),
-      nostrCryptoImpl
-    )) % nostrOrder;
-    const nostrResult = nostrAffine(nostrAdd(nostrMultiply(nostrS), nostrMultiply(
-      nostrChallenge,
-      [nostrPoint[0], nostrMod(-nostrPoint[1]), 1n]
-    )));
-    return nostrResult !== null && (nostrResult[1] & 1n) === 0n && nostrResult[0] === nostrR;
-  }
-  async function nostrSign(nostrMessage, nostrSecret, nostrAuxiliary, nostrCryptoImpl) {
-    const nostrMessageCopy = nostrRequireBytes(nostrMessage, 32, "message");
-    const nostrAuxiliaryCopy = nostrRequireBytes(nostrAuxiliary, 32, "auxiliary randomness");
-    const nostrSecretCopy = nostrRequireBytes(nostrSecret, 32, "secret");
-    let nostrMaskedSecret;
-    try {
-      const nostrScalar = nostrBytesToNumber(nostrSecretCopy);
-      if (nostrScalar === 0n || nostrScalar >= nostrOrder) throw new RangeError("Invalid secp256k1 secret");
-      const nostrPoint = nostrAffine(nostrMultiply(nostrScalar));
-      const nostrNormalizedSecret = nostrPoint[1] & 1n ? nostrOrder - nostrScalar : nostrScalar;
-      const nostrPublic = nostrNumberToBytes(nostrPoint[0]);
-      const nostrAuxiliaryHash = await nostrTaggedHash("BIP0340/aux", nostrAuxiliaryCopy, nostrCryptoImpl);
-      nostrMaskedSecret = nostrNumberToBytes(nostrNormalizedSecret);
-      for (let nostrIndex = 0; nostrIndex < 32; nostrIndex++) nostrMaskedSecret[nostrIndex] ^= nostrAuxiliaryHash[nostrIndex];
-      const nostrNonce = nostrBytesToNumber(await nostrTaggedHash(
-        "BIP0340/nonce",
-        nostrConcat(nostrMaskedSecret, nostrPublic, nostrMessageCopy),
-        nostrCryptoImpl
-      )) % nostrOrder;
-      if (nostrNonce === 0n) throw new Error("BIP340 nonce generation failed");
-      const nostrNoncePoint = nostrAffine(nostrMultiply(nostrNonce));
-      const nostrNormalizedNonce = nostrNoncePoint[1] & 1n ? nostrOrder - nostrNonce : nostrNonce;
-      const nostrR = nostrNumberToBytes(nostrNoncePoint[0]);
-      const nostrChallenge = nostrBytesToNumber(await nostrTaggedHash(
-        "BIP0340/challenge",
-        nostrConcat(nostrR, nostrPublic, nostrMessageCopy),
-        nostrCryptoImpl
-      )) % nostrOrder;
-      const nostrSignature = nostrConcat(nostrR, nostrNumberToBytes(nostrMod(nostrNormalizedNonce + nostrChallenge * nostrNormalizedSecret, nostrOrder)));
-      if (!await nostrVerify(nostrSignature, nostrMessageCopy, nostrPublic, nostrCryptoImpl)) throw new Error("BIP340 signature self-check failed");
-      return nostrSignature;
-    } finally {
-      nostrSecretCopy.fill(0);
-      nostrAuxiliaryCopy.fill(0);
-      nostrMaskedSecret?.fill(0);
-    }
-  }
-  var nostrCrypto = Object.freeze({
-    publicKey: nostrPublicKey,
-    sign: (nostrMessage, nostrSecret, nostrAuxiliary) => nostrSign(nostrMessage, nostrSecret, nostrAuxiliary, globalThis.crypto),
-    verify: (nostrSignature, nostrMessage, nostrPublic) => nostrVerify(nostrSignature, nostrMessage, nostrPublic, globalThis.crypto)
   });
-  var nostrContentLimit = 128 * 1024;
-  var starHeader = 24;
-  var starPayload = CHUNK_SIZE - starHeader;
-  var PROBE_MAGIC = new Uint8Array([66, 77, 68, 89, 78, 80, 82, 49]);
-  var MAX_SIGNAL_BYTES = 128 * 1024;
-  var MAX_BACKLOG_BYTES = 2 * 1024 * 1024;
+  function createValueCodec2({ format = "binary", maxBytes = 16 * 1024 * 1024, maxDepth = 128, maxEntries = 1e6 } = {}) {
+    if (!["binary", "json"].includes(format)) throw new TypeError("Unknown codec format");
+    for (const limit of [maxBytes, maxDepth, maxEntries]) if (!Number.isSafeInteger(limit) || limit < 1) throw new RangeError("Invalid codec limit");
+    const encoder22 = new TextEncoder(), decoder22 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+    function normalize(value, depth = 0, seen = /* @__PURE__ */ new Set(), budget = { count: 0 }) {
+      if (depth > maxDepth || ++budget.count > maxEntries) throw new RangeError("Value codec budget exceeded");
+      if (value === null || typeof value === "boolean") return value;
+      if (typeof value === "number") {
+        if (!Number.isFinite(value)) throw new TypeError("Finite numbers required");
+        return Object.is(value, -0) ? 0 : value;
+      }
+      if (typeof value === "string") {
+        if (decoder22.decode(encoder22.encode(value)) !== value) throw new TypeError("Invalid Unicode string");
+        return value;
+      }
+      if (!value || typeof value !== "object" || seen.has(value)) throw new TypeError("Unsupported or cyclic value");
+      seen.add(value);
+      let result;
+      if (value instanceof Uint8Array) {
+        if (format === "json") throw new TypeError("JSON codec does not support byte values");
+        result = value;
+      } else if (Array.isArray(value)) {
+        result = Array.from(value, (item) => normalize(item, depth + 1, seen, budget));
+      } else {
+        if (![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new TypeError("Plain records required");
+        result = {};
+        for (const key of Object.keys(value).sort()) {
+          normalize(key, depth + 1, seen, budget);
+          Object.defineProperty(result, key, { value: normalize(value[key], depth + 1, seen, budget), enumerable: true, writable: true, configurable: true });
+        }
+      }
+      seen.delete(value);
+      return result;
+    }
+    const stringCache = /* @__PURE__ */ new Map();
+    let cachedStringBytes = 0;
+    function stringBytes(value) {
+      let data = stringCache.get(value);
+      if (data) return data;
+      for (let i = 0; i < value.length; i++) {
+        const c = value.charCodeAt(i);
+        if (c >= 55296 && c <= 56319) {
+          const next = value.charCodeAt(++i);
+          if (!(next >= 56320 && next <= 57343)) throw new TypeError("Invalid Unicode string");
+        } else if (c >= 56320 && c <= 57343) throw new TypeError("Invalid Unicode string");
+      }
+      data = encoder22.encode(value);
+      if (data.length <= 256 && stringCache.size < 1024 && cachedStringBytes + data.length <= 131072) {
+        stringCache.set(value, data);
+        cachedStringBytes += data.length;
+      }
+      return data;
+    }
+    function encode(value) {
+      if (format === "json") {
+        const bytes3 = encoder22.encode(JSON.stringify(normalize(value)));
+        if (bytes3.length > maxBytes) throw new RangeError("Codec byte budget exceeded");
+        return bytes3;
+      }
+      let bytes22 = new Uint8Array(Math.min(1024, maxBytes)), offset = 0, view = new DataView(bytes22.buffer), entries = 0;
+      const seen = /* @__PURE__ */ new Set(), strings = /* @__PURE__ */ new Map();
+      function reserve(size) {
+        if (offset + size > maxBytes) throw new RangeError("Codec byte budget exceeded");
+        if (offset + size > bytes22.length) {
+          const next = new Uint8Array(Math.min(maxBytes, Math.max(offset + size, bytes22.length * 2)));
+          next.set(bytes22);
+          bytes22 = next;
+          view = new DataView(bytes22.buffer);
+        }
+      }
+      function byte(n) {
+        reserve(1);
+        bytes22[offset++] = n;
+      }
+      function length(n) {
+        reserve(4);
+        view.setUint32(offset, n, true);
+        offset += 4;
+      }
+      function raw(data) {
+        length(data.length);
+        reserve(data.length);
+        bytes22.set(data, offset);
+        offset += data.length;
+      }
+      function variable(n) {
+        while (n >= 128) {
+          byte(n % 128 + 128);
+          n = Math.floor(n / 128);
+        }
+        byte(n);
+      }
+      function write(v, depth = 0) {
+        if (depth > maxDepth || ++entries > maxEntries) throw new RangeError("Value codec budget exceeded");
+        if (v === null) byte(0);
+        else if (v === false) byte(1);
+        else if (v === true) byte(2);
+        else if (typeof v === "number") {
+          if (!Number.isFinite(v)) throw new TypeError("Finite numbers required");
+          if (Number.isInteger(v) && v >= -2147483648 && v <= 2147483647) {
+            byte(8);
+            variable(v < 0 ? -v * 2 - 1 : v * 2);
+          } else {
+            byte(3);
+            reserve(8);
+            view.setFloat64(offset, v, true);
+            offset += 8;
+          }
+        } else if (typeof v === "string") {
+          const ref = strings.get(v);
+          if (ref !== void 0) {
+            byte(9);
+            variable(ref);
+          } else {
+            strings.set(v, strings.size);
+            byte(4);
+            raw(stringBytes(v));
+          }
+        } else {
+          if (!v || typeof v !== "object" || seen.has(v)) throw new TypeError("Unsupported or cyclic value");
+          if (v instanceof Uint8Array) {
+            byte(7);
+            raw(v);
+            return;
+          }
+          seen.add(v);
+          if (Array.isArray(v)) {
+            byte(5);
+            length(v.length);
+            for (const item of v) write(item, depth + 1);
+          } else {
+            const prototype = Object.getPrototypeOf(v);
+            if (prototype !== Object.prototype && prototype !== null) throw new TypeError("Plain records required");
+            byte(6);
+            const keys = Object.keys(v).sort();
+            length(keys.length);
+            for (const key of keys) {
+              write(key, depth + 1);
+              write(v[key], depth + 1);
+            }
+          }
+          seen.delete(v);
+        }
+      }
+      byte(82);
+      byte(86);
+      byte(1);
+      write(value);
+      return bytes22.slice(0, offset);
+    }
+    function decode(input) {
+      const bytes22 = input instanceof Uint8Array ? input : input instanceof ArrayBuffer ? new Uint8Array(input) : ArrayBuffer.isView(input) ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength) : null;
+      if (!bytes22 || bytes22.length > maxBytes) throw new RangeError("Invalid codec bytes");
+      let result;
+      if (format === "json") result = normalize(JSON.parse(decoder22.decode(bytes22)));
+      else {
+        let need = function(n) {
+          if (n > bytes22.length - offset) throw new RangeError("Truncated codec bytes");
+        }, byte = function() {
+          need(1);
+          return bytes22[offset++];
+        }, length = function() {
+          need(4);
+          const n = view.getUint32(offset, true);
+          offset += 4;
+          return n;
+        }, raw = function() {
+          const n = length();
+          need(n);
+          const data = bytes22.subarray(offset, offset + n);
+          offset += n;
+          return data;
+        }, read = function(depth = 0) {
+          if (depth > maxDepth || ++entries > maxEntries) throw new RangeError("Value codec budget exceeded");
+          const tag = byte();
+          if (tag === 0) return null;
+          if (tag === 1) return false;
+          if (tag === 2) return true;
+          if (tag === 3) {
+            need(8);
+            const n2 = view.getFloat64(offset, true);
+            offset += 8;
+            if (!Number.isFinite(n2) || Object.is(n2, -0) || Number.isInteger(n2) && n2 >= -2147483648 && n2 <= 2147483647) throw new TypeError("Noncanonical number");
+            return n2;
+          }
+          if (tag === 8 || tag === 9) {
+            let n2 = 0, scale = 1, part;
+            for (let i = 0; i < 5; i++) {
+              part = byte();
+              n2 += (part & 127) * scale;
+              if (n2 > 4294967295) throw new TypeError("Integer overflow");
+              if (part < 128) {
+                if (i && part === 0) throw new TypeError("Noncanonical integer");
+                if (tag === 9) {
+                  if (n2 >= strings.length) throw new TypeError("Invalid string reference");
+                  return strings[n2];
+                }
+                return n2 % 2 ? -(n2 + 1) / 2 : n2 / 2;
+              }
+              scale *= 128;
+            }
+            throw new TypeError("Invalid integer");
+          }
+          if (tag === 4) {
+            const value = decoder22.decode(raw());
+            if (stringSet.has(value)) throw new TypeError("Noncanonical repeated string");
+            stringSet.add(value);
+            strings.push(value);
+            return value;
+          }
+          if (tag === 7) return raw().slice();
+          if (tag !== 5 && tag !== 6) throw new TypeError("Invalid codec tag");
+          const n = length();
+          if (n > maxEntries - entries) throw new RangeError("Value codec budget exceeded");
+          if (tag === 5) {
+            const arr = [];
+            for (let i = 0; i < n; i++) arr.push(read(depth + 1));
+            return arr;
+          }
+          const obj = {};
+          let previous;
+          for (let i = 0; i < n; i++) {
+            const key = read(depth + 1);
+            if (typeof key !== "string" || i && key <= previous) throw new TypeError("Noncanonical record key");
+            if (key === "__proto__") Object.defineProperty(obj, key, { value: read(depth + 1), enumerable: true, writable: true, configurable: true });
+            else obj[key] = read(depth + 1);
+            previous = key;
+          }
+          return obj;
+        };
+        let offset = 0, entries = 0;
+        const strings = [], stringSet = /* @__PURE__ */ new Set();
+        const view = new DataView(bytes22.buffer, bytes22.byteOffset, bytes22.byteLength);
+        if (byte() !== 82 || byte() !== 86 || byte() !== 1) throw new TypeError("Invalid codec header");
+        result = read();
+        if (offset !== bytes22.length) throw new TypeError("Trailing codec bytes");
+      }
+      if (format === "json") {
+        const canonical = encode(result);
+        if (canonical.length !== bytes22.length || canonical.some((v, i) => v !== bytes22[i])) throw new TypeError("Noncanonical codec bytes");
+      }
+      return result;
+    }
+    return Object.freeze({ format, encode, decode });
+  }
+  var binaryCodec2 = createValueCodec2();
+  var jsonCodec2 = createValueCodec2({ format: "json" });
+  var CHUNK_SIZE2 = 16384;
+  var defaults2 = {
+    mode: "rollback",
+    inputScheduling: "configured",
+    inputSafetyMarginMs: 8,
+    inputJitterMultiplier: 2,
+    tickRate: 60,
+    baseInputDelayTicks: 2,
+    minInputDelayTicks: 0,
+    maxInputDelayTicks: 8,
+    rollbackWindowTicks: 12,
+    stateHistorySize: 64,
+    predictionPolicy: "hold",
+    stallPolicy: "wait",
+    tickDriftThreshold: 2,
+    pacingPolicy: "hold",
+    checksumInterval: 30,
+    maxCatchupSteps: 4,
+    adaptiveInputDelay: true,
+    heartbeatMs: 100,
+    adaptationIntervalMs: 1e3,
+    maxSnapshotBytes: 4 * 1024 * 1024,
+    maxHistoryBytes: 64 * 1024 * 1024,
+    maxReplayBytes: 64 * 1024 * 1024,
+    maxCommandBytes: 2048,
+    maxPendingCommands: 256,
+    maxQueuedBytes: 5 * 1024 * 1024,
+    recoveryTimeoutMs: 1e4,
+    maxRecoveryAttempts: 3,
+    peerInterruptMs: 1e3,
+    peerTimeoutMs: 1e4
+  };
+  var profiles2 = Object.freeze({
+    action: Object.freeze({ ...defaults2 }),
+    rts: Object.freeze({
+      ...defaults2,
+      tickRate: 20,
+      baseInputDelayTicks: 4,
+      maxInputDelayTicks: 12,
+      rollbackWindowTicks: 6,
+      stateHistorySize: 32,
+      predictionPolicy: "neutral",
+      checksumInterval: 20
+    }),
+    lockstep: Object.freeze({
+      ...defaults2,
+      mode: "lockstep",
+      tickRate: 20,
+      baseInputDelayTicks: 4,
+      maxInputDelayTicks: 20,
+      rollbackWindowTicks: 0,
+      checksumInterval: 20,
+      stateHistorySize: 32,
+      predictionPolicy: "neutral"
+    })
+  });
+  var encoder2 = new TextEncoder();
+  var decoder2 = new TextDecoder("utf-8", { fatal: true });
+  var TYPE2 = Object.freeze({
+    HELLO: 1,
+    INPUT: 2,
+    CLOCK: 3,
+    HASH: 4,
+    REQUEST: 5,
+    BEGIN: 6,
+    CHUNK: 7,
+    INPUT_RESERVATION: 8,
+    INPUT_RESERVATION_ACK: 9
+  });
+  var HEADER2 = 12;
+  var SNAP_CHUNK_BYTES2 = CHUNK_SIZE2 - HEADER2 - 8;
 
   // modules/simloop/examples/input-preview/demo.js
   var DT = 100;
-  var encoder2 = new TextEncoder();
-  var decoder2 = new TextDecoder();
+  var encoder3 = new TextEncoder();
+  var decoder3 = new TextDecoder();
   var Unit = class extends RenderObject {
     constructor(color2) {
       super();
@@ -4832,7 +4986,7 @@ void main() {
     renderer.resize(canvas.clientWidth, canvas.clientHeight, devicePixelRatio || 1);
     const actions = new ActionState(), input = createDOMInput({ target: canvas, state: actions, keys: { KeyA: "left", ArrowLeft: "left", KeyD: "right", ArrowRight: "right", Space: "roll" } });
     let unit, remote, presentation, preview, session, loop, disposed = false, enabled = true, frames = 0, pose = {}, captureSequence = 0, worldTick = 0, forkCreates = 0, forkRestores = 0;
-    const snapshot = () => encoder2.encode(JSON.stringify({ unit, tick: worldTick }));
+    const snapshot = () => encoder3.encode(JSON.stringify({ unit, tick: worldTick }));
     const continuationKey = "remote-inputs:stable";
     const checkpoint = (mode) => preview.reconcile({
       snapshot: snapshot(),
@@ -4853,15 +5007,15 @@ void main() {
       captureSequence = 0;
       worldTick = 0;
       presentation = new PresentationRuntime({ stepMs: DT, snapDistance: 180 });
-      const adapter = { save: snapshot, validateSnapshot(bytes2) {
+      const adapter = { save: snapshot, validateSnapshot(bytes3) {
         try {
-          const data = JSON.parse(decoder2.decode(bytes2)), u = data.unit;
+          const data = JSON.parse(decoder3.decode(bytes3)), u = data.unit;
           return Number.isSafeInteger(data.tick) && data.tick >= 0 && [u.x, u.y, u.direction, u.roll?.progress, u.flash].every(Number.isFinite) && Array.isArray(u.color) && u.color.length === 4 && u.color.every(Number.isFinite);
         } catch {
           return false;
         }
-      }, load(bytes2) {
-        const data = JSON.parse(decoder2.decode(bytes2));
+      }, load(bytes3) {
+        const data = JSON.parse(decoder3.decode(bytes3));
         Object.assign(unit, data.unit);
         worldTick = data.tick;
       }, step(frame) {
@@ -4890,22 +5044,22 @@ void main() {
         maxFutureTicks: 8,
         maxAgeMs: 1500,
         captureSnapshot: snapshot,
-        createFork: (bytes2) => {
+        createFork: (bytes3) => {
           forkCreates++;
           const fork = new Unit([0.15, 1, 0.55, 1]);
           let forkTick;
           const restore = (b) => {
             forkRestores++;
-            const data = JSON.parse(decoder2.decode(b));
+            const data = JSON.parse(decoder3.decode(b));
             Object.assign(fork, data.unit);
             forkTick = data.tick;
             fork.color = [0.15, 1, 0.55, 1];
           };
-          restore(bytes2);
-          return { unit: fork, restore, step: (bytes3, ctx) => {
+          restore(bytes3);
+          return { unit: fork, restore, step: (bytes4, ctx) => {
             if (ctx.tick !== forkTick) throw Error("Detached replay compressed a tick gap");
             for (const command of ctx.commands) if (command.executeTick !== void 0 && command.executeTick !== forkTick) throw Error("Canonical command executed at wrong preview tick");
-            stepUnit(fork, bytes3, ctx.commands);
+            stepUnit(fork, bytes4, ctx.commands);
             forkTick++;
           } };
         },
@@ -4957,7 +5111,7 @@ void main() {
         return session;
       },
       get diagnostics() {
-        return { authorityX: unit.x, displayedX: pose.x, displayFlash: pose.flash, remoteX: remote.x, authorityTick: session.tick, authorityHash: hashBytes(snapshot()), frames, pending: preview.pendingCount, forkCreates, forkRestores, metrics: preview.metrics, presentationMetrics: presentation.previewMetrics, confirmedCommandSequence: session.localInputState.executedCommandSequence };
+        return { authorityX: unit.x, displayedX: pose.x, displayFlash: pose.flash, remoteX: remote.x, authorityTick: session.tick, authorityHash: hashBytes2(snapshot()), frames, pending: preview.pendingCount, forkCreates, forkRestores, metrics: preview.metrics, presentationMetrics: presentation.previewMetrics, confirmedCommandSequence: session.localInputState.executedCommandSequence };
       },
       setPreview(value) {
         enabled = !!value;
