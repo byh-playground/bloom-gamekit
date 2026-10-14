@@ -1,11 +1,11 @@
-import { createLoop } from '../../dist/simloop.js';
-import { InterpolationTimeline } from '../../dist/interpolation.js';
-import { Renderer2D } from '../../dist/rendering.js';
-import { ActionState, createDOMInput } from '../../dist/input.js';
-import { OrthographicProjection, CameraViewport } from '../../dist/camera.js';
-import { PresentationEventQueue } from '../../dist/presentation-events.js';
-import { DOMHud } from '../../dist/hud.js';
-import { DiagnosticRing } from '../../dist/debug-tools.js';
+import { createLoop } from '../../../dist/simloop.js';
+import { InterpolationTimeline } from '../../../dist/interpolation.js';
+import { Renderer2D } from '../../../dist/rendering.js';
+import { ActionState, createDOMInput } from '../../../dist/input.js';
+import { OrthographicProjection, CameraViewport } from '../../../dist/camera.js';
+import { PresentationEventQueue } from '../../../dist/presentation-events.js';
+import { DOMHud } from '../../../dist/hud.js';
+import { DiagnosticRing } from '../../../dist/debug-tools.js';
 
 // This adapter is owned by the game. A Worker timestamp is simulation metadata only.
 export function createPresentation(stepMs = 100) {

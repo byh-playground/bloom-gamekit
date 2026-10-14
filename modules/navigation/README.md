@@ -1,5 +1,7 @@
 # navigation
 
+**HTML 실행 프리뷰:** [navigation](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/navigation.html)
+
 독립 `navigation.js`는 해시 화면과 브라우저 이력을 소유합니다. UI·포커스·스크롤·게임 입력·구매 명령은 소비자가 소유합니다.
 
 ## API

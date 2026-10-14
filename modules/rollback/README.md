@@ -1,5 +1,7 @@
 # rollback
 
+**HTML 실행 프리뷰:** [rollback-availability](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rollback-availability.html)
+
 입력 확정·예측·동기적 롤백·검증된 snapshot 복구를 소유합니다.
 
 공개 API: `createSession, RollbackSession, createRoomSession, RoomSession, createBootstrapReplay, VERSION, PROTOCOL_VERSION, CHUNK_SIZE, MAX_TICK, profiles`. 외부 import가 없는 `dist/rollback.js` 하나로 사용할 수 있습니다. 도구 설치나 다른 모듈 초기화는 필요하지 않습니다.

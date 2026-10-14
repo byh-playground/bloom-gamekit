@@ -1,8 +1,8 @@
-import { ActionState, createDOMInput } from '../../dist/input.js';
-import { Renderer2D } from '../../dist/rendering.js';
-import { PresentationRuntime, RenderObject } from '../../dist/interpolation.js';
-import { LocalInputPreview, createLoop } from '../../dist/simloop.js';
-import { createSession, hashBytes, profiles } from '../../dist/rollback-netcode.js';
+import { ActionState, createDOMInput } from '../../../../dist/input.js';
+import { Renderer2D } from '../../../../dist/rendering.js';
+import { PresentationRuntime, RenderObject } from '../../../../dist/interpolation.js';
+import { LocalInputPreview, createLoop } from '../../../../dist/simloop.js';
+import { createSession, hashBytes, profiles } from '../../../../dist/rollback-netcode.js';
 const DT=100,encoder=new TextEncoder(),decoder=new TextDecoder();
 class Unit extends RenderObject {
  constructor(color){super();this.x=80;this.y=100;this.direction=1;this.roll={progress:0};this.flash=0;this.color=color;}

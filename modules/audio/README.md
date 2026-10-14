@@ -1,5 +1,7 @@
 # audio
 
+**HTML 실행 프리뷰:** [audio](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/audio.html)
+
 실제 필요가 생긴 게임의 짧은 효과음을 위한 독립 Web Audio ESM입니다. AudioPlayer는 오디오 자원·음량·재생 예산을 소유하고, 게임은 음형·이벤트·강도를 소유합니다. 배경 음악·전투 규칙·rollback history·파일 fetch/decode는 넣지 않습니다.
 
 ## 시작과 수명

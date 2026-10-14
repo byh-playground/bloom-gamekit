@@ -5,7 +5,7 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-// Run: node --expose-gc scripts/benchmark-reviewed.mjs /path/to/baseline-checkout [current-checkout]
+// Run: node --expose-gc project/benchmarks/reviewed.mjs /path/to/baseline-checkout [current-checkout]
 if (!process.argv[2]) throw Error('Provide the baseline source checkout path');
 const baseline = resolve(process.argv[2]), current = resolve(process.argv[3] ?? '.');
 // Accept both the pinned pre-restructure baseline and the module-first source tree.

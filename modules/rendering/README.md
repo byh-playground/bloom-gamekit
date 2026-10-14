@@ -1,5 +1,7 @@
 # rendering
 
+**HTML 실행 프리뷰:** [rendering-vector](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rendering-vector.html)
+
 게임·시뮬레이션·보간·DOM 입력과 독립적인 **WebGL 1 2D 제출 kernel**입니다. WebGL 2 전용 기능이나 Canvas2D 전장 fallback은 사용하지 않습니다. 불가능한 브라우저에서는 생성이 실패합니다.
 
 ```js
@@ -144,7 +146,7 @@ vector.flush(); device.endFrame();
 
 The [native rendering example](./examples/vector/index.html) demonstrates polygon/curve/text/clip/group composition. The browser E2E reads actual WebGL pixels for alpha 128, fill holes, clipping, glyphs, nested opacity, bounded target allocation and target restoration. This validates the reference Chromium WebGL1/SwiftShader path, not mobile GPU performance. Path flattening, scanline tessellation, clip-polygon intersections, geometric glyph outlines, staging growth, uploaded vertex bytes and render-target clears add CPU/GPU work; the example reports CPU submission time (not GPU completion) and counters for its one small scene, not a device-wide benchmark.
 
-요구 근거는 [Budmori 88c93e7](https://github.com/byh-playground/budmori-io/blob/88c93e713d6bc2b4f081c24a99e536d497a5799b/index.html)의 geometry stream·명시적 texture invalidation·painter order와 [Rally f6037f0](https://github.com/byh-playground/rally-frontier/blob/f6037f05e0ff2163fc11cf0f770e2bc071eaa291/index.html)의 game-owned projection·presentation-only buffer입니다. 해당 게임 코드를 변경하거나 통째로 복사하지 않았습니다. 통합 검사는 [실제 브라우저 E2E](../../tests/browser.e2e.mjs)를 보세요.
+요구 근거는 [Budmori 88c93e7](https://github.com/byh-playground/budmori-io/blob/88c93e713d6bc2b4f081c24a99e536d497a5799b/index.html)의 geometry stream·명시적 texture invalidation·painter order와 [Rally f6037f0](https://github.com/byh-playground/rally-frontier/blob/f6037f05e0ff2163fc11cf0f770e2bc071eaa291/index.html)의 game-owned projection·presentation-only buffer입니다. 해당 게임 코드를 변경하거나 통째로 복사하지 않았습니다. 통합 검사는 [실제 브라우저 E2E](../../project/tests/browser.e2e.mjs)를 보세요.
 
 ## WebGLDevice: 게임이 만든 geometry/pass를 제출하는 공통 GPU core
 
