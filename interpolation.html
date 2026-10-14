@@ -1,0 +1,2378 @@
+<!doctype html>
+<html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Input → Interpolation → WebGL · bloom-gamekit</title>
+<style>
+body{font:16px system-ui;max-width:960px;margin:2rem auto;padding:0 1rem;background:#111c24;color:#e6f1f3;line-height:1.6}
+canvas{display:block;width:100%;aspect-ratio:1.8;background:#091117;touch-action:none;outline:1px solid #40535e}
+canvas:focus-visible{outline:2px solid #86edc0}code{background:#24333b}label{display:inline-flex;gap:.7rem;align-items:center}#status{font:13px ui-monospace,monospace;min-height:3rem}small{color:#b4c6cc}
+</style>
+<h1>입력 한 번, 고정 틱, 부드러운 표현</h1>
+<p>캔버스를 누른 뒤 WASD/방향키로 이동하세요. 클릭·터치로 목적지를 정하고 Space 또는 가까운 위치 더블 탭으로 구릅니다. 그림자·몸체·체력바·카메라가 같은 보간 pose를 읽습니다.</p>
+<p><a href="https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/interpolation-frame.html">권장 표시 프레임: 생성·경로·제거·rollback 예제</a></p>
+<canvas width="720" height="400" tabindex="0" aria-label="키보드와 터치로 조작하는 WebGL 통합 예제"></canvas>
+<p id="status">Loading…</p>
+<label>게임 카메라 확대 <input id="zoom" type="range" min="0.5" max="2" step="0.1" value="1"></label>
+<p><small>실제 dist의 독립 입력·simloop·보간·렌더링·카메라·표현 이벤트·HUD·진단 ESM를 사용합니다. 화면의 FPS는 이 장면·현재 브라우저 관찰값이며 모바일 성능 보증이 아닙니다. 텍스트/UI는 DOM, 전장 geometry는 WebGL 1입니다.</small></p>
+<p><small>개발: <code>npm test</code> 후 저장소 루트에서 정적 서버를 실행하세요.</small></p>
+<script>
+(() => {
+  // dist/simloop.js
+  function clockRates({ baseHz, tickRate, inputHz, renderHz } = {}) {
+    for (const [name, value] of Object.entries({ baseHz, tickRate, inputHz, renderHz })) {
+      if (!Number.isSafeInteger(value) || value <= 0) throw new RangeError(`${name} must be a positive integer frequency`);
+      if (name !== "baseHz" && baseHz % value !== 0) throw new RangeError(`${name} (${value}) must divide baseHz (${baseHz}) exactly`);
+    }
+    return Object.freeze({ baseHz, tickRate, inputHz, renderHz, simulationDivisor: baseHz / tickRate, inputDivisor: baseHz / inputHz, renderDivisor: baseHz / renderHz });
+  }
+  function createLoop({
+    session,
+    getInput = () => new Uint8Array(session.inputSize),
+    render = () => {
+    },
+    inputPreview,
+    rates,
+    backlogPolicy = "drop",
+    beforeFrame = () => {
+    },
+    canAdvance = () => true,
+    canObserveInput = () => true,
+    onAdvance = () => {
+    },
+    onPreviewError = () => {
+    },
+    onError = (error) => {
+      throw error;
+    },
+    onInputRelease = () => {
+    },
+    onBacklogDrop = () => {
+    },
+    maxBacklogTicks = 8,
+    requestFrame = globalThis.requestAnimationFrame?.bind(globalThis),
+    cancelFrame = globalThis.cancelAnimationFrame?.bind(globalThis)
+  } = {}) {
+    if (!session || typeof session.poll !== "function" || typeof session.advance !== "function") throw new TypeError("session capability");
+    for (const callback of [getInput, render, beforeFrame, canAdvance, canObserveInput, onAdvance, onPreviewError, onError, onInputRelease, onBacklogDrop]) {
+      if (typeof callback !== "function") throw new TypeError("loop callback");
+    }
+    if (backlogPolicy !== "drop" && backlogPolicy !== "retain") throw new RangeError("backlogPolicy");
+    if (!Number.isInteger(maxBacklogTicks) || maxBacklogTicks < 1 || maxBacklogTicks > 8192) throw new RangeError("maxBacklogTicks");
+    const hasSubmission = typeof session.submitInput === "function";
+    const configuredRates = rates === void 0 ? null : clockRates({ ...rates, tickRate: session.profile.tickRate });
+    const quantum = 1e3 / session.profile.tickRate;
+    const maxBacklogMs = quantum * maxBacklogTicks;
+    let running = false, handle, last, accumulator = 0, generation = 0, timingGeneration = 0;
+    if (inputPreview && typeof inputPreview.observe !== "function") throw new TypeError("inputPreview observation capability");
+    let inputSequence = 0, commandObservation = 0, observedAt = -Infinity, cached = null, captureEpoch = "", captureSequence = -1;
+    const observedCommands = [];
+    const observeInput = (timestamp) => {
+      if (!Number.isFinite(timestamp)) throw new TypeError("input observation timestamp");
+      if (!canObserveInput()) {
+        cached = null;
+        inputPreview?.clear?.();
+        return null;
+      }
+      const sampled = getInput(), packet = sampled && typeof sampled === "object" && !ArrayBuffer.isView(sampled) && Object.hasOwn(sampled, "input");
+      const input = packet ? sampled.input : sampled, commands = packet ? sampled.commands ?? [] : [];
+      if (!Array.isArray(commands)) throw new TypeError("input packet commands");
+      const held = observedCommands;
+      if (held.length + commands.length > 64) throw new RangeError("unsubmitted input command capacity");
+      for (const command of commands) {
+        if (!command || command.payload === void 0) throw new TypeError("command payload required");
+        held.push({ observationId: ++commandObservation, sequence: null, payload: command.payload.slice?.() ?? structuredClone(command.payload) });
+      }
+      cached = { input: input.slice?.() ?? structuredClone(input), commands: held, predict: !packet || sampled.predict !== false || held.length > 0 || inputPreview?.active === true, continuationKey: packet ? sampled.continuationKey : void 0, sequence: ++inputSequence };
+      observedAt = timestamp;
+      if (hasSubmission) {
+        const pending = held.filter((command) => command.sequence === null);
+        const submission = session.submitInput(cached.input, { commands: pending.map((command) => command.payload) });
+        if (submission.commandSequences.length !== pending.length) throw new Error("input submission command receipt");
+        for (let i = 0; i < pending.length; i++) pending[i].sequence = submission.commandSequences[i];
+      }
+      if (inputPreview && packet && sampled.predict === false && !held.length && !inputPreview.active) inputPreview.cancelObservation?.(Math.max(timestamp, performance.now()));
+      else if (inputPreview?.enabled !== false && inputPreview) try {
+        inputPreview.observe(cached.input, {
+          sequence: cached.sequence,
+          tick: session.tick,
+          epoch: session.epoch ?? 0,
+          continuationKey: cached.continuationKey,
+          timeMs: Math.max(timestamp, globalThis.performance?.now?.() ?? timestamp),
+          commands: cached.commands
+        });
+      } catch (error) {
+        inputPreview.clear?.();
+        onPreviewError(error);
+      }
+      return cached;
+    };
+    const resetTiming = (clearPreview = true) => {
+      timingGeneration++;
+      last = void 0;
+      accumulator = 0;
+      if (clearPreview) {
+        cached = null;
+        observedAt = -Infinity;
+        inputPreview?.clear?.();
+      }
+    };
+    const release = () => {
+      try {
+        onInputRelease();
+        session.releaseInput();
+        cached = null;
+        observedAt = -Infinity;
+        inputPreview?.clear?.();
+      } catch (error) {
+        stop();
+        onError(error);
+      }
+    };
+    const hidden = () => {
+      if (globalThis.document?.hidden) {
+        release();
+        resetTiming();
+      }
+    };
+    const stop = () => {
+      generation++;
+      running = false;
+      if (handle !== void 0) cancelFrame?.(handle);
+      handle = void 0;
+      inputPreview?.clear?.();
+      globalThis.removeEventListener?.("blur", release);
+      globalThis.document?.removeEventListener("visibilitychange", hidden);
+    };
+    const renderFrame = () => render({ session, alpha: Math.min(1, accumulator / quantum), resimulating: session.resimulating });
+    const pulse = (timestamp, { render: shouldRender = true, input: shouldSampleInput = true } = {}) => {
+      const current = generation;
+      try {
+        if (!Number.isFinite(timestamp)) throw new TypeError("frame timestamp");
+        if (backlogPolicy === "retain" && last !== void 0 && timestamp < last) throw new RangeError("retained loop timestamp cannot regress");
+        beforeFrame(timestamp);
+        if (current !== generation) return;
+        const timing = timingGeneration;
+        if (last === void 0) last = timestamp;
+        const elapsed = Math.max(0, timestamp - last);
+        if (backlogPolicy === "drop" && elapsed > maxBacklogMs) {
+          accumulator = 0;
+          last = timestamp;
+          if (typeof inputPreview?.clockGap === "function") inputPreview.clockGap();
+          else inputPreview?.clear?.();
+          onBacklogDrop({ elapsedMs: elapsed, droppedTicks: Math.floor(elapsed / quantum), timestamp });
+        } else {
+          accumulator = backlogPolicy === "retain" ? accumulator + elapsed : Math.min(accumulator + Math.min(250, elapsed), quantum * session.profile.maxCatchupSteps);
+          last = timestamp;
+        }
+        if (!Number.isFinite(accumulator) || accumulator > Number.MAX_SAFE_INTEGER) throw new RangeError("loop backlog exceeds safe milliseconds");
+        session.poll();
+        if (current !== generation || timing !== timingGeneration) return;
+        if (shouldSampleInput && (inputPreview || hasSubmission) && (!cached || timestamp - observedAt >= quantum)) observeInput(timestamp);
+        let work = 0;
+        while (!session.closed && !session.resimulating && work < session.profile.maxCatchupSteps) {
+          const pace = session.pace ?? session.metrics.pace;
+          if (accumulator + 1e-7 < quantum * pace) break;
+          const allowed = canAdvance();
+          if (current !== generation || timing !== timingGeneration) return;
+          if (!allowed) {
+            if (backlogPolicy === "drop") accumulator = Math.min(accumulator, quantum);
+            break;
+          }
+          const sampled = inputPreview || hasSubmission || !shouldSampleInput ? cached ?? (shouldSampleInput ? observeInput(timestamp) : null) : getInput();
+          if (!sampled) break;
+          if (current !== generation || timing !== timingGeneration) return;
+          const packet = sampled && typeof sampled === "object" && !ArrayBuffer.isView(sampled) && !(sampled instanceof ArrayBuffer) && Object.hasOwn(sampled, "input");
+          const inputValue = packet ? sampled.input : sampled;
+          const input = inputPreview && inputPreview.enabled !== false && ArrayBuffer.isView(inputValue) ? new inputValue.constructor(inputValue) : inputValue;
+          if (packet) {
+            const commands = sampled.commands ?? [];
+            if (!Array.isArray(commands)) throw new TypeError("input packet commands must be an array");
+            if (commands.length && typeof session.queueCommand !== "function") throw new TypeError("session does not support queued input commands");
+            for (const command of commands) {
+              if (!command || command.payload === void 0) throw new TypeError("input command payload required");
+              const payload = ArrayBuffer.isView(command.payload) ? new command.payload.constructor(command.payload) : command.payload;
+              if ((inputPreview || hasSubmission || !shouldSampleInput) && command.sequence !== null && command.sequence !== void 0) continue;
+              const sequence = session.queueCommand(payload);
+              if (!Number.isSafeInteger(sequence) || sequence < 0) throw new TypeError("session command sequence");
+              if (inputPreview || hasSubmission || !shouldSampleInput) command.sequence = sequence;
+            }
+          }
+          if (!inputPreview && !hasSubmission && !shouldSampleInput) observedCommands.length = 0;
+          const result = session.advance(input);
+          work++;
+          let submission;
+          if (inputPreview || hasSubmission) {
+            const metadata = session.localInputState;
+            const epoch = metadata ? metadata.epoch + ":" + metadata.baseTick : "";
+            if (epoch !== captureEpoch) {
+              captureEpoch = epoch;
+              captureSequence = -1;
+            }
+            for (const capture of metadata?.captures ?? (metadata?.capture ? [metadata.capture] : [])) {
+              if (capture.sequence <= captureSequence) continue;
+              captureSequence = capture.sequence;
+              submission = { ...capture, predict: cached?.predict !== false, boundaryTick: metadata.tick, epoch: metadata.epoch, timeMs: Math.max(timestamp, performance.now()) };
+              submission.commands = capture.commands.map((command) => ({ ...command, observationId: cached?.commands.find((c) => c.sequence === command.sequence)?.observationId }));
+              try {
+                inputPreview?.commit(submission, submission.timeMs);
+              } catch (error) {
+                inputPreview.clear?.();
+                onPreviewError(error);
+              }
+              const assigned = new Set(capture.commands.map((c) => c.sequence));
+              for (let i = observedCommands.length - 1; i >= 0; i--) if (assigned.has(observedCommands[i].sequence)) observedCommands.splice(i, 1);
+            }
+          }
+          if (timing !== timingGeneration) return;
+          if (result.status === "advanced") accumulator = Math.max(0, accumulator - quantum * pace);
+          else if (backlogPolicy === "drop") accumulator = Math.min(accumulator, quantum);
+          if (current !== generation) return;
+          onAdvance(result, submission);
+          if (current !== generation || timing !== timingGeneration) return;
+          if (result.status !== "advanced") break;
+        }
+        if (shouldRender) renderFrame();
+      } catch (error) {
+        if (current === generation) stop();
+        onError(error);
+      }
+    };
+    const start = () => {
+      if (running) return;
+      if (typeof requestFrame !== "function" || typeof cancelFrame !== "function") throw new TypeError("frame scheduler");
+      running = true;
+      resetTiming(false);
+      const current = ++generation;
+      const frame = (timestamp) => {
+        if (!running || current !== generation) return;
+        if (inputPreview || hasSubmission) observeInput(timestamp);
+        pulse(timestamp);
+        if (running && current === generation) handle = requestFrame(frame);
+      };
+      globalThis.addEventListener?.("blur", release);
+      globalThis.document?.addEventListener("visibilitychange", hidden);
+      handle = requestFrame(frame);
+    };
+    const flushInput = (timestamp) => observeInput(timestamp);
+    const pollInput = (timestamp) => {
+      const sample = observeInput(timestamp);
+      session.poll();
+      return sample;
+    };
+    return { get simulationTimeMs() {
+      return last === void 0 ? null : last - accumulator;
+    }, get rates() {
+      return configuredRates;
+    }, get nextDeadlineMs() {
+      return last === void 0 ? null : last + Math.max(0, quantum * (session.pace ?? session.metrics.pace) - accumulator);
+    }, start, stop, pulse, render: renderFrame, observeInput, flushInput, pollInput, releaseInput: release, resetTiming, get running() {
+      return running;
+    } };
+  }
+
+  // dist/interpolation.js
+  function bufferInterval(track, old, { origin, timeMs, previousTimeMs, stepMs, delayMs, continuous, seeded, initialTimeMs, reset }) {
+    const start = continuous ? previousTimeMs : seeded ? initialTimeMs ?? timeMs - stepMs : timeMs;
+    if (!Number.isFinite(start) || start > timeMs) throw new RangeError("initialTimeMs must be finite and <= timeMs");
+    track.startedAt = track.at = origin + start;
+    track.durationMs = timeMs - start;
+    track.bornAt = continuous ? old.bornAt : reset ? origin + timeMs - delayMs : origin + start;
+    track.removedAt = Infinity;
+    track.buffered = true;
+    const history = continuous ? [...old.history ?? [], old] : [];
+    track.history = history.slice(-Math.ceil(delayMs / stepMs) - 2).map(({ history: history2, ...item }) => item);
+  }
+  function intervalAt(track, at) {
+    if (!track || at < track.bornAt || at >= track.removedAt) return null;
+    if (at >= track.startedAt) return track;
+    return track.history.find((item) => at <= item.startedAt + item.durationMs) ?? track.history.at(-1) ?? track;
+  }
+  function retainRemoved(next, previous, { origin, timeMs, nowMs, delayMs }) {
+    if (!delayMs) return;
+    for (const [id, old] of previous) if (!next.has(id)) {
+      const removedAt = Number.isFinite(old.removedAt) ? old.removedAt : origin + timeMs;
+      if (nowMs - delayMs < removedAt) next.set(id, { ...old, removedAt });
+    }
+  }
+  function compileSchema(schema) {
+    if (!schema || typeof schema !== "object" || Array.isArray(schema)) throw new TypeError("schema must be an object");
+    const fields = Object.entries(schema);
+    if (!fields.length) throw new TypeError("schema must declare at least one field");
+    for (const [name, kind] of fields) {
+      if (["__proto__", "prototype", "constructor"].includes(name)) throw new TypeError("unsafe field name");
+      if (!["number", "angle", "discrete"].includes(kind)) throw new TypeError(`unknown kind: ${kind}`);
+    }
+    return fields;
+  }
+  function finite(value, label) {
+    if (typeof value !== "number" || !Number.isFinite(value)) throw new TypeError(`${label} must be finite`);
+    return value;
+  }
+  function ordinal(value, label) {
+    if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${label} must be a nonnegative safe integer`);
+    return value;
+  }
+  function readValues(fields, values) {
+    if (!values || typeof values !== "object" || Array.isArray(values)) throw new TypeError("values must be an object");
+    return fields.map(([name, kind]) => {
+      if (!Object.hasOwn(values, name)) throw new TypeError(`missing field: ${name}; sparse patches are not supported`);
+      const value = values[name];
+      if (kind !== "discrete") return finite(value, name);
+      if (value !== null && !["string", "boolean", "number"].includes(typeof value)) throw new TypeError(`${name} must be a scalar`);
+      if (typeof value === "number") finite(value, name);
+      return value;
+    });
+  }
+  function readResetFields(indices, names) {
+    if (names === void 0) return null;
+    if (!Array.isArray(names)) throw new TypeError("resetFields must be an array");
+    const reset = /* @__PURE__ */ new Set();
+    for (const name of names) {
+      if (typeof name !== "string" || !indices.has(name)) throw new TypeError("resetFields must name declared fields");
+      const index = indices.get(name);
+      if (reset.has(index)) throw new TypeError("duplicate resetFields field");
+      reset.add(index);
+    }
+    return reset;
+  }
+  var TAU = Math.PI * 2;
+  function wrap(angle) {
+    const value = angle % TAU;
+    const positive4 = value < 0 ? value + TAU : value;
+    return positive4 >= TAU || positive4 === 0 ? 0 : positive4;
+  }
+  function evaluate(kind, from, to, alpha) {
+    if (kind === "discrete") return to;
+    if (alpha === 1) return kind === "angle" ? wrap(to) : to;
+    if (alpha === 0) return kind === "angle" ? wrap(from) : from;
+    if (kind === "angle") {
+      const start = wrap(from);
+      let delta = wrap(to) - start;
+      if (Math.abs(Math.abs(delta) - Math.PI) <= Number.EPSILON * TAU) delta = -Math.PI;
+      else if (delta > Math.PI) delta -= TAU;
+      else if (delta < -Math.PI) delta += TAU;
+      return wrap(start + delta * alpha);
+    }
+    return Math.sign(from) === Math.sign(to) ? from + (to - from) * alpha : from * (1 - alpha) + to * alpha;
+  }
+  function fraction(track, now, stepMs) {
+    return Math.min(1, Math.max(0, (now - track.startedAt) / stepMs));
+  }
+  function retarget(fields, old, target, generation, now, stepMs, snap, initial, resetFields) {
+    const continued = old && old.generation === generation;
+    const from = !continued && !snap && initial ? initial : target.slice();
+    if (continued && !snap) {
+      const alpha = fraction(old, now, stepMs);
+      for (let i = 0; i < fields.length; i++) from[i] = evaluate(fields[i][1], old.from[i], old.target[i], alpha);
+    }
+    if (resetFields) for (const index of resetFields) from[index] = target[index];
+    return { generation, from, target, startedAt: now };
+  }
+  var InterpolationTimeline = class {
+    #fields;
+    #fieldIndices;
+    #stepMs;
+    #tracks = /* @__PURE__ */ new Map();
+    #now = -Infinity;
+    #delayMs;
+    #origin = 0;
+    #revision = -1;
+    #sequence = -1;
+    #timeMs = -Infinity;
+    /** @param {{schema:import('./schema.js').Schema, stepMs:number,delayMs?:number}} options */
+    constructor({ schema, stepMs, delayMs = 0 }) {
+      this.#fields = compileSchema(schema);
+      this.#fieldIndices = new Map(this.#fields.map((field2, index) => [field2[0], index]));
+      this.#stepMs = finite(stepMs, "stepMs");
+      if (stepMs <= 0) throw new RangeError("stepMs must be positive");
+      this.#delayMs = finite(delayMs, "delayMs");
+      if (delayMs < 0 || delayMs > stepMs * 16) throw new RangeError("delayMs must be between 0 and 16 steps");
+    }
+    get size() {
+      return this.#tracks.size;
+    }
+    #checkClock(nowMs) {
+      finite(nowMs, "nowMs");
+      if (nowMs < this.#now) throw new RangeError("presentation clock must not go backwards");
+    }
+    /**
+     * Accept one complete authoritative snapshot. Returns false for obsolete packets.
+     * Invalid packets throw without changing tracks, revision, or presentation time.
+     * timeMs is simulation time; nowMs is local receipt time. delayMs establishes a per-revision clock mapping.
+     * resetFields snaps only named fields. initialValues seeds new identities in continuous mode.
+     * Explicit teleport/reset/load/rollback overrides seeds; all supplied options are validated.
+     * @param {Snapshot} packet @param {number} nowMs @returns {boolean}
+     */
+    accept(packet, nowMs) {
+      this.#checkClock(nowMs);
+      if (!packet || typeof packet !== "object") throw new TypeError("packet must be an object");
+      const revision = ordinal(packet.revision, "revision");
+      const sequence = ordinal(packet.sequence, "sequence");
+      const timeMs = finite(packet.timeMs, "timeMs");
+      const mode = packet.mode ?? "continuous";
+      if (!["continuous", "reset", "load", "rollback"].includes(mode)) throw new TypeError("unknown snapshot mode");
+      if (revision < this.#revision || revision === this.#revision && sequence <= this.#sequence) return false;
+      const changedRevision = revision !== this.#revision;
+      if (this.#revision !== -1 && changedRevision && mode === "continuous") throw new RangeError("new revision requires reset, load or rollback");
+      if (!changedRevision && mode !== "continuous") throw new RangeError("reset, load and rollback require a newer revision");
+      if (!changedRevision && timeMs < this.#timeMs) return false;
+      if (!Array.isArray(packet.entities)) throw new TypeError("entities must be an array");
+      const next = /* @__PURE__ */ new Map();
+      const origin = changedRevision ? nowMs - timeMs : this.#origin;
+      for (const entity of packet.entities) {
+        if (!entity || typeof entity.id !== "string" || !entity.id.length) throw new TypeError("id must be a nonempty string");
+        if (next.has(entity.id)) throw new TypeError("duplicate entity id");
+        const generation = ordinal(entity.generation, "generation");
+        if (entity.teleport !== void 0 && typeof entity.teleport !== "boolean") throw new TypeError("teleport must be boolean");
+        const target = readValues(this.#fields, entity.values);
+        const initial = entity.initialValues === void 0 ? null : readValues(this.#fields, entity.initialValues);
+        const resetFields = readResetFields(this.#fieldIndices, entity.resetFields);
+        const old = this.#tracks.get(entity.id);
+        const snap = mode !== "continuous" || entity.teleport === true;
+        const track = retarget(this.#fields, old, target, generation, nowMs, this.#stepMs, snap, initial, resetFields);
+        if (this.#delayMs > 0) {
+          const continued = old && old.generation === generation && !snap && !changedRevision && !Number.isFinite(old.removedAt);
+          if (continued) {
+            track.from = old.target.slice();
+            if (resetFields) for (const i of resetFields) track.from[i] = target[i];
+          }
+          bufferInterval(track, old, {
+            origin,
+            timeMs,
+            previousTimeMs: this.#timeMs,
+            stepMs: this.#stepMs,
+            delayMs: this.#delayMs,
+            continuous: continued,
+            reset: snap,
+            seeded: !!initial && !snap,
+            initialTimeMs: entity.initialTimeMs
+          });
+        }
+        next.set(entity.id, track);
+      }
+      if (!changedRevision && mode === "continuous") retainRemoved(next, this.#tracks, { origin, timeMs, nowMs, delayMs: this.#delayMs });
+      this.#tracks = next;
+      this.#origin = origin;
+      this.#revision = revision;
+      this.#sequence = sequence;
+      this.#timeMs = timeMs;
+      this.#now = nowMs;
+      return true;
+    }
+    /**
+     * Write declared fields into a caller-owned reusable object; no pose allocation.
+     * Returns false for absent identities and leaves out untouched.
+     * Supply the same nowMs for camera, body, shadow, and every entity in a frame.
+     * @param {string} id @param {number} generation @param {number} nowMs
+     * @param {Record<string,number|string|boolean|null>} out @returns {boolean}
+     */
+    sampleInto(id, generation, nowMs, out) {
+      this.#checkClock(nowMs);
+      if (!out || typeof out !== "object") throw new TypeError("out must be a writable object");
+      let track = this.#tracks.get(id);
+      this.#now = nowMs;
+      if (!track || track.generation !== generation) return false;
+      const sampleAt = nowMs - this.#delayMs;
+      if (this.#delayMs > 0) {
+        track = intervalAt(track, sampleAt);
+        if (!track) return false;
+      }
+      const alpha = track.durationMs === 0 ? 1 : fraction(track, sampleAt, track.durationMs ?? this.#stepMs);
+      for (let i = 0; i < this.#fields.length; i++) {
+        const field2 = this.#fields[i];
+        out[field2[0]] = this.#delayMs > 0 && field2[1] === "discrete" && alpha < 1 ? track.from[i] : evaluate(field2[1], track.from[i], track.target[i], alpha);
+      }
+      return true;
+    }
+  };
+  var RenderObject = class {
+    static LINEAR = 0;
+    static ANGLE = 1;
+    static STEP = 2;
+    // 타격 flash처럼 값이 증가하면 새 표현으로 즉시 시작합니다.
+    static DECAY = 3;
+    // 0..1 진행률이 1에서 0으로 순환하는 필드. 종료 때 역방향 보간하지 않습니다.
+    static CYCLE = 4;
+    static COUNTDOWN_MS = 5;
+    static COUNTDOWN_SECONDS = 6;
+    // 해당 필드의 부모 객체가 어떤 표시 상태인지 구분하는 scalar 키입니다.
+    static STATE_KEY = 7;
+    static POSITION_X = 8;
+    static POSITION_Y = 9;
+    static POSITION_Z = 10;
+    static ORIGIN_X = 11;
+    static ORIGIN_Y = 12;
+    static ORIGIN_Z = 13;
+    static SPAWN_LINEAR = 14;
+    /** Optional bounded world-space path: {x:'x',y:'y',durationMs:400,maxPoints:64}.
+     * Position fields must be declared. Shape/attachments remain game-owned. */
+    static renderPath = null;
+    static renderSchema = Object.freeze({});
+    /** @param {unknown} context @param {object} model */
+    render(context, model) {
+      throw new Error("RenderObject 하위 타입은 render(context, model)을 구현해야 합니다.");
+    }
+  };
+
+  // dist/rendering.js
+  var FUNCTIONS = Object.freeze({ never: "NEVER", less: "LESS", equal: "EQUAL", lequal: "LEQUAL", greater: "GREATER", notequal: "NOTEQUAL", gequal: "GEQUAL", always: "ALWAYS" });
+  var OPERATIONS = Object.freeze({ keep: "KEEP", zero: "ZERO", replace: "REPLACE", increment: "INCR", decrement: "DECR", invert: "INVERT", "increment-wrap": "INCR_WRAP", "decrement-wrap": "DECR_WRAP" });
+  var ALL_COLOR = Object.freeze([true, true, true, true]);
+  var IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
+  var WHITE = Object.freeze([1, 1, 1, 1]);
+  var IDENTITY2 = Object.freeze([1, 0, 0, 1, 0, 0]);
+  var ZERO_MORPH = Object.freeze([0, 0]);
+  var EMPTY_CLIP = Object.freeze({ key: "", values: null, count: 0 });
+  var WHITE2 = Object.freeze([1, 1, 1, 1]);
+  var INSTANCE_ATTRIBUTES = ["i_row0", "i_row1", "i_color", "i_params"].map((name, i) => ({ name, size: 4, offset: i * 16, source: "instance" }));
+  var TAU2 = Math.PI * 2;
+  var SILHOUETTE_OFFSETS = Object.freeze(Array.from({ length: 8 }, (_, i) => Object.freeze([Math.cos(i * TAU2 / 8), Math.sin(i * TAU2 / 8)])));
+  var IDENTITY3 = Object.freeze([1, 0, 0, 1, 0, 0]);
+  var WHITE3 = Object.freeze([1, 1, 1, 1]);
+  var NAMED = Object.freeze({
+    black: "#000000",
+    white: "#ffffff",
+    red: "#ff0000",
+    green: "#008000",
+    blue: "#0000ff",
+    yellow: "#ffff00",
+    orange: "#ffa500",
+    purple: "#800080",
+    pink: "#ffc0cb",
+    gray: "#808080",
+    grey: "#808080",
+    silver: "#c0c0c0",
+    maroon: "#800000",
+    olive: "#808000",
+    lime: "#00ff00",
+    aqua: "#00ffff",
+    cyan: "#00ffff",
+    teal: "#008080",
+    navy: "#000080",
+    fuchsia: "#ff00ff",
+    magenta: "#ff00ff",
+    rebeccapurple: "#663399",
+    transparent: "#00000000"
+  });
+  var WHITE4 = Object.freeze([1, 1, 1, 1]);
+  var CLEAR = Object.freeze([0, 0, 0, 0]);
+  var VERTEX2 = `
+attribute vec2 a_position;
+attribute vec2 a_uv;
+attribute vec4 a_color;
+uniform mat3 u_projection;
+varying vec2 v_uv;
+varying vec4 v_color;
+void main() {
+  vec3 p = u_projection * vec3(a_position, 1.0);
+  gl_Position = vec4(p.xy, 0.0, 1.0);
+  v_uv = a_uv; v_color = a_color;
+}`;
+  var FRAGMENT2 = `
+precision mediump float;
+uniform sampler2D u_texture;
+varying vec2 v_uv;
+varying vec4 v_color;
+void main() {
+  vec4 t = texture2D(u_texture, v_uv);
+  float alpha = t.a * v_color.a;
+  gl_FragColor = vec4(t.rgb * v_color.rgb * v_color.a, alpha);
+}`;
+  function finite4(value, name) {
+    if (!Number.isFinite(value)) throw new TypeError(`${name} must be finite`);
+  }
+  function positive2(value, name) {
+    finite4(value, name);
+    if (value <= 0) throw new RangeError(`${name} must be positive`);
+  }
+  function color(value) {
+    if (!value || value.length !== 4) throw new TypeError("color must be [r,g,b,a]");
+    for (let i = 0; i < 4; i++) if (!Number.isFinite(value[i]) || value[i] < 0 || value[i] > 1) throw new RangeError("color channels must be in [0,1]");
+  }
+  function compile2(gl, type, source) {
+    const shader2 = gl.createShader(type);
+    if (!shader2) throw new Error("WebGL shader allocation failed");
+    gl.shaderSource(shader2, source);
+    gl.compileShader(shader2);
+    if (!gl.getShaderParameter(shader2, gl.COMPILE_STATUS)) {
+      const message = gl.getShaderInfoLog(shader2);
+      gl.deleteShader(shader2);
+      throw new Error(`WebGL shader: ${message}`);
+    }
+    return shader2;
+  }
+  var Renderer2D = class {
+    constructor(canvas, { batchVertices = 6144, antialias = true, preserveDrawingBuffer = false } = {}) {
+      if (!canvas?.getContext || !canvas?.addEventListener) throw new TypeError("canvas is required");
+      if (!Number.isSafeInteger(batchVertices) || batchVertices < 6 || batchVertices > 1048576) throw new RangeError("batchVertices must be 6..1048576");
+      this.canvas = canvas;
+      this.gl = canvas.getContext("webgl", { alpha: true, premultipliedAlpha: true, antialias, depth: false, stencil: false, preserveDrawingBuffer });
+      if (!this.gl) throw new Error("WebGL 1 is required; no Canvas2D fallback");
+      this.state = "ready";
+      this.failure = null;
+      this.active = false;
+      this.vertices = new Float32Array(batchVertices * 8);
+      this.vertexCount = 0;
+      this.projection = new Float32Array(9);
+      this.textures = /* @__PURE__ */ new Map();
+      this.width = canvas.width || 1;
+      this.height = canvas.height || 1;
+      this.dpr = 1;
+      this.camera = { x: this.width / 2, y: this.height / 2, zoom: 1, rotation: 0 };
+      this.stats = {
+        backend: "webgl1",
+        frame: 0,
+        drawCalls: 0,
+        vertices: 0,
+        uploadedBytes: 0,
+        bufferViews: 0,
+        textureUploads: 0,
+        totalTextureUploads: 0,
+        textureCount: 0,
+        stagingBytes: this.vertices.byteLength,
+        bufferAllocations: 0
+      };
+      this.onLost = (event) => {
+        event.preventDefault();
+        this.state = "lost";
+        this.active = false;
+        this.vertexCount = 0;
+        this.batchTexture = null;
+      };
+      this.onRestored = () => {
+        if (this.state === "disposed") return;
+        try {
+          this._initialize();
+          this.state = "ready";
+          this.failure = null;
+        } catch (error) {
+          this.state = "failed";
+          this.failure = error.message;
+          this._deleteGPU();
+        }
+      };
+      try {
+        this._initialize();
+      } catch (error) {
+        this._deleteGPU();
+        this.state = "failed";
+        throw error;
+      }
+      canvas.addEventListener("webglcontextlost", this.onLost);
+      canvas.addEventListener("webglcontextrestored", this.onRestored);
+    }
+    _ready() {
+      if (this.state !== "ready") throw new Error(`Renderer is ${this.state}${this.failure ? `: ${this.failure}` : ""}`);
+    }
+    _frame() {
+      this._ready();
+      if (!this.active) throw new Error("beginFrame is required");
+    }
+    _initialize() {
+      const gl = this.gl;
+      let vertex, fragment2;
+      try {
+        vertex = compile2(gl, gl.VERTEX_SHADER, VERTEX2);
+        fragment2 = compile2(gl, gl.FRAGMENT_SHADER, FRAGMENT2);
+        this.program = gl.createProgram();
+        if (!this.program) throw new Error("WebGL program allocation failed");
+        gl.attachShader(this.program, vertex);
+        gl.attachShader(this.program, fragment2);
+        gl.linkProgram(this.program);
+        if (!gl.getProgramParameter(this.program, gl.LINK_STATUS)) throw new Error(`WebGL link: ${gl.getProgramInfoLog(this.program)}`);
+      } finally {
+        if (vertex) gl.deleteShader(vertex);
+        if (fragment2) gl.deleteShader(fragment2);
+      }
+      this.buffer = gl.createBuffer();
+      if (!this.buffer) throw new Error("WebGL buffer allocation failed");
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+      gl.bufferData(gl.ARRAY_BUFFER, this.vertices.byteLength, gl.DYNAMIC_DRAW);
+      this.stats.bufferAllocations++;
+      gl.useProgram(this.program);
+      for (const [name, size, offset] of [["a_position", 2, 0], ["a_uv", 2, 8], ["a_color", 4, 16]]) {
+        const location = gl.getAttribLocation(this.program, name);
+        gl.enableVertexAttribArray(location);
+        gl.vertexAttribPointer(location, size, gl.FLOAT, false, 32, offset);
+      }
+      this.uProjection = gl.getUniformLocation(this.program, "u_projection");
+      gl.uniform1i(gl.getUniformLocation(this.program, "u_texture"), 0);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.disable(gl.DEPTH_TEST);
+      gl.disable(gl.CULL_FACE);
+      gl.disable(gl.DITHER);
+      gl.enable(gl.BLEND);
+      gl.blendEquation(gl.FUNC_ADD);
+      gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+      this.white = { width: 1, height: 1, source: new Uint8Array([255, 255, 255, 255]), filter: "nearest", texture: null };
+      this._upload(this.white);
+      for (const record of this.textures.values()) {
+        record.texture = null;
+        this._upload(record);
+      }
+      this.batchTexture = null;
+      this.vertexCount = 0;
+      gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+      this._projection();
+    }
+    _projection() {
+      const { x, y, zoom, rotation } = this.camera;
+      const c = Math.cos(rotation) * zoom, s = Math.sin(rotation) * zoom;
+      const m = this.projection, w = this.width, h = this.height;
+      m[0] = 2 * c / w;
+      m[1] = 2 * s / h;
+      m[2] = 0;
+      m[3] = 2 * s / w;
+      m[4] = -2 * c / h;
+      m[5] = 0;
+      m[6] = -2 * (c * x + s * y) / w;
+      m[7] = 2 * (c * y - s * x) / h;
+      m[8] = 1;
+      this.gl.uniformMatrix3fv(this.uProjection, false, m);
+    }
+    /** CSS viewport dimensions; does not change CSS style. Game controls camera separately. */
+    resize(width, height, dpr = 1) {
+      this._ready();
+      positive2(width, "width");
+      positive2(height, "height");
+      positive2(dpr, "dpr");
+      const pixelWidth = Math.max(1, Math.round(width * dpr)), pixelHeight = Math.max(1, Math.round(height * dpr));
+      const limit = this.gl.getParameter(this.gl.MAX_VIEWPORT_DIMS);
+      if (pixelWidth > limit[0] || pixelHeight > limit[1]) throw new RangeError("viewport exceeds WebGL limits");
+      if (this.active) throw new Error("resize must be outside beginFrame/endFrame");
+      this.width = width;
+      this.height = height;
+      this.dpr = dpr;
+      if (this.canvas.width !== pixelWidth) this.canvas.width = pixelWidth;
+      if (this.canvas.height !== pixelHeight) this.canvas.height = pixelHeight;
+      this.gl.viewport(0, 0, pixelWidth, pixelHeight);
+      this._projection();
+    }
+    /** Camera center in world units; zoom is CSS pixels per world unit. */
+    setCamera({ x = this.camera.x, y = this.camera.y, zoom = this.camera.zoom, rotation = this.camera.rotation } = {}) {
+      this._ready();
+      finite4(x, "x");
+      finite4(y, "y");
+      positive2(zoom, "zoom");
+      finite4(rotation, "rotation");
+      if (this.active) this.flush();
+      this.camera.x = x;
+      this.camera.y = y;
+      this.camera.zoom = zoom;
+      this.camera.rotation = rotation;
+      this._projection();
+    }
+    /** Caller-owned output; no world/simulation state is read or changed. */
+    worldToScreenInto(x, y, out) {
+      finite4(x, "x");
+      finite4(y, "y");
+      const camera = this.camera;
+      const c = Math.cos(camera.rotation), s = Math.sin(camera.rotation), dx = x - camera.x, dy = y - camera.y;
+      out.x = (c * dx + s * dy) * camera.zoom + this.width / 2;
+      out.y = (-s * dx + c * dy) * camera.zoom + this.height / 2;
+      return out;
+    }
+    screenToWorldInto(x, y, out) {
+      finite4(x, "x");
+      finite4(y, "y");
+      const camera = this.camera;
+      const c = Math.cos(camera.rotation), s = Math.sin(camera.rotation), dx = (x - this.width / 2) / camera.zoom, dy = (y - this.height / 2) / camera.zoom;
+      out.x = c * dx - s * dy + camera.x;
+      out.y = s * dx + c * dy + camera.y;
+      return out;
+    }
+    _source(source, filter) {
+      if (filter !== "nearest" && filter !== "linear") throw new RangeError("filter must be nearest or linear");
+      if (Object.prototype.toString.call(source) === "[object ImageBitmap]") throw new TypeError("ImageBitmap alpha mode cannot be inspected; use an image/canvas or RGBA bytes");
+      const width = source?.naturalWidth ?? source?.videoWidth ?? source?.width;
+      const height = source?.naturalHeight ?? source?.videoHeight ?? source?.height;
+      const max = this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE);
+      if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1 || width > max || height > max) throw new RangeError("texture dimensions are invalid");
+      let retained = source;
+      if (source.data !== void 0) {
+        if (!(source.data instanceof Uint8Array || source.data instanceof Uint8ClampedArray) || source.data.length !== width * height * 4) throw new TypeError("texture data must be width*height*4 RGBA bytes");
+        retained = new Uint8Array(source.data);
+        for (let i = 0; i < retained.length; i += 4) {
+          const a = retained[i + 3] / 255;
+          retained[i] = Math.round(retained[i] * a);
+          retained[i + 1] = Math.round(retained[i + 1] * a);
+          retained[i + 2] = Math.round(retained[i + 2] * a);
+        }
+      }
+      return { width, height, source: retained, filter, texture: null };
+    }
+    _upload(record) {
+      const gl = this.gl;
+      const texture = gl.createTexture();
+      if (!texture) throw new Error("WebGL texture allocation failed");
+      record.texture = texture;
+      try {
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, !(record.source instanceof Uint8Array));
+        if (record.source instanceof Uint8Array) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, record.width, record.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, record.source);
+        else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, record.source);
+        const filter = record.filter === "linear" ? gl.LINEAR : gl.NEAREST;
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        const error = gl.getError();
+        if (error !== gl.NO_ERROR) throw new Error(`WebGL texture upload error ${error}`);
+        this.stats.textureUploads++;
+        this.stats.totalTextureUploads++;
+      } catch (error) {
+        gl.deleteTexture(texture);
+        record.texture = null;
+        throw error;
+      }
+    }
+    /** Loaded origin-clean image/canvas, or {width,height,data: RGBA bytes}. */
+    createTexture(source, { filter = "linear" } = {}) {
+      this._ready();
+      const record = this._source(source, filter);
+      if (this.active) this.flush();
+      this._upload(record);
+      const handle = Object.freeze({ width: record.width, height: record.height });
+      this.textures.set(handle, record);
+      this.stats.textureCount = this.textures.size;
+      return handle;
+    }
+    /** Replacement dimensions must match the handle. Upload is explicit, never per sprite. */
+    updateTexture(handle, source) {
+      this._ready();
+      const previous = this.textures.get(handle);
+      if (!previous) throw new Error("unknown/deleted texture");
+      const record = this._source(source, previous.filter);
+      if (record.width !== handle.width || record.height !== handle.height) throw new RangeError("texture update dimensions must match");
+      if (this.active) this.flush();
+      this._upload(record);
+      this.gl.deleteTexture(previous.texture);
+      this.textures.set(handle, record);
+    }
+    deleteTexture(handle) {
+      if (this.state === "disposed") return false;
+      const record = this.textures.get(handle);
+      if (!record) return false;
+      if (this.active) this.flush();
+      this.gl.deleteTexture(record.texture);
+      this.textures.delete(handle);
+      this.stats.textureCount = this.textures.size;
+      return true;
+    }
+    /** Returns false while context is lost. Caller skips that frame; restore is automatic. */
+    beginFrame(clear = CLEAR) {
+      if (this.state === "lost") return false;
+      this._ready();
+      if (this.active) throw new Error("endFrame is required");
+      color(clear);
+      this.active = true;
+      this.vertexCount = 0;
+      this.batchTexture = null;
+      const stats = this.stats;
+      stats.frame++;
+      stats.drawCalls = stats.vertices = stats.uploadedBytes = stats.bufferViews = stats.textureUploads = 0;
+      const gl = this.gl;
+      gl.clearColor(clear[0] * clear[3], clear[1] * clear[3], clear[2] * clear[3], clear[3]);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      return true;
+    }
+    _reserve(count, texture) {
+      this._frame();
+      if (this.batchTexture !== texture || this.vertexCount + count > this.vertices.length / 8) this.flush();
+      this.batchTexture = texture;
+    }
+    _vertex(x, y, u, v, tint) {
+      const data = this.vertices;
+      let i = this.vertexCount++ * 8;
+      data[i++] = x;
+      data[i++] = y;
+      data[i++] = u;
+      data[i++] = v;
+      data[i++] = tint[0];
+      data[i++] = tint[1];
+      data[i++] = tint[2];
+      data[i] = tint[3];
+    }
+    triangle(x0, y0, x1, y1, x2, y2, tint = WHITE4) {
+      finite4(x0, "x0");
+      finite4(y0, "y0");
+      finite4(x1, "x1");
+      finite4(y1, "y1");
+      finite4(x2, "x2");
+      finite4(y2, "y2");
+      color(tint);
+      this._reserve(3, this.white.texture);
+      this._vertex(x0, y0, 0, 0, tint);
+      this._vertex(x1, y1, 0, 0, tint);
+      this._vertex(x2, y2, 0, 0, tint);
+    }
+    _quad(texture, x, y, width, height, angle, tint, u0, v0, u1, v1) {
+      finite4(x, "x");
+      finite4(y, "y");
+      positive2(width, "width");
+      positive2(height, "height");
+      finite4(angle, "angle");
+      color(tint);
+      this._reserve(6, texture);
+      const c = Math.cos(angle), s = Math.sin(angle), hx = width / 2, hy = height / 2;
+      const ax = x - c * hx + s * hy, ay = y - s * hx - c * hy;
+      const bx = x + c * hx + s * hy, by = y + s * hx - c * hy;
+      const cx = x + c * hx - s * hy, cy = y + s * hx + c * hy;
+      const dx = x - c * hx - s * hy, dy = y - s * hx + c * hy;
+      this._vertex(ax, ay, u0, v0, tint);
+      this._vertex(bx, by, u1, v0, tint);
+      this._vertex(cx, cy, u1, v1, tint);
+      this._vertex(ax, ay, u0, v0, tint);
+      this._vertex(cx, cy, u1, v1, tint);
+      this._vertex(dx, dy, u0, v1, tint);
+    }
+    /** Center-anchored rectangle, positive size, clockwise rotation in y-down world. */
+    rect(x, y, width, height, tint = WHITE4, angle = 0) {
+      this._quad(this.white.texture, x, y, width, height, angle, tint, 0, 0, 1, 1);
+    }
+    /** Atlas UV edges are top-left based; reversing endpoints flips the image. */
+    sprite(texture, x, y, width = texture.width, height = texture.height, { angle = 0, tint = WHITE4, u0 = 0, v0 = 0, u1 = 1, v1 = 1 } = {}) {
+      const record = this.textures.get(texture);
+      if (!record) throw new Error("unknown/deleted texture");
+      if (!Number.isFinite(u0) || !Number.isFinite(v0) || !Number.isFinite(u1) || !Number.isFinite(v1) || Math.min(u0, v0, u1, v1) < 0 || Math.max(u0, v0, u1, v1) > 1) throw new RangeError("UV must be in [0,1]");
+      this._quad(record.texture, x, y, width, height, angle, tint, u0, v0, u1, v1);
+    }
+    /** Bounded fan tessellation; game chooses quality. No path/tessellation engine. */
+    ellipse(x, y, radiusX, radiusY, tint = WHITE4, segments = 24) {
+      finite4(x, "x");
+      finite4(y, "y");
+      positive2(radiusX, "radiusX");
+      positive2(radiusY, "radiusY");
+      color(tint);
+      if (!Number.isSafeInteger(segments) || segments < 3 || segments > 256) throw new RangeError("segments must be 3..256");
+      for (let i = 0; i < segments; i++) {
+        const a = i / segments * Math.PI * 2, b = (i + 1) / segments * Math.PI * 2;
+        this._reserve(3, this.white.texture);
+        this._vertex(x, y, 0, 0, tint);
+        this._vertex(x + Math.cos(a) * radiusX, y + Math.sin(a) * radiusY, 0, 0, tint);
+        this._vertex(x + Math.cos(b) * radiusX, y + Math.sin(b) * radiusY, 0, 0, tint);
+      }
+    }
+    line(x0, y0, x1, y1, width, tint = WHITE4) {
+      finite4(x0, "x0");
+      finite4(y0, "y0");
+      finite4(x1, "x1");
+      finite4(y1, "y1");
+      positive2(width, "width");
+      color(tint);
+      this._frame();
+      const length = Math.hypot(x1 - x0, y1 - y0);
+      if (!length) return;
+      this.rect((x0 + x1) / 2, (y0 + y1) / 2, length, width, tint, Math.atan2(y1 - y0, x1 - x0));
+    }
+    flush() {
+      this._frame();
+      if (!this.vertexCount) return;
+      const gl = this.gl, view = this.vertices.subarray(0, this.vertexCount * 8);
+      gl.bindTexture(gl.TEXTURE_2D, this.batchTexture);
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, view);
+      gl.drawArrays(gl.TRIANGLES, 0, this.vertexCount);
+      this.stats.drawCalls++;
+      this.stats.vertices += this.vertexCount;
+      this.stats.uploadedBytes += view.byteLength;
+      this.stats.bufferViews++;
+      this.vertexCount = 0;
+    }
+    /** Stats is a reused object, valid until next frame; CPU submission, not GPU timing. */
+    endFrame() {
+      this.flush();
+      this.active = false;
+      this.batchTexture = null;
+      return this.stats;
+    }
+    _deleteGPU() {
+      const gl = this.gl;
+      gl.useProgram(null);
+      gl.bindBuffer(gl.ARRAY_BUFFER, null);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      for (const record of this.textures.values()) if (record.texture) gl.deleteTexture(record.texture);
+      if (this.white?.texture) gl.deleteTexture(this.white.texture);
+      if (this.buffer) gl.deleteBuffer(this.buffer);
+      if (this.program) gl.deleteProgram(this.program);
+    }
+    /** Idempotent. Removes context listeners and releases retained sources/GPU resources. */
+    dispose() {
+      if (this.state === "disposed") return;
+      this.canvas.removeEventListener("webglcontextlost", this.onLost);
+      this.canvas.removeEventListener("webglcontextrestored", this.onRestored);
+      this._deleteGPU();
+      this.textures.clear();
+      this.white = null;
+      this.buffer = this.program = null;
+      this.stats.textureCount = 0;
+      this.active = false;
+      this.vertexCount = 0;
+      this.state = "disposed";
+    }
+  };
+
+  // dist/input.js
+  function actionName(action) {
+    if (typeof action !== "string" || !action.length) throw new TypeError("action must be a nonempty string");
+  }
+  function sourceId(source) {
+    if ((typeof source !== "string" || !source.length) && typeof source !== "symbol") {
+      throw new TypeError("source must be a nonempty string or symbol");
+    }
+  }
+  var ActionState = class {
+    #actions = /* @__PURE__ */ new Map();
+    #sources = /* @__PURE__ */ new Map();
+    #entry(action) {
+      let entry = this.#actions.get(action);
+      if (!entry) {
+        entry = { sources: /* @__PURE__ */ new Set(), pressed: false, released: false };
+        this.#actions.set(action, entry);
+      }
+      return entry;
+    }
+    /**
+     * 실제 장치/source의 눌림을 갱신합니다. 반복 down/up은 무시합니다.
+     * 첫 source가 눌리면 pressed, 마지막 source가 해제되면 released가 생깁니다.
+     * @param {string} action @param {string|symbol} source @param {boolean} down
+     */
+    set(action, source, down) {
+      actionName(action);
+      sourceId(source);
+      if (typeof down !== "boolean") throw new TypeError("down must be boolean");
+      const entry = down ? this.#entry(action) : this.#actions.get(action);
+      if (!entry || entry.sources.has(source) === down) return;
+      if (down) {
+        if (!entry.sources.size) entry.pressed = true;
+        entry.sources.add(source);
+        let actions = this.#sources.get(source);
+        if (!actions) this.#sources.set(source, actions = /* @__PURE__ */ new Set());
+        actions.add(action);
+      } else {
+        entry.sources.delete(source);
+        if (!entry.sources.size) entry.released = true;
+        const actions = this.#sources.get(source);
+        actions.delete(action);
+        if (!actions.size) this.#sources.delete(source);
+      }
+    }
+    /**
+     * tap 같은 이산 행동의 pressed/released를 함께 표시합니다. 기존 hold는 유지합니다.
+     * 같은 consume 구간의 반복 pulse는 bool 하나로 합쳐집니다. 횟수/좌표는 호출자가 큐에 보관합니다.
+     * @param {string} action
+     */
+    pulse(action) {
+      actionName(action);
+      const entry = this.#entry(action);
+      entry.pressed = true;
+      entry.released = true;
+    }
+    /** 해당 source의 hold만 해제합니다. 다른 장치/어댑터의 hold는 유지합니다. @param {string|symbol} source */
+    releaseSource(source) {
+      sourceId(source);
+      const actions = this.#sources.get(source);
+      if (!actions) return;
+      for (const action of actions) {
+        const entry = this.#actions.get(action);
+        entry.sources.delete(source);
+        if (!entry.sources.size) entry.released = true;
+      }
+      this.#sources.delete(source);
+    }
+    /** 모든 source를 해제합니다. 남아 있는 edge는 consume() 전까지 유지됩니다. */
+    releaseAll() {
+      for (const source of this.#sources.keys()) this.releaseSource(source);
+    }
+    /** 소비 없이 재사용 가능한 out을 갱신합니다. 모르는 액션은 모두 false입니다. @param {string} action @param {ActionSample} out @returns {ActionSample} */
+    sampleInto(action, out) {
+      actionName(action);
+      if (!out || typeof out !== "object") throw new TypeError("out must be a writable object");
+      const entry = this.#actions.get(action);
+      out.held = !!entry?.sources.size;
+      out.pressed = entry?.pressed ?? false;
+      out.released = entry?.released ?? false;
+      return out;
+    }
+    /** 새 객체가 필요한 편의 함수. 매 프레임에는 sampleInto를 쓰세요. @param {string} action @returns {ActionSample} */
+    sample(action) {
+      return this.sampleInto(action, {});
+    }
+    /** 게임의 입력 제출/simulation tick 경계에서만 명시적으로 호출합니다. hold는 유지합니다. */
+    consume() {
+      for (const entry of this.#actions.values()) {
+        entry.pressed = false;
+        entry.released = false;
+      }
+    }
+  };
+  var UI_TARGETS = 'input, textarea, select, button, a[href], [contenteditable]:not([contenteditable="false"]), [data-gamekit-ui]';
+  var BUTTON_BITS = [1, 4, 2, 8, 16];
+  function bindings(value, name, pointer = false) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`${name} must be an object`);
+    const map = /* @__PURE__ */ new Map();
+    for (const [key, action] of Object.entries(value)) {
+      if (!key.length || typeof action !== "string" || !action.length) throw new TypeError(`${name} requires nonempty action names`);
+      if (pointer && !/^[0-4]$/.test(key)) throw new RangeError("pointerButtons keys must be 0..4");
+      map.set(pointer ? Number(key) : key, action);
+    }
+    return map;
+  }
+  function positive(value, name) {
+    if (!Number.isFinite(value) || value < 0) throw new RangeError(`${name} must be a finite nonnegative number`);
+    return value;
+  }
+  function gestureOptions(value) {
+    if (value === void 0 || value === null) return null;
+    if (typeof value !== "object" || Array.isArray(value)) throw new TypeError("gestures must be an object");
+    const result = {
+      tap: value.tap,
+      doubleTap: value.doubleTap,
+      button: value.button ?? 0,
+      tapMs: value.tapMs ?? 400,
+      doubleTapMs: value.doubleTapMs ?? 300,
+      dragSlop: value.dragSlop ?? 12,
+      doubleTapSlop: value.doubleTapSlop ?? 32
+    };
+    for (const name of ["tap", "doubleTap"]) {
+      if (result[name] !== void 0 && (typeof result[name] !== "string" || !result[name].length)) throw new TypeError(`gestures.${name} must be a nonempty action name`);
+    }
+    if (!result.tap && !result.doubleTap) throw new TypeError("gestures needs tap or doubleTap");
+    if (!Number.isInteger(result.button) || result.button < 0 || result.button > 4) throw new RangeError("gestures.button must be 0..4");
+    for (const name of ["tapMs", "doubleTapMs", "dragSlop", "doubleTapSlop"]) positive(result[name], `gestures.${name}`);
+    return result;
+  }
+  function pointerPositionInto(event, target, out) {
+    if (!out || typeof out !== "object") throw new TypeError("out must be a writable object");
+    const rect = target.getBoundingClientRect();
+    if (!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY) || !Number.isFinite(rect.left) || !Number.isFinite(rect.top) || !Number.isFinite(rect.width) || !Number.isFinite(rect.height) || rect.width <= 0 || rect.height <= 0) return false;
+    out.x = event.clientX - rect.left;
+    out.y = event.clientY - rect.top;
+    out.u = out.x / rect.width;
+    out.v = out.y / rect.height;
+    return true;
+  }
+  function createDOMInput({ target, state = new ActionState(), keys = {}, pointerButtons = {}, keyboardTarget = target?.ownerDocument, excludeTarget = UI_TARGETS, preventDefault = true, touchAction, gestures, onGesture, onPointer, onRelease } = {}) {
+    const doc = target?.ownerDocument;
+    if (!target?.addEventListener || !target?.getBoundingClientRect || !doc?.addEventListener || !keyboardTarget?.addEventListener) throw new TypeError("target needs a DOM ownerDocument; keyboardTarget must be an EventTarget");
+    if (!(state instanceof ActionState)) throw new TypeError("state must be an ActionState");
+    if (typeof excludeTarget !== "string" && typeof excludeTarget !== "function" && excludeTarget !== false) throw new TypeError("excludeTarget must be a selector, predicate or false");
+    if (typeof preventDefault !== "boolean") throw new TypeError("preventDefault must be boolean");
+    if (touchAction !== void 0 && typeof touchAction !== "string") throw new TypeError("touchAction must be a string");
+    if (onGesture !== void 0 && typeof onGesture !== "function") throw new TypeError("onGesture must be a function");
+    for (const [name, callback] of Object.entries({ onPointer, onRelease })) if (callback !== void 0 && typeof callback !== "function") throw new TypeError(`${name} must be a function`);
+    const keyMap = bindings(keys, "keys");
+    const buttonMap = bindings(pointerButtons, "pointerButtons", true);
+    const gesture = gestureOptions(gestures);
+    if (typeof excludeTarget === "string" && excludeTarget) target.matches?.(excludeTarget);
+    const activeKeys = /* @__PURE__ */ new Map();
+    const pointers = /* @__PURE__ */ new Map();
+    const removers = [];
+    let latest = null, lastTap = null, disposed = false;
+    const oldTouchAction = target.style?.touchAction;
+    const listen = (owner, type, callback, options) => {
+      owner.addEventListener(type, callback, options);
+      removers.push(() => owner.removeEventListener(type, callback, options));
+    };
+    const prevent = (event) => {
+      if (preventDefault && event.cancelable) event.preventDefault();
+    };
+    const inside = (event) => event.composedPath?.().includes(target) || event.target === target || target.contains?.(event.target);
+    const excluded = (event) => {
+      if (excludeTarget === false || excludeTarget === "") return false;
+      if (typeof excludeTarget === "function") return !!excludeTarget(event.target, event);
+      const path = event.composedPath?.() ?? [event.target];
+      return path.some((node) => node?.closest?.(excludeTarget));
+    };
+    const sample = (record, out) => {
+      if (!record) return false;
+      if (!out || typeof out !== "object") throw new TypeError("out must be a writable object");
+      out.pointerId = record.pointerId;
+      out.pointerType = record.pointerType;
+      out.x = record.x;
+      out.y = record.y;
+      out.u = record.u;
+      out.v = record.v;
+      out.buttons = record.buttons;
+      out.timeMs = record.timeMs;
+      out.active = record.active;
+      return true;
+    };
+    const notifyPointer = (type, record, originalEvent, reason) => {
+      if (!onPointer) return;
+      const value = { type, originalEvent, reason };
+      sample(record, value);
+      onPointer(value);
+    };
+    const updatePosition = (record, event) => {
+      if (!pointerPositionInto(event, target, record)) return false;
+      record.buttons = event.buttons;
+      record.timeMs = event.timeStamp;
+      latest = record;
+      return true;
+    };
+    const syncButtons = (record, event) => {
+      for (const [button, action] of buttonMap) {
+        const down = (event.buttons & BUTTON_BITS[button]) !== 0;
+        let source = record.sources.get(button);
+        if (down && !source) {
+          source = /* @__PURE__ */ Symbol(`pointer:${event.pointerId}:${button}`);
+          record.sources.set(button, source);
+          state.set(action, source, true);
+        } else if (!down && source) {
+          state.releaseSource(source);
+          record.sources.delete(button);
+        }
+      }
+    };
+    const releaseCapture = (id) => {
+      try {
+        if (target.hasPointerCapture?.(id)) target.releasePointerCapture(id);
+      } catch {
+      }
+    };
+    const dropPointer = (record) => {
+      pointers.delete(record.pointerId);
+      record.active = false;
+      for (const source of record.sources.values()) state.releaseSource(source);
+      record.sources.clear();
+      releaseCapture(record.pointerId);
+    };
+    const releaseAll = (event) => {
+      const released = onPointer ? [...pointers.values()] : [];
+      for (const source of activeKeys.values()) state.releaseSource(source);
+      activeKeys.clear();
+      for (const record of pointers.values()) dropPointer(record);
+      lastTap = null;
+      latest = null;
+      const reason = typeof event === "string" ? event : event?.type ?? "releaseAll";
+      const errors = [];
+      for (const record of released) try {
+        notifyPointer("cancel", record, event?.type ? event : null, reason);
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        onRelease?.({ reason, originalEvent: event?.type ? event : null });
+      } catch (error) {
+        errors.push(error);
+      }
+      if (errors.length) throw new AggregateError(errors, "input release callbacks failed");
+    };
+    const cancelGesture = (record) => {
+      record.gestureCanceled = true;
+      lastTap = null;
+    };
+    const moved = (record, event) => Math.hypot(event.clientX - record.startX, event.clientY - record.startY) > gesture.dragSlop;
+    const checkGesture = (record, event) => {
+      if (!gesture || record.gestureCanceled) return;
+      if (moved(record, event) || (event.buttons & ~BUTTON_BITS[gesture.button]) !== 0) cancelGesture(record);
+    };
+    const keydown = (event) => {
+      const action = keyMap.get(event.code);
+      if (!action || doc.hidden || excluded(event)) return;
+      if (!activeKeys.has(event.code)) {
+        if (event.repeat) return;
+        const source = /* @__PURE__ */ Symbol(`key:${event.code}`);
+        activeKeys.set(event.code, source);
+        state.set(action, source, true);
+      }
+      prevent(event);
+    };
+    const keyup = (event) => {
+      const source = activeKeys.get(event.code);
+      if (!source) return;
+      state.releaseSource(source);
+      activeKeys.delete(event.code);
+      if (!excluded(event)) prevent(event);
+    };
+    const pointerdown = (event) => {
+      if (doc.hidden || excluded(event) || pointers.has(event.pointerId)) return;
+      if (!buttonMap.has(event.button) && (!gesture || event.button !== gesture.button)) return;
+      const record = { pointerId: event.pointerId, pointerType: event.pointerType, active: true, sources: /* @__PURE__ */ new Map(), startX: event.clientX, startY: event.clientY, startMs: event.timeStamp, gestureCanceled: !gesture || event.button !== gesture.button || pointers.size > 0 };
+      if (!updatePosition(record, event)) return;
+      if (pointers.size) for (const other of pointers.values()) cancelGesture(other);
+      pointers.set(event.pointerId, record);
+      syncButtons(record, event);
+      checkGesture(record, event);
+      try {
+        target.setPointerCapture?.(event.pointerId);
+      } catch {
+      }
+      prevent(event);
+      notifyPointer("down", record, event);
+    };
+    const pointermove = (event) => {
+      const record = pointers.get(event.pointerId);
+      if (!record) {
+        if (inside(event) && !excluded(event)) {
+          const hover = latest && !latest.active && latest.pointerId === event.pointerId ? latest : { pointerId: event.pointerId, pointerType: event.pointerType, active: false };
+          if (updatePosition(hover, event)) notifyPointer("move", hover, event);
+        }
+        return;
+      }
+      if (!updatePosition(record, event)) cancelGesture(record);
+      checkGesture(record, event);
+      syncButtons(record, event);
+      prevent(event);
+      notifyPointer("move", record, event);
+    };
+    const pointerend = (event, canceled) => {
+      const record = pointers.get(event.pointerId);
+      if (!record) return;
+      const validPosition = updatePosition(record, event);
+      checkGesture(record, event);
+      dropPointer(record);
+      if (!canceled) prevent(event);
+      notifyPointer(canceled ? "cancel" : "up", record, event, canceled ? "pointercancel" : void 0);
+      if (!gesture) return;
+      const duration = event.timeStamp - record.startMs;
+      if (canceled || !validPosition || record.gestureCanceled || !Number.isFinite(duration) || duration < 0 || duration > gesture.tapMs || record.u < 0 || record.u > 1 || record.v < 0 || record.v > 1) {
+        lastTap = null;
+        return;
+      }
+      const gap = lastTap ? event.timeStamp - lastTap.timeMs : Infinity;
+      const double = !!gesture.doubleTap && !!lastTap && lastTap.pointerType === record.pointerType && gap >= 0 && gap <= gesture.doubleTapMs && Math.hypot(event.clientX - lastTap.clientX, event.clientY - lastTap.clientY) <= gesture.doubleTapSlop;
+      const type = double ? "doubleTap" : "tap";
+      const action = gesture[type];
+      lastTap = double ? null : { timeMs: event.timeStamp, clientX: event.clientX, clientY: event.clientY, pointerType: record.pointerType };
+      if (action) state.pulse(action);
+      if (onGesture) onGesture({ type, action: action ?? null, pointerId: record.pointerId, pointerType: record.pointerType, x: record.x, y: record.y, u: record.u, v: record.v, timeMs: record.timeMs });
+    };
+    const unrelatedDown = (event) => {
+      if (!inside(event) || excluded(event) || !buttonMap.has(event.button) && gesture && event.button !== gesture.button) {
+        lastTap = null;
+        for (const record of pointers.values()) cancelGesture(record);
+      }
+    };
+    const lostcapture = (event) => {
+      const record = pointers.get(event.pointerId);
+      if (!record) return;
+      dropPointer(record);
+      lastTap = null;
+      notifyPointer("cancel", record, event, "lostpointercapture");
+    };
+    listen(keyboardTarget, "keydown", keydown);
+    listen(doc, "keyup", keyup, true);
+    listen(target, "pointerdown", pointerdown, { passive: false });
+    listen(doc, "pointerdown", unrelatedDown, true);
+    listen(doc, "pointermove", pointermove, { capture: true, passive: false });
+    listen(doc, "pointerup", (event) => pointerend(event, false), { capture: true, passive: false });
+    listen(doc, "pointercancel", (event) => pointerend(event, true), true);
+    listen(target, "lostpointercapture", lostcapture);
+    listen(doc, "visibilitychange", (event) => {
+      if (doc.hidden) releaseAll(event);
+    });
+    if (doc.defaultView) {
+      listen(doc.defaultView, "blur", releaseAll);
+      listen(doc.defaultView, "pagehide", releaseAll);
+    }
+    if (preventDefault && (buttonMap.has(2) || gesture?.button === 2)) {
+      listen(target, "contextmenu", (event) => {
+        if (!excluded(event)) prevent(event);
+      });
+    }
+    if (touchAction !== void 0 && target.style) target.style.touchAction = touchAction;
+    return {
+      state,
+      get disposed() {
+        return disposed;
+      },
+      samplePointerInto(pointerId, out) {
+        return sample(pointers.get(pointerId), out);
+      },
+      sampleLatestPointerInto(out) {
+        return sample(latest, out);
+      },
+      releaseAll,
+      dispose() {
+        if (disposed) return;
+        disposed = true;
+        for (const remove of removers) remove();
+        try {
+          releaseAll("dispose");
+        } finally {
+          if (touchAction !== void 0 && target.style?.touchAction === touchAction) target.style.touchAction = oldTouchAction;
+        }
+      }
+    };
+  }
+
+  // dist/camera.js
+  var finite2 = (n, name) => {
+    if (!Number.isFinite(n)) throw new TypeError(`${name} must be finite`);
+    return n;
+  };
+  var positive3 = (n, name) => {
+    finite2(n, name);
+    if (n <= 0) throw new RangeError(`${name} must be positive`);
+    return n;
+  };
+  var OrthographicProjection = class {
+    constructor(options = {}) {
+      this.configure({ degrees: 40, pixel2to1: false, ...options });
+    }
+    configure({ degrees = this._degrees, pixel2to1 = this.pixel2to1 } = {}) {
+      finite2(degrees, "degrees");
+      if (degrees <= 0 || degrees > 90) throw new RangeError("degrees must be (0,90]");
+      if (typeof pixel2to1 !== "boolean") throw new TypeError("pixel2to1 must be boolean");
+      this._degrees = degrees;
+      this.pixel2to1 = pixel2to1;
+      this.K = pixel2to1 ? 0.5 : Math.sin(degrees * Math.PI / 180);
+      this.H = Math.sqrt(Math.max(0, 1 - this.K * this.K));
+      this.degrees = Math.asin(this.K) * 180 / Math.PI;
+      return this;
+    }
+    projectInto(x, y, z, out) {
+      finite2(x, "x");
+      finite2(y, "y");
+      finite2(z, "z");
+      out.x = x;
+      out.y = y * this.K - z * this.H;
+      out.depth = y * this.H + z * this.K;
+      return out;
+    }
+    groundInto(x, y, out, z = 0) {
+      finite2(x, "x");
+      finite2(y, "y");
+      finite2(z, "z");
+      out.x = x;
+      out.y = (y + z * this.H) / this.K;
+      out.z = z;
+      return out;
+    }
+    depth(y, z = 0) {
+      return finite2(y, "y") * this.H + finite2(z, "z") * this.K;
+    }
+    angle(angle) {
+      finite2(angle, "angle");
+      return Math.atan2(Math.sin(angle) * this.K, Math.cos(angle));
+    }
+    intentInto(x, y, out) {
+      finite2(x, "x");
+      finite2(y, "y");
+      const magnitude = Math.min(1, Math.hypot(x, y)), wy = y / this.K, length = Math.hypot(x, wy);
+      out.x = length ? x / length * magnitude : 0;
+      out.y = length ? wy / length * magnitude : 0;
+      return out;
+    }
+  };
+  var CameraViewport = class {
+    constructor({ projection = new OrthographicProjection(), width = 1, height = 1, dpr = 1, left = 0, top = 0, x = 0, y = 0, zoom = 1, rotation = 0 } = {}) {
+      if (typeof projection?.projectInto !== "function" || typeof projection?.groundInto !== "function") throw new TypeError("projection contract required");
+      this.projection = projection;
+      this.camera = { x: 0, y: 0, zoom: 1, rotation: 0 };
+      this._point = {};
+      this._render = {};
+      this.shakeX = 0;
+      this.shakeY = 0;
+      this.setViewport({ width, height, dpr, left, top });
+      this.setCamera({ x, y, zoom, rotation });
+    }
+    setViewport({ width = this.width, height = this.height, dpr = this.dpr, left = this.left, top = this.top } = {}) {
+      positive3(width, "width");
+      positive3(height, "height");
+      positive3(dpr, "dpr");
+      positive3(width * dpr, "backing width");
+      positive3(height * dpr, "backing height");
+      finite2(left, "left");
+      finite2(top, "top");
+      this.width = width;
+      this.height = height;
+      this.dpr = dpr;
+      this.left = left;
+      this.top = top;
+      return this;
+    }
+    setCamera({ x = this.camera.x, y = this.camera.y, zoom = this.camera.zoom, rotation = this.camera.rotation } = {}) {
+      finite2(x, "x");
+      finite2(y, "y");
+      positive3(zoom, "zoom");
+      finite2(rotation, "rotation");
+      Object.assign(this.camera, { x, y, zoom, rotation });
+      this._cos = Math.cos(rotation);
+      this._sin = Math.sin(rotation);
+      return this;
+    }
+    setShake(x = 0, y = 0) {
+      this.shakeX = finite2(x, "x");
+      this.shakeY = finite2(y, "y");
+      return this;
+    }
+    /** Caller chooses target and duration. This modifies presentation only; no random source or authority. */
+    follow(x, y, elapsedMs, halfLifeMs = 0) {
+      finite2(x, "x");
+      finite2(y, "y");
+      finite2(elapsedMs, "elapsedMs");
+      finite2(halfLifeMs, "halfLifeMs");
+      if (elapsedMs < 0 || halfLifeMs < 0) throw new RangeError("follow times must be nonnegative");
+      const a = halfLifeMs === 0 ? 1 : -Math.expm1(-Math.LN2 * elapsedMs / halfLifeMs);
+      return this.setCamera({ x: this.camera.x + (x - this.camera.x) * a, y: this.camera.y + (y - this.camera.y) * a });
+    }
+    rendererCameraInto(out) {
+      const c = this.camera, dx = this.shakeX / c.zoom, dy = this.shakeY / c.zoom;
+      out.x = c.x - this._cos * dx + this._sin * dy;
+      out.y = c.y - this._sin * dx - this._cos * dy;
+      out.zoom = c.zoom;
+      out.rotation = c.rotation;
+      return out;
+    }
+    applyToRenderer(renderer, resize = false) {
+      if (resize) renderer.resize(this.width, this.height, this.dpr);
+      renderer.setCamera(this.rendererCameraInto(this._render));
+      return this;
+    }
+    planeToScreenInto(x, y, out) {
+      finite2(x, "x");
+      finite2(y, "y");
+      const dx = x - this.camera.x, dy = y - this.camera.y;
+      out.x = (this._cos * dx + this._sin * dy) * this.camera.zoom + this.width / 2 + this.shakeX;
+      out.y = (-this._sin * dx + this._cos * dy) * this.camera.zoom + this.height / 2 + this.shakeY;
+      return out;
+    }
+    screenToPlaneInto(x, y, out) {
+      finite2(x, "x");
+      finite2(y, "y");
+      const dx = (x - this.width / 2 - this.shakeX) / this.camera.zoom, dy = (y - this.height / 2 - this.shakeY) / this.camera.zoom;
+      out.x = this._cos * dx - this._sin * dy + this.camera.x;
+      out.y = this._sin * dx + this._cos * dy + this.camera.y;
+      return out;
+    }
+    worldToScreenInto(x, y, z, out) {
+      this.projection.projectInto(x, y, z, this._point);
+      return this.planeToScreenInto(this._point.x, this._point.y, out);
+    }
+    clientToScreenInto(x, y, out) {
+      out.x = finite2(x, "x") - this.left;
+      out.y = finite2(y, "y") - this.top;
+      return out;
+    }
+    screenToClientInto(x, y, out) {
+      out.x = finite2(x, "x") + this.left;
+      out.y = finite2(y, "y") + this.top;
+      return out;
+    }
+    screenToBackingInto(x, y, out) {
+      out.x = finite2(x, "x") * Math.max(1, Math.round(this.width * this.dpr)) / this.width;
+      out.y = finite2(y, "y") * Math.max(1, Math.round(this.height * this.dpr)) / this.height;
+      return out;
+    }
+    /** Exact flat inverse, or caller terrain intersection hook (returns boolean). No hidden iterative solver. */
+    screenToGroundInto(x, y, out, { z = 0, intersect = null } = {}) {
+      this.screenToPlaneInto(x, y, this._point);
+      if (intersect !== null) {
+        if (typeof intersect !== "function") throw new TypeError("intersect must be a function");
+        return intersect(this._point.x, this._point.y, this.projection, out);
+      }
+      this.projection.groundInto(this._point.x, this._point.y, out, z);
+      return true;
+    }
+  };
+
+  // dist/presentation-events.js
+  var integer = (value, name) => {
+    if (!Number.isSafeInteger(value) || value < 0) throw new RangeError(`${name} must be a nonnegative safe integer`);
+    return value;
+  };
+  var time = (value, name) => {
+    if (!Number.isFinite(value) || value < 0) throw new RangeError(`${name} must be nonnegative milliseconds`);
+    return value;
+  };
+  function presentationEventKey(event) {
+    integer(event.tick, "tick");
+    integer(event.sequence, "sequence");
+    integer(event.generation, "generation");
+    if (typeof event.entityId !== "string" && typeof event.entityId !== "number" || typeof event.entityId === "number" && !Number.isSafeInteger(event.entityId)) throw new TypeError("entityId must be string or safe integer");
+    if (typeof event.kind !== "string" || !event.kind) throw new TypeError("kind required");
+    return JSON.stringify([event.tick, event.sequence, event.entityId, event.generation, event.kind]);
+  }
+  var PresentationEventQueue = class {
+    constructor({ adapters, retentionTicks = 120, maxPending = 1e5, nowMs = 0 } = {}) {
+      if (!adapters || typeof adapters !== "object") throw new TypeError("adapters required");
+      integer(retentionTicks, "retentionTicks");
+      if (!retentionTicks) throw new RangeError("retentionTicks must be positive");
+      integer(maxPending, "maxPending");
+      if (!maxPending) throw new RangeError("maxPending must be positive");
+      this.adapters = new Map(Object.entries(adapters));
+      for (const [kind, adapter] of this.adapters) {
+        if (!kind || typeof adapter?.start !== "function") throw new TypeError("adapter.start required");
+        if (adapter.reversible === true && typeof adapter.stop !== "function") throw new TypeError("reversible adapter.stop required");
+        for (const key of ["stop", "update", "reconcile", "confirm"]) if (adapter[key] !== void 0 && typeof adapter[key] !== "function") throw new TypeError(`adapter.${key} must be function`);
+      }
+      this.retentionTicks = retentionTicks;
+      this.maxPending = maxPending;
+      this.nowMs = time(nowMs, "nowMs");
+      this.confirmedTick = -1;
+      this.records = /* @__PURE__ */ new Map();
+      this.active = /* @__PURE__ */ new Set();
+      this.awaitingConfirmation = /* @__PURE__ */ new Set();
+      this.collectibleTicks = /* @__PURE__ */ new Map();
+      this.rollbackFrom = null;
+      this.disposed = false;
+      this.confirmationDirty = false;
+      this.stats = { started: 0, duplicates: 0, cancelled: 0, expired: 0, collected: 0, rejectedOld: 0 };
+    }
+    _ready() {
+      if (this.disposed) throw new Error("event queue disposed");
+    }
+    _start(record) {
+      try {
+        record.handle = record.adapter.start(record.event, this.nowMs);
+      } catch (error) {
+        if (record.confirmed) {
+          this.confirmationDirty = true;
+          this.awaitingConfirmation.add(record);
+        }
+        throw error;
+      }
+      record.startedMs = this.nowMs;
+      record.state = "active";
+      this.active.add(record);
+      this.stats.started++;
+      if (record.durationMs === 0) {
+        this._stop(record, "expired");
+        this.stats.expired++;
+      }
+    }
+    _release(record) {
+      if (!record.confirmed || record.state === "active" || record.state === "pending") return;
+      const { tick } = record.event;
+      if (!record.compacted) {
+        const { sequence, entityId, generation, kind, policy } = record.event;
+        record.event = { tick, sequence, entityId, generation, kind, policy };
+        record.handle = void 0;
+        record.compacted = true;
+        if (tick > this.confirmedTick - this.retentionTicks) {
+          let bucket = this.collectibleTicks.get(tick);
+          if (!bucket) this.collectibleTicks.set(tick, bucket = []);
+          bucket.push(record);
+        }
+      }
+      if (tick <= this.confirmedTick - this.retentionTicks && this.records.delete(record.key)) this.stats.collected++;
+    }
+    _stop(record, reason) {
+      if (record.state === "active") {
+        record.state = reason;
+        this.active.delete(record);
+        try {
+          record.adapter.stop?.(record.handle, reason, record.event);
+        } finally {
+          record.handle = void 0;
+          this._release(record);
+        }
+      } else {
+        record.state = reason;
+        this._release(record);
+      }
+    }
+    emit(event) {
+      this._ready();
+      const key = presentationEventKey(event), adapter = this.adapters.get(event.kind);
+      if (!adapter) throw new RangeError(`unknown presentation kind: ${event.kind}`);
+      const policy = event.policy ?? "confirmed";
+      if (policy !== "confirmed" && policy !== "speculative") throw new RangeError("policy must be confirmed or speculative");
+      if (policy === "speculative" && adapter.reversible !== true) throw new Error("speculation requires reversible resources; played one-shot sounds cannot be unplayed");
+      const durationMs = event.durationMs === void 0 ? Infinity : time(event.durationMs, "durationMs");
+      if (this.rollbackFrom !== null && event.tick < this.rollbackFrom) throw new RangeError("resimulation event precedes rollback range");
+      if (event.tick <= this.confirmedTick - this.retentionTicks) {
+        this.stats.rejectedOld++;
+        return false;
+      }
+      let record = this.records.get(key);
+      if (record) {
+        if (record.policy !== policy) throw new Error("event policy cannot change for a stable identity");
+        record.seen = true;
+        this.stats.duplicates++;
+        if (!record.confirmed) {
+          const previous = record.event;
+          record.event = { ...event, policy };
+          record.durationMs = durationMs;
+          if (record.state === "cancelled") {
+            record.state = "pending";
+            if (policy === "speculative") this._start(record);
+          } else if (record.state === "active") adapter.reconcile?.(record.handle, record.event, previous, this.nowMs);
+          else if (record.state === "pending" && policy === "speculative") this._start(record);
+        }
+        if (record.confirmed && record.state === "pending") this._start(record);
+        return false;
+      }
+      if (this.records.size >= this.maxPending) throw new RangeError("presentation journal capacity exceeded; confirm/collect or increase capacity explicitly");
+      record = {
+        key,
+        event: { ...event, policy },
+        adapter,
+        policy,
+        durationMs,
+        confirmed: event.tick <= this.confirmedTick,
+        state: "pending",
+        handle: void 0,
+        startedMs: 0,
+        seen: true,
+        compacted: false
+      };
+      this.records.set(key, record);
+      if (!record.confirmed) this.awaitingConfirmation.add(record);
+      if (policy === "speculative" || record.confirmed) this._start(record);
+      return true;
+    }
+    beginRollback(fromTick) {
+      this._ready();
+      integer(fromTick, "fromTick");
+      if (this.rollbackFrom !== null) throw new Error("rollback already active");
+      if (fromTick <= this.confirmedTick) throw new RangeError("cannot rollback confirmed presentation");
+      this.rollbackFrom = fromTick;
+      for (const record of this.awaitingConfirmation) if (record.event.tick >= fromTick && !record.confirmed) record.seen = false;
+    }
+    endRollback() {
+      this._ready();
+      if (this.rollbackFrom === null) throw new Error("no rollback active");
+      this.rollbackFrom = null;
+      const errors = [];
+      for (const record of this.awaitingConfirmation) if (!record.seen && !record.confirmed && record.state !== "cancelled") {
+        try {
+          this._stop(record, "cancelled");
+        } catch (error) {
+          errors.push(error);
+        }
+        this.stats.cancelled++;
+      }
+      if (errors.length) throw new AggregateError(errors, "rollback resource cleanup failed");
+    }
+    confirmThrough(tick) {
+      this._ready();
+      integer(tick, "tick");
+      if (this.rollbackFrom !== null) throw new Error("finish rollback before confirmation");
+      if (tick < this.confirmedTick) throw new RangeError("confirmed tick cannot regress");
+      if (tick === this.confirmedTick && !this.confirmationDirty) return;
+      this.confirmedTick = tick;
+      this.confirmationDirty = true;
+      for (const record of this.awaitingConfirmation) if (record.event.tick <= tick) {
+        const wasConfirmed = record.confirmed;
+        record.confirmed = true;
+        if (record.state === "pending") this._start(record);
+        if (!wasConfirmed && record.state === "active") record.adapter.confirm?.(record.handle, record.event);
+        this._release(record);
+        this.awaitingConfirmation.delete(record);
+      }
+      this.collect();
+      this.confirmationDirty = false;
+    }
+    update(nowMs) {
+      this._ready();
+      time(nowMs, "nowMs");
+      if (nowMs < this.nowMs) throw new RangeError("presentation clock must be monotonic");
+      this.nowMs = nowMs;
+      for (const record of this.active) {
+        const ageMs = nowMs - record.startedMs;
+        if (ageMs >= record.durationMs) {
+          this._stop(record, "expired");
+          this.stats.expired++;
+        } else record.adapter.update?.(record.handle, ageMs, record.event);
+      }
+    }
+    /** Adapter reports a naturally completed audio/particle resource without discarding its dedup identity. */
+    finish(event) {
+      this._ready();
+      const record = this.records.get(presentationEventKey(event));
+      if (!record || record.state !== "active") return false;
+      this._stop(record, "expired");
+      this.stats.expired++;
+      return true;
+    }
+    collect() {
+      this._ready();
+      const cutoff = this.confirmedTick - this.retentionTicks;
+      for (const [tick, bucket] of this.collectibleTicks) if (tick <= cutoff) {
+        for (const record of bucket) if (this.records.delete(record.key)) this.stats.collected++;
+        this.collectibleTicks.delete(tick);
+      }
+    }
+    get size() {
+      return this.records.size;
+    }
+    dispose() {
+      if (this.disposed) return;
+      this.disposed = true;
+      const errors = [];
+      for (const record of this.records.values()) try {
+        this._stop(record, "disposed");
+      } catch (error) {
+        errors.push(error);
+      }
+      this.records.clear();
+      this.active.clear();
+      this.awaitingConfirmation.clear();
+      this.collectibleTicks.clear();
+      this.rollbackFrom = null;
+      if (errors.length) throw new AggregateError(errors, "presentation cleanup failed");
+    }
+  };
+
+  // dist/hud.js
+  var finite3 = (value, name) => {
+    if (!Number.isFinite(value)) throw new TypeError(`${name} must be finite`);
+    return value;
+  };
+  function resolveAnchorInto(camera, anchor, out) {
+    const space = anchor.space ?? "world";
+    if (space === "world") camera.worldToScreenInto(anchor.x, anchor.y, anchor.z ?? 0, out);
+    else if (space === "screen") {
+      out.x = finite3(anchor.x, "x");
+      out.y = finite3(anchor.y, "y");
+    } else throw new RangeError("anchor.space must be world or screen");
+    out.x += finite3(anchor.offsetX ?? 0, "offsetX");
+    out.y += finite3(anchor.offsetY ?? 0, "offsetY");
+    const margin = finite3(anchor.margin ?? 0, "margin");
+    if (margin < 0 || margin * 2 > Math.min(camera.width, camera.height)) throw new RangeError("margin outside viewport");
+    out.onScreen = out.x >= margin && out.x <= camera.width - margin && out.y >= margin && out.y <= camera.height - margin;
+    out.visible = anchor.visible !== false && (anchor.clamp === true || out.onScreen);
+    if (anchor.clamp === true) {
+      out.x = Math.max(margin, Math.min(camera.width - margin, out.x));
+      out.y = Math.max(margin, Math.min(camera.height - margin, out.y));
+    }
+    return out;
+  }
+  var DOMHud = class {
+    constructor({ camera, root } = {}) {
+      if (typeof camera?.worldToScreenInto !== "function" || !root?.appendChild) throw new TypeError("camera and DOM root required");
+      this.camera = camera;
+      this.root = root;
+      this.entries = /* @__PURE__ */ new Map();
+      this.disposed = false;
+      this.stats = { writes: 0, nodes: 0 };
+    }
+    _ready() {
+      if (this.disposed) throw new Error("HUD disposed");
+    }
+    add(id, { element, anchor, text } = {}) {
+      this._ready();
+      if (this.entries.has(id)) throw new Error("duplicate HUD id");
+      if (!anchor || typeof anchor !== "object") throw new TypeError("anchor required");
+      if (text !== void 0 && typeof text !== "string" && typeof text !== "number") throw new TypeError("HUD text must be string or number");
+      const owned = !element;
+      element ??= this.root.ownerDocument.createElement("span");
+      if (!element.style || !element.setAttribute) throw new TypeError("DOM element required");
+      const point = {};
+      resolveAnchorInto(this.camera, anchor, point);
+      const previous = { css: element.getAttribute("style"), hidden: element.hidden, children: [...element.childNodes], parent: element.parentNode, next: element.nextSibling };
+      if (!owned && previous.parent) {
+        previous.marker = element.ownerDocument.createComment("hud position");
+        previous.parent.insertBefore(previous.marker, element);
+      }
+      element.style.position = "absolute";
+      element.style.left = "0";
+      element.style.top = "0";
+      element.style.pointerEvents = "none";
+      this.root.appendChild(element);
+      this.entries.set(id, { element, anchor: { ...anchor }, point, owned, previous, x: NaN, y: NaN, visible: null, text: void 0 });
+      this.stats.nodes++;
+      if (text !== void 0) this.setText(id, text);
+      return element;
+    }
+    setText(id, text) {
+      this._ready();
+      const entry = this.entries.get(id);
+      if (!entry) throw new RangeError("unknown HUD id");
+      if (typeof text !== "string" && typeof text !== "number") throw new TypeError("HUD text must be string or number");
+      text = String(text);
+      if (entry.text !== text) {
+        entry.element.textContent = text;
+        entry.text = text;
+        this.stats.writes++;
+      }
+      return this;
+    }
+    setAnchor(id, anchor) {
+      this._ready();
+      const entry = this.entries.get(id);
+      if (!entry) throw new RangeError("unknown HUD id");
+      const next = { ...entry.anchor, ...anchor };
+      resolveAnchorInto(this.camera, next, entry.point);
+      entry.anchor = next;
+      return this;
+    }
+    update() {
+      this._ready();
+      for (const entry of this.entries.values()) {
+        const point = resolveAnchorInto(this.camera, entry.anchor, entry.point);
+        if (point.visible !== entry.visible) {
+          entry.element.hidden = !point.visible;
+          entry.visible = point.visible;
+          this.stats.writes++;
+        }
+        if (point.visible && (point.x !== entry.x || point.y !== entry.y)) {
+          entry.element.style.transform = `translate(${point.x}px,${point.y}px) translate(-50%,-100%)`;
+          entry.x = point.x;
+          entry.y = point.y;
+          this.stats.writes++;
+        }
+      }
+      return this.stats;
+    }
+    remove(id) {
+      const entry = this.entries.get(id);
+      if (!entry) return false;
+      const { element, previous } = entry;
+      if (entry.owned) element.remove();
+      else {
+        if (previous.css === null) element.removeAttribute("style");
+        else element.setAttribute("style", previous.css);
+        element.hidden = previous.hidden;
+        element.replaceChildren(...previous.children);
+        if (previous.parent) previous.parent.insertBefore(element, previous.marker?.parentNode === previous.parent ? previous.marker : previous.next?.parentNode === previous.parent ? previous.next : null);
+        else element.remove();
+        previous.marker?.remove();
+      }
+      this.entries.delete(id);
+      this.stats.nodes--;
+      return true;
+    }
+    dispose() {
+      if (this.disposed) return;
+      for (const id of this.entries.keys()) this.remove(id);
+      this.disposed = true;
+    }
+  };
+
+  // dist/debug-tools.js
+  var bound = (value, name, min = 1, max = 1e5) => {
+    if (!Number.isInteger(value) || value < min || value > max) throw new RangeError(`${name} outside supported range`);
+    return value;
+  };
+  var field = (object, key) => {
+    try {
+      return object?.[key];
+    } catch {
+      return void 0;
+    }
+  };
+  var DIAGNOSTIC_VISIBILITIES = /* @__PURE__ */ new Set(["log", "notice", "blocking", "fatal"]);
+  var diagnosticVisibility = (visibility, fatal) => {
+    if (visibility !== void 0 && !DIAGNOSTIC_VISIBILITIES.has(visibility)) {
+      throw new TypeError("visibility must be log, notice, blocking, or fatal");
+    }
+    return fatal || visibility === "fatal" ? "fatal" : visibility ?? "blocking";
+  };
+  function redactDiagnostic(value, limit = 1600) {
+    bound(limit, "limit");
+    const text = typeof value === "string" ? value : typeof value === "number" || typeof value === "boolean" ? String(value) : "";
+    return text.replace(/\{[\s\S]*\}/g, "[structured data omitted]").replace(/(?:["']?(?:password|token|api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|secret|cookie)["']?\s*[=:]\s*)(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|[^\s,;]+)/gi, "[redacted]").replace(/\b(?:https?|blob|file):[^\r\n)\]<>"']+/gi, "[source]").replace(/(?:[A-Za-z]:[\\/]|\/(?!\/)[A-Za-z0-9_.~-]+\/)[^\r\n)\]<>"']*/g, "[local source]").replace(/\b(?:Bearer\s+\S+|sk-[A-Za-z0-9_-]+)/gi, "[redacted]").replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email]").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").slice(0, limit);
+  }
+  var DiagnosticRing = class {
+    constructor({ capacity = 20, now = () => performance.now(), release = "" } = {}) {
+      bound(capacity, "capacity", 1, 1e3);
+      if (typeof now !== "function") throw new TypeError("now must be function");
+      this.capacity = capacity;
+      this.now = now;
+      this.release = redactDiagnostic(release, 160);
+      this.records = new Array(capacity);
+      this.start = 0;
+      this.size = 0;
+      this.total = 0;
+      this.dropped = 0;
+      this._lastMs = 0;
+      this._busy = false;
+      this._listeners = /* @__PURE__ */ new Set();
+    }
+    /** @param {unknown} error @param {{kind?: string, visibility?: DiagnosticVisibility, fatal?: boolean, origin?: string, source?: string, line?: number, column?: number, workerTimeMs?: number|null, cause?: unknown}} options */
+    report(error, { kind = "exception", visibility, fatal = false, origin = "main", source = "", line = 0, column = 0, workerTimeMs = null, cause = "" } = {}) {
+      if (this._busy) {
+        this.dropped++;
+        return null;
+      }
+      this._busy = true;
+      try {
+        const severity = diagnosticVisibility(visibility, Boolean(fatal));
+        const at = this.now();
+        if (!Number.isFinite(at)) throw new TypeError("diagnostic clock must be finite");
+        this._lastMs = Math.max(this._lastMs, at);
+        const record = {
+          kind: redactDiagnostic(kind, 64),
+          visibility: severity,
+          fatal: severity === "fatal",
+          origin: redactDiagnostic(origin, 64),
+          message: redactDiagnostic(typeof error === "string" ? error : field(error, "message") ?? "Non-text error omitted", 500),
+          stack: redactDiagnostic(field(error, "stack"), 1800),
+          source: redactDiagnostic(source, 160),
+          line: Number.isSafeInteger(line) && line >= 0 ? line : 0,
+          column: Number.isSafeInteger(column) && column >= 0 ? column : 0,
+          workerTimeMs: Number.isFinite(workerTimeMs) && workerTimeMs >= 0 ? workerTimeMs : null,
+          cause: redactDiagnostic(typeof cause === "string" && cause ? cause : field(field(error, "cause"), "message") ?? field(error, "cause"), 300),
+          firstMs: this._lastMs,
+          lastMs: this._lastMs,
+          count: 1
+        };
+        this.total++;
+        for (let i = 0; i < this.size; i++) {
+          const old = this.records[(this.start + i) % this.capacity];
+          if (old.kind === record.kind && old.message === record.message && old.stack === record.stack && old.visibility === record.visibility && old.origin === record.origin && old.source === record.source && old.line === record.line && old.column === record.column) {
+            old.count++;
+            old.lastMs = record.lastMs;
+            return { ...old };
+          }
+        }
+        if (this.size === this.capacity) {
+          this.records[this.start] = record;
+          this.start = (this.start + 1) % this.capacity;
+          this.dropped++;
+        } else {
+          this.records[(this.start + this.size) % this.capacity] = record;
+          this.size++;
+        }
+        return { ...record };
+      } finally {
+        this._busy = false;
+      }
+    }
+    snapshot() {
+      const errors = [];
+      for (let i = 0; i < this.size; i++) errors.push({ ...this.records[(this.start + i) % this.capacity] });
+      const counts = { log: 0, notice: 0, blocking: 0, fatal: 0 };
+      for (const record of errors) counts[record.visibility] += record.count;
+      return {
+        format: "bloom-gamekit diagnostics v2",
+        release: this.release,
+        total: this.total,
+        dropped: this.dropped,
+        counts: { total: this.total, retained: Object.values(counts).reduce((sum, count) => sum + count, 0), ...counts },
+        blockerCount: counts.blocking + counts.fatal,
+        errors
+      };
+    }
+    format() {
+      return JSON.stringify(this.snapshot(), null, 2);
+    }
+    /** Does not swallow errors or replace onerror. Caller decides whether a fatal error should halt gameplay. */
+    installGlobal(target, { onReport } = {}) {
+      if (!target?.addEventListener || !target?.removeEventListener) throw new TypeError("EventTarget required");
+      if (onReport !== void 0 && typeof onReport !== "function") throw new TypeError("onReport must be function");
+      const report = (error2, kind) => {
+        try {
+          const record = this.report(error2, { kind });
+          onReport?.(record);
+        } catch {
+          this.dropped++;
+        }
+      };
+      const error = (event) => report(event.error ?? event.message, "global-error");
+      const rejection = (event) => report(event.reason, "unhandled-rejection");
+      target.addEventListener("error", error);
+      target.addEventListener("unhandledrejection", rejection);
+      let active = true;
+      const dispose = () => {
+        if (!active) return;
+        active = false;
+        target.removeEventListener("error", error);
+        target.removeEventListener("unhandledrejection", rejection);
+        this._listeners.delete(dispose);
+      };
+      this._listeners.add(dispose);
+      return dispose;
+    }
+    clear() {
+      this.records.fill(void 0);
+      this.size = this.start = this.total = this.dropped = 0;
+    }
+    dispose() {
+      for (const dispose of this._listeners) dispose();
+      this.clear();
+    }
+  };
+
+  // modules/interpolation/examples/demo.js
+  function createPresentation(stepMs = 100) {
+    const timeline = new InterpolationTimeline({
+      stepMs,
+      schema: { x: "number", y: "number", z: "number", health: "number", angle: "angle", state: "discrete" }
+    });
+    const pose = {};
+    return {
+      timeline,
+      pose,
+      receive(packet, receiptMs) {
+        return timeline.accept(packet, receiptMs);
+      },
+      frame(nowMs) {
+        return timeline.sampleInto("actor", 0, nowMs, pose) ? pose : null;
+      }
+    };
+  }
+  var STEP_MS = 100;
+  var WORLD_WIDTH = 720;
+  var WORLD_HEIGHT = 400;
+  var COLORS = Object.freeze({
+    clear: [0.035, 0.065, 0.09, 1],
+    grid: [0.12, 0.2, 0.23, 1],
+    shadow: [0, 0, 0, 0.35],
+    body: [0.24, 0.85, 0.66, 1],
+    satellite: [0.3, 0.55, 0.95, 0.85],
+    healthBack: [0.12, 0.18, 0.2, 1],
+    health: [0.67, 0.94, 0.43, 1],
+    target: [1, 0.8, 0.3, 0.6]
+  });
+  function startDemo(canvas, status, { autoStart = true } = {}) {
+    const renderer = new Renderer2D(canvas);
+    const projection = new OrthographicProjection(), camera = new CameraViewport({ projection });
+    const debug = new DiagnosticRing({ release: "composed gamekit example" });
+    debug.installGlobal(window);
+    const hudRoot = document.createElement("div");
+    hudRoot.style.cssText = "position:absolute;inset:0;pointer-events:none";
+    const wrapper = document.createElement("div");
+    wrapper.style.position = "relative";
+    canvas.before(wrapper);
+    wrapper.append(canvas, hudRoot);
+    const hud = new DOMHud({ camera, root: hudRoot });
+    hud.add("actor", { anchor: { x: 280, y: 210, z: 8, offsetY: -28 }, text: "actor" });
+    const effects = new PresentationEventQueue({ adapters: { roll: {
+      reversible: true,
+      start(event) {
+        return hud.add(event.sequence, { anchor: { ...event.payload, offsetY: -55 }, text: "roll" });
+      },
+      update(handle, ageMs, event) {
+        hud.setAnchor(event.sequence, { ...event.payload, offsetY: -55 - ageMs / 30 });
+      },
+      stop(handle, reason, event) {
+        hud.remove(event.sequence);
+      }
+    } } });
+    const projected = {};
+    const app = createPresentation(STEP_MS), actions = new ActionState();
+    const sampled = { left: {}, right: {}, up: {}, down: {}, roll: {} }, worldPoint = {};
+    const actor = { x: 280, y: 210, z: 8, angle: 0, health: 100, state: "idle" };
+    const spriteOptions = { angle: 0 };
+    const texture = renderer.createTexture({ width: 2, height: 2, data: new Uint8Array([
+      255,
+      255,
+      255,
+      255,
+      255,
+      166,
+      80,
+      255,
+      255,
+      166,
+      80,
+      255,
+      255,
+      255,
+      255,
+      255
+    ]) }, { filter: "nearest" });
+    const poses = Array.from({ length: 25 }, () => ({}));
+    const records = poses.map((_, i) => ({ id: i === 0 ? "actor" : `orbiter-${i}`, generation: 0, values: {} }));
+    let target = null, running = true, sequence = 0, tick = 0, rollUntilMs = 0;
+    let lastMs = performance.now(), frameNow = lastMs, stepped = false, zoom = 1, paused = false;
+    let lastMetricMs = lastMs, metricFrames = 0, fps = 0, cpuMs = 0;
+    const diagnostics = {
+      frames: 0,
+      tick: 0,
+      authorityX: actor.x,
+      authorityY: actor.y,
+      poseX: actor.x,
+      poseY: actor.y,
+      rolls: 0,
+      fps: 0,
+      cpuSubmitMs: 0,
+      stepMs: STEP_MS,
+      frameIntervals: [],
+      renderer
+    };
+    const input = createDOMInput({
+      target: canvas,
+      state: actions,
+      keys: { KeyA: "left", ArrowLeft: "left", KeyD: "right", ArrowRight: "right", KeyW: "up", ArrowUp: "up", KeyS: "down", ArrowDown: "down", Space: "roll" },
+      gestures: { tap: "move", doubleTap: "roll", doubleTapMs: 300, tapMs: 400, dragSlop: 12, doubleTapSlop: 32 },
+      onGesture(event) {
+        if (event.type === "tap") {
+          camera.screenToGroundInto(event.x, event.y, worldPoint);
+          target = { x: worldPoint.x, y: worldPoint.y };
+        }
+      }
+    });
+    function resize() {
+      if (renderer.state !== "ready") return;
+      const rect = canvas.getBoundingClientRect();
+      camera.setViewport({ width: rect.width, height: rect.height, dpr: Math.min(window.devicePixelRatio || 1, 2), left: rect.left, top: rect.top });
+      camera.applyToRenderer(renderer, true);
+    }
+    function authorityStep() {
+      tick++;
+      for (const key of Object.keys(sampled)) actions.sampleInto(key, sampled[key]);
+      if (sampled.roll.pressed) {
+        rollUntilMs = tick * STEP_MS + 300;
+        diagnostics.rolls++;
+        effects.emit({ tick, sequence: diagnostics.rolls, entityId: "actor", generation: 0, kind: "roll", policy: "speculative", durationMs: 600, payload: { x: actor.x, y: actor.y, z: actor.z } });
+      }
+      effects.confirmThrough(tick);
+      let dx = Number(sampled.right.held) - Number(sampled.left.held), dy = Number(sampled.down.held) - Number(sampled.up.held);
+      if (dx || dy) target = null;
+      else if (target) {
+        dx = target.x - actor.x;
+        dy = target.y - actor.y;
+      }
+      const length = Math.hypot(dx, dy), rolling = tick * STEP_MS < rollUntilMs;
+      const distance = Math.min(length, (rolling ? 220 : 90) * STEP_MS / 1e3);
+      if (length) {
+        const scale = target ? distance / length : (rolling ? 220 : 90) * STEP_MS / 1e3 / length;
+        actor.x = Math.max(24, Math.min(WORLD_WIDTH - 24, actor.x + dx * scale));
+        actor.y = Math.max(45, Math.min(WORLD_HEIGHT - 24, actor.y + dy * scale));
+        actor.angle = Math.atan2(dy, dx);
+        actor.state = rolling ? "rolling" : "walking";
+        if (target && length <= distance) target = null;
+      } else actor.state = "idle";
+      actor.z = rolling ? 18 : 8;
+      actions.consume();
+    }
+    function receive(now) {
+      Object.assign(records[0].values, actor);
+      for (let i = 1; i < records.length; i++) {
+        const phase = tick * STEP_MS / 1800 + i * Math.PI * 2 / 24;
+        Object.assign(records[i].values, {
+          x: 360 + Math.cos(phase) * (110 + i % 3 * 32),
+          y: 210 + Math.sin(phase) * 105,
+          z: 8 + Math.sin(phase * 2) * 5,
+          health: 50 + i * 2,
+          angle: phase,
+          state: "orbiting"
+        });
+      }
+      app.receive({ revision: 0, sequence: sequence++, timeMs: tick * STEP_MS, entities: records }, now);
+    }
+    function render(now) {
+      const start = performance.now();
+      const pose = app.frame(now);
+      if (!pose || !renderer.beginFrame(COLORS.clear)) return;
+      const scale = Math.min(renderer.width / WORLD_WIDTH, renderer.height / WORLD_HEIGHT) * zoom;
+      camera.setCamera({ x: 360 + (pose.x - 360) * 0.15, y: 200 * projection.K, zoom: scale });
+      camera.applyToRenderer(renderer);
+      for (let x = 0; x <= WORLD_WIDTH; x += 40) renderer.line(x, 0, x, WORLD_HEIGHT * projection.K, 1, COLORS.grid);
+      for (let y = 0; y <= WORLD_HEIGHT; y += 40) renderer.line(0, y * projection.K, WORLD_WIDTH, y * projection.K, 1, COLORS.grid);
+      if (target) {
+        renderer.ellipse(target.x, target.y * projection.K, 8, 4, COLORS.target, 12);
+      }
+      for (let i = 0; i < records.length; i++) {
+        app.timeline.sampleInto(records[i].id, 0, now, poses[i]);
+        poses[i].actor = i === 0;
+        renderer.ellipse(poses[i].x, poses[i].y * projection.K, i ? 9 : 16, i ? 4 : 6, COLORS.shadow, 12);
+      }
+      sorted.length = 0;
+      for (const item of poses) sorted.push(item);
+      sorted.sort((a, b) => a.y - b.y);
+      for (const item of sorted) {
+        projection.projectInto(item.x, item.y, item.z, projected);
+        renderer.rect(projected.x, projected.y - 8, item.actor ? 24 : 14, item.actor ? 24 : 14, item.actor ? COLORS.body : COLORS.satellite, item.angle);
+        renderer.rect(projected.x, projected.y - 28, 26, 3, COLORS.healthBack);
+        renderer.rect(projected.x - 13 + 13 * item.health / 100, projected.y - 28, 26 * item.health / 100, 3, COLORS.health);
+      }
+      spriteOptions.angle = tick * STEP_MS / 1e3;
+      renderer.sprite(texture, 640, 65, 34, 34, spriteOptions);
+      const stats = renderer.endFrame();
+      effects.update(now);
+      hud.setAnchor("actor", { x: pose.x, y: pose.y, z: pose.z });
+      hud.update();
+      cpuMs = performance.now() - start;
+      diagnostics.frames++;
+      diagnostics.tick = tick;
+      diagnostics.authorityX = actor.x;
+      diagnostics.authorityY = actor.y;
+      diagnostics.poseX = pose.x;
+      diagnostics.poseY = pose.y;
+      diagnostics.cpuSubmitMs = cpuMs;
+      canvas.dataset.frames = String(diagnostics.frames);
+      canvas.dataset.x = String(pose.x);
+      metricFrames++;
+      if (now - lastMetricMs >= 500) {
+        fps = metricFrames * 1e3 / (now - lastMetricMs);
+        metricFrames = 0;
+        lastMetricMs = now;
+      }
+      diagnostics.fps = fps;
+      status.textContent = `${STEP_MS}ms fixed step (${1e3 / STEP_MS} TPS) → ${fps.toFixed(1)} observed FPS | ${stats.drawCalls} draws · ${stats.vertices} vertices · ${stats.uploadedBytes} B/frame · ${stats.textureUploads} texture uploads/frame | CPU submit ${cpuMs.toFixed(2)}ms`;
+    }
+    const sorted = [];
+    resize();
+    receive(lastMs);
+    const localSession = {
+      inputSize: 1,
+      profile: { tickRate: 1e3 / STEP_MS, maxCatchupSteps: 3 },
+      metrics: { pace: 1 },
+      get closed() {
+        return !running;
+      },
+      resimulating: false,
+      poll() {
+      },
+      releaseInput() {
+        input.releaseAll();
+      },
+      advance() {
+        authorityStep();
+        return { status: "advanced", tick };
+      }
+    };
+    const loop = createLoop({
+      session: localSession,
+      canAdvance: () => !paused,
+      beforeFrame() {
+        const now = performance.now();
+        frameNow = now;
+        stepped = false;
+        if (!paused && diagnostics.frameIntervals.length < 180) diagnostics.frameIntervals.push(Math.max(0, Math.min(250, now - lastMs)));
+        lastMs = now;
+      },
+      onAdvance() {
+        stepped = true;
+      },
+      render() {
+        if (!paused) {
+          if (stepped) receive(frameNow);
+          render(frameNow);
+        }
+      }
+    });
+    window.addEventListener("resize", resize);
+    if (autoStart) loop.start();
+    return {
+      actions,
+      input,
+      renderer,
+      diagnostics,
+      camera,
+      hud,
+      effects,
+      debug,
+      setZoom(value) {
+        if (!Number.isFinite(value) || value < 0.5 || value > 2) throw new RangeError("zoom must be 0.5..2");
+        zoom = value;
+      },
+      pause(value = true) {
+        paused = value;
+        lastMs = performance.now();
+        loop.resetTiming();
+      },
+      dispose() {
+        if (!running) return;
+        running = false;
+        loop.stop();
+        input.dispose();
+        effects.dispose();
+        hud.dispose();
+        debug.dispose();
+        hudRoot.remove();
+        wrapper.before(canvas);
+        wrapper.remove();
+        renderer.dispose();
+        window.removeEventListener("resize", resize);
+      }
+    };
+  }
+
+  // modules/interpolation/examples/modules/interpolation/examples/index.html
+  var demo = startDemo(document.querySelector("canvas"), document.querySelector("#status"));
+  window.demo = demo;
+  document.querySelector("#zoom").addEventListener("input", (event) => demo.setZoom(Number(event.target.value)));
+  window.addEventListener("pagehide", () => demo.dispose(), { once: true });
+})();
+
+</script></html>
