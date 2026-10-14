@@ -1,4 +1,7 @@
-import { createNostrGroupRoom, createNostrSignaler, createWebRTCPeer, createSession, createLoop, profiles, playReplay } from '../../../dist/rollback-netcode.js';
+import { createNostrGroupRoom, createNostrSignaler, createWebRTCPeer } from '../../../dist/transport.js';
+import { createSession, profiles } from '../../../dist/rollback.js';
+import { createLoop } from '../../../dist/simloop.js';
+import { playReplay } from '../../../dist/replay.js';
 const $=id=>document.getElementById(id),sleep=ms=>new Promise(r=>setTimeout(r,ms));
 class LocalRelay extends EventTarget {
   static sockets=new Set();

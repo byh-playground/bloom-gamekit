@@ -4,7 +4,7 @@ import {performance} from 'node:perf_hooks';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
-import * as current from '../../../dist/rollback-netcode.js';
+import * as current from '../../../dist/rollback.js';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../../..');
 const sizes=process.env.SNAPSHOT_BYTES?[Number(process.env.SNAPSHOT_BYTES)]:[128*1024,1024*1024,2*1024*1024,4*1024*1024];
 const steps=Number(process.env.BENCH_STEPS||240),results=[];

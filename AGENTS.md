@@ -9,3 +9,5 @@
 - `npm ci && npm test`, `npm run test:browser`를 변경에 맞게 실행합니다. 실행하지 못한 환경은 명시하며 Node 통과를 실제 브라우저나 기기 검증으로 부르지 않습니다.
 - 검증 정책 원본은 [공통 프로젝트 관리 규칙](https://github.com/byh-playground/bloom-reference/blob/main/rules/project-management.html#verification)입니다. 개발 중 단위 검증은 임시로만 수행하고 완료 시 실행 코드와 목록에서 제거합니다. 저장소에는 고정 사용자 시나리오 E2E만 남깁니다. `project/test-scenarios.mjs`는 한 실행 전체 180초 상한을 적용하며 벤치마크는 별도 명령입니다. 시간 초과·미실행 범위를 성공으로 보고하지 않습니다.
 - dist는 생성물입니다. 소스 브랜치에 직접 커밋하지 않습니다. `.github/workflows/ci.yml`의 승인된 main→dist 배포 경계를 보존하고, PR에는 쓰기 권한을 주지 않습니다. 외부 fork를 신뢰하는 배포나 paid runner를 추가하지 않습니다.
+
+- [공통 마이그레이션 규칙](https://github.com/byh-playground/bloom-reference/blob/main/rules/project-management.html#migration)에 따라 요청하지 않은 호환 집계·alias·wrapper·fallback을 남기지 않습니다. 소비자를 기능 소유 모듈로 이관한 뒤 구 진입점을 제거합니다.

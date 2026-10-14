@@ -1,5 +1,7 @@
 import { PresentationEventQueue } from '../../../dist/presentation-events.js';
-import { createNostrPublicRoom, createNostrSignaler, createWebRTCPeer, createRoomSession, createValueCodec, profiles } from '../../../dist/rollback-netcode.js';
+import { createNostrPublicRoom, createNostrSignaler, createWebRTCPeer } from '../../../dist/transport.js';
+import { createRoomSession, profiles } from '../../../dist/rollback.js';
+import { createValueCodec } from '../../../dist/deterministic.js';
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 class LocalRelay extends EventTarget {
   static sockets = new Set();

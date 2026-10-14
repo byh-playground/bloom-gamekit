@@ -27,7 +27,9 @@
 </div>
 <pre id="details">No connection yet.</pre>
 <script type="module">
-import { createSession, playReplay, profiles, WebRTCTransport, VERSION } from '../../../dist/rollback-netcode.js';
+import { createSession, profiles, VERSION } from '../../../dist/rollback.js';
+import { playReplay } from '../../../dist/replay.js';
+import { WebRTCTransport } from '../../../dist/transport.js';
 
 const ids = ['a', 'b'];
 const state = new Int32Array(8);

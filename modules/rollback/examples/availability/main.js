@@ -1,4 +1,7 @@
-import { createRoomSession, createNostrDynamicRoom, createValueCodec, profiles, createLoop, createDeadlineScheduler } from '../../../../dist/rollback-netcode.js';
+import { createRoomSession, profiles } from '../../../../dist/rollback.js';
+import { createNostrDynamicRoom } from '../../../../dist/transport.js';
+import { createValueCodec } from '../../../../dist/deterministic.js';
+import { createLoop, createDeadlineScheduler } from '../../../../dist/simloop.js';
 
 const codec = createValueCodec(), keys = new Set(), status = document.querySelector('#status'), canvas = document.querySelector('#view'), ctx = canvas.getContext('2d');
 let session, room, loop, scheduler, animation, state, lastEvent = '';

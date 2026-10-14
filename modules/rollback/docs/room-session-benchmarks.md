@@ -11,4 +11,4 @@
 
 Node 연속 fixture는 1→2→5 입장, 65 tick 이후 늦은 합류, 명령 보존, RTC capability 교체, guest/coordinator reload의 같은 actor 유지, graceful coordinator 퇴장, partition fail-closed를 검사합니다. synthetic transport 결과를 실제 RTC 결과로 부르지 않습니다.
 
-실제 RTC harness는 `node modules/rollback-netcode/scripts/dynamic-room-browser.mjs`이고 기존 `npm run test:browser`에 포함됩니다. signed local Nostr relay fixture와 Chromium의 실제 RTCPeerConnection을 사용합니다. 현재 cloud executor의 Chromium은 `socket() failed: Operation not permitted`로 시작되지 않았습니다. 로컬 실제 RTC는 미실행이며 GitHub CI의 해당 source commit 실행 결과를 별도로 확인해야 합니다. 공용 Nostr relay 또는 서로 다른 NAT/모바일 기기는 이 harness 범위가 아닙니다.
+실제 RTC harness는 `node modules/transport/scripts/dynamic-room-browser.mjs`이고 기존 `npm run test:browser`에 포함됩니다. signed local Nostr relay fixture와 Chromium의 실제 RTCPeerConnection을 사용합니다. 현재 cloud executor의 Chromium은 `socket() failed: Operation not permitted`로 시작되지 않았습니다. 로컬 실제 RTC는 미실행이며 GitHub CI의 해당 source commit 실행 결과를 별도로 확인해야 합니다. 공용 Nostr relay 또는 서로 다른 NAT/모바일 기기는 이 harness 범위가 아닙니다.

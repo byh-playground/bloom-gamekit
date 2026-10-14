@@ -338,7 +338,8 @@ try {
   report.stages.push('detached same-update input fork → first sampled schema render → delayed authority correction → collision/roll/press-release/direction/off/blur/gap/restart');
   await previewPage.evaluate(()=>window.inputPreviewDemo.dispose());
   report.manualOwnerRelease=await previewPage.evaluate(async()=>{
-    const {createLoop,LocalInputPreview,createSession,profiles}=await import('/dist/rollback-netcode.js');
+    const { createLoop, LocalInputPreview } = await import('/dist/simloop.js');
+const { createSession, profiles } = await import('/dist/rollback.js');
     const {ActionState,createDOMInput}=await import('/dist/input.js');
     const state={x:0,tick:0,edges:0},update=(world,input,commands=[])=>{world.x+=input[0];world.edges+=commands.length;world.tick++};let forkRestores=0,confirmedReplaySteps=0,confirmedAdvanceResults=[],confirmedAdvanceRestoreDeltas=[];
     const adapter={save:()=>Uint8Array.of(state.x,state.tick,state.edges),load:bytes=>{state.x=bytes[0];state.tick=bytes[1];state.edges=bytes[2]},validateSnapshot:bytes=>bytes.length===3,step:frame=>update(state,frame.inputs[0].input,frame.inputs[0].commands)};

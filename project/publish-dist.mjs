@@ -56,6 +56,11 @@ export async function publishDist({ root, remote, sourceSha, expectedManifestHas
       git(['fetch', '--no-tags', remote, 'refs/heads/dist']);
       parent = git(['rev-parse', 'FETCH_HEAD']);
       git(['read-tree', parent]);
+      const previous = JSON.parse(git(['show', `${parent}:${MANIFEST_FILE}`]));
+      for (const { file } of previous.modules ?? []) {
+        if (!/^[a-z][a-z-]*\.js$/.test(file)) throw new Error('Invalid previous bundle path');
+        if (!bundles.has(file)) git(['update-index', '--force-remove', file]);
+      }
     } else {
       git(['read-tree', '--empty']);
     }

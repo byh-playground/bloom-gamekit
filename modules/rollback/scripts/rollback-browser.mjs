@@ -24,7 +24,7 @@ async function launchBrowser(chromium) {
 const server = createServer(async (request, response) => {
   try {
     const pathname = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
-    const path = resolve(root, `.${pathname === '/' ? '/modules/rollback-netcode/tests/browser.html' : pathname}`);
+    const path = resolve(root, `.${pathname === '/' ? '/modules/rollback/tests/browser.html' : pathname}`);
     if (path !== root && !path.startsWith(`${root}${sep}`)) {
       response.writeHead(403).end('Forbidden');
       return;
@@ -53,12 +53,14 @@ try {
     await pages[index].setViewportSize({ width: 1100, height: 1050 });
   }
   const address = server.address();
-  const url = `http://127.0.0.1:${address.port}/modules/rollback-netcode/tests/browser.html`;
+  const url = `http://127.0.0.1:${address.port}/modules/rollback/tests/browser.html`;
   await Promise.all(pages.map(page => page.goto(url)));
   assert.deepEqual(browserErrors, [], 'both browser pages must load the ES module without errors');
   await Promise.all(pages.map(page => page.waitForFunction(() => Boolean(window.harness), null, { timeout })));
   const capabilities = await pages[0].evaluate(async () => {
-    const { createLoop, createSession, runSyncTest, runSyncTestAsync } = await import('/dist/rollback-netcode.js');
+    const { createLoop } = await import('/dist/simloop.js');
+const { createSession } = await import('/dist/rollback.js');
+const { runSyncTest, runSyncTestAsync } = await import('/dist/deterministic.js');
     let tick=0,clock=0,allowed=true,polls=0,renders=0;
     const session={inputSize:1,profile:{tickRate:20,maxCatchupSteps:5},metrics:{pace:1},closed:false,resimulating:false,
       poll(){polls++;if(this.resimulating)this.resimulating=false},advance(){if(clock!==250)throw Error('frame clock');return{status:'advanced',tick:++tick}}};
