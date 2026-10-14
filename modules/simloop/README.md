@@ -95,3 +95,7 @@ protocol 3은 이벤트에서 명령별 불변 T를 예약합니다. 한 pump가
 
 
 `loop.simulationTimeMs`는 현재 완료된 경계의 로컬 단조 시각입니다(null은 초기화 전). preview reconcile에 `phaseStartMs:loop.simulationTimeMs`를 전달하면 snapshot을 실제 게시한 `timeMs`와 tick의 표시 시작 시각을 분리할 수 있습니다. `phaseStartMs`는 유한하고 timeMs보다 미래가 아니어야 합니다. `nextDeadlineMs`는 초기화 전 null이며, 지연된 backlog가 있으면 즉시 다시 깨울 시각을 반환합니다. deadline scheduler의 getDeadlineMs 모드는 getIntervalMs와 함께 사용할 수 없습니다.
+
+일반 `reconcile`에서 pending 입력이 끝나면 표시 계층의 `releasePreview(timeMs)`로 넘깁니다.
+지연 authority를 사용하는 경우 현재 로컬 pose를 과거 표시 이력으로 즉시 되돌리지 않습니다.
+reset/rollback 같은 불연속 경계의 강제 clear는 유지합니다.

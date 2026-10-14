@@ -71,6 +71,8 @@ function installPeer(room,tps){
     if(reset)peer.revision++;
     const list=entities(peer.game.world).map(e=>{
       const a=e.source;
+      // Authority teleport discards buffered history immediately. The same serial
+      // is a STATE_KEY in Actor, so detached local preview also cuts its pose.
       if(e.id.startsWith('actor:')){e.teleport=peer.teleports.has(e.id)&&peer.teleports.get(e.id)!==a.teleportSerial;peer.teleports.set(e.id,a.teleportSerial);}
       if(reset){delete e.pathPoints;delete e.initialSource;delete e.initialTimeMs;}
       else peer.stats.pathCorners+=e.pathPoints?.length??0;

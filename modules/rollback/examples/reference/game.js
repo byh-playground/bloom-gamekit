@@ -6,7 +6,9 @@ export const codec=createValueCodec(), WIDTH=720, HEIGHT=280;
 export class Actor extends R {
   static renderSchema={id:R.STEP,generation:R.STEP,x:R.POSITION_X,y:R.POSITION_Y,z:R.POSITION_Z,angle:R.ANGLE,color:R.STEP,
     'action.kind':R.STATE_KEY,'action.sequence':R.STATE_KEY,'action.left':R.COUNTDOWN_MS,'action.total':R.STATE_KEY,
-    teleportSerial:R.STEP};
+    // Ordinary XYZ/angle remain interpolated. A root STATE_KEY cuts the whole
+    // actor pose in local preview too; STEP would only switch the serial itself.
+    teleportSerial:R.STATE_KEY};
 }
 export class Shot extends R {
   static renderSchema={owner:R.STEP,target:R.STEP,x:R.POSITION_X,y:R.POSITION_Y,z:R.POSITION_Z,angle:R.ANGLE,
