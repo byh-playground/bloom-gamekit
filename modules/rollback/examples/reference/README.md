@@ -2,7 +2,7 @@
 
 루트에서 `npm ci`, `npm run build`, `npm run serve:rollback-demo`를 실행한 뒤
 <http://127.0.0.1:8771/modules/rollback/examples/reference/index.html>을 엽니다.
-브라우저는 빌드된 세 개의 독립 ESM만 가져옵니다. 소비 게임에 Node/bundler는 필요 없습니다.
+브라우저는 필요한 기능별 독립 ESM을 가져옵니다. 소비 게임에 Node/bundler는 필요 없습니다.
 
 - [main.js](./main.js): 공식 방·루프·preview·표시·연출의 기본 연결 순서.
 - [game.js](./game.js): snapshot, 이동·대시·발사·반사 규칙, 선언적 표시 데이터.
@@ -55,7 +55,7 @@
 | action lifetime | nullable `action`, kind/sequence/total STATE_KEY, left COUNTDOWN_MS | 손을 뗀 뒤에도 진행되는 대시를 입력 버튼 상태만으로 알 수 없음 |
 | 생성·재사용 | origin XYZ, bornMs/initialSource, slot ID와 generation | 첫 표본만으로 출발점·출생 시각·다른 incarnation을 구별할 수 없음 |
 | 반사·표적 | 정확한 tick 내부 pathPoints, target ID | endpoint 두 개만으로 반사 궤적·추적 의미를 복원할 수 없음 |
-| 순간이동·rollback | teleportSerial→teleport, 새 revision | 큰 이동이 걸음인지 이동 불연속인지 게임이 정의 |
+| 순간이동·rollback | root teleportSerial STATE_KEY + authority teleport, 새 revision | 큰 이동이 걸음인지 이동 불연속인지 게임이 정의 |
 | 즉시 섬광 | tick/sequence/entity/generation + fixed anchor | 두 snapshot에 모두 없는 객체는 보간으로 생성할 수 없음 |
 | 연출 정책 | reversible particle / confirmed sound | 들린 소리는 취소할 수 없으며 particle은 stop/reconcile 가능 |
 
@@ -63,11 +63,42 @@
 그대로 사용합니다. 게임 측 NaN 가드나 혼합 pose로 숨기지 않습니다. 예제 draw에는 부분 action,
 동일 frame 참조, 잔상 head/body 불일치를 즉시 드러내는 검사도 있습니다.
 
+### 일반 이동과 teleport / respawn
+
+일반 이동·높이는 `POSITION_X/Y/Z`, 회전은 `ANGLE`로 유지합니다. 발사체는
+origin과 `initialSource`에서 이어지는 보간·`renderPath`를 그대로 사용합니다.
+위치를 전부 STEP으로 바꾸거나 로컬 preview를 끄면 일반 이동까지 끊깁니다.
+
+같은 actor의 순간이동은 결정론적 update에서 위치를 바꾸고 `teleportSerial`을 증가시킵니다.
+이 값은 snapshot과 detached fork에 함께 포함하며 **root `STATE_KEY`**로 선언합니다.
+`STEP`은 serial 값만 바꾸지만 `STATE_KEY`는 같은 부모 범위의 pose 구간을 끊으므로
+로컬 preview가 이전 위치에서 새 위치까지 미끄러지지 않습니다. `action.kind`처럼
+중첩된 키는 해당 action만 끊으므로 일반 이동 보간을 방해하지 않습니다.
+
+authority capture에서는 serial 변화에 `entity.teleport: true`를 전달하여 지연된 표시 이력을
+즉시 버립니다. 거리 임계치에 의존하지 않으므로 짧은 순간이동에도 같은 의미가 적용됩니다.
+같은 identity로 respawn하는 게임도 이 serial을 증가시키고 같은 경계를 전달합니다.
+새 incarnation이면 `generation`을 바꾸고 첫 authority 표본을 capture한 뒤 그 identity를
+preview에 선택합니다. respawn에는 이동 시작점을 만드는 `initialSource`를 주지 않습니다.
+rollback/recovery는 기존 새 revision + `mode: 'rollback'/'reset'`을 authority와 preview
+reconcile에 함께 전달하여 이전 표시 구간을 재사용하지 않습니다.
+
+일반 authority capture는 지연 이력과 로컬 preview 연결을 따로 유지합니다. 입력 해제 후에는
+지연 표시 시계가 checkpoint에 도달할 때 넘겨 과거 위치로 되돌아가지 않습니다.
+게임이 별도 위치 캐시를 만들거나 매 tick preview를 강제로 clear할 필요가 없습니다.
+
+actor 자체에는 이동 잔상 경로가 없습니다. 순간이동 출발점의 원형 particle은 게임이 명시한
+고정 anchor 연출이며 몸체·그림자의 위치 보간과 별개입니다. 발사체 잔상은 `renderPath`의
+동일 frame 경로로 유지됩니다.
+
 ## 검증과 범위
 
 `npm run test:rollback-demo`는 기존 180초 상한 안에서 한 대표 흐름을 실행합니다.
 실제 native WebRTC 두 peer, 10→중지→30 TPS, held 이동, 소유별 대시·발사, 늦은 입력 rollback,
 명령/연출 dedup, 선택적 상태, ID 재사용·순간이동, 같은 확정 tick의 hash, 재시작 정리를 확인합니다.
+10/30 TPS에서 실제 Canvas에 제출된 A 몸체 좌표를 A/B 화면에서 각각 기록합니다.
+일반 이동의 중간 프레임과 입력 해제까지의 단조 이동을 확인하고, 지연된 순간이동·rollback·
+preview reconcile/release 동안에는 출발점과 도착점 사이 몸체와 과거 위치 재노출이 없는지 검사합니다.
 15/20은 정수 분주상 유효한 선택이며 전 조합 성능 매트릭스를 만들지 않습니다.
 
 온라인 방 만들기/참가는 공식 Nostr dynamic room을 사용합니다. 외부 relay/NAT smoke는

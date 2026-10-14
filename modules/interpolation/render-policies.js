@@ -38,11 +38,16 @@ export function compileFieldPolicies(root, fields) {
   return { keys, clocks, positions, origins, births };
 }
 
-/** STATE_KEY 전환과 countdown 재시작은 부모 범위만 새 표본으로 연결합니다. */
-export function inferFieldResets(policies, previous, target, timeMs, reset) {
-  for (const key of policies.keys) if (!Object.is(previous.target.values[key.index], target.values[key.index])) {
+/** Receipt-time preview에도 적용 가능한 상태 구간 경계. */
+export function inferStateResets(policies, previous, target, reset) {
+  for (const key of policies.keys) if (!Object.is(previous.values[key.index], target.values[key.index])) {
     for (const index of key.scope) reset.add(index);
   }
+}
+
+/** STATE_KEY 전환과 countdown 재시작은 부모 범위만 새 표본으로 연결합니다. */
+export function inferFieldResets(policies, previous, target, timeMs, reset) {
+  inferStateResets(policies, previous.target, target, reset);
   const elapsed = timeMs - previous.timeMs;
   for (const clock of policies.clocks) {
     const from = previous.target.values[clock.index], to = target.values[clock.index];

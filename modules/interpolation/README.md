@@ -56,6 +56,12 @@ static renderSchema = {
 
 `new PresentationRuntime({stepMs: 100, snapDistance: 160})`은 선언된 position 축의 이전/현재 차이가 임계치를 넘으면 그 identity를 snap합니다. position 역할이 없으면 적용하지 않고 미등록 x/y 속성을 읽지 않습니다. 이 옵션은 위치 불연속을 표현하는 정책이며 실제 이동/충돌을 판정하지 않습니다. 게임 어댑터는 source/type/identity와 세계 생명주기만 전달하고 timer/phase/발사 이름을 검사하거나 필드별 reset 목록을 만들 필요가 없습니다.
 
+로컬 `capturePreview`에도 같은 `STATE_KEY` 부모 범위 경계를 적용합니다. 첫 fork 표본은
+명시 `initialSource` 또는 authority target과, 이어지는 표본은 이전 preview target과 비교합니다.
+따라서 root에 둔 teleport/respawn serial은 전체 preview pose를 즉시 맞추고,
+중첩 action key는 위치 보간을 유지하면서 해당 action 범위만 맞춥니다.
+지연 authority의 과거 구간까지 즉시 버릴 때는 capture의 `teleport: true`를 함께 사용합니다.
+
 ### 선택적 제한적 외삽
 
 입력 preview의 `snapshotPreview(entities)`는 선언 필드의 detached 시작 model을 만듭니다. `capturePreview({revision,sequence,timeMs,phaseStartMs,stepMs,entities},nowMs)`는 실제 fork의 다음 표본을 저장하며 `sample/modelFor/render`가 같은 시간 곡선을 읽습니다. 고정 미래 pose를 RAF마다 그대로 반환하지 않습니다. 방향/상태 교체도 Unit 조건문 없이 같은 schema 정책을 따르고 authority capture에서 그 시각 preview pose로 correction을 연결합니다.
@@ -219,6 +225,10 @@ schema/ID/generation이 일치해야 합니다. preview 경로의 예측 생성�
 관계없는 위치 필드는 계속 보간합니다. 명시적 `initialSource`는 필드값과 초기 구조를
 함께 제공합니다. 이 정책은 지연 authority에 적용되며 즉시 preview와 기본 수신 시각
 모드의 기존 타이밍은 유지합니다.
-지연 모드의 `releasePreview(nowMs)`는 preview 선택을 해제하고 기존 authority 표시
-구간으로 복귀합니다. preview의 수신 시각/필드를 authority의 시뮬레이션 구간에
-덮어쓰지 않습니다. 지연 없는 모드의 preview→authority 보정은 유지합니다.
+지연 모드의 continuous capture는 유효한 로컬 preview 연결을 유지합니다. `releasePreview(nowMs)`는
+현재 로컬 pose에서 해당 authority checkpoint까지 별도 표시 연결을 만들고, 지연 시계가
+checkpoint에 도달하면 기존 authority 구간으로 넘깁니다. 과거 위치·action을 즉시 재노출하거나
+preview의 수신 시각/필드를 authority의 시뮬레이션 이력에 덮어쓰지 않습니다.
+새 preview는 이 연결에서 이어집니다. teleport/reset/rollback·generation 변경·삭제는
+이 연결도 폐기합니다. 강제 `clearPreview()`는 즉시 제거이며 정상 입력 해제에 쓰지 않습니다.
+지연 없는 모드의 preview→authority 보정은 유지합니다.

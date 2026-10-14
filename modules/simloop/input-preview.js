@@ -130,7 +130,10 @@ export class LocalInputPreview {
     this.#phaseStartMs = checkpoint.phaseStartMs ?? checkpoint.timeMs; this.#generation++;
     if(this.#pending.length||this.#observed||!this.#fork)this.#rebuild(checkpoint.timeMs);
     this.#metrics.corrections++; this.#metrics.correctionMs += performance.now() - start;
-    if (!this.#pending.length && !this.#observed) { this.#forecast.length=0;this.#forkCurrent=false;this.#presentation?.clearPreview?.(); return true; }
+    if (!this.#pending.length && !this.#observed) { this.#forecast.length=0;this.#forkCurrent=false;
+      if(discontinuity||mode==='rollback')this.#presentation?.clearPreview?.();
+      else this.#presentation?.releasePreview?.(checkpoint.timeMs);
+      return true; }
     return true;
   }
 

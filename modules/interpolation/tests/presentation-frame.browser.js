@@ -60,7 +60,7 @@ export async function runFrameChecks(page){return page.evaluate(async()=>{
   released.capturePreview({revision:0,sequence:0,timeMs:110,phaseStartMs:100,stepMs:100,entities:[{id:'a',generation:0,type:Attacker,source:{...owner,x:20}}]},110);
   check(released.frame(115).sample('a',0).pending===null,'immediate preview has its complete target structure');
   released.releasePreview(120);
-  p=released.frame(150).sample('a',0);check(p.x===5&&p.pending?.total===.2&&p.pending.left===.1,'preview release preserves buffered authority clock and complete state');
+  p=released.frame(150).sample('a',0);check(p.x>10&&p.x<20&&p.pending===null,'preview release corrects its local pose without resurrecting buffered attack state');
   p=released.frame(200).sample('a',0);check(p.x===10&&p.pending===null,'released authority reaches its original display boundary');
   return {birth:'PASS',pathCorner:'PASS',lifetime:'PASS',rollback:'PASS',teleport:'PASS',preview:'PASS',frameGuard:'PASS',atomicAttackState:'PASS'};
 });}
