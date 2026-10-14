@@ -1,3 +1,5 @@
+export { CollisionBoom } from './collision-boom.js';
+
 const finite = (n, name) => { if (!Number.isFinite(n)) throw new TypeError(`${name} must be finite`); return n; };
 const positive = (n, name) => { finite(n, name); if (n <= 0) throw new RangeError(`${name} must be positive`); return n; };
 /** XYZ pitch projection. Absolute Z; terrain offsets belong to the caller. */
