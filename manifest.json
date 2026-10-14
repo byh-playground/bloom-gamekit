@@ -27,15 +27,15 @@
     },
     {
       "file": "replay.js",
-      "sha256": "4097b6d78d0368c0339d05a8b274693424c5fb8c3a4f9741921a912f06ab34ee"
+      "sha256": "2f9ca6c7220e282be8f7e070d1dc62ce368d3123649d0d8f62283deb8d9da4cf"
     },
     {
       "file": "rollback.js",
-      "sha256": "ec914ba35407859cefee4be25ab517373d9a02be8c998e5bd2da6400ee779ce4"
+      "sha256": "ebcd6d44a6b0fdea659141f93733cce0f0e3058b1d049d706ea453d5819c9417"
     },
     {
       "file": "rollback-netcode.js",
-      "sha256": "e54794c5fff1fccf5325fe517a25bab6b61848d62276e1e9f9300dcf00aa2be2"
+      "sha256": "63bb9ad4eb965782ebcfe210d80ab4e6efc8502951e9704cf963d37159a78be7"
     },
     {
       "file": "camera.js",

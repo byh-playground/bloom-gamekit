@@ -41,8 +41,11 @@ var fixedPoint = Object.freeze({
   }
 });
 
+// modules/_rollback-shared/version.js
+var VERSION = "0.2.0";
+
 // modules/_rollback-shared/protocol.js
-var VERSION = "0.2.0-dev";
+var REPLAY_FORMAT_VERSION = "0.2.0-dev";
 var PROTOCOL_VERSION = 3;
 var CHUNK_SIZE = 16384;
 var MAX_TICK = 2147483646;
@@ -1778,7 +1781,7 @@ var RollbackSession = class {
     const hash = this._stateHash(this._stateAt(tick)) ?? this._stateHash(this._replayFinalState) ?? this._replayFinalHash;
     if (tick > 0 && hash === void 0) throw new Error("replay final boundary is unavailable after fatal restoration failure");
     return {
-      version: VERSION,
+      version: REPLAY_FORMAT_VERSION,
       simulationVersion: this.simulationVersion,
       seed: this.seed,
       players: [...this.players],
