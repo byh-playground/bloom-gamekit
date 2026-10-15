@@ -2,16 +2,25 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { compileVectorAsset, compileVectorAssetFile } from '../compiler.js';
 import { validateCompiledAsset } from '../schema.js';
+import { MeshBuilder } from '../../rendering/mesh-builder.js';
 
 const sourcePath = 'modules/vector-assets/assets/seed-scout.svg';
 const source = await readFile(sourcePath);
 const asset = await compileVectorAssetFile(sourcePath, sourcePath);
 validateCompiledAsset(asset);
 assert.equal(asset.schemaVersion, 1);
-assert.equal(asset.compilerVersion, '0.3.0');
+assert.equal(asset.compilerVersion, '0.4.0');
 assert.doesNotThrow(() => validateCompiledAsset({ ...asset, compilerVersion: '0.2.0' }), 'previous compiled meshes remain valid under the unchanged asset schema');
 assert.equal(asset.geometry.strideFloats, 11);
+assert.ok(asset.geometry.indices instanceof Uint16Array, 'SVG compiler retains unique vertices and triangle indices');
+assert.equal(asset.geometry.indices.length % 3, 0);
+assert.ok(asset.geometry.indices.length / (asset.geometry.vertices.length / 11) > 2.5, 'static SVG triangulation contains reusable vertex attributes');
 assert.equal(asset.geometry.partCount, 7);
+const combinedAssetGeometry = MeshBuilder.combine([asset.geometry, asset.geometry]);
+assert.equal(combinedAssetGeometry.partCount, 14);
+assert.equal(combinedAssetGeometry.indices.length, asset.geometry.indices.length * 2, 'combining indexed assets offsets each source index');
+assert.ok(combinedAssetGeometry.indices.slice(asset.geometry.indices.length).some(index => index >= asset.geometry.vertices.length / 11),
+  'the second combined asset references its own remapped vertex range');
 assert.ok(asset.geometry.vertices.byteLength > 100_000);
 assert.equal(asset.metadata.parts.find(part => part.id === 'leaf-left').parent, 'sprout');
 assert.ok(asset.metadata.clips.idle.keyframes.length >= 3);
@@ -22,7 +31,7 @@ const sketchAsset = await compileVectorAssetFile('modules/vector-assets/assets/s
 assert.equal(yarnAsset.metadata.styles[0].kind, 'yarn');
 assert.equal(yarnAsset.geometry.morphCount, 0, 'yarn stitches/fibers are static retained vector geometry');
 assert.ok(yarnAsset.geometry.vertices.byteLength < 4_000_000, 'yarn texture stays bounded as vector triangles');
-assert.equal(yarnAsset.geometry.vertices.length % 33, 0);
+assert.equal(yarnAsset.geometry.indices.length % 3, 0);
 assert.ok(yarnAsset.geometry.vertices.some((value, index) => index % 11 === 2 && value > 0.9)
   && yarnAsset.geometry.vertices.some((value, index) => index % 11 === 2 && value < 0.2), 'linear gradient is split at stops and stored as vertex RGB');
 assert.ok(yarnAsset.geometry.vertices.some((value, index) => index % 11 === 5 && value > 0.6), 'gradient stop alpha reaches the compiled mesh');
@@ -67,7 +76,8 @@ assert.ok(transformedGradientAsset.geometry.vertices.some((value, index) => inde
   'objectBoundingBox gradient target bounds are transformed with the path instead of using a world-axis-aligned box');
 
 console.log(JSON.stringify({ status: 'PASS', sourceSha256: asset.sourceSha256, compiledVertices: asset.geometry.vertices.length / 11,
-  compiledBytes: asset.geometry.vertices.byteLength, checks: ['DOMParser round trip preserves metadata and all DOM ids', 'Three SVGLoader Node compilation',
+  compiledBytes: asset.geometry.vertices.byteLength + asset.geometry.indices.byteLength, expandedBytes: asset.geometry.indices.length * 44,
+  checks: ['DOMParser round trip preserves metadata and all DOM ids', 'Three SVGLoader Node compilation', 'indexed retained triangle geometry',
     'linear gradient stops and alpha in retained triangles', 'hole, stroke and gradient geometry', 'Squish scallop/two-loop yarn and boundary fibers',
     'two-target sketch morph geometry', 'repeat compilation determinism',
     'bad ids and metadata', 'scripts/foreignObject/raster/external refs/unknown elements rejected'] }));

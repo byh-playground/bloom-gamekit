@@ -41,26 +41,41 @@ export class MeshBuilder {
   static combine(geometries) {
     if (!Array.isArray(geometries) || !geometries.length ||
       geometries.some(geometry => !Number.isSafeInteger(geometry?.partCount) || geometry.partCount < 1 ||
-        geometry.strideFloats !== 11 || !(geometry.vertices instanceof Float32Array) || geometry.vertices.length % 33 ||
+        geometry.strideFloats !== 11 || !(geometry.vertices instanceof Float32Array) || geometry.vertices.length < 33 || geometry.vertices.length % 11 ||
+        (geometry.indices !== undefined && (!(geometry.indices instanceof Uint16Array) || geometry.indices.length < 3 || geometry.indices.length % 3 ||
+          geometry.vertices.length / 11 > 0x10000 || geometry.indices.some(index => index >= geometry.vertices.length / 11))) ||
+        (geometry.indices === undefined && geometry.vertices.length % 33) ||
         !Number.isSafeInteger(geometry.morphCount) || geometry.morphCount < 0 || geometry.morphCount > 2) ||
       geometries.reduce((count, geometry) => count + geometry.partCount, 0) > 16) {
       throw new TypeError('MeshBuilder geometries must fit within 16 parts and use the 11-float schema');
     }
+    const vertexCount = geometries.reduce((count, geometry) => count + geometry.vertices.length / 11, 0);
+    const indexCount = geometries.reduce((count, geometry) => count + (geometry.indices?.length ?? geometry.vertices.length / 11), 0);
+    if (vertexCount > 0x10000) throw new RangeError('Combined geometry exceeds 65,536 distinct vertices');
     for (const geometry of geometries) for (let i = 10; i < geometry.vertices.length; i += 11) {
       const part = geometry.vertices[i];
       if (!Number.isSafeInteger(part) || part < 0 || part >= geometry.partCount) throw new RangeError('Mesh part index outside partCount');
     }
-    const vertices = new Float32Array(geometries.reduce((n, geometry) => n + geometry.vertices.length, 0));
+    const vertices = new Float32Array(vertexCount * 11), indices = new Uint16Array(indexCount);
     const partCount = geometries.reduce((count, geometry) => count + geometry.partCount, 0);
     const morphCount = Math.max(...geometries.map(geometry => geometry.morphCount));
     let offset = 0;
     let partOffset = 0;
+    let indexOffset = 0;
     for (const geometry of geometries) {
       vertices.set(geometry.vertices, offset);
-      for (let i = 0; i < geometry.vertices.length; i += 11) vertices[offset + i + 10] += partOffset;
-      offset += geometry.vertices.length;
+      const vertexLength = geometry.vertices.length;
+      for (let i = 10; i < vertexLength; i += 11) vertices[offset + i] += partOffset;
+      if (geometry.indices) {
+        for (let i = 0; i < geometry.indices.length; i++) indices[indexOffset + i] = geometry.indices[i] + offset / 11;
+        indexOffset += geometry.indices.length;
+      } else {
+        for (let i = 0; i < vertexLength / 11; i++) indices[indexOffset + i] = i + offset / 11;
+        indexOffset += vertexLength / 11;
+      }
+      offset += vertexLength;
       partOffset += geometry.partCount;
     }
-    return Object.freeze({ vertices, count: vertices.length / 11, strideFloats: 11, partCount, morphCount });
+    return Object.freeze({ vertices, indices, count: indices.length, strideFloats: 11, partCount, morphCount });
   }
 }

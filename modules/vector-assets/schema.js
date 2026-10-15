@@ -1,6 +1,6 @@
 export const VECTOR_ASSET_SCHEMA_VERSION = 1;
-export const VECTOR_ASSET_COMPILER_VERSION = '0.3.0';
-const ACCEPTED_COMPILER_VERSIONS = new Set(['0.2.0', VECTOR_ASSET_COMPILER_VERSION]);
+export const VECTOR_ASSET_COMPILER_VERSION = '0.4.0';
+const ACCEPTED_COMPILER_VERSIONS = new Set(['0.2.0', '0.3.0', VECTOR_ASSET_COMPILER_VERSION]);
 export const NUMERIC_POSE_FIELDS = Object.freeze(['x', 'y', 'rotation', 'scaleX', 'scaleY', 'opacity']);
 const EASINGS = new Set(['linear', 'inSine', 'outSine', 'inOutSine', 'inQuad', 'outQuad', 'inOutQuad', 'inCubic', 'outCubic', 'inOutCubic']);
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -137,10 +137,16 @@ export function validateCompiledAsset(asset) {
       || typeof asset.sourceSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(asset.sourceSha256)
       || !isObject(asset.metadata) || !isObject(asset.geometry)
       || !(asset.geometry.vertices instanceof Float32Array) || asset.geometry.vertices.length < 33
-      || asset.geometry.vertices.length % 33 || asset.geometry.strideFloats !== 11
+      || asset.geometry.vertices.length % 11 || asset.geometry.strideFloats !== 11
       || asset.geometry.partCount !== asset.metadata.parts?.length || ![0, 2].includes(asset.geometry.morphCount)) {
     throw new TypeError('Invalid compiled SVG vector asset');
   }
+  const vertexCount = asset.geometry.vertices.length / 11, indices = asset.geometry.indices;
+  if (indices !== undefined && (!(indices instanceof Uint16Array) || indices.length < 3 || indices.length % 3
+      || vertexCount > 0x10000 || indices.some(index => index >= vertexCount))) {
+    throw new TypeError('Invalid compiled SVG vertex indices');
+  }
+  if (indices === undefined && vertexCount % 3) throw new TypeError('Non-indexed compiled SVG geometry must contain complete triangles');
   return asset;
 }
 
