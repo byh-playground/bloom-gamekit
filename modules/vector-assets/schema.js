@@ -1,6 +1,6 @@
 export const VECTOR_ASSET_SCHEMA_VERSION = 1;
-export const VECTOR_ASSET_COMPILER_VERSION = '0.5.0';
-const ACCEPTED_COMPILER_VERSIONS = new Set(['0.2.0', '0.3.0', '0.4.0', VECTOR_ASSET_COMPILER_VERSION]);
+export const VECTOR_ASSET_COMPILER_VERSION = '0.6.0';
+const ACCEPTED_COMPILER_VERSIONS = new Set(['0.2.0', '0.3.0', '0.4.0', '0.5.0', VECTOR_ASSET_COMPILER_VERSION]);
 export const NUMERIC_POSE_FIELDS = Object.freeze(['x', 'y', 'rotation', 'scaleX', 'scaleY', 'opacity']);
 const EASINGS = new Set(['linear', 'inSine', 'outSine', 'inOutSine', 'inQuad', 'outQuad', 'inOutQuad', 'inCubic', 'outCubic', 'inOutCubic']);
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -147,6 +147,23 @@ export function validateCompiledAsset(asset) {
     throw new TypeError('Invalid compiled SVG vertex indices');
   }
   if (indices === undefined && vertexCount % 3) throw new TypeError('Non-indexed compiled SVG geometry must contain complete triangles');
+  if (asset.compilerVersion === VECTOR_ASSET_COMPILER_VERSION && asset.compilerOptions === undefined) {
+    throw new TypeError('Current SVG compiler options are required');
+  }
+  if (asset.compilerOptions !== undefined && (!exactKeys(asset.compilerOptions, ['curveSegments'])
+      || !Number.isSafeInteger(asset.compilerOptions.curveSegments) || asset.compilerOptions.curveSegments < 4 || asset.compilerOptions.curveSegments > 64)) {
+    throw new TypeError('Invalid SVG compiler options');
+  }
+  const expressionIndices = asset.geometry.expressionIndices;
+  if (expressionIndices !== undefined) {
+    if (!isObject(expressionIndices)) throw new TypeError('Invalid compiled SVG expression indices');
+    for (const [name, variant] of Object.entries(expressionIndices)) {
+      if (!Object.hasOwn(asset.metadata.expressions ?? {}, name) || !(variant instanceof Uint16Array)
+          || variant.length % 3 || variant.some(index => index >= vertexCount)) {
+        throw new TypeError('Invalid compiled SVG expression index variant: ' + name);
+      }
+    }
+  }
   return asset;
 }
 

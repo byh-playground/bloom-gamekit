@@ -14,6 +14,9 @@ export async function exerciseVectorAssets(page) {
     const demo = window.vectorAssetDemo;
     const fail = message => { throw new Error('Three-view example: ' + message); };
     if (!demo?.ready || !demo.asset || !demo.actor) fail('SVG source and WebGL resources did not finish loading');
+    const submittedVariants = [];
+    const drawMesh = demo.meshes.drawMesh.bind(demo.meshes);
+    demo.meshes.drawMesh = (mesh, options) => { submittedVariants.push(options?.indexVariant ?? null); return drawMesh(mesh, options); };
     const clip = document.querySelector('#clip'), time = document.querySelector('#time');
     const expression = document.querySelector('#expression'), zoom = document.querySelector('#zoom');
     clip.value = 'bounce'; clip.dispatchEvent(new Event('change', { bubbles: true }));
@@ -22,6 +25,13 @@ export async function exerciseVectorAssets(page) {
     zoom.value = '1.50'; zoom.dispatchEvent(new Event('input', { bubbles: true }));
     document.querySelector('#play-toggle').click();
     await waitFrame(); await waitFrame();
+    const expressionIndexVariantUsed = submittedVariants.includes('happy');
+    demo.actor.setPartVisible('face-happy', false);
+    await waitFrame();
+    const explicitVisibilityUsesFullGeometry = submittedVariants.at(-1) === null;
+    demo.actor.setExpression('happy');
+    await waitFrame();
+    const expressionVariantRestoredAfterOverride = submittedVariants.at(-1) === 'happy';
     const body = demo.actor.getPartPose('body');
     const sourceBody = demo.sourceSvg.querySelector('[data-vector-part="body"]').getAttribute('transform');
     const sourceMatrix = sourceBody.slice(7, -1).split(/[ ,]+/).map(Number);
@@ -34,6 +44,7 @@ export async function exerciseVectorAssets(page) {
       sourceBodyPoseMatches: sourceMatrix.length === 6 && sourceMatrix.every((value, index) => Math.abs(value - body.transform[index]) <= 0.006),
       happyShown: demo.sourceSvg.querySelector('[data-vector-part="face-happy"]').style.display !== 'none',
       neutralHidden: demo.sourceSvg.querySelector('[data-vector-part="face-neutral"]').style.display === 'none',
+      expressionIndexVariantUsed, explicitVisibilityUsesFullGeometry, expressionVariantRestoredAfterOverride,
       triangles: demo.topology.triangles, compiledTriangles: demo.asset.mesh.indices.length / 3,
       visibleTriangles: demo.lastFrame.topology.visibleTriangles, uniqueEdges: demo.topology.uniqueEdges,
       webglBackend: demo.device.instancingSupported ? 'WebGL 1 + ANGLE instancing' : 'WebGL 1 + per-draw uniforms',
@@ -61,6 +72,9 @@ export async function exerciseVectorAssets(page) {
   assert.equal(panelState.sourceBodyPoseMatches, true, 'the source SVG view uses the same authored part pose');
   assert.equal(panelState.happyShown, true);
   assert.equal(panelState.neutralHidden, true);
+  assert.equal(panelState.expressionIndexVariantUsed, true, 'authored expressions select their prefiltered retained triangle indices');
+  assert.equal(panelState.explicitVisibilityUsesFullGeometry, true, 'explicit per-part visibility keeps the unfiltered geometry path');
+  assert.equal(panelState.expressionVariantRestoredAfterOverride, true, 'selecting a new expression restores the matching index variant');
   assert.equal(panelState.triangles, panelState.compiledTriangles);
   assert.ok(panelState.visibleTriangles > 0 && panelState.visibleTriangles < panelState.triangles);
   assert.ok(panelState.uniqueEdges > panelState.triangles);
@@ -125,6 +139,7 @@ export async function exerciseVectorAssets(page) {
     };
     const pixel = (x, y) => { const data = new Uint8Array(4); device.gl.readPixels(x, 219 - y, 1, 1, device.gl.RGBA, device.gl.UNSIGNED_BYTE, data); return [...data]; };
     const initialFrame = paint();
+    console.log('VECTOR_STAGE initial-frame');
     const bodyPixel = pixel(100, 112), holePixel = pixel(80, 48), background = [223, 232, 204, 255];
     assertThat(bodyPixel[1] > 100 && bodyPixel[0] < background[0] && bodyPixel[0] > 60, `SVG body color reaches WebGL pixels: ${bodyPixel}`);
     player.setPartVisible('leaf-left', false); paint(); const underHolePixel = pixel(80, 48); player.setPartVisible('leaf-left', true);
@@ -133,6 +148,28 @@ export async function exerciseVectorAssets(page) {
     assertThat(initialFrame.mesh.geometryUploads === 0 && initialFrame.mesh.geometryBytesUploaded === 0, 'asset geometry was uploaded only at resource creation');
     assertThat(asset.mesh.byteLength > 100_000 && meshes.stats().meshCount === 1, 'one retained static SVG geometry handle');
     assertThat(near(player.getSocket('mouth').x, 100) && near(player.getSocket('mouth').y, 146), 'authored socket at SVG coordinates');
+
+    const beforeFailedCreate = { bytes: device.stats.gpuBufferBytes, retained: meshes.stats().retainedBytes, meshes: meshes.stats().meshCount };
+    const uploadIndices = device.uploadIndices;
+    let indexUploads = 0, failedCreate = null;
+    device.uploadIndices = function(buffer, indices) {
+      indexUploads++;
+      if (indexUploads === 2) throw new Error('injected expression index upload failure');
+      return uploadIndices.call(this, buffer, indices);
+    };
+    const geometryInput = {
+      vertices: asset.mesh.vertices, strideFloats: 11, partCount: asset.mesh.partCount, morphCount: asset.mesh.morphCount,
+      indices: asset.mesh.indices,
+      expressionIndices: Object.fromEntries([...asset.mesh.expressionIndices].map(([name, variant]) => [name, variant.indices])),
+    };
+    try { meshes.createMesh(geometryInput); } catch (error) { failedCreate = error; }
+    finally { device.uploadIndices = uploadIndices; }
+    assertThat(failedCreate?.message === 'injected expression index upload failure', 'expression index upload failure reaches the caller');
+    assertThat(device.stats.gpuBufferBytes === beforeFailedCreate.bytes && meshes.stats().retainedBytes === beforeFailedCreate.retained
+      && meshes.stats().meshCount === beforeFailedCreate.meshes, 'failed expression index upload releases every partial GPU allocation');
+    let nullVariantsRejected = false;
+    try { meshes.createMesh({ ...geometryInput, expressionIndices: null }); } catch (error) { nullVariantsRejected = /triangles/.test(error.message); }
+    assertThat(nullVariantsRejected, 'an explicit null expression index map is rejected instead of silently treated as absent');
 
     player.seek(0);
     const expandedVertices = new Float32Array(asset.mesh.indices.length * 11);
@@ -275,6 +312,43 @@ export async function exerciseVectorAssets(page) {
       for (const actor of actors) actor.dispose();
     }
 
+    player.setExpression('happy');
+    const drawMesh = meshes.drawMesh;
+    const observedVariants = [];
+    meshes.drawMesh = (mesh, options) => { observedVariants.push(options.indexVariant); return drawMesh.call(meshes, mesh, options); };
+    const poseAt375 = player.seek(375).getPartPose('body').transform;
+    paint([player], 375);
+    const poseAt700 = player.seek(700).getPartPose('body').transform;
+    paint([player], 700);
+    assertThat(JSON.stringify(poseAt375) !== JSON.stringify(poseAt700), 'absolute seek changes the authored animated pose');
+    assertThat(observedVariants.length === 2 && observedVariants.every(name => name === 'happy'),
+      'seek and clip animation keep selecting the same authored expression indices');
+    observedVariants.length = 0;
+    const beforeRestore = paint([player], 375);
+    const pixelsBeforeRestore = new Uint8Array(200 * 220 * 4);
+    device.gl.readPixels(0, 0, 200, 220, device.gl.RGBA, device.gl.UNSIGNED_BYTE, pixelsBeforeRestore);
+    const loss = device.gl.getExtension('WEBGL_lose_context');
+    assertThat(Boolean(loss), 'Chromium provides WEBGL_lose_context for expression index restoration coverage');
+    const waitForContextEvent = name => new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error(name + ' did not arrive within 5 seconds')), 5000);
+      canvas.addEventListener(name, event => { clearTimeout(timeout); resolve(event); }, { once: true });
+    });
+    const lost = waitForContextEvent('webglcontextlost');
+    loss.loseContext(); await lost;
+    assertThat(device.state === 'lost' && meshes.stats().state === 'lost', 'device and retained renderer enter lost state together');
+    await new Promise(resolve => setTimeout(resolve, 80));
+    const restored = waitForContextEvent('webglcontextrestored');
+    loss.restoreContext(); await restored;
+    assertThat(device.state === 'ready' && meshes.stats().state === 'ready', 'device and expression index buffers restore together');
+    const afterRestore = paint([player], 375);
+    const pixelsAfterRestore = new Uint8Array(200 * 220 * 4);
+    device.gl.readPixels(0, 0, 200, 220, device.gl.RGBA, device.gl.UNSIGNED_BYTE, pixelsAfterRestore);
+    let restorePixelMismatch = 0;
+    for (let index = 0; index < pixelsBeforeRestore.length; index++) if (pixelsBeforeRestore[index] !== pixelsAfterRestore[index]) restorePixelMismatch++;
+    assertThat(observedVariants.at(-1) === 'happy' && afterRestore.glError === 0 && restorePixelMismatch === 0,
+      `restored expression index buffer draws the same pixels (${restorePixelMismatch} channel differences)`);
+    meshes.drawMesh = drawMesh;
+
     const expressionTargets = new Set(Object.values(seedScoutMetadata.expressions).flatMap(item => [...item.show, ...item.hide]));
     const expressionVisible = new Set(seedScoutMetadata.expressions[seedScoutMetadata.defaultExpression].show);
     const visibleSourcePaths = sourcePaths.filter(path => !expressionTargets.has(path.part) || expressionVisible.has(path.part));
@@ -325,17 +399,25 @@ export async function exerciseVectorAssets(page) {
     const disposedPlayer = player; assertThat(disposedPlayer.dispose(), 'player disposes once');
     assertThat(asset.dispose() && !asset.dispose(), 'asset disposes idempotently');
     assertThat(meshes.stats().meshCount === oldMeshCount - 1 && meshes.stats().retainedBytes === 0, 'asset disposal releases exactly its retained geometry');
-    assertThat(device.stats.gpuBufferBytes < oldBufferBytes, 'GPU buffer storage drops after asset disposal');
+    assertThat(oldBufferBytes - device.stats.gpuBufferBytes === asset.mesh.byteLength, 'asset disposal releases base and expression index buffer bytes');
     const replacement = createSeedScout(meshes), replacementPlayer = replacement.createPlayer();
     paint([replacementPlayer], 0);
     assertThat(meshes.stats().meshCount === 1 && device.gl.getError() === 0, 'dispose and recreate renders again on the same renderer/device');
-    replacementPlayer.dispose(); replacement.dispose(); meshes.dispose(); device.dispose(); canvas.remove();
+    replacementPlayer.dispose();
+    const rendererBuffersBeforeDispose = device.stats.gpuBufferBytes;
+    meshes.dispose();
+    assertThat(meshes.stats().retainedBytes === 0 && device.stats.gpuBufferBytes === 0,
+      `renderer disposal releases every expression buffer (${rendererBuffersBeforeDispose} bytes before disposal)`);
+    replacement.dispose(); device.dispose(); canvas.remove();
     return { status: 'PASS', sourceSha256: asset.sourceSha256, coldMetrics, indexedParity, warm: { geometryUploads: warmFrame.mesh.geometryUploads, geometryBytesUploaded: warmFrame.mesh.geometryBytesUploaded },
       benchmark: { svgLoaderCompileMs: threeCompileMs, retainedMeshInstances: benchmark, independentAnimationActors, vectorContextPerFramePathTessellation: pathPipelineBenchmark,
         threeBasedProcessing: { svgLoader: 'Three SVGLoader build-time only', runtimeRenderer: 'not introduced', outputGeometryBytes: asset.mesh.byteLength,
           gpuPath: 'same retained GameKit MeshRenderer mesh; see retainedMeshInstances (compiled source mesh uploaded once)' } },
+      expressionIndexLifecycle: { indexedCreateFailureCleanupBytes: beforeFailedCreate.bytes, seekVariants: observedVariants, contextRestorePixelMismatch: restorePixelMismatch,
+        retainedMeshBytesReleased: asset.mesh.byteLength, rendererBufferBytesReleased: rendererBuffersBeforeDispose },
       checks: ['WebGL1 real draw and zero GL error', 'evenodd hole and stroke/pixel color', 'SVG metadata pivots and sockets', 'part hierarchy visibility and opacity',
-        'neutral/happy expression group variants', 'clip switch and repeat seek after rollback', 'transition seek after rollback', 'dispose and recreate', 'mobile landscape viewport'] };
+        'neutral/happy expression group variants', 'expression variants across animated seek and context restore', 'failed expression index allocation cleanup',
+        'mesh/renderer disposal releases expression index buffers', 'clip switch and repeat seek after rollback', 'transition seek after rollback', 'dispose and recreate', 'mobile landscape viewport'] };
   }, { sourcePaths: referenceAsset.sourcePaths, threeCompileMs });
   assert.equal(report.status, 'PASS');
   assert.equal(report.benchmark.retainedMeshInstances.length, 2);
