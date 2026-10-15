@@ -34,7 +34,7 @@ export async function exerciseVectorAssets(page) {
       sourceBodyPoseMatches: sourceMatrix.length === 6 && sourceMatrix.every((value, index) => Math.abs(value - body.transform[index]) <= 0.006),
       happyShown: demo.sourceSvg.querySelector('[data-vector-part="face-happy"]').style.display !== 'none',
       neutralHidden: demo.sourceSvg.querySelector('[data-vector-part="face-neutral"]').style.display === 'none',
-      triangles: demo.topology.triangles, compiledTriangles: demo.asset.mesh.vertices.length / 33,
+      triangles: demo.topology.triangles, compiledTriangles: demo.asset.mesh.indices.length / 3,
       visibleTriangles: demo.lastFrame.topology.visibleTriangles, uniqueEdges: demo.topology.uniqueEdges,
       webglBackend: demo.device.instancingSupported ? 'WebGL 1 + ANGLE instancing' : 'WebGL 1 + per-draw uniforms',
       drawCalls: demo.lastFrame.gamekit.device.drawCalls,
@@ -134,6 +134,26 @@ export async function exerciseVectorAssets(page) {
     assertThat(asset.mesh.byteLength > 100_000 && meshes.stats().meshCount === 1, 'one retained static SVG geometry handle');
     assertThat(near(player.getSocket('mouth').x, 100) && near(player.getSocket('mouth').y, 146), 'authored socket at SVG coordinates');
 
+    player.seek(0);
+    const expandedVertices = new Float32Array(asset.mesh.indices.length * 11);
+    for (let i = 0; i < asset.mesh.indices.length; i++) expandedVertices.set(asset.mesh.vertices.subarray(asset.mesh.indices[i] * 11, asset.mesh.indices[i] * 11 + 11), i * 11);
+    const expandedMesh = meshes.createMesh({ vertices: expandedVertices, strideFloats: 11, partCount: asset.mesh.partCount, morphCount: asset.mesh.morphCount });
+    const actorParts = player.partPoses().map(({ transform, opacity, visible }) => ({ transform, opacity, visible }));
+    const capture = mesh => {
+      device.beginFrame({ width: 200, height: 220, clearColor: [0.875, 0.91, 0.80, 1] }); meshes.beginFrame();
+      meshes.drawMesh(mesh, { projection, parts: actorParts }); meshes.flush(); device.endFrame();
+      const pixels = new Uint8Array(200 * 220 * 4); device.gl.readPixels(0, 0, 200, 220, device.gl.RGBA, device.gl.UNSIGNED_BYTE, pixels);
+      return { pixels, glError: device.gl.getError() };
+    };
+    const indexedCapture = capture(asset.mesh), expandedCapture = capture(expandedMesh);
+    let pixelMismatch = 0;
+    for (let i = 0; i < indexedCapture.pixels.length; i++) if (indexedCapture.pixels[i] !== expandedCapture.pixels[i]) pixelMismatch++;
+    assertThat(indexedCapture.glError === 0 && expandedCapture.glError === 0 && pixelMismatch === 0,
+      `indexed and expanded retained geometry render the same pixels (${pixelMismatch} channel differences)`);
+    const indexedParity = { pixelMismatch, indexedBytes: asset.mesh.byteLength, expandedBytes: expandedVertices.byteLength,
+      savedBytes: expandedVertices.byteLength - asset.mesh.byteLength };
+    meshes.deleteMesh(expandedMesh);
+
     const firstPose = player.seek(375).getPartPose('body');
     player.seek(900); const rollbackPose = player.seek(375).getPartPose('body');
     assertThat(JSON.stringify(firstPose) === JSON.stringify(rollbackPose), 'same absolute clip time reproduces exactly the same pose after rollback seek');
@@ -200,6 +220,61 @@ export async function exerciseVectorAssets(page) {
       for (const actor of actors) actor.dispose();
     }
 
+    const independentAnimationActors = [];
+    for (const count of [100, 400]) {
+      const clips = Object.keys(seedScoutMetadata.clips), expressions = Object.keys(seedScoutMetadata.expressions);
+      const groupCounts = new Map(clips.map(clip => [clip, Array.from({ length: count }, (_, i) => clips[i % clips.length]).filter(name => name === clip).length]));
+      const groupIndices = new Map(clips.map(clip => [clip, 0]));
+      const createStart = performance.now();
+      const actors = Array.from({ length: count }, (_, index) => {
+        const clip = clips[index % clips.length], ordinal = groupIndices.get(clip), groupCount = groupCounts.get(clip);
+        groupIndices.set(clip, ordinal + 1);
+        const durationMs = seedScoutMetadata.clips[clip].durationMs;
+        const phaseSpanMs = Math.max(1, durationMs / 3 - 32);
+        const phaseMs = (ordinal + 0.5) * phaseSpanMs / groupCount;
+        const actor = asset.createPlayer({ clip, startedAtMs: 1000 - phaseMs });
+        actor.setExpression(expressions[index % expressions.length]);
+        return actor;
+      });
+      const createMs = performance.now() - createStart;
+      const matrices = actors.map((_, i) => [0.045, 0, 0, 0.045, 8 + (i % 20) * 9, 7 + Math.floor(i / 20) * 10]);
+      const frames = [];
+      const poseStates = [];
+      let distinctPoseCount = 0;
+      for (const displayTimeMs of [1000, 1016]) {
+        for (const actor of actors) actor.seek(displayTimeMs);
+        const poseKeys = new Map(), duplicatePoseIndices = [];
+        poseStates.push(JSON.stringify(actors.map(actor => actor.partPoses())));
+        actors.forEach((actor, index) => {
+          const signature = JSON.stringify(actor.partPoses()), earlier = poseKeys.get(signature);
+          if (earlier === undefined) poseKeys.set(signature, index);
+          else duplicatePoseIndices.push([earlier, index]);
+        });
+        distinctPoseCount = Math.min(distinctPoseCount || count, poseKeys.size);
+        const cpuStart = performance.now();
+        const query = beginGpuQuery(device);
+        device.beginFrame({ width: 200, height: 220, clearColor: [0.875, 0.91, 0.80, 1] }); meshes.beginFrame();
+        for (let i = 0; i < count; i++) actors[i].draw({ projection, matrix: matrices[i] });
+        const cpuSubmitMs = performance.now() - cpuStart;
+        meshes.flush(); device.endFrame();
+        const gpuTime = endGpuQuery(device, query), meshStats = { ...meshes.stats() }, deviceStats = { ...device.stats }, glError = device.gl.getError();
+        assertThat(poseKeys.size === count, `independent clip/phase/expression fixture must produce ${count} unique part poses at ${displayTimeMs}: ${poseKeys.size}; duplicates=${JSON.stringify(duplicatePoseIndices)}`);
+        assertThat(meshStats.draws === count && deviceStats.drawCalls === count && meshStats.geometryUploads === 0 && meshStats.geometryBytesUploaded === 0,
+          `independent ${count}-actor poses should submit one retained mesh draw each without frame geometry uploads: ${meshStats.draws}`);
+        frames.push({ displayTimeMs, cpuSubmitMs, gpuTimer: gpuTime, draws: meshStats.draws, instances: meshStats.instances,
+          geometryUploads: meshStats.geometryUploads, geometryBytesUploaded: meshStats.geometryBytesUploaded,
+          instanceBytesUploaded: meshStats.instanceBytesUploaded, partUniformBytesSubmitted: meshStats.partUniformBytesSubmitted,
+          glError });
+        assertThat(glError === 0, `independent ${count}-actor frame has no WebGL error`);
+      }
+      for (const actor of actors) actor.seek(1000);
+      assertThat(JSON.stringify(actors.map(actor => actor.partPoses())) === poseStates[0],
+        `independent ${count}-actor clip/phase/expression poses reproduce after a rollback seek`);
+      independentAnimationActors.push({ actors: count, playerInitMs: createMs, clips: clips.map(name => ({ name, count: groupCounts.get(name) })),
+        expressionCount: expressions.length, distinctPoseCount, frames });
+      for (const actor of actors) actor.dispose();
+    }
+
     const expressionTargets = new Set(Object.values(seedScoutMetadata.expressions).flatMap(item => [...item.show, ...item.hide]));
     const expressionVisible = new Set(seedScoutMetadata.expressions[seedScoutMetadata.defaultExpression].show);
     const visibleSourcePaths = sourcePaths.filter(path => !expressionTargets.has(path.part) || expressionVisible.has(path.part));
@@ -255,8 +330,8 @@ export async function exerciseVectorAssets(page) {
     paint([replacementPlayer], 0);
     assertThat(meshes.stats().meshCount === 1 && device.gl.getError() === 0, 'dispose and recreate renders again on the same renderer/device');
     replacementPlayer.dispose(); replacement.dispose(); meshes.dispose(); device.dispose(); canvas.remove();
-    return { status: 'PASS', sourceSha256: asset.sourceSha256, coldMetrics, warm: { geometryUploads: warmFrame.mesh.geometryUploads, geometryBytesUploaded: warmFrame.mesh.geometryBytesUploaded },
-      benchmark: { svgLoaderCompileMs: threeCompileMs, retainedMeshInstances: benchmark, vectorContextPerFramePathTessellation: pathPipelineBenchmark,
+    return { status: 'PASS', sourceSha256: asset.sourceSha256, coldMetrics, indexedParity, warm: { geometryUploads: warmFrame.mesh.geometryUploads, geometryBytesUploaded: warmFrame.mesh.geometryBytesUploaded },
+      benchmark: { svgLoaderCompileMs: threeCompileMs, retainedMeshInstances: benchmark, independentAnimationActors, vectorContextPerFramePathTessellation: pathPipelineBenchmark,
         threeBasedProcessing: { svgLoader: 'Three SVGLoader build-time only', runtimeRenderer: 'not introduced', outputGeometryBytes: asset.mesh.byteLength,
           gpuPath: 'same retained GameKit MeshRenderer mesh; see retainedMeshInstances (compiled source mesh uploaded once)' } },
       checks: ['WebGL1 real draw and zero GL error', 'evenodd hole and stroke/pixel color', 'SVG metadata pivots and sockets', 'part hierarchy visibility and opacity',
@@ -264,8 +339,11 @@ export async function exerciseVectorAssets(page) {
   }, { sourcePaths: referenceAsset.sourcePaths, threeCompileMs });
   assert.equal(report.status, 'PASS');
   assert.equal(report.benchmark.retainedMeshInstances.length, 2);
+  assert.equal(report.benchmark.independentAnimationActors.length, 2);
   assert.equal(report.benchmark.vectorContextPerFramePathTessellation.length, 2);
-  for (const row of [...report.benchmark.retainedMeshInstances, ...report.benchmark.vectorContextPerFramePathTessellation]) assert.ok(row.actors === 100 || row.actors === 400);
+  for (const row of [...report.benchmark.retainedMeshInstances, ...report.benchmark.independentAnimationActors, ...report.benchmark.vectorContextPerFramePathTessellation]) assert.ok(row.actors === 100 || row.actors === 400);
+  for (const row of report.benchmark.independentAnimationActors) assert.equal(row.distinctPoseCount, row.actors);
+  report.checks.push('100/400 independently phased clips and expression variants remain seek-deterministic, submit one draw per distinct multipart pose, and reuse retained geometry');
   report.threeViewExample = panelState;
   report.checks.unshift('same authored SVG source SHA and pose across original/source, compiled triangle topology, and GameKit WebGL panels; shared time/expression/zoom/pan; mobile landscape layout');
   return report;

@@ -86,7 +86,10 @@ export class MeshRenderer {
     this.onRestored = () => {
       try {
         if (this.instanced && !device.instancingSupported) throw new Error('Restored context no longer supports mesh instancing');
-        for (const mesh of this.meshes) device.uploadVertices(mesh.buffer, mesh.vertices);
+        for (const mesh of this.meshes) {
+          device.uploadVertices(mesh.buffer, mesh.vertices);
+          if (mesh.indices) device.uploadIndices(mesh.indexBuffer, mesh.indices);
+        }
         this.state = 'ready'; this.failure = null;
       } catch (error) { this.state = 'failed'; this.failure = error.message; }
     };
@@ -111,25 +114,43 @@ export class MeshRenderer {
   }
   createMesh(data) {
     this._ready();
-    if (!(data?.vertices instanceof Float32Array) || data.vertices.length % 33 || data.strideFloats !== 11 || !Number.isSafeInteger(data.partCount) || data.partCount < 1 || data.partCount > 16 || !Number.isSafeInteger(data.morphCount) || data.morphCount < 0 || data.morphCount > 2) throw new TypeError('MeshBuilder geometry with 1..16 parts required');
+    const indices = data?.indices;
+    if (!(data?.vertices instanceof Float32Array) || data.vertices.length < 33 || data.vertices.length % 11 || data.strideFloats !== 11 || !Number.isSafeInteger(data.partCount) || data.partCount < 1 || data.partCount > 16 || !Number.isSafeInteger(data.morphCount) || data.morphCount < 0 || data.morphCount > 2
+        || (indices !== undefined && (!(indices instanceof Uint16Array) || indices.length < 3 || indices.length % 3 || data.vertices.length / 11 > 0x10000 || indices.some(index => index >= data.vertices.length / 11)))
+        || (indices === undefined && data.vertices.length % 33)) throw new TypeError('Mesh geometry with complete triangles and 1..16 parts required');
     if (data.vertices.some(n => !Number.isFinite(n))) throw new TypeError('Mesh values must be finite');
     for (let i = 0; i < data.vertices.length; i++) {
       if (i % 11 >= 2 && i % 11 < 6 && (data.vertices[i] < 0 || data.vertices[i] > 1)) throw new RangeError('Mesh RGBA channels must be in [0,1]');
       if (i % 11 === 10 && (!Number.isSafeInteger(data.vertices[i]) || data.vertices[i] < 0 || data.vertices[i] >= data.partCount)) throw new RangeError('Mesh part index outside partCount');
       if (i % 11 >= 6 + data.morphCount * 2 && i % 11 < 10 && data.vertices[i] !== 0) throw new RangeError('Mesh deltas exceed declared morphCount');
     }
-    if (this.meshes.size >= this.maxMeshes || this.bytes + data.vertices.byteLength > this.maxMeshBytes) throw new RangeError('Retained mesh budget exceeded');
-    const vertices = data.vertices.slice(), buffer = this.device.createVertexBuffer({ capacityBytes: vertices.byteLength });
-    try { this.device.uploadVertices(buffer, vertices); } catch (error) { this.device.deleteVertexBuffer(buffer); throw error; }
-    const mesh = Object.freeze({ renderer: this, buffer, vertices, count: vertices.length / 11, byteLength: vertices.byteLength, partCount: data.partCount, morphCount: data.morphCount });
-    this.meshes.add(mesh); this.bytes += vertices.byteLength;
-    this.metrics.geometryUploads++; this.metrics.geometryBytesUploaded += vertices.byteLength;
+    const byteLength = data.vertices.byteLength + (indices?.byteLength ?? 0);
+    if (this.meshes.size >= this.maxMeshes || this.bytes + byteLength > this.maxMeshBytes) throw new RangeError('Retained mesh budget exceeded');
+    const vertices = data.vertices.slice(), ownedIndices = indices?.slice(), buffer = this.device.createVertexBuffer({ capacityBytes: vertices.byteLength });
+    let indexBuffer;
+    try {
+      this.device.uploadVertices(buffer, vertices);
+      if (ownedIndices) {
+        indexBuffer = this.device.createIndexBuffer({ capacityBytes: ownedIndices.byteLength });
+        this.device.uploadIndices(indexBuffer, ownedIndices);
+      }
+    } catch (error) {
+      if (indexBuffer) this.device.deleteIndexBuffer(indexBuffer);
+      this.device.deleteVertexBuffer(buffer);
+      throw error;
+    }
+    const mesh = Object.freeze({ renderer: this, buffer, indexBuffer, vertices, indices: ownedIndices,
+      count: ownedIndices?.length ?? vertices.length / 11, byteLength, partCount: data.partCount, morphCount: data.morphCount });
+    this.meshes.add(mesh); this.bytes += byteLength;
+    this.metrics.geometryUploads++; this.metrics.geometryBytesUploaded += byteLength;
     return mesh;
   }
   deleteMesh(mesh) {
     if (!this.meshes.has(mesh)) return false;
     if (this.pending?.mesh === mesh) this.flush();
-    this.device.deleteVertexBuffer(mesh.buffer); this.meshes.delete(mesh); this.bytes -= mesh.byteLength;
+    this.device.deleteVertexBuffer(mesh.buffer);
+    if (mesh.indexBuffer) this.device.deleteIndexBuffer(mesh.indexBuffer);
+    this.meshes.delete(mesh); this.bytes -= mesh.byteLength;
     return true;
   }
   /** Captures state by value; subsequent transform/paint changes do not alter queued instances. */
@@ -201,13 +222,13 @@ export class MeshRenderer {
     if (mesh.partCount > 1) uniforms['u_parts[0]'] = parts;
     if (this.instanced) {
       this.device.uploadVertices(this.instanceBuffer, this.instances.subarray(0, this.count * 16));
-      this.device.draw({ pipeline, buffer: mesh.buffer, count: mesh.count, instanceBuffer: this.instanceBuffer, instances: this.count, uniforms, depth: depthState });
+      this.device.draw({ pipeline, buffer: mesh.buffer, indexBuffer: mesh.indexBuffer, count: mesh.count, instanceBuffer: this.instanceBuffer, instances: this.count, uniforms, depth: depthState });
       this.metrics.instanceBytesUploaded += this.count * 64; this.metrics.draws++;
       this.metrics.partUniformBytesSubmitted += parts.byteLength;
     } else {
       for (let i = 0; i < this.count; i++) {
         for (let j = 0; j < 4; j++) uniforms[['i_row0', 'i_row1', 'i_color', 'i_params'][j]] = this.instances.subarray(i * 16 + j * 4, i * 16 + j * 4 + 4);
-        this.device.draw({ pipeline, buffer: mesh.buffer, count: mesh.count, uniforms, depth: depthState }); this.metrics.draws++;
+        this.device.draw({ pipeline, buffer: mesh.buffer, indexBuffer: mesh.indexBuffer, count: mesh.count, uniforms, depth: depthState }); this.metrics.draws++;
         this.metrics.partUniformBytesSubmitted += parts.byteLength;
       }
     }
@@ -220,7 +241,10 @@ export class MeshRenderer {
   dispose() {
     if (this.disposed) return;
     this.discard(); this.device.canvas.removeEventListener('webglcontextlost', this.onLost); this.device.canvas.removeEventListener('webglcontextrestored', this.onRestored);
-    for (const mesh of this.meshes) this.device.deleteVertexBuffer(mesh.buffer);
+    for (const mesh of this.meshes) {
+      this.device.deleteVertexBuffer(mesh.buffer);
+      if (mesh.indexBuffer) this.device.deleteIndexBuffer(mesh.indexBuffer);
+    }
     this.meshes.clear(); this.bytes = 0;
     if (this.instanceBuffer) this.device.deleteVertexBuffer(this.instanceBuffer);
     for (const pipeline of this.pipelines.values()) this.device.deletePipeline(pipeline);

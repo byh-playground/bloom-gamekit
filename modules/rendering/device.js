@@ -48,7 +48,7 @@ export class WebGLDevice {
         this._instancingExtension = this.gl.getExtension('ANGLE_instanced_arrays');
         this.instancingSupported = !!this._instancingExtension;
         for (const record of this.pipelines.values()) this._pipeline(record);
-        for (const record of this.buffers.values()) { record.gpu = this.gl.createBuffer(); if (!record.gpu) throw new Error('Buffer allocation failed'); this.gl.bindBuffer(this.gl.ARRAY_BUFFER,record.gpu); this.gl.bufferData(this.gl.ARRAY_BUFFER,record.capacity,this.gl.DYNAMIC_DRAW); record.used = 0; this.stats.bufferAllocations++; }
+        for (const record of this.buffers.values()) { record.gpu = this.gl.createBuffer(); if (!record.gpu) throw new Error('Buffer allocation failed'); this.gl.bindBuffer(record.target,record.gpu); this.gl.bufferData(record.target,record.capacity,this.gl.DYNAMIC_DRAW); record.used = 0; this.stats.bufferAllocations++; }
         for (const record of this.textures.values()) { record.gpu = null; this._texture(record); }
         for (const record of this.renderTargets.values()) this._renderTarget(record);
         this.state = 'ready'; this.failure = null; this.stats.restores++;
@@ -95,16 +95,29 @@ export class WebGLDevice {
   createVertexBuffer({capacityBytes=0}={}) {
     this._ready();integer(capacityBytes,'capacityBytes',0,this.maxBufferBytes);if(capacityBytes%4)throw new RangeError('capacityBytes must align to FLOAT');
     const gl=this.gl,gpu=gl.createBuffer();if(!gpu)throw new Error('Buffer allocation failed');gl.bindBuffer(gl.ARRAY_BUFFER,gpu);gl.bufferData(gl.ARRAY_BUFFER,capacityBytes,gl.DYNAMIC_DRAW);
-    const handle=Object.freeze({});this.buffers.set(handle,{gpu,capacity:capacityBytes,used:0});this.stats.bufferAllocations++;this.stats.gpuBufferBytes+=capacityBytes;this.stats.bufferCount=this.buffers.size;return handle;
+    const handle=Object.freeze({});this.buffers.set(handle,{gpu,target:gl.ARRAY_BUFFER,capacity:capacityBytes,used:0});this.stats.bufferAllocations++;this.stats.gpuBufferBytes+=capacityBytes;this.stats.bufferCount=this.buffers.size;return handle;
+  }
+  createIndexBuffer({capacityBytes=0}={}) {
+    this._ready();integer(capacityBytes,'capacityBytes',0,this.maxBufferBytes);if(capacityBytes%2)throw new RangeError('Index buffer capacity must align to UNSIGNED_SHORT');
+    const gl=this.gl,gpu=gl.createBuffer();if(!gpu)throw new Error('Index buffer allocation failed');gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,gpu);gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,capacityBytes,gl.DYNAMIC_DRAW);
+    const handle=Object.freeze({});this.buffers.set(handle,{gpu,target:gl.ELEMENT_ARRAY_BUFFER,capacity:capacityBytes,used:0});this.stats.bufferAllocations++;this.stats.gpuBufferBytes+=capacityBytes;this.stats.bufferCount=this.buffers.size;return handle;
   }
   /** View is uploaded synchronously, never copied into another CPU arena or retained. */
   uploadVertices(handle, data) {
-    this._ready();const r=this._handle(this.buffers,handle,'buffer');if(!(data instanceof Float32Array))throw new TypeError('Float32Array required');
+    this._ready();const r=this._handle(this.buffers,handle,'buffer');if(r.target!==this.gl.ARRAY_BUFFER||!(data instanceof Float32Array))throw new TypeError('An ARRAY_BUFFER and Float32Array are required');
     if(data.byteLength>this.maxBufferBytes)throw new RangeError('Stream exceeds maxBufferBytes');const gl=this.gl;gl.bindBuffer(gl.ARRAY_BUFFER,r.gpu);
     if(data.byteLength>r.capacity){let capacity=Math.max(4,r.capacity);while(capacity<data.byteLength)capacity=Math.min(this.maxBufferBytes,capacity*2);gl.bufferData(gl.ARRAY_BUFFER,capacity,gl.DYNAMIC_DRAW);this.stats.gpuBufferBytes+=capacity-r.capacity;r.capacity=capacity;this.stats.bufferAllocations++;}
     if(data.byteLength){gl.bufferSubData(gl.ARRAY_BUFFER,0,data);this.stats.bufferUploads++;this.stats.bufferBytes+=data.byteLength;}r.used=data.byteLength;
   }
-  deleteVertexBuffer(handle){const r=this.buffers.get(handle);if(!r)return false;this.gl.deleteBuffer(r.gpu);this.buffers.delete(handle);this.stats.gpuBufferBytes-=r.capacity;this.stats.bufferCount=this.buffers.size;return true;}
+  uploadIndices(handle, data) {
+    this._ready();const r=this._handle(this.buffers,handle,'index buffer');if(r.target!==this.gl.ELEMENT_ARRAY_BUFFER||!(data instanceof Uint16Array))throw new TypeError('An ELEMENT_ARRAY_BUFFER and Uint16Array are required');
+    if(data.byteLength>this.maxBufferBytes)throw new RangeError('Index stream exceeds maxBufferBytes');const gl=this.gl;gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,r.gpu);
+    if(data.byteLength>r.capacity){let capacity=Math.max(2,r.capacity);while(capacity<data.byteLength)capacity=Math.min(this.maxBufferBytes,this.maxBufferBytes%2?this.maxBufferBytes-1:this.maxBufferBytes,capacity*2);gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,capacity,gl.DYNAMIC_DRAW);this.stats.gpuBufferBytes+=capacity-r.capacity;r.capacity=capacity;this.stats.bufferAllocations++;}
+    if(data.byteLength){gl.bufferSubData(gl.ELEMENT_ARRAY_BUFFER,0,data);this.stats.bufferUploads++;this.stats.bufferBytes+=data.byteLength;}r.used=data.byteLength;
+  }
+  deleteVertexBuffer(handle){return this._deleteBuffer(handle,this.gl.ARRAY_BUFFER);}
+  deleteIndexBuffer(handle){return this._deleteBuffer(handle,this.gl.ELEMENT_ARRAY_BUFFER);}
+  _deleteBuffer(handle,target){const r=this.buffers.get(handle);if(!r)return false;if(r.target!==target)throw new TypeError('Buffer target does not match delete operation');this.gl.deleteBuffer(r.gpu);this.buffers.delete(handle);this.stats.gpuBufferBytes-=r.capacity;this.stats.bufferCount=this.buffers.size;return true;}
   _source(source, format, premultiplied) {
     if(source===this.canvas)throw new TypeError('Use copyFrameToTexture for GPU frame composition, not canvas upload');
     if(typeof premultiplied!=='boolean')throw new TypeError('premultiplied must be boolean');
@@ -226,14 +239,19 @@ export class WebGLDevice {
     gl.disable(gl.SCISSOR_TEST);gl.clear(flags);
   }
   /** Full pass state is explicit per draw; no state leakage between game materials. */
-  draw({pipeline,buffer,instanceBuffer,instances=1,first=0,count,uniforms={},textures=[],blend='source-over',depth=false,stencil=false,colorMask=ALL_COLOR,filter}={}){
+  draw({pipeline,buffer,indexBuffer,instanceBuffer,instances=1,first=0,count,uniforms={},textures=[],blend='source-over',depth=false,stencil=false,colorMask=ALL_COLOR,filter}={}){
     this._ready();if(!this.active)throw new Error('beginFrame required');const p=this._handle(this.pipelines,pipeline,'pipeline'),b=this._handle(this.buffers,buffer,'buffer');
-    integer(first,'first');integer(count,'count');if(first+count>b.used/p.stride)throw new RangeError('draw exceeds uploaded vertices');
+    if(b.target!==this.gl.ARRAY_BUFFER)throw new TypeError('A vertex buffer is required');
+    integer(first,'first');integer(count,'count');
+    const elements=indexBuffer===undefined||indexBuffer===null?null:this._handle(this.buffers,indexBuffer,'index buffer');
+    if(elements){if(elements.target!==this.gl.ELEMENT_ARRAY_BUFFER||elements.used%2||first+count>elements.used/2)throw new RangeError('draw exceeds uploaded indices');}
+    else if(first+count>b.used/p.stride)throw new RangeError('draw exceeds uploaded vertices');
     integer(instances,'instances',1);
     let instanceRecord;
     if(p.instanced){
       if(!this._instancingExtension)throw new Error('ANGLE_instanced_arrays required for instance attributes');
       instanceRecord=this._handle(this.buffers,instanceBuffer,'instance buffer');
+      if(instanceRecord.target!==this.gl.ARRAY_BUFFER)throw new TypeError('An instance vertex buffer is required');
       if(instances>instanceRecord.used/p.instanceStride)throw new RangeError('draw exceeds uploaded instances');
     }else if(instances!==1)throw new RangeError('Multiple instances require instance attributes');
     if(!Number.isSafeInteger(count*instances))throw new RangeError('draw vertex count exceeds safe integer range');
@@ -270,11 +288,16 @@ export class WebGLDevice {
     gl.depthMask(depthState?.write??false);
     if(stencil){gl.enable(gl.STENCIL_TEST);gl.stencilFunc(gl[FUNCTIONS[stencil.func??'always']],stencil.ref??0,stencil.mask??255);gl.stencilMask(stencil.writeMask??255);gl.stencilOp(gl[OPERATIONS[stencil.fail??'keep']],gl[OPERATIONS[stencil.zfail??'keep']],gl[OPERATIONS[stencil.pass??'keep']]);}else gl.disable(gl.STENCIL_TEST);
     gl.colorMask(...colorMask);gl.disable(gl.CULL_FACE);gl.disable(gl.DITHER);gl.disable(gl.SCISSOR_TEST);
-    if(p.instanced){instancing.drawArraysInstancedANGLE(gl.TRIANGLES,first,count,instances);this.stats.instancedDrawCalls++;}
+    if(elements)gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,elements.gpu);
+    if(p.instanced){
+      if(elements)instancing.drawElementsInstancedANGLE(gl.TRIANGLES,count,gl.UNSIGNED_SHORT,first*2,instances);
+      else instancing.drawArraysInstancedANGLE(gl.TRIANGLES,first,count,instances);
+      this.stats.instancedDrawCalls++;
+    } else if(elements)gl.drawElements(gl.TRIANGLES,count,gl.UNSIGNED_SHORT,first*2);
     else gl.drawArrays(gl.TRIANGLES,first,count);
     this.stats.drawCalls++;this.stats.vertices+=count*instances;
   }
   endFrame(){this._ready();if(!this.active)throw new Error('beginFrame required');if(this.renderTargetStack.length)throw new Error('Unbind render targets before endFrame');this.active=false;return this.stats;}
-  _deleteGPU(){const gl=this.gl;gl.useProgram(null);gl.bindBuffer(gl.ARRAY_BUFFER,null);for(let i=0;i<this.maxTextures;i++){gl.activeTexture(gl.TEXTURE0+i);gl.bindTexture(gl.TEXTURE_2D,null);}gl.activeTexture(gl.TEXTURE0);for(const r of this.pipelines.values())gl.deleteProgram(r.gpu);for(const r of this.buffers.values())gl.deleteBuffer(r.gpu);for(const r of this.renderTargets.values())gl.deleteFramebuffer(r.framebuffer);for(const r of this.textures.values())gl.deleteTexture(r.gpu);}
+  _deleteGPU(){const gl=this.gl;gl.useProgram(null);gl.bindBuffer(gl.ARRAY_BUFFER,null);gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,null);for(let i=0;i<this.maxTextures;i++){gl.activeTexture(gl.TEXTURE0+i);gl.bindTexture(gl.TEXTURE_2D,null);}gl.activeTexture(gl.TEXTURE0);for(const r of this.pipelines.values())gl.deleteProgram(r.gpu);for(const r of this.buffers.values())gl.deleteBuffer(r.gpu);for(const r of this.renderTargets.values())gl.deleteFramebuffer(r.framebuffer);for(const r of this.textures.values())gl.deleteTexture(r.gpu);}
   dispose(){if(this.state==='disposed')return;this.canvas.removeEventListener('webglcontextlost',this.onLost);this.canvas.removeEventListener('webglcontextrestored',this.onRestored);this._deleteGPU();this.pipelines.clear();this.buffers.clear();this.textures.clear();this.renderTargets.clear();this.renderTargetStack.length=0;this.activeRenderTarget=null;this.enabledAttributes.clear();this.regionCanvas=this.regionContext=this.regionBytes=null;this.stats.pipelineCount=this.stats.bufferCount=this.stats.textureCount=this.stats.renderTargetCount=this.stats.gpuBufferBytes=this.stats.gpuRenderTargetBytes=0;this.active=false;this.state='disposed';}
 }

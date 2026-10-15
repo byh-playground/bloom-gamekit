@@ -832,7 +832,21 @@ function compilePaths(paths, partIndices, parts, metadata, gradients) {
     }
   }
   if (!vertices.length || vertices.length % 33) throw new TypeError('SVG did not produce complete painted triangles');
-  return { vertices: new Float32Array(vertices), morphCount };
+  const expanded = new Float32Array(vertices);
+  const uniqueVertices = [], indices = [], vertexIds = new Map();
+  const words = new Uint32Array(expanded.buffer, expanded.byteOffset, expanded.length);
+  for (let offset = 0; offset < expanded.length; offset += 11) {
+    const key = words.subarray(offset, offset + 11).join(',');
+    let index = vertexIds.get(key);
+    if (index === undefined) {
+      index = uniqueVertices.length / 11;
+      if (index > 0xffff) throw new RangeError('SVG needs more than 65,536 distinct vertices; split the authored asset into bounded meshes');
+      vertexIds.set(key, index);
+      for (let field = 0; field < 11; field++) uniqueVertices.push(expanded[offset + field]);
+    }
+    indices.push(index);
+  }
+  return { vertices: new Float32Array(uniqueVertices), indices: new Uint16Array(indices), morphCount };
 }
 
 function compileSourcePaths(paths, partIndices, parts) {
@@ -960,9 +974,10 @@ export async function compileVectorAssetFile(svgPath, sourcePath = 'asset.svg') 
 }
 
 function javascriptValue(value) {
-  if (value instanceof Float32Array) {
+  if (value instanceof Float32Array || value instanceof Uint16Array) {
     const bytes = Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString('base64');
-    return '(()=>{const b=atob(' + JSON.stringify(bytes) + '),u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return new Float32Array(u.buffer)})()';
+    const constructor = value instanceof Float32Array ? 'Float32Array' : 'Uint16Array';
+    return '(()=>{const b=atob(' + JSON.stringify(bytes) + '),u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return new ' + constructor + '(u.buffer)})()';
   }
   if (Array.isArray(value)) return '[' + value.map(javascriptValue).join(',') + ']';
   if (value && typeof value === 'object') return 'Object.freeze({' + Object.entries(value).map(([key, child]) => JSON.stringify(key) + ':' + javascriptValue(child)).join(',') + '})';

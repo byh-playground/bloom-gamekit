@@ -197,7 +197,7 @@ export async function exerciseReusableMeshes(page) {
         const packedMesh = ctx.createMesh(packedData), initialParts = poses();
         ctx.drawMesh(packedMesh, { transform: [1, 0, 0, 1, 34, 64], parts: initialParts, morph: globalMorph });
         const packedCold = ctx.endFrame();
-        check(packedCold.mesh.geometryUploads === 1 && packedCold.mesh.geometryBytesUploaded === packedData.vertices.byteLength, 'combined geometry uploaded once');
+        check(packedCold.mesh.geometryUploads === 1 && packedCold.mesh.geometryBytesUploaded === packedData.vertices.byteLength + packedData.indices.byteLength, 'combined indexed geometry uploaded once');
         near(pixel(34, 64), [77, 102, 0, 255], 'original red then green order, hidden blue part absent');
 
         const paintPackedScene = (retained, draws, silhouette = false) => {

@@ -209,17 +209,18 @@
     if (source.sha256 !== asset.sourceSha256) throw new Error('Fetched SVG SHA does not match the compiled asset source SHA');
     const creationStats = meshes.stats();
     const assetInitializationMs = performance.now() - assetInitializationStart;
-    const triangleCount = asset.mesh.vertices.length / 33;
+    const triangleCount = asset.mesh.indices.length / 3;
     const partByIndex = seedScoutMetadata.parts.map(part => part.id);
     const triangles = [];
     const edgeMap = new Map();
     const pointKey = (x, y) => Number(x.toFixed(4)) + ',' + Number(y.toFixed(4));
-    for (let offset = 0; offset < asset.mesh.vertices.length; offset += 33) {
+    for (let offset = 0; offset < asset.mesh.indices.length; offset += 3) {
       const vertices = asset.mesh.vertices;
-      const partIndex = vertices[offset + 10];
+      const vertexOffsets = [0, 1, 2].map(corner => asset.mesh.indices[offset + corner] * 11);
+      const partIndex = vertices[vertexOffsets[0] + 10];
       const part = partByIndex[partIndex];
-      const points = [0, 11, 22].map(step => [vertices[offset + step], vertices[offset + step + 1]]);
-      const color = [vertices[offset + 2], vertices[offset + 3], vertices[offset + 4], vertices[offset + 5]];
+      const points = vertexOffsets.map(vertexOffset => [vertices[vertexOffset], vertices[vertexOffset + 1]]);
+      const color = [vertices[vertexOffsets[0] + 2], vertices[vertexOffsets[0] + 3], vertices[vertexOffsets[0] + 4], vertices[vertexOffsets[0] + 5]];
       triangles.push({ part, points, color });
       for (let edge = 0; edge < 3; edge++) {
         const a = points[edge], b = points[(edge + 1) % 3];

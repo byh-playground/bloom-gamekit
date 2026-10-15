@@ -243,3 +243,11 @@ The browser's network cache is origin/top-site partitioned and browser-managed. 
 기준 `812a6e2`와 변경 소스를 Node 24의 recording device에서 비교했습니다. 4 frame × (200 rect fill + 5 stroke + 20 gradient fill + white-flash + 반투명 group), 중간 stop 변경 1회에서 draw/upload 호출은 각각 917→21입니다. 업로드 geometry 자체와 순서·projection·clip 결과·제출 시점의 texture bytes는 동일했고 CPU staging은 양쪽 128KiB였습니다. 낮은 batch 한도 7 vertices 경계도 확인했습니다. gradient raster 생성 5회와 gradient texture 생성 4회는 양쪽 동일하며 frame 간 보관 캐시는 추가하지 않았습니다.
 
 이는 실제 GL 호출·GPU 실행을 포함하지 않는 제한된 비용 표본이며 FPS 개선 주장에 사용하지 않습니다. 실제 Chromium/WebGL E2E에는 batching/capacity/painter order, gradient stop 변경·context loss 시나리오를 반영했지만 이 환경의 Chromium socket 권한 제한으로 실행하지 못했습니다. 실기기/GPU 검증은 남아 있습니다. silhouette topology·인스턴스 구조 재작성과 frame 간 gradient 캐시는 현재 소비자에서 추가 이익이 확인되지 않아 포함하지 않았습니다.
+
+## Indexed retained geometry
+
+`WebGLDevice.createIndexBuffer()` and `uploadIndices(handle, Uint16Array)` own WebGL 1 element buffers. `MeshRenderer.createMesh()` accepts complete expanded triangles or a `Uint16Array` of triangle indices over its 11-float vertex records; indexed meshes submit with `drawElements` or the matching ANGLE instanced call. The retained byte budget, context restoration, and disposal include both buffers. `MeshBuilder.combine()` remaps and preserves indexed inputs while retaining painter order.
+
+## Ordered submission and batching
+
+`MeshRenderer.drawMesh()` appends an ordered instance to its pending batch; call `flush()` at a real painter-order boundary or before ending the frame, rather than after every actor. Adjacent submissions batch only while the mesh, projection, clip, and (for multi-part meshes) packed part pose match. Root transforms and instance colors may vary inside that batch. A different mesh or part pose closes the batch because part poses are currently shared uniforms. Flush the legacy `Renderer2D` queue before entering a vector block, then flush `MeshRenderer` before the next legacy draw. Repeated outline offsets with the same mesh and pose can be submitted consecutively and flushed once when no other renderer needs to draw between them. If legacy effects genuinely alternate around each actor, those are painter-order boundaries and the current single-pass API cannot merge the calls without changing layering.
