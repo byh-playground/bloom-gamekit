@@ -115,8 +115,8 @@
           for (const record of this.buffers.values()) {
             record.gpu = this.gl.createBuffer();
             if (!record.gpu) throw new Error("Buffer allocation failed");
-            this.gl.bindBuffer(this.gl.ARRAY_BUFFER, record.gpu);
-            this.gl.bufferData(this.gl.ARRAY_BUFFER, record.capacity, this.gl.DYNAMIC_DRAW);
+            this.gl.bindBuffer(record.target, record.gpu);
+            this.gl.bufferData(record.target, record.capacity, this.gl.DYNAMIC_DRAW);
             record.used = 0;
             this.stats.bufferAllocations++;
           }
@@ -217,7 +217,22 @@
       gl.bindBuffer(gl.ARRAY_BUFFER, gpu);
       gl.bufferData(gl.ARRAY_BUFFER, capacityBytes, gl.DYNAMIC_DRAW);
       const handle = Object.freeze({});
-      this.buffers.set(handle, { gpu, capacity: capacityBytes, used: 0 });
+      this.buffers.set(handle, { gpu, target: gl.ARRAY_BUFFER, capacity: capacityBytes, used: 0 });
+      this.stats.bufferAllocations++;
+      this.stats.gpuBufferBytes += capacityBytes;
+      this.stats.bufferCount = this.buffers.size;
+      return handle;
+    }
+    createIndexBuffer({ capacityBytes = 0 } = {}) {
+      this._ready();
+      integer(capacityBytes, "capacityBytes", 0, this.maxBufferBytes);
+      if (capacityBytes % 2) throw new RangeError("Index buffer capacity must align to UNSIGNED_SHORT");
+      const gl = this.gl, gpu = gl.createBuffer();
+      if (!gpu) throw new Error("Index buffer allocation failed");
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gpu);
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, capacityBytes, gl.DYNAMIC_DRAW);
+      const handle = Object.freeze({});
+      this.buffers.set(handle, { gpu, target: gl.ELEMENT_ARRAY_BUFFER, capacity: capacityBytes, used: 0 });
       this.stats.bufferAllocations++;
       this.stats.gpuBufferBytes += capacityBytes;
       this.stats.bufferCount = this.buffers.size;
@@ -227,7 +242,7 @@
     uploadVertices(handle, data2) {
       this._ready();
       const r = this._handle(this.buffers, handle, "buffer");
-      if (!(data2 instanceof Float32Array)) throw new TypeError("Float32Array required");
+      if (r.target !== this.gl.ARRAY_BUFFER || !(data2 instanceof Float32Array)) throw new TypeError("An ARRAY_BUFFER and Float32Array are required");
       if (data2.byteLength > this.maxBufferBytes) throw new RangeError("Stream exceeds maxBufferBytes");
       const gl = this.gl;
       gl.bindBuffer(gl.ARRAY_BUFFER, r.gpu);
@@ -246,9 +261,38 @@
       }
       r.used = data2.byteLength;
     }
+    uploadIndices(handle, data2) {
+      this._ready();
+      const r = this._handle(this.buffers, handle, "index buffer");
+      if (r.target !== this.gl.ELEMENT_ARRAY_BUFFER || !(data2 instanceof Uint16Array)) throw new TypeError("An ELEMENT_ARRAY_BUFFER and Uint16Array are required");
+      if (data2.byteLength > this.maxBufferBytes) throw new RangeError("Index stream exceeds maxBufferBytes");
+      const gl = this.gl;
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, r.gpu);
+      if (data2.byteLength > r.capacity) {
+        let capacity = Math.max(2, r.capacity);
+        while (capacity < data2.byteLength) capacity = Math.min(this.maxBufferBytes, this.maxBufferBytes % 2 ? this.maxBufferBytes - 1 : this.maxBufferBytes, capacity * 2);
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, capacity, gl.DYNAMIC_DRAW);
+        this.stats.gpuBufferBytes += capacity - r.capacity;
+        r.capacity = capacity;
+        this.stats.bufferAllocations++;
+      }
+      if (data2.byteLength) {
+        gl.bufferSubData(gl.ELEMENT_ARRAY_BUFFER, 0, data2);
+        this.stats.bufferUploads++;
+        this.stats.bufferBytes += data2.byteLength;
+      }
+      r.used = data2.byteLength;
+    }
     deleteVertexBuffer(handle) {
+      return this._deleteBuffer(handle, this.gl.ARRAY_BUFFER);
+    }
+    deleteIndexBuffer(handle) {
+      return this._deleteBuffer(handle, this.gl.ELEMENT_ARRAY_BUFFER);
+    }
+    _deleteBuffer(handle, target) {
       const r = this.buffers.get(handle);
       if (!r) return false;
+      if (r.target !== target) throw new TypeError("Buffer target does not match delete operation");
       this.gl.deleteBuffer(r.gpu);
       this.buffers.delete(handle);
       this.stats.gpuBufferBytes -= r.capacity;
@@ -548,18 +592,23 @@
       gl.clear(flags);
     }
     /** Full pass state is explicit per draw; no state leakage between game materials. */
-    draw({ pipeline, buffer, instanceBuffer, instances = 1, first = 0, count, uniforms = {}, textures = [], blend = "source-over", depth = false, stencil = false, colorMask = ALL_COLOR, filter } = {}) {
+    draw({ pipeline, buffer, indexBuffer, instanceBuffer, instances = 1, first = 0, count, uniforms = {}, textures = [], blend = "source-over", depth = false, stencil = false, colorMask = ALL_COLOR, filter } = {}) {
       this._ready();
       if (!this.active) throw new Error("beginFrame required");
       const p = this._handle(this.pipelines, pipeline, "pipeline"), b = this._handle(this.buffers, buffer, "buffer");
+      if (b.target !== this.gl.ARRAY_BUFFER) throw new TypeError("A vertex buffer is required");
       integer(first, "first");
       integer(count, "count");
-      if (first + count > b.used / p.stride) throw new RangeError("draw exceeds uploaded vertices");
+      const elements = indexBuffer === void 0 || indexBuffer === null ? null : this._handle(this.buffers, indexBuffer, "index buffer");
+      if (elements) {
+        if (elements.target !== this.gl.ELEMENT_ARRAY_BUFFER || elements.used % 2 || first + count > elements.used / 2) throw new RangeError("draw exceeds uploaded indices");
+      } else if (first + count > b.used / p.stride) throw new RangeError("draw exceeds uploaded vertices");
       integer(instances, "instances", 1);
       let instanceRecord;
       if (p.instanced) {
         if (!this._instancingExtension) throw new Error("ANGLE_instanced_arrays required for instance attributes");
         instanceRecord = this._handle(this.buffers, instanceBuffer, "instance buffer");
+        if (instanceRecord.target !== this.gl.ARRAY_BUFFER) throw new TypeError("An instance vertex buffer is required");
         if (instances > instanceRecord.used / p.instanceStride) throw new RangeError("draw exceeds uploaded instances");
       } else if (instances !== 1) throw new RangeError("Multiple instances require instance attributes");
       if (!Number.isSafeInteger(count * instances)) throw new RangeError("draw vertex count exceeds safe integer range");
@@ -643,10 +692,13 @@
       gl.disable(gl.CULL_FACE);
       gl.disable(gl.DITHER);
       gl.disable(gl.SCISSOR_TEST);
+      if (elements) gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, elements.gpu);
       if (p.instanced) {
-        instancing.drawArraysInstancedANGLE(gl.TRIANGLES, first, count, instances);
+        if (elements) instancing.drawElementsInstancedANGLE(gl.TRIANGLES, count, gl.UNSIGNED_SHORT, first * 2, instances);
+        else instancing.drawArraysInstancedANGLE(gl.TRIANGLES, first, count, instances);
         this.stats.instancedDrawCalls++;
-      } else gl.drawArrays(gl.TRIANGLES, first, count);
+      } else if (elements) gl.drawElements(gl.TRIANGLES, count, gl.UNSIGNED_SHORT, first * 2);
+      else gl.drawArrays(gl.TRIANGLES, first, count);
       this.stats.drawCalls++;
       this.stats.vertices += count * instances;
     }
@@ -661,6 +713,7 @@
       const gl = this.gl;
       gl.useProgram(null);
       gl.bindBuffer(gl.ARRAY_BUFFER, null);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
       for (let i = 0; i < this.maxTextures; i++) {
         gl.activeTexture(gl.TEXTURE0 + i);
         gl.bindTexture(gl.TEXTURE_2D, null);
