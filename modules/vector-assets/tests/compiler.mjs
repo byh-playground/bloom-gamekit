@@ -44,6 +44,10 @@ assert.throws(() => compileVectorAsset(source, sourcePath, { curveSegments: 3 })
 assert.throws(() => compileVectorAsset(source, sourcePath, { curveSegments: 65 }), /curveSegments/i);
 assert.throws(() => compileVectorAsset(source, sourcePath, { quality: 'low' }), /Only curveSegments/i);
 assert.throws(() => compileVectorAsset(source, sourcePath, { curveSegments: 8.5 }), /curveSegments/i);
+assert.throws(() => compileVectorAsset(source, sourcePath, { curveSegments: null }), /curveSegments/i,
+  'explicit null is rejected instead of silently selecting the default');
+assert.throws(() => compileVectorAsset(source, sourcePath, { curveSegments: Number.MAX_SAFE_INTEGER + 1 }), /curveSegments/i,
+  'unsafe integers are rejected before compilation');
 const cli = spawnSync(process.execPath, ['modules/vector-assets/scripts/compile.mjs', sourcePath, '--curve-segments', '8'],
   { encoding: 'utf8', maxBuffer: 1024 * 1024 });
 assert.equal(cli.status, 0, cli.stderr);
@@ -51,6 +55,17 @@ assert.equal(JSON.parse(cli.stdout).compilerOptions.curveSegments, 8, 'CLI expos
 const invalidCli = spawnSync(process.execPath, ['modules/vector-assets/scripts/compile.mjs', sourcePath, '--curve-segments', '3'],
   { encoding: 'utf8', maxBuffer: 1024 * 1024 });
 assert.notEqual(invalidCli.status, 0, 'CLI rejects values below the documented boundary');
+for (const curveSegments of [4, 64]) {
+  const result = spawnSync(process.execPath, ['modules/vector-assets/scripts/compile.mjs', sourcePath, '--curve-segments', String(curveSegments)],
+    { encoding: 'utf8', maxBuffer: 1024 * 1024 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).compilerOptions.curveSegments, curveSegments, 'CLI accepts both inclusive bounds');
+}
+for (const args of [['8.5'], ['0x10'], ['8', '--curve-segments', '9']]) {
+  const result = spawnSync(process.execPath, ['modules/vector-assets/scripts/compile.mjs', sourcePath, '--curve-segments', ...args],
+    { encoding: 'utf8', maxBuffer: 1024 * 1024 });
+  assert.notEqual(result.status, 0, `CLI rejects malformed tessellation arguments: ${args.join(' ')}`);
+}
 const sparseExpressionSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20"><metadata id="vector-asset">${JSON.stringify({
   schemaVersion: 1, id: 'sparse-expression-fixture', defaultExpression: 'default',
   parts: [{ id: 'body', parent: null, pivot: [0, 0] }, { id: 'eyes', parent: 'body', pivot: [0, 0] }],
@@ -150,6 +165,12 @@ const gradientMetadata = JSON.stringify({ schemaVersion: 1, id: 'gradient-alpha'
   ] } } });
 const gradientFixture = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><metadata id="vector-asset">${gradientMetadata}</metadata><defs><linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0" stop-color="#ffffff" stop-opacity="0.75"/><stop offset="0.53" stop-color="#888888"/><stop offset="1" stop-color="#000000" stop-opacity="0.25"/></linearGradient></defs><g id="body"><path id="ring" fill="url(#g)" fill-opacity="0.6" opacity="0.5" fill-rule="evenodd" d="M10 10 H90 V90 H10 Z M30 30 V70 H70 V30 Z"/></g></svg>`;
 const gradientFixtureAsset = compileVectorAsset(Buffer.from(gradientFixture), 'gradient-alpha.svg');
+const curvedGradientFixture = gradientFixture.replace('d="M10 10 H90 V90 H10 Z M30 30 V70 H70 V30 Z"',
+  'd="M10 50 Q10 10 50 10 Q90 10 90 50 Q90 90 50 90 Q10 90 10 50 Z"');
+const curvedGradient16 = compileVectorAsset(Buffer.from(curvedGradientFixture), 'curved-gradient.svg', { curveSegments: 16 });
+const curvedGradient8 = compileVectorAsset(Buffer.from(curvedGradientFixture), 'curved-gradient.svg', { curveSegments: 8 });
+assert.ok(curvedGradient8.geometry.indices.length < curvedGradient16.geometry.indices.length,
+  'curveSegments also controls gradient-fill tessellation without moving gradient object bounds');
 const ringAlpha = [...gradientFixtureAsset.geometry.vertices].filter((_, index) => index % 11 === 5);
 assert.ok(Math.min(...ringAlpha) >= 0.074 && Math.max(...ringAlpha) <= 0.301, 'fill opacity, element opacity, and stop alpha multiply at vertices');
 assert.ok(new Set([...gradientFixtureAsset.geometry.vertices].filter((_, index) => index % 11 === 2).map(value => value.toFixed(3))).size > 2,
@@ -160,8 +181,9 @@ assert.ok(transformedGradientAsset.geometry.vertices.some((value, index) => inde
   && transformedGradientAsset.geometry.vertices.some((value, index) => index % 11 === 1 && value > 90),
   'objectBoundingBox gradient target bounds are transformed with the path instead of using a world-axis-aligned box');
 
+const expressionVariantBytes = Object.values(asset.geometry.expressionIndices).reduce((total, indices) => total + indices.byteLength, 0);
 console.log(JSON.stringify({ status: 'PASS', sourceSha256: asset.sourceSha256, compiledVertices: asset.geometry.vertices.length / 11,
-  compiledBytes: asset.geometry.vertices.byteLength + asset.geometry.indices.byteLength, expandedBytes: asset.geometry.indices.length * 44,
+  expressionVariantBytes, compiledBytes: asset.geometry.vertices.byteLength + asset.geometry.indices.byteLength + expressionVariantBytes, expandedBytes: asset.geometry.indices.length * 44,
   checks: ['DOMParser round trip preserves metadata and all DOM ids', 'Three SVGLoader Node compilation', 'indexed retained triangle geometry',
     'linear gradient stops and alpha in retained triangles', 'gradient-following yarn palette with stop-boundary color/alpha', 'hole, stroke and gradient geometry', 'scallop/two-loop yarn and boundary fibers',
     'two-target sketch morph geometry', 'repeat compilation determinism',

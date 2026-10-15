@@ -295,8 +295,8 @@ function clipGradientPolygon(polygon, sampler, level, keepAbove) {
   return output;
 }
 
-function appendGradientShape(vertices, shape, gradient, bounds, transform, opacity, partIndex) {
-  const geometry = new ShapeGeometry(shape, 24), position = geometry.attributes.position, index = geometry.index;
+function appendGradientShape(vertices, shape, gradient, bounds, transform, opacity, partIndex, curveSegments) {
+  const geometry = new ShapeGeometry(shape, curveSegments), position = geometry.attributes.position, index = geometry.index;
   const count = index ? index.count : position.count;
   const gradientT = point => {
     const [start, end] = gradientEndpoints(gradient, bounds, transform);
@@ -642,7 +642,7 @@ function yarnTint(color, amount, opacity) {
     color[2] + (target - color[2]) * weight, color[3] * opacity];
 }
 
-function compileYarnStyle(vertices, style, shape, fillColor, opacity, partIndex, gradient, gradientBounds, transform) {
+function compileYarnStyle(vertices, style, shape, fillColor, opacity, partIndex, gradient, gradientBounds, transform, curveSegments) {
   const info = shapeInfo(shape, true), sourceMetric = curveMetric(info.contour);
   const lobes = Math.max(8, Math.round(sourceMetric.length / style.edgeSpacing));
   const amount = style.detail ? 0.3 : 1;
@@ -674,9 +674,9 @@ function compileYarnStyle(vertices, style, shape, fillColor, opacity, partIndex,
   const underColor = yarnColor(-0.28, 0.5), grooveColor = yarnColor(-style.contrast, 0.85);
   const stitchColor = yarnColor(0.1), stitchLightColor = yarnColor(0.38, 0.57), crossLightColor = yarnColor(0.38, 0.5);
   const fiberColor = yarnColor(0.22, style.fiberOpacity), fiberLightColor = yarnColor(0.38, style.fiberOpacity * 0.7);
-  if (gradient) appendGradientShape(vertices, outline, gradient, gradientBounds, transform, opacity, partIndex);
+  if (gradient) appendGradientShape(vertices, outline, gradient, gradientBounds, transform, opacity, partIndex, curveSegments);
   else {
-    const fill = new ShapeGeometry(outline, 24);
+    const fill = new ShapeGeometry(outline, curveSegments);
     appendTriangles(vertices, fill, yarnTint(baseColor, 0, opacity), partIndex); fill.dispose();
   }
 
@@ -846,10 +846,10 @@ function compilePaths(paths, partIndices, parts, metadata, gradients, curveSegme
     if (authoredStyle?.kind === 'yarn') {
       if (shapes.length !== 1) throw new TypeError('Authored yarn style currently requires one connected filled shape: ' + authoredStyle.target);
       if (fillOpacity > 0) compileYarnStyle(vertices, authoredStyle, shapes[0], path.color, fillOpacity, partIndex,
-        fillGradient, gradientBounds, path.userData.transform);
+        fillGradient, gradientBounds, path.userData.transform, curveSegments);
     } else {
       if (fillOpacity > 0) for (const shape of shapes) {
-        if (fillGradient) appendGradientShape(vertices, shape, fillGradient, gradientBounds, path.userData.transform, fillOpacity, partIndex);
+        if (fillGradient) appendGradientShape(vertices, shape, fillGradient, gradientBounds, path.userData.transform, fillOpacity, partIndex, curveSegments);
         else {
           const geometry = new ShapeGeometry(shape, curveSegments);
           appendTriangles(vertices, geometry, colorComponents(path.color, fillOpacity), partIndex);
@@ -1001,7 +1001,7 @@ function installSvgLoaderSelectors(document) {
 export function compileVectorAsset(svgBytes, sourcePath = 'asset.svg', options = {}) {
   if (options === null || typeof options !== 'object' || Array.isArray(options)
       || Object.keys(options).some(key => key !== 'curveSegments')) throw new TypeError('Only curveSegments compiler option is supported');
-  const curveSegments = options.curveSegments ?? 16;
+  const curveSegments = options.curveSegments === undefined ? 16 : options.curveSegments;
   if (!Number.isSafeInteger(curveSegments) || curveSegments < 4 || curveSegments > 64) throw new RangeError('curveSegments must be an integer from 4 to 64');
   const source = Buffer.isBuffer(svgBytes) ? svgBytes : Buffer.from(String(svgBytes), 'utf8');
   if (!source.length || source.byteLength > MAX_SOURCE_BYTES) throw new RangeError('SVG source must be 1..512 KiB');

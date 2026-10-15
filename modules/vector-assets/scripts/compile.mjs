@@ -7,14 +7,20 @@ import { compileVectorAssetFile, compiledAssetModuleSource } from '../compiler.j
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const args = process.argv.slice(2);
 const positional = [];
-let output = null, curveSegments = 16;
+let output = null, curveSegments = 16, outputSeen = false, curveSegmentsSeen = false;
 for (let index = 0; index < args.length; index++) {
   const argument = args[index];
   if (argument === '--output' || argument === '--curve-segments') {
     const value = args[++index];
     if (!value || value.startsWith('--')) throw new TypeError(argument + ' requires a value');
-    if (argument === '--output') output = resolve(root, value);
-    else curveSegments = Number(value);
+    if (argument === '--output') {
+      if (outputSeen) throw new TypeError('--output may be supplied once');
+      outputSeen = true; output = resolve(root, value);
+    } else {
+      if (curveSegmentsSeen) throw new TypeError('--curve-segments may be supplied once');
+      if (!/^\d+$/.test(value)) throw new TypeError('--curve-segments must be a decimal integer from 4 to 64');
+      curveSegmentsSeen = true; curveSegments = Number(value);
+    }
   } else if (argument.startsWith('--')) throw new TypeError('Unsupported compiler option: ' + argument);
   else positional.push(argument);
 }
