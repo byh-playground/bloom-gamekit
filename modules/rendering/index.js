@@ -50,11 +50,12 @@ function compile(gl, type, source) {
  * All public numbers use CSS/world units, angles use radians, RGBA colors are straight-alpha normalized numbers.
  */
 export class Renderer2D {
-  constructor(canvas, { batchVertices = 6144, antialias = true, preserveDrawingBuffer = false } = {}) {
+  constructor(canvas, { batchVertices = 6144, antialias = true, depth = false, preserveDrawingBuffer = false } = {}) {
     if (!canvas?.getContext || !canvas?.addEventListener) throw new TypeError('canvas is required');
     if (!Number.isSafeInteger(batchVertices) || batchVertices < 6 || batchVertices > 1_048_576) throw new RangeError('batchVertices must be 6..1048576');
+    if (typeof depth !== 'boolean') throw new TypeError('depth must be boolean');
     this.canvas = canvas;
-    this.gl = canvas.getContext('webgl', { alpha: true, premultipliedAlpha: true, antialias, depth: false, stencil: false, preserveDrawingBuffer });
+    this.gl = canvas.getContext('webgl', { alpha: true, premultipliedAlpha: true, antialias, depth, stencil: false, preserveDrawingBuffer });
     if (!this.gl) throw new Error('WebGL 1 is required; no Canvas2D fallback');
     this.state = 'ready'; this.failure = null; this.active = false;
     this.vertices = new Float32Array(batchVertices * 8); this.vertexCount = 0;
@@ -273,7 +274,7 @@ export class Renderer2D {
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.batchTexture);
     gl.uniform1i(this.uTexture, 0);
     gl.uniformMatrix3fv(this.uProjection, false, this.projection);
-    gl.disable(gl.SCISSOR_TEST); gl.disable(gl.DEPTH_TEST); gl.disable(gl.STENCIL_TEST); gl.disable(gl.CULL_FACE); gl.disable(gl.DITHER);
+    gl.disable(gl.SCISSOR_TEST); gl.disable(gl.DEPTH_TEST); gl.depthMask(false); gl.disable(gl.STENCIL_TEST); gl.disable(gl.CULL_FACE); gl.disable(gl.DITHER);
     gl.colorMask(true, true, true, true); gl.enable(gl.BLEND); gl.blendEquation(gl.FUNC_ADD); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, view); gl.drawArrays(gl.TRIANGLES, 0, this.vertexCount);
     this.stats.drawCalls++; this.stats.vertices += this.vertexCount; this.stats.uploadedBytes += view.byteLength; this.stats.bufferViews++; this.vertexCount = 0;

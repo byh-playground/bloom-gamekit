@@ -4,6 +4,7 @@ import { exerciseWebGLDevice, exerciseVectorRenderer, exerciseFontAssetLoader } 
 import { exerciseReusableMeshes } from '../../modules/rendering/tests/mesh.browser.mjs';
 import { exerciseRendererInterleaving } from '../../modules/rendering/tests/interop.browser.mjs';
 import { exerciseOrderedAssetBatch } from '../../modules/rendering/tests/ordered-batch.browser.mjs';
+import { exerciseMeshDepth } from '../../modules/rendering/tests/mesh-depth.browser.mjs';
 import { runPresentationChecks } from './presentation.browser.js';
 import { chromium } from 'playwright';
 import { createServer } from 'node:http';
@@ -149,6 +150,9 @@ try {
   assert.equal(report.orderedAssetBatch.pixelMismatch, 0, 'combined SVG geometry is pixel-identical to ordered individual draws');
   assert.equal(report.orderedAssetBatch.batched.draws, 1, 'compatible ordered assets submit in one draw');
   report.stages.push('MeshBuilder.combine batches painter-ordered asset geometries with per-part transforms, opacity, and shared clipping');
+  report.meshDepth = await exerciseMeshDepth(page);
+  assert.equal(report.meshDepth.glError, 0, 'per-instance/per-part depth leaves a clean WebGL state');
+  report.stages.push('MeshRenderer depth and transparent painter order compose with a following Renderer2D pass');
   report.rendering = await page.evaluate(async () => {
     const { Renderer2D } = await import('/dist/rendering.js');
     const check = (condition, message) => { if (!condition) throw new Error(message); };

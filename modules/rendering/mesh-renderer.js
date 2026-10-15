@@ -16,7 +16,7 @@ uniform mat3 u_projection; varying vec4 v_color; ${clipped ? 'varying vec2 v_pos
 void main(){${partCount > 1 ? 'int index=int(a_part)*3;vec4 row0=u_parts[index];vec4 row1=u_parts[index+1];vec4 pose=u_parts[index+2];' : ''}
 vec2 local=${local};vec2 p=${partCount > 1 ? 'vec2(dot(row0.xyz,vec3(local,1.0)),dot(row1.xyz,vec3(local,1.0)))' : 'local'};
 vec2 world=vec2(dot(i_row0.xyz,vec3(p,1.0)),dot(i_row1.xyz,vec3(p,1.0)));
-vec3 projected=u_projection*vec3(world,1.0);gl_Position=vec4(projected.xy,0.0,1.0);${clipped ? 'v_position=world;' : ''}
+vec3 projected=u_projection*vec3(world,1.0);gl_Position=vec4(projected.xy,(i_params.w+${partCount > 1 ? 'pose.w' : '0.0'})*projected.z,projected.z);${clipped ? 'v_position=world;' : ''}
 vec4 color=mix(a_color*i_color,i_color,i_row1.w);color.a*=i_row0.w${partCount > 1 ? '*pose.z' : ''};
 color.rgb=mix(color.rgb,vec3(1.0),i_params.z);v_color=vec4(color.rgb*color.a,color.a);}`;
 }
@@ -40,7 +40,9 @@ function packParts(parts, count, output) {
     const at = i * 12;
     output[at] = m[0]; output[at+1] = m[2]; output[at+2] = m[4]; output[at+3] = 0;
     output[at+4] = m[1]; output[at+5] = m[3]; output[at+6] = m[5]; output[at+7] = 0;
-    output[at+8] = morph[0]; output[at+9] = morph[1]; output[at+10] = part?.visible === false ? 0 : opacity; output[at+11] = 0;
+    const depth = part?.depth ?? 0;
+    if (!Number.isFinite(depth) || depth < -1 || depth > 1) throw new RangeError('part depth must be in [-1,1]');
+    output[at+8] = morph[0]; output[at+9] = morph[1]; output[at+10] = part?.visible === false ? 0 : opacity; output[at+11] = depth;
   }
 }
 function clipState(clips, maxPlanes) {
@@ -133,13 +135,15 @@ export class MeshRenderer {
   /** Captures state by value; subsequent transform/paint changes do not alter queued instances. */
   drawMesh(mesh, options = {}) {
     const { matrix = IDENTITY, projection, morph = [0, 0], parts = null, color = WHITE,
-      forceColor = false, alpha = 1, whiteFlash = false, clips = [] } = options;
-    this._drawMeshInstances(mesh, { matrices: matrix, count: 1, projection, morph, parts, color, forceColor, alpha, whiteFlash, clips });
+      forceColor = false, alpha = 1, whiteFlash = false, clips = [], depth = 0,
+      depthTest = false, depthWrite = false, depthFunc = 'lequal' } = options;
+    this._drawMeshInstances(mesh, { matrices: matrix, count: 1, projection, morph, parts, color, forceColor, alpha, whiteFlash, clips,
+      depth, depthTest, depthWrite, depthFunc });
   }
   /** Internal ordered instance append used when one retained pose has several transforms. */
   _drawMeshInstances(mesh, { matrices, count, projection, morph = [0, 0], parts = null, color = WHITE,
     forceColor = false, alpha = 1, whiteFlash = false, clips = [], prefixColor = null,
-    prefixCount = 0, forceColorPrefixCount = 0 } = {}) {
+    prefixCount = 0, forceColorPrefixCount = 0, depth = 0, depthTest = false, depthWrite = false, depthFunc = 'lequal' } = {}) {
     this._ready();
     if (!this.meshes.has(mesh)) throw new TypeError('Mesh owned by this renderer required');
     if (!this.device.active) throw new Error('beginFrame required');
@@ -147,6 +151,9 @@ export class MeshRenderer {
     for (let i = 0; i < matrices.length; i++) if (!Number.isFinite(matrices[i])) throw new TypeError('Mesh matrix values must be finite');
     finiteArray(projection, 9, 'projection'); finiteArray(morph, 2, 'morph'); finiteArray(color, 4, 'color');
     if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1 || color.some(n => n < 0 || n > 1)) throw new RangeError('RGBA/alpha in [0,1] required');
+    if (!Number.isFinite(depth) || depth < -1 || depth > 1) throw new RangeError('depth must be in [-1,1]');
+    if (typeof depthTest !== 'boolean' || typeof depthWrite !== 'boolean') throw new TypeError('depthTest and depthWrite must be booleans');
+    if (!['never', 'less', 'equal', 'lequal', 'greater', 'notequal', 'gequal', 'always'].includes(depthFunc)) throw new TypeError('Unsupported depthFunc');
     if (!Number.isSafeInteger(prefixCount) || prefixCount < 0 || prefixCount > count ||
       !Number.isSafeInteger(forceColorPrefixCount) || forceColorPrefixCount < 0 || forceColorPrefixCount > count) throw new RangeError('Instance color prefix count is invalid');
     if (prefixCount && !prefixColor) throw new TypeError('A prefix color is required for colored mesh instances');
@@ -156,11 +163,14 @@ export class MeshRenderer {
     }
     const clip = clipState(clips, this.maxPlanes), pending = this.pending;
     packParts(parts, mesh.partCount, this.partScratch);
-    if (pending && (pending.mesh !== mesh || pending.clip.key !== clip.key || projection.some((n, i) => Math.fround(n) !== pending.projection[i]) || (mesh.partCount > 1 && pending.parts.some((n, i) => n !== this.partScratch[i])) || this.count === this.maxInstances)) this.flush();
+    for (let i = 0; i < mesh.partCount; i++) if (depth + this.partScratch[i * 12 + 11] < -1 || depth + this.partScratch[i * 12 + 11] > 1) throw new RangeError('combined mesh and part depth must be in [-1,1]');
+    const depthStateKey = `${Number(depthTest)}:${Number(depthWrite)}:${depthFunc}`;
+    if (pending && (pending.mesh !== mesh || pending.clip.key !== clip.key || pending.depthStateKey !== depthStateKey || projection.some((n, i) => Math.fround(n) !== pending.projection[i]) || (mesh.partCount > 1 && pending.parts.some((n, i) => n !== this.partScratch[i])) || this.count === this.maxInstances)) this.flush();
     const part = this.partScratch, singlePart = mesh.partCount === 1;
     for (let i = 0; i < count; i++) {
       if (this.count === this.maxInstances) this.flush();
-      if (!this.pending) this.pending = { mesh, projection: Float32Array.from(projection), clip, parts: this.partScratch.slice(0, mesh.partCount > 1 ? mesh.partCount * 12 : 0) };
+      if (!this.pending) this.pending = { mesh, projection: Float32Array.from(projection), clip, depthStateKey,
+        depthState: { test: depthTest, write: depthWrite, func: depthFunc }, parts: this.partScratch.slice(0, mesh.partCount > 1 ? mesh.partCount * 12 : 0) };
       const offset = i * 6;
       let m0 = matrices[offset], m1 = matrices[offset + 1], m2 = matrices[offset + 2], m3 = matrices[offset + 3], m4 = matrices[offset + 4], m5 = matrices[offset + 5];
       let weight0 = morph[0], weight1 = morph[1], instanceAlpha = alpha;
@@ -177,26 +187,27 @@ export class MeshRenderer {
       data[at + 4] = m1; data[at + 5] = m3; data[at + 6] = m5; data[at + 7] = instanceForceColor ? 1 : 0;
       data[at + 8] = instanceColor[0]; data[at + 9] = instanceColor[1];
       data[at + 10] = instanceColor[2]; data[at + 11] = instanceColor[3];
-      data[at + 12] = weight0; data[at + 13] = weight1; data[at + 14] = whiteFlash ? 1 : 0; data[at + 15] = 0;
+      const instanceDepth = depth + (singlePart ? part[11] : 0);
+      data[at + 12] = weight0; data[at + 13] = weight1; data[at + 14] = whiteFlash ? 1 : 0; data[at + 15] = instanceDepth;
     }
   }
   flush() {
     if (!this.count) return;
     this._ready();
-    const { mesh, projection, clip, parts } = this.pending;
+    const { mesh, projection, clip, parts, depthState } = this.pending;
     this.planes.fill(0); if (clip.values) this.planes.set(clip.values);
     const pipeline = this._pipeline(mesh, clip.count > 0), uniforms = { u_projection: projection };
     if (clip.count) Object.assign(uniforms, { 'u_planes[0]': this.planes, u_planeCount: clip.count });
     if (mesh.partCount > 1) uniforms['u_parts[0]'] = parts;
     if (this.instanced) {
       this.device.uploadVertices(this.instanceBuffer, this.instances.subarray(0, this.count * 16));
-      this.device.draw({ pipeline, buffer: mesh.buffer, count: mesh.count, instanceBuffer: this.instanceBuffer, instances: this.count, uniforms });
+      this.device.draw({ pipeline, buffer: mesh.buffer, count: mesh.count, instanceBuffer: this.instanceBuffer, instances: this.count, uniforms, depth: depthState });
       this.metrics.instanceBytesUploaded += this.count * 64; this.metrics.draws++;
       this.metrics.partUniformBytesSubmitted += parts.byteLength;
     } else {
       for (let i = 0; i < this.count; i++) {
         for (let j = 0; j < 4; j++) uniforms[['i_row0', 'i_row1', 'i_color', 'i_params'][j]] = this.instances.subarray(i * 16 + j * 4, i * 16 + j * 4 + 4);
-        this.device.draw({ pipeline, buffer: mesh.buffer, count: mesh.count, uniforms }); this.metrics.draws++;
+        this.device.draw({ pipeline, buffer: mesh.buffer, count: mesh.count, uniforms, depth: depthState }); this.metrics.draws++;
         this.metrics.partUniformBytesSubmitted += parts.byteLength;
       }
     }

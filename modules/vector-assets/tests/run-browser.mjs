@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { exerciseVectorAssets } from './runtime.browser.mjs';
 import { exerciseRendererInterleaving } from '../../rendering/tests/interop.browser.mjs';
 import { exerciseOrderedAssetBatch } from '../../rendering/tests/ordered-batch.browser.mjs';
+import { exerciseMeshDepth } from '../../rendering/tests/mesh-depth.browser.mjs';
 
 const root = resolve('.');
 const sourceURL = 'https://raw.githubusercontent.com/byh-playground/bloom-gamekit/main/modules/vector-assets/assets/seed-scout.svg';
@@ -71,6 +72,7 @@ try {
   report.orderedAssetBatch = await exerciseOrderedAssetBatch(page, renderingModuleURL);
   assert.equal(report.orderedAssetBatch.pixelMismatch, 0);
   assert.equal(report.orderedAssetBatch.batched.draws, 1);
+  report.meshDepth = await exerciseMeshDepth(page, renderingModuleURL);
   await page.locator('#style-comparison').click();
   await page.waitForFunction(() => window.vectorAssetDemo?.styleReady || window.vectorAssetDemo?.styleError, null, { timeout: 15000 });
   const styleError = await page.evaluate(() => window.vectorAssetDemo?.styleError ?? null);
