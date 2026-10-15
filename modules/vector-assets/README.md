@@ -4,7 +4,7 @@
 
 An SVG file is the only authored visual source. `assets/seed-scout.svg` contains paths, paint, strokes, SVG ids, the part hierarchy and pivots, sockets, expression variants, clips, keyframes, easings, and loop mode in one direct JSON `metadata#vector-asset` node. No separately edited visual JSON or raster textures are used.
 
-The same page includes SVG-authored yarn and sketch samples. Stitch layout, hatch pattern, contour wobble, color contrast, and deterministic seed live in each SVG metadata node; the build emits retained vector triangles, never a raster texture. The sketch style has two fixed-topology morph targets sampled from absolute display time.
+The same page includes SVG-authored yarn and sketch samples. Stitch layout, hatch pattern, contour wobble, color contrast, and deterministic seed live in each SVG metadata node; the build emits retained vector triangles, never a raster texture. The yarn shell uses SVG-authored linear-gradient stops for the surface color, a scalloped outline generated from the source path's edge metric, two Bézier stitch loops with layered yarn/light passes, edge loops, and deterministically seeded fibers that extend outward from the scalloped edge. The sketch style has two fixed-topology morph targets sampled from absolute display time.
 
 ## Build and runtime
 
@@ -42,7 +42,9 @@ meshes.dispose();
 device.dispose();
 ```
 
-Expressions and explicit part visibility are set on the player. Part pivots and socket coordinates are read from SVG metadata. Authored numeric clip fields are `x`, `y`, `rotation` (radians), `scaleX`, `scaleY`, and `opacity`; clip modes are `once`, `repeat`, and `alternate`. Each asset supports at most 16 parts. Geometry is static: topology morphs, SVG filters, gradients, CSS, text, `use`, arbitrary XML, and full SVG rendering are outside this schema. Scripts, `foreignObject`, external references, embedded raster, doctypes, unknown elements/attributes, and unsupported style values fail compilation.
+Expressions and explicit part visibility are set on the player. Part pivots and socket coordinates are read from SVG metadata. Authored numeric clip fields are `x`, `y`, `rotation` (radians), `scaleX`, `scaleY`, and `opacity`; clip modes are `once`, `repeat`, and `alternate`. Each asset supports at most 16 parts. Geometry remains static; authored clips transform parts and select expression variants without topology morphing. SVG paint support includes solid fills/strokes and a restricted linear-gradient contract: direct root `<defs><linearGradient>` elements with explicit stops, `pad` spread, object-bounding-box or unitless user-space coordinates, and internal `fill="url(#id)"` references. Gradient stops are split into retained triangles and compiled to vertex RGBA; the GPU does not sample a texture. `gradientTransform`, inherited gradients, radial gradients, CSS, text, `use`, arbitrary XML, and full SVG rendering are outside this schema. Scripts, `foreignObject`, external references, embedded raster, doctypes, unknown elements/attributes, and unsupported style values fail compilation. The yarn generator tessellates curved strokes into static triangles and is parameter-driven rather than pixel-identical to another renderer's raster output.
+
+`player.draw({ projection, depth, depthTest, depthWrite, depthFunc })` forwards explicit clip-space depth to `MeshRenderer`. Depth is `[-1,1]`; depth testing and writing default off, so regular 2D assets retain painter-order behavior. The context must have a depth buffer for a depth-tested pass. Transparent actors are still submitted in host painter order; this API does not sort or change scene policy.
 
 The SVG save round-trip check serializes and reparses the source, then verifies the JSON metadata and every DOM id survive. Editors that remove this metadata or rename ids need an export setting or a different SVG editor.
 

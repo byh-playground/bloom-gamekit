@@ -237,8 +237,13 @@ export class WebGLDevice {
       if(instances>instanceRecord.used/p.instanceStride)throw new RangeError('draw exceeds uploaded instances');
     }else if(instances!==1)throw new RangeError('Multiple instances require instance attributes');
     if(!Number.isSafeInteger(count*instances))throw new RangeError('draw vertex count exceeds safe integer range');
-    if(depth&&!this.depthAvailable)throw new Error('Context has no depth buffer');if(stencil&&!this.stencilAvailable)throw new Error('Context has no stencil buffer');
-    if(blend!==false&&!BLENDS.has(blend))throw new TypeError('Unsupported blend');if(depth&&!FUNCTIONS[depth.func??'lequal'])throw new TypeError('Unsupported depth function');
+    const depthState = depth === false || depth == null ? null : depth === true
+      ? { test: true, write: true, func: 'lequal' }
+      : typeof depth === 'object' && !Array.isArray(depth) ? { test: depth.test ?? true, write: depth.write ?? true, func: depth.func ?? 'lequal' }
+        : (() => { throw new TypeError('depth must be false or a depth policy object'); })();
+    if(depthState && (typeof depthState.test!=='boolean'||typeof depthState.write!=='boolean'))throw new TypeError('depth.test and depth.write must be booleans');
+    if((depthState?.test||depthState?.write)&&!this.depthAvailable)throw new Error('Context has no depth buffer');if(stencil&&!this.stencilAvailable)throw new Error('Context has no stencil buffer');
+    if(blend!==false&&!BLENDS.has(blend))throw new TypeError('Unsupported blend');if(depthState&&!FUNCTIONS[depthState.func])throw new TypeError('Unsupported depth function');
     if(stencil){if(!FUNCTIONS[stencil.func??'always'])throw new TypeError('Unsupported stencil function');for(const key of ['fail','zfail','pass'])if(!OPERATIONS[stencil[key]??'keep'])throw new TypeError('Unsupported stencil operation');for(const key of ['ref','mask','writeMask'])integer(stencil[key]??(key==='ref'?0:255),key,0,255);}
     if(!colorMask||colorMask.length!==4||!Array.from(colorMask).every(v=>typeof v==='boolean'))throw new TypeError('colorMask must contain booleans');
     if(!Array.isArray(textures)||textures.length>this.maxTextures)throw new RangeError('Too many textures');for(const handle of textures){this._handle(this.textures,handle,'texture');if(handle===this.activeRenderTarget)throw new Error('Cannot sample the active render target');}
@@ -261,7 +266,8 @@ export class WebGLDevice {
     }
     const textureUnits=Math.max(this.boundTextureCount,textures.length);for(let i=0;i<textureUnits;i++){gl.activeTexture(gl.TEXTURE0+i);const r=i<textures.length?this.textures.get(textures[i]):null;gl.bindTexture(gl.TEXTURE_2D,r?.gpu??null);if(r)this._filter(filter??r.filter);}if(textureUnits)gl.activeTexture(gl.TEXTURE0);this.boundTextureCount=textures.length;
     if(blend===false)gl.disable(gl.BLEND);else{gl.enable(gl.BLEND);gl.blendEquation(gl.FUNC_ADD);const factors=blend==='source-over'?[gl.ONE,gl.ONE_MINUS_SRC_ALPHA]:blend==='straight-alpha'?[gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA]:blend==='copy'?[gl.ONE,gl.ZERO]:blend==='lighter'?[gl.ONE,gl.ONE]:blend==='source-in'?[gl.DST_ALPHA,gl.ZERO]:[gl.ZERO,gl.SRC_ALPHA];gl.blendFunc(...factors);}
-    if(depth){gl.enable(gl.DEPTH_TEST);gl.depthFunc(gl[FUNCTIONS[depth.func??'lequal']]);gl.depthMask(depth.write??true);}else{gl.disable(gl.DEPTH_TEST);gl.depthMask(false);}
+    if(depthState?.test){gl.enable(gl.DEPTH_TEST);gl.depthFunc(gl[FUNCTIONS[depthState.func]]);}else gl.disable(gl.DEPTH_TEST);
+    gl.depthMask(depthState?.write??false);
     if(stencil){gl.enable(gl.STENCIL_TEST);gl.stencilFunc(gl[FUNCTIONS[stencil.func??'always']],stencil.ref??0,stencil.mask??255);gl.stencilMask(stencil.writeMask??255);gl.stencilOp(gl[OPERATIONS[stencil.fail??'keep']],gl[OPERATIONS[stencil.zfail??'keep']],gl[OPERATIONS[stencil.pass??'keep']]);}else gl.disable(gl.STENCIL_TEST);
     gl.colorMask(...colorMask);gl.disable(gl.CULL_FACE);gl.disable(gl.DITHER);gl.disable(gl.SCISSOR_TEST);
     if(p.instanced){instancing.drawArraysInstancedANGLE(gl.TRIANGLES,first,count,instances);this.stats.instancedDrawCalls++;}

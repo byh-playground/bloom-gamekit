@@ -1,5 +1,6 @@
 export const VECTOR_ASSET_SCHEMA_VERSION = 1;
-export const VECTOR_ASSET_COMPILER_VERSION = '0.2.0';
+export const VECTOR_ASSET_COMPILER_VERSION = '0.3.0';
+const ACCEPTED_COMPILER_VERSIONS = new Set(['0.2.0', VECTOR_ASSET_COMPILER_VERSION]);
 export const NUMERIC_POSE_FIELDS = Object.freeze(['x', 'y', 'rotation', 'scaleX', 'scaleY', 'opacity']);
 const EASINGS = new Set(['linear', 'inSine', 'outSine', 'inOutSine', 'inQuad', 'outQuad', 'inOutQuad', 'inCubic', 'outCubic', 'inOutCubic']);
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -73,14 +74,20 @@ export function validateAssetMetadata(metadata, idNodes) {
       }
       targets.add(style.target);
       if (style.kind === 'yarn') {
-        if (!exactKeys(style, ['target', 'kind', 'seed', 'stitchWidth', 'stitchHeight', 'thickness', 'irregularity', 'contrast', 'edgeSpacing', 'edgeRelief', 'edgeWidth', 'fiberLength', 'fiberWidth', 'fiberOpacity', 'fiberMax'])) {
+        const required = ['target', 'kind', 'seed', 'stitchWidth', 'stitchHeight', 'thickness', 'irregularity', 'contrast', 'edgeSpacing', 'edgeRelief', 'edgeWidth', 'fiberLength', 'fiberWidth', 'fiberOpacity', 'fiberMax'];
+        const optional = ['fiberSpacing', 'curved', 'pattern', 'detail', 'fiber'];
+        if (!isObject(style) || required.some(key => !Object.hasOwn(style, key))
+            || Object.keys(style).some(key => ![...required, ...optional].includes(key))) {
           throw new TypeError('Yarn style fields are incomplete or unsupported: ' + style.target);
         }
-        for (const key of ['stitchWidth', 'stitchHeight', 'thickness', 'edgeSpacing', 'edgeWidth', 'fiberLength', 'fiberWidth']) {
+        for (const key of ['stitchWidth', 'stitchHeight', 'thickness', 'edgeSpacing', 'edgeRelief', 'edgeWidth', 'fiberLength', 'fiberWidth', ...(style.fiberSpacing === undefined ? [] : ['fiberSpacing'])]) {
           if (!finite(style[key]) || style[key] <= 0) throw new RangeError('Yarn ' + key + ' must be positive');
         }
-        for (const key of ['irregularity', 'contrast', 'edgeRelief', 'fiberOpacity']) {
+        for (const key of ['irregularity', 'contrast', 'fiberOpacity']) {
           if (!finite(style[key]) || style[key] < 0 || style[key] > 1) throw new RangeError('Yarn ' + key + ' must be in [0,1]');
+        }
+        for (const key of ['curved', 'pattern', 'detail', 'fiber']) {
+          if (style[key] !== undefined && typeof style[key] !== 'boolean') throw new TypeError('Yarn ' + key + ' must be boolean');
         }
         if (!Number.isSafeInteger(style.seed) || style.seed < 0 || style.seed > 0x7fffffff
             || !Number.isSafeInteger(style.fiberMax) || style.fiberMax < 0 || style.fiberMax > 512) throw new RangeError('Yarn seed/fiberMax is outside its bound');
@@ -126,7 +133,7 @@ export function validateAssetMetadata(metadata, idNodes) {
 }
 
 export function validateCompiledAsset(asset) {
-  if (!isObject(asset) || asset.schemaVersion !== VECTOR_ASSET_SCHEMA_VERSION || asset.compilerVersion !== VECTOR_ASSET_COMPILER_VERSION
+  if (!isObject(asset) || asset.schemaVersion !== VECTOR_ASSET_SCHEMA_VERSION || !ACCEPTED_COMPILER_VERSIONS.has(asset.compilerVersion)
       || typeof asset.sourceSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(asset.sourceSha256)
       || !isObject(asset.metadata) || !isObject(asset.geometry)
       || !(asset.geometry.vertices instanceof Float32Array) || asset.geometry.vertices.length < 33

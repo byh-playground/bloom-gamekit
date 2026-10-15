@@ -39,9 +39,17 @@ device.endFrame();
 
 Use the same default framebuffer and painter order for all interleaved passes. `Renderer2D.beginFrame()` clears the canvas, so start it before any mesh draw whose pixels must remain on screen. Do not interleave while a `WebGLDevice` render target is bound; `Renderer2D` has no render-target selection API. GPU object ownership remains local: dispose each renderer/device with its existing owner.
 
+## Mesh depth
+
+`MeshRenderer.drawMesh(mesh, { projection, depth, depthTest, depthWrite, depthFunc })` gives a mesh instance an explicit normalized device depth in `[-1, 1]`. `depthTest` and `depthWrite` default to `false`, preserving the painter-ordered 2D behavior. When interleaving with `Renderer2D`, create it with `{ depth: true }` before the WebGL context is first acquired. With a `WebGLDevice` created first, request its depth buffer using `new WebGLDevice(canvas, { depth: true })`. `depthFunc` accepts the device's `never`, `less`, `equal`, `lequal`, `greater`, `notequal`, `gequal`, or `always` functions and defaults to `lequal`.
+
+Each `drawMesh()` call can carry a different depth while adjacent calls using the same mesh and depth policy still share the instanced draw. `parts` entries may also supply `depth` in `[-1, 1]`; it is added to that instance's depth. Their sum must remain in `[-1, 1]`. Depth-policy changes split a pending batch so one draw never mixes depth-test/write settings. The renderer does not sort transparent geometry; submit it in the required painter order and normally set `depthWrite: false` for translucent overlays.
+
+The mesh pass writes a clip-space Z value and reasserts depth test/write state for each draw. A following `Renderer2D.flush()` disables depth testing and depth writes before drawing its next ordered pass. A Canvas2D context and a WebGL context cannot both be acquired on one canvas: callers currently drawing a field entirely with Canvas2D need a separate canvas/composition layer or a field-wide move to GameKit WebGL before they can insert meshes into that field's painter order.
+
 ## 공개 API와 공간 계약
 
-- `new Renderer2D(canvas, {batchVertices=6144, antialias=true, preserveDrawingBuffer=false})`: acquires the canvas WebGL 1 context. It owns its program and stream buffer and can interleave with `WebGLDevice`/`MeshRenderer` on the same default framebuffer when each pass is flushed before switching; each renderer rebinds its own program, buffers, attributes, and blend state. `gl` remains available for context-loss and pixel-readback checks. Set `preserveDrawingBuffer` only when needed for checks.
+- `new Renderer2D(canvas, {batchVertices=6144, antialias=true, depth=false, preserveDrawingBuffer=false})`: acquires the canvas WebGL 1 context. It owns its program and stream buffer and can interleave with `WebGLDevice`/`MeshRenderer` on the same default framebuffer when each pass is flushed before switching; each renderer rebinds its own program, buffers, attributes, and blend state. Set `depth:true` when a depth-tested `MeshRenderer` pass will share the canvas and `Renderer2D` acquires the context first. `gl` remains available for context-loss and pixel-readback checks. Set `preserveDrawingBuffer` only when needed for checks.
 - `resize(cssWidth, cssHeight, dpr=1)`: 양의 유한 수, 실제 backing store는 반올림한 CSS×DPR입니다. CSS 스타일이나 카메라를 바꾸지 않습니다. frame 밖에서 호출하세요. frame 중 resize는 throw합니다. DPR 상한은 게임의 비용 정책입니다. 예제는 2로 제한합니다.
 - `setCamera({x,y,zoom,rotation})`: 세계의 카메라 중심, CSS pixel/world unit 확대율, radians 회전입니다. 생략 필드는 유지합니다. 생성 기본값은 초기 canvas 크기의 중심, zoom 1, rotation 0입니다. +x 오른쪽, +y 아래입니다. frame 도중 변경하면 기존 batch를 먼저 제출합니다.
 - `worldToScreenInto(x,y,out)`, `screenToWorldInto(x,y,out)`: 재사용 가능한 out의 x/y에 CSS 화면 또는 world 좌표를 기록합니다. 게임의 3D/isometric 투영·높이·카메라 추적은 호출자가 계산합니다.

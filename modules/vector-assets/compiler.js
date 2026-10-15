@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
-import { Color, ShapeGeometry, SRGBColorSpace } from 'three';
+import { Color, Path, Shape, ShapeGeometry, SRGBColorSpace, Vector2 } from 'three';
 import { SVGLoader } from 'three/addons/loaders/SVGLoader.js';
 import { VECTOR_ASSET_COMPILER_VERSION, VECTOR_ASSET_SCHEMA_VERSION, validateAssetMetadata } from './schema.js';
 
@@ -16,7 +16,9 @@ const ATTRIBUTES = new Set([
   'fill', 'fill-opacity', 'fill-rule', 'stroke', 'stroke-opacity', 'stroke-width',
   'stroke-linecap', 'stroke-linejoin', 'stroke-miterlimit', 'opacity',
 ]);
-const ELEMENTS = new Set(['svg', 'metadata', 'g', 'path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon']);
+const GRADIENT_ATTRIBUTES = new Set(['id', 'gradientUnits', 'spreadMethod', 'x1', 'y1', 'x2', 'y2']);
+const STOP_ATTRIBUTES = new Set(['id', 'offset', 'stop-color', 'stop-opacity']);
+const ELEMENTS = new Set(['svg', 'metadata', 'defs', 'linearGradient', 'stop', 'g', 'path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon']);
 
 function finiteList(value, count, name) {
   const values = value.trim().split(/[\s,]+/).filter(Boolean).map(Number);
@@ -42,6 +44,60 @@ function validateTransform(value) {
   }
 }
 
+function gradientCoordinate(value, units, name) {
+  const raw = value ?? ({ x1: '0%', y1: '0%', x2: '100%', y2: '0%' }[name]);
+  if (units === 'objectBoundingBox') {
+    const percent = /^([+-]?(?:\d+\.?\d*|\.\d+))%$/.exec(raw);
+    const number = percent ? Number(percent[1]) / 100 : NUMBER.test(raw) ? Number(raw) : NaN;
+    if (!Number.isFinite(number) || number < 0 || number > 1) throw new RangeError('objectBoundingBox gradient ' + name + ' must be in [0,1]');
+    return number;
+  }
+  if (!NUMBER.test(raw) || !Number.isFinite(Number(raw))) throw new TypeError('userSpaceOnUse gradient ' + name + ' must be a unitless CSS pixel number');
+  return Number(raw);
+}
+
+function parseGradientDefinitions(root, ids) {
+  const gradients = new Map();
+  const candidates = [];
+  const visit = node => {
+    if (node.nodeType === 1 && node.nodeName === 'linearGradient') candidates.push(node);
+    for (let child = node.firstChild; child; child = child.nextSibling) visit(child);
+  };
+  visit(root);
+  for (const node of candidates) {
+    if (node.parentNode?.nodeName !== 'defs' || node.parentNode.parentNode !== root) throw new TypeError('linearGradient must be a direct child of root defs');
+    if (!node.getAttribute('id') || ids.get(node.getAttribute('id')) !== node) throw new TypeError('linearGradient needs a unique id');
+    const units = node.getAttribute('gradientUnits') || 'objectBoundingBox';
+    const spread = node.getAttribute('spreadMethod') || 'pad';
+    if (!['objectBoundingBox', 'userSpaceOnUse'].includes(units) || spread !== 'pad') throw new TypeError('Only pad linearGradient with objectBoundingBox or userSpaceOnUse coordinates is supported');
+    const x1 = gradientCoordinate(node.getAttribute('x1'), units, 'x1');
+    const y1 = gradientCoordinate(node.getAttribute('y1'), units, 'y1');
+    const x2 = gradientCoordinate(node.getAttribute('x2'), units, 'x2');
+    const y2 = gradientCoordinate(node.getAttribute('y2'), units, 'y2');
+    if (x1 === x2 && y1 === y2) throw new TypeError('A linearGradient needs two distinct endpoints');
+    const stops = [];
+    for (let child = node.firstChild; child; child = child.nextSibling) {
+      if (child.nodeType !== 1) continue;
+      if (child.nodeName !== 'stop') throw new TypeError('linearGradient may contain stop elements only');
+      const rawOffset = child.getAttribute('offset') || '0';
+      const percent = /^([+-]?(?:\d+\.?\d*|\.\d+))%$/.exec(rawOffset);
+      const offset = percent ? Number(percent[1]) / 100 : NUMBER.test(rawOffset) ? Number(rawOffset) : NaN;
+      const colorText = child.getAttribute('stop-color') || '#000000';
+      const opacityText = child.getAttribute('stop-opacity') || '1';
+      if (!Number.isFinite(offset) || offset < 0 || offset > 1 || (stops.length && offset < stops[stops.length - 1].offset)) throw new RangeError('linearGradient stop offsets must be nondecreasing in [0,1]');
+      if (!NUMBER.test(opacityText) || Number(opacityText) < 0 || Number(opacityText) > 1) throw new RangeError('stop-opacity must be in [0,1]');
+      let color;
+      try { color = colorComponents(new Color().setStyle(colorText, SRGBColorSpace), Number(opacityText)); }
+      catch { throw new TypeError('Unsupported linearGradient stop color: ' + colorText); }
+      stops.push({ offset, color });
+      if (stops.length > 16) throw new RangeError('linearGradient supports at most 16 stops');
+    }
+    if (stops.length < 2) throw new TypeError('linearGradient needs at least two explicit stop elements');
+    gradients.set(node.getAttribute('id'), { id: node.getAttribute('id'), units, x1, y1, x2, y2, stops });
+  }
+  return gradients;
+}
+
 function parseXml(source, label) {
   const errors = [];
   const document = new DOMParser({
@@ -64,13 +120,19 @@ function collectIds(root) {
       if (name === 'script' || name === 'foreignObject' || name === 'image') throw new TypeError('Script, foreignObject, and raster image elements are not supported');
       if (!ELEMENTS.has(name) || node.namespaceURI && node.namespaceURI !== SVG_NS) throw new TypeError('Unsupported SVG element or namespace: ' + name);
       if (name === 'metadata' && (node.parentNode !== root || node.getAttribute('id') !== 'vector-asset')) throw new TypeError('Only the direct JSON metadata#vector-asset element is supported');
+      if (name === 'defs' && node.parentNode !== root) throw new TypeError('SVG defs must be a direct child of the root');
+      if (name === 'linearGradient' && node.parentNode?.nodeName !== 'defs') throw new TypeError('linearGradient must be inside root defs');
+      if (name === 'stop' && node.parentNode?.nodeName !== 'linearGradient') throw new TypeError('stop must be inside linearGradient');
+      const allowedAttributes = name === 'linearGradient' ? GRADIENT_ATTRIBUTES : name === 'stop' ? STOP_ATTRIBUTES : ATTRIBUTES;
       for (let i = 0; i < node.attributes.length; i++) {
         const attribute = node.attributes.item(i), key = attribute.name, value = attribute.value;
         if (key === 'xmlns') {
           if (node !== root || value !== SVG_NS) throw new TypeError('Only the SVG namespace on the root is supported');
           continue;
         }
-        if (!ATTRIBUTES.has(key) || /^on/i.test(key) || /url\s*\(/i.test(value) || /(?:https?:|data:|file:|\/\/)/i.test(value)) {
+        const gradientPaint = key === 'fill' && /^url\(\s*#[A-Za-z_][A-Za-z0-9_.:-]{0,127}\s*\)$/.test(value);
+        if (!allowedAttributes.has(key) || /^on/i.test(key)
+            || (/url\s*\(/i.test(value) && !gradientPaint) || /(?:https?:|data:|file:|\/\/)/i.test(value)) {
           throw new TypeError('Unsupported SVG attribute or external reference: ' + key);
         }
         if (key === 'id') {
@@ -86,11 +148,23 @@ function collectIds(root) {
         if (key === 'stroke-linecap' && !['butt', 'round', 'square'].includes(value)) throw new TypeError('Unsupported stroke-linecap: ' + value);
         if (key === 'stroke-linejoin' && !['miter', 'round', 'bevel'].includes(value)) throw new TypeError('Unsupported stroke-linejoin: ' + value);
         if (key === 'fill-rule' && value !== 'evenodd') throw new TypeError('Only evenodd compound fills are supported');
-        if (key === 'fill' || key === 'stroke') {
+        if ((key === 'fill' || key === 'stroke') && !gradientPaint) {
           if (value !== 'none') {
             try { new Color().setStyle(value, SRGBColorSpace); }
             catch { throw new TypeError('Unsupported SVG paint color: ' + value); }
           }
+        }
+        if (name === 'linearGradient' && key === 'gradientUnits' && !['objectBoundingBox', 'userSpaceOnUse'].includes(value)) throw new TypeError('Unsupported SVG gradientUnits: ' + value);
+        if (name === 'linearGradient' && key === 'spreadMethod' && value !== 'pad') throw new TypeError('Only linearGradient spreadMethod=pad is supported');
+        if (name === 'linearGradient' && ['x1', 'y1', 'x2', 'y2'].includes(key)) gradientCoordinate(value, node.getAttribute('gradientUnits') || 'objectBoundingBox', key);
+        if (name === 'stop' && key === 'offset') {
+          const percent = /^([+-]?(?:\d+\.?\d*|\.\d+))%$/.exec(value);
+          const offset = percent ? Number(percent[1]) / 100 : NUMBER.test(value) ? Number(value) : NaN;
+          if (!Number.isFinite(offset) || offset < 0 || offset > 1) throw new RangeError('linearGradient offset must be in [0,1]');
+        }
+        if (name === 'stop' && key === 'stop-color') {
+          try { new Color().setStyle(value, SRGBColorSpace); }
+          catch { throw new TypeError('Unsupported linearGradient stop color: ' + value); }
         }
       }
     } else if (node.nodeType === 3 && node.parentNode?.nodeName !== 'metadata' && node.nodeValue.trim()) {
@@ -154,12 +228,113 @@ function appendTriangles(vertices, geometry, rgba, partIndex) {
   }
 }
 
+function inverseTransformedPoint(matrix, point) {
+  const e = matrix.elements, dx = point.x - e[6], dy = point.y - e[7], determinant = e[0] * e[4] - e[3] * e[1];
+  if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-12) throw new TypeError('Gradient target transform must be invertible');
+  return { x: (e[4] * dx - e[3] * dy) / determinant, y: (-e[1] * dx + e[0] * dy) / determinant };
+}
+
+function shapeBounds(shapes, inverseTransform = null) {
+  const bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+  for (const shape of shapes) {
+    const points = shape.extractPoints(24);
+    for (const point of [...points.shape, ...points.holes.flat()]) {
+      const local = inverseTransform ? inverseTransformedPoint(inverseTransform, point) : point;
+      bounds.minX = Math.min(bounds.minX, local.x); bounds.maxX = Math.max(bounds.maxX, local.x);
+      bounds.minY = Math.min(bounds.minY, local.y); bounds.maxY = Math.max(bounds.maxY, local.y);
+    }
+  }
+  if (!Number.isFinite(bounds.minX) || bounds.maxX <= bounds.minX || bounds.maxY <= bounds.minY) throw new TypeError('Gradient paint needs a nonempty shape bounding box');
+  return bounds;
+}
+
+function transformedPoint(matrix, point) {
+  const e = matrix.elements;
+  return { x: e[0] * point.x + e[3] * point.y + e[6], y: e[1] * point.x + e[4] * point.y + e[7] };
+}
+
+function gradientColorAtT(gradient, t) {
+  if (t <= gradient.stops[0].offset) return gradient.stops[0].color;
+  for (let index = 1; index < gradient.stops.length; index++) {
+    const right = gradient.stops[index], left = gradient.stops[index - 1];
+    if (t <= right.offset) {
+      const amount = right.offset === left.offset ? 1 : (t - left.offset) / (right.offset - left.offset);
+      return left.color.map((value, channel) => value + (right.color[channel] - value) * amount);
+    }
+  }
+  return gradient.stops.at(-1).color;
+}
+
+function gradientEndpoints(gradient, bounds, transform) {
+  const local = gradient.units === 'objectBoundingBox'
+    ? (x, y) => ({ x: bounds.minX + x * (bounds.maxX - bounds.minX), y: bounds.minY + y * (bounds.maxY - bounds.minY) })
+    : (x, y) => ({ x, y });
+  return [transformedPoint(transform, local(gradient.x1, gradient.y1)), transformedPoint(transform, local(gradient.x2, gradient.y2))];
+}
+
+function gradientAtPoint(gradient, point, bounds, transform) {
+  const [start, end] = gradientEndpoints(gradient, bounds, transform);
+  const dx = end.x - start.x, dy = end.y - start.y;
+  const t = ((point.x - start.x) * dx + (point.y - start.y) * dy) / (dx * dx + dy * dy);
+  return gradientColorAtT(gradient, t);
+}
+
+function clipGradientPolygon(polygon, sampler, level, keepAbove) {
+  const output = [];
+  for (let index = 0; index < polygon.length; index++) {
+    const a = polygon[index], b = polygon[(index + 1) % polygon.length];
+    const da = sampler(a) - level, db = sampler(b) - level;
+    const insideA = keepAbove ? da >= -1e-9 : da <= 1e-9;
+    const insideB = keepAbove ? db >= -1e-9 : db <= 1e-9;
+    if (insideA) output.push(a);
+    if (insideA !== insideB) {
+      const amount = da / (da - db);
+      output.push({ x: a.x + (b.x - a.x) * amount, y: a.y + (b.y - a.y) * amount });
+    }
+  }
+  return output;
+}
+
+function appendGradientShape(vertices, shape, gradient, bounds, transform, opacity, partIndex) {
+  const geometry = new ShapeGeometry(shape, 24), position = geometry.attributes.position, index = geometry.index;
+  const count = index ? index.count : position.count;
+  const gradientT = point => {
+    const [start, end] = gradientEndpoints(gradient, bounds, transform);
+    const dx = end.x - start.x, dy = end.y - start.y;
+    return ((point.x - start.x) * dx + (point.y - start.y) * dy) / (dx * dx + dy * dy);
+  };
+  const colorAt = point => gradientAtPoint(gradient, point, bounds, transform).map((value, channel) => channel === 3 ? value * opacity : value);
+  for (let triangle = 0; triangle + 2 < count; triangle += 3) {
+    const points = [0, 1, 2].map(corner => {
+      const at = triangle + corner, vertex = index ? index.getX(at) : at;
+      return { x: position.getX(vertex), y: position.getY(vertex) };
+    });
+    const times = points.map(gradientT), low = Math.min(...times), high = Math.max(...times);
+    const cuts = [...new Set(gradient.stops.map(stop => stop.offset).filter(offset => offset > low + 1e-9 && offset < high - 1e-9))].sort((a, b) => a - b);
+    const boundaries = [low, ...cuts, high];
+    for (let band = 0; band + 1 < boundaries.length; band++) {
+      const lower = boundaries[band], upper = boundaries[band + 1];
+      if (upper - lower < 1e-9) continue;
+      let polygon = clipGradientPolygon(points, gradientT, lower, true);
+      polygon = clipGradientPolygon(polygon, gradientT, upper, false);
+      for (let corner = 1; corner + 1 < polygon.length; corner++) {
+        for (const point of [polygon[0], polygon[corner], polygon[corner + 1]]) {
+          vertices.push(point.x, point.y, ...colorAt(point), 0, 0, 0, 0, partIndex);
+        }
+      }
+    }
+  }
+  geometry.dispose();
+}
+
 const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
 function seeded(seed, index, salt = 0) {
   let value = Math.imul((seed ^ salt) + index * 0x9e3779b9, 0x85ebca6b);
   value = Math.imul(value ^ (value >>> 13), 0xc2b2ae35);
   return ((value ^ (value >>> 16)) >>> 0) / 0x100000000;
 }
+const yarnHash = value => { const result = Math.sin(value * 127.1 + 311.7) * 43758.5453; return result - Math.floor(result); };
+const yarnRandom = (seed, index, salt) => yarnHash(seed * 57.13 + index * 113.71 + salt * 3.1);
 
 function inRing(point, ring) {
   let inside = false;
@@ -171,16 +346,169 @@ function inRing(point, ring) {
   return inside;
 }
 
-function shapeInfo(shape) {
+function shapeInfo(shape, includeClipMesh = false) {
   const extracted = shape.extractPoints(24), contour = extracted.shape;
   if (contour.length < 3) throw new TypeError('Styled SVG fills need a closed contour');
-  const xs = contour.map(point => point.x), ys = contour.map(point => point.y);
-  return {
-    contour, holes: extracted.holes,
-    minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys),
-    center: { x: (Math.min(...xs) + Math.max(...xs)) / 2, y: (Math.min(...ys) + Math.max(...ys)) / 2 },
+  const bounds = shapeBounds([shape]);
+  const info = {
+    contour, holes: extracted.holes, ...bounds,
+    width: bounds.maxX - bounds.minX, height: bounds.maxY - bounds.minY,
+    center: { x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2 },
     contains(point) { return inRing(point, contour) && !extracted.holes.some(hole => inRing(point, hole)); },
   };
+  if (includeClipMesh) {
+    const geometry = new ShapeGeometry(shape, 24), position = geometry.attributes.position, index = geometry.index;
+    const count = index ? index.count : position.count, cellSize = Math.max(4, Math.min(info.width, info.height) / 16);
+    const triangles = [], cells = new Map();
+    const cellKey = (x, y) => `${x},${y}`;
+    for (let at = 0; at + 2 < count; at += 3) {
+      const points = [0, 1, 2].map(corner => {
+        const vertex = index ? index.getX(at + corner) : at + corner;
+        return { x: position.getX(vertex), y: position.getY(vertex) };
+      });
+      const bounds = {
+        minX: Math.min(...points.map(point => point.x)), maxX: Math.max(...points.map(point => point.x)),
+        minY: Math.min(...points.map(point => point.y)), maxY: Math.max(...points.map(point => point.y)),
+      };
+      const triangle = { points, bounds }, id = triangles.push(triangle) - 1;
+      const x0 = Math.floor((bounds.minX - info.minX) / cellSize), x1 = Math.floor((bounds.maxX - info.minX) / cellSize);
+      const y0 = Math.floor((bounds.minY - info.minY) / cellSize), y1 = Math.floor((bounds.maxY - info.minY) / cellSize);
+      for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) {
+        const key = cellKey(x, y), list = cells.get(key) ?? [];
+        list.push(id); cells.set(key, list);
+      }
+    }
+    geometry.dispose();
+    info.clipMesh = { triangles, cells, cellSize, cellKey };
+  }
+  return info;
+}
+
+function cross(a, b, c) { return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x); }
+function triangleContains(triangle, point) {
+  const [a, b, c] = triangle;
+  const ab = cross(a, b, point), bc = cross(b, c, point), ca = cross(c, a, point);
+  return (ab >= -1e-8 && bc >= -1e-8 && ca >= -1e-8) || (ab <= 1e-8 && bc <= 1e-8 && ca <= 1e-8);
+}
+
+function segmentIntersection(a, b, c, d) {
+  const rx = b.x - a.x, ry = b.y - a.y, sx = d.x - c.x, sy = d.y - c.y;
+  const denominator = rx * sy - ry * sx;
+  if (Math.abs(denominator) < 1e-9) return false;
+  const qx = c.x - a.x, qy = c.y - a.y;
+  const t = (qx * sy - qy * sx) / denominator, u = (qx * ry - qy * rx) / denominator;
+  return t > 1e-8 && t < 1 - 1e-8 && u >= -1e-8 && u <= 1 + 1e-8;
+}
+
+function triangleIsContained(points, info) {
+  const centroid = { x: (points[0].x + points[1].x + points[2].x) / 3, y: (points[0].y + points[1].y + points[2].y) / 3 };
+  if (!points.every(point => info.contains(point)) || !info.contains(centroid)) return false;
+  const rings = [info.contour, ...info.holes];
+  for (const ring of rings) {
+    for (let index = 0; index < ring.length; index++) {
+      const a = ring[index], b = ring[(index + 1) % ring.length];
+      if (triangleContains(points, a)) return false;
+      for (let edge = 0; edge < 3; edge++) if (segmentIntersection(points[edge], points[(edge + 1) % 3], a, b)) return false;
+    }
+  }
+  return true;
+}
+
+function clipTriangleToTriangle(subject, clip) {
+  let polygon = [...subject];
+  const orientation = cross(clip[0], clip[1], clip[2]) >= 0 ? 1 : -1;
+  for (let edge = 0; edge < 3 && polygon.length; edge++) {
+    const a = clip[edge], b = clip[(edge + 1) % 3], input = polygon;
+    polygon = [];
+    for (let index = 0; index < input.length; index++) {
+      const start = input[index], end = input[(index + 1) % input.length];
+      const startSide = orientation * cross(a, b, start), endSide = orientation * cross(a, b, end);
+      const startInside = startSide >= -1e-8, endInside = endSide >= -1e-8;
+      if (startInside) polygon.push(start);
+      if (startInside !== endInside) {
+        const amount = startSide / (startSide - endSide);
+        polygon.push({ x: start.x + (end.x - start.x) * amount, y: start.y + (end.y - start.y) * amount });
+      }
+    }
+  }
+  return polygon;
+}
+
+function emitClippedTriangle(vertices, points, rgba, partIndex, info) {
+  const twiceArea = Math.abs(cross(points[0], points[1], points[2]));
+  if (twiceArea < 1e-8) return;
+  if (triangleIsContained(points, info)) {
+    for (const point of points) emitStyleVertex(vertices, point, rgba, partIndex);
+    return;
+  }
+  const { triangles, cells, cellSize, cellKey } = info.clipMesh;
+  const bounds = {
+    minX: Math.min(...points.map(point => point.x)), maxX: Math.max(...points.map(point => point.x)),
+    minY: Math.min(...points.map(point => point.y)), maxY: Math.max(...points.map(point => point.y)),
+  };
+  const candidates = new Set();
+  const x0 = Math.floor((bounds.minX - info.minX) / cellSize), x1 = Math.floor((bounds.maxX - info.minX) / cellSize);
+  const y0 = Math.floor((bounds.minY - info.minY) / cellSize), y1 = Math.floor((bounds.maxY - info.minY) / cellSize);
+  for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) {
+    for (const id of cells.get(cellKey(x, y)) ?? []) candidates.add(id);
+  }
+  for (const id of candidates) {
+    const clip = triangles[id];
+    if (clip.bounds.maxX < bounds.minX || clip.bounds.minX > bounds.maxX || clip.bounds.maxY < bounds.minY || clip.bounds.minY > bounds.maxY) continue;
+    const polygon = clipTriangleToTriangle(points, clip.points);
+    for (let corner = 1; corner + 1 < polygon.length; corner++) {
+      if (Math.abs(cross(polygon[0], polygon[corner], polygon[corner + 1])) < 1e-8) continue;
+      emitStyleVertex(vertices, polygon[0], rgba, partIndex);
+      emitStyleVertex(vertices, polygon[corner], rgba, partIndex);
+      emitStyleVertex(vertices, polygon[corner + 1], rgba, partIndex);
+    }
+  }
+}
+
+function appendClippedStrokeGeometry(vertices, geometry, rgba, partIndex, info) {
+  const position = geometry.attributes.position, index = geometry.index;
+  const count = index ? index.count : position.count;
+  for (let at = 0; at + 2 < count; at += 3) {
+    const points = [0, 1, 2].map(corner => {
+      const vertex = index ? index.getX(at + corner) : at + corner;
+      return { x: position.getX(vertex), y: position.getY(vertex) };
+    });
+    emitClippedTriangle(vertices, points, rgba, partIndex, info);
+  }
+}
+
+function appendYarnStroke(vertices, points, width, rgba, partIndex, info = null) {
+  if (points.length < 2 || width <= 0) return;
+  const triangle = (a, b, c) => {
+    if (info) emitClippedTriangle(vertices, [a, b, c], rgba, partIndex, info);
+    else { emitStyleVertex(vertices, a, rgba, partIndex); emitStyleVertex(vertices, b, rgba, partIndex); emitStyleVertex(vertices, c, rgba, partIndex); }
+  };
+  const radius = width / 2, segments = points.length - 1, normals = [];
+  for (let index = 0; index < segments; index++) {
+    const start = points[index], end = points[index + 1], dx = end.x - start.x, dy = end.y - start.y, length = Math.hypot(dx, dy);
+    if (length < 1e-6) { normals.push(null); continue; }
+    const nx = -dy / length * radius, ny = dx / length * radius;
+    normals.push({ x: nx, y: ny });
+    const a = { x: start.x + nx, y: start.y + ny }, b = { x: start.x - nx, y: start.y - ny };
+    const c = { x: end.x - nx, y: end.y - ny }, d = { x: end.x + nx, y: end.y + ny };
+    triangle(a, b, c); triangle(a, c, d);
+  }
+  for (let index = 1; index < points.length - 1; index++) {
+    const before = normals[index - 1], after = normals[index];
+    if (!before || !after) continue;
+    const point = points[index];
+    triangle(point, { x: point.x + before.x, y: point.y + before.y }, { x: point.x + after.x, y: point.y + after.y });
+    triangle(point, { x: point.x - before.x, y: point.y - before.y }, { x: point.x - after.x, y: point.y - after.y });
+  }
+  const cap = center => {
+    const slices = 8;
+    for (let index = 0; index < slices; index++) {
+      const a = index / slices * Math.PI * 2, b = (index + 1) / slices * Math.PI * 2;
+      triangle(center, { x: center.x + Math.cos(a) * radius, y: center.y + Math.sin(a) * radius },
+        { x: center.x + Math.cos(b) * radius, y: center.y + Math.sin(b) * radius });
+    }
+  };
+  cap(points[0]); cap(points.at(-1));
 }
 
 function quadPoints(start, end, width) {
@@ -232,45 +560,158 @@ function colorScale(color, factor, alpha) {
   return colorComponents(color.clone().multiplyScalar(factor), alpha);
 }
 
-function compileYarnStyle(vertices, style, shape, fillColor, opacity, partIndex) {
-  const info = shapeInfo(shape), dark = colorScale(fillColor, clamp(0.72 - style.contrast * 1.15, 0.2, 0.8), opacity);
-  const groove = colorScale(fillColor, clamp(0.91 - style.contrast * 0.75, 0.3, 0.9), opacity * 0.85);
-  const yarn = colorScale(fillColor, 1 + style.contrast * 0.55, opacity);
-  const highlight = colorScale(fillColor.clone().lerp(new Color(1, 1, 1), clamp(0.32 + style.contrast, 0.2, 0.85)), 1, opacity * 0.57);
-  const twist = colorScale(fillColor.clone().lerp(new Color(1, 1, 1), 0.3), 1, opacity * 0.5);
-  const width = style.stitchWidth, height = style.stitchHeight;
-  const columns = Math.min(128, Math.max(1, Math.ceil((info.maxX - info.minX) / width)));
-  const rows = Math.min(128, Math.max(1, Math.ceil((info.maxY - info.minY) / height)));
-  const stitch = [
-    [0.08, 0.54], [0.2, 0.22], [0.43, 0.1], [0.69, 0.18], [0.91, 0.47], [0.72, 0.78], [0.46, 0.9], [0.2, 0.78], [0.08, 0.54],
-  ];
-  let emitted = 0;
-  for (let row = 0; row < rows; row++) for (let column = 0; column < columns; column++) {
-    const cellX = info.minX + column * width, cellY = info.minY + row * height;
-    const jitter = (seeded(style.seed, row * columns + column) - 0.5) * style.irregularity;
-    const points = stitch.map(([x, y]) => ({ x: cellX + (x + jitter) * width, y: cellY + y * height }));
-    appendClippedPolyline(vertices, points.map(point => ({ x: point.x, y: point.y + height * style.thickness * 0.06 })), false,
-      Math.max(0.12, width * style.thickness * 0.5), dark, partIndex, info);
-    appendClippedPolyline(vertices, points, false, Math.max(0.14, width * style.thickness * 1.08), groove, partIndex, info);
-    appendClippedPolyline(vertices, points, false, Math.max(0.12, width * style.thickness * 0.82), yarn, partIndex, info);
-    const hi = points.map(point => ({ x: point.x, y: point.y - height * style.thickness * 0.22 }));
-    appendClippedPolyline(vertices, hi, false, Math.max(0.1, width * style.thickness * 0.34), highlight, partIndex, info);
-    const tw = points.filter((_, pointIndex) => pointIndex % 2 === 0).map((point, pointIndex) => ({ x: point.x, y: point.y + (pointIndex % 2 ? 1 : -1) * height * style.thickness * 0.12 }));
-    appendClippedPolyline(vertices, tw, false, Math.max(0.08, width * 0.075), twist, partIndex, info);
-    if (++emitted > 16384) throw new RangeError('Yarn style tessellation exceeds the 16,384 stitch limit');
+function curveMetric(points, closed = true) {
+  const lengths = [0], segmentCount = closed ? points.length : points.length - 1;
+  let area = 0;
+  for (let index = 0; index < segmentCount; index++) {
+    const a = points[index], b = points[(index + 1) % points.length];
+    lengths.push(lengths[index] + Math.hypot(b.x - a.x, b.y - a.y));
+    area += a.x * b.y - b.x * a.y;
   }
-  const edgeCount = Math.min(4096, Math.floor(info.contour.reduce((sum, point, index) => sum + Math.hypot(point.x - info.contour[(index + 1) % info.contour.length].x, point.y - info.contour[(index + 1) % info.contour.length].y), 0) / style.edgeSpacing));
-  for (let index = 0; index < edgeCount; index++) {
-    const point = info.contour[Math.floor(index * info.contour.length / edgeCount)], dx = info.center.x - point.x, dy = info.center.y - point.y, length = Math.hypot(dx, dy) || 1;
-    const inward = { x: dx / length, y: dy / length }, a = { x: point.x + inward.x * style.edgeRelief, y: point.y + inward.y * style.edgeRelief };
-    const b = { x: a.x + inward.x * style.edgeSpacing * 0.42, y: a.y + inward.y * style.edgeSpacing * 0.42 };
-    appendStyleSegment(vertices, a, b, style.edgeWidth, dark, partIndex);
+  const length = lengths[segmentCount] || 1e-5, sign = closed && area < 0 ? -1 : 1;
+  return { length, at(amount) {
+    const distance = (closed ? ((amount % 1) + 1) % 1 : clamp(amount, 0, 1)) * length;
+    let low = 0, high = segmentCount - 1;
+    while (low < high) { const middle = (low + high) >> 1; if (lengths[middle + 1] < distance) low = middle + 1; else high = middle; }
+    const a = points[low], b = points[(low + 1) % points.length], segmentLength = lengths[low + 1] - lengths[low] || 1;
+    const t = clamp((distance - lengths[low]) / segmentLength, 0, 1), tx = (b.x - a.x) / segmentLength, ty = (b.y - a.y) / segmentLength;
+    return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, tx, ty, nx: sign * ty, ny: -sign * tx };
+  } };
+}
+
+function quadraticPoints(start, control, end, divisions = 8) {
+  return Array.from({ length: divisions + 1 }, (_, index) => {
+    const t = index / divisions, inverse = 1 - t;
+    return { x: inverse * inverse * start.x + 2 * inverse * t * control.x + t * t * end.x,
+      y: inverse * inverse * start.y + 2 * inverse * t * control.y + t * t * end.y };
+  });
+}
+
+function cubicPoints(start, first, second, end, divisions = 8) {
+  return Array.from({ length: divisions + 1 }, (_, index) => {
+    const t = index / divisions, inverse = 1 - t;
+    return { x: inverse ** 3 * start.x + 3 * inverse ** 2 * t * first.x + 3 * inverse * t ** 2 * second.x + t ** 3 * end.x,
+      y: inverse ** 3 * start.y + 3 * inverse ** 2 * t * first.y + 3 * inverse * t ** 2 * second.y + t ** 3 * end.y };
+  });
+}
+
+function roundedOutline(points, holes) {
+  const shape = new Shape(), middle = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+  const first = middle(points.at(-1), points[0]);
+  shape.moveTo(first.x, first.y);
+  for (let index = 0; index < points.length; index++) {
+    const point = points[index], next = points[(index + 1) % points.length], end = middle(point, next);
+    shape.quadraticCurveTo(point.x, point.y, end.x, end.y);
   }
-  for (let index = 0; index < style.fiberMax; index++) {
-    const x = info.minX + seeded(style.seed, index, 0x1839) * (info.maxX - info.minX), y = info.minY + seeded(style.seed, index, 0x8d31) * (info.maxY - info.minY);
-    const start = { x, y }, angle = seeded(style.seed, index, 0x52a1) * Math.PI * 2, length = style.fiberLength * (0.45 + seeded(style.seed, index, 0xa771) * 0.55);
-    const end = { x: x + Math.cos(angle) * length, y: y + Math.sin(angle) * length };
-    if (info.contains(start)) appendClippedPolyline(vertices, [start, end], false, style.fiberWidth, colorScale(fillColor, 1.3, opacity * style.fiberOpacity), partIndex, info);
+  shape.closePath();
+  for (const ring of holes) {
+    const hole = new Path();
+    hole.moveTo(ring[0].x, ring[0].y);
+    for (const point of ring.slice(1)) hole.lineTo(point.x, point.y);
+    hole.closePath(); shape.holes.push(hole);
+  }
+  return shape;
+}
+
+function yarnTint(color, amount, opacity) {
+  const target = amount > 0 ? 1 : 0, weight = Math.abs(amount);
+  return [color[0] + (target - color[0]) * weight, color[1] + (target - color[1]) * weight,
+    color[2] + (target - color[2]) * weight, color[3] * opacity];
+}
+
+function compileYarnStyle(vertices, style, shape, fillColor, opacity, partIndex, gradient, gradientBounds, transform) {
+  const info = shapeInfo(shape, true), sourceMetric = curveMetric(info.contour);
+  const lobes = Math.max(8, Math.round(sourceMetric.length / style.edgeSpacing));
+  const amount = style.detail ? 0.3 : 1;
+  const relief = Math.min(style.edgeRelief, Math.min(info.width, info.height) * 0.115) * amount;
+  const scallops = [];
+  for (let index = 0; index < lobes * 5; index++) {
+    const u = index / (lobes * 5), point = sourceMetric.at(u);
+    const displacement = relief * (Math.sin(Math.PI * u * lobes) ** 2 * 0.85 + 0.18 * Math.sin(u * Math.PI * 4 + style.seed) + 0.1)
+      * (0.8 + 0.2 * Math.sin(u * Math.PI * 6 + style.seed * 0.7));
+    scallops.push({ x: point.x + point.nx * displacement, y: point.y + point.ny * displacement });
+  }
+  const outline = roundedOutline(scallops, info.holes);
+  const baseColor = gradient ? gradientColorAtT(gradient, 0.53) : colorComponents(fillColor, 1);
+  const dark = yarnTint(baseColor, -0.28, opacity), groove = yarnTint(baseColor, -(style.contrast), opacity * 0.85);
+  const yarn = yarnTint(baseColor, 0.1, opacity), light = yarnTint(baseColor, 0.38, opacity);
+  if (gradient) appendGradientShape(vertices, outline, gradient, gradientBounds, transform, opacity, partIndex);
+  else {
+    const fill = new ShapeGeometry(outline, 24);
+    appendTriangles(vertices, fill, yarnTint(baseColor, 0, opacity), partIndex); fill.dispose();
+  }
+
+  const edge = curveMetric(scallops), edgeWidth = style.edgeWidth;
+  for (let index = 0; index < lobes; index++) {
+    const a0 = edge.at((index + 0.12) / lobes), b0 = edge.at((index + 0.85) / lobes), middle = edge.at((index + 0.5) / lobes);
+    const depth = edgeWidth * 0.62 * amount;
+    const start = { x: a0.x - a0.nx * depth, y: a0.y - a0.ny * depth };
+    const control = { x: middle.x + middle.nx * depth * 0.38, y: middle.y + middle.ny * depth * 0.38 };
+    const end = { x: b0.x - b0.nx * depth, y: b0.y - b0.ny * depth };
+    const loop = quadraticPoints(start, control, end, 6);
+    appendYarnStroke(vertices, loop, edgeWidth * 0.8, yarnTint(dark, 0, 0.7), partIndex);
+    appendYarnStroke(vertices, loop, edgeWidth * 0.56, yarn, partIndex);
+    appendYarnStroke(vertices, loop.map(point => ({ x: point.x - edgeWidth * 0.1, y: point.y - edgeWidth * 0.09 })), edgeWidth * 0.17,
+      yarnTint(light, 0, 0.55), partIndex);
+  }
+
+  if (style.pattern !== false) {
+    const curved = style.curved !== false, stitchWidth = style.stitchWidth, stitchHeight = style.stitchHeight;
+    const columns = Math.min(128, Math.max(2, Math.ceil(info.width / stitchWidth)));
+    const rows = Math.min(128, Math.max(2, Math.ceil(info.height / stitchHeight)));
+    if (rows * columns > 16384) throw new RangeError('Yarn style tessellation exceeds the 16,384 stitch limit');
+    const sx = info.width / columns, sy = info.height / rows, rx = info.width / 2, ry = info.height / 2;
+    const strokeWidth = Math.min(sx, sy) * (style.thickness / stitchHeight);
+    const mapPoint = (x, y, ox = 0, oy = 0) => {
+      x += ox; y += oy;
+      const nx = x / rx, ny = y / ry;
+      return { x: info.center.x + (curved ? Math.sin(clamp(nx, -1.35, 1.35) * 1.1) / Math.sin(1.1) * rx : x),
+        y: info.center.y + y + (curved ? ry * 0.13 * nx * nx * (1 - ny * 0.24) : 0) };
+    };
+    const drawCellCurve = (x, y, ax, ay, data, rgba, width, offsetX = 0, offsetY = 0) => {
+      const points = cubicPoints(
+        { x: x + ax * data[0], y: y + ay * data[1] },
+        { x: x + ax * data[2], y: y + ay * data[3] },
+        { x: x + ax * data[4], y: y + ay * data[5] },
+        { x: x + ax * data[6], y: y + ay * data[7] }, 5,
+      ).map(point => mapPoint(point.x, point.y, offsetX, offsetY));
+      appendYarnStroke(vertices, points, width, rgba, partIndex, info);
+    };
+    let stitchCount = 0;
+    for (let row = -1; row <= rows + 1; row++) for (let column = -1; column <= columns + 1; column++) {
+      const jitter = style.irregularity, x = -rx + (column + 0.5) * sx + (yarnRandom(style.seed, row * columns + column, 71) - 0.5) * sx * jitter;
+      const y = -ry + (row + 0.5) * sy + (yarnRandom(style.seed, row * columns + column, 39) - 0.5) * sy * jitter;
+      const ax = sx * (1 + (yarnRandom(style.seed, row * columns + column, 57) - 0.5) * jitter);
+      const ay = sy * (1 + (yarnRandom(style.seed, row * columns + column, 91) - 0.5) * jitter);
+      const under = [-0.48, -0.46, -0.22, -0.57, 0.22, -0.57, 0.48, -0.46];
+      const leftLoop = [-0.34, -0.36, -0.32, -0.06, -0.18, 0.17, -0.025, 0.34];
+      const rightLoop = [0.34, -0.36, 0.32, -0.06, 0.18, 0.17, 0.025, 0.34];
+      drawCellCurve(x, y, ax, ay, under, yarnTint(dark, 0, 0.5), strokeWidth * 0.5, 0, strokeWidth * 0.06);
+      for (const loop of [leftLoop, rightLoop]) drawCellCurve(x, y, ax, ay, loop, groove, strokeWidth * 1.08, 0, strokeWidth * 0.06);
+      for (const loop of [leftLoop, rightLoop]) drawCellCurve(x, y, ax, ay, loop, yarn, strokeWidth * 0.89);
+      for (const loop of [leftLoop, rightLoop]) drawCellCurve(x, y, ax, ay, loop, yarnTint(light, 0, 0.57), strokeWidth * 0.34,
+        -strokeWidth * 0.14, -strokeWidth * 0.13);
+      if ((row + column) % 2 === 0) {
+        drawCellCurve(x, y, ax, ay, [-0.32, -0.12, -0.27, -0.13, -0.20, -0.15, -0.16, -0.13], yarnTint(light, 0, 0.5), strokeWidth * 0.075);
+        drawCellCurve(x, y, ax, ay, [0.22, 0.18, 0.28, 0.14, 0.33, 0.11, 0.37, 0.08], yarnTint(light, 0, 0.5), strokeWidth * 0.075);
+      }
+      if (++stitchCount > 16384) throw new RangeError('Yarn style tessellation exceeds the 16,384 stitch limit');
+    }
+  }
+
+  if (style.fiber !== false) {
+    const fiberCount = Math.min(style.fiberMax, Math.round(edge.length / (style.fiberSpacing ?? 4)));
+    for (let index = 0; index < fiberCount; index++) {
+      const at = edge.at((index + 0.22 + yarnRandom(style.seed, index, 22) * 0.48) / fiberCount);
+      const length = Math.min(style.fiberLength, Math.min(info.width, info.height) / 2 * 0.24) * (0.45 + yarnRandom(style.seed, index, 5) * 0.95);
+      const lean = (yarnRandom(style.seed, index, 14) - 0.5) * length * 1.5;
+      const start = { x: at.x - at.nx * 0.008, y: at.y - at.ny * 0.008 };
+      const control = { x: at.x + at.nx * length * 0.64 + at.tx * lean, y: at.y + at.ny * length * 0.64 + at.ty * lean };
+      const end = { x: at.x + at.nx * length + at.tx * lean * 0.48, y: at.y + at.ny * length + at.ty * lean * 0.48 };
+      appendYarnStroke(vertices, quadraticPoints(start, control, end, 3), style.fiberWidth, yarnTint(baseColor, 0.22, opacity * style.fiberOpacity), partIndex);
+      const tipStart = { x: at.x + at.nx * length * 0.48 + at.tx * lean * 0.25, y: at.y + at.ny * length * 0.48 + at.ty * lean * 0.25 };
+      appendYarnStroke(vertices, [tipStart, end], style.fiberWidth * 0.4, yarnTint(light, 0, opacity * style.fiberOpacity * 0.7), partIndex);
+    }
   }
 }
 
@@ -326,7 +767,19 @@ function ownerPart(node, partIndices) {
   throw new TypeError('Every painted SVG element must be inside an authored part group');
 }
 
-function compilePaths(paths, partIndices, parts, metadata) {
+function resolveGradientPaint(paint, gradients) {
+  const match = /^url\(\s*#([A-Za-z_][A-Za-z0-9_.:-]{0,127})\s*\)$/.exec(paint ?? '');
+  if (!match) return null;
+  const gradient = gradients.get(match[1]);
+  if (!gradient) throw new TypeError('SVG fill references an unknown linearGradient: ' + match[1]);
+  return gradient;
+}
+
+function colorFromComponents(rgba) {
+  return new Color().setRGB(rgba[0], rgba[1], rgba[2], SRGBColorSpace);
+}
+
+function compilePaths(paths, partIndices, parts, metadata, gradients) {
   const vertices = [];
   const styled = new Map((metadata.styles ?? []).map(style => [style.target, style]));
   const morphCount = metadata.styles?.some(style => style.kind === 'sketch') ? 2 : 0;
@@ -336,25 +789,32 @@ function compilePaths(paths, partIndices, parts, metadata) {
     const partIndex = ownerPart(sourceNode, partIndices);
     const style = path.userData.style;
     const overallOpacity = style.opacity ?? 1;
-    if (style.fill !== undefined && style.fill !== 'none') {
-      const opacity = (style.fillOpacity ?? 1) * overallOpacity;
-      if (opacity > 0) {
-        const rgba = colorComponents(path.color, opacity);
-        for (const shape of path.toShapes()) {
+    const authoredStyle = styled.get(sourceNode.getAttribute('id'));
+    if (authoredStyle && (style.fill === undefined || style.fill === 'none')) throw new TypeError('Authored yarn/sketch styles require an SVG fill: ' + authoredStyle.target);
+    const fillGradient = style.fill !== undefined && style.fill !== 'none' ? resolveGradientPaint(style.fill, gradients) : null;
+    const fillOpacity = (style.fillOpacity ?? 1) * overallOpacity;
+    const shapes = style.fill !== undefined && style.fill !== 'none' ? path.toShapes() : [];
+    const gradientBounds = fillGradient && shapes.length
+      ? shapeBounds(shapes, fillGradient.units === 'objectBoundingBox' ? path.userData.transform : null) : null;
+    const styleColor = fillGradient ? colorFromComponents(gradientColorAtT(fillGradient, 0.53)) : path.color;
+
+    if (authoredStyle?.kind === 'yarn') {
+      if (shapes.length !== 1) throw new TypeError('Authored yarn style currently requires one connected filled shape: ' + authoredStyle.target);
+      if (fillOpacity > 0) compileYarnStyle(vertices, authoredStyle, shapes[0], path.color, fillOpacity, partIndex,
+        fillGradient, gradientBounds, path.userData.transform);
+    } else {
+      if (fillOpacity > 0) for (const shape of shapes) {
+        if (fillGradient) appendGradientShape(vertices, shape, fillGradient, gradientBounds, path.userData.transform, fillOpacity, partIndex);
+        else {
           const geometry = new ShapeGeometry(shape, 16);
-          appendTriangles(vertices, geometry, rgba, partIndex);
+          appendTriangles(vertices, geometry, colorComponents(path.color, fillOpacity), partIndex);
           geometry.dispose();
         }
       }
-    }
-    const authoredStyle = styled.get(sourceNode.getAttribute('id'));
-    if (authoredStyle && (style.fill === undefined || style.fill === 'none')) throw new TypeError('Authored yarn/sketch styles require a solid SVG fill: ' + authoredStyle.target);
-    if (authoredStyle) {
-      const shapes = path.toShapes();
-      if (shapes.length !== 1) throw new TypeError('Authored yarn/sketch styles currently require one connected filled shape: ' + authoredStyle.target);
-      const paintOpacity = (style.fillOpacity ?? 1) * overallOpacity;
-      if (authoredStyle.kind === 'yarn') compileYarnStyle(vertices, authoredStyle, shapes[0], path.color, paintOpacity, partIndex);
-      else compileSketchStyle(vertices, authoredStyle, shapes[0], path.color, paintOpacity, partIndex);
+      if (authoredStyle) {
+        if (shapes.length !== 1) throw new TypeError('Authored sketch style currently requires one connected filled shape: ' + authoredStyle.target);
+        if (fillOpacity > 0) compileSketchStyle(vertices, authoredStyle, shapes[0], styleColor, fillOpacity, partIndex);
+      }
     }
     if (style.stroke !== undefined && style.stroke !== 'none' && style.strokeWidth > 0) {
       const opacity = (style.strokeOpacity ?? 1) * overallOpacity;
@@ -456,6 +916,7 @@ export function compileVectorAsset(svgBytes, sourcePath = 'asset.svg') {
   const original = parseXml(text, 'source');
   const root = original.documentElement;
   const ids = collectIds(root);
+  const gradients = parseGradientDefinitions(root, ids);
   const metadataBlock = directMetadata(root);
   const viewBox = validateRoot(root);
   const metadata = validateAssetMetadata(metadataBlock.value, ids);
@@ -476,7 +937,7 @@ export function compileVectorAsset(svgBytes, sourcePath = 'asset.svg') {
     return { clean: withoutMetadata(original), loader };
   });
   const paths = withNodeDomParser(() => vectorText.loader.parse(vectorText.clean).paths);
-  const geometry = compilePaths(paths, partIndices, metadata.parts, metadata);
+  const geometry = compilePaths(paths, partIndices, metadata.parts, metadata, gradients);
   const sourcePaths = compileSourcePaths(paths, partIndices, metadata.parts);
   const paintedIds = new Set(paths.map(path => path.userData.node.getAttribute('id')));
   const shapeNodes = [...ids.values()].filter(node => ['path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon'].includes(node.nodeName));

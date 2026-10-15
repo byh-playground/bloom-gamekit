@@ -211,10 +211,12 @@ export function createVectorAsset(meshRenderer, compiledAsset) {
       });
       return output;
     };
-    const draw = ({ projection, matrix = IDENTITY, alpha = 1, color = [1, 1, 1, 1], forceColor = false } = {}) => {
+    const draw = ({ projection, matrix = IDENTITY, alpha = 1, color = [1, 1, 1, 1], forceColor = false,
+      depth = 0, depthTest = false, depthWrite = false, depthFunc = 'lequal' } = {}) => {
       assertPlayer();
       const poses = partPoses().map(({ transform, opacity, visible: isVisible }) => ({ transform, opacity, visible: isVisible }));
-      meshRenderer.drawMesh(mesh, { projection, matrix, parts: poses, morph: authoredMorph(metadata, displayTimeMs), alpha, color, forceColor });
+      meshRenderer.drawMesh(mesh, { projection, matrix, parts: poses, morph: authoredMorph(metadata, displayTimeMs), alpha, color, forceColor,
+        depth, depthTest, depthWrite, depthFunc });
     };
     const getPartPose = id => {
       assertPlayer();
