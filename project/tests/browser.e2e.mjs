@@ -1,4 +1,5 @@
 import { runFrameChecks } from '../../modules/interpolation/tests/presentation-frame.browser.js';
+import { exerciseVectorAssets } from '../../modules/vector-assets/tests/runtime.browser.mjs';
 import { exerciseWebGLDevice, exerciseVectorRenderer, exerciseFontAssetLoader } from '../../modules/rendering/tests/device.browser.mjs';
 import { exerciseReusableMeshes } from '../../modules/rendering/tests/mesh.browser.mjs';
 import { runPresentationChecks } from './presentation.browser.js';
@@ -403,6 +404,8 @@ const { createSession, profiles } = await import('/dist/rollback.js');
   await previewPage.close();
   assert.equal(previewErrors.length,0,previewErrors.join('\n'));
   report.stages.push('explicit disposal, repeated disposal and pagehide release the demo once without lifecycle errors');
+  report.vectorAssets = await exerciseVectorAssets(page);
+  report.stages.push('single SVG SSOT compiled through pinned Three SVGLoader, rendered as shared retained GameKit WebGL mesh with deterministic Anime.js seek');
   report.browser = await browser.version(); report.contextLoss = supportsLoss;
   report.scope = 'Headless Chromium with actual WebGL1/SwiftShader pixels and built ESMs. CPU/interval observations are not mobile FPS or hardware-GPU certification. No screenshot/artifact retention.';
   console.log(JSON.stringify(report, null, 2));

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f1f0e8">
+  <title>GameKit SVG vector asset</title>
+  <style>
+    :root { color-scheme: light; font: 16px/1.45 system-ui, sans-serif; color: #293e36; background: #f1f0e8; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100svh; display: grid; grid-template-rows: auto 1fr auto; }
+    header, footer { padding: .85rem clamp(1rem, 4vw, 2rem); background: #fffdf4; }
+    header { border-bottom: 1px solid #d5dec2; display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; }
+    h1 { margin: 0; font-size: 1.1rem; }
+    main { min-height: 280px; display: grid; place-items: center; padding: 1rem; }
+    canvas { display: block; width: min(100%, 900px); height: min(72svh, 620px); border-radius: 1rem; background: #dfe8cb; box-shadow: 0 12px 40px #35482720; }
+    label { display: flex; align-items: center; gap: .5rem; font-size: .9rem; }
+    select { border: 1px solid #98a785; border-radius: .5rem; padding: .45rem .7rem; color: inherit; background: white; font: inherit; }
+    footer { border-top: 1px solid #d5dec2; color: #50624a; font-size: .82rem; }
+    @media (orientation: landscape) and (max-height: 520px) { body { grid-template-rows: auto 1fr; } header { padding-block: .45rem; } main { min-height: 0; padding: .5rem; } canvas { height: calc(100svh - 3.5rem); max-height: 100%; } footer { display: none; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>SVG single-source character</h1>
+    <label>Expression <select id="expression"><option>neutral</option><option>happy</option><option>surprised</option></select></label>
+  </header>
+  <main><canvas id="scene" width="800" height="600" aria-label="Animated vector seedling character"></canvas></main>
+  <footer id="status">One SVG source, retained mesh shared by all players, host-owned display clock.</footer>
+  <script type="module">
+    import { WebGLDevice, MeshRenderer, VectorContext } from '/dist/rendering.js';
+    import { createSeedScout, seedScoutMetadata } from '/dist/vector-assets.js';
+    const canvas = document.querySelector('#scene');
+    const device = new WebGLDevice(canvas, { alpha: false, antialias: true, depth: false, stencil: false });
+    const meshes = new MeshRenderer(device, { maxMeshes: 4, maxInstances: 8 });
+    const asset = createSeedScout(meshes);
+    const actor = asset.createPlayer({ clip: 'idle', startedAtMs: 0 });
+    const expression = document.querySelector('#expression');
+    expression.addEventListener('change', () => actor.setExpression(expression.value));
+    const projection = [2 / 200, 0, 0, 0, -2 / 220, 0, -1, 1, 1];
+    let lastSize = '';
+    function frame(displayTimeMs) {
+      const rect = canvas.getBoundingClientRect(), dpr = Math.min(2, window.devicePixelRatio || 1);
+      const width = Math.max(1, Math.round(rect.width * dpr)), height = Math.max(1, Math.round(rect.height * dpr));
+      const size = `${width}x${height}`;
+      if (size !== lastSize) { canvas.width = width; canvas.height = height; lastSize = size; }
+      const scale = Math.min(width / 200, height / 220), tx = (width - 200 * scale) / 2, ty = (height - 220 * scale) / 2;
+      const localProjection = [2 * scale / width, 0, 0, 0, -2 * scale / height, 0, 2 * tx / width - 1, 1 - 2 * ty / height, 1];
+      device.beginFrame({ width, height, clearColor: [0.875, 0.91, 0.80, 1], clearDepth: 1 });
+      meshes.beginFrame(); actor.seek(displayTimeMs); actor.draw({ projection: localProjection }); meshes.flush(); device.endFrame();
+      document.querySelector('#status').textContent = `source ${asset.sourceSha256.slice(0, 12)} · schema ${asset.schemaVersion} · ${seedScoutMetadata.parts.length} parts · socket ${Math.round(actor.getSocket('mouth').x)}, ${Math.round(actor.getSocket('mouth').y)}`;
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+    window.addEventListener('pagehide', () => { actor.dispose(); asset.dispose(); meshes.dispose(); device.dispose(); }, { once: true });
+    window.vectorAssetRuntime = { WebGLDevice, MeshRenderer, VectorContext, createSeedScout, seedScoutMetadata };
+    window.vectorAssetDemo = { device, meshes, asset, actor };
+  </script>
+</body>
+</html>

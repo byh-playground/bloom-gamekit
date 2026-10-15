@@ -1,5 +1,7 @@
 # bloom-gamekit
 
+**New SVG vector asset example:** [vector-assets](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/vector-assets.html)
+
 **HTML 실행 프리뷰:** [interpolation](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/interpolation.html) · [interpolation-frame](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/interpolation-frame.html) · [simloop-input-preview](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/simloop-input-preview.html) · [audio](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/audio.html) · [navigation](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/navigation.html) · [rendering-vector](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rendering-vector.html) · [rollback-availability](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rollback-availability.html) · [rollback-reference](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rollback-reference.html) · [scenario](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/scenario.html)
 
 브라우저 게임에서 공통으로 쓰는 보간·렌더링·입력·실행·결정론·전송·리플레이·롤백 기능을 독립 모듈로 개발하는 저장소입니다. 필요한 기능만 골라 조합하며, 게임 전체를 소유하는 범용 엔진 클래스는 만들지 않습니다.

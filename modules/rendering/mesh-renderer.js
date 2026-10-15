@@ -35,10 +35,12 @@ function packParts(parts, count, output) {
   for (let i = 0; i < count; i++) {
     const part = parts?.[i], m = part?.transform ?? IDENTITY, morph = part?.morph ?? ZERO_MORPH;
     finiteArray(m, 6, 'part transform'); finiteArray(morph, 2, 'part morph');
+    const opacity = part?.opacity ?? 1;
+    if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) throw new RangeError('part opacity must be in [0,1]');
     const at = i * 12;
     output[at] = m[0]; output[at+1] = m[2]; output[at+2] = m[4]; output[at+3] = 0;
     output[at+4] = m[1]; output[at+5] = m[3]; output[at+6] = m[5]; output[at+7] = 0;
-    output[at+8] = morph[0]; output[at+9] = morph[1]; output[at+10] = part?.visible === false ? 0 : 1; output[at+11] = 0;
+    output[at+8] = morph[0]; output[at+9] = morph[1]; output[at+10] = part?.visible === false ? 0 : opacity; output[at+11] = 0;
   }
 }
 function clipState(clips, maxPlanes) {
@@ -154,7 +156,7 @@ export class MeshRenderer {
     }
     const clip = clipState(clips, this.maxPlanes), pending = this.pending;
     packParts(parts, mesh.partCount, this.partScratch);
-    if (pending && (pending.mesh !== mesh || pending.clip.key !== clip.key || projection.some((n, i) => n !== pending.projection[i]) || (mesh.partCount > 1 && pending.parts.some((n, i) => n !== this.partScratch[i])) || this.count === this.maxInstances)) this.flush();
+    if (pending && (pending.mesh !== mesh || pending.clip.key !== clip.key || projection.some((n, i) => Math.fround(n) !== pending.projection[i]) || (mesh.partCount > 1 && pending.parts.some((n, i) => n !== this.partScratch[i])) || this.count === this.maxInstances)) this.flush();
     const part = this.partScratch, singlePart = mesh.partCount === 1;
     for (let i = 0; i < count; i++) {
       if (this.count === this.maxInstances) this.flush();

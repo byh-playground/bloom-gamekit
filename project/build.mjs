@@ -3,12 +3,24 @@ import { mkdir, readFile, writeFile, readdir, unlink } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { MODULES, FONT_ASSETS, MANIFEST_FILE, createManifest, serializeManifest } from './distribution.mjs';
+import { bundledAssetSource } from '../modules/vector-assets/compiler.js';
 
 const SDK_DEPENDENCIES = {
   scenario: ['simloop'],
   deterministic: ['_rollback-shared'], simloop: [], transport: ['_rollback-shared', 'deterministic'],
   replay: ['_rollback-shared', 'deterministic'], rollback: ['_rollback-shared', 'deterministic'],
 };
+const BUNDLED_PACKAGES = { 'vector-assets': ['node_modules/animejs/'] };
+
+function vectorAssetPlugin(root) {
+  return {
+    name: 'vector-asset-svg-ssot',
+    setup(build) {
+      build.onResolve({ filter: /^\.\/seed-scout\.compiled\.js$/ }, () => ({ path: 'seed-scout', namespace: 'vector-asset' }));
+      build.onLoad({ filter: /.*/, namespace: 'vector-asset' }, async () => ({ contents: await bundledAssetSource(root), loader: 'js' }));
+    },
+  };
+}
 
 export async function buildDistribution(root) {
   const bundles = new Map();
@@ -30,13 +42,17 @@ export async function buildDistribution(root) {
       write: false,
       logLevel: 'warning',
       logOverride: { 'unsupported-dynamic-import': 'error', 'unsupported-require-call': 'error' },
+      ...(name === 'vector-assets' ? { plugins: [vectorAssetPlugin(root)] } : {}),
     });
     const outputs = Object.values(result.metafile.outputs);
     if (result.outputFiles.length !== 1 || outputs.length !== 1 || outputs[0].imports.length !== 0) {
       throw new Error(`배포물은 외부 import가 없는 ${name}.js 하나여야 합니다.`);
     }
     for (const input of Object.keys(result.metafile.inputs)) {
-      if (![name, ...(SDK_DEPENDENCIES[name] ?? [])].some(owner => input.startsWith(`modules/${owner}/`) && !input.slice(`modules/${owner}/`.length).includes('/'))) {
+      const owned = [name, ...(SDK_DEPENDENCIES[name] ?? [])].some(owner => input.startsWith(`modules/${owner}/`) && !input.slice(`modules/${owner}/`.length).includes('/'));
+      const packageOwned = (BUNDLED_PACKAGES[name] ?? []).some(prefix => input.startsWith(prefix));
+      const generatedAsset = name === 'vector-assets' && input.startsWith('vector-asset:');
+      if (!owned && !packageOwned && !generatedAsset) {
         throw new Error(`${name} 소스 밖의 런타임 의존성은 허용하지 않습니다: ${input}`);
       }
     }

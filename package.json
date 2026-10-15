@@ -7,6 +7,8 @@
   },
   "scripts": {
     "build": "node project/build.mjs",
+    "vector-assets:compile": "node modules/vector-assets/scripts/compile.mjs",
+    "test:vector-assets": "node modules/vector-assets/tests/compiler.mjs && npm run build && npm run build:previews && node modules/vector-assets/tests/run-browser.mjs",
     "test": "node project/test-scenarios.mjs core",
     "test:browser": "node project/test-scenarios.mjs core",
     "test:network": "node project/test-scenarios.mjs network",
@@ -30,7 +32,10 @@
     "test:previews": "node project/test-scenarios.mjs previews"
   },
   "devDependencies": {
+    "@xmldom/xmldom": "0.9.12",
+    "animejs": "4.5.0",
     "esbuild": "0.28.2",
-    "playwright": "1.63.0"
+    "playwright": "1.63.0",
+    "three": "0.186.1"
   }
 }
