@@ -5601,6 +5601,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
   var sourceHost = document.querySelector("#source-svg");
   var demo = {
     ready: false,
+    sourceLoaded: false,
     device: null,
     meshes: null,
     asset: null,
@@ -5608,6 +5609,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
     sourceSvg: null,
     sourceBytes: 0,
     sourcePathCount: 0,
+    sourceSha256: null,
     initializationMs: 0,
     creationStats: null,
     camera: { x: 100, y: 110, zoom: 1 },
@@ -5629,19 +5631,18 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
     }
     throw new Error("SVG shape has no authored part group: " + shape.id);
   };
-  async function loadAuthoredSvg(asset) {
+  async function loadAuthoredSvg(metadata) {
     const response = await fetch(SOURCE_URL, { mode: "cors", cache: "force-cache" });
     if (!response.ok) throw new Error("Could not load the authored SVG (" + response.status + ")");
     const bytes = await response.arrayBuffer();
     const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
     const sourceSha = [...digest].map((value) => value.toString(16).padStart(2, "0")).join("");
-    if (sourceSha !== asset.sourceSha256) throw new Error("Fetched SVG SHA does not match the compiled asset source SHA");
     const text = new TextDecoder().decode(bytes);
     const document2 = new DOMParser().parseFromString(text, "image/svg+xml");
     if (document2.querySelector("parsererror") || document2.documentElement?.localName !== "svg") throw new Error("Authored source is not a valid SVG document");
     if (document2.querySelector("script, foreignObject, image, iframe, object, use")) throw new Error("The authored SVG contains unsupported active or external elements");
     const original = document2.documentElement;
-    const partIds = new Set(seedScoutMetadata.parts.map((part) => part.id));
+    const partIds = new Set(metadata.parts.map((part) => part.id));
     const wrappers = /* @__PURE__ */ new Map();
     const display = document2.createElementNS(NS, "svg");
     display.id = "source-svg";
@@ -5649,7 +5650,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
     display.setAttribute("preserveAspectRatio", "xMidYMid meet");
     display.setAttribute("role", "img");
     display.setAttribute("aria-label", "Original SVG source, posed by the shared authored clip");
-    for (const part of seedScoutMetadata.parts) {
+    for (const part of metadata.parts) {
       const wrapper = document2.createElementNS(NS, "g");
       wrapper.dataset.vectorPart = part.id;
       wrappers.set(part.id, wrapper);
@@ -5672,9 +5673,14 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
     demo.sourceSvg = display;
     demo.sourceBytes = bytes.byteLength;
     demo.sourcePathCount = shapes.length;
+    demo.sourceSha256 = sourceSha;
+    window.document.querySelector("#source-metrics").textContent = "Native SVG · " + shapes.length + " paths/shapes · " + bytes.byteLength.toLocaleString() + " source bytes · SHA " + sourceSha.slice(0, 12);
     return { wrappers, sha256: sourceSha };
   }
   (async () => {
+    if (document.readyState === "loading") await new Promise((resolve) => document.addEventListener("DOMContentLoaded", resolve, { once: true }));
+    const source = await loadAuthoredSvg(seedScoutMetadata);
+    demo.sourceLoaded = true;
     const rendererInitializationStart = performance.now();
     const device = new WebGLDevice(canvas, { alpha: false, antialias: true, depth: false, stencil: false });
     const meshes = new MeshRenderer(device, { maxMeshes: 4, maxInstances: 8 });
@@ -5683,6 +5689,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
     const asset = createSeedScout(meshes);
     const actor = asset.createPlayer({ clip: "idle", startedAtMs: 0 });
     Object.assign(demo, { device, meshes, asset, actor });
+    if (source.sha256 !== asset.sourceSha256) throw new Error("Fetched SVG SHA does not match the compiled asset source SHA");
     const creationStats = meshes.stats();
     const assetInitializationMs = performance.now() - assetInitializationStart;
     const triangleCount = asset.mesh.vertices.length / 33;
@@ -5706,7 +5713,6 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
     }
     demo.topology = { triangles: triangles.length, uniqueEdges: edgeMap.size };
     const edges = [...edgeMap.values()];
-    const source = await loadAuthoredSvg(asset);
     demo.creationStats = creationStats;
     demo.rendererInitializationMs = rendererInitializationMs;
     demo.assetInitializationMs = assetInitializationMs;
@@ -5919,8 +5925,21 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
   })().catch((error) => {
     demo.error = error.message;
     const status = document.querySelector("#status");
-    status.textContent = "Example failed: " + error.message;
     status.classList.add("error");
+    if (demo.sourceSvg && error.message === "WebGL 1 required") {
+      const message = "WebGL unavailable: this browser or environment did not provide a WebGL 1 context. The independently loaded source SVG remains visible in panel 1.";
+      const gamekitMetrics = document.querySelector("#gamekit-metrics");
+      gamekitMetrics.classList.add("error");
+      gamekitMetrics.textContent = message;
+      document.querySelector("#source-metrics").textContent = "Native SVG · " + demo.sourcePathCount + " paths/shapes · " + demo.sourceBytes.toLocaleString() + " source bytes · SHA " + demo.sourceSha256.slice(0, 12);
+      status.textContent = "Source SVG loaded directly; the GameKit WebGL view is unavailable.";
+    } else {
+      document.querySelector("#source-metrics").textContent = demo.sourceSvg ? document.querySelector("#source-metrics").textContent : "Source SVG unavailable: " + error.message;
+      const gamekitMetrics = document.querySelector("#gamekit-metrics");
+      gamekitMetrics.classList.add("error");
+      gamekitMetrics.textContent = "Example failed: " + error.message;
+      status.textContent = "Example failed: " + error.message;
+    }
   });
 })();
 /**
