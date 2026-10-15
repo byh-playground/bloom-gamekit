@@ -563,10 +563,14 @@
         if (instances > instanceRecord.used / p.instanceStride) throw new RangeError("draw exceeds uploaded instances");
       } else if (instances !== 1) throw new RangeError("Multiple instances require instance attributes");
       if (!Number.isSafeInteger(count * instances)) throw new RangeError("draw vertex count exceeds safe integer range");
-      if (depth && !this.depthAvailable) throw new Error("Context has no depth buffer");
+      const depthState = depth === false || depth == null ? null : depth === true ? { test: true, write: true, func: "lequal" } : typeof depth === "object" && !Array.isArray(depth) ? { test: depth.test ?? true, write: depth.write ?? true, func: depth.func ?? "lequal" } : (() => {
+        throw new TypeError("depth must be false or a depth policy object");
+      })();
+      if (depthState && (typeof depthState.test !== "boolean" || typeof depthState.write !== "boolean")) throw new TypeError("depth.test and depth.write must be booleans");
+      if ((depthState?.test || depthState?.write) && !this.depthAvailable) throw new Error("Context has no depth buffer");
       if (stencil && !this.stencilAvailable) throw new Error("Context has no stencil buffer");
       if (blend !== false && !BLENDS.has(blend)) throw new TypeError("Unsupported blend");
-      if (depth && !FUNCTIONS[depth.func ?? "lequal"]) throw new TypeError("Unsupported depth function");
+      if (depthState && !FUNCTIONS[depthState.func]) throw new TypeError("Unsupported depth function");
       if (stencil) {
         if (!FUNCTIONS[stencil.func ?? "always"]) throw new TypeError("Unsupported stencil function");
         for (const key of ["fail", "zfail", "pass"]) if (!OPERATIONS[stencil[key] ?? "keep"]) throw new TypeError("Unsupported stencil operation");
@@ -624,14 +628,11 @@
         const factors = blend === "source-over" ? [gl.ONE, gl.ONE_MINUS_SRC_ALPHA] : blend === "straight-alpha" ? [gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA] : blend === "copy" ? [gl.ONE, gl.ZERO] : blend === "lighter" ? [gl.ONE, gl.ONE] : blend === "source-in" ? [gl.DST_ALPHA, gl.ZERO] : [gl.ZERO, gl.SRC_ALPHA];
         gl.blendFunc(...factors);
       }
-      if (depth) {
+      if (depthState?.test) {
         gl.enable(gl.DEPTH_TEST);
-        gl.depthFunc(gl[FUNCTIONS[depth.func ?? "lequal"]]);
-        gl.depthMask(depth.write ?? true);
-      } else {
-        gl.disable(gl.DEPTH_TEST);
-        gl.depthMask(false);
-      }
+        gl.depthFunc(gl[FUNCTIONS[depthState.func]]);
+      } else gl.disable(gl.DEPTH_TEST);
+      gl.depthMask(depthState?.write ?? false);
       if (stencil) {
         gl.enable(gl.STENCIL_TEST);
         gl.stencilFunc(gl[FUNCTIONS[stencil.func ?? "always"]], stencil.ref ?? 0, stencil.mask ?? 255);

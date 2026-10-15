@@ -901,11 +901,12 @@ void main() {
     return shader2;
   }
   var Renderer2D = class {
-    constructor(canvas, { batchVertices = 6144, antialias = true, preserveDrawingBuffer = false } = {}) {
+    constructor(canvas, { batchVertices = 6144, antialias = true, depth = false, preserveDrawingBuffer = false } = {}) {
       if (!canvas?.getContext || !canvas?.addEventListener) throw new TypeError("canvas is required");
       if (!Number.isSafeInteger(batchVertices) || batchVertices < 6 || batchVertices > 1048576) throw new RangeError("batchVertices must be 6..1048576");
+      if (typeof depth !== "boolean") throw new TypeError("depth must be boolean");
       this.canvas = canvas;
-      this.gl = canvas.getContext("webgl", { alpha: true, premultipliedAlpha: true, antialias, depth: false, stencil: false, preserveDrawingBuffer });
+      this.gl = canvas.getContext("webgl", { alpha: true, premultipliedAlpha: true, antialias, depth, stencil: false, preserveDrawingBuffer });
       if (!this.gl) throw new Error("WebGL 1 is required; no Canvas2D fallback");
       this.state = "ready";
       this.failure = null;
@@ -1292,6 +1293,7 @@ void main() {
       gl.uniformMatrix3fv(this.uProjection, false, this.projection);
       gl.disable(gl.SCISSOR_TEST);
       gl.disable(gl.DEPTH_TEST);
+      gl.depthMask(false);
       gl.disable(gl.STENCIL_TEST);
       gl.disable(gl.CULL_FACE);
       gl.disable(gl.DITHER);
