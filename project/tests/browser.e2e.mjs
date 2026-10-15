@@ -5,6 +5,7 @@ import { exerciseReusableMeshes } from '../../modules/rendering/tests/mesh.brows
 import { exerciseRendererInterleaving } from '../../modules/rendering/tests/interop.browser.mjs';
 import { exerciseOrderedAssetBatch } from '../../modules/rendering/tests/ordered-batch.browser.mjs';
 import { exerciseMeshDepth } from '../../modules/rendering/tests/mesh-depth.browser.mjs';
+import { exerciseMeshAlphaDepthWrite } from '../../modules/rendering/tests/mesh-alpha-depth.browser.mjs';
 import { runPresentationChecks } from './presentation.browser.js';
 import { chromium } from 'playwright';
 import { createServer } from 'node:http';
@@ -153,6 +154,14 @@ try {
   report.meshDepth = await exerciseMeshDepth(page);
   assert.equal(report.meshDepth.glError, 0, 'per-instance/per-part depth leaves a clean WebGL state');
   report.stages.push('MeshRenderer depth and transparent painter order compose with a following Renderer2D pass');
+  report.meshAlphaDepthWrite = await exerciseMeshAlphaDepthWrite(page);
+  assert.deepEqual(report.meshAlphaDepthWrite.orderedRuns.pixel, [0, 0, 255, 255]);
+  assert.deepEqual(report.meshAlphaDepthWrite.partOpacity.pixel, [0, 0, 255, 255]);
+  assert.deepEqual(report.meshAlphaDepthWrite.instanceOpacity.pixel, [0, 0, 255, 255]);
+  assert.deepEqual(report.meshAlphaDepthWrite.afterRestore.pixel, [255, 0, 0, 255]);
+  assert.equal(report.meshAlphaDepthWrite.drawCost400.opaque.draws, report.meshAlphaDepthWrite.instanced ? 1 : 400);
+  assert.equal(report.meshAlphaDepthWrite.drawCost400.mixedThreeRun.draws, 1200);
+  report.stages.push('MeshRenderer alpha-threshold depth writes preserve triangle and instance painter order, opacity variants, lifecycle, and 400-instance draw cost');
   report.rendering = await page.evaluate(async () => {
     const { Renderer2D } = await import('/dist/rendering.js');
     const check = (condition, message) => { if (!condition) throw new Error(message); };

@@ -80,7 +80,9 @@ export class MeshRenderer {
     this.meshes = new Set(); this.bytes = 0; this.count = 0; this.pending = null;
     this.planes = new Float32Array(this.maxPlanes * 3);
     this.partScratch = new Float32Array(16 * 12);
-    this.metrics = { draws: 0, instances: 0, geometryUploads: 0, geometryBytesUploaded: 0, instanceBytesUploaded: 0, partUniformBytesSubmitted: 0 };
+    this.alphaRunScratch = [];
+    this.alphaRunCache = new WeakMap();
+    this.metrics = { draws: 0, instances: 0, geometryUploads: 0, geometryBytesUploaded: 0, instanceBytesUploaded: 0, partUniformBytesSubmitted: 0, alphaRunCacheHits: 0, alphaRunCacheMisses: 0 };
     this.state = 'ready'; this.failure = null;
     this.onLost = () => { this.discard(); this.state = 'lost'; };
     this.onRestored = () => {
@@ -162,6 +164,7 @@ export class MeshRenderer {
   deleteMesh(mesh) {
     if (!this.meshes.has(mesh)) return false;
     if (this.pending?.mesh === mesh) this.flush();
+    this.alphaRunCache.delete(mesh);
     this.device.deleteVertexBuffer(mesh.buffer);
     if (mesh.indexBuffer) this.device.deleteIndexBuffer(mesh.indexBuffer);
     for (const variant of mesh.expressionIndices.values()) if (variant.indexBuffer) this.device.deleteIndexBuffer(variant.indexBuffer);
@@ -172,14 +175,15 @@ export class MeshRenderer {
   drawMesh(mesh, options = {}) {
     const { matrix = IDENTITY, projection, morph = [0, 0], parts = null, color = WHITE,
       forceColor = false, alpha = 1, whiteFlash = false, clips = [], depth = 0,
-      depthTest = false, depthWrite = false, depthFunc = 'lequal', indexVariant = null } = options;
+      depthTest = false, depthWrite = false, depthWriteAlphaThreshold = null, depthFunc = 'lequal', indexVariant = null } = options;
     this._drawMeshInstances(mesh, { matrices: matrix, count: 1, projection, morph, parts, color, forceColor, alpha, whiteFlash, clips, indexVariant,
-      depth, depthTest, depthWrite, depthFunc });
+      depth, depthTest, depthWrite, depthWriteAlphaThreshold, depthFunc });
   }
   /** Internal ordered instance append used when one retained pose has several transforms. */
   _drawMeshInstances(mesh, { matrices, count, projection, morph = [0, 0], parts = null, color = WHITE,
     forceColor = false, alpha = 1, whiteFlash = false, clips = [], prefixColor = null,
-    prefixCount = 0, forceColorPrefixCount = 0, depth = 0, depthTest = false, depthWrite = false, depthFunc = 'lequal', indexVariant = null } = {}) {
+    prefixCount = 0, forceColorPrefixCount = 0, depth = 0, depthTest = false, depthWrite = false,
+    depthWriteAlphaThreshold = null, depthFunc = 'lequal', indexVariant = null } = {}) {
     this._ready();
     if (!this.meshes.has(mesh)) throw new TypeError('Mesh owned by this renderer required');
     if (indexVariant !== null && (typeof indexVariant !== 'string' || !mesh.expressionIndices.has(indexVariant))) throw new TypeError('Known mesh expression index variant required');
@@ -190,6 +194,9 @@ export class MeshRenderer {
     if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1 || color.some(n => n < 0 || n > 1)) throw new RangeError('RGBA/alpha in [0,1] required');
     if (!Number.isFinite(depth) || depth < -1 || depth > 1) throw new RangeError('depth must be in [-1,1]');
     if (typeof depthTest !== 'boolean' || typeof depthWrite !== 'boolean') throw new TypeError('depthTest and depthWrite must be booleans');
+    if (depthWriteAlphaThreshold !== null && (!Number.isFinite(depthWriteAlphaThreshold) || depthWriteAlphaThreshold < 0 || depthWriteAlphaThreshold > 1)) {
+      throw new RangeError('depthWriteAlphaThreshold must be in [0,1]');
+    }
     if (!['never', 'less', 'equal', 'lequal', 'greater', 'notequal', 'gequal', 'always'].includes(depthFunc)) throw new TypeError('Unsupported depthFunc');
     if (!Number.isSafeInteger(prefixCount) || prefixCount < 0 || prefixCount > count ||
       !Number.isSafeInteger(forceColorPrefixCount) || forceColorPrefixCount < 0 || forceColorPrefixCount > count) throw new RangeError('Instance color prefix count is invalid');
@@ -202,14 +209,78 @@ export class MeshRenderer {
     const variant = indexVariant === null ? null : mesh.expressionIndices.get(indexVariant);
     packParts(parts, mesh.partCount, this.partScratch);
     for (let i = 0; i < mesh.partCount; i++) if (depth + this.partScratch[i * 12 + 11] < -1 || depth + this.partScratch[i * 12 + 11] > 1) throw new RangeError('combined mesh and part depth must be in [-1,1]');
-    const depthStateKey = `${Number(depthTest)}:${Number(depthWrite)}:${depthFunc}`;
-    if (pending && (pending.mesh !== mesh || pending.indexVariant !== indexVariant || pending.clip.key !== clip.key || pending.depthStateKey !== depthStateKey || projection.some((n, i) => Math.fround(n) !== pending.projection[i]) || (mesh.partCount > 1 && pending.parts.some((n, i) => n !== this.partScratch[i])) || this.count === this.maxInstances)) this.flush();
+    const depthStateKey = Number(depthTest) + ':' + Number(depthWrite) + ':' + depthFunc;
+    const alphaDepthWrite = depthWrite && depthWriteAlphaThreshold !== null;
+    if (!alphaDepthWrite) {
+      if (pending && (pending.mesh !== mesh || pending.indexVariant !== indexVariant || pending.clip.key !== clip.key || pending.depthStateKey !== depthStateKey || projection.some((n, i) => Math.fround(n) !== pending.projection[i]) || (mesh.partCount > 1 && pending.parts.some((n, i) => n !== this.partScratch[i])) || this.count === this.maxInstances)) this.flush();
+      if (variant?.count === 0) return;
+      const part = this.partScratch, singlePart = mesh.partCount === 1;
+      for (let i = 0; i < count; i++) {
+        if (this.count === this.maxInstances) this.flush();
+        if (!this.pending) this.pending = { mesh, projection: Float32Array.from(projection), clip, depthStateKey,
+          indexVariant, depthState: { test: depthTest, write: depthWrite, func: depthFunc }, parts: this.partScratch.slice(0, mesh.partCount > 1 ? mesh.partCount * 12 : 0) };
+        const offset = i * 6;
+        let m0 = matrices[offset], m1 = matrices[offset + 1], m2 = matrices[offset + 2], m3 = matrices[offset + 3], m4 = matrices[offset + 4], m5 = matrices[offset + 5];
+        let weight0 = morph[0], weight1 = morph[1], instanceAlpha = alpha;
+        if (singlePart) {
+          const a = m0, b = m1, c = m2, d = m3;
+          m0 = a * part[0] + c * part[4]; m1 = b * part[0] + d * part[4];
+          m2 = a * part[1] + c * part[5]; m3 = b * part[1] + d * part[5];
+          m4 = a * part[2] + c * part[6] + m4; m5 = b * part[2] + d * part[6] + m5;
+          instanceAlpha *= part[10]; weight0 += part[8]; weight1 += part[9];
+        }
+        const instanceColor = i < prefixCount ? prefixColor : color;
+        const instanceForceColor = i < forceColorPrefixCount ? true : forceColor, at = this.count++ * 16, data = this.instances;
+        data[at] = m0; data[at + 1] = m2; data[at + 2] = m4; data[at + 3] = instanceAlpha;
+        data[at + 4] = m1; data[at + 5] = m3; data[at + 6] = m5; data[at + 7] = instanceForceColor ? 1 : 0;
+        data[at + 8] = instanceColor[0]; data[at + 9] = instanceColor[1];
+        data[at + 10] = instanceColor[2]; data[at + 11] = instanceColor[3];
+        const instanceDepth = depth + (singlePart ? part[11] : 0);
+        data[at + 12] = weight0; data[at + 13] = weight1; data[at + 14] = whiteFlash ? 1 : 0; data[at + 15] = instanceDepth;
+      }
+      return;
+    }
+    const sharedMismatch = current => current.mesh !== mesh || current.indexVariant !== indexVariant || current.clip.key !== clip.key
+      || projection.some((n, i) => Math.fround(n) !== current.projection[i])
+      || (mesh.partCount > 1 && current.parts.some((n, i) => n !== this.partScratch[i]));
+    if (this.pending && (sharedMismatch(this.pending) || this.pending.depthStateKey !== depthStateKey || this.count === this.maxInstances)) this.flush();
     if (variant?.count === 0) return;
+    const indices = variant?.indices ?? mesh.indices;
+    const triangleCount = (variant?.count ?? mesh.count) / 3;
     const part = this.partScratch, singlePart = mesh.partCount === 1;
     for (let i = 0; i < count; i++) {
-      if (this.count === this.maxInstances) this.flush();
-      if (!this.pending) this.pending = { mesh, projection: Float32Array.from(projection), clip, depthStateKey,
-        indexVariant, depthState: { test: depthTest, write: depthWrite, func: depthFunc }, parts: this.partScratch.slice(0, mesh.partCount > 1 ? mesh.partCount * 12 : 0) };
+      const instanceColor = i < prefixCount ? prefixColor : color;
+      const instanceForceColor = i < forceColorPrefixCount ? true : forceColor;
+      const runs = this._collectAlphaDepthRuns(mesh, indices, triangleCount, depthWriteAlphaThreshold,
+        alpha * instanceColor[3], instanceForceColor, indexVariant);
+      const totalVertices = triangleCount * 3;
+      const oneRun = runs.length === 3 && runs[0] === 0 && runs[1] === totalVertices;
+      if (!oneRun) {
+        this.flush();
+        const offset = i * 6;
+        let m0 = matrices[offset], m1 = matrices[offset + 1], m2 = matrices[offset + 2], m3 = matrices[offset + 3], m4 = matrices[offset + 4], m5 = matrices[offset + 5];
+        let weight0 = morph[0], weight1 = morph[1], instanceAlpha = alpha;
+        if (singlePart) {
+          const a = m0, b = m1, c = m2, d = m3;
+          m0 = a * part[0] + c * part[4]; m1 = b * part[0] + d * part[4];
+          m2 = a * part[1] + c * part[5]; m3 = b * part[1] + d * part[5];
+          m4 = a * part[2] + c * part[6] + m4; m5 = b * part[2] + d * part[6] + m5;
+          instanceAlpha *= part[10]; weight0 += part[8]; weight1 += part[9];
+        }
+        const at = 0, data = this.instances;
+        data[at] = m0; data[at + 1] = m2; data[at + 2] = m4; data[at + 3] = instanceAlpha;
+        data[at + 4] = m1; data[at + 5] = m3; data[at + 6] = m5; data[at + 7] = instanceForceColor ? 1 : 0;
+        data[at + 8] = instanceColor[0]; data[at + 9] = instanceColor[1];
+        data[at + 10] = instanceColor[2]; data[at + 11] = instanceColor[3];
+        data[at + 12] = weight0; data[at + 13] = weight1; data[at + 14] = whiteFlash ? 1 : 0;
+        data[at + 15] = depth + (singlePart ? part[11] : 0);
+        this._drawAlphaDepthRuns(mesh, variant, projection, clip, part, runs, depthTest, depthFunc);
+        continue;
+      }
+      const write = runs[2], stateKey = Number(depthTest) + ':' + Number(write) + ':' + depthFunc;
+      if (this.pending && (this.pending.depthStateKey !== stateKey || this.count === this.maxInstances)) this.flush();
+      if (!this.pending) this.pending = { mesh, projection: Float32Array.from(projection), clip, depthStateKey: stateKey,
+        indexVariant, depthState: { test: depthTest, write, func: depthFunc }, parts: this.partScratch.slice(0, mesh.partCount > 1 ? mesh.partCount * 12 : 0) };
       const offset = i * 6;
       let m0 = matrices[offset], m1 = matrices[offset + 1], m2 = matrices[offset + 2], m3 = matrices[offset + 3], m4 = matrices[offset + 4], m5 = matrices[offset + 5];
       let weight0 = morph[0], weight1 = morph[1], instanceAlpha = alpha;
@@ -220,15 +291,83 @@ export class MeshRenderer {
         m4 = a * part[2] + c * part[6] + m4; m5 = b * part[2] + d * part[6] + m5;
         instanceAlpha *= part[10]; weight0 += part[8]; weight1 += part[9];
       }
-      const instanceColor = i < prefixCount ? prefixColor : color;
-      const instanceForceColor = i < forceColorPrefixCount ? true : forceColor, at = this.count++ * 16, data = this.instances;
+      const at = this.count++ * 16, data = this.instances;
       data[at] = m0; data[at + 1] = m2; data[at + 2] = m4; data[at + 3] = instanceAlpha;
       data[at + 4] = m1; data[at + 5] = m3; data[at + 6] = m5; data[at + 7] = instanceForceColor ? 1 : 0;
       data[at + 8] = instanceColor[0]; data[at + 9] = instanceColor[1];
       data[at + 10] = instanceColor[2]; data[at + 11] = instanceColor[3];
-      const instanceDepth = depth + (singlePart ? part[11] : 0);
-      data[at + 12] = weight0; data[at + 13] = weight1; data[at + 14] = whiteFlash ? 1 : 0; data[at + 15] = instanceDepth;
+      data[at + 12] = weight0; data[at + 13] = weight1; data[at + 14] = whiteFlash ? 1 : 0;
+      data[at + 15] = depth + (singlePart ? part[11] : 0);
     }
+  }
+  _collectAlphaDepthRuns(mesh, indices, triangleCount, threshold, opacity, forceColor, indexVariant) {
+    let cache = this.alphaRunCache.get(mesh);
+    if (!cache) { cache = new Map(); this.alphaRunCache.set(mesh, cache); }
+    const partOpacities = [];
+    for (let i = 0; i < mesh.partCount; i++) partOpacities.push(this.partScratch[i * 12 + 10]);
+    const key = JSON.stringify([indexVariant, threshold, opacity, forceColor, partOpacities]);
+    const cached = cache.get(key);
+    if (cached) {
+      cache.delete(key); cache.set(key, cached);
+      this.metrics.alphaRunCacheHits++;
+      return cached;
+    }
+    this.metrics.alphaRunCacheMisses++;
+    const runs = this.alphaRunScratch;
+    runs.length = 0;
+    if (opacity < threshold) {
+      runs.push(0, triangleCount * 3, false);
+    } else {
+      let runStart = 0, runWrite = null;
+      for (let triangle = 0; triangle < triangleCount; triangle++) {
+        let write = true;
+        for (let corner = 0; corner < 3; corner++) {
+          const indexOffset = triangle * 3 + corner, vertexOffset = (indices ? indices[indexOffset] : indexOffset) * 11;
+          const partIndex = mesh.vertices[vertexOffset + 10];
+          const vertexAlpha = forceColor ? 1 : mesh.vertices[vertexOffset + 5];
+          const effectiveAlpha = opacity * vertexAlpha * this.partScratch[partIndex * 12 + 10];
+          if (effectiveAlpha <= 0 || effectiveAlpha < threshold) { write = false; break; }
+        }
+        if (runWrite === null) { runStart = triangle; runWrite = write; }
+        else if (write !== runWrite) {
+          runs.push(runStart * 3, (triangle - runStart) * 3, runWrite);
+          runStart = triangle; runWrite = write;
+        }
+      }
+      if (runWrite !== null) runs.push(runStart * 3, (triangleCount - runStart) * 3, runWrite);
+    }
+    if (runs.length <= 64) {
+      const stableRuns = runs.slice();
+      if (cache.size >= 16) cache.delete(cache.keys().next().value);
+      cache.set(key, stableRuns);
+      return stableRuns;
+    }
+    this.alphaRunScratch = [];
+    return runs;
+  }
+  _drawAlphaDepthRuns(mesh, variant, projection, clip, parts, runs, depthTest, depthFunc) {
+    this.planes.fill(0);
+    if (clip.values) this.planes.set(clip.values);
+    const pipeline = this._pipeline(mesh, clip.count > 0), uniforms = { u_projection: projection };
+    if (clip.count) Object.assign(uniforms, { 'u_planes[0]': this.planes, u_planeCount: clip.count });
+    if (mesh.partCount > 1) uniforms['u_parts[0]'] = parts;
+    if (!this.instanced) {
+      for (let j = 0; j < 4; j++) uniforms[['i_row0', 'i_row1', 'i_color', 'i_params'][j]] =
+        this.instances.subarray(j * 4, j * 4 + 4);
+    } else {
+      const instance = this.instances.subarray(0, 16);
+      this.device.uploadVertices(this.instanceBuffer, instance);
+      this.metrics.instanceBytesUploaded += instance.byteLength;
+    }
+    const indexBuffer = variant?.indexBuffer ?? mesh.indexBuffer;
+    for (let run = 0; run < runs.length; run += 3) {
+      this.device.draw({ pipeline, buffer: mesh.buffer, indexBuffer, first: runs[run], count: runs[run + 1],
+        instanceBuffer: this.instanceBuffer, instances: 1, uniforms,
+        depth: { test: depthTest, write: runs[run + 2], func: depthFunc } });
+      this.metrics.draws++;
+      this.metrics.partUniformBytesSubmitted += parts.byteLength;
+    }
+    this.metrics.instances++;
   }
   flush() {
     if (!this.count) return;
@@ -265,7 +404,7 @@ export class MeshRenderer {
       if (mesh.indexBuffer) this.device.deleteIndexBuffer(mesh.indexBuffer);
       for (const variant of mesh.expressionIndices.values()) if (variant.indexBuffer) this.device.deleteIndexBuffer(variant.indexBuffer);
     }
-    this.meshes.clear(); this.bytes = 0;
+    this.meshes.clear(); this.bytes = 0; this.alphaRunCache = new WeakMap(); this.alphaRunScratch.length = 0;
     if (this.instanceBuffer) this.device.deleteVertexBuffer(this.instanceBuffer);
     for (const pipeline of this.pipelines.values()) this.device.deletePipeline(pipeline);
     this.pipelines.clear(); this.disposed = true; this.state = 'disposed';
