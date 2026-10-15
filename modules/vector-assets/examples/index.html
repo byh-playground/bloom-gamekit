@@ -4,57 +4,378 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#f1f0e8">
-  <title>GameKit SVG vector asset</title>
+  <title>GameKit SVG vector asset comparison</title>
   <style>
-    :root { color-scheme: light; font: 16px/1.45 system-ui, sans-serif; color: #293e36; background: #f1f0e8; }
+    :root { color-scheme: light; font: 14px/1.4 system-ui, sans-serif; color: #293e36; background: #f1f0e8; }
     * { box-sizing: border-box; }
     body { margin: 0; min-height: 100svh; display: grid; grid-template-rows: auto 1fr auto; }
-    header, footer { padding: .85rem clamp(1rem, 4vw, 2rem); background: #fffdf4; }
-    header { border-bottom: 1px solid #d5dec2; display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; }
+    header, footer { padding: .65rem clamp(.75rem, 2.2vw, 1.5rem); background: #fffdf4; }
+    header { border-bottom: 1px solid #d5dec2; }
+    .heading-row, .controls { display: flex; align-items: center; justify-content: space-between; gap: .55rem; flex-wrap: wrap; }
     h1 { margin: 0; font-size: 1.1rem; }
-    main { min-height: 280px; display: grid; place-items: center; padding: 1rem; }
-    canvas { display: block; width: min(100%, 900px); height: min(72svh, 620px); border-radius: 1rem; background: #dfe8cb; box-shadow: 0 12px 40px #35482720; }
-    label { display: flex; align-items: center; gap: .5rem; font-size: .9rem; }
-    select { border: 1px solid #98a785; border-radius: .5rem; padding: .45rem .7rem; color: inherit; background: white; font: inherit; }
-    footer { border-top: 1px solid #d5dec2; color: #50624a; font-size: .82rem; }
-    @media (orientation: landscape) and (max-height: 520px) { body { grid-template-rows: auto 1fr; } header { padding-block: .45rem; } main { min-height: 0; padding: .5rem; } canvas { height: calc(100svh - 3.5rem); max-height: 100%; } footer { display: none; } }
+    .asset-tag { color: #53694a; font-size: .82rem; white-space: nowrap; }
+    .controls { justify-content: flex-start; margin-top: .6rem; }
+    label { display: inline-flex; align-items: center; gap: .35rem; font-size: .82rem; white-space: nowrap; }
+    select, button, input[type="range"] { accent-color: #557d4b; }
+    select, button { min-height: 2rem; border: 1px solid #98a785; border-radius: .45rem; padding: .25rem .55rem; color: inherit; background: white; font: inherit; }
+    button { cursor: pointer; }
+    input[type="range"] { width: clamp(5rem, 12vw, 11rem); }
+    output { min-width: 3.7em; font-variant-numeric: tabular-nums; }
+    .help { margin: .4rem 0 0; color: #596850; font-size: .76rem; }
+    main { min-height: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .65rem; padding: .65rem; }
+    .panel { min-width: 0; min-height: 0; display: grid; grid-template-rows: 2.5rem minmax(120px, 1fr) 3.3rem; gap: .35rem; padding: .5rem; border: 1px solid #d5dec2; border-radius: .75rem; background: #fffdf4; box-shadow: 0 5px 20px #35482710; }
+    h2 { margin: 0; font-size: .88rem; line-height: 1.25; }
+    h2 small { display: block; margin-top: .1rem; color: #68735d; font-size: .72rem; font-weight: 400; }
+    .stage { position: relative; min-width: 0; min-height: 0; overflow: hidden; border-radius: .5rem; background-color: #dfe8cb; background-image: linear-gradient(45deg, #cfdbb8 25%, transparent 25%), linear-gradient(-45deg, #cfdbb8 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #cfdbb8 75%), linear-gradient(-45deg, transparent 75%, #cfdbb8 75%); background-size: 18px 18px; background-position: 0 0, 0 9px, 9px -9px, -9px 0; touch-action: none; cursor: grab; }
+    .stage.dragging { cursor: grabbing; }
+    .stage svg, .stage canvas { display: block; width: 100%; height: 100%; }
+    .metrics { min-height: 3.1em; color: #50624a; font-size: .7rem; line-height: 1.35; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; overflow-y: auto; }
+    .metrics strong { color: #293e36; }
+    footer { border-top: 1px solid #d5dec2; color: #50624a; font-size: .73rem; }
+    .error { color: #9a332b; font-weight: 650; }
+    @media (max-width: 700px) and (orientation: portrait) {
+      body { min-height: 100svh; grid-template-rows: auto 1fr auto; }
+      main { grid-template-columns: minmax(0, 1fr); overflow-y: auto; align-content: start; }
+      .panel { grid-template-rows: auto minmax(210px, 48svh) auto; }
+      .controls { gap: .4rem; }
+    }
+    @media (orientation: landscape) and (max-height: 520px) {
+      body { height: 100svh; overflow: hidden; grid-template-rows: auto minmax(0, 1fr) auto; }
+      main { overflow: hidden; }
+      header, footer { padding-block: .35rem; }
+      h1 { font-size: .92rem; }
+      .controls { margin-top: .28rem; gap: .35rem; }
+      label { font-size: .72rem; }
+      select, button { min-height: 1.65rem; padding: .12rem .38rem; font-size: .74rem; }
+      input[type="range"] { width: clamp(3.5rem, 9vw, 6.5rem); }
+      .help { margin-top: .15rem; font-size: .65rem; }
+      main { gap: .38rem; padding: .38rem; }
+      .panel { grid-template-rows: 2.15rem minmax(110px, 1fr) 2.6rem; gap: .22rem; padding: .35rem; }
+      h2 { font-size: .75rem; }
+      h2 small { font-size: .62rem; }
+      .metrics { min-height: 2.6em; max-height: 2.6rem; font-size: .61rem; }
+      footer { font-size: .62rem; }
+    }
   </style>
 </head>
 <body>
   <header>
-    <h1>SVG single-source character</h1>
-    <label>Expression <select id="expression"><option>neutral</option><option>happy</option><option>surprised</option></select></label>
+    <div class="heading-row">
+      <h1>SVG single-source · three synchronized views</h1>
+      <span class="asset-tag">Asset: Seed Scout · one authored SVG</span>
+    </div>
+    <div class="controls" aria-label="Shared comparison controls">
+      <button id="play-toggle" type="button" aria-pressed="true">Pause</button>
+      <label>Clip <select id="clip"><option value="idle">idle</option><option value="bounce">bounce</option></select></label>
+      <label>Time <input id="time" type="range" min="0" max="1200" step="1" value="0"><output id="time-value" for="time">0 ms</output></label>
+      <label>Expression <select id="expression"><option value="neutral">neutral</option><option value="happy">happy</option><option value="surprised">surprised</option></select></label>
+      <label>Zoom <input id="zoom" type="range" min="0.65" max="2.00" step="0.05" value="1"><output id="zoom-value" for="zoom">1.00×</output></label>
+      <button id="center-camera" type="button">Center</button>
+    </div>
+    <p class="help">Drag any panel to pan all three. Scrub the shared display clock; expressions, clip, zoom, and center apply to every view.</p>
   </header>
-  <main><canvas id="scene" width="800" height="600" aria-label="Animated vector seedling character"></canvas></main>
-  <footer id="status">One SVG source, retained mesh shared by all players, host-owned display clock.</footer>
+  <main>
+    <section class="panel" aria-labelledby="source-title">
+      <h2 id="source-title">1 · Authored SVG <small>Original paths · browser SVG</small></h2>
+      <div class="stage" id="source-stage"><svg id="source-svg" viewBox="0 0 200 220" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Original SVG source, posed by the shared authored clip"></svg></div>
+      <div class="metrics" id="source-metrics">Loading source SVG…</div>
+    </section>
+    <section class="panel" aria-labelledby="topology-title">
+      <h2 id="topology-title">2 · Compiled topology <small>Actual triangles · faces + wire edges</small></h2>
+      <div class="stage" id="topology-stage"><canvas id="topology-canvas" aria-label="Compiled SVG mesh triangles and wireframe"></canvas></div>
+      <div class="metrics" id="topology-metrics">Waiting for compiled geometry…</div>
+    </section>
+    <section class="panel" aria-labelledby="gamekit-title">
+      <h2 id="gamekit-title">3 · GameKit render <small>Actual WebGL 1 mesh output</small></h2>
+      <div class="stage" id="gamekit-stage"><canvas id="gamekit-canvas" aria-label="Seed Scout rendered through GameKit WebGL"></canvas></div>
+      <div class="metrics" id="gamekit-metrics">Waiting for GameKit WebGL…</div>
+    </section>
+  </main>
+  <footer id="status" aria-live="polite">Metrics report each view's actual rendering path. GPU elapsed time is not inferred from CPU timing.</footer>
   <script type="module">
     import { WebGLDevice, MeshRenderer, VectorContext } from '/dist/rendering.js';
     import { createSeedScout, seedScoutMetadata } from '/dist/vector-assets.js';
-    const canvas = document.querySelector('#scene');
+
+    const NS = 'http://www.w3.org/2000/svg';
+    const SOURCE_URL = 'https://raw.githubusercontent.com/byh-playground/bloom-gamekit/main/modules/vector-assets/assets/seed-scout.svg';
+    const background = [0.875, 0.91, 0.80, 1];
+    const canvas = document.querySelector('#gamekit-canvas');
+    const wireCanvas = document.querySelector('#topology-canvas');
+    const wireContext = wireCanvas.getContext('2d');
+    const sourceHost = document.querySelector('#source-svg');
+    const demo = { ready: false, device: null, meshes: null, asset: null, actor: null, sourceSvg: null,
+      sourceBytes: 0, sourcePathCount: 0, initializationMs: 0, creationStats: null, camera: { x: 100, y: 110, zoom: 1 },
+      topology: { triangles: 0, uniqueEdges: 0 }, lastFrame: null };
+    window.vectorAssetRuntime = { WebGLDevice, MeshRenderer, VectorContext, createSeedScout, seedScoutMetadata };
+    window.vectorAssetDemo = demo;
+
+    const matrixFromElement = element => {
+      const list = element.transform?.baseVal;
+      const item = list?.numberOfItems ? list.consolidate() : null;
+      const m = item?.matrix;
+      return m ? new DOMMatrix([m.a, m.b, m.c, m.d, m.e, m.f]) : new DOMMatrix();
+    };
+    const matrixString = matrix => 'matrix(' + [matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f].map(number => Number(number.toPrecision(12))).join(' ') + ')';
+    const getSourcePart = (shape, parts) => {
+      for (let node = shape.parentElement; node; node = node.parentElement) {
+        if (parts.has(node.id)) return node.id;
+      }
+      throw new Error('SVG shape has no authored part group: ' + shape.id);
+    };
+    async function loadAuthoredSvg(asset) {
+      const response = await fetch(SOURCE_URL, { mode: 'cors', cache: 'force-cache' });
+      if (!response.ok) throw new Error('Could not load the authored SVG (' + response.status + ')');
+      const bytes = await response.arrayBuffer();
+      const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+      const sourceSha = [...digest].map(value => value.toString(16).padStart(2, '0')).join('');
+      if (sourceSha !== asset.sourceSha256) throw new Error('Fetched SVG SHA does not match the compiled asset source SHA');
+      const text = new TextDecoder().decode(bytes);
+      const document = new DOMParser().parseFromString(text, 'image/svg+xml');
+      if (document.querySelector('parsererror') || document.documentElement?.localName !== 'svg') throw new Error('Authored source is not a valid SVG document');
+      if (document.querySelector('script, foreignObject, image, iframe, object, use')) throw new Error('The authored SVG contains unsupported active or external elements');
+      const original = document.documentElement;
+      const partIds = new Set(seedScoutMetadata.parts.map(part => part.id));
+      const wrappers = new Map();
+      const display = document.createElementNS(NS, 'svg');
+      display.id = 'source-svg';
+      display.setAttribute('viewBox', original.getAttribute('viewBox'));
+      display.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+      display.setAttribute('role', 'img');
+      display.setAttribute('aria-label', 'Original SVG source, posed by the shared authored clip');
+      for (const part of seedScoutMetadata.parts) {
+        const wrapper = document.createElementNS(NS, 'g');
+        wrapper.dataset.vectorPart = part.id;
+        wrappers.set(part.id, wrapper);
+        display.append(wrapper);
+      }
+      const allowed = 'path,rect,circle,ellipse,line,polyline,polygon';
+      const shapes = [...original.querySelectorAll(allowed)];
+      if (!shapes.length) throw new Error('Authored SVG contains no supported vector shapes');
+      for (const shape of shapes) {
+        const partId = getSourcePart(shape, partIds);
+        const chain = [];
+        for (let node = shape; node && node !== original; node = node.parentElement) chain.unshift(node);
+        let transform = new DOMMatrix();
+        for (const node of chain) transform = transform.multiply(matrixFromElement(node));
+        const copy = shape.cloneNode(true);
+        copy.setAttribute('transform', matrixString(transform));
+        wrappers.get(partId).append(copy);
+      }
+      sourceHost.replaceWith(display);
+      demo.sourceSvg = display;
+      demo.sourceBytes = bytes.byteLength;
+      demo.sourcePathCount = shapes.length;
+      return { wrappers, sha256: sourceSha };
+    }
+
+    (async () => {
+    const rendererInitializationStart = performance.now();
     const device = new WebGLDevice(canvas, { alpha: false, antialias: true, depth: false, stencil: false });
     const meshes = new MeshRenderer(device, { maxMeshes: 4, maxInstances: 8 });
+    const rendererInitializationMs = performance.now() - rendererInitializationStart;
+    const assetInitializationStart = performance.now();
     const asset = createSeedScout(meshes);
     const actor = asset.createPlayer({ clip: 'idle', startedAtMs: 0 });
+    Object.assign(demo, { device, meshes, asset, actor });
+    const creationStats = meshes.stats();
+    const assetInitializationMs = performance.now() - assetInitializationStart;
+    const triangleCount = asset.mesh.vertices.length / 33;
+    const partByIndex = seedScoutMetadata.parts.map(part => part.id);
+    const triangles = [];
+    const edgeMap = new Map();
+    const pointKey = (x, y) => Number(x.toFixed(4)) + ',' + Number(y.toFixed(4));
+    for (let offset = 0; offset < asset.mesh.vertices.length; offset += 33) {
+      const vertices = asset.mesh.vertices;
+      const partIndex = vertices[offset + 10];
+      const part = partByIndex[partIndex];
+      const points = [0, 11, 22].map(step => [vertices[offset + step], vertices[offset + step + 1]]);
+      const color = [vertices[offset + 2], vertices[offset + 3], vertices[offset + 4], vertices[offset + 5]];
+      triangles.push({ part, points, color });
+      for (let edge = 0; edge < 3; edge++) {
+        const a = points[edge], b = points[(edge + 1) % 3];
+        const ka = pointKey(a[0], a[1]), kb = pointKey(b[0], b[1]);
+        const key = part + '|' + (ka < kb ? ka + '|' + kb : kb + '|' + ka);
+        if (!edgeMap.has(key)) edgeMap.set(key, { part, a, b });
+      }
+    }
+    demo.topology = { triangles: triangles.length, uniqueEdges: edgeMap.size };
+    const edges = [...edgeMap.values()];
+    const source = await loadAuthoredSvg(asset);
+    demo.creationStats = creationStats;
+    demo.rendererInitializationMs = rendererInitializationMs;
+    demo.assetInitializationMs = assetInitializationMs;
+    demo.initializationMs = rendererInitializationMs + assetInitializationMs;
     const expression = document.querySelector('#expression');
-    expression.addEventListener('change', () => actor.setExpression(expression.value));
-    const projection = [2 / 200, 0, 0, 0, -2 / 220, 0, -1, 1, 1];
-    let lastSize = '';
-    function frame(displayTimeMs) {
-      const rect = canvas.getBoundingClientRect(), dpr = Math.min(2, window.devicePixelRatio || 1);
+    const clipInput = document.querySelector('#clip');
+    const timeInput = document.querySelector('#time');
+    const timeValue = document.querySelector('#time-value');
+    const zoomInput = document.querySelector('#zoom');
+    const zoomValue = document.querySelector('#zoom-value');
+    const playToggle = document.querySelector('#play-toggle');
+    const clipDefinition = () => seedScoutMetadata.clips[clipInput.value];
+    let displayTimeMs = 0;
+    let playing = true;
+    let previousFrameMs = null;
+    let stopped = false;
+    const svgParts = new Map([...demo.sourceSvg.querySelectorAll('[data-vector-part]')].map(group => [group.dataset.vectorPart, group]));
+    const format = value => Number(value).toFixed(2);
+
+    function updateSourceViewBox() {
+      const width = 200 / demo.camera.zoom, height = 220 / demo.camera.zoom;
+      demo.sourceSvg.setAttribute('viewBox', [demo.camera.x - width / 2, demo.camera.y - height / 2, width, height].map(format).join(' '));
+      zoomValue.value = demo.camera.zoom.toFixed(2) + '×';
+      zoomValue.textContent = zoomValue.value;
+    }
+    function fitCamera(width, height) {
+      const viewWidth = 200 / demo.camera.zoom, viewHeight = 220 / demo.camera.zoom;
+      const scale = Math.min(width / viewWidth, height / viewHeight);
+      return { scale, tx: width / 2 - demo.camera.x * scale, ty: height / 2 - demo.camera.y * scale };
+    }
+    function resizeCanvas(target, context2d = null) {
+      const rect = target.getBoundingClientRect(), dpr = Math.min(2, window.devicePixelRatio || 1);
       const width = Math.max(1, Math.round(rect.width * dpr)), height = Math.max(1, Math.round(rect.height * dpr));
-      const size = `${width}x${height}`;
-      if (size !== lastSize) { canvas.width = width; canvas.height = height; lastSize = size; }
-      const scale = Math.min(width / 200, height / 220), tx = (width - 200 * scale) / 2, ty = (height - 220 * scale) / 2;
-      const localProjection = [2 * scale / width, 0, 0, 0, -2 * scale / height, 0, 2 * tx / width - 1, 1 - 2 * ty / height, 1];
-      device.beginFrame({ width, height, clearColor: [0.875, 0.91, 0.80, 1], clearDepth: 1 });
-      meshes.beginFrame(); actor.seek(displayTimeMs); actor.draw({ projection: localProjection }); meshes.flush(); device.endFrame();
-      document.querySelector('#status').textContent = `source ${asset.sourceSha256.slice(0, 12)} · schema ${asset.schemaVersion} · ${seedScoutMetadata.parts.length} parts · socket ${Math.round(actor.getSocket('mouth').x)}, ${Math.round(actor.getSocket('mouth').y)}`;
+      if (target.width !== width) target.width = width;
+      if (target.height !== height) target.height = height;
+      if (context2d) context2d.setTransform(dpr, 0, 0, dpr, 0, 0);
+      return { width, height, cssWidth: rect.width, cssHeight: rect.height };
+    }
+    function syncPartLayers() {
+      const poses = new Map(seedScoutMetadata.parts.map(part => [part.id, actor.getPartPose(part.id)]));
+      for (const part of seedScoutMetadata.parts) {
+        const pose = poses.get(part.id), group = svgParts.get(part.id);
+        group.setAttribute('transform', 'matrix(' + pose.transform.map(format).join(' ') + ')');
+        group.style.display = pose.visible ? '' : 'none';
+        group.setAttribute('opacity', String(pose.opacity));
+      }
+      return poses;
+    }
+    function drawTopology(poses) {
+      const dimensions = resizeCanvas(wireCanvas, wireContext), width = dimensions.cssWidth, height = dimensions.cssHeight;
+      const camera = fitCamera(width, height), started = performance.now();
+      wireContext.clearRect(0, 0, width, height);
+      const project = (point, matrix) => {
+        const x = matrix[0] * point[0] + matrix[2] * point[1] + matrix[4];
+        const y = matrix[1] * point[0] + matrix[3] * point[1] + matrix[5];
+        return [camera.tx + x * camera.scale, camera.ty + y * camera.scale];
+      };
+      let visibleTriangles = 0;
+      for (const triangle of triangles) {
+        const pose = poses.get(triangle.part);
+        if (!pose.visible || pose.opacity <= 0) continue;
+        const points = triangle.points.map(point => project(point, pose.transform));
+        wireContext.beginPath(); wireContext.moveTo(points[0][0], points[0][1]);
+        wireContext.lineTo(points[1][0], points[1][1]); wireContext.lineTo(points[2][0], points[2][1]); wireContext.closePath();
+        wireContext.fillStyle = 'rgba(' + Math.round(triangle.color[0] * 255) + ',' + Math.round(triangle.color[1] * 255) + ',' + Math.round(triangle.color[2] * 255) + ',' + Math.max(0, Math.min(1, triangle.color[3] * pose.opacity * 0.58)) + ')';
+        wireContext.fill();
+        visibleTriangles++;
+      }
+      wireContext.lineWidth = 0.75;
+      wireContext.strokeStyle = 'rgba(30,46,38,.72)';
+      for (const edge of edges) {
+        const pose = poses.get(edge.part);
+        if (!pose.visible || pose.opacity <= 0) continue;
+        const a = project(edge.a, pose.transform), b = project(edge.b, pose.transform);
+        wireContext.beginPath(); wireContext.moveTo(a[0], a[1]); wireContext.lineTo(b[0], b[1]); wireContext.stroke();
+      }
+      return { visibleTriangles, cpuMs: performance.now() - started, width, height };
+    }
+    function drawGameKit(timeMs) {
+      const dimensions = resizeCanvas(canvas), { width, height } = dimensions;
+      const camera = fitCamera(width, height);
+      const projection = [2 * camera.scale / width, 0, 0, 0, -2 * camera.scale / height, 0,
+        2 * camera.tx / width - 1, 1 - 2 * camera.ty / height, 1];
+      device.beginFrame({ width, height, clearColor: background, clearDepth: 1 });
+      meshes.beginFrame();
+      actor.seek(timeMs);
+      actor.draw({ projection });
+      meshes.flush();
+      device.endFrame();
+      return { mesh: meshes.stats(), device: { ...device.stats }, glError: device.gl.getError() };
+    }
+    function updateReadouts(topologyFrame, gamekitFrame) {
+      document.querySelector('#source-metrics').innerHTML = '<strong>Native SVG</strong> · ' + demo.sourcePathCount + ' paths/shapes · ' + demo.sourceBytes.toLocaleString() + ' source bytes · SHA ' + source.sha256.slice(0, 12);
+      document.querySelector('#topology-metrics').innerHTML = '<strong>Canvas 2D</strong> · ' + topologyFrame.visibleTriangles.toLocaleString() + '/' + triangles.length.toLocaleString() + ' visible triangles · ' + edges.length.toLocaleString() + ' unique compiled edges · ' + topologyFrame.cpuMs.toFixed(2) + ' ms CPU draw';
+      const backend = device.instancingSupported ? 'WebGL 1 + ANGLE instancing' : 'WebGL 1 + per-draw uniforms';
+      document.querySelector('#gamekit-metrics').innerHTML = '<strong>' + backend + '</strong> · ' + gamekitFrame.device.drawCalls + ' draw calls · ' + asset.mesh.byteLength.toLocaleString() + ' retained geometry bytes · create upload ' + creationStats.geometryBytesUploaded.toLocaleString() + ' B once · frame geometry ' + gamekitFrame.mesh.geometryBytesUploaded.toLocaleString() + ' B · instance ' + gamekitFrame.mesh.instanceBytesUploaded.toLocaleString() + ' B · GPU buffers ' + gamekitFrame.device.gpuBufferBytes.toLocaleString() + ' B · WebGL init ' + rendererInitializationMs.toFixed(2) + ' ms · asset init ' + assetInitializationMs.toFixed(2) + ' ms';
+      document.querySelector('#status').textContent = 'Per view, one character at the same display time. SVG = browser SVG; topology = Canvas 2D from compiled GameKit triangle vertices; game = GameKit WebGL 1. The shown draw/upload counters are device counters; GPU elapsed time is not inferred or available here.';
+    }
+    function syncTimeControls() {
+      const definition = clipDefinition();
+      timeInput.max = String(definition.durationMs);
+      timeInput.value = String(Math.min(definition.durationMs, displayTimeMs));
+      timeValue.value = Math.round(displayTimeMs) + ' ms / ' + definition.durationMs + ' ms';
+      timeValue.textContent = timeValue.value;
+      playToggle.textContent = playing ? 'Pause' : 'Play';
+      playToggle.setAttribute('aria-pressed', String(playing));
+    }
+    function frame(now) {
+      if (stopped) return;
+      if (previousFrameMs !== null && playing) {
+        const delta = Math.min(80, Math.max(0, now - previousFrameMs));
+        displayTimeMs += delta;
+        const definition = clipDefinition();
+        if (definition.loop === 'once' && displayTimeMs >= definition.durationMs) {
+          displayTimeMs = definition.durationMs;
+          playing = false;
+        } else if (definition.loop !== 'once') displayTimeMs %= definition.durationMs;
+      }
+      previousFrameMs = now;
+      syncTimeControls();
+      actor.seek(displayTimeMs);
+      const poses = syncPartLayers();
+      const topologyFrame = drawTopology(poses);
+      const gamekitFrame = drawGameKit(displayTimeMs);
+      demo.lastFrame = { timeMs: displayTimeMs, expression: actor.currentExpression, topology: topologyFrame, gamekit: gamekitFrame };
+      updateReadouts(topologyFrame, gamekitFrame);
       requestAnimationFrame(frame);
     }
+    clipInput.addEventListener('change', () => {
+      displayTimeMs = 0; actor.play(clipInput.value, displayTimeMs); playing = true; previousFrameMs = null; syncTimeControls();
+    });
+    expression.addEventListener('change', () => actor.setExpression(expression.value));
+    timeInput.addEventListener('input', () => { displayTimeMs = Number(timeInput.value); actor.seek(displayTimeMs); syncTimeControls(); });
+    zoomInput.addEventListener('input', () => { demo.camera.zoom = Number(zoomInput.value); updateSourceViewBox(); });
+    playToggle.addEventListener('click', () => {
+      const definition = clipDefinition();
+      if (!playing && definition.loop === 'once' && displayTimeMs >= definition.durationMs) {
+        displayTimeMs = 0; actor.play(clipInput.value, 0);
+      }
+      playing = !playing; previousFrameMs = null; syncTimeControls();
+    });
+    document.querySelector('#center-camera').addEventListener('click', () => {
+      demo.camera.x = 100; demo.camera.y = 110; updateSourceViewBox();
+    });
+    for (const stage of document.querySelectorAll('.stage')) {
+      let drag = null;
+      stage.addEventListener('pointerdown', event => {
+        if (event.button !== 0) return;
+        const rect = stage.getBoundingClientRect(), camera = fitCamera(rect.width, rect.height);
+        drag = { x: event.clientX, y: event.clientY, cameraX: demo.camera.x, cameraY: demo.camera.y, scale: camera.scale };
+        stage.classList.add('dragging'); stage.setPointerCapture(event.pointerId); event.preventDefault();
+      });
+      stage.addEventListener('pointermove', event => {
+        if (!drag) return;
+        demo.camera.x = drag.cameraX - (event.clientX - drag.x) / drag.scale;
+        demo.camera.y = drag.cameraY - (event.clientY - drag.y) / drag.scale;
+        updateSourceViewBox();
+      });
+      const endDrag = () => { drag = null; stage.classList.remove('dragging'); };
+      stage.addEventListener('pointerup', endDrag); stage.addEventListener('pointercancel', endDrag);
+    }
+    window.addEventListener('resize', updateSourceViewBox);
+    window.addEventListener('pagehide', () => {
+      stopped = true; actor.dispose(); asset.dispose(); meshes.dispose(); device.dispose();
+    }, { once: true });
+    demo.ready = true;
+    updateSourceViewBox();
     requestAnimationFrame(frame);
-    window.addEventListener('pagehide', () => { actor.dispose(); asset.dispose(); meshes.dispose(); device.dispose(); }, { once: true });
-    window.vectorAssetRuntime = { WebGLDevice, MeshRenderer, VectorContext, createSeedScout, seedScoutMetadata };
-    window.vectorAssetDemo = { device, meshes, asset, actor };
+    window.vectorAssetDemo = demo;
+    })().catch(error => {
+      demo.error = error.message;
+      const status = document.querySelector('#status');
+      status.textContent = 'Example failed: ' + error.message;
+      status.classList.add('error');
+    });
   </script>
 </body>
 </html>
