@@ -108,6 +108,7 @@ export function createVectorAsset(meshRenderer, compiledAsset) {
 
     let rootPlayback = { kind: 'clip', name: clip, startedAtMs };
     let expression = metadata.defaultExpression;
+    let visibilityOverridden = false;
     let displayTimeMs = startedAtMs;
     let currentPose = new Map(metadata.parts.map(part => [part.id, { ...DEFAULT_POSE }]));
     let playerDisposed = false;
@@ -143,12 +144,14 @@ export function createVectorAsset(meshRenderer, compiledAsset) {
       for (const id of variant.show) visible.set(id, true);
       for (const id of variant.hide) visible.set(id, false);
       expression = name;
+      visibilityOverridden = false;
       return player;
     };
     const setPartVisible = (id, isVisible) => {
       assertPlayer();
       if (!partIndices.has(id) || typeof isVisible !== 'boolean') throw new TypeError('Known part id and boolean visibility required');
       visible.set(id, isVisible);
+      visibilityOverridden = true;
       return player;
     };
     const setBasePose = (id, pose) => {
@@ -215,8 +218,9 @@ export function createVectorAsset(meshRenderer, compiledAsset) {
       depth = 0, depthTest = false, depthWrite = false, depthFunc = 'lequal' } = {}) => {
       assertPlayer();
       const poses = partPoses().map(({ transform, opacity, visible: isVisible }) => ({ transform, opacity, visible: isVisible }));
+      const indexVariant = !visibilityOverridden && compiledAsset.geometry.expressionIndices?.[expression] ? expression : null;
       meshRenderer.drawMesh(mesh, { projection, matrix, parts: poses, morph: authoredMorph(metadata, displayTimeMs), alpha, color, forceColor,
-        depth, depthTest, depthWrite, depthFunc });
+        depth, depthTest, depthWrite, depthFunc, indexVariant });
     };
     const getPartPose = id => {
       assertPlayer();

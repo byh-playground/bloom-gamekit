@@ -824,7 +824,7 @@ function colorFromComponents(rgba) {
   return new Color().setRGB(rgba[0], rgba[1], rgba[2], SRGBColorSpace);
 }
 
-function compilePaths(paths, partIndices, parts, metadata, gradients) {
+function compilePaths(paths, partIndices, parts, metadata, gradients, curveSegments) {
   const vertices = [];
   const styled = new Map((metadata.styles ?? []).map(style => [style.target, style]));
   const morphCount = metadata.styles?.some(style => style.kind === 'sketch') ? 2 : 0;
@@ -851,7 +851,7 @@ function compilePaths(paths, partIndices, parts, metadata, gradients) {
       if (fillOpacity > 0) for (const shape of shapes) {
         if (fillGradient) appendGradientShape(vertices, shape, fillGradient, gradientBounds, path.userData.transform, fillOpacity, partIndex);
         else {
-          const geometry = new ShapeGeometry(shape, 16);
+          const geometry = new ShapeGeometry(shape, curveSegments);
           appendTriangles(vertices, geometry, colorComponents(path.color, fillOpacity), partIndex);
           geometry.dispose();
         }
@@ -867,7 +867,7 @@ function compilePaths(paths, partIndices, parts, metadata, gradients) {
         const rgba = colorComponents(new Color().setStyle(style.stroke, SRGBColorSpace), opacity);
         const stroke = SVGLoader.getStrokeStyle(style.strokeWidth, style.stroke, style.strokeLineJoin, style.strokeLineCap, style.strokeMiterLimit);
         for (const subPath of path.subPaths) {
-          const geometry = SVGLoader.pointsToStroke(subPath.getPoints(16), stroke, 12, 0.001);
+          const geometry = SVGLoader.pointsToStroke(subPath.getPoints(curveSegments), stroke, 12, 0.001);
           if (geometry) {
             appendTriangles(vertices, geometry, rgba, partIndex);
             geometry.dispose();
@@ -892,6 +892,37 @@ function compilePaths(paths, partIndices, parts, metadata, gradients) {
     indices.push(index);
   }
   return { vertices: new Float32Array(uniqueVertices), indices: new Uint16Array(indices), morphCount };
+}
+
+function compileExpressionIndices(geometry, metadata) {
+  const partIndices = new Map(metadata.parts.map((part, index) => [part.id, index]));
+  const output = {};
+  for (const [name, expression] of Object.entries(metadata.expressions)) {
+    // An expression only hides the parts it names. Keep omitted parts in the
+    // index list because their visibility can be inherited from an earlier
+    // expression or the player's initial visible state.
+    const visible = metadata.parts.map(() => true);
+    for (const id of expression.show) visible[partIndices.get(id)] = true;
+    for (const id of expression.hide) visible[partIndices.get(id)] = false;
+    for (let index = 0; index < metadata.parts.length; index++) {
+      let parent = metadata.parts[index].parent;
+      while (parent !== null) {
+        if (!visible[partIndices.get(parent)]) { visible[index] = false; break; }
+        parent = metadata.parts[partIndices.get(parent)].parent;
+      }
+    }
+    const indices = [];
+    for (let offset = 0; offset < geometry.indices.length; offset += 3) {
+      const a = geometry.indices[offset], b = geometry.indices[offset + 1], c = geometry.indices[offset + 2];
+      const part = geometry.vertices[a * 11 + 10];
+      if (geometry.vertices[b * 11 + 10] !== part || geometry.vertices[c * 11 + 10] !== part) {
+        throw new TypeError('Compiled SVG triangle crosses authored part boundaries');
+      }
+      if (visible[part]) indices.push(a, b, c);
+    }
+    output[name] = new Uint16Array(indices);
+  }
+  return output;
 }
 
 function compileSourcePaths(paths, partIndices, parts) {
@@ -967,7 +998,11 @@ function installSvgLoaderSelectors(document) {
   install(document.documentElement);
 }
 
-export function compileVectorAsset(svgBytes, sourcePath = 'asset.svg') {
+export function compileVectorAsset(svgBytes, sourcePath = 'asset.svg', options = {}) {
+  if (options === null || typeof options !== 'object' || Array.isArray(options)
+      || Object.keys(options).some(key => key !== 'curveSegments')) throw new TypeError('Only curveSegments compiler option is supported');
+  const curveSegments = options.curveSegments ?? 16;
+  if (!Number.isSafeInteger(curveSegments) || curveSegments < 4 || curveSegments > 64) throw new RangeError('curveSegments must be an integer from 4 to 64');
   const source = Buffer.isBuffer(svgBytes) ? svgBytes : Buffer.from(String(svgBytes), 'utf8');
   if (!source.length || source.byteLength > MAX_SOURCE_BYTES) throw new RangeError('SVG source must be 1..512 KiB');
   const text = source.toString('utf8');
@@ -996,7 +1031,8 @@ export function compileVectorAsset(svgBytes, sourcePath = 'asset.svg') {
     return { clean: withoutMetadata(original), loader };
   });
   const paths = withNodeDomParser(() => vectorText.loader.parse(vectorText.clean).paths);
-  const geometry = compilePaths(paths, partIndices, metadata.parts, metadata, gradients);
+  const geometry = compilePaths(paths, partIndices, metadata.parts, metadata, gradients, curveSegments);
+  geometry.expressionIndices = compileExpressionIndices(geometry, metadata);
   const sourcePaths = compileSourcePaths(paths, partIndices, metadata.parts);
   const paintedIds = new Set(paths.map(path => path.userData.node.getAttribute('id')));
   const shapeNodes = [...ids.values()].filter(node => ['path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon'].includes(node.nodeName));
@@ -1004,6 +1040,7 @@ export function compileVectorAsset(svgBytes, sourcePath = 'asset.svg') {
   return {
     schemaVersion: VECTOR_ASSET_SCHEMA_VERSION,
     compilerVersion: VECTOR_ASSET_COMPILER_VERSION,
+    compilerOptions: { curveSegments },
     sourceSha256: createHash('sha256').update(source).digest('hex'),
     sourcePath,
     metadata,
@@ -1013,9 +1050,9 @@ export function compileVectorAsset(svgBytes, sourcePath = 'asset.svg') {
   };
 }
 
-export async function compileVectorAssetFile(svgPath, sourcePath = 'asset.svg') {
+export async function compileVectorAssetFile(svgPath, sourcePath = 'asset.svg', options = {}) {
   const bytes = await readFile(svgPath);
-  return compileVectorAsset(bytes, sourcePath);
+  return compileVectorAsset(bytes, sourcePath, options);
 }
 
 function javascriptValue(value) {

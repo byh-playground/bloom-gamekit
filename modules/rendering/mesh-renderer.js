@@ -89,6 +89,7 @@ export class MeshRenderer {
         for (const mesh of this.meshes) {
           device.uploadVertices(mesh.buffer, mesh.vertices);
           if (mesh.indices) device.uploadIndices(mesh.indexBuffer, mesh.indices);
+          for (const variant of mesh.expressionIndices.values()) if (variant.indices.length) device.uploadIndices(variant.indexBuffer, variant.indices);
         }
         this.state = 'ready'; this.failure = null;
       } catch (error) { this.state = 'failed'; this.failure = error.message; }
@@ -115,32 +116,45 @@ export class MeshRenderer {
   createMesh(data) {
     this._ready();
     const indices = data?.indices;
+    const expressionIndices = data?.expressionIndices === undefined ? {} : data.expressionIndices;
     if (!(data?.vertices instanceof Float32Array) || data.vertices.length < 33 || data.vertices.length % 11 || data.strideFloats !== 11 || !Number.isSafeInteger(data.partCount) || data.partCount < 1 || data.partCount > 16 || !Number.isSafeInteger(data.morphCount) || data.morphCount < 0 || data.morphCount > 2
         || (indices !== undefined && (!(indices instanceof Uint16Array) || indices.length < 3 || indices.length % 3 || data.vertices.length / 11 > 0x10000 || indices.some(index => index >= data.vertices.length / 11)))
-        || (indices === undefined && data.vertices.length % 33)) throw new TypeError('Mesh geometry with complete triangles and 1..16 parts required');
+        || (indices === undefined && data.vertices.length % 33)
+        || !expressionIndices || typeof expressionIndices !== 'object' || Array.isArray(expressionIndices)) throw new TypeError('Mesh geometry with complete triangles and 1..16 parts required');
+    const variantEntries = Object.entries(expressionIndices);
+    if (variantEntries.some(([name, variant]) => !name || !(variant instanceof Uint16Array) || variant.length % 3 || variant.some(index => index >= data.vertices.length / 11))) throw new TypeError('Invalid expression index variants');
     if (data.vertices.some(n => !Number.isFinite(n))) throw new TypeError('Mesh values must be finite');
     for (let i = 0; i < data.vertices.length; i++) {
       if (i % 11 >= 2 && i % 11 < 6 && (data.vertices[i] < 0 || data.vertices[i] > 1)) throw new RangeError('Mesh RGBA channels must be in [0,1]');
       if (i % 11 === 10 && (!Number.isSafeInteger(data.vertices[i]) || data.vertices[i] < 0 || data.vertices[i] >= data.partCount)) throw new RangeError('Mesh part index outside partCount');
       if (i % 11 >= 6 + data.morphCount * 2 && i % 11 < 10 && data.vertices[i] !== 0) throw new RangeError('Mesh deltas exceed declared morphCount');
     }
-    const byteLength = data.vertices.byteLength + (indices?.byteLength ?? 0);
+    const variantByteLength = variantEntries.reduce((total, [, variant]) => total + variant.byteLength, 0);
+    const byteLength = data.vertices.byteLength + (indices?.byteLength ?? 0) + variantByteLength;
     if (this.meshes.size >= this.maxMeshes || this.bytes + byteLength > this.maxMeshBytes) throw new RangeError('Retained mesh budget exceeded');
     const vertices = data.vertices.slice(), ownedIndices = indices?.slice(), buffer = this.device.createVertexBuffer({ capacityBytes: vertices.byteLength });
-    let indexBuffer;
+    let indexBuffer; const ownedVariants = new Map();
     try {
       this.device.uploadVertices(buffer, vertices);
       if (ownedIndices) {
         indexBuffer = this.device.createIndexBuffer({ capacityBytes: ownedIndices.byteLength });
         this.device.uploadIndices(indexBuffer, ownedIndices);
       }
+      for (const [name, source] of variantEntries) {
+        const variantIndices = source.slice();
+        const variantBuffer = variantIndices.length ? this.device.createIndexBuffer({ capacityBytes: variantIndices.byteLength }) : null;
+        const variant = { indices: variantIndices, indexBuffer: variantBuffer, count: variantIndices.length };
+        ownedVariants.set(name, variant);
+        if (variantBuffer) this.device.uploadIndices(variantBuffer, variantIndices);
+      }
     } catch (error) {
+      for (const variant of ownedVariants.values()) if (variant.indexBuffer) this.device.deleteIndexBuffer(variant.indexBuffer);
       if (indexBuffer) this.device.deleteIndexBuffer(indexBuffer);
       this.device.deleteVertexBuffer(buffer);
       throw error;
     }
     const mesh = Object.freeze({ renderer: this, buffer, indexBuffer, vertices, indices: ownedIndices,
-      count: ownedIndices?.length ?? vertices.length / 11, byteLength, partCount: data.partCount, morphCount: data.morphCount });
+      expressionIndices: ownedVariants, count: ownedIndices?.length ?? vertices.length / 11, byteLength, partCount: data.partCount, morphCount: data.morphCount });
     this.meshes.add(mesh); this.bytes += byteLength;
     this.metrics.geometryUploads++; this.metrics.geometryBytesUploaded += byteLength;
     return mesh;
@@ -150,6 +164,7 @@ export class MeshRenderer {
     if (this.pending?.mesh === mesh) this.flush();
     this.device.deleteVertexBuffer(mesh.buffer);
     if (mesh.indexBuffer) this.device.deleteIndexBuffer(mesh.indexBuffer);
+    for (const variant of mesh.expressionIndices.values()) if (variant.indexBuffer) this.device.deleteIndexBuffer(variant.indexBuffer);
     this.meshes.delete(mesh); this.bytes -= mesh.byteLength;
     return true;
   }
@@ -157,16 +172,17 @@ export class MeshRenderer {
   drawMesh(mesh, options = {}) {
     const { matrix = IDENTITY, projection, morph = [0, 0], parts = null, color = WHITE,
       forceColor = false, alpha = 1, whiteFlash = false, clips = [], depth = 0,
-      depthTest = false, depthWrite = false, depthFunc = 'lequal' } = options;
-    this._drawMeshInstances(mesh, { matrices: matrix, count: 1, projection, morph, parts, color, forceColor, alpha, whiteFlash, clips,
+      depthTest = false, depthWrite = false, depthFunc = 'lequal', indexVariant = null } = options;
+    this._drawMeshInstances(mesh, { matrices: matrix, count: 1, projection, morph, parts, color, forceColor, alpha, whiteFlash, clips, indexVariant,
       depth, depthTest, depthWrite, depthFunc });
   }
   /** Internal ordered instance append used when one retained pose has several transforms. */
   _drawMeshInstances(mesh, { matrices, count, projection, morph = [0, 0], parts = null, color = WHITE,
     forceColor = false, alpha = 1, whiteFlash = false, clips = [], prefixColor = null,
-    prefixCount = 0, forceColorPrefixCount = 0, depth = 0, depthTest = false, depthWrite = false, depthFunc = 'lequal' } = {}) {
+    prefixCount = 0, forceColorPrefixCount = 0, depth = 0, depthTest = false, depthWrite = false, depthFunc = 'lequal', indexVariant = null } = {}) {
     this._ready();
     if (!this.meshes.has(mesh)) throw new TypeError('Mesh owned by this renderer required');
+    if (indexVariant !== null && (typeof indexVariant !== 'string' || !mesh.expressionIndices.has(indexVariant))) throw new TypeError('Known mesh expression index variant required');
     if (!this.device.active) throw new Error('beginFrame required');
     if (!Number.isSafeInteger(count) || count < 1 || !matrices || matrices.length !== count * 6) throw new TypeError('Packed mesh instance matrices required');
     for (let i = 0; i < matrices.length; i++) if (!Number.isFinite(matrices[i])) throw new TypeError('Mesh matrix values must be finite');
@@ -183,15 +199,17 @@ export class MeshRenderer {
       if (prefixColor.some(n => n < 0 || n > 1)) throw new RangeError('RGBA channels must be in [0,1]');
     }
     const clip = clipState(clips, this.maxPlanes), pending = this.pending;
+    const variant = indexVariant === null ? null : mesh.expressionIndices.get(indexVariant);
     packParts(parts, mesh.partCount, this.partScratch);
     for (let i = 0; i < mesh.partCount; i++) if (depth + this.partScratch[i * 12 + 11] < -1 || depth + this.partScratch[i * 12 + 11] > 1) throw new RangeError('combined mesh and part depth must be in [-1,1]');
     const depthStateKey = `${Number(depthTest)}:${Number(depthWrite)}:${depthFunc}`;
-    if (pending && (pending.mesh !== mesh || pending.clip.key !== clip.key || pending.depthStateKey !== depthStateKey || projection.some((n, i) => Math.fround(n) !== pending.projection[i]) || (mesh.partCount > 1 && pending.parts.some((n, i) => n !== this.partScratch[i])) || this.count === this.maxInstances)) this.flush();
+    if (pending && (pending.mesh !== mesh || pending.indexVariant !== indexVariant || pending.clip.key !== clip.key || pending.depthStateKey !== depthStateKey || projection.some((n, i) => Math.fround(n) !== pending.projection[i]) || (mesh.partCount > 1 && pending.parts.some((n, i) => n !== this.partScratch[i])) || this.count === this.maxInstances)) this.flush();
+    if (variant?.count === 0) return;
     const part = this.partScratch, singlePart = mesh.partCount === 1;
     for (let i = 0; i < count; i++) {
       if (this.count === this.maxInstances) this.flush();
       if (!this.pending) this.pending = { mesh, projection: Float32Array.from(projection), clip, depthStateKey,
-        depthState: { test: depthTest, write: depthWrite, func: depthFunc }, parts: this.partScratch.slice(0, mesh.partCount > 1 ? mesh.partCount * 12 : 0) };
+        indexVariant, depthState: { test: depthTest, write: depthWrite, func: depthFunc }, parts: this.partScratch.slice(0, mesh.partCount > 1 ? mesh.partCount * 12 : 0) };
       const offset = i * 6;
       let m0 = matrices[offset], m1 = matrices[offset + 1], m2 = matrices[offset + 2], m3 = matrices[offset + 3], m4 = matrices[offset + 4], m5 = matrices[offset + 5];
       let weight0 = morph[0], weight1 = morph[1], instanceAlpha = alpha;
@@ -215,20 +233,21 @@ export class MeshRenderer {
   flush() {
     if (!this.count) return;
     this._ready();
-    const { mesh, projection, clip, parts, depthState } = this.pending;
+    const { mesh, projection, clip, parts, depthState, indexVariant } = this.pending;
+    const variant = indexVariant === null ? null : mesh.expressionIndices.get(indexVariant);
     this.planes.fill(0); if (clip.values) this.planes.set(clip.values);
     const pipeline = this._pipeline(mesh, clip.count > 0), uniforms = { u_projection: projection };
     if (clip.count) Object.assign(uniforms, { 'u_planes[0]': this.planes, u_planeCount: clip.count });
     if (mesh.partCount > 1) uniforms['u_parts[0]'] = parts;
     if (this.instanced) {
       this.device.uploadVertices(this.instanceBuffer, this.instances.subarray(0, this.count * 16));
-      this.device.draw({ pipeline, buffer: mesh.buffer, indexBuffer: mesh.indexBuffer, count: mesh.count, instanceBuffer: this.instanceBuffer, instances: this.count, uniforms, depth: depthState });
+      this.device.draw({ pipeline, buffer: mesh.buffer, indexBuffer: variant?.indexBuffer ?? mesh.indexBuffer, count: variant?.count ?? mesh.count, instanceBuffer: this.instanceBuffer, instances: this.count, uniforms, depth: depthState });
       this.metrics.instanceBytesUploaded += this.count * 64; this.metrics.draws++;
       this.metrics.partUniformBytesSubmitted += parts.byteLength;
     } else {
       for (let i = 0; i < this.count; i++) {
         for (let j = 0; j < 4; j++) uniforms[['i_row0', 'i_row1', 'i_color', 'i_params'][j]] = this.instances.subarray(i * 16 + j * 4, i * 16 + j * 4 + 4);
-        this.device.draw({ pipeline, buffer: mesh.buffer, indexBuffer: mesh.indexBuffer, count: mesh.count, uniforms, depth: depthState }); this.metrics.draws++;
+        this.device.draw({ pipeline, buffer: mesh.buffer, indexBuffer: variant?.indexBuffer ?? mesh.indexBuffer, count: variant?.count ?? mesh.count, uniforms, depth: depthState }); this.metrics.draws++;
         this.metrics.partUniformBytesSubmitted += parts.byteLength;
       }
     }
@@ -244,6 +263,7 @@ export class MeshRenderer {
     for (const mesh of this.meshes) {
       this.device.deleteVertexBuffer(mesh.buffer);
       if (mesh.indexBuffer) this.device.deleteIndexBuffer(mesh.indexBuffer);
+      for (const variant of mesh.expressionIndices.values()) if (variant.indexBuffer) this.device.deleteIndexBuffer(variant.indexBuffer);
     }
     this.meshes.clear(); this.bytes = 0;
     if (this.instanceBuffer) this.device.deleteVertexBuffer(this.instanceBuffer);

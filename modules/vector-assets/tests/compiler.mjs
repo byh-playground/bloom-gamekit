@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { compileVectorAsset, compileVectorAssetFile } from '../compiler.js';
 import { validateCompiledAsset } from '../schema.js';
@@ -9,13 +10,59 @@ const source = await readFile(sourcePath);
 const asset = await compileVectorAssetFile(sourcePath, sourcePath);
 validateCompiledAsset(asset);
 assert.equal(asset.schemaVersion, 1);
-assert.equal(asset.compilerVersion, '0.5.0');
+assert.equal(asset.compilerVersion, '0.6.0');
 assert.doesNotThrow(() => validateCompiledAsset({ ...asset, compilerVersion: '0.2.0' }), 'previous compiled meshes remain valid under the unchanged asset schema');
+const { compilerOptions: ignoredCompilerOptions, ...assetWithoutCompilerOptions } = asset;
+assert.throws(() => validateCompiledAsset({ ...assetWithoutCompilerOptions, compilerVersion: '0.6.0' }), /compiler options/i,
+  'compiler 0.6 output must identify its tessellation setting');
+assert.equal(asset.compilerOptions.curveSegments, 16, 'the default curve quality is recorded in compiled output');
 assert.equal(asset.geometry.strideFloats, 11);
 assert.ok(asset.geometry.indices instanceof Uint16Array, 'SVG compiler retains unique vertices and triangle indices');
 assert.equal(asset.geometry.indices.length % 3, 0);
 assert.ok(asset.geometry.indices.length / (asset.geometry.vertices.length / 11) > 2.5, 'static SVG triangulation contains reusable vertex attributes');
 assert.equal(asset.geometry.partCount, 7);
+for (const [name, indices] of Object.entries(asset.geometry.expressionIndices)) {
+  assert.ok(indices instanceof Uint16Array && indices.length % 3 === 0, `${name} compiles a retained triangle index variant`);
+  assert.ok(indices.length < asset.geometry.indices.length, `${name} omits the mutually exclusive expression geometry`);
+  const expression = asset.metadata.expressions[name], hidden = new Set(expression.hide);
+  for (const index of indices) {
+    const partId = asset.metadata.parts[asset.geometry.vertices[index * 11 + 10]].id;
+    assert.ok(!hidden.has(partId), `${name} index variant excludes hidden part ${partId}`);
+  }
+}
+const coarseAsset = compileVectorAsset(source, sourcePath, { curveSegments: 8 });
+validateCompiledAsset(coarseAsset);
+assert.equal(coarseAsset.compilerOptions.curveSegments, 8);
+assert.ok(coarseAsset.geometry.indices.length < asset.geometry.indices.length * 0.7,
+  'eight-segment curves reduce the same authored SVG triangle references by at least 30%');
+for (const curveSegments of [4, 64]) {
+  const boundaryAsset = compileVectorAsset(source, sourcePath, { curveSegments });
+  validateCompiledAsset(boundaryAsset);
+  assert.equal(boundaryAsset.compilerOptions.curveSegments, curveSegments, `${curveSegments} is an accepted curveSegments boundary`);
+}
+assert.throws(() => compileVectorAsset(source, sourcePath, { curveSegments: 3 }), /curveSegments/i);
+assert.throws(() => compileVectorAsset(source, sourcePath, { curveSegments: 65 }), /curveSegments/i);
+assert.throws(() => compileVectorAsset(source, sourcePath, { quality: 'low' }), /Only curveSegments/i);
+assert.throws(() => compileVectorAsset(source, sourcePath, { curveSegments: 8.5 }), /curveSegments/i);
+const cli = spawnSync(process.execPath, ['modules/vector-assets/scripts/compile.mjs', sourcePath, '--curve-segments', '8'],
+  { encoding: 'utf8', maxBuffer: 1024 * 1024 });
+assert.equal(cli.status, 0, cli.stderr);
+assert.equal(JSON.parse(cli.stdout).compilerOptions.curveSegments, 8, 'CLI exposes the same recorded tessellation contract');
+const invalidCli = spawnSync(process.execPath, ['modules/vector-assets/scripts/compile.mjs', sourcePath, '--curve-segments', '3'],
+  { encoding: 'utf8', maxBuffer: 1024 * 1024 });
+assert.notEqual(invalidCli.status, 0, 'CLI rejects values below the documented boundary');
+const sparseExpressionSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20"><metadata id="vector-asset">${JSON.stringify({
+  schemaVersion: 1, id: 'sparse-expression-fixture', defaultExpression: 'default',
+  parts: [{ id: 'body', parent: null, pivot: [0, 0] }, { id: 'eyes', parent: 'body', pivot: [0, 0] }],
+  expressions: { default: { show: [], hide: [] }, hidden: { show: [], hide: ['eyes'] } }, sockets: {},
+  clips: { idle: { durationMs: 100, loop: 'repeat', easing: 'linear', keyframes: [
+    { timeMs: 0, easing: 'linear', parts: {} }, { timeMs: 100, easing: 'linear', parts: {} },
+  ] } },
+})}</metadata><g id="body"><rect id="body-shape" x="0" y="0" width="20" height="20" fill="#f00"/><g id="eyes"><circle id="eyes-shape" cx="10" cy="10" r="3" fill="#00f"/></g></g></svg>`;
+const sparseExpressionAsset = compileVectorAsset(Buffer.from(sparseExpressionSvg), 'sparse-expression-fixture.svg');
+const eyesPart = sparseExpressionAsset.metadata.parts.findIndex(part => part.id === 'eyes');
+assert.ok([...sparseExpressionAsset.geometry.expressionIndices.default].some(index => sparseExpressionAsset.geometry.vertices[index * 11 + 10] === eyesPart),
+  'an expression variant keeps an omitted part because the initial player state leaves it visible');
 const combinedAssetGeometry = MeshBuilder.combine([asset.geometry, asset.geometry]);
 assert.equal(combinedAssetGeometry.partCount, 14);
 assert.equal(combinedAssetGeometry.indices.length, asset.geometry.indices.length * 2, 'combining indexed assets offsets each source index');
