@@ -9,7 +9,7 @@ const source = await readFile(sourcePath);
 const asset = await compileVectorAssetFile(sourcePath, sourcePath);
 validateCompiledAsset(asset);
 assert.equal(asset.schemaVersion, 1);
-assert.equal(asset.compilerVersion, '0.4.0');
+assert.equal(asset.compilerVersion, '0.5.0');
 assert.doesNotThrow(() => validateCompiledAsset({ ...asset, compilerVersion: '0.2.0' }), 'previous compiled meshes remain valid under the unchanged asset schema');
 assert.equal(asset.geometry.strideFloats, 11);
 assert.ok(asset.geometry.indices instanceof Uint16Array, 'SVG compiler retains unique vertices and triangle indices');
@@ -54,6 +54,44 @@ reject('id="body-outline"', /unique/i, 'id="body"');
 reject('"schemaVersion": 1,', /valid JSON/i, '"schemaVersion": nope,');
 reject('id="vector-asset"', /metadata#vector-asset/i, 'id="author-notes"');
 const yarnSource = await readFile('modules/vector-assets/assets/yarn-fox.svg', 'utf8');
+const yarnMetadata = /<metadata id="vector-asset">([\s\S]*?)<\/metadata>/.exec(yarnSource)?.[1];
+assert.ok(yarnMetadata, 'the yarn fixture retains its authored metadata');
+const yarnEdgeMetadata = yarnMetadata.replace('"pattern":true', '"pattern":false').replace('"fiber":true', '"fiber":false');
+const yarnEdgeSource = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><metadata id="vector-asset">${yarnEdgeMetadata}</metadata><defs><linearGradient id="yarn-gradient" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0" stop-color="#ffffff"/><stop offset="0.53" stop-color="#888888"/><stop offset="1" stop-color="#000000"/></linearGradient></defs><g id="body"><path id="yarn-shell" fill="url(#yarn-gradient)" d="M0 0 H100 V100 H0 Z"/></g></svg>`;
+const yarnEdgeAsset = compileVectorAsset(Buffer.from(yarnEdgeSource), 'yarn-gradient-edge.svg');
+const yarnVertices = yarnEdgeAsset.geometry.vertices;
+const darkEdgeSamples = [];
+for (let index = 0; index < yarnVertices.length; index += 11) {
+  if (Math.abs(yarnVertices[index + 5] - 0.7) < 0.01) darkEdgeSamples.push({ x: yarnVertices[index], red: yarnVertices[index + 2] });
+}
+const leftEdgeRed = darkEdgeSamples.filter(sample => sample.x < 15).map(sample => sample.red);
+const rightEdgeRed = darkEdgeSamples.filter(sample => sample.x > 85).map(sample => sample.red);
+assert.ok(leftEdgeRed.length && rightEdgeRed.length, 'the yarn edge fixtures produce dark pass vertices on both gradient ends');
+assert.ok(Math.min(...leftEdgeRed) > Math.max(...rightEdgeRed) + 0.25,
+  'yarn edge-loop palette follows the authored gradient position instead of sampling one midpoint color');
+let gradientBandsChecked = 0;
+for (let index = 0; index < yarnEdgeAsset.geometry.indices.length; index += 3) {
+  const vertices = [0, 1, 2].map(corner => yarnEdgeAsset.geometry.indices[index + corner] * 11);
+  if (!vertices.every(vertex => Math.abs(yarnVertices[vertex + 5] - 0.7) < 0.01)) continue;
+  const t = vertices.map(vertex => yarnVertices[vertex] / 100);
+  assert.ok(Math.max(...t) <= 0.53 + 1e-5 || Math.min(...t) >= 0.53 - 1e-5,
+    `each yarn edge triangle stays within one authored gradient stop band: ${JSON.stringify(t)}`);
+  gradientBandsChecked++;
+}
+assert.ok(gradientBandsChecked > 0, 'yarn edge geometry is subdivided at the middle gradient stop');
+const yarnAlphaSource = yarnEdgeSource
+  .replace('offset="0" stop-color="#ffffff"', 'offset="0" stop-color="#ffffff" stop-opacity="1"')
+  .replace('offset="0.53" stop-color="#888888"', 'offset="0.53" stop-color="#888888" stop-opacity="0.5"')
+  .replace('offset="1" stop-color="#000000"', 'offset="1" stop-color="#000000" stop-opacity="0.25"');
+const yarnAlphaVertices = compileVectorAsset(Buffer.from(yarnAlphaSource), 'yarn-gradient-alpha.svg').geometry.vertices;
+const leftDarkAlpha = [], rightDarkAlpha = [];
+for (let index = 0; index < yarnAlphaVertices.length; index += 11) {
+  const x = yarnAlphaVertices[index], alpha = yarnAlphaVertices[index + 5];
+  if (x < 2 && Math.abs(alpha - 0.7) < 0.01) leftDarkAlpha.push(alpha);
+  if (x > 98 && alpha > 0.16 && alpha < 0.19) rightDarkAlpha.push(alpha);
+}
+assert.ok(leftDarkAlpha.length && rightDarkAlpha.length && Math.min(...leftDarkAlpha) > Math.max(...rightDarkAlpha) * 3.5,
+  'yarn thread alpha follows authored stop-opacity across the gradient');
 assert.throws(() => compileVectorAsset(Buffer.from(yarnSource.replace('"fiberMax":155', '"fiberMax":999')), 'invalid.svg'), /fiberMax/i);
 assert.throws(() => compileVectorAsset(Buffer.from(yarnSource.replace('url(#yarn-gradient)', 'url(#missing-gradient)')), 'invalid.svg'), /unknown linearGradient/i);
 assert.throws(() => compileVectorAsset(Buffer.from(yarnSource.replace('<linearGradient id="yarn-gradient"', '<radialGradient id="yarn-gradient"').replace('</linearGradient>', '</radialGradient>')), 'invalid.svg'), /Unsupported SVG element/i);
@@ -78,6 +116,6 @@ assert.ok(transformedGradientAsset.geometry.vertices.some((value, index) => inde
 console.log(JSON.stringify({ status: 'PASS', sourceSha256: asset.sourceSha256, compiledVertices: asset.geometry.vertices.length / 11,
   compiledBytes: asset.geometry.vertices.byteLength + asset.geometry.indices.byteLength, expandedBytes: asset.geometry.indices.length * 44,
   checks: ['DOMParser round trip preserves metadata and all DOM ids', 'Three SVGLoader Node compilation', 'indexed retained triangle geometry',
-    'linear gradient stops and alpha in retained triangles', 'hole, stroke and gradient geometry', 'Squish scallop/two-loop yarn and boundary fibers',
+    'linear gradient stops and alpha in retained triangles', 'gradient-following yarn palette with stop-boundary color/alpha', 'hole, stroke and gradient geometry', 'scallop/two-loop yarn and boundary fibers',
     'two-target sketch morph geometry', 'repeat compilation determinism',
     'bad ids and metadata', 'scripts/foreignObject/raster/external refs/unknown elements rejected'] }));
