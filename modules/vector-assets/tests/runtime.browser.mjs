@@ -8,6 +8,81 @@ export async function exerciseVectorAssets(page) {
   const referenceAsset = await compileVectorAssetFile('modules/vector-assets/assets/seed-scout.svg', 'modules/vector-assets/assets/seed-scout.svg');
   const threeCompileMs = performance.now() - compileStart;
   await page.setViewportSize({ width: 844, height: 390 });
+  const panelState = await page.evaluate(async () => {
+    const waitFrame = () => new Promise(resolve => requestAnimationFrame(resolve));
+    await waitFrame(); await waitFrame();
+    const demo = window.vectorAssetDemo;
+    const fail = message => { throw new Error('Three-view example: ' + message); };
+    if (!demo?.ready || !demo.asset || !demo.actor) fail('SVG source and WebGL resources did not finish loading');
+    const clip = document.querySelector('#clip'), time = document.querySelector('#time');
+    const expression = document.querySelector('#expression'), zoom = document.querySelector('#zoom');
+    clip.value = 'bounce'; clip.dispatchEvent(new Event('change', { bubbles: true }));
+    time.value = '220'; time.dispatchEvent(new Event('input', { bubbles: true }));
+    expression.value = 'happy'; expression.dispatchEvent(new Event('change', { bubbles: true }));
+    zoom.value = '1.50'; zoom.dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('#play-toggle').click();
+    await waitFrame(); await waitFrame();
+    const body = demo.actor.getPartPose('body');
+    const sourceBody = demo.sourceSvg.querySelector('[data-vector-part="body"]').getAttribute('transform');
+    const sourceMatrix = sourceBody.slice(7, -1).split(/[ ,]+/).map(Number);
+    const stages = [...document.querySelectorAll('.stage')].map(stage => {
+      const rect = stage.getBoundingClientRect(); return { width: rect.width, height: rect.height };
+    });
+    const result = {
+      ready: demo.ready, clip: demo.actor.currentClip, timeMs: demo.actor.currentTimeMs,
+      expression: demo.actor.currentExpression, zoom: demo.camera.zoom, sourceSha256: demo.sourceSvg ? demo.asset.sourceSha256 : '',
+      sourceBodyPoseMatches: sourceMatrix.length === 6 && sourceMatrix.every((value, index) => Math.abs(value - body.transform[index]) <= 0.006),
+      happyShown: demo.sourceSvg.querySelector('[data-vector-part="face-happy"]').style.display !== 'none',
+      neutralHidden: demo.sourceSvg.querySelector('[data-vector-part="face-neutral"]').style.display === 'none',
+      triangles: demo.topology.triangles, compiledTriangles: demo.asset.mesh.vertices.length / 33,
+      visibleTriangles: demo.lastFrame.topology.visibleTriangles, uniqueEdges: demo.topology.uniqueEdges,
+      webglBackend: demo.device.instancingSupported ? 'WebGL 1 + ANGLE instancing' : 'WebGL 1 + per-draw uniforms',
+      drawCalls: demo.lastFrame.gamekit.device.drawCalls,
+      meshBytes: demo.asset.mesh.byteLength, sourceMetrics: document.querySelector('#source-metrics').textContent,
+      topologyMetrics: document.querySelector('#topology-metrics').textContent, gamekitMetrics: document.querySelector('#gamekit-metrics').textContent,
+      stages, sourceViewBox: demo.sourceSvg.getAttribute('viewBox'), viewport: [innerWidth, innerHeight],
+      bodyHeight: document.body.getBoundingClientRect().height, mainHeight: document.querySelector('main').getBoundingClientRect().height,
+    };
+    clip.value = 'idle'; clip.dispatchEvent(new Event('change', { bubbles: true }));
+    expression.value = 'neutral'; expression.dispatchEvent(new Event('change', { bubbles: true }));
+    zoom.value = '1.00'; zoom.dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('#center-camera').click();
+    time.value = '0'; time.dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('#play-toggle').click();
+    await waitFrame(); await waitFrame();
+    return result;
+  });
+  assert.equal(panelState.ready, true);
+  assert.equal(panelState.clip, 'bounce');
+  assert.equal(panelState.timeMs, 220, 'shared absolute time is applied to the GameKit player');
+  assert.equal(panelState.expression, 'happy');
+  assert.equal(panelState.zoom, 1.5);
+  assert.match(panelState.sourceSha256, /^[a-f0-9]{64}$/);
+  assert.equal(panelState.sourceBodyPoseMatches, true, 'the source SVG view uses the same authored part pose');
+  assert.equal(panelState.happyShown, true);
+  assert.equal(panelState.neutralHidden, true);
+  assert.equal(panelState.triangles, panelState.compiledTriangles);
+  assert.ok(panelState.visibleTriangles > 0 && panelState.visibleTriangles < panelState.triangles);
+  assert.ok(panelState.uniqueEdges > panelState.triangles);
+  assert.match(panelState.webglBackend, /^WebGL 1/);
+  assert.ok(panelState.drawCalls > 0 && panelState.meshBytes > 100_000);
+  assert.match(panelState.sourceMetrics, /source bytes/);
+  assert.match(panelState.topologyMetrics, /visible triangles/);
+  assert.match(panelState.gamekitMetrics, /draw calls/);
+  assert.ok(Math.min(...panelState.stages.map(stage => stage.width)) > 200, 'all three panels remain readable at mobile landscape width');
+  assert.ok(Math.min(...panelState.stages.map(stage => stage.height)) > 100, 'all three panels remain visible at mobile landscape height');
+  assert.ok(Math.max(...panelState.stages.map(stage => stage.height)) < 260, 'three panels fit the mobile landscape viewport without vertical overflow');
+  assert.ok(Math.max(...panelState.stages.map(stage => stage.height)) - Math.min(...panelState.stages.map(stage => stage.height)) < 1.5,
+    'the three camera viewports have matching dimensions');
+  const panStage = page.locator('#source-stage'), box = await panStage.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down(); await page.mouse.move(box.x + box.width / 2 + 6, box.y + box.height / 2 + 4); await page.mouse.up();
+  const movedCamera = await page.evaluate(() => ({ x: vectorAssetDemo.camera.x, y: vectorAssetDemo.camera.y }));
+  assert.notEqual(movedCamera.x, 100, 'dragging one panel pans the shared camera');
+  assert.notEqual(movedCamera.y, 110, 'vertical pan is shared');
+  await page.locator('#center-camera').click();
+  const centeredCamera = await page.evaluate(() => ({ x: vectorAssetDemo.camera.x, y: vectorAssetDemo.camera.y }));
+  assert.deepEqual(centeredCamera, { x: 100, y: 110 }, 'center resets the shared camera');
   const report = await page.evaluate(async ({ sourcePaths, threeCompileMs }) => {
     const modules = window.vectorAssetRuntime ?? {
       ...await import('/dist/rendering.js'), ...await import('/dist/vector-assets.js'),
@@ -191,5 +266,7 @@ export async function exerciseVectorAssets(page) {
   assert.equal(report.benchmark.retainedMeshInstances.length, 2);
   assert.equal(report.benchmark.vectorContextPerFramePathTessellation.length, 2);
   for (const row of [...report.benchmark.retainedMeshInstances, ...report.benchmark.vectorContextPerFramePathTessellation]) assert.ok(row.actors === 100 || row.actors === 400);
+  report.threeViewExample = panelState;
+  report.checks.unshift('same authored SVG source SHA and pose across original/source, compiled triangle topology, and GameKit WebGL panels; shared time/expression/zoom/pan; mobile landscape layout');
   return report;
 }
