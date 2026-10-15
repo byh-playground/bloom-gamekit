@@ -100,8 +100,8 @@ var WebGLDevice = class {
         for (const record of this.buffers.values()) {
           record.gpu = this.gl.createBuffer();
           if (!record.gpu) throw new Error("Buffer allocation failed");
-          this.gl.bindBuffer(this.gl.ARRAY_BUFFER, record.gpu);
-          this.gl.bufferData(this.gl.ARRAY_BUFFER, record.capacity, this.gl.DYNAMIC_DRAW);
+          this.gl.bindBuffer(record.target, record.gpu);
+          this.gl.bufferData(record.target, record.capacity, this.gl.DYNAMIC_DRAW);
           record.used = 0;
           this.stats.bufferAllocations++;
         }
@@ -202,7 +202,22 @@ var WebGLDevice = class {
     gl.bindBuffer(gl.ARRAY_BUFFER, gpu);
     gl.bufferData(gl.ARRAY_BUFFER, capacityBytes, gl.DYNAMIC_DRAW);
     const handle = Object.freeze({});
-    this.buffers.set(handle, { gpu, capacity: capacityBytes, used: 0 });
+    this.buffers.set(handle, { gpu, target: gl.ARRAY_BUFFER, capacity: capacityBytes, used: 0 });
+    this.stats.bufferAllocations++;
+    this.stats.gpuBufferBytes += capacityBytes;
+    this.stats.bufferCount = this.buffers.size;
+    return handle;
+  }
+  createIndexBuffer({ capacityBytes = 0 } = {}) {
+    this._ready();
+    integer(capacityBytes, "capacityBytes", 0, this.maxBufferBytes);
+    if (capacityBytes % 2) throw new RangeError("Index buffer capacity must align to UNSIGNED_SHORT");
+    const gl = this.gl, gpu = gl.createBuffer();
+    if (!gpu) throw new Error("Index buffer allocation failed");
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gpu);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, capacityBytes, gl.DYNAMIC_DRAW);
+    const handle = Object.freeze({});
+    this.buffers.set(handle, { gpu, target: gl.ELEMENT_ARRAY_BUFFER, capacity: capacityBytes, used: 0 });
     this.stats.bufferAllocations++;
     this.stats.gpuBufferBytes += capacityBytes;
     this.stats.bufferCount = this.buffers.size;
@@ -212,7 +227,7 @@ var WebGLDevice = class {
   uploadVertices(handle, data) {
     this._ready();
     const r = this._handle(this.buffers, handle, "buffer");
-    if (!(data instanceof Float32Array)) throw new TypeError("Float32Array required");
+    if (r.target !== this.gl.ARRAY_BUFFER || !(data instanceof Float32Array)) throw new TypeError("An ARRAY_BUFFER and Float32Array are required");
     if (data.byteLength > this.maxBufferBytes) throw new RangeError("Stream exceeds maxBufferBytes");
     const gl = this.gl;
     gl.bindBuffer(gl.ARRAY_BUFFER, r.gpu);
@@ -231,9 +246,38 @@ var WebGLDevice = class {
     }
     r.used = data.byteLength;
   }
+  uploadIndices(handle, data) {
+    this._ready();
+    const r = this._handle(this.buffers, handle, "index buffer");
+    if (r.target !== this.gl.ELEMENT_ARRAY_BUFFER || !(data instanceof Uint16Array)) throw new TypeError("An ELEMENT_ARRAY_BUFFER and Uint16Array are required");
+    if (data.byteLength > this.maxBufferBytes) throw new RangeError("Index stream exceeds maxBufferBytes");
+    const gl = this.gl;
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, r.gpu);
+    if (data.byteLength > r.capacity) {
+      let capacity = Math.max(2, r.capacity);
+      while (capacity < data.byteLength) capacity = Math.min(this.maxBufferBytes, this.maxBufferBytes % 2 ? this.maxBufferBytes - 1 : this.maxBufferBytes, capacity * 2);
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, capacity, gl.DYNAMIC_DRAW);
+      this.stats.gpuBufferBytes += capacity - r.capacity;
+      r.capacity = capacity;
+      this.stats.bufferAllocations++;
+    }
+    if (data.byteLength) {
+      gl.bufferSubData(gl.ELEMENT_ARRAY_BUFFER, 0, data);
+      this.stats.bufferUploads++;
+      this.stats.bufferBytes += data.byteLength;
+    }
+    r.used = data.byteLength;
+  }
   deleteVertexBuffer(handle) {
+    return this._deleteBuffer(handle, this.gl.ARRAY_BUFFER);
+  }
+  deleteIndexBuffer(handle) {
+    return this._deleteBuffer(handle, this.gl.ELEMENT_ARRAY_BUFFER);
+  }
+  _deleteBuffer(handle, target) {
     const r = this.buffers.get(handle);
     if (!r) return false;
+    if (r.target !== target) throw new TypeError("Buffer target does not match delete operation");
     this.gl.deleteBuffer(r.gpu);
     this.buffers.delete(handle);
     this.stats.gpuBufferBytes -= r.capacity;
@@ -533,18 +577,23 @@ var WebGLDevice = class {
     gl.clear(flags);
   }
   /** Full pass state is explicit per draw; no state leakage between game materials. */
-  draw({ pipeline, buffer, instanceBuffer, instances = 1, first = 0, count, uniforms = {}, textures = [], blend = "source-over", depth = false, stencil = false, colorMask = ALL_COLOR, filter } = {}) {
+  draw({ pipeline, buffer, indexBuffer, instanceBuffer, instances = 1, first = 0, count, uniforms = {}, textures = [], blend = "source-over", depth = false, stencil = false, colorMask = ALL_COLOR, filter } = {}) {
     this._ready();
     if (!this.active) throw new Error("beginFrame required");
     const p = this._handle(this.pipelines, pipeline, "pipeline"), b = this._handle(this.buffers, buffer, "buffer");
+    if (b.target !== this.gl.ARRAY_BUFFER) throw new TypeError("A vertex buffer is required");
     integer(first, "first");
     integer(count, "count");
-    if (first + count > b.used / p.stride) throw new RangeError("draw exceeds uploaded vertices");
+    const elements = indexBuffer === void 0 || indexBuffer === null ? null : this._handle(this.buffers, indexBuffer, "index buffer");
+    if (elements) {
+      if (elements.target !== this.gl.ELEMENT_ARRAY_BUFFER || elements.used % 2 || first + count > elements.used / 2) throw new RangeError("draw exceeds uploaded indices");
+    } else if (first + count > b.used / p.stride) throw new RangeError("draw exceeds uploaded vertices");
     integer(instances, "instances", 1);
     let instanceRecord;
     if (p.instanced) {
       if (!this._instancingExtension) throw new Error("ANGLE_instanced_arrays required for instance attributes");
       instanceRecord = this._handle(this.buffers, instanceBuffer, "instance buffer");
+      if (instanceRecord.target !== this.gl.ARRAY_BUFFER) throw new TypeError("An instance vertex buffer is required");
       if (instances > instanceRecord.used / p.instanceStride) throw new RangeError("draw exceeds uploaded instances");
     } else if (instances !== 1) throw new RangeError("Multiple instances require instance attributes");
     if (!Number.isSafeInteger(count * instances)) throw new RangeError("draw vertex count exceeds safe integer range");
@@ -628,10 +677,13 @@ var WebGLDevice = class {
     gl.disable(gl.CULL_FACE);
     gl.disable(gl.DITHER);
     gl.disable(gl.SCISSOR_TEST);
+    if (elements) gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, elements.gpu);
     if (p.instanced) {
-      instancing.drawArraysInstancedANGLE(gl.TRIANGLES, first, count, instances);
+      if (elements) instancing.drawElementsInstancedANGLE(gl.TRIANGLES, count, gl.UNSIGNED_SHORT, first * 2, instances);
+      else instancing.drawArraysInstancedANGLE(gl.TRIANGLES, first, count, instances);
       this.stats.instancedDrawCalls++;
-    } else gl.drawArrays(gl.TRIANGLES, first, count);
+    } else if (elements) gl.drawElements(gl.TRIANGLES, count, gl.UNSIGNED_SHORT, first * 2);
+    else gl.drawArrays(gl.TRIANGLES, first, count);
     this.stats.drawCalls++;
     this.stats.vertices += count * instances;
   }
@@ -646,6 +698,7 @@ var WebGLDevice = class {
     const gl = this.gl;
     gl.useProgram(null);
     gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
     for (let i = 0; i < this.maxTextures; i++) {
       gl.activeTexture(gl.TEXTURE0 + i);
       gl.bindTexture(gl.TEXTURE_2D, null);
@@ -1246,7 +1299,10 @@ var MeshRenderer = class {
     this.onRestored = () => {
       try {
         if (this.instanced && !device.instancingSupported) throw new Error("Restored context no longer supports mesh instancing");
-        for (const mesh of this.meshes) device.uploadVertices(mesh.buffer, mesh.vertices);
+        for (const mesh of this.meshes) {
+          device.uploadVertices(mesh.buffer, mesh.vertices);
+          if (mesh.indices) device.uploadIndices(mesh.indexBuffer, mesh.indices);
+        }
         this.state = "ready";
         this.failure = null;
       } catch (error) {
@@ -1279,32 +1335,51 @@ var MeshRenderer = class {
   }
   createMesh(data) {
     this._ready();
-    if (!(data?.vertices instanceof Float32Array) || data.vertices.length % 33 || data.strideFloats !== 11 || !Number.isSafeInteger(data.partCount) || data.partCount < 1 || data.partCount > 16 || !Number.isSafeInteger(data.morphCount) || data.morphCount < 0 || data.morphCount > 2) throw new TypeError("MeshBuilder geometry with 1..16 parts required");
+    const indices = data?.indices;
+    if (!(data?.vertices instanceof Float32Array) || data.vertices.length < 33 || data.vertices.length % 11 || data.strideFloats !== 11 || !Number.isSafeInteger(data.partCount) || data.partCount < 1 || data.partCount > 16 || !Number.isSafeInteger(data.morphCount) || data.morphCount < 0 || data.morphCount > 2 || indices !== void 0 && (!(indices instanceof Uint16Array) || indices.length < 3 || indices.length % 3 || data.vertices.length / 11 > 65536 || indices.some((index) => index >= data.vertices.length / 11)) || indices === void 0 && data.vertices.length % 33) throw new TypeError("Mesh geometry with complete triangles and 1..16 parts required");
     if (data.vertices.some((n) => !Number.isFinite(n))) throw new TypeError("Mesh values must be finite");
     for (let i = 0; i < data.vertices.length; i++) {
       if (i % 11 >= 2 && i % 11 < 6 && (data.vertices[i] < 0 || data.vertices[i] > 1)) throw new RangeError("Mesh RGBA channels must be in [0,1]");
       if (i % 11 === 10 && (!Number.isSafeInteger(data.vertices[i]) || data.vertices[i] < 0 || data.vertices[i] >= data.partCount)) throw new RangeError("Mesh part index outside partCount");
       if (i % 11 >= 6 + data.morphCount * 2 && i % 11 < 10 && data.vertices[i] !== 0) throw new RangeError("Mesh deltas exceed declared morphCount");
     }
-    if (this.meshes.size >= this.maxMeshes || this.bytes + data.vertices.byteLength > this.maxMeshBytes) throw new RangeError("Retained mesh budget exceeded");
-    const vertices = data.vertices.slice(), buffer = this.device.createVertexBuffer({ capacityBytes: vertices.byteLength });
+    const byteLength = data.vertices.byteLength + (indices?.byteLength ?? 0);
+    if (this.meshes.size >= this.maxMeshes || this.bytes + byteLength > this.maxMeshBytes) throw new RangeError("Retained mesh budget exceeded");
+    const vertices = data.vertices.slice(), ownedIndices = indices?.slice(), buffer = this.device.createVertexBuffer({ capacityBytes: vertices.byteLength });
+    let indexBuffer;
     try {
       this.device.uploadVertices(buffer, vertices);
+      if (ownedIndices) {
+        indexBuffer = this.device.createIndexBuffer({ capacityBytes: ownedIndices.byteLength });
+        this.device.uploadIndices(indexBuffer, ownedIndices);
+      }
     } catch (error) {
+      if (indexBuffer) this.device.deleteIndexBuffer(indexBuffer);
       this.device.deleteVertexBuffer(buffer);
       throw error;
     }
-    const mesh = Object.freeze({ renderer: this, buffer, vertices, count: vertices.length / 11, byteLength: vertices.byteLength, partCount: data.partCount, morphCount: data.morphCount });
+    const mesh = Object.freeze({
+      renderer: this,
+      buffer,
+      indexBuffer,
+      vertices,
+      indices: ownedIndices,
+      count: ownedIndices?.length ?? vertices.length / 11,
+      byteLength,
+      partCount: data.partCount,
+      morphCount: data.morphCount
+    });
     this.meshes.add(mesh);
-    this.bytes += vertices.byteLength;
+    this.bytes += byteLength;
     this.metrics.geometryUploads++;
-    this.metrics.geometryBytesUploaded += vertices.byteLength;
+    this.metrics.geometryBytesUploaded += byteLength;
     return mesh;
   }
   deleteMesh(mesh) {
     if (!this.meshes.has(mesh)) return false;
     if (this.pending?.mesh === mesh) this.flush();
     this.device.deleteVertexBuffer(mesh.buffer);
+    if (mesh.indexBuffer) this.device.deleteIndexBuffer(mesh.indexBuffer);
     this.meshes.delete(mesh);
     this.bytes -= mesh.byteLength;
     return true;
@@ -1444,14 +1519,14 @@ var MeshRenderer = class {
     if (mesh.partCount > 1) uniforms["u_parts[0]"] = parts;
     if (this.instanced) {
       this.device.uploadVertices(this.instanceBuffer, this.instances.subarray(0, this.count * 16));
-      this.device.draw({ pipeline, buffer: mesh.buffer, count: mesh.count, instanceBuffer: this.instanceBuffer, instances: this.count, uniforms, depth: depthState });
+      this.device.draw({ pipeline, buffer: mesh.buffer, indexBuffer: mesh.indexBuffer, count: mesh.count, instanceBuffer: this.instanceBuffer, instances: this.count, uniforms, depth: depthState });
       this.metrics.instanceBytesUploaded += this.count * 64;
       this.metrics.draws++;
       this.metrics.partUniformBytesSubmitted += parts.byteLength;
     } else {
       for (let i = 0; i < this.count; i++) {
         for (let j = 0; j < 4; j++) uniforms[["i_row0", "i_row1", "i_color", "i_params"][j]] = this.instances.subarray(i * 16 + j * 4, i * 16 + j * 4 + 4);
-        this.device.draw({ pipeline, buffer: mesh.buffer, count: mesh.count, uniforms, depth: depthState });
+        this.device.draw({ pipeline, buffer: mesh.buffer, indexBuffer: mesh.indexBuffer, count: mesh.count, uniforms, depth: depthState });
         this.metrics.draws++;
         this.metrics.partUniformBytesSubmitted += parts.byteLength;
       }
@@ -1478,7 +1553,10 @@ var MeshRenderer = class {
     this.discard();
     this.device.canvas.removeEventListener("webglcontextlost", this.onLost);
     this.device.canvas.removeEventListener("webglcontextrestored", this.onRestored);
-    for (const mesh of this.meshes) this.device.deleteVertexBuffer(mesh.buffer);
+    for (const mesh of this.meshes) {
+      this.device.deleteVertexBuffer(mesh.buffer);
+      if (mesh.indexBuffer) this.device.deleteIndexBuffer(mesh.indexBuffer);
+    }
     this.meshes.clear();
     this.bytes = 0;
     if (this.instanceBuffer) this.device.deleteVertexBuffer(this.instanceBuffer);
@@ -2376,25 +2454,37 @@ var MeshBuilder = class _MeshBuilder {
   }
   /** Packs compatible authored geometries into one painter-ordered mesh without sorting. */
   static combine(geometries) {
-    if (!Array.isArray(geometries) || !geometries.length || geometries.some((geometry) => !Number.isSafeInteger(geometry?.partCount) || geometry.partCount < 1 || geometry.strideFloats !== 11 || !(geometry.vertices instanceof Float32Array) || geometry.vertices.length % 33 || !Number.isSafeInteger(geometry.morphCount) || geometry.morphCount < 0 || geometry.morphCount > 2) || geometries.reduce((count, geometry) => count + geometry.partCount, 0) > 16) {
+    if (!Array.isArray(geometries) || !geometries.length || geometries.some((geometry) => !Number.isSafeInteger(geometry?.partCount) || geometry.partCount < 1 || geometry.strideFloats !== 11 || !(geometry.vertices instanceof Float32Array) || geometry.vertices.length < 33 || geometry.vertices.length % 11 || geometry.indices !== void 0 && (!(geometry.indices instanceof Uint16Array) || geometry.indices.length < 3 || geometry.indices.length % 3 || geometry.vertices.length / 11 > 65536 || geometry.indices.some((index) => index >= geometry.vertices.length / 11)) || geometry.indices === void 0 && geometry.vertices.length % 33 || !Number.isSafeInteger(geometry.morphCount) || geometry.morphCount < 0 || geometry.morphCount > 2) || geometries.reduce((count, geometry) => count + geometry.partCount, 0) > 16) {
       throw new TypeError("MeshBuilder geometries must fit within 16 parts and use the 11-float schema");
     }
+    const vertexCount = geometries.reduce((count, geometry) => count + geometry.vertices.length / 11, 0);
+    const indexCount = geometries.reduce((count, geometry) => count + (geometry.indices?.length ?? geometry.vertices.length / 11), 0);
+    if (vertexCount > 65536) throw new RangeError("Combined geometry exceeds 65,536 distinct vertices");
     for (const geometry of geometries) for (let i = 10; i < geometry.vertices.length; i += 11) {
       const part = geometry.vertices[i];
       if (!Number.isSafeInteger(part) || part < 0 || part >= geometry.partCount) throw new RangeError("Mesh part index outside partCount");
     }
-    const vertices = new Float32Array(geometries.reduce((n, geometry) => n + geometry.vertices.length, 0));
+    const vertices = new Float32Array(vertexCount * 11), indices = new Uint16Array(indexCount);
     const partCount = geometries.reduce((count, geometry) => count + geometry.partCount, 0);
     const morphCount = Math.max(...geometries.map((geometry) => geometry.morphCount));
     let offset = 0;
     let partOffset = 0;
+    let indexOffset = 0;
     for (const geometry of geometries) {
       vertices.set(geometry.vertices, offset);
-      for (let i = 0; i < geometry.vertices.length; i += 11) vertices[offset + i + 10] += partOffset;
-      offset += geometry.vertices.length;
+      const vertexLength = geometry.vertices.length;
+      for (let i = 10; i < vertexLength; i += 11) vertices[offset + i] += partOffset;
+      if (geometry.indices) {
+        for (let i = 0; i < geometry.indices.length; i++) indices[indexOffset + i] = geometry.indices[i] + offset / 11;
+        indexOffset += geometry.indices.length;
+      } else {
+        for (let i = 0; i < vertexLength / 11; i++) indices[indexOffset + i] = i + offset / 11;
+        indexOffset += vertexLength / 11;
+      }
+      offset += vertexLength;
       partOffset += geometry.partCount;
     }
-    return Object.freeze({ vertices, count: vertices.length / 11, strideFloats: 11, partCount, morphCount });
+    return Object.freeze({ vertices, indices, count: indices.length, strideFloats: 11, partCount, morphCount });
   }
 };
 
