@@ -48,7 +48,7 @@
       const localProjection = [2 * scale / width, 0, 0, 0, -2 * scale / height, 0, 2 * tx / width - 1, 1 - 2 * ty / height, 1];
       device.beginFrame({ width, height, clearColor: [0.875, 0.91, 0.80, 1], clearDepth: 1 });
       meshes.beginFrame(); actor.seek(displayTimeMs); actor.draw({ projection: localProjection }); meshes.flush(); device.endFrame();
-      document.querySelector('#status').textContent = `source ${asset.sourceSha256.slice(0, 12)} �� schema ${asset.schemaVersion} �� ${seedScoutMetadata.parts.length} parts �� socket ${Math.round(actor.getSocket('mouth').x)}, ${Math.round(actor.getSocket('mouth').y)}`;
+      document.querySelector('#status').textContent = `source ${asset.sourceSha256.slice(0, 12)} · schema ${asset.schemaVersion} · ${seedScoutMetadata.parts.length} parts · socket ${Math.round(actor.getSocket('mouth').x)}, ${Math.round(actor.getSocket('mouth').y)}`;
       requestAnimationFrame(frame);
     }
     requestAnimationFrame(frame);

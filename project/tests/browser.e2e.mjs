@@ -82,7 +82,7 @@ try {
   await page.waitForFunction(x => demo.diagnostics.authorityX > x + 25, initialX);
   await page.keyboard.up('KeyD');
   await page.waitForFunction(() => Math.abs(demo.diagnostics.poseX - demo.diagnostics.authorityX) < 0.1);
-  report.stages.push('real DOM keyboard �� 100ms authority �� interpolation �� WebGL rAF movement');
+  report.stages.push('real DOM keyboard → 100ms authority → interpolation → WebGL rAF movement');
 
   // Several render-time samples cannot erase a down/up entirely between simulation ticks.
   await page.evaluate(() => demo.pause());
@@ -214,7 +214,7 @@ try {
       return { pixel: pixel(32, 32), error: r.gl.getError(), allocations: r.stats.bufferAllocations };
     });
     assert.deepEqual(restored.pixel, [0, 255, 0, 255]); assert.equal(restored.error, 0); assert.equal(restored.allocations, 2);
-    report.stages.push('WEBGL_lose_context �� skipped lost frame �� shader/buffer/texture handle restoration');
+    report.stages.push('WEBGL_lose_context → skipped lost frame → shader/buffer/texture handle restoration');
   } else report.stages.push('WEBGL_lose_context unavailable: restoration not executed');
 
   report.input = await page.evaluate(async () => {
@@ -261,7 +261,7 @@ try {
   assert.equal(errors.length, 0, errors.join('\n'));
   assert.equal(moduleErrors.length, 0, moduleErrors.join('\n'));
   assert.equal(report.reusableMeshes?.scenes.length, 4, 'reusable mesh helper must execute both native backends with and without MSAA');
-  report.stages.push('retained animated mesh �� silhouette/instance batching �� vector painter order �� nested/rotated clipping �� native context restoration/disposal, ANGLE and uniform backends, MSAA off/on');
+  report.stages.push('retained animated mesh → silhouette/instance batching → vector painter order → nested/rotated clipping → native context restoration/disposal, ANGLE and uniform backends, MSAA off/on');
   const vectorExample=await browser.newPage({viewport:{width:1000,height:700}}),exampleErrors=[];
   vectorExample.on('pageerror',error=>exampleErrors.push(error.message));
   await vectorExample.goto(`http://127.0.0.1:${server.address().port}/modules/rendering/examples/vector/index.html`);
@@ -336,7 +336,7 @@ try {
   assert.equal(report.inputPreview.glError,0);assert.equal(previewErrors.length,0,previewErrors.join('\n'));
   report.inputPreview.inputToFirstDisplayMs=inputToDisplayMs;report.inputPreview.webglPixel=renderedPreviewPixel;report.inputPreview.lastConfirmBeforeCollision=rollCountBefore;
   report.inputPreview.preTick={tick:beforePreview.authorityTick,hash:beforePreview.authorityHash,smoothHold};report.inputPreview.capture={captureTick:captureMetadata.capture.captureTick,executeTick:captureMetadata.capture.executeTick,commandSequence:captureMetadata.commandSequence};
-  report.stages.push('detached same-update input fork �� first sampled schema render �� delayed authority correction �� collision/roll/press-release/direction/off/blur/gap/restart');
+  report.stages.push('detached same-update input fork → first sampled schema render → delayed authority correction → collision/roll/press-release/direction/off/blur/gap/restart');
   await previewPage.evaluate(()=>window.inputPreviewDemo.dispose());
   report.manualOwnerRelease=await previewPage.evaluate(async()=>{
     const { createLoop, LocalInputPreview } = await import('/dist/simloop.js');
