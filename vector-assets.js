@@ -3155,11 +3155,11 @@ var createTimeline = (parameters) => {
 
 // modules/vector-assets/schema.js
 var VECTOR_ASSET_SCHEMA_VERSION = 1;
-var VECTOR_ASSET_COMPILER_VERSION = "0.1.0";
+var VECTOR_ASSET_COMPILER_VERSION = "0.2.0";
 var NUMERIC_POSE_FIELDS = Object.freeze(["x", "y", "rotation", "scaleX", "scaleY", "opacity"]);
 var isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 function validateCompiledAsset(asset) {
-  if (!isObject(asset) || asset.schemaVersion !== VECTOR_ASSET_SCHEMA_VERSION || asset.compilerVersion !== VECTOR_ASSET_COMPILER_VERSION || typeof asset.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/.test(asset.sourceSha256) || !isObject(asset.metadata) || !isObject(asset.geometry) || !(asset.geometry.vertices instanceof Float32Array) || asset.geometry.vertices.length < 33 || asset.geometry.vertices.length % 33 || asset.geometry.strideFloats !== 11 || asset.geometry.partCount !== asset.metadata.parts?.length || asset.geometry.morphCount !== 0) {
+  if (!isObject(asset) || asset.schemaVersion !== VECTOR_ASSET_SCHEMA_VERSION || asset.compilerVersion !== VECTOR_ASSET_COMPILER_VERSION || typeof asset.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/.test(asset.sourceSha256) || !isObject(asset.metadata) || !isObject(asset.geometry) || !(asset.geometry.vertices instanceof Float32Array) || asset.geometry.vertices.length < 33 || asset.geometry.vertices.length % 33 || asset.geometry.strideFloats !== 11 || asset.geometry.partCount !== asset.metadata.parts?.length || ![0, 2].includes(asset.geometry.morphCount)) {
     throw new TypeError("Invalid compiled SVG vector asset");
   }
   return asset;
@@ -3224,6 +3224,15 @@ function buildClipTimeline(clip, parts) {
 }
 function copyPose(pose) {
   return Object.fromEntries(POSE_FIELDS.map((field) => [field, pose[field]]));
+}
+function authoredMorph(metadata, displayTimeMs) {
+  const sketch = metadata.styles?.find((style) => style.kind === "sketch");
+  if (!sketch) return [0, 0];
+  const phase = (displayTimeMs % sketch.periodMs + sketch.periodMs) % sketch.periodMs / sketch.periodMs * 3;
+  const segment = Math.floor(phase), amount = phase - segment;
+  if (segment === 0) return [amount, 0];
+  if (segment === 1) return [1 - amount, amount];
+  return [0, 1 - amount];
 }
 function blendPoses(from, to, amount, partIds) {
   const output = /* @__PURE__ */ new Map();
@@ -3353,20 +3362,21 @@ function createVectorAsset(meshRenderer, compiledAsset) {
     const partPoses = () => {
       assertPlayer();
       const matrices = worldMatrices(), output = metadata.parts.map((part, index) => {
+        const morph = authoredMorph(metadata, displayTimeMs);
         let parentVisible = true, opacity = 1, parent = part;
         while (parent) {
           parentVisible &&= visible.get(parent.id) !== false;
           opacity *= effectivePose(basePose.get(parent.id), currentPose.get(parent.id)).opacity;
           parent = parent.parent === null ? null : metadata.parts[partIndices.get(parent.parent)];
         }
-        return { transform: matrices.get(part.id), opacity, visible: parentVisible, index };
+        return { transform: matrices.get(part.id), morph, opacity, visible: parentVisible, index };
       });
       return output;
     };
     const draw = ({ projection, matrix = IDENTITY, alpha = 1, color = [1, 1, 1, 1], forceColor = false } = {}) => {
       assertPlayer();
       const poses = partPoses().map(({ transform, opacity, visible: isVisible }) => ({ transform, opacity, visible: isVisible }));
-      meshRenderer.drawMesh(mesh, { projection, matrix, parts: poses, alpha, color, forceColor });
+      meshRenderer.drawMesh(mesh, { projection, matrix, parts: poses, morph: authoredMorph(metadata, displayTimeMs), alpha, color, forceColor });
     };
     const getPartPose = (id) => {
       assertPlayer();

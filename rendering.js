@@ -2335,17 +2335,27 @@ var MeshBuilder = class _MeshBuilder {
     }
     return Object.freeze({ vertices, count, strideFloats: 11, morphCount: morphs.length, partCount: 1 });
   }
-  /** Packs authored parts in their original painter order, never one GPU buffer per animated part. */
-  static combine(parts) {
-    if (!Array.isArray(parts) || !parts.length || parts.length > 16 || parts.some((p) => p?.partCount !== 1 || p.strideFloats !== 11 || !(p.vertices instanceof Float32Array) || p.vertices.length % 33)) throw new TypeError("1..16 single-part MeshBuilder geometries required");
-    const vertices = new Float32Array(parts.reduce((n, part) => n + part.vertices.length, 0));
-    let offset = 0;
-    for (let part = 0; part < parts.length; part++) {
-      vertices.set(parts[part].vertices, offset);
-      for (let i = 10; i < parts[part].vertices.length; i += 11) vertices[offset + i] = part;
-      offset += parts[part].vertices.length;
+  /** Packs compatible authored geometries into one painter-ordered mesh without sorting. */
+  static combine(geometries) {
+    if (!Array.isArray(geometries) || !geometries.length || geometries.some((geometry) => !Number.isSafeInteger(geometry?.partCount) || geometry.partCount < 1 || geometry.strideFloats !== 11 || !(geometry.vertices instanceof Float32Array) || geometry.vertices.length % 33 || !Number.isSafeInteger(geometry.morphCount) || geometry.morphCount < 0 || geometry.morphCount > 2) || geometries.reduce((count, geometry) => count + geometry.partCount, 0) > 16) {
+      throw new TypeError("MeshBuilder geometries must fit within 16 parts and use the 11-float schema");
     }
-    return Object.freeze({ vertices, count: vertices.length / 11, strideFloats: 11, partCount: parts.length, morphCount: Math.max(...parts.map((p) => p.morphCount)) });
+    for (const geometry of geometries) for (let i = 10; i < geometry.vertices.length; i += 11) {
+      const part = geometry.vertices[i];
+      if (!Number.isSafeInteger(part) || part < 0 || part >= geometry.partCount) throw new RangeError("Mesh part index outside partCount");
+    }
+    const vertices = new Float32Array(geometries.reduce((n, geometry) => n + geometry.vertices.length, 0));
+    const partCount = geometries.reduce((count, geometry) => count + geometry.partCount, 0);
+    const morphCount = Math.max(...geometries.map((geometry) => geometry.morphCount));
+    let offset = 0;
+    let partOffset = 0;
+    for (const geometry of geometries) {
+      vertices.set(geometry.vertices, offset);
+      for (let i = 0; i < geometry.vertices.length; i += 11) vertices[offset + i + 10] += partOffset;
+      offset += geometry.vertices.length;
+      partOffset += geometry.partCount;
+    }
+    return Object.freeze({ vertices, count: vertices.length / 11, strideFloats: 11, partCount, morphCount });
   }
 };
 
@@ -2977,13 +2987,17 @@ var Renderer2D = class {
     gl.bufferData(gl.ARRAY_BUFFER, this.vertices.byteLength, gl.DYNAMIC_DRAW);
     this.stats.bufferAllocations++;
     gl.useProgram(this.program);
+    this.instancingExtension = gl.getExtension("ANGLE_instanced_arrays");
+    this.attributeLocations = [];
     for (const [name, size, offset] of [["a_position", 2, 0], ["a_uv", 2, 8], ["a_color", 4, 16]]) {
       const location = gl.getAttribLocation(this.program, name);
+      this.attributeLocations.push([location, size, offset]);
       gl.enableVertexAttribArray(location);
       gl.vertexAttribPointer(location, size, gl.FLOAT, false, 32, offset);
     }
     this.uProjection = gl.getUniformLocation(this.program, "u_projection");
-    gl.uniform1i(gl.getUniformLocation(this.program, "u_texture"), 0);
+    this.uTexture = gl.getUniformLocation(this.program, "u_texture");
+    gl.uniform1i(this.uTexture, 0);
     gl.activeTexture(gl.TEXTURE0);
     gl.disable(gl.DEPTH_TEST);
     gl.disable(gl.CULL_FACE);
@@ -3018,6 +3032,7 @@ var Renderer2D = class {
     m[6] = -2 * (c * x + s * y) / w;
     m[7] = 2 * (c * y - s * x) / h;
     m[8] = 1;
+    this.gl.useProgram(this.program);
     this.gl.uniformMatrix3fv(this.uProjection, false, m);
   }
   /** CSS viewport dimensions; does not change CSS style. Game controls camera separately. */
@@ -3162,6 +3177,9 @@ var Renderer2D = class {
     stats.frame++;
     stats.drawCalls = stats.vertices = stats.uploadedBytes = stats.bufferViews = stats.textureUploads = 0;
     const gl = this.gl;
+    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    gl.disable(gl.SCISSOR_TEST);
+    gl.colorMask(true, true, true, true);
     gl.clearColor(clear[0] * clear[3], clear[1] * clear[3], clear[2] * clear[3], clear[3]);
     gl.clear(gl.COLOR_BUFFER_BIT);
     return true;
@@ -3259,7 +3277,26 @@ var Renderer2D = class {
     this._frame();
     if (!this.vertexCount) return;
     const gl = this.gl, view = this.vertices.subarray(0, this.vertexCount * 8);
+    gl.useProgram(this.program);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+    for (const [location, size, offset] of this.attributeLocations) {
+      gl.enableVertexAttribArray(location);
+      this.instancingExtension?.vertexAttribDivisorANGLE(location, 0);
+      gl.vertexAttribPointer(location, size, gl.FLOAT, false, 32, offset);
+    }
+    gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.batchTexture);
+    gl.uniform1i(this.uTexture, 0);
+    gl.uniformMatrix3fv(this.uProjection, false, this.projection);
+    gl.disable(gl.SCISSOR_TEST);
+    gl.disable(gl.DEPTH_TEST);
+    gl.disable(gl.STENCIL_TEST);
+    gl.disable(gl.CULL_FACE);
+    gl.disable(gl.DITHER);
+    gl.colorMask(true, true, true, true);
+    gl.enable(gl.BLEND);
+    gl.blendEquation(gl.FUNC_ADD);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, view);
     gl.drawArrays(gl.TRIANGLES, 0, this.vertexCount);
     this.stats.drawCalls++;
