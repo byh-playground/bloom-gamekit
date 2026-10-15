@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="160" height="180" viewBox="0 0 160 180">
+  <metadata id="vector-asset">{"schemaVersion":1,"id":"sketch-fox","defaultExpression":"neutral","parts":[{"id":"body","parent":null,"pivot":[80,90]}],"expressions":{"neutral":{"show":[],"hide":[]}},"sockets":{"nose":{"part":"body","point":[80,95]}},"clips":{"idle":{"durationMs":900,"loop":"alternate","easing":"inOutSine","keyframes":[{"timeMs":0,"easing":"inOutSine","parts":{"body":{"rotation":-0.025}}},{"timeMs":450,"easing":"inOutSine","parts":{"body":{"rotation":0.025}}},{"timeMs":900,"easing":"inOutSine","parts":{"body":{"rotation":-0.025}}}]}},"styles":[{"target":"sketch-shell","kind":"sketch","seed":73,"periodMs":135,"amplitude":1.3,"frequency":4,"echoX":1.1,"echoY":-0.8,"echoWidth":1.4,"echoOpacity":0.24,"hatchAngle":0.72,"hatchSpacing":7,"hatchWidth":0.8,"hatchOpacity":0.36}]}</metadata>
+  <g id="body">
+    <path id="sketch-shell" fill="#e6a362" stroke="#384650" stroke-width="2.2" d="M80 24 C107 24 130 47 135 77 C140 110 123 147 96 157 C88 160 72 160 64 157 C37 147 20 110 25 77 C30 47 53 24 80 24 Z"/>
+    <path id="sketch-ear-left" fill="#f1c488" stroke="#384650" stroke-width="2" d="M42 49 L34 18 Q53 23 62 42 Z"/>
+    <path id="sketch-ear-right" fill="#f1c488" stroke="#384650" stroke-width="2" d="M98 42 Q107 23 126 18 L118 49 Z"/>
+    <circle id="sketch-eye-left" fill="#293843" cx="62" cy="83" r="4"/>
+    <circle id="sketch-eye-right" fill="#293843" cx="98" cy="83" r="4"/>
+    <path id="sketch-nose" fill="#8b493d" d="M73 96 Q80 90 87 96 L80 102 Z"/>
+    <path id="sketch-mouth" fill="none" stroke="#384650" stroke-width="2" stroke-linecap="round" d="M80 102 Q73 111 68 106 M80 102 Q87 111 92 106"/>
+  </g>
+</svg>

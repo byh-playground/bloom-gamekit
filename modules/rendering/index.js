@@ -45,8 +45,9 @@ function compile(gl, type, source) {
 
 /**
  * Painter-order quads/triangles, one reusable vertex buffer. No implicit loop/sorting.
- * Owns the canvas WebGL context exclusively. All public numbers use CSS/world units,
- * angles use radians, RGBA colors are straight-alpha normalized numbers.
+ * Owns its program and stream buffer. It can interleave with a WebGLDevice/MeshRenderer
+ * on the same WebGL 1 context when each renderer is flushed before switching passes.
+ * All public numbers use CSS/world units, angles use radians, RGBA colors are straight-alpha normalized numbers.
  */
 export class Renderer2D {
   constructor(canvas, { batchVertices = 6144, antialias = true, preserveDrawingBuffer = false } = {}) {
@@ -88,12 +89,16 @@ export class Renderer2D {
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer); gl.bufferData(gl.ARRAY_BUFFER, this.vertices.byteLength, gl.DYNAMIC_DRAW);
     this.stats.bufferAllocations++;
     gl.useProgram(this.program);
+    this.instancingExtension = gl.getExtension('ANGLE_instanced_arrays');
+    this.attributeLocations = [];
     for (const [name, size, offset] of [['a_position', 2, 0], ['a_uv', 2, 8], ['a_color', 4, 16]]) {
       const location = gl.getAttribLocation(this.program, name);
+      this.attributeLocations.push([location, size, offset]);
       gl.enableVertexAttribArray(location); gl.vertexAttribPointer(location, size, gl.FLOAT, false, 32, offset);
     }
     this.uProjection = gl.getUniformLocation(this.program, 'u_projection');
-    gl.uniform1i(gl.getUniformLocation(this.program, 'u_texture'), 0);
+    this.uTexture = gl.getUniformLocation(this.program, 'u_texture');
+    gl.uniform1i(this.uTexture, 0);
     gl.activeTexture(gl.TEXTURE0); gl.disable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE); gl.disable(gl.DITHER);
     gl.enable(gl.BLEND); gl.blendEquation(gl.FUNC_ADD); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true); gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
@@ -111,6 +116,7 @@ export class Renderer2D {
     m[0] = 2 * c / w; m[1] = 2 * s / h; m[2] = 0;
     m[3] = 2 * s / w; m[4] = -2 * c / h; m[5] = 0;
     m[6] = -2 * (c * x + s * y) / w; m[7] = 2 * (c * y - s * x) / h; m[8] = 1;
+    this.gl.useProgram(this.program);
     this.gl.uniformMatrix3fv(this.uProjection, false, m);
   }
   /** CSS viewport dimensions; does not change CSS style. Game controls camera separately. */
@@ -200,7 +206,10 @@ export class Renderer2D {
     this._ready(); if (this.active) throw new Error('endFrame is required'); color(clear);
     this.active = true; this.vertexCount = 0; this.batchTexture = null;
     const stats = this.stats; stats.frame++; stats.drawCalls = stats.vertices = stats.uploadedBytes = stats.bufferViews = stats.textureUploads = 0;
-    const gl = this.gl; gl.clearColor(clear[0] * clear[3], clear[1] * clear[3], clear[2] * clear[3], clear[3]); gl.clear(gl.COLOR_BUFFER_BIT); return true;
+    const gl = this.gl;
+    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    gl.disable(gl.SCISSOR_TEST); gl.colorMask(true, true, true, true);
+    gl.clearColor(clear[0] * clear[3], clear[1] * clear[3], clear[2] * clear[3], clear[3]); gl.clear(gl.COLOR_BUFFER_BIT); return true;
   }
   _reserve(count, texture) {
     this._frame();
@@ -254,7 +263,19 @@ export class Renderer2D {
   flush() {
     this._frame(); if (!this.vertexCount) return;
     const gl = this.gl, view = this.vertices.subarray(0, this.vertexCount * 8);
-    gl.bindTexture(gl.TEXTURE_2D, this.batchTexture); gl.bufferSubData(gl.ARRAY_BUFFER, 0, view); gl.drawArrays(gl.TRIANGLES, 0, this.vertexCount);
+    gl.useProgram(this.program);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+    for (const [location, size, offset] of this.attributeLocations) {
+      gl.enableVertexAttribArray(location);
+      this.instancingExtension?.vertexAttribDivisorANGLE(location, 0);
+      gl.vertexAttribPointer(location, size, gl.FLOAT, false, 32, offset);
+    }
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.batchTexture);
+    gl.uniform1i(this.uTexture, 0);
+    gl.uniformMatrix3fv(this.uProjection, false, this.projection);
+    gl.disable(gl.SCISSOR_TEST); gl.disable(gl.DEPTH_TEST); gl.disable(gl.STENCIL_TEST); gl.disable(gl.CULL_FACE); gl.disable(gl.DITHER);
+    gl.colorMask(true, true, true, true); gl.enable(gl.BLEND); gl.blendEquation(gl.FUNC_ADD); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, view); gl.drawArrays(gl.TRIANGLES, 0, this.vertexCount);
     this.stats.drawCalls++; this.stats.vertices += this.vertexCount; this.stats.uploadedBytes += view.byteLength; this.stats.bufferViews++; this.vertexCount = 0;
   }
   /** Stats is a reused object, valid until next frame; CPU submission, not GPU timing. */

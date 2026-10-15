@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="160" height="180" viewBox="0 0 160 180">
+  <metadata id="vector-asset">{"schemaVersion":1,"id":"yarn-fox","defaultExpression":"neutral","parts":[{"id":"body","parent":null,"pivot":[80,90]}],"expressions":{"neutral":{"show":[],"hide":[]}},"sockets":{"nose":{"part":"body","point":[80,95]}},"clips":{"idle":{"durationMs":900,"loop":"alternate","easing":"inOutSine","keyframes":[{"timeMs":0,"easing":"inOutSine","parts":{"body":{"rotation":-0.025}}},{"timeMs":450,"easing":"inOutSine","parts":{"body":{"rotation":0.025}}},{"timeMs":900,"easing":"inOutSine","parts":{"body":{"rotation":-0.025}}}]}},"styles":[{"target":"yarn-shell","kind":"yarn","seed":41,"stitchWidth":8,"stitchHeight":7,"thickness":0.17,"irregularity":0.13,"contrast":0.23,"edgeSpacing":5,"edgeRelief":0.7,"edgeWidth":1.7,"fiberLength":3.2,"fiberWidth":0.35,"fiberOpacity":0.55,"fiberMax":95}]}</metadata>
+  <g id="body">
+    <path id="yarn-shell" fill="#d98a58" stroke="#994b31" stroke-width="3" d="M80 24 C107 24 130 47 135 77 C140 110 123 147 96 157 C88 160 72 160 64 157 C37 147 20 110 25 77 C30 47 53 24 80 24 Z"/>
+    <path id="yarn-ear-left" fill="#f4c58e" d="M42 49 L34 18 Q53 23 62 42 Z"/>
+    <path id="yarn-ear-right" fill="#f4c58e" d="M98 42 Q107 23 126 18 L118 49 Z"/>
+    <circle id="yarn-eye-left" fill="#293843" cx="62" cy="83" r="4"/>
+    <circle id="yarn-eye-right" fill="#293843" cx="98" cy="83" r="4"/>
+    <path id="yarn-nose" fill="#8b493d" d="M73 96 Q80 90 87 96 L80 102 Z"/>
+    <path id="yarn-mouth" fill="none" stroke="#8b493d" stroke-width="2" stroke-linecap="round" d="M80 102 Q73 111 68 106 M80 102 Q87 111 92 106"/>
+  </g>
+</svg>

@@ -62,6 +62,16 @@ function copyPose(pose) {
   return Object.fromEntries(POSE_FIELDS.map(field => [field, pose[field]]));
 }
 
+function authoredMorph(metadata, displayTimeMs) {
+  const sketch = metadata.styles?.find(style => style.kind === 'sketch');
+  if (!sketch) return [0, 0];
+  const phase = (((displayTimeMs % sketch.periodMs) + sketch.periodMs) % sketch.periodMs) / sketch.periodMs * 3;
+  const segment = Math.floor(phase), amount = phase - segment;
+  if (segment === 0) return [amount, 0];
+  if (segment === 1) return [1 - amount, amount];
+  return [0, 1 - amount];
+}
+
 function blendPoses(from, to, amount, partIds) {
   const output = new Map();
   for (const id of partIds) {
@@ -190,20 +200,21 @@ export function createVectorAsset(meshRenderer, compiledAsset) {
     const partPoses = () => {
       assertPlayer();
       const matrices = worldMatrices(), output = metadata.parts.map((part, index) => {
+        const morph = authoredMorph(metadata, displayTimeMs);
         let parentVisible = true, opacity = 1, parent = part;
         while (parent) {
           parentVisible &&= visible.get(parent.id) !== false;
           opacity *= effectivePose(basePose.get(parent.id), currentPose.get(parent.id)).opacity;
           parent = parent.parent === null ? null : metadata.parts[partIndices.get(parent.parent)];
         }
-        return { transform: matrices.get(part.id), opacity, visible: parentVisible, index };
+        return { transform: matrices.get(part.id), morph, opacity, visible: parentVisible, index };
       });
       return output;
     };
     const draw = ({ projection, matrix = IDENTITY, alpha = 1, color = [1, 1, 1, 1], forceColor = false } = {}) => {
       assertPlayer();
       const poses = partPoses().map(({ transform, opacity, visible: isVisible }) => ({ transform, opacity, visible: isVisible }));
-      meshRenderer.drawMesh(mesh, { projection, matrix, parts: poses, alpha, color, forceColor });
+      meshRenderer.drawMesh(mesh, { projection, matrix, parts: poses, morph: authoredMorph(metadata, displayTimeMs), alpha, color, forceColor });
     };
     const getPartPose = id => {
       assertPlayer();

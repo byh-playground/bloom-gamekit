@@ -2,7 +2,7 @@ import { build } from 'esbuild';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { bundledAssetSource } from '../modules/vector-assets/compiler.js';
+import { bundledAssetSource, bundledStyleExamplesSource } from '../modules/vector-assets/compiler.js';
 
 // Every maintained example HTML entry. Test harnesses and provenance archives are not demos.
 export const EXAMPLES = [
@@ -40,8 +40,12 @@ export async function buildPreviews(root) {
                 /(?:^|[\\/])modules[\\/]vector-assets[\\/]examples[\\/]seed-scout\.js$/.test(args.importer)
                   ? { path: 'seed-scout', namespace: 'vector-asset-example' }
                   : null);
-              b.onLoad({ filter: /.*/, namespace: 'vector-asset-example' }, async () => ({
-                contents: await bundledAssetSource(root), loader: 'js',
+              b.onResolve({ filter: /^\.\/styles\.compiled\.js$/ }, args =>
+                /(?:^|[\\/])modules[\\/]vector-assets[\\/]examples[\\/]style-samples\.js$/.test(args.importer)
+                  ? { path: 'style-samples', namespace: 'vector-asset-example' }
+                  : null);
+              b.onLoad({ filter: /.*/, namespace: 'vector-asset-example' }, async args => ({
+                contents: args.path === 'seed-scout' ? await bundledAssetSource(root) : await bundledStyleExamplesSource(root), loader: 'js',
               }));
             },
           },

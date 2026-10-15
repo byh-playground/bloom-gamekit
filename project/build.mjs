@@ -38,7 +38,13 @@ export async function buildDistribution(root) {
     }
     for (const input of Object.keys(result.metafile.inputs)) {
       const owned = [name, ...(SDK_DEPENDENCIES[name] ?? [])].some(owner => input.startsWith(`modules/${owner}/`) && !input.slice(`modules/${owner}/`.length).includes('/'));
-      const packageOwned = (BUNDLED_PACKAGES[name] ?? []).some(prefix => input.startsWith(prefix));
+      // esbuild reports a package's real path when node_modules is symlinked
+      // into an isolated worktree (for example ../node_modules/animejs/...).
+      // Keep the allowlist package-specific while accepting that canonical path.
+      const packageOwned = (BUNDLED_PACKAGES[name] ?? []).some(prefix => {
+        const packagePath = prefix.startsWith('./') ? prefix.slice(2) : prefix;
+        return input.startsWith(packagePath) || input.includes('/' + packagePath);
+      });
       const generatedAsset = name === 'vector-assets' && input.startsWith('vector-asset:');
       if (!owned && !packageOwned && !generatedAsset) {
         throw new Error(`${name} 소스 밖의 런타임 의존성은 허용하지 않습니다: ${input}`);
