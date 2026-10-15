@@ -989,13 +989,17 @@ void main() {
       gl.bufferData(gl.ARRAY_BUFFER, this.vertices.byteLength, gl.DYNAMIC_DRAW);
       this.stats.bufferAllocations++;
       gl.useProgram(this.program);
+      this.instancingExtension = gl.getExtension("ANGLE_instanced_arrays");
+      this.attributeLocations = [];
       for (const [name, size, offset] of [["a_position", 2, 0], ["a_uv", 2, 8], ["a_color", 4, 16]]) {
         const location = gl.getAttribLocation(this.program, name);
+        this.attributeLocations.push([location, size, offset]);
         gl.enableVertexAttribArray(location);
         gl.vertexAttribPointer(location, size, gl.FLOAT, false, 32, offset);
       }
       this.uProjection = gl.getUniformLocation(this.program, "u_projection");
-      gl.uniform1i(gl.getUniformLocation(this.program, "u_texture"), 0);
+      this.uTexture = gl.getUniformLocation(this.program, "u_texture");
+      gl.uniform1i(this.uTexture, 0);
       gl.activeTexture(gl.TEXTURE0);
       gl.disable(gl.DEPTH_TEST);
       gl.disable(gl.CULL_FACE);
@@ -1030,6 +1034,7 @@ void main() {
       m[6] = -2 * (c * x + s * y) / w;
       m[7] = 2 * (c * y - s * x) / h;
       m[8] = 1;
+      this.gl.useProgram(this.program);
       this.gl.uniformMatrix3fv(this.uProjection, false, m);
     }
     /** CSS viewport dimensions; does not change CSS style. Game controls camera separately. */
@@ -1174,6 +1179,9 @@ void main() {
       stats.frame++;
       stats.drawCalls = stats.vertices = stats.uploadedBytes = stats.bufferViews = stats.textureUploads = 0;
       const gl = this.gl;
+      gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+      gl.disable(gl.SCISSOR_TEST);
+      gl.colorMask(true, true, true, true);
       gl.clearColor(clear[0] * clear[3], clear[1] * clear[3], clear[2] * clear[3], clear[3]);
       gl.clear(gl.COLOR_BUFFER_BIT);
       return true;
@@ -1271,7 +1279,26 @@ void main() {
       this._frame();
       if (!this.vertexCount) return;
       const gl = this.gl, view = this.vertices.subarray(0, this.vertexCount * 8);
+      gl.useProgram(this.program);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+      for (const [location, size, offset] of this.attributeLocations) {
+        gl.enableVertexAttribArray(location);
+        this.instancingExtension?.vertexAttribDivisorANGLE(location, 0);
+        gl.vertexAttribPointer(location, size, gl.FLOAT, false, 32, offset);
+      }
+      gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, this.batchTexture);
+      gl.uniform1i(this.uTexture, 0);
+      gl.uniformMatrix3fv(this.uProjection, false, this.projection);
+      gl.disable(gl.SCISSOR_TEST);
+      gl.disable(gl.DEPTH_TEST);
+      gl.disable(gl.STENCIL_TEST);
+      gl.disable(gl.CULL_FACE);
+      gl.disable(gl.DITHER);
+      gl.colorMask(true, true, true, true);
+      gl.enable(gl.BLEND);
+      gl.blendEquation(gl.FUNC_ADD);
+      gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
       gl.bufferSubData(gl.ARRAY_BUFFER, 0, view);
       gl.drawArrays(gl.TRIANGLES, 0, this.vertexCount);
       this.stats.drawCalls++;
