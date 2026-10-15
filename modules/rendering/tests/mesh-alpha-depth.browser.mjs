@@ -164,4 +164,4 @@ export async function exerciseMeshAlphaDepthWrite(page, moduleURL = '/dist/rende
         drawCost400, disposed: true, instanced: drawCost400.opaque.instanced };
     } finally { meshes.dispose(); device.dispose(); canvas.remove(); }
   }, moduleURL);
-}\r\n
+}
