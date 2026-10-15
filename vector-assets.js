@@ -3155,8 +3155,8 @@ var createTimeline = (parameters) => {
 
 // modules/vector-assets/schema.js
 var VECTOR_ASSET_SCHEMA_VERSION = 1;
-var VECTOR_ASSET_COMPILER_VERSION = "0.4.0";
-var ACCEPTED_COMPILER_VERSIONS = /* @__PURE__ */ new Set(["0.2.0", "0.3.0", VECTOR_ASSET_COMPILER_VERSION]);
+var VECTOR_ASSET_COMPILER_VERSION = "0.5.0";
+var ACCEPTED_COMPILER_VERSIONS = /* @__PURE__ */ new Set(["0.2.0", "0.3.0", "0.4.0", VECTOR_ASSET_COMPILER_VERSION]);
 var NUMERIC_POSE_FIELDS = Object.freeze(["x", "y", "rotation", "scaleX", "scaleY", "opacity"]);
 var isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 function validateCompiledAsset(asset) {
