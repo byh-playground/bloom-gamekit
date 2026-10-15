@@ -548,10 +548,14 @@ var WebGLDevice = class {
       if (instances > instanceRecord.used / p.instanceStride) throw new RangeError("draw exceeds uploaded instances");
     } else if (instances !== 1) throw new RangeError("Multiple instances require instance attributes");
     if (!Number.isSafeInteger(count * instances)) throw new RangeError("draw vertex count exceeds safe integer range");
-    if (depth && !this.depthAvailable) throw new Error("Context has no depth buffer");
+    const depthState = depth === false || depth == null ? null : depth === true ? { test: true, write: true, func: "lequal" } : typeof depth === "object" && !Array.isArray(depth) ? { test: depth.test ?? true, write: depth.write ?? true, func: depth.func ?? "lequal" } : (() => {
+      throw new TypeError("depth must be false or a depth policy object");
+    })();
+    if (depthState && (typeof depthState.test !== "boolean" || typeof depthState.write !== "boolean")) throw new TypeError("depth.test and depth.write must be booleans");
+    if ((depthState?.test || depthState?.write) && !this.depthAvailable) throw new Error("Context has no depth buffer");
     if (stencil && !this.stencilAvailable) throw new Error("Context has no stencil buffer");
     if (blend !== false && !BLENDS.has(blend)) throw new TypeError("Unsupported blend");
-    if (depth && !FUNCTIONS[depth.func ?? "lequal"]) throw new TypeError("Unsupported depth function");
+    if (depthState && !FUNCTIONS[depthState.func]) throw new TypeError("Unsupported depth function");
     if (stencil) {
       if (!FUNCTIONS[stencil.func ?? "always"]) throw new TypeError("Unsupported stencil function");
       for (const key of ["fail", "zfail", "pass"]) if (!OPERATIONS[stencil[key] ?? "keep"]) throw new TypeError("Unsupported stencil operation");
@@ -609,14 +613,11 @@ var WebGLDevice = class {
       const factors = blend === "source-over" ? [gl.ONE, gl.ONE_MINUS_SRC_ALPHA] : blend === "straight-alpha" ? [gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA] : blend === "copy" ? [gl.ONE, gl.ZERO] : blend === "lighter" ? [gl.ONE, gl.ONE] : blend === "source-in" ? [gl.DST_ALPHA, gl.ZERO] : [gl.ZERO, gl.SRC_ALPHA];
       gl.blendFunc(...factors);
     }
-    if (depth) {
+    if (depthState?.test) {
       gl.enable(gl.DEPTH_TEST);
-      gl.depthFunc(gl[FUNCTIONS[depth.func ?? "lequal"]]);
-      gl.depthMask(depth.write ?? true);
-    } else {
-      gl.disable(gl.DEPTH_TEST);
-      gl.depthMask(false);
-    }
+      gl.depthFunc(gl[FUNCTIONS[depthState.func]]);
+    } else gl.disable(gl.DEPTH_TEST);
+    gl.depthMask(depthState?.write ?? false);
     if (stencil) {
       gl.enable(gl.STENCIL_TEST);
       gl.stencilFunc(gl[FUNCTIONS[stencil.func ?? "always"]], stencil.ref ?? 0, stencil.mask ?? 255);
@@ -1154,7 +1155,7 @@ uniform mat3 u_projection; varying vec4 v_color; ${clipped ? "varying vec2 v_pos
 void main(){${partCount > 1 ? "int index=int(a_part)*3;vec4 row0=u_parts[index];vec4 row1=u_parts[index+1];vec4 pose=u_parts[index+2];" : ""}
 vec2 local=${local};vec2 p=${partCount > 1 ? "vec2(dot(row0.xyz,vec3(local,1.0)),dot(row1.xyz,vec3(local,1.0)))" : "local"};
 vec2 world=vec2(dot(i_row0.xyz,vec3(p,1.0)),dot(i_row1.xyz,vec3(p,1.0)));
-vec3 projected=u_projection*vec3(world,1.0);gl_Position=vec4(projected.xy,0.0,1.0);${clipped ? "v_position=world;" : ""}
+vec3 projected=u_projection*vec3(world,1.0);gl_Position=vec4(projected.xy,(i_params.w+${partCount > 1 ? "pose.w" : "0.0"})*projected.z,projected.z);${clipped ? "v_position=world;" : ""}
 vec4 color=mix(a_color*i_color,i_color,i_row1.w);color.a*=i_row0.w${partCount > 1 ? "*pose.z" : ""};
 color.rgb=mix(color.rgb,vec3(1.0),i_params.z);v_color=vec4(color.rgb*color.a,color.a);}`;
 }
@@ -1185,10 +1186,12 @@ function packParts(parts, count, output) {
     output[at + 5] = m[3];
     output[at + 6] = m[5];
     output[at + 7] = 0;
+    const depth = part?.depth ?? 0;
+    if (!Number.isFinite(depth) || depth < -1 || depth > 1) throw new RangeError("part depth must be in [-1,1]");
     output[at + 8] = morph[0];
     output[at + 9] = morph[1];
     output[at + 10] = part?.visible === false ? 0 : opacity;
-    output[at + 11] = 0;
+    output[at + 11] = depth;
   }
 }
 function clipState(clips, maxPlanes) {
@@ -1317,9 +1320,28 @@ var MeshRenderer = class {
       forceColor = false,
       alpha = 1,
       whiteFlash = false,
-      clips = []
+      clips = [],
+      depth = 0,
+      depthTest = false,
+      depthWrite = false,
+      depthFunc = "lequal"
     } = options;
-    this._drawMeshInstances(mesh, { matrices: matrix, count: 1, projection, morph, parts, color: color2, forceColor, alpha, whiteFlash, clips });
+    this._drawMeshInstances(mesh, {
+      matrices: matrix,
+      count: 1,
+      projection,
+      morph,
+      parts,
+      color: color2,
+      forceColor,
+      alpha,
+      whiteFlash,
+      clips,
+      depth,
+      depthTest,
+      depthWrite,
+      depthFunc
+    });
   }
   /** Internal ordered instance append used when one retained pose has several transforms. */
   _drawMeshInstances(mesh, {
@@ -1335,7 +1357,11 @@ var MeshRenderer = class {
     clips = [],
     prefixColor = null,
     prefixCount = 0,
-    forceColorPrefixCount = 0
+    forceColorPrefixCount = 0,
+    depth = 0,
+    depthTest = false,
+    depthWrite = false,
+    depthFunc = "lequal"
   } = {}) {
     this._ready();
     if (!this.meshes.has(mesh)) throw new TypeError("Mesh owned by this renderer required");
@@ -1346,6 +1372,9 @@ var MeshRenderer = class {
     finiteArray2(morph, 2, "morph");
     finiteArray2(color2, 4, "color");
     if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1 || color2.some((n) => n < 0 || n > 1)) throw new RangeError("RGBA/alpha in [0,1] required");
+    if (!Number.isFinite(depth) || depth < -1 || depth > 1) throw new RangeError("depth must be in [-1,1]");
+    if (typeof depthTest !== "boolean" || typeof depthWrite !== "boolean") throw new TypeError("depthTest and depthWrite must be booleans");
+    if (!["never", "less", "equal", "lequal", "greater", "notequal", "gequal", "always"].includes(depthFunc)) throw new TypeError("Unsupported depthFunc");
     if (!Number.isSafeInteger(prefixCount) || prefixCount < 0 || prefixCount > count || !Number.isSafeInteger(forceColorPrefixCount) || forceColorPrefixCount < 0 || forceColorPrefixCount > count) throw new RangeError("Instance color prefix count is invalid");
     if (prefixCount && !prefixColor) throw new TypeError("A prefix color is required for colored mesh instances");
     if (prefixColor !== null) {
@@ -1354,11 +1383,20 @@ var MeshRenderer = class {
     }
     const clip = clipState(clips, this.maxPlanes), pending = this.pending;
     packParts(parts, mesh.partCount, this.partScratch);
-    if (pending && (pending.mesh !== mesh || pending.clip.key !== clip.key || projection.some((n, i) => Math.fround(n) !== pending.projection[i]) || mesh.partCount > 1 && pending.parts.some((n, i) => n !== this.partScratch[i]) || this.count === this.maxInstances)) this.flush();
+    for (let i = 0; i < mesh.partCount; i++) if (depth + this.partScratch[i * 12 + 11] < -1 || depth + this.partScratch[i * 12 + 11] > 1) throw new RangeError("combined mesh and part depth must be in [-1,1]");
+    const depthStateKey = `${Number(depthTest)}:${Number(depthWrite)}:${depthFunc}`;
+    if (pending && (pending.mesh !== mesh || pending.clip.key !== clip.key || pending.depthStateKey !== depthStateKey || projection.some((n, i) => Math.fround(n) !== pending.projection[i]) || mesh.partCount > 1 && pending.parts.some((n, i) => n !== this.partScratch[i]) || this.count === this.maxInstances)) this.flush();
     const part = this.partScratch, singlePart = mesh.partCount === 1;
     for (let i = 0; i < count; i++) {
       if (this.count === this.maxInstances) this.flush();
-      if (!this.pending) this.pending = { mesh, projection: Float32Array.from(projection), clip, parts: this.partScratch.slice(0, mesh.partCount > 1 ? mesh.partCount * 12 : 0) };
+      if (!this.pending) this.pending = {
+        mesh,
+        projection: Float32Array.from(projection),
+        clip,
+        depthStateKey,
+        depthState: { test: depthTest, write: depthWrite, func: depthFunc },
+        parts: this.partScratch.slice(0, mesh.partCount > 1 ? mesh.partCount * 12 : 0)
+      };
       const offset = i * 6;
       let m0 = matrices[offset], m1 = matrices[offset + 1], m2 = matrices[offset + 2], m3 = matrices[offset + 3], m4 = matrices[offset + 4], m5 = matrices[offset + 5];
       let weight0 = morph[0], weight1 = morph[1], instanceAlpha = alpha;
@@ -1388,16 +1426,17 @@ var MeshRenderer = class {
       data[at + 9] = instanceColor[1];
       data[at + 10] = instanceColor[2];
       data[at + 11] = instanceColor[3];
+      const instanceDepth = depth + (singlePart ? part[11] : 0);
       data[at + 12] = weight0;
       data[at + 13] = weight1;
       data[at + 14] = whiteFlash ? 1 : 0;
-      data[at + 15] = 0;
+      data[at + 15] = instanceDepth;
     }
   }
   flush() {
     if (!this.count) return;
     this._ready();
-    const { mesh, projection, clip, parts } = this.pending;
+    const { mesh, projection, clip, parts, depthState } = this.pending;
     this.planes.fill(0);
     if (clip.values) this.planes.set(clip.values);
     const pipeline = this._pipeline(mesh, clip.count > 0), uniforms = { u_projection: projection };
@@ -1405,14 +1444,14 @@ var MeshRenderer = class {
     if (mesh.partCount > 1) uniforms["u_parts[0]"] = parts;
     if (this.instanced) {
       this.device.uploadVertices(this.instanceBuffer, this.instances.subarray(0, this.count * 16));
-      this.device.draw({ pipeline, buffer: mesh.buffer, count: mesh.count, instanceBuffer: this.instanceBuffer, instances: this.count, uniforms });
+      this.device.draw({ pipeline, buffer: mesh.buffer, count: mesh.count, instanceBuffer: this.instanceBuffer, instances: this.count, uniforms, depth: depthState });
       this.metrics.instanceBytesUploaded += this.count * 64;
       this.metrics.draws++;
       this.metrics.partUniformBytesSubmitted += parts.byteLength;
     } else {
       for (let i = 0; i < this.count; i++) {
         for (let j = 0; j < 4; j++) uniforms[["i_row0", "i_row1", "i_color", "i_params"][j]] = this.instances.subarray(i * 16 + j * 4, i * 16 + j * 4 + 4);
-        this.device.draw({ pipeline, buffer: mesh.buffer, count: mesh.count, uniforms });
+        this.device.draw({ pipeline, buffer: mesh.buffer, count: mesh.count, uniforms, depth: depthState });
         this.metrics.draws++;
         this.metrics.partUniformBytesSubmitted += parts.byteLength;
       }
@@ -2899,11 +2938,12 @@ function compile2(gl, type, source) {
   return shader2;
 }
 var Renderer2D = class {
-  constructor(canvas, { batchVertices = 6144, antialias = true, preserveDrawingBuffer = false } = {}) {
+  constructor(canvas, { batchVertices = 6144, antialias = true, depth = false, preserveDrawingBuffer = false } = {}) {
     if (!canvas?.getContext || !canvas?.addEventListener) throw new TypeError("canvas is required");
     if (!Number.isSafeInteger(batchVertices) || batchVertices < 6 || batchVertices > 1048576) throw new RangeError("batchVertices must be 6..1048576");
+    if (typeof depth !== "boolean") throw new TypeError("depth must be boolean");
     this.canvas = canvas;
-    this.gl = canvas.getContext("webgl", { alpha: true, premultipliedAlpha: true, antialias, depth: false, stencil: false, preserveDrawingBuffer });
+    this.gl = canvas.getContext("webgl", { alpha: true, premultipliedAlpha: true, antialias, depth, stencil: false, preserveDrawingBuffer });
     if (!this.gl) throw new Error("WebGL 1 is required; no Canvas2D fallback");
     this.state = "ready";
     this.failure = null;
@@ -3290,6 +3330,7 @@ var Renderer2D = class {
     gl.uniformMatrix3fv(this.uProjection, false, this.projection);
     gl.disable(gl.SCISSOR_TEST);
     gl.disable(gl.DEPTH_TEST);
+    gl.depthMask(false);
     gl.disable(gl.STENCIL_TEST);
     gl.disable(gl.CULL_FACE);
     gl.disable(gl.DITHER);

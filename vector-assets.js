@@ -3155,11 +3155,12 @@ var createTimeline = (parameters) => {
 
 // modules/vector-assets/schema.js
 var VECTOR_ASSET_SCHEMA_VERSION = 1;
-var VECTOR_ASSET_COMPILER_VERSION = "0.2.0";
+var VECTOR_ASSET_COMPILER_VERSION = "0.3.0";
+var ACCEPTED_COMPILER_VERSIONS = /* @__PURE__ */ new Set(["0.2.0", VECTOR_ASSET_COMPILER_VERSION]);
 var NUMERIC_POSE_FIELDS = Object.freeze(["x", "y", "rotation", "scaleX", "scaleY", "opacity"]);
 var isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 function validateCompiledAsset(asset) {
-  if (!isObject(asset) || asset.schemaVersion !== VECTOR_ASSET_SCHEMA_VERSION || asset.compilerVersion !== VECTOR_ASSET_COMPILER_VERSION || typeof asset.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/.test(asset.sourceSha256) || !isObject(asset.metadata) || !isObject(asset.geometry) || !(asset.geometry.vertices instanceof Float32Array) || asset.geometry.vertices.length < 33 || asset.geometry.vertices.length % 33 || asset.geometry.strideFloats !== 11 || asset.geometry.partCount !== asset.metadata.parts?.length || ![0, 2].includes(asset.geometry.morphCount)) {
+  if (!isObject(asset) || asset.schemaVersion !== VECTOR_ASSET_SCHEMA_VERSION || !ACCEPTED_COMPILER_VERSIONS.has(asset.compilerVersion) || typeof asset.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/.test(asset.sourceSha256) || !isObject(asset.metadata) || !isObject(asset.geometry) || !(asset.geometry.vertices instanceof Float32Array) || asset.geometry.vertices.length < 33 || asset.geometry.vertices.length % 33 || asset.geometry.strideFloats !== 11 || asset.geometry.partCount !== asset.metadata.parts?.length || ![0, 2].includes(asset.geometry.morphCount)) {
     throw new TypeError("Invalid compiled SVG vector asset");
   }
   return asset;
@@ -3373,10 +3374,32 @@ function createVectorAsset(meshRenderer, compiledAsset) {
       });
       return output;
     };
-    const draw = ({ projection, matrix = IDENTITY, alpha = 1, color = [1, 1, 1, 1], forceColor = false } = {}) => {
+    const draw = ({
+      projection,
+      matrix = IDENTITY,
+      alpha = 1,
+      color = [1, 1, 1, 1],
+      forceColor = false,
+      depth = 0,
+      depthTest = false,
+      depthWrite = false,
+      depthFunc = "lequal"
+    } = {}) => {
       assertPlayer();
       const poses = partPoses().map(({ transform, opacity, visible: isVisible }) => ({ transform, opacity, visible: isVisible }));
-      meshRenderer.drawMesh(mesh, { projection, matrix, parts: poses, morph: authoredMorph(metadata, displayTimeMs), alpha, color, forceColor });
+      meshRenderer.drawMesh(mesh, {
+        projection,
+        matrix,
+        parts: poses,
+        morph: authoredMorph(metadata, displayTimeMs),
+        alpha,
+        color,
+        forceColor,
+        depth,
+        depthTest,
+        depthWrite,
+        depthFunc
+      });
     };
     const getPartPose = (id) => {
       assertPlayer();
