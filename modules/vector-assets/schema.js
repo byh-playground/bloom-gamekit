@@ -1,6 +1,6 @@
 export const VECTOR_ASSET_SCHEMA_VERSION = 1;
-export const VECTOR_ASSET_COMPILER_VERSION = '0.4.0';
-const ACCEPTED_COMPILER_VERSIONS = new Set(['0.2.0', '0.3.0', VECTOR_ASSET_COMPILER_VERSION]);
+export const VECTOR_ASSET_COMPILER_VERSION = '0.5.0';
+const ACCEPTED_COMPILER_VERSIONS = new Set(['0.2.0', '0.3.0', '0.4.0', VECTOR_ASSET_COMPILER_VERSION]);
 export const NUMERIC_POSE_FIELDS = Object.freeze(['x', 'y', 'rotation', 'scaleX', 'scaleY', 'opacity']);
 const EASINGS = new Set(['linear', 'inSine', 'outSine', 'inOutSine', 'inQuad', 'outQuad', 'inOutQuad', 'inCubic', 'outCubic', 'inOutCubic']);
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);

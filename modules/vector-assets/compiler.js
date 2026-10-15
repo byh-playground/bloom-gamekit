@@ -434,11 +434,12 @@ function clipTriangleToTriangle(subject, clip) {
   return polygon;
 }
 
-function emitClippedTriangle(vertices, points, rgba, partIndex, info) {
+function emitClippedTriangle(vertices, points, rgba, partIndex, info, colorAt = null) {
+  const emit = point => emitStyleVertex(vertices, point, colorAt ? colorAt(point) : rgba, partIndex);
   const twiceArea = Math.abs(cross(points[0], points[1], points[2]));
   if (twiceArea < 1e-8) return;
   if (triangleIsContained(points, info)) {
-    for (const point of points) emitStyleVertex(vertices, point, rgba, partIndex);
+    for (const point of points) emit(point);
     return;
   }
   const { triangles, cells, cellSize, cellKey } = info.clipMesh;
@@ -458,9 +459,9 @@ function emitClippedTriangle(vertices, points, rgba, partIndex, info) {
     const polygon = clipTriangleToTriangle(points, clip.points);
     for (let corner = 1; corner + 1 < polygon.length; corner++) {
       if (Math.abs(cross(polygon[0], polygon[corner], polygon[corner + 1])) < 1e-8) continue;
-      emitStyleVertex(vertices, polygon[0], rgba, partIndex);
-      emitStyleVertex(vertices, polygon[corner], rgba, partIndex);
-      emitStyleVertex(vertices, polygon[corner + 1], rgba, partIndex);
+      emit(polygon[0]);
+      emit(polygon[corner]);
+      emit(polygon[corner + 1]);
     }
   }
 }
@@ -477,11 +478,33 @@ function appendClippedStrokeGeometry(vertices, geometry, rgba, partIndex, info) 
   }
 }
 
-function appendYarnStroke(vertices, points, width, rgba, partIndex, info = null) {
+function appendYarnTriangle(vertices, points, rgba, partIndex, info, colorAt) {
+  const emit = triangle => {
+    if (info) emitClippedTriangle(vertices, triangle, rgba, partIndex, info, colorAt);
+    else for (const point of triangle) emitStyleVertex(vertices, point, colorAt ? colorAt(point) : rgba, partIndex);
+  };
+  const gradientT = colorAt?.gradientT, stops = colorAt?.gradientStops;
+  if (!gradientT || !stops?.length) { emit(points); return; }
+  const values = points.map(gradientT), low = Math.min(...values), high = Math.max(...values);
+  const cuts = [...new Set(stops.filter(offset => offset > low + 1e-9 && offset < high - 1e-9))].sort((a, b) => a - b);
+  if (!cuts.length) { emit(points); return; }
+  const boundaries = [low, ...cuts, high];
+  for (let band = 0; band + 1 < boundaries.length; band++) {
+    const lower = boundaries[band], upper = boundaries[band + 1];
+    if (upper - lower < 1e-9) continue;
+    let polygon = clipGradientPolygon(points, gradientT, lower, true);
+    polygon = clipGradientPolygon(polygon, gradientT, upper, false);
+    for (let corner = 1; corner + 1 < polygon.length; corner++) {
+      if (Math.abs(cross(polygon[0], polygon[corner], polygon[corner + 1])) < 1e-8) continue;
+      emit([polygon[0], polygon[corner], polygon[corner + 1]]);
+    }
+  }
+}
+
+function appendYarnStroke(vertices, points, width, rgba, partIndex, info = null, colorAt = null) {
   if (points.length < 2 || width <= 0) return;
   const triangle = (a, b, c) => {
-    if (info) emitClippedTriangle(vertices, [a, b, c], rgba, partIndex, info);
-    else { emitStyleVertex(vertices, a, rgba, partIndex); emitStyleVertex(vertices, b, rgba, partIndex); emitStyleVertex(vertices, c, rgba, partIndex); }
+    appendYarnTriangle(vertices, [a, b, c], rgba, partIndex, info, colorAt);
   };
   const radius = width / 2, segments = points.length - 1, normals = [];
   for (let index = 0; index < segments; index++) {
@@ -635,6 +658,22 @@ function compileYarnStyle(vertices, style, shape, fillColor, opacity, partIndex,
   const baseColor = gradient ? gradientColorAtT(gradient, 0.53) : colorComponents(fillColor, 1);
   const dark = yarnTint(baseColor, -0.28, opacity), groove = yarnTint(baseColor, -(style.contrast), opacity * 0.85);
   const yarn = yarnTint(baseColor, 0.1, opacity), light = yarnTint(baseColor, 0.38, opacity);
+  const gradientT = gradient ? (() => {
+    const [start, end] = gradientEndpoints(gradient, gradientBounds, transform);
+    const dx = end.x - start.x, dy = end.y - start.y, denominator = dx * dx + dy * dy;
+    return point => ((point.x - start.x) * dx + (point.y - start.y) * dy) / denominator;
+  })() : null;
+  const yarnColor = (tint, alpha = 1) => {
+    if (!gradient) return null;
+    const sampler = point => yarnTint(gradientColorAtT(gradient, gradientT(point)), tint, opacity * alpha);
+    sampler.gradientT = gradientT;
+    sampler.gradientStops = gradient.stops.map(stop => stop.offset);
+    return sampler;
+  };
+  const edgeDarkColor = yarnColor(-0.28, 0.7), edgeMainColor = yarnColor(0.1), edgeLightColor = yarnColor(0.38, 0.55);
+  const underColor = yarnColor(-0.28, 0.5), grooveColor = yarnColor(-style.contrast, 0.85);
+  const stitchColor = yarnColor(0.1), stitchLightColor = yarnColor(0.38, 0.57), crossLightColor = yarnColor(0.38, 0.5);
+  const fiberColor = yarnColor(0.22, style.fiberOpacity), fiberLightColor = yarnColor(0.38, style.fiberOpacity * 0.7);
   if (gradient) appendGradientShape(vertices, outline, gradient, gradientBounds, transform, opacity, partIndex);
   else {
     const fill = new ShapeGeometry(outline, 24);
@@ -649,10 +688,10 @@ function compileYarnStyle(vertices, style, shape, fillColor, opacity, partIndex,
     const control = { x: middle.x + middle.nx * depth * 0.38, y: middle.y + middle.ny * depth * 0.38 };
     const end = { x: b0.x - b0.nx * depth, y: b0.y - b0.ny * depth };
     const loop = quadraticPoints(start, control, end, 6);
-    appendYarnStroke(vertices, loop, edgeWidth * 0.8, yarnTint(dark, 0, 0.7), partIndex);
-    appendYarnStroke(vertices, loop, edgeWidth * 0.56, yarn, partIndex);
+    appendYarnStroke(vertices, loop, edgeWidth * 0.8, yarnTint(dark, 0, 0.7), partIndex, null, edgeDarkColor);
+    appendYarnStroke(vertices, loop, edgeWidth * 0.56, yarn, partIndex, null, edgeMainColor);
     appendYarnStroke(vertices, loop.map(point => ({ x: point.x - edgeWidth * 0.1, y: point.y - edgeWidth * 0.09 })), edgeWidth * 0.17,
-      yarnTint(light, 0, 0.55), partIndex);
+      yarnTint(light, 0, 0.55), partIndex, null, edgeLightColor);
   }
 
   if (style.pattern !== false) {
@@ -668,14 +707,14 @@ function compileYarnStyle(vertices, style, shape, fillColor, opacity, partIndex,
       return { x: info.center.x + (curved ? Math.sin(clamp(nx, -1.35, 1.35) * 1.1) / Math.sin(1.1) * rx : x),
         y: info.center.y + y + (curved ? ry * 0.13 * nx * nx * (1 - ny * 0.24) : 0) };
     };
-    const drawCellCurve = (x, y, ax, ay, data, rgba, width, offsetX = 0, offsetY = 0) => {
+    const drawCellCurve = (x, y, ax, ay, data, rgba, width, offsetX = 0, offsetY = 0, colorAt = null) => {
       const points = cubicPoints(
         { x: x + ax * data[0], y: y + ay * data[1] },
         { x: x + ax * data[2], y: y + ay * data[3] },
         { x: x + ax * data[4], y: y + ay * data[5] },
         { x: x + ax * data[6], y: y + ay * data[7] }, 5,
       ).map(point => mapPoint(point.x, point.y, offsetX, offsetY));
-      appendYarnStroke(vertices, points, width, rgba, partIndex, info);
+      appendYarnStroke(vertices, points, width, rgba, partIndex, info, colorAt);
     };
     let stitchCount = 0;
     for (let row = -1; row <= rows + 1; row++) for (let column = -1; column <= columns + 1; column++) {
@@ -686,14 +725,18 @@ function compileYarnStyle(vertices, style, shape, fillColor, opacity, partIndex,
       const under = [-0.48, -0.46, -0.22, -0.57, 0.22, -0.57, 0.48, -0.46];
       const leftLoop = [-0.34, -0.36, -0.32, -0.06, -0.18, 0.17, -0.025, 0.34];
       const rightLoop = [0.34, -0.36, 0.32, -0.06, 0.18, 0.17, 0.025, 0.34];
-      drawCellCurve(x, y, ax, ay, under, yarnTint(dark, 0, 0.5), strokeWidth * 0.5, 0, strokeWidth * 0.06);
-      for (const loop of [leftLoop, rightLoop]) drawCellCurve(x, y, ax, ay, loop, groove, strokeWidth * 1.08, 0, strokeWidth * 0.06);
-      for (const loop of [leftLoop, rightLoop]) drawCellCurve(x, y, ax, ay, loop, yarn, strokeWidth * 0.89);
+      drawCellCurve(x, y, ax, ay, under, yarnTint(dark, 0, 0.5), strokeWidth * 0.5, 0, strokeWidth * 0.06, underColor);
+      for (const loop of [leftLoop, rightLoop]) drawCellCurve(x, y, ax, ay, loop, groove, strokeWidth * 1.08, 0, strokeWidth * 0.06,
+        grooveColor);
+      for (const loop of [leftLoop, rightLoop]) drawCellCurve(x, y, ax, ay, loop, yarn, strokeWidth * 0.89, 0, 0,
+        stitchColor);
       for (const loop of [leftLoop, rightLoop]) drawCellCurve(x, y, ax, ay, loop, yarnTint(light, 0, 0.57), strokeWidth * 0.34,
-        -strokeWidth * 0.14, -strokeWidth * 0.13);
+        -strokeWidth * 0.14, -strokeWidth * 0.13, stitchLightColor);
       if ((row + column) % 2 === 0) {
-        drawCellCurve(x, y, ax, ay, [-0.32, -0.12, -0.27, -0.13, -0.20, -0.15, -0.16, -0.13], yarnTint(light, 0, 0.5), strokeWidth * 0.075);
-        drawCellCurve(x, y, ax, ay, [0.22, 0.18, 0.28, 0.14, 0.33, 0.11, 0.37, 0.08], yarnTint(light, 0, 0.5), strokeWidth * 0.075);
+        drawCellCurve(x, y, ax, ay, [-0.32, -0.12, -0.27, -0.13, -0.20, -0.15, -0.16, -0.13], yarnTint(light, 0, 0.5), strokeWidth * 0.075,
+          0, 0, crossLightColor);
+        drawCellCurve(x, y, ax, ay, [0.22, 0.18, 0.28, 0.14, 0.33, 0.11, 0.37, 0.08], yarnTint(light, 0, 0.5), strokeWidth * 0.075,
+          0, 0, crossLightColor);
       }
       if (++stitchCount > 16384) throw new RangeError('Yarn style tessellation exceeds the 16,384 stitch limit');
     }
@@ -708,9 +751,11 @@ function compileYarnStyle(vertices, style, shape, fillColor, opacity, partIndex,
       const start = { x: at.x - at.nx * 0.008, y: at.y - at.ny * 0.008 };
       const control = { x: at.x + at.nx * length * 0.64 + at.tx * lean, y: at.y + at.ny * length * 0.64 + at.ty * lean };
       const end = { x: at.x + at.nx * length + at.tx * lean * 0.48, y: at.y + at.ny * length + at.ty * lean * 0.48 };
-      appendYarnStroke(vertices, quadraticPoints(start, control, end, 3), style.fiberWidth, yarnTint(baseColor, 0.22, opacity * style.fiberOpacity), partIndex);
+      appendYarnStroke(vertices, quadraticPoints(start, control, end, 3), style.fiberWidth, yarnTint(baseColor, 0.22, opacity * style.fiberOpacity), partIndex, null,
+        fiberColor);
       const tipStart = { x: at.x + at.nx * length * 0.48 + at.tx * lean * 0.25, y: at.y + at.ny * length * 0.48 + at.ty * lean * 0.25 };
-      appendYarnStroke(vertices, [tipStart, end], style.fiberWidth * 0.4, yarnTint(light, 0, opacity * style.fiberOpacity * 0.7), partIndex);
+      appendYarnStroke(vertices, [tipStart, end], style.fiberWidth * 0.4, yarnTint(light, 0, opacity * style.fiberOpacity * 0.7), partIndex, null,
+        fiberLightColor);
     }
   }
 }
