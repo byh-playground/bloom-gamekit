@@ -1,5 +1,5 @@
 export const VECTOR_ASSET_SCHEMA_VERSION = 1;
-export const VECTOR_ASSET_COMPILER_VERSION = '0.1.0';
+export const VECTOR_ASSET_COMPILER_VERSION = '0.2.0';
 export const NUMERIC_POSE_FIELDS = Object.freeze(['x', 'y', 'rotation', 'scaleX', 'scaleY', 'opacity']);
 const EASINGS = new Set(['linear', 'inSine', 'outSine', 'inOutSine', 'inQuad', 'outQuad', 'inOutQuad', 'inCubic', 'outCubic', 'inOutCubic']);
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -15,7 +15,11 @@ function requirePoint(value, name) {
 }
 
 export function validateAssetMetadata(metadata, idNodes) {
-  if (!exactKeys(metadata, ['schemaVersion', 'id', 'defaultExpression', 'parts', 'expressions', 'sockets', 'clips']) || metadata.schemaVersion !== VECTOR_ASSET_SCHEMA_VERSION) {
+  const metadataKeys = ['schemaVersion', 'id', 'defaultExpression', 'parts', 'expressions', 'sockets', 'clips'];
+  if (!isObject(metadata) || ![metadataKeys.length, metadataKeys.length + 1].includes(Object.keys(metadata).length)
+      || metadataKeys.some(key => !Object.hasOwn(metadata, key))
+      || Object.keys(metadata).some(key => ![...metadataKeys, 'styles'].includes(key))
+      || metadata.schemaVersion !== VECTOR_ASSET_SCHEMA_VERSION) {
     throw new TypeError('SVG metadata must use the exact vector asset schemaVersion 1 fields');
   }
   requireId(metadata.id, 'asset id');
@@ -57,6 +61,45 @@ export function validateAssetMetadata(metadata, idNodes) {
     if (!exactKeys(socket, ['part', 'point']) || !parts.has(socket.part)) throw new TypeError('socket must reference a known part');
     requirePoint(socket.point, 'socket point');
   }
+  if (metadata.styles !== undefined) {
+    if (!Array.isArray(metadata.styles) || metadata.styles.length > 128) throw new RangeError('styles must contain at most 128 SVG target declarations');
+    const targets = new Set();
+    let sketchPeriod = null;
+    for (const style of metadata.styles) {
+      if (!isObject(style) || typeof style.target !== 'string') throw new TypeError('A style target must name an SVG shape id');
+      requireId(style.target, 'style target');
+      if (targets.has(style.target) || !idNodes.has(style.target) || !['path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon'].includes(idNodes.get(style.target).nodeName)) {
+        throw new TypeError('Style targets must uniquely reference an authored SVG shape: ' + style.target);
+      }
+      targets.add(style.target);
+      if (style.kind === 'yarn') {
+        if (!exactKeys(style, ['target', 'kind', 'seed', 'stitchWidth', 'stitchHeight', 'thickness', 'irregularity', 'contrast', 'edgeSpacing', 'edgeRelief', 'edgeWidth', 'fiberLength', 'fiberWidth', 'fiberOpacity', 'fiberMax'])) {
+          throw new TypeError('Yarn style fields are incomplete or unsupported: ' + style.target);
+        }
+        for (const key of ['stitchWidth', 'stitchHeight', 'thickness', 'edgeSpacing', 'edgeWidth', 'fiberLength', 'fiberWidth']) {
+          if (!finite(style[key]) || style[key] <= 0) throw new RangeError('Yarn ' + key + ' must be positive');
+        }
+        for (const key of ['irregularity', 'contrast', 'edgeRelief', 'fiberOpacity']) {
+          if (!finite(style[key]) || style[key] < 0 || style[key] > 1) throw new RangeError('Yarn ' + key + ' must be in [0,1]');
+        }
+        if (!Number.isSafeInteger(style.seed) || style.seed < 0 || style.seed > 0x7fffffff
+            || !Number.isSafeInteger(style.fiberMax) || style.fiberMax < 0 || style.fiberMax > 512) throw new RangeError('Yarn seed/fiberMax is outside its bound');
+      } else if (style.kind === 'sketch') {
+        if (!exactKeys(style, ['target', 'kind', 'seed', 'periodMs', 'amplitude', 'frequency', 'echoX', 'echoY', 'echoWidth', 'echoOpacity', 'hatchAngle', 'hatchSpacing', 'hatchWidth', 'hatchOpacity'])) {
+          throw new TypeError('Sketch style fields are incomplete or unsupported: ' + style.target);
+        }
+        for (const key of ['amplitude', 'frequency', 'echoWidth', 'hatchSpacing', 'hatchWidth']) {
+          if (!finite(style[key]) || style[key] <= 0) throw new RangeError('Sketch ' + key + ' must be positive');
+        }
+        for (const key of ['echoX', 'echoY', 'hatchAngle']) if (!finite(style[key])) throw new TypeError('Sketch ' + key + ' must be finite');
+        for (const key of ['echoOpacity', 'hatchOpacity']) if (!finite(style[key]) || style[key] < 0 || style[key] > 1) throw new RangeError('Sketch ' + key + ' must be in [0,1]');
+        if (!Number.isSafeInteger(style.seed) || style.seed < 0 || style.seed > 0x7fffffff
+            || !Number.isSafeInteger(style.periodMs) || style.periodMs < 16 || style.periodMs > 10000) throw new RangeError('Sketch seed/periodMs is outside its bound');
+        if (sketchPeriod !== null && sketchPeriod !== style.periodMs) throw new RangeError('All sketch targets in one SVG must share a periodMs');
+        sketchPeriod = style.periodMs;
+      } else throw new TypeError('Unsupported authored style kind: ' + String(style.kind));
+    }
+  }
   if (!isObject(metadata.clips) || !Object.keys(metadata.clips).length) throw new TypeError('at least one authored clip is required');
   for (const [name, clip] of Object.entries(metadata.clips)) {
     requireId(name, 'clip id');
@@ -88,7 +131,7 @@ export function validateCompiledAsset(asset) {
       || !isObject(asset.metadata) || !isObject(asset.geometry)
       || !(asset.geometry.vertices instanceof Float32Array) || asset.geometry.vertices.length < 33
       || asset.geometry.vertices.length % 33 || asset.geometry.strideFloats !== 11
-      || asset.geometry.partCount !== asset.metadata.parts?.length || asset.geometry.morphCount !== 0) {
+      || asset.geometry.partCount !== asset.metadata.parts?.length || ![0, 2].includes(asset.geometry.morphCount)) {
     throw new TypeError('Invalid compiled SVG vector asset');
   }
   return asset;

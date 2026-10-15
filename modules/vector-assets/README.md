@@ -4,6 +4,8 @@
 
 An SVG file is the only authored visual source. `assets/seed-scout.svg` contains paths, paint, strokes, SVG ids, the part hierarchy and pivots, sockets, expression variants, clips, keyframes, easings, and loop mode in one direct JSON `metadata#vector-asset` node. No separately edited visual JSON or raster textures are used.
 
+The same page includes SVG-authored yarn and sketch samples. Stitch layout, hatch pattern, contour wobble, color contrast, and deterministic seed live in each SVG metadata node; the build emits retained vector triangles, never a raster texture. The sketch style has two fixed-topology morph targets sampled from absolute display time.
+
 ## Build and runtime
 
 The public example compares that exact authored SVG, the compiled triangle topology, and the real GameKit WebGL 1 mesh in three side-by-side views. It fetches the source SVG directly and checks its SHA-256 against the compiled asset before displaying it; the example derives display-only part groups and poses from the same paths and metadata. One set of clip, time, expression, zoom, and pan controls drives all views. Drag any panel to pan; Center restores the shared camera. On narrow portrait screens the panels stack, while landscape viewports keep all three visible.
@@ -43,3 +45,20 @@ device.dispose();
 Expressions and explicit part visibility are set on the player. Part pivots and socket coordinates are read from SVG metadata. Authored numeric clip fields are `x`, `y`, `rotation` (radians), `scaleX`, `scaleY`, and `opacity`; clip modes are `once`, `repeat`, and `alternate`. Each asset supports at most 16 parts. Geometry is static: topology morphs, SVG filters, gradients, CSS, text, `use`, arbitrary XML, and full SVG rendering are outside this schema. Scripts, `foreignObject`, external references, embedded raster, doctypes, unknown elements/attributes, and unsupported style values fail compilation.
 
 The SVG save round-trip check serializes and reparses the source, then verifies the JSON metadata and every DOM id survive. Editors that remove this metadata or rename ids need an export setting or a different SVG editor.
+
+## Painter-ordered geometry batches
+
+`MeshBuilder.combine([assetA.geometry, assetB.geometry])` concatenates compatible compiled geometries in the supplied order and remaps their part indices. It accepts 11-float mesh data, up to two morph targets, and at most 16 total parts. The result is one retained mesh, uploaded once:
+
+```js
+const geometry = MeshBuilder.combine([player.geometry, enemy.geometry, prop.geometry]);
+const mesh = meshes.createMesh(geometry);
+meshes.drawMesh(mesh, {
+  projection,
+  parts: [...playerPartPoses, ...enemyPartPoses, ...propPartPoses],
+  clips: sharedViewportClip,
+});
+meshes.flush();
+```
+
+The input list defines painter order; the batch never sorts. Each player's `partPoses()` exposes its local transform, authored two-target morph weights, visibility, and opacity. Before combining actors, fold each actor's root matrix into every one of its part transforms and concatenate the pose arrays in the same order as the geometry list. Per-part transforms, morph weights, visibility, and opacity remain independent. A draw has one projection and shared clip planes, so items with different projections or clip regions must be separate ordered batches. Part `color`/white-flash state is not per-part; keep those items in separate draws unless color was authored into the SVG geometry. Build the combined geometry when the group membership/order changes, not per frame. The existing 16-part limit is intentional; the API rejects a larger group rather than silently dropping parts.

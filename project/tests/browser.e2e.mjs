@@ -2,6 +2,8 @@ import { runFrameChecks } from '../../modules/interpolation/tests/presentation-f
 import { exerciseVectorAssets } from '../../modules/vector-assets/tests/runtime.browser.mjs';
 import { exerciseWebGLDevice, exerciseVectorRenderer, exerciseFontAssetLoader } from '../../modules/rendering/tests/device.browser.mjs';
 import { exerciseReusableMeshes } from '../../modules/rendering/tests/mesh.browser.mjs';
+import { exerciseRendererInterleaving } from '../../modules/rendering/tests/interop.browser.mjs';
+import { exerciseOrderedAssetBatch } from '../../modules/rendering/tests/ordered-batch.browser.mjs';
 import { runPresentationChecks } from './presentation.browser.js';
 import { chromium } from 'playwright';
 import { createServer } from 'node:http';
@@ -137,6 +139,16 @@ try {
   await page.evaluate(() => demo.pause());
 
   // Continue the same built-bundle/browser flow with focused pixel/lifecycle probes.
+  report.rendererInterleaving = await exerciseRendererInterleaving(page);
+  assert.deepEqual(report.rendererInterleaving.red2d, [255, 0, 0, 255], 'Renderer2D retains its program/buffer/attributes after prior device setup');
+  assert.deepEqual(report.rendererInterleaving.blueMesh, [0, 0, 255, 255], 'MeshRenderer draws between Renderer2D submissions');
+  assert.deepEqual(report.rendererInterleaving.green2d, [0, 255, 0, 255], 'Renderer2D rebinds after MeshRenderer changes WebGL state');
+  assert.equal(report.rendererInterleaving.glError, 0, 'interleaved draw stream leaves no WebGL error');
+  report.stages.push('Renderer2D and MeshRenderer interleave ordered draws on one WebGL1 canvas with clean state and expected pixels');
+  report.orderedAssetBatch = await exerciseOrderedAssetBatch(page);
+  assert.equal(report.orderedAssetBatch.pixelMismatch, 0, 'combined SVG geometry is pixel-identical to ordered individual draws');
+  assert.equal(report.orderedAssetBatch.batched.draws, 1, 'compatible ordered assets submit in one draw');
+  report.stages.push('MeshBuilder.combine batches painter-ordered asset geometries with per-part transforms, opacity, and shared clipping');
   report.rendering = await page.evaluate(async () => {
     const { Renderer2D } = await import('/dist/rendering.js');
     const check = (condition, message) => { if (!condition) throw new Error(message); };
@@ -411,7 +423,7 @@ const { createSession, profiles } = await import('/dist/rollback.js');
   await vectorAssetPage.waitForFunction(() => Boolean(window.vectorAssetDemo?.ready || window.vectorAssetDemo?.error), null, { timeout: 15000 });
   assert.equal(await vectorAssetPage.evaluate(() => window.vectorAssetDemo?.error ?? null), null, 'standalone vector-assets preview initializes');
   report.vectorAssets = await exerciseVectorAssets(vectorAssetPage);
-  assert.equal(vectorAssetErrors.length, 0, vectorAssetErrors.join('\\n'));
+  assert.equal(vectorAssetErrors.length, 0, vectorAssetErrors.join('\n'));
   await vectorAssetPage.evaluate(() => {
     const demo = window.vectorAssetDemo;
     demo.actor.dispose(); demo.asset.dispose(); demo.meshes.dispose(); demo.device.dispose();

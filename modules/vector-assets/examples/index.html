@@ -33,6 +33,17 @@
     .metrics strong { color: #293e36; }
     footer { border-top: 1px solid #d5dec2; color: #50624a; font-size: .73rem; }
     .error { color: #9a332b; font-weight: 650; }
+    dialog#style-dialog { width: min(92vw, 1000px); max-width: none; max-height: 88svh; padding: .75rem; border: 1px solid #a6b696; border-radius: .8rem; color: inherit; background: #fffdf4; box-shadow: 0 20px 70px #18251d55; }
+    dialog#style-dialog::backdrop { background: #17231dbb; }
+    .style-dialog-head { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
+    .style-dialog-head h2 { font-size: 1rem; }
+    .style-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem; margin-top: .6rem; }
+    .style-card { min-width: 0; padding: .5rem; border: 1px solid #d5dec2; border-radius: .6rem; }
+    .style-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .4rem; margin-top: .4rem; }
+    .style-stage { height: clamp(150px, 36vh, 340px); overflow: hidden; border-radius: .4rem; background: #dfe8cb; }
+    .style-stage svg, .style-stage canvas { display: block; width: 100%; height: 100%; }
+    .style-caption { margin: .3rem 0 0; color: #50624a; font-size: .72rem; }
+    @media (max-width: 680px) { .style-grid { grid-template-columns: 1fr; } dialog#style-dialog { max-height: 94svh; } }
     @media (max-width: 700px) and (orientation: portrait) {
       body { min-height: 100svh; grid-template-rows: auto 1fr auto; }
       main { grid-template-columns: minmax(0, 1fr); overflow-y: auto; align-content: start; }
@@ -71,6 +82,7 @@
       <label>Expression <select id="expression"><option value="neutral">neutral</option><option value="happy">happy</option><option value="surprised">surprised</option></select></label>
       <label>Zoom <input id="zoom" type="range" min="0.65" max="2.00" step="0.05" value="1"><output id="zoom-value" for="zoom">1.00×</output></label>
       <button id="center-camera" type="button">Center</button>
+      <button id="style-comparison" type="button">Yarn / sketch SVG comparison</button>
     </div>
     <p class="help">Drag any panel to pan all three. Scrub the shared display clock; expressions, clip, zoom, and center apply to every view.</p>
   </header>
@@ -91,10 +103,23 @@
       <div class="metrics" id="gamekit-metrics">Waiting for GameKit WebGL…</div>
     </section>
   </main>
+  <dialog id="style-dialog" aria-labelledby="style-dialog-title">
+    <div class="style-dialog-head"><h2 id="style-dialog-title">SVG-authored yarn and sketch styles</h2><button id="style-dialog-close" type="button">Close</button></div>
+    <p class="style-caption">Each card uses the same committed SVG source for the native SVG and retained GameKit WebGL views. The sketch outline is sampled from absolute display time.</p>
+    <div class="style-grid">
+      <article class="style-card"><h2>Yarn surface <small>Seeded stitches, relief, and fibers tessellated at build time</small></h2>
+        <div class="style-pair"><div class="style-stage" id="style-yarn-source" aria-label="Yarn SVG source"></div><div class="style-stage"><canvas id="style-yarn-canvas" aria-label="Yarn rendered with the GameKit renderer"></canvas></div></div>
+        <p class="style-caption" id="style-yarn-metrics">Opens on demand.</p></article>
+      <article class="style-card"><h2>Sketch boil <small>Hatching and echo line plus two deterministic morph targets</small></h2>
+        <div class="style-pair"><div class="style-stage" id="style-sketch-source" aria-label="Sketch SVG source"></div><div class="style-stage"><canvas id="style-sketch-canvas" aria-label="Sketch rendered with the GameKit renderer"></canvas></div></div>
+        <p class="style-caption" id="style-sketch-metrics">Opens on demand.</p></article>
+    </div>
+  </dialog>
   <footer id="status" aria-live="polite">Metrics report each view's actual rendering path. GPU elapsed time is not inferred from CPU timing.</footer>
   <script type="module">
     import { WebGLDevice, MeshRenderer, VectorContext } from '/dist/rendering.js';
     import { createSeedScout, seedScoutMetadata } from './seed-scout.js';
+    import { createStyleSample, styleSamples } from './style-samples.js';
 
     const NS = 'http://www.w3.org/2000/svg';
     const SOURCE_URL = 'https://raw.githubusercontent.com/byh-playground/bloom-gamekit/main/modules/vector-assets/assets/seed-scout.svg';
@@ -105,8 +130,8 @@
     const sourceHost = document.querySelector('#source-svg');
     const demo = { ready: false, sourceLoaded: false, device: null, meshes: null, asset: null, actor: null, sourceSvg: null,
       sourceBytes: 0, sourcePathCount: 0, sourceSha256: null, initializationMs: 0, creationStats: null, camera: { x: 100, y: 110, zoom: 1 },
-      topology: { triangles: 0, uniqueEdges: 0 }, lastFrame: null };
-    window.vectorAssetRuntime = { WebGLDevice, MeshRenderer, VectorContext, createSeedScout, seedScoutMetadata };
+      topology: { triangles: 0, uniqueEdges: 0 }, lastFrame: null, styleInstances: [] };
+    window.vectorAssetRuntime = { WebGLDevice, MeshRenderer, VectorContext, createSeedScout, seedScoutMetadata, createStyleSample, styleSamples };
     window.vectorAssetDemo = demo;
 
     const matrixFromElement = element => {
@@ -221,6 +246,63 @@
     let playing = true;
     let previousFrameMs = null;
     let stopped = false;
+    const styleDialog = document.querySelector('#style-dialog');
+    let styleReady = null;
+    const styleInstances = [];
+    async function initializeStyleSamples() {
+      for (const [id, sample] of Object.entries(styleSamples)) {
+        const sourceDigest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(sample.source)));
+        const sourceSha = [...sourceDigest].map(value => value.toString(16).padStart(2, '0')).join('');
+        if (sourceSha !== sample.asset.sourceSha256) throw new Error(id + ' SVG source SHA does not match compiled geometry');
+        const parsed = new DOMParser().parseFromString(sample.source, 'image/svg+xml');
+        if (parsed.querySelector('parsererror') || parsed.documentElement?.localName !== 'svg') throw new Error(id + ' authored source is not valid SVG');
+        const nativeSvg = document.importNode(parsed.documentElement, true);
+        nativeSvg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+        document.querySelector('#style-' + id.replace('-fox', '') + '-source').replaceChildren(nativeSvg);
+        const styleCanvas = document.querySelector('#style-' + id.replace('-fox', '') + '-canvas');
+        const styleDevice = new WebGLDevice(styleCanvas, { alpha: false, antialias: true, depth: false, stencil: false });
+        const styleMeshes = new MeshRenderer(styleDevice, { maxMeshes: 2, maxInstances: 8 });
+        const styleAsset = createStyleSample(id, styleMeshes);
+        const styleActor = styleAsset.createPlayer({ clip: 'idle', startedAtMs: 0 });
+        styleInstances.push({ id, sourceSha, canvas: styleCanvas, device: styleDevice, meshes: styleMeshes, asset: styleAsset, actor: styleActor });
+      }
+      demo.styleInstances = styleInstances;
+      demo.styleReady = true;
+      renderStyleSamples(displayTimeMs);
+      return styleInstances.length;
+    }
+    function renderStyleSamples(timeMs) {
+      for (const item of styleInstances) {
+        const rect = item.canvas.getBoundingClientRect(), dpr = Math.min(2, devicePixelRatio || 1);
+        const width = Math.max(1, Math.round(rect.width * dpr)), height = Math.max(1, Math.round(rect.height * dpr));
+        if (item.canvas.width !== width) item.canvas.width = width;
+        if (item.canvas.height !== height) item.canvas.height = height;
+        const scale = Math.min(width / 160, height / 180), tx = (width - 160 * scale) / 2, ty = (height - 180 * scale) / 2;
+        const projection = [2 * scale / width, 0, 0, 0, -2 * scale / height, 0, 2 * tx / width - 1, 1 - 2 * ty / height, 1];
+        const geometryUploadBytesBefore = item.meshes.stats().geometryBytesUploaded;
+        item.device.beginFrame({ width, height, clearColor: background, clearDepth: 1 });
+        item.meshes.beginFrame(); item.actor.seek(timeMs); item.actor.draw({ projection }); item.meshes.flush(); item.device.endFrame();
+        const stats = item.meshes.stats(), backend = item.device.instancingSupported ? 'ANGLE instanced' : 'uniform fallback';
+        const frameGeometryUploadBytes = stats.geometryBytesUploaded - geometryUploadBytesBefore;
+        document.querySelector('#style-' + item.id.replace('-fox', '') + '-metrics').textContent =
+          item.id + ' · SVG SHA ' + item.sourceSha.slice(0, 12) + ' · ' + backend + ' · ' + item.device.stats.drawCalls + ' draw calls · ' + item.asset.mesh.byteLength.toLocaleString() + ' retained B · create upload ' + item.asset.mesh.byteLength.toLocaleString() + ' B · ' + frameGeometryUploadBytes.toLocaleString() + ' B/frame geometry upload';
+      }
+    }
+    demo.renderStyleSamples = renderStyleSamples;
+    demo.disposeStyleSamples = () => {
+      for (const item of styleInstances.splice(0)) {
+        item.actor.dispose(); item.asset.dispose(); item.meshes.dispose(); item.device.dispose();
+      }
+      demo.styleInstances = [];
+      demo.styleReady = false;
+      styleReady = null;
+    };
+    document.querySelector('#style-comparison').addEventListener('click', () => {
+      styleDialog.showModal();
+      styleReady ??= initializeStyleSamples().catch(error => { demo.styleError = error.message; return 0; });
+      demo.styleReadyPromise = styleReady;
+    });
+    document.querySelector('#style-dialog-close').addEventListener('click', () => styleDialog.close());
     const svgParts = new Map([...demo.sourceSvg.querySelectorAll('[data-vector-part]')].map(group => [group.dataset.vectorPart, group]));
     const format = value => Number(value).toFixed(2);
 
@@ -329,6 +411,7 @@
       const poses = syncPartLayers();
       const topologyFrame = drawTopology(poses);
       const gamekitFrame = drawGameKit(displayTimeMs);
+      if (styleDialog.open && demo.styleReady) renderStyleSamples(displayTimeMs);
       demo.lastFrame = { timeMs: displayTimeMs, expression: actor.currentExpression, topology: topologyFrame, gamekit: gamekitFrame };
       updateReadouts(topologyFrame, gamekitFrame);
       requestAnimationFrame(frame);
@@ -369,6 +452,7 @@
     window.addEventListener('resize', updateSourceViewBox);
     window.addEventListener('pagehide', () => {
       stopped = true; actor.dispose(); asset.dispose(); meshes.dispose(); device.dispose();
+      demo.disposeStyleSamples();
     }, { once: true });
     demo.ready = true;
     updateSourceViewBox();

@@ -16,9 +16,32 @@ if (renderer.beginFrame([0.03, 0.05, 0.08, 1])) {
 }
 ```
 
+## Shared-canvas renderer interleaving
+
+`Renderer2D` and `WebGLDevice`/`MeshRenderer` may submit ordered passes to the same default-framebuffer WebGL 1 canvas. Each pass must be flushed before switching renderers. `Renderer2D.flush()` rebinds its program, stream buffer, attributes, texture, projection, and blend state; the device draw path establishes its own GL state before every mesh draw. The two renderers share a context but keep separate buffers and resource ownership.
+
+```js
+const renderer = new Renderer2D(canvas); // this creates the canvas WebGL 1 context
+const device = new WebGLDevice(canvas);  // reuses that same context
+const meshes = new MeshRenderer(device);
+
+device.beginFrame({ width: canvas.width, height: canvas.height });
+meshes.beginFrame();
+renderer.beginFrame([0, 0, 0, 1]);
+renderer.triangle(8, 8, 16, 8, 12, 16, [1, 0, 0, 1]);
+renderer.flush();
+meshes.drawMesh(mesh, { projection });
+meshes.flush();
+renderer.triangle(46, 8, 54, 8, 50, 16, [0, 1, 0, 1]);
+renderer.endFrame();
+device.endFrame();
+```
+
+Use the same default framebuffer and painter order for all interleaved passes. `Renderer2D.beginFrame()` clears the canvas, so start it before any mesh draw whose pixels must remain on screen. Do not interleave while a `WebGLDevice` render target is bound; `Renderer2D` has no render-target selection API. GPU object ownership remains local: dispose each renderer/device with its existing owner.
+
 ## 공개 API와 공간 계약
 
-- `new Renderer2D(canvas, {batchVertices=6144, antialias=true, preserveDrawingBuffer=false})`: context를 독점 소유합니다. 다른 renderer/직접 GL 상태 변경과 공유하지 마세요. `gl`은 진단/readPixels/context-loss 검사에 노출합니다. `preserveDrawingBuffer`는 검사 등 필요한 경우만 사용하세요.
+- `new Renderer2D(canvas, {batchVertices=6144, antialias=true, preserveDrawingBuffer=false})`: acquires the canvas WebGL 1 context. It owns its program and stream buffer and can interleave with `WebGLDevice`/`MeshRenderer` on the same default framebuffer when each pass is flushed before switching; each renderer rebinds its own program, buffers, attributes, and blend state. `gl` remains available for context-loss and pixel-readback checks. Set `preserveDrawingBuffer` only when needed for checks.
 - `resize(cssWidth, cssHeight, dpr=1)`: 양의 유한 수, 실제 backing store는 반올림한 CSS×DPR입니다. CSS 스타일이나 카메라를 바꾸지 않습니다. frame 밖에서 호출하세요. frame 중 resize는 throw합니다. DPR 상한은 게임의 비용 정책입니다. 예제는 2로 제한합니다.
 - `setCamera({x,y,zoom,rotation})`: 세계의 카메라 중심, CSS pixel/world unit 확대율, radians 회전입니다. 생략 필드는 유지합니다. 생성 기본값은 초기 canvas 크기의 중심, zoom 1, rotation 0입니다. +x 오른쪽, +y 아래입니다. frame 도중 변경하면 기존 batch를 먼저 제출합니다.
 - `worldToScreenInto(x,y,out)`, `screenToWorldInto(x,y,out)`: 재사용 가능한 out의 x/y에 CSS 화면 또는 world 좌표를 기록합니다. 게임의 3D/isometric 투영·높이·카메라 추적은 호출자가 계산합니다.

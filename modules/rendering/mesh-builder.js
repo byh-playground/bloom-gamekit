@@ -37,16 +37,30 @@ export class MeshBuilder {
     }
     return Object.freeze({ vertices, count, strideFloats: 11, morphCount: morphs.length, partCount: 1 });
   }
-  /** Packs authored parts in their original painter order, never one GPU buffer per animated part. */
-  static combine(parts) {
-    if (!Array.isArray(parts) || !parts.length || parts.length > 16 || parts.some(p => p?.partCount !== 1 || p.strideFloats !== 11 || !(p.vertices instanceof Float32Array) || p.vertices.length % 33)) throw new TypeError('1..16 single-part MeshBuilder geometries required');
-    const vertices = new Float32Array(parts.reduce((n, part) => n + part.vertices.length, 0));
-    let offset = 0;
-    for (let part = 0; part < parts.length; part++) {
-      vertices.set(parts[part].vertices, offset);
-      for (let i = 10; i < parts[part].vertices.length; i += 11) vertices[offset + i] = part;
-      offset += parts[part].vertices.length;
+  /** Packs compatible authored geometries into one painter-ordered mesh without sorting. */
+  static combine(geometries) {
+    if (!Array.isArray(geometries) || !geometries.length ||
+      geometries.some(geometry => !Number.isSafeInteger(geometry?.partCount) || geometry.partCount < 1 ||
+        geometry.strideFloats !== 11 || !(geometry.vertices instanceof Float32Array) || geometry.vertices.length % 33 ||
+        !Number.isSafeInteger(geometry.morphCount) || geometry.morphCount < 0 || geometry.morphCount > 2) ||
+      geometries.reduce((count, geometry) => count + geometry.partCount, 0) > 16) {
+      throw new TypeError('MeshBuilder geometries must fit within 16 parts and use the 11-float schema');
     }
-    return Object.freeze({ vertices, count: vertices.length / 11, strideFloats: 11, partCount: parts.length, morphCount: Math.max(...parts.map(p => p.morphCount)) });
+    for (const geometry of geometries) for (let i = 10; i < geometry.vertices.length; i += 11) {
+      const part = geometry.vertices[i];
+      if (!Number.isSafeInteger(part) || part < 0 || part >= geometry.partCount) throw new RangeError('Mesh part index outside partCount');
+    }
+    const vertices = new Float32Array(geometries.reduce((n, geometry) => n + geometry.vertices.length, 0));
+    const partCount = geometries.reduce((count, geometry) => count + geometry.partCount, 0);
+    const morphCount = Math.max(...geometries.map(geometry => geometry.morphCount));
+    let offset = 0;
+    let partOffset = 0;
+    for (const geometry of geometries) {
+      vertices.set(geometry.vertices, offset);
+      for (let i = 0; i < geometry.vertices.length; i += 11) vertices[offset + i + 10] += partOffset;
+      offset += geometry.vertices.length;
+      partOffset += geometry.partCount;
+    }
+    return Object.freeze({ vertices, count: vertices.length / 11, strideFloats: 11, partCount, morphCount });
   }
 }
