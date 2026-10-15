@@ -753,25 +753,34 @@ function tessellate(contours, rule) {
     for (let i = 0; i < contour.length; i++) {
       const a = contour[i], b = contour[(i + 1) % contour.length];
       if (Math.abs(a.y - b.y) < 1e-9) continue;
-      edges.push({ a, b, sign: b.y > a.y ? 1 : -1 });
+      const minY = Math.min(a.y, b.y), maxY = Math.max(a.y, b.y);
+      edges.push({ a, b, sign: b.y > a.y ? 1 : -1, minY, maxY });
       ys.push(a.y, b.y);
     }
   }
   ys.sort((a, b) => a - b);
-  const levels = ys.filter((y, i) => i === 0 || y - ys[i - 1] > 1e-8), triangles = [];
+  const levels = [];
+  for (const y of ys) if (!levels.length || y - levels.at(-1) > 1e-8) levels.push(y);
+  const starts = edges.slice().sort((a, b) => a.minY - b.minY), active = [], triangles = [];
+  let nextStart = 0;
   for (let band = 0; band + 1 < levels.length; band++) {
     const y0 = levels[band], y1 = levels[band + 1], ym = (y0 + y1) / 2;
     if (y1 - y0 < 1e-8) continue;
-    const active = edges.filter((e) => ym > Math.min(e.a.y, e.b.y) && ym < Math.max(e.a.y, e.b.y)).map((e) => ({ edge: e, x: xAt(e, ym) })).sort((a, b) => a.x - b.x);
+    while (nextStart < starts.length && starts[nextStart].minY < ym) active.push(starts[nextStart++]);
+    for (let i = active.length - 1; i >= 0; i--) if (active[i].maxY <= ym) {
+      active[i] = active[active.length - 1];
+      active.pop();
+    }
+    active.sort((a, b) => xAt(a, ym) - xAt(b, ym));
     let winding = 0, inside = false, left = null;
-    for (const item of active) {
+    for (const edge of active) {
       const before = rule === "evenodd" ? inside : winding !== 0;
       if (rule === "evenodd") inside = !inside;
-      else winding += item.edge.sign;
+      else winding += edge.sign;
       const after = rule === "evenodd" ? inside : winding !== 0;
-      if (!before && after) left = item.edge;
+      if (!before && after) left = edge;
       else if (before && !after && left) {
-        const a = { x: xAt(left, y0), y: y0 }, b = { x: xAt(item.edge, y0), y: y0 }, c = { x: xAt(item.edge, y1), y: y1 }, d = { x: xAt(left, y1), y: y1 };
+        const a = { x: xAt(left, y0), y: y0 }, b = { x: xAt(edge, y0), y: y0 }, c = { x: xAt(edge, y1), y: y1 }, d = { x: xAt(left, y1), y: y1 };
         triangles.push(a, b, c, a, c, d);
         left = null;
       }
@@ -962,7 +971,25 @@ var VectorRenderer = class {
   }
   _emitTriangle(a, b, c, color2, uv = null) {
     rgba(color2);
-    const poly = this.clips.length ? this._clipTriangle(a, b, c, uv) : uv ? [a, b, c].map((p, i) => ({ ...p, u: uv[i][0], v: uv[i][1] })) : [a, b, c];
+    if (!this.clips.length && !uv) {
+      if (this.count + 3 > this.maxVertices) this._submit();
+      if (this.count + 3 > this.vertices.length / 8) {
+        const size = Math.min(this.maxVertices, Math.max(this.count + 3, this.vertices.length / 4));
+        const next = new Float32Array(size * 8);
+        next.set(this.vertices);
+        this.vertices = next;
+      }
+      const data = this.vertices;
+      for (let i = 0; i < 3; i++) {
+        const point2 = i === 0 ? a : i === 1 ? b : c, k = this.count++ * 8;
+        data[k] = point2.x;
+        data[k + 1] = point2.y;
+        data[k + 2] = data[k + 3] = 0;
+        data.set(color2, k + 4);
+      }
+      return;
+    }
+    const poly = this.clips.length ? this._clipTriangle(a, b, c, uv) : uv ? [a, b, c].map((point2, i) => ({ ...point2, u: uv[i][0], v: uv[i][1] })) : [a, b, c];
     for (let i = 1; i + 1 < poly.length; i++) {
       if (this.count + 3 > this.maxVertices) this._submit();
       if (this.count + 3 > this.vertices.length / 8) {
@@ -971,12 +998,12 @@ var VectorRenderer = class {
         next.set(this.vertices);
         this.vertices = next;
       }
-      for (const p of [poly[0], poly[i], poly[i + 1]]) {
+      for (const point2 of [poly[0], poly[i], poly[i + 1]]) {
         const k = this.count++ * 8;
-        this.vertices[k] = p.x;
-        this.vertices[k + 1] = p.y;
-        this.vertices[k + 2] = p.u ?? 0;
-        this.vertices[k + 3] = p.v ?? 0;
+        this.vertices[k] = point2.x;
+        this.vertices[k + 1] = point2.y;
+        this.vertices[k + 2] = point2.u ?? 0;
+        this.vertices[k + 3] = point2.v ?? 0;
         this.vertices.set(color2, k + 4);
       }
     }
