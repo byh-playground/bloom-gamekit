@@ -2,6 +2,7 @@ import { build } from 'esbuild';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { bundledAssetSource } from '../modules/vector-assets/compiler.js';
 
 // Every maintained example HTML entry. Test harnesses and provenance archives are not demos.
 export const EXAMPLES = [
@@ -30,7 +31,21 @@ export async function buildPreviews(root) {
       const result = await build({
         absWorkingDir: root, stdin: { contents: src ? `import ${JSON.stringify(src)};` : body, resolveDir: resolve(root, dirname(source)), sourcefile: source },
         bundle: true, format: 'iife', platform: 'browser', target: 'es2022', charset: 'utf8', write: false, metafile: true,
-        plugins: [{ name: 'root-dist', setup(b) { b.onResolve({ filter: /^\/dist\// }, args => ({ path: resolve(root, '.' + args.path) })); } }],
+        plugins: [
+          { name: 'root-dist', setup(b) { b.onResolve({ filter: /^\/dist\// }, args => ({ path: resolve(root, '.' + args.path) })); } },
+          {
+            name: 'vector-asset-example',
+            setup(b) {
+              b.onResolve({ filter: /^\.\.\/seed-scout\.compiled\.js$/ }, args =>
+                /(?:^|[\\/])modules[\\/]vector-assets[\\/]examples[\\/]seed-scout\.js$/.test(args.importer)
+                  ? { path: 'seed-scout', namespace: 'vector-asset-example' }
+                  : null);
+              b.onLoad({ filter: /.*/, namespace: 'vector-asset-example' }, async () => ({
+                contents: await bundledAssetSource(root), loader: 'js',
+              }));
+            },
+          },
+        ],
       });
       if (result.outputFiles.length !== 1 || Object.values(result.metafile.outputs).some(o => o.imports.length)) throw new Error(`Preview has external imports: ${source}`);
       html = html.replace(whole, () => `<script>\n${result.outputFiles[0].text.replace(/<\/script/gi, '<\\/script')}\n</script>`);
