@@ -1,4 +1,5 @@
 import { runFrameChecks } from '../../modules/interpolation/tests/presentation-frame.browser.js';
+import { exerciseVectorAssets } from '../../modules/vector-assets/tests/runtime.browser.mjs';
 import { exerciseWebGLDevice, exerciseVectorRenderer, exerciseFontAssetLoader } from '../../modules/rendering/tests/device.browser.mjs';
 import { exerciseReusableMeshes } from '../../modules/rendering/tests/mesh.browser.mjs';
 import { runPresentationChecks } from './presentation.browser.js';
@@ -81,7 +82,7 @@ try {
   await page.waitForFunction(x => demo.diagnostics.authorityX > x + 25, initialX);
   await page.keyboard.up('KeyD');
   await page.waitForFunction(() => Math.abs(demo.diagnostics.poseX - demo.diagnostics.authorityX) < 0.1);
-  report.stages.push('real DOM keyboard → 100ms authority → interpolation → WebGL rAF movement');
+  report.stages.push('real DOM keyboard �� 100ms authority �� interpolation �� WebGL rAF movement');
 
   // Several render-time samples cannot erase a down/up entirely between simulation ticks.
   await page.evaluate(() => demo.pause());
@@ -213,7 +214,7 @@ try {
       return { pixel: pixel(32, 32), error: r.gl.getError(), allocations: r.stats.bufferAllocations };
     });
     assert.deepEqual(restored.pixel, [0, 255, 0, 255]); assert.equal(restored.error, 0); assert.equal(restored.allocations, 2);
-    report.stages.push('WEBGL_lose_context → skipped lost frame → shader/buffer/texture handle restoration');
+    report.stages.push('WEBGL_lose_context �� skipped lost frame �� shader/buffer/texture handle restoration');
   } else report.stages.push('WEBGL_lose_context unavailable: restoration not executed');
 
   report.input = await page.evaluate(async () => {
@@ -260,7 +261,7 @@ try {
   assert.equal(errors.length, 0, errors.join('\n'));
   assert.equal(moduleErrors.length, 0, moduleErrors.join('\n'));
   assert.equal(report.reusableMeshes?.scenes.length, 4, 'reusable mesh helper must execute both native backends with and without MSAA');
-  report.stages.push('retained animated mesh → silhouette/instance batching → vector painter order → nested/rotated clipping → native context restoration/disposal, ANGLE and uniform backends, MSAA off/on');
+  report.stages.push('retained animated mesh �� silhouette/instance batching �� vector painter order �� nested/rotated clipping �� native context restoration/disposal, ANGLE and uniform backends, MSAA off/on');
   const vectorExample=await browser.newPage({viewport:{width:1000,height:700}}),exampleErrors=[];
   vectorExample.on('pageerror',error=>exampleErrors.push(error.message));
   await vectorExample.goto(`http://127.0.0.1:${server.address().port}/modules/rendering/examples/vector/index.html`);
@@ -335,7 +336,7 @@ try {
   assert.equal(report.inputPreview.glError,0);assert.equal(previewErrors.length,0,previewErrors.join('\n'));
   report.inputPreview.inputToFirstDisplayMs=inputToDisplayMs;report.inputPreview.webglPixel=renderedPreviewPixel;report.inputPreview.lastConfirmBeforeCollision=rollCountBefore;
   report.inputPreview.preTick={tick:beforePreview.authorityTick,hash:beforePreview.authorityHash,smoothHold};report.inputPreview.capture={captureTick:captureMetadata.capture.captureTick,executeTick:captureMetadata.capture.executeTick,commandSequence:captureMetadata.commandSequence};
-  report.stages.push('detached same-update input fork → first sampled schema render → delayed authority correction → collision/roll/press-release/direction/off/blur/gap/restart');
+  report.stages.push('detached same-update input fork �� first sampled schema render �� delayed authority correction �� collision/roll/press-release/direction/off/blur/gap/restart');
   await previewPage.evaluate(()=>window.inputPreviewDemo.dispose());
   report.manualOwnerRelease=await previewPage.evaluate(async()=>{
     const { createLoop, LocalInputPreview } = await import('/dist/simloop.js');
@@ -403,6 +404,8 @@ const { createSession, profiles } = await import('/dist/rollback.js');
   await previewPage.close();
   assert.equal(previewErrors.length,0,previewErrors.join('\n'));
   report.stages.push('explicit disposal, repeated disposal and pagehide release the demo once without lifecycle errors');
+  report.vectorAssets = await exerciseVectorAssets(page);
+  report.stages.push('single SVG SSOT compiled through pinned Three SVGLoader, rendered as shared retained GameKit WebGL mesh with deterministic Anime.js seek');
   report.browser = await browser.version(); report.contextLoss = supportsLoss;
   report.scope = 'Headless Chromium with actual WebGL1/SwiftShader pixels and built ESMs. CPU/interval observations are not mobile FPS or hardware-GPU certification. No screenshot/artifact retention.';
   console.log(JSON.stringify(report, null, 2));
