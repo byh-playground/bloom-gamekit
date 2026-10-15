@@ -10,13 +10,39 @@ function rgba(value) { if (!value || value.length !== 4 || Array.from(value).som
 function point(m, x, y) { return { x: m[0] * x + m[2] * y + m[4], y: m[1] * x + m[3] * y + m[5] }; }
 function tessellate(contours,rule){
   const edges=[],ys=[];
-  for(const contour of contours){if(contour.length<3)continue;for(let i=0;i<contour.length;i++){const a=contour[i],b=contour[(i+1)%contour.length];if(Math.abs(a.y-b.y)<1e-9)continue;edges.push({a,b,sign:b.y>a.y?1:-1});ys.push(a.y,b.y)}}
-  ys.sort((a,b)=>a-b);const levels=ys.filter((y,i)=>i===0||y-ys[i-1]>1e-8),triangles=[];
-  for(let band=0;band+1<levels.length;band++){const y0=levels[band],y1=levels[band+1],ym=(y0+y1)/2;if(y1-y0<1e-8)continue;
-    const active=edges.filter(e=>ym>Math.min(e.a.y,e.b.y)&&ym<Math.max(e.a.y,e.b.y)).map(e=>({edge:e,x:xAt(e,ym)})).sort((a,b)=>a.x-b.x);
+  for(const contour of contours){
+    if(contour.length<3)continue;
+    for(let i=0;i<contour.length;i++){
+      const a=contour[i],b=contour[(i+1)%contour.length];
+      if(Math.abs(a.y-b.y)<1e-9)continue;
+      const minY=Math.min(a.y,b.y),maxY=Math.max(a.y,b.y);
+      edges.push({a,b,sign:b.y>a.y?1:-1,minY,maxY});
+      ys.push(a.y,b.y);
+    }
+  }
+  ys.sort((a,b)=>a-b);
+  const levels=[];
+  for(const y of ys)if(!levels.length||y-levels.at(-1)>1e-8)levels.push(y);
+  const starts=edges.slice().sort((a,b)=>a.minY-b.minY),active=[],triangles=[];
+  let nextStart=0;
+  for(let band=0;band+1<levels.length;band++){
+    const y0=levels[band],y1=levels[band+1],ym=(y0+y1)/2;
+    if(y1-y0<1e-8)continue;
+    while(nextStart<starts.length&&starts[nextStart].minY<ym)active.push(starts[nextStart++]);
+    for(let i=active.length-1;i>=0;i--)if(active[i].maxY<=ym){active[i]=active[active.length-1];active.pop();}
+    active.sort((a,b)=>xAt(a,ym)-xAt(b,ym));
     let winding=0,inside=false,left=null;
-    for(const item of active){const before=rule==='evenodd'?inside:winding!==0;if(rule==='evenodd')inside=!inside;else winding+=item.edge.sign;const after=rule==='evenodd'?inside:winding!==0;
-      if(!before&&after)left=item.edge;else if(before&&!after&&left){const a={x:xAt(left,y0),y:y0},b={x:xAt(item.edge,y0),y:y0},c={x:xAt(item.edge,y1),y:y1},d={x:xAt(left,y1),y:y1};triangles.push(a,b,c,a,c,d);left=null}}
+    for(const edge of active){
+      const before=rule==='evenodd'?inside:winding!==0;
+      if(rule==='evenodd')inside=!inside;else winding+=edge.sign;
+      const after=rule==='evenodd'?inside:winding!==0;
+      if(!before&&after)left=edge;
+      else if(before&&!after&&left){
+        const a={x:xAt(left,y0),y:y0},b={x:xAt(edge,y0),y:y0},c={x:xAt(edge,y1),y:y1},d={x:xAt(left,y1),y:y1};
+        triangles.push(a,b,c,a,c,d);
+        left=null;
+      }
+    }
   }
   return triangles;
 }
@@ -54,7 +80,22 @@ export class VectorRenderer {
   /** Add the current transformed path contours to the clip stack. */
   clip(rule='nonzero'){this._frame();if(rule!=='nonzero'&&rule!=='evenodd')throw new TypeError('rule must be nonzero or evenodd');const contours=this.path.filter(path=>path.length>=3).map(path=>path.map(p=>({...p})));if(!contours.length)return;this.clips.push(...contours);}
   _clipTriangle(a,b,c,uv){let poly=[a,b,c].map((p,i)=>uv?{...p,u:uv[i][0],v:uv[i][1]}:p);for(const clip of this.clips){let orientation=0;for(let i=0;i<clip.length;i++)orientation+=clip[i].x*clip[(i+1)%clip.length].y-clip[(i+1)%clip.length].x*clip[i].y;const direction=orientation>=0?1:-1;for(let i=0;i<clip.length;i++){const p=clip[i],q=clip[(i+1)%clip.length],side=v=>direction*((q.x-p.x)*(v.y-p.y)-(q.y-p.y)*(v.x-p.x)),out=[];let prev=poly.at(-1),pv=side(prev);for(const cur of poly){const cv=side(cur);if((pv< -1e-8)!==(cv< -1e-8)){const t=pv/(pv-cv),vertex={x:prev.x+(cur.x-prev.x)*t,y:prev.y+(cur.y-prev.y)*t};if(uv){vertex.u=prev.u+(cur.u-prev.u)*t;vertex.v=prev.v+(cur.v-prev.v)*t}out.push(vertex)}if(cv>=-1e-8)out.push(cur);prev=cur;pv=cv}poly=out;if(!poly.length)return poly}}return poly;}
-  _emitTriangle(a,b,c,color,uv=null){rgba(color);const poly=this.clips.length?this._clipTriangle(a,b,c,uv):(uv?[a,b,c].map((p,i)=>({...p,u:uv[i][0],v:uv[i][1]})):[a,b,c]);for(let i=1;i+1<poly.length;i++){if(this.count+3>this.maxVertices)this._submit();if(this.count+3>this.vertices.length/8){const size=Math.min(this.maxVertices,Math.max(this.count+3,this.vertices.length/4));const next=new Float32Array(size*8);next.set(this.vertices);this.vertices=next}for(const p of [poly[0],poly[i],poly[i+1]]){const k=this.count++*8;this.vertices[k]=p.x;this.vertices[k+1]=p.y;this.vertices[k+2]=p.u??0;this.vertices[k+3]=p.v??0;this.vertices.set(color,k+4)}}}
+  _emitTriangle(a,b,c,color,uv=null){
+    rgba(color);
+    if(!this.clips.length&&!uv){
+      if(this.count+3>this.maxVertices)this._submit();
+      if(this.count+3>this.vertices.length/8){const size=Math.min(this.maxVertices,Math.max(this.count+3,this.vertices.length/4));const next=new Float32Array(size*8);next.set(this.vertices);this.vertices=next;}
+      const data=this.vertices;
+      for(let i=0;i<3;i++){const point=i===0?a:i===1?b:c,k=this.count++*8;data[k]=point.x;data[k+1]=point.y;data[k+2]=data[k+3]=0;data.set(color,k+4);}
+      return;
+    }
+    const poly=this.clips.length?this._clipTriangle(a,b,c,uv):(uv?[a,b,c].map((point,i)=>({...point,u:uv[i][0],v:uv[i][1]})):[a,b,c]);
+    for(let i=1;i+1<poly.length;i++){
+      if(this.count+3>this.maxVertices)this._submit();
+      if(this.count+3>this.vertices.length/8){const size=Math.min(this.maxVertices,Math.max(this.count+3,this.vertices.length/4));const next=new Float32Array(size*8);next.set(this.vertices);this.vertices=next;}
+      for(const point of [poly[0],poly[i],poly[i+1]]){const k=this.count++*8;this.vertices[k]=point.x;this.vertices[k+1]=point.y;this.vertices[k+2]=point.u??0;this.vertices[k+3]=point.v??0;this.vertices.set(color,k+4);}
+    }
+  }
   _submit(){if(!this.count)return;const texture=this.activeTexture??this.white;this.device.uploadVertices(this.buffer,this.vertices.subarray(0,this.count*8));this.device.draw({pipeline:this.pipeline,buffer:this.buffer,count:this.count,uniforms:{u_projection:this.projection,u_texture:0,u_textured:texture===this.white?0:1,u_radial:this.activeRadial?1:0,u_whiteFlash:this.activeWhiteFlash?1:0},textures:[texture],blend:'source-over'});this.count=0;}
   _useTexture(texture,{radial=false,whiteFlash=false}={}){if(this.activeTexture!==texture||this.activeRadial!==radial||this.activeWhiteFlash!==whiteFlash)this._submit();this.activeTexture=texture;this.activeRadial=radial;this.activeWhiteFlash=whiteFlash;}
   fill(colorValue=[0,0,0,1],rule='nonzero'){this._frame();if(rule!=='nonzero'&&rule!=='evenodd')throw new TypeError('rule must be nonzero or evenodd');this._useTexture(this.white);const col=rgba(colorValue),vertices=tessellate(this.path,rule);for(let i=0;i+2<vertices.length;i+=3)this._emitTriangle(vertices[i],vertices[i+1],vertices[i+2],col);}
@@ -72,3 +113,4 @@ export class VectorRenderer {
   endGroup(){this._frame();const group=this.groups.pop();if(!group)throw new Error('endGroup without beginGroup');this._submit();if(group.direct)return;this.device.unbindRenderTarget(group.target);this.matrix=group.matrix;this.clips=group.clips;this.projection.set(group.projection);this._useTexture(group.target);const {x,y,width,height}=group.bounds,u=width/group.target.width,v=height/group.target.height,a={x,y},b={x:x+width,y},c={x:x+width,y:y+height},d={x,y:y+height},alpha=[1,1,1,group.opacity];this._emitTriangle(a,b,c,alpha,[[0,1],[u,1],[u,1-v]]);this._emitTriangle(a,c,d,alpha,[[0,1],[u,1-v],[0,1-v]]);this._submit();this._useTexture(this.white);}
   dispose(){if(this.state==='disposed')return;this.canvas.removeEventListener('webglcontextlost',this.onLost);this.count=0;for(const target of this.groupTargets)this.device.deleteRenderTarget(target);this.device.deleteVertexBuffer(this.buffer);this.device.deletePipeline(this.pipeline);this.device.deleteTexture(this.white);this.buffer=this.pipeline=this.white=null;this.state='disposed'}
 }
+
