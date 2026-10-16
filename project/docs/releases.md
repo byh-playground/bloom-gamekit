@@ -1,3 +1,7 @@
+## v0.10.5 (2026-10-16)
+
+The vector asset compiler and browser startup loader add opt-in `normalizeCenteredViewBox` support for centered-local-coordinate SVG sources with legacy viewport dimensions and empty no-op clip poses. The compiler verifies the original source hash first, normalizes only its in-memory compiler input, drops only empty no-op poses from compiled metadata, and preserves the authored viewBox, paths, part pivots, sockets, and nonempty clip transforms. Source SVG files and the original-byte hash are unchanged.
+
 ## v0.10.4 (2026-10-16)
 
 Vector assets add a standalone browser startup loader that verifies original SVG bytes, compiles them with the shared Node/browser core, deduplicates concurrent requests, and retains successful compiled geometry in a bounded cache. The production render bundle remains separate; the loader bundle includes no authored sample SVGs or precompiled sample geometry. Hash mismatches fail before compilation and caching.
