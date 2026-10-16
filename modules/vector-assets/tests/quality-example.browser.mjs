@@ -96,6 +96,9 @@ export async function exerciseVectorAssetQualityExample(page, previewURL,
   }));
   assert.equal(typed.curveSegments, 3);
   assert.ok(typed.triangles > 0, 'a low typed quality still produces inspectable geometry');
+  await page.locator('[data-quality-target="curve-segments"][data-quality-value="16"]').click();
+  await page.waitForFunction(() => window.vectorAssetDemo?.compiledAsset?.compilerOptions?.curveSegments === 16, null, { timeout: 15000 });
+  const highQualityTriangles = await page.evaluate(() => window.vectorAssetDemo.topology.triangles);
   await page.locator('[data-quality-target="curve-segments"][data-quality-value="8"]').click();
   await page.waitForFunction(() => window.vectorAssetDemo?.compiledAsset?.compilerOptions?.curveSegments === 8, null, { timeout: 15000 });
   const coarse = await page.evaluate(() => ({
@@ -104,7 +107,7 @@ export async function exerciseVectorAssetQualityExample(page, previewURL,
     compileMs: window.vectorAssetDemo.compileMs,
     fetchMs: window.vectorAssetDemo.fetchMs,
   }));
-  assert.ok(coarse.triangles < initial.triangles, 'the 8-segment preset produces fewer triangles than 16');
+  assert.ok(coarse.triangles < highQualityTriangles, 'the 8-segment preset produces fewer triangles than 16 at the same arc divisions');
   assert.ok(coarse.uniqueVertices > 0, 'the example reports stored vertex counts');
   assert.ok(Number.isFinite(coarse.compileMs) && coarse.compileMs >= 0, 'the compile/hash measurement is reported separately from fetch');
   assert.ok(Number.isFinite(coarse.fetchMs) && coarse.fetchMs >= 0, 'the source fetch timing is reported');
