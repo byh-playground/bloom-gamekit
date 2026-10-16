@@ -65,7 +65,8 @@ try {
   await page.waitForFunction(() => Boolean(window.vectorAssetDemo?.ready || window.vectorAssetDemo?.error), null, { timeout: 15000 });
   const exampleError = await page.evaluate(() => window.vectorAssetDemo?.error ?? null);
   if (exampleError) throw new Error('Example initialization failed: ' + exampleError);
-  const report = await exerciseVectorAssets(page);
+  const includePopulationTimingDiagnostics = process.argv.includes('--population-timing');
+  const report = await exerciseVectorAssets(page, { includePopulationTimingDiagnostics });
   report.rendererInterleaving = await exerciseRendererInterleaving(page, renderingModuleURL);
   assert.deepEqual(report.rendererInterleaving.red2d, [255, 0, 0, 255]);
   assert.deepEqual(report.rendererInterleaving.blueMesh, [0, 0, 255, 255]);

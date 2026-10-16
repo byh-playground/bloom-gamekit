@@ -3,7 +3,7 @@ import { performance } from 'node:perf_hooks';
 import { compileVectorAssetFile } from '../compiler.js';
 
 /** Exercises the compiled SVG through GameKit's real WebGL1 device and retained mesh renderer. */
-export async function exerciseVectorAssets(page) {
+export async function exerciseVectorAssets(page, { includePopulationTimingDiagnostics = false } = {}) {
   const compileStart = performance.now();
   const referenceAsset = await compileVectorAssetFile('modules/vector-assets/assets/seed-scout.svg', 'modules/vector-assets/assets/seed-scout.svg');
   const threeCompileMs = performance.now() - compileStart;
@@ -97,7 +97,7 @@ export async function exerciseVectorAssets(page) {
   await page.locator('#center-camera').click();
   const centeredCamera = await page.evaluate(() => ({ x: vectorAssetDemo.camera.x, y: vectorAssetDemo.camera.y }));
   assert.deepEqual(centeredCamera, { x: 100, y: 110 }, 'center resets the shared camera');
-  const report = await page.evaluate(async ({ sourcePaths, threeCompileMs }) => {
+  const report = await page.evaluate(async ({ sourcePaths, threeCompileMs, includePopulationTimingDiagnostics }) => {
     const modules = window.vectorAssetRuntime ?? {
       ...await import('/dist/rendering.js'), ...await import('/dist/vector-assets.js'),
     };
@@ -224,36 +224,39 @@ export async function exerciseVectorAssets(page) {
 
     const benchmark = [];
     for (const count of [100, 400]) {
-      const createStart = performance.now();
+      const createStart = includePopulationTimingDiagnostics ? performance.now() : null;
       const actors = Array.from({ length: count }, () => asset.createPlayer({ clip: 'idle', startedAtMs: 0 }));
-      const createMs = performance.now() - createStart;
+      const createMs = createStart === null ? null : performance.now() - createStart;
       actors[0].seek(300); actors[1].seek(300);
       const sharedPoseState = JSON.stringify(actors[0].partPoses()) === JSON.stringify(actors[1].partPoses());
       const matrices = actors.map((_, i) => [0.045, 0, 0, 0.045, 8 + (i % 20) * 9, 7 + Math.floor(i / 20) * 10]);
-      let cpuStart = performance.now();
-      const coldQuery = beginGpuQuery(device);
+      let cpuStart = includePopulationTimingDiagnostics ? performance.now() : null;
+      const coldQuery = includePopulationTimingDiagnostics ? beginGpuQuery(device) : null;
       device.beginFrame({ width: 200, height: 220, clearColor: [0.875, 0.91, 0.80, 1] }); meshes.beginFrame();
       for (let i = 0; i < count; i++) { actors[i].seek(300); actors[i].draw({ projection, matrix: matrices[i] }); }
-      const submitCpuMs = performance.now() - cpuStart;
+      const submitCpuMs = cpuStart === null ? null : performance.now() - cpuStart;
       meshes.flush(); device.endFrame();
-      const coldGpuTimeNs = endGpuQuery(device, coldQuery);
+      const coldGpuTimeNs = includePopulationTimingDiagnostics ? endGpuQuery(device, coldQuery) : null;
       const firstDraw = { ...meshes.stats() }, firstDevice = { ...device.stats };
-      cpuStart = performance.now();
-      const warmQuery = beginGpuQuery(device);
+      cpuStart = includePopulationTimingDiagnostics ? performance.now() : null;
+      const warmQuery = includePopulationTimingDiagnostics ? beginGpuQuery(device) : null;
       device.beginFrame({ width: 200, height: 220, clearColor: [0.875, 0.91, 0.80, 1] }); meshes.beginFrame();
       for (let i = 0; i < count; i++) { actors[i].seek(450); actors[i].draw({ projection, matrix: matrices[i] }); }
-      const warmCpuMs = performance.now() - cpuStart;
+      const warmCpuMs = cpuStart === null ? null : performance.now() - cpuStart;
       meshes.flush(); device.endFrame();
-      const warmGpuTimeNs = endGpuQuery(device, warmQuery);
+      const warmGpuTimeNs = includePopulationTimingDiagnostics ? endGpuQuery(device, warmQuery) : null;
       const warm = { ...meshes.stats() }, warmDevice = { ...device.stats };
       assertThat(warmDevice.drawCalls === (device.instancingSupported ? 1 : count), `retained actors should batch by shared pose (${count}): ${warmDevice.drawCalls} draws`);
-      benchmark.push({ actors: count, playerInitMs: createMs, cpuSubmitMs: submitCpuMs, warmCpuSubmitMs: warmCpuMs,
-        sharedPoseState, gpuTimerCold: coldGpuTimeNs, gpuTimerWarm: warmGpuTimeNs,
+      benchmark.push({ actors: count, ...(includePopulationTimingDiagnostics ? {
+        playerInitMs: createMs, cpuSubmitMs: submitCpuMs, warmCpuSubmitMs: warmCpuMs,
+        gpuTimerCold: coldGpuTimeNs, gpuTimerWarm: warmGpuTimeNs,
+        jsHeapBytes: performance.memory?.usedJSHeapSize ?? null,
+      } : {}),
+        sharedPoseState,
         geometryBytes: asset.mesh.byteLength, geometryUploadBytesCold: firstDraw.geometryBytesUploaded,
         instanceUploadBytesCold: firstDraw.instanceBytesUploaded, instanceUploadBytesWarm: warm.instanceBytesUploaded,
         partUniformBytesSubmitted: warm.partUniformBytesSubmitted, drawsCold: firstDevice.drawCalls, drawsWarm: warmDevice.drawCalls,
-        totalGpuBufferBytes: warmDevice.gpuBufferBytes, rendererStagingBytes: warm.stagingBytes,
-        jsHeapBytes: performance.memory?.usedJSHeapSize ?? null });
+        totalGpuBufferBytes: warmDevice.gpuBufferBytes, rendererStagingBytes: warm.stagingBytes });
       for (const actor of actors) actor.dispose();
     }
 
@@ -262,7 +265,7 @@ export async function exerciseVectorAssets(page) {
       const clips = Object.keys(seedScoutMetadata.clips), expressions = Object.keys(seedScoutMetadata.expressions);
       const groupCounts = new Map(clips.map(clip => [clip, Array.from({ length: count }, (_, i) => clips[i % clips.length]).filter(name => name === clip).length]));
       const groupIndices = new Map(clips.map(clip => [clip, 0]));
-      const createStart = performance.now();
+      const createStart = includePopulationTimingDiagnostics ? performance.now() : null;
       const actors = Array.from({ length: count }, (_, index) => {
         const clip = clips[index % clips.length], ordinal = groupIndices.get(clip), groupCount = groupCounts.get(clip);
         groupIndices.set(clip, ordinal + 1);
@@ -273,7 +276,7 @@ export async function exerciseVectorAssets(page) {
         actor.setExpression(expressions[index % expressions.length]);
         return actor;
       });
-      const createMs = performance.now() - createStart;
+      const createMs = createStart === null ? null : performance.now() - createStart;
       const matrices = actors.map((_, i) => [0.045, 0, 0, 0.045, 8 + (i % 20) * 9, 7 + Math.floor(i / 20) * 10]);
       const frames = [];
       const poseStates = [];
@@ -288,17 +291,18 @@ export async function exerciseVectorAssets(page) {
           else duplicatePoseIndices.push([earlier, index]);
         });
         distinctPoseCount = Math.min(distinctPoseCount || count, poseKeys.size);
-        const cpuStart = performance.now();
-        const query = beginGpuQuery(device);
+        const cpuStart = includePopulationTimingDiagnostics ? performance.now() : null;
+        const query = includePopulationTimingDiagnostics ? beginGpuQuery(device) : null;
         device.beginFrame({ width: 200, height: 220, clearColor: [0.875, 0.91, 0.80, 1] }); meshes.beginFrame();
         for (let i = 0; i < count; i++) actors[i].draw({ projection, matrix: matrices[i] });
-        const cpuSubmitMs = performance.now() - cpuStart;
+        const cpuSubmitMs = cpuStart === null ? null : performance.now() - cpuStart;
         meshes.flush(); device.endFrame();
-        const gpuTime = endGpuQuery(device, query), meshStats = { ...meshes.stats() }, deviceStats = { ...device.stats }, glError = device.gl.getError();
+        const gpuTime = includePopulationTimingDiagnostics ? endGpuQuery(device, query) : null;
+        const meshStats = { ...meshes.stats() }, deviceStats = { ...device.stats }, glError = device.gl.getError();
         assertThat(poseKeys.size === count, `independent clip/phase/expression fixture must produce ${count} unique part poses at ${displayTimeMs}: ${poseKeys.size}; duplicates=${JSON.stringify(duplicatePoseIndices)}`);
         assertThat(meshStats.draws === count && deviceStats.drawCalls === count && meshStats.geometryUploads === 0 && meshStats.geometryBytesUploaded === 0,
           `independent ${count}-actor poses should submit one retained mesh draw each without frame geometry uploads: ${meshStats.draws}`);
-        frames.push({ displayTimeMs, cpuSubmitMs, gpuTimer: gpuTime, draws: meshStats.draws, instances: meshStats.instances,
+        frames.push({ displayTimeMs, ...(includePopulationTimingDiagnostics ? { cpuSubmitMs, gpuTimer: gpuTime } : {}), draws: meshStats.draws, instances: meshStats.instances,
           geometryUploads: meshStats.geometryUploads, geometryBytesUploaded: meshStats.geometryBytesUploaded,
           instanceBytesUploaded: meshStats.instanceBytesUploaded, partUniformBytesSubmitted: meshStats.partUniformBytesSubmitted,
           glError });
@@ -307,7 +311,7 @@ export async function exerciseVectorAssets(page) {
       for (const actor of actors) actor.seek(1000);
       assertThat(JSON.stringify(actors.map(actor => actor.partPoses())) === poseStates[0],
         `independent ${count}-actor clip/phase/expression poses reproduce after a rollback seek`);
-      independentAnimationActors.push({ actors: count, playerInitMs: createMs, clips: clips.map(name => ({ name, count: groupCounts.get(name) })),
+      independentAnimationActors.push({ actors: count, ...(includePopulationTimingDiagnostics ? { playerInitMs: createMs } : {}), clips: clips.map(name => ({ name, count: groupCounts.get(name) })),
         expressionCount: expressions.length, distinctPoseCount, frames });
       for (const actor of actors) actor.dispose();
     }
@@ -353,7 +357,7 @@ export async function exerciseVectorAssets(page) {
     const expressionVisible = new Set(seedScoutMetadata.expressions[seedScoutMetadata.defaultExpression].show);
     const visibleSourcePaths = sourcePaths.filter(path => !expressionTargets.has(path.part) || expressionVisible.has(path.part));
     const pathPipelineBenchmark = [];
-    for (const count of [100, 400]) {
+    if (includePopulationTimingDiagnostics) for (const count of [100, 400]) {
       const pathCanvas = document.createElement('canvas'); pathCanvas.width = 200; pathCanvas.height = 220;
       const pathStart = performance.now();
       const pathDevice = new WebGLDevice(pathCanvas, { alpha: false, antialias: false, depth: false, stencil: false });
@@ -410,7 +414,8 @@ export async function exerciseVectorAssets(page) {
       `renderer disposal releases every expression buffer (${rendererBuffersBeforeDispose} bytes before disposal)`);
     replacement.dispose(); device.dispose(); canvas.remove();
     return { status: 'PASS', sourceSha256: asset.sourceSha256, coldMetrics, indexedParity, warm: { geometryUploads: warmFrame.mesh.geometryUploads, geometryBytesUploaded: warmFrame.mesh.geometryBytesUploaded },
-      benchmark: { svgLoaderCompileMs: threeCompileMs, retainedMeshInstances: benchmark, independentAnimationActors, vectorContextPerFramePathTessellation: pathPipelineBenchmark,
+      benchmark: { timingDiagnosticsEnabled: includePopulationTimingDiagnostics, svgLoaderCompileMs: threeCompileMs, retainedMeshInstances: benchmark, independentAnimationActors,
+        vectorContextPerFramePathTessellation: pathPipelineBenchmark,
         threeBasedProcessing: { svgLoader: 'Three SVGLoader build-time only', runtimeRenderer: 'not introduced', outputGeometryBytes: asset.mesh.byteLength,
           gpuPath: 'same retained GameKit MeshRenderer mesh; see retainedMeshInstances (compiled source mesh uploaded once)' } },
       expressionIndexLifecycle: { indexedCreateFailureCleanupBytes: beforeFailedCreate.bytes, seekVariants: observedVariants, contextRestorePixelMismatch: restorePixelMismatch,
@@ -418,11 +423,12 @@ export async function exerciseVectorAssets(page) {
       checks: ['WebGL1 real draw and zero GL error', 'evenodd hole and stroke/pixel color', 'SVG metadata pivots and sockets', 'part hierarchy visibility and opacity',
         'neutral/happy expression group variants', 'expression variants across animated seek and context restore', 'failed expression index allocation cleanup',
         'mesh/renderer disposal releases expression index buffers', 'clip switch and repeat seek after rollback', 'transition seek after rollback', 'dispose and recreate', 'mobile landscape viewport'] };
-  }, { sourcePaths: referenceAsset.sourcePaths, threeCompileMs });
+  }, { sourcePaths: referenceAsset.sourcePaths, threeCompileMs, includePopulationTimingDiagnostics });
   assert.equal(report.status, 'PASS');
+  assert.equal(report.benchmark.timingDiagnosticsEnabled, includePopulationTimingDiagnostics);
   assert.equal(report.benchmark.retainedMeshInstances.length, 2);
   assert.equal(report.benchmark.independentAnimationActors.length, 2);
-  assert.equal(report.benchmark.vectorContextPerFramePathTessellation.length, 2);
+  assert.equal(report.benchmark.vectorContextPerFramePathTessellation.length, includePopulationTimingDiagnostics ? 2 : 0);
   for (const row of [...report.benchmark.retainedMeshInstances, ...report.benchmark.independentAnimationActors, ...report.benchmark.vectorContextPerFramePathTessellation]) assert.ok(row.actors === 100 || row.actors === 400);
   for (const row of report.benchmark.independentAnimationActors) assert.equal(row.distinctPoseCount, row.actors);
   report.checks.push('100/400 independently phased clips and expression variants remain seek-deterministic, submit one draw per distinct multipart pose, and reuse retained geometry');

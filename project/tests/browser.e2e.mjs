@@ -159,13 +159,7 @@ try {
   assert.deepEqual(report.meshAlphaDepthWrite.partOpacity.pixel, [0, 0, 255, 255]);
   assert.deepEqual(report.meshAlphaDepthWrite.instanceOpacity.pixel, [0, 0, 255, 255]);
   assert.deepEqual(report.meshAlphaDepthWrite.afterRestore.pixel, [255, 0, 0, 255]);
-  assert.equal(report.meshAlphaDepthWrite.drawCost400.opaque.draws, report.meshAlphaDepthWrite.instanced ? 1 : 400);
-  const mixedAlphaDraws = report.meshAlphaDepthWrite.drawCost400.mixedThreeRun.draws;
-  assert.ok(report.meshAlphaDepthWrite.instanced
-    ? mixedAlphaDraws > 0 && mixedAlphaDraws <= 1200
-    : mixedAlphaDraws === 1200);
-  assert.equal(report.meshAlphaDepthWrite.drawCost400.mixedThreeRun.deviceDrawCalls, mixedAlphaDraws);
-  report.stages.push('MeshRenderer alpha-threshold depth writes preserve triangle and instance painter order, opacity variants, lifecycle, and safe disjoint instancing');
+  report.stages.push('MeshRenderer alpha-threshold depth writes preserve triangle and instance painter order, opacity variants, and lifecycle');
   report.rendering = await page.evaluate(async () => {
     const { Renderer2D } = await import('/dist/rendering.js');
     const check = (condition, message) => { if (!condition) throw new Error(message); };

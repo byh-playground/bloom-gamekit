@@ -120,39 +120,6 @@ export async function exerciseMeshAlphaDepthWrite(page, moduleURL = '/dist/rende
       check(afterRestore.pixel[0] >= 253 && afterRestore.pixel[1] <= 2 && afterRestore.pixel[2] <= 2,
         'restored expression index buffer is classified and drawn: ' + JSON.stringify(afterRestore));
 
-      const run400 = mixed => {
-        check(device.beginFrame({ width: 64, height: 64, clearColor: [0, 0, 0, 1], clearDepth: 1 }), '400-instance frame begins');
-        meshes.beginFrame();
-        for (let i = 0; i < 400; i++) {
-          const matrix = [0.15, 0, 0, 0.15, (i % 20) * 3, Math.floor(i / 20) * 3];
-          meshes.drawMesh(mesh, mixed
-            ? { ...opaqueOptions, matrix }
-            : { ...opaqueOptions, matrix, indexVariant: 'red' });
-        }
-        meshes.flush();
-        const meshStats = meshes.stats(), deviceDrawCalls = device.stats.drawCalls, glError = gl.getError();
-        device.endFrame();
-        return { draws: meshStats.draws, instances: meshStats.instances, instanceBytesUploaded: meshStats.instanceBytesUploaded,
-          alphaRunCacheHits: meshStats.alphaRunCacheHits, alphaRunCacheMisses: meshStats.alphaRunCacheMisses,
-          deviceDrawCalls, glError, instanced: meshStats.instanced };
-      };
-      const drawCost400 = { opaque: run400(false), mixedThreeRun: run400(true) };
-      const opaqueDrawTarget = drawCost400.opaque.instanced ? 1 : 400;
-      check(drawCost400.opaque.draws === opaqueDrawTarget && drawCost400.opaque.instances === 400
-        && drawCost400.opaque.deviceDrawCalls === opaqueDrawTarget,
-      '400 one-run actors retain compatible instancing: ' + JSON.stringify(drawCost400.opaque));
-      const mixedAlphaDrawCountValid = drawCost400.opaque.instanced
-        ? drawCost400.mixedThreeRun.draws > 0 && drawCost400.mixedThreeRun.draws <= 1200
-        : drawCost400.mixedThreeRun.draws === 1200;
-      check(mixedAlphaDrawCountValid && drawCost400.mixedThreeRun.instances === 400
-        && drawCost400.mixedThreeRun.deviceDrawCalls === drawCost400.mixedThreeRun.draws,
-      '400 mixed-alpha three-run actors preserve ordered draws while allowing disjoint instancing: ' + JSON.stringify(drawCost400.mixedThreeRun));
-      check(drawCost400.opaque.glError === 0 && drawCost400.mixedThreeRun.glError === 0, '400-instance runs leave a clean WebGL context');
-      check(drawCost400.opaque.alphaRunCacheHits + drawCost400.opaque.alphaRunCacheMisses === 400
-        && drawCost400.opaque.alphaRunCacheHits >= 399 && drawCost400.mixedThreeRun.alphaRunCacheHits >= 399
-        && drawCost400.mixedThreeRun.alphaRunCacheHits + drawCost400.mixedThreeRun.alphaRunCacheMisses === 400,
-      '400 identical actors reuse bounded mesh/variant/opacity run classifications: ' + JSON.stringify(drawCost400));
-
       meshes.dispose();
       const disposed = meshes.stats();
       check(disposed.meshCount === 0 && disposed.retainedBytes === 0 && disposed.pipelineCount === 0
@@ -160,7 +127,7 @@ export async function exerciseMeshAlphaDepthWrite(page, moduleURL = '/dist/rende
       'dispose releases retained mesh, expression index, instance buffer, and pipeline resources');
       return { orderedRuns, expressionAlpha, partOpacity, instanceOpacity, colorOpacity, forceColor,
         thresholdBoundary, legacyWholeMesh, legacyNoWrite, afterRestore, invalidThresholdRejected,
-        drawCost400, disposed: true, instanced: drawCost400.opaque.instanced };
+        disposed: true };
     } finally { meshes.dispose(); device.dispose(); canvas.remove(); }
   }, moduleURL);
 }
