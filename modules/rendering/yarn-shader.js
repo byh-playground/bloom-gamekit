@@ -385,7 +385,7 @@ export class YarnSurfaceRenderer {
     return surface;
   }
   drawSurface(surface, { projection, transform = IDENTITY, color = WHITE, alpha = 1, whiteFlash = 0, timeMs = 0,
-    clips = [], z = 0, depth = false, blend = 'source-over' } = {}) {
+    clips = [], stencilRef = null, z = 0, depth = false, blend = 'source-over' } = {}) {
     if (this.disposed || this.state !== 'ready') throw new Error(`YarnSurfaceRenderer is ${this.state}${this.failure ? ': ' + this.failure : ''}`);
     if (!this.surfaces.has(surface)) throw new TypeError('Surface must belong to this YarnSurfaceRenderer');
     finiteArray(projection, 9, 'projection'); finiteArray(color, 4, 'color');
@@ -393,6 +393,8 @@ export class YarnSurfaceRenderer {
     if (!Number.isFinite(whiteFlash) || whiteFlash < 0 || whiteFlash > 1) throw new RangeError('whiteFlash must be in [0,1]');
     if (!Number.isFinite(timeMs)) throw new TypeError('timeMs must be finite');
     if (!Number.isFinite(z) || z < -1 || z > 1) throw new RangeError('z must be in [-1,1]');
+    if (stencilRef !== null && (!Number.isSafeInteger(stencilRef) || stencilRef < 0 || stencilRef > 255)) throw new RangeError('stencilRef must be null or in [0,255]');
+    if (stencilRef !== null && !this.device.activeStencilAvailable) throw new Error('A stencil-tested yarn surface requires an active stencil attachment');
     const planes = clipPlanes(clips, this.maxClipPlanes), style = surface.style;
     const yarn = surface.kind === 'yarn';
     const stitchPattern = style.pattern !== false;
@@ -413,7 +415,8 @@ export class YarnSurfaceRenderer {
       u_effect0: effect0, u_effect1: effect1, u_effect2: effect2, u_effect3: effect3,
       u_tint: [color[0], color[1], color[2], color[3] * alpha], u_flash: whiteFlash, 'u_planes[0]': planes,
       ...(yarn ? {} : { u_timeMs: ((timeMs % style.periodMs) + style.periodMs) % style.periodMs }) };
-    const common = { pipeline: surface.pipeline, buffer: surface.buffer, uniforms, blend, depth };
+    const common = { pipeline: surface.pipeline, buffer: surface.buffer, uniforms, blend, depth,
+      stencil: stencilRef === null ? false : { func: 'equal', ref: stencilRef, mask: 255, writeMask: 0, pass: 'keep' } };
     this.device.draw({ ...common, first: surface.fillFirst, count: surface.fillCount });
     if (surface.edgeCount) {
       const edgeDepth = depth === true ? { test: true, write: false } : (depth && typeof depth === 'object' ? { ...depth, write: false } : depth);

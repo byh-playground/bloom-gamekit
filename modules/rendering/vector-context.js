@@ -41,9 +41,9 @@ function transformed(matrix,x,y){return{x:matrix[0]*x+matrix[2]*y+matrix[4],y:ma
 function invert(matrix){const d=matrix[0]*matrix[3]-matrix[1]*matrix[2];if(Math.abs(d)<1e-15)return null;return[matrix[3]/d,-matrix[1]/d,-matrix[2]/d,matrix[0]/d,(matrix[2]*matrix[5]-matrix[3]*matrix[4])/d,(matrix[1]*matrix[4]-matrix[0]*matrix[5])/d];}
 
 class RadialGradient {
-  constructor(matrix,x0,y0,r0,x1,y1,r1){if(Math.hypot(x1-x0,y1-y0)>1e-8)throw new Error('Radial gradients require concentric circles');for(const [n,v]of Object.entries({x0,y0,r0,x1,y1,r1}))finite(v,n);if(r0<0||r1<0)throw new RangeError('Gradient radii must be non-negative');this.matrix=matrix.slice();this.x=x1;this.y=y1;this.r0=r0;this.r1=r1;this.stops=[];this.pixels=null;this.revision=0;}
+  constructor(matrix,x0,y0,r0,x1,y1,r1){for(const [n,v]of Object.entries({x0,y0,r0,x1,y1,r1}))finite(v,n);if(r0<0||r1<0)throw new RangeError('Gradient radii must be non-negative');this.matrix=matrix.slice();this.x0=x0;this.y0=y0;this.r0=r0;this.x1=x1;this.y1=y1;this.r1=r1;this.stops=[];this.pixels=null;this.revision=0;}
   addColorStop(offset,value){if(!Number.isFinite(offset)||offset<0||offset>1)throw new RangeError('Invalid gradient stop');this.stops.push({offset,color:normalizeColor(value)});this.stops.sort((a,b)=>a.offset-b.offset);this.pixels=null;this.revision++;}
-  raster(){if(this.pixels)return this.pixels;const data=new Uint8Array(256*4),stops=this.stops.length?this.stops:[{offset:0,color:[0,0,0,0]}];for(let i=0;i<256;i++){const t=(i/255*this.r1-this.r0)/Math.max(1e-8,this.r1-this.r0);let lo=stops[0],hi=stops.at(-1);for(let j=1;j<stops.length;j++)if(t<stops[j].offset){lo=stops[j-1];hi=stops[j];break;}const q=clamp((t-lo.offset)/(hi.offset-lo.offset||1)),alpha=lo.color[3]+(hi.color[3]-lo.color[3])*q;for(let k=0;k<3;k++)data[i*4+k]=Math.round((lo.color[k]+(hi.color[k]-lo.color[k])*q)*alpha*255);data[i*4+3]=Math.round(alpha*255);}this.pixels=data;return data;}
+  raster(){if(this.pixels)return this.pixels;const data=new Uint8Array(256*4),stops=this.stops.length?this.stops:[{offset:0,color:[0,0,0,0]}];for(let i=0;i<256;i++){const t=i/255;let lo=stops[0],hi=stops.at(-1);for(let j=1;j<stops.length;j++)if(t<stops[j].offset){lo=stops[j-1];hi=stops[j];break;}const q=clamp((t-lo.offset)/(hi.offset-lo.offset||1)),alpha=lo.color[3]+(hi.color[3]-lo.color[3])*q;for(let k=0;k<3;k++)data[i*4+k]=Math.round((lo.color[k]+(hi.color[k]-lo.color[k])*q)*alpha*255);data[i*4+3]=Math.round(alpha*255);}this.pixels=data;return data;}
 }
 
 class LinearGradient {
@@ -82,6 +82,7 @@ export class VectorContext {
   get textBaseline(){return this._textBaseline} set textBaseline(v){if(['top','hanging','middle','alphabetic','ideographic','bottom'].includes(v))this._textBaseline=v}
   get direction(){return this._direction} set direction(v){if(['ltr','rtl','inherit'].includes(v))this._direction=v}
   get filter(){return this._filter} set filter(v){if(v!=='none'&&v!=='brightness(0) invert(1)')throw new RangeError('VectorContext supports only none and brightness(0) invert(1) filters');this._filter=v}
+  get stencilRef(){return this.vector.stencilDepth||null}
   _frame(){if(!this.active||this.device.state!=='ready')throw new Error('VectorContext frame is unavailable');}
   _paint(style){if(style instanceof RadialGradient||style instanceof LinearGradient)throw new TypeError('Gradient paint must be submitted through a vector fill or stroke');const color=normalizeColor(this.forceColor??style);color[3]*=this._globalAlpha;if(this._filter==='brightness(0) invert(1)')color[0]=color[1]=color[2]=1;return color;}
   _gradientPaint(gradient){
@@ -93,7 +94,8 @@ export class VectorContext {
     }else if(cached.revision!==gradient.revision){this.vector.flush();const linear=gradient instanceof LinearGradient,width=linear?LINEAR_GRADIENT_SIZE:256;this.device.updateTexture(cached.texture,{width,height:1,data:gradient.raster()});cached.revision=gradient.revision;cached.linear=linear;}
     cached.lastFrame=this.frame;const matrixInverse=invert(gradient.matrix);if(!matrixInverse)throw new RangeError('Gradient transform is singular');const color=normalizeColor(this.forceColor??[1,1,1,1]);color[3]*=this._globalAlpha;
     if(gradient instanceof LinearGradient)return{texture:cached.texture,kind:'linear',gradient,x0:gradient.x0,y0:gradient.y0,x1:gradient.x1,y1:gradient.y1,matrixInverse,color,whiteFlash:this._filter==='brightness(0) invert(1)'};
-    return{texture:cached.texture,kind:'radial',gradient,centerX:gradient.x,centerY:gradient.y,radius:gradient.r1,matrixInverse,color,whiteFlash:this._filter==='brightness(0) invert(1)'};
+    const dx=gradient.x1-gradient.x0,dy=gradient.y1-gradient.y0,dr=gradient.r1-gradient.r0,scale=Math.max(1,Math.hypot(dx,dy),Math.abs(gradient.r0),Math.abs(gradient.r1));
+    return{texture:cached.texture,kind:'radial',gradient,x0:gradient.x0,y0:gradient.y0,radialScale:scale,radialParams:[dx/scale,dy/scale,gradient.r0/scale,dr/scale],radialEmpty:dx===0&&dy===0&&dr===0,matrixInverse,color,whiteFlash:this._filter==='brightness(0) invert(1)'};
   }
   _releaseGradientTextures(){for(const [gradient,cached]of this.gradientTextures){try{this.device.deleteTexture(cached.texture)}catch(error){try{this.onError?.(error,{phase:'gradient-release'})}catch{}}finally{gradient.pixels=null;}}this.gradientTextures.clear();}
   beginFrame({width=this.canvas.width,height=this.canvas.height,clearColor=[0,0,0,0]}={}){

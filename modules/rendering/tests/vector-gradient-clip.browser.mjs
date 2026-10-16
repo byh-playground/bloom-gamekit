@@ -62,6 +62,37 @@ export async function exerciseVectorGradientClip(browser, moduleURL, screenshotP
         gradientCanvases.push({ canvas, device, vector, ctx });
       }
 
+      const radialComparisons={};
+      for(const [id,size,dpr] of [['radial-mobile',47,1],['radial-desktop',74,2]]){
+        const canvas=document.createElement('canvas'),card=document.createElement('div'),label=document.createElement('small');
+        card.className='card';label.textContent=`Two-circle radial gradient · ${size} CSS px · DPR ${dpr}`;canvas.style.cssText='display:block;background:white';card.append(canvas,label);document.querySelector('body').append(card);
+        canvas.width=(size+16)*dpr;canvas.height=(size+16)*dpr;canvas.style.width=`${size+16}px`;canvas.style.height=`${size+16}px`;
+        const reference=document.createElement('canvas');reference.width=canvas.width;reference.height=canvas.height;
+        const device=new WebGLDevice(canvas,{alpha:true,antialias:false,depth:false,stencil:false,preserveDrawingBuffer:true});
+        const vector=new VectorRenderer(device,{initialVertices:128,maxVertices:8192}),ctx=new VectorContext(device,{vectorRenderer:vector});
+        ctx.beginFrame({clearColor:[0,0,0,0]});ctx.scale(dpr,dpr);ctx.translate((size+16)/2,(size+16)/2);ctx.scale(size/120,size/120);
+        ctx.fillStyle='#304860';ctx.fillRect(-80,-80,160,160);
+        const gradient=ctx.createRadialGradient(-18,-22,4,0,0,70);gradient.addColorStop(0,'#fff1cf');gradient.addColorStop(.58,'#d9b995');gradient.addColorStop(1,'#b78f75');
+        ctx.fillStyle=gradient;ctx.beginPath();ctx.ellipse(0,0,50,44,0,0,Math.PI*2);ctx.fill();ctx.save();ctx.translate(60,0);ctx.fillStyle='#00ff00';ctx.fillRect(-8,-8,16,16);
+        const identical=ctx.createRadialGradient(-18,-22,4,-18,-22,4);identical.addColorStop(0,'#fff1cf');identical.addColorStop(1,'#b78f75');ctx.fillStyle=identical;ctx.fillRect(-8,-8,16,16);ctx.restore();ctx.endFrame();
+        const ref=reference.getContext('2d');ref.scale(dpr,dpr);ref.translate((size+16)/2,(size+16)/2);ref.scale(size/120,size/120);ref.fillStyle='#304860';ref.fillRect(-80,-80,160,160);
+        const nativeGradient=ref.createRadialGradient(-18,-22,4,0,0,70);nativeGradient.addColorStop(0,'#fff1cf');nativeGradient.addColorStop(.58,'#d9b995');nativeGradient.addColorStop(1,'#b78f75');
+        ref.fillStyle=nativeGradient;ref.beginPath();ref.ellipse(0,0,50,44,0,0,Math.PI*2);ref.fill();
+        ref.save();ref.translate(60,0);ref.fillStyle='#00ff00';ref.fillRect(-8,-8,16,16);const nativeIdentical=ref.createRadialGradient(-18,-22,4,-18,-22,4);nativeIdentical.addColorStop(0,'#fff1cf');nativeIdentical.addColorStop(1,'#b78f75');ref.fillStyle=nativeIdentical;ref.fillRect(-8,-8,16,16);ref.restore();
+        const glPixels=new Uint8Array(canvas.width*canvas.height*4);device.gl.readPixels(0,0,canvas.width,canvas.height,device.gl.RGBA,device.gl.UNSIGNED_BYTE,glPixels);
+        const nativePixels=ref.getImageData(0,0,reference.width,reference.height).data;let compared=0,maxDiff=0,totalDiff=0,notchOrBackgroundMismatch=0;
+        const scale=size/120,center=(size+16)/2;
+        for(let y=1;y<canvas.height-1;y++)for(let x=1;x<canvas.width-1;x++){
+          const cssX=(x+.5)/dpr-center,cssY=(y+.5)/dpr-center,localX=cssX/scale,localY=cssY/scale,ellipseEdge=Math.hypot(localX/50,localY/44);
+          if(ellipseEdge>.90)continue;const glAt=((canvas.height-1-y)*canvas.width+x)*4,refAt=(y*canvas.width+x)*4;
+          for(let k=0;k<4;k++){const diff=Math.abs(glPixels[glAt+k]-nativePixels[refAt+k]);maxDiff=Math.max(maxDiff,diff);totalDiff+=diff;compared++;}
+          if(ellipseEdge<.8&&nativePixels[refAt+3]===255&&glPixels[glAt+3]===0)notchOrBackgroundMismatch++;
+        }
+        const identicalX=Math.floor((center+60*scale)*dpr),identicalY=Math.floor(center*dpr),identicalPixel=new Uint8Array(4);device.gl.readPixels(identicalX,canvas.height-1-identicalY,1,1,device.gl.RGBA,device.gl.UNSIGNED_BYTE,identicalPixel);
+        radialComparisons[id]={size,dpr,compared,maxDiff,meanDiff:totalDiff/compared,notchOrBackgroundMismatch,identicalCirclePixel:[...identicalPixel],glError:device.gl.getError()};
+        ctx.dispose();vector.dispose();device.dispose();
+      }
+
       const canvas = document.getElementById('clip'); canvas.style.width = '160px'; canvas.style.height = '130px'; canvas.width = 160; canvas.height = 130;
       const device = new WebGLDevice(canvas, { alpha: true, antialias: false, depth: false, stencil: true, preserveDrawingBuffer: true });
       const vector = new VectorRenderer(device, { initialVertices: 128, maxVertices: 8192 });
@@ -132,7 +163,7 @@ export async function exerciseVectorGradientClip(browser, moduleURL, screenshotP
       ctx.dispose(); for(const sample of gradientCanvases){sample.ctx.dispose();sample.vector.dispose();sample.device.dispose();sample.canvas.remove();}
       vector.dispose();device.dispose();canvas.remove();
       const disposed = device.stats.bufferCount===0&&device.stats.pipelineCount===0&&device.stats.textureCount===0&&device.stats.renderTargetCount===0&&device.stats.gpuBufferBytes===0&&device.stats.gpuRenderTargetBytes===0;
-      return { gradientSamples, clipPixels, gradientStopLimitRejected, clipPointLimitRejected, missingStencilRejected, selfIntersectionRejected, dynamicConcaveRejected, savedClipDeletionRejected, authoredConvexCount, restored, restorePixel, restoreNotch, glError, disposed };
+      return { gradientSamples, radialComparisons, clipPixels, gradientStopLimitRejected, clipPointLimitRejected, missingStencilRejected, selfIntersectionRejected, dynamicConcaveRejected, savedClipDeletionRejected, authoredConvexCount, restored, restorePixel, restoreNotch, glError, disposed };
     }, { moduleURL });
 
     for (const [name, sample] of Object.entries(result.gradientSamples)) {
@@ -144,6 +175,14 @@ export async function exerciseVectorGradientClip(browser, moduleURL, screenshotP
       assert.ok(sample.strokeMid[3] > 0, `${name}: gradient stroke has covered pixels`);
       assert.ok(sample.transformedCoverage[3] > 0, `${name}: transformed fill has covered pixels`);
       assert.equal(sample.error, 0);
+    }
+    for(const [name,sample] of Object.entries(result.radialComparisons)){
+      assert.equal(sample.size,name==='radial-mobile'?47:74);
+      assert.ok(sample.compared>1000,`${name}: compare actual rendered pixels against native Canvas2D`);
+      assert.ok(sample.maxDiff<=10&&sample.meanDiff<=2.5,`${name}: two-circle gradient pixel parity ${JSON.stringify(sample)}`);
+      assert.equal(sample.notchOrBackgroundMismatch,0,`${name}: transparent area outside the radial cone leaves prior paint intact`);
+      assert.deepEqual(sample.identicalCirclePixel,[0,255,0,255],`${name}: identical circles paint nothing per the Canvas radial-gradient algorithm`);
+      assert.equal(sample.glError,0);
     }
     assert.ok(result.clipPixels.innerAndGroup[0] > 100 && result.clipPixels.innerAndGroup[1] > 240, `nested clip + group ${result.clipPixels.innerAndGroup}`);
     assert.ok(result.clipPixels.rightArm[0] > 100 && result.clipPixels.rightArm[1] > 100, `retained mesh/clip and group ${result.clipPixels.rightArm}`);
