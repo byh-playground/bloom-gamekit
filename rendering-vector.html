@@ -147,14 +147,14 @@
     }
     _pipeline(record) {
       const gl = this.gl;
-      let vertex, fragment2, program;
+      let vertex, fragment3, program;
       try {
         vertex = compile(gl, gl.VERTEX_SHADER, record.vertex);
-        fragment2 = compile(gl, gl.FRAGMENT_SHADER, record.fragment);
+        fragment3 = compile(gl, gl.FRAGMENT_SHADER, record.fragment);
         program = gl.createProgram();
         if (!program) throw new Error("Program allocation failed");
         gl.attachShader(program, vertex);
-        gl.attachShader(program, fragment2);
+        gl.attachShader(program, fragment3);
         gl.linkProgram(program);
         if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(`Program link failed: ${gl.getProgramInfoLog(program)}`);
         record.locations = record.attributes.map((attribute) => ({ ...attribute, location: gl.getAttribLocation(program, attribute.name) }));
@@ -166,13 +166,13 @@
         throw error;
       } finally {
         if (vertex) gl.deleteShader(vertex);
-        if (fragment2) gl.deleteShader(fragment2);
+        if (fragment3) gl.deleteShader(fragment3);
       }
     }
     /** Attributes use interleaved FLOAT components and byte offsets in their vertex/instance source. */
-    createPipeline({ vertex, fragment: fragment2, stride, instanceStride = 0, attributes, uniforms = {} }) {
+    createPipeline({ vertex, fragment: fragment3, stride, instanceStride = 0, attributes, uniforms = {} }) {
       this._ready();
-      if (typeof vertex !== "string" || typeof fragment2 !== "string") throw new TypeError("Shader sources required");
+      if (typeof vertex !== "string" || typeof fragment3 !== "string") throw new TypeError("Shader sources required");
       integer(stride, "stride", 4, 255);
       if (stride % 4) throw new RangeError("stride must align to FLOAT");
       integer(instanceStride, "instanceStride", 0, 255);
@@ -192,7 +192,7 @@
       }
       if (!uniforms || typeof uniforms !== "object") throw new TypeError("uniform descriptors required");
       for (const type of Object.values(uniforms)) if (!UNIFORMS.has(type)) throw new TypeError(`Unsupported uniform ${type}`);
-      const record = { vertex, fragment: fragment2, stride, instanceStride, instanced: attributes.some((a) => a.source === "instance"), attributes: attributes.map((a) => ({ ...a, source: a.source ?? "vertex" })), uniforms: { ...uniforms }, gpu: null };
+      const record = { vertex, fragment: fragment3, stride, instanceStride, instanced: attributes.some((a) => a.source === "instance"), attributes: attributes.map((a) => ({ ...a, source: a.source ?? "vertex" })), uniforms: { ...uniforms }, gpu: null };
       this._pipeline(record);
       const handle = Object.freeze({ stride, instanceStride });
       this.pipelines.set(handle, record);
@@ -1260,6 +1260,11 @@ varying vec2 v_uv; varying vec4 v_color; void main(){vec2 uv=u_radial>0.5?vec2(c
     rebeccapurple: "#663399",
     transparent: "#00000000"
   });
+  var STRIDE_FLOATS = 9;
+  var STRIDE_BYTES = STRIDE_FLOATS * 4;
+  var DEFAULT_LIMIT_BYTES = 32 * 1024 * 1024;
+  var IDENTITY4 = Object.freeze([1, 0, 0, 1, 0, 0]);
+  var WHITE4 = Object.freeze([1, 1, 1, 1]);
   var GlyphAtlas = class {
     constructor(device2, {
       width: width2,
@@ -1486,7 +1491,7 @@ varying vec2 v_uv; varying vec4 v_color; void main(){vec2 uv=u_radial>0.5?vec2(c
   function positiveInteger(value, name) {
     if (!Number.isSafeInteger(value) || value < 1) throw new RangeError(`${name} must be a positive integer`);
   }
-  var WHITE4 = Object.freeze([1, 1, 1, 1]);
+  var WHITE5 = Object.freeze([1, 1, 1, 1]);
   var CLEAR = Object.freeze([0, 0, 0, 0]);
 
   // modules/rendering/examples/vector/modules/rendering/examples/vector/index.html

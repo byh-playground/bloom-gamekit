@@ -437,9 +437,14 @@ body{font:16px system-ui;max-width:900px;margin:2rem auto;padding:0 1rem;backgro
     rebeccapurple: "#663399",
     transparent: "#00000000"
   });
+  var STRIDE_FLOATS = 9;
+  var STRIDE_BYTES = STRIDE_FLOATS * 4;
+  var DEFAULT_LIMIT_BYTES = 32 * 1024 * 1024;
+  var IDENTITY4 = Object.freeze([1, 0, 0, 1, 0, 0]);
   var WHITE4 = Object.freeze([1, 1, 1, 1]);
+  var WHITE5 = Object.freeze([1, 1, 1, 1]);
   var CLEAR = Object.freeze([0, 0, 0, 0]);
-  var VERTEX2 = `
+  var VERTEX3 = `
 attribute vec2 a_position;
 attribute vec2 a_uv;
 attribute vec4 a_color;
@@ -554,19 +559,19 @@ void main() {
     }
     _initialize() {
       const gl = this.gl;
-      let vertex, fragment2;
+      let vertex, fragment3;
       try {
-        vertex = compile2(gl, gl.VERTEX_SHADER, VERTEX2);
-        fragment2 = compile2(gl, gl.FRAGMENT_SHADER, FRAGMENT2);
+        vertex = compile2(gl, gl.VERTEX_SHADER, VERTEX3);
+        fragment3 = compile2(gl, gl.FRAGMENT_SHADER, FRAGMENT2);
         this.program = gl.createProgram();
         if (!this.program) throw new Error("WebGL program allocation failed");
         gl.attachShader(this.program, vertex);
-        gl.attachShader(this.program, fragment2);
+        gl.attachShader(this.program, fragment3);
         gl.linkProgram(this.program);
         if (!gl.getProgramParameter(this.program, gl.LINK_STATUS)) throw new Error(`WebGL link: ${gl.getProgramInfoLog(this.program)}`);
       } finally {
         if (vertex) gl.deleteShader(vertex);
-        if (fragment2) gl.deleteShader(fragment2);
+        if (fragment3) gl.deleteShader(fragment3);
       }
       this.buffer = gl.createBuffer();
       if (!this.buffer) throw new Error("WebGL buffer allocation failed");
@@ -788,7 +793,7 @@ void main() {
       data[i++] = tint[2];
       data[i] = tint[3];
     }
-    triangle(x0, y0, x1, y1, x2, y2, tint = WHITE4) {
+    triangle(x0, y0, x1, y1, x2, y2, tint = WHITE5) {
       finite4(x0, "x0");
       finite4(y0, "y0");
       finite4(x1, "x1");
@@ -822,18 +827,18 @@ void main() {
       this._vertex(dx, dy, u0, v1, tint);
     }
     /** Center-anchored rectangle, positive size, clockwise rotation in y-down world. */
-    rect(x, y, width, height, tint = WHITE4, angle = 0) {
+    rect(x, y, width, height, tint = WHITE5, angle = 0) {
       this._quad(this.white.texture, x, y, width, height, angle, tint, 0, 0, 1, 1);
     }
     /** Atlas UV edges are top-left based; reversing endpoints flips the image. */
-    sprite(texture, x, y, width = texture.width, height = texture.height, { angle = 0, tint = WHITE4, u0 = 0, v0 = 0, u1 = 1, v1 = 1 } = {}) {
+    sprite(texture, x, y, width = texture.width, height = texture.height, { angle = 0, tint = WHITE5, u0 = 0, v0 = 0, u1 = 1, v1 = 1 } = {}) {
       const record = this.textures.get(texture);
       if (!record) throw new Error("unknown/deleted texture");
       if (!Number.isFinite(u0) || !Number.isFinite(v0) || !Number.isFinite(u1) || !Number.isFinite(v1) || Math.min(u0, v0, u1, v1) < 0 || Math.max(u0, v0, u1, v1) > 1) throw new RangeError("UV must be in [0,1]");
       this._quad(record.texture, x, y, width, height, angle, tint, u0, v0, u1, v1);
     }
     /** Bounded fan tessellation; game chooses quality. No path/tessellation engine. */
-    ellipse(x, y, radiusX, radiusY, tint = WHITE4, segments = 24) {
+    ellipse(x, y, radiusX, radiusY, tint = WHITE5, segments = 24) {
       finite4(x, "x");
       finite4(y, "y");
       positive2(radiusX, "radiusX");
@@ -848,7 +853,7 @@ void main() {
         this._vertex(x + Math.cos(b) * radiusX, y + Math.sin(b) * radiusY, 0, 0, tint);
       }
     }
-    line(x0, y0, x1, y1, width, tint = WHITE4) {
+    line(x0, y0, x1, y1, width, tint = WHITE5) {
       finite4(x0, "x0");
       finite4(y0, "y0");
       finite4(x1, "x1");
@@ -2628,7 +2633,7 @@ void main() {
       return signed(Number(BigInt(signed(a)) * 1024n / BigInt(b)));
     }
   });
-  var VERSION = "0.7.2";
+  var VERSION = "0.7.3";
   var REPLAY_FORMAT_VERSION = "0.2.0-dev";
   var PROTOCOL_VERSION = 3;
   var CHUNK_SIZE = 16384;
