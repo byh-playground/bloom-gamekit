@@ -608,7 +608,8 @@ const { createSession, profiles } = await import('/dist/rollback.js');
     metadataNode.textContent = JSON.stringify(metadata);
     const normalizedText = new XMLSerializer().serializeToString(svgDocument);
     const normalizedBytes = new TextEncoder().encode(normalizedText);
-    const normalizedHash = await digest(normalizedText);
+    const normalizedDigest = new Uint8Array(await crypto.subtle.digest('SHA-256', normalizedBytes));
+    const normalizedHash = [...normalizedDigest].map(item => item.toString(16).padStart(2, '0')).join('');
     const blobUrl = URL.createObjectURL(new Blob([normalizedBytes], { type: 'image/svg+xml' }));
     let referenceAsset;
     try {
