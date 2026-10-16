@@ -1,6 +1,6 @@
 export const VECTOR_ASSET_SCHEMA_VERSION = 1;
-export const VECTOR_ASSET_COMPILER_VERSION = '0.7.0';
-const ACCEPTED_COMPILER_VERSIONS = new Set(['0.2.0', '0.3.0', '0.4.0', '0.5.0', '0.6.0', VECTOR_ASSET_COMPILER_VERSION]);
+export const VECTOR_ASSET_COMPILER_VERSION = '0.8.0';
+const ACCEPTED_COMPILER_VERSIONS = new Set(['0.2.0', '0.3.0', '0.4.0', '0.5.0', '0.6.0', '0.7.0', VECTOR_ASSET_COMPILER_VERSION]);
 export const NUMERIC_POSE_FIELDS = Object.freeze(['x', 'y', 'rotation', 'scaleX', 'scaleY', 'opacity']);
 const EASINGS = new Set(['linear', 'inSine', 'outSine', 'inOutSine', 'inQuad', 'outQuad', 'inOutQuad', 'inCubic', 'outCubic', 'inOutCubic']);
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -75,7 +75,7 @@ export function validateAssetMetadata(metadata, idNodes) {
       targets.add(style.target);
       if (style.kind === 'yarn') {
         const required = ['target', 'kind', 'seed', 'stitchWidth', 'stitchHeight', 'thickness', 'irregularity', 'contrast', 'edgeSpacing', 'edgeRelief', 'edgeWidth', 'fiberLength', 'fiberWidth', 'fiberOpacity', 'fiberMax'];
-        const optional = ['fiberSpacing', 'curved', 'pattern', 'detail', 'fiber'];
+        const optional = ['fiberSpacing', 'curved', 'pattern', 'detail', 'fiber', 'backend'];
         if (!isObject(style) || required.some(key => !Object.hasOwn(style, key))
             || Object.keys(style).some(key => ![...required, ...optional].includes(key))) {
           throw new TypeError('Yarn style fields are incomplete or unsupported: ' + style.target);
@@ -89,12 +89,16 @@ export function validateAssetMetadata(metadata, idNodes) {
         for (const key of ['curved', 'pattern', 'detail', 'fiber']) {
           if (style[key] !== undefined && typeof style[key] !== 'boolean') throw new TypeError('Yarn ' + key + ' must be boolean');
         }
+        if (style.backend !== undefined && style.backend !== 'shader') throw new TypeError('Yarn backend supports only the explicit shader value');
         if (!Number.isSafeInteger(style.seed) || style.seed < 0 || style.seed > 0x7fffffff
             || !Number.isSafeInteger(style.fiberMax) || style.fiberMax < 0 || style.fiberMax > 512) throw new RangeError('Yarn seed/fiberMax is outside its bound');
       } else if (style.kind === 'sketch') {
-        if (!exactKeys(style, ['target', 'kind', 'seed', 'periodMs', 'amplitude', 'frequency', 'echoX', 'echoY', 'echoWidth', 'echoOpacity', 'hatchAngle', 'hatchSpacing', 'hatchWidth', 'hatchOpacity'])) {
+        const required = ['target', 'kind', 'seed', 'periodMs', 'amplitude', 'frequency', 'echoX', 'echoY', 'echoWidth', 'echoOpacity', 'hatchAngle', 'hatchSpacing', 'hatchWidth', 'hatchOpacity'];
+        if (!isObject(style) || required.some(key => !Object.hasOwn(style, key))
+            || Object.keys(style).some(key => ![...required, 'backend'].includes(key))) {
           throw new TypeError('Sketch style fields are incomplete or unsupported: ' + style.target);
         }
+        if (style.backend !== undefined && style.backend !== 'shader') throw new TypeError('Sketch backend supports only the explicit shader value');
         for (const key of ['amplitude', 'frequency', 'echoWidth', 'hatchSpacing', 'hatchWidth']) {
           if (!finite(style[key]) || style[key] <= 0) throw new RangeError('Sketch ' + key + ' must be positive');
         }
@@ -133,10 +137,12 @@ export function validateAssetMetadata(metadata, idNodes) {
 }
 
 export function validateCompiledAsset(asset) {
+  const shaderSurfaces = asset?.geometry?.shaderSurfaces;
+  const surfaceOnly = Array.isArray(shaderSurfaces) && shaderSurfaces.length > 0;
   if (!isObject(asset) || asset.schemaVersion !== VECTOR_ASSET_SCHEMA_VERSION || !ACCEPTED_COMPILER_VERSIONS.has(asset.compilerVersion)
       || typeof asset.sourceSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(asset.sourceSha256)
       || !isObject(asset.metadata) || !isObject(asset.geometry)
-      || !(asset.geometry.vertices instanceof Float32Array) || asset.geometry.vertices.length < 33
+      || !(asset.geometry.vertices instanceof Float32Array) || (asset.geometry.vertices.length < 33 && !(surfaceOnly && asset.geometry.vertices.length === 0))
       || asset.geometry.vertices.length % 11 || asset.geometry.strideFloats !== 11
       || (asset.geometry.nonScalingStroke !== undefined && typeof asset.geometry.nonScalingStroke !== 'boolean')
       || (asset.geometry.nonScalingStroke && asset.geometry.morphCount !== 0)
@@ -144,7 +150,7 @@ export function validateCompiledAsset(asset) {
     throw new TypeError('Invalid compiled SVG vector asset');
   }
   const vertexCount = asset.geometry.vertices.length / 11, indices = asset.geometry.indices;
-  if (indices !== undefined && (!(indices instanceof Uint16Array) || indices.length < 3 || indices.length % 3
+  if (indices !== undefined && (!(indices instanceof Uint16Array) || (indices.length < 3 && !(surfaceOnly && indices.length === 0)) || indices.length % 3
       || vertexCount > 0x10000 || indices.some(index => index >= vertexCount))) {
     throw new TypeError('Invalid compiled SVG vertex indices');
   }
@@ -173,6 +179,48 @@ export function validateCompiledAsset(asset) {
         || !(variant instanceof Uint16Array) || variant.length % 3 || variant.some(index => index >= vertexCount)) {
       throw new TypeError('Invalid compiled SVG named index variant: ' + name);
     }
+  }
+  const surfaces = asset.geometry.shaderSurfaces;
+  const drawOrder = asset.geometry.drawOrder;
+  if (surfaces !== undefined || drawOrder !== undefined) {
+    if (!Array.isArray(surfaces) || !Array.isArray(drawOrder) || !drawOrder.length || surfaces.length > 128 || drawOrder.length > 512) {
+      throw new TypeError('Shader-backed SVG assets require bounded shaderSurfaces and drawOrder arrays');
+    }
+    for (const [index, surface] of surfaces.entries()) {
+      const style = asset.metadata.styles?.find(entry => entry.target === surface?.target && entry.backend === 'shader');
+      const contour = surface?.outline;
+      if (!style || !Number.isSafeInteger(surface.partIndex) || surface.partIndex < 0 || surface.partIndex >= asset.geometry.partCount
+          || !(surface.fillVertices instanceof Float32Array) || surface.fillVertices.length < 18 || surface.fillVertices.length % 18
+          || !(contour instanceof Float32Array) || contour.length < 6 || contour.length % 2
+          || !(surface.edgeColors instanceof Float32Array) || surface.edgeColors.length !== contour.length * 2) {
+        throw new TypeError('Invalid retained SVG shader surface at index ' + index);
+      }
+      if (surface.fillVertices.some((value, offset) => !Number.isFinite(value) || (offset % 6 >= 2 && (value < 0 || value > 1)))
+          || contour.some(value => !Number.isFinite(value))
+          || surface.edgeColors.some(value => !Number.isFinite(value) || value < 0 || value > 1)) {
+        throw new TypeError('SVG shader surface values must be finite and colors in [0,1]');
+      }
+      const surfaceStyle = surface.style, styleKeys = Object.keys(style);
+      if (!isObject(surfaceStyle) || Object.keys(surfaceStyle).length !== styleKeys.length
+          || styleKeys.some(key => !Object.hasOwn(surfaceStyle, key) || surfaceStyle[key] !== style[key])) {
+        throw new TypeError('SVG shader surface style must exactly match its authored metadata target');
+      }
+    }
+    const referenced = new Set();
+    for (const command of drawOrder) {
+      if (command?.kind === 'mesh') {
+        if (!Number.isSafeInteger(command.firstIndex) || !Number.isSafeInteger(command.indexCount) || command.firstIndex < 0
+            || !Number.isSafeInteger(command.partIndex) || command.partIndex < 0 || command.partIndex >= asset.geometry.partCount
+            || command.indexCount < 3 || command.indexCount % 3 || command.firstIndex % 3 || command.firstIndex + command.indexCount > (indices?.length ?? vertexCount)) {
+          throw new TypeError('Invalid ordered SVG mesh range');
+        }
+      } else if (command?.kind === 'surface') {
+        if (!Number.isSafeInteger(command.surfaceIndex) || command.surfaceIndex < 0 || command.surfaceIndex >= surfaces.length
+            || referenced.has(command.surfaceIndex)) throw new TypeError('Invalid or repeated ordered SVG shader surface reference');
+        referenced.add(command.surfaceIndex);
+      } else throw new TypeError('Unsupported SVG painter-order command');
+    }
+    if (referenced.size !== surfaces.length) throw new TypeError('Every retained SVG shader surface must appear once in drawOrder');
   }
   return asset;
 }

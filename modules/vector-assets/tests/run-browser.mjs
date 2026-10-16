@@ -10,12 +10,15 @@ import { exerciseOrderedAssetBatch } from '../../rendering/tests/ordered-batch.b
 import { exerciseMeshDepth } from '../../rendering/tests/mesh-depth.browser.mjs';
 import { compileVectorAssetFile } from '../compiler.js';
 import { exerciseNonScalingStroke } from './non-scaling-stroke.browser.mjs';
+import { exerciseWorldVectorRendering } from './world-rendering.browser.mjs';
 
 const root = resolve('.');
 const sourceURL = 'https://raw.githubusercontent.com/byh-playground/bloom-gamekit/main/modules/vector-assets/assets/seed-scout.svg';
 const sourceBytes = await readFile(resolve(root, 'modules/vector-assets/assets/seed-scout.svg'));
 const renderingBundle = await readFile(resolve(root, 'dist/rendering.js'));
 const renderingModuleURL = 'data:text/javascript;base64,' + renderingBundle.toString('base64');
+const vectorAssetsBundle = await readFile(resolve(root, 'dist/vector-assets.js'));
+const vectorAssetsModuleURL = 'data:text/javascript;base64,' + vectorAssetsBundle.toString('base64');
 const executablePath = process.env.CHROMIUM_EXECUTABLE_PATH
   ?? ['C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'].find(path => existsSync(path));
 if (!executablePath) throw new Error('Set CHROMIUM_EXECUTABLE_PATH to Chromium or Edge.');
@@ -86,6 +89,18 @@ try {
     indices: Array.from(nonScalingAsset.geometry.indices),
   }, nonScalingEvidence);
   report.nonScalingStroke.evidencePath = nonScalingEvidence;
+  const worldVectorAsset = await compileVectorAssetFile(resolve(root, 'modules/vector-assets/tests/world-shader.svg'));
+  const worldGeometry = worldVectorAsset.geometry;
+  const worldCompiled = { ...worldVectorAsset, geometry: { ...worldGeometry,
+    vertices: Array.from(worldGeometry.vertices), indices: Array.from(worldGeometry.indices),
+    expressionIndices: Object.fromEntries(Object.entries(worldGeometry.expressionIndices ?? {}).map(([key, value]) => [key, Array.from(value)])),
+    indexVariants: Object.fromEntries(Object.entries(worldGeometry.indexVariants ?? {}).map(([key, value]) => [key, Array.from(value)])),
+    shaderSurfaces: worldGeometry.shaderSurfaces?.map(surface => ({ ...surface,
+      fillVertices: Array.from(surface.fillVertices), outline: Array.from(surface.outline), edgeColors: Array.from(surface.edgeColors),
+    })),
+  } };
+  report.worldVector = await exerciseWorldVectorRendering(browser, renderingModuleURL, vectorAssetsModuleURL, worldCompiled,
+    resolve(evidenceDirectory, 'digmory-world-vector.png'));
   await page.locator('#style-comparison').click();
   await page.waitForFunction(() => window.vectorAssetDemo?.styleReady || window.vectorAssetDemo?.styleError, null, { timeout: 15000 });
   const styleError = await page.evaluate(() => window.vectorAssetDemo?.styleError ?? null);

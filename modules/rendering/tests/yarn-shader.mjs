@@ -22,6 +22,13 @@ const edgeColors = new Float32Array(points.flatMap((_, index) => {
   return [0.82 - t * 0.12, 0.48 - t * 0.08, 0.28 - t * 0.06, 1];
 }));
 const base = buildYarnSurfaceGeometry({ fillVertices: fill, outline, edgeColors, style });
+// SVG contours commonly repeat the first/adjacent point. Colors must follow
+// the same vertex normalization instead of rejecting an otherwise valid asset.
+const duplicated = [0, 1, 1, 2, 3, 4, 5, 6, 7, 0];
+const normalized = buildYarnSurfaceGeometry({ fillVertices: fill,
+  outline: Float32Array.from(duplicated.flatMap(i => points[i])),
+  edgeColors: Float32Array.from(duplicated.flatMap(i => Array.from(edgeColors.subarray(i * 4, i * 4 + 4)))), style });
+assert.deepEqual(normalized.vertices, base.vertices, 'duplicate contour vertices retain matching gradient colors');
 assert.ok(base.vertices.length > fill.length);
 assert.equal(base.fillCount, fill.length / 6);
 assert.equal(base.edgeCount, points.length * 6);

@@ -30,6 +30,29 @@ void main() {
   v_color = a_color;
   v_surface = a_surface;
 }`;
+const VERTEX_WORLD = `
+attribute vec2 a_position;
+attribute vec4 a_color;
+attribute vec3 a_surface;
+uniform mat4 u_viewProjection;
+uniform mat4 u_worldMatrix;
+uniform mat3 u_transform;
+uniform float u_depth;
+varying vec2 v_position;
+varying vec2 v_world;
+varying vec4 v_color;
+varying vec3 v_surface;
+void main() {
+  vec3 plane = u_transform * vec3(a_position, 1.0);
+  vec4 world = u_worldMatrix * vec4(plane.xy / plane.z, 0.0, 1.0);
+  vec4 projected = u_viewProjection * world;
+  projected.z += u_depth * projected.w;
+  gl_Position = projected;
+  v_position = a_position;
+  v_world = world.xy / world.w;
+  v_color = a_color;
+  v_surface = a_surface;
+}`;
 
 function fragment(kind, maxClipPlanes) {
   const clips = maxClipPlanes ? `
@@ -44,7 +67,7 @@ void clipWorld() {
   return `precision mediump float;
 varying vec2 v_position; varying vec2 v_world; varying vec4 v_color; varying vec3 v_surface;
 uniform vec4 u_bounds; uniform vec4 u_effect0; uniform vec4 u_effect1; uniform vec4 u_effect2; uniform vec4 u_effect3;
-uniform vec4 u_tint; uniform float u_flash;
+uniform vec4 u_tint; uniform float u_flash; uniform float u_forceColor;
 ${kind === 'sketch' ? 'uniform float u_timeMs;' : ''}
 ${clips}
 float hashCell(vec2 cell, float salt) {
@@ -80,9 +103,9 @@ vec3 tintTo(vec3 base, float amount) {
 ${body}
 void main() {
   clipWorld();
-  float alpha = v_color.a * u_tint.a;
+  float alpha = mix(v_color.a, 1.0, u_forceColor) * u_tint.a;
   if (alpha <= 0.0001) discard;
-  vec3 base = mix(v_color.rgb * u_tint.rgb, vec3(1.0), clamp(u_flash, 0.0, 1.0));
+  vec3 base = mix(mix(v_color.rgb * u_tint.rgb, u_tint.rgb, u_forceColor), vec3(1.0), clamp(u_flash, 0.0, 1.0));
   vec3 rgb = base;
   float effect = v_surface.x;
   if (effect < 0.5) {
@@ -220,24 +243,28 @@ function validateStyle(style) {
   }
 }
 
-function normalizeOutline(outline) {
+function normalizeOutline(outline, sourceIndices) {
   if (!(outline instanceof Float32Array || Array.isArray(outline)) || outline.length < 8 || outline.length % 2) throw new TypeError('Closed SVG contour must contain at least four x/y points');
   const points = [];
   for (let i = 0; i < outline.length; i += 2) {
     const x = outline[i], y = outline[i + 1];
     if (!Number.isFinite(x) || !Number.isFinite(y)) throw new TypeError('SVG contour points must be finite');
-    if (!points.length || Math.hypot(x - points.at(-1)[0], y - points.at(-1)[1]) > 1e-6) points.push([x, y]);
+    if (!points.length || Math.hypot(x - points.at(-1)[0], y - points.at(-1)[1]) > 1e-6) { points.push([x, y]); sourceIndices?.push(i / 2); }
   }
-  if (points.length > 4 && Math.hypot(points[0][0] - points.at(-1)[0], points[0][1] - points.at(-1)[1]) < 1e-6) points.pop();
+  if (points.length > 4 && Math.hypot(points[0][0] - points.at(-1)[0], points[0][1] - points.at(-1)[1]) < 1e-6) { points.pop(); sourceIndices?.pop(); }
   if (points.length < 3) throw new TypeError('SVG contour requires at least three distinct points');
   return points;
 }
 
 function surfaceGeometry(fillVertices, outline, edgeColors, style) {
   if (!(fillVertices instanceof Float32Array) || fillVertices.length < 18 || fillVertices.length % 18) throw new TypeError('Filled surface requires complete triangles in a six-float position/color layout');
-  const points = normalizeOutline(outline);
-  if (edgeColors !== undefined && (!(edgeColors instanceof Float32Array) || edgeColors.length !== points.length * 4)) throw new TypeError('edgeColors must contain one RGBA color per contour point');
+  const sourceIndices = [], points = normalizeOutline(outline, sourceIndices);
+  if (edgeColors !== undefined && (!(edgeColors instanceof Float32Array) || (edgeColors.length !== points.length * 4 && edgeColors.length !== outline.length * 2))) throw new TypeError('edgeColors must contain one RGBA color per contour point');
   if (edgeColors && edgeColors.some(value => !Number.isFinite(value) || value < 0 || value > 1)) throw new RangeError('edgeColors must contain finite RGBA values in [0,1]');
+  if (edgeColors && edgeColors.length !== points.length * 4) {
+    const originalColors = edgeColors;
+    edgeColors = Float32Array.from(sourceIndices.flatMap(index => Array.from(originalColors.subarray(index * 4, index * 4 + 4))));
+  }
   for (let i = 0; i < fillVertices.length; i++) {
     if (!Number.isFinite(fillVertices[i])) throw new TypeError('Filled surface vertices must be finite');
     const field = i % 6;
@@ -333,6 +360,12 @@ function toMatrix3(matrix) {
   finiteArray(matrix, 6, 'transform');
   return Float32Array.of(matrix[0], matrix[1], 0, matrix[2], matrix[3], 0, matrix[4], matrix[5], 1);
 }
+function affineMatrix4(matrix, name) {
+  finiteArray(matrix, 16, name);
+  if (Math.abs(matrix[3]) > 1e-7 || Math.abs(matrix[7]) > 1e-7 || Math.abs(matrix[11]) > 1e-7 || Math.abs(matrix[15] - 1) > 1e-7) {
+    throw new TypeError(`${name} must be an affine column-major 4x4 matrix`);
+  }
+}
 
 /**
  * WebGL 1 retained yarn/sketch surface passes. Effect density is evaluated per fragment;
@@ -356,15 +389,17 @@ export class YarnSurfaceRenderer {
     device.canvas.addEventListener('webglcontextlost', this.onLost);
     device.canvas.addEventListener('webglcontextrestored', this.onRestored);
   }
-  _pipeline(kind) {
-    let pipeline = this.pipelines.get(kind);
+  _pipeline(kind, worldMode = false) {
+    const key = kind + ':' + Number(worldMode);
+    let pipeline = this.pipelines.get(key);
     if (pipeline) return pipeline;
-    const uniforms = { u_projection: 'matrix3fv', u_transform: 'matrix3fv', u_depth: '1f', u_bounds: '4f',
-      u_effect0: '4f', u_effect1: '4f', u_effect2: '4f', u_effect3: '4f', u_tint: '4f', u_flash: '1f',
+    const uniforms = { ...(worldMode ? { u_viewProjection: 'matrix4fv', u_worldMatrix: 'matrix4fv' } : { u_projection: 'matrix3fv' }),
+      u_transform: 'matrix3fv', u_depth: '1f', u_bounds: '4f',
+      u_effect0: '4f', u_effect1: '4f', u_effect2: '4f', u_effect3: '4f', u_tint: '4f', u_flash: '1f', u_forceColor: '1f',
       'u_planes[0]': '3fv', ...(kind === 'sketch' ? { u_timeMs: '1f' } : {}) };
-    pipeline = this.device.createPipeline({ vertex: VERTEX, fragment: fragment(kind, this.maxClipPlanes), stride: STRIDE_BYTES,
+    pipeline = this.device.createPipeline({ vertex: worldMode ? VERTEX_WORLD : VERTEX, fragment: fragment(kind, this.maxClipPlanes), stride: STRIDE_BYTES,
       attributes: ATTRIBUTES, uniforms });
-    this.pipelines.set(kind, pipeline);
+    this.pipelines.set(key, pipeline);
     return pipeline;
   }
   createSurface({ fillVertices, outline, edgeColors, style }) {
@@ -384,12 +419,18 @@ export class YarnSurfaceRenderer {
     this.surfaces.add(surface); this.bytes += surface.byteLength;
     return surface;
   }
-  drawSurface(surface, { projection, transform = IDENTITY, color = WHITE, alpha = 1, whiteFlash = 0, timeMs = 0,
+  drawSurface(surface, { projection, viewProjection, worldMatrix, transform = IDENTITY, color = WHITE, alpha = 1, forceColor = false, whiteFlash = 0, timeMs = 0,
     clips = [], stencilRef = null, z = 0, depth = false, blend = 'source-over' } = {}) {
     if (this.disposed || this.state !== 'ready') throw new Error(`YarnSurfaceRenderer is ${this.state}${this.failure ? ': ' + this.failure : ''}`);
     if (!this.surfaces.has(surface)) throw new TypeError('Surface must belong to this YarnSurfaceRenderer');
-    finiteArray(projection, 9, 'projection'); finiteArray(color, 4, 'color');
+    const worldMode = viewProjection !== undefined || worldMatrix !== undefined;
+    if (worldMode) {
+      if (projection !== undefined || viewProjection === undefined || worldMatrix === undefined) throw new TypeError('3D surface draws require viewProjection and worldMatrix and cannot include projection');
+      finiteArray(viewProjection, 16, 'viewProjection'); affineMatrix4(worldMatrix, 'worldMatrix');
+    } else finiteArray(projection, 9, 'projection');
+    finiteArray(color, 4, 'color');
     if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1 || color.some(value => value < 0 || value > 1)) throw new RangeError('Surface tint/alpha must be in [0,1]');
+    if (typeof forceColor !== 'boolean') throw new TypeError('forceColor must be boolean');
     if (!Number.isFinite(whiteFlash) || whiteFlash < 0 || whiteFlash > 1) throw new RangeError('whiteFlash must be in [0,1]');
     if (!Number.isFinite(timeMs)) throw new TypeError('timeMs must be finite');
     if (!Number.isFinite(z) || z < -1 || z > 1) throw new RangeError('z must be in [-1,1]');
@@ -411,11 +452,12 @@ export class YarnSurfaceRenderer {
       ? [style.fiber === false ? 0 : style.fiberMax, surface.contourLength, style.curved === false ? 0 : 1,
         style.edgeRelief * (style.detail ? 0.3 : 1)]
       : [0, style.echoY, 0, 0];
-    const uniforms = { u_projection: projection, u_transform: toMatrix3(transform), u_depth: z, u_bounds: surface.bounds,
+    const uniforms = { ...(worldMode ? { u_viewProjection: viewProjection, u_worldMatrix: worldMatrix } : { u_projection: projection }),
+      u_transform: toMatrix3(transform), u_depth: z, u_bounds: surface.bounds,
       u_effect0: effect0, u_effect1: effect1, u_effect2: effect2, u_effect3: effect3,
-      u_tint: [color[0], color[1], color[2], color[3] * alpha], u_flash: whiteFlash, 'u_planes[0]': planes,
+      u_tint: [color[0], color[1], color[2], color[3] * alpha], u_flash: whiteFlash, u_forceColor: forceColor ? 1 : 0, 'u_planes[0]': planes,
       ...(yarn ? {} : { u_timeMs: ((timeMs % style.periodMs) + style.periodMs) % style.periodMs }) };
-    const common = { pipeline: surface.pipeline, buffer: surface.buffer, uniforms, blend, depth,
+    const common = { pipeline: this._pipeline(surface.kind, worldMode), buffer: surface.buffer, uniforms, blend, depth,
       stencil: stencilRef === null ? false : { func: 'equal', ref: stencilRef, mask: 255, writeMask: 0, pass: 'keep' } };
     this.device.draw({ ...common, first: surface.fillFirst, count: surface.fillCount });
     if (surface.edgeCount) {

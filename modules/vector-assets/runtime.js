@@ -24,6 +24,39 @@ function multiply(a, b) {
   ];
 }
 
+function composeWorldMatrix(world, local) {
+  if (!world || world.length !== 16 || local.length !== 6 || Array.from(local).some(value => !Number.isFinite(value))) throw new TypeError('Six finite root matrix values required');
+  const [a, b, c, d, e, f] = local, out = Float32Array.from(world);
+  for (const value of out) if (!Number.isFinite(value)) throw new TypeError('worldMatrix must contain 16 finite values');
+  if (Math.abs(out[3]) > 1e-7 || Math.abs(out[7]) > 1e-7 || Math.abs(out[11]) > 1e-7 || Math.abs(out[15] - 1) > 1e-7) {
+    throw new TypeError('worldMatrix must be an affine column-major 4x4 matrix');
+  }
+  out[0] = world[0] * a + world[4] * b; out[1] = world[1] * a + world[5] * b; out[2] = world[2] * a + world[6] * b; out[3] = world[3] * a + world[7] * b;
+  out[4] = world[0] * c + world[4] * d; out[5] = world[1] * c + world[5] * d; out[6] = world[2] * c + world[6] * d; out[7] = world[3] * c + world[7] * d;
+  out[12] = world[0] * e + world[4] * f + world[12]; out[13] = world[1] * e + world[5] * f + world[13];
+  out[14] = world[2] * e + world[6] * f + world[14]; out[15] = world[3] * e + world[7] * f + world[15];
+  return out;
+}
+
+function validateShaderSurfaceClipCapacity(clips, maxPlanes) {
+  if (!clips?.length) return;
+  if (!Array.isArray(clips)) throw new TypeError('clips must be an array of convex polygons');
+  let edgeCount = 0;
+  for (const polygon of clips) {
+    if (!Array.isArray(polygon) || polygon.length < 3 || polygon.some(point => !Number.isFinite(point?.x) || !Number.isFinite(point?.y))) {
+      throw new TypeError('Finite convex clip polygons required');
+    }
+    let area = 0;
+    for (let i = 0; i < polygon.length; i++) {
+      const a = polygon[i], b = polygon[(i + 1) % polygon.length];
+      area += a.x * b.y - b.x * a.y;
+      if (Math.hypot(b.x - a.x, b.y - a.y) > 0) edgeCount++;
+    }
+    if (Math.abs(area) < 1e-8) throw new RangeError('A clip polygon must have nonzero area');
+    if (edgeCount > maxPlanes) throw new RangeError(`Vector asset clipping exceeds the shader surface limit of ${maxPlanes} edge planes`);
+  }
+}
+
 function transformPoint(matrix, point) {
   return { x: matrix[0] * point[0] + matrix[2] * point[1] + matrix[4], y: matrix[1] * point[0] + matrix[3] * point[1] + matrix[5] };
 }
@@ -82,13 +115,25 @@ function blendPoses(from, to, amount, partIds) {
 }
 
 /** Owns one retained GPU mesh; its players own only independent pose/timeline state. */
-export function createVectorAsset(meshRenderer, compiledAsset) {
+export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null } = {}) {
   if (!meshRenderer?.createMesh || !meshRenderer?.drawMesh || !meshRenderer?.deleteMesh) throw new TypeError('A GameKit MeshRenderer is required');
   validateCompiledAsset(compiledAsset);
   const metadata = compiledAsset.metadata;
   const partIndices = new Map(metadata.parts.map((part, index) => [part.id, index]));
   const clips = metadata.clips;
-  const mesh = meshRenderer.createMesh(compiledAsset.geometry);
+  const geometry = compiledAsset.geometry, shaderGeometry = geometry.shaderSurfaces ?? [];
+  if (shaderGeometry.length && (!surfaceRenderer?.createSurface || !surfaceRenderer?.drawSurface || !surfaceRenderer?.deleteSurface)) {
+    throw new TypeError('This SVG declares backend:"shader"; pass a GameKit YarnSurfaceRenderer when creating the vector asset');
+  }
+  const mesh = geometry.vertices.length ? meshRenderer.createMesh(geometry) : null;
+  const retainedSurfaces = [];
+  try {
+    for (const descriptor of shaderGeometry) retainedSurfaces.push(surfaceRenderer.createSurface(descriptor));
+  } catch (error) {
+    for (const surface of retainedSurfaces) surfaceRenderer.deleteSurface(surface);
+    if (mesh) meshRenderer.deleteMesh(mesh);
+    throw error;
+  }
   const players = new Set();
   let disposed = false;
 
@@ -214,13 +259,39 @@ export function createVectorAsset(meshRenderer, compiledAsset) {
       });
       return output;
     };
-    const draw = ({ projection, matrix = IDENTITY, alpha = 1, color = [1, 1, 1, 1], forceColor = false,
-      depth = 0, depthTest = false, depthWrite = false, depthFunc = 'lequal', strokeViewport = null } = {}) => {
+    const draw = ({ projection, viewProjection, worldMatrix, matrix = IDENTITY, alpha = 1, color = [1, 1, 1, 1], forceColor = false, whiteFlash = false,
+      clips = [], stencilRef = null, depth = 0, depthTest = false, depthWrite = false, depthFunc = 'lequal', strokeViewport = null } = {}) => {
       assertPlayer();
-      const poses = partPoses().map(({ transform, opacity, visible: isVisible }) => ({ transform, opacity, visible: isVisible }));
+      if (geometry.shaderSurfaces?.length) validateShaderSurfaceClipCapacity(clips, surfaceRenderer.maxClipPlanes);
+      const fullPartPoses = partPoses();
+      const poses = fullPartPoses.map(({ transform, opacity, visible: isVisible }) => ({ transform, opacity, visible: isVisible }));
+      if (geometry.drawOrder) {
+        const worldMode = viewProjection !== undefined || worldMatrix !== undefined;
+        for (const command of geometry.drawOrder) {
+          if (command.kind === 'mesh') {
+            if (!poses[command.partIndex].visible || poses[command.partIndex].opacity <= 0) continue;
+            if (!mesh) throw new Error('SVG draw order references mesh geometry that was not retained');
+            meshRenderer.drawMesh(mesh, { ...(worldMode ? { viewProjection, worldMatrix } : { projection }), matrix,
+              parts: poses, morph: authoredMorph(metadata, displayTimeMs), alpha, color, forceColor, whiteFlash,
+              clips, stencilRef, depth, depthTest, depthWrite, depthFunc, strokeViewport,
+              indexRange: [command.firstIndex, command.indexCount] });
+            continue;
+          }
+          const surface = retainedSurfaces[command.surfaceIndex], pose = fullPartPoses[geometry.shaderSurfaces[command.surfaceIndex].partIndex];
+          if (!pose.visible || pose.opacity <= 0) continue;
+          meshRenderer.flush('vectorShaderSurfaceBoundary');
+          const materialTransform = worldMode ? pose.transform : multiply(matrix, pose.transform);
+          const shaderDepth = depthTest || depthWrite ? { test: depthTest, write: depthWrite, func: depthFunc } : false;
+          surfaceRenderer.drawSurface(surface, { ...(worldMode ? { viewProjection, worldMatrix: composeWorldMatrix(worldMatrix, matrix) } : { projection }),
+            transform: materialTransform, color, alpha: alpha * pose.opacity, forceColor, whiteFlash: whiteFlash ? 1 : 0,
+            timeMs: displayTimeMs, clips, stencilRef, z: depth, depth: shaderDepth });
+        }
+        return;
+      }
       const indexVariant = !visibilityOverridden && compiledAsset.geometry.expressionIndices?.[expression] ? expression : null;
-      meshRenderer.drawMesh(mesh, { projection, matrix, parts: poses, morph: authoredMorph(metadata, displayTimeMs), alpha, color, forceColor,
-        depth, depthTest, depthWrite, depthFunc, indexVariant, strokeViewport });
+      const worldMode = viewProjection !== undefined || worldMatrix !== undefined;
+      meshRenderer.drawMesh(mesh, { ...(worldMode ? { viewProjection, worldMatrix } : { projection }), matrix, parts: poses, morph: authoredMorph(metadata, displayTimeMs), alpha, color, forceColor,
+        whiteFlash, clips, stencilRef, depth, depthTest, depthWrite, depthFunc, indexVariant, strokeViewport });
     };
     const getPartPose = id => {
       assertPlayer();
@@ -250,14 +321,15 @@ export function createVectorAsset(meshRenderer, compiledAsset) {
   const dispose = () => {
     if (disposed) return false;
     for (const player of [...players]) player.dispose();
-    meshRenderer.deleteMesh(mesh);
+    if (mesh) meshRenderer.deleteMesh(mesh);
+    for (const surface of retainedSurfaces) surfaceRenderer.deleteSurface(surface);
     disposed = true;
     return true;
   };
   return Object.freeze({
     id: metadata.id, sourceSha256: compiledAsset.sourceSha256, schemaVersion: compiledAsset.schemaVersion,
     compilerVersion: compiledAsset.compilerVersion, viewBox: Object.freeze([...compiledAsset.viewBox]),
-    metadata, mesh, createPlayer, dispose,
+    metadata, mesh, surfaces: Object.freeze(retainedSurfaces), createPlayer, dispose,
     get disposed() { return disposed; },
     get playerCount() { return players.size; },
   });
