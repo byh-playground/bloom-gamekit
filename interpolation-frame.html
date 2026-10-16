@@ -825,6 +825,7 @@
   var EMPTY_CLIP = Object.freeze({ key: "", values: null, count: 0 });
   var WHITE2 = Object.freeze([1, 1, 1, 1]);
   var INSTANCE_ATTRIBUTES = ["i_row0", "i_row1", "i_color", "i_params"].map((name, i) => ({ name, size: 4, offset: i * 16, source: "instance" }));
+  var WORLD_INSTANCE_ATTRIBUTES = ["i_row0", "i_row1", "i_row2", "i_params"].map((name, i) => ({ name, size: 4, offset: i * 16, source: "instance" }));
   var TAU2 = Math.PI * 2;
   var SILHOUETTE_OFFSETS = Object.freeze(Array.from({ length: 8 }, (_, i) => Object.freeze([Math.cos(i * TAU2 / 8), Math.sin(i * TAU2 / 8)])));
   var IDENTITY3 = Object.freeze([1, 0, 0, 1, 0, 0]);
