@@ -1,6 +1,6 @@
 export const VECTOR_ASSET_SCHEMA_VERSION = 1;
-export const VECTOR_ASSET_COMPILER_VERSION = '0.6.0';
-const ACCEPTED_COMPILER_VERSIONS = new Set(['0.2.0', '0.3.0', '0.4.0', '0.5.0', VECTOR_ASSET_COMPILER_VERSION]);
+export const VECTOR_ASSET_COMPILER_VERSION = '0.7.0';
+const ACCEPTED_COMPILER_VERSIONS = new Set(['0.2.0', '0.3.0', '0.4.0', '0.5.0', '0.6.0', VECTOR_ASSET_COMPILER_VERSION]);
 export const NUMERIC_POSE_FIELDS = Object.freeze(['x', 'y', 'rotation', 'scaleX', 'scaleY', 'opacity']);
 const EASINGS = new Set(['linear', 'inSine', 'outSine', 'inOutSine', 'inQuad', 'outQuad', 'inOutQuad', 'inCubic', 'outCubic', 'inOutCubic']);
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -138,6 +138,8 @@ export function validateCompiledAsset(asset) {
       || !isObject(asset.metadata) || !isObject(asset.geometry)
       || !(asset.geometry.vertices instanceof Float32Array) || asset.geometry.vertices.length < 33
       || asset.geometry.vertices.length % 11 || asset.geometry.strideFloats !== 11
+      || (asset.geometry.nonScalingStroke !== undefined && typeof asset.geometry.nonScalingStroke !== 'boolean')
+      || (asset.geometry.nonScalingStroke && asset.geometry.morphCount !== 0)
       || asset.geometry.partCount !== asset.metadata.parts?.length || ![0, 2].includes(asset.geometry.morphCount)) {
     throw new TypeError('Invalid compiled SVG vector asset');
   }

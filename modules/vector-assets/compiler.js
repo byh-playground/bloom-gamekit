@@ -14,7 +14,7 @@ const ATTRIBUTES = new Set([
   'id', 'xmlns', 'width', 'height', 'viewBox', 'version', 'transform',
   'd', 'x', 'y', 'width', 'height', 'cx', 'cy', 'r', 'rx', 'ry', 'x1', 'y1', 'x2', 'y2', 'points',
   'fill', 'fill-opacity', 'fill-rule', 'stroke', 'stroke-opacity', 'stroke-width',
-  'stroke-linecap', 'stroke-linejoin', 'stroke-miterlimit', 'opacity',
+  'stroke-linecap', 'stroke-linejoin', 'stroke-miterlimit', 'vector-effect', 'opacity',
 ]);
 const GRADIENT_ATTRIBUTES = new Set(['id', 'gradientUnits', 'spreadMethod', 'x1', 'y1', 'x2', 'y2']);
 const STOP_ATTRIBUTES = new Set(['id', 'offset', 'stop-color', 'stop-opacity']);
@@ -134,6 +134,10 @@ function collectIds(root) {
         if (!allowedAttributes.has(key) || /^on/i.test(key)
             || (/url\s*\(/i.test(value) && !gradientPaint) || /(?:https?:|data:|file:|\/\/)/i.test(value)) {
           throw new TypeError('Unsupported SVG attribute or external reference: ' + key);
+        }
+        if (key === 'vector-effect') {
+          if (!['none', 'non-scaling-stroke'].includes(value)) throw new TypeError('Unsupported SVG vector-effect: ' + value);
+          if (name !== 'line') throw new TypeError('Non-scaling strokes currently support only <line> elements');
         }
         if (key === 'id') {
           if (!value || ids.has(value)) throw new TypeError('SVG ids must be nonempty and unique: ' + value);
@@ -824,8 +828,34 @@ function colorFromComponents(rgba) {
   return new Color().setRGB(rgba[0], rgba[1], rgba[2], SRGBColorSpace);
 }
 
+function appendNonScalingLine(vertices, start, end, rgba, partIndex, width, lineCap) {
+  if (!['butt', 'square', 'round'].includes(lineCap)) throw new TypeError('Unsupported non-scaling stroke linecap: ' + lineCap);
+  const dx=end.x-start.x, dy=end.y-start.y;
+  const length=Math.hypot(dx,dy);
+  if (length<1e-9) throw new TypeError('Zero-length non-scaling <line> elements are not supported');
+  const tangentX=dx/length,tangentY=dy/length,half=width*0.5;
+  const push = (along, radialAlong, radialSide) => {
+    const point = along===0 ? start : end;
+    vertices.push(point.x,point.y,...rgba,tangentX,tangentY,radialAlong*half,radialSide*half,partIndex);
+  };
+  const triangle = (a,b,c) => { for (const v of [a,b,c]) push(...v); };
+  const startExtension=lineCap==='square'?-1:0, endExtension=lineCap==='square'?1:0;
+  triangle([0,startExtension,1],[1,endExtension,1],[1,endExtension,-1]);
+  triangle([0,startExtension,1],[1,endExtension,-1],[0,startExtension,-1]);
+  if (lineCap==='round') {
+    const segments=12;
+    for (const [along,firstAngle] of [[0,Math.PI/2],[1,-Math.PI/2]]) {
+      for (let i=0;i<segments;i++) {
+        const a=firstAngle+i*Math.PI/segments, b=firstAngle+(i+1)*Math.PI/segments;
+        triangle([along,0,0],[along,Math.cos(a),Math.sin(a)],[along,Math.cos(b),Math.sin(b)]);
+      }
+    }
+  }
+}
+
 function compilePaths(paths, partIndices, parts, metadata, gradients, curveSegments) {
   const vertices = [];
+  let hasNonScalingStroke=false;
   const styled = new Map((metadata.styles ?? []).map(style => [style.target, style]));
   const morphCount = metadata.styles?.some(style => style.kind === 'sketch') ? 2 : 0;
   for (const path of paths) {
@@ -865,6 +895,15 @@ function compilePaths(paths, partIndices, parts, metadata, gradients, curveSegme
       const opacity = (style.strokeOpacity ?? 1) * overallOpacity;
       if (opacity > 0) {
         const rgba = colorComponents(new Color().setStyle(style.stroke, SRGBColorSpace), opacity);
+        const vectorEffect=sourceNode.getAttribute('vector-effect') || 'none';
+        if (vectorEffect==='non-scaling-stroke') {
+          if (morphCount) throw new TypeError('Non-scaling strokes cannot be combined with vertex morph targets');
+          if (sourceNode.nodeName!=='line' || path.subPaths.length!==1) throw new TypeError('Non-scaling strokes currently support one straight <line> per shape');
+          const points=path.subPaths[0].getPoints(1);
+          if (points.length!==2) throw new TypeError('Non-scaling strokes currently support straight <line> geometry only');
+          appendNonScalingLine(vertices,points[0],points[1],rgba,partIndex,style.strokeWidth,style.strokeLineCap ?? 'butt');
+          hasNonScalingStroke=true;
+        } else {
         const stroke = SVGLoader.getStrokeStyle(style.strokeWidth, style.stroke, style.strokeLineJoin, style.strokeLineCap, style.strokeMiterLimit);
         for (const subPath of path.subPaths) {
           const geometry = SVGLoader.pointsToStroke(subPath.getPoints(curveSegments), stroke, 12, 0.001);
@@ -873,25 +912,28 @@ function compilePaths(paths, partIndices, parts, metadata, gradients, curveSegme
             geometry.dispose();
           }
         }
+        }
       }
     }
   }
   if (!vertices.length || vertices.length % 33) throw new TypeError('SVG did not produce complete painted triangles');
   const expanded = new Float32Array(vertices);
+  const strideFloats=11;
   const uniqueVertices = [], indices = [], vertexIds = new Map();
   const words = new Uint32Array(expanded.buffer, expanded.byteOffset, expanded.length);
-  for (let offset = 0; offset < expanded.length; offset += 11) {
-    const key = words.subarray(offset, offset + 11).join(',');
+  for (let offset = 0; offset < expanded.length; offset += strideFloats) {
+    const key = words.subarray(offset, offset + strideFloats).join(',');
     let index = vertexIds.get(key);
     if (index === undefined) {
-      index = uniqueVertices.length / 11;
+      index = uniqueVertices.length / strideFloats;
       if (index > 0xffff) throw new RangeError('SVG needs more than 65,536 distinct vertices; split the authored asset into bounded meshes');
       vertexIds.set(key, index);
-      for (let field = 0; field < 11; field++) uniqueVertices.push(expanded[offset + field]);
+      for (let field = 0; field < strideFloats; field++) uniqueVertices.push(expanded[offset + field]);
     }
     indices.push(index);
   }
-  return { vertices: new Float32Array(uniqueVertices), indices: new Uint16Array(indices), morphCount };
+  return { vertices: new Float32Array(uniqueVertices), indices: new Uint16Array(indices), morphCount, strideFloats,
+    ...(hasNonScalingStroke ? { nonScalingStroke: true } : {}) };
 }
 
 function compileExpressionIndices(geometry, metadata) {
@@ -1046,7 +1088,7 @@ export function compileVectorAsset(svgBytes, sourcePath = 'asset.svg', options =
     metadata,
     viewBox,
     sourcePaths,
-    geometry: { ...geometry, strideFloats: 11, partCount: metadata.parts.length },
+    geometry: { ...geometry, partCount: metadata.parts.length },
   };
 }
 

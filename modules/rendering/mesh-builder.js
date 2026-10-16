@@ -42,6 +42,7 @@ export class MeshBuilder {
     if (!Array.isArray(geometries) || !geometries.length ||
       geometries.some(geometry => !Number.isSafeInteger(geometry?.partCount) || geometry.partCount < 1 ||
         geometry.strideFloats !== 11 || !(geometry.vertices instanceof Float32Array) || geometry.vertices.length < 33 || geometry.vertices.length % 11 ||
+        (geometry.nonScalingStroke !== undefined && typeof geometry.nonScalingStroke !== 'boolean') || (geometry.nonScalingStroke && geometry.morphCount !== 0) ||
         (geometry.indices !== undefined && (!(geometry.indices instanceof Uint16Array) || geometry.indices.length < 3 || geometry.indices.length % 3 ||
           geometry.vertices.length / 11 > 0x10000 || geometry.indices.some(index => index >= geometry.vertices.length / 11))) ||
         (geometry.indices === undefined && geometry.vertices.length % 33) ||
@@ -59,6 +60,8 @@ export class MeshBuilder {
     const vertices = new Float32Array(vertexCount * 11), indices = new Uint16Array(indexCount);
     const partCount = geometries.reduce((count, geometry) => count + geometry.partCount, 0);
     const morphCount = Math.max(...geometries.map(geometry => geometry.morphCount));
+    const nonScalingStroke = geometries.some(geometry => geometry.nonScalingStroke === true);
+    if (nonScalingStroke && morphCount) throw new TypeError('Non-scaling strokes cannot be combined with vertex morph targets');
     let offset = 0;
     let partOffset = 0;
     let indexOffset = 0;
@@ -76,6 +79,6 @@ export class MeshBuilder {
       offset += vertexLength;
       partOffset += geometry.partCount;
     }
-    return Object.freeze({ vertices, indices, count: indices.length, strideFloats: 11, partCount, morphCount });
+    return Object.freeze({ vertices, indices, count: indices.length, strideFloats: 11, partCount, morphCount, ...(nonScalingStroke ? { nonScalingStroke: true } : {}) });
   }
 }

@@ -215,12 +215,12 @@ export function createVectorAsset(meshRenderer, compiledAsset) {
       return output;
     };
     const draw = ({ projection, matrix = IDENTITY, alpha = 1, color = [1, 1, 1, 1], forceColor = false,
-      depth = 0, depthTest = false, depthWrite = false, depthFunc = 'lequal' } = {}) => {
+      depth = 0, depthTest = false, depthWrite = false, depthFunc = 'lequal', strokeViewport = null } = {}) => {
       assertPlayer();
       const poses = partPoses().map(({ transform, opacity, visible: isVisible }) => ({ transform, opacity, visible: isVisible }));
       const indexVariant = !visibilityOverridden && compiledAsset.geometry.expressionIndices?.[expression] ? expression : null;
       meshRenderer.drawMesh(mesh, { projection, matrix, parts: poses, morph: authoredMorph(metadata, displayTimeMs), alpha, color, forceColor,
-        depth, depthTest, depthWrite, depthFunc, indexVariant });
+        depth, depthTest, depthWrite, depthFunc, indexVariant, strokeViewport });
     };
     const getPartPose = id => {
       assertPlayer();

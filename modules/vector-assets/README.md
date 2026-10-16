@@ -22,6 +22,18 @@ The production entry exports only the generic `createVectorAsset(meshRenderer, c
 
 The browser runtime uses the existing `MeshRenderer.createMesh` / `drawMesh` / part pose API. `createVectorAsset(meshRenderer, compiledAsset)` owns one retained GPU mesh and `asset.createPlayer()` creates independent clip state. The resource owns its vertex and index buffers; callers own `MeshRenderer` and `WebGLDevice`. Disposing the asset disposes its players and both buffers but leaves the renderer and device alive.
 
+`vector-effect="non-scaling-stroke"` is supported for a single straight SVG `<line>` with a visible solid stroke and `stroke-linecap="butt"`, `"square"`, or `"round"`. The numeric `stroke-width` is interpreted as CSS pixels. SVG paths, polylines, polygons, zero-length lines, unknown `vector-effect` values, and assets with vertex morph targets fail compilation; they never fall back to the ordinary scaling stroke. A single line has no join, so join and miter behavior do not apply to this supported shape. This scope keeps the authored line centerline and its cap triangles in the same static 11-float mesh; the vertex shader expands those triangles after part, object, and camera transforms. It does not tessellate or upload geometry per frame. Rotation and non-uniform scale affect the line direction but not its CSS-pixel width.
+
+On the default framebuffer the renderer takes the logical viewport from `canvas.clientWidth` and `clientHeight`, so device-pixel ratio does not change stroke width. When drawing to a render target, pass `strokeViewport: [logicalCssWidth, logicalCssHeight]` to `MeshRenderer.drawMesh()` or the vector player's `draw()` call; the host must provide the CSS-sized viewport represented by the offscreen image. Omitting it on an active render target throws. The ordinary alpha, painter order, depth, clipping, retained-buffer restore, and disposal paths remain in use; clipping evaluates the expanded screen-space edge after converting it back through the projection.
+
+```svg
+<line x1="20" y1="50" x2="80" y2="50" fill="none"
+      stroke="#ffffff" stroke-width="1.5" stroke-linecap="round"
+      vector-effect="non-scaling-stroke" />
+```
+
+The compiler/render regression fixture is `tests/non-scaling-stroke.svg`. The browser test measures actual WebGL pixels at multiple CSS viewport sizes, DPRs, camera zoom, and an animated part transform. SVG 2 defines this effect in host/viewport coordinates; Chromium's SVG painter likewise resets to the host transform before painting the stroke ([SVG 2](https://www.w3.org/TR/SVG2/painting.html#VectorEffectProperty), [Chromium `SVGShapePainter`](https://chromium.googlesource.com/chromium/src/+/main/third_party/blink/renderer/core/paint/svg_shape_painter.cc)).
+
 Animation data is evaluated by a paused Anime.js v4.5.0 timeline over plain objects. `player.seek(displayTimeMs)` samples a caller-provided display timestamp; no module animation loop, event callback, or game command runs. Snapshot position interpolation remains the host's responsibility. `transitionTo` preserves deterministic time seeks by blending the previous and next clip trees at that same timestamp. Use existing presentation-events/audio APIs for one-shot presentation effects.
 
 ```js
