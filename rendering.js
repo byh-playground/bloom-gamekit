@@ -1358,6 +1358,7 @@ var MeshRenderer = class {
           device.uploadVertices(mesh.buffer, mesh.vertices);
           if (mesh.indices) device.uploadIndices(mesh.indexBuffer, mesh.indices);
           for (const variant of mesh.expressionIndices.values()) if (variant.indices.length) device.uploadIndices(variant.indexBuffer, variant.indices);
+          for (const variant of mesh.indexVariants.values()) if (variant.indices.length) device.uploadIndices(variant.indexBuffer, variant.indices);
         }
         this.state = "ready";
         this.failure = null;
@@ -1399,10 +1400,14 @@ var MeshRenderer = class {
     this._ready();
     const indices = data?.indices;
     const expressionIndices = data?.expressionIndices === void 0 ? {} : data.expressionIndices;
+    const indexVariants = data?.indexVariants === void 0 ? {} : data.indexVariants;
     const nonScalingStroke = data?.nonScalingStroke ?? false;
-    if (!(data?.vertices instanceof Float32Array) || data.vertices.length < 33 || data.vertices.length % 11 || data.strideFloats !== 11 || typeof nonScalingStroke !== "boolean" || !Number.isSafeInteger(data.partCount) || data.partCount < 1 || data.partCount > 16 || !Number.isSafeInteger(data.morphCount) || data.morphCount < 0 || data.morphCount > 2 || indices !== void 0 && (!(indices instanceof Uint16Array) || indices.length < 3 || indices.length % 3 || data.vertices.length / 11 > 65536 || indices.some((index) => index >= data.vertices.length / 11)) || indices === void 0 && data.vertices.length % 33 || !expressionIndices || typeof expressionIndices !== "object" || Array.isArray(expressionIndices)) throw new TypeError("Mesh geometry with complete triangles and 1..16 parts required");
-    const variantEntries = Object.entries(expressionIndices);
-    if (variantEntries.some(([name, variant]) => !name || !(variant instanceof Uint16Array) || variant.length % 3 || variant.some((index) => index >= data.vertices.length / 11))) throw new TypeError("Invalid expression index variants");
+    if (!(data?.vertices instanceof Float32Array) || data.vertices.length < 33 || data.vertices.length % 11 || data.strideFloats !== 11 || typeof nonScalingStroke !== "boolean" || !Number.isSafeInteger(data.partCount) || data.partCount < 1 || data.partCount > 16 || !Number.isSafeInteger(data.morphCount) || data.morphCount < 0 || data.morphCount > 2 || indices !== void 0 && (!(indices instanceof Uint16Array) || indices.length < 3 || indices.length % 3 || data.vertices.length / 11 > 65536 || indices.some((index) => index >= data.vertices.length / 11)) || indices === void 0 && data.vertices.length % 33 || !expressionIndices || typeof expressionIndices !== "object" || Array.isArray(expressionIndices) || !indexVariants || typeof indexVariants !== "object" || Array.isArray(indexVariants)) throw new TypeError("Mesh geometry with complete triangles and 1..16 parts required");
+    const expressionEntries = Object.entries(expressionIndices), indexVariantEntries = Object.entries(indexVariants);
+    const variantNames = new Set(expressionEntries.map(([name]) => name));
+    if (expressionEntries.some(([name, variant]) => !name || !(variant instanceof Uint16Array) || variant.length % 3 || variant.some((index) => index >= data.vertices.length / 11)) || indexVariantEntries.some(([name, variant]) => !/^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/.test(name) || variantNames.has(name) || !(variant instanceof Uint16Array) || variant.length % 3 || variant.some((index) => index >= data.vertices.length / 11))) {
+      throw new TypeError("Invalid named mesh index variants or expression index variants");
+    }
     if (data.vertices.some((n) => !Number.isFinite(n))) throw new TypeError("Mesh values must be finite");
     for (let i = 0; i < data.vertices.length; i++) {
       if (i % 11 >= 2 && i % 11 < 6 && (data.vertices[i] < 0 || data.vertices[i] > 1)) throw new RangeError("Mesh RGBA channels must be in [0,1]");
@@ -1410,19 +1415,26 @@ var MeshRenderer = class {
       if (i % 11 >= 6 + data.morphCount * 2 && i % 11 < 10 && data.vertices[i] !== 0 && !nonScalingStroke) throw new RangeError("Mesh deltas exceed declared morphCount");
     }
     if (nonScalingStroke && data.morphCount) throw new TypeError("Non-scaling stroke meshes cannot use vertex morph targets");
-    const variantByteLength = variantEntries.reduce((total, [, variant]) => total + variant.byteLength, 0);
+    const variantByteLength = [...expressionEntries, ...indexVariantEntries].reduce((total, [, variant]) => total + variant.byteLength, 0);
     const byteLength = data.vertices.byteLength + (indices?.byteLength ?? 0) + variantByteLength;
     if (this.meshes.size >= this.maxMeshes || this.bytes + byteLength > this.maxMeshBytes) throw new RangeError("Retained mesh budget exceeded");
     const vertices = data.vertices.slice(), ownedIndices = indices?.slice(), buffer = this.device.createVertexBuffer({ capacityBytes: vertices.byteLength });
     let indexBuffer;
-    const ownedVariants = /* @__PURE__ */ new Map();
+    const ownedExpressions = /* @__PURE__ */ new Map(), ownedVariants = /* @__PURE__ */ new Map();
     try {
       this.device.uploadVertices(buffer, vertices);
       if (ownedIndices) {
         indexBuffer = this.device.createIndexBuffer({ capacityBytes: ownedIndices.byteLength });
         this.device.uploadIndices(indexBuffer, ownedIndices);
       }
-      for (const [name, source] of variantEntries) {
+      for (const [name, source] of expressionEntries) {
+        const variantIndices = source.slice();
+        const variantBuffer = variantIndices.length ? this.device.createIndexBuffer({ capacityBytes: variantIndices.byteLength }) : null;
+        const variant = { indices: variantIndices, indexBuffer: variantBuffer, count: variantIndices.length };
+        ownedExpressions.set(name, variant);
+        if (variantBuffer) this.device.uploadIndices(variantBuffer, variantIndices);
+      }
+      for (const [name, source] of indexVariantEntries) {
         const variantIndices = source.slice();
         const variantBuffer = variantIndices.length ? this.device.createIndexBuffer({ capacityBytes: variantIndices.byteLength }) : null;
         const variant = { indices: variantIndices, indexBuffer: variantBuffer, count: variantIndices.length };
@@ -1430,6 +1442,7 @@ var MeshRenderer = class {
         if (variantBuffer) this.device.uploadIndices(variantBuffer, variantIndices);
       }
     } catch (error) {
+      for (const variant of ownedExpressions.values()) if (variant.indexBuffer) this.device.deleteIndexBuffer(variant.indexBuffer);
       for (const variant of ownedVariants.values()) if (variant.indexBuffer) this.device.deleteIndexBuffer(variant.indexBuffer);
       if (indexBuffer) this.device.deleteIndexBuffer(indexBuffer);
       this.device.deleteVertexBuffer(buffer);
@@ -1441,7 +1454,8 @@ var MeshRenderer = class {
       indexBuffer,
       vertices,
       indices: ownedIndices,
-      expressionIndices: ownedVariants,
+      expressionIndices: ownedExpressions,
+      indexVariants: ownedVariants,
       count: ownedIndices?.length ?? vertices.length / 11,
       byteLength,
       partCount: data.partCount,
@@ -1462,6 +1476,7 @@ var MeshRenderer = class {
     this.device.deleteVertexBuffer(mesh.buffer);
     if (mesh.indexBuffer) this.device.deleteIndexBuffer(mesh.indexBuffer);
     for (const variant of mesh.expressionIndices.values()) if (variant.indexBuffer) this.device.deleteIndexBuffer(variant.indexBuffer);
+    for (const variant of mesh.indexVariants.values()) if (variant.indexBuffer) this.device.deleteIndexBuffer(variant.indexBuffer);
     this.meshes.delete(mesh);
     this.bytes -= mesh.byteLength;
     return true;
@@ -1531,7 +1546,9 @@ var MeshRenderer = class {
   } = {}) {
     this._ready();
     if (!this.meshes.has(mesh)) throw new TypeError("Mesh owned by this renderer required");
-    if (indexVariant !== null && (typeof indexVariant !== "string" || !mesh.expressionIndices.has(indexVariant))) throw new TypeError("Known mesh expression index variant required");
+    if (indexVariant !== null && (typeof indexVariant !== "string" || !mesh.expressionIndices.has(indexVariant) && !mesh.indexVariants.has(indexVariant))) {
+      throw new TypeError("Known mesh index variant required");
+    }
     if (!this.device.active) throw new Error("beginFrame required");
     if (!Number.isSafeInteger(count) || count < 1 || !matrices || matrices.length !== count * 6) throw new TypeError("Packed mesh instance matrices required");
     for (let i = 0; i < matrices.length; i++) if (!Number.isFinite(matrices[i])) throw new TypeError("Mesh matrix values must be finite");
@@ -1564,7 +1581,7 @@ var MeshRenderer = class {
       if (prefixColor.some((n) => n < 0 || n > 1)) throw new RangeError("RGBA channels must be in [0,1]");
     }
     const clip = clipState(clips, this.maxPlanes), pending = this.pending;
-    const variant = indexVariant === null ? null : mesh.expressionIndices.get(indexVariant);
+    const variant = indexVariant === null ? null : mesh.indexVariants.get(indexVariant) ?? mesh.expressionIndices.get(indexVariant);
     packParts(parts, mesh.partCount, this.partScratch);
     for (let i = 0; i < mesh.partCount; i++) if (depth + this.partScratch[i * 12 + 11] < -1 || depth + this.partScratch[i * 12 + 11] > 1) throw new RangeError("combined mesh and part depth must be in [-1,1]");
     const depthStateKey = Number(depthTest) + ":" + Number(depthWrite) + ":" + depthFunc;
@@ -1818,7 +1835,7 @@ var MeshRenderer = class {
     if (!this.count) return;
     this._ready();
     const { mesh, projection, clip, parts, depthState, indexVariant, strokeSize, inverseStrokeProjection } = this.pending;
-    const variant = indexVariant === null ? null : mesh.expressionIndices.get(indexVariant);
+    const variant = indexVariant === null ? null : mesh.indexVariants.get(indexVariant) ?? mesh.expressionIndices.get(indexVariant);
     this.planes.fill(0);
     if (clip.values) this.planes.set(clip.values);
     const pipeline = this._pipeline(mesh, clip.count > 0), uniforms = { u_projection: projection };
@@ -1865,6 +1882,7 @@ var MeshRenderer = class {
       this.device.deleteVertexBuffer(mesh.buffer);
       if (mesh.indexBuffer) this.device.deleteIndexBuffer(mesh.indexBuffer);
       for (const variant of mesh.expressionIndices.values()) if (variant.indexBuffer) this.device.deleteIndexBuffer(variant.indexBuffer);
+      for (const variant of mesh.indexVariants.values()) if (variant.indexBuffer) this.device.deleteIndexBuffer(variant.indexBuffer);
     }
     this.meshes.clear();
     this.bytes = 0;
@@ -2727,6 +2745,9 @@ var PrimitivePainter = class {
 var PRIMITIVE_DIRECTIONS = /* @__PURE__ */ new Map();
 
 // modules/rendering/mesh-builder.js
+var INDEX_NAME = /^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/;
+var isIndexMap = (map, vertexCount) => map !== null && typeof map === "object" && !Array.isArray(map) && Object.entries(map).every(([name, indices]) => INDEX_NAME.test(name) && indices instanceof Uint16Array && indices.length % 3 === 0 && indices.every((index) => index < vertexCount));
+var baseIndices = (geometry) => geometry.indices ?? Uint16Array.from({ length: geometry.vertices.length / 11 }, (_, index) => index);
 var MeshBuilder = class _MeshBuilder {
   constructor({ maxVertices = 262144 } = {}) {
     if (!Number.isSafeInteger(maxVertices) || maxVertices < 3) throw new RangeError("maxVertices must be >= 3");
@@ -2765,8 +2786,8 @@ var MeshBuilder = class _MeshBuilder {
   }
   /** Packs compatible authored geometries into one painter-ordered mesh without sorting. */
   static combine(geometries) {
-    if (!Array.isArray(geometries) || !geometries.length || geometries.some((geometry) => !Number.isSafeInteger(geometry?.partCount) || geometry.partCount < 1 || geometry.strideFloats !== 11 || !(geometry.vertices instanceof Float32Array) || geometry.vertices.length < 33 || geometry.vertices.length % 11 || geometry.nonScalingStroke !== void 0 && typeof geometry.nonScalingStroke !== "boolean" || geometry.nonScalingStroke && geometry.morphCount !== 0 || geometry.indices !== void 0 && (!(geometry.indices instanceof Uint16Array) || geometry.indices.length < 3 || geometry.indices.length % 3 || geometry.vertices.length / 11 > 65536 || geometry.indices.some((index) => index >= geometry.vertices.length / 11)) || geometry.indices === void 0 && geometry.vertices.length % 33 || !Number.isSafeInteger(geometry.morphCount) || geometry.morphCount < 0 || geometry.morphCount > 2) || geometries.reduce((count, geometry) => count + geometry.partCount, 0) > 16) {
-      throw new TypeError("MeshBuilder geometries must fit within 16 parts and use the 11-float schema");
+    if (!Array.isArray(geometries) || !geometries.length || geometries.some((geometry) => !Number.isSafeInteger(geometry?.partCount) || geometry.partCount < 1 || geometry.strideFloats !== 11 || !(geometry.vertices instanceof Float32Array) || geometry.vertices.length < 33 || geometry.vertices.length % 11 || geometry.nonScalingStroke !== void 0 && typeof geometry.nonScalingStroke !== "boolean" || geometry.nonScalingStroke && geometry.morphCount !== 0 || geometry.indices !== void 0 && (!(geometry.indices instanceof Uint16Array) || geometry.indices.length < 3 || geometry.indices.length % 3 || geometry.vertices.length / 11 > 65536 || geometry.indices.some((index) => index >= geometry.vertices.length / 11)) || geometry.indices === void 0 && geometry.vertices.length % 33 || !Number.isSafeInteger(geometry.morphCount) || geometry.morphCount < 0 || geometry.morphCount > 2 || geometry.expressionIndices !== void 0 && !isIndexMap(geometry.expressionIndices, geometry.vertices.length / 11) || geometry.indexVariants !== void 0 && (!isIndexMap(geometry.indexVariants, geometry.vertices.length / 11) || Object.keys(geometry.indexVariants).length > 0)) || geometries.reduce((count, geometry) => count + geometry.partCount, 0) > 16) {
+      throw new TypeError("MeshBuilder geometries must fit within 16 parts, use the 11-float schema, and cannot flatten painter-order indexVariants");
     }
     const vertexCount = geometries.reduce((count, geometry) => count + geometry.vertices.length / 11, 0);
     const indexCount = geometries.reduce((count, geometry) => count + (geometry.indices?.length ?? geometry.vertices.length / 11), 0);
@@ -2776,6 +2797,8 @@ var MeshBuilder = class _MeshBuilder {
       if (!Number.isSafeInteger(part) || part < 0 || part >= geometry.partCount) throw new RangeError("Mesh part index outside partCount");
     }
     const vertices = new Float32Array(vertexCount * 11), indices = new Uint16Array(indexCount);
+    const expressionNames = new Set(geometries.flatMap((geometry) => Object.keys(geometry.expressionIndices ?? {})));
+    const expressionIndices = /* @__PURE__ */ Object.create(null);
     const partCount = geometries.reduce((count, geometry) => count + geometry.partCount, 0);
     const morphCount = Math.max(...geometries.map((geometry) => geometry.morphCount));
     const nonScalingStroke = geometries.some((geometry) => geometry.nonScalingStroke === true);
@@ -2797,7 +2820,28 @@ var MeshBuilder = class _MeshBuilder {
       offset += vertexLength;
       partOffset += geometry.partCount;
     }
-    return Object.freeze({ vertices, indices, count: indices.length, strideFloats: 11, partCount, morphCount, ...nonScalingStroke ? { nonScalingStroke: true } : {} });
+    for (const name of expressionNames) {
+      const variantLength = geometries.reduce((count, geometry) => count + (geometry.expressionIndices?.[name]?.length ?? (geometry.indices?.length ?? geometry.vertices.length / 11)), 0);
+      const variant = new Uint16Array(variantLength);
+      let target = 0, vertexOffset = 0;
+      for (const geometry of geometries) {
+        const source = geometry.expressionIndices?.[name] ?? baseIndices(geometry);
+        for (let i = 0; i < source.length; i++) variant[target + i] = source[i] + vertexOffset;
+        target += source.length;
+        vertexOffset += geometry.vertices.length / 11;
+      }
+      expressionIndices[name] = variant;
+    }
+    return Object.freeze({
+      vertices,
+      indices,
+      count: indices.length,
+      strideFloats: 11,
+      partCount,
+      morphCount,
+      ...expressionNames.size ? { expressionIndices } : {},
+      ...nonScalingStroke ? { nonScalingStroke: true } : {}
+    });
   }
 };
 

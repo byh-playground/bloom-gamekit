@@ -3176,12 +3176,19 @@ function validateCompiledAsset(asset) {
     throw new TypeError("Invalid SVG compiler options");
   }
   const expressionIndices = asset.geometry.expressionIndices;
+  const indexVariants = asset.geometry.indexVariants;
+  if (indexVariants !== void 0 && !isObject(indexVariants)) throw new TypeError("Invalid compiled SVG index variants");
   if (expressionIndices !== void 0) {
     if (!isObject(expressionIndices)) throw new TypeError("Invalid compiled SVG expression indices");
     for (const [name, variant] of Object.entries(expressionIndices)) {
       if (!Object.hasOwn(asset.metadata.expressions ?? {}, name) || !(variant instanceof Uint16Array) || variant.length % 3 || variant.some((index) => index >= vertexCount)) {
         throw new TypeError("Invalid compiled SVG expression index variant: " + name);
       }
+    }
+  }
+  for (const [name, variant] of Object.entries(indexVariants ?? {})) {
+    if (!/^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/.test(name) || Object.hasOwn(expressionIndices ?? {}, name) || !(variant instanceof Uint16Array) || variant.length % 3 || variant.some((index) => index >= vertexCount)) {
+      throw new TypeError("Invalid compiled SVG named index variant: " + name);
     }
   }
   return asset;
