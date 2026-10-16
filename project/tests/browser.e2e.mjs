@@ -533,6 +533,7 @@ const { createSession, profiles } = await import('/dist/rollback.js');
   const sourceBytes = await readFile(resolve(root, sourcePath));
   const expectedSha256 = createHash('sha256').update(sourceBytes).digest('hex');
   const nodeAsset = compileVectorAsset(sourceBytes, sourcePath);
+  const legacyNodeAsset = compileVectorAsset(sourceBytes, sourcePath, { curveSegments: 16, strokeArcDivisions: 12 });
   const stable = value => {
     if (ArrayBuffer.isView(value)) return Array.from(value, stable);
     if (Array.isArray(value)) return value.map(stable);
@@ -540,6 +541,7 @@ const { createSession, profiles } = await import('/dist/rollback.js');
     return value;
   };
   const nodeGeometrySha256 = createHash('sha256').update(JSON.stringify(stable(nodeAsset.geometry))).digest('hex');
+  const legacyNodeGeometrySha256 = createHash('sha256').update(JSON.stringify(stable(legacyNodeAsset.geometry))).digest('hex');
   const lowQualityExpected = [1, 2, 3].map(value => {
     const compiled = compileVectorAsset(sourceBytes, sourcePath, { curveSegments: value, strokeArcDivisions: value });
     assert.ok(compiled.geometry.vertices.every(Number.isFinite), `${value}/${value} Node geometry contains only finite vertices`);
@@ -550,8 +552,8 @@ const { createSession, profiles } = await import('/dist/rollback.js');
   const startupErrors = [];
   startupPage.on('pageerror', error => startupErrors.push(error.message));
   await startupPage.goto(`http://127.0.0.1:${server.address().port}/modules/interpolation/examples/index.html`);
-  const loadedStartup = await startupPage.evaluate(async ({ expectedSha256, nodeGeometrySha256, lowQualityExpected, sourcePath }) => {
-    const { createVectorAssetLoader } = await import('/dist/vector-assets-loader.js');
+  const loadedStartup = await startupPage.evaluate(async ({ expectedSha256, nodeGeometrySha256, legacyNodeGeometrySha256, lowQualityExpected, sourcePath }) => {
+    const { createVectorAssetLoader, VECTOR_ASSET_QUALITY_PRESETS } = await import('/dist/vector-assets-loader.js');
     const { createVectorAsset } = await import('/dist/vector-assets.js');
     const { WebGLDevice, MeshRenderer } = await import('/dist/rendering.js');
     const url = '/modules/vector-assets/assets/seed-scout.svg';
@@ -559,15 +561,17 @@ const { createSession, profiles } = await import('/dist/rollback.js');
     const options = { sourcePath, expectedSha256, maxBytes: 512 * 1024 };
     const [compiledAsset, sameCompiledAsset] = await Promise.all([loader.load(url, options), loader.load(url, options)]);
     if (compiledAsset !== sameCompiledAsset || loader.size !== 1) throw new Error('Concurrent SVG startup loads did not share the cached compilation');
-    const explicitDefaultAsset = await loader.load(url, { ...options, strokeArcDivisions: 12 });
-    if (explicitDefaultAsset !== compiledAsset) throw new Error('Explicit default stroke arc quality did not normalize to the shared cache key');
-    const coarseArcAsset = await loader.load(url, { ...options, strokeArcDivisions: 8 });
-    const sameCoarseArcAsset = await loader.load(url, { ...options, strokeArcDivisions: 8 });
+    const explicitDefaultAsset = await loader.load(url, { ...options, ...VECTOR_ASSET_QUALITY_PRESETS.standard });
+    if (explicitDefaultAsset !== compiledAsset) throw new Error('Explicit standard SVG quality did not normalize to the shared cache key');
+    const coarseArcOptions = { ...options, curveSegments: VECTOR_ASSET_QUALITY_PRESETS.standard.curveSegments, strokeArcDivisions: 8 };
+    const coarseArcAsset = await loader.load(url, coarseArcOptions);
+    const sameCoarseArcAsset = await loader.load(url, coarseArcOptions);
     if (coarseArcAsset !== sameCoarseArcAsset || coarseArcAsset === compiledAsset || loader.size !== 2) {
       throw new Error('Distinct stroke arc quality did not use its own cached compilation');
     }
-    if (compiledAsset.compilerOptions.strokeArcDivisions !== 12 || coarseArcAsset.compilerOptions.strokeArcDivisions !== 8) {
-      throw new Error('Browser loader did not record selected stroke arc quality');
+    if (compiledAsset.compilerOptions.curveSegments !== 4 || compiledAsset.compilerOptions.strokeArcDivisions !== 2
+        || coarseArcAsset.compilerOptions.strokeArcDivisions !== 8) {
+      throw new Error('Browser loader did not record the standard or selected stroke arc quality');
     }
     if (JSON.stringify(Array.from(compiledAsset.geometry.indices)) === JSON.stringify(Array.from(coarseArcAsset.geometry.indices))) {
       throw new Error('Non-default round stroke arc quality produced the default triangle list');
@@ -582,6 +586,10 @@ const { createSession, profiles } = await import('/dist/rollback.js');
     const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(canonical(compiledAsset.geometry)))));
     const browserGeometrySha256 = [...digest].map(value => value.toString(16).padStart(2, '0')).join('');
     if (browserGeometrySha256 !== nodeGeometrySha256) throw new Error('Browser and Node SVG compiler geometry differ');
+    const legacyAsset = await loader.load(url, { ...options, curveSegments: 16, strokeArcDivisions: 12 });
+    const legacyDigest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(canonical(legacyAsset.geometry)))));
+    const legacyGeometrySha256 = [...legacyDigest].map(value => value.toString(16).padStart(2, '0')).join('');
+    if (legacyGeometrySha256 !== legacyNodeGeometrySha256) throw new Error('Explicit 16/12 browser quality differs from the preserved Node geometry');
 
     const lowQualityResults = [];
     let previousQualityAsset = compiledAsset;
@@ -621,11 +629,11 @@ const { createSession, profiles } = await import('/dist/rollback.js');
     mismatchLoader.dispose();
     loader.clear(); loader.dispose();
     return { geometrySha256: browserGeometrySha256, lowQualityResults };
-  }, { expectedSha256, nodeGeometrySha256, lowQualityExpected, sourcePath });
+  }, { expectedSha256, nodeGeometrySha256, legacyNodeGeometrySha256, lowQualityExpected, sourcePath });
   assert.equal(loadedStartup.geometrySha256, nodeGeometrySha256, 'browser and Node compilers emit identical geometry');
   assert.deepEqual(loadedStartup.lowQualityResults.map(item => item.value), [1, 2, 3], 'browser compiles each requested low quality');
   const startupFetches = vectorSvgFetches - startupFetchBaseline;
-  assert.equal(startupFetches, 6, 'same-key startup loads share one fetch and each independent quality key plus the hash mismatch fetches once');
+  assert.equal(startupFetches, 7, 'same-key startup loads share one fetch and each independent quality key, explicit 16/12 override, and hash mismatch fetches once');
   assert.equal(startupErrors.length, 0, startupErrors.join('\n'));
   await startupPage.close();
   report.browserSvgStartup = { sourceSha256: expectedSha256, geometrySha256: loadedStartup.geometrySha256, lowQuality: loadedStartup.lowQualityResults, requests: startupFetches,

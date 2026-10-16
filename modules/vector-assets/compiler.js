@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { compileVectorAssetCore } from './compiler-core.js';
 export { compileVectorAssetCore } from './compiler-core.js';
+export { VECTOR_ASSET_QUALITY_PRESETS } from './quality-presets.js';
 
 export function compileVectorAsset(svgBytes, sourcePath = 'asset.svg', options = {}) {
   const source = Buffer.isBuffer(svgBytes) ? svgBytes : Buffer.from(String(svgBytes), 'utf8');

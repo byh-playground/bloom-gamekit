@@ -25,6 +25,7 @@
     input[type="number"] { width: 4.2rem; min-height: 2rem; border: 1px solid #98a785; border-radius: .45rem; padding: .25rem .4rem; color: inherit; background: white; font: inherit; font-variant-numeric: tabular-nums; }
     .quality-presets { display: inline-flex; align-items: center; gap: .2rem; }
     .quality-presets button { min-width: 2rem; padding-inline: .35rem; }
+    .named-quality-presets { display: inline-flex; align-items: center; gap: .2rem; }
     input[type="range"] { width: clamp(5rem, 12vw, 11rem); }
     output { min-width: 3.7em; font-variant-numeric: tabular-nums; }
     .help { margin: .4rem 0 0; color: #596850; font-size: .76rem; }
@@ -84,7 +85,7 @@
     <div class="controls source-controls" aria-label="SVG source and tessellation controls">
       <label>GitHub SVG URL <input id="asset-url" type="url" spellcheck="false" autocomplete="url" value="https://raw.githubusercontent.com/byh-playground/budmori-io/0dab58e201b5c08f5073108121eeae91acc34774/assets/troops/pea.svg"></label>
       <button id="load-asset" type="button">Load &amp; compile</button>
-      <label for="curve-segments">Curve segments <input id="curve-segments" type="number" min="1" max="64" step="1" value="16" inputmode="numeric"></label>
+      <label for="curve-segments">Curve segments <input id="curve-segments" type="number" min="1" max="64" step="1" value="4" inputmode="numeric"></label>
       <span class="quality-presets" role="group" aria-label="Curve segment presets">Quick
         <button type="button" data-quality-target="curve-segments" data-quality-value="1" aria-label="Set curve segments to 1">1</button>
         <button type="button" data-quality-target="curve-segments" data-quality-value="2" aria-label="Set curve segments to 2">2</button>
@@ -92,13 +93,17 @@
         <button type="button" data-quality-target="curve-segments" data-quality-value="8" aria-label="Set curve segments to 8">8</button>
         <button type="button" data-quality-target="curve-segments" data-quality-value="16" aria-label="Set curve segments to 16">16</button>
       </span>
-      <label for="stroke-arc-divisions">Stroke arc divisions <input id="stroke-arc-divisions" type="number" min="1" max="64" step="1" value="12" inputmode="numeric"></label>
+      <label for="stroke-arc-divisions">Stroke arc divisions <input id="stroke-arc-divisions" type="number" min="1" max="64" step="1" value="2" inputmode="numeric"></label>
       <span class="quality-presets" role="group" aria-label="Stroke arc division presets">Quick
         <button type="button" data-quality-target="stroke-arc-divisions" data-quality-value="1" aria-label="Set stroke arc divisions to 1">1</button>
         <button type="button" data-quality-target="stroke-arc-divisions" data-quality-value="2" aria-label="Set stroke arc divisions to 2">2</button>
         <button type="button" data-quality-target="stroke-arc-divisions" data-quality-value="4" aria-label="Set stroke arc divisions to 4">4</button>
         <button type="button" data-quality-target="stroke-arc-divisions" data-quality-value="8" aria-label="Set stroke arc divisions to 8">8</button>
         <button type="button" data-quality-target="stroke-arc-divisions" data-quality-value="16" aria-label="Set stroke arc divisions to 16">16</button>
+      </span>
+      <span class="named-quality-presets" role="group" aria-label="Shared SVG quality presets">
+        <button type="button" data-quality-preset="standard" aria-label="Use standard SVG quality, 4 curve segments and 2 stroke arc divisions">Standard 4 / 2</button>
+        <button type="button" data-quality-preset="smallAsset" aria-label="Use small-asset SVG quality, 2 curve segments and 2 stroke arc divisions">Small asset 2 / 2</button>
       </span>
       <button id="copy-loader-options" type="button">Copy loader options</button>
     </div>
@@ -113,7 +118,7 @@
       <button id="center-camera" type="button">Center</button>
       <button id="style-comparison" type="button">Yarn / sketch SVG comparison</button>
     </div>
-    <p class="help">Paste a GitHub SVG blob or raw URL with vector-asset metadata. Enter any whole-number quality from 1 to 64 or use a quick preset. Compile to update all three views while keeping authored clips and expressions.</p>
+    <p class="help">Paste a GitHub SVG blob or raw URL with vector-asset metadata. Standard quality starts at 4 / 2; choose the small-asset 2 / 2 preset or enter any whole-number subdivision from 1 to 64. Compile to update all three views while keeping authored clips and expressions.</p>
   </header>
   <main>
     <section class="panel" aria-labelledby="source-title">
@@ -147,7 +152,7 @@
   <footer id="status" aria-live="polite">Metrics report each view's actual rendering path. GPU elapsed time is not inferred from CPU timing.</footer>
   <script type="module">
     import { WebGLDevice, MeshRenderer, VectorContext, YarnSurfaceRenderer } from '/dist/rendering.js';
-    import { createVectorAsset } from '/dist/vector-assets.js';
+    import { createVectorAsset, VECTOR_ASSET_QUALITY_PRESETS } from '/dist/vector-assets.js';
     import { createVectorAssetLoader } from '/dist/vector-assets-loader.js';
     import { createSeedScout, seedScoutMetadata } from './seed-scout.js';
     import { createStyleSample, styleSamples } from './style-samples.js';
@@ -162,7 +167,7 @@
     const demo = { ready: false, sourceLoaded: false, loading: false, device: null, meshes: null, surfaces: null, asset: null, actor: null, compiledAsset: null, sourceSvg: null,
       sourceUrl: null, sourceBytes: 0, sourcePathCount: 0, sourceSha256: null, compileMs: 0, fetchMs: 0, initializationMs: 0, creationStats: null,
       camera: { x: 160, y: 175, zoom: 1 }, displaySizePx: 220, viewBox: [0, 0, 320, 350], topology: { triangles: 0, uniqueEdges: 0, uniqueVertices: 0 }, lastFrame: null, styleInstances: [] };
-    window.vectorAssetRuntime = { WebGLDevice, MeshRenderer, VectorContext, YarnSurfaceRenderer, createVectorAsset, createVectorAssetLoader, createSeedScout, seedScoutMetadata, createStyleSample, styleSamples };
+    window.vectorAssetRuntime = { WebGLDevice, MeshRenderer, VectorContext, YarnSurfaceRenderer, createVectorAsset, createVectorAssetLoader, VECTOR_ASSET_QUALITY_PRESETS, createSeedScout, seedScoutMetadata, createStyleSample, styleSamples };
     window.vectorAssetDemo = demo;
 
     let sourceWrappers = new Map(), triangles = [], edges = [], compiledAsset = null, source = null, asset = null, actor = null;
@@ -328,6 +333,8 @@
     const displaySizeValue = document.querySelector('#display-size-value');
     const curveSegmentsInput = document.querySelector('#curve-segments');
     const strokeArcDivisionsInput = document.querySelector('#stroke-arc-divisions');
+    curveSegmentsInput.value = VECTOR_ASSET_QUALITY_PRESETS.standard.curveSegments;
+    strokeArcDivisionsInput.value = VECTOR_ASSET_QUALITY_PRESETS.standard.strokeArcDivisions;
     const wireframeInput = document.querySelector('#wireframe');
     const playToggle = document.querySelector('#play-toggle');
     const status = document.querySelector('#status');
@@ -640,6 +647,15 @@
     for (const preset of document.querySelectorAll('[data-quality-target]')) {
       preset.addEventListener('click', () => {
         document.getElementById(preset.dataset.qualityTarget).value = preset.dataset.qualityValue;
+        void loadAsset();
+      });
+    }
+    for (const preset of document.querySelectorAll('[data-quality-preset]')) {
+      preset.addEventListener('click', () => {
+        const quality = VECTOR_ASSET_QUALITY_PRESETS[preset.dataset.qualityPreset];
+        if (!quality) throw new Error('Unknown SVG quality preset: ' + preset.dataset.qualityPreset);
+        curveSegmentsInput.value = quality.curveSegments;
+        strokeArcDivisionsInput.value = quality.strokeArcDivisions;
         void loadAsset();
       });
     }
