@@ -67,7 +67,7 @@
       return signed(Number(BigInt(signed(a)) * 1024n / BigInt(b)));
     }
   });
-  var VERSION = "0.10.0";
+  var VERSION = "0.10.1";
   var REPLAY_FORMAT_VERSION = "0.2.0-dev";
   var PROTOCOL_VERSION = 3;
   var CHUNK_SIZE = 16384;
@@ -6943,6 +6943,7 @@
     track.buffered = true;
     const history = continuous ? [...old.history ?? [], old] : [];
     track.history = history.slice(-Math.ceil(delayMs / stepMs) - 2).map(({ history: history2, ...item }) => item);
+    return start2;
   }
   function intervalAt(track, at) {
     if (!track || at < track.bornAt || at >= track.removedAt) return null;
@@ -7576,13 +7577,13 @@
           sampleValues: same2 ? old.sampleValues : void 0,
           sampledAt: -Infinity
         };
+        let intervalStart;
         if (this.#delayMs) {
-          bufferInterval(track, old, {
+          intervalStart = bufferInterval(track, old, {
             origin,
             timeMs,
             previousTimeMs: this.#timeMs,
             stepMs: this.#stepMs,
-            delayMs: this.#delayMs,
             continuous: same2 && !snap,
             reset: snap,
             seeded: !snap && (!!initial || plan.policies.origins.some((i) => i !== void 0)),
@@ -7596,7 +7597,7 @@
           const prior = same2 && !snap ? old.target.values : !snap && initial ? initial.values : target.values;
           for (const index of track.heldFields) from[index] = prior[index];
         }
-        const pathStart = this.#delayMs ? track.startedAt - origin : same2 && !snap ? old.timeMs : !snap && initial ? entity.initialTimeMs ?? timeMs - this.#stepMs : timeMs;
+        const pathStart = this.#delayMs ? intervalStart : same2 && !snap ? old.timeMs : !snap && initial ? entity.initialTimeMs ?? timeMs - this.#stepMs : timeMs;
         track.path = capturePath(plan.path, old?.path, from, target.values, pathStart, timeMs, entity.pathPoints, !same2 || snap, this.#delayMs, this.#stepMs);
         next.set(entity.id, track);
         sources.set(source, track);

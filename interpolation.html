@@ -280,6 +280,7 @@ canvas:focus-visible{outline:2px solid #86edc0}code{background:#24333b}label{dis
     track.buffered = true;
     const history = continuous ? [...old.history ?? [], old] : [];
     track.history = history.slice(-Math.ceil(delayMs / stepMs) - 2).map(({ history: history2, ...item }) => item);
+    return start;
   }
   function intervalAt(track, at) {
     if (!track || at < track.bornAt || at >= track.removedAt) return null;
