@@ -24529,7 +24529,7 @@ function addStops(canvasGradient, stops) {
 
 // modules/vector-assets/schema.js
 var VECTOR_ASSET_SCHEMA_VERSION = 1;
-var VECTOR_ASSET_COMPILER_VERSION = "0.10.0";
+var VECTOR_ASSET_COMPILER_VERSION = "0.11.0";
 var NUMERIC_POSE_FIELDS = Object.freeze(["x", "y", "rotation", "scaleX", "scaleY", "opacity"]);
 var EASINGS = /* @__PURE__ */ new Set(["linear", "inSine", "outSine", "inOutSine", "inQuad", "outQuad", "inOutQuad", "inCubic", "outCubic", "inOutCubic"]);
 var isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -24651,6 +24651,12 @@ function validateAssetMetadata(metadata, idNodes) {
   }
   return metadata;
 }
+
+// modules/vector-assets/quality-presets.js
+var VECTOR_ASSET_QUALITY_PRESETS = Object.freeze({
+  standard: Object.freeze({ curveSegments: 4, strokeArcDivisions: 2 }),
+  smallAsset: Object.freeze({ curveSegments: 2, strokeArcDivisions: 2 })
+});
 
 // modules/vector-assets/compiler-core.js
 var SVG_NS = "http://www.w3.org/2000/svg";
@@ -25888,9 +25894,9 @@ function compileVectorAssetCore(svgBytes, sourcePath = "asset.svg", options = {}
   if (options === null || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some((key) => !["curveSegments", "normalizeCenteredViewBox", "strokeArcDivisions"].includes(key))) {
     throw new TypeError("Only curveSegments, normalizeCenteredViewBox, and strokeArcDivisions compiler options are supported");
   }
-  const curveSegments = options.curveSegments === void 0 ? 16 : options.curveSegments;
+  const curveSegments = options.curveSegments === void 0 ? VECTOR_ASSET_QUALITY_PRESETS.standard.curveSegments : options.curveSegments;
   if (!Number.isSafeInteger(curveSegments) || curveSegments < 1 || curveSegments > 64) throw new RangeError("curveSegments must be an integer from 1 to 64");
-  const strokeArcDivisions = options.strokeArcDivisions === void 0 ? 12 : options.strokeArcDivisions;
+  const strokeArcDivisions = options.strokeArcDivisions === void 0 ? VECTOR_ASSET_QUALITY_PRESETS.standard.strokeArcDivisions : options.strokeArcDivisions;
   if (!Number.isSafeInteger(strokeArcDivisions) || strokeArcDivisions < 1 || strokeArcDivisions > 64) throw new RangeError("strokeArcDivisions must be an integer from 1 to 64");
   const normalizeCenteredViewBox = options.normalizeCenteredViewBox ?? false;
   if (typeof normalizeCenteredViewBox !== "boolean") throw new TypeError("normalizeCenteredViewBox must be a boolean");
@@ -25988,8 +25994,8 @@ function validateLoadOptions(url, options) {
   const sourcePath = options.sourcePath ?? url;
   const expectedSha256 = options.expectedSha256;
   const maxBytes = options.maxBytes ?? MAX_SOURCE_BYTES2;
-  const curveSegments = options.curveSegments === void 0 ? 16 : options.curveSegments;
-  const strokeArcDivisions = options.strokeArcDivisions === void 0 ? 12 : options.strokeArcDivisions;
+  const curveSegments = options.curveSegments === void 0 ? VECTOR_ASSET_QUALITY_PRESETS.standard.curveSegments : options.curveSegments;
+  const strokeArcDivisions = options.strokeArcDivisions === void 0 ? VECTOR_ASSET_QUALITY_PRESETS.standard.strokeArcDivisions : options.strokeArcDivisions;
   const includeSourcePaths = options.includeSourcePaths ?? false;
   const normalizeCenteredViewBox = options.normalizeCenteredViewBox ?? false;
   if (typeof sourcePath !== "string" || sourcePath.length < 1 || sourcePath.length > 2048) throw new TypeError("sourcePath must be a nonempty string of at most 2048 characters");
@@ -26082,5 +26088,6 @@ function createVectorAssetLoader({ fetch: fetcher = globalThis.fetch, maxEntries
   } });
 }
 export {
+  VECTOR_ASSET_QUALITY_PRESETS,
   createVectorAssetLoader
 };
