@@ -1,3 +1,7 @@
+## v0.11.2 (2026-10-16)
+
+Vector clip sampling skips a transition's source tree before its start and after it completes, avoiding repeat sampling and pose blending for settled historical transitions. Active transitions still blend from the prior tree to the target clip. Playback history remains retained for deterministic backward seeks, so this patch does not bound transition-history memory.
+
 ## v0.11.1 (2026-10-16)
 
 `createRoomSession` adds an opt-in single-player local lockstep fast path. It preserves deterministic input/command execution and app-owned explicit saves while skipping SDK snapshot serialization/copies, checkpoint history, and state/input hashes when no peer can consume them. Existing local and online behavior is unchanged unless selected.
