@@ -1,3 +1,7 @@
+## v0.10.2 (2026-10-16)
+
+`createLoop` adds opt-in `backlogPolicy: 'defer'` for bounded real-time catch-up. It preserves unprocessed wall-clock debt up to `maxBacklogTicks`, keeps the existing per-pulse `maxCatchupSteps` limit, and reports dropped debt with explicit `clock-gap` or `backlog-overflow` diagnostics. It never skips authoritative simulation ticks. Existing `drop` default and unbounded opt-in `retain` behavior remain unchanged. Pause/resume and hidden-document reset behavior are documented and regression-tested.
+
 ## v0.10.0 (2026-10-16)
 
 Rendering adds Canvas-compatible two-circle radial gradients to `VectorContext.createRadialGradient()` while retaining the creation transform and existing gradient texture lifecycle. `YarnSurfaceRenderer.drawSurface()` accepts an explicit `stencilRef` so retained Yarn fill and edge passes respect the active concave `VectorContext` stencil clip. Missing stencil attachments and invalid refs fail explicitly. Existing meshes and `MeshRenderer` batching semantics are unchanged. Focused browser pixel checks cover the Squish radial-gradient descriptor at 47 CSS px/DPR 1 and 74 CSS px/DPR 2, plus concave Yarn clipping and context restoration.
