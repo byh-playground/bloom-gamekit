@@ -3155,8 +3155,8 @@ var createTimeline = (parameters) => {
 
 // modules/vector-assets/schema.js
 var VECTOR_ASSET_SCHEMA_VERSION = 1;
-var VECTOR_ASSET_COMPILER_VERSION = "0.9.0";
-var ACCEPTED_COMPILER_VERSIONS = /* @__PURE__ */ new Set(["0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0", "0.7.0", "0.8.0", VECTOR_ASSET_COMPILER_VERSION]);
+var VECTOR_ASSET_COMPILER_VERSION = "0.10.0";
+var ACCEPTED_COMPILER_VERSIONS = /* @__PURE__ */ new Set(["0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0", "0.7.0", "0.8.0", "0.9.0", VECTOR_ASSET_COMPILER_VERSION]);
 var NUMERIC_POSE_FIELDS = Object.freeze(["x", "y", "rotation", "scaleX", "scaleY", "opacity"]);
 var isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 var exactKeys = (value, keys) => isObject(value) && Object.keys(value).length === keys.length && keys.every((key2) => Object.hasOwn(value, key2));
@@ -3171,13 +3171,14 @@ function validateCompiledAsset(asset) {
     throw new TypeError("Invalid compiled SVG vertex indices");
   }
   if (indices === void 0 && vertexCount % 3) throw new TypeError("Non-indexed compiled SVG geometry must contain complete triangles");
-  if (["0.8.0", VECTOR_ASSET_COMPILER_VERSION].includes(asset.compilerVersion) && asset.compilerOptions === void 0) {
+  if (["0.8.0", "0.9.0", VECTOR_ASSET_COMPILER_VERSION].includes(asset.compilerVersion) && asset.compilerOptions === void 0) {
     throw new TypeError("Current SVG compiler options are required");
   }
   if (asset.compilerOptions !== void 0) {
     const current = asset.compilerVersion === VECTOR_ASSET_COMPILER_VERSION;
-    const expectedKeys = current ? ["curveSegments", "normalizeCenteredViewBox"] : ["curveSegments"];
-    if (!exactKeys(asset.compilerOptions, expectedKeys) || !Number.isSafeInteger(asset.compilerOptions.curveSegments) || asset.compilerOptions.curveSegments < 4 || asset.compilerOptions.curveSegments > 64 || current && typeof asset.compilerOptions.normalizeCenteredViewBox !== "boolean") {
+    const centeredViewBoxVersion = current || asset.compilerVersion === "0.9.0";
+    const expectedKeys = current ? ["curveSegments", "normalizeCenteredViewBox", "strokeArcDivisions"] : centeredViewBoxVersion ? ["curveSegments", "normalizeCenteredViewBox"] : ["curveSegments"];
+    if (!exactKeys(asset.compilerOptions, expectedKeys) || !Number.isSafeInteger(asset.compilerOptions.curveSegments) || asset.compilerOptions.curveSegments < 4 || asset.compilerOptions.curveSegments > 64 || centeredViewBoxVersion && typeof asset.compilerOptions.normalizeCenteredViewBox !== "boolean" || current && (!Number.isSafeInteger(asset.compilerOptions.strokeArcDivisions) || asset.compilerOptions.strokeArcDivisions < 4 || asset.compilerOptions.strokeArcDivisions > 64)) {
       throw new TypeError("Invalid SVG compiler options");
     }
   }
@@ -3332,8 +3333,7 @@ function buildClipTimeline(clip, parts) {
 function copyPose(pose) {
   return Object.fromEntries(POSE_FIELDS.map((field) => [field, pose[field]]));
 }
-function authoredMorph(metadata, displayTimeMs) {
-  const sketch = metadata.styles?.find((style) => style.kind === "sketch");
+function authoredMorph(sketch, displayTimeMs) {
   if (!sketch) return [0, 0];
   const phase = (displayTimeMs % sketch.periodMs + sketch.periodMs) % sketch.periodMs / sketch.periodMs * 3;
   const segment = Math.floor(phase), amount = phase - segment;
@@ -3353,6 +3353,7 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
   if (!meshRenderer?.createMesh || !meshRenderer?.drawMesh || !meshRenderer?.deleteMesh) throw new TypeError("A GameKit MeshRenderer is required");
   validateCompiledAsset(compiledAsset);
   const metadata = compiledAsset.metadata;
+  const sketchMorphStyle = metadata.styles?.find((style) => style.kind === "sketch") ?? null;
   const partIndices = new Map(metadata.parts.map((part, index) => [part.id, index]));
   const clips = metadata.clips;
   const geometry = compiledAsset.geometry, shaderGeometry = geometry.shaderSurfaces ?? [];
@@ -3481,19 +3482,28 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
       if (!socket) throw new TypeError(`Unknown vector socket: ${id}`);
       return transformPoint(worldMatrices().get(socket.part), socket.point);
     };
+    const resolvePartPose = (part, matrices) => {
+      let parentVisible = true, opacity = 1, parent = part;
+      while (parent) {
+        parentVisible &&= visible.get(parent.id) !== false;
+        opacity *= effectivePose(basePose.get(parent.id), currentPose.get(parent.id)).opacity;
+        parent = parent.parent === null ? null : metadata.parts[partIndices.get(parent.parent)];
+      }
+      return { transform: matrices.get(part.id), opacity, visible: parentVisible };
+    };
     const partPoses = () => {
       assertPlayer();
-      const matrices = worldMatrices(), output = metadata.parts.map((part, index) => {
-        const morph = authoredMorph(metadata, displayTimeMs);
-        let parentVisible = true, opacity = 1, parent = part;
-        while (parent) {
-          parentVisible &&= visible.get(parent.id) !== false;
-          opacity *= effectivePose(basePose.get(parent.id), currentPose.get(parent.id)).opacity;
-          parent = parent.parent === null ? null : metadata.parts[partIndices.get(parent.parent)];
-        }
-        return { transform: matrices.get(part.id), morph, opacity, visible: parentVisible, index };
+      const matrices = worldMatrices();
+      return metadata.parts.map((part, index) => {
+        const pose = resolvePartPose(part, matrices);
+        return {
+          transform: pose.transform,
+          morph: authoredMorph(sketchMorphStyle, displayTimeMs),
+          opacity: pose.opacity,
+          visible: pose.visible,
+          index
+        };
       });
-      return output;
     };
     const draw = ({
       projection,
@@ -3514,8 +3524,8 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
     } = {}) => {
       assertPlayer();
       if (geometry.shaderSurfaces?.length) validateShaderSurfaceClipCapacity(clips2, surfaceRenderer.maxClipPlanes);
-      const fullPartPoses = partPoses();
-      const poses = fullPartPoses.map(({ transform, opacity, visible: isVisible }) => ({ transform, opacity, visible: isVisible }));
+      const matrices = worldMatrices();
+      const poses = metadata.parts.map((part) => resolvePartPose(part, matrices));
       if (geometry.drawOrder) {
         const worldMode2 = viewProjection !== void 0 || worldMatrix !== void 0;
         for (const command of geometry.drawOrder) {
@@ -3526,7 +3536,7 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
               ...worldMode2 ? { viewProjection, worldMatrix } : { projection },
               matrix,
               parts: poses,
-              morph: authoredMorph(metadata, displayTimeMs),
+              morph: authoredMorph(sketchMorphStyle, displayTimeMs),
               alpha,
               color,
               forceColor,
@@ -3542,7 +3552,7 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
             });
             continue;
           }
-          const surface = retainedSurfaces[command.surfaceIndex], pose = fullPartPoses[geometry.shaderSurfaces[command.surfaceIndex].partIndex];
+          const surface = retainedSurfaces[command.surfaceIndex], pose = poses[geometry.shaderSurfaces[command.surfaceIndex].partIndex];
           if (!pose.visible || pose.opacity <= 0) continue;
           meshRenderer.flush("vectorShaderSurfaceBoundary");
           const materialTransform = worldMode2 ? pose.transform : multiply(matrix, pose.transform);
@@ -3569,7 +3579,7 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
         ...worldMode ? { viewProjection, worldMatrix } : { projection },
         matrix,
         parts: poses,
-        morph: authoredMorph(metadata, displayTimeMs),
+        morph: authoredMorph(sketchMorphStyle, displayTimeMs),
         alpha,
         color,
         forceColor,
@@ -3587,7 +3597,7 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
     const getPartPose = (id) => {
       assertPlayer();
       if (!partIndices.has(id)) throw new TypeError(`Unknown vector part: ${id}`);
-      const index = partIndices.get(id), effective = partPoses()[index];
+      const index = partIndices.get(id), effective = resolvePartPose(metadata.parts[index], worldMatrices());
       return { ...currentPose.get(id), visible: effective.visible, transform: effective.transform };
     };
     const disposePlayer = () => {

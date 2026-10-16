@@ -24529,7 +24529,7 @@ function addStops(canvasGradient, stops) {
 
 // modules/vector-assets/schema.js
 var VECTOR_ASSET_SCHEMA_VERSION = 1;
-var VECTOR_ASSET_COMPILER_VERSION = "0.9.0";
+var VECTOR_ASSET_COMPILER_VERSION = "0.10.0";
 var NUMERIC_POSE_FIELDS = Object.freeze(["x", "y", "rotation", "scaleX", "scaleY", "opacity"]);
 var EASINGS = /* @__PURE__ */ new Set(["linear", "inSine", "outSine", "inOutSine", "inQuad", "outQuad", "inOutQuad", "inCubic", "outCubic", "inOutCubic"]);
 var isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -25639,7 +25639,7 @@ function resolveGradientPaint(paint, gradients) {
 function colorFromComponents(rgba) {
   return new Color().setRGB(rgba[0], rgba[1], rgba[2], SRGBColorSpace);
 }
-function appendNonScalingLine(vertices, start, end, rgba, partIndex, width, lineCap) {
+function appendNonScalingLine(vertices, start, end, rgba, partIndex, width, lineCap, arcDivisions) {
   if (!["butt", "square", "round"].includes(lineCap)) throw new TypeError("Unsupported non-scaling stroke linecap: " + lineCap);
   const dx = end.x - start.x, dy = end.y - start.y;
   const length = Math.hypot(dx, dy);
@@ -25656,16 +25656,15 @@ function appendNonScalingLine(vertices, start, end, rgba, partIndex, width, line
   triangle([0, startExtension, 1], [1, endExtension, 1], [1, endExtension, -1]);
   triangle([0, startExtension, 1], [1, endExtension, -1], [0, startExtension, -1]);
   if (lineCap === "round") {
-    const segments = 12;
     for (const [along, firstAngle] of [[0, Math.PI / 2], [1, -Math.PI / 2]]) {
-      for (let i = 0; i < segments; i++) {
-        const a = firstAngle + i * Math.PI / segments, b = firstAngle + (i + 1) * Math.PI / segments;
+      for (let i = 0; i < arcDivisions; i++) {
+        const a = firstAngle + i * Math.PI / arcDivisions, b = firstAngle + (i + 1) * Math.PI / arcDivisions;
         triangle([along, 0, 0], [along, Math.cos(a), Math.sin(a)], [along, Math.cos(b), Math.sin(b)]);
       }
     }
   }
 }
-function compilePaths(paths, partIndices, parts, metadata, gradients, curveSegments) {
+function compilePaths(paths, partIndices, parts, metadata, gradients, curveSegments, strokeArcDivisions) {
   const vertices = [], shaderSurfaces = [], drawOrder = [];
   let hasNonScalingStroke = false;
   const styled = new Map((metadata.styles ?? []).map((style) => [style.target, style]));
@@ -25739,12 +25738,12 @@ function compilePaths(paths, partIndices, parts, metadata, gradients, curveSegme
           if (sourceNode.nodeName !== "line" || path.subPaths.length !== 1) throw new TypeError("Non-scaling strokes currently support one straight <line> per shape");
           const points = path.subPaths[0].getPoints(1);
           if (points.length !== 2) throw new TypeError("Non-scaling strokes currently support straight <line> geometry only");
-          appendNonScalingLine(vertices, points[0], points[1], rgba, partIndex, style.strokeWidth, style.strokeLineCap ?? "butt");
+          appendNonScalingLine(vertices, points[0], points[1], rgba, partIndex, style.strokeWidth, style.strokeLineCap ?? "butt", strokeArcDivisions);
           hasNonScalingStroke = true;
         } else {
           const stroke = SVGLoader.getStrokeStyle(style.strokeWidth, style.stroke, style.strokeLineJoin, style.strokeLineCap, style.strokeMiterLimit);
           for (const subPath of path.subPaths) {
-            const geometry = SVGLoader.pointsToStroke(subPath.getPoints(curveSegments), stroke, 12, 1e-3);
+            const geometry = SVGLoader.pointsToStroke(subPath.getPoints(curveSegments), stroke, strokeArcDivisions, 1e-3);
             if (geometry) {
               appendTriangles(vertices, geometry, rgba, partIndex);
               geometry.dispose();
@@ -25886,11 +25885,13 @@ function installSvgLoaderSelectors(document2) {
   install(document2.documentElement);
 }
 function compileVectorAssetCore(svgBytes, sourcePath = "asset.svg", options = {}, sourceSha256) {
-  if (options === null || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some((key) => !["curveSegments", "normalizeCenteredViewBox"].includes(key))) {
-    throw new TypeError("Only curveSegments and normalizeCenteredViewBox compiler options are supported");
+  if (options === null || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some((key) => !["curveSegments", "normalizeCenteredViewBox", "strokeArcDivisions"].includes(key))) {
+    throw new TypeError("Only curveSegments, normalizeCenteredViewBox, and strokeArcDivisions compiler options are supported");
   }
   const curveSegments = options.curveSegments === void 0 ? 16 : options.curveSegments;
   if (!Number.isSafeInteger(curveSegments) || curveSegments < 4 || curveSegments > 64) throw new RangeError("curveSegments must be an integer from 4 to 64");
+  const strokeArcDivisions = options.strokeArcDivisions === void 0 ? 12 : options.strokeArcDivisions;
+  if (!Number.isSafeInteger(strokeArcDivisions) || strokeArcDivisions < 4 || strokeArcDivisions > 64) throw new RangeError("strokeArcDivisions must be an integer from 4 to 64");
   const normalizeCenteredViewBox = options.normalizeCenteredViewBox ?? false;
   if (typeof normalizeCenteredViewBox !== "boolean") throw new TypeError("normalizeCenteredViewBox must be a boolean");
   if (!(svgBytes instanceof Uint8Array)) throw new TypeError("SVG source bytes must be a Uint8Array");
@@ -25924,7 +25925,7 @@ function compileVectorAssetCore(svgBytes, sourcePath = "asset.svg", options = {}
     return { clean: withoutMetadata(original), loader };
   });
   const paths = withNodeDomParser(() => vectorText.loader.parse(vectorText.clean).paths);
-  const geometry = compilePaths(paths, partIndices, metadata.parts, metadata, gradients, curveSegments);
+  const geometry = compilePaths(paths, partIndices, metadata.parts, metadata, gradients, curveSegments, strokeArcDivisions);
   geometry.expressionIndices = compileExpressionIndices(geometry, metadata);
   const sourcePaths = compileSourcePaths(paths, partIndices, metadata.parts);
   const paintedIds = new Set(paths.map((path) => path.userData.node.getAttribute("id")));
@@ -25933,7 +25934,7 @@ function compileVectorAssetCore(svgBytes, sourcePath = "asset.svg", options = {}
   return {
     schemaVersion: VECTOR_ASSET_SCHEMA_VERSION,
     compilerVersion: VECTOR_ASSET_COMPILER_VERSION,
-    compilerOptions: { curveSegments, normalizeCenteredViewBox },
+    compilerOptions: { curveSegments, normalizeCenteredViewBox, strokeArcDivisions },
     sourceSha256,
     sourcePath,
     metadata,
@@ -25981,22 +25982,24 @@ async function readBoundedResponse(response, limit) {
   return bytes;
 }
 function validateLoadOptions(url, options) {
-  if (options === null || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some((key) => !["sourcePath", "expectedSha256", "maxBytes", "curveSegments", "includeSourcePaths", "normalizeCenteredViewBox"].includes(key))) {
-    throw new TypeError("load options may contain only sourcePath, expectedSha256, maxBytes, curveSegments, includeSourcePaths, and normalizeCenteredViewBox");
+  if (options === null || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some((key) => !["sourcePath", "expectedSha256", "maxBytes", "curveSegments", "strokeArcDivisions", "includeSourcePaths", "normalizeCenteredViewBox"].includes(key))) {
+    throw new TypeError("load options may contain only sourcePath, expectedSha256, maxBytes, curveSegments, strokeArcDivisions, includeSourcePaths, and normalizeCenteredViewBox");
   }
   const sourcePath = options.sourcePath ?? url;
   const expectedSha256 = options.expectedSha256;
   const maxBytes = options.maxBytes ?? MAX_SOURCE_BYTES2;
   const curveSegments = options.curveSegments ?? 16;
+  const strokeArcDivisions = options.strokeArcDivisions === void 0 ? 12 : options.strokeArcDivisions;
   const includeSourcePaths = options.includeSourcePaths ?? false;
   const normalizeCenteredViewBox = options.normalizeCenteredViewBox ?? false;
   if (typeof sourcePath !== "string" || sourcePath.length < 1 || sourcePath.length > 2048) throw new TypeError("sourcePath must be a nonempty string of at most 2048 characters");
   if (expectedSha256 !== void 0 && (typeof expectedSha256 !== "string" || !SHA256.test(expectedSha256))) throw new TypeError("expectedSha256 must be a lowercase SHA-256 digest");
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_SOURCE_BYTES2) throw new RangeError("maxBytes must be an integer from 1 through 524288");
   if (!Number.isSafeInteger(curveSegments) || curveSegments < 4 || curveSegments > 64) throw new RangeError("curveSegments must be an integer from 4 to 64");
+  if (!Number.isSafeInteger(strokeArcDivisions) || strokeArcDivisions < 4 || strokeArcDivisions > 64) throw new RangeError("strokeArcDivisions must be an integer from 4 to 64");
   if (typeof includeSourcePaths !== "boolean") throw new TypeError("includeSourcePaths must be a boolean");
   if (typeof normalizeCenteredViewBox !== "boolean") throw new TypeError("normalizeCenteredViewBox must be a boolean");
-  return { sourcePath, expectedSha256, maxBytes, curveSegments, includeSourcePaths, normalizeCenteredViewBox };
+  return { sourcePath, expectedSha256, maxBytes, curveSegments, strokeArcDivisions, includeSourcePaths, normalizeCenteredViewBox };
 }
 function createVectorAssetLoader({ fetch: fetcher = globalThis.fetch, maxEntries = 64 } = {}) {
   if (typeof fetcher !== "function") throw new TypeError("A browser fetch function is required");
@@ -26009,7 +26012,16 @@ function createVectorAssetLoader({ fetch: fetcher = globalThis.fetch, maxEntries
     if (!(typeof input === "string" || typeof URL !== "undefined" && input instanceof URL)) throw new TypeError("load expects an SVG URL string or URL");
     const url = String(input);
     const settings = validateLoadOptions(url, options);
-    const key = JSON.stringify([url, settings.sourcePath, settings.expectedSha256 ?? null, settings.maxBytes, settings.curveSegments, settings.normalizeCenteredViewBox, settings.includeSourcePaths]);
+    const key = JSON.stringify([
+      url,
+      settings.sourcePath,
+      settings.expectedSha256 ?? null,
+      settings.maxBytes,
+      settings.curveSegments,
+      settings.strokeArcDivisions,
+      settings.normalizeCenteredViewBox,
+      settings.includeSourcePaths
+    ]);
     if (cache.has(key)) {
       const asset = cache.get(key);
       cache.delete(key);
@@ -26032,6 +26044,7 @@ function createVectorAssetLoader({ fetch: fetcher = globalThis.fetch, maxEntries
       if (disposed) throw new Error("Vector asset loader is disposed");
       const asset = compileVectorAssetCore(bytes, settings.sourcePath, {
         curveSegments: settings.curveSegments,
+        strokeArcDivisions: settings.strokeArcDivisions,
         normalizeCenteredViewBox: settings.normalizeCenteredViewBox
       }, sourceSha256);
       if (!settings.includeSourcePaths) delete asset.sourcePaths;
