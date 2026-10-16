@@ -479,7 +479,7 @@ const { createSession, profiles } = await import('/dist/rollback.js');
   const vectorAssetPage = await browser.newPage({ viewport: { width: 1000, height: 800 }, hasTouch: true, deviceScaleFactor: 2 });
   const vectorAssetErrors = [];
   vectorAssetPage.on('pageerror', error => vectorAssetErrors.push(error.message));
-  await vectorAssetPage.goto(`http://127.0.0.1:${server.address().port}/dist/previews/vector-assets.html`);
+  await vectorAssetPage.goto(`http://127.0.0.1:${server.address().port}/dist/previews/vector-assets.html?fixture=seed-scout`);
   await vectorAssetPage.waitForFunction(() => Boolean(window.vectorAssetDemo?.ready || window.vectorAssetDemo?.error), null, { timeout: 15000 });
   assert.equal(await vectorAssetPage.evaluate(() => window.vectorAssetDemo?.error ?? null), null, 'standalone vector-assets preview initializes');
   report.vectorAssets = await exerciseVectorAssets(vectorAssetPage);
