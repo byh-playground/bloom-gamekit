@@ -10,6 +10,7 @@
     "vector-assets:compile": "node modules/vector-assets/scripts/compile.mjs",
     "test:vector-assets": "node modules/vector-assets/tests/compiler.mjs && npm run build && npm run build:previews && node modules/vector-assets/tests/run-browser.mjs",
     "test:vector-assets:non-scaling-stroke": "npm run build && node modules/vector-assets/tests/run-non-scaling-stroke.browser.mjs",
+    "test:rendering:yarn-shader": "npm run build && node modules/rendering/tests/yarn-shader.mjs && node modules/rendering/tests/run-yarn-shader.browser.mjs",
     "test": "node project/test-scenarios.mjs core",
     "test:browser": "node project/test-scenarios.mjs core",
     "test:network": "node project/test-scenarios.mjs network",
