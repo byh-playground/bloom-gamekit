@@ -149,7 +149,8 @@ if (ctx.beginFrame({ width: canvas.width, height: canvas.height, clearColor: [0,
 ```
 
 - path/state API는 CSS hex/rgb(a)/hsl(a)/named paint, alpha, affine transform, curve, arc/ellipse/rect/roundRect, fill/stroke, dash, clip, scoped color, silhouette/group, prebaked atlas text의 metrics와 그리기를 제공합니다. `filter`는 `none`과 게임 white-flash 값 `brightness(0) invert(1)`을 지원하며 save/restore에 포함됩니다. 흰색 변환은 강제색을 결정한 뒤 RGB만 흰색으로 바꾸고 alpha는 보존합니다.
-- `createRadialGradient(x0,y0,r0,x1,y1,r1)`는 concentric circle만 지원하고, creation transform과 sorted color stops를 보존합니다. `addColorStop()`의 premultiplied 256×1 ramp를 frame 안 첫 fill 때 upload하고, 같은 gradient 객체의 후속 fill은 동일 handle을 재사용합니다. 추가한 stop은 이전 geometry queue를 먼저 제출한 뒤 같은 handle에 update합니다. 모든 gradient texture와 raster byte는 `endFrame()`에서 공용 queue를 flush한 뒤 해제되고, `stats().activeGradientTextureCount`는 frame 밖에서 0입니다. filter white-flash, forceColor, globalAlpha와 clip/group 안에서도 alpha와 painter order를 유지합니다. 비동심 원과 singular transform은 오류로 명시합니다.
+- `createRadialGradient(x0,y0,r0,x1,y1,r1)`는 두 원의 중심과 반지름, 생성 시 transform, 정렬된 color stop을 보존합니다. Fragment shader가 Canvas의 두 원뿔(cone) 매개변수를 계산해 기존 premultiplied 256x1 ramp를 샘플링합니다. 같은 원 두 개는 아무것도 그리지 않고 cone 바깥 fragment는 버려 이전 paint를 유지합니다. 좌표는 유한수, 반지름은 0 이상이어야 하며 singular 생성 transform은 제출 시 명시적으로 오류가 납니다. Gradient texture 재사용, stop 수정 시 queue flush, alpha, painter order, endFrame 정리는 기존 계약을 따릅니다. [Canvas radial-gradient construction](https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-createradialgradient)과 실제 픽셀 검증은 `npm run test:rendering:vector-gradient-clip`에서 47px 및 74px 크기로 확인합니다.
+
 - `fillTriangleFan(points,paint)`는 caller가 정의한 fan topology를 삼각형 재분할 없이 공통 clip/group 경로로 제출하고, `VectorRenderer` private method를 호출하지 않습니다. `PrimitivePainter(target,{point,alphaMultiplier})`는 WebGL `VectorContext`와 caller가 전달한 native Canvas2D paint target 양쪽에 `poly/tri/quad/regularPolygon/circle/hex/line/fan`을 제공합니다. target 쪽에서는 하나의 path fill로 원래 fan을 그리고, `point(x,y)` hook은 caller의 authored facing만 반영합니다. UI thumbnail은 기존의 명시적인 native Canvas2D target을 전달할 수 있습니다. world draw는 WebGLContext가 담당합니다.
 - `withGroupOpacity(opacity,callback,bounds)`는 그룹 opacity를 딱 한 번 합성하고 callback 안에서 globalAlpha를 1로 둔 뒤 원래 상태를 복구합니다. `withSilhouette(color,width,paint,radius)`는 opacity-bounded group 안에서 강제색 offset fan과 중심 pass를 그리고, forceColor를 복구한 뒤 원래 body를 한 번 더 그립니다. 기존 clip/filter와 draw order를 보존합니다.
 - `drawMeshSilhouette(mesh,{transform,morph,parts,color,width,radius,outlineScale})`는 silhouette와 본체를 painter order대로 제출합니다. `outlineScale`을 생략하면 기존 8방향·중심 outline 9개와 body를 쓰며, `outlineScale >= 1`이면 변환 중심 기준으로 확장한 outline 1개와 body 1개를 씁니다. 두 경로 모두 색/forceColor, 현재 및 local transform, morph/parts, clip, white-flash, globalAlpha와 group opacity를 캡처합니다. ANGLE WebGL1에서 확장 경로는 2 instance/128 bytes, 기본 경로는 10 instance/640 bytes이며, uniform fallback도 각각 2회/10회 draw합니다. 확장 경로는 silhouette callback과 pixel-identical하지 않은 모양 근사이므로 필요한 게임 아트에서만 명시하고 실제 화면을 확인하세요. 임의 path/vector callback에는 generic `withSilhouette`을 그대로 사용합니다.
@@ -319,14 +320,23 @@ const surface = surfaces.createSurface({
 
 // Keep this call at the styled SVG path's painter-order position.
 // transform composes the actor matrix and the animated part pose.
-surfaces.drawSurface(surface, { projection, transform: partMatrix, clips, alpha, color });
+const clip = ctx.createClipPath(authoredConcaveContour);
+ctx.save();
+ctx.clipPath(clip); // retained stencil clip; requires an active stencil attachment
+surfaces.drawSurface(surface, {
+  projection, transform: partMatrix, clips, alpha, color,
+  stencilRef: ctx.stencilRef, // pass the active VectorContext stencil depth
+});
+ctx.restore();
 surfaces.deleteSurface(surface);
 surfaces.dispose();
 ```
 
 Yarn metadata accepts the SVG `kind`, `seed`, stitch, edge, and fiber fields used by the vector-assets schema. Sketch metadata accepts the SVG `kind`, `seed`, `periodMs`, echo, and hatch fields. Yarn cells and edge fibers are deterministic from the authored seed. Sketch time is the caller's absolute `timeMs`; the renderer owns no clock. A fill and its contour strip are separate ordered draws. The host still decides where each surface appears between eyes, outlines, and other SVG paths; this API never sorts.
 
-Coordinates, stitch dimensions, and fiber dimensions are in source-vector units and follow the supplied object/part transform, including rotation and non-uniform scale. CSS size affects pixel sampling and DPR affects backing resolution; neither changes the authored local-space material scale. Pass `clips` as convex polygons in transformed world coordinates; exceeding the device's fragment-uniform clip-plane limit throws. Depth and blending use explicit `WebGLDevice` state. The edge-strip join uses a bounded four-width miter. These are filled surface effects, not SVG stroke caps/joins, and SVG outline strokes remain on the existing vector-asset path.
+Coordinates, stitch dimensions, and fiber dimensions are in source-vector units and follow the supplied object/part transform, including rotation and non-uniform scale. CSS size affects pixel sampling and DPR affects backing resolution; neither changes the authored local-space material scale. Pass `clips` as convex polygons in transformed world coordinates; exceeding the device's fragment-uniform clip-plane limit throws. For a retained concave clip, use `VectorContext.createClipPath()` / `clipPath()` and pass its active `stencilRef` to every `drawSurface()` call in that painter-order scope. The renderer applies the same explicit `EQUAL` stencil test to both fill and edge draws, validates that the current framebuffer has a stencil attachment, and disables stencil on calls with `stencilRef: null`. No contour approximation is used. `VectorContext` rebuilds its retained clip stack after context restoration; resume the frame through that context before submitting Yarn. Depth and blending use explicit `WebGLDevice` state. The edge-strip join uses a bounded four-width miter. These are filled surface effects, not SVG stroke caps/joins, and SVG outline strokes remain on the existing vector-asset path.
+
+`YarnSurfaceRenderer.drawSurface()` accepts `stencilRef: null` (default) or an integer in `[0,255]`; a non-null value requires the active default framebuffer or render target to have stencil. Convex `clips` and stencil clipping intersect. This option adds no mesh batching path and does not change `MeshRenderer` compatibility or painter ordering.
 
 The API is additive: existing `MeshRenderer` meshes, old compiled assets, static yarn/sketch triangle assets, and ordinary SVG strokes keep their existing behavior until a consumer opts into the new material and passes its authored surface data. The focused validation is `npm run test:rendering:yarn-shader`; it checks density-invariant geometry and real Chromium/WebGL pixels at 47 and 74 CSS px, clipping, and context restoration. It is a correctness check, not an FPS or CPU benchmark.
 

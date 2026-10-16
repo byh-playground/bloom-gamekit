@@ -1,3 +1,7 @@
+## v0.10.0 (2026-10-16)
+
+Rendering adds Canvas-compatible two-circle radial gradients to `VectorContext.createRadialGradient()` while retaining the creation transform and existing gradient texture lifecycle. `YarnSurfaceRenderer.drawSurface()` accepts an explicit `stencilRef` so retained Yarn fill and edge passes respect the active concave `VectorContext` stencil clip. Missing stencil attachments and invalid refs fail explicitly. Existing meshes and `MeshRenderer` batching semantics are unchanged. Focused browser pixel checks cover the Squish radial-gradient descriptor at 47 CSS px/DPR 1 and 74 CSS px/DPR 2, plus concave Yarn clipping and context restoration.
+
 ## v0.9.0 (2026-10-16)
 
 Rendering adds endpoint-preserving linear gradient paints, retained single-contour stencil clips for full-detail concave paths, and safe mixed-alpha run instancing for disjoint bounds. `MeshRenderer.stats()` reports flush-boundary and actual draw-dispatch reasons. Unsupported clip shapes or unsafe batch bounds keep their explicit error or ordered fallback behavior.
