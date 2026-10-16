@@ -91,12 +91,38 @@ function clipState(clips, maxPlanes) {
   return { key: key.join(','), values, count: values.length / 3 };
 }
 
+function meshPartBounds(vertices, partCount, morphCount) {
+  const bounds = Array.from({ length: partCount }, () => ({
+    minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity,
+    minDx0: Infinity, minDy0: Infinity, maxDx0: -Infinity, maxDy0: -Infinity,
+    minDx1: Infinity, minDy1: Infinity, maxDx1: -Infinity, maxDy1: -Infinity,
+  }));
+  for (let at = 0; at < vertices.length; at += 11) {
+    const bound = bounds[vertices[at + 10]], x = vertices[at], y = vertices[at + 1];
+    bound.minX = Math.min(bound.minX, x); bound.maxX = Math.max(bound.maxX, x);
+    bound.minY = Math.min(bound.minY, y); bound.maxY = Math.max(bound.maxY, y);
+    const dx0 = morphCount > 0 ? vertices[at + 6] : 0, dy0 = morphCount > 0 ? vertices[at + 7] : 0;
+    const dx1 = morphCount > 1 ? vertices[at + 8] : 0, dy1 = morphCount > 1 ? vertices[at + 9] : 0;
+    bound.minDx0 = Math.min(bound.minDx0, dx0); bound.maxDx0 = Math.max(bound.maxDx0, dx0);
+    bound.minDy0 = Math.min(bound.minDy0, dy0); bound.maxDy0 = Math.max(bound.maxDy0, dy0);
+    bound.minDx1 = Math.min(bound.minDx1, dx1); bound.maxDx1 = Math.max(bound.maxDx1, dx1);
+    bound.minDy1 = Math.min(bound.minDy1, dy1); bound.maxDy1 = Math.max(bound.maxDy1, dy1);
+  }
+  for (const bound of bounds) {
+    if (!Number.isFinite(bound.minX)) { bound.minX = bound.minY = bound.maxX = bound.maxY = 0; }
+    for (const key of ['minDx0', 'minDy0', 'maxDx0', 'maxDy0', 'minDx1', 'minDy1', 'maxDx1', 'maxDy1']) if (!Number.isFinite(bound[key])) bound[key] = 0;
+  }
+  return bounds;
+}
+
 /** Retained GPU meshes; batches only adjacent equal meshes. No game sorting or animation clock. */
 export class MeshRenderer {
-  constructor(device, { maxMeshes = 512, maxMeshBytes = 32 * 1024 * 1024, maxInstances = 2048 } = {}) {
+  constructor(device, { maxMeshes = 512, maxMeshBytes = 32 * 1024 * 1024, maxInstances = 2048, safeAlphaRunBatching = true } = {}) {
     for (const [key, value] of Object.entries({ maxMeshes, maxMeshBytes, maxInstances })) if (!Number.isSafeInteger(value) || value < 1) throw new RangeError(`${key} must be positive`);
+    if (typeof safeAlphaRunBatching !== 'boolean') throw new TypeError('safeAlphaRunBatching must be a boolean');
     this.device = device;
     this.maxMeshes = maxMeshes; this.maxMeshBytes = maxMeshBytes; this.maxInstances = maxInstances;
+    this.safeAlphaRunBatching = safeAlphaRunBatching;
     if (maxInstances * 64 > device.maxBufferBytes) throw new RangeError('Mesh instance buffer exceeds device byte limit');
     this.maxPlanes = Math.max(1, Math.min(32, device.gl.getParameter(device.gl.MAX_FRAGMENT_UNIFORM_VECTORS) - 2));
     this.instanced = device.instancingSupported === true;
@@ -108,7 +134,13 @@ export class MeshRenderer {
     this.partScratch = new Float32Array(16 * 12);
     this.alphaRunScratch = [];
     this.alphaRunCache = new WeakMap();
-    this.metrics = { draws: 0, instances: 0, geometryUploads: 0, geometryBytesUploaded: 0, instanceBytesUploaded: 0, partUniformBytesSubmitted: 0, alphaRunCacheHits: 0, alphaRunCacheMisses: 0 };
+    this.alphaQueue = new Array(maxInstances); this.alphaQueueBounds = { minX: 0, minY: 0, maxX: 0, maxY: 0 }; this.alphaBoundsScratch = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+    this.alphaQueueParts = new Float32Array(16 * 12); this.alphaQueueCount = 0; this.alphaQueueState = null;
+    this.metrics = { draws: 0, instances: 0, geometryUploads: 0, geometryBytesUploaded: 0, instanceBytesUploaded: 0, partUniformBytesSubmitted: 0,
+      alphaRunCacheHits: 0, alphaRunCacheMisses: 0, alphaRunSafeBatches: 0, alphaRunBatchedInstances: 0, alphaRunDrawsSaved: 0,
+      alphaRunSafeRunDraws: 0, alphaRunImmediateRunDraws: 0, alphaRunOverlapBoundaries: 0, alphaRunSignatureBoundaries: 0,
+      alphaRunUnbatchableBounds: 0, alphaRunImmediateInstances: 0,
+      flushReasons: Object.create(null), drawDispatchReasons: Object.create(null) };
     this.state = 'ready'; this.failure = null;
     this.onLost = () => { this.discard(); this.state = 'lost'; };
     this.onRestored = () => {
@@ -206,14 +238,15 @@ export class MeshRenderer {
     }
     const mesh = Object.freeze({ renderer: this, buffer, indexBuffer, vertices, indices: ownedIndices,
       expressionIndices: ownedExpressions, indexVariants: ownedVariants,
-      count: ownedIndices?.length ?? vertices.length / 11, byteLength, partCount: data.partCount, morphCount: data.morphCount, strideFloats: 11, hasNonScalingStroke: nonScalingStroke });
+      count: ownedIndices?.length ?? vertices.length / 11, byteLength, partCount: data.partCount, morphCount: data.morphCount, strideFloats: 11,
+      hasNonScalingStroke: nonScalingStroke, partBounds: meshPartBounds(vertices, data.partCount, data.morphCount) });
     this.meshes.add(mesh); this.bytes += byteLength;
     this.metrics.geometryUploads++; this.metrics.geometryBytesUploaded += byteLength;
     return mesh;
   }
   deleteMesh(mesh) {
     if (!this.meshes.has(mesh)) return false;
-    if (this.pending?.mesh === mesh) this.flush();
+    if (this.pending?.mesh === mesh || (this.alphaQueueCount && this.alphaQueueState.mesh === mesh)) this.flush('deleteMesh');
     this.alphaRunCache.delete(mesh);
     this.device.deleteVertexBuffer(mesh.buffer);
     if (mesh.indexBuffer) this.device.deleteIndexBuffer(mesh.indexBuffer);
@@ -227,21 +260,103 @@ export class MeshRenderer {
     const { matrix = IDENTITY, projection, morph = [0, 0], parts = null, color = WHITE,
       forceColor = false, alpha = 1, whiteFlash = false, clips = [], depth = 0,
       depthTest = false, depthWrite = false, depthWriteAlphaThreshold = null, depthFunc = 'lequal', indexVariant = null,
-      strokeViewport = null } = options;
+      strokeViewport = null, stencilRef = null } = options;
     this._drawMeshInstances(mesh, { matrices: matrix, count: 1, projection, morph, parts, color, forceColor, alpha, whiteFlash, clips, indexVariant,
-      depth, depthTest, depthWrite, depthWriteAlphaThreshold, depthFunc, strokeViewport });
+      depth, depthTest, depthWrite, depthWriteAlphaThreshold, depthFunc, strokeViewport, stencilRef });
+  }
+  _screenBounds(mesh, matrices, instanceIndex, projection, morph) {
+    if (mesh.hasNonScalingStroke || projection[2] !== 0 || projection[5] !== 0 || Math.abs(projection[8]) < 1e-12) return null;
+    const width = this.device.activeRenderTarget?.width ?? this.device.canvas.width;
+    const height = this.device.activeRenderTarget?.height ?? this.device.canvas.height;
+    const matrixAt = instanceIndex * 6, m0 = matrices[matrixAt], m1 = matrices[matrixAt + 1], m2 = matrices[matrixAt + 2], m3 = matrices[matrixAt + 3], m4 = matrices[matrixAt + 4], m5 = matrices[matrixAt + 5];
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (let partIndex = 0; partIndex < mesh.partCount; partIndex++) {
+      const bound = mesh.partBounds[partIndex], at = partIndex * 12, poseMorph0 = morph[0] + this.partScratch[at + 8], poseMorph1 = morph[1] + this.partScratch[at + 9];
+      const x0 = bound.minX + (poseMorph0 < 0 ? bound.maxDx0 : bound.minDx0) * poseMorph0 + (poseMorph1 < 0 ? bound.maxDx1 : bound.minDx1) * poseMorph1;
+      const x1 = bound.maxX + (poseMorph0 < 0 ? bound.minDx0 : bound.maxDx0) * poseMorph0 + (poseMorph1 < 0 ? bound.minDx1 : bound.maxDx1) * poseMorph1;
+      const y0 = bound.minY + (poseMorph0 < 0 ? bound.maxDy0 : bound.minDy0) * poseMorph0 + (poseMorph1 < 0 ? bound.maxDy1 : bound.minDy1) * poseMorph1;
+      const y1 = bound.maxY + (poseMorph0 < 0 ? bound.minDy0 : bound.maxDy0) * poseMorph0 + (poseMorph1 < 0 ? bound.minDy1 : bound.maxDy1) * poseMorph1;
+      const pa = this.partScratch[at], pc = this.partScratch[at + 1], pe = this.partScratch[at + 2];
+      const pb = this.partScratch[at + 4], pd = this.partScratch[at + 5], pf = this.partScratch[at + 6];
+      for (let xi = 0; xi < 2; xi++) for (let yi = 0; yi < 2; yi++) {
+        const x = xi ? x1 : x0, y = yi ? y1 : y0, partX = pa * x + pc * y + pe, partY = pb * x + pd * y + pf;
+        const worldX = m0 * partX + m2 * partY + m4, worldY = m1 * partX + m3 * partY + m5;
+        const clipX = projection[0] * worldX + projection[3] * worldY + projection[6], clipY = projection[1] * worldX + projection[4] * worldY + projection[7];
+        const px = (clipX / projection[8] + 1) * width / 2, py = (1 - clipY / projection[8]) * height / 2;
+        if (!Number.isFinite(px) || !Number.isFinite(py)) return null;
+        minX = Math.min(minX, px); maxX = Math.max(maxX, px); minY = Math.min(minY, py); maxY = Math.max(maxY, py);
+      }
+    }
+    if (!Number.isFinite(minX)) return null;
+    const bounds = this.alphaBoundsScratch;
+    bounds.minX = minX - 1.5; bounds.minY = minY - 1.5; bounds.maxX = maxX + 1.5; bounds.maxY = maxY + 1.5;
+    return bounds;
+  }
+  _boundsOverlap(a, b) { return !(a.maxX < b.minX || b.maxX < a.minX || a.maxY < b.minY || b.maxY < a.minY); }
+  _extendAlphaQueueBounds(bounds) {
+    const group = this.alphaQueueBounds;
+    if (!this.alphaQueueCount) Object.assign(group, bounds);
+    else {
+      group.minX = Math.min(group.minX, bounds.minX); group.minY = Math.min(group.minY, bounds.minY);
+      group.maxX = Math.max(group.maxX, bounds.maxX); group.maxY = Math.max(group.maxY, bounds.maxY);
+    }
+  }
+  _alphaQueueMatches(mesh, projection, clip, stencilRef, depthTest, depthFunc, indexVariant, runs) {
+    const state = this.alphaQueueState;
+    if (!state) return true;
+    if (state.mesh !== mesh || state.indexVariant !== indexVariant || state.clip.key !== clip.key || state.stencilRef !== stencilRef
+      || state.depthTest !== depthTest || state.depthFunc !== depthFunc || state.runKey !== runs.join(',')
+      || projection.some((n, i) => Math.fround(n) !== state.projection[i])) return false;
+    for (let i = 0; i < mesh.partCount * 12; i++) if (this.partScratch[i] !== this.alphaQueueParts[i]) return false;
+    return true;
+  }
+  _startAlphaQueue(mesh, projection, clip, stencilRef, depthTest, depthFunc, indexVariant, runs) {
+    this.alphaQueueParts.set(this.partScratch.subarray(0, mesh.partCount * 12));
+    this.alphaQueueState = { mesh, projection: Float32Array.from(projection), clip, stencilRef, depthTest, depthFunc, indexVariant, runs: runs.slice(), runKey: runs.join(',') };
+  }
+  _flushAlphaQueue(reason) {
+    if (!this.alphaQueueCount) return;
+    const state = this.alphaQueueState, mesh = state.mesh, parts = this.alphaQueueParts.subarray(0, mesh.partCount * 12);
+    const indexBufferVariant = state.indexVariant === null ? null : mesh.indexVariants.get(state.indexVariant) ?? mesh.expressionIndices.get(state.indexVariant);
+    const projection = state.projection, clip = state.clip, pipeline = this._pipeline(mesh, clip.count > 0), uniforms = { u_projection: projection };
+    this.planes.fill(0); if (clip.values) this.planes.set(clip.values);
+    if (clip.count) Object.assign(uniforms, { 'u_planes[0]': this.planes, u_planeCount: clip.count });
+    if (mesh.partCount > 1) uniforms['u_parts[0]'] = parts;
+    const instances = this.alphaQueueCount;
+    this.device.uploadVertices(this.instanceBuffer, this.instances.subarray(0, instances * 16));
+    this.metrics.instanceBytesUploaded += instances * 64;
+    for (let run = 0; run < state.runs.length; run += 3) {
+      this.device.draw({ pipeline, buffer: mesh.buffer, indexBuffer: indexBufferVariant?.indexBuffer ?? mesh.indexBuffer,
+        first: state.runs[run], count: state.runs[run + 1], instanceBuffer: this.instanceBuffer, instances, uniforms,
+        depth: { test: state.depthTest, write: state.runs[run + 2], func: state.depthFunc },
+        stencil: state.stencilRef === null ? false : { func: 'equal', ref: state.stencilRef, mask: 255, writeMask: 0, pass: 'keep' } });
+      this.metrics.draws++;
+      this.metrics.drawDispatchReasons[reason] = (this.metrics.drawDispatchReasons[reason] ?? 0) + 1;
+      this.metrics.alphaRunSafeRunDraws++;
+      if (mesh.partCount > 1) this.metrics.partUniformBytesSubmitted += parts.byteLength;
+    }
+    this.metrics.instances += instances;
+    if (instances > 1) {
+      this.metrics.alphaRunSafeBatches++;
+      this.metrics.alphaRunBatchedInstances += instances;
+      this.metrics.alphaRunDrawsSaved += (instances - 1) * (state.runs.length / 3);
+    }
+    this.metrics.flushReasons[reason] = (this.metrics.flushReasons[reason] ?? 0) + 1;
+    this.alphaQueueCount = 0; this.alphaQueueState = null;
   }
   /** Internal ordered instance append used when one retained pose has several transforms. */
   _drawMeshInstances(mesh, { matrices, count, projection, morph = [0, 0], parts = null, color = WHITE,
     forceColor = false, alpha = 1, whiteFlash = false, clips = [], prefixColor = null,
     prefixCount = 0, forceColorPrefixCount = 0, depth = 0, depthTest = false, depthWrite = false,
-    depthWriteAlphaThreshold = null, depthFunc = 'lequal', indexVariant = null, strokeViewport = null } = {}) {
+    depthWriteAlphaThreshold = null, depthFunc = 'lequal', indexVariant = null, strokeViewport = null, stencilRef = null } = {}) {
     this._ready();
     if (!this.meshes.has(mesh)) throw new TypeError('Mesh owned by this renderer required');
     if (indexVariant !== null && (typeof indexVariant !== 'string' || (!mesh.expressionIndices.has(indexVariant) && !mesh.indexVariants.has(indexVariant)))) {
       throw new TypeError('Known mesh index variant required');
     }
     if (!this.device.active) throw new Error('beginFrame required');
+    if (stencilRef !== null && (!Number.isSafeInteger(stencilRef) || stencilRef < 0 || stencilRef > 255)) throw new RangeError('stencilRef must be null or in [0,255]');
+    if (stencilRef !== null && !this.device.activeStencilAvailable) throw new Error('A stencil-tested mesh requires an active stencil attachment');
     if (!Number.isSafeInteger(count) || count < 1 || !matrices || matrices.length !== count * 6) throw new TypeError('Packed mesh instance matrices required');
     for (let i = 0; i < matrices.length; i++) if (!Number.isFinite(matrices[i])) throw new TypeError('Mesh matrix values must be finite');
     finiteArray(projection, 9, 'projection'); finiteArray(morph, 2, 'morph'); finiteArray(color, 4, 'color');
@@ -278,12 +393,19 @@ export class MeshRenderer {
     const depthStateKey = Number(depthTest) + ':' + Number(depthWrite) + ':' + depthFunc;
     const alphaDepthWrite = depthWrite && depthWriteAlphaThreshold !== null;
     if (!alphaDepthWrite) {
-      if (pending && (pending.mesh !== mesh || pending.indexVariant !== indexVariant || pending.clip.key !== clip.key || pending.depthStateKey !== depthStateKey || projection.some((n, i) => Math.fround(n) !== pending.projection[i]) || (mesh.partCount > 1 && pending.parts.some((n, i) => n !== this.partScratch[i])) || this.count === this.maxInstances)) this.flush();
+      if (this.alphaQueueCount) this._flushAlphaQueue('alphaBoundary');
+      if (pending) {
+        const reason = pending.mesh !== mesh ? 'mesh' : pending.indexVariant !== indexVariant ? 'indexVariant' : pending.clip.key !== clip.key ? 'clip'
+          : pending.stencilRef !== stencilRef ? 'stencil' : pending.depthStateKey !== depthStateKey ? 'depthState'
+            : projection.some((n, i) => Math.fround(n) !== pending.projection[i]) ? 'projection'
+              : mesh.partCount > 1 && pending.parts.some((n, i) => n !== this.partScratch[i]) ? 'parts' : this.count === this.maxInstances ? 'capacity' : null;
+        if (reason) this.flush(reason);
+      }
       if (variant?.count === 0) return;
       const part = this.partScratch, singlePart = mesh.partCount === 1;
       for (let i = 0; i < count; i++) {
-        if (this.count === this.maxInstances) this.flush();
-        if (!this.pending) this.pending = { mesh, projection: Float32Array.from(projection), clip, depthStateKey,
+        if (this.count === this.maxInstances) this.flush('capacity');
+        if (!this.pending) this.pending = { mesh, projection: Float32Array.from(projection), clip, stencilRef, depthStateKey,
           indexVariant, strokeSize, inverseStrokeProjection, depthState: { test: depthTest, write: depthWrite, func: depthFunc }, parts: this.partScratch.slice(0, mesh.partCount > 1 ? mesh.partCount * 12 : 0) };
         const offset = i * 6;
         let m0 = matrices[offset], m1 = matrices[offset + 1], m2 = matrices[offset + 2], m3 = matrices[offset + 3], m4 = matrices[offset + 4], m5 = matrices[offset + 5];
@@ -306,15 +428,29 @@ export class MeshRenderer {
       }
       return;
     }
-    const sharedMismatch = current => current.mesh !== mesh || current.indexVariant !== indexVariant || current.clip.key !== clip.key
-      || projection.some((n, i) => Math.fround(n) !== current.projection[i])
-      || (strokeSize && strokeSize.some((n, i) => n !== current.strokeSize?.[i]))
-      || (mesh.partCount > 1 && current.parts.some((n, i) => n !== this.partScratch[i]));
-    if (this.pending && (sharedMismatch(this.pending) || this.pending.depthStateKey !== depthStateKey || this.count === this.maxInstances)) this.flush();
     if (variant?.count === 0) return;
     const indices = variant?.indices ?? mesh.indices;
     const triangleCount = (variant?.count ?? mesh.count) / 3;
     const part = this.partScratch, singlePart = mesh.partCount === 1;
+    const writeAlphaInstance = (i, slot) => {
+      const offset = i * 6;
+      let m0 = matrices[offset], m1 = matrices[offset + 1], m2 = matrices[offset + 2], m3 = matrices[offset + 3], m4 = matrices[offset + 4], m5 = matrices[offset + 5];
+      let weight0 = morph[0], weight1 = morph[1], instanceAlpha = alpha;
+      if (singlePart) {
+        const a = m0, b = m1, c = m2, d = m3;
+        m0 = a * part[0] + c * part[4]; m1 = b * part[0] + d * part[4];
+        m2 = a * part[1] + c * part[5]; m3 = b * part[1] + d * part[5];
+        m4 = a * part[2] + c * part[6] + m4; m5 = b * part[2] + d * part[6] + m5;
+        instanceAlpha *= part[10]; weight0 += part[8]; weight1 += part[9];
+      }
+      const instanceColor = i < prefixCount ? prefixColor : color;
+      const instanceForceColor = i < forceColorPrefixCount ? true : forceColor, at = slot * 16, data = this.instances;
+      data[at] = m0; data[at + 1] = m2; data[at + 2] = m4; data[at + 3] = instanceAlpha;
+      data[at + 4] = m1; data[at + 5] = m3; data[at + 6] = m5; data[at + 7] = instanceForceColor ? 1 : 0;
+      data[at + 8] = instanceColor[0]; data[at + 9] = instanceColor[1]; data[at + 10] = instanceColor[2]; data[at + 11] = instanceColor[3];
+      data[at + 12] = weight0; data[at + 13] = weight1; data[at + 14] = whiteFlash ? 1 : 0;
+      data[at + 15] = depth + (singlePart ? part[11] : 0);
+    };
     for (let i = 0; i < count; i++) {
       const instanceColor = i < prefixCount ? prefixColor : color;
       const instanceForceColor = i < forceColorPrefixCount ? true : forceColor;
@@ -323,30 +459,43 @@ export class MeshRenderer {
       const totalVertices = triangleCount * 3;
       const oneRun = runs.length === 3 && runs[0] === 0 && runs[1] === totalVertices;
       if (!oneRun) {
-        this.flush();
-        const offset = i * 6;
-        let m0 = matrices[offset], m1 = matrices[offset + 1], m2 = matrices[offset + 2], m3 = matrices[offset + 3], m4 = matrices[offset + 4], m5 = matrices[offset + 5];
-        let weight0 = morph[0], weight1 = morph[1], instanceAlpha = alpha;
-        if (singlePart) {
-          const a = m0, b = m1, c = m2, d = m3;
-          m0 = a * part[0] + c * part[4]; m1 = b * part[0] + d * part[4];
-          m2 = a * part[1] + c * part[5]; m3 = b * part[1] + d * part[5];
-          m4 = a * part[2] + c * part[6] + m4; m5 = b * part[2] + d * part[6] + m5;
-          instanceAlpha *= part[10]; weight0 += part[8]; weight1 += part[9];
+        const bounds = this.safeAlphaRunBatching && this.instanced ? this._screenBounds(mesh, matrices, i, projection, morph) : null;
+        if (bounds) {
+          if (this.count) this.flush('alphaDepthBoundary');
+          if (this.alphaQueueCount && !this._alphaQueueMatches(mesh, projection, clip, stencilRef, depthTest, depthFunc, indexVariant, runs)) {
+            this.metrics.alphaRunSignatureBoundaries++;
+            this._flushAlphaQueue('alphaSignature');
+          }
+          if (this.alphaQueueCount && this._boundsOverlap(bounds, this.alphaQueueBounds)) {
+            this.metrics.alphaRunOverlapBoundaries++;
+            this._flushAlphaQueue('alphaOverlap');
+          }
+          if (this.alphaQueueCount === this.maxInstances) this._flushAlphaQueue('capacity');
+          if (!this.alphaQueueCount) this._startAlphaQueue(mesh, projection, clip, stencilRef, depthTest, depthFunc, indexVariant, runs);
+          this._extendAlphaQueueBounds(bounds);
+          const slot = this.alphaQueueCount;
+          writeAlphaInstance(i, slot); this.alphaQueueCount++;
+          continue;
         }
-        const at = 0, data = this.instances;
-        data[at] = m0; data[at + 1] = m2; data[at + 2] = m4; data[at + 3] = instanceAlpha;
-        data[at + 4] = m1; data[at + 5] = m3; data[at + 6] = m5; data[at + 7] = instanceForceColor ? 1 : 0;
-        data[at + 8] = instanceColor[0]; data[at + 9] = instanceColor[1];
-        data[at + 10] = instanceColor[2]; data[at + 11] = instanceColor[3];
-        data[at + 12] = weight0; data[at + 13] = weight1; data[at + 14] = whiteFlash ? 1 : 0;
-        data[at + 15] = depth + (singlePart ? part[11] : 0);
-        this._drawAlphaDepthRuns(mesh, variant, projection, clip, part, runs, depthTest, depthFunc, strokeSize, inverseStrokeProjection);
+        if (this.safeAlphaRunBatching) this.metrics.alphaRunUnbatchableBounds++;
+        if (this.alphaQueueCount) this._flushAlphaQueue('alphaUnsupportedBoundary');
+        if (this.count) this.flush('alphaImmediateBoundary');
+        writeAlphaInstance(i, 0);
+        this._drawAlphaDepthRuns(mesh, variant, projection, clip, part.subarray(0, mesh.partCount * 12), runs, depthTest, depthFunc, strokeSize, inverseStrokeProjection, stencilRef);
+        this.metrics.alphaRunImmediateInstances++; this.metrics.alphaRunImmediateRunDraws += runs.length / 3;
         continue;
       }
+      if (this.alphaQueueCount) this._flushAlphaQueue('singleRunBoundary');
       const write = runs[2], stateKey = Number(depthTest) + ':' + Number(write) + ':' + depthFunc;
-      if (this.pending && (this.pending.depthStateKey !== stateKey || this.count === this.maxInstances)) this.flush();
-      if (!this.pending) this.pending = { mesh, projection: Float32Array.from(projection), clip, depthStateKey: stateKey,
+      if (this.pending) {
+        const current = this.pending, reason = current.mesh !== mesh ? 'mesh' : current.indexVariant !== indexVariant ? 'indexVariant' : current.clip.key !== clip.key ? 'clip'
+          : current.stencilRef !== stencilRef ? 'stencil' : current.depthStateKey !== stateKey ? 'depthState'
+            : projection.some((n, j) => Math.fround(n) !== current.projection[j]) ? 'projection'
+              : strokeSize && strokeSize.some((n, j) => n !== current.strokeSize?.[j]) ? 'strokeViewport'
+                : mesh.partCount > 1 && current.parts.some((n, j) => n !== this.partScratch[j]) ? 'parts' : this.count === this.maxInstances ? 'capacity' : null;
+        if (reason) this.flush(reason);
+      }
+      if (!this.pending) this.pending = { mesh, projection: Float32Array.from(projection), clip, stencilRef, depthStateKey: stateKey,
         indexVariant, strokeSize, inverseStrokeProjection, depthState: { test: depthTest, write, func: depthFunc }, parts: this.partScratch.slice(0, mesh.partCount > 1 ? mesh.partCount * 12 : 0) };
       const offset = i * 6;
       let m0 = matrices[offset], m1 = matrices[offset + 1], m2 = matrices[offset + 2], m3 = matrices[offset + 3], m4 = matrices[offset + 4], m5 = matrices[offset + 5];
@@ -412,7 +561,7 @@ export class MeshRenderer {
     this.alphaRunScratch = [];
     return runs;
   }
-  _drawAlphaDepthRuns(mesh, variant, projection, clip, parts, runs, depthTest, depthFunc, strokeSize, inverseStrokeProjection) {
+  _drawAlphaDepthRuns(mesh, variant, projection, clip, parts, runs, depthTest, depthFunc, strokeSize, inverseStrokeProjection, stencilRef) {
     this.planes.fill(0);
     if (clip.values) this.planes.set(clip.values);
     const pipeline = this._pipeline(mesh, clip.count > 0), uniforms = { u_projection: projection };
@@ -431,16 +580,18 @@ export class MeshRenderer {
     for (let run = 0; run < runs.length; run += 3) {
       this.device.draw({ pipeline, buffer: mesh.buffer, indexBuffer, first: runs[run], count: runs[run + 1],
         instanceBuffer: this.instanceBuffer, instances: 1, uniforms,
-        depth: { test: depthTest, write: runs[run + 2], func: depthFunc } });
+        depth: { test: depthTest, write: runs[run + 2], func: depthFunc }, stencil: stencilRef===null?false:{func:'equal',ref:stencilRef,mask:255,writeMask:0,pass:'keep'} });
       this.metrics.draws++;
-      this.metrics.partUniformBytesSubmitted += parts.byteLength;
+      this.metrics.drawDispatchReasons.alphaImmediateRun = (this.metrics.drawDispatchReasons.alphaImmediateRun ?? 0) + 1;
+      if (mesh.partCount > 1) this.metrics.partUniformBytesSubmitted += parts.byteLength;
     }
     this.metrics.instances++;
   }
-  flush() {
+  flush(reason = 'explicit') {
+    if (this.alphaQueueCount) this._flushAlphaQueue(reason);
     if (!this.count) return;
     this._ready();
-    const { mesh, projection, clip, parts, depthState, indexVariant, strokeSize, inverseStrokeProjection } = this.pending;
+    const { mesh, projection, clip, parts, depthState, indexVariant, strokeSize, inverseStrokeProjection, stencilRef } = this.pending;
     const variant = indexVariant === null ? null : mesh.indexVariants.get(indexVariant) ?? mesh.expressionIndices.get(indexVariant);
     this.planes.fill(0); if (clip.values) this.planes.set(clip.values);
     const pipeline = this._pipeline(mesh, clip.count > 0), uniforms = { u_projection: projection };
@@ -449,22 +600,26 @@ export class MeshRenderer {
     if (mesh.partCount > 1) uniforms['u_parts[0]'] = parts;
     if (this.instanced) {
       this.device.uploadVertices(this.instanceBuffer, this.instances.subarray(0, this.count * 16));
-      this.device.draw({ pipeline, buffer: mesh.buffer, indexBuffer: variant?.indexBuffer ?? mesh.indexBuffer, count: variant?.count ?? mesh.count, instanceBuffer: this.instanceBuffer, instances: this.count, uniforms, depth: depthState });
-      this.metrics.instanceBytesUploaded += this.count * 64; this.metrics.draws++;
-      this.metrics.partUniformBytesSubmitted += parts.byteLength;
+      this.device.draw({ pipeline, buffer: mesh.buffer, indexBuffer: variant?.indexBuffer ?? mesh.indexBuffer, count: variant?.count ?? mesh.count, instanceBuffer: this.instanceBuffer, instances: this.count, uniforms, depth: depthState, stencil: stencilRef===null?false:{func:'equal',ref:stencilRef,mask:255,writeMask:0,pass:'keep'} });
+       this.metrics.instanceBytesUploaded += this.count * 64; this.metrics.draws++;
+       this.metrics.drawDispatchReasons[reason] = (this.metrics.drawDispatchReasons[reason] ?? 0) + 1;
+       if (mesh.partCount > 1) this.metrics.partUniformBytesSubmitted += parts.byteLength;
     } else {
       for (let i = 0; i < this.count; i++) {
         for (let j = 0; j < 4; j++) uniforms[['i_row0', 'i_row1', 'i_color', 'i_params'][j]] = this.instances.subarray(i * 16 + j * 4, i * 16 + j * 4 + 4);
-        this.device.draw({ pipeline, buffer: mesh.buffer, indexBuffer: variant?.indexBuffer ?? mesh.indexBuffer, count: variant?.count ?? mesh.count, uniforms, depth: depthState }); this.metrics.draws++;
-        this.metrics.partUniformBytesSubmitted += parts.byteLength;
+        this.device.draw({ pipeline, buffer: mesh.buffer, indexBuffer: variant?.indexBuffer ?? mesh.indexBuffer, count: variant?.count ?? mesh.count, uniforms, depth: depthState, stencil: stencilRef===null?false:{func:'equal',ref:stencilRef,mask:255,writeMask:0,pass:'keep'} }); this.metrics.draws++;
+        this.metrics.drawDispatchReasons[reason] = (this.metrics.drawDispatchReasons[reason] ?? 0) + 1;
+         if (mesh.partCount > 1) this.metrics.partUniformBytesSubmitted += parts.byteLength;
       }
     }
-    this.metrics.instances += this.count; this.discard();
+    this.metrics.instances += this.count;
+    this.metrics.flushReasons[reason] = (this.metrics.flushReasons[reason] ?? 0) + 1;
+    this.discard();
   }
-  discard() { this.count = 0; this.pending = null; }
+  discard() { this.count = 0; this.pending = null; this.alphaQueueCount = 0; this.alphaQueueState = null; }
   _ready() { if (this.state !== 'ready' || this.disposed) throw new Error(`MeshRenderer is ${this.state}${this.failure ? ': ' + this.failure : ''}`); }
-  beginFrame() { this.discard(); for (const key of Object.keys(this.metrics)) this.metrics[key] = 0; }
-  stats() { return { ...this.metrics, state: this.state, failure: this.failure, pipelineCount: this.pipelines.size, meshCount: this.meshes.size, retainedBytes: this.bytes, stagingBytes: this.instances.byteLength + this.planes.byteLength + this.partScratch.byteLength, instanced: this.instanced, maxClipPlanes: this.maxPlanes }; }
+  beginFrame() { this.discard(); for (const key of Object.keys(this.metrics)) if (key !== 'flushReasons' && key !== 'drawDispatchReasons') this.metrics[key] = 0; this.metrics.flushReasons = Object.create(null); this.metrics.drawDispatchReasons = Object.create(null); }
+  stats() { return { ...this.metrics, flushReasons: { ...this.metrics.flushReasons }, drawDispatchReasons: { ...this.metrics.drawDispatchReasons }, pendingAlphaRunInstances: this.alphaQueueCount, safeAlphaRunBatching: this.safeAlphaRunBatching, state: this.state, failure: this.failure, pipelineCount: this.pipelines.size, meshCount: this.meshes.size, retainedBytes: this.bytes, stagingBytes: this.instances.byteLength + this.planes.byteLength + this.partScratch.byteLength, instanced: this.instanced, maxClipPlanes: this.maxPlanes }; }
   dispose() {
     if (this.disposed) return;
     this.discard(); this.device.canvas.removeEventListener('webglcontextlost', this.onLost); this.device.canvas.removeEventListener('webglcontextrestored', this.onRestored);

@@ -57,6 +57,7 @@ export class WebGLDevice {
     canvas.addEventListener('webglcontextlost',this.onLost); canvas.addEventListener('webglcontextrestored',this.onRestored);
   }
   _ready() { if (this.state !== 'ready') throw new Error(`WebGLDevice is ${this.state}${this.failure ? `: ${this.failure}` : ''}`); }
+  get activeStencilAvailable(){if(!this.stencilAvailable)return false;if(!this.activeRenderTarget)return true;return this.renderTargets.get(this.activeRenderTarget)?.stencil===true;}
   _handle(map, handle, name) { const record = map.get(handle); if (!record) throw new Error(`Unknown/deleted ${name}`); return record; }
   _pipeline(record) {
     const gl = this.gl; let vertex, fragment, program;
@@ -147,23 +148,25 @@ export class WebGLDevice {
   }
   _filter(filter){if(filter!=='nearest'&&filter!=='linear')throw new TypeError('filter must be nearest or linear');const gl=this.gl,value=filter==='nearest'?gl.NEAREST:gl.LINEAR;gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,value);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,value);}
   _renderTarget(record){
-    const gl=this.gl,previous=gl.getParameter(gl.FRAMEBUFFER_BINDING),framebuffer=gl.createFramebuffer();
+    const gl=this.gl,previous=gl.getParameter(gl.FRAMEBUFFER_BINDING),previousRenderbuffer=gl.getParameter(gl.RENDERBUFFER_BINDING),framebuffer=gl.createFramebuffer();let stencilBuffer=null;
     if(!framebuffer)throw new Error('Render target framebuffer allocation failed');
     try{
       gl.bindFramebuffer(gl.FRAMEBUFFER,framebuffer);gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,record.gpu,0);
+      if(record.stencil){stencilBuffer=gl.createRenderbuffer();if(!stencilBuffer)throw new Error('Render target stencil allocation failed');gl.bindRenderbuffer(gl.RENDERBUFFER,stencilBuffer);gl.renderbufferStorage(gl.RENDERBUFFER,gl.STENCIL_INDEX8,record.width,record.height);gl.framebufferRenderbuffer(gl.FRAMEBUFFER,gl.STENCIL_ATTACHMENT,gl.RENDERBUFFER,stencilBuffer);}
       const status=gl.checkFramebufferStatus(gl.FRAMEBUFFER);if(status!==gl.FRAMEBUFFER_COMPLETE)throw new Error(`Render target framebuffer incomplete: ${status}`);
-      record.framebuffer=framebuffer;
-    }catch(error){gl.deleteFramebuffer(framebuffer);throw error;}finally{gl.bindFramebuffer(gl.FRAMEBUFFER,previous);}
+      record.framebuffer=framebuffer;record.stencilBuffer=stencilBuffer;
+    }catch(error){gl.deleteFramebuffer(framebuffer);if(stencilBuffer)gl.deleteRenderbuffer(stencilBuffer);throw error;}finally{gl.bindFramebuffer(gl.FRAMEBUFFER,previous);gl.bindRenderbuffer(gl.RENDERBUFFER,previousRenderbuffer);}
   }
   /** Creates a reusable, premultiplied RGBA texture/FBO pair; the handle is also a draw texture. */
-  createRenderTarget(width,height,{filter='linear'}={}){
+  createRenderTarget(width,height,{filter='linear',stencil=false}={}){
     this._ready();integer(width,'render target width',1,this.maxTextureSize);integer(height,'render target height',1,this.maxTextureSize);
     if(filter!=='nearest'&&filter!=='linear')throw new TypeError('filter must be nearest or linear');
-    const record={width,height,format:'rgba',premultiplied:true,source:null,filter,gpu:null,framebuffer:null};
+    if(typeof stencil!=='boolean')throw new TypeError('stencil must be boolean');if(stencil&&!this.stencilAvailable)throw new Error('Context has no stencil buffer');
+    const record={width,height,format:'rgba',premultiplied:true,source:null,filter,stencil,gpu:null,framebuffer:null,stencilBuffer:null};
     this._texture(record);
     try{this._renderTarget(record);}catch(error){this.gl.deleteTexture(record.gpu);record.gpu=null;throw error;}
-    const handle=Object.freeze({width,height});this.textures.set(handle,record);this.renderTargets.set(handle,record);
-    this.stats.textureCount=this.textures.size;this.stats.renderTargetCount=this.renderTargets.size;this.stats.gpuRenderTargetBytes+=width*height*4;return handle;
+    const handle=Object.freeze({width,height,stencil});this.textures.set(handle,record);this.renderTargets.set(handle,record);
+    this.stats.textureCount=this.textures.size;this.stats.renderTargetCount=this.renderTargets.size;this.stats.gpuRenderTargetBytes+=width*height*(4+(stencil?1:0));return handle;
   }
   /** Binds a target inside an active frame. Bindings may nest and must unwind in LIFO order. */
   bindRenderTarget(handle){
@@ -181,8 +184,8 @@ export class WebGLDevice {
   deleteRenderTarget(handle){
     const record=this.renderTargets.get(handle);if(!record)return false;
     if(this.renderTargetStack.some(entry=>entry.handle===handle)||this.activeRenderTarget===handle)throw new Error('Cannot delete a bound render target');
-    this.gl.deleteFramebuffer(record.framebuffer);this.gl.deleteTexture(record.gpu);this.renderTargets.delete(handle);this.textures.delete(handle);
-    this.stats.textureCount=this.textures.size;this.stats.renderTargetCount=this.renderTargets.size;this.stats.gpuRenderTargetBytes-=record.width*record.height*4;return true;
+    this.gl.deleteFramebuffer(record.framebuffer);if(record.stencilBuffer)this.gl.deleteRenderbuffer(record.stencilBuffer);this.gl.deleteTexture(record.gpu);this.renderTargets.delete(handle);this.textures.delete(handle);
+    this.stats.textureCount=this.textures.size;this.stats.renderTargetCount=this.renderTargets.size;this.stats.gpuRenderTargetBytes-=record.width*record.height*(4+(record.stencil?1:0));return true;
   }
   createTexture(source,{format='rgba',premultiplied=false,filter='linear'}={}){
     this._ready();if(filter!=='nearest'&&filter!=='linear')throw new TypeError('Invalid filter');const record={...this._source(source,format,premultiplied),filter,gpu:null};this._texture(record);
@@ -260,7 +263,7 @@ export class WebGLDevice {
       : typeof depth === 'object' && !Array.isArray(depth) ? { test: depth.test ?? true, write: depth.write ?? true, func: depth.func ?? 'lequal' }
         : (() => { throw new TypeError('depth must be false or a depth policy object'); })();
     if(depthState && (typeof depthState.test!=='boolean'||typeof depthState.write!=='boolean'))throw new TypeError('depth.test and depth.write must be booleans');
-    if((depthState?.test||depthState?.write)&&!this.depthAvailable)throw new Error('Context has no depth buffer');if(stencil&&!this.stencilAvailable)throw new Error('Context has no stencil buffer');
+    if((depthState?.test||depthState?.write)&&!this.depthAvailable)throw new Error('Context has no depth buffer');if(stencil&&!this.activeStencilAvailable)throw new Error('The active framebuffer has no stencil attachment');
     if(blend!==false&&!BLENDS.has(blend))throw new TypeError('Unsupported blend');if(depthState&&!FUNCTIONS[depthState.func])throw new TypeError('Unsupported depth function');
     if(stencil){if(!FUNCTIONS[stencil.func??'always'])throw new TypeError('Unsupported stencil function');for(const key of ['fail','zfail','pass'])if(!OPERATIONS[stencil[key]??'keep'])throw new TypeError('Unsupported stencil operation');for(const key of ['ref','mask','writeMask'])integer(stencil[key]??(key==='ref'?0:255),key,0,255);}
     if(!colorMask||colorMask.length!==4||!Array.from(colorMask).every(v=>typeof v==='boolean'))throw new TypeError('colorMask must contain booleans');
@@ -298,6 +301,6 @@ export class WebGLDevice {
     this.stats.drawCalls++;this.stats.vertices+=count*instances;
   }
   endFrame(){this._ready();if(!this.active)throw new Error('beginFrame required');if(this.renderTargetStack.length)throw new Error('Unbind render targets before endFrame');this.active=false;return this.stats;}
-  _deleteGPU(){const gl=this.gl;gl.useProgram(null);gl.bindBuffer(gl.ARRAY_BUFFER,null);gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,null);for(let i=0;i<this.maxTextures;i++){gl.activeTexture(gl.TEXTURE0+i);gl.bindTexture(gl.TEXTURE_2D,null);}gl.activeTexture(gl.TEXTURE0);for(const r of this.pipelines.values())gl.deleteProgram(r.gpu);for(const r of this.buffers.values())gl.deleteBuffer(r.gpu);for(const r of this.renderTargets.values())gl.deleteFramebuffer(r.framebuffer);for(const r of this.textures.values())gl.deleteTexture(r.gpu);}
+  _deleteGPU(){const gl=this.gl;gl.useProgram(null);gl.bindBuffer(gl.ARRAY_BUFFER,null);gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,null);gl.bindRenderbuffer(gl.RENDERBUFFER,null);for(let i=0;i<this.maxTextures;i++){gl.activeTexture(gl.TEXTURE0+i);gl.bindTexture(gl.TEXTURE_2D,null);}gl.activeTexture(gl.TEXTURE0);for(const r of this.pipelines.values())gl.deleteProgram(r.gpu);for(const r of this.buffers.values())gl.deleteBuffer(r.gpu);for(const r of this.renderTargets.values()){gl.deleteFramebuffer(r.framebuffer);if(r.stencilBuffer)gl.deleteRenderbuffer(r.stencilBuffer);}for(const r of this.textures.values())gl.deleteTexture(r.gpu);}
   dispose(){if(this.state==='disposed')return;this.canvas.removeEventListener('webglcontextlost',this.onLost);this.canvas.removeEventListener('webglcontextrestored',this.onRestored);this._deleteGPU();this.pipelines.clear();this.buffers.clear();this.textures.clear();this.renderTargets.clear();this.renderTargetStack.length=0;this.activeRenderTarget=null;this.enabledAttributes.clear();this.regionCanvas=this.regionContext=this.regionBytes=null;this.stats.pipelineCount=this.stats.bufferCount=this.stats.textureCount=this.stats.renderTargetCount=this.stats.gpuBufferBytes=this.stats.gpuRenderTargetBytes=0;this.active=false;this.state='disposed';}
 }
