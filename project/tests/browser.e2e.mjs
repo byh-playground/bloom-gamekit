@@ -62,18 +62,62 @@ try {
     for(let i=0;i<12;i++){now+=delay+(i%2?0.1:2);const before=session.tick;callback();advances.push(session.tick-before);}
     now+=1000;callback();for(let i=0;i<20&&loop.nextDeadlineMs<=now;i++){now+=delay;callback();}
     const caughtUp=session.tick>=40;timer.stop();
+    const deferSession={inputSize:1,tick:0,pace:1,closed:false,resimulating:false,profile:{tickRate:10,maxCatchupSteps:2},polls:0,attempts:0,
+      poll(){this.polls++},releaseInput(){},advance(){this.attempts++;if(this.waitOnce){this.waitOnce=false;return{status:'waiting',tick:this.tick}}return{status:'advanced',tick:++this.tick}}};
+    const overflow=[];let allowDefer=false;const defer=createLoop({session:deferSession,backlogPolicy:'defer',maxBacklogTicks:3,
+      getInput:()=>Uint8Array.of(0),canAdvance:()=>allowDefer,onBacklogDrop:event=>overflow.push(event)});
+    const deferPulses=[];const pulseDefer=at=>{const beforeTick=deferSession.tick,beforeAttempts=deferSession.attempts;defer.pulse(at,{render:false});
+      deferPulses.push({tickDelta:deferSession.tick-beforeTick,attempts:deferSession.attempts-beforeAttempts,debt:defer.simulationTimeMs===null?0:at-defer.simulationTimeMs});};
+    pulseDefer(0);pulseDefer(100);deferSession.resimulating=true;pulseDefer(200);deferSession.resimulating=false;pulseDefer(300);
+    pulseDefer(350);allowDefer=true;deferSession.waitOnce=true;pulseDefer(450);pulseDefer(450);
+    deferSession.resimulating=true;pulseDefer(550);deferSession.resimulating=false;pulseDefer(550);
+    allowDefer=false;pulseDefer(650);allowDefer=true;pulseDefer(650);
+    const deferPassed=deferSession.tick===5&&deferPulses.every(p=>p.attempts<=2&&p.debt<=300)&&deferSession.polls===deferPulses.length&&
+      deferPulses.map(p=>p.tickDelta).join(',')==='0,0,0,0,0,0,2,0,2,0,1'&&overflow.length===2&&
+      overflow[0].reason==='backlog-overflow'&&overflow[0].droppedMs===50&&overflow[1].reason==='backlog-overflow'&&overflow[1].droppedMs===100;
+    const dropSession={inputSize:1,tick:0,pace:1,closed:false,resimulating:false,profile:{tickRate:10,maxCatchupSteps:2},poll(){},releaseInput(){},advance(){return{status:'advanced',tick:++this.tick}}};
+    let dropEvent;const drop=createLoop({session:dropSession,maxBacklogTicks:2,onBacklogDrop:event=>dropEvent=event});
+    drop.pulse(0,{render:false});drop.pulse(301,{render:false});
+    const dropCompatible=dropSession.tick===0&&drop.simulationTimeMs===301&&dropEvent?.elapsedMs===301&&dropEvent.droppedTicks===3&&dropEvent.timestamp===301&&
+      !Object.hasOwn(dropEvent,'droppedMs')&&!Object.hasOwn(dropEvent,'reason');
+    const gapSession={inputSize:1,tick:0,pace:1,closed:false,resimulating:false,profile:{tickRate:10,maxCatchupSteps:2},poll(){},releaseInput(){},advance(){return{status:'advanced',tick:++this.tick}}};
+    let gapEvent;const gap=createLoop({session:gapSession,backlogPolicy:'defer',maxBacklogTicks:3,canAdvance:()=>false,onBacklogDrop:event=>gapEvent=event});
+    gap.pulse(0,{render:false});gap.pulse(300,{render:false});gap.pulse(700,{render:false});
+    const longGapPassed=gapEvent?.reason==='clock-gap'&&gapEvent.elapsedMs===400&&gapEvent.droppedMs===700&&gap.simulationTimeMs===700;
+    const pauseSession={inputSize:1,tick:0,pace:1,closed:false,resimulating:false,profile:{tickRate:10,maxCatchupSteps:2},poll(){},releaseInput(){},advance(){return{status:'advanced',tick:++this.tick}}};
+    let resumeAllowed=false;const paused=createLoop({session:pauseSession,backlogPolicy:'defer',maxBacklogTicks:3,canAdvance:()=>resumeAllowed});
+    paused.pulse(0,{render:false});paused.pulse(80,{render:false});paused.resetTiming();resumeAllowed=true;
+    paused.pulse(1000,{render:false});const pauseCleared=paused.simulationTimeMs===1000&&pauseSession.tick===0;
+    paused.pulse(1100,{render:false});const pausePassed=pauseCleared&&pauseSession.tick===1;
+    const visibilityDescriptor=Object.getOwnPropertyDescriptor(document,'hidden');let visibilityPassed=false;
+    try{
+      Object.defineProperty(document,'hidden',{configurable:true,value:false});
+      const callbacks=[];let visibleAllowed=false;
+      const visibleSession={inputSize:1,tick:0,pace:1,closed:false,resimulating:false,profile:{tickRate:10,maxCatchupSteps:2},poll(){},released:0,
+        releaseInput(){this.released++},advance(){return{status:'advanced',tick:++this.tick}}};
+      const visibleLoop=createLoop({session:visibleSession,backlogPolicy:'defer',maxBacklogTicks:3,canAdvance:()=>visibleAllowed,getInput:()=>Uint8Array.of(0),
+        requestFrame:callback=>{callbacks.push(callback);return callbacks.length},cancelFrame:()=>{}});
+      const fire=at=>{const callback=callbacks.shift();if(!callback)throw Error('missing fake frame');callback(at)};
+      visibleLoop.start();fire(0);fire(100);Object.defineProperty(document,'hidden',{configurable:true,value:true});
+      document.dispatchEvent(new Event('visibilitychange'));Object.defineProperty(document,'hidden',{configurable:true,value:false});
+      visibleAllowed=true;fire(1000);const noHiddenCatchup=visibleLoop.simulationTimeMs===1000&&visibleSession.tick===0;
+      fire(1100);visibilityPassed=noHiddenCatchup&&visibleSession.tick===1&&visibleSession.released===1;visibleLoop.stop();
+    }finally{if(visibilityDescriptor)Object.defineProperty(document,'hidden',visibilityDescriptor);else delete document.hidden;}
     const timeline=new InterpolationTimeline({stepMs:1000/30,delayMs:2000/30,schema:{x:'number'}});
     const packet=(tick,x)=>({revision:0,sequence:tick,timeMs:tick*1000/30,entities:[{id:'u',generation:0,values:{x}}]});
     timeline.accept(packet(0,0),0);timeline.accept(packet(1,10),38);timeline.accept(packet(2,20),70);
     const out={};timeline.sampleInto('u',0,83.3333333333,out);const x=out.x;
     timeline.accept(packet(3,30),103);timeline.accept(packet(4,40),134);
     timeline.sampleInto('u',0,150,out);
-    return {rejected,divisor:valid.simulationDivisor,advances,caughtUp,x,end:out.x};
+    return {rejected,divisor:valid.simulationDivisor,advances,caughtUp,x,end:out.x,deferPassed,dropCompatible,longGapPassed,pausePassed,visibilityPassed,
+      deferTicks:deferSession.tick,deferPolls:deferSession.polls,deferPulses,overflow,gapEvent};
   });
   assert.equal(clockCheck.rejected,true);assert.equal(clockCheck.divisor,2);
   assert.deepEqual(clockCheck.advances,Array(12).fill(1));assert.equal(clockCheck.caughtUp,true);
+  assert.ok(clockCheck.deferPassed&&clockCheck.dropCompatible&&clockCheck.longGapPassed&&clockCheck.pausePassed&&clockCheck.visibilityPassed,
+    `bounded defer policy verification: ${JSON.stringify(clockCheck)}`);
   assert.ok(Math.abs(clockCheck.x-5)<1e-6);assert.ok(Math.abs(clockCheck.end-25)<1e-6);
-  report.stages.push('integer clock divisors, loop-owned jittered deadlines, retained long-gap catch-up and simulation-time interpolation');
+  report.stages.push('integer clock divisors, loop-owned jittered deadlines, default drop compatibility, explicit retain/defer timing, bounded overflow diagnostics, hold/resim polling, pause/hidden reset and simulation-time interpolation');
 
   report.presentationFrame=await runFrameChecks(page);
   const framePage=await browser.newPage();const frameErrors=[];framePage.on('pageerror',e=>frameErrors.push(e.message));

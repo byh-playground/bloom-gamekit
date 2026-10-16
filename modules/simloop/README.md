@@ -19,9 +19,11 @@ pulse(timestampMs)는 자동 rAF와 같은 누적·pacing·maxCatchupSteps 경�
 - `stop()`은 현재 pulse의 남은 callback/추가 tick/render를 취소합니다. callback 안에서 stop/start해도 이전 세대가 새 rAF 체인을 만들지 않습니다. 나중에 직접 부른 `pulse()`는 stopped 상태에서도 실행됩니다.
 - session의 공개 scalar `pace`를 우선 읽어 진단용 전체 `metrics` snapshot 할당을 피합니다. 기존 capability는 `metrics.pace` fallback을 유지하며 step 결정당 한 번 읽습니다. `RollbackSession.metrics`는 여전히 독립 snapshot입니다.
 - `backlogPolicy: 'drop'`이 기본값입니다. `maxBacklogTicks`(기본 8틱)를 넘는 한 번의 clock gap은 backlog를 폐기하고 현재 시각을 새 기준으로 삼습니다. 작은 지연만 기존 250ms elapsed clamp와 maxCatchupSteps 경계 안에서 처리합니다.
-- 명시적 `backlogPolicy: 'retain'`은 짧은 elapsed와 미처리 debt를 보존하지만 pulse당 maxCatchupSteps만 실행합니다. held/stalled/canAdvance=false에서도 debt를 유지합니다. `maxBacklogTicks`를 넘는 큰 지연은 여러 pulse로 replay하지 않고 `onBacklogDrop`을 호출한 뒤 버립니다. retain timestamp는 단조 증가해야 하며 safe millisecond 범위를 넘는 debt는 오류로 중단합니다.
-- `onBacklogDrop({elapsedMs,droppedTicks,timestamp})`는 앱이 외부 driver의 `nextPulseAt`와 reconnect/resync 기준을 현재 시각으로 재설정할 수 있는 lifecycle 경계입니다. 게임 상태를 stale 클라이언트가 덮어쓰지 않도록 canonical snapshot 설치는 소비자 책임입니다.
+- 명시적 `backlogPolicy: 'retain'`은 elapsed와 미처리 debt를 제한 없이 보존하지만 pulse당 maxCatchupSteps만 실행합니다. held/stalled/canAdvance=false에서도 debt를 유지합니다. `maxBacklogTicks`는 retain의 누적 한도가 아니며, 이 정책은 backlog overflow callback을 호출하지 않습니다. retain timestamp는 단조 증가해야 하며 safe millisecond 범위를 넘는 debt는 오류로 중단합니다. 새로운 실시간 게임에서 backlog를 보존하면서 상한도 원하면 `defer`를 사용하세요.
+- 명시적 `backlogPolicy: 'defer'`는 pulse의 elapsed를 누적하고, held/stalled/resimulating/canAdvance=false에서도 debt를 유지합니다. 각 pulse의 실제 `session.advance()` 횟수는 동일한 `maxCatchupSteps`로 제한됩니다. 따라서 대기한 시뮬레이션 tick을 건너뛰지 않고 순서대로 실행하되, due wall-clock debt는 `maxBacklogTicks` 범위로 제한합니다. 누적 부채가 이 한도를 넘으면 가장 오래된 초과 시간만 버리고 최신 `maxBacklogTicks` 구간을 유지하며 `onBacklogDrop(..., reason:'backlog-overflow')`을 호출합니다. 한 pulse의 elapsed 자체가 한도를 넘으면 기존 suspension 처리처럼 누적 부채를 비우고 현재 시각에서 다시 시작하며 `reason:'clock-gap'`을 보고합니다. defer timestamp는 단조 증가해야 합니다.
+- `onBacklogDrop({elapsedMs,droppedMs,droppedTicks,timestamp,reason})`는 외부 driver의 시각 기준과 표시·진단 timeline을 재설정할 수 있는 경계입니다. `droppedTicks`는 버린 **wall-clock debt의 quantum 개수**이며 simulation tick ID나 실행 결과를 뜻하지 않습니다. `defer`에서 `droppedMs`는 실제 버린 누적 시간을, `elapsedMs`는 현재 pulse의 경과 시간을 나타냅니다. 기존 기본 `drop` callback은 `elapsedMs`, `droppedTicks`, `timestamp`를 계속 제공합니다. 게임 상태를 stale 클라이언트가 덮어쓰지 않도록 canonical snapshot 설치는 소비자 책임입니다.
 - pause는 게임이 소유합니다. pause 전환과 resume에서 `resetTiming()`을 호출해 debt와 elapsed 기준을 지우면 pause 시간은 따라잡지 않습니다. `start()`도 timing을 초기화합니다. retain은 pause를 자동 추측하지 않습니다.
+- `defer`도 pause를 자동 추측하지 않습니다. 명시적 pause/resume에서 `resetTiming()`을 호출하고, 자동 loop는 document hidden에서 held input을 해제한 뒤 timing/debt를 reset합니다. 숨김·pause 이전의 debt는 새 시뮬레이션 tick으로 replay되지 않습니다.
 
 ## 선택적 로컬 입력 미리보기
 

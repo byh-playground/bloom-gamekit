@@ -9,7 +9,7 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
   for (const callback of [getInput, render, beforeFrame, canAdvance, canObserveInput, onAdvance, onPreviewError, onError, onInputRelease, onBacklogDrop]) {
     if (typeof callback !== 'function') throw new TypeError('loop callback');
   }
-  if (backlogPolicy !== 'drop' && backlogPolicy !== 'retain') throw new RangeError('backlogPolicy');
+  if (backlogPolicy !== 'drop' && backlogPolicy !== 'retain' && backlogPolicy !== 'defer') throw new RangeError('backlogPolicy');
   if (!Number.isInteger(maxBacklogTicks) || maxBacklogTicks < 1 || maxBacklogTicks > 8192) throw new RangeError('maxBacklogTicks');
   const hasSubmission = typeof session.submitInput === 'function';
   const configuredRates = rates === undefined ? null : clockRates({...rates, tickRate:session.profile.tickRate});
@@ -57,6 +57,7 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
     try {
       if (!Number.isFinite(timestamp)) throw new TypeError('frame timestamp');
       if (backlogPolicy === 'retain' && last !== undefined && timestamp < last) throw new RangeError('retained loop timestamp cannot regress');
+      if (backlogPolicy === 'defer' && last !== undefined && timestamp < last) throw new RangeError('deferred loop timestamp cannot regress');
       beforeFrame(timestamp);
       if (current !== generation) return;
       const timing = timingGeneration;
@@ -67,9 +68,23 @@ export function createLoop({ session, getInput = () => new Uint8Array(session.in
         last = timestamp;
         if (typeof inputPreview?.clockGap === 'function') inputPreview.clockGap(); else inputPreview?.clear?.();
         onBacklogDrop({ elapsedMs: elapsed, droppedTicks: Math.floor(elapsed / quantum), timestamp });
+      } else if (backlogPolicy === 'defer' && elapsed > maxBacklogMs) {
+        const droppedMs = accumulator + elapsed;
+        accumulator = 0;
+        last = timestamp;
+        if (typeof inputPreview?.clockGap === 'function') inputPreview.clockGap(); else inputPreview?.clear?.();
+        onBacklogDrop({ elapsedMs: elapsed, droppedMs, droppedTicks: Math.floor(droppedMs / quantum), timestamp, reason: 'clock-gap' });
       } else {
-        accumulator = backlogPolicy === 'retain' ? accumulator + elapsed :
-          Math.min(accumulator + Math.min(250, elapsed), quantum * session.profile.maxCatchupSteps);
+        if (backlogPolicy === 'retain') accumulator += elapsed;
+        else if (backlogPolicy === 'defer') {
+          const accumulatedMs = accumulator + elapsed;
+          if (accumulatedMs > maxBacklogMs) {
+            const droppedMs = accumulatedMs - maxBacklogMs;
+            accumulator = maxBacklogMs;
+            if (typeof inputPreview?.clockGap === 'function') inputPreview.clockGap(); else inputPreview?.clear?.();
+            onBacklogDrop({ elapsedMs: elapsed, droppedMs, droppedTicks: Math.floor(droppedMs / quantum), timestamp, reason: 'backlog-overflow' });
+          } else accumulator = accumulatedMs;
+        } else accumulator = Math.min(accumulator + Math.min(250, elapsed), quantum * session.profile.maxCatchupSteps);
         last = timestamp;
       }
       if (!Number.isFinite(accumulator) || accumulator > Number.MAX_SAFE_INTEGER) throw new RangeError('loop backlog exceeds safe milliseconds');
