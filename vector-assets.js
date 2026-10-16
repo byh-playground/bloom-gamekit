@@ -3178,7 +3178,7 @@ function validateCompiledAsset(asset) {
     const current = asset.compilerVersion === VECTOR_ASSET_COMPILER_VERSION;
     const centeredViewBoxVersion = current || asset.compilerVersion === "0.9.0";
     const expectedKeys = current ? ["curveSegments", "normalizeCenteredViewBox", "strokeArcDivisions"] : centeredViewBoxVersion ? ["curveSegments", "normalizeCenteredViewBox"] : ["curveSegments"];
-    if (!exactKeys(asset.compilerOptions, expectedKeys) || !Number.isSafeInteger(asset.compilerOptions.curveSegments) || asset.compilerOptions.curveSegments < 4 || asset.compilerOptions.curveSegments > 64 || centeredViewBoxVersion && typeof asset.compilerOptions.normalizeCenteredViewBox !== "boolean" || current && (!Number.isSafeInteger(asset.compilerOptions.strokeArcDivisions) || asset.compilerOptions.strokeArcDivisions < 4 || asset.compilerOptions.strokeArcDivisions > 64)) {
+    if (!exactKeys(asset.compilerOptions, expectedKeys) || !Number.isSafeInteger(asset.compilerOptions.curveSegments) || asset.compilerOptions.curveSegments < 1 || asset.compilerOptions.curveSegments > 64 || centeredViewBoxVersion && typeof asset.compilerOptions.normalizeCenteredViewBox !== "boolean" || current && (!Number.isSafeInteger(asset.compilerOptions.strokeArcDivisions) || asset.compilerOptions.strokeArcDivisions < 1 || asset.compilerOptions.strokeArcDivisions > 64)) {
       throw new TypeError("Invalid SVG compiler options");
     }
   }
