@@ -41,6 +41,10 @@ Use the same default framebuffer and painter order for all interleaved passes. `
 
 ## Mesh depth
 
+### SVG non-scaling strokes
+
+The vector-asset compiler retains `vector-effect="non-scaling-stroke"` as a mesh flag and the stroke's tangent/offset data in its existing 11-float records. The vertex shader expands supported straight-line caps after camera, object, and part transforms, in logical CSS pixels. Draws on the default framebuffer use the canvas client size; draws on an active `WebGLDevice` render target must pass `strokeViewport: [logicalCssWidth, logicalCssHeight]` to `drawMesh()`. Omitting the target viewport throws because the physical target dimensions do not identify the logical CSS size. The compiler's supported shape/cap scope and fail-fast behavior are documented in [vector-assets](../vector-assets/README.md).
+
 `MeshRenderer.drawMesh(mesh, { projection, depth, depthTest, depthWrite, depthFunc })` gives a mesh instance an explicit normalized device depth in `[-1, 1]`. `depthTest` and `depthWrite` default to `false`, preserving the painter-ordered 2D behavior. When interleaving with `Renderer2D`, create it with `{ depth: true }` before the WebGL context is first acquired. With a `WebGLDevice` created first, request its depth buffer using `new WebGLDevice(canvas, { depth: true })`. `depthFunc` accepts the device's `never`, `less`, `equal`, `lequal`, `greater`, `notequal`, `gequal`, or `always` functions and defaults to `lequal`.
 
 Each `drawMesh()` call can carry a different depth while adjacent calls using the same mesh and depth policy still share the instanced draw. `parts` entries may also supply `depth` in `[-1, 1]`; it is added to that instance's depth. Their sum must remain in `[-1, 1]`. Depth-policy changes split a pending batch so one draw never mixes depth-test/write settings. The renderer does not sort transparent geometry; submit it in the required painter order and normally set `depthWrite: false` for translucent overlays.

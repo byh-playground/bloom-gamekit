@@ -1,6 +1,6 @@
 import { chromium } from 'playwright';
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import assert from 'node:assert/strict';
@@ -8,6 +8,8 @@ import { exerciseVectorAssets } from './runtime.browser.mjs';
 import { exerciseRendererInterleaving } from '../../rendering/tests/interop.browser.mjs';
 import { exerciseOrderedAssetBatch } from '../../rendering/tests/ordered-batch.browser.mjs';
 import { exerciseMeshDepth } from '../../rendering/tests/mesh-depth.browser.mjs';
+import { compileVectorAssetFile } from '../compiler.js';
+import { exerciseNonScalingStroke } from './non-scaling-stroke.browser.mjs';
 
 const root = resolve('.');
 const sourceURL = 'https://raw.githubusercontent.com/byh-playground/bloom-gamekit/main/modules/vector-assets/assets/seed-scout.svg';
@@ -73,6 +75,16 @@ try {
   assert.equal(report.orderedAssetBatch.pixelMismatch, 0);
   assert.equal(report.orderedAssetBatch.batched.draws, 1);
   report.meshDepth = await exerciseMeshDepth(page, renderingModuleURL);
+  const nonScalingAsset = await compileVectorAssetFile(resolve(root, 'modules/vector-assets/tests/non-scaling-stroke.svg'));
+  const evidenceDirectory = resolve(root, '..', 'evidence');
+  await mkdir(evidenceDirectory, { recursive: true });
+  const nonScalingEvidence = resolve(evidenceDirectory, 'non-scaling-stroke-webgl.png');
+  report.nonScalingStroke = await exerciseNonScalingStroke(browser, renderingModuleURL, {
+    ...nonScalingAsset.geometry,
+    vertices: Array.from(nonScalingAsset.geometry.vertices),
+    indices: Array.from(nonScalingAsset.geometry.indices),
+  }, nonScalingEvidence);
+  report.nonScalingStroke.evidencePath = nonScalingEvidence;
   await page.locator('#style-comparison').click();
   await page.waitForFunction(() => window.vectorAssetDemo?.styleReady || window.vectorAssetDemo?.styleError, null, { timeout: 15000 });
   const styleError = await page.evaluate(() => window.vectorAssetDemo?.styleError ?? null);

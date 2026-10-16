@@ -10,11 +10,12 @@ const source = await readFile(sourcePath);
 const asset = await compileVectorAssetFile(sourcePath, sourcePath);
 validateCompiledAsset(asset);
 assert.equal(asset.schemaVersion, 1);
-assert.equal(asset.compilerVersion, '0.6.0');
+assert.equal(asset.compilerVersion, '0.7.0');
 assert.doesNotThrow(() => validateCompiledAsset({ ...asset, compilerVersion: '0.2.0' }), 'previous compiled meshes remain valid under the unchanged asset schema');
 const { compilerOptions: ignoredCompilerOptions, ...assetWithoutCompilerOptions } = asset;
-assert.throws(() => validateCompiledAsset({ ...assetWithoutCompilerOptions, compilerVersion: '0.6.0' }), /compiler options/i,
-  'compiler 0.6 output must identify its tessellation setting');
+assert.throws(() => validateCompiledAsset({ ...assetWithoutCompilerOptions, compilerVersion: '0.7.0' }), /compiler options/i,
+  'compiler 0.7 output must identify its tessellation setting');
+assert.doesNotThrow(() => validateCompiledAsset({ ...asset, compilerVersion: '0.6.0' }), 'existing 0.6 compiled assets remain readable');
 assert.equal(asset.compilerOptions.curveSegments, 16, 'the default curve quality is recorded in compiled output');
 assert.equal(asset.geometry.strideFloats, 11);
 assert.ok(asset.geometry.indices instanceof Uint16Array, 'SVG compiler retains unique vertices and triangle indices');
@@ -102,6 +103,31 @@ assert.equal(sketchAsset.geometry.morphCount, 2, 'sketch boil compiles two deter
 assert.ok(sketchAsset.geometry.vertices.some((value, index) => index % 11 === 6 && Math.abs(value) > 1e-6), 'sketch mesh contains authored morph deltas');
 const sketchAgain = await compileVectorAssetFile('modules/vector-assets/assets/sketch-fox.svg');
 assert.deepEqual(sketchAgain.geometry.vertices, sketchAsset.geometry.vertices, 'sketch geometry generation is deterministic');
+
+const nonScalingLine = await compileVectorAssetFile('modules/vector-assets/tests/non-scaling-stroke.svg');
+validateCompiledAsset(nonScalingLine);
+assert.equal(nonScalingLine.geometry.nonScalingStroke, true, 'non-scaling line stroke metadata is retained');
+assert.equal(nonScalingLine.geometry.morphCount, 0, 'non-scaling stroke does not repurpose morph data');
+assert.equal(nonScalingLine.geometry.strideFloats, 11, 'the existing mesh record layout remains unchanged');
+assert.equal(nonScalingLine.geometry.indices.length, 78, 'a round line cap is a fixed set of retained triangles');
+for (let index=0;index<nonScalingLine.geometry.vertices.length;index+=11) {
+  assert.ok(Math.abs(Math.hypot(nonScalingLine.geometry.vertices[index+6],nonScalingLine.geometry.vertices[index+7])-1)<1e-6,
+    'each expanded line vertex retains a normalized tangent');
+  const radius=Math.hypot(nonScalingLine.geometry.vertices[index+8],nonScalingLine.geometry.vertices[index+9]);
+  assert.ok(radius<1e-6||Math.abs(radius-0.75)<1e-6,
+    'stroke outline offsets are authored in CSS-pixel units');
+}
+const nonScalingSource=await readFile('modules/vector-assets/tests/non-scaling-stroke.svg','utf8');
+assert.throws(()=>compileVectorAsset(Buffer.from(nonScalingSource.replace('<line id="crack"','<path id="crack" d="M20 50 L80 50"')), 'unsupported-vector-effect.svg'), /only <line>/i,
+  'unsupported path outlines fail explicitly instead of falling back to a scaling stroke');
+assert.throws(()=>compileVectorAsset(Buffer.from(nonScalingSource.replace('non-scaling-stroke"','scale-stroke"')), 'unsupported-vector-effect-value.svg'), /Unsupported SVG vector-effect/i,
+  'unknown vector-effect values fail compilation');
+const buttCapAsset=compileVectorAsset(Buffer.from(nonScalingSource.replace('stroke-linecap="round"','stroke-linecap="butt"')),'non-scaling-butt-cap.svg');
+const squareCapAsset=compileVectorAsset(Buffer.from(nonScalingSource.replace('stroke-linecap="round"','stroke-linecap="square"')),'non-scaling-square-cap.svg');
+assert.equal(buttCapAsset.geometry.indices.length,6,'butt caps keep a two-triangle static line body');
+assert.equal(squareCapAsset.geometry.indices.length,6,'square caps keep a two-triangle static line body');
+assert.ok(squareCapAsset.geometry.vertices.some((value,index)=>index%11===8&&Math.abs(value)>=0.75),
+  'square caps extend their retained geometry by half the authored width');
 
 const reject = (fragment, message, replacement = '') => {
   assert.throws(() => compileVectorAsset(Buffer.from(source.toString('utf8').replace(fragment, replacement)), 'invalid.svg'), message);

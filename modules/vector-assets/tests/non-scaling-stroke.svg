@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
+  <metadata id="vector-asset">{"schemaVersion":1,"id":"non-scaling-stroke-line","defaultExpression":"default","parts":[{"id":"body","parent":null,"pivot":[0,0]}],"expressions":{"default":{"show":[],"hide":[]}},"sockets":{},"clips":{"idle":{"durationMs":100,"loop":"repeat","easing":"linear","keyframes":[{"timeMs":0,"easing":"linear","parts":{}},{"timeMs":100,"easing":"linear","parts":{}}]}}}</metadata>
+  <g id="body">
+    <line id="crack" x1="20" y1="50" x2="80" y2="50" fill="none" stroke="#ffffff" stroke-width="1.5" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+  </g>
+</svg>
