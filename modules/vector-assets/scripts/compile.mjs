@@ -18,11 +18,11 @@ for (let index = 0; index < args.length; index++) {
       outputSeen = true; output = resolve(root, value);
     } else if (argument === '--curve-segments') {
       if (curveSegmentsSeen) throw new TypeError('--curve-segments may be supplied once');
-      if (!/^\d+$/.test(value)) throw new TypeError('--curve-segments must be a decimal integer from 4 to 64');
+      if (!/^\d+$/.test(value)) throw new TypeError('--curve-segments must be a decimal integer from 1 to 64');
       curveSegmentsSeen = true; curveSegments = Number(value);
     } else {
       if (strokeArcDivisionsSeen) throw new TypeError('--stroke-arc-divisions may be supplied once');
-      if (!/^\d+$/.test(value)) throw new TypeError('--stroke-arc-divisions must be a decimal integer from 4 to 64');
+      if (!/^\d+$/.test(value)) throw new TypeError('--stroke-arc-divisions must be a decimal integer from 1 to 64');
       strokeArcDivisionsSeen = true; strokeArcDivisions = Number(value);
     }
   } else if (argument.startsWith('--')) throw new TypeError('Unsupported compiler option: ' + argument);

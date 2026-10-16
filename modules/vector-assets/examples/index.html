@@ -22,6 +22,9 @@
     select, button, input[type="range"] { accent-color: #557d4b; }
     select, button { min-height: 2rem; border: 1px solid #98a785; border-radius: .45rem; padding: .25rem .55rem; color: inherit; background: white; font: inherit; }
     button { cursor: pointer; }
+    input[type="number"] { width: 4.2rem; min-height: 2rem; border: 1px solid #98a785; border-radius: .45rem; padding: .25rem .4rem; color: inherit; background: white; font: inherit; font-variant-numeric: tabular-nums; }
+    .quality-presets { display: inline-flex; align-items: center; gap: .2rem; }
+    .quality-presets button { min-width: 2rem; padding-inline: .35rem; }
     input[type="range"] { width: clamp(5rem, 12vw, 11rem); }
     output { min-width: 3.7em; font-variant-numeric: tabular-nums; }
     .help { margin: .4rem 0 0; color: #596850; font-size: .76rem; }
@@ -60,7 +63,7 @@
       h1 { font-size: .92rem; }
       .controls { margin-top: .28rem; gap: .35rem; }
       label { font-size: .72rem; }
-      select, button { min-height: 1.65rem; padding: .12rem .38rem; font-size: .74rem; }
+      select, button, input[type="number"] { min-height: 1.65rem; padding: .12rem .38rem; font-size: .74rem; }
       input[type="range"] { width: clamp(3.5rem, 9vw, 6.5rem); }
       .help { margin-top: .15rem; font-size: .65rem; }
       main { gap: .38rem; padding: .38rem; }
@@ -81,8 +84,22 @@
     <div class="controls source-controls" aria-label="SVG source and tessellation controls">
       <label>GitHub SVG URL <input id="asset-url" type="url" spellcheck="false" autocomplete="url" value="https://raw.githubusercontent.com/byh-playground/budmori-io/0dab58e201b5c08f5073108121eeae91acc34774/assets/troops/pea.svg"></label>
       <button id="load-asset" type="button">Load &amp; compile</button>
-      <label>Curve segments <select id="curve-segments"><option value="16" selected>16 · standard</option><option value="8">8 · medium</option><option value="4">4 · coarse</option></select></label>
-      <label>Stroke arc divisions <select id="stroke-arc-divisions"><option value="12" selected>12 · default</option><option value="16">16 · fine</option><option value="8">8 · medium</option><option value="4">4 · coarse</option></select></label>
+      <label for="curve-segments">Curve segments <input id="curve-segments" type="number" min="1" max="64" step="1" value="16" inputmode="numeric"></label>
+      <span class="quality-presets" role="group" aria-label="Curve segment presets">Quick
+        <button type="button" data-quality-target="curve-segments" data-quality-value="1" aria-label="Set curve segments to 1">1</button>
+        <button type="button" data-quality-target="curve-segments" data-quality-value="2" aria-label="Set curve segments to 2">2</button>
+        <button type="button" data-quality-target="curve-segments" data-quality-value="4" aria-label="Set curve segments to 4">4</button>
+        <button type="button" data-quality-target="curve-segments" data-quality-value="8" aria-label="Set curve segments to 8">8</button>
+        <button type="button" data-quality-target="curve-segments" data-quality-value="16" aria-label="Set curve segments to 16">16</button>
+      </span>
+      <label for="stroke-arc-divisions">Stroke arc divisions <input id="stroke-arc-divisions" type="number" min="1" max="64" step="1" value="12" inputmode="numeric"></label>
+      <span class="quality-presets" role="group" aria-label="Stroke arc division presets">Quick
+        <button type="button" data-quality-target="stroke-arc-divisions" data-quality-value="1" aria-label="Set stroke arc divisions to 1">1</button>
+        <button type="button" data-quality-target="stroke-arc-divisions" data-quality-value="2" aria-label="Set stroke arc divisions to 2">2</button>
+        <button type="button" data-quality-target="stroke-arc-divisions" data-quality-value="4" aria-label="Set stroke arc divisions to 4">4</button>
+        <button type="button" data-quality-target="stroke-arc-divisions" data-quality-value="8" aria-label="Set stroke arc divisions to 8">8</button>
+        <button type="button" data-quality-target="stroke-arc-divisions" data-quality-value="16" aria-label="Set stroke arc divisions to 16">16</button>
+      </span>
       <button id="copy-loader-options" type="button">Copy loader options</button>
     </div>
     <div class="controls" aria-label="Shared animation and display controls">
@@ -96,7 +113,7 @@
       <button id="center-camera" type="button">Center</button>
       <button id="style-comparison" type="button">Yarn / sketch SVG comparison</button>
     </div>
-    <p class="help">Paste a GitHub SVG blob or raw URL with vector-asset metadata. Choose curve and round-stroke tessellation independently; every successful compile updates the three views while keeping its authored clips and expressions.</p>
+    <p class="help">Paste a GitHub SVG blob or raw URL with vector-asset metadata. Enter any whole-number quality from 1 to 64 or use a quick preset. Compile to update all three views while keeping authored clips and expressions.</p>
   </header>
   <main>
     <section class="panel" aria-labelledby="source-title">
@@ -346,6 +363,16 @@
       document.querySelector('#load-asset').disabled = isLoading;
       document.querySelector('#load-asset').textContent = isLoading ? 'Loading…' : 'Load & compile';
     }
+    function readQualitySettings() {
+      const read = (input, name) => {
+        const value = input.value.trim(), parsed = Number(value);
+        if (!/^\d+$/.test(value) || !Number.isSafeInteger(parsed) || parsed < 1 || parsed > 64) {
+          throw new RangeError(name + ' must be a whole number from 1 through 64.');
+        }
+        return parsed;
+      };
+      return { curveSegments: read(curveSegmentsInput, 'Curve segments'), strokeArcDivisions: read(strokeArcDivisionsInput, 'Stroke arc divisions') };
+    }
     function updateAssetTitle(metadata) {
       const label = metadata.id === 'budmori-pea' ? 'Farmpea' : metadata.id;
       document.querySelector('#asset-tag').textContent = 'Asset: ' + label + ' · authored SVG';
@@ -354,9 +381,12 @@
       const requestId = ++loadSequence;
       let url;
       try { url = normalizeSvgUrl(document.querySelector('#asset-url').value); }
-      catch (error) { status.classList.add('error'); status.textContent = error.message; return; }
+      catch (error) { setLoading(false); status.classList.add('error'); status.textContent = error.message; return; }
       document.querySelector('#asset-url').value = url;
-      const curveSegments = Number(curveSegmentsInput.value), strokeArcDivisions = Number(strokeArcDivisionsInput.value);
+      let quality;
+      try { quality = readQualitySettings(); }
+      catch (error) { setLoading(false); status.classList.add('error'); status.textContent = error.message; return; }
+      const { curveSegments, strokeArcDivisions } = quality;
       const options = { sourcePath: url, maxBytes: MAX_SOURCE_BYTES, curveSegments, strokeArcDivisions };
       const resultKey = JSON.stringify([url, curveSegments, strokeArcDivisions]);
       setLoading(true); status.classList.remove('error'); status.textContent = 'Fetching SVG and compiling the selected tessellation…';
@@ -607,12 +637,16 @@
     wireframeInput.addEventListener('change', () => { demo.wireframe = wireframeInput.checked; });
     document.querySelector('#load-asset').addEventListener('click', () => void loadAsset());
     document.querySelector('#asset-url').addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); void loadAsset(); } });
-    curveSegmentsInput.addEventListener('change', () => void loadAsset());
-    strokeArcDivisionsInput.addEventListener('change', () => void loadAsset());
+    for (const preset of document.querySelectorAll('[data-quality-target]')) {
+      preset.addEventListener('click', () => {
+        document.getElementById(preset.dataset.qualityTarget).value = preset.dataset.qualityValue;
+        void loadAsset();
+      });
+    }
     document.querySelector('#copy-loader-options').addEventListener('click', async () => {
       try {
         const sourcePath = normalizeSvgUrl(document.querySelector('#asset-url').value);
-        const options = { sourcePath, maxBytes: MAX_SOURCE_BYTES, curveSegments: Number(curveSegmentsInput.value), strokeArcDivisions: Number(strokeArcDivisionsInput.value) };
+        const options = { sourcePath, maxBytes: MAX_SOURCE_BYTES, ...readQualitySettings() };
         await navigator.clipboard.writeText(JSON.stringify(options, null, 2));
         status.classList.remove('error'); status.textContent = 'Loader options copied.';
       } catch (error) {

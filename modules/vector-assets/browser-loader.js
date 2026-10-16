@@ -43,15 +43,15 @@ function validateLoadOptions(url, options) {
   const sourcePath = options.sourcePath ?? url;
   const expectedSha256 = options.expectedSha256;
   const maxBytes = options.maxBytes ?? MAX_SOURCE_BYTES;
-  const curveSegments = options.curveSegments ?? 16;
+  const curveSegments = options.curveSegments === undefined ? 16 : options.curveSegments;
   const strokeArcDivisions = options.strokeArcDivisions === undefined ? 12 : options.strokeArcDivisions;
   const includeSourcePaths = options.includeSourcePaths ?? false;
   const normalizeCenteredViewBox = options.normalizeCenteredViewBox ?? false;
   if (typeof sourcePath !== 'string' || sourcePath.length < 1 || sourcePath.length > 2048) throw new TypeError('sourcePath must be a nonempty string of at most 2048 characters');
   if (expectedSha256 !== undefined && (typeof expectedSha256 !== 'string' || !SHA256.test(expectedSha256))) throw new TypeError('expectedSha256 must be a lowercase SHA-256 digest');
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_SOURCE_BYTES) throw new RangeError('maxBytes must be an integer from 1 through 524288');
-  if (!Number.isSafeInteger(curveSegments) || curveSegments < 4 || curveSegments > 64) throw new RangeError('curveSegments must be an integer from 4 to 64');
-  if (!Number.isSafeInteger(strokeArcDivisions) || strokeArcDivisions < 4 || strokeArcDivisions > 64) throw new RangeError('strokeArcDivisions must be an integer from 4 to 64');
+  if (!Number.isSafeInteger(curveSegments) || curveSegments < 1 || curveSegments > 64) throw new RangeError('curveSegments must be an integer from 1 to 64');
+  if (!Number.isSafeInteger(strokeArcDivisions) || strokeArcDivisions < 1 || strokeArcDivisions > 64) throw new RangeError('strokeArcDivisions must be an integer from 1 to 64');
   if (typeof includeSourcePaths !== 'boolean') throw new TypeError('includeSourcePaths must be a boolean');
   if (typeof normalizeCenteredViewBox !== 'boolean') throw new TypeError('normalizeCenteredViewBox must be a boolean');
   return { sourcePath, expectedSha256, maxBytes, curveSegments, strokeArcDivisions, includeSourcePaths, normalizeCenteredViewBox };

@@ -540,12 +540,17 @@ const { createSession, profiles } = await import('/dist/rollback.js');
     return value;
   };
   const nodeGeometrySha256 = createHash('sha256').update(JSON.stringify(stable(nodeAsset.geometry))).digest('hex');
+  const lowQualityExpected = [1, 2, 3].map(value => {
+    const compiled = compileVectorAsset(sourceBytes, sourcePath, { curveSegments: value, strokeArcDivisions: value });
+    assert.ok(compiled.geometry.vertices.every(Number.isFinite), `${value}/${value} Node geometry contains only finite vertices`);
+    return { value, geometrySha256: createHash('sha256').update(JSON.stringify(stable(compiled.geometry))).digest('hex') };
+  });
   const startupFetchBaseline = vectorSvgFetches;
   const startupPage = await browser.newPage({ viewport: { width: 1000, height: 800 }, deviceScaleFactor: 1 });
   const startupErrors = [];
   startupPage.on('pageerror', error => startupErrors.push(error.message));
   await startupPage.goto(`http://127.0.0.1:${server.address().port}/modules/interpolation/examples/index.html`);
-  const loadedGeometrySha256 = await startupPage.evaluate(async ({ expectedSha256, nodeGeometrySha256, sourcePath }) => {
+  const loadedStartup = await startupPage.evaluate(async ({ expectedSha256, nodeGeometrySha256, lowQualityExpected, sourcePath }) => {
     const { createVectorAssetLoader } = await import('/dist/vector-assets-loader.js');
     const { createVectorAsset } = await import('/dist/vector-assets.js');
     const { WebGLDevice, MeshRenderer } = await import('/dist/rendering.js');
@@ -578,6 +583,24 @@ const { createSession, profiles } = await import('/dist/rollback.js');
     const browserGeometrySha256 = [...digest].map(value => value.toString(16).padStart(2, '0')).join('');
     if (browserGeometrySha256 !== nodeGeometrySha256) throw new Error('Browser and Node SVG compiler geometry differ');
 
+    const lowQualityResults = [];
+    let previousQualityAsset = compiledAsset;
+    for (const { value, geometrySha256 } of lowQualityExpected) {
+      const qualityOptions = { ...options, curveSegments: value, strokeArcDivisions: value };
+      const [qualityAsset, sameQualityAsset] = await Promise.all([loader.load(url, qualityOptions), loader.load(url, qualityOptions)]);
+      if (qualityAsset !== sameQualityAsset || qualityAsset === previousQualityAsset) {
+        throw new Error(`Low SVG quality ${value}/${value} did not use its own stable cache entry`);
+      }
+      if (!qualityAsset.geometry.vertices.every(Number.isFinite) || qualityAsset.geometry.indices.length % 3) {
+        throw new Error(`Low SVG quality ${value}/${value} produced invalid triangle buffers`);
+      }
+      const qualityDigest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(canonical(qualityAsset.geometry)))));
+      const qualityGeometrySha256 = [...qualityDigest].map(number => number.toString(16).padStart(2, '0')).join('');
+      if (qualityGeometrySha256 !== geometrySha256) throw new Error(`Browser and Node geometry differ at low quality ${value}/${value}`);
+      lowQualityResults.push({ value, geometrySha256: qualityGeometrySha256, triangles: qualityAsset.geometry.indices.length / 3 });
+      previousQualityAsset = qualityAsset;
+    }
+
     const canvas = document.createElement('canvas'); canvas.width = 200; canvas.height = 220; document.body.append(canvas);
     const device = new WebGLDevice(canvas, { alpha: false, antialias: false, preserveDrawingBuffer: true, checkGLErrors: true });
     const meshes = new MeshRenderer(device);
@@ -597,15 +620,16 @@ const { createSession, profiles } = await import('/dist/rollback.js');
     if (!mismatchRejected || mismatchLoader.size !== 0) throw new Error('A hash-mismatched SVG was compiled or cached');
     mismatchLoader.dispose();
     loader.clear(); loader.dispose();
-    return browserGeometrySha256;
-  }, { expectedSha256, nodeGeometrySha256, sourcePath });
-  assert.equal(loadedGeometrySha256, nodeGeometrySha256, 'browser and Node compilers emit identical geometry');
+    return { geometrySha256: browserGeometrySha256, lowQualityResults };
+  }, { expectedSha256, nodeGeometrySha256, lowQualityExpected, sourcePath });
+  assert.equal(loadedStartup.geometrySha256, nodeGeometrySha256, 'browser and Node compilers emit identical geometry');
+  assert.deepEqual(loadedStartup.lowQualityResults.map(item => item.value), [1, 2, 3], 'browser compiles each requested low quality');
   const startupFetches = vectorSvgFetches - startupFetchBaseline;
-  assert.equal(startupFetches, 3, 'same-key startup loads share one fetch, changed arc quality has its own key, and a hash mismatch is fetched only once');
+  assert.equal(startupFetches, 6, 'same-key startup loads share one fetch and each independent quality key plus the hash mismatch fetches once');
   assert.equal(startupErrors.length, 0, startupErrors.join('\n'));
   await startupPage.close();
-  report.browserSvgStartup = { sourceSha256: expectedSha256, geometrySha256: loadedGeometrySha256, requests: startupFetches,
-    scope: 'same-key promise/cache deduplication, expected-hash rejection before caching, browser/Node geometry parity, and actual WebGL1 draw of the browser-compiled SVG' };
+  report.browserSvgStartup = { sourceSha256: expectedSha256, geometrySha256: loadedStartup.geometrySha256, lowQuality: loadedStartup.lowQualityResults, requests: startupFetches,
+    scope: 'same-key promise/cache deduplication, low-quality browser/Node geometry parity, expected-hash rejection before caching, and actual WebGL1 draw of the browser-compiled SVG' };
   report.stages.push('browser SVG startup loader verifies source SHA-256, compiles once with bounded cache, and renders the same geometry as Node');
 
   const centeredSourcePath = 'modules/vector-assets/tests/centered-viewbox.svg';

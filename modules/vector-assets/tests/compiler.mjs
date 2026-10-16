@@ -50,10 +50,36 @@ assert.equal(strokeLoader.size, 2, 'both default and custom stroke tessellations
 assert.equal(defaultStrokeLoad.compilerOptions.strokeArcDivisions, 12);
 assert.equal(coarseStrokeLoad.compilerOptions.strokeArcDivisions, 8);
 assert.notDeepEqual(coarseStrokeLoad.geometry, defaultStrokeLoad.geometry, 'browser loader forwards the selected stroke tessellation');
-await assert.rejects(strokeLoader.load('/startup/seed-scout.svg', { sourcePath, strokeArcDivisions: 2 }), /strokeArcDivisions/i);
+await assert.rejects(strokeLoader.load('/startup/seed-scout.svg', { sourcePath, strokeArcDivisions: 0 }), /strokeArcDivisions/i);
 await assert.rejects(strokeLoader.load('/startup/seed-scout.svg', { sourcePath, strokeArcDivisions: null }), /strokeArcDivisions/i,
   'browser loader rejects explicit null instead of silently restoring the default');
-loader.clear(); loader.dispose(); mismatchLoader.dispose(); boundedLoader.dispose(); strokeLoader.dispose();
+for (const strokeArcDivisions of [65, 8.5]) {
+  await assert.rejects(strokeLoader.load('/startup/seed-scout.svg', { sourcePath, strokeArcDivisions }), /strokeArcDivisions/i,
+    'browser loader rejects out-of-range and fractional stroke subdivisions');
+}
+let qualityLoaderFetches = 0;
+const qualityLoader = createVectorAssetLoader({ fetch: async () => { qualityLoaderFetches++; return new Response(source, { status: 200 }); }, maxEntries: 8 });
+const [curveThree, sameCurveThree] = await Promise.all([
+  qualityLoader.load('/startup/seed-scout.svg', { sourcePath, curveSegments: 3 }),
+  qualityLoader.load('/startup/seed-scout.svg', { sourcePath, curveSegments: 3 }),
+]);
+assert.equal(curveThree, sameCurveThree, 'the same low curve quality reuses its cached browser-loader compile');
+const arcThree = await qualityLoader.load('/startup/seed-scout.svg', { sourcePath, strokeArcDivisions: 3 });
+const curveAndArcThree = await qualityLoader.load('/startup/seed-scout.svg', { sourcePath, curveSegments: 3, strokeArcDivisions: 3 });
+assert.notEqual(curveThree, arcThree, 'strokeArcDivisions remains part of the browser-loader cache key');
+assert.notEqual(curveThree, curveAndArcThree, 'curveSegments remains part of the browser-loader cache key');
+assert.equal(qualityLoaderFetches, 3, 'only distinct quality contracts fetch and compile');
+for (const curveSegments of [0, 65, 8.5]) {
+  await assert.rejects(qualityLoader.load('/startup/seed-scout.svg', { sourcePath, curveSegments }), /curveSegments/i,
+    'browser loader rejects out-of-range and fractional curve subdivisions');
+}
+await assert.rejects(qualityLoader.load('/startup/seed-scout.svg', { sourcePath, curveSegments: null }), /curveSegments/i,
+  'browser loader rejects explicit null rather than restoring the default');
+for (const strokeArcDivisions of [65, 8.5]) {
+  await assert.rejects(qualityLoader.load('/startup/seed-scout.svg', { sourcePath, strokeArcDivisions }), /strokeArcDivisions/i,
+    'browser loader rejects out-of-range and fractional stroke subdivisions');
+}
+loader.clear(); loader.dispose(); mismatchLoader.dispose(); boundedLoader.dispose(); strokeLoader.dispose(); qualityLoader.dispose();
 assert.equal(asset.schemaVersion, 1);
 assert.equal(asset.compilerVersion, '0.10.0');
 const { compilerOptions: ignoredCompilerOptions, ...assetWithoutCompilerOptions } = asset;
@@ -66,6 +92,12 @@ assert.doesNotThrow(() => validateCompiledAsset({ ...asset, compilerVersion: '0.
   'previous 0.9 compiler options remain readable');
 assert.throws(() => validateCompiledAsset({ ...asset, compilerOptions: { ...asset.compilerOptions, strokeArcDivisions: null } }), /compiler options/i,
   'the recorded stroke subdivision must be a bounded safe integer');
+for (const value of [0, 1.5, 65]) {
+  assert.throws(() => validateCompiledAsset({ ...asset, compilerOptions: { ...asset.compilerOptions, curveSegments: value } }), /compiler options/i,
+    'compiled asset schema rejects invalid curve subdivisions');
+  assert.throws(() => validateCompiledAsset({ ...asset, compilerOptions: { ...asset.compilerOptions, strokeArcDivisions: value } }), /compiler options/i,
+    'compiled asset schema rejects invalid stroke subdivisions');
+}
 assert.equal(asset.compilerOptions.curveSegments, 16, 'the default curve quality is recorded in compiled output');
 assert.equal(asset.compilerOptions.normalizeCenteredViewBox, false, 'the default viewport normalization mode is recorded');
 assert.equal(asset.compilerOptions.strokeArcDivisions, 12, 'the prior round stroke tessellation is the new recorded default');
@@ -88,15 +120,18 @@ validateCompiledAsset(coarseAsset);
 assert.equal(coarseAsset.compilerOptions.curveSegments, 8);
 assert.ok(coarseAsset.geometry.indices.length < asset.geometry.indices.length * 0.7,
   'eight-segment curves reduce the same authored SVG triangle references by at least 30%');
-for (const curveSegments of [4, 64]) {
+for (const curveSegments of [1, 2, 3, 64]) {
   const boundaryAsset = compileVectorAsset(source, sourcePath, { curveSegments });
   validateCompiledAsset(boundaryAsset);
   assert.equal(boundaryAsset.compilerOptions.curveSegments, curveSegments, `${curveSegments} is an accepted curveSegments boundary`);
+  assert.ok(boundaryAsset.geometry.vertices.every(Number.isFinite), `${curveSegments} curve segments produce only finite vertex buffers`);
+  assert.ok(boundaryAsset.geometry.indices instanceof Uint16Array && boundaryAsset.geometry.indices.length % 3 === 0,
+    `${curveSegments} curve segments preserve complete triangle indices`);
 }
-assert.throws(() => compileVectorAsset(source, sourcePath, { curveSegments: 3 }), /curveSegments/i);
+assert.throws(() => compileVectorAsset(source, sourcePath, { curveSegments: 0 }), /curveSegments/i);
 assert.throws(() => compileVectorAsset(source, sourcePath, { curveSegments: 65 }), /curveSegments/i);
 assert.throws(() => compileVectorAsset(source, sourcePath, { quality: 'low' }), /Only curveSegments/i);
-assert.throws(() => compileVectorAsset(source, sourcePath, { curveSegments: 8.5 }), /curveSegments/i);
+assert.throws(() => compileVectorAsset(source, sourcePath, { curveSegments: 1.5 }), /curveSegments/i);
 assert.throws(() => compileVectorAsset(source, sourcePath, { curveSegments: null }), /curveSegments/i,
   'explicit null is rejected instead of silently selecting the default');
 assert.throws(() => compileVectorAsset(source, sourcePath, { curveSegments: Number.MAX_SAFE_INTEGER + 1 }), /curveSegments/i,
@@ -106,18 +141,31 @@ assert.deepEqual(explicitDefaultArcAsset.geometry, asset.geometry, 'omitted arc 
 const coarseArcAsset = compileVectorAsset(source, sourcePath, { strokeArcDivisions: 8 });
 assert.equal(coarseArcAsset.compilerOptions.strokeArcDivisions, 8);
 assert.notDeepEqual(coarseArcAsset.geometry, asset.geometry, 'round joins and caps use the selected arc subdivision');
-for (const strokeArcDivisions of [4, 64]) {
+for (const strokeArcDivisions of [1, 2, 3, 64]) {
   const boundaryAsset = compileVectorAsset(source, sourcePath, { strokeArcDivisions });
   validateCompiledAsset(boundaryAsset);
   assert.equal(boundaryAsset.compilerOptions.strokeArcDivisions, strokeArcDivisions, `${strokeArcDivisions} is an accepted stroke arc boundary`);
+  assert.ok(boundaryAsset.geometry.vertices.every(Number.isFinite), `${strokeArcDivisions} stroke arc divisions produce only finite vertex buffers`);
+  assert.ok(boundaryAsset.geometry.indices instanceof Uint16Array && boundaryAsset.geometry.indices.length % 3 === 0,
+    `${strokeArcDivisions} stroke arc divisions preserve complete triangle indices`);
 }
-assert.throws(() => compileVectorAsset(source, sourcePath, { strokeArcDivisions: 3 }), /strokeArcDivisions/i);
+assert.throws(() => compileVectorAsset(source, sourcePath, { strokeArcDivisions: 0 }), /strokeArcDivisions/i);
 assert.throws(() => compileVectorAsset(source, sourcePath, { strokeArcDivisions: 65 }), /strokeArcDivisions/i);
-assert.throws(() => compileVectorAsset(source, sourcePath, { strokeArcDivisions: 8.5 }), /strokeArcDivisions/i);
+assert.throws(() => compileVectorAsset(source, sourcePath, { strokeArcDivisions: 1.5 }), /strokeArcDivisions/i);
 assert.throws(() => compileVectorAsset(source, sourcePath, { strokeArcDivisions: null }), /strokeArcDivisions/i,
   'explicit null is rejected instead of silently selecting the default');
 assert.throws(() => compileVectorAsset(source, sourcePath, { strokeArcDivisions: Number.MAX_SAFE_INTEGER + 1 }), /strokeArcDivisions/i,
   'unsafe arc subdivision integers are rejected');
+const collapsedCurveMetadata = {
+  schemaVersion: 1, id: 'collapsed-curve', defaultExpression: 'default',
+  parts: [{ id: 'body', parent: null, pivot: [0, 0] }], expressions: { default: { show: [], hide: [] } }, sockets: {},
+  clips: { idle: { durationMs: 100, loop: 'repeat', easing: 'linear', keyframes: [
+    { timeMs: 0, easing: 'linear', parts: {} }, { timeMs: 100, easing: 'linear', parts: {} },
+  ] } },
+};
+const collapsedCurveSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10"><metadata id="vector-asset">${JSON.stringify(collapsedCurveMetadata)}</metadata><g id="body"><path id="body-shape" d="M0 0 C0 0 0 0 0 0 Z" fill="#f00"/></g></svg>`;
+assert.throws(() => compileVectorAsset(Buffer.from(collapsedCurveSvg), 'collapsed-curve.svg', { curveSegments: 1 }),
+  /at this tessellation; increase the selected subdivision/, 'an all-degenerate low-quality SVG fails with a clear instruction to raise tessellation');
 const nonScalingStrokeSourcePath = 'modules/vector-assets/tests/non-scaling-stroke.svg';
 const nonScalingStrokeSourceBytes = await readFile(nonScalingStrokeSourcePath);
 const nonScalingDefaultAsset = compileVectorAsset(nonScalingStrokeSourceBytes, nonScalingStrokeSourcePath);
@@ -133,17 +181,33 @@ const arcCli = spawnSync(process.execPath, ['modules/vector-assets/scripts/compi
   { encoding: 'utf8', maxBuffer: 1024 * 1024 });
 assert.equal(arcCli.status, 0, arcCli.stderr);
 assert.equal(JSON.parse(arcCli.stdout).compilerOptions.strokeArcDivisions, 8, 'CLI exposes the recorded stroke tessellation contract');
-const invalidArcCli = spawnSync(process.execPath, ['modules/vector-assets/scripts/compile.mjs', sourcePath, '--stroke-arc-divisions', '3'],
+const invalidArcCli = spawnSync(process.execPath, ['modules/vector-assets/scripts/compile.mjs', sourcePath, '--stroke-arc-divisions', '0'],
   { encoding: 'utf8', maxBuffer: 1024 * 1024 });
 assert.notEqual(invalidArcCli.status, 0, 'CLI rejects stroke arc values below the documented boundary');
-const invalidCli = spawnSync(process.execPath, ['modules/vector-assets/scripts/compile.mjs', sourcePath, '--curve-segments', '3'],
+const invalidCli = spawnSync(process.execPath, ['modules/vector-assets/scripts/compile.mjs', sourcePath, '--curve-segments', '0'],
   { encoding: 'utf8', maxBuffer: 1024 * 1024 });
 assert.notEqual(invalidCli.status, 0, 'CLI rejects values below the documented boundary');
-for (const curveSegments of [4, 64]) {
+for (const curveSegments of [1, 2, 3, 64]) {
   const result = spawnSync(process.execPath, ['modules/vector-assets/scripts/compile.mjs', sourcePath, '--curve-segments', String(curveSegments)],
     { encoding: 'utf8', maxBuffer: 1024 * 1024 });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(JSON.parse(result.stdout).compilerOptions.curveSegments, curveSegments, 'CLI accepts both inclusive bounds');
+  assert.equal(JSON.parse(result.stdout).compilerOptions.curveSegments, curveSegments, 'CLI accepts the requested low values and upper boundary');
+}
+for (const value of [1.5, 65]) {
+  const result = spawnSync(process.execPath, ['modules/vector-assets/scripts/compile.mjs', sourcePath, '--curve-segments', String(value)],
+    { encoding: 'utf8', maxBuffer: 1024 * 1024 });
+  assert.notEqual(result.status, 0, `CLI rejects invalid curve subdivision ${value}`);
+}
+for (const strokeArcDivisions of [1, 2, 3, 64]) {
+  const result = spawnSync(process.execPath, ['modules/vector-assets/scripts/compile.mjs', sourcePath, '--stroke-arc-divisions', String(strokeArcDivisions)],
+    { encoding: 'utf8', maxBuffer: 1024 * 1024 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).compilerOptions.strokeArcDivisions, strokeArcDivisions, 'CLI accepts low round-stroke values and the upper boundary');
+}
+for (const value of [1.5, 65]) {
+  const result = spawnSync(process.execPath, ['modules/vector-assets/scripts/compile.mjs', sourcePath, '--stroke-arc-divisions', String(value)],
+    { encoding: 'utf8', maxBuffer: 1024 * 1024 });
+  assert.notEqual(result.status, 0, `CLI rejects invalid stroke subdivision ${value}`);
 }
 for (const args of [['8.5'], ['0x10'], ['8', '--curve-segments', '9']]) {
   const result = spawnSync(process.execPath, ['modules/vector-assets/scripts/compile.mjs', sourcePath, '--curve-segments', ...args],

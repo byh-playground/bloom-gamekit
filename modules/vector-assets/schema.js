@@ -164,10 +164,10 @@ export function validateCompiledAsset(asset) {
     const expectedKeys = current ? ['curveSegments', 'normalizeCenteredViewBox', 'strokeArcDivisions']
       : centeredViewBoxVersion ? ['curveSegments', 'normalizeCenteredViewBox'] : ['curveSegments'];
     if (!exactKeys(asset.compilerOptions, expectedKeys)
-        || !Number.isSafeInteger(asset.compilerOptions.curveSegments) || asset.compilerOptions.curveSegments < 4 || asset.compilerOptions.curveSegments > 64
+        || !Number.isSafeInteger(asset.compilerOptions.curveSegments) || asset.compilerOptions.curveSegments < 1 || asset.compilerOptions.curveSegments > 64
         || (centeredViewBoxVersion && typeof asset.compilerOptions.normalizeCenteredViewBox !== 'boolean')
         || (current && (!Number.isSafeInteger(asset.compilerOptions.strokeArcDivisions)
-          || asset.compilerOptions.strokeArcDivisions < 4 || asset.compilerOptions.strokeArcDivisions > 64))) {
+          || asset.compilerOptions.strokeArcDivisions < 1 || asset.compilerOptions.strokeArcDivisions > 64))) {
       throw new TypeError('Invalid SVG compiler options');
     }
   }

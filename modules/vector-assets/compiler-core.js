@@ -986,7 +986,7 @@ function compilePaths(paths, partIndices, parts, metadata, gradients, curveSegme
     }
     appendOrderedMeshRange(drawOrder, meshFirst, vertices.length / 11 - meshFirst, partIndex);
   }
-  if ((!vertices.length && !shaderSurfaces.length) || vertices.length % 33) throw new TypeError('SVG did not produce complete painted triangles or shader surfaces');
+  if ((!vertices.length && !shaderSurfaces.length) || vertices.length % 33) throw new TypeError('SVG did not produce complete painted triangles or shader surfaces at this tessellation; increase the selected subdivision or use a non-degenerate shape');
   const expanded = new Float32Array(vertices);
   const strideFloats=11;
   const uniqueVertices = [], indices = [], vertexIds = new Map();
@@ -1117,9 +1117,9 @@ export function compileVectorAssetCore(svgBytes, sourcePath = 'asset.svg', optio
     throw new TypeError('Only curveSegments, normalizeCenteredViewBox, and strokeArcDivisions compiler options are supported');
   }
   const curveSegments = options.curveSegments === undefined ? 16 : options.curveSegments;
-  if (!Number.isSafeInteger(curveSegments) || curveSegments < 4 || curveSegments > 64) throw new RangeError('curveSegments must be an integer from 4 to 64');
+  if (!Number.isSafeInteger(curveSegments) || curveSegments < 1 || curveSegments > 64) throw new RangeError('curveSegments must be an integer from 1 to 64');
   const strokeArcDivisions = options.strokeArcDivisions === undefined ? 12 : options.strokeArcDivisions;
-  if (!Number.isSafeInteger(strokeArcDivisions) || strokeArcDivisions < 4 || strokeArcDivisions > 64) throw new RangeError('strokeArcDivisions must be an integer from 4 to 64');
+  if (!Number.isSafeInteger(strokeArcDivisions) || strokeArcDivisions < 1 || strokeArcDivisions > 64) throw new RangeError('strokeArcDivisions must be an integer from 1 to 64');
   const normalizeCenteredViewBox = options.normalizeCenteredViewBox ?? false;
   if (typeof normalizeCenteredViewBox !== 'boolean') throw new TypeError('normalizeCenteredViewBox must be a boolean');
   if (!(svgBytes instanceof Uint8Array)) throw new TypeError('SVG source bytes must be a Uint8Array');
