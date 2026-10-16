@@ -134,7 +134,7 @@ export class MeshRenderer {
     this.partScratch = new Float32Array(16 * 12);
     this.alphaRunScratch = [];
     this.alphaRunCache = new WeakMap();
-    this.alphaQueue = new Array(maxInstances); this.alphaBounds = Array.from({ length: maxInstances }, () => ({ minX: 0, minY: 0, maxX: 0, maxY: 0 })); this.alphaBoundsScratch = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+    this.alphaQueue = new Array(maxInstances); this.alphaQueueBounds = { minX: 0, minY: 0, maxX: 0, maxY: 0 }; this.alphaBoundsScratch = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
     this.alphaQueueParts = new Float32Array(16 * 12); this.alphaQueueCount = 0; this.alphaQueueState = null;
     this.metrics = { draws: 0, instances: 0, geometryUploads: 0, geometryBytesUploaded: 0, instanceBytesUploaded: 0, partUniformBytesSubmitted: 0,
       alphaRunCacheHits: 0, alphaRunCacheMisses: 0, alphaRunSafeBatches: 0, alphaRunBatchedInstances: 0, alphaRunDrawsSaved: 0,
@@ -293,6 +293,14 @@ export class MeshRenderer {
     return bounds;
   }
   _boundsOverlap(a, b) { return !(a.maxX < b.minX || b.maxX < a.minX || a.maxY < b.minY || b.maxY < a.minY); }
+  _extendAlphaQueueBounds(bounds) {
+    const group = this.alphaQueueBounds;
+    if (!this.alphaQueueCount) Object.assign(group, bounds);
+    else {
+      group.minX = Math.min(group.minX, bounds.minX); group.minY = Math.min(group.minY, bounds.minY);
+      group.maxX = Math.max(group.maxX, bounds.maxX); group.maxY = Math.max(group.maxY, bounds.maxY);
+    }
+  }
   _alphaQueueMatches(mesh, projection, clip, stencilRef, depthTest, depthFunc, indexVariant, runs) {
     const state = this.alphaQueueState;
     if (!state) return true;
@@ -458,18 +466,14 @@ export class MeshRenderer {
             this.metrics.alphaRunSignatureBoundaries++;
             this._flushAlphaQueue('alphaSignature');
           }
-          let overlapsQueuedBounds = false;
-          for (let queued = 0; queued < this.alphaQueueCount; queued++) {
-            if (this._boundsOverlap(bounds, this.alphaBounds[queued])) { overlapsQueuedBounds = true; break; }
-          }
-          if (overlapsQueuedBounds) {
+          if (this.alphaQueueCount && this._boundsOverlap(bounds, this.alphaQueueBounds)) {
             this.metrics.alphaRunOverlapBoundaries++;
             this._flushAlphaQueue('alphaOverlap');
           }
           if (this.alphaQueueCount === this.maxInstances) this._flushAlphaQueue('capacity');
           if (!this.alphaQueueCount) this._startAlphaQueue(mesh, projection, clip, stencilRef, depthTest, depthFunc, indexVariant, runs);
+          this._extendAlphaQueueBounds(bounds);
           const slot = this.alphaQueueCount;
-          Object.assign(this.alphaBounds[slot], bounds);
           writeAlphaInstance(i, slot); this.alphaQueueCount++;
           continue;
         }
