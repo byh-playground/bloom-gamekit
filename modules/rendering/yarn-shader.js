@@ -243,24 +243,28 @@ function validateStyle(style) {
   }
 }
 
-function normalizeOutline(outline) {
+function normalizeOutline(outline, sourceIndices) {
   if (!(outline instanceof Float32Array || Array.isArray(outline)) || outline.length < 8 || outline.length % 2) throw new TypeError('Closed SVG contour must contain at least four x/y points');
   const points = [];
   for (let i = 0; i < outline.length; i += 2) {
     const x = outline[i], y = outline[i + 1];
     if (!Number.isFinite(x) || !Number.isFinite(y)) throw new TypeError('SVG contour points must be finite');
-    if (!points.length || Math.hypot(x - points.at(-1)[0], y - points.at(-1)[1]) > 1e-6) points.push([x, y]);
+    if (!points.length || Math.hypot(x - points.at(-1)[0], y - points.at(-1)[1]) > 1e-6) { points.push([x, y]); sourceIndices?.push(i / 2); }
   }
-  if (points.length > 4 && Math.hypot(points[0][0] - points.at(-1)[0], points[0][1] - points.at(-1)[1]) < 1e-6) points.pop();
+  if (points.length > 4 && Math.hypot(points[0][0] - points.at(-1)[0], points[0][1] - points.at(-1)[1]) < 1e-6) { points.pop(); sourceIndices?.pop(); }
   if (points.length < 3) throw new TypeError('SVG contour requires at least three distinct points');
   return points;
 }
 
 function surfaceGeometry(fillVertices, outline, edgeColors, style) {
   if (!(fillVertices instanceof Float32Array) || fillVertices.length < 18 || fillVertices.length % 18) throw new TypeError('Filled surface requires complete triangles in a six-float position/color layout');
-  const points = normalizeOutline(outline);
-  if (edgeColors !== undefined && (!(edgeColors instanceof Float32Array) || edgeColors.length !== points.length * 4)) throw new TypeError('edgeColors must contain one RGBA color per contour point');
+  const sourceIndices = [], points = normalizeOutline(outline, sourceIndices);
+  if (edgeColors !== undefined && (!(edgeColors instanceof Float32Array) || (edgeColors.length !== points.length * 4 && edgeColors.length !== outline.length * 2))) throw new TypeError('edgeColors must contain one RGBA color per contour point');
   if (edgeColors && edgeColors.some(value => !Number.isFinite(value) || value < 0 || value > 1)) throw new RangeError('edgeColors must contain finite RGBA values in [0,1]');
+  if (edgeColors && edgeColors.length !== points.length * 4) {
+    const originalColors = edgeColors;
+    edgeColors = Float32Array.from(sourceIndices.flatMap(index => Array.from(originalColors.subarray(index * 4, index * 4 + 4))));
+  }
   for (let i = 0; i < fillVertices.length; i++) {
     if (!Number.isFinite(fillVertices[i])) throw new TypeError('Filled surface vertices must be finite');
     const field = i % 6;
