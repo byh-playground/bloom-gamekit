@@ -98,6 +98,19 @@ const session = createSession({
 - replay schema와 codec은 그대로입니다. 최종 hash는 export 때 현재 경계에서 계산하고 replay 용량에 도달할 때는 마지막 기록 경계를 미리 hash하여 보존합니다. 완료된 입력만 기록하며 초기 상태 이후 replay로 재현합니다.
 - `metrics.snapshotSaves`, `serializedSnapshotBytes`는 SDK 직렬화 횟수/바이트를 제공합니다. 기존 `retainedSnapshotBytes`, `stateHashComputations`, `hashedStateBytes`도 유지합니다. 이는 adapter 내부 할당/게임의 별도 저장 비용까지 측정하지 않습니다.
 
+단일 플레이 로컬 RoomSession은 필요하면 `localFastPath: true`를 명시할 수 있습니다. 이 옵션은 `mode: 'local'`, `profile.mode: 'lockstep'`, strict availability 조합에서만 허용하며, 세션 생성·매틱 입력 해시·주기 checkpoint·상태 해시·리플레이 보관을 생략합니다. 입력/명령 예약과 같은 `runSimulationFrame` 경로, 논리 틱, `applyMembership`, 렌더 보간, 그리고 앱 소유의 수동 저장·복원은 유지됩니다. SDK의 `adapter.save()`는 이 모드에서 자동 호출되지 않으므로 `metrics.snapshotSaves`, `serializedSnapshotBytes`, `retainedSnapshotBytes`, `stateHashComputations`, `hashedStateBytes`는 0이고 `getStateHash()`는 `undefined`를 반환합니다. 리플레이·bootstrap/resync 기능은 제공하지 않습니다. step이 예외를 던지면 복원할 내부 checkpoint가 없으므로 `failure.restoreUnavailable`로 알려주고 세션은 fatal로 멈춥니다. 온라인 세션 또는 rollback 모드에서는 이 옵션을 거부합니다. 기본값은 `false`라 기존 동작은 바뀌지 않습니다.
+
+```js
+const session = createRoomSession({
+  mode: 'local', localFastPath: true,
+  simulationVersion: 'game-v1', inputSize: 1,
+  profile: { ...profiles.lockstep, baseInputDelayTicks: 0 },
+  adapter: gameAdapter,
+});
+// 게임 소유의 명시 저장은 계속 가능하다.
+const save = gameAdapter.save();
+```
+
 HELLO는 양쪽 mode를 명시하며 lockstep에서는 초기 `baseInputDelayTicks`, `checksumInterval`도 일치해야 합니다. rollback의 peer별 delay 설정 및 런타임 delay 적응은 유지합니다. replay version은 유지하며 protocol 3을 사용합니다. 이 handshake 필드가 없는 이전 bundle과 새 bundle을 섞으면 시작을 거절합니다. 함께 플레이할 소비자는 같은 검증된 dist pin으로 업데이트하세요.
 
 ## 확정 bootstrap과 bounded catch-up

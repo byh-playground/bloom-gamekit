@@ -66,7 +66,9 @@ Synctest는 실제 Adapter, 공통 frame 실행 경계와 StateHistory를 재사
 
 입력 지연 증가는 EMA 기반 측정 목표까지 빠르게 적용하고 범위를 제한한다. 감소는 현재 sample이 마지막 commit과 같고 대기 command가 없을 때 한 번에 한 틱만 적용한다. requestedInputDelay는 목표, inputDelay는 실제 적용값이다. 이미 commit한 frame/command는 이동하지 않는다.
 
-save()의 반환 버퍼는 Adapter가 재사용할 수 있으므로 Core는 독립 복사본을 보관한다. 상태 hash는 필요한 경계/요청에서 계산하고 그 snapshot에 캐시한다. 매 틱 누적 입력 hash는 별도 계약이며 유지한다. hash 전용 Writer는 재사용하되 전송/보관 payload에는 가변 scratch view를 노출하지 않는다.
+save()의 반환 버퍼는 Adapter가 재사용할 수 있으므로 Core는 독립 복사본을 보관한다. 상태 hash는 필요한 경계/요청에서 계산하고 그 snapshot에 캐시한다. 매 틱 누적 입력 hash는 peer 비교를 위해 별도 계약이며 일반 lockstep/rollback에서 유지한다. hash 전용 Writer는 재사용하되 전송/보관 payload에는 가변 scratch view를 노출하지 않는다.
+
+`createRoomSession({ mode: 'local', localFastPath: true, profile: { mode: 'lockstep', ... } })`는 단일 플레이 싱글 세션을 위한 opt-in 경로다. `mode`가 local이고 lockstep이어야 하며, 한 플레이어만 실행할 때만 허용한다. 가용성 모드는 `strict`여야 한다. 일반 Core와 온라인 RoomSession의 동작은 바꾸지 않는다. 이 경로는 내부 초기 snapshot/byte copy, checkpoint/history 보관, 상태 hash와 매틱 입력 hash, replay/bootstrap/resync 생성을 생략한다. SDK는 `adapter.save()`/`load()`를 자동 호출하지 않지만 앱은 자신의 adapter를 통해 수동 저장/복원을 계속 수행한다. 동일 `runSimulationFrame`·입력/명령 예약 경로를 유지한다. `getStateHash()`는 `undefined`이며 replay, bootstrap, resync 기능은 지원하지 않는다. step 실패를 복구할 내부 checkpoint도 없으므로 fatal로 중단한다. 입력 버퍼는 명령 예약·실행과 제한 용량을 위해 계속 유지된다.
 
 초기 snapshot 크기로 전체 ring 예산을 검사하고 실제 state 성장도 매번 검사한다. 예산 초과는 조용한 history 삭제가 아니라 명확한 오류다. sparse checkpoint 간격은 이력·복구 설계와 실측 근거 없이 도입하지 않는다. 최적화는 정확한 결과·hash 동일성과 측정 이득을 함께 요구한다. fixedPoint.mul의 안전한 정수 곱 범위만 빠른 경로를 사용하고 범위 밖과 div는 BigInt 기준을 유지한다.
 

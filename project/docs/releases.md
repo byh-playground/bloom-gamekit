@@ -1,3 +1,7 @@
+## v0.11.1 (2026-10-16)
+
+`createRoomSession` adds an opt-in single-player local lockstep fast path. It preserves deterministic input/command execution and app-owned explicit saves while skipping SDK snapshot serialization/copies, checkpoint history, and state/input hashes when no peer can consume them. Existing local and online behavior is unchanged unless selected.
+
 ## v0.11.0 (2026-10-16)
 
 The SVG compiler default changes to 4 curve segments and 2 round-stroke arc divisions. The exported frozen `VECTOR_ASSET_QUALITY_PRESETS` provides the `standard` 4/2 preset for most assets and the `smallAsset` 2/2 preset. Explicit 16/12 options retain the previous geometry; the supported range remains 1–64. Node compilation, the browser loader, the CLI, and the three-view example share these defaults.

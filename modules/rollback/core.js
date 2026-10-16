@@ -67,6 +67,10 @@ function profileOf(profile) {
 }
 import { StateHistory, CheckpointHistory } from '../_rollback-shared/history.js';
 export function createSession(options) { return new RollbackSession(options); }
+// RoomSession's explicitly opted-in local single-player path has no peer,
+// replay, recovery, or state-hash consumer. Keep this constructor internal to
+// the public aggregate API so generic RollbackSession defaults don't change.
+export function createLocalFastPathSession(options) { return new RollbackSession(options, undefined, true); }
 // RoomSession owns optional multi-peer snapshot selection. Not a public Core option.
 export function delegateRoomRecovery(session, selectBoundary) { session._roomRecovery = selectBoundary; }
 // Module-private, consume-once handoff. Public options cannot supply a trusted
@@ -80,7 +84,7 @@ export function createSessionFromBoundary(options, state, hash) {
 export class RollbackSession {
   constructor({ players, localPlayerId, sessionId, simulationVersion, seed = 1, inputSize,
     profile = profiles.action, adapter, authorityPlayerId, onEvent = () => {}, recordReplay = true, clock = nowMs,
-    localCommandState, initialCommandSequences } = {}, boundaryToken) {
+    localCommandState, initialCommandSequences } = {}, boundaryToken, localFastPath = false) {
     if (!Array.isArray(players) || players.length < 1 || players.length > 8 ||
       players.some(p => typeof p !== 'string' || !p.length || p.length > 128) || new Set(players).size !== players.length) throw new TypeError('fixed player roster (1..8 unique IDs)');
     this.players = Object.freeze([...players].sort(compareIds));
@@ -92,12 +96,16 @@ export class RollbackSession {
     if (typeof clock !== 'function') throw new TypeError('monotonic runtime clock');
     this._clock = clock;
     this.profile = profileOf(profile); this.adapter = adapter; this.onEvent = onEvent;
+    this.localFastPath = localFastPath;
+    if (localFastPath && (this.players.length !== 1 || this.profile.mode !== 'lockstep' || recordReplay || boundaryToken)) {
+      throw new TypeError('local fast path requires one-player lockstep without replay or a recovery boundary');
+    }
     this.authorityPlayerId = authorityPlayerId ?? this.players[0];
     if (!this.players.includes(this.authorityPlayerId)) throw new TypeError('authorityPlayerId');
     this._tick = 0; this._inputDelay = this.profile.inputScheduling === 'network' ? this.profile.minInputDelayTicks : this.profile.baseInputDelayTicks; this._requestedInputDelay = this._inputDelay;
     this.closed = false; this._failure = null;
-    this._history = this._newHistory();
-    this._inputWriter = new Writer(CHUNK_SIZE * this.players.length);
+    this._history = this.localFastPath ? null : this._newHistory();
+    this._inputWriter = this.localFastPath ? null : new Writer(CHUNK_SIZE * this.players.length);
     this._inputs = new Map(this.players.map(p => [p, new Map()]));
     this._through = new Map(this.players.map(p => [p, -1]));
     this._used = new Map(); this._peers = new Map(); this._pendingCommands = [];
@@ -130,19 +138,26 @@ export class RollbackSession {
     const boundary = boundaries.get(boundaryToken);
     if (boundary) boundaries.delete(boundaryToken);
     if (boundary && boundary.adapter !== adapter) throw new Error('initial boundary adapter');
-    const initial = boundary ? boundary.state : this._save();
-    if (!initial.length || initial.length > this.profile.maxSnapshotBytes) throw new RangeError('snapshot size');
-    const retainedCount = this.profile.mode === 'lockstep' ? Math.ceil(this.profile.stateHistorySize / this.profile.checksumInterval) + 2 : this.profile.stateHistorySize;
-    const requiredBytes=initial.length*retainedCount;
-    if(requiredBytes>this.profile.maxHistoryBytes)throw Object.assign(new RangeError('initial snapshot cannot fill retained history byte budget'),{code:'history-capacity',snapshotBytes:initial.length,requiredBytes,maxHistoryBytes:this.profile.maxHistoryBytes});
-    this._initialState = boundary ? initial : initial.slice();
-    const initialRecord={ tick: 0, bytes: initial, inputHash: this._inputHash, commandSequences: this._commandSequences, ...(boundary ? { hash: boundary.hash } : {}) };
-    this._history.put(initialRecord); this._currentState = initialRecord;
-    this._hello = encoder.encode(JSON.stringify({ protocol: PROTOCOL_VERSION, library: VERSION, sessionId,
-      simulationVersion, seed, players: this.players, tickRate: this.profile.tickRate, inputSize,
-      authorityPlayerId: this.authorityPlayerId, mode: this.profile.mode,
-      baseInputDelayTicks: this.profile.mode === 'lockstep' ? this.profile.baseInputDelayTicks : null,
-      checksumInterval: this.profile.mode === 'lockstep' ? this.profile.checksumInterval : null, initialHash: this._stateHash(initialRecord) }));
+    if (this.localFastPath) {
+      // A local single-player session has no handshake, checksum, replay, or
+      // automatic recovery consumer. The game's adapter remains available to
+      // its owner for explicit saves and restores.
+      this._initialState = null; this._currentState = null; this._hello = null;
+    } else {
+      const initial = boundary ? boundary.state : this._save();
+      if (!initial.length || initial.length > this.profile.maxSnapshotBytes) throw new RangeError('snapshot size');
+      const retainedCount = this.profile.mode === 'lockstep' ? Math.ceil(this.profile.stateHistorySize / this.profile.checksumInterval) + 2 : this.profile.stateHistorySize;
+      const requiredBytes=initial.length*retainedCount;
+      if(requiredBytes>this.profile.maxHistoryBytes)throw Object.assign(new RangeError('initial snapshot cannot fill retained history byte budget'),{code:'history-capacity',snapshotBytes:initial.length,requiredBytes,maxHistoryBytes:this.profile.maxHistoryBytes});
+      this._initialState = boundary ? initial : initial.slice();
+      const initialRecord={ tick: 0, bytes: initial, inputHash: this._inputHash, commandSequences: this._commandSequences, ...(boundary ? { hash: boundary.hash } : {}) };
+      this._history.put(initialRecord); this._currentState = initialRecord;
+      this._hello = encoder.encode(JSON.stringify({ protocol: PROTOCOL_VERSION, library: VERSION, sessionId,
+        simulationVersion, seed, players: this.players, tickRate: this.profile.tickRate, inputSize,
+        authorityPlayerId: this.authorityPlayerId, mode: this.profile.mode,
+        baseInputDelayTicks: this.profile.mode === 'lockstep' ? this.profile.baseInputDelayTicks : null,
+        checksumInterval: this.profile.mode === 'lockstep' ? this.profile.checksumInterval : null, initialHash: this._stateHash(initialRecord) }));
+    }
     const neutral = new Uint8Array(this.inputSize);
     if (localCommandState) {
       for (const entry of carriedInputs) this._localReservations.set(entry.tick, {tick:entry.tick,input:bytes(entry.input).slice(),commands:[],revision:++this._reservationRevision,packet:null});
@@ -189,12 +204,13 @@ export class RollbackSession {
   /** Current scheduling multiplier without allocating a diagnostic metrics snapshot. */
   get pace() { return this._pace; }
   get metrics() { return { ...this._metrics, inputDelay: this.inputDelay, requestedInputDelay:this.requestedInputDelay,
-    confirmedTick: this.confirmedTick, tick: this.tick, pace: this._pace,retainedSnapshotBytes:this._history.byteLength }; }
+    confirmedTick: this.confirmedTick, tick: this.tick, pace: this._pace,retainedSnapshotBytes:this._history?.byteLength ?? 0 }; }
   _newHistory() {
     const History = this.profile.mode === 'lockstep' ? CheckpointHistory : StateHistory;
     return new History(this.profile.stateHistorySize, this.profile.maxHistoryBytes);
   }
   _stateAt(tick) {
+    if (this.localFastPath) return undefined;
     const retained = this._history.get(tick);
     if (retained) return retained;
     if (this.profile.mode !== 'lockstep' || tick !== this.tick || this.resimulating) return undefined;
@@ -251,6 +267,7 @@ export class RollbackSession {
   }
   _nextSequence() { this._sequence = (this._sequence + 1) >>> 0; return this._sequence; }
   attachTransport(peerId, transport) {
+    if (this.localFastPath) throw new Error('transport unavailable in local fast path');
     if (this.closed) throw new Error('session closed');
     if (this._failure) throw new Error('session failed: '+this._failure.type);
     if (peerId === this.localPlayerId || !this.players.includes(peerId) || this._peers.has(peerId)) throw new TypeError('peerId already attached or outside roster');
@@ -710,7 +727,7 @@ export class RollbackSession {
     return inputs.reduce((s, f) => s + f.input.length + f.commands.reduce((k, c) => k + c.payload.length + 12, 0), 16);
   }
   _step(inputs, resimulating) {
-    const before = this._history.get(this.tick);
+    const before = this._history?.get(this.tick);
     const tick = this.tick, lockstep = this.profile.mode === 'lockstep';
     integer(tick, 'session tick limit', 0, MAX_TICK);
     // Freeze the last recorded boundary before mutating it when the input log is
@@ -721,9 +738,9 @@ export class RollbackSession {
     }
     try {
       runSimulationFrame(this.adapter, { tick, tickRate: this.profile.tickRate, inputs, resimulating });
-      const inputHash = this._hashInputFrame(tick,inputs,this._inputHash);
+      const inputHash = this.localFastPath ? this._inputHash : this._hashInputFrame(tick,inputs,this._inputHash);
       const commandSequences = executedSequences(this._commandSequences, inputs);
-      if (!lockstep || (tick + 1) % this.profile.checksumInterval === 0) {
+      if (!this.localFastPath && (!lockstep || (tick + 1) % this.profile.checksumInterval === 0)) {
         const state = this._save();
         this._history.put({ tick: tick + 1, bytes: state, inputHash, commandSequences });
       }
@@ -732,6 +749,13 @@ export class RollbackSession {
       const localFrame=inputs.find(frame=>frame.playerId===this.localPlayerId);if(localFrame)this._localExecutedInput=localFrame.input.slice();
       this._commandSequences = commandSequences;
     } catch (error) {
+      if (this.localFastPath) {
+        // Without a retained canonical boundary, partial adapter mutation
+        // cannot be rolled back safely. Stop immediately and surface fatal.
+        this._currentState = null;
+        this._fail('fatal', { error, restoreUnavailable: true });
+        throw error;
+      }
       try {
         if (before) this.adapter.load(before.bytes.slice());
         else if (lockstep) this._restoreConfirmedBoundary(tick);
@@ -839,7 +863,7 @@ export class RollbackSession {
     this._window = { advances: 0, received: 0, late: 0, depth: 0, rollback: 0, stall: 0, cost: 0, costSamples: 0 };
   }
   _sendHashes() {
-    if (this.resimulating) return;
+    if (this.localFastPath || this.resimulating) return;
     const upTo = Math.min(this.tick, this.confirmedTick + 1);
     const t = Math.floor(upTo / this.profile.checksumInterval) * this.profile.checksumInterval;
     if (!t) return;
@@ -851,7 +875,7 @@ export class RollbackSession {
     }
   }
   _checkHashes() {
-    if (this.resimulating) return;
+    if (this.localFastPath || this.resimulating) return;
     for (const peer of this._peers.values()) for (const [tick, remote] of peer.hashes) {
       if (tick > Math.min(this.tick, this.confirmedTick + 1)) continue;
       const local = this._history.get(tick);
@@ -871,6 +895,7 @@ export class RollbackSession {
   getStateHash(tick = this.tick) { return this._stateHash(this._stateAt(tick)); }
   /** Export the requested confirmed boundary, never the predicted present. */
   exportConfirmedBootstrap({ tick = this.confirmedBoundary, checkpointAtOrBefore = tick } = {}) {
+    if (this.localFastPath) throw new Error('confirmed bootstrap unavailable in local fast path');
     if (this.closed || this._failure || this.resimulating || this._requestedRecovery) throw new Error('confirmed boundary is required');
     integer(tick, 'bootstrap confirmed boundary', 0, this.confirmedBoundary);
     integer(checkpointAtOrBefore, 'bootstrap checkpoint boundary', 0, tick);
@@ -893,6 +918,7 @@ export class RollbackSession {
   }
   /** Fence a donor against retained confirmed history and immutable local inputs. */
   verifyConfirmedBootstrap(bootstrap) {
+    if (this.localFastPath) throw new Error('confirmed bootstrap unavailable in local fast path');
     if (this.closed || this._failure || this.resimulating || !bootstrap ||
       bootstrap.tick < this.confirmedBoundary || bootstrap.tick - bootstrap.checkpoint?.tick > this.profile.stateHistorySize ||
       !Array.isArray(bootstrap.frames) || bootstrap.frames.length !== bootstrap.tick - bootstrap.checkpoint.tick ||
@@ -915,6 +941,7 @@ export class RollbackSession {
     return true;
   }
   requestResync(tick) {
+    if (this.localFastPath) return false;
     if(this.closed||this._failure)return false;
     integer(tick, 'recovery tick', 0, Math.min(this.tick, this.confirmedTick + 1));
     if (this.localPlayerId === this.authorityPlayerId) return false;
@@ -1049,6 +1076,7 @@ export class RollbackSession {
     }
   }
   exportSyncTestFrames({maxFrames=32}={}) {
+    if (this.localFastPath) throw new Error('replay unavailable in local fast path');
     integer(maxFrames,'maxFrames',1,256);
     if (this.resimulating) throw new Error('finish rollback before exporting synctest frames');
     this._recordConfirmed();
@@ -1058,6 +1086,7 @@ export class RollbackSession {
         inputs: f.inputs.map(x => ({ ...copyFrame(x), playerId: x.playerId, predicted: false })) })) };
   }
   exportReplay() {
+    if (this.localFastPath) throw new Error('replay unavailable in local fast path');
     if (this.resimulating) throw new Error('finish rollback before exporting replay');
     this._recordConfirmed();
     const tick = this._replayFrames.length;
@@ -1072,7 +1101,7 @@ export class RollbackSession {
   }
   _prune() {
     const windowOldest = Math.max(0, this.tick - this.profile.stateHistorySize + 1);
-    const oldest = this.profile.mode === 'lockstep' ? Math.min(windowOldest, this._history.oldestTick) : windowOldest;
+    const oldest = this.profile.mode === 'lockstep' ? Math.min(windowOldest, this._history?.oldestTick ?? windowOldest) : windowOldest;
     for (const t of this._used.keys()) if (t < oldest - 1) this._used.delete(t);
     for(const peer of this._peers.values()){for(const t of peer.reservations?.keys()??[])if(t<oldest)peer.reservations.delete(t);for(const [seq,c] of peer.reservedCommands??[])if(c.executeTick<oldest)peer.reservedCommands.delete(seq);for(const t of peer.reservationAcks?.keys()??[])if(t<oldest)peer.reservationAcks.delete(t);}
     const minAck = this._peers.size ? Math.min(...[...this._peers.values()].map(p => p.ack)) : this.tick;
