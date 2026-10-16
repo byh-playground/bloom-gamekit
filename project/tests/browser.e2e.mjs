@@ -540,6 +540,7 @@ const { createSession, profiles } = await import('/dist/rollback.js');
     return value;
   };
   const nodeGeometrySha256 = createHash('sha256').update(JSON.stringify(stable(nodeAsset.geometry))).digest('hex');
+  const startupFetchBaseline = vectorSvgFetches;
   const startupPage = await browser.newPage({ viewport: { width: 1000, height: 800 }, deviceScaleFactor: 1 });
   const startupErrors = [];
   startupPage.on('pageerror', error => startupErrors.push(error.message));
@@ -599,10 +600,11 @@ const { createSession, profiles } = await import('/dist/rollback.js');
     return browserGeometrySha256;
   }, { expectedSha256, nodeGeometrySha256, sourcePath });
   assert.equal(loadedGeometrySha256, nodeGeometrySha256, 'browser and Node compilers emit identical geometry');
-  assert.equal(vectorSvgFetches, 3, 'same-key startup loads share one fetch, changed arc quality has its own key, and a hash mismatch is fetched only once');
+  const startupFetches = vectorSvgFetches - startupFetchBaseline;
+  assert.equal(startupFetches, 3, 'same-key startup loads share one fetch, changed arc quality has its own key, and a hash mismatch is fetched only once');
   assert.equal(startupErrors.length, 0, startupErrors.join('\n'));
   await startupPage.close();
-  report.browserSvgStartup = { sourceSha256: expectedSha256, geometrySha256: loadedGeometrySha256, requests: vectorSvgFetches,
+  report.browserSvgStartup = { sourceSha256: expectedSha256, geometrySha256: loadedGeometrySha256, requests: startupFetches,
     scope: 'same-key promise/cache deduplication, expected-hash rejection before caching, browser/Node geometry parity, and actual WebGL1 draw of the browser-compiled SVG' };
   report.stages.push('browser SVG startup loader verifies source SHA-256, compiles once with bounded cache, and renders the same geometry as Node');
 
