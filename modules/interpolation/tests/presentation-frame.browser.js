@@ -4,6 +4,13 @@ export async function runFrameChecks(page){return page.evaluate(async()=>{
   const check=(ok,message)=>{if(!ok)throw new Error(message);};
   class Shot extends R {static renderSchema={x:R.POSITION_X,y:R.POSITION_Y,color:R.STEP};static renderPath={x:'x',y:'y',durationMs:300,maxPoints:16};}
   const runtime=new PresentationRuntime({stepMs:100,delayMs:200});
+  const tickBoundary=966.666666666667, boundaryRuntime=new PresentationRuntime({stepMs:100/3,delayMs:100/3});
+  boundaryRuntime.capture({revision:0,sequence:0,timeMs:tickBoundary,entities:[{id:'boundary',generation:0,type:Shot,source:{x:1,y:1,color:'red'}}]},10000);
+  const boundaryPath=[];boundaryRuntime.frame(10000+100/3).pathInto('boundary',0,boundaryPath);
+  check(boundaryPath.length===1&&boundaryPath[0].timeMs===tickBoundary,'delayed path reuses its exact computed interval start at a floating-point tick boundary');
+  const strictPath=new PresentationRuntime({stepMs:100,delayMs:100});
+  let backwardPath=false;try{strictPath.capture({revision:0,sequence:0,timeMs:100,entities:[{id:'reverse',generation:0,type:Shot,source:{x:1,y:1,color:'red'},initialSource:{x:0,y:0,color:'red'},initialTimeMs:0,pathPoints:[{timeMs:75,x:2,y:2},{timeMs:50,x:3,y:3}]}]},1000);}catch(error){backwardPath=/path points must be ordered/.test(error.message);}
+  check(backwardPath,'genuinely out-of-order path points still fail strictly');
   const capture=(sequence,timeMs,entities,extra={})=>runtime.capture({revision:0,sequence,timeMs,entities,...extra},timeMs);
   capture(0,0,[]);
   capture(1,100,[{id:'shot',generation:0,type:Shot,source:{x:10,y:10,color:'red',secret:99},initialSource:{x:0,y:0,color:'red'},initialTimeMs:0,pathPoints:[{timeMs:50,x:0,y:10}]}]);
@@ -62,5 +69,5 @@ export async function runFrameChecks(page){return page.evaluate(async()=>{
   released.releasePreview(120);
   p=released.frame(150).sample('a',0);check(p.x>10&&p.x<20&&p.pending===null,'preview release corrects its local pose without resurrecting buffered attack state');
   p=released.frame(200).sample('a',0);check(p.x===10&&p.pending===null,'released authority reaches its original display boundary');
-  return {birth:'PASS',pathCorner:'PASS',lifetime:'PASS',rollback:'PASS',teleport:'PASS',preview:'PASS',frameGuard:'PASS',atomicAttackState:'PASS'};
+  return {birth:'PASS',tickBoundary:'PASS',strictPath:'PASS',pathCorner:'PASS',lifetime:'PASS',rollback:'PASS',teleport:'PASS',preview:'PASS',frameGuard:'PASS',atomicAttackState:'PASS'};
 });}

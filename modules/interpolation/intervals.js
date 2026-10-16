@@ -10,6 +10,7 @@ export function bufferInterval(track, old, {origin, timeMs, previousTimeMs, step
   track.buffered=true;
   const history=continuous ? [...(old.history??[]),old] : [];
   track.history=history.slice(-Math.ceil(delayMs/stepMs)-2).map(({history,...item})=>item);
+  return start;
 }
 export function intervalAt(track, at) {
   if (!track || at<track.bornAt || at>=track.removedAt) return null;

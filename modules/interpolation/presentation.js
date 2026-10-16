@@ -214,8 +214,9 @@ export class PresentationRuntime {
       }
       const track = { id: entity.id, generation, source, plan, target, from, velocity, at: nowMs, timeMs,
         model: same ? old.model : {}, sampleValues: same ? old.sampleValues : undefined, sampledAt: -Infinity };
+      let intervalStart;
       if(this.#delayMs){
-        bufferInterval(track,old,{origin,timeMs,previousTimeMs:this.#timeMs,stepMs:this.#stepMs,delayMs:this.#delayMs,
+        intervalStart=bufferInterval(track,old,{origin,timeMs,previousTimeMs:this.#timeMs,stepMs:this.#stepMs,
           continuous:same&&!snap,reset:snap,seeded:!snap&&(!!initial||plan.policies.origins.some(i=>i!==undefined)),initialTimeMs:entity.initialTimeMs});
         track.initialShapes=same&&!snap?old.target.shapes:!snap&&initial?initial.shapes:target.shapes;
         // Shape and descendants are one state. Holding only the old shape with reset
@@ -227,7 +228,7 @@ export class PresentationRuntime {
         const prior=same&&!snap?old.target.values:!snap&&initial?initial.values:target.values;
         for(const index of track.heldFields)from[index]=prior[index];
       }
-      const pathStart=this.#delayMs?track.startedAt-origin:same&&!snap?old.timeMs:(!snap&&initial?(entity.initialTimeMs??timeMs-this.#stepMs):timeMs);
+      const pathStart=this.#delayMs?intervalStart:same&&!snap?old.timeMs:(!snap&&initial?(entity.initialTimeMs??timeMs-this.#stepMs):timeMs);
       track.path=capturePath(plan.path,old?.path,from,target.values,pathStart,timeMs,entity.pathPoints,!same||snap,this.#delayMs,this.#stepMs);
       next.set(entity.id, track); sources.set(source, track);
     }

@@ -36,10 +36,14 @@ jobs:
           fi
       - name: Install locked build tooling without lifecycle scripts
         run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Install Chromium for browser scenarios
+        run: npx playwright install --with-deps chromium
       - name: Build independent bundles
         run: npm run build
       - name: Build standalone HTML previews
         run: npm run build:previews
+      - name: Run core browser-backed scenarios
+        run: npm test
       - name: Reject changed bytes under an existing version
         run: npm run verify:release
       - name: Verify generated manifest and bundle bytes
