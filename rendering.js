@@ -759,8 +759,17 @@ uniform mat3 u_projection; varying vec2 v_uv; varying vec4 v_color;
 void main(){vec3 p=u_projection*vec3(a_position,1.0);gl_Position=vec4(p.xy,0.0,1.0);v_uv=a_uv;v_color=a_color;}`;
 var CLIP_VERTEX = `attribute vec2 a_position;uniform mat3 u_projection;uniform mat3 u_transform;void main(){vec3 p=u_projection*u_transform*vec3(a_position,1.0);gl_Position=vec4(p.xy,0.0,1.0);}`;
 var CLIP_FRAGMENT = "precision mediump float;void main(){gl_FragColor=vec4(1.0);}";
-var FRAGMENT = `precision mediump float; uniform sampler2D u_texture; uniform float u_textured; uniform float u_radial; uniform float u_whiteFlash;
-varying vec2 v_uv; varying vec4 v_color; void main(){vec2 uv=u_radial>0.5?vec2(clamp(length(v_uv),0.0,1.0),0.5):v_uv;vec4 t=mix(vec4(1.0),texture2D(u_texture,uv),u_textured);float a=t.a*v_color.a;vec3 rgb=mix(t.rgb*v_color.rgb*v_color.a,vec3(a),u_whiteFlash);gl_FragColor=vec4(rgb,a);}`;
+var FRAGMENT = `precision mediump float; uniform sampler2D u_texture; uniform float u_textured; uniform float u_radial; uniform vec4 u_radial_params; uniform float u_whiteFlash;
+varying vec2 v_uv; varying vec4 v_color;
+float radialParameter(vec2 q){
+  vec2 d=u_radial_params.xy;float r0=u_radial_params.z,dr=u_radial_params.w;
+  float a=dot(d,d)-dr*dr,b=-2.0*(dot(q,d)+r0*dr),c=dot(q,q)-r0*r0;
+  if(abs(a)<0.000001){if(abs(b)<0.000001)return -10000.0;float t=-c/b;return r0+dr*t>0.0?t:-10000.0;}
+  float discriminant=b*b-4.0*a*c;if(discriminant<0.0)return -10000.0;
+  float root=sqrt(max(discriminant,0.0)),t0=(-b-root)/(2.0*a),t1=(-b+root)/(2.0*a),chosen=-10000.0;
+  if(r0+dr*t0>0.0)chosen=t0;if(r0+dr*t1>0.0)chosen=max(chosen,t1);return chosen;
+}
+void main(){if(u_radial>1.5)discard;float t=u_radial>0.5?radialParameter(v_uv):0.0;if(u_radial>0.5&&t< -1000.0)discard;vec2 uv=u_radial>0.5?vec2(clamp(t,0.0,1.0),0.5):v_uv;vec4 texel=mix(vec4(1.0),texture2D(u_texture,uv),u_textured);float a=texel.a*v_color.a;vec3 rgb=mix(texel.rgb*v_color.rgb*v_color.a,vec3(a),u_whiteFlash);gl_FragColor=vec4(rgb,a);}`;
 var finite = (n, label) => {
   if (!Number.isFinite(n)) throw new TypeError(`${label} must be finite`);
 };
@@ -875,7 +884,7 @@ var VectorRenderer = class {
     this.glyphAtlas = glyphAtlas;
     this.maxVertices = Math.min(maxVertices, Math.floor(device.maxBufferBytes / 32));
     this.maxClipPlanes = Math.max(1, Math.min(32, device.gl.getParameter(device.gl.MAX_FRAGMENT_UNIFORM_VECTORS) - 2));
-    this.pipeline = device.createPipeline({ vertex: VERTEX, fragment: FRAGMENT, stride: 32, attributes: [{ name: "a_position", size: 2, offset: 0 }, { name: "a_uv", size: 2, offset: 8 }, { name: "a_color", size: 4, offset: 16 }], uniforms: { u_projection: "matrix3fv", u_texture: "1i", u_textured: "1f", u_radial: "1f", u_whiteFlash: "1f" } });
+    this.pipeline = device.createPipeline({ vertex: VERTEX, fragment: FRAGMENT, stride: 32, attributes: [{ name: "a_position", size: 2, offset: 0 }, { name: "a_uv", size: 2, offset: 8 }, { name: "a_color", size: 4, offset: 16 }], uniforms: { u_projection: "matrix3fv", u_texture: "1i", u_textured: "1f", u_radial: "1f", u_radial_params: "4f", u_whiteFlash: "1f" } });
     this.clipPipeline = device.createPipeline({ vertex: CLIP_VERTEX, fragment: CLIP_FRAGMENT, stride: 8, attributes: [{ name: "a_position", size: 2, offset: 0 }], uniforms: { u_projection: "matrix3fv", u_transform: "matrix3fv" } });
     this.buffer = device.createVertexBuffer({ capacityBytes: initialVertices * 32 });
     this.dynamicClipBuffer = device.createVertexBuffer({ capacityBytes: 0 });
@@ -1224,9 +1233,9 @@ var VectorRenderer = class {
   }
   _submit() {
     if (!this.count) return;
-    const texture = this.activeTexture ?? this.white;
+    const texture = this.activeTexture ?? this.white, gradient = this.activeGradient;
     this.device.uploadVertices(this.buffer, this.vertices.subarray(0, this.count * 8));
-    this.device.draw({ pipeline: this.pipeline, buffer: this.buffer, count: this.count, uniforms: { u_projection: this.projection, u_texture: 0, u_textured: texture === this.white ? 0 : 1, u_radial: this.activeRadial ? 1 : 0, u_whiteFlash: this.activeWhiteFlash ? 1 : 0 }, textures: [texture], blend: "source-over", stencil: this.stencilDepth ? { func: "equal", ref: this.stencilDepth, mask: 255, writeMask: 0, pass: "keep" } : false });
+    this.device.draw({ pipeline: this.pipeline, buffer: this.buffer, count: this.count, uniforms: { u_projection: this.projection, u_texture: 0, u_textured: texture === this.white ? 0 : 1, u_radial: this.activeRadial ? gradient?.radialEmpty ? 2 : 1 : 0, u_radial_params: gradient?.radialParams ?? [0, 0, 0, 0], u_whiteFlash: this.activeWhiteFlash ? 1 : 0 }, textures: [texture], blend: "source-over", stencil: this.stencilDepth ? { func: "equal", ref: this.stencilDepth, mask: 255, writeMask: 0, pass: "keep" } : false });
     this.count = 0;
   }
   _useTexture(texture, { radial = false, whiteFlash = false, gradient = null } = {}) {
@@ -1245,7 +1254,7 @@ var VectorRenderer = class {
   }
   fillRadialGradient(gradient) {
     this._frame();
-    if (!gradient?.texture || !Number.isFinite(gradient.radius) || gradient.radius < 0 || !gradient.matrixInverse) throw new TypeError("valid radial gradient texture and transform are required");
+    if (!gradient?.texture || !gradient.matrixInverse || !Number.isFinite(gradient.radialScale) || gradient.radialScale <= 0 || !Array.isArray(gradient.radialParams) || gradient.radialParams.length !== 4 || gradient.radialParams.some((value) => !Number.isFinite(value))) throw new TypeError("valid two-circle radial gradient texture and transform are required");
     this._useTexture(gradient.texture, { radial: true, whiteFlash: gradient.whiteFlash, gradient });
     const vertices = tessellate(this.path, gradient.rule ?? "nonzero");
     for (let i = 0; i + 2 < vertices.length; i += 3) this._emitTriangle(vertices[i], vertices[i + 1], vertices[i + 2], gradient.color);
@@ -1259,7 +1268,7 @@ var VectorRenderer = class {
   }
   _gradientUV(p) {
     const g = this.activeGradient, m = g.matrixInverse, x = m[0] * p.x + m[2] * p.y + m[4], y = m[1] * p.x + m[3] * p.y + m[5];
-    if (this.activeRadial) return [(x - g.centerX) / Math.max(1e-8, g.radius), (y - g.centerY) / Math.max(1e-8, g.radius)];
+    if (this.activeRadial) return [(x - g.x0) / g.radialScale, (y - g.y0) / g.radialScale];
     const dx = g.x1 - g.x0, dy = g.y1 - g.y0, denom = dx * dx + dy * dy;
     return [denom ? ((x - g.x0) * dx + (y - g.y0) * dy) / denom : 1, 0.5];
   }
@@ -2443,13 +2452,14 @@ function invert(matrix) {
 }
 var RadialGradient = class {
   constructor(matrix, x0, y0, r0, x1, y1, r1) {
-    if (Math.hypot(x1 - x0, y1 - y0) > 1e-8) throw new Error("Radial gradients require concentric circles");
     for (const [n, v] of Object.entries({ x0, y0, r0, x1, y1, r1 })) finite2(v, n);
     if (r0 < 0 || r1 < 0) throw new RangeError("Gradient radii must be non-negative");
     this.matrix = matrix.slice();
-    this.x = x1;
-    this.y = y1;
+    this.x0 = x0;
+    this.y0 = y0;
     this.r0 = r0;
+    this.x1 = x1;
+    this.y1 = y1;
     this.r1 = r1;
     this.stops = [];
     this.pixels = null;
@@ -2466,7 +2476,7 @@ var RadialGradient = class {
     if (this.pixels) return this.pixels;
     const data = new Uint8Array(256 * 4), stops = this.stops.length ? this.stops : [{ offset: 0, color: [0, 0, 0, 0] }];
     for (let i = 0; i < 256; i++) {
-      const t = (i / 255 * this.r1 - this.r0) / Math.max(1e-8, this.r1 - this.r0);
+      const t = i / 255;
       let lo = stops[0], hi = stops.at(-1);
       for (let j = 1; j < stops.length; j++) if (t < stops[j].offset) {
         lo = stops[j - 1];
@@ -2679,6 +2689,9 @@ var VectorContext = class {
     if (v !== "none" && v !== "brightness(0) invert(1)") throw new RangeError("VectorContext supports only none and brightness(0) invert(1) filters");
     this._filter = v;
   }
+  get stencilRef() {
+    return this.vector.stencilDepth || null;
+  }
   _frame() {
     if (!this.active || this.device.state !== "ready") throw new Error("VectorContext frame is unavailable");
   }
@@ -2714,7 +2727,8 @@ var VectorContext = class {
     const color2 = normalizeColor(this.forceColor ?? [1, 1, 1, 1]);
     color2[3] *= this._globalAlpha;
     if (gradient instanceof LinearGradient) return { texture: cached.texture, kind: "linear", gradient, x0: gradient.x0, y0: gradient.y0, x1: gradient.x1, y1: gradient.y1, matrixInverse, color: color2, whiteFlash: this._filter === "brightness(0) invert(1)" };
-    return { texture: cached.texture, kind: "radial", gradient, centerX: gradient.x, centerY: gradient.y, radius: gradient.r1, matrixInverse, color: color2, whiteFlash: this._filter === "brightness(0) invert(1)" };
+    const dx = gradient.x1 - gradient.x0, dy = gradient.y1 - gradient.y0, dr = gradient.r1 - gradient.r0, scale = Math.max(1, Math.hypot(dx, dy), Math.abs(gradient.r0), Math.abs(gradient.r1));
+    return { texture: cached.texture, kind: "radial", gradient, x0: gradient.x0, y0: gradient.y0, radialScale: scale, radialParams: [dx / scale, dy / scale, gradient.r0 / scale, dr / scale], radialEmpty: dx === 0 && dy === 0 && dr === 0, matrixInverse, color: color2, whiteFlash: this._filter === "brightness(0) invert(1)" };
   }
   _releaseGradientTextures() {
     for (const [gradient, cached] of this.gradientTextures) {
@@ -3829,6 +3843,7 @@ var YarnSurfaceRenderer = class {
     whiteFlash = 0,
     timeMs = 0,
     clips = [],
+    stencilRef = null,
     z = 0,
     depth = false,
     blend = "source-over"
@@ -3841,6 +3856,8 @@ var YarnSurfaceRenderer = class {
     if (!Number.isFinite(whiteFlash) || whiteFlash < 0 || whiteFlash > 1) throw new RangeError("whiteFlash must be in [0,1]");
     if (!Number.isFinite(timeMs)) throw new TypeError("timeMs must be finite");
     if (!Number.isFinite(z) || z < -1 || z > 1) throw new RangeError("z must be in [-1,1]");
+    if (stencilRef !== null && (!Number.isSafeInteger(stencilRef) || stencilRef < 0 || stencilRef > 255)) throw new RangeError("stencilRef must be null or in [0,255]");
+    if (stencilRef !== null && !this.device.activeStencilAvailable) throw new Error("A stencil-tested yarn surface requires an active stencil attachment");
     const planes = clipPlanes(clips, this.maxClipPlanes), style = surface.style;
     const yarn = surface.kind === "yarn";
     const stitchPattern = style.pattern !== false;
@@ -3867,7 +3884,14 @@ var YarnSurfaceRenderer = class {
       "u_planes[0]": planes,
       ...yarn ? {} : { u_timeMs: (timeMs % style.periodMs + style.periodMs) % style.periodMs }
     };
-    const common = { pipeline: surface.pipeline, buffer: surface.buffer, uniforms, blend, depth };
+    const common = {
+      pipeline: surface.pipeline,
+      buffer: surface.buffer,
+      uniforms,
+      blend,
+      depth,
+      stencil: stencilRef === null ? false : { func: "equal", ref: stencilRef, mask: 255, writeMask: 0, pass: "keep" }
+    };
     this.device.draw({ ...common, first: surface.fillFirst, count: surface.fillCount });
     if (surface.edgeCount) {
       const edgeDepth = depth === true ? { test: true, write: false } : depth && typeof depth === "object" ? { ...depth, write: false } : depth;
