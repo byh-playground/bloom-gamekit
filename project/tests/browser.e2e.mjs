@@ -13,16 +13,20 @@ import { readFile } from 'node:fs/promises';
 import { resolve, extname, sep } from 'node:path';
 import assert from 'node:assert/strict';
 import { runRenderObjectChecks } from '../../modules/interpolation/tests/render-object.browser.js';
+import { createHash } from 'node:crypto';
+import { compileVectorAsset } from '../../modules/vector-assets/compiler.js';
 
 const root = resolve('.');
 let retryFontRequests = 0;
 let sharedFontRequests = 0;
+let vectorSvgFetches = 0;
 const server = createServer(async (req, res) => {
   try {
     const pathname = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
     if (pathname === '/__font-retry' && ++retryFontRequests === 1) { res.writeHead(503, { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }).end(); return; }
     if (pathname === '/__font-delay') { setTimeout(() => serveFont(res), 200); return; }
     if (pathname === '/__font-retry') { await serveFont(res); return; }
+    if (pathname === '/modules/vector-assets/assets/seed-scout.svg') vectorSvgFetches++;
     const path = resolve(root, '.' + pathname);
     if (!path.startsWith(root + sep)) { res.writeHead(403).end(); return; }
     res.setHeader('Content-Type', { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json' }[extname(path)] ?? 'application/octet-stream');
@@ -485,6 +489,70 @@ const { createSession, profiles } = await import('/dist/rollback.js');
   });
   await vectorAssetPage.close();
   report.stages.push('single SVG SSOT compiled through pinned Three SVGLoader, rendered as shared retained GameKit WebGL mesh with deterministic Anime.js seek');
+
+  const sourcePath = 'modules/vector-assets/assets/seed-scout.svg';
+  const sourceBytes = await readFile(resolve(root, sourcePath));
+  const expectedSha256 = createHash('sha256').update(sourceBytes).digest('hex');
+  const nodeAsset = compileVectorAsset(sourceBytes, sourcePath);
+  const stable = value => {
+    if (ArrayBuffer.isView(value)) return Array.from(value, stable);
+    if (Array.isArray(value)) return value.map(stable);
+    if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map(key => [key, stable(value[key])]));
+    return value;
+  };
+  const nodeGeometrySha256 = createHash('sha256').update(JSON.stringify(stable(nodeAsset.geometry))).digest('hex');
+  const startupPage = await browser.newPage({ viewport: { width: 1000, height: 800 }, deviceScaleFactor: 1 });
+  const startupErrors = [];
+  startupPage.on('pageerror', error => startupErrors.push(error.message));
+  await startupPage.goto(`http://127.0.0.1:${server.address().port}/modules/interpolation/examples/index.html`);
+  const loadedGeometrySha256 = await startupPage.evaluate(async ({ expectedSha256, nodeGeometrySha256, sourcePath }) => {
+    const { createVectorAssetLoader } = await import('/dist/vector-assets-loader.js');
+    const { createVectorAsset } = await import('/dist/vector-assets.js');
+    const { WebGLDevice, MeshRenderer } = await import('/dist/rendering.js');
+    const url = '/modules/vector-assets/assets/seed-scout.svg';
+    const loader = createVectorAssetLoader({ maxEntries: 2 });
+    const options = { sourcePath, expectedSha256, maxBytes: 512 * 1024 };
+    const [compiledAsset, sameCompiledAsset] = await Promise.all([loader.load(url, options), loader.load(url, options)]);
+    if (compiledAsset !== sameCompiledAsset || loader.size !== 1) throw new Error('Concurrent SVG startup loads did not share the cached compilation');
+    if (compiledAsset.sourceSha256 !== expectedSha256 || 'sourcePaths' in compiledAsset) throw new Error('Loaded SVG hash or default debug-data policy is incorrect');
+    const canonical = value => {
+      if (ArrayBuffer.isView(value)) return Array.from(value, canonical);
+      if (Array.isArray(value)) return value.map(canonical);
+      if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])]));
+      return value;
+    };
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(canonical(compiledAsset.geometry)))));
+    const browserGeometrySha256 = [...digest].map(value => value.toString(16).padStart(2, '0')).join('');
+    if (browserGeometrySha256 !== nodeGeometrySha256) throw new Error('Browser and Node SVG compiler geometry differ');
+
+    const canvas = document.createElement('canvas'); canvas.width = 200; canvas.height = 220; document.body.append(canvas);
+    const device = new WebGLDevice(canvas, { alpha: false, antialias: false, preserveDrawingBuffer: true, checkGLErrors: true });
+    const meshes = new MeshRenderer(device);
+    const asset = createVectorAsset(meshes, compiledAsset);
+    const actor = asset.createPlayer({ clip: 'idle', startedAtMs: 0 });
+    device.beginFrame({ width: 200, height: 220, clearColor: [0.875, 0.91, 0.80, 1] });
+    meshes.beginFrame(); actor.draw({ projection: [2 / 200, 0, 0, 0, -2 / 220, 0, -1, 1, 1] }); meshes.flush(); device.endFrame();
+    const pixel = new Uint8Array(4); device.gl.readPixels(100, 107, 1, 1, device.gl.RGBA, device.gl.UNSIGNED_BYTE, pixel);
+    if (pixel[1] < 100 || device.gl.getError() !== 0 || device.stats.drawCalls < 1) throw new Error(`Browser-compiled SVG did not render in WebGL: ${[...pixel]}`);
+    if (meshes.stats().geometryUploads !== 0) throw new Error('The retained SVG mesh uploaded geometry during its draw');
+    actor.dispose(); asset.dispose(); meshes.dispose(); device.dispose(); canvas.remove();
+
+    const mismatchLoader = createVectorAssetLoader({ maxEntries: 2 });
+    let mismatchRejected = false;
+    try { await mismatchLoader.load(url, { sourcePath, expectedSha256: '0'.repeat(64) }); }
+    catch (error) { mismatchRejected = /SHA-256 mismatch/.test(error.message); }
+    if (!mismatchRejected || mismatchLoader.size !== 0) throw new Error('A hash-mismatched SVG was compiled or cached');
+    mismatchLoader.dispose();
+    loader.clear(); loader.dispose();
+    return browserGeometrySha256;
+  }, { expectedSha256, nodeGeometrySha256, sourcePath });
+  assert.equal(loadedGeometrySha256, nodeGeometrySha256, 'browser and Node compilers emit identical geometry');
+  assert.equal(vectorSvgFetches, 2, 'same-key startup loads share one fetch and a hash mismatch is fetched only once');
+  assert.equal(startupErrors.length, 0, startupErrors.join('\n'));
+  await startupPage.close();
+  report.browserSvgStartup = { sourceSha256: expectedSha256, geometrySha256: loadedGeometrySha256, requests: vectorSvgFetches,
+    scope: 'same-key promise/cache deduplication, expected-hash rejection before caching, browser/Node geometry parity, and actual WebGL1 draw of the browser-compiled SVG' };
+  report.stages.push('browser SVG startup loader verifies source SHA-256, compiles once with bounded cache, and renders the same geometry as Node');
   report.browser = await browser.version(); report.contextLoss = supportsLoss;
   report.scope = 'Headless Chromium with actual WebGL1/SwiftShader pixels and built ESMs. CPU/interval observations are not mobile FPS or hardware-GPU certification. No screenshot/artifact retention.';
   console.log(JSON.stringify(report, null, 2));
