@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
+  <metadata id="vector-asset">{"schemaVersion":1,"id":"shader-surface-fixture","defaultExpression":"neutral","parts":[{"id":"body","parent":null,"pivot":[50,50]}],"expressions":{"neutral":{"show":[],"hide":[]}},"sockets":{},"styles":[{"target":"cloth","kind":"yarn","backend":"shader","seed":17,"stitchWidth":8,"stitchHeight":8,"thickness":0.08,"irregularity":0.1,"contrast":0.23,"edgeSpacing":12,"edgeRelief":1,"edgeWidth":1.2,"fiberLength":2,"fiberWidth":0.2,"fiberOpacity":0.65,"fiberMax":12}],"clips":{"idle":{"durationMs":100,"loop":"once","easing":"linear","keyframes":[{"timeMs":0,"easing":"linear","parts":{"body":{"rotation":0}}},{"timeMs":100,"easing":"linear","parts":{"body":{"rotation":0.08}}}]}}}</metadata>
+  <g id="body">
+    <rect id="under" x="5" y="5" width="90" height="90" fill="#334455"/>
+    <path id="cloth" fill="#dc8050" d="M20 20 H80 V80 H20 Z"/>
+    <rect id="over" x="35" y="35" width="30" height="30" fill="#55aa77"/>
+  </g>
+</svg>

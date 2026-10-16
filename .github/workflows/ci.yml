@@ -44,6 +44,8 @@ jobs:
         run: npm run build:previews
       - name: Run core browser-backed scenarios
         run: npm test
+      - name: Run 3D vector rendering browser scenarios
+        run: npm run test:vector-assets:world-rendering
       - name: Reject changed bytes under an existing version
         run: npm run verify:release
       - name: Verify generated manifest and bundle bytes

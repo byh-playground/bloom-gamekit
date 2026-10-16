@@ -10,11 +10,12 @@ const source = await readFile(sourcePath);
 const asset = await compileVectorAssetFile(sourcePath, sourcePath);
 validateCompiledAsset(asset);
 assert.equal(asset.schemaVersion, 1);
-assert.equal(asset.compilerVersion, '0.7.0');
+assert.equal(asset.compilerVersion, '0.8.0');
 assert.doesNotThrow(() => validateCompiledAsset({ ...asset, compilerVersion: '0.2.0' }), 'previous compiled meshes remain valid under the unchanged asset schema');
 const { compilerOptions: ignoredCompilerOptions, ...assetWithoutCompilerOptions } = asset;
-assert.throws(() => validateCompiledAsset({ ...assetWithoutCompilerOptions, compilerVersion: '0.7.0' }), /compiler options/i,
-  'compiler 0.7 output must identify its tessellation setting');
+assert.throws(() => validateCompiledAsset({ ...assetWithoutCompilerOptions, compilerVersion: '0.8.0' }), /compiler options/i,
+  'compiler 0.8 output must identify its tessellation setting');
+assert.doesNotThrow(() => validateCompiledAsset({ ...asset, compilerVersion: '0.7.0' }), 'existing 0.7 compiled assets remain readable');
 assert.doesNotThrow(() => validateCompiledAsset({ ...asset, compilerVersion: '0.6.0' }), 'existing 0.6 compiled assets remain readable');
 assert.equal(asset.compilerOptions.curveSegments, 16, 'the default curve quality is recorded in compiled output');
 assert.equal(asset.geometry.strideFloats, 11);
@@ -103,6 +104,29 @@ assert.equal(sketchAsset.geometry.morphCount, 2, 'sketch boil compiles two deter
 assert.ok(sketchAsset.geometry.vertices.some((value, index) => index % 11 === 6 && Math.abs(value) > 1e-6), 'sketch mesh contains authored morph deltas');
 const sketchAgain = await compileVectorAssetFile('modules/vector-assets/assets/sketch-fox.svg');
 assert.deepEqual(sketchAgain.geometry.vertices, sketchAsset.geometry.vertices, 'sketch geometry generation is deterministic');
+
+const shaderSurfaceSvg = await readFile('modules/vector-assets/tests/world-shader.svg', 'utf8');
+const shaderSurfaceAsset = compileVectorAsset(Buffer.from(shaderSurfaceSvg), 'shader-surface-fixture.svg');
+validateCompiledAsset(shaderSurfaceAsset);
+assert.equal(shaderSurfaceAsset.compilerVersion, '0.8.0');
+assert.equal(shaderSurfaceAsset.geometry.morphCount, 0, 'shader-backed sketch/yarn do not generate dynamic mesh morph data');
+assert.equal(shaderSurfaceAsset.geometry.shaderSurfaces.length, 1, 'the compiler retains one shader surface descriptor');
+assert.ok(shaderSurfaceAsset.geometry.shaderSurfaces[0].fillVertices instanceof Float32Array);
+assert.ok(shaderSurfaceAsset.geometry.shaderSurfaces[0].outline.length >= 6, 'shader material retains the sampled authored contour');
+assert.deepEqual(shaderSurfaceAsset.geometry.drawOrder.map(command => command.kind), ['mesh', 'surface', 'mesh'],
+  'ordinary SVG paint ranges keep their exact order around shader-backed surfaces');
+assert.deepEqual(shaderSurfaceAsset.geometry.drawOrder.filter(command => command.kind === 'mesh').map(command => command.indexCount), [6, 6]);
+const mismatchedSurfaceStyle = { ...shaderSurfaceAsset.geometry.shaderSurfaces[0], style: { ...shaderSurfaceAsset.geometry.shaderSurfaces[0].style, edgeWidth: 9 } };
+assert.throws(() => validateCompiledAsset({ ...shaderSurfaceAsset, geometry: { ...shaderSurfaceAsset.geometry, shaderSurfaces: [mismatchedSurfaceStyle] } }),
+  /exactly match/i, 'retained surface style cannot diverge from its authored metadata');
+const shaderOnlySvg = shaderSurfaceSvg.replace(/\s*<rect id="under"[^>]*\/>/, '').replace(/\s*<rect id="over"[^>]*\/>/, '');
+const shaderOnlyAsset = compileVectorAsset(Buffer.from(shaderOnlySvg), 'shader-only-fixture.svg');
+validateCompiledAsset(shaderOnlyAsset);
+assert.equal(shaderOnlyAsset.geometry.vertices.length, 0, 'surface-only assets do not need a transparent sentinel mesh');
+assert.equal(shaderOnlyAsset.geometry.indices.length, 0);
+assert.deepEqual(shaderOnlyAsset.geometry.drawOrder, [{ kind: 'surface', surfaceIndex: 0 }]);
+assert.throws(() => compileVectorAsset(Buffer.from(shaderSurfaceSvg.replace('"backend":"shader"', '"backend":"software-fallback"')),
+  'unsupported-style-backend.svg'), /backend/i, 'unsupported style backends fail instead of silently selecting baked triangles');
 
 const nonScalingLine = await compileVectorAssetFile('modules/vector-assets/tests/non-scaling-stroke.svg');
 validateCompiledAsset(nonScalingLine);

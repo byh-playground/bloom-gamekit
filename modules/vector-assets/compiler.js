@@ -807,6 +807,40 @@ function compileSketchStyle(vertices, style, shape, fillColor, opacity, partInde
   }
 }
 
+function compileShaderSurface(style, shape, fillColor, opacity, partIndex, gradient, gradientBounds, transform, curveSegments) {
+  const extracted = shape.extractPoints(curveSegments);
+  if (extracted.shape.length < 3 || extracted.holes.length) {
+    throw new TypeError('Shader-backed SVG yarn/sketch surfaces currently require one closed contour without holes: ' + style.target);
+  }
+  const geometry = new ShapeGeometry(shape, curveSegments), position = geometry.attributes.position, index = geometry.index;
+  const count = index ? index.count : position.count, fill = new Float32Array(count * 6);
+  const colorAt = point => {
+    const rgba = gradient ? gradientAtPoint(gradient, point, gradientBounds, transform) : colorComponents(fillColor, 1);
+    rgba[3] *= opacity;
+    return rgba;
+  };
+  let write = 0;
+  for (let at = 0; at + 2 < count; at += 3) for (let corner = 0; corner < 3; corner++) {
+    const vertex = index ? index.getX(at + corner) : at + corner;
+    const point = { x: position.getX(vertex), y: position.getY(vertex) };
+    fill[write++] = point.x; fill[write++] = point.y; fill.set(colorAt(point), write); write += 4;
+  }
+  geometry.dispose();
+  const outline = new Float32Array(extracted.shape.length * 2), edgeColors = new Float32Array(extracted.shape.length * 4);
+  for (let point = 0; point < extracted.shape.length; point++) {
+    const current = extracted.shape[point]; outline[point * 2] = current.x; outline[point * 2 + 1] = current.y;
+    edgeColors.set(colorAt(current), point * 4);
+  }
+  return { target: style.target, partIndex, fillVertices: fill, outline, edgeColors, style: { ...style } };
+}
+
+function appendOrderedMeshRange(drawOrder, firstIndex, indexCount, partIndex) {
+  if (!indexCount) return;
+  const previous = drawOrder.at(-1);
+  if (previous?.kind === 'mesh' && previous.partIndex === partIndex && previous.firstIndex + previous.indexCount === firstIndex) previous.indexCount += indexCount;
+  else drawOrder.push({ kind: 'mesh', firstIndex, indexCount, partIndex });
+}
+
 function ownerPart(node, partIndices) {
   for (let current = node; current; current = current.parentNode) {
     if (current.nodeType !== 1) continue;
@@ -854,10 +888,11 @@ function appendNonScalingLine(vertices, start, end, rgba, partIndex, width, line
 }
 
 function compilePaths(paths, partIndices, parts, metadata, gradients, curveSegments) {
-  const vertices = [];
+  const vertices = [], shaderSurfaces = [], drawOrder = [];
   let hasNonScalingStroke=false;
   const styled = new Map((metadata.styles ?? []).map(style => [style.target, style]));
-  const morphCount = metadata.styles?.some(style => style.kind === 'sketch') ? 2 : 0;
+  const shaderOrdered = metadata.styles?.some(style => style.backend === 'shader') ?? false;
+  const morphCount = metadata.styles?.some(style => style.kind === 'sketch' && style.backend !== 'shader') ? 2 : 0;
   for (const path of paths) {
     const sourceNode = path.userData?.node;
     if (!sourceNode?.getAttribute?.('id')) throw new TypeError('Every painted SVG shape must keep its DOM id');
@@ -872,8 +907,16 @@ function compilePaths(paths, partIndices, parts, metadata, gradients, curveSegme
     const gradientBounds = fillGradient && shapes.length
       ? shapeBounds(shapes, fillGradient.units === 'objectBoundingBox' ? path.userData.transform : null) : null;
     const styleColor = fillGradient ? colorFromComponents(gradientColorAtT(fillGradient, 0.53)) : path.color;
+    const meshFirst = vertices.length / 11;
 
-    if (authoredStyle?.kind === 'yarn') {
+    if (authoredStyle?.backend === 'shader') {
+      if (shapes.length !== 1) throw new TypeError('Shader-backed yarn/sketch style requires one connected filled shape: ' + authoredStyle.target);
+      if (fillOpacity > 0) {
+        const surfaceIndex = shaderSurfaces.push(compileShaderSurface(authoredStyle, shapes[0], path.color, fillOpacity, partIndex,
+          fillGradient, gradientBounds, path.userData.transform, curveSegments)) - 1;
+        drawOrder.push({ kind: 'surface', surfaceIndex });
+      }
+    } else if (authoredStyle?.kind === 'yarn') {
       if (shapes.length !== 1) throw new TypeError('Authored yarn style currently requires one connected filled shape: ' + authoredStyle.target);
       if (fillOpacity > 0) compileYarnStyle(vertices, authoredStyle, shapes[0], path.color, fillOpacity, partIndex,
         fillGradient, gradientBounds, path.userData.transform, curveSegments);
@@ -915,8 +958,9 @@ function compilePaths(paths, partIndices, parts, metadata, gradients, curveSegme
         }
       }
     }
+    appendOrderedMeshRange(drawOrder, meshFirst, vertices.length / 11 - meshFirst, partIndex);
   }
-  if (!vertices.length || vertices.length % 33) throw new TypeError('SVG did not produce complete painted triangles');
+  if ((!vertices.length && !shaderSurfaces.length) || vertices.length % 33) throw new TypeError('SVG did not produce complete painted triangles or shader surfaces');
   const expanded = new Float32Array(vertices);
   const strideFloats=11;
   const uniqueVertices = [], indices = [], vertexIds = new Map();
@@ -933,7 +977,8 @@ function compilePaths(paths, partIndices, parts, metadata, gradients, curveSegme
     indices.push(index);
   }
   return { vertices: new Float32Array(uniqueVertices), indices: new Uint16Array(indices), morphCount, strideFloats,
-    ...(hasNonScalingStroke ? { nonScalingStroke: true } : {}) };
+    ...(hasNonScalingStroke ? { nonScalingStroke: true } : {}),
+    ...(shaderOrdered ? { shaderSurfaces, drawOrder } : {}) };
 }
 
 function compileExpressionIndices(geometry, metadata) {
