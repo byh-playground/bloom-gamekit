@@ -1,3 +1,7 @@
+## v0.8.0 (2026-10-16)
+
+Rendering adds a generic `indexVariants` map for host-selected named triangle ranges. Vector asset `expressionIndices` remain semantic and are validated against authored expression names; the two maps are retained and rendered independently with explicit collision checks. `MeshBuilder.combine()` preserves semantic expression lists and rejects painter-order range maps that cannot be flattened without changing host paint order.
+
 ## v0.7.2 (2026-10-16)
 
 Keep ordinary fill triangles unchanged when their retained SVG mesh also contains `vector-effect="non-scaling-stroke"` lines. The vertex shader now expands only the line vertices marked by their retained tangent data.

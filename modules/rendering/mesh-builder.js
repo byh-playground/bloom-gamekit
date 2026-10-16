@@ -1,5 +1,11 @@
 import { normalizeColor } from './vector-context.js';
 
+const INDEX_NAME = /^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/;
+const isIndexMap = (map, vertexCount) => map !== null && typeof map === 'object' && !Array.isArray(map)
+  && Object.entries(map).every(([name, indices]) => INDEX_NAME.test(name) && indices instanceof Uint16Array
+    && indices.length % 3 === 0 && indices.every(index => index < vertexCount));
+const baseIndices = geometry => geometry.indices ?? Uint16Array.from({ length: geometry.vertices.length / 11 }, (_, index) => index);
+
 /** Cold-path, local-space authored triangles. PrimitivePainter can paint directly into this target. */
 export class MeshBuilder {
   constructor({ maxVertices = 262144 } = {}) {
@@ -46,9 +52,11 @@ export class MeshBuilder {
         (geometry.indices !== undefined && (!(geometry.indices instanceof Uint16Array) || geometry.indices.length < 3 || geometry.indices.length % 3 ||
           geometry.vertices.length / 11 > 0x10000 || geometry.indices.some(index => index >= geometry.vertices.length / 11))) ||
         (geometry.indices === undefined && geometry.vertices.length % 33) ||
-        !Number.isSafeInteger(geometry.morphCount) || geometry.morphCount < 0 || geometry.morphCount > 2) ||
+        !Number.isSafeInteger(geometry.morphCount) || geometry.morphCount < 0 || geometry.morphCount > 2 ||
+        (geometry.expressionIndices !== undefined && !isIndexMap(geometry.expressionIndices, geometry.vertices.length / 11)) ||
+        (geometry.indexVariants !== undefined && (!isIndexMap(geometry.indexVariants, geometry.vertices.length / 11) || Object.keys(geometry.indexVariants).length > 0))) ||
       geometries.reduce((count, geometry) => count + geometry.partCount, 0) > 16) {
-      throw new TypeError('MeshBuilder geometries must fit within 16 parts and use the 11-float schema');
+      throw new TypeError('MeshBuilder geometries must fit within 16 parts, use the 11-float schema, and cannot flatten painter-order indexVariants');
     }
     const vertexCount = geometries.reduce((count, geometry) => count + geometry.vertices.length / 11, 0);
     const indexCount = geometries.reduce((count, geometry) => count + (geometry.indices?.length ?? geometry.vertices.length / 11), 0);
@@ -58,6 +66,8 @@ export class MeshBuilder {
       if (!Number.isSafeInteger(part) || part < 0 || part >= geometry.partCount) throw new RangeError('Mesh part index outside partCount');
     }
     const vertices = new Float32Array(vertexCount * 11), indices = new Uint16Array(indexCount);
+    const expressionNames = new Set(geometries.flatMap(geometry => Object.keys(geometry.expressionIndices ?? {})));
+    const expressionIndices = Object.create(null);
     const partCount = geometries.reduce((count, geometry) => count + geometry.partCount, 0);
     const morphCount = Math.max(...geometries.map(geometry => geometry.morphCount));
     const nonScalingStroke = geometries.some(geometry => geometry.nonScalingStroke === true);
@@ -79,6 +89,19 @@ export class MeshBuilder {
       offset += vertexLength;
       partOffset += geometry.partCount;
     }
-    return Object.freeze({ vertices, indices, count: indices.length, strideFloats: 11, partCount, morphCount, ...(nonScalingStroke ? { nonScalingStroke: true } : {}) });
+    for (const name of expressionNames) {
+      const variantLength = geometries.reduce((count, geometry) => count + (geometry.expressionIndices?.[name]?.length ?? (geometry.indices?.length ?? geometry.vertices.length / 11)), 0);
+      const variant = new Uint16Array(variantLength);
+      let target = 0, vertexOffset = 0;
+      for (const geometry of geometries) {
+        const source = geometry.expressionIndices?.[name] ?? baseIndices(geometry);
+        for (let i = 0; i < source.length; i++) variant[target + i] = source[i] + vertexOffset;
+        target += source.length;
+        vertexOffset += geometry.vertices.length / 11;
+      }
+      expressionIndices[name] = variant;
+    }
+    return Object.freeze({ vertices, indices, count: indices.length, strideFloats: 11, partCount, morphCount,
+      ...(expressionNames.size ? { expressionIndices } : {}), ...(nonScalingStroke ? { nonScalingStroke: true } : {}) });
   }
 }
