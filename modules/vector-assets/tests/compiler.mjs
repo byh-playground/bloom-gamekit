@@ -109,14 +109,22 @@ validateCompiledAsset(nonScalingLine);
 assert.equal(nonScalingLine.geometry.nonScalingStroke, true, 'non-scaling line stroke metadata is retained');
 assert.equal(nonScalingLine.geometry.morphCount, 0, 'non-scaling stroke does not repurpose morph data');
 assert.equal(nonScalingLine.geometry.strideFloats, 11, 'the existing mesh record layout remains unchanged');
-assert.equal(nonScalingLine.geometry.indices.length, 78, 'a round line cap is a fixed set of retained triangles');
+assert.equal(nonScalingLine.geometry.indices.length, 84, 'a round line cap keeps its fixed triangles alongside the SVG fill triangles');
+let lineVertexCount=0,fillVertexCount=0;
 for (let index=0;index<nonScalingLine.geometry.vertices.length;index+=11) {
-  assert.ok(Math.abs(Math.hypot(nonScalingLine.geometry.vertices[index+6],nonScalingLine.geometry.vertices[index+7])-1)<1e-6,
-    'each expanded line vertex retains a normalized tangent');
+  const tangentLength=Math.hypot(nonScalingLine.geometry.vertices[index+6],nonScalingLine.geometry.vertices[index+7]);
+  if(tangentLength<0.9){
+    fillVertexCount++;
+    assert.equal(tangentLength,0,'ordinary SVG fill vertices have no screen-stroke marker');
+    continue;
+  }
+  lineVertexCount++;
+  assert.ok(Math.abs(tangentLength-1)<1e-6,'each expanded line vertex retains a normalized tangent');
   const radius=Math.hypot(nonScalingLine.geometry.vertices[index+8],nonScalingLine.geometry.vertices[index+9]);
   assert.ok(radius<1e-6||Math.abs(radius-0.75)<1e-6,
     'stroke outline offsets are authored in CSS-pixel units');
 }
+assert.ok(lineVertexCount>0&&fillVertexCount>0,'one retained vector mesh can carry both non-scaling lines and ordinary SVG fills');
 const nonScalingSource=await readFile('modules/vector-assets/tests/non-scaling-stroke.svg','utf8');
 assert.throws(()=>compileVectorAsset(Buffer.from(nonScalingSource.replace('<line id="crack"','<path id="crack" d="M20 50 L80 50"')), 'unsupported-vector-effect.svg'), /only <line>/i,
   'unsupported path outlines fail explicitly instead of falling back to a scaling stroke');
@@ -124,8 +132,8 @@ assert.throws(()=>compileVectorAsset(Buffer.from(nonScalingSource.replace('non-s
   'unknown vector-effect values fail compilation');
 const buttCapAsset=compileVectorAsset(Buffer.from(nonScalingSource.replace('stroke-linecap="round"','stroke-linecap="butt"')),'non-scaling-butt-cap.svg');
 const squareCapAsset=compileVectorAsset(Buffer.from(nonScalingSource.replace('stroke-linecap="round"','stroke-linecap="square"')),'non-scaling-square-cap.svg');
-assert.equal(buttCapAsset.geometry.indices.length,6,'butt caps keep a two-triangle static line body');
-assert.equal(squareCapAsset.geometry.indices.length,6,'square caps keep a two-triangle static line body');
+assert.equal(buttCapAsset.geometry.indices.length,12,'butt caps keep a two-triangle static line body beside the fill triangles');
+assert.equal(squareCapAsset.geometry.indices.length,12,'square caps keep a two-triangle static line body beside the fill triangles');
 assert.ok(squareCapAsset.geometry.vertices.some((value,index)=>index%11===8&&Math.abs(value)>=0.75),
   'square caps extend their retained geometry by half the authored width');
 

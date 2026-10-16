@@ -18,13 +18,15 @@ vec2 tangentPart=${partCount > 1 ? 'vec2(dot(row0.xyz,vec3(tangentLocal,1.0)),do
 vec2 tangentWorld=vec2(dot(i_row0.xyz,vec3(tangentPart,1.0)),dot(i_row1.xyz,vec3(tangentPart,1.0)));
 vec3 tangentProjected=u_projection*vec3(tangentWorld,1.0);
 vec2 tangent=(tangentProjected.xy/tangentProjected.z-projected.xy/projected.z)*u_strokeViewportSize*0.5;float tangentLength=length(tangent);
-if(tangentLength<0.000001){projected.z=0.0;}
-else{
-  tangent/=tangentLength;vec2 normal=vec2(-tangent.y,tangent.x);
-  vec2 pxOffset=tangent*a_stroke.z+normal*a_stroke.w;
-  vec2 clipOffset=pxOffset*2.0/u_strokeViewportSize;
-  projected.xy+=clipOffset*projected.z;
-  ${clipped ? 'vec3 clippedWorld=u_inverseProjection*vec3(projected.xy,projected.z);v_position=clippedWorld.xy/clippedWorld.z;' : ''}
+if(dot(a_stroke.xy,a_stroke.xy)>0.5){
+  if(tangentLength<0.000001){projected.z=0.0;}
+  else{
+    tangent/=tangentLength;vec2 normal=vec2(-tangent.y,tangent.x);
+    vec2 pxOffset=tangent*a_stroke.z+normal*a_stroke.w;
+    vec2 clipOffset=pxOffset*2.0/u_strokeViewportSize;
+    projected.xy+=clipOffset*projected.z;
+    ${clipped ? 'vec3 clippedWorld=u_inverseProjection*vec3(projected.xy,projected.z);v_position=clippedWorld.xy/clippedWorld.z;' : ''}
+  }
 }` : '';
   return `attribute vec2 a_position; attribute vec4 a_color; ${morphCount ? 'attribute vec4 a_morph;' : ''} ${partCount > 1 ? 'attribute float a_part;uniform vec4 u_parts[' + partCount*3 + '];' : ''}
 ${inputs}${strokeInputs}

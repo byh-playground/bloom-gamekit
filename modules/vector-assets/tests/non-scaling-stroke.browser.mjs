@@ -27,6 +27,10 @@ export async function exerciseNonScalingStroke(browser, moduleURL, compiledGeome
         const w=projection[2]*point.x+projection[5]*point.y+projection[8];
         return {x:(x/w+1)*width/2,y:(1-y/w)*height/2};
       };
+      const pixelAt=(pixels,width,height,dpr,x,y)=>{
+        const px=Math.floor(x*dpr),py=height*dpr-1-Math.floor(y*dpr),at=(py*width*dpr+px)*4;
+        return Array.from(pixels.subarray(at,at+4));
+      };
       const measure=(pixels,width,height,dpr,start,end)=>{
         const dx=end.x-start.x,dy=end.y-start.y,length=Math.hypot(dx,dy),windowStart=0.2,windowEnd=0.8;
         let alpha=0,maximum=0,highestY=-Infinity;
@@ -54,7 +58,7 @@ export async function exerciseNonScalingStroke(browser, moduleURL, compiledGeome
         gl.readPixels(0,0,backingWidth,backingHeight,gl.RGBA,gl.UNSIGNED_BYTE,pixels);
         device.endFrame();
         const startLocal=transformed(20,50,part),endLocal=transformed(80,50,part);
-        return {name,width,height,dpr,pixels,measure:measure(pixels,width,height,dpr,screen(startLocal,projection,width,height),screen(endLocal,projection,width,height)),draws:renderer.stats().draws};
+        return {name,width,height,dpr,pixels,measure:measure(pixels,width,height,dpr,screen(startLocal,projection,width,height),screen(endLocal,projection,width,height)),fillSample:pixelAt(pixels,width,height,dpr,50,10),draws:renderer.stats().draws};
       };
       const identityPart=[1,0,0,1,40,0];
       const base=render('css-160-dpr1',{part:identityPart,dpr:1});
@@ -97,7 +101,7 @@ export async function exerciseNonScalingStroke(browser, moduleURL, compiledGeome
       await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
       await document.fonts.ready;
       // The enclosing Playwright call saves the canvas and caption as one reviewable image.
-      const report={base:base.measure,dpr2:dpr2.measure,zoomed:zoomed.measure,animated: { ...animated.measure,draws:animated.draws },larger:larger.measure,offscreen,renderTargetRequiresViewport,
+      const report={base:{...base.measure,fillSample:base.fillSample},dpr2:dpr2.measure,zoomed:zoomed.measure,animated: { ...animated.measure,draws:animated.draws },larger:larger.measure,offscreen,renderTargetRequiresViewport,
         clippedPixelCount:clippedPixels.length,clippedMaxY:Math.max(...clippedPixels),halfAlphaMaximum:halfAlpha.measure.maximumAlpha,restored,geometryUploadsAtCreation,geometryUploadsAfterFrames:renderer.stats().geometryUploads,
         screenshot:{cssWidth:320,cssHeight:200,dpr:2,nonScalingWidth:screenshotCase.measure.cssWidth}};
       window.__nonScalingStrokeTest={dispose(){renderer.deleteMesh(mesh);const disposed=renderer.stats().meshCount;const targetDisposed=device.deleteRenderTarget(renderTarget);renderer.dispose();device.dispose();return {disposed,targetDisposed};}};
@@ -109,6 +113,7 @@ export async function exerciseNonScalingStroke(browser, moduleURL, compiledGeome
     assert.ok(Math.abs(result.base.cssWidth-result.zoomed.cssWidth)<0.28,'camera zoom does not scale stroke width');
     assert.ok(Math.abs(result.base.cssWidth-result.animated.cssWidth)<0.28,'part rotation and non-uniform scale do not scale stroke width');
     assert.ok(Math.abs(result.base.cssWidth-result.larger.cssWidth)<0.28,'the same scene keeps its CSS-pixel width in a larger viewport');
+    assert.ok(result.base.fillSample[3]>=250&&result.base.fillSample[0]>120,'the ordinary SVG fill remains visible in a mesh that also contains non-scaling strokes');
     assert.ok(Math.abs(result.offscreen.cssWidth-1.5)<0.42,'offscreen render targets preserve CSS-pixel width when the host supplies the logical viewport');
     assert.equal(result.renderTargetRequiresViewport,true,'offscreen targets fail clearly when their CSS viewport is not supplied');
     assert.ok(result.clippedMaxY<=50.75,`expanded stroke pixels must still obey the clip polygon (max y=${result.clippedMaxY})`);
