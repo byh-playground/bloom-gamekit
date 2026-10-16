@@ -3407,10 +3407,14 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
     };
     const sample = (playback, timeMs) => {
       if (playback.kind === "clip") return sampleClip(playback, timeMs);
+      const elapsedMs = timeMs - playback.atMs;
+      if (elapsedMs < 0) return sample(playback.from, timeMs);
+      if (playback.durationMs === 0) return sample(playback.to, timeMs);
+      if (elapsedMs === 0) return sample(playback.from, timeMs);
+      if (elapsedMs >= playback.durationMs) return sample(playback.to, timeMs);
       const source = sample(playback.from, timeMs);
-      if (timeMs < playback.atMs) return source;
       const target = sample(playback.to, timeMs);
-      const amount = playback.durationMs === 0 ? 1 : Math.min(1, Math.max(0, (timeMs - playback.atMs) / playback.durationMs));
+      const amount = elapsedMs / playback.durationMs;
       return blendPoses(source, target, amount, metadata.parts.map((part) => part.id));
     };
     const seek = (timeMs) => {
