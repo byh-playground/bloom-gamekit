@@ -1,3 +1,7 @@
+## v0.10.6 (2026-10-16)
+
+Vector asset rendering no longer creates per-part morph arrays on the private draw path when those values are discarded; public `partPoses()` still returns independent mutable morph weights. The compiler adds `strokeArcDivisions` (4–64, default 12) for scaling and non-scaling round stroke tessellation, exposed through Node/browser compilation, browser loader caching, and the CLI. The default preserves prior stroke geometry.
+
 ## v0.10.5 (2026-10-16)
 
 The vector asset compiler and browser startup loader add opt-in `normalizeCenteredViewBox` support for centered-local-coordinate SVG sources with legacy viewport dimensions and empty no-op clip poses. The compiler verifies the original source hash first, normalizes only its in-memory compiler input, drops only empty no-op poses from compiled metadata, and preserves the authored viewBox, paths, part pivots, sockets, and nonempty clip transforms. Source SVG files and the original-byte hash are unchanged.

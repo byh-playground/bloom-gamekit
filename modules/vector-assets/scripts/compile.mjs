@@ -7,26 +7,30 @@ import { compileVectorAssetFile, compiledAssetModuleSource } from '../compiler.j
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const args = process.argv.slice(2);
 const positional = [];
-let output = null, curveSegments = 16, outputSeen = false, curveSegmentsSeen = false;
+let output = null, curveSegments = 16, strokeArcDivisions = 12, outputSeen = false, curveSegmentsSeen = false, strokeArcDivisionsSeen = false;
 for (let index = 0; index < args.length; index++) {
   const argument = args[index];
-  if (argument === '--output' || argument === '--curve-segments') {
+  if (argument === '--output' || argument === '--curve-segments' || argument === '--stroke-arc-divisions') {
     const value = args[++index];
     if (!value || value.startsWith('--')) throw new TypeError(argument + ' requires a value');
     if (argument === '--output') {
       if (outputSeen) throw new TypeError('--output may be supplied once');
       outputSeen = true; output = resolve(root, value);
-    } else {
+    } else if (argument === '--curve-segments') {
       if (curveSegmentsSeen) throw new TypeError('--curve-segments may be supplied once');
       if (!/^\d+$/.test(value)) throw new TypeError('--curve-segments must be a decimal integer from 4 to 64');
       curveSegmentsSeen = true; curveSegments = Number(value);
+    } else {
+      if (strokeArcDivisionsSeen) throw new TypeError('--stroke-arc-divisions may be supplied once');
+      if (!/^\d+$/.test(value)) throw new TypeError('--stroke-arc-divisions must be a decimal integer from 4 to 64');
+      strokeArcDivisionsSeen = true; strokeArcDivisions = Number(value);
     }
   } else if (argument.startsWith('--')) throw new TypeError('Unsupported compiler option: ' + argument);
   else positional.push(argument);
 }
 if (positional.length > 1) throw new TypeError('Only one SVG source path may be supplied');
 const input = resolve(root, positional[0] ?? 'modules/vector-assets/assets/seed-scout.svg');
-const asset = await compileVectorAssetFile(input, input.startsWith(root) ? input.slice(root.length + 1).replaceAll('\\', '/') : input, { curveSegments });
+const asset = await compileVectorAssetFile(input, input.startsWith(root) ? input.slice(root.length + 1).replaceAll('\\', '/') : input, { curveSegments, strokeArcDivisions });
 if (output) await writeFile(output, await compiledAssetModuleSource(asset));
 const sourceSha256 = createHash('sha256').update(await readFile(input)).digest('hex');
 console.log(JSON.stringify({ source: input, sourceSha256, compilerVersion: asset.compilerVersion, compilerOptions: asset.compilerOptions, parts: asset.geometry.partCount,

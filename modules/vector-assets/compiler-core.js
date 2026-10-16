@@ -889,7 +889,7 @@ function colorFromComponents(rgba) {
   return new Color().setRGB(rgba[0], rgba[1], rgba[2], SRGBColorSpace);
 }
 
-function appendNonScalingLine(vertices, start, end, rgba, partIndex, width, lineCap) {
+function appendNonScalingLine(vertices, start, end, rgba, partIndex, width, lineCap, arcDivisions) {
   if (!['butt', 'square', 'round'].includes(lineCap)) throw new TypeError('Unsupported non-scaling stroke linecap: ' + lineCap);
   const dx=end.x-start.x, dy=end.y-start.y;
   const length=Math.hypot(dx,dy);
@@ -904,17 +904,16 @@ function appendNonScalingLine(vertices, start, end, rgba, partIndex, width, line
   triangle([0,startExtension,1],[1,endExtension,1],[1,endExtension,-1]);
   triangle([0,startExtension,1],[1,endExtension,-1],[0,startExtension,-1]);
   if (lineCap==='round') {
-    const segments=12;
     for (const [along,firstAngle] of [[0,Math.PI/2],[1,-Math.PI/2]]) {
-      for (let i=0;i<segments;i++) {
-        const a=firstAngle+i*Math.PI/segments, b=firstAngle+(i+1)*Math.PI/segments;
+      for (let i=0;i<arcDivisions;i++) {
+        const a=firstAngle+i*Math.PI/arcDivisions, b=firstAngle+(i+1)*Math.PI/arcDivisions;
         triangle([along,0,0],[along,Math.cos(a),Math.sin(a)],[along,Math.cos(b),Math.sin(b)]);
       }
     }
   }
 }
 
-function compilePaths(paths, partIndices, parts, metadata, gradients, curveSegments) {
+function compilePaths(paths, partIndices, parts, metadata, gradients, curveSegments, strokeArcDivisions) {
   const vertices = [], shaderSurfaces = [], drawOrder = [];
   let hasNonScalingStroke=false;
   const styled = new Map((metadata.styles ?? []).map(style => [style.target, style]));
@@ -971,12 +970,12 @@ function compilePaths(paths, partIndices, parts, metadata, gradients, curveSegme
           if (sourceNode.nodeName!=='line' || path.subPaths.length!==1) throw new TypeError('Non-scaling strokes currently support one straight <line> per shape');
           const points=path.subPaths[0].getPoints(1);
           if (points.length!==2) throw new TypeError('Non-scaling strokes currently support straight <line> geometry only');
-          appendNonScalingLine(vertices,points[0],points[1],rgba,partIndex,style.strokeWidth,style.strokeLineCap ?? 'butt');
+          appendNonScalingLine(vertices,points[0],points[1],rgba,partIndex,style.strokeWidth,style.strokeLineCap ?? 'butt', strokeArcDivisions);
           hasNonScalingStroke=true;
         } else {
         const stroke = SVGLoader.getStrokeStyle(style.strokeWidth, style.stroke, style.strokeLineJoin, style.strokeLineCap, style.strokeMiterLimit);
         for (const subPath of path.subPaths) {
-          const geometry = SVGLoader.pointsToStroke(subPath.getPoints(curveSegments), stroke, 12, 0.001);
+          const geometry = SVGLoader.pointsToStroke(subPath.getPoints(curveSegments), stroke, strokeArcDivisions, 0.001);
           if (geometry) {
             appendTriangles(vertices, geometry, rgba, partIndex);
             geometry.dispose();
@@ -1114,11 +1113,13 @@ function installSvgLoaderSelectors(document) {
 
 export function compileVectorAssetCore(svgBytes, sourcePath = 'asset.svg', options = {}, sourceSha256) {
   if (options === null || typeof options !== 'object' || Array.isArray(options)
-      || Object.keys(options).some(key => !['curveSegments', 'normalizeCenteredViewBox'].includes(key))) {
-    throw new TypeError('Only curveSegments and normalizeCenteredViewBox compiler options are supported');
+      || Object.keys(options).some(key => !['curveSegments', 'normalizeCenteredViewBox', 'strokeArcDivisions'].includes(key))) {
+    throw new TypeError('Only curveSegments, normalizeCenteredViewBox, and strokeArcDivisions compiler options are supported');
   }
   const curveSegments = options.curveSegments === undefined ? 16 : options.curveSegments;
   if (!Number.isSafeInteger(curveSegments) || curveSegments < 4 || curveSegments > 64) throw new RangeError('curveSegments must be an integer from 4 to 64');
+  const strokeArcDivisions = options.strokeArcDivisions === undefined ? 12 : options.strokeArcDivisions;
+  if (!Number.isSafeInteger(strokeArcDivisions) || strokeArcDivisions < 4 || strokeArcDivisions > 64) throw new RangeError('strokeArcDivisions must be an integer from 4 to 64');
   const normalizeCenteredViewBox = options.normalizeCenteredViewBox ?? false;
   if (typeof normalizeCenteredViewBox !== 'boolean') throw new TypeError('normalizeCenteredViewBox must be a boolean');
   if (!(svgBytes instanceof Uint8Array)) throw new TypeError('SVG source bytes must be a Uint8Array');
@@ -1155,7 +1156,7 @@ export function compileVectorAssetCore(svgBytes, sourcePath = 'asset.svg', optio
     return { clean: withoutMetadata(original), loader };
   });
   const paths = withNodeDomParser(() => vectorText.loader.parse(vectorText.clean).paths);
-  const geometry = compilePaths(paths, partIndices, metadata.parts, metadata, gradients, curveSegments);
+  const geometry = compilePaths(paths, partIndices, metadata.parts, metadata, gradients, curveSegments, strokeArcDivisions);
   geometry.expressionIndices = compileExpressionIndices(geometry, metadata);
   const sourcePaths = compileSourcePaths(paths, partIndices, metadata.parts);
   const paintedIds = new Set(paths.map(path => path.userData.node.getAttribute('id')));
@@ -1164,7 +1165,7 @@ export function compileVectorAssetCore(svgBytes, sourcePath = 'asset.svg', optio
   return {
     schemaVersion: VECTOR_ASSET_SCHEMA_VERSION,
     compilerVersion: VECTOR_ASSET_COMPILER_VERSION,
-    compilerOptions: { curveSegments, normalizeCenteredViewBox },
+    compilerOptions: { curveSegments, normalizeCenteredViewBox, strokeArcDivisions },
     sourceSha256,
     sourcePath,
     metadata,

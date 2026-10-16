@@ -55,6 +55,15 @@ jobs:
           set -euo pipefail
           manifest="$(node project/verify-dist.mjs)"
           echo "sha256=$manifest" >> "$GITHUB_OUTPUT"
+      - name: Retain Farmpea vector example screenshot
+        if: always()
+        # https://github.com/actions/upload-artifact/releases/tag/v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vector-assets-quality-farmpea
+          path: test-results/vector-assets-quality-farmpea.png
+          if-no-files-found: ignore
+          retention-days: 7
 
   publish-dist:
     name: Update dist branch

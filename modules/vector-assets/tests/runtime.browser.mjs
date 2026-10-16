@@ -129,6 +129,12 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
     const coldStart = performance.now(), asset = createSeedScout(meshes), initializationMs = performance.now() - coldStart;
     const resourceCreationStats = meshes.stats();
     const player = asset.createPlayer({ clip: 'idle', startedAtMs: 0 });
+    const staticPartPoses = player.partPoses();
+    assertThat(staticPartPoses.every(pose => Array.isArray(pose.morph) && pose.morph.length === 2
+      && pose.morph[0] === 0 && pose.morph[1] === 0), 'styleless assets preserve the public two-weight part pose with default zero morph values');
+    assertThat(staticPartPoses.every((pose, index) => index === 0 || pose.morph !== staticPartPoses[0].morph)
+      && !Object.isFrozen(staticPartPoses[0].morph),
+      'public styleless part poses keep independent mutable zero-morph tuples');
     const projection = [2 / 200, 0, 0, 0, -2 / 220, 0, -1, 1, 1];
     const paint = (actors = [player], timeMs = 0) => {
       device.beginFrame({ width: 200, height: 220, clearColor: [0.875, 0.91, 0.80, 1], clearDepth: 1, clearStencil: 0 });
@@ -138,7 +144,17 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
       return { mesh: meshes.stats(), device: { ...device.stats }, glError: device.gl.getError() };
     };
     const pixel = (x, y) => { const data = new Uint8Array(4); device.gl.readPixels(x, 219 - y, 1, 1, device.gl.RGBA, device.gl.UNSIGNED_BYTE, data); return [...data]; };
+    const originalDrawMesh = meshes.drawMesh;
+    let submittedParts, submittedMorph;
+    meshes.drawMesh = function(mesh, options) {
+      submittedParts = options.parts; submittedMorph = options.morph;
+      return originalDrawMesh.call(this, mesh, options);
+    };
     const initialFrame = paint();
+    meshes.drawMesh = originalDrawMesh;
+    assertThat(submittedParts?.every(pose => !Object.hasOwn(pose, 'morph'))
+      && Array.isArray(submittedMorph) && submittedMorph[0] === 0 && submittedMorph[1] === 0,
+      'render-only part poses omit discarded per-part morph arrays and retain the draw-level morph value');
     console.log('VECTOR_STAGE initial-frame');
     const bodyPixel = pixel(100, 112), holePixel = pixel(80, 48), background = [223, 232, 204, 255];
     assertThat(bodyPixel[1] > 100 && bodyPixel[0] < background[0] && bodyPixel[0] > 60, `SVG body color reaches WebGL pixels: ${bodyPixel}`);

@@ -1,5 +1,6 @@
 import { runFrameChecks } from '../../modules/interpolation/tests/presentation-frame.browser.js';
 import { exerciseVectorAssets } from '../../modules/vector-assets/tests/runtime.browser.mjs';
+import { exerciseVectorAssetQualityExample } from '../../modules/vector-assets/tests/quality-example.browser.mjs';
 import { exerciseWebGLDevice, exerciseVectorRenderer, exerciseFontAssetLoader } from '../../modules/rendering/tests/device.browser.mjs';
 import { exerciseReusableMeshes } from '../../modules/rendering/tests/mesh.browser.mjs';
 import { exerciseRendererInterleaving } from '../../modules/rendering/tests/interop.browser.mjs';
@@ -478,10 +479,39 @@ const { createSession, profiles } = await import('/dist/rollback.js');
   const vectorAssetPage = await browser.newPage({ viewport: { width: 1000, height: 800 }, hasTouch: true, deviceScaleFactor: 2 });
   const vectorAssetErrors = [];
   vectorAssetPage.on('pageerror', error => vectorAssetErrors.push(error.message));
-  await vectorAssetPage.goto(`http://127.0.0.1:${server.address().port}/dist/previews/vector-assets.html`);
+  await vectorAssetPage.goto(`http://127.0.0.1:${server.address().port}/dist/previews/vector-assets.html?fixture=seed-scout`);
   await vectorAssetPage.waitForFunction(() => Boolean(window.vectorAssetDemo?.ready || window.vectorAssetDemo?.error), null, { timeout: 15000 });
   assert.equal(await vectorAssetPage.evaluate(() => window.vectorAssetDemo?.error ?? null), null, 'standalone vector-assets preview initializes');
   report.vectorAssets = await exerciseVectorAssets(vectorAssetPage);
+  const sketchPixelParity = await vectorAssetPage.evaluate(() => {
+    const { WebGLDevice, MeshRenderer, createStyleSample } = window.vectorAssetRuntime;
+    const canvas = document.createElement('canvas'); canvas.width = 320; canvas.height = 360; document.body.append(canvas);
+    const device = new WebGLDevice(canvas, { alpha: false, antialias: false, preserveDrawingBuffer: true, checkGLErrors: true });
+    const meshes = new MeshRenderer(device), asset = createStyleSample('sketch-fox', meshes);
+    const actor = asset.createPlayer({ clip: 'idle', startedAtMs: 0 });
+    const projection = [2 / 160, 0, 0, 0, -2 / 180, 0, -1, 1, 1];
+    const capture = timeMs => {
+      actor.seek(timeMs);
+      device.beginFrame({ width: canvas.width, height: canvas.height, clearColor: [0.875, 0.91, 0.80, 1] });
+      meshes.beginFrame(); actor.draw({ projection }); meshes.flush(); device.endFrame();
+      const pixels = new Uint8Array(canvas.width * canvas.height * 4);
+      device.gl.readPixels(0, 0, canvas.width, canvas.height, device.gl.RGBA, device.gl.UNSIGNED_BYTE, pixels);
+      return pixels;
+    };
+    const first = capture(987.5), later = capture(2100), repeated = capture(987.5);
+    let changedChannels = 0, repeatedChannels = 0;
+    for (let index = 0; index < first.length; index++) {
+      if (first[index] !== later[index]) changedChannels++;
+      if (first[index] !== repeated[index]) repeatedChannels++;
+    }
+    const result = { changedChannels, repeatedChannels, glError: device.gl.getError(), morphCount: asset.mesh.morphCount };
+    actor.dispose(); asset.dispose(); meshes.dispose(); device.dispose(); canvas.remove();
+    return result;
+  });
+  assert.equal(sketchPixelParity.glError, 0);
+  assert.equal(sketchPixelParity.morphCount, 2);
+  assert.ok(sketchPixelParity.changedChannels > 0, 'animated sketch morphs change actual WebGL pixels');
+  assert.equal(sketchPixelParity.repeatedChannels, 0, 'the same sketch time reproduces identical WebGL pixels');
   assert.equal(vectorAssetErrors.length, 0, vectorAssetErrors.join('\n'));
   await vectorAssetPage.evaluate(() => {
     const demo = window.vectorAssetDemo;
@@ -489,6 +519,15 @@ const { createSession, profiles } = await import('/dist/rollback.js');
   });
   await vectorAssetPage.close();
   report.stages.push('single SVG SSOT compiled through pinned Three SVGLoader, rendered as shared retained GameKit WebGL mesh with deterministic Anime.js seek');
+
+  const qualityExamplePage = await browser.newPage({ viewport: { width: 1200, height: 900 }, deviceScaleFactor: 1 });
+  const qualityExampleErrors = [];
+  qualityExamplePage.on('pageerror', error => qualityExampleErrors.push(error.message));
+  report.vectorAssetQuality = await exerciseVectorAssetQualityExample(qualityExamplePage,
+    `http://127.0.0.1:${server.address().port}/dist/previews/vector-assets.html`);
+  assert.equal(qualityExampleErrors.length, 0, qualityExampleErrors.join('\n'));
+  await qualityExamplePage.close();
+  report.stages.push('vector-assets example loads a GitHub SVG URL and compares independently configurable curve/stroke tessellation');
 
   const sourcePath = 'modules/vector-assets/assets/seed-scout.svg';
   const sourceBytes = await readFile(resolve(root, sourcePath));
@@ -501,6 +540,7 @@ const { createSession, profiles } = await import('/dist/rollback.js');
     return value;
   };
   const nodeGeometrySha256 = createHash('sha256').update(JSON.stringify(stable(nodeAsset.geometry))).digest('hex');
+  const startupFetchBaseline = vectorSvgFetches;
   const startupPage = await browser.newPage({ viewport: { width: 1000, height: 800 }, deviceScaleFactor: 1 });
   const startupErrors = [];
   startupPage.on('pageerror', error => startupErrors.push(error.message));
@@ -514,6 +554,19 @@ const { createSession, profiles } = await import('/dist/rollback.js');
     const options = { sourcePath, expectedSha256, maxBytes: 512 * 1024 };
     const [compiledAsset, sameCompiledAsset] = await Promise.all([loader.load(url, options), loader.load(url, options)]);
     if (compiledAsset !== sameCompiledAsset || loader.size !== 1) throw new Error('Concurrent SVG startup loads did not share the cached compilation');
+    const explicitDefaultAsset = await loader.load(url, { ...options, strokeArcDivisions: 12 });
+    if (explicitDefaultAsset !== compiledAsset) throw new Error('Explicit default stroke arc quality did not normalize to the shared cache key');
+    const coarseArcAsset = await loader.load(url, { ...options, strokeArcDivisions: 8 });
+    const sameCoarseArcAsset = await loader.load(url, { ...options, strokeArcDivisions: 8 });
+    if (coarseArcAsset !== sameCoarseArcAsset || coarseArcAsset === compiledAsset || loader.size !== 2) {
+      throw new Error('Distinct stroke arc quality did not use its own cached compilation');
+    }
+    if (compiledAsset.compilerOptions.strokeArcDivisions !== 12 || coarseArcAsset.compilerOptions.strokeArcDivisions !== 8) {
+      throw new Error('Browser loader did not record selected stroke arc quality');
+    }
+    if (JSON.stringify(Array.from(compiledAsset.geometry.indices)) === JSON.stringify(Array.from(coarseArcAsset.geometry.indices))) {
+      throw new Error('Non-default round stroke arc quality produced the default triangle list');
+    }
     if (compiledAsset.sourceSha256 !== expectedSha256 || 'sourcePaths' in compiledAsset) throw new Error('Loaded SVG hash or default debug-data policy is incorrect');
     const canonical = value => {
       if (ArrayBuffer.isView(value)) return Array.from(value, canonical);
@@ -547,10 +600,11 @@ const { createSession, profiles } = await import('/dist/rollback.js');
     return browserGeometrySha256;
   }, { expectedSha256, nodeGeometrySha256, sourcePath });
   assert.equal(loadedGeometrySha256, nodeGeometrySha256, 'browser and Node compilers emit identical geometry');
-  assert.equal(vectorSvgFetches, 2, 'same-key startup loads share one fetch and a hash mismatch is fetched only once');
+  const startupFetches = vectorSvgFetches - startupFetchBaseline;
+  assert.equal(startupFetches, 3, 'same-key startup loads share one fetch, changed arc quality has its own key, and a hash mismatch is fetched only once');
   assert.equal(startupErrors.length, 0, startupErrors.join('\n'));
   await startupPage.close();
-  report.browserSvgStartup = { sourceSha256: expectedSha256, geometrySha256: loadedGeometrySha256, requests: vectorSvgFetches,
+  report.browserSvgStartup = { sourceSha256: expectedSha256, geometrySha256: loadedGeometrySha256, requests: startupFetches,
     scope: 'same-key promise/cache deduplication, expected-hash rejection before caching, browser/Node geometry parity, and actual WebGL1 draw of the browser-compiled SVG' };
   report.stages.push('browser SVG startup loader verifies source SHA-256, compiles once with bounded cache, and renders the same geometry as Node');
 
