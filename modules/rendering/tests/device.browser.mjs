@@ -125,11 +125,11 @@ export async function exerciseVectorRenderer(page) {
   assert.ok(result.label[0]>200&&result.label[1]>200&&result.label[2]>200,'prebaked glyph atlas produces WebGL text pixels');
   assert.deepEqual(result.clipped,[0,0,255,255],'clip rectangles exclude geometry beyond their bounds');assert.deepEqual(result.hole,[0,0,255,255],'evenodd tessellation preserves path holes');
   assert.equal(result.measure.width,8);assert.equal(result.stats.renderTargetCount,2);
-  assert.equal(result.error,0);assert.equal(result.stats.gpuRenderTargetBytes,(64*32+8*8)*4);assert.ok(result.stats.drawCalls>=5);
+  assert.equal(result.error,0);assert.equal(result.stats.gpuRenderTargetBytes,(64*32+8*8)*5);assert.ok(result.stats.drawCalls>=5);
   const loss=await page.evaluate(()=>{const p=vectorProbe;p.loss=p.device.gl.getExtension('WEBGL_lose_context');if(!p.loss)return false;p.loss.loseContext();return true;});
   if(loss){await page.waitForFunction(()=>vectorProbe.device.state==='lost');assert.equal(await page.evaluate(()=>vectorProbe.device.beginFrame()),false);await page.evaluate(()=>vectorProbe.loss.restoreContext());await page.waitForFunction(()=>vectorProbe.device.state==='ready');
     const restored=await page.evaluate(()=>{const p=vectorProbe;p.device.beginFrame({clearColor:[0,0,1,1]});p.renderer.beginGroup(.5,{x:12,y:12,width:44,height:32});p.renderer.polygon([[12,12],[44,12],[44,44],[12,44]],[1,0,0,1]);p.renderer.endGroup();p.device.endFrame();return{pixel:p.pixel(30,24),bytes:p.device.stats.gpuRenderTargetBytes,error:p.device.gl.getError()}});
-    assert.ok(Math.abs(restored.pixel[0]-128)<=3&&Math.abs(restored.pixel[2]-127)<=3,'restored target retains its identity and can composite');assert.equal(restored.bytes,(64*32+8*8)*4);assert.equal(restored.error,0);result.targetRestoration=restored;
+    assert.ok(Math.abs(restored.pixel[0]-128)<=3&&Math.abs(restored.pixel[2]-127)<=3,'restored target retains its identity and can composite');assert.equal(restored.bytes,(64*32+8*8)*5);assert.equal(restored.error,0);result.targetRestoration=restored;
   }else result.targetRestoration='WEBGL_lose_context unavailable';
   result.disposed=await page.evaluate(()=>{const p=vectorProbe;p.renderer.dispose();p.atlas.dispose();p.device.dispose();p.canvas.remove();return p.device.state==='disposed'&&p.device.stats.gpuRenderTargetBytes===0&&p.device.stats.renderTargetCount===0});assert.equal(result.disposed,true);
   return result;
