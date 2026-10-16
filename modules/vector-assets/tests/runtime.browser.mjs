@@ -236,6 +236,7 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
     const idleBeforeStart = asset.createPlayer({ clip: 'idle', startedAtMs: 0 }).seek(999).getPartPose('body');
     const idleAtStart = asset.createPlayer({ clip: 'idle', startedAtMs: 0 }).seek(1000).getPartPose('body');
     const bounceAtStart = asset.createPlayer({ clip: 'bounce', startedAtMs: 1000 }).seek(1000).getPartPose('body');
+    const bounceAtEnd = asset.createPlayer({ clip: 'bounce', startedAtMs: 1000 }).seek(1200).getPartPose('body');
     const idleProbe = asset.createPlayer({ clip: 'idle', startedAtMs: 0 });
     const bounceProbe = asset.createPlayer({ clip: 'bounce', startedAtMs: 1000 });
     boundaryPlayer.transitionTo('bounce', 1000, 200);
@@ -255,7 +256,7 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
     assertThat(completedTransitionMaps === directTargetMaps, `a completed transition samples only its target (${completedTransitionMaps} vs ${directTargetMaps} Map constructions)`);
     assertThat(JSON.stringify(beforeTransition) === JSON.stringify(idleBeforeStart), 'a transition samples only its source before the start time');
     assertThat(JSON.stringify(atTransitionStart) === JSON.stringify(idleAtStart), 'a transition begins at its source pose exactly at the start boundary');
-    assertThat(JSON.stringify(atTransitionEnd) === JSON.stringify(bounceAtStart), 'a completed transition returns its target pose exactly at the end boundary');
+    assertThat(JSON.stringify(atTransitionEnd) === JSON.stringify(bounceAtEnd), 'a completed transition returns its target pose exactly at the end boundary');
     const zeroDurationPlayer = asset.createPlayer({ clip: 'idle', startedAtMs: 0 });
     zeroDurationPlayer.transitionTo('bounce', 1000, 0);
     assertThat(JSON.stringify(zeroDurationPlayer.seek(999).getPartPose('body')) === JSON.stringify(idleBeforeStart), 'a zero-duration transition keeps its source before its start');
