@@ -91,7 +91,7 @@ export async function exerciseWorldVectorRendering(browser, renderingURL, vector
         return { width: maxX - minX + 1, height: maxY - minY + 1, count };
       };
       const sampleAt = (center, size, x, y) => { const point = screen(center, size, x, y); return sample(point.x, point.y); };
-      const smallBounds = bounds(30, 90), largeBounds = bounds(130, 215);
+      const smallBounds = bounds(39, 90), largeBounds = bounds(130, 215);
       const under = sampleAt(59, 47, 12, 12), cloth = sampleAt(59, 47, 25, 25), over = sampleAt(59, 47, 50, 50), clipped = sampleAt(172, 74, 90, 50), fallbackWorldDraw = sampleAt(26, 24, 50, 50);
       const clothColors = new Set();
       for (let y = 0; y < canvas.height; y++) for (let x = 0; x < canvas.width; x++) {
@@ -124,8 +124,8 @@ export async function exerciseWorldVectorRendering(browser, renderingURL, vector
       return state;
     }, { renderingURL, vectorAssetsURL, compiled });
     assert.ok(result.smallBounds.count > 200 && result.largeBounds.count > 600, 'both retained SVG actors cover real WebGL pixels');
-    assert.ok(result.largeBounds.width / result.smallBounds.width > 1.4 && result.largeBounds.width / result.smallBounds.width < 1.75,
-      'the larger world transform produces proportionally larger pixels');
+    assert.ok(result.largeBounds.height / result.smallBounds.height > 1.4 && result.largeBounds.height / result.smallBounds.height < 1.75,
+      'unclipped vertical extent scales proportionally; the large actor is deliberately clipped horizontally: ' + JSON.stringify({small:result.smallBounds,large:result.largeBounds}));
     assert.ok(result.under[2] > result.under[0] && result.under[3] > 240, 'pre-surface SVG geometry paints beneath the shader surface');
     assert.ok(result.cloth[3] > 240 && result.yarnColorCount > 4, 'the retained yarn material produces filled, non-solid shader pixels');
     assert.ok(result.over[1] > result.over[0] && result.over[3] > 240, 'post-surface SVG geometry paints above the shader surface');
