@@ -206,6 +206,36 @@ function validateRoot(root) {
   return viewBox;
 }
 
+function normalizeCenteredViewBoxInput(root, metadata) {
+  const widthText = root.getAttribute('width'), heightText = root.getAttribute('height');
+  const width = Number(widthText), height = Number(heightText);
+  const viewBox = finiteList(root.getAttribute('viewBox') || '', 4, 'viewBox');
+  if (!widthText || !heightText || !Number.isFinite(width) || !Number.isFinite(height)
+      || viewBox[2] <= 0 || viewBox[3] <= 0) {
+    throw new TypeError('Centered SVG normalization needs finite root width, height, and positive viewBox dimensions');
+  }
+
+  // This matches the build-time Bounko normalization without changing source
+  // bytes or authored local coordinates. Three's SVGLoader compiles geometry
+  // in those authored coordinates; the original viewport is returned below.
+  root.setAttribute('width', String(viewBox[2]));
+  root.setAttribute('height', String(viewBox[3]));
+  root.setAttribute('viewBox', `0 0 ${viewBox[2]} ${viewBox[3]}`);
+
+  for (const clip of Object.values(metadata?.clips ?? {})) {
+    for (const frame of clip?.keyframes ?? []) {
+      const poses = frame?.parts;
+      if (!poses || typeof poses !== 'object' || Array.isArray(poses)) continue;
+      for (const [part, pose] of Object.entries(poses)) {
+        if (pose && typeof pose === 'object' && !Array.isArray(pose) && Object.keys(pose).length === 0) {
+          delete poses[part];
+        }
+      }
+    }
+  }
+  return viewBox;
+}
+
 function idList(ids) {
   return [...ids.keys()].sort();
 }
@@ -1084,9 +1114,13 @@ function installSvgLoaderSelectors(document) {
 
 export function compileVectorAssetCore(svgBytes, sourcePath = 'asset.svg', options = {}, sourceSha256) {
   if (options === null || typeof options !== 'object' || Array.isArray(options)
-      || Object.keys(options).some(key => key !== 'curveSegments')) throw new TypeError('Only curveSegments compiler option is supported');
+      || Object.keys(options).some(key => !['curveSegments', 'normalizeCenteredViewBox'].includes(key))) {
+    throw new TypeError('Only curveSegments and normalizeCenteredViewBox compiler options are supported');
+  }
   const curveSegments = options.curveSegments === undefined ? 16 : options.curveSegments;
   if (!Number.isSafeInteger(curveSegments) || curveSegments < 4 || curveSegments > 64) throw new RangeError('curveSegments must be an integer from 4 to 64');
+  const normalizeCenteredViewBox = options.normalizeCenteredViewBox ?? false;
+  if (typeof normalizeCenteredViewBox !== 'boolean') throw new TypeError('normalizeCenteredViewBox must be a boolean');
   if (!(svgBytes instanceof Uint8Array)) throw new TypeError('SVG source bytes must be a Uint8Array');
   const source = svgBytes;
   if (!source.length || source.byteLength > MAX_SOURCE_BYTES) throw new RangeError('SVG source must be 1..512 KiB');
@@ -1100,7 +1134,9 @@ export function compileVectorAssetCore(svgBytes, sourcePath = 'asset.svg', optio
   const ids = collectIds(root);
   const gradients = parseGradientDefinitions(root, ids);
   const metadataBlock = directMetadata(root);
-  const viewBox = validateRoot(root);
+  const viewBox = normalizeCenteredViewBox
+    ? normalizeCenteredViewBoxInput(root, metadataBlock.value)
+    : validateRoot(root);
   const metadata = validateAssetMetadata(metadataBlock.value, ids);
 
   const serialized = new XMLSerializer().serializeToString(original);
@@ -1128,7 +1164,7 @@ export function compileVectorAssetCore(svgBytes, sourcePath = 'asset.svg', optio
   return {
     schemaVersion: VECTOR_ASSET_SCHEMA_VERSION,
     compilerVersion: VECTOR_ASSET_COMPILER_VERSION,
-    compilerOptions: { curveSegments },
+    compilerOptions: { curveSegments, normalizeCenteredViewBox },
     sourceSha256,
     sourcePath,
     metadata,

@@ -553,6 +553,122 @@ const { createSession, profiles } = await import('/dist/rollback.js');
   report.browserSvgStartup = { sourceSha256: expectedSha256, geometrySha256: loadedGeometrySha256, requests: vectorSvgFetches,
     scope: 'same-key promise/cache deduplication, expected-hash rejection before caching, browser/Node geometry parity, and actual WebGL1 draw of the browser-compiled SVG' };
   report.stages.push('browser SVG startup loader verifies source SHA-256, compiles once with bounded cache, and renders the same geometry as Node');
+
+  const centeredSourcePath = 'modules/vector-assets/tests/centered-viewbox.svg';
+  const centeredSourceBytes = await readFile(resolve(root, centeredSourcePath));
+  const centeredSourceSha256 = createHash('sha256').update(centeredSourceBytes).digest('hex');
+  const centeredNodeAsset = compileVectorAsset(centeredSourceBytes, centeredSourcePath, { normalizeCenteredViewBox: true });
+  const centeredGeometrySha256 = createHash('sha256').update(JSON.stringify(stable(centeredNodeAsset.geometry))).digest('hex');
+  const centeredPage = await browser.newPage({ viewport: { width: 800, height: 600 }, deviceScaleFactor: 1 });
+  const centeredErrors = [];
+  centeredPage.on('pageerror', error => centeredErrors.push(error.message));
+  await centeredPage.goto(`http://127.0.0.1:${server.address().port}/modules/interpolation/examples/index.html`);
+  const centeredResult = await centeredPage.evaluate(async ({ sourcePath, sourceSha256, nodeGeometrySha256 }) => {
+    const { createVectorAssetLoader } = await import('/dist/vector-assets-loader.js');
+    const { createVectorAsset } = await import('/dist/vector-assets.js');
+    const { WebGLDevice, MeshRenderer } = await import('/dist/rendering.js');
+    const url = '/modules/vector-assets/tests/centered-viewbox.svg';
+    const loader = createVectorAssetLoader({ maxEntries: 4 });
+    const sourceResponse = await fetch(url, { cache: 'no-store' });
+    const originalText = await sourceResponse.text();
+    const normalizedAsset = await loader.load(url, {
+      sourcePath, expectedSha256: sourceSha256, maxBytes: 512 * 1024, normalizeCenteredViewBox: true,
+    });
+    if (normalizedAsset.sourceSha256 !== sourceSha256 || JSON.stringify(normalizedAsset.viewBox) !== JSON.stringify([-36, -40, 72, 80])) {
+      throw new Error('Centered SVG result did not retain the original byte digest and viewBox');
+    }
+    const canonical = value => {
+      if (ArrayBuffer.isView(value)) return Array.from(value, canonical);
+      if (Array.isArray(value)) return value.map(canonical);
+      if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])]));
+      return value;
+    };
+    const digest = async value => {
+      const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(canonical(value)))));
+      return [...bytes].map(item => item.toString(16).padStart(2, '0')).join('');
+    };
+    if (await digest(normalizedAsset.geometry) !== nodeGeometrySha256) throw new Error('Centered browser and Node compiler geometry differ');
+
+    // Recreate the previous build-only normalization as a reference, then
+    // compare actual WebGL frames including the authored part/pivot/clip data.
+    const svgDocument = new DOMParser().parseFromString(originalText, 'image/svg+xml');
+    const root = svgDocument.documentElement;
+    const viewBox = root.getAttribute('viewBox').trim().split(/[\s,]+/).map(Number);
+    root.setAttribute('width', String(viewBox[2])); root.setAttribute('height', String(viewBox[3]));
+    root.setAttribute('viewBox', `0 0 ${viewBox[2]} ${viewBox[3]}`);
+    const metadataNode = [...root.children].find(child => child.localName === 'metadata' && child.id === 'vector-asset');
+    const metadata = JSON.parse(metadataNode.textContent);
+    for (const clip of Object.values(metadata.clips ?? {})) {
+      for (const frame of clip.keyframes ?? []) {
+        for (const [part, pose] of Object.entries(frame.parts ?? {})) {
+          if (pose && typeof pose === 'object' && !Array.isArray(pose) && Object.keys(pose).length === 0) delete frame.parts[part];
+        }
+      }
+    }
+    metadataNode.textContent = JSON.stringify(metadata);
+    const normalizedText = new XMLSerializer().serializeToString(svgDocument);
+    const normalizedBytes = new TextEncoder().encode(normalizedText);
+    const normalizedDigest = new Uint8Array(await crypto.subtle.digest('SHA-256', normalizedBytes));
+    const normalizedHash = [...normalizedDigest].map(item => item.toString(16).padStart(2, '0')).join('');
+    const blobUrl = URL.createObjectURL(new Blob([normalizedBytes], { type: 'image/svg+xml' }));
+    let referenceAsset;
+    try {
+      referenceAsset = await loader.load(blobUrl, { sourcePath, expectedSha256: normalizedHash, maxBytes: 512 * 1024 });
+    } finally { URL.revokeObjectURL(blobUrl); }
+    if (await digest(referenceAsset.geometry) !== nodeGeometrySha256) throw new Error('Legacy-normalized SVG reference geometry differs');
+    if (JSON.stringify(normalizedAsset.metadata) !== JSON.stringify(referenceAsset.metadata)) throw new Error('Centered compiler changed parts, pivots, sockets, or non-empty clip poses');
+    if (JSON.stringify(normalizedAsset.metadata.parts.map(part => part.pivot)) !== JSON.stringify([[0, 0], [-12, 2], [-12, -14]])) throw new Error('Centered part pivots were not preserved');
+    if (JSON.stringify(normalizedAsset.metadata.sockets.grip.point) !== JSON.stringify([-12, -18])) throw new Error('Centered socket coordinates were not preserved');
+
+    const canvas = window.document.createElement('canvas'); canvas.width = 200; canvas.height = 220; window.document.body.append(canvas);
+    const device = new WebGLDevice(canvas, { alpha: false, antialias: false, preserveDrawingBuffer: true, checkGLErrors: true });
+    const meshes = new MeshRenderer(device);
+    const normalizedResource = createVectorAsset(meshes, normalizedAsset);
+    const referenceResource = createVectorAsset(meshes, referenceAsset);
+    const normalizedActor = normalizedResource.createPlayer({ clip: 'test', startedAtMs: 0 });
+    const referenceActor = referenceResource.createPlayer({ clip: 'test', startedAtMs: 0 });
+    const projection = [2 / 72, 0, 0, 0, -2 / 80, 0, 0, 0, 1];
+    const capture = (actor, timeMs) => {
+      actor.seek(timeMs);
+      device.beginFrame({ width: 200, height: 220, clearColor: [0.93, 0.95, 0.98, 1] });
+      meshes.beginFrame(); actor.draw({ projection }); meshes.flush(); device.endFrame();
+      const pixels = new Uint8Array(200 * 220 * 4);
+      device.gl.readPixels(0, 0, 200, 220, device.gl.RGBA, device.gl.UNSIGNED_BYTE, pixels);
+      return pixels;
+    };
+    const frameHashes = [];
+    let movingPixels = 0, redPixels = 0, greenPixels = 0, bluePixels = 0;
+    for (const timeMs of [0, 50, 100]) {
+      const compiledPixels = capture(normalizedActor, timeMs);
+      const legacyPixels = capture(referenceActor, timeMs);
+      if (compiledPixels.some((channel, index) => channel !== legacyPixels[index])) throw new Error(`Centered SVG WebGL pixels differ from the previous normalizer at ${timeMs}ms`);
+      frameHashes.push(await digest(compiledPixels));
+      for (let index = 0; index < compiledPixels.length; index += 4) {
+        const [red, green, blue] = compiledPixels.subarray(index, index + 3);
+        if (red > 150 && green < 100 && blue < 100) redPixels++;
+        if (green > 80 && green > red * 1.3 && green > blue * 1.3) greenPixels++;
+        if (blue > 100 && blue > red * 1.3 && blue > green * 1.3) bluePixels++;
+      }
+      if (timeMs === 100) {
+        const initial = capture(normalizedActor, 0);
+        for (let index = 0; index < compiledPixels.length; index += 4) {
+          if (compiledPixels[index] !== initial[index] || compiledPixels[index + 1] !== initial[index + 1]
+              || compiledPixels[index + 2] !== initial[index + 2] || compiledPixels[index + 3] !== initial[index + 3]) movingPixels++;
+        }
+      }
+    }
+    if (frameHashes[0] === frameHashes[2] || movingPixels < 20 || redPixels < 500 || greenPixels < 20 || bluePixels < 20) {
+      throw new Error(`Centered SVG frame lost geometry or clip motion: ${JSON.stringify({ frameHashes, movingPixels, redPixels, greenPixels, bluePixels })}`);
+    }
+    const finalError = device.gl.getError();
+    normalizedActor.dispose(); referenceActor.dispose(); normalizedResource.dispose(); referenceResource.dispose(); meshes.dispose(); device.dispose(); canvas.remove(); loader.dispose();
+    if (finalError !== 0) throw new Error(`Centered SVG WebGL render error ${finalError}`);
+    return { sourceSha256: normalizedAsset.sourceSha256, viewBox: normalizedAsset.viewBox, frameHashes, movingPixels, redPixels, greenPixels, bluePixels };
+  }, { sourcePath: centeredSourcePath, sourceSha256: centeredSourceSha256, nodeGeometrySha256: centeredGeometrySha256 });
+  assert.equal(centeredErrors.length, 0, centeredErrors.join('\n'));
+  await centeredPage.close();
+  report.centeredSvgStartup = centeredResult;
+  report.stages.push('centered-viewBox normalization preserves original provenance, geometry, pivots, sockets, clip transforms, and actual WebGL pixels versus the prior build-time normalizer');
   report.browser = await browser.version(); report.contextLoss = supportsLoss;
   report.scope = 'Headless Chromium with actual WebGL1/SwiftShader pixels and built ESMs. CPU/interval observations are not mobile FPS or hardware-GPU certification. No screenshot/artifact retention.';
   console.log(JSON.stringify(report, null, 2));

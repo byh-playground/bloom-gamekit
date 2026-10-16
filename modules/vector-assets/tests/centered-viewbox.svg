@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="540" height="600" viewBox="-36 -40 72 80">
+  <metadata id="vector-asset">{"schemaVersion":1,"id":"centered-normalization-fixture","defaultExpression":"neutral","parts":[{"id":"body","parent":null,"pivot":[0,0]},{"id":"arm","parent":"body","pivot":[-12,2]},{"id":"hand","parent":"arm","pivot":[-12,-14]}],"expressions":{"neutral":{"show":[],"hide":[]}},"sockets":{"origin":{"part":"body","point":[0,0]},"grip":{"part":"hand","point":[-12,-18]}},"clips":{"test":{"durationMs":100,"loop":"once","easing":"linear","keyframes":[{"timeMs":0,"easing":"linear","parts":{"body":{"x":0,"y":0},"arm":{"rotation":0},"hand":{"rotation":0} }},{"timeMs":25,"easing":"linear","parts":{"arm":{},"hand":{}}},{"timeMs":50,"easing":"inOutSine","parts":{"body":{"x":2,"y":-3},"arm":{"rotation":0.45},"hand":{"rotation":-0.2}}},{"timeMs":100,"easing":"linear","parts":{"body":{"x":4,"y":-2},"arm":{"rotation":0.9},"hand":{"rotation":-0.4}}}]}}}</metadata>
+  <g id="body">
+    <rect id="body-shape" x="-16" y="-22" width="32" height="44" fill="#e53935"/>
+    <g id="arm" transform="translate(-12 2)">
+      <rect id="arm-shape" x="-3" y="-16" width="6" height="16" fill="#00a040"/>
+      <g id="hand" transform="translate(0 -16)">
+        <rect id="hand-shape" x="-5" y="-4" width="12" height="8" fill="#0040ff"/>
+      </g>
+    </g>
+  </g>
+</svg>

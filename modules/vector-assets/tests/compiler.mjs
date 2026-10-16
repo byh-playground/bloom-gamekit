@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { compileVectorAsset, compileVectorAssetFile } from '../compiler.js';
@@ -33,14 +34,15 @@ await assert.rejects(boundedLoader.load('/startup/seed-scout.svg', { maxBytes: s
 assert.equal(boundedLoader.size, 0, 'over-limit SVG bytes are not cached');
 loader.clear(); loader.dispose(); mismatchLoader.dispose(); boundedLoader.dispose();
 assert.equal(asset.schemaVersion, 1);
-assert.equal(asset.compilerVersion, '0.8.0');
-assert.doesNotThrow(() => validateCompiledAsset({ ...asset, compilerVersion: '0.2.0' }), 'previous compiled meshes remain valid under the unchanged asset schema');
+assert.equal(asset.compilerVersion, '0.9.0');
 const { compilerOptions: ignoredCompilerOptions, ...assetWithoutCompilerOptions } = asset;
+assert.doesNotThrow(() => validateCompiledAsset({ ...assetWithoutCompilerOptions, compilerVersion: '0.2.0' }), 'previous compiled meshes remain valid under the unchanged asset schema');
 assert.throws(() => validateCompiledAsset({ ...assetWithoutCompilerOptions, compilerVersion: '0.8.0' }), /compiler options/i,
   'compiler 0.8 output must identify its tessellation setting');
-assert.doesNotThrow(() => validateCompiledAsset({ ...asset, compilerVersion: '0.7.0' }), 'existing 0.7 compiled assets remain readable');
-assert.doesNotThrow(() => validateCompiledAsset({ ...asset, compilerVersion: '0.6.0' }), 'existing 0.6 compiled assets remain readable');
+assert.doesNotThrow(() => validateCompiledAsset({ ...assetWithoutCompilerOptions, compilerVersion: '0.7.0' }), 'existing 0.7 compiled assets remain readable');
+assert.doesNotThrow(() => validateCompiledAsset({ ...assetWithoutCompilerOptions, compilerVersion: '0.6.0' }), 'existing 0.6 compiled assets remain readable');
 assert.equal(asset.compilerOptions.curveSegments, 16, 'the default curve quality is recorded in compiled output');
+assert.equal(asset.compilerOptions.normalizeCenteredViewBox, false, 'the default viewport normalization mode is recorded');
 assert.equal(asset.geometry.strideFloats, 11);
 assert.ok(asset.geometry.indices instanceof Uint16Array, 'SVG compiler retains unique vertices and triangle indices');
 assert.equal(asset.geometry.indices.length % 3, 0);
@@ -103,6 +105,63 @@ const sparseExpressionAsset = compileVectorAsset(Buffer.from(sparseExpressionSvg
 const eyesPart = sparseExpressionAsset.metadata.parts.findIndex(part => part.id === 'eyes');
 assert.ok([...sparseExpressionAsset.geometry.expressionIndices.default].some(index => sparseExpressionAsset.geometry.vertices[index * 11 + 10] === eyesPart),
   'an expression variant keeps an omitted part because the initial player state leaves it visible');
+
+const centeredSource = await readFile('modules/vector-assets/tests/centered-viewbox.svg');
+const centeredText = centeredSource.toString('utf8');
+const centeredRoot = /<svg\b[^>]*>/.exec(centeredText)?.[0];
+const centeredMetadataBlock = /<metadata\s+id="vector-asset">([\s\S]*?)<\/metadata>/.exec(centeredText);
+assert.ok(centeredRoot && centeredMetadataBlock, 'centered fixture has a root viewport and vector metadata');
+const centeredViewBox = centeredRoot.match(/\bviewBox="([^"]+)"/)?.[1].trim().split(/[\s,]+/).map(Number);
+const normalizedMetadata = JSON.parse(centeredMetadataBlock[1]);
+for (const clip of Object.values(normalizedMetadata.clips)) {
+  for (const frame of clip.keyframes) {
+    for (const [part, pose] of Object.entries(frame.parts)) {
+      if (pose && typeof pose === 'object' && !Array.isArray(pose) && Object.keys(pose).length === 0) delete frame.parts[part];
+    }
+  }
+}
+const quote = String.fromCharCode(34);
+const normalizedRoot = centeredRoot
+  .replace(/\bwidth="[^"]+"/, `width=${quote}${centeredViewBox[2]}${quote}`)
+  .replace(/\bheight="[^"]+"/, `height=${quote}${centeredViewBox[3]}${quote}`)
+  .replace(/\bviewBox="[^"]+"/, `viewBox=${quote}0 0 ${centeredViewBox[2]} ${centeredViewBox[3]}${quote}`);
+const normalizedSource = centeredText
+  .replace(centeredRoot, normalizedRoot)
+  .replace(centeredMetadataBlock[0], `<metadata id=${quote}vector-asset${quote}>${JSON.stringify(normalizedMetadata)}</metadata>`);
+const centeredExpectedHash = createHash('sha256').update(centeredSource).digest('hex');
+const centeredAsset = compileVectorAsset(centeredSource, 'centered-viewbox.svg', { normalizeCenteredViewBox: true });
+const legacyNormalizedAsset = compileVectorAsset(normalizedSource, 'centered-viewbox.svg');
+validateCompiledAsset(centeredAsset);
+assert.deepEqual(centeredAsset.viewBox, [-36, -40, 72, 80], 'normalization preserves the original centered viewBox for the host renderer');
+assert.equal(centeredAsset.sourceSha256, centeredExpectedHash, 'compiled source provenance hashes the original, unnormalized bytes');
+assert.deepEqual(centeredAsset.geometry, legacyNormalizedAsset.geometry, 'all retained geometry and clip part assignments match the existing Bounko normalization');
+assert.deepEqual(centeredAsset.sourcePaths, legacyNormalizedAsset.sourcePaths, 'path provenance is unaffected by centered viewport normalization');
+assert.deepEqual(centeredAsset.metadata, legacyNormalizedAsset.metadata, 'parts, pivots, sockets, and non-empty clip transforms match the old normalizer');
+assert.deepEqual(centeredAsset.metadata.parts.map(part => part.pivot), [[0, 0], [-12, 2], [-12, -14]]);
+assert.deepEqual(centeredAsset.metadata.sockets, { origin: { part: 'body', point: [0, 0] }, grip: { part: 'hand', point: [-12, -18] } });
+assert.deepEqual(centeredAsset.metadata.clips.test.keyframes[1].parts, {}, 'empty no-op poses are removed without dropping their keyframe');
+assert.deepEqual(centeredAsset.metadata.clips.test.keyframes[2].parts.arm, { rotation: 0.45 }, 'non-empty clip transforms remain authored');
+assert.throws(() => compileVectorAsset(centeredSource, 'centered-viewbox.svg'), /viewBox/i,
+  'centered viewport compatibility stays explicit and does not broaden the default compiler contract');
+let centeredLoaderFetches = 0;
+const centeredLoader = createVectorAssetLoader({ fetch: async () => {
+  centeredLoaderFetches++;
+  return new Response(centeredSource, { status: 200 });
+} });
+const centeredLoadOptions = { sourcePath: 'centered-viewbox.svg', expectedSha256: centeredExpectedHash,
+  maxBytes: centeredSource.byteLength, normalizeCenteredViewBox: true };
+const centeredLoaded = await centeredLoader.load('/startup/centered.svg', centeredLoadOptions);
+assert.deepEqual(centeredLoaded.geometry, centeredAsset.geometry, 'browser startup and Node compiler share the centered-viewBox normalization core');
+assert.deepEqual(centeredLoaded.viewBox, [-36, -40, 72, 80]);
+assert.equal(centeredLoaded.sourceSha256, centeredExpectedHash);
+await assert.rejects(centeredLoader.load('/startup/centered.svg', { ...centeredLoadOptions, normalizeCenteredViewBox: false }), /viewBox/i,
+  'the cache key separates legacy-normalized and strict compiler contracts');
+assert.equal(centeredLoader.size, 1);
+const badCenteredLoader = createVectorAssetLoader({ fetch: async () => new Response(centeredSource, { status: 200 }) });
+await assert.rejects(badCenteredLoader.load('/startup/centered.svg', { ...centeredLoadOptions, expectedSha256: '0'.repeat(64) }), /SHA-256 mismatch/);
+assert.equal(badCenteredLoader.size, 0, 'an incorrect original-byte hash rejects before normalization and caching');
+assert.equal(centeredLoaderFetches, 2, 'a distinct compiler normalization mode receives its own fetch/compile key');
+centeredLoader.dispose(); badCenteredLoader.dispose();
 const combinedAssetGeometry = MeshBuilder.combine([asset.geometry, asset.geometry]);
 assert.equal(combinedAssetGeometry.partCount, 14);
 assert.equal(combinedAssetGeometry.indices.length, asset.geometry.indices.length * 2, 'combining indexed assets offsets each source index');
@@ -131,7 +190,7 @@ assert.deepEqual(sketchAgain.geometry.vertices, sketchAsset.geometry.vertices, '
 const shaderSurfaceSvg = await readFile('modules/vector-assets/tests/world-shader.svg', 'utf8');
 const shaderSurfaceAsset = compileVectorAsset(Buffer.from(shaderSurfaceSvg), 'shader-surface-fixture.svg');
 validateCompiledAsset(shaderSurfaceAsset);
-assert.equal(shaderSurfaceAsset.compilerVersion, '0.8.0');
+assert.equal(shaderSurfaceAsset.compilerVersion, '0.9.0');
 assert.equal(shaderSurfaceAsset.geometry.morphCount, 0, 'shader-backed sketch/yarn do not generate dynamic mesh morph data');
 assert.equal(shaderSurfaceAsset.geometry.shaderSurfaces.length, 1, 'the compiler retains one shader surface descriptor');
 assert.ok(shaderSurfaceAsset.geometry.shaderSurfaces[0].fillVertices instanceof Float32Array);
