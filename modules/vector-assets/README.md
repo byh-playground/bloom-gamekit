@@ -12,7 +12,29 @@ The public example compares that exact authored SVG, the compiled triangle topol
 
 The per-view counters state their scope: the source panel reports downloaded SVG bytes and shape count; the topology panel reports compiled triangle/edge counts and Canvas 2D draw CPU time; the GameKit panel reports the selected WebGL 1 instancing path, device draw calls, retained mesh bytes, creation/frame upload bytes, GPU buffer allocation, and renderer/asset initialization time. GPU elapsed time is not inferred from CPU timing; this example reports no GPU milliseconds.
 
-Run `npm run vector-assets:compile` to validate and compile the reference SVG. The regular `npm run build` runs the same compiler and emits `dist/vector-assets.js` as a self-contained ESM bundle. It records the source SHA-256, asset schema version, compiler version, and tessellation options in the compiled asset. Three.js `SVGLoader` 0.186.1 is build-only; its paths are converted once to triangle geometry, including compound fills and strokes, and packed into GameKit's 11-float mesh format. The compiler deduplicates only bit-identical complete records into a 16-bit index buffer while preserving triangle order; assets with more than 65,536 distinct records are rejected. Node compilation uses the pinned `@xmldom/xmldom` 0.9.12 DOMParser adapter.
+Run `npm run vector-assets:compile` to validate and compile the reference SVG. The regular `npm run build` emits `dist/vector-assets.js` for retained rendering and a separate, self-contained `dist/vector-assets-loader.js` for browser startup compilation. The loader bundle contains the pinned Three.js `SVGLoader` 0.186.1, `@xmldom/xmldom` 0.9.12, and the shared compiler core, but no authored SVGs or sample geometry. The browser and Node paths use that same core and record the source SHA-256, asset schema version, compiler version, and tessellation options in the compiled asset. SVG paths are converted once to triangle geometry, including compound fills and strokes, and packed into GameKit's 11-float mesh format. The compiler deduplicates only bit-identical complete records into a 16-bit index buffer while preserving triangle order; assets with more than 65,536 distinct records are rejected.
+
+For games that ship original SVG resources, compile them once during startup instead of checking in generated geometry. `createVectorAssetLoader()` fetches and compiles source bytes using Web Crypto SHA-256 and returns a retained-geometry descriptor that can be passed to `createVectorAsset()`. Identical concurrent requests share one fetch/compile promise; completed results use a bounded least-recently-used cache (64 entries by default), and compilation or network errors reject the load. Supplying `expectedSha256` verifies the exact original bytes before parsing or caching. `maxBytes` can lower the 512 KiB source ceiling for a particular resource. Debug-only `sourcePaths` are omitted by default and can be requested with `includeSourcePaths: true`.
+
+```js
+import { createVectorAssetLoader } from './vector-assets-loader.js';
+import { createVectorAsset } from './vector-assets.js';
+
+const loader = createVectorAssetLoader({ maxEntries: 8 });
+const [compiledScout] = await Promise.all([
+  loader.load('/assets/scout.svg', {
+    sourcePath: 'assets/scout.svg',
+    expectedSha256: '...64 lowercase hex characters...',
+    maxBytes: 256 * 1024,
+  }),
+]);
+const scout = createVectorAsset(meshes, compiledScout);
+const actor = scout.createPlayer({ clip: 'idle', startedAtMs: 0 });
+// In the render loop, seek and draw the already-compiled actor.
+// On owner shutdown, dispose the actor, asset, loader, meshes and device.
+```
+
+`loader.load(url, { sourcePath, expectedSha256, maxBytes, curveSegments, includeSourcePaths })` returns a promise. The cache key includes the URL, source path, expected digest, source limit, curve quality, and debug-data choice; distinct compilation contracts never share a cached result. Set `maxEntries: 0` to disable completed-result caching while keeping same-key in-flight deduplication. Call `loader.clear()` to drop completed entries or `loader.dispose()` during owner shutdown.
 
 SVG fill triangulation (including gradient fills and yarn outer fills) and stroked path sampling default to 16 subdivisions. The compiler API accepts only the `curveSegments` option as an integer from 4 through 64; omitted means 16, while `null`, fractions, and out-of-range values are rejected. The CLI uses the matching `--curve-segments <integer>` decimal option and rejects duplicate or unknown flags. `ShapeGeometry` uses this value, as does `SVGLoader` path point sampling before stroke tessellation; round stroke joins and end caps keep Three.js's separate 12 arc divisions. Authored sketch morph outlines and yarn stitch paths retain their fixed style subdivisions. Object-bounding-box gradient coordinates are computed at a fixed sampling quality so changing geometry detail does not move gradient endpoints. The compiled asset records the selected value alongside its source hash. For example: `npm run vector-assets:compile -- modules/vector-assets/assets/seed-scout.svg --curve-segments 8 --output seed-scout.compiled.js`. Lower values reduce retained triangle references and initial geometry bytes but can change small curves, so choose against the asset's displayed size and compare actual output.
 

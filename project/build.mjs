@@ -6,10 +6,14 @@ import { MODULES, FONT_ASSETS, MANIFEST_FILE, createManifest, serializeManifest 
 
 const SDK_DEPENDENCIES = {
   scenario: ['simloop'],
+  'vector-assets-loader': ['vector-assets'],
   deterministic: ['_rollback-shared'], simloop: [], transport: ['_rollback-shared', 'deterministic'],
   replay: ['_rollback-shared', 'deterministic'], rollback: ['_rollback-shared', 'deterministic'],
 };
-const BUNDLED_PACKAGES = { 'vector-assets': ['node_modules/animejs/'] };
+const BUNDLED_PACKAGES = {
+  'vector-assets': ['node_modules/animejs/'],
+  'vector-assets-loader': ['node_modules/@xmldom/xmldom/', 'node_modules/three/'],
+};
 
 export async function buildDistribution(root) {
   const bundles = new Map();

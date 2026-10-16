@@ -1,3 +1,7 @@
+## v0.10.4 (2026-10-16)
+
+Vector assets add a standalone browser startup loader that verifies original SVG bytes, compiles them with the shared Node/browser core, deduplicates concurrent requests, and retains successful compiled geometry in a bounded cache. The production render bundle remains separate; the loader bundle includes no authored sample SVGs or precompiled sample geometry. Hash mismatches fail before compilation and caching.
+
 ## v0.10.2 (2026-10-16)
 
 `createLoop` adds opt-in `backlogPolicy: 'defer'` for bounded real-time catch-up. It preserves unprocessed wall-clock debt up to `maxBacklogTicks`, keeps the existing per-pulse `maxCatchupSteps` limit, and reports dropped debt with explicit `clock-gap` or `backlog-overflow` diagnostics. It never skips authoritative simulation ticks. Existing `drop` default and unbounded opt-in `retain` behavior remain unchanged. Pause/resume and hidden-document reset behavior are documented and regression-tested.

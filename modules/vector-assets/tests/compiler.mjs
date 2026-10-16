@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { compileVectorAsset, compileVectorAssetFile } from '../compiler.js';
+import { createVectorAssetLoader } from '../browser-loader.js';
 import { validateCompiledAsset } from '../schema.js';
 import { MeshBuilder } from '../../rendering/mesh-builder.js';
 
@@ -9,6 +10,28 @@ const sourcePath = 'modules/vector-assets/assets/seed-scout.svg';
 const source = await readFile(sourcePath);
 const asset = await compileVectorAssetFile(sourcePath, sourcePath);
 validateCompiledAsset(asset);
+let loaderFetches = 0;
+const loader = createVectorAssetLoader({ fetch: async () => { loaderFetches++; return new Response(source, { status: 200 }); }, maxEntries: 1 });
+const loadOptions = { sourcePath, expectedSha256: asset.sourceSha256, maxBytes: source.byteLength };
+const [browserCoreAsset, sharedBrowserCoreAsset] = await Promise.all([
+  loader.load('/startup/seed-scout.svg', loadOptions), loader.load('/startup/seed-scout.svg', loadOptions),
+]);
+assert.equal(loaderFetches, 1, 'same-key concurrent browser startup requests share one fetch');
+assert.equal(browserCoreAsset, sharedBrowserCoreAsset, 'same-key startup requests share one compile result');
+assert.equal(loader.size, 1, 'successful startup compile is retained in the bounded cache');
+assert.deepEqual(browserCoreAsset.geometry, asset.geometry, 'browser loader and Node compiler core emit identical geometry');
+assert.equal(browserCoreAsset.sourceSha256, asset.sourceSha256, 'browser Web Crypto digest matches Node SHA-256');
+assert.equal('sourcePaths' in browserCoreAsset, false, 'browser runtime omits optional debug paths by default');
+const debugAsset = await loader.load('/startup/seed-scout.svg', { ...loadOptions, includeSourcePaths: true });
+assert.ok(Array.isArray(debugAsset.sourcePaths), 'debug source paths can be requested explicitly');
+assert.ok(loader.size <= 1, 'the compiled-asset cache stays within its configured entry bound');
+const mismatchLoader = createVectorAssetLoader({ fetch: async () => new Response(source, { status: 200 }) });
+await assert.rejects(mismatchLoader.load('/startup/seed-scout.svg', { expectedSha256: '0'.repeat(64) }), /SHA-256 mismatch/);
+assert.equal(mismatchLoader.size, 0, 'a hash mismatch is rejected before compiling or caching');
+const boundedLoader = createVectorAssetLoader({ fetch: async () => new Response(source, { status: 200 }) });
+await assert.rejects(boundedLoader.load('/startup/seed-scout.svg', { maxBytes: source.byteLength - 1 }), /exceeds/);
+assert.equal(boundedLoader.size, 0, 'over-limit SVG bytes are not cached');
+loader.clear(); loader.dispose(); mismatchLoader.dispose(); boundedLoader.dispose();
 assert.equal(asset.schemaVersion, 1);
 assert.equal(asset.compilerVersion, '0.8.0');
 assert.doesNotThrow(() => validateCompiledAsset({ ...asset, compilerVersion: '0.2.0' }), 'previous compiled meshes remain valid under the unchanged asset schema');
