@@ -3155,17 +3155,19 @@ var createTimeline = (parameters) => {
 
 // modules/vector-assets/schema.js
 var VECTOR_ASSET_SCHEMA_VERSION = 1;
-var VECTOR_ASSET_COMPILER_VERSION = "0.7.0";
-var ACCEPTED_COMPILER_VERSIONS = /* @__PURE__ */ new Set(["0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0", VECTOR_ASSET_COMPILER_VERSION]);
+var VECTOR_ASSET_COMPILER_VERSION = "0.8.0";
+var ACCEPTED_COMPILER_VERSIONS = /* @__PURE__ */ new Set(["0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0", "0.7.0", VECTOR_ASSET_COMPILER_VERSION]);
 var NUMERIC_POSE_FIELDS = Object.freeze(["x", "y", "rotation", "scaleX", "scaleY", "opacity"]);
 var isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 var exactKeys = (value, keys) => isObject(value) && Object.keys(value).length === keys.length && keys.every((key2) => Object.hasOwn(value, key2));
 function validateCompiledAsset(asset) {
-  if (!isObject(asset) || asset.schemaVersion !== VECTOR_ASSET_SCHEMA_VERSION || !ACCEPTED_COMPILER_VERSIONS.has(asset.compilerVersion) || typeof asset.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/.test(asset.sourceSha256) || !isObject(asset.metadata) || !isObject(asset.geometry) || !(asset.geometry.vertices instanceof Float32Array) || asset.geometry.vertices.length < 33 || asset.geometry.vertices.length % 11 || asset.geometry.strideFloats !== 11 || asset.geometry.nonScalingStroke !== void 0 && typeof asset.geometry.nonScalingStroke !== "boolean" || asset.geometry.nonScalingStroke && asset.geometry.morphCount !== 0 || asset.geometry.partCount !== asset.metadata.parts?.length || ![0, 2].includes(asset.geometry.morphCount)) {
+  const shaderSurfaces = asset?.geometry?.shaderSurfaces;
+  const surfaceOnly = Array.isArray(shaderSurfaces) && shaderSurfaces.length > 0;
+  if (!isObject(asset) || asset.schemaVersion !== VECTOR_ASSET_SCHEMA_VERSION || !ACCEPTED_COMPILER_VERSIONS.has(asset.compilerVersion) || typeof asset.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/.test(asset.sourceSha256) || !isObject(asset.metadata) || !isObject(asset.geometry) || !(asset.geometry.vertices instanceof Float32Array) || asset.geometry.vertices.length < 33 && !(surfaceOnly && asset.geometry.vertices.length === 0) || asset.geometry.vertices.length % 11 || asset.geometry.strideFloats !== 11 || asset.geometry.nonScalingStroke !== void 0 && typeof asset.geometry.nonScalingStroke !== "boolean" || asset.geometry.nonScalingStroke && asset.geometry.morphCount !== 0 || asset.geometry.partCount !== asset.metadata.parts?.length || ![0, 2].includes(asset.geometry.morphCount)) {
     throw new TypeError("Invalid compiled SVG vector asset");
   }
   const vertexCount = asset.geometry.vertices.length / 11, indices = asset.geometry.indices;
-  if (indices !== void 0 && (!(indices instanceof Uint16Array) || indices.length < 3 || indices.length % 3 || vertexCount > 65536 || indices.some((index) => index >= vertexCount))) {
+  if (indices !== void 0 && (!(indices instanceof Uint16Array) || indices.length < 3 && !(surfaceOnly && indices.length === 0) || indices.length % 3 || vertexCount > 65536 || indices.some((index) => index >= vertexCount))) {
     throw new TypeError("Invalid compiled SVG vertex indices");
   }
   if (indices === void 0 && vertexCount % 3) throw new TypeError("Non-indexed compiled SVG geometry must contain complete triangles");
@@ -3190,6 +3192,39 @@ function validateCompiledAsset(asset) {
     if (!/^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/.test(name) || Object.hasOwn(expressionIndices ?? {}, name) || !(variant instanceof Uint16Array) || variant.length % 3 || variant.some((index) => index >= vertexCount)) {
       throw new TypeError("Invalid compiled SVG named index variant: " + name);
     }
+  }
+  const surfaces = asset.geometry.shaderSurfaces;
+  const drawOrder = asset.geometry.drawOrder;
+  if (surfaces !== void 0 || drawOrder !== void 0) {
+    if (!Array.isArray(surfaces) || !Array.isArray(drawOrder) || !drawOrder.length || surfaces.length > 128 || drawOrder.length > 512) {
+      throw new TypeError("Shader-backed SVG assets require bounded shaderSurfaces and drawOrder arrays");
+    }
+    for (const [index, surface] of surfaces.entries()) {
+      const style = asset.metadata.styles?.find((entry) => entry.target === surface?.target && entry.backend === "shader");
+      const contour = surface?.outline;
+      if (!style || !Number.isSafeInteger(surface.partIndex) || surface.partIndex < 0 || surface.partIndex >= asset.geometry.partCount || !(surface.fillVertices instanceof Float32Array) || surface.fillVertices.length < 18 || surface.fillVertices.length % 18 || !(contour instanceof Float32Array) || contour.length < 6 || contour.length % 2 || !(surface.edgeColors instanceof Float32Array) || surface.edgeColors.length !== contour.length * 2) {
+        throw new TypeError("Invalid retained SVG shader surface at index " + index);
+      }
+      if (surface.fillVertices.some((value, offset) => !Number.isFinite(value) || offset % 6 >= 2 && (value < 0 || value > 1)) || contour.some((value) => !Number.isFinite(value)) || surface.edgeColors.some((value) => !Number.isFinite(value) || value < 0 || value > 1)) {
+        throw new TypeError("SVG shader surface values must be finite and colors in [0,1]");
+      }
+      const surfaceStyle = surface.style, styleKeys = Object.keys(style);
+      if (!isObject(surfaceStyle) || Object.keys(surfaceStyle).length !== styleKeys.length || styleKeys.some((key2) => !Object.hasOwn(surfaceStyle, key2) || surfaceStyle[key2] !== style[key2])) {
+        throw new TypeError("SVG shader surface style must exactly match its authored metadata target");
+      }
+    }
+    const referenced = /* @__PURE__ */ new Set();
+    for (const command of drawOrder) {
+      if (command?.kind === "mesh") {
+        if (!Number.isSafeInteger(command.firstIndex) || !Number.isSafeInteger(command.indexCount) || command.firstIndex < 0 || !Number.isSafeInteger(command.partIndex) || command.partIndex < 0 || command.partIndex >= asset.geometry.partCount || command.indexCount < 3 || command.indexCount % 3 || command.firstIndex % 3 || command.firstIndex + command.indexCount > (indices?.length ?? vertexCount)) {
+          throw new TypeError("Invalid ordered SVG mesh range");
+        }
+      } else if (command?.kind === "surface") {
+        if (!Number.isSafeInteger(command.surfaceIndex) || command.surfaceIndex < 0 || command.surfaceIndex >= surfaces.length || referenced.has(command.surfaceIndex)) throw new TypeError("Invalid or repeated ordered SVG shader surface reference");
+        referenced.add(command.surfaceIndex);
+      } else throw new TypeError("Unsupported SVG painter-order command");
+    }
+    if (referenced.size !== surfaces.length) throw new TypeError("Every retained SVG shader surface must appear once in drawOrder");
   }
   return asset;
 }
@@ -3216,6 +3251,45 @@ function multiply(a, b) {
     a[0] * b[4] + a[2] * b[5] + a[4],
     a[1] * b[4] + a[3] * b[5] + a[5]
   ];
+}
+function composeWorldMatrix(world, local) {
+  if (!world || world.length !== 16 || local.length !== 6 || Array.from(local).some((value) => !Number.isFinite(value))) throw new TypeError("Six finite root matrix values required");
+  const [a, b, c, d, e, f] = local, out = Float32Array.from(world);
+  for (const value of out) if (!Number.isFinite(value)) throw new TypeError("worldMatrix must contain 16 finite values");
+  if (Math.abs(out[3]) > 1e-7 || Math.abs(out[7]) > 1e-7 || Math.abs(out[11]) > 1e-7 || Math.abs(out[15] - 1) > 1e-7) {
+    throw new TypeError("worldMatrix must be an affine column-major 4x4 matrix");
+  }
+  out[0] = world[0] * a + world[4] * b;
+  out[1] = world[1] * a + world[5] * b;
+  out[2] = world[2] * a + world[6] * b;
+  out[3] = world[3] * a + world[7] * b;
+  out[4] = world[0] * c + world[4] * d;
+  out[5] = world[1] * c + world[5] * d;
+  out[6] = world[2] * c + world[6] * d;
+  out[7] = world[3] * c + world[7] * d;
+  out[12] = world[0] * e + world[4] * f + world[12];
+  out[13] = world[1] * e + world[5] * f + world[13];
+  out[14] = world[2] * e + world[6] * f + world[14];
+  out[15] = world[3] * e + world[7] * f + world[15];
+  return out;
+}
+function validateShaderSurfaceClipCapacity(clips, maxPlanes) {
+  if (!clips?.length) return;
+  if (!Array.isArray(clips)) throw new TypeError("clips must be an array of convex polygons");
+  let edgeCount = 0;
+  for (const polygon of clips) {
+    if (!Array.isArray(polygon) || polygon.length < 3 || polygon.some((point) => !Number.isFinite(point?.x) || !Number.isFinite(point?.y))) {
+      throw new TypeError("Finite convex clip polygons required");
+    }
+    let area = 0;
+    for (let i = 0; i < polygon.length; i++) {
+      const a = polygon[i], b = polygon[(i + 1) % polygon.length];
+      area += a.x * b.y - b.x * a.y;
+      if (Math.hypot(b.x - a.x, b.y - a.y) > 0) edgeCount++;
+    }
+    if (Math.abs(area) < 1e-8) throw new RangeError("A clip polygon must have nonzero area");
+    if (edgeCount > maxPlanes) throw new RangeError(`Vector asset clipping exceeds the shader surface limit of ${maxPlanes} edge planes`);
+  }
 }
 function transformPoint(matrix, point) {
   return { x: matrix[0] * point[0] + matrix[2] * point[1] + matrix[4], y: matrix[1] * point[0] + matrix[3] * point[1] + matrix[5] };
@@ -3271,13 +3345,25 @@ function blendPoses(from, to, amount, partIds) {
   }
   return output;
 }
-function createVectorAsset(meshRenderer, compiledAsset) {
+function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null } = {}) {
   if (!meshRenderer?.createMesh || !meshRenderer?.drawMesh || !meshRenderer?.deleteMesh) throw new TypeError("A GameKit MeshRenderer is required");
   validateCompiledAsset(compiledAsset);
   const metadata = compiledAsset.metadata;
   const partIndices = new Map(metadata.parts.map((part, index) => [part.id, index]));
   const clips = metadata.clips;
-  const mesh = meshRenderer.createMesh(compiledAsset.geometry);
+  const geometry = compiledAsset.geometry, shaderGeometry = geometry.shaderSurfaces ?? [];
+  if (shaderGeometry.length && (!surfaceRenderer?.createSurface || !surfaceRenderer?.drawSurface || !surfaceRenderer?.deleteSurface)) {
+    throw new TypeError('This SVG declares backend:"shader"; pass a GameKit YarnSurfaceRenderer when creating the vector asset');
+  }
+  const mesh = geometry.vertices.length ? meshRenderer.createMesh(geometry) : null;
+  const retainedSurfaces = [];
+  try {
+    for (const descriptor of shaderGeometry) retainedSurfaces.push(surfaceRenderer.createSurface(descriptor));
+  } catch (error) {
+    for (const surface of retainedSurfaces) surfaceRenderer.deleteSurface(surface);
+    if (mesh) meshRenderer.deleteMesh(mesh);
+    throw error;
+  }
   const players = /* @__PURE__ */ new Set();
   let disposed = false;
   const requireReady = () => {
@@ -3407,10 +3493,15 @@ function createVectorAsset(meshRenderer, compiledAsset) {
     };
     const draw = ({
       projection,
+      viewProjection,
+      worldMatrix,
       matrix = IDENTITY,
       alpha = 1,
       color = [1, 1, 1, 1],
       forceColor = false,
+      whiteFlash = false,
+      clips: clips2 = [],
+      stencilRef = null,
       depth = 0,
       depthTest = false,
       depthWrite = false,
@@ -3418,16 +3509,69 @@ function createVectorAsset(meshRenderer, compiledAsset) {
       strokeViewport = null
     } = {}) => {
       assertPlayer();
-      const poses = partPoses().map(({ transform, opacity, visible: isVisible }) => ({ transform, opacity, visible: isVisible }));
+      if (geometry.shaderSurfaces?.length) validateShaderSurfaceClipCapacity(clips2, surfaceRenderer.maxClipPlanes);
+      const fullPartPoses = partPoses();
+      const poses = fullPartPoses.map(({ transform, opacity, visible: isVisible }) => ({ transform, opacity, visible: isVisible }));
+      if (geometry.drawOrder) {
+        const worldMode2 = viewProjection !== void 0 || worldMatrix !== void 0;
+        for (const command of geometry.drawOrder) {
+          if (command.kind === "mesh") {
+            if (!poses[command.partIndex].visible || poses[command.partIndex].opacity <= 0) continue;
+            if (!mesh) throw new Error("SVG draw order references mesh geometry that was not retained");
+            meshRenderer.drawMesh(mesh, {
+              ...worldMode2 ? { viewProjection, worldMatrix } : { projection },
+              matrix,
+              parts: poses,
+              morph: authoredMorph(metadata, displayTimeMs),
+              alpha,
+              color,
+              forceColor,
+              whiteFlash,
+              clips: clips2,
+              stencilRef,
+              depth,
+              depthTest,
+              depthWrite,
+              depthFunc,
+              strokeViewport,
+              indexRange: [command.firstIndex, command.indexCount]
+            });
+            continue;
+          }
+          const surface = retainedSurfaces[command.surfaceIndex], pose = fullPartPoses[geometry.shaderSurfaces[command.surfaceIndex].partIndex];
+          if (!pose.visible || pose.opacity <= 0) continue;
+          meshRenderer.flush("vectorShaderSurfaceBoundary");
+          const materialTransform = worldMode2 ? pose.transform : multiply(matrix, pose.transform);
+          const shaderDepth = depthTest || depthWrite ? { test: depthTest, write: depthWrite, func: depthFunc } : false;
+          surfaceRenderer.drawSurface(surface, {
+            ...worldMode2 ? { viewProjection, worldMatrix: composeWorldMatrix(worldMatrix, matrix) } : { projection },
+            transform: materialTransform,
+            color,
+            alpha: alpha * pose.opacity,
+            forceColor,
+            whiteFlash: whiteFlash ? 1 : 0,
+            timeMs: displayTimeMs,
+            clips: clips2,
+            stencilRef,
+            z: depth,
+            depth: shaderDepth
+          });
+        }
+        return;
+      }
       const indexVariant = !visibilityOverridden && compiledAsset.geometry.expressionIndices?.[expression] ? expression : null;
+      const worldMode = viewProjection !== void 0 || worldMatrix !== void 0;
       meshRenderer.drawMesh(mesh, {
-        projection,
+        ...worldMode ? { viewProjection, worldMatrix } : { projection },
         matrix,
         parts: poses,
         morph: authoredMorph(metadata, displayTimeMs),
         alpha,
         color,
         forceColor,
+        whiteFlash,
+        clips: clips2,
+        stencilRef,
         depth,
         depthTest,
         depthWrite,
@@ -3482,7 +3626,8 @@ function createVectorAsset(meshRenderer, compiledAsset) {
   const dispose = () => {
     if (disposed) return false;
     for (const player of [...players]) player.dispose();
-    meshRenderer.deleteMesh(mesh);
+    if (mesh) meshRenderer.deleteMesh(mesh);
+    for (const surface of retainedSurfaces) surfaceRenderer.deleteSurface(surface);
     disposed = true;
     return true;
   };
@@ -3494,6 +3639,7 @@ function createVectorAsset(meshRenderer, compiledAsset) {
     viewBox: Object.freeze([...compiledAsset.viewBox]),
     metadata,
     mesh,
+    surfaces: Object.freeze(retainedSurfaces),
     createPlayer,
     dispose,
     get disposed() {

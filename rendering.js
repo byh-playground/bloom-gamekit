@@ -1466,7 +1466,8 @@ var ATTRIBUTES = [
   { name: "a_part", size: 1, offset: 40 }
 ];
 var INSTANCE_ATTRIBUTES = ["i_row0", "i_row1", "i_color", "i_params"].map((name, i) => ({ name, size: 4, offset: i * 16, source: "instance" }));
-function shader(instanced, partCount, morphCount, clipped, nonScalingStroke) {
+var WORLD_INSTANCE_ATTRIBUTES = ["i_row0", "i_row1", "i_row2", "i_params"].map((name, i) => ({ name, size: 4, offset: i * 16, source: "instance" }));
+function shader(instanced, partCount, morphCount, clipped, nonScalingStroke, worldMode = false) {
   const inputs = ["i_row0", "i_row1", "i_color", "i_params"].map((name) => `${instanced ? "attribute" : "uniform"} vec4 ${name};`).join("\n");
   const local = morphCount ? "a_position+a_morph.xy*(i_params.x" + (partCount > 1 ? "+pose.x" : "") + ")" + (morphCount > 1 ? "+a_morph.zw*(i_params.y" + (partCount > 1 ? "+pose.y" : "") + ")" : "") : "a_position";
   const strokeInputs = nonScalingStroke ? "attribute vec4 a_stroke;uniform vec2 u_strokeViewportSize;" : "";
@@ -1487,6 +1488,30 @@ if(dot(a_stroke.xy,a_stroke.xy)>0.5){
     ${clipped ? "vec3 clippedWorld=u_inverseProjection*vec3(projected.xy,projected.z);v_position=clippedWorld.xy/clippedWorld.z;" : ""}
   }
 }` : "";
+  if (worldMode) {
+    const worldInputs = ["i_row0", "i_row1", "i_row2", "i_params"].map((name) => `${instanced ? "attribute" : "uniform"} vec4 ${name};`).join("\n");
+    const worldStrokeInputs = nonScalingStroke ? "attribute vec4 a_stroke;uniform vec2 u_strokeViewportSize;" + (clipped ? "uniform mat4 u_inverseViewProjection;" : "") : "";
+    const worldStroke = nonScalingStroke ? `
+vec2 tangentLocal=local+a_stroke.xy;
+vec2 tangentPlane=${partCount > 1 ? "vec2(dot(row0.xyz,vec3(tangentLocal,1.0)),dot(row1.xyz,vec3(tangentLocal,1.0)))" : "tangentLocal"};
+vec3 tangentWorld=vec3(dot(i_row0.xyz,vec3(tangentPlane,1.0)),dot(i_row1.xyz,vec3(tangentPlane,1.0)),dot(i_row2.xyz,vec3(tangentPlane,1.0)));
+vec4 tangentProjected=u_viewProjection*vec4(tangentWorld,1.0);vec2 tangent=(tangentProjected.xy/tangentProjected.w-projected.xy/projected.w)*u_strokeViewportSize*0.5;float tangentLength=length(tangent);
+if(dot(a_stroke.xy,a_stroke.xy)>0.5){
+  if(tangentLength<0.000001){projected.w=0.0;}
+  else{tangent/=tangentLength;vec2 normal=vec2(-tangent.y,tangent.x);vec2 pxOffset=tangent*a_stroke.z+normal*a_stroke.w;
+    projected.xy+=pxOffset*2.0/u_strokeViewportSize*projected.w;${clipped ? "vec4 clippedWorld=u_inverseViewProjection*projected;v_position=clippedWorld.xy/clippedWorld.w;" : ""}}
+}` : "";
+    return `attribute vec2 a_position; attribute vec4 a_color; ${morphCount ? "attribute vec4 a_morph;" : ""} ${partCount > 1 ? "attribute float a_part;uniform vec4 u_parts[" + partCount * 3 + "];" : ""}
+${worldInputs}${worldStrokeInputs}
+uniform mat4 u_viewProjection; uniform vec4 u_color; varying vec4 v_color; ${clipped ? "varying vec2 v_position;" : ""}
+void main(){${partCount > 1 ? "int index=int(a_part)*3;vec4 row0=u_parts[index];vec4 row1=u_parts[index+1];vec4 pose=u_parts[index+2];" : ""}
+vec2 local=${local};vec2 plane=${partCount > 1 ? "vec2(dot(row0.xyz,vec3(local,1.0)),dot(row1.xyz,vec3(local,1.0)))" : "local"};
+vec3 world=vec3(dot(i_row0.xyz,vec3(plane,1.0)),dot(i_row1.xyz,vec3(plane,1.0)),dot(i_row2.xyz,vec3(plane,1.0)));
+vec4 projected=u_viewProjection*vec4(world,1.0);${clipped ? "v_position=world.xy;" : ""}${worldStroke}
+projected.z+=(i_params.w+${partCount > 1 ? "pose.w" : "0.0"})*projected.w;gl_Position=projected;
+vec4 color=mix(a_color*u_color,u_color,i_row1.w);color.a*=i_row0.w${partCount > 1 ? "*pose.z" : ""};color.rgb=mix(color.rgb,vec3(1.0),i_row2.w);v_color=vec4(color.rgb*color.a,color.a);
+}`;
+  }
   return `attribute vec2 a_position; attribute vec4 a_color; ${morphCount ? "attribute vec4 a_morph;" : ""} ${partCount > 1 ? "attribute float a_part;uniform vec4 u_parts[" + partCount * 3 + "];" : ""}
 ${inputs}${strokeInputs}
 uniform mat3 u_projection; varying vec4 v_color; ${clipped ? "varying vec2 v_position;" : ""}${strokeVarying}
@@ -1507,6 +1532,36 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
 function finiteArray2(value, size, name) {
   if (!value || value.length !== size) throw new TypeError(`${name}: ${size} finite numbers required`);
   for (let i = 0; i < size; i++) if (!Number.isFinite(value[i])) throw new TypeError(`${name}: ${size} finite numbers required`);
+}
+function affineMatrix4(value, name) {
+  finiteArray2(value, 16, name);
+  if (Math.abs(value[3]) > 1e-7 || Math.abs(value[7]) > 1e-7 || Math.abs(value[11]) > 1e-7 || Math.abs(value[15] - 1) > 1e-7) {
+    throw new TypeError(`${name} must be an affine column-major 4x4 matrix`);
+  }
+}
+function invertMatrix4(matrix) {
+  const rows = Array.from({ length: 4 }, (_, row) => [
+    matrix[row],
+    matrix[4 + row],
+    matrix[8 + row],
+    matrix[12 + row],
+    ...row === 0 ? [1, 0, 0, 0] : row === 1 ? [0, 1, 0, 0] : row === 2 ? [0, 0, 1, 0] : [0, 0, 0, 1]
+  ]);
+  for (let column = 0; column < 4; column++) {
+    let pivot = column;
+    for (let row = column + 1; row < 4; row++) if (Math.abs(rows[row][column]) > Math.abs(rows[pivot][column])) pivot = row;
+    if (!Number.isFinite(rows[pivot][column]) || Math.abs(rows[pivot][column]) < 1e-12) throw new RangeError("Clipped non-scaling strokes require an invertible viewProjection");
+    [rows[column], rows[pivot]] = [rows[pivot], rows[column]];
+    const divisor = rows[column][column];
+    for (let j = 0; j < 8; j++) rows[column][j] /= divisor;
+    for (let row = 0; row < 4; row++) if (row !== column) {
+      const scale = rows[row][column];
+      for (let j = 0; j < 8; j++) rows[row][j] -= scale * rows[column][j];
+    }
+  }
+  const inverse = new Float32Array(16);
+  for (let row = 0; row < 4; row++) for (let column = 0; column < 4; column++) inverse[column * 4 + row] = rows[row][column + 4];
+  return inverse;
 }
 function invertProjection(projection) {
   const [a, d, g, b, e, h, c, f, i] = projection;
@@ -1679,26 +1734,27 @@ var MeshRenderer = class {
     device.canvas.addEventListener("webglcontextrestored", this.onRestored);
     this.disposed = false;
   }
-  _pipeline(mesh, clipped) {
-    const key = mesh.partCount + ":" + mesh.morphCount + ":" + Number(clipped) + ":" + Number(mesh.hasNonScalingStroke);
+  _pipeline(mesh, clipped, worldMode = false) {
+    const key = mesh.partCount + ":" + mesh.morphCount + ":" + Number(clipped) + ":" + Number(mesh.hasNonScalingStroke) + ":" + Number(worldMode);
     let pipeline = this.pipelines.get(key);
     if (pipeline) return pipeline;
-    const uniforms = { u_projection: "matrix3fv" };
+    const uniforms = worldMode ? { u_viewProjection: "matrix4fv", u_color: "4f" } : { u_projection: "matrix3fv" };
     if (clipped) Object.assign(uniforms, { "u_planes[0]": "3fv", u_planeCount: "1i" });
+    if (clipped && worldMode && mesh.hasNonScalingStroke) uniforms.u_inverseViewProjection = "matrix4fv";
     if (mesh.hasNonScalingStroke) {
       uniforms.u_strokeViewportSize = "2f";
-      if (clipped) uniforms.u_inverseProjection = "matrix3fv";
+      if (clipped && !worldMode) uniforms.u_inverseProjection = "matrix3fv";
     }
     if (mesh.partCount > 1) uniforms["u_parts[0]"] = "4fv";
-    if (!this.instanced) for (const name of ["i_row0", "i_row1", "i_color", "i_params"]) uniforms[name] = "4f";
+    if (!this.instanced) for (const name of worldMode ? ["i_row0", "i_row1", "i_row2", "i_params"] : ["i_row0", "i_row1", "i_color", "i_params"]) uniforms[name] = "4f";
     pipeline = this.device.createPipeline({
-      vertex: shader(this.instanced, mesh.partCount, mesh.morphCount, clipped, mesh.hasNonScalingStroke),
+      vertex: shader(this.instanced, mesh.partCount, mesh.morphCount, clipped, mesh.hasNonScalingStroke, worldMode),
       fragment: fragment(this.maxPlanes, clipped),
       stride: mesh.strideFloats * 4,
       ...this.instanced ? { instanceStride: 64 } : {},
       attributes: [...mesh.hasNonScalingStroke ? ATTRIBUTES.filter((attribute) => attribute.name !== "a_morph") : ATTRIBUTES, ...mesh.hasNonScalingStroke ? [
         { name: "a_stroke", size: 4, offset: 24 }
-      ] : [], ...this.instanced ? INSTANCE_ATTRIBUTES : []],
+      ] : [], ...this.instanced ? worldMode ? WORLD_INSTANCE_ATTRIBUTES : INSTANCE_ATTRIBUTES : []],
       uniforms
     });
     this.pipelines.set(key, pipeline);
@@ -1808,13 +1864,18 @@ var MeshRenderer = class {
       depthWriteAlphaThreshold = null,
       depthFunc = "lequal",
       indexVariant = null,
+      indexRange = null,
       strokeViewport = null,
-      stencilRef = null
+      stencilRef = null,
+      viewProjection,
+      worldMatrix
     } = options;
     this._drawMeshInstances(mesh, {
       matrices: matrix,
       count: 1,
       projection,
+      viewProjection,
+      worldMatrix,
       morph,
       parts,
       color: color2,
@@ -1823,6 +1884,7 @@ var MeshRenderer = class {
       whiteFlash,
       clips,
       indexVariant,
+      indexRange,
       depth,
       depthTest,
       depthWrite,
@@ -1935,6 +1997,8 @@ var MeshRenderer = class {
     matrices,
     count,
     projection,
+    viewProjection,
+    worldMatrix,
     morph = [0, 0],
     parts = null,
     color: color2 = WHITE2,
@@ -1951,6 +2015,7 @@ var MeshRenderer = class {
     depthWriteAlphaThreshold = null,
     depthFunc = "lequal",
     indexVariant = null,
+    indexRange = null,
     strokeViewport = null,
     stencilRef = null
   } = {}) {
@@ -1964,10 +2029,15 @@ var MeshRenderer = class {
     if (stencilRef !== null && !this.device.activeStencilAvailable) throw new Error("A stencil-tested mesh requires an active stencil attachment");
     if (!Number.isSafeInteger(count) || count < 1 || !matrices || matrices.length !== count * 6) throw new TypeError("Packed mesh instance matrices required");
     for (let i = 0; i < matrices.length; i++) if (!Number.isFinite(matrices[i])) throw new TypeError("Mesh matrix values must be finite");
-    finiteArray2(projection, 9, "projection");
+    const worldMode = viewProjection !== void 0 || worldMatrix !== void 0;
+    if (worldMode) {
+      if (projection !== void 0 || viewProjection === void 0 || worldMatrix === void 0) throw new TypeError("3D mesh draws require viewProjection and worldMatrix and cannot include projection");
+      finiteArray2(viewProjection, 16, "viewProjection");
+      affineMatrix4(worldMatrix, "worldMatrix");
+    } else finiteArray2(projection, 9, "projection");
     finiteArray2(morph, 2, "morph");
     finiteArray2(color2, 4, "color");
-    let strokeSize = null, inverseStrokeProjection = null;
+    let strokeSize = null, inverseStrokeProjection = null, inverseViewProjection = null;
     if (mesh.hasNonScalingStroke) {
       if (strokeViewport === null) {
         if (this.device.activeRenderTarget) throw new Error("A strokeViewport is required for non-scaling strokes rendered to a render target");
@@ -1977,7 +2047,8 @@ var MeshRenderer = class {
         strokeSize = [strokeViewport[0], strokeViewport[1]];
       }
       if (strokeSize.some((value) => !Number.isFinite(value) || value <= 0)) throw new RangeError("Non-scaling strokes require a positive CSS-pixel viewport size");
-      inverseStrokeProjection = invertProjection(projection);
+      if (!worldMode) inverseStrokeProjection = invertProjection(projection);
+      else if (clipState(clips, this.maxPlanes).count) inverseViewProjection = invertMatrix4(viewProjection);
     }
     if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1 || color2.some((n) => n < 0 || n > 1)) throw new RangeError("RGBA/alpha in [0,1] required");
     if (!Number.isFinite(depth) || depth < -1 || depth > 1) throw new RangeError("depth must be in [-1,1]");
@@ -1985,6 +2056,7 @@ var MeshRenderer = class {
     if (depthWriteAlphaThreshold !== null && (!Number.isFinite(depthWriteAlphaThreshold) || depthWriteAlphaThreshold < 0 || depthWriteAlphaThreshold > 1)) {
       throw new RangeError("depthWriteAlphaThreshold must be in [0,1]");
     }
+    if (worldMode && depthWriteAlphaThreshold !== null) throw new TypeError("depthWriteAlphaThreshold is currently supported only for 2D mesh draws");
     if (!["never", "less", "equal", "lequal", "greater", "notequal", "gequal", "always"].includes(depthFunc)) throw new TypeError("Unsupported depthFunc");
     if (!Number.isSafeInteger(prefixCount) || prefixCount < 0 || prefixCount > count || !Number.isSafeInteger(forceColorPrefixCount) || forceColorPrefixCount < 0 || forceColorPrefixCount > count) throw new RangeError("Instance color prefix count is invalid");
     if (prefixCount && !prefixColor) throw new TypeError("A prefix color is required for colored mesh instances");
@@ -1992,8 +2064,15 @@ var MeshRenderer = class {
       finiteArray2(prefixColor, 4, "prefix color");
       if (prefixColor.some((n) => n < 0 || n > 1)) throw new RangeError("RGBA channels must be in [0,1]");
     }
+    if (worldMode && (prefixCount || forceColorPrefixCount)) throw new TypeError("Per-instance color prefixes are not supported for 3D mesh draws");
+    if (indexRange !== null && (indexVariant !== null || !Array.isArray(indexRange) || indexRange.length !== 2 || !Number.isSafeInteger(indexRange[0]) || !Number.isSafeInteger(indexRange[1]) || indexRange[0] < 0 || indexRange[1] < 0 || indexRange[0] % 3 || indexRange[1] % 3)) {
+      throw new TypeError("indexRange must be [firstIndex, triangleAlignedCount] and cannot be combined with indexVariant");
+    }
+    if (indexRange !== null && depthWriteAlphaThreshold !== null) throw new TypeError("indexRange is currently supported only for ordinary ordered mesh draws");
     const clip = clipState(clips, this.maxPlanes), pending = this.pending;
     const variant = indexVariant === null ? null : mesh.indexVariants.get(indexVariant) ?? mesh.expressionIndices.get(indexVariant);
+    const firstIndex = indexRange?.[0] ?? 0, indexCount = indexRange?.[1] ?? variant?.count ?? mesh.count;
+    if (firstIndex + indexCount > (variant?.count ?? mesh.count)) throw new RangeError("indexRange exceeds the selected mesh index data");
     packParts(parts, mesh.partCount, this.partScratch);
     for (let i = 0; i < mesh.partCount; i++) if (depth + this.partScratch[i * 12 + 11] < -1 || depth + this.partScratch[i * 12 + 11] > 1) throw new RangeError("combined mesh and part depth must be in [-1,1]");
     const depthStateKey = Number(depthTest) + ":" + Number(depthWrite) + ":" + depthFunc;
@@ -2001,7 +2080,9 @@ var MeshRenderer = class {
     if (!alphaDepthWrite) {
       if (this.alphaQueueCount) this._flushAlphaQueue("alphaBoundary");
       if (pending) {
-        const reason = pending.mesh !== mesh ? "mesh" : pending.indexVariant !== indexVariant ? "indexVariant" : pending.clip.key !== clip.key ? "clip" : pending.stencilRef !== stencilRef ? "stencil" : pending.depthStateKey !== depthStateKey ? "depthState" : projection.some((n, i) => Math.fround(n) !== pending.projection[i]) ? "projection" : mesh.partCount > 1 && pending.parts.some((n, i) => n !== this.partScratch[i]) ? "parts" : this.count === this.maxInstances ? "capacity" : null;
+        const matrix = worldMode ? viewProjection : projection;
+        const previousColor = pending.color;
+        const reason = pending.mesh !== mesh ? "mesh" : pending.worldMode !== worldMode ? "transformMode" : pending.indexVariant !== indexVariant ? "indexVariant" : pending.firstIndex !== firstIndex || pending.indexCount !== indexCount ? "indexRange" : pending.clip.key !== clip.key ? "clip" : pending.stencilRef !== stencilRef ? "stencil" : pending.depthStateKey !== depthStateKey ? "depthState" : matrix.some((n, i) => Math.fround(n) !== pending.projection[i]) ? "projection" : strokeSize && strokeSize.some((n, i) => n !== pending.strokeSize?.[i]) ? "strokeViewport" : worldMode && color2.some((n, i) => n !== previousColor[i]) ? "color" : mesh.partCount > 1 && pending.parts.some((n, i) => n !== this.partScratch[i]) ? "parts" : this.count === this.maxInstances ? "capacity" : null;
         if (reason) this.flush(reason);
       }
       if (variant?.count === 0) return;
@@ -2010,13 +2091,18 @@ var MeshRenderer = class {
         if (this.count === this.maxInstances) this.flush("capacity");
         if (!this.pending) this.pending = {
           mesh,
-          projection: Float32Array.from(projection),
+          projection: Float32Array.from(worldMode ? viewProjection : projection),
+          worldMode,
+          color: Float32Array.from(color2),
           clip,
           stencilRef,
           depthStateKey,
           indexVariant,
+          firstIndex,
+          indexCount,
           strokeSize,
           inverseStrokeProjection,
+          inverseViewProjection,
           depthState: { test: depthTest, write: depthWrite, func: depthFunc },
           parts: this.partScratch.slice(0, mesh.partCount > 1 ? mesh.partCount * 12 : 0)
         };
@@ -2037,23 +2123,42 @@ var MeshRenderer = class {
         }
         const instanceColor = i < prefixCount ? prefixColor : color2;
         const instanceForceColor = i < forceColorPrefixCount ? true : forceColor, at = this.count++ * 16, data = this.instances;
-        data[at] = m0;
-        data[at + 1] = m2;
-        data[at + 2] = m4;
-        data[at + 3] = instanceAlpha;
-        data[at + 4] = m1;
-        data[at + 5] = m3;
-        data[at + 6] = m5;
-        data[at + 7] = instanceForceColor ? 1 : 0;
-        data[at + 8] = instanceColor[0];
-        data[at + 9] = instanceColor[1];
-        data[at + 10] = instanceColor[2];
-        data[at + 11] = instanceColor[3];
         const instanceDepth = depth + (singlePart2 ? part2[11] : 0);
-        data[at + 12] = weight0;
-        data[at + 13] = weight1;
-        data[at + 14] = whiteFlash ? 1 : 0;
-        data[at + 15] = instanceDepth;
+        if (worldMode) {
+          data[at] = worldMatrix[0] * m0 + worldMatrix[4] * m1;
+          data[at + 1] = worldMatrix[0] * m2 + worldMatrix[4] * m3;
+          data[at + 2] = worldMatrix[0] * m4 + worldMatrix[4] * m5 + worldMatrix[12];
+          data[at + 3] = instanceAlpha;
+          data[at + 4] = worldMatrix[1] * m0 + worldMatrix[5] * m1;
+          data[at + 5] = worldMatrix[1] * m2 + worldMatrix[5] * m3;
+          data[at + 6] = worldMatrix[1] * m4 + worldMatrix[5] * m5 + worldMatrix[13];
+          data[at + 7] = instanceForceColor ? 1 : 0;
+          data[at + 8] = worldMatrix[2] * m0 + worldMatrix[6] * m1;
+          data[at + 9] = worldMatrix[2] * m2 + worldMatrix[6] * m3;
+          data[at + 10] = worldMatrix[2] * m4 + worldMatrix[6] * m5 + worldMatrix[14];
+          data[at + 11] = whiteFlash ? 1 : 0;
+          data[at + 12] = weight0;
+          data[at + 13] = weight1;
+          data[at + 14] = 0;
+          data[at + 15] = instanceDepth;
+        } else {
+          data[at] = m0;
+          data[at + 1] = m2;
+          data[at + 2] = m4;
+          data[at + 3] = instanceAlpha;
+          data[at + 4] = m1;
+          data[at + 5] = m3;
+          data[at + 6] = m5;
+          data[at + 7] = instanceForceColor ? 1 : 0;
+          data[at + 8] = instanceColor[0];
+          data[at + 9] = instanceColor[1];
+          data[at + 10] = instanceColor[2];
+          data[at + 11] = instanceColor[3];
+          data[at + 12] = weight0;
+          data[at + 13] = weight1;
+          data[at + 14] = whiteFlash ? 1 : 0;
+          data[at + 15] = instanceDepth;
+        }
       }
       return;
     }
@@ -2142,18 +2247,22 @@ var MeshRenderer = class {
       if (this.alphaQueueCount) this._flushAlphaQueue("singleRunBoundary");
       const write = runs[2], stateKey = Number(depthTest) + ":" + Number(write) + ":" + depthFunc;
       if (this.pending) {
-        const current = this.pending, reason = current.mesh !== mesh ? "mesh" : current.indexVariant !== indexVariant ? "indexVariant" : current.clip.key !== clip.key ? "clip" : current.stencilRef !== stencilRef ? "stencil" : current.depthStateKey !== stateKey ? "depthState" : projection.some((n, j) => Math.fround(n) !== current.projection[j]) ? "projection" : strokeSize && strokeSize.some((n, j) => n !== current.strokeSize?.[j]) ? "strokeViewport" : mesh.partCount > 1 && current.parts.some((n, j) => n !== this.partScratch[j]) ? "parts" : this.count === this.maxInstances ? "capacity" : null;
+        const current = this.pending, reason = current.mesh !== mesh ? "mesh" : current.worldMode ? "transformMode" : current.indexVariant !== indexVariant ? "indexVariant" : current.firstIndex !== firstIndex || current.indexCount !== indexCount ? "indexRange" : current.clip.key !== clip.key ? "clip" : current.stencilRef !== stencilRef ? "stencil" : current.depthStateKey !== stateKey ? "depthState" : projection.some((n, j) => Math.fround(n) !== current.projection[j]) ? "projection" : strokeSize && strokeSize.some((n, j) => n !== current.strokeSize?.[j]) ? "strokeViewport" : mesh.partCount > 1 && current.parts.some((n, j) => n !== this.partScratch[j]) ? "parts" : this.count === this.maxInstances ? "capacity" : null;
         if (reason) this.flush(reason);
       }
       if (!this.pending) this.pending = {
         mesh,
         projection: Float32Array.from(projection),
+        worldMode: false,
         clip,
         stencilRef,
         depthStateKey: stateKey,
         indexVariant,
+        firstIndex,
+        indexCount,
         strokeSize,
         inverseStrokeProjection,
+        inverseViewProjection,
         depthState: { test: depthTest, write, func: depthFunc },
         parts: this.partScratch.slice(0, mesh.partCount > 1 ? mesh.partCount * 12 : 0)
       };
@@ -2284,25 +2393,26 @@ var MeshRenderer = class {
     if (this.alphaQueueCount) this._flushAlphaQueue(reason);
     if (!this.count) return;
     this._ready();
-    const { mesh, projection, clip, parts, depthState, indexVariant, strokeSize, inverseStrokeProjection, stencilRef } = this.pending;
+    const { mesh, projection, worldMode, color: color2, clip, parts, depthState, indexVariant, firstIndex, indexCount, strokeSize, inverseStrokeProjection, inverseViewProjection, stencilRef } = this.pending;
     const variant = indexVariant === null ? null : mesh.indexVariants.get(indexVariant) ?? mesh.expressionIndices.get(indexVariant);
     this.planes.fill(0);
     if (clip.values) this.planes.set(clip.values);
-    const pipeline = this._pipeline(mesh, clip.count > 0), uniforms = { u_projection: projection };
+    const pipeline = this._pipeline(mesh, clip.count > 0, worldMode), uniforms = worldMode ? { u_viewProjection: projection, u_color: color2 } : { u_projection: projection };
     if (clip.count) Object.assign(uniforms, { "u_planes[0]": this.planes, u_planeCount: clip.count });
-    if (mesh.hasNonScalingStroke) Object.assign(uniforms, { u_strokeViewportSize: strokeSize, ...clip.count ? { u_inverseProjection: inverseStrokeProjection } : {} });
+    if (mesh.hasNonScalingStroke) Object.assign(uniforms, { u_strokeViewportSize: strokeSize, ...clip.count ? worldMode ? { u_inverseViewProjection: inverseViewProjection } : { u_inverseProjection: inverseStrokeProjection } : {} });
     if (mesh.partCount > 1) uniforms["u_parts[0]"] = parts;
+    const instanceUniforms = worldMode ? ["i_row0", "i_row1", "i_row2", "i_params"] : ["i_row0", "i_row1", "i_color", "i_params"];
     if (this.instanced) {
       this.device.uploadVertices(this.instanceBuffer, this.instances.subarray(0, this.count * 16));
-      this.device.draw({ pipeline, buffer: mesh.buffer, indexBuffer: variant?.indexBuffer ?? mesh.indexBuffer, count: variant?.count ?? mesh.count, instanceBuffer: this.instanceBuffer, instances: this.count, uniforms, depth: depthState, stencil: stencilRef === null ? false : { func: "equal", ref: stencilRef, mask: 255, writeMask: 0, pass: "keep" } });
+      this.device.draw({ pipeline, buffer: mesh.buffer, indexBuffer: variant?.indexBuffer ?? mesh.indexBuffer, first: firstIndex, count: indexCount, instanceBuffer: this.instanceBuffer, instances: this.count, uniforms, depth: depthState, stencil: stencilRef === null ? false : { func: "equal", ref: stencilRef, mask: 255, writeMask: 0, pass: "keep" } });
       this.metrics.instanceBytesUploaded += this.count * 64;
       this.metrics.draws++;
       this.metrics.drawDispatchReasons[reason] = (this.metrics.drawDispatchReasons[reason] ?? 0) + 1;
       if (mesh.partCount > 1) this.metrics.partUniformBytesSubmitted += parts.byteLength;
     } else {
       for (let i = 0; i < this.count; i++) {
-        for (let j = 0; j < 4; j++) uniforms[["i_row0", "i_row1", "i_color", "i_params"][j]] = this.instances.subarray(i * 16 + j * 4, i * 16 + j * 4 + 4);
-        this.device.draw({ pipeline, buffer: mesh.buffer, indexBuffer: variant?.indexBuffer ?? mesh.indexBuffer, count: variant?.count ?? mesh.count, uniforms, depth: depthState, stencil: stencilRef === null ? false : { func: "equal", ref: stencilRef, mask: 255, writeMask: 0, pass: "keep" } });
+        for (let j = 0; j < 4; j++) uniforms[instanceUniforms[j]] = this.instances.subarray(i * 16 + j * 4, i * 16 + j * 4 + 4);
+        this.device.draw({ pipeline, buffer: mesh.buffer, indexBuffer: variant?.indexBuffer ?? mesh.indexBuffer, first: firstIndex, count: indexCount, uniforms, depth: depthState, stencil: stencilRef === null ? false : { func: "equal", ref: stencilRef, mask: 255, writeMask: 0, pass: "keep" } });
         this.metrics.draws++;
         this.metrics.drawDispatchReasons[reason] = (this.metrics.drawDispatchReasons[reason] ?? 0) + 1;
         if (mesh.partCount > 1) this.metrics.partUniformBytesSubmitted += parts.byteLength;
@@ -3422,6 +3532,29 @@ void main() {
   v_color = a_color;
   v_surface = a_surface;
 }`;
+var VERTEX_WORLD = `
+attribute vec2 a_position;
+attribute vec4 a_color;
+attribute vec3 a_surface;
+uniform mat4 u_viewProjection;
+uniform mat4 u_worldMatrix;
+uniform mat3 u_transform;
+uniform float u_depth;
+varying vec2 v_position;
+varying vec2 v_world;
+varying vec4 v_color;
+varying vec3 v_surface;
+void main() {
+  vec3 plane = u_transform * vec3(a_position, 1.0);
+  vec4 world = u_worldMatrix * vec4(plane.xy / plane.z, 0.0, 1.0);
+  vec4 projected = u_viewProjection * world;
+  projected.z += u_depth * projected.w;
+  gl_Position = projected;
+  v_position = a_position;
+  v_world = world.xy / world.w;
+  v_color = a_color;
+  v_surface = a_surface;
+}`;
 function fragment2(kind, maxClipPlanes) {
   const clips = maxClipPlanes ? `
 uniform vec3 u_planes[${maxClipPlanes}];
@@ -3435,7 +3568,7 @@ void clipWorld() {
   return `precision mediump float;
 varying vec2 v_position; varying vec2 v_world; varying vec4 v_color; varying vec3 v_surface;
 uniform vec4 u_bounds; uniform vec4 u_effect0; uniform vec4 u_effect1; uniform vec4 u_effect2; uniform vec4 u_effect3;
-uniform vec4 u_tint; uniform float u_flash;
+uniform vec4 u_tint; uniform float u_flash; uniform float u_forceColor;
 ${kind === "sketch" ? "uniform float u_timeMs;" : ""}
 ${clips}
 float hashCell(vec2 cell, float salt) {
@@ -3471,9 +3604,9 @@ vec3 tintTo(vec3 base, float amount) {
 ${body}
 void main() {
   clipWorld();
-  float alpha = v_color.a * u_tint.a;
+  float alpha = mix(v_color.a, 1.0, u_forceColor) * u_tint.a;
   if (alpha <= 0.0001) discard;
-  vec3 base = mix(v_color.rgb * u_tint.rgb, vec3(1.0), clamp(u_flash, 0.0, 1.0));
+  vec3 base = mix(mix(v_color.rgb * u_tint.rgb, u_tint.rgb, u_forceColor), vec3(1.0), clamp(u_flash, 0.0, 1.0));
   vec3 rgb = base;
   float effect = v_surface.x;
   if (effect < 0.5) {
@@ -3606,23 +3739,33 @@ function validateStyle(style) {
     for (const key of ["echoOpacity", "hatchOpacity"]) if (style[key] < 0 || style[key] > 1) throw new RangeError(`Sketch ${key} must be in [0,1]`);
   }
 }
-function normalizeOutline(outline) {
+function normalizeOutline(outline, sourceIndices) {
   if (!(outline instanceof Float32Array || Array.isArray(outline)) || outline.length < 8 || outline.length % 2) throw new TypeError("Closed SVG contour must contain at least four x/y points");
   const points = [];
   for (let i = 0; i < outline.length; i += 2) {
     const x = outline[i], y = outline[i + 1];
     if (!Number.isFinite(x) || !Number.isFinite(y)) throw new TypeError("SVG contour points must be finite");
-    if (!points.length || Math.hypot(x - points.at(-1)[0], y - points.at(-1)[1]) > 1e-6) points.push([x, y]);
+    if (!points.length || Math.hypot(x - points.at(-1)[0], y - points.at(-1)[1]) > 1e-6) {
+      points.push([x, y]);
+      sourceIndices?.push(i / 2);
+    }
   }
-  if (points.length > 4 && Math.hypot(points[0][0] - points.at(-1)[0], points[0][1] - points.at(-1)[1]) < 1e-6) points.pop();
+  if (points.length > 4 && Math.hypot(points[0][0] - points.at(-1)[0], points[0][1] - points.at(-1)[1]) < 1e-6) {
+    points.pop();
+    sourceIndices?.pop();
+  }
   if (points.length < 3) throw new TypeError("SVG contour requires at least three distinct points");
   return points;
 }
 function surfaceGeometry(fillVertices, outline, edgeColors, style) {
   if (!(fillVertices instanceof Float32Array) || fillVertices.length < 18 || fillVertices.length % 18) throw new TypeError("Filled surface requires complete triangles in a six-float position/color layout");
-  const points = normalizeOutline(outline);
-  if (edgeColors !== void 0 && (!(edgeColors instanceof Float32Array) || edgeColors.length !== points.length * 4)) throw new TypeError("edgeColors must contain one RGBA color per contour point");
+  const sourceIndices = [], points = normalizeOutline(outline, sourceIndices);
+  if (edgeColors !== void 0 && (!(edgeColors instanceof Float32Array) || edgeColors.length !== points.length * 4 && edgeColors.length !== outline.length * 2)) throw new TypeError("edgeColors must contain one RGBA color per contour point");
   if (edgeColors && edgeColors.some((value) => !Number.isFinite(value) || value < 0 || value > 1)) throw new RangeError("edgeColors must contain finite RGBA values in [0,1]");
+  if (edgeColors && edgeColors.length !== points.length * 4) {
+    const originalColors = edgeColors;
+    edgeColors = Float32Array.from(sourceIndices.flatMap((index) => Array.from(originalColors.subarray(index * 4, index * 4 + 4))));
+  }
   for (let i = 0; i < fillVertices.length; i++) {
     if (!Number.isFinite(fillVertices[i])) throw new TypeError("Filled surface vertices must be finite");
     const field = i % 6;
@@ -3742,6 +3885,12 @@ function toMatrix3(matrix) {
   finiteArray3(matrix, 6, "transform");
   return Float32Array.of(matrix[0], matrix[1], 0, matrix[2], matrix[3], 0, matrix[4], matrix[5], 1);
 }
+function affineMatrix42(matrix, name) {
+  finiteArray3(matrix, 16, name);
+  if (Math.abs(matrix[3]) > 1e-7 || Math.abs(matrix[7]) > 1e-7 || Math.abs(matrix[11]) > 1e-7 || Math.abs(matrix[15] - 1) > 1e-7) {
+    throw new TypeError(`${name} must be an affine column-major 4x4 matrix`);
+  }
+}
 var YarnSurfaceRenderer = class {
   constructor(device, { maxSurfaces = MAX_SURFACES, maxSurfaceBytes = DEFAULT_LIMIT_BYTES } = {}) {
     if (!device?.createPipeline || !device?.uploadVertices || !device?.draw) throw new TypeError("A ready GameKit WebGLDevice is required");
@@ -3773,11 +3922,12 @@ var YarnSurfaceRenderer = class {
     device.canvas.addEventListener("webglcontextlost", this.onLost);
     device.canvas.addEventListener("webglcontextrestored", this.onRestored);
   }
-  _pipeline(kind) {
-    let pipeline = this.pipelines.get(kind);
+  _pipeline(kind, worldMode = false) {
+    const key = kind + ":" + Number(worldMode);
+    let pipeline = this.pipelines.get(key);
     if (pipeline) return pipeline;
     const uniforms = {
-      u_projection: "matrix3fv",
+      ...worldMode ? { u_viewProjection: "matrix4fv", u_worldMatrix: "matrix4fv" } : { u_projection: "matrix3fv" },
       u_transform: "matrix3fv",
       u_depth: "1f",
       u_bounds: "4f",
@@ -3787,17 +3937,18 @@ var YarnSurfaceRenderer = class {
       u_effect3: "4f",
       u_tint: "4f",
       u_flash: "1f",
+      u_forceColor: "1f",
       "u_planes[0]": "3fv",
       ...kind === "sketch" ? { u_timeMs: "1f" } : {}
     };
     pipeline = this.device.createPipeline({
-      vertex: VERTEX2,
+      vertex: worldMode ? VERTEX_WORLD : VERTEX2,
       fragment: fragment2(kind, this.maxClipPlanes),
       stride: STRIDE_BYTES,
       attributes: ATTRIBUTES2,
       uniforms
     });
-    this.pipelines.set(kind, pipeline);
+    this.pipelines.set(key, pipeline);
     return pipeline;
   }
   createSurface({ fillVertices, outline, edgeColors, style }) {
@@ -3837,9 +3988,12 @@ var YarnSurfaceRenderer = class {
   }
   drawSurface(surface, {
     projection,
+    viewProjection,
+    worldMatrix,
     transform = IDENTITY4,
     color: color2 = WHITE4,
     alpha = 1,
+    forceColor = false,
     whiteFlash = 0,
     timeMs = 0,
     clips = [],
@@ -3850,9 +4004,15 @@ var YarnSurfaceRenderer = class {
   } = {}) {
     if (this.disposed || this.state !== "ready") throw new Error(`YarnSurfaceRenderer is ${this.state}${this.failure ? ": " + this.failure : ""}`);
     if (!this.surfaces.has(surface)) throw new TypeError("Surface must belong to this YarnSurfaceRenderer");
-    finiteArray3(projection, 9, "projection");
+    const worldMode = viewProjection !== void 0 || worldMatrix !== void 0;
+    if (worldMode) {
+      if (projection !== void 0 || viewProjection === void 0 || worldMatrix === void 0) throw new TypeError("3D surface draws require viewProjection and worldMatrix and cannot include projection");
+      finiteArray3(viewProjection, 16, "viewProjection");
+      affineMatrix42(worldMatrix, "worldMatrix");
+    } else finiteArray3(projection, 9, "projection");
     finiteArray3(color2, 4, "color");
     if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1 || color2.some((value) => value < 0 || value > 1)) throw new RangeError("Surface tint/alpha must be in [0,1]");
+    if (typeof forceColor !== "boolean") throw new TypeError("forceColor must be boolean");
     if (!Number.isFinite(whiteFlash) || whiteFlash < 0 || whiteFlash > 1) throw new RangeError("whiteFlash must be in [0,1]");
     if (!Number.isFinite(timeMs)) throw new TypeError("timeMs must be finite");
     if (!Number.isFinite(z) || z < -1 || z > 1) throw new RangeError("z must be in [-1,1]");
@@ -3871,7 +4031,7 @@ var YarnSurfaceRenderer = class {
       style.edgeRelief * (style.detail ? 0.3 : 1)
     ] : [0, style.echoY, 0, 0];
     const uniforms = {
-      u_projection: projection,
+      ...worldMode ? { u_viewProjection: viewProjection, u_worldMatrix: worldMatrix } : { u_projection: projection },
       u_transform: toMatrix3(transform),
       u_depth: z,
       u_bounds: surface.bounds,
@@ -3881,11 +4041,12 @@ var YarnSurfaceRenderer = class {
       u_effect3: effect3,
       u_tint: [color2[0], color2[1], color2[2], color2[3] * alpha],
       u_flash: whiteFlash,
+      u_forceColor: forceColor ? 1 : 0,
       "u_planes[0]": planes,
       ...yarn ? {} : { u_timeMs: (timeMs % style.periodMs + style.periodMs) % style.periodMs }
     };
     const common = {
-      pipeline: surface.pipeline,
+      pipeline: this._pipeline(surface.kind, worldMode),
       buffer: surface.buffer,
       uniforms,
       blend,
