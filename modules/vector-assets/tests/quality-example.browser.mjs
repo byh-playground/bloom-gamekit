@@ -34,8 +34,8 @@ export async function exerciseVectorAssetQualityExample(page, previewURL,
   assert.equal(farmpea.sourceUrl, farmpeaURL);
   assert.equal(farmpea.sourceSha256, farmpeaSha256, 'the public SVG bytes match the immutable original');
   assert.equal(farmpea.metadataId, 'budmori-pea');
-  assert.equal(farmpea.curveSegments, 16);
-  assert.equal(farmpea.strokeArcDivisions, 12);
+  assert.equal(farmpea.curveSegments, 4);
+  assert.equal(farmpea.strokeArcDivisions, 2);
   assert.equal(farmpea.sourceSvgPresent, true, 'the sanitized original SVG is displayed in the source panel');
   assert.ok(farmpea.sourceShapeCount > 0, 'the source panel contains actual sanitized SVG shapes');
   await mkdir('test-results', { recursive: true });
@@ -52,7 +52,18 @@ export async function exerciseVectorAssetQualityExample(page, previewURL,
     strokeArcDivisions: window.vectorAssetDemo.compiledAsset.compilerOptions.strokeArcDivisions,
   }));
   assert.equal(initial.sourceSha256, expectedSha256, 'the sample source is rendered from the exact fixture bytes');
-  assert.equal(initial.curveSegments, 16, 'the initial curve preset is 16 segments');
+  assert.equal(initial.curveSegments, 4, 'the initial curve preset is the shared standard 4/2 setting');
+  const sharedPresets = await page.evaluate(() => window.vectorAssetRuntime.VECTOR_ASSET_QUALITY_PRESETS);
+  assert.deepEqual(sharedPresets, {
+    standard: { curveSegments: 4, strokeArcDivisions: 2 },
+    smallAsset: { curveSegments: 2, strokeArcDivisions: 2 },
+  }, 'the browser example consumes the shared named quality presets');
+  await page.locator('[data-quality-preset="smallAsset"]').click();
+  await page.waitForFunction(() => window.vectorAssetDemo?.compiledAsset?.compilerOptions?.curveSegments === 2
+    && window.vectorAssetDemo?.compiledAsset?.compilerOptions?.strokeArcDivisions === 2, null, { timeout: 15000 });
+  await page.locator('[data-quality-preset="standard"]').click();
+  await page.waitForFunction(() => window.vectorAssetDemo?.compiledAsset?.compilerOptions?.curveSegments === 4
+    && window.vectorAssetDemo?.compiledAsset?.compilerOptions?.strokeArcDivisions === 2, null, { timeout: 15000 });
   const presetValues = await page.locator('.quality-presets').evaluateAll(groups => groups.map(group =>
     [...group.querySelectorAll('button')].map(button => button.dataset.qualityValue)));
   assert.deepEqual(presetValues, [['1', '2', '4', '8', '16'], ['1', '2', '4', '8', '16']],
@@ -62,7 +73,7 @@ export async function exerciseVectorAssetQualityExample(page, previewURL,
   await page.locator('#asset-url').fill(blobURL);
   await page.locator('#load-asset').click();
   await page.waitForFunction(raw => window.vectorAssetDemo?.sourceUrl === raw
-    && window.vectorAssetDemo?.compiledAsset?.compilerOptions?.curveSegments === 16, rawURL, { timeout: 15000 });
+    && window.vectorAssetDemo?.compiledAsset?.compilerOptions?.curveSegments === 4, rawURL, { timeout: 15000 });
   await page.locator('#curve-segments').fill('3');
   assert.equal(await page.locator('#curve-segments').inputValue(), '3', 'the number control accepts direct typed input');
   await page.locator('#load-asset').click();
@@ -77,7 +88,7 @@ export async function exerciseVectorAssetQualityExample(page, previewURL,
   assert.equal(copiedOptions.sourcePath, rawURL, 'GitHub blob URL is normalized to the matching raw URL');
   assert.equal(copiedOptions.maxBytes, 512 * 1024);
   assert.equal(copiedOptions.curveSegments, 3, 'copy reflects the typed tessellation value');
-  assert.equal(copiedOptions.strokeArcDivisions, 12);
+  assert.equal(copiedOptions.strokeArcDivisions, 2);
 
   const typed = await page.evaluate(() => ({
     triangles: window.vectorAssetDemo.topology.triangles,
@@ -85,6 +96,9 @@ export async function exerciseVectorAssetQualityExample(page, previewURL,
   }));
   assert.equal(typed.curveSegments, 3);
   assert.ok(typed.triangles > 0, 'a low typed quality still produces inspectable geometry');
+  await page.locator('[data-quality-target="curve-segments"][data-quality-value="16"]').click();
+  await page.waitForFunction(() => window.vectorAssetDemo?.compiledAsset?.compilerOptions?.curveSegments === 16, null, { timeout: 15000 });
+  const highQualityTriangles = await page.evaluate(() => window.vectorAssetDemo.topology.triangles);
   await page.locator('[data-quality-target="curve-segments"][data-quality-value="8"]').click();
   await page.waitForFunction(() => window.vectorAssetDemo?.compiledAsset?.compilerOptions?.curveSegments === 8, null, { timeout: 15000 });
   const coarse = await page.evaluate(() => ({
@@ -93,7 +107,7 @@ export async function exerciseVectorAssetQualityExample(page, previewURL,
     compileMs: window.vectorAssetDemo.compileMs,
     fetchMs: window.vectorAssetDemo.fetchMs,
   }));
-  assert.ok(coarse.triangles < initial.triangles, 'the 8-segment preset produces fewer triangles than 16');
+  assert.ok(coarse.triangles < highQualityTriangles, 'the 8-segment preset produces fewer triangles than 16 at the same arc divisions');
   assert.ok(coarse.uniqueVertices > 0, 'the example reports stored vertex counts');
   assert.ok(Number.isFinite(coarse.compileMs) && coarse.compileMs >= 0, 'the compile/hash measurement is reported separately from fetch');
   assert.ok(Number.isFinite(coarse.fetchMs) && coarse.fetchMs >= 0, 'the source fetch timing is reported');

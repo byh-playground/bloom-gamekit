@@ -1,4 +1,5 @@
 import { compileVectorAssetCore } from './compiler-core.js';
+import { VECTOR_ASSET_QUALITY_PRESETS } from './quality-presets.js';
 
 const MAX_SOURCE_BYTES = 512 * 1024;
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -43,8 +44,8 @@ function validateLoadOptions(url, options) {
   const sourcePath = options.sourcePath ?? url;
   const expectedSha256 = options.expectedSha256;
   const maxBytes = options.maxBytes ?? MAX_SOURCE_BYTES;
-  const curveSegments = options.curveSegments === undefined ? 16 : options.curveSegments;
-  const strokeArcDivisions = options.strokeArcDivisions === undefined ? 12 : options.strokeArcDivisions;
+  const curveSegments = options.curveSegments === undefined ? VECTOR_ASSET_QUALITY_PRESETS.standard.curveSegments : options.curveSegments;
+  const strokeArcDivisions = options.strokeArcDivisions === undefined ? VECTOR_ASSET_QUALITY_PRESETS.standard.strokeArcDivisions : options.strokeArcDivisions;
   const includeSourcePaths = options.includeSourcePaths ?? false;
   const normalizeCenteredViewBox = options.normalizeCenteredViewBox ?? false;
   if (typeof sourcePath !== 'string' || sourcePath.length < 1 || sourcePath.length > 2048) throw new TypeError('sourcePath must be a nonempty string of at most 2048 characters');

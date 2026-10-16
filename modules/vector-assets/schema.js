@@ -1,6 +1,6 @@
 export const VECTOR_ASSET_SCHEMA_VERSION = 1;
-export const VECTOR_ASSET_COMPILER_VERSION = '0.10.0';
-const ACCEPTED_COMPILER_VERSIONS = new Set(['0.2.0', '0.3.0', '0.4.0', '0.5.0', '0.6.0', '0.7.0', '0.8.0', '0.9.0', VECTOR_ASSET_COMPILER_VERSION]);
+export const VECTOR_ASSET_COMPILER_VERSION = '0.11.0';
+const ACCEPTED_COMPILER_VERSIONS = new Set(['0.2.0', '0.3.0', '0.4.0', '0.5.0', '0.6.0', '0.7.0', '0.8.0', '0.9.0', '0.10.0', VECTOR_ASSET_COMPILER_VERSION]);
 export const NUMERIC_POSE_FIELDS = Object.freeze(['x', 'y', 'rotation', 'scaleX', 'scaleY', 'opacity']);
 const EASINGS = new Set(['linear', 'inSine', 'outSine', 'inOutSine', 'inQuad', 'outQuad', 'inOutQuad', 'inCubic', 'outCubic', 'inOutCubic']);
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -155,18 +155,19 @@ export function validateCompiledAsset(asset) {
     throw new TypeError('Invalid compiled SVG vertex indices');
   }
   if (indices === undefined && vertexCount % 3) throw new TypeError('Non-indexed compiled SVG geometry must contain complete triangles');
-  if (['0.8.0', '0.9.0', VECTOR_ASSET_COMPILER_VERSION].includes(asset.compilerVersion) && asset.compilerOptions === undefined) {
+  if (['0.8.0', '0.9.0', '0.10.0', VECTOR_ASSET_COMPILER_VERSION].includes(asset.compilerVersion) && asset.compilerOptions === undefined) {
     throw new TypeError('Current SVG compiler options are required');
   }
   if (asset.compilerOptions !== undefined) {
     const current = asset.compilerVersion === VECTOR_ASSET_COMPILER_VERSION;
-    const centeredViewBoxVersion = current || asset.compilerVersion === '0.9.0';
-    const expectedKeys = current ? ['curveSegments', 'normalizeCenteredViewBox', 'strokeArcDivisions']
+    const roundStrokeVersion = current || asset.compilerVersion === '0.10.0';
+    const centeredViewBoxVersion = roundStrokeVersion || asset.compilerVersion === '0.9.0';
+    const expectedKeys = roundStrokeVersion ? ['curveSegments', 'normalizeCenteredViewBox', 'strokeArcDivisions']
       : centeredViewBoxVersion ? ['curveSegments', 'normalizeCenteredViewBox'] : ['curveSegments'];
     if (!exactKeys(asset.compilerOptions, expectedKeys)
         || !Number.isSafeInteger(asset.compilerOptions.curveSegments) || asset.compilerOptions.curveSegments < 1 || asset.compilerOptions.curveSegments > 64
         || (centeredViewBoxVersion && typeof asset.compilerOptions.normalizeCenteredViewBox !== 'boolean')
-        || (current && (!Number.isSafeInteger(asset.compilerOptions.strokeArcDivisions)
+        || (roundStrokeVersion && (!Number.isSafeInteger(asset.compilerOptions.strokeArcDivisions)
           || asset.compilerOptions.strokeArcDivisions < 1 || asset.compilerOptions.strokeArcDivisions > 64))) {
       throw new TypeError('Invalid SVG compiler options');
     }

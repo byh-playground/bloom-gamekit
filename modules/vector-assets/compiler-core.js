@@ -2,6 +2,7 @@ import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
 import { Color, Path, Shape, ShapeGeometry, SRGBColorSpace, Vector2 } from 'three';
 import { SVGLoader } from 'three/addons/loaders/SVGLoader.js';
 import { VECTOR_ASSET_COMPILER_VERSION, VECTOR_ASSET_SCHEMA_VERSION, validateAssetMetadata } from './schema.js';
+import { VECTOR_ASSET_QUALITY_PRESETS } from './quality-presets.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const MAX_SOURCE_BYTES = 512 * 1024;
@@ -1116,9 +1117,9 @@ export function compileVectorAssetCore(svgBytes, sourcePath = 'asset.svg', optio
       || Object.keys(options).some(key => !['curveSegments', 'normalizeCenteredViewBox', 'strokeArcDivisions'].includes(key))) {
     throw new TypeError('Only curveSegments, normalizeCenteredViewBox, and strokeArcDivisions compiler options are supported');
   }
-  const curveSegments = options.curveSegments === undefined ? 16 : options.curveSegments;
+  const curveSegments = options.curveSegments === undefined ? VECTOR_ASSET_QUALITY_PRESETS.standard.curveSegments : options.curveSegments;
   if (!Number.isSafeInteger(curveSegments) || curveSegments < 1 || curveSegments > 64) throw new RangeError('curveSegments must be an integer from 1 to 64');
-  const strokeArcDivisions = options.strokeArcDivisions === undefined ? 12 : options.strokeArcDivisions;
+  const strokeArcDivisions = options.strokeArcDivisions === undefined ? VECTOR_ASSET_QUALITY_PRESETS.standard.strokeArcDivisions : options.strokeArcDivisions;
   if (!Number.isSafeInteger(strokeArcDivisions) || strokeArcDivisions < 1 || strokeArcDivisions > 64) throw new RangeError('strokeArcDivisions must be an integer from 1 to 64');
   const normalizeCenteredViewBox = options.normalizeCenteredViewBox ?? false;
   if (typeof normalizeCenteredViewBox !== 'boolean') throw new TypeError('normalizeCenteredViewBox must be a boolean');

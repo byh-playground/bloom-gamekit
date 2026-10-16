@@ -1,3 +1,7 @@
+## v0.11.0 (2026-10-16)
+
+The SVG compiler default changes to 4 curve segments and 2 round-stroke arc divisions. The exported frozen `VECTOR_ASSET_QUALITY_PRESETS` provides the `standard` 4/2 preset for most assets and the `smallAsset` 2/2 preset. Explicit 16/12 options retain the previous geometry; the supported range remains 1–64. Node compilation, the browser loader, the CLI, and the three-view example share these defaults.
+
 ## v0.10.7 (2026-10-16)
 
 The SVG compiler accepts curve and round-stroke subdivisions from 1 through 64. The three-view quality example accepts direct integer input and offers quick presets. The existing defaults remain unchanged.

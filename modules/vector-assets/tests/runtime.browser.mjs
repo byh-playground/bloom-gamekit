@@ -6,6 +6,14 @@ import { compileVectorAssetFile } from '../compiler.js';
 export async function exerciseVectorAssets(page, { includePopulationTimingDiagnostics = false } = {}) {
   const compileStart = performance.now();
   const referenceAsset = await compileVectorAssetFile('modules/vector-assets/assets/seed-scout.svg', 'modules/vector-assets/assets/seed-scout.svg');
+  const legacyReferenceAsset = await compileVectorAssetFile('modules/vector-assets/assets/seed-scout.svg', 'modules/vector-assets/assets/seed-scout.svg',
+    { curveSegments: 16, strokeArcDivisions: 12 });
+  const retainedBytes = asset => asset.geometry.vertices.byteLength + asset.geometry.indices.byteLength
+    + [...Object.values(asset.geometry.expressionIndices ?? {}), ...Object.values(asset.geometry.indexVariants ?? {})]
+      .reduce((total, indices) => total + indices.byteLength, 0);
+  const standardMeshBytes = retainedBytes(referenceAsset), legacyMeshBytes = retainedBytes(legacyReferenceAsset);
+  assert.ok(standardMeshBytes > 0 && standardMeshBytes < legacyMeshBytes,
+    'the same seed-scout fixture produces valid 4/2 geometry smaller than explicit 16/12 geometry');
   const threeCompileMs = performance.now() - compileStart;
   await page.setViewportSize({ width: 844, height: 390 });
   const panelState = await page.evaluate(async () => {
@@ -79,7 +87,8 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
   assert.ok(panelState.visibleTriangles > 0 && panelState.visibleTriangles < panelState.triangles);
   assert.ok(panelState.uniqueEdges > panelState.triangles);
   assert.match(panelState.webglBackend, /^WebGL 1/);
-  assert.ok(panelState.drawCalls > 0 && panelState.meshBytes > 100_000);
+  assert.ok(panelState.drawCalls > 0 && panelState.meshBytes === standardMeshBytes && panelState.meshBytes < legacyMeshBytes,
+    'the three-view example retains the same valid 4/2 geometry measured from its source');
   assert.match(panelState.sourceMetrics, /source bytes/);
   assert.match(panelState.topologyMetrics, /visible triangles/);
   assert.match(panelState.gamekitMetrics, /draw calls/);
@@ -97,7 +106,7 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
   await page.locator('#center-camera').click();
   const centeredCamera = await page.evaluate(() => ({ x: vectorAssetDemo.camera.x, y: vectorAssetDemo.camera.y }));
   assert.deepEqual(centeredCamera, { x: 100, y: 110 }, 'center resets the shared camera');
-  const report = await page.evaluate(async ({ sourcePaths, threeCompileMs, includePopulationTimingDiagnostics }) => {
+  const report = await page.evaluate(async ({ sourcePaths, threeCompileMs, includePopulationTimingDiagnostics, standardMeshBytes, legacyMeshBytes }) => {
     const modules = window.vectorAssetRuntime ?? {
       ...await import('/dist/rendering.js'), ...await import('/dist/vector-assets.js'),
     };
@@ -162,7 +171,8 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
     assertThat(holePixel.every((channel, index) => Math.abs(channel - underHolePixel[index]) <= 2), `evenodd compound leaf hole matches its visible under-layer: ${holePixel}/${underHolePixel}`);
     assertThat(initialFrame.glError === 0 && initialFrame.device.drawCalls >= 1, 'real WebGL draw and GL error check');
     assertThat(initialFrame.mesh.geometryUploads === 0 && initialFrame.mesh.geometryBytesUploaded === 0, 'asset geometry was uploaded only at resource creation');
-    assertThat(asset.mesh.byteLength > 100_000 && meshes.stats().meshCount === 1, 'one retained static SVG geometry handle');
+    assertThat(asset.mesh.byteLength === standardMeshBytes && asset.mesh.byteLength > 0 && asset.mesh.byteLength < legacyMeshBytes
+      && meshes.stats().meshCount === 1, 'the bundled fixture retains valid default geometry smaller than explicit 16/12');
     assertThat(near(player.getSocket('mouth').x, 100) && near(player.getSocket('mouth').y, 146), 'authored socket at SVG coordinates');
 
     const beforeFailedCreate = { bytes: device.stats.gpuBufferBytes, retained: meshes.stats().retainedBytes, meshes: meshes.stats().meshCount };
@@ -439,7 +449,7 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
       checks: ['WebGL1 real draw and zero GL error', 'evenodd hole and stroke/pixel color', 'SVG metadata pivots and sockets', 'part hierarchy visibility and opacity',
         'neutral/happy expression group variants', 'expression variants across animated seek and context restore', 'failed expression index allocation cleanup',
         'mesh/renderer disposal releases expression index buffers', 'clip switch and repeat seek after rollback', 'transition seek after rollback', 'dispose and recreate', 'mobile landscape viewport'] };
-  }, { sourcePaths: referenceAsset.sourcePaths, threeCompileMs, includePopulationTimingDiagnostics });
+  }, { sourcePaths: referenceAsset.sourcePaths, threeCompileMs, includePopulationTimingDiagnostics, standardMeshBytes, legacyMeshBytes });
   assert.equal(report.status, 'PASS');
   assert.equal(report.benchmark.timingDiagnosticsEnabled, includePopulationTimingDiagnostics);
   assert.equal(report.benchmark.retainedMeshInstances.length, 2);
