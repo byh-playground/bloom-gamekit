@@ -42,7 +42,7 @@ var fixedPoint = Object.freeze({
 });
 
 // modules/_rollback-shared/version.js
-var VERSION = "0.10.1";
+var VERSION = "0.10.2";
 
 // modules/_rollback-shared/protocol.js
 var REPLAY_FORMAT_VERSION = "0.2.0-dev";
