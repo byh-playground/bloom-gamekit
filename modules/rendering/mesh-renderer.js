@@ -469,6 +469,7 @@ export class MeshRenderer {
           : pending.indexVariant !== indexVariant ? 'indexVariant' : pending.firstIndex !== firstIndex || pending.indexCount !== indexCount ? 'indexRange' : pending.clip.key !== clip.key ? 'clip'
           : pending.stencilRef !== stencilRef ? 'stencil' : pending.depthStateKey !== depthStateKey ? 'depthState'
             : matrix.some((n, i) => Math.fround(n) !== pending.projection[i]) ? 'projection'
+              : strokeSize && strokeSize.some((n, i) => n !== pending.strokeSize?.[i]) ? 'strokeViewport'
               : worldMode && color.some((n, i) => n !== previousColor[i]) ? 'color'
               : mesh.partCount > 1 && pending.parts.some((n, i) => n !== this.partScratch[i]) ? 'parts' : this.count === this.maxInstances ? 'capacity' : null;
         if (reason) this.flush(reason);
@@ -570,15 +571,15 @@ export class MeshRenderer {
       if (this.alphaQueueCount) this._flushAlphaQueue('singleRunBoundary');
       const write = runs[2], stateKey = Number(depthTest) + ':' + Number(write) + ':' + depthFunc;
       if (this.pending) {
-        const current = this.pending, reason = current.mesh !== mesh ? 'mesh' : current.indexVariant !== indexVariant ? 'indexVariant' : current.clip.key !== clip.key ? 'clip'
+        const current = this.pending, reason = current.mesh !== mesh ? 'mesh' : current.worldMode ? 'transformMode' : current.indexVariant !== indexVariant ? 'indexVariant' : current.firstIndex !== firstIndex || current.indexCount !== indexCount ? 'indexRange' : current.clip.key !== clip.key ? 'clip'
           : current.stencilRef !== stencilRef ? 'stencil' : current.depthStateKey !== stateKey ? 'depthState'
             : projection.some((n, j) => Math.fround(n) !== current.projection[j]) ? 'projection'
               : strokeSize && strokeSize.some((n, j) => n !== current.strokeSize?.[j]) ? 'strokeViewport'
                 : mesh.partCount > 1 && current.parts.some((n, j) => n !== this.partScratch[j]) ? 'parts' : this.count === this.maxInstances ? 'capacity' : null;
         if (reason) this.flush(reason);
       }
-      if (!this.pending) this.pending = { mesh, projection: Float32Array.from(projection), clip, stencilRef, depthStateKey: stateKey,
-        indexVariant, strokeSize, inverseStrokeProjection, inverseViewProjection, depthState: { test: depthTest, write, func: depthFunc }, parts: this.partScratch.slice(0, mesh.partCount > 1 ? mesh.partCount * 12 : 0) };
+      if (!this.pending) this.pending = { mesh, projection: Float32Array.from(projection), worldMode: false, clip, stencilRef, depthStateKey: stateKey,
+        indexVariant, firstIndex, indexCount, strokeSize, inverseStrokeProjection, inverseViewProjection, depthState: { test: depthTest, write, func: depthFunc }, parts: this.partScratch.slice(0, mesh.partCount > 1 ? mesh.partCount * 12 : 0) };
       const offset = i * 6;
       let m0 = matrices[offset], m1 = matrices[offset + 1], m2 = matrices[offset + 2], m3 = matrices[offset + 3], m4 = matrices[offset + 4], m5 = matrices[offset + 5];
       let weight0 = morph[0], weight1 = morph[1], instanceAlpha = alpha;
