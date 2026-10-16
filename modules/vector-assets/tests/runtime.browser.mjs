@@ -223,6 +223,64 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
     player.transitionTo('bounce', 1000, 200); const transition = player.seek(1100).getPartPose('body');
     player.seek(1400); const transitionRollback = player.seek(1100).getPartPose('body');
     assertThat(JSON.stringify(transition) === JSON.stringify(transitionRollback), 'clip transition is deterministic under seek rollback');
+    const mapConstructionsDuring = callback => {
+      const NativeMap = window.Map;
+      let constructions = 0;
+      window.Map = class CountingMap extends NativeMap {
+        constructor(...args) { constructions++; super(...args); }
+      };
+      try { callback(); return constructions; }
+      finally { window.Map = NativeMap; }
+    };
+    const boundaryPlayer = asset.createPlayer({ clip: 'idle', startedAtMs: 0 });
+    const idleAtStart = asset.createPlayer({ clip: 'idle', startedAtMs: 0 }).seek(1000).getPartPose('body');
+    const bounceAtStart = asset.createPlayer({ clip: 'bounce', startedAtMs: 1000 }).seek(1000).getPartPose('body');
+    const idleProbe = asset.createPlayer({ clip: 'idle', startedAtMs: 0 });
+    const bounceProbe = asset.createPlayer({ clip: 'bounce', startedAtMs: 1000 });
+    boundaryPlayer.transitionTo('bounce', 1000, 200);
+    const directSourceMaps = mapConstructionsDuring(() => idleProbe.seek(1100));
+    const directTargetMaps = mapConstructionsDuring(() => bounceProbe.seek(1100));
+    const beforeStartMaps = mapConstructionsDuring(() => boundaryPlayer.seek(999));
+    const atStartMaps = mapConstructionsDuring(() => boundaryPlayer.seek(1000));
+    const activeTransitionMaps = mapConstructionsDuring(() => boundaryPlayer.seek(1100));
+    const completedTransitionMaps = mapConstructionsDuring(() => boundaryPlayer.seek(1200));
+    const beforeTransition = boundaryPlayer.seek(999).getPartPose('body');
+    const atTransitionStart = boundaryPlayer.seek(1000).getPartPose('body');
+    const atTransitionEnd = boundaryPlayer.seek(1200).getPartPose('body');
+    assertThat(beforeStartMaps === directSourceMaps, `a transition before its start samples only its source (${beforeStartMaps} vs ${directSourceMaps} Map constructions)`);
+    assertThat(atStartMaps === directSourceMaps, `a positive-duration transition samples only its source at the zero-progress start boundary (${atStartMaps} vs ${directSourceMaps} Map constructions)`);
+    assertThat(activeTransitionMaps === directSourceMaps + directTargetMaps + 1,
+      `an active transition samples both clips and allocates one blended pose map (${activeTransitionMaps} constructions)`);
+    assertThat(completedTransitionMaps === directTargetMaps, `a completed transition samples only its target (${completedTransitionMaps} vs ${directTargetMaps} Map constructions)`);
+    assertThat(JSON.stringify(beforeTransition) === JSON.stringify(idleAtStart), 'a transition samples only its source before the start time');
+    assertThat(JSON.stringify(atTransitionStart) === JSON.stringify(idleAtStart), 'a transition begins at its source pose exactly at the start boundary');
+    assertThat(JSON.stringify(atTransitionEnd) === JSON.stringify(bounceAtStart), 'a completed transition returns its target pose exactly at the end boundary');
+    const zeroDurationPlayer = asset.createPlayer({ clip: 'idle', startedAtMs: 0 });
+    zeroDurationPlayer.transitionTo('bounce', 1000, 0);
+    assertThat(JSON.stringify(zeroDurationPlayer.seek(999).getPartPose('body')) === JSON.stringify(idleAtStart), 'a zero-duration transition keeps its source before its start');
+    assertThat(mapConstructionsDuring(() => zeroDurationPlayer.seek(1000)) === directTargetMaps, 'a zero-duration transition samples only its target at the start boundary');
+    assertThat(JSON.stringify(zeroDurationPlayer.seek(1000).getPartPose('body')) === JSON.stringify(bounceAtStart), 'a zero-duration transition selects its target at the start boundary');
+
+    const overlappingPlayer = asset.createPlayer({ clip: 'idle', startedAtMs: 0 });
+    overlappingPlayer.transitionTo('bounce', 1000, 200);
+    overlappingPlayer.transitionTo('idle', 1150, 200);
+    overlappingPlayer.transitionTo('bounce', 1250, 0);
+    const overlappingTimes = [1125, 1175, 1249, 1250, 1275, 1350];
+    const overlappingForward = overlappingTimes.map(time => JSON.stringify(overlappingPlayer.seek(time).getPartPose('body')));
+    overlappingPlayer.seek(3000);
+    const overlappingBackward = overlappingTimes.map(time => JSON.stringify(overlappingPlayer.seek(time).getPartPose('body')));
+    assertThat(JSON.stringify(overlappingForward) === JSON.stringify(overlappingBackward), 'overlapping and completed transitions retain deterministic backward seeks across their full history');
+
+    const simpleSamplingProbe = asset.createPlayer({ clip: 'bounce', startedAtMs: 0 });
+    const completedChainProbe = asset.createPlayer({ clip: 'idle', startedAtMs: 0 });
+    for (let index = 0; index < 16; index++) {
+      completedChainProbe.transitionTo(index % 2 ? 'idle' : 'bounce', 1000 + index * 300, 100);
+    }
+    const settledTime = 1000 + 15 * 300 + 500;
+    const simpleSeekMapConstructions = mapConstructionsDuring(() => simpleSamplingProbe.seek(settledTime));
+    const completedChainMapConstructions = mapConstructionsDuring(() => completedChainProbe.seek(settledTime));
+    assertThat(completedChainMapConstructions === simpleSeekMapConstructions,
+      `a settled 16-transition playback chain samples its target with the same Map construction count as one direct clip (${completedChainMapConstructions} vs ${simpleSeekMapConstructions})`);
     player.seek(300);
     const transformedSocket = player.getSocket('mouth');
     assertThat(!near(transformedSocket.y, 146), 'part rotation/scale/translation transforms visual socket');
