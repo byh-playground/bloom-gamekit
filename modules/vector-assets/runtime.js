@@ -95,8 +95,7 @@ function copyPose(pose) {
   return Object.fromEntries(POSE_FIELDS.map(field => [field, pose[field]]));
 }
 
-function authoredMorph(metadata, displayTimeMs) {
-  const sketch = metadata.styles?.find(style => style.kind === 'sketch');
+function authoredMorph(sketch, displayTimeMs) {
   if (!sketch) return [0, 0];
   const phase = (((displayTimeMs % sketch.periodMs) + sketch.periodMs) % sketch.periodMs) / sketch.periodMs * 3;
   const segment = Math.floor(phase), amount = phase - segment;
@@ -119,6 +118,7 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
   if (!meshRenderer?.createMesh || !meshRenderer?.drawMesh || !meshRenderer?.deleteMesh) throw new TypeError('A GameKit MeshRenderer is required');
   validateCompiledAsset(compiledAsset);
   const metadata = compiledAsset.metadata;
+  const sketchMorphStyle = metadata.styles?.find(style => style.kind === 'sketch') ?? null;
   const partIndices = new Map(metadata.parts.map((part, index) => [part.id, index]));
   const clips = metadata.clips;
   const geometry = compiledAsset.geometry, shaderGeometry = geometry.shaderSurfaces ?? [];
@@ -245,26 +245,30 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
       if (!socket) throw new TypeError(`Unknown vector socket: ${id}`);
       return transformPoint(worldMatrices().get(socket.part), socket.point);
     };
+    const resolvePartPose = (part, matrices) => {
+      let parentVisible = true, opacity = 1, parent = part;
+      while (parent) {
+        parentVisible &&= visible.get(parent.id) !== false;
+        opacity *= effectivePose(basePose.get(parent.id), currentPose.get(parent.id)).opacity;
+        parent = parent.parent === null ? null : metadata.parts[partIndices.get(parent.parent)];
+      }
+      return { transform: matrices.get(part.id), opacity, visible: parentVisible };
+    };
     const partPoses = () => {
       assertPlayer();
-      const matrices = worldMatrices(), output = metadata.parts.map((part, index) => {
-        const morph = authoredMorph(metadata, displayTimeMs);
-        let parentVisible = true, opacity = 1, parent = part;
-        while (parent) {
-          parentVisible &&= visible.get(parent.id) !== false;
-          opacity *= effectivePose(basePose.get(parent.id), currentPose.get(parent.id)).opacity;
-          parent = parent.parent === null ? null : metadata.parts[partIndices.get(parent.parent)];
-        }
-        return { transform: matrices.get(part.id), morph, opacity, visible: parentVisible, index };
+      const matrices = worldMatrices();
+      return metadata.parts.map((part, index) => {
+        const pose = resolvePartPose(part, matrices);
+        return { transform: pose.transform, morph: authoredMorph(sketchMorphStyle, displayTimeMs),
+          opacity: pose.opacity, visible: pose.visible, index };
       });
-      return output;
     };
     const draw = ({ projection, viewProjection, worldMatrix, matrix = IDENTITY, alpha = 1, color = [1, 1, 1, 1], forceColor = false, whiteFlash = false,
       clips = [], stencilRef = null, depth = 0, depthTest = false, depthWrite = false, depthFunc = 'lequal', strokeViewport = null } = {}) => {
       assertPlayer();
       if (geometry.shaderSurfaces?.length) validateShaderSurfaceClipCapacity(clips, surfaceRenderer.maxClipPlanes);
-      const fullPartPoses = partPoses();
-      const poses = fullPartPoses.map(({ transform, opacity, visible: isVisible }) => ({ transform, opacity, visible: isVisible }));
+      const matrices = worldMatrices();
+      const poses = metadata.parts.map(part => resolvePartPose(part, matrices));
       if (geometry.drawOrder) {
         const worldMode = viewProjection !== undefined || worldMatrix !== undefined;
         for (const command of geometry.drawOrder) {
@@ -272,12 +276,12 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
             if (!poses[command.partIndex].visible || poses[command.partIndex].opacity <= 0) continue;
             if (!mesh) throw new Error('SVG draw order references mesh geometry that was not retained');
             meshRenderer.drawMesh(mesh, { ...(worldMode ? { viewProjection, worldMatrix } : { projection }), matrix,
-              parts: poses, morph: authoredMorph(metadata, displayTimeMs), alpha, color, forceColor, whiteFlash,
+              parts: poses, morph: authoredMorph(sketchMorphStyle, displayTimeMs), alpha, color, forceColor, whiteFlash,
               clips, stencilRef, depth, depthTest, depthWrite, depthFunc, strokeViewport,
               indexRange: [command.firstIndex, command.indexCount] });
             continue;
           }
-          const surface = retainedSurfaces[command.surfaceIndex], pose = fullPartPoses[geometry.shaderSurfaces[command.surfaceIndex].partIndex];
+          const surface = retainedSurfaces[command.surfaceIndex], pose = poses[geometry.shaderSurfaces[command.surfaceIndex].partIndex];
           if (!pose.visible || pose.opacity <= 0) continue;
           meshRenderer.flush('vectorShaderSurfaceBoundary');
           const materialTransform = worldMode ? pose.transform : multiply(matrix, pose.transform);
@@ -290,13 +294,13 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
       }
       const indexVariant = !visibilityOverridden && compiledAsset.geometry.expressionIndices?.[expression] ? expression : null;
       const worldMode = viewProjection !== undefined || worldMatrix !== undefined;
-      meshRenderer.drawMesh(mesh, { ...(worldMode ? { viewProjection, worldMatrix } : { projection }), matrix, parts: poses, morph: authoredMorph(metadata, displayTimeMs), alpha, color, forceColor,
+      meshRenderer.drawMesh(mesh, { ...(worldMode ? { viewProjection, worldMatrix } : { projection }), matrix, parts: poses, morph: authoredMorph(sketchMorphStyle, displayTimeMs), alpha, color, forceColor,
         whiteFlash, clips, stencilRef, depth, depthTest, depthWrite, depthFunc, indexVariant, strokeViewport });
     };
     const getPartPose = id => {
       assertPlayer();
       if (!partIndices.has(id)) throw new TypeError(`Unknown vector part: ${id}`);
-      const index = partIndices.get(id), effective = partPoses()[index];
+      const index = partIndices.get(id), effective = resolvePartPose(metadata.parts[index], worldMatrices());
       return { ...currentPose.get(id), visible: effective.visible, transform: effective.transform };
     };
     const disposePlayer = () => {

@@ -115,6 +115,18 @@ try {
     const sketch = demo.styleInstances.find(item => item.id === 'sketch-fox');
     const morphAt = time => { sketch.actor.seek(time); return sketch.actor.partPoses().map(pose => pose.morph); };
     const morphFirst = morphAt(987.5), morphLater = morphAt(2100), morphRepeated = morphAt(987.5);
+    const pixelsAt = time => {
+      demo.renderStyleSamples(time);
+      const gl = sketch.device.gl, pixels = new Uint8Array(sketch.canvas.width * sketch.canvas.height * 4);
+      gl.readPixels(0, 0, sketch.canvas.width, sketch.canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      return pixels;
+    };
+    const sketchPixelsFirst = pixelsAt(987.5), sketchPixelsLater = pixelsAt(2100), sketchPixelsRepeated = pixelsAt(987.5);
+    let sketchPixelDifference = 0, sketchPixelRepeatDifference = 0;
+    for (let index = 0; index < sketchPixelsFirst.length; index++) {
+      if (sketchPixelsFirst[index] !== sketchPixelsLater[index]) sketchPixelDifference++;
+      if (sketchPixelsFirst[index] !== sketchPixelsRepeated[index]) sketchPixelRepeatDifference++;
+    }
     demo.renderStyleSamples(987.5);
     const canvases = [...document.querySelectorAll('#style-dialog canvas')];
     const result = {
@@ -128,6 +140,7 @@ try {
       changedBetweenSamples: first !== middle,
       deterministicPartMorphSeek: JSON.stringify(morphFirst) === JSON.stringify(morphRepeated),
       partMorphChangesWithDisplayTime: JSON.stringify(morphFirst) !== JSON.stringify(morphLater),
+      sketchPixelDifference, sketchPixelRepeatDifference,
       partMorphWeights: morphFirst,
       morphCounts: demo.styleInstances.map(item => item.asset.mesh.morphCount),
       metrics: ['#style-yarn-metrics', '#style-sketch-metrics'].map(selector => document.querySelector(selector).textContent),
@@ -142,6 +155,8 @@ try {
   assert.equal(styles.changedBetweenSamples, true, 'the authored clip changes as display time moves');
   assert.equal(styles.deterministicPartMorphSeek, true, 'part-level morph weights reproduce after rollback seek');
   assert.equal(styles.partMorphChangesWithDisplayTime, true, 'part-level morph weights follow absolute display time');
+  assert.ok(styles.sketchPixelDifference > 0, 'animated sketch morphs change actual WebGL pixels');
+  assert.equal(styles.sketchPixelRepeatDifference, 0, 'the same sketch timestamp reproduces the same WebGL pixels');
   assert.deepEqual(styles.morphCounts, [0, 2], 'only the sketch clip declares two fixed-topology targets');
   report.styles = styles;
   await page.locator('#style-dialog-close').click();

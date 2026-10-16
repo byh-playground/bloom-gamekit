@@ -22,6 +22,7 @@ assert.equal(browserCoreAsset, sharedBrowserCoreAsset, 'same-key startup request
 assert.equal(loader.size, 1, 'successful startup compile is retained in the bounded cache');
 assert.deepEqual(browserCoreAsset.geometry, asset.geometry, 'browser loader and Node compiler core emit identical geometry');
 assert.equal(browserCoreAsset.sourceSha256, asset.sourceSha256, 'browser Web Crypto digest matches Node SHA-256');
+assert.equal(browserCoreAsset.compilerOptions.strokeArcDivisions, 12, 'browser loader records the unchanged round-stroke default');
 assert.equal('sourcePaths' in browserCoreAsset, false, 'browser runtime omits optional debug paths by default');
 const debugAsset = await loader.load('/startup/seed-scout.svg', { ...loadOptions, includeSourcePaths: true });
 assert.ok(Array.isArray(debugAsset.sourcePaths), 'debug source paths can be requested explicitly');
@@ -32,17 +33,42 @@ assert.equal(mismatchLoader.size, 0, 'a hash mismatch is rejected before compili
 const boundedLoader = createVectorAssetLoader({ fetch: async () => new Response(source, { status: 200 }) });
 await assert.rejects(boundedLoader.load('/startup/seed-scout.svg', { maxBytes: source.byteLength - 1 }), /exceeds/);
 assert.equal(boundedLoader.size, 0, 'over-limit SVG bytes are not cached');
-loader.clear(); loader.dispose(); mismatchLoader.dispose(); boundedLoader.dispose();
+let strokeLoaderFetches = 0;
+const strokeLoader = createVectorAssetLoader({ fetch: async () => { strokeLoaderFetches++; return new Response(source, { status: 200 }); }, maxEntries: 2 });
+const [defaultStrokeLoad, explicitDefaultStrokeLoad] = await Promise.all([
+  strokeLoader.load('/startup/seed-scout.svg', { sourcePath }),
+  strokeLoader.load('/startup/seed-scout.svg', { sourcePath, strokeArcDivisions: 12 }),
+]);
+assert.equal(defaultStrokeLoad, explicitDefaultStrokeLoad, 'omitted and explicit default arc quality normalize to the same cache key');
+const [coarseStrokeLoad, sameCoarseStrokeLoad] = await Promise.all([
+  strokeLoader.load('/startup/seed-scout.svg', { sourcePath, strokeArcDivisions: 8 }),
+  strokeLoader.load('/startup/seed-scout.svg', { sourcePath, strokeArcDivisions: 8 }),
+]);
+assert.equal(coarseStrokeLoad, sameCoarseStrokeLoad, 'same non-default arc quality shares the in-flight compilation');
+assert.equal(strokeLoaderFetches, 2, 'a changed stroke quality uses a distinct loader cache key');
+assert.equal(strokeLoader.size, 2, 'both default and custom stroke tessellations fit the bounded cache');
+assert.equal(defaultStrokeLoad.compilerOptions.strokeArcDivisions, 12);
+assert.equal(coarseStrokeLoad.compilerOptions.strokeArcDivisions, 8);
+assert.notDeepEqual(coarseStrokeLoad.geometry, defaultStrokeLoad.geometry, 'browser loader forwards the selected stroke tessellation');
+await assert.rejects(strokeLoader.load('/startup/seed-scout.svg', { sourcePath, strokeArcDivisions: 2 }), /strokeArcDivisions/i);
+await assert.rejects(strokeLoader.load('/startup/seed-scout.svg', { sourcePath, strokeArcDivisions: null }), /strokeArcDivisions/i,
+  'browser loader rejects explicit null instead of silently restoring the default');
+loader.clear(); loader.dispose(); mismatchLoader.dispose(); boundedLoader.dispose(); strokeLoader.dispose();
 assert.equal(asset.schemaVersion, 1);
-assert.equal(asset.compilerVersion, '0.9.0');
+assert.equal(asset.compilerVersion, '0.10.0');
 const { compilerOptions: ignoredCompilerOptions, ...assetWithoutCompilerOptions } = asset;
 assert.doesNotThrow(() => validateCompiledAsset({ ...assetWithoutCompilerOptions, compilerVersion: '0.2.0' }), 'previous compiled meshes remain valid under the unchanged asset schema');
 assert.throws(() => validateCompiledAsset({ ...assetWithoutCompilerOptions, compilerVersion: '0.8.0' }), /compiler options/i,
   'compiler 0.8 output must identify its tessellation setting');
 assert.doesNotThrow(() => validateCompiledAsset({ ...assetWithoutCompilerOptions, compilerVersion: '0.7.0' }), 'existing 0.7 compiled assets remain readable');
 assert.doesNotThrow(() => validateCompiledAsset({ ...assetWithoutCompilerOptions, compilerVersion: '0.6.0' }), 'existing 0.6 compiled assets remain readable');
+assert.doesNotThrow(() => validateCompiledAsset({ ...asset, compilerVersion: '0.9.0', compilerOptions: { curveSegments: 16, normalizeCenteredViewBox: false } }),
+  'previous 0.9 compiler options remain readable');
+assert.throws(() => validateCompiledAsset({ ...asset, compilerOptions: { ...asset.compilerOptions, strokeArcDivisions: null } }), /compiler options/i,
+  'the recorded stroke subdivision must be a bounded safe integer');
 assert.equal(asset.compilerOptions.curveSegments, 16, 'the default curve quality is recorded in compiled output');
 assert.equal(asset.compilerOptions.normalizeCenteredViewBox, false, 'the default viewport normalization mode is recorded');
+assert.equal(asset.compilerOptions.strokeArcDivisions, 12, 'the prior round stroke tessellation is the new recorded default');
 assert.equal(asset.geometry.strideFloats, 11);
 assert.ok(asset.geometry.indices instanceof Uint16Array, 'SVG compiler retains unique vertices and triangle indices');
 assert.equal(asset.geometry.indices.length % 3, 0);
@@ -75,10 +101,41 @@ assert.throws(() => compileVectorAsset(source, sourcePath, { curveSegments: null
   'explicit null is rejected instead of silently selecting the default');
 assert.throws(() => compileVectorAsset(source, sourcePath, { curveSegments: Number.MAX_SAFE_INTEGER + 1 }), /curveSegments/i,
   'unsafe integers are rejected before compilation');
+const explicitDefaultArcAsset = compileVectorAsset(source, sourcePath, { strokeArcDivisions: 12 });
+assert.deepEqual(explicitDefaultArcAsset.geometry, asset.geometry, 'omitted arc divisions preserve exact default tessellation and geometry');
+const coarseArcAsset = compileVectorAsset(source, sourcePath, { strokeArcDivisions: 8 });
+assert.equal(coarseArcAsset.compilerOptions.strokeArcDivisions, 8);
+assert.notDeepEqual(coarseArcAsset.geometry, asset.geometry, 'round joins and caps use the selected arc subdivision');
+for (const strokeArcDivisions of [4, 64]) {
+  const boundaryAsset = compileVectorAsset(source, sourcePath, { strokeArcDivisions });
+  validateCompiledAsset(boundaryAsset);
+  assert.equal(boundaryAsset.compilerOptions.strokeArcDivisions, strokeArcDivisions, `${strokeArcDivisions} is an accepted stroke arc boundary`);
+}
+assert.throws(() => compileVectorAsset(source, sourcePath, { strokeArcDivisions: 3 }), /strokeArcDivisions/i);
+assert.throws(() => compileVectorAsset(source, sourcePath, { strokeArcDivisions: 65 }), /strokeArcDivisions/i);
+assert.throws(() => compileVectorAsset(source, sourcePath, { strokeArcDivisions: 8.5 }), /strokeArcDivisions/i);
+assert.throws(() => compileVectorAsset(source, sourcePath, { strokeArcDivisions: null }), /strokeArcDivisions/i,
+  'explicit null is rejected instead of silently selecting the default');
+assert.throws(() => compileVectorAsset(source, sourcePath, { strokeArcDivisions: Number.MAX_SAFE_INTEGER + 1 }), /strokeArcDivisions/i,
+  'unsafe arc subdivision integers are rejected');
+const nonScalingStrokeSourcePath = 'modules/vector-assets/tests/non-scaling-stroke.svg';
+const nonScalingStrokeSourceBytes = await readFile(nonScalingStrokeSourcePath);
+const nonScalingDefaultAsset = compileVectorAsset(nonScalingStrokeSourceBytes, nonScalingStrokeSourcePath);
+const nonScalingArc8Asset = compileVectorAsset(nonScalingStrokeSourceBytes, nonScalingStrokeSourcePath, { strokeArcDivisions: 8 });
+assert.deepEqual(compileVectorAsset(nonScalingStrokeSourceBytes, nonScalingStrokeSourcePath, { strokeArcDivisions: 12 }).geometry, nonScalingDefaultAsset.geometry,
+  'explicit default arc divisions preserve custom non-scaling round caps exactly');
+assert.notDeepEqual(nonScalingArc8Asset.geometry, nonScalingDefaultAsset.geometry, 'non-scaling round caps use the selected arc subdivision');
 const cli = spawnSync(process.execPath, ['modules/vector-assets/scripts/compile.mjs', sourcePath, '--curve-segments', '8'],
   { encoding: 'utf8', maxBuffer: 1024 * 1024 });
 assert.equal(cli.status, 0, cli.stderr);
 assert.equal(JSON.parse(cli.stdout).compilerOptions.curveSegments, 8, 'CLI exposes the same recorded tessellation contract');
+const arcCli = spawnSync(process.execPath, ['modules/vector-assets/scripts/compile.mjs', sourcePath, '--stroke-arc-divisions', '8'],
+  { encoding: 'utf8', maxBuffer: 1024 * 1024 });
+assert.equal(arcCli.status, 0, arcCli.stderr);
+assert.equal(JSON.parse(arcCli.stdout).compilerOptions.strokeArcDivisions, 8, 'CLI exposes the recorded stroke tessellation contract');
+const invalidArcCli = spawnSync(process.execPath, ['modules/vector-assets/scripts/compile.mjs', sourcePath, '--stroke-arc-divisions', '3'],
+  { encoding: 'utf8', maxBuffer: 1024 * 1024 });
+assert.notEqual(invalidArcCli.status, 0, 'CLI rejects stroke arc values below the documented boundary');
 const invalidCli = spawnSync(process.execPath, ['modules/vector-assets/scripts/compile.mjs', sourcePath, '--curve-segments', '3'],
   { encoding: 'utf8', maxBuffer: 1024 * 1024 });
 assert.notEqual(invalidCli.status, 0, 'CLI rejects values below the documented boundary');
@@ -190,7 +247,7 @@ assert.deepEqual(sketchAgain.geometry.vertices, sketchAsset.geometry.vertices, '
 const shaderSurfaceSvg = await readFile('modules/vector-assets/tests/world-shader.svg', 'utf8');
 const shaderSurfaceAsset = compileVectorAsset(Buffer.from(shaderSurfaceSvg), 'shader-surface-fixture.svg');
 validateCompiledAsset(shaderSurfaceAsset);
-assert.equal(shaderSurfaceAsset.compilerVersion, '0.9.0');
+assert.equal(shaderSurfaceAsset.compilerVersion, '0.10.0');
 assert.equal(shaderSurfaceAsset.geometry.morphCount, 0, 'shader-backed sketch/yarn do not generate dynamic mesh morph data');
 assert.equal(shaderSurfaceAsset.geometry.shaderSurfaces.length, 1, 'the compiler retains one shader surface descriptor');
 assert.ok(shaderSurfaceAsset.geometry.shaderSurfaces[0].fillVertices instanceof Float32Array);
