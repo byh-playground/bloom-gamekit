@@ -9,6 +9,7 @@ function bufferInterval(track, old, { origin, timeMs, previousTimeMs, stepMs, de
   track.buffered = true;
   const history = continuous ? [...old.history ?? [], old] : [];
   track.history = history.slice(-Math.ceil(delayMs / stepMs) - 2).map(({ history: history2, ...item }) => item);
+  return start;
 }
 function intervalAt(track, at) {
   if (!track || at < track.bornAt || at >= track.removedAt) return null;
@@ -825,13 +826,13 @@ var PresentationRuntime = class {
         sampleValues: same ? old.sampleValues : void 0,
         sampledAt: -Infinity
       };
+      let intervalStart;
       if (this.#delayMs) {
-        bufferInterval(track, old, {
+        intervalStart = bufferInterval(track, old, {
           origin,
           timeMs,
           previousTimeMs: this.#timeMs,
           stepMs: this.#stepMs,
-          delayMs: this.#delayMs,
           continuous: same && !snap,
           reset: snap,
           seeded: !snap && (!!initial || plan.policies.origins.some((i) => i !== void 0)),
@@ -845,7 +846,7 @@ var PresentationRuntime = class {
         const prior = same && !snap ? old.target.values : !snap && initial ? initial.values : target.values;
         for (const index of track.heldFields) from[index] = prior[index];
       }
-      const pathStart = this.#delayMs ? track.startedAt - origin : same && !snap ? old.timeMs : !snap && initial ? entity.initialTimeMs ?? timeMs - this.#stepMs : timeMs;
+      const pathStart = this.#delayMs ? intervalStart : same && !snap ? old.timeMs : !snap && initial ? entity.initialTimeMs ?? timeMs - this.#stepMs : timeMs;
       track.path = capturePath(plan.path, old?.path, from, target.values, pathStart, timeMs, entity.pathPoints, !same || snap, this.#delayMs, this.#stepMs);
       next.set(entity.id, track);
       sources.set(source, track);
