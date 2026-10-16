@@ -34,7 +34,7 @@ export async function exerciseVectorContext(page){
   assert.ok(result.pixels.dash[0]>240&&result.pixels.dash[1]>240,'dashed path paints in its on interval');assert.deepEqual(result.pixels.dashGap,[0,0,255,255]);assert.ok(result.pixels.roundCap[0]>240,'round line cap extends beyond the endpoint');
   assert.ok(result.pixels.primitive[0]>240&&result.pixels.primitive[1]>240,`public primitive painter emits WebGL fan geometry: ${JSON.stringify(result.pixels)}`);
   assert.ok(result.pixels.glyph[0]>240,'text keeps the caller-provided prebaked glyph atlas');assert.deepEqual(result.pixels.staticMesh,[255,0,0,255]);assert.equal(result.error,0);
-  assert.equal(result.textureBytes,64*64*4);assert.ok(result.stats.vertices>0&&result.stats.drawCalls>0);
+  assert.equal(result.textureBytes,64*64*5);assert.ok(result.stats.vertices>0&&result.stats.drawCalls>0);
   assert.equal(result.batched.drawCalls,2,'adjacent fill/stroke submits only at bounded capacity and frame end');
   assert.deepEqual(result.batchPixel,[0,0,255,255],'capacity flush preserves painter order');assert.deepEqual(result.strokePixel,[255,255,255,255]);
   result.restored=await page.evaluate(()=>{const p=vectorContextProbe;p.loss=p.device.gl.getExtension('WEBGL_lose_context');if(!p.loss)return false;p.loss.loseContext();return true;});

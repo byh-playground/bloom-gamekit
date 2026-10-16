@@ -12,6 +12,8 @@
     "test:vector-assets:index-variants": "npm run build && node modules/vector-assets/tests/index-variants.mjs && node modules/vector-assets/tests/run-index-variants.browser.mjs",
     "test:vector-assets:non-scaling-stroke": "npm run build && node modules/vector-assets/tests/run-non-scaling-stroke.browser.mjs",
     "test:rendering:yarn-shader": "npm run build && node modules/rendering/tests/yarn-shader.mjs && node modules/rendering/tests/run-yarn-shader.browser.mjs",
+    "test:rendering:vector-gradient-clip": "npm run build && node modules/rendering/tests/run-vector-gradient-clip.browser.mjs",
+    "test:rendering:alpha-run-batching": "npm run build && node modules/rendering/tests/run-alpha-run-batching.browser.mjs",
     "test": "node project/test-scenarios.mjs core",
     "test:browser": "node project/test-scenarios.mjs core",
     "test:network": "node project/test-scenarios.mjs network",

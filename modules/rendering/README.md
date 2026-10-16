@@ -53,6 +53,44 @@ The mesh pass writes a clip-space Z value and reasserts depth test/write state f
 
 When drawMesh() uses depthWrite: true with `depthWriteAlphaThreshold`, it enables depth writes only for contiguous triangles whose three effective vertex alpha values are positive and meet the threshold. Effective alpha includes vertex alpha (unless forceColor replaces it), draw alpha, color alpha, and the opacity of each referenced part. Indexed expression variants are classified in their selected index order. The renderer submits each contiguous run in its original vertex/index order; it never moves opaque triangles ahead of translucent triangles. A mesh that needs several runs is emitted per instance to preserve painter order; one-run meshes retain adjacent instancing. Repeated classifications are reused in a bounded per-mesh cache. Omitting the threshold keeps the existing mesh-wide depthWrite boolean behavior.
 
+### Linear gradients and retained clip contours
+
+`VectorContext.createLinearGradient(x0,y0,x1,y1)` preserves the endpoints and stop data. The gradient captures the current affine transform when created; `addColorStop(offset,color)` keeps the supplied offset/color pairs, including duplicate offsets in insertion order. `fill()` and `stroke()` sample the gradient along its authored vector. The implementation rasterizes a premultiplied 1024×1 RGBA ramp on first use and after stop edits. A gradient supports up to 32 stops; a context retains at most 64 distinct gradient textures in one frame and evicts textures that were not used in the current frame. Gradient paints are supported for vector fills and strokes; text and `fillTriangleFan()` require a solid color.
+
+```js
+const gradient = ctx.createLinearGradient(12, 18, 72, 18);
+gradient.addColorStop(0, '#ed5445');
+gradient.addColorStop(0.35, 'rgba(248, 198, 72, .7)');
+gradient.addColorStop(1, '#344cda');
+ctx.fillStyle = gradient;
+ctx.beginPath(); ctx.roundRect(12, 18, 60, 28, 5); ctx.fill();
+```
+
+`VectorContext.createClipPath(flatXY,{rule})` creates a retained, single-contour clip outside an active frame. The flat input keeps its authored point sequence; triangulation happens once at creation, then the mask triangles are retained and reuploaded after context restoration. The contour may have at most 256 points and must be simple, non-self-intersecting, non-degenerate, and contain no consecutive duplicate points. Current retained clips do not accept holes or multiple contours. At most 64 clip handles and 16 MiB of retained triangle data may be live; a tessellated mask may contain up to 16,384 triangles.
+
+```js
+const eggClip = ctx.createClipPath(new Float32Array([
+  18, 12, 82, 12, 92, 44, 82, 78, 18, 78, 8, 44,
+])); // create outside beginFrame()
+ctx.beginFrame();
+ctx.clipPath(eggClip, { transform: [1, 0, 0, 1, 4, 0] });
+ctx.drawMesh(eggMesh);
+ctx.endFrame();
+ctx.deleteClipPath(eggClip); // only after it is removed from every saved clip stack
+```
+
+`clipPath()` intersects the current clip using the active stencil attachment. It fails explicitly if the default framebuffer or active render target has no stencil buffer; it does not approximate a retained concave contour. Up to 255 stencil clips may nest. Stencil state is restored through `save()/restore()`, offscreen opacity groups, context loss, and normal painter-order transitions. Deleting a handle still referenced by an active, saved, or group clip stack throws.
+
+The immediate `clip()` path accepts one convex contour at a time, with at most 1,024 authored points. It remains on the existing convex clipping path while the combined edge planes fit the device limit; excess convex contours use a fan-triangulated stencil mask. Concave or multi-contour input must use `createClipPath()` and `clipPath()`.
+
+### Safe batching for mixed-alpha depth runs
+
+`MeshRenderer` and `VectorContext` default `safeAlphaRunBatching` to `true`; pass `false` to preserve the previous per-instance submission path. It applies only when `depthWriteAlphaThreshold` creates multiple contiguous runs and the device supports instancing. A conservative screen-space bound is built from retained per-part bounds and the current part/morph/object transforms. Compatible instances batch each corresponding authored run only while their expanded bounds remain pairwise disjoint from every earlier instance in the candidate group. A 1.5-pixel guard covers raster edge/sample coverage. No command crosses an explicit painter boundary, and an overlapping bound, incompatible run pattern, non-affine projection, or non-scaling-stroke mesh ends the candidate batch and preserves the old draw order.
+
+The bounds are computed from per-part ranges retained at mesh creation; the renderer does not rescan or tessellate triangles each frame. `stats()` distinguishes actual `draws` from `instances` and reports `alphaRunSafeBatches`, `alphaRunBatchedInstances`, `alphaRunDrawsSaved`, `alphaRunSafeRunDraws`, `alphaRunImmediateRunDraws`, `alphaRunOverlapBoundaries`, `alphaRunSignatureBoundaries`, `alphaRunUnbatchableBounds`, `alphaRunImmediateInstances`, `flushReasons`, and `drawDispatchReasons`. Flush reasons count queue boundaries; dispatch reasons classify every `device.draw()` issued by this renderer, so their total equals `draws`. These are submission counters, not GPU timing measurements.
+
+`npm run test:rendering:vector-gradient-clip` covers gradient pixels at 47px and 74px, a 160-point concave clip through vectors/meshes/groups, limits, context restoration, and disposal. `npm run test:rendering:alpha-run-batching` compares fixed overlapping and disjoint mixed-alpha units against the original per-unit painter order using browser `readPixels`; it is a correctness test, not a performance benchmark.
+
 ## 공개 API와 공간 계약
 
 - `new Renderer2D(canvas, {batchVertices=6144, antialias=true, depth=false, preserveDrawingBuffer=false})`: acquires the canvas WebGL 1 context. It owns its program and stream buffer and can interleave with `WebGLDevice`/`MeshRenderer` on the same default framebuffer when each pass is flushed before switching; each renderer rebinds its own program, buffers, attributes, and blend state. Set `depth:true` when a depth-tested `MeshRenderer` pass will share the canvas and `Renderer2D` acquires the context first. `gl` remains available for context-loss and pixel-readback checks. Set `preserveDrawingBuffer` only when needed for checks.
