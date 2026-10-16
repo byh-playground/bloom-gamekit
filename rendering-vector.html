@@ -140,6 +140,11 @@
     _ready() {
       if (this.state !== "ready") throw new Error(`WebGLDevice is ${this.state}${this.failure ? `: ${this.failure}` : ""}`);
     }
+    get activeStencilAvailable() {
+      if (!this.stencilAvailable) return false;
+      if (!this.activeRenderTarget) return true;
+      return this.renderTargets.get(this.activeRenderTarget)?.stencil === true;
+    }
     _handle(map, handle, name) {
       const record = map.get(handle);
       if (!record) throw new Error(`Unknown/deleted ${name}`);
@@ -356,28 +361,41 @@
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, value);
     }
     _renderTarget(record) {
-      const gl = this.gl, previous = gl.getParameter(gl.FRAMEBUFFER_BINDING), framebuffer = gl.createFramebuffer();
+      const gl = this.gl, previous = gl.getParameter(gl.FRAMEBUFFER_BINDING), previousRenderbuffer = gl.getParameter(gl.RENDERBUFFER_BINDING), framebuffer = gl.createFramebuffer();
+      let stencilBuffer = null;
       if (!framebuffer) throw new Error("Render target framebuffer allocation failed");
       try {
         gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
         gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, record.gpu, 0);
+        if (record.stencil) {
+          stencilBuffer = gl.createRenderbuffer();
+          if (!stencilBuffer) throw new Error("Render target stencil allocation failed");
+          gl.bindRenderbuffer(gl.RENDERBUFFER, stencilBuffer);
+          gl.renderbufferStorage(gl.RENDERBUFFER, gl.STENCIL_INDEX8, record.width, record.height);
+          gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.STENCIL_ATTACHMENT, gl.RENDERBUFFER, stencilBuffer);
+        }
         const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
         if (status !== gl.FRAMEBUFFER_COMPLETE) throw new Error(`Render target framebuffer incomplete: ${status}`);
         record.framebuffer = framebuffer;
+        record.stencilBuffer = stencilBuffer;
       } catch (error) {
         gl.deleteFramebuffer(framebuffer);
+        if (stencilBuffer) gl.deleteRenderbuffer(stencilBuffer);
         throw error;
       } finally {
         gl.bindFramebuffer(gl.FRAMEBUFFER, previous);
+        gl.bindRenderbuffer(gl.RENDERBUFFER, previousRenderbuffer);
       }
     }
     /** Creates a reusable, premultiplied RGBA texture/FBO pair; the handle is also a draw texture. */
-    createRenderTarget(width2, height2, { filter = "linear" } = {}) {
+    createRenderTarget(width2, height2, { filter = "linear", stencil = false } = {}) {
       this._ready();
       integer(width2, "render target width", 1, this.maxTextureSize);
       integer(height2, "render target height", 1, this.maxTextureSize);
       if (filter !== "nearest" && filter !== "linear") throw new TypeError("filter must be nearest or linear");
-      const record = { width: width2, height: height2, format: "rgba", premultiplied: true, source: null, filter, gpu: null, framebuffer: null };
+      if (typeof stencil !== "boolean") throw new TypeError("stencil must be boolean");
+      if (stencil && !this.stencilAvailable) throw new Error("Context has no stencil buffer");
+      const record = { width: width2, height: height2, format: "rgba", premultiplied: true, source: null, filter, stencil, gpu: null, framebuffer: null, stencilBuffer: null };
       this._texture(record);
       try {
         this._renderTarget(record);
@@ -386,12 +404,12 @@
         record.gpu = null;
         throw error;
       }
-      const handle = Object.freeze({ width: width2, height: height2 });
+      const handle = Object.freeze({ width: width2, height: height2, stencil });
       this.textures.set(handle, record);
       this.renderTargets.set(handle, record);
       this.stats.textureCount = this.textures.size;
       this.stats.renderTargetCount = this.renderTargets.size;
-      this.stats.gpuRenderTargetBytes += width2 * height2 * 4;
+      this.stats.gpuRenderTargetBytes += width2 * height2 * (4 + (stencil ? 1 : 0));
       return handle;
     }
     /** Binds a target inside an active frame. Bindings may nest and must unwind in LIFO order. */
@@ -424,12 +442,13 @@
       if (!record) return false;
       if (this.renderTargetStack.some((entry) => entry.handle === handle) || this.activeRenderTarget === handle) throw new Error("Cannot delete a bound render target");
       this.gl.deleteFramebuffer(record.framebuffer);
+      if (record.stencilBuffer) this.gl.deleteRenderbuffer(record.stencilBuffer);
       this.gl.deleteTexture(record.gpu);
       this.renderTargets.delete(handle);
       this.textures.delete(handle);
       this.stats.textureCount = this.textures.size;
       this.stats.renderTargetCount = this.renderTargets.size;
-      this.stats.gpuRenderTargetBytes -= record.width * record.height * 4;
+      this.stats.gpuRenderTargetBytes -= record.width * record.height * (4 + (record.stencil ? 1 : 0));
       return true;
     }
     createTexture(source, { format = "rgba", premultiplied = false, filter = "linear" } = {}) {
@@ -617,7 +636,7 @@
       })();
       if (depthState && (typeof depthState.test !== "boolean" || typeof depthState.write !== "boolean")) throw new TypeError("depth.test and depth.write must be booleans");
       if ((depthState?.test || depthState?.write) && !this.depthAvailable) throw new Error("Context has no depth buffer");
-      if (stencil && !this.stencilAvailable) throw new Error("Context has no stencil buffer");
+      if (stencil && !this.activeStencilAvailable) throw new Error("The active framebuffer has no stencil attachment");
       if (blend !== false && !BLENDS.has(blend)) throw new TypeError("Unsupported blend");
       if (depthState && !FUNCTIONS[depthState.func]) throw new TypeError("Unsupported depth function");
       if (stencil) {
@@ -714,6 +733,7 @@
       gl.useProgram(null);
       gl.bindBuffer(gl.ARRAY_BUFFER, null);
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
+      gl.bindRenderbuffer(gl.RENDERBUFFER, null);
       for (let i = 0; i < this.maxTextures; i++) {
         gl.activeTexture(gl.TEXTURE0 + i);
         gl.bindTexture(gl.TEXTURE_2D, null);
@@ -721,7 +741,10 @@
       gl.activeTexture(gl.TEXTURE0);
       for (const r of this.pipelines.values()) gl.deleteProgram(r.gpu);
       for (const r of this.buffers.values()) gl.deleteBuffer(r.gpu);
-      for (const r of this.renderTargets.values()) gl.deleteFramebuffer(r.framebuffer);
+      for (const r of this.renderTargets.values()) {
+        gl.deleteFramebuffer(r.framebuffer);
+        if (r.stencilBuffer) gl.deleteRenderbuffer(r.stencilBuffer);
+      }
       for (const r of this.textures.values()) gl.deleteTexture(r.gpu);
     }
     dispose() {
@@ -747,6 +770,8 @@
   var VERTEX = `attribute vec2 a_position; attribute vec2 a_uv; attribute vec4 a_color;
 uniform mat3 u_projection; varying vec2 v_uv; varying vec4 v_color;
 void main(){vec3 p=u_projection*vec3(a_position,1.0);gl_Position=vec4(p.xy,0.0,1.0);v_uv=a_uv;v_color=a_color;}`;
+  var CLIP_VERTEX = `attribute vec2 a_position;uniform mat3 u_projection;uniform mat3 u_transform;void main(){vec3 p=u_projection*u_transform*vec3(a_position,1.0);gl_Position=vec4(p.xy,0.0,1.0);}`;
+  var CLIP_FRAGMENT = "precision mediump float;void main(){gl_FragColor=vec4(1.0);}";
   var FRAGMENT = `precision mediump float; uniform sampler2D u_texture; uniform float u_textured; uniform float u_radial; uniform float u_whiteFlash;
 varying vec2 v_uv; varying vec4 v_color; void main(){vec2 uv=u_radial>0.5?vec2(clamp(length(v_uv),0.0,1.0),0.5):v_uv;vec4 t=mix(vec4(1.0),texture2D(u_texture,uv),u_textured);float a=t.a*v_color.a;vec3 rgb=mix(t.rgb*v_color.rgb*v_color.a,vec3(a),u_whiteFlash);gl_FragColor=vec4(rgb,a);}`;
   var finite = (n, label) => {
@@ -758,6 +783,9 @@ varying vec2 v_uv; varying vec4 v_color; void main(){vec2 uv=u_radial>0.5?vec2(c
   }
   function point(m, x, y) {
     return { x: m[0] * x + m[2] * y + m[4], y: m[1] * x + m[3] * y + m[5] };
+  }
+  function compose(a, b) {
+    return [a[0] * b[0] + a[2] * b[1], a[1] * b[0] + a[3] * b[1], a[0] * b[2] + a[2] * b[3], a[1] * b[2] + a[3] * b[3], a[0] * b[4] + a[2] * b[5] + a[4], a[1] * b[4] + a[3] * b[5] + a[5]];
   }
   function tessellate(contours, rule) {
     const edges = [], ys = [];
@@ -805,6 +833,50 @@ varying vec2 v_uv; varying vec4 v_color; void main(){vec2 uv=u_radial>0.5?vec2(c
     const { a, b } = edge;
     return a.x + (b.x - a.x) * (y - a.y) / (b.y - a.y);
   }
+  function clipContour(points, rule) {
+    if (rule !== "nonzero" && rule !== "evenodd") throw new TypeError("clip rule must be nonzero or evenodd");
+    if (!(points instanceof Float32Array) && !(points instanceof Float64Array) && !Array.isArray(points)) throw new TypeError("Clip contour must be a flat numeric array of x/y pairs");
+    if (points.length % 2) throw new RangeError("Clip contour needs x/y pairs");
+    const flat = Float32Array.from(points);
+    if (flat.some((value) => !Number.isFinite(value))) throw new TypeError("Clip contour coordinates must be finite");
+    const count = flat.length / 2;
+    if (count > 256) throw new RangeError("Retained clip contours support at most 256 authored points");
+    let end = count;
+    if (count > 3 && flat[0] === flat[(count - 1) * 2] && flat[1] === flat[(count - 1) * 2 + 1]) end--;
+    if (end < 3) throw new RangeError("Clip contour requires at least three distinct points");
+    const contour = Array.from({ length: end }, (_, i) => ({ x: flat[i * 2], y: flat[i * 2 + 1] }));
+    for (let i = 0; i < end; i++) {
+      const a = contour[i], b = contour[(i + 1) % end];
+      if (a.x === b.x && a.y === b.y) throw new RangeError("Clip contour cannot contain consecutive duplicate points");
+    }
+    const orient = (a, b, c) => (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x), on = (a, b, p) => Math.abs(orient(a, b, p)) < 1e-9 && p.x >= Math.min(a.x, b.x) - 1e-9 && p.x <= Math.max(a.x, b.x) + 1e-9 && p.y >= Math.min(a.y, b.y) - 1e-9 && p.y <= Math.max(a.y, b.y) + 1e-9;
+    for (let i = 0; i < end; i++) for (let j = i + 1; j < end; j++) {
+      if (j === i + 1 || i === 0 && j === end - 1) continue;
+      const a = contour[i], b = contour[(i + 1) % end], c = contour[j], d = contour[(j + 1) % end], o1 = orient(a, b, c), o2 = orient(a, b, d), o3 = orient(c, d, a), o4 = orient(c, d, b);
+      if (o1 * o2 < 0 && o3 * o4 < 0 || on(a, b, c) || on(a, b, d) || on(c, d, a) || on(c, d, b)) throw new RangeError("Retained clip contours must be simple and non-self-intersecting");
+    }
+    let area = 0;
+    for (let i = 0; i < end; i++) {
+      const a = contour[i], b = contour[(i + 1) % end];
+      area += a.x * b.y - b.x * a.y;
+    }
+    if (Math.abs(area) < 1e-9) throw new RangeError("Clip contour area must be nonzero");
+    const triangles = tessellate([contour], rule);
+    if (!triangles.length) throw new RangeError("Clip contour could not be tessellated");
+    if (triangles.length / 3 > 16384) throw new RangeError("Retained clip tessellation exceeds 16384 triangles");
+    return { flat, triangles: Float32Array.from(triangles.flatMap((p) => [p.x, p.y])) };
+  }
+  function convexContour(contour) {
+    let sign = 0;
+    for (let i = 0; i < contour.length; i++) {
+      const a = contour[i], b = contour[(i + 1) % contour.length], c = contour[(i + 2) % contour.length], cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+      if (Math.abs(cross) < 1e-8) continue;
+      const next = Math.sign(cross);
+      if (sign && next !== sign) return false;
+      sign = next;
+    }
+    return sign !== 0;
+  }
   var VectorRenderer = class {
     constructor(device2, { initialVertices = 4096, maxVertices = 262144, glyphAtlas = null } = {}) {
       if (!device2?.createPipeline || !device2?.draw) throw new TypeError("A WebGLDevice is required");
@@ -815,8 +887,11 @@ varying vec2 v_uv; varying vec4 v_color; void main(){vec2 uv=u_radial>0.5?vec2(c
       this.canvas = device2.canvas;
       this.glyphAtlas = glyphAtlas;
       this.maxVertices = Math.min(maxVertices, Math.floor(device2.maxBufferBytes / 32));
+      this.maxClipPlanes = Math.max(1, Math.min(32, device2.gl.getParameter(device2.gl.MAX_FRAGMENT_UNIFORM_VECTORS) - 2));
       this.pipeline = device2.createPipeline({ vertex: VERTEX, fragment: FRAGMENT, stride: 32, attributes: [{ name: "a_position", size: 2, offset: 0 }, { name: "a_uv", size: 2, offset: 8 }, { name: "a_color", size: 4, offset: 16 }], uniforms: { u_projection: "matrix3fv", u_texture: "1i", u_textured: "1f", u_radial: "1f", u_whiteFlash: "1f" } });
+      this.clipPipeline = device2.createPipeline({ vertex: CLIP_VERTEX, fragment: CLIP_FRAGMENT, stride: 8, attributes: [{ name: "a_position", size: 2, offset: 0 }], uniforms: { u_projection: "matrix3fv", u_transform: "matrix3fv" } });
       this.buffer = device2.createVertexBuffer({ capacityBytes: initialVertices * 32 });
+      this.dynamicClipBuffer = device2.createVertexBuffer({ capacityBytes: 0 });
       this.white = device2.createTexture({ width: 1, height: 1, data: new Uint8Array([255, 255, 255, 255]) }, { format: "rgba", premultiplied: true, filter: "nearest" });
       this.vertices = new Float32Array(initialVertices * 8);
       this.count = 0;
@@ -831,11 +906,27 @@ varying vec2 v_uv; varying vec4 v_color; void main(){vec2 uv=u_radial>0.5?vec2(c
       this.activeTexture = this.white;
       this.activeRadial = false;
       this.activeWhiteFlash = false;
+      this.activeGradient = null;
+      this.stencilClips = [];
+      this.clipPaths = /* @__PURE__ */ new Map();
+      this.clipPathBytes = 0;
+      this.stencilDepth = 0;
+      this.stencilNeedsRebuild = false;
       this.state = "ready";
       this.onLost = () => {
         this.count = 0;
+        this.stencilNeedsRebuild = this.stencilClips.length > 0;
+      };
+      this.onRestored = () => {
+        if (this.state === "disposed") return;
+        try {
+          for (const record of this.clipPaths.values()) this.device.uploadVertices(record.buffer, record.triangles);
+        } catch {
+          this.state = "failed";
+        }
       };
       this.canvas.addEventListener("webglcontextlost", this.onLost);
+      this.canvas.addEventListener("webglcontextrestored", this.onRestored);
       this.projection = new Float32Array([2 / this.canvas.width, 0, 0, 0, -2 / this.canvas.height, 0, -1, 1, 1]);
     }
     _frame() {
@@ -844,6 +935,10 @@ varying vec2 v_uv; varying vec4 v_color; void main(){vec2 uv=u_radial>0.5?vec2(c
       const g = [...this.groups].reverse().find((group) => !group.direct);
       if (g) this._setProjection(g.bounds, g.target);
       else this._setProjection(null);
+      if (this.stencilNeedsRebuild) {
+        this._rebuildStencil();
+        this.stencilNeedsRebuild = false;
+      }
     }
     _setProjection(bounds, target = null) {
       const w = target?.width ?? this.canvas.width, h = target?.height ?? this.canvas.height, x = bounds?.x ?? 0, y = bounds?.y ?? 0;
@@ -913,14 +1008,19 @@ varying vec2 v_uv; varying vec4 v_color; void main(){vec2 uv=u_radial>0.5?vec2(c
     }
     save() {
       this._frame();
-      this.stack.push({ matrix: this.matrix.slice(), clips: this.clips.map((polygon) => polygon.map((p) => ({ ...p }))) });
+      this.stack.push({ matrix: this.matrix.slice(), clips: this.clips.map((polygon) => polygon.map((p) => ({ ...p }))), stencilClips: this.stencilClips.slice() });
     }
     restore() {
       this._frame();
       const s = this.stack.pop();
       if (!s) throw new Error("restore without save");
+      this._submit();
       this.matrix = s.matrix;
       this.clips = s.clips;
+      if (s.stencilClips.length !== this.stencilClips.length || s.stencilClips.some((clip, i) => clip !== this.stencilClips[i])) {
+        this.stencilClips = s.stencilClips;
+        this._rebuildStencil();
+      }
     }
     setTransform(a, b, c, d, e, f) {
       this._frame();
@@ -943,15 +1043,128 @@ varying vec2 v_uv; varying vec4 v_color; void main(){vec2 uv=u_radial>0.5?vec2(c
     clipRect(x, y, width2, height2) {
       this._frame();
       if (width2 < 0 || height2 < 0) throw new RangeError("clip size must be non-negative");
-      this.clips.push([point(this.matrix, x, y), point(this.matrix, x + width2, y), point(this.matrix, x + width2, y + height2), point(this.matrix, x, y + height2)]);
+      const contour = [point(this.matrix, x, y), point(this.matrix, x + width2, y), point(this.matrix, x + width2, y + height2), point(this.matrix, x, y + height2)];
+      if (width2 === 0 || height2 === 0) this.clips.push(contour);
+      else this._addConvexClip(contour);
     }
     /** Add the current transformed path contours to the clip stack. */
+    _addConvexClip(contour) {
+      if (contour.length > 1024) throw new RangeError("Dynamic convex clips support at most 1024 authored points");
+      if (!convexContour(contour)) throw new RangeError("clip() accepts convex contours; create a retained ClipPath for concave contours");
+      const area = contour.reduce((sum, p, i) => sum + p.x * contour[(i + 1) % contour.length].y - contour[(i + 1) % contour.length].x * p.y, 0);
+      if (Math.abs(area) < 1e-9) {
+        this.clips.push(contour);
+        return;
+      }
+      const planeCount = this.clips.reduce((sum, polygon) => sum + polygon.length, 0);
+      if (planeCount + contour.length > this.maxClipPlanes) {
+        this._pushDynamicStencilClip(contour);
+        return;
+      }
+      this.clips.push(contour);
+    }
+    _pushDynamicStencilClip(contour) {
+      if (!this.device.activeStencilAvailable) throw new Error("Clip contours exceeding the mesh edge-plane limit require stencil; no fallback is available");
+      if (this.stencilClips.length >= 255) throw new RangeError("At most 255 nested stencil clips are supported");
+      const triangles = new Float32Array((contour.length - 2) * 6);
+      let at = 0;
+      for (let i = 1; i + 1 < contour.length; i++) for (const p of [contour[0], contour[i], contour[i + 1]]) {
+        triangles[at++] = p.x;
+        triangles[at++] = p.y;
+      }
+      this._submit();
+      if (!this.stencilDepth) this.device.clear({ stencil: 0 });
+      const entry = { dynamic: true, triangles };
+      this._drawStencilClip(entry, this.stencilDepth);
+      this.stencilClips = [...this.stencilClips, entry];
+      this.stencilDepth++;
+    }
     clip(rule = "nonzero") {
       this._frame();
       if (rule !== "nonzero" && rule !== "evenodd") throw new TypeError("rule must be nonzero or evenodd");
       const contours = this.path.filter((path) => path.length >= 3).map((path) => path.map((p) => ({ ...p })));
       if (!contours.length) return;
-      this.clips.push(...contours);
+      if (contours.length !== 1) throw new RangeError("clip() accepts one contour; use a retained ClipPath for multi-contour geometry");
+      const contour = contours[0];
+      if (contour.length > 3 && contour[0].x === contour.at(-1).x && contour[0].y === contour.at(-1).y) contour.pop();
+      this._addConvexClip(contour);
+    }
+    createClipPath(points, { rule = "nonzero" } = {}) {
+      if (this.state !== "ready" || this.device.state !== "ready") throw new Error("VectorRenderer is not ready");
+      if (this.device.active) throw new Error("Create retained ClipPaths outside an active frame");
+      if (this.clipPaths.size >= 64) throw new RangeError("At most 64 retained ClipPaths may be live");
+      const geometry = clipContour(points, rule);
+      if (this.clipPathBytes + geometry.triangles.byteLength > 16 * 1024 * 1024) throw new RangeError("Retained ClipPaths exceed the 16 MiB budget");
+      const buffer = this.device.createVertexBuffer({ capacityBytes: geometry.triangles.byteLength });
+      try {
+        this.device.uploadVertices(buffer, geometry.triangles);
+      } catch (error) {
+        this.device.deleteVertexBuffer(buffer);
+        throw error;
+      }
+      const handle = Object.freeze({ renderer: this, buffer });
+      this.clipPaths.set(handle, { buffer, triangles: geometry.triangles, count: geometry.triangles.length / 2, byteLength: geometry.triangles.byteLength, contour: geometry.flat, rule });
+      this.clipPathBytes += geometry.triangles.byteLength;
+      return handle;
+    }
+    deleteClipPath(handle) {
+      const record = this.clipPaths.get(handle);
+      if (!record) return false;
+      const referenced = this.stencilClips.some((entry) => entry.handle === handle) || this.stack.some((state) => state.stencilClips.some((entry) => entry.handle === handle)) || this.groups.some((group) => group.stencilClips?.some((entry) => entry.handle === handle));
+      if (referenced) throw new Error("Remove a ClipPath from every saved clip stack before deleting it");
+      this.device.deleteVertexBuffer(record.buffer);
+      this.clipPaths.delete(handle);
+      this.clipPathBytes -= record.byteLength;
+      return true;
+    }
+    clipPath(handle, { transform = null } = {}) {
+      this._frame();
+      const record = this.clipPaths.get(handle);
+      if (!record) throw new TypeError("ClipPath owned by this VectorRenderer is required");
+      if (!this.device.activeStencilAvailable) throw new Error("Concave ClipPath requires an active stencil attachment; no fallback is available");
+      if (this.stencilClips.length >= 255) throw new RangeError("At most 255 nested stencil ClipPaths are supported");
+      const local = transform ?? IDENTITY;
+      if (local.length !== 6 || Array.from(local).some((value) => !Number.isFinite(value))) throw new TypeError("ClipPath transform needs six finite values");
+      const matrix = compose(this.matrix, local);
+      if (Math.abs(matrix[0] * matrix[3] - matrix[1] * matrix[2]) < 1e-12) throw new RangeError("ClipPath transform must be invertible");
+      this._submit();
+      if (!this.stencilDepth) this.device.clear({ stencil: 0 });
+      const entry = { handle, matrix: Float32Array.from(matrix) };
+      this._drawStencilClip(entry, this.stencilDepth);
+      this.stencilClips = [...this.stencilClips, entry];
+      this.stencilDepth++;
+    }
+    _drawStencilClip(entry, ref) {
+      let buffer, count, transform;
+      if (entry.dynamic) {
+        buffer = this.dynamicClipBuffer;
+        this.device.uploadVertices(buffer, entry.triangles);
+        count = entry.triangles.length / 2;
+        transform = Float32Array.from([1, 0, 0, 0, 1, 0, 0, 0, 1]);
+      } else {
+        const record = this.clipPaths.get(entry.handle);
+        if (!record) throw new Error("A ClipPath in the active stack was deleted");
+        buffer = record.buffer;
+        count = record.count;
+        const m = entry.matrix;
+        transform = Float32Array.from([m[0], m[1], 0, m[2], m[3], 0, m[4], m[5], 1]);
+      }
+      this.device.draw({ pipeline: this.clipPipeline, buffer, count, uniforms: { u_projection: this.projection, u_transform: transform }, blend: false, colorMask: [false, false, false, false], stencil: { func: "equal", ref, mask: 255, writeMask: 255, pass: "increment" } });
+    }
+    _rebuildStencil() {
+      if (!this.stencilClips.length) {
+        this.stencilDepth = 0;
+        this.stencilNeedsRebuild = false;
+        return;
+      }
+      if (!this.device.activeStencilAvailable) throw new Error("Saved concave ClipPath requires a stencil attachment");
+      this.device.clear({ stencil: 0 });
+      this.stencilDepth = 0;
+      for (const entry of this.stencilClips) {
+        this._drawStencilClip(entry, this.stencilDepth);
+        this.stencilDepth++;
+      }
+      this.stencilNeedsRebuild = false;
     }
     _clipTriangle(a, b, c, uv) {
       let poly = [a, b, c].map((p, i) => uv ? { ...p, u: uv[i][0], v: uv[i][1] } : p);
@@ -984,6 +1197,7 @@ varying vec2 v_uv; varying vec4 v_color; void main(){vec2 uv=u_radial>0.5?vec2(c
     }
     _emitTriangle(a, b, c, color2, uv = null) {
       rgba(color2);
+      if (this.activeGradient && !uv) uv = [this._gradientUV(a), this._gradientUV(b), this._gradientUV(c)];
       if (!this.clips.length && !uv) {
         if (this.count + 3 > this.maxVertices) this._submit();
         if (this.count + 3 > this.vertices.length / 8) {
@@ -1025,14 +1239,15 @@ varying vec2 v_uv; varying vec4 v_color; void main(){vec2 uv=u_radial>0.5?vec2(c
       if (!this.count) return;
       const texture = this.activeTexture ?? this.white;
       this.device.uploadVertices(this.buffer, this.vertices.subarray(0, this.count * 8));
-      this.device.draw({ pipeline: this.pipeline, buffer: this.buffer, count: this.count, uniforms: { u_projection: this.projection, u_texture: 0, u_textured: texture === this.white ? 0 : 1, u_radial: this.activeRadial ? 1 : 0, u_whiteFlash: this.activeWhiteFlash ? 1 : 0 }, textures: [texture], blend: "source-over" });
+      this.device.draw({ pipeline: this.pipeline, buffer: this.buffer, count: this.count, uniforms: { u_projection: this.projection, u_texture: 0, u_textured: texture === this.white ? 0 : 1, u_radial: this.activeRadial ? 1 : 0, u_whiteFlash: this.activeWhiteFlash ? 1 : 0 }, textures: [texture], blend: "source-over", stencil: this.stencilDepth ? { func: "equal", ref: this.stencilDepth, mask: 255, writeMask: 0, pass: "keep" } : false });
       this.count = 0;
     }
-    _useTexture(texture, { radial = false, whiteFlash = false } = {}) {
-      if (this.activeTexture !== texture || this.activeRadial !== radial || this.activeWhiteFlash !== whiteFlash) this._submit();
+    _useTexture(texture, { radial = false, whiteFlash = false, gradient = null } = {}) {
+      if (this.activeTexture !== texture || this.activeRadial !== radial || this.activeWhiteFlash !== whiteFlash || this.activeGradient?.gradient !== gradient?.gradient) this._submit();
       this.activeTexture = texture;
       this.activeRadial = radial;
       this.activeWhiteFlash = whiteFlash;
+      this.activeGradient = gradient;
     }
     fill(colorValue = [0, 0, 0, 1], rule = "nonzero") {
       this._frame();
@@ -1041,22 +1256,29 @@ varying vec2 v_uv; varying vec4 v_color; void main(){vec2 uv=u_radial>0.5?vec2(c
       const col = rgba(colorValue), vertices = tessellate(this.path, rule);
       for (let i = 0; i + 2 < vertices.length; i += 3) this._emitTriangle(vertices[i], vertices[i + 1], vertices[i + 2], col);
     }
-    fillRadialGradient({ texture, centerX, centerY, radius, matrixInverse, color: color2 = [1, 1, 1, 1], whiteFlash = false, rule = "nonzero" } = {}) {
+    fillRadialGradient(gradient) {
       this._frame();
-      if (!texture || !Number.isFinite(radius) || radius < 0 || !matrixInverse) throw new TypeError("valid radial gradient texture and transform are required");
-      this._useTexture(texture, { radial: true, whiteFlash });
-      const vertices = tessellate(this.path, rule), uv = (p) => {
-        const m = matrixInverse, x = m[0] * p.x + m[2] * p.y + m[4], y = m[1] * p.x + m[3] * p.y + m[5], r = Math.max(1e-8, radius);
-        return [(x - centerX) / r, (y - centerY) / r];
-      };
-      for (let i = 0; i + 2 < vertices.length; i += 3) {
-        const a = vertices[i], b = vertices[i + 1], c = vertices[i + 2];
-        this._emitTriangle(a, b, c, color2, [uv(a), uv(b), uv(c)]);
-      }
+      if (!gradient?.texture || !Number.isFinite(gradient.radius) || gradient.radius < 0 || !gradient.matrixInverse) throw new TypeError("valid radial gradient texture and transform are required");
+      this._useTexture(gradient.texture, { radial: true, whiteFlash: gradient.whiteFlash, gradient });
+      const vertices = tessellate(this.path, gradient.rule ?? "nonzero");
+      for (let i = 0; i + 2 < vertices.length; i += 3) this._emitTriangle(vertices[i], vertices[i + 1], vertices[i + 2], gradient.color);
     }
-    stroke(colorValue = [0, 0, 0, 1], width2 = 1, { lineCap = "butt", lineJoin = "miter", miterLimit = 10 } = {}) {
+    fillLinearGradient(gradient) {
       this._frame();
-      this._useTexture(this.white);
+      if (!gradient?.texture || !gradient.matrixInverse || ![gradient.x0, gradient.y0, gradient.x1, gradient.y1].every(Number.isFinite)) throw new TypeError("valid linear gradient texture and transform are required");
+      this._useTexture(gradient.texture, { whiteFlash: gradient.whiteFlash, gradient });
+      const vertices = tessellate(this.path, gradient.rule ?? "nonzero");
+      for (let i = 0; i + 2 < vertices.length; i += 3) this._emitTriangle(vertices[i], vertices[i + 1], vertices[i + 2], gradient.color);
+    }
+    _gradientUV(p) {
+      const g = this.activeGradient, m = g.matrixInverse, x = m[0] * p.x + m[2] * p.y + m[4], y = m[1] * p.x + m[3] * p.y + m[5];
+      if (this.activeRadial) return [(x - g.centerX) / Math.max(1e-8, g.radius), (y - g.centerY) / Math.max(1e-8, g.radius)];
+      const dx = g.x1 - g.x0, dy = g.y1 - g.y0, denom = dx * dx + dy * dy;
+      return [denom ? ((x - g.x0) * dx + (y - g.y0) * dy) / denom : 1, 0.5];
+    }
+    stroke(colorValue = [0, 0, 0, 1], width2 = 1, { lineCap = "butt", lineJoin = "miter", miterLimit = 10 } = {}, gradient = null) {
+      this._frame();
+      this._useTexture(gradient?.texture ?? this.white, { radial: gradient?.kind === "radial", whiteFlash: gradient?.whiteFlash ?? false, gradient });
       rgba(colorValue);
       if (!Number.isFinite(width2) || width2 <= 0) throw new RangeError("line width must be positive");
       if (!["butt", "round", "square"].includes(lineCap) || !["miter", "round", "bevel"].includes(lineJoin) || !Number.isFinite(miterLimit) || miterLimit <= 0) throw new TypeError("invalid stroke style");
@@ -1184,18 +1406,19 @@ varying vec2 v_uv; varying vec4 v_color; void main(){vec2 uv=u_radial>0.5?vec2(c
       }
       const depth = this.groups.filter((g) => !g.direct).length;
       let target = this.groupTargets[depth];
-      const allocation = (n) => Math.min(this.device.maxTextureSize, 2 ** Math.ceil(Math.log2(n)));
-      const needW = allocation(width2), needH = allocation(height2);
-      if (!target || target.width < width2 || target.height < height2) {
+      const allocation = (n) => Math.min(this.device.maxTextureSize, 2 ** Math.ceil(Math.log2(n))), needW = allocation(width2), needH = allocation(height2), needStencil = this.device.stencilAvailable;
+      if (!target || target.width < width2 || target.height < height2 || Boolean(this.device.renderTargets.get(target)?.stencil) !== needStencil) {
         if (target) this.device.deleteRenderTarget(target);
-        target = this.groupTargets[depth] = this.device.createRenderTarget(needW, needH, { filter: "nearest" });
+        target = this.groupTargets[depth] = this.device.createRenderTarget(needW, needH, { filter: "nearest", stencil: needStencil });
       }
-      const group = { target, opacity, bounds: { x, y, width: width2, height: height2 }, matrix: this.matrix.slice(), clips: this.clips, projection: this.projection.slice() };
+      const group = { target, opacity, bounds: { x, y, width: width2, height: height2 }, matrix: this.matrix.slice(), clips: this.clips, stencilClips: this.stencilClips.slice(), projection: this.projection.slice() };
       this.device.bindRenderTarget(target);
-      this.device.clear({ color: [0, 0, 0, 0] });
       this.groups.push(group);
-      this.clips = [...this.clips, [{ x, y }, { x: right, y }, { x: right, y: bottom }, { x, y: bottom }]];
       this._setProjection(group.bounds, target);
+      this.device.clear({ color: [0, 0, 0, 0], ...this.device.activeStencilAvailable ? { stencil: 0 } : {} });
+      this.stencilDepth = 0;
+      if (this.stencilClips.length) this._rebuildStencil();
+      this.clips = [...this.clips, [{ x, y }, { x: right, y }, { x: right, y: bottom }, { x, y: bottom }]];
     }
     endGroup() {
       this._frame();
@@ -1206,6 +1429,8 @@ varying vec2 v_uv; varying vec4 v_color; void main(){vec2 uv=u_radial>0.5?vec2(c
       this.device.unbindRenderTarget(group.target);
       this.matrix = group.matrix;
       this.clips = group.clips;
+      this.stencilClips = group.stencilClips;
+      this.stencilDepth = this.stencilClips.length;
       this.projection.set(group.projection);
       this._useTexture(group.target);
       const { x, y, width: width2, height: height2 } = group.bounds, u = width2 / group.target.width, v = height2 / group.target.height, a = { x, y }, b = { x: x + width2, y }, c = { x: x + width2, y: y + height2 }, d = { x, y: y + height2 }, alpha = [1, 1, 1, group.opacity];
@@ -1217,12 +1442,18 @@ varying vec2 v_uv; varying vec4 v_color; void main(){vec2 uv=u_radial>0.5?vec2(c
     dispose() {
       if (this.state === "disposed") return;
       this.canvas.removeEventListener("webglcontextlost", this.onLost);
+      this.canvas.removeEventListener("webglcontextrestored", this.onRestored);
       this.count = 0;
       for (const target of this.groupTargets) this.device.deleteRenderTarget(target);
+      for (const record of this.clipPaths.values()) this.device.deleteVertexBuffer(record.buffer);
+      this.clipPaths.clear();
+      this.clipPathBytes = 0;
+      this.device.deleteVertexBuffer(this.dynamicClipBuffer);
       this.device.deleteVertexBuffer(this.buffer);
+      this.device.deletePipeline(this.clipPipeline);
       this.device.deletePipeline(this.pipeline);
       this.device.deleteTexture(this.white);
-      this.buffer = this.pipeline = this.white = null;
+      this.buffer = this.dynamicClipBuffer = this.clipPipeline = this.pipeline = this.white = null;
       this.state = "disposed";
     }
   };
