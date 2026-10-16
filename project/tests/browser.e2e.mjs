@@ -1,5 +1,6 @@
 import { runFrameChecks } from '../../modules/interpolation/tests/presentation-frame.browser.js';
 import { exerciseVectorAssets } from '../../modules/vector-assets/tests/runtime.browser.mjs';
+import { exerciseVectorAssetQualityExample } from '../../modules/vector-assets/tests/quality-example.browser.mjs';
 import { exerciseWebGLDevice, exerciseVectorRenderer, exerciseFontAssetLoader } from '../../modules/rendering/tests/device.browser.mjs';
 import { exerciseReusableMeshes } from '../../modules/rendering/tests/mesh.browser.mjs';
 import { exerciseRendererInterleaving } from '../../modules/rendering/tests/interop.browser.mjs';
@@ -518,6 +519,15 @@ const { createSession, profiles } = await import('/dist/rollback.js');
   });
   await vectorAssetPage.close();
   report.stages.push('single SVG SSOT compiled through pinned Three SVGLoader, rendered as shared retained GameKit WebGL mesh with deterministic Anime.js seek');
+
+  const qualityExamplePage = await browser.newPage({ viewport: { width: 1200, height: 900 }, deviceScaleFactor: 1 });
+  const qualityExampleErrors = [];
+  qualityExamplePage.on('pageerror', error => qualityExampleErrors.push(error.message));
+  report.vectorAssetQuality = await exerciseVectorAssetQualityExample(qualityExamplePage,
+    `http://127.0.0.1:${server.address().port}/dist/previews/vector-assets.html`);
+  assert.equal(qualityExampleErrors.length, 0, qualityExampleErrors.join('\n'));
+  await qualityExamplePage.close();
+  report.stages.push('vector-assets example loads a GitHub SVG URL and compares independently configurable curve/stroke tessellation');
 
   const sourcePath = 'modules/vector-assets/assets/seed-scout.svg';
   const sourceBytes = await readFile(resolve(root, sourcePath));
