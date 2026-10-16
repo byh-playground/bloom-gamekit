@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const suites = {
   previews: ['project/tests/previews.mjs'],
-  core: ['modules/vector-assets/tests/compiler.mjs', 'project/previews.mjs', 'project/tests/browser.e2e.mjs'],
+  core: ['modules/vector-assets/tests/compiler.mjs', 'project/previews.mjs', 'modules/rollback/scripts/local-fastpath-browser.mjs', 'project/tests/browser.e2e.mjs'],
   consumer: ['modules/scenario/tests/bounko.mjs'],
   execution: ['modules/scenario/tests/browser.mjs'],
   audio: ['modules/audio/scripts/check.mjs'],

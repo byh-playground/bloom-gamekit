@@ -203,6 +203,8 @@ export interface RoomSessionEvent {
 export interface RoomSessionOptions {
   /** strict 기본. available은 재결합 시 한 분기의 진행을 버릴 수 있다. */
   availability?: Partial<AvailabilityOptions> & { autoTransfer?: Partial<CoordinatorTransferOptions> };
+  /** strict local lockstep에서 SDK 내부 snapshot/checkpoint/hash/replay 생성을 생략한다. 앱의 adapter 저장 기능은 그대로 쓴다. */
+  localFastPath?: boolean;
   /** 게임 방 소유자 식별. coordinator 이관으로 변경되지 않는다. */
   roomOwnerId?: PlayerId;
   mode?: 'local' | 'online'; room?: RoomTransport; localPlayerId?: PlayerId; sessionId?: string;
@@ -238,7 +240,7 @@ export interface RoomSessionMetrics extends Partial<SessionMetrics> {
 export class RoomSession {
   readonly localInputState: LocalInputState | null;
   constructor(options: RoomSessionOptions);
-  readonly mode: 'local' | 'online'; readonly room?: RoomTransport;
+  readonly mode: 'local' | 'online'; readonly localFastPath: boolean; readonly room?: RoomTransport;
   readonly localPlayerId: PlayerId; readonly sessionId: string; readonly inputSize: number;
   readonly simulationVersion: string; readonly seed: number; readonly players: readonly PlayerId[];
   readonly coordinatorId: PlayerId; readonly epoch: number; readonly baseTick: number;

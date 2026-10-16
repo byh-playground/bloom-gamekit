@@ -1,4 +1,4 @@
-import { createSession, createSessionFromBoundary, delegateRoomRecovery } from './core.js';
+import { createSession, createSessionFromBoundary, createLocalFastPathSession, delegateRoomRecovery } from './core.js';
 import { Availability, availabilityConfig } from './availability.js';
 import { createBootstrapReplay } from './bootstrap.js';
 import { profiles, PROTOCOL_VERSION, CHUNK_SIZE, MAGIC } from '../_rollback-shared/protocol.js';
@@ -15,8 +15,9 @@ export function createRoomSession(options) { return new RoomSession(options); }
 export class RoomSession {
   constructor({ mode = 'local', room, localPlayerId = room?.localPlayerId ?? 'local', sessionId = room?.sessionId ?? 'local',
     simulationVersion, seed = 1, inputSize, profile = profiles.lockstep, adapter, membership = {}, clock = nowMs,
-    onEvent = () => {}, availability = {}, roomOwnerId = room?.coordinatorId ?? localPlayerId } = {}) {
+    onEvent = () => {}, availability = {}, roomOwnerId = room?.coordinatorId ?? localPlayerId, localFastPath = false } = {}) {
     if (!['local', 'online'].includes(mode) || !idValid(localPlayerId) || !idValid(sessionId)) throw new TypeError('room session identity/mode');
+    if (typeof localFastPath !== 'boolean') throw new TypeError('localFastPath');
     integer(inputSize, 'inputSize', 1, 1024);
     if (!idValid(simulationVersion) || sessionId.length > 116) throw new TypeError('room simulationVersion/sessionId');
     if (mode === 'local' && room) throw new TypeError('local room cannot own online transport');
@@ -32,9 +33,13 @@ export class RoomSession {
     integer(this.membership.maxCatchupSteps, 'maxCatchupSteps', 1, 8192);
     integer(this.membership.maxPlayers, 'maxPlayers', 1, 8); integer(this.membership.maxTransferBytes, 'maxTransferBytes', CHUNK_SIZE, 128 * 1024 * 1024);
     const simulationMode = profile.mode ?? 'lockstep';
+    if (localFastPath && (mode !== 'local' || simulationMode !== 'lockstep')) throw new TypeError('localFastPath requires a local lockstep RoomSession');
     this.profile = Object.freeze({ ...(simulationMode === 'rollback' ? profiles.action : profiles.lockstep), ...profile, mode: simulationMode,
       adaptiveInputDelay: simulationMode === 'rollback' ? profile.adaptiveInputDelay ?? true : false });
-    this.availability = availabilityConfig(availability); if (!idValid(roomOwnerId)) throw new TypeError('roomOwnerId'); this.roomOwnerId = roomOwnerId;
+    this.localFastPath = localFastPath;
+    this.availability = availabilityConfig(availability);
+    if (localFastPath && this.availability.mode !== 'strict') throw new TypeError('localFastPath requires strict availability');
+    if (!idValid(roomOwnerId)) throw new TypeError('roomOwnerId'); this.roomOwnerId = roomOwnerId;
     this.codec = createValueCodec({ maxBytes: this.membership.maxTransferBytes, maxEntries: Math.min(this.membership.maxTransferBytes, 1000000), maxDepth: 32 });
     this.contract = hashBytes(this.codec.encode({ version: 2, protocol: PROTOCOL_VERSION, mode: this.profile.mode, rollbackWindowTicks: this.profile.rollbackWindowTicks, stateHistorySize: this.profile.stateHistorySize, simulationVersion, seed, inputSize, maxPlayers: this.membership.maxPlayers,
       tickRate: this.profile.tickRate, baseInputDelayTicks: this.profile.baseInputDelayTicks, checksumInterval: this.profile.checksumInterval,
@@ -158,7 +163,9 @@ export class RoomSession {
       sessionId: this.sessionId + ':' + this.epoch, simulationVersion: this.simulationVersion, seed: this.seed, inputSize: this.inputSize,
       profile: this.profile, adapter: this._adapter(), localCommandState: commandState, initialCommandSequences: commandSequences ? Object.fromEntries(this.activePlayers.map(id => [id, commandSequences[id] ?? 0])) : undefined, clock: this.clock, recordReplay: false,
       onEvent: event => { if (event.type !== 'closed') this._event(event.type, { ...event, tick: event.tick + this.baseTick, ...(event.schedule?{schedule:{...event.schedule,baseTick:this.baseTick}}:{}), ...(Array.isArray(event.commands)?{commands:event.commands.map(c=>({...c,executeTick:c.executeTick+this.baseTick}))}:{}), ...(Number.isSafeInteger(event.executeTick) ? { executeTick: event.executeTick + this.baseTick } : {}), ...(['rollback', 'recovered', 'reconciled'].includes(event.type) ? { from: event.from + this.baseTick, target: event.target + this.baseTick } : {}) }); } };
-    this._core = boundary ? createSessionFromBoundary(options, boundary.bytes, boundary.hash) : createSession(options);
+    if (this.localFastPath && boundary) throw new Error('local fast path cannot install a recovery boundary');
+    this._core = boundary ? createSessionFromBoundary(options, boundary.bytes, boundary.hash) :
+      this.localFastPath ? createLocalFastPathSession(options) : createSession(options);
     if (this._availability) delegateRoomRecovery(this._core, () => { this._availability.requested = 'state-mismatch'; });
     this.profile = this._core.profile;
     for (const [id, link] of this._links) this._attachCore(id, link);
