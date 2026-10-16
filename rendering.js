@@ -1226,16 +1226,33 @@ var ATTRIBUTES = [
   { name: "a_part", size: 1, offset: 40 }
 ];
 var INSTANCE_ATTRIBUTES = ["i_row0", "i_row1", "i_color", "i_params"].map((name, i) => ({ name, size: 4, offset: i * 16, source: "instance" }));
-function shader(instanced, partCount, morphCount, clipped) {
+function shader(instanced, partCount, morphCount, clipped, nonScalingStroke) {
   const inputs = ["i_row0", "i_row1", "i_color", "i_params"].map((name) => `${instanced ? "attribute" : "uniform"} vec4 ${name};`).join("\n");
   const local = morphCount ? "a_position+a_morph.xy*(i_params.x" + (partCount > 1 ? "+pose.x" : "") + ")" + (morphCount > 1 ? "+a_morph.zw*(i_params.y" + (partCount > 1 ? "+pose.y" : "") + ")" : "") : "a_position";
+  const strokeInputs = nonScalingStroke ? "attribute vec4 a_stroke;uniform vec2 u_strokeViewportSize;" : "";
+  const strokeVarying = clipped && nonScalingStroke ? "uniform mat3 u_inverseProjection;" : "";
+  const strokePosition = nonScalingStroke ? `
+vec2 tangentLocal=local+a_stroke.xy;
+vec2 tangentPart=${partCount > 1 ? "vec2(dot(row0.xyz,vec3(tangentLocal,1.0)),dot(row1.xyz,vec3(tangentLocal,1.0)))" : "tangentLocal"};
+vec2 tangentWorld=vec2(dot(i_row0.xyz,vec3(tangentPart,1.0)),dot(i_row1.xyz,vec3(tangentPart,1.0)));
+vec3 tangentProjected=u_projection*vec3(tangentWorld,1.0);
+vec2 tangent=(tangentProjected.xy/tangentProjected.z-projected.xy/projected.z)*u_strokeViewportSize*0.5;float tangentLength=length(tangent);
+if(tangentLength<0.000001){projected.z=0.0;}
+else{
+  tangent/=tangentLength;vec2 normal=vec2(-tangent.y,tangent.x);
+  vec2 pxOffset=tangent*a_stroke.z+normal*a_stroke.w;
+  vec2 clipOffset=pxOffset*2.0/u_strokeViewportSize;
+  projected.xy+=clipOffset*projected.z;
+  ${clipped ? "vec3 clippedWorld=u_inverseProjection*vec3(projected.xy,projected.z);v_position=clippedWorld.xy/clippedWorld.z;" : ""}
+}` : "";
   return `attribute vec2 a_position; attribute vec4 a_color; ${morphCount ? "attribute vec4 a_morph;" : ""} ${partCount > 1 ? "attribute float a_part;uniform vec4 u_parts[" + partCount * 3 + "];" : ""}
-${inputs}
-uniform mat3 u_projection; varying vec4 v_color; ${clipped ? "varying vec2 v_position;" : ""}
+${inputs}${strokeInputs}
+uniform mat3 u_projection; varying vec4 v_color; ${clipped ? "varying vec2 v_position;" : ""}${strokeVarying}
 void main(){${partCount > 1 ? "int index=int(a_part)*3;vec4 row0=u_parts[index];vec4 row1=u_parts[index+1];vec4 pose=u_parts[index+2];" : ""}
 vec2 local=${local};vec2 p=${partCount > 1 ? "vec2(dot(row0.xyz,vec3(local,1.0)),dot(row1.xyz,vec3(local,1.0)))" : "local"};
 vec2 world=vec2(dot(i_row0.xyz,vec3(p,1.0)),dot(i_row1.xyz,vec3(p,1.0)));
-vec3 projected=u_projection*vec3(world,1.0);gl_Position=vec4(projected.xy,(i_params.w+${partCount > 1 ? "pose.w" : "0.0"})*projected.z,projected.z);${clipped ? "v_position=world;" : ""}
+vec3 projected=u_projection*vec3(world,1.0);${clipped ? "v_position=world;" : ""}${strokePosition}
+gl_Position=vec4(projected.xy,(i_params.w+${partCount > 1 ? "pose.w" : "0.0"})*projected.z,projected.z);
 vec4 color=mix(a_color*i_color,i_color,i_row1.w);color.a*=i_row0.w${partCount > 1 ? "*pose.z" : ""};
 color.rgb=mix(color.rgb,vec3(1.0),i_params.z);v_color=vec4(color.rgb*color.a,color.a);}`;
 }
@@ -1248,6 +1265,13 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
 function finiteArray2(value, size, name) {
   if (!value || value.length !== size) throw new TypeError(`${name}: ${size} finite numbers required`);
   for (let i = 0; i < size; i++) if (!Number.isFinite(value[i])) throw new TypeError(`${name}: ${size} finite numbers required`);
+}
+function invertProjection(projection) {
+  const [a, d, g, b, e, h, c, f, i] = projection;
+  const A = e * i - f * h, B = f * g - d * i, C = d * h - e * g, D = c * h - b * i, E = a * i - c * g, F = b * g - a * h, G = b * f - c * e, H = c * d - a * f, I = a * e - b * d;
+  const determinant = a * A + b * B + c * C;
+  if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-12) throw new RangeError("Non-scaling strokes require an invertible projection");
+  return Float32Array.from([A, B, C, D, E, F, G, H, I], (value) => value / determinant);
 }
 function packParts(parts, count, output) {
   if (parts !== null && (!Array.isArray(parts) || parts.length !== count)) throw new TypeError("One pose per authored mesh part required");
@@ -1345,19 +1369,25 @@ var MeshRenderer = class {
     this.disposed = false;
   }
   _pipeline(mesh, clipped) {
-    const key = mesh.partCount + ":" + mesh.morphCount + ":" + Number(clipped);
+    const key = mesh.partCount + ":" + mesh.morphCount + ":" + Number(clipped) + ":" + Number(mesh.hasNonScalingStroke);
     let pipeline = this.pipelines.get(key);
     if (pipeline) return pipeline;
     const uniforms = { u_projection: "matrix3fv" };
     if (clipped) Object.assign(uniforms, { "u_planes[0]": "3fv", u_planeCount: "1i" });
+    if (mesh.hasNonScalingStroke) {
+      uniforms.u_strokeViewportSize = "2f";
+      if (clipped) uniforms.u_inverseProjection = "matrix3fv";
+    }
     if (mesh.partCount > 1) uniforms["u_parts[0]"] = "4fv";
     if (!this.instanced) for (const name of ["i_row0", "i_row1", "i_color", "i_params"]) uniforms[name] = "4f";
     pipeline = this.device.createPipeline({
-      vertex: shader(this.instanced, mesh.partCount, mesh.morphCount, clipped),
+      vertex: shader(this.instanced, mesh.partCount, mesh.morphCount, clipped, mesh.hasNonScalingStroke),
       fragment: fragment(this.maxPlanes, clipped),
-      stride: 44,
+      stride: mesh.strideFloats * 4,
       ...this.instanced ? { instanceStride: 64 } : {},
-      attributes: [...ATTRIBUTES, ...this.instanced ? INSTANCE_ATTRIBUTES : []],
+      attributes: [...mesh.hasNonScalingStroke ? ATTRIBUTES.filter((attribute) => attribute.name !== "a_morph") : ATTRIBUTES, ...mesh.hasNonScalingStroke ? [
+        { name: "a_stroke", size: 4, offset: 24 }
+      ] : [], ...this.instanced ? INSTANCE_ATTRIBUTES : []],
       uniforms
     });
     this.pipelines.set(key, pipeline);
@@ -1367,15 +1397,17 @@ var MeshRenderer = class {
     this._ready();
     const indices = data?.indices;
     const expressionIndices = data?.expressionIndices === void 0 ? {} : data.expressionIndices;
-    if (!(data?.vertices instanceof Float32Array) || data.vertices.length < 33 || data.vertices.length % 11 || data.strideFloats !== 11 || !Number.isSafeInteger(data.partCount) || data.partCount < 1 || data.partCount > 16 || !Number.isSafeInteger(data.morphCount) || data.morphCount < 0 || data.morphCount > 2 || indices !== void 0 && (!(indices instanceof Uint16Array) || indices.length < 3 || indices.length % 3 || data.vertices.length / 11 > 65536 || indices.some((index) => index >= data.vertices.length / 11)) || indices === void 0 && data.vertices.length % 33 || !expressionIndices || typeof expressionIndices !== "object" || Array.isArray(expressionIndices)) throw new TypeError("Mesh geometry with complete triangles and 1..16 parts required");
+    const nonScalingStroke = data?.nonScalingStroke ?? false;
+    if (!(data?.vertices instanceof Float32Array) || data.vertices.length < 33 || data.vertices.length % 11 || data.strideFloats !== 11 || typeof nonScalingStroke !== "boolean" || !Number.isSafeInteger(data.partCount) || data.partCount < 1 || data.partCount > 16 || !Number.isSafeInteger(data.morphCount) || data.morphCount < 0 || data.morphCount > 2 || indices !== void 0 && (!(indices instanceof Uint16Array) || indices.length < 3 || indices.length % 3 || data.vertices.length / 11 > 65536 || indices.some((index) => index >= data.vertices.length / 11)) || indices === void 0 && data.vertices.length % 33 || !expressionIndices || typeof expressionIndices !== "object" || Array.isArray(expressionIndices)) throw new TypeError("Mesh geometry with complete triangles and 1..16 parts required");
     const variantEntries = Object.entries(expressionIndices);
     if (variantEntries.some(([name, variant]) => !name || !(variant instanceof Uint16Array) || variant.length % 3 || variant.some((index) => index >= data.vertices.length / 11))) throw new TypeError("Invalid expression index variants");
     if (data.vertices.some((n) => !Number.isFinite(n))) throw new TypeError("Mesh values must be finite");
     for (let i = 0; i < data.vertices.length; i++) {
       if (i % 11 >= 2 && i % 11 < 6 && (data.vertices[i] < 0 || data.vertices[i] > 1)) throw new RangeError("Mesh RGBA channels must be in [0,1]");
       if (i % 11 === 10 && (!Number.isSafeInteger(data.vertices[i]) || data.vertices[i] < 0 || data.vertices[i] >= data.partCount)) throw new RangeError("Mesh part index outside partCount");
-      if (i % 11 >= 6 + data.morphCount * 2 && i % 11 < 10 && data.vertices[i] !== 0) throw new RangeError("Mesh deltas exceed declared morphCount");
+      if (i % 11 >= 6 + data.morphCount * 2 && i % 11 < 10 && data.vertices[i] !== 0 && !nonScalingStroke) throw new RangeError("Mesh deltas exceed declared morphCount");
     }
+    if (nonScalingStroke && data.morphCount) throw new TypeError("Non-scaling stroke meshes cannot use vertex morph targets");
     const variantByteLength = variantEntries.reduce((total, [, variant]) => total + variant.byteLength, 0);
     const byteLength = data.vertices.byteLength + (indices?.byteLength ?? 0) + variantByteLength;
     if (this.meshes.size >= this.maxMeshes || this.bytes + byteLength > this.maxMeshBytes) throw new RangeError("Retained mesh budget exceeded");
@@ -1411,7 +1443,9 @@ var MeshRenderer = class {
       count: ownedIndices?.length ?? vertices.length / 11,
       byteLength,
       partCount: data.partCount,
-      morphCount: data.morphCount
+      morphCount: data.morphCount,
+      strideFloats: 11,
+      hasNonScalingStroke: nonScalingStroke
     });
     this.meshes.add(mesh);
     this.bytes += byteLength;
@@ -1447,7 +1481,8 @@ var MeshRenderer = class {
       depthWrite = false,
       depthWriteAlphaThreshold = null,
       depthFunc = "lequal",
-      indexVariant = null
+      indexVariant = null,
+      strokeViewport = null
     } = options;
     this._drawMeshInstances(mesh, {
       matrices: matrix,
@@ -1465,7 +1500,8 @@ var MeshRenderer = class {
       depthTest,
       depthWrite,
       depthWriteAlphaThreshold,
-      depthFunc
+      depthFunc,
+      strokeViewport
     });
   }
   /** Internal ordered instance append used when one retained pose has several transforms. */
@@ -1488,7 +1524,8 @@ var MeshRenderer = class {
     depthWrite = false,
     depthWriteAlphaThreshold = null,
     depthFunc = "lequal",
-    indexVariant = null
+    indexVariant = null,
+    strokeViewport = null
   } = {}) {
     this._ready();
     if (!this.meshes.has(mesh)) throw new TypeError("Mesh owned by this renderer required");
@@ -1499,6 +1536,18 @@ var MeshRenderer = class {
     finiteArray2(projection, 9, "projection");
     finiteArray2(morph, 2, "morph");
     finiteArray2(color2, 4, "color");
+    let strokeSize = null, inverseStrokeProjection = null;
+    if (mesh.hasNonScalingStroke) {
+      if (strokeViewport === null) {
+        if (this.device.activeRenderTarget) throw new Error("A strokeViewport is required for non-scaling strokes rendered to a render target");
+        strokeSize = [this.device.canvas.clientWidth, this.device.canvas.clientHeight];
+      } else {
+        finiteArray2(strokeViewport, 2, "strokeViewport");
+        strokeSize = [strokeViewport[0], strokeViewport[1]];
+      }
+      if (strokeSize.some((value) => !Number.isFinite(value) || value <= 0)) throw new RangeError("Non-scaling strokes require a positive CSS-pixel viewport size");
+      inverseStrokeProjection = invertProjection(projection);
+    }
     if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1 || color2.some((n) => n < 0 || n > 1)) throw new RangeError("RGBA/alpha in [0,1] required");
     if (!Number.isFinite(depth) || depth < -1 || depth > 1) throw new RangeError("depth must be in [-1,1]");
     if (typeof depthTest !== "boolean" || typeof depthWrite !== "boolean") throw new TypeError("depthTest and depthWrite must be booleans");
@@ -1530,6 +1579,8 @@ var MeshRenderer = class {
           clip,
           depthStateKey,
           indexVariant,
+          strokeSize,
+          inverseStrokeProjection,
           depthState: { test: depthTest, write: depthWrite, func: depthFunc },
           parts: this.partScratch.slice(0, mesh.partCount > 1 ? mesh.partCount * 12 : 0)
         };
@@ -1570,7 +1621,7 @@ var MeshRenderer = class {
       }
       return;
     }
-    const sharedMismatch = (current) => current.mesh !== mesh || current.indexVariant !== indexVariant || current.clip.key !== clip.key || projection.some((n, i) => Math.fround(n) !== current.projection[i]) || mesh.partCount > 1 && current.parts.some((n, i) => n !== this.partScratch[i]);
+    const sharedMismatch = (current) => current.mesh !== mesh || current.indexVariant !== indexVariant || current.clip.key !== clip.key || projection.some((n, i) => Math.fround(n) !== current.projection[i]) || strokeSize && strokeSize.some((n, i) => n !== current.strokeSize?.[i]) || mesh.partCount > 1 && current.parts.some((n, i) => n !== this.partScratch[i]);
     if (this.pending && (sharedMismatch(this.pending) || this.pending.depthStateKey !== depthStateKey || this.count === this.maxInstances)) this.flush();
     if (variant?.count === 0) return;
     const indices = variant?.indices ?? mesh.indices;
@@ -1624,7 +1675,7 @@ var MeshRenderer = class {
         data2[at2 + 13] = weight12;
         data2[at2 + 14] = whiteFlash ? 1 : 0;
         data2[at2 + 15] = depth + (singlePart ? part[11] : 0);
-        this._drawAlphaDepthRuns(mesh, variant, projection, clip, part, runs, depthTest, depthFunc);
+        this._drawAlphaDepthRuns(mesh, variant, projection, clip, part, runs, depthTest, depthFunc, strokeSize, inverseStrokeProjection);
         continue;
       }
       const write = runs[2], stateKey = Number(depthTest) + ":" + Number(write) + ":" + depthFunc;
@@ -1635,6 +1686,8 @@ var MeshRenderer = class {
         clip,
         depthStateKey: stateKey,
         indexVariant,
+        strokeSize,
+        inverseStrokeProjection,
         depthState: { test: depthTest, write, func: depthFunc },
         parts: this.partScratch.slice(0, mesh.partCount > 1 ? mesh.partCount * 12 : 0)
       };
@@ -1698,7 +1751,7 @@ var MeshRenderer = class {
       for (let triangle = 0; triangle < triangleCount; triangle++) {
         let write = true;
         for (let corner = 0; corner < 3; corner++) {
-          const indexOffset = triangle * 3 + corner, vertexOffset = (indices ? indices[indexOffset] : indexOffset) * 11;
+          const indexOffset = triangle * 3 + corner, vertexOffset = (indices ? indices[indexOffset] : indexOffset) * mesh.strideFloats;
           const partIndex = mesh.vertices[vertexOffset + 10];
           const vertexAlpha = forceColor ? 1 : mesh.vertices[vertexOffset + 5];
           const effectiveAlpha = opacity * vertexAlpha * this.partScratch[partIndex * 12 + 10];
@@ -1727,11 +1780,12 @@ var MeshRenderer = class {
     this.alphaRunScratch = [];
     return runs;
   }
-  _drawAlphaDepthRuns(mesh, variant, projection, clip, parts, runs, depthTest, depthFunc) {
+  _drawAlphaDepthRuns(mesh, variant, projection, clip, parts, runs, depthTest, depthFunc, strokeSize, inverseStrokeProjection) {
     this.planes.fill(0);
     if (clip.values) this.planes.set(clip.values);
     const pipeline = this._pipeline(mesh, clip.count > 0), uniforms = { u_projection: projection };
     if (clip.count) Object.assign(uniforms, { "u_planes[0]": this.planes, u_planeCount: clip.count });
+    if (mesh.hasNonScalingStroke) Object.assign(uniforms, { u_strokeViewportSize: strokeSize, ...clip.count ? { u_inverseProjection: inverseStrokeProjection } : {} });
     if (mesh.partCount > 1) uniforms["u_parts[0]"] = parts;
     if (!this.instanced) {
       for (let j = 0; j < 4; j++) uniforms[["i_row0", "i_row1", "i_color", "i_params"][j]] = this.instances.subarray(j * 4, j * 4 + 4);
@@ -1761,12 +1815,13 @@ var MeshRenderer = class {
   flush() {
     if (!this.count) return;
     this._ready();
-    const { mesh, projection, clip, parts, depthState, indexVariant } = this.pending;
+    const { mesh, projection, clip, parts, depthState, indexVariant, strokeSize, inverseStrokeProjection } = this.pending;
     const variant = indexVariant === null ? null : mesh.expressionIndices.get(indexVariant);
     this.planes.fill(0);
     if (clip.values) this.planes.set(clip.values);
     const pipeline = this._pipeline(mesh, clip.count > 0), uniforms = { u_projection: projection };
     if (clip.count) Object.assign(uniforms, { "u_planes[0]": this.planes, u_planeCount: clip.count });
+    if (mesh.hasNonScalingStroke) Object.assign(uniforms, { u_strokeViewportSize: strokeSize, ...clip.count ? { u_inverseProjection: inverseStrokeProjection } : {} });
     if (mesh.partCount > 1) uniforms["u_parts[0]"] = parts;
     if (this.instanced) {
       this.device.uploadVertices(this.instanceBuffer, this.instances.subarray(0, this.count * 16));
@@ -2708,7 +2763,7 @@ var MeshBuilder = class _MeshBuilder {
   }
   /** Packs compatible authored geometries into one painter-ordered mesh without sorting. */
   static combine(geometries) {
-    if (!Array.isArray(geometries) || !geometries.length || geometries.some((geometry) => !Number.isSafeInteger(geometry?.partCount) || geometry.partCount < 1 || geometry.strideFloats !== 11 || !(geometry.vertices instanceof Float32Array) || geometry.vertices.length < 33 || geometry.vertices.length % 11 || geometry.indices !== void 0 && (!(geometry.indices instanceof Uint16Array) || geometry.indices.length < 3 || geometry.indices.length % 3 || geometry.vertices.length / 11 > 65536 || geometry.indices.some((index) => index >= geometry.vertices.length / 11)) || geometry.indices === void 0 && geometry.vertices.length % 33 || !Number.isSafeInteger(geometry.morphCount) || geometry.morphCount < 0 || geometry.morphCount > 2) || geometries.reduce((count, geometry) => count + geometry.partCount, 0) > 16) {
+    if (!Array.isArray(geometries) || !geometries.length || geometries.some((geometry) => !Number.isSafeInteger(geometry?.partCount) || geometry.partCount < 1 || geometry.strideFloats !== 11 || !(geometry.vertices instanceof Float32Array) || geometry.vertices.length < 33 || geometry.vertices.length % 11 || geometry.nonScalingStroke !== void 0 && typeof geometry.nonScalingStroke !== "boolean" || geometry.nonScalingStroke && geometry.morphCount !== 0 || geometry.indices !== void 0 && (!(geometry.indices instanceof Uint16Array) || geometry.indices.length < 3 || geometry.indices.length % 3 || geometry.vertices.length / 11 > 65536 || geometry.indices.some((index) => index >= geometry.vertices.length / 11)) || geometry.indices === void 0 && geometry.vertices.length % 33 || !Number.isSafeInteger(geometry.morphCount) || geometry.morphCount < 0 || geometry.morphCount > 2) || geometries.reduce((count, geometry) => count + geometry.partCount, 0) > 16) {
       throw new TypeError("MeshBuilder geometries must fit within 16 parts and use the 11-float schema");
     }
     const vertexCount = geometries.reduce((count, geometry) => count + geometry.vertices.length / 11, 0);
@@ -2721,6 +2776,8 @@ var MeshBuilder = class _MeshBuilder {
     const vertices = new Float32Array(vertexCount * 11), indices = new Uint16Array(indexCount);
     const partCount = geometries.reduce((count, geometry) => count + geometry.partCount, 0);
     const morphCount = Math.max(...geometries.map((geometry) => geometry.morphCount));
+    const nonScalingStroke = geometries.some((geometry) => geometry.nonScalingStroke === true);
+    if (nonScalingStroke && morphCount) throw new TypeError("Non-scaling strokes cannot be combined with vertex morph targets");
     let offset = 0;
     let partOffset = 0;
     let indexOffset = 0;
@@ -2738,7 +2795,7 @@ var MeshBuilder = class _MeshBuilder {
       offset += vertexLength;
       partOffset += geometry.partCount;
     }
-    return Object.freeze({ vertices, indices, count: indices.length, strideFloats: 11, partCount, morphCount });
+    return Object.freeze({ vertices, indices, count: indices.length, strideFloats: 11, partCount, morphCount, ...nonScalingStroke ? { nonScalingStroke: true } : {} });
   }
 };
 

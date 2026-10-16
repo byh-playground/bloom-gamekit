@@ -3155,13 +3155,13 @@ var createTimeline = (parameters) => {
 
 // modules/vector-assets/schema.js
 var VECTOR_ASSET_SCHEMA_VERSION = 1;
-var VECTOR_ASSET_COMPILER_VERSION = "0.6.0";
-var ACCEPTED_COMPILER_VERSIONS = /* @__PURE__ */ new Set(["0.2.0", "0.3.0", "0.4.0", "0.5.0", VECTOR_ASSET_COMPILER_VERSION]);
+var VECTOR_ASSET_COMPILER_VERSION = "0.7.0";
+var ACCEPTED_COMPILER_VERSIONS = /* @__PURE__ */ new Set(["0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0", VECTOR_ASSET_COMPILER_VERSION]);
 var NUMERIC_POSE_FIELDS = Object.freeze(["x", "y", "rotation", "scaleX", "scaleY", "opacity"]);
 var isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 var exactKeys = (value, keys) => isObject(value) && Object.keys(value).length === keys.length && keys.every((key2) => Object.hasOwn(value, key2));
 function validateCompiledAsset(asset) {
-  if (!isObject(asset) || asset.schemaVersion !== VECTOR_ASSET_SCHEMA_VERSION || !ACCEPTED_COMPILER_VERSIONS.has(asset.compilerVersion) || typeof asset.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/.test(asset.sourceSha256) || !isObject(asset.metadata) || !isObject(asset.geometry) || !(asset.geometry.vertices instanceof Float32Array) || asset.geometry.vertices.length < 33 || asset.geometry.vertices.length % 11 || asset.geometry.strideFloats !== 11 || asset.geometry.partCount !== asset.metadata.parts?.length || ![0, 2].includes(asset.geometry.morphCount)) {
+  if (!isObject(asset) || asset.schemaVersion !== VECTOR_ASSET_SCHEMA_VERSION || !ACCEPTED_COMPILER_VERSIONS.has(asset.compilerVersion) || typeof asset.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/.test(asset.sourceSha256) || !isObject(asset.metadata) || !isObject(asset.geometry) || !(asset.geometry.vertices instanceof Float32Array) || asset.geometry.vertices.length < 33 || asset.geometry.vertices.length % 11 || asset.geometry.strideFloats !== 11 || asset.geometry.nonScalingStroke !== void 0 && typeof asset.geometry.nonScalingStroke !== "boolean" || asset.geometry.nonScalingStroke && asset.geometry.morphCount !== 0 || asset.geometry.partCount !== asset.metadata.parts?.length || ![0, 2].includes(asset.geometry.morphCount)) {
     throw new TypeError("Invalid compiled SVG vector asset");
   }
   const vertexCount = asset.geometry.vertices.length / 11, indices = asset.geometry.indices;
@@ -3407,7 +3407,8 @@ function createVectorAsset(meshRenderer, compiledAsset) {
       depth = 0,
       depthTest = false,
       depthWrite = false,
-      depthFunc = "lequal"
+      depthFunc = "lequal",
+      strokeViewport = null
     } = {}) => {
       assertPlayer();
       const poses = partPoses().map(({ transform, opacity, visible: isVisible }) => ({ transform, opacity, visible: isVisible }));
@@ -3424,7 +3425,8 @@ function createVectorAsset(meshRenderer, compiledAsset) {
         depthTest,
         depthWrite,
         depthFunc,
-        indexVariant
+        indexVariant,
+        strokeViewport
       });
     };
     const getPartPose = (id) => {
