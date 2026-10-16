@@ -3155,8 +3155,8 @@ var createTimeline = (parameters) => {
 
 // modules/vector-assets/schema.js
 var VECTOR_ASSET_SCHEMA_VERSION = 1;
-var VECTOR_ASSET_COMPILER_VERSION = "0.8.0";
-var ACCEPTED_COMPILER_VERSIONS = /* @__PURE__ */ new Set(["0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0", "0.7.0", VECTOR_ASSET_COMPILER_VERSION]);
+var VECTOR_ASSET_COMPILER_VERSION = "0.9.0";
+var ACCEPTED_COMPILER_VERSIONS = /* @__PURE__ */ new Set(["0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0", "0.7.0", "0.8.0", VECTOR_ASSET_COMPILER_VERSION]);
 var NUMERIC_POSE_FIELDS = Object.freeze(["x", "y", "rotation", "scaleX", "scaleY", "opacity"]);
 var isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 var exactKeys = (value, keys) => isObject(value) && Object.keys(value).length === keys.length && keys.every((key2) => Object.hasOwn(value, key2));
@@ -3171,11 +3171,15 @@ function validateCompiledAsset(asset) {
     throw new TypeError("Invalid compiled SVG vertex indices");
   }
   if (indices === void 0 && vertexCount % 3) throw new TypeError("Non-indexed compiled SVG geometry must contain complete triangles");
-  if (asset.compilerVersion === VECTOR_ASSET_COMPILER_VERSION && asset.compilerOptions === void 0) {
+  if (["0.8.0", VECTOR_ASSET_COMPILER_VERSION].includes(asset.compilerVersion) && asset.compilerOptions === void 0) {
     throw new TypeError("Current SVG compiler options are required");
   }
-  if (asset.compilerOptions !== void 0 && (!exactKeys(asset.compilerOptions, ["curveSegments"]) || !Number.isSafeInteger(asset.compilerOptions.curveSegments) || asset.compilerOptions.curveSegments < 4 || asset.compilerOptions.curveSegments > 64)) {
-    throw new TypeError("Invalid SVG compiler options");
+  if (asset.compilerOptions !== void 0) {
+    const current = asset.compilerVersion === VECTOR_ASSET_COMPILER_VERSION;
+    const expectedKeys = current ? ["curveSegments", "normalizeCenteredViewBox"] : ["curveSegments"];
+    if (!exactKeys(asset.compilerOptions, expectedKeys) || !Number.isSafeInteger(asset.compilerOptions.curveSegments) || asset.compilerOptions.curveSegments < 4 || asset.compilerOptions.curveSegments > 64 || current && typeof asset.compilerOptions.normalizeCenteredViewBox !== "boolean") {
+      throw new TypeError("Invalid SVG compiler options");
+    }
   }
   const expressionIndices = asset.geometry.expressionIndices;
   const indexVariants = asset.geometry.indexVariants;

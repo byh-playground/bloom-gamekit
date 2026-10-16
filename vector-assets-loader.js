@@ -24529,7 +24529,7 @@ function addStops(canvasGradient, stops) {
 
 // modules/vector-assets/schema.js
 var VECTOR_ASSET_SCHEMA_VERSION = 1;
-var VECTOR_ASSET_COMPILER_VERSION = "0.8.0";
+var VECTOR_ASSET_COMPILER_VERSION = "0.9.0";
 var NUMERIC_POSE_FIELDS = Object.freeze(["x", "y", "rotation", "scaleX", "scaleY", "opacity"]);
 var EASINGS = /* @__PURE__ */ new Set(["linear", "inSine", "outSine", "inOutSine", "inQuad", "outQuad", "inOutQuad", "inCubic", "outCubic", "inOutCubic"]);
 var isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -24882,6 +24882,29 @@ function validateRoot(root) {
   const width = root.getAttribute("width"), height = root.getAttribute("height");
   if (viewBox[0] !== 0 || viewBox[1] !== 0 || viewBox[2] <= 0 || viewBox[3] <= 0 || !width || !height || !NUMBER.test(width) || !NUMBER.test(height) || Number(width) !== viewBox[2] || Number(height) !== viewBox[3]) {
     throw new TypeError("SVG viewBox must be 0 0 width height in unitless CSS pixels");
+  }
+  return viewBox;
+}
+function normalizeCenteredViewBoxInput(root, metadata) {
+  const widthText = root.getAttribute("width"), heightText = root.getAttribute("height");
+  const width = Number(widthText), height = Number(heightText);
+  const viewBox = finiteList(root.getAttribute("viewBox") || "", 4, "viewBox");
+  if (!widthText || !heightText || !Number.isFinite(width) || !Number.isFinite(height) || viewBox[2] <= 0 || viewBox[3] <= 0) {
+    throw new TypeError("Centered SVG normalization needs finite root width, height, and positive viewBox dimensions");
+  }
+  root.setAttribute("width", String(viewBox[2]));
+  root.setAttribute("height", String(viewBox[3]));
+  root.setAttribute("viewBox", `0 0 ${viewBox[2]} ${viewBox[3]}`);
+  for (const clip of Object.values(metadata?.clips ?? {})) {
+    for (const frame of clip?.keyframes ?? []) {
+      const poses = frame?.parts;
+      if (!poses || typeof poses !== "object" || Array.isArray(poses)) continue;
+      for (const [part, pose] of Object.entries(poses)) {
+        if (pose && typeof pose === "object" && !Array.isArray(pose) && Object.keys(pose).length === 0) {
+          delete poses[part];
+        }
+      }
+    }
   }
   return viewBox;
 }
@@ -25863,9 +25886,13 @@ function installSvgLoaderSelectors(document2) {
   install(document2.documentElement);
 }
 function compileVectorAssetCore(svgBytes, sourcePath = "asset.svg", options = {}, sourceSha256) {
-  if (options === null || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some((key) => key !== "curveSegments")) throw new TypeError("Only curveSegments compiler option is supported");
+  if (options === null || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some((key) => !["curveSegments", "normalizeCenteredViewBox"].includes(key))) {
+    throw new TypeError("Only curveSegments and normalizeCenteredViewBox compiler options are supported");
+  }
   const curveSegments = options.curveSegments === void 0 ? 16 : options.curveSegments;
   if (!Number.isSafeInteger(curveSegments) || curveSegments < 4 || curveSegments > 64) throw new RangeError("curveSegments must be an integer from 4 to 64");
+  const normalizeCenteredViewBox = options.normalizeCenteredViewBox ?? false;
+  if (typeof normalizeCenteredViewBox !== "boolean") throw new TypeError("normalizeCenteredViewBox must be a boolean");
   if (!(svgBytes instanceof Uint8Array)) throw new TypeError("SVG source bytes must be a Uint8Array");
   const source = svgBytes;
   if (!source.length || source.byteLength > MAX_SOURCE_BYTES) throw new RangeError("SVG source must be 1..512 KiB");
@@ -25882,7 +25909,7 @@ function compileVectorAssetCore(svgBytes, sourcePath = "asset.svg", options = {}
   const ids = collectIds(root);
   const gradients = parseGradientDefinitions(root, ids);
   const metadataBlock = directMetadata(root);
-  const viewBox = validateRoot(root);
+  const viewBox = normalizeCenteredViewBox ? normalizeCenteredViewBoxInput(root, metadataBlock.value) : validateRoot(root);
   const metadata = validateAssetMetadata(metadataBlock.value, ids);
   const serialized = new import_xmldom.XMLSerializer().serializeToString(original);
   const roundTrip = parseXml(serialized, "editor-save round trip");
@@ -25906,7 +25933,7 @@ function compileVectorAssetCore(svgBytes, sourcePath = "asset.svg", options = {}
   return {
     schemaVersion: VECTOR_ASSET_SCHEMA_VERSION,
     compilerVersion: VECTOR_ASSET_COMPILER_VERSION,
-    compilerOptions: { curveSegments },
+    compilerOptions: { curveSegments, normalizeCenteredViewBox },
     sourceSha256,
     sourcePath,
     metadata,
@@ -25954,20 +25981,22 @@ async function readBoundedResponse(response, limit) {
   return bytes;
 }
 function validateLoadOptions(url, options) {
-  if (options === null || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some((key) => !["sourcePath", "expectedSha256", "maxBytes", "curveSegments", "includeSourcePaths"].includes(key))) {
-    throw new TypeError("load options may contain only sourcePath, expectedSha256, maxBytes, curveSegments, and includeSourcePaths");
+  if (options === null || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some((key) => !["sourcePath", "expectedSha256", "maxBytes", "curveSegments", "includeSourcePaths", "normalizeCenteredViewBox"].includes(key))) {
+    throw new TypeError("load options may contain only sourcePath, expectedSha256, maxBytes, curveSegments, includeSourcePaths, and normalizeCenteredViewBox");
   }
   const sourcePath = options.sourcePath ?? url;
   const expectedSha256 = options.expectedSha256;
   const maxBytes = options.maxBytes ?? MAX_SOURCE_BYTES2;
   const curveSegments = options.curveSegments ?? 16;
   const includeSourcePaths = options.includeSourcePaths ?? false;
+  const normalizeCenteredViewBox = options.normalizeCenteredViewBox ?? false;
   if (typeof sourcePath !== "string" || sourcePath.length < 1 || sourcePath.length > 2048) throw new TypeError("sourcePath must be a nonempty string of at most 2048 characters");
   if (expectedSha256 !== void 0 && (typeof expectedSha256 !== "string" || !SHA256.test(expectedSha256))) throw new TypeError("expectedSha256 must be a lowercase SHA-256 digest");
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_SOURCE_BYTES2) throw new RangeError("maxBytes must be an integer from 1 through 524288");
   if (!Number.isSafeInteger(curveSegments) || curveSegments < 4 || curveSegments > 64) throw new RangeError("curveSegments must be an integer from 4 to 64");
   if (typeof includeSourcePaths !== "boolean") throw new TypeError("includeSourcePaths must be a boolean");
-  return { sourcePath, expectedSha256, maxBytes, curveSegments, includeSourcePaths };
+  if (typeof normalizeCenteredViewBox !== "boolean") throw new TypeError("normalizeCenteredViewBox must be a boolean");
+  return { sourcePath, expectedSha256, maxBytes, curveSegments, includeSourcePaths, normalizeCenteredViewBox };
 }
 function createVectorAssetLoader({ fetch: fetcher = globalThis.fetch, maxEntries = 64 } = {}) {
   if (typeof fetcher !== "function") throw new TypeError("A browser fetch function is required");
@@ -25980,7 +26009,7 @@ function createVectorAssetLoader({ fetch: fetcher = globalThis.fetch, maxEntries
     if (!(typeof input === "string" || typeof URL !== "undefined" && input instanceof URL)) throw new TypeError("load expects an SVG URL string or URL");
     const url = String(input);
     const settings = validateLoadOptions(url, options);
-    const key = JSON.stringify([url, settings.sourcePath, settings.expectedSha256 ?? null, settings.maxBytes, settings.curveSegments, settings.includeSourcePaths]);
+    const key = JSON.stringify([url, settings.sourcePath, settings.expectedSha256 ?? null, settings.maxBytes, settings.curveSegments, settings.normalizeCenteredViewBox, settings.includeSourcePaths]);
     if (cache.has(key)) {
       const asset = cache.get(key);
       cache.delete(key);
@@ -26001,7 +26030,10 @@ function createVectorAssetLoader({ fetch: fetcher = globalThis.fetch, maxEntries
         throw new Error(`SVG SHA-256 mismatch for ${url}: expected ${settings.expectedSha256}, received ${sourceSha256}`);
       }
       if (disposed) throw new Error("Vector asset loader is disposed");
-      const asset = compileVectorAssetCore(bytes, settings.sourcePath, { curveSegments: settings.curveSegments }, sourceSha256);
+      const asset = compileVectorAssetCore(bytes, settings.sourcePath, {
+        curveSegments: settings.curveSegments,
+        normalizeCenteredViewBox: settings.normalizeCenteredViewBox
+      }, sourceSha256);
       if (!settings.includeSourcePaths) delete asset.sourcePaths;
       if (maxEntries > 0 && !disposed) {
         cache.set(key, asset);
