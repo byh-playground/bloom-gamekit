@@ -53,12 +53,20 @@ export async function exerciseVectorAssetQualityExample(page, previewURL,
   }));
   assert.equal(initial.sourceSha256, expectedSha256, 'the sample source is rendered from the exact fixture bytes');
   assert.equal(initial.curveSegments, 16, 'the initial curve preset is 16 segments');
+  const presetValues = await page.locator('.quality-presets').evaluateAll(groups => groups.map(group =>
+    [...group.querySelectorAll('button')].map(button => button.dataset.qualityValue)));
+  assert.deepEqual(presetValues, [['1', '2', '4', '8', '16'], ['1', '2', '4', '8', '16']],
+    'both numeric controls offer the same five quick presets');
 
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
   await page.locator('#asset-url').fill(blobURL);
   await page.locator('#load-asset').click();
   await page.waitForFunction(raw => window.vectorAssetDemo?.sourceUrl === raw
     && window.vectorAssetDemo?.compiledAsset?.compilerOptions?.curveSegments === 16, rawURL, { timeout: 15000 });
+  await page.locator('#curve-segments').fill('3');
+  assert.equal(await page.locator('#curve-segments').inputValue(), '3', 'the number control accepts direct typed input');
+  await page.locator('#load-asset').click();
+  await page.waitForFunction(() => window.vectorAssetDemo?.compiledAsset?.compilerOptions?.curveSegments === 3, null, { timeout: 15000 });
   const copy = await page.evaluate(async () => {
     document.querySelector('#copy-loader-options').click();
     await new Promise(resolve => setTimeout(resolve, 30));
@@ -68,10 +76,16 @@ export async function exerciseVectorAssetQualityExample(page, previewURL,
   const copiedOptions = JSON.parse(copy.text);
   assert.equal(copiedOptions.sourcePath, rawURL, 'GitHub blob URL is normalized to the matching raw URL');
   assert.equal(copiedOptions.maxBytes, 512 * 1024);
-  assert.equal(copiedOptions.curveSegments, 16);
+  assert.equal(copiedOptions.curveSegments, 3, 'copy reflects the typed tessellation value');
   assert.equal(copiedOptions.strokeArcDivisions, 12);
 
-  await page.locator('#curve-segments').selectOption('8');
+  const typed = await page.evaluate(() => ({
+    triangles: window.vectorAssetDemo.topology.triangles,
+    curveSegments: window.vectorAssetDemo.compiledAsset.compilerOptions.curveSegments,
+  }));
+  assert.equal(typed.curveSegments, 3);
+  assert.ok(typed.triangles > 0, 'a low typed quality still produces inspectable geometry');
+  await page.locator('[data-quality-target="curve-segments"][data-quality-value="8"]').click();
   await page.waitForFunction(() => window.vectorAssetDemo?.compiledAsset?.compilerOptions?.curveSegments === 8, null, { timeout: 15000 });
   const coarse = await page.evaluate(() => ({
     triangles: window.vectorAssetDemo.topology.triangles,
@@ -84,15 +98,15 @@ export async function exerciseVectorAssetQualityExample(page, previewURL,
   assert.ok(Number.isFinite(coarse.compileMs) && coarse.compileMs >= 0, 'the compile/hash measurement is reported separately from fetch');
   assert.ok(Number.isFinite(coarse.fetchMs) && coarse.fetchMs >= 0, 'the source fetch timing is reported');
 
-  await page.locator('#stroke-arc-divisions').selectOption('4');
-  await page.waitForFunction(() => window.vectorAssetDemo?.compiledAsset?.compilerOptions?.strokeArcDivisions === 4, null, { timeout: 15000 });
+  await page.locator('[data-quality-target="stroke-arc-divisions"][data-quality-value="1"]').click();
+  await page.waitForFunction(() => window.vectorAssetDemo?.compiledAsset?.compilerOptions?.strokeArcDivisions === 1, null, { timeout: 15000 });
   const splitOptions = await page.evaluate(() => ({
     curveSegments: window.vectorAssetDemo.compiledAsset.compilerOptions.curveSegments,
     strokeArcDivisions: window.vectorAssetDemo.compiledAsset.compilerOptions.strokeArcDivisions,
     sourceSha256: window.vectorAssetDemo.sourceSha256,
     sourceSvg: document.querySelector('#source-svg') !== null,
   }));
-  assert.deepEqual(splitOptions, { curveSegments: 8, strokeArcDivisions: 4, sourceSha256: expectedSha256, sourceSvg: true },
+  assert.deepEqual(splitOptions, { curveSegments: 8, strokeArcDivisions: 1, sourceSha256: expectedSha256, sourceSvg: true },
     'changing stroke arcs leaves curve quality and the exact original source independent');
   const arcTriangles = await page.evaluate(() => window.vectorAssetDemo.topology.triangles);
 
@@ -107,6 +121,13 @@ export async function exerciseVectorAssetQualityExample(page, previewURL,
   assert.equal(display.triangles, arcTriangles, 'display sizing changes no compiled geometry');
 
   const previousSha = splitOptions.sourceSha256;
+  for (const invalidCurveSegments of ['0', '1.5', '65']) {
+    await page.locator('#curve-segments').fill(invalidCurveSegments);
+    await page.locator('#load-asset').click();
+    await page.waitForFunction(() => document.querySelector('#status').textContent.includes('whole number from 1 through 64'));
+    assert.equal(await page.evaluate(() => window.vectorAssetDemo.sourceSha256), previousSha,
+      `invalid curve input ${invalidCurveSegments} leaves the last compiled geometry intact`);
+  }
   await page.locator('#asset-url').fill('file:///tmp/outside.svg');
   await page.locator('#load-asset').click();
   await page.waitForFunction(() => document.querySelector('#status').textContent.includes('Only HTTP(S)'));
@@ -114,7 +135,7 @@ export async function exerciseVectorAssetQualityExample(page, previewURL,
     'invalid protocol input leaves the previously compiled source and view intact');
   return { initialTriangles: initial.triangles, eightSegmentTriangles: coarse.triangles,
     compileMs: coarse.compileMs, fetchMs: coarse.fetchMs, normalizedBlobURL: rawURL,
-    fourArcDivisions: splitOptions.strokeArcDivisions, displaySize: display.actualSize, invalidProtocolRejected: true,
+    oneArcDivision: splitOptions.strokeArcDivisions, displaySize: display.actualSize, invalidProtocolRejected: true,
     farmpeaSourceSha256: farmpea.sourceSha256, farmpeaTriangles: farmpea.triangles,
     farmpeaScreenshot: screenshotPath };
 }

@@ -1,729 +1,1 @@
-import { runFrameChecks } from '../../modules/interpolation/tests/presentation-frame.browser.js';
-import { exerciseVectorAssets } from '../../modules/vector-assets/tests/runtime.browser.mjs';
-import { exerciseVectorAssetQualityExample } from '../../modules/vector-assets/tests/quality-example.browser.mjs';
-import { exerciseWebGLDevice, exerciseVectorRenderer, exerciseFontAssetLoader } from '../../modules/rendering/tests/device.browser.mjs';
-import { exerciseReusableMeshes } from '../../modules/rendering/tests/mesh.browser.mjs';
-import { exerciseRendererInterleaving } from '../../modules/rendering/tests/interop.browser.mjs';
-import { exerciseOrderedAssetBatch } from '../../modules/rendering/tests/ordered-batch.browser.mjs';
-import { exerciseMeshDepth } from '../../modules/rendering/tests/mesh-depth.browser.mjs';
-import { exerciseMeshAlphaDepthWrite } from '../../modules/rendering/tests/mesh-alpha-depth.browser.mjs';
-import { runPresentationChecks } from './presentation.browser.js';
-import { chromium } from 'playwright';
-import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
-import { resolve, extname, sep } from 'node:path';
-import assert from 'node:assert/strict';
-import { runRenderObjectChecks } from '../../modules/interpolation/tests/render-object.browser.js';
-import { createHash } from 'node:crypto';
-import { compileVectorAsset } from '../../modules/vector-assets/compiler.js';
-
-const root = resolve('.');
-let retryFontRequests = 0;
-let sharedFontRequests = 0;
-let vectorSvgFetches = 0;
-const server = createServer(async (req, res) => {
-  try {
-    const pathname = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
-    if (pathname === '/__font-retry' && ++retryFontRequests === 1) { res.writeHead(503, { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }).end(); return; }
-    if (pathname === '/__font-delay') { setTimeout(() => serveFont(res), 200); return; }
-    if (pathname === '/__font-retry') { await serveFont(res); return; }
-    if (pathname === '/modules/vector-assets/assets/seed-scout.svg') vectorSvgFetches++;
-    const path = resolve(root, '.' + pathname);
-    if (!path.startsWith(root + sep)) { res.writeHead(403).end(); return; }
-    res.setHeader('Content-Type', { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json' }[extname(path)] ?? 'application/octet-stream');
-    if (pathname === '/dist/assets/fonts/noto-sans-kr-700-v1.json' && req.headers.host?.startsWith('127.0.0.1:')) sharedFontRequests++;
-    if (pathname.startsWith('/dist/assets/fonts/') && !req.headers.host?.startsWith('localhost:')) res.setHeader('Access-Control-Allow-Origin', '*');
-    res.end(await readFile(path));
-  } catch { res.writeHead(404).end(); }
-});
-async function serveFont(res) {
-  res.setHeader('Content-Type', 'application/json'); res.setHeader('Access-Control-Allow-Origin', '*');
-  res.end(await readFile(resolve(root, 'dist/assets/fonts/noto-sans-kr-700-v1.json')));
-}
-await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-let browser;
-const report = { stages: [] };
-try {
-  browser = await chromium.launch({ headless: true,
-    ...(process.env.CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.CHROMIUM_EXECUTABLE_PATH } : {}),
-    args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
-  });
-  const page = await browser.newPage({ viewport: { width: 1000, height: 800 }, hasTouch: true, deviceScaleFactor: 2 });
-  const errors = [];
-  page.on('pageerror', error => { errors.push(error.message); console.error('Browser runtime:', error.stack ?? error.message); });
-  await page.goto(`http://127.0.0.1:${server.address().port}/modules/interpolation/examples/index.html`);
-  await page.waitForFunction(() => window.demo?.diagnostics.frames >= 30);
-  assert.equal(await page.evaluate(() => demo.renderer.stats.backend), 'webgl1');
-  const clockCheck=await page.evaluate(async()=>{
-    const {createLoop,createDeadlineScheduler,clockRates}=await import('/dist/simloop.js');
-    const {InterpolationTimeline}=await import('/dist/interpolation.js');
-    let rejected=false;try{clockRates({baseHz:60,tickRate:45,inputHz:60,renderHz:60});}catch(e){rejected=e instanceof RangeError;}
-    const valid=clockRates({baseHz:60,tickRate:30,inputHz:60,renderHz:60});
-    const session={inputSize:1,tick:0,pace:1,closed:false,resimulating:false,profile:{tickRate:30,maxCatchupSteps:2},poll(){},releaseInput(){},advance(){this.tick++;return {status:'advanced'};}};
-    const loop=createLoop({session,backlogPolicy:'retain',maxBacklogTicks:2,rates:valid});
-    let now=0,callback=null,delay=0;loop.observeInput(0);loop.pulse(0,{render:false,input:false});
-    const timer=createDeadlineScheduler({getDeadlineMs:()=>loop.nextDeadlineMs,pulse:t=>loop.pulse(t,{render:false,input:false}),now:()=>now,setTimer:(cb,ms)=>{callback=cb;delay=ms;return 1;},clearTimer(){callback=null;}});
-    timer.start();const advances=[];
-    for(let i=0;i<12;i++){now+=delay+(i%2?0.1:2);const before=session.tick;callback();advances.push(session.tick-before);}
-    now+=1000;callback();for(let i=0;i<20&&loop.nextDeadlineMs<=now;i++){now+=delay;callback();}
-    const caughtUp=session.tick>=40;timer.stop();
-    const deferSession={inputSize:1,tick:0,pace:1,closed:false,resimulating:false,profile:{tickRate:10,maxCatchupSteps:2},polls:0,attempts:0,
-      poll(){this.polls++},releaseInput(){},advance(){this.attempts++;if(this.waitOnce){this.waitOnce=false;return{status:'waiting',tick:this.tick}}return{status:'advanced',tick:++this.tick}}};
-    const overflow=[];let allowDefer=false;const defer=createLoop({session:deferSession,backlogPolicy:'defer',maxBacklogTicks:3,
-      getInput:()=>Uint8Array.of(0),canAdvance:()=>allowDefer,onBacklogDrop:event=>overflow.push(event)});
-    const deferPulses=[];const pulseDefer=at=>{const beforeTick=deferSession.tick,beforeAttempts=deferSession.attempts;defer.pulse(at,{render:false});
-      deferPulses.push({tickDelta:deferSession.tick-beforeTick,attempts:deferSession.attempts-beforeAttempts,debt:defer.simulationTimeMs===null?0:at-defer.simulationTimeMs});};
-    pulseDefer(0);pulseDefer(100);deferSession.resimulating=true;pulseDefer(200);deferSession.resimulating=false;pulseDefer(300);
-    pulseDefer(350);allowDefer=true;deferSession.waitOnce=true;pulseDefer(450);pulseDefer(450);
-    deferSession.resimulating=true;pulseDefer(550);deferSession.resimulating=false;pulseDefer(550);
-    allowDefer=false;pulseDefer(650);allowDefer=true;pulseDefer(650);
-    const deferPassed=deferSession.tick===5&&deferPulses.every(p=>p.attempts<=2&&p.debt<=300)&&deferSession.polls===deferPulses.length&&
-      deferPulses.map(p=>p.tickDelta).join(',')==='0,0,0,0,0,0,2,0,2,0,1'&&overflow.length===2&&
-      overflow[0].reason==='backlog-overflow'&&overflow[0].droppedMs===50&&overflow[1].reason==='backlog-overflow'&&overflow[1].droppedMs===100;
-    const dropSession={inputSize:1,tick:0,pace:1,closed:false,resimulating:false,profile:{tickRate:10,maxCatchupSteps:2},poll(){},releaseInput(){},advance(){return{status:'advanced',tick:++this.tick}}};
-    let dropEvent;const drop=createLoop({session:dropSession,maxBacklogTicks:2,onBacklogDrop:event=>dropEvent=event});
-    drop.pulse(0,{render:false});drop.pulse(301,{render:false});
-    const dropCompatible=dropSession.tick===0&&drop.simulationTimeMs===301&&dropEvent?.elapsedMs===301&&dropEvent.droppedTicks===3&&dropEvent.timestamp===301&&
-      !Object.hasOwn(dropEvent,'droppedMs')&&!Object.hasOwn(dropEvent,'reason');
-    const gapSession={inputSize:1,tick:0,pace:1,closed:false,resimulating:false,profile:{tickRate:10,maxCatchupSteps:2},poll(){},releaseInput(){},advance(){return{status:'advanced',tick:++this.tick}}};
-    let gapEvent;const gap=createLoop({session:gapSession,backlogPolicy:'defer',maxBacklogTicks:3,canAdvance:()=>false,onBacklogDrop:event=>gapEvent=event});
-    gap.pulse(0,{render:false});gap.pulse(300,{render:false});gap.pulse(700,{render:false});
-    const longGapPassed=gapEvent?.reason==='clock-gap'&&gapEvent.elapsedMs===400&&gapEvent.droppedMs===700&&gap.simulationTimeMs===700;
-    const pauseSession={inputSize:1,tick:0,pace:1,closed:false,resimulating:false,profile:{tickRate:10,maxCatchupSteps:2},poll(){},releaseInput(){},advance(){return{status:'advanced',tick:++this.tick}}};
-    let resumeAllowed=false;const paused=createLoop({session:pauseSession,backlogPolicy:'defer',maxBacklogTicks:3,canAdvance:()=>resumeAllowed});
-    paused.pulse(0,{render:false});paused.pulse(80,{render:false});paused.resetTiming();resumeAllowed=true;
-    paused.pulse(1000,{render:false});const pauseCleared=paused.simulationTimeMs===1000&&pauseSession.tick===0;
-    paused.pulse(1100,{render:false});const pausePassed=pauseCleared&&pauseSession.tick===1;
-    const visibilityDescriptor=Object.getOwnPropertyDescriptor(document,'hidden');let visibilityPassed=false;
-    try{
-      Object.defineProperty(document,'hidden',{configurable:true,value:false});
-      const callbacks=[];let visibleAllowed=false;
-      const visibleSession={inputSize:1,tick:0,pace:1,closed:false,resimulating:false,profile:{tickRate:10,maxCatchupSteps:2},poll(){},released:0,
-        releaseInput(){this.released++},advance(){return{status:'advanced',tick:++this.tick}}};
-      const visibleLoop=createLoop({session:visibleSession,backlogPolicy:'defer',maxBacklogTicks:3,canAdvance:()=>visibleAllowed,getInput:()=>Uint8Array.of(0),
-        requestFrame:callback=>{callbacks.push(callback);return callbacks.length},cancelFrame:()=>{}});
-      const fire=at=>{const callback=callbacks.shift();if(!callback)throw Error('missing fake frame');callback(at)};
-      visibleLoop.start();fire(0);fire(100);Object.defineProperty(document,'hidden',{configurable:true,value:true});
-      document.dispatchEvent(new Event('visibilitychange'));Object.defineProperty(document,'hidden',{configurable:true,value:false});
-      visibleAllowed=true;fire(1000);const noHiddenCatchup=visibleLoop.simulationTimeMs===1000&&visibleSession.tick===0;
-      fire(1100);visibilityPassed=noHiddenCatchup&&visibleSession.tick===1&&visibleSession.released===1;visibleLoop.stop();
-    }finally{if(visibilityDescriptor)Object.defineProperty(document,'hidden',visibilityDescriptor);else delete document.hidden;}
-    const timeline=new InterpolationTimeline({stepMs:1000/30,delayMs:2000/30,schema:{x:'number'}});
-    const packet=(tick,x)=>({revision:0,sequence:tick,timeMs:tick*1000/30,entities:[{id:'u',generation:0,values:{x}}]});
-    timeline.accept(packet(0,0),0);timeline.accept(packet(1,10),38);timeline.accept(packet(2,20),70);
-    const out={};timeline.sampleInto('u',0,83.3333333333,out);const x=out.x;
-    timeline.accept(packet(3,30),103);timeline.accept(packet(4,40),134);
-    timeline.sampleInto('u',0,150,out);
-    return {rejected,divisor:valid.simulationDivisor,advances,caughtUp,x,end:out.x,deferPassed,dropCompatible,longGapPassed,pausePassed,visibilityPassed,
-      deferTicks:deferSession.tick,deferPolls:deferSession.polls,deferPulses,overflow,gapEvent};
-  });
-  assert.equal(clockCheck.rejected,true);assert.equal(clockCheck.divisor,2);
-  assert.deepEqual(clockCheck.advances,Array(12).fill(1));assert.equal(clockCheck.caughtUp,true);
-  assert.ok(clockCheck.deferPassed&&clockCheck.dropCompatible&&clockCheck.longGapPassed&&clockCheck.pausePassed&&clockCheck.visibilityPassed,
-    `bounded defer policy verification: ${JSON.stringify(clockCheck)}`);
-  assert.ok(Math.abs(clockCheck.x-5)<1e-6);assert.ok(Math.abs(clockCheck.end-25)<1e-6);
-  report.stages.push('integer clock divisors, loop-owned jittered deadlines, default drop compatibility, explicit retain/defer timing, bounded overflow diagnostics, hold/resim polling, pause/hidden reset and simulation-time interpolation');
-
-  report.presentationFrame=await runFrameChecks(page);
-  const framePage=await browser.newPage();const frameErrors=[];framePage.on('pageerror',e=>frameErrors.push(e.message));
-  await framePage.goto(`http://127.0.0.1:${server.address().port}/modules/interpolation/examples/frame.html`);
-  await framePage.waitForFunction(()=>document.querySelector('#status').textContent.includes('displayed: 1'));
-  await framePage.locator('#rollback').click();await framePage.locator('#spawn').click();
-  assert.deepEqual(frameErrors,[]);await framePage.close();
-  const initialX = await page.evaluate(() => demo.diagnostics.authorityX);
-  await page.keyboard.down('KeyD');
-  await page.waitForFunction(x => demo.diagnostics.authorityX > x + 25, initialX);
-  await page.keyboard.up('KeyD');
-  await page.waitForFunction(() => Math.abs(demo.diagnostics.poseX - demo.diagnostics.authorityX) < 0.1);
-  report.stages.push('real DOM keyboard â†’ 100ms authority â†’ interpolation â†’ WebGL rAF movement');
-
-  // Several render-time samples cannot erase a down/up entirely between simulation ticks.
-  await page.evaluate(() => demo.pause());
-  const rolls = await page.evaluate(() => demo.diagnostics.rolls);
-  await page.keyboard.press('Space');
-  const tap = await page.evaluate(() => {
-    const out = {}; for (let i = 0; i < 8; i++) demo.actions.sampleInto('roll', out); return out;
-  });
-  assert.deepEqual(tap, { held: false, pressed: true, released: true });
-  await page.evaluate(() => demo.pause(false));
-  await page.waitForFunction(n => demo.diagnostics.rolls === n + 1, rolls);
-  // UI controls never generate a held game action.
-  await page.locator('#zoom').focus(); await page.keyboard.down('ArrowRight');
-  assert.equal(await page.evaluate(() => demo.actions.sample('right').held), false);
-  await page.keyboard.up('ArrowRight');
-  report.stages.push('quick tap survives render samples until fixed-step consume; editable UI excluded');
-
-  const bounds = await page.locator('canvas').boundingBox();
-  await page.touchscreen.tap(bounds.x + bounds.width * 0.72, bounds.y + bounds.height * 0.6);
-  const rollBeforeTouch = await page.evaluate(() => demo.diagnostics.rolls);
-  await page.touchscreen.tap(bounds.x + bounds.width * 0.72 + 2, bounds.y + bounds.height * 0.6 + 2);
-  await page.waitForFunction(n => demo.diagnostics.rolls > n, rollBeforeTouch);
-  await page.keyboard.down('KeyW');
-  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
-  assert.equal(await page.evaluate(() => demo.actions.sample('up').held), false);
-  await page.keyboard.up('KeyW');
-  report.stages.push('actual touch double-tap maps to game roll; blur releases held keyboard');
-
-  await page.setViewportSize({ width: 620, height: 800 });
-  await page.waitForFunction(() => {
-    const c = document.querySelector('canvas'); return c.width === Math.round(c.getBoundingClientRect().width * 2);
-  });
-  report.scene = await page.evaluate(() => {
-    const d = demo.diagnostics, r = demo.renderer;
-    const intervals = d.frameIntervals.slice().sort((a, b) => a - b);
-    return { frames: d.frames, tick: d.tick, observedFps: d.fps, cpuSubmitMs: d.cpuSubmitMs,
-      intervalP50Ms: intervals[Math.floor(intervals.length / 2)], intervalP95Ms: intervals[Math.floor(intervals.length * 0.95)],
-      viewport: [...r.gl.getParameter(r.gl.VIEWPORT)], stats: { ...r.stats }, error: r.gl.getError() };
-  });
-  assert.equal(report.scene.error, 0); assert.equal(report.scene.stats.textureUploads, 0);
-  assert.equal(report.scene.stats.bufferAllocations, 1);
-  assert.ok(report.scene.stats.vertices > 500); assert.ok(report.scene.stats.uploadedBytes > 0);
-  report.scenePixels = await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => {
-    const r = demo.renderer, gl = r.gl, pixels = new Uint8Array(r.canvas.width * r.canvas.height * 4);
-    gl.readPixels(0, 0, r.canvas.width, r.canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
-    let colored = 0;
-    for (let i = 0; i < pixels.length; i += 4) if (pixels[i + 1] > 100 || pixels[i + 2] > 120) colored++;
-    resolve({ colored, error: gl.getError() });
-  })));
-  assert.ok(report.scenePixels.colored > 100, 'composed input/interpolation example must draw visible geometry');
-  assert.equal(report.scenePixels.error, 0);
-  await page.evaluate(() => demo.pause());
-
-  // Continue the same built-bundle/browser flow with focused pixel/lifecycle probes.
-  report.rendererInterleaving = await exerciseRendererInterleaving(page);
-  assert.deepEqual(report.rendererInterleaving.red2d, [255, 0, 0, 255], 'Renderer2D retains its program/buffer/attributes after prior device setup');
-  assert.deepEqual(report.rendererInterleaving.blueMesh, [0, 0, 255, 255], 'MeshRenderer draws between Renderer2D submissions');
-  assert.deepEqual(report.rendererInterleaving.green2d, [0, 255, 0, 255], 'Renderer2D rebinds after MeshRenderer changes WebGL state');
-  assert.equal(report.rendererInterleaving.glError, 0, 'interleaved draw stream leaves no WebGL error');
-  report.stages.push('Renderer2D and MeshRenderer interleave ordered draws on one WebGL1 canvas with clean state and expected pixels');
-  report.orderedAssetBatch = await exerciseOrderedAssetBatch(page);
-  assert.equal(report.orderedAssetBatch.pixelMismatch, 0, 'combined SVG geometry is pixel-identical to ordered individual draws');
-  assert.equal(report.orderedAssetBatch.batched.draws, 1, 'compatible ordered assets submit in one draw');
-  report.stages.push('MeshBuilder.combine batches painter-ordered asset geometries with per-part transforms, opacity, and shared clipping');
-  report.meshDepth = await exerciseMeshDepth(page);
-  assert.equal(report.meshDepth.glError, 0, 'per-instance/per-part depth leaves a clean WebGL state');
-  report.stages.push('MeshRenderer depth and transparent painter order compose with a following Renderer2D pass');
-  report.meshAlphaDepthWrite = await exerciseMeshAlphaDepthWrite(page);
-  assert.deepEqual(report.meshAlphaDepthWrite.orderedRuns.pixel, [0, 0, 255, 255]);
-  assert.deepEqual(report.meshAlphaDepthWrite.partOpacity.pixel, [0, 0, 255, 255]);
-  assert.deepEqual(report.meshAlphaDepthWrite.instanceOpacity.pixel, [0, 0, 255, 255]);
-  assert.deepEqual(report.meshAlphaDepthWrite.afterRestore.pixel, [255, 0, 0, 255]);
-  report.stages.push('MeshRenderer alpha-threshold depth writes preserve triangle and instance painter order, opacity variants, and lifecycle');
-  report.rendering = await page.evaluate(async () => {
-    const { Renderer2D } = await import('/dist/rendering.js');
-    const check = (condition, message) => { if (!condition) throw new Error(message); };
-    const near = (actual, expected, message) => check(actual.every((value, i) => Math.abs(value - expected[i]) <= 3), `${message}: ${actual} expected ${expected}`);
-    const canvas = document.createElement('canvas'); canvas.width = canvas.height = 64;
-    canvas.style.cssText = 'width:64px;height:64px'; document.body.append(canvas);
-    const r = new Renderer2D(canvas, { batchVertices: 12, antialias: false, preserveDrawingBuffer: true });
-    r.resize(64, 64, 2); r.setCamera({ x: 32, y: 32 });
-    const gl = r.gl;
-    const pixel = (x, y) => { const out = new Uint8Array(4); gl.readPixels(Math.floor(x * 2), canvas.height - 1 - Math.floor(y * 2), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, out); return [...out]; };
-    const red = [1, 0, 0, 0.5], blue = [0, 0, 1, 1], green = [0, 1, 0, 1];
-    const texture = r.createTexture({ width: 1, height: 1, data: new Uint8Array([255, 0, 0, 128]) }, { filter: 'nearest' });
-    r.beginFrame(blue); r.rect(16, 32, 20, 30, red); r.sprite(texture, 48, 32, 20, 30); r.endFrame();
-    const primitiveAlpha = pixel(16, 32), textureAlpha = pixel(48, 32);
-    near(primitiveAlpha, [128, 0, 127, 255], 'primitive premultiplied alpha');
-    near(textureAlpha, [128, 0, 127, 255], 'byte texture must be premultiplied exactly once');
-    const image = document.createElement('canvas'); image.width = image.height = 1;
-    image.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray([255, 0, 0, 128]), 1, 1), 0, 0);
-    const domTexture = r.createTexture(image);
-    r.beginFrame(blue); r.sprite(domTexture, 32, 32, 32, 32); r.endFrame();
-    near(pixel(32, 32), [128, 0, 127, 255], 'DOM source alpha');
-    const bitmap = await createImageBitmap(image, { premultiplyAlpha: 'none' });
-    let bitmapRejected = false; try { r.createTexture(bitmap); } catch { bitmapRejected = true; } finally { bitmap.close(); }
-    check(bitmapRejected, 'ambiguous bitmap alpha must be rejected');
-
-    r.beginFrame(blue); r.sprite(texture, 32, 32, 40, 40); r.rect(32, 32, 40, 40, green); r.sprite(texture, 32, 32, 20, 20); r.endFrame();
-    near(pixel(32, 32), [128, 127, 0, 255], 'texture switches preserve transparent painter order');
-    near(pixel(17, 32), [0, 255, 0, 255], 'outer opaque layer');
-    const atlas = r.createTexture({ width: 2, height: 2, data: new Uint8Array([
-      255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
-    ]) }, { filter: 'nearest' });
-    r.beginFrame(); r.sprite(atlas, 32, 32, 40, 40); r.endFrame();
-    near(pixel(20, 20), [255, 0, 0, 255], 'atlas top-left'); near(pixel(44, 20), [0, 255, 0, 255], 'atlas top-right');
-    near(pixel(20, 44), [0, 0, 255, 255], 'atlas bottom-left');
-    // NPOT and transparent border linear filtering operate on premultiplied texels.
-    const linear = r.createTexture({ width: 3, height: 1, data: new Uint8Array([255, 0, 0, 255, 0, 255, 0, 0, 0, 255, 0, 0]) });
-    r.beginFrame(blue); r.sprite(linear, 32, 32, 48, 20); r.endFrame();
-    const filtered = pixel(24, 32); check(filtered[0] > 60 && filtered[0] < 200 && filtered[1] <= 2, `filtered fringe: ${filtered}`);
-    // Updating a queued texture first flushes old pixels; the next draw uses the update.
-    r.beginFrame(blue); r.sprite(texture, 16, 32, 20, 20);
-    r.updateTexture(texture, { width: 1, height: 1, data: new Uint8Array([0, 255, 0, 255]) });
-    r.sprite(texture, 48, 32, 20, 20); r.endFrame();
-    near(pixel(16, 32), [128, 0, 127, 255], 'queued old texture'); near(pixel(48, 32), [0, 255, 0, 255], 'updated texture');
-
-    const staging = r.vertices, buffer = r.buffer;
-    r.beginFrame(); for (let i = 0; i < 25; i++) r.rect(i * 2, 32, 2, 2, green); const stats = { ...r.endFrame() };
-    check(stats.drawCalls === 13 && stats.vertices === 150 && stats.uploadedBytes === 4800, `bounded batch counts ${JSON.stringify(stats)}`);
-    check(r.vertices === staging && r.buffer === buffer && stats.bufferAllocations === 1 && stats.textureUploads === 0, 'steady buffers/textures reused');
-    check(stats.bufferViews === stats.drawCalls, 'view allocation counter matches flush');
-    r.setCamera({ x: 12, y: 24, zoom: 2, rotation: Math.PI / 2 });
-    const screen = {}, world = {}; r.worldToScreenInto(15, 28, screen); r.screenToWorldInto(screen.x, screen.y, world);
-    check(Math.abs(world.x - 15) < 1e-6 && Math.abs(world.y - 28) < 1e-6, 'camera inverse roundtrip');
-    r.beginFrame(); r.rect(12, 24, 2, 2, green); r.rect(16, 24, 2, 2, green); r.endFrame(); near(pixel(32, 32), [0, 255, 0, 255], 'camera center at viewport center'); near(pixel(32, 24), [0, 255, 0, 255], 'camera rotation/zoom moves positive world x upward');
-    r.beginFrame(); let resizeRejected = false; try { r.resize(20, 20); } catch { resizeRejected = true; } r.endFrame(); check(resizeRejected, 'active resize must not silently erase draws');
-    check(gl.getError() === gl.NO_ERROR, 'actual GL error must be NO_ERROR');
-    const version = gl.getParameter(gl.VERSION), shadingLanguage = gl.getParameter(gl.SHADING_LANGUAGE_VERSION);
-    window.renderProbe = { r, texture, pixel, canvas, buffers: { buffer, program: r.program } };
-    return { primitiveAlpha, textureAlpha, filtered, version, shadingLanguage, stats, viewport: [...gl.getParameter(gl.VIEWPORT)], bitmapRejected };
-  });
-  assert.deepEqual(report.rendering.viewport, [0, 0, 128, 128]);
-  report.stages.push('actual WebGL shader/link, readPixels alpha/order/atlas/update, NPOT, camera/DPR, bounded reused buffers');
-
-  const supportsLoss = await page.evaluate(() => {
-    const { r } = renderProbe; renderProbe.loss = r.gl.getExtension('WEBGL_lose_context');
-    if (!renderProbe.loss) return false; renderProbe.loss.loseContext(); return true;
-  });
-  if (supportsLoss) {
-    await page.waitForFunction(() => renderProbe.r.state === 'lost');
-    assert.equal(await page.evaluate(() => renderProbe.r.beginFrame()), false);
-    await page.evaluate(() => renderProbe.loss.restoreContext());
-    await page.waitForFunction(() => renderProbe.r.state === 'ready');
-    const restored = await page.evaluate(() => {
-      const { r, texture, pixel } = renderProbe;
-      r.setCamera({ x: 32, y: 32, zoom: 1, rotation: 0 }); r.beginFrame([0, 0, 1, 1]); r.sprite(texture, 32, 32, 24, 24); r.endFrame();
-      return { pixel: pixel(32, 32), error: r.gl.getError(), allocations: r.stats.bufferAllocations };
-    });
-    assert.deepEqual(restored.pixel, [0, 255, 0, 255]); assert.equal(restored.error, 0); assert.equal(restored.allocations, 2);
-    report.stages.push('WEBGL_lose_context â†’ skipped lost frame â†’ shader/buffer/texture handle restoration');
-  } else report.stages.push('WEBGL_lose_context unavailable: restoration not executed');
-
-  report.input = await page.evaluate(async () => {
-    const { ActionState, createDOMInput } = await import('/dist/input.js');
-    const check = (condition, message) => { if (!condition) throw new Error(message); };
-    const canvas = renderProbe.canvas, state = new ActionState(), pointerEvents = [], releases = [];
-    const input = createDOMInput({ target: canvas, state, keys: { KeyQ: 'hold' }, pointerButtons: { 0: 'hold' },
-      onPointer: event => pointerEvents.push(event), onRelease: event => releases.push(event.reason) });
-    const rect = canvas.getBoundingClientRect();
-    const dispatch = (type, id, buttons) => canvas.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true,
-      pointerId: id, pointerType: 'touch', button: 0, buttons, clientX: rect.left + 16, clientY: rect.top + 32 }));
-    dispatch('pointerdown', 101, 1); dispatch('pointerdown', 102, 1);
-    const position = {}; check(input.samplePointerInto(101, position) && position.x === 16 && position.y === 32 && position.u === 0.25 && position.v === 0.5, 'CSS coordinates ignore backing DPR');
-    state.consume(); dispatch('pointercancel', 101, 0);
-    check(state.sample('hold').held && !state.sample('hold').released, 'second touch still holds action');
-    canvas.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyQ', bubbles: true }));
-    dispatch('lostpointercapture', 102, 0); check(state.sample('hold').held, 'keyboard source survives pointer cancel');
-    window.dispatchEvent(new Event('blur')); check(!state.sample('hold').held && state.sample('hold').released, 'blur releases remaining source');
-    check(pointerEvents.map(event => `${event.type}:${event.pointerId}`).join(',') === 'down:101,down:102,cancel:101,cancel:102', 'callback identity and cancellation order');
-    check(pointerEvents[0].originalEvent instanceof PointerEvent && pointerEvents[0].u === .25, 'callback original DOM event and CSS sample');
-    check(releases.includes('blur'), 'callback blur reason');
-    state.consume(); input.dispose(); input.dispose(); dispatch('pointerdown', 103, 1);
-    check(pointerEvents.length === 4, 'dispose removes pointer callbacks');
-    canvas.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyQ', bubbles: true }));
-    check(!state.sample('hold').held && !state.sample('hold').pressed, 'dispose removes listeners');
-    return { coordinates: position, multisource: true, pointerCancel: true, captureLoss: true, disposal: true,
-      ownedCallbacks: true, eventScope: 'Real DOM dispatch for deterministic multi-pointer cancellation; trusted touchscreen tap tested above.' };
-  });
-  report.stages.push('DOM multi-pointer identity/coordinates/cancel/capture loss + keyboard aggregation + listener disposal');
-
-  const moduleErrors = [];
-  for (const [name, check] of [['renderObject', runRenderObjectChecks], ['presentation', runPresentationChecks], ['device', exerciseWebGLDevice], ['vectorRenderer', exerciseVectorRenderer], ['reusableMeshes', p => exerciseReusableMeshes(p)],
-    ['fontAssets', p => exerciseFontAssetLoader(p, `http://127.0.0.1:${server.address().port}`)]]) {
-    try { report[name] = await check(page); }
-    catch (error) { console.error(`Browser module ${name}:`, error); moduleErrors.push(`${name}: ${error.message}`); }
-  }
-  assert.equal(sharedFontRequests, 1, 'concurrent devices and loaders share one fetch and CPU decode in this JavaScript realm');
-  const disposal = await page.evaluate(() => {
-    const { r } = renderProbe, gl = r.gl, buffer = r.buffer, program = r.program;
-    r.dispose(); r.dispose(); const result = { state: r.state, bufferReleased: !gl.isBuffer(buffer), programReleased: !gl.isProgram(program), textures: r.stats.textureCount };
-    demo.dispose(); return result;
-  });
-  assert.deepEqual(disposal, { state: 'disposed', bufferReleased: true, programReleased: true, textures: 0 });
-  assert.equal(errors.length, 0, errors.join('\n'));
-  assert.equal(moduleErrors.length, 0, moduleErrors.join('\n'));
-  assert.equal(report.reusableMeshes?.scenes.length, 4, 'reusable mesh helper must execute both native backends with and without MSAA');
-  report.stages.push('retained animated mesh â†’ silhouette/instance batching â†’ vector painter order â†’ nested/rotated clipping â†’ native context restoration/disposal, ANGLE and uniform backends, MSAA off/on');
-  const vectorExample=await browser.newPage({viewport:{width:1000,height:700}}),exampleErrors=[];
-  vectorExample.on('pageerror',error=>exampleErrors.push(error.message));
-  await vectorExample.goto(`http://127.0.0.1:${server.address().port}/modules/rendering/examples/vector/index.html`);
-  await vectorExample.waitForFunction(()=>document.querySelector('#stats')?.textContent.includes('draw calls'));
-  report.vectorExample=await vectorExample.evaluate(()=>{const {device,cpuSubmitMs}=window.vectorExample,gl=device.gl,pixel=new Uint8Array(4);gl.readPixels(450,499-200,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel);return{pixels:[...pixel],stats:{...device.stats},cpuSubmitMs,text:document.querySelector('#stats').textContent,error:gl.getError()}});
-  assert.ok(report.vectorExample.pixels[0]>100&&report.vectorExample.pixels[0]>report.vectorExample.pixels[1]*3,'native example has group-composited red pixels');
-  assert.equal(report.vectorExample.error,0);assert.ok(report.vectorExample.stats.gpuRenderTargetBytes>0);assert.equal(exampleErrors.length,0,exampleErrors.join('\n'));
-  await vectorExample.close();report.stages.push('native vector/text/group-opacity example draws WebGL pixels');
-  const previewPage=await browser.newPage({viewport:{width:900,height:620},deviceScaleFactor:1}),previewErrors=[];
-  previewPage.on('pageerror',error=>{previewErrors.push(error.message);console.error('Input preview scenario:',error.stack)});
-  await previewPage.goto(`http://127.0.0.1:${server.address().port}/modules/simloop/examples/input-preview/index.html`);
-  await previewPage.waitForFunction(()=>window.inputPreviewDemo?.diagnostics.frames>10);
-  await previewPage.locator('canvas').focus();
-  const nextBoundary=await previewPage.evaluate(()=>inputPreviewDemo.diagnostics.authorityTick);
-  await previewPage.waitForFunction(t=>inputPreviewDemo.diagnostics.authorityTick>t,nextBoundary,{timeout:1500,polling:'raf'});
-  const beforePreview=await previewPage.evaluate(()=>window.inputPreviewDemo.diagnostics);
-  const inputAt=await previewPage.evaluate(()=>{window.inputEventAt=performance.now();document.querySelector('canvas').dispatchEvent(new KeyboardEvent('keydown',{code:'KeyD',bubbles:true}));return window.inputEventAt;});
-  await previewPage.waitForFunction(x=>window.inputPreviewDemo.diagnostics.displayedX>x+0.5,beforePreview.displayedX,{timeout:1500,polling:'raf'});
-  const firstResponse=await previewPage.evaluate(()=>window.inputPreviewDemo.diagnostics);
-  const inputToDisplayMs=await previewPage.evaluate(()=>performance.now()-window.inputEventAt);
-  assert.ok(firstResponse.authorityX<beforePreview.authorityX+8,'preview responds before delayed authority confirmation');
-  assert.equal(firstResponse.authorityTick,beforePreview.authorityTick,'input changes display before authority tick');
-  assert.equal(firstResponse.authorityHash,beforePreview.authorityHash,'observing input leaves actual authority bytes/hash unchanged');
-  const smoothHold=await previewPage.evaluate(async()=>{const positions=[];for(let i=0;i<4;i++){await new Promise(requestAnimationFrame);positions.push(inputPreviewDemo.diagnostics.displayedX)}return positions;});
-  assert.ok(new Set(smoothHold.map(x=>x.toFixed(3))).size>1,'cached future schema sample moves BETWEEN authority ticks');
-  assert.ok(smoothHold.slice(1).every((x,i)=>Math.abs(x-smoothHold[i])<20),'preview does not jump a whole simulation step per RAF');
-  assert.equal(firstResponse.remoteX,575,'remote authoritative identity is not replaced by local prediction');
-  assert.ok(inputToDisplayMs<400,`local response did not reach its first sampled render within 400ms: ${inputToDisplayMs}ms`);
-  const renderedPreviewPixel=await previewPage.evaluate(()=>{const {renderer}=window.inputPreviewDemo,gl=renderer.gl,pixels=new Uint8Array(renderer.canvas.width*renderer.canvas.height*4);gl.readPixels(0,0,renderer.canvas.width,renderer.canvas.height,gl.RGBA,gl.UNSIGNED_BYTE,pixels);let green=0;for(let i=0;i<pixels.length;i+=4)if(pixels[i+1]>180&&pixels[i]<90&&pixels[i+2]>70)green++;return{greenPixels:green,error:gl.getError()};});
-  assert.ok(renderedPreviewPixel.greenPixels>20,'selected local fork is rendered from its schema model in WebGL');assert.equal(renderedPreviewPixel.error,0);
-  const restoreCountBeforeSteadyHold=firstResponse.forkRestores,continuedBeforeSteadyHold=firstResponse.metrics.continuedCheckpoints;
-  await previewPage.waitForFunction(t=>inputPreviewDemo.diagnostics.authorityTick>=t+6,firstResponse.authorityTick,{timeout:2500,polling:'raf'});
-  const steadyHold=await previewPage.evaluate(()=>inputPreviewDemo.diagnostics);
-  assert.ok(steadyHold.metrics.continuedCheckpoints>=continuedBeforeSteadyHold+4,'matching confirmed ticks continue the existing prediction fork');
-  assert.ok(steadyHold.forkRestores<=restoreCountBeforeSteadyHold+2,'steady held input does not reinstall the full preview snapshot each authority tick');
-  await previewPage.evaluate(()=>inputPreviewDemo.clockGap());
-  await previewPage.waitForFunction(t=>inputPreviewDemo.diagnostics.authorityTick>=t+2,steadyHold.authorityTick,{timeout:1500,polling:'raf'});
-  const afterClockGap=await previewPage.evaluate(()=>inputPreviewDemo.diagnostics);
-  assert.ok(afterClockGap.metrics.clockGaps>steadyHold.metrics.clockGaps,'clock gap clears the stale rendered sample');
-  assert.ok(afterClockGap.metrics.continuedCheckpoints>steadyHold.metrics.continuedCheckpoints,'exact current input continues the same fork after an active clock gap');
-  assert.ok(afterClockGap.forkRestores<=steadyHold.forkRestores+1,'valid clock-gap continuation avoids full snapshot reinstall');
-  await previewPage.evaluate(()=>document.querySelector('canvas').dispatchEvent(new KeyboardEvent('keyup',{code:'KeyD',bubbles:true})));
-  const beforeRoll=await previewPage.evaluate(()=>window.inputPreviewDemo.diagnostics.displayedX);
-  await previewPage.keyboard.press('Space');
-  await previewPage.waitForFunction(()=>inputPreviewDemo.diagnostics.displayFlash>.1,undefined,{timeout:1500,polling:'raf'});
-  await previewPage.waitForFunction(()=>window.inputPreviewDemo.diagnostics.confirmedCommandSequence>0,undefined,{timeout:2000,polling:'raf'});
-  const captureMetadata=await previewPage.evaluate(()=>inputPreviewDemo.session.localInputState);
-  assert.equal(captureMetadata.capture.executeTick-captureMetadata.capture.captureTick,2,'actual SDK input delay is retained in execution metadata');
-  assert.equal(captureMetadata.commandSequence,captureMetadata.executedCommandSequence,'observed roll binds once and is confirmed at actual execution');
-  assert.equal(previewErrors.length,0,'detached fork tick/command guards reject compressed gaps or changed execution T');
-  const beforeDirectionSwitch=await previewPage.evaluate(()=>window.inputPreviewDemo.diagnostics.displayedX);
-  await previewPage.evaluate(()=>document.querySelector('canvas').dispatchEvent(new KeyboardEvent('keydown',{code:'KeyA',bubbles:true})));
-  await previewPage.waitForFunction(x=>window.inputPreviewDemo.diagnostics.displayedX<x-.5,beforeDirectionSwitch,{timeout:1000,polling:'raf'});
-  await previewPage.evaluate(()=>document.querySelector('canvas').dispatchEvent(new KeyboardEvent('keyup',{code:'KeyA',bubbles:true})));
-  const rollCountBefore=await previewPage.evaluate(()=>window.inputPreviewDemo.diagnostics.lastConfirm);
-  await previewPage.evaluate(()=>window.inputPreviewDemo.forceCollision());
-  await previewPage.waitForFunction(()=>window.inputPreviewDemo.diagnostics.displayedX>650,{timeout:1500});
-  await previewPage.waitForFunction(()=>Math.abs(window.inputPreviewDemo.diagnostics.displayedX-window.inputPreviewDemo.diagnostics.authorityX)<2,{timeout:1500});
-  await previewPage.locator('#preview').uncheck();
-  await previewPage.locator('canvas').focus();
-  const offAuthorityBefore=await previewPage.evaluate(()=>window.inputPreviewDemo.diagnostics.authorityX);
-  await previewPage.evaluate(()=>document.querySelector('canvas').dispatchEvent(new KeyboardEvent('keydown',{code:'KeyA',bubbles:true})));
-  await previewPage.waitForFunction(x=>window.inputPreviewDemo.diagnostics.authorityX<x-.5,offAuthorityBefore,{timeout:1500,polling:'raf'});
-  assert.equal(await previewPage.evaluate(()=>window.inputPreviewDemo.preview.pendingCount),0,'preview OFF retains authoritative-only route');
-  await previewPage.evaluate(()=>document.querySelector('canvas').dispatchEvent(new KeyboardEvent('keyup',{code:'KeyA',bubbles:true})));
-  await previewPage.locator('#preview').check();
-  await previewPage.evaluate(()=>window.dispatchEvent(new Event('blur')));
-  assert.equal(await previewPage.evaluate(()=>window.inputPreviewDemo.diagnostics.pending),0,'blur clears speculative inputs');
-  await previewPage.locator('#gap').click(); await previewPage.locator('#restart').click();
-  await previewPage.waitForFunction(()=>Math.abs(window.inputPreviewDemo.diagnostics.displayedX-80)<2,undefined,{timeout:1000,polling:'raf'});
-  report.inputPreview=await previewPage.evaluate(()=>({diagnostics:window.inputPreviewDemo.diagnostics,glError:window.inputPreviewDemo.renderer.gl.getError()}));
-  assert.equal(report.inputPreview.glError,0);assert.equal(previewErrors.length,0,previewErrors.join('\n'));
-  report.inputPreview.inputToFirstDisplayMs=inputToDisplayMs;report.inputPreview.webglPixel=renderedPreviewPixel;report.inputPreview.lastConfirmBeforeCollision=rollCountBefore;
-  report.inputPreview.preTick={tick:beforePreview.authorityTick,hash:beforePreview.authorityHash,smoothHold};report.inputPreview.capture={captureTick:captureMetadata.capture.captureTick,executeTick:captureMetadata.capture.executeTick,commandSequence:captureMetadata.commandSequence};
-  report.stages.push('detached same-update input fork â†’ first sampled schema render â†’ delayed authority correction â†’ collision/roll/press-release/direction/off/blur/gap/restart');
-  await previewPage.evaluate(()=>window.inputPreviewDemo.dispose());
-  report.manualOwnerRelease=await previewPage.evaluate(async()=>{
-    const { createLoop, LocalInputPreview } = await import('/dist/simloop.js');
-const { createSession, profiles } = await import('/dist/rollback.js');
-    const {ActionState,createDOMInput}=await import('/dist/input.js');
-    const state={x:0,tick:0,edges:0},update=(world,input,commands=[])=>{world.x+=input[0];world.edges+=commands.length;world.tick++};let forkRestores=0,confirmedReplaySteps=0,confirmedAdvanceResults=[],confirmedAdvanceRestoreDeltas=[];
-    const adapter={save:()=>Uint8Array.of(state.x,state.tick,state.edges),load:bytes=>{state.x=bytes[0];state.tick=bytes[1];state.edges=bytes[2]},validateSnapshot:bytes=>bytes.length===3,step:frame=>update(state,frame.inputs[0].input,frame.inputs[0].commands)};
-    const session=createSession({players:['local'],localPlayerId:'local',sessionId:'manual-blur',simulationVersion:'manual-v1',seed:1,inputSize:1,adapter,profile:{...profiles.lockstep,tickRate:10,maxCatchupSteps:1,baseInputDelayTicks:0,minInputDelayTicks:0,maxInputDelayTicks:0,adaptiveInputDelay:false,pacingPolicy:'none'}});
-    const actions=new ActionState(),canvas=document.querySelector('canvas'),input=createDOMInput({target:canvas,state:actions,keys:{KeyQ:'hold',KeyE:'tap'}});
-    const preview=new LocalInputPreview({maxAgeMs:1000,createFork:bytes=>{const fork={x:bytes[0],tick:bytes[1],edges:bytes[2]};return{restore(snapshot){fork.x=snapshot[0];fork.tick=snapshot[1];fork.edges=snapshot[2];forkRestores++},step:(input,context)=>{if(context.confirmedReplay)confirmedReplaySteps++;update(fork,input,context.commands)}}},readEntities:()=>[]});
-    // Integer fixture times keep exact 100ms deadlines free of floating subtraction jitter.
-    const now=Math.ceil(performance.now()),continuationKey='manual-blur';preview.reconcile({snapshot:adapter.save(),input:Uint8Array.of(0),revision:0,tick:0,epoch:0,continuationKey,confirmedCommandSequence:0,timeMs:now,mode:'reset'});let previewCheckpointTime=now;
-    let observations=0, lifecycleBoundary=null; const lifecycleRebases=[];
-    const loop=createLoop({session,inputPreview:preview,getInput(){observations++;const held=actions.sample('hold').held,edge=actions.sample('tap').pressed;actions.consume();return{input:Uint8Array.of(held?1:0),commands:edge?[{payload:Uint8Array.of(7)}]:[],predict:held||edge,continuationKey}},onAdvance(result,submission){if(result.status!=='advanced')return;const metadata=session.localInputState,checkpoint={input:metadata.replayInput??metadata.executedInput??Uint8Array.of(0),revision:0,tick:session.tick,epoch:metadata.epoch??0,continuationKey,confirmedCommandSequence:metadata.executedCommandSequence??0,timeMs:previewCheckpointTime=Math.max(previewCheckpointTime+1,submission?.timeMs??performance.now())};
-      if(lifecycleBoundary){
-        if(preview.continueFromCheckpoint(checkpoint))throw Error('cleared lifecycle fork unexpectedly continued');
-        preview.reconcile({...checkpoint,snapshot:adapter.save(),mode:'reset'});
-        lifecycleRebases.push(lifecycleBoundary);lifecycleBoundary=null;
-      }else if(submission?.predict){if(!preview.continueFromCheckpoint(checkpoint))throw Error('predicted confirmation did not continue its exact fork')}else{const restores=forkRestores;if(preview.advanceConfirmedCheckpoint(checkpoint)){confirmedAdvanceResults.push(checkpoint.tick);confirmedAdvanceRestoreDeltas.push(forkRestores-restores);if(preview.advanceConfirmedCheckpoint({...checkpoint,tick:checkpoint.tick+1,timeMs:checkpoint.timeMs+1}))throw Error('confirmed-only continuation exceeded its one-step bound')}}}});
-    const release=()=>loop.releaseInput();window.addEventListener('blur',release);
-    try{loop.pulse(now);canvas.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyQ',bubbles:true}));
-      canvas.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyE',bubbles:true}));canvas.dispatchEvent(new KeyboardEvent('keyup',{code:'KeyE',bubbles:true}));
-      if(state.x!==0)throw Error('DOM input advanced authority');loop.pulse(now+100);const deadlineHeldX=state.x;
-      if(deadlineHeldX!==1||state.edges!==1||observations!==2)throw Error('deadline failed to refresh held/quick edge without RAF');
-      loop.pulse(now+100);if(observations!==2)throw Error('same timestamp observed twice');
-      canvas.dispatchEvent(new KeyboardEvent('keyup',{code:'KeyQ',bubbles:true}));loop.observeInput(now+150);loop.pulse(now+150);loop.pulse(now+200);
-      if(observations!==3||state.x!==1)throw Error('recent RAF observation was not reused by deadline');
-      canvas.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyQ',bubbles:true}));loop.pulse(now+300);const heldX=state.x;
-      if(heldX!==2)throw Error('later held change stayed stale without RAF');
-      const confirmedState = {confirmedAdvances:preview.metrics.confirmedAdvances,confirmedAdvanceRejected:preview.metrics.confirmedAdvanceRejected,confirmedAdvanceRejectedLimit:preview.metrics.confirmedAdvanceRejectedLimit,confirmedAdvanceResults:[...confirmedAdvanceResults],confirmedAdvanceRestoreDeltas:[...confirmedAdvanceRestoreDeltas],confirmedReplaySteps,forkRestores};
-      lifecycleBoundary='blur';
-      window.dispatchEvent(new Event('blur'));loop.pulse(now+400);loop.pulse(now+500);
-      if(state.x!==heldX||session.localInputState.capture.input[0]!==0||session.localInputState.executedInput[0]!==0)throw Error('manual owner retained stale held cache after the reserved release frame');
-      if(state.edges!==1||session.localInputState.commandSequence!==1||session.localInputState.executedCommandSequence!==1)throw Error('deadline refresh duplicated or lost edge command');
-      const retainedEdges = [];
-      for (const [index, boundary] of ['blur', 'resetTiming', 'stop'].entries()) {
-        const at = now + 550 + index * 400, previousEdges = state.edges;
-        canvas.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyE',bubbles:true}));
-        canvas.dispatchEvent(new KeyboardEvent('keyup',{code:'KeyE',bubbles:true}));
-        loop.observeInput(at);
-        lifecycleBoundary=boundary;
-        if (boundary === 'blur') window.dispatchEvent(new Event('blur')); else loop[boundary]();
-        loop.pulse(at + 50); loop.pulse(at + 150); loop.pulse(at + 250);
-        if (state.edges !== previousEdges + 1 || session.localInputState.executedCommandSequence !== state.edges) throw Error(boundary + ' lost or duplicated an observed edge before tick consumption');
-        if (state.x !== heldX) throw Error(boundary + ' restored stale held input');
-        retainedEdges.push(boundary);
-      }
-      return{deadlineHeldX,heldX,afterBlurX:state.x,edges:state.edges,retainedEdges,lifecycleRebases,observationReads:observations,neutral:session.localInputState.capture.input[0],automaticRafStarted:loop.running,...confirmedState};
-    }finally{window.removeEventListener('blur',release);loop.stop();preview.dispose();session.close();input.dispose();}
-  });
-  assert.equal(report.manualOwnerRelease.automaticRafStarted,false);
-  assert.deepEqual(report.manualOwnerRelease.lifecycleRebases,['blur','blur','resetTiming','stop'],'each lifecycle clear rejects continuation and installs a fresh authority checkpoint');
-  assert.equal(report.manualOwnerRelease.confirmedAdvances,1,'one exact idle frame advances the detached local fork without a checkpoint restore');
-  assert.equal(report.manualOwnerRelease.confirmedReplaySteps,1,'confirmed-only continuation still executes the same detached game step');
-  assert.ok(report.manualOwnerRelease.confirmedAdvanceRejected>=1,'a second speculative confirmed-only step is rejected until another prediction or snapshot rebase');
-  assert.ok(report.manualOwnerRelease.confirmedAdvanceRejectedLimit>=1,'the confirmed-only horizon rejects a second consecutive step');
-  assert.deepEqual(report.manualOwnerRelease.confirmedAdvanceRestoreDeltas,[0],'the bounded confirmed-only step avoids reinstalling the full snapshot');
-  report.stages.push('manual deadline refreshes held/quick edges without RAF, reuses observations, stays neutral and retains one edge across blur/resetTiming/stop until tick consumption');
-  await previewPage.evaluate(()=>{
-    window.inputPreviewDemo.dispose();
-    window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: false }));
-  });
-  assert.equal(previewErrors.length,0,previewErrors.join('\n'));
-
-  await previewPage.close();
-  assert.equal(previewErrors.length,0,previewErrors.join('\n'));
-  report.stages.push('explicit disposal, repeated disposal and pagehide release the demo once without lifecycle errors');
-  const vectorAssetPage = await browser.newPage({ viewport: { width: 1000, height: 800 }, hasTouch: true, deviceScaleFactor: 2 });
-  const vectorAssetErrors = [];
-  vectorAssetPage.on('pageerror', error => vectorAssetErrors.push(error.message));
-  await vectorAssetPage.goto(`http://127.0.0.1:${server.address().port}/dist/previews/vector-assets.html?fixture=seed-scout`);
-  await vectorAssetPage.waitForFunction(() => Boolean(window.vectorAssetDemo?.ready || window.vectorAssetDemo?.error), null, { timeout: 15000 });
-  assert.equal(await vectorAssetPage.evaluate(() => window.vectorAssetDemo?.error ?? null), null, 'standalone vector-assets preview initializes');
-  report.vectorAssets = await exerciseVectorAssets(vectorAssetPage);
-  const sketchPixelParity = await vectorAssetPage.evaluate(() => {
-    const { WebGLDevice, MeshRenderer, createStyleSample } = window.vectorAssetRuntime;
-    const canvas = document.createElement('canvas'); canvas.width = 320; canvas.height = 360; document.body.append(canvas);
-    const device = new WebGLDevice(canvas, { alpha: false, antialias: false, preserveDrawingBuffer: true, checkGLErrors: true });
-    const meshes = new MeshRenderer(device), asset = createStyleSample('sketch-fox', meshes);
-    const actor = asset.createPlayer({ clip: 'idle', startedAtMs: 0 });
-    const projection = [2 / 160, 0, 0, 0, -2 / 180, 0, -1, 1, 1];
-    const capture = timeMs => {
-      actor.seek(timeMs);
-      device.beginFrame({ width: canvas.width, height: canvas.height, clearColor: [0.875, 0.91, 0.80, 1] });
-      meshes.beginFrame(); actor.draw({ projection }); meshes.flush(); device.endFrame();
-      const pixels = new Uint8Array(canvas.width * canvas.height * 4);
-      device.gl.readPixels(0, 0, canvas.width, canvas.height, device.gl.RGBA, device.gl.UNSIGNED_BYTE, pixels);
-      return pixels;
-    };
-    const first = capture(987.5), later = capture(2100), repeated = capture(987.5);
-    let changedChannels = 0, repeatedChannels = 0;
-    for (let index = 0; index < first.length; index++) {
-      if (first[index] !== later[index]) changedChannels++;
-      if (first[index] !== repeated[index]) repeatedChannels++;
-    }
-    const result = { changedChannels, repeatedChannels, glError: device.gl.getError(), morphCount: asset.mesh.morphCount };
-    actor.dispose(); asset.dispose(); meshes.dispose(); device.dispose(); canvas.remove();
-    return result;
-  });
-  assert.equal(sketchPixelParity.glError, 0);
-  assert.equal(sketchPixelParity.morphCount, 2);
-  assert.ok(sketchPixelParity.changedChannels > 0, 'animated sketch morphs change actual WebGL pixels');
-  assert.equal(sketchPixelParity.repeatedChannels, 0, 'the same sketch time reproduces identical WebGL pixels');
-  assert.equal(vectorAssetErrors.length, 0, vectorAssetErrors.join('\n'));
-  await vectorAssetPage.evaluate(() => {
-    const demo = window.vectorAssetDemo;
-    demo.actor.dispose(); demo.asset.dispose(); demo.meshes.dispose(); demo.device.dispose();
-  });
-  await vectorAssetPage.close();
-  report.stages.push('single SVG SSOT compiled through pinned Three SVGLoader, rendered as shared retained GameKit WebGL mesh with deterministic Anime.js seek');
-
-  const qualityExamplePage = await browser.newPage({ viewport: { width: 1200, height: 900 }, deviceScaleFactor: 1 });
-  const qualityExampleErrors = [];
-  qualityExamplePage.on('pageerror', error => qualityExampleErrors.push(error.message));
-  report.vectorAssetQuality = await exerciseVectorAssetQualityExample(qualityExamplePage,
-    `http://127.0.0.1:${server.address().port}/dist/previews/vector-assets.html`);
-  assert.equal(qualityExampleErrors.length, 0, qualityExampleErrors.join('\n'));
-  await qualityExamplePage.close();
-  report.stages.push('vector-assets example loads a GitHub SVG URL and compares independently configurable curve/stroke tessellation');
-
-  const sourcePath = 'modules/vector-assets/assets/seed-scout.svg';
-  const sourceBytes = await readFile(resolve(root, sourcePath));
-  const expectedSha256 = createHash('sha256').update(sourceBytes).digest('hex');
-  const nodeAsset = compileVectorAsset(sourceBytes, sourcePath);
-  const stable = value => {
-    if (ArrayBuffer.isView(value)) return Array.from(value, stable);
-    if (Array.isArray(value)) return value.map(stable);
-    if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map(key => [key, stable(value[key])]));
-    return value;
-  };
-  const nodeGeometrySha256 = createHash('sha256').update(JSON.stringify(stable(nodeAsset.geometry))).digest('hex');
-  const startupFetchBaseline = vectorSvgFetches;
-  const startupPage = await browser.newPage({ viewport: { width: 1000, height: 800 }, deviceScaleFactor: 1 });
-  const startupErrors = [];
-  startupPage.on('pageerror', error => startupErrors.push(error.message));
-  await startupPage.goto(`http://127.0.0.1:${server.address().port}/modules/interpolation/examples/index.html`);
-  const loadedGeometrySha256 = await startupPage.evaluate(async ({ expectedSha256, nodeGeometrySha256, sourcePath }) => {
-    const { createVectorAssetLoader } = await import('/dist/vector-assets-loader.js');
-    const { createVectorAsset } = await import('/dist/vector-assets.js');
-    const { WebGLDevice, MeshRenderer } = await import('/dist/rendering.js');
-    const url = '/modules/vector-assets/assets/seed-scout.svg';
-    const loader = createVectorAssetLoader({ maxEntries: 2 });
-    const options = { sourcePath, expectedSha256, maxBytes: 512 * 1024 };
-    const [compiledAsset, sameCompiledAsset] = await Promise.all([loader.load(url, options), loader.load(url, options)]);
-    if (compiledAsset !== sameCompiledAsset || loader.size !== 1) throw new Error('Concurrent SVG startup loads did not share the cached compilation');
-    const explicitDefaultAsset = await loader.load(url, { ...options, strokeArcDivisions: 12 });
-    if (explicitDefaultAsset !== compiledAsset) throw new Error('Explicit default stroke arc quality did not normalize to the shared cache key');
-    const coarseArcAsset = await loader.load(url, { ...options, strokeArcDivisions: 8 });
-    const sameCoarseArcAsset = await loader.load(url, { ...options, strokeArcDivisions: 8 });
-    if (coarseArcAsset !== sameCoarseArcAsset || coarseArcAsset === compiledAsset || loader.size !== 2) {
-      throw new Error('Distinct stroke arc quality did not use its own cached compilation');
-    }
-    if (compiledAsset.compilerOptions.strokeArcDivisions !== 12 || coarseArcAsset.compilerOptions.strokeArcDivisions !== 8) {
-      throw new Error('Browser loader did not record selected stroke arc quality');
-    }
-    if (JSON.stringify(Array.from(compiledAsset.geometry.indices)) === JSON.stringify(Array.from(coarseArcAsset.geometry.indices))) {
-      throw new Error('Non-default round stroke arc quality produced the default triangle list');
-    }
-    if (compiledAsset.sourceSha256 !== expectedSha256 || 'sourcePaths' in compiledAsset) throw new Error('Loaded SVG hash or default debug-data policy is incorrect');
-    const canonical = value => {
-      if (ArrayBuffer.isView(value)) return Array.from(value, canonical);
-      if (Array.isArray(value)) return value.map(canonical);
-      if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])]));
-      return value;
-    };
-    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(canonical(compiledAsset.geometry)))));
-    const browserGeometrySha256 = [...digest].map(value => value.toString(16).padStart(2, '0')).join('');
-    if (browserGeometrySha256 !== nodeGeometrySha256) throw new Error('Browser and Node SVG compiler geometry differ');
-
-    const canvas = document.createElement('canvas'); canvas.width = 200; canvas.height = 220; document.body.append(canvas);
-    const device = new WebGLDevice(canvas, { alpha: false, antialias: false, preserveDrawingBuffer: true, checkGLErrors: true });
-    const meshes = new MeshRenderer(device);
-    const asset = createVectorAsset(meshes, compiledAsset);
-    const actor = asset.createPlayer({ clip: 'idle', startedAtMs: 0 });
-    device.beginFrame({ width: 200, height: 220, clearColor: [0.875, 0.91, 0.80, 1] });
-    meshes.beginFrame(); actor.draw({ projection: [2 / 200, 0, 0, 0, -2 / 220, 0, -1, 1, 1] }); meshes.flush(); device.endFrame();
-    const pixel = new Uint8Array(4); device.gl.readPixels(100, 107, 1, 1, device.gl.RGBA, device.gl.UNSIGNED_BYTE, pixel);
-    if (pixel[1] < 100 || device.gl.getError() !== 0 || device.stats.drawCalls < 1) throw new Error(`Browser-compiled SVG did not render in WebGL: ${[...pixel]}`);
-    if (meshes.stats().geometryUploads !== 0) throw new Error('The retained SVG mesh uploaded geometry during its draw');
-    actor.dispose(); asset.dispose(); meshes.dispose(); device.dispose(); canvas.remove();
-
-    const mismatchLoader = createVectorAssetLoader({ maxEntries: 2 });
-    let mismatchRejected = false;
-    try { await mismatchLoader.load(url, { sourcePath, expectedSha256: '0'.repeat(64) }); }
-    catch (error) { mismatchRejected = /SHA-256 mismatch/.test(error.message); }
-    if (!mismatchRejected || mismatchLoader.size !== 0) throw new Error('A hash-mismatched SVG was compiled or cached');
-    mismatchLoader.dispose();
-    loader.clear(); loader.dispose();
-    return browserGeometrySha256;
-  }, { expectedSha256, nodeGeometrySha256, sourcePath });
-  assert.equal(loadedGeometrySha256, nodeGeometrySha256, 'browser and Node compilers emit identical geometry');
-  const startupFetches = vectorSvgFetches - startupFetchBaseline;
-  assert.equal(startupFetches, 3, 'same-key startup loads share one fetch, changed arc quality has its own key, and a hash mismatch is fetched only once');
-  assert.equal(startupErrors.length, 0, startupErrors.join('\n'));
-  await startupPage.close();
-  report.browserSvgStartup = { sourceSha256: expectedSha256, geometrySha256: loadedGeometrySha256, requests: startupFetches,
-    scope: 'same-key promise/cache deduplication, expected-hash rejection before caching, browser/Node geometry parity, and actual WebGL1 draw of the browser-compiled SVG' };
-  report.stages.push('browser SVG startup loader verifies source SHA-256, compiles once with bounded cache, and renders the same geometry as Node');
-
-  const centeredSourcePath = 'modules/vector-assets/tests/centered-viewbox.svg';
-  const centeredSourceBytes = await readFile(resolve(root, centeredSourcePath));
-  const centeredSourceSha256 = createHash('sha256').update(centeredSourceBytes).digest('hex');
-  const centeredNodeAsset = compileVectorAsset(centeredSourceBytes, centeredSourcePath, { normalizeCenteredViewBox: true });
-  const centeredGeometrySha256 = createHash('sha256').update(JSON.stringify(stable(centeredNodeAsset.geometry))).digest('hex');
-  const centeredPage = await browser.newPage({ viewport: { width: 800, height: 600 }, deviceScaleFactor: 1 });
-  const centeredErrors = [];
-  centeredPage.on('pageerror', error => centeredErrors.push(error.message));
-  await centeredPage.goto(`http://127.0.0.1:${server.address().port}/modules/interpolation/examples/index.html`);
-  const centeredResult = await centeredPage.evaluate(async ({ sourcePath, sourceSha256, nodeGeometrySha256 }) => {
-    const { createVectorAssetLoader } = await import('/dist/vector-assets-loader.js');
-    const { createVectorAsset } = await import('/dist/vector-assets.js');
-    const { WebGLDevice, MeshRenderer } = await import('/dist/rendering.js');
-    const url = '/modules/vector-assets/tests/centered-viewbox.svg';
-    const loader = createVectorAssetLoader({ maxEntries: 4 });
-    const sourceResponse = await fetch(url, { cache: 'no-store' });
-    const originalText = await sourceResponse.text();
-    const normalizedAsset = await loader.load(url, {
-      sourcePath, expectedSha256: sourceSha256, maxBytes: 512 * 1024, normalizeCenteredViewBox: true,
-    });
-    if (normalizedAsset.sourceSha256 !== sourceSha256 || JSON.stringify(normalizedAsset.viewBox) !== JSON.stringify([-36, -40, 72, 80])) {
-      throw new Error('Centered SVG result did not retain the original byte digest and viewBox');
-    }
-    const canonical = value => {
-      if (ArrayBuffer.isView(value)) return Array.from(value, canonical);
-      if (Array.isArray(value)) return value.map(canonical);
-      if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])]));
-      return value;
-    };
-    const digest = async value => {
-      const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(canonical(value)))));
-      return [...bytes].map(item => item.toString(16).padStart(2, '0')).join('');
-    };
-    if (await digest(normalizedAsset.geometry) !== nodeGeometrySha256) throw new Error('Centered browser and Node compiler geometry differ');
-
-    // Recreate the previous build-only normalization as a reference, then
-    // compare actual WebGL frames including the authored part/pivot/clip data.
-    const svgDocument = new DOMParser().parseFromString(originalText, 'image/svg+xml');
-    const root = svgDocument.documentElement;
-    const viewBox = root.getAttribute('viewBox').trim().split(/[\s,]+/).map(Number);
-    root.setAttribute('width', String(viewBox[2])); root.setAttribute('height', String(viewBox[3]));
-    root.setAttribute('viewBox', `0 0 ${viewBox[2]} ${viewBox[3]}`);
-    const metadataNode = [...root.children].find(child => child.localName === 'metadata' && child.id === 'vector-asset');
-    const metadata = JSON.parse(metadataNode.textContent);
-    for (const clip of Object.values(metadata.clips ?? {})) {
-      for (const frame of clip.keyframes ?? []) {
-        for (const [part, pose] of Object.entries(frame.parts ?? {})) {
-          if (pose && typeof pose === 'object' && !Array.isArray(pose) && Object.keys(pose).length === 0) delete frame.parts[part];
-        }
-      }
-    }
-    metadataNode.textContent = JSON.stringify(metadata);
-    const normalizedText = new XMLSerializer().serializeToString(svgDocument);
-    const normalizedBytes = new TextEncoder().encode(normalizedText);
-    const normalizedDigest = new Uint8Array(await crypto.subtle.digest('SHA-256', normalizedBytes));
-    const normalizedHash = [...normalizedDigest].map(item => item.toString(16).padStart(2, '0')).join('');
-    const blobUrl = URL.createObjectURL(new Blob([normalizedBytes], { type: 'image/svg+xml' }));
-    let referenceAsset;
-    try {
-      referenceAsset = await loader.load(blobUrl, { sourcePath, expectedSha256: normalizedHash, maxBytes: 512 * 1024 });
-    } finally { URL.revokeObjectURL(blobUrl); }
-    if (await digest(referenceAsset.geometry) !== nodeGeometrySha256) throw new Error('Legacy-normalized SVG reference geometry differs');
-    if (JSON.stringify(normalizedAsset.metadata) !== JSON.stringify(referenceAsset.metadata)) throw new Error('Centered compiler changed parts, pivots, sockets, or non-empty clip poses');
-    if (JSON.stringify(normalizedAsset.metadata.parts.map(part => part.pivot)) !== JSON.stringify([[0, 0], [-12, 2], [-12, -14]])) throw new Error('Centered part pivots were not preserved');
-    if (JSON.stringify(normalizedAsset.metadata.sockets.grip.point) !== JSON.stringify([-12, -18])) throw new Error('Centered socket coordinates were not preserved');
-
-    const canvas = window.document.createElement('canvas'); canvas.width = 200; canvas.height = 220; window.document.body.append(canvas);
-    const device = new WebGLDevice(canvas, { alpha: false, antialias: false, preserveDrawingBuffer: true, checkGLErrors: true });
-    const meshes = new MeshRenderer(device);
-    const normalizedResource = createVectorAsset(meshes, normalizedAsset);
-    const referenceResource = createVectorAsset(meshes, referenceAsset);
-    const normalizedActor = normalizedResource.createPlayer({ clip: 'test', startedAtMs: 0 });
-    const referenceActor = referenceResource.createPlayer({ clip: 'test', startedAtMs: 0 });
-    const projection = [2 / 72, 0, 0, 0, -2 / 80, 0, 0, 0, 1];
-    const capture = (actor, timeMs) => {
-      actor.seek(timeMs);
-      device.beginFrame({ width: 200, height: 220, clearColor: [0.93, 0.95, 0.98, 1] });
-      meshes.beginFrame(); actor.draw({ projection }); meshes.flush(); device.endFrame();
-      const pixels = new Uint8Array(200 * 220 * 4);
-      device.gl.readPixels(0, 0, 200, 220, device.gl.RGBA, device.gl.UNSIGNED_BYTE, pixels);
-      return pixels;
-    };
-    const frameHashes = [];
-    let movingPixels = 0, redPixels = 0, greenPixels = 0, bluePixels = 0;
-    for (const timeMs of [0, 50, 100]) {
-      const compiledPixels = capture(normalizedActor, timeMs);
-      const legacyPixels = capture(referenceActor, timeMs);
-      if (compiledPixels.some((channel, index) => channel !== legacyPixels[index])) throw new Error(`Centered SVG WebGL pixels differ from the previous normalizer at ${timeMs}ms`);
-      frameHashes.push(await digest(compiledPixels));
-      for (let index = 0; index < compiledPixels.length; index += 4) {
-        const [red, green, blue] = compiledPixels.subarray(index, index + 3);
-        if (red > 150 && green < 100 && blue < 100) redPixels++;
-        if (green > 80 && green > red * 1.3 && green > blue * 1.3) greenPixels++;
-        if (blue > 100 && blue > red * 1.3 && blue > green * 1.3) bluePixels++;
-      }
-      if (timeMs === 100) {
-        const initial = capture(normalizedActor, 0);
-        for (let index = 0; index < compiledPixels.length; index += 4) {
-          if (compiledPixels[index] !== initial[index] || compiledPixels[index + 1] !== initial[index + 1]
-              || compiledPixels[index + 2] !== initial[index + 2] || compiledPixels[index + 3] !== initial[index + 3]) movingPixels++;
-        }
-      }
-    }
-    if (frameHashes[0] === frameHashes[2] || movingPixels < 20 || redPixels < 500 || greenPixels < 20 || bluePixels < 20) {
-      throw new Error(`Centered SVG frame lost geometry or clip motion: ${JSON.stringify({ frameHashes, movingPixels, redPixels, greenPixels, bluePixels })}`);
-    }
-    const finalError = device.gl.getError();
-    normalizedActor.dispose(); referenceActor.dispose(); normalizedResource.dispose(); referenceResource.dispose(); meshes.dispose(); device.dispose(); canvas.remove(); loader.dispose();
-    if (finalError !== 0) throw new Error(`Centered SVG WebGL render error ${finalError}`);
-    return { sourceSha256: normalizedAsset.sourceSha256, viewBox: normalizedAsset.viewBox, frameHashes, movingPixels, redPixels, greenPixels, bluePixels };
-  }, { sourcePath: centeredSourcePath, sourceSha256: centeredSourceSha256, nodeGeometrySha256: centeredGeometrySha256 });
-  assert.equal(centeredErrors.length, 0, centeredErrors.join('\n'));
-  await centeredPage.close();
-  report.centeredSvgStartup = centeredResult;
-  report.stages.push('centered-viewBox normalization preserves original provenance, geometry, pivots, sockets, clip transforms, and actual WebGL pixels versus the prior build-time normalizer');
-  report.browser = await browser.version(); report.contextLoss = supportsLoss;
-  report.scope = 'Headless Chromium with actual WebGL1/SwiftShader pixels and built ESMs. CPU/interval observations are not mobile FPS or hardware-GPU certification. No screenshot/artifact retention.';
-  console.log(JSON.stringify(report, null, 2));
-} finally { await browser?.close(); await new Promise(resolve => server.close(resolve)); }
+YªçŠx-®éÜj×¢ëiºÚ+Š§j[h‘éÜ¢éíÛ}õÑ:-jZ.¶›­–)Þ³V–×÷'B²'Väg&ÖT6†V6·2Òg&öÒrââòââöÖöGVÆW2ö–çFW'öÆF–öâ÷FW7G2÷&W6VçFF–öâÖg&ÖRæ'&÷w6W"æ§2s°Ð¦–×÷'B²W†W&6—6UfV7F÷$76WG2Òg&öÒrââòââöÖöGVÆW2÷fV7F÷"Ö76WG2÷FW7G2÷'VçF–ÖRæ'&÷w6W"æÖ§2s°Ð¦–×÷'B²W†W&6—6UfV7F÷$76WEVÆ—G”W†×ÆRÒg&öÒrââòââöÖöGVÆW2÷fV7F÷"Ö76WG2÷FW7G2÷VÆ—G’ÖW†×ÆRæ'&÷w6W"æÖ§2s°Ð¦–×÷'B²W†W&6—6UvV$tÄFWf–6RÂW†W&6—6UfV7F÷%&VæFW&W"ÂW†W&6—6TföçD76WDÆöFW"Òg&öÒrââòââöÖöGVÆW2÷&VæFW&–ær÷FW7G2öFWf–6Ræ'&÷w6W"æÖ§2s°Ð¦–×÷'B²W†W&6—6U&WW6&ÆTÖW6†W2Òg&öÒrââòââöÖöGVÆW2÷&VæFW&–ær÷FW7G2öÖW6‚æ'&÷w6W"æÖ§2s°Ð¦–×÷'B²W†W&6—6U&VæFW&W$–çFW&ÆVf–ærÒg&öÒrââòââöÖöGVÆW2÷&VæFW&–ær÷FW7G2ö–çFW&÷æ'&÷w6W"æÖ§2s°Ð¦–×÷'B²W†W&6—6T÷&FW&VD76WD&F6‚Òg&öÒrââòââöÖöGVÆW2÷&VæFW&–ær÷FW7G2ö÷&FW&VBÖ&F6‚æ'&÷w6W"æÖ§2s°Ð¦–×÷'B²W†W&6—6TÖW6„FWF‚Òg&öÒrââòââöÖöGVÆW2÷&VæFW&–ær÷FW7G2öÖW6‚ÖFWF‚æ'&÷w6W"æÖ§2s°Ð¦–×÷'B²W†W&6—6TÖW6„Ç†FWF…w&—FRÒg&öÒrââòââöÖöGVÆW2÷&VæFW&–ær÷FW7G2öÖW6‚ÖÇ†ÖFWF‚æ'&÷w6W"æÖ§2s°Ð¦–×÷'B²'Vå&W6VçFF–öä6†V6·2Òg&öÒrâ÷&W6VçFF–öâæ'&÷w6W"æ§2s°Ð¦–×÷'B²6‡&öÖ—VÒÒg&öÒwÆ—w&–v‡Bs°Ð¦–×÷'B²7&VFU6W'fW"Òg&öÒvæöFS¦‡GGs°Ð¦–×÷'B²&VDf–ÆRÒg&öÒvæöFS¦g2÷&öÖ—6W2s°Ð¦–×÷'B²&W6öÇfRÂW‡FæÖRÂ6WÒg&öÒvæöFS§F‚s°Ð¦–×÷'B76W'Bg&öÒvæöFS¦76W'B÷7G&–7Bs°Ð¦–×÷'B²'Vå&VæFW$ö&¦V7D6†V6·2Òg&öÒrââòââöÖöGVÆW2ö–çFW'öÆF–öâ÷FW7G2÷&VæFW"Öö&¦V7Bæ'&÷w6W"æ§2s°Ð¦–×÷'B²7&VFT†6‚Òg&öÒvæöFS¦7'—Fòs°Ð¦–×÷'B²6ö×–ÆUfV7F÷$76WBÒg&öÒrââòââöÖöGVÆW2÷fV7F÷"Ö76WG2ö6ö×–ÆW"æ§2s°Ð Ð¦6öç7B&ö÷BÒ&W6öÇfR‚râr“°Ð¦ÆWB&WG'”föçE&WVW7G2Ò°Ð¦ÆWB6†&VDföçE&WVW7G2Ò°Ð¦ÆWBfV7F÷%7ftfWF6†W2Ò°Ð¦6öç7B6W'fW"Ò7&VFU6W'fW"†7–æ2‡&WÂ&W2’Óâ°Ð¢G'’°Ð¢6öç7BF†æÖRÒFV6öFUU$”6ö×öæVçB†æWrU$Â‡&WçW&ÂÂv‡GG¢òöÆö6Æ†÷7Br’çF†æÖR“°Ð¢–b‡F†æÖRÓÓÒrõõöföçB×&WG'’rbb²·&WG'”föçE&WVW7G2ÓÓÒ’²&W2çw&—FT†VBƒS2Â²t66W72Ô6öçG&öÂÔÆÆ÷rÔ÷&–v–âs¢r¢rÂt66†RÔ6öçG&öÂs¢væò×7F÷&RrÒ’æVæB‚“²&WGW&ã²ÐÐ¢–b‡F†æÖRÓÓÒrõõöföçBÖFVÆ’r’²6WEF–ÖV÷WB‚‚’Óâ6W'fTföçB‡&W2’Â#“²&WGW&ã²ÐÐ¢–b‡F†æÖRÓÓÒrõõöföçB×&WG'’r’²v—B6W'fTföçB‡&W2“²&WGW&ã²ÐÐ¢–b‡F†æÖRÓÓÒröÖöGVÆW2÷fV7F÷"Ö76WG2ö76WG2÷6VVB×66÷WBç7frr’fV7F÷%7ftfWF6†W2²³°Ð¢6öç7BF‚Ò&W6öÇfR‡&ö÷BÂrâr²F†æÖR“°Ð¢–b‚F‚ç7F'G5v—F‚‡&ö÷B²6W’’²&W2çw&—FT†VBƒC2’æVæB‚“²&WGW&ã²ÐÐ¢&W2ç6WD†VFW"‚t6öçFVçBÕG—RrÂ²ræ‡FÖÂs¢wFW‡Bö‡FÖÂrÂræ§2s¢wFW‡Bö¦f67&—BrÂræ§6öâs¢vÆ–6F–öâö§6öârÕ¶W‡FæÖR‡F‚•ÒóòvÆ–6F–öâöö7FWB×7G&VÒr“°Ð¢–b‡F†æÖRÓÓÒröF—7Bö76WG2öföçG2öæ÷Fò×6ç2Ö·"Ós×cæ§6öârbb&Wæ†VFW'2æ†÷7Còç7F'G5v—F‚‚s#rããã¢r’’6†&VDföçE&WVW7G2²³°Ð¢–b‡F†æÖRç7F'G5v—F‚‚röF—7Bö76WG2öföçG2òr’bb&Wæ†VFW'2æ†÷7Còç7F'G5v—F‚‚vÆö6Æ†÷7C¢r’’&W2ç6WD†VFW"‚t66W72Ô6öçG&öÂÔÆÆ÷rÔ÷&–v–ârÂr¢r“°Ð¢&W2æVæB†v—B&VDf–ÆR‡F‚’“°Ð¢Ò6F6‚²&W2çw&—FT†VBƒCB’æVæB‚“²ÐÐ§Ò“°Ð¦7–æ2gVæ7F–öâ6W'fTföçB‡&W2’°Ð¢&W2ç6WD†VFW"‚t6öçFVçBÕG—RrÂvÆ–6F–öâö§6öâr“²&W2ç6WD†VFW"‚t66W72Ô6öçG&öÂÔÆÆ÷rÔ÷&–v–ârÂr¢r“°Ð¢&W2æVæB†v—B&VDf–ÆR‡&W6öÇfR‡&ö÷BÂvF—7Bö76WG2öföçG2öæ÷Fò×6ç2Ö·"Ós×cæ§6öâr’’“°Ð§ÐÐ¦v—BæWr&öÖ—6R‡&W6öÇfRÓâ6W'fW"æÆ—7FVâƒÂs#rãããrÂ&W6öÇfR’“°Ð¦ÆWB'&÷w6W#°Ð¦6öç7B&W÷'BÒ²7FvW3¢µÒÓ°Ð§G'’°Ð¢'&÷w6W"Òv—B6‡&öÖ—VÒæÆVæ6‚‡²†VFÆW73¢G'VRÀÐ¢âââ‡&ö6W72æVçbä4…$ôÔ•TÕôU„T5UD$ÄUõD‚ò²W†V7WF&ÆUFƒ¢&ö6W72æVçbä4…$ôÔ•TÕôU„T5UD$ÄUõD‚Ò¢·Ò’ÀÐ¢&w3¢²rÒ×W6RÖævÆS×7v–gG6†FW"rÂrÒÖVæ&ÆR×Vç6fR×7v–gG6†FW"uÒÀÐ¢Ò“°Ð¢6öç7BvRÒv—B'&÷w6W"ææWuvR‡²f–Ww÷'C¢²v–GFƒ¢Â†V–v‡C¢ƒÒÂ†5F÷V6ƒ¢G'VRÂFWf–6U66ÆTf7F÷#¢"Ò“°Ð¢6öç7BW'&÷'2ÒµÓ°Ð¢vRæöâ‚wvVW'&÷"rÂW'&÷"Óâ²W'&÷'2çW6‚†W'&÷"æÖW76vR“²6öç6öÆRæW'&÷"‚t'&÷w6W"'VçF–ÖS¢rÂW'&÷"ç7F6²óòW'&÷"æÖW76vR“²Ò“°Ð¢v—BvRæv÷Fò†‡GG¢òó#rããã¢G·6W'fW"æFG&W72‚’ç÷'GÒöÖöGVÆW2ö–çFW'öÆF–öâöW†×ÆW2ö–æFW‚æ‡FÖÆ“°Ð¢v—BvRçv—Df÷$gVæ7F–öâ‚‚’Óâv–æF÷ræFVÖóòæF–væ÷7F–72æg&ÖW2ãÒ3“°Ð¢76W'BæWVÂ†v—BvRæWfÇVFR‚‚’ÓâFVÖòç&VæFW&W"ç7FG2æ&6¶VæB’ÂwvV&vÃr“°Ð¢6öç7B6Æö6´6†V6³Öv—BvRæWfÇVFR†7–æ2‚“Óç°Ð¢6öç7B¶7&VFTÆö÷Æ7&VFTFVFÆ–æU66†VGVÆW"Æ6Æö6µ&FW7ÓÖv—B–×÷'B‚röF—7B÷6–ÖÆö÷æ§2r“°Ð¢6öç7B´–çFW'öÆF–öåF–ÖVÆ–æWÓÖv—B–×÷'B‚röF—7Bö–çFW'öÆF–öâæ§2r“°Ð¢ÆWB&V¦V7FVCÖfÇ6S·G'—¶6Æö6µ&FW2‡¶&6T‡££cÇF–6µ&FS£CRÆ–çWD‡££cÇ&VæFW$‡££cÒ“·Ö6F6‚†R—·&V¦V7FVCÖR–ç7Fæ6Vöb&ævTW'&÷#·ÐÐ¢6öç7BfÆ–CÖ6Æö6µ&FW2‡¶&6T‡££cÇF–6µ&FS£3Æ–çWD‡££cÇ&VæFW$‡££cÒ“°Ð¢6öç7B6W76–öã×¶–çWE6—¦S£ÇF–6³£Ç6S£Æ6Æ÷6VC¦fÇ6RÇ&W6–×VÆF–æs¦fÇ6RÇ&öf–ÆS§·F–6µ&FS£3ÆÖ„6F6‡W7FW3£'ÒÇöÆÂ‚—·ÒÇ&VÆV6T–çWB‚—·ÒÆGfæ6R‚—·F†—2çF–6²²³·&WGW&â·7FGW3¢vGfæ6VBwÓ·×Ó°Ð¢6öç7BÆö÷Ö7&VFTÆö÷‡·6W76–öâÆ&6¶ÆöuöÆ–7“¢w&WF–ârÆÖ„&6¶ÆöuF–6·3£"Ç&FW3§fÆ–GÒ“°Ð¢ÆWBæ÷sÓÆ6ÆÆ&6³ÖçVÆÂÆFVÆ“Ó¶Æö÷æö'6W'fT–çWBƒ“¶Æö÷çVÇ6RƒÇ·&VæFW#¦fÇ6RÆ–çWC¦fÇ6WÒ“°Ð¢6öç7BF–ÖW#Ö7&VFTFVFÆ–æU66†VGVÆW"‡¶vWDFVFÆ–æT×3¢‚“ÓæÆö÷ææW‡DFVFÆ–æT×2ÇVÇ6S§CÓæÆö÷çVÇ6R‡BÇ·&VæFW#¦fÇ6RÆ–çWC¦fÇ6WÒ’Ææ÷s¢‚“Óææ÷rÇ6WEF–ÖW#¢†6"Æ×2“Óç¶6ÆÆ&6³Ö6#¶FVÆ“Ö×3·&WGW&â·ÒÆ6ÆV%F–ÖW"‚—¶6ÆÆ&6³ÖçVÆÃ·×Ò“°Ð¢F–ÖW"ç7F'B‚“¶6öç7BGfæ6W3ÕµÓ°Ð¢f÷"†ÆWB“Ó¶“Ã#¶’²²—¶æ÷r³ÖFVÆ’²†’S#óã£"“¶6öç7B&Vf÷&S×6W76–öâçF–6³¶6ÆÆ&6²‚“¶Gfæ6W2çW6‚‡6W76–öâçF–6²Ö&Vf÷&R“·ÐÐ¢æ÷r³Ó¶6ÆÆ&6²‚“¶f÷"†ÆWB“Ó¶“Ã#bfÆö÷ææW‡DFVFÆ–æT×3ÃÖæ÷s¶’²²—¶æ÷r³ÖFVÆ“¶6ÆÆ&6²‚“·ÐÐ¢6öç7B6Vv‡EW×6W76–öâçF–6³ãÓC·F–ÖW"ç7F÷‚“°Ð¢6öç7BFVfW%6W76–öã×¶–çWE6—¦S£ÇF–6³£Ç6S£Æ6Æ÷6VC¦fÇ6RÇ&W6–×VÆF–æs¦fÇ6RÇ&öf–ÆS§·F–6µ&FS£ÆÖ„6F6‡W7FW3£'ÒÇöÆÇ3£ÆGFV×G3£À¢öÆÂ‚—·F†—2çöÆÇ2²·ÒÇ&VÆV6T–çWB‚—·ÒÆGfæ6R‚—·F†—2æGFV×G2²³¶–b‡F†—2çv—Döæ6R—·F†—2çv—Döæ6SÖfÇ6S·&WGW&ç·7FGW3¢wv—F–ærrÇF–6³§F†—2çF–6·××&WGW&ç·7FGW3¢vGfæ6VBrÇF–6³¢²·F†—2çF–6·××Ó°¢6öç7B÷fW&fÆ÷sÕµÓ¶ÆWBÆÆ÷tFVfW#ÖfÇ6S¶6öç7BFVfW#Ö7&VFTÆö÷‡·6W76–öã¦FVfW%6W76–öâÆ&6¶ÆöuöÆ–7“¢vFVfW"rÆÖ„&6¶ÆöuF–6·3£2À¢vWD–çWC¢‚“ÓåV–çC„'&’æöbƒ’Æ6äGfæ6S¢‚“ÓæÆÆ÷tFVfW"Æöä&6¶ÆötG&÷¦WfVçCÓæ÷fW&fÆ÷rçW6‚†WfVçB—Ò“°¢6öç7BFVfW%VÇ6W3ÕµÓ¶6öç7BVÇ6TFVfW#ÖCÓç¶6öç7B&Vf÷&UF–6³ÖFVfW%6W76–öâçF–6²Æ&Vf÷&TGFV×G3ÖFVfW%6W76–öâæGFV×G3¶FVfW"çVÇ6R†BÇ·&VæFW#¦fÇ6WÒ“°¢FVfW%VÇ6W2çW6‚‡·F–6´FVÇF¦FVfW%6W76–öâçF–6²Ö&Vf÷&UF–6²ÆGFV×G3¦FVfW%6W76–öâæGFV×G2Ö&Vf÷&TGFV×G2ÆFV'C¦FVfW"ç6–×VÆF–öåF–ÖT×3ÓÓÖçVÆÃó¦BÖFVfW"ç6–×VÆF–öåF–ÖT×7Ò“·Ó°¢VÇ6TFVfW"ƒ“·VÇ6TFVfW"ƒ“¶FVfW%6W76–öâç&W6–×VÆF–æs×G'VS·VÇ6TFVfW"ƒ#“¶FVfW%6W76–öâç&W6–×VÆF–æsÖfÇ6S·VÇ6TFVfW"ƒ3“°¢VÇ6TFVfW"ƒ3S“¶ÆÆ÷tFVfW#×G'VS¶FVfW%6W76–öâçv—Döæ6S×G'VS·VÇ6TFVfW"ƒCS“·VÇ6TFVfW"ƒCS“°¢FVfW%6W76–öâç&W6–×VÆF–æs×G'VS·VÇ6TFVfW"ƒSS“¶FVfW%6W76–öâç&W6–×VÆF–æsÖfÇ6S·VÇ6TFVfW"ƒSS“°¢ÆÆ÷tFVfW#ÖfÇ6S·VÇ6TFVfW"ƒcS“¶ÆÆ÷tFVfW#×G'VS·VÇ6TFVfW"ƒcS“°¢6öç7BFVfW%76VCÖFVfW%6W76–öâçF–6³ÓÓÓRbfFVfW%VÇ6W2æWfW'’‡ÓçæGFV×G3ÃÓ"bgæFV'CÃÓ3’bfFVfW%6W76–öâçöÆÇ3ÓÓÖFVfW%VÇ6W2æÆVæwF‚b`¢FVfW%VÇ6W2æÖ‡ÓççF–6´FVÇF’æ¦ö–â‚rÂr“ÓÓÒsÃÃÃÃÃÃ"ÃÃ"ÃÃrbf÷fW&fÆ÷ræÆVæwFƒÓÓÓ"b`¢÷fW&fÆ÷u³Òç&V6öãÓÓÒv&6¶ÆörÖ÷fW&fÆ÷rrbf÷fW&fÆ÷u³ÒæG&÷VD×3ÓÓÓSbf÷fW&fÆ÷u³Òç&V6öãÓÓÒv&6¶ÆörÖ÷fW&fÆ÷rrbf÷fW&fÆ÷u³ÒæG&÷VD×3ÓÓÓ°¢6öç7BG&÷6W76–öã×¶–çWE6—¦S£ÇF–6³£Ç6S£Æ6Æ÷6VC¦fÇ6RÇ&W6–×VÆF–æs¦fÇ6RÇ&öf–ÆS§·F–6µ&FS£ÆÖ„6F6‡W7FW3£'ÒÇöÆÂ‚—·ÒÇ&VÆV6T–çWB‚—·ÒÆGfæ6R‚—·&WGW&ç·7FGW3¢vGfæ6VBrÇF–6³¢²·F†—2çF–6·××Ó°¢ÆWBG&÷WfVçC¶6öç7BG&÷Ö7&VFTÆö÷‡·6W76–öã¦G&÷6W76–öâÆÖ„&6¶ÆöuF–6·3£"Æöä&6¶ÆötG&÷¦WfVçCÓæG&÷WfVçCÖWfVçGÒ“°¢G&÷çVÇ6RƒÇ·&VæFW#¦fÇ6WÒ“¶G&÷çVÇ6Rƒ3Ç·&VæFW#¦fÇ6WÒ“°¢6öç7BG&÷6ö×F–&ÆSÖG&÷6W76–öâçF–6³ÓÓÓbfG&÷ç6–×VÆF–öåF–ÖT×3ÓÓÓ3bfG&÷WfVçCòæVÆ6VD×3ÓÓÓ3bfG&÷WfVçBæG&÷VEF–6·3ÓÓÓ2bfG&÷WfVçBçF–ÖW7F×ÓÓÓ3b`¢ö&¦V7Bæ†4÷vâ†G&÷WfVçBÂvG&÷VD×2r’bbö&¦V7Bæ†4÷vâ†G&÷WfVçBÂw&V6öâr“°¢6öç7Bv6W76–öã×¶–çWE6—¦S£ÇF–6³£Ç6S£Æ6Æ÷6VC¦fÇ6RÇ&W6–×VÆF–æs¦fÇ6RÇ&öf–ÆS§·F–6µ&FS£ÆÖ„6F6‡W7FW3£'ÒÇöÆÂ‚—·ÒÇ&VÆV6T–çWB‚—·ÒÆGfæ6R‚—·&WGW&ç·7FGW3¢vGfæ6VBrÇF–6³¢²·F†—2çF–6·××Ó°¢ÆWBvWfVçC¶6öç7BvÖ7&VFTÆö÷‡·6W76–öã¦v6W76–öâÆ&6¶ÆöuöÆ–7“¢vFVfW"rÆÖ„&6¶ÆöuF–6·3£2Æ6äGfæ6S¢‚“ÓæfÇ6RÆöä&6¶ÆötG&÷¦WfVçCÓævWfVçCÖWfVçGÒ“°¢vçVÇ6RƒÇ·&VæFW#¦fÇ6WÒ“¶vçVÇ6Rƒ3Ç·&VæFW#¦fÇ6WÒ“¶vçVÇ6RƒsÇ·&VæFW#¦fÇ6WÒ“°¢6öç7BÆöætv76VCÖvWfVçCòç&V6öãÓÓÒv6Æö6²ÖvrbfvWfVçBæVÆ6VD×3ÓÓÓCbfvWfVçBæG&÷VD×3ÓÓÓsbfvç6–×VÆF–öåF–ÖT×3ÓÓÓs°¢6öç7BW6U6W76–öã×¶–çWE6—¦S£ÇF–6³£Ç6S£Æ6Æ÷6VC¦fÇ6RÇ&W6–×VÆF–æs¦fÇ6RÇ&öf–ÆS§·F–6µ&FS£ÆÖ„6F6‡W7FW3£'ÒÇöÆÂ‚—·ÒÇ&VÆV6T–çWB‚—·ÒÆGfæ6R‚—·&WGW&ç·7FGW3¢vGfæ6VBrÇF–6³¢²·F†—2çF–6·××Ó°¢ÆWB&W7VÖTÆÆ÷vVCÖfÇ6S¶6öç7BW6VCÖ7&VFTÆö÷‡·6W76–öã§W6U6W76–öâÆ&6¶ÆöuöÆ–7“¢vFVfW"rÆÖ„&6¶ÆöuF–6·3£2Æ6äGfæ6S¢‚“Óç&W7VÖTÆÆ÷vVGÒ“°¢W6VBçVÇ6RƒÇ·&VæFW#¦fÇ6WÒ“·W6VBçVÇ6RƒƒÇ·&VæFW#¦fÇ6WÒ“·W6VBç&W6WEF–Ö–ær‚“·&W7VÖTÆÆ÷vVC×G'VS°¢W6VBçVÇ6RƒÇ·&VæFW#¦fÇ6WÒ“¶6öç7BW6T6ÆV&VC×W6VBç6–×VÆF–öåF–ÖT×3ÓÓÓbgW6U6W76–öâçF–6³ÓÓÓ°¢W6VBçVÇ6RƒÇ·&VæFW#¦fÇ6WÒ“¶6öç7BW6U76VC×W6T6ÆV&VBbgW6U6W76–öâçF–6³ÓÓÓ°¢6öç7Bf—6–&–Æ—G”FW67&—F÷#Ôö&¦V7BævWD÷vå&÷W'G”FW67&—F÷"†Fö7VÖVçBÂv†–FFVâr“¶ÆWBf—6–&–Æ—G•76VCÖfÇ6S°¢G'—°¢ö&¦V7BæFVf–æU&÷W'G’†Fö7VÖVçBÂv†–FFVârÇ¶6öæf–wW&&ÆS§G'VRÇfÇVS¦fÇ6WÒ“°¢6öç7B6ÆÆ&6·3ÕµÓ¶ÆWBf—6–&ÆTÆÆ÷vVCÖfÇ6S°¢6öç7Bf—6–&ÆU6W76–öã×¶–çWE6—¦S£ÇF–6³£Ç6S£Æ6Æ÷6VC¦fÇ6RÇ&W6–×VÆF–æs¦fÇ6RÇ&öf–ÆS§·F–6µ&FS£ÆÖ„6F6‡W7FW3£'ÒÇöÆÂ‚—·ÒÇ&VÆV6VC£À¢&VÆV6T–çWB‚—·F†—2ç&VÆV6VB²·ÒÆGfæ6R‚—·&WGW&ç·7FGW3¢vGfæ6VBrÇF–6³¢²·F†—2çF–6·××Ó°¢6öç7Bf—6–&ÆTÆö÷Ö7&VFTÆö÷‡·6W76–öã§f—6–&ÆU6W76–öâÆ&6¶ÆöuöÆ–7“¢vFVfW"rÆÖ„&6¶ÆöuF–6·3£2Æ6äGfæ6S¢‚“Óçf—6–&ÆTÆÆ÷vVBÆvWD–çWC¢‚“ÓåV–çC„'&’æöbƒ’À¢&WVW7Dg&ÖS¦6ÆÆ&6³Óç¶6ÆÆ&6·2çW6‚†6ÆÆ&6²“·&WGW&â6ÆÆ&6·2æÆVæwF‡ÒÆ6æ6VÄg&ÖS¢‚“Óç·×Ò“°¢6öç7Bf—&SÖCÓç¶6öç7B6ÆÆ&6³Ö6ÆÆ&6·2ç6†–gB‚“¶–b‚6ÆÆ&6²—F‡&÷rW'&÷"‚vÖ—76–ærf¶Rg&ÖRr“¶6ÆÆ&6²†B—Ó°¢f—6–&ÆTÆö÷ç7F'B‚“¶f—&Rƒ“¶f—&Rƒ“´ö&¦V7BæFVf–æU&÷W'G’†Fö7VÖVçBÂv†–FFVârÇ¶6öæf–wW&&ÆS§G'VRÇfÇVS§G'VWÒ“°¢Fö7VÖVçBæF—7F6„WfVçB†æWrWfVçB‚wf—6–&–Æ—G–6†ævRr’“´ö&¦V7BæFVf–æU&÷W'G’†Fö7VÖVçBÂv†–FFVârÇ¶6öæf–wW&&ÆS§G'VRÇfÇVS¦fÇ6WÒ“°¢f—6–&ÆTÆÆ÷vVC×G'VS¶f—&Rƒ“¶6öç7Bæô†–FFVä6F6‡W×f—6–&ÆTÆö÷ç6–×VÆF–öåF–ÖT×3ÓÓÓbgf—6–&ÆU6W76–öâçF–6³ÓÓÓ°¢f—&Rƒ“·f—6–&–Æ—G•76VCÖæô†–FFVä6F6‡Wbgf—6–&ÆU6W76–öâçF–6³ÓÓÓbgf—6–&ÆU6W76–öâç&VÆV6VCÓÓÓ·f—6–&ÆTÆö÷ç7F÷‚“°¢Öf–æÆÇ—¶–b‡f—6–&–Æ—G”FW67&—F÷"”ö&¦V7BæFVf–æU&÷W'G’†Fö7VÖVçBÂv†–FFVârÇf—6–&–Æ—G”FW67&—F÷"“¶VÇ6RFVÆWFRFö7VÖVçBæ†–FFVã·Ð¢6öç7BF–ÖVÆ–æSÖæWr–çFW'öÆF–öåF–ÖVÆ–æR‡·7FW×3£ó3ÆFVÆ”×3£#ó3Ç66†VÖ§·ƒ¢vçVÖ&W"w×Ò“°¢6öç7B6¶WCÒ‡F–6²Ç‚“Óâ‡·&Wf—6–öã£Ç6WVVæ6S§F–6²ÇF–ÖT×3§F–6²£ó3ÆVçF—F–W3¥·¶–C¢wRrÆvVæW&F–öã£ÇfÇVW3§·‡×Õ×Ò“°¢F–ÖVÆ–æRæ66WB‡6¶WBƒÃ’Ã“·F–ÖVÆ–æRæ66WB‡6¶WBƒÃ’Ã3‚“·F–ÖVÆ–æRæ66WB‡6¶WBƒ"Ã#’Ãs“°¢6öç7B÷WC×·Ó·F–ÖVÆ–æRç6×ÆT–çFò‚wRrÃÃƒ2ã3333333332Æ÷WB“¶6öç7BƒÖ÷WBçƒ°¢F–ÖVÆ–æRæ66WB‡6¶WBƒ2Ã3’Ã2“·F–ÖVÆ–æRæ66WB‡6¶WBƒBÃC’Ã3B“°¢F–ÖVÆ–æRç6×ÆT–çFò‚wRrÃÃSÆ÷WB“°¢&WGW&â·&V¦V7FVBÆF—f—6÷#§fÆ–Bç6–×VÆF–öäF—f—6÷"ÆGfæ6W2Æ6Vv‡EWÇ‚ÆVæC¦÷WBç‚ÆFVfW%76VBÆG&÷6ö×F–&ÆRÆÆöætv76VBÇW6U76VBÇf—6–&–Æ—G•76VBÀ¢FVfW%F–6·3¦FVfW%6W76–öâçF–6²ÆFVfW%öÆÇ3¦FVfW%6W76–öâçöÆÇ2ÆFVfW%VÇ6W2Æ÷fW&fÆ÷rÆvWfVçGÓ°¢Ò“°¢76W'BæWVÂ†6Æö6´6†V6²ç&V¦V7FVBÇG'VR“¶76W'BæWVÂ†6Æö6´6†V6²æF—f—6÷"Ã"“°¢76W'BæFVWWVÂ†6Æö6´6†V6²æGfæ6W2Ä'&’ƒ"’æf–ÆÂƒ’“¶76W'BæWVÂ†6Æö6´6†V6²æ6Vv‡EWÇG'VR“°¢76W'Bæö²†6Æö6´6†V6²æFVfW%76VBbf6Æö6´6†V6²æG&÷6ö×F–&ÆRbf6Æö6´6†V6²æÆöætv76VBbf6Æö6´6†V6²çW6U76VBbf6Æö6´6†V6²çf—6–&–Æ—G•76VBÀ¢&÷VæFVBFVfW"öÆ–7’fW&–f–6F–öã¢G´¥4ôâç7G&–æv–g’†6Æö6´6†V6²—Ö“°¢76W'Bæö²„ÖF‚æ'2†6Æö6´6†V6²ç‚ÓR“ÃRÓb“¶76W'Bæö²„ÖF‚æ'2†6Æö6´6†V6²æVæBÓ#R“ÃRÓb“°¢&W÷'Bç7FvW2çW6‚‚v–çFVvW"6Æö6²F—f—6÷'2ÂÆö÷Ö÷væVB¦—GFW&VBFVFÆ–æW2ÂFVfVÇBG&÷6ö×F–&–Æ—G’ÂW‡Æ–6—B&WF–âöFVfW"F–Ö–ærÂ&÷VæFVB÷fW&fÆ÷rF–væ÷7F–72Â†öÆB÷&W6–ÒöÆÆ–ærÂW6Rö†–FFVâ&W6WBæB6–×VÆF–öâ×F–ÖR–çFW'öÆF–öâr“° ¢&W÷'Bç&W6VçFF–öäg&ÖSÖv—B'Väg&ÖT6†V6·2‡vR“°Ð¢6öç7Bg&ÖUvSÖv—B'&÷w6W"ææWuvR‚“¶6öç7Bg&ÖTW'&÷'3ÕµÓ¶g&ÖUvRæöâ‚wvVW'&÷"rÆSÓæg&ÖTW'&÷'2çW6‚†RæÖW76vR’“°Ð¢v—Bg&ÖUvRæv÷Fò†‡GG¢òó#rããã¢G·6W'fW"æFG&W72‚’ç÷'GÒöÖöGVÆW2ö–çFW'öÆF–öâöW†×ÆW2ög&ÖRæ‡FÖÆ“°Ð¢v—Bg&ÖUvRçv—Df÷$gVæ7F–öâ‚‚“ÓæFö7VÖVçBçVW'•6VÆV7F÷"‚r77FGW2r’çFW‡D6öçFVçBæ–æ6ÇVFW2‚vF—7Æ–VC¢r’“°Ð¢v—Bg&ÖUvRæÆö6F÷"‚r7&öÆÆ&6²r’æ6Æ–6²‚“¶v—Bg&ÖUvRæÆö6F÷"‚r77vâr’æ6Æ–6²‚“°Ð¢76W'BæFVWWVÂ†g&ÖTW'&÷'2ÅµÒ“¶v—Bg&ÖUvRæ6Æ÷6R‚“°Ð¢6öç7B–æ—F–Å‚Òv—BvRæWfÇVFR‚‚’ÓâFVÖòæF–væ÷7F–72æWF†÷&—G•‚“°Ð¢v—BvRæ¶W–&ö&BæF÷vâ‚t¶W”Br“°Ð¢v—BvRçv—Df÷$gVæ7F–öâ‡‚ÓâFVÖòæF–væ÷7F–72æWF†÷&—G•‚â‚²#RÂ–æ—F–Å‚“°Ð¢v—BvRæ¶W–&ö&BçW‚t¶W”Br“°Ð¢v—BvRçv—Df÷$gVæ7F–öâ‚‚’ÓâÖF‚æ'2†FVÖòæF–væ÷7F–72ç÷6U‚ÒFVÖòæF–væ÷7F–72æWF†÷&—G•‚’Âã“°Ð¢&W÷'Bç7FvW2çW6‚‚w&VÂDôÒ¶W–&ö&B(i"×2WF†÷&—G’(i"–çFW'öÆF–öâ(i"vV$tÂ$bÖ÷fVÖVçBr“°Ð Ð¢òò6WfW&Â&VæFW"×F–ÖR6×ÆW26ææ÷BW&6RF÷vâ÷WVçF—&VÇ’&WGvVVâ6–×VÆF–öâF–6·2àÐ¢v—BvRæWfÇVFR‚‚’ÓâFVÖòçW6R‚’“°Ð¢6öç7B&öÆÇ2Òv—BvRæWfÇVFR‚‚’ÓâFVÖòæF–væ÷7F–72ç&öÆÇ2“°Ð¢v—BvRæ¶W–&ö&Bç&W72‚u76Rr“°Ð¢6öç7BFÒv—BvRæWfÇVFR‚‚’Óâ°Ð¢6öç7B÷WBÒ·Ó²f÷"†ÆWB’Ò²’Âƒ²’²²’FVÖòæ7F–öç2ç6×ÆT–çFò‚w&öÆÂrÂ÷WB“²&WGW&â÷WC°Ð¢Ò“°Ð¢76W'BæFVWWVÂ‡FÂ²†VÆC¢fÇ6RÂ&W76VC¢G'VRÂ&VÆV6VC¢G'VRÒ“°Ð¢v—BvRæWfÇVFR‚‚’ÓâFVÖòçW6R†fÇ6R’“°Ð¢v—BvRçv—Df÷$gVæ7F–öâ†âÓâFVÖòæF–væ÷7F–72ç&öÆÇ2ÓÓÒâ²Â&öÆÇ2“°Ð¢òòT’6öçG&öÇ2æWfW"vVæW&FR†VÆBvÖR7F–öâàÐ¢v—BvRæÆö6F÷"‚r7¦ööÒr’æfö7W2‚“²v—BvRæ¶W–&ö&BæF÷vâ‚t'&÷u&–v‡Br“°Ð¢76W'BæWVÂ†v—BvRæWfÇVFR‚‚’ÓâFVÖòæ7F–öç2ç6×ÆR‚w&–v‡Br’æ†VÆB’ÂfÇ6R“°Ð¢v—BvRæ¶W–&ö&BçW‚t'&÷u&–v‡Br“°Ð¢&W÷'Bç7FvW2çW6‚‚wV–6²F7W'f—fW2&VæFW"6×ÆW2VçF–Âf—†VB×7FW6öç7VÖS²VF—F&ÆRT’W†6ÇVFVBr“°Ð Ð¢6öç7B&÷VæG2Òv—BvRæÆö6F÷"‚v6çf2r’æ&÷VæF–æt&÷‚‚“°Ð¢v—BvRçF÷V6‡67&VVâçF†&÷VæG2ç‚²&÷VæG2çv–GF‚¢ãs"Â&÷VæG2ç’²&÷VæG2æ†V–v‡B¢ãb“°Ð¢6öç7B&öÆÄ&Vf÷&UF÷V6‚Òv—BvRæWfÇVFR‚‚’ÓâFVÖòæF–væ÷7F–72ç&öÆÇ2“°Ð¢v—BvRçF÷V6‡67&VVâçF†&÷VæG2ç‚²&÷VæG2çv–GF‚¢ãs"²"Â&÷VæG2ç’²&÷VæG2æ†V–v‡B¢ãb²"“°Ð¢v—BvRçv—Df÷$gVæ7F–öâ†âÓâFVÖòæF–væ÷7F–72ç&öÆÇ2ââÂ&öÆÄ&Vf÷&UF÷V6‚“°Ð¢v—BvRæ¶W–&ö&BæF÷vâ‚t¶W•rr“°Ð¢v—BvRæWfÇVFR‚‚’Óâv–æF÷ræF—7F6„WfVçB†æWrWfVçB‚v&ÇW"r’’“°Ð¢76W'BæWVÂ†v—BvRæWfÇVFR‚‚’ÓâFVÖòæ7F–öç2ç6×ÆR‚wWr’æ†VÆB’ÂfÇ6R“°Ð¢v—BvRæ¶W–&ö&BçW‚t¶W•rr“°Ð¢&W÷'Bç7FvW2çW6‚‚v7GVÂF÷V6‚F÷V&ÆR×FÖ2FòvÖR&öÆÃ²&ÇW"&VÆV6W2†VÆB¶W–&ö&Br“°Ð Ð¢v—BvRç6WEf–Ww÷'E6—¦R‡²v–GFƒ¢c#Â†V–v‡C¢ƒÒ“°Ð¢v—BvRçv—Df÷$gVæ7F–öâ‚‚’Óâ°Ð¢6öç7B2ÒFö7VÖVçBçVW'•6VÆV7F÷"‚v6çf2r“²&WGW&â2çv–GF‚ÓÓÒÖF‚ç&÷VæB†2ævWD&÷VæF–æt6Æ–VçE&V7B‚’çv–GF‚¢"“°Ð¢Ò“°Ð¢&W÷'Bç66VæRÒv—BvRæWfÇVFR‚‚’Óâ°Ð¢6öç7BBÒFVÖòæF–væ÷7F–72Â"ÒFVÖòç&VæFW&W#°Ð¢6öç7B–çFW'fÇ2ÒBæg&ÖT–çFW'fÇ2ç6Æ–6R‚’ç6÷'B‚†Â"’ÓâÒ"“°Ð¢&WGW&â²g&ÖW3¢Bæg&ÖW2ÂF–6³¢BçF–6²Âö'6W'fVDg3¢Bæg2Â7U7V&Ö—D×3¢Bæ7U7V&Ö—D×2ÀÐ¢–çFW'fÅS×3¢–çFW'fÇ5´ÖF‚æfÆö÷"†–çFW'fÇ2æÆVæwF‚ò"•ÒÂ–çFW'fÅ“T×3¢–çFW'fÇ5´ÖF‚æfÆö÷"†–çFW'fÇ2æÆVæwF‚¢ã“R•ÒÀÐ¢f–Ww÷'C¢²ââç"ævÂævWE&ÖWFW"‡"ævÂåd”Uuõ%B•ÒÂ7FG3¢²ââç"ç7FG2ÒÂW'&÷#¢"ævÂævWDW'&÷"‚’Ó°Ð¢Ò“°Ð¢76W'BæWVÂ‡&W÷'Bç66VæRæW'&÷"Â“²76W'BæWVÂ‡&W÷'Bç66VæRç7FG2çFW‡GW&UWÆöG2Â“°Ð¢76W'BæWVÂ‡&W÷'Bç66VæRç7FG2æ'VffW$ÆÆö6F–öç2Â“°Ð¢76W'Bæö²‡&W÷'Bç66VæRç7FG2çfW'F–6W2âS“²76W'Bæö²‡&W÷'Bç66VæRç7FG2çWÆöFVD'—FW2â“°Ð¢&W÷'Bç66VæU—†VÇ2Òv—BvRæWfÇVFR‚‚’ÓâæWr&öÖ—6R‡&W6öÇfRÓâ&WVW7Dæ–ÖF–öäg&ÖR‚‚’Óâ°Ð¢6öç7B"ÒFVÖòç&VæFW&W"ÂvÂÒ"ævÂÂ—†VÇ2ÒæWrV–çC„'&’‡"æ6çf2çv–GF‚¢"æ6çf2æ†V–v‡B¢B“°Ð¢vÂç&VE—†VÇ2ƒÂÂ"æ6çf2çv–GF‚Â"æ6çf2æ†V–v‡BÂvÂå$t$ÂvÂåTå4”täTEô%•DRÂ—†VÇ2“°Ð¢ÆWB6öÆ÷&VBÒ°Ð¢f÷"†ÆWB’Ò²’Â—†VÇ2æÆVæwFƒ²’³ÒB’–b‡—†VÇ5¶’²ÒâÇÂ—†VÇ5¶’²%Òâ#’6öÆ÷&VB²³°Ð¢&W6öÇfR‡²6öÆ÷&VBÂW'&÷#¢vÂævWDW'&÷"‚’Ò“°Ð¢Ò’’“°Ð¢76W'Bæö²‡&W÷'Bç66VæU—†VÇ2æ6öÆ÷&VBâÂv6ö×÷6VB–çWBö–çFW'öÆF–öâW†×ÆR×W7BG&rf—6–&ÆRvVöÖWG'’r“°Ð¢76W'BæWVÂ‡&W÷'Bç66VæU—†VÇ2æW'&÷"Â“°Ð¢v—BvRæWfÇVFR‚‚’ÓâFVÖòçW6R‚’“°Ð Ð¢òò6öçF–çVRF†R6ÖR'V–ÇBÖ'VæFÆRö'&÷w6W"fÆ÷rv—F‚fö7W6VB—†VÂöÆ–fV7–6ÆR&ö&W2àÐ¢&W÷'Bç&VæFW&W$–çFW&ÆVf–ærÒv—BW†W&6—6U&VæFW&W$–çFW&ÆVf–ær‡vR“°Ð¢76W'BæFVWWVÂ‡&W÷'Bç&VæFW&W$–çFW&ÆVf–ærç&VC&BÂ³#SRÂÂÂ#SUÒÂu&VæFW&W#$B&WF–ç2—G2&öw&Òö'VffW"öGG&–'WFW2gFW"&–÷"FWf–6R6WGWr“°Ð¢76W'BæFVWWVÂ‡&W÷'Bç&VæFW&W$–çFW&ÆVf–æræ&ÇVTÖW6‚Â³ÂÂ#SRÂ#SUÒÂtÖW6…&VæFW&W"G&w2&WGvVVâ&VæFW&W#$B7V&Ö—76–öç2r“°Ð¢76W'BæFVWWVÂ‡&W÷'Bç&VæFW&W$–çFW&ÆVf–æræw&VVã&BÂ³Â#SRÂÂ#SUÒÂu&VæFW&W#$B&V&–æG2gFW"ÖW6…&VæFW&W"6†ævW2vV$tÂ7FFRr“°Ð¢76W'BæWVÂ‡&W÷'Bç&VæFW&W$–çFW&ÆVf–ærævÄW'&÷"ÂÂv–çFW&ÆVfVBG&r7G&VÒÆVfW2æòvV$tÂW'&÷"r“°Ð¢&W÷'Bç7FvW2çW6‚‚u&VæFW&W#$BæBÖW6…&VæFW&W"–çFW&ÆVfR÷&FW&VBG&w2öâöæRvV$tÃ6çf2v—F‚6ÆVâ7FFRæBW‡V7FVB—†VÇ2r“°Ð¢&W÷'Bæ÷&FW&VD76WD&F6‚Òv—BW†W&6—6T÷&FW&VD76WD&F6‚‡vR“°Ð¢76W'BæWVÂ‡&W÷'Bæ÷&FW&VD76WD&F6‚ç—†VÄÖ—6ÖF6‚ÂÂv6öÖ&–æVB5drvVöÖWG'’—2—†VÂÖ–FVçF–6ÂFò÷&FW&VB–æF—f–GVÂG&w2r“°Ð¢76W'BæWVÂ‡&W÷'Bæ÷&FW&VD76WD&F6‚æ&F6†VBæG&w2ÂÂv6ö×F–&ÆR÷&FW&VB76WG27V&Ö—B–âöæRG&rr“°Ð¢&W÷'Bç7FvW2çW6‚‚tÖW6„'V–ÆFW"æ6öÖ&–æR&F6†W2–çFW"Ö÷&FW&VB76WBvVöÖWG&–W2v—F‚W"×'BG&ç6f÷&×2Â÷6—G’ÂæB6†&VB6Æ—–ærr“°Ð¢&W÷'BæÖW6„FWF‚Òv—BW†W&6—6TÖW6„FWF‚‡vR“°Ð¢76W'BæWVÂ‡&W÷'BæÖW6„FWF‚ævÄW'&÷"ÂÂwW"Ö–ç7Fæ6R÷W"×'BFWF‚ÆVfW26ÆVâvV$tÂ7FFRr“°Ð¢&W÷'Bç7FvW2çW6‚‚tÖW6…&VæFW&W"FWF‚æBG&ç7&VçB–çFW"÷&FW"6ö×÷6Rv—F‚föÆÆ÷v–ær&VæFW&W#$B72r“°Ð¢&W÷'BæÖW6„Ç†FWF…w&—FRÒv—BW†W&6—6TÖW6„Ç†FWF…w&—FR‡vR“°Ð¢76W'BæFVWWVÂ‡&W÷'BæÖW6„Ç†FWF…w&—FRæ÷&FW&VE'Vç2ç—†VÂÂ³ÂÂ#SRÂ#SUÒ“°Ð¢76W'BæFVWWVÂ‡&W÷'BæÖW6„Ç†FWF…w&—FRç'D÷6—G’ç—†VÂÂ³ÂÂ#SRÂ#SUÒ“°Ð¢76W'BæFVWWVÂ‡&W÷'BæÖW6„Ç†FWF…w&—FRæ–ç7Fæ6T÷6—G’ç—†VÂÂ³ÂÂ#SRÂ#SUÒ“°Ð¢76W'BæFVWWVÂ‡&W÷'BæÖW6„Ç†FWF…w&—FRægFW%&W7F÷&Rç—†VÂÂ³#SRÂÂÂ#SUÒ“°Ð¢&W÷'Bç7FvW2çW6‚‚tÖW6…&VæFW&W"Ç†×F‡&W6†öÆBFWF‚w&—FW2&W6W'fRG&–ævÆRæB–ç7Fæ6R–çFW"÷&FW"Â÷6—G’f&–çG2ÂæBÆ–fV7–6ÆRr“°Ð¢&W÷'Bç&VæFW&–ærÒv—BvRæWfÇVFR†7–æ2‚’Óâ°Ð¢6öç7B²&VæFW&W#$BÒÒv—B–×÷'B‚röF—7B÷&VæFW&–æræ§2r“°Ð¢6öç7B6†V6²Ò†6öæF—F–öâÂÖW76vR’Óâ²–b‚6öæF—F–öâ’F‡&÷ræWrW'&÷"†ÖW76vR“²Ó°Ð¢6öç7BæV"Ò†7GVÂÂW‡V7FVBÂÖW76vR’Óâ6†V6²†7GVÂæWfW'’‚‡fÇVRÂ’’ÓâÖF‚æ'2‡fÇVRÒW‡V7FVE¶•Ò’ÃÒ2’ÂG¶ÖW76vWÓ¢G¶7GVÇÒW‡V7FVBG¶W‡V7FVGÖ“°Ð¢6öç7B6çf2ÒFö7VÖVçBæ7&VFTVÆVÖVçB‚v6çf2r“²6çf2çv–GF‚Ò6çf2æ†V–v‡BÒcC°Ð¢6çf2ç7G–ÆRæ775FW‡BÒwv–GFƒ£cGƒ¶†V–v‡C£cG‚s²Fö7VÖVçBæ&öG’æVæB†6çf2“°Ð¢6öç7B"ÒæWr&VæFW&W#$B†6çf2Â²&F6…fW'F–6W3¢"ÂçF–Æ–3¢fÇ6RÂ&W6W'fTG&v–æt'VffW#¢G'VRÒ“°Ð¢"ç&W6—¦RƒcBÂcBÂ"“²"ç6WD6ÖW&‡²ƒ¢3"Â“¢3"Ò“°Ð¢6öç7BvÂÒ"ævÃ°Ð¢6öç7B—†VÂÒ‡‚Â’’Óâ²6öç7B÷WBÒæWrV–çC„'&’ƒB“²vÂç&VE—†VÇ2„ÖF‚æfÆö÷"‡‚¢"’Â6çf2æ†V–v‡BÒÒÖF‚æfÆö÷"‡’¢"’ÂÂÂvÂå$t$ÂvÂåTå4”täTEô%•DRÂ÷WB“²&WGW&â²ââæ÷WEÓ²Ó°Ð¢6öç7B&VBÒ³ÂÂÂãUÒÂ&ÇVRÒ³ÂÂÂÒÂw&VVâÒ³ÂÂÂÓ°Ð¢6öç7BFW‡GW&RÒ"æ7&VFUFW‡GW&R‡²v–GFƒ¢Â†V–v‡C¢ÂFF¢æWrV–çC„'&’…³#SRÂÂÂ#…Ò’ÒÂ²f–ÇFW#¢væV&W7BrÒ“°Ð¢"æ&Vv–äg&ÖR†&ÇVR“²"ç&V7BƒbÂ3"Â#Â3Â&VB“²"ç7&—FR‡FW‡GW&RÂC‚Â3"Â#Â3“²"æVæDg&ÖR‚“°Ð¢6öç7B&–Ö—F—fTÇ†Ò—†VÂƒbÂ3"’ÂFW‡GW&TÇ†Ò—†VÂƒC‚Â3"“°Ð¢æV"‡&–Ö—F—fTÇ†Â³#‚ÂÂ#rÂ#SUÒÂw&–Ö—F—fR&V×VÇF—Æ–VBÇ†r“°Ð¢æV"‡FW‡GW&TÇ†Â³#‚ÂÂ#rÂ#SUÒÂv'—FRFW‡GW&R×W7B&R&V×VÇF—Æ–VBW†7FÇ’öæ6Rr“°Ð¢6öç7B–ÖvRÒFö7VÖVçBæ7&VFTVÆVÖVçB‚v6çf2r“²–ÖvRçv–GF‚Ò–ÖvRæ†V–v‡BÒ°Ð¢–ÖvRævWD6öçFW‡B‚s&Br’çWD–ÖvTFF†æWr–ÖvTFF†æWrV–çC„6Æ×VD'&’…³#SRÂÂÂ#…Ò’ÂÂ’ÂÂ“°Ð¢6öç7BFöÕFW‡GW&RÒ"æ7&VFUFW‡GW&R†–ÖvR“°Ð¢"æ&Vv–äg&ÖR†&ÇVR“²"ç7&—FR†FöÕFW‡GW&RÂ3"Â3"Â3"Â3"“²"æVæDg&ÖR‚“°Ð¢æV"‡—†VÂƒ3"Â3"’Â³#‚ÂÂ#rÂ#SUÒÂtDôÒ6÷W&6RÇ†r“°Ð¢6öç7B&—FÖÒv—B7&VFT–ÖvT&—FÖ†–ÖvRÂ²&V×VÇF—Ç”Ç†¢væöæRrÒ“°Ð¢ÆWB&—FÖ&V¦V7FVBÒfÇ6S²G'’²"æ7&VFUFW‡GW&R†&—FÖ“²Ò6F6‚²&—FÖ&V¦V7FVBÒG'VS²Òf–æÆÇ’²&—FÖæ6Æ÷6R‚“²ÐÐ¢6†V6²†&—FÖ&V¦V7FVBÂvÖ&–wV÷W2&—FÖÇ†×W7B&R&V¦V7FVBr“°Ð Ð¢"æ&Vv–äg&ÖR†&ÇVR“²"ç7&—FR‡FW‡GW&RÂ3"Â3"ÂCÂC“²"ç&V7Bƒ3"Â3"ÂCÂCÂw&VVâ“²"ç7&—FR‡FW‡GW&RÂ3"Â3"Â#Â#“²"æVæDg&ÖR‚“°Ð¢æV"‡—†VÂƒ3"Â3"’Â³#‚Â#rÂÂ#SUÒÂwFW‡GW&R7v—F6†W2&W6W'fRG&ç7&VçB–çFW"÷&FW"r“°Ð¢æV"‡—†VÂƒrÂ3"’Â³Â#SRÂÂ#SUÒÂv÷WFW"÷VRÆ–W"r“°Ð¢6öç7BFÆ2Ò"æ7&VFUFW‡GW&R‡²v–GFƒ¢"Â†V–v‡C¢"ÂFF¢æWrV–çC„'&’…°Ð¢#SRÂÂÂ#SRÂÂ#SRÂÂ#SRÂÂÂ#SRÂ#SRÂ#SRÂ#SRÂ#SRÂ#SRÀÐ¢Ò’ÒÂ²f–ÇFW#¢væV&W7BrÒ“°Ð¢"æ&Vv–äg&ÖR‚“²"ç7&—FR†FÆ2Â3"Â3"ÂCÂC“²"æVæDg&ÖR‚“°Ð¢æV"‡—†VÂƒ#Â#’Â³#SRÂÂÂ#SUÒÂvFÆ2F÷ÖÆVgBr“²æV"‡—†VÂƒCBÂ#’Â³Â#SRÂÂ#SUÒÂvFÆ2F÷×&–v‡Br“°Ð¢æV"‡—†VÂƒ#ÂCB’Â³ÂÂ#SRÂ#SUÒÂvFÆ2&÷GFöÒÖÆVgBr“°Ð¢òòåõBæBG&ç7&VçB&÷&FW"Æ–æV"f–ÇFW&–ær÷W&FRöâ&V×VÇF—Æ–VBFW†VÇ2àÐ¢6öç7BÆ–æV"Ò"æ7&VFUFW‡GW&R‡²v–GFƒ¢2Â†V–v‡C¢ÂFF¢æWrV–çC„'&’…³#SRÂÂÂ#SRÂÂ#SRÂÂÂÂ#SRÂÂÒ’Ò“°Ð¢"æ&Vv–äg&ÖR†&ÇVR“²"ç7&—FR†Æ–æV"Â3"Â3"ÂC‚Â#“²"æVæDg&ÖR‚“°Ð¢6öç7Bf–ÇFW&VBÒ—†VÂƒ#BÂ3"“²6†V6²†f–ÇFW&VE³Òâcbbf–ÇFW&VE³ÒÂ#bbf–ÇFW&VE³ÒÃÒ"Âf–ÇFW&VBg&–ævS¢G¶f–ÇFW&VGÖ“°Ð¢òòWFF–ærVWVVBFW‡GW&Rf—'7BfÇW6†W2öÆB—†VÇ3²F†RæW‡BG&rW6W2F†RWFFRàÐ¢"æ&Vv–äg&ÖR†&ÇVR“²"ç7&—FR‡FW‡GW&RÂbÂ3"Â#Â#“°Ð¢"çWFFUFW‡GW&R‡FW‡GW&RÂ²v–GFƒ¢Â†V–v‡C¢ÂFF¢æWrV–çC„'&’…³Â#SRÂÂ#SUÒ’Ò“°Ð¢"ç7&—FR‡FW‡GW&RÂC‚Â3"Â#Â#“²"æVæDg&ÖR‚“°Ð¢æV"‡—†VÂƒbÂ3"’Â³#‚ÂÂ#rÂ#SUÒÂwVWVVBöÆBFW‡GW&Rr“²æV"‡—†VÂƒC‚Â3"’Â³Â#SRÂÂ#SUÒÂwWFFVBFW‡GW&Rr“°Ð Ð¢6öç7B7Fv–ærÒ"çfW'F–6W2Â'VffW"Ò"æ'VffW#°Ð¢"æ&Vv–äg&ÖR‚“²f÷"†ÆWB’Ò²’Â#S²’²²’"ç&V7B†’¢"Â3"Â"Â"Âw&VVâ“²6öç7B7FG2Ò²ââç"æVæDg&ÖR‚’Ó°Ð¢6†V6²‡7FG2æG&t6ÆÇ2ÓÓÒ2bb7FG2çfW'F–6W2ÓÓÒSbb7FG2çWÆöFVD'—FW2ÓÓÒCƒÂ&÷VæFVB&F6‚6÷VçG2G´¥4ôâç7G&–æv–g’‡7FG2—Ö“°Ð¢6†V6²‡"çfW'F–6W2ÓÓÒ7Fv–ærbb"æ'VffW"ÓÓÒ'VffW"bb7FG2æ'VffW$ÆÆö6F–öç2ÓÓÒbb7FG2çFW‡GW&UWÆöG2ÓÓÒÂw7FVG’'VffW'2÷FW‡GW&W2&WW6VBr“°Ð¢6†V6²‡7FG2æ'VffW%f–Ww2ÓÓÒ7FG2æG&t6ÆÇ2Âwf–WrÆÆö6F–öâ6÷VçFW"ÖF6†W2fÇW6‚r“°Ð¢"ç6WD6ÖW&‡²ƒ¢"Â“¢#BÂ¦ööÓ¢"Â&÷FF–öã¢ÖF‚å’ò"Ò“°Ð¢6öç7B67&VVâÒ·ÒÂv÷&ÆBÒ·Ó²"çv÷&ÆEFõ67&VVä–çFòƒRÂ#‚Â67&VVâ“²"ç67&VVåFõv÷&ÆD–çFò‡67&VVâç‚Â67&VVâç’Âv÷&ÆB“°Ð¢6†V6²„ÖF‚æ'2‡v÷&ÆBç‚ÒR’ÂRÓbbbÖF‚æ'2‡v÷&ÆBç’Ò#‚’ÂRÓbÂv6ÖW&–çfW'6R&÷VæGG&—r“°Ð¢"æ&Vv–äg&ÖR‚“²"ç&V7Bƒ"Â#BÂ"Â"Âw&VVâ“²"ç&V7BƒbÂ#BÂ"Â"Âw&VVâ“²"æVæDg&ÖR‚“²æV"‡—†VÂƒ3"Â3"’Â³Â#SRÂÂ#SUÒÂv6ÖW&6VçFW"Bf–Ww÷'B6VçFW"r“²æV"‡—†VÂƒ3"Â#B’Â³Â#SRÂÂ#SUÒÂv6ÖW&&÷FF–öâ÷¦ööÒÖ÷fW2÷6—F—fRv÷&ÆB‚Wv&Br“°Ð¢"æ&Vv–äg&ÖR‚“²ÆWB&W6—¦U&V¦V7FVBÒfÇ6S²G'’²"ç&W6—¦Rƒ#Â#“²Ò6F6‚²&W6—¦U&V¦V7FVBÒG'VS²Ò"æVæDg&ÖR‚“²6†V6²‡&W6—¦U&V¦V7FVBÂv7F—fR&W6—¦R×W7Bæ÷B6–ÆVçFÇ’W&6RG&w2r“°Ð¢6†V6²†vÂævWDW'&÷"‚’ÓÓÒvÂääõôU%$õ"Âv7GVÂtÂW'&÷"×W7B&RäõôU%$õ"r“°Ð¢6öç7BfW'6–öâÒvÂævWE&ÖWFW"†vÂådU%4”ôâ’Â6†F–ætÆæwVvRÒvÂævWE&ÖWFW"†vÂå4„D”äuôÄäuTtUõdU%4”ôâ“°Ð¢v–æF÷rç&VæFW%&ö&RÒ²"ÂFW‡GW&RÂ—†VÂÂ6çf2Â'VffW'3¢²'VffW"Â&öw&Ó¢"ç&öw&ÒÒÓ°Ð¢&WGW&â²&–Ö—F—fTÇ†ÂFW‡GW&TÇ†Âf–ÇFW&VBÂfW'6–öâÂ6†F–ætÆæwVvRÂ7FG2Âf–Ww÷'C¢²ââævÂævWE&ÖWFW"†vÂåd”Uuõ%B•ÒÂ&—FÖ&V¦V7FVBÓ°Ð¢Ò“°Ð¢76W'BæFVWWVÂ‡&W÷'Bç&VæFW&–ærçf–Ww÷'BÂ³ÂÂ#‚Â#…Ò“°Ð¢&W÷'Bç7FvW2çW6‚‚v7GVÂvV$tÂ6†FW"öÆ–æ²Â&VE—†VÇ2Ç†ö÷&FW"öFÆ2÷WFFRÂåõBÂ6ÖW&ôE"Â&÷VæFVB&WW6VB'VffW'2r“°Ð Ð¢6öç7B7W÷'G4Æ÷72Òv—BvRæWfÇVFR‚‚’Óâ°Ð¢6öç7B²"ÒÒ&VæFW%&ö&S²&VæFW%&ö&RæÆ÷72Ò"ævÂævWDW‡FVç6–öâ‚utT$tÅöÆ÷6Uö6öçFW‡Br“°Ð¢–b‚&VæFW%&ö&RæÆ÷72’&WGW&âfÇ6S²&VæFW%&ö&RæÆ÷72æÆ÷6T6öçFW‡B‚“²&WGW&âG'VS°Ð¢Ò“°Ð¢–b‡7W÷'G4Æ÷72’°Ð¢v—BvRçv—Df÷$gVæ7F–öâ‚‚’Óâ&VæFW%&ö&Rç"ç7FFRÓÓÒvÆ÷7Br“°Ð¢76W'BæWVÂ†v—BvRæWfÇVFR‚‚’Óâ&VæFW%&ö&Rç"æ&Vv–äg&ÖR‚’’ÂfÇ6R“°Ð¢v—BvRæWfÇVFR‚‚’Óâ&VæFW%&ö&RæÆ÷72ç&W7F÷&T6öçFW‡B‚’“°Ð¢v—BvRçv—Df÷$gVæ7F–öâ‚‚’Óâ&VæFW%&ö&Rç"ç7FFRÓÓÒw&VG’r“°Ð¢6öç7B&W7F÷&VBÒv—BvRæWfÇVFR‚‚’Óâ°Ð¢6öç7B²"ÂFW‡GW&RÂ—†VÂÒÒ&VæFW%&ö&S°Ð¢"ç6WD6ÖW&‡²ƒ¢3"Â“¢3"Â¦ööÓ¢Â&÷FF–öã¢Ò“²"æ&Vv–äg&ÖR…³ÂÂÂÒ“²"ç7&—FR‡FW‡GW&RÂ3"Â3"Â#BÂ#B“²"æVæDg&ÖR‚“°Ð¢&WGW&â²—†VÃ¢—†VÂƒ3"Â3"’ÂW'&÷#¢"ævÂævWDW'&÷"‚’ÂÆÆö6F–öç3¢"ç7FG2æ'VffW$ÆÆö6F–öç2Ó°Ð¢Ò“°Ð¢76W'BæFVWWVÂ‡&W7F÷&VBç—†VÂÂ³Â#SRÂÂ#SUÒ“²76W'BæWVÂ‡&W7F÷&VBæW'&÷"Â“²76W'BæWVÂ‡&W7F÷&VBæÆÆö6F–öç2Â"“°Ð¢&W÷'Bç7FvW2çW6‚‚utT$tÅöÆ÷6Uö6öçFW‡B(i"6¶—VBÆ÷7Bg&ÖR(i"6†FW"ö'VffW"÷FW‡GW&R†æFÆR&W7F÷&F–öâr“°Ð¢ÒVÇ6R&W÷'Bç7FvW2çW6‚‚utT$tÅöÆ÷6Uö6öçFW‡BVæf–Æ&ÆS¢&W7F÷&F–öâæ÷BW†V7WFVBr“°Ð Ð¢&W÷'Bæ–çWBÒv—BvRæWfÇVFR†7–æ2‚’Óâ°Ð¢6öç7B²7F–öå7FFRÂ7&VFTDôÔ–çWBÒÒv—B–×÷'B‚röF—7Bö–çWBæ§2r“°Ð¢6öç7B6†V6²Ò†6öæF—F–öâÂÖW76vR’Óâ²–b‚6öæF—F–öâ’F‡&÷ræWrW'&÷"†ÖW76vR“²Ó°Ð¢6öç7B6çf2Ò&VæFW%&ö&Ræ6çf2Â7FFRÒæWr7F–öå7FFR‚’Âö–çFW$WfVçG2ÒµÒÂ&VÆV6W2ÒµÓ°Ð¢6öç7B–çWBÒ7&VFTDôÔ–çWB‡²F&vWC¢6çf2Â7FFRÂ¶W—3¢²¶W•¢v†öÆBrÒÂö–çFW$'WGFöç3¢²¢v†öÆBrÒÀÐ¢öåö–çFW#¢WfVçBÓâö–çFW$WfVçG2çW6‚†WfVçB’Âöå&VÆV6S¢WfVçBÓâ&VÆV6W2çW6‚†WfVçBç&V6öâ’Ò“°Ð¢6öç7B&V7BÒ6çf2ævWD&÷VæF–æt6Æ–VçE&V7B‚“°Ð¢6öç7BF—7F6‚Ò‡G—RÂ–BÂ'WGFöç2’Óâ6çf2æF—7F6„WfVçB†æWrö–çFW$WfVçB‡G—RÂ²'V&&ÆW3¢G'VRÂ6æ6VÆ&ÆS¢G'VRÀÐ¢ö–çFW$–C¢–BÂö–çFW%G—S¢wF÷V6‚rÂ'WGFöã¢Â'WGFöç2Â6Æ–VçEƒ¢&V7BæÆVgB²bÂ6Æ–VçE“¢&V7BçF÷²3"Ò’“°Ð¢F—7F6‚‚wö–çFW&F÷vârÂÂ“²F—7F6‚‚wö–çFW&F÷vârÂ"Â“°Ð¢6öç7B÷6—F–öâÒ·Ó²6†V6²†–çWBç6×ÆUö–çFW$–çFòƒÂ÷6—F–öâ’bb÷6—F–öâç‚ÓÓÒbbb÷6—F–öâç’ÓÓÒ3"bb÷6—F–öâçRÓÓÒã#Rbb÷6—F–öâçbÓÓÒãRÂt5526ö÷&F–æFW2–væ÷&R&6¶–ærE"r“°Ð¢7FFRæ6öç7VÖR‚“²F—7F6‚‚wö–çFW&6æ6VÂrÂÂ“°Ð¢6†V6²‡7FFRç6×ÆR‚v†öÆBr’æ†VÆBbb7FFRç6×ÆR‚v†öÆBr’ç&VÆV6VBÂw6V6öæBF÷V6‚7F–ÆÂ†öÆG27F–öâr“°Ð¢6çf2æF—7F6„WfVçB†æWr¶W–&ö&DWfVçB‚v¶W–F÷vârÂ²6öFS¢t¶W•rÂ'V&&ÆW3¢G'VRÒ’“°Ð¢F—7F6‚‚vÆ÷7Gö–çFW&6GW&RrÂ"Â“²6†V6²‡7FFRç6×ÆR‚v†öÆBr’æ†VÆBÂv¶W–&ö&B6÷W&6R7W'f—fW2ö–çFW"6æ6VÂr“°Ð¢v–æF÷ræF—7F6„WfVçB†æWrWfVçB‚v&ÇW"r’“²6†V6²‚7FFRç6×ÆR‚v†öÆBr’æ†VÆBbb7FFRç6×ÆR‚v†öÆBr’ç&VÆV6VBÂv&ÇW"&VÆV6W2&VÖ–æ–ær6÷W&6Rr“°Ð¢6†V6²‡ö–çFW$WfVçG2æÖ†WfVçBÓâG¶WfVçBçG—WÓ¢G¶WfVçBçö–çFW$–GÖ’æ¦ö–â‚rÂr’ÓÓÒvF÷vã£ÆF÷vã£"Æ6æ6VÃ£Æ6æ6VÃ£"rÂv6ÆÆ&6²–FVçF—G’æB6æ6VÆÆF–öâ÷&FW"r“°Ð¢6†V6²‡ö–çFW$WfVçG5³Òæ÷&–v–æÄWfVçB–ç7Fæ6Vöbö–çFW$WfVçBbbö–çFW$WfVçG5³ÒçRÓÓÒã#RÂv6ÆÆ&6²÷&–v–æÂDôÒWfVçBæB5526×ÆRr“°Ð¢6†V6²‡&VÆV6W2æ–æ6ÇVFW2‚v&ÇW"r’Âv6ÆÆ&6²&ÇW"&V6öâr“°Ð¢7FFRæ6öç7VÖR‚“²–çWBæF—7÷6R‚“²–çWBæF—7÷6R‚“²F—7F6‚‚wö–çFW&F÷vârÂ2Â“°Ð¢6†V6²‡ö–çFW$WfVçG2æÆVæwF‚ÓÓÒBÂvF—7÷6R&VÖ÷fW2ö–çFW"6ÆÆ&6·2r“°Ð¢6çf2æF—7F6„WfVçB†æWr¶W–&ö&DWfVçB‚v¶W–F÷vârÂ²6öFS¢t¶W•rÂ'V&&ÆW3¢G'VRÒ’“°Ð¢6†V6²‚7FFRç6×ÆR‚v†öÆBr’æ†VÆBbb7FFRç6×ÆR‚v†öÆBr’ç&W76VBÂvF—7÷6R&VÖ÷fW2Æ—7FVæW'2r“°Ð¢&WGW&â²6ö÷&F–æFW3¢÷6—F–öâÂ×VÇF—6÷W&6S¢G'VRÂö–çFW$6æ6VÃ¢G'VRÂ6GW&TÆ÷73¢G'VRÂF—7÷6Ã¢G'VRÀÐ¢÷væVD6ÆÆ&6·3¢G'VRÂWfVçE66÷S¢u&VÂDôÒF—7F6‚f÷"FWFW&Ö–æ—7F–2×VÇF’×ö–çFW"6æ6VÆÆF–öã²G'W7FVBF÷V6‡67&VVâFFW7FVB&÷fRârÓ°Ð¢Ò“°Ð¢&W÷'Bç7FvW2çW6‚‚tDôÒ×VÇF’×ö–çFW"–FVçF—G’ö6ö÷&F–æFW2ö6æ6VÂö6GW&RÆ÷72²¶W–&ö&Bvw&VvF–öâ²Æ—7FVæW"F—7÷6Âr“°Ð Ð¢6öç7BÖöGVÆTW'&÷'2ÒµÓ°Ð¢f÷"†6öç7B¶æÖRÂ6†V6µÒöbµ²w&VæFW$ö&¦V7BrÂ'Vå&VæFW$ö&¦V7D6†V6·5ÒÂ²w&W6VçFF–öârÂ'Vå&W6VçFF–öä6†V6·5ÒÂ²vFWf–6RrÂW†W&6—6UvV$tÄFWf–6UÒÂ²wfV7F÷%&VæFW&W"rÂW†W&6—6UfV7F÷%&VæFW&W%ÒÂ²w&WW6&ÆTÖW6†W2rÂÓâW†W&6—6U&WW6&ÆTÖW6†W2‡•ÒÀÐ¢²vföçD76WG2rÂÓâW†W&6—6TföçD76WDÆöFW"‡Â‡GG¢òó#rããã¢G·6W'fW"æFG&W72‚’ç÷'GÖ•ÕÒ’°Ð¢G'’²&W÷'E¶æÖUÒÒv—B6†V6²‡vR“²ÐÐ¢6F6‚†W'&÷"’²6öç6öÆRæW'&÷"†'&÷w6W"ÖöGVÆRG¶æÖWÓ¦ÂW'&÷"“²ÖöGVÆTW'&÷'2çW6‚†G¶æÖWÓ¢G¶W'&÷"æÖW76vWÖ“²ÐÐ¢ÐÐ¢76W'BæWVÂ‡6†&VDföçE&WVW7G2ÂÂv6öæ7W'&VçBFWf–6W2æBÆöFW'26†&RöæRfWF6‚æB5RFV6öFR–âF†—2¦f67&—B&VÆÒr“°Ð¢6öç7BF—7÷6ÂÒv—BvRæWfÇVFR‚‚’Óâ°Ð¢6öç7B²"ÒÒ&VæFW%&ö&RÂvÂÒ"ævÂÂ'VffW"Ò"æ'VffW"Â&öw&ÒÒ"ç&öw&Ó°Ð¢"æF—7÷6R‚“²"æF—7÷6R‚“²6öç7B&W7VÇBÒ²7FFS¢"ç7FFRÂ'VffW%&VÆV6VC¢vÂæ—4'VffW"†'VffW"’Â&öw&Õ&VÆV6VC¢vÂæ—5&öw&Ò‡&öw&Ò’ÂFW‡GW&W3¢"ç7FG2çFW‡GW&T6÷VçBÓ°Ð¢FVÖòæF—7÷6R‚“²&WGW&â&W7VÇC°Ð¢Ò“°Ð¢76W'BæFVWWVÂ†F—7÷6ÂÂ²7FFS¢vF—7÷6VBrÂ'VffW%&VÆV6VC¢G'VRÂ&öw&Õ&VÆV6VC¢G'VRÂFW‡GW&W3¢Ò“°Ð¢76W'BæWVÂ†W'&÷'2æÆVæwF‚ÂÂW'&÷'2æ¦ö–â‚uÆâr’“°Ð¢76W'BæWVÂ†ÖöGVÆTW'&÷'2æÆVæwF‚ÂÂÖöGVÆTW'&÷'2æ¦ö–â‚uÆâr’“°Ð¢76W'BæWVÂ‡&W÷'Bç&WW6&ÆTÖW6†W3òç66VæW2æÆVæwF‚ÂBÂw&WW6&ÆRÖW6‚†VÇW"×W7BW†V7WFR&÷F‚æF—fR&6¶VæG2v—F‚æBv—F†÷WBÕ4r“°Ð¢&W÷'Bç7FvW2çW6‚‚w&WF–æVBæ–ÖFVBÖW6‚(i"6–Æ†÷VWGFRö–ç7Fæ6R&F6†–ær(i"fV7F÷"–çFW"÷&FW"(i"æW7FVB÷&÷FFVB6Æ—–ær(i"æF—fR6öçFW‡B&W7F÷&F–öâöF—7÷6ÂÂätÄRæBVæ–f÷&Ò&6¶VæG2ÂÕ4öfbööâr“°Ð¢6öç7BfV7F÷$W†×ÆSÖv—B'&÷w6W"ææWuvR‡·f–Ww÷'C§·v–GFƒ£Æ†V–v‡C£s×Ò’ÆW†×ÆTW'&÷'3ÕµÓ°Ð¢fV7F÷$W†×ÆRæöâ‚wvVW'&÷"rÆW'&÷#ÓæW†×ÆTW'&÷'2çW6‚†W'&÷"æÖW76vR’“°Ð¢v—BfV7F÷$W†×ÆRæv÷Fò†‡GG¢òó#rããã¢G·6W'fW"æFG&W72‚’ç÷'GÒöÖöGVÆW2÷&VæFW&–æröW†×ÆW2÷fV7F÷"ö–æFW‚æ‡FÖÆ“°Ð¢v—BfV7F÷$W†×ÆRçv—Df÷$gVæ7F–öâ‚‚“ÓæFö7VÖVçBçVW'•6VÆV7F÷-÷×Kh‘éì¶»§q«^tõíàèÀ±Ñ¥¬èÀ±•‘•ÌèÁô±ÕÁ‘…Ñ”ô¡Ý½É±±¥¹ÁÕÐ±½µµ…¹‘Ìõmt¤ôùíÝ½É±¹à¬õ¥¹ÁÕÑlÁtíÝ½É±¹•‘•Ì¬õ½µµ…¹‘Ì¹±•¹Ñ íÝ½É±¹Ñ¥¬¬­ôí±•Ð™½É­I•ÍÑ½É•ÌôÀ±½¹™¥Éµ•‘I•Á±…åMÑ•ÁÌôÀ±½¹™¥Éµ•‘‘Ù…¹•I•ÍÕ±ÑÌõmt±½¹™¥Éµ•‘‘Ù…¹•I•ÍÑ½É••±Ñ…Ìõmtì4(€€€½¹ÍÐ…‘…ÁÑ•ÈõíÍ…Ù”è ¤ôùU¥¹ÐáÉÉ…ä¹½˜¡ÍÑ…Ñ”¹à±ÍÑ…Ñ”¹Ñ¥¬±ÍÑ…Ñ”¹•‘•Ì¤±±½…é‰åÑ•ÌôùíÍÑ…Ñ”¹àõ‰åÑ•ÍlÁtíÍÑ…Ñ”¹Ñ¥¬õ‰åÑ•ÍlÅtíÍÑ…Ñ”¹•‘•Ìõ‰åÑ•ÍlÉuô±Ù…±¥‘…Ñ•M¹…ÁÍ¡½Ðé‰åÑ•Ìôù‰åÑ•Ì¹±•¹Ñ ôôôÌ±ÍÑ•Àé™É…µ”ôùÕÁ‘…Ñ”¡ÍÑ…Ñ”±™É…µ”¹¥¹ÁÕÑÍlÁt¹¥¹ÁÕÐ±™É…µ”¹¥¹ÁÕÑÍlÁt¹½µµ…¹‘Ì¥ôì4(€€€½¹ÍÐÍ•ÍÍ¥½¸õÉ•…Ñ•M•ÍÍ¥½¸¡íÁ±…å•ÉÌél±½…°t±±½…±A±…å•É%è±½…°œ±Í•ÍÍ¥½¹%èµ…¹Õ…°µ‰±ÕÈœ±Í¥µÕ±…Ñ¥½¹Y•ÉÍ¥½¸èµ…¹Õ…°µØÄœ±Í••èÄ±¥¹ÁÕÑM¥é”èÄ±…‘…ÁÑ•È±ÁÉ½™¥±”éì¸¸¹ÁÉ½™¥±•Ì¹±½­ÍÑ•À±Ñ¥­I…Ñ”èÄÀ±µ…á…Ñ¡ÕÁMÑ•ÁÌèÄ±‰…Í•%¹ÁÕÑ•±…åQ¥­ÌèÀ±µ¥¹%¹ÁÕÑ•±…åQ¥­ÌèÀ±µ…á%¹ÁÕÑ•±…åQ¥­ÌèÀ±…‘…ÁÑ¥Ù•%¹ÁÕÑ•±…äé™…±Í”±Á…¥¹A½±¥äè¹½¹”õô¤ì4(€€€½¹ÍÐ…Ñ¥½¹Ìõ¹•ÜÑ¥½¹MÑ…Ñ” ¤±…¹Ù…Ìõ‘½Õµ•¹Ð¹ÅÕ•ÉåM•±•Ñ½È …¹Ù…Ìœ¤±¥¹ÁÕÐõÉ•…Ñ•=5%¹ÁÕÐ¡íÑ…É•Ðé…¹Ù…Ì±ÍÑ…Ñ”é…Ñ¥½¹Ì±­•åÌéí-•åDè¡½±œ±-•åèÑ…Àõô¤ì4(€€€½¹ÍÐÁÉ•Ù¥•Üõ¹•Ü1½…±%¹ÁÕÑAÉ•Ù¥•Ü¡íµ…á•5ÌèÄÀÀÀ±É•…Ñ•½É¬é‰åÑ•Ìôùí½¹ÍÐ™½É¬õíàé‰åÑ•ÍlÁt±Ñ¥¬é‰åÑ•ÍlÅt±•‘•Ìé‰åÑ•ÍlÉuôíÉ•ÑÕÉ¹íÉ•ÍÑ½É”¡Í¹…ÁÍ¡½Ð¥í™½É¬¹àõÍ¹…ÁÍ¡½ÑlÁtí™½É¬¹Ñ¥¬õÍ¹…ÁÍ¡½ÑlÅtí™½É¬¹•‘•ÌõÍ¹…ÁÍ¡½ÑlÉtí™½É­I•ÍÑ½É•Ì¬­ô±ÍÑ•Àè¡¥¹ÁÕÐ±½¹Ñ•áÐ¤ôùí¥˜¡½¹Ñ•áÐ¹½¹™¥Éµ•‘I•Á±…ä¥½¹™¥Éµ•‘I•Á±…åMÑ•ÁÌ¬¬íÕÁ‘…Ñ”¡™½É¬±¥¹ÁÕÐ±½¹Ñ•áÐ¹½µµ…¹‘Ì¥õõô±É•…‘¹Ñ¥Ñ¥•Ìè ¤ôùmuô¤ì4(€€€€¼¼%¹Ñ••È™¥áÑÕÉ”Ñ¥µ•Ì­••À•á…Ð€ÄÀÁµÌ‘•…‘±¥¹•Ì™É•”½˜™±½…Ñ¥¹œÍÕ‰ÑÉ…Ñ¥½¸©¥ÑÑ•È¸4(€€€½¹ÍÐ¹½Üõ5…Ñ ¹•¥°¡Á•É™½Éµ…¹”¹¹½Ü ¤¤±½¹Ñ¥¹Õ…Ñ¥½¹-•äôµ…¹Õ…°µ‰±ÕÈœíÁÉ•Ù¥•Ü¹É•½¹¥±”¡íÍ¹…ÁÍ¡½Ðé…‘…ÁÑ•È¹Í…Ù” ¤±¥¹ÁÕÐéU¥¹ÐáÉÉ…ä¹½˜ À¤±É•Ù¥Í¥½¸èÀ±Ñ¥¬èÀ±•Á½ èÀ±½¹Ñ¥¹Õ…Ñ¥½¹-•ä±½¹™¥Éµ•‘½µµ…¹‘M•ÅÕ•¹”èÀ±Ñ¥µ•5Ìé¹½Ü±µ½‘”èÉ•Í•Ðô¤í±•ÐÁÉ•Ù¥•Ý¡•­Á½¥¹ÑQ¥µ”õ¹½Üì4(€€€±•Ð½‰Í•ÉÙ…Ñ¥½¹ÌôÀ°±¥™•å±•	½Õ¹‘…Éäõ¹Õ±°ì½¹ÍÐ±¥™•å±•I•‰…Í•Ìõmtì4(€€€½¹ÍÐ±½½ÀõÉ•…Ñ•1½½À¡íÍ•ÍÍ¥½¸±¥¹ÁÕÑAÉ•Ù¥•ÜéÁÉ•Ù¥•Ü±•Ñ%¹ÁÕÐ ¥í½‰Í•ÉÙ…Ñ¥½¹Ì¬¬í½¹ÍÐ¡•±õ…Ñ¥½¹Ì¹Í…µÁ±” ¡½±œ¤¹¡•±±•‘”õ…Ñ¥½¹Ì¹Í…µÁ±” Ñ…Àœ¤¹ÁÉ•ÍÍ•í…Ñ¥½¹Ì¹½¹ÍÕµ” ¤íÉ•ÑÕÉ¹í¥¹ÁÕÐéU¥¹ÐáÉÉ…ä¹½˜¡¡•±üÄèÀ¤±½µµ…¹‘Ìé•‘”ýmíÁ…å±½…éU¥¹ÐáÉÉ…ä¹½˜ Ü¥õtémt±ÁÉ•‘¥Ðé¡•±‘ññ•‘”±½¹Ñ¥¹Õ…Ñ¥½¹-•åõô±½¹‘Ù…¹”¡É•ÍÕ±Ð±ÍÕ‰µ¥ÍÍ¥½¸¥í¥˜¡É•ÍÕ±Ð¹ÍÑ…ÑÕÌ„ôô…‘Ù…¹•œ¥É•ÑÕÉ¸í½¹ÍÐµ•Ñ…‘…Ñ„õÍ•ÍÍ¥½¸¹±½…±%¹ÁÕÑMÑ…Ñ”±¡•­Á½¥¹Ðõí¥¹ÁÕÐéµ•Ñ…‘…Ñ„¹É•Á±…å%¹ÁÕÐüýµ•Ñ…‘…Ñ„¹•á•ÕÑ•‘%¹ÁÕÐüýU¥¹ÐáÉÉ…ä¹½˜ À¤±É•Ù¥Í¥½¸èÀ±Ñ¥¬éÍ•ÍÍ¥½¸¹Ñ¥¬±•Á½ éµ•Ñ…‘…Ñ„¹•Á½ üüÀ±½¹Ñ¥¹Õ…Ñ¥½¹-•ä±½¹™¥Éµ•‘½µµ…¹‘M•ÅÕ•¹”éµ•Ñ…‘…Ñ„¹•á•ÕÑ•‘½µµ…¹‘M•ÅÕ•¹”üüÀ±Ñ¥µ•5ÌéÁÉ•Ù¥•Ý¡•­Á½¥¹ÑQ¥µ”õ5…Ñ ¹µ…à¡ÁÉ•Ù¥•Ý¡•­Á½¥¹ÑQ¥µ”¬Ä±ÍÕ‰µ¥ÍÍ¥½¸ü¹Ñ¥µ•5ÌüýÁ•É™½Éµ…¹”¹¹½Ü ¤¥ôì4(€€€€€¥˜¡±¥™•å±•	½Õ¹‘…Éä¥ì4(€€€€€€€¥˜¡ÁÉ•Ù¥•Ü¹½¹Ñ¥¹Õ•É½µ¡•­Á½¥¹Ð¡¡•­Á½¥¹Ð¤¥Ñ¡É½ÜÉÉ½È ±•…É•±¥™•å±”™½É¬Õ¹•áÁ•Ñ•‘±ä½¹Ñ¥¹Õ•œ¤ì4(€€€€€€€ÁÉ•Ù¥•Ü¹É•½¹¥±”¡ì¸¸¹¡•­Á½¥¹Ð±Í¹…ÁÍ¡½Ðé…‘…ÁÑ•È¹Í…Ù” ¤±µ½‘”èÉ•Í•Ðô¤ì4(€€€€€€€±¥™•å±•I•‰…Í•Ì¹ÁÕÍ ¡±¥™•å±•	½Õ¹‘…Éä¤í±¥™•å±•	½Õ¹‘…Éäõ¹Õ±°ì4(€€€€€õ•±Í”¥˜¡ÍÕ‰µ¥ÍÍ¥½¸ü¹ÁÉ•‘¥Ð¥í¥˜ …ÁÉ•Ù¥•Ü¹½¹Ñ¥¹Õ•É½µ¡•­Á½¥¹Ð¡¡•­Á½¥¹Ð¤¥Ñ¡É½ÜÉÉ½È ÁÉ•‘¥Ñ•½¹™¥Éµ…Ñ¥½¸‘¥¹½Ð½¹Ñ¥¹Õ”¥ÑÌ•á…Ð™½É¬œ¥õ•±Í•í½¹ÍÐÉ•ÍÑ½É•Ìõ™½É­I•ÍÑ½É•Ìí¥˜¡ÁÉ•Ù¥•Ü¹…‘Ù…¹•½¹™¥Éµ•‘¡•­Á½¥¹Ð¡¡•­Á½¥¹Ð¤¥í½¹™¥Éµ•‘‘Ù…¹•I•ÍÕ±ÑÌ¹ÁÕÍ ¡¡•­Á½¥¹Ð¹Ñ¥¬¤í½¹™¥Éµ•‘‘Ù…¹•I•ÍÑ½É••±Ñ…Ì¹ÁÕÍ ¡™½É­I•ÍÑ½É•ÌµÉ•ÍÑ½É•Ì¤í¥˜¡ÁÉ•Ù¥•Ü¹…‘Ù…¹•½¹™¥Éµ•‘¡•­Á½¥¹Ð¡ì¸¸¹¡•­Á½¥¹Ð±Ñ¥¬é¡•­Á½¥¹Ð¹Ñ¥¬¬Ä±Ñ¥µ•5Ìé¡•­Á½¥¹Ð¹Ñ¥µ•5Ì¬Åô¤¥Ñ¡É½ÜÉÉ½È ½¹™¥Éµ•µ½¹±ä½¹Ñ¥¹Õ…Ñ¥½¸•á••‘•¥ÑÌ½¹”µÍÑ•À‰½Õ¹œ¥õõõô¤ì4(€€€½¹ÍÐÉ•±•…Í”ô ¤ôù±½½À¹É•±•…Í•%¹ÁÕÐ ¤íÝ¥¹‘½Ü¹…‘‘Ù•¹Ñ1¥ÍÑ•¹•È ‰±ÕÈœ±É•±•…Í”¤ì4(€€€ÑÉåí±½½À¹ÁÕ±Í”¡¹½Ü¤í…¹Ù…Ì¹‘¥ÍÁ…Ñ¡Ù•¹Ð¡¹•Ü-•å‰½…É‘Ù•¹Ð ­•å‘½Ý¸œ±í½‘”è-•åDœ±‰Õ‰‰±•ÌéÑÉÕ•ô¤¤ì4(€€€€€…¹Ù…Ì¹‘¥ÍÁ…Ñ¡Ù•¹Ð¡¹•Ü-•å‰½…É‘Ù•¹Ð ­•å‘½Ý¸œ±í½‘”è-•åœ±‰Õ‰‰±•ÌéÑÉÕ•ô¤¤í…¹Ù…Ì¹‘¥ÍÁ…Ñ¡Ù•¹Ð¡¹•Ü-•å‰½…É‘Ù•¹Ð ­•åÕÀœ±í½‘”è-•åœ±‰Õ‰‰±•ÌéÑÉÕ•ô¤¤ì4(€€€€€¥˜¡ÍÑ…Ñ”¹à„ôôÀ¥Ñ¡É½ÜÉÉ½È =4¥¹ÁÕÐ…‘Ù…¹•…ÕÑ¡½É¥Ñäœ¤í±½½À¹ÁÕ±Í”¡¹½Ü¬ÄÀÀ¤í½¹ÍÐ‘•…‘±¥¹•!•±‘`õÍÑ…Ñ”¹àì4(€€€€€¥˜¡‘•…‘±¥¹•!•±‘`„ôôÅññÍÑ…Ñ”¹•‘•Ì„ôôÅññ½‰Í•ÉÙ…Ñ¥½¹Ì„ôôÈ¥Ñ¡É½ÜÉÉ½È ‘•…‘±¥¹”™…¥±•Ñ¼É•™É•Í ¡•±½ÅÕ¥¬•‘”Ý¥Ñ¡½ÕÐIœ¤ì4(€€€€€±½½À¹ÁÕ±Í”¡¹½Ü¬ÄÀÀ¤í¥˜¡½‰Í•ÉÙ…Ñ¥½¹Ì„ôôÈ¥Ñ¡É½ÜÉÉ½È Í…µ”Ñ¥µ•ÍÑ…µÀ½‰Í•ÉÙ•ÑÝ¥”œ¤ì4(€€€€€…¹Ù…Ì¹‘¥ÍÁ…Ñ¡Ù•¹Ð¡¹•Ü-•å‰½…É‘Ù•¹Ð ­•åÕÀœ±í½‘”è-•åDœ±‰Õ‰‰±•ÌéÑÉÕ•ô¤¤í±½½À¹½‰Í•ÉÙ•%¹ÁÕÐ¡¹½Ü¬ÄÔÀ¤í±½½À¹ÁÕ±Í”¡¹½Ü¬ÄÔÀ¤í±½½À¹ÁÕ±Í”¡¹½Ü¬ÈÀÀ¤ì4(€€€€€¥˜¡½‰Í•ÉÙ…Ñ¥½¹Ì„ôôÍññÍÑ…Ñ”¹à„ôôÄ¥Ñ¡É½ÜÉÉ½È É••¹ÐI½‰Í•ÉÙ…Ñ¥½¸Ý…Ì¹½ÐÉ•ÕÍ•‰ä‘•…‘±¥¹”œ¤ì4(€€€€€…¹Ù…Ì¹‘¥ÍÁ…Ñ¡Ù•¹Ð¡¹•Ü-•å‰½…É‘Ù•¹Ð ­•å‘½Ý¸œ±í½‘”è-•åDœ±‰Õ‰‰±•ÌéÑÉÕ•ô¤¤í±½½À¹ÁÕ±Í”¡¹½Ü¬ÌÀÀ¤í½¹ÍÐ¡•±‘`õÍÑ…Ñ”¹àì4(€€€€€¥˜¡¡•±‘`„ôôÈ¥Ñ¡É½ÜÉÉ½È ±…Ñ•È¡•±¡…¹”ÍÑ…å•ÍÑ…±”Ý¥Ñ¡½ÕÐIœ¤ì4(€€€€€½¹ÍÐ½¹™¥Éµ•‘MÑ…Ñ”€ôí½¹™¥Éµ•‘‘Ù…¹•ÌéÁÉ•Ù¥•Ü¹µ•ÑÉ¥Ì¹½¹™¥Éµ•‘‘Ù…¹•Ì±½¹™¥Éµ•‘‘Ù…¹•I•©•Ñ•éÁÉ•Ù¥•Ü¹µ•ÑÉ¥Ì¹½¹™¥Éµ•‘‘Ù…¹•I•©•Ñ•±½¹™¥Éµ•‘‘Ù…¹•I•©•Ñ•‘1¥µ¥ÐéÁÉ•Ù¥•Ü¹µ•ÑÉ¥Ì¹½¹™¥Éµ•‘‘Ù…¹•I•©•Ñ•‘1¥µ¥Ð±½¹™¥Éµ•‘‘Ù…¹•I•ÍÕ±ÑÌél¸¸¹½¹™¥Éµ•‘‘Ù…¹•I•ÍÕ±ÑÍt±½¹™¥Éµ•‘‘Ù…¹•I•ÍÑ½É••±Ñ…Ìél¸¸¹½¹™¥Éµ•‘‘Ù…¹•I•ÍÑ½É••±Ñ…Ít±½¹™¥Éµ•‘I•Á±…åMÑ•ÁÌ±™½É­I•ÍÑ½É•Íôì4(€€€€€±¥™•å±•	½Õ¹‘…Éäô‰±ÕÈœì4(€€€€€Ý¥¹‘½Ü¹‘¥ÍÁ…Ñ¡Ù•¹Ð¡¹•ÜÙ•¹Ð ‰±ÕÈœ¤¤í±½½À¹ÁÕ±Í”¡¹½Ü¬ÐÀÀ¤í±½½À¹ÁÕ±Í”¡¹½Ü¬ÔÀÀ¤ì4(€€€€€¥˜¡ÍÑ…Ñ”¹à„ôõ¡•±‘aññÍ•ÍÍ¥½¸¹±½…±%¹ÁÕÑMÑ…Ñ”¹…ÁÑÕÉ”¹¥¹ÁÕÑlÁt„ôôÁññÍ•ÍÍ¥½¸¹±½…±%¹ÁÕÑMÑ…Ñ”¹•á•ÕÑ•‘%¹ÁÕÑlÁt„ôôÀ¥Ñ¡É½ÜÉÉ½È µ…¹Õ…°½Ý¹•ÈÉ•Ñ…¥¹•ÍÑ…±”¡•±…¡”…™Ñ•ÈÑ¡”É•Í•ÉÙ•É•±•…Í”™É…µ”œ¤ì4(€€€€€¥˜¡ÍÑ…Ñ”¹•‘•Ì„ôôÅññÍ•ÍÍ¥½¸¹±½…±%¹ÁÕÑMÑ…Ñ”¹½µµ…¹‘M•ÅÕ•¹”„ôôÅññÍ•ÍÍ¥½¸¹±½…±%¹ÁÕÑMÑ…Ñ”¹•á•ÕÑ•‘½µµ…¹‘M•ÅÕ•¹”„ôôÄ¥Ñ¡É½ÜÉÉ½È ‘•…‘±¥¹”É•™É•Í ‘ÕÁ±¥…Ñ•½È±½ÍÐ•‘”½µµ…¹œ¤ì4(€€€€€½¹ÍÐÉ•Ñ…¥¹•‘‘•Ì€ômtì4(€€€€€™½È€¡½¹ÍÐm¥¹‘•à°‰½Õ¹‘…Éåt½˜l‰±ÕÈœ°€É•Í•ÑQ¥µ¥¹œœ°€ÍÑ½Àt¹•¹ÑÉ¥•Ì ¤¤ì4(€€€€€€€½¹ÍÐ…Ð€ô¹½Ü€¬€ÔÔÀ€¬¥¹‘•à€¨€ÐÀÀ°ÁÉ•Ù¥½ÕÍ‘•Ì€ôÍÑ…Ñ”¹•‘•Ìì4(€€€€€€€…¹Ù…Ì¹‘¥ÍÁ…Ñ¡Ù•¹Ð¡¹•Ü-•å‰½…É‘Ù•¹Ð ­•å‘½Ý¸œ±í½‘”è-•åœ±‰Õ‰‰±•ÌéÑÉÕ•ô¤¤ì4(€€€€€€€…¹Ù…Ì¹‘¥ÍÁ…Ñ¡Ù•¹Ð¡¹•Ü-•å‰½…É‘Ù•¹Ð ­•åÕÀœ±í½‘”è-•åœ±‰Õ‰‰±•ÌéÑÉÕ•ô¤¤ì4(€€€€€€€±½½À¹½‰Í•ÉÙ•%¹ÁÕÐ¡…Ð¤ì4(€€€€€€€±¥™•å±•	½Õ¹‘…Éäõ‰½Õ¹‘…Éäì4(€€€€€€€¥˜€¡‰½Õ¹‘…Éä€ôôô€‰±ÕÈœ¤Ý¥¹‘½Ü¹‘¥ÍÁ…Ñ¡Ù•¹Ð¡¹•ÜÙ•¹Ð ‰±ÕÈœ¤¤ì•±Í”±½½Ám‰½Õ¹‘…Éåt ¤ì4(€€€€€€€±½½À¹ÁÕ±Í”¡…Ð€¬€ÔÀ¤ì±½½À¹ÁÕ±Í”¡…Ð€¬€ÄÔÀ¤ì±½½À¹ÁÕ±Í”¡…Ð€¬€ÈÔÀ¤ì4(€€€€€€€¥˜€¡ÍÑ…Ñ”¹•‘•Ì€„ôôÁÉ•Ù¥½ÕÍ‘•Ì€¬€ÄñðÍ•ÍÍ¥½¸¹±½…±%¹ÁÕÑMÑ…Ñ”¹•á•ÕÑ•‘½µµ…¹‘M•ÅÕ•¹”€„ôôÍÑ…Ñ”¹•‘•Ì¤Ñ¡É½ÜÉÉ½È¡‰½Õ¹‘…Éä€¬€œ±½ÍÐ½È‘ÕÁ±¥…Ñ•…¸½‰Í•ÉÙ••‘”‰•™½É”Ñ¥¬½¹ÍÕµÁÑ¥½¸œ¤ì4(€€€€€€€¥˜€¡ÍÑ…Ñ”¹à€„ôô¡•±‘`¤Ñ¡É½ÜÉÉ½È¡‰½Õ¹‘…Éä€¬€œÉ•ÍÑ½É•ÍÑ…±”¡•±¥¹ÁÕÐœ¤ì4(€€€€€€€É•Ñ…¥¹•‘‘•Ì¹ÁÕÍ ¡‰½Õ¹‘…Éä¤ì4(€€€€€ô4(€€€€€É•ÑÕÉ¹í‘•…‘±¥¹•!•±‘`±¡•±‘`±…™Ñ•É	±ÕÉ`éÍÑ…Ñ”¹à±•‘•ÌéÍÑ…Ñ”¹•‘•Ì±É•Ñ…¥¹•‘‘•Ì±±¥™•å±•I•‰…Í•Ì±½‰Í•ÉÙ…Ñ¥½¹I•…‘Ìé½‰Í•ÉÙ…Ñ¥½¹Ì±¹•ÕÑÉ…°éÍ•ÍÍ¥½¸¹±½…±%¹ÁÕÑMÑ…Ñ”¹…ÁÑÕÉ”¹¥¹ÁÕÑlÁt±…ÕÑ½µ…Ñ¥I…™MÑ…ÉÑ•é±½½À¹ÉÕ¹¹¥¹œ°¸¸¹½¹™¥Éµ•‘MÑ…Ñ•ôì4(€€€õ™¥¹…±±åíÝ¥¹‘½Ü¹É•µ½Ù•Ù•¹Ñ1¥ÍÑ•¹•È ‰±ÕÈœ±É•±•…Í”¤í±½½À¹ÍÑ½À ¤íÁÉ•Ù¥•Ü¹‘¥ÍÁ½Í” ¤íÍ•ÍÍ¥½¸¹±½Í” ¤í¥¹ÁÕÐ¹‘¥ÍÁ½Í” ¤íô4(€ô¤ì4(€…ÍÍ•ÉÐ¹•ÅÕ…°¡É•Á½ÉÐ¹µ…¹Õ…±=Ý¹•ÉI•±•…Í”¹…ÕÑ½µ…Ñ¥I…™MÑ…ÉÑ•±™…±Í”¤ì4(€…ÍÍ•ÉÐ¹‘••ÁÅÕ…°¡É•Á½ÉÐ¹µ…¹Õ…±=Ý¹•ÉI•±•…Í”¹±¥™•å±•I•‰…Í•Ì±l‰±ÕÈœ°‰±ÕÈœ°É•Í•ÑQ¥µ¥¹œœ°ÍÑ½Àt°•… ±¥™•å±”±•…ÈÉ•©•ÑÌ½¹Ñ¥¹Õ…Ñ¥½¸…¹¥¹ÍÑ…±±Ì„™É•Í …ÕÑ¡½É¥Ñä¡•­Á½¥¹Ðœ¤ì4(€…ÍÍ•ÉÐ¹•ÅÕ…°¡É•Á½ÉÐ¹µ…¹Õ…±=Ý¹•ÉI•±•…Í”¹½¹™¥Éµ•‘‘Ù…¹•Ì°Ä°½¹”•á…Ð¥‘±”™É…µ”…‘Ù…¹•ÌÑ¡”‘•Ñ…¡•±½…°™½É¬Ý¥Ñ¡½ÕÐ„¡•­Á½¥¹ÐÉ•ÍÑ½É”œ¤ì4(€…ÍÍ•ÉÐ¹•ÅÕ…°¡É•Á½ÉÐ¹µ…¹Õ…±=Ý¹•ÉI•±•…Í”¹½¹™¥Éµ•‘I•Á±…åMÑ•ÁÌ°Ä°½¹™¥Éµ•µ½¹±ä½¹Ñ¥¹Õ…Ñ¥½¸ÍÑ¥±°•á•ÕÑ•ÌÑ¡”Í…µ”‘•Ñ…¡•…µ”ÍÑ•Àœ¤ì4(€…ÍÍ•ÉÐ¹½¬¡É•Á½ÉÐ¹µ…¹Õ…±=Ý¹•ÉI•±•…Í”¹½¹™¥Éµ•‘‘Ù…¹•I•©•Ñ•øôÄ°„Í•½¹ÍÁ•Õ±…Ñ¥Ù”½¹™¥Éµ•µ½¹±äÍÑ•À¥ÌÉ•©•Ñ•Õ¹Ñ¥°…¹½Ñ¡•ÈÁÉ•‘¥Ñ¥½¸½ÈÍ¹…ÁÍ¡½ÐÉ•‰…Í”œ¤ì4(€…ÍÍ•ÉÐ¹½¬¡É•Á½ÉÐ¹µ…¹Õ…±=Ý¹•ÉI•±•…Í”¹½¹™¥Éµ•‘‘Ù…¹•I•©•Ñ•‘1¥µ¥ÐøôÄ°Ñ¡”½¹™¥Éµ•µ½¹±ä¡½É¥é½¸É•©•ÑÌ„Í•½¹½¹Í•ÕÑ¥Ù”ÍÑ•Àœ¤ì4(€…ÍÍ•ÉÐ¹‘••ÁÅÕ…°¡É•Á½ÉÐ¹µ…¹Õ…±=Ý¹•ÉI•±•…Í”¹½¹™¥Éµ•‘‘Ù…¹•I•ÍÑ½É••±Ñ…Ì±lÁt°Ñ¡”‰½Õ¹‘•½¹™¥Éµ•µ½¹±äÍÑ•À…Ù½¥‘ÌÉ•¥¹ÍÑ…±±¥¹œÑ¡”™Õ±°Í¹…ÁÍ¡½Ðœ¤ì4(€É•Á½ÉÐ¹ÍÑ…•Ì¹ÁÕÍ  µ…¹Õ…°‘•…‘±¥¹”É•™É•Í¡•Ì¡•±½ÅÕ¥¬•‘•ÌÝ¥Ñ¡½ÕÐI°É•ÕÍ•Ì½‰Í•ÉÙ…Ñ¥½¹Ì°ÍÑ…åÌ¹•ÕÑÉ…°…¹É•Ñ…¥¹Ì½¹”•‘”…É½ÍÌ‰±ÕÈ½É•Í•ÑQ¥µ¥¹œ½ÍÑ½ÀÕ¹Ñ¥°Ñ¥¬½¹ÍÕµÁÑ¥½¸œ¤ì4(€…Ý…¥ÐÁÉ•Ù¥•ÝA…”¹•Ù…±Õ…Ñ”  ¤ôùì4(€€€Ý¥¹‘½Ü¹¥¹ÁÕÑAÉ•Ù¥•Ý•µ¼¹‘¥ÍÁ½Í” ¤ì4(€€€Ý¥¹‘½Ü¹‘¥ÍÁ…Ñ¡Ù•¹Ð¡¹•ÜA…•QÉ…¹Í¥Ñ¥½¹Ù•¹Ð Á…•¡¥‘”œ°ìÁ•ÉÍ¥ÍÑ•è™…±Í”ô¤¤ì4(€ô¤ì4(€…ÍÍ•ÉÐ¹•ÅÕ…°¡ÁÉ•Ù¥•ÝÉÉ½ÉÌ¹±•¹Ñ °À±ÁÉ•Ù¥•ÝÉÉ½ÉÌ¹©½¥¸ q¸œ¤¤ì4(4(€…Ý…¥ÐÁÉ•Ù¥•ÝA…”¹±½Í” ¤ì4(€…ÍÍ•ÉÐ¹•ÅÕ…°¡ÁÉ•Ù¥•ÝÉÉ½ÉÌ¹±•¹Ñ °À±ÁÉ•Ù¥•ÝÉÉ½ÉÌ¹©½¥¸ q¸œ¤¤ì4(€É•Á½ÉÐ¹ÍÑ…•Ì¹ÁÕÍ  •áÁ±¥¥Ð‘¥ÍÁ½Í…°°É•Á•…Ñ•‘¥ÍÁ½Í…°…¹Á…•¡¥‘”É•±•…Í”Ñ¡”‘•µ¼½¹”Ý¥Ñ¡½ÕÐ±¥™•å±”•ÉÉ½ÉÌœ¤ì4(€½¹ÍÐÙ•Ñ½ÉÍÍ•ÑA…”€ô…Ý…¥Ð‰É½ÝÍ•È¹¹•ÝA…”¡ìÙ¥•ÝÁ½ÉÐèìÝ¥‘Ñ è€ÄÀÀÀ°¡•¥¡Ðè€àÀÀô°¡…ÍQ½Õ èÑÉÕ”°‘•Ù¥•M…±•…Ñ½Èè€Èô¤ì4(€½¹ÍÐÙ•Ñ½ÉÍÍ•ÑÉÉ½ÉÌ€ômtì4(€Ù•Ñ½ÉÍÍ•ÑA…”¹½¸ Á…••ÉÉ½Èœ°•ÉÉ½È€ôøÙ•Ñ½ÉÍÍ•ÑÉÉ½ÉÌ¹ÁÕÍ ¡•ÉÉ½È¹µ•ÍÍ…”¤¤ì4(€…Ý…¥ÐÙ•Ñ½ÉÍÍ•ÑA…”¹½Ñ¼¡¡ÑÑÀè¼¼ÄÈÜ¸À¸À¸Äè‘íÍ•ÉÙ•È¹…‘‘É•ÍÌ ¤¹Á½ÉÑô½‘¥ÍÐ½ÁÉ•Ù¥•ÝÌ½Ù•Ñ½Èµ…ÍÍ•ÑÌ¹¡Ñµ°ý™¥áÑÕÉ”õÍ••µÍ½ÕÑ€¤ì4(€…Ý…¥ÐÙ•Ñ½ÉÍÍ•ÑA…”¹Ý…¥Ñ½ÉÕ¹Ñ¥½¸  ¤€ôø	½½±•…¸¡Ý¥¹‘½Ü¹Ù•Ñ½ÉÍÍ•Ñ•µ¼ü¹É•…‘äñðÝ¥¹‘½Ü¹Ù•Ñ½ÉÍÍ•Ñ•µ¼ü¹•ÉÉ½È¤°¹Õ±°°ìÑ¥µ•½ÕÐè€ÄÔÀÀÀô¤ì4(€…ÍÍ•ÉÐ¹•ÅÕ…°¡…Ý…¥ÐÙ•Ñ½ÉÍÍ•ÑA…”¹•Ù…±Õ…Ñ”  ¤€ôøÝ¥¹‘½Ü¹Ù•Ñ½ÉÍÍ•Ñ•µ¼ü¹•ÉÉ½È€üü¹Õ±°¤°¹Õ±°°€ÍÑ…¹‘…±½¹”Ù•Ñ½Èµ…ÍÍ•ÑÌÁÉ•Ù¥•Ü¥¹¥Ñ¥…±¥é•Ìœ¤ì4(€É•Á½ÉÐ¹Ù•Ñ½ÉÍÍ•ÑÌ€ô…Ý…¥Ð•á•É¥Í•Y•Ñ½ÉÍÍ•ÑÌ¡Ù•Ñ½ÉÍÍ•ÑA…”¤ì4(€½¹ÍÐÍ­•Ñ¡A¥á•±A…É¥Ñä€ô…Ý…¥ÐÙ•Ñ½ÉÍÍ•ÑA…”¹•Ù…±Õ…Ñ”  ¤€ôøì4(€€€½¹ÍÐì]•‰1•Ù¥”°5•Í¡I•¹‘•É•È°É•…Ñ•MÑå±•M…µÁ±”ô€ôÝ¥¹‘½Ü¹Ù•Ñ½ÉÍÍ•ÑIÕ¹Ñ¥µ”ì4(€€€½¹ÍÐ…¹Ù…Ì€ô‘½Õµ•¹Ð¹É•…Ñ•±•µ•¹Ð …¹Ù…Ìœ¤ì…¹Ù…Ì¹Ý¥‘Ñ €ô€ÌÈÀì…¹Ù…Ì¹¡•¥¡Ð€ô€ÌØÀì‘½Õµ•¹Ð¹‰½‘ä¹…ÁÁ•¹¡…¹Ù…Ì¤ì4(€€€½¹ÍÐ‘•Ù¥”€ô¹•Ü]•‰1•Ù¥”¡…¹Ù…Ì°ì…±Á¡„è™…±Í”°…¹Ñ¥…±¥…Ìè™…±Í”°ÁÉ•Í•ÉÙ•É…Ý¥¹	Õ™™•ÈèÑÉÕ”°¡•­1ÉÉ½ÉÌèÑÉÕ”ô¤ì4(€€€½¹ÍÐµ•Í¡•Ì€ô¹•Ü5•Í¡I•¹‘•É•È¡‘•Ù¥”¤°…ÍÍ•Ð€ôÉ•…Ñ•MÑå±•M…µÁ±” Í­•Ñ µ™½àœ°µ•Í¡•Ì¤ì4(€€€½¹ÍÐ…Ñ½È€ô…ÍÍ•Ð¹É•…Ñ•A±…å•È¡ì±¥Àè€¥‘±”œ°ÍÑ…ÉÑ•‘Ñ5Ìè€Àô¤ì4(€€€½¹ÍÐÁÉ½©•Ñ¥½¸€ôlÈ€¼€ÄØÀ°€À°€À°€À°€´È€¼€ÄàÀ°€À°€´Ä°€Ä°€Åtì4(€€€½¹ÍÐ…ÁÑÕÉ”€ôÑ¥µ•5Ì€ôøì4(€€€€€…Ñ½È¹Í••¬¡Ñ¥µ•5Ì¤ì4(€€€€€‘•Ù¥”¹‰•¥¹É…µ”¡ìÝ¥‘Ñ è…¹Ù…Ì¹Ý¥‘Ñ °¡•¥¡Ðè…¹Ù…Ì¹¡•¥¡Ð°±•…É½±½ÈèlÀ¸àÜÔ°€À¸äÄ°€À¸àÀ°€Åtô¤ì4(€€€€€µ•Í¡•Ì¹‰•¥¹É…µ” ¤ì…Ñ½È¹‘É…Ü¡ìÁÉ½©•Ñ¥½¸ô¤ìµ•Í¡•Ì¹™±ÕÍ  ¤ì‘•Ù¥”¹•¹‘É…µ” ¤ì4(€€€€€½¹ÍÐÁ¥á•±Ì€ô¹•ÜU¥¹ÐáÉÉ…ä¡…¹Ù…Ì¹Ý¥‘Ñ €¨…¹Ù…Ì¹¡•¥¡Ð€¨€Ð¤ì4(€€€€€‘•Ù¥”¹°¹É•…‘A¥á•±Ì À°€À°…¹Ù…Ì¹Ý¥‘Ñ °…¹Ù…Ì¹¡•¥¡Ð°‘•Ù¥”¹°¹I	°‘•Ù¥”¹°¹U9M%9}	eQ°Á¥á•±Ì¤ì4(€€€€€É•ÑÕÉ¸Á¥á•±Ìì4(€€€ôì4(€€€½¹ÍÐ™¥ÉÍÐ€ô…ÁÑÕÉ” äàÜ¸Ô¤°±…Ñ•È€ô…ÁÑÕÉ” ÈÄÀÀ¤°É•Á•…Ñ•€ô…ÁÑÕÉ” äàÜ¸Ô¤ì4(€€€±•Ð¡…¹•‘¡…¹¹•±Ì€ô€À°É•Á•…Ñ•‘¡…¹¹•±Ì€ô€Àì4(€€€™½È€¡±•Ð¥¹‘•à€ô€Àì¥¹‘•à€ð™¥ÉÍÐ¹±•¹Ñ ì¥¹‘•à¬¬¤ì4(€€€€€¥˜€¡™¥ÉÍÑm¥¹‘•át€„ôô±…Ñ•Ém¥¹‘•át¤¡…¹•‘¡…¹¹•±Ì¬¬ì4(€€€€€¥˜€¡™¥ÉÍÑm¥¹‘•át€„ôôÉ•Á•…Ñ•‘m¥¹‘•át¤É•Á•…Ñ•‘¡…¹¹•±Ì¬¬ì4(€€€ô4(€€€½¹ÍÐÉ•ÍÕ±Ð€ôì¡…¹•‘¡…¹¹•±Ì°É•Á•…Ñ•‘¡…¹¹•±Ì°±ÉÉ½Èè‘•Ù¥”¹°¹•ÑÉÉ½È ¤°µ½ÉÁ¡½Õ¹Ðè…ÍÍ•Ð¹µ•Í ¹µ½ÉÁ¡½Õ¹Ðôì4(€€€…Ñ½È¹‘¥ÍÁ½Í” ¤ì…ÍÍ•Ð¹‘¥ÍÁ½Í” ¤ìµ•Í¡•Ì¹‘¥ÍÁ½Í” ¤ì‘•Ù¥”¹‘¥ÍÁ½Í” ¤ì…¹Ù…Ì¹É•µ½Ù” ¤ì4(€€€É•ÑÕÉ¸É•ÍÕ±Ðì4(€ô¤ì4(€…ÍÍ•ÉÐ¹•ÅÕ…°¡Í­•Ñ¡A¥á•±A…É¥Ñä¹±ÉÉ½È°€À¤ì4(€…ÍÍ•ÉÐ¹•ÅÕ…°¡Í­•Ñ¡A¥á•±A…É¥Ñä¹µ½ÉÁ¡½Õ¹Ð°€È¤ì4(€…ÍÍ•ÉÐ¹½¬¡Í­•Ñ¡A¥á•±A…É¥Ñä¹¡…¹•‘¡…¹¹•±Ì€ø€À°€…¹¥µ…Ñ•Í­•Ñ µ½ÉÁ¡Ì¡…¹”…ÑÕ…°]•‰0Á¥á•±Ìœ¤ì4(€…ÍÍ•ÉÐ¹•ÅÕ…°¡Í­•Ñ¡A¥á•±A…É¥Ñä¹É•Á•…Ñ•‘¡…¹¹•±Ì°€À°€Ñ¡”Í…µ”Í­•Ñ Ñ¥µ”É•ÁÉ½‘Õ•Ì¥‘•¹Ñ¥…°]•‰0Á¥á•±Ìœ¤ì4(€…ÍÍ•ÉÐ¹•ÅÕ…°¡Ù•Ñ½ÉÍÍ•ÑÉÉ½ÉÌ¹±•¹Ñ °€À°Ù•Ñ½ÉÍÍ•ÑÉÉ½ÉÌ¹©½¥¸ q¸œ¤¤ì4(€…Ý…¥ÐÙ•Ñ½ÉÍÍ•ÑA…”¹•Ù…±Õ…Ñ”  ¤€ôøì4(€€€½¹ÍÐ‘•µ¼€ôÝ¥¹‘½Ü¹Ù•Ñ½ÉÍÍ•Ñ•µ¼ì4(€€€‘•µ¼¹…Ñ½È¹‘¥ÍÁ½Í” ¤ì‘•µ¼¹…ÍÍ•Ð¹‘¥ÍÁ½Í” ¤ì‘•µ¼¹µ•Í¡•Ì¹‘¥ÍÁ½Í” ¤ì‘•µ¼¹‘•Ù¥”¹‘¥ÍÁ½Í” ¤ì4(€ô¤ì4(€…Ý…¥ÐÙ•Ñ½ÉÍÍ•ÑA…”¹±½Í” ¤ì4(€É•Á½ÉÐ¹ÍÑ…•Ì¹ÁÕÍ  Í¥¹±”MYMM=P½µÁ¥±•Ñ¡É½Õ Á¥¹¹•Q¡É•”MY1½…‘•È°É•¹‘•É•…ÌÍ¡…É•É•Ñ…¥¹•…µ•-¥Ð]•‰0µ•Í Ý¥Ñ ‘•Ñ•Éµ¥¹¥ÍÑ¥Œ¹¥µ”¹©ÌÍ••¬œ¤ì4(4(€½¹ÍÐÅÕ…±¥Ñåá…µÁ±•A…”€ô…Ý…¥Ð‰É½ÝÍ•È¹¹•ÝA…”¡ìÙ¥•ÝÁ½ÉÐèìÝ¥‘Ñ è€ÄÈÀÀ°¡•¥¡Ðè€äÀÀô°‘•Ù¥•M…±•…Ñ½Èè€Äô¤ì4(€½¹ÍÐÅÕ…±¥Ñåá…µÁ±•ÉÉ½ÉÌ€ômtì4(€ÅÕ…±¥Ñåá…µÁ±•A…”¹½¸ Á…••ÉÉ½Èœ°•ÉÉ½È€ôøÅÕ…±¥Ñåá…µÁ±•ÉÉ½ÉÌ¹ÁÕÍ ¡•ÉÉ½È¹µ•ÍÍ…”¤¤ì4(€É•Á½ÉÐ¹Ù•Ñ½ÉÍÍ•ÑEÕ…±¥Ñä€ô…Ý…¥Ð•á•É¥Í•Y•Ñ½ÉÍÍ•ÑEÕ…±¥Ñåá…µÁ±”¡ÅÕ…±¥Ñåá…µÁ±•A…”°4(€€€¡ÑÑÀè¼¼ÄÈÜ¸À¸À¸Äè‘íÍ•ÉÙ•È¹…‘‘É•ÍÌ ¤¹Á½ÉÑô½‘¥ÍÐ½ÁÉ•Ù¥•ÝÌ½Ù•Ñ½Èµ…ÍÍ•ÑÌ¹¡Ñµ±€¤ì4(€…ÍÍ•ÉÐ¹•ÅÕ…°¡ÅÕ…±¥Ñåá…µÁ±•ÉÉ½ÉÌ¹±•¹Ñ °€À°ÅÕ…±¥Ñåá…µÁ±•ÉÉ½ÉÌ¹©½¥¸ q¸œ¤¤ì4(€…Ý…¥ÐÅÕ…±¥Ñåá…µÁ±•A…”¹±½Í” ¤ì4(€É•Á½ÉÐ¹ÍÑ…•Ì¹ÁÕÍ  Ù•Ñ½Èµ…ÍÍ•ÑÌ•á…µÁ±”±½…‘Ì„¥Ñ!ÕˆMYUI0…¹½µÁ…É•Ì¥¹‘•Á•¹‘•¹Ñ±ä½¹™¥ÕÉ…‰±”ÕÉÙ”½ÍÑÉ½­”Ñ•ÍÍ•±±…Ñ¥½¸œ¤ì4(4(€½¹ÍÐÍ½ÕÉ•A…Ñ €ô€µ½‘Õ±•Ì½Ù•Ñ½Èµ…ÍÍ•ÑÌ½…ÍÍ•ÑÌ½Í••µÍ½ÕÐ¹ÍÙœœì4(€½¹ÍÐÍ½ÕÉ•	åÑ•Ì€ô…Ý…¥ÐÉ•…‘¥±”¡É•Í½±Ù”¡É½½Ð°Í½ÕÉ•A…Ñ ¤¤ì4(€½¹ÍÐ•áÁ•Ñ•‘M¡„ÈÔØ€ôÉ•…Ñ•!…Í  Í¡„ÈÔØœ¤¹ÕÁ‘…Ñ”¡Í½ÕÉ•	åÑ•Ì¤¹‘¥•ÍÐ ¡•àœ¤ì4(€½¹ÍÐ¹½‘•ÍÍ•Ð€ô½µÁ¥±•Y•Ñ½ÉÍÍ•Ð¡Í½ÕÉ•	åÑ•Ì°Í½ÕÉ•A…Ñ ¤ì4(€½¹ÍÐÍÑ…‰±”€ôÙ…±Õ”€ôøì4(€€€¥˜€¡ÉÉ…å	Õ™™•È¹¥ÍY¥•Ü¡Ù…±Õ”¤¤É•ÑÕÉ¸ÉÉ…ä¹™É½´¡Ù…±Õ”°ÍÑ…‰±”¤ì4(€€€¥˜€¡ÉÉ…ä¹¥ÍÉÉ…ä¡Ù…±Õ”¤¤É•ÑÕÉ¸Ù…±Õ”¹µ…À¡ÍÑ…‰±”¤ì4(€€€¥˜€¡Ù…±Õ”€˜˜ÑåÁ•½˜Ù…±Õ”€ôôô€½‰©•Ðœ¤É•ÑÕÉ¸=‰©•Ð¹™É½µ¹ÑÉ¥•Ì¡=‰©•Ð¹­•åÌ¡Ù…±Õ”¤¹Í½ÉÐ ¤¹µ…À¡­•ä€ôøm­•ä°ÍÑ…‰±”¡Ù…±Õ•m­•åt¥t¤¤ì4(€€€É•ÑÕÉ¸Ù…±Õ”ì4(€ôì4(€½¹ÍÐ¹½‘••½µ•ÑÉåM¡„ÈÔØ€ôÉ•…Ñ•!…Í  Í¡„ÈÔØœ¤¹ÕÁ‘…Ñ”¡)M=8¹ÍÑÉ¥¹¥™ä¡ÍÑ…‰±”¡¹½‘•ÍÍ•Ð¹•½µ•ÑÉä¤¤¤¹‘¥•ÍÐ ¡•àœ¤ì4(€½¹ÍÐ±½ÝEÕ…±¥ÑåáÁ•Ñ•€ôlÄ°€È°€Ít¹µ…À¡Ù…±Õ”€ôøì(€€€½¹ÍÐ½µÁ¥±•€ô½µÁ¥±•Y•Ñ½ÉÍÍ•Ð¡Í½ÕÉ•	åÑ•Ì°Í½ÕÉ•A…Ñ °ìÕÉÙ•M•µ•¹ÑÌèÙ…±Õ”°ÍÑÉ½­•É¥Ù¥Í¥½¹ÌèÙ…±Õ”ô¤ì(€€€…ÍÍ•ÉÐ¹½¬¡½µÁ¥±•¹•½µ•ÑÉä¹Ù•ÉÑ¥•Ì¹•Ù•Éä¡9Õµ‰•È¹¥Í¥¹¥Ñ”¤°€‘íÙ…±Õ•ô¼‘íÙ…±Õ•ô9½‘”•½µ•ÑÉä½¹Ñ…¥¹Ì½¹±ä™¥¹¥Ñ”Ù•ÉÑ¥•Í€¤ì(€€€É•ÑÕÉ¸ìÙ…±Õ”°•½µ•ÑÉåM¡„ÈÔØèÉ•…Ñ•!…Í  Í¡„ÈÔØœ¤¹ÕÁ‘…Ñ”¡)M=8¹ÍÑÉ¥¹¥™ä¡ÍÑ…‰±”¡½µÁ¥±•¹•½µ•ÑÉä¤¤¤¹‘¥•ÍÐ ¡•àœ¤ôì(€ô¤ì(€½¹ÍÐÍÑ…ÉÑÕÁ•Ñ¡	…Í•±¥¹”€ôÙ•Ñ½ÉMÙ•Ñ¡•Ìì4(€½¹ÍÐÍÑ…ÉÑÕÁA…”€ô…Ý…¥Ð‰É½ÝÍ•È¹¹•ÝA…”¡ìÙ¥•ÝÁ½ÉÐèìÝ¥‘Ñ è€ÄÀÀÀ°¡•¥¡Ðè€àÀÀô°‘•Ù¥•M…±•…Ñ½Èè€Äô¤ì4(€½¹ÍÐÍÑ…ÉÑÕÁÉÉ½ÉÌ€ômtì4(€ÍÑ…ÉÑÕÁA…”¹½¸ Á…••ÉÉ½Èœ°•ÉÉ½È€ôøÍÑ…ÉÑÕÁÉÉ½ÉÌ¹ÁÕÍ ¡•ÉÉ½È¹µ•ÍÍ…”¤¤ì4(€…Ý…¥ÐÍÑ…ÉÑÕÁA…”¹½Ñ¼¡¡ÑÑÀè¼¼ÄÈÜ¸À¸À¸Äè‘íÍ•ÉÙ•È¹…‘‘É•ÍÌ ¤¹Á½ÉÑô½µ½‘Õ±•Ì½¥¹Ñ•ÉÁ½±…Ñ¥½¸½•á…µÁ±•Ì½¥¹‘•à¹¡Ñµ±€¤ì4(€½¹ÍÐ±½…‘•‘MÑ…ÉÑÕÀ€ô…Ý…¥ÐÍÑ…ÉÑÕÁA…”¹•Ù…±Õ…Ñ”¡…Íå¹Œ€¡ì•áÁ•Ñ•‘M¡„ÈÔØ°¹½‘••½µ•ÑÉåM¡„ÈÔØ°±½ÝEÕ…±¥ÑåáÁ•Ñ•°Í½ÕÉ•A…Ñ ô¤€ôøì(€€€½¹ÍÐìÉ•…Ñ•Y•Ñ½ÉÍÍ•Ñ1½…‘•Èô€ô…Ý…¥Ð¥µÁ½ÉÐ œ½‘¥ÍÐ½Ù•Ñ½Èµ…ÍÍ•ÑÌµ±½…‘•È¹©Ìœ¤ì4(€€€½¹ÍÐìÉ•…Ñ•Y•Ñ½ÉÍÍ•Ðô€ô…Ý…¥Ð¥µÁ½ÉÐ œ½‘¥ÍÐ½Ù•Ñ½Èµ…ÍÍ•ÑÌ¹©Ìœ¤ì4(€€€½¹ÍÐì]•‰1•Ù¥”°5•Í¡I•¹‘•É•Èô€ô…Ý…¥Ð¥µÁ½ÉÐ œ½‘¥ÍÐ½É•¹‘•É¥¹œ¹©Ìœ¤ì4(€€€½¹ÍÐÕÉ°€ô€œ½µ½‘Õ±•Ì½Ù•Ñ½Èµ…ÍÍ•ÑÌ½…ÍÍ•ÑÌ½Í••µÍ½ÕÐ¹ÍÙœœì4(€€€½¹ÍÐ±½…‘•È€ôÉ•…Ñ•Y•Ñ½ÉÍÍ•Ñ1½…‘•È¡ìµ…á¹ÑÉ¥•Ìè€Èô¤ì4(€€€½¹ÍÐ½ÁÑ¥½¹Ì€ôìÍ½ÕÉ•A…Ñ °•áÁ•Ñ•‘M¡„ÈÔØ°µ…á	åÑ•Ìè€ÔÄÈ€¨€ÄÀÈÐôì4(€€€½¹ÍÐm½µÁ¥±•‘ÍÍ•Ð°Í…µ•½µÁ¥±•‘ÍÍ•Ñt€ô…Ý…¥ÐAÉ½µ¥Í”¹…±°¡m±½…‘•È¹±½…¡ÕÉ°°½ÁÑ¥½¹Ì¤°±½…‘•È¹±½…¡ÕÉ°°½ÁÑ¥½¹Ì¥t¤ì4(€€€¥˜€¡½µÁ¥±•‘ÍÍ•Ð€„ôôÍ…µ•½µÁ¥±•‘ÍÍ•Ðñð±½…‘•È¹Í¥é”€„ôô€Ä¤Ñ¡É½Ü¹•ÜÉÉ½È ½¹ÕÉÉ•¹ÐMYÍÑ…ÉÑÕÀ±½…‘Ì‘¥¹½ÐÍ¡…É”Ñ¡”…¡•½µÁ¥±…Ñ¥½¸œ¤ì4(€€€½¹ÍÐ•áÁ±¥¥Ñ•™…Õ±ÑÍÍ•Ð€ô…Ý…¥Ð±½…‘•È¹±½…¡ÕÉ°°ì€¸¸¹½ÁÑ¥½¹Ì°ÍÑÉ½­•É¥Ù¥Í¥½¹Ìè€ÄÈô¤ì4(€€€¥˜€¡•áÁ±¥¥Ñ•™…Õ±ÑÍÍ•Ð€„ôô½µÁ¥±•‘ÍÍ•Ð¤Ñ¡É½Ü¹•ÜÉÉ½È áÁ±¥¥Ð‘•™…Õ±ÐÍÑÉ½­”…ÉŒÅÕ…±¥Ñä‘¥¹½Ð¹½Éµ…±¥é”Ñ¼Ñ¡”Í¡…É•…¡”­•äœ¤ì4(€€€½¹ÍÐ½…ÉÍ•ÉÍÍ•Ð€ô…Ý…¥Ð±½…‘•È¹±½…¡ÕÉ°°ì€¸¸¹½ÁÑ¥½¹Ì°ÍÑÉ½­•É¥Ù¥Í¥½¹Ìè€àô¤ì4(€€€½¹ÍÐÍ…µ•½…ÉÍ•ÉÍÍ•Ð€ô…Ý…¥Ð±½…‘•È¹±½…¡ÕÉ°°ì€¸¸¹½ÁÑ¥½¹Ì°ÍÑÉ½­•É¥Ù¥Í¥½¹Ìè€àô¤ì4(€€€¥˜€¡½…ÉÍ•ÉÍÍ•Ð€„ôôÍ…µ•½…ÉÍ•ÉÍÍ•Ðñð½…ÉÍ•ÉÍÍ•Ð€ôôô½µÁ¥±•‘ÍÍ•Ðñð±½…‘•È¹Í¥é”€„ôô€È¤ì4(€€€€€Ñ¡É½Ü¹•ÜÉÉ½È ¥ÍÑ¥¹ÐÍÑÉ½­”…ÉŒÅÕ…±¥Ñä‘¥¹½ÐÕÍ”¥ÑÌ½Ý¸…¡•½µÁ¥±…Ñ¥½¸œ¤ì4(€€€ô4(€€€¥˜€¡½µÁ¥±•‘ÍÍ•Ð¹½µÁ¥±•É=ÁÑ¥½¹Ì¹ÍÑÉ½­•É¥Ù¥Í¥½¹Ì€„ôô€ÄÈñð½…ÉÍ•ÉÍÍ•Ð¹½µÁ¥±•É=ÁÑ¥½¹Ì¹ÍÑÉ½­•É¥Ù¥Í¥½¹Ì€„ôô€à¤ì4(€€€€€Ñ¡É½Ü¹•ÜÉÉ½È 	É½ÝÍ•È±½…‘•È‘¥¹½ÐÉ•½ÉÍ•±•Ñ•ÍÑÉ½­”…ÉŒÅÕ…±¥Ñäœ¤ì4(€€€ô4(€€€¥˜€¡)M=8¹ÍÑÉ¥¹¥™ä¡ÉÉ…ä¹™É½´¡½µÁ¥±•‘ÍÍ•Ð¹•½µ•ÑÉä¹¥¹‘¥•Ì¤¤€ôôô)M=8¹ÍÑÉ¥¹¥™ä¡ÉÉ…ä¹™É½´¡½…ÉÍ•ÉÍÍ•Ð¹•½µ•ÑÉä¹¥¹‘¥•Ì¤¤¤ì4(€€€€€Ñ¡É½Ü¹•ÜÉÉ½È 9½¸µ‘•™…Õ±ÐÉ½Õ¹ÍÑÉ½­”…ÉŒÅÕ…±¥ÑäÁÉ½‘Õ•Ñ¡”‘•™…Õ±ÐÑÉ¥…¹±”±¥ÍÐœ¤ì4(€€€ô4(€€€¥˜€¡½µÁ¥±•‘ÍÍ•Ð¹Í½ÕÉ•M¡„ÈÔØ€„ôô•áÁ•Ñ•‘M¡„ÈÔØñð€Í½ÕÉ•A…Ñ¡Ìœ¥¸½µÁ¥±•‘ÍÍ•Ð¤Ñ¡É½Ü¹•ÜÉÉ½È 1½…‘•MY¡…Í ½È‘•™…Õ±Ð‘•‰Õœµ‘…Ñ„Á½±¥ä¥Ì¥¹½ÉÉ•Ðœ¤ì4(€€€½¹ÍÐ…¹½¹¥…°€ôÙ…±Õ”€ôøì4(€€€€€¥˜€¡ÉÉ…å	Õ™™•È¹¥ÍY¥•Ü¡Ù…±Õ”¤¤É•ÑÕÉ¸ÉÉ…ä¹™É½´¡Ù…±Õ”°…¹½¹¥…°¤ì4(€€€€€¥˜€¡ÉÉ…ä¹¥ÍÉÉ…ä¡Ù…±Õ”¤¤É•ÑÕÉ¸Ù…±Õ”¹µ…À¡…¹½¹¥…°¤ì4(€€€€€¥˜€¡Ù…±Õ”€˜˜ÑåÁ•½˜Ù…±Õ”€ôôô€½‰©•Ðœ¤É•ÑÕÉ¸=‰©•Ð¹™É½µ¹ÑÉ¥•Ì¡=‰©•Ð¹­•åÌ¡Ù…±Õ”¤¹Í½ÉÐ ¤¹µ…À¡­•ä€ôøm­•ä°…¹½¹¥…°¡Ù…±Õ•m­•åt¥t¤¤ì4(€€€€€É•ÑÕÉ¸Ù…±Õ”ì4(€€€ôì4(€€€½¹ÍÐ‘¥•ÍÐ€ô¹•ÜU¥¹ÐáÉÉ…ä¡…Ý…¥ÐÉåÁÑ¼¹ÍÕ‰Ñ±”¹‘¥•ÍÐ M!´ÈÔØœ°¹•ÜQ•áÑ¹½‘•È ¤¹•¹½‘”¡)M=8¹ÍÑÉ¥¹¥™ä¡…¹½¹¥…°¡½µÁ¥±•‘ÍÍ•Ð¹•½µ•ÑÉä¤¤¤¤¤ì4(€€€½¹ÍÐ‰É½ÝÍ•É•½µ•ÑÉåM¡„ÈÔØ€ôl¸¸¹‘¥•ÍÑt¹µ…À¡Ù…±Õ”€ôøÙ…±Õ”¹Ñ½MÑÉ¥¹œ ÄØ¤¹Á…‘MÑ…ÉÐ È°€œÀœ¤¤¹©½¥¸ œœ¤ì4(€€€¥˜€¡‰É½ÝÍ•É•½µ•ÑÉåM¡„ÈÔØ€„ôô¹½‘••½µ•ÑÉåM¡„ÈÔØ¤Ñ¡É½Ü¹•ÜÉÉ½È 	É½ÝÍ•È…¹9½‘”MY½µÁ¥±•È•½µ•ÑÉä‘¥™™•Èœ¤ì4(4(€€€½¹ÍÐ±½ÝEÕ…±¥ÑåI•ÍÕ±ÑÌ€ômtì(€€€±•ÐÁÉ•Ù¥½ÕÍEÕ…±¥ÑåÍÍ•Ð€ô½µÁ¥±•‘ÍÍ•Ðì(€€€™½È€¡½¹ÍÐìÙ…±Õ”°•½µ•ÑÉåM¡„ÈÔØô½˜±½ÝEÕ…±¥ÑåáÁ•Ñ•¤ì(€€€€€½¹ÍÐÅÕ…±¥Ñå=ÁÑ¥½¹Ì€ôì€¸¸¹½ÁÑ¥½¹Ì°ÕÉÙ•M•µ•¹ÑÌèÙ…±Õ”°ÍÑÉ½­•É¥Ù¥Í¥½¹ÌèÙ…±Õ”ôì(€€€€€½¹ÍÐmÅÕ…±¥ÑåÍÍ•Ð°Í…µ•EÕ…±¥ÑåÍÍ•Ñt€ô…Ý…¥ÐAÉ½µ¥Í”¹…±°¡m±½…‘•È¹±½…¡ÕÉ°°ÅÕ…±¥Ñå=ÁÑ¥½¹Ì¤°±½…‘•È¹±½…¡ÕÉ°°ÅÕ…±¥Ñå=ÁÑ¥½¹Ì¥t¤ì(€€€€€¥˜€¡ÅÕ…±¥ÑåÍÍ•Ð€„ôôÍ…µ•EÕ…±¥ÑåÍÍ•ÐñðÅÕ…±¥ÑåÍÍ•Ð€ôôôÁÉ•Ù¥½ÕÍEÕ…±¥ÑåÍÍ•Ð¤ì(€€€€€€€Ñ¡É½Ü¹•ÜÉÉ½È¡1½ÜMYÅÕ…±¥Ñä€‘íÙ…±Õ•ô¼‘íÙ…±Õ•ô‘¥¹½ÐÕÍ”¥ÑÌ½Ý¸ÍÑ…‰±”…¡”•¹ÑÉå€¤ì(€€€€€ô(€€€€€¥˜€ …ÅÕ…±¥ÑåÍÍ•Ð¹•½µ•ÑÉä¹Ù•ÉÑ¥•Ì¹•Ù•Éä¡9Õµ‰•È¹¥Í¥¹¥Ñ”¤ñðÅÕ…±¥ÑåÍÍ•Ð¹•½µ•ÑÉä¹¥¹‘¥•Ì¹±•¹Ñ €”€Ì¤ì(€€€€€€€Ñ¡É½Ü¹•ÜÉÉ½È¡1½ÜMYÅÕ…±¥Ñä€‘íÙ…±Õ•ô¼‘íÙ…±Õ•ôÁÉ½‘Õ•¥¹Ù…±¥ÑÉ¥…¹±”‰Õ™™•ÉÍ€¤ì(€€€€€ô(€€€€€½¹ÍÐÅÕ…±¥Ñå¥•ÍÐ€ô¹•ÜU¥¹ÐáÉÉ…ä¡…Ý…¥ÐÉåÁÑ¼¹ÍÕ‰Ñ±”¹‘¥•ÍÐ M!´ÈÔØœ°¹•ÜQ•áÑ¹½‘•È ¤¹•¹½‘”¡)M=8¹ÍÑÉ¥¹¥™ä¡…¹½¹¥…°¡ÅÕ…±¥ÑåÍÍ•Ð¹•½µ•ÑÉä¤¤¤¤¤ì(€€€€€½¹ÍÐÅÕ…±¥Ñå•½µ•ÑÉåM¡„ÈÔØ€ôl¸¸¹ÅÕ…±¥Ñå¥•ÍÑt¹µ…À¡¹Õµ‰•È€ôø¹Õµ‰•È¹Ñ½MÑÉ¥¹œ ÄØ¤¹Á…‘MÑ…ÉÐ È°€œÀœ¤¤¹©½¥¸ œœ¤ì(€€€€€¥˜€¡ÅÕ…±¥Ñå•½µ•ÑÉåM¡„ÈÔØ€„ôô•½µ•ÑÉåM¡„ÈÔØ¤Ñ¡É½Ü¹•ÜÉÉ½È¡	É½ÝÍ•È…¹9½‘”•½µ•ÑÉä‘¥™™•È…Ð±½ÜÅÕ…±¥Ñä€‘íÙ…±Õ•ô¼‘íÙ…±Õ•õ€¤ì(€€€€€±½ÝEÕ…±¥ÑåI•ÍÕ±ÑÌ¹ÁÕÍ ¡ìÙ…±Õ”°•½µ•ÑÉåM¡„ÈÔØèÅÕ…±¥Ñå•½µ•ÑÉåM¡„ÈÔØ°ÑÉ¥…¹±•ÌèÅÕ…±¥ÑåÍÍ•Ð¹•½µ•ÑÉä¹¥¹‘¥•Ì¹±•¹Ñ €¼€Ìô¤ì(€€€€€ÁÉ•Ù¥½ÕÍEÕ…±¥ÑåÍÍ•Ð€ôÅÕ…±¥ÑåÍÍ•Ðì(€€€ô((€€€½¹ÍÐ…¹Ù…Ì€ô‘½Õµ•¹Ð¹É•…Ñ•±•µ•¹Ð …¹Ù…Ìœ¤ì…¹Ù…Ì¹Ý¥‘Ñ €ô€ÈÀÀì…¹Ù…Ì¹¡•¥¡Ð€ô€ÈÈÀì‘½Õµ•¹Ð¹‰½‘ä¹…ÁÁ•¹¡…¹Ù…Ì¤ì4(€€€½¹ÍÐ‘•Ù¥”€ô¹•Ü]•‰1•Ù¥”¡…¹Ù…Ì°ì…±Á¡„è™…±Í”°…¹Ñ¥…±¥…Ìè™…±Í”°ÁÉ•Í•ÉÙ•É…Ý¥¹	Õ™™•ÈèÑÉÕ”°¡•­1ÉÉ½ÉÌèÑÉÕ”ô¤ì4(€€€½¹ÍÐµ•Í¡•Ì€ô¹•Ü5•Í¡I•¹‘•É•È¡‘•Ù¥”¤ì4(€€€½¹ÍÐ…ÍÍ•Ð€ôÉ•…Ñ•Y•Ñ½ÉÍÍ•Ð¡µ•Í¡•Ì°½µÁ¥±•‘ÍÍ•Ð¤ì4(€€€½¹ÍÐ…Ñ½È€ô…ÍÍ•Ð¹É•…Ñ•A±…å•È¡ì±¥Àè€¥‘±”œ°ÍÑ…ÉÑ•‘Ñ5Ìè€Àô¤ì4(€€€‘•Ù¥”¹‰•¥¹É…µ”¡ìÝ¥‘Ñ è€ÈÀÀ°¡•¥¡Ðè€ÈÈÀ°±•…É½±½ÈèlÀ¸àÜÔ°€À¸äÄ°€À¸àÀ°€Åtô¤ì4(€€€µ•Í¡•Ì¹‰•¥¹É…µ” ¤ì…Ñ½È¹‘É…Ü¡ìÁÉ½©•Ñ¥½¸èlÈ€¼€ÈÀÀ°€À°€À°€À°€´È€¼€ÈÈÀ°€À°€´Ä°€Ä°€Åtô¤ìµ•Í¡•Ì¹™±ÕÍ  ¤ì‘•Ù¥”¹•¹‘É…µ” ¤ì4(€€€½¹ÍÐÁ¥á•°€ô¹•ÜU¥¹ÐáÉÉ…ä Ð¤ì‘•Ù¥”¹°¹É•…‘A¥á•±Ì ÄÀÀ°€ÄÀÜ°€Ä°€Ä°‘•Ù¥”¹°¹I	°‘•Ù¥”¹°¹U9M%9}	eQ°Á¥á•°¤ì4(€€€¥˜€¡Á¥á•±lÅt€ð€ÄÀÀñð‘•Ù¥”¹°¹•ÑÉÉ½È ¤€„ôô€Àñð‘•Ù¥”¹ÍÑ…ÑÌ¹‘É…Ý…±±Ì€ð€Ä¤Ñ¡É½Ü¹•ÜÉÉ½È¡	É½ÝÍ•Èµ½µÁ¥±•MY‘¥¹½ÐÉ•¹‘•È¥¸]•‰0è€‘íl¸¸¹Á¥á•±uõ€¤ì4(€€€¥˜€¡µ•Í¡•Ì¹ÍÑ…ÑÌ ¤¹•½µ•ÑÉåUÁ±½…‘Ì€„ôô€À¤Ñ¡É½Ü¹•ÜÉÉ½È Q¡”É•Ñ…¥¹•MYµ•Í ÕÁ±½…‘••½µ•ÑÉä‘ÕÉ¥¹œ¥ÑÌ‘É…Üœ¤ì4(€€€…Ñ½È¹‘¥ÍÁ½Í” ¤ì…ÍÍ•Ð¹‘¥ÍÁ½Í” ¤ìµ•Í¡•Ì¹‘¥ÍÁ½Í” ¤ì‘•Ù¥”¹‘¥ÍÁ½Í” ¤ì…¹Ù…Ì¹É•µ½Ù” ¤ì4(4(€€€½¹ÍÐµ¥Íµ…Ñ¡1½…‘•È€ôÉ•…Ñ•Y•Ñ½ÉÍÍ•Ñ1½…‘•È¡ìµ…á¹ÑÉ¥•Ìè€Èô¤ì4(€€€±•Ðµ¥Íµ…Ñ¡I•©•Ñ•€ô™…±Í”ì4(€€€ÑÉäì…Ý…¥Ðµ¥Íµ…Ñ¡1½…‘•È¹±½…¡ÕÉ°°ìÍ½ÕÉ•A…Ñ °•áÁ•Ñ•‘M¡„ÈÔØè€œÀœ¹É•Á•…Ð ØÐ¤ô¤ìô4(€€€…Ñ €¡•ÉÉ½È¤ìµ¥Íµ…Ñ¡I•©•Ñ•€ô€½M!´ÈÔØµ¥Íµ…Ñ ¼¹Ñ•ÍÐ¡•ÉÉ½È¹µ•ÍÍ…”¤ìô4(€€€¥˜€ …µ¥Íµ…Ñ¡I•©•Ñ•ñðµ¥Íµ…Ñ¡1½…‘•È¹Í¥é”€„ôô€À¤Ñ¡É½Ü¹•ÜÉÉ½È ¡…Í µµ¥Íµ…Ñ¡•MYÝ…Ì½µÁ¥±•½È…¡•œ¤ì4(€€€µ¥Íµ…Ñ¡1½…‘•È¹‘¥ÍÁ½Í” ¤ì4(€€€±½…‘•È¹±•…È ¤ì±½…‘•È¹‘¥ÍÁ½Í” ¤ì4(€€€É•ÑÕÉ¸ì•½µ•ÑÉåM¡„ÈÔØè‰É½ÝÍ•É•½µ•ÑÉåM¡„ÈÔØ°±½ÝEÕ…±¥ÑåI•ÍÕ±ÑÌôì(€ô°ì•áÁ•Ñ•‘M¡„ÈÔØ°¹½‘••½µ•ÑÉåM¡„ÈÔØ°±½ÝEÕ…±¥ÑåáÁ•Ñ•°Í½ÕÉ•A…Ñ ô¤ì(€…ÍÍ•ÉÐ¹•ÅÕ…°¡±½…‘•‘MÑ…ÉÑÕÀ¹•½µ•ÑÉåM¡„ÈÔØ°¹½‘••½µ•ÑÉåM¡„ÈÔØ°€‰É½ÝÍ•È…¹9½‘”½µÁ¥±•ÉÌ•µ¥Ð¥‘•¹Ñ¥…°•½µ•ÑÉäœ¤ì(€…ÍÍ•ÉÐ¹‘••ÁÅÕ…°¡±½…‘•‘MÑ…ÉÑÕÀ¹±½ÝEÕ…±¥ÑåI•ÍÕ±ÑÌ¹µ…À¡¥Ñ•´€ôø¥Ñ•´¹Ù…±Õ”¤°lÄ°€È°€Ít°€‰É½ÝÍ•È½µÁ¥±•Ì•… É•ÅÕ•ÍÑ•±½ÜÅÕ…±¥Ñäœ¤ì(€½¹ÍÐÍÑ…ÉÑÕÁ•Ñ¡•Ì€ôÙ•Ñ½ÉMÙ•Ñ¡•Ì€´ÍÑ…ÉÑÕÁ•Ñ¡	…Í•±¥¹”ì(€…ÍÍ•ÉÐ¹•ÅÕ…°¡ÍÑ…ÉÑÕÁ•Ñ¡•Ì°€Ø°€Í…µ”µ­•äÍÑ…ÉÑÕÀ±½…‘ÌÍ¡…É”½¹”™•Ñ …¹•… ¥¹‘•Á•¹‘•¹ÐÅÕ…±¥Ñä­•äÁ±ÕÌÑ¡”¡…Í µ¥Íµ…Ñ ™•Ñ¡•Ì½¹”œ¤ì(€…ÍÍ•ÉÐ¹•ÅÕ…°¡ÍÑ…ÉÑÕÁÉÉ½ÉÌ¹±•¹Ñ °€À°ÍÑ…ÉÑÕÁÉÉ½ÉÌ¹©½¥¸ q¸œ¤¤ì(€…Ý…¥ÐÍÑ…ÉÑÕÁA…”¹±½Í” ¤ì(€É•Á½ÉÐ¹‰É½ÝÍ•ÉMÙMÑ…ÉÑÕÀ€ôìÍ½ÕÉ•M¡„ÈÔØè•áÁ•Ñ•‘M¡„ÈÔØ°•½µ•ÑÉåM¡„ÈÔØè±½…‘•‘MÑ…ÉÑÕÀ¹•½µ•ÑÉåM¡„ÈÔØ°±½ÝEÕ…±¥Ñäè±½…‘•‘MÑ…ÉÑÕÀ¹±½ÝEÕ…±¥ÑåI•ÍÕ±ÑÌ°É•ÅÕ•ÍÑÌèÍÑ…ÉÑÕÁ•Ñ¡•Ì°(€€€Í½Á”è€Í…µ”µ­•äÁÉ½µ¥Í”½…¡”‘•‘ÕÁ±¥…Ñ¥½¸°±½ÜµÅÕ…±¥Ñä‰É½ÝÍ•È½9½‘”•½µ•ÑÉäÁ…É¥Ñä°•áÁ•Ñ•µ¡…Í É•©•Ñ¥½¸‰•™½É”…¡¥¹œ°…¹…ÑÕ…°]•‰0Ä‘É…Ü½˜Ñ¡”‰É½ÝÍ•Èµ½µÁ¥±•MYœôì(€É•Á½ÉÐ¹ÍÑ…•Ì¹ÁÕÍ  ‰É½ÝÍ•ÈMYÍÑ…ÉÑÕÀ±½…‘•ÈÙ•É¥™¥•ÌÍ½ÕÉ”M!´ÈÔØ°½µÁ¥±•Ì½¹”Ý¥Ñ ‰½Õ¹‘•…¡”°…¹É•¹‘•ÉÌÑ¡”Í…µ”•½µ•ÑÉä…Ì9½‘”œ¤ì4((€½¹ÍÐ•¹Ñ•É•‘M½ÕÉ•A…Ñ €ô€µ½‘Õ±•Ì½Ù•Ñ½Èµ…ÍÍ•ÑÌ½Ñ•ÍÑÌ½•¹Ñ•É•µÙ¥•Ý‰½à¹ÍÙœœì(€½¹ÍÐ•¹Ñ•É•‘M½ÕÉ•	åÑ•Ì€ô…Ý…¥ÐÉ•…‘¥±”¡É•Í½±Ù”¡É½½Ð°•¹Ñ•É•‘M½ÕÉ•A…Ñ ¤¤ì(€½¹ÍÐ•¹Ñ•É•‘M½ÕÉ•M¡„ÈÔØ€ôÉ•…Ñ•!…Í  Í¡„ÈÔØœ¤¹ÕÁ‘…Ñ”¡•¹Ñ•É•‘M½ÕÉ•	åÑ•Ì¤¹‘¥•ÍÐ ¡•àœ¤ì(€½¹ÍÐ•¹Ñ•É•‘9½‘•ÍÍ•Ð€ô½µÁ¥±•Y•Ñ½ÉÍÍ•Ð¡•¹Ñ•É•‘M½ÕÉ•	åÑ•Ì°•¹Ñ•É•‘M½ÕÉ•A…Ñ °ì¹½Éµ…±¥é••¹Ñ•É•‘Y¥•Ý	½àèÑÉÕ”ô¤ì(€½¹ÍÐ•¹Ñ•É•‘•½µ•ÑÉåM¡„ÈÔØ€ôÉ•…Ñ•!…Í  Í¡„ÈÔØœ¤¹ÕÁ‘…Ñ”¡)M=8¹ÍÑÉ¥¹¥™ä¡ÍÑ…‰±”¡•¹Ñ•É•‘9½‘•ÍÍ•Ð¹•½µ•ÑÉä¤¤¤¹‘¥•ÍÐ ¡•àœ¤ì(€½¹ÍÐ•¹Ñ•É•‘A…”€ô…Ý…¥Ð‰É½ÝÍ•È¹¹•ÝA…”¡ìÙ¥•ÝÁ½ÉÐèìÝ¥‘Ñ è€àÀÀ°¡•¥¡Ðè€ØÀÀô°‘•Ù¥•M…±•…Ñ½Èè€Äô¤ì(€½¹ÍÐ•¹Ñ•É•‘ÉÉ½ÉÌ€ômtì(€•¹Ñ•É•‘A…”¹½¸ Á…••ÉÉ½Èœ°•ÉÉ½È€ôø•¹Ñ•É•‘ÉÉ½ÉÌ¹ÁÕÍ ¡•ÉÉ½È¹µ•ÍÍ…”¤¤ì(€…Ý…¥Ð•¹Ñ•É•‘A…”¹½Ñ¼¡¡ÑÑÀè¼¼ÄÈÜ¸À¸À¸Äè‘íÍ•ÉÙ•È¹…‘‘É•ÍÌ ¤¹Á½ÉÑô½µ½‘Õ±•Ì½¥¹Ñ•ÉÁ½±…Ñ¥½¸½•á…µÁ±•Ì½¥¹‘•à¹¡Ñµ±€¤ì(€½¹ÍÐ•¹Ñ•É•‘I•ÍÕ±Ð€ô…Ý…¥Ð•¹Ñ•É•‘A…”¹•Ù…±Õ…Ñ”¡…Íå¹Œ€¡ìÍ½ÕÉ•A…Ñ °Í½ÕÉ•M¡„ÈÔØ°¹½‘••½µ•ÑÉåM¡„ÈÔØô¤€ôøì(€€€½¹ÍÐìÉ•…Ñ•Y•Ñ½ÉÍÍ•Ñ1½…‘•Èô€ô…Ý…¥Ð¥µÁ½ÉÐ œ½‘¥ÍÐ½Ù•Ñ½Èµ…ÍÍ•ÑÌµ±½…‘•È¹©Ìœ¤ì(€€€½¹ÍÐìÉ•…Ñ•Y•Ñ½ÉÍÍ•Ðô€ô…Ý…¥Ð¥µÁ½ÉÐ œ½‘¥ÍÐ½Ù•Ñ½Èµ…ÍÍ•ÑÌ¹©Ìœ¤ì(€€€½¹ÍÐì]•‰1•Ù¥”°5•Í¡I•¹‘•É•Èô€ô…Ý…¥Ð¥µÁ½ÉÐ œ½‘¥ÍÐ½É•¹‘•É¥¹œ¹©Ìœ¤ì(€€€½¹ÍÐÕÉ°€ô€œ½µ½‘Õ±•Ì½Ù•Ñ½Èµ…ÍÍ•ÑÌ½Ñ•ÍÑÌ½•¹Ñ•É•µÙ¥•Ý‰½à¹ÍÙœœì(€€€½¹ÍÐ±½…‘•È€ôÉ•…Ñ•Y•Ñ½ÉÍÍ•Ñ1½…‘•È¡ìµ…á¹ÑÉ¥•Ìè€Ðô¤ì(€€€½¹ÍÐÍ½ÕÉ•I•ÍÁ½¹Í”€ô…Ý…¥Ð™•Ñ ¡ÕÉ°°ì…¡”è€¹¼µÍÑ½É”œô¤ì(€€€½¹ÍÐ½É¥¥¹…±Q•áÐ€ô…Ý…¥ÐÍ½ÕÉ•I•ÍÁ½¹Í”¹Ñ•áÐ ¤ì(€€€½¹ÍÐ¹½Éµ…±¥é•‘ÍÍ•Ð€ô…Ý…¥Ð±½…‘•È¹±½…¡ÕÉ°°ì(€€€€€Í½ÕÉ•A…Ñ °•áÁ•Ñ•‘M¡„ÈÔØèÍ½ÕÉ•M¡„ÈÔØ°µ…á	åÑ•Ìè€ÔÄÈ€¨€ÄÀÈÐ°¹½Éµ…±¥é••¹Ñ•É•‘Y¥•Ý	½àèÑÉÕ”°(€€€ô¤ì(€€€¥˜€¡¹½Éµ…±¥é•‘ÍÍ•Ð¹Í½ÕÉ•M¡„ÈÔØ€„ôôÍ½ÕÉ•M¡„ÈÔØñð)M=8¹ÍÑÉ¥¹¥™ä¡¹½Éµ…±¥é•‘ÍÍ•Ð¹Ù¥•Ý	½à¤€„ôô)M=8¹ÍÑÉ¥¹¥™ä¡l´ÌØ°€´ÐÀ°€ÜÈ°€àÁt¤¤ì(€€€€€Ñ¡É½Ü¹•ÜÉÉ½È •¹Ñ•É•MYÉ•ÍÕ±Ð‘¥¹½ÐÉ•Ñ…¥¸Ñ¡”½É¥¥¹…°‰åÑ”‘¥•ÍÐ…¹Ù¥•Ý	½àœ¤ì(€€€ô(€€€½¹ÍÐ…¹½¹¥…°€ôÙ…±Õ”€ôøì(€€€€€¥˜€¡ÉÉ…å	Õ™™•È¹¥ÍY¥•Ü¡Ù…±Õ”¤¤É•ÑÕÉ¸ÉÉ…ä¹™É½´¡Ù…±Õ”°…¹½¹¥…°¤ì(€€€€€¥˜€¡ÉÉ…ä¹¥ÍÉÉ…ä¡Ù…±Õ”¤¤É•ÑÕÉ¸Ù…±Õ”¹µ…À¡…¹½¹¥…°¤ì(€€€€€¥˜€¡Ù…±Õ”€˜˜ÑåÁ•½˜Ù…±Õ”€ôôô€½‰©•Ðœ¤É•ÑÕÉ¸=‰©•Ð¹™É½µ¹ÑÉ¥•Ì¡=‰©•Ð¹­•åÌ¡Ù…±Õ”¤¹Í½ÉÐ ¤¹µ…À¡­•ä€ôøm­•ä°…¹½¹¥…°¡Ù…±Õ•m­•åt¥t¤¤ì(€€€€€É•ÑÕÉ¸Ù…±Õ”ì(€€€ôì(€€€½¹ÍÐ‘¥•ÍÐ€ô…Íå¹ŒÙ…±Õ”€ôøì(€€€€€½¹ÍÐ‰åÑ•Ì€ô¹•ÜU¥¹ÐáÉÉ…ä¡…Ý…¥ÐÉåÁÑ¼¹ÍÕ‰Ñ±”¹‘¥•ÍÐ M!´ÈÔØœ°¹•ÜQ•áÑ¹½‘•È ¤¹•¹½‘”¡)M=8¹ÍÑÉ¥¹¥™ä¡…¹½¹¥…°¡Ù…±Õ”¤¤¤¤¤ì(€€€€€É•ÑÕÉ¸l¸¸¹‰åÑ•Ít¹µ…À¡¥Ñ•´€ôø¥Ñ•´¹Ñ½MÑÉ¥¹œ ÄØ¤¹Á…‘MÑ…ÉÐ È°€œÀœ¤¤¹©½¥¸ œœ¤ì(€€€ôì(€€€¥˜€¡…Ý…¥Ð‘¥•ÍÐ¡¹½Éµ…±¥é•‘ÍÍ•Ð¹•½µ•ÑÉä¤€„ôô¹½‘••½µ•ÑÉåM¡„ÈÔØ¤Ñ¡É½Ü¹•ÜÉÉ½È •¹Ñ•É•‰É½ÝÍ•È…¹9½‘”½µÁ¥±•È•½µ•ÑÉä‘¥™™•Èœ¤ì((€€€€¼¼I•É•…Ñ”Ñ¡”ÁÉ•Ù¥½ÕÌ‰Õ¥±µ½¹±ä¹½Éµ…±¥é…Ñ¥½¸…Ì„É•™•É•¹”°Ñ¡•¸(€€€€¼¼½µÁ…É”…ÑÕ…°]•‰0™É…µ•Ì¥¹±Õ‘¥¹œÑ¡”…ÕÑ¡½É•Á…ÉÐ½Á¥Ù½Ð½±¥À‘…Ñ„¸(€€€½¹ÍÐÍÙ½Õµ•¹Ð€ô¹•Ü=5A…ÉÍ•È ¤¹Á…ÉÍ•É½µMÑÉ¥¹œ¡½É¥¥¹…±Q•áÐ°€¥µ…”½ÍÙœ­áµ°œ¤ì(€€€½¹ÍÐÉ½½Ð€ôÍÙ½Õµ•¹Ð¹‘½Õµ•¹Ñ±•µ•¹Ðì(€€€½¹ÍÐÙ¥•Ý	½à€ôÉ½½Ð¹•ÑÑÑÉ¥‰ÕÑ” Ù¥•Ý	½àœ¤¹ÑÉ¥´ ¤¹ÍÁ±¥Ð ½mqÌ±t¬¼¤¹µ…À¡9Õµ‰•È¤ì(€€€É½½Ð¹Í•ÑÑÑÉ¥‰ÕÑ” Ý¥‘Ñ œ°MÑÉ¥¹œ¡Ù¥•Ý	½álÉt¤¤ìÉ½½Ð¹Í•ÑÑÑÉ¥‰ÕÑ” ¡•¥¡Ðœ°MÑÉ¥¹œ¡Ù¥•Ý	½álÍt¤¤ì(€€€É½½Ð¹Í•ÑÑÑÉ¥‰ÕÑ” Ù¥•Ý	½àœ°€À€À€‘íÙ¥•Ý	½álÉuô€‘íÙ¥•Ý	½álÍuõ€¤ì(€€€½¹ÍÐµ•Ñ…‘…Ñ…9½‘”€ôl¸¸¹É½½Ð¹¡¥±‘É•¹t¹™¥¹¡¡¥±€ôø¡¥±¹±½…±9…µ”€ôôô€µ•Ñ…‘…Ñ„œ€˜˜¡¥±¹¥€ôôô€Ù•Ñ½Èµ…ÍÍ•Ðœ¤ì(€€€½¹ÍÐµ•Ñ…‘…Ñ„€ô)M=8¹Á…ÉÍ”¡µ•Ñ…‘…Ñ…9½‘”¹Ñ•áÑ½¹Ñ•¹Ð¤ì(€€€™½È€¡½¹ÍÐ±¥À½˜=‰©•Ð¹Ù…±Õ•Ì¡µ•Ñ…‘…Ñ„¹±¥ÁÌ€üüíô¤¤ì(€€€€€™½È€¡½¹ÍÐ™É…µ”½˜±¥À¹­•å™É…µ•Ì€üümt¤ì(€€€€€€€™½È€¡½¹ÍÐmÁ…ÉÐ°Á½Í•t½˜=‰©•Ð¹•¹ÑÉ¥•Ì¡™É…µ”¹Á…ÉÑÌ€üüíô¤¤ì(€€€€€€€€€¥˜€¡Á½Í”€˜˜ÑåÁ•½˜Á½Í”€ôôô€½‰©•Ðœ€˜˜€…ÉÉ…ä¹¥ÍÉÉ…ä¡Á½Í”¤€˜˜=‰©•Ð¹­•åÌ¡Á½Í”¤¹±•¹Ñ €ôôô€À¤‘•±•Ñ”™É…µ”¹Á…ÉÑÍmÁ…ÉÑtì(€€€€€€€ô(€€€€€ô(€€€ô(€€€µ•Ñ…‘…Ñ…9½‘”¹Ñ•áÑ½¹Ñ•¹Ð€ô)M=8¹ÍÑÉ¥¹¥™ä¡µ•Ñ…‘…Ñ„¤ì(€€€½¹ÍÐ¹½Éµ…±¥é•‘Q•áÐ€ô¹•Üa51M•É¥…±¥é•È ¤¹Í•É¥…±¥é•Q½MÑÉ¥¹œ¡ÍÙ½Õµ•¹Ð¤ì(€€€½¹ÍÐ¹½Éµ…±¥é•‘	åÑ•Ì€ô¹•ÜQ•áÑ¹½‘•È ¤¹•¹½‘”¡¹½Éµ…±¥é•‘Q•áÐ¤ì(€€€½¹ÍÐ¹½Éµ…±¥é•‘¥•ÍÐ€ô¹•ÜU¥¹ÐáÉÉ…ä¡…Ý…¥ÐÉåÁÑ¼¹ÍÕ‰Ñ±”¹‘¥•ÍÐ M!´ÈÔØœ°¹½Éµ…±¥é•‘	åÑ•Ì¤¤ì(€€€½¹ÍÐ¹½Éµ…±¥é•‘!…Í €ôl¸¸¹¹½Éµ…±¥é•‘¥•ÍÑt¹µ…À¡¥Ñ•´€ôø¥Ñ•´¹Ñ½MÑÉ¥¹œ ÄØ¤¹Á…‘MÑ…ÉÐ È°€œÀœ¤¤¹©½¥¸ œœ¤ì(€€€½¹ÍÐ‰±½‰UÉ°€ôUI0¹É•…Ñ•=‰©•ÑUI0¡¹•Ü	±½ˆ¡m¹½Éµ…±¥é•‘	åÑ•Ít°ìÑåÁ”è€¥µ…”½ÍÙœ­áµ°œô¤¤ì(€€€±•ÐÉ•™•É•¹•ÍÍ•Ðì(€€€ÑÉäì(€€€€€É•™•É•¹•ÍÍ•Ð€ô…Ý…¥Ð±½…‘•È¹±½…¡‰±½‰UÉ°°ìÍ½ÕÉ•A…Ñ °•áÁ•Ñ•‘M¡„ÈÔØè¹½Éµ…±¥é•‘!…Í °µ…á	åÑ•Ìè€ÔÄÈ€¨€ÄÀÈÐô¤ì(€€€ô™¥¹…±±äìUI0¹É•Ù½­•=‰©•ÑUI0¡‰±½‰UÉ°¤ìô(€€€¥˜€¡…Ý…¥Ð‘¥•ÍÐ¡É•™•É•¹•ÍÍ•Ð¹•½µ•ÑÉä¤€„ôô¹½‘••½µ•ÑÉåM¡„ÈÔØ¤Ñ¡É½Ü¹•ÜÉÉ½È 1•…äµ¹½Éµ…±¥é•MYÉ•™•É•¹”•½µ•ÑÉä‘¥™™•ÉÌœ¤ì(€€€¥˜€¡)M=8¹ÍÑÉ¥¹¥™ä¡¹½Éµ…±¥é•‘ÍÍ•Ð¹µ•Ñ…‘…Ñ„¤€„ôô)M=8¹ÍÑÉ¥¹¥™ä¡É•™•É•¹•ÍÍ•Ð¹µ•Ñ…‘…Ñ„¤¤Ñ¡É½Ü¹•ÜÉÉ½È •¹Ñ•É•½µÁ¥±•È¡…¹•Á…ÉÑÌ°Á¥Ù½ÑÌ°Í½­•ÑÌ°½È¹½¸µ•µÁÑä±¥ÀÁ½Í•Ìœ¤ì(€€€¥˜€¡)M=8¹ÍÑÉ¥¹¥™ä¡¹½Éµ…±¥é•‘ÍÍ•Ð¹µ•Ñ…‘…Ñ„¹Á…ÉÑÌ¹µ…À¡Á…ÉÐ€ôøÁ…ÉÐ¹Á¥Ù½Ð¤¤€„ôô)M=8¹ÍÑÉ¥¹¥™ä¡mlÀ°€Át°l´ÄÈ°€Ét°l´ÄÈ°€´ÄÑut¤¤Ñ¡É½Ü¹•ÜÉÉ½È •¹Ñ•É•Á…ÉÐÁ¥Ù½ÑÌÝ•É”¹½ÐÁÉ•Í•ÉÙ•œ¤ì(€€€¥˜€¡)M=8¹ÍÑÉ¥¹¥™ä¡¹½Éµ…±¥é•‘ÍÍ•Ð¹µ•Ñ…‘…Ñ„¹Í½­•ÑÌ¹É¥À¹Á½¥¹Ð¤€„ôô)M=8¹ÍÑÉ¥¹¥™ä¡l´ÄÈ°€´Äát¤¤Ñ¡É½Ü¹•ÜÉÉ½È •¹Ñ•É•Í½­•Ð½½É‘¥¹…Ñ•ÌÝ•É”¹½ÐÁÉ•Í•ÉÙ•œ¤ì((€€€½¹ÍÐ…¹Ù…Ì€ôÝ¥¹‘½Ü¹‘½Õµ•¹Ð¹É•…Ñ•±•µ•¹Ð …¹Ù…Ìœ¤ì…¹Ù…Ì¹Ý¥‘Ñ €ô€ÈÀÀì…¹Ù…Ì¹¡•¥¡Ð€ô€ÈÈÀìÝ¥¹‘½Ü¹‘½Õµ•¹Ð¹‰½‘ä¹…ÁÁ•¹¡…¹Ù…Ì¤ì(€€€½¹ÍÐ‘•Ù¥”€ô¹•Ü]•‰1•Ù¥”¡…¹Ù…Ì°ì…±Á¡„è™…±Í”°…¹Ñ¥…±¥…Ìè™…±Í”°ÁÉ•Í•ÉÙ•É…Ý¥¹	Õ™™•ÈèÑÉÕ”°¡•­1ÉÉ½ÉÌèÑÉÕ”ô¤ì(€€€½¹ÍÐµ•Í¡•Ì€ô¹•Ü5•Í¡I•¹‘•É•È¡‘•Ù¥”¤ì(€€€½¹ÍÐ¹½Éµ…±¥é•‘I•Í½ÕÉ”€ôÉ•…Ñ•Y•Ñ½ÉÍÍ•Ð¡µ•Í¡•Ì°¹½Éµ…±¥é•‘ÍÍ•Ð¤ì(€€€½¹ÍÐÉ•™•É•¹•I•Í½ÕÉ”€ôÉ•…Ñ•Y•Ñ½ÉÍÍ•Ð¡µ•Í¡•Ì°É•™•É•¹•ÍÍ•Ð¤ì(€€€½¹ÍÐ¹½Éµ…±¥é•‘Ñ½È€ô¹½Éµ…±¥é•‘I•Í½ÕÉ”¹É•…Ñ•A±…å•È¡ì±¥Àè€Ñ•ÍÐœ°ÍÑ…ÉÑ•‘Ñ5Ìè€Àô¤ì(€€€½¹ÍÐÉ•™•É•¹•Ñ½È€ôÉ•™•É•¹•I•Í½ÕÉ”¹É•…Ñ•A±…å•È¡ì±¥Àè€Ñ•ÍÐœ°ÍÑ…ÉÑ•‘Ñ5Ìè€Àô¤ì(€€€½¹ÍÐÁÉ½©•Ñ¥½¸€ôlÈ€¼€ÜÈ°€À°€À°€À°€´È€¼€àÀ°€À°€À°€À°€Åtì(€€€½¹ÍÐ…ÁÑÕÉ”€ô€¡…Ñ½È°Ñ¥µ•5Ì¤€ôøì(€€€€€…Ñ½È¹Í••¬¡Ñ¥µ•5Ì¤ì(€€€€€‘•Ù¥”¹‰•¥¹É…µ”¡ìÝ¥‘Ñ è€ÈÀÀ°¡•¥¡Ðè€ÈÈÀ°±•…É½±½ÈèlÀ¸äÌ°€À¸äÔ°€À¸äà°€Åtô¤ì(€€€€€µ•Í¡•Ì¹‰•¥¹É…µ” ¤ì…Ñ½È¹‘É…Ü¡ìÁÉ½©•Ñ¥½¸ô¤ìµ•Í¡•Ì¹™±ÕÍ  ¤ì‘•Ù¥”¹•¹‘É…µ” ¤ì(€€€€€½¹ÍÐÁ¥á•±Ì€ô¹•ÜU¥¹ÐáÉÉ…ä ÈÀÀ€¨€ÈÈÀ€¨€Ð¤ì(€€€€€‘•Ù¥”¹°¹É•…‘A¥á•±Ì À°€À°€ÈÀÀ°€ÈÈÀ°‘•Ù¥”¹°¹I	°‘•Ù¥”¹°¹U9M%9}	eQ°Á¥á•±Ì¤ì(€€€€€É•ÑÕÉ¸Á¥á•±Ìì(€€€ôì(€€€½¹ÍÐ™É…µ•!…Í¡•Ì€ômtì(€€€±•Ðµ½Ù¥¹A¥á•±Ì€ô€À°É•‘A¥á•±Ì€ô€À°É••¹A¥á•±Ì€ô€À°‰±Õ•A¥á•±Ì€ô€Àì(€€€™½È€¡½¹ÍÐÑ¥µ•5Ì½˜lÀ°€ÔÀ°€ÄÀÁt¤ì(€€€€€½¹ÍÐ½µÁ¥±•‘A¥á•±Ì€ô…ÁÑÕÉ”¡¹½Éµ…±¥é•‘Ñ½È°Ñ¥µ•5Ì¤ì(€€€€€½¹ÍÐ±•…åA¥á•±Ì€ô…ÁÑÕÉ”¡É•™•É•¹•Ñ½È°Ñ¥µ•5Ì¤ì(€€€€€¥˜€¡½µÁ¥±•‘A¥á•±Ì¹Í½µ” ¡¡…¹¹•°°¥¹‘•à¤€ôø¡…¹¹•°€„ôô±•…åA¥á•±Ím¥¹‘•át¤¤Ñ¡É½Ü¹•ÜÉÉ½È¡•¹Ñ•É•MY]•‰0Á¥á•±Ì‘¥™™•È™É½´Ñ¡”ÁÉ•Ù¥½ÕÌ¹½Éµ…±¥é•È…Ð€‘íÑ¥µ•5ÍõµÍ€¤ì(€€€€€™É…µ•!…Í¡•Ì¹ÁÕÍ ¡…Ý…¥Ð‘¥•ÍÐ¡½µÁ¥±•‘A¥á•±Ì¤¤ì(€€€€€™½È€¡±•Ð¥¹‘•à€ô€Àì¥¹‘•à€ð½µÁ¥±•‘A¥á•±Ì¹±•¹Ñ ì¥¹‘•à€¬ô€Ð¤ì(€€€€€€€½¹ÍÐmÉ•°É••¸°‰±Õ•t€ô½µÁ¥±•‘A¥á•±Ì¹ÍÕ‰…ÉÉ…ä¡¥¹‘•à°¥¹‘•à€¬€Ì¤ì(€€€€€€€¥˜€¡É•€ø€ÄÔÀ€˜˜É••¸€ð€ÄÀÀ€˜˜‰±Õ”€ð€ÄÀÀ¤É•‘A¥á•±Ì¬¬ì(€€€€€€€¥˜€¡É••¸€ø€àÀ€˜˜É••¸€øÉ•€¨€Ä¸Ì€˜˜É••¸€ø‰±Õ”€¨€Ä¸Ì¤É••¹A¥á•±Ì¬¬ì(€€€€€€€¥˜€¡‰±Õ”€ø€ÄÀÀ€˜˜‰±Õ”€øÉ•€¨€Ä¸Ì€˜˜‰±Õ”€øÉ••¸€¨€Ä¸Ì¤‰±Õ•A¥á•±Ì¬¬ì(€€€€€ô(€€€€€¥˜€¡Ñ¥µ•5Ì€ôôô€ÄÀÀ¤ì(€€€€€€€½¹ÍÐ¥¹¥Ñ¥…°€ô…ÁÑÕÉ”¡¹½Éµ…±¥é•‘Ñ½È°€À¤ì(€€€€€€€™½È€¡±•Ð¥¹‘•à€ô€Àì¥¹‘•à€ð½µÁ¥±•‘A¥á•±Ì¹±•¹Ñ ì¥¹‘•à€¬ô€Ð¤ì(€€€€€€€€€¥˜€¡½µÁ¥±•‘A¥á•±Ím¥¹‘•át€„ôô¥¹¥Ñ¥…±m¥¹‘•átñð½µÁ¥±•‘A¥á•±Ím¥¹‘•à€¬€Åt€„ôô¥¹¥Ñ¥…±m¥¹‘•à€¬€Åt(€€€€€€€€€€€€€ñð½µÁ¥±•‘A¥á•±Ím¥¹‘•à€¬€Ét€„ôô¥¹¥Ñ¥…±m¥¹‘•à€¬€Étñð½µÁ¥±•‘A¥á•±Ím¥¹‘•à€¬€Ít€„ôô¥¹¥Ñ¥…±m¥¹‘•à€¬€Ít¤µ½Ù¥¹A¥á•±Ì¬¬ì(€€€€€€€ô(€€€€€ô(€€€ô(€€€¥˜€¡™É…µ•!…Í¡•ÍlÁt€ôôô™É…µ•!…Í¡•ÍlÉtñðµ½Ù¥¹A¥á•±Ì€ð€ÈÀñðÉ•‘A¥á•±Ì€ð€ÔÀÀñðÉ••¹A¥á•±Ì€ð€ÈÀñð‰±Õ•A¥á•±Ì€ð€ÈÀ¤ì(€€€€€Ñ¡É½Ü¹•ÜÉÉ½È¡•¹Ñ•É•MY™É…µ”±½ÍÐ•½µ•ÑÉä½È±¥Àµ½Ñ¥½¸è€‘í)M=8¹ÍÑÉ¥¹¥™ä¡ì™É…µ•!…Í¡•Ì°µ½Ù¥¹A¥á•±Ì°É•‘A¥á•±Ì°É••¹A¥á•±Ì°‰±Õ•A¥á•±Ìô¥õ€¤ì(€€€ô(€€€½¹ÍÐ™¥¹…±ÉÉ½È€ô‘•Ù¥”¹°¹•ÑÉÉ½È ¤ì(€€€¹½Éµ…±¥é•‘Ñ½È¹‘¥ÍÁ½Í” ¤ìÉ•™•É•¹•Ñ½È¹‘¥ÍÁ½Í” ¤ì¹½Éµ…±¥é•‘I•Í½ÕÉ”¹‘¥ÍÁ½Í” ¤ìÉ•™•É•¹•I•Í½ÕÉ”¹‘¥ÍÁ½Í” ¤ìµ•Í¡•Ì¹‘¥ÍÁ½Í” ¤ì‘•Ù¥”¹‘¥ÍÁ½Í” ¤ì…¹Ù…Ì¹É•µ½Ù” ¤ì±½…‘•È¹‘¥ÍÁ½Í” ¤ì(€€€¥˜€¡™¥¹…±ÉÉ½È€„ôô€À¤Ñ¡É½Ü¹•ÜÉÉ½È¡•¹Ñ•É•MY]•‰0É•¹‘•È•ÉÉ½È€‘í™¥¹…±ÉÉ½Éõ€¤ì(€€€É•ÑÕÉ¸ìÍ½ÕÉ•M¡„ÈÔØè¹½Éµ…±¥é•‘ÍÍ•Ð¹Í½ÕÉ•M¡„ÈÔØ°Ù¥•Ý	½àè¹½Éµ…±¥é•‘ÍÍ•Ð¹Ù¥•Ý	½à°™É…µ•!…Í¡•Ì°µ½Ù¥¹A¥á•±Ì°É•‘A¥á•±Ì°É••¹A¥á•±Ì°‰±Õ•A¥á•±Ìôì(€ô°ìÍ½ÕÉ•A…Ñ è•¹Ñ•É•‘M½ÕÉ•A…Ñ °Í½ÕÉ•M¡„ÈÔØè•¹Ñ•É•‘M½ÕÉ•M¡„ÈÔØ°¹½‘••½µ•ÑÉåM¡„ÈÔØè•¹Ñ•É•‘•½µ•ÑÉåM¡„ÈÔØô¤ì(€…ÍÍ•ÉÐ¹•ÅÕ…°¡•¹Ñ•É•‘ÉÉ½ÉÌ¹±•¹Ñ °€À°•¹Ñ•É•‘ÉÉ½ÉÌ¹©½¥¸ q¸œ¤¤ì(€…Ý…¥Ð•¹Ñ•É•‘A…”¹±½Í” ¤ì(€É•Á½ÉÐ¹•¹Ñ•É•‘MÙMÑ…ÉÑÕÀ€ô•¹Ñ•É•‘I•ÍÕ±Ðì(€É•Á½ÉÐ¹ÍÑ…•Ì¹ÁÕÍ  •¹Ñ•É•µÙ¥•Ý	½à¹½Éµ…±¥é…Ñ¥½¸ÁÉ•Í•ÉÙ•Ì½É¥¥¹…°ÁÉ½Ù•¹…¹”°•½µ•ÑÉä°Á¥Ù½ÑÌ°Í½­•ÑÌ°±¥ÀÑÉ…¹Í™½ÉµÌ°…¹…ÑÕ…°]•‰0Á¥á•±ÌÙ•ÉÍÕÌÑ¡”ÁÉ¥½È‰Õ¥±µÑ¥µ”¹½Éµ…±¥é•Èœ¤ì(€É•Á½ÉÐ¹‰É½ÝÍ•È€ô…Ý…¥Ð‰É½ÝÍ•È¹Ù•ÉÍ¥½¸ ¤ìÉ•Á½ÉÐ¹½¹Ñ•áÑ1½ÍÌ€ôÍÕÁÁ½ÉÑÍ1½ÍÌì(€É•Á½ÉÐ¹Í½Á”€ô€!•…‘±•ÍÌ¡É½µ¥Õ´Ý¥Ñ …ÑÕ…°]•‰0Ä½MÝ¥™ÑM¡…‘•ÈÁ¥á•±Ì…¹‰Õ¥±ÐM5Ì¸AT½¥¹Ñ•ÉÙ…°½‰Í•ÉÙ…Ñ¥½¹Ì…É”¹½Ðµ½‰¥±”AL½È¡…É‘Ý…É”µAT•ÉÑ¥™¥…Ñ¥½¸¸9¼ÍÉ••¹Í¡½Ð½…ÉÑ¥™…ÐÉ•Ñ•¹Ñ¥½¸¸œì4(€½¹Í½±”¹±½œ¡)M=8¹ÍÑÉ¥¹¥™ä¡É•Á½ÉÐ°¹Õ±°°€È¤¤ì)ô™¥¹…±±äì…Ý…¥Ð‰É½ÝÍ•Èü¹±½Í” ¤ì…Ý…¥Ð¹•ÜAÉ½µ¥Í”¡É•Í½±Ù”€ôøÍ•ÉÙ•È¹±½Í”¡É•Í½±Ù”¤¤ìô(
