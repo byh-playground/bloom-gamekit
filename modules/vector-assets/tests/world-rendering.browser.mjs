@@ -175,6 +175,120 @@ export async function exerciseWorldVectorRendering(browser, renderingURL, vector
                     return PIXELS;
                 };
                 const PIXELS = DRAW();
+                const ORDERED_DRAW_EVENTS = [],
+                    EMPTY_EXCLUSIONS = new Set(),
+                    EXCLUDED_BODY_PARTS = new Set(['body']),
+                    ORIGINAL_EXCLUSION_DRAW_MESH = MESHES.drawMesh,
+                    ORIGINAL_EXCLUSION_DRAW_SURFACE = SURFACES.drawSurface,
+                    POSES_BEFORE_EXCLUSION = JSON.stringify(PLAYER.partPoses()),
+                    EXPRESSION_BEFORE_EXCLUSION = PLAYER.currentExpression;
+                MESHES.drawMesh = function (mesh, options) {
+                    ORDERED_DRAW_EVENTS.push({
+                        kind: 'mesh',
+                        options,
+                    });
+                    return ORIGINAL_EXCLUSION_DRAW_MESH.call(this, mesh, options);
+                };
+                SURFACES.drawSurface = function (surface, options) {
+                    ORDERED_DRAW_EVENTS.push({
+                        kind: 'surface',
+                        options,
+                    });
+                    return ORIGINAL_EXCLUSION_DRAW_SURFACE.call(this, surface, options);
+                };
+                DEVICE.beginFrame({
+                    width: CANVAS.width,
+                    height: CANVAS.height,
+                    clearColor: [0, 0, 0, 0],
+                });
+                MESHES.beginFrame();
+                PLAYER.draw({
+                    viewProjection: VP,
+                    worldMatrix: MODEL(59, 47),
+                    clips: CLIPS,
+                    alpha: 0.625,
+                    depthTest: true,
+                    depthWrite: false,
+                    excludeParts: EMPTY_EXCLUSIONS,
+                });
+                MESHES.flush();
+                const INCLUDED_DRAW_EVENTS = ORDERED_DRAW_EVENTS.slice(),
+                    INCLUDED_MESH_DRAWS = MESHES.stats().draws,
+                    INCLUDED_DRAW_ERROR = DEVICE.gl.getError();
+                DEVICE.endFrame();
+                const EXPECTED_DRAW_KINDS = DATA.geometry.drawOrder.map((command) =>
+                        command.kind === 'mesh' ? 'mesh' : 'surface',
+                    ),
+                    EXPECTED_MESH_RANGES = DATA.geometry.drawOrder
+                        .filter((command) => command.kind === 'mesh')
+                        .map((command) => [command.firstIndex, command.indexCount]),
+                    INCLUDED_MESH_OPTIONS = INCLUDED_DRAW_EVENTS.filter((event) => event.kind === 'mesh').map(
+                        (event) => event.options,
+                    ),
+                    INCLUDED_SURFACE_OPTIONS = INCLUDED_DRAW_EVENTS.filter((event) => event.kind === 'surface').map(
+                        (event) => event.options,
+                    );
+                const ORDERED_DRAW_COMPATIBLE =
+                    JSON.stringify(INCLUDED_DRAW_EVENTS.map((event) => event.kind)) ===
+                        JSON.stringify(EXPECTED_DRAW_KINDS) &&
+                    JSON.stringify(INCLUDED_MESH_OPTIONS.map((options) => options.indexRange)) ===
+                        JSON.stringify(EXPECTED_MESH_RANGES) &&
+                    INCLUDED_MESH_DRAWS === EXPECTED_MESH_RANGES.length &&
+                    INCLUDED_MESH_OPTIONS.every((options) => options.alpha === 0.625 && options.clips === CLIPS) &&
+                    INCLUDED_SURFACE_OPTIONS.every((options) => options.alpha === 0.625 && options.clips === CLIPS) &&
+                    INCLUDED_DRAW_ERROR === 0;
+                ORDERED_DRAW_EVENTS.length = 0;
+                DEVICE.beginFrame({
+                    width: CANVAS.width,
+                    height: CANVAS.height,
+                    clearColor: [0, 0, 0, 0],
+                });
+                MESHES.beginFrame();
+                PLAYER.draw({
+                    viewProjection: VP,
+                    worldMatrix: MODEL(59, 47),
+                    clips: CLIPS,
+                    excludeParts: EXCLUDED_BODY_PARTS,
+                });
+                MESHES.flush();
+                const EXCLUDED_BODY_DRAW_SUPPRESSED = ORDERED_DRAW_EVENTS.length === 0;
+                DEVICE.endFrame();
+                ORDERED_DRAW_EVENTS.length = 0;
+                DEVICE.beginFrame({
+                    width: CANVAS.width,
+                    height: CANVAS.height,
+                    clearColor: [0, 0, 0, 0],
+                });
+                MESHES.beginFrame();
+                let invalidExcludeError = null,
+                    invalidExcludeTypeError = null;
+                try {
+                    PLAYER.draw({
+                        viewProjection: VP,
+                        worldMatrix: MODEL(59, 47),
+                        clips: CLIPS,
+                        excludeParts: new Set(['unknown-part']),
+                    });
+                } catch (error) {
+                    invalidExcludeError = error;
+                }
+                try {
+                    PLAYER.draw({
+                        viewProjection: VP,
+                        worldMatrix: MODEL(59, 47),
+                        clips: CLIPS,
+                        excludeParts: ['body'],
+                    });
+                } catch (error) {
+                    invalidExcludeTypeError = error;
+                }
+                MESHES.flush();
+                const INVALID_EXCLUSION_PREFLIGHT =
+                    invalidExcludeError instanceof TypeError &&
+                    invalidExcludeTypeError instanceof TypeError &&
+                    ORDERED_DRAW_EVENTS.length === 0;
+                DEVICE.endFrame();
+                ORDERED_DRAW_EVENTS.length = 0;
                 const CLIP_TRIANGLE_COUNT = Math.ceil((SURFACES.stats().maxClipPlanes + 1) / 3);
                 const OVERFLOW_CLIPS = Array.from(
                     {
@@ -211,14 +325,22 @@ export async function exerciseWorldVectorRendering(browser, renderingURL, vector
                         viewProjection: VP,
                         worldMatrix: MODEL(59, 47),
                         clips: OVERFLOW_CLIPS,
+                        excludeParts: EMPTY_EXCLUSIONS,
                     });
                 } catch (error) {
                     clipLimitError = error.message;
                 }
                 MESHES.flush();
                 const CLIP_LIMIT_PREFLIGHT =
-                    /shader surface limit/.test(clipLimitError) && MESHES.stats().draws === CLIP_LIMIT_BEFORE;
+                    /shader surface limit/.test(clipLimitError) &&
+                    MESHES.stats().draws === CLIP_LIMIT_BEFORE &&
+                    ORDERED_DRAW_EVENTS.length === 0;
                 DEVICE.endFrame();
+                SURFACES.drawSurface = ORIGINAL_EXCLUSION_DRAW_SURFACE;
+                MESHES.drawMesh = ORIGINAL_EXCLUSION_DRAW_MESH;
+                const EXCLUSION_STATE_PRESERVED =
+                    JSON.stringify(PLAYER.partPoses()) === POSES_BEFORE_EXCLUSION &&
+                    PLAYER.currentExpression === EXPRESSION_BEFORE_EXCLUSION;
                 DEVICE.beginFrame({
                     width: CANVAS.width,
                     height: CANVAS.height,
@@ -341,6 +463,10 @@ export async function exerciseWorldVectorRendering(browser, renderingURL, vector
                     fallbackWorldDraw: FALLBACK_WORLD_DRAW,
                     depthPixel: DEPTH_PIXEL,
                     yarnColorCount: CLOTH_COLORS.size,
+                    orderedDrawCompatible: ORDERED_DRAW_COMPATIBLE,
+                    excludedBodyDrawSuppressed: EXCLUDED_BODY_DRAW_SUPPRESSED,
+                    invalidExclusionPreflight: INVALID_EXCLUSION_PREFLIGHT,
+                    exclusionStatePreserved: EXCLUSION_STATE_PRESERVED,
                     clipLimitPreflight: CLIP_LIMIT_PREFLIGHT,
                     meshDraws: MESHES.stats().draws,
                     meshUploadsAtCreation: MESH_UPLOADS_AT_CREATION,
@@ -425,6 +551,13 @@ export async function exerciseWorldVectorRendering(browser, renderingURL, vector
         assert.ok(
             RESULT.cloth[3] > 240 && RESULT.yarnColorCount > 4,
             'the retained yarn material produces filled, non-solid shader pixels',
+        );
+        assert.ok(
+            RESULT.orderedDrawCompatible &&
+                RESULT.excludedBodyDrawSuppressed &&
+                RESULT.invalidExclusionPreflight &&
+                RESULT.exclusionStatePreserved,
+            'call-scoped part exclusions preserve painter ranges, alpha/clips, shader surfaces, and player state',
         );
         assert.ok(
             RESULT.over[1] > RESULT.over[0] && RESULT.over[3] > 240,

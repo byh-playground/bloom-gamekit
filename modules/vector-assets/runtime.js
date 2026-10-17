@@ -530,16 +530,27 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
             depthWrite = false,
             depthFunc = 'lequal',
             strokeViewport = null,
+            excludeParts = null,
         } = {}) => {
             ASSERT_PLAYER();
+            if (excludeParts !== null) {
+                if (!(excludeParts instanceof Set)) {
+                    throw new TypeError('excludeParts must be a Set of known part ids');
+                }
+                for (const PART_ID of excludeParts) {
+                    if (!PART_INDICES.has(PART_ID)) {
+                        throw new TypeError(`Unknown vector part: ${PART_ID}`);
+                    }
+                }
+            }
             if (GEOMETRY.shaderSurfaces?.length) {
                 validateShaderSurfaceClipCapacity(clips, surfaceRenderer.maxClipPlanes);
             }
             const RESOLVED = WORLD_MATRICES();
-            const POSES = RESOLVED.parts.map((pose) => ({
+            const POSES = RESOLVED.parts.map((pose, index) => ({
                 transform: pose.transform.slice(),
                 opacity: pose.opacity,
-                visible: pose.visible,
+                visible: pose.visible && !excludeParts?.has(METADATA.parts[index].id),
             }));
             if (GEOMETRY.drawOrder) {
                 const WORLD_MODE = viewProjection !== undefined || worldMatrix !== undefined;

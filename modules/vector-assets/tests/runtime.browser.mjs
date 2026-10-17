@@ -424,6 +424,168 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
                 BODY_PIXEL[1] > 100 && BODY_PIXEL[0] < BACKGROUND[0] && BODY_PIXEL[0] > 60,
                 `SVG body color reaches WebGL pixels: ${BODY_PIXEL}`,
             );
+            const ORIGINAL_EXPRESSION = PLAYER.currentExpression;
+            PLAYER.setExpression('happy');
+            const EXCLUDED_FACE_PARTS = new Set(['face-neutral', 'face-happy', 'face-surprised']),
+                OUTLINE_CLIPS = [
+                    [
+                        { x: 0, y: 0 },
+                        { x: 200, y: 0 },
+                        { x: 200, y: 220 },
+                        { x: 0, y: 220 },
+                    ],
+                ],
+                FULL_DRAW_OPTIONS = {
+                    alpha: 0.65,
+                    clips: OUTLINE_CLIPS,
+                },
+                OUTLINE_DRAW_OPTIONS = {
+                    ...FULL_DRAW_OPTIONS,
+                    excludeParts: EXCLUDED_FACE_PARTS,
+                },
+                SUBMITTED_EXCLUSION_OPTIONS = [],
+                ORIGINAL_EXCLUSION_DRAW_MESH = MESHES.drawMesh,
+                POSES_BEFORE_EXCLUSION = JSON.stringify(PLAYER.partPoses()),
+                BODY_TRANSFORM_BEFORE_EXCLUSION = PLAYER.getPartPose('body').transform;
+            const CAPTURE_PLAYER_DRAW = (options) => {
+                DEVICE.beginFrame({
+                    width: 200,
+                    height: 220,
+                    clearColor: [0.875, 0.91, 0.8, 1],
+                    clearDepth: 1,
+                    clearStencil: 0,
+                });
+                MESHES.beginFrame();
+                PLAYER.seek(0);
+                PLAYER.draw({
+                    projection: PROJECTION,
+                    ...options,
+                });
+                MESHES.flush();
+                const PIXELS = new Uint8Array(200 * 220 * 4);
+                DEVICE.gl.readPixels(0, 0, 200, 220, DEVICE.gl.RGBA, DEVICE.gl.UNSIGNED_BYTE, PIXELS);
+                const FRAME = {
+                    pixels: PIXELS,
+                    mesh: MESHES.stats(),
+                    glError: DEVICE.gl.getError(),
+                };
+                DEVICE.endFrame();
+                return FRAME;
+            };
+            MESHES.drawMesh = function (mesh, options) {
+                SUBMITTED_EXCLUSION_OPTIONS.push(options);
+                return ORIGINAL_EXCLUSION_DRAW_MESH.call(this, mesh, options);
+            };
+            const FULL_FACE_DRAW = CAPTURE_PLAYER_DRAW(FULL_DRAW_OPTIONS),
+                OUTLINE_FACE_DRAW = CAPTURE_PLAYER_DRAW(OUTLINE_DRAW_OPTIONS),
+                REPEATED_OUTLINE_FACE_DRAW = CAPTURE_PLAYER_DRAW(OUTLINE_DRAW_OPTIONS);
+            const BATCH_OPTIONS_START = SUBMITTED_EXCLUSION_OPTIONS.length;
+            DEVICE.beginFrame({
+                width: 200,
+                height: 220,
+                clearColor: [0.875, 0.91, 0.8, 1],
+                clearDepth: 1,
+                clearStencil: 0,
+            });
+            MESHES.beginFrame();
+            PLAYER.draw({
+                projection: PROJECTION,
+                ...OUTLINE_DRAW_OPTIONS,
+            });
+            PLAYER.draw({
+                projection: PROJECTION,
+                ...OUTLINE_DRAW_OPTIONS,
+            });
+            PLAYER.draw({
+                projection: PROJECTION,
+                ...FULL_DRAW_OPTIONS,
+            });
+            MESHES.flush();
+            const EXCLUSION_BATCH_STATS = MESHES.stats(),
+                BATCH_EXCLUSION_OPTIONS = SUBMITTED_EXCLUSION_OPTIONS.slice(BATCH_OPTIONS_START);
+            DEVICE.endFrame();
+            MESHES.drawMesh = ORIGINAL_EXCLUSION_DRAW_MESH;
+            const BODY_PART_INDEX = SEED_SCOUT_METADATA.parts.findIndex((part) => part.id === 'body'),
+                FACE_PART_INDICES = SEED_SCOUT_METADATA.parts
+                    .map((part, index) => (EXCLUDED_FACE_PARTS.has(part.id) ? index : -1))
+                    .filter((index) => index >= 0),
+                PIXEL_AT = (pixels, x, y) => {
+                    const OFFSET = ((219 - y) * 200 + x) * 4;
+                    return [...pixels.subarray(OFFSET, OFFSET + 4)];
+                },
+                FULL_FACE_PARTS = SUBMITTED_EXCLUSION_OPTIONS[0].parts,
+                OUTLINE_FACE_PARTS = SUBMITTED_EXCLUSION_OPTIONS[1].parts,
+                BATCH_FULL_FACE_PARTS = BATCH_EXCLUSION_OPTIONS[2].parts,
+                FULL_BODY_PIXEL = PIXEL_AT(FULL_FACE_DRAW.pixels, 100, 112),
+                OUTLINE_BODY_PIXEL = PIXEL_AT(OUTLINE_FACE_DRAW.pixels, 100, 112);
+            let excludedFacePixelDifferences = 0;
+            for (let pixelOffset = 0; pixelOffset < FULL_FACE_DRAW.pixels.length; pixelOffset += 4) {
+                if (
+                    FULL_FACE_DRAW.pixels[pixelOffset] !== OUTLINE_FACE_DRAW.pixels[pixelOffset] ||
+                    FULL_FACE_DRAW.pixels[pixelOffset + 1] !== OUTLINE_FACE_DRAW.pixels[pixelOffset + 1] ||
+                    FULL_FACE_DRAW.pixels[pixelOffset + 2] !== OUTLINE_FACE_DRAW.pixels[pixelOffset + 2] ||
+                    FULL_FACE_DRAW.pixels[pixelOffset + 3] !== OUTLINE_FACE_DRAW.pixels[pixelOffset + 3]
+                ) {
+                    excludedFacePixelDifferences++;
+                }
+            }
+            ASSERT_THAT(
+                SUBMITTED_EXCLUSION_OPTIONS.length === 6 &&
+                    BATCH_EXCLUSION_OPTIONS.length === 3 &&
+                    FULL_FACE_DRAW.mesh.draws === 1 &&
+                    OUTLINE_FACE_DRAW.mesh.draws === 1 &&
+                    REPEATED_OUTLINE_FACE_DRAW.mesh.draws === 1 &&
+                    EXCLUSION_BATCH_STATS.draws === (DEVICE.instancingSupported ? 2 : 3) &&
+                    FULL_FACE_DRAW.glError === 0 &&
+                    OUTLINE_FACE_DRAW.glError === 0 &&
+                    REPEATED_OUTLINE_FACE_DRAW.glError === 0,
+                'call-scoped part filtering keeps valid WebGL submissions for full and repeated outline passes',
+            );
+            ASSERT_THAT(
+                excludedFacePixelDifferences > 0 &&
+                    FULL_BODY_PIXEL.every((value, index) => value === OUTLINE_BODY_PIXEL[index]) &&
+                    OUTLINE_FACE_DRAW.pixels.every(
+                        (value, index) => value === REPEATED_OUTLINE_FACE_DRAW.pixels[index],
+                    ),
+                'excluding expression face geometry changes face pixels only while the body remains and reuses the Set',
+            );
+            ASSERT_THAT(
+                FULL_FACE_PARTS[BODY_PART_INDEX].visible &&
+                    FACE_PART_INDICES.some(
+                        (index) => FULL_FACE_PARTS[index].visible && !OUTLINE_FACE_PARTS[index].visible,
+                    ) &&
+                    FACE_PART_INDICES.every((index) => !OUTLINE_FACE_PARTS[index].visible) &&
+                    FULL_FACE_PARTS[BODY_PART_INDEX].transform.every(
+                        (value, index) => value === OUTLINE_FACE_PARTS[BODY_PART_INDEX].transform[index],
+                    ) &&
+                    FACE_PART_INDICES.every((index) => !BATCH_EXCLUSION_OPTIONS[0].parts[index].visible) &&
+                    FACE_PART_INDICES.every((index) => !BATCH_EXCLUSION_OPTIONS[1].parts[index].visible) &&
+                    FACE_PART_INDICES.some((index) => BATCH_FULL_FACE_PARTS[index].visible) &&
+                    BATCH_EXCLUSION_OPTIONS.every(
+                        (options) =>
+                            options.alpha === 0.65 &&
+                            options.clips === OUTLINE_CLIPS &&
+                            options.indexVariant === 'happy',
+                    ) &&
+                    SUBMITTED_EXCLUSION_OPTIONS.every(
+                        (options) =>
+                            options.alpha === 0.65 &&
+                            options.clips === OUTLINE_CLIPS &&
+                            options.indexVariant === 'happy' &&
+                            !Object.hasOwn(options, 'indexRange'),
+                    ),
+                'excludeParts hides only listed faces per call and preserves pose, alpha, clipping, and variant selection',
+            );
+            ASSERT_THAT(
+                PLAYER.currentExpression === 'happy' &&
+                    PLAYER.getPartPose('face-happy').visible &&
+                    JSON.stringify(PLAYER.partPoses()) === POSES_BEFORE_EXCLUSION &&
+                    BODY_TRANSFORM_BEFORE_EXCLUSION.every(
+                        (value, index) => value === PLAYER.getPartPose('body').transform[index],
+                    ),
+                'call-scoped face exclusion does not mutate player visibility or the cached interpreted pose',
+            );
+            PLAYER.setExpression(ORIGINAL_EXPRESSION);
             PLAYER.setPartVisible('leaf-left', false);
             PAINT();
             const UNDER_HOLE_PIXEL = PIXEL(80, 48);

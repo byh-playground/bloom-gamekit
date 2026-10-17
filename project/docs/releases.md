@@ -1,3 +1,10 @@
+## v0.11.8 (2026-10-17)
+
+Vector asset players accept a caller-owned `Set` of excluded part IDs on each `draw()` call.
+Exclusions affect that draw only and preserve the player's expression, visibility state, and resolved pose cache.
+Ordered mesh ranges and shader surfaces keep their painter order, alpha, clipping, and batch behavior.
+The integrated browser checks cover face-only outline passes, unchanged body pixels, invalid exclusions, and shader-surface clip preflight.
+
 ## v0.11.7 (2026-10-17)
 
 Interpolation reuses steady-state capture buffers and track records while keeping captured target snapshots detached.
