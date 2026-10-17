@@ -111,7 +111,7 @@
       return SIGNED(Number(BigInt(SIGNED(a)) * 1024n / BigInt(b)));
     }
   });
-  var VERSION = "0.11.6";
+  var VERSION = "0.11.7";
   var REPLAY_FORMAT_VERSION = "0.2.0-dev";
   var PROTOCOL_VERSION = 3;
   var CHUNK_SIZE = 16384;
@@ -9453,6 +9453,18 @@
     });
     const QUANTUM = 1e3 / session2.profile.tickRate;
     const MAX_BACKLOG_MS = QUANTUM * maxBacklogTicks;
+    const REPORT_BACKLOG_DROP = (elapsedMs, droppedMs, timestamp, reason) => {
+      if (droppedMs <= 0) {
+        return;
+      }
+      onBacklogDrop({
+        elapsedMs,
+        droppedMs,
+        droppedTicks: Math.floor(droppedMs / QUANTUM),
+        timestamp,
+        reason
+      });
+    };
     let running = false;
     let handle;
     let last;
@@ -9602,6 +9614,7 @@
         }
         const ELAPSED = Math.max(0, timestamp - last);
         if (backlogPolicy === "drop" && ELAPSED > MAX_BACKLOG_MS) {
+          const DROPPED_MS = accumulator + ELAPSED;
           accumulator = 0;
           last = timestamp;
           if (typeof inputPreview?.clockGap === "function") {
@@ -9609,11 +9622,7 @@
           } else {
             inputPreview?.clear?.();
           }
-          onBacklogDrop({
-            elapsedMs: ELAPSED,
-            droppedTicks: Math.floor(ELAPSED / QUANTUM),
-            timestamp
-          });
+          REPORT_BACKLOG_DROP(ELAPSED, DROPPED_MS, timestamp, "clock-gap");
         } else if (backlogPolicy === "defer" && ELAPSED > MAX_BACKLOG_MS) {
           const DROPPED_MS = accumulator + ELAPSED;
           accumulator = 0;
@@ -9623,13 +9632,7 @@
           } else {
             inputPreview?.clear?.();
           }
-          onBacklogDrop({
-            elapsedMs: ELAPSED,
-            droppedMs: DROPPED_MS,
-            droppedTicks: Math.floor(DROPPED_MS / QUANTUM),
-            timestamp,
-            reason: "clock-gap"
-          });
+          REPORT_BACKLOG_DROP(ELAPSED, DROPPED_MS, timestamp, "clock-gap");
         } else {
           if (backlogPolicy === "retain") {
             accumulator += ELAPSED;
@@ -9643,21 +9646,15 @@
               } else {
                 inputPreview?.clear?.();
               }
-              onBacklogDrop({
-                elapsedMs: ELAPSED,
-                droppedMs: DROPPED_MS,
-                droppedTicks: Math.floor(DROPPED_MS / QUANTUM),
-                timestamp,
-                reason: "backlog-overflow"
-              });
+              REPORT_BACKLOG_DROP(ELAPSED, DROPPED_MS, timestamp, "backlog-overflow");
             } else {
               accumulator = ACCUMULATED_MS;
             }
           } else {
-            accumulator = Math.min(
-              accumulator + Math.min(250, ELAPSED),
-              QUANTUM * session2.profile.maxCatchupSteps
-            );
+            const CLAMPED_ELAPSED = Math.min(250, ELAPSED), ACCUMULATED_MS = accumulator + CLAMPED_ELAPSED, MAX_CATCHUP_MS = QUANTUM * session2.profile.maxCatchupSteps, INPUT_DROPPED_MS = ELAPSED - CLAMPED_ELAPSED, BACKLOG_DROPPED_MS = Math.max(0, ACCUMULATED_MS - MAX_CATCHUP_MS);
+            accumulator = Math.min(ACCUMULATED_MS, MAX_CATCHUP_MS);
+            REPORT_BACKLOG_DROP(ELAPSED, INPUT_DROPPED_MS, timestamp, "input-dt-clamp");
+            REPORT_BACKLOG_DROP(ELAPSED, BACKLOG_DROPPED_MS, timestamp, "backlog-overflow");
           }
           last = timestamp;
         }
@@ -9683,7 +9680,9 @@
           }
           if (!ALLOWED) {
             if (backlogPolicy === "drop") {
+              const DROPPED_MS = Math.max(0, accumulator - QUANTUM);
               accumulator = Math.min(accumulator, QUANTUM);
+              REPORT_BACKLOG_DROP(ELAPSED, DROPPED_MS, timestamp, "drop-policy");
             }
             break;
           }
@@ -9771,7 +9770,9 @@
           if (RESULT.status === "advanced") {
             accumulator = Math.max(0, accumulator - QUANTUM * PACE);
           } else if (backlogPolicy === "drop") {
+            const DROPPED_MS = Math.max(0, accumulator - QUANTUM);
             accumulator = Math.min(accumulator, QUANTUM);
+            REPORT_BACKLOG_DROP(ELAPSED, DROPPED_MS, timestamp, "drop-policy");
           }
           if (CURRENT !== generation) {
             return;
