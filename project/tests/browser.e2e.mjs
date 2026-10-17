@@ -1,3 +1,4 @@
+import { exerciseFrameMetrics } from '../../modules/debug-tools/tests/frame-metrics.browser.mjs';
 /* global demo, inputPreviewDemo, renderProbe */
 import { runFrameChecks } from '../../modules/interpolation/tests/presentation-frame.browser.js';
 import { exerciseVectorAssets } from '../../modules/vector-assets/tests/runtime.browser.mjs';
@@ -1034,6 +1035,7 @@ try {
         ['presentation', runPresentationChecks],
         ['device', exerciseWebGLDevice],
         ['vectorRenderer', exerciseVectorRenderer],
+        ['frameMetrics', exerciseFrameMetrics],
         ['reusableMeshes', (p) => exerciseReusableMeshes(p)],
         ['fontAssets', (p) => exerciseFontAssetLoader(p, `http://127.0.0.1:${SERVER.address().port}`)],
     ]) {

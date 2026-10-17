@@ -20,3 +20,17 @@ Budmori의 local diagnostic bootstrap에서 입증된 오류 redaction/ring/copy
 report context의 source/line/column/workerTimeMs/cause도 제한된 generic metadata로 지원합니다. source/cause는 redaction, 위치는 비음수 safe integer, worker 시간은 유한 비음수로만 저장합니다.
 
 CPU·보유 heap의 전후 비교와 재현 명령은 [비용 측정](./docs/cost-measurement.md)에 있습니다.
+
+## 숫자 전용 프레임 계측
+
+`FrameMetrics({capacity=240, stages=[], counters=[], now})`는 이름을 생성 시 등록하고 두 Float64Array를 재사용합니다.
+`beginFrame(rafTimestampMs)` → `stage(name, durationMs)`/`count(name, amount=1)` → `endFrame()` 순서입니다.
+프레임 경로에 객체 샘플·Map 생성·로그·JSON을 만들지 않습니다. 기존 metadata 기반 PerformanceProfiler는 그대로 유지합니다.
+CPU stage는 호출자가 실제 구간과 포함 관계를 소유합니다. 자식과 부모 시간을 합산하지 않습니다. GPU 완료 시간은 측정하지 않습니다.
+
+명시적으로 `snapshot({limit=0, slowFrameMs=50, slowLimit=3})`를 부를 때만 프레임과 mean/p95/max/total을 구성합니다.
+intervalMs는 실제 RAF 간격, cpuMs는 begin/end 사이 CPU wall 시간이며 둘을 더하지 않습니다. windowMs는 보유한 양의 RAF 간격 합계입니다.
+slowFrames는 같은 프레임의 stage/count를 보존합니다. 0 stage는 측정하지 않았다는 뜻이 아니므로 상세 측정 활성 여부는 소비자가 함께 표시해야 합니다.
+필수 카운터와 상세 계측의 활성 정책·진단 UI·저장은 게임이 소유합니다. clear()는 새 진단 세션을 시작합니다.
+
+RAF 간격은 다음 beginFrame에서 직전 샘플에 확정하므로 느린 구간과 그 구간을 시작한 콜백의 stage/count가 일치합니다. 최신 샘플은 intervalMs=0인 미완료 간격입니다. 콜백 밖의 stage/count는 직전 RAF 구간에 기록하되 cpuMs(콜백 내부)에는 합산하지 않습니다.

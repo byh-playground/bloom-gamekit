@@ -1,3 +1,4 @@
+export { FrameMetrics } from './frame-metrics.js';
 const BOUND = (value, name, min = 1, max = 100000) => {
     if (!Number.isInteger(value) || value < min || value > max) {
         throw new RangeError(`${name} outside supported range`);

@@ -188,3 +188,50 @@ export function compareStateFields<T>(
         maxDifferences?: number;
     },
 ): StateFieldComparison;
+
+export interface NumericMetricSummary {
+    count: number;
+    total: number;
+    mean: number;
+    p50: number;
+    p95: number;
+    max: number;
+}
+export interface NumericFrameSample {
+    sequence: number;
+    timestampMs: number;
+    intervalMs: number;
+    cpuMs: number;
+    stagesMs: Record<string, number>;
+    counts: Record<string, number>;
+}
+export interface NumericFrameSnapshot {
+    format: 'bloom numeric frame metrics v1';
+    capacity: number;
+    retainedFrames: number;
+    firstSequence: number;
+    lastSequence: number;
+    windowMs: number;
+    fps: number | null;
+    intervalMs: NumericMetricSummary;
+    cpuMs: NumericMetricSummary;
+    stagesMs: Record<string, NumericMetricSummary>;
+    counts: Record<string, NumericMetricSummary>;
+    slowFrames: NumericFrameSample[];
+    frames: NumericFrameSample[];
+}
+export class FrameMetrics {
+    constructor(options?: { capacity?: number; stages?: string[]; counters?: string[]; now?: () => number });
+    readonly capacity: number;
+    readonly samples: Float64Array;
+    readonly current: Float64Array;
+    readonly size: number;
+    readonly sequence: number;
+    readonly active: boolean;
+    beginFrame(timestampMs: number): void;
+    stage(name: string, durationMs: number): boolean;
+    count(name: string, amount?: number): boolean;
+    endFrame(): boolean;
+    clear(): void;
+    snapshot(options?: { limit?: number; slowFrameMs?: number; slowLimit?: number }): NumericFrameSnapshot;
+}
