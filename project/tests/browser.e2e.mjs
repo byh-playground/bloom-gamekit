@@ -13,6 +13,7 @@ import { exerciseRendererInterleaving } from '../../modules/rendering/tests/inte
 import { exerciseOrderedAssetBatch } from '../../modules/rendering/tests/ordered-batch.browser.mjs';
 import { exerciseMeshDepth } from '../../modules/rendering/tests/mesh-depth.browser.mjs';
 import { exerciseMeshAlphaDepthWrite } from '../../modules/rendering/tests/mesh-alpha-depth.browser.mjs';
+import { exercisePrimitiveInstances } from '../../modules/rendering/tests/primitive-instances.browser.mjs';
 import { runPresentationChecks } from './presentation.browser.js';
 import { chromium } from 'playwright';
 import { createServer } from 'node:http';
@@ -691,6 +692,38 @@ try {
     assert.deepEqual(REPORT.meshAlphaDepthWrite.afterRestore.pixel, [255, 0, 0, 255]);
     REPORT.stages.push(
         'MeshRenderer alpha-threshold depth writes preserve triangle and instance painter order, opacity variants, and lifecycle',
+    );
+    REPORT.primitiveInstances = await exercisePrimitiveInstances(PAGE);
+    assert.deepEqual(REPORT.primitiveInstances.circle, [0, 255, 0, 255]);
+    assert.deepEqual(REPORT.primitiveInstances.ellipse, [255, 0, 0, 255]);
+    assert.deepEqual(REPORT.primitiveInstances.rect, [0, 0, 255, 255]);
+    assert.deepEqual(REPORT.primitiveInstances.rotatedRect, [255, 0, 255, 255]);
+    assert.deepEqual(REPORT.primitiveInstances.line, [255, 255, 0, 255]);
+    assert.deepEqual(REPORT.primitiveInstances.overlap, [64, 0, 128, 255]);
+    assert.deepEqual(REPORT.primitiveInstances.clippedInside, [255, 255, 255, 255]);
+    assert.deepEqual(REPORT.primitiveInstances.clippedOutside, [0, 0, 0, 255]);
+    assert.equal(REPORT.primitiveInstances.pathTessellations, 0);
+    assert.equal(REPORT.primitiveInstances.pathStrokeBuilds, 0);
+    assert.equal(REPORT.primitiveInstances.arcPointBuilds, 0);
+    assert.equal(REPORT.primitiveInstances.bufferAllocationsAfterWarmup, 0);
+    assert.equal(
+        REPORT.primitiveInstances.bufferUploads,
+        REPORT.primitiveInstances.primitives.frame.instanceUploads,
+        'warm primitive frames upload instance records only',
+    );
+    assert.equal(
+        REPORT.primitiveInstances.primitives.frame.instanceBytesUploaded,
+        REPORT.primitiveInstances.primitives.frame.instances * 64,
+    );
+    if (REPORT.primitiveInstances.primitives.instanced) {
+        assert.ok(
+            REPORT.primitiveInstances.primitives.frame.draws < REPORT.primitiveInstances.primitives.frame.instances,
+            'adjacent primitive instances batch into fewer draws than shapes',
+        );
+    }
+    assert.equal(REPORT.primitiveInstances.glError, 0);
+    REPORT.stages.push(
+        'shared primitive instances draw circles, ellipses, rectangles, and capped lines with order, clips, alpha, and transforms',
     );
     REPORT.rendering = await PAGE.evaluate(async () => {
         const { Renderer2D: RENDERER2_D } = await import('/dist/rendering.js');
