@@ -292,7 +292,15 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
                 },
             ]),
         );
+        let playbackRevision = 0;
+        let sampledPlaybackRevision = -1;
+        let poseRevision = 0;
+        let resolvedRevision = -1;
+        let resolvedPose = null;
         let playerDisposed = false;
+        const INVALIDATE_POSE = () => {
+            poseRevision++;
+        };
         const ASSERT_PLAYER = () => {
             REQUIRE_READY();
             if (playerDisposed) {
@@ -339,8 +347,13 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
         };
         const SEEK = (timeMs) => {
             ASSERT_PLAYER();
-            displayTimeMs = FINITE_TIME(timeMs, 'displayTimeMs');
-            currentPose = SAMPLE(rootPlayback, displayTimeMs);
+            const NEXT_TIME_MS = FINITE_TIME(timeMs, 'displayTimeMs');
+            if (NEXT_TIME_MS !== displayTimeMs || sampledPlaybackRevision !== playbackRevision) {
+                displayTimeMs = NEXT_TIME_MS;
+                currentPose = SAMPLE(rootPlayback, displayTimeMs);
+                sampledPlaybackRevision = playbackRevision;
+                INVALIDATE_POSE();
+            }
             return PLAYER;
         };
         const SET_EXPRESSION = (name) => {
@@ -360,6 +373,7 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
             }
             expression = name;
             visibilityOverridden = false;
+            INVALIDATE_POSE();
             return PLAYER;
         };
         const SET_PART_VISIBLE = (id, isVisible) => {
@@ -369,6 +383,7 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
             }
             VISIBLE.set(id, isVisible);
             visibilityOverridden = true;
+            INVALIDATE_POSE();
             return PLAYER;
         };
         const SET_BASE_POSE = (id, pose) => {
@@ -389,6 +404,7 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
                 }
                 CURRENT[FIELD] = VALUE;
             }
+            INVALIDATE_POSE();
             return PLAYER;
         };
         const PLAY = (name, atMs = displayTimeMs) => {
@@ -401,6 +417,7 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
                 name,
                 startedAtMs: FINITE_TIME(atMs, 'atMs'),
             };
+            playbackRevision++;
             return SEEK(atMs);
         };
         const TRANSITION_TO = (name, atMs = displayTimeMs, durationMs = 0) => {
@@ -423,9 +440,13 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
                 atMs,
                 durationMs,
             };
+            playbackRevision++;
             return SEEK(atMs);
         };
         const WORLD_MATRICES = () => {
+            if (resolvedRevision === poseRevision) {
+                return resolvedPose;
+            }
             const OUTPUT = new Map();
             const RESOLVE_PART = (id) => {
                 if (OUTPUT.has(id)) {
@@ -441,7 +462,21 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
             for (const PART of METADATA.parts) {
                 RESOLVE_PART(PART.id);
             }
-            return OUTPUT;
+            const PART_POSES = METADATA.parts.map((part) => {
+                const POSE = RESOLVE_PART_POSE(part, OUTPUT);
+                return {
+                    transform: POSE.transform,
+                    opacity: POSE.opacity,
+                    visible: POSE.visible,
+                };
+            });
+            resolvedPose = {
+                matrices: OUTPUT,
+                parts: PART_POSES,
+                morph: authoredMorph(SKETCH_MORPH_STYLE, displayTimeMs),
+            };
+            resolvedRevision = poseRevision;
+            return resolvedPose;
         };
         const GET_SOCKET = (id) => {
             ASSERT_PLAYER();
@@ -449,7 +484,7 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
             if (!SOCKET) {
                 throw new TypeError(`Unknown vector socket: ${id}`);
             }
-            return transformPoint(WORLD_MATRICES().get(SOCKET.part), SOCKET.point);
+            return transformPoint(WORLD_MATRICES().matrices.get(SOCKET.part), SOCKET.point);
         };
         const RESOLVE_PART_POSE = (part, matrices) => {
             let parentVisible = true;
@@ -468,14 +503,13 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
         };
         const PART_POSES = () => {
             ASSERT_PLAYER();
-            const MATRICES = WORLD_MATRICES();
-            return METADATA.parts.map((part, index) => {
-                const POSE = RESOLVE_PART_POSE(part, MATRICES);
+            const RESOLVED = WORLD_MATRICES();
+            return RESOLVED.parts.map((pose, index) => {
                 return {
-                    transform: POSE.transform,
-                    morph: authoredMorph(SKETCH_MORPH_STYLE, displayTimeMs),
-                    opacity: POSE.opacity,
-                    visible: POSE.visible,
+                    transform: pose.transform.slice(),
+                    morph: RESOLVED.morph.slice(),
+                    opacity: pose.opacity,
+                    visible: pose.visible,
                     index,
                 };
             });
@@ -501,8 +535,12 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
             if (GEOMETRY.shaderSurfaces?.length) {
                 validateShaderSurfaceClipCapacity(clips, surfaceRenderer.maxClipPlanes);
             }
-            const MATRICES = WORLD_MATRICES();
-            const POSES = METADATA.parts.map((part) => RESOLVE_PART_POSE(part, MATRICES));
+            const RESOLVED = WORLD_MATRICES();
+            const POSES = RESOLVED.parts.map((pose) => ({
+                transform: pose.transform.slice(),
+                opacity: pose.opacity,
+                visible: pose.visible,
+            }));
             if (GEOMETRY.drawOrder) {
                 const WORLD_MODE = viewProjection !== undefined || worldMatrix !== undefined;
                 for (const COMMAND of GEOMETRY.drawOrder) {
@@ -524,7 +562,7 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
                                   }),
                             matrix,
                             parts: POSES,
-                            morph: authoredMorph(SKETCH_MORPH_STYLE, displayTimeMs),
+                            morph: RESOLVED.morph.slice(),
                             alpha,
                             color,
                             forceColor,
@@ -592,7 +630,7 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
                       }),
                 matrix,
                 parts: POSES,
-                morph: authoredMorph(SKETCH_MORPH_STYLE, displayTimeMs),
+                morph: RESOLVED.morph.slice(),
                 alpha,
                 color,
                 forceColor,
@@ -613,11 +651,11 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
                 throw new TypeError(`Unknown vector part: ${id}`);
             }
             const INDEX = PART_INDICES.get(id),
-                EFFECTIVE = RESOLVE_PART_POSE(METADATA.parts[INDEX], WORLD_MATRICES());
+                EFFECTIVE = WORLD_MATRICES().parts[INDEX];
             return {
                 ...currentPose.get(id),
                 visible: EFFECTIVE.visible,
-                transform: EFFECTIVE.transform,
+                transform: EFFECTIVE.transform.slice(),
             };
         };
         const DISPOSE_PLAYER = () => {

@@ -304,9 +304,13 @@ try {
         const DROP = CREATE_LOOP({
             session: DROP_SESSION,
             maxBacklogTicks: 2,
+            canAdvance: () => false,
             onBacklogDrop: (event) => (dropEvent = event),
         });
         DROP.pulse(0, {
+            render: false,
+        });
+        DROP.pulse(100, {
             render: false,
         });
         DROP.pulse(301, {
@@ -315,11 +319,89 @@ try {
         const DROP_COMPATIBLE =
             DROP_SESSION.tick === 0 &&
             DROP.simulationTimeMs === 301 &&
-            dropEvent?.elapsedMs === 301 &&
+            dropEvent?.elapsedMs === 201 &&
             dropEvent.droppedTicks === 3 &&
+            dropEvent.droppedMs === 301 &&
+            dropEvent.reason === 'clock-gap' &&
             dropEvent.timestamp === 301 &&
-            !Object.hasOwn(dropEvent, 'droppedMs') &&
-            !Object.hasOwn(dropEvent, 'reason');
+            Object.keys(dropEvent).length === 5;
+        const CLAMP_SESSION = {
+            inputSize: 1,
+            tick: 0,
+            pace: 1,
+            closed: false,
+            resimulating: false,
+            profile: {
+                tickRate: 10,
+                maxCatchupSteps: 1,
+            },
+            poll() {},
+            releaseInput() {},
+            advance() {
+                return {
+                    status: 'advanced',
+                    tick: ++this.tick,
+                };
+            },
+        };
+        const CLAMP_EVENTS = [],
+            CLAMP = CREATE_LOOP({
+                session: CLAMP_SESSION,
+                maxBacklogTicks: 4,
+                onBacklogDrop: (event) => CLAMP_EVENTS.push(event),
+            });
+        CLAMP.pulse(0, {
+            render: false,
+        });
+        CLAMP.pulse(300, {
+            render: false,
+        });
+        const CLAMP_REPORTING_PASSED =
+            CLAMP_SESSION.tick === 1 &&
+            CLAMP_EVENTS.length === 2 &&
+            CLAMP_EVENTS[0].reason === 'input-dt-clamp' &&
+            CLAMP_EVENTS[0].droppedMs === 50 &&
+            CLAMP_EVENTS[0].droppedTicks === 0 &&
+            CLAMP_EVENTS[1].reason === 'backlog-overflow' &&
+            CLAMP_EVENTS[1].droppedMs === 150 &&
+            CLAMP_EVENTS[1].droppedTicks === 1;
+        const STALLED_SESSION = {
+            inputSize: 1,
+            tick: 0,
+            pace: 1,
+            closed: false,
+            resimulating: false,
+            profile: {
+                tickRate: 10,
+                maxCatchupSteps: 3,
+            },
+            poll() {},
+            releaseInput() {},
+            advance() {
+                return {
+                    status: 'advanced',
+                    tick: ++this.tick,
+                };
+            },
+        };
+        let stalledDrop;
+        const STALLED = CREATE_LOOP({
+            session: STALLED_SESSION,
+            maxBacklogTicks: 3,
+            canAdvance: () => false,
+            onBacklogDrop: (event) => (stalledDrop = event),
+        });
+        STALLED.pulse(0, {
+            render: false,
+        });
+        STALLED.pulse(200, {
+            render: false,
+        });
+        const STALLED_REPORTING_PASSED =
+            stalledDrop?.reason === 'drop-policy' &&
+            stalledDrop.droppedMs === 100 &&
+            stalledDrop.droppedTicks === 1 &&
+            STALLED.simulationTimeMs === 100;
         const GAP_SESSION = {
             inputSize: 1,
             tick: 0,
@@ -518,6 +600,8 @@ try {
             deferPassed: DEFER_PASSED,
             dropCompatible: DROP_COMPATIBLE,
             longGapPassed: LONG_GAP_PASSED,
+            clampReportingPassed: CLAMP_REPORTING_PASSED,
+            stalledReportingPassed: STALLED_REPORTING_PASSED,
             pausePassed: PAUSE_PASSED,
             visibilityPassed,
             deferTicks: DEFER_SESSION.tick,
@@ -535,6 +619,8 @@ try {
         CLOCK_CHECK.deferPassed &&
             CLOCK_CHECK.dropCompatible &&
             CLOCK_CHECK.longGapPassed &&
+            CLOCK_CHECK.clampReportingPassed &&
+            CLOCK_CHECK.stalledReportingPassed &&
             CLOCK_CHECK.pausePassed &&
             CLOCK_CHECK.visibilityPassed,
         `bounded defer policy verification: ${JSON.stringify(CLOCK_CHECK)}`,

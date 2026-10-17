@@ -1,3 +1,11 @@
+## v0.11.7 (2026-10-17)
+
+Interpolation reuses steady-state capture buffers and track records while keeping captured target snapshots detached.
+Vector asset players cache resolved poses until playback or pose inputs change; public pose results remain detached copies.
+Simloop drop notifications add exact dropped duration and reasons for clock gaps, input-dt clamps, backlog caps, and drop-policy trimming.
+These additive telemetry fields do not change simulation timing or backlog policy behavior.
+Core browser checks cover snapshot isolation, pose isolation, and drop telemetry. Allocation samples are CPU-only; GPU completion and physical mobile performance remain unmeasured.
+
 ## v0.11.6 (2026-10-17)
 
 VectorContext adds a module-owned unit-quad renderer for full circles, ellipses, rectangles, and single-segment strokes.

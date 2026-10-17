@@ -251,6 +251,51 @@ export async function runFrameChecks(page) {
                 y: R.POSITION_Y,
             };
         }
+        const REUSED_RUNTIME = new PRESENTATION_RUNTIME({
+                stepMs: 100,
+            }),
+            REUSED_SOURCE = {
+                x: 0,
+                y: 0,
+            };
+        REUSED_RUNTIME.capture(
+            {
+                revision: 0,
+                sequence: 0,
+                timeMs: 0,
+                entities: [
+                    {
+                        id: 'reused',
+                        generation: 0,
+                        type: Actor,
+                        source: REUSED_SOURCE,
+                    },
+                ],
+            },
+            0,
+        );
+        REUSED_SOURCE.x = 20;
+        REUSED_RUNTIME.capture(
+            {
+                revision: 0,
+                sequence: 1,
+                timeMs: 100,
+                entities: [
+                    {
+                        id: 'reused',
+                        generation: 0,
+                        type: Actor,
+                        source: REUSED_SOURCE,
+                    },
+                ],
+            },
+            100,
+        );
+        REUSED_SOURCE.x = 10000;
+        CHECK(
+            REUSED_RUNTIME.sample('reused', 0, 150).x === 10,
+            'continuous capture keeps an immutable target snapshot while reusing its private interpolation state',
+        );
         const LOCAL = new PRESENTATION_RUNTIME({
                 stepMs: 100,
                 delayMs: 200,

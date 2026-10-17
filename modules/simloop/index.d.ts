@@ -140,7 +140,7 @@ export function createLoop<S extends LoopSession>(options: {
         droppedMs?: number;
         droppedTicks: number;
         timestamp: number;
-        reason?: 'clock-gap' | 'backlog-overflow';
+        reason?: 'clock-gap' | 'input-dt-clamp' | 'backlog-overflow' | 'drop-policy';
     }) => void;
     getInput?: () =>
         Bytes | { input: Bytes; commands?: Array<{ payload: Bytes }>; continuationKey?: string; predict?: boolean };

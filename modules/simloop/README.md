@@ -101,3 +101,9 @@ protocol 3은 이벤트에서 명령별 불변 T를 예약합니다. 한 pump가
 일반 `reconcile`에서 pending 입력이 끝나면 표시 계층의 `releasePreview(timeMs)`로 넘깁니다.
 지연 authority를 사용하는 경우 현재 로컬 pose를 과거 표시 이력으로 즉시 되돌리지 않습니다.
 reset/rollback 같은 불연속 경계의 강제 clear는 유지합니다.
+
+## backlog telemetry
+
+`onBacklogDrop`은 모든 누락 시간을 `droppedMs`로 보고합니다. `droppedTicks`는
+`floor(droppedMs / quantum)`이므로 양수인 sub-tick 손실은 0일 수 있습니다. `reason`은
+`clock-gap`, `input-dt-clamp`, `backlog-overflow`, `drop-policy`로 누락 원인을 구분합니다.
