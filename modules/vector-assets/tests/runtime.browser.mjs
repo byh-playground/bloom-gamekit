@@ -344,6 +344,31 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
                     !Object.isFrozen(STATIC_PART_POSES[0].morph),
                 'public styleless part poses keep independent mutable zero-morph tuples',
             );
+            const DETACHED_BODY = PLAYER.getPartPose('body'),
+                ORIGINAL_BODY_TRANSFORM = PLAYER.getPartPose('body').transform;
+            DETACHED_BODY.transform[0] += 1000;
+            const DETACHED_PART_POSES = PLAYER.partPoses();
+            DETACHED_PART_POSES[0].transform[0] += 1000;
+            DETACHED_PART_POSES[0].morph[0] = 1000;
+            ASSERT_THAT(
+                PLAYER.getPartPose('body').transform.every(
+                    (value, index) => value === ORIGINAL_BODY_TRANSFORM[index],
+                ) &&
+                    PLAYER.partPoses()[0].morph[0] === 0,
+                'mutating returned part poses cannot corrupt the player-local resolved-pose cache',
+            );
+            const BASE_POSE_BEFORE = PLAYER.getPartPose('body').transform;
+            PLAYER.setBasePose('body', {
+                x: 10,
+            });
+            const BASE_POSE_AFTER = PLAYER.getPartPose('body').transform;
+            PLAYER.setBasePose('body', {
+                x: 0,
+            });
+            ASSERT_THAT(
+                JSON.stringify(BASE_POSE_BEFORE) !== JSON.stringify(BASE_POSE_AFTER),
+                'base-pose revision invalidates cached world transforms',
+            );
             const PROJECTION = [2 / 200, 0, 0, 0, -2 / 220, 0, -1, 1, 1];
             const PAINT = (actors = [PLAYER], timeMs = 0) => {
                 DEVICE.beginFrame({
