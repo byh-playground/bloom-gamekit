@@ -1,6 +1,6 @@
 # bloom-gamekit 작업 지침
 
-- 공통 경계·설계·리뷰 기준은 [README](./README.md)를 먼저 읽습니다.
+- 공통 경계·설계·리뷰 기준은 [README](./README.md)를 먼저 읽습니다. [코드 규칙](./project/docs/code-conventions.md)에 따라 `npm run format`, `npm run check`를 사용합니다. 빌드 전 검사는 소스를 자동 수정하지 않습니다.
 - 보간 변경은 [모듈 계약](./modules/interpolation/README.md), 공개 JSDoc, [고정 브라우저 시나리오](./project/tests/browser.e2e.mjs)를 함께 확인합니다. 시간·세대·순서·reset 계약을 임의로 바꾸지 않습니다.
 - rendering/input 변경은 해당 modules/*/README.md와 project/tests/browser.e2e.mjs의 실제 WebGL·DOM 검증을 함께 확인합니다. 입력 edge는 명시적 tick 소비 전까지 유지하며 rendering에 게임 정렬·시간선·권위 상태를 넣지 않습니다.
 - 새 기능은 실제 필요가 생긴 모듈에만 구현합니다. rendering/input placeholder나 범용 게임 엔진을 만들지 않습니다.

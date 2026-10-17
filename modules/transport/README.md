@@ -10,7 +10,6 @@ WebRTC 바이너리 전송과 Nostr 방·시그널링을 제공합니다. 게임
 
 방 close와 session close는 각 소유자의 자원을 정리합니다. Nostr 시그널링은 공개 서명 메시지이며 민감한 게임 상태를 넣지 않습니다. 실제 통신은 명시적으로 생성할 때만 시작합니다. 단순 import에는 접속 부수 효과가 없습니다.
 
-
 ## 동적 방 연결 capability
 
 `createNostrDynamicRoom({ role: 'host' | 'join', room, namespace, ... })`은 같은 방에서 참가·이탈·재연결을 계속 처리하는 1..5인 mesh 연결입니다. 고정 2..8인 `createNostrGroupRoom`의 시작 barrier나 roster 계약은 바꾸지 않습니다. Nostr에는 discovery와 SDP/ICE만 보내며 게임 제어·snapshot·입력은 RTC를 사용합니다. 기본 ICE는 기존 `createWebRTCPeer`와 같은 STUN이며 서버나 자동 TURN fallback은 추가하지 않습니다.
@@ -46,7 +45,6 @@ console.log(room.room, room.localPlayerId, room.players);
 
 현재 장기 검증은 `npm test`의 실제 브라우저 시나리오와 `npm run test:network`의 RTC·방 수명주기 시나리오로 수행합니다. 이 절의 과거 단위 검증 코드는 개발 완료 시 제거했으며 결과·소스 해시는 Git 이력과 provenance 기록으로 확인합니다. 로컬 RTC 시나리오를 공용 relay/NAT·모바일 기기 검증으로 확대 해석하지 않습니다.
 
-
 ### 명시적인 탭 저장소 resume
 
 `resume: { storage: sessionStorage, key?, lifetimeMs?, reset? }`를 전달하면 같은 페이지를 새로고침한 뒤 살아 있는 같은 방에 복귀할 수 있습니다. 기본 저장은 없으며 cookie·서버·지갑·사용자 계정은 만들지 않습니다. 여기서 `sessionStorage`는 소비자 앱이 명시적으로 제공하는 표준 저장소 capability입니다. 기본 key에는 namespace와 방 코드가 들어가며 저장 내용에는 동일 sessionId, 확정 roster/epoch, coordinator와 임시 Nostr 개인 서명 키가 포함됩니다. 기본 수명은 8시간, 범위는 1000ms..24시간이고 갱신 때 수명을 무한 연장하지 않습니다.
@@ -65,11 +63,19 @@ console.log(room.room, room.localPlayerId, room.players);
 
 ```js
 const room = await createNostrPublicRoom({
-  namespace: 'my-game', simulationVersion: 'my-simulation-v1', maxPlayers: 5,
-  resume: { storage: sessionStorage }, // 선택 사항; 기본 저장 없음
+    namespace: 'my-game',
+    simulationVersion: 'my-simulation-v1',
+    maxPlayers: 5,
+    resume: { storage: sessionStorage }, // 선택 사항; 기본 저장 없음
 });
-const session = createRoomSession({ mode: 'online', room, simulationVersion: 'my-simulation-v1',
-  inputSize, adapter, membership: { maxPlayers: 5 } });
+const session = createRoomSession({
+    mode: 'online',
+    room,
+    simulationVersion: 'my-simulation-v1',
+    inputSize,
+    adapter,
+    membership: { maxPlayers: 5 },
+});
 ```
 
 - 목록은 같은 public Nostr relay의 `namespace + ':public-v1'` / `0000` 채널에만 있습니다. 실제 게임 방 신호는 기존 `:dynamic-v1`과 선택된 방 코드로 분리합니다. 별도 서버·DB·계정·지갑·고정 공개 shard·자동 TURN fallback을 추가하지 않습니다. `relays`, `rtcConfig`는 기존 capability로 전달합니다.

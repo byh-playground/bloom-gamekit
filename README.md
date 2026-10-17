@@ -36,7 +36,7 @@ project/{tests,docs,benchmarks}/  통합 검증·측정 기록
 .github/workflows/ci.yml           PR 검사 / main→dist·불변 태그·previews
 ```
 
-개발 명령은 `npm ci`, `npm test`, `npm run test:browser`입니다. 브라우저 첫 설치는 `npx playwright install chromium`입니다. 소스·문서·검사·예제·도구는 기능을 소유한 모듈에 함께 둡니다. 저장소 공통 자료는 project 아래로 모으며 루트에 docs/scripts/tests/examples를 두지 않습니다. `rollback`은 세션과 종합 예제, `transport`는 RTC/discovery 검사를 소유합니다. 공개 집계 진입점은 없습니다.
+개발 명령은 `npm ci`, `npm run format`, `npm run check`, `npm test`, `npm run test:browser`입니다. [코드 규칙](./project/docs/code-conventions.md)은 Prettier와 ESLint가 검사하며 `npm run build`도 먼저 같은 읽기 전용 검사를 실행합니다. 브라우저 첫 설치는 `npx playwright install chromium`입니다. 소스·문서·검사·예제·도구는 기능을 소유한 모듈에 함께 둡니다. 저장소 공통 자료는 project 아래로 모으며 루트에 docs/scripts/tests/examples를 두지 않습니다. `rollback`은 세션과 종합 예제, `transport`는 RTC/discovery 검사를 소유합니다. 공개 집계 진입점은 없습니다.
 
 검증 정책 원본은 [공통 프로젝트 관리 규칙 §13](https://github.com/byh-playground/bloom-reference/blob/main/rules/project-management.html#verification)입니다. `npm test`는 실제 DOM 입력 → 시뮬 → 표시 모델 → WebGL·HUD·복구의 고정 시나리오를 실행합니다. `npm run test:network`는 RTC·방 수명주기, `npm run test:availability`는 가용성·복귀·분할 시나리오입니다. `npm run test:scenarios`는 build 후 독립 시나리오를 최대 두 개씩 실행하고 데모까지 포함합니다. 각 실행 전체 상한은 180초이며 초과하거나 한 경로가 실패하면 남은 자식 프로세스도 정리하고 실패합니다. 개발 중 단위 검증 파일은 완료 시 제거하고 구현 내부에 맞춘 회귀 파일을 누적하지 않습니다. CPU·할당 측정은 `benchmark:interpolation`, `benchmark:presentation`, 기존 SDK benchmark 명령으로 따로 실행합니다.
 

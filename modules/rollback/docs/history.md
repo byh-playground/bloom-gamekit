@@ -14,11 +14,9 @@
 
 개발 검사: `npm ci --ignore-scripts --no-audit --no-fund`, `npm test`, `npm run test:browser`. 필요한 경우 공식 Playwright Chromium을 설치합니다. 로컬에서 시스템 Chromium을 쓸 때 `CHROMIUM_EXECUTABLE_PATH`를 지정할 수 있습니다.
 
-
 ## 이전 후 리뷰 수정
 
 core의 transport detach를 idempotent/identity-guarded cleanup으로 고치고 공개 scalar pace를 추가했습니다. loop는 callback 중 stop/start의 세대 취소, 할당 없는 pacing 읽기, 명시적 backlogPolicy:'retain'을 지원합니다. 기존 기본 backlog drop과 프로토콜·snapshot·replay 형식은 유지합니다. 이는 위 원본 이후의 동작 수정이며 원본 저장소에 역으로 적용한 변경이 아닙니다.
-
 
 ## 2026-10-07 모듈 중심 배치
 

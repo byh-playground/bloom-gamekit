@@ -14,20 +14,34 @@
 
 ```js
 const session = createRoomSession({
-  mode: 'online', room, adapter: gameAdapter, inputSize: 1,
-  simulationVersion: 'game-v1', profile: profiles.lockstep,
-  roomOwnerId: gameRoomOwnerId,
-  availability: {
-    mode: 'available', heartbeatMs: 250,
-    silenceMs: 3000, inputGraceMs: 3000, resumeGapMs: 3000,
-    roundTimeoutMs: 5000, retryMs: 500,
-    autoTransfer: {
-      enabled: true, intervalMs: 10000, minTenureMs: 30000,
-      minImprovementMs: 10, minSamples: 10,
-      rttWeight: 1, jitterWeight: 2, stepWeight: 4, stepEmaAlpha: 0.1,
+    mode: 'online',
+    room,
+    adapter: gameAdapter,
+    inputSize: 1,
+    simulationVersion: 'game-v1',
+    profile: profiles.lockstep,
+    roomOwnerId: gameRoomOwnerId,
+    availability: {
+        mode: 'available',
+        heartbeatMs: 250,
+        silenceMs: 3000,
+        inputGraceMs: 3000,
+        resumeGapMs: 3000,
+        roundTimeoutMs: 5000,
+        retryMs: 500,
+        autoTransfer: {
+            enabled: true,
+            intervalMs: 10000,
+            minTenureMs: 30000,
+            minImprovementMs: 10,
+            minSamples: 10,
+            rttWeight: 1,
+            jitterWeight: 2,
+            stepWeight: 4,
+            stepEmaAlpha: 0.1,
+        },
     },
-  },
-  onEvent: event => updateRoomUI(event),
+    onEvent: (event) => updateRoomUI(event),
 });
 ```
 
@@ -44,18 +58,25 @@ UI는 `participant-state`(active/suspended/unresponsive/resynchronizing), `avail
 ```js
 const loop = createLoop({ session, getInput, render });
 const pump = createDeadlineScheduler({
-  getIntervalMs: () => 1000 / session.profile.tickRate,
-  pulse: now => loop.pulse(now, { render: false }),
-  onGap: () => loop.resetTiming(),
+    getIntervalMs: () => 1000 / session.profile.tickRate,
+    pulse: (now) => loop.pulse(now, { render: false }),
+    onGap: () => loop.resetTiming(),
 });
 function frame(now) {
-  loop.observeInput(now); loop.render(); requestAnimationFrame(frame);
+    loop.observeInput(now);
+    loop.render();
+    requestAnimationFrame(frame);
 }
-requestAnimationFrame(frame); pump.start();
+requestAnimationFrame(frame);
+pump.start();
 window.addEventListener('blur', () => loop.releaseInput());
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) loop.releaseInput();
-  else { loop.resetTiming(); pump.rebase(); pump.wake(); }
+    if (document.hidden) loop.releaseInput();
+    else {
+        loop.resetTiming();
+        pump.rebase();
+        pump.wake();
+    }
 });
 // 종료 시 pump.stop(), loop.stop(), session.close()와 앱의 listener/RAF를 정리합니다.
 ```
@@ -74,9 +95,9 @@ document.addEventListener('visibilitychange', () => {
 
 ```js
 const session = createSession({
-  ...gameOptions,
-  profile: { ...profiles.rts, mode: 'lockstep', checksumInterval: 20 },
-  adapter: gameAdapter,
+    ...gameOptions,
+    profile: { ...profiles.rts, mode: 'lockstep', checksumInterval: 20 },
+    adapter: gameAdapter,
 });
 ```
 
@@ -102,10 +123,12 @@ const session = createSession({
 
 ```js
 const session = createRoomSession({
-  mode: 'local', localFastPath: true,
-  simulationVersion: 'game-v1', inputSize: 1,
-  profile: { ...profiles.lockstep, baseInputDelayTicks: 0 },
-  adapter: gameAdapter,
+    mode: 'local',
+    localFastPath: true,
+    simulationVersion: 'game-v1',
+    inputSize: 1,
+    profile: { ...profiles.lockstep, baseInputDelayTicks: 0 },
+    adapter: gameAdapter,
 });
 // 게임 소유의 명시 저장은 계속 가능하다.
 const save = gameAdapter.save();
@@ -126,18 +149,18 @@ HELLO는 양쪽 mode를 명시하며 lockstep에서는 초기 `baseInputDelayTic
 import { createBootstrapReplay } from './rollback.js';
 
 const job = createBootstrapReplay({
-  adapter: joiningGameAdapter,
-  bootstrap,
-  maxCatchupSteps: 4,
-  maxSnapshotBytes: 4 * 1024 * 1024,
-  maxSuffixTicks: 20,
-  simulationVersion: 'game-v1',
+    adapter: joiningGameAdapter,
+    bootstrap,
+    maxCatchupSteps: 4,
+    maxSnapshotBytes: 4 * 1024 * 1024,
+    maxSuffixTicks: 20,
+    simulationVersion: 'game-v1',
 });
 
 // 렌더 루프가 pulse를 한 번씩 호출한다. while로 끝까지 밀어 실행하지 않는다.
 function catchupPulse() {
-  const result = job.pulse();
-  if (result.status === 'done') console.log(job.result.tick, job.result.hash);
+    const result = job.pulse();
+    if (result.status === 'done') console.log(job.result.tick, job.result.hash);
 }
 ```
 
@@ -163,18 +186,23 @@ load 후 checkpoint의 canonical round-trip과 최종 snapshot의 hash/`validate
 
 ```js
 const session = createRoomSession({
-  mode: room ? 'online' : 'local', room,
-  simulationVersion: 'my-game-rules-v1', seed: 1, inputSize: 8,
-  profile: { ...profiles.lockstep, baseInputDelayTicks: room ? 2 : 0 },
-  membership: { maxPlayers: 5, transitionTimeoutMs: 15000,
-    reconnectGraceMs: 10000, maxCatchupSteps: 4 },
-  adapter: {
-    save, load, validateSnapshot, step,
-    applyMembership({ epoch, tick, players, joined, left, coordinatorId, reason }) {
-      // canonical state만 변경합니다. spawn/despawn/재화/정책은 게임 소유입니다.
-      // appliedMembershipEpoch와 playerId→entity 매핑도 save/load에 포함합니다.
+    mode: room ? 'online' : 'local',
+    room,
+    simulationVersion: 'my-game-rules-v1',
+    seed: 1,
+    inputSize: 8,
+    profile: { ...profiles.lockstep, baseInputDelayTicks: room ? 2 : 0 },
+    membership: { maxPlayers: 5, transitionTimeoutMs: 15000, reconnectGraceMs: 10000, maxCatchupSteps: 4 },
+    adapter: {
+        save,
+        load,
+        validateSnapshot,
+        step,
+        applyMembership({ epoch, tick, players, joined, left, coordinatorId, reason }) {
+            // canonical state만 변경합니다. spawn/despawn/재화/정책은 게임 소유입니다.
+            // appliedMembershipEpoch와 playerId→entity 매핑도 save/load에 포함합니다.
+        },
     },
-  },
 });
 ```
 
@@ -205,7 +233,6 @@ const session = createRoomSession({
 현재 장기 검증은 `npm test`의 실제 브라우저 시나리오와 `npm run test:network`의 RTC·방 수명주기 시나리오로 수행합니다. 이 절의 과거 단위 검증 코드는 개발 완료 시 제거했으며 결과·소스 해시는 Git 이력과 provenance 기록으로 확인합니다. 로컬 RTC 시나리오를 공용 relay/NAT·모바일 기기 검증으로 확대 해석하지 않습니다.
 
 RoomSession의 전체 여러 epoch replay 파일 export는 아직 제공하지 않습니다. 기존 고정 Core의 replay API는 유지하고, 동적 입장/복구에는 명시적인 checkpoint+suffix만 사용합니다.
-
 
 ### 새로고침 재접속
 

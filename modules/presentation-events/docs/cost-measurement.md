@@ -13,10 +13,10 @@
 
 `steady-benchmark.mjs`는 1,000 tick 동안 tick 확정 → 즉시 종료 hit 발행 → update를 반복한다. retentionTicks는 120이며 payload·renderer는 없다. 시간은 할당/GC 영향을 포함하는 CPU 경과시간이다. heap은 `--expose-gc`의 명시 GC 후 살아 있는 journal의 heap delta 중앙값이며 peak allocation이나 byte-정확한 객체 크기가 아니다.
 
-| 매 tick hit | 총 hit | 기준 CPU ms | 변경 CPU ms | 기준 보유 heap bytes | 변경 보유 heap bytes |
-|---:|---:|---:|---:|---:|---:|
-| 1 | 1,000 | 6.325 | 2.642 | 37,864 | 69,608 |
-| 200 | 200,000 | 551.360 | 111.637 | 7,223,992 | 7,462,120 |
+| 매 tick hit |  총 hit | 기준 CPU ms | 변경 CPU ms | 기준 보유 heap bytes | 변경 보유 heap bytes |
+| ----------: | ------: | ----------: | ----------: | -------------------: | -------------------: |
+|           1 |   1,000 |       6.325 |       2.642 |               37,864 |               69,608 |
+|         200 | 200,000 |     551.360 |     111.637 |            7,223,992 |            7,462,120 |
 
 희소 workload는 bucket 관리로 보유 heap이 약 31 KiB 증가한다. 조밀 workload는 CPU가 약 80% 감소하고 retained 24,000 identity에서 heap은 약 233 KiB(3.3%) 증가했다. 첫 별도 실행에서도 조밀 CPU 465→142 ms의 개선을 확인했으며 JIT/GC와 공유 실행 환경 때문에 절대값은 반복에 따라 달라진다. 메모리 공짜 최적화로 부르지 않는다.
 

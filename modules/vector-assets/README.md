@@ -22,11 +22,11 @@ import { createVectorAsset } from './vector-assets.js';
 
 const loader = createVectorAssetLoader({ maxEntries: 8 });
 const [compiledScout] = await Promise.all([
-  loader.load('/assets/scout.svg', {
-    sourcePath: 'assets/scout.svg',
-    expectedSha256: '...64 lowercase hex characters...',
-    maxBytes: 256 * 1024,
-  }),
+    loader.load('/assets/scout.svg', {
+        sourcePath: 'assets/scout.svg',
+        expectedSha256: '...64 lowercase hex characters...',
+        maxBytes: 256 * 1024,
+    }),
 ]);
 const scout = createVectorAsset(meshes, compiledScout);
 const actor = scout.createPlayer({ clip: 'idle', startedAtMs: 0 });
@@ -96,9 +96,9 @@ The SVG save round-trip check serializes and reparses the source, then verifies 
 const geometry = MeshBuilder.combine([player.geometry, enemy.geometry, prop.geometry]);
 const mesh = meshes.createMesh(geometry);
 meshes.drawMesh(mesh, {
-  projection,
-  parts: [...playerPartPoses, ...enemyPartPoses, ...propPartPoses],
-  clips: sharedViewportClip,
+    projection,
+    parts: [...playerPartPoses, ...enemyPartPoses, ...propPartPoses],
+    clips: sharedViewportClip,
 });
 meshes.flush();
 ```

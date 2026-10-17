@@ -1,162 +1,842 @@
 import { RoomSession, profiles } from '../../../../dist/rollback.js';
 import { createNostrDynamicRoom, createWebRTCPeer } from '../../../../dist/transport.js';
 import { createLoop, createDeadlineScheduler, LocalInputPreview } from '../../../../dist/simloop.js';
-import {PresentationRuntime} from '../../../../dist/interpolation.js';
-import {PresentationEventQueue} from '../../../../dist/presentation-events.js';
-import {Actor,codec,createGame,stepWorld,entities,WIDTH,HEIGHT} from './game.js';
-
-const $=id=>document.getElementById(id),canvas=$('simulation'),ctx=canvas.getContext('2d');
-let peers=[],rooms=[],abort,serial=0,animation=0,audio=null,stopAt=Infinity,lastDiagnostic=0;
-const devices=new Map(),errors=[],impairment={ms:0},liveConnections=new Set();
-const fail=error=>{const message=String(error.stack??error);if(!errors.includes(message)&&errors.length<8)errors.push(message);$('error-log').textContent=errors.join('\n');$('error-log').hidden=false;};
-const status=text=>{$('connection-status').textContent=text;};
+import { PresentationRuntime } from '../../../../dist/interpolation.js';
+import { PresentationEventQueue } from '../../../../dist/presentation-events.js';
+import { Actor, codec, createGame, stepWorld, entities, WIDTH, HEIGHT } from './game.js';
+const DOLLAR = (id) => document.getElementById(id),
+    CANVAS = DOLLAR('simulation'),
+    CTX = CANVAS.getContext('2d');
+let peers = [];
+let rooms = [];
+let abort;
+let serial = 0;
+let animation = 0;
+let audio = null;
+let stopAt = Infinity;
+let lastDiagnostic = 0;
+const DEVICES = new Map(),
+    ERRORS = [],
+    IMPAIRMENT = {
+        ms: 0,
+    },
+    LIVE_CONNECTIONS = new Set();
+const FAIL = (error) => {
+    const MESSAGE = String(error.stack ?? error);
+    if (!ERRORS.includes(MESSAGE) && ERRORS.length < 8) {
+        ERRORS.push(MESSAGE);
+    }
+    DOLLAR('error-log').textContent = ERRORS.join('\n');
+    DOLLAR('error-log').hidden = false;
+};
+const STATUS = (text) => {
+    DOLLAR('connection-status').textContent = text;
+};
 
 // Local mode substitutes SDP/ICE routing only. Every game packet still crosses real WebRTC.
 // Online mode uses the default Nostr signaler; neither path implements a synchronization engine.
-function localSignaling(){const handlers=new Map();let n=0;return async()=>{
-  const id=['a','b'][n++];return{id,send:async(to,message)=>{for(const [other,receive]of handlers)if(other!==id&&(!to||to==='*'||to===other))queueMicrotask(()=>receive({from:id,to,message:structuredClone(message)}));},subscribe(fn){handlers.set(id,fn);return()=>handlers.delete(id);},close(){handlers.delete(id);}};
-};}
-async function delayedPeer(options){
-  const connection=await createWebRTCPeer(options);liveConnections.add(connection.peerConnection);
-  const raw=connection.transport;let queue=[],timer=0,closed=false;
-  const flush=()=>{timer=0;while(queue.length&&queue[0].due<=performance.now()){if(raw.send(queue[0].bytes)===false)break;queue.shift();}if(queue.length)timer=setTimeout(flush,Math.max(5,queue[0].due-performance.now()));};
-  connection.transport={send(bytes){const delay=options.signaler.id==='a'?impairment.ms:0;if(closed||queue.length>=2048)return false;if(!delay&&!queue.length)return raw.send(bytes);queue.push({bytes:bytes.slice(),due:Math.max(performance.now()+delay,queue.at(-1)?.due??0)});if(!timer)timer=setTimeout(flush,delay);return true;},
-    subscribe:fn=>raw.subscribe(fn),subscribeStatus:fn=>raw.subscribeStatus(fn),get state(){return raw.state;},close(){closed=true;clearTimeout(timer);queue=[];raw.close();}};
-  const close=connection.close;connection.close=()=>{connection.transport.close();liveConnections.delete(connection.peerConnection);close();};return connection;
+function localSignaling() {
+    const HANDLERS = new Map();
+    let n = 0;
+    return async () => {
+        const ID = ['a', 'b'][n++];
+        return {
+            id: ID,
+            send: async (to, message) => {
+                for (const [OTHER, RECEIVE] of HANDLERS) {
+                    if (OTHER !== ID && (!to || to === '*' || to === OTHER)) {
+                        queueMicrotask(() =>
+                            RECEIVE({
+                                from: ID,
+                                to,
+                                message: structuredClone(message),
+                            }),
+                        );
+                    }
+                }
+            },
+            subscribe(fn) {
+                HANDLERS.set(ID, fn);
+                return () => HANDLERS.delete(ID);
+            },
+            close() {
+                HANDLERS.delete(ID);
+            },
+        };
+    };
 }
-function eventKey(e){return JSON.stringify([e.tick,e.sequence,e.entityId,e.generation,e.kind]);}
-function journalFor(peer){
-  const particle={reversible:true,start(e,now){const key=eventKey(e);if(peer.particles.has(key))peer.stats.duplicateParticles++;peer.particles.add(key);if(peer.particles.size>256)peer.particles.delete(peer.particles.values().next().value);peer.stats.particleStarts++;const h={...e.payload,at:now,kind:e.kind,key:eventKey(e)};peer.effects.add(h);return h;},
-    reconcile(h,e,old,now){peer.stats.particleReconciles++;Object.assign(h,e.payload);},
-    stop(h){peer.stats.particleStops++;peer.effects.delete(h);}};
-  return new PresentationEventQueue({retentionTicks:120,maxPending:2048,adapters:{particle,instant:particle,
-    sound:{start(e){const key=eventKey(e);if(peer.sounds.has(key))peer.stats.duplicateSounds++;peer.sounds.add(key);if(peer.sounds.size>256)peer.sounds.delete(peer.sounds.values().next().value);peer.stats.soundStarts++;
-      // Irreversible sound is confirmed-only. Local two-peer mode sounds one perspective.
-      if(audio&&$('sound').checked&&peer===peers[0]){const osc=audio.createOscillator(),gain=audio.createGain();osc.frequency.value=420;gain.gain.setValueAtTime(.025,audio.currentTime);gain.gain.exponentialRampToValueAtTime(.001,audio.currentTime+.07);osc.connect(gain).connect(audio.destination);osc.onended=()=>{osc.disconnect();gain.disconnect();};osc.start();osc.stop(audio.currentTime+.08);}
-    }}}});
+async function delayedPeer(options) {
+    const CONNECTION = await createWebRTCPeer(options);
+    LIVE_CONNECTIONS.add(CONNECTION.peerConnection);
+    const RAW = CONNECTION.transport;
+    let queue = [];
+    let timer = 0;
+    let closed = false;
+    const FLUSH = () => {
+        timer = 0;
+        while (queue.length && queue[0].due <= performance.now()) {
+            if (RAW.send(queue[0].bytes) === false) {
+                break;
+            }
+            queue.shift();
+        }
+        if (queue.length) {
+            timer = setTimeout(FLUSH, Math.max(5, queue[0].due - performance.now()));
+        }
+    };
+    CONNECTION.transport = {
+        send(bytes) {
+            const DELAY = options.signaler.id === 'a' ? IMPAIRMENT.ms : 0;
+            if (closed || queue.length >= 2048) {
+                return false;
+            }
+            if (!DELAY && !queue.length) {
+                return RAW.send(bytes);
+            }
+            queue.push({
+                bytes: bytes.slice(),
+                due: Math.max(performance.now() + DELAY, queue.at(-1)?.due ?? 0),
+            });
+            if (!timer) {
+                timer = setTimeout(FLUSH, DELAY);
+            }
+            return true;
+        },
+        subscribe: (fn) => RAW.subscribe(fn),
+        subscribeStatus: (fn) => RAW.subscribeStatus(fn),
+        get state() {
+            return RAW.state;
+        },
+        close() {
+            closed = true;
+            clearTimeout(timer);
+            queue = [];
+            RAW.close();
+        },
+    };
+    const CLOSE = CONNECTION.close;
+    CONNECTION.close = () => {
+        CONNECTION.transport.close();
+        LIVE_CONNECTIONS.delete(CONNECTION.peerConnection);
+        CLOSE();
+    };
+    return CONNECTION;
 }
-function installPeer(room,tps){
-  const stepMs=1000/tps,id=room.localPlayerId,device={axis:0,commands:[]};devices.set(id,device);
-  const peer={id,room,tps,stepMs,effects:new Set(),sounds:new Set(),particles:new Set(),revision:0,sequence:0,needsReset:'reset',publishedTick:-1,epoch:-1,teleports:new Map(),
-    stats:{frames:0,projectileFrames:0,retainedFrames:0,previewFrames:0,releases:0,rollbacks:0,particleStarts:0,particleStops:0,particleReconciles:0,soundStarts:0,duplicateSounds:0,duplicateParticles:0,optionalFrames:0,pathCorners:0},submission:[],display:{},status:'joining'};
-  peer.journal=journalFor(peer);
-  peer.game=createGame(stepMs,e=>peer.journal.emit(e));
-  peer.presentation=new PresentationRuntime({stepMs,delayMs:stepMs,snapDistance:300});
-  // Disable pacing holds here to demonstrate rollback on late changed input.
-  peer.session=new RoomSession({mode:'online',room,inputSize:1,simulationVersion:'reference-v2-'+tps,seed:42,adapter:peer.game,
-    profile:{...profiles.action,mode:'rollback',tickRate:tps,baseInputDelayTicks:1,minInputDelayTicks:1,maxInputDelayTicks:1,adaptiveInputDelay:false,rollbackWindowTicks:16,stateHistorySize:128,checksumInterval:10,pacingPolicy:'none'},membership:{maxPlayers:2},
-    onEvent(e){try{
-      if(e.type==='rollback'){
-        peer.stats.rollbacks++;peer.needsReset='rollback';
-        peer.journal.beginRollback(Math.max(e.from,peer.journal.confirmedTick+1));peer.inRollback=true;
-      }
-      if(e.type==='reconciled'){if(peer.inRollback)peer.journal.endRollback();peer.inRollback=false;peer.needsReset='rollback';}
-      if(e.type==='membership-committed'||e.type==='recovered'){
-        peer.journal.dispose();peer.effects.clear();peer.journal=journalFor(peer);peer.inRollback=false;peer.needsReset='reset';
-      }
-      if(e.type==='input-submitted'&&e.commands?.length){peer.submission.push({tick:e.tick,T:e.executeTick,commands:e.commands});if(peer.submission.length>16)peer.submission.shift();}
-      if(['fatal','version-mismatch','handshake-mismatch','desync-unrecoverable'].includes(e.type))throw Error(e.type);
-    }catch(error){fail(error);}}});
-  const snapshot=()=>peer.game.save();
-  peer.preview=new LocalInputPreview({presentation:peer.presentation,stepMs,maxAgeMs:1600,maxFutureTicks:16,maxPendingInputs:16,captureSnapshot:snapshot,cloneSnapshot:b=>b.slice(),
-    isActive:fork=>!!fork.world.actors[id]?.action,
-    createFork(bytes){let world=codec.decode(bytes);return{get world(){return world;},restore(b){world=codec.decode(b);},step(input,context){
-      // Same update, detached world, this player only. No journal/audio/network from this fork.
-      stepWorld(world,{tick:context.tick,inputs:[{playerId:id,input,commands:context.commands}]},stepMs);
-    }};},readEntities:fork=>{const a=fork.world.actors[id];return a?[{id:'actor:'+id,generation:a.generation,source:a,type:Actor}]:[];}});
-  function publish(){
-    const session=peer.session;if(!session.ready||session.resimulating)return;
-    if(peer.publishedTick===session.tick&&!peer.needsReset)return;
-    const reset=peer.needsReset|| (peer.epoch!==session.epoch?'reset':null),now=performance.now();
-    if(reset)peer.revision++;
-    const list=entities(peer.game.world).map(e=>{
-      const a=e.source;
-      // Authority teleport discards buffered history immediately. The same serial
-      // is a STATE_KEY in Actor, so detached local preview also cuts its pose.
-      if(e.id.startsWith('actor:')){e.teleport=peer.teleports.has(e.id)&&peer.teleports.get(e.id)!==a.teleportSerial;peer.teleports.set(e.id,a.teleportSerial);}
-      if(reset){delete e.pathPoints;delete e.initialSource;delete e.initialTimeMs;}
-      else peer.stats.pathCorners+=e.pathPoints?.length??0;
-      return e;
+function eventKey(e) {
+    return JSON.stringify([e.tick, e.sequence, e.entityId, e.generation, e.kind]);
+}
+function journalFor(peer) {
+    const PARTICLE = {
+        reversible: true,
+        start(e, now) {
+            const KEY = eventKey(e);
+            if (peer.particles.has(KEY)) {
+                peer.stats.duplicateParticles++;
+            }
+            peer.particles.add(KEY);
+            if (peer.particles.size > 256) {
+                peer.particles.delete(peer.particles.values().next().value);
+            }
+            peer.stats.particleStarts++;
+            const H = {
+                ...e.payload,
+                at: now,
+                kind: e.kind,
+                key: eventKey(e),
+            };
+            peer.effects.add(H);
+            return H;
+        },
+        reconcile(h, e, _old, _now) {
+            peer.stats.particleReconciles++;
+            Object.assign(h, e.payload);
+        },
+        stop(h) {
+            peer.stats.particleStops++;
+            peer.effects.delete(h);
+        },
+    };
+    return new PresentationEventQueue({
+        retentionTicks: 120,
+        maxPending: 2048,
+        adapters: {
+            particle: PARTICLE,
+            instant: PARTICLE,
+            sound: {
+                start(e) {
+                    const KEY = eventKey(e);
+                    if (peer.sounds.has(KEY)) {
+                        peer.stats.duplicateSounds++;
+                    }
+                    peer.sounds.add(KEY);
+                    if (peer.sounds.size > 256) {
+                        peer.sounds.delete(peer.sounds.values().next().value);
+                    }
+                    peer.stats.soundStarts++;
+                    // Irreversible sound is confirmed-only. Local two-peer mode sounds one perspective.
+                    if (audio && DOLLAR('sound').checked && peer === peers[0]) {
+                        const OSC = audio.createOscillator(),
+                            GAIN = audio.createGain();
+                        OSC.frequency.value = 420;
+                        GAIN.gain.setValueAtTime(0.025, audio.currentTime);
+                        GAIN.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + 0.07);
+                        OSC.connect(GAIN).connect(audio.destination);
+                        OSC.onended = () => {
+                            OSC.disconnect();
+                            GAIN.disconnect();
+                        };
+                        OSC.start();
+                        OSC.stop(audio.currentTime + 0.08);
+                    }
+                },
+            },
+        },
     });
-    peer.presentation.capture({revision:peer.revision,sequence:++peer.sequence,timeMs:session.tick*stepMs,mode:reset==='rollback'?'rollback':reset?'reset':'continuous',entities:list},now);
-    const local=session.localInputState;
-    // Deliberately full checkpoints: no guessed remote continuation key / stale fork optimization.
-    peer.preview.reconcile({snapshot:snapshot(),revision:peer.revision,tick:session.tick,epoch:session.epoch,mode:reset==='rollback'?'rollback':reset?'reset':'continuous',
-      input:local.replayInput??local.executedInput,confirmedCommandSequence:local.executedCommandSequence??undefined,timeMs:now});
-    peer.publishedTick=session.tick;peer.epoch=session.epoch;peer.needsReset=null;
-  }
-  peer.loop=createLoop({session:peer.session,inputPreview:peer.preview,rates:{baseHz:120,inputHz:60,renderHz:60},
-    canAdvance:()=>peer.session.tick<stopAt,canObserveInput:()=>peer.session.ready&&!peer.session.resimulating&&peer.publishedTick>=0,
-    getInput:()=>({input:Uint8Array.of(device.axis),commands:device.commands.splice(0).map(n=>({payload:Uint8Array.of(n)})),predict:device.axis!==0}),
-    onAdvance(result){peer.status=result.status;publish();},onInputRelease(){device.axis=0;device.commands=[];},onPreviewError:fail,onError:fail,
-    onBacklogDrop(){peer.needsReset='reset';},render(){publish();drawPeer(peer);}});
-  publish();
-  // Timer owns input/poll/fixed work; RAF owns drawing. Both use the official loop.
-  peer.scheduler=createDeadlineScheduler({getIntervalMs:()=>1000/60,pulse:now=>{peer.loop.pollInput(now);peer.loop.pulse(now,{render:false,input:false});publish();
-    if(!peer.inRollback&&peer.session.confirmedTick>=0)peer.journal.confirmThrough(Math.min(peer.session.confirmedTick,peer.session.tick-1));},onGap(){peer.loop.resetTiming();peer.needsReset='reset';},onError:fail});
-  peers.push(peer);peer.scheduler.start();return peer;
 }
-function drawPeer(peer){
-  if(peer.publishedTick<0||peer.session.resimulating)return;
-  const frame=peer.presentation.frame(performance.now()),models=new Map(),path=[];peer.stats.frames++;
-  frame.forEach((m,id,g)=>models.set(id,{m,g}));
-  const local=models.get('actor:'+peer.id)?.m;
-  const selected=peer.preview.active||peer.preview.pendingCount>0||devices.get(peer.id)?.axis!==0;
-  if(selected)peer.stats.previewFrames++;if(peer.wasPreview&&!selected)peer.stats.releases++;peer.wasPreview=selected;
-  peer.display={preview:selected,x:local?.x,action:local?.action??null,timeMs:frame.timeMs};
-  const index=peers.indexOf(peer);ctx.save();ctx.translate(0,index*(HEIGHT+38));ctx.fillStyle='#8c9eb7';ctx.fillText(`참가자 ${peer.id.slice(0,8)}가 보는 세계 · ${selected?'로컬 preview':'authority'}`,16,18);ctx.translate(0,28);
-  ctx.strokeStyle='#33455d';ctx.strokeRect(15,15,WIDTH-30,HEIGHT-30);
-  for(const [id,{m,g}]of models){
-    if(![m.x,m.y,m.z,m.angle].every(Number.isFinite))throw Error('Non-finite frame pose');
-    if(frame.sample(id,g)!==m||frame.modelFor(m)!==m)throw Error('Mixed display frame');
-    const radius=id.startsWith('actor:')?13:5;
-    if(id.startsWith('shot:')){
-      peer.stats.projectileFrames++;if(!peer.game.world.shots.some(s=>s.id===id&&s.generation===g))peer.stats.retainedFrames++;
-      frame.pathInto(id,g,path);ctx.strokeStyle=m.color+'66';ctx.beginPath();path.forEach((p,i)=>i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y));ctx.stroke();
-      const head=path.at(-1);if(head&&(Math.abs(head.x-m.x)>1e-7||Math.abs(head.y-m.y)>1e-7))throw Error('Trail/body time mismatch');
-      const target=models.get('actor:'+m.target)?.m;if(target){ctx.setLineDash([3,5]);ctx.beginPath();ctx.moveTo(m.x,m.y-m.z);ctx.lineTo(target.x,target.y-target.z);ctx.stroke();ctx.setLineDash([]);}
-    }else if(m.action){peer.stats.optionalFrames++;if(!Number.isFinite(m.action.left/m.action.total))throw Error('Partial optional action');}
-    ctx.fillStyle='#0006';ctx.beginPath();ctx.ellipse(m.x,m.y, radius, radius*.4,0,0,Math.PI*2);ctx.fill();
-    ctx.save();ctx.translate(m.x,m.y-m.z);ctx.rotate(m.angle);ctx.fillStyle=m.color;ctx.fillRect(-radius,-radius,radius*2,radius*2);ctx.fillStyle='#fff';ctx.fillRect(radius,-2,7,4);ctx.restore();
-    if(m.action){ctx.strokeStyle='#fff';ctx.beginPath();ctx.arc(m.x,m.y-m.z,19,0,Math.PI*2*m.action.left/m.action.total);ctx.stroke();}
-  }
-  peer.journal.update(performance.now());
-  for(const e of peer.effects){const age=(performance.now()-e.at)/260;ctx.strokeStyle=e.color;ctx.globalAlpha=Math.max(0,1-age);ctx.beginPath();if(e.kind==='instant'){ctx.moveTo(e.x,e.y);ctx.lineTo(e.x2,e.y2);}else ctx.arc(e.x,e.y,5+age*22,0,Math.PI*2);ctx.stroke();}ctx.globalAlpha=1;ctx.restore();
+function installPeer(room, tps) {
+    const STEP_MS = 1000 / tps,
+        ID = room.localPlayerId,
+        DEVICE = {
+            axis: 0,
+            commands: [],
+        };
+    DEVICES.set(ID, DEVICE);
+    const PEER = {
+        id: ID,
+        room,
+        tps,
+        stepMs: STEP_MS,
+        effects: new Set(),
+        sounds: new Set(),
+        particles: new Set(),
+        revision: 0,
+        sequence: 0,
+        needsReset: 'reset',
+        publishedTick: -1,
+        epoch: -1,
+        teleports: new Map(),
+        stats: {
+            frames: 0,
+            projectileFrames: 0,
+            retainedFrames: 0,
+            previewFrames: 0,
+            releases: 0,
+            rollbacks: 0,
+            particleStarts: 0,
+            particleStops: 0,
+            particleReconciles: 0,
+            soundStarts: 0,
+            duplicateSounds: 0,
+            duplicateParticles: 0,
+            optionalFrames: 0,
+            pathCorners: 0,
+        },
+        submission: [],
+        display: {},
+        status: 'joining',
+    };
+    PEER.journal = journalFor(PEER);
+    PEER.game = createGame(STEP_MS, (e) => PEER.journal.emit(e));
+    PEER.presentation = new PresentationRuntime({
+        stepMs: STEP_MS,
+        delayMs: STEP_MS,
+        snapDistance: 300,
+    });
+    // Disable pacing holds here to demonstrate rollback on late changed input.
+    PEER.session = new RoomSession({
+        mode: 'online',
+        room,
+        inputSize: 1,
+        simulationVersion: 'reference-v2-' + tps,
+        seed: 42,
+        adapter: PEER.game,
+        profile: {
+            ...profiles.action,
+            mode: 'rollback',
+            tickRate: tps,
+            baseInputDelayTicks: 1,
+            minInputDelayTicks: 1,
+            maxInputDelayTicks: 1,
+            adaptiveInputDelay: false,
+            rollbackWindowTicks: 16,
+            stateHistorySize: 128,
+            checksumInterval: 10,
+            pacingPolicy: 'none',
+        },
+        membership: {
+            maxPlayers: 2,
+        },
+        onEvent(e) {
+            try {
+                if (e.type === 'rollback') {
+                    PEER.stats.rollbacks++;
+                    PEER.needsReset = 'rollback';
+                    PEER.journal.beginRollback(Math.max(e.from, PEER.journal.confirmedTick + 1));
+                    PEER.inRollback = true;
+                }
+                if (e.type === 'reconciled') {
+                    if (PEER.inRollback) {
+                        PEER.journal.endRollback();
+                    }
+                    PEER.inRollback = false;
+                    PEER.needsReset = 'rollback';
+                }
+                if (e.type === 'membership-committed' || e.type === 'recovered') {
+                    PEER.journal.dispose();
+                    PEER.effects.clear();
+                    PEER.journal = journalFor(PEER);
+                    PEER.inRollback = false;
+                    PEER.needsReset = 'reset';
+                }
+                if (e.type === 'input-submitted' && e.commands?.length) {
+                    PEER.submission.push({
+                        tick: e.tick,
+                        T: e.executeTick,
+                        commands: e.commands,
+                    });
+                    if (PEER.submission.length > 16) {
+                        PEER.submission.shift();
+                    }
+                }
+                if (['fatal', 'version-mismatch', 'handshake-mismatch', 'desync-unrecoverable'].includes(e.type)) {
+                    throw Error(e.type);
+                }
+            } catch (error) {
+                FAIL(error);
+            }
+        },
+    });
+    const SNAPSHOT = () => PEER.game.save();
+    PEER.preview = new LocalInputPreview({
+        presentation: PEER.presentation,
+        stepMs: STEP_MS,
+        maxAgeMs: 1600,
+        maxFutureTicks: 16,
+        maxPendingInputs: 16,
+        captureSnapshot: SNAPSHOT,
+        cloneSnapshot: (b) => b.slice(),
+        isActive: (fork) => !!fork.world.actors[ID]?.action,
+        createFork(bytes) {
+            let world = codec.decode(bytes);
+            return {
+                get world() {
+                    return world;
+                },
+                restore(b) {
+                    world = codec.decode(b);
+                },
+                step(input, context) {
+                    // Same update, detached world, this player only. No journal/audio/network from this fork.
+                    stepWorld(
+                        world,
+                        {
+                            tick: context.tick,
+                            inputs: [
+                                {
+                                    playerId: ID,
+                                    input,
+                                    commands: context.commands,
+                                },
+                            ],
+                        },
+                        STEP_MS,
+                    );
+                },
+            };
+        },
+        readEntities: (fork) => {
+            const A = fork.world.actors[ID];
+            return A
+                ? [
+                      {
+                          id: 'actor:' + ID,
+                          generation: A.generation,
+                          source: A,
+                          type: Actor,
+                      },
+                  ]
+                : [];
+        },
+    });
+    function publish() {
+        const SESSION = PEER.session;
+        if (!SESSION.ready || SESSION.resimulating) {
+            return;
+        }
+        if (PEER.publishedTick === SESSION.tick && !PEER.needsReset) {
+            return;
+        }
+        const RESET = PEER.needsReset || (PEER.epoch !== SESSION.epoch ? 'reset' : null),
+            NOW = performance.now();
+        if (RESET) {
+            PEER.revision++;
+        }
+        const LIST = entities(PEER.game.world).map((e) => {
+            const A = e.source;
+            // Authority teleport discards buffered history immediately. The same serial
+            // is a STATE_KEY in Actor, so detached local preview also cuts its pose.
+            if (e.id.startsWith('actor:')) {
+                e.teleport = PEER.teleports.has(e.id) && PEER.teleports.get(e.id) !== A.teleportSerial;
+                PEER.teleports.set(e.id, A.teleportSerial);
+            }
+            if (RESET) {
+                delete e.pathPoints;
+                delete e.initialSource;
+                delete e.initialTimeMs;
+            } else {
+                PEER.stats.pathCorners += e.pathPoints?.length ?? 0;
+            }
+            return e;
+        });
+        PEER.presentation.capture(
+            {
+                revision: PEER.revision,
+                sequence: ++PEER.sequence,
+                timeMs: SESSION.tick * STEP_MS,
+                mode: RESET === 'rollback' ? 'rollback' : RESET ? 'reset' : 'continuous',
+                entities: LIST,
+            },
+            NOW,
+        );
+        const LOCAL = SESSION.localInputState;
+        // Deliberately full checkpoints: no guessed remote continuation key / stale fork optimization.
+        PEER.preview.reconcile({
+            snapshot: SNAPSHOT(),
+            revision: PEER.revision,
+            tick: SESSION.tick,
+            epoch: SESSION.epoch,
+            mode: RESET === 'rollback' ? 'rollback' : RESET ? 'reset' : 'continuous',
+            input: LOCAL.replayInput ?? LOCAL.executedInput,
+            confirmedCommandSequence: LOCAL.executedCommandSequence ?? undefined,
+            timeMs: NOW,
+        });
+        PEER.publishedTick = SESSION.tick;
+        PEER.epoch = SESSION.epoch;
+        PEER.needsReset = null;
+    }
+    PEER.loop = createLoop({
+        session: PEER.session,
+        inputPreview: PEER.preview,
+        rates: {
+            baseHz: 120,
+            inputHz: 60,
+            renderHz: 60,
+        },
+        canAdvance: () => PEER.session.tick < stopAt,
+        canObserveInput: () => PEER.session.ready && !PEER.session.resimulating && PEER.publishedTick >= 0,
+        getInput: () => ({
+            input: Uint8Array.of(DEVICE.axis),
+            commands: DEVICE.commands.splice(0).map((n) => ({
+                payload: Uint8Array.of(n),
+            })),
+            predict: DEVICE.axis !== 0,
+        }),
+        onAdvance(result) {
+            PEER.status = result.status;
+            publish();
+        },
+        onInputRelease() {
+            DEVICE.axis = 0;
+            DEVICE.commands = [];
+        },
+        onPreviewError: FAIL,
+        onError: FAIL,
+        onBacklogDrop() {
+            PEER.needsReset = 'reset';
+        },
+        render() {
+            publish();
+            drawPeer(PEER);
+        },
+    });
+    publish();
+    // Timer owns input/poll/fixed work; RAF owns drawing. Both use the official loop.
+    PEER.scheduler = createDeadlineScheduler({
+        getIntervalMs: () => 1000 / 60,
+        pulse: (now) => {
+            PEER.loop.pollInput(now);
+            PEER.loop.pulse(now, {
+                render: false,
+                input: false,
+            });
+            publish();
+            if (!PEER.inRollback && PEER.session.confirmedTick >= 0) {
+                PEER.journal.confirmThrough(Math.min(PEER.session.confirmedTick, PEER.session.tick - 1));
+            }
+        },
+        onGap() {
+            PEER.loop.resetTiming();
+            PEER.needsReset = 'reset';
+        },
+        onError: FAIL,
+    });
+    peers.push(PEER);
+    PEER.scheduler.start();
+    return PEER;
 }
-function diagnostic(){return{tps:peers[0]?.tps,connections:[...liveConnections].map(p=>p.connectionState),errors:[...errors],peers:peers.map(p=>({id:p.id,tick:p.session.tick,confirmedTick:p.session.confirmedTick,epoch:p.session.epoch,status:p.session.status,hash:p.session.getStateHash(),rollback:p.stats.rollbacks,preview:p.display.preview,counts:p.game.world.counts,commands:p.game.world.commands,actors:p.game.world.actors,display:p.display,stats:p.stats,submissions:p.submission}))};}
-function render(now){try{ctx.clearRect(0,0,canvas.width,canvas.height);peers.forEach(p=>p.loop.render());if(now-lastDiagnostic>150){$('debug-state').textContent=JSON.stringify(diagnostic(),null,2);$('summary').textContent=peers.map(p=>`${p.id.slice(0,8)} tick ${p.session.tick}/${p.session.confirmedTick} · rollback ${p.stats.rollbacks} · preview ${!!p.display.preview} · SFX ${p.stats.soundStarts}`).join(' | ');lastDiagnostic=now;}}catch(e){fail(e);}animation=requestAnimationFrame(render);}
-function controls(running){for(const id of ['mode','tps','room-input','start'])$(id).disabled=running;$('stop').disabled=!running;document.querySelectorAll('[data-command], [data-axis], #compare, #delay').forEach(e=>e.disabled=!running);}
-function release(){for(const p of peers)p.loop.releaseInput();}
-function stop(){serial++;abort?.abort();abort=null;cancelAnimationFrame(animation);release();for(const p of peers){p.scheduler.stop();p.loop.stop();p.preview.dispose();p.journal.dispose();p.session.close();}rooms.forEach(r=>r.close());rooms=[];peers=[];devices.clear();stopAt=Infinity;impairment.ms=0;controls(false);status('중지됨. 두 참가자가 나간 뒤 같은 TPS로 새 방을 시작하세요.');}
-async function start(){stop();const token=serial;$('delay').textContent='A → B RTC 송신 지연: 0ms';errors.length=0;$('error-log').hidden=true;$('comparison').textContent='';abort=new AbortController();controls(true);
-  const mode=$('mode').value,tps=Number($('tps').value),room=$('room-input').value;$('delay').disabled=mode!=='local';
-  audio??=typeof AudioContext==='function'?new AudioContext():null;audio?.resume();
-  const options={room,namespace:'bloom-reference-v2-'+tps,maxPlayers:2,signal:abort.signal,retryMs:200,advertiseIntervalMs:500};
-  try{
-    status(`${tps} TPS 방 준비 중…`);
-    const add=async role=>{const r=await createNostrDynamicRoom({...options,role});if(serial!==token){r.close();return;}rooms.push(r);installPeer(r,tps);};
-    if(mode==='local'){options.signalerFactory=localSignaling();options.peerFactory=delayedPeer;options.rtcConfig={iceServers:[]};await add('host');await add('join');}
-    else await add(mode);
-    if(serial!==token)return;canvas.height=(HEIGHT+38)*peers.length;
-    document.querySelectorAll('[data-player="b"]').forEach(e=>e.hidden=mode!=='local');
-    status(`${tps} TPS · 입력 60Hz / RAF 표시 · 방 ${room} · 실행 중 TPS 변경 불가`);animation=requestAnimationFrame(render);
-  }catch(e){if(serial===token){stop();fail(e);}}
+function drawPeer(peer) {
+    if (peer.publishedTick < 0 || peer.session.resimulating) {
+        return;
+    }
+    const FRAME = peer.presentation.frame(performance.now()),
+        MODELS = new Map(),
+        PATH = [];
+    peer.stats.frames++;
+    FRAME.forEach((m, id, g) =>
+        MODELS.set(id, {
+            m,
+            g,
+        }),
+    );
+    const LOCAL = MODELS.get('actor:' + peer.id)?.m;
+    const SELECTED = peer.preview.active || peer.preview.pendingCount > 0 || DEVICES.get(peer.id)?.axis !== 0;
+    if (SELECTED) {
+        peer.stats.previewFrames++;
+    }
+    if (peer.wasPreview && !SELECTED) {
+        peer.stats.releases++;
+    }
+    peer.wasPreview = SELECTED;
+    peer.display = {
+        preview: SELECTED,
+        x: LOCAL?.x,
+        action: LOCAL?.action ?? null,
+        timeMs: FRAME.timeMs,
+    };
+    const INDEX = peers.indexOf(peer);
+    CTX.save();
+    CTX.translate(0, INDEX * (HEIGHT + 38));
+    CTX.fillStyle = '#8c9eb7';
+    CTX.fillText(`참가자 ${peer.id.slice(0, 8)}가 보는 세계 · ${SELECTED ? '로컬 preview' : 'authority'}`, 16, 18);
+    CTX.translate(0, 28);
+    CTX.strokeStyle = '#33455d';
+    CTX.strokeRect(15, 15, WIDTH - 30, HEIGHT - 30);
+    for (const [ID, { m: M, g: G }] of MODELS) {
+        if (![M.x, M.y, M.z, M.angle].every(Number.isFinite)) {
+            throw Error('Non-finite frame pose');
+        }
+        if (FRAME.sample(ID, G) !== M || FRAME.modelFor(M) !== M) {
+            throw Error('Mixed display frame');
+        }
+        const RADIUS = ID.startsWith('actor:') ? 13 : 5;
+        if (ID.startsWith('shot:')) {
+            peer.stats.projectileFrames++;
+            if (!peer.game.world.shots.some((s) => s.id === ID && s.generation === G)) {
+                peer.stats.retainedFrames++;
+            }
+            FRAME.pathInto(ID, G, PATH);
+            CTX.strokeStyle = M.color + '66';
+            CTX.beginPath();
+            PATH.forEach((p, i) => (i ? CTX.lineTo(p.x, p.y) : CTX.moveTo(p.x, p.y)));
+            CTX.stroke();
+            const HEAD = PATH.at(-1);
+            if (HEAD && (Math.abs(HEAD.x - M.x) > 1e-7 || Math.abs(HEAD.y - M.y) > 1e-7)) {
+                throw Error('Trail/body time mismatch');
+            }
+            const TARGET = MODELS.get('actor:' + M.target)?.m;
+            if (TARGET) {
+                CTX.setLineDash([3, 5]);
+                CTX.beginPath();
+                CTX.moveTo(M.x, M.y - M.z);
+                CTX.lineTo(TARGET.x, TARGET.y - TARGET.z);
+                CTX.stroke();
+                CTX.setLineDash([]);
+            }
+        } else if (M.action) {
+            peer.stats.optionalFrames++;
+            if (!Number.isFinite(M.action.left / M.action.total)) {
+                throw Error('Partial optional action');
+            }
+        }
+        CTX.fillStyle = '#0006';
+        CTX.beginPath();
+        CTX.ellipse(M.x, M.y, RADIUS, RADIUS * 0.4, 0, 0, Math.PI * 2);
+        CTX.fill();
+        CTX.save();
+        CTX.translate(M.x, M.y - M.z);
+        CTX.rotate(M.angle);
+        CTX.fillStyle = M.color;
+        CTX.fillRect(-RADIUS, -RADIUS, RADIUS * 2, RADIUS * 2);
+        CTX.fillStyle = '#fff';
+        CTX.fillRect(RADIUS, -2, 7, 4);
+        CTX.restore();
+        if (M.action) {
+            CTX.strokeStyle = '#fff';
+            CTX.beginPath();
+            CTX.arc(M.x, M.y - M.z, 19, 0, (Math.PI * 2 * M.action.left) / M.action.total);
+            CTX.stroke();
+        }
+    }
+    peer.journal.update(performance.now());
+    for (const E of peer.effects) {
+        const AGE = (performance.now() - E.at) / 260;
+        CTX.strokeStyle = E.color;
+        CTX.globalAlpha = Math.max(0, 1 - AGE);
+        CTX.beginPath();
+        if (E.kind === 'instant') {
+            CTX.moveTo(E.x, E.y);
+            CTX.lineTo(E.x2, E.y2);
+        } else {
+            CTX.arc(E.x, E.y, 5 + AGE * 22, 0, Math.PI * 2);
+        }
+        CTX.stroke();
+    }
+    CTX.globalAlpha = 1;
+    CTX.restore();
 }
-function peerAt(label){return peers[label==='b'?1:0];}
-function observe(label,axis,command){const p=peerAt(label);if(!p?.session.ready)return;const d=devices.get(p.id);if(axis!==undefined)d.axis=axis;if(command)d.commands.push(command);p.loop.observeInput(performance.now());}
-document.querySelectorAll('[data-axis]').forEach(b=>{b.onpointerdown=e=>{e.preventDefault();b.setPointerCapture(e.pointerId);observe(b.dataset.player,Number(b.dataset.axis));};for(const event of ['pointerup','pointercancel','lostpointercapture'])b.addEventListener(event,()=>observe(b.dataset.player,0));});
-document.querySelectorAll('[data-command]').forEach(b=>b.onclick=()=>observe(b.dataset.player,undefined,Number(b.dataset.command)));
-const keys={ArrowLeft:['a',1],ArrowRight:['a',2],KeyA:['b',1],KeyD:['b',2]};
-window.addEventListener('keydown',e=>{if(/INPUT|SELECT|TEXTAREA/.test(e.target.tagName))return;if(keys[e.code]){e.preventDefault();observe(...keys[e.code]);}if(!e.repeat&&e.code==='Space'){e.preventDefault();observe('a',undefined,1);}if(!e.repeat&&e.code==='KeyF')observe('a',undefined,2);});
-window.addEventListener('keyup',e=>{if(keys[e.code])observe(keys[e.code][0],0);});window.addEventListener('blur',release);
-document.addEventListener('visibilitychange',()=>{if(document.hidden)release();else for(const p of peers){p.loop.resetTiming();p.scheduler.rebase();p.needsReset='reset';}});
-window.addEventListener('pagehide',()=>{stop();audio?.close();});$('start').onclick=start;$('stop').onclick=stop;
-$('delay').onclick=()=>{impairment.ms=impairment.ms?0:240;$('delay').textContent=`A → B RTC 송신 지연: ${impairment.ms}ms`;};
-$('compare').onclick=async()=>{
-  if(peers.length!==2)return;const comparisonSerial=serial;$('comparison').dataset.result='pending';release();stopAt=Math.max(...peers.map(p=>p.session.tick))+Math.ceil(peers[0].tps*.5);const target=stopAt,deadline=performance.now()+10000;
-  while(serial===comparisonSerial&&performance.now()<deadline&&!peers.every(p=>p.session.tick===target&&p.session.confirmedTick>=target-1&&!p.session.resimulating))await new Promise(r=>setTimeout(r,20));
-  if(serial!==comparisonSerial)return;
-  const snapshot=diagnostic(),equal=snapshot.peers.every(p=>p.tick===target&&p.confirmedTick>=target-1)&&new Set(snapshot.peers.map(p=>p.hash)).size===1;
-  $('comparison').dataset.result=equal?'matched':'failed';$('comparison').textContent=`tick ${target} · ${equal?'확정 hash 일치':'아직 불일치'} · ${snapshot.peers.map(p=>p.hash).join(' / ')}`;window.reference.lastComparison=snapshot;stopAt=Infinity;
+function diagnostic() {
+    return {
+        tps: peers[0]?.tps,
+        connections: [...LIVE_CONNECTIONS].map((p) => p.connectionState),
+        errors: [...ERRORS],
+        peers: peers.map((p) => ({
+            id: p.id,
+            tick: p.session.tick,
+            confirmedTick: p.session.confirmedTick,
+            epoch: p.session.epoch,
+            status: p.session.status,
+            hash: p.session.getStateHash(),
+            rollback: p.stats.rollbacks,
+            preview: p.display.preview,
+            counts: p.game.world.counts,
+            commands: p.game.world.commands,
+            actors: p.game.world.actors,
+            display: p.display,
+            stats: p.stats,
+            submissions: p.submission,
+        })),
+    };
+}
+function render(now) {
+    try {
+        CTX.clearRect(0, 0, CANVAS.width, CANVAS.height);
+        peers.forEach((p) => p.loop.render());
+        if (now - lastDiagnostic > 150) {
+            DOLLAR('debug-state').textContent = JSON.stringify(diagnostic(), null, 2);
+            DOLLAR('summary').textContent = peers
+                .map(
+                    (p) =>
+                        `${p.id.slice(0, 8)} tick ${p.session.tick}/${p.session.confirmedTick} · rollback ${p.stats.rollbacks} · preview ${!!p.display.preview} · SFX ${p.stats.soundStarts}`,
+                )
+                .join(' | ');
+            lastDiagnostic = now;
+        }
+    } catch (e) {
+        FAIL(e);
+    }
+    animation = requestAnimationFrame(render);
+}
+function controls(running) {
+    for (const ID of ['mode', 'tps', 'room-input', 'start']) {
+        DOLLAR(ID).disabled = running;
+    }
+    DOLLAR('stop').disabled = !running;
+    document.querySelectorAll('[data-command], [data-axis], #compare, #delay').forEach((e) => (e.disabled = !running));
+}
+function release() {
+    for (const P of peers) {
+        P.loop.releaseInput();
+    }
+}
+function stop() {
+    serial++;
+    abort?.abort();
+    abort = null;
+    cancelAnimationFrame(animation);
+    release();
+    for (const P of peers) {
+        P.scheduler.stop();
+        P.loop.stop();
+        P.preview.dispose();
+        P.journal.dispose();
+        P.session.close();
+    }
+    rooms.forEach((r) => r.close());
+    rooms = [];
+    peers = [];
+    DEVICES.clear();
+    stopAt = Infinity;
+    IMPAIRMENT.ms = 0;
+    controls(false);
+    STATUS('중지됨. 두 참가자가 나간 뒤 같은 TPS로 새 방을 시작하세요.');
+}
+async function start() {
+    stop();
+    const TOKEN = serial;
+    DOLLAR('delay').textContent = 'A → B RTC 송신 지연: 0ms';
+    ERRORS.length = 0;
+    DOLLAR('error-log').hidden = true;
+    DOLLAR('comparison').textContent = '';
+    abort = new AbortController();
+    controls(true);
+    const MODE = DOLLAR('mode').value,
+        TPS = Number(DOLLAR('tps').value),
+        ROOM = DOLLAR('room-input').value;
+    DOLLAR('delay').disabled = MODE !== 'local';
+    audio ??= typeof AudioContext === 'function' ? new AudioContext() : null;
+    audio?.resume();
+    const OPTIONS = {
+        room: ROOM,
+        namespace: 'bloom-reference-v2-' + TPS,
+        maxPlayers: 2,
+        signal: abort.signal,
+        retryMs: 200,
+        advertiseIntervalMs: 500,
+    };
+    try {
+        STATUS(`${TPS} TPS 방 준비 중…`);
+        const ADD = async (role) => {
+            const R = await createNostrDynamicRoom({
+                ...OPTIONS,
+                role,
+            });
+            if (serial !== TOKEN) {
+                R.close();
+                return;
+            }
+            rooms.push(R);
+            installPeer(R, TPS);
+        };
+        if (MODE === 'local') {
+            OPTIONS.signalerFactory = localSignaling();
+            OPTIONS.peerFactory = delayedPeer;
+            OPTIONS.rtcConfig = {
+                iceServers: [],
+            };
+            await ADD('host');
+            await ADD('join');
+        } else {
+            await ADD(MODE);
+        }
+        if (serial !== TOKEN) {
+            return;
+        }
+        CANVAS.height = (HEIGHT + 38) * peers.length;
+        document.querySelectorAll('[data-player="b"]').forEach((e) => (e.hidden = MODE !== 'local'));
+        STATUS(`${TPS} TPS · 입력 60Hz / RAF 표시 · 방 ${ROOM} · 실행 중 TPS 변경 불가`);
+        animation = requestAnimationFrame(render);
+    } catch (e) {
+        if (serial === TOKEN) {
+            stop();
+            FAIL(e);
+        }
+    }
+}
+function peerAt(label) {
+    return peers[label === 'b' ? 1 : 0];
+}
+function observe(label, axis, command) {
+    const P = peerAt(label);
+    if (!P?.session.ready) {
+        return;
+    }
+    const D = DEVICES.get(P.id);
+    if (axis !== undefined) {
+        D.axis = axis;
+    }
+    if (command) {
+        D.commands.push(command);
+    }
+    P.loop.observeInput(performance.now());
+}
+document.querySelectorAll('[data-axis]').forEach((b) => {
+    b.onpointerdown = (e) => {
+        e.preventDefault();
+        b.setPointerCapture(e.pointerId);
+        observe(b.dataset.player, Number(b.dataset.axis));
+    };
+    for (const EVENT of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+        b.addEventListener(EVENT, () => observe(b.dataset.player, 0));
+    }
+});
+document
+    .querySelectorAll('[data-command]')
+    .forEach((b) => (b.onclick = () => observe(b.dataset.player, undefined, Number(b.dataset.command))));
+const KEYS = {
+    ArrowLeft: ['a', 1],
+    ArrowRight: ['a', 2],
+    KeyA: ['b', 1],
+    KeyD: ['b', 2],
 };
-window.reference={get diagnostics(){return diagnostic();},lastComparison:null};controls(false);
+window.addEventListener('keydown', (e) => {
+    if (/INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) {
+        return;
+    }
+    if (KEYS[e.code]) {
+        e.preventDefault();
+        observe(...KEYS[e.code]);
+    }
+    if (!e.repeat && e.code === 'Space') {
+        e.preventDefault();
+        observe('a', undefined, 1);
+    }
+    if (!e.repeat && e.code === 'KeyF') {
+        observe('a', undefined, 2);
+    }
+});
+window.addEventListener('keyup', (e) => {
+    if (KEYS[e.code]) {
+        observe(KEYS[e.code][0], 0);
+    }
+});
+window.addEventListener('blur', release);
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+        release();
+    } else {
+        for (const P of peers) {
+            P.loop.resetTiming();
+            P.scheduler.rebase();
+            P.needsReset = 'reset';
+        }
+    }
+});
+window.addEventListener('pagehide', () => {
+    stop();
+    audio?.close();
+});
+DOLLAR('start').onclick = start;
+DOLLAR('stop').onclick = stop;
+DOLLAR('delay').onclick = () => {
+    IMPAIRMENT.ms = IMPAIRMENT.ms ? 0 : 240;
+    DOLLAR('delay').textContent = `A → B RTC 송신 지연: ${IMPAIRMENT.ms}ms`;
+};
+DOLLAR('compare').onclick = async () => {
+    if (peers.length !== 2) {
+        return;
+    }
+    const COMPARISON_SERIAL = serial;
+    DOLLAR('comparison').dataset.result = 'pending';
+    release();
+    stopAt = Math.max(...peers.map((p) => p.session.tick)) + Math.ceil(peers[0].tps * 0.5);
+    const TARGET = stopAt,
+        DEADLINE = performance.now() + 10000;
+    while (
+        serial === COMPARISON_SERIAL &&
+        performance.now() < DEADLINE &&
+        !peers.every(
+            (p) => p.session.tick === TARGET && p.session.confirmedTick >= TARGET - 1 && !p.session.resimulating,
+        )
+    ) {
+        await new Promise((r) => setTimeout(r, 20));
+    }
+    if (serial !== COMPARISON_SERIAL) {
+        return;
+    }
+    const SNAPSHOT = diagnostic(),
+        EQUAL =
+            SNAPSHOT.peers.every((p) => p.tick === TARGET && p.confirmedTick >= TARGET - 1) &&
+            new Set(SNAPSHOT.peers.map((p) => p.hash)).size === 1;
+    DOLLAR('comparison').dataset.result = EQUAL ? 'matched' : 'failed';
+    DOLLAR('comparison').textContent =
+        `tick ${TARGET} · ${EQUAL ? '확정 hash 일치' : '아직 불일치'} · ${SNAPSHOT.peers.map((p) => p.hash).join(' / ')}`;
+    window.reference.lastComparison = SNAPSHOT;
+    stopAt = Infinity;
+};
+window.reference = {
+    get diagnostics() {
+        return diagnostic();
+    },
+    lastComparison: null,
+};
+controls(false);

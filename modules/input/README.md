@@ -12,39 +12,44 @@ import { ActionState, createDOMInput } from './input.js';
 const actions = new ActionState();
 const pendingPoints = [];
 const input = createDOMInput({
-  target: canvas,
-  state: actions,
-  keys: { KeyW: 'up', ArrowUp: 'up', Space: 'roll' },
-  pointerButtons: { 0: 'aim' },
-  touchAction: 'none',
-  gestures: {
-    tap: 'move', doubleTap: 'roll',
-    tapMs: 400, doubleTapMs: 300, dragSlop: 12, doubleTapSlop: 32,
-  },
-  onGesture(event) {
-    // 이벤트 수집만 합니다. 좌표가 필요한 이산 입력은 액션 bool과 별도로 보관합니다.
-    pendingPoints.push(event);
-  },
+    target: canvas,
+    state: actions,
+    keys: { KeyW: 'up', ArrowUp: 'up', Space: 'roll' },
+    pointerButtons: { 0: 'aim' },
+    touchAction: 'none',
+    gestures: {
+        tap: 'move',
+        doubleTap: 'roll',
+        tapMs: 400,
+        doubleTapMs: 300,
+        dragSlop: 12,
+        doubleTapSlop: 32,
+    },
+    onGesture(event) {
+        // 이벤트 수집만 합니다. 좌표가 필요한 이산 입력은 액션 bool과 별도로 보관합니다.
+        pendingPoints.push(event);
+    },
 });
 
-const up = {}, roll = {};
+const up = {},
+    roll = {};
 function collectAtSimulationTick() {
-  actions.sampleInto('up', up);
-  actions.sampleInto('roll', roll);
-  for (const event of pendingPoints) {
-    const world = game.screenToWorld(event.x, event.y); // 게임 소유의 투영
-    game.queuePointCommand(world, event.type === 'doubleTap');
-  }
-  pendingPoints.length = 0;
-  game.queueDirectionalInput(up.held);
-  // roll.pressed를 일반 구르기에 사용할 때는 위 point command와 중복 실행하지 않도록
-  // 게임이 키보드/포인터 명령의 우선순위와 경로를 정합니다.
-  actions.consume(); // 이 tick의 수집/제출이 끝난 뒤에만 edge를 지웁니다.
+    actions.sampleInto('up', up);
+    actions.sampleInto('roll', roll);
+    for (const event of pendingPoints) {
+        const world = game.screenToWorld(event.x, event.y); // 게임 소유의 투영
+        game.queuePointCommand(world, event.type === 'doubleTap');
+    }
+    pendingPoints.length = 0;
+    game.queueDirectionalInput(up.held);
+    // roll.pressed를 일반 구르기에 사용할 때는 위 point command와 중복 실행하지 않도록
+    // 게임이 키보드/포인터 명령의 우선순위와 경로를 정합니다.
+    actions.consume(); // 이 tick의 수집/제출이 끝난 뒤에만 edge를 지웁니다.
 }
 
 function render() {
-  // sample/sampleInto는 consume하지 않습니다. 렌더 FPS와 논리 TPS는 독립입니다.
-  actions.sampleInto('roll', roll);
+    // sample/sampleInto는 consume하지 않습니다. 렌더 FPS와 논리 TPS는 독립입니다.
+    actions.sampleInto('roll', roll);
 }
 
 // 화면/게임 종료 시 listener·capture·이 어댑터가 가진 hold를 모두 정리합니다.

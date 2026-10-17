@@ -1,65 +1,151 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-
-const root = fileURLToPath(new URL('../', import.meta.url));
-const suites = {
-  previews: ['project/tests/previews.mjs'],
-  core: ['modules/vector-assets/tests/compiler.mjs', 'project/previews.mjs', 'modules/rollback/scripts/local-fastpath-browser.mjs', 'project/tests/browser.e2e.mjs'],
-  consumer: ['modules/scenario/tests/bounko.mjs'],
-  execution: ['modules/scenario/tests/browser.mjs'],
-  audio: ['modules/audio/scripts/check.mjs'],
-  network: ['modules/rollback/scripts/rollback-browser.mjs', 'modules/transport/scripts/dynamic-room-browser.mjs'],
-  room: ['modules/rollback/scripts/room-modes-browser.mjs', 'modules/rollback/scripts/availability-browser.mjs'],
-  availability: ['modules/rollback/scripts/availability-browser.mjs'],
-  demo: ['modules/rollback/scripts/demo-check.mjs'],
-  live: ['modules/rollback/scripts/live-room-check.mjs'],
+const ROOT = fileURLToPath(new URL('../', import.meta.url));
+const SUITES = {
+    previews: ['project/tests/previews.mjs'],
+    core: [
+        'modules/vector-assets/tests/compiler.mjs',
+        'project/previews.mjs',
+        'modules/rollback/scripts/local-fastpath-browser.mjs',
+        'project/tests/browser.e2e.mjs',
+    ],
+    consumer: ['modules/scenario/tests/bounko.mjs'],
+    execution: ['modules/scenario/tests/browser.mjs'],
+    audio: ['modules/audio/scripts/check.mjs'],
+    network: ['modules/rollback/scripts/rollback-browser.mjs', 'modules/transport/scripts/dynamic-room-browser.mjs'],
+    room: ['modules/rollback/scripts/room-modes-browser.mjs', 'modules/rollback/scripts/availability-browser.mjs'],
+    availability: ['modules/rollback/scripts/availability-browser.mjs'],
+    demo: ['modules/rollback/scripts/demo-check.mjs'],
+    live: ['modules/rollback/scripts/live-room-check.mjs'],
 };
-const suite = process.argv[2] ?? 'core';
-const scenarios = suite === 'all' ? [...suites.core, ...suites.execution, ...suites.audio, ...suites.network, ...suites.availability, ...suites.demo] : suites[suite];
-if (!scenarios) throw new Error('Unknown scenario suite: ' + suite);
-const budgetMs = 180000, started = performance.now();
-const active = new Set();
-function stopChild(child) {
-  if (!child?.pid || child.exitCode !== null || child.signalCode !== null) return;
-  if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
-  else { try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); } }
+const SUITE = process.argv[2] ?? 'core';
+const SCENARIOS =
+    SUITE === 'all'
+        ? [
+              ...SUITES.core,
+              ...SUITES.execution,
+              ...SUITES.audio,
+              ...SUITES.network,
+              ...SUITES.availability,
+              ...SUITES.demo,
+          ]
+        : SUITES[SUITE];
+if (!SCENARIOS) {
+    throw new Error('Unknown scenario suite: ' + SUITE);
 }
-const stopActive = () => { for (const child of active) stopChild(child); };
-for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { stopActive(); process.exit(130); });
-async function run(file) {
-  const remaining = budgetMs - (performance.now() - started);
-  if (remaining <= 0) throw new Error('Scenario verification exceeded 180 seconds; unfinished coverage is NOT PASS');
-  console.log('Scenario:', file);
-  await new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [file], { cwd: root, env: { ...process.env, ...(suite === 'room' ? { ROOM_SIMULATION_MODE: 'rollback' } : {}) }, stdio: 'inherit', windowsHide: true, detached: process.platform !== 'win32' });
-    active.add(child);
-    let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; stopChild(child); }, remaining);
-    child.once('error', error => { clearTimeout(timer); active.delete(child); reject(error); });
-    child.once('exit', code => {
-      clearTimeout(timer); active.delete(child);
-      if (timedOut) reject(new Error('Scenario verification exceeded 180 seconds: ' + file));
-      else if (code !== 0) reject(new Error('Scenario failed: ' + file + ' (exit ' + code + ')'));
-      else resolve();
+const BUDGET_MS = 180000,
+    STARTED = performance.now();
+const ACTIVE = new Set();
+function stopChild(child) {
+    if (!child?.pid || child.exitCode !== null || child.signalCode !== null) {
+        return;
+    }
+    if (process.platform === 'win32') {
+        spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
+            windowsHide: true,
+            stdio: 'ignore',
+        });
+    } else {
+        try {
+            process.kill(-child.pid, 'SIGKILL');
+        } catch {
+            child.kill('SIGKILL');
+        }
+    }
+}
+const STOP_ACTIVE = () => {
+    for (const CHILD of ACTIVE) {
+        stopChild(CHILD);
+    }
+};
+for (const SIGNAL of ['SIGINT', 'SIGTERM']) {
+    process.once(SIGNAL, () => {
+        STOP_ACTIVE();
+        process.exit(130);
     });
-  });
+}
+async function run(file) {
+    const REMAINING = BUDGET_MS - (performance.now() - STARTED);
+    if (REMAINING <= 0) {
+        throw new Error('Scenario verification exceeded 180 seconds; unfinished coverage is NOT PASS');
+    }
+    console.log('Scenario:', file);
+    await new Promise((resolve, reject) => {
+        const CHILD = spawn(process.execPath, [file], {
+            cwd: ROOT,
+            env: {
+                ...process.env,
+                ...(SUITE === 'room'
+                    ? {
+                          ROOM_SIMULATION_MODE: 'rollback',
+                      }
+                    : {}),
+            },
+            stdio: 'inherit',
+            windowsHide: true,
+            detached: process.platform !== 'win32',
+        });
+        ACTIVE.add(CHILD);
+        let timedOut = false;
+        const TIMER = setTimeout(() => {
+            timedOut = true;
+            stopChild(CHILD);
+        }, REMAINING);
+        CHILD.once('error', (error) => {
+            clearTimeout(TIMER);
+            ACTIVE.delete(CHILD);
+            reject(error);
+        });
+        CHILD.once('exit', (code) => {
+            clearTimeout(TIMER);
+            ACTIVE.delete(CHILD);
+            if (timedOut) {
+                reject(new Error('Scenario verification exceeded 180 seconds: ' + file));
+            } else if (code !== 0) {
+                reject(new Error('Scenario failed: ' + file + ' (exit ' + code + ')'));
+            } else {
+                resolve();
+            }
+        });
+    });
 }
 try {
-  await run('project/build.mjs');
-  if (suite === 'all') {
-    // Independent servers/browser profiles/report files; bounded concurrency,
-    // with one shared whole-run deadline and fail-fast child cleanup.
-    let cursor = 0, failure;
-    const worker = async () => {
-      while (!failure && cursor < scenarios.length) {
-        try { await run(scenarios[cursor++]); }
-        catch (error) { failure ??= error; stopActive(); }
-      }
-    };
-    await Promise.all([worker(), worker()]);
-    if (failure) throw failure;
-  } else for (const file of scenarios) await run(file);
-  console.log(JSON.stringify({ status: 'PASS', suite, elapsedMs: Math.round(performance.now() - started), budgetMs, scenarios }));
+    await run('project/build.mjs');
+    if (SUITE === 'all') {
+        // Independent servers/browser profiles/report files; bounded concurrency,
+        // with one shared whole-run deadline and fail-fast child cleanup.
+        let cursor = 0;
+        let failure;
+        const WORKER = async () => {
+            while (!failure && cursor < SCENARIOS.length) {
+                try {
+                    await run(SCENARIOS[cursor++]);
+                } catch (error) {
+                    failure ??= error;
+                    STOP_ACTIVE();
+                }
+            }
+        };
+        await Promise.all([WORKER(), WORKER()]);
+        if (failure) {
+            throw failure;
+        }
+    } else {
+        for (const FILE of SCENARIOS) {
+            await run(FILE);
+        }
+    }
+    console.log(
+        JSON.stringify({
+            status: 'PASS',
+            suite: SUITE,
+            elapsedMs: Math.round(performance.now() - STARTED),
+            budgetMs: BUDGET_MS,
+            scenarios: SCENARIOS,
+        }),
+    );
 } catch (error) {
-  stopActive(); console.error(error.message); process.exitCode = 1;
+    STOP_ACTIVE();
+    console.error(error.message);
+    process.exitCode = 1;
 }

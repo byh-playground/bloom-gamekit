@@ -1,66 +1,373 @@
+/* global vectorGameCoverageProbe */
 import assert from 'node:assert/strict';
 
 /** Pixel proof for the actual Budmori renderer contracts, without game code or private SDK calls. */
-export async function exerciseVectorGameCoverage(page){
-  const result=await page.evaluate(async()=>{
-    const {WebGLDevice,VectorRenderer,VectorContext,PrimitivePainter}=await import('/dist/rendering.js');
-    const canvas=document.createElement('canvas');canvas.width=canvas.height=128;document.body.append(canvas);
-    const device=new WebGLDevice(canvas,{alpha:true,antialias:false,depth:false,stencil:false,preserveDrawingBuffer:true});
-    const vector=new VectorRenderer(device,{initialVertices:256,maxVertices:8192});const ctx=new VectorContext(device,{vectorRenderer:vector});const gl=device.gl;
-    const pixel=(x,y)=>{const out=new Uint8Array(4);gl.readPixels(x,127-y,1,1,gl.RGBA,gl.UNSIGNED_BYTE,out);return [...out]};
-    const renderStarted=performance.now();ctx.beginFrame({clearColor:[0,0,0,0]});
-    ctx.save();ctx.translate(24,24);ctx.fillStyle='#183fce';ctx.withSilhouette('#16e277',3,()=>{ctx.beginPath();ctx.arc(0,0,10,0,Math.PI*2);ctx.fill()},15);ctx.restore();
-    ctx.save();ctx.translate(64,24);ctx.globalAlpha=.5;ctx.filter='brightness(0) invert(1)';ctx.fillStyle='#df2020';ctx.withSilhouette('#18a04a',3,()=>{ctx.beginPath();ctx.arc(0,0,10,0,Math.PI*2);ctx.fill()},15);ctx.restore();
-    ctx.save();ctx.translate(100,24);const gradient=ctx.createRadialGradient(0,0,0,0,0,18);gradient.addColorStop(0,'#ff0000');ctx.fillStyle=gradient;ctx.beginPath();ctx.arc(0,0,18,0,Math.PI*2);ctx.fill();gradient.addColorStop(.5,'#00ff00');gradient.addColorStop(1,'#0000ff00');ctx.beginPath();ctx.arc(0,0,9,0,Math.PI*2);ctx.fill();ctx.restore();
-    ctx.save();ctx.translate(100,64);ctx.filter='brightness(0) invert(1)';const flashGradient=ctx.createRadialGradient(0,0,0,0,0,12);flashGradient.addColorStop(0,'rgba(180,30,90,.6)');flashGradient.addColorStop(1,'rgba(0,0,0,0)');ctx.fillStyle=flashGradient;ctx.beginPath();ctx.arc(0,0,12,0,Math.PI*2);ctx.fill();ctx.restore();
-    ctx.withGroupOpacity(.5,()=>{ctx.fillStyle='#ff0000';ctx.fillRect(8,76,20,20);},{x:8,y:76,width:20,height:20});
-    const stats=ctx.endFrame(),renderSubmitMs=performance.now()-renderStarted;const pixels={body:pixel(24,24),outline:pixel(36,24),flashBody:pixel(64,24),flashOutline:pixel(76,24),gradientCenter:pixel(100,24),gradientMiddle:pixel(108,24),gradientOuter:pixel(118,24),whiteGradient:pixel(100,64),whiteGradientAlpha:pixel(106,64),group:pixel(16,84)};
-
-    const uploadsBeforeNative=device.stats.textureUploads,nativeA=document.createElement('canvas'),nativeB=document.createElement('canvas');nativeA.width=nativeA.height=nativeB.width=nativeB.height=40;const target=nativeA.getContext('2d'),reference=nativeB.getContext('2d');
-    const turn=(x,y)=>[20-(y-20)*.8,20+(x-20)*.8],colors=[.18,.72,.38,.8],painter=new PrimitivePainter(target,{point:turn,alphaMultiplier:.65});
-    const css=c=>`rgba(${Math.round(c[0]*255)},${Math.round(c[1]*255)},${Math.round(c[2]*255)},${c[3]})`;
-    const oldPoly=(ctx,points,color)=>{const alpha=ctx.globalAlpha;ctx.fillStyle=css(color);ctx.globalAlpha=alpha*.65;ctx.beginPath();const a=turn(points[0][0],points[0][1]);for(let i=1;i<points.length-1;i++){const b=turn(points[i][0],points[i][1]),c=turn(points[i+1][0],points[i+1][1]);ctx.moveTo(...a);ctx.lineTo(...b);ctx.lineTo(...c);ctx.closePath();}ctx.fill();ctx.globalAlpha=alpha;};
-    const polygon=(x,y,r,n,rotation)=>Array.from({length:n},(_,i)=>[x+Math.cos(rotation+i/n*Math.PI*2)*r,y+Math.sin(rotation+i/n*Math.PI*2)*r]);
-    const poly=polygon(20,20,13,7,.2),nativeStarted=performance.now();painter.regularPolygon(20,20,13,colors,7,.2);
-    const dx=9,dy=-4,w=6,l=Math.hypot(dx,dy)||1,nx=-dy/l*w/2,ny=dx/l*w/2;const quad=[[9+nx,12+ny],[18+nx,8+ny],[18-nx,8-ny],[9-nx,12-ny]];painter.line(9,12,18,8,w,[.9,.35,.12,.7]);const nativePainterMs=performance.now()-nativeStarted;oldPoly(reference,poly,colors);oldPoly(reference,quad,[.9,.35,.12,.7]);
-    const a=target.getImageData(0,0,40,40).data,b=reference.getImageData(0,0,40,40).data;let canvasDiff=0;for(let i=0;i<a.length;i++)if(a[i]!==b[i])canvasDiff++;const canvasGpuUploads=device.stats.textureUploads-uploadsBeforeNative;
-    const glError=gl.getError(),radialLifetime=[];
-    const check=(ok,message)=>{if(!ok)throw new Error(message)};
-    // A revision must not recolor geometry queued before addColorStop().
-    ctx.beginFrame();const revised=ctx.createRadialGradient(0,0,0,0,0,1);revised.addColorStop(0,'red');ctx.fillStyle=revised;ctx.fillRect(0,0,16,16);revised.addColorStop(1,'blue');ctx.fillRect(16,0,16,16);ctx.endFrame();
-    check(pixel(8,8).join()=== '255,0,0,255'&&pixel(24,8).join()==='0,0,255,255','gradient revision preserves queued painter order');
-    const textureBaseline=device.stats.textureCount;
-    for(let frame=0;frame<4;frame++){
-      ctx.beginFrame({clearColor:[0,0,0,0]});
-      for(let i=0;i<4;i++){
-        const g=ctx.createRadialGradient(0,0,0,0,0,5+i),x=8+i*10,y=108+frame*3;g.addColorStop(0,'#ff3010');g.addColorStop(1,'#2040ff00');ctx.fillStyle=g;
-        ctx.beginPath();ctx.arc(x,y,5+i,0,Math.PI*2);ctx.fill();const textureAfterCreate=device.stats.textureCount;
-        g.addColorStop(.5,'#00ff40');ctx.beginPath();ctx.arc(x,y,4+i,0,Math.PI*2);ctx.fill();radialLifetime.push({frame,withinFrameIndex:i+1,textureBaseline,textureAfterCreate,textureAfterUpdate:device.stats.textureCount,cacheAfterUpdate:ctx.stats().activeGradientTextureCount});
-      }
-      ctx.endFrame();radialLifetime.at(-1).textureAfterEnd=device.stats.textureCount;radialLifetime.at(-1).cacheAfterEnd=ctx.stats().activeGradientTextureCount;radialLifetime.at(-1).textureBaseline=textureBaseline;
+export async function exerciseVectorGameCoverage(page) {
+    const RESULT = await page.evaluate(async () => {
+        const {
+            WebGLDevice: WEB_GL_DEVICE,
+            VectorRenderer: VECTOR_RENDERER,
+            VectorContext: VECTOR_CONTEXT,
+            PrimitivePainter: PRIMITIVE_PAINTER,
+        } = await import('/dist/rendering.js');
+        const CANVAS = document.createElement('canvas');
+        CANVAS.width = CANVAS.height = 128;
+        document.body.append(CANVAS);
+        const DEVICE = new WEB_GL_DEVICE(CANVAS, {
+            alpha: true,
+            antialias: false,
+            depth: false,
+            stencil: false,
+            preserveDrawingBuffer: true,
+        });
+        const VECTOR = new VECTOR_RENDERER(DEVICE, {
+            initialVertices: 256,
+            maxVertices: 8192,
+        });
+        const CTX = new VECTOR_CONTEXT(DEVICE, {
+            vectorRenderer: VECTOR,
+        });
+        const GL = DEVICE.gl;
+        const PIXEL = (x, y) => {
+            const OUT = new Uint8Array(4);
+            GL.readPixels(x, 127 - y, 1, 1, GL.RGBA, GL.UNSIGNED_BYTE, OUT);
+            return [...OUT];
+        };
+        const RENDER_STARTED = performance.now();
+        CTX.beginFrame({
+            clearColor: [0, 0, 0, 0],
+        });
+        CTX.save();
+        CTX.translate(24, 24);
+        CTX.fillStyle = '#183fce';
+        CTX.withSilhouette(
+            '#16e277',
+            3,
+            () => {
+                CTX.beginPath();
+                CTX.arc(0, 0, 10, 0, Math.PI * 2);
+                CTX.fill();
+            },
+            15,
+        );
+        CTX.restore();
+        CTX.save();
+        CTX.translate(64, 24);
+        CTX.globalAlpha = 0.5;
+        CTX.filter = 'brightness(0) invert(1)';
+        CTX.fillStyle = '#df2020';
+        CTX.withSilhouette(
+            '#18a04a',
+            3,
+            () => {
+                CTX.beginPath();
+                CTX.arc(0, 0, 10, 0, Math.PI * 2);
+                CTX.fill();
+            },
+            15,
+        );
+        CTX.restore();
+        CTX.save();
+        CTX.translate(100, 24);
+        const GRADIENT = CTX.createRadialGradient(0, 0, 0, 0, 0, 18);
+        GRADIENT.addColorStop(0, '#ff0000');
+        CTX.fillStyle = GRADIENT;
+        CTX.beginPath();
+        CTX.arc(0, 0, 18, 0, Math.PI * 2);
+        CTX.fill();
+        GRADIENT.addColorStop(0.5, '#00ff00');
+        GRADIENT.addColorStop(1, '#0000ff00');
+        CTX.beginPath();
+        CTX.arc(0, 0, 9, 0, Math.PI * 2);
+        CTX.fill();
+        CTX.restore();
+        CTX.save();
+        CTX.translate(100, 64);
+        CTX.filter = 'brightness(0) invert(1)';
+        const FLASH_GRADIENT = CTX.createRadialGradient(0, 0, 0, 0, 0, 12);
+        FLASH_GRADIENT.addColorStop(0, 'rgba(180,30,90,.6)');
+        FLASH_GRADIENT.addColorStop(1, 'rgba(0,0,0,0)');
+        CTX.fillStyle = FLASH_GRADIENT;
+        CTX.beginPath();
+        CTX.arc(0, 0, 12, 0, Math.PI * 2);
+        CTX.fill();
+        CTX.restore();
+        CTX.withGroupOpacity(
+            0.5,
+            () => {
+                CTX.fillStyle = '#ff0000';
+                CTX.fillRect(8, 76, 20, 20);
+            },
+            {
+                x: 8,
+                y: 76,
+                width: 20,
+                height: 20,
+            },
+        );
+        const STATS = CTX.endFrame(),
+            RENDER_SUBMIT_MS = performance.now() - RENDER_STARTED;
+        const PIXELS = {
+            body: PIXEL(24, 24),
+            outline: PIXEL(36, 24),
+            flashBody: PIXEL(64, 24),
+            flashOutline: PIXEL(76, 24),
+            gradientCenter: PIXEL(100, 24),
+            gradientMiddle: PIXEL(108, 24),
+            gradientOuter: PIXEL(118, 24),
+            whiteGradient: PIXEL(100, 64),
+            whiteGradientAlpha: PIXEL(106, 64),
+            group: PIXEL(16, 84),
+        };
+        const UPLOADS_BEFORE_NATIVE = DEVICE.stats.textureUploads,
+            NATIVE_A = document.createElement('canvas'),
+            NATIVE_B = document.createElement('canvas');
+        NATIVE_A.width = NATIVE_A.height = NATIVE_B.width = NATIVE_B.height = 40;
+        const TARGET = NATIVE_A.getContext('2d'),
+            REFERENCE = NATIVE_B.getContext('2d');
+        const TURN = (x, y) => [20 - (y - 20) * 0.8, 20 + (x - 20) * 0.8],
+            COLORS = [0.18, 0.72, 0.38, 0.8],
+            PAINTER = new PRIMITIVE_PAINTER(TARGET, {
+                point: TURN,
+                alphaMultiplier: 0.65,
+            });
+        const CSS = (c) =>
+            `rgba(${Math.round(c[0] * 255)},${Math.round(c[1] * 255)},${Math.round(c[2] * 255)},${c[3]})`;
+        const OLD_POLY = (ctx, points, color) => {
+            const ALPHA = ctx.globalAlpha;
+            ctx.fillStyle = CSS(color);
+            ctx.globalAlpha = ALPHA * 0.65;
+            ctx.beginPath();
+            const A = TURN(points[0][0], points[0][1]);
+            for (let i = 1; i < points.length - 1; i++) {
+                const B = TURN(points[i][0], points[i][1]),
+                    C = TURN(points[i + 1][0], points[i + 1][1]);
+                ctx.moveTo(...A);
+                ctx.lineTo(...B);
+                ctx.lineTo(...C);
+                ctx.closePath();
+            }
+            ctx.fill();
+            ctx.globalAlpha = ALPHA;
+        };
+        const POLYGON = (x, y, r, n, rotation) =>
+            Array.from(
+                {
+                    length: n,
+                },
+                (_, i) => [
+                    x + Math.cos(rotation + (i / n) * Math.PI * 2) * r,
+                    y + Math.sin(rotation + (i / n) * Math.PI * 2) * r,
+                ],
+            );
+        const POLY = POLYGON(20, 20, 13, 7, 0.2),
+            NATIVE_STARTED = performance.now();
+        PAINTER.regularPolygon(20, 20, 13, COLORS, 7, 0.2);
+        const DX = 9,
+            DY = -4,
+            W = 6,
+            L = Math.hypot(DX, DY) || 1,
+            NX = ((-DY / L) * W) / 2,
+            NY = ((DX / L) * W) / 2;
+        const QUAD = [
+            [9 + NX, 12 + NY],
+            [18 + NX, 8 + NY],
+            [18 - NX, 8 - NY],
+            [9 - NX, 12 - NY],
+        ];
+        PAINTER.line(9, 12, 18, 8, W, [0.9, 0.35, 0.12, 0.7]);
+        const NATIVE_PAINTER_MS = performance.now() - NATIVE_STARTED;
+        OLD_POLY(REFERENCE, POLY, COLORS);
+        OLD_POLY(REFERENCE, QUAD, [0.9, 0.35, 0.12, 0.7]);
+        const A = TARGET.getImageData(0, 0, 40, 40).data,
+            B = REFERENCE.getImageData(0, 0, 40, 40).data;
+        let canvasDiff = 0;
+        for (let i = 0; i < A.length; i++) {
+            if (A[i] !== B[i]) {
+                canvasDiff++;
+            }
+        }
+        const CANVAS_GPU_UPLOADS = DEVICE.stats.textureUploads - UPLOADS_BEFORE_NATIVE;
+        const GL_ERROR = GL.getError(),
+            RADIAL_LIFETIME = [];
+        const CHECK = (ok, message) => {
+            if (!ok) {
+                throw new Error(message);
+            }
+        };
+        // A revision must not recolor geometry queued before addColorStop().
+        CTX.beginFrame();
+        const REVISED = CTX.createRadialGradient(0, 0, 0, 0, 0, 1);
+        REVISED.addColorStop(0, 'red');
+        CTX.fillStyle = REVISED;
+        CTX.fillRect(0, 0, 16, 16);
+        REVISED.addColorStop(1, 'blue');
+        CTX.fillRect(16, 0, 16, 16);
+        CTX.endFrame();
+        CHECK(
+            PIXEL(8, 8).join() === '255,0,0,255' && PIXEL(24, 8).join() === '0,0,255,255',
+            'gradient revision preserves queued painter order',
+        );
+        const TEXTURE_BASELINE = DEVICE.stats.textureCount;
+        for (let frame = 0; frame < 4; frame++) {
+            CTX.beginFrame({
+                clearColor: [0, 0, 0, 0],
+            });
+            for (let i = 0; i < 4; i++) {
+                const G = CTX.createRadialGradient(0, 0, 0, 0, 0, 5 + i),
+                    X = 8 + i * 10,
+                    Y = 108 + frame * 3;
+                G.addColorStop(0, '#ff3010');
+                G.addColorStop(1, '#2040ff00');
+                CTX.fillStyle = G;
+                CTX.beginPath();
+                CTX.arc(X, Y, 5 + i, 0, Math.PI * 2);
+                CTX.fill();
+                const TEXTURE_AFTER_CREATE = DEVICE.stats.textureCount;
+                G.addColorStop(0.5, '#00ff40');
+                CTX.beginPath();
+                CTX.arc(X, Y, 4 + i, 0, Math.PI * 2);
+                CTX.fill();
+                RADIAL_LIFETIME.push({
+                    frame,
+                    withinFrameIndex: i + 1,
+                    textureBaseline: TEXTURE_BASELINE,
+                    textureAfterCreate: TEXTURE_AFTER_CREATE,
+                    textureAfterUpdate: DEVICE.stats.textureCount,
+                    cacheAfterUpdate: CTX.stats().activeGradientTextureCount,
+                });
+            }
+            CTX.endFrame();
+            RADIAL_LIFETIME.at(-1).textureAfterEnd = DEVICE.stats.textureCount;
+            RADIAL_LIFETIME.at(-1).cacheAfterEnd = CTX.stats().activeGradientTextureCount;
+            RADIAL_LIFETIME.at(-1).textureBaseline = TEXTURE_BASELINE;
+        }
+        const DISPOSED_GRADIENT_PIXELS_CLEARED = GRADIENT.pixels === null && FLASH_GRADIENT.pixels === null;
+        window.vectorGameCoverageProbe = {
+            device: DEVICE,
+            vector: VECTOR,
+            ctx: CTX,
+            canvas: CANVAS,
+            gradient: GRADIENT,
+        };
+        return {
+            pixels: PIXELS,
+            stats: STATS,
+            glError: GL_ERROR,
+            renderSubmitMs: RENDER_SUBMIT_MS,
+            nativePainterMs: NATIVE_PAINTER_MS,
+            canvasDiff,
+            canvasBytes: A.byteLength,
+            canvasGpuUploads: CANVAS_GPU_UPLOADS,
+            gradientRampBytes: 2 * 256 * 4,
+            radialLifetime: RADIAL_LIFETIME,
+            disposedGradientPixelsCleared: DISPOSED_GRADIENT_PIXELS_CLEARED,
+        };
+    });
+    assert.deepEqual(RESULT.pixels.body, [24, 63, 206, 255]);
+    assert.deepEqual(RESULT.pixels.outline, [22, 226, 119, 255]);
+    assert.deepEqual(RESULT.pixels.flashBody, [128, 128, 128, 128]);
+    assert.deepEqual(RESULT.pixels.flashOutline, [128, 128, 128, 128]);
+    assert.ok(
+        RESULT.pixels.gradientCenter[0] > 225 && RESULT.pixels.gradientCenter[1] < 30,
+        `radial gradient center uses first stop: ${JSON.stringify(RESULT.pixels)}`,
+    );
+    assert.ok(
+        RESULT.pixels.gradientMiddle[1] > 220 &&
+            RESULT.pixels.gradientMiddle[1] > RESULT.pixels.gradientMiddle[0] &&
+            RESULT.pixels.gradientMiddle[1] > RESULT.pixels.gradientMiddle[2],
+        'radial gradient ramp refreshes after adding a stop',
+    );
+    assert.deepEqual(RESULT.pixels.gradientOuter, [0, 0, 0, 0], 'transparent gradient stop preserves zero alpha');
+    assert.ok(
+        RESULT.pixels.whiteGradient.every((c) => Math.abs(c - 144) <= 5),
+        'white flash turns RGB white while preserving gradient alpha',
+    );
+    assert.ok(
+        RESULT.pixels.whiteGradientAlpha[0] > RESULT.pixels.whiteGradient[0] / 2 - 8 &&
+            RESULT.pixels.whiteGradientAlpha[0] < RESULT.pixels.whiteGradient[0] / 2 + 8,
+        'gradient alpha ramps smoothly toward the transparent stop',
+    );
+    assert.deepEqual(RESULT.pixels.group, [128, 0, 0, 128]);
+    assert.equal(RESULT.glError, 0);
+    assert.equal(
+        RESULT.canvasDiff,
+        0,
+        'native Canvas2D primitive target matches the authored fan reference pixel-for-pixel',
+    );
+    assert.equal(RESULT.canvasGpuUploads, 0, 'native UI paint target does not upload or rasterize through WebGL');
+    assert.ok(
+        RESULT.radialLifetime.length === 16 &&
+            RESULT.radialLifetime.every(
+                (x) =>
+                    x.textureAfterCreate === x.textureBaseline + x.withinFrameIndex &&
+                    x.textureAfterUpdate === x.textureAfterCreate &&
+                    x.cacheAfterUpdate === x.withinFrameIndex,
+            ) &&
+            [0, 4, 8, 12].every(
+                (i) =>
+                    RESULT.radialLifetime[i + 3].textureAfterEnd === RESULT.radialLifetime[i].textureBaseline &&
+                    RESULT.radialLifetime[i + 3].cacheAfterEnd === 0,
+            ),
+        `gradient handles are reused for repeated fills and released at every frame boundary: ${JSON.stringify(RESULT.radialLifetime)}`,
+    );
+    assert.equal(RESULT.disposedGradientPixelsCleared, true, 'frame eviction releases retained CPU ramps');
+    RESULT.restored = await page.evaluate(() => {
+        const P = vectorGameCoverageProbe;
+        P.ctx.beginFrame();
+        P.ctx.fillStyle = P.gradient;
+        P.ctx.fillRect(0, 0, 16, 16);
+        P.loss = P.device.gl.getExtension('WEBGL_lose_context');
+        if (!P.loss) {
+            P.ctx.endFrame();
+            return false;
+        }
+        P.loss.loseContext();
+        return true;
+    });
+    if (RESULT.restored) {
+        await page.waitForFunction(() => vectorGameCoverageProbe.ctx.state === 'lost');
+        assert.deepEqual(
+            await page.evaluate(() => ({
+                cache: vectorGameCoverageProbe.ctx.gradientTextures.size,
+                queued: vectorGameCoverageProbe.vector.count,
+            })),
+            {
+                cache: 0,
+                queued: 0,
+            },
+        );
+        await page.evaluate(() => vectorGameCoverageProbe.loss.restoreContext());
+        await page.waitForFunction(() => vectorGameCoverageProbe.ctx.state === 'ready');
+        assert.equal(
+            await page.evaluate(() => {
+                const P = vectorGameCoverageProbe;
+                P.ctx.beginFrame();
+                P.ctx.fillStyle = P.gradient;
+                P.ctx.fillRect(0, 0, 16, 16);
+                P.ctx.endFrame();
+                return P.device.stats.textureUploads === 1 && P.device.gl.getError() === 0;
+            }),
+            true,
+        );
     }
-    const disposedGradientPixelsCleared=gradient.pixels===null&&flashGradient.pixels===null;window.vectorGameCoverageProbe={device,vector,ctx,canvas,gradient};
-    return{pixels,stats,glError,renderSubmitMs,nativePainterMs,canvasDiff,canvasBytes:a.byteLength,canvasGpuUploads,gradientRampBytes:2*256*4,radialLifetime,disposedGradientPixelsCleared};
-  });
-  assert.deepEqual(result.pixels.body,[24,63,206,255]);assert.deepEqual(result.pixels.outline,[22,226,119,255]);
-  assert.deepEqual(result.pixels.flashBody,[128,128,128,128]);assert.deepEqual(result.pixels.flashOutline,[128,128,128,128]);
-  assert.ok(result.pixels.gradientCenter[0]>225&&result.pixels.gradientCenter[1]<30,`radial gradient center uses first stop: ${JSON.stringify(result.pixels)}`);
-  assert.ok(result.pixels.gradientMiddle[1]>220&&result.pixels.gradientMiddle[1]>result.pixels.gradientMiddle[0]&&result.pixels.gradientMiddle[1]>result.pixels.gradientMiddle[2],'radial gradient ramp refreshes after adding a stop');
-  assert.deepEqual(result.pixels.gradientOuter,[0,0,0,0],'transparent gradient stop preserves zero alpha');
-  assert.ok(result.pixels.whiteGradient.every(c=>Math.abs(c-144)<=5),'white flash turns RGB white while preserving gradient alpha');
-  assert.ok(result.pixels.whiteGradientAlpha[0]>result.pixels.whiteGradient[0]/2-8&&result.pixels.whiteGradientAlpha[0]<result.pixels.whiteGradient[0]/2+8,'gradient alpha ramps smoothly toward the transparent stop');
-  assert.deepEqual(result.pixels.group,[128,0,0,128]);assert.equal(result.glError,0);
-  assert.equal(result.canvasDiff,0,'native Canvas2D primitive target matches the authored fan reference pixel-for-pixel');
-  assert.equal(result.canvasGpuUploads,0,'native UI paint target does not upload or rasterize through WebGL');
-  assert.ok(result.radialLifetime.length===16&&result.radialLifetime.every(x=>x.textureAfterCreate===x.textureBaseline+x.withinFrameIndex&&x.textureAfterUpdate===x.textureAfterCreate&&x.cacheAfterUpdate===x.withinFrameIndex)&&[0,4,8,12].every(i=>result.radialLifetime[i+3].textureAfterEnd===result.radialLifetime[i].textureBaseline&&result.radialLifetime[i+3].cacheAfterEnd===0),`gradient handles are reused for repeated fills and released at every frame boundary: ${JSON.stringify(result.radialLifetime)}`);
-  assert.equal(result.disposedGradientPixelsCleared,true,'frame eviction releases retained CPU ramps');
-  result.restored=await page.evaluate(()=>{const p=vectorGameCoverageProbe;p.ctx.beginFrame();p.ctx.fillStyle=p.gradient;p.ctx.fillRect(0,0,16,16);p.loss=p.device.gl.getExtension('WEBGL_lose_context');if(!p.loss){p.ctx.endFrame();return false;}p.loss.loseContext();return true;});
-  if(result.restored){
-    await page.waitForFunction(()=>vectorGameCoverageProbe.ctx.state==='lost');
-    assert.deepEqual(await page.evaluate(()=>({cache:vectorGameCoverageProbe.ctx.gradientTextures.size,queued:vectorGameCoverageProbe.vector.count})),{cache:0,queued:0});
-    await page.evaluate(()=>vectorGameCoverageProbe.loss.restoreContext());await page.waitForFunction(()=>vectorGameCoverageProbe.ctx.state==='ready');
-    assert.equal(await page.evaluate(()=>{const p=vectorGameCoverageProbe;p.ctx.beginFrame();p.ctx.fillStyle=p.gradient;p.ctx.fillRect(0,0,16,16);p.ctx.endFrame();return p.device.stats.textureUploads===1&&p.device.gl.getError()===0;}),true);
-  }
-  result.disposed=await page.evaluate(()=>{const p=vectorGameCoverageProbe;const gradients=[...p.ctx.gradientTextures.keys()];p.ctx.dispose();if(gradients.some(g=>g.pixels!==null))throw new Error('dispose must release gradient rasters');p.vector.dispose();p.device.dispose();p.canvas.remove();return p.device.state==='disposed'&&p.device.stats.gpuBufferBytes===0&&p.device.stats.textureCount===0&&p.device.stats.gpuRenderTargetBytes===0});
-  assert.equal(result.disposed,true);return result;
+    RESULT.disposed = await page.evaluate(() => {
+        const P = vectorGameCoverageProbe;
+        const GRADIENTS = [...P.ctx.gradientTextures.keys()];
+        P.ctx.dispose();
+        if (GRADIENTS.some((g) => g.pixels !== null)) {
+            throw new Error('dispose must release gradient rasters');
+        }
+        P.vector.dispose();
+        P.device.dispose();
+        P.canvas.remove();
+        return (
+            P.device.state === 'disposed' &&
+            P.device.stats.gpuBufferBytes === 0 &&
+            P.device.stats.textureCount === 0 &&
+            P.device.stats.gpuRenderTargetBytes === 0
+        );
+    });
+    assert.equal(RESULT.disposed, true);
+    return RESULT;
 }

@@ -1,12 +1,33 @@
 import { REPLAY_FORMAT_VERSION, runSimulationFrame } from '../_rollback-shared/protocol.js';
 import { bytes, hashBytes } from '../deterministic/utilities.js';
 export function playReplay({ adapter, replay, simulationVersion = replay?.simulationVersion } = {}) {
-  if (replay?.version !== REPLAY_FORMAT_VERSION || replay.simulationVersion !== simulationVersion || !Array.isArray(replay.frames)) throw new Error('replay compatibility');
-  adapter.load(bytes(replay.initialState).slice());
-  let tick = 0;
-  for (const f of replay.frames) {
-    if (f.tick !== tick) throw new Error('non-contiguous replay');
-    runSimulationFrame(adapter, { tick, tickRate: replay.tickRate, inputs: f.inputs.map(x => ({ ...x, predicted: false })), resimulating: true, replaying: true }); tick++;
-  }
-  return { tick, hash: hashBytes(bytes(adapter.save())) };
+    if (
+        replay?.version !== REPLAY_FORMAT_VERSION ||
+        replay.simulationVersion !== simulationVersion ||
+        !Array.isArray(replay.frames)
+    ) {
+        throw new Error('replay compatibility');
+    }
+    adapter.load(bytes(replay.initialState).slice());
+    let tick = 0;
+    for (const F of replay.frames) {
+        if (F.tick !== tick) {
+            throw new Error('non-contiguous replay');
+        }
+        runSimulationFrame(adapter, {
+            tick,
+            tickRate: replay.tickRate,
+            inputs: F.inputs.map((x) => ({
+                ...x,
+                predicted: false,
+            })),
+            resimulating: true,
+            replaying: true,
+        });
+        tick++;
+    }
+    return {
+        tick,
+        hash: hashBytes(bytes(adapter.save())),
+    };
 }

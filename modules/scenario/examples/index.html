@@ -1,15 +1,97 @@
-<!doctype html><meta charset="utf-8"><title>Scenario example</title>
-<h1>실제 시뮬레이션 재생</h1><button id="play">재생</button><button id="pause">일시정지</button><button id="restart">재시작</button><button id="stop">종료</button><label><input id="repeat" type="checkbox">반복</label><canvas width="320" height="180"></canvas><output></output>
+<!doctype html><meta charset="utf-8" /><title>Scenario example</title>
+<h1>실제 시뮬레이션 재생</h1>
+<button id="play">재생</button><button id="pause">일시정지</button><button id="restart">재시작</button
+><button id="stop">종료</button><label><input id="repeat" type="checkbox" />반복</label
+><canvas width="320" height="180"></canvas><output></output>
 <script type="module">
-import {createScenario} from '../../../dist/scenario.js';
-const canvas=document.querySelector('canvas'),gl=canvas.getContext('webgl');
-if(!gl)throw Error('WebGL unavailable');
-let runner,value,disposed=0,created=0;
-const definition={seed:7,tickRate:60,endTick:60,initialState:{value:0},timeline:[{tick:0,amount:7},{atMs:500,amount:3}]};
-function make(){runner?.dispose();runner=createScenario({definition:{...definition,loop:document.querySelector('#repeat').checked},createRun({seed,initialState,signal}){
-created++;value=initialState.value;const commands=frame=>{for(const event of frame.events)value+=event.amount;};
-return {initialize:commands,step(frame){commands(frame);value+=seed;},render(frame){gl.clearColor(value%255/255,.25,.3,1);gl.clear(gl.COLOR_BUFFER_BIT);document.querySelector('output').textContent=frame.tick+' / '+value;},dispose(){disposed++;if(!signal.aborted)throw Error('scope abort order');}};}});}
-make();document.querySelector('#play').onclick=()=>runner.play();document.querySelector('#pause').onclick=()=>runner.pause();document.querySelector('#restart').onclick=()=>runner.restart();document.querySelector('#stop').onclick=()=>runner.stop();document.querySelector('#repeat').onchange=make;
-window.scenarioDemo={get runner(){return runner;},get value(){return value;},get created(){return created;},get disposed(){return disposed;},get backend(){return gl.getParameter(gl.VERSION);}};
-addEventListener('pagehide',()=>runner.dispose(),{once:true});
+    import { createScenario } from '../../../dist/scenario.js';
+    const CANVAS = document.querySelector('canvas'),
+        GL = CANVAS.getContext('webgl');
+    if (!GL) {
+        throw Error('WebGL unavailable');
+    }
+    let runner;
+    let value;
+    let disposed = 0;
+    let created = 0;
+    const DEFINITION = {
+        seed: 7,
+        tickRate: 60,
+        endTick: 60,
+        initialState: {
+            value: 0,
+        },
+        timeline: [
+            {
+                tick: 0,
+                amount: 7,
+            },
+            {
+                atMs: 500,
+                amount: 3,
+            },
+        ],
+    };
+    function make() {
+        runner?.dispose();
+        runner = createScenario({
+            definition: {
+                ...DEFINITION,
+                loop: document.querySelector('#repeat').checked,
+            },
+            createRun({ seed, initialState, signal }) {
+                created++;
+                value = initialState.value;
+                const COMMANDS = (frame) => {
+                    for (const EVENT of frame.events) {
+                        value += EVENT.amount;
+                    }
+                };
+                return {
+                    initialize: COMMANDS,
+                    step(frame) {
+                        COMMANDS(frame);
+                        value += seed;
+                    },
+                    render(frame) {
+                        GL.clearColor((value % 255) / 255, 0.25, 0.3, 1);
+                        GL.clear(GL.COLOR_BUFFER_BIT);
+                        document.querySelector('output').textContent = frame.tick + ' / ' + value;
+                    },
+                    dispose() {
+                        disposed++;
+                        if (!signal.aborted) {
+                            throw Error('scope abort order');
+                        }
+                    },
+                };
+            },
+        });
+    }
+    make();
+    document.querySelector('#play').onclick = () => runner.play();
+    document.querySelector('#pause').onclick = () => runner.pause();
+    document.querySelector('#restart').onclick = () => runner.restart();
+    document.querySelector('#stop').onclick = () => runner.stop();
+    document.querySelector('#repeat').onchange = make;
+    window.scenarioDemo = {
+        get runner() {
+            return runner;
+        },
+        get value() {
+            return value;
+        },
+        get created() {
+            return created;
+        },
+        get disposed() {
+            return disposed;
+        },
+        get backend() {
+            return GL.getParameter(GL.VERSION);
+        },
+    };
+    addEventListener('pagehide', () => runner.dispose(), {
+        once: true,
+    });
 </script>

@@ -2,111 +2,620 @@ import { PresentationEventQueue } from '../../../dist/presentation-events.js';
 import { createNostrPublicRoom, createNostrSignaler, createWebRTCPeer } from '../../../dist/transport.js';
 import { createRoomSession, profiles } from '../../../dist/rollback.js';
 import { createValueCodec } from '../../../dist/deterministic.js';
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const SLEEP = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 class LocalRelay extends EventTarget {
-  static sockets = new Set();
-  constructor() { super(); this.readyState = 0; LocalRelay.sockets.add(this); queueMicrotask(() => { if(this.readyState === 0){this.readyState=1;this.dispatchEvent(new Event('open'));} }); }
-  deliver(value) { if(this.readyState===1)this.dispatchEvent(new MessageEvent('message',{data:JSON.stringify(value)})); }
-  send(text) { const [type,...args]=JSON.parse(text); if(type==='REQ'){this.subscription=args[0];this.filter=args[1];queueMicrotask(()=>this.deliver(['EOSE',this.subscription]));}
-    if(type==='EVENT'){const event=args[0];queueMicrotask(()=>{this.deliver(['OK',event.id,true,'']);for(const socket of LocalRelay.sockets)if(socket.filter?.['#d']?.includes(event.tags.find(t=>t[0]==='d')?.[1]))socket.deliver(['EVENT',socket.subscription,event]);});} }
-  close(){if(this.readyState===3)return;this.readyState=3;LocalRelay.sockets.delete(this);this.dispatchEvent(new Event('close'));}
+    static sockets = new Set();
+    constructor() {
+        super();
+        this.readyState = 0;
+        LocalRelay.sockets.add(this);
+        queueMicrotask(() => {
+            if (this.readyState === 0) {
+                this.readyState = 1;
+                this.dispatchEvent(new Event('open'));
+            }
+        });
+    }
+    deliver(value) {
+        if (this.readyState === 1) {
+            this.dispatchEvent(
+                new MessageEvent('message', {
+                    data: JSON.stringify(value),
+                }),
+            );
+        }
+    }
+    send(text) {
+        const [TYPE, ...ARGS] = JSON.parse(text);
+        if (TYPE === 'REQ') {
+            this.subscription = ARGS[0];
+            this.filter = ARGS[1];
+            queueMicrotask(() => this.deliver(['EOSE', this.subscription]));
+        }
+        if (TYPE === 'EVENT') {
+            const EVENT = ARGS[0];
+            queueMicrotask(() => {
+                this.deliver(['OK', EVENT.id, true, '']);
+                for (const SOCKET of LocalRelay.sockets) {
+                    if (SOCKET.filter?.['#d']?.includes(EVENT.tags.find((t) => t[0] === 'd')?.[1])) {
+                        SOCKET.deliver(['EVENT', SOCKET.subscription, EVENT]);
+                    }
+                }
+            });
+        }
+    }
+    close() {
+        if (this.readyState === 3) {
+            return;
+        }
+        this.readyState = 3;
+        LocalRelay.sockets.delete(this);
+        this.dispatchEvent(new Event('close'));
+    }
 }
-function assert(value, message) { if (!value) throw new Error(message); }
+function assert(value, message) {
+    if (!value) {
+        throw new Error(message);
+    }
+}
 function actor(prepared = false, available = false, assignments = new Map()) {
-  const codec = createValueCodec(); let state = { tick:0, epoch:-1, players:[], value:0, commands:[], joins:0, leaves:0, padding:new Uint8Array(32768) };
-  let saves=0, journal, rollingBack=false, presentationFailure=null; const played=new Set();
-  const resetJournal=()=>{journal?.dispose();rollingBack=false;journal=new PresentationEventQueue({adapters:{command:{start(event){const id=event.entityId+':'+event.sequence;assert(!played.has(id),'duplicate confirmed presentation '+id);played.add(id);}}}});};resetJournal();
-  const actor = { state:()=>state,
-    event(e,playerId){try{if(e.type==='input-submitted')for(const c of e.commands??[]){const key=playerId+':'+c.sequence;assert(!assignments.has(key)||assignments.get(key)===c.executeTick,'reservation changed execution tick');assignments.set(key,c.executeTick);}if(e.type==='rollback'){assert(e.from>=0 && e.from<=e.target,'global rollback range');// Membership restores a canonical boundary and resets the journal at commit; only discard its speculative tail.
-const from=e.reason==='membership'?Math.max(e.from,journal.confirmedTick+1):e.from;journal.beginRollback(from);rollingBack=true;}if(e.type==='reconciled'&&rollingBack){journal.endRollback();rollingBack=false;}if(e.type==='membership-committed')resetJournal();}catch(error){presentationFailure=error;}},
-    confirm(s){if(presentationFailure)throw presentationFailure;if(rollingBack){journal.endRollback();rollingBack=false;}if(!s.resimulating&&s.confirmedTick>=0)journal.confirmThrough(s.confirmedTick);},
-    dispose(){journal.dispose();}, get presentations(){return played.size;}, get saves(){return saves;}, adapter:{
-    save(){saves++;return codec.encode(state);}, load:b=>{state=codec.decode(b);},
-    validateSnapshot:(b,{tick})=>{try{return codec.decode(b).tick===tick;}catch{return false;}},
-    applyMembership({tick,epoch,players,activePlayers,joined,left}){assert(state.tick===tick&&(available||state.epoch+1===epoch),'membership canonical boundary');state.epoch=epoch;state.players=[...players];if(available)state.activePlayers=[...(activePlayers??players)];state.joins+=joined.length;state.leaves+=left.length;},
-    step({tick,membershipEpoch,inputs,recovering}){assert(tick===state.tick&&membershipEpoch===state.epoch,'global tick/epoch regression');assert(JSON.stringify(inputs.map(i=>i.playerId))===JSON.stringify(available?state.activePlayers:state.players),'input roster mismatch');for(const frame of inputs){state.value+=frame.input[0];for(const c of frame.commands){assert(c.executeTick===tick,'command execution metadata');const scheduled=assignments.get(frame.playerId+':'+c.sequence);if(scheduled!==undefined)assert(scheduled===tick,'initial reservation tick changed across reconnect');state.commands.push(frame.playerId+':'+c.sequence+':'+c.payload[0]);if(!recovering)journal.emit({tick,sequence:c.sequence,entityId:frame.playerId,generation:0,kind:'command',durationMs:0});}}state.tick++;}
-  }};
-  if (prepared) {
-    const tokens = new WeakMap(), same = (a,b) => JSON.stringify(a) === JSON.stringify(b);
-    const token = (candidate, context) => {
-      assert(candidate.tick === context.tick && candidate.epoch === context.membershipEpoch && same(candidate.players, context.players), 'prepared context');
-      const key = {}; tokens.set(key, { candidate, context: structuredClone(context) }); return key;
+    const CODEC = createValueCodec();
+    let state = {
+        tick: 0,
+        epoch: -1,
+        players: [],
+        value: 0,
+        commands: [],
+        joins: 0,
+        leaves: 0,
+        padding: new Uint8Array(32768),
     };
-    const job = work => { let done = false, result, pulses = 0; return {
-      get done(){return done;}, get result(){return result;}, cancel(){done=true;},
-      pulse(){if(!done && ++pulses===2){result=work();done=true;}}
-    }; };
-    actor.adapter.saveJob = () => job(() => actor.adapter.save());
-    actor.adapter.prepareSnapshotJob = (data, context) => job(() => token(codec.decode(data), context));
-    actor.adapter.loadPreparedSnapshot = (key, context) => {
-      const owned = tokens.get(key); assert(owned && same(owned.context, context), 'owned token binding'); tokens.delete(key); state = owned.candidate;
+    let saves = 0;
+    let journal;
+    let rollingBack = false;
+    let presentationFailure = null;
+    const PLAYED = new Set();
+    const RESET_JOURNAL = () => {
+        journal?.dispose();
+        rollingBack = false;
+        journal = new PresentationEventQueue({
+            adapters: {
+                command: {
+                    start(event) {
+                        const ID = event.entityId + ':' + event.sequence;
+                        assert(!PLAYED.has(ID), 'duplicate confirmed presentation ' + ID);
+                        PLAYED.add(ID);
+                    },
+                },
+            },
+        });
     };
-    actor.adapter.prepareMembershipJob = (change, context) => {
-      const original = state;
-      return job(() => {
-        assert(state === original && state.tick === change.tick, 'no live mutation during prepared job');
-        const candidate = structuredClone(state); candidate.epoch=change.epoch;candidate.players=[...change.players];candidate.joins+=change.joined.length;candidate.leaves+=change.left.length;
-        return {bytes:codec.encode(candidate),prepared:token(candidate,context)};
-      });
+    RESET_JOURNAL();
+    const ACTOR = {
+        state: () => state,
+        event(e, playerId) {
+            try {
+                if (e.type === 'input-submitted') {
+                    for (const C of e.commands ?? []) {
+                        const KEY = playerId + ':' + C.sequence;
+                        assert(
+                            !assignments.has(KEY) || assignments.get(KEY) === C.executeTick,
+                            'reservation changed execution tick',
+                        );
+                        assignments.set(KEY, C.executeTick);
+                    }
+                }
+                if (e.type === 'rollback') {
+                    assert(e.from >= 0 && e.from <= e.target, 'global rollback range'); // Membership restores a canonical boundary and resets the journal at commit; only discard its speculative tail.
+                    const FROM = e.reason === 'membership' ? Math.max(e.from, journal.confirmedTick + 1) : e.from;
+                    journal.beginRollback(FROM);
+                    rollingBack = true;
+                }
+                if (e.type === 'reconciled' && rollingBack) {
+                    journal.endRollback();
+                    rollingBack = false;
+                }
+                if (e.type === 'membership-committed') {
+                    RESET_JOURNAL();
+                }
+            } catch (error) {
+                presentationFailure = error;
+            }
+        },
+        confirm(s) {
+            if (presentationFailure) {
+                throw presentationFailure;
+            }
+            if (rollingBack) {
+                journal.endRollback();
+                rollingBack = false;
+            }
+            if (!s.resimulating && s.confirmedTick >= 0) {
+                journal.confirmThrough(s.confirmedTick);
+            }
+        },
+        dispose() {
+            journal.dispose();
+        },
+        get presentations() {
+            return PLAYED.size;
+        },
+        get saves() {
+            return saves;
+        },
+        adapter: {
+            save() {
+                saves++;
+                return CODEC.encode(state);
+            },
+            load: (b) => {
+                state = CODEC.decode(b);
+            },
+            validateSnapshot: (b, { tick }) => {
+                try {
+                    return CODEC.decode(b).tick === tick;
+                } catch {
+                    return false;
+                }
+            },
+            applyMembership({ tick, epoch, players, activePlayers, joined, left }) {
+                assert(
+                    state.tick === tick && (available || state.epoch + 1 === epoch),
+                    'membership canonical boundary',
+                );
+                state.epoch = epoch;
+                state.players = [...players];
+                if (available) {
+                    state.activePlayers = [...(activePlayers ?? players)];
+                }
+                state.joins += joined.length;
+                state.leaves += left.length;
+            },
+            step({ tick, membershipEpoch, inputs, recovering }) {
+                assert(tick === state.tick && membershipEpoch === state.epoch, 'global tick/epoch regression');
+                assert(
+                    JSON.stringify(inputs.map((i) => i.playerId)) ===
+                        JSON.stringify(available ? state.activePlayers : state.players),
+                    'input roster mismatch',
+                );
+                for (const FRAME of inputs) {
+                    state.value += FRAME.input[0];
+                    for (const C of FRAME.commands) {
+                        assert(C.executeTick === tick, 'command execution metadata');
+                        const SCHEDULED = assignments.get(FRAME.playerId + ':' + C.sequence);
+                        if (SCHEDULED !== undefined) {
+                            assert(SCHEDULED === tick, 'initial reservation tick changed across reconnect');
+                        }
+                        state.commands.push(FRAME.playerId + ':' + C.sequence + ':' + C.payload[0]);
+                        if (!recovering) {
+                            journal.emit({
+                                tick,
+                                sequence: C.sequence,
+                                entityId: FRAME.playerId,
+                                generation: 0,
+                                kind: 'command',
+                                durationMs: 0,
+                            });
+                        }
+                    }
+                }
+                state.tick++;
+            },
+        },
     };
-  }
-  return actor;
+    if (prepared) {
+        const TOKENS = new WeakMap(),
+            SAME = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+        const TOKEN = (candidate, context) => {
+            assert(
+                candidate.tick === context.tick &&
+                    candidate.epoch === context.membershipEpoch &&
+                    SAME(candidate.players, context.players),
+                'prepared context',
+            );
+            const KEY = {};
+            TOKENS.set(KEY, {
+                candidate,
+                context: structuredClone(context),
+            });
+            return KEY;
+        };
+        const JOB = (work) => {
+            let done = false;
+            let result;
+            let pulses = 0;
+            return {
+                get done() {
+                    return done;
+                },
+                get result() {
+                    return result;
+                },
+                cancel() {
+                    done = true;
+                },
+                pulse() {
+                    if (!done && ++pulses === 2) {
+                        result = work();
+                        done = true;
+                    }
+                },
+            };
+        };
+        ACTOR.adapter.saveJob = () => JOB(() => ACTOR.adapter.save());
+        ACTOR.adapter.prepareSnapshotJob = (data, context) => JOB(() => TOKEN(CODEC.decode(data), context));
+        ACTOR.adapter.loadPreparedSnapshot = (key, context) => {
+            const OWNED = TOKENS.get(key);
+            assert(OWNED && SAME(OWNED.context, context), 'owned token binding');
+            TOKENS.delete(key);
+            state = OWNED.candidate;
+        };
+        ACTOR.adapter.prepareMembershipJob = (change, context) => {
+            const ORIGINAL = state;
+            return JOB(() => {
+                assert(state === ORIGINAL && state.tick === change.tick, 'no live mutation during prepared job');
+                const CANDIDATE = structuredClone(state);
+                CANDIDATE.epoch = change.epoch;
+                CANDIDATE.players = [...change.players];
+                CANDIDATE.joins += change.joined.length;
+                CANDIDATE.leaves += change.left.length;
+                return {
+                    bytes: CODEC.encode(CANDIDATE),
+                    prepared: TOKEN(CANDIDATE, context),
+                };
+            });
+        };
+    }
+    return ACTOR;
 }
-export async function runDynamicRoomScenario({ prepared = false, paced = false, available = false, simulationMode = 'lockstep' } = {}) {
-  const assignments=new Map(), sessions=[],rooms=[],actors=[],events=[], samples=[], interrupted=new Set(); let timer, target=Infinity, failure=null, maxPulseMs=0, maxCatchupPerPulse=0, handoffCommands=0;
-  const namespace='dynamic-e2e-'+crypto.randomUUID(),roomCode=String(Math.floor(Math.random()*10000)).padStart(4,'0');
-  const options={room:roomCode,namespace,timeoutMs:60000,peerTimeoutMs:20000,retryMs:paced?1500:100,advertiseIntervalMs:paced?5000:1000,rtcConfig:{iceServers:[]},
-    signalerFactory:opts=>createNostrSignaler({...opts,relays:['wss://fixture.invalid'],WebSocketImpl:LocalRelay,publishIntervalMs:paced?500:0}),
-    peerFactory:opts=>createWebRTCPeer({...opts,rtcConfig:{iceServers:[]}})};
-  const profile={...(simulationMode==='rollback'?profiles.action:profiles.lockstep),baseInputDelayTicks:2,pacingPolicy:'none',checksumInterval:20,stateHistorySize:96,heartbeatMs:30,peerInterruptMs:500,peerTimeoutMs:8000};
-  async function add(role, slot = rooms.length){const room=await createNostrPublicRoom({...options,simulationVersion:'dynamic-browser-v1',discoveryMs:paced?1500:150,totalTimeoutMs:60000,leaseMs:paced?15000:1500,reservationMs:30000,resume:{storage:sessionStorage,key:namespace+':actor:'+slot,lifetimeMs:600000}});rooms.push(room);const a=actor(prepared,available,assignments);actors.push(a);const s=createRoomSession({mode:'online',room,adapter:a.adapter,inputSize:1,simulationVersion:'dynamic-browser-v1',profile,
-    ...(available?{availability:{mode:'available',heartbeatMs:100,silenceMs:1600,inputGraceMs:1600,resumeGapMs:1600,roundTimeoutMs:5000}}:{}),
-    membership:{transitionTimeoutMs:60000,reconnectGraceMs:30000,maxCatchupSteps:2},onEvent:e=>{a.event(e,room.localPlayerId);if(['membership-committed','membership-failed','partition-failed'].includes(e.type))events.push(e);}});sessions.push(s);return s;}
-  function pulse(){const start=performance.now();try{for(const [index,s] of sessions.entries())if(!s.closed&&!interrupted.has(s)){const before=s.metrics.bootstrapTicks;s.poll();maxCatchupPerPulse=Math.max(maxCatchupPerPulse,s.metrics.bootstrapTicks-before);if(!s.closed&&s.tick<target&&!s.resimulating)s.advance(new Uint8Array([1]));actors[index].confirm(s);if(s.failure)throw new Error(JSON.stringify({player:s.localPlayerId,failure:s.failure}));}}catch(error){failure=error;}maxPulseMs=Math.max(maxPulseMs,performance.now()-start);}
-  async function until(predicate,label,timeoutMs=65000){const end=performance.now()+timeoutMs;while(!predicate()){if(failure)throw failure;if(performance.now()>end)throw new Error(label+' timeout '+JSON.stringify(sessions.map(s=>({tick:s.tick,epoch:s.epoch,status:s.status,transition:s._transition&&{target:s._transition.target,prepared:s._transition.prepared.size,reached:s._transition.reached.size,installed:s._transition.installed.size,committed:s._transition.committed.size}}))));await sleep(10);}}
-  async function checkpoint(label){const active=sessions.filter(s=>!s.closed);target=Math.max(...active.map(s=>s.tick));await until(()=>active.every(s=>s.tick===target&&s.confirmedTick+1>=target&&!s.resimulating),'checkpoint '+label);const hashes=active.map(s=>s.getStateHash());assert(new Set(hashes).size===1,'hash mismatch '+label);samples.push({label,tick:target,hash:hashes[0],players:active.length});target=Infinity;}
-  try{
-    let host=await add('host');timer=setInterval(pulse,8);await until(()=>host.tick>=75,'single start');
-    for(let i=1;i<5;i++){host.queueCommand(new Uint8Array([i]));const joined=await add('join');await until(()=>joined.ready&&host.players.length===i+1&&!host._transition,'sequential join '+(i+1));await until(()=>sessions.every(s=>s.tick>=host.baseTick+25),'post admission advance');await checkpoint('players-'+(i+1));
-      if(i===1 && simulationMode==='rollback' && !available){
-        interrupted.add(sessions[1]);host.queueCommand(new Uint8Array([99]));
-        await until(()=>actors[0].state().commands.some(c=>c.endsWith(':99')), 'predicted command before reconnect');
-        assert(host.confirmedTick+1<host.tick, 'handoff actually has an unconfirmed tail');
-        const reconnect=rooms[0].reconnect(rooms[1].localPlayerId);interrupted.clear();await reconnect;
-        await until(()=>sessions.every(s=>s.ready), 'predicted command reconnect');await checkpoint('predicted-command-handoff');
-        assert(actors.every(a=>a.state().commands.filter(c=>c.endsWith(':99')).length===1), 'predicted command lost or duplicated');handoffCommands++;
-      }
+export async function runDynamicRoomScenario({
+    prepared = false,
+    paced = false,
+    available = false,
+    simulationMode = 'lockstep',
+} = {}) {
+    const ASSIGNMENTS = new Map(),
+        SESSIONS = [],
+        ROOMS = [],
+        ACTORS = [],
+        EVENTS = [],
+        SAMPLES = [],
+        INTERRUPTED = new Set();
+    let timer;
+    let target = Infinity;
+    let failure = null;
+    let maxPulseMs = 0;
+    let maxCatchupPerPulse = 0;
+    let handoffCommands = 0;
+    const NAMESPACE = 'dynamic-e2e-' + crypto.randomUUID(),
+        ROOM_CODE = String(Math.floor(Math.random() * 10000)).padStart(4, '0');
+    const OPTIONS = {
+        room: ROOM_CODE,
+        namespace: NAMESPACE,
+        timeoutMs: 60000,
+        peerTimeoutMs: 20000,
+        retryMs: paced ? 1500 : 100,
+        advertiseIntervalMs: paced ? 5000 : 1000,
+        rtcConfig: {
+            iceServers: [],
+        },
+        signalerFactory: (opts) =>
+            createNostrSignaler({
+                ...opts,
+                relays: ['wss://fixture.invalid'],
+                WebSocketImpl: LocalRelay,
+                publishIntervalMs: paced ? 500 : 0,
+            }),
+        peerFactory: (opts) =>
+            createWebRTCPeer({
+                ...opts,
+                rtcConfig: {
+                    iceServers: [],
+                },
+            }),
+    };
+    const PROFILE = {
+        ...(simulationMode === 'rollback' ? profiles.action : profiles.lockstep),
+        baseInputDelayTicks: 2,
+        pacingPolicy: 'none',
+        checksumInterval: 20,
+        stateHistorySize: 96,
+        heartbeatMs: 30,
+        peerInterruptMs: 500,
+        peerTimeoutMs: 8000,
+    };
+    async function add(_role, slot = ROOMS.length) {
+        const ROOM = await createNostrPublicRoom({
+            ...OPTIONS,
+            simulationVersion: 'dynamic-browser-v1',
+            discoveryMs: paced ? 1500 : 150,
+            totalTimeoutMs: 60000,
+            leaseMs: paced ? 15000 : 1500,
+            reservationMs: 30000,
+            resume: {
+                storage: sessionStorage,
+                key: NAMESPACE + ':actor:' + slot,
+                lifetimeMs: 600000,
+            },
+        });
+        ROOMS.push(ROOM);
+        const A = actor(prepared, available, ASSIGNMENTS);
+        ACTORS.push(A);
+        const S = createRoomSession({
+            mode: 'online',
+            room: ROOM,
+            adapter: A.adapter,
+            inputSize: 1,
+            simulationVersion: 'dynamic-browser-v1',
+            profile: PROFILE,
+            ...(available
+                ? {
+                      availability: {
+                          mode: 'available',
+                          heartbeatMs: 100,
+                          silenceMs: 1600,
+                          inputGraceMs: 1600,
+                          resumeGapMs: 1600,
+                          roundTimeoutMs: 5000,
+                      },
+                  }
+                : {}),
+            membership: {
+                transitionTimeoutMs: 60000,
+                reconnectGraceMs: 30000,
+                maxCatchupSteps: 2,
+            },
+            onEvent: (e) => {
+                A.event(e, ROOM.localPlayerId);
+                if (['membership-committed', 'membership-failed', 'partition-failed'].includes(e.type)) {
+                    EVENTS.push(e);
+                }
+            },
+        });
+        SESSIONS.push(S);
+        return S;
     }
-    assert(actors.every(a=>a.state().commands.length===4+handoffCommands),'pending commands duplicated or lost');
-    assert(maxCatchupPerPulse<=2,'bootstrap work exceeded per-pulse bound');
-    if(available){
-      interrupted.add(sessions[2]);let prior=host.tick;
-      await until(()=>sessions.filter(s=>!interrupted.has(s)).every(s=>s.tick>prior+15&&s.activePlayers.length===4),'inactive dynamic guest');
-      await rooms[0].reconnect(rooms[2].localPlayerId);interrupted.clear();
-      await until(()=>sessions.every(s=>s.ready&&s.activePlayers.length===5),'dynamic guest return');await checkpoint('available-guest-return');
-      interrupted.add(host);prior=sessions[1].tick;
-      await until(()=>sessions.filter(s=>s!==host).every(s=>s.tick>prior+15&&s.coordinatorId!==host.localPlayerId),'inactive dynamic coordinator');
-      await rooms[1].reconnect(host.localPlayerId);interrupted.clear();
-      await until(()=>sessions.every(s=>s.ready&&s.activePlayers.length===5),'dynamic coordinator return');await checkpoint('available-coordinator-return');
-      let bytesSent=0,connections=0;for(const room of rooms)for(const pc of room.peerConnections.values()){connections++;(await pc.getStats()).forEach(row=>{if(row.type==='data-channel')bytesSent+=row.bytesSent||0;});}
-      assert(connections===20&&bytesSent>0,'available dynamic real RTC');
-      return {passed:true,reservedCommands:[...assignments],policy:'available',transport:'actual createNostrPublicRoom/dynamic room and Chromium RTC; signed local relay fixture; session pump stop injected',samples,connections:connections/2,bytesSent,maxPulseMs,maxCatchupPerPulse,events};
+    function pulse() {
+        const START = performance.now();
+        try {
+            for (const [INDEX, S] of SESSIONS.entries()) {
+                if (!S.closed && !INTERRUPTED.has(S)) {
+                    const BEFORE = S.metrics.bootstrapTicks;
+                    S.poll();
+                    maxCatchupPerPulse = Math.max(maxCatchupPerPulse, S.metrics.bootstrapTicks - BEFORE);
+                    if (!S.closed && S.tick < target && !S.resimulating) {
+                        S.advance(new Uint8Array([1]));
+                    }
+                    ACTORS[INDEX].confirm(S);
+                    if (S.failure) {
+                        throw new Error(
+                            JSON.stringify({
+                                player: S.localPlayerId,
+                                failure: S.failure,
+                            }),
+                        );
+                    }
+                }
+            }
+        } catch (error) {
+            failure = error;
+        }
+        maxPulseMs = Math.max(maxPulseMs, performance.now() - START);
     }
-    await rooms[0].reconnect(rooms[2].localPlayerId);await until(()=>sessions.every(s=>s.ready),'retained identity reconnect');await checkpoint('reconnect');
-    const oldGuest=sessions[2], guestId=oldGuest.localPlayerId;oldGuest.queueCommand(new Uint8Array([9]));
-    await until(()=>actors[0].state().commands.length===5+handoffCommands,'pre-refresh command');oldGuest.close();
-    const resumedGuest=await add('join',2);assert(resumedGuest.localPlayerId===guestId,'refresh identity changed');
-    await until(()=>resumedGuest.ready&&!host._transition,'guest refresh admission');resumedGuest.queueCommand(new Uint8Array([8]));
-    await until(()=>actors[0].state().commands.length===6+handoffCommands,'post-refresh command');await checkpoint('guest-refresh');
-    const oldHostId=host.localPlayerId;host.close();host=await add('host',0);assert(host.localPlayerId===oldHostId,'coordinator refresh identity changed');
-    await until(()=>host.ready&&sessions.filter(s=>!s.closed).every(s=>s.ready),'coordinator refresh');await checkpoint('coordinator-refresh');
-    // Collect physical RTC traffic while all ten mesh edges still exist.
-    let bytesSent=0,connections=0;for(const room of rooms.filter(r=>!r.closed))for(const pc of room.peerConnections.values()){connections++;const stats=await pc.getStats();stats.forEach(row=>{if(row.type==='data-channel')bytesSent+=row.bytesSent||0;});}
-    assert(connections===20&&bytesSent>0,'five-player real RTC mesh evidence');
-    const departing=host.leave();await until(()=>host.closed&&sessions.filter(s=>!s.closed).every(s=>s.players.length===4&&s.coordinatorId!==host.localPlayerId),'coordinator succession');await departing;
-    const prior=Math.max(...sessions.filter(s=>!s.closed).map(s=>s.tick));await until(()=>sessions.filter(s=>!s.closed).every(s=>s.tick>=prior+25),'successor simulation');await checkpoint('coordinator-left');
-    assert(actors.filter((a,i)=>!sessions[i].closed).every(a=>a.state().joins===5&&a.state().leaves===1),'membership exactly-once');
-    return {passed:true,reservedCommands:[...assignments],publishIntervalMs:paced?500:0,snapshotPath:prepared?'cooperative fixture':'legacy',transport:'real Chromium RTCPeerConnections; public directory/reservations via signed local Nostr relay fixture',samples,connections:connections/2,bytesSent,maxPulseMs,maxCatchupPerPulse,
-      metrics:sessions.map(s=>s.metrics),snapshotSaves:actors.map(a=>a.saves),confirmedPresentations:actors.map(a=>a.presentations),events};
-  }finally{clearInterval(timer);sessions.forEach(s=>s.close());rooms.forEach(r=>r.close());actors.forEach(a=>a.dispose());}
+    async function until(predicate, label, timeoutMs = 65000) {
+        const END = performance.now() + timeoutMs;
+        while (!predicate()) {
+            if (failure) {
+                throw failure;
+            }
+            if (performance.now() > END) {
+                throw new Error(
+                    label +
+                        ' timeout ' +
+                        JSON.stringify(
+                            SESSIONS.map((s) => ({
+                                tick: s.tick,
+                                epoch: s.epoch,
+                                status: s.status,
+                                transition: s._transition && {
+                                    target: s._transition.target,
+                                    prepared: s._transition.prepared.size,
+                                    reached: s._transition.reached.size,
+                                    installed: s._transition.installed.size,
+                                    committed: s._transition.committed.size,
+                                },
+                            })),
+                        ),
+                );
+            }
+            await SLEEP(10);
+        }
+    }
+    async function checkpoint(label) {
+        const ACTIVE = SESSIONS.filter((s) => !s.closed);
+        target = Math.max(...ACTIVE.map((s) => s.tick));
+        await until(
+            () => ACTIVE.every((s) => s.tick === target && s.confirmedTick + 1 >= target && !s.resimulating),
+            'checkpoint ' + label,
+        );
+        const HASHES = ACTIVE.map((s) => s.getStateHash());
+        assert(new Set(HASHES).size === 1, 'hash mismatch ' + label);
+        SAMPLES.push({
+            label,
+            tick: target,
+            hash: HASHES[0],
+            players: ACTIVE.length,
+        });
+        target = Infinity;
+    }
+    try {
+        let host = await add('host');
+        timer = setInterval(pulse, 8);
+        await until(() => host.tick >= 75, 'single start');
+        for (let i = 1; i < 5; i++) {
+            host.queueCommand(new Uint8Array([i]));
+            const JOINED = await add('join');
+            await until(
+                () => JOINED.ready && host.players.length === i + 1 && !host._transition,
+                'sequential join ' + (i + 1),
+            );
+            await until(() => SESSIONS.every((s) => s.tick >= host.baseTick + 25), 'post admission advance');
+            await checkpoint('players-' + (i + 1));
+            if (i === 1 && simulationMode === 'rollback' && !available) {
+                INTERRUPTED.add(SESSIONS[1]);
+                host.queueCommand(new Uint8Array([99]));
+                await until(
+                    () => ACTORS[0].state().commands.some((c) => c.endsWith(':99')),
+                    'predicted command before reconnect',
+                );
+                assert(host.confirmedTick + 1 < host.tick, 'handoff actually has an unconfirmed tail');
+                const RECONNECT = ROOMS[0].reconnect(ROOMS[1].localPlayerId);
+                INTERRUPTED.clear();
+                await RECONNECT;
+                await until(() => SESSIONS.every((s) => s.ready), 'predicted command reconnect');
+                await checkpoint('predicted-command-handoff');
+                assert(
+                    ACTORS.every((a) => a.state().commands.filter((c) => c.endsWith(':99')).length === 1),
+                    'predicted command lost or duplicated',
+                );
+                handoffCommands++;
+            }
+        }
+        assert(
+            ACTORS.every((a) => a.state().commands.length === 4 + handoffCommands),
+            'pending commands duplicated or lost',
+        );
+        assert(maxCatchupPerPulse <= 2, 'bootstrap work exceeded per-pulse bound');
+        if (available) {
+            INTERRUPTED.add(SESSIONS[2]);
+            let prior = host.tick;
+            await until(
+                () =>
+                    SESSIONS.filter((s) => !INTERRUPTED.has(s)).every(
+                        (s) => s.tick > prior + 15 && s.activePlayers.length === 4,
+                    ),
+                'inactive dynamic guest',
+            );
+            await ROOMS[0].reconnect(ROOMS[2].localPlayerId);
+            INTERRUPTED.clear();
+            await until(() => SESSIONS.every((s) => s.ready && s.activePlayers.length === 5), 'dynamic guest return');
+            await checkpoint('available-guest-return');
+            INTERRUPTED.add(host);
+            prior = SESSIONS[1].tick;
+            await until(
+                () =>
+                    SESSIONS.filter((s) => s !== host).every(
+                        (s) => s.tick > prior + 15 && s.coordinatorId !== host.localPlayerId,
+                    ),
+                'inactive dynamic coordinator',
+            );
+            await ROOMS[1].reconnect(host.localPlayerId);
+            INTERRUPTED.clear();
+            await until(
+                () => SESSIONS.every((s) => s.ready && s.activePlayers.length === 5),
+                'dynamic coordinator return',
+            );
+            await checkpoint('available-coordinator-return');
+            let bytesSent = 0;
+            let connections = 0;
+            for (const ROOM of ROOMS) {
+                for (const PC of ROOM.peerConnections.values()) {
+                    connections++;
+                    (await PC.getStats()).forEach((row) => {
+                        if (row.type === 'data-channel') {
+                            bytesSent += row.bytesSent || 0;
+                        }
+                    });
+                }
+            }
+            assert(connections === 20 && bytesSent > 0, 'available dynamic real RTC');
+            return {
+                passed: true,
+                reservedCommands: [...ASSIGNMENTS],
+                policy: 'available',
+                transport:
+                    'actual createNostrPublicRoom/dynamic room and Chromium RTC; signed local relay fixture; session pump stop injected',
+                samples: SAMPLES,
+                connections: connections / 2,
+                bytesSent,
+                maxPulseMs,
+                maxCatchupPerPulse,
+                events: EVENTS,
+            };
+        }
+        await ROOMS[0].reconnect(ROOMS[2].localPlayerId);
+        await until(() => SESSIONS.every((s) => s.ready), 'retained identity reconnect');
+        await checkpoint('reconnect');
+        const OLD_GUEST = SESSIONS[2],
+            GUEST_ID = OLD_GUEST.localPlayerId;
+        OLD_GUEST.queueCommand(new Uint8Array([9]));
+        await until(() => ACTORS[0].state().commands.length === 5 + handoffCommands, 'pre-refresh command');
+        OLD_GUEST.close();
+        const RESUMED_GUEST = await add('join', 2);
+        assert(RESUMED_GUEST.localPlayerId === GUEST_ID, 'refresh identity changed');
+        await until(() => RESUMED_GUEST.ready && !host._transition, 'guest refresh admission');
+        RESUMED_GUEST.queueCommand(new Uint8Array([8]));
+        await until(() => ACTORS[0].state().commands.length === 6 + handoffCommands, 'post-refresh command');
+        await checkpoint('guest-refresh');
+        const OLD_HOST_ID = host.localPlayerId;
+        host.close();
+        host = await add('host', 0);
+        assert(host.localPlayerId === OLD_HOST_ID, 'coordinator refresh identity changed');
+        await until(() => host.ready && SESSIONS.filter((s) => !s.closed).every((s) => s.ready), 'coordinator refresh');
+        await checkpoint('coordinator-refresh');
+        // Collect physical RTC traffic while all ten mesh edges still exist.
+        let bytesSent = 0;
+        let connections = 0;
+        for (const ROOM of ROOMS.filter((r) => !r.closed)) {
+            for (const PC of ROOM.peerConnections.values()) {
+                connections++;
+                const STATS = await PC.getStats();
+                STATS.forEach((row) => {
+                    if (row.type === 'data-channel') {
+                        bytesSent += row.bytesSent || 0;
+                    }
+                });
+            }
+        }
+        assert(connections === 20 && bytesSent > 0, 'five-player real RTC mesh evidence');
+        const DEPARTING = host.leave();
+        await until(
+            () =>
+                host.closed &&
+                SESSIONS.filter((s) => !s.closed).every(
+                    (s) => s.players.length === 4 && s.coordinatorId !== host.localPlayerId,
+                ),
+            'coordinator succession',
+        );
+        await DEPARTING;
+        const PRIOR = Math.max(...SESSIONS.filter((s) => !s.closed).map((s) => s.tick));
+        await until(() => SESSIONS.filter((s) => !s.closed).every((s) => s.tick >= PRIOR + 25), 'successor simulation');
+        await checkpoint('coordinator-left');
+        assert(
+            ACTORS.filter((_a, i) => !SESSIONS[i].closed).every((a) => a.state().joins === 5 && a.state().leaves === 1),
+            'membership exactly-once',
+        );
+        return {
+            passed: true,
+            reservedCommands: [...ASSIGNMENTS],
+            publishIntervalMs: paced ? 500 : 0,
+            snapshotPath: prepared ? 'cooperative fixture' : 'legacy',
+            transport:
+                'real Chromium RTCPeerConnections; public directory/reservations via signed local Nostr relay fixture',
+            samples: SAMPLES,
+            connections: connections / 2,
+            bytesSent,
+            maxPulseMs,
+            maxCatchupPerPulse,
+            metrics: SESSIONS.map((s) => s.metrics),
+            snapshotSaves: ACTORS.map((a) => a.saves),
+            confirmedPresentations: ACTORS.map((a) => a.presentations),
+            events: EVENTS,
+        };
+    } finally {
+        clearInterval(timer);
+        SESSIONS.forEach((s) => s.close());
+        ROOMS.forEach((r) => r.close());
+        ACTORS.forEach((a) => a.dispose());
+    }
 }

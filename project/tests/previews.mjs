@@ -1,3 +1,4 @@
+/* global audioExample, demo, reference, scenarioDemo, vectorExample */
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
@@ -5,58 +6,140 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { EXAMPLES, buildPreviews, previewURL } from '../previews.mjs';
-
-const root = fileURLToPath(new URL('../../', import.meta.url));
-const publicMode = process.argv.includes('--public');
-const names = new Set(EXAMPLES.map(([name]) => name));
-let server, browser;
-const report = { mode: publicMode ? 'public-htmlpreview' : 'local-standalone-html', examples: [] };
+const ROOT = fileURLToPath(new URL('../../', import.meta.url));
+const PUBLIC_MODE = process.argv.includes('--public');
+const NAMES = new Set(EXAMPLES.map(([name]) => name));
+let server;
+let browser;
+const REPORT = {
+    mode: PUBLIC_MODE ? 'public-htmlpreview' : 'local-standalone-html',
+    examples: [],
+};
 try {
-  if (!publicMode) {
-    await buildPreviews(root);
-    server = createServer(async (req, res) => {
-      const name = new URL(req.url, 'http://localhost').pathname.slice(1).replace(/\.html$/, '');
-      if (!names.has(name)) { res.writeHead(404).end(); return; }
-      res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.end(await readFile(resolve(root, 'dist/previews', `${name}.html`)));
-    });
-    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  }
-  browser = await chromium.launch({ headless: true, ...(process.env.CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.CHROMIUM_EXECUTABLE_PATH } : {}), args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
-  for (const [name] of EXAMPLES) {
-    const page = await browser.newPage();
-    const errors = [];
-    page.on('pageerror', error => errors.push(error.message));
-    const url = publicMode ? previewURL(name) : `http://127.0.0.1:${server.address().port}/${name}.html`;
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
-    await page.waitForFunction(name => {
-      const globals = { interpolation: 'demo', 'interpolation-frame': 'frameDemo', 'simloop-input-preview': 'inputPreviewDemo', audio: 'audioExample', navigation: 'navigationDemo', 'rendering-vector': 'vectorExample', 'rollback-reference': 'reference', scenario: 'scenarioDemo' };
-      return name === 'rollback-availability' ? typeof document.querySelector('#host')?.onclick === 'function' : !!window[globals[name]];
-    }, name, { timeout: 25000 });
-    if (name === 'interpolation') await page.waitForFunction(() => demo.diagnostics.frames > 5);
-    if (name === 'interpolation-frame') { await page.click('#spawn'); await page.click('#rollback'); }
-    if (name === 'audio') { await page.click('#tap'); await page.click('#confirmed'); assert.equal(await page.evaluate(() => audioExample.player.snapshot().state), 'running'); }
-    if (name === 'navigation') { await page.click('#wiki'); await page.waitForFunction(() => document.querySelector('#screen').textContent.startsWith('wiki/')); }
-    if (name === 'scenario') { await page.click('#play'); await page.waitForFunction(() => scenarioDemo.value > 7); await page.click('#stop'); }
-    if (name === 'rendering-vector') assert(await page.evaluate(() => vectorExample.device.stats.drawCalls > 0 && vectorExample.device.gl.getError() === 0));
-    if (name === 'rollback-reference') {
-      await page.click('#start');
-      await page.waitForFunction(() => reference.diagnostics.peers.length === 2 && reference.diagnostics.peers.every(p => p.tick > 5), null, { timeout: 20000 });
-      await page.click('[data-player="a"][data-command="2"]');
-      await page.click('#compare');
-      await page.waitForFunction(() => document.querySelector('#comparison').dataset.result === 'matched', null, { timeout: 15000 });
-      assert.equal(await page.evaluate(() => reference.diagnostics.connections.filter(x => x === 'connected').length), 2);
-      await page.click('#stop');
+    if (!PUBLIC_MODE) {
+        await buildPreviews(ROOT);
+        server = createServer(async (req, res) => {
+            const NAME = new URL(req.url, 'http://localhost').pathname.slice(1).replace(/\.html$/, '');
+            if (!NAMES.has(NAME)) {
+                res.writeHead(404).end();
+                return;
+            }
+            res.setHeader('Content-Type', 'text/html; charset=utf-8');
+            res.end(await readFile(resolve(ROOT, 'dist/previews', `${NAME}.html`)));
+        });
+        await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     }
-    assert.deepEqual(errors, [], name);
-    report.examples.push({ name, status: 'PASS', url });
-    await page.close();
-  }
-  report.status = 'PASS';
-} catch (error) { report.status = 'FAIL'; report.error = error.stack; throw error; }
-finally {
-  await browser?.close(); if (server) await new Promise(resolve => server.close(resolve));
-  await mkdir(resolve(root, 'test-results'), { recursive: true });
-  await writeFile(resolve(root, `test-results/previews-${publicMode ? 'public' : 'local'}.json`), JSON.stringify(report, null, 2));
-  console.log(JSON.stringify(report));
+    browser = await chromium.launch({
+        headless: true,
+        ...(process.env.CHROMIUM_EXECUTABLE_PATH
+            ? {
+                  executablePath: process.env.CHROMIUM_EXECUTABLE_PATH,
+              }
+            : {}),
+        args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
+    });
+    for (const [NAME] of EXAMPLES) {
+        const PAGE = await browser.newPage();
+        const ERRORS = [];
+        PAGE.on('pageerror', (error) => ERRORS.push(error.message));
+        const URL_LOCAL = PUBLIC_MODE ? previewURL(NAME) : `http://127.0.0.1:${server.address().port}/${NAME}.html`;
+        await PAGE.goto(URL_LOCAL, {
+            waitUntil: 'domcontentloaded',
+            timeout: 45000,
+        });
+        await PAGE.waitForFunction(
+            (name) => {
+                const GLOBALS = {
+                    interpolation: 'demo',
+                    'interpolation-frame': 'frameDemo',
+                    'simloop-input-preview': 'inputPreviewDemo',
+                    audio: 'audioExample',
+                    navigation: 'navigationDemo',
+                    'rendering-vector': 'vectorExample',
+                    'rollback-reference': 'reference',
+                    scenario: 'scenarioDemo',
+                };
+                return name === 'rollback-availability'
+                    ? typeof document.querySelector('#host')?.onclick === 'function'
+                    : !!window[GLOBALS[name]];
+            },
+            NAME,
+            {
+                timeout: 25000,
+            },
+        );
+        if (NAME === 'interpolation') {
+            await PAGE.waitForFunction(() => demo.diagnostics.frames > 5);
+        }
+        if (NAME === 'interpolation-frame') {
+            await PAGE.click('#spawn');
+            await PAGE.click('#rollback');
+        }
+        if (NAME === 'audio') {
+            await PAGE.click('#tap');
+            await PAGE.click('#confirmed');
+            assert.equal(await PAGE.evaluate(() => audioExample.player.snapshot().state), 'running');
+        }
+        if (NAME === 'navigation') {
+            await PAGE.click('#wiki');
+            await PAGE.waitForFunction(() => document.querySelector('#screen').textContent.startsWith('wiki/'));
+        }
+        if (NAME === 'scenario') {
+            await PAGE.click('#play');
+            await PAGE.waitForFunction(() => scenarioDemo.value > 7);
+            await PAGE.click('#stop');
+        }
+        if (NAME === 'rendering-vector') {
+            assert(
+                await PAGE.evaluate(
+                    () => vectorExample.device.stats.drawCalls > 0 && vectorExample.device.gl.getError() === 0,
+                ),
+            );
+        }
+        if (NAME === 'rollback-reference') {
+            await PAGE.click('#start');
+            await PAGE.waitForFunction(
+                () => reference.diagnostics.peers.length === 2 && reference.diagnostics.peers.every((p) => p.tick > 5),
+                null,
+                {
+                    timeout: 20000,
+                },
+            );
+            await PAGE.click('[data-player="a"][data-command="2"]');
+            await PAGE.click('#compare');
+            await PAGE.waitForFunction(() => document.querySelector('#comparison').dataset.result === 'matched', null, {
+                timeout: 15000,
+            });
+            assert.equal(
+                await PAGE.evaluate(() => reference.diagnostics.connections.filter((x) => x === 'connected').length),
+                2,
+            );
+            await PAGE.click('#stop');
+        }
+        assert.deepEqual(ERRORS, [], NAME);
+        REPORT.examples.push({
+            name: NAME,
+            status: 'PASS',
+            url: URL_LOCAL,
+        });
+        await PAGE.close();
+    }
+    REPORT.status = 'PASS';
+} catch (error) {
+    REPORT.status = 'FAIL';
+    REPORT.error = error.stack;
+    throw error;
+} finally {
+    await browser?.close();
+    if (server) {
+        await new Promise((resolve) => server.close(resolve));
+    }
+    await mkdir(resolve(ROOT, 'test-results'), {
+        recursive: true,
+    });
+    await writeFile(
+        resolve(ROOT, `test-results/previews-${PUBLIC_MODE ? 'public' : 'local'}.json`),
+        JSON.stringify(REPORT, null, 2),
+    );
+    console.log(JSON.stringify(REPORT));
 }

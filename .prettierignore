@@ -1,0 +1,9 @@
+node_modules/
+dist/
+test-results/
+playwright-report/
+**/*.generated.*
+**/*.compiled.*
+modules/rendering/assets/
+modules/rollback/docs/provenance/
+package-lock.json

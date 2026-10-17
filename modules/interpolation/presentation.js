@@ -4,10 +4,15 @@ import { RenderObject } from './render-object.js';
 import { compileRenderSchema, captureRenderData, writeRenderModel } from './render-schema.js';
 import { finite, ordinal } from './schema.js';
 import { evaluate } from './tracks.js';
-import { isLinearField, inferFieldResets, inferStateResets, positionDiscontinuity, seedFieldValues } from './render-policies.js';
-
+import {
+    isLinearField,
+    inferFieldResets,
+    inferStateResets,
+    positionDiscontinuity,
+    seedFieldValues,
+} from './render-policies.js';
 function fraction(track, now, stepMs) {
-  return stepMs===0?1:Math.min(1, Math.max(0, (now - track.at) / stepMs));
+    return stepMs === 0 ? 1 : Math.min(1, Math.max(0, (now - track.at) / stepMs));
 }
 
 /**
@@ -15,319 +20,712 @@ function fraction(track, now, stepMs) {
  * capture packet은 전체 생존 목록이며 기존 timeline과 같은 revision/sequence 계약입니다.
  */
 export class PresentationRuntime {
-  #stepMs; #tracks = new Map(); #sources = new WeakMap(); #models = new WeakMap(); #preview = new Map(); #previewSelection = new Map(); #previewSources = new WeakMap();
-  #now = -Infinity; #revision = -1; #sequence = -1; #timeMs = -Infinity;
-  #previewRevision = -1; #previewSequence = -1; #previewTimeMs = -Infinity;
-  #previewMetrics = { captureMs: 0, captureBytes: 0, captures: 0 };
-  #extrapolation;
-  #snapDistance; #delayMs; #origin=0; #frameSerial=0;
+    #stepMs;
+    #tracks = new Map();
+    #sources = new WeakMap();
+    #models = new WeakMap();
+    #preview = new Map();
+    #previewSelection = new Map();
+    #previewSources = new WeakMap();
+    #now = -Infinity;
+    #revision = -1;
+    #sequence = -1;
+    #timeMs = -Infinity;
+    #previewRevision = -1;
+    #previewSequence = -1;
+    #previewTimeMs = -Infinity;
+    #previewMetrics = {
+        captureMs: 0,
+        captureBytes: 0,
+        captures: 0,
+    };
+    #extrapolation;
+    #snapDistance;
+    #delayMs;
+    #origin = 0;
+    #frameSerial = 0;
 
-  /** @param {{stepMs:number, delayMs?:number, snapDistance?:number, extrapolation?:{fields:string[],maxMs:number}}} options */
-  constructor({ stepMs, snapDistance, extrapolation, delayMs=0 } = {}) {
-    this.#stepMs = finite(stepMs, 'stepMs');
-    this.#delayMs=finite(delayMs,'delayMs');
-    if(delayMs<0||delayMs>stepMs*16)throw new RangeError('delayMs must be between 0 and 16 steps');
-    if(delayMs&&extrapolation)throw new TypeError('delayed authority cannot also extrapolate');
-    if (stepMs <= 0) throw new RangeError('stepMs must be positive');
-    if (snapDistance !== undefined && finite(snapDistance, 'snapDistance') <= 0) throw new RangeError('snapDistance must be positive');
-    this.#snapDistance = snapDistance;
-    if (extrapolation) {
-      if (!Array.isArray(extrapolation.fields) || new Set(extrapolation.fields).size !== extrapolation.fields.length || Array.from(extrapolation.fields).some(x => typeof x !== 'string')) throw new TypeError('extrapolation.fields must be unique paths');
-      if (finite(extrapolation.maxMs, 'maxMs') <= 0) throw new RangeError('maxMs must be positive');
-      if (extrapolation.maxMs < stepMs) throw new RangeError('maxMs must cover the correction stepMs');
-      this.#extrapolation = { fields: new Set(extrapolation.fields), maxMs: extrapolation.maxMs };
-    }
-  }
-  get size() { return this.#tracks.size; }
-  get previewMetrics() { return { ...this.#previewMetrics }; }
-  /** Select game-owned local identities only; remote authoritative tracks remain unchanged. */
-  selectPreview(identities) {
-    if (!Array.isArray(identities)) throw new TypeError('preview identities must be an array');
-    const next = new Map();
-    for (const identity of identities) {
-      if (!identity || typeof identity.id !== 'string' || !identity.id || !Number.isSafeInteger(identity.generation) || identity.generation < 0 || next.has(identity.id)) throw new TypeError('invalid preview identity');
-      next.set(identity.id, identity.generation);
-    }
-    this.#frameSerial++;this.#previewSelection = next;
-    for (const id of this.#preview.keys()) if (!next.has(id) || next.get(id) !== this.#preview.get(id).generation) this.#preview.delete(id);
-  }
-  clearPreview() { this.#frameSerial++; this.#preview.clear(); this.#previewSelection.clear(); this.#previewSources = new WeakMap(); }
-  releasePreview(nowMs){
-    this.#checkClock(nowMs);
-    if(this.#delayMs){
-      // Keep a separate local handoff until the buffered clock reaches this
-      // checkpoint. Rewriting its historical interval would also corrupt remote
-      // shapes/paths; immediately exposing it would rewind the local body.
-      for(const [id,preview]of this.#preview){
-        if(preview.releaseAt!==undefined)continue;
-        const track=this.#tracks.get(id);if(!track||track.generation!==preview.generation)continue;
-        const from=preview.plan.fields.map((_,i)=>this.#value(preview,i,nowMs)),reset=new Set();
-        inferStateResets(preview.plan.policies,preview.target,track.target,reset);
-        for(const i of reset)from[i]=track.target.values[i];
-        const releaseAt=Math.max(nowMs,this.#origin+track.timeMs+this.#delayMs);
-        this.#preview.set(id,{...preview,from,target:track.target,at:nowMs,durationMs:releaseAt-nowMs,releaseAt,sampledAt:-Infinity});
-      }
-      this.#frameSerial++;this.#now=nowMs;return;
-    }
-    for(const [id,preview]of this.#preview){
-      const track=this.#tracks.get(id);if(!track||track.generation!==preview.generation)continue;
-      track.from=track.plan.fields.map((_,i)=>this.#value(preview,i,nowMs));track.at=nowMs;track.sampledAt=-Infinity;
-    }
-    this.clearPreview();this.#now=nowMs;
-  }
-  /** Detached declared-field baselines for the next fork step; no source references retained. */
-  snapshotPreview(entities) {
-    return entities.map(entity => {
-      const type=entity.type ?? entity.source.constructor, plan=compileRenderSchema(type), data=captureRenderData(plan,entity.source);
-      return {id:entity.id,generation:entity.generation,type,source:writeRenderModel(plan,{},data.values,data.shapes)};
-    });
-  }
-  /** Publish immediate schema-only local fork models. This never replaces authoritative tracks. */
-  capturePreview(packet, nowMs) {
-    const started = performance.now(); let bytes = 0;
-    this.#checkClock(nowMs);
-    if (!packet || !Array.isArray(packet.entities)) throw new TypeError('preview packet entities');
-    const revision = ordinal(packet.revision, 'preview revision'), sequence = ordinal(packet.sequence, 'preview sequence'), timeMs = finite(packet.timeMs, 'preview timeMs');
-    if (revision !== this.#revision || revision < this.#previewRevision || (revision === this.#previewRevision && sequence <= this.#previewSequence) || timeMs < this.#previewTimeMs) return false;
-    if (timeMs < this.#now) return false;
-    const next = new Map(), sources = new WeakMap();
-    for (const entity of packet.entities) {
-      if (!entity || typeof entity.id !== 'string' || !entity.id || !Number.isSafeInteger(entity.generation) || entity.generation < 0 || next.has(entity.id)) throw new TypeError('invalid preview entity');
-      if (this.#previewSelection.get(entity.id) !== entity.generation) continue;
-      if (!entity.source || typeof entity.source !== 'object') throw new TypeError('preview source required');
-      const plan = compileRenderSchema(entity.type ?? entity.source.constructor), authority = this.#tracks.get(entity.id);
-      if (!authority || authority.generation !== entity.generation || authority.plan !== plan) throw new TypeError('preview must match a live authoritative render identity and schema');
-      const data = captureRenderData(plan, entity.source), old=this.#preview.get(entity.id);
-      const initial=entity.initialSource ? captureRenderData(plan,entity.initialSource) : authority.target;
-      const same=old && old.generation===entity.generation && old.plan===plan;
-      const from=same ? plan.fields.map((_,i)=>this.#value(old,i,nowMs)) : plan.fields.map((_,i)=>this.#value(authority,i,nowMs));
-      // Preview uses receipt time, but STATE_KEY still marks a semantic boundary.
-      // Do not connect a prior displayed pose across that boundary on fork replay.
-      const reset=new Set();
-      inferStateResets(plan.policies,same?old.target:initial,data,reset);
-      for(const index of reset)from[index]=data.values[index];
-      const at=same ? nowMs : Math.min(nowMs,finite(packet.phaseStartMs ?? nowMs,'phaseStartMs'));
-      const end=Math.max(nowMs+1,finite(packet.phaseStartMs ?? nowMs,'phaseStartMs')+(packet.stepMs ?? this.#stepMs));
-      const model=same ? old.model : {};
-      bytes += data.values.length * 8 + data.shapes.length * 4;
-      writeRenderModel(plan, model, data.values, data.shapes);
-      const entry = { id: entity.id, generation: entity.generation, plan, data, target:data, from,at,durationMs:end-at,preview:true,
-        model,source:entity.source,sequence,sampledAt:-Infinity,sampleValues:same?old.sampleValues:undefined };
-      next.set(entity.id, entry); sources.set(entity.source, entry);
-    }
-    this.#frameSerial++;this.#preview = next; this.#previewSources = sources; this.#previewRevision = revision; this.#previewSequence = sequence; this.#previewTimeMs = timeMs; this.#now = nowMs;
-    this.#previewMetrics.captureMs += performance.now() - started; this.#previewMetrics.captureBytes += bytes; this.#previewMetrics.captures++;
-    return true;
-  }
-  isModel(value) {
-    const owner = value && this.#models.get(value);
-    const preview=owner&&this.#preview.get(owner.id);
-    if(preview?.model===value&&this.#previewSelection.get(owner.id)===owner.generation)return true;
-    const current = owner && this.#tracks.get(owner.id);
-    return !!current && current.generation === owner.generation && current.model === value;
-  }
-  #checkClock(now) {
-    finite(now, 'nowMs');
-    if (now < this.#now) throw new RangeError('presentation clock must not go backwards');
-  }
-
-  /**
-   * Full authoritative snapshot. timeMs/initialTimeMs/pathPoints use simulation milliseconds.
-   * delayMs buffers intervals and removal; a continuous new identity may seed its first interval
-   * with initialSource at initialTimeMs (default timeMs-stepMs). Reset/rollback/teleport discard history.
-   * renderPath captures endpoints automatically. Supply within-tick bends as ordered pathPoints;
-   * the module cannot infer a collision/orbit curve between simulation endpoints.
-   * An entity born and removed between captures is unobservable here: the game must emit
-   * its timed visual event/anchors through presentation-events, not expect snapshot inference.
-   * @param {{revision:number,sequence:number,timeMs:number,mode?:string,entities:Array<{id:string,generation:number,source:object,type?:typeof RenderObject,teleport?:boolean,resetFields?:string[],initialSource?:object,initialTimeMs?:number,pathPoints?:Array<{timeMs:number,x:number,y:number}>}>}} packet
-   * @param {number} nowMs
-   */
-  capture(packet, nowMs) {
-    this.#checkClock(nowMs);
-    if (!packet || typeof packet !== 'object') throw new TypeError('packet must be an object');
-    const revision = ordinal(packet.revision, 'revision'), sequence = ordinal(packet.sequence, 'sequence'), timeMs = finite(packet.timeMs, 'timeMs');
-    const mode = packet.mode ?? 'continuous';
-    if (!['continuous', 'reset', 'load', 'rollback'].includes(mode)) throw new TypeError('unknown capture mode');
-    if (revision < this.#revision || (revision === this.#revision && sequence <= this.#sequence)) return false;
-    const changed = revision !== this.#revision;
-    if (this.#revision >= 0 && changed && mode === 'continuous') throw new RangeError('new revision requires reset, load or rollback');
-    if (!changed && mode !== 'continuous') throw new RangeError('reset, load and rollback require a newer revision');
-    if (!changed && timeMs < this.#timeMs) return false;
-    if (!Array.isArray(packet.entities)) throw new TypeError('entities must be an array');
-    const origin=changed?nowMs-timeMs:this.#origin;
-    const next = new Map(), sources = new WeakMap(), previews=new Map(), previewSources=new WeakMap();
-    for (const entity of packet.entities) {
-      if (!entity || typeof entity.id !== 'string' || !entity.id || next.has(entity.id)) throw new TypeError('entity IDs must be nonempty and unique');
-      const generation = ordinal(entity.generation, 'generation'), source = entity.source;
-      if (!source || typeof source !== 'object' || sources.has(source)) throw new TypeError('entity sources must be unique objects');
-      if (entity.teleport !== undefined && typeof entity.teleport !== 'boolean') throw new TypeError('teleport must be boolean');
-      const plan = compileRenderSchema(entity.type ?? source.constructor);
-      if (this.#extrapolation) for (const field of plan.fields) {
-        if (this.#extrapolation.fields.has(field.name) && !isLinearField(field.code)) throw new TypeError('extrapolation requires LINEAR: ' + field.name);
-      }
-      const target = captureRenderData(plan, source);
-      const initial = entity.initialSource === undefined ? null : captureRenderData(plan, entity.initialSource);
-      const reset = new Set();
-      if (entity.resetFields !== undefined) {
-        if (!Array.isArray(entity.resetFields)) throw new TypeError('resetFields must be an array');
-        for (const name of entity.resetFields) {
-          const index = plan.indices.get(name);
-          if (index === undefined || reset.has(index)) throw new TypeError('resetFields must contain unique declared paths');
-          reset.add(index);
+    /** @param {{stepMs:number, delayMs?:number, snapDistance?:number, extrapolation?:{fields:string[],maxMs:number}}} options */
+    constructor({ stepMs, snapDistance, extrapolation, delayMs = 0 } = {}) {
+        this.#stepMs = finite(stepMs, 'stepMs');
+        this.#delayMs = finite(delayMs, 'delayMs');
+        if (delayMs < 0 || delayMs > stepMs * 16) {
+            throw new RangeError('delayMs must be between 0 and 16 steps');
         }
-      }
-      const old = this.#tracks.get(entity.id), preview = this.#preview.get(entity.id);
-      const same = mode === 'continuous' && old && old.generation === generation && old.plan === plan && !Number.isFinite(old.removedAt);
-      const snap = mode !== 'continuous' || entity.teleport === true || !!same && positionDiscontinuity(plan.policies, old, target, this.#snapDistance);
-      if(this.#delayMs&&same&&!snap&&preview?.generation===generation&&preview.plan===plan){previews.set(entity.id,preview);previewSources.set(preview.source,preview);}
-      if (same && !snap) inferFieldResets(plan.policies, old, target, timeMs, reset);
-      const from = same && !snap && preview?.generation === generation && this.#previewSelection.get(entity.id) === generation
-        ? plan.fields.map((_,i)=>this.#value(preview,i,nowMs))
-        : !same && !snap ? (initial ? initial.values.slice() : seedFieldValues(plan.policies, target.values)) : target.values.slice();
-      if(this.#delayMs&&same&&!snap)for(let i=0;i<from.length;i++)from[i]=old.target.values[i];
-      const velocity = this.#extrapolation ? new Array(plan.fields.length).fill(0) : null;
-      for (let i = 0; i < plan.fields.length; i++) {
-        const field = plan.fields[i], value = target.values[i];
-        // Buffered state changes occur at the target simulation time, not receipt time.
-        if (reset.has(i) && !this.#delayMs) from[i] = value;
-        if (!same && !snap && initial && this.#extrapolation?.fields.has(field.name) && typeof from[i] === 'number' && typeof value === 'number') {
-          if (!Number.isFinite(from[i] - value)) throw new RangeError('extrapolation correction overflow: ' + field.name);
+        if (delayMs && extrapolation) {
+            throw new TypeError('delayed authority cannot also extrapolate');
         }
-        if (same && !snap && !reset.has(i) && typeof value === 'number' && typeof old.target.values[i] === 'number') {
-          if(this.#delayMs)from[i]=old.target.values[i];
-          else if (!preview || preview.generation!==generation) from[i] = this.#value(old, i, nowMs);
-          if (field.code === RenderObject.DECAY && value > old.target.values[i]) from[i] = value;
-          if (this.#extrapolation?.fields.has(field.name)) {
-            if (!isLinearField(field.code)) throw new TypeError('extrapolation requires LINEAR: ' + field.name);
-            const delta = timeMs - old.timeMs;
-            if (delta > 0) {
-              const distance = value - old.target.values[i];
-              velocity[i] = !Number.isFinite(delta)
-                ? (value / 2 - old.target.values[i] / 2) / (timeMs / 2 - old.timeMs / 2)
-                : !Number.isFinite(distance) ? ((value / 2 - old.target.values[i] / 2) / delta) * 2 : distance / delta;
+        if (stepMs <= 0) {
+            throw new RangeError('stepMs must be positive');
+        }
+        if (snapDistance !== undefined && finite(snapDistance, 'snapDistance') <= 0) {
+            throw new RangeError('snapDistance must be positive');
+        }
+        this.#snapDistance = snapDistance;
+        if (extrapolation) {
+            if (
+                !Array.isArray(extrapolation.fields) ||
+                new Set(extrapolation.fields).size !== extrapolation.fields.length ||
+                Array.from(extrapolation.fields).some((x) => typeof x !== 'string')
+            ) {
+                throw new TypeError('extrapolation.fields must be unique paths');
             }
-            else velocity[i] = old.velocity[i];
-            if (!Number.isFinite(velocity[i])) throw new RangeError('extrapolation velocity overflow: ' + field.name);
-            if (!Number.isFinite(from[i] - value)) throw new RangeError('extrapolation correction overflow: ' + field.name);
-          }
+            if (finite(extrapolation.maxMs, 'maxMs') <= 0) {
+                throw new RangeError('maxMs must be positive');
+            }
+            if (extrapolation.maxMs < stepMs) {
+                throw new RangeError('maxMs must cover the correction stepMs');
+            }
+            this.#extrapolation = {
+                fields: new Set(extrapolation.fields),
+                maxMs: extrapolation.maxMs,
+            };
         }
-      }
-      const track = { id: entity.id, generation, source, plan, target, from, velocity, at: nowMs, timeMs,
-        model: same ? old.model : {}, sampleValues: same ? old.sampleValues : undefined, sampledAt: -Infinity };
-      let intervalStart;
-      if(this.#delayMs){
-        intervalStart=bufferInterval(track,old,{origin,timeMs,previousTimeMs:this.#timeMs,stepMs:this.#stepMs,
-          continuous:same&&!snap,reset:snap,seeded:!snap&&(!!initial||plan.policies.origins.some(i=>i!==undefined)),initialTimeMs:entity.initialTimeMs});
-        track.initialShapes=same&&!snap?old.target.shapes:!snap&&initial?initial.shapes:target.shapes;
-        // Shape and descendants are one state. Holding only the old shape with reset
-        // target fields can expose {}, or interpolate fields from different phases.
-        track.heldFields=reset;
-        for(const node of plan.nodes)if(node.field===undefined&&!Object.is(track.initialShapes[node.index],target.shapes[node.index])){
-          for(const index of node.fields)track.heldFields.add(index);
+    }
+    get size() {
+        return this.#tracks.size;
+    }
+    get previewMetrics() {
+        return {
+            ...this.#previewMetrics,
+        };
+    }
+    /** Select game-owned local identities only; remote authoritative tracks remain unchanged. */
+    selectPreview(identities) {
+        if (!Array.isArray(identities)) {
+            throw new TypeError('preview identities must be an array');
         }
-        const prior=same&&!snap?old.target.values:!snap&&initial?initial.values:target.values;
-        for(const index of track.heldFields)from[index]=prior[index];
-      }
-      const pathStart=this.#delayMs?intervalStart:same&&!snap?old.timeMs:(!snap&&initial?(entity.initialTimeMs??timeMs-this.#stepMs):timeMs);
-      track.path=capturePath(plan.path,old?.path,from,target.values,pathStart,timeMs,entity.pathPoints,!same||snap,this.#delayMs,this.#stepMs);
-      next.set(entity.id, track); sources.set(source, track);
+        const NEXT = new Map();
+        for (const IDENTITY of identities) {
+            if (
+                !IDENTITY ||
+                typeof IDENTITY.id !== 'string' ||
+                !IDENTITY.id ||
+                !Number.isSafeInteger(IDENTITY.generation) ||
+                IDENTITY.generation < 0 ||
+                NEXT.has(IDENTITY.id)
+            ) {
+                throw new TypeError('invalid preview identity');
+            }
+            NEXT.set(IDENTITY.id, IDENTITY.generation);
+        }
+        this.#frameSerial++;
+        this.#previewSelection = NEXT;
+        for (const ID of this.#preview.keys()) {
+            if (!NEXT.has(ID) || NEXT.get(ID) !== this.#preview.get(ID).generation) {
+                this.#preview.delete(ID);
+            }
+        }
     }
-    if(!changed&&mode==='continuous')retainRemoved(next,this.#tracks,{origin,timeMs,nowMs,delayMs:this.#delayMs});
-    this.#origin=origin;this.#frameSerial++;
-    this.#tracks = next; this.#sources = sources; this.#preview=previews; this.#previewSources=previewSources;
-    this.#revision = revision; this.#sequence = sequence; this.#timeMs = timeMs; this.#now = nowMs;
-    return true;
-  }
+    clearPreview() {
+        this.#frameSerial++;
+        this.#preview.clear();
+        this.#previewSelection.clear();
+        this.#previewSources = new WeakMap();
+    }
+    releasePreview(nowMs) {
+        this.#checkClock(nowMs);
+        if (this.#delayMs) {
+            // Keep a separate local handoff until the buffered clock reaches this
+            // checkpoint. Rewriting its historical interval would also corrupt remote
+            // shapes/paths; immediately exposing it would rewind the local body.
+            for (const [ID, PREVIEW] of this.#preview) {
+                if (PREVIEW.releaseAt !== undefined) {
+                    continue;
+                }
+                const TRACK = this.#tracks.get(ID);
+                if (!TRACK || TRACK.generation !== PREVIEW.generation) {
+                    continue;
+                }
+                const FROM = PREVIEW.plan.fields.map((_, i) => this.#value(PREVIEW, i, nowMs)),
+                    RESET = new Set();
+                inferStateResets(PREVIEW.plan.policies, PREVIEW.target, TRACK.target, RESET);
+                for (const I of RESET) {
+                    FROM[I] = TRACK.target.values[I];
+                }
+                const RELEASE_AT = Math.max(nowMs, this.#origin + TRACK.timeMs + this.#delayMs);
+                this.#preview.set(ID, {
+                    ...PREVIEW,
+                    from: FROM,
+                    target: TRACK.target,
+                    at: nowMs,
+                    durationMs: RELEASE_AT - nowMs,
+                    releaseAt: RELEASE_AT,
+                    sampledAt: -Infinity,
+                });
+            }
+            this.#frameSerial++;
+            this.#now = nowMs;
+            return;
+        }
+        for (const [ID, PREVIEW] of this.#preview) {
+            const TRACK = this.#tracks.get(ID);
+            if (!TRACK || TRACK.generation !== PREVIEW.generation) {
+                continue;
+            }
+            TRACK.from = TRACK.plan.fields.map((_, i) => this.#value(PREVIEW, i, nowMs));
+            TRACK.at = nowMs;
+            TRACK.sampledAt = -Infinity;
+        }
+        this.clearPreview();
+        this.#now = nowMs;
+    }
+    /** Detached declared-field baselines for the next fork step; no source references retained. */
+    snapshotPreview(entities) {
+        return entities.map((entity) => {
+            const TYPE = entity.type ?? entity.source.constructor,
+                PLAN = compileRenderSchema(TYPE),
+                DATA = captureRenderData(PLAN, entity.source);
+            return {
+                id: entity.id,
+                generation: entity.generation,
+                type: TYPE,
+                source: writeRenderModel(PLAN, {}, DATA.values, DATA.shapes),
+            };
+        });
+    }
+    /** Publish immediate schema-only local fork models. This never replaces authoritative tracks. */
+    capturePreview(packet, nowMs) {
+        const STARTED = performance.now();
+        let bytes = 0;
+        this.#checkClock(nowMs);
+        if (!packet || !Array.isArray(packet.entities)) {
+            throw new TypeError('preview packet entities');
+        }
+        const REVISION = ordinal(packet.revision, 'preview revision'),
+            SEQUENCE = ordinal(packet.sequence, 'preview sequence'),
+            TIME_MS = finite(packet.timeMs, 'preview timeMs');
+        if (
+            REVISION !== this.#revision ||
+            REVISION < this.#previewRevision ||
+            (REVISION === this.#previewRevision && SEQUENCE <= this.#previewSequence) ||
+            TIME_MS < this.#previewTimeMs
+        ) {
+            return false;
+        }
+        if (TIME_MS < this.#now) {
+            return false;
+        }
+        const NEXT = new Map(),
+            SOURCES = new WeakMap();
+        for (const ENTITY of packet.entities) {
+            if (
+                !ENTITY ||
+                typeof ENTITY.id !== 'string' ||
+                !ENTITY.id ||
+                !Number.isSafeInteger(ENTITY.generation) ||
+                ENTITY.generation < 0 ||
+                NEXT.has(ENTITY.id)
+            ) {
+                throw new TypeError('invalid preview entity');
+            }
+            if (this.#previewSelection.get(ENTITY.id) !== ENTITY.generation) {
+                continue;
+            }
+            if (!ENTITY.source || typeof ENTITY.source !== 'object') {
+                throw new TypeError('preview source required');
+            }
+            const PLAN = compileRenderSchema(ENTITY.type ?? ENTITY.source.constructor),
+                AUTHORITY = this.#tracks.get(ENTITY.id);
+            if (!AUTHORITY || AUTHORITY.generation !== ENTITY.generation || AUTHORITY.plan !== PLAN) {
+                throw new TypeError('preview must match a live authoritative render identity and schema');
+            }
+            const DATA = captureRenderData(PLAN, ENTITY.source),
+                OLD = this.#preview.get(ENTITY.id);
+            const INITIAL = ENTITY.initialSource ? captureRenderData(PLAN, ENTITY.initialSource) : AUTHORITY.target;
+            const SAME = OLD && OLD.generation === ENTITY.generation && OLD.plan === PLAN;
+            const FROM = SAME
+                ? PLAN.fields.map((_, i) => this.#value(OLD, i, nowMs))
+                : PLAN.fields.map((_, i) => this.#value(AUTHORITY, i, nowMs));
+            // Preview uses receipt time, but STATE_KEY still marks a semantic boundary.
+            // Do not connect a prior displayed pose across that boundary on fork replay.
+            const RESET = new Set();
+            inferStateResets(PLAN.policies, SAME ? OLD.target : INITIAL, DATA, RESET);
+            for (const INDEX of RESET) {
+                FROM[INDEX] = DATA.values[INDEX];
+            }
+            const AT = SAME ? nowMs : Math.min(nowMs, finite(packet.phaseStartMs ?? nowMs, 'phaseStartMs'));
+            const END = Math.max(
+                nowMs + 1,
+                finite(packet.phaseStartMs ?? nowMs, 'phaseStartMs') + (packet.stepMs ?? this.#stepMs),
+            );
+            const MODEL = SAME ? OLD.model : {};
+            bytes += DATA.values.length * 8 + DATA.shapes.length * 4;
+            writeRenderModel(PLAN, MODEL, DATA.values, DATA.shapes);
+            const ENTRY = {
+                id: ENTITY.id,
+                generation: ENTITY.generation,
+                plan: PLAN,
+                data: DATA,
+                target: DATA,
+                from: FROM,
+                at: AT,
+                durationMs: END - AT,
+                preview: true,
+                model: MODEL,
+                source: ENTITY.source,
+                sequence: SEQUENCE,
+                sampledAt: -Infinity,
+                sampleValues: SAME ? OLD.sampleValues : undefined,
+            };
+            NEXT.set(ENTITY.id, ENTRY);
+            SOURCES.set(ENTITY.source, ENTRY);
+        }
+        this.#frameSerial++;
+        this.#preview = NEXT;
+        this.#previewSources = SOURCES;
+        this.#previewRevision = REVISION;
+        this.#previewSequence = SEQUENCE;
+        this.#previewTimeMs = TIME_MS;
+        this.#now = nowMs;
+        this.#previewMetrics.captureMs += performance.now() - STARTED;
+        this.#previewMetrics.captureBytes += bytes;
+        this.#previewMetrics.captures++;
+        return true;
+    }
+    isModel(value) {
+        const OWNER = value && this.#models.get(value);
+        const PREVIEW = OWNER && this.#preview.get(OWNER.id);
+        if (PREVIEW?.model === value && this.#previewSelection.get(OWNER.id) === OWNER.generation) {
+            return true;
+        }
+        const CURRENT = OWNER && this.#tracks.get(OWNER.id);
+        return !!CURRENT && CURRENT.generation === OWNER.generation && CURRENT.model === value;
+    }
+    #checkClock(now) {
+        finite(now, 'nowMs');
+        if (now < this.#now) {
+            throw new RangeError('presentation clock must not go backwards');
+        }
+    }
 
-  #value(track, index, now) {
-    const field = track.plan.fields[index], from = track.from[index], to = track.target.values[index];
-    if (from == null || to == null || field.kind === 'discrete' || track.heldFields?.has(index)) return track.buffered&&now<track.at+track.durationMs?from:to;
-    const alpha = fraction(track, now, track.durationMs ?? this.#stepMs);
-    if (!track.preview && this.#extrapolation?.fields.has(field.name)) {
-      const age = Math.min(this.#extrapolation.maxMs, Math.max(0, now - track.at));
-      // 같은 표현이지만 to + (from-to)는 큰 목표에서 작은 from을 잃습니다.
-      const value = evaluate('number', from, to, alpha) + track.velocity[index] * age;
-      if (!Number.isFinite(value)) throw new RangeError('extrapolated render value overflow: ' + field.name);
-      return value;
+    /**
+     * Full authoritative snapshot. timeMs/initialTimeMs/pathPoints use simulation milliseconds.
+     * delayMs buffers intervals and removal; a continuous new identity may seed its first interval
+     * with initialSource at initialTimeMs (default timeMs-stepMs). Reset/rollback/teleport discard history.
+     * renderPath captures endpoints automatically. Supply within-tick bends as ordered pathPoints;
+     * the module cannot infer a collision/orbit curve between simulation endpoints.
+     * An entity born and removed between captures is unobservable here: the game must emit
+     * its timed visual event/anchors through presentation-events, not expect snapshot inference.
+     * @param {{revision:number,sequence:number,timeMs:number,mode?:string,entities:Array<{id:string,generation:number,source:object,type?:typeof RenderObject,teleport?:boolean,resetFields?:string[],initialSource?:object,initialTimeMs?:number,pathPoints?:Array<{timeMs:number,x:number,y:number}>}>}} packet
+     * @param {number} nowMs
+     */
+    capture(packet, nowMs) {
+        this.#checkClock(nowMs);
+        if (!packet || typeof packet !== 'object') {
+            throw new TypeError('packet must be an object');
+        }
+        const REVISION = ordinal(packet.revision, 'revision'),
+            SEQUENCE = ordinal(packet.sequence, 'sequence'),
+            TIME_MS = finite(packet.timeMs, 'timeMs');
+        const MODE = packet.mode ?? 'continuous';
+        if (!['continuous', 'reset', 'load', 'rollback'].includes(MODE)) {
+            throw new TypeError('unknown capture mode');
+        }
+        if (REVISION < this.#revision || (REVISION === this.#revision && SEQUENCE <= this.#sequence)) {
+            return false;
+        }
+        const CHANGED = REVISION !== this.#revision;
+        if (this.#revision >= 0 && CHANGED && MODE === 'continuous') {
+            throw new RangeError('new revision requires reset, load or rollback');
+        }
+        if (!CHANGED && MODE !== 'continuous') {
+            throw new RangeError('reset, load and rollback require a newer revision');
+        }
+        if (!CHANGED && TIME_MS < this.#timeMs) {
+            return false;
+        }
+        if (!Array.isArray(packet.entities)) {
+            throw new TypeError('entities must be an array');
+        }
+        const ORIGIN = CHANGED ? nowMs - TIME_MS : this.#origin;
+        const NEXT = new Map(),
+            SOURCES = new WeakMap(),
+            PREVIEWS = new Map(),
+            PREVIEW_SOURCES = new WeakMap();
+        for (const ENTITY of packet.entities) {
+            if (!ENTITY || typeof ENTITY.id !== 'string' || !ENTITY.id || NEXT.has(ENTITY.id)) {
+                throw new TypeError('entity IDs must be nonempty and unique');
+            }
+            const GENERATION = ordinal(ENTITY.generation, 'generation'),
+                SOURCE = ENTITY.source;
+            if (!SOURCE || typeof SOURCE !== 'object' || SOURCES.has(SOURCE)) {
+                throw new TypeError('entity sources must be unique objects');
+            }
+            if (ENTITY.teleport !== undefined && typeof ENTITY.teleport !== 'boolean') {
+                throw new TypeError('teleport must be boolean');
+            }
+            const PLAN = compileRenderSchema(ENTITY.type ?? SOURCE.constructor);
+            if (this.#extrapolation) {
+                for (const FIELD of PLAN.fields) {
+                    if (this.#extrapolation.fields.has(FIELD.name) && !isLinearField(FIELD.code)) {
+                        throw new TypeError('extrapolation requires LINEAR: ' + FIELD.name);
+                    }
+                }
+            }
+            const TARGET = captureRenderData(PLAN, SOURCE);
+            const INITIAL = ENTITY.initialSource === undefined ? null : captureRenderData(PLAN, ENTITY.initialSource);
+            const RESET = new Set();
+            if (ENTITY.resetFields !== undefined) {
+                if (!Array.isArray(ENTITY.resetFields)) {
+                    throw new TypeError('resetFields must be an array');
+                }
+                for (const NAME of ENTITY.resetFields) {
+                    const INDEX = PLAN.indices.get(NAME);
+                    if (INDEX === undefined || RESET.has(INDEX)) {
+                        throw new TypeError('resetFields must contain unique declared paths');
+                    }
+                    RESET.add(INDEX);
+                }
+            }
+            const OLD = this.#tracks.get(ENTITY.id),
+                PREVIEW = this.#preview.get(ENTITY.id);
+            const SAME =
+                MODE === 'continuous' &&
+                OLD &&
+                OLD.generation === GENERATION &&
+                OLD.plan === PLAN &&
+                !Number.isFinite(OLD.removedAt);
+            const SNAP =
+                MODE !== 'continuous' ||
+                ENTITY.teleport === true ||
+                (!!SAME && positionDiscontinuity(PLAN.policies, OLD, TARGET, this.#snapDistance));
+            if (this.#delayMs && SAME && !SNAP && PREVIEW?.generation === GENERATION && PREVIEW.plan === PLAN) {
+                PREVIEWS.set(ENTITY.id, PREVIEW);
+                PREVIEW_SOURCES.set(PREVIEW.source, PREVIEW);
+            }
+            if (SAME && !SNAP) {
+                inferFieldResets(PLAN.policies, OLD, TARGET, TIME_MS, RESET);
+            }
+            const FROM =
+                SAME &&
+                !SNAP &&
+                PREVIEW?.generation === GENERATION &&
+                this.#previewSelection.get(ENTITY.id) === GENERATION
+                    ? PLAN.fields.map((_, i) => this.#value(PREVIEW, i, nowMs))
+                    : !SAME && !SNAP
+                      ? INITIAL
+                          ? INITIAL.values.slice()
+                          : seedFieldValues(PLAN.policies, TARGET.values)
+                      : TARGET.values.slice();
+            if (this.#delayMs && SAME && !SNAP) {
+                for (let i = 0; i < FROM.length; i++) {
+                    FROM[i] = OLD.target.values[i];
+                }
+            }
+            const VELOCITY = this.#extrapolation ? new Array(PLAN.fields.length).fill(0) : null;
+            for (let i = 0; i < PLAN.fields.length; i++) {
+                const FIELD = PLAN.fields[i],
+                    VALUE = TARGET.values[i];
+                // Buffered state changes occur at the target simulation time, not receipt time.
+                if (RESET.has(i) && !this.#delayMs) {
+                    FROM[i] = VALUE;
+                }
+                if (
+                    !SAME &&
+                    !SNAP &&
+                    INITIAL &&
+                    this.#extrapolation?.fields.has(FIELD.name) &&
+                    typeof FROM[i] === 'number' &&
+                    typeof VALUE === 'number'
+                ) {
+                    if (!Number.isFinite(FROM[i] - VALUE)) {
+                        throw new RangeError('extrapolation correction overflow: ' + FIELD.name);
+                    }
+                }
+                if (
+                    SAME &&
+                    !SNAP &&
+                    !RESET.has(i) &&
+                    typeof VALUE === 'number' &&
+                    typeof OLD.target.values[i] === 'number'
+                ) {
+                    if (this.#delayMs) {
+                        FROM[i] = OLD.target.values[i];
+                    } else if (!PREVIEW || PREVIEW.generation !== GENERATION) {
+                        FROM[i] = this.#value(OLD, i, nowMs);
+                    }
+                    if (FIELD.code === RenderObject.DECAY && VALUE > OLD.target.values[i]) {
+                        FROM[i] = VALUE;
+                    }
+                    if (this.#extrapolation?.fields.has(FIELD.name)) {
+                        if (!isLinearField(FIELD.code)) {
+                            throw new TypeError('extrapolation requires LINEAR: ' + FIELD.name);
+                        }
+                        const DELTA = TIME_MS - OLD.timeMs;
+                        if (DELTA > 0) {
+                            const DISTANCE = VALUE - OLD.target.values[i];
+                            VELOCITY[i] = !Number.isFinite(DELTA)
+                                ? (VALUE / 2 - OLD.target.values[i] / 2) / (TIME_MS / 2 - OLD.timeMs / 2)
+                                : !Number.isFinite(DISTANCE)
+                                  ? ((VALUE / 2 - OLD.target.values[i] / 2) / DELTA) * 2
+                                  : DISTANCE / DELTA;
+                        } else {
+                            VELOCITY[i] = OLD.velocity[i];
+                        }
+                        if (!Number.isFinite(VELOCITY[i])) {
+                            throw new RangeError('extrapolation velocity overflow: ' + FIELD.name);
+                        }
+                        if (!Number.isFinite(FROM[i] - VALUE)) {
+                            throw new RangeError('extrapolation correction overflow: ' + FIELD.name);
+                        }
+                    }
+                }
+            }
+            const TRACK = {
+                id: ENTITY.id,
+                generation: GENERATION,
+                source: SOURCE,
+                plan: PLAN,
+                target: TARGET,
+                from: FROM,
+                velocity: VELOCITY,
+                at: nowMs,
+                timeMs: TIME_MS,
+                model: SAME ? OLD.model : {},
+                sampleValues: SAME ? OLD.sampleValues : undefined,
+                sampledAt: -Infinity,
+            };
+            let intervalStart;
+            if (this.#delayMs) {
+                intervalStart = bufferInterval(TRACK, OLD, {
+                    origin: ORIGIN,
+                    timeMs: TIME_MS,
+                    previousTimeMs: this.#timeMs,
+                    stepMs: this.#stepMs,
+                    continuous: SAME && !SNAP,
+                    reset: SNAP,
+                    seeded: !SNAP && (!!INITIAL || PLAN.policies.origins.some((i) => i !== undefined)),
+                    initialTimeMs: ENTITY.initialTimeMs,
+                });
+                TRACK.initialShapes =
+                    SAME && !SNAP ? OLD.target.shapes : !SNAP && INITIAL ? INITIAL.shapes : TARGET.shapes;
+                // Shape and descendants are one state. Holding only the old shape with reset
+                // target fields can expose {}, or interpolate fields from different phases.
+                TRACK.heldFields = RESET;
+                for (const NODE of PLAN.nodes) {
+                    if (
+                        NODE.field === undefined &&
+                        !Object.is(TRACK.initialShapes[NODE.index], TARGET.shapes[NODE.index])
+                    ) {
+                        for (const INDEX of NODE.fields) {
+                            TRACK.heldFields.add(INDEX);
+                        }
+                    }
+                }
+                const PRIOR = SAME && !SNAP ? OLD.target.values : !SNAP && INITIAL ? INITIAL.values : TARGET.values;
+                for (const INDEX of TRACK.heldFields) {
+                    FROM[INDEX] = PRIOR[INDEX];
+                }
+            }
+            const PATH_START = this.#delayMs
+                ? intervalStart
+                : SAME && !SNAP
+                  ? OLD.timeMs
+                  : !SNAP && INITIAL
+                    ? (ENTITY.initialTimeMs ?? TIME_MS - this.#stepMs)
+                    : TIME_MS;
+            TRACK.path = capturePath(
+                PLAN.path,
+                OLD?.path,
+                FROM,
+                TARGET.values,
+                PATH_START,
+                TIME_MS,
+                ENTITY.pathPoints,
+                !SAME || SNAP,
+                this.#delayMs,
+                this.#stepMs,
+            );
+            NEXT.set(ENTITY.id, TRACK);
+            SOURCES.set(SOURCE, TRACK);
+        }
+        if (!CHANGED && MODE === 'continuous') {
+            retainRemoved(NEXT, this.#tracks, {
+                origin: ORIGIN,
+                timeMs: TIME_MS,
+                nowMs,
+                delayMs: this.#delayMs,
+            });
+        }
+        this.#origin = ORIGIN;
+        this.#frameSerial++;
+        this.#tracks = NEXT;
+        this.#sources = SOURCES;
+        this.#preview = PREVIEWS;
+        this.#previewSources = PREVIEW_SOURCES;
+        this.#revision = REVISION;
+        this.#sequence = SEQUENCE;
+        this.#timeMs = TIME_MS;
+        this.#now = nowMs;
+        return true;
     }
-    if (field.code === RenderObject.CYCLE) {
-      if (alpha === 1) return to;
-      const value = evaluate('number', from, to < from ? to + 1 : to, alpha);
-      return value > 1 ? value - 1 : value;
+    #value(track, index, now) {
+        const FIELD = track.plan.fields[index],
+            FROM = track.from[index],
+            TO = track.target.values[index];
+        if (FROM == null || TO == null || FIELD.kind === 'discrete' || track.heldFields?.has(index)) {
+            return track.buffered && now < track.at + track.durationMs ? FROM : TO;
+        }
+        const ALPHA = fraction(track, now, track.durationMs ?? this.#stepMs);
+        if (!track.preview && this.#extrapolation?.fields.has(FIELD.name)) {
+            const AGE = Math.min(this.#extrapolation.maxMs, Math.max(0, now - track.at));
+            // 같은 표현이지만 to + (from-to)는 큰 목표에서 작은 from을 잃습니다.
+            const VALUE = evaluate('number', FROM, TO, ALPHA) + track.velocity[index] * AGE;
+            if (!Number.isFinite(VALUE)) {
+                throw new RangeError('extrapolated render value overflow: ' + FIELD.name);
+            }
+            return VALUE;
+        }
+        if (FIELD.code === RenderObject.CYCLE) {
+            if (ALPHA === 1) {
+                return TO;
+            }
+            const VALUE = evaluate('number', FROM, TO < FROM ? TO + 1 : TO, ALPHA);
+            return VALUE > 1 ? VALUE - 1 : VALUE;
+        }
+        return evaluate(FIELD.kind, FROM, TO, ALPHA);
     }
-    return evaluate(field.kind, from, to, alpha);
-  }
 
-  /** 유효 identity가 아니면 null. 원본 fallback은 없습니다. 모델은 프레임 간 재사용됩니다. */
-  sample(id, generation, nowMs) {
-    this.#checkClock(nowMs);
-    let preview = this.#preview.get(id);
-    if(preview?.releaseAt!==undefined&&nowMs>=preview.releaseAt){this.#preview.delete(id);preview=null;}
-    if (preview && preview.generation === generation && this.#previewSelection.get(id) === generation) {
-      if (preview.sampledAt !== nowMs) {
-        const values = preview.sampleValues ??= new Array(preview.plan.fields.length);
-        for (let i = 0; i < values.length; i++) values[i] = this.#value(preview, i, nowMs);
-        writeRenderModel(preview.plan, preview.model, values, preview.target.shapes);
-        preview.sampledAt = nowMs; this.#models.set(preview.model, preview);
-      }
-      this.#now = nowMs; return preview.model;
+    /** 유효 identity가 아니면 null. 원본 fallback은 없습니다. 모델은 프레임 간 재사용됩니다. */
+    sample(id, generation, nowMs) {
+        this.#checkClock(nowMs);
+        let preview = this.#preview.get(id);
+        if (preview?.releaseAt !== undefined && nowMs >= preview.releaseAt) {
+            this.#preview.delete(id);
+            preview = null;
+        }
+        if (preview && preview.generation === generation && this.#previewSelection.get(id) === generation) {
+            if (preview.sampledAt !== nowMs) {
+                const VALUES = (preview.sampleValues ??= new Array(preview.plan.fields.length));
+                for (let i = 0; i < VALUES.length; i++) {
+                    VALUES[i] = this.#value(preview, i, nowMs);
+                }
+                writeRenderModel(preview.plan, preview.model, VALUES, preview.target.shapes);
+                preview.sampledAt = nowMs;
+                this.#models.set(preview.model, preview);
+            }
+            this.#now = nowMs;
+            return preview.model;
+        }
+        const TRACK = this.#tracks.get(id);
+        const AT = nowMs - this.#delayMs;
+        const INTERVAL = this.#delayMs ? intervalAt(TRACK, AT) : TRACK;
+        if (!INTERVAL || !TRACK || TRACK.generation !== generation) {
+            this.#now = nowMs;
+            return null;
+        }
+        if (TRACK.sampledAt !== nowMs) {
+            const VALUES = (TRACK.sampleValues ??= new Array(TRACK.plan.fields.length));
+            for (let i = 0; i < VALUES.length; i++) {
+                VALUES[i] = this.#value(INTERVAL, i, AT);
+            }
+            if (TRACK.plan.path) {
+                const POINT = TRACK.pathHead ?? (TRACK.pathHead = {});
+                pointAt(TRACK.path, AT - this.#origin, POINT);
+                VALUES[TRACK.plan.path.x] = POINT.x;
+                VALUES[TRACK.plan.path.y] = POINT.y;
+            }
+            writeRenderModel(
+                TRACK.plan,
+                TRACK.model,
+                VALUES,
+                INTERVAL.buffered && AT < INTERVAL.at + INTERVAL.durationMs
+                    ? INTERVAL.initialShapes
+                    : INTERVAL.target.shapes,
+            );
+            TRACK.sampledAt = nowMs;
+            this.#models.set(TRACK.model, TRACK);
+        }
+        this.#now = nowMs;
+        return TRACK.model;
     }
-    const track = this.#tracks.get(id);
-    const at=nowMs-this.#delayMs;
-    const interval=this.#delayMs?intervalAt(track,at):track;
-    if (!interval || !track || track.generation !== generation) { this.#now = nowMs; return null; }
-    if (track.sampledAt !== nowMs) {
-      const values = track.sampleValues ??= new Array(track.plan.fields.length);
-      for (let i = 0; i < values.length; i++) values[i] = this.#value(interval, i, at);
-      if(track.plan.path){const point=track.pathHead??(track.pathHead={});pointAt(track.path,at-this.#origin,point);values[track.plan.path.x]=point.x;values[track.plan.path.y]=point.y;}
-      writeRenderModel(track.plan, track.model, values, interval.buffered&&at<interval.at+interval.durationMs?interval.initialShapes:interval.target.shapes);
-      track.sampledAt = nowMs; this.#models.set(track.model, track);
+
+    /** 등록된 원본 객체나 유효한 모델만 받습니다. 삭제·세대 변경된 모델은 다시 그리지 않습니다. */
+    modelFor(source, nowMs) {
+        this.#checkClock(nowMs);
+        if (this.isModel(source)) {
+            const OWNER = this.#models.get(source);
+            return this.sample(OWNER.id, OWNER.generation, nowMs);
+        }
+        const PREVIEW = source && typeof source === 'object' ? this.#previewSources.get(source) : null;
+        if (PREVIEW && this.#previewSelection.get(PREVIEW.id) === PREVIEW.generation) {
+            return this.sample(PREVIEW.id, PREVIEW.generation, nowMs);
+        }
+        const TRACK = this.#sources.get(source);
+        if (TRACK) {
+            return this.sample(TRACK.id, TRACK.generation, nowMs);
+        }
+        this.#now = nowMs;
+        return null;
     }
-    this.#now = nowMs;
-    return track.model;
-  }
 
-  /** 등록된 원본 객체나 유효한 모델만 받습니다. 삭제·세대 변경된 모델은 다시 그리지 않습니다. */
-  modelFor(source, nowMs) {
-    this.#checkClock(nowMs);
-    if (this.isModel(source)) {
-      const owner = this.#models.get(source);
-      return this.sample(owner.id, owner.generation, nowMs);
+    /**
+     * One synchronous display frame. All reads share one nowMs and preview selection.
+     * Enumerate this frame, not the current simulation collection: delayed removals stay visible.
+     * Models are reused, declared data only; do not retain/mutate them or read raw simulation in draw code.
+     * A new frame/capture invalidates this handle. No per-field proxy or deep copy on RAF.
+     */
+    frame(nowMs) {
+        this.#checkClock(nowMs);
+        this.#now = nowMs;
+        const SERIAL = ++this.#frameSerial,
+            CHECK = () => {
+                if (SERIAL !== this.#frameSerial) {
+                    throw new Error('Presentation frame expired');
+                }
+            };
+        return Object.freeze({
+            nowMs,
+            timeMs: nowMs - this.#delayMs - this.#origin,
+            sample: (id, generation) => {
+                CHECK();
+                return this.sample(id, generation, nowMs);
+            },
+            modelFor: (source) => {
+                CHECK();
+                return this.modelFor(source, nowMs);
+            },
+            forEach: (visit) => {
+                CHECK();
+                for (const [ID, TRACK] of this.#tracks) {
+                    const MODEL = this.sample(ID, TRACK.generation, nowMs);
+                    if (MODEL) {
+                        visit(MODEL, ID, TRACK.generation);
+                    }
+                }
+            },
+            pathInto: (id, generation, out) => {
+                CHECK();
+                if (!Array.isArray(out)) {
+                    throw new TypeError('path output must be an array');
+                }
+                const TRACK = this.#tracks.get(id);
+                if (!TRACK || TRACK.generation !== generation || !this.sample(id, generation, nowMs)) {
+                    out.length = 0;
+                    return out;
+                }
+                if (!TRACK.plan.path) {
+                    throw new Error('Declare renderPath before reading a path');
+                }
+                if (this.#preview.has(id) && this.#previewSelection.get(id) === generation) {
+                    throw new Error('Preview path is not supported; attach visuals to the selected model');
+                }
+                return samplePath(TRACK.path, nowMs - this.#delayMs - this.#origin, TRACK.plan.path.durationMs, out);
+            },
+        });
     }
-    const preview = source && typeof source === 'object' ? this.#previewSources.get(source) : null;
-    if (preview && this.#previewSelection.get(preview.id) === preview.generation) return this.sample(preview.id,preview.generation,nowMs);
-    const track = this.#sources.get(source);
-    if (track) return this.sample(track.id, track.generation, nowMs);
-    this.#now = nowMs; return null;
-  }
 
-  /**
-   * One synchronous display frame. All reads share one nowMs and preview selection.
-   * Enumerate this frame, not the current simulation collection: delayed removals stay visible.
-   * Models are reused, declared data only; do not retain/mutate them or read raw simulation in draw code.
-   * A new frame/capture invalidates this handle. No per-field proxy or deep copy on RAF.
-   */
-  frame(nowMs) {
-    this.#checkClock(nowMs);this.#now=nowMs;
-    const serial=++this.#frameSerial,check=()=>{if(serial!==this.#frameSerial)throw new Error('Presentation frame expired');};
-    return Object.freeze({nowMs,timeMs:nowMs-this.#delayMs-this.#origin,
-      sample:(id,generation)=>{check();return this.sample(id,generation,nowMs);},
-      modelFor:source=>{check();return this.modelFor(source,nowMs);},
-      forEach:visit=>{check();for(const [id,track]of this.#tracks){const model=this.sample(id,track.generation,nowMs);if(model)visit(model,id,track.generation);}},
-      pathInto:(id,generation,out)=>{check();if(!Array.isArray(out))throw new TypeError('path output must be an array');
-        const track=this.#tracks.get(id);if(!track||track.generation!==generation||!this.sample(id,generation,nowMs)){out.length=0;return out;}
-        if(!track.plan.path)throw new Error('Declare renderPath before reading a path');
-        if(this.#preview.has(id)&&this.#previewSelection.get(id)===generation)throw new Error('Preview path is not supported; attach visuals to the selected model');
-        return samplePath(track.path,nowMs-this.#delayMs-this.#origin,track.plan.path.durationMs,out);}
-    });
-  }
-
-  /** 정상적인 객체 메서드 호출입니다. this/프로토타입을 바꾸지 않습니다. */
-  render(source, context, nowMs) {
-    if (!(source instanceof RenderObject)) throw new TypeError('render() requires a RenderObject');
-    const model = this.modelFor(source, nowMs);
-    if (!model) throw new Error('Render object has not been captured');
-    source.render(context, model);
-    return model;
-  }
+    /** 정상적인 객체 메서드 호출입니다. this/프로토타입을 바꾸지 않습니다. */
+    render(source, context, nowMs) {
+        if (!(source instanceof RenderObject)) {
+            throw new TypeError('render() requires a RenderObject');
+        }
+        const MODEL = this.modelFor(source, nowMs);
+        if (!MODEL) {
+            throw new Error('Render object has not been captured');
+        }
+        source.render(context, MODEL);
+        return MODEL;
+    }
 }

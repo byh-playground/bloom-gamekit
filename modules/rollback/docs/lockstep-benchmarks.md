@@ -5,10 +5,10 @@
 동일 canonical JSON 어댑터·고정 입력·300 tick·64 tick input/history window·20 tick checksum·replay 켬으로 rollback과 lockstep을 번갈아 5회 측정했습니다. 각 모드 warm-up 1회 후 표본 중앙값입니다. 병렬 작업이 존재하는 cloud Node 환경의 CPU fixture이며 실제 게임 render/main-loop·GPU·휴대폰 FPS 측정이 아닙니다. 실제 Rally/Budmori 어댑터 측정은 해당 소비자 저장소가 소유합니다.
 
 | entities | rollback 전체 advance ms | lockstep 전체 advance ms | rollback tick 중앙값 ms | lockstep tick 중앙값 ms |
-| --- | ---: | ---: | ---: | ---: |
-| 1 | 8.873 | 5.120 | 0.01450 | 0.01152 |
-| 155 | 26.093 | 7.981 | 0.06303 | 0.01445 |
-| 1000 | 115.700 | 18.681 | 0.29941 | 0.02371 |
+| -------- | -----------------------: | -----------------------: | ----------------------: | ----------------------: |
+| 1        |                    8.873 |                    5.120 |                 0.01450 |                 0.01152 |
+| 155      |                   26.093 |                    7.981 |                 0.06303 |                 0.01445 |
+| 1000     |                  115.700 |                   18.681 |                 0.29941 |                 0.02371 |
 
 모든 경우 save 횟수는 **301 → 16** (최초 1회 + 20 tick마다 1회), 입력·최종 상태 hash는 동일합니다. 정상 tick의 adapter.load와 rollback/예측은 없었습니다. 체크포인트를 매 tick 검사하도록 설정하거나 게임이 매 tick getStateHash/save를 호출하면 이 이득을 다시 지불합니다.
 
