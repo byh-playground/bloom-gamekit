@@ -1,3 +1,7 @@
+## v0.11.3 (2026-10-17)
+
+Rally에서 사용하던 범용 객체 풀을 독립 `object-pool.js`의 `ObjectPool`로 추출합니다. factory/reset/유휴 보관 상한과 LIFO acquire/release, 유휴 참조만 비우는 clear를 제공하며 게임별 상태와 buffer 수명은 포함하지 않습니다. 생성 설정만 검사하고 중복 반납·타입·외부 참조 해제는 소비자 계약으로 둡니다.
+
 ## v0.11.2 (2026-10-16)
 
 Vector clip sampling skips a transition's source tree before its start and after it completes, avoiding repeat sampling and pose blending for settled historical transitions. Active transitions still blend from the prior tree to the target clip. Playback history remains retained for deterministic backward seeks, so this patch does not bound transition-history memory.

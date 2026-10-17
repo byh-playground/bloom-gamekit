@@ -3,7 +3,7 @@ import { lstat, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 // 빌드·검증·배포가 공유하는 고정 목록입니다. manifest의 경로를 실행 경로로 신뢰하지 않습니다.
-export const MODULES = Object.freeze(['interpolation', 'rendering', 'vector-assets', 'vector-assets-loader', 'input', 'deterministic', 'simloop', 'transport', 'replay', 'rollback', 'camera', 'presentation-events', 'hud', 'debug-tools', 'audio', 'navigation', 'scenario']);
+export const MODULES = Object.freeze(['interpolation', 'rendering', 'vector-assets', 'vector-assets-loader', 'input', 'deterministic', 'simloop', 'transport', 'replay', 'rollback', 'camera', 'presentation-events', 'hud', 'debug-tools', 'audio', 'navigation', 'scenario', 'object-pool']);
 export const BUNDLE_FILES = Object.freeze(MODULES.map((name) => `${name}.js`));
 export const FONT_ASSETS = Object.freeze([Object.freeze({
   source: 'modules/rendering/assets/fonts/noto-sans-kr-700-v1.json',
