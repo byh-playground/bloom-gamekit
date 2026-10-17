@@ -1,26 +1,178 @@
 <!doctype html>
-<html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>BLOOM · 롤백 연결 기준 예제</title>
-<style>
-:root{font:16px/1.5 system-ui;color:#edf3fa;background:#101824}body{max-width:980px;margin:auto;padding:24px}h1{font-size:28px}h2{font-size:18px}p{color:#adbed3}section,details{background:#192638;border:1px solid #32445c;border-radius:12px;padding:18px;margin:16px 0}button,select,input{font:inherit;padding:9px;border:1px solid #576c85;border-radius:6px;background:#22364c;color:inherit}button{cursor:pointer;touch-action:none}button:disabled,select:disabled{opacity:.5}#start{background:#c8ef95;color:#182819}label{display:inline-block;margin:5px}canvas{display:block;width:100%;background:#101b29;border-radius:8px}pre{font:12px/1.5 ui-monospace,monospace;white-space:pre-wrap;max-height:400px;overflow:auto}a{color:#c8ef95}.controls{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.controls strong{min-width:80px;align-self:center}#error-log{color:#ffb3aa}#summary{font-size:13px;color:#c8ef95}[hidden]{display:none!important}
-</style>
-<header><small>BLOOM GAMEKIT · EXECUTABLE REFERENCE</small><h1>입력부터 롤백·표시까지</h1><p>두 세계가 실제 WebRTC로 연결됩니다. 걷기·대시·발사체를 보면서 판정 TPS와 표시 프레임이 어떻게 분리되는지 비교하세요.</p></header>
-<section>
-<label>연결 <select id="mode"><option value="local">이 화면에서 실제 RTC 2인</option><option value="host">온라인 방 만들기</option><option value="join">온라인 참가</option></select></label>
-<label>판정 TPS <select id="tps"><option>10</option><option>15</option><option>20</option><option>30</option></select></label>
-<label>방 번호 <input id="room-input" value="2828" maxlength="4" size="5"></label>
-<button id="start">새 방 시작</button><button id="stop" disabled>중지 / 모두 나가기</button>
-<p id="connection-status" role="status">입력 60Hz · 표시 RAF · baseHz 120의 정수 분주. TPS는 실행 중 잠깁니다.</p>
-<p>TPS 비교: 중지 → TPS 선택 → 새 방 시작. 온라인에서는 <b>두 참가자 모두 나가고 같은 TPS·방 번호로 다시 연결</b>하세요. 다른 TPS는 다른 방 namespace/handshake 계약이므로 기존 방을 바꾸지 않습니다.</p>
-</section>
-<section id="quick-guide"><h2>여기서 확인할 연결</h2><p>← → 는 A 걷기, A/D는 B 걷기. Space는 A 대시, F는 A 발사입니다. 버튼도 사용할 수 있습니다. 대시 버튼을 놓아도 흰 action 원이 끝날 때까지 로컬 preview가 유지됩니다.</p>
-<div class="controls"><strong>참가자 A</strong><button data-player="a" data-axis="1">←</button><button data-player="a" data-axis="2">→</button><button data-player="a" data-command="1">대시 A</button><button data-player="a" data-command="2">발사 A</button><button data-player="a" data-command="3">순간이동 A</button><button data-player="a" data-command="4">한 tick 섬광 A</button></div>
-<div class="controls" data-player="b"><strong>참가자 B</strong><button data-player="b" data-axis="1">←</button><button data-player="b" data-axis="2">→</button><button data-player="b" data-command="1">대시 B</button><button data-player="b" data-command="2">발사 B</button><button data-player="b" data-command="3">순간이동 B</button></div>
-<button id="delay">A → B RTC 송신 지연: 0ms</button> <button id="compare">같은 확정 tick에서 hash 비교</button><label><input id="sound" type="checkbox">확정 효과음</label>
-<p>지연을 켠 뒤 이동 방향을 바꾸면 rollback이 늘어납니다. 작은 원은 취소·수정 가능한 예측 연출, 소리는 확정 이후 한 번만 재생합니다. 점선은 같은 표시 프레임의 표적, 바닥 선은 반사점을 포함한 잔상입니다. 발사체 본체는 높이만큼 떠 있고 그림자·잔상은 지면에 있습니다.</p>
-<canvas id="simulation" width="720" height="636"></canvas><p id="summary"></p><p id="comparison" role="status"></p>
-</section>
-<details open><summary>연결 진단: TPS / tick / confirmed / rollback / preview / 명령 T / hash</summary><pre id="debug-state">새 방을 시작하세요.</pre></details>
-<pre id="error-log" hidden></pre>
-<footer><a href="./README.md">복사 순서·게임이 제공할 데이터</a> · <a href="./main.js">실행 연결 main.js</a> · <a href="./game.js">작은 게임 규칙 game.js</a><p>기본 모드는 로컬 SDP/ICE 라우팅과 실제 WebRTC를 사용합니다. 온라인 모드는 공식 Nostr 방 탐색을 사용하며 별도 relay/NAT 환경 검증이 필요합니다.</p></footer>
-<script type="module" src="./main.js"></script></html>
+<html lang="ko">
+    <meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>BLOOM · 롤백 연결 기준 예제</title>
+    <style>
+        :root {
+            font: 16px/1.5 system-ui;
+            color: #edf3fa;
+            background: #101824;
+        }
+        body {
+            max-width: 980px;
+            margin: auto;
+            padding: 24px;
+        }
+        h1 {
+            font-size: 28px;
+        }
+        h2 {
+            font-size: 18px;
+        }
+        p {
+            color: #adbed3;
+        }
+        section,
+        details {
+            background: #192638;
+            border: 1px solid #32445c;
+            border-radius: 12px;
+            padding: 18px;
+            margin: 16px 0;
+        }
+        button,
+        select,
+        input {
+            font: inherit;
+            padding: 9px;
+            border: 1px solid #576c85;
+            border-radius: 6px;
+            background: #22364c;
+            color: inherit;
+        }
+        button {
+            cursor: pointer;
+            touch-action: none;
+        }
+        button:disabled,
+        select:disabled {
+            opacity: 0.5;
+        }
+        #start {
+            background: #c8ef95;
+            color: #182819;
+        }
+        label {
+            display: inline-block;
+            margin: 5px;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            background: #101b29;
+            border-radius: 8px;
+        }
+        pre {
+            font:
+                12px/1.5 ui-monospace,
+                monospace;
+            white-space: pre-wrap;
+            max-height: 400px;
+            overflow: auto;
+        }
+        a {
+            color: #c8ef95;
+        }
+        .controls {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin: 12px 0;
+        }
+        .controls strong {
+            min-width: 80px;
+            align-self: center;
+        }
+        #error-log {
+            color: #ffb3aa;
+        }
+        #summary {
+            font-size: 13px;
+            color: #c8ef95;
+        }
+        [hidden] {
+            display: none !important;
+        }
+    </style>
+    <header>
+        <small>BLOOM GAMEKIT · EXECUTABLE REFERENCE</small>
+        <h1>입력부터 롤백·표시까지</h1>
+        <p>
+            두 세계가 실제 WebRTC로 연결됩니다. 걷기·대시·발사체를 보면서 판정 TPS와 표시 프레임이 어떻게 분리되는지
+            비교하세요.
+        </p>
+    </header>
+    <section>
+        <label
+            >연결
+            <select id="mode">
+                <option value="local">이 화면에서 실제 RTC 2인</option>
+                <option value="host">온라인 방 만들기</option>
+                <option value="join">온라인 참가</option>
+            </select></label
+        >
+        <label
+            >판정 TPS
+            <select id="tps">
+                <option>10</option>
+                <option>15</option>
+                <option>20</option>
+                <option>30</option>
+            </select></label
+        >
+        <label>방 번호 <input id="room-input" value="2828" maxlength="4" size="5" /></label>
+        <button id="start">새 방 시작</button><button id="stop" disabled>중지 / 모두 나가기</button>
+        <p id="connection-status" role="status">
+            입력 60Hz · 표시 RAF · baseHz 120의 정수 분주. TPS는 실행 중 잠깁니다.
+        </p>
+        <p>
+            TPS 비교: 중지 → TPS 선택 → 새 방 시작. 온라인에서는
+            <b>두 참가자 모두 나가고 같은 TPS·방 번호로 다시 연결</b>하세요. 다른 TPS는 다른 방 namespace/handshake
+            계약이므로 기존 방을 바꾸지 않습니다.
+        </p>
+    </section>
+    <section id="quick-guide">
+        <h2>여기서 확인할 연결</h2>
+        <p>
+            ← → 는 A 걷기, A/D는 B 걷기. Space는 A 대시, F는 A 발사입니다. 버튼도 사용할 수 있습니다. 대시 버튼을 놓아도
+            흰 action 원이 끝날 때까지 로컬 preview가 유지됩니다.
+        </p>
+        <div class="controls">
+            <strong>참가자 A</strong><button data-player="a" data-axis="1">←</button
+            ><button data-player="a" data-axis="2">→</button><button data-player="a" data-command="1">대시 A</button
+            ><button data-player="a" data-command="2">발사 A</button
+            ><button data-player="a" data-command="3">순간이동 A</button
+            ><button data-player="a" data-command="4">한 tick 섬광 A</button>
+        </div>
+        <div class="controls" data-player="b">
+            <strong>참가자 B</strong><button data-player="b" data-axis="1">←</button
+            ><button data-player="b" data-axis="2">→</button><button data-player="b" data-command="1">대시 B</button
+            ><button data-player="b" data-command="2">발사 B</button
+            ><button data-player="b" data-command="3">순간이동 B</button>
+        </div>
+        <button id="delay">A → B RTC 송신 지연: 0ms</button> <button id="compare">같은 확정 tick에서 hash 비교</button
+        ><label><input id="sound" type="checkbox" />확정 효과음</label>
+        <p>
+            지연을 켠 뒤 이동 방향을 바꾸면 rollback이 늘어납니다. 작은 원은 취소·수정 가능한 예측 연출, 소리는 확정
+            이후 한 번만 재생합니다. 점선은 같은 표시 프레임의 표적, 바닥 선은 반사점을 포함한 잔상입니다. 발사체 본체는
+            높이만큼 떠 있고 그림자·잔상은 지면에 있습니다.
+        </p>
+        <canvas id="simulation" width="720" height="636"></canvas>
+        <p id="summary"></p>
+        <p id="comparison" role="status"></p>
+    </section>
+    <details open>
+        <summary>연결 진단: TPS / tick / confirmed / rollback / preview / 명령 T / hash</summary>
+        <pre id="debug-state">새 방을 시작하세요.</pre>
+    </details>
+    <pre id="error-log" hidden></pre>
+    <footer>
+        <a href="./README.md">복사 순서·게임이 제공할 데이터</a> · <a href="./main.js">실행 연결 main.js</a> ·
+        <a href="./game.js">작은 게임 규칙 game.js</a>
+        <p>
+            기본 모드는 로컬 SDP/ICE 라우팅과 실제 WebRTC를 사용합니다. 온라인 모드는 공식 Nostr 방 탐색을 사용하며 별도
+            relay/NAT 환경 검증이 필요합니다.
+        </p>
+    </footer>
+    <script type="module" src="./main.js"></script>
+</html>

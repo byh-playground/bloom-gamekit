@@ -1,3 +1,7 @@
+## v0.11.4 (2026-10-17)
+
+공통 코드 규칙을 Prettier와 ESLint로 검사합니다. 내부 const 바인딩을 UPPER_SNAKE_CASE로 정리하되 공개 export·import 이름, 객체 키, 클래스 이름, 함수 인자 수와 runtime 계약은 유지합니다. 소스·예제의 형식 정리로 비압축 배포 bytes가 바뀌므로 기존 불변 태그를 보존하기 위해 호환 PATCH를 발행합니다. API·wire protocol·게임 snapshot·replay 형식과 소비자 게임의 고정 버전은 바꾸지 않습니다.
+
 ## v0.11.3 (2026-10-17)
 
 Rally에서 사용하던 범용 객체 풀을 독립 `object-pool.js`의 `ObjectPool`로 추출합니다. factory/reset/유휴 보관 상한과 LIFO acquire/release, 유휴 참조만 비우는 clear를 제공하며 게임별 상태와 buffer 수명은 포함하지 않습니다. 생성 설정만 검사하고 중복 반납·타입·외부 참조 해제는 소비자 계약으로 둡니다.

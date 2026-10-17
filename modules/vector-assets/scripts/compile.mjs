@@ -4,41 +4,96 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compileVectorAssetFile, compiledAssetModuleSource } from '../compiler.js';
 import { VECTOR_ASSET_QUALITY_PRESETS } from '../quality-presets.js';
-
-const root = fileURLToPath(new URL('../../../', import.meta.url));
-const args = process.argv.slice(2);
-const positional = [];
-let output = null, curveSegments = VECTOR_ASSET_QUALITY_PRESETS.standard.curveSegments,
-  strokeArcDivisions = VECTOR_ASSET_QUALITY_PRESETS.standard.strokeArcDivisions,
-  outputSeen = false, curveSegmentsSeen = false, strokeArcDivisionsSeen = false;
-for (let index = 0; index < args.length; index++) {
-  const argument = args[index];
-  if (argument === '--output' || argument === '--curve-segments' || argument === '--stroke-arc-divisions') {
-    const value = args[++index];
-    if (!value || value.startsWith('--')) throw new TypeError(argument + ' requires a value');
-    if (argument === '--output') {
-      if (outputSeen) throw new TypeError('--output may be supplied once');
-      outputSeen = true; output = resolve(root, value);
-    } else if (argument === '--curve-segments') {
-      if (curveSegmentsSeen) throw new TypeError('--curve-segments may be supplied once');
-      if (!/^\d+$/.test(value)) throw new TypeError('--curve-segments must be a decimal integer from 1 to 64');
-      curveSegmentsSeen = true; curveSegments = Number(value);
+const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
+const ARGS = process.argv.slice(2);
+const POSITIONAL = [];
+let output = null;
+let curveSegments = VECTOR_ASSET_QUALITY_PRESETS.standard.curveSegments;
+let strokeArcDivisions = VECTOR_ASSET_QUALITY_PRESETS.standard.strokeArcDivisions;
+let outputSeen = false;
+let curveSegmentsSeen = false;
+let strokeArcDivisionsSeen = false;
+for (let index = 0; index < ARGS.length; index++) {
+    const ARGUMENT = ARGS[index];
+    if (ARGUMENT === '--output' || ARGUMENT === '--curve-segments' || ARGUMENT === '--stroke-arc-divisions') {
+        const VALUE = ARGS[++index];
+        if (!VALUE || VALUE.startsWith('--')) {
+            throw new TypeError(ARGUMENT + ' requires a value');
+        }
+        if (ARGUMENT === '--output') {
+            if (outputSeen) {
+                throw new TypeError('--output may be supplied once');
+            }
+            outputSeen = true;
+            output = resolve(ROOT, VALUE);
+        } else if (ARGUMENT === '--curve-segments') {
+            if (curveSegmentsSeen) {
+                throw new TypeError('--curve-segments may be supplied once');
+            }
+            if (!/^\d+$/.test(VALUE)) {
+                throw new TypeError('--curve-segments must be a decimal integer from 1 to 64');
+            }
+            curveSegmentsSeen = true;
+            curveSegments = Number(VALUE);
+        } else {
+            if (strokeArcDivisionsSeen) {
+                throw new TypeError('--stroke-arc-divisions may be supplied once');
+            }
+            if (!/^\d+$/.test(VALUE)) {
+                throw new TypeError('--stroke-arc-divisions must be a decimal integer from 1 to 64');
+            }
+            strokeArcDivisionsSeen = true;
+            strokeArcDivisions = Number(VALUE);
+        }
+    } else if (ARGUMENT.startsWith('--')) {
+        throw new TypeError('Unsupported compiler option: ' + ARGUMENT);
     } else {
-      if (strokeArcDivisionsSeen) throw new TypeError('--stroke-arc-divisions may be supplied once');
-      if (!/^\d+$/.test(value)) throw new TypeError('--stroke-arc-divisions must be a decimal integer from 1 to 64');
-      strokeArcDivisionsSeen = true; strokeArcDivisions = Number(value);
+        POSITIONAL.push(ARGUMENT);
     }
-  } else if (argument.startsWith('--')) throw new TypeError('Unsupported compiler option: ' + argument);
-  else positional.push(argument);
 }
-if (positional.length > 1) throw new TypeError('Only one SVG source path may be supplied');
-const input = resolve(root, positional[0] ?? 'modules/vector-assets/assets/seed-scout.svg');
-const asset = await compileVectorAssetFile(input, input.startsWith(root) ? input.slice(root.length + 1).replaceAll('\\', '/') : input, { curveSegments, strokeArcDivisions });
-if (output) await writeFile(output, await compiledAssetModuleSource(asset));
-const sourceSha256 = createHash('sha256').update(await readFile(input)).digest('hex');
-console.log(JSON.stringify({ source: input, sourceSha256, compilerVersion: asset.compilerVersion, compilerOptions: asset.compilerOptions, parts: asset.geometry.partCount,
-  vertices: asset.geometry.vertices.length / asset.geometry.strideFloats, triangles: asset.geometry.indices.length / 3,
-  expressionVariantBytes: Object.values(asset.geometry.expressionIndices).reduce((total, indices) => total + indices.byteLength, 0),
-  geometryBytes: asset.geometry.vertices.byteLength + asset.geometry.indices.byteLength
-    + Object.values(asset.geometry.expressionIndices).reduce((total, indices) => total + indices.byteLength, 0),
-  expandedGeometryBytes: asset.geometry.indices.length * asset.geometry.strideFloats * 4, output }, null, 2));
+if (POSITIONAL.length > 1) {
+    throw new TypeError('Only one SVG source path may be supplied');
+}
+const INPUT = resolve(ROOT, POSITIONAL[0] ?? 'modules/vector-assets/assets/seed-scout.svg');
+const ASSET = await compileVectorAssetFile(
+    INPUT,
+    INPUT.startsWith(ROOT) ? INPUT.slice(ROOT.length + 1).replaceAll('\\', '/') : INPUT,
+    {
+        curveSegments,
+        strokeArcDivisions,
+    },
+);
+if (output) {
+    await writeFile(output, await compiledAssetModuleSource(ASSET));
+}
+const SOURCE_SHA256 = createHash('sha256')
+    .update(await readFile(INPUT))
+    .digest('hex');
+console.log(
+    JSON.stringify(
+        {
+            source: INPUT,
+            sourceSha256: SOURCE_SHA256,
+            compilerVersion: ASSET.compilerVersion,
+            compilerOptions: ASSET.compilerOptions,
+            parts: ASSET.geometry.partCount,
+            vertices: ASSET.geometry.vertices.length / ASSET.geometry.strideFloats,
+            triangles: ASSET.geometry.indices.length / 3,
+            expressionVariantBytes: Object.values(ASSET.geometry.expressionIndices).reduce(
+                (total, indices) => total + indices.byteLength,
+                0,
+            ),
+            geometryBytes:
+                ASSET.geometry.vertices.byteLength +
+                ASSET.geometry.indices.byteLength +
+                Object.values(ASSET.geometry.expressionIndices).reduce(
+                    (total, indices) => total + indices.byteLength,
+                    0,
+                ),
+            expandedGeometryBytes: ASSET.geometry.indices.length * ASSET.geometry.strideFloats * 4,
+            output,
+        },
+        null,
+        2,
+    ),
+);

@@ -9,21 +9,31 @@
 ```js
 import { RenderObject, PresentationRuntime } from './interpolation.js';
 class Unit extends RenderObject {
-  x = 0; y = 0; angle = 0; hp = 100; roll = { progress: 0 }; kind = 'unit';
-  static renderSchema = {
-    x: this.LINEAR, y: this.LINEAR, angle: this.ANGLE,
-    hp: this.LINEAR, 'roll.progress': this.LINEAR, kind: this.STEP,
-  };
-  render(renderer, model) {
-    renderer.rect(model.x, model.y, 20, 20, [0, 1, 0, 1], model.angle);
-  }
+    x = 0;
+    y = 0;
+    angle = 0;
+    hp = 100;
+    roll = { progress: 0 };
+    kind = 'unit';
+    static renderSchema = {
+        x: this.LINEAR,
+        y: this.LINEAR,
+        angle: this.ANGLE,
+        hp: this.LINEAR,
+        'roll.progress': this.LINEAR,
+        kind: this.STEP,
+    };
+    render(renderer, model) {
+        renderer.rect(model.x, model.y, 20, 20, [0, 1, 0, 1], model.angle);
+    }
 }
 const unit = new Unit();
 const presentation = new PresentationRuntime({ stepMs: 100 });
 // 기존 시뮬 틱 이후 한 번. 전체 생존 목록입니다.
-presentation.capture({ revision: 0, sequence: 0, timeMs: 0,
-  entities: [{ id: 'u', generation: 0, source: unit }],
-}, performance.now());
+presentation.capture(
+    { revision: 0, sequence: 0, timeMs: 0, entities: [{ id: 'u', generation: 0, source: unit }] },
+    performance.now(),
+);
 // 프레임 시각을 한 번 읽고 몸체/그림자/HUD에 같은 모델을 공유합니다.
 presentation.render(unit, renderer, performance.now());
 ```
@@ -81,17 +91,25 @@ static renderSchema = {
 ```js
 import { InterpolationTimeline } from './interpolation.js'; // dist 브랜치에서 받은 단일 파일
 const view = new InterpolationTimeline({
-  stepMs: 100,
-  schema: { x: 'number', y: 'number', z: 'number', health: 'number', angle: 'angle', state: 'discrete' },
+    stepMs: 100,
+    schema: { x: 'number', y: 'number', z: 'number', health: 'number', angle: 'angle', state: 'discrete' },
 });
 const pose = {};
-view.accept({ revision: 0, sequence: 0, timeMs: 0, entities: [
-  { id: 'player', generation: 0, values: { x: 10, y: 20, z: 0, health: 100, angle: 0, state: 'idle' } },
-] }, performance.now());
+view.accept(
+    {
+        revision: 0,
+        sequence: 0,
+        timeMs: 0,
+        entities: [
+            { id: 'player', generation: 0, values: { x: 10, y: 20, z: 0, health: 100, angle: 0, state: 'idle' } },
+        ],
+    },
+    performance.now(),
+);
 // 기존 게임 rAF 안에서 호출. 반환 false이면 해당 identity를 그리지 않습니다.
 const now = performance.now();
 if (view.sampleInto('player', 0, now, pose)) {
-  // camera, body root, shadow는 같은 pose를 사용합니다.
+    // camera, body root, shadow는 같은 pose를 사용합니다.
 }
 ```
 
@@ -132,11 +150,9 @@ E2E는 실제 Worker 이동에서 추출한 표본, 10/20/30 TPS·60Hz 위상, �
 
 `npm run benchmark:interpolation`의 별도 Node benchmark는 256 entity의 sample/accept batch CPU p50/p95와 heap 변화, 재사용 output 수를 로그로 출력합니다. heap 변화는 GC가 포함된 관찰값이지 총 할당량이나 0-allocation 증명이 아닙니다. 별도 V8 통계 프로파일은 accept/sampleInto 호출 스택의 추정 할당 바이트를 기록하며 수집된 객체도 포함합니다. 샘플 간격은 1024 bytes이고 0 추정도 실제 0 할당을 증명하지 않습니다. Chromium 통합 검사는 실제 독립 ESM 3개와 DOM 입력·고정 틱·rAF·WebGL 픽셀·texture/alpha/order·생명주기를 확인합니다. 모바일·기기 FPS·GPU 성능·전체 게임 통합은 별도 검증 대상입니다.
 
-
 ### 일정한 시뮬레이션 시각의 snapshot 표시
 
 `InterpolationTimeline({schema,stepMs,delayMs:stepMs*2})`는 revision 시작에서 로컬 표시 clock과 simulation time을 대응시키고, 고정 지연을 둔 시뮬레이션 시각의 두 snapshot 사이를 표시합니다. 수신 때마다 1틱 보간을 재시작하지 않으며 같은 callback에 여러 tick이 도착해도 중간 구간을 보존합니다. 지연은 0~16틱이며 0은 기존 즉시 retarget 방식입니다. 순간이동·revision reset은 이전 history를 끊습니다. 없는 미래는 추정하지 않고 마지막 snapshot에서 멈춥니다. 입력 송신이나 권위 시뮬레이션에는 지연을 추가하지 않습니다.
-
 
 ## 권장 진입점: 한 표시 프레임
 
@@ -149,22 +165,38 @@ Runtime에 `delayMs`가 없으면 기존 수신 시각 기반 동작을 유지�
 
 ```js
 class ShotView extends RenderObject {
-  static renderSchema = { x:this.POSITION_X, y:this.POSITION_Y, color:this.STEP };
-  static renderPath = { x:'x', y:'y', durationMs:400, maxPoints:64 };
+    static renderSchema = { x: this.POSITION_X, y: this.POSITION_Y, color: this.STEP };
+    static renderPath = { x: 'x', y: 'y', durationMs: 400, maxPoints: 64 };
 }
-const view = new PresentationRuntime({stepMs:1000/30, delayMs:2000/30});
+const view = new PresentationRuntime({ stepMs: 1000 / 30, delayMs: 2000 / 30 });
 // 먼저 빈 전체 스냅샷으로 시계 기준을 정한 뒤, 매 완료 tick마다 capture합니다.
-view.capture({revision:0,sequence:0,timeMs:0,entities:[]}, receiptNow);
-view.capture({revision:0,sequence:1,timeMs:stepMs,entities:[{
-  id:'shot-1', generation:0, type:ShotView, source:shot,
-  initialSource:launchPose, initialTimeMs:0,
-  // 한 tick 내부 반사/굴절이 있을 때만 게임이 실제 경유점을 제공합니다.
-  pathPoints:[{timeMs:stepMs/2,x:collisionX,y:collisionY}]
-}]}, nextReceiptNow);
-const frame=view.frame(performance.now());
-frame.forEach((model,id,generation)=>{
-  frame.pathInto(id,generation,reusablePoints);
-  drawTrail(reusablePoints); drawBody(model); drawShadow(model);
+view.capture({ revision: 0, sequence: 0, timeMs: 0, entities: [] }, receiptNow);
+view.capture(
+    {
+        revision: 0,
+        sequence: 1,
+        timeMs: stepMs,
+        entities: [
+            {
+                id: 'shot-1',
+                generation: 0,
+                type: ShotView,
+                source: shot,
+                initialSource: launchPose,
+                initialTimeMs: 0,
+                // 한 tick 내부 반사/굴절이 있을 때만 게임이 실제 경유점을 제공합니다.
+                pathPoints: [{ timeMs: stepMs / 2, x: collisionX, y: collisionY }],
+            },
+        ],
+    },
+    nextReceiptNow,
+);
+const frame = view.frame(performance.now());
+frame.forEach((model, id, generation) => {
+    frame.pathInto(id, generation, reusablePoints);
+    drawTrail(reusablePoints);
+    drawBody(model);
+    drawShadow(model);
 });
 ```
 
@@ -186,12 +218,14 @@ frame.forEach((model,id,generation)=>{
 시뮬레이션 시간을 같게 만들거나 로컬 입력에 `delayMs`를 강제하지 않습니다.
 
 ```js
-presentation.selectPreview([{id:'local-actor',generation:0}]);
+presentation.selectPreview([{ id: 'local-actor', generation: 0 }]);
 // LocalInputPreview({presentation, ...})가 capturePreview를 게시합니다.
-const frame=presentation.frame(now);
-const actor=frame.sample('local-actor',0);
-if(actor){
-  drawActor(actor); drawAttachedLight(actor.x,actor.y); camera.follow(actor);
+const frame = presentation.frame(now);
+const actor = frame.sample('local-actor', 0);
+if (actor) {
+    drawActor(actor);
+    drawAttachedLight(actor.x, actor.y);
+    camera.follow(actor);
 }
 ```
 

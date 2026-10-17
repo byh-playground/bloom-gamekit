@@ -49,15 +49,15 @@
 
 ## 게임이 반드시 제공하는 의미
 
-| 데이터 | 이 예제 | 모듈이 추측하지 않는 이유 |
-|---|---|---|
-| 소유자·one-shot 실행 T | frame.playerId, command.executeTick | 다른 actor로 재적용하거나 T를 바꾸면 판정이 달라짐 |
-| action lifetime | nullable `action`, kind/sequence/total STATE_KEY, left COUNTDOWN_MS | 손을 뗀 뒤에도 진행되는 대시를 입력 버튼 상태만으로 알 수 없음 |
-| 생성·재사용 | origin XYZ, bornMs/initialSource, slot ID와 generation | 첫 표본만으로 출발점·출생 시각·다른 incarnation을 구별할 수 없음 |
-| 반사·표적 | 정확한 tick 내부 pathPoints, target ID | endpoint 두 개만으로 반사 궤적·추적 의미를 복원할 수 없음 |
-| 순간이동·rollback | root teleportSerial STATE_KEY + authority teleport, 새 revision | 큰 이동이 걸음인지 이동 불연속인지 게임이 정의 |
-| 즉시 섬광 | tick/sequence/entity/generation + fixed anchor | 두 snapshot에 모두 없는 객체는 보간으로 생성할 수 없음 |
-| 연출 정책 | reversible particle / confirmed sound | 들린 소리는 취소할 수 없으며 particle은 stop/reconcile 가능 |
+| 데이터                 | 이 예제                                                             | 모듈이 추측하지 않는 이유                                        |
+| ---------------------- | ------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| 소유자·one-shot 실행 T | frame.playerId, command.executeTick                                 | 다른 actor로 재적용하거나 T를 바꾸면 판정이 달라짐               |
+| action lifetime        | nullable `action`, kind/sequence/total STATE_KEY, left COUNTDOWN_MS | 손을 뗀 뒤에도 진행되는 대시를 입력 버튼 상태만으로 알 수 없음   |
+| 생성·재사용            | origin XYZ, bornMs/initialSource, slot ID와 generation              | 첫 표본만으로 출발점·출생 시각·다른 incarnation을 구별할 수 없음 |
+| 반사·표적              | 정확한 tick 내부 pathPoints, target ID                              | endpoint 두 개만으로 반사 궤적·추적 의미를 복원할 수 없음        |
+| 순간이동·rollback      | root teleportSerial STATE_KEY + authority teleport, 새 revision     | 큰 이동이 걸음인지 이동 불연속인지 게임이 정의                   |
+| 즉시 섬광              | tick/sequence/entity/generation + fixed anchor                      | 두 snapshot에 모두 없는 객체는 보간으로 생성할 수 없음           |
+| 연출 정책              | reversible particle / confirmed sound                               | 들린 소리는 취소할 수 없으며 particle은 stop/reconcile 가능      |
 
 `action`의 object→null, 새 action의 키 전환, preview 종료는 SDK의 원자적 구조/필드 계약을
 그대로 사용합니다. 게임 측 NaN 가드나 혼합 pose로 숨기지 않습니다. 예제 draw에는 부분 action,

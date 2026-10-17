@@ -5,9 +5,12 @@ Rally의 `ReusableObjectPool`에서 추출한 독립 ESM 객체 재사용 코어
 ```js
 import { ObjectPool } from './object-pool.js';
 const pool = new ObjectPool(
-  () => ({ x: 0, target: null }),
-  item => { item.x = 0; item.target = null; },
-  64,
+    () => ({ x: 0, target: null }),
+    (item) => {
+        item.x = 0;
+        item.target = null;
+    },
+    64,
 );
 const item = pool.acquire();
 item.x = 10;

@@ -1,734 +1,1809 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#f1f0e8">
-  <title>GameKit SVG vector asset comparison</title>
-  <style>
-    :root { color-scheme: light; font: 14px/1.4 system-ui, sans-serif; color: #293e36; background: #f1f0e8; }
-    * { box-sizing: border-box; }
-    body { margin: 0; min-height: 100svh; display: grid; grid-template-rows: auto 1fr auto; }
-    header, footer { padding: .65rem clamp(.75rem, 2.2vw, 1.5rem); background: #fffdf4; }
-    header { border-bottom: 1px solid #d5dec2; }
-    .heading-row, .controls { display: flex; align-items: center; justify-content: space-between; gap: .55rem; flex-wrap: wrap; }
-    h1 { margin: 0; font-size: 1.1rem; }
-    .asset-tag { color: #53694a; font-size: .82rem; white-space: nowrap; }
-    .controls { justify-content: flex-start; margin-top: .6rem; }
-    .source-controls { padding-top: .55rem; border-top: 1px solid #e4e8dc; }
-    #asset-url { width: clamp(17rem, 42vw, 38rem); max-width: 72vw; min-height: 2rem; border: 1px solid #98a785; border-radius: .45rem; padding: .25rem .55rem; color: inherit; background: white; font: inherit; }
-    .check-label { gap: .4rem; }
-    label { display: inline-flex; align-items: center; gap: .35rem; font-size: .82rem; white-space: nowrap; }
-    select, button, input[type="range"] { accent-color: #557d4b; }
-    select, button { min-height: 2rem; border: 1px solid #98a785; border-radius: .45rem; padding: .25rem .55rem; color: inherit; background: white; font: inherit; }
-    button { cursor: pointer; }
-    input[type="number"] { width: 4.2rem; min-height: 2rem; border: 1px solid #98a785; border-radius: .45rem; padding: .25rem .4rem; color: inherit; background: white; font: inherit; font-variant-numeric: tabular-nums; }
-    .quality-presets { display: inline-flex; align-items: center; gap: .2rem; }
-    .quality-presets button { min-width: 2rem; padding-inline: .35rem; }
-    .named-quality-presets { display: inline-flex; align-items: center; gap: .2rem; }
-    input[type="range"] { width: clamp(5rem, 12vw, 11rem); }
-    output { min-width: 3.7em; font-variant-numeric: tabular-nums; }
-    .help { margin: .4rem 0 0; color: #596850; font-size: .76rem; }
-    main { min-height: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .65rem; padding: .65rem; }
-    .panel { min-width: 0; min-height: 0; display: grid; grid-template-rows: 2.5rem minmax(120px, 1fr) 3.3rem; gap: .35rem; padding: .5rem; border: 1px solid #d5dec2; border-radius: .75rem; background: #fffdf4; box-shadow: 0 5px 20px #35482710; }
-    h2 { margin: 0; font-size: .88rem; line-height: 1.25; }
-    h2 small { display: block; margin-top: .1rem; color: #68735d; font-size: .72rem; font-weight: 400; }
-    .stage { position: relative; min-width: 0; min-height: 0; overflow: hidden; border-radius: .5rem; background-color: #dfe8cb; background-image: linear-gradient(45deg, #cfdbb8 25%, transparent 25%), linear-gradient(-45deg, #cfdbb8 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #cfdbb8 75%), linear-gradient(-45deg, transparent 75%, #cfdbb8 75%); background-size: 18px 18px; background-position: 0 0, 0 9px, 9px -9px, -9px 0; touch-action: none; cursor: grab; }
-    .stage.dragging { cursor: grabbing; }
-    .stage svg, .stage canvas { display: block; width: 100%; height: 100%; }
-    .metrics { min-height: 3.1em; color: #50624a; font-size: .7rem; line-height: 1.35; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; overflow-y: auto; }
-    .metrics strong { color: #293e36; }
-    footer { border-top: 1px solid #d5dec2; color: #50624a; font-size: .73rem; }
-    .error { color: #9a332b; font-weight: 650; }
-    dialog#style-dialog { width: min(92vw, 1000px); max-width: none; max-height: 88svh; padding: .75rem; border: 1px solid #a6b696; border-radius: .8rem; color: inherit; background: #fffdf4; box-shadow: 0 20px 70px #18251d55; }
-    dialog#style-dialog::backdrop { background: #17231dbb; }
-    .style-dialog-head { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
-    .style-dialog-head h2 { font-size: 1rem; }
-    .style-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem; margin-top: .6rem; }
-    .style-card { min-width: 0; padding: .5rem; border: 1px solid #d5dec2; border-radius: .6rem; }
-    .style-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .4rem; margin-top: .4rem; }
-    .style-stage { height: clamp(150px, 36vh, 340px); overflow: hidden; border-radius: .4rem; background: #dfe8cb; }
-    .style-stage svg, .style-stage canvas { display: block; width: 100%; height: 100%; }
-    .style-caption { margin: .3rem 0 0; color: #50624a; font-size: .72rem; }
-    @media (max-width: 680px) { .style-grid { grid-template-columns: 1fr; } dialog#style-dialog { max-height: 94svh; } }
-    @media (max-width: 700px) and (orientation: portrait) {
-      body { min-height: 100svh; grid-template-rows: auto 1fr auto; }
-      main { grid-template-columns: minmax(0, 1fr); overflow-y: auto; align-content: start; }
-      .panel { grid-template-rows: auto minmax(210px, 48svh) auto; }
-      .controls { gap: .4rem; }
-    }
-    @media (orientation: landscape) and (max-height: 520px) {
-      body { height: 100svh; overflow: hidden; grid-template-rows: auto minmax(0, 1fr) auto; }
-      main { overflow: hidden; }
-      header, footer { padding-block: .35rem; }
-      h1 { font-size: .92rem; }
-      .controls { margin-top: .28rem; gap: .35rem; }
-      label { font-size: .72rem; }
-      select, button, input[type="number"] { min-height: 1.65rem; padding: .12rem .38rem; font-size: .74rem; }
-      input[type="range"] { width: clamp(3.5rem, 9vw, 6.5rem); }
-      .help { margin-top: .15rem; font-size: .65rem; }
-      main { gap: .38rem; padding: .38rem; }
-      .panel { grid-template-rows: 2.15rem minmax(110px, 1fr) 2.6rem; gap: .22rem; padding: .35rem; }
-      h2 { font-size: .75rem; }
-      h2 small { font-size: .62rem; }
-      .metrics { min-height: 2.6em; max-height: 2.6rem; font-size: .61rem; }
-      footer { font-size: .62rem; }
-    }
-  </style>
-</head>
-<body>
-  <header>
-    <div class="heading-row">
-      <h1>SVG quality test · three synchronized views</h1>
-      <span class="asset-tag" id="asset-tag">Asset: Farmpea · one authored SVG</span>
-    </div>
-    <div class="controls source-controls" aria-label="SVG source and tessellation controls">
-      <label>GitHub SVG URL <input id="asset-url" type="url" spellcheck="false" autocomplete="url" value="https://raw.githubusercontent.com/byh-playground/budmori-io/0dab58e201b5c08f5073108121eeae91acc34774/assets/troops/pea.svg"></label>
-      <button id="load-asset" type="button">Load &amp; compile</button>
-      <label for="curve-segments">Curve segments <input id="curve-segments" type="number" min="1" max="64" step="1" value="4" inputmode="numeric"></label>
-      <span class="quality-presets" role="group" aria-label="Curve segment presets">Quick
-        <button type="button" data-quality-target="curve-segments" data-quality-value="1" aria-label="Set curve segments to 1">1</button>
-        <button type="button" data-quality-target="curve-segments" data-quality-value="2" aria-label="Set curve segments to 2">2</button>
-        <button type="button" data-quality-target="curve-segments" data-quality-value="4" aria-label="Set curve segments to 4">4</button>
-        <button type="button" data-quality-target="curve-segments" data-quality-value="8" aria-label="Set curve segments to 8">8</button>
-        <button type="button" data-quality-target="curve-segments" data-quality-value="16" aria-label="Set curve segments to 16">16</button>
-      </span>
-      <label for="stroke-arc-divisions">Stroke arc divisions <input id="stroke-arc-divisions" type="number" min="1" max="64" step="1" value="2" inputmode="numeric"></label>
-      <span class="quality-presets" role="group" aria-label="Stroke arc division presets">Quick
-        <button type="button" data-quality-target="stroke-arc-divisions" data-quality-value="1" aria-label="Set stroke arc divisions to 1">1</button>
-        <button type="button" data-quality-target="stroke-arc-divisions" data-quality-value="2" aria-label="Set stroke arc divisions to 2">2</button>
-        <button type="button" data-quality-target="stroke-arc-divisions" data-quality-value="4" aria-label="Set stroke arc divisions to 4">4</button>
-        <button type="button" data-quality-target="stroke-arc-divisions" data-quality-value="8" aria-label="Set stroke arc divisions to 8">8</button>
-        <button type="button" data-quality-target="stroke-arc-divisions" data-quality-value="16" aria-label="Set stroke arc divisions to 16">16</button>
-      </span>
-      <span class="named-quality-presets" role="group" aria-label="Shared SVG quality presets">
-        <button type="button" data-quality-preset="standard" aria-label="Use standard SVG quality, 4 curve segments and 2 stroke arc divisions">Standard 4 / 2</button>
-        <button type="button" data-quality-preset="smallAsset" aria-label="Use small-asset SVG quality, 2 curve segments and 2 stroke arc divisions">Small asset 2 / 2</button>
-      </span>
-      <button id="copy-loader-options" type="button">Copy loader options</button>
-    </div>
-    <div class="controls" aria-label="Shared animation and display controls">
-      <button id="play-toggle" type="button" aria-pressed="true">Pause</button>
-      <label>Clip <select id="clip"><option value="idle">idle</option><option value="bounce">bounce</option></select></label>
-      <label>Time <input id="time" type="range" min="0" max="1200" step="1" value="0"><output id="time-value" for="time">0 ms</output></label>
-      <label>Expression <select id="expression"><option value="neutral">neutral</option><option value="happy">happy</option><option value="surprised">surprised</option></select></label>
-      <label>Display size <input id="display-size" type="range" min="80" max="400" step="10" value="220"><output id="display-size-value" for="display-size">220 px</output></label>
-      <label>Zoom <input id="zoom" type="range" min="0.65" max="2.00" step="0.05" value="1"><output id="zoom-value" for="zoom">1.00×</output></label>
-      <label class="check-label"><input id="wireframe" type="checkbox" checked> Triangle wireframe</label>
-      <button id="center-camera" type="button">Center</button>
-      <button id="style-comparison" type="button">Yarn / sketch SVG comparison</button>
-    </div>
-    <p class="help">Paste a GitHub SVG blob or raw URL with vector-asset metadata. Standard quality starts at 4 / 2; choose the small-asset 2 / 2 preset or enter any whole-number subdivision from 1 to 64. Compile to update all three views while keeping authored clips and expressions.</p>
-  </header>
-  <main>
-    <section class="panel" aria-labelledby="source-title">
-      <h2 id="source-title">1 · Authored SVG <small>Sanitized source · authored part poses</small></h2>
-      <div class="stage" id="source-stage"><svg id="source-svg" viewBox="0 0 320 350" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Original SVG source, posed by its authored clip"></svg></div>
-      <div class="metrics" id="source-metrics">Loading Farmpea SVG…</div>
-    </section>
-    <section class="panel" aria-labelledby="topology-title">
-      <h2 id="topology-title">2 · Compiled topology <small>Actual triangles · faces + wire edges</small></h2>
-      <div class="stage" id="topology-stage"><canvas id="topology-canvas" aria-label="Compiled SVG mesh triangles and wireframe"></canvas></div>
-      <div class="metrics" id="topology-metrics">Waiting for compiled geometry…</div>
-    </section>
-    <section class="panel" aria-labelledby="gamekit-title">
-      <h2 id="gamekit-title">3 · GameKit render <small>Actual WebGL 1 mesh output</small></h2>
-      <div class="stage" id="gamekit-stage"><canvas id="gamekit-canvas" aria-label="Seed Scout rendered through GameKit WebGL"></canvas></div>
-      <div class="metrics" id="gamekit-metrics">Waiting for GameKit WebGL…</div>
-    </section>
-  </main>
-  <dialog id="style-dialog" aria-labelledby="style-dialog-title">
-    <div class="style-dialog-head"><h2 id="style-dialog-title">SVG-authored yarn and sketch styles</h2><button id="style-dialog-close" type="button">Close</button></div>
-    <p class="style-caption">Each card uses the same committed SVG source for the native SVG and retained GameKit WebGL views. The sketch outline is sampled from absolute display time.</p>
-    <div class="style-grid">
-      <article class="style-card"><h2>Yarn surface <small>Seeded stitches, relief, and fibers tessellated at build time</small></h2>
-        <div class="style-pair"><div class="style-stage" id="style-yarn-source" aria-label="Yarn SVG source"></div><div class="style-stage"><canvas id="style-yarn-canvas" aria-label="Yarn rendered with the GameKit renderer"></canvas></div></div>
-        <p class="style-caption" id="style-yarn-metrics">Opens on demand.</p></article>
-      <article class="style-card"><h2>Sketch boil <small>Hatching and echo line plus two deterministic morph targets</small></h2>
-        <div class="style-pair"><div class="style-stage" id="style-sketch-source" aria-label="Sketch SVG source"></div><div class="style-stage"><canvas id="style-sketch-canvas" aria-label="Sketch rendered with the GameKit renderer"></canvas></div></div>
-        <p class="style-caption" id="style-sketch-metrics">Opens on demand.</p></article>
-    </div>
-  </dialog>
-  <footer id="status" aria-live="polite">Metrics report each view's actual rendering path. GPU elapsed time is not inferred from CPU timing.</footer>
-  <script type="module">
-    import { WebGLDevice, MeshRenderer, VectorContext, YarnSurfaceRenderer } from '/dist/rendering.js';
-    import { createVectorAsset, VECTOR_ASSET_QUALITY_PRESETS } from '/dist/vector-assets.js';
-    import { createVectorAssetLoader } from '/dist/vector-assets-loader.js';
-    import { createSeedScout, seedScoutMetadata } from './seed-scout.js';
-    import { createStyleSample, styleSamples } from './style-samples.js';
-
-    const NS = 'http://www.w3.org/2000/svg';
-    const DEFAULT_SOURCE_URL = 'https://raw.githubusercontent.com/byh-playground/budmori-io/0dab58e201b5c08f5073108121eeae91acc34774/assets/troops/pea.svg';
-    const MAX_SOURCE_BYTES = 512 * 1024;
-    const background = [0.875, 0.91, 0.80, 1];
-    const canvas = document.querySelector('#gamekit-canvas');
-    const wireCanvas = document.querySelector('#topology-canvas');
-    const wireContext = wireCanvas.getContext('2d');
-    const demo = { ready: false, sourceLoaded: false, loading: false, device: null, meshes: null, surfaces: null, asset: null, actor: null, compiledAsset: null, sourceSvg: null,
-      sourceUrl: null, sourceBytes: 0, sourcePathCount: 0, sourceSha256: null, compileMs: 0, fetchMs: 0, initializationMs: 0, creationStats: null,
-      camera: { x: 160, y: 175, zoom: 1 }, displaySizePx: 220, viewBox: [0, 0, 320, 350], topology: { triangles: 0, uniqueEdges: 0, uniqueVertices: 0 }, lastFrame: null, styleInstances: [] };
-    window.vectorAssetRuntime = { WebGLDevice, MeshRenderer, VectorContext, YarnSurfaceRenderer, createVectorAsset, createVectorAssetLoader, VECTOR_ASSET_QUALITY_PRESETS, createSeedScout, seedScoutMetadata, createStyleSample, styleSamples };
-    window.vectorAssetDemo = demo;
-
-    let sourceWrappers = new Map(), triangles = [], edges = [], compiledAsset = null, source = null, asset = null, actor = null;
-    let partByIndex = [], displayTimeMs = 0, playing = true, previousFrameMs = null, stopped = false, loadSequence = 0;
-    const loader = createVectorAssetLoader({ maxEntries: 8, fetch: fetchBoundedSvg });
-    const compileTimings = new Map();
-    const sourceByteCache = new Map();
-
-    function normalizeSvgUrl(value) {
-      let url;
-      try { url = new URL(value.trim()); } catch { throw new TypeError('Enter a complete GitHub SVG URL.'); }
-      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
-        throw new TypeError('Only HTTP(S) SVG URLs without embedded credentials are supported.');
-      }
-      if (url.hostname === 'github.com' || url.hostname === 'www.github.com') {
-        const match = /^\/([^/]+)\/([^/]+)\/blob\/([^/]+)\/(.+)$/.exec(url.pathname);
-        if (!match) throw new TypeError('Use a GitHub file URL in the form github.com/owner/repository/blob/branch/path.svg.');
-      const segments = [match[1], match[2], match[3], ...match[4].split('/')].map(segment => encodeURIComponent(decodeURIComponent(segment)));
-        url = new URL('https://raw.githubusercontent.com/' + segments.join('/'));
-      }
-      return url.href;
-    }
-    async function fetchBoundedSvg(input) {
-      const url = new URL(String(input));
-      if (!['http:', 'https:'].includes(url.protocol)) throw new TypeError('Only HTTP(S) SVG URLs can be fetched.');
-      const started = performance.now();
-      let response;
-      try {
-        response = await fetch(url.href, { mode: 'cors', credentials: 'omit', referrerPolicy: 'no-referrer' });
-      } catch {
-        demo.fetchMs = performance.now() - started;
-        throw new Error('Network or CORS error while fetching this SVG. Use an HTTP(S) host that allows cross-origin requests, such as raw.githubusercontent.com.');
-      }
-      if (response.url && !['http:', 'https:'].includes(new URL(response.url).protocol)) throw new TypeError('The SVG request redirected to a non-HTTP(S) URL.');
-      if (!response.ok) { demo.fetchMs = performance.now() - started; return response; }
-      const advertised = Number(response.headers.get('content-length'));
-      if (Number.isFinite(advertised) && advertised > MAX_SOURCE_BYTES) {
-        await response.body?.cancel?.(); demo.fetchMs = performance.now() - started;
-        throw new RangeError('SVG response exceeds the 512 KiB source limit.');
-      }
-      let bytes;
-      if (!response.body?.getReader) {
-        bytes = new Uint8Array(await response.arrayBuffer());
-        if (bytes.byteLength > MAX_SOURCE_BYTES) throw new RangeError('SVG response exceeds the 512 KiB source limit.');
-      } else {
-        const reader = response.body.getReader(), chunks = [];
-        let length = 0;
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            length += value.byteLength;
-            if (length > MAX_SOURCE_BYTES) {
-              await reader.cancel();
-              throw new RangeError('SVG response exceeds the 512 KiB source limit.');
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+        <meta name="theme-color" content="#f1f0e8" />
+        <title>GameKit SVG vector asset comparison</title>
+        <style>
+            :root {
+                color-scheme: light;
+                font:
+                    14px/1.4 system-ui,
+                    sans-serif;
+                color: #293e36;
+                background: #f1f0e8;
             }
-            chunks.push(value);
-          }
-        } finally { reader.releaseLock?.(); }
-        bytes = new Uint8Array(length);
-        let offset = 0;
-        for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-      }
-      if (bytes.byteLength < 1) throw new RangeError('SVG response must contain 1 or more bytes.');
-      demo.fetchMs = performance.now() - started;
-      if (sourceByteCache.has(url.href)) sourceByteCache.delete(url.href);
-      sourceByteCache.set(url.href, bytes);
-      while (sourceByteCache.size > 8) sourceByteCache.delete(sourceByteCache.keys().next().value);
-      return new Response(bytes, { status: response.status, statusText: response.statusText,
-        headers: { 'content-length': String(bytes.byteLength), 'content-type': response.headers.get('content-type') || 'image/svg+xml' } });
-    }
-
-    const matrixFromElement = element => {
-      const list = element.transform?.baseVal;
-      const item = list?.numberOfItems ? list.consolidate() : null;
-      const m = item?.matrix;
-      return m ? new DOMMatrix([m.a, m.b, m.c, m.d, m.e, m.f]) : new DOMMatrix();
-    };
-    const matrixString = matrix => 'matrix(' + [matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f].map(number => Number(number.toPrecision(12))).join(' ') + ')';
-    const shapeNames = new Set(['path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon']);
-    const elementNames = new Set(['svg', 'defs', 'linearGradient', 'stop', 'g', ...shapeNames]);
-    const commonAttributes = new Set(['id', 'transform', 'fill', 'fill-opacity', 'fill-rule', 'stroke', 'stroke-opacity', 'stroke-width',
-      'stroke-linecap', 'stroke-linejoin', 'stroke-miterlimit', 'vector-effect', 'opacity', 'd', 'x', 'y', 'width', 'height', 'cx', 'cy', 'r', 'rx', 'ry', 'x1', 'y1', 'x2', 'y2', 'points']);
-    const gradientAttributes = new Set(['id', 'gradientUnits', 'spreadMethod', 'x1', 'y1', 'x2', 'y2']);
-    const stopAttributes = new Set(['id', 'offset', 'stop-color', 'stop-opacity']);
-    function copySafeAttributes(sourceNode, targetNode, root = false) {
-      const elementName = sourceNode.localName;
-      const allowed = elementName === 'linearGradient' ? gradientAttributes : elementName === 'stop' ? stopAttributes : commonAttributes;
-      for (const { name, value } of sourceNode.attributes) {
-        if (name === 'xmlns' && root && value === NS) continue;
-        if (root && name === 'id') continue;
-        if (root && ['viewBox', 'width', 'height', 'version'].includes(name)) continue;
-        if (!allowed.has(name) || /^on/i.test(name) || (/(?:https?:|data:|file:|\/\/)/i.test(value) && !(name === 'fill' && /^url\(\s*#[A-Za-z_][A-Za-z0-9_.:-]{0,127}\s*\)$/.test(value)))) {
-          throw new TypeError('SVG display sanitizer rejected unsupported or external attribute: ' + name);
-        }
-        if (name === 'fill' && /url\s*\(/i.test(value) && !/^url\(\s*#[A-Za-z_][A-Za-z0-9_.:-]{0,127}\s*\)$/.test(value)) {
-          throw new TypeError('SVG display sanitizer rejected a non-local paint reference.');
-        }
-        targetNode.setAttribute(name, value);
-      }
-    }
-    function createSafeDisplaySvg(bytes, compiled) {
-      const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-      const parsed = new DOMParser().parseFromString(text, 'image/svg+xml');
-      if (parsed.querySelector('parsererror') || parsed.documentElement?.localName !== 'svg') throw new Error('Loaded source is not a valid SVG document.');
-      const partIds = new Set(compiled.metadata.parts.map(part => part.id)), wrappers = new Map();
-      const display = document.createElementNS(NS, 'svg');
-      display.id = 'source-svg';
-      display.setAttribute('viewBox', compiled.viewBox.join(' '));
-      display.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-      display.setAttribute('role', 'img');
-      display.setAttribute('aria-label', 'Sanitized SVG source, posed by its authored clip');
-      copySafeAttributes(parsed.documentElement, display, true);
-      let shapeCount = 0;
-      const cloneElement = node => {
-        const name = node.localName;
-        if (name === 'metadata') return null;
-        if (!elementNames.has(name) || node.namespaceURI !== NS) throw new TypeError('SVG display sanitizer rejected an unsupported element: ' + name);
-        const clone = document.createElementNS(NS, name);
-        copySafeAttributes(node, clone);
-        if (shapeNames.has(name)) shapeCount++;
-        let outer = clone;
-        if (node.id && partIds.has(node.id)) {
-          const wrapper = document.createElementNS(NS, 'g');
-          wrapper.dataset.vectorPart = node.id;
-          wrapper.append(clone);
-          wrappers.set(node.id, wrapper);
-          outer = wrapper;
-        }
-        for (const child of node.children) {
-          const safeChild = cloneElement(child);
-          if (safeChild) clone.append(safeChild);
-        }
-        return outer;
-      };
-      for (const child of parsed.documentElement.children) {
-        const safeChild = cloneElement(child);
-        if (safeChild) display.append(safeChild);
-      }
-      if (!shapeCount) throw new Error('SVG source contains no supported vector shapes.');
-      const missing = compiled.metadata.parts.filter(part => !wrappers.has(part.id)).map(part => part.id);
-      if (missing.length) throw new Error('SVG display is missing authored part ids: ' + missing.join(', '));
-      return { display, wrappers, shapeCount };
-    }
-
-    (async () => {
-    if (document.readyState === 'loading') await new Promise(resolve => document.addEventListener('DOMContentLoaded', resolve, { once: true }));
-    const rendererInitializationStart = performance.now();
-    const device = new WebGLDevice(canvas, { alpha: false, antialias: true, depth: false, stencil: false });
-    const meshes = new MeshRenderer(device, { maxMeshes: 4, maxInstances: 8 });
-    const surfaces = new YarnSurfaceRenderer(device);
-    const rendererInitializationMs = performance.now() - rendererInitializationStart;
-    const pointKey = (x, y) => Number(x.toFixed(4)) + ',' + Number(y.toFixed(4));
-    Object.assign(demo, { device, meshes, surfaces, rendererInitializationMs });
-    demo.rendererInitializationMs = rendererInitializationMs;
-    const expression = document.querySelector('#expression');
-    const clipInput = document.querySelector('#clip');
-    const timeInput = document.querySelector('#time');
-    const timeValue = document.querySelector('#time-value');
-    const zoomInput = document.querySelector('#zoom');
-    const zoomValue = document.querySelector('#zoom-value');
-    const displaySizeInput = document.querySelector('#display-size');
-    const displaySizeValue = document.querySelector('#display-size-value');
-    const curveSegmentsInput = document.querySelector('#curve-segments');
-    const strokeArcDivisionsInput = document.querySelector('#stroke-arc-divisions');
-    curveSegmentsInput.value = VECTOR_ASSET_QUALITY_PRESETS.standard.curveSegments;
-    strokeArcDivisionsInput.value = VECTOR_ASSET_QUALITY_PRESETS.standard.strokeArcDivisions;
-    const wireframeInput = document.querySelector('#wireframe');
-    const playToggle = document.querySelector('#play-toggle');
-    const status = document.querySelector('#status');
-    const clipDefinition = () => compiledAsset?.metadata.clips[clipInput.value];
-    const styleDialog = document.querySelector('#style-dialog');
-    let styleReady = null;
-    const styleInstances = [];
-
-    function buildTopology(compiled) {
-      const builtTriangles = [], edgeMap = new Map(), vertices = compiled.geometry.vertices, indices = compiled.geometry.indices;
-      const stride = compiled.geometry.strideFloats || 11;
-      for (let offset = 0; offset < indices.length; offset += 3) {
-        const vertexOffsets = [0, 1, 2].map(corner => indices[offset + corner] * stride);
-        const part = compiled.metadata.parts[vertices[vertexOffsets[0] + 10]]?.id;
-        const points = vertexOffsets.map(vertexOffset => [vertices[vertexOffset], vertices[vertexOffset + 1]]);
-        const color = [vertices[vertexOffsets[0] + 2], vertices[vertexOffsets[0] + 3], vertices[vertexOffsets[0] + 4], vertices[vertexOffsets[0] + 5]];
-        builtTriangles.push({ part, points, color });
-        for (let edge = 0; edge < 3; edge++) {
-          const a = points[edge], b = points[(edge + 1) % 3];
-          const ka = pointKey(a[0], a[1]), kb = pointKey(b[0], b[1]);
-          const key = part + '|' + (ka < kb ? ka + '|' + kb : kb + '|' + ka);
-          if (!edgeMap.has(key)) edgeMap.set(key, { part, a, b });
-        }
-      }
-      return { triangles: builtTriangles, edges: [...edgeMap.values()], uniqueEdges: edgeMap.size };
-    }
-    function setSelectOptions(select, values, preferred) {
-      select.replaceChildren(...values.map(value => { const option = document.createElement('option'); option.value = value; option.textContent = value; return option; }));
-      select.value = values.includes(preferred) ? preferred : values[0];
-    }
-    function setLoading(isLoading) {
-      demo.loading = isLoading;
-      document.querySelector('#load-asset').disabled = isLoading;
-      document.querySelector('#load-asset').textContent = isLoading ? 'Loading…' : 'Load & compile';
-    }
-    function readQualitySettings() {
-      const read = (input, name) => {
-        const value = input.value.trim(), parsed = Number(value);
-        if (!/^\d+$/.test(value) || !Number.isSafeInteger(parsed) || parsed < 1 || parsed > 64) {
-          throw new RangeError(name + ' must be a whole number from 1 through 64.');
-        }
-        return parsed;
-      };
-      return { curveSegments: read(curveSegmentsInput, 'Curve segments'), strokeArcDivisions: read(strokeArcDivisionsInput, 'Stroke arc divisions') };
-    }
-    function updateAssetTitle(metadata) {
-      const label = metadata.id === 'budmori-pea' ? 'Farmpea' : metadata.id;
-      document.querySelector('#asset-tag').textContent = 'Asset: ' + label + ' · authored SVG';
-    }
-    async function loadAsset() {
-      const requestId = ++loadSequence;
-      let url;
-      try { url = normalizeSvgUrl(document.querySelector('#asset-url').value); }
-      catch (error) { setLoading(false); status.classList.add('error'); status.textContent = error.message; return; }
-      document.querySelector('#asset-url').value = url;
-      let quality;
-      try { quality = readQualitySettings(); }
-      catch (error) { setLoading(false); status.classList.add('error'); status.textContent = error.message; return; }
-      const { curveSegments, strokeArcDivisions } = quality;
-      const options = { sourcePath: url, maxBytes: MAX_SOURCE_BYTES, curveSegments, strokeArcDivisions };
-      const resultKey = JSON.stringify([url, curveSegments, strokeArcDivisions]);
-      setLoading(true); status.classList.remove('error'); status.textContent = 'Fetching SVG and compiling the selected tessellation…';
-      demo.fetchMs = 0;
-      const loadStarted = performance.now();
-      try {
-        const nextCompiled = await loader.load(url, options);
-        const loadMs = performance.now() - loadStarted;
-        if (requestId !== loadSequence || stopped) return;
-        const measured = compileTimings.get(resultKey);
-        const fetchMs = measured?.fetchMs ?? demo.fetchMs;
-        const compileMs = measured?.compileMs ?? Math.max(0, loadMs - fetchMs);
-        const cached = loadMs < 2 && measured;
-        const sourceBytes = sourceByteCache.get(url);
-        if (!sourceBytes) throw new Error('The bounded loader response was unavailable for the sanitized native view.');
-        const sourceDigest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', sourceBytes))].map(value => value.toString(16).padStart(2, '0')).join('');
-        if (sourceDigest !== nextCompiled.sourceSha256) throw new Error('The source changed between compile and safe display reads. Load again for a consistent comparison.');
-        const displayBuild = createSafeDisplaySvg(sourceBytes, nextCompiled);
-        const assetInitStarted = performance.now();
-        const nextAsset = createVectorAsset(meshes, nextCompiled, { surfaceRenderer: surfaces });
-        const firstClip = Object.keys(nextCompiled.metadata.clips)[0];
-        const clipName = Object.hasOwn(nextCompiled.metadata.clips, clipInput.value) ? clipInput.value : firstClip;
-        const nextActor = nextAsset.createPlayer({ clip: clipName, startedAtMs: 0 });
-        nextActor.setExpression(nextCompiled.metadata.defaultExpression);
-        const oldActor = actor, oldAsset = asset;
-        if (demo.sourceSvg?.isConnected) demo.sourceSvg.replaceWith(displayBuild.display);
-        else document.querySelector('#source-stage').querySelector('svg')?.replaceWith(displayBuild.display);
-        actor = nextActor; asset = nextAsset; compiledAsset = nextCompiled; source = { sha256: nextCompiled.sourceSha256 };
-        sourceWrappers = displayBuild.wrappers; triangles = []; edges = [];
-        const topology = buildTopology(nextCompiled); triangles = topology.triangles; edges = topology.edges;
-        partByIndex = nextCompiled.metadata.parts.map(part => part.id);
-        demo.asset = asset; demo.actor = actor; demo.compiledAsset = compiledAsset; demo.sourceSvg = displayBuild.display; demo.sourcePathCount = displayBuild.shapeCount;
-        demo.sourceBytes = sourceBytes.byteLength; demo.sourceSha256 = nextCompiled.sourceSha256; demo.sourceUrl = url; demo.sourceLoaded = true;
-        demo.fetchMs = fetchMs; demo.compileMs = compileMs; demo.topology = { triangles: triangles.length, uniqueEdges: topology.uniqueEdges, uniqueVertices: nextCompiled.geometry.vertices.length / 11 };
-        demo.creationStats = meshes.stats(); demo.assetInitializationMs = performance.now() - assetInitStarted;
-        demo.initializationMs = rendererInitializationMs + demo.assetInitializationMs; demo.viewBox = nextCompiled.viewBox;
-        demo.camera.x = nextCompiled.viewBox[0] + nextCompiled.viewBox[2] / 2; demo.camera.y = nextCompiled.viewBox[1] + nextCompiled.viewBox[3] / 2;
-        displayTimeMs = 0; actor.seek(0); playing = true; previousFrameMs = null;
-        setSelectOptions(clipInput, Object.keys(nextCompiled.metadata.clips), clipName);
-        setSelectOptions(expression, Object.keys(nextCompiled.metadata.expressions), nextCompiled.metadata.defaultExpression);
-        timeInput.max = String(clipDefinition().durationMs); timeInput.value = '0'; syncTimeControls(); updateSourceViewBox();
-        updateAssetTitle(nextCompiled.metadata);
-        const timing = { fetchMs: fetchMs || 0, compileMs: compileMs || 0 };
-        compileTimings.set(resultKey, timing);
-        while (compileTimings.size > 16) compileTimings.delete(compileTimings.keys().next().value);
-        document.querySelector('#source-metrics').textContent = 'Sanitized native SVG · ' + displayBuild.shapeCount.toLocaleString() + ' shapes · ' + sourceBytes.length.toLocaleString() + ' bytes · SHA ' + nextCompiled.sourceSha256.slice(0, 12);
-        status.classList.remove('error');
-        status.textContent = (cached ? 'Cached compile reused' : 'Loaded and compiled') + ' · fetch ' + timing.fetchMs.toFixed(1) + ' ms · SHA + compile ' + timing.compileMs.toFixed(1) + ' ms · browser loader enforces CORS, SVG schema checks, and a 512 KiB source limit.';
-        if (oldActor) oldActor.dispose(); if (oldAsset) oldAsset.dispose();
-      } catch (error) {
-        if (requestId !== loadSequence) return;
-        const message = /Failed to fetch|Load failed|NetworkError|CORS/i.test(error.message)
-          ? 'Network or CORS error. Use an HTTP(S) SVG URL whose host allows cross-origin requests.' : error.message;
-        status.classList.add('error'); status.textContent = 'SVG load failed: ' + message;
-        document.querySelector('#gamekit-metrics').textContent = 'SVG load failed: ' + message;
-      } finally { if (requestId === loadSequence) setLoading(false); }
-    }
-    async function initializeStyleSamples() {
-      for (const [id, sample] of Object.entries(styleSamples)) {
-        const sourceDigest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(sample.source)));
-        const sourceSha = [...sourceDigest].map(value => value.toString(16).padStart(2, '0')).join('');
-        if (sourceSha !== sample.asset.sourceSha256) throw new Error(id + ' SVG source SHA does not match compiled geometry');
-        const parsed = new DOMParser().parseFromString(sample.source, 'image/svg+xml');
-        if (parsed.querySelector('parsererror') || parsed.documentElement?.localName !== 'svg') throw new Error(id + ' authored source is not valid SVG');
-        const nativeSvg = document.importNode(parsed.documentElement, true);
-        nativeSvg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-        document.querySelector('#style-' + id.replace('-fox', '') + '-source').replaceChildren(nativeSvg);
-        const styleCanvas = document.querySelector('#style-' + id.replace('-fox', '') + '-canvas');
-        const styleDevice = new WebGLDevice(styleCanvas, { alpha: false, antialias: true, depth: false, stencil: false });
-        const styleMeshes = new MeshRenderer(styleDevice, { maxMeshes: 2, maxInstances: 8 });
-        const styleAsset = createStyleSample(id, styleMeshes);
-        const styleActor = styleAsset.createPlayer({ clip: 'idle', startedAtMs: 0 });
-        styleInstances.push({ id, sourceSha, canvas: styleCanvas, device: styleDevice, meshes: styleMeshes, asset: styleAsset, actor: styleActor });
-      }
-      demo.styleInstances = styleInstances;
-      demo.styleReady = true;
-      renderStyleSamples(displayTimeMs);
-      return styleInstances.length;
-    }
-    function renderStyleSamples(timeMs) {
-      for (const item of styleInstances) {
-        const rect = item.canvas.getBoundingClientRect(), dpr = Math.min(2, devicePixelRatio || 1);
-        const width = Math.max(1, Math.round(rect.width * dpr)), height = Math.max(1, Math.round(rect.height * dpr));
-        if (item.canvas.width !== width) item.canvas.width = width;
-        if (item.canvas.height !== height) item.canvas.height = height;
-        const scale = Math.min(width / 160, height / 180), tx = (width - 160 * scale) / 2, ty = (height - 180 * scale) / 2;
-        const projection = [2 * scale / width, 0, 0, 0, -2 * scale / height, 0, 2 * tx / width - 1, 1 - 2 * ty / height, 1];
-        const geometryUploadBytesBefore = item.meshes.stats().geometryBytesUploaded;
-        item.device.beginFrame({ width, height, clearColor: background, clearDepth: 1 });
-        item.meshes.beginFrame(); item.actor.seek(timeMs); item.actor.draw({ projection }); item.meshes.flush(); item.device.endFrame();
-        const stats = item.meshes.stats(), backend = item.device.instancingSupported ? 'ANGLE instanced' : 'uniform fallback';
-        const frameGeometryUploadBytes = stats.geometryBytesUploaded - geometryUploadBytesBefore;
-        document.querySelector('#style-' + item.id.replace('-fox', '') + '-metrics').textContent =
-          item.id + ' · SVG SHA ' + item.sourceSha.slice(0, 12) + ' · ' + backend + ' · ' + item.device.stats.drawCalls + ' draw calls · ' + item.asset.mesh.byteLength.toLocaleString() + ' retained B · create upload ' + item.asset.mesh.byteLength.toLocaleString() + ' B · ' + frameGeometryUploadBytes.toLocaleString() + ' B/frame geometry upload';
-      }
-    }
-    demo.renderStyleSamples = renderStyleSamples;
-    demo.disposeStyleSamples = () => {
-      for (const item of styleInstances.splice(0)) {
-        item.actor.dispose(); item.asset.dispose(); item.meshes.dispose(); item.device.dispose();
-      }
-      demo.styleInstances = [];
-      demo.styleReady = false;
-      styleReady = null;
-    };
-    document.querySelector('#style-comparison').addEventListener('click', () => {
-      styleDialog.showModal();
-      styleReady ??= initializeStyleSamples().catch(error => { demo.styleError = error.message; return 0; });
-      demo.styleReadyPromise = styleReady;
-    });
-    document.querySelector('#style-dialog-close').addEventListener('click', () => styleDialog.close());
-    const format = value => Number(value).toFixed(2);
-
-    function updateSourceViewBox() {
-      if (!demo.sourceSvg) return;
-      const rect = demo.sourceSvg.getBoundingClientRect();
-      const [,,sourceWidth, sourceHeight] = demo.viewBox;
-      const scale = demo.displaySizePx * demo.camera.zoom / Math.max(sourceWidth, sourceHeight);
-      const width = rect.width / scale, height = rect.height / scale;
-      demo.sourceSvg.setAttribute('viewBox', [demo.camera.x - width / 2, demo.camera.y - height / 2, width, height].map(format).join(' '));
-      zoomValue.value = demo.camera.zoom.toFixed(2) + '×';
-      zoomValue.textContent = zoomValue.value;
-      displaySizeValue.value = Math.round(demo.displaySizePx * demo.camera.zoom) + ' px';
-      displaySizeValue.textContent = displaySizeValue.value;
-    }
-    function fitCamera(width, height) {
-      const [,,sourceWidth, sourceHeight] = demo.viewBox;
-      const scale = demo.displaySizePx * demo.camera.zoom / Math.max(sourceWidth, sourceHeight);
-      return { scale, tx: width / 2 - demo.camera.x * scale, ty: height / 2 - demo.camera.y * scale };
-    }
-    function resizeCanvas(target, context2d = null) {
-      const rect = target.getBoundingClientRect(), dpr = Math.min(2, window.devicePixelRatio || 1);
-      const width = Math.max(1, Math.round(rect.width * dpr)), height = Math.max(1, Math.round(rect.height * dpr));
-      if (target.width !== width) target.width = width;
-      if (target.height !== height) target.height = height;
-      if (context2d) context2d.setTransform(dpr, 0, 0, dpr, 0, 0);
-      return { width, height, cssWidth: rect.width, cssHeight: rect.height };
-    }
-    function syncPartLayers() {
-      const poses = new Map(compiledAsset.metadata.parts.map(part => [part.id, actor.getPartPose(part.id)]));
-      for (const part of compiledAsset.metadata.parts) {
-        const pose = poses.get(part.id), group = sourceWrappers.get(part.id);
-        let transform = new DOMMatrix(Array.from(pose.transform)), opacity = pose.opacity;
-        const parentGroup = group.parentElement?.closest('[data-vector-part]');
-        if (parentGroup) {
-          const parentPose = poses.get(parentGroup.dataset.vectorPart);
-          transform = new DOMMatrix(Array.from(parentPose.transform)).inverse().multiply(transform);
-          opacity = parentPose.opacity > 0 ? pose.opacity / parentPose.opacity : 0;
-        }
-        group.setAttribute('transform', matrixString(transform));
-        group.style.display = pose.visible ? '' : 'none';
-        group.setAttribute('opacity', String(opacity));
-      }
-      return poses;
-    }
-    function drawTopology(poses) {
-      const dimensions = resizeCanvas(wireCanvas, wireContext), width = dimensions.cssWidth, height = dimensions.cssHeight;
-      const camera = fitCamera(width, height), started = performance.now();
-      wireContext.clearRect(0, 0, width, height);
-      const project = (point, matrix) => {
-        const x = matrix[0] * point[0] + matrix[2] * point[1] + matrix[4];
-        const y = matrix[1] * point[0] + matrix[3] * point[1] + matrix[5];
-        return [camera.tx + x * camera.scale, camera.ty + y * camera.scale];
-      };
-      let visibleTriangles = 0;
-      for (const triangle of triangles) {
-        const pose = poses.get(triangle.part);
-        if (!pose.visible || pose.opacity <= 0) continue;
-        const points = triangle.points.map(point => project(point, pose.transform));
-        wireContext.beginPath(); wireContext.moveTo(points[0][0], points[0][1]);
-        wireContext.lineTo(points[1][0], points[1][1]); wireContext.lineTo(points[2][0], points[2][1]); wireContext.closePath();
-        wireContext.fillStyle = 'rgba(' + Math.round(triangle.color[0] * 255) + ',' + Math.round(triangle.color[1] * 255) + ',' + Math.round(triangle.color[2] * 255) + ',' + Math.max(0, Math.min(1, triangle.color[3] * pose.opacity * 0.58)) + ')';
-        wireContext.fill();
-        visibleTriangles++;
-      }
-      wireContext.lineWidth = 0.75;
-      wireContext.strokeStyle = 'rgba(30,46,38,.72)';
-      if (wireframeInput.checked) {
-        for (const edge of edges) {
-          const pose = poses.get(edge.part);
-          if (!pose.visible || pose.opacity <= 0) continue;
-          const a = project(edge.a, pose.transform), b = project(edge.b, pose.transform);
-          wireContext.beginPath(); wireContext.moveTo(a[0], a[1]); wireContext.lineTo(b[0], b[1]); wireContext.stroke();
-        }
-      }
-      return { visibleTriangles, cpuMs: performance.now() - started, width, height };
-    }
-    function drawGameKit(timeMs) {
-      const dimensions = resizeCanvas(canvas), { width, height, cssWidth, cssHeight } = dimensions;
-      const camera = fitCamera(cssWidth, cssHeight);
-      const projection = [2 * camera.scale / cssWidth, 0, 0, 0, -2 * camera.scale / cssHeight, 0,
-        2 * camera.tx / cssWidth - 1, 1 - 2 * camera.ty / cssHeight, 1];
-      device.beginFrame({ width, height, clearColor: background, clearDepth: 1 });
-      meshes.beginFrame();
-      actor.seek(timeMs);
-      actor.draw({ projection });
-      meshes.flush();
-      device.endFrame();
-      return { mesh: meshes.stats(), device: { ...device.stats }, glError: device.gl.getError() };
-    }
-    function updateReadouts(topologyFrame, gamekitFrame) {
-      document.querySelector('#source-metrics').textContent = 'Sanitized native SVG · ' + demo.sourcePathCount.toLocaleString() + ' shapes · ' + demo.sourceBytes.toLocaleString() + ' source bytes · SHA ' + demo.sourceSha256.slice(0, 12);
-      document.querySelector('#topology-metrics').textContent = 'Canvas 2D · ' + topologyFrame.visibleTriangles.toLocaleString() + '/' + triangles.length.toLocaleString() + ' visible triangles · ' + demo.topology.uniqueVertices.toLocaleString() + ' unique vertices · ' + compiledAsset.geometry.indices.length.toLocaleString() + ' indexed corners · ' + (wireframeInput.checked ? edges.length.toLocaleString() + ' wire edges' : 'wireframe hidden') + ' · ' + topologyFrame.cpuMs.toFixed(2) + ' ms draw';
-      const backend = device.instancingSupported ? 'WebGL 1 + ANGLE instancing' : 'WebGL 1 + per-draw uniforms';
-      const geometry = compiledAsset.geometry, retainedBytes = asset.mesh?.byteLength ?? 0;
-      document.querySelector('#gamekit-metrics').textContent = backend + ' · ' + (geometry.indices.length / 3).toLocaleString() + ' triangles · ' + (geometry.vertices.length / 11).toLocaleString() + ' unique vertices · ' + gamekitFrame.device.drawCalls + ' draw calls · ' + retainedBytes.toLocaleString() + ' retained mesh bytes · create upload ' + demo.creationStats.geometryBytesUploaded.toLocaleString() + ' B · frame geometry ' + gamekitFrame.mesh.geometryBytesUploaded.toLocaleString() + ' B · instance ' + gamekitFrame.mesh.instanceBytesUploaded.toLocaleString() + ' B · GPU buffers ' + gamekitFrame.device.gpuBufferBytes.toLocaleString() + ' B';
-    }
-    function syncTimeControls() {
-      const definition = clipDefinition();
-      timeInput.max = String(definition.durationMs);
-      timeInput.value = String(Math.min(definition.durationMs, displayTimeMs));
-      timeValue.value = Math.round(displayTimeMs) + ' ms / ' + definition.durationMs + ' ms';
-      timeValue.textContent = timeValue.value;
-      playToggle.textContent = playing ? 'Pause' : 'Play';
-      playToggle.setAttribute('aria-pressed', String(playing));
-    }
-    function frame(now) {
-      if (stopped) return;
-      if (actor && compiledAsset && previousFrameMs !== null && playing) {
-        const delta = Math.min(80, Math.max(0, now - previousFrameMs));
-        displayTimeMs += delta;
-        const definition = clipDefinition();
-        if (definition.loop === 'once' && displayTimeMs >= definition.durationMs) {
-          displayTimeMs = definition.durationMs;
-          playing = false;
-        } else if (definition.loop !== 'once') displayTimeMs %= definition.durationMs;
-      }
-      previousFrameMs = now;
-      if (actor && compiledAsset) {
-        syncTimeControls();
-        actor.seek(displayTimeMs);
-        const poses = syncPartLayers();
-        const topologyFrame = drawTopology(poses);
-        const gamekitFrame = drawGameKit(displayTimeMs);
-        if (styleDialog.open && demo.styleReady) renderStyleSamples(displayTimeMs);
-        demo.lastFrame = { timeMs: displayTimeMs, expression: actor.currentExpression, topology: topologyFrame, gamekit: gamekitFrame };
-        updateReadouts(topologyFrame, gamekitFrame);
-      }
-      requestAnimationFrame(frame);
-    }
-    clipInput.addEventListener('change', () => {
-      displayTimeMs = 0; actor.play(clipInput.value, displayTimeMs); playing = true; previousFrameMs = null; syncTimeControls();
-    });
-    expression.addEventListener('change', () => actor.setExpression(expression.value));
-    timeInput.addEventListener('input', () => { displayTimeMs = Number(timeInput.value); actor.seek(displayTimeMs); syncTimeControls(); });
-    zoomInput.addEventListener('input', () => { demo.camera.zoom = Number(zoomInput.value); updateSourceViewBox(); });
-    displaySizeInput.addEventListener('input', () => { demo.displaySizePx = Number(displaySizeInput.value); updateSourceViewBox(); });
-    wireframeInput.addEventListener('change', () => { demo.wireframe = wireframeInput.checked; });
-    document.querySelector('#load-asset').addEventListener('click', () => void loadAsset());
-    document.querySelector('#asset-url').addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); void loadAsset(); } });
-    for (const preset of document.querySelectorAll('[data-quality-target]')) {
-      preset.addEventListener('click', () => {
-        document.getElementById(preset.dataset.qualityTarget).value = preset.dataset.qualityValue;
-        void loadAsset();
-      });
-    }
-    for (const preset of document.querySelectorAll('[data-quality-preset]')) {
-      preset.addEventListener('click', () => {
-        const quality = VECTOR_ASSET_QUALITY_PRESETS[preset.dataset.qualityPreset];
-        if (!quality) throw new Error('Unknown SVG quality preset: ' + preset.dataset.qualityPreset);
-        curveSegmentsInput.value = quality.curveSegments;
-        strokeArcDivisionsInput.value = quality.strokeArcDivisions;
-        void loadAsset();
-      });
-    }
-    document.querySelector('#copy-loader-options').addEventListener('click', async () => {
-      try {
-        const sourcePath = normalizeSvgUrl(document.querySelector('#asset-url').value);
-        const options = { sourcePath, maxBytes: MAX_SOURCE_BYTES, ...readQualitySettings() };
-        await navigator.clipboard.writeText(JSON.stringify(options, null, 2));
-        status.classList.remove('error'); status.textContent = 'Loader options copied.';
-      } catch (error) {
-        status.classList.add('error'); status.textContent = 'Could not copy loader options: ' + (error.message || 'Clipboard access is unavailable.');
-      }
-    });
-    playToggle.addEventListener('click', () => {
-      const definition = clipDefinition();
-      if (!playing && definition.loop === 'once' && displayTimeMs >= definition.durationMs) {
-        displayTimeMs = 0; actor.play(clipInput.value, 0);
-      }
-      playing = !playing; previousFrameMs = null; syncTimeControls();
-    });
-    document.querySelector('#center-camera').addEventListener('click', () => {
-      demo.camera.x = demo.viewBox[0] + demo.viewBox[2] / 2; demo.camera.y = demo.viewBox[1] + demo.viewBox[3] / 2; updateSourceViewBox();
-    });
-    for (const stage of document.querySelectorAll('.stage')) {
-      let drag = null;
-      stage.addEventListener('pointerdown', event => {
-        if (event.button !== 0) return;
-        const rect = stage.getBoundingClientRect(), camera = fitCamera(rect.width, rect.height);
-        drag = { x: event.clientX, y: event.clientY, cameraX: demo.camera.x, cameraY: demo.camera.y, scale: camera.scale };
-        stage.classList.add('dragging'); stage.setPointerCapture(event.pointerId); event.preventDefault();
-      });
-      stage.addEventListener('pointermove', event => {
-        if (!drag) return;
-        demo.camera.x = drag.cameraX - (event.clientX - drag.x) / drag.scale;
-        demo.camera.y = drag.cameraY - (event.clientY - drag.y) / drag.scale;
-        updateSourceViewBox();
-      });
-      const endDrag = () => { drag = null; stage.classList.remove('dragging'); };
-      stage.addEventListener('pointerup', endDrag); stage.addEventListener('pointercancel', endDrag);
-    }
-    window.addEventListener('resize', updateSourceViewBox);
-    window.addEventListener('pagehide', () => {
-      stopped = true; actor?.dispose(); asset?.dispose(); loader.dispose(); surfaces.dispose(); meshes.dispose(); device.dispose();
-      demo.disposeStyleSamples();
-    }, { once: true });
-    const query = new URLSearchParams(location.search);
-    document.querySelector('#asset-url').value = query.get('fixture') === 'seed-scout'
-      ? new URL('/modules/vector-assets/assets/seed-scout.svg', location.href).href : DEFAULT_SOURCE_URL;
-    await loadAsset();
-    demo.ready = true;
-    requestAnimationFrame(frame);
-    window.vectorAssetDemo = demo;
-    })().catch(error => {
-      demo.error = error.message;
-      const status = document.querySelector('#status');
-      status.classList.add('error');
-      if (demo.sourceSvg && error.message === 'WebGL 1 required') {
-        const message = 'WebGL unavailable: this browser or environment did not provide a WebGL 1 context. The independently loaded source SVG remains visible in panel 1.';
-        const gamekitMetrics = document.querySelector('#gamekit-metrics');
-        gamekitMetrics.classList.add('error');
-        gamekitMetrics.textContent = message;
-        document.querySelector('#source-metrics').textContent = 'Native SVG · ' + demo.sourcePathCount + ' paths/shapes · ' + demo.sourceBytes.toLocaleString() + ' source bytes · SHA ' + demo.sourceSha256.slice(0, 12);
-        status.textContent = 'Source SVG loaded directly; the GameKit WebGL view is unavailable.';
-      } else {
-        document.querySelector('#source-metrics').textContent = demo.sourceSvg
-          ? document.querySelector('#source-metrics').textContent
-          : 'Source SVG unavailable: ' + error.message;
-        const gamekitMetrics = document.querySelector('#gamekit-metrics');
-        gamekitMetrics.classList.add('error');
-        gamekitMetrics.textContent = 'Example failed: ' + error.message;
-        status.textContent = 'Example failed: ' + error.message;
-      }
-    });
-  </script>
-</body>
+            * {
+                box-sizing: border-box;
+            }
+            body {
+                margin: 0;
+                min-height: 100svh;
+                display: grid;
+                grid-template-rows: auto 1fr auto;
+            }
+            header,
+            footer {
+                padding: 0.65rem clamp(0.75rem, 2.2vw, 1.5rem);
+                background: #fffdf4;
+            }
+            header {
+                border-bottom: 1px solid #d5dec2;
+            }
+            .heading-row,
+            .controls {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 0.55rem;
+                flex-wrap: wrap;
+            }
+            h1 {
+                margin: 0;
+                font-size: 1.1rem;
+            }
+            .asset-tag {
+                color: #53694a;
+                font-size: 0.82rem;
+                white-space: nowrap;
+            }
+            .controls {
+                justify-content: flex-start;
+                margin-top: 0.6rem;
+            }
+            .source-controls {
+                padding-top: 0.55rem;
+                border-top: 1px solid #e4e8dc;
+            }
+            #asset-url {
+                width: clamp(17rem, 42vw, 38rem);
+                max-width: 72vw;
+                min-height: 2rem;
+                border: 1px solid #98a785;
+                border-radius: 0.45rem;
+                padding: 0.25rem 0.55rem;
+                color: inherit;
+                background: white;
+                font: inherit;
+            }
+            .check-label {
+                gap: 0.4rem;
+            }
+            label {
+                display: inline-flex;
+                align-items: center;
+                gap: 0.35rem;
+                font-size: 0.82rem;
+                white-space: nowrap;
+            }
+            select,
+            button,
+            input[type='range'] {
+                accent-color: #557d4b;
+            }
+            select,
+            button {
+                min-height: 2rem;
+                border: 1px solid #98a785;
+                border-radius: 0.45rem;
+                padding: 0.25rem 0.55rem;
+                color: inherit;
+                background: white;
+                font: inherit;
+            }
+            button {
+                cursor: pointer;
+            }
+            input[type='number'] {
+                width: 4.2rem;
+                min-height: 2rem;
+                border: 1px solid #98a785;
+                border-radius: 0.45rem;
+                padding: 0.25rem 0.4rem;
+                color: inherit;
+                background: white;
+                font: inherit;
+                font-variant-numeric: tabular-nums;
+            }
+            .quality-presets {
+                display: inline-flex;
+                align-items: center;
+                gap: 0.2rem;
+            }
+            .quality-presets button {
+                min-width: 2rem;
+                padding-inline: 0.35rem;
+            }
+            .named-quality-presets {
+                display: inline-flex;
+                align-items: center;
+                gap: 0.2rem;
+            }
+            input[type='range'] {
+                width: clamp(5rem, 12vw, 11rem);
+            }
+            output {
+                min-width: 3.7em;
+                font-variant-numeric: tabular-nums;
+            }
+            .help {
+                margin: 0.4rem 0 0;
+                color: #596850;
+                font-size: 0.76rem;
+            }
+            main {
+                min-height: 0;
+                display: grid;
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+                gap: 0.65rem;
+                padding: 0.65rem;
+            }
+            .panel {
+                min-width: 0;
+                min-height: 0;
+                display: grid;
+                grid-template-rows: 2.5rem minmax(120px, 1fr) 3.3rem;
+                gap: 0.35rem;
+                padding: 0.5rem;
+                border: 1px solid #d5dec2;
+                border-radius: 0.75rem;
+                background: #fffdf4;
+                box-shadow: 0 5px 20px #35482710;
+            }
+            h2 {
+                margin: 0;
+                font-size: 0.88rem;
+                line-height: 1.25;
+            }
+            h2 small {
+                display: block;
+                margin-top: 0.1rem;
+                color: #68735d;
+                font-size: 0.72rem;
+                font-weight: 400;
+            }
+            .stage {
+                position: relative;
+                min-width: 0;
+                min-height: 0;
+                overflow: hidden;
+                border-radius: 0.5rem;
+                background-color: #dfe8cb;
+                background-image:
+                    linear-gradient(45deg, #cfdbb8 25%, transparent 25%),
+                    linear-gradient(-45deg, #cfdbb8 25%, transparent 25%),
+                    linear-gradient(45deg, transparent 75%, #cfdbb8 75%),
+                    linear-gradient(-45deg, transparent 75%, #cfdbb8 75%);
+                background-size: 18px 18px;
+                background-position:
+                    0 0,
+                    0 9px,
+                    9px -9px,
+                    -9px 0;
+                touch-action: none;
+                cursor: grab;
+            }
+            .stage.dragging {
+                cursor: grabbing;
+            }
+            .stage svg,
+            .stage canvas {
+                display: block;
+                width: 100%;
+                height: 100%;
+            }
+            .metrics {
+                min-height: 3.1em;
+                color: #50624a;
+                font-size: 0.7rem;
+                line-height: 1.35;
+                font-variant-numeric: tabular-nums;
+                overflow-wrap: anywhere;
+                overflow-y: auto;
+            }
+            .metrics strong {
+                color: #293e36;
+            }
+            footer {
+                border-top: 1px solid #d5dec2;
+                color: #50624a;
+                font-size: 0.73rem;
+            }
+            .error {
+                color: #9a332b;
+                font-weight: 650;
+            }
+            dialog#style-dialog {
+                width: min(92vw, 1000px);
+                max-width: none;
+                max-height: 88svh;
+                padding: 0.75rem;
+                border: 1px solid #a6b696;
+                border-radius: 0.8rem;
+                color: inherit;
+                background: #fffdf4;
+                box-shadow: 0 20px 70px #18251d55;
+            }
+            dialog#style-dialog::backdrop {
+                background: #17231dbb;
+            }
+            .style-dialog-head {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 0.5rem;
+            }
+            .style-dialog-head h2 {
+                font-size: 1rem;
+            }
+            .style-grid {
+                display: grid;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 0.6rem;
+                margin-top: 0.6rem;
+            }
+            .style-card {
+                min-width: 0;
+                padding: 0.5rem;
+                border: 1px solid #d5dec2;
+                border-radius: 0.6rem;
+            }
+            .style-pair {
+                display: grid;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 0.4rem;
+                margin-top: 0.4rem;
+            }
+            .style-stage {
+                height: clamp(150px, 36vh, 340px);
+                overflow: hidden;
+                border-radius: 0.4rem;
+                background: #dfe8cb;
+            }
+            .style-stage svg,
+            .style-stage canvas {
+                display: block;
+                width: 100%;
+                height: 100%;
+            }
+            .style-caption {
+                margin: 0.3rem 0 0;
+                color: #50624a;
+                font-size: 0.72rem;
+            }
+            @media (max-width: 680px) {
+                .style-grid {
+                    grid-template-columns: 1fr;
+                }
+                dialog#style-dialog {
+                    max-height: 94svh;
+                }
+            }
+            @media (max-width: 700px) and (orientation: portrait) {
+                body {
+                    min-height: 100svh;
+                    grid-template-rows: auto 1fr auto;
+                }
+                main {
+                    grid-template-columns: minmax(0, 1fr);
+                    overflow-y: auto;
+                    align-content: start;
+                }
+                .panel {
+                    grid-template-rows: auto minmax(210px, 48svh) auto;
+                }
+                .controls {
+                    gap: 0.4rem;
+                }
+            }
+            @media (orientation: landscape) and (max-height: 520px) {
+                body {
+                    height: 100svh;
+                    overflow: hidden;
+                    grid-template-rows: auto minmax(0, 1fr) auto;
+                }
+                main {
+                    overflow: hidden;
+                }
+                header,
+                footer {
+                    padding-block: 0.35rem;
+                }
+                h1 {
+                    font-size: 0.92rem;
+                }
+                .controls {
+                    margin-top: 0.28rem;
+                    gap: 0.35rem;
+                }
+                label {
+                    font-size: 0.72rem;
+                }
+                select,
+                button,
+                input[type='number'] {
+                    min-height: 1.65rem;
+                    padding: 0.12rem 0.38rem;
+                    font-size: 0.74rem;
+                }
+                input[type='range'] {
+                    width: clamp(3.5rem, 9vw, 6.5rem);
+                }
+                .help {
+                    margin-top: 0.15rem;
+                    font-size: 0.65rem;
+                }
+                main {
+                    gap: 0.38rem;
+                    padding: 0.38rem;
+                }
+                .panel {
+                    grid-template-rows: 2.15rem minmax(110px, 1fr) 2.6rem;
+                    gap: 0.22rem;
+                    padding: 0.35rem;
+                }
+                h2 {
+                    font-size: 0.75rem;
+                }
+                h2 small {
+                    font-size: 0.62rem;
+                }
+                .metrics {
+                    min-height: 2.6em;
+                    max-height: 2.6rem;
+                    font-size: 0.61rem;
+                }
+                footer {
+                    font-size: 0.62rem;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <header>
+            <div class="heading-row">
+                <h1>SVG quality test · three synchronized views</h1>
+                <span class="asset-tag" id="asset-tag">Asset: Farmpea · one authored SVG</span>
+            </div>
+            <div class="controls source-controls" aria-label="SVG source and tessellation controls">
+                <label
+                    >GitHub SVG URL
+                    <input
+                        id="asset-url"
+                        type="url"
+                        spellcheck="false"
+                        autocomplete="url"
+                        value="https://raw.githubusercontent.com/byh-playground/budmori-io/0dab58e201b5c08f5073108121eeae91acc34774/assets/troops/pea.svg"
+                /></label>
+                <button id="load-asset" type="button">Load &amp; compile</button>
+                <label for="curve-segments"
+                    >Curve segments
+                    <input id="curve-segments" type="number" min="1" max="64" step="1" value="4" inputmode="numeric"
+                /></label>
+                <span class="quality-presets" role="group" aria-label="Curve segment presets"
+                    >Quick
+                    <button
+                        type="button"
+                        data-quality-target="curve-segments"
+                        data-quality-value="1"
+                        aria-label="Set curve segments to 1"
+                    >
+                        1
+                    </button>
+                    <button
+                        type="button"
+                        data-quality-target="curve-segments"
+                        data-quality-value="2"
+                        aria-label="Set curve segments to 2"
+                    >
+                        2
+                    </button>
+                    <button
+                        type="button"
+                        data-quality-target="curve-segments"
+                        data-quality-value="4"
+                        aria-label="Set curve segments to 4"
+                    >
+                        4
+                    </button>
+                    <button
+                        type="button"
+                        data-quality-target="curve-segments"
+                        data-quality-value="8"
+                        aria-label="Set curve segments to 8"
+                    >
+                        8
+                    </button>
+                    <button
+                        type="button"
+                        data-quality-target="curve-segments"
+                        data-quality-value="16"
+                        aria-label="Set curve segments to 16"
+                    >
+                        16
+                    </button>
+                </span>
+                <label for="stroke-arc-divisions"
+                    >Stroke arc divisions
+                    <input
+                        id="stroke-arc-divisions"
+                        type="number"
+                        min="1"
+                        max="64"
+                        step="1"
+                        value="2"
+                        inputmode="numeric"
+                /></label>
+                <span class="quality-presets" role="group" aria-label="Stroke arc division presets"
+                    >Quick
+                    <button
+                        type="button"
+                        data-quality-target="stroke-arc-divisions"
+                        data-quality-value="1"
+                        aria-label="Set stroke arc divisions to 1"
+                    >
+                        1
+                    </button>
+                    <button
+                        type="button"
+                        data-quality-target="stroke-arc-divisions"
+                        data-quality-value="2"
+                        aria-label="Set stroke arc divisions to 2"
+                    >
+                        2
+                    </button>
+                    <button
+                        type="button"
+                        data-quality-target="stroke-arc-divisions"
+                        data-quality-value="4"
+                        aria-label="Set stroke arc divisions to 4"
+                    >
+                        4
+                    </button>
+                    <button
+                        type="button"
+                        data-quality-target="stroke-arc-divisions"
+                        data-quality-value="8"
+                        aria-label="Set stroke arc divisions to 8"
+                    >
+                        8
+                    </button>
+                    <button
+                        type="button"
+                        data-quality-target="stroke-arc-divisions"
+                        data-quality-value="16"
+                        aria-label="Set stroke arc divisions to 16"
+                    >
+                        16
+                    </button>
+                </span>
+                <span class="named-quality-presets" role="group" aria-label="Shared SVG quality presets">
+                    <button
+                        type="button"
+                        data-quality-preset="standard"
+                        aria-label="Use standard SVG quality, 4 curve segments and 2 stroke arc divisions"
+                    >
+                        Standard 4 / 2
+                    </button>
+                    <button
+                        type="button"
+                        data-quality-preset="smallAsset"
+                        aria-label="Use small-asset SVG quality, 2 curve segments and 2 stroke arc divisions"
+                    >
+                        Small asset 2 / 2
+                    </button>
+                </span>
+                <button id="copy-loader-options" type="button">Copy loader options</button>
+            </div>
+            <div class="controls" aria-label="Shared animation and display controls">
+                <button id="play-toggle" type="button" aria-pressed="true">Pause</button>
+                <label
+                    >Clip
+                    <select id="clip">
+                        <option value="idle">idle</option>
+                        <option value="bounce">bounce</option>
+                    </select></label
+                >
+                <label
+                    >Time <input id="time" type="range" min="0" max="1200" step="1" value="0" /><output
+                        id="time-value"
+                        for="time"
+                        >0 ms</output
+                    ></label
+                >
+                <label
+                    >Expression
+                    <select id="expression">
+                        <option value="neutral">neutral</option>
+                        <option value="happy">happy</option>
+                        <option value="surprised">surprised</option>
+                    </select></label
+                >
+                <label
+                    >Display size
+                    <input id="display-size" type="range" min="80" max="400" step="10" value="220" /><output
+                        id="display-size-value"
+                        for="display-size"
+                        >220 px</output
+                    ></label
+                >
+                <label
+                    >Zoom <input id="zoom" type="range" min="0.65" max="2.00" step="0.05" value="1" /><output
+                        id="zoom-value"
+                        for="zoom"
+                        >1.00×</output
+                    ></label
+                >
+                <label class="check-label"><input id="wireframe" type="checkbox" checked /> Triangle wireframe</label>
+                <button id="center-camera" type="button">Center</button>
+                <button id="style-comparison" type="button">Yarn / sketch SVG comparison</button>
+            </div>
+            <p class="help">
+                Paste a GitHub SVG blob or raw URL with vector-asset metadata. Standard quality starts at 4 / 2; choose
+                the small-asset 2 / 2 preset or enter any whole-number subdivision from 1 to 64. Compile to update all
+                three views while keeping authored clips and expressions.
+            </p>
+        </header>
+        <main>
+            <section class="panel" aria-labelledby="source-title">
+                <h2 id="source-title">1 · Authored SVG <small>Sanitized source · authored part poses</small></h2>
+                <div class="stage" id="source-stage">
+                    <svg
+                        id="source-svg"
+                        viewBox="0 0 320 350"
+                        preserveAspectRatio="xMidYMid meet"
+                        role="img"
+                        aria-label="Original SVG source, posed by its authored clip"
+                    ></svg>
+                </div>
+                <div class="metrics" id="source-metrics">Loading Farmpea SVG…</div>
+            </section>
+            <section class="panel" aria-labelledby="topology-title">
+                <h2 id="topology-title">2 · Compiled topology <small>Actual triangles · faces + wire edges</small></h2>
+                <div class="stage" id="topology-stage">
+                    <canvas id="topology-canvas" aria-label="Compiled SVG mesh triangles and wireframe"></canvas>
+                </div>
+                <div class="metrics" id="topology-metrics">Waiting for compiled geometry…</div>
+            </section>
+            <section class="panel" aria-labelledby="gamekit-title">
+                <h2 id="gamekit-title">3 · GameKit render <small>Actual WebGL 1 mesh output</small></h2>
+                <div class="stage" id="gamekit-stage">
+                    <canvas id="gamekit-canvas" aria-label="Seed Scout rendered through GameKit WebGL"></canvas>
+                </div>
+                <div class="metrics" id="gamekit-metrics">Waiting for GameKit WebGL…</div>
+            </section>
+        </main>
+        <dialog id="style-dialog" aria-labelledby="style-dialog-title">
+            <div class="style-dialog-head">
+                <h2 id="style-dialog-title">SVG-authored yarn and sketch styles</h2>
+                <button id="style-dialog-close" type="button">Close</button>
+            </div>
+            <p class="style-caption">
+                Each card uses the same committed SVG source for the native SVG and retained GameKit WebGL views. The
+                sketch outline is sampled from absolute display time.
+            </p>
+            <div class="style-grid">
+                <article class="style-card">
+                    <h2>Yarn surface <small>Seeded stitches, relief, and fibers tessellated at build time</small></h2>
+                    <div class="style-pair">
+                        <div class="style-stage" id="style-yarn-source" aria-label="Yarn SVG source"></div>
+                        <div class="style-stage">
+                            <canvas
+                                id="style-yarn-canvas"
+                                aria-label="Yarn rendered with the GameKit renderer"
+                            ></canvas>
+                        </div>
+                    </div>
+                    <p class="style-caption" id="style-yarn-metrics">Opens on demand.</p>
+                </article>
+                <article class="style-card">
+                    <h2>Sketch boil <small>Hatching and echo line plus two deterministic morph targets</small></h2>
+                    <div class="style-pair">
+                        <div class="style-stage" id="style-sketch-source" aria-label="Sketch SVG source"></div>
+                        <div class="style-stage">
+                            <canvas
+                                id="style-sketch-canvas"
+                                aria-label="Sketch rendered with the GameKit renderer"
+                            ></canvas>
+                        </div>
+                    </div>
+                    <p class="style-caption" id="style-sketch-metrics">Opens on demand.</p>
+                </article>
+            </div>
+        </dialog>
+        <footer id="status" aria-live="polite">
+            Metrics report each view's actual rendering path. GPU elapsed time is not inferred from CPU timing.
+        </footer>
+        <script type="module">
+            import { WebGLDevice, MeshRenderer, VectorContext, YarnSurfaceRenderer } from '/dist/rendering.js';
+            import { createVectorAsset, VECTOR_ASSET_QUALITY_PRESETS } from '/dist/vector-assets.js';
+            import { createVectorAssetLoader } from '/dist/vector-assets-loader.js';
+            import { createSeedScout, seedScoutMetadata } from './seed-scout.js';
+            import { createStyleSample, styleSamples } from './style-samples.js';
+            const NS = 'http://www.w3.org/2000/svg';
+            const DEFAULT_SOURCE_URL =
+                'https://raw.githubusercontent.com/byh-playground/budmori-io/0dab58e201b5c08f5073108121eeae91acc34774/assets/troops/pea.svg';
+            const MAX_SOURCE_BYTES = 512 * 1024;
+            const BACKGROUND = [0.875, 0.91, 0.8, 1];
+            const CANVAS = document.querySelector('#gamekit-canvas');
+            const WIRE_CANVAS = document.querySelector('#topology-canvas');
+            const WIRE_CONTEXT = WIRE_CANVAS.getContext('2d');
+            const DEMO = {
+                ready: false,
+                sourceLoaded: false,
+                loading: false,
+                device: null,
+                meshes: null,
+                surfaces: null,
+                asset: null,
+                actor: null,
+                compiledAsset: null,
+                sourceSvg: null,
+                sourceUrl: null,
+                sourceBytes: 0,
+                sourcePathCount: 0,
+                sourceSha256: null,
+                compileMs: 0,
+                fetchMs: 0,
+                initializationMs: 0,
+                creationStats: null,
+                camera: {
+                    x: 160,
+                    y: 175,
+                    zoom: 1,
+                },
+                displaySizePx: 220,
+                viewBox: [0, 0, 320, 350],
+                topology: {
+                    triangles: 0,
+                    uniqueEdges: 0,
+                    uniqueVertices: 0,
+                },
+                lastFrame: null,
+                styleInstances: [],
+            };
+            window.vectorAssetRuntime = {
+                WebGLDevice,
+                MeshRenderer,
+                VectorContext,
+                YarnSurfaceRenderer,
+                createVectorAsset,
+                createVectorAssetLoader,
+                VECTOR_ASSET_QUALITY_PRESETS,
+                createSeedScout,
+                seedScoutMetadata,
+                createStyleSample,
+                styleSamples,
+            };
+            window.vectorAssetDemo = DEMO;
+            let sourceWrappers = new Map();
+            let triangles = [];
+            let edges = [];
+            let compiledAsset = null;
+            let asset = null;
+            let actor = null;
+            let displayTimeMs = 0;
+            let playing = true;
+            let previousFrameMs = null;
+            let stopped = false;
+            let loadSequence = 0;
+            const LOADER = createVectorAssetLoader({
+                maxEntries: 8,
+                fetch: fetchBoundedSvg,
+            });
+            const COMPILE_TIMINGS = new Map();
+            const SOURCE_BYTE_CACHE = new Map();
+            function normalizeSvgUrl(value) {
+                let url;
+                try {
+                    url = new URL(value.trim());
+                } catch {
+                    throw new TypeError('Enter a complete GitHub SVG URL.');
+                }
+                if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
+                    throw new TypeError('Only HTTP(S) SVG URLs without embedded credentials are supported.');
+                }
+                if (url.hostname === 'github.com' || url.hostname === 'www.github.com') {
+                    const MATCH = /^\/([^/]+)\/([^/]+)\/blob\/([^/]+)\/(.+)$/.exec(url.pathname);
+                    if (!MATCH) {
+                        throw new TypeError(
+                            'Use a GitHub file URL in the form github.com/owner/repository/blob/branch/path.svg.',
+                        );
+                    }
+                    const SEGMENTS = [MATCH[1], MATCH[2], MATCH[3], ...MATCH[4].split('/')].map((segment) =>
+                        encodeURIComponent(decodeURIComponent(segment)),
+                    );
+                    url = new URL('https://raw.githubusercontent.com/' + SEGMENTS.join('/'));
+                }
+                return url.href;
+            }
+            async function fetchBoundedSvg(input) {
+                const URL_LOCAL = new URL(String(input));
+                if (!['http:', 'https:'].includes(URL_LOCAL.protocol)) {
+                    throw new TypeError('Only HTTP(S) SVG URLs can be fetched.');
+                }
+                const STARTED = performance.now();
+                let response;
+                try {
+                    response = await fetch(URL_LOCAL.href, {
+                        mode: 'cors',
+                        credentials: 'omit',
+                        referrerPolicy: 'no-referrer',
+                    });
+                } catch {
+                    DEMO.fetchMs = performance.now() - STARTED;
+                    throw new Error(
+                        'Network or CORS error while fetching this SVG. Use an HTTP(S) host that allows cross-origin requests, such as raw.githubusercontent.com.',
+                    );
+                }
+                if (response.url && !['http:', 'https:'].includes(new URL(response.url).protocol)) {
+                    throw new TypeError('The SVG request redirected to a non-HTTP(S) URL.');
+                }
+                if (!response.ok) {
+                    DEMO.fetchMs = performance.now() - STARTED;
+                    return response;
+                }
+                const ADVERTISED = Number(response.headers.get('content-length'));
+                if (Number.isFinite(ADVERTISED) && ADVERTISED > MAX_SOURCE_BYTES) {
+                    await response.body?.cancel?.();
+                    DEMO.fetchMs = performance.now() - STARTED;
+                    throw new RangeError('SVG response exceeds the 512 KiB source limit.');
+                }
+                let bytes;
+                if (!response.body?.getReader) {
+                    bytes = new Uint8Array(await response.arrayBuffer());
+                    if (bytes.byteLength > MAX_SOURCE_BYTES) {
+                        throw new RangeError('SVG response exceeds the 512 KiB source limit.');
+                    }
+                } else {
+                    const READER = response.body.getReader(),
+                        CHUNKS = [];
+                    let length = 0;
+                    try {
+                        while (true) {
+                            const { done: DONE, value: VALUE } = await READER.read();
+                            if (DONE) {
+                                break;
+                            }
+                            length += VALUE.byteLength;
+                            if (length > MAX_SOURCE_BYTES) {
+                                await READER.cancel();
+                                throw new RangeError('SVG response exceeds the 512 KiB source limit.');
+                            }
+                            CHUNKS.push(VALUE);
+                        }
+                    } finally {
+                        READER.releaseLock?.();
+                    }
+                    bytes = new Uint8Array(length);
+                    let offset = 0;
+                    for (const CHUNK of CHUNKS) {
+                        bytes.set(CHUNK, offset);
+                        offset += CHUNK.byteLength;
+                    }
+                }
+                if (bytes.byteLength < 1) {
+                    throw new RangeError('SVG response must contain 1 or more bytes.');
+                }
+                DEMO.fetchMs = performance.now() - STARTED;
+                if (SOURCE_BYTE_CACHE.has(URL_LOCAL.href)) {
+                    SOURCE_BYTE_CACHE.delete(URL_LOCAL.href);
+                }
+                SOURCE_BYTE_CACHE.set(URL_LOCAL.href, bytes);
+                while (SOURCE_BYTE_CACHE.size > 8) {
+                    SOURCE_BYTE_CACHE.delete(SOURCE_BYTE_CACHE.keys().next().value);
+                }
+                return new Response(bytes, {
+                    status: response.status,
+                    statusText: response.statusText,
+                    headers: {
+                        'content-length': String(bytes.byteLength),
+                        'content-type': response.headers.get('content-type') || 'image/svg+xml',
+                    },
+                });
+            }
+            const MATRIX_STRING = (matrix) =>
+                'matrix(' +
+                [matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f]
+                    .map((number) => Number(number.toPrecision(12)))
+                    .join(' ') +
+                ')';
+            const SHAPE_NAMES = new Set(['path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon']);
+            const ELEMENT_NAMES = new Set(['svg', 'defs', 'linearGradient', 'stop', 'g', ...SHAPE_NAMES]);
+            const COMMON_ATTRIBUTES = new Set([
+                'id',
+                'transform',
+                'fill',
+                'fill-opacity',
+                'fill-rule',
+                'stroke',
+                'stroke-opacity',
+                'stroke-width',
+                'stroke-linecap',
+                'stroke-linejoin',
+                'stroke-miterlimit',
+                'vector-effect',
+                'opacity',
+                'd',
+                'x',
+                'y',
+                'width',
+                'height',
+                'cx',
+                'cy',
+                'r',
+                'rx',
+                'ry',
+                'x1',
+                'y1',
+                'x2',
+                'y2',
+                'points',
+            ]);
+            const GRADIENT_ATTRIBUTES = new Set(['id', 'gradientUnits', 'spreadMethod', 'x1', 'y1', 'x2', 'y2']);
+            const STOP_ATTRIBUTES = new Set(['id', 'offset', 'stop-color', 'stop-opacity']);
+            function copySafeAttributes(sourceNode, targetNode, root = false) {
+                const ELEMENT_NAME = sourceNode.localName;
+                const ALLOWED =
+                    ELEMENT_NAME === 'linearGradient'
+                        ? GRADIENT_ATTRIBUTES
+                        : ELEMENT_NAME === 'stop'
+                          ? STOP_ATTRIBUTES
+                          : COMMON_ATTRIBUTES;
+                for (const { name: NAME, value: VALUE } of sourceNode.attributes) {
+                    if (NAME === 'xmlns' && root && VALUE === NS) {
+                        continue;
+                    }
+                    if (root && NAME === 'id') {
+                        continue;
+                    }
+                    if (root && ['viewBox', 'width', 'height', 'version'].includes(NAME)) {
+                        continue;
+                    }
+                    if (
+                        !ALLOWED.has(NAME) ||
+                        /^on/i.test(NAME) ||
+                        (/(?:https?:|data:|file:|\/\/)/i.test(VALUE) &&
+                            !(NAME === 'fill' && /^url\(\s*#[A-Za-z_][A-Za-z0-9_.:-]{0,127}\s*\)$/.test(VALUE)))
+                    ) {
+                        throw new TypeError(
+                            'SVG display sanitizer rejected unsupported or external attribute: ' + NAME,
+                        );
+                    }
+                    if (
+                        NAME === 'fill' &&
+                        /url\s*\(/i.test(VALUE) &&
+                        !/^url\(\s*#[A-Za-z_][A-Za-z0-9_.:-]{0,127}\s*\)$/.test(VALUE)
+                    ) {
+                        throw new TypeError('SVG display sanitizer rejected a non-local paint reference.');
+                    }
+                    targetNode.setAttribute(NAME, VALUE);
+                }
+            }
+            function createSafeDisplaySvg(bytes, compiled) {
+                const TEXT = new TextDecoder('utf-8', {
+                    fatal: true,
+                }).decode(bytes);
+                const PARSED = new DOMParser().parseFromString(TEXT, 'image/svg+xml');
+                if (PARSED.querySelector('parsererror') || PARSED.documentElement?.localName !== 'svg') {
+                    throw new Error('Loaded source is not a valid SVG document.');
+                }
+                const PART_IDS = new Set(compiled.metadata.parts.map((part) => part.id)),
+                    WRAPPERS = new Map();
+                const DISPLAY = document.createElementNS(NS, 'svg');
+                DISPLAY.id = 'source-svg';
+                DISPLAY.setAttribute('viewBox', compiled.viewBox.join(' '));
+                DISPLAY.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+                DISPLAY.setAttribute('role', 'img');
+                DISPLAY.setAttribute('aria-label', 'Sanitized SVG source, posed by its authored clip');
+                copySafeAttributes(PARSED.documentElement, DISPLAY, true);
+                let shapeCount = 0;
+                const CLONE_ELEMENT = (node) => {
+                    const NAME = node.localName;
+                    if (NAME === 'metadata') {
+                        return null;
+                    }
+                    if (!ELEMENT_NAMES.has(NAME) || node.namespaceURI !== NS) {
+                        throw new TypeError('SVG display sanitizer rejected an unsupported element: ' + NAME);
+                    }
+                    const CLONE = document.createElementNS(NS, NAME);
+                    copySafeAttributes(node, CLONE);
+                    if (SHAPE_NAMES.has(NAME)) {
+                        shapeCount++;
+                    }
+                    let outer = CLONE;
+                    if (node.id && PART_IDS.has(node.id)) {
+                        const WRAPPER = document.createElementNS(NS, 'g');
+                        WRAPPER.dataset.vectorPart = node.id;
+                        WRAPPER.append(CLONE);
+                        WRAPPERS.set(node.id, WRAPPER);
+                        outer = WRAPPER;
+                    }
+                    for (const CHILD of node.children) {
+                        const SAFE_CHILD = CLONE_ELEMENT(CHILD);
+                        if (SAFE_CHILD) {
+                            CLONE.append(SAFE_CHILD);
+                        }
+                    }
+                    return outer;
+                };
+                for (const CHILD of PARSED.documentElement.children) {
+                    const SAFE_CHILD = CLONE_ELEMENT(CHILD);
+                    if (SAFE_CHILD) {
+                        DISPLAY.append(SAFE_CHILD);
+                    }
+                }
+                if (!shapeCount) {
+                    throw new Error('SVG source contains no supported vector shapes.');
+                }
+                const MISSING = compiled.metadata.parts.filter((part) => !WRAPPERS.has(part.id)).map((part) => part.id);
+                if (MISSING.length) {
+                    throw new Error('SVG display is missing authored part ids: ' + MISSING.join(', '));
+                }
+                return {
+                    display: DISPLAY,
+                    wrappers: WRAPPERS,
+                    shapeCount,
+                };
+            }
+            (async () => {
+                if (document.readyState === 'loading') {
+                    await new Promise((resolve) =>
+                        document.addEventListener('DOMContentLoaded', resolve, {
+                            once: true,
+                        }),
+                    );
+                }
+                const RENDERER_INITIALIZATION_START = performance.now();
+                const DEVICE = new WebGLDevice(CANVAS, {
+                    alpha: false,
+                    antialias: true,
+                    depth: false,
+                    stencil: false,
+                });
+                const MESHES = new MeshRenderer(DEVICE, {
+                    maxMeshes: 4,
+                    maxInstances: 8,
+                });
+                const SURFACES = new YarnSurfaceRenderer(DEVICE);
+                const RENDERER_INITIALIZATION_MS = performance.now() - RENDERER_INITIALIZATION_START;
+                const POINT_KEY = (x, y) => Number(x.toFixed(4)) + ',' + Number(y.toFixed(4));
+                Object.assign(DEMO, {
+                    device: DEVICE,
+                    meshes: MESHES,
+                    surfaces: SURFACES,
+                    rendererInitializationMs: RENDERER_INITIALIZATION_MS,
+                });
+                DEMO.rendererInitializationMs = RENDERER_INITIALIZATION_MS;
+                const EXPRESSION = document.querySelector('#expression');
+                const CLIP_INPUT = document.querySelector('#clip');
+                const TIME_INPUT = document.querySelector('#time');
+                const TIME_VALUE = document.querySelector('#time-value');
+                const ZOOM_INPUT = document.querySelector('#zoom');
+                const ZOOM_VALUE = document.querySelector('#zoom-value');
+                const DISPLAY_SIZE_INPUT = document.querySelector('#display-size');
+                const DISPLAY_SIZE_VALUE = document.querySelector('#display-size-value');
+                const CURVE_SEGMENTS_INPUT = document.querySelector('#curve-segments');
+                const STROKE_ARC_DIVISIONS_INPUT = document.querySelector('#stroke-arc-divisions');
+                CURVE_SEGMENTS_INPUT.value = VECTOR_ASSET_QUALITY_PRESETS.standard.curveSegments;
+                STROKE_ARC_DIVISIONS_INPUT.value = VECTOR_ASSET_QUALITY_PRESETS.standard.strokeArcDivisions;
+                const WIREFRAME_INPUT = document.querySelector('#wireframe');
+                const PLAY_TOGGLE = document.querySelector('#play-toggle');
+                const STATUS = document.querySelector('#status');
+                const CLIP_DEFINITION = () => compiledAsset?.metadata.clips[CLIP_INPUT.value];
+                const STYLE_DIALOG = document.querySelector('#style-dialog');
+                let styleReady = null;
+                const STYLE_INSTANCES = [];
+                function buildTopology(compiled) {
+                    const BUILT_TRIANGLES = [],
+                        EDGE_MAP = new Map(),
+                        VERTICES = compiled.geometry.vertices,
+                        INDICES = compiled.geometry.indices;
+                    const STRIDE = compiled.geometry.strideFloats || 11;
+                    for (let offset = 0; offset < INDICES.length; offset += 3) {
+                        const VERTEX_OFFSETS = [0, 1, 2].map((corner) => INDICES[offset + corner] * STRIDE);
+                        const PART = compiled.metadata.parts[VERTICES[VERTEX_OFFSETS[0] + 10]]?.id;
+                        const POINTS = VERTEX_OFFSETS.map((vertexOffset) => [
+                            VERTICES[vertexOffset],
+                            VERTICES[vertexOffset + 1],
+                        ]);
+                        const COLOR = [
+                            VERTICES[VERTEX_OFFSETS[0] + 2],
+                            VERTICES[VERTEX_OFFSETS[0] + 3],
+                            VERTICES[VERTEX_OFFSETS[0] + 4],
+                            VERTICES[VERTEX_OFFSETS[0] + 5],
+                        ];
+                        BUILT_TRIANGLES.push({
+                            part: PART,
+                            points: POINTS,
+                            color: COLOR,
+                        });
+                        for (let edge = 0; edge < 3; edge++) {
+                            const A = POINTS[edge],
+                                B = POINTS[(edge + 1) % 3];
+                            const KA = POINT_KEY(A[0], A[1]),
+                                KB = POINT_KEY(B[0], B[1]);
+                            const KEY = PART + '|' + (KA < KB ? KA + '|' + KB : KB + '|' + KA);
+                            if (!EDGE_MAP.has(KEY)) {
+                                EDGE_MAP.set(KEY, {
+                                    part: PART,
+                                    a: A,
+                                    b: B,
+                                });
+                            }
+                        }
+                    }
+                    return {
+                        triangles: BUILT_TRIANGLES,
+                        edges: [...EDGE_MAP.values()],
+                        uniqueEdges: EDGE_MAP.size,
+                    };
+                }
+                function setSelectOptions(select, values, preferred) {
+                    select.replaceChildren(
+                        ...values.map((value) => {
+                            const OPTION = document.createElement('option');
+                            OPTION.value = value;
+                            OPTION.textContent = value;
+                            return OPTION;
+                        }),
+                    );
+                    select.value = values.includes(preferred) ? preferred : values[0];
+                }
+                function setLoading(isLoading) {
+                    DEMO.loading = isLoading;
+                    document.querySelector('#load-asset').disabled = isLoading;
+                    document.querySelector('#load-asset').textContent = isLoading ? 'Loading…' : 'Load & compile';
+                }
+                function readQualitySettings() {
+                    const READ = (input, name) => {
+                        const VALUE = input.value.trim(),
+                            PARSED = Number(VALUE);
+                        if (!/^\d+$/.test(VALUE) || !Number.isSafeInteger(PARSED) || PARSED < 1 || PARSED > 64) {
+                            throw new RangeError(name + ' must be a whole number from 1 through 64.');
+                        }
+                        return PARSED;
+                    };
+                    return {
+                        curveSegments: READ(CURVE_SEGMENTS_INPUT, 'Curve segments'),
+                        strokeArcDivisions: READ(STROKE_ARC_DIVISIONS_INPUT, 'Stroke arc divisions'),
+                    };
+                }
+                function updateAssetTitle(metadata) {
+                    const LABEL = metadata.id === 'budmori-pea' ? 'Farmpea' : metadata.id;
+                    document.querySelector('#asset-tag').textContent = 'Asset: ' + LABEL + ' · authored SVG';
+                }
+                async function loadAsset() {
+                    const REQUEST_ID = ++loadSequence;
+                    let url;
+                    try {
+                        url = normalizeSvgUrl(document.querySelector('#asset-url').value);
+                    } catch (error) {
+                        setLoading(false);
+                        STATUS.classList.add('error');
+                        STATUS.textContent = error.message;
+                        return;
+                    }
+                    document.querySelector('#asset-url').value = url;
+                    let quality;
+                    try {
+                        quality = readQualitySettings();
+                    } catch (error) {
+                        setLoading(false);
+                        STATUS.classList.add('error');
+                        STATUS.textContent = error.message;
+                        return;
+                    }
+                    const { curveSegments: CURVE_SEGMENTS, strokeArcDivisions: STROKE_ARC_DIVISIONS } = quality;
+                    const OPTIONS = {
+                        sourcePath: url,
+                        maxBytes: MAX_SOURCE_BYTES,
+                        curveSegments: CURVE_SEGMENTS,
+                        strokeArcDivisions: STROKE_ARC_DIVISIONS,
+                    };
+                    const RESULT_KEY = JSON.stringify([url, CURVE_SEGMENTS, STROKE_ARC_DIVISIONS]);
+                    setLoading(true);
+                    STATUS.classList.remove('error');
+                    STATUS.textContent = 'Fetching SVG and compiling the selected tessellation…';
+                    DEMO.fetchMs = 0;
+                    const LOAD_STARTED = performance.now();
+                    try {
+                        const NEXT_COMPILED = await LOADER.load(url, OPTIONS);
+                        const LOAD_MS = performance.now() - LOAD_STARTED;
+                        if (REQUEST_ID !== loadSequence || stopped) {
+                            return;
+                        }
+                        const MEASURED = COMPILE_TIMINGS.get(RESULT_KEY);
+                        const FETCH_MS = MEASURED?.fetchMs ?? DEMO.fetchMs;
+                        const COMPILE_MS = MEASURED?.compileMs ?? Math.max(0, LOAD_MS - FETCH_MS);
+                        const CACHED = LOAD_MS < 2 && MEASURED;
+                        const SOURCE_BYTES = SOURCE_BYTE_CACHE.get(url);
+                        if (!SOURCE_BYTES) {
+                            throw new Error(
+                                'The bounded loader response was unavailable for the sanitized native view.',
+                            );
+                        }
+                        const SOURCE_DIGEST = [...new Uint8Array(await crypto.subtle.digest('SHA-256', SOURCE_BYTES))]
+                            .map((value) => value.toString(16).padStart(2, '0'))
+                            .join('');
+                        if (SOURCE_DIGEST !== NEXT_COMPILED.sourceSha256) {
+                            throw new Error(
+                                'The source changed between compile and safe display reads. Load again for a consistent comparison.',
+                            );
+                        }
+                        const DISPLAY_BUILD = createSafeDisplaySvg(SOURCE_BYTES, NEXT_COMPILED);
+                        const ASSET_INIT_STARTED = performance.now();
+                        const NEXT_ASSET = createVectorAsset(MESHES, NEXT_COMPILED, {
+                            surfaceRenderer: SURFACES,
+                        });
+                        const FIRST_CLIP = Object.keys(NEXT_COMPILED.metadata.clips)[0];
+                        const CLIP_NAME = Object.hasOwn(NEXT_COMPILED.metadata.clips, CLIP_INPUT.value)
+                            ? CLIP_INPUT.value
+                            : FIRST_CLIP;
+                        const NEXT_ACTOR = NEXT_ASSET.createPlayer({
+                            clip: CLIP_NAME,
+                            startedAtMs: 0,
+                        });
+                        NEXT_ACTOR.setExpression(NEXT_COMPILED.metadata.defaultExpression);
+                        const OLD_ACTOR = actor,
+                            OLD_ASSET = asset;
+                        if (DEMO.sourceSvg?.isConnected) {
+                            DEMO.sourceSvg.replaceWith(DISPLAY_BUILD.display);
+                        } else {
+                            document
+                                .querySelector('#source-stage')
+                                .querySelector('svg')
+                                ?.replaceWith(DISPLAY_BUILD.display);
+                        }
+                        actor = NEXT_ACTOR;
+                        asset = NEXT_ASSET;
+                        compiledAsset = NEXT_COMPILED;
+                        sourceWrappers = DISPLAY_BUILD.wrappers;
+                        triangles = [];
+                        edges = [];
+                        const TOPOLOGY = buildTopology(NEXT_COMPILED);
+                        triangles = TOPOLOGY.triangles;
+                        edges = TOPOLOGY.edges;
+                        DEMO.asset = asset;
+                        DEMO.actor = actor;
+                        DEMO.compiledAsset = compiledAsset;
+                        DEMO.sourceSvg = DISPLAY_BUILD.display;
+                        DEMO.sourcePathCount = DISPLAY_BUILD.shapeCount;
+                        DEMO.sourceBytes = SOURCE_BYTES.byteLength;
+                        DEMO.sourceSha256 = NEXT_COMPILED.sourceSha256;
+                        DEMO.sourceUrl = url;
+                        DEMO.sourceLoaded = true;
+                        DEMO.fetchMs = FETCH_MS;
+                        DEMO.compileMs = COMPILE_MS;
+                        DEMO.topology = {
+                            triangles: triangles.length,
+                            uniqueEdges: TOPOLOGY.uniqueEdges,
+                            uniqueVertices: NEXT_COMPILED.geometry.vertices.length / 11,
+                        };
+                        DEMO.creationStats = MESHES.stats();
+                        DEMO.assetInitializationMs = performance.now() - ASSET_INIT_STARTED;
+                        DEMO.initializationMs = RENDERER_INITIALIZATION_MS + DEMO.assetInitializationMs;
+                        DEMO.viewBox = NEXT_COMPILED.viewBox;
+                        DEMO.camera.x = NEXT_COMPILED.viewBox[0] + NEXT_COMPILED.viewBox[2] / 2;
+                        DEMO.camera.y = NEXT_COMPILED.viewBox[1] + NEXT_COMPILED.viewBox[3] / 2;
+                        displayTimeMs = 0;
+                        actor.seek(0);
+                        playing = true;
+                        previousFrameMs = null;
+                        setSelectOptions(CLIP_INPUT, Object.keys(NEXT_COMPILED.metadata.clips), CLIP_NAME);
+                        setSelectOptions(
+                            EXPRESSION,
+                            Object.keys(NEXT_COMPILED.metadata.expressions),
+                            NEXT_COMPILED.metadata.defaultExpression,
+                        );
+                        TIME_INPUT.max = String(CLIP_DEFINITION().durationMs);
+                        TIME_INPUT.value = '0';
+                        syncTimeControls();
+                        updateSourceViewBox();
+                        updateAssetTitle(NEXT_COMPILED.metadata);
+                        const TIMING = {
+                            fetchMs: FETCH_MS || 0,
+                            compileMs: COMPILE_MS || 0,
+                        };
+                        COMPILE_TIMINGS.set(RESULT_KEY, TIMING);
+                        while (COMPILE_TIMINGS.size > 16) {
+                            COMPILE_TIMINGS.delete(COMPILE_TIMINGS.keys().next().value);
+                        }
+                        document.querySelector('#source-metrics').textContent =
+                            'Sanitized native SVG · ' +
+                            DISPLAY_BUILD.shapeCount.toLocaleString() +
+                            ' shapes · ' +
+                            SOURCE_BYTES.length.toLocaleString() +
+                            ' bytes · SHA ' +
+                            NEXT_COMPILED.sourceSha256.slice(0, 12);
+                        STATUS.classList.remove('error');
+                        STATUS.textContent =
+                            (CACHED ? 'Cached compile reused' : 'Loaded and compiled') +
+                            ' · fetch ' +
+                            TIMING.fetchMs.toFixed(1) +
+                            ' ms · SHA + compile ' +
+                            TIMING.compileMs.toFixed(1) +
+                            ' ms · browser loader enforces CORS, SVG schema checks, and a 512 KiB source limit.';
+                        if (OLD_ACTOR) {
+                            OLD_ACTOR.dispose();
+                        }
+                        if (OLD_ASSET) {
+                            OLD_ASSET.dispose();
+                        }
+                    } catch (error) {
+                        if (REQUEST_ID !== loadSequence) {
+                            return;
+                        }
+                        const MESSAGE = /Failed to fetch|Load failed|NetworkError|CORS/i.test(error.message)
+                            ? 'Network or CORS error. Use an HTTP(S) SVG URL whose host allows cross-origin requests.'
+                            : error.message;
+                        STATUS.classList.add('error');
+                        STATUS.textContent = 'SVG load failed: ' + MESSAGE;
+                        document.querySelector('#gamekit-metrics').textContent = 'SVG load failed: ' + MESSAGE;
+                    } finally {
+                        if (REQUEST_ID === loadSequence) {
+                            setLoading(false);
+                        }
+                    }
+                }
+                async function initializeStyleSamples() {
+                    for (const [ID, SAMPLE] of Object.entries(styleSamples)) {
+                        const SOURCE_DIGEST = new Uint8Array(
+                            await crypto.subtle.digest('SHA-256', new TextEncoder().encode(SAMPLE.source)),
+                        );
+                        const SOURCE_SHA = [...SOURCE_DIGEST]
+                            .map((value) => value.toString(16).padStart(2, '0'))
+                            .join('');
+                        if (SOURCE_SHA !== SAMPLE.asset.sourceSha256) {
+                            throw new Error(ID + ' SVG source SHA does not match compiled geometry');
+                        }
+                        const PARSED = new DOMParser().parseFromString(SAMPLE.source, 'image/svg+xml');
+                        if (PARSED.querySelector('parsererror') || PARSED.documentElement?.localName !== 'svg') {
+                            throw new Error(ID + ' authored source is not valid SVG');
+                        }
+                        const NATIVE_SVG = document.importNode(PARSED.documentElement, true);
+                        NATIVE_SVG.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+                        document
+                            .querySelector('#style-' + ID.replace('-fox', '') + '-source')
+                            .replaceChildren(NATIVE_SVG);
+                        const STYLE_CANVAS = document.querySelector('#style-' + ID.replace('-fox', '') + '-canvas');
+                        const STYLE_DEVICE = new WebGLDevice(STYLE_CANVAS, {
+                            alpha: false,
+                            antialias: true,
+                            depth: false,
+                            stencil: false,
+                        });
+                        const STYLE_MESHES = new MeshRenderer(STYLE_DEVICE, {
+                            maxMeshes: 2,
+                            maxInstances: 8,
+                        });
+                        const STYLE_ASSET = createStyleSample(ID, STYLE_MESHES);
+                        const STYLE_ACTOR = STYLE_ASSET.createPlayer({
+                            clip: 'idle',
+                            startedAtMs: 0,
+                        });
+                        STYLE_INSTANCES.push({
+                            id: ID,
+                            sourceSha: SOURCE_SHA,
+                            canvas: STYLE_CANVAS,
+                            device: STYLE_DEVICE,
+                            meshes: STYLE_MESHES,
+                            asset: STYLE_ASSET,
+                            actor: STYLE_ACTOR,
+                        });
+                    }
+                    DEMO.styleInstances = STYLE_INSTANCES;
+                    DEMO.styleReady = true;
+                    renderStyleSamples(displayTimeMs);
+                    return STYLE_INSTANCES.length;
+                }
+                function renderStyleSamples(timeMs) {
+                    for (const ITEM of STYLE_INSTANCES) {
+                        const RECT = ITEM.canvas.getBoundingClientRect(),
+                            DPR = Math.min(2, devicePixelRatio || 1);
+                        const WIDTH = Math.max(1, Math.round(RECT.width * DPR)),
+                            HEIGHT = Math.max(1, Math.round(RECT.height * DPR));
+                        if (ITEM.canvas.width !== WIDTH) {
+                            ITEM.canvas.width = WIDTH;
+                        }
+                        if (ITEM.canvas.height !== HEIGHT) {
+                            ITEM.canvas.height = HEIGHT;
+                        }
+                        const SCALE = Math.min(WIDTH / 160, HEIGHT / 180),
+                            TX = (WIDTH - 160 * SCALE) / 2,
+                            TY = (HEIGHT - 180 * SCALE) / 2;
+                        const PROJECTION = [
+                            (2 * SCALE) / WIDTH,
+                            0,
+                            0,
+                            0,
+                            (-2 * SCALE) / HEIGHT,
+                            0,
+                            (2 * TX) / WIDTH - 1,
+                            1 - (2 * TY) / HEIGHT,
+                            1,
+                        ];
+                        const GEOMETRY_UPLOAD_BYTES_BEFORE = ITEM.meshes.stats().geometryBytesUploaded;
+                        ITEM.device.beginFrame({
+                            width: WIDTH,
+                            height: HEIGHT,
+                            clearColor: BACKGROUND,
+                            clearDepth: 1,
+                        });
+                        ITEM.meshes.beginFrame();
+                        ITEM.actor.seek(timeMs);
+                        ITEM.actor.draw({
+                            projection: PROJECTION,
+                        });
+                        ITEM.meshes.flush();
+                        ITEM.device.endFrame();
+                        const STATS = ITEM.meshes.stats(),
+                            BACKEND = ITEM.device.instancingSupported ? 'ANGLE instanced' : 'uniform fallback';
+                        const FRAME_GEOMETRY_UPLOAD_BYTES = STATS.geometryBytesUploaded - GEOMETRY_UPLOAD_BYTES_BEFORE;
+                        document.querySelector('#style-' + ITEM.id.replace('-fox', '') + '-metrics').textContent =
+                            ITEM.id +
+                            ' · SVG SHA ' +
+                            ITEM.sourceSha.slice(0, 12) +
+                            ' · ' +
+                            BACKEND +
+                            ' · ' +
+                            ITEM.device.stats.drawCalls +
+                            ' draw calls · ' +
+                            ITEM.asset.mesh.byteLength.toLocaleString() +
+                            ' retained B · create upload ' +
+                            ITEM.asset.mesh.byteLength.toLocaleString() +
+                            ' B · ' +
+                            FRAME_GEOMETRY_UPLOAD_BYTES.toLocaleString() +
+                            ' B/frame geometry upload';
+                    }
+                }
+                DEMO.renderStyleSamples = renderStyleSamples;
+                DEMO.disposeStyleSamples = () => {
+                    for (const ITEM of STYLE_INSTANCES.splice(0)) {
+                        ITEM.actor.dispose();
+                        ITEM.asset.dispose();
+                        ITEM.meshes.dispose();
+                        ITEM.device.dispose();
+                    }
+                    DEMO.styleInstances = [];
+                    DEMO.styleReady = false;
+                    styleReady = null;
+                };
+                document.querySelector('#style-comparison').addEventListener('click', () => {
+                    STYLE_DIALOG.showModal();
+                    styleReady ??= initializeStyleSamples().catch((error) => {
+                        DEMO.styleError = error.message;
+                        return 0;
+                    });
+                    DEMO.styleReadyPromise = styleReady;
+                });
+                document.querySelector('#style-dialog-close').addEventListener('click', () => STYLE_DIALOG.close());
+                const FORMAT = (value) => Number(value).toFixed(2);
+                function updateSourceViewBox() {
+                    if (!DEMO.sourceSvg) {
+                        return;
+                    }
+                    const RECT = DEMO.sourceSvg.getBoundingClientRect();
+                    const [, , SOURCE_WIDTH, SOURCE_HEIGHT] = DEMO.viewBox;
+                    const SCALE = (DEMO.displaySizePx * DEMO.camera.zoom) / Math.max(SOURCE_WIDTH, SOURCE_HEIGHT);
+                    const WIDTH = RECT.width / SCALE,
+                        HEIGHT = RECT.height / SCALE;
+                    DEMO.sourceSvg.setAttribute(
+                        'viewBox',
+                        [DEMO.camera.x - WIDTH / 2, DEMO.camera.y - HEIGHT / 2, WIDTH, HEIGHT].map(FORMAT).join(' '),
+                    );
+                    ZOOM_VALUE.value = DEMO.camera.zoom.toFixed(2) + '×';
+                    ZOOM_VALUE.textContent = ZOOM_VALUE.value;
+                    DISPLAY_SIZE_VALUE.value = Math.round(DEMO.displaySizePx * DEMO.camera.zoom) + ' px';
+                    DISPLAY_SIZE_VALUE.textContent = DISPLAY_SIZE_VALUE.value;
+                }
+                function fitCamera(width, height) {
+                    const [, , SOURCE_WIDTH, SOURCE_HEIGHT] = DEMO.viewBox;
+                    const SCALE = (DEMO.displaySizePx * DEMO.camera.zoom) / Math.max(SOURCE_WIDTH, SOURCE_HEIGHT);
+                    return {
+                        scale: SCALE,
+                        tx: width / 2 - DEMO.camera.x * SCALE,
+                        ty: height / 2 - DEMO.camera.y * SCALE,
+                    };
+                }
+                function resizeCanvas(target, context2d = null) {
+                    const RECT = target.getBoundingClientRect(),
+                        DPR = Math.min(2, window.devicePixelRatio || 1);
+                    const WIDTH = Math.max(1, Math.round(RECT.width * DPR)),
+                        HEIGHT = Math.max(1, Math.round(RECT.height * DPR));
+                    if (target.width !== WIDTH) {
+                        target.width = WIDTH;
+                    }
+                    if (target.height !== HEIGHT) {
+                        target.height = HEIGHT;
+                    }
+                    if (context2d) {
+                        context2d.setTransform(DPR, 0, 0, DPR, 0, 0);
+                    }
+                    return {
+                        width: WIDTH,
+                        height: HEIGHT,
+                        cssWidth: RECT.width,
+                        cssHeight: RECT.height,
+                    };
+                }
+                function syncPartLayers() {
+                    const POSES = new Map(
+                        compiledAsset.metadata.parts.map((part) => [part.id, actor.getPartPose(part.id)]),
+                    );
+                    for (const PART of compiledAsset.metadata.parts) {
+                        const POSE = POSES.get(PART.id),
+                            GROUP = sourceWrappers.get(PART.id);
+                        let transform = new DOMMatrix(Array.from(POSE.transform));
+                        let opacity = POSE.opacity;
+                        const PARENT_GROUP = GROUP.parentElement?.closest('[data-vector-part]');
+                        if (PARENT_GROUP) {
+                            const PARENT_POSE = POSES.get(PARENT_GROUP.dataset.vectorPart);
+                            transform = new DOMMatrix(Array.from(PARENT_POSE.transform)).inverse().multiply(transform);
+                            opacity = PARENT_POSE.opacity > 0 ? POSE.opacity / PARENT_POSE.opacity : 0;
+                        }
+                        GROUP.setAttribute('transform', MATRIX_STRING(transform));
+                        GROUP.style.display = POSE.visible ? '' : 'none';
+                        GROUP.setAttribute('opacity', String(opacity));
+                    }
+                    return POSES;
+                }
+                function drawTopology(poses) {
+                    const DIMENSIONS = resizeCanvas(WIRE_CANVAS, WIRE_CONTEXT),
+                        WIDTH = DIMENSIONS.cssWidth,
+                        HEIGHT = DIMENSIONS.cssHeight;
+                    const CAMERA = fitCamera(WIDTH, HEIGHT),
+                        STARTED = performance.now();
+                    WIRE_CONTEXT.clearRect(0, 0, WIDTH, HEIGHT);
+                    const PROJECT = (point, matrix) => {
+                        const X = matrix[0] * point[0] + matrix[2] * point[1] + matrix[4];
+                        const Y = matrix[1] * point[0] + matrix[3] * point[1] + matrix[5];
+                        return [CAMERA.tx + X * CAMERA.scale, CAMERA.ty + Y * CAMERA.scale];
+                    };
+                    let visibleTriangles = 0;
+                    for (const TRIANGLE of triangles) {
+                        const POSE = poses.get(TRIANGLE.part);
+                        if (!POSE.visible || POSE.opacity <= 0) {
+                            continue;
+                        }
+                        const POINTS = TRIANGLE.points.map((point) => PROJECT(point, POSE.transform));
+                        WIRE_CONTEXT.beginPath();
+                        WIRE_CONTEXT.moveTo(POINTS[0][0], POINTS[0][1]);
+                        WIRE_CONTEXT.lineTo(POINTS[1][0], POINTS[1][1]);
+                        WIRE_CONTEXT.lineTo(POINTS[2][0], POINTS[2][1]);
+                        WIRE_CONTEXT.closePath();
+                        WIRE_CONTEXT.fillStyle =
+                            'rgba(' +
+                            Math.round(TRIANGLE.color[0] * 255) +
+                            ',' +
+                            Math.round(TRIANGLE.color[1] * 255) +
+                            ',' +
+                            Math.round(TRIANGLE.color[2] * 255) +
+                            ',' +
+                            Math.max(0, Math.min(1, TRIANGLE.color[3] * POSE.opacity * 0.58)) +
+                            ')';
+                        WIRE_CONTEXT.fill();
+                        visibleTriangles++;
+                    }
+                    WIRE_CONTEXT.lineWidth = 0.75;
+                    WIRE_CONTEXT.strokeStyle = 'rgba(30,46,38,.72)';
+                    if (WIREFRAME_INPUT.checked) {
+                        for (const EDGE of edges) {
+                            const POSE = poses.get(EDGE.part);
+                            if (!POSE.visible || POSE.opacity <= 0) {
+                                continue;
+                            }
+                            const A = PROJECT(EDGE.a, POSE.transform),
+                                B = PROJECT(EDGE.b, POSE.transform);
+                            WIRE_CONTEXT.beginPath();
+                            WIRE_CONTEXT.moveTo(A[0], A[1]);
+                            WIRE_CONTEXT.lineTo(B[0], B[1]);
+                            WIRE_CONTEXT.stroke();
+                        }
+                    }
+                    return {
+                        visibleTriangles,
+                        cpuMs: performance.now() - STARTED,
+                        width: WIDTH,
+                        height: HEIGHT,
+                    };
+                }
+                function drawGameKit(timeMs) {
+                    const DIMENSIONS = resizeCanvas(CANVAS),
+                        { width: WIDTH, height: HEIGHT, cssWidth: CSS_WIDTH, cssHeight: CSS_HEIGHT } = DIMENSIONS;
+                    const CAMERA = fitCamera(CSS_WIDTH, CSS_HEIGHT);
+                    const PROJECTION = [
+                        (2 * CAMERA.scale) / CSS_WIDTH,
+                        0,
+                        0,
+                        0,
+                        (-2 * CAMERA.scale) / CSS_HEIGHT,
+                        0,
+                        (2 * CAMERA.tx) / CSS_WIDTH - 1,
+                        1 - (2 * CAMERA.ty) / CSS_HEIGHT,
+                        1,
+                    ];
+                    DEVICE.beginFrame({
+                        width: WIDTH,
+                        height: HEIGHT,
+                        clearColor: BACKGROUND,
+                        clearDepth: 1,
+                    });
+                    MESHES.beginFrame();
+                    actor.seek(timeMs);
+                    actor.draw({
+                        projection: PROJECTION,
+                    });
+                    MESHES.flush();
+                    DEVICE.endFrame();
+                    return {
+                        mesh: MESHES.stats(),
+                        device: {
+                            ...DEVICE.stats,
+                        },
+                        glError: DEVICE.gl.getError(),
+                    };
+                }
+                function updateReadouts(topologyFrame, gamekitFrame) {
+                    document.querySelector('#source-metrics').textContent =
+                        'Sanitized native SVG · ' +
+                        DEMO.sourcePathCount.toLocaleString() +
+                        ' shapes · ' +
+                        DEMO.sourceBytes.toLocaleString() +
+                        ' source bytes · SHA ' +
+                        DEMO.sourceSha256.slice(0, 12);
+                    document.querySelector('#topology-metrics').textContent =
+                        'Canvas 2D · ' +
+                        topologyFrame.visibleTriangles.toLocaleString() +
+                        '/' +
+                        triangles.length.toLocaleString() +
+                        ' visible triangles · ' +
+                        DEMO.topology.uniqueVertices.toLocaleString() +
+                        ' unique vertices · ' +
+                        compiledAsset.geometry.indices.length.toLocaleString() +
+                        ' indexed corners · ' +
+                        (WIREFRAME_INPUT.checked ? edges.length.toLocaleString() + ' wire edges' : 'wireframe hidden') +
+                        ' · ' +
+                        topologyFrame.cpuMs.toFixed(2) +
+                        ' ms draw';
+                    const BACKEND = DEVICE.instancingSupported
+                        ? 'WebGL 1 + ANGLE instancing'
+                        : 'WebGL 1 + per-draw uniforms';
+                    const GEOMETRY = compiledAsset.geometry,
+                        RETAINED_BYTES = asset.mesh?.byteLength ?? 0;
+                    document.querySelector('#gamekit-metrics').textContent =
+                        BACKEND +
+                        ' · ' +
+                        (GEOMETRY.indices.length / 3).toLocaleString() +
+                        ' triangles · ' +
+                        (GEOMETRY.vertices.length / 11).toLocaleString() +
+                        ' unique vertices · ' +
+                        gamekitFrame.device.drawCalls +
+                        ' draw calls · ' +
+                        RETAINED_BYTES.toLocaleString() +
+                        ' retained mesh bytes · create upload ' +
+                        DEMO.creationStats.geometryBytesUploaded.toLocaleString() +
+                        ' B · frame geometry ' +
+                        gamekitFrame.mesh.geometryBytesUploaded.toLocaleString() +
+                        ' B · instance ' +
+                        gamekitFrame.mesh.instanceBytesUploaded.toLocaleString() +
+                        ' B · GPU buffers ' +
+                        gamekitFrame.device.gpuBufferBytes.toLocaleString() +
+                        ' B';
+                }
+                function syncTimeControls() {
+                    const DEFINITION = CLIP_DEFINITION();
+                    TIME_INPUT.max = String(DEFINITION.durationMs);
+                    TIME_INPUT.value = String(Math.min(DEFINITION.durationMs, displayTimeMs));
+                    TIME_VALUE.value = Math.round(displayTimeMs) + ' ms / ' + DEFINITION.durationMs + ' ms';
+                    TIME_VALUE.textContent = TIME_VALUE.value;
+                    PLAY_TOGGLE.textContent = playing ? 'Pause' : 'Play';
+                    PLAY_TOGGLE.setAttribute('aria-pressed', String(playing));
+                }
+                function frame(now) {
+                    if (stopped) {
+                        return;
+                    }
+                    if (actor && compiledAsset && previousFrameMs !== null && playing) {
+                        const DELTA = Math.min(80, Math.max(0, now - previousFrameMs));
+                        displayTimeMs += DELTA;
+                        const DEFINITION = CLIP_DEFINITION();
+                        if (DEFINITION.loop === 'once' && displayTimeMs >= DEFINITION.durationMs) {
+                            displayTimeMs = DEFINITION.durationMs;
+                            playing = false;
+                        } else if (DEFINITION.loop !== 'once') {
+                            displayTimeMs %= DEFINITION.durationMs;
+                        }
+                    }
+                    previousFrameMs = now;
+                    if (actor && compiledAsset) {
+                        syncTimeControls();
+                        actor.seek(displayTimeMs);
+                        const POSES = syncPartLayers();
+                        const TOPOLOGY_FRAME = drawTopology(POSES);
+                        const GAMEKIT_FRAME = drawGameKit(displayTimeMs);
+                        if (STYLE_DIALOG.open && DEMO.styleReady) {
+                            renderStyleSamples(displayTimeMs);
+                        }
+                        DEMO.lastFrame = {
+                            timeMs: displayTimeMs,
+                            expression: actor.currentExpression,
+                            topology: TOPOLOGY_FRAME,
+                            gamekit: GAMEKIT_FRAME,
+                        };
+                        updateReadouts(TOPOLOGY_FRAME, GAMEKIT_FRAME);
+                    }
+                    requestAnimationFrame(frame);
+                }
+                CLIP_INPUT.addEventListener('change', () => {
+                    displayTimeMs = 0;
+                    actor.play(CLIP_INPUT.value, displayTimeMs);
+                    playing = true;
+                    previousFrameMs = null;
+                    syncTimeControls();
+                });
+                EXPRESSION.addEventListener('change', () => actor.setExpression(EXPRESSION.value));
+                TIME_INPUT.addEventListener('input', () => {
+                    displayTimeMs = Number(TIME_INPUT.value);
+                    actor.seek(displayTimeMs);
+                    syncTimeControls();
+                });
+                ZOOM_INPUT.addEventListener('input', () => {
+                    DEMO.camera.zoom = Number(ZOOM_INPUT.value);
+                    updateSourceViewBox();
+                });
+                DISPLAY_SIZE_INPUT.addEventListener('input', () => {
+                    DEMO.displaySizePx = Number(DISPLAY_SIZE_INPUT.value);
+                    updateSourceViewBox();
+                });
+                WIREFRAME_INPUT.addEventListener('change', () => {
+                    DEMO.wireframe = WIREFRAME_INPUT.checked;
+                });
+                document.querySelector('#load-asset').addEventListener('click', () => void loadAsset());
+                document.querySelector('#asset-url').addEventListener('keydown', (event) => {
+                    if (event.key === 'Enter') {
+                        event.preventDefault();
+                        void loadAsset();
+                    }
+                });
+                for (const PRESET of document.querySelectorAll('[data-quality-target]')) {
+                    PRESET.addEventListener('click', () => {
+                        document.getElementById(PRESET.dataset.qualityTarget).value = PRESET.dataset.qualityValue;
+                        void loadAsset();
+                    });
+                }
+                for (const PRESET of document.querySelectorAll('[data-quality-preset]')) {
+                    PRESET.addEventListener('click', () => {
+                        const QUALITY = VECTOR_ASSET_QUALITY_PRESETS[PRESET.dataset.qualityPreset];
+                        if (!QUALITY) {
+                            throw new Error('Unknown SVG quality preset: ' + PRESET.dataset.qualityPreset);
+                        }
+                        CURVE_SEGMENTS_INPUT.value = QUALITY.curveSegments;
+                        STROKE_ARC_DIVISIONS_INPUT.value = QUALITY.strokeArcDivisions;
+                        void loadAsset();
+                    });
+                }
+                document.querySelector('#copy-loader-options').addEventListener('click', async () => {
+                    try {
+                        const SOURCE_PATH = normalizeSvgUrl(document.querySelector('#asset-url').value);
+                        const OPTIONS = {
+                            sourcePath: SOURCE_PATH,
+                            maxBytes: MAX_SOURCE_BYTES,
+                            ...readQualitySettings(),
+                        };
+                        await navigator.clipboard.writeText(JSON.stringify(OPTIONS, null, 2));
+                        STATUS.classList.remove('error');
+                        STATUS.textContent = 'Loader options copied.';
+                    } catch (error) {
+                        STATUS.classList.add('error');
+                        STATUS.textContent =
+                            'Could not copy loader options: ' + (error.message || 'Clipboard access is unavailable.');
+                    }
+                });
+                PLAY_TOGGLE.addEventListener('click', () => {
+                    const DEFINITION = CLIP_DEFINITION();
+                    if (!playing && DEFINITION.loop === 'once' && displayTimeMs >= DEFINITION.durationMs) {
+                        displayTimeMs = 0;
+                        actor.play(CLIP_INPUT.value, 0);
+                    }
+                    playing = !playing;
+                    previousFrameMs = null;
+                    syncTimeControls();
+                });
+                document.querySelector('#center-camera').addEventListener('click', () => {
+                    DEMO.camera.x = DEMO.viewBox[0] + DEMO.viewBox[2] / 2;
+                    DEMO.camera.y = DEMO.viewBox[1] + DEMO.viewBox[3] / 2;
+                    updateSourceViewBox();
+                });
+                for (const STAGE of document.querySelectorAll('.stage')) {
+                    let drag = null;
+                    STAGE.addEventListener('pointerdown', (event) => {
+                        if (event.button !== 0) {
+                            return;
+                        }
+                        const RECT = STAGE.getBoundingClientRect(),
+                            CAMERA = fitCamera(RECT.width, RECT.height);
+                        drag = {
+                            x: event.clientX,
+                            y: event.clientY,
+                            cameraX: DEMO.camera.x,
+                            cameraY: DEMO.camera.y,
+                            scale: CAMERA.scale,
+                        };
+                        STAGE.classList.add('dragging');
+                        STAGE.setPointerCapture(event.pointerId);
+                        event.preventDefault();
+                    });
+                    STAGE.addEventListener('pointermove', (event) => {
+                        if (!drag) {
+                            return;
+                        }
+                        DEMO.camera.x = drag.cameraX - (event.clientX - drag.x) / drag.scale;
+                        DEMO.camera.y = drag.cameraY - (event.clientY - drag.y) / drag.scale;
+                        updateSourceViewBox();
+                    });
+                    const END_DRAG = () => {
+                        drag = null;
+                        STAGE.classList.remove('dragging');
+                    };
+                    STAGE.addEventListener('pointerup', END_DRAG);
+                    STAGE.addEventListener('pointercancel', END_DRAG);
+                }
+                window.addEventListener('resize', updateSourceViewBox);
+                window.addEventListener(
+                    'pagehide',
+                    () => {
+                        stopped = true;
+                        actor?.dispose();
+                        asset?.dispose();
+                        LOADER.dispose();
+                        SURFACES.dispose();
+                        MESHES.dispose();
+                        DEVICE.dispose();
+                        DEMO.disposeStyleSamples();
+                    },
+                    {
+                        once: true,
+                    },
+                );
+                const QUERY = new URLSearchParams(location.search);
+                document.querySelector('#asset-url').value =
+                    QUERY.get('fixture') === 'seed-scout'
+                        ? new URL('/modules/vector-assets/assets/seed-scout.svg', location.href).href
+                        : DEFAULT_SOURCE_URL;
+                await loadAsset();
+                DEMO.ready = true;
+                requestAnimationFrame(frame);
+                window.vectorAssetDemo = DEMO;
+            })().catch((error) => {
+                DEMO.error = error.message;
+                const STATUS = document.querySelector('#status');
+                STATUS.classList.add('error');
+                if (DEMO.sourceSvg && error.message === 'WebGL 1 required') {
+                    const MESSAGE =
+                        'WebGL unavailable: this browser or environment did not provide a WebGL 1 context. The independently loaded source SVG remains visible in panel 1.';
+                    const GAMEKIT_METRICS = document.querySelector('#gamekit-metrics');
+                    GAMEKIT_METRICS.classList.add('error');
+                    GAMEKIT_METRICS.textContent = MESSAGE;
+                    document.querySelector('#source-metrics').textContent =
+                        'Native SVG · ' +
+                        DEMO.sourcePathCount +
+                        ' paths/shapes · ' +
+                        DEMO.sourceBytes.toLocaleString() +
+                        ' source bytes · SHA ' +
+                        DEMO.sourceSha256.slice(0, 12);
+                    STATUS.textContent = 'Source SVG loaded directly; the GameKit WebGL view is unavailable.';
+                } else {
+                    document.querySelector('#source-metrics').textContent = DEMO.sourceSvg
+                        ? document.querySelector('#source-metrics').textContent
+                        : 'Source SVG unavailable: ' + error.message;
+                    const GAMEKIT_METRICS = document.querySelector('#gamekit-metrics');
+                    GAMEKIT_METRICS.classList.add('error');
+                    GAMEKIT_METRICS.textContent = 'Example failed: ' + error.message;
+                    STATUS.textContent = 'Example failed: ' + error.message;
+                }
+            });
+        </script>
+    </body>
 </html>

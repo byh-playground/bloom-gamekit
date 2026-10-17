@@ -16,10 +16,10 @@ protocol 2는 이벤트에서 후보 slot을 보내고 다음 capture에서 명�
 - 별도 browser context·focus emulation으로 두 클라이언트 visible/focused를 확인했다. 최대 RAF 간격23.7/36.5ms. 이전 단일 context 측정의 약1초 RAF 지연은 최종 수치에 사용하지 않았다.
 - RTC clock 교환7회 중 가장 좁은 offset 구간을 전후 기록했다. 구간 폭0.7ms(중점오차±0.35ms), 전후 중점 차이 최대0.1ms. 수신→적용과 적용→픽셀은 수신자 시계만 사용한다.
 
-| 조건 | 정상 수신→T 적용(각4개) | 늦은 수신→적용(각4개) | 늦은 적용→최초 픽셀 | rollback / replay tick |
-|---|---:|---:|---:|---:|
-| 5TPS, 고정 delay2 | 373.3–578.1ms | 0.2–0.5ms | 5.3–14.9ms | 4 / 6 |
-| 15TPS, 고정 delay2 | 154.6–173.2ms | 0.1–0.6ms | 16.3–28.8ms | 4 / 5 |
+| 조건               | 정상 수신→T 적용(각4개) | 늦은 수신→적용(각4개) | 늦은 적용→최초 픽셀 | rollback / replay tick |
+| ------------------ | ----------------------: | --------------------: | ------------------: | ---------------------: |
+| 5TPS, 고정 delay2  |           373.3–578.1ms |             0.2–0.5ms |          5.3–14.9ms |                  4 / 6 |
+| 15TPS, 고정 delay2 |           154.6–173.2ms |             0.1–0.6ms |         16.3–28.8ms |                  4 / 5 |
 
 정상 도착의 대기는 공유 T까지 기다리는 의도한 지연이다. 늦은 표본에는 각각700ms/233.3ms를 주입했으므로 4/8은 실제 rollback 빈도 추정치가 아니다. 작은 순수 함수 시뮬레이션의 receiver load+replay CPU 합계는 각각0.1/0.3ms이며 timer 해상도 한계가 있다. GPU 시간은 측정하지 않았다. readPixels나 RAF를 GPU 비용으로 해석하지 않는다.
 
@@ -33,10 +33,10 @@ protocol 2는 이벤트에서 후보 slot을 보내고 다음 capture에서 명�
 
 ```js
 const profile = {
-  ...profiles.action,
-  inputScheduling: 'network', // 생략하면 기존 configured 정책
-  inputSafetyMarginMs: 8,
-  inputJitterMultiplier: 2,
+    ...profiles.action,
+    inputScheduling: 'network', // 생략하면 기존 configured 정책
+    inputSafetyMarginMs: 8,
+    inputJitterMultiplier: 2,
 };
 const receipt = session.submitInput(heldBytes, { commands: [commandBytes] });
 // receipt.commands의 sequence/executeTick은 예약 후 불변.

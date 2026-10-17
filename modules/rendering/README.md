@@ -10,9 +10,9 @@ const renderer = new Renderer2D(canvas);
 renderer.resize(720, 400, devicePixelRatio); // CSS 크기, 실제 backing store는 DPR 적용
 renderer.setCamera({ x: 360, y: 200, zoom: 1, rotation: 0 });
 if (renderer.beginFrame([0.03, 0.05, 0.08, 1])) {
-  renderer.ellipse(pose.x, pose.y, 16, 5, [0, 0, 0, 0.3]);
-  renderer.rect(pose.x, pose.y - pose.z, 24, 24, [0.2, 0.8, 0.6, 1], pose.angle);
-  renderer.endFrame();
+    renderer.ellipse(pose.x, pose.y, 16, 5, [0, 0, 0, 0.3]);
+    renderer.rect(pose.x, pose.y - pose.z, 24, 24, [0.2, 0.8, 0.6, 1], pose.angle);
+    renderer.endFrame();
 }
 ```
 
@@ -22,7 +22,7 @@ if (renderer.beginFrame([0.03, 0.05, 0.08, 1])) {
 
 ```js
 const renderer = new Renderer2D(canvas); // this creates the canvas WebGL 1 context
-const device = new WebGLDevice(canvas);  // reuses that same context
+const device = new WebGLDevice(canvas); // reuses that same context
 const meshes = new MeshRenderer(device);
 
 device.beginFrame({ width: canvas.width, height: canvas.height });
@@ -65,15 +65,15 @@ gradient.addColorStop(0, '#ed5445');
 gradient.addColorStop(0.35, 'rgba(248, 198, 72, .7)');
 gradient.addColorStop(1, '#344cda');
 ctx.fillStyle = gradient;
-ctx.beginPath(); ctx.roundRect(12, 18, 60, 28, 5); ctx.fill();
+ctx.beginPath();
+ctx.roundRect(12, 18, 60, 28, 5);
+ctx.fill();
 ```
 
 `VectorContext.createClipPath(flatXY,{rule})` creates a retained, single-contour clip outside an active frame. The flat input keeps its authored point sequence; triangulation happens once at creation, then the mask triangles are retained and reuploaded after context restoration. The contour may have at most 256 points and must be simple, non-self-intersecting, non-degenerate, and contain no consecutive duplicate points. Current retained clips do not accept holes or multiple contours. At most 64 clip handles and 16 MiB of retained triangle data may be live; a tessellated mask may contain up to 16,384 triangles.
 
 ```js
-const eggClip = ctx.createClipPath(new Float32Array([
-  18, 12, 82, 12, 92, 44, 82, 78, 18, 78, 8, 44,
-])); // create outside beginFrame()
+const eggClip = ctx.createClipPath(new Float32Array([18, 12, 82, 12, 92, 44, 82, 78, 18, 78, 8, 44])); // create outside beginFrame()
 ctx.beginFrame();
 ctx.clipPath(eggClip, { transform: [1, 0, 0, 1, 4, 0] });
 ctx.drawMesh(eggMesh);
@@ -139,14 +139,22 @@ const vector = new VectorRenderer(device, { glyphAtlas });
 const ctx = new VectorContext(device, { vectorRenderer: vector, glyphAtlas, onError: reportRenderError });
 const primitive = new PrimitivePainter(ctx, { point: transformArtPoint, alphaMultiplier: () => artAlpha });
 if (ctx.beginFrame({ width: canvas.width, height: canvas.height, clearColor: [0, 0, 0, 0] })) {
-  ctx.fillStyle = 'rgba(32, 78, 54, .8)'; ctx.beginPath();
-  ctx.roundRect(24, 20, 110, 52, 8); ctx.fill();
-  ctx.strokeStyle = '#d9f3ad'; ctx.setLineDash([6, 3]); ctx.stroke();
-  const glow = ctx.createRadialGradient(80, 100, 0, 80, 100, 18);
-  glow.addColorStop(0, '#fff8d0'); glow.addColorStop(1, '#fff8d000');
-  ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(80, 100, 18, 0, Math.PI * 2); ctx.fill();
-  primitive.circle(80, 100, 12, '#f1f8d7', 12); // 원래 authored fan topology 유지
-  ctx.endFrame();
+    ctx.fillStyle = 'rgba(32, 78, 54, .8)';
+    ctx.beginPath();
+    ctx.roundRect(24, 20, 110, 52, 8);
+    ctx.fill();
+    ctx.strokeStyle = '#d9f3ad';
+    ctx.setLineDash([6, 3]);
+    ctx.stroke();
+    const glow = ctx.createRadialGradient(80, 100, 0, 80, 100, 18);
+    glow.addColorStop(0, '#fff8d0');
+    glow.addColorStop(1, '#fff8d000');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(80, 100, 18, 0, Math.PI * 2);
+    ctx.fill();
+    primitive.circle(80, 100, 12, '#f1f8d7', 12); // 원래 authored fan topology 유지
+    ctx.endFrame();
 }
 ```
 
@@ -176,7 +184,7 @@ new PrimitivePainter(shape).circle(0, 0, 12, '#a8c991', 10);
 const mesh = ctx.createMesh(shape.build()); // cold path, 프레임 밖에서도 가능
 ctx.beginFrame();
 for (const pose of depthSortedPoses) {
-  ctx.drawMesh(mesh, { transform: [1, 0, 0, 1, pose.x, pose.y] });
+    ctx.drawMesh(mesh, { transform: [1, 0, 0, 1, pose.x, pose.y] });
 }
 ctx.endFrame();
 ctx.deleteMesh(mesh);
@@ -207,12 +215,23 @@ const atlas = await font.ready;
 const vector = new VectorRenderer(device, { glyphAtlas: atlas });
 device.beginFrame({ clearColor: [0, 0, 0, 0] });
 vector.beginGroup(0.5, { x: 80, y: 60, width: 240, height: 160 });
-vector.polygon([[90, 80], [200, 80], [170, 170], [100, 150]], [1, 0.2, 0.1, 1]);
+vector.polygon(
+    [
+        [90, 80],
+        [200, 80],
+        [170, 170],
+        [100, 150],
+    ],
+    [1, 0.2, 0.1, 1],
+);
 vector.endGroup();
-vector.beginPath(); vector.moveTo(80, 200); vector.quadraticCurveTo(160, 130, 240, 200);
+vector.beginPath();
+vector.moveTo(80, 200);
+vector.quadraticCurveTo(160, 130, 240, 200);
 vector.stroke([0.3, 0.9, 0.6, 1], 3);
 vector.fillText('label', 200, 250, { fontSize: 18, align: 'center', baseline: 'alphabetic', color: [1, 1, 1, 1] });
-vector.flush(); device.endFrame();
+vector.flush();
+device.endFrame();
 ```
 
 - Paths use pixel coordinates in the device backing viewport. `moveTo`/`lineTo`, quadratic/cubic Bezier sampling, `closePath`, `fill` (`nonzero`/`evenodd`), `stroke(width)`, `polygon`, affine transforms, save/restore, and nested rectangular clips are supported. Curves default to 12/16 segments and accept an explicit 2..256 segment count. Fills use scanline trapezoid tessellation over flattened contours; inputs should be finite, non-self-intersecting contours. It supports holes with even-odd winding, not self-intersection repair.
@@ -236,18 +255,28 @@ Budmori의 FPV11 texture/gradient/white-mask stream과 Rally의 xyz/depth·alpha
 import { WebGLDevice } from './rendering.js';
 const device = new WebGLDevice(canvas, { depth: true, stencil: true });
 const pipeline = device.createPipeline({
-  vertex: gameVertexShader, fragment: gameFragmentShader,
-  stride: 28, // bytes: xyz + rgba
-  attributes: [{ name: 'a', size: 3, offset: 0 }, { name: 'ac', size: 4, offset: 12 }],
-  uniforms: { r: '2f' },
+    vertex: gameVertexShader,
+    fragment: gameFragmentShader,
+    stride: 28, // bytes: xyz + rgba
+    attributes: [
+        { name: 'a', size: 3, offset: 0 },
+        { name: 'ac', size: 4, offset: 12 },
+    ],
+    uniforms: { r: '2f' },
 });
 const buffer = device.createVertexBuffer({ capacityBytes: 28 * 16384 });
 if (device.beginFrame({ width: canvas.width, height: canvas.height })) {
-  device.uploadVertices(buffer, gameGeometry.view());
-  device.draw({ pipeline, buffer, first: 0, count: gameGeometry.length / 7,
-    uniforms: { r: [canvas.width, canvas.height] }, blend: 'straight-alpha',
-    depth: { func: 'lequal', write: true } });
-  device.endFrame();
+    device.uploadVertices(buffer, gameGeometry.view());
+    device.draw({
+        pipeline,
+        buffer,
+        first: 0,
+        count: gameGeometry.length / 7,
+        uniforms: { r: [canvas.width, canvas.height] },
+        blend: 'straight-alpha',
+        depth: { func: 'lequal', write: true },
+    });
+    device.endFrame();
 }
 ```
 
@@ -314,10 +343,10 @@ import { YarnSurfaceRenderer } from './rendering.js';
 
 const surfaces = new YarnSurfaceRenderer(device);
 const surface = surfaces.createSurface({
-  fillVertices, // Float32Array, non-indexed triangles, x/y/rgba
-  outline,      // Float32Array, closed local-space contour x/y pairs
-  edgeColors,   // optional Float32Array, one RGBA per contour point
-  style: svgMetadata.styles.find(style => style.kind === 'yarn'),
+    fillVertices, // Float32Array, non-indexed triangles, x/y/rgba
+    outline, // Float32Array, closed local-space contour x/y pairs
+    edgeColors, // optional Float32Array, one RGBA per contour point
+    style: svgMetadata.styles.find((style) => style.kind === 'yarn'),
 });
 
 // Keep this call at the styled SVG path's painter-order position.
@@ -326,8 +355,12 @@ const clip = ctx.createClipPath(authoredConcaveContour);
 ctx.save();
 ctx.clipPath(clip); // retained stencil clip; requires an active stencil attachment
 surfaces.drawSurface(surface, {
-  projection, transform: partMatrix, clips, alpha, color,
-  stencilRef: ctx.stencilRef, // pass the active VectorContext stencil depth
+    projection,
+    transform: partMatrix,
+    clips,
+    alpha,
+    color,
+    stencilRef: ctx.stencilRef, // pass the active VectorContext stencil depth
 });
 ctx.restore();
 surfaces.deleteSurface(surface);
@@ -341,4 +374,3 @@ Coordinates, stitch dimensions, and fiber dimensions are in source-vector units 
 `YarnSurfaceRenderer.drawSurface()` accepts `stencilRef: null` (default) or an integer in `[0,255]`; a non-null value requires the active default framebuffer or render target to have stencil. Convex `clips` and stencil clipping intersect. This option adds no mesh batching path and does not change `MeshRenderer` compatibility or painter ordering.
 
 The API is additive: existing `MeshRenderer` meshes, old compiled assets, static yarn/sketch triangle assets, and ordinary SVG strokes keep their existing behavior until a consumer opts into the new material and passes its authored surface data. The focused validation is `npm run test:rendering:yarn-shader`; it checks density-invariant geometry and real Chromium/WebGL pixels at 47 and 74 CSS px, clipping, and context restoration. It is a correctness check, not an FPS or CPU benchmark.
-

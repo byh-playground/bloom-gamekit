@@ -1,524 +1,1307 @@
+/* global vectorAssetDemo */
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import { compileVectorAssetFile } from '../compiler.js';
 
 /** Exercises the compiled SVG through GameKit's real WebGL1 device and retained mesh renderer. */
 export async function exerciseVectorAssets(page, { includePopulationTimingDiagnostics = false } = {}) {
-  const compileStart = performance.now();
-  const referenceAsset = await compileVectorAssetFile('modules/vector-assets/assets/seed-scout.svg', 'modules/vector-assets/assets/seed-scout.svg');
-  const legacyReferenceAsset = await compileVectorAssetFile('modules/vector-assets/assets/seed-scout.svg', 'modules/vector-assets/assets/seed-scout.svg',
-    { curveSegments: 16, strokeArcDivisions: 12 });
-  const retainedBytes = asset => asset.geometry.vertices.byteLength + asset.geometry.indices.byteLength
-    + [...Object.values(asset.geometry.expressionIndices ?? {}), ...Object.values(asset.geometry.indexVariants ?? {})]
-      .reduce((total, indices) => total + indices.byteLength, 0);
-  const standardMeshBytes = retainedBytes(referenceAsset), legacyMeshBytes = retainedBytes(legacyReferenceAsset);
-  assert.ok(standardMeshBytes > 0 && standardMeshBytes < legacyMeshBytes,
-    'the same seed-scout fixture produces valid 4/2 geometry smaller than explicit 16/12 geometry');
-  const threeCompileMs = performance.now() - compileStart;
-  await page.setViewportSize({ width: 844, height: 390 });
-  const panelState = await page.evaluate(async () => {
-    const waitFrame = () => new Promise(resolve => requestAnimationFrame(resolve));
-    await waitFrame(); await waitFrame();
-    const demo = window.vectorAssetDemo;
-    const fail = message => { throw new Error('Three-view example: ' + message); };
-    if (!demo?.ready || !demo.asset || !demo.actor) fail('SVG source and WebGL resources did not finish loading');
-    const submittedVariants = [];
-    const drawMesh = demo.meshes.drawMesh.bind(demo.meshes);
-    demo.meshes.drawMesh = (mesh, options) => { submittedVariants.push(options?.indexVariant ?? null); return drawMesh(mesh, options); };
-    const clip = document.querySelector('#clip'), time = document.querySelector('#time');
-    const expression = document.querySelector('#expression'), zoom = document.querySelector('#zoom');
-    clip.value = 'bounce'; clip.dispatchEvent(new Event('change', { bubbles: true }));
-    time.value = '220'; time.dispatchEvent(new Event('input', { bubbles: true }));
-    expression.value = 'happy'; expression.dispatchEvent(new Event('change', { bubbles: true }));
-    zoom.value = '1.50'; zoom.dispatchEvent(new Event('input', { bubbles: true }));
-    document.querySelector('#play-toggle').click();
-    await waitFrame(); await waitFrame();
-    const expressionIndexVariantUsed = submittedVariants.includes('happy');
-    demo.actor.setPartVisible('face-happy', false);
-    await waitFrame();
-    const explicitVisibilityUsesFullGeometry = submittedVariants.at(-1) === null;
-    demo.actor.setExpression('happy');
-    await waitFrame();
-    const expressionVariantRestoredAfterOverride = submittedVariants.at(-1) === 'happy';
-    const body = demo.actor.getPartPose('body');
-    const sourceBody = demo.sourceSvg.querySelector('[data-vector-part="body"]').getAttribute('transform');
-    const sourceMatrix = sourceBody.slice(7, -1).split(/[ ,]+/).map(Number);
-    const stages = [...document.querySelectorAll('.stage')].map(stage => {
-      const rect = stage.getBoundingClientRect(); return { width: rect.width, height: rect.height };
+    const COMPILE_START = performance.now();
+    const REFERENCE_ASSET = await compileVectorAssetFile(
+        'modules/vector-assets/assets/seed-scout.svg',
+        'modules/vector-assets/assets/seed-scout.svg',
+    );
+    const LEGACY_REFERENCE_ASSET = await compileVectorAssetFile(
+        'modules/vector-assets/assets/seed-scout.svg',
+        'modules/vector-assets/assets/seed-scout.svg',
+        {
+            curveSegments: 16,
+            strokeArcDivisions: 12,
+        },
+    );
+    const RETAINED_BYTES = (asset) =>
+        asset.geometry.vertices.byteLength +
+        asset.geometry.indices.byteLength +
+        [
+            ...Object.values(asset.geometry.expressionIndices ?? {}),
+            ...Object.values(asset.geometry.indexVariants ?? {}),
+        ].reduce((total, indices) => total + indices.byteLength, 0);
+    const STANDARD_MESH_BYTES = RETAINED_BYTES(REFERENCE_ASSET),
+        LEGACY_MESH_BYTES = RETAINED_BYTES(LEGACY_REFERENCE_ASSET);
+    assert.ok(
+        STANDARD_MESH_BYTES > 0 && STANDARD_MESH_BYTES < LEGACY_MESH_BYTES,
+        'the same seed-scout fixture produces valid 4/2 geometry smaller than explicit 16/12 geometry',
+    );
+    const THREE_COMPILE_MS = performance.now() - COMPILE_START;
+    await page.setViewportSize({
+        width: 844,
+        height: 390,
     });
-    const result = {
-      ready: demo.ready, clip: demo.actor.currentClip, timeMs: demo.actor.currentTimeMs,
-      expression: demo.actor.currentExpression, zoom: demo.camera.zoom, sourceSha256: demo.sourceSvg ? demo.asset.sourceSha256 : '',
-      sourceBodyPoseMatches: sourceMatrix.length === 6 && sourceMatrix.every((value, index) => Math.abs(value - body.transform[index]) <= 0.006),
-      happyShown: demo.sourceSvg.querySelector('[data-vector-part="face-happy"]').style.display !== 'none',
-      neutralHidden: demo.sourceSvg.querySelector('[data-vector-part="face-neutral"]').style.display === 'none',
-      expressionIndexVariantUsed, explicitVisibilityUsesFullGeometry, expressionVariantRestoredAfterOverride,
-      triangles: demo.topology.triangles, compiledTriangles: demo.asset.mesh.indices.length / 3,
-      visibleTriangles: demo.lastFrame.topology.visibleTriangles, uniqueEdges: demo.topology.uniqueEdges,
-      webglBackend: demo.device.instancingSupported ? 'WebGL 1 + ANGLE instancing' : 'WebGL 1 + per-draw uniforms',
-      drawCalls: demo.lastFrame.gamekit.device.drawCalls,
-      meshBytes: demo.asset.mesh.byteLength, sourceMetrics: document.querySelector('#source-metrics').textContent,
-      topologyMetrics: document.querySelector('#topology-metrics').textContent, gamekitMetrics: document.querySelector('#gamekit-metrics').textContent,
-      stages, sourceViewBox: demo.sourceSvg.getAttribute('viewBox'), viewport: [innerWidth, innerHeight],
-      bodyHeight: document.body.getBoundingClientRect().height, mainHeight: document.querySelector('main').getBoundingClientRect().height,
-    };
-    clip.value = 'idle'; clip.dispatchEvent(new Event('change', { bubbles: true }));
-    expression.value = 'neutral'; expression.dispatchEvent(new Event('change', { bubbles: true }));
-    zoom.value = '1.00'; zoom.dispatchEvent(new Event('input', { bubbles: true }));
-    document.querySelector('#center-camera').click();
-    time.value = '0'; time.dispatchEvent(new Event('input', { bubbles: true }));
-    document.querySelector('#play-toggle').click();
-    await waitFrame(); await waitFrame();
-    return result;
-  });
-  assert.equal(panelState.ready, true);
-  assert.equal(panelState.clip, 'bounce');
-  assert.equal(panelState.timeMs, 220, 'shared absolute time is applied to the GameKit player');
-  assert.equal(panelState.expression, 'happy');
-  assert.equal(panelState.zoom, 1.5);
-  assert.match(panelState.sourceSha256, /^[a-f0-9]{64}$/);
-  assert.equal(panelState.sourceBodyPoseMatches, true, 'the source SVG view uses the same authored part pose');
-  assert.equal(panelState.happyShown, true);
-  assert.equal(panelState.neutralHidden, true);
-  assert.equal(panelState.expressionIndexVariantUsed, true, 'authored expressions select their prefiltered retained triangle indices');
-  assert.equal(panelState.explicitVisibilityUsesFullGeometry, true, 'explicit per-part visibility keeps the unfiltered geometry path');
-  assert.equal(panelState.expressionVariantRestoredAfterOverride, true, 'selecting a new expression restores the matching index variant');
-  assert.equal(panelState.triangles, panelState.compiledTriangles);
-  assert.ok(panelState.visibleTriangles > 0 && panelState.visibleTriangles < panelState.triangles);
-  assert.ok(panelState.uniqueEdges > panelState.triangles);
-  assert.match(panelState.webglBackend, /^WebGL 1/);
-  assert.ok(panelState.drawCalls > 0 && panelState.meshBytes === standardMeshBytes && panelState.meshBytes < legacyMeshBytes,
-    'the three-view example retains the same valid 4/2 geometry measured from its source');
-  assert.match(panelState.sourceMetrics, /source bytes/);
-  assert.match(panelState.topologyMetrics, /visible triangles/);
-  assert.match(panelState.gamekitMetrics, /draw calls/);
-  assert.ok(Math.min(...panelState.stages.map(stage => stage.width)) > 200, 'all three panels remain readable at mobile landscape width');
-  assert.ok(Math.min(...panelState.stages.map(stage => stage.height)) > 100, 'all three panels remain visible at mobile landscape height');
-  assert.ok(Math.max(...panelState.stages.map(stage => stage.height)) < 260, 'three panels fit the mobile landscape viewport without vertical overflow');
-  assert.ok(Math.max(...panelState.stages.map(stage => stage.height)) - Math.min(...panelState.stages.map(stage => stage.height)) < 1.5,
-    'the three camera viewports have matching dimensions');
-  const panStage = page.locator('#source-stage'), box = await panStage.boundingBox();
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await page.mouse.down(); await page.mouse.move(box.x + box.width / 2 + 6, box.y + box.height / 2 + 4); await page.mouse.up();
-  const movedCamera = await page.evaluate(() => ({ x: vectorAssetDemo.camera.x, y: vectorAssetDemo.camera.y }));
-  assert.notEqual(movedCamera.x, 100, 'dragging one panel pans the shared camera');
-  assert.notEqual(movedCamera.y, 110, 'vertical pan is shared');
-  await page.locator('#center-camera').click();
-  const centeredCamera = await page.evaluate(() => ({ x: vectorAssetDemo.camera.x, y: vectorAssetDemo.camera.y }));
-  assert.deepEqual(centeredCamera, { x: 100, y: 110 }, 'center resets the shared camera');
-  const report = await page.evaluate(async ({ sourcePaths, threeCompileMs, includePopulationTimingDiagnostics, standardMeshBytes, legacyMeshBytes }) => {
-    const modules = window.vectorAssetRuntime ?? {
-      ...await import('/dist/rendering.js'), ...await import('/dist/vector-assets.js'),
-    };
-    const { WebGLDevice, MeshRenderer, VectorContext, createSeedScout, seedScoutMetadata } = modules;
-    const assertThat = (condition, message) => { if (!condition) throw new Error(message); };
-    const near = (a, b, epsilon = 1e-6) => Math.abs(a - b) <= epsilon;
-    const beginGpuQuery = device => {
-      const extension = device.gl.getExtension('EXT_disjoint_timer_query');
-      if (!extension) return null;
-      const query = extension.createQueryEXT(); extension.beginQueryEXT(extension.TIME_ELAPSED_EXT, query);
-      return { extension, query };
-    };
-    const endGpuQuery = (device, record) => {
-      if (!record) return { elapsedNs: null, status: 'unsupported' };
-      const { extension, query } = record;
-      extension.endQueryEXT(extension.TIME_ELAPSED_EXT); device.gl.finish();
-      const ready = extension.getQueryObjectEXT(query, extension.QUERY_RESULT_AVAILABLE_EXT);
-      const disjoint = device.gl.getParameter(extension.GPU_DISJOINT_EXT);
-      const elapsedNs = ready && !disjoint ? extension.getQueryObjectEXT(query, extension.QUERY_RESULT_EXT) : null;
-      extension.deleteQueryEXT(query);
-      return { elapsedNs, status: !ready ? 'unavailable' : disjoint ? 'disjoint' : 'measured' };
-    };
-    const canvas = document.createElement('canvas'); canvas.width = 200; canvas.height = 220;
-    canvas.style.cssText = 'width: 200px; height: 220px'; document.body.append(canvas);
-    const rendererInitStart = performance.now();
-    const device = new WebGLDevice(canvas, { alpha: false, antialias: false, depth: false, stencil: false, preserveDrawingBuffer: true, checkGLErrors: true });
-    const meshes = new MeshRenderer(device, { maxMeshes: 4, maxInstances: 1024 });
-    const rendererInitializationMs = performance.now() - rendererInitStart;
-    const coldStart = performance.now(), asset = createSeedScout(meshes), initializationMs = performance.now() - coldStart;
-    const resourceCreationStats = meshes.stats();
-    const player = asset.createPlayer({ clip: 'idle', startedAtMs: 0 });
-    const staticPartPoses = player.partPoses();
-    assertThat(staticPartPoses.every(pose => Array.isArray(pose.morph) && pose.morph.length === 2
-      && pose.morph[0] === 0 && pose.morph[1] === 0), 'styleless assets preserve the public two-weight part pose with default zero morph values');
-    assertThat(staticPartPoses.every((pose, index) => index === 0 || pose.morph !== staticPartPoses[0].morph)
-      && !Object.isFrozen(staticPartPoses[0].morph),
-      'public styleless part poses keep independent mutable zero-morph tuples');
-    const projection = [2 / 200, 0, 0, 0, -2 / 220, 0, -1, 1, 1];
-    const paint = (actors = [player], timeMs = 0) => {
-      device.beginFrame({ width: 200, height: 220, clearColor: [0.875, 0.91, 0.80, 1], clearDepth: 1, clearStencil: 0 });
-      meshes.beginFrame();
-      for (const actor of actors) { actor.seek(timeMs); actor.draw({ projection }); }
-      meshes.flush(); device.endFrame();
-      return { mesh: meshes.stats(), device: { ...device.stats }, glError: device.gl.getError() };
-    };
-    const pixel = (x, y) => { const data = new Uint8Array(4); device.gl.readPixels(x, 219 - y, 1, 1, device.gl.RGBA, device.gl.UNSIGNED_BYTE, data); return [...data]; };
-    const originalDrawMesh = meshes.drawMesh;
-    let submittedParts, submittedMorph;
-    meshes.drawMesh = function(mesh, options) {
-      submittedParts = options.parts; submittedMorph = options.morph;
-      return originalDrawMesh.call(this, mesh, options);
-    };
-    const initialFrame = paint();
-    meshes.drawMesh = originalDrawMesh;
-    assertThat(submittedParts?.every(pose => !Object.hasOwn(pose, 'morph'))
-      && Array.isArray(submittedMorph) && submittedMorph[0] === 0 && submittedMorph[1] === 0,
-      'render-only part poses omit discarded per-part morph arrays and retain the draw-level morph value');
-    console.log('VECTOR_STAGE initial-frame');
-    const bodyPixel = pixel(100, 112), holePixel = pixel(80, 48), background = [223, 232, 204, 255];
-    assertThat(bodyPixel[1] > 100 && bodyPixel[0] < background[0] && bodyPixel[0] > 60, `SVG body color reaches WebGL pixels: ${bodyPixel}`);
-    player.setPartVisible('leaf-left', false); paint(); const underHolePixel = pixel(80, 48); player.setPartVisible('leaf-left', true);
-    assertThat(holePixel.every((channel, index) => Math.abs(channel - underHolePixel[index]) <= 2), `evenodd compound leaf hole matches its visible under-layer: ${holePixel}/${underHolePixel}`);
-    assertThat(initialFrame.glError === 0 && initialFrame.device.drawCalls >= 1, 'real WebGL draw and GL error check');
-    assertThat(initialFrame.mesh.geometryUploads === 0 && initialFrame.mesh.geometryBytesUploaded === 0, 'asset geometry was uploaded only at resource creation');
-    assertThat(asset.mesh.byteLength === standardMeshBytes && asset.mesh.byteLength > 0 && asset.mesh.byteLength < legacyMeshBytes
-      && meshes.stats().meshCount === 1, 'the bundled fixture retains valid default geometry smaller than explicit 16/12');
-    assertThat(near(player.getSocket('mouth').x, 100) && near(player.getSocket('mouth').y, 146), 'authored socket at SVG coordinates');
-
-    const beforeFailedCreate = { bytes: device.stats.gpuBufferBytes, retained: meshes.stats().retainedBytes, meshes: meshes.stats().meshCount };
-    const uploadIndices = device.uploadIndices;
-    let indexUploads = 0, failedCreate = null;
-    device.uploadIndices = function(buffer, indices) {
-      indexUploads++;
-      if (indexUploads === 2) throw new Error('injected expression index upload failure');
-      return uploadIndices.call(this, buffer, indices);
-    };
-    const geometryInput = {
-      vertices: asset.mesh.vertices, strideFloats: 11, partCount: asset.mesh.partCount, morphCount: asset.mesh.morphCount,
-      indices: asset.mesh.indices,
-      expressionIndices: Object.fromEntries([...asset.mesh.expressionIndices].map(([name, variant]) => [name, variant.indices])),
-    };
-    try { meshes.createMesh(geometryInput); } catch (error) { failedCreate = error; }
-    finally { device.uploadIndices = uploadIndices; }
-    assertThat(failedCreate?.message === 'injected expression index upload failure', 'expression index upload failure reaches the caller');
-    assertThat(device.stats.gpuBufferBytes === beforeFailedCreate.bytes && meshes.stats().retainedBytes === beforeFailedCreate.retained
-      && meshes.stats().meshCount === beforeFailedCreate.meshes, 'failed expression index upload releases every partial GPU allocation');
-    let nullVariantsRejected = false;
-    try { meshes.createMesh({ ...geometryInput, expressionIndices: null }); } catch (error) { nullVariantsRejected = /triangles/.test(error.message); }
-    assertThat(nullVariantsRejected, 'an explicit null expression index map is rejected instead of silently treated as absent');
-
-    player.seek(0);
-    const expandedVertices = new Float32Array(asset.mesh.indices.length * 11);
-    for (let i = 0; i < asset.mesh.indices.length; i++) expandedVertices.set(asset.mesh.vertices.subarray(asset.mesh.indices[i] * 11, asset.mesh.indices[i] * 11 + 11), i * 11);
-    const expandedMesh = meshes.createMesh({ vertices: expandedVertices, strideFloats: 11, partCount: asset.mesh.partCount, morphCount: asset.mesh.morphCount });
-    const actorParts = player.partPoses().map(({ transform, opacity, visible }) => ({ transform, opacity, visible }));
-    const capture = mesh => {
-      device.beginFrame({ width: 200, height: 220, clearColor: [0.875, 0.91, 0.80, 1] }); meshes.beginFrame();
-      meshes.drawMesh(mesh, { projection, parts: actorParts }); meshes.flush(); device.endFrame();
-      const pixels = new Uint8Array(200 * 220 * 4); device.gl.readPixels(0, 0, 200, 220, device.gl.RGBA, device.gl.UNSIGNED_BYTE, pixels);
-      return { pixels, glError: device.gl.getError() };
-    };
-    const indexedCapture = capture(asset.mesh), expandedCapture = capture(expandedMesh);
-    let pixelMismatch = 0;
-    for (let i = 0; i < indexedCapture.pixels.length; i++) if (indexedCapture.pixels[i] !== expandedCapture.pixels[i]) pixelMismatch++;
-    assertThat(indexedCapture.glError === 0 && expandedCapture.glError === 0 && pixelMismatch === 0,
-      `indexed and expanded retained geometry render the same pixels (${pixelMismatch} channel differences)`);
-    const indexedParity = { pixelMismatch, indexedBytes: asset.mesh.byteLength, expandedBytes: expandedVertices.byteLength,
-      savedBytes: expandedVertices.byteLength - asset.mesh.byteLength };
-    meshes.deleteMesh(expandedMesh);
-
-    const firstPose = player.seek(375).getPartPose('body');
-    player.seek(900); const rollbackPose = player.seek(375).getPartPose('body');
-    assertThat(JSON.stringify(firstPose) === JSON.stringify(rollbackPose), 'same absolute clip time reproduces exactly the same pose after rollback seek');
-    player.transitionTo('bounce', 1000, 200); const transition = player.seek(1100).getPartPose('body');
-    player.seek(1400); const transitionRollback = player.seek(1100).getPartPose('body');
-    assertThat(JSON.stringify(transition) === JSON.stringify(transitionRollback), 'clip transition is deterministic under seek rollback');
-    const mapConstructionsDuring = callback => {
-      const NativeMap = window.Map;
-      let constructions = 0;
-      window.Map = class CountingMap extends NativeMap {
-        constructor(...args) { constructions++; super(...args); }
-      };
-      try { callback(); return constructions; }
-      finally { window.Map = NativeMap; }
-    };
-    const boundaryPlayer = asset.createPlayer({ clip: 'idle', startedAtMs: 0 });
-    const idleBeforeStart = asset.createPlayer({ clip: 'idle', startedAtMs: 0 }).seek(999).getPartPose('body');
-    const idleAtStart = asset.createPlayer({ clip: 'idle', startedAtMs: 0 }).seek(1000).getPartPose('body');
-    const bounceAtStart = asset.createPlayer({ clip: 'bounce', startedAtMs: 1000 }).seek(1000).getPartPose('body');
-    const bounceAtEnd = asset.createPlayer({ clip: 'bounce', startedAtMs: 1000 }).seek(1200).getPartPose('body');
-    const idleProbe = asset.createPlayer({ clip: 'idle', startedAtMs: 0 });
-    const bounceProbe = asset.createPlayer({ clip: 'bounce', startedAtMs: 1000 });
-    boundaryPlayer.transitionTo('bounce', 1000, 200);
-    const directSourceMaps = mapConstructionsDuring(() => idleProbe.seek(1100));
-    const directTargetMaps = mapConstructionsDuring(() => bounceProbe.seek(1100));
-    const beforeStartMaps = mapConstructionsDuring(() => boundaryPlayer.seek(999));
-    const atStartMaps = mapConstructionsDuring(() => boundaryPlayer.seek(1000));
-    const activeTransitionMaps = mapConstructionsDuring(() => boundaryPlayer.seek(1100));
-    const completedTransitionMaps = mapConstructionsDuring(() => boundaryPlayer.seek(1200));
-    const beforeTransition = boundaryPlayer.seek(999).getPartPose('body');
-    const atTransitionStart = boundaryPlayer.seek(1000).getPartPose('body');
-    const atTransitionEnd = boundaryPlayer.seek(1200).getPartPose('body');
-    assertThat(beforeStartMaps === directSourceMaps, `a transition before its start samples only its source (${beforeStartMaps} vs ${directSourceMaps} Map constructions)`);
-    assertThat(atStartMaps === directSourceMaps, `a positive-duration transition samples only its source at the zero-progress start boundary (${atStartMaps} vs ${directSourceMaps} Map constructions)`);
-    assertThat(activeTransitionMaps === directSourceMaps + directTargetMaps + 1,
-      `an active transition samples both clips and allocates one blended pose map (${activeTransitionMaps} constructions)`);
-    assertThat(completedTransitionMaps === directTargetMaps, `a completed transition samples only its target (${completedTransitionMaps} vs ${directTargetMaps} Map constructions)`);
-    assertThat(JSON.stringify(beforeTransition) === JSON.stringify(idleBeforeStart), 'a transition samples only its source before the start time');
-    assertThat(JSON.stringify(atTransitionStart) === JSON.stringify(idleAtStart), 'a transition begins at its source pose exactly at the start boundary');
-    assertThat(JSON.stringify(atTransitionEnd) === JSON.stringify(bounceAtEnd), 'a completed transition returns its target pose exactly at the end boundary');
-    const zeroDurationPlayer = asset.createPlayer({ clip: 'idle', startedAtMs: 0 });
-    zeroDurationPlayer.transitionTo('bounce', 1000, 0);
-    assertThat(JSON.stringify(zeroDurationPlayer.seek(999).getPartPose('body')) === JSON.stringify(idleBeforeStart), 'a zero-duration transition keeps its source before its start');
-    assertThat(mapConstructionsDuring(() => zeroDurationPlayer.seek(1000)) === directTargetMaps, 'a zero-duration transition samples only its target at the start boundary');
-    assertThat(JSON.stringify(zeroDurationPlayer.seek(1000).getPartPose('body')) === JSON.stringify(bounceAtStart), 'a zero-duration transition selects its target at the start boundary');
-
-    const overlappingPlayer = asset.createPlayer({ clip: 'idle', startedAtMs: 0 });
-    overlappingPlayer.transitionTo('bounce', 1000, 200);
-    overlappingPlayer.transitionTo('idle', 1150, 200);
-    overlappingPlayer.transitionTo('bounce', 1250, 0);
-    const overlappingTimes = [1125, 1175, 1249, 1250, 1275, 1350];
-    const overlappingForward = overlappingTimes.map(time => JSON.stringify(overlappingPlayer.seek(time).getPartPose('body')));
-    overlappingPlayer.seek(3000);
-    const overlappingBackward = overlappingTimes.map(time => JSON.stringify(overlappingPlayer.seek(time).getPartPose('body')));
-    assertThat(JSON.stringify(overlappingForward) === JSON.stringify(overlappingBackward), 'overlapping and completed transitions retain deterministic backward seeks across their full history');
-
-    const simpleSamplingProbe = asset.createPlayer({ clip: 'bounce', startedAtMs: 0 });
-    const completedChainProbe = asset.createPlayer({ clip: 'idle', startedAtMs: 0 });
-    for (let index = 0; index < 16; index++) {
-      completedChainProbe.transitionTo(index % 2 ? 'idle' : 'bounce', 1000 + index * 300, 100);
-    }
-    const settledTime = 1000 + 15 * 300 + 500;
-    const simpleSeekMapConstructions = mapConstructionsDuring(() => simpleSamplingProbe.seek(settledTime));
-    const completedChainMapConstructions = mapConstructionsDuring(() => completedChainProbe.seek(settledTime));
-    assertThat(completedChainMapConstructions === simpleSeekMapConstructions,
-      `a settled 16-transition playback chain samples its target with the same Map construction count as one direct clip (${completedChainMapConstructions} vs ${simpleSeekMapConstructions})`);
-    player.seek(300);
-    const transformedSocket = player.getSocket('mouth');
-    assertThat(!near(transformedSocket.y, 146), 'part rotation/scale/translation transforms visual socket');
-    player.setExpression('happy');
-    assertThat(player.currentExpression === 'happy' && !player.getPartPose('face-neutral').visible && player.getPartPose('face-happy').visible, 'expression variants toggle SVG-authored groups');
-    player.setExpression('neutral');
-    player.setBasePose('body', { opacity: 1 }); paint([player], 300); const opaqueShellPixel = pixel(100, 90);
-    player.setBasePose('body', { opacity: 0.5 });
-    const fadedChild = player.partPoses().find(part => part.index === seedScoutMetadata.parts.findIndex(item => item.id === 'face-neutral'));
-    assertThat(near(fadedChild.opacity, 0.5 * player.getPartPose('body').opacity), 'parent part opacity composes into descendant parts');
-    paint([player], 300); const fadedShellPixel = pixel(100, 90);
-    assertThat(fadedShellPixel.some((channel, index) => Math.abs(channel - opaqueShellPixel[index]) > 2), `per-part opacity changes actual WebGL pixels: ${opaqueShellPixel}/${fadedShellPixel}`);
-    player.setPartVisible('body', false);
-    assertThat(!player.getPartPose('face-neutral').visible, 'parent visibility hides descendants');
-    player.setPartVisible('body', true); player.setBasePose('body', { opacity: 1 });
-
-    const coldMetrics = { initializationMs, retainedGeometryBytes: asset.mesh.byteLength, sourceSha256: asset.sourceSha256,
-      partCount: seedScoutMetadata.parts.length, instanceUploadsPerActor: initialFrame.mesh.instanceBytesUploaded,
-      geometryUploadsAtCreate: resourceCreationStats.geometryUploads, geometryUploadBytesAtCreate: resourceCreationStats.geometryBytesUploaded, gpuBufferBytes: device.stats.gpuBufferBytes,
-      gpuDrawCalls: initialFrame.device.drawCalls, rendererInitializationMs, gpuTimerExtension: Boolean(device.gl.getExtension('EXT_disjoint_timer_query')),
-      backend: device.instancingSupported ? 'ANGLE_instanced_arrays' : 'uniform-per-actor',
-      viewportCss: [innerWidth, innerHeight], socket: player.getSocket('mouth') };
-    const warmFrame = paint([player], 400);
-    assertThat(warmFrame.mesh.geometryUploads === 0 && warmFrame.mesh.geometryBytesUploaded === 0 && warmFrame.glError === 0, 'warm frame does not upload geometry');
-
-    const benchmark = [];
-    for (const count of [100, 400]) {
-      const createStart = includePopulationTimingDiagnostics ? performance.now() : null;
-      const actors = Array.from({ length: count }, () => asset.createPlayer({ clip: 'idle', startedAtMs: 0 }));
-      const createMs = createStart === null ? null : performance.now() - createStart;
-      actors[0].seek(300); actors[1].seek(300);
-      const sharedPoseState = JSON.stringify(actors[0].partPoses()) === JSON.stringify(actors[1].partPoses());
-      const matrices = actors.map((_, i) => [0.045, 0, 0, 0.045, 8 + (i % 20) * 9, 7 + Math.floor(i / 20) * 10]);
-      let cpuStart = includePopulationTimingDiagnostics ? performance.now() : null;
-      const coldQuery = includePopulationTimingDiagnostics ? beginGpuQuery(device) : null;
-      device.beginFrame({ width: 200, height: 220, clearColor: [0.875, 0.91, 0.80, 1] }); meshes.beginFrame();
-      for (let i = 0; i < count; i++) { actors[i].seek(300); actors[i].draw({ projection, matrix: matrices[i] }); }
-      const submitCpuMs = cpuStart === null ? null : performance.now() - cpuStart;
-      meshes.flush(); device.endFrame();
-      const coldGpuTimeNs = includePopulationTimingDiagnostics ? endGpuQuery(device, coldQuery) : null;
-      const firstDraw = { ...meshes.stats() }, firstDevice = { ...device.stats };
-      cpuStart = includePopulationTimingDiagnostics ? performance.now() : null;
-      const warmQuery = includePopulationTimingDiagnostics ? beginGpuQuery(device) : null;
-      device.beginFrame({ width: 200, height: 220, clearColor: [0.875, 0.91, 0.80, 1] }); meshes.beginFrame();
-      for (let i = 0; i < count; i++) { actors[i].seek(450); actors[i].draw({ projection, matrix: matrices[i] }); }
-      const warmCpuMs = cpuStart === null ? null : performance.now() - cpuStart;
-      meshes.flush(); device.endFrame();
-      const warmGpuTimeNs = includePopulationTimingDiagnostics ? endGpuQuery(device, warmQuery) : null;
-      const warm = { ...meshes.stats() }, warmDevice = { ...device.stats };
-      assertThat(warmDevice.drawCalls === (device.instancingSupported ? 1 : count), `retained actors should batch by shared pose (${count}): ${warmDevice.drawCalls} draws`);
-      benchmark.push({ actors: count, ...(includePopulationTimingDiagnostics ? {
-        playerInitMs: createMs, cpuSubmitMs: submitCpuMs, warmCpuSubmitMs: warmCpuMs,
-        gpuTimerCold: coldGpuTimeNs, gpuTimerWarm: warmGpuTimeNs,
-        jsHeapBytes: performance.memory?.usedJSHeapSize ?? null,
-      } : {}),
-        sharedPoseState,
-        geometryBytes: asset.mesh.byteLength, geometryUploadBytesCold: firstDraw.geometryBytesUploaded,
-        instanceUploadBytesCold: firstDraw.instanceBytesUploaded, instanceUploadBytesWarm: warm.instanceBytesUploaded,
-        partUniformBytesSubmitted: warm.partUniformBytesSubmitted, drawsCold: firstDevice.drawCalls, drawsWarm: warmDevice.drawCalls,
-        totalGpuBufferBytes: warmDevice.gpuBufferBytes, rendererStagingBytes: warm.stagingBytes });
-      for (const actor of actors) actor.dispose();
-    }
-
-    const independentAnimationActors = [];
-    for (const count of [100, 400]) {
-      const clips = Object.keys(seedScoutMetadata.clips), expressions = Object.keys(seedScoutMetadata.expressions);
-      const groupCounts = new Map(clips.map(clip => [clip, Array.from({ length: count }, (_, i) => clips[i % clips.length]).filter(name => name === clip).length]));
-      const groupIndices = new Map(clips.map(clip => [clip, 0]));
-      const createStart = includePopulationTimingDiagnostics ? performance.now() : null;
-      const actors = Array.from({ length: count }, (_, index) => {
-        const clip = clips[index % clips.length], ordinal = groupIndices.get(clip), groupCount = groupCounts.get(clip);
-        groupIndices.set(clip, ordinal + 1);
-        const durationMs = seedScoutMetadata.clips[clip].durationMs;
-        const phaseSpanMs = Math.max(1, durationMs / 3 - 32);
-        const phaseMs = (ordinal + 0.5) * phaseSpanMs / groupCount;
-        const actor = asset.createPlayer({ clip, startedAtMs: 1000 - phaseMs });
-        actor.setExpression(expressions[index % expressions.length]);
-        return actor;
-      });
-      const createMs = createStart === null ? null : performance.now() - createStart;
-      const matrices = actors.map((_, i) => [0.045, 0, 0, 0.045, 8 + (i % 20) * 9, 7 + Math.floor(i / 20) * 10]);
-      const frames = [];
-      const poseStates = [];
-      let distinctPoseCount = 0;
-      for (const displayTimeMs of [1000, 1016]) {
-        for (const actor of actors) actor.seek(displayTimeMs);
-        const poseKeys = new Map(), duplicatePoseIndices = [];
-        poseStates.push(JSON.stringify(actors.map(actor => actor.partPoses())));
-        actors.forEach((actor, index) => {
-          const signature = JSON.stringify(actor.partPoses()), earlier = poseKeys.get(signature);
-          if (earlier === undefined) poseKeys.set(signature, index);
-          else duplicatePoseIndices.push([earlier, index]);
-        });
-        distinctPoseCount = Math.min(distinctPoseCount || count, poseKeys.size);
-        const cpuStart = includePopulationTimingDiagnostics ? performance.now() : null;
-        const query = includePopulationTimingDiagnostics ? beginGpuQuery(device) : null;
-        device.beginFrame({ width: 200, height: 220, clearColor: [0.875, 0.91, 0.80, 1] }); meshes.beginFrame();
-        for (let i = 0; i < count; i++) actors[i].draw({ projection, matrix: matrices[i] });
-        const cpuSubmitMs = cpuStart === null ? null : performance.now() - cpuStart;
-        meshes.flush(); device.endFrame();
-        const gpuTime = includePopulationTimingDiagnostics ? endGpuQuery(device, query) : null;
-        const meshStats = { ...meshes.stats() }, deviceStats = { ...device.stats }, glError = device.gl.getError();
-        assertThat(poseKeys.size === count, `independent clip/phase/expression fixture must produce ${count} unique part poses at ${displayTimeMs}: ${poseKeys.size}; duplicates=${JSON.stringify(duplicatePoseIndices)}`);
-        assertThat(meshStats.draws === count && deviceStats.drawCalls === count && meshStats.geometryUploads === 0 && meshStats.geometryBytesUploaded === 0,
-          `independent ${count}-actor poses should submit one retained mesh draw each without frame geometry uploads: ${meshStats.draws}`);
-        frames.push({ displayTimeMs, ...(includePopulationTimingDiagnostics ? { cpuSubmitMs, gpuTimer: gpuTime } : {}), draws: meshStats.draws, instances: meshStats.instances,
-          geometryUploads: meshStats.geometryUploads, geometryBytesUploaded: meshStats.geometryBytesUploaded,
-          instanceBytesUploaded: meshStats.instanceBytesUploaded, partUniformBytesSubmitted: meshStats.partUniformBytesSubmitted,
-          glError });
-        assertThat(glError === 0, `independent ${count}-actor frame has no WebGL error`);
-      }
-      for (const actor of actors) actor.seek(1000);
-      assertThat(JSON.stringify(actors.map(actor => actor.partPoses())) === poseStates[0],
-        `independent ${count}-actor clip/phase/expression poses reproduce after a rollback seek`);
-      independentAnimationActors.push({ actors: count, ...(includePopulationTimingDiagnostics ? { playerInitMs: createMs } : {}), clips: clips.map(name => ({ name, count: groupCounts.get(name) })),
-        expressionCount: expressions.length, distinctPoseCount, frames });
-      for (const actor of actors) actor.dispose();
-    }
-
-    player.setExpression('happy');
-    const drawMesh = meshes.drawMesh;
-    const observedVariants = [];
-    meshes.drawMesh = (mesh, options) => { observedVariants.push(options.indexVariant); return drawMesh.call(meshes, mesh, options); };
-    const poseAt375 = player.seek(375).getPartPose('body').transform;
-    paint([player], 375);
-    const poseAt700 = player.seek(700).getPartPose('body').transform;
-    paint([player], 700);
-    assertThat(JSON.stringify(poseAt375) !== JSON.stringify(poseAt700), 'absolute seek changes the authored animated pose');
-    assertThat(observedVariants.length === 2 && observedVariants.every(name => name === 'happy'),
-      'seek and clip animation keep selecting the same authored expression indices');
-    observedVariants.length = 0;
-    const beforeRestore = paint([player], 375);
-    const pixelsBeforeRestore = new Uint8Array(200 * 220 * 4);
-    device.gl.readPixels(0, 0, 200, 220, device.gl.RGBA, device.gl.UNSIGNED_BYTE, pixelsBeforeRestore);
-    const loss = device.gl.getExtension('WEBGL_lose_context');
-    assertThat(Boolean(loss), 'Chromium provides WEBGL_lose_context for expression index restoration coverage');
-    const waitForContextEvent = name => new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error(name + ' did not arrive within 5 seconds')), 5000);
-      canvas.addEventListener(name, event => { clearTimeout(timeout); resolve(event); }, { once: true });
-    });
-    const lost = waitForContextEvent('webglcontextlost');
-    loss.loseContext(); await lost;
-    assertThat(device.state === 'lost' && meshes.stats().state === 'lost', 'device and retained renderer enter lost state together');
-    await new Promise(resolve => setTimeout(resolve, 80));
-    const restored = waitForContextEvent('webglcontextrestored');
-    loss.restoreContext(); await restored;
-    assertThat(device.state === 'ready' && meshes.stats().state === 'ready', 'device and expression index buffers restore together');
-    const afterRestore = paint([player], 375);
-    const pixelsAfterRestore = new Uint8Array(200 * 220 * 4);
-    device.gl.readPixels(0, 0, 200, 220, device.gl.RGBA, device.gl.UNSIGNED_BYTE, pixelsAfterRestore);
-    let restorePixelMismatch = 0;
-    for (let index = 0; index < pixelsBeforeRestore.length; index++) if (pixelsBeforeRestore[index] !== pixelsAfterRestore[index]) restorePixelMismatch++;
-    assertThat(observedVariants.at(-1) === 'happy' && afterRestore.glError === 0 && restorePixelMismatch === 0,
-      `restored expression index buffer draws the same pixels (${restorePixelMismatch} channel differences)`);
-    meshes.drawMesh = drawMesh;
-
-    const expressionTargets = new Set(Object.values(seedScoutMetadata.expressions).flatMap(item => [...item.show, ...item.hide]));
-    const expressionVisible = new Set(seedScoutMetadata.expressions[seedScoutMetadata.defaultExpression].show);
-    const visibleSourcePaths = sourcePaths.filter(path => !expressionTargets.has(path.part) || expressionVisible.has(path.part));
-    const pathPipelineBenchmark = [];
-    if (includePopulationTimingDiagnostics) for (const count of [100, 400]) {
-      const pathCanvas = document.createElement('canvas'); pathCanvas.width = 200; pathCanvas.height = 220;
-      const pathStart = performance.now();
-      const pathDevice = new WebGLDevice(pathCanvas, { alpha: false, antialias: false, depth: false, stencil: false });
-      const context = new VectorContext(pathDevice, { initialVertices: 16384, maxVertices: 524288 });
-      const initializeMs = performance.now() - pathStart;
-      const columns = 20, actorScale = 0.045;
-      const started = performance.now();
-      const pathQuery = beginGpuQuery(pathDevice);
-      context.beginFrame({ width: 200, height: 220, clearColor: [0.875, 0.91, 0.80, 1] });
-      for (let actorIndex = 0; actorIndex < count; actorIndex++) {
-        const x = 8 + (actorIndex % columns) * 9, y = 7 + Math.floor(actorIndex / columns) * 10;
-        context.save(); context.setTransform(actorScale, 0, 0, actorScale, x, y);
-        for (const path of visibleSourcePaths) {
-          context.beginPath();
-          for (const subpath of path.subpaths) {
-            if (!subpath.points.length) continue;
-            context.moveTo(...subpath.points[0]);
-            for (let pointIndex = 1; pointIndex < subpath.points.length; pointIndex++) context.lineTo(...subpath.points[pointIndex]);
-            if (subpath.closed) context.closePath();
-          }
-          if (path.fill !== 'none' && path.fillOpacity * path.opacity > 0) {
-            context.fillStyle = path.fill; context.globalAlpha = path.fillOpacity * path.opacity; context.fill(path.fillRule);
-          }
-          if (path.stroke !== 'none' && path.strokeWidth > 0 && path.strokeOpacity * path.opacity > 0) {
-            context.strokeStyle = path.stroke; context.lineWidth = path.strokeWidth; context.lineCap = path.strokeLineCap;
-            context.lineJoin = path.strokeLineJoin; context.miterLimit = path.strokeMiterLimit;
-            context.globalAlpha = path.strokeOpacity * path.opacity; context.stroke();
-          }
+    const PANEL_STATE = await page.evaluate(async () => {
+        const WAIT_FRAME = () => new Promise((resolve) => requestAnimationFrame(resolve));
+        await WAIT_FRAME();
+        await WAIT_FRAME();
+        const DEMO = window.vectorAssetDemo;
+        const FAIL = (message) => {
+            throw new Error('Three-view example: ' + message);
+        };
+        if (!DEMO?.ready || !DEMO.asset || !DEMO.actor) {
+            FAIL('SVG source and WebGL resources did not finish loading');
         }
-        context.restore();
-      }
-      const pathStats = context.endFrame(), pathCpuMs = performance.now() - started, pathDeviceStats = { ...pathDevice.stats };
-      const pathGpuTimer = endGpuQuery(pathDevice, pathQuery);
-      const uploadedBytes = pathStats.uploadedBytes, drawCalls = pathStats.drawCalls;
-      context.dispose(); pathDevice.dispose();
-      pathPipelineBenchmark.push({ actors: count, rendererInitializationMs: initializeMs, cpuSubmitAndTessellateMs: pathCpuMs, gpuTimer: pathGpuTimer,
-        uploadsBytes: uploadedBytes, drawCalls, vertices: pathStats.vertices, stagingBytes: pathStats.stagingBytes,
-        gpuBufferBytes: pathStats.gpuBufferBytes, bufferUploads: pathDeviceStats.bufferUploads, sourcePathsPerActor: visibleSourcePaths.length });
-      pathCanvas.remove();
+        const SUBMITTED_VARIANTS = [];
+        const DRAW_MESH = DEMO.meshes.drawMesh.bind(DEMO.meshes);
+        DEMO.meshes.drawMesh = (mesh, options) => {
+            SUBMITTED_VARIANTS.push(options?.indexVariant ?? null);
+            return DRAW_MESH(mesh, options);
+        };
+        const CLIP = document.querySelector('#clip'),
+            TIME = document.querySelector('#time');
+        const EXPRESSION = document.querySelector('#expression'),
+            ZOOM = document.querySelector('#zoom');
+        CLIP.value = 'bounce';
+        CLIP.dispatchEvent(
+            new Event('change', {
+                bubbles: true,
+            }),
+        );
+        TIME.value = '220';
+        TIME.dispatchEvent(
+            new Event('input', {
+                bubbles: true,
+            }),
+        );
+        EXPRESSION.value = 'happy';
+        EXPRESSION.dispatchEvent(
+            new Event('change', {
+                bubbles: true,
+            }),
+        );
+        ZOOM.value = '1.50';
+        ZOOM.dispatchEvent(
+            new Event('input', {
+                bubbles: true,
+            }),
+        );
+        document.querySelector('#play-toggle').click();
+        await WAIT_FRAME();
+        await WAIT_FRAME();
+        const EXPRESSION_INDEX_VARIANT_USED = SUBMITTED_VARIANTS.includes('happy');
+        DEMO.actor.setPartVisible('face-happy', false);
+        await WAIT_FRAME();
+        const EXPLICIT_VISIBILITY_USES_FULL_GEOMETRY = SUBMITTED_VARIANTS.at(-1) === null;
+        DEMO.actor.setExpression('happy');
+        await WAIT_FRAME();
+        const EXPRESSION_VARIANT_RESTORED_AFTER_OVERRIDE = SUBMITTED_VARIANTS.at(-1) === 'happy';
+        const BODY = DEMO.actor.getPartPose('body');
+        const SOURCE_BODY = DEMO.sourceSvg.querySelector('[data-vector-part="body"]').getAttribute('transform');
+        const SOURCE_MATRIX = SOURCE_BODY.slice(7, -1).split(/[ ,]+/).map(Number);
+        const STAGES = [...document.querySelectorAll('.stage')].map((stage) => {
+            const RECT = stage.getBoundingClientRect();
+            return {
+                width: RECT.width,
+                height: RECT.height,
+            };
+        });
+        const RESULT = {
+            ready: DEMO.ready,
+            clip: DEMO.actor.currentClip,
+            timeMs: DEMO.actor.currentTimeMs,
+            expression: DEMO.actor.currentExpression,
+            zoom: DEMO.camera.zoom,
+            sourceSha256: DEMO.sourceSvg ? DEMO.asset.sourceSha256 : '',
+            sourceBodyPoseMatches:
+                SOURCE_MATRIX.length === 6 &&
+                SOURCE_MATRIX.every((value, index) => Math.abs(value - BODY.transform[index]) <= 0.006),
+            happyShown: DEMO.sourceSvg.querySelector('[data-vector-part="face-happy"]').style.display !== 'none',
+            neutralHidden: DEMO.sourceSvg.querySelector('[data-vector-part="face-neutral"]').style.display === 'none',
+            expressionIndexVariantUsed: EXPRESSION_INDEX_VARIANT_USED,
+            explicitVisibilityUsesFullGeometry: EXPLICIT_VISIBILITY_USES_FULL_GEOMETRY,
+            expressionVariantRestoredAfterOverride: EXPRESSION_VARIANT_RESTORED_AFTER_OVERRIDE,
+            triangles: DEMO.topology.triangles,
+            compiledTriangles: DEMO.asset.mesh.indices.length / 3,
+            visibleTriangles: DEMO.lastFrame.topology.visibleTriangles,
+            uniqueEdges: DEMO.topology.uniqueEdges,
+            webglBackend: DEMO.device.instancingSupported
+                ? 'WebGL 1 + ANGLE instancing'
+                : 'WebGL 1 + per-draw uniforms',
+            drawCalls: DEMO.lastFrame.gamekit.device.drawCalls,
+            meshBytes: DEMO.asset.mesh.byteLength,
+            sourceMetrics: document.querySelector('#source-metrics').textContent,
+            topologyMetrics: document.querySelector('#topology-metrics').textContent,
+            gamekitMetrics: document.querySelector('#gamekit-metrics').textContent,
+            stages: STAGES,
+            sourceViewBox: DEMO.sourceSvg.getAttribute('viewBox'),
+            viewport: [innerWidth, innerHeight],
+            bodyHeight: document.body.getBoundingClientRect().height,
+            mainHeight: document.querySelector('main').getBoundingClientRect().height,
+        };
+        CLIP.value = 'idle';
+        CLIP.dispatchEvent(
+            new Event('change', {
+                bubbles: true,
+            }),
+        );
+        EXPRESSION.value = 'neutral';
+        EXPRESSION.dispatchEvent(
+            new Event('change', {
+                bubbles: true,
+            }),
+        );
+        ZOOM.value = '1.00';
+        ZOOM.dispatchEvent(
+            new Event('input', {
+                bubbles: true,
+            }),
+        );
+        document.querySelector('#center-camera').click();
+        TIME.value = '0';
+        TIME.dispatchEvent(
+            new Event('input', {
+                bubbles: true,
+            }),
+        );
+        document.querySelector('#play-toggle').click();
+        await WAIT_FRAME();
+        await WAIT_FRAME();
+        return RESULT;
+    });
+    assert.equal(PANEL_STATE.ready, true);
+    assert.equal(PANEL_STATE.clip, 'bounce');
+    assert.equal(PANEL_STATE.timeMs, 220, 'shared absolute time is applied to the GameKit player');
+    assert.equal(PANEL_STATE.expression, 'happy');
+    assert.equal(PANEL_STATE.zoom, 1.5);
+    assert.match(PANEL_STATE.sourceSha256, /^[a-f0-9]{64}$/);
+    assert.equal(PANEL_STATE.sourceBodyPoseMatches, true, 'the source SVG view uses the same authored part pose');
+    assert.equal(PANEL_STATE.happyShown, true);
+    assert.equal(PANEL_STATE.neutralHidden, true);
+    assert.equal(
+        PANEL_STATE.expressionIndexVariantUsed,
+        true,
+        'authored expressions select their prefiltered retained triangle indices',
+    );
+    assert.equal(
+        PANEL_STATE.explicitVisibilityUsesFullGeometry,
+        true,
+        'explicit per-part visibility keeps the unfiltered geometry path',
+    );
+    assert.equal(
+        PANEL_STATE.expressionVariantRestoredAfterOverride,
+        true,
+        'selecting a new expression restores the matching index variant',
+    );
+    assert.equal(PANEL_STATE.triangles, PANEL_STATE.compiledTriangles);
+    assert.ok(PANEL_STATE.visibleTriangles > 0 && PANEL_STATE.visibleTriangles < PANEL_STATE.triangles);
+    assert.ok(PANEL_STATE.uniqueEdges > PANEL_STATE.triangles);
+    assert.match(PANEL_STATE.webglBackend, /^WebGL 1/);
+    assert.ok(
+        PANEL_STATE.drawCalls > 0 &&
+            PANEL_STATE.meshBytes === STANDARD_MESH_BYTES &&
+            PANEL_STATE.meshBytes < LEGACY_MESH_BYTES,
+        'the three-view example retains the same valid 4/2 geometry measured from its source',
+    );
+    assert.match(PANEL_STATE.sourceMetrics, /source bytes/);
+    assert.match(PANEL_STATE.topologyMetrics, /visible triangles/);
+    assert.match(PANEL_STATE.gamekitMetrics, /draw calls/);
+    assert.ok(
+        Math.min(...PANEL_STATE.stages.map((stage) => stage.width)) > 200,
+        'all three panels remain readable at mobile landscape width',
+    );
+    assert.ok(
+        Math.min(...PANEL_STATE.stages.map((stage) => stage.height)) > 100,
+        'all three panels remain visible at mobile landscape height',
+    );
+    assert.ok(
+        Math.max(...PANEL_STATE.stages.map((stage) => stage.height)) < 260,
+        'three panels fit the mobile landscape viewport without vertical overflow',
+    );
+    assert.ok(
+        Math.max(...PANEL_STATE.stages.map((stage) => stage.height)) -
+            Math.min(...PANEL_STATE.stages.map((stage) => stage.height)) <
+            1.5,
+        'the three camera viewports have matching dimensions',
+    );
+    const PAN_STAGE = page.locator('#source-stage'),
+        BOX = await PAN_STAGE.boundingBox();
+    await page.mouse.move(BOX.x + BOX.width / 2, BOX.y + BOX.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(BOX.x + BOX.width / 2 + 6, BOX.y + BOX.height / 2 + 4);
+    await page.mouse.up();
+    const MOVED_CAMERA = await page.evaluate(() => ({
+        x: vectorAssetDemo.camera.x,
+        y: vectorAssetDemo.camera.y,
+    }));
+    assert.notEqual(MOVED_CAMERA.x, 100, 'dragging one panel pans the shared camera');
+    assert.notEqual(MOVED_CAMERA.y, 110, 'vertical pan is shared');
+    await page.locator('#center-camera').click();
+    const CENTERED_CAMERA = await page.evaluate(() => ({
+        x: vectorAssetDemo.camera.x,
+        y: vectorAssetDemo.camera.y,
+    }));
+    assert.deepEqual(
+        CENTERED_CAMERA,
+        {
+            x: 100,
+            y: 110,
+        },
+        'center resets the shared camera',
+    );
+    const REPORT = await page.evaluate(
+        async ({
+            sourcePaths,
+            threeCompileMs,
+            includePopulationTimingDiagnostics,
+            standardMeshBytes,
+            legacyMeshBytes,
+        }) => {
+            const MODULES = window.vectorAssetRuntime ?? {
+                ...(await import('/dist/rendering.js')),
+                ...(await import('/dist/vector-assets.js')),
+            };
+            const {
+                WebGLDevice: WEB_GL_DEVICE,
+                MeshRenderer: MESH_RENDERER,
+                VectorContext: VECTOR_CONTEXT,
+                createSeedScout: CREATE_SEED_SCOUT,
+                seedScoutMetadata: SEED_SCOUT_METADATA,
+            } = MODULES;
+            const ASSERT_THAT = (condition, message) => {
+                if (!condition) {
+                    throw new Error(message);
+                }
+            };
+            const NEAR = (a, b, epsilon = 1e-6) => Math.abs(a - b) <= epsilon;
+            const BEGIN_GPU_QUERY = (device) => {
+                const EXTENSION = device.gl.getExtension('EXT_disjoint_timer_query');
+                if (!EXTENSION) {
+                    return null;
+                }
+                const QUERY = EXTENSION.createQueryEXT();
+                EXTENSION.beginQueryEXT(EXTENSION.TIME_ELAPSED_EXT, QUERY);
+                return {
+                    extension: EXTENSION,
+                    query: QUERY,
+                };
+            };
+            const END_GPU_QUERY = (device, record) => {
+                if (!record) {
+                    return {
+                        elapsedNs: null,
+                        status: 'unsupported',
+                    };
+                }
+                const { extension: EXTENSION, query: QUERY } = record;
+                EXTENSION.endQueryEXT(EXTENSION.TIME_ELAPSED_EXT);
+                device.gl.finish();
+                const READY = EXTENSION.getQueryObjectEXT(QUERY, EXTENSION.QUERY_RESULT_AVAILABLE_EXT);
+                const DISJOINT = device.gl.getParameter(EXTENSION.GPU_DISJOINT_EXT);
+                const ELAPSED_NS =
+                    READY && !DISJOINT ? EXTENSION.getQueryObjectEXT(QUERY, EXTENSION.QUERY_RESULT_EXT) : null;
+                EXTENSION.deleteQueryEXT(QUERY);
+                return {
+                    elapsedNs: ELAPSED_NS,
+                    status: !READY ? 'unavailable' : DISJOINT ? 'disjoint' : 'measured',
+                };
+            };
+            const CANVAS = document.createElement('canvas');
+            CANVAS.width = 200;
+            CANVAS.height = 220;
+            CANVAS.style.cssText = 'width: 200px; height: 220px';
+            document.body.append(CANVAS);
+            const RENDERER_INIT_START = performance.now();
+            const DEVICE = new WEB_GL_DEVICE(CANVAS, {
+                alpha: false,
+                antialias: false,
+                depth: false,
+                stencil: false,
+                preserveDrawingBuffer: true,
+                checkGLErrors: true,
+            });
+            const MESHES = new MESH_RENDERER(DEVICE, {
+                maxMeshes: 4,
+                maxInstances: 1024,
+            });
+            const RENDERER_INITIALIZATION_MS = performance.now() - RENDERER_INIT_START;
+            const COLD_START = performance.now(),
+                ASSET = CREATE_SEED_SCOUT(MESHES),
+                INITIALIZATION_MS = performance.now() - COLD_START;
+            const RESOURCE_CREATION_STATS = MESHES.stats();
+            const PLAYER = ASSET.createPlayer({
+                clip: 'idle',
+                startedAtMs: 0,
+            });
+            const STATIC_PART_POSES = PLAYER.partPoses();
+            ASSERT_THAT(
+                STATIC_PART_POSES.every(
+                    (pose) =>
+                        Array.isArray(pose.morph) &&
+                        pose.morph.length === 2 &&
+                        pose.morph[0] === 0 &&
+                        pose.morph[1] === 0,
+                ),
+                'styleless assets preserve the public two-weight part pose with default zero morph values',
+            );
+            ASSERT_THAT(
+                STATIC_PART_POSES.every((pose, index) => index === 0 || pose.morph !== STATIC_PART_POSES[0].morph) &&
+                    !Object.isFrozen(STATIC_PART_POSES[0].morph),
+                'public styleless part poses keep independent mutable zero-morph tuples',
+            );
+            const PROJECTION = [2 / 200, 0, 0, 0, -2 / 220, 0, -1, 1, 1];
+            const PAINT = (actors = [PLAYER], timeMs = 0) => {
+                DEVICE.beginFrame({
+                    width: 200,
+                    height: 220,
+                    clearColor: [0.875, 0.91, 0.8, 1],
+                    clearDepth: 1,
+                    clearStencil: 0,
+                });
+                MESHES.beginFrame();
+                for (const ACTOR of actors) {
+                    ACTOR.seek(timeMs);
+                    ACTOR.draw({
+                        projection: PROJECTION,
+                    });
+                }
+                MESHES.flush();
+                DEVICE.endFrame();
+                return {
+                    mesh: MESHES.stats(),
+                    device: {
+                        ...DEVICE.stats,
+                    },
+                    glError: DEVICE.gl.getError(),
+                };
+            };
+            const PIXEL = (x, y) => {
+                const DATA = new Uint8Array(4);
+                DEVICE.gl.readPixels(x, 219 - y, 1, 1, DEVICE.gl.RGBA, DEVICE.gl.UNSIGNED_BYTE, DATA);
+                return [...DATA];
+            };
+            const ORIGINAL_DRAW_MESH = MESHES.drawMesh;
+            let submittedParts;
+            let submittedMorph;
+            MESHES.drawMesh = function (mesh, options) {
+                submittedParts = options.parts;
+                submittedMorph = options.morph;
+                return ORIGINAL_DRAW_MESH.call(this, mesh, options);
+            };
+            const INITIAL_FRAME = PAINT();
+            MESHES.drawMesh = ORIGINAL_DRAW_MESH;
+            ASSERT_THAT(
+                submittedParts?.every((pose) => !Object.hasOwn(pose, 'morph')) &&
+                    Array.isArray(submittedMorph) &&
+                    submittedMorph[0] === 0 &&
+                    submittedMorph[1] === 0,
+                'render-only part poses omit discarded per-part morph arrays and retain the draw-level morph value',
+            );
+            console.log('VECTOR_STAGE initial-frame');
+            const BODY_PIXEL = PIXEL(100, 112),
+                HOLE_PIXEL = PIXEL(80, 48),
+                BACKGROUND = [223, 232, 204, 255];
+            ASSERT_THAT(
+                BODY_PIXEL[1] > 100 && BODY_PIXEL[0] < BACKGROUND[0] && BODY_PIXEL[0] > 60,
+                `SVG body color reaches WebGL pixels: ${BODY_PIXEL}`,
+            );
+            PLAYER.setPartVisible('leaf-left', false);
+            PAINT();
+            const UNDER_HOLE_PIXEL = PIXEL(80, 48);
+            PLAYER.setPartVisible('leaf-left', true);
+            ASSERT_THAT(
+                HOLE_PIXEL.every((channel, index) => Math.abs(channel - UNDER_HOLE_PIXEL[index]) <= 2),
+                `evenodd compound leaf hole matches its visible under-layer: ${HOLE_PIXEL}/${UNDER_HOLE_PIXEL}`,
+            );
+            ASSERT_THAT(
+                INITIAL_FRAME.glError === 0 && INITIAL_FRAME.device.drawCalls >= 1,
+                'real WebGL draw and GL error check',
+            );
+            ASSERT_THAT(
+                INITIAL_FRAME.mesh.geometryUploads === 0 && INITIAL_FRAME.mesh.geometryBytesUploaded === 0,
+                'asset geometry was uploaded only at resource creation',
+            );
+            ASSERT_THAT(
+                ASSET.mesh.byteLength === standardMeshBytes &&
+                    ASSET.mesh.byteLength > 0 &&
+                    ASSET.mesh.byteLength < legacyMeshBytes &&
+                    MESHES.stats().meshCount === 1,
+                'the bundled fixture retains valid default geometry smaller than explicit 16/12',
+            );
+            ASSERT_THAT(
+                NEAR(PLAYER.getSocket('mouth').x, 100) && NEAR(PLAYER.getSocket('mouth').y, 146),
+                'authored socket at SVG coordinates',
+            );
+            const BEFORE_FAILED_CREATE = {
+                bytes: DEVICE.stats.gpuBufferBytes,
+                retained: MESHES.stats().retainedBytes,
+                meshes: MESHES.stats().meshCount,
+            };
+            const UPLOAD_INDICES = DEVICE.uploadIndices;
+            let indexUploads = 0;
+            let failedCreate = null;
+            DEVICE.uploadIndices = function (buffer, indices) {
+                indexUploads++;
+                if (indexUploads === 2) {
+                    throw new Error('injected expression index upload failure');
+                }
+                return UPLOAD_INDICES.call(this, buffer, indices);
+            };
+            const GEOMETRY_INPUT = {
+                vertices: ASSET.mesh.vertices,
+                strideFloats: 11,
+                partCount: ASSET.mesh.partCount,
+                morphCount: ASSET.mesh.morphCount,
+                indices: ASSET.mesh.indices,
+                expressionIndices: Object.fromEntries(
+                    [...ASSET.mesh.expressionIndices].map(([name, variant]) => [name, variant.indices]),
+                ),
+            };
+            try {
+                MESHES.createMesh(GEOMETRY_INPUT);
+            } catch (error) {
+                failedCreate = error;
+            } finally {
+                DEVICE.uploadIndices = UPLOAD_INDICES;
+            }
+            ASSERT_THAT(
+                failedCreate?.message === 'injected expression index upload failure',
+                'expression index upload failure reaches the caller',
+            );
+            ASSERT_THAT(
+                DEVICE.stats.gpuBufferBytes === BEFORE_FAILED_CREATE.bytes &&
+                    MESHES.stats().retainedBytes === BEFORE_FAILED_CREATE.retained &&
+                    MESHES.stats().meshCount === BEFORE_FAILED_CREATE.meshes,
+                'failed expression index upload releases every partial GPU allocation',
+            );
+            let nullVariantsRejected = false;
+            try {
+                MESHES.createMesh({
+                    ...GEOMETRY_INPUT,
+                    expressionIndices: null,
+                });
+            } catch (error) {
+                nullVariantsRejected = /triangles/.test(error.message);
+            }
+            ASSERT_THAT(
+                nullVariantsRejected,
+                'an explicit null expression index map is rejected instead of silently treated as absent',
+            );
+            PLAYER.seek(0);
+            const EXPANDED_VERTICES = new Float32Array(ASSET.mesh.indices.length * 11);
+            for (let i = 0; i < ASSET.mesh.indices.length; i++) {
+                EXPANDED_VERTICES.set(
+                    ASSET.mesh.vertices.subarray(ASSET.mesh.indices[i] * 11, ASSET.mesh.indices[i] * 11 + 11),
+                    i * 11,
+                );
+            }
+            const EXPANDED_MESH = MESHES.createMesh({
+                vertices: EXPANDED_VERTICES,
+                strideFloats: 11,
+                partCount: ASSET.mesh.partCount,
+                morphCount: ASSET.mesh.morphCount,
+            });
+            const ACTOR_PARTS = PLAYER.partPoses().map(({ transform, opacity, visible }) => ({
+                transform,
+                opacity,
+                visible,
+            }));
+            const CAPTURE = (mesh) => {
+                DEVICE.beginFrame({
+                    width: 200,
+                    height: 220,
+                    clearColor: [0.875, 0.91, 0.8, 1],
+                });
+                MESHES.beginFrame();
+                MESHES.drawMesh(mesh, {
+                    projection: PROJECTION,
+                    parts: ACTOR_PARTS,
+                });
+                MESHES.flush();
+                DEVICE.endFrame();
+                const PIXELS = new Uint8Array(200 * 220 * 4);
+                DEVICE.gl.readPixels(0, 0, 200, 220, DEVICE.gl.RGBA, DEVICE.gl.UNSIGNED_BYTE, PIXELS);
+                return {
+                    pixels: PIXELS,
+                    glError: DEVICE.gl.getError(),
+                };
+            };
+            const INDEXED_CAPTURE = CAPTURE(ASSET.mesh),
+                EXPANDED_CAPTURE = CAPTURE(EXPANDED_MESH);
+            let pixelMismatch = 0;
+            for (let i = 0; i < INDEXED_CAPTURE.pixels.length; i++) {
+                if (INDEXED_CAPTURE.pixels[i] !== EXPANDED_CAPTURE.pixels[i]) {
+                    pixelMismatch++;
+                }
+            }
+            ASSERT_THAT(
+                INDEXED_CAPTURE.glError === 0 && EXPANDED_CAPTURE.glError === 0 && pixelMismatch === 0,
+                `indexed and expanded retained geometry render the same pixels (${pixelMismatch} channel differences)`,
+            );
+            const INDEXED_PARITY = {
+                pixelMismatch,
+                indexedBytes: ASSET.mesh.byteLength,
+                expandedBytes: EXPANDED_VERTICES.byteLength,
+                savedBytes: EXPANDED_VERTICES.byteLength - ASSET.mesh.byteLength,
+            };
+            MESHES.deleteMesh(EXPANDED_MESH);
+            const FIRST_POSE = PLAYER.seek(375).getPartPose('body');
+            PLAYER.seek(900);
+            const ROLLBACK_POSE = PLAYER.seek(375).getPartPose('body');
+            ASSERT_THAT(
+                JSON.stringify(FIRST_POSE) === JSON.stringify(ROLLBACK_POSE),
+                'same absolute clip time reproduces exactly the same pose after rollback seek',
+            );
+            PLAYER.transitionTo('bounce', 1000, 200);
+            const TRANSITION = PLAYER.seek(1100).getPartPose('body');
+            PLAYER.seek(1400);
+            const TRANSITION_ROLLBACK = PLAYER.seek(1100).getPartPose('body');
+            ASSERT_THAT(
+                JSON.stringify(TRANSITION) === JSON.stringify(TRANSITION_ROLLBACK),
+                'clip transition is deterministic under seek rollback',
+            );
+            const MAP_CONSTRUCTIONS_DURING = (callback) => {
+                const NATIVE_MAP = window.Map;
+                let constructions = 0;
+                window.Map = class CountingMap extends NATIVE_MAP {
+                    constructor(...args) {
+                        constructions++;
+                        super(...args);
+                    }
+                };
+                try {
+                    callback();
+                    return constructions;
+                } finally {
+                    window.Map = NATIVE_MAP;
+                }
+            };
+            const BOUNDARY_PLAYER = ASSET.createPlayer({
+                clip: 'idle',
+                startedAtMs: 0,
+            });
+            const IDLE_BEFORE_START = ASSET.createPlayer({
+                clip: 'idle',
+                startedAtMs: 0,
+            })
+                .seek(999)
+                .getPartPose('body');
+            const IDLE_AT_START = ASSET.createPlayer({
+                clip: 'idle',
+                startedAtMs: 0,
+            })
+                .seek(1000)
+                .getPartPose('body');
+            const BOUNCE_AT_START = ASSET.createPlayer({
+                clip: 'bounce',
+                startedAtMs: 1000,
+            })
+                .seek(1000)
+                .getPartPose('body');
+            const BOUNCE_AT_END = ASSET.createPlayer({
+                clip: 'bounce',
+                startedAtMs: 1000,
+            })
+                .seek(1200)
+                .getPartPose('body');
+            const IDLE_PROBE = ASSET.createPlayer({
+                clip: 'idle',
+                startedAtMs: 0,
+            });
+            const BOUNCE_PROBE = ASSET.createPlayer({
+                clip: 'bounce',
+                startedAtMs: 1000,
+            });
+            BOUNDARY_PLAYER.transitionTo('bounce', 1000, 200);
+            const DIRECT_SOURCE_MAPS = MAP_CONSTRUCTIONS_DURING(() => IDLE_PROBE.seek(1100));
+            const DIRECT_TARGET_MAPS = MAP_CONSTRUCTIONS_DURING(() => BOUNCE_PROBE.seek(1100));
+            const BEFORE_START_MAPS = MAP_CONSTRUCTIONS_DURING(() => BOUNDARY_PLAYER.seek(999));
+            const AT_START_MAPS = MAP_CONSTRUCTIONS_DURING(() => BOUNDARY_PLAYER.seek(1000));
+            const ACTIVE_TRANSITION_MAPS = MAP_CONSTRUCTIONS_DURING(() => BOUNDARY_PLAYER.seek(1100));
+            const COMPLETED_TRANSITION_MAPS = MAP_CONSTRUCTIONS_DURING(() => BOUNDARY_PLAYER.seek(1200));
+            const BEFORE_TRANSITION = BOUNDARY_PLAYER.seek(999).getPartPose('body');
+            const AT_TRANSITION_START = BOUNDARY_PLAYER.seek(1000).getPartPose('body');
+            const AT_TRANSITION_END = BOUNDARY_PLAYER.seek(1200).getPartPose('body');
+            ASSERT_THAT(
+                BEFORE_START_MAPS === DIRECT_SOURCE_MAPS,
+                `a transition before its start samples only its source (${BEFORE_START_MAPS} vs ${DIRECT_SOURCE_MAPS} Map constructions)`,
+            );
+            ASSERT_THAT(
+                AT_START_MAPS === DIRECT_SOURCE_MAPS,
+                `a positive-duration transition samples only its source at the zero-progress start boundary (${AT_START_MAPS} vs ${DIRECT_SOURCE_MAPS} Map constructions)`,
+            );
+            ASSERT_THAT(
+                ACTIVE_TRANSITION_MAPS === DIRECT_SOURCE_MAPS + DIRECT_TARGET_MAPS + 1,
+                `an active transition samples both clips and allocates one blended pose map (${ACTIVE_TRANSITION_MAPS} constructions)`,
+            );
+            ASSERT_THAT(
+                COMPLETED_TRANSITION_MAPS === DIRECT_TARGET_MAPS,
+                `a completed transition samples only its target (${COMPLETED_TRANSITION_MAPS} vs ${DIRECT_TARGET_MAPS} Map constructions)`,
+            );
+            ASSERT_THAT(
+                JSON.stringify(BEFORE_TRANSITION) === JSON.stringify(IDLE_BEFORE_START),
+                'a transition samples only its source before the start time',
+            );
+            ASSERT_THAT(
+                JSON.stringify(AT_TRANSITION_START) === JSON.stringify(IDLE_AT_START),
+                'a transition begins at its source pose exactly at the start boundary',
+            );
+            ASSERT_THAT(
+                JSON.stringify(AT_TRANSITION_END) === JSON.stringify(BOUNCE_AT_END),
+                'a completed transition returns its target pose exactly at the end boundary',
+            );
+            const ZERO_DURATION_PLAYER = ASSET.createPlayer({
+                clip: 'idle',
+                startedAtMs: 0,
+            });
+            ZERO_DURATION_PLAYER.transitionTo('bounce', 1000, 0);
+            ASSERT_THAT(
+                JSON.stringify(ZERO_DURATION_PLAYER.seek(999).getPartPose('body')) ===
+                    JSON.stringify(IDLE_BEFORE_START),
+                'a zero-duration transition keeps its source before its start',
+            );
+            ASSERT_THAT(
+                MAP_CONSTRUCTIONS_DURING(() => ZERO_DURATION_PLAYER.seek(1000)) === DIRECT_TARGET_MAPS,
+                'a zero-duration transition samples only its target at the start boundary',
+            );
+            ASSERT_THAT(
+                JSON.stringify(ZERO_DURATION_PLAYER.seek(1000).getPartPose('body')) === JSON.stringify(BOUNCE_AT_START),
+                'a zero-duration transition selects its target at the start boundary',
+            );
+            const OVERLAPPING_PLAYER = ASSET.createPlayer({
+                clip: 'idle',
+                startedAtMs: 0,
+            });
+            OVERLAPPING_PLAYER.transitionTo('bounce', 1000, 200);
+            OVERLAPPING_PLAYER.transitionTo('idle', 1150, 200);
+            OVERLAPPING_PLAYER.transitionTo('bounce', 1250, 0);
+            const OVERLAPPING_TIMES = [1125, 1175, 1249, 1250, 1275, 1350];
+            const OVERLAPPING_FORWARD = OVERLAPPING_TIMES.map((time) =>
+                JSON.stringify(OVERLAPPING_PLAYER.seek(time).getPartPose('body')),
+            );
+            OVERLAPPING_PLAYER.seek(3000);
+            const OVERLAPPING_BACKWARD = OVERLAPPING_TIMES.map((time) =>
+                JSON.stringify(OVERLAPPING_PLAYER.seek(time).getPartPose('body')),
+            );
+            ASSERT_THAT(
+                JSON.stringify(OVERLAPPING_FORWARD) === JSON.stringify(OVERLAPPING_BACKWARD),
+                'overlapping and completed transitions retain deterministic backward seeks across their full history',
+            );
+            const SIMPLE_SAMPLING_PROBE = ASSET.createPlayer({
+                clip: 'bounce',
+                startedAtMs: 0,
+            });
+            const COMPLETED_CHAIN_PROBE = ASSET.createPlayer({
+                clip: 'idle',
+                startedAtMs: 0,
+            });
+            for (let index = 0; index < 16; index++) {
+                COMPLETED_CHAIN_PROBE.transitionTo(index % 2 ? 'idle' : 'bounce', 1000 + index * 300, 100);
+            }
+            const SETTLED_TIME = 1000 + 15 * 300 + 500;
+            const SIMPLE_SEEK_MAP_CONSTRUCTIONS = MAP_CONSTRUCTIONS_DURING(() =>
+                SIMPLE_SAMPLING_PROBE.seek(SETTLED_TIME),
+            );
+            const COMPLETED_CHAIN_MAP_CONSTRUCTIONS = MAP_CONSTRUCTIONS_DURING(() =>
+                COMPLETED_CHAIN_PROBE.seek(SETTLED_TIME),
+            );
+            ASSERT_THAT(
+                COMPLETED_CHAIN_MAP_CONSTRUCTIONS === SIMPLE_SEEK_MAP_CONSTRUCTIONS,
+                `a settled 16-transition playback chain samples its target with the same Map construction count as one direct clip (${COMPLETED_CHAIN_MAP_CONSTRUCTIONS} vs ${SIMPLE_SEEK_MAP_CONSTRUCTIONS})`,
+            );
+            PLAYER.seek(300);
+            const TRANSFORMED_SOCKET = PLAYER.getSocket('mouth');
+            ASSERT_THAT(!NEAR(TRANSFORMED_SOCKET.y, 146), 'part rotation/scale/translation transforms visual socket');
+            PLAYER.setExpression('happy');
+            ASSERT_THAT(
+                PLAYER.currentExpression === 'happy' &&
+                    !PLAYER.getPartPose('face-neutral').visible &&
+                    PLAYER.getPartPose('face-happy').visible,
+                'expression variants toggle SVG-authored groups',
+            );
+            PLAYER.setExpression('neutral');
+            PLAYER.setBasePose('body', {
+                opacity: 1,
+            });
+            PAINT([PLAYER], 300);
+            const OPAQUE_SHELL_PIXEL = PIXEL(100, 90);
+            PLAYER.setBasePose('body', {
+                opacity: 0.5,
+            });
+            const FADED_CHILD = PLAYER.partPoses().find(
+                (part) => part.index === SEED_SCOUT_METADATA.parts.findIndex((item) => item.id === 'face-neutral'),
+            );
+            ASSERT_THAT(
+                NEAR(FADED_CHILD.opacity, 0.5 * PLAYER.getPartPose('body').opacity),
+                'parent part opacity composes into descendant parts',
+            );
+            PAINT([PLAYER], 300);
+            const FADED_SHELL_PIXEL = PIXEL(100, 90);
+            ASSERT_THAT(
+                FADED_SHELL_PIXEL.some((channel, index) => Math.abs(channel - OPAQUE_SHELL_PIXEL[index]) > 2),
+                `per-part opacity changes actual WebGL pixels: ${OPAQUE_SHELL_PIXEL}/${FADED_SHELL_PIXEL}`,
+            );
+            PLAYER.setPartVisible('body', false);
+            ASSERT_THAT(!PLAYER.getPartPose('face-neutral').visible, 'parent visibility hides descendants');
+            PLAYER.setPartVisible('body', true);
+            PLAYER.setBasePose('body', {
+                opacity: 1,
+            });
+            const COLD_METRICS = {
+                initializationMs: INITIALIZATION_MS,
+                retainedGeometryBytes: ASSET.mesh.byteLength,
+                sourceSha256: ASSET.sourceSha256,
+                partCount: SEED_SCOUT_METADATA.parts.length,
+                instanceUploadsPerActor: INITIAL_FRAME.mesh.instanceBytesUploaded,
+                geometryUploadsAtCreate: RESOURCE_CREATION_STATS.geometryUploads,
+                geometryUploadBytesAtCreate: RESOURCE_CREATION_STATS.geometryBytesUploaded,
+                gpuBufferBytes: DEVICE.stats.gpuBufferBytes,
+                gpuDrawCalls: INITIAL_FRAME.device.drawCalls,
+                rendererInitializationMs: RENDERER_INITIALIZATION_MS,
+                gpuTimerExtension: Boolean(DEVICE.gl.getExtension('EXT_disjoint_timer_query')),
+                backend: DEVICE.instancingSupported ? 'ANGLE_instanced_arrays' : 'uniform-per-actor',
+                viewportCss: [innerWidth, innerHeight],
+                socket: PLAYER.getSocket('mouth'),
+            };
+            const WARM_FRAME = PAINT([PLAYER], 400);
+            ASSERT_THAT(
+                WARM_FRAME.mesh.geometryUploads === 0 &&
+                    WARM_FRAME.mesh.geometryBytesUploaded === 0 &&
+                    WARM_FRAME.glError === 0,
+                'warm frame does not upload geometry',
+            );
+            const BENCHMARK = [];
+            for (const COUNT of [100, 400]) {
+                const CREATE_START = includePopulationTimingDiagnostics ? performance.now() : null;
+                const ACTORS = Array.from(
+                    {
+                        length: COUNT,
+                    },
+                    () =>
+                        ASSET.createPlayer({
+                            clip: 'idle',
+                            startedAtMs: 0,
+                        }),
+                );
+                const CREATE_MS = CREATE_START === null ? null : performance.now() - CREATE_START;
+                ACTORS[0].seek(300);
+                ACTORS[1].seek(300);
+                const SHARED_POSE_STATE =
+                    JSON.stringify(ACTORS[0].partPoses()) === JSON.stringify(ACTORS[1].partPoses());
+                const MATRICES = ACTORS.map((_, i) => [
+                    0.045,
+                    0,
+                    0,
+                    0.045,
+                    8 + (i % 20) * 9,
+                    7 + Math.floor(i / 20) * 10,
+                ]);
+                let cpuStart = includePopulationTimingDiagnostics ? performance.now() : null;
+                const COLD_QUERY = includePopulationTimingDiagnostics ? BEGIN_GPU_QUERY(DEVICE) : null;
+                DEVICE.beginFrame({
+                    width: 200,
+                    height: 220,
+                    clearColor: [0.875, 0.91, 0.8, 1],
+                });
+                MESHES.beginFrame();
+                for (let i = 0; i < COUNT; i++) {
+                    ACTORS[i].seek(300);
+                    ACTORS[i].draw({
+                        projection: PROJECTION,
+                        matrix: MATRICES[i],
+                    });
+                }
+                const SUBMIT_CPU_MS = cpuStart === null ? null : performance.now() - cpuStart;
+                MESHES.flush();
+                DEVICE.endFrame();
+                const COLD_GPU_TIME_NS = includePopulationTimingDiagnostics ? END_GPU_QUERY(DEVICE, COLD_QUERY) : null;
+                const FIRST_DRAW = {
+                        ...MESHES.stats(),
+                    },
+                    FIRST_DEVICE = {
+                        ...DEVICE.stats,
+                    };
+                cpuStart = includePopulationTimingDiagnostics ? performance.now() : null;
+                const WARM_QUERY = includePopulationTimingDiagnostics ? BEGIN_GPU_QUERY(DEVICE) : null;
+                DEVICE.beginFrame({
+                    width: 200,
+                    height: 220,
+                    clearColor: [0.875, 0.91, 0.8, 1],
+                });
+                MESHES.beginFrame();
+                for (let i = 0; i < COUNT; i++) {
+                    ACTORS[i].seek(450);
+                    ACTORS[i].draw({
+                        projection: PROJECTION,
+                        matrix: MATRICES[i],
+                    });
+                }
+                const WARM_CPU_MS = cpuStart === null ? null : performance.now() - cpuStart;
+                MESHES.flush();
+                DEVICE.endFrame();
+                const WARM_GPU_TIME_NS = includePopulationTimingDiagnostics ? END_GPU_QUERY(DEVICE, WARM_QUERY) : null;
+                const WARM = {
+                        ...MESHES.stats(),
+                    },
+                    WARM_DEVICE = {
+                        ...DEVICE.stats,
+                    };
+                ASSERT_THAT(
+                    WARM_DEVICE.drawCalls === (DEVICE.instancingSupported ? 1 : COUNT),
+                    `retained actors should batch by shared pose (${COUNT}): ${WARM_DEVICE.drawCalls} draws`,
+                );
+                BENCHMARK.push({
+                    actors: COUNT,
+                    ...(includePopulationTimingDiagnostics
+                        ? {
+                              playerInitMs: CREATE_MS,
+                              cpuSubmitMs: SUBMIT_CPU_MS,
+                              warmCpuSubmitMs: WARM_CPU_MS,
+                              gpuTimerCold: COLD_GPU_TIME_NS,
+                              gpuTimerWarm: WARM_GPU_TIME_NS,
+                              jsHeapBytes: performance.memory?.usedJSHeapSize ?? null,
+                          }
+                        : {}),
+                    sharedPoseState: SHARED_POSE_STATE,
+                    geometryBytes: ASSET.mesh.byteLength,
+                    geometryUploadBytesCold: FIRST_DRAW.geometryBytesUploaded,
+                    instanceUploadBytesCold: FIRST_DRAW.instanceBytesUploaded,
+                    instanceUploadBytesWarm: WARM.instanceBytesUploaded,
+                    partUniformBytesSubmitted: WARM.partUniformBytesSubmitted,
+                    drawsCold: FIRST_DEVICE.drawCalls,
+                    drawsWarm: WARM_DEVICE.drawCalls,
+                    totalGpuBufferBytes: WARM_DEVICE.gpuBufferBytes,
+                    rendererStagingBytes: WARM.stagingBytes,
+                });
+                for (const ACTOR of ACTORS) {
+                    ACTOR.dispose();
+                }
+            }
+            const INDEPENDENT_ANIMATION_ACTORS = [];
+            for (const COUNT of [100, 400]) {
+                const CLIPS = Object.keys(SEED_SCOUT_METADATA.clips),
+                    EXPRESSIONS = Object.keys(SEED_SCOUT_METADATA.expressions);
+                const GROUP_COUNTS = new Map(
+                    CLIPS.map((clip) => [
+                        clip,
+                        Array.from(
+                            {
+                                length: COUNT,
+                            },
+                            (_, i) => CLIPS[i % CLIPS.length],
+                        ).filter((name) => name === clip).length,
+                    ]),
+                );
+                const GROUP_INDICES = new Map(CLIPS.map((clip) => [clip, 0]));
+                const CREATE_START = includePopulationTimingDiagnostics ? performance.now() : null;
+                const ACTORS = Array.from(
+                    {
+                        length: COUNT,
+                    },
+                    (_, index) => {
+                        const CLIP = CLIPS[index % CLIPS.length],
+                            ORDINAL = GROUP_INDICES.get(CLIP),
+                            GROUP_COUNT = GROUP_COUNTS.get(CLIP);
+                        GROUP_INDICES.set(CLIP, ORDINAL + 1);
+                        const DURATION_MS = SEED_SCOUT_METADATA.clips[CLIP].durationMs;
+                        const PHASE_SPAN_MS = Math.max(1, DURATION_MS / 3 - 32);
+                        const PHASE_MS = ((ORDINAL + 0.5) * PHASE_SPAN_MS) / GROUP_COUNT;
+                        const ACTOR = ASSET.createPlayer({
+                            clip: CLIP,
+                            startedAtMs: 1000 - PHASE_MS,
+                        });
+                        ACTOR.setExpression(EXPRESSIONS[index % EXPRESSIONS.length]);
+                        return ACTOR;
+                    },
+                );
+                const CREATE_MS = CREATE_START === null ? null : performance.now() - CREATE_START;
+                const MATRICES = ACTORS.map((_, i) => [
+                    0.045,
+                    0,
+                    0,
+                    0.045,
+                    8 + (i % 20) * 9,
+                    7 + Math.floor(i / 20) * 10,
+                ]);
+                const FRAMES = [];
+                const POSE_STATES = [];
+                let distinctPoseCount = 0;
+                for (const DISPLAY_TIME_MS of [1000, 1016]) {
+                    for (const ACTOR of ACTORS) {
+                        ACTOR.seek(DISPLAY_TIME_MS);
+                    }
+                    const POSE_KEYS = new Map(),
+                        DUPLICATE_POSE_INDICES = [];
+                    POSE_STATES.push(JSON.stringify(ACTORS.map((actor) => actor.partPoses())));
+                    ACTORS.forEach((actor, index) => {
+                        const SIGNATURE = JSON.stringify(actor.partPoses()),
+                            EARLIER = POSE_KEYS.get(SIGNATURE);
+                        if (EARLIER === undefined) {
+                            POSE_KEYS.set(SIGNATURE, index);
+                        } else {
+                            DUPLICATE_POSE_INDICES.push([EARLIER, index]);
+                        }
+                    });
+                    distinctPoseCount = Math.min(distinctPoseCount || COUNT, POSE_KEYS.size);
+                    const CPU_START = includePopulationTimingDiagnostics ? performance.now() : null;
+                    const QUERY = includePopulationTimingDiagnostics ? BEGIN_GPU_QUERY(DEVICE) : null;
+                    DEVICE.beginFrame({
+                        width: 200,
+                        height: 220,
+                        clearColor: [0.875, 0.91, 0.8, 1],
+                    });
+                    MESHES.beginFrame();
+                    for (let i = 0; i < COUNT; i++) {
+                        ACTORS[i].draw({
+                            projection: PROJECTION,
+                            matrix: MATRICES[i],
+                        });
+                    }
+                    const CPU_SUBMIT_MS = CPU_START === null ? null : performance.now() - CPU_START;
+                    MESHES.flush();
+                    DEVICE.endFrame();
+                    const GPU_TIME = includePopulationTimingDiagnostics ? END_GPU_QUERY(DEVICE, QUERY) : null;
+                    const MESH_STATS = {
+                            ...MESHES.stats(),
+                        },
+                        DEVICE_STATS = {
+                            ...DEVICE.stats,
+                        },
+                        GL_ERROR = DEVICE.gl.getError();
+                    ASSERT_THAT(
+                        POSE_KEYS.size === COUNT,
+                        `independent clip/phase/expression fixture must produce ${COUNT} unique part poses at ${DISPLAY_TIME_MS}: ${POSE_KEYS.size}; duplicates=${JSON.stringify(DUPLICATE_POSE_INDICES)}`,
+                    );
+                    ASSERT_THAT(
+                        MESH_STATS.draws === COUNT &&
+                            DEVICE_STATS.drawCalls === COUNT &&
+                            MESH_STATS.geometryUploads === 0 &&
+                            MESH_STATS.geometryBytesUploaded === 0,
+                        `independent ${COUNT}-actor poses should submit one retained mesh draw each without frame geometry uploads: ${MESH_STATS.draws}`,
+                    );
+                    FRAMES.push({
+                        displayTimeMs: DISPLAY_TIME_MS,
+                        ...(includePopulationTimingDiagnostics
+                            ? {
+                                  cpuSubmitMs: CPU_SUBMIT_MS,
+                                  gpuTimer: GPU_TIME,
+                              }
+                            : {}),
+                        draws: MESH_STATS.draws,
+                        instances: MESH_STATS.instances,
+                        geometryUploads: MESH_STATS.geometryUploads,
+                        geometryBytesUploaded: MESH_STATS.geometryBytesUploaded,
+                        instanceBytesUploaded: MESH_STATS.instanceBytesUploaded,
+                        partUniformBytesSubmitted: MESH_STATS.partUniformBytesSubmitted,
+                        glError: GL_ERROR,
+                    });
+                    ASSERT_THAT(GL_ERROR === 0, `independent ${COUNT}-actor frame has no WebGL error`);
+                }
+                for (const ACTOR of ACTORS) {
+                    ACTOR.seek(1000);
+                }
+                ASSERT_THAT(
+                    JSON.stringify(ACTORS.map((actor) => actor.partPoses())) === POSE_STATES[0],
+                    `independent ${COUNT}-actor clip/phase/expression poses reproduce after a rollback seek`,
+                );
+                INDEPENDENT_ANIMATION_ACTORS.push({
+                    actors: COUNT,
+                    ...(includePopulationTimingDiagnostics
+                        ? {
+                              playerInitMs: CREATE_MS,
+                          }
+                        : {}),
+                    clips: CLIPS.map((name) => ({
+                        name,
+                        count: GROUP_COUNTS.get(name),
+                    })),
+                    expressionCount: EXPRESSIONS.length,
+                    distinctPoseCount,
+                    frames: FRAMES,
+                });
+                for (const ACTOR of ACTORS) {
+                    ACTOR.dispose();
+                }
+            }
+            PLAYER.setExpression('happy');
+            const DRAW_MESH = MESHES.drawMesh;
+            const OBSERVED_VARIANTS = [];
+            MESHES.drawMesh = (mesh, options) => {
+                OBSERVED_VARIANTS.push(options.indexVariant);
+                return DRAW_MESH.call(MESHES, mesh, options);
+            };
+            const POSE_AT375 = PLAYER.seek(375).getPartPose('body').transform;
+            PAINT([PLAYER], 375);
+            const POSE_AT700 = PLAYER.seek(700).getPartPose('body').transform;
+            PAINT([PLAYER], 700);
+            ASSERT_THAT(
+                JSON.stringify(POSE_AT375) !== JSON.stringify(POSE_AT700),
+                'absolute seek changes the authored animated pose',
+            );
+            ASSERT_THAT(
+                OBSERVED_VARIANTS.length === 2 && OBSERVED_VARIANTS.every((name) => name === 'happy'),
+                'seek and clip animation keep selecting the same authored expression indices',
+            );
+            OBSERVED_VARIANTS.length = 0;
+            PAINT([PLAYER], 375);
+            const PIXELS_BEFORE_RESTORE = new Uint8Array(200 * 220 * 4);
+            DEVICE.gl.readPixels(0, 0, 200, 220, DEVICE.gl.RGBA, DEVICE.gl.UNSIGNED_BYTE, PIXELS_BEFORE_RESTORE);
+            const LOSS = DEVICE.gl.getExtension('WEBGL_lose_context');
+            ASSERT_THAT(
+                Boolean(LOSS),
+                'Chromium provides WEBGL_lose_context for expression index restoration coverage',
+            );
+            const WAIT_FOR_CONTEXT_EVENT = (name) =>
+                new Promise((resolve, reject) => {
+                    const TIMEOUT = setTimeout(
+                        () => reject(new Error(name + ' did not arrive within 5 seconds')),
+                        5000,
+                    );
+                    CANVAS.addEventListener(
+                        name,
+                        (event) => {
+                            clearTimeout(TIMEOUT);
+                            resolve(event);
+                        },
+                        {
+                            once: true,
+                        },
+                    );
+                });
+            const LOST = WAIT_FOR_CONTEXT_EVENT('webglcontextlost');
+            LOSS.loseContext();
+            await LOST;
+            ASSERT_THAT(
+                DEVICE.state === 'lost' && MESHES.stats().state === 'lost',
+                'device and retained renderer enter lost state together',
+            );
+            await new Promise((resolve) => setTimeout(resolve, 80));
+            const RESTORED = WAIT_FOR_CONTEXT_EVENT('webglcontextrestored');
+            LOSS.restoreContext();
+            await RESTORED;
+            ASSERT_THAT(
+                DEVICE.state === 'ready' && MESHES.stats().state === 'ready',
+                'device and expression index buffers restore together',
+            );
+            const AFTER_RESTORE = PAINT([PLAYER], 375);
+            const PIXELS_AFTER_RESTORE = new Uint8Array(200 * 220 * 4);
+            DEVICE.gl.readPixels(0, 0, 200, 220, DEVICE.gl.RGBA, DEVICE.gl.UNSIGNED_BYTE, PIXELS_AFTER_RESTORE);
+            let restorePixelMismatch = 0;
+            for (let index = 0; index < PIXELS_BEFORE_RESTORE.length; index++) {
+                if (PIXELS_BEFORE_RESTORE[index] !== PIXELS_AFTER_RESTORE[index]) {
+                    restorePixelMismatch++;
+                }
+            }
+            ASSERT_THAT(
+                OBSERVED_VARIANTS.at(-1) === 'happy' && AFTER_RESTORE.glError === 0 && restorePixelMismatch === 0,
+                `restored expression index buffer draws the same pixels (${restorePixelMismatch} channel differences)`,
+            );
+            MESHES.drawMesh = DRAW_MESH;
+            const EXPRESSION_TARGETS = new Set(
+                Object.values(SEED_SCOUT_METADATA.expressions).flatMap((item) => [...item.show, ...item.hide]),
+            );
+            const EXPRESSION_VISIBLE = new Set(
+                SEED_SCOUT_METADATA.expressions[SEED_SCOUT_METADATA.defaultExpression].show,
+            );
+            const VISIBLE_SOURCE_PATHS = sourcePaths.filter(
+                (path) => !EXPRESSION_TARGETS.has(path.part) || EXPRESSION_VISIBLE.has(path.part),
+            );
+            const PATH_PIPELINE_BENCHMARK = [];
+            if (includePopulationTimingDiagnostics) {
+                for (const COUNT of [100, 400]) {
+                    const PATH_CANVAS = document.createElement('canvas');
+                    PATH_CANVAS.width = 200;
+                    PATH_CANVAS.height = 220;
+                    const PATH_START = performance.now();
+                    const PATH_DEVICE = new WEB_GL_DEVICE(PATH_CANVAS, {
+                        alpha: false,
+                        antialias: false,
+                        depth: false,
+                        stencil: false,
+                    });
+                    const CONTEXT = new VECTOR_CONTEXT(PATH_DEVICE, {
+                        initialVertices: 16384,
+                        maxVertices: 524288,
+                    });
+                    const INITIALIZE_MS = performance.now() - PATH_START;
+                    const COLUMNS = 20,
+                        ACTOR_SCALE = 0.045;
+                    const STARTED = performance.now();
+                    const PATH_QUERY = BEGIN_GPU_QUERY(PATH_DEVICE);
+                    CONTEXT.beginFrame({
+                        width: 200,
+                        height: 220,
+                        clearColor: [0.875, 0.91, 0.8, 1],
+                    });
+                    for (let actorIndex = 0; actorIndex < COUNT; actorIndex++) {
+                        const X = 8 + (actorIndex % COLUMNS) * 9,
+                            Y = 7 + Math.floor(actorIndex / COLUMNS) * 10;
+                        CONTEXT.save();
+                        CONTEXT.setTransform(ACTOR_SCALE, 0, 0, ACTOR_SCALE, X, Y);
+                        for (const PATH of VISIBLE_SOURCE_PATHS) {
+                            CONTEXT.beginPath();
+                            for (const SUBPATH of PATH.subpaths) {
+                                if (!SUBPATH.points.length) {
+                                    continue;
+                                }
+                                CONTEXT.moveTo(...SUBPATH.points[0]);
+                                for (let pointIndex = 1; pointIndex < SUBPATH.points.length; pointIndex++) {
+                                    CONTEXT.lineTo(...SUBPATH.points[pointIndex]);
+                                }
+                                if (SUBPATH.closed) {
+                                    CONTEXT.closePath();
+                                }
+                            }
+                            if (PATH.fill !== 'none' && PATH.fillOpacity * PATH.opacity > 0) {
+                                CONTEXT.fillStyle = PATH.fill;
+                                CONTEXT.globalAlpha = PATH.fillOpacity * PATH.opacity;
+                                CONTEXT.fill(PATH.fillRule);
+                            }
+                            if (
+                                PATH.stroke !== 'none' &&
+                                PATH.strokeWidth > 0 &&
+                                PATH.strokeOpacity * PATH.opacity > 0
+                            ) {
+                                CONTEXT.strokeStyle = PATH.stroke;
+                                CONTEXT.lineWidth = PATH.strokeWidth;
+                                CONTEXT.lineCap = PATH.strokeLineCap;
+                                CONTEXT.lineJoin = PATH.strokeLineJoin;
+                                CONTEXT.miterLimit = PATH.strokeMiterLimit;
+                                CONTEXT.globalAlpha = PATH.strokeOpacity * PATH.opacity;
+                                CONTEXT.stroke();
+                            }
+                        }
+                        CONTEXT.restore();
+                    }
+                    const PATH_STATS = CONTEXT.endFrame(),
+                        PATH_CPU_MS = performance.now() - STARTED,
+                        PATH_DEVICE_STATS = {
+                            ...PATH_DEVICE.stats,
+                        };
+                    const PATH_GPU_TIMER = END_GPU_QUERY(PATH_DEVICE, PATH_QUERY);
+                    const UPLOADED_BYTES = PATH_STATS.uploadedBytes,
+                        DRAW_CALLS = PATH_STATS.drawCalls;
+                    CONTEXT.dispose();
+                    PATH_DEVICE.dispose();
+                    PATH_PIPELINE_BENCHMARK.push({
+                        actors: COUNT,
+                        rendererInitializationMs: INITIALIZE_MS,
+                        cpuSubmitAndTessellateMs: PATH_CPU_MS,
+                        gpuTimer: PATH_GPU_TIMER,
+                        uploadsBytes: UPLOADED_BYTES,
+                        drawCalls: DRAW_CALLS,
+                        vertices: PATH_STATS.vertices,
+                        stagingBytes: PATH_STATS.stagingBytes,
+                        gpuBufferBytes: PATH_STATS.gpuBufferBytes,
+                        bufferUploads: PATH_DEVICE_STATS.bufferUploads,
+                        sourcePathsPerActor: VISIBLE_SOURCE_PATHS.length,
+                    });
+                    PATH_CANVAS.remove();
+                }
+            }
+            const OLD_MESH_COUNT = MESHES.stats().meshCount,
+                OLD_BUFFER_BYTES = DEVICE.stats.gpuBufferBytes;
+            const DISPOSED_PLAYER = PLAYER;
+            ASSERT_THAT(DISPOSED_PLAYER.dispose(), 'player disposes once');
+            ASSERT_THAT(ASSET.dispose() && !ASSET.dispose(), 'asset disposes idempotently');
+            ASSERT_THAT(
+                MESHES.stats().meshCount === OLD_MESH_COUNT - 1 && MESHES.stats().retainedBytes === 0,
+                'asset disposal releases exactly its retained geometry',
+            );
+            ASSERT_THAT(
+                OLD_BUFFER_BYTES - DEVICE.stats.gpuBufferBytes === ASSET.mesh.byteLength,
+                'asset disposal releases base and expression index buffer bytes',
+            );
+            const REPLACEMENT = CREATE_SEED_SCOUT(MESHES),
+                REPLACEMENT_PLAYER = REPLACEMENT.createPlayer();
+            PAINT([REPLACEMENT_PLAYER], 0);
+            ASSERT_THAT(
+                MESHES.stats().meshCount === 1 && DEVICE.gl.getError() === 0,
+                'dispose and recreate renders again on the same renderer/device',
+            );
+            REPLACEMENT_PLAYER.dispose();
+            const RENDERER_BUFFERS_BEFORE_DISPOSE = DEVICE.stats.gpuBufferBytes;
+            MESHES.dispose();
+            ASSERT_THAT(
+                MESHES.stats().retainedBytes === 0 && DEVICE.stats.gpuBufferBytes === 0,
+                `renderer disposal releases every expression buffer (${RENDERER_BUFFERS_BEFORE_DISPOSE} bytes before disposal)`,
+            );
+            REPLACEMENT.dispose();
+            DEVICE.dispose();
+            CANVAS.remove();
+            return {
+                status: 'PASS',
+                sourceSha256: ASSET.sourceSha256,
+                coldMetrics: COLD_METRICS,
+                indexedParity: INDEXED_PARITY,
+                warm: {
+                    geometryUploads: WARM_FRAME.mesh.geometryUploads,
+                    geometryBytesUploaded: WARM_FRAME.mesh.geometryBytesUploaded,
+                },
+                benchmark: {
+                    timingDiagnosticsEnabled: includePopulationTimingDiagnostics,
+                    svgLoaderCompileMs: threeCompileMs,
+                    retainedMeshInstances: BENCHMARK,
+                    independentAnimationActors: INDEPENDENT_ANIMATION_ACTORS,
+                    vectorContextPerFramePathTessellation: PATH_PIPELINE_BENCHMARK,
+                    threeBasedProcessing: {
+                        svgLoader: 'Three SVGLoader build-time only',
+                        runtimeRenderer: 'not introduced',
+                        outputGeometryBytes: ASSET.mesh.byteLength,
+                        gpuPath:
+                            'same retained GameKit MeshRenderer mesh; see retainedMeshInstances (compiled source mesh uploaded once)',
+                    },
+                },
+                expressionIndexLifecycle: {
+                    indexedCreateFailureCleanupBytes: BEFORE_FAILED_CREATE.bytes,
+                    seekVariants: OBSERVED_VARIANTS,
+                    contextRestorePixelMismatch: restorePixelMismatch,
+                    retainedMeshBytesReleased: ASSET.mesh.byteLength,
+                    rendererBufferBytesReleased: RENDERER_BUFFERS_BEFORE_DISPOSE,
+                },
+                checks: [
+                    'WebGL1 real draw and zero GL error',
+                    'evenodd hole and stroke/pixel color',
+                    'SVG metadata pivots and sockets',
+                    'part hierarchy visibility and opacity',
+                    'neutral/happy expression group variants',
+                    'expression variants across animated seek and context restore',
+                    'failed expression index allocation cleanup',
+                    'mesh/renderer disposal releases expression index buffers',
+                    'clip switch and repeat seek after rollback',
+                    'transition seek after rollback',
+                    'dispose and recreate',
+                    'mobile landscape viewport',
+                ],
+            };
+        },
+        {
+            sourcePaths: REFERENCE_ASSET.sourcePaths,
+            threeCompileMs: THREE_COMPILE_MS,
+            includePopulationTimingDiagnostics,
+            standardMeshBytes: STANDARD_MESH_BYTES,
+            legacyMeshBytes: LEGACY_MESH_BYTES,
+        },
+    );
+    assert.equal(REPORT.status, 'PASS');
+    assert.equal(REPORT.benchmark.timingDiagnosticsEnabled, includePopulationTimingDiagnostics);
+    assert.equal(REPORT.benchmark.retainedMeshInstances.length, 2);
+    assert.equal(REPORT.benchmark.independentAnimationActors.length, 2);
+    assert.equal(
+        REPORT.benchmark.vectorContextPerFramePathTessellation.length,
+        includePopulationTimingDiagnostics ? 2 : 0,
+    );
+    for (const ROW of [
+        ...REPORT.benchmark.retainedMeshInstances,
+        ...REPORT.benchmark.independentAnimationActors,
+        ...REPORT.benchmark.vectorContextPerFramePathTessellation,
+    ]) {
+        assert.ok(ROW.actors === 100 || ROW.actors === 400);
     }
-
-    const oldMeshCount = meshes.stats().meshCount, oldBufferBytes = device.stats.gpuBufferBytes;
-    const disposedPlayer = player; assertThat(disposedPlayer.dispose(), 'player disposes once');
-    assertThat(asset.dispose() && !asset.dispose(), 'asset disposes idempotently');
-    assertThat(meshes.stats().meshCount === oldMeshCount - 1 && meshes.stats().retainedBytes === 0, 'asset disposal releases exactly its retained geometry');
-    assertThat(oldBufferBytes - device.stats.gpuBufferBytes === asset.mesh.byteLength, 'asset disposal releases base and expression index buffer bytes');
-    const replacement = createSeedScout(meshes), replacementPlayer = replacement.createPlayer();
-    paint([replacementPlayer], 0);
-    assertThat(meshes.stats().meshCount === 1 && device.gl.getError() === 0, 'dispose and recreate renders again on the same renderer/device');
-    replacementPlayer.dispose();
-    const rendererBuffersBeforeDispose = device.stats.gpuBufferBytes;
-    meshes.dispose();
-    assertThat(meshes.stats().retainedBytes === 0 && device.stats.gpuBufferBytes === 0,
-      `renderer disposal releases every expression buffer (${rendererBuffersBeforeDispose} bytes before disposal)`);
-    replacement.dispose(); device.dispose(); canvas.remove();
-    return { status: 'PASS', sourceSha256: asset.sourceSha256, coldMetrics, indexedParity, warm: { geometryUploads: warmFrame.mesh.geometryUploads, geometryBytesUploaded: warmFrame.mesh.geometryBytesUploaded },
-      benchmark: { timingDiagnosticsEnabled: includePopulationTimingDiagnostics, svgLoaderCompileMs: threeCompileMs, retainedMeshInstances: benchmark, independentAnimationActors,
-        vectorContextPerFramePathTessellation: pathPipelineBenchmark,
-        threeBasedProcessing: { svgLoader: 'Three SVGLoader build-time only', runtimeRenderer: 'not introduced', outputGeometryBytes: asset.mesh.byteLength,
-          gpuPath: 'same retained GameKit MeshRenderer mesh; see retainedMeshInstances (compiled source mesh uploaded once)' } },
-      expressionIndexLifecycle: { indexedCreateFailureCleanupBytes: beforeFailedCreate.bytes, seekVariants: observedVariants, contextRestorePixelMismatch: restorePixelMismatch,
-        retainedMeshBytesReleased: asset.mesh.byteLength, rendererBufferBytesReleased: rendererBuffersBeforeDispose },
-      checks: ['WebGL1 real draw and zero GL error', 'evenodd hole and stroke/pixel color', 'SVG metadata pivots and sockets', 'part hierarchy visibility and opacity',
-        'neutral/happy expression group variants', 'expression variants across animated seek and context restore', 'failed expression index allocation cleanup',
-        'mesh/renderer disposal releases expression index buffers', 'clip switch and repeat seek after rollback', 'transition seek after rollback', 'dispose and recreate', 'mobile landscape viewport'] };
-  }, { sourcePaths: referenceAsset.sourcePaths, threeCompileMs, includePopulationTimingDiagnostics, standardMeshBytes, legacyMeshBytes });
-  assert.equal(report.status, 'PASS');
-  assert.equal(report.benchmark.timingDiagnosticsEnabled, includePopulationTimingDiagnostics);
-  assert.equal(report.benchmark.retainedMeshInstances.length, 2);
-  assert.equal(report.benchmark.independentAnimationActors.length, 2);
-  assert.equal(report.benchmark.vectorContextPerFramePathTessellation.length, includePopulationTimingDiagnostics ? 2 : 0);
-  for (const row of [...report.benchmark.retainedMeshInstances, ...report.benchmark.independentAnimationActors, ...report.benchmark.vectorContextPerFramePathTessellation]) assert.ok(row.actors === 100 || row.actors === 400);
-  for (const row of report.benchmark.independentAnimationActors) assert.equal(row.distinctPoseCount, row.actors);
-  report.checks.push('100/400 independently phased clips and expression variants remain seek-deterministic, submit one draw per distinct multipart pose, and reuse retained geometry');
-  report.threeViewExample = panelState;
-  report.checks.unshift('same authored SVG source SHA and pose across original/source, compiled triangle topology, and GameKit WebGL panels; shared time/expression/zoom/pan; mobile landscape layout');
-  return report;
+    for (const ROW of REPORT.benchmark.independentAnimationActors) {
+        assert.equal(ROW.distinctPoseCount, ROW.actors);
+    }
+    REPORT.checks.push(
+        '100/400 independently phased clips and expression variants remain seek-deterministic, submit one draw per distinct multipart pose, and reuse retained geometry',
+    );
+    REPORT.threeViewExample = PANEL_STATE;
+    REPORT.checks.unshift(
+        'same authored SVG source SHA and pose across original/source, compiled triangle topology, and GameKit WebGL panels; shared time/expression/zoom/pan; mobile landscape layout',
+    );
+    return REPORT;
 }

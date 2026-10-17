@@ -19,12 +19,12 @@ node --expose-gc modules/debug-tools/scripts/benchmark.mjs /tmp/debug-before.mjs
 node --expose-gc modules/debug-tools/scripts/benchmark.mjs
 ```
 
-| 작업 | capacity | 기준 중앙 CPU ms | 변경 중앙 CPU ms |
-|---|---:|---:|---:|
-| frame 100,000개 | 30 | 37.746 | 24.106 |
-| frame 100,000개 | 1000 | 399.986 | 19.910 |
-| snapshot 500회 × 16 stages | 30 | 71.315 | 72.909 |
-| snapshot 500회 × 16 stages | 1000 | 2295.704 | 1608.177 |
+| 작업                       | capacity | 기준 중앙 CPU ms | 변경 중앙 CPU ms |
+| -------------------------- | -------: | ---------------: | ---------------: |
+| frame 100,000개            |       30 |           37.746 |           24.106 |
+| frame 100,000개            |     1000 |          399.986 |           19.910 |
+| snapshot 500회 × 16 stages |       30 |           71.315 |           72.909 |
+| snapshot 500회 × 16 stages |     1000 |         2295.704 |         1608.177 |
 
 작은 snapshot은 이 실행에서 약 2% 느렸고 절대 차이는 500회에 1.6 ms다. 큰 snapshot은 약 30% 개선했다. 단독 초기 fixture의 frame 기록은 capacity 30에서 21.55→20.75 ms, capacity 1000에서 32.74→21.57 ms였다. 즉 JIT/fixture 순서/GC에 따른 절대 편차가 크므로 ring의 이득을 항상 20배라고 주장하지 않는다. 이득이 작은 기본 workload와 큰 workload를 함께 제시한다.
 
