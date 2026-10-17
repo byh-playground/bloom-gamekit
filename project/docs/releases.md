@@ -1,3 +1,13 @@
+## v0.11.6 (2026-10-17)
+
+VectorContext adds a module-owned unit-quad renderer for full circles, ellipses, rectangles, and single-segment strokes.
+It captures each shape's transform, color, alpha, stroke width, and cap or join style.
+Full-ellipse fast paths defer arc point sampling unless the path later needs the existing vector fallback.
+ANGLE devices batch compatible instances while preserving painter order and clipping.
+Unsupported shapes keep the existing path fallback.
+The fixed browser E2E checks real WebGL pixels, warm-frame tessellation, and instance-upload counters.
+GPU completion time and physical mobile performance remain unmeasured.
+
 ## v0.11.4 (2026-10-17)
 
 공통 코드 규칙을 Prettier와 ESLint로 검사합니다. 내부 const 바인딩을 UPPER_SNAKE_CASE로 정리하되 공개 export·import 이름, 객체 키, 클래스 이름, 함수 인자 수와 runtime 계약은 유지합니다. 소스·예제의 형식 정리로 비압축 배포 bytes가 바뀌므로 기존 불변 태그를 보존하기 위해 호환 PATCH를 발행합니다. API·wire protocol·게임 snapshot·replay 형식과 소비자 게임의 고정 버전은 바꾸지 않습니다.

@@ -383,3 +383,27 @@ pathStrokeBuilds (stroke geometry builds), and meshCreates (successful retained 
 Existing drawCalls, bufferUploads and bufferBytes count actual device submissions. These counts do not measure GPU completion.
 MeshRenderer has no per-frame geometry rebuild API: geometryUploads measures retained creation/restoration, not instance buffer uploads.
 Use FrameMetrics from debug-tools to retain selected numbers with the same frame's CPU stage observations; no profiler is installed automatically.
+
+## Shared primitive instances (0.11.6)
+
+VectorContext routes eligible simple shapes through one module-owned unit quad.
+The fast path supports full circles and ellipses, rectangle fills and eligible strokes, and one-segment strokes.
+Each instance captures its transform, paint color and alpha, stroke width, and cap or join.
+ANGLE devices batch adjacent instances in painter order.
+Devices without instancing draw the same quad with uniforms.
+
+After initialization, the fast path uploads no primitive geometry and samples no full-ellipse path points.
+It builds path geometry only when a fallback or a later path command needs the original contour.
+ANGLE devices upload 64 bytes of instance data per primitive.
+The `primitives` stats field has frame and lifetime records.
+It exposes `instances`, `instanceUploads`, `instanceBytesUploaded`, and `draws` counters.
+It also exposes `instancedDraws`, `flushes`, instancing availability, and pending instances.
+The device's `bufferUploads` counter also includes these instance uploads.
+
+Fast paths retain Canvas path transforms, effective alpha, convex clips, stencil clips, and submission order.
+Partial arcs, compound paths, holes, rounded rectangles, gradients, and dashed strokes use the existing path renderer.
+Bevel rectangle joins and sheared rectangle strokes also use the existing path renderer.
+VectorContext owns primitive buffers and shader programs and restores and releases them with the context.
+The integrated `npm run test:browser` scenario checks real Chromium/WebGL pixels for fills, strokes, transforms, alpha, and clips.
+It also checks warm-frame tessellation and instance-upload counters.
+This correctness check does not measure GPU completion or mobile performance.

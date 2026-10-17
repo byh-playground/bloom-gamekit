@@ -1,5 +1,6 @@
 import { VectorRenderer } from './vector-renderer.js';
 import { MeshRenderer } from './mesh-renderer.js';
+import { PrimitiveRenderer } from './primitive-renderer.js';
 const TAU = Math.PI * 2;
 const MAX_LINEAR_GRADIENT_STOPS = 32;
 const LINEAR_GRADIENT_SIZE = 1024;
@@ -14,6 +15,38 @@ const SILHOUETTE_OFFSETS = Object.freeze(
 );
 const IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
 const WHITE = Object.freeze([1, 1, 1, 1]);
+function composeTransform(a, b) {
+    return [
+        a[0] * b[0] + a[2] * b[1],
+        a[1] * b[0] + a[3] * b[1],
+        a[0] * b[2] + a[2] * b[3],
+        a[1] * b[2] + a[3] * b[3],
+        a[0] * b[4] + a[2] * b[5] + a[4],
+        a[1] * b[4] + a[3] * b[5] + a[5],
+    ];
+}
+function transformedPoint(matrix, x, y) {
+    return [matrix[0] * x + matrix[2] * y + matrix[4], matrix[1] * x + matrix[3] * y + matrix[5]];
+}
+function isFullArc(start, end, ccw) {
+    let sweep = end - start;
+    if (!ccw) {
+        if (sweep >= TAU) {
+            return true;
+        }
+        while (sweep < 0) {
+            sweep += TAU;
+        }
+    } else {
+        if (sweep <= -TAU) {
+            return true;
+        }
+        while (sweep > 0) {
+            sweep -= TAU;
+        }
+    }
+    return Math.abs(sweep) >= TAU;
+}
 const NAMED = Object.freeze({
     black: '#000000',
     white: '#ffffff',
@@ -349,6 +382,10 @@ export class VectorContext {
         }
         this.safeAlphaRunBatching = safeAlphaRunBatching;
         this.meshRenderer = null;
+        this.primitiveRenderer = null;
+        this.primitivePath = {
+            type: 'empty',
+        };
         this.active = false;
         this.state = 'ready';
         this.frame = 0;
@@ -656,9 +693,13 @@ export class VectorContext {
             }
             this.active = true;
             this.meshRenderer?.beginFrame();
+            this.primitiveRenderer?.beginFrame();
             this.frame++;
             this.pathCount = 0;
             this.vector.beginPath();
+            this.primitivePath = {
+                type: 'empty',
+            };
             return true;
         } catch (error) {
             this.onError?.(error, {
@@ -684,6 +725,7 @@ export class VectorContext {
                 textureBytes: STATS.textureBytes ?? 0,
                 gpuRenderTargetBytes: STATS.gpuRenderTargetBytes ?? 0,
                 paths: this.pathCount,
+                primitives: this.primitiveRenderer?.stats().frame ?? null,
             };
             this.total.frames++;
             this.total.drawCalls += this.frameStats.drawCalls;
@@ -726,6 +768,7 @@ export class VectorContext {
         if (!S) {
             return;
         }
+        this.primitiveRenderer?.flush('stateRestore');
         this.meshRenderer?.flush('stateRestore');
         this.vector.restore();
         Object.assign(this, {
@@ -779,20 +822,78 @@ export class VectorContext {
         this._frame();
         this.pathCount++;
         this.vector.beginPath();
+        this.primitivePath = {
+            type: 'empty',
+        };
+    }
+    _materializePrimitivePath() {
+        const PATH = this.primitivePath;
+        if (PATH?.type !== 'ellipse') {
+            return;
+        }
+        const MATRIX = this.vector.matrix;
+        this.primitivePath = null;
+        this.vector.matrix = PATH.matrix.slice();
+        try {
+            const POINTS = this._arcPoints(
+                PATH.x,
+                PATH.y,
+                PATH.rx,
+                PATH.ry,
+                PATH.rotation,
+                PATH.start,
+                PATH.end,
+                PATH.ccw,
+            );
+            this.vector.moveTo(...POINTS[0]);
+            for (let i = 1; i < POINTS.length; i++) {
+                this.vector.lineTo(...POINTS[i]);
+            }
+        } finally {
+            this.vector.matrix = MATRIX;
+        }
     }
     moveTo(x, y) {
+        this._materializePrimitivePath();
+        const POINT = transformedPoint(this.vector.matrix, x, y);
+        this.primitivePath =
+            this.primitivePath?.type === 'empty'
+                ? {
+                      type: 'line',
+                      start: POINT,
+                      end: null,
+                  }
+                : null;
         this.vector.moveTo(x, y);
     }
     lineTo(x, y) {
+        this._materializePrimitivePath();
+        if (!this.vector.cursor && this.primitivePath?.type === 'empty') {
+            this.primitivePath = {
+                type: 'line',
+                start: transformedPoint(this.vector.matrix, x, y),
+                end: null,
+            };
+        } else if (this.primitivePath?.type === 'line' && !this.primitivePath.end) {
+            this.primitivePath.end = transformedPoint(this.vector.matrix, x, y);
+        } else {
+            this.primitivePath = null;
+        }
         this.vector.lineTo(x, y);
     }
     closePath() {
+        this._materializePrimitivePath();
+        this.primitivePath = null;
         this.vector.closePath();
     }
     quadraticCurveTo(cx, cy, x, y) {
+        this._materializePrimitivePath();
+        this.primitivePath = null;
         this.vector.quadraticCurveTo(cx, cy, x, y);
     }
     bezierCurveTo(x1, y1, x2, y2, x, y) {
+        this._materializePrimitivePath();
+        this.primitivePath = null;
         this.vector.bezierCurveTo(x1, y1, x2, y2, x, y);
     }
     _arcPoints(x, y, rx, ry, rotation, start, end, ccw) {
@@ -835,6 +936,35 @@ export class VectorContext {
         this.ellipse(x, y, r, r, 0, start, end, ccw);
     }
     ellipse(x, y, rx, ry, rotation = 0, start = 0, end = TAU, ccw = false) {
+        if (rx < 0 || ry < 0) {
+            throw new RangeError('ellipse radii must be non-negative');
+        }
+        this._frame();
+        this._materializePrimitivePath();
+        const MATRIX = this.vector.matrix.slice();
+        const FULL = isFullArc(start, end, ccw);
+        const FAST =
+            this.primitivePath?.type === 'empty' &&
+            !this.vector.cursor &&
+            FULL &&
+            [x, y, rx, ry, rotation, start, end].every(Number.isFinite);
+        this.primitivePath = FAST
+            ? {
+                  type: 'ellipse',
+                  x,
+                  y,
+                  rx,
+                  ry,
+                  rotation,
+                  start,
+                  end,
+                  ccw,
+                  matrix: MATRIX,
+              }
+            : null;
+        if (FAST) {
+            return;
+        }
         const POINTS = this._arcPoints(x, y, rx, ry, rotation, start, end, ccw);
         if (!this.vector.cursor) {
             this.vector.moveTo(...POINTS[0]);
@@ -846,13 +976,28 @@ export class VectorContext {
         }
     }
     rect(x, y, w, h) {
-        this.moveTo(x, y);
-        this.lineTo(x + w, y);
-        this.lineTo(x + w, y + h);
-        this.lineTo(x, y + h);
-        this.closePath();
+        this._materializePrimitivePath();
+        const MATRIX = this.vector.matrix.slice();
+        this.primitivePath =
+            this.primitivePath?.type === 'empty' && !this.vector.cursor
+                ? {
+                      type: 'rect',
+                      x,
+                      y,
+                      w,
+                      h,
+                      matrix: MATRIX,
+                  }
+                : null;
+        this.vector.moveTo(x, y);
+        this.vector.lineTo(x + w, y);
+        this.vector.lineTo(x + w, y + h);
+        this.vector.lineTo(x, y + h);
+        this.vector.closePath();
     }
     roundRect(x, y, w, h, r = 0) {
+        this._materializePrimitivePath();
+        this.primitivePath = null;
         const RADII = Array.isArray(r) ? r : [r, r, r, r];
         const MAX = Math.min(Math.abs(w) / 2, Math.abs(h) / 2);
         const Q = RADII.map((v) => clamp(Number(v) || 0, 0, MAX));
@@ -873,17 +1018,133 @@ export class VectorContext {
                 path: V.path,
                 cursor: V.cursor,
                 subpath: V.subpath,
+                primitivePath: this.primitivePath,
             };
         try {
+            this.primitivePath = {
+                type: 'empty',
+            };
             callback();
         } finally {
             V.path = SAVED.path;
             V.cursor = SAVED.cursor;
             V.subpath = SAVED.subpath;
+            this.primitivePath = SAVED.primitivePath;
         }
+    }
+    _primitiveTransform(path) {
+        let local;
+        if (path.type === 'ellipse') {
+            const COS = Math.cos(path.rotation);
+            const SIN = Math.sin(path.rotation);
+            local = [path.rx * COS, path.rx * SIN, -path.ry * SIN, path.ry * COS, path.x, path.y];
+        } else {
+            local = [path.w / 2, 0, 0, path.h / 2, path.x + path.w / 2, path.y + path.h / 2];
+        }
+        return composeTransform(path.matrix, local);
+    }
+    _submitPrimitive(matrix, color, params) {
+        this.meshRenderer?.flush('primitiveBoundary');
+        this.vector.flush();
+        this.primitiveRenderer ??= new PrimitiveRenderer(this.device);
+        return this.primitiveRenderer.draw({
+            matrix,
+            color,
+            params,
+            projection: this.vector.projection,
+            clips: this.vector.clips,
+            stencilRef: this.vector.stencilDepth || null,
+        });
+    }
+    _tryPrimitiveFill() {
+        const PATH = this.primitivePath;
+        if (!PATH || (PATH.type !== 'ellipse' && PATH.type !== 'rect')) {
+            return false;
+        }
+        if (this._fillStyle instanceof RadialGradient || this._fillStyle instanceof LinearGradient) {
+            return false;
+        }
+        if (PATH.type === 'ellipse' && (!PATH.rx || !PATH.ry)) {
+            return true;
+        }
+        if (PATH.type === 'rect' && (!PATH.w || !PATH.h)) {
+            return true;
+        }
+        const TYPE = PATH.type === 'ellipse' ? 0 : 1;
+        return this._submitPrimitive(this._primitiveTransform(PATH), this._paint(this._fillStyle), [TYPE, 0, 0, 0]);
+    }
+    _tryPrimitiveStroke(width) {
+        const PATH = this.primitivePath;
+        if (!PATH || this._strokeStyle instanceof RadialGradient || this._strokeStyle instanceof LinearGradient) {
+            return false;
+        }
+        if (PATH.type === 'ellipse') {
+            if (!PATH.rx || !PATH.ry) {
+                return false;
+            }
+            return this._submitPrimitive(this._primitiveTransform(PATH), this._paint(this._strokeStyle), [
+                0,
+                1,
+                width,
+                0,
+            ]);
+        }
+        if (PATH.type === 'rect') {
+            if (!PATH.w || !PATH.h) {
+                return false;
+            }
+            const MATRIX = this._primitiveTransform(PATH);
+            const SCALE_X = Math.hypot(MATRIX[0], MATRIX[1]);
+            const SCALE_Y = Math.hypot(MATRIX[2], MATRIX[3]);
+            const DOT = MATRIX[0] * MATRIX[2] + MATRIX[1] * MATRIX[3];
+            if (Math.abs(DOT) > 1e-6 * SCALE_X * SCALE_Y) {
+                return false;
+            }
+            if (this._lineJoin === 'miter') {
+                if (this._miterLimit < Math.SQRT2) {
+                    return false;
+                }
+            } else if (this._lineJoin !== 'round') {
+                return false;
+            }
+            return this._submitPrimitive(MATRIX, this._paint(this._strokeStyle), [
+                1,
+                1,
+                width,
+                this._lineJoin === 'miter' ? 1 : 0,
+            ]);
+        }
+        if (PATH.type === 'line' && PATH.end) {
+            const DX = PATH.end[0] - PATH.start[0];
+            const DY = PATH.end[1] - PATH.start[1];
+            const LENGTH = Math.hypot(DX, DY);
+            if (!LENGTH) {
+                return false;
+            }
+            const CAP = this._lineCap === 'butt' ? 0 : this._lineCap === 'square' ? 1 : 2;
+            const UNIT_X = DX / LENGTH;
+            const UNIT_Y = DY / LENGTH;
+            const PAD = CAP === 0 ? 0 : width / 2;
+            const HALF_LENGTH = LENGTH / 2 + PAD;
+            const MATRIX = [
+                UNIT_X * HALF_LENGTH,
+                UNIT_Y * HALF_LENGTH,
+                (-UNIT_Y * width) / 2,
+                (UNIT_X * width) / 2,
+                (PATH.start[0] + PATH.end[0]) / 2,
+                (PATH.start[1] + PATH.end[1]) / 2,
+            ];
+            return this._submitPrimitive(MATRIX, this._paint(this._strokeStyle), [2, 1, width, CAP]);
+        }
+        return false;
     }
     fill(rule = 'nonzero') {
         this._frame();
+        if ((rule === 'nonzero' || rule === 'evenodd') && this._tryPrimitiveFill()) {
+            return;
+        }
+        this._materializePrimitivePath();
+        this.primitiveRenderer?.flush('vectorBoundary');
         this.meshRenderer?.flush('vectorBoundary');
         if (this._fillStyle instanceof RadialGradient) {
             this.vector.fillRadialGradient({
@@ -909,7 +1170,6 @@ export class VectorContext {
     }
     stroke() {
         this._frame();
-        this.meshRenderer?.flush('vectorBoundary');
         if (!(this._lineWidth > 0)) {
             return;
         }
@@ -927,6 +1187,12 @@ export class VectorContext {
             },
             DASH = this._lineDash,
             PERIOD = DASH.reduce((a, b) => a + b, 0);
+        if ((!DASH.length || !PERIOD) && !GRADIENT && this._tryPrimitiveStroke(WIDTH)) {
+            return;
+        }
+        this._materializePrimitivePath();
+        this.primitiveRenderer?.flush('vectorBoundary');
+        this.meshRenderer?.flush('vectorBoundary');
         if (!DASH.length || !PERIOD) {
             this.vector.stroke(PAINT, WIDTH, STYLE, GRADIENT);
             return;
@@ -993,6 +1259,9 @@ export class VectorContext {
     }
     clip(rule = 'nonzero') {
         this._frame();
+        this._materializePrimitivePath();
+        this.primitiveRenderer?.flush('clipBoundary');
+        this.meshRenderer?.flush('clipBoundary');
         if (this.vector.path.filter((p) => p.length >= 3).length > 1) {
             throw new RangeError('clip supports one contour per clip call');
         }
@@ -1005,6 +1274,7 @@ export class VectorContext {
     }
     clipPath(handle, { transform = null } = {}) {
         this._frame();
+        this.primitiveRenderer?.flush('stencilChange');
         this.meshRenderer?.flush('stencilChange');
         this.vector.flush();
         this.vector.clipPath(handle, {
@@ -1016,10 +1286,13 @@ export class VectorContext {
     }
     clipRect(x, y, w, h) {
         this._frame();
+        this.primitiveRenderer?.flush('clipBoundary');
+        this.meshRenderer?.flush('clipBoundary');
         this.vector.clipRect(x, y, w, h);
     }
     fillTriangleFan(points, paint = this._fillStyle) {
         this._frame();
+        this.primitiveRenderer?.flush('vectorBoundary');
         this.meshRenderer?.flush('vectorBoundary');
         if (points.length < 3) {
             return;
@@ -1028,6 +1301,7 @@ export class VectorContext {
     }
     beginGroup(opacity = 1, bounds = null) {
         this._frame();
+        this.primitiveRenderer?.flush('groupBoundary');
         if (opacity !== 1) {
             this.meshRenderer?.flush('groupBoundary');
         }
@@ -1035,6 +1309,7 @@ export class VectorContext {
     }
     endGroup() {
         if (!this.vector.groups.at(-1)?.direct) {
+            this.primitiveRenderer?.flush('groupBoundary');
             this.meshRenderer?.flush('groupBoundary');
         }
         this.vector.endGroup();
@@ -1126,6 +1401,7 @@ export class VectorContext {
     }
     fillText(text, x, y, maxWidth) {
         this._frame();
+        this.primitiveRenderer?.flush('vectorBoundary');
         this.meshRenderer?.flush('vectorBoundary');
         if (!this.glyphAtlas) {
             throw new Error('GlyphAtlas is not configured');
@@ -1159,6 +1435,7 @@ export class VectorContext {
     }
     strokeText(text, x, y, maxWidth) {
         this._frame();
+        this.primitiveRenderer?.flush('vectorBoundary');
         this.meshRenderer?.flush('vectorBoundary');
         if (!this.glyphAtlas) {
             throw new Error('GlyphAtlas is not configured');
@@ -1216,6 +1493,7 @@ export class VectorContext {
         if (!this.meshRenderer) {
             throw new TypeError('createMesh required');
         }
+        this.primitiveRenderer?.flush('meshBoundary');
         this.vector.flush();
         let matrix = this.vector.matrix;
         if (transform) {
@@ -1353,6 +1631,7 @@ export class VectorContext {
     }
     flush(reason = 'explicit') {
         this._frame();
+        this.primitiveRenderer?.flush(reason);
         this.meshRenderer?.flush(reason);
         this.vector.flush();
     }
@@ -1440,6 +1719,7 @@ export class VectorContext {
             frame: this.frame,
             ...this.frameStats,
             mesh: this.meshRenderer?.stats() ?? null,
+            primitives: this.primitiveRenderer?.stats() ?? null,
             stagingBytes: this.vector.vertices.byteLength,
             gpuBufferBytes: this.device.stats.gpuBufferBytes ?? 0,
             gpuRenderTargetBytes: this.device.stats.gpuRenderTargetBytes ?? 0,
@@ -1459,6 +1739,7 @@ export class VectorContext {
         this.vector.count = 0;
         this.canvas.removeEventListener('webglcontextlost', this.onLost);
         this.canvas.removeEventListener('webglcontextrestored', this.onRestored);
+        this.primitiveRenderer?.dispose();
         this.meshRenderer?.dispose();
         for (const MESH of this.staticMeshes) {
             this.device.deleteVertexBuffer(MESH.buffer);
