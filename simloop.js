@@ -1,10 +1,27 @@
 // modules/simloop/rates.js
 function clockRates({ baseHz, tickRate, inputHz, renderHz } = {}) {
-  for (const [name, value] of Object.entries({ baseHz, tickRate, inputHz, renderHz })) {
-    if (!Number.isSafeInteger(value) || value <= 0) throw new RangeError(`${name} must be a positive integer frequency`);
-    if (name !== "baseHz" && baseHz % value !== 0) throw new RangeError(`${name} (${value}) must divide baseHz (${baseHz}) exactly`);
+  for (const [NAME, VALUE] of Object.entries({
+    baseHz,
+    tickRate,
+    inputHz,
+    renderHz
+  })) {
+    if (!Number.isSafeInteger(VALUE) || VALUE <= 0) {
+      throw new RangeError(`${NAME} must be a positive integer frequency`);
+    }
+    if (NAME !== "baseHz" && baseHz % VALUE !== 0) {
+      throw new RangeError(`${NAME} (${VALUE}) must divide baseHz (${baseHz}) exactly`);
+    }
   }
-  return Object.freeze({ baseHz, tickRate, inputHz, renderHz, simulationDivisor: baseHz / tickRate, inputDivisor: baseHz / inputHz, renderDivisor: baseHz / renderHz });
+  return Object.freeze({
+    baseHz,
+    tickRate,
+    inputHz,
+    renderHz,
+    simulationDivisor: baseHz / tickRate,
+    inputDivisor: baseHz / inputHz,
+    renderDivisor: baseHz / renderHz
+  });
 }
 
 // modules/simloop/loop.js
@@ -35,61 +52,122 @@ function createLoop({
   requestFrame = globalThis.requestAnimationFrame?.bind(globalThis),
   cancelFrame = globalThis.cancelAnimationFrame?.bind(globalThis)
 } = {}) {
-  if (!session || typeof session.poll !== "function" || typeof session.advance !== "function") throw new TypeError("session capability");
-  for (const callback of [getInput, render, beforeFrame, canAdvance, canObserveInput, onAdvance, onPreviewError, onError, onInputRelease, onBacklogDrop]) {
-    if (typeof callback !== "function") throw new TypeError("loop callback");
+  if (!session || typeof session.poll !== "function" || typeof session.advance !== "function") {
+    throw new TypeError("session capability");
   }
-  if (backlogPolicy !== "drop" && backlogPolicy !== "retain" && backlogPolicy !== "defer") throw new RangeError("backlogPolicy");
-  if (!Number.isInteger(maxBacklogTicks) || maxBacklogTicks < 1 || maxBacklogTicks > 8192) throw new RangeError("maxBacklogTicks");
-  const hasSubmission = typeof session.submitInput === "function";
-  const configuredRates = rates === void 0 ? null : clockRates({ ...rates, tickRate: session.profile.tickRate });
-  const quantum = 1e3 / session.profile.tickRate;
-  const maxBacklogMs = quantum * maxBacklogTicks;
-  let running = false, handle, last, accumulator = 0, generation = 0, timingGeneration = 0;
-  if (inputPreview && typeof inputPreview.observe !== "function") throw new TypeError("inputPreview observation capability");
-  let inputSequence = 0, commandObservation = 0, observedAt = -Infinity, cached = null, captureEpoch = "", captureSequence = -1;
-  const observedCommands = [];
-  const observeInput = (timestamp) => {
-    if (!Number.isFinite(timestamp)) throw new TypeError("input observation timestamp");
+  for (const CALLBACK of [
+    getInput,
+    render,
+    beforeFrame,
+    canAdvance,
+    canObserveInput,
+    onAdvance,
+    onPreviewError,
+    onError,
+    onInputRelease,
+    onBacklogDrop
+  ]) {
+    if (typeof CALLBACK !== "function") {
+      throw new TypeError("loop callback");
+    }
+  }
+  if (backlogPolicy !== "drop" && backlogPolicy !== "retain" && backlogPolicy !== "defer") {
+    throw new RangeError("backlogPolicy");
+  }
+  if (!Number.isInteger(maxBacklogTicks) || maxBacklogTicks < 1 || maxBacklogTicks > 8192) {
+    throw new RangeError("maxBacklogTicks");
+  }
+  const HAS_SUBMISSION = typeof session.submitInput === "function";
+  const CONFIGURED_RATES = rates === void 0 ? null : clockRates({
+    ...rates,
+    tickRate: session.profile.tickRate
+  });
+  const QUANTUM = 1e3 / session.profile.tickRate;
+  const MAX_BACKLOG_MS = QUANTUM * maxBacklogTicks;
+  let running = false;
+  let handle;
+  let last;
+  let accumulator = 0;
+  let generation = 0;
+  let timingGeneration = 0;
+  if (inputPreview && typeof inputPreview.observe !== "function") {
+    throw new TypeError("inputPreview observation capability");
+  }
+  let inputSequence = 0;
+  let commandObservation = 0;
+  let observedAt = -Infinity;
+  let cached = null;
+  let captureEpoch = "";
+  let captureSequence = -1;
+  const OBSERVED_COMMANDS = [];
+  const OBSERVE_INPUT = (timestamp) => {
+    if (!Number.isFinite(timestamp)) {
+      throw new TypeError("input observation timestamp");
+    }
     if (!canObserveInput()) {
       cached = null;
       inputPreview?.clear?.();
       return null;
     }
-    const sampled = getInput(), packet = sampled && typeof sampled === "object" && !ArrayBuffer.isView(sampled) && Object.hasOwn(sampled, "input");
-    const input = packet ? sampled.input : sampled, commands = packet ? sampled.commands ?? [] : [];
-    if (!Array.isArray(commands)) throw new TypeError("input packet commands");
-    const held = observedCommands;
-    if (held.length + commands.length > 64) throw new RangeError("unsubmitted input command capacity");
-    for (const command of commands) {
-      if (!command || command.payload === void 0) throw new TypeError("command payload required");
-      held.push({ observationId: ++commandObservation, sequence: null, payload: command.payload.slice?.() ?? structuredClone(command.payload) });
+    const SAMPLED = getInput(), PACKET = SAMPLED && typeof SAMPLED === "object" && !ArrayBuffer.isView(SAMPLED) && Object.hasOwn(SAMPLED, "input");
+    const INPUT = PACKET ? SAMPLED.input : SAMPLED, COMMANDS = PACKET ? SAMPLED.commands ?? [] : [];
+    if (!Array.isArray(COMMANDS)) {
+      throw new TypeError("input packet commands");
     }
-    cached = { input: input.slice?.() ?? structuredClone(input), commands: held, predict: !packet || sampled.predict !== false || held.length > 0 || inputPreview?.active === true, continuationKey: packet ? sampled.continuationKey : void 0, sequence: ++inputSequence };
-    observedAt = timestamp;
-    if (hasSubmission) {
-      const pending = held.filter((command) => command.sequence === null);
-      const submission = session.submitInput(cached.input, { commands: pending.map((command) => command.payload) });
-      if (submission.commandSequences.length !== pending.length) throw new Error("input submission command receipt");
-      for (let i = 0; i < pending.length; i++) pending[i].sequence = submission.commandSequences[i];
+    const HELD = OBSERVED_COMMANDS;
+    if (HELD.length + COMMANDS.length > 64) {
+      throw new RangeError("unsubmitted input command capacity");
     }
-    if (inputPreview && packet && sampled.predict === false && !held.length && !inputPreview.active) inputPreview.cancelObservation?.(Math.max(timestamp, performance.now()));
-    else if (inputPreview?.enabled !== false && inputPreview) try {
-      inputPreview.observe(cached.input, {
-        sequence: cached.sequence,
-        tick: session.tick,
-        epoch: session.epoch ?? 0,
-        continuationKey: cached.continuationKey,
-        timeMs: Math.max(timestamp, globalThis.performance?.now?.() ?? timestamp),
-        commands: cached.commands
+    for (const COMMAND of COMMANDS) {
+      if (!COMMAND || COMMAND.payload === void 0) {
+        throw new TypeError("command payload required");
+      }
+      HELD.push({
+        observationId: ++commandObservation,
+        sequence: null,
+        payload: COMMAND.payload.slice?.() ?? structuredClone(COMMAND.payload)
       });
-    } catch (error) {
-      inputPreview.clear?.();
-      onPreviewError(error);
+    }
+    cached = {
+      input: INPUT.slice?.() ?? structuredClone(INPUT),
+      commands: HELD,
+      predict: !PACKET || SAMPLED.predict !== false || HELD.length > 0 || inputPreview?.active === true,
+      continuationKey: PACKET ? SAMPLED.continuationKey : void 0,
+      sequence: ++inputSequence
+    };
+    observedAt = timestamp;
+    if (HAS_SUBMISSION) {
+      const PENDING = HELD.filter((command) => command.sequence === null);
+      const SUBMISSION = session.submitInput(cached.input, {
+        commands: PENDING.map((command) => command.payload)
+      });
+      if (SUBMISSION.commandSequences.length !== PENDING.length) {
+        throw new Error("input submission command receipt");
+      }
+      for (let i = 0; i < PENDING.length; i++) {
+        PENDING[i].sequence = SUBMISSION.commandSequences[i];
+      }
+    }
+    if (inputPreview && PACKET && SAMPLED.predict === false && !HELD.length && !inputPreview.active) {
+      inputPreview.cancelObservation?.(Math.max(timestamp, performance.now()));
+    } else if (inputPreview?.enabled !== false && inputPreview) {
+      try {
+        inputPreview.observe(cached.input, {
+          sequence: cached.sequence,
+          tick: session.tick,
+          epoch: session.epoch ?? 0,
+          continuationKey: cached.continuationKey,
+          timeMs: Math.max(timestamp, globalThis.performance?.now?.() ?? timestamp),
+          commands: cached.commands
+        });
+      } catch (error) {
+        inputPreview.clear?.();
+        onPreviewError(error);
+      }
     }
     return cached;
   };
-  const resetTiming = (clearPreview = true) => {
+  const RESET_TIMING = (clearPreview = true) => {
     timingGeneration++;
     last = void 0;
     accumulator = 0;
@@ -99,7 +177,7 @@ function createLoop({
       inputPreview?.clear?.();
     }
   };
-  const release = () => {
+  const RELEASE = () => {
     try {
       onInputRelease();
       session.releaseInput();
@@ -107,223 +185,398 @@ function createLoop({
       observedAt = -Infinity;
       inputPreview?.clear?.();
     } catch (error) {
-      stop();
+      STOP();
       onError(error);
     }
   };
-  const hidden = () => {
+  const HIDDEN = () => {
     if (globalThis.document?.hidden) {
-      release();
-      resetTiming();
+      RELEASE();
+      RESET_TIMING();
     }
   };
-  const stop = () => {
+  const STOP = () => {
     generation++;
     running = false;
-    if (handle !== void 0) cancelFrame?.(handle);
+    if (handle !== void 0) {
+      cancelFrame?.(handle);
+    }
     handle = void 0;
     inputPreview?.clear?.();
-    globalThis.removeEventListener?.("blur", release);
-    globalThis.document?.removeEventListener("visibilitychange", hidden);
+    globalThis.removeEventListener?.("blur", RELEASE);
+    globalThis.document?.removeEventListener("visibilitychange", HIDDEN);
   };
-  const renderFrame = () => render({ session, alpha: Math.min(1, accumulator / quantum), resimulating: session.resimulating });
-  const pulse = (timestamp, { render: shouldRender = true, input: shouldSampleInput = true } = {}) => {
-    const current = generation;
+  const RENDER_FRAME = () => render({
+    session,
+    alpha: Math.min(1, accumulator / QUANTUM),
+    resimulating: session.resimulating
+  });
+  const PULSE = (timestamp, { render: shouldRender = true, input: shouldSampleInput = true } = {}) => {
+    const CURRENT = generation;
     try {
-      if (!Number.isFinite(timestamp)) throw new TypeError("frame timestamp");
-      if (backlogPolicy === "retain" && last !== void 0 && timestamp < last) throw new RangeError("retained loop timestamp cannot regress");
-      if (backlogPolicy === "defer" && last !== void 0 && timestamp < last) throw new RangeError("deferred loop timestamp cannot regress");
+      if (!Number.isFinite(timestamp)) {
+        throw new TypeError("frame timestamp");
+      }
+      if (backlogPolicy === "retain" && last !== void 0 && timestamp < last) {
+        throw new RangeError("retained loop timestamp cannot regress");
+      }
+      if (backlogPolicy === "defer" && last !== void 0 && timestamp < last) {
+        throw new RangeError("deferred loop timestamp cannot regress");
+      }
       beforeFrame(timestamp);
-      if (current !== generation) return;
-      const timing = timingGeneration;
-      if (last === void 0) last = timestamp;
-      const elapsed = Math.max(0, timestamp - last);
-      if (backlogPolicy === "drop" && elapsed > maxBacklogMs) {
-        accumulator = 0;
-        last = timestamp;
-        if (typeof inputPreview?.clockGap === "function") inputPreview.clockGap();
-        else inputPreview?.clear?.();
-        onBacklogDrop({ elapsedMs: elapsed, droppedTicks: Math.floor(elapsed / quantum), timestamp });
-      } else if (backlogPolicy === "defer" && elapsed > maxBacklogMs) {
-        const droppedMs = accumulator + elapsed;
-        accumulator = 0;
-        last = timestamp;
-        if (typeof inputPreview?.clockGap === "function") inputPreview.clockGap();
-        else inputPreview?.clear?.();
-        onBacklogDrop({ elapsedMs: elapsed, droppedMs, droppedTicks: Math.floor(droppedMs / quantum), timestamp, reason: "clock-gap" });
-      } else {
-        if (backlogPolicy === "retain") accumulator += elapsed;
-        else if (backlogPolicy === "defer") {
-          const accumulatedMs = accumulator + elapsed;
-          if (accumulatedMs > maxBacklogMs) {
-            const droppedMs = accumulatedMs - maxBacklogMs;
-            accumulator = maxBacklogMs;
-            if (typeof inputPreview?.clockGap === "function") inputPreview.clockGap();
-            else inputPreview?.clear?.();
-            onBacklogDrop({ elapsedMs: elapsed, droppedMs, droppedTicks: Math.floor(droppedMs / quantum), timestamp, reason: "backlog-overflow" });
-          } else accumulator = accumulatedMs;
-        } else accumulator = Math.min(accumulator + Math.min(250, elapsed), quantum * session.profile.maxCatchupSteps);
+      if (CURRENT !== generation) {
+        return;
+      }
+      const TIMING = timingGeneration;
+      if (last === void 0) {
         last = timestamp;
       }
-      if (!Number.isFinite(accumulator) || accumulator > Number.MAX_SAFE_INTEGER) throw new RangeError("loop backlog exceeds safe milliseconds");
+      const ELAPSED = Math.max(0, timestamp - last);
+      if (backlogPolicy === "drop" && ELAPSED > MAX_BACKLOG_MS) {
+        accumulator = 0;
+        last = timestamp;
+        if (typeof inputPreview?.clockGap === "function") {
+          inputPreview.clockGap();
+        } else {
+          inputPreview?.clear?.();
+        }
+        onBacklogDrop({
+          elapsedMs: ELAPSED,
+          droppedTicks: Math.floor(ELAPSED / QUANTUM),
+          timestamp
+        });
+      } else if (backlogPolicy === "defer" && ELAPSED > MAX_BACKLOG_MS) {
+        const DROPPED_MS = accumulator + ELAPSED;
+        accumulator = 0;
+        last = timestamp;
+        if (typeof inputPreview?.clockGap === "function") {
+          inputPreview.clockGap();
+        } else {
+          inputPreview?.clear?.();
+        }
+        onBacklogDrop({
+          elapsedMs: ELAPSED,
+          droppedMs: DROPPED_MS,
+          droppedTicks: Math.floor(DROPPED_MS / QUANTUM),
+          timestamp,
+          reason: "clock-gap"
+        });
+      } else {
+        if (backlogPolicy === "retain") {
+          accumulator += ELAPSED;
+        } else if (backlogPolicy === "defer") {
+          const ACCUMULATED_MS = accumulator + ELAPSED;
+          if (ACCUMULATED_MS > MAX_BACKLOG_MS) {
+            const DROPPED_MS = ACCUMULATED_MS - MAX_BACKLOG_MS;
+            accumulator = MAX_BACKLOG_MS;
+            if (typeof inputPreview?.clockGap === "function") {
+              inputPreview.clockGap();
+            } else {
+              inputPreview?.clear?.();
+            }
+            onBacklogDrop({
+              elapsedMs: ELAPSED,
+              droppedMs: DROPPED_MS,
+              droppedTicks: Math.floor(DROPPED_MS / QUANTUM),
+              timestamp,
+              reason: "backlog-overflow"
+            });
+          } else {
+            accumulator = ACCUMULATED_MS;
+          }
+        } else {
+          accumulator = Math.min(
+            accumulator + Math.min(250, ELAPSED),
+            QUANTUM * session.profile.maxCatchupSteps
+          );
+        }
+        last = timestamp;
+      }
+      if (!Number.isFinite(accumulator) || accumulator > Number.MAX_SAFE_INTEGER) {
+        throw new RangeError("loop backlog exceeds safe milliseconds");
+      }
       session.poll();
-      if (current !== generation || timing !== timingGeneration) return;
-      if (shouldSampleInput && (inputPreview || hasSubmission) && (!cached || timestamp - observedAt >= quantum)) observeInput(timestamp);
+      if (CURRENT !== generation || TIMING !== timingGeneration) {
+        return;
+      }
+      if (shouldSampleInput && (inputPreview || HAS_SUBMISSION) && (!cached || timestamp - observedAt >= QUANTUM)) {
+        OBSERVE_INPUT(timestamp);
+      }
       let work = 0;
       while (!session.closed && !session.resimulating && work < session.profile.maxCatchupSteps) {
-        const pace = session.pace ?? session.metrics.pace;
-        if (accumulator + 1e-7 < quantum * pace) break;
-        const allowed = canAdvance();
-        if (current !== generation || timing !== timingGeneration) return;
-        if (!allowed) {
-          if (backlogPolicy === "drop") accumulator = Math.min(accumulator, quantum);
+        const PACE = session.pace ?? session.metrics.pace;
+        if (accumulator + 1e-7 < QUANTUM * PACE) {
           break;
         }
-        const sampled = inputPreview || hasSubmission || !shouldSampleInput ? cached ?? (shouldSampleInput ? observeInput(timestamp) : null) : getInput();
-        if (!sampled) break;
-        if (current !== generation || timing !== timingGeneration) return;
-        const packet = sampled && typeof sampled === "object" && !ArrayBuffer.isView(sampled) && !(sampled instanceof ArrayBuffer) && Object.hasOwn(sampled, "input");
-        const inputValue = packet ? sampled.input : sampled;
-        const input = inputPreview && inputPreview.enabled !== false && ArrayBuffer.isView(inputValue) ? new inputValue.constructor(inputValue) : inputValue;
-        if (packet) {
-          const commands = sampled.commands ?? [];
-          if (!Array.isArray(commands)) throw new TypeError("input packet commands must be an array");
-          if (commands.length && typeof session.queueCommand !== "function") throw new TypeError("session does not support queued input commands");
-          for (const command of commands) {
-            if (!command || command.payload === void 0) throw new TypeError("input command payload required");
-            const payload = ArrayBuffer.isView(command.payload) ? new command.payload.constructor(command.payload) : command.payload;
-            if ((inputPreview || hasSubmission || !shouldSampleInput) && command.sequence !== null && command.sequence !== void 0) continue;
-            const sequence = session.queueCommand(payload);
-            if (!Number.isSafeInteger(sequence) || sequence < 0) throw new TypeError("session command sequence");
-            if (inputPreview || hasSubmission || !shouldSampleInput) command.sequence = sequence;
+        const ALLOWED = canAdvance();
+        if (CURRENT !== generation || TIMING !== timingGeneration) {
+          return;
+        }
+        if (!ALLOWED) {
+          if (backlogPolicy === "drop") {
+            accumulator = Math.min(accumulator, QUANTUM);
+          }
+          break;
+        }
+        const SAMPLED = inputPreview || HAS_SUBMISSION || !shouldSampleInput ? cached ?? (shouldSampleInput ? OBSERVE_INPUT(timestamp) : null) : getInput();
+        if (!SAMPLED) {
+          break;
+        }
+        if (CURRENT !== generation || TIMING !== timingGeneration) {
+          return;
+        }
+        const PACKET = SAMPLED && typeof SAMPLED === "object" && !ArrayBuffer.isView(SAMPLED) && !(SAMPLED instanceof ArrayBuffer) && Object.hasOwn(SAMPLED, "input");
+        const INPUT_VALUE = PACKET ? SAMPLED.input : SAMPLED;
+        const INPUT = inputPreview && inputPreview.enabled !== false && ArrayBuffer.isView(INPUT_VALUE) ? new INPUT_VALUE.constructor(INPUT_VALUE) : INPUT_VALUE;
+        if (PACKET) {
+          const COMMANDS = SAMPLED.commands ?? [];
+          if (!Array.isArray(COMMANDS)) {
+            throw new TypeError("input packet commands must be an array");
+          }
+          if (COMMANDS.length && typeof session.queueCommand !== "function") {
+            throw new TypeError("session does not support queued input commands");
+          }
+          for (const COMMAND of COMMANDS) {
+            if (!COMMAND || COMMAND.payload === void 0) {
+              throw new TypeError("input command payload required");
+            }
+            const PAYLOAD = ArrayBuffer.isView(COMMAND.payload) ? new COMMAND.payload.constructor(COMMAND.payload) : COMMAND.payload;
+            if ((inputPreview || HAS_SUBMISSION || !shouldSampleInput) && COMMAND.sequence !== null && COMMAND.sequence !== void 0) {
+              continue;
+            }
+            const SEQUENCE = session.queueCommand(PAYLOAD);
+            if (!Number.isSafeInteger(SEQUENCE) || SEQUENCE < 0) {
+              throw new TypeError("session command sequence");
+            }
+            if (inputPreview || HAS_SUBMISSION || !shouldSampleInput) {
+              COMMAND.sequence = SEQUENCE;
+            }
           }
         }
-        if (!inputPreview && !hasSubmission && !shouldSampleInput) observedCommands.length = 0;
-        const result = session.advance(input);
+        if (!inputPreview && !HAS_SUBMISSION && !shouldSampleInput) {
+          OBSERVED_COMMANDS.length = 0;
+        }
+        const RESULT = session.advance(INPUT);
         work++;
         let submission;
-        if (inputPreview || hasSubmission) {
-          const metadata = session.localInputState;
-          const epoch = metadata ? metadata.epoch + ":" + metadata.baseTick : "";
-          if (epoch !== captureEpoch) {
-            captureEpoch = epoch;
+        if (inputPreview || HAS_SUBMISSION) {
+          const METADATA = session.localInputState;
+          const EPOCH = METADATA ? METADATA.epoch + ":" + METADATA.baseTick : "";
+          if (EPOCH !== captureEpoch) {
+            captureEpoch = EPOCH;
             captureSequence = -1;
           }
-          for (const capture of metadata?.captures ?? (metadata?.capture ? [metadata.capture] : [])) {
-            if (capture.sequence <= captureSequence) continue;
-            captureSequence = capture.sequence;
-            submission = { ...capture, predict: cached?.predict !== false, boundaryTick: metadata.tick, epoch: metadata.epoch, timeMs: Math.max(timestamp, performance.now()) };
-            submission.commands = capture.commands.map((command) => ({ ...command, observationId: cached?.commands.find((c) => c.sequence === command.sequence)?.observationId }));
+          for (const CAPTURE of METADATA?.captures ?? (METADATA?.capture ? [METADATA.capture] : [])) {
+            if (CAPTURE.sequence <= captureSequence) {
+              continue;
+            }
+            captureSequence = CAPTURE.sequence;
+            submission = {
+              ...CAPTURE,
+              predict: cached?.predict !== false,
+              boundaryTick: METADATA.tick,
+              epoch: METADATA.epoch,
+              timeMs: Math.max(timestamp, performance.now())
+            };
+            submission.commands = CAPTURE.commands.map((command) => ({
+              ...command,
+              observationId: cached?.commands.find((c) => c.sequence === command.sequence)?.observationId
+            }));
             try {
               inputPreview?.commit(submission, submission.timeMs);
             } catch (error) {
               inputPreview.clear?.();
               onPreviewError(error);
             }
-            const assigned = new Set(capture.commands.map((c) => c.sequence));
-            for (let i = observedCommands.length - 1; i >= 0; i--) if (assigned.has(observedCommands[i].sequence)) observedCommands.splice(i, 1);
+            const ASSIGNED = new Set(CAPTURE.commands.map((c) => c.sequence));
+            for (let i = OBSERVED_COMMANDS.length - 1; i >= 0; i--) {
+              if (ASSIGNED.has(OBSERVED_COMMANDS[i].sequence)) {
+                OBSERVED_COMMANDS.splice(i, 1);
+              }
+            }
           }
         }
-        if (timing !== timingGeneration) return;
-        if (result.status === "advanced") accumulator = Math.max(0, accumulator - quantum * pace);
-        else if (backlogPolicy === "drop") accumulator = Math.min(accumulator, quantum);
-        if (current !== generation) return;
-        onAdvance(result, submission);
-        if (current !== generation || timing !== timingGeneration) return;
-        if (result.status !== "advanced") break;
+        if (TIMING !== timingGeneration) {
+          return;
+        }
+        if (RESULT.status === "advanced") {
+          accumulator = Math.max(0, accumulator - QUANTUM * PACE);
+        } else if (backlogPolicy === "drop") {
+          accumulator = Math.min(accumulator, QUANTUM);
+        }
+        if (CURRENT !== generation) {
+          return;
+        }
+        onAdvance(RESULT, submission);
+        if (CURRENT !== generation || TIMING !== timingGeneration) {
+          return;
+        }
+        if (RESULT.status !== "advanced") {
+          break;
+        }
       }
-      if (shouldRender) renderFrame();
+      if (shouldRender) {
+        RENDER_FRAME();
+      }
     } catch (error) {
-      if (current === generation) stop();
+      if (CURRENT === generation) {
+        STOP();
+      }
       onError(error);
     }
   };
-  const start = () => {
-    if (running) return;
-    if (typeof requestFrame !== "function" || typeof cancelFrame !== "function") throw new TypeError("frame scheduler");
+  const START = () => {
+    if (running) {
+      return;
+    }
+    if (typeof requestFrame !== "function" || typeof cancelFrame !== "function") {
+      throw new TypeError("frame scheduler");
+    }
     running = true;
-    resetTiming(false);
-    const current = ++generation;
-    const frame = (timestamp) => {
-      if (!running || current !== generation) return;
-      if (inputPreview || hasSubmission) observeInput(timestamp);
-      pulse(timestamp);
-      if (running && current === generation) handle = requestFrame(frame);
+    RESET_TIMING(false);
+    const CURRENT = ++generation;
+    const FRAME = (timestamp) => {
+      if (!running || CURRENT !== generation) {
+        return;
+      }
+      if (inputPreview || HAS_SUBMISSION) {
+        OBSERVE_INPUT(timestamp);
+      }
+      PULSE(timestamp);
+      if (running && CURRENT === generation) {
+        handle = requestFrame(FRAME);
+      }
     };
-    globalThis.addEventListener?.("blur", release);
-    globalThis.document?.addEventListener("visibilitychange", hidden);
-    handle = requestFrame(frame);
+    globalThis.addEventListener?.("blur", RELEASE);
+    globalThis.document?.addEventListener("visibilitychange", HIDDEN);
+    handle = requestFrame(FRAME);
   };
-  const flushInput = (timestamp) => observeInput(timestamp);
-  const pollInput = (timestamp) => {
-    const sample = observeInput(timestamp);
+  const FLUSH_INPUT = (timestamp) => OBSERVE_INPUT(timestamp);
+  const POLL_INPUT = (timestamp) => {
+    const SAMPLE = OBSERVE_INPUT(timestamp);
     session.poll();
-    return sample;
+    return SAMPLE;
   };
-  return { get simulationTimeMs() {
-    return last === void 0 ? null : last - accumulator;
-  }, get rates() {
-    return configuredRates;
-  }, get nextDeadlineMs() {
-    return last === void 0 ? null : last + Math.max(0, quantum * (session.pace ?? session.metrics.pace) - accumulator);
-  }, start, stop, pulse, render: renderFrame, observeInput, flushInput, pollInput, releaseInput: release, resetTiming, get running() {
-    return running;
-  } };
+  return {
+    get simulationTimeMs() {
+      return last === void 0 ? null : last - accumulator;
+    },
+    get rates() {
+      return CONFIGURED_RATES;
+    },
+    get nextDeadlineMs() {
+      return last === void 0 ? null : last + Math.max(0, QUANTUM * (session.pace ?? session.metrics.pace) - accumulator);
+    },
+    start: START,
+    stop: STOP,
+    pulse: PULSE,
+    render: RENDER_FRAME,
+    observeInput: OBSERVE_INPUT,
+    flushInput: FLUSH_INPUT,
+    pollInput: POLL_INPUT,
+    releaseInput: RELEASE,
+    resetTiming: RESET_TIMING,
+    get running() {
+      return running;
+    }
+  };
 }
 
 // modules/simloop/input-preview.js
 var MODES = /* @__PURE__ */ new Set(["continuous", "rollback", "load", "reset", "teleport", "join", "resync"]);
 function equalInput(a, b) {
-  if (a === b) return true;
-  if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
-  if (ArrayBuffer.isView(a) && ArrayBuffer.isView(b)) {
-    if (a.byteLength !== b.byteLength) return false;
-    const x = new Uint8Array(a.buffer, a.byteOffset, a.byteLength), y = new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
-    return x.every((v, i) => v === y[i]);
+  if (a === b) {
+    return true;
   }
-  const keys = Object.keys(a);
-  return keys.length === Object.keys(b).length && keys.every((key) => Object.hasOwn(b, key) && equalInput(a[key], b[key]));
+  if (!a || !b || typeof a !== "object" || typeof b !== "object") {
+    return false;
+  }
+  if (ArrayBuffer.isView(a) && ArrayBuffer.isView(b)) {
+    if (a.byteLength !== b.byteLength) {
+      return false;
+    }
+    const X = new Uint8Array(a.buffer, a.byteOffset, a.byteLength), Y = new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
+    return X.every((v, i) => v === Y[i]);
+  }
+  const KEYS = Object.keys(a);
+  return KEYS.length === Object.keys(b).length && KEYS.every((key) => Object.hasOwn(b, key) && equalInput(a[key], b[key]));
 }
 function equalCommands(a, b) {
-  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) {
+    return false;
+  }
   for (let i = 0; i < a.length; i++) {
-    if (!equalInput(a[i]?.payload, b[i]?.payload)) return false;
+    if (!equalInput(a[i]?.payload, b[i]?.payload)) {
+      return false;
+    }
     if (a[i]?.observationId !== void 0 || b[i]?.observationId !== void 0) {
-      if (a[i]?.observationId !== b[i]?.observationId) return false;
-    } else if (a[i]?.sequence !== b[i]?.sequence) return false;
+      if (a[i]?.observationId !== b[i]?.observationId) {
+        return false;
+      }
+    } else if (a[i]?.sequence !== b[i]?.sequence) {
+      return false;
+    }
   }
   return true;
 }
 function copyInput(input, seen = /* @__PURE__ */ new Set()) {
-  if (input instanceof Uint8Array) return input.slice();
-  if (input instanceof DataView) return new DataView(input.buffer.slice(input.byteOffset, input.byteOffset + input.byteLength));
-  if (ArrayBuffer.isView(input)) return new input.constructor(input);
-  if (input instanceof ArrayBuffer) return input.slice(0);
+  if (input instanceof Uint8Array) {
+    return input.slice();
+  }
+  if (input instanceof DataView) {
+    return new DataView(input.buffer.slice(input.byteOffset, input.byteOffset + input.byteLength));
+  }
+  if (ArrayBuffer.isView(input)) {
+    return new input.constructor(input);
+  }
+  if (input instanceof ArrayBuffer) {
+    return input.slice(0);
+  }
   if (Array.isArray(input) || input && typeof input === "object" && (Object.getPrototypeOf(input) === Object.prototype || Object.getPrototypeOf(input) === null)) {
-    if (seen.has(input)) throw new TypeError("preview input cannot contain cycles");
+    if (seen.has(input)) {
+      throw new TypeError("preview input cannot contain cycles");
+    }
     seen.add(input);
-    const copy = Array.isArray(input) ? new Array(input.length) : {};
-    for (const key of Object.keys(input)) {
-      if (["__proto__", "prototype", "constructor"].includes(key)) throw new TypeError("unsafe preview input key");
-      const descriptor = Object.getOwnPropertyDescriptor(input, key);
-      if (!descriptor || !Object.hasOwn(descriptor, "value")) throw new TypeError("preview input accessors are not supported");
-      copy[key] = copyInput(descriptor.value, seen);
+    const COPY = Array.isArray(input) ? new Array(input.length) : {};
+    for (const KEY of Object.keys(input)) {
+      if (["__proto__", "prototype", "constructor"].includes(KEY)) {
+        throw new TypeError("unsafe preview input key");
+      }
+      const DESCRIPTOR = Object.getOwnPropertyDescriptor(input, KEY);
+      if (!DESCRIPTOR || !Object.hasOwn(DESCRIPTOR, "value")) {
+        throw new TypeError("preview input accessors are not supported");
+      }
+      COPY[KEY] = copyInput(DESCRIPTOR.value, seen);
     }
     seen.delete(input);
-    return copy;
+    return COPY;
   }
-  if (input === null || ["string", "number", "boolean", "undefined"].includes(typeof input)) return input;
+  if (input === null || ["string", "number", "boolean", "undefined"].includes(typeof input)) {
+    return input;
+  }
   throw new TypeError("preview input must be immutable plain data or bytes");
 }
 function byteLength(value, seen = /* @__PURE__ */ new Set()) {
-  if (value == null) return 0;
-  if (ArrayBuffer.isView(value)) return value.byteLength;
-  if (value instanceof ArrayBuffer) return value.byteLength;
-  if (typeof value === "string") return value.length * 2;
-  if (typeof value !== "object" || seen.has(value)) return 8;
+  if (value == null) {
+    return 0;
+  }
+  if (ArrayBuffer.isView(value)) {
+    return value.byteLength;
+  }
+  if (value instanceof ArrayBuffer) {
+    return value.byteLength;
+  }
+  if (typeof value === "string") {
+    return value.length * 2;
+  }
+  if (typeof value !== "object" || seen.has(value)) {
+    return 8;
+  }
   seen.add(value);
   let size = Array.isArray(value) ? 8 : 16;
-  for (const [key, item] of Object.entries(value)) size += key.length * 2 + byteLength(item, seen);
+  for (const [KEY, ITEM] of Object.entries(value)) {
+    size += KEY.length * 2 + byteLength(ITEM, seen);
+  }
   return size;
 }
 var LocalInputPreview = class {
@@ -420,12 +673,24 @@ var LocalInputPreview = class {
     maxAgeMs = 250,
     stepMs = 100
   } = {}) {
-    if (typeof createFork !== "function" || typeof readEntities !== "function") throw new TypeError("preview fork and entity reader are required");
-    if (presentation && (typeof presentation.selectPreview !== "function" || typeof presentation.capturePreview !== "function")) throw new TypeError("presentation preview capability");
-    if (!Number.isInteger(maxPendingInputs) || maxPendingInputs < 1 || maxPendingInputs > 64) throw new RangeError("maxPendingInputs");
-    if (!Number.isInteger(maxFutureTicks) || maxFutureTicks < 1 || maxFutureTicks > 64) throw new RangeError("maxFutureTicks");
-    if (!Number.isFinite(maxAgeMs) || maxAgeMs <= 0 || maxAgeMs > 2e3) throw new RangeError("maxAgeMs");
-    if (!Number.isFinite(stepMs) || stepMs <= 0) throw new RangeError("stepMs");
+    if (typeof createFork !== "function" || typeof readEntities !== "function") {
+      throw new TypeError("preview fork and entity reader are required");
+    }
+    if (presentation && (typeof presentation.selectPreview !== "function" || typeof presentation.capturePreview !== "function")) {
+      throw new TypeError("presentation preview capability");
+    }
+    if (!Number.isInteger(maxPendingInputs) || maxPendingInputs < 1 || maxPendingInputs > 64) {
+      throw new RangeError("maxPendingInputs");
+    }
+    if (!Number.isInteger(maxFutureTicks) || maxFutureTicks < 1 || maxFutureTicks > 64) {
+      throw new RangeError("maxFutureTicks");
+    }
+    if (!Number.isFinite(maxAgeMs) || maxAgeMs <= 0 || maxAgeMs > 2e3) {
+      throw new RangeError("maxAgeMs");
+    }
+    if (!Number.isFinite(stepMs) || stepMs <= 0) {
+      throw new RangeError("stepMs");
+    }
     this.#forkFactory = createFork;
     this.#cloneSnapshot = cloneSnapshot;
     this.#captureSnapshot = captureSnapshot;
@@ -435,10 +700,16 @@ var LocalInputPreview = class {
     this.#maxFutureTicks = maxFutureTicks;
     this.#maxAgeMs = maxAgeMs;
     this.#stepMs = stepMs;
-    if (isActive !== void 0 && typeof isActive !== "function") throw new TypeError("isActive");
+    if (isActive !== void 0 && typeof isActive !== "function") {
+      throw new TypeError("isActive");
+    }
     this.#isActive = isActive;
-    if (typeof cloneSnapshot !== "function") throw new TypeError("cloneSnapshot");
-    if (captureSnapshot !== void 0 && typeof captureSnapshot !== "function") throw new TypeError("captureSnapshot");
+    if (typeof cloneSnapshot !== "function") {
+      throw new TypeError("cloneSnapshot");
+    }
+    if (captureSnapshot !== void 0 && typeof captureSnapshot !== "function") {
+      throw new TypeError("captureSnapshot");
+    }
   }
   /** Ongoing detached action intent, independent of newly observed device commands. */
   get active() {
@@ -454,7 +725,12 @@ var LocalInputPreview = class {
     return !!this.#snapshot && !!this.#fork && this.#enabled && !this.#disposed && performance.now() - this.#timeMs <= this.#maxAgeMs;
   }
   get metrics() {
-    return { ...this.#metrics, pendingCount: this.#pending.length, epoch: this.#epoch, generation: this.#generation };
+    return {
+      ...this.#metrics,
+      pendingCount: this.#pending.length,
+      epoch: this.#epoch,
+      generation: this.#generation
+    };
   }
   #clear() {
     this.#pending.length = 0;
@@ -480,35 +756,61 @@ var LocalInputPreview = class {
    */
   reconcile(checkpoint) {
     this.#assertLive();
-    const start = performance.now();
-    if (!checkpoint || !MODES.has(checkpoint.mode ?? "continuous")) throw new TypeError("preview reconciliation mode");
-    for (const key of ["revision", "tick", "epoch"]) if (!Number.isSafeInteger(checkpoint[key]) || checkpoint[key] < 0) throw new RangeError("checkpoint " + key);
-    if (!Number.isFinite(checkpoint.timeMs) || checkpoint.timeMs < this.#timeMs) throw new RangeError("checkpoint timeMs must be monotonic");
-    if (checkpoint.phaseStartMs !== void 0 && (!Number.isFinite(checkpoint.phaseStartMs) || checkpoint.phaseStartMs > checkpoint.timeMs)) throw new RangeError("checkpoint phaseStartMs must not exceed timeMs");
-    const mode = checkpoint.mode ?? "continuous";
-    if (checkpoint.revision < this.#revision) throw new RangeError("checkpoint revision cannot regress");
-    if (checkpoint.continuationKey !== void 0 && (typeof checkpoint.continuationKey !== "string" || checkpoint.continuationKey.length > 65536)) throw new TypeError("checkpoint continuationKey");
-    const changedRevision = this.#revision >= 0 && checkpoint.revision !== this.#revision;
-    if (changedRevision && !["rollback", "load", "reset", "teleport", "join", "resync"].includes(mode)) throw new RangeError("new preview revision requires an explicit lifecycle mode");
-    for (const key of ["confirmedSequence", "confirmedCommandSequence"]) if (checkpoint[key] !== void 0 && (!Number.isSafeInteger(checkpoint[key]) || checkpoint[key] < 0)) throw new RangeError("checkpoint " + key);
-    const discontinuity = checkpoint.reset || ["load", "reset", "teleport", "join", "resync"].includes(mode) || this.#epoch >= 0 && checkpoint.epoch !== this.#epoch;
-    if (discontinuity) {
+    const START = performance.now();
+    if (!checkpoint || !MODES.has(checkpoint.mode ?? "continuous")) {
+      throw new TypeError("preview reconciliation mode");
+    }
+    for (const KEY of ["revision", "tick", "epoch"]) {
+      if (!Number.isSafeInteger(checkpoint[KEY]) || checkpoint[KEY] < 0) {
+        throw new RangeError("checkpoint " + KEY);
+      }
+    }
+    if (!Number.isFinite(checkpoint.timeMs) || checkpoint.timeMs < this.#timeMs) {
+      throw new RangeError("checkpoint timeMs must be monotonic");
+    }
+    if (checkpoint.phaseStartMs !== void 0 && (!Number.isFinite(checkpoint.phaseStartMs) || checkpoint.phaseStartMs > checkpoint.timeMs)) {
+      throw new RangeError("checkpoint phaseStartMs must not exceed timeMs");
+    }
+    const MODE = checkpoint.mode ?? "continuous";
+    if (checkpoint.revision < this.#revision) {
+      throw new RangeError("checkpoint revision cannot regress");
+    }
+    if (checkpoint.continuationKey !== void 0 && (typeof checkpoint.continuationKey !== "string" || checkpoint.continuationKey.length > 65536)) {
+      throw new TypeError("checkpoint continuationKey");
+    }
+    const CHANGED_REVISION = this.#revision >= 0 && checkpoint.revision !== this.#revision;
+    if (CHANGED_REVISION && !["rollback", "load", "reset", "teleport", "join", "resync"].includes(MODE)) {
+      throw new RangeError("new preview revision requires an explicit lifecycle mode");
+    }
+    for (const KEY of ["confirmedSequence", "confirmedCommandSequence"]) {
+      if (checkpoint[KEY] !== void 0 && (!Number.isSafeInteger(checkpoint[KEY]) || checkpoint[KEY] < 0)) {
+        throw new RangeError("checkpoint " + KEY);
+      }
+    }
+    const DISCONTINUITY = checkpoint.reset || ["load", "reset", "teleport", "join", "resync"].includes(MODE) || this.#epoch >= 0 && checkpoint.epoch !== this.#epoch;
+    if (DISCONTINUITY) {
       this.#pending.length = 0;
       this.#observed = null;
       this.#forecast.length = 0;
       this.#forkCurrent = false;
       this.#captureSequence = -1;
-    } else this.#pending = this.#pending.filter((input) => input.executeTick >= checkpoint.tick && input.executeTick - checkpoint.tick < this.#maxFutureTicks).map((input) => ({
-      ...input,
-      commands: checkpoint.confirmedCommandSequence === void 0 ? input.commands : input.commands.filter((command) => command.sequence > checkpoint.confirmedCommandSequence)
-    }));
-    const clonedAt = performance.now();
-    const snapshot = this.#cloneSnapshot(checkpoint.snapshot);
-    this.#metrics.snapshotCloneMs += performance.now() - clonedAt;
-    const snapshotSize = byteLength(snapshot);
-    this.#metrics.snapshotBytes += snapshotSize;
-    this.#metrics.correctionBytes += snapshotSize;
-    this.#snapshot = snapshot;
+    } else {
+      this.#pending = this.#pending.filter(
+        (input) => input.executeTick >= checkpoint.tick && input.executeTick - checkpoint.tick < this.#maxFutureTicks
+      ).map((input) => ({
+        ...input,
+        commands: checkpoint.confirmedCommandSequence === void 0 ? input.commands : input.commands.filter(
+          (command) => command.sequence > checkpoint.confirmedCommandSequence
+        )
+      }));
+    }
+    const CLONED_AT = performance.now();
+    const SNAPSHOT = this.#cloneSnapshot(checkpoint.snapshot);
+    this.#metrics.snapshotCloneMs += performance.now() - CLONED_AT;
+    const SNAPSHOT_SIZE = byteLength(SNAPSHOT);
+    this.#metrics.snapshotBytes += SNAPSHOT_SIZE;
+    this.#metrics.correctionBytes += SNAPSHOT_SIZE;
+    this.#snapshot = SNAPSHOT;
     this.#snapshotTick = checkpoint.tick;
     this.#continuationKey = checkpoint.continuationKey;
     this.#clockGap = false;
@@ -524,14 +826,19 @@ var LocalInputPreview = class {
     this.#timeMs = checkpoint.timeMs;
     this.#phaseStartMs = checkpoint.phaseStartMs ?? checkpoint.timeMs;
     this.#generation++;
-    if (this.#pending.length || this.#observed || !this.#fork) this.#rebuild(checkpoint.timeMs);
+    if (this.#pending.length || this.#observed || !this.#fork) {
+      this.#rebuild(checkpoint.timeMs);
+    }
     this.#metrics.corrections++;
-    this.#metrics.correctionMs += performance.now() - start;
+    this.#metrics.correctionMs += performance.now() - START;
     if (!this.#pending.length && !this.#observed) {
       this.#forecast.length = 0;
       this.#forkCurrent = false;
-      if (discontinuity || mode === "rollback") this.#presentation?.clearPreview?.();
-      else this.#presentation?.releasePreview?.(checkpoint.timeMs);
+      if (DISCONTINUITY || MODE === "rollback") {
+        this.#presentation?.clearPreview?.();
+      } else {
+        this.#presentation?.releasePreview?.(checkpoint.timeMs);
+      }
       return true;
     }
     return true;
@@ -542,28 +849,64 @@ var LocalInputPreview = class {
    */
   continueFromCheckpoint(checkpoint) {
     this.#assertLive();
-    const reject = (reason) => {
+    const REJECT = (reason) => {
       this.#metrics["continuationRejected" + reason]++;
       return false;
     };
-    if (!this.#enabled) return reject("Disabled");
-    if (!checkpoint || typeof checkpoint.continuationKey !== "string") return reject("Key");
-    for (const key of ["revision", "tick", "epoch"]) if (!Number.isSafeInteger(checkpoint[key]) || checkpoint[key] < 0) throw new RangeError("checkpoint " + key);
-    if (!Number.isFinite(checkpoint.timeMs) || checkpoint.timeMs < this.#timeMs) throw new RangeError("checkpoint timeMs must be monotonic");
-    if (checkpoint.tick !== this.#tick + 1) return reject("Tick");
-    if (checkpoint.revision !== this.#revision) return reject("Revision");
-    if (checkpoint.epoch !== this.#epoch) return reject("Epoch");
-    if (checkpoint.continuationKey !== this.#continuationKey) return reject("Key");
-    if (this.#observed) return reject("Observed");
-    if (checkpoint.input === void 0) return reject("Input");
-    if (!this.#fork) return reject("Fork");
-    const predicted = this.#forecast.find((step) => step.tick === this.#tick);
-    if (!predicted) return reject("Forecast");
-    if (!equalInput(predicted.input, checkpoint.input)) return reject("Input");
-    if (this.#forkTick < checkpoint.tick) return reject("Fork");
-    const commands = predicted.commands || [];
-    if (commands.length && (checkpoint.confirmedCommandSequence === void 0 || !Number.isSafeInteger(checkpoint.confirmedCommandSequence) || commands.some((command) => !Number.isSafeInteger(command.sequence) || command.sequence > checkpoint.confirmedCommandSequence))) return reject("Commands");
-    this.#pending = this.#pending.filter((input) => input.executeTick >= checkpoint.tick && input.executeTick - checkpoint.tick < this.#maxFutureTicks).map((input) => ({
+    if (!this.#enabled) {
+      return REJECT("Disabled");
+    }
+    if (!checkpoint || typeof checkpoint.continuationKey !== "string") {
+      return REJECT("Key");
+    }
+    for (const KEY of ["revision", "tick", "epoch"]) {
+      if (!Number.isSafeInteger(checkpoint[KEY]) || checkpoint[KEY] < 0) {
+        throw new RangeError("checkpoint " + KEY);
+      }
+    }
+    if (!Number.isFinite(checkpoint.timeMs) || checkpoint.timeMs < this.#timeMs) {
+      throw new RangeError("checkpoint timeMs must be monotonic");
+    }
+    if (checkpoint.tick !== this.#tick + 1) {
+      return REJECT("Tick");
+    }
+    if (checkpoint.revision !== this.#revision) {
+      return REJECT("Revision");
+    }
+    if (checkpoint.epoch !== this.#epoch) {
+      return REJECT("Epoch");
+    }
+    if (checkpoint.continuationKey !== this.#continuationKey) {
+      return REJECT("Key");
+    }
+    if (this.#observed) {
+      return REJECT("Observed");
+    }
+    if (checkpoint.input === void 0) {
+      return REJECT("Input");
+    }
+    if (!this.#fork) {
+      return REJECT("Fork");
+    }
+    const PREDICTED = this.#forecast.find((step) => step.tick === this.#tick);
+    if (!PREDICTED) {
+      return REJECT("Forecast");
+    }
+    if (!equalInput(PREDICTED.input, checkpoint.input)) {
+      return REJECT("Input");
+    }
+    if (this.#forkTick < checkpoint.tick) {
+      return REJECT("Fork");
+    }
+    const COMMANDS = PREDICTED.commands || [];
+    if (COMMANDS.length && (checkpoint.confirmedCommandSequence === void 0 || !Number.isSafeInteger(checkpoint.confirmedCommandSequence) || COMMANDS.some(
+      (command) => !Number.isSafeInteger(command.sequence) || command.sequence > checkpoint.confirmedCommandSequence
+    ))) {
+      return REJECT("Commands");
+    }
+    this.#pending = this.#pending.filter(
+      (input) => input.executeTick >= checkpoint.tick && input.executeTick - checkpoint.tick < this.#maxFutureTicks
+    ).map((input) => ({
       ...input,
       commands: checkpoint.confirmedCommandSequence === void 0 ? input.commands : input.commands.filter((command) => command.sequence > checkpoint.confirmedCommandSequence)
     }));
@@ -582,8 +925,11 @@ var LocalInputPreview = class {
     this.#clockGap = false;
     this.#metrics.continuedCheckpoints++;
     if (!this.#pending.length && !this.#observed) {
-      if (this.#forecast.some((step) => step.kind === "observed" && step.tick >= checkpoint.tick)) this.#publish(checkpoint.timeMs);
-      else this.#presentation?.clearPreview?.();
+      if (this.#forecast.some((step) => step.kind === "observed" && step.tick >= checkpoint.tick)) {
+        this.#publish(checkpoint.timeMs);
+      } else {
+        this.#presentation?.clearPreview?.();
+      }
     }
     return true;
   }
@@ -596,30 +942,66 @@ var LocalInputPreview = class {
    */
   advanceConfirmedCheckpoint(checkpoint) {
     this.#assertLive();
-    const reject = (reason) => {
+    const REJECT = (reason) => {
       this.#metrics.confirmedAdvanceRejected++;
       this.#metrics["confirmedAdvanceRejected" + reason]++;
       return false;
     };
-    if (!this.#enabled) return reject("Disabled");
-    if (!checkpoint || typeof checkpoint.continuationKey !== "string") return reject("Key");
-    for (const key of ["revision", "tick", "epoch"]) if (!Number.isSafeInteger(checkpoint[key]) || checkpoint[key] < 0) throw new RangeError("checkpoint " + key);
-    if (!Number.isFinite(checkpoint.timeMs) || checkpoint.timeMs < this.#timeMs) throw new RangeError("checkpoint timeMs must be monotonic");
-    if (checkpoint.confirmedCommandSequence !== void 0 && (!Number.isSafeInteger(checkpoint.confirmedCommandSequence) || checkpoint.confirmedCommandSequence < 0)) throw new RangeError("checkpoint confirmedCommandSequence");
-    if (checkpoint.tick !== this.#tick + 1) return reject("Tick");
-    if (checkpoint.revision !== this.#revision) return reject("Revision");
-    if (checkpoint.epoch !== this.#epoch) return reject("Epoch");
-    if (checkpoint.continuationKey !== this.#continuationKey) return reject("Key");
-    if (checkpoint.input === void 0) return reject("Input");
-    if (checkpoint.confirmedCommandSequence !== this.#confirmedCommandSequence) return reject("Commands");
-    if (!this.#fork || !this.#forkCurrent || this.#forkTick !== this.#tick) return reject("Fork");
-    if (this.#pending.length || this.#observed || this.#forecast.length) return reject("Pending");
-    if (this.#confirmedOnlySteps >= 1) return reject("Limit");
-    const started = performance.now(), input = copyInput(checkpoint.input);
-    this.#fork.step(copyInput(input), { tick: this.#tick, epoch: this.#epoch, commands: [], speculative: true, confirmedReplay: true });
-    this.#metrics.confirmedAdvanceMs += performance.now() - started;
+    if (!this.#enabled) {
+      return REJECT("Disabled");
+    }
+    if (!checkpoint || typeof checkpoint.continuationKey !== "string") {
+      return REJECT("Key");
+    }
+    for (const KEY of ["revision", "tick", "epoch"]) {
+      if (!Number.isSafeInteger(checkpoint[KEY]) || checkpoint[KEY] < 0) {
+        throw new RangeError("checkpoint " + KEY);
+      }
+    }
+    if (!Number.isFinite(checkpoint.timeMs) || checkpoint.timeMs < this.#timeMs) {
+      throw new RangeError("checkpoint timeMs must be monotonic");
+    }
+    if (checkpoint.confirmedCommandSequence !== void 0 && (!Number.isSafeInteger(checkpoint.confirmedCommandSequence) || checkpoint.confirmedCommandSequence < 0)) {
+      throw new RangeError("checkpoint confirmedCommandSequence");
+    }
+    if (checkpoint.tick !== this.#tick + 1) {
+      return REJECT("Tick");
+    }
+    if (checkpoint.revision !== this.#revision) {
+      return REJECT("Revision");
+    }
+    if (checkpoint.epoch !== this.#epoch) {
+      return REJECT("Epoch");
+    }
+    if (checkpoint.continuationKey !== this.#continuationKey) {
+      return REJECT("Key");
+    }
+    if (checkpoint.input === void 0) {
+      return REJECT("Input");
+    }
+    if (checkpoint.confirmedCommandSequence !== this.#confirmedCommandSequence) {
+      return REJECT("Commands");
+    }
+    if (!this.#fork || !this.#forkCurrent || this.#forkTick !== this.#tick) {
+      return REJECT("Fork");
+    }
+    if (this.#pending.length || this.#observed || this.#forecast.length) {
+      return REJECT("Pending");
+    }
+    if (this.#confirmedOnlySteps >= 1) {
+      return REJECT("Limit");
+    }
+    const STARTED = performance.now(), INPUT = copyInput(checkpoint.input);
+    this.#fork.step(copyInput(INPUT), {
+      tick: this.#tick,
+      epoch: this.#epoch,
+      commands: [],
+      speculative: true,
+      confirmedReplay: true
+    });
+    this.#metrics.confirmedAdvanceMs += performance.now() - STARTED;
     this.#metrics.confirmedAdvances++;
-    this.#baseInput = copyInput(input);
+    this.#baseInput = copyInput(INPUT);
     this.#tick = checkpoint.tick;
     this.#epoch = checkpoint.epoch;
     this.#revision = checkpoint.revision;
@@ -635,24 +1017,35 @@ var LocalInputPreview = class {
   /** Observe a coalesced future frame BEFORE authority advances. Provisional IDs are not SDK command sequences. */
   observe(input, { sequence, tick, epoch, timeMs, continuationKey, commands = [] }) {
     this.#assertLive();
-    if (!this.#enabled) return false;
-    if (!this.#snapshot || !this.#fork) return false;
-    for (const [name, value] of Object.entries({ sequence, tick, epoch, timeMs })) {
-      if (name === "timeMs" ? !Number.isFinite(value) : !Number.isSafeInteger(value) || value < 0) throw new RangeError("preview submission " + name);
+    if (!this.#enabled) {
+      return false;
+    }
+    if (!this.#snapshot || !this.#fork) {
+      return false;
+    }
+    for (const [NAME, VALUE] of Object.entries({
+      sequence,
+      tick,
+      epoch,
+      timeMs
+    })) {
+      if (NAME === "timeMs" ? !Number.isFinite(VALUE) : !Number.isSafeInteger(VALUE) || VALUE < 0) {
+        throw new RangeError("preview submission " + NAME);
+      }
     }
     if (epoch !== this.#epoch) {
       this.#metrics.rejectedEpoch++;
       this.#clear();
       return false;
     }
-    const futureEnd = Math.max(this.#tick, ...this.#pending.map((frame) => frame.executeTick + 1));
-    if (tick < this.#tick || futureEnd - this.#tick + 1 > this.#maxFutureTicks) {
+    const FUTURE_END = Math.max(this.#tick, ...this.#pending.map((frame) => frame.executeTick + 1));
+    if (tick < this.#tick || FUTURE_END - this.#tick + 1 > this.#maxFutureTicks) {
       this.#metrics.rejectedHorizon++;
       this.#clear();
       return false;
     }
-    const sameCheckpointAfterGap = this.#clockGap && tick === this.#tick && (continuationKey ?? this.#continuationKey) === this.#continuationKey;
-    if (timeMs - this.#timeMs > this.#maxAgeMs && !sameCheckpointAfterGap) {
+    const SAME_CHECKPOINT_AFTER_GAP = this.#clockGap && tick === this.#tick && (continuationKey ?? this.#continuationKey) === this.#continuationKey;
+    if (timeMs - this.#timeMs > this.#maxAgeMs && !SAME_CHECKPOINT_AFTER_GAP) {
       this.#metrics.rejectedAge++;
       this.#clear();
       return false;
@@ -662,10 +1055,19 @@ var LocalInputPreview = class {
       this.#clear();
       return false;
     }
-    if (!Array.isArray(commands)) throw new TypeError("preview commands must be an array");
-    const owned = { sequence, tick, epoch, timeMs, input: copyInput(input), commands: copyInput(commands) };
-    const same = this.#observed && equalInput(this.#observed.input, owned.input) && equalInput(this.#observed.commands, owned.commands);
-    if (same) {
+    if (!Array.isArray(commands)) {
+      throw new TypeError("preview commands must be an array");
+    }
+    const OWNED = {
+      sequence,
+      tick,
+      epoch,
+      timeMs,
+      input: copyInput(input),
+      commands: copyInput(commands)
+    };
+    const SAME = this.#observed && equalInput(this.#observed.input, OWNED.input) && equalInput(this.#observed.commands, OWNED.commands);
+    if (SAME) {
       if (this.#clockGap) {
         this.#clockGap = false;
         this.#publish(timeMs);
@@ -674,11 +1076,11 @@ var LocalInputPreview = class {
     }
     let conflictingObserved = false;
     for (let i = this.#forecast.length - 1; i >= 0; i--) {
-      const step = this.#forecast[i];
-      if (step.kind === "observed" && step.tick >= tick) {
-        if (equalInput(step.input, owned.input) && equalCommands(step.commands, owned.commands)) {
-          this.#observed = owned;
-          step.sequence = owned.sequence;
+      const STEP = this.#forecast[i];
+      if (STEP.kind === "observed" && STEP.tick >= tick) {
+        if (equalInput(STEP.input, OWNED.input) && equalCommands(STEP.commands, OWNED.commands)) {
+          this.#observed = OWNED;
+          STEP.sequence = OWNED.sequence;
           this.#metrics.forecastReuses++;
           this.#clockGap = false;
           this.#publish(timeMs);
@@ -689,13 +1091,25 @@ var LocalInputPreview = class {
       }
     }
     if (this.#forkCurrent && this.#forkTick === this.#tick && !this.#pending.length) {
-      const started = performance.now(), stepInput = copyInput(owned.input), stepCommands = copyInput(owned.commands);
-      this.#fork.step(stepInput, { sequence: owned.sequence, tick: this.#tick, epoch: this.#epoch, commands: stepCommands, speculative: true });
-      this.#metrics.replayMs += performance.now() - started;
+      const STARTED = performance.now(), STEP_INPUT = copyInput(OWNED.input), STEP_COMMANDS = copyInput(OWNED.commands);
+      this.#fork.step(STEP_INPUT, {
+        sequence: OWNED.sequence,
+        tick: this.#tick,
+        epoch: this.#epoch,
+        commands: STEP_COMMANDS,
+        speculative: true
+      });
+      this.#metrics.replayMs += performance.now() - STARTED;
       this.#metrics.replayedInputs++;
-      this.#metrics.replayBytes += byteLength(owned.input) + byteLength(owned.commands);
-      this.#forecast.push({ tick: this.#tick, input: copyInput(owned.input), commands: copyInput(owned.commands), sequence: owned.sequence, kind: "observed" });
-      this.#observed = owned;
+      this.#metrics.replayBytes += byteLength(OWNED.input) + byteLength(OWNED.commands);
+      this.#forecast.push({
+        tick: this.#tick,
+        input: copyInput(OWNED.input),
+        commands: copyInput(OWNED.commands),
+        sequence: OWNED.sequence,
+        kind: "observed"
+      });
+      this.#observed = OWNED;
       this.#forkTick = this.#tick + 1;
       this.#forkCurrent = false;
       this.#clockGap = false;
@@ -704,13 +1118,25 @@ var LocalInputPreview = class {
       return true;
     }
     if (!conflictingObserved && tick === this.#tick && this.#fork && this.#forkTick > this.#tick) {
-      const started = performance.now(), stepInput = copyInput(owned.input), stepCommands = copyInput(owned.commands), tick2 = this.#forkTick;
-      this.#fork.step(stepInput, { sequence: owned.sequence, tick: tick2, epoch: this.#epoch, commands: stepCommands, speculative: true });
-      this.#metrics.replayMs += performance.now() - started;
+      const STARTED = performance.now(), STEP_INPUT = copyInput(OWNED.input), STEP_COMMANDS = copyInput(OWNED.commands), TICK = this.#forkTick;
+      this.#fork.step(STEP_INPUT, {
+        sequence: OWNED.sequence,
+        tick: TICK,
+        epoch: this.#epoch,
+        commands: STEP_COMMANDS,
+        speculative: true
+      });
+      this.#metrics.replayMs += performance.now() - STARTED;
       this.#metrics.replayedInputs++;
-      this.#metrics.replayBytes += byteLength(owned.input) + byteLength(owned.commands);
-      this.#forecast.push({ tick: tick2, input: copyInput(owned.input), commands: copyInput(owned.commands), sequence: owned.sequence, kind: "observed" });
-      this.#observed = owned;
+      this.#metrics.replayBytes += byteLength(OWNED.input) + byteLength(OWNED.commands);
+      this.#forecast.push({
+        tick: TICK,
+        input: copyInput(OWNED.input),
+        commands: copyInput(OWNED.commands),
+        sequence: OWNED.sequence,
+        kind: "observed"
+      });
+      this.#observed = OWNED;
       this.#forkTick++;
       this.#forkCurrent = false;
       this.#clockGap = false;
@@ -718,16 +1144,22 @@ var LocalInputPreview = class {
       this.#publish(timeMs);
       return true;
     }
-    this.#observed = owned;
+    this.#observed = OWNED;
     this.#rebuild(timeMs);
     return true;
   }
   /** Bind provisional observations once to immutable SDK captures, including their real execution ticks. */
   commit(capture, nowMs) {
     this.#assertLive();
-    if (!this.#enabled) return false;
-    if (!this.#snapshot || !capture || capture.sequence === this.#captureSequence) return false;
-    if (!Number.isSafeInteger(capture.executeTick) || capture.executeTick < this.#tick) return false;
+    if (!this.#enabled) {
+      return false;
+    }
+    if (!this.#snapshot || !capture || capture.sequence === this.#captureSequence) {
+      return false;
+    }
+    if (!Number.isSafeInteger(capture.executeTick) || capture.executeTick < this.#tick) {
+      return false;
+    }
     if (capture.executeTick - this.#tick >= this.#maxFutureTicks) {
       this.#metrics.rejectedHorizon++;
       this.#clear();
@@ -735,16 +1167,25 @@ var LocalInputPreview = class {
     }
     this.#captureSequence = capture.sequence;
     this.#pending = this.#pending.filter((frame) => frame.executeTick !== capture.executeTick);
-    if (capture.predict !== false || capture.commands?.length) this.#pending.push({ ...capture, input: copyInput(capture.input), commands: copyInput(capture.commands ?? []), timeMs: nowMs });
-    const forecast = this.#forecast.find((step) => step.tick === capture.executeTick);
-    if (forecast) {
-      forecast.input = copyInput(capture.input);
-      forecast.commands = copyInput(capture.commands ?? []);
-      forecast.sequence = capture.sequence;
-      forecast.executeTick = capture.executeTick;
-      forecast.kind = "pending";
+    if (capture.predict !== false || capture.commands?.length) {
+      this.#pending.push({
+        ...capture,
+        input: copyInput(capture.input),
+        commands: copyInput(capture.commands ?? []),
+        timeMs: nowMs
+      });
     }
-    if (Number.isSafeInteger(capture.boundaryTick)) this.#pending = this.#pending.filter((frame) => frame.executeTick >= capture.boundaryTick);
+    const FORECAST = this.#forecast.find((step) => step.tick === capture.executeTick);
+    if (FORECAST) {
+      FORECAST.input = copyInput(capture.input);
+      FORECAST.commands = copyInput(capture.commands ?? []);
+      FORECAST.sequence = capture.sequence;
+      FORECAST.executeTick = capture.executeTick;
+      FORECAST.kind = "pending";
+    }
+    if (Number.isSafeInteger(capture.boundaryTick)) {
+      this.#pending = this.#pending.filter((frame) => frame.executeTick >= capture.boundaryTick);
+    }
     this.#observed = null;
     if (this.#pending.length > this.#maxPending) {
       this.#metrics.rejectedCapacity++;
@@ -755,20 +1196,24 @@ var LocalInputPreview = class {
   }
   /** No active device intent: preserve immutable future captures and release the coalesced slot smoothly. */
   cancelObservation(nowMs) {
-    const changed = !!this.#observed;
+    const CHANGED = !!this.#observed;
     this.#observed = null;
     if (!this.#pending.length) {
-      if (changed) {
+      if (CHANGED) {
         this.#forecast.length = 0;
         this.#forkCurrent = false;
       }
       this.#presentation?.releasePreview?.(nowMs);
-    } else if (changed) this.#rebuild(nowMs);
+    } else if (CHANGED) {
+      this.#rebuild(nowMs);
+    }
   }
   /** A main-thread clock gap drops frame timing; keep the fork only for exact next-tick confirmation. */
   clockGap() {
     this.#assertLive();
-    if (!this.#enabled || !this.#snapshot || !this.#fork) return false;
+    if (!this.#enabled || !this.#snapshot || !this.#fork) {
+      return false;
+    }
     this.#clockGap = true;
     this.#metrics.clockGaps++;
     this.#presentation?.clearPreview?.();
@@ -781,74 +1226,146 @@ var LocalInputPreview = class {
       return;
     }
     if (this.#snapshotTick !== this.#tick) {
-      if (!this.#captureSnapshot) throw new Error("A fresh authoritative snapshot is required to rebase the preview fork");
-      const captured = this.#captureSnapshot(), clonedAt = performance.now();
-      this.#snapshot = this.#cloneSnapshot(captured);
+      if (!this.#captureSnapshot) {
+        throw new Error("A fresh authoritative snapshot is required to rebase the preview fork");
+      }
+      const CAPTURED = this.#captureSnapshot(), CLONED_AT = performance.now();
+      this.#snapshot = this.#cloneSnapshot(CAPTURED);
       this.#snapshotTick = this.#tick;
-      this.#metrics.snapshotCloneMs += performance.now() - clonedAt;
+      this.#metrics.snapshotCloneMs += performance.now() - CLONED_AT;
       this.#metrics.snapshotBytes += byteLength(this.#snapshot);
       this.#metrics.snapshotRefreshes++;
     }
-    const started = performance.now();
+    const STARTED = performance.now();
     this.#metrics.forkRebuilds++;
     this.#clockGap = false;
     this.#forecast.length = 0;
     this.#forkCurrent = false;
-    if (this.#fork?.restore) this.#fork.restore(this.#cloneSnapshot(this.#snapshot));
-    else this.#fork = this.#forkFactory(this.#cloneSnapshot(this.#snapshot));
-    if (!this.#fork || typeof this.#fork.step !== "function") throw new TypeError("fork must expose step(input, context)");
-    this.#metrics.forkMs += performance.now() - started;
-    let tick = this.#tick, held = this.#baseInput;
-    for (const entry of this.#pending.slice().sort((a, b) => a.executeTick - b.executeTick)) {
-      while (tick < entry.executeTick) {
-        if (held === void 0) throw new TypeError("Replay gaps require explicit confirmed checkpoint input");
-        const gapInput = copyInput(held), gapAt = performance.now();
-        this.#forecast.push({ tick, input: copyInput(gapInput), commands: [], kind: "gap" });
-        this.#fork.step(gapInput, { tick: tick++, epoch: this.#epoch, commands: [], speculative: true, replay: true, gap: true });
-        this.#metrics.replayMs += performance.now() - gapAt;
+    if (this.#fork?.restore) {
+      this.#fork.restore(this.#cloneSnapshot(this.#snapshot));
+    } else {
+      this.#fork = this.#forkFactory(this.#cloneSnapshot(this.#snapshot));
+    }
+    if (!this.#fork || typeof this.#fork.step !== "function") {
+      throw new TypeError("fork must expose step(input, context)");
+    }
+    this.#metrics.forkMs += performance.now() - STARTED;
+    let tick = this.#tick;
+    let held = this.#baseInput;
+    for (const ENTRY of this.#pending.slice().sort((a, b) => a.executeTick - b.executeTick)) {
+      while (tick < ENTRY.executeTick) {
+        if (held === void 0) {
+          throw new TypeError("Replay gaps require explicit confirmed checkpoint input");
+        }
+        const GAP_INPUT = copyInput(held), GAP_AT = performance.now();
+        this.#forecast.push({
+          tick,
+          input: copyInput(GAP_INPUT),
+          commands: [],
+          kind: "gap"
+        });
+        this.#fork.step(GAP_INPUT, {
+          tick: tick++,
+          epoch: this.#epoch,
+          commands: [],
+          speculative: true,
+          replay: true,
+          gap: true
+        });
+        this.#metrics.replayMs += performance.now() - GAP_AT;
         this.#metrics.replayedInputs++;
         this.#metrics.replayGapSteps++;
         this.#metrics.replayBytes += byteLength(held);
       }
-      const replayAt = performance.now();
-      const replayInput = copyInput(entry.input), replayCommands = copyInput(entry.commands);
-      this.#forecast.push({ tick, input: copyInput(replayInput), commands: copyInput(replayCommands), sequence: entry.sequence, executeTick: entry.executeTick, kind: "pending" });
-      this.#fork.step(replayInput, { sequence: entry.sequence, tick: tick++, executeTick: entry.executeTick, epoch: this.#epoch, commands: replayCommands, speculative: true, replay: true });
-      held = entry.input;
-      this.#metrics.replayMs += performance.now() - replayAt;
-      this.#metrics.replayBytes += byteLength(entry.input) + byteLength(entry.commands);
+      const REPLAY_AT = performance.now();
+      const REPLAY_INPUT = copyInput(ENTRY.input), REPLAY_COMMANDS = copyInput(ENTRY.commands);
+      this.#forecast.push({
+        tick,
+        input: copyInput(REPLAY_INPUT),
+        commands: copyInput(REPLAY_COMMANDS),
+        sequence: ENTRY.sequence,
+        executeTick: ENTRY.executeTick,
+        kind: "pending"
+      });
+      this.#fork.step(REPLAY_INPUT, {
+        sequence: ENTRY.sequence,
+        tick: tick++,
+        executeTick: ENTRY.executeTick,
+        epoch: this.#epoch,
+        commands: REPLAY_COMMANDS,
+        speculative: true,
+        replay: true
+      });
+      held = ENTRY.input;
+      this.#metrics.replayMs += performance.now() - REPLAY_AT;
+      this.#metrics.replayBytes += byteLength(ENTRY.input) + byteLength(ENTRY.commands);
       this.#metrics.replayedInputs++;
     }
     if (this.#observed) {
-      const entry = this.#observed, replayAt = performance.now();
-      const observedInput = copyInput(entry.input), observedCommands = copyInput(entry.commands);
-      this.#forecast.push({ tick, input: copyInput(observedInput), commands: copyInput(observedCommands), sequence: entry.sequence, kind: "observed" });
-      this.#fork.step(observedInput, { sequence: entry.sequence, tick, epoch: this.#epoch, commands: observedCommands, speculative: true });
-      this.#metrics.replayMs += performance.now() - replayAt;
+      const ENTRY = this.#observed, REPLAY_AT = performance.now();
+      const OBSERVED_INPUT = copyInput(ENTRY.input), OBSERVED_COMMANDS = copyInput(ENTRY.commands);
+      this.#forecast.push({
+        tick,
+        input: copyInput(OBSERVED_INPUT),
+        commands: copyInput(OBSERVED_COMMANDS),
+        sequence: ENTRY.sequence,
+        kind: "observed"
+      });
+      this.#fork.step(OBSERVED_INPUT, {
+        sequence: ENTRY.sequence,
+        tick,
+        epoch: this.#epoch,
+        commands: OBSERVED_COMMANDS,
+        speculative: true
+      });
+      this.#metrics.replayMs += performance.now() - REPLAY_AT;
       this.#metrics.replayedInputs++;
-      this.#metrics.replayBytes += byteLength(entry.input) + byteLength(entry.commands);
+      this.#metrics.replayBytes += byteLength(ENTRY.input) + byteLength(ENTRY.commands);
     }
     this.#forkTick = tick + (this.#observed ? 1 : 0);
     this.#forkCurrent = this.#forkTick === this.#tick && !this.#pending.length && !this.#observed;
-    if (this.#pending.length || this.#observed) this.#publish(timeMs);
+    if (this.#pending.length || this.#observed) {
+      this.#publish(timeMs);
+    }
   }
   #publish(timeMs, initial) {
-    if (!this.#enabled) return false;
-    if (!this.#presentation || !this.#fork) return true;
-    const entities = this.#readEntities(this.#fork);
-    if (!Array.isArray(entities) || entities.some((entity) => !entity || typeof entity.id !== "string" || !Number.isSafeInteger(entity.generation) || !entity.source)) throw new TypeError("preview entities must be schema-backed identities");
-    this.#presentation.selectPreview(entities.map(({ id, generation }) => ({ id, generation })));
-    const starts = new Map((initial ?? []).map((entity) => [entity.id, entity.source]));
-    const accepted = this.#presentation.capturePreview({
-      revision: this.#revision,
-      sequence: ++this.#sequence,
-      timeMs,
-      phaseStartMs: this.#phaseStartMs,
-      stepMs: Math.max(1, this.#forkTick - this.#tick) * this.#stepMs,
-      entities: entities.map((entity) => ({ ...entity, initialSource: starts.get(entity.id) }))
-    }, timeMs);
-    if (accepted) this.#metrics.previewPublishes++;
-    return accepted;
+    if (!this.#enabled) {
+      return false;
+    }
+    if (!this.#presentation || !this.#fork) {
+      return true;
+    }
+    const ENTITIES = this.#readEntities(this.#fork);
+    if (!Array.isArray(ENTITIES) || ENTITIES.some(
+      (entity) => !entity || typeof entity.id !== "string" || !Number.isSafeInteger(entity.generation) || !entity.source
+    )) {
+      throw new TypeError("preview entities must be schema-backed identities");
+    }
+    this.#presentation.selectPreview(
+      ENTITIES.map(({ id, generation }) => ({
+        id,
+        generation
+      }))
+    );
+    const STARTS = new Map((initial ?? []).map((entity) => [entity.id, entity.source]));
+    const ACCEPTED = this.#presentation.capturePreview(
+      {
+        revision: this.#revision,
+        sequence: ++this.#sequence,
+        timeMs,
+        phaseStartMs: this.#phaseStartMs,
+        stepMs: Math.max(1, this.#forkTick - this.#tick) * this.#stepMs,
+        entities: ENTITIES.map((entity) => ({
+          ...entity,
+          initialSource: STARTS.get(entity.id)
+        }))
+      },
+      timeMs
+    );
+    if (ACCEPTED) {
+      this.#metrics.previewPublishes++;
+    }
+    return ACCEPTED;
   }
   /** Clear prediction at pause, blur, clock gap, lifecycle reset, or when preview is disabled. */
   clear() {
@@ -857,17 +1374,25 @@ var LocalInputPreview = class {
   }
   setEnabled(enabled) {
     this.#assertLive();
-    if (typeof enabled !== "boolean") throw new TypeError("enabled");
+    if (typeof enabled !== "boolean") {
+      throw new TypeError("enabled");
+    }
     this.#enabled = enabled;
-    if (!enabled) this.#clear();
+    if (!enabled) {
+      this.#clear();
+    }
   }
   dispose() {
-    if (this.#disposed) return;
+    if (this.#disposed) {
+      return;
+    }
     this.#clear();
     this.#disposed = true;
   }
   #assertLive() {
-    if (this.#disposed) throw new Error("input preview disposed");
+    if (this.#disposed) {
+      throw new Error("input preview disposed");
+    }
   }
 };
 
@@ -883,18 +1408,38 @@ function createDeadlineScheduler({
   onGap
 } = {}) {
   if (getDeadlineMs !== void 0) {
-    if (getIntervalMs !== void 0) throw new TypeError("choose getDeadlineMs or getIntervalMs");
-    return ownedDeadline({ getDeadlineMs, pulse, now, setTimer, clearTimer });
+    if (getIntervalMs !== void 0) {
+      throw new TypeError("choose getDeadlineMs or getIntervalMs");
+    }
+    return ownedDeadline({
+      getDeadlineMs,
+      pulse,
+      now,
+      setTimer,
+      clearTimer
+    });
   }
-  if (typeof getIntervalMs !== "function") throw new TypeError("getIntervalMs must be a function");
-  if (typeof pulse !== "function") throw new TypeError("pulse must be a function");
+  if (typeof getIntervalMs !== "function") {
+    throw new TypeError("getIntervalMs must be a function");
+  }
+  if (typeof pulse !== "function") {
+    throw new TypeError("pulse must be a function");
+  }
   if (!Number.isSafeInteger(maxBacklogTicks) || maxBacklogTicks < 1) {
     throw new RangeError("maxBacklogTicks must be a positive safe integer");
   }
-  if (typeof now !== "function") throw new TypeError("now must be a function");
-  if (typeof setTimer !== "function") throw new TypeError("setTimer must be a function");
-  if (typeof clearTimer !== "function") throw new TypeError("clearTimer must be a function");
-  if (onGap !== void 0 && typeof onGap !== "function") throw new TypeError("onGap must be a function");
+  if (typeof now !== "function") {
+    throw new TypeError("now must be a function");
+  }
+  if (typeof setTimer !== "function") {
+    throw new TypeError("setTimer must be a function");
+  }
+  if (typeof clearTimer !== "function") {
+    throw new TypeError("clearTimer must be a function");
+  }
+  if (onGap !== void 0 && typeof onGap !== "function") {
+    throw new TypeError("onGap must be a function");
+  }
   let active = false;
   let timerPending = false;
   let timerHandle;
@@ -904,113 +1449,161 @@ function createDeadlineScheduler({
   let lastPulseAt = null;
   let lastNow = null;
   let dispatchingWake = false;
-  const readNow = () => {
-    const value = now();
-    if (!Number.isFinite(value)) throw new RangeError("now() must return a finite timestamp");
-    if (lastNow !== null && value < lastNow) throw new RangeError("now() must be monotonic");
-    lastNow = value;
-    return value;
+  const READ_NOW = () => {
+    const VALUE = now();
+    if (!Number.isFinite(VALUE)) {
+      throw new RangeError("now() must return a finite timestamp");
+    }
+    if (lastNow !== null && VALUE < lastNow) {
+      throw new RangeError("now() must be monotonic");
+    }
+    lastNow = VALUE;
+    return VALUE;
   };
-  const readInterval = () => {
-    const value = getIntervalMs();
-    if (!Number.isFinite(value) || value <= 0) {
+  const READ_INTERVAL = () => {
+    const VALUE = getIntervalMs();
+    if (!Number.isFinite(VALUE) || VALUE <= 0) {
       throw new RangeError("getIntervalMs() must return a positive finite interval");
     }
-    return value;
+    return VALUE;
   };
-  const clearPendingTimer = () => {
-    if (!timerPending) return;
+  const CLEAR_PENDING_TIMER = () => {
+    if (!timerPending) {
+      return;
+    }
     timerPending = false;
     clearTimer(timerHandle);
     timerHandle = void 0;
   };
   let arm;
-  const dispatchRegular = (token) => {
-    if (!active || token !== generation) return;
+  const DISPATCH_REGULAR = (token) => {
+    if (!active || token !== generation) {
+      return;
+    }
     timerPending = false;
     timerHandle = void 0;
-    const timestamp = readNow();
-    if (timestamp < deadline) {
+    const TIMESTAMP = READ_NOW();
+    if (TIMESTAMP < deadline) {
       arm(token);
       return;
     }
-    const interval = intervalMs;
-    const lateness = timestamp - deadline;
-    if (!Number.isFinite(lateness)) throw new RangeError("clock gap is outside the supported range");
-    const due = Math.floor(lateness / interval) + 1;
-    const elapsedMs = lastPulseAt === null ? interval : timestamp - lastPulseAt;
-    const maxGapMs = interval * maxBacklogTicks;
-    if (elapsedMs > maxGapMs) {
-      const droppedTicks = Math.max(0, due - 1);
-      deadline = timestamp + interval;
-      if (!Number.isFinite(deadline)) throw new RangeError("next deadline is outside the supported range");
-      lastPulseAt = timestamp;
-      onGap?.({ elapsedMs, droppedTicks, timestamp, scheduledAtMs: timestamp });
-      if (!active || token !== generation) return;
-      pulse(timestamp, { due: 1, scheduledAtMs: timestamp });
-    } else {
-      const scheduledAtMs = deadline;
-      deadline += due * interval;
-      if (!Number.isFinite(deadline)) throw new RangeError("next deadline is outside the supported range");
-      lastPulseAt = timestamp;
-      pulse(timestamp, { due, scheduledAtMs });
+    const INTERVAL = intervalMs;
+    const LATENESS = TIMESTAMP - deadline;
+    if (!Number.isFinite(LATENESS)) {
+      throw new RangeError("clock gap is outside the supported range");
     }
-    if (active && token === generation) arm(token);
+    const DUE = Math.floor(LATENESS / INTERVAL) + 1;
+    const ELAPSED_MS = lastPulseAt === null ? INTERVAL : TIMESTAMP - lastPulseAt;
+    const MAX_GAP_MS = INTERVAL * maxBacklogTicks;
+    if (ELAPSED_MS > MAX_GAP_MS) {
+      const DROPPED_TICKS = Math.max(0, DUE - 1);
+      deadline = TIMESTAMP + INTERVAL;
+      if (!Number.isFinite(deadline)) {
+        throw new RangeError("next deadline is outside the supported range");
+      }
+      lastPulseAt = TIMESTAMP;
+      onGap?.({
+        elapsedMs: ELAPSED_MS,
+        droppedTicks: DROPPED_TICKS,
+        timestamp: TIMESTAMP,
+        scheduledAtMs: TIMESTAMP
+      });
+      if (!active || token !== generation) {
+        return;
+      }
+      pulse(TIMESTAMP, {
+        due: 1,
+        scheduledAtMs: TIMESTAMP
+      });
+    } else {
+      const SCHEDULED_AT_MS = deadline;
+      deadline += DUE * INTERVAL;
+      if (!Number.isFinite(deadline)) {
+        throw new RangeError("next deadline is outside the supported range");
+      }
+      lastPulseAt = TIMESTAMP;
+      pulse(TIMESTAMP, {
+        due: DUE,
+        scheduledAtMs: SCHEDULED_AT_MS
+      });
+    }
+    if (active && token === generation) {
+      arm(token);
+    }
   };
   arm = (token) => {
-    if (!active || token !== generation || timerPending) return;
-    const timestamp = readNow();
-    const delay = Math.max(0, deadline - timestamp);
+    if (!active || token !== generation || timerPending) {
+      return;
+    }
+    const TIMESTAMP = READ_NOW();
+    const DELAY = Math.max(0, deadline - TIMESTAMP);
     timerPending = true;
-    timerHandle = setTimer(() => dispatchRegular(token), delay);
+    timerHandle = setTimer(() => DISPATCH_REGULAR(token), DELAY);
   };
-  const rebase = (timestampMs) => {
-    const timestamp = timestampMs === void 0 ? readNow() : timestampMs;
-    if (!Number.isFinite(timestamp)) throw new RangeError("rebase timestamp must be finite");
-    if (lastNow !== null && timestamp < lastNow) throw new RangeError("rebase timestamp must be monotonic");
-    lastNow = timestamp;
-    intervalMs = readInterval();
-    deadline = timestamp + intervalMs;
-    if (!Number.isFinite(deadline)) throw new RangeError("next deadline is outside the supported range");
-    lastPulseAt = timestamp;
+  const REBASE = (timestampMs) => {
+    const TIMESTAMP = timestampMs === void 0 ? READ_NOW() : timestampMs;
+    if (!Number.isFinite(TIMESTAMP)) {
+      throw new RangeError("rebase timestamp must be finite");
+    }
+    if (lastNow !== null && TIMESTAMP < lastNow) {
+      throw new RangeError("rebase timestamp must be monotonic");
+    }
+    lastNow = TIMESTAMP;
+    intervalMs = READ_INTERVAL();
+    deadline = TIMESTAMP + intervalMs;
+    if (!Number.isFinite(deadline)) {
+      throw new RangeError("next deadline is outside the supported range");
+    }
+    lastPulseAt = TIMESTAMP;
     generation += 1;
-    clearPendingTimer();
-    if (active) arm(generation);
+    CLEAR_PENDING_TIMER();
+    if (active) {
+      arm(generation);
+    }
   };
-  const stop = () => {
+  const STOP = () => {
     generation += 1;
     active = false;
     deadline = null;
     lastPulseAt = null;
-    clearPendingTimer();
+    CLEAR_PENDING_TIMER();
   };
-  const start = () => {
-    if (active) return;
-    const timestamp = readNow();
-    intervalMs = readInterval();
-    deadline = timestamp + intervalMs;
-    if (!Number.isFinite(deadline)) throw new RangeError("next deadline is outside the supported range");
-    lastPulseAt = timestamp;
+  const START = () => {
+    if (active) {
+      return;
+    }
+    const TIMESTAMP = READ_NOW();
+    intervalMs = READ_INTERVAL();
+    deadline = TIMESTAMP + intervalMs;
+    if (!Number.isFinite(deadline)) {
+      throw new RangeError("next deadline is outside the supported range");
+    }
+    lastPulseAt = TIMESTAMP;
     active = true;
     generation += 1;
     arm(generation);
   };
-  const wake = () => {
-    if (!active || dispatchingWake) return;
-    const timestamp = readNow();
-    lastPulseAt = timestamp;
+  const WAKE = () => {
+    if (!active || dispatchingWake) {
+      return;
+    }
+    const TIMESTAMP = READ_NOW();
+    lastPulseAt = TIMESTAMP;
     dispatchingWake = true;
     try {
-      pulse(timestamp, { due: 0, scheduledAtMs: null });
+      pulse(TIMESTAMP, {
+        due: 0,
+        scheduledAtMs: null
+      });
     } finally {
       dispatchingWake = false;
     }
   };
   return {
-    start,
-    stop,
-    wake,
-    rebase,
+    start: START,
+    stop: STOP,
+    wake: WAKE,
+    rebase: REBASE,
     get running() {
       return active;
     },
@@ -1020,67 +1613,103 @@ function createDeadlineScheduler({
   };
 }
 function ownedDeadline({ getDeadlineMs, pulse, now, setTimer, clearTimer }) {
-  for (const callback of [getDeadlineMs, pulse, now, setTimer, clearTimer]) if (typeof callback !== "function") throw new TypeError("deadline callback");
-  let active = false, handle, generation = 0, deadline = null, last = -Infinity, dispatching = false;
-  const readNow = () => {
-    const t = now();
-    if (!Number.isFinite(t) || t < last) throw new RangeError("now must be finite and monotonic");
-    last = t;
-    return t;
+  for (const CALLBACK of [getDeadlineMs, pulse, now, setTimer, clearTimer]) {
+    if (typeof CALLBACK !== "function") {
+      throw new TypeError("deadline callback");
+    }
+  }
+  let active = false;
+  let handle;
+  let generation = 0;
+  let deadline = null;
+  let last = -Infinity;
+  let dispatching = false;
+  const READ_NOW = () => {
+    const T = now();
+    if (!Number.isFinite(T) || T < last) {
+      throw new RangeError("now must be finite and monotonic");
+    }
+    last = T;
+    return T;
   };
-  const clear = () => {
-    if (handle !== void 0) clearTimer(handle);
+  const CLEAR = () => {
+    if (handle !== void 0) {
+      clearTimer(handle);
+    }
     handle = void 0;
   };
-  const arm = () => {
-    if (!active) return;
-    clear();
-    const t = readNow(), next = getDeadlineMs();
-    if (next !== null && !Number.isFinite(next)) throw new RangeError("deadline must be finite or null");
-    deadline = next ?? t;
-    const token = generation;
-    handle = setTimer(() => {
-      if (!active || token !== generation) return;
-      handle = void 0;
-      const at = readNow();
-      if (at < deadline) {
-        arm();
-        return;
-      }
-      dispatching = true;
-      try {
-        pulse(at, { due: 0, scheduledAtMs: deadline });
-      } finally {
-        dispatching = false;
-        if (active && token === generation) arm();
-      }
-    }, Math.max(1, deadline - t));
+  const ARM = () => {
+    if (!active) {
+      return;
+    }
+    CLEAR();
+    const T = READ_NOW(), NEXT = getDeadlineMs();
+    if (NEXT !== null && !Number.isFinite(NEXT)) {
+      throw new RangeError("deadline must be finite or null");
+    }
+    deadline = NEXT ?? T;
+    const TOKEN = generation;
+    handle = setTimer(
+      () => {
+        if (!active || TOKEN !== generation) {
+          return;
+        }
+        handle = void 0;
+        const AT = READ_NOW();
+        if (AT < deadline) {
+          ARM();
+          return;
+        }
+        dispatching = true;
+        try {
+          pulse(AT, {
+            due: 0,
+            scheduledAtMs: deadline
+          });
+        } finally {
+          dispatching = false;
+          if (active && TOKEN === generation) {
+            ARM();
+          }
+        }
+      },
+      Math.max(1, deadline - T)
+    );
   };
   return {
     start() {
-      if (active) return;
+      if (active) {
+        return;
+      }
       active = true;
       generation++;
-      arm();
+      ARM();
     },
     stop() {
       active = false;
       generation++;
-      clear();
+      CLEAR();
       deadline = null;
     },
     rebase() {
       generation++;
-      if (active) arm();
+      if (active) {
+        ARM();
+      }
     },
     wake() {
-      if (!active || dispatching) return;
+      if (!active || dispatching) {
+        return;
+      }
       dispatching = true;
       try {
-        pulse(readNow(), { due: 0, scheduledAtMs: null });
+        pulse(READ_NOW(), {
+          due: 0,
+          scheduledAtMs: null
+        });
       } finally {
         dispatching = false;
-        arm();
+        ARM();
       }
     },
     get running() {

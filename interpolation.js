@@ -1,90 +1,145 @@
 // modules/interpolation/intervals.js
 function bufferInterval(track, old, { origin, timeMs, previousTimeMs, stepMs, delayMs, continuous, seeded, initialTimeMs, reset }) {
-  const start = continuous ? previousTimeMs : seeded ? initialTimeMs ?? timeMs - stepMs : timeMs;
-  if (!Number.isFinite(start) || start > timeMs) throw new RangeError("initialTimeMs must be finite and <= timeMs");
-  track.startedAt = track.at = origin + start;
-  track.durationMs = timeMs - start;
-  track.bornAt = continuous ? old.bornAt : reset ? origin + timeMs - delayMs : origin + start;
+  const START = continuous ? previousTimeMs : seeded ? initialTimeMs ?? timeMs - stepMs : timeMs;
+  if (!Number.isFinite(START) || START > timeMs) {
+    throw new RangeError("initialTimeMs must be finite and <= timeMs");
+  }
+  track.startedAt = track.at = origin + START;
+  track.durationMs = timeMs - START;
+  track.bornAt = continuous ? old.bornAt : reset ? origin + timeMs - delayMs : origin + START;
   track.removedAt = Infinity;
   track.buffered = true;
-  const history = continuous ? [...old.history ?? [], old] : [];
-  track.history = history.slice(-Math.ceil(delayMs / stepMs) - 2).map(({ history: history2, ...item }) => item);
-  return start;
+  const HISTORY = continuous ? [...old.history ?? [], old] : [];
+  track.history = HISTORY.slice(-Math.ceil(delayMs / stepMs) - 2).map(({ history, ...item }) => item);
+  return START;
 }
 function intervalAt(track, at) {
-  if (!track || at < track.bornAt || at >= track.removedAt) return null;
-  if (at >= track.startedAt) return track;
+  if (!track || at < track.bornAt || at >= track.removedAt) {
+    return null;
+  }
+  if (at >= track.startedAt) {
+    return track;
+  }
   return track.history.find((item) => at <= item.startedAt + item.durationMs) ?? track.history.at(-1) ?? track;
 }
 function retainRemoved(next, previous, { origin, timeMs, nowMs, delayMs }) {
-  if (!delayMs) return;
-  for (const [id, old] of previous) if (!next.has(id)) {
-    const removedAt = Number.isFinite(old.removedAt) ? old.removedAt : origin + timeMs;
-    if (nowMs - delayMs < removedAt) next.set(id, { ...old, removedAt });
+  if (!delayMs) {
+    return;
+  }
+  for (const [ID, OLD] of previous) {
+    if (!next.has(ID)) {
+      const REMOVED_AT = Number.isFinite(OLD.removedAt) ? OLD.removedAt : origin + timeMs;
+      if (nowMs - delayMs < REMOVED_AT) {
+        next.set(ID, {
+          ...OLD,
+          removedAt: REMOVED_AT
+        });
+      }
+    }
   }
 }
 
 // modules/interpolation/schema.js
 function compileSchema(schema) {
-  if (!schema || typeof schema !== "object" || Array.isArray(schema)) throw new TypeError("schema must be an object");
-  const fields = Object.entries(schema);
-  if (!fields.length) throw new TypeError("schema must declare at least one field");
-  for (const [name, kind] of fields) {
-    if (["__proto__", "prototype", "constructor"].includes(name)) throw new TypeError("unsafe field name");
-    if (!["number", "angle", "discrete"].includes(kind)) throw new TypeError(`unknown kind: ${kind}`);
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+    throw new TypeError("schema must be an object");
   }
-  return fields;
+  const FIELDS = Object.entries(schema);
+  if (!FIELDS.length) {
+    throw new TypeError("schema must declare at least one field");
+  }
+  for (const [NAME, KIND] of FIELDS) {
+    if (["__proto__", "prototype", "constructor"].includes(NAME)) {
+      throw new TypeError("unsafe field name");
+    }
+    if (!["number", "angle", "discrete"].includes(KIND)) {
+      throw new TypeError(`unknown kind: ${KIND}`);
+    }
+  }
+  return FIELDS;
 }
 function finite(value, label) {
-  if (typeof value !== "number" || !Number.isFinite(value)) throw new TypeError(`${label} must be finite`);
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new TypeError(`${label} must be finite`);
+  }
   return value;
 }
 function ordinal(value, label) {
-  if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${label} must be a nonnegative safe integer`);
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError(`${label} must be a nonnegative safe integer`);
+  }
   return value;
 }
 function readValues(fields, values) {
-  if (!values || typeof values !== "object" || Array.isArray(values)) throw new TypeError("values must be an object");
+  if (!values || typeof values !== "object" || Array.isArray(values)) {
+    throw new TypeError("values must be an object");
+  }
   return fields.map(([name, kind]) => {
-    if (!Object.hasOwn(values, name)) throw new TypeError(`missing field: ${name}; sparse patches are not supported`);
-    const value = values[name];
-    if (kind !== "discrete") return finite(value, name);
-    if (value !== null && !["string", "boolean", "number"].includes(typeof value)) throw new TypeError(`${name} must be a scalar`);
-    if (typeof value === "number") finite(value, name);
-    return value;
+    if (!Object.hasOwn(values, name)) {
+      throw new TypeError(`missing field: ${name}; sparse patches are not supported`);
+    }
+    const VALUE = values[name];
+    if (kind !== "discrete") {
+      return finite(VALUE, name);
+    }
+    if (VALUE !== null && !["string", "boolean", "number"].includes(typeof VALUE)) {
+      throw new TypeError(`${name} must be a scalar`);
+    }
+    if (typeof VALUE === "number") {
+      finite(VALUE, name);
+    }
+    return VALUE;
   });
 }
 function readResetFields(indices, names) {
-  if (names === void 0) return null;
-  if (!Array.isArray(names)) throw new TypeError("resetFields must be an array");
-  const reset = /* @__PURE__ */ new Set();
-  for (const name of names) {
-    if (typeof name !== "string" || !indices.has(name)) throw new TypeError("resetFields must name declared fields");
-    const index = indices.get(name);
-    if (reset.has(index)) throw new TypeError("duplicate resetFields field");
-    reset.add(index);
+  if (names === void 0) {
+    return null;
   }
-  return reset;
+  if (!Array.isArray(names)) {
+    throw new TypeError("resetFields must be an array");
+  }
+  const RESET = /* @__PURE__ */ new Set();
+  for (const NAME of names) {
+    if (typeof NAME !== "string" || !indices.has(NAME)) {
+      throw new TypeError("resetFields must name declared fields");
+    }
+    const INDEX = indices.get(NAME);
+    if (RESET.has(INDEX)) {
+      throw new TypeError("duplicate resetFields field");
+    }
+    RESET.add(INDEX);
+  }
+  return RESET;
 }
 
 // modules/interpolation/tracks.js
 var TAU = Math.PI * 2;
 function wrap(angle) {
-  const value = angle % TAU;
-  const positive = value < 0 ? value + TAU : value;
-  return positive >= TAU || positive === 0 ? 0 : positive;
+  const VALUE = angle % TAU;
+  const POSITIVE = VALUE < 0 ? VALUE + TAU : VALUE;
+  return POSITIVE >= TAU || POSITIVE === 0 ? 0 : POSITIVE;
 }
 function evaluate(kind, from, to, alpha) {
-  if (kind === "discrete") return to;
-  if (alpha === 1) return kind === "angle" ? wrap(to) : to;
-  if (alpha === 0) return kind === "angle" ? wrap(from) : from;
+  if (kind === "discrete") {
+    return to;
+  }
+  if (alpha === 1) {
+    return kind === "angle" ? wrap(to) : to;
+  }
+  if (alpha === 0) {
+    return kind === "angle" ? wrap(from) : from;
+  }
   if (kind === "angle") {
-    const start = wrap(from);
-    let delta = wrap(to) - start;
-    if (Math.abs(Math.abs(delta) - Math.PI) <= Number.EPSILON * TAU) delta = -Math.PI;
-    else if (delta > Math.PI) delta -= TAU;
-    else if (delta < -Math.PI) delta += TAU;
-    return wrap(start + delta * alpha);
+    const START = wrap(from);
+    let delta = wrap(to) - START;
+    if (Math.abs(Math.abs(delta) - Math.PI) <= Number.EPSILON * TAU) {
+      delta = -Math.PI;
+    } else if (delta > Math.PI) {
+      delta -= TAU;
+    } else if (delta < -Math.PI) {
+      delta += TAU;
+    }
+    return wrap(START + delta * alpha);
   }
   return Math.sign(from) === Math.sign(to) ? from + (to - from) * alpha : from * (1 - alpha) + to * alpha;
 }
@@ -92,14 +147,25 @@ function fraction(track, now, stepMs) {
   return Math.min(1, Math.max(0, (now - track.startedAt) / stepMs));
 }
 function retarget(fields, old, target, generation, now, stepMs, snap, initial, resetFields) {
-  const continued = old && old.generation === generation;
-  const from = !continued && !snap && initial ? initial : target.slice();
-  if (continued && !snap) {
-    const alpha = fraction(old, now, stepMs);
-    for (let i = 0; i < fields.length; i++) from[i] = evaluate(fields[i][1], old.from[i], old.target[i], alpha);
+  const CONTINUED = old && old.generation === generation;
+  const FROM = !CONTINUED && !snap && initial ? initial : target.slice();
+  if (CONTINUED && !snap) {
+    const ALPHA = fraction(old, now, stepMs);
+    for (let i = 0; i < fields.length; i++) {
+      FROM[i] = evaluate(fields[i][1], old.from[i], old.target[i], ALPHA);
+    }
   }
-  if (resetFields) for (const index of resetFields) from[index] = target[index];
-  return { generation, from, target, startedAt: now };
+  if (resetFields) {
+    for (const INDEX of resetFields) {
+      FROM[INDEX] = target[INDEX];
+    }
+  }
+  return {
+    generation,
+    from: FROM,
+    target,
+    startedAt: now
+  };
 }
 
 // modules/interpolation/timeline.js
@@ -119,16 +185,22 @@ var InterpolationTimeline = class {
     this.#fields = compileSchema(schema);
     this.#fieldIndices = new Map(this.#fields.map((field, index) => [field[0], index]));
     this.#stepMs = finite(stepMs, "stepMs");
-    if (stepMs <= 0) throw new RangeError("stepMs must be positive");
+    if (stepMs <= 0) {
+      throw new RangeError("stepMs must be positive");
+    }
     this.#delayMs = finite(delayMs, "delayMs");
-    if (delayMs < 0 || delayMs > stepMs * 16) throw new RangeError("delayMs must be between 0 and 16 steps");
+    if (delayMs < 0 || delayMs > stepMs * 16) {
+      throw new RangeError("delayMs must be between 0 and 16 steps");
+    }
   }
   get size() {
     return this.#tracks.size;
   }
   #checkClock(nowMs) {
     finite(nowMs, "nowMs");
-    if (nowMs < this.#now) throw new RangeError("presentation clock must not go backwards");
+    if (nowMs < this.#now) {
+      throw new RangeError("presentation clock must not go backwards");
+    }
   }
   /**
    * Accept one complete authoritative snapshot. Returns false for obsolete packets.
@@ -140,57 +212,98 @@ var InterpolationTimeline = class {
    */
   accept(packet, nowMs) {
     this.#checkClock(nowMs);
-    if (!packet || typeof packet !== "object") throw new TypeError("packet must be an object");
-    const revision = ordinal(packet.revision, "revision");
-    const sequence = ordinal(packet.sequence, "sequence");
-    const timeMs = finite(packet.timeMs, "timeMs");
-    const mode = packet.mode ?? "continuous";
-    if (!["continuous", "reset", "load", "rollback"].includes(mode)) throw new TypeError("unknown snapshot mode");
-    if (revision < this.#revision || revision === this.#revision && sequence <= this.#sequence) return false;
-    const changedRevision = revision !== this.#revision;
-    if (this.#revision !== -1 && changedRevision && mode === "continuous") throw new RangeError("new revision requires reset, load or rollback");
-    if (!changedRevision && mode !== "continuous") throw new RangeError("reset, load and rollback require a newer revision");
-    if (!changedRevision && timeMs < this.#timeMs) return false;
-    if (!Array.isArray(packet.entities)) throw new TypeError("entities must be an array");
-    const next = /* @__PURE__ */ new Map();
-    const origin = changedRevision ? nowMs - timeMs : this.#origin;
-    for (const entity of packet.entities) {
-      if (!entity || typeof entity.id !== "string" || !entity.id.length) throw new TypeError("id must be a nonempty string");
-      if (next.has(entity.id)) throw new TypeError("duplicate entity id");
-      const generation = ordinal(entity.generation, "generation");
-      if (entity.teleport !== void 0 && typeof entity.teleport !== "boolean") throw new TypeError("teleport must be boolean");
-      const target = readValues(this.#fields, entity.values);
-      const initial = entity.initialValues === void 0 ? null : readValues(this.#fields, entity.initialValues);
-      const resetFields = readResetFields(this.#fieldIndices, entity.resetFields);
-      const old = this.#tracks.get(entity.id);
-      const snap = mode !== "continuous" || entity.teleport === true;
-      const track = retarget(this.#fields, old, target, generation, nowMs, this.#stepMs, snap, initial, resetFields);
+    if (!packet || typeof packet !== "object") {
+      throw new TypeError("packet must be an object");
+    }
+    const REVISION = ordinal(packet.revision, "revision");
+    const SEQUENCE = ordinal(packet.sequence, "sequence");
+    const TIME_MS = finite(packet.timeMs, "timeMs");
+    const MODE = packet.mode ?? "continuous";
+    if (!["continuous", "reset", "load", "rollback"].includes(MODE)) {
+      throw new TypeError("unknown snapshot mode");
+    }
+    if (REVISION < this.#revision || REVISION === this.#revision && SEQUENCE <= this.#sequence) {
+      return false;
+    }
+    const CHANGED_REVISION = REVISION !== this.#revision;
+    if (this.#revision !== -1 && CHANGED_REVISION && MODE === "continuous") {
+      throw new RangeError("new revision requires reset, load or rollback");
+    }
+    if (!CHANGED_REVISION && MODE !== "continuous") {
+      throw new RangeError("reset, load and rollback require a newer revision");
+    }
+    if (!CHANGED_REVISION && TIME_MS < this.#timeMs) {
+      return false;
+    }
+    if (!Array.isArray(packet.entities)) {
+      throw new TypeError("entities must be an array");
+    }
+    const NEXT = /* @__PURE__ */ new Map();
+    const ORIGIN = CHANGED_REVISION ? nowMs - TIME_MS : this.#origin;
+    for (const ENTITY of packet.entities) {
+      if (!ENTITY || typeof ENTITY.id !== "string" || !ENTITY.id.length) {
+        throw new TypeError("id must be a nonempty string");
+      }
+      if (NEXT.has(ENTITY.id)) {
+        throw new TypeError("duplicate entity id");
+      }
+      const GENERATION = ordinal(ENTITY.generation, "generation");
+      if (ENTITY.teleport !== void 0 && typeof ENTITY.teleport !== "boolean") {
+        throw new TypeError("teleport must be boolean");
+      }
+      const TARGET = readValues(this.#fields, ENTITY.values);
+      const INITIAL = ENTITY.initialValues === void 0 ? null : readValues(this.#fields, ENTITY.initialValues);
+      const RESET_FIELDS = readResetFields(this.#fieldIndices, ENTITY.resetFields);
+      const OLD = this.#tracks.get(ENTITY.id);
+      const SNAP = MODE !== "continuous" || ENTITY.teleport === true;
+      const TRACK = retarget(
+        this.#fields,
+        OLD,
+        TARGET,
+        GENERATION,
+        nowMs,
+        this.#stepMs,
+        SNAP,
+        INITIAL,
+        RESET_FIELDS
+      );
       if (this.#delayMs > 0) {
-        const continued = old && old.generation === generation && !snap && !changedRevision && !Number.isFinite(old.removedAt);
-        if (continued) {
-          track.from = old.target.slice();
-          if (resetFields) for (const i of resetFields) track.from[i] = target[i];
+        const CONTINUED = OLD && OLD.generation === GENERATION && !SNAP && !CHANGED_REVISION && !Number.isFinite(OLD.removedAt);
+        if (CONTINUED) {
+          TRACK.from = OLD.target.slice();
+          if (RESET_FIELDS) {
+            for (const I of RESET_FIELDS) {
+              TRACK.from[I] = TARGET[I];
+            }
+          }
         }
-        bufferInterval(track, old, {
-          origin,
-          timeMs,
+        bufferInterval(TRACK, OLD, {
+          origin: ORIGIN,
+          timeMs: TIME_MS,
           previousTimeMs: this.#timeMs,
           stepMs: this.#stepMs,
           delayMs: this.#delayMs,
-          continuous: continued,
-          reset: snap,
-          seeded: !!initial && !snap,
-          initialTimeMs: entity.initialTimeMs
+          continuous: CONTINUED,
+          reset: SNAP,
+          seeded: !!INITIAL && !SNAP,
+          initialTimeMs: ENTITY.initialTimeMs
         });
       }
-      next.set(entity.id, track);
+      NEXT.set(ENTITY.id, TRACK);
     }
-    if (!changedRevision && mode === "continuous") retainRemoved(next, this.#tracks, { origin, timeMs, nowMs, delayMs: this.#delayMs });
-    this.#tracks = next;
-    this.#origin = origin;
-    this.#revision = revision;
-    this.#sequence = sequence;
-    this.#timeMs = timeMs;
+    if (!CHANGED_REVISION && MODE === "continuous") {
+      retainRemoved(NEXT, this.#tracks, {
+        origin: ORIGIN,
+        timeMs: TIME_MS,
+        nowMs,
+        delayMs: this.#delayMs
+      });
+    }
+    this.#tracks = NEXT;
+    this.#origin = ORIGIN;
+    this.#revision = REVISION;
+    this.#sequence = SEQUENCE;
+    this.#timeMs = TIME_MS;
     this.#now = nowMs;
     return true;
   }
@@ -203,19 +316,25 @@ var InterpolationTimeline = class {
    */
   sampleInto(id, generation, nowMs, out) {
     this.#checkClock(nowMs);
-    if (!out || typeof out !== "object") throw new TypeError("out must be a writable object");
+    if (!out || typeof out !== "object") {
+      throw new TypeError("out must be a writable object");
+    }
     let track = this.#tracks.get(id);
     this.#now = nowMs;
-    if (!track || track.generation !== generation) return false;
-    const sampleAt = nowMs - this.#delayMs;
-    if (this.#delayMs > 0) {
-      track = intervalAt(track, sampleAt);
-      if (!track) return false;
+    if (!track || track.generation !== generation) {
+      return false;
     }
-    const alpha = track.durationMs === 0 ? 1 : fraction(track, sampleAt, track.durationMs ?? this.#stepMs);
+    const SAMPLE_AT = nowMs - this.#delayMs;
+    if (this.#delayMs > 0) {
+      track = intervalAt(track, SAMPLE_AT);
+      if (!track) {
+        return false;
+      }
+    }
+    const ALPHA = track.durationMs === 0 ? 1 : fraction(track, SAMPLE_AT, track.durationMs ?? this.#stepMs);
     for (let i = 0; i < this.#fields.length; i++) {
-      const field = this.#fields[i];
-      out[field[0]] = this.#delayMs > 0 && field[1] === "discrete" && alpha < 1 ? track.from[i] : evaluate(field[1], track.from[i], track.target[i], alpha);
+      const FIELD = this.#fields[i];
+      out[FIELD[0]] = this.#delayMs > 0 && FIELD[1] === "discrete" && ALPHA < 1 ? track.from[i] : evaluate(FIELD[1], track.from[i], track.target[i], ALPHA);
     }
     return true;
   }
@@ -246,80 +365,123 @@ var RenderObject = class {
   static renderPath = null;
   static renderSchema = Object.freeze({});
   /** @param {unknown} context @param {object} model */
-  render(context, model) {
+  render(_context, _model) {
     throw new Error("RenderObject 하위 타입은 render(context, model)을 구현해야 합니다.");
   }
 };
 
 // modules/interpolation/path.js
 function pathPlan(declaration, indices) {
-  if (!declaration) return null;
-  const x = indices.get(declaration.x), y = indices.get(declaration.y), durationMs = finite(declaration.durationMs, "renderPath.durationMs");
-  const maxPoints = declaration.maxPoints ?? 64;
-  if (x === void 0 || y === void 0 || durationMs <= 0 || !Number.isSafeInteger(maxPoints) || maxPoints < 2 || maxPoints > 4096) throw new TypeError("invalid renderPath");
-  return { x, y, durationMs, maxPoints };
+  if (!declaration) {
+    return null;
+  }
+  const X = indices.get(declaration.x), Y = indices.get(declaration.y), DURATION_MS = finite(declaration.durationMs, "renderPath.durationMs");
+  const MAX_POINTS = declaration.maxPoints ?? 64;
+  if (X === void 0 || Y === void 0 || DURATION_MS <= 0 || !Number.isSafeInteger(MAX_POINTS) || MAX_POINTS < 2 || MAX_POINTS > 4096) {
+    throw new TypeError("invalid renderPath");
+  }
+  return {
+    x: X,
+    y: Y,
+    durationMs: DURATION_MS,
+    maxPoints: MAX_POINTS
+  };
 }
 function capturePath(plan, old, from, target, startMs, timeMs, points, reset, delayMs, stepMs) {
-  if (!plan) return null;
-  const path = reset ? [] : (old ?? []).slice();
-  const add = (timeMs2, x, y) => {
+  if (!plan) {
+    return null;
+  }
+  const PATH = reset ? [] : (old ?? []).slice();
+  const ADD = (timeMs2, x, y) => {
     finite(timeMs2, "path timeMs");
     finite(x, "path x");
     finite(y, "path y");
-    if (path.length && timeMs2 < path.at(-1).timeMs) throw new RangeError("path points must be ordered");
-    if (path.length && timeMs2 === path.at(-1).timeMs) path[path.length - 1] = { timeMs: timeMs2, x, y };
-    else path.push({ timeMs: timeMs2, x, y });
+    if (PATH.length && timeMs2 < PATH.at(-1).timeMs) {
+      throw new RangeError("path points must be ordered");
+    }
+    if (PATH.length && timeMs2 === PATH.at(-1).timeMs) {
+      PATH[PATH.length - 1] = {
+        timeMs: timeMs2,
+        x,
+        y
+      };
+    } else {
+      PATH.push({
+        timeMs: timeMs2,
+        x,
+        y
+      });
+    }
   };
-  if (!path.length) add(startMs, from[plan.x], from[plan.y]);
+  if (!PATH.length) {
+    ADD(startMs, from[plan.x], from[plan.y]);
+  }
   if (points !== void 0) {
-    if (!Array.isArray(points)) throw new TypeError("pathPoints must be an array");
-    for (const point of points) {
-      if (point.timeMs < startMs || point.timeMs > timeMs) throw new RangeError("pathPoints must be inside this capture interval");
-      add(point.timeMs, point.x, point.y);
+    if (!Array.isArray(points)) {
+      throw new TypeError("pathPoints must be an array");
+    }
+    for (const POINT of points) {
+      if (POINT.timeMs < startMs || POINT.timeMs > timeMs) {
+        throw new RangeError("pathPoints must be inside this capture interval");
+      }
+      ADD(POINT.timeMs, POINT.x, POINT.y);
     }
   }
-  add(timeMs, target[plan.x], target[plan.y]);
-  const floor = timeMs - plan.durationMs - delayMs - stepMs;
-  while (path.length > 2 && path[1].timeMs < floor) path.shift();
-  return path.slice(-plan.maxPoints);
+  ADD(timeMs, target[plan.x], target[plan.y]);
+  const FLOOR = timeMs - plan.durationMs - delayMs - stepMs;
+  while (PATH.length > 2 && PATH[1].timeMs < FLOOR) {
+    PATH.shift();
+  }
+  return PATH.slice(-plan.maxPoints);
 }
 function pointAt(path, timeMs, out) {
-  if (!path?.length) return false;
-  let a = path[0], b = a;
+  if (!path?.length) {
+    return false;
+  }
+  let a = path[0];
+  let b = a;
   for (let i = 1; i < path.length; i++) {
     b = path[i];
-    if (timeMs <= b.timeMs) break;
+    if (timeMs <= b.timeMs) {
+      break;
+    }
     a = b;
   }
-  const t = b.timeMs === a.timeMs ? 1 : Math.max(0, Math.min(1, (timeMs - a.timeMs) / (b.timeMs - a.timeMs)));
+  const T = b.timeMs === a.timeMs ? 1 : Math.max(0, Math.min(1, (timeMs - a.timeMs) / (b.timeMs - a.timeMs)));
   out.timeMs = Math.max(path[0].timeMs, Math.min(timeMs, path.at(-1).timeMs));
-  out.x = a.x + (b.x - a.x) * t;
-  out.y = a.y + (b.y - a.y) * t;
+  out.x = a.x + (b.x - a.x) * T;
+  out.y = a.y + (b.y - a.y) * T;
   return true;
 }
 function samplePath(path, timeMs, durationMs, out) {
   let count = 0;
-  const write = (point) => {
-    const item = out[count] ?? (out[count] = {});
-    Object.assign(item, point);
+  const WRITE = (point) => {
+    const ITEM = out[count] ?? (out[count] = {});
+    Object.assign(ITEM, point);
     count++;
   };
-  const head = {};
-  if (!pointAt(path, timeMs, head)) {
+  const HEAD = {};
+  if (!pointAt(path, timeMs, HEAD)) {
     out.length = 0;
     return out;
   }
-  const floor = Math.max(path[0].timeMs, head.timeMs - durationMs), tail = {};
-  pointAt(path, floor, tail);
-  write(tail);
-  for (const point of path) if (point.timeMs > floor && point.timeMs < head.timeMs) write(point);
-  if (head.timeMs > floor) write(head);
+  const FLOOR = Math.max(path[0].timeMs, HEAD.timeMs - durationMs), TAIL = {};
+  pointAt(path, FLOOR, TAIL);
+  WRITE(TAIL);
+  for (const POINT of path) {
+    if (POINT.timeMs > FLOOR && POINT.timeMs < HEAD.timeMs) {
+      WRITE(POINT);
+    }
+  }
+  if (HEAD.timeMs > FLOOR) {
+    WRITE(HEAD);
+  }
   out.length = count;
   return out;
 }
 
 // modules/interpolation/render-policies.js
-var kinds = [
+var KINDS = [
   "number",
   "angle",
   "discrete",
@@ -337,7 +499,7 @@ var kinds = [
   "number"
 ];
 function fieldKind(code) {
-  return kinds[code];
+  return KINDS[code];
 }
 function isLinearField(code) {
   return code === RenderObject.LINEAR || code >= RenderObject.POSITION_X && code <= RenderObject.SPAWN_LINEAR;
@@ -345,223 +507,378 @@ function isLinearField(code) {
 function compileFieldPolicies(root, fields) {
   function descendants(node) {
     node.fields = node.field === void 0 ? [] : [node.field];
-    for (const child of node.children.values()) node.fields.push(...descendants(child));
+    for (const CHILD of node.children.values()) {
+      node.fields.push(...descendants(CHILD));
+    }
     return node.fields;
   }
   descendants(root);
-  const keys = [], clocks = [], positions = new Array(3), origins = new Array(3), births = [];
+  const KEYS = [], CLOCKS = [], POSITIONS = new Array(3), ORIGINS = new Array(3), BIRTHS = [];
   for (let index = 0; index < fields.length; index++) {
-    const field = fields[index];
-    if (field.code === RenderObject.STATE_KEY) keys.push({ index, scope: field.owner.fields });
-    if (field.code === RenderObject.COUNTDOWN_MS || field.code === RenderObject.COUNTDOWN_SECONDS) clocks.push({
-      index,
-      scope: field.owner.fields,
-      unitsPerMs: field.code === RenderObject.COUNTDOWN_MS ? 1 : 1e-3
-    });
-    if (field.code >= RenderObject.POSITION_X && field.code <= RenderObject.POSITION_Z) {
-      const axis = field.code - RenderObject.POSITION_X;
-      if (positions[axis] !== void 0) throw new TypeError("Duplicate render position axis");
-      positions[axis] = index;
+    const FIELD = fields[index];
+    if (FIELD.code === RenderObject.STATE_KEY) {
+      KEYS.push({
+        index,
+        scope: FIELD.owner.fields
+      });
     }
-    if (field.code >= RenderObject.ORIGIN_X && field.code <= RenderObject.ORIGIN_Z) {
-      const axis = field.code - RenderObject.ORIGIN_X;
-      if (origins[axis] !== void 0) throw new TypeError("Duplicate render origin axis");
-      origins[axis] = index;
+    if (FIELD.code === RenderObject.COUNTDOWN_MS || FIELD.code === RenderObject.COUNTDOWN_SECONDS) {
+      CLOCKS.push({
+        index,
+        scope: FIELD.owner.fields,
+        unitsPerMs: FIELD.code === RenderObject.COUNTDOWN_MS ? 1 : 1e-3
+      });
     }
-    if (field.code === RenderObject.SPAWN_LINEAR) births.push(index);
+    if (FIELD.code >= RenderObject.POSITION_X && FIELD.code <= RenderObject.POSITION_Z) {
+      const AXIS = FIELD.code - RenderObject.POSITION_X;
+      if (POSITIONS[AXIS] !== void 0) {
+        throw new TypeError("Duplicate render position axis");
+      }
+      POSITIONS[AXIS] = index;
+    }
+    if (FIELD.code >= RenderObject.ORIGIN_X && FIELD.code <= RenderObject.ORIGIN_Z) {
+      const AXIS = FIELD.code - RenderObject.ORIGIN_X;
+      if (ORIGINS[AXIS] !== void 0) {
+        throw new TypeError("Duplicate render origin axis");
+      }
+      ORIGINS[AXIS] = index;
+    }
+    if (FIELD.code === RenderObject.SPAWN_LINEAR) {
+      BIRTHS.push(index);
+    }
   }
-  return { keys, clocks, positions, origins, births };
+  return {
+    keys: KEYS,
+    clocks: CLOCKS,
+    positions: POSITIONS,
+    origins: ORIGINS,
+    births: BIRTHS
+  };
 }
 function inferStateResets(policies, previous, target, reset) {
-  for (const key of policies.keys) if (!Object.is(previous.values[key.index], target.values[key.index])) {
-    for (const index of key.scope) reset.add(index);
+  for (const KEY of policies.keys) {
+    if (!Object.is(previous.values[KEY.index], target.values[KEY.index])) {
+      for (const INDEX of KEY.scope) {
+        reset.add(INDEX);
+      }
+    }
   }
 }
 function inferFieldResets(policies, previous, target, timeMs, reset) {
   inferStateResets(policies, previous.target, target, reset);
-  const elapsed = timeMs - previous.timeMs;
-  for (const clock of policies.clocks) {
-    const from = previous.target.values[clock.index], to = target.values[clock.index];
-    if (typeof from !== "number" || typeof to !== "number") continue;
-    const passed = Number.isFinite(elapsed) ? elapsed * clock.unitsPerMs : timeMs * clock.unitsPerMs - previous.timeMs * clock.unitsPerMs;
-    const expected = Math.max(0, from - passed);
-    const tolerance = 1e-6 * clock.unitsPerMs + Number.EPSILON * 16 * Math.max(1, from, to) + Number.EPSILON * 16 * Math.max(Math.abs(timeMs), Math.abs(previous.timeMs)) * clock.unitsPerMs;
-    if (Math.abs(to - expected) > tolerance) for (const index of clock.scope) reset.add(index);
+  const ELAPSED = timeMs - previous.timeMs;
+  for (const CLOCK of policies.clocks) {
+    const FROM = previous.target.values[CLOCK.index], TO = target.values[CLOCK.index];
+    if (typeof FROM !== "number" || typeof TO !== "number") {
+      continue;
+    }
+    const PASSED = Number.isFinite(ELAPSED) ? ELAPSED * CLOCK.unitsPerMs : timeMs * CLOCK.unitsPerMs - previous.timeMs * CLOCK.unitsPerMs;
+    const EXPECTED = Math.max(0, FROM - PASSED);
+    const TOLERANCE = 1e-6 * CLOCK.unitsPerMs + Number.EPSILON * 16 * Math.max(1, FROM, TO) + Number.EPSILON * 16 * Math.max(Math.abs(timeMs), Math.abs(previous.timeMs)) * CLOCK.unitsPerMs;
+    if (Math.abs(TO - EXPECTED) > TOLERANCE) {
+      for (const INDEX of CLOCK.scope) {
+        reset.add(INDEX);
+      }
+    }
   }
 }
 function positionDiscontinuity(policies, previous, target, distance) {
-  if (distance === void 0) return false;
-  let count = 0, a = 0, b = 0, c = 0;
+  if (distance === void 0) {
+    return false;
+  }
+  let count = 0;
+  let a = 0;
+  let b = 0;
+  let c = 0;
   for (let axis = 0; axis < 3; axis++) {
-    const index = policies.positions[axis];
-    if (index === void 0) continue;
-    const from = previous.target.values[index], to = target.values[index];
-    if (typeof from !== "number" || typeof to !== "number") continue;
-    const delta = to - from;
-    if (axis === 0) a = delta;
-    else if (axis === 1) b = delta;
-    else c = delta;
+    const INDEX = policies.positions[axis];
+    if (INDEX === void 0) {
+      continue;
+    }
+    const FROM = previous.target.values[INDEX], TO = target.values[INDEX];
+    if (typeof FROM !== "number" || typeof TO !== "number") {
+      continue;
+    }
+    const DELTA = TO - FROM;
+    if (axis === 0) {
+      a = DELTA;
+    } else if (axis === 1) {
+      b = DELTA;
+    } else {
+      c = DELTA;
+    }
     count++;
   }
   return count > 0 && Math.hypot(a, b, c) > distance;
 }
 function seedFieldValues(policies, values) {
-  const from = values.slice();
+  const FROM = values.slice();
   for (let axis = 0; axis < 3; axis++) {
-    const position = policies.positions[axis], origin = policies.origins[axis];
-    if (position !== void 0 && origin !== void 0 && typeof values[position] === "number" && typeof values[origin] === "number") from[position] = values[origin];
+    const POSITION = policies.positions[axis], ORIGIN = policies.origins[axis];
+    if (POSITION !== void 0 && ORIGIN !== void 0 && typeof values[POSITION] === "number" && typeof values[ORIGIN] === "number") {
+      FROM[POSITION] = values[ORIGIN];
+    }
   }
-  for (const index of policies.births) if (typeof values[index] === "number") from[index] = 0;
-  return from;
+  for (const INDEX of policies.births) {
+    if (typeof values[INDEX] === "number") {
+      FROM[INDEX] = 0;
+    }
+  }
+  return FROM;
 }
 
 // modules/interpolation/render-schema.js
-var unsafe = /* @__PURE__ */ new Set(["__proto__", "prototype", "constructor"]);
-var cache = /* @__PURE__ */ new WeakMap();
-var arrayKey = /^(0|[1-9][0-9]*)$/;
+var UNSAFE = /* @__PURE__ */ new Set(["__proto__", "prototype", "constructor"]);
+var CACHE = /* @__PURE__ */ new WeakMap();
+var ARRAY_KEY = /^(0|[1-9][0-9]*)$/;
 function copyRenderData(value, seen = /* @__PURE__ */ new Set()) {
-  if (value === null || value === void 0 || typeof value === "string" || typeof value === "boolean") return value;
-  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (value === null || value === void 0 || typeof value === "string" || typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
   if (typeof value !== "object" || !Array.isArray(value) && Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) {
     throw new TypeError("Render STEP requires finite scalar or plain data");
   }
-  if (seen.has(value)) throw new TypeError("Render STEP cannot contain cycles; use an entity ID");
+  if (seen.has(value)) {
+    throw new TypeError("Render STEP cannot contain cycles; use an entity ID");
+  }
   seen.add(value);
-  const result = Array.isArray(value) ? new Array(value.length) : {};
-  for (const key of Object.keys(value)) {
-    if (unsafe.has(key)) throw new TypeError("Unsafe render data key: " + key);
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (!Object.hasOwn(descriptor, "value")) throw new TypeError("Render data accessors are not supported");
-    result[key] = copyRenderData(descriptor.value, seen);
+  const RESULT = Array.isArray(value) ? new Array(value.length) : {};
+  for (const KEY of Object.keys(value)) {
+    if (UNSAFE.has(KEY)) {
+      throw new TypeError("Unsafe render data key: " + KEY);
+    }
+    const DESCRIPTOR = Object.getOwnPropertyDescriptor(value, KEY);
+    if (!Object.hasOwn(DESCRIPTOR, "value")) {
+      throw new TypeError("Render data accessors are not supported");
+    }
+    RESULT[KEY] = copyRenderData(DESCRIPTOR.value, seen);
   }
   seen.delete(value);
-  return result;
+  return RESULT;
 }
 function dataAt(source, key) {
-  const descriptor = Object.getOwnPropertyDescriptor(source, key);
-  if (!descriptor) return void 0;
-  if (!Object.hasOwn(descriptor, "value")) throw new TypeError("Render fields must be data properties: " + key);
-  return descriptor.value;
+  const DESCRIPTOR = Object.getOwnPropertyDescriptor(source, key);
+  if (!DESCRIPTOR) {
+    return void 0;
+  }
+  if (!Object.hasOwn(DESCRIPTOR, "value")) {
+    throw new TypeError("Render fields must be data properties: " + key);
+  }
+  return DESCRIPTOR.value;
 }
 function compileRenderSchema(type) {
   if (typeof type !== "function" || type !== RenderObject && !(type.prototype instanceof RenderObject)) {
     throw new TypeError("Render type must extend RenderObject");
   }
-  if (cache.has(type)) return cache.get(type);
-  const merged = {};
-  const chain = [];
-  for (let current = type; current && current !== Function.prototype; current = Object.getPrototypeOf(current)) chain.unshift(current);
-  for (const current of chain) {
-    if (!Object.hasOwn(current, "renderSchema")) continue;
-    const declaration = Object.getOwnPropertyDescriptor(current, "renderSchema");
-    if (!Object.hasOwn(declaration, "value")) throw new TypeError("renderSchema cannot be an accessor");
-    const schema = declaration.value;
-    if (!schema || typeof schema !== "object" || Array.isArray(schema)) throw new TypeError("renderSchema must be a field-path map");
-    for (const name of Object.keys(schema)) {
-      const descriptor = Object.getOwnPropertyDescriptor(schema, name);
-      if (!Object.hasOwn(descriptor, "value")) throw new TypeError("renderSchema cannot contain accessors");
-      Object.defineProperty(merged, name, { value: descriptor.value, enumerable: true, configurable: true });
-    }
+  if (CACHE.has(type)) {
+    return CACHE.get(type);
   }
-  const fields = [], nodes = [], indices = /* @__PURE__ */ new Map(), root = { children: /* @__PURE__ */ new Map() };
-  for (const [name, code] of Object.entries(merged)) {
-    const path2 = name.split(".");
-    if (path2.some((key) => !key || unsafe.has(key))) throw new TypeError("Unsafe or empty render path: " + name);
-    if (!Number.isInteger(code) || !fieldKind(code)) throw new TypeError("Unknown render interpolation: " + name);
-    let node = root;
-    for (const key of path2) {
-      if (node.field !== void 0) throw new TypeError("Overlapping render paths: " + name);
-      if (!node.children.has(key)) {
-        const child = { key, children: /* @__PURE__ */ new Map(), index: nodes.length, parent: node };
-        node.children.set(key, child);
-        nodes.push(child);
+  const MERGED = {};
+  const CHAIN = [];
+  for (let current = type; current && current !== Function.prototype; current = Object.getPrototypeOf(current)) {
+    CHAIN.unshift(current);
+  }
+  for (const CURRENT of CHAIN) {
+    if (!Object.hasOwn(CURRENT, "renderSchema")) {
+      continue;
+    }
+    const DECLARATION = Object.getOwnPropertyDescriptor(CURRENT, "renderSchema");
+    if (!Object.hasOwn(DECLARATION, "value")) {
+      throw new TypeError("renderSchema cannot be an accessor");
+    }
+    const SCHEMA = DECLARATION.value;
+    if (!SCHEMA || typeof SCHEMA !== "object" || Array.isArray(SCHEMA)) {
+      throw new TypeError("renderSchema must be a field-path map");
+    }
+    for (const NAME of Object.keys(SCHEMA)) {
+      const DESCRIPTOR = Object.getOwnPropertyDescriptor(SCHEMA, NAME);
+      if (!Object.hasOwn(DESCRIPTOR, "value")) {
+        throw new TypeError("renderSchema cannot contain accessors");
       }
-      node = node.children.get(key);
+      Object.defineProperty(MERGED, NAME, {
+        value: DESCRIPTOR.value,
+        enumerable: true,
+        configurable: true
+      });
     }
-    if (node.children.size) throw new TypeError("Overlapping render paths: " + name);
-    node.field = fields.length;
-    indices.set(name, fields.length);
-    fields.push(Object.freeze({ name, code, kind: fieldKind(code), path: Object.freeze(path2), owner: node.parent }));
   }
-  if (!fields.length) throw new TypeError("renderSchema must declare at least one field");
-  const policies = compileFieldPolicies(root, fields);
-  const path = pathPlan(type.renderPath, indices);
-  const plan = { path, fields: Object.freeze(fields), indices, root, nodes, policies };
-  cache.set(type, plan);
-  return plan;
+  const FIELDS = [], NODES = [], INDICES = /* @__PURE__ */ new Map(), ROOT = {
+    children: /* @__PURE__ */ new Map()
+  };
+  for (const [NAME, CODE] of Object.entries(MERGED)) {
+    const PATH2 = NAME.split(".");
+    if (PATH2.some((key) => !key || UNSAFE.has(key))) {
+      throw new TypeError("Unsafe or empty render path: " + NAME);
+    }
+    if (!Number.isInteger(CODE) || !fieldKind(CODE)) {
+      throw new TypeError("Unknown render interpolation: " + NAME);
+    }
+    let node = ROOT;
+    for (const KEY of PATH2) {
+      if (node.field !== void 0) {
+        throw new TypeError("Overlapping render paths: " + NAME);
+      }
+      if (!node.children.has(KEY)) {
+        const CHILD = {
+          key: KEY,
+          children: /* @__PURE__ */ new Map(),
+          index: NODES.length,
+          parent: node
+        };
+        node.children.set(KEY, CHILD);
+        NODES.push(CHILD);
+      }
+      node = node.children.get(KEY);
+    }
+    if (node.children.size) {
+      throw new TypeError("Overlapping render paths: " + NAME);
+    }
+    node.field = FIELDS.length;
+    INDICES.set(NAME, FIELDS.length);
+    FIELDS.push(
+      Object.freeze({
+        name: NAME,
+        code: CODE,
+        kind: fieldKind(CODE),
+        path: Object.freeze(PATH2),
+        owner: node.parent
+      })
+    );
+  }
+  if (!FIELDS.length) {
+    throw new TypeError("renderSchema must declare at least one field");
+  }
+  const POLICIES = compileFieldPolicies(ROOT, FIELDS);
+  const PATH = pathPlan(type.renderPath, INDICES);
+  const PLAN = {
+    path: PATH,
+    fields: Object.freeze(FIELDS),
+    indices: INDICES,
+    root: ROOT,
+    nodes: NODES,
+    policies: POLICIES
+  };
+  CACHE.set(type, PLAN);
+  return PLAN;
 }
 function captureRenderData(plan, source) {
-  if (!source || typeof source !== "object") throw new TypeError("Render source must be an object");
-  const values = new Array(plan.fields.length), shapes = new Array(plan.nodes.length);
+  if (!source || typeof source !== "object") {
+    throw new TypeError("Render source must be an object");
+  }
+  const VALUES = new Array(plan.fields.length), SHAPES = new Array(plan.nodes.length);
   function visit(node, value) {
     if (node.field !== void 0) {
-      const field = plan.fields[node.field];
-      if (value == null) values[node.field] = value;
-      else if (field.kind === "discrete") {
-        if (field.code === RenderObject.STATE_KEY && !["number", "boolean", "string"].includes(typeof value)) throw new TypeError("STATE_KEY requires a scalar: " + field.name);
-        values[node.field] = copyRenderData(value);
+      const FIELD = plan.fields[node.field];
+      if (value == null) {
+        VALUES[node.field] = value;
+      } else if (FIELD.kind === "discrete") {
+        if (FIELD.code === RenderObject.STATE_KEY && !["number", "boolean", "string"].includes(typeof value)) {
+          throw new TypeError("STATE_KEY requires a scalar: " + FIELD.name);
+        }
+        VALUES[node.field] = copyRenderData(value);
       } else {
-        if (typeof value !== "number" || !Number.isFinite(value)) throw new TypeError("Render field must be finite: " + field.name);
-        if (field.code === RenderObject.CYCLE && (value < 0 || value > 1)) throw new RangeError("Render CYCLE requires 0..1: " + field.name);
-        if ((field.code === RenderObject.COUNTDOWN_MS || field.code === RenderObject.COUNTDOWN_SECONDS) && value < 0) throw new RangeError("Render countdown must be nonnegative: " + field.name);
-        values[node.field] = value;
+        if (typeof value !== "number" || !Number.isFinite(value)) {
+          throw new TypeError("Render field must be finite: " + FIELD.name);
+        }
+        if (FIELD.code === RenderObject.CYCLE && (value < 0 || value > 1)) {
+          throw new RangeError("Render CYCLE requires 0..1: " + FIELD.name);
+        }
+        if ((FIELD.code === RenderObject.COUNTDOWN_MS || FIELD.code === RenderObject.COUNTDOWN_SECONDS) && value < 0) {
+          throw new RangeError("Render countdown must be nonnegative: " + FIELD.name);
+        }
+        VALUES[node.field] = value;
       }
       return;
     }
     if (value == null) {
-      shapes[node.index] = value;
+      SHAPES[node.index] = value;
       return;
     }
-    if (typeof value !== "object") throw new TypeError("Render parent must be an object: " + node.key);
-    shapes[node.index] = Array.isArray(value) ? value.length : -1;
-    for (const child of node.children.values()) {
-      if (Array.isArray(value) && child.key === "length") throw new TypeError("Array length belongs to render structure, not a field");
-      visit(child, dataAt(value, child.key));
+    if (typeof value !== "object") {
+      throw new TypeError("Render parent must be an object: " + node.key);
+    }
+    SHAPES[node.index] = Array.isArray(value) ? value.length : -1;
+    for (const CHILD of node.children.values()) {
+      if (Array.isArray(value) && CHILD.key === "length") {
+        throw new TypeError("Array length belongs to render structure, not a field");
+      }
+      visit(CHILD, dataAt(value, CHILD.key));
     }
   }
-  for (const node of plan.root.children.values()) visit(node, dataAt(source, node.key));
-  return { values, shapes };
+  for (const NODE of plan.root.children.values()) {
+    visit(NODE, dataAt(source, NODE.key));
+  }
+  return {
+    values: VALUES,
+    shapes: SHAPES
+  };
 }
 function snapshotRenderModel(type, source) {
-  const plan = compileRenderSchema(type), data = captureRenderData(plan, source);
-  return writeRenderModel(plan, {}, data.values, data.shapes);
+  const PLAN = compileRenderSchema(type), DATA = captureRenderData(PLAN, source);
+  return writeRenderModel(PLAN, {}, DATA.values, DATA.shapes);
 }
 function writeRenderModel(plan, model, values, shapes) {
   function visit(parent, node) {
-    const { key } = node;
+    const { key: KEY } = node;
     if (node.field !== void 0) {
-      const value = values[node.field];
-      if (value === void 0) delete parent[key];
-      else parent[key] = plan.fields[node.field].kind === "discrete" ? reuseData(parent[key], value) : value;
+      const VALUE = values[node.field];
+      if (VALUE === void 0) {
+        delete parent[KEY];
+      } else {
+        parent[KEY] = plan.fields[node.field].kind === "discrete" ? reuseData(parent[KEY], VALUE) : VALUE;
+      }
       return;
     }
-    const shape = shapes[node.index];
-    if (shape === void 0) {
-      delete parent[key];
+    const SHAPE = shapes[node.index];
+    if (SHAPE === void 0) {
+      delete parent[KEY];
       return;
     }
-    if (shape === null) {
-      parent[key] = null;
+    if (SHAPE === null) {
+      parent[KEY] = null;
       return;
     }
-    const array = shape >= 0;
-    let target = parent[key];
-    if (!target || typeof target !== "object" || Array.isArray(target) !== array) target = parent[key] = array ? [] : {};
-    if (array) target.length = shape;
-    for (const child of node.children.values()) {
-      if (!array || !arrayKey.test(child.key) || Number(child.key) < shape) visit(target, child);
+    const ARRAY = SHAPE >= 0;
+    let target = parent[KEY];
+    if (!target || typeof target !== "object" || Array.isArray(target) !== ARRAY) {
+      target = parent[KEY] = ARRAY ? [] : {};
+    }
+    if (ARRAY) {
+      target.length = SHAPE;
+    }
+    for (const CHILD of node.children.values()) {
+      if (!ARRAY || !ARRAY_KEY.test(CHILD.key) || Number(CHILD.key) < SHAPE) {
+        visit(target, CHILD);
+      }
     }
   }
-  for (const node of plan.root.children.values()) visit(model, node);
+  for (const NODE of plan.root.children.values()) {
+    visit(model, NODE);
+  }
   return model;
 }
 function reuseData(out, value) {
-  if (value === null || typeof value !== "object") return value;
-  const array = Array.isArray(value);
-  if (!out || typeof out !== "object" || Array.isArray(out) !== array) out = array ? [] : {};
-  for (const key of Object.keys(out)) if (!Object.hasOwn(value, key)) delete out[key];
-  if (array) out.length = value.length;
-  for (const key of Object.keys(value)) out[key] = reuseData(out[key], value[key]);
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
+  const ARRAY = Array.isArray(value);
+  if (!out || typeof out !== "object" || Array.isArray(out) !== ARRAY) {
+    out = ARRAY ? [] : {};
+  }
+  for (const KEY of Object.keys(out)) {
+    if (!Object.hasOwn(value, KEY)) {
+      delete out[KEY];
+    }
+  }
+  if (ARRAY) {
+    out.length = value.length;
+  }
+  for (const KEY of Object.keys(value)) {
+    out[KEY] = reuseData(out[KEY], value[KEY]);
+  }
   return out;
 }
 
@@ -584,7 +901,11 @@ var PresentationRuntime = class {
   #previewRevision = -1;
   #previewSequence = -1;
   #previewTimeMs = -Infinity;
-  #previewMetrics = { captureMs: 0, captureBytes: 0, captures: 0 };
+  #previewMetrics = {
+    captureMs: 0,
+    captureBytes: 0,
+    captures: 0
+  };
   #extrapolation;
   #snapDistance;
   #delayMs;
@@ -594,35 +915,62 @@ var PresentationRuntime = class {
   constructor({ stepMs, snapDistance, extrapolation, delayMs = 0 } = {}) {
     this.#stepMs = finite(stepMs, "stepMs");
     this.#delayMs = finite(delayMs, "delayMs");
-    if (delayMs < 0 || delayMs > stepMs * 16) throw new RangeError("delayMs must be between 0 and 16 steps");
-    if (delayMs && extrapolation) throw new TypeError("delayed authority cannot also extrapolate");
-    if (stepMs <= 0) throw new RangeError("stepMs must be positive");
-    if (snapDistance !== void 0 && finite(snapDistance, "snapDistance") <= 0) throw new RangeError("snapDistance must be positive");
+    if (delayMs < 0 || delayMs > stepMs * 16) {
+      throw new RangeError("delayMs must be between 0 and 16 steps");
+    }
+    if (delayMs && extrapolation) {
+      throw new TypeError("delayed authority cannot also extrapolate");
+    }
+    if (stepMs <= 0) {
+      throw new RangeError("stepMs must be positive");
+    }
+    if (snapDistance !== void 0 && finite(snapDistance, "snapDistance") <= 0) {
+      throw new RangeError("snapDistance must be positive");
+    }
     this.#snapDistance = snapDistance;
     if (extrapolation) {
-      if (!Array.isArray(extrapolation.fields) || new Set(extrapolation.fields).size !== extrapolation.fields.length || Array.from(extrapolation.fields).some((x) => typeof x !== "string")) throw new TypeError("extrapolation.fields must be unique paths");
-      if (finite(extrapolation.maxMs, "maxMs") <= 0) throw new RangeError("maxMs must be positive");
-      if (extrapolation.maxMs < stepMs) throw new RangeError("maxMs must cover the correction stepMs");
-      this.#extrapolation = { fields: new Set(extrapolation.fields), maxMs: extrapolation.maxMs };
+      if (!Array.isArray(extrapolation.fields) || new Set(extrapolation.fields).size !== extrapolation.fields.length || Array.from(extrapolation.fields).some((x) => typeof x !== "string")) {
+        throw new TypeError("extrapolation.fields must be unique paths");
+      }
+      if (finite(extrapolation.maxMs, "maxMs") <= 0) {
+        throw new RangeError("maxMs must be positive");
+      }
+      if (extrapolation.maxMs < stepMs) {
+        throw new RangeError("maxMs must cover the correction stepMs");
+      }
+      this.#extrapolation = {
+        fields: new Set(extrapolation.fields),
+        maxMs: extrapolation.maxMs
+      };
     }
   }
   get size() {
     return this.#tracks.size;
   }
   get previewMetrics() {
-    return { ...this.#previewMetrics };
+    return {
+      ...this.#previewMetrics
+    };
   }
   /** Select game-owned local identities only; remote authoritative tracks remain unchanged. */
   selectPreview(identities) {
-    if (!Array.isArray(identities)) throw new TypeError("preview identities must be an array");
-    const next = /* @__PURE__ */ new Map();
-    for (const identity of identities) {
-      if (!identity || typeof identity.id !== "string" || !identity.id || !Number.isSafeInteger(identity.generation) || identity.generation < 0 || next.has(identity.id)) throw new TypeError("invalid preview identity");
-      next.set(identity.id, identity.generation);
+    if (!Array.isArray(identities)) {
+      throw new TypeError("preview identities must be an array");
+    }
+    const NEXT = /* @__PURE__ */ new Map();
+    for (const IDENTITY of identities) {
+      if (!IDENTITY || typeof IDENTITY.id !== "string" || !IDENTITY.id || !Number.isSafeInteger(IDENTITY.generation) || IDENTITY.generation < 0 || NEXT.has(IDENTITY.id)) {
+        throw new TypeError("invalid preview identity");
+      }
+      NEXT.set(IDENTITY.id, IDENTITY.generation);
     }
     this.#frameSerial++;
-    this.#previewSelection = next;
-    for (const id of this.#preview.keys()) if (!next.has(id) || next.get(id) !== this.#preview.get(id).generation) this.#preview.delete(id);
+    this.#previewSelection = NEXT;
+    for (const ID of this.#preview.keys()) {
+      if (!NEXT.has(ID) || NEXT.get(ID) !== this.#preview.get(ID).generation) {
+        this.#preview.delete(ID);
+      }
+    }
   }
   clearPreview() {
     this.#frameSerial++;
@@ -633,26 +981,42 @@ var PresentationRuntime = class {
   releasePreview(nowMs) {
     this.#checkClock(nowMs);
     if (this.#delayMs) {
-      for (const [id, preview] of this.#preview) {
-        if (preview.releaseAt !== void 0) continue;
-        const track = this.#tracks.get(id);
-        if (!track || track.generation !== preview.generation) continue;
-        const from = preview.plan.fields.map((_, i) => this.#value(preview, i, nowMs)), reset = /* @__PURE__ */ new Set();
-        inferStateResets(preview.plan.policies, preview.target, track.target, reset);
-        for (const i of reset) from[i] = track.target.values[i];
-        const releaseAt = Math.max(nowMs, this.#origin + track.timeMs + this.#delayMs);
-        this.#preview.set(id, { ...preview, from, target: track.target, at: nowMs, durationMs: releaseAt - nowMs, releaseAt, sampledAt: -Infinity });
+      for (const [ID, PREVIEW] of this.#preview) {
+        if (PREVIEW.releaseAt !== void 0) {
+          continue;
+        }
+        const TRACK = this.#tracks.get(ID);
+        if (!TRACK || TRACK.generation !== PREVIEW.generation) {
+          continue;
+        }
+        const FROM = PREVIEW.plan.fields.map((_, i) => this.#value(PREVIEW, i, nowMs)), RESET = /* @__PURE__ */ new Set();
+        inferStateResets(PREVIEW.plan.policies, PREVIEW.target, TRACK.target, RESET);
+        for (const I of RESET) {
+          FROM[I] = TRACK.target.values[I];
+        }
+        const RELEASE_AT = Math.max(nowMs, this.#origin + TRACK.timeMs + this.#delayMs);
+        this.#preview.set(ID, {
+          ...PREVIEW,
+          from: FROM,
+          target: TRACK.target,
+          at: nowMs,
+          durationMs: RELEASE_AT - nowMs,
+          releaseAt: RELEASE_AT,
+          sampledAt: -Infinity
+        });
       }
       this.#frameSerial++;
       this.#now = nowMs;
       return;
     }
-    for (const [id, preview] of this.#preview) {
-      const track = this.#tracks.get(id);
-      if (!track || track.generation !== preview.generation) continue;
-      track.from = track.plan.fields.map((_, i) => this.#value(preview, i, nowMs));
-      track.at = nowMs;
-      track.sampledAt = -Infinity;
+    for (const [ID, PREVIEW] of this.#preview) {
+      const TRACK = this.#tracks.get(ID);
+      if (!TRACK || TRACK.generation !== PREVIEW.generation) {
+        continue;
+      }
+      TRACK.from = TRACK.plan.fields.map((_, i) => this.#value(PREVIEW, i, nowMs));
+      TRACK.at = nowMs;
+      TRACK.sampledAt = -Infinity;
     }
     this.clearPreview();
     this.#now = nowMs;
@@ -660,79 +1024,107 @@ var PresentationRuntime = class {
   /** Detached declared-field baselines for the next fork step; no source references retained. */
   snapshotPreview(entities) {
     return entities.map((entity) => {
-      const type = entity.type ?? entity.source.constructor, plan = compileRenderSchema(type), data = captureRenderData(plan, entity.source);
-      return { id: entity.id, generation: entity.generation, type, source: writeRenderModel(plan, {}, data.values, data.shapes) };
+      const TYPE = entity.type ?? entity.source.constructor, PLAN = compileRenderSchema(TYPE), DATA = captureRenderData(PLAN, entity.source);
+      return {
+        id: entity.id,
+        generation: entity.generation,
+        type: TYPE,
+        source: writeRenderModel(PLAN, {}, DATA.values, DATA.shapes)
+      };
     });
   }
   /** Publish immediate schema-only local fork models. This never replaces authoritative tracks. */
   capturePreview(packet, nowMs) {
-    const started = performance.now();
+    const STARTED = performance.now();
     let bytes = 0;
     this.#checkClock(nowMs);
-    if (!packet || !Array.isArray(packet.entities)) throw new TypeError("preview packet entities");
-    const revision = ordinal(packet.revision, "preview revision"), sequence = ordinal(packet.sequence, "preview sequence"), timeMs = finite(packet.timeMs, "preview timeMs");
-    if (revision !== this.#revision || revision < this.#previewRevision || revision === this.#previewRevision && sequence <= this.#previewSequence || timeMs < this.#previewTimeMs) return false;
-    if (timeMs < this.#now) return false;
-    const next = /* @__PURE__ */ new Map(), sources = /* @__PURE__ */ new WeakMap();
-    for (const entity of packet.entities) {
-      if (!entity || typeof entity.id !== "string" || !entity.id || !Number.isSafeInteger(entity.generation) || entity.generation < 0 || next.has(entity.id)) throw new TypeError("invalid preview entity");
-      if (this.#previewSelection.get(entity.id) !== entity.generation) continue;
-      if (!entity.source || typeof entity.source !== "object") throw new TypeError("preview source required");
-      const plan = compileRenderSchema(entity.type ?? entity.source.constructor), authority = this.#tracks.get(entity.id);
-      if (!authority || authority.generation !== entity.generation || authority.plan !== plan) throw new TypeError("preview must match a live authoritative render identity and schema");
-      const data = captureRenderData(plan, entity.source), old = this.#preview.get(entity.id);
-      const initial = entity.initialSource ? captureRenderData(plan, entity.initialSource) : authority.target;
-      const same = old && old.generation === entity.generation && old.plan === plan;
-      const from = same ? plan.fields.map((_, i) => this.#value(old, i, nowMs)) : plan.fields.map((_, i) => this.#value(authority, i, nowMs));
-      const reset = /* @__PURE__ */ new Set();
-      inferStateResets(plan.policies, same ? old.target : initial, data, reset);
-      for (const index of reset) from[index] = data.values[index];
-      const at = same ? nowMs : Math.min(nowMs, finite(packet.phaseStartMs ?? nowMs, "phaseStartMs"));
-      const end = Math.max(nowMs + 1, finite(packet.phaseStartMs ?? nowMs, "phaseStartMs") + (packet.stepMs ?? this.#stepMs));
-      const model = same ? old.model : {};
-      bytes += data.values.length * 8 + data.shapes.length * 4;
-      writeRenderModel(plan, model, data.values, data.shapes);
-      const entry = {
-        id: entity.id,
-        generation: entity.generation,
-        plan,
-        data,
-        target: data,
-        from,
-        at,
-        durationMs: end - at,
+    if (!packet || !Array.isArray(packet.entities)) {
+      throw new TypeError("preview packet entities");
+    }
+    const REVISION = ordinal(packet.revision, "preview revision"), SEQUENCE = ordinal(packet.sequence, "preview sequence"), TIME_MS = finite(packet.timeMs, "preview timeMs");
+    if (REVISION !== this.#revision || REVISION < this.#previewRevision || REVISION === this.#previewRevision && SEQUENCE <= this.#previewSequence || TIME_MS < this.#previewTimeMs) {
+      return false;
+    }
+    if (TIME_MS < this.#now) {
+      return false;
+    }
+    const NEXT = /* @__PURE__ */ new Map(), SOURCES = /* @__PURE__ */ new WeakMap();
+    for (const ENTITY of packet.entities) {
+      if (!ENTITY || typeof ENTITY.id !== "string" || !ENTITY.id || !Number.isSafeInteger(ENTITY.generation) || ENTITY.generation < 0 || NEXT.has(ENTITY.id)) {
+        throw new TypeError("invalid preview entity");
+      }
+      if (this.#previewSelection.get(ENTITY.id) !== ENTITY.generation) {
+        continue;
+      }
+      if (!ENTITY.source || typeof ENTITY.source !== "object") {
+        throw new TypeError("preview source required");
+      }
+      const PLAN = compileRenderSchema(ENTITY.type ?? ENTITY.source.constructor), AUTHORITY = this.#tracks.get(ENTITY.id);
+      if (!AUTHORITY || AUTHORITY.generation !== ENTITY.generation || AUTHORITY.plan !== PLAN) {
+        throw new TypeError("preview must match a live authoritative render identity and schema");
+      }
+      const DATA = captureRenderData(PLAN, ENTITY.source), OLD = this.#preview.get(ENTITY.id);
+      const INITIAL = ENTITY.initialSource ? captureRenderData(PLAN, ENTITY.initialSource) : AUTHORITY.target;
+      const SAME = OLD && OLD.generation === ENTITY.generation && OLD.plan === PLAN;
+      const FROM = SAME ? PLAN.fields.map((_, i) => this.#value(OLD, i, nowMs)) : PLAN.fields.map((_, i) => this.#value(AUTHORITY, i, nowMs));
+      const RESET = /* @__PURE__ */ new Set();
+      inferStateResets(PLAN.policies, SAME ? OLD.target : INITIAL, DATA, RESET);
+      for (const INDEX of RESET) {
+        FROM[INDEX] = DATA.values[INDEX];
+      }
+      const AT = SAME ? nowMs : Math.min(nowMs, finite(packet.phaseStartMs ?? nowMs, "phaseStartMs"));
+      const END = Math.max(
+        nowMs + 1,
+        finite(packet.phaseStartMs ?? nowMs, "phaseStartMs") + (packet.stepMs ?? this.#stepMs)
+      );
+      const MODEL = SAME ? OLD.model : {};
+      bytes += DATA.values.length * 8 + DATA.shapes.length * 4;
+      writeRenderModel(PLAN, MODEL, DATA.values, DATA.shapes);
+      const ENTRY = {
+        id: ENTITY.id,
+        generation: ENTITY.generation,
+        plan: PLAN,
+        data: DATA,
+        target: DATA,
+        from: FROM,
+        at: AT,
+        durationMs: END - AT,
         preview: true,
-        model,
-        source: entity.source,
-        sequence,
+        model: MODEL,
+        source: ENTITY.source,
+        sequence: SEQUENCE,
         sampledAt: -Infinity,
-        sampleValues: same ? old.sampleValues : void 0
+        sampleValues: SAME ? OLD.sampleValues : void 0
       };
-      next.set(entity.id, entry);
-      sources.set(entity.source, entry);
+      NEXT.set(ENTITY.id, ENTRY);
+      SOURCES.set(ENTITY.source, ENTRY);
     }
     this.#frameSerial++;
-    this.#preview = next;
-    this.#previewSources = sources;
-    this.#previewRevision = revision;
-    this.#previewSequence = sequence;
-    this.#previewTimeMs = timeMs;
+    this.#preview = NEXT;
+    this.#previewSources = SOURCES;
+    this.#previewRevision = REVISION;
+    this.#previewSequence = SEQUENCE;
+    this.#previewTimeMs = TIME_MS;
     this.#now = nowMs;
-    this.#previewMetrics.captureMs += performance.now() - started;
+    this.#previewMetrics.captureMs += performance.now() - STARTED;
     this.#previewMetrics.captureBytes += bytes;
     this.#previewMetrics.captures++;
     return true;
   }
   isModel(value) {
-    const owner = value && this.#models.get(value);
-    const preview = owner && this.#preview.get(owner.id);
-    if (preview?.model === value && this.#previewSelection.get(owner.id) === owner.generation) return true;
-    const current = owner && this.#tracks.get(owner.id);
-    return !!current && current.generation === owner.generation && current.model === value;
+    const OWNER = value && this.#models.get(value);
+    const PREVIEW = OWNER && this.#preview.get(OWNER.id);
+    if (PREVIEW?.model === value && this.#previewSelection.get(OWNER.id) === OWNER.generation) {
+      return true;
+    }
+    const CURRENT = OWNER && this.#tracks.get(OWNER.id);
+    return !!CURRENT && CURRENT.generation === OWNER.generation && CURRENT.model === value;
   }
   #checkClock(now) {
     finite(now, "nowMs");
-    if (now < this.#now) throw new RangeError("presentation clock must not go backwards");
+    if (now < this.#now) {
+      throw new RangeError("presentation clock must not go backwards");
+    }
   }
   /**
    * Full authoritative snapshot. timeMs/initialTimeMs/pathPoints use simulation milliseconds.
@@ -747,139 +1139,220 @@ var PresentationRuntime = class {
    */
   capture(packet, nowMs) {
     this.#checkClock(nowMs);
-    if (!packet || typeof packet !== "object") throw new TypeError("packet must be an object");
-    const revision = ordinal(packet.revision, "revision"), sequence = ordinal(packet.sequence, "sequence"), timeMs = finite(packet.timeMs, "timeMs");
-    const mode = packet.mode ?? "continuous";
-    if (!["continuous", "reset", "load", "rollback"].includes(mode)) throw new TypeError("unknown capture mode");
-    if (revision < this.#revision || revision === this.#revision && sequence <= this.#sequence) return false;
-    const changed = revision !== this.#revision;
-    if (this.#revision >= 0 && changed && mode === "continuous") throw new RangeError("new revision requires reset, load or rollback");
-    if (!changed && mode !== "continuous") throw new RangeError("reset, load and rollback require a newer revision");
-    if (!changed && timeMs < this.#timeMs) return false;
-    if (!Array.isArray(packet.entities)) throw new TypeError("entities must be an array");
-    const origin = changed ? nowMs - timeMs : this.#origin;
-    const next = /* @__PURE__ */ new Map(), sources = /* @__PURE__ */ new WeakMap(), previews = /* @__PURE__ */ new Map(), previewSources = /* @__PURE__ */ new WeakMap();
-    for (const entity of packet.entities) {
-      if (!entity || typeof entity.id !== "string" || !entity.id || next.has(entity.id)) throw new TypeError("entity IDs must be nonempty and unique");
-      const generation = ordinal(entity.generation, "generation"), source = entity.source;
-      if (!source || typeof source !== "object" || sources.has(source)) throw new TypeError("entity sources must be unique objects");
-      if (entity.teleport !== void 0 && typeof entity.teleport !== "boolean") throw new TypeError("teleport must be boolean");
-      const plan = compileRenderSchema(entity.type ?? source.constructor);
-      if (this.#extrapolation) for (const field of plan.fields) {
-        if (this.#extrapolation.fields.has(field.name) && !isLinearField(field.code)) throw new TypeError("extrapolation requires LINEAR: " + field.name);
+    if (!packet || typeof packet !== "object") {
+      throw new TypeError("packet must be an object");
+    }
+    const REVISION = ordinal(packet.revision, "revision"), SEQUENCE = ordinal(packet.sequence, "sequence"), TIME_MS = finite(packet.timeMs, "timeMs");
+    const MODE = packet.mode ?? "continuous";
+    if (!["continuous", "reset", "load", "rollback"].includes(MODE)) {
+      throw new TypeError("unknown capture mode");
+    }
+    if (REVISION < this.#revision || REVISION === this.#revision && SEQUENCE <= this.#sequence) {
+      return false;
+    }
+    const CHANGED = REVISION !== this.#revision;
+    if (this.#revision >= 0 && CHANGED && MODE === "continuous") {
+      throw new RangeError("new revision requires reset, load or rollback");
+    }
+    if (!CHANGED && MODE !== "continuous") {
+      throw new RangeError("reset, load and rollback require a newer revision");
+    }
+    if (!CHANGED && TIME_MS < this.#timeMs) {
+      return false;
+    }
+    if (!Array.isArray(packet.entities)) {
+      throw new TypeError("entities must be an array");
+    }
+    const ORIGIN = CHANGED ? nowMs - TIME_MS : this.#origin;
+    const NEXT = /* @__PURE__ */ new Map(), SOURCES = /* @__PURE__ */ new WeakMap(), PREVIEWS = /* @__PURE__ */ new Map(), PREVIEW_SOURCES = /* @__PURE__ */ new WeakMap();
+    for (const ENTITY of packet.entities) {
+      if (!ENTITY || typeof ENTITY.id !== "string" || !ENTITY.id || NEXT.has(ENTITY.id)) {
+        throw new TypeError("entity IDs must be nonempty and unique");
       }
-      const target = captureRenderData(plan, source);
-      const initial = entity.initialSource === void 0 ? null : captureRenderData(plan, entity.initialSource);
-      const reset = /* @__PURE__ */ new Set();
-      if (entity.resetFields !== void 0) {
-        if (!Array.isArray(entity.resetFields)) throw new TypeError("resetFields must be an array");
-        for (const name of entity.resetFields) {
-          const index = plan.indices.get(name);
-          if (index === void 0 || reset.has(index)) throw new TypeError("resetFields must contain unique declared paths");
-          reset.add(index);
-        }
+      const GENERATION = ordinal(ENTITY.generation, "generation"), SOURCE = ENTITY.source;
+      if (!SOURCE || typeof SOURCE !== "object" || SOURCES.has(SOURCE)) {
+        throw new TypeError("entity sources must be unique objects");
       }
-      const old = this.#tracks.get(entity.id), preview = this.#preview.get(entity.id);
-      const same = mode === "continuous" && old && old.generation === generation && old.plan === plan && !Number.isFinite(old.removedAt);
-      const snap = mode !== "continuous" || entity.teleport === true || !!same && positionDiscontinuity(plan.policies, old, target, this.#snapDistance);
-      if (this.#delayMs && same && !snap && preview?.generation === generation && preview.plan === plan) {
-        previews.set(entity.id, preview);
-        previewSources.set(preview.source, preview);
+      if (ENTITY.teleport !== void 0 && typeof ENTITY.teleport !== "boolean") {
+        throw new TypeError("teleport must be boolean");
       }
-      if (same && !snap) inferFieldResets(plan.policies, old, target, timeMs, reset);
-      const from = same && !snap && preview?.generation === generation && this.#previewSelection.get(entity.id) === generation ? plan.fields.map((_, i) => this.#value(preview, i, nowMs)) : !same && !snap ? initial ? initial.values.slice() : seedFieldValues(plan.policies, target.values) : target.values.slice();
-      if (this.#delayMs && same && !snap) for (let i = 0; i < from.length; i++) from[i] = old.target.values[i];
-      const velocity = this.#extrapolation ? new Array(plan.fields.length).fill(0) : null;
-      for (let i = 0; i < plan.fields.length; i++) {
-        const field = plan.fields[i], value = target.values[i];
-        if (reset.has(i) && !this.#delayMs) from[i] = value;
-        if (!same && !snap && initial && this.#extrapolation?.fields.has(field.name) && typeof from[i] === "number" && typeof value === "number") {
-          if (!Number.isFinite(from[i] - value)) throw new RangeError("extrapolation correction overflow: " + field.name);
-        }
-        if (same && !snap && !reset.has(i) && typeof value === "number" && typeof old.target.values[i] === "number") {
-          if (this.#delayMs) from[i] = old.target.values[i];
-          else if (!preview || preview.generation !== generation) from[i] = this.#value(old, i, nowMs);
-          if (field.code === RenderObject.DECAY && value > old.target.values[i]) from[i] = value;
-          if (this.#extrapolation?.fields.has(field.name)) {
-            if (!isLinearField(field.code)) throw new TypeError("extrapolation requires LINEAR: " + field.name);
-            const delta = timeMs - old.timeMs;
-            if (delta > 0) {
-              const distance = value - old.target.values[i];
-              velocity[i] = !Number.isFinite(delta) ? (value / 2 - old.target.values[i] / 2) / (timeMs / 2 - old.timeMs / 2) : !Number.isFinite(distance) ? (value / 2 - old.target.values[i] / 2) / delta * 2 : distance / delta;
-            } else velocity[i] = old.velocity[i];
-            if (!Number.isFinite(velocity[i])) throw new RangeError("extrapolation velocity overflow: " + field.name);
-            if (!Number.isFinite(from[i] - value)) throw new RangeError("extrapolation correction overflow: " + field.name);
+      const PLAN = compileRenderSchema(ENTITY.type ?? SOURCE.constructor);
+      if (this.#extrapolation) {
+        for (const FIELD of PLAN.fields) {
+          if (this.#extrapolation.fields.has(FIELD.name) && !isLinearField(FIELD.code)) {
+            throw new TypeError("extrapolation requires LINEAR: " + FIELD.name);
           }
         }
       }
-      const track = {
-        id: entity.id,
-        generation,
-        source,
-        plan,
-        target,
-        from,
-        velocity,
+      const TARGET = captureRenderData(PLAN, SOURCE);
+      const INITIAL = ENTITY.initialSource === void 0 ? null : captureRenderData(PLAN, ENTITY.initialSource);
+      const RESET = /* @__PURE__ */ new Set();
+      if (ENTITY.resetFields !== void 0) {
+        if (!Array.isArray(ENTITY.resetFields)) {
+          throw new TypeError("resetFields must be an array");
+        }
+        for (const NAME of ENTITY.resetFields) {
+          const INDEX = PLAN.indices.get(NAME);
+          if (INDEX === void 0 || RESET.has(INDEX)) {
+            throw new TypeError("resetFields must contain unique declared paths");
+          }
+          RESET.add(INDEX);
+        }
+      }
+      const OLD = this.#tracks.get(ENTITY.id), PREVIEW = this.#preview.get(ENTITY.id);
+      const SAME = MODE === "continuous" && OLD && OLD.generation === GENERATION && OLD.plan === PLAN && !Number.isFinite(OLD.removedAt);
+      const SNAP = MODE !== "continuous" || ENTITY.teleport === true || !!SAME && positionDiscontinuity(PLAN.policies, OLD, TARGET, this.#snapDistance);
+      if (this.#delayMs && SAME && !SNAP && PREVIEW?.generation === GENERATION && PREVIEW.plan === PLAN) {
+        PREVIEWS.set(ENTITY.id, PREVIEW);
+        PREVIEW_SOURCES.set(PREVIEW.source, PREVIEW);
+      }
+      if (SAME && !SNAP) {
+        inferFieldResets(PLAN.policies, OLD, TARGET, TIME_MS, RESET);
+      }
+      const FROM = SAME && !SNAP && PREVIEW?.generation === GENERATION && this.#previewSelection.get(ENTITY.id) === GENERATION ? PLAN.fields.map((_, i) => this.#value(PREVIEW, i, nowMs)) : !SAME && !SNAP ? INITIAL ? INITIAL.values.slice() : seedFieldValues(PLAN.policies, TARGET.values) : TARGET.values.slice();
+      if (this.#delayMs && SAME && !SNAP) {
+        for (let i = 0; i < FROM.length; i++) {
+          FROM[i] = OLD.target.values[i];
+        }
+      }
+      const VELOCITY = this.#extrapolation ? new Array(PLAN.fields.length).fill(0) : null;
+      for (let i = 0; i < PLAN.fields.length; i++) {
+        const FIELD = PLAN.fields[i], VALUE = TARGET.values[i];
+        if (RESET.has(i) && !this.#delayMs) {
+          FROM[i] = VALUE;
+        }
+        if (!SAME && !SNAP && INITIAL && this.#extrapolation?.fields.has(FIELD.name) && typeof FROM[i] === "number" && typeof VALUE === "number") {
+          if (!Number.isFinite(FROM[i] - VALUE)) {
+            throw new RangeError("extrapolation correction overflow: " + FIELD.name);
+          }
+        }
+        if (SAME && !SNAP && !RESET.has(i) && typeof VALUE === "number" && typeof OLD.target.values[i] === "number") {
+          if (this.#delayMs) {
+            FROM[i] = OLD.target.values[i];
+          } else if (!PREVIEW || PREVIEW.generation !== GENERATION) {
+            FROM[i] = this.#value(OLD, i, nowMs);
+          }
+          if (FIELD.code === RenderObject.DECAY && VALUE > OLD.target.values[i]) {
+            FROM[i] = VALUE;
+          }
+          if (this.#extrapolation?.fields.has(FIELD.name)) {
+            if (!isLinearField(FIELD.code)) {
+              throw new TypeError("extrapolation requires LINEAR: " + FIELD.name);
+            }
+            const DELTA = TIME_MS - OLD.timeMs;
+            if (DELTA > 0) {
+              const DISTANCE = VALUE - OLD.target.values[i];
+              VELOCITY[i] = !Number.isFinite(DELTA) ? (VALUE / 2 - OLD.target.values[i] / 2) / (TIME_MS / 2 - OLD.timeMs / 2) : !Number.isFinite(DISTANCE) ? (VALUE / 2 - OLD.target.values[i] / 2) / DELTA * 2 : DISTANCE / DELTA;
+            } else {
+              VELOCITY[i] = OLD.velocity[i];
+            }
+            if (!Number.isFinite(VELOCITY[i])) {
+              throw new RangeError("extrapolation velocity overflow: " + FIELD.name);
+            }
+            if (!Number.isFinite(FROM[i] - VALUE)) {
+              throw new RangeError("extrapolation correction overflow: " + FIELD.name);
+            }
+          }
+        }
+      }
+      const TRACK = {
+        id: ENTITY.id,
+        generation: GENERATION,
+        source: SOURCE,
+        plan: PLAN,
+        target: TARGET,
+        from: FROM,
+        velocity: VELOCITY,
         at: nowMs,
-        timeMs,
-        model: same ? old.model : {},
-        sampleValues: same ? old.sampleValues : void 0,
+        timeMs: TIME_MS,
+        model: SAME ? OLD.model : {},
+        sampleValues: SAME ? OLD.sampleValues : void 0,
         sampledAt: -Infinity
       };
       let intervalStart;
       if (this.#delayMs) {
-        intervalStart = bufferInterval(track, old, {
-          origin,
-          timeMs,
+        intervalStart = bufferInterval(TRACK, OLD, {
+          origin: ORIGIN,
+          timeMs: TIME_MS,
           previousTimeMs: this.#timeMs,
           stepMs: this.#stepMs,
-          continuous: same && !snap,
-          reset: snap,
-          seeded: !snap && (!!initial || plan.policies.origins.some((i) => i !== void 0)),
-          initialTimeMs: entity.initialTimeMs
+          continuous: SAME && !SNAP,
+          reset: SNAP,
+          seeded: !SNAP && (!!INITIAL || PLAN.policies.origins.some((i) => i !== void 0)),
+          initialTimeMs: ENTITY.initialTimeMs
         });
-        track.initialShapes = same && !snap ? old.target.shapes : !snap && initial ? initial.shapes : target.shapes;
-        track.heldFields = reset;
-        for (const node of plan.nodes) if (node.field === void 0 && !Object.is(track.initialShapes[node.index], target.shapes[node.index])) {
-          for (const index of node.fields) track.heldFields.add(index);
+        TRACK.initialShapes = SAME && !SNAP ? OLD.target.shapes : !SNAP && INITIAL ? INITIAL.shapes : TARGET.shapes;
+        TRACK.heldFields = RESET;
+        for (const NODE of PLAN.nodes) {
+          if (NODE.field === void 0 && !Object.is(TRACK.initialShapes[NODE.index], TARGET.shapes[NODE.index])) {
+            for (const INDEX of NODE.fields) {
+              TRACK.heldFields.add(INDEX);
+            }
+          }
         }
-        const prior = same && !snap ? old.target.values : !snap && initial ? initial.values : target.values;
-        for (const index of track.heldFields) from[index] = prior[index];
+        const PRIOR = SAME && !SNAP ? OLD.target.values : !SNAP && INITIAL ? INITIAL.values : TARGET.values;
+        for (const INDEX of TRACK.heldFields) {
+          FROM[INDEX] = PRIOR[INDEX];
+        }
       }
-      const pathStart = this.#delayMs ? intervalStart : same && !snap ? old.timeMs : !snap && initial ? entity.initialTimeMs ?? timeMs - this.#stepMs : timeMs;
-      track.path = capturePath(plan.path, old?.path, from, target.values, pathStart, timeMs, entity.pathPoints, !same || snap, this.#delayMs, this.#stepMs);
-      next.set(entity.id, track);
-      sources.set(source, track);
+      const PATH_START = this.#delayMs ? intervalStart : SAME && !SNAP ? OLD.timeMs : !SNAP && INITIAL ? ENTITY.initialTimeMs ?? TIME_MS - this.#stepMs : TIME_MS;
+      TRACK.path = capturePath(
+        PLAN.path,
+        OLD?.path,
+        FROM,
+        TARGET.values,
+        PATH_START,
+        TIME_MS,
+        ENTITY.pathPoints,
+        !SAME || SNAP,
+        this.#delayMs,
+        this.#stepMs
+      );
+      NEXT.set(ENTITY.id, TRACK);
+      SOURCES.set(SOURCE, TRACK);
     }
-    if (!changed && mode === "continuous") retainRemoved(next, this.#tracks, { origin, timeMs, nowMs, delayMs: this.#delayMs });
-    this.#origin = origin;
+    if (!CHANGED && MODE === "continuous") {
+      retainRemoved(NEXT, this.#tracks, {
+        origin: ORIGIN,
+        timeMs: TIME_MS,
+        nowMs,
+        delayMs: this.#delayMs
+      });
+    }
+    this.#origin = ORIGIN;
     this.#frameSerial++;
-    this.#tracks = next;
-    this.#sources = sources;
-    this.#preview = previews;
-    this.#previewSources = previewSources;
-    this.#revision = revision;
-    this.#sequence = sequence;
-    this.#timeMs = timeMs;
+    this.#tracks = NEXT;
+    this.#sources = SOURCES;
+    this.#preview = PREVIEWS;
+    this.#previewSources = PREVIEW_SOURCES;
+    this.#revision = REVISION;
+    this.#sequence = SEQUENCE;
+    this.#timeMs = TIME_MS;
     this.#now = nowMs;
     return true;
   }
   #value(track, index, now) {
-    const field = track.plan.fields[index], from = track.from[index], to = track.target.values[index];
-    if (from == null || to == null || field.kind === "discrete" || track.heldFields?.has(index)) return track.buffered && now < track.at + track.durationMs ? from : to;
-    const alpha = fraction2(track, now, track.durationMs ?? this.#stepMs);
-    if (!track.preview && this.#extrapolation?.fields.has(field.name)) {
-      const age = Math.min(this.#extrapolation.maxMs, Math.max(0, now - track.at));
-      const value = evaluate("number", from, to, alpha) + track.velocity[index] * age;
-      if (!Number.isFinite(value)) throw new RangeError("extrapolated render value overflow: " + field.name);
-      return value;
+    const FIELD = track.plan.fields[index], FROM = track.from[index], TO = track.target.values[index];
+    if (FROM == null || TO == null || FIELD.kind === "discrete" || track.heldFields?.has(index)) {
+      return track.buffered && now < track.at + track.durationMs ? FROM : TO;
     }
-    if (field.code === RenderObject.CYCLE) {
-      if (alpha === 1) return to;
-      const value = evaluate("number", from, to < from ? to + 1 : to, alpha);
-      return value > 1 ? value - 1 : value;
+    const ALPHA = fraction2(track, now, track.durationMs ?? this.#stepMs);
+    if (!track.preview && this.#extrapolation?.fields.has(FIELD.name)) {
+      const AGE = Math.min(this.#extrapolation.maxMs, Math.max(0, now - track.at));
+      const VALUE = evaluate("number", FROM, TO, ALPHA) + track.velocity[index] * AGE;
+      if (!Number.isFinite(VALUE)) {
+        throw new RangeError("extrapolated render value overflow: " + FIELD.name);
+      }
+      return VALUE;
     }
-    return evaluate(field.kind, from, to, alpha);
+    if (FIELD.code === RenderObject.CYCLE) {
+      if (ALPHA === 1) {
+        return TO;
+      }
+      const VALUE = evaluate("number", FROM, TO < FROM ? TO + 1 : TO, ALPHA);
+      return VALUE > 1 ? VALUE - 1 : VALUE;
+    }
+    return evaluate(FIELD.kind, FROM, TO, ALPHA);
   }
   /** 유효 identity가 아니면 null. 원본 fallback은 없습니다. 모델은 프레임 간 재사용됩니다. */
   sample(id, generation, nowMs) {
@@ -891,49 +1364,62 @@ var PresentationRuntime = class {
     }
     if (preview && preview.generation === generation && this.#previewSelection.get(id) === generation) {
       if (preview.sampledAt !== nowMs) {
-        const values = preview.sampleValues ??= new Array(preview.plan.fields.length);
-        for (let i = 0; i < values.length; i++) values[i] = this.#value(preview, i, nowMs);
-        writeRenderModel(preview.plan, preview.model, values, preview.target.shapes);
+        const VALUES = preview.sampleValues ??= new Array(preview.plan.fields.length);
+        for (let i = 0; i < VALUES.length; i++) {
+          VALUES[i] = this.#value(preview, i, nowMs);
+        }
+        writeRenderModel(preview.plan, preview.model, VALUES, preview.target.shapes);
         preview.sampledAt = nowMs;
         this.#models.set(preview.model, preview);
       }
       this.#now = nowMs;
       return preview.model;
     }
-    const track = this.#tracks.get(id);
-    const at = nowMs - this.#delayMs;
-    const interval = this.#delayMs ? intervalAt(track, at) : track;
-    if (!interval || !track || track.generation !== generation) {
+    const TRACK = this.#tracks.get(id);
+    const AT = nowMs - this.#delayMs;
+    const INTERVAL = this.#delayMs ? intervalAt(TRACK, AT) : TRACK;
+    if (!INTERVAL || !TRACK || TRACK.generation !== generation) {
       this.#now = nowMs;
       return null;
     }
-    if (track.sampledAt !== nowMs) {
-      const values = track.sampleValues ??= new Array(track.plan.fields.length);
-      for (let i = 0; i < values.length; i++) values[i] = this.#value(interval, i, at);
-      if (track.plan.path) {
-        const point = track.pathHead ?? (track.pathHead = {});
-        pointAt(track.path, at - this.#origin, point);
-        values[track.plan.path.x] = point.x;
-        values[track.plan.path.y] = point.y;
+    if (TRACK.sampledAt !== nowMs) {
+      const VALUES = TRACK.sampleValues ??= new Array(TRACK.plan.fields.length);
+      for (let i = 0; i < VALUES.length; i++) {
+        VALUES[i] = this.#value(INTERVAL, i, AT);
       }
-      writeRenderModel(track.plan, track.model, values, interval.buffered && at < interval.at + interval.durationMs ? interval.initialShapes : interval.target.shapes);
-      track.sampledAt = nowMs;
-      this.#models.set(track.model, track);
+      if (TRACK.plan.path) {
+        const POINT = TRACK.pathHead ?? (TRACK.pathHead = {});
+        pointAt(TRACK.path, AT - this.#origin, POINT);
+        VALUES[TRACK.plan.path.x] = POINT.x;
+        VALUES[TRACK.plan.path.y] = POINT.y;
+      }
+      writeRenderModel(
+        TRACK.plan,
+        TRACK.model,
+        VALUES,
+        INTERVAL.buffered && AT < INTERVAL.at + INTERVAL.durationMs ? INTERVAL.initialShapes : INTERVAL.target.shapes
+      );
+      TRACK.sampledAt = nowMs;
+      this.#models.set(TRACK.model, TRACK);
     }
     this.#now = nowMs;
-    return track.model;
+    return TRACK.model;
   }
   /** 등록된 원본 객체나 유효한 모델만 받습니다. 삭제·세대 변경된 모델은 다시 그리지 않습니다. */
   modelFor(source, nowMs) {
     this.#checkClock(nowMs);
     if (this.isModel(source)) {
-      const owner = this.#models.get(source);
-      return this.sample(owner.id, owner.generation, nowMs);
+      const OWNER = this.#models.get(source);
+      return this.sample(OWNER.id, OWNER.generation, nowMs);
     }
-    const preview = source && typeof source === "object" ? this.#previewSources.get(source) : null;
-    if (preview && this.#previewSelection.get(preview.id) === preview.generation) return this.sample(preview.id, preview.generation, nowMs);
-    const track = this.#sources.get(source);
-    if (track) return this.sample(track.id, track.generation, nowMs);
+    const PREVIEW = source && typeof source === "object" ? this.#previewSources.get(source) : null;
+    if (PREVIEW && this.#previewSelection.get(PREVIEW.id) === PREVIEW.generation) {
+      return this.sample(PREVIEW.id, PREVIEW.generation, nowMs);
+    }
+    const TRACK = this.#sources.get(source);
+    if (TRACK) {
+      return this.sample(TRACK.id, TRACK.generation, nowMs);
+    }
     this.#now = nowMs;
     return null;
   }
@@ -946,48 +1432,62 @@ var PresentationRuntime = class {
   frame(nowMs) {
     this.#checkClock(nowMs);
     this.#now = nowMs;
-    const serial = ++this.#frameSerial, check = () => {
-      if (serial !== this.#frameSerial) throw new Error("Presentation frame expired");
+    const SERIAL = ++this.#frameSerial, CHECK = () => {
+      if (SERIAL !== this.#frameSerial) {
+        throw new Error("Presentation frame expired");
+      }
     };
     return Object.freeze({
       nowMs,
       timeMs: nowMs - this.#delayMs - this.#origin,
       sample: (id, generation) => {
-        check();
+        CHECK();
         return this.sample(id, generation, nowMs);
       },
       modelFor: (source) => {
-        check();
+        CHECK();
         return this.modelFor(source, nowMs);
       },
       forEach: (visit) => {
-        check();
-        for (const [id, track] of this.#tracks) {
-          const model = this.sample(id, track.generation, nowMs);
-          if (model) visit(model, id, track.generation);
+        CHECK();
+        for (const [ID, TRACK] of this.#tracks) {
+          const MODEL = this.sample(ID, TRACK.generation, nowMs);
+          if (MODEL) {
+            visit(MODEL, ID, TRACK.generation);
+          }
         }
       },
       pathInto: (id, generation, out) => {
-        check();
-        if (!Array.isArray(out)) throw new TypeError("path output must be an array");
-        const track = this.#tracks.get(id);
-        if (!track || track.generation !== generation || !this.sample(id, generation, nowMs)) {
+        CHECK();
+        if (!Array.isArray(out)) {
+          throw new TypeError("path output must be an array");
+        }
+        const TRACK = this.#tracks.get(id);
+        if (!TRACK || TRACK.generation !== generation || !this.sample(id, generation, nowMs)) {
           out.length = 0;
           return out;
         }
-        if (!track.plan.path) throw new Error("Declare renderPath before reading a path");
-        if (this.#preview.has(id) && this.#previewSelection.get(id) === generation) throw new Error("Preview path is not supported; attach visuals to the selected model");
-        return samplePath(track.path, nowMs - this.#delayMs - this.#origin, track.plan.path.durationMs, out);
+        if (!TRACK.plan.path) {
+          throw new Error("Declare renderPath before reading a path");
+        }
+        if (this.#preview.has(id) && this.#previewSelection.get(id) === generation) {
+          throw new Error("Preview path is not supported; attach visuals to the selected model");
+        }
+        return samplePath(TRACK.path, nowMs - this.#delayMs - this.#origin, TRACK.plan.path.durationMs, out);
       }
     });
   }
   /** 정상적인 객체 메서드 호출입니다. this/프로토타입을 바꾸지 않습니다. */
   render(source, context, nowMs) {
-    if (!(source instanceof RenderObject)) throw new TypeError("render() requires a RenderObject");
-    const model = this.modelFor(source, nowMs);
-    if (!model) throw new Error("Render object has not been captured");
-    source.render(context, model);
-    return model;
+    if (!(source instanceof RenderObject)) {
+      throw new TypeError("render() requires a RenderObject");
+    }
+    const MODEL = this.modelFor(source, nowMs);
+    if (!MODEL) {
+      throw new Error("Render object has not been captured");
+    }
+    source.render(context, MODEL);
+    return MODEL;
   }
 };
 export {

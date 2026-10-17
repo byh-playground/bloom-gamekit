@@ -1,112 +1,182 @@
 // modules/audio/index.js
-var audioDefaults = {
+var AUDIO_DEFAULTS = {
   volume: 0.7,
   headroom: 0.24,
   maxVoices: 12,
   rampMs: 8,
   storageKey: null,
-  synthesis: { attackMs: 4, releaseTailMs: 6, sourceTailMs: 10, noiseMs: 1e3, minGain: 1e-4, minHz: 20 },
-  compressor: { threshold: -18, knee: 12, ratio: 6, attackMs: 3, releaseMs: 120 },
-  categories: { sfx: { volume: 1, max: 12, gapMs: 0, priority: 0 } },
+  synthesis: {
+    attackMs: 4,
+    releaseTailMs: 6,
+    sourceTailMs: 10,
+    noiseMs: 1e3,
+    minGain: 1e-4,
+    minHz: 20
+  },
+  compressor: {
+    threshold: -18,
+    knee: 12,
+    ratio: 6,
+    attackMs: 3,
+    releaseMs: 120
+  },
+  categories: {
+    sfx: {
+      volume: 1,
+      max: 12,
+      gapMs: 0,
+      priority: 0
+    }
+  },
   sounds: {}
 };
 function validateRecipe(recipe) {
-  if (!recipe || !Array.isArray(recipe.layers) || !recipe.layers.length) throw new TypeError("sound.layers required");
-  for (const layer of recipe.layers) {
-    if (!["tone", "noise", "buffer"].includes(layer.kind) || !Number.isFinite(layer.ms) || layer.ms <= 0 || layer.ms > 1e4 || !Number.isFinite(layer.gain) || layer.gain < 0 || layer.gain > 1 || !Number.isFinite(layer.delay ?? 0) || (layer.delay ?? 0) < 0) throw new RangeError("finite bounded layer duration/gain/delay required");
-    if (layer.kind === "tone" && (!Number.isFinite(layer.hz) || layer.hz <= 0 || !Number.isFinite(layer.end) || layer.end <= 0 || !["sine", "square", "triangle", "sawtooth"].includes(layer.type))) throw new RangeError("valid tone frequency/type required");
-    if (layer.kind === "noise" && (!Number.isFinite(layer.hz) || layer.hz <= 0)) throw new RangeError("noise cutoff required");
+  if (!recipe || !Array.isArray(recipe.layers) || !recipe.layers.length) {
+    throw new TypeError("sound.layers required");
+  }
+  for (const LAYER of recipe.layers) {
+    if (!["tone", "noise", "buffer"].includes(LAYER.kind) || !Number.isFinite(LAYER.ms) || LAYER.ms <= 0 || LAYER.ms > 1e4 || !Number.isFinite(LAYER.gain) || LAYER.gain < 0 || LAYER.gain > 1 || !Number.isFinite(LAYER.delay ?? 0) || (LAYER.delay ?? 0) < 0) {
+      throw new RangeError("finite bounded layer duration/gain/delay required");
+    }
+    if (LAYER.kind === "tone" && (!Number.isFinite(LAYER.hz) || LAYER.hz <= 0 || !Number.isFinite(LAYER.end) || LAYER.end <= 0 || !["sine", "square", "triangle", "sawtooth"].includes(LAYER.type))) {
+      throw new RangeError("valid tone frequency/type required");
+    }
+    if (LAYER.kind === "noise" && (!Number.isFinite(LAYER.hz) || LAYER.hz <= 0)) {
+      throw new RangeError("noise cutoff required");
+    }
   }
 }
-function makeNoise(context, noiseMs = audioDefaults.synthesis.noiseMs) {
-  const buffer = context.createBuffer(1, Math.round(context.sampleRate * noiseMs / 1e3), context.sampleRate), data = buffer.getChannelData(0);
+function makeNoise(context, noiseMs = AUDIO_DEFAULTS.synthesis.noiseMs) {
+  const BUFFER = context.createBuffer(1, Math.round(context.sampleRate * noiseMs / 1e3), context.sampleRate), DATA = BUFFER.getChannelData(0);
   let seed = 213341;
-  for (let i = 0; i < data.length; i++) {
+  for (let i = 0; i < DATA.length; i++) {
     seed = Math.imul(seed, 1664525) + 1013904223 >>> 0;
-    data[i] = seed / 2147483648 - 1;
+    DATA[i] = seed / 2147483648 - 1;
   }
-  return buffer;
+  return BUFFER;
 }
-function createMix(context, destination, config = audioDefaults) {
-  const compressor = context.createDynamicsCompressor(), master = context.createGain();
-  for (const key of ["threshold", "knee", "ratio"]) compressor[key].value = config.compressor[key];
-  compressor.attack.value = config.compressor.attackMs / 1e3;
-  compressor.release.value = config.compressor.releaseMs / 1e3;
-  master.gain.value = config.headroom * config.volume;
-  compressor.connect(master);
-  master.connect(destination);
-  return { input: compressor, master, compressor };
+function createMix(context, destination, config = AUDIO_DEFAULTS) {
+  const COMPRESSOR = context.createDynamicsCompressor(), MASTER = context.createGain();
+  for (const KEY of ["threshold", "knee", "ratio"]) {
+    COMPRESSOR[KEY].value = config.compressor[KEY];
+  }
+  COMPRESSOR.attack.value = config.compressor.attackMs / 1e3;
+  COMPRESSOR.release.value = config.compressor.releaseMs / 1e3;
+  MASTER.gain.value = config.headroom * config.volume;
+  COMPRESSOR.connect(MASTER);
+  MASTER.connect(destination);
+  return {
+    input: COMPRESSOR,
+    master: MASTER,
+    compressor: COMPRESSOR
+  };
 }
-function renderSound(context, destination, recipe, buffer, { at = context.currentTime, scale = 1, onEnded = () => {
-}, buffers = /* @__PURE__ */ new Map(), synthesis = audioDefaults.synthesis } = {}) {
+function renderSound(context, destination, recipe, buffer, {
+  at = context.currentTime,
+  scale = 1,
+  onEnded = () => {
+  },
+  buffers = /* @__PURE__ */ new Map(),
+  synthesis = AUDIO_DEFAULTS.synthesis
+} = {}) {
   validateRecipe(recipe);
-  for (const layer of recipe.layers) if (layer.kind === "buffer" && !buffers.has(layer.bufferId)) throw new Error("AudioBuffer not registered: " + layer.bufferId);
-  const voices = [];
-  let remaining = recipe.layers.length, finished = false;
-  const finish = () => {
+  for (const LAYER of recipe.layers) {
+    if (LAYER.kind === "buffer" && !buffers.has(LAYER.bufferId)) {
+      throw new Error("AudioBuffer not registered: " + LAYER.bufferId);
+    }
+  }
+  const VOICES = [];
+  let remaining = recipe.layers.length;
+  let finished = false;
+  const FINISH = () => {
     if (--remaining === 0 && !finished) {
       finished = true;
       onEnded();
     }
   };
-  for (const layer of recipe.layers) {
-    const start = at + (layer.delay || 0) / 1e3, duration = layer.ms / 1e3, gain = context.createGain();
-    let source, filter;
-    if (layer.kind === "buffer") {
+  for (const LAYER of recipe.layers) {
+    const START = at + (LAYER.delay || 0) / 1e3, DURATION = LAYER.ms / 1e3, GAIN = context.createGain();
+    let source;
+    let filter;
+    if (LAYER.kind === "buffer") {
       source = context.createBufferSource();
-      source.buffer = buffers.get(layer.bufferId);
-      source.connect(gain);
-    } else if (layer.kind === "noise") {
+      source.buffer = buffers.get(LAYER.bufferId);
+      source.connect(GAIN);
+    } else if (LAYER.kind === "noise") {
       source = context.createBufferSource();
       source.buffer = buffer;
-      source.loop = duration > buffer.duration;
+      source.loop = DURATION > buffer.duration;
       filter = context.createBiquadFilter();
       filter.type = "lowpass";
-      filter.frequency.value = layer.hz;
+      filter.frequency.value = LAYER.hz;
       source.connect(filter);
-      filter.connect(gain);
+      filter.connect(GAIN);
     } else {
       source = context.createOscillator();
-      source.type = layer.type;
-      source.frequency.setValueAtTime(layer.hz, start);
-      source.frequency.exponentialRampToValueAtTime(Math.max(synthesis.minHz, layer.end), start + duration);
-      source.connect(gain);
+      source.type = LAYER.type;
+      source.frequency.setValueAtTime(LAYER.hz, START);
+      source.frequency.exponentialRampToValueAtTime(Math.max(synthesis.minHz, LAYER.end), START + DURATION);
+      source.connect(GAIN);
     }
-    gain.gain.setValueAtTime(0, start);
-    gain.gain.linearRampToValueAtTime(layer.gain * scale, start + synthesis.attackMs / 1e3);
-    gain.gain.exponentialRampToValueAtTime(synthesis.minGain, start + duration);
-    gain.gain.linearRampToValueAtTime(0, start + duration + synthesis.releaseTailMs / 1e3);
-    gain.connect(destination);
+    GAIN.gain.setValueAtTime(0, START);
+    GAIN.gain.linearRampToValueAtTime(LAYER.gain * scale, START + synthesis.attackMs / 1e3);
+    GAIN.gain.exponentialRampToValueAtTime(synthesis.minGain, START + DURATION);
+    GAIN.gain.linearRampToValueAtTime(0, START + DURATION + synthesis.releaseTailMs / 1e3);
+    GAIN.connect(destination);
     source.onended = () => {
       source.disconnect();
       filter?.disconnect();
-      gain.disconnect();
-      finish();
+      GAIN.disconnect();
+      FINISH();
     };
-    source.start(start);
-    source.stop(start + duration + synthesis.sourceTailMs / 1e3);
-    voices.push({ source, gain });
+    source.start(START);
+    source.stop(START + DURATION + synthesis.sourceTailMs / 1e3);
+    VOICES.push({
+      source,
+      gain: GAIN
+    });
   }
-  return { stop() {
-    for (const voice of voices) {
-      try {
-        voice.gain.gain.cancelScheduledValues(context.currentTime);
-        voice.gain.gain.setTargetAtTime(0, context.currentTime, 4e-3);
-        voice.source.stop(context.currentTime);
-      } catch {
+  return {
+    stop() {
+      for (const VOICE of VOICES) {
+        try {
+          VOICE.gain.gain.cancelScheduledValues(context.currentTime);
+          VOICE.gain.gain.setTargetAtTime(0, context.currentTime, 4e-3);
+          VOICE.source.stop(context.currentTime);
+        } catch {
+        }
       }
     }
-  } };
+  };
 }
 var AudioPlayer = class {
-  constructor(config = audioDefaults) {
-    config = { ...audioDefaults, ...config, compressor: { ...audioDefaults.compressor, ...config.compressor }, synthesis: { ...audioDefaults.synthesis, ...config.synthesis } };
+  constructor(config = AUDIO_DEFAULTS) {
+    config = {
+      ...AUDIO_DEFAULTS,
+      ...config,
+      compressor: {
+        ...AUDIO_DEFAULTS.compressor,
+        ...config.compressor
+      },
+      synthesis: {
+        ...AUDIO_DEFAULTS.synthesis,
+        ...config.synthesis
+      }
+    };
     this.config = config;
-    if (!Number.isSafeInteger(config.maxVoices) || config.maxVoices < 1 || config.maxVoices > 64) throw new RangeError("maxVoices must be 1..64");
-    for (const c of Object.values(config.categories)) if (!Number.isFinite(c.volume) || c.volume < 0 || c.volume > 1 || !Number.isSafeInteger(c.max) || c.max < 1 || !Number.isFinite(c.gapMs) || c.gapMs < 0 || !Number.isFinite(c.priority)) throw new RangeError("valid category volume/budget/gap/priority required");
-    for (const recipe of Object.values(config.sounds)) {
-      validateRecipe(recipe);
-      if (!config.categories[recipe.category]) throw new Error("unknown sound category");
+    if (!Number.isSafeInteger(config.maxVoices) || config.maxVoices < 1 || config.maxVoices > 64) {
+      throw new RangeError("maxVoices must be 1..64");
+    }
+    for (const C of Object.values(config.categories)) {
+      if (!Number.isFinite(C.volume) || C.volume < 0 || C.volume > 1 || !Number.isSafeInteger(C.max) || C.max < 1 || !Number.isFinite(C.gapMs) || C.gapMs < 0 || !Number.isFinite(C.priority)) {
+        throw new RangeError("valid category volume/budget/gap/priority required");
+      }
+    }
+    for (const RECIPE of Object.values(config.sounds)) {
+      validateRecipe(RECIPE);
+      if (!config.categories[RECIPE.category]) {
+        throw new Error("unknown sound category");
+      }
     }
     this.disposed = false;
     this.buffers = /* @__PURE__ */ new Map();
@@ -119,18 +189,32 @@ var AudioPlayer = class {
     this.muted = false;
     this.voices = /* @__PURE__ */ new Set();
     this.lastCategory = /* @__PURE__ */ new Map();
-    this.metrics = { played: 0, dropped: 0, blocked: 0, maxObserved: 0, bySound: {} };
+    this.metrics = {
+      played: 0,
+      dropped: 0,
+      blocked: 0,
+      maxObserved: 0,
+      bySound: {}
+    };
     try {
-      const data = JSON.parse(config.storageKey ? globalThis.localStorage?.getItem(config.storageKey) : null);
-      if (data) {
-        if (Number.isFinite(data.volume)) this.volume = Math.max(0, Math.min(1, data.volume));
-        this.muted = data.muted === true;
-        for (const [name, value] of Object.entries(data.categories || {})) if (this.categoryVolumes.has(name) && Number.isFinite(value)) this.categoryVolumes.set(name, Math.max(0, Math.min(1, value)));
+      const DATA = JSON.parse(config.storageKey ? globalThis.localStorage?.getItem(config.storageKey) : null);
+      if (DATA) {
+        if (Number.isFinite(DATA.volume)) {
+          this.volume = Math.max(0, Math.min(1, DATA.volume));
+        }
+        this.muted = DATA.muted === true;
+        for (const [NAME, VALUE] of Object.entries(DATA.categories || {})) {
+          if (this.categoryVolumes.has(NAME) && Number.isFinite(VALUE)) {
+            this.categoryVolumes.set(NAME, Math.max(0, Math.min(1, VALUE)));
+          }
+        }
       }
     } catch {
     }
     this.onGesture = () => {
-      if (!globalThis.document?.hidden) void this.unlock();
+      if (!globalThis.document?.hidden) {
+        void this.unlock();
+      }
     };
     this.onHidden = () => {
       if (globalThis.document?.hidden) {
@@ -139,17 +223,27 @@ var AudioPlayer = class {
         });
       }
     };
-    globalThis.document?.addEventListener("pointerdown", this.onGesture, { capture: true });
-    globalThis.document?.addEventListener("keydown", this.onGesture, { capture: true });
+    globalThis.document?.addEventListener("pointerdown", this.onGesture, {
+      capture: true
+    });
+    globalThis.document?.addEventListener("keydown", this.onGesture, {
+      capture: true
+    });
     globalThis.document?.addEventListener("visibilitychange", this.onHidden);
   }
   async unlock() {
-    if (this.disposed) return false;
+    if (this.disposed) {
+      return false;
+    }
     try {
       if (!this.context) {
-        const Audio = globalThis.AudioContext || globalThis.webkitAudioContext;
-        if (!Audio) return false;
-        this.context = new Audio({ latencyHint: "interactive" });
+        const AUDIO = globalThis.AudioContext || globalThis.webkitAudioContext;
+        if (!AUDIO) {
+          return false;
+        }
+        this.context = new AUDIO({
+          latencyHint: "interactive"
+        });
         this.analyser = this.context.createAnalyser();
         this.analyser.fftSize = 512;
         this.mix = createMix(this.context, this.analyser, this.config);
@@ -157,11 +251,17 @@ var AudioPlayer = class {
         this.noise = makeNoise(this.context, this.config.synthesis.noiseMs);
         this.applyVolume();
         this.context.onstatechange = () => {
-          if (this.context.state !== "running") this.stopAll();
+          if (this.context.state !== "running") {
+            this.stopAll();
+          }
         };
       }
-      if (globalThis.document?.hidden) return false;
-      if (this.context.state !== "running") await this.context.resume();
+      if (globalThis.document?.hidden) {
+        return false;
+      }
+      if (this.context.state !== "running") {
+        await this.context.resume();
+      }
       return this.context.state === "running";
     } catch (error) {
       this.metrics.blocked++;
@@ -170,31 +270,52 @@ var AudioPlayer = class {
     }
   }
   applyVolume() {
-    if (!this.mix) return;
-    const now = this.context.currentTime;
-    this.mix.master.gain.cancelScheduledValues(now);
-    this.mix.master.gain.setTargetAtTime(this.muted ? 0 : this.volume * this.config.headroom, now, this.config.rampMs / 1e3);
+    if (!this.mix) {
+      return;
+    }
+    const NOW = this.context.currentTime;
+    this.mix.master.gain.cancelScheduledValues(NOW);
+    this.mix.master.gain.setTargetAtTime(
+      this.muted ? 0 : this.volume * this.config.headroom,
+      NOW,
+      this.config.rampMs / 1e3
+    );
   }
   save() {
-    if (!this.config.storageKey) return;
+    if (!this.config.storageKey) {
+      return;
+    }
     try {
-      globalThis.localStorage?.setItem(this.config.storageKey, JSON.stringify({ volume: this.volume, muted: this.muted, categories: Object.fromEntries(this.categoryVolumes) }));
+      globalThis.localStorage?.setItem(
+        this.config.storageKey,
+        JSON.stringify({
+          volume: this.volume,
+          muted: this.muted,
+          categories: Object.fromEntries(this.categoryVolumes)
+        })
+      );
     } catch {
     }
   }
   /** Registers caller-owned reusable decoded data; no fetch/decode or gameplay history. */
   setBuffer(id, buffer) {
-    if (typeof id !== "string" || !id || typeof buffer?.getChannelData !== "function") throw new TypeError("AudioBuffer and string ID required");
+    if (typeof id !== "string" || !id || typeof buffer?.getChannelData !== "function") {
+      throw new TypeError("AudioBuffer and string ID required");
+    }
     this.buffers.set(id, buffer);
   }
   setCategoryVolume(name, value) {
-    if (!this.categoryVolumes.has(name) || !Number.isFinite(value)) return false;
+    if (!this.categoryVolumes.has(name) || !Number.isFinite(value)) {
+      return false;
+    }
     this.categoryVolumes.set(name, Math.max(0, Math.min(1, value)));
     this.save();
     return true;
   }
   setVolume(value) {
-    if (!Number.isFinite(value)) return;
+    if (!Number.isFinite(value)) {
+      return;
+    }
     this.volume = Math.max(0, Math.min(1, value));
     this.applyVolume();
     this.save();
@@ -202,11 +323,15 @@ var AudioPlayer = class {
   setMuted(value) {
     this.muted = !!value;
     this.applyVolume();
-    if (this.muted) this.stopAll();
+    if (this.muted) {
+      this.stopAll();
+    }
     this.save();
   }
   stopAll() {
-    for (const voice of this.voices) voice.handle.stop();
+    for (const VOICE of this.voices) {
+      VOICE.handle.stop();
+    }
     this.voices.clear();
     this.lastCategory.clear();
   }
@@ -216,85 +341,141 @@ var AudioPlayer = class {
   /** Returns a stoppable voice or null; blocked/muted events are dropped, never queued. */
   start(id, strength = 1, onEnded = () => {
   }) {
-    if (this.disposed || !Number.isFinite(strength) || strength <= 0) return null;
-    if (this.muted || this.volume <= 0) return null;
+    if (this.disposed || !Number.isFinite(strength) || strength <= 0) {
+      return null;
+    }
+    if (this.muted || this.volume <= 0) {
+      return null;
+    }
     if (!this.context || this.context.state !== "running" || globalThis.document?.hidden) {
       this.metrics.blocked++;
       return null;
     }
-    const recipe = this.config.sounds[id];
-    if (!recipe) return null;
-    const category = this.config.categories[recipe.category], priority = recipe.priority ?? category.priority, now = this.context.currentTime * 1e3;
-    if (now - (this.lastCategory.get(recipe.category) ?? -Infinity) < (recipe.gapMs ?? category.gapMs)) {
+    const RECIPE = this.config.sounds[id];
+    if (!RECIPE) {
+      return null;
+    }
+    const CATEGORY = this.config.categories[RECIPE.category], PRIORITY = RECIPE.priority ?? CATEGORY.priority, NOW = this.context.currentTime * 1e3;
+    if (NOW - (this.lastCategory.get(RECIPE.category) ?? -Infinity) < (RECIPE.gapMs ?? CATEGORY.gapMs)) {
       this.metrics.dropped++;
       return null;
     }
-    if (this.categoryVolumes.get(recipe.category) <= 0) return null;
-    const group = [...this.voices].filter((v) => v.category === recipe.category);
-    if (group.length >= category.max) {
-      const low = group.sort((a, b) => a.priority - b.priority || a.at - b.at)[0];
-      if (low.priority >= priority) {
+    if (this.categoryVolumes.get(RECIPE.category) <= 0) {
+      return null;
+    }
+    const GROUP = [...this.voices].filter((v) => v.category === RECIPE.category);
+    if (GROUP.length >= CATEGORY.max) {
+      const LOW = GROUP.sort((a, b) => a.priority - b.priority || a.at - b.at)[0];
+      if (LOW.priority >= PRIORITY) {
         this.metrics.dropped++;
         return null;
       }
-      low.handle.stop();
-      this.voices.delete(low);
+      LOW.handle.stop();
+      this.voices.delete(LOW);
     }
     if (this.voices.size >= this.config.maxVoices) {
-      const low = [...this.voices].sort((a, b) => a.priority - b.priority || a.at - b.at)[0];
-      if (low.priority >= priority) {
+      const LOW = [...this.voices].sort((a, b) => a.priority - b.priority || a.at - b.at)[0];
+      if (LOW.priority >= PRIORITY) {
         this.metrics.dropped++;
         return null;
       }
-      low.handle.stop();
-      this.voices.delete(low);
+      LOW.handle.stop();
+      this.voices.delete(LOW);
     }
-    const voice = { category: recipe.category, priority, at: now, handle: null };
-    voice.handle = renderSound(this.context, this.mix.input, recipe, this.noise, { scale: this.categoryVolumes.get(recipe.category) * Math.max(0, Math.min(1, strength)), buffers: this.buffers, synthesis: this.config.synthesis, onEnded: () => {
-      this.voices.delete(voice);
-      onEnded();
-    } });
-    this.voices.add(voice);
-    this.lastCategory.set(recipe.category, now);
+    const VOICE = {
+      category: RECIPE.category,
+      priority: PRIORITY,
+      at: NOW,
+      handle: null
+    };
+    VOICE.handle = renderSound(this.context, this.mix.input, RECIPE, this.noise, {
+      scale: this.categoryVolumes.get(RECIPE.category) * Math.max(0, Math.min(1, strength)),
+      buffers: this.buffers,
+      synthesis: this.config.synthesis,
+      onEnded: () => {
+        this.voices.delete(VOICE);
+        onEnded();
+      }
+    });
+    this.voices.add(VOICE);
+    this.lastCategory.set(RECIPE.category, NOW);
     this.metrics.played++;
     this.metrics.bySound[id] = (this.metrics.bySound[id] || 0) + 1;
     this.metrics.maxObserved = Math.max(this.metrics.maxObserved, this.voices.size);
-    return voice.handle;
+    return VOICE.handle;
   }
   /** Connect to PresentationEventQueue's confirmed SFX policy; no second journal. */
   createAdapter({ onEnded } = {}) {
-    if (typeof onEnded !== "function") throw new TypeError("onEnded must release the presentation journal event");
-    return { reversible: false, start: (event) => {
-      if (event.policy && event.policy !== "confirmed") throw new Error("one-shot SFX requires confirmed policy");
-      let stopped = false;
-      const handle = this.start(event.payload?.soundId, event.payload?.strength ?? 1, () => {
-        if (!stopped) onEnded(event);
-      });
-      if (!handle) queueMicrotask(() => {
-        if (!stopped) onEnded(event);
-      });
-      return { stop() {
-        stopped = true;
-        handle?.stop();
-      } };
-    }, stop: (handle) => handle?.stop() };
+    if (typeof onEnded !== "function") {
+      throw new TypeError("onEnded must release the presentation journal event");
+    }
+    return {
+      reversible: false,
+      start: (event) => {
+        if (event.policy && event.policy !== "confirmed") {
+          throw new Error("one-shot SFX requires confirmed policy");
+        }
+        let stopped = false;
+        const HANDLE = this.start(event.payload?.soundId, event.payload?.strength ?? 1, () => {
+          if (!stopped) {
+            onEnded(event);
+          }
+        });
+        if (!HANDLE) {
+          queueMicrotask(() => {
+            if (!stopped) {
+              onEnded(event);
+            }
+          });
+        }
+        return {
+          stop() {
+            stopped = true;
+            HANDLE?.stop();
+          }
+        };
+      },
+      stop: (handle) => handle?.stop()
+    };
   }
   meter() {
-    if (!this.analyser) return { peak: 0, rms: 0 };
-    const values = new Float32Array(this.analyser.fftSize);
-    this.analyser.getFloatTimeDomainData(values);
-    let peak = 0, sum = 0;
-    for (const value of values) {
-      peak = Math.max(peak, Math.abs(value));
-      sum += value * value;
+    if (!this.analyser) {
+      return {
+        peak: 0,
+        rms: 0
+      };
     }
-    return { peak, rms: Math.sqrt(sum / values.length) };
+    const VALUES = new Float32Array(this.analyser.fftSize);
+    this.analyser.getFloatTimeDomainData(VALUES);
+    let peak = 0;
+    let sum = 0;
+    for (const VALUE of VALUES) {
+      peak = Math.max(peak, Math.abs(VALUE));
+      sum += VALUE * VALUE;
+    }
+    return {
+      peak,
+      rms: Math.sqrt(sum / VALUES.length)
+    };
   }
   snapshot() {
-    return { state: this.disposed ? "disposed" : this.context?.state || "locked", volume: this.volume, muted: this.muted, voices: this.voices.size, categoryVolumes: Object.fromEntries(this.categoryVolumes), lastError: this.lastError || null, ...this.metrics, bySound: { ...this.metrics.bySound } };
+    return {
+      state: this.disposed ? "disposed" : this.context?.state || "locked",
+      volume: this.volume,
+      muted: this.muted,
+      voices: this.voices.size,
+      categoryVolumes: Object.fromEntries(this.categoryVolumes),
+      lastError: this.lastError || null,
+      ...this.metrics,
+      bySound: {
+        ...this.metrics.bySound
+      }
+    };
   }
   dispose() {
-    if (this.disposed) return;
+    if (this.disposed) {
+      return;
+    }
     this.disposed = true;
     globalThis.document?.removeEventListener("pointerdown", this.onGesture, true);
     globalThis.document?.removeEventListener("keydown", this.onGesture, true);
@@ -311,7 +492,7 @@ var AudioPlayer = class {
 };
 export {
   AudioPlayer,
-  audioDefaults,
+  AUDIO_DEFAULTS as audioDefaults,
   createMix,
   makeNoise,
   renderSound

@@ -1,43 +1,57 @@
 // modules/deterministic/utilities.js
 function integer(value, name, min = 0, max = 4294967295) {
-  if (!Number.isSafeInteger(value) || value < min || value > max) throw new RangeError(name);
+  if (!Number.isSafeInteger(value) || value < min || value > max) {
+    throw new RangeError(name);
+  }
   return value;
 }
 function bytes(value, name = "bytes") {
-  if (value instanceof Uint8Array) return value;
-  if (value instanceof ArrayBuffer) return new Uint8Array(value);
-  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  if (value instanceof Uint8Array) {
+    return value;
+  }
+  if (value instanceof ArrayBuffer) {
+    return new Uint8Array(value);
+  }
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  }
   throw new TypeError(`${name} must be Uint8Array or ArrayBuffer`);
 }
 function hashBytes(value, seed = 2166136261) {
   let h = seed >>> 0;
-  for (const b of bytes(value)) h = Math.imul(h ^ b, 16777619) >>> 0;
+  for (const B of bytes(value)) {
+    h = Math.imul(h ^ B, 16777619) >>> 0;
+  }
   return h;
 }
-var signed = (x) => integer(x, "fixed-point result", -2147483648, 2147483647);
-var fixedPoint = Object.freeze({
+var SIGNED = (x) => integer(x, "fixed-point result", -2147483648, 2147483647);
+var FIXED_POINT = Object.freeze({
   scale: 1024,
-  fromNumber: (x) => signed(Math.round(x * 1024)),
-  toNumber: (x) => signed(x) / 1024,
-  add: (a, b) => signed(signed(a) + signed(b)),
-  sub: (a, b) => signed(signed(a) - signed(b)),
+  fromNumber: (x) => SIGNED(Math.round(x * 1024)),
+  toNumber: (x) => SIGNED(x) / 1024,
+  add: (a, b) => SIGNED(SIGNED(a) + SIGNED(b)),
+  sub: (a, b) => SIGNED(SIGNED(a) - SIGNED(b)),
   mul: (a, b) => {
-    signed(a);
-    signed(b);
-    const product = a * b;
-    if (Number.isSafeInteger(product)) return signed(Math.trunc(product / 1024) || 0);
-    return signed(Number(BigInt(a) * BigInt(b) / 1024n));
+    SIGNED(a);
+    SIGNED(b);
+    const PRODUCT = a * b;
+    if (Number.isSafeInteger(PRODUCT)) {
+      return SIGNED(Math.trunc(PRODUCT / 1024) || 0);
+    }
+    return SIGNED(Number(BigInt(a) * BigInt(b) / 1024n));
   },
   div: (a, b) => {
-    if (signed(b) === 0) throw new RangeError("fixed-point division by zero");
-    return signed(Number(BigInt(signed(a)) * 1024n / BigInt(b)));
+    if (SIGNED(b) === 0) {
+      throw new RangeError("fixed-point division by zero");
+    }
+    return SIGNED(Number(BigInt(SIGNED(a)) * 1024n / BigInt(b)));
   }
 });
 
 // modules/_rollback-shared/protocol.js
 var REPLAY_FORMAT_VERSION = "0.2.0-dev";
 var CHUNK_SIZE = 16384;
-var defaults = {
+var DEFAULTS = {
   mode: "rollback",
   inputScheduling: "configured",
   inputSafetyMarginMs: 8,
@@ -68,10 +82,12 @@ var defaults = {
   peerInterruptMs: 1e3,
   peerTimeoutMs: 1e4
 };
-var profiles = Object.freeze({
-  action: Object.freeze({ ...defaults }),
+var PROFILES = Object.freeze({
+  action: Object.freeze({
+    ...DEFAULTS
+  }),
   rts: Object.freeze({
-    ...defaults,
+    ...DEFAULTS,
     tickRate: 20,
     baseInputDelayTicks: 4,
     maxInputDelayTicks: 12,
@@ -81,7 +97,7 @@ var profiles = Object.freeze({
     checksumInterval: 20
   }),
   lockstep: Object.freeze({
-    ...defaults,
+    ...DEFAULTS,
     mode: "lockstep",
     tickRate: 20,
     baseInputDelayTicks: 4,
@@ -92,8 +108,10 @@ var profiles = Object.freeze({
     predictionPolicy: "neutral"
   })
 });
-var encoder = new TextEncoder();
-var decoder = new TextDecoder("utf-8", { fatal: true });
+var ENCODER = new TextEncoder();
+var DECODER = new TextDecoder("utf-8", {
+  fatal: true
+});
 var TYPE = Object.freeze({
   HELLO: 1,
   INPUT: 2,
@@ -108,27 +126,52 @@ var TYPE = Object.freeze({
 var HEADER = 12;
 var SNAP_CHUNK_BYTES = CHUNK_SIZE - HEADER - 8;
 function copyFrame(frame) {
-  return { input: frame.input.slice(), commands: frame.commands.map((c) => ({ ...c, payload: c.payload.slice() })) };
+  return {
+    input: frame.input.slice(),
+    commands: frame.commands.map((c) => ({
+      ...c,
+      payload: c.payload.slice()
+    }))
+  };
 }
 function runSimulationFrame(adapter, context) {
-  return adapter.step({ ...context, inputs: context.inputs.map((frame) => ({
-    ...copyFrame(frame),
-    playerId: frame.playerId,
-    predicted: !!frame.predicted
-  })) });
+  return adapter.step({
+    ...context,
+    inputs: context.inputs.map((frame) => ({
+      ...copyFrame(frame),
+      playerId: frame.playerId,
+      predicted: !!frame.predicted
+    }))
+  });
 }
 
 // modules/replay/index.js
 function playReplay({ adapter, replay, simulationVersion = replay?.simulationVersion } = {}) {
-  if (replay?.version !== REPLAY_FORMAT_VERSION || replay.simulationVersion !== simulationVersion || !Array.isArray(replay.frames)) throw new Error("replay compatibility");
+  if (replay?.version !== REPLAY_FORMAT_VERSION || replay.simulationVersion !== simulationVersion || !Array.isArray(replay.frames)) {
+    throw new Error("replay compatibility");
+  }
   adapter.load(bytes(replay.initialState).slice());
   let tick = 0;
-  for (const f of replay.frames) {
-    if (f.tick !== tick) throw new Error("non-contiguous replay");
-    runSimulationFrame(adapter, { tick, tickRate: replay.tickRate, inputs: f.inputs.map((x) => ({ ...x, predicted: false })), resimulating: true, replaying: true });
+  for (const F of replay.frames) {
+    if (F.tick !== tick) {
+      throw new Error("non-contiguous replay");
+    }
+    runSimulationFrame(adapter, {
+      tick,
+      tickRate: replay.tickRate,
+      inputs: F.inputs.map((x) => ({
+        ...x,
+        predicted: false
+      })),
+      resimulating: true,
+      replaying: true
+    });
     tick++;
   }
-  return { tick, hash: hashBytes(bytes(adapter.save())) };
+  return {
+    tick,
+    hash: hashBytes(bytes(adapter.save()))
+  };
 }
 export {
   playReplay

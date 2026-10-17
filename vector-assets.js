@@ -3156,97 +3156,133 @@ var createTimeline = (parameters) => {
 // modules/vector-assets/schema.js
 var VECTOR_ASSET_SCHEMA_VERSION = 1;
 var VECTOR_ASSET_COMPILER_VERSION = "0.11.0";
-var ACCEPTED_COMPILER_VERSIONS = /* @__PURE__ */ new Set(["0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0", "0.7.0", "0.8.0", "0.9.0", "0.10.0", VECTOR_ASSET_COMPILER_VERSION]);
+var ACCEPTED_COMPILER_VERSIONS = /* @__PURE__ */ new Set([
+  "0.2.0",
+  "0.3.0",
+  "0.4.0",
+  "0.5.0",
+  "0.6.0",
+  "0.7.0",
+  "0.8.0",
+  "0.9.0",
+  "0.10.0",
+  VECTOR_ASSET_COMPILER_VERSION
+]);
 var NUMERIC_POSE_FIELDS = Object.freeze(["x", "y", "rotation", "scaleX", "scaleY", "opacity"]);
-var isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
-var exactKeys = (value, keys) => isObject(value) && Object.keys(value).length === keys.length && keys.every((key2) => Object.hasOwn(value, key2));
+var IS_OBJECT = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+var EXACT_KEYS = (value, keys) => IS_OBJECT(value) && Object.keys(value).length === keys.length && keys.every((key2) => Object.hasOwn(value, key2));
 function validateCompiledAsset(asset) {
-  const shaderSurfaces = asset?.geometry?.shaderSurfaces;
-  const surfaceOnly = Array.isArray(shaderSurfaces) && shaderSurfaces.length > 0;
-  if (!isObject(asset) || asset.schemaVersion !== VECTOR_ASSET_SCHEMA_VERSION || !ACCEPTED_COMPILER_VERSIONS.has(asset.compilerVersion) || typeof asset.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/.test(asset.sourceSha256) || !isObject(asset.metadata) || !isObject(asset.geometry) || !(asset.geometry.vertices instanceof Float32Array) || asset.geometry.vertices.length < 33 && !(surfaceOnly && asset.geometry.vertices.length === 0) || asset.geometry.vertices.length % 11 || asset.geometry.strideFloats !== 11 || asset.geometry.nonScalingStroke !== void 0 && typeof asset.geometry.nonScalingStroke !== "boolean" || asset.geometry.nonScalingStroke && asset.geometry.morphCount !== 0 || asset.geometry.partCount !== asset.metadata.parts?.length || ![0, 2].includes(asset.geometry.morphCount)) {
+  const SHADER_SURFACES = asset?.geometry?.shaderSurfaces;
+  const SURFACE_ONLY = Array.isArray(SHADER_SURFACES) && SHADER_SURFACES.length > 0;
+  if (!IS_OBJECT(asset) || asset.schemaVersion !== VECTOR_ASSET_SCHEMA_VERSION || !ACCEPTED_COMPILER_VERSIONS.has(asset.compilerVersion) || typeof asset.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/.test(asset.sourceSha256) || !IS_OBJECT(asset.metadata) || !IS_OBJECT(asset.geometry) || !(asset.geometry.vertices instanceof Float32Array) || asset.geometry.vertices.length < 33 && !(SURFACE_ONLY && asset.geometry.vertices.length === 0) || asset.geometry.vertices.length % 11 || asset.geometry.strideFloats !== 11 || asset.geometry.nonScalingStroke !== void 0 && typeof asset.geometry.nonScalingStroke !== "boolean" || asset.geometry.nonScalingStroke && asset.geometry.morphCount !== 0 || asset.geometry.partCount !== asset.metadata.parts?.length || ![0, 2].includes(asset.geometry.morphCount)) {
     throw new TypeError("Invalid compiled SVG vector asset");
   }
-  const vertexCount = asset.geometry.vertices.length / 11, indices = asset.geometry.indices;
-  if (indices !== void 0 && (!(indices instanceof Uint16Array) || indices.length < 3 && !(surfaceOnly && indices.length === 0) || indices.length % 3 || vertexCount > 65536 || indices.some((index) => index >= vertexCount))) {
+  const VERTEX_COUNT = asset.geometry.vertices.length / 11, INDICES = asset.geometry.indices;
+  if (INDICES !== void 0 && (!(INDICES instanceof Uint16Array) || INDICES.length < 3 && !(SURFACE_ONLY && INDICES.length === 0) || INDICES.length % 3 || VERTEX_COUNT > 65536 || INDICES.some((index) => index >= VERTEX_COUNT))) {
     throw new TypeError("Invalid compiled SVG vertex indices");
   }
-  if (indices === void 0 && vertexCount % 3) throw new TypeError("Non-indexed compiled SVG geometry must contain complete triangles");
+  if (INDICES === void 0 && VERTEX_COUNT % 3) {
+    throw new TypeError("Non-indexed compiled SVG geometry must contain complete triangles");
+  }
   if (["0.8.0", "0.9.0", "0.10.0", VECTOR_ASSET_COMPILER_VERSION].includes(asset.compilerVersion) && asset.compilerOptions === void 0) {
     throw new TypeError("Current SVG compiler options are required");
   }
   if (asset.compilerOptions !== void 0) {
-    const current = asset.compilerVersion === VECTOR_ASSET_COMPILER_VERSION;
-    const roundStrokeVersion = current || asset.compilerVersion === "0.10.0";
-    const centeredViewBoxVersion = roundStrokeVersion || asset.compilerVersion === "0.9.0";
-    const expectedKeys = roundStrokeVersion ? ["curveSegments", "normalizeCenteredViewBox", "strokeArcDivisions"] : centeredViewBoxVersion ? ["curveSegments", "normalizeCenteredViewBox"] : ["curveSegments"];
-    if (!exactKeys(asset.compilerOptions, expectedKeys) || !Number.isSafeInteger(asset.compilerOptions.curveSegments) || asset.compilerOptions.curveSegments < 1 || asset.compilerOptions.curveSegments > 64 || centeredViewBoxVersion && typeof asset.compilerOptions.normalizeCenteredViewBox !== "boolean" || roundStrokeVersion && (!Number.isSafeInteger(asset.compilerOptions.strokeArcDivisions) || asset.compilerOptions.strokeArcDivisions < 1 || asset.compilerOptions.strokeArcDivisions > 64)) {
+    const CURRENT = asset.compilerVersion === VECTOR_ASSET_COMPILER_VERSION;
+    const ROUND_STROKE_VERSION = CURRENT || asset.compilerVersion === "0.10.0";
+    const CENTERED_VIEW_BOX_VERSION = ROUND_STROKE_VERSION || asset.compilerVersion === "0.9.0";
+    const EXPECTED_KEYS = ROUND_STROKE_VERSION ? ["curveSegments", "normalizeCenteredViewBox", "strokeArcDivisions"] : CENTERED_VIEW_BOX_VERSION ? ["curveSegments", "normalizeCenteredViewBox"] : ["curveSegments"];
+    if (!EXACT_KEYS(asset.compilerOptions, EXPECTED_KEYS) || !Number.isSafeInteger(asset.compilerOptions.curveSegments) || asset.compilerOptions.curveSegments < 1 || asset.compilerOptions.curveSegments > 64 || CENTERED_VIEW_BOX_VERSION && typeof asset.compilerOptions.normalizeCenteredViewBox !== "boolean" || ROUND_STROKE_VERSION && (!Number.isSafeInteger(asset.compilerOptions.strokeArcDivisions) || asset.compilerOptions.strokeArcDivisions < 1 || asset.compilerOptions.strokeArcDivisions > 64)) {
       throw new TypeError("Invalid SVG compiler options");
     }
   }
-  const expressionIndices = asset.geometry.expressionIndices;
-  const indexVariants = asset.geometry.indexVariants;
-  if (indexVariants !== void 0 && !isObject(indexVariants)) throw new TypeError("Invalid compiled SVG index variants");
-  if (expressionIndices !== void 0) {
-    if (!isObject(expressionIndices)) throw new TypeError("Invalid compiled SVG expression indices");
-    for (const [name, variant] of Object.entries(expressionIndices)) {
-      if (!Object.hasOwn(asset.metadata.expressions ?? {}, name) || !(variant instanceof Uint16Array) || variant.length % 3 || variant.some((index) => index >= vertexCount)) {
-        throw new TypeError("Invalid compiled SVG expression index variant: " + name);
+  const EXPRESSION_INDICES = asset.geometry.expressionIndices;
+  const INDEX_VARIANTS = asset.geometry.indexVariants;
+  if (INDEX_VARIANTS !== void 0 && !IS_OBJECT(INDEX_VARIANTS)) {
+    throw new TypeError("Invalid compiled SVG index variants");
+  }
+  if (EXPRESSION_INDICES !== void 0) {
+    if (!IS_OBJECT(EXPRESSION_INDICES)) {
+      throw new TypeError("Invalid compiled SVG expression indices");
+    }
+    for (const [NAME, VARIANT] of Object.entries(EXPRESSION_INDICES)) {
+      if (!Object.hasOwn(asset.metadata.expressions ?? {}, NAME) || !(VARIANT instanceof Uint16Array) || VARIANT.length % 3 || VARIANT.some((index) => index >= VERTEX_COUNT)) {
+        throw new TypeError("Invalid compiled SVG expression index variant: " + NAME);
       }
     }
   }
-  for (const [name, variant] of Object.entries(indexVariants ?? {})) {
-    if (!/^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/.test(name) || Object.hasOwn(expressionIndices ?? {}, name) || !(variant instanceof Uint16Array) || variant.length % 3 || variant.some((index) => index >= vertexCount)) {
-      throw new TypeError("Invalid compiled SVG named index variant: " + name);
+  for (const [NAME, VARIANT] of Object.entries(INDEX_VARIANTS ?? {})) {
+    if (!/^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/.test(NAME) || Object.hasOwn(EXPRESSION_INDICES ?? {}, NAME) || !(VARIANT instanceof Uint16Array) || VARIANT.length % 3 || VARIANT.some((index) => index >= VERTEX_COUNT)) {
+      throw new TypeError("Invalid compiled SVG named index variant: " + NAME);
     }
   }
-  const surfaces = asset.geometry.shaderSurfaces;
-  const drawOrder = asset.geometry.drawOrder;
-  if (surfaces !== void 0 || drawOrder !== void 0) {
-    if (!Array.isArray(surfaces) || !Array.isArray(drawOrder) || !drawOrder.length || surfaces.length > 128 || drawOrder.length > 512) {
+  const SURFACES = asset.geometry.shaderSurfaces;
+  const DRAW_ORDER = asset.geometry.drawOrder;
+  if (SURFACES !== void 0 || DRAW_ORDER !== void 0) {
+    if (!Array.isArray(SURFACES) || !Array.isArray(DRAW_ORDER) || !DRAW_ORDER.length || SURFACES.length > 128 || DRAW_ORDER.length > 512) {
       throw new TypeError("Shader-backed SVG assets require bounded shaderSurfaces and drawOrder arrays");
     }
-    for (const [index, surface] of surfaces.entries()) {
-      const style = asset.metadata.styles?.find((entry) => entry.target === surface?.target && entry.backend === "shader");
-      const contour = surface?.outline;
-      if (!style || !Number.isSafeInteger(surface.partIndex) || surface.partIndex < 0 || surface.partIndex >= asset.geometry.partCount || !(surface.fillVertices instanceof Float32Array) || surface.fillVertices.length < 18 || surface.fillVertices.length % 18 || !(contour instanceof Float32Array) || contour.length < 6 || contour.length % 2 || !(surface.edgeColors instanceof Float32Array) || surface.edgeColors.length !== contour.length * 2) {
-        throw new TypeError("Invalid retained SVG shader surface at index " + index);
+    for (const [INDEX, SURFACE] of SURFACES.entries()) {
+      const STYLE = asset.metadata.styles?.find(
+        (entry) => entry.target === SURFACE?.target && entry.backend === "shader"
+      );
+      const CONTOUR = SURFACE?.outline;
+      if (!STYLE || !Number.isSafeInteger(SURFACE.partIndex) || SURFACE.partIndex < 0 || SURFACE.partIndex >= asset.geometry.partCount || !(SURFACE.fillVertices instanceof Float32Array) || SURFACE.fillVertices.length < 18 || SURFACE.fillVertices.length % 18 || !(CONTOUR instanceof Float32Array) || CONTOUR.length < 6 || CONTOUR.length % 2 || !(SURFACE.edgeColors instanceof Float32Array) || SURFACE.edgeColors.length !== CONTOUR.length * 2) {
+        throw new TypeError("Invalid retained SVG shader surface at index " + INDEX);
       }
-      if (surface.fillVertices.some((value, offset) => !Number.isFinite(value) || offset % 6 >= 2 && (value < 0 || value > 1)) || contour.some((value) => !Number.isFinite(value)) || surface.edgeColors.some((value) => !Number.isFinite(value) || value < 0 || value > 1)) {
+      if (SURFACE.fillVertices.some(
+        (value, offset) => !Number.isFinite(value) || offset % 6 >= 2 && (value < 0 || value > 1)
+      ) || CONTOUR.some((value) => !Number.isFinite(value)) || SURFACE.edgeColors.some((value) => !Number.isFinite(value) || value < 0 || value > 1)) {
         throw new TypeError("SVG shader surface values must be finite and colors in [0,1]");
       }
-      const surfaceStyle = surface.style, styleKeys = Object.keys(style);
-      if (!isObject(surfaceStyle) || Object.keys(surfaceStyle).length !== styleKeys.length || styleKeys.some((key2) => !Object.hasOwn(surfaceStyle, key2) || surfaceStyle[key2] !== style[key2])) {
+      const SURFACE_STYLE = SURFACE.style, STYLE_KEYS = Object.keys(STYLE);
+      if (!IS_OBJECT(SURFACE_STYLE) || Object.keys(SURFACE_STYLE).length !== STYLE_KEYS.length || STYLE_KEYS.some((key2) => !Object.hasOwn(SURFACE_STYLE, key2) || SURFACE_STYLE[key2] !== STYLE[key2])) {
         throw new TypeError("SVG shader surface style must exactly match its authored metadata target");
       }
     }
-    const referenced = /* @__PURE__ */ new Set();
-    for (const command of drawOrder) {
-      if (command?.kind === "mesh") {
-        if (!Number.isSafeInteger(command.firstIndex) || !Number.isSafeInteger(command.indexCount) || command.firstIndex < 0 || !Number.isSafeInteger(command.partIndex) || command.partIndex < 0 || command.partIndex >= asset.geometry.partCount || command.indexCount < 3 || command.indexCount % 3 || command.firstIndex % 3 || command.firstIndex + command.indexCount > (indices?.length ?? vertexCount)) {
+    const REFERENCED = /* @__PURE__ */ new Set();
+    for (const COMMAND of DRAW_ORDER) {
+      if (COMMAND?.kind === "mesh") {
+        if (!Number.isSafeInteger(COMMAND.firstIndex) || !Number.isSafeInteger(COMMAND.indexCount) || COMMAND.firstIndex < 0 || !Number.isSafeInteger(COMMAND.partIndex) || COMMAND.partIndex < 0 || COMMAND.partIndex >= asset.geometry.partCount || COMMAND.indexCount < 3 || COMMAND.indexCount % 3 || COMMAND.firstIndex % 3 || COMMAND.firstIndex + COMMAND.indexCount > (INDICES?.length ?? VERTEX_COUNT)) {
           throw new TypeError("Invalid ordered SVG mesh range");
         }
-      } else if (command?.kind === "surface") {
-        if (!Number.isSafeInteger(command.surfaceIndex) || command.surfaceIndex < 0 || command.surfaceIndex >= surfaces.length || referenced.has(command.surfaceIndex)) throw new TypeError("Invalid or repeated ordered SVG shader surface reference");
-        referenced.add(command.surfaceIndex);
-      } else throw new TypeError("Unsupported SVG painter-order command");
+      } else if (COMMAND?.kind === "surface") {
+        if (!Number.isSafeInteger(COMMAND.surfaceIndex) || COMMAND.surfaceIndex < 0 || COMMAND.surfaceIndex >= SURFACES.length || REFERENCED.has(COMMAND.surfaceIndex)) {
+          throw new TypeError("Invalid or repeated ordered SVG shader surface reference");
+        }
+        REFERENCED.add(COMMAND.surfaceIndex);
+      } else {
+        throw new TypeError("Unsupported SVG painter-order command");
+      }
     }
-    if (referenced.size !== surfaces.length) throw new TypeError("Every retained SVG shader surface must appear once in drawOrder");
+    if (REFERENCED.size !== SURFACES.length) {
+      throw new TypeError("Every retained SVG shader surface must appear once in drawOrder");
+    }
   }
   return asset;
 }
 
 // modules/vector-assets/runtime.js
 var IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
-var DEFAULT_POSE = Object.freeze({ x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, opacity: 1 });
+var DEFAULT_POSE = Object.freeze({
+  x: 0,
+  y: 0,
+  rotation: 0,
+  scaleX: 1,
+  scaleY: 1,
+  opacity: 1
+});
 var POSE_FIELDS = Object.keys(DEFAULT_POSE);
-var finiteTime = (value, name) => {
-  if (!Number.isFinite(value)) throw new TypeError(`${name} must be a finite absolute display time in milliseconds`);
+var FINITE_TIME = (value, name) => {
+  if (!Number.isFinite(value)) {
+    throw new TypeError(`${name} must be a finite absolute display time in milliseconds`);
+  }
   return value;
 };
 function localMatrix(pivot, pose) {
-  const [px, py] = pivot, cosine = Math.cos(pose.rotation), sine = Math.sin(pose.rotation);
-  const a = cosine * pose.scaleX, b = sine * pose.scaleX, c = -sine * pose.scaleY, d = cosine * pose.scaleY;
-  return [a, b, c, d, px + pose.x - a * px - c * py, py + pose.y - b * px - d * py];
+  const [PX, PY] = pivot, COSINE = Math.cos(pose.rotation), SINE = Math.sin(pose.rotation);
+  const A = COSINE * pose.scaleX, B = SINE * pose.scaleX, C = -SINE * pose.scaleY, D = COSINE * pose.scaleY;
+  return [A, B, C, D, PX + pose.x - A * PX - C * PY, PY + pose.y - B * PX - D * PY];
 }
 function multiply(a, b) {
   return [
@@ -3259,46 +3295,65 @@ function multiply(a, b) {
   ];
 }
 function composeWorldMatrix(world, local) {
-  if (!world || world.length !== 16 || local.length !== 6 || Array.from(local).some((value) => !Number.isFinite(value))) throw new TypeError("Six finite root matrix values required");
-  const [a, b, c, d, e, f] = local, out = Float32Array.from(world);
-  for (const value of out) if (!Number.isFinite(value)) throw new TypeError("worldMatrix must contain 16 finite values");
-  if (Math.abs(out[3]) > 1e-7 || Math.abs(out[7]) > 1e-7 || Math.abs(out[11]) > 1e-7 || Math.abs(out[15] - 1) > 1e-7) {
+  if (!world || world.length !== 16 || local.length !== 6 || Array.from(local).some((value) => !Number.isFinite(value))) {
+    throw new TypeError("Six finite root matrix values required");
+  }
+  const [A, B, C, D, E, F] = local, OUT = Float32Array.from(world);
+  for (const VALUE of OUT) {
+    if (!Number.isFinite(VALUE)) {
+      throw new TypeError("worldMatrix must contain 16 finite values");
+    }
+  }
+  if (Math.abs(OUT[3]) > 1e-7 || Math.abs(OUT[7]) > 1e-7 || Math.abs(OUT[11]) > 1e-7 || Math.abs(OUT[15] - 1) > 1e-7) {
     throw new TypeError("worldMatrix must be an affine column-major 4x4 matrix");
   }
-  out[0] = world[0] * a + world[4] * b;
-  out[1] = world[1] * a + world[5] * b;
-  out[2] = world[2] * a + world[6] * b;
-  out[3] = world[3] * a + world[7] * b;
-  out[4] = world[0] * c + world[4] * d;
-  out[5] = world[1] * c + world[5] * d;
-  out[6] = world[2] * c + world[6] * d;
-  out[7] = world[3] * c + world[7] * d;
-  out[12] = world[0] * e + world[4] * f + world[12];
-  out[13] = world[1] * e + world[5] * f + world[13];
-  out[14] = world[2] * e + world[6] * f + world[14];
-  out[15] = world[3] * e + world[7] * f + world[15];
-  return out;
+  OUT[0] = world[0] * A + world[4] * B;
+  OUT[1] = world[1] * A + world[5] * B;
+  OUT[2] = world[2] * A + world[6] * B;
+  OUT[3] = world[3] * A + world[7] * B;
+  OUT[4] = world[0] * C + world[4] * D;
+  OUT[5] = world[1] * C + world[5] * D;
+  OUT[6] = world[2] * C + world[6] * D;
+  OUT[7] = world[3] * C + world[7] * D;
+  OUT[12] = world[0] * E + world[4] * F + world[12];
+  OUT[13] = world[1] * E + world[5] * F + world[13];
+  OUT[14] = world[2] * E + world[6] * F + world[14];
+  OUT[15] = world[3] * E + world[7] * F + world[15];
+  return OUT;
 }
 function validateShaderSurfaceClipCapacity(clips, maxPlanes) {
-  if (!clips?.length) return;
-  if (!Array.isArray(clips)) throw new TypeError("clips must be an array of convex polygons");
+  if (!clips?.length) {
+    return;
+  }
+  if (!Array.isArray(clips)) {
+    throw new TypeError("clips must be an array of convex polygons");
+  }
   let edgeCount = 0;
-  for (const polygon of clips) {
-    if (!Array.isArray(polygon) || polygon.length < 3 || polygon.some((point) => !Number.isFinite(point?.x) || !Number.isFinite(point?.y))) {
+  for (const POLYGON of clips) {
+    if (!Array.isArray(POLYGON) || POLYGON.length < 3 || POLYGON.some((point) => !Number.isFinite(point?.x) || !Number.isFinite(point?.y))) {
       throw new TypeError("Finite convex clip polygons required");
     }
     let area = 0;
-    for (let i = 0; i < polygon.length; i++) {
-      const a = polygon[i], b = polygon[(i + 1) % polygon.length];
-      area += a.x * b.y - b.x * a.y;
-      if (Math.hypot(b.x - a.x, b.y - a.y) > 0) edgeCount++;
+    for (let i = 0; i < POLYGON.length; i++) {
+      const A = POLYGON[i], B = POLYGON[(i + 1) % POLYGON.length];
+      area += A.x * B.y - B.x * A.y;
+      if (Math.hypot(B.x - A.x, B.y - A.y) > 0) {
+        edgeCount++;
+      }
     }
-    if (Math.abs(area) < 1e-8) throw new RangeError("A clip polygon must have nonzero area");
-    if (edgeCount > maxPlanes) throw new RangeError(`Vector asset clipping exceeds the shader surface limit of ${maxPlanes} edge planes`);
+    if (Math.abs(area) < 1e-8) {
+      throw new RangeError("A clip polygon must have nonzero area");
+    }
+    if (edgeCount > maxPlanes) {
+      throw new RangeError(`Vector asset clipping exceeds the shader surface limit of ${maxPlanes} edge planes`);
+    }
   }
 }
 function transformPoint(matrix, point) {
-  return { x: matrix[0] * point[0] + matrix[2] * point[1] + matrix[4], y: matrix[1] * point[0] + matrix[3] * point[1] + matrix[5] };
+  return {
+    x: matrix[0] * point[0] + matrix[2] * point[1] + matrix[4],
+    y: matrix[1] * point[0] + matrix[3] * point[1] + matrix[5]
+  };
 }
 function effectivePose(base, authored) {
   return {
@@ -3311,206 +3366,352 @@ function effectivePose(base, authored) {
   };
 }
 function loopTime(clip, elapsed) {
-  if (clip.loop === "once") return Math.min(clip.durationMs, Math.max(0, elapsed));
-  if (clip.loop === "repeat") return (elapsed % clip.durationMs + clip.durationMs) % clip.durationMs;
-  const cycle = clip.durationMs * 2, point = (elapsed % cycle + cycle) % cycle;
-  return point <= clip.durationMs ? point : cycle - point;
+  if (clip.loop === "once") {
+    return Math.min(clip.durationMs, Math.max(0, elapsed));
+  }
+  if (clip.loop === "repeat") {
+    return (elapsed % clip.durationMs + clip.durationMs) % clip.durationMs;
+  }
+  const CYCLE = clip.durationMs * 2, POINT = (elapsed % CYCLE + CYCLE) % CYCLE;
+  return POINT <= clip.durationMs ? POINT : CYCLE - POINT;
 }
 function buildClipTimeline(clip, parts) {
-  const tracks = new Map(parts.map((part) => [part.id, { ...DEFAULT_POSE }]));
-  const first = clip.keyframes[0];
-  for (const [partId, pose] of Object.entries(first.parts)) Object.assign(tracks.get(partId), pose);
-  const timeline = createTimeline({ autoplay: false });
+  const TRACKS = new Map(
+    parts.map((part) => [
+      part.id,
+      {
+        ...DEFAULT_POSE
+      }
+    ])
+  );
+  const FIRST = clip.keyframes[0];
+  for (const [PART_ID, POSE] of Object.entries(FIRST.parts)) {
+    Object.assign(TRACKS.get(PART_ID), POSE);
+  }
+  const TIMELINE = createTimeline({
+    autoplay: false
+  });
   for (let frameIndex = 1; frameIndex < clip.keyframes.length; frameIndex++) {
-    const previous = clip.keyframes[frameIndex - 1], frame = clip.keyframes[frameIndex];
-    const duration = frame.timeMs - previous.timeMs;
-    for (const [partId, pose] of Object.entries(frame.parts)) {
-      timeline.add(tracks.get(partId), { ...pose, duration, ease: frame.easing }, previous.timeMs);
+    const PREVIOUS = clip.keyframes[frameIndex - 1], FRAME = clip.keyframes[frameIndex];
+    const DURATION = FRAME.timeMs - PREVIOUS.timeMs;
+    for (const [PART_ID, POSE] of Object.entries(FRAME.parts)) {
+      TIMELINE.add(
+        TRACKS.get(PART_ID),
+        {
+          ...POSE,
+          duration: DURATION,
+          ease: FRAME.easing
+        },
+        PREVIOUS.timeMs
+      );
     }
   }
-  if (!timeline.paused) timeline.pause();
-  return { timeline, tracks };
+  if (!TIMELINE.paused) {
+    TIMELINE.pause();
+  }
+  return {
+    timeline: TIMELINE,
+    tracks: TRACKS
+  };
 }
 function copyPose(pose) {
   return Object.fromEntries(POSE_FIELDS.map((field) => [field, pose[field]]));
 }
 function authoredMorph(sketch, displayTimeMs) {
-  if (!sketch) return [0, 0];
-  const phase = (displayTimeMs % sketch.periodMs + sketch.periodMs) % sketch.periodMs / sketch.periodMs * 3;
-  const segment = Math.floor(phase), amount = phase - segment;
-  if (segment === 0) return [amount, 0];
-  if (segment === 1) return [1 - amount, amount];
-  return [0, 1 - amount];
+  if (!sketch) {
+    return [0, 0];
+  }
+  const PHASE = (displayTimeMs % sketch.periodMs + sketch.periodMs) % sketch.periodMs / sketch.periodMs * 3;
+  const SEGMENT = Math.floor(PHASE), AMOUNT = PHASE - SEGMENT;
+  if (SEGMENT === 0) {
+    return [AMOUNT, 0];
+  }
+  if (SEGMENT === 1) {
+    return [1 - AMOUNT, AMOUNT];
+  }
+  return [0, 1 - AMOUNT];
 }
 function blendPoses(from, to, amount, partIds) {
-  const output = /* @__PURE__ */ new Map();
-  for (const id of partIds) {
-    const a = from.get(id) ?? DEFAULT_POSE, b = to.get(id) ?? DEFAULT_POSE;
-    output.set(id, Object.fromEntries(POSE_FIELDS.map((field) => [field, a[field] + (b[field] - a[field]) * amount])));
+  const OUTPUT = /* @__PURE__ */ new Map();
+  for (const ID of partIds) {
+    const A = from.get(ID) ?? DEFAULT_POSE, B = to.get(ID) ?? DEFAULT_POSE;
+    OUTPUT.set(
+      ID,
+      Object.fromEntries(POSE_FIELDS.map((field) => [field, A[field] + (B[field] - A[field]) * amount]))
+    );
   }
-  return output;
+  return OUTPUT;
 }
 function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null } = {}) {
-  if (!meshRenderer?.createMesh || !meshRenderer?.drawMesh || !meshRenderer?.deleteMesh) throw new TypeError("A GameKit MeshRenderer is required");
-  validateCompiledAsset(compiledAsset);
-  const metadata = compiledAsset.metadata;
-  const sketchMorphStyle = metadata.styles?.find((style) => style.kind === "sketch") ?? null;
-  const partIndices = new Map(metadata.parts.map((part, index) => [part.id, index]));
-  const clips = metadata.clips;
-  const geometry = compiledAsset.geometry, shaderGeometry = geometry.shaderSurfaces ?? [];
-  if (shaderGeometry.length && (!surfaceRenderer?.createSurface || !surfaceRenderer?.drawSurface || !surfaceRenderer?.deleteSurface)) {
-    throw new TypeError('This SVG declares backend:"shader"; pass a GameKit YarnSurfaceRenderer when creating the vector asset');
+  if (!meshRenderer?.createMesh || !meshRenderer?.drawMesh || !meshRenderer?.deleteMesh) {
+    throw new TypeError("A GameKit MeshRenderer is required");
   }
-  const mesh = geometry.vertices.length ? meshRenderer.createMesh(geometry) : null;
-  const retainedSurfaces = [];
+  validateCompiledAsset(compiledAsset);
+  const METADATA = compiledAsset.metadata;
+  const SKETCH_MORPH_STYLE = METADATA.styles?.find((style) => style.kind === "sketch") ?? null;
+  const PART_INDICES = new Map(METADATA.parts.map((part, index) => [part.id, index]));
+  const CLIPS = METADATA.clips;
+  const GEOMETRY = compiledAsset.geometry, SHADER_GEOMETRY = GEOMETRY.shaderSurfaces ?? [];
+  if (SHADER_GEOMETRY.length && (!surfaceRenderer?.createSurface || !surfaceRenderer?.drawSurface || !surfaceRenderer?.deleteSurface)) {
+    throw new TypeError(
+      'This SVG declares backend:"shader"; pass a GameKit YarnSurfaceRenderer when creating the vector asset'
+    );
+  }
+  const MESH = GEOMETRY.vertices.length ? meshRenderer.createMesh(GEOMETRY) : null;
+  const RETAINED_SURFACES = [];
   try {
-    for (const descriptor of shaderGeometry) retainedSurfaces.push(surfaceRenderer.createSurface(descriptor));
+    for (const DESCRIPTOR of SHADER_GEOMETRY) {
+      RETAINED_SURFACES.push(surfaceRenderer.createSurface(DESCRIPTOR));
+    }
   } catch (error) {
-    for (const surface of retainedSurfaces) surfaceRenderer.deleteSurface(surface);
-    if (mesh) meshRenderer.deleteMesh(mesh);
+    for (const SURFACE of RETAINED_SURFACES) {
+      surfaceRenderer.deleteSurface(SURFACE);
+    }
+    if (MESH) {
+      meshRenderer.deleteMesh(MESH);
+    }
     throw error;
   }
-  const players = /* @__PURE__ */ new Set();
+  const PLAYERS = /* @__PURE__ */ new Set();
   let disposed = false;
-  const requireReady = () => {
-    if (disposed) throw new Error("Vector asset is disposed");
+  const REQUIRE_READY = () => {
+    if (disposed) {
+      throw new Error("Vector asset is disposed");
+    }
   };
-  const createPlayer = ({ clip = Object.keys(clips)[0], startedAtMs = 0 } = {}) => {
-    requireReady();
-    if (!Object.hasOwn(clips, clip)) throw new TypeError(`Unknown vector clip: ${clip}`);
-    finiteTime(startedAtMs, "startedAtMs");
-    const timelines = /* @__PURE__ */ new Map();
-    for (const [name, definition] of Object.entries(clips)) timelines.set(name, buildClipTimeline(definition, metadata.parts));
-    const expressionParts = new Set(Object.values(metadata.expressions).flatMap((expression2) => [...expression2.show, ...expression2.hide]));
-    const visible = new Map(metadata.parts.map((part) => [part.id, !expressionParts.has(part.id)]));
-    const basePose = new Map(metadata.parts.map((part) => [part.id, { ...DEFAULT_POSE }]));
-    const initial = metadata.expressions[metadata.defaultExpression];
-    for (const id of initial.show) visible.set(id, true);
-    for (const id of initial.hide) visible.set(id, false);
-    let rootPlayback = { kind: "clip", name: clip, startedAtMs };
-    let expression = metadata.defaultExpression;
+  const CREATE_PLAYER = ({ clip = Object.keys(CLIPS)[0], startedAtMs = 0 } = {}) => {
+    REQUIRE_READY();
+    if (!Object.hasOwn(CLIPS, clip)) {
+      throw new TypeError(`Unknown vector clip: ${clip}`);
+    }
+    FINITE_TIME(startedAtMs, "startedAtMs");
+    const TIMELINES = /* @__PURE__ */ new Map();
+    for (const [NAME, DEFINITION] of Object.entries(CLIPS)) {
+      TIMELINES.set(NAME, buildClipTimeline(DEFINITION, METADATA.parts));
+    }
+    const EXPRESSION_PARTS = new Set(
+      Object.values(METADATA.expressions).flatMap((expression2) => [...expression2.show, ...expression2.hide])
+    );
+    const VISIBLE = new Map(METADATA.parts.map((part) => [part.id, !EXPRESSION_PARTS.has(part.id)]));
+    const BASE_POSE = new Map(
+      METADATA.parts.map((part) => [
+        part.id,
+        {
+          ...DEFAULT_POSE
+        }
+      ])
+    );
+    const INITIAL = METADATA.expressions[METADATA.defaultExpression];
+    for (const ID of INITIAL.show) {
+      VISIBLE.set(ID, true);
+    }
+    for (const ID of INITIAL.hide) {
+      VISIBLE.set(ID, false);
+    }
+    let rootPlayback = {
+      kind: "clip",
+      name: clip,
+      startedAtMs
+    };
+    let expression = METADATA.defaultExpression;
     let visibilityOverridden = false;
     let displayTimeMs = startedAtMs;
-    let currentPose = new Map(metadata.parts.map((part) => [part.id, { ...DEFAULT_POSE }]));
+    let currentPose = new Map(
+      METADATA.parts.map((part) => [
+        part.id,
+        {
+          ...DEFAULT_POSE
+        }
+      ])
+    );
     let playerDisposed = false;
-    const assertPlayer = () => {
-      requireReady();
-      if (playerDisposed) throw new Error("Vector player is disposed");
+    const ASSERT_PLAYER = () => {
+      REQUIRE_READY();
+      if (playerDisposed) {
+        throw new Error("Vector player is disposed");
+      }
     };
-    const sampleClip = (playback, timeMs) => {
-      const definition = clips[playback.name], localTime = loopTime(definition, timeMs - playback.startedAtMs);
-      const record = timelines.get(playback.name);
-      record.timeline.seek(localTime, true);
-      const output = /* @__PURE__ */ new Map();
-      for (const [id, pose] of record.tracks) output.set(id, copyPose(pose));
-      return output;
+    const SAMPLE_CLIP = (playback, timeMs) => {
+      const DEFINITION = CLIPS[playback.name], LOCAL_TIME = loopTime(DEFINITION, timeMs - playback.startedAtMs);
+      const RECORD = TIMELINES.get(playback.name);
+      RECORD.timeline.seek(LOCAL_TIME, true);
+      const OUTPUT = /* @__PURE__ */ new Map();
+      for (const [ID, POSE] of RECORD.tracks) {
+        OUTPUT.set(ID, copyPose(POSE));
+      }
+      return OUTPUT;
     };
-    const sample = (playback, timeMs) => {
-      if (playback.kind === "clip") return sampleClip(playback, timeMs);
-      const elapsedMs = timeMs - playback.atMs;
-      if (elapsedMs < 0) return sample(playback.from, timeMs);
-      if (playback.durationMs === 0) return sample(playback.to, timeMs);
-      if (elapsedMs === 0) return sample(playback.from, timeMs);
-      if (elapsedMs >= playback.durationMs) return sample(playback.to, timeMs);
-      const source = sample(playback.from, timeMs);
-      const target = sample(playback.to, timeMs);
-      const amount = elapsedMs / playback.durationMs;
-      return blendPoses(source, target, amount, metadata.parts.map((part) => part.id));
+    const SAMPLE = (playback, timeMs) => {
+      if (playback.kind === "clip") {
+        return SAMPLE_CLIP(playback, timeMs);
+      }
+      const ELAPSED_MS = timeMs - playback.atMs;
+      if (ELAPSED_MS < 0) {
+        return SAMPLE(playback.from, timeMs);
+      }
+      if (playback.durationMs === 0) {
+        return SAMPLE(playback.to, timeMs);
+      }
+      if (ELAPSED_MS === 0) {
+        return SAMPLE(playback.from, timeMs);
+      }
+      if (ELAPSED_MS >= playback.durationMs) {
+        return SAMPLE(playback.to, timeMs);
+      }
+      const SOURCE = SAMPLE(playback.from, timeMs);
+      const TARGET = SAMPLE(playback.to, timeMs);
+      const AMOUNT = ELAPSED_MS / playback.durationMs;
+      return blendPoses(
+        SOURCE,
+        TARGET,
+        AMOUNT,
+        METADATA.parts.map((part) => part.id)
+      );
     };
-    const seek = (timeMs) => {
-      assertPlayer();
-      displayTimeMs = finiteTime(timeMs, "displayTimeMs");
-      currentPose = sample(rootPlayback, displayTimeMs);
-      return player;
+    const SEEK = (timeMs) => {
+      ASSERT_PLAYER();
+      displayTimeMs = FINITE_TIME(timeMs, "displayTimeMs");
+      currentPose = SAMPLE(rootPlayback, displayTimeMs);
+      return PLAYER;
     };
-    const setExpression = (name) => {
-      assertPlayer();
-      const variant = metadata.expressions[name];
-      if (!variant) throw new TypeError(`Unknown vector expression: ${name}`);
-      for (const id of expressionParts) visible.set(id, false);
-      for (const id of variant.show) visible.set(id, true);
-      for (const id of variant.hide) visible.set(id, false);
+    const SET_EXPRESSION = (name) => {
+      ASSERT_PLAYER();
+      const VARIANT = METADATA.expressions[name];
+      if (!VARIANT) {
+        throw new TypeError(`Unknown vector expression: ${name}`);
+      }
+      for (const ID of EXPRESSION_PARTS) {
+        VISIBLE.set(ID, false);
+      }
+      for (const ID of VARIANT.show) {
+        VISIBLE.set(ID, true);
+      }
+      for (const ID of VARIANT.hide) {
+        VISIBLE.set(ID, false);
+      }
       expression = name;
       visibilityOverridden = false;
-      return player;
+      return PLAYER;
     };
-    const setPartVisible = (id, isVisible) => {
-      assertPlayer();
-      if (!partIndices.has(id) || typeof isVisible !== "boolean") throw new TypeError("Known part id and boolean visibility required");
-      visible.set(id, isVisible);
+    const SET_PART_VISIBLE = (id, isVisible) => {
+      ASSERT_PLAYER();
+      if (!PART_INDICES.has(id) || typeof isVisible !== "boolean") {
+        throw new TypeError("Known part id and boolean visibility required");
+      }
+      VISIBLE.set(id, isVisible);
       visibilityOverridden = true;
-      return player;
+      return PLAYER;
     };
-    const setBasePose = (id, pose) => {
-      assertPlayer();
-      if (!partIndices.has(id) || !pose || typeof pose !== "object" || Array.isArray(pose)) throw new TypeError("Known part and pose object required");
-      const current = basePose.get(id);
-      for (const [field, value] of Object.entries(pose)) {
-        if (!POSE_FIELDS.includes(field) || !Number.isFinite(value)) throw new TypeError("Part base poses accept only finite authored numeric pose fields");
-        if (field === "opacity" && (value < 0 || value > 1)) throw new RangeError("Part opacity must be in [0,1]");
-        if ((field === "scaleX" || field === "scaleY") && value === 0) throw new RangeError("Part scale cannot be zero");
-        current[field] = value;
+    const SET_BASE_POSE = (id, pose) => {
+      ASSERT_PLAYER();
+      if (!PART_INDICES.has(id) || !pose || typeof pose !== "object" || Array.isArray(pose)) {
+        throw new TypeError("Known part and pose object required");
       }
-      return player;
+      const CURRENT = BASE_POSE.get(id);
+      for (const [FIELD, VALUE] of Object.entries(pose)) {
+        if (!POSE_FIELDS.includes(FIELD) || !Number.isFinite(VALUE)) {
+          throw new TypeError("Part base poses accept only finite authored numeric pose fields");
+        }
+        if (FIELD === "opacity" && (VALUE < 0 || VALUE > 1)) {
+          throw new RangeError("Part opacity must be in [0,1]");
+        }
+        if ((FIELD === "scaleX" || FIELD === "scaleY") && VALUE === 0) {
+          throw new RangeError("Part scale cannot be zero");
+        }
+        CURRENT[FIELD] = VALUE;
+      }
+      return PLAYER;
     };
-    const play = (name, atMs = displayTimeMs) => {
-      assertPlayer();
-      if (!Object.hasOwn(clips, name)) throw new TypeError(`Unknown vector clip: ${name}`);
-      rootPlayback = { kind: "clip", name, startedAtMs: finiteTime(atMs, "atMs") };
-      return seek(atMs);
-    };
-    const transitionTo = (name, atMs = displayTimeMs, durationMs = 0) => {
-      assertPlayer();
-      if (!Object.hasOwn(clips, name)) throw new TypeError(`Unknown vector clip: ${name}`);
-      finiteTime(atMs, "atMs");
-      if (!Number.isFinite(durationMs) || durationMs < 0) throw new RangeError("transition duration must be finite and nonnegative");
-      rootPlayback = { kind: "transition", from: rootPlayback, to: { kind: "clip", name, startedAtMs: atMs }, atMs, durationMs };
-      return seek(atMs);
-    };
-    const worldMatrices = () => {
-      const output = /* @__PURE__ */ new Map();
-      const resolvePart = (id) => {
-        if (output.has(id)) return output.get(id);
-        const definition = metadata.parts[partIndices.get(id)];
-        const pose = effectivePose(basePose.get(id), currentPose.get(id));
-        const local = localMatrix(definition.pivot, pose);
-        const matrix = definition.parent === null ? local : multiply(resolvePart(definition.parent), local);
-        output.set(id, matrix);
-        return matrix;
+    const PLAY = (name, atMs = displayTimeMs) => {
+      ASSERT_PLAYER();
+      if (!Object.hasOwn(CLIPS, name)) {
+        throw new TypeError(`Unknown vector clip: ${name}`);
+      }
+      rootPlayback = {
+        kind: "clip",
+        name,
+        startedAtMs: FINITE_TIME(atMs, "atMs")
       };
-      for (const part of metadata.parts) resolvePart(part.id);
-      return output;
+      return SEEK(atMs);
     };
-    const getSocket = (id) => {
-      assertPlayer();
-      const socket = metadata.sockets[id];
-      if (!socket) throw new TypeError(`Unknown vector socket: ${id}`);
-      return transformPoint(worldMatrices().get(socket.part), socket.point);
-    };
-    const resolvePartPose = (part, matrices) => {
-      let parentVisible = true, opacity = 1, parent = part;
-      while (parent) {
-        parentVisible &&= visible.get(parent.id) !== false;
-        opacity *= effectivePose(basePose.get(parent.id), currentPose.get(parent.id)).opacity;
-        parent = parent.parent === null ? null : metadata.parts[partIndices.get(parent.parent)];
+    const TRANSITION_TO = (name, atMs = displayTimeMs, durationMs = 0) => {
+      ASSERT_PLAYER();
+      if (!Object.hasOwn(CLIPS, name)) {
+        throw new TypeError(`Unknown vector clip: ${name}`);
       }
-      return { transform: matrices.get(part.id), opacity, visible: parentVisible };
+      FINITE_TIME(atMs, "atMs");
+      if (!Number.isFinite(durationMs) || durationMs < 0) {
+        throw new RangeError("transition duration must be finite and nonnegative");
+      }
+      rootPlayback = {
+        kind: "transition",
+        from: rootPlayback,
+        to: {
+          kind: "clip",
+          name,
+          startedAtMs: atMs
+        },
+        atMs,
+        durationMs
+      };
+      return SEEK(atMs);
     };
-    const partPoses = () => {
-      assertPlayer();
-      const matrices = worldMatrices();
-      return metadata.parts.map((part, index) => {
-        const pose = resolvePartPose(part, matrices);
+    const WORLD_MATRICES = () => {
+      const OUTPUT = /* @__PURE__ */ new Map();
+      const RESOLVE_PART = (id) => {
+        if (OUTPUT.has(id)) {
+          return OUTPUT.get(id);
+        }
+        const DEFINITION = METADATA.parts[PART_INDICES.get(id)];
+        const POSE = effectivePose(BASE_POSE.get(id), currentPose.get(id));
+        const LOCAL = localMatrix(DEFINITION.pivot, POSE);
+        const MATRIX = DEFINITION.parent === null ? LOCAL : multiply(RESOLVE_PART(DEFINITION.parent), LOCAL);
+        OUTPUT.set(id, MATRIX);
+        return MATRIX;
+      };
+      for (const PART of METADATA.parts) {
+        RESOLVE_PART(PART.id);
+      }
+      return OUTPUT;
+    };
+    const GET_SOCKET = (id) => {
+      ASSERT_PLAYER();
+      const SOCKET = METADATA.sockets[id];
+      if (!SOCKET) {
+        throw new TypeError(`Unknown vector socket: ${id}`);
+      }
+      return transformPoint(WORLD_MATRICES().get(SOCKET.part), SOCKET.point);
+    };
+    const RESOLVE_PART_POSE = (part, matrices) => {
+      let parentVisible = true;
+      let opacity = 1;
+      let parent = part;
+      while (parent) {
+        parentVisible &&= VISIBLE.get(parent.id) !== false;
+        opacity *= effectivePose(BASE_POSE.get(parent.id), currentPose.get(parent.id)).opacity;
+        parent = parent.parent === null ? null : METADATA.parts[PART_INDICES.get(parent.parent)];
+      }
+      return {
+        transform: matrices.get(part.id),
+        opacity,
+        visible: parentVisible
+      };
+    };
+    const PART_POSES = () => {
+      ASSERT_PLAYER();
+      const MATRICES = WORLD_MATRICES();
+      return METADATA.parts.map((part, index) => {
+        const POSE = RESOLVE_PART_POSE(part, MATRICES);
         return {
-          transform: pose.transform,
-          morph: authoredMorph(sketchMorphStyle, displayTimeMs),
-          opacity: pose.opacity,
-          visible: pose.visible,
+          transform: POSE.transform,
+          morph: authoredMorph(SKETCH_MORPH_STYLE, displayTimeMs),
+          opacity: POSE.opacity,
+          visible: POSE.visible,
           index
         };
       });
     };
-    const draw = ({
+    const DRAW = ({
       projection,
       viewProjection,
       worldMatrix,
@@ -3519,7 +3720,7 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
       color = [1, 1, 1, 1],
       forceColor = false,
       whiteFlash = false,
-      clips: clips2 = [],
+      clips = [],
       stencilRef = null,
       depth = 0,
       depthTest = false,
@@ -3527,104 +3728,141 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
       depthFunc = "lequal",
       strokeViewport = null
     } = {}) => {
-      assertPlayer();
-      if (geometry.shaderSurfaces?.length) validateShaderSurfaceClipCapacity(clips2, surfaceRenderer.maxClipPlanes);
-      const matrices = worldMatrices();
-      const poses = metadata.parts.map((part) => resolvePartPose(part, matrices));
-      if (geometry.drawOrder) {
-        const worldMode2 = viewProjection !== void 0 || worldMatrix !== void 0;
-        for (const command of geometry.drawOrder) {
-          if (command.kind === "mesh") {
-            if (!poses[command.partIndex].visible || poses[command.partIndex].opacity <= 0) continue;
-            if (!mesh) throw new Error("SVG draw order references mesh geometry that was not retained");
-            meshRenderer.drawMesh(mesh, {
-              ...worldMode2 ? { viewProjection, worldMatrix } : { projection },
+      ASSERT_PLAYER();
+      if (GEOMETRY.shaderSurfaces?.length) {
+        validateShaderSurfaceClipCapacity(clips, surfaceRenderer.maxClipPlanes);
+      }
+      const MATRICES = WORLD_MATRICES();
+      const POSES = METADATA.parts.map((part) => RESOLVE_PART_POSE(part, MATRICES));
+      if (GEOMETRY.drawOrder) {
+        const WORLD_MODE2 = viewProjection !== void 0 || worldMatrix !== void 0;
+        for (const COMMAND of GEOMETRY.drawOrder) {
+          if (COMMAND.kind === "mesh") {
+            if (!POSES[COMMAND.partIndex].visible || POSES[COMMAND.partIndex].opacity <= 0) {
+              continue;
+            }
+            if (!MESH) {
+              throw new Error("SVG draw order references mesh geometry that was not retained");
+            }
+            meshRenderer.drawMesh(MESH, {
+              ...WORLD_MODE2 ? {
+                viewProjection,
+                worldMatrix
+              } : {
+                projection
+              },
               matrix,
-              parts: poses,
-              morph: authoredMorph(sketchMorphStyle, displayTimeMs),
+              parts: POSES,
+              morph: authoredMorph(SKETCH_MORPH_STYLE, displayTimeMs),
               alpha,
               color,
               forceColor,
               whiteFlash,
-              clips: clips2,
+              clips,
               stencilRef,
               depth,
               depthTest,
               depthWrite,
               depthFunc,
               strokeViewport,
-              indexRange: [command.firstIndex, command.indexCount]
+              indexRange: [COMMAND.firstIndex, COMMAND.indexCount]
             });
             continue;
           }
-          const surface = retainedSurfaces[command.surfaceIndex], pose = poses[geometry.shaderSurfaces[command.surfaceIndex].partIndex];
-          if (!pose.visible || pose.opacity <= 0) continue;
+          const SURFACE = RETAINED_SURFACES[COMMAND.surfaceIndex], POSE = POSES[GEOMETRY.shaderSurfaces[COMMAND.surfaceIndex].partIndex];
+          if (!POSE.visible || POSE.opacity <= 0) {
+            continue;
+          }
           meshRenderer.flush("vectorShaderSurfaceBoundary");
-          const materialTransform = worldMode2 ? pose.transform : multiply(matrix, pose.transform);
-          const shaderDepth = depthTest || depthWrite ? { test: depthTest, write: depthWrite, func: depthFunc } : false;
-          surfaceRenderer.drawSurface(surface, {
-            ...worldMode2 ? { viewProjection, worldMatrix: composeWorldMatrix(worldMatrix, matrix) } : { projection },
-            transform: materialTransform,
+          const MATERIAL_TRANSFORM = WORLD_MODE2 ? POSE.transform : multiply(matrix, POSE.transform);
+          const SHADER_DEPTH = depthTest || depthWrite ? {
+            test: depthTest,
+            write: depthWrite,
+            func: depthFunc
+          } : false;
+          surfaceRenderer.drawSurface(SURFACE, {
+            ...WORLD_MODE2 ? {
+              viewProjection,
+              worldMatrix: composeWorldMatrix(worldMatrix, matrix)
+            } : {
+              projection
+            },
+            transform: MATERIAL_TRANSFORM,
             color,
-            alpha: alpha * pose.opacity,
+            alpha: alpha * POSE.opacity,
             forceColor,
             whiteFlash: whiteFlash ? 1 : 0,
             timeMs: displayTimeMs,
-            clips: clips2,
+            clips,
             stencilRef,
             z: depth,
-            depth: shaderDepth
+            depth: SHADER_DEPTH
           });
         }
         return;
       }
-      const indexVariant = !visibilityOverridden && compiledAsset.geometry.expressionIndices?.[expression] ? expression : null;
-      const worldMode = viewProjection !== void 0 || worldMatrix !== void 0;
-      meshRenderer.drawMesh(mesh, {
-        ...worldMode ? { viewProjection, worldMatrix } : { projection },
+      const INDEX_VARIANT = !visibilityOverridden && compiledAsset.geometry.expressionIndices?.[expression] ? expression : null;
+      const WORLD_MODE = viewProjection !== void 0 || worldMatrix !== void 0;
+      meshRenderer.drawMesh(MESH, {
+        ...WORLD_MODE ? {
+          viewProjection,
+          worldMatrix
+        } : {
+          projection
+        },
         matrix,
-        parts: poses,
-        morph: authoredMorph(sketchMorphStyle, displayTimeMs),
+        parts: POSES,
+        morph: authoredMorph(SKETCH_MORPH_STYLE, displayTimeMs),
         alpha,
         color,
         forceColor,
         whiteFlash,
-        clips: clips2,
+        clips,
         stencilRef,
         depth,
         depthTest,
         depthWrite,
         depthFunc,
-        indexVariant,
+        indexVariant: INDEX_VARIANT,
         strokeViewport
       });
     };
-    const getPartPose = (id) => {
-      assertPlayer();
-      if (!partIndices.has(id)) throw new TypeError(`Unknown vector part: ${id}`);
-      const index = partIndices.get(id), effective = resolvePartPose(metadata.parts[index], worldMatrices());
-      return { ...currentPose.get(id), visible: effective.visible, transform: effective.transform };
+    const GET_PART_POSE = (id) => {
+      ASSERT_PLAYER();
+      if (!PART_INDICES.has(id)) {
+        throw new TypeError(`Unknown vector part: ${id}`);
+      }
+      const INDEX = PART_INDICES.get(id), EFFECTIVE = RESOLVE_PART_POSE(METADATA.parts[INDEX], WORLD_MATRICES());
+      return {
+        ...currentPose.get(id),
+        visible: EFFECTIVE.visible,
+        transform: EFFECTIVE.transform
+      };
     };
-    const disposePlayer = () => {
-      if (playerDisposed) return false;
-      for (const { timeline } of timelines.values()) timeline.pause();
-      timelines.clear();
-      players.delete(player);
+    const DISPOSE_PLAYER = () => {
+      if (playerDisposed) {
+        return false;
+      }
+      for (const { timeline: TIMELINE } of TIMELINES.values()) {
+        TIMELINE.pause();
+      }
+      TIMELINES.clear();
+      PLAYERS.delete(PLAYER);
       playerDisposed = true;
       return true;
     };
-    const player = Object.freeze({
-      seek,
-      play,
-      transitionTo,
-      setExpression,
-      setPartVisible,
-      setBasePose,
-      getPartPose,
-      getSocket,
-      partPoses,
-      draw,
-      dispose: disposePlayer,
+    const PLAYER = Object.freeze({
+      seek: SEEK,
+      play: PLAY,
+      transitionTo: TRANSITION_TO,
+      setExpression: SET_EXPRESSION,
+      setPartVisible: SET_PART_VISIBLE,
+      setBasePose: SET_BASE_POSE,
+      getPartPose: GET_PART_POSE,
+      getSocket: GET_SOCKET,
+      partPoses: PART_POSES,
+      draw: DRAW,
+      dispose: DISPOSE_PLAYER,
       get currentClip() {
         return rootPlayback.kind === "clip" ? rootPlayback.name : rootPlayback.to.name;
       },
@@ -3638,42 +3876,56 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
         return playerDisposed;
       }
     });
-    players.add(player);
-    seek(startedAtMs);
-    return player;
+    PLAYERS.add(PLAYER);
+    SEEK(startedAtMs);
+    return PLAYER;
   };
-  const dispose = () => {
-    if (disposed) return false;
-    for (const player of [...players]) player.dispose();
-    if (mesh) meshRenderer.deleteMesh(mesh);
-    for (const surface of retainedSurfaces) surfaceRenderer.deleteSurface(surface);
+  const DISPOSE = () => {
+    if (disposed) {
+      return false;
+    }
+    for (const PLAYER of [...PLAYERS]) {
+      PLAYER.dispose();
+    }
+    if (MESH) {
+      meshRenderer.deleteMesh(MESH);
+    }
+    for (const SURFACE of RETAINED_SURFACES) {
+      surfaceRenderer.deleteSurface(SURFACE);
+    }
     disposed = true;
     return true;
   };
   return Object.freeze({
-    id: metadata.id,
+    id: METADATA.id,
     sourceSha256: compiledAsset.sourceSha256,
     schemaVersion: compiledAsset.schemaVersion,
     compilerVersion: compiledAsset.compilerVersion,
     viewBox: Object.freeze([...compiledAsset.viewBox]),
-    metadata,
-    mesh,
-    surfaces: Object.freeze(retainedSurfaces),
-    createPlayer,
-    dispose,
+    metadata: METADATA,
+    mesh: MESH,
+    surfaces: Object.freeze(RETAINED_SURFACES),
+    createPlayer: CREATE_PLAYER,
+    dispose: DISPOSE,
     get disposed() {
       return disposed;
     },
     get playerCount() {
-      return players.size;
+      return PLAYERS.size;
     }
   });
 }
 
 // modules/vector-assets/quality-presets.js
 var VECTOR_ASSET_QUALITY_PRESETS = Object.freeze({
-  standard: Object.freeze({ curveSegments: 4, strokeArcDivisions: 2 }),
-  smallAsset: Object.freeze({ curveSegments: 2, strokeArcDivisions: 2 })
+  standard: Object.freeze({
+    curveSegments: 4,
+    strokeArcDivisions: 2
+  }),
+  smallAsset: Object.freeze({
+    curveSegments: 2,
+    strokeArcDivisions: 2
+  })
 });
 export {
   VECTOR_ASSET_QUALITY_PRESETS,
