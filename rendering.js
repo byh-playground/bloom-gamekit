@@ -124,6 +124,11 @@ var WebGLDevice = class {
     this.enabledAttributes = /* @__PURE__ */ new Set();
     this.stats = {
       frame: 0,
+      vectorFlushCalls: 0,
+      vectorSubmissions: 0,
+      pathTessellations: 0,
+      pathStrokeBuilds: 0,
+      meshCreates: 0,
       drawCalls: 0,
       instancedDrawCalls: 0,
       vertices: 0,
@@ -883,6 +888,11 @@ var WebGLDevice = class {
     this.activeRenderTarget = null;
     this.stats.frame++;
     for (const NAME of [
+      "vectorFlushCalls",
+      "vectorSubmissions",
+      "pathTessellations",
+      "pathStrokeBuilds",
+      "meshCreates",
       "drawCalls",
       "instancedDrawCalls",
       "vertices",
@@ -2031,6 +2041,7 @@ var VectorRenderer = class {
     if (!this.count) {
       return;
     }
+    this.device.stats.vectorSubmissions++;
     const TEXTURE = this.activeTexture ?? this.white, GRADIENT = this.activeGradient;
     this.device.uploadVertices(this.buffer, this.vertices.subarray(0, this.count * 8));
     this.device.draw({
@@ -2072,6 +2083,7 @@ var VectorRenderer = class {
       throw new TypeError("rule must be nonzero or evenodd");
     }
     this._useTexture(this.white);
+    this.device.stats.pathTessellations++;
     const COL = rgba(colorValue), VERTICES = tessellate(this.path, rule);
     for (let i = 0; i + 2 < VERTICES.length; i += 3) {
       this._emitTriangle(VERTICES[i], VERTICES[i + 1], VERTICES[i + 2], COL);
@@ -2087,6 +2099,7 @@ var VectorRenderer = class {
       whiteFlash: gradient.whiteFlash,
       gradient
     });
+    this.device.stats.pathTessellations++;
     const VERTICES = tessellate(this.path, gradient.rule ?? "nonzero");
     for (let i = 0; i + 2 < VERTICES.length; i += 3) {
       this._emitTriangle(VERTICES[i], VERTICES[i + 1], VERTICES[i + 2], gradient.color);
@@ -2121,6 +2134,7 @@ var VectorRenderer = class {
       whiteFlash: gradient?.whiteFlash ?? false,
       gradient
     });
+    this.device.stats.pathStrokeBuilds++;
     rgba(colorValue);
     if (!Number.isFinite(width) || width <= 0) {
       throw new RangeError("line width must be positive");
@@ -2320,6 +2334,7 @@ var VectorRenderer = class {
   }
   flush() {
     this._frame();
+    this.device.stats.vectorFlushCalls++;
     this._submit();
   }
   beginGroup(opacity = 1, bounds = null) {
@@ -3081,6 +3096,7 @@ var MeshRenderer = class {
     });
     this.meshes.add(MESH);
     this.bytes += BYTE_LENGTH;
+    this.device.stats.meshCreates++;
     this.metrics.geometryUploads++;
     this.metrics.geometryBytesUploaded += BYTE_LENGTH;
     return MESH;
