@@ -133,6 +133,11 @@ export class WebGLDevice {
         this.enabledAttributes = new Set();
         this.stats = {
             frame: 0,
+            vectorFlushCalls: 0,
+            vectorSubmissions: 0,
+            pathTessellations: 0,
+            pathStrokeBuilds: 0,
+            meshCreates: 0,
             drawCalls: 0,
             instancedDrawCalls: 0,
             vertices: 0,
@@ -911,6 +916,11 @@ export class WebGLDevice {
         this.activeRenderTarget = null;
         this.stats.frame++;
         for (const NAME of [
+            'vectorFlushCalls',
+            'vectorSubmissions',
+            'pathTessellations',
+            'pathStrokeBuilds',
+            'meshCreates',
             'drawCalls',
             'instancedDrawCalls',
             'vertices',

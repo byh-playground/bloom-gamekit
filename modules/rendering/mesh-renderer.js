@@ -714,6 +714,7 @@ export class MeshRenderer {
         });
         this.meshes.add(MESH);
         this.bytes += BYTE_LENGTH;
+        this.device.stats.meshCreates++;
         this.metrics.geometryUploads++;
         this.metrics.geometryBytesUploaded += BYTE_LENGTH;
         return MESH;

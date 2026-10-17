@@ -374,3 +374,12 @@ Coordinates, stitch dimensions, and fiber dimensions are in source-vector units 
 `YarnSurfaceRenderer.drawSurface()` accepts `stencilRef: null` (default) or an integer in `[0,255]`; a non-null value requires the active default framebuffer or render target to have stencil. Convex `clips` and stencil clipping intersect. This option adds no mesh batching path and does not change `MeshRenderer` compatibility or painter ordering.
 
 The API is additive: existing `MeshRenderer` meshes, old compiled assets, static yarn/sketch triangle assets, and ordinary SVG strokes keep their existing behavior until a consumer opts into the new material and passes its authored surface data. The focused validation is `npm run test:rendering:yarn-shader`; it checks density-invariant geometry and real Chromium/WebGL pixels at 47 and 74 CSS px, clipping, and context restoration. It is a correctness check, not an FPS or CPU benchmark.
+
+## CPU geometry diagnostic counters (0.11.5)
+
+WebGLDevice.stats exposes frame-local numeric counters, reset by beginFrame(): vectorFlushCalls (explicit VectorRenderer.flush calls),
+vectorSubmissions (nonempty vector buffer submissions), pathTessellations (actual fill/radial-fill tessellator calls),
+pathStrokeBuilds (stroke geometry builds), and meshCreates (successful retained mesh creation).
+Existing drawCalls, bufferUploads and bufferBytes count actual device submissions. These counts do not measure GPU completion.
+MeshRenderer has no per-frame geometry rebuild API: geometryUploads measures retained creation/restoration, not instance buffer uploads.
+Use FrameMetrics from debug-tools to retain selected numbers with the same frame's CPU stage observations; no profiler is installed automatically.
