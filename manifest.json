@@ -3,7 +3,7 @@
   "modules": [
     {
       "file": "interpolation.js",
-      "sha256": "dfa7b585fdc926b9d45dcd2e3ff34e18d0713f8fd38e7ee106893ef9b3ac7e69"
+      "sha256": "061960f311ad57894914186baa01f6b257269637353056ac93f86d34265a4ef8"
     },
     {
       "file": "rendering.js",
@@ -11,7 +11,7 @@
     },
     {
       "file": "vector-assets.js",
-      "sha256": "424941f66979b9e4188b84630bd5852fa14e10560a01ad3f7cb3d5f5898c0038"
+      "sha256": "62f175a70a3705840d36e952eff7dc84d38d6ee256a6af5ae516c59fcb2fd4fc"
     },
     {
       "file": "vector-assets-loader.js",
@@ -27,7 +27,7 @@
     },
     {
       "file": "simloop.js",
-      "sha256": "b1f46b1945246ef12edc4f5872de7d396970f044943f1255afe4df76f43eb650"
+      "sha256": "c25a8f7f4999e4fe8beb6b08167fa4d0934c34098db2bf912335e81db53c4ef8"
     },
     {
       "file": "transport.js",
@@ -39,7 +39,7 @@
     },
     {
       "file": "rollback.js",
-      "sha256": "69f799774fcf4621982cdf22cb3b369da79c6069ca70213393b3aae935c78c54"
+      "sha256": "62b29de085866c5dd2f1e9acc49ca04cf2873825889fe154f84717e08f092b84"
     },
     {
       "file": "camera.js",
@@ -67,7 +67,7 @@
     },
     {
       "file": "scenario.js",
-      "sha256": "9c53cd1dbf38bed3837a96b9dd64e97c58dce437aaebd28be3c9e435a14a6ac5"
+      "sha256": "2bcd65e620bce1d468256d53dadfef00fe4081d10ef8a431ee7b7d04da858ad6"
     },
     {
       "file": "object-pool.js",

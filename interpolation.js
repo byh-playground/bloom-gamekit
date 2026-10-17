@@ -889,9 +889,11 @@ function fraction2(track, now, stepMs) {
 var PresentationRuntime = class {
   #stepMs;
   #tracks = /* @__PURE__ */ new Map();
+  #trackBuffer = /* @__PURE__ */ new Map();
   #sources = /* @__PURE__ */ new WeakMap();
   #models = /* @__PURE__ */ new WeakMap();
   #preview = /* @__PURE__ */ new Map();
+  #previewBuffer = /* @__PURE__ */ new Map();
   #previewSelection = /* @__PURE__ */ new Map();
   #previewSources = /* @__PURE__ */ new WeakMap();
   #now = -Infinity;
@@ -1164,7 +1166,9 @@ var PresentationRuntime = class {
       throw new TypeError("entities must be an array");
     }
     const ORIGIN = CHANGED ? nowMs - TIME_MS : this.#origin;
-    const NEXT = /* @__PURE__ */ new Map(), SOURCES = /* @__PURE__ */ new WeakMap(), PREVIEWS = /* @__PURE__ */ new Map(), PREVIEW_SOURCES = /* @__PURE__ */ new WeakMap();
+    const NEXT = this.#trackBuffer, SOURCES = /* @__PURE__ */ new WeakMap(), PREVIEWS = this.#previewBuffer, PREVIEW_SOURCES = /* @__PURE__ */ new WeakMap(), RESET_FIELDS = /* @__PURE__ */ new Set();
+    NEXT.clear();
+    PREVIEWS.clear();
     for (const ENTITY of packet.entities) {
       if (!ENTITY || typeof ENTITY.id !== "string" || !ENTITY.id || NEXT.has(ENTITY.id)) {
         throw new TypeError("entity IDs must be nonempty and unique");
@@ -1186,7 +1190,8 @@ var PresentationRuntime = class {
       }
       const TARGET = captureRenderData(PLAN, SOURCE);
       const INITIAL = ENTITY.initialSource === void 0 ? null : captureRenderData(PLAN, ENTITY.initialSource);
-      const RESET = /* @__PURE__ */ new Set();
+      const RESET = this.#delayMs ? /* @__PURE__ */ new Set() : RESET_FIELDS;
+      RESET.clear();
       if (ENTITY.resetFields !== void 0) {
         if (!Array.isArray(ENTITY.resetFields)) {
           throw new TypeError("resetFields must be an array");
@@ -1209,7 +1214,9 @@ var PresentationRuntime = class {
       if (SAME && !SNAP) {
         inferFieldResets(PLAN.policies, OLD, TARGET, TIME_MS, RESET);
       }
-      const FROM = SAME && !SNAP && PREVIEW?.generation === GENERATION && this.#previewSelection.get(ENTITY.id) === GENERATION ? PLAN.fields.map((_, i) => this.#value(PREVIEW, i, nowMs)) : !SAME && !SNAP ? INITIAL ? INITIAL.values.slice() : seedFieldValues(PLAN.policies, TARGET.values) : TARGET.values.slice();
+      const PREVIEW_SELECTED = SAME && !SNAP && PREVIEW?.generation === GENERATION && this.#previewSelection.get(ENTITY.id) === GENERATION;
+      const REUSE_FROM = SAME && !SNAP && !this.#delayMs && !PREVIEW_SELECTED;
+      const FROM = PREVIEW_SELECTED ? PLAN.fields.map((_, i) => this.#value(PREVIEW, i, nowMs)) : REUSE_FROM ? OLD.from : !SAME && !SNAP ? INITIAL ? INITIAL.values.slice() : seedFieldValues(PLAN.policies, TARGET.values) : TARGET.values.slice();
       if (this.#delayMs && SAME && !SNAP) {
         for (let i = 0; i < FROM.length; i++) {
           FROM[i] = OLD.target.values[i];
@@ -1217,8 +1224,11 @@ var PresentationRuntime = class {
       }
       const VELOCITY = this.#extrapolation ? new Array(PLAN.fields.length).fill(0) : null;
       for (let i = 0; i < PLAN.fields.length; i++) {
-        const FIELD = PLAN.fields[i], VALUE = TARGET.values[i];
-        if (RESET.has(i) && !this.#delayMs) {
+        const FIELD = PLAN.fields[i], VALUE = TARGET.values[i], USE_PREVIOUS_VALUE = REUSE_FROM && !RESET.has(i) && typeof VALUE === "number" && typeof OLD.target.values[i] === "number" && (!PREVIEW || PREVIEW.generation !== GENERATION), PREVIOUS_VALUE = USE_PREVIOUS_VALUE ? this.#value(OLD, i, nowMs) : void 0;
+        if (REUSE_FROM && !USE_PREVIOUS_VALUE) {
+          FROM[i] = VALUE;
+        }
+        if (RESET.has(i) && !this.#delayMs && !REUSE_FROM) {
           FROM[i] = VALUE;
         }
         if (!SAME && !SNAP && INITIAL && this.#extrapolation?.fields.has(FIELD.name) && typeof FROM[i] === "number" && typeof VALUE === "number") {
@@ -1230,7 +1240,7 @@ var PresentationRuntime = class {
           if (this.#delayMs) {
             FROM[i] = OLD.target.values[i];
           } else if (!PREVIEW || PREVIEW.generation !== GENERATION) {
-            FROM[i] = this.#value(OLD, i, nowMs);
+            FROM[i] = REUSE_FROM ? PREVIOUS_VALUE : this.#value(OLD, i, nowMs);
           }
           if (FIELD.code === RenderObject.DECAY && VALUE > OLD.target.values[i]) {
             FROM[i] = VALUE;
@@ -1255,20 +1265,19 @@ var PresentationRuntime = class {
           }
         }
       }
-      const TRACK = {
-        id: ENTITY.id,
-        generation: GENERATION,
-        source: SOURCE,
-        plan: PLAN,
-        target: TARGET,
-        from: FROM,
-        velocity: VELOCITY,
-        at: nowMs,
-        timeMs: TIME_MS,
-        model: SAME ? OLD.model : {},
-        sampleValues: SAME ? OLD.sampleValues : void 0,
-        sampledAt: -Infinity
-      };
+      const TRACK = REUSE_FROM ? OLD : {}, OLD_PATH = OLD?.path, OLD_TIME_MS = OLD?.timeMs, MODEL = SAME ? OLD.model : {}, SAMPLE_VALUES = SAME ? OLD.sampleValues : void 0;
+      TRACK.id = ENTITY.id;
+      TRACK.generation = GENERATION;
+      TRACK.source = SOURCE;
+      TRACK.plan = PLAN;
+      TRACK.target = TARGET;
+      TRACK.from = FROM;
+      TRACK.velocity = VELOCITY;
+      TRACK.at = nowMs;
+      TRACK.timeMs = TIME_MS;
+      TRACK.model = MODEL;
+      TRACK.sampleValues = SAMPLE_VALUES;
+      TRACK.sampledAt = -Infinity;
       let intervalStart;
       if (this.#delayMs) {
         intervalStart = bufferInterval(TRACK, OLD, {
@@ -1295,10 +1304,10 @@ var PresentationRuntime = class {
           FROM[INDEX] = PRIOR[INDEX];
         }
       }
-      const PATH_START = this.#delayMs ? intervalStart : SAME && !SNAP ? OLD.timeMs : !SNAP && INITIAL ? ENTITY.initialTimeMs ?? TIME_MS - this.#stepMs : TIME_MS;
+      const PATH_START = this.#delayMs ? intervalStart : SAME && !SNAP ? OLD_TIME_MS : !SNAP && INITIAL ? ENTITY.initialTimeMs ?? TIME_MS - this.#stepMs : TIME_MS;
       TRACK.path = capturePath(
         PLAN.path,
-        OLD?.path,
+        OLD_PATH,
         FROM,
         TARGET.values,
         PATH_START,
@@ -1321,8 +1330,10 @@ var PresentationRuntime = class {
     }
     this.#origin = ORIGIN;
     this.#frameSerial++;
+    this.#trackBuffer = this.#tracks;
     this.#tracks = NEXT;
     this.#sources = SOURCES;
+    this.#previewBuffer = this.#preview;
     this.#preview = PREVIEWS;
     this.#previewSources = PREVIEW_SOURCES;
     this.#revision = REVISION;

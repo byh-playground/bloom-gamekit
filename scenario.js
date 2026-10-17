@@ -84,6 +84,18 @@ function createLoop({
   });
   const QUANTUM = 1e3 / session.profile.tickRate;
   const MAX_BACKLOG_MS = QUANTUM * maxBacklogTicks;
+  const REPORT_BACKLOG_DROP = (elapsedMs, droppedMs, timestamp, reason) => {
+    if (droppedMs <= 0) {
+      return;
+    }
+    onBacklogDrop({
+      elapsedMs,
+      droppedMs,
+      droppedTicks: Math.floor(droppedMs / QUANTUM),
+      timestamp,
+      reason
+    });
+  };
   let running = false;
   let handle;
   let last;
@@ -233,6 +245,7 @@ function createLoop({
       }
       const ELAPSED = Math.max(0, timestamp - last);
       if (backlogPolicy === "drop" && ELAPSED > MAX_BACKLOG_MS) {
+        const DROPPED_MS = accumulator + ELAPSED;
         accumulator = 0;
         last = timestamp;
         if (typeof inputPreview?.clockGap === "function") {
@@ -240,11 +253,7 @@ function createLoop({
         } else {
           inputPreview?.clear?.();
         }
-        onBacklogDrop({
-          elapsedMs: ELAPSED,
-          droppedTicks: Math.floor(ELAPSED / QUANTUM),
-          timestamp
-        });
+        REPORT_BACKLOG_DROP(ELAPSED, DROPPED_MS, timestamp, "clock-gap");
       } else if (backlogPolicy === "defer" && ELAPSED > MAX_BACKLOG_MS) {
         const DROPPED_MS = accumulator + ELAPSED;
         accumulator = 0;
@@ -254,13 +263,7 @@ function createLoop({
         } else {
           inputPreview?.clear?.();
         }
-        onBacklogDrop({
-          elapsedMs: ELAPSED,
-          droppedMs: DROPPED_MS,
-          droppedTicks: Math.floor(DROPPED_MS / QUANTUM),
-          timestamp,
-          reason: "clock-gap"
-        });
+        REPORT_BACKLOG_DROP(ELAPSED, DROPPED_MS, timestamp, "clock-gap");
       } else {
         if (backlogPolicy === "retain") {
           accumulator += ELAPSED;
@@ -274,21 +277,15 @@ function createLoop({
             } else {
               inputPreview?.clear?.();
             }
-            onBacklogDrop({
-              elapsedMs: ELAPSED,
-              droppedMs: DROPPED_MS,
-              droppedTicks: Math.floor(DROPPED_MS / QUANTUM),
-              timestamp,
-              reason: "backlog-overflow"
-            });
+            REPORT_BACKLOG_DROP(ELAPSED, DROPPED_MS, timestamp, "backlog-overflow");
           } else {
             accumulator = ACCUMULATED_MS;
           }
         } else {
-          accumulator = Math.min(
-            accumulator + Math.min(250, ELAPSED),
-            QUANTUM * session.profile.maxCatchupSteps
-          );
+          const CLAMPED_ELAPSED = Math.min(250, ELAPSED), ACCUMULATED_MS = accumulator + CLAMPED_ELAPSED, MAX_CATCHUP_MS = QUANTUM * session.profile.maxCatchupSteps, INPUT_DROPPED_MS = ELAPSED - CLAMPED_ELAPSED, BACKLOG_DROPPED_MS = Math.max(0, ACCUMULATED_MS - MAX_CATCHUP_MS);
+          accumulator = Math.min(ACCUMULATED_MS, MAX_CATCHUP_MS);
+          REPORT_BACKLOG_DROP(ELAPSED, INPUT_DROPPED_MS, timestamp, "input-dt-clamp");
+          REPORT_BACKLOG_DROP(ELAPSED, BACKLOG_DROPPED_MS, timestamp, "backlog-overflow");
         }
         last = timestamp;
       }
@@ -314,7 +311,9 @@ function createLoop({
         }
         if (!ALLOWED) {
           if (backlogPolicy === "drop") {
+            const DROPPED_MS = Math.max(0, accumulator - QUANTUM);
             accumulator = Math.min(accumulator, QUANTUM);
+            REPORT_BACKLOG_DROP(ELAPSED, DROPPED_MS, timestamp, "drop-policy");
           }
           break;
         }
@@ -402,7 +401,9 @@ function createLoop({
         if (RESULT.status === "advanced") {
           accumulator = Math.max(0, accumulator - QUANTUM * PACE);
         } else if (backlogPolicy === "drop") {
+          const DROPPED_MS = Math.max(0, accumulator - QUANTUM);
           accumulator = Math.min(accumulator, QUANTUM);
+          REPORT_BACKLOG_DROP(ELAPSED, DROPPED_MS, timestamp, "drop-policy");
         }
         if (CURRENT !== generation) {
           return;
