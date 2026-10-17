@@ -353,8 +353,7 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
             ASSERT_THAT(
                 PLAYER.getPartPose('body').transform.every(
                     (value, index) => value === ORIGINAL_BODY_TRANSFORM[index],
-                ) &&
-                    PLAYER.partPoses()[0].morph[0] === 0,
+                ) && PLAYER.partPoses()[0].morph[0] === 0,
                 'mutating returned part poses cannot corrupt the player-local resolved-pose cache',
             );
             const BASE_POSE_BEFORE = PLAYER.getPartPose('body').transform;
