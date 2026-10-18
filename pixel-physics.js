@@ -87,10 +87,36 @@ function installDeterministicTrig() {
   Math.sin = dsin;
   Math.cos = dcos;
 }
+function shiftPlane(a, pw, ph, dx, dy, fill) {
+  const X0 = Math.max(0, -dx), X1 = Math.min(pw, pw - dx), Y0 = Math.max(0, -dy), Y1 = Math.min(ph, ph - dy);
+  if (X0 >= X1 || Y0 >= Y1) {
+    a.fill(fill);
+    return;
+  }
+  for (let n = 0; n < Y1 - Y0; n++) {
+    const Y = dy > 0 ? Y0 + n : Y1 - 1 - n, SRC = (Y + dy) * pw + X0 + dx;
+    a.copyWithin(Y * pw + X0, SRC, SRC + (X1 - X0));
+  }
+  a.fill(fill, 0, Y0 * pw);
+  a.fill(fill, Y1 * pw);
+  for (let y = Y0; y < Y1; y++) {
+    a.fill(fill, y * pw, y * pw + X0);
+    a.fill(fill, y * pw + X1, (y + 1) * pw);
+  }
+}
+function hashCell(seed, x, y) {
+  let h = (seed ^ Math.imul(x | 0, 2654435761) ^ Math.imul(y | 0, 2246822507)) >>> 0;
+  h = Math.imul(h ^ h >>> 16, 2146121005);
+  h = Math.imul(h ^ h >>> 15, 2221713035);
+  return (h ^ h >>> 16) >>> 0;
+}
 var PixelWorld = class _PixelWorld {
-  constructor(w, h, { seed = 1 } = {}) {
+  constructor(w, h, { seed = 1, originX = 0, originY = 0, stream = {} } = {}) {
     this.w = w;
     this.h = h;
+    this.originX = originX;
+    this.originY = originY;
+    this.setStreaming(stream);
     const N_VALUE = w * h;
     this.g = new Uint8Array(N_VALUE);
     this.life = new Uint8Array(N_VALUE);
@@ -518,6 +544,199 @@ var PixelWorld = class _PixelWorld {
         F_VALUE(e);
       }
     }
+  }
+  _region(x, y, w, h) {
+    if (![x, y, w, h].every(Number.isInteger) || w < 0 || h < 0 || x < 0 || y < 0 || x + w > this.w || y + h > this.h) {
+      throw new RangeError("영역은 창 안의 정수 사각형이어야 합니다.");
+    }
+  }
+  /**
+   * 창 안 사각형(x,y,w,h)의 재료·수명을 새 Uint8Array로 읽습니다. 맵 데이터에 되쓸 때 씁니다.
+   * 반환: {g, life} 각각 길이 w*h, 행 우선.
+   */
+  readRegion(x, y, w, h) {
+    this._region(x, y, w, h);
+    const G = new Uint8Array(w * h), LIFE = new Uint8Array(w * h);
+    for (let r = 0; r < h; r++) {
+      const SRC = (y + r) * this.w + x;
+      G.set(this.g.subarray(SRC, SRC + w), r * w);
+      LIFE.set(this.life.subarray(SRC, SRC + w), r * w);
+    }
+    return { g: G, life: LIFE };
+  }
+  /**
+   * 창 안 사각형(x,y,w,h)을 맵 데이터로 덮어씁니다: cells는 길이 w*h인 재료 id 배열(행 우선, 0은 빈 셀)입니다.
+   * life를 주지 않으면 재료의 수명 최솟값(없으면 0)을 씁니다. 월드 난수열을 쓰지 않아서 같은 데이터는 언제 써도 같은 결과입니다.
+   * 덮은 청크와 이웃 청크는 깨우고 지형 충돌체를 다시 만들며 붕괴 검사를 요청합니다. 잘못된 재료 id는 RangeError입니다.
+   */
+  writeRegion(x, y, w, h, cells, life = null) {
+    this._region(x, y, w, h);
+    if (!(cells instanceof Uint8Array) || cells.length !== w * h || life && life.length !== w * h) {
+      throw new RangeError("cells와 life는 길이 w*h인 Uint8Array여야 합니다.");
+    }
+    if (this.dirty) {
+      this._compile();
+    }
+    for (let i = 0; i < cells.length; i++) {
+      if (cells[i] >= this.mats.length) {
+        throw new RangeError(`정의되지 않은 재료 id ${cells[i]}입니다.`);
+      }
+    }
+    for (let r = 0; r < h; r++) {
+      const DST = (y + r) * this.w + x;
+      for (let c = 0; c < w; c++) {
+        const ID = cells[r * w + c];
+        this.g[DST + c] = ID;
+        this.life[DST + c] = life ? life[r * w + c] : this.mats[ID].life?.[0] ?? 0;
+      }
+      this.u.fill(this.flag, DST, DST + w);
+    }
+    this._touch(x, y, x + w, y + h);
+  }
+  _touch(x0, y0, x1, y1) {
+    if (x0 >= x1 || y0 >= y1) {
+      return;
+    }
+    const CX0 = Math.max(0, (x0 >> 4) - 1), CX1 = Math.min(this.cw - 1, x1 - 1 >> 4) + 1, CY0 = Math.max(0, (y0 >> 4) - 1), CY1 = Math.min(this.chh - 1, y1 - 1 >> 4) + 1;
+    for (let cy = CY0; cy <= Math.min(this.chh - 1, CY1); cy++) {
+      for (let cx = CX0; cx <= Math.min(this.cw - 1, CX1); cx++) {
+        const C_VALUE = cy * this.cw + cx;
+        this.awake[C_VALUE] = 20;
+        this.chd[C_VALUE] = 1;
+        this._refreshReac(C_VALUE);
+      }
+    }
+    this.supDirty = true;
+  }
+  /**
+   * scrollTo가 쓰는 미리 불러오기 설정입니다(시뮬레이션 상태가 아니라 설정이라 snapshot에 들어가지 않습니다. 모든 참가자가 같게 두세요).
+   * margin: 초점이 창 가장자리에서 이만큼(셀) 안쪽을 벗어나면 창을 옮깁니다. 곧 "미리 불러둘 거리"이며, 카메라 시야의 반 크기보다 크게 잡아야
+   *   시야가 항상 불러온 영역 안에 있습니다. 기본은 짧은 변의 1/4.
+   * step: 한 번에 옮기는 단위(셀, 16의 배수). 클수록 드물게 크게 불러오고 작을수록 자주 조금씩 불러옵니다. 기본은 16 이상 32 이하의 가능한 최대값.
+   * 조건: step <= min(w,h) - 2*margin (옮긴 뒤 초점이 다시 여유 구간 안에 들어와야 합니다). 청크 크기 16은 sleep 단위라 고정입니다.
+   */
+  setStreaming({ margin, step } = {}) {
+    const SIDE = Math.min(this.w, this.h), MARGIN = margin ?? SIDE >> 2, STEP = step ?? Math.max(16, Math.min(32, SIDE - 2 * MARGIN & ~15));
+    if (!Number.isInteger(MARGIN) || MARGIN < 0 || !Number.isInteger(STEP) || STEP < 16 || STEP % 16) {
+      throw new RangeError("margin은 0 이상 정수, step은 16 이상의 16의 배수여야 합니다.");
+    }
+    if (STEP > SIDE - 2 * MARGIN) {
+      throw new RangeError(`step(${STEP}) <= min(w,h) - 2*margin(${SIDE - 2 * MARGIN})이어야 합니다.`);
+    }
+    this.stream = { margin: MARGIN, step: STEP };
+  }
+  /**
+   * 초점(절대 좌표 focusX, focusY — 카메라 중심이나 플레이어)이 창의 여유 구간(margin 안쪽)을 벗어났을 때만 창을 옮깁니다.
+   * 옮길 때는 초점이 창 가운데 근처로 오도록 step의 배수만큼 옮기며, 같은 초점 열이면 같은 이동을 하는 결정적 함수입니다.
+   * 반환은 shiftWindow의 결과이고, 옮기지 않았으면 null입니다. 틱 사이에 매 프레임 불러도 됩니다.
+   */
+  scrollTo(focusX, focusY, hooks = {}) {
+    const { margin: M, step: S } = this.stream, AXIS = (focus, origin, size) => {
+      const POS = focus - origin;
+      if (POS >= M && POS < size - M) {
+        return 0;
+      }
+      const D = Math.round((POS - size / 2) / S) * S;
+      return D || (POS < size / 2 ? -S : S);
+    }, DX = AXIS(focusX, this.originX, this.w), DY = AXIS(focusY, this.originY, this.h);
+    return DX || DY ? this.shiftWindow(DX, DY, hooks) : null;
+  }
+  _edges(dx, dy, leaving) {
+    const { w: W, h: H } = this, OUT = [];
+    const TOP = leaving ? dy > 0 : dy < 0, LEFT = leaving ? dx > 0 : dx < 0, AY = Math.min(H, Math.abs(dy)), AX = Math.min(W, Math.abs(dx));
+    let ya = 0, yb = H;
+    if (dy) {
+      OUT.push({ x0: 0, y0: TOP ? 0 : H - AY, x1: W, y1: TOP ? AY : H });
+      ya = TOP ? AY : 0;
+      yb = TOP ? H : H - AY;
+    }
+    if (dx && ya < yb) {
+      OUT.push({ x0: LEFT ? 0 : W - AX, y0: ya, x1: LEFT ? AX : W, y1: yb });
+    }
+    return OUT;
+  }
+  /**
+   * 창(이 격자)을 큰 세계에서 (dx,dy)칸 움직입니다. 열린 월드·무한 스크롤용이며 틱 사이에만 호출하세요.
+   * dx,dy는 16의 배수 정수(청크 단위)이고 둘 다 0일 수 없습니다. 창 좌표 (x,y)의 셀은 (x-dx, y-dy)로 옮겨지고
+   * originX += dx, originY += dy가 됩니다(절대 좌표 = origin + 창 좌표).
+   * 옮기는 것: 셀(g/life/u), 청크 플래그(awake/reac/chd/chunkTick), 발사체, 엔티티, 강체(위치·핀·고정 조인트·정적 충돌체).
+   * 창 밖으로 나간 셀·발사체는 사라지고, 엔티티·강체는 지우지 않은 채 돌려줍니다(게임이 처리).
+   * @param {{evict?: Function, load?: Function}} hooks evict(rect): 밀려나기 직전 호출(옛 origin 기준, 셀이 아직 있음 →
+   *   readRegion으로 읽어 맵 데이터에 되쓰기). load(rect): 새로 드러난 영역마다 호출(새 origin 기준 → writeRegion이나 set으로 채우기).
+   *   rect = {world, x0, y0, x1, y1, originX, originY}. 호출하지 않은 영역은 빈 셀입니다.
+   * @returns {{originX:number, originY:number, entities:Body[], bodies:object[], projectiles:number}}
+   */
+  shiftWindow(dx, dy, { load, evict } = {}) {
+    if (!Number.isInteger(dx) || !Number.isInteger(dy) || dx % 16 || dy % 16 || !dx && !dy) {
+      throw new RangeError("dx, dy는 16의 배수 정수이고 둘 다 0일 수 없습니다.");
+    }
+    if (load && typeof load !== "function" || evict && typeof evict !== "function") {
+      throw new TypeError("load와 evict는 함수여야 합니다.");
+    }
+    if (this.dirty) {
+      this._compile();
+    }
+    const { w: W, h: H, cw: CW, chh: CH } = this, RECT = (e) => ({ world: this, ...e, originX: this.originX, originY: this.originY });
+    if (evict) {
+      for (const E of this._edges(dx, dy, true)) {
+        evict(RECT(E));
+      }
+    }
+    shiftPlane(this.g, W, H, dx, dy, 0);
+    shiftPlane(this.life, W, H, dx, dy, 0);
+    shiftPlane(this.u, W, H, dx, dy, 0);
+    shiftPlane(this.awake, CW, CH, dx / 16, dy / 16, 20);
+    shiftPlane(this.reac, CW, CH, dx / 16, dy / 16, 1);
+    shiftPlane(this.chd, CW, CH, dx / 16, dy / 16, 1);
+    shiftPlane(this.chunkTick, CW, CH, dx / 16, dy / 16, this.time);
+    this.originX += dx;
+    this.originY += dy;
+    const OUT = { originX: this.originX, originY: this.originY, entities: [], bodies: [], projectiles: 0 }, INSIDE = (o) => o.x >= 0 && o.x < W && o.y >= 0 && o.y < H;
+    for (const E of this.bodies) {
+      E.x -= dx;
+      E.y -= dy;
+      E.px -= dx;
+      E.py -= dy;
+      if (!INSIDE(E)) {
+        OUT.entities.push(E);
+      }
+    }
+    const BEFORE = this.proj.length;
+    for (const P of this.proj) {
+      P.x -= dx;
+      P.y -= dy;
+      P.ex -= dx;
+      P.ey -= dy;
+    }
+    this.proj = this.proj.filter((jet) => Math.floor(jet.x) >= 0 && Math.floor(jet.x) < W && Math.floor(jet.y) < H);
+    OUT.projectiles = BEFORE - this.proj.length;
+    if (this.bridge) {
+      this.bridge.shift(dx, dy, (id) => {
+        const CX = id % CW - dx / 16, CY = (id / CW | 0) - dy / 16;
+        return CX < 0 || CX >= CW || CY < 0 || CY >= CH ? -1 : CY * CW + CX;
+      });
+      for (const H_VALUE of this.bridge.bodies) {
+        if (H_VALUE._sm) {
+          H_VALUE._sm.x -= dx;
+          H_VALUE._sm.y -= dy;
+        }
+        if (!INSIDE(H_VALUE)) {
+          OUT.bodies.push(H_VALUE);
+        }
+      }
+    }
+    this.supDirty = true;
+    const ENTERING = this._edges(dx, dy, false);
+    for (const E of ENTERING) {
+      this._touch(E.x0, E.y0, E.x1, E.y1);
+    }
+    if (load) {
+      for (const E of ENTERING) {
+        load(RECT(E));
+      }
+    }
+    this.emit("shift", { dx, dy, originX: this.originX, originY: this.originY });
+    return OUT;
   }
   markAllDirty() {
     this.chd.fill(1);
@@ -961,7 +1180,16 @@ var PixelWorld = class _PixelWorld {
   }
   /* ---- 지형 붕괴: 앵커(바닥·가장자리·indestructible 재료)와 8방향으로 이어지지 않은 고체 덩어리는 강체가 되어 떨어짐 ---- */
   enableCollapse(o = {}) {
-    this.collapse = { minCells: 4, maxCells: 1500, interval: 4, bake: true, restTicks: 40, minBake: 0.7, ...o };
+    this.collapse = {
+      minCells: 4,
+      maxCells: 1500,
+      interval: 4,
+      bake: true,
+      restTicks: 40,
+      minBake: 0.7,
+      anchorTop: false,
+      ...o
+    };
     this.supDirty = true;
   }
   _flood() {
@@ -988,6 +1216,9 @@ var PixelWorld = class _PixelWorld {
     }
     for (let x = 0; x < W_VALUE; x++) {
       SEED((H_VALUE - 1) * W_VALUE + x);
+      if (this.collapse?.anchorTop) {
+        SEED(x);
+      }
     }
     for (let y = 0; y < H_VALUE; y++) {
       SEED(y * W_VALUE);
@@ -1195,6 +1426,8 @@ var PixelWorld = class _PixelWorld {
       dir: this.dir,
       seed: this.seed,
       time: this.time,
+      originX: this.originX,
+      originY: this.originY,
       pseq: this.pseq,
       eseq: this.eseq,
       supDirty: this.supDirty,
@@ -1218,6 +1451,8 @@ var PixelWorld = class _PixelWorld {
     this.dir = s.dir;
     this.seed = s.seed;
     this.time = s.time;
+    this.originX = s.originX;
+    this.originY = s.originY;
     this.pseq = s.pseq;
     this.eseq = s.eseq;
     this.supDirty = s.supDirty;
@@ -1255,6 +1490,8 @@ var PixelWorld = class _PixelWorld {
     }
     MIX(this.seed);
     MIX(this.time);
+    MF(this.originX);
+    MF(this.originY);
     for (const P_VALUE of this.proj) {
       MF(P_VALUE.x);
       MF(P_VALUE.y);
@@ -1723,6 +1960,9 @@ var PhysicsBridge = class {
   }
   removeJoint(_j) {
   }
+  shift(_dx, _dy, _remapStatic) {
+  }
+  // 창 이동: 모든 월드 좌표를 (-dx,-dy)만큼 옮기고 정적 충돌체 id를 remapStatic(id)(없으면 -1)로 바꿉니다
   setAngularVelocity(_h, _av) {
   }
   // 조인트: {a,b?,ax,ay,bx,by,len,stiff,damping}
@@ -2099,6 +2339,47 @@ var MatterBridge = class extends PhysicsBridge {
     const B_VALUE = h.body, V = B_VALUE.velocity;
     this.M.Body.setVelocity(B_VALUE, { x: V.x * lin, y: V.y * lin });
     this.M.Body.setAngularVelocity(B_VALUE, B_VALUE.angularVelocity * ang);
+  }
+  shift(dx, dy, remapStatic) {
+    const M = this.M, T = { x: -dx, y: -dy };
+    for (const H_VALUE of this.bodies) {
+      M.Body.translate(H_VALUE.body, T, false);
+      H_VALUE.x = H_VALUE.body.position.x;
+      H_VALUE.y = H_VALUE.body.position.y;
+      H_VALUE.px -= dx;
+      H_VALUE.py -= dy;
+      for (const P_VALUE of H_VALUE.pins) {
+        P_VALUE.ax -= dx;
+        P_VALUE.ay -= dy;
+      }
+      for (const C_VALUE of H_VALUE._cons) {
+        C_VALUE.pointA.x -= dx;
+        C_VALUE.pointA.y -= dy;
+      }
+    }
+    for (const J of this.joints) {
+      if (!J.b) {
+        J.bx -= dx;
+        J.by -= dy;
+        J.c.pointB.x -= dx;
+        J.c.pointB.y -= dy;
+      }
+    }
+    const NEXT = /* @__PURE__ */ new Map();
+    for (const [ID, BS] of this.statics) {
+      const NEW_ID = remapStatic(ID);
+      if (NEW_ID < 0) {
+        M.Composite.remove(this.engine.world, BS);
+        continue;
+      }
+      BS.forEach((b, k) => {
+        M.Body.translate(b, T, false);
+        b.id = 1e5 + NEW_ID * 256 + k;
+      });
+      NEXT.set(NEW_ID, BS);
+    }
+    this.statics = NEXT;
+    M.Pairs.clear(this.engine.pairs);
   }
   wake(r) {
     for (const H_VALUE of this.bodies) {
@@ -2680,36 +2961,77 @@ function createGridShade(cellCount) {
   }
   return OUT;
 }
-function writeGridPixels(world, pixels, shade, background = GRID_BACKGROUND) {
-  if (pixels.length !== world.g.length || shade.length !== world.g.length) {
-    throw new RangeError("pixels와 shade의 길이는 w*h여야 합니다.");
+function writeGridPixels(world, pixels, shade, background = GRID_BACKGROUND, view = null) {
+  const { w: W, h: H } = world;
+  if (shade.length !== W * H) {
+    throw new RangeError("shade의 길이는 w*h여야 합니다.");
+  }
+  const VX = view ? view.x : 0, VY = view ? view.y : 0, VW = view ? view.w : W, VH = view ? view.h : H;
+  if (![VX, VY, VW, VH].every(Number.isInteger) || VW < 0 || VH < 0) {
+    throw new RangeError("view는 정수 {x, y, w, h}이고 w, h는 0 이상이어야 합니다.");
+  }
+  if (pixels.length !== VW * VH) {
+    throw new RangeError(
+      view ? "pixels의 길이는 view.w*view.h여야 합니다." : "pixels와 shade의 길이는 w*h여야 합니다."
+    );
   }
   if (world.dirty) {
     world._compile();
   }
   const { g: G, life: LIFE, PAL, FL } = world;
-  for (let i = 0; i < G.length; i++) {
-    const T = G[i];
-    pixels[i] = T ? PAL[T * 8 + (FL[T] ? LIFE[i] + i & 7 : shade[i])] : background;
+  const X0 = Math.max(0, VX), X1 = Math.min(W, VX + VW);
+  for (let r = 0; r < VH; r++) {
+    const Y = VY + r, OUT = r * VW;
+    if (Y < 0 || Y >= H || X0 >= X1) {
+      pixels.fill(background, OUT, OUT + VW);
+      continue;
+    }
+    pixels.fill(background, OUT, OUT + (X0 - VX));
+    pixels.fill(background, OUT + (X1 - VX), OUT + VW);
+    const SY = ((world.originY + Y) % H + H) % H;
+    let sx = ((world.originX + X0) % W + W) % W;
+    for (let x = X0, i = Y * W + X0, o = OUT + (X0 - VX); x < X1; x++, i++, o++) {
+      const T = G[i], S = SY * W + sx;
+      pixels[o] = T ? PAL[T * 8 + (FL[T] ? LIFE[i] + S & 7 : shade[S])] : background;
+      if (++sx === W) {
+        sx = 0;
+      }
+    }
   }
 }
 
 // modules/pixel-physics/renderer.js
 var PixelRenderer = class {
-  constructor(canvas, world, { overlay = null } = {}) {
+  /** view = {x, y, w, h}(창 좌표)를 주면 그 사각형만 그립니다. 생략하면 전체 격자입니다. */
+  constructor(canvas, world, { overlay = null, view = null } = {}) {
     this.ov = overlay;
+    this.canvas = canvas;
     this.ctx = canvas.getContext("2d");
     this.world = world;
-    canvas.width = world.w;
-    canvas.height = world.h;
-    this.img = this.ctx.createImageData(world.w, world.h);
-    this.px = new Uint32Array(this.img.data.buffer);
     this.sh = createGridShade(world.w * world.h);
     this.bg = GRID_BACKGROUND;
+    this.setView(view);
+  }
+  /**
+   * 그릴 사각형을 바꿉니다(null이면 전체). 크기가 바뀔 때만 캔버스와 버퍼를 다시 만들고, 같은 크기로 위치만 옮기면 비용이 없습니다.
+   * 격자 밖에 걸친 부분은 배경색입니다. 개체와 extra 훅은 창 좌표 그대로 그리면 view에 맞춰 이동됩니다.
+   */
+  setView(view) {
+    const V = view ?? { x: 0, y: 0, w: this.world.w, h: this.world.h };
+    if (![V.x, V.y, V.w, V.h].every(Number.isInteger) || V.w <= 0 || V.h <= 0) {
+      throw new RangeError("view는 정수 {x, y, w, h}이고 w, h는 1 이상이어야 합니다.");
+    }
+    if (!this.view || this.view.w !== V.w || this.view.h !== V.h) {
+      this.canvas.width = V.w;
+      this.canvas.height = V.h;
+      this.img = this.ctx.createImageData(V.w, V.h);
+      this.px = new Uint32Array(this.img.data.buffer);
+    }
+    this.view = { x: V.x, y: V.y, w: V.w, h: V.h };
   }
   draw(drawBody, extra) {
-    const W = this.world;
-    writeGridPixels(W, this.px, this.sh, this.bg);
+    const W = this.world, V = this.view;
+    writeGridPixels(W, this.px, this.sh, this.bg, V);
     this.ctx.putImageData(this.img, 0, 0);
     const F = drawBody || this.drawBody;
     if (this.ov) {
@@ -2720,20 +3042,26 @@ var PixelRenderer = class {
       }
       const C = O.getContext("2d");
       C.clearRect(0, 0, PW, PH);
-      const S = PW / W.w;
+      const S = PW / V.w;
+      C.save();
+      C.translate(-V.x * S, -V.y * S);
       for (const B of W.bodies) {
         F(C, B, S);
       }
       if (extra) {
         extra(C, S);
       }
+      C.restore();
     } else {
+      this.ctx.save();
+      this.ctx.translate(-V.x, -V.y);
       for (const B of W.bodies) {
         F(this.ctx, B, 1);
       }
       if (extra) {
         extra(this.ctx, 1);
       }
+      this.ctx.restore();
     }
   }
   drawBody(ctx, b, s = 1) {
@@ -3339,6 +3667,11 @@ function decode(world, bytes) {
   for (const KEY of GRID_KEYS) {
     V[KEY] = decodeGrid(V[KEY], world[KEY].length);
   }
+  if (!Number.isFinite(V.originX) || !Number.isFinite(V.originY)) {
+    throw new RangeError(
+      "창 원점(originX, originY)이 없는 snapshot입니다. v0.15.0 이전 SDK에서 만든 바이트입니다."
+    );
+  }
   if (Boolean(V.bridge) !== Boolean(world.bridge)) {
     throw new RangeError("강체 브리지 유무가 다른 snapshot입니다.");
   }
@@ -3438,6 +3771,7 @@ export {
   PixelRenderer,
   PixelWorld,
   createGridShade,
+  hashCell,
   HYP as hyp,
   installDeterministicTrig,
   loadPixelWorld,
