@@ -225,10 +225,58 @@ try {
     );
     REPORT.scenarios.push('platformer works by touch emulation: move and multi-touch jump, buttons release');
     await TOUCH_PLATFORMER.close();
+
+    // 소환수 전투 시험판: 소환 버튼, 흙 놓기/분사 도구 전환, 캔버스 터치 조준을 터치만으로 확인합니다.
+    const TOUCH_SUMMON = await TOUCH_CONTEXT.newPage();
+    TOUCH_SUMMON.on('pageerror', (error) => ERRORS.push(error.message));
+    await TOUCH_SUMMON.route('**/*', TOUCH_ROUTE);
+    await TOUCH_SUMMON.goto(`http://127.0.0.1:${SERVER.address().port}/modules/pixel-physics/examples/summon.html`);
+    await TOUCH_SUMMON.waitForFunction(() => window.summonExample?.diagnostics.tick > 10);
+    assert(await NO_HORIZONTAL_SCROLL(TOUCH_SUMMON), 'summon has no horizontal scroll on a phone');
+    const SUMMON_TOUCH = await TOUCH_CONTEXT.newCDPSession(TOUCH_SUMMON);
+    const GOLEM = await CENTER(TOUCH_SUMMON, '#summons button:nth-child(4)');
+    await SUMMON_TOUCH.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...GOLEM, id: 1 }] });
+    await SUMMON_TOUCH.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await TOUCH_SUMMON.waitForFunction(() => window.summonExample.diagnostics.allies >= 1);
+    // 흙 도구: 누르고 있는 동안 포인터에 흙 셀 덩어리를 붙잡고, 놓으면 모래처럼 떨어져 지형 셀이 됩니다.
+    const SUMMON_CANVAS = await TOUCH_SUMMON.locator('#c').boundingBox();
+    const AIM = {
+        x: SUMMON_CANVAS.x + SUMMON_CANVAS.width * (14 / 160),
+        y: SUMMON_CANVAS.y + SUMMON_CANVAS.height * (44 / 80),
+    };
+    const TAP = async (selector) => {
+        await SUMMON_TOUCH.send('Input.dispatchTouchEvent', {
+            type: 'touchStart',
+            touchPoints: [{ ...(await CENTER(TOUCH_SUMMON, selector)), id: 1 }],
+        });
+        await SUMMON_TOUCH.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    };
+    await TAP('#toolSoil');
+    await SUMMON_TOUCH.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...AIM, id: 1 }] });
+    await TOUCH_SUMMON.waitForFunction(() => window.summonExample.diagnostics.blob > 30);
+    await SUMMON_TOUCH.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await TOUCH_SUMMON.waitForFunction(() => window.summonExample.diagnostics.blob === 0);
+    const SOIL_RELEASED = await TOUCH_SUMMON.evaluate(() => window.summonExample.diagnostics);
+    assert(SOIL_RELEASED.dirt > 30 && SOIL_RELEASED.throws === 0, 'released soil stays as sand cells');
+    // 던지기 도구: 끌어모았다 놓으면 덩어리가 발사체로 바뀌어 날아갑니다.
+    await TAP('#toolThrow');
+    await SUMMON_TOUCH.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...AIM, id: 1 }] });
+    await TOUCH_SUMMON.waitForFunction(() => window.summonExample.diagnostics.blob > 30);
+    await SUMMON_TOUCH.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await TOUCH_SUMMON.waitForFunction(() => window.summonExample.diagnostics.throws === 1);
+    // 분사 도구로 바꿔 누르고 있으면 연료가 줄어 듭니다.
+    await TAP('#toolJet');
+    await SUMMON_TOUCH.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...AIM, id: 1 }] });
+    await TOUCH_SUMMON.waitForFunction(() => window.summonExample.diagnostics.fuel < 80);
+    await SUMMON_TOUCH.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    REPORT.scenarios.push(
+        'summon works by touch emulation: summon button, soil tool holds and drops a sand clump, throw tool flings it, jet tool burns fuel',
+    );
+    await TOUCH_SUMMON.close();
     await TOUCH_CONTEXT.close();
 
     // htmlpreview.github.io recreates inline scripts as classic scripts, so a module script or static import cannot run there.
-    for (const NAME of ['pixel-physics', 'pixel-physics-open-world']) {
+    for (const NAME of ['pixel-physics', 'pixel-physics-open-world', 'pixel-physics-summon']) {
         const PREVIEW_HTML = await readFile(resolve(ROOT, `dist/previews/${NAME}.html`), 'utf8');
         for (const [, ATTRIBUTES, BODY] of PREVIEW_HTML.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
             assert(!/\btype\s*=/i.test(ATTRIBUTES) && !/^\s*(?:import|export)\b/m.test(BODY));
