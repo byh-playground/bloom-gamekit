@@ -23,7 +23,7 @@
     },
     {
       "file": "deterministic.js",
-      "sha256": "311e5b01fae52fd095733ca6999bbb5b14c290abc57d41906c282b2ddcf6f0db"
+      "sha256": "a6c381346a263a724719733762c5b7d02caf7385ac74e06cb4ef96e1fd7f9210"
     },
     {
       "file": "simloop.js",
@@ -43,7 +43,7 @@
     },
     {
       "file": "rollback.js",
-      "sha256": "b05b46e8458e04a14b0de91e97930e8ac9f412dd88694afcdd60a90c03545298"
+      "sha256": "6277879afa9ff7723bbc91805b40d4740ad9026cfe46cbbc4c67bb67ca9511a9"
     },
     {
       "file": "camera.js",
