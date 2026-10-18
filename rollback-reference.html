@@ -239,7 +239,7 @@
       return SIGNED(Number(BigInt(SIGNED(a)) * 1024n / BigInt(b)));
     }
   });
-  var VERSION = "0.14.2";
+  var VERSION = "0.14.3";
   var REPLAY_FORMAT_VERSION = "0.2.0-dev";
   var PROTOCOL_VERSION = 3;
   var CHUNK_SIZE = 16384;
@@ -6116,6 +6116,10 @@
           const MESSAGE = this._incoming.shift();
           this._incomingBytes -= MESSAGE.size ?? 0;
           this._handle(MESSAGE.from, MESSAGE.value);
+        }
+        if (this._departing) {
+          this._flush();
+          return;
         }
         if (this._core && !this._transition && !this._availability?.round && this.coordinatorId === this.localPlayerId && this.activePlayers.length === this.players.length) {
           for (const [ID, REQUESTED_AT] of this._admissionQueue) {
