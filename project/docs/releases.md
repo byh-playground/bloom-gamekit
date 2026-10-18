@@ -154,6 +154,6 @@ import { PresentationRuntime } from 'https://cdn.jsdelivr.net/gh/byh-playground/
 
 [프리뷰 목록](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/index.html)은 10개 기존 예제를 모두 포함합니다. [previews.mjs](../previews.mjs)의 EXAMPLES가 목록입니다. 원본 예제는 소유 모듈 아래에 있으며 API 설명만 있는 모듈에 빈 데모를 만들지 않습니다.
 
-기존 html-share 문서처럼 HTML Preview를 사용합니다. 원본 ESM 예제를 직접 열면 상대 import와 module 실행이 실패하므로 `npm run build:previews`가 각 예제를 독립 IIFE script가 포함된 HTML 하나로 묶습니다. 예제 간 링크는 공개 프리뷰 URL로 변환합니다. PixelPhysics는 ESM script에서 정의된 Matter 웹 URL을 import하며 엔진 코드를 HTML에 넣지 않습니다. 나머지 예제는 외부 SDK import·CDN·공유 chunk가 없습니다. 소스 보기 링크는 GitHub 파일로 연결합니다. `dist/*.js`의 독립 ESM 계약과 프리뷰 빌드는 별개입니다.
+기존 html-share 문서처럼 HTML Preview를 사용합니다. 원본 ESM 예제를 직접 열면 상대 import와 module 실행이 실패하므로 `npm run build:previews`가 각 예제를 독립 IIFE script가 포함된 HTML 하나로 묶습니다. 예제 간 링크는 공개 프리뷰 URL로 변환합니다. PixelPhysics는 HTML Preview가 `type="module"`을 지우고 classic script로 다시 만들어 정적 import가 실패하므로 IIFE 안에서 정의된 Matter 웹 URL을 실행 직전에 동적 `import()`로 받으며 엔진 코드를 HTML에 넣지 않습니다. 나머지 예제는 외부 SDK import·CDN·공유 chunk가 없습니다. 소스 보기 링크는 GitHub 파일로 연결합니다. `dist/*.js`의 독립 ESM 계약과 프리뷰 빌드는 별개입니다.
 
 같은 main CI가 생성 HTML만 별도 `previews` 브랜치에 게시합니다. SDK bytes가 그대로인 예제 수정은 프리뷰만 갱신합니다. 새 계정·토큰·유료 호스팅·Pages 설정은 필요하지 않습니다. 프리뷰는 최신 main의 예제이며 불변 SDK 릴리스 URL과 혼동하지 마세요. Nostr 온라인 예제는 여전히 공용 relay·NAT 환경 영향을 받습니다. 오디오 재생에는 사용자의 시작 동작이 필요합니다.

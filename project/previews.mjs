@@ -20,6 +20,7 @@ export const EXAMPLES = [
     ['rollback-reference', 'modules/rollback/examples/reference/index.html'],
     ['scenario', 'modules/scenario/examples/index.html'],
 ];
+const EXTERNAL_GLOBAL = '__bloomPreviewImports';
 const PREVIEW_URL = (name) =>
     `https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/${name}.html`;
 export { PREVIEW_URL as previewURL };
@@ -45,14 +46,42 @@ export async function buildPreviews(root) {
                     sourcefile: SOURCE,
                 },
                 bundle: true,
-                format: EXTERNAL_IMPORTS.length ? 'esm' : 'iife',
-                external: EXTERNAL_IMPORTS,
+                format: 'iife',
                 platform: 'browser',
                 target: 'es2022',
                 charset: 'utf8',
                 write: false,
                 metafile: true,
                 plugins: [
+                    {
+                        // HTML Preview는 inline script의 type을 지우고 classic script로 다시 만들어 정적 import를 실행하지 못한다.
+                        // 선언된 웹 URL은 번들에 넣지 않고, 실행 직전에 동적 import로 받은 default export를 전역에서 읽는다.
+                        name: 'external-runtime-import',
+                        setup(b) {
+                            b.onResolve(
+                                {
+                                    filter: /^https:\/\//,
+                                },
+                                (args) =>
+                                    EXTERNAL_IMPORTS.includes(args.path)
+                                        ? {
+                                              path: args.path,
+                                              namespace: 'external-runtime-import',
+                                          }
+                                        : null,
+                            );
+                            b.onLoad(
+                                {
+                                    filter: /.*/,
+                                    namespace: 'external-runtime-import',
+                                },
+                                (args) => ({
+                                    contents: `export default globalThis.${EXTERNAL_GLOBAL}[${JSON.stringify(args.path)}].default;`,
+                                    loader: 'js',
+                                }),
+                            );
+                        },
+                    },
                     {
                         name: 'root-dist',
                         setup(b) {
@@ -116,21 +145,15 @@ export async function buildPreviews(root) {
             });
             if (
                 RESULT.outputFiles.length !== 1 ||
-                Object.values(RESULT.metafile.outputs).some(
-                    (o) =>
-                        o.imports.length !== EXTERNAL_IMPORTS.length ||
-                        o.imports.some(
-                            (entry) => entry.kind !== 'import-statement' || !EXTERNAL_IMPORTS.includes(entry.path),
-                        ),
-                )
+                Object.values(RESULT.metafile.outputs).some((o) => o.imports.length)
             ) {
                 throw new Error(`Preview has undeclared external imports: ${SOURCE}`);
             }
-            html = html.replace(
-                WHOLE,
-                () =>
-                    `<script${EXTERNAL_IMPORTS.length ? ' type="module"' : ''}>\n${RESULT.outputFiles[0].text.replace(/<\/script/gi, '<\\/script')}\n</script>`,
-            );
+            const BUNDLE = RESULT.outputFiles[0].text.replace(/<\/script/gi, '<\\/script');
+            const SCRIPT = EXTERNAL_IMPORTS.length
+                ? `Promise.all([${EXTERNAL_IMPORTS.map((url) => `import(${JSON.stringify(url)})`).join(', ')}]).then((LOADED) => {\nglobalThis.${EXTERNAL_GLOBAL} = Object.fromEntries(${JSON.stringify(EXTERNAL_IMPORTS)}.map((url, index) => [url, LOADED[index]]));\n${BUNDLE}});`
+                : BUNDLE;
+            html = html.replace(WHOLE, () => `<script>\n${SCRIPT}\n</script>`);
         }
         html = html.replace(/href=["'](\.[^"']*)["']/g, (_whole, target) => {
             const DESTINATION = resolve(root, dirname(SOURCE), target);
