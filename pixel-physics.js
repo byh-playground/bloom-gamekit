@@ -98,6 +98,7 @@ var PixelWorld = class _PixelWorld {
     this.mats = [{ name: "empty", kind: "solid", color: [0, 0, 0], reactions: [] }];
     this.id = { empty: 0 };
     this.bodies = [];
+    this.eseq = 1;
     this.statuses = {};
     this.flag = 1;
     this.dir = 0;
@@ -1173,6 +1174,14 @@ var PixelWorld = class _PixelWorld {
     this.bridge.removeBody(h);
     this.emit("shatter", { x: h.x, y: h.y, body: h });
   }
+  addEntity(body) {
+    if (body.eid !== void 0) {
+      throw new Error("이미 등록된 엔티티입니다.");
+    }
+    body.eid = this.eseq++;
+    this.bodies.push(body);
+    return body;
+  }
   /* ---- 스냅샷 / 해시 (롤백, 리플레이, 락스텝 디싱크 검출) ---- */
   snapshot() {
     const S_VALUE = {
@@ -1186,6 +1195,7 @@ var PixelWorld = class _PixelWorld {
       seed: this.seed,
       time: this.time,
       pseq: this.pseq,
+      eseq: this.eseq,
       supDirty: this.supDirty,
       supT: this._supT,
       proj: this.proj.map((p) => ({ ...p })),
@@ -1208,6 +1218,7 @@ var PixelWorld = class _PixelWorld {
     this.seed = s.seed;
     this.time = s.time;
     this.pseq = s.pseq;
+    this.eseq = s.eseq;
     this.supDirty = s.supDirty;
     this._supT = s.supT;
     this.proj = s.proj.map((p) => ({ ...p }));
@@ -2145,6 +2156,12 @@ var MatterBridge = class extends PhysicsBridge {
       jseq: this.jseq,
       bs: this.bodies.map((h) => ({
         h,
+        w: h.w,
+        hh: h.h,
+        cells: h.cells,
+        // 마스크 강체의 셀 집합(생성 뒤 불변)과 무게중심 격자 좌표
+        ox: h.ox,
+        oy: h.oy,
         desc: h.desc,
         pins: h.pins.map((p) => ({ ...p })),
         st: ST_VALUE(h.body),
@@ -2157,6 +2174,7 @@ var MatterBridge = class extends PhysicsBridge {
         j,
         a: j.a,
         b: j.b,
+        d: { ax: j.ax, ay: j.ay, bx: j.bx, by: j.by, len: j.len, stiff: j.stiff, damp: j.damp },
         k: {
           ax: j.c.pointA.x,
           ay: j.c.pointA.y,
@@ -2199,6 +2217,13 @@ var MatterBridge = class extends PhysicsBridge {
       const H_VALUE = R_VALUE.h, Q = R_VALUE.st;
       H_VALUE.pins = R_VALUE.pins;
       H_VALUE._cons = [];
+      H_VALUE.w = R_VALUE.w;
+      H_VALUE.h = R_VALUE.hh;
+      if (R_VALUE.cells) {
+        H_VALUE.cells = R_VALUE.cells;
+        H_VALUE.ox = R_VALUE.ox;
+        H_VALUE.oy = R_VALUE.oy;
+      }
       this._make(H_VALUE, R_VALUE.desc);
       const B_VALUE = H_VALUE.body;
       PUT(B_VALUE, Q);
@@ -2245,6 +2270,7 @@ var MatterBridge = class extends PhysicsBridge {
     this.joints = [];
     for (const R_VALUE of s.js) {
       const J = R_VALUE.j;
+      Object.assign(J, R_VALUE.d);
       J.a = R_VALUE.a;
       J.b = R_VALUE.b;
       this._joint(J);
@@ -2352,6 +2378,9 @@ var Body = class {
       delete this.status[K_VALUE];
     }
     Object.assign(this.status, STATUS);
+    for (const K_VALUE in this.input) {
+      delete this.input[K_VALUE];
+    }
     Object.assign(this.input, INPUT);
     for (const K_VALUE in this.data) {
       delete this.data[K_VALUE];
@@ -2636,6 +2665,29 @@ var Body = class {
   }
 };
 
+// modules/pixel-physics/pixels.js
+var GRID_BACKGROUND = 255 << 24 | 26 << 16 | 22 << 8 | 20;
+function createGridShade(cellCount) {
+  const OUT = new Uint8Array(cellCount);
+  for (let i = 0; i < cellCount; i++) {
+    OUT[i] = (i * 2654435761 >>> 0) % 8;
+  }
+  return OUT;
+}
+function writeGridPixels(world, pixels, shade, background = GRID_BACKGROUND) {
+  if (pixels.length !== world.g.length || shade.length !== world.g.length) {
+    throw new RangeError("pixels와 shade의 길이는 w*h여야 합니다.");
+  }
+  if (world.dirty) {
+    world._compile();
+  }
+  const { g: G, life: LIFE, PAL, FL } = world;
+  for (let i = 0; i < G.length; i++) {
+    const T = G[i];
+    pixels[i] = T ? PAL[T * 8 + (FL[T] ? LIFE[i] + i & 7 : shade[i])] : background;
+  }
+}
+
 // modules/pixel-physics/renderer.js
 var PixelRenderer = class {
   constructor(canvas, world, { overlay = null } = {}) {
@@ -2646,21 +2698,12 @@ var PixelRenderer = class {
     canvas.height = world.h;
     this.img = this.ctx.createImageData(world.w, world.h);
     this.px = new Uint32Array(this.img.data.buffer);
-    this.sh = new Uint8Array(world.w * world.h);
-    for (let i = 0; i < this.sh.length; i++) {
-      this.sh[i] = (i * 2654435761 >>> 0) % 8;
-    }
-    this.bg = 255 << 24 | 26 << 16 | 22 << 8 | 20;
+    this.sh = createGridShade(world.w * world.h);
+    this.bg = GRID_BACKGROUND;
   }
   draw(drawBody, extra) {
-    const W = this.world, { g: G, life: LIFE } = W;
-    if (W.dirty) {
-      W._compile();
-    }
-    for (let i = 0; i < G.length; i++) {
-      const T = G[i];
-      this.px[i] = T ? W.PAL[T * 8 + (W.FL[T] ? LIFE[i] + i & 7 : this.sh[i])] : this.bg;
-    }
+    const W = this.world;
+    writeGridPixels(W, this.px, this.sh, this.bg);
     this.ctx.putImageData(this.img, 0, 0);
     const F = drawBody || this.drawBody;
     if (this.ov) {
@@ -2705,13 +2748,574 @@ var PixelRenderer = class {
     }
   }
 };
+
+// modules/deterministic/value-codec.js
+function createValueCodec({
+  format = "binary",
+  maxBytes = 16 * 1024 * 1024,
+  maxDepth = 128,
+  maxEntries = 1e6
+} = {}) {
+  if (!["binary", "json"].includes(format)) {
+    throw new TypeError("Unknown codec format");
+  }
+  for (const LIMIT of [maxBytes, maxDepth, maxEntries]) {
+    if (!Number.isSafeInteger(LIMIT) || LIMIT < 1) {
+      throw new RangeError("Invalid codec limit");
+    }
+  }
+  const ENCODER = new TextEncoder(), DECODER = new TextDecoder("utf-8", {
+    fatal: true,
+    ignoreBOM: true
+  });
+  function normalize(value, depth = 0, seen = /* @__PURE__ */ new Set(), budget = {
+    count: 0
+  }) {
+    if (depth > maxDepth || ++budget.count > maxEntries) {
+      throw new RangeError("Value codec budget exceeded");
+    }
+    if (value === null || typeof value === "boolean") {
+      return value;
+    }
+    if (typeof value === "number") {
+      if (!Number.isFinite(value)) {
+        throw new TypeError("Finite numbers required");
+      }
+      return Object.is(value, -0) ? 0 : value;
+    }
+    if (typeof value === "string") {
+      if (DECODER.decode(ENCODER.encode(value)) !== value) {
+        throw new TypeError("Invalid Unicode string");
+      }
+      return value;
+    }
+    if (!value || typeof value !== "object" || seen.has(value)) {
+      throw new TypeError("Unsupported or cyclic value");
+    }
+    seen.add(value);
+    let result;
+    if (value instanceof Uint8Array) {
+      if (format === "json") {
+        throw new TypeError("JSON codec does not support byte values");
+      }
+      result = value;
+    } else if (Array.isArray(value)) {
+      result = Array.from(value, (item) => normalize(item, depth + 1, seen, budget));
+    } else {
+      if (![Object.prototype, null].includes(Object.getPrototypeOf(value))) {
+        throw new TypeError("Plain records required");
+      }
+      result = {};
+      for (const KEY of Object.keys(value).sort()) {
+        normalize(KEY, depth + 1, seen, budget);
+        Object.defineProperty(result, KEY, {
+          value: normalize(value[KEY], depth + 1, seen, budget),
+          enumerable: true,
+          writable: true,
+          configurable: true
+        });
+      }
+    }
+    seen.delete(value);
+    return result;
+  }
+  const STRING_CACHE = /* @__PURE__ */ new Map();
+  let cachedStringBytes = 0;
+  function stringBytes(value) {
+    let data = STRING_CACHE.get(value);
+    if (data) {
+      return data;
+    }
+    for (let i = 0; i < value.length; i++) {
+      const C = value.charCodeAt(i);
+      if (C >= 55296 && C <= 56319) {
+        const NEXT = value.charCodeAt(++i);
+        if (!(NEXT >= 56320 && NEXT <= 57343)) {
+          throw new TypeError("Invalid Unicode string");
+        }
+      } else if (C >= 56320 && C <= 57343) {
+        throw new TypeError("Invalid Unicode string");
+      }
+    }
+    data = ENCODER.encode(value);
+    if (data.length <= 256 && STRING_CACHE.size < 1024 && cachedStringBytes + data.length <= 131072) {
+      STRING_CACHE.set(value, data);
+      cachedStringBytes += data.length;
+    }
+    return data;
+  }
+  function encode(value) {
+    if (format === "json") {
+      const BYTES = ENCODER.encode(JSON.stringify(normalize(value)));
+      if (BYTES.length > maxBytes) {
+        throw new RangeError("Codec byte budget exceeded");
+      }
+      return BYTES;
+    }
+    let bytes = new Uint8Array(Math.min(1024, maxBytes));
+    let offset = 0;
+    let view = new DataView(bytes.buffer);
+    let entries = 0;
+    const SEEN = /* @__PURE__ */ new Set(), STRINGS = /* @__PURE__ */ new Map();
+    function reserve(size) {
+      if (offset + size > maxBytes) {
+        throw new RangeError("Codec byte budget exceeded");
+      }
+      if (offset + size > bytes.length) {
+        const NEXT = new Uint8Array(Math.min(maxBytes, Math.max(offset + size, bytes.length * 2)));
+        NEXT.set(bytes);
+        bytes = NEXT;
+        view = new DataView(bytes.buffer);
+      }
+    }
+    function byte(n) {
+      reserve(1);
+      bytes[offset++] = n;
+    }
+    function length(n) {
+      reserve(4);
+      view.setUint32(offset, n, true);
+      offset += 4;
+    }
+    function raw(data) {
+      length(data.length);
+      reserve(data.length);
+      bytes.set(data, offset);
+      offset += data.length;
+    }
+    function variable(n) {
+      while (n >= 128) {
+        byte(n % 128 + 128);
+        n = Math.floor(n / 128);
+      }
+      byte(n);
+    }
+    function write(v, depth = 0) {
+      if (depth > maxDepth || ++entries > maxEntries) {
+        throw new RangeError("Value codec budget exceeded");
+      }
+      if (v === null) {
+        byte(0);
+      } else if (v === false) {
+        byte(1);
+      } else if (v === true) {
+        byte(2);
+      } else if (typeof v === "number") {
+        if (!Number.isFinite(v)) {
+          throw new TypeError("Finite numbers required");
+        }
+        if (Number.isInteger(v) && v >= -2147483648 && v <= 2147483647) {
+          byte(8);
+          variable(v < 0 ? -v * 2 - 1 : v * 2);
+        } else {
+          byte(3);
+          reserve(8);
+          view.setFloat64(offset, v, true);
+          offset += 8;
+        }
+      } else if (typeof v === "string") {
+        const REF = STRINGS.get(v);
+        if (REF !== void 0) {
+          byte(9);
+          variable(REF);
+        } else {
+          STRINGS.set(v, STRINGS.size);
+          byte(4);
+          raw(stringBytes(v));
+        }
+      } else {
+        if (!v || typeof v !== "object" || SEEN.has(v)) {
+          throw new TypeError("Unsupported or cyclic value");
+        }
+        if (v instanceof Uint8Array) {
+          byte(7);
+          raw(v);
+          return;
+        }
+        SEEN.add(v);
+        if (Array.isArray(v)) {
+          byte(5);
+          length(v.length);
+          for (const ITEM of v) {
+            write(ITEM, depth + 1);
+          }
+        } else {
+          const PROTOTYPE = Object.getPrototypeOf(v);
+          if (PROTOTYPE !== Object.prototype && PROTOTYPE !== null) {
+            throw new TypeError("Plain records required");
+          }
+          byte(6);
+          const KEYS = Object.keys(v).sort();
+          length(KEYS.length);
+          for (const KEY of KEYS) {
+            write(KEY, depth + 1);
+            write(v[KEY], depth + 1);
+          }
+        }
+        SEEN.delete(v);
+      }
+    }
+    byte(82);
+    byte(86);
+    byte(1);
+    write(value);
+    return bytes.slice(0, offset);
+  }
+  function decode2(input) {
+    const BYTES = input instanceof Uint8Array ? input : input instanceof ArrayBuffer ? new Uint8Array(input) : ArrayBuffer.isView(input) ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength) : null;
+    if (!BYTES || BYTES.length > maxBytes) {
+      throw new RangeError("Invalid codec bytes");
+    }
+    let result;
+    if (format === "json") {
+      result = normalize(JSON.parse(DECODER.decode(BYTES)));
+    } else {
+      let need = function(n) {
+        if (n > BYTES.length - offset) {
+          throw new RangeError("Truncated codec bytes");
+        }
+      }, byte = function() {
+        need(1);
+        return BYTES[offset++];
+      }, length = function() {
+        need(4);
+        const N = VIEW.getUint32(offset, true);
+        offset += 4;
+        return N;
+      }, raw = function() {
+        const N = length();
+        need(N);
+        const DATA = BYTES.subarray(offset, offset + N);
+        offset += N;
+        return DATA;
+      }, read = function(depth = 0) {
+        if (depth > maxDepth || ++entries > maxEntries) {
+          throw new RangeError("Value codec budget exceeded");
+        }
+        const TAG = byte();
+        if (TAG === 0) {
+          return null;
+        }
+        if (TAG === 1) {
+          return false;
+        }
+        if (TAG === 2) {
+          return true;
+        }
+        if (TAG === 3) {
+          need(8);
+          const N2 = VIEW.getFloat64(offset, true);
+          offset += 8;
+          if (!Number.isFinite(N2) || Object.is(N2, -0) || Number.isInteger(N2) && N2 >= -2147483648 && N2 <= 2147483647) {
+            throw new TypeError("Noncanonical number");
+          }
+          return N2;
+        }
+        if (TAG === 8 || TAG === 9) {
+          let n = 0;
+          let scale = 1;
+          let part;
+          for (let i = 0; i < 5; i++) {
+            part = byte();
+            n += (part & 127) * scale;
+            if (n > 4294967295) {
+              throw new TypeError("Integer overflow");
+            }
+            if (part < 128) {
+              if (i && part === 0) {
+                throw new TypeError("Noncanonical integer");
+              }
+              if (TAG === 9) {
+                if (n >= STRINGS.length) {
+                  throw new TypeError("Invalid string reference");
+                }
+                return STRINGS[n];
+              }
+              return n % 2 ? -(n + 1) / 2 : n / 2;
+            }
+            scale *= 128;
+          }
+          throw new TypeError("Invalid integer");
+        }
+        if (TAG === 4) {
+          const VALUE = DECODER.decode(raw());
+          if (STRING_SET.has(VALUE)) {
+            throw new TypeError("Noncanonical repeated string");
+          }
+          STRING_SET.add(VALUE);
+          STRINGS.push(VALUE);
+          return VALUE;
+        }
+        if (TAG === 7) {
+          return raw().slice();
+        }
+        if (TAG !== 5 && TAG !== 6) {
+          throw new TypeError("Invalid codec tag");
+        }
+        const N = length();
+        if (N > maxEntries - entries) {
+          throw new RangeError("Value codec budget exceeded");
+        }
+        if (TAG === 5) {
+          const ARR = [];
+          for (let i = 0; i < N; i++) {
+            ARR.push(read(depth + 1));
+          }
+          return ARR;
+        }
+        const OBJ = {};
+        let previous;
+        for (let i = 0; i < N; i++) {
+          const KEY = read(depth + 1);
+          if (typeof KEY !== "string" || i && KEY <= previous) {
+            throw new TypeError("Noncanonical record key");
+          }
+          if (KEY === "__proto__") {
+            Object.defineProperty(OBJ, KEY, {
+              value: read(depth + 1),
+              enumerable: true,
+              writable: true,
+              configurable: true
+            });
+          } else {
+            OBJ[KEY] = read(depth + 1);
+          }
+          previous = KEY;
+        }
+        return OBJ;
+      };
+      let offset = 0;
+      let entries = 0;
+      const STRINGS = [], STRING_SET = /* @__PURE__ */ new Set();
+      const VIEW = new DataView(BYTES.buffer, BYTES.byteOffset, BYTES.byteLength);
+      if (byte() !== 82 || byte() !== 86 || byte() !== 1) {
+        throw new TypeError("Invalid codec header");
+      }
+      result = read();
+      if (offset !== BYTES.length) {
+        throw new TypeError("Trailing codec bytes");
+      }
+    }
+    if (format === "json") {
+      const CANONICAL = encode(result);
+      if (CANONICAL.length !== BYTES.length || CANONICAL.some((v, i) => v !== BYTES[i])) {
+        throw new TypeError("Noncanonical codec bytes");
+      }
+    }
+    return result;
+  }
+  return Object.freeze({
+    format,
+    encode,
+    decode: decode2
+  });
+}
+var BINARY_CODEC = createValueCodec();
+var JSON_CODEC = createValueCodec({
+  format: "json"
+});
+
+// modules/pixel-physics/snapshot.js
+var CODEC = createValueCodec({ format: "binary", maxBytes: 64 << 20, maxEntries: 1 << 22, maxDepth: 64 });
+var TYPED = { Uint8Array, Int8Array, Uint16Array, Int16Array, Uint32Array, Int32Array, Float32Array, Float64Array };
+var GRID_KEYS = ["g", "life", "u", "awake", "reac"];
+function ref(o) {
+  if (o === null || o === void 0) {
+    return null;
+  }
+  if (o instanceof Body) {
+    if (o.eid === void 0) {
+      throw new Error("eid가 없는 엔티티입니다. world.bodies.push 대신 world.addEntity를 사용하세요.");
+    }
+    return "e" + o.eid;
+  }
+  if (o.body && o.desc && typeof o.id === "number") {
+    return "h" + o.id;
+  }
+  if (typeof o.id === "number" && "stiff" in o) {
+    return "j" + o.id;
+  }
+  throw new Error("snapshot이 알 수 없는 객체를 참조합니다.");
+}
+function packCells(cells) {
+  const OUT = new Int32Array(cells.length * 3);
+  cells.forEach((c, i) => {
+    OUT[i * 3] = c.x;
+    OUT[i * 3 + 1] = c.y;
+    OUT[i * 3 + 2] = c.t;
+  });
+  return OUT;
+}
+function unpackCells(flat) {
+  const OUT = [];
+  for (let i = 0; i < flat.length; i += 3) {
+    OUT.push({ x: flat[i], y: flat[i + 1], t: flat[i + 2] });
+  }
+  return OUT;
+}
+function pack(v) {
+  if (v === null || typeof v !== "object") {
+    return v;
+  }
+  if (ArrayBuffer.isView(v)) {
+    const BYTES = new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+    return { $: v.constructor.name, b: BYTES.slice() };
+  }
+  if (Array.isArray(v)) {
+    return v.map(pack);
+  }
+  const OUT = {};
+  for (const KEY of Object.keys(v)) {
+    if (v[KEY] !== void 0) {
+      OUT[KEY] = pack(v[KEY]);
+    }
+  }
+  return OUT;
+}
+function unpack(v) {
+  if (v === null || typeof v !== "object") {
+    return v;
+  }
+  if (Array.isArray(v)) {
+    return v.map(unpack);
+  }
+  if (typeof v.$ === "string") {
+    const TYPE = TYPED[v.$];
+    if (!TYPE) {
+      throw new TypeError("알 수 없는 typed array: " + v.$);
+    }
+    return new TYPE(v.b.slice().buffer);
+  }
+  const OUT = {};
+  for (const KEY of Object.keys(v)) {
+    OUT[KEY] = unpack(v[KEY]);
+  }
+  return OUT;
+}
+function savePixelWorld(world) {
+  const S = world.snapshot();
+  const OUT = { ...S, entRefs: S.entRefs.map(ref), proj: S.proj.map((p) => ({ ...p, src: ref(p.src) })) };
+  OUT.ents = S.ents.map((e) => ({ ...e, _ride: ref(e._ride) }));
+  if (S.bridge) {
+    OUT.bridge = {
+      ...S.bridge,
+      bs: S.bridge.bs.map((r) => ({ ...r, h: ref(r.h), cells: r.cells && packCells(r.cells) })),
+      js: S.bridge.js.map((r) => ({ ...r, j: ref(r.j), a: ref(r.a), b: ref(r.b) }))
+    };
+  }
+  return CODEC.encode(pack(OUT));
+}
+function decode(world, bytes) {
+  const V = unpack(CODEC.decode(bytes));
+  for (const KEY of GRID_KEYS) {
+    if (!(V[KEY] instanceof Uint8Array) || V[KEY].length !== world[KEY].length) {
+      throw new RangeError("월드 크기나 형식이 다른 snapshot입니다: " + KEY);
+    }
+  }
+  if (Boolean(V.bridge) !== Boolean(world.bridge)) {
+    throw new RangeError("강체 브리지 유무가 다른 snapshot입니다.");
+  }
+  return V;
+}
+function validatePixelWorld(world, bytes) {
+  try {
+    decode(world, bytes);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function loadPixelWorld(world, bytes, { createBody } = {}) {
+  const V = decode(world, bytes);
+  const ENTITIES = new Map(world.bodies.map((b) => [b.eid, b]));
+  const ENTITY = (id, state) => {
+    let b = ENTITIES.get(id);
+    if (!b) {
+      if (typeof createBody !== "function") {
+        throw new Error(`엔티티 e${id}가 없습니다. createBody(eid, state)를 전달하세요.`);
+      }
+      b = createBody(id, state);
+      if (!(b instanceof Body)) {
+        throw new TypeError("createBody는 Body를 반환해야 합니다.");
+      }
+      b.eid = id;
+      ENTITIES.set(id, b);
+    }
+    return b;
+  };
+  const HANDLES = new Map((world.bridge?.bodies ?? []).map((h) => [h.id, h]));
+  const JOINTS = new Map((world.bridge?.joints ?? []).map((j) => [j.id, j]));
+  const HANDLE = (id, rec) => {
+    let h = HANDLES.get(id);
+    if (!h) {
+      h = {
+        id,
+        desc: rec?.desc,
+        x: 0,
+        y: 0,
+        angle: 0,
+        w: 0,
+        h: 0,
+        mass: 0,
+        area: 0,
+        vx: 0,
+        vy: 0,
+        av: 0,
+        data: {},
+        pins: [],
+        _cons: []
+      };
+      HANDLES.set(id, h);
+    }
+    return h;
+  };
+  const RESOLVE = (r) => {
+    if (r === null || r === void 0) {
+      return null;
+    }
+    const ID = Number(r.slice(1));
+    if (r[0] === "e") {
+      return ENTITIES.get(ID) ?? ENTITY(ID, V.ents[V.entRefs.indexOf(r)]);
+    }
+    if (r[0] === "h") {
+      return HANDLES.get(ID) ?? HANDLE(ID);
+    }
+    return JOINTS.get(ID);
+  };
+  const S = { ...V };
+  S.entRefs = V.entRefs.map((r, i) => ENTITY(Number(r.slice(1)), V.ents[i]));
+  if (V.bridge) {
+    const BRIDGE = V.bridge;
+    BRIDGE.bs.forEach((r) => HANDLE(Number(r.h.slice(1)), r));
+    BRIDGE.js.forEach((r) => {
+      const ID = Number(r.j.slice(1));
+      if (!JOINTS.has(ID)) {
+        JOINTS.set(ID, { id: ID, a: null, b: null, c: null });
+      }
+    });
+    S.bridge = {
+      ...BRIDGE,
+      bs: BRIDGE.bs.map((r) => ({ ...r, h: RESOLVE(r.h), cells: r.cells && unpackCells(r.cells) })),
+      js: BRIDGE.js.map((r) => ({ ...r, j: RESOLVE(r.j), a: RESOLVE(r.a), b: RESOLVE(r.b) }))
+    };
+  }
+  S.proj = V.proj.map((p) => ({ ...p, src: p.src ? RESOLVE(p.src) : void 0 }));
+  S.ents = V.ents.map((e) => ({ ...e, _ride: RESOLVE(e._ride) }));
+  world.restore(S);
+}
 export {
   Body,
+  GRID_BACKGROUND,
   MatterBridge,
   PhysicsBridge,
   PixelRenderer,
   PixelWorld,
+  createGridShade,
   HYP as hyp,
   installDeterministicTrig,
-  NOW as now
+  loadPixelWorld,
+  NOW as now,
+  savePixelWorld,
+  validatePixelWorld,
+  writeGridPixels
 };
