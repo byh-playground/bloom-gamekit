@@ -113,9 +113,9 @@ The bounds are computed from per-part ranges retained at mesh creation; the rend
 
 ## 텍스처·생명주기
 
-- `createTexture(source,{filter='linear'}) → handle`: origin-clean하고 로딩 완료한 image/canvas 또는 `{width,height,data: Uint8Array|Uint8ClampedArray}` RGBA bytes입니다. nearest/linear, CLAMP_TO_EDGE, mipmap 없음으로 WebGL 1 NPOT를 지원합니다. handle은 해당 renderer만 사용할 수 있습니다.
-- byte data는 복사·premultiply해 보관하므로 caller의 이후 변경이 반영되지 않습니다. DOM source는 참조를 보관합니다. context 복구 시 최신 DOM pixels를 다시 올립니다. source를 닫거나 해제하지 마세요. ImageBitmap은 premultiplyAlpha 생성 옵션을 검사할 수 없으므로 명시적으로 거부합니다. byte data 또는 일반 image/canvas를 사용하세요.
-- `updateTexture(handle,source)`: 같은 크기로 명시적 재업로드. 기존 batch를 먼저 제출하므로 이전 sprite 호출의 내용은 유지됩니다. 크기를 바꾸려면 새 texture를 만들고 기존 것을 삭제하세요. sprite마다 자동 upload하지 않습니다.
+- `createTexture(source,{filter='linear',premultiplied=false}) → handle`: origin-clean하고 로딩 완료한 image/canvas 또는 `{width,height,data: Uint8Array|Uint8ClampedArray}` RGBA bytes입니다. nearest/linear, CLAMP_TO_EDGE, mipmap 없음으로 WebGL 1 NPOT를 지원합니다. handle은 해당 renderer만 사용할 수 있습니다.
+- byte data는 복사·premultiply해 보관하므로 caller의 이후 변경이 반영되지 않습니다. DOM source는 참조를 보관합니다. context 복구 시 최신 DOM pixels를 다시 올립니다. source를 닫거나 해제하지 마세요. ImageBitmap은 premultiplyAlpha 생성 옵션을 검사할 수 없으므로 명시적으로 거부합니다. byte data 또는 일반 image/canvas를 사용하세요. byte data의 알파가 모두 255이면 곱셈이 항등이라 premultiply 패스를 건너뜁니다. `premultiplied:true`는 RGB에 알파가 이미 곱해진 바이트임을 선언하며 CPU 패스를 생략합니다(텍스처가 이 선언을 기억해 이후 `updateTexture`에도 적용).
+- `updateTexture(handle,source,{x=0,y=0,width=handle.width,height=handle.height})`: 같은 크기로 명시적 재업로드. 기존 batch를 먼저 제출하므로 이전 sprite 호출의 내용은 유지됩니다. RGBA byte source는 기존 GPU texture를 제자리에서 `texSubImage2D`로 갱신하며(재할당 없음), 영역을 주면 그 행만 복사·premultiply·업로드합니다. source는 전체 이미지이고 영역 밖 픽셀은 직전 업로드 이후 바뀌지 않아야 합니다. 영역 갱신은 byte texture에서만 가능하고 DOM source는 전체 갱신만 합니다. 크기를 바꾸려면 새 texture를 만들고 기존 것을 삭제하세요. sprite마다 자동 upload하지 않습니다.
 - `deleteTexture(handle) → boolean`: GPU texture와 retained source를 해제합니다. 이미 삭제한 handle은 false. 삭제/다른 renderer handle의 sprite 호출은 throw합니다.
 - `state`: ready/lost/failed/disposed. webglcontextlost는 preventDefault 후 현재 frame을 취소합니다. 복구 event에서 shader·buffer·retained texture를 다시 생성합니다. handle identity는 유지합니다. 복구 실패는 failed 및 failure 문자열로 드러나며 게임은 dispose/recreate를 선택합니다.
 - `dispose()`: 반복해도 안전하며 context listener·GPU 자원·retained source를 해제합니다. canvas/DOM 노드를 제거하지 않습니다. 그 뒤 draw/create/resize는 지원하지 않습니다.

@@ -62,7 +62,7 @@ const ADAPTER = {
 
 ## rendering 연동
 
-`writeGridPixels(world, pixels, shade)`는 격자만 `Uint32Array` RGBA로 씁니다(엔티티·강체는 제외, DOM·Canvas 비의존). `PixelRenderer`도 같은 함수를 씁니다. [rendering](../rendering/README.md)의 `createTexture({width,height,data}, {filter:'nearest'})`로 한 번 올리고, 틱마다 `writeGridPixels` 뒤 `updateTexture`로 갱신해 `Renderer2D.sprite`로 그립니다. 엔티티와 강체는 같은 프레임에서 `rect`·`ellipse`·폴리곤으로 그리고, 강체 다각형은 `bridge.getPolys(h)`를 씁니다. 그림 순서와 카메라는 rendering의 `setCamera`와 호출 순서가 정합니다. [tests/rendering.e2e.mjs](./tests/rendering.e2e.mjs)가 실제 WebGL 픽셀을 읽어 격자와 비교합니다(헤드리스 Chromium 한 대, 40×30 월드). 큰 월드를 카메라 영역만 올리는 부분 갱신은 아직 없습니다.
+`writeGridPixels(world, pixels, shade)`는 격자만 `Uint32Array` RGBA로 씁니다(엔티티·강체는 제외, DOM·Canvas 비의존). `PixelRenderer`도 같은 함수를 씁니다. [rendering](../rendering/README.md)의 `createTexture({width,height,data}, {filter:'nearest'})`로 한 번 올리고, 틱마다 `writeGridPixels` 뒤 `updateTexture`로 갱신해 `Renderer2D.sprite`로 그립니다(불투명 격자는 premultiply를 건너뛰고, 바뀐 영역만 `{x,y,width,height}`로 올릴 수 있습니다). 엔티티와 강체는 같은 프레임에서 `rect`·`ellipse`·폴리곤으로 그리고, 강체 다각형은 `bridge.getPolys(h)`를 씁니다. 그림 순서와 카메라는 rendering의 `setCamera`와 호출 순서가 정합니다. [tests/rendering.e2e.mjs](./tests/rendering.e2e.mjs)가 실제 WebGL 픽셀을 읽어 격자와 비교합니다(헤드리스 Chromium 한 대, 40×30 월드). 큰 월드를 카메라 영역만 올리는 부분 갱신은 아직 없습니다.
 
 `installDeterministicTrig()`를 명시적으로 호출하면 **전역 `Math.sin`과 `Math.cos`를 다항식 구현으로 덮어씁니다.** 자동 설치·복원 API는 없으며 같은 realm의 다른 라이브러리에도 영향을 줍니다. 예제는 Matter 생성 전에 호출합니다. 이를 사용해도 서로 다른 브라우저·CPU·Matter 버전 사이의 비트 단위 일치는 보장하지 않습니다. 실제 대상 환경에서 같은 입력과 체크포인트 해시를 비교해야 합니다. 이 모듈을 가져오는 것만으로 전역 함수를 바꾸지는 않습니다.
 

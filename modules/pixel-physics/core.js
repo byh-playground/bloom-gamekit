@@ -1880,6 +1880,12 @@ class PixelWorld {
             this._compile();
         }
         const T0 = NOW();
+        if (this.time === 0) {
+            // 청크 sleep 판정을 시작할 때 한 번에 확정합니다. 청크 하나씩 돌려 확정하면 청크 수만큼의 틱 동안 전 청크가 깨어 있습니다.
+            for (let c = 0; c < this.reac.length; c++) {
+                this._refreshReac(c);
+            }
+        }
         if (this.bridge) {
             for (const H_VALUE of this.bridge.bodies) {
                 H_VALUE.px = H_VALUE.x;

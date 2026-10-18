@@ -97,6 +97,84 @@ try {
         const SECOND = CELLS.map(([x, y]) => ({ got: READ(x, y), want: EXPECT(x, y) }));
         return { FIRST, SECOND, state: RENDERER.state };
     });
+    // Renderer2D 바이트 텍스처: 반투명 premultiply, premultiplied 선언, 제자리 부분 갱신.
+    const TEXTURE_RESULT = await PAGE.evaluate(async () => {
+        const RENDERING = await import('/dist/rendering.js');
+        const CANVAS = document.createElement('canvas');
+        document.body.append(CANVAS);
+        const RENDERER = new RENDERING.Renderer2D(CANVAS);
+        RENDERER.resize(16, 16, 1);
+        RENDERER.setCamera({ x: 2, y: 2, zoom: 4 });
+        const GL = CANVAS.getContext('webgl');
+        const BYTES = (rgba) => new Uint8ClampedArray(16 * 4).map((_, i) => rgba[i % 4]);
+        const PIXEL_AT = (cellX, cellY) => {
+            const OUT = new Uint8Array(4);
+            GL.readPixels(cellX * 4 + 2, 16 - (cellY * 4 + 2) - 1, 1, 1, GL.RGBA, GL.UNSIGNED_BYTE, OUT);
+            return [...OUT];
+        };
+        const DRAW = (texture) => {
+            RENDERER.beginFrame([0, 0, 0, 1]);
+            RENDERER.sprite(texture, 2, 2, 4, 4);
+            RENDERER.endFrame();
+        };
+        const OUT = {};
+        // 직선 알파 (200,100,50,128) → 검은 배경 위 결과는 RGB*128/255
+        const STRAIGHT = RENDERER.createTexture(
+            { width: 4, height: 4, data: BYTES([200, 100, 50, 128]) },
+            { filter: 'nearest' },
+        );
+        DRAW(STRAIGHT);
+        OUT.straight = PIXEL_AT(1, 1);
+        // 이미 premultiply한 바이트를 선언하면 CPU 곱셈 없이 같은 화면이 나옵니다.
+        const PRE = RENDERER.createTexture(
+            { width: 4, height: 4, data: BYTES([100, 50, 25, 128]) },
+            { filter: 'nearest', premultiplied: true },
+        );
+        DRAW(PRE);
+        OUT.declared = PIXEL_AT(1, 1);
+        // 부분 갱신: 왼쪽 위 2x2만 바꾸고 나머지는 이전 픽셀 유지, GPU 텍스처 수는 그대로
+        const BEFORE = RENDERER.stats.textureCount;
+        const NEXT = BYTES([200, 100, 50, 128]);
+        for (const [CELL_X, CELL_Y] of [
+            [0, 0],
+            [1, 0],
+            [0, 1],
+            [1, 1],
+        ]) {
+            NEXT.set([10, 220, 30, 255], (CELL_Y * 4 + CELL_X) * 4);
+        }
+        const UPLOADS = RENDERER.stats.totalTextureUploads;
+        RENDERER.updateTexture(STRAIGHT, { width: 4, height: 4, data: NEXT }, { x: 0, y: 0, width: 2, height: 2 });
+        DRAW(STRAIGHT);
+        OUT.regionInside = PIXEL_AT(0, 0);
+        OUT.regionOutside = PIXEL_AT(3, 3);
+        OUT.uploads = RENDERER.stats.totalTextureUploads - UPLOADS;
+        OUT.textureCount = [BEFORE, RENDERER.stats.textureCount];
+        // 전체 갱신도 같은 핸들·같은 GPU 텍스처 수로 반영
+        RENDERER.updateTexture(STRAIGHT, { width: 4, height: 4, data: BYTES([0, 0, 255, 255]) });
+        DRAW(STRAIGHT);
+        OUT.whole = PIXEL_AT(3, 3);
+        try {
+            RENDERER.updateTexture(STRAIGHT, { width: 4, height: 4, data: NEXT }, { x: 3, y: 3, width: 2, height: 2 });
+            OUT.outOfBounds = 'no error';
+        } catch (error) {
+            OUT.outOfBounds = error.name;
+        }
+        return OUT;
+    });
+    const NEAR = (got, want, label) =>
+        assert.ok(
+            got.every((v, i) => Math.abs(v - want[i]) <= 2),
+            `${label}: ${got} != ${want}`,
+        );
+    NEAR(TEXTURE_RESULT.straight, [100, 50, 25, 255], 'straight alpha premultiply');
+    NEAR(TEXTURE_RESULT.declared, [100, 50, 25, 255], 'premultiplied declared');
+    NEAR(TEXTURE_RESULT.regionInside, [10, 220, 30, 255], 'region inside');
+    NEAR(TEXTURE_RESULT.regionOutside, [100, 50, 25, 255], 'region outside kept');
+    assert.equal(TEXTURE_RESULT.uploads, 1);
+    assert.equal(TEXTURE_RESULT.textureCount[0], TEXTURE_RESULT.textureCount[1]);
+    NEAR(TEXTURE_RESULT.whole, [0, 0, 255, 255], 'whole update');
+    assert.equal(TEXTURE_RESULT.outOfBounds, 'RangeError');
     const CLOSE = (a, b) => a.every((v, i) => Math.abs(v - b[i]) <= 2);
     for (const ROUND of [RESULT.FIRST, RESULT.SECOND]) {
         for (const CELL of ROUND) {

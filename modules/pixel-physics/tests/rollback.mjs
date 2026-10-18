@@ -137,3 +137,15 @@ console.log(
     }
     console.log('cross-instance ok, bodies:', SOURCE.bridge.bodies.length);
 }
+
+// 청크 sleep: 첫 틱에 반응 재료 유무를 확정하므로, 정지한 큰 월드는 바로 전 청크가 잠들어야 합니다.
+{
+    const WORLD = new PixelWorld(1280, 720, { seed: 1 });
+    WORLD.define({ name: 'stone', kind: 'solid', color: [110, 112, 122] });
+    WORLD.rect(0, 700, 1279, 719, 'stone');
+    for (let tick = 0; tick < 30; tick++) {
+        WORLD.tick();
+    }
+    assert.equal(WORLD.stats.active, 0, '정지한 월드의 활성 청크는 0이어야 합니다.');
+    console.log('sleep warm-up ok, total chunks:', WORLD.stats.total);
+}
