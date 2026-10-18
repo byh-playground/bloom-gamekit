@@ -8,6 +8,7 @@ import { MATTER_URL } from '../modules/pixel-physics/dependencies.js';
 // Every maintained example HTML entry. Test harnesses and provenance archives are not demos.
 export const EXAMPLES = [
     ['pixel-physics', 'modules/pixel-physics/examples/index.html'],
+    ['pixel-physics-open-world', 'modules/pixel-physics/examples/open-world.html'],
     ['interpolation', 'modules/interpolation/examples/index.html'],
     ['interpolation-frame', 'modules/interpolation/examples/frame.html'],
     ['simloop-input-preview', 'modules/simloop/examples/input-preview/index.html'],
@@ -30,7 +31,7 @@ export async function buildPreviews(root) {
         recursive: true,
     });
     for (const [NAME, SOURCE] of EXAMPLES) {
-        const EXTERNAL_IMPORTS = NAME === 'pixel-physics' ? [MATTER_URL] : [];
+        const EXTERNAL_IMPORTS = SOURCE.startsWith('modules/pixel-physics/') ? [MATTER_URL] : [];
         let html = await readFile(resolve(root, SOURCE), 'utf8');
         const SCRIPTS = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)];
         for (const [WHOLE, ATTRIBUTES, BODY] of SCRIPTS) {

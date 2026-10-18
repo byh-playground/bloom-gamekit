@@ -60,6 +60,7 @@ try {
                     'rollback-reference': 'reference',
                     scenario: 'scenarioDemo',
                     'pixel-physics': 'pixelPhysicsExample',
+                    'pixel-physics-open-world': 'openWorldExample',
                 };
                 if (name === 'work-scheduler') {
                     return !!document.querySelector('#output')?.textContent;

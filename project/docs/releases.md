@@ -1,3 +1,9 @@
+## v0.15.0 (2026-10-18)
+
+`pixel-physics`에 열린 월드(창 이동)와 뷰포트 렌더를 추가합니다. 격자는 고정 크기 창이고 큰 맵은 게임의 맵 데이터입니다. `shiftWindow(dx, dy, {load, evict})`가 셀·청크 플래그·발사체·엔티티·강체·핀·고정 조인트·정적 충돌체를 16의 배수 칸만큼 함께 옮기고, `scrollTo(focusX, focusY, hooks)`가 `stream: {margin, step}` 설정(미리 불러올 거리와 한 번에 옮기는 단위)에 따라 필요할 때만 옮깁니다. `readRegion`/`writeRegion`으로 맵 데이터를 일괄 읽고 쓰며, `hashCell(seed, x, y)`는 절대 좌표 기반 해시입니다. `writeGridPixels`와 `PixelRenderer`는 `view` 사각형만 쓰고 올리며(격자 밖은 배경), 음영은 절대 좌표 기준이라 창이 움직여도 같은 셀은 같은 색입니다. `enableCollapse`에 `anchorTop` 옵션을 추가했습니다(기본 꺼짐).
+
+**호환:** `PixelWorld`의 snapshot과 `hash()`에 `originX`/`originY`가 들어가므로 이전 SDK가 만든 바이트는 `validatePixelWorld`가 거부하고, 같은 장면의 해시 값도 이전 버전과 다릅니다(origin이 0이어도). 버전이 섞인 방에서는 쓰지 마세요. 새 예제 `pixel-physics-open-world`(로켓)가 프리뷰 목록에 추가됩니다. 검증 범위는 PR 기록을 따릅니다.
+
 ## v0.14.2 (2026-10-18)
 
 `deterministic`의 값 codec에 바이너리 형식 전용 typed array 태그(`Int8Array`·`Int16Array`·`Uint16Array`·`Int32Array`·`Uint32Array`·`Float32Array`·`Float64Array`, 요소는 little-endian, 실수는 유한 값만, `-0`은 `0`)와 `omitUndefined` 옵션을 추가합니다. 이전 SDK의 디코더는 새 태그가 든 payload를 읽지 못하므로 SDK 버전이 섞인 방에서는 쓰지 마세요. 기존 payload는 바이트 그대로 읽히고 같은 값의 인코딩 결과도 바이트가 같습니다. encode는 작업 버퍼를 재사용해 반복 호출에서 확장 복사를 없앱니다(격자 상태 인코딩 0.51~1.0ms → 0.15~0.27ms). `pixel-physics`의 `savePixelWorld`는 래퍼의 복사를 없애고(`snapshot(false)`) 새 태그를 직접 쓰며, 격자 배열을 같은 값 구간으로 줄여 저장합니다. 정지한 1280×720 월드의 스냅샷이 2.77MB에서 약 24KB로 줄어 히스토리 예산과 합류·복구 전송량이 크게 줄고, 구간이 줄지 않으면 원본으로 저장합니다. 이전 `savePixelWorld` 바이트는 새 `loadPixelWorld`로 읽을 수 없으므로 두 버전의 피어를 섞지 마세요. 수치는 Node 22 한 대에서 잰 값입니다.
@@ -152,7 +158,7 @@ import { PresentationRuntime } from 'https://cdn.jsdelivr.net/gh/byh-playground/
 
 ## 실행 HTML 프리뷰
 
-[프리뷰 목록](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/index.html)은 10개 기존 예제를 모두 포함합니다. [previews.mjs](../previews.mjs)의 EXAMPLES가 목록입니다. 원본 예제는 소유 모듈 아래에 있으며 API 설명만 있는 모듈에 빈 데모를 만들지 않습니다.
+[프리뷰 목록](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/index.html)은 모든 예제를 포함합니다. [previews.mjs](../previews.mjs)의 EXAMPLES가 목록입니다. 원본 예제는 소유 모듈 아래에 있으며 API 설명만 있는 모듈에 빈 데모를 만들지 않습니다.
 
 기존 html-share 문서처럼 HTML Preview를 사용합니다. 원본 ESM 예제를 직접 열면 상대 import와 module 실행이 실패하므로 `npm run build:previews`가 각 예제를 독립 IIFE script가 포함된 HTML 하나로 묶습니다. 예제 간 링크는 공개 프리뷰 URL로 변환합니다. PixelPhysics는 HTML Preview가 `type="module"`을 지우고 classic script로 다시 만들어 정적 import가 실패하므로 IIFE 안에서 정의된 Matter 웹 URL을 실행 직전에 동적 `import()`로 받으며 엔진 코드를 HTML에 넣지 않습니다. 나머지 예제는 외부 SDK import·CDN·공유 chunk가 없습니다. 소스 보기 링크는 GitHub 파일로 연결합니다. `dist/*.js`의 독립 ESM 계약과 프리뷰 빌드는 별개입니다.
 

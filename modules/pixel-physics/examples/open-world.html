@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="ko">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+        <title>PixelPhysics 열린 월드 예제 (로켓)</title>
+        <style>
+            :root {
+                --bg: #e9e7e2;
+                --fg: #1b1d21;
+                --mut: #5d6168;
+                --panel: #f6f5f2;
+                --line: #cfccc5;
+                color-scheme: light;
+            }
+            @media (prefers-color-scheme: dark) {
+                :root {
+                    --bg: #111316;
+                    --fg: #e8e8e6;
+                    --mut: #9a9ea6;
+                    --panel: #1a1d21;
+                    --line: #2d3138;
+                    color-scheme: dark;
+                }
+            }
+            * {
+                box-sizing: border-box;
+            }
+            body {
+                margin: 0;
+                padding: 16px;
+                background: var(--bg);
+                color: var(--fg);
+                font:
+                    15px/1.5 system-ui,
+                    -apple-system,
+                    'Apple SD Gothic Neo',
+                    'Noto Sans KR',
+                    sans-serif;
+            }
+            main {
+                max-width: 900px;
+                margin: 0 auto;
+            }
+            h1 {
+                font-size: 20px;
+                margin: 0 0 4px;
+            }
+            p {
+                margin: 0 0 10px;
+                color: var(--mut);
+            }
+            canvas {
+                display: block;
+                width: 100%;
+                aspect-ratio: 160/96;
+                image-rendering: pixelated;
+                touch-action: none;
+                border: 1px solid var(--line);
+                border-radius: 6px;
+            }
+            .bar {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 6px 12px;
+                margin: 10px 0;
+                align-items: center;
+            }
+            label {
+                color: var(--mut);
+                font-size: 13px;
+            }
+            input[type='number'] {
+                width: 5em;
+                font: inherit;
+                color: var(--fg);
+                background: var(--panel);
+                border: 1px solid var(--line);
+                border-radius: 6px;
+                padding: 4px 6px;
+            }
+            button {
+                font: inherit;
+                color: var(--fg);
+                background: var(--panel);
+                border: 1px solid var(--line);
+                border-radius: 6px;
+                padding: 6px 12px;
+                cursor: pointer;
+                touch-action: none;
+                user-select: none;
+            }
+            #hud {
+                margin-left: auto;
+                color: var(--mut);
+            }
+            #stat {
+                color: var(--mut);
+                font:
+                    12px/1.4 ui-monospace,
+                    SFMono-Regular,
+                    Menlo,
+                    monospace;
+                min-height: 4.2em;
+                white-space: pre-wrap;
+            }
+        </style>
+    </head>
+    <body>
+        <main>
+            <h1>PixelPhysics 열린 월드 예제 (로켓)</h1>
+            <p>
+                ← → / A D로 기울이고 Space / W로 분사해 위로 오릅니다(터치는 아래 버튼). 격자는 320x240 창 하나뿐이고,
+                큰 맵은 절대 좌표의 맵 데이터입니다. 로켓이 여유 구간(margin)을 벗어나면 <code>scrollTo</code>가 창을
+                step 단위로 옮기고, 새로 드러난 영역을 <code>load</code>가 맵 데이터에서 읽어 채웁니다. 캔버스를
+                클릭하면 그 자리를 폭파하는데, 밀려나는 영역은 <code>evict</code>가 맵 데이터에 되써서 멀리 갔다
+                돌아와도 파인 자국이 남습니다. 지형은 절대 좌표 해시로 만들어 두었지만 같은 자리에 파일에서 읽어 온
+                데이터를 넣어도 됩니다. 기본 플랫포머 예제는 <a href="./index.html">여기</a>입니다.
+            </p>
+            <canvas id="c"></canvas>
+            <div class="bar">
+                <label>margin(셀) <input id="margin" type="number" min="0" step="8" /></label>
+                <label>step(셀, 16의 배수) <input id="step" type="number" min="16" step="16" /></label>
+                <button id="apply">적용</button>
+                <button id="reset">다시 시작</button>
+                <span id="hud"></span>
+            </div>
+            <div class="bar">
+                <button id="bl">◀ 기울이기</button><button id="bt">▲ 분사</button><button id="br">기울이기 ▶</button>
+            </div>
+            <div id="stat"></div>
+        </main>
+        <script type="module">
+            import {
+                PixelWorld,
+                MatterBridge,
+                PixelRenderer,
+                installDeterministicTrig,
+                hashCell,
+            } from '/dist/pixel-physics.js';
+            installDeterministicTrig();
+
+            /* =====================================================================
+             * 맵 데이터: 절대 좌표 (ax, ay) → 재료 id. 여기서는 해시로 만들지만 파일에서 읽은 배열이어도 됩니다.
+             * EDITS는 evict가 되쓰는 사용자 편집입니다(맵 데이터 위에 덮어씀).
+             * ===================================================================== */
+            const SEED = 5,
+                W = 320,
+                H = 240,
+                VIEW_W = 160,
+                VIEW_H = 96,
+                DT = 1000 / 60;
+            const STONE = 1,
+                ROCK = 2;
+            let edits, world, bridge, rocket, renderer, shifts, thrust, fuel;
+            const CV = document.getElementById('c'),
+                HUD = document.getElementById('hud'),
+                STAT = document.getElementById('stat'),
+                KEYS = { l: 0, r: 0, t: 0 };
+
+            const SURFACE = (ax) => Math.round(24 * Math.sin(ax / 43) + 10 * Math.sin(ax / 13));
+            function baseCell(ax, ay) {
+                if (ay > SURFACE(ax)) {
+                    return STONE; // 지면
+                }
+                if (ay >= -64) {
+                    return 0;
+                }
+                // 공중 섬: 64x64 블록마다 해시로 타원 하나. 고도가 오르면 드물어집니다.
+                const BX = Math.floor(ax / 64),
+                    BY = Math.floor(ay / 64),
+                    R = hashCell(SEED, BX, BY);
+                if (R % 100 >= Math.max(8, 55 + BY * 3)) {
+                    return 0;
+                }
+                const DX = ax - (BX * 64 + 16 + ((R >>> 8) % 32)),
+                    DY = ay - (BY * 64 + 16 + ((R >>> 16) % 32)),
+                    RX = 6 + ((R >>> 4) % 8),
+                    RY = 3 + ((R >>> 12) % 5);
+                return (DX * DX) / (RX * RX) + (DY * DY) / (RY * RY) <= 1 ? ROCK : 0;
+            }
+            const CELL_AT = (ax, ay) => edits.get(ax + ',' + ay) ?? baseCell(ax, ay);
+
+            // load: 새로 드러난 사각형을 맵 데이터에서 읽어 한 번에 씁니다(월드 난수열을 쓰지 않아 몇 번을 불러와도 같음).
+            function load(rect) {
+                const RW = rect.x1 - rect.x0,
+                    CELLS = new Uint8Array(RW * (rect.y1 - rect.y0));
+                for (let y = rect.y0; y < rect.y1; y++) {
+                    for (let x = rect.x0; x < rect.x1; x++) {
+                        CELLS[(y - rect.y0) * RW + x - rect.x0] = CELL_AT(rect.originX + x, rect.originY + y);
+                    }
+                }
+                rect.world.writeRegion(rect.x0, rect.y0, RW, rect.y1 - rect.y0, CELLS);
+            }
+            // evict: 밀려나기 직전의 지형을 읽어, 맵 데이터와 다른 셀만 편집으로 기록합니다.
+            function evict(rect) {
+                const RW = rect.x1 - rect.x0,
+                    { g: G } = rect.world.readRegion(rect.x0, rect.y0, RW, rect.y1 - rect.y0);
+                for (let y = rect.y0; y < rect.y1; y++) {
+                    for (let x = rect.x0; x < rect.x1; x++) {
+                        const AX = rect.originX + x,
+                            AY = rect.originY + y,
+                            V = G[(y - rect.y0) * RW + x - rect.x0];
+                        if (V !== baseCell(AX, AY)) {
+                            edits.set(AX + ',' + AY, V);
+                        } else {
+                            edits.delete(AX + ',' + AY);
+                        }
+                    }
+                }
+            }
+
+            function build() {
+                edits = new Map();
+                shifts = 0;
+                fuel = 100;
+                world = new PixelWorld(W, H, {
+                    seed: SEED,
+                    originX: -W / 2,
+                    originY: -140,
+                    stream: {
+                        margin: Number(document.getElementById('margin').value) || 88,
+                        step: Number(document.getElementById('step').value) || 32,
+                    },
+                });
+                world.define({ name: 'stone', kind: 'solid', color: [112, 108, 100], strength: 90 });
+                world.define({
+                    name: 'rock',
+                    kind: 'solid',
+                    color: [136, 124, 112],
+                    strength: 40,
+                    blast: { debris: 'sand' },
+                });
+                world.define({ name: 'sand', kind: 'powder', density: 15, color: [222, 190, 110] });
+                world.define({
+                    name: 'smoke',
+                    kind: 'gas',
+                    density: 1,
+                    push: 11,
+                    rise: 0.8,
+                    color: [190, 190, 198],
+                    life: [30, 60],
+                    decay: { to: 'empty' },
+                });
+                bridge = new MatterBridge();
+                world.attachBridge(bridge);
+                load({ world, x0: 0, y0: 0, x1: W, y1: H, originX: world.originX, originY: world.originY });
+                rocket = bridge.addBox({ x: W / 2, y: 140 - 12, w: 5, h: 14, density: 0.004 });
+                rocket.data.color = '#d8dde6';
+                renderer = new PixelRenderer(CV, world, { view: { x: 0, y: 0, w: VIEW_W, h: VIEW_H } });
+                document.getElementById('margin').value = world.stream.margin;
+                document.getElementById('step').value = world.stream.step;
+            }
+
+            function steer() {
+                const AIM = KEYS.r - KEYS.l;
+                // 자세 제어: 목표 각도(최대 약 29도)로 각속도를 맞추고 공기저항으로 속도를 제한합니다. 분사 연기가 만드는 부력 떨림을 눌러 줍니다.
+                bridge.setAngularVelocity(rocket, Math.max(-0.05, Math.min(0.05, (AIM * 0.5 - rocket.angle) * 0.12)));
+                bridge.damp(rocket, 0.96, 1);
+                thrust = KEYS.t && fuel > 0;
+                if (!thrust) {
+                    fuel = Math.min(100, fuel + 0.05);
+                    return;
+                }
+                fuel -= 0.12;
+                const SA = Math.sin(rocket.angle),
+                    CA = Math.cos(rocket.angle);
+                // 발사체는 600개까지라서 적은 수의 입자에 반발력(recoil)을 크게 줍니다.
+                for (let i = 0; i < 3; i++) {
+                    const SPREAD = (world.rand() - 0.5) * 0.35,
+                        SPEED = 2.6 + world.rand() * 0.6,
+                        DX = -SA * Math.cos(SPREAD) - CA * Math.sin(SPREAD),
+                        DY = CA * Math.cos(SPREAD) - SA * Math.sin(SPREAD);
+                    world.spray(rocket.x - SA * 9, rocket.y + CA * 9, DX * SPEED, DY * SPEED, 'smoke', {
+                        shooter: rocket,
+                        recoil: 2.6,
+                    });
+                }
+            }
+
+            function update() {
+                steer();
+                world.tick();
+                // 틱이 끝난 뒤 초점(절대 좌표)이 여유 구간을 벗어났으면 창을 옮깁니다. 밖으로 밀려난 강체는 지우지 않고 돌려받습니다.
+                const MOVED = world.scrollTo(world.originX + rocket.x, world.originY + rocket.y, { load, evict });
+                if (MOVED) {
+                    shifts++;
+                    for (const GONE of MOVED.bodies) {
+                        if (GONE !== rocket) {
+                            bridge.removeBody(GONE);
+                        }
+                    }
+                }
+            }
+
+            function drawRocket(ctx) {
+                for (const H_VALUE of bridge.bodies) {
+                    ctx.fillStyle = H_VALUE.data.color ?? '#aaa';
+                    for (const V of bridge.getPolys(H_VALUE)) {
+                        ctx.beginPath();
+                        V.forEach((point, i) => (i ? ctx.lineTo(point.x, point.y) : ctx.moveTo(point.x, point.y)));
+                        ctx.closePath();
+                        ctx.fill();
+                    }
+                }
+            }
+
+            const ALTITUDE = () => Math.round(-(world.originY + rocket.y) + 8);
+            function stat() {
+                return (
+                    `절대 좌표  x ${Math.round(world.originX + rocket.x)}  y ${Math.round(world.originY + rocket.y)}\n` +
+                    `창 원점    originX ${world.originX}  originY ${world.originY}  (창 이동 ${shifts}회)\n` +
+                    `맵 편집    ${edits.size}셀 저장됨  ·  tick ${world.time}  ·  깨어 있는 청크 ${world.stats.active}/${world.stats.total}\n` +
+                    `margin ${world.stream.margin}  step ${world.stream.step}  (시야 ${VIEW_W}x${VIEW_H}의 반 크기보다 margin이 커야 시야가 창 안에 있음)`
+                );
+            }
+
+            let last = 0,
+                acc = 0,
+                frames = 0;
+            function frame(t) {
+                if (!last) {
+                    last = t;
+                }
+                acc += Math.min(100, t - last);
+                last = t;
+                while (acc >= DT) {
+                    update();
+                    acc -= DT;
+                }
+                renderer.setView({
+                    x: Math.round(rocket.x - VIEW_W / 2),
+                    y: Math.round(rocket.y - VIEW_H / 2),
+                    w: VIEW_W,
+                    h: VIEW_H,
+                });
+                renderer.draw(null, drawRocket);
+                if (++frames % 6 === 0) {
+                    HUD.textContent = `고도 ${ALTITUDE()}  ·  연료 ${Math.round(fuel)}%`;
+                    STAT.textContent = stat();
+                }
+                requestAnimationFrame(frame);
+            }
+
+            // 입력
+            const KEY_MAP = { ArrowLeft: 'l', a: 'l', ArrowRight: 'r', d: 'r', ' ': 't', ArrowUp: 't', w: 't' };
+            addEventListener('keydown', (e) => {
+                const K = KEY_MAP[e.key.length > 1 ? e.key : e.key.toLowerCase()];
+                if (K) {
+                    KEYS[K] = 1;
+                    e.preventDefault();
+                }
+            });
+            addEventListener('keyup', (e) => {
+                const K = KEY_MAP[e.key.length > 1 ? e.key : e.key.toLowerCase()];
+                if (K) {
+                    KEYS[K] = 0;
+                }
+            });
+            for (const [ID, K] of [
+                ['bl', 'l'],
+                ['br', 'r'],
+                ['bt', 't'],
+            ]) {
+                const B = document.getElementById(ID);
+                B.onpointerdown = () => (KEYS[K] = 1);
+                B.onpointerup = B.onpointerleave = B.onpointercancel = () => (KEYS[K] = 0);
+            }
+            CV.addEventListener('pointerdown', (e) => {
+                const R = CV.getBoundingClientRect(),
+                    V = renderer.view,
+                    X = Math.floor(V.x + ((e.clientX - R.left) / R.width) * V.w),
+                    Y = Math.floor(V.y + ((e.clientY - R.top) / R.height) * V.h);
+                world.explode(X, Y, 8);
+            });
+            document.getElementById('apply').onclick = () => {
+                try {
+                    world.setStreaming({
+                        margin: Number(document.getElementById('margin').value),
+                        step: Number(document.getElementById('step').value),
+                    });
+                } catch (error) {
+                    STAT.textContent = String(error.message);
+                }
+            };
+            document.getElementById('reset').onclick = build;
+
+            build();
+            requestAnimationFrame(frame);
+            Object.defineProperty(window, 'openWorldExample', {
+                get() {
+                    return {
+                        diagnostics: {
+                            tick: world.time,
+                            origin: { x: world.originX, y: world.originY },
+                            absolute: { x: world.originX + rocket.x, y: world.originY + rocket.y },
+                            shifts,
+                            edits: edits.size,
+                            altitude: ALTITUDE(),
+                            stream: { ...world.stream },
+                        },
+                    };
+                },
+            });
+        </script>
+    </body>
+</html>

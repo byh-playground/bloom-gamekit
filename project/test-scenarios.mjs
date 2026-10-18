@@ -5,6 +5,7 @@ const SUITES = {
     'pixel-physics': [
         'project/previews.mjs',
         'modules/pixel-physics/tests/rollback.mjs',
+        'modules/pixel-physics/tests/open-world.mjs',
         'modules/pixel-physics/tests/browser.e2e.mjs',
         'modules/pixel-physics/tests/rendering.e2e.mjs',
     ],
