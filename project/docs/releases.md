@@ -1,3 +1,7 @@
+## v0.14.3 (2026-10-18)
+
+`RoomSession`이 퇴장 commit으로 로컬 피어를 roster에서 제거한 poll에서 join deadline 검사로 들어가지 않게 합니다. 커밋된 퇴장 ACK를 reliable queue에 flush하고 기존 retire 확인·연결 정리 순서를 이어갑니다. 고정 RTC E2E가 중복 leave 호출과 committed ACK, 5인 방 손님 퇴장 후 4→5 재입장, 기존 재연결과 호스트 퇴장을 확인합니다. wire protocol, snapshot/replay, 게임 규칙 계약은 바꾸지 않습니다.
+
 ## v0.14.2 (2026-10-18)
 
 `deterministic`의 값 codec에 바이너리 형식 전용 typed array 태그(`Int8Array`·`Int16Array`·`Uint16Array`·`Int32Array`·`Uint32Array`·`Float32Array`·`Float64Array`, 요소는 little-endian, 실수는 유한 값만, `-0`은 `0`)와 `omitUndefined` 옵션을 추가합니다. 이전 SDK의 디코더는 새 태그가 든 payload를 읽지 못하므로 SDK 버전이 섞인 방에서는 쓰지 마세요. 기존 payload는 바이트 그대로 읽히고 같은 값의 인코딩 결과도 바이트가 같습니다. encode는 작업 버퍼를 재사용해 반복 호출에서 확장 복사를 없앱니다(격자 상태 인코딩 0.51~1.0ms → 0.15~0.27ms). `pixel-physics`의 `savePixelWorld`는 래퍼의 복사를 없애고(`snapshot(false)`) 새 태그를 직접 쓰며, 격자 배열을 같은 값 구간으로 줄여 저장합니다. 정지한 1280×720 월드의 스냅샷이 2.77MB에서 약 24KB로 줄어 히스토리 예산과 합류·복구 전송량이 크게 줄고, 구간이 줄지 않으면 원본으로 저장합니다. 이전 `savePixelWorld` 바이트는 새 `loadPixelWorld`로 읽을 수 없으므로 두 버전의 피어를 섞지 마세요. 수치는 Node 22 한 대에서 잰 값입니다.
