@@ -172,11 +172,11 @@
             <h1>PixelPhysics 소환수 전투 시험판</h1>
             <p>
                 소환수를 불러 충격량과 재료 반응(물·용암·산성)으로 적을 쓸어 내고, 오른쪽 끝 둥지를 부수세요. ← → / A D
-                이동, W / Space 점프, 1~5 소환. 마우스 좌클릭은 누른 순간 0.5초 동안 순간적으로 나가는 공기
-                분사(이동기), 우클릭은 누르는 동안 포인터 지점에 플레이어 머리만 한 흙 셀 뭉치를 붙잡습니다. 놓으면
-                모래처럼 퍼져 떨어져 지형과 합쳐지고, 붙잡은 채 좌클릭하면 뭉친 채로 날아가다 지형이나 적에 부딪히면
-                흩어집니다. 흙 더미에 가까이 분사하면 흩날립니다. 터치는 아래 도구로 고르고, 던지기는 끌어모았다 놓으면
-                던집니다.
+                이동, W / Space 점프, 1~5 소환. 마우스 좌클릭은 클릭한 방향으로 공기를 순간적으로 확 뿜어 플레이어를
+                튕겨 내는 분사(이동기, 0.5초 쿨다운), 우클릭은 누르는 동안 포인터 지점에 플레이어 머리만 한 흙 셀 뭉치를
+                붙잡습니다. 놓으면 모래처럼 퍼져 떨어져 지형과 합쳐지고, 붙잡은 채 좌클릭하면 뭉친 채로 날아가다
+                지형이나 적에 부딪히면 흩어집니다. 흙 더미에 가까이 분사하면 흩날립니다. 터치는 아래 도구로 고르고,
+                던지기는 끌어모았다 놓으면 던집니다.
             </p>
             <div class="stage"><canvas id="c"></canvas><canvas id="o"></canvas></div>
             <div id="hud"></div>
@@ -3760,11 +3760,14 @@ globalThis.__bloomPreviewImports = Object.fromEntries(["https://cdn.jsdelivr.net
   var BLOB_GROW = 0.25;
   var BLOB_MIN_THROW = 4;
   var THROW_SPEED = 2.6;
-  var JET_TICKS = 30;
+  var JET_TICKS = 6;
+  var JET_COOLDOWN = 30;
+  var JET_COST = 25;
+  var JET_PARTICLES = 12;
   var JET_FAR = 18;
-  var KICK_DV = 1;
+  var KICK_DV = 3;
   var JET_REACH = 9;
-  var RECOIL = 0.25;
+  var RECOIL = 0.18;
   var DISC = [];
   for (let dy = -9; dy <= 9; dy++) {
     for (let dx = -9; dx <= 9; dx++) {
@@ -3792,6 +3795,8 @@ globalThis.__bloomPreviewImports = Object.fromEntries(["https://cdn.jsdelivr.net
   var blob = { n: 0, f: 0, cells: [], x: 0, y: 0 };
   var throws = 0;
   var jetLeft = 0;
+  var jetCool = 0;
+  var jetDir = [1, 0];
   var world;
   var bridge;
   var player;
@@ -4024,6 +4029,7 @@ globalThis.__bloomPreviewImports = Object.fromEntries(["https://cdn.jsdelivr.net
     soil = SOIL_MAX;
     blob = { n: 0, f: 0, cells: [], x: 0, y: 0 };
     jetLeft = 0;
+    jetCool = 0;
     kills = 0;
     won = false;
     respawnAt = 0;
@@ -4104,22 +4110,20 @@ globalThis.__bloomPreviewImports = Object.fromEntries(["https://cdn.jsdelivr.net
       return;
     }
   }
-  function useJet() {
-    const [AX, AY] = aimVector();
-    fuel -= 1;
-    player.data.face = AX < 0 ? -1 : 1;
-    for (let i = 0; i < 3; i++) {
-      const SPEED = 4.2 + world.rand() * 0.6, ANGLE = (world.rand() - 0.5) * 0.5, C = Math.cos(ANGLE), S = Math.sin(ANGLE);
+  function useJet(ax, ay) {
+    player.data.face = ax < 0 ? -1 : 1;
+    for (let i = 0; i < JET_PARTICLES; i++) {
+      const SPEED = 4.6 + world.rand() * 0.8, ANGLE = (world.rand() - 0.5) * 0.4, C = Math.cos(ANGLE), S = Math.sin(ANGLE);
       world.spray(
-        player.x + AX * 3,
-        player.y - 1 + AY * 3,
-        (AX * C - AY * S) * SPEED,
-        (AX * S + AY * C) * SPEED,
+        player.x + ax * 3,
+        player.y - 1 + ay * 3,
+        (ax * C - ay * S) * SPEED,
+        (ax * S + ay * C) * SPEED,
         "air",
         { shooter: player, recoil: RECOIL }
       );
     }
-    jetAhead(AX, AY);
+    jetAhead(ax, ay);
   }
   function clearBlob() {
     for (const I of blob.cells) {
@@ -4231,15 +4235,20 @@ globalThis.__bloomPreviewImports = Object.fromEntries(["https://cdn.jsdelivr.net
       blob.n = 0;
       blob.f = 0;
     }
-    if (PRESS && jetLeft === 0 && fuel >= JET_TICKS * 0.5) {
-      jetLeft = JET_TICKS;
+    if (jetCool > 0) {
+      jetCool--;
     }
-    if (jetLeft > 0 && fuel > 0) {
+    if (PRESS && jetCool === 0 && fuel >= JET_COST) {
+      jetCool = JET_COOLDOWN;
+      jetLeft = JET_TICKS;
+      fuel -= JET_COST;
+      jetDir = aimVector();
+    }
+    if (jetLeft > 0) {
       jetLeft--;
-      useJet();
+      useJet(jetDir[0], jetDir[1]);
     } else if (player.ground) {
-      jetLeft = 0;
-      fuel = Math.min(FUEL_MAX, fuel + 1.5);
+      fuel = Math.min(FUEL_MAX, fuel + 0.5);
     }
   }
   function boulder(x, y, vx, vy) {
