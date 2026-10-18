@@ -56,9 +56,14 @@ try {
                     audio: 'audioExample',
                     navigation: 'navigationDemo',
                     'rendering-vector': 'vectorExample',
+                    'vector-assets': 'vectorAssetDemo',
                     'rollback-reference': 'reference',
                     scenario: 'scenarioDemo',
+                    'pixel-physics': 'pixelPhysicsExample',
                 };
+                if (name === 'work-scheduler') {
+                    return !!document.querySelector('#output')?.textContent;
+                }
                 return name === 'rollback-availability'
                     ? typeof document.querySelector('#host')?.onclick === 'function'
                     : !!window[GLOBALS[name]];
@@ -70,6 +75,10 @@ try {
         );
         if (NAME === 'interpolation') {
             await PAGE.waitForFunction(() => demo.diagnostics.frames > 5);
+        }
+        if (NAME === 'work-scheduler') {
+            await PAGE.click('#tick');
+            assert.equal(await PAGE.locator('#output').evaluate((output) => JSON.parse(output.textContent).tick), 1);
         }
         if (NAME === 'interpolation-frame') {
             await PAGE.click('#spawn');

@@ -1,2 +1,3 @@
 modules/rendering/assets/fonts/noto-sans-kr-700-v1.json -text
 *.svg text eol=lf
+modules/pixel-physics/docs/provenance/pixel-physics-lib.html -text

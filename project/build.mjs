@@ -13,6 +13,7 @@ const SDK_DEPENDENCIES = {
     rollback: ['_rollback-shared', 'deterministic'],
 };
 const BUNDLED_PACKAGES = {
+    'pixel-physics-matter': ['node_modules/matter-js/'],
     'vector-assets': ['node_modules/animejs/'],
     'vector-assets-loader': ['node_modules/@xmldom/xmldom/', 'node_modules/three/'],
 };

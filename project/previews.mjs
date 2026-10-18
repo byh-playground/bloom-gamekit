@@ -6,6 +6,7 @@ import { bundledAssetSource, bundledStyleExamplesSource } from '../modules/vecto
 
 // Every maintained example HTML entry. Test harnesses and provenance archives are not demos.
 export const EXAMPLES = [
+    ['pixel-physics', 'modules/pixel-physics/examples/index.html'],
     ['interpolation', 'modules/interpolation/examples/index.html'],
     ['interpolation-frame', 'modules/interpolation/examples/frame.html'],
     ['simloop-input-preview', 'modules/simloop/examples/input-preview/index.html'],

@@ -7,6 +7,7 @@ const SOURCE_FILES = ['modules/**/*.{js,cjs,mjs}', 'project/**/*.{js,cjs,mjs}', 
 // Only pure runtime owners belong here. Rendering, input/DOM, navigation,
 // transport/session persistence, audio and browser examples are adapters.
 const CORE_FILES = [
+    'modules/pixel-physics/core.js',
     'modules/_rollback-shared/*.js',
     'modules/deterministic/*.js',
     'modules/replay/*.js',
@@ -36,6 +37,7 @@ export default [
             '**/*.compiled.*',
             'dist/**',
             'modules/rollback/docs/provenance/**',
+            'modules/pixel-physics/docs/provenance/**',
         ],
     },
     {

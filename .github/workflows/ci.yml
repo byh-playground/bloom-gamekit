@@ -30,7 +30,7 @@ jobs:
               shell: bash
               run: |
                   set -euo pipefail
-                  if [ -n "$(git ls-files -- dist/ interpolation.js rendering.js input.js deterministic.js simloop.js work-scheduler.js transport.js replay.js rollback.js rollback-netcode.js camera.js presentation-events.js hud.js debug-tools.js audio.js navigation.js scenario.js object-pool.js manifest.json)" ]; then
+                  if [ -n "$(git ls-files -- dist/ interpolation.js rendering.js input.js deterministic.js simloop.js work-scheduler.js transport.js replay.js rollback.js rollback-netcode.js camera.js presentation-events.js hud.js debug-tools.js audio.js navigation.js scenario.js object-pool.js pixel-physics.js pixel-physics-matter.js manifest.json)" ]; then
                     echo 'Generated bundles belong only on the dist branch.' >&2
                     exit 1
                   fi
@@ -44,6 +44,8 @@ jobs:
               run: npm run build:previews
             - name: Run core browser-backed scenarios
               run: npm test
+            - name: Run pixel physics browser scenario
+              run: npm run test:pixel-physics
             - name: Run 3D vector rendering browser scenarios
               run: npm run test:vector-assets:world-rendering
             - name: Reject changed bytes under an existing version
