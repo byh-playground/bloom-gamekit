@@ -63,7 +63,7 @@ var FIXED_POINT = Object.freeze({
 });
 
 // modules/_rollback-shared/version.js
-var VERSION = "0.14.2";
+var VERSION = "0.14.3";
 
 // modules/_rollback-shared/protocol.js
 var REPLAY_FORMAT_VERSION = "0.2.0-dev";
@@ -5957,6 +5957,10 @@ var RoomSession = class {
         const MESSAGE = this._incoming.shift();
         this._incomingBytes -= MESSAGE.size ?? 0;
         this._handle(MESSAGE.from, MESSAGE.value);
+      }
+      if (this._departing) {
+        this._flush();
+        return;
       }
       if (this._core && !this._transition && !this._availability?.round && this.coordinatorId === this.localPlayerId && this.activePlayers.length === this.players.length) {
         for (const [ID, REQUESTED_AT] of this._admissionQueue) {
