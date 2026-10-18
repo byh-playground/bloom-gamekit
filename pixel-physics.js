@@ -1,4 +1,5 @@
 // modules/pixel-physics/core.js
+import Matter from "https://cdn.jsdelivr.net/npm/matter-js@0.19.0/+esm";
 var KINDS = { solid: 0, powder: 1, liquid: 2, gas: 3 };
 function inPoly(v, px, py) {
   let p = 0, n = 0;
@@ -1747,16 +1748,16 @@ var PhysicsBridge = class {
 var MatterBridge = class extends PhysicsBridge {
   /* deterministic: 바디 id/순서를 고정하고 checkpoint 틱마다 접촉 캐시를 비워서, 스냅샷에서 복원해 다시 돌려도 비트 단위로 같은 결과가 나오게 함.
    * 스냅샷은 world.time(= bridge.tickNo)이 checkpoint의 배수일 때 찍어야 정확히 재현됨 */
-  constructor(mValue, { gravity = 4e-4, deterministic = true, checkpoint = 30 } = {}) {
+  constructor({ gravity = 4e-4, deterministic = true, checkpoint = 30 } = {}) {
     super();
-    this.M = mValue;
+    this.M = Matter;
     this.gravityScale = gravity;
     this.deterministic = deterministic;
     this.checkpoint = checkpoint;
     this.tickNo = 0;
     this.seq = 1;
     this.dt = 1e3 / 60;
-    this.engine = mValue.Engine.create({ enableSleeping: false });
+    this.engine = Matter.Engine.create({ enableSleeping: false });
     this.engine.gravity.y = 1;
     this.engine.gravity.scale = gravity;
     this.engine.positionIterations = 16;
@@ -1765,7 +1766,7 @@ var MatterBridge = class extends PhysicsBridge {
     this.proxies = /* @__PURE__ */ new Set();
     this.impacts = [];
     this.jseq = 1;
-    mValue.Events.on(this.engine, "collisionStart", (e) => {
+    Matter.Events.on(this.engine, "collisionStart", (e) => {
       for (const P_VALUE of e.pairs) {
         const A = P_VALUE.bodyA.parent, B_VALUE = P_VALUE.bodyB.parent;
         if (A.isStatic === B_VALUE.isStatic) {
