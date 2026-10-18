@@ -1,0 +1,1029 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>PixelPhysics 라이브러리 + 플랫포머 예제</title>
+<style>
+:root{--bg:#e9e7e2;--fg:#1b1d21;--mut:#5d6168;--panel:#f6f5f2;--line:#cfccc5;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#111316;--fg:#e8e8e6;--mut:#9a9ea6;--panel:#1a1d21;--line:#2d3138;color-scheme:dark}}
+*{box-sizing:border-box}body{margin:0;padding:16px;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif}
+main{max-width:900px;margin:0 auto}h1{font-size:20px;margin:0 0 4px}p{margin:0 0 10px;color:var(--mut)}
+canvas{display:block;width:100%;aspect-ratio:200/120;image-rendering:pixelated;touch-action:none;border:1px solid var(--line);border-radius:6px;cursor:crosshair}
+.stage{position:relative}#o{position:absolute;inset:0;height:100%;aspect-ratio:auto;pointer-events:none;border:0;image-rendering:auto}
+.bar{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0;align-items:center}
+button{font:inherit;color:var(--fg);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:6px 10px;cursor:pointer}
+button.on{border-color:var(--fg);box-shadow:inset 0 0 0 1px var(--fg)}
+#hud{margin-left:auto;color:var(--mut)}
+#stat{color:var(--mut);font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;min-height:1.4em}
+pre#out{margin:8px 0 0;padding:8px 10px;background:var(--panel);border:1px solid var(--line);border-radius:6px;white-space:pre-wrap;color:var(--mut);font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;display:none}
+</style></head><body><main>
+<h1>PixelPhysics 라이브러리 + 플랫포머 예제</h1>
+<p>이동 ← → / A D, 점프·수영 Space / W (짧게 누르면 낮게, 길게 누르면 높게). 도구 1 곡괭이, 2 폭탄, 3 유체 발사(다시 누르면 물/기름/산성/용암/공기/증기/연기 전환 — 기체는 제트팩: 아래로 뿜으면 떠오르고 연료가 닳으며 땅에서 충전됨, 마우스 방향으로 쏘고 캐릭터가 그쪽을 보며, 유체 밀도에 비례한 반발력으로 뒤로 밀리고 맞은 상자·몬스터도 밀려남), 4 사각형 발사(다시 누르면 나무/돌/철 전환) — 상자는 밀고 올라탈 수 있고, 빠르게 떨어지거나 날아오는 상자에 맞으면 피해를 입습니다. 물에 뜬 상자 위에서는 내 체중에 가라앉기도 합니다. 상자가 물에 들어가면 수면이 오르고, 모래는 상자 위에 쌓여 무게로 상자를 누릅니다(물에 뜬 상자에 모래를 쌓으면 가라앉음) — 캔버스를 클릭하거나 드래그. 캐릭터와 몬스터는 격자(저해상도)가 아니라 고해상도 오버레이 위에 벡터로 그립니다. 열쇠를 먹고 문(노란색) 앞으로 가면 열립니다. 오른쪽 끝 깃발이 목표입니다.</p>
+<div class="stage"><canvas id="c"></canvas><canvas id="o"></canvas></div>
+<div class="bar" id="tools"></div>
+<div class="bar"><button id="reset">다시 시작</button><button id="dbg" title="G">디버그 오버레이</button><button id="det">결정성 검사</button><button id="bench">벤치마크</button><span id="hud"></span></div>
+<div id="stat"></div>
+<pre id="out"></pre>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+<script>
+/* =====================================================================
+ * PixelPhysics 라이브러리 (이 블록만 복사해서 쓰면 됨)
+ *
+ *  const world = new PixelWorld(w, h, {seed});
+ *  world.define({name, kind:'solid|powder|liquid|gas', density, dispersion, rise, slow,
+ *                color:[r,g,b], life:[min,max], decay:{to,chance}, flicker, noSwap, indestructible,
+ *                blast:{debris,debrisChance,burn,burnChance},          // 폭발 시 처리
+ *                body:{blocks, swim, damage, status:[name,frames]},    // 개체에 주는 기본 효과
+ *                reactions:[{with:name|[names], chance, self:name, other:name}],  // 선언형 반응
+ *                react(ctx){...return true}});                         // 코드형 반응(콜백)
+ *  world.defineStatus(name,{damage, emit:{material,chance}, clearedBy:[materials], tick(body,world)});
+ *  world.bodies.push(new Body({shape:'box'|'circle', x,y,w,h,r, sensor, onContact, onOverlap, onDeath}));
+ *  world.tick();  world.explode(x,y,r);  world.carve(x,y,r);  world.paint(x,y,r,mat);  world.rect(...)
+ *  new PixelRenderer(canvas, world, {overlay: 고해상도 canvas}).draw(drawBodyFn?)
+ *     // drawBodyFn(ctx, body, scale): 개체를 화면 해상도로 직접 그리는 훅 (scale = 화면px / 격자셀)
+ *  world.attachBridge(new MatterBridge(Matter));   // 강체 연동. 재료의 strength: 충격 에너지가 이보다 크면 깎임
+ *  // 강체 -> 입자: 유령 solid로 밀어냄(수면 상승, 모래가 위에 쌓임), 잠긴 셀 기준 부력
+ *  // 입자 -> 강체: 윗면에 쌓인 가루 기둥의 무게가 강체를 누름
+ *  world.on('chip'|'explosion'|'hit', fn);   // hit: 강체가 엔티티를 때림. 엔티티는 강체를 막힘/밀기/탑승으로 상호작용
+ *    bridge.addBox({x,y,w,h,density,vx,vy})  // 지형 셀이 SSOT, 변화는 청크 dirty 이벤트로 전달
+ *  world.snapshot() / restore(s) / hash() / isCheckpoint()   // 롤백, 리플레이, 디싱크 검출
+ *    락스텝용: 같은 시드 + 같은 입력 + new MatterBridge(Matter,{deterministic:true}) + installDeterministicTrig() (Matter 생성 전)
+ *    스냅샷은 isCheckpoint()가 true인 틱에서 찍으면 복원 후 재실행이 비트 단위로 일치
+ *  world.spray(x,y,vx,vy,mat,{shooter,recoil})   // 유체 발사: 날아가다 막힌 곳에 그 재료 셀로 내려앉음. shooter(엔티티/강체)는 밀도 x 속도만큼 반발력을 받고,
+ *                                              //   맞은 엔티티/강체도 같은 운동량으로 밀림 (world.jetPush로 세기 조절, 강체는 맞은 지점 기준이라 회전도 함)
+ *  재료 push: 분사 운동량 밀도(기본은 density). 기체는 density가 작아 push를 크게 줘야 제트팩처럼 밀어줌. Body.maxRise: 상승 속도 한계
+ *  world.sleepEnabled / world.stats / bridge.addPin(h,ax,ay,lx,ly,len)   // 청크 sleep, 통계, 줄
+ *  --- 강체 형상 / 조인트 ---
+ *  bridge.addBox({x,y,w,h}) / addCircle({x,y,r}) / addPolygon({x,y,sides,r}) / addConvex({x,y,verts}) / addBody({kind:'compound',parts:[{x,y,w,h,density}],x,y,angle,...})
+ *     공통 옵션: density, friction, restitution, vx, vy, angle, group(같은 음수 group끼리는 충돌 안 함), data. 형상 질의는 bridge.getPolys(h)/getBounds(h) (월드 좌표 볼록 다각형)
+ *  bridge.addJoint({a,b?,ax,ay,bx,by,len,stiff,damping})  // a의 로컬 앵커 ↔ b의 로컬 앵커 (b 없으면 월드 고정점). len=0,stiff=1:경첩, len>0:줄/막대, stiff 작게:스프링. removeJoint(j)
+ *  --- 지형 붕괴 / 파편화 ---
+ *  world.enableCollapse({minCells,maxCells,interval,bake})  // 앵커(재료 anchor:true 또는 indestructible, 바닥/좌우 가장자리)와 8방향으로 안 이어진 고체 덩어리는
+ *     // 마스크 강체(같은 재료 직사각형 부품의 복합체)로 변해 떨어지고, 쉬면 다시 지형 셀로 굳음(bake). 재료 rigid:{density}로 무게 지정. 이벤트: 'collapse','bake'
+ *  강체 data.strength를 넘는 충격이면 world.fracture가 충돌점 주변으로 쪼갬 (data.mat 이 있는 박스/원 포함, 조각은 강체로 유지, 너무 작으면 가루). 이벤트: 'fracture'
+ *  world.spawnCells(cells[{x,y,t}], {x,y,angle,vx,vy,av,data})  // 셀 집합 → 강체 (직접 쓸 수도 있음)
+ *  Body.solid(기본 true): 엔티티끼리 서로 막고(AABB), 밀고(운동량 공유), 위에 서면 같이 이동. 센서는 제외
+ * 내부는 속성 테이블(typed array)로 컴파일되고, 난수는 시드 고정이라 결정적입니다.
+ * ===================================================================== */
+const KINDS={solid:0,powder:1,liquid:2,gas:3};
+function inPoly(v,px,py){   // 볼록 다각형 안에 점이 있는지 (감김 방향 무관)
+  let p=0,n=0;for(let i=0,l=v.length;i<l;i++){const a=v[i],b=v[i+1===l?0:i+1],c=(b.x-a.x)*(py-a.y)-(b.y-a.y)*(px-a.x);if(c>0)p=1;else if(c<0)n=1;if(p&&n)return false}
+  return true}
+function polyHit(P,x0,y0,x1,y1){   // 볼록 다각형들(P)과 축정렬 박스(AABB)의 SAT 겹침 판정 (맞닿기만 하면 false)
+  for(const v of P){let ax=1e9,bx=-1e9,ay=1e9,by=-1e9;for(const p of v){if(p.x<ax)ax=p.x;if(p.x>bx)bx=p.x;if(p.y<ay)ay=p.y;if(p.y>by)by=p.y}
+    if(bx<=x0||ax>=x1||by<=y0||ay>=y1)continue;
+    let hit=true;
+    for(let i=0,l=v.length;i<l&&hit;i++){const a=v[i],b=v[i+1===l?0:i+1],nx=b.y-a.y,ny=a.x-b.x;
+      let pmin=1e9,pmax=-1e9;for(const p of v){const d=p.x*nx+p.y*ny;if(d<pmin)pmin=d;if(d>pmax)pmax=d}
+      const c0=x0*nx+y0*ny,c1=x1*nx+y0*ny,c2=x0*nx+y1*ny,c3=x1*nx+y1*ny,rmin=Math.min(c0,c1,c2,c3),rmax=Math.max(c0,c1,c2,c3);
+      if(pmax<=rmin||rmax<=pmin)hit=false}
+    if(hit)return true}
+  return false}
+function bodyHit(B,h,x0,y0,x1,y1){   // 강체 핸들 vs AABB (브릿지가 주는 다각형 사용 → 박스/원/다각형/복합체 모두 동일하게 처리)
+  const bd=B.getBounds(h);if(bd.x1<=x0||bd.x0>=x1||bd.y1<=y0||bd.y0>=y1)return false;return polyHit(B.getPolys(h),x0,y0,x1,y1)}
+/* ---- 결정성 유틸: 같은 입력이면 모든 클라이언트에서 같은 결과가 나오도록 ---- */
+const hyp=(x,y)=>Math.sqrt(x*x+y*y);   // Math.hypot은 엔진마다 결과가 다를 수 있음 (sqrt는 IEEE 정확)
+const now=()=>typeof performance!=='undefined'?performance.now():Date.now();
+function dsin(x){   // + - * 만 쓰는 사인 (Math.sin은 브라우저/CPU마다 마지막 비트가 다를 수 있음)
+  const TP=6.283185307179586,H=1.5707963267948966;x-=TP*Math.round(x/TP);
+  if(x>H)x=Math.PI-x;else if(x<-H)x=-Math.PI-x;
+  const q=x*x;return x*(1+q*(-1/6+q*(1/120+q*(-1/5040+q*(1/362880+q*(-1/39916800+q*(1/6227020800)))))))}
+function dcos(x){return dsin(x+1.5707963267948966)}
+function installDeterministicTrig(){Math.sin=dsin;Math.cos=dcos}   // 전역 교체: Matter.js 내부 호출까지 결정적으로 만듦. Matter 생성 전에 호출
+class PixelWorld{
+  constructor(w,h,{seed=1}={}){
+    this.w=w;this.h=h;const n=w*h;
+    this.g=new Uint8Array(n);this.life=new Uint8Array(n);this.u=new Uint8Array(n);
+    this.mats=[{name:'empty',kind:'solid',color:[0,0,0],reactions:[]}];this.id={empty:0};
+    this.bodies=[];this.statuses={};this.flag=1;this.dir=0;this.seed=seed>>>0;this.dirty=true;this.time=0;
+    this.cw=Math.ceil(w/16);this.chh=Math.ceil(h/16);const nch=this.cw*this.chh;this.chd=new Uint8Array(nch);
+    this.awake=new Uint8Array(nch).fill(20);this.reac=new Uint8Array(nch).fill(1);this.sleepEnabled=true;   // 청크 sleep: 변화 없고 반응 재료도 없는 청크는 스캔 생략
+    this.chunkTick=new Uint32Array(nch);this.pseq=1;this.proj=[];this.stats={active:nch,total:nch,ms:0};   // proj: 날아가는 유체 발사체, 청크(16x16) dirty 플래그
+    this.bridge=null;this.gown=new Int16Array(n);this.jetPush=.5;this.fp=new Uint8Array(n);   // gown: 유령 셀이 어느 강체 것인지, jetPush: 유체가 맞은 대상을 미는 세기 배율
+    this._ghost=[];this.ghostId=null;this.ev={};this.impactScale=150;this.fluidScale=.0002;
+    this._mk=new Int32Array(n);this._mkId=0;this.collapse=null;this.supDirty=false;this._supT=-99;this._sup=null;this._stk=null;this._sk=null;this._skId=0;   // 붕괴/파편화 작업 버퍼
+    this.frag={minCells:3,maxPieces:6,jitter:1.6,kick:.35,hardening:1.5,maxGen:3,maxBodies:70};
+  }
+  rand(){let t=this.seed+=0x6D2B79F5;t=Math.imul(t^t>>>15,t|1);t^=t+Math.imul(t^t>>>7,t|61);return((t^t>>>14)>>>0)/4294967296}
+  rnd(n){return this.rand()*n|0}
+  define(d){const m={kind:'solid',density:50,dispersion:0,rise:0,slow:0,color:[200,200,200],reactions:[],...d};
+    m.id=this.mats.length;this.mats.push(m);this.id[m.name]=m.id;this.dirty=true;return m.id}
+  defineStatus(name,s){this.statuses[name]=s}
+  _compile(){
+    const N=this.mats.length;
+    this.K=new Uint8Array(N);this.D=new Float32Array(N);this.DI=new Uint8Array(N);this.R=new Float32Array(N);this.S=new Float32Array(N);
+    this.NS=new Uint8Array(N);this.AN=new Uint8Array(N);this.ST=new Uint8Array(N);this.PU=new Float32Array(N);this.BL=new Uint8Array(N);this.SW=new Uint8Array(N);this.FL=new Uint8Array(N);this.PAL=new Uint32Array(N*8);
+    this.mats.forEach((m,i)=>{
+      this.K[i]=KINDS[m.kind];this.D[i]=m.density;this.DI[i]=m.dispersion;this.R[i]=m.rise;this.S[i]=m.slow;
+      this.NS[i]=m.noSwap?1:0;this.PU[i]=m.push??m.density;   // PU: 분사 운동량 밀도 (기체는 밀도가 낮아 push로 따로 지정)
+      this.ST[i]=(i!==0&&m.kind==='solid'&&!(m.body&&m.body.blocks===false))?1:0;this.FL[i]=m.flicker?1:0;this.AN[i]=(m.anchor??m.indestructible)?1:0;this.SW[i]=m.body&&m.body.swim?1:0;
+      this.BL[i]=m.body&&m.body.blocks!=null?+m.body.blocks:(m.kind==='solid'||m.kind==='powder')?1:0;
+      m.rx=m.reactions.map(r=>({w:[].concat(r.with).map(n=>this.id[n]),chance:r.chance??1,
+        self:r.self==null?-1:this.id[r.self],other:r.other==null?-1:this.id[r.other]}));
+      m.decayTo=m.decay?this.id[m.decay.to]??0:0;
+      m.act=!!(m.decay||m.rx.length||m.react);
+      const c=m.color;for(let v=0;v<8;v++){const f=.82+v*.05;
+        this.PAL[i*8+v]=(255<<24)|(Math.min(255,c[2]*f|0)<<16)|(Math.min(255,c[1]*f|0)<<8)|Math.min(255,c[0]*f|0)}
+    });
+    this.dirty=false;
+  }
+  _lf(id){const m=this.mats[id];return m.life?m.life[0]+this.rnd(m.life[1]-m.life[0]+1):0}
+  spray(x,y,vx,vy,mat,{shooter=null,recoil=1}={}){   // 유체 발사: 셀이 아니라 발사체로 날아가다 처음 막힌 셀 앞에 그 재료의 셀로 내려앉음 (시드 RNG만 쓰므로 결정적, 스냅샷/해시에 포함)
+    if(this.proj.length>=600)return;const rid=typeof mat==='string'?this.id[mat]:mat;this.proj.push({x,y,vx,vy,id:typeof mat==='string'?this.id[mat]:mat,t:0,ex:Math.floor(x),ey:Math.floor(y),src:shooter});   // src: 쏜 쪽(처음 몇 틱은 자기 유체에 안 맞음). ex,ey: 마지막으로 지난 빈 셀 (틱을 넘겨도 유지)
+    if(shooter){   // 반발력: 쏜 유체의 운동량(밀도 x 속도)만큼 쏜 쪽을 반대로 밈. 밀도는 부력·하중과 같은 환산(fluidScale)을 써서 재료 공통
+      if(this.dirty)this._compile();const m=this.PU[rid]*this.fluidScale*recoil,jx=-vx*m,jy=-vy*m;
+      if(shooter.impulse)shooter.impulse(jx/shooter.mass,jy/shooter.mass);else if(this.bridge&&shooter.body)this.bridge.applyImpulse(shooter,jx,jy)}}
+  _drop(x,y,id){   // 발사체를 (x,y) 근처에서 가장 가까운 빈 셀에 내려놓음 (같은 줄·위쪽 반경 4칸, 가까운 순). 양을 최대한 보존
+    if(x<0||y<0)return;const g=this.g,w=this.w,h=this.h;
+    if(!PixelWorld._OFF){const o=[];for(let dy=0;dy<=4;dy++)for(let dx=-4;dx<=4;dx++)o.push([dx,dy]);
+      o.sort((p,q)=>(p[0]*p[0]+p[1]*p[1])-(q[0]*q[0]+q[1]*q[1])||p[1]-q[1]||p[0]-q[0]);PixelWorld._OFF=o}
+    for(const[dx,dy]of PixelWorld._OFF){const qx=x+dx,qy=y-dy;if(qx<0||qx>=w||qy<0||qy>=h)continue;
+      if(g[qy*w+qx]===0){this.setCell(qy*w+qx,id);return}}}
+  _jetMass(p){return this.PU[p.id]*this.fluidScale*this.jetPush*(this.K[p.id]===3?.25:1)}   // 발사체 하나의 질량 환산 (밀도 기반, 반발력과 같은 환산). 기체는 맞았을 때 운동량 전달 효율이 낮아 x0.25
+  _jetEntity(p){   // 날아가던 유체가 엔티티에 맞으면 운동량(질량 x 속도)만큼 엔티티를 밂
+    for(const e of this.bodies){if(e.sensor||e.dead||(e===p.src&&p.t<8))continue;
+      if(Math.abs(p.x-e.x)<=e.hx+.3&&Math.abs(p.y-e.y)<=e.hy+.3){const m=this._jetMass(p);e.impulse(p.vx*m/e.mass,p.vy*m/e.mass);return true}}
+    return false}
+  _jets(){
+    const g=this.g,w=this.w,h=this.h,K=this.K,ST=this.ST,live=[];
+    for(const p of this.proj){const gas=K[p.id]===3;p.vy+=gas?-.03:.1;if(gas){p.vx*=.97;p.vy*=.97}p.t++;   // 기체 발사체는 중력 대신 살짝 뜨고 공기저항으로 빨리 느려짐
+      const n=Math.max(1,Math.ceil(Math.max(Math.abs(p.vx),Math.abs(p.vy))));let cx0=Math.floor(p.x),cy0=Math.floor(p.y),px=p.ex,py=p.ey,dead=false;   // (px,py): 마지막으로 지난 빈 셀 — 유체 속에서 틱이 끝나도 잃지 않도록 발사체가 들고 다님
+      for(let s=0;s<n;s++){p.x+=p.vx/n;p.y+=p.vy/n;const cx=Math.floor(p.x),cy=Math.floor(p.y);if(cx===cx0&&cy===cy0)continue;cx0=cx;cy0=cy;
+        if(cx<0||cx>=w||cy>=h){dead=true;break}
+        if(cy<0)continue;
+        if(this._jetEntity(p)){this._drop(px,py,p.id);dead=true;break}   // 엔티티에 부딪힘: 밀고 그 앞에 퇴적
+        const v=g[cy*w+cx];
+        if(v===0){px=cx;py=cy;continue}
+        if(v===this.ghostId&&this.bridge){const hb=this.bridge.bodies[this.gown[cy*w+cx]-1];   // 강체의 유령 셀에 부딪힘: 맞은 지점에 충격량을 줘서 밀고 회전시킴
+          if(hb){const m=this._jetMass(p);this.bridge.applyImpulseAt(hb,cx+.5,cy+.5,p.vx*m,p.vy*m)}this._drop(px,py,p.id);dead=true;break}
+        if(ST[v]||K[v]===0){this._drop(px,py,p.id);dead=true;break}   // 고체(강체 유령 셀 포함)에 막힘: 마지막 빈 셀에 퇴적
+        const f=K[v]===2?.9:K[v]===1?.8:.98;p.vx*=f;p.vy*=f;                           // 액체·가루·기체는 막지 않고 속도 벡터를 유지한 채 지나가며 감속
+        if(p.vx*p.vx+p.vy*p.vy<.36){this._drop(px,py,p.id);dead=true;break}   // 속도를 다 잃으면 그 자리 근처에 퇴적
+      }
+      if(!dead&&gas&&p.vx*p.vx+p.vy*p.vy<.25){this._drop(px,py,p.id);dead=true}   // 기체는 힘이 다하면 기체 셀(올라가며 사라짐)이 됨
+      p.ex=px;p.ey=py;
+      if(!dead&&p.t>300){this._drop(px,py,p.id);dead=true}
+      if(!dead)live.push(p)}
+    this.proj=live}
+  _wk(i){   // 셀이 바뀐 청크(와 경계에 닿은 이웃 청크)를 깨움. 청크 인덱스 반환
+    const w=this.w,x=i%w,y=(i-x)/w,cx=x>>4,cy=y>>4,c=cy*this.cw+cx,a=this.awake,lx=x&15,ly=y&15;a[c]=20;
+    if(lx===0){if(cx>0)a[c-1]=20}else if(lx===15&&cx<this.cw-1)a[c+1]=20;
+    if(ly===0){if(cy>0)a[c-this.cw]=20}else if(ly===15&&cy<this.chh-1)a[c+this.cw]=20;
+    return c}
+  _refreshReac(c){const w=this.w,x0=(c%this.cw)<<4,y0=((c/this.cw)|0)<<4,x1=Math.min(w,x0+16),y1=Math.min(this.h,y0+16);let r=0;
+    for(let y=y0;y<y1&&!r;y++)for(let x=x0;x<x1;x++)if(this.mats[this.g[y*w+x]].act){r=1;break}
+    this.reac[c]=r}
+  setCell(i,id,l){if(this.dirty)this._compile();
+    const c=this._wk(i);
+    if(this.ST[this.g[i]]!==this.ST[id]){this.chd[c]=1;if(!this.ST[id])this.supDirty=true}   // 정적 고체가 바뀐 청크만 표시
+    this.g[i]=id;this.life[i]=l??this._lf(id);this.u[i]=this.flag;
+    if(this.mats[id].act)this.reac[c]=1}
+  set(x,y,mat){if(x<0||y<0||x>=this.w||y>=this.h)return;this.setCell(y*this.w+x,typeof mat==='string'?this.id[mat]:mat)}
+  get(x,y){return x<0||y<0||x>=this.w||y>=this.h?-1:this.g[y*this.w+x]}
+  rect(x0,y0,x1,y1,mat){for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++)this.set(x,y,mat)}
+  paint(cx,cy,r,mat,{sparse=0}={}){const id=typeof mat==='string'?this.id[mat]:mat;
+    for(let dy=-r;dy<=r;dy++)for(let dx=-r;dx<=r;dx++){
+      if(dx*dx+dy*dy>r*r)continue;const x=cx+dx,y=cy+dy;
+      if(x<0||y<0||x>=this.w||y>=this.h||this.g[y*this.w+x]!==0||this.rand()<sparse)continue;
+      this.setCell(y*this.w+x,id)}}
+  carve(cx,cy,r){let n=0;   // 곡괭이: 부술 수 있는 고체/가루만 제거
+    for(let dy=-r;dy<=r;dy++)for(let dx=-r;dx<=r;dx++){
+      if(dx*dx+dy*dy>r*r)continue;const x=cx+dx,y=cy+dy;if(x<0||y<0||x>=this.w||y>=this.h)continue;
+      const i=y*this.w+x,t=this.g[i];if(!t||this.mats[t].indestructible||this.K[t]>1)continue;
+      this.setCell(i,0);n++}return n}
+  explode(cx,cy,r,{damage=40,force=2.5}={}){
+    const R2=r*r,fire=this.id.fire;
+    for(let dy=-r;dy<=r;dy++)for(let dx=-r;dx<=r;dx++){
+      const d2=dx*dx+dy*dy,x=cx+dx,y=cy+dy;if(d2>R2||x<0||y<0||x>=this.w||y>=this.h)continue;
+      const i=y*this.w+x,t=this.g[i],rim=d2>R2*.6;
+      if(!t){if(!rim&&fire!=null&&this.rand()<.08)this.setCell(i,fire);continue}
+      const m=this.mats[t];if(m.indestructible)continue;
+      if(m.kind==='solid'&&rim&&this.rand()<.4)continue;      // 가장자리는 들쭉날쭉하게 남김
+      const b=m.blast||{};
+      if(b.debris&&this.rand()<(b.debrisChance??.35))this.setCell(i,this.id[b.debris]);
+      else if(b.burn&&this.rand()<(b.burnChance??.4))this.setCell(i,this.id[b.burn]);
+      else this.setCell(i,0);
+    }
+    const R=r*1.5;this.emit('explosion',{x:cx,y:cy,r});
+    for(const b of this.bodies){const px=b.x-cx,py=b.y-cy,d=hyp(px,py)||1;
+      if(d<R){b.impulse(px/d*force,py/d*force-.5);b.hurt(damage*(1-d/R),'blast')}}
+  }
+  /* ---- 이벤트 / 강체 브릿지 ---- */
+  on(t,f){(this.ev[t]||(this.ev[t]=[])).push(f)}
+  emit(t,e){const l=this.ev[t];if(l)for(const f of l)f(e)}
+  markAllDirty(){this.chd.fill(1);this.awake.fill(20);this.reac.fill(1)}
+  attachBridge(B){this.bridge=B;this.markAllDirty();
+    if(this.ghostId==null)this.ghostId=this.define({name:'__ghost',kind:'solid',color:[0,0,0],indestructible:true,body:{blocks:false}});   // 유령 solid용 내부 재료
+    this.on('explosion',e=>{const R=e.r*1.5;for(const h of B.bodies){const dx=h.x-e.x,dy=h.y-e.y,d=hyp(dx,dy)||1;
+      if(d<R){const dv=3*(1-d/R)*h.mass;B.applyImpulse(h,dx/d*dv,dy/d*dv-.3*h.mass)}}})}
+  _chunkShapes(cx,cy){   // 청크 안의 정적 고체를 같은 재료끼리 직사각형으로 병합 (격자와 정확히 일치)
+    const{w,h,g,ST}=this,x0=cx*16,y0=cy*16,x1=Math.min(w,x0+16),y1=Math.min(h,y0+16),out=[];let open=new Map();
+    for(let y=y0;y<y1;y++){const next=new Map();let x=x0;
+      while(x<x1){const t=g[y*w+x];if(!ST[t]){x++;continue}let e=x;while(e<x1&&g[y*w+e]===t)e++;
+        const k=x+','+e+','+t,o=open.get(k);
+        if(o){o.y1=y+1;next.set(k,o)}else{const n={x0:x,x1:e,y0:y,y1:y+1,m:t};next.set(k,n);out.push(n)}x=e}
+      open=next}
+    return out.map(r=>({mat:r.m,verts:[{x:r.x0,y:r.y0},{x:r.x1,y:r.y0},{x:r.x1,y:r.y1},{x:r.x0,y:r.y1}]}))}
+  _fluid(h){   // 부력: 유령 solid가 밀어낸(=잠긴) 셀들의 (유체 밀도 합 x 중력)을 그 셀들의 무게중심에 위로 가함 → 질량에 따라 뜨고 가라앉음
+    const q=h.sub;h.dbg=0;if(!q||!q.n)return;const B=this.bridge,f=q.rho*this.fluidScale*B.gravityScale,fr=q.n/(h.area||h.w*h.h);
+    h.dbg=f;B.applyForce(h,q.sx/q.n,q.sy/q.n,0,-f);B.damp(h,1-.08*fr,1-.15*fr)}
+  chip(cx,cy,r,energy){   // 충격 에너지 > 재료 strength 인 셀만 깎임 (중심에서 멀수록 에너지 감쇠)
+    let n=0;cx=Math.round(cx);cy=Math.round(cy);
+    for(let dy=-r;dy<=r;dy++)for(let dx=-r;dx<=r;dx++){
+      const d=hyp(dx,dy);if(d>r)continue;const x=cx+dx,y=cy+dy;if(x<0||y<0||x>=this.w||y>=this.h)continue;
+      const i=y*this.w+x,t=this.g[i];if(!t||!this.ST[t])continue;const m=this.mats[t];if(m.strength==null)continue;
+      if(energy*(1-d/(r+1))>m.strength){const db=m.blast&&m.blast.debris;
+        this.setCell(i,db&&this.rand()<(m.blast.debrisChance??.35)?this.id[db]:0);n++}}
+    return n}
+  _impact(im){
+    if(im.entity){this._entityImpact(im);return}
+    const e=im.impulse*this.impactScale;if(e<10)return;
+    const r=Math.min(6,1+Math.floor(Math.sqrt(e)/3)),n=this.chip(im.x,im.y,r,e);
+    if(n){this.bridge.damp(im.body,1-Math.min(.6,n*.03),1);this.emit('chip',{x:im.x,y:im.y,removed:n,energy:e,body:im.body})}
+    const d=im.body.data;if(d.strength!=null&&e>d.strength&&this.time-(d.born??-99)>=6&&this.bridge.bodies.includes(im.body))this.fracture(im.body,im,e)}   // 강도를 넘으면 강체 조각으로 쪼개짐 (너무 작으면 픽셀로 환원)
+  _entityImpact(im){   // 엔티티 프록시와의 충돌: 충돌 직전 속도 기준으로 피해와 밀침
+    const e=im.entity;if(e.dead||this.time-(im.body.data.born??-99)<10)return;
+    const dx=e.x-im.body.x,dy=e.y-im.body.y,dd=hyp(dx,dy)||1,en=im.body.mass*Math.max(0,(im.rvx*dx+im.rvy*dy)/dd)*this.impactScale;   // 강체가 엔티티 쪽으로 향하는 속도만 충격으로 침 (밀려 멀어지는 접촉, 얹혀 있는 접촉은 0)
+    if(en>8&&this.time>=(e.data.rock||0)){e.data.rock=this.time+20;const k=im.body.mass/(im.body.mass+e.mass);
+      e.hurt(en*.4);e.impulse(im.rvx*k,im.rvy*k);this.emit('hit',{entity:e,rigid:im.body,energy:en})}}
+  _rowsOf(b){   // 강체가 덮는 셀의 행 구간 목록 (브릿지가 주는 볼록 다각형들을 셀 중심으로 래스터화 → 박스/원/다각형/복합체 공통, 한 행에 구간이 여러 개일 수 있음)
+    const B=this.bridge,P=B.getPolys(b),bd=B.getBounds(b),{w,h}=this,mk=this._mk,id=++this._mkId,rows=[];
+    const y0=Math.max(0,Math.floor(bd.y0)),y1=Math.min(h-1,Math.floor(bd.y1)),x0=Math.max(0,Math.floor(bd.x0)),x1=Math.min(w-1,Math.floor(bd.x1));
+    for(const v of P){let a=1e9,c=-1e9,d=1e9,e=-1e9;for(const p of v){if(p.x<a)a=p.x;if(p.x>c)c=p.x;if(p.y<d)d=p.y;if(p.y>e)e=p.y}
+      const ya=Math.max(y0,Math.floor(d)),yb=Math.min(y1,Math.floor(e)),xa=Math.max(x0,Math.floor(a)),xb=Math.min(x1,Math.floor(c));
+      for(let y=ya;y<=yb;y++)for(let x=xa;x<=xb;x++)if(mk[y*w+x]!==id&&inPoly(v,x+.5,y+.5))mk[y*w+x]=id}
+    for(let y=y0;y<=y1;y++){let xa=-1;for(let x=x0;x<=x1+1;x++){const on=x<=x1&&mk[y*w+x]===id;if(on){if(xa<0)xa=x}else if(xa>=0){rows.push({y,xa,xb:x-1});xa=-1}}}
+    return rows}
+  /* ---- 셀 집합 <-> 강체 (지형 붕괴, 파편화, 굳히기의 공통 기반) ----
+   * 마스크 강체 = 같은 재료 직사각형들을 부품으로 가진 복합체. h.cells = [{x,y,t}] 는 격자 좌표, (h.ox,h.oy) = 무게중심의 격자 좌표.
+   * 셀 중심의 무게중심 기준 좌표 = (x+.5-h.ox, y+.5-h.oy) 를 h.angle만큼 회전해 h.x,h.y에 더하면 월드 좌표 */
+  _rects(cells){   // 셀 → 재료별 직사각형 병합 (_chunkShapes와 같은 방식)
+    let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;for(const c of cells){if(c.x<x0)x0=c.x;if(c.x>x1)x1=c.x;if(c.y<y0)y0=c.y;if(c.y>y1)y1=c.y}
+    const W=x1-x0+1,H=y1-y0+1,a=new Uint8Array(W*H),out=[];for(const c of cells)a[(c.y-y0)*W+c.x-x0]=c.t;let open=new Map();
+    for(let y=0;y<H;y++){const next=new Map();let x=0;
+      while(x<W){const t=a[y*W+x];if(!t){x++;continue}let e=x;while(e<W&&a[y*W+e]===t)e++;
+        const k=x+','+e+','+t,o=open.get(k);
+        if(o){o.h++;next.set(k,o)}else{const n={x:x0+x,y:y0+y,w:e-x,h:1,t};next.set(k,n);out.push(n)}x=e}
+      open=next}
+    return out.map(r=>{const m=this.mats[r.t].rigid||{};return{x:r.x,y:r.y,w:r.w,h:r.h,density:m.density??.004}})}
+  _strengthOf(cells){let n=0,sum=0;for(const c of cells){const st=this.mats[c.t].strength;if(st!=null){sum+=st;n++}}return n*2>cells.length?sum/n:null}   // 절반 넘는 셀이 강도가 있을 때만 평균 (철 같은 건 안 깨짐)
+  spawnCells(cells,{x=0,y=0,angle=0,vx=0,vy=0,av=0,data={}}={}){   // 셀 집합으로 강체 생성. (x,y) = 격자 원점의 월드 위치, angle = 그 원점 기준 회전
+    if(this.dirty)this._compile();
+    const d={born:this.time,chunk:true,...data};if(d.strength===undefined){const st=this._strengthOf(cells);if(st!=null)d.strength=st}
+    const h=this.bridge.addBody({kind:'compound',parts:this._rects(cells),x,y,angle,vx,vy,av,data:d});h.cells=cells;return h}
+  cellsOf(h){   // 강체를 셀로 분해 (마스크 강체는 그대로, 박스/원/다각형은 data.mat 재료로 로컬 격자에 샘플링). 불가능하면 null
+    if(h.cells)return{cells:h.cells,ox:h.ox,oy:h.oy};
+    const t=this.id[h.data.mat];if(!t)return null;
+    const P=this.bridge.getPolys(h),c=Math.cos(h.angle),s=Math.sin(h.angle);
+    const L=P.map(v=>v.map(p=>{const dx=p.x-h.x,dy=p.y-h.y;return{x:dx*c+dy*s,y:-dx*s+dy*c}}));
+    let a=1e9,b=1e9,e=-1e9,f=-1e9;for(const v of L)for(const p of v){if(p.x<a)a=p.x;if(p.x>e)e=p.x;if(p.y<b)b=p.y;if(p.y>f)f=p.y}
+    const gx0=Math.floor(a),gy0=Math.floor(b),cells=[];
+    for(let gy=0;gy<=Math.ceil(f)-gy0;gy++)for(let gx=0;gx<=Math.ceil(e)-gx0;gx++){const px=gx+gx0+.5,py=gy+gy0+.5;
+      if(L.some(v=>inPoly(v,px,py)))cells.push({x:gx,y:gy,t})}
+    return cells.length?{cells,ox:-gx0,oy:-gy0}:null}
+  _cellWorld(h,src,c){const co=Math.cos(h.angle),si=Math.sin(h.angle),lx=c.x+.5-src.ox,ly=c.y+.5-src.oy;return[h.x+lx*co-ly*si,h.y+lx*si+ly*co]}
+  fracture(h,im,e){   // 강체 파편화: 충돌점 주변에 시드를 뿌려 셀을 보로노이 비슷하게 나누고, 각 덩어리를 새 강체로 (너무 작은 조각은 가루로)
+    const F=this.frag,B=this.bridge,src=this.cellsOf(h);
+    if(!src||src.cells.length<F.minCells*2||B.bodies.length>=F.maxBodies||(h.data.gen|0)>=F.maxGen){this.shatter(h);return}
+    const{cells}=src,n=cells.length,d=h.data,co=Math.cos(h.angle),si=Math.sin(h.angle),px=im.x-h.x,py=im.y-h.y,lx=px*co+py*si+src.ox-.5,ly=-px*si+py*co+src.oy-.5;
+    let k=Math.max(2,Math.min(F.maxPieces,2+Math.floor(e/d.strength-1),(n/(F.minCells*2))|0));
+    const seeds=[];let bi=0,bd=1e9;cells.forEach((c,i)=>{const dd=(c.x-lx)*(c.x-lx)+(c.y-ly)*(c.y-ly);if(dd<bd){bd=dd;bi=i}});seeds.push(cells[bi]);   // 첫 시드는 충돌점에서 가장 가까운 셀
+    while(seeds.length<k){let best=null,bs=-1;for(let t=0;t<3;t++){const c=cells[this.rnd(n)];let m=1e9;for(const q of seeds)m=Math.min(m,(c.x-q.x)*(c.x-q.x)+(c.y-q.y)*(c.y-q.y));if(m>bs){bs=m;best=c}}seeds.push(best)}
+    const lab=new Int16Array(n);cells.forEach((c,i)=>{let bl=0,bv=1e9;seeds.forEach((q,j)=>{const dd=hyp(c.x-q.x,c.y-q.y)+this.rand()*F.jitter;if(dd<bv){bv=dd;bl=j}});lab[i]=bl});
+    const idx=new Map();cells.forEach((c,i)=>idx.set(c.y*65536+c.x,i));const seen=new Uint8Array(n),comps=[];
+    for(let i=0;i<n;i++){if(seen[i])continue;const comp=[],st=[i];seen[i]=1;
+      while(st.length){const j=st.pop();comp.push(cells[j]);const c=cells[j];
+        for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){const q=idx.get((c.y+dy)*65536+c.x+dx);if(q!==undefined&&!seen[q]&&lab[q]===lab[j]){seen[q]=1;st.push(q)}}}
+      comps.push(comp)}
+    const gx=h.x-(src.ox*co-src.oy*si),gy=h.y-(src.ox*si+src.oy*co),pieces=[];
+    for(const comp of comps){
+      if(comp.length<F.minCells){   // 너무 작음 → 파편 재료 가루
+        for(const c of comp){const db=(this.mats[c.t].blast&&this.mats[c.t].blast.debris)||d.debris;if(!db)continue;const[wx,wy]=this._cellWorld(h,src,c),xi=Math.floor(wx),yi=Math.floor(wy);
+          if(xi>=0&&yi>=0&&xi<this.w&&yi<this.h){const i=yi*this.w+xi;if(this.g[i]===0||this.K[this.g[i]]>0)this.setCell(i,this.id[db])}}
+        continue}
+      const st=d.strength!=null?d.strength*F.hardening:this._strengthOf(comp),
+        p=this.spawnCells(comp,{x:gx,y:gy,angle:h.angle,data:{strength:st??undefined,gen:(d.gen|0)+1,debris:d.debris,mat:undefined}});
+      const rx=p.x-h.x,ry=p.y-h.y,ix=p.x-im.x,iy=p.y-im.y,id=hyp(ix,iy)||1;
+      B.setVelocity(p,h.vx-(h.av||0)*ry+ix/id*F.kick,h.vy+(h.av||0)*rx+iy/id*F.kick);B.setAngularVelocity(p,h.av||0);pieces.push(p)}
+    B.removeBody(h);this.emit('fracture',{x:h.x,y:h.y,body:h,pieces,energy:e})}
+  /* ---- 지형 붕괴: 앵커(바닥·가장자리·indestructible 재료)와 8방향으로 이어지지 않은 고체 덩어리는 강체가 되어 떨어짐 ---- */
+  enableCollapse(o={}){this.collapse={minCells:4,maxCells:1500,interval:4,bake:true,restTicks:40,minBake:.7,...o};this.supDirty=true}
+  _flood(){   // 앵커에서 8방향 flood fill. 반환: 지탱되는 고체 셀이 1인 배열
+    const{w,h,g,ST,AN}=this,n=w*h;let S=this._sup;if(!S||S.length!==n){S=this._sup=new Uint8Array(n);this._stk=new Int32Array(n)}else S.fill(0);
+    const stk=this._stk;let sp=0;const seed=i=>{if(!S[i]&&ST[g[i]]){S[i]=1;stk[sp++]=i}};
+    for(let i=0;i<n;i++)if(AN[g[i]])seed(i);
+    for(let x=0;x<w;x++)seed((h-1)*w+x);for(let y=0;y<h;y++){seed(y*w);seed(y*w+w-1)}
+    while(sp){const i=stk[--sp],x=i%w,y=(i/w)|0;
+      for(let dy=-1;dy<=1;dy++){const ny=y+dy;if(ny<0||ny>=h)continue;for(let dx=-1;dx<=1;dx++){const nx=x+dx;if(nx<0||nx>=w||(!dx&&!dy))continue;seed(ny*w+nx)}}}
+    return S}
+  _support(){   // 셀이 사라진 적이 있을 때만(supDirty) 몇 틱에 한 번 검사
+    const C=this.collapse;if(!C||!this.supDirty||this.time-this._supT<C.interval)return;this.supDirty=false;this._supT=this.time;
+    const S=this._flood(),{w,h,g,ST}=this,n=w*h;if(!this._sk)this._sk=new Int32Array(n);const sk=this._sk,id=++this._skId,stk=new Int32Array(n);
+    for(let s0=0;s0<n;s0++){if(!ST[g[s0]]||S[s0]||sk[s0]===id)continue;
+      const comp=[];let sp=0;stk[sp++]=s0;sk[s0]=id;
+      while(sp){const i=stk[--sp];comp.push(i);const x=i%w,y=(i/w)|0;
+        for(let dy=-1;dy<=1;dy++){const ny=y+dy;if(ny<0||ny>=h)continue;for(let dx=-1;dx<=1;dx++){const nx=x+dx;if(nx<0||nx>=w)continue;const q=ny*w+nx;if(sk[q]!==id&&ST[g[q]]&&!S[q]){sk[q]=id;stk[sp++]=q}}}}
+      if(comp.length>C.maxCells)continue;   // 너무 큰 덩어리는 정적으로 둠 (성능 보호)
+      if(comp.length<C.minCells){for(const i of comp){const db=this.mats[g[i]].blast&&this.mats[g[i]].blast.debris;if(db)this.setCell(i,this.id[db])}continue}   // 부스러기는 가루로
+      comp.sort((a,b)=>a-b);const cells=comp.map(i=>({x:i%w,y:(i/w)|0,t:g[i]}));
+      for(const i of comp)this.setCell(i,0);
+      const hh=this.spawnCells(cells);this.emit('collapse',{body:hh,cells:cells.length,x:hh.x,y:hh.y})}}
+  _bake(h){   // 가만히 쉬는 조각을 다시 지형 셀로 굳힘. 굳힌 셀이 앵커에 이어지지 않으면 한 칸 아래/위로 옮겨 시도하고, 안 되면 실패
+    const{w,h:H,g}=this,B=this.bridge,map=new Map();for(const c of h.cells)map.set(c.y*65536+c.x,c.t);
+    const rows=this._rowsOf(h),co=Math.cos(h.angle),si=Math.sin(h.angle),tgt=[];
+    for(const r of rows)for(let x=r.xa;x<=r.xb;x++){const px=x+.5-h.x,py=r.y+.5-h.y,t=map.get(Math.floor(-px*si+py*co+h.oy)*65536+Math.floor(px*co+py*si+h.ox));if(t)tgt.push({x,y:r.y,t})}
+    if(!tgt.length){B.removeBody(h);return true}
+    for(const dy of[0,1,-1]){const use=[],saved=[];
+      for(const q of tgt){const y=q.y+dy;if(y<0||y>=H)continue;const i=y*w+q.x;if(this.ST[g[i]])continue;use.push({i,t:q.t});saved.push([i,g[i],this.life[i]])}
+      if(!use.length)continue;
+      for(const q of use){if(g[q.i]&&this.K[g[q.i]]>0)this._eject(q.i,q.i%w,(q.i/w)|0);this.setCell(q.i,q.t)}
+      const S=this._flood();let ok=0;for(const q of use)if(S[q.i])ok++;
+      if(ok>=use.length*this.collapse.minBake){B.removeBody(h);this.supDirty=true;this.emit('bake',{x:h.x,y:h.y,cells:use.length});return true}
+      for(let k=saved.length-1;k>=0;k--)this.setCell(saved[k][0],saved[k][1],saved[k][2])}
+    return false}
+  _settle(){const C=this.collapse;if(!C||!C.bake)return;
+    for(const h of this.bridge.bodies.slice()){if(!h.cells||h.data.noBake)continue;const d=h.data;
+      if(this.time-(d.born??0)<20)continue;
+      if(hyp(h.vx,h.vy)<.04&&Math.abs(h.av||0)<.004)d.rest=(d.rest|0)+1;else d.rest=0;
+      if(d.rest>=C.restTicks&&!this._bake(h)){d.bakeFail=(d.bakeFail|0)+1;d.rest=-30;if(d.bakeFail>=3)d.noBake=true}}}
+  shatter(h){   // 강체 -> 픽셀: 덮고 있던 셀을 파편 재료로 바꾸고 강체 제거
+    const db=this.id[h.data.debris||'sand'];
+    for(const r of this._rowsOf(h))for(let x=r.xa;x<=r.xb;x++){const i=r.y*this.w+x,t=this.g[i];if((t===0||this.K[t]>0)&&this.rand()<.7)this.setCell(i,db)}
+    this.bridge.removeBody(h);this.emit('shatter',{x:h.x,y:h.y,body:h})}
+  /* ---- 스냅샷 / 해시 (롤백, 리플레이, 락스텝 디싱크 검출) ---- */
+  snapshot(){
+    const s={g:this.g.slice(),life:this.life.slice(),u:this.u.slice(),awake:this.awake.slice(),reac:this.reac.slice(),
+      flag:this.flag,dir:this.dir,seed:this.seed,time:this.time,pseq:this.pseq,supDirty:this.supDirty,supT:this._supT,proj:this.proj.map(p=>({...p})),entRefs:this.bodies.slice(),ents:this.bodies.map(b=>b.save())};
+    if(this.bridge)s.bridge=this.bridge.snapshot();return s}
+  restore(s){
+    this.g.set(s.g);this.life.set(s.life);this.u.set(s.u);this.awake.set(s.awake);this.reac.set(s.reac);
+    this.flag=s.flag;this.dir=s.dir;this.seed=s.seed;this.time=s.time;this.pseq=s.pseq;this.supDirty=s.supDirty;this._supT=s.supT;this.proj=s.proj.map(p=>({...p}));this._ghost=[];this.fp.fill(0);
+    this.bodies=s.entRefs.slice();this.bodies.forEach((b,i)=>b.load(s.ents[i]));
+    if(this.bridge){this.bridge.clearProxies();for(const b of this.bodies)b._proxy=null;this.bridge.restore(s.bridge);this.chd.fill(1)}
+    for(const b of this.bodies){b.px=b.x;b.py=b.y}}
+  hash(){   // 시뮬레이션 상태 전체의 32비트 해시 (부동소수점은 비트 단위로 섞음)
+    let h=2166136261;const mix=v=>{h=Math.imul(h^(v|0),16777619)},F=new Float64Array(1),U=new Uint32Array(F.buffer),mf=x=>{F[0]=x;mix(U[0]);mix(U[1])};
+    for(let i=0;i<this.g.length;i++){mix(this.g[i]);mix(this.life[i])}
+    mix(this.seed);mix(this.time);for(const p of this.proj){mf(p.x);mf(p.y);mf(p.vx);mf(p.vy);mix(p.id);mix(p.t)}
+    for(const e of this.bodies){mf(e.x);mf(e.y);mf(e.vx);mf(e.vy);mf(e.hp);mix(e.dead?1:0);for(const k of Object.keys(e.status).sort())mix(e.status[k])}
+    if(this.bridge)for(const r of this.bridge.bodies){const b=r.body;
+      mf(b.position.x);mf(b.position.y);mf(b.positionPrev.x);mf(b.positionPrev.y);mf(b.angle);mf(b.anglePrev);mf(b.velocity.x);mf(b.velocity.y);mf(b.angularVelocity)}
+    return h>>>0}
+  /* ---- 유령 solid: 강체 -> 입자 방향 (SSOT 아님, 입자 갱신 동안만 존재) ----
+   * 틱 시작: 강체가 덮은 셀의 입자를 주변 빈 셀로 밀어내고, 빈 셀에 유령 재료를 찍는다
+   * 입자 갱신: 유령 셀은 그냥 고체처럼 보이므로 액체/모래가 강체를 피해 흐르고 위에 쌓인다
+   * 틱 끝: 유령 셀을 지운다. 잠긴 셀(=밀려난 유체)은 행 단위로 판정해 부력 계산에 쓴다 */
+  _stamp(){
+    const B=this.bridge,{w,h,g}=this,gid=this.ghostId;this._ghost=[];
+    for(const b of B.bodies){const rows=this._rowsOf(b);for(const r of rows)for(let x=r.xa;x<=r.xb;x++)this.fp[r.y*w+x]=1;b._rows=rows}
+    const air=v=>v===0||this.K[v]===3,liq=v=>v!==0&&this.K[v]===2?v:0;
+    let bi=-1;for(const b of B.bodies){bi++;let carry=0;b.sub={n:0,rho:0,sx:0,sy:0};
+      for(const r of b._rows){const y=r.y;let ej=0;
+        for(let x=r.xa;x<=r.xb;x++){const i=y*w+x,t=g[i];
+          if(t&&t!==gid&&this.K[t]>0&&this._eject(i,x,y)&&this.K[t]===2)ej=t}
+        const L=r.xa>0?g[y*w+r.xa-1]:1,R=r.xb<w-1?g[y*w+r.xb+1]:1;
+        let f=ej||liq(L)||liq(R);
+        if(!f&&carry&&!air(L)&&!air(R))f=carry;   // 좁은 틈에 낀 경우: 위 행이 잠겼고 양옆이 막혀 있으면 이어서 잠김
+        carry=f;
+        for(let x=r.xa;x<=r.xb;x++){const i=y*w+x;
+          if(f){b.sub.n++;b.sub.rho+=this.D[f];b.sub.sx+=x+.5;b.sub.sy+=y+.5}
+          if(g[i]===0){this.setCell(i,gid);this._ghost.push(i);this.gown[i]=bi+1}}}
+      const q=b.sub,raw=q.n?{n:q.n,r:q.rho/q.n,x:q.sx/q.n,y:q.sy/q.n}:{n:0,r:0,x:b.x,y:b.y},p=b._sm||(b._sm=raw);   // 잠김 값을 저역통과해서 수면 출렁임에 의한 부력 떨림을 줄임
+      p.n+=(raw.n-p.n)*.25;if(raw.n){p.r+=(raw.r-p.r)*.25;p.x+=(raw.x-p.x)*.25;p.y+=(raw.y-p.y)*.25}
+      b.sub={n:p.n,rho:p.n*p.r,sx:p.n*p.x,sy:p.n*p.y}}
+  }
+  _eject(i,x,y){   // 위쪽 우선으로 가까운 빈 셀(다른 강체 영역 제외)로 입자 이동
+    const{w,h,g}=this;
+    for(let r=1;r<=4;r++)for(let dy=-r;dy<=r;dy++)for(let dx=-r;dx<=r;dx++){
+      if(Math.max(Math.abs(dx),Math.abs(dy))!==r)continue;const nx=x+dx,ny=y+dy;if(nx<0||ny<0||nx>=w||ny>=h)continue;
+      const j=ny*w+nx;if(g[j]!==0||this.fp[j])continue;
+      this.setCell(j,g[i],this.life[i]);this.setCell(i,0);return true}
+    return false}
+  _unstamp(){
+    const gid=this.ghostId,g=this.g,w=this.w,B=this.bridge,K=this.K,D=this.D;
+    for(const b of B.bodies){   // 입자 -> 강체: 윗면에 쌓인 가루 기둥의 무게(밀도 합 x 중력)를 윗면 중심에 아래로 가함
+      let load=0,sx=0,sy=0,m=0;
+      for(const r of b._rows)for(let x=r.xa;x<=r.xb;x++){const i=r.y*w+x;
+        if(r.y===0||this.fp[i-w])continue;
+        let j=i-w,n=0;while(j>=0&&K[g[j]]===1&&n<24){load+=D[g[j]];n++;j-=w}
+        if(n){sx+=x+.5;sy+=r.y;m++}}
+      b.dbgLoad=m?load*this.fluidScale*B.gravityScale:0;if(m)B.applyForce(b,sx/m,sy/m,0,b.dbgLoad)}
+    for(const i of this._ghost)if(g[i]===gid)this.setCell(i,0);
+    for(const b of this.bridge.bodies)for(const r of b._rows)for(let x=r.xa;x<=r.xb;x++)this.fp[r.y*w+x]=0;
+    this._ghost=[]}
+  _entityHits(){   // 강체 → 엔티티: 상대 운동량이 임계값을 넘으면 피해와 밀침 (자기가 쏜 직후 10틱은 무시)
+    for(const e of this.bodies){if(e.dead||e.sensor)continue;
+      const x0=e.x-e.hx-.5,x1=e.x+e.hx+.5,y0=e.y-e.hy-.5,y1=e.y+e.hy+.5;
+      for(const h of this.bridge.bodies){
+        if(this.time-(h.data.born??-99)<10||!bodyHit(this.bridge,h,x0,y0,x1,y1))continue;
+        const dx=e.x-h.x,dy=e.y-h.y,dd=hyp(dx,dy)||1,en=h.mass*Math.max(0,(h.vx*dx+h.vy*dy)/dd)*this.impactScale;   // 강체가 엔티티 쪽으로 향하는 속도만 (엔티티가 걸어 들어가는 속도는 제외)
+        if(en>8&&this.time>=(e.data.rock||0)){e.data.rock=this.time+20;const k=h.mass/(h.mass+e.mass);
+          e.hurt(en*.4);e.impulse(h.vx*k,h.vy*k);this.emit('hit',{entity:e,rigid:h,energy:en})}}}}
+  isCheckpoint(){return !this.bridge||this.bridge.tickNo%this.bridge.checkpoint===0}   // 스냅샷은 이 틱에 찍어야 롤백이 비트 단위로 정확함
+  _sync(){   // 동기화 순서: dirty 청크 → 강체 엔진 / 부력 → step → 충격 이벤트 → 지형 반영
+    const B=this.bridge;
+    for(let c=0;c<this.chd.length;c++)if(this.chd[c]){this.chd[c]=0;const cx=c%this.cw,cy=(c/this.cw)|0;
+      B.setStaticChunk(c,this._chunkShapes(cx,cy));this.chunkTick[c]=this.time;B.wake({x:cx*16-2,y:cy*16-2,w:20,h:20})}
+    for(const e of this.bodies){if(e.sensor||e.dead||e.rigid===false)continue;   // 엔티티를 엔진에 정적 박스로 비춤 → 상자가 엔티티를 뚫지 않고 위에 얹힘
+      if(e.pid==null)e.pid=this.pseq++;if(!e._proxy)e._proxy=B.addProxy(e);B.moveProxy(e._proxy,e.x,e.y)}
+    for(const h of B.bodies)this._fluid(h);
+    B.step(1000/60);
+    for(const im of B.drainImpacts())this._impact(im);
+    this._entityHits()}
+  _ok(t,c){if(c===0)return true;if(this.NS[t])return false;
+    return this.K[t]<3?(this.K[c]>=2&&this.D[t]>this.D[c]):this.K[c]===2}
+  _mv(i,j){const{g,life,u}=this;let t=g[i];g[i]=g[j];g[j]=t;t=life[i];life[i]=life[j];life[j]=t;u[i]=u[j]=this.flag;
+    const a=this._wk(i),b=this._wk(j);if(this.mats[g[i]].act)this.reac[a]=1;if(this.mats[g[j]].act)this.reac[b]=1}
+  _nbr(x,y){const d=this.rnd(4),nx=x+(d===0)-(d===1),ny=y+(d===2)-(d===3);
+    return nx<0||ny<0||nx>=this.w||ny>=this.h?-1:ny*this.w+nx}
+  _react(x,y,i,t){
+    const m=this.mats[t];if(!m.act)return false;
+    if(m.decay&&--this.life[i]<=0){this.setCell(i,this.rand()<(m.decay.chance??1)?m.decayTo:0);return true}
+    const n=this._nbr(x,y),c=n<0?0:this.g[n];
+    if(c){for(const r of m.rx)if(r.w.includes(c)&&this.rand()<r.chance){
+      if(r.other>=0)this.setCell(n,r.other);
+      if(r.self>=0){this.setCell(i,r.self);return true}break}}
+    return !!(m.react&&m.react({world:this,x,y,i,n,other:c,self:t}));
+  }
+  _step(x,y){
+    const{w,h,g}=this,i=y*w+x,t=g[i];if(!t||this.u[i]===this.flag)return;
+    if(this._react(x,y,i,t))return;
+    const k=this.K[t];if(k===0)return;
+    if(this.S[t]&&this.rand()<this.S[t])return;
+    const d=this.rand()<.5?-1:1;
+    if(k===3){
+      if(y>0&&this.rand()<this.R[t]){
+        if(this._ok(t,g[i-w])){this._mv(i,i-w);return}
+        if(x+d>=0&&x+d<w&&this._ok(t,g[i-w+d])){this._mv(i,i-w+d);return}}
+      if(!this.NS[t]&&x+d>=0&&x+d<w&&g[i+d]===0)this._mv(i,i+d);
+      return}
+    if(y<h-1){
+      if(this._ok(t,g[i+w])){this._mv(i,i+w);return}
+      for(let a=0;a<2;a++){const s=a?-d:d;if(x+s>=0&&x+s<w&&this._ok(t,g[i+w+s])){this._mv(i,i+w+s);return}}}
+    if(k===2){
+      for(let a=0;a<2;a++){const s=a?-d:d;let e=-1;
+        for(let q=1;q<=this.DI[t];q++){const nx=x+s*q;if(nx<0||nx>=w||g[y*w+nx]!==0)break;e=y*w+nx}
+        if(e>=0){this._mv(i,e);return}}}
+  }
+  tick(){
+    if(this.dirty)this._compile();
+    const t0=now();
+    if(this.bridge)for(const h of this.bridge.bodies){h.px=h.x;h.py=h.y;h.pa=h.angle}   // 렌더 보간용 이전 상태
+    for(const b of this.bodies){b.px=b.x;b.py=b.y}
+    this.flag=this.flag===1?2:1;this.dir^=1;
+    if(this.bridge)this._stamp();
+    if(this.proj.length)this._jets();   // 유령 셀이 찍힌 뒤라서 발사체도 강체에 막힘
+    const{w,cw,awake,reac}=this,sl=this.sleepEnabled;
+    for(let y=this.h-1;y>=0;y--){const base=(y>>4)*cw;
+      if(this.dir){for(let cx=0;cx<cw;cx++){if(sl&&!awake[base+cx]&&!reac[base+cx])continue;
+        const xe=Math.min(w,(cx+1)<<4);for(let x=cx<<4;x<xe;x++)this._step(x,y)}}
+      else for(let cx=cw-1;cx>=0;cx--){if(sl&&!awake[base+cx]&&!reac[base+cx])continue;
+        const xs=cx<<4;for(let x=Math.min(w,(cx+1)<<4)-1;x>=xs;x--)this._step(x,y)}}
+    let ac=0;for(let c=0;c<awake.length;c++){if(awake[c]||reac[c])ac++;if(awake[c])awake[c]--}
+    this._refreshReac(this.time%awake.length);   // 반응 재료 유무는 청크 하나씩 돌아가며 갱신
+    if(this.bridge){this._unstamp();this._support();this._sync();this._settle()}
+    for(const b of this.bodies)b.update(this);
+    for(const a of this.bodies)if(a.onOverlap&&!a.dead)for(const b of this.bodies)
+      if(b!==a&&!b.dead&&Math.abs(a.x-b.x)<a.hx+b.hx+.4&&Math.abs(a.y-b.y)<a.hy+b.hy+.4)a.onOverlap(b);   // 서로 막히는 엔티티는 맞닿기만 해도 접촉으로 침 (.4 여유)
+    this.bodies=this.bodies.filter(b=>{if(b.dead&&b._proxy){this.bridge.removeProxy(b._proxy);b._proxy=null}return !b.dead});
+    this.stats.active=ac;this.stats.ms=now()-t0;
+    this.time++;
+  }
+}
+/* 강체 엔진 어댑터 계약: 라이브러리는 이 메서드만 안다 (엔진을 바꿔도 PixelWorld는 그대로) */
+class PhysicsBridge{
+  constructor(){this.bodies=[];this.joints=[];this.gravityScale=0}      // bodies: 핸들 {x,y,angle,w,h,mass,vx,vy,data,pins}
+  setStaticChunk(id,shapes){}   // shapes: [{verts:[{x,y}..], mat}]  지형 충돌체 교체
+  addBody(o){}  addBox(o){}  removeBody(h){}  clearDynamic(){}   // addBody({kind:'box'|'circle'|'poly'|'convex'|'compound', x,y,angle,vx,vy,av,density,friction,restitution,group,data, w,h|r|sides|verts|parts})
+  getPolys(h){return[]}  getBounds(h){return{x0:0,y0:0,x1:0,y1:0}}   // 형상 질의: 월드 좌표의 볼록 다각형들, AABB (격자 래스터화·엔티티 충돌·렌더가 사용)
+  addJoint(o){}  removeJoint(j){}  setAngularVelocity(h,av){}   // 조인트: {a,b?,ax,ay,bx,by,len,stiff,damping}
+  addProxy(e){}  moveProxy(p,x,y){}  removeProxy(p){}  clearProxies(){}   // 엔티티를 엔진에 정적 박스로 비춤
+  addPin(h,ax,ay,lx,ly,len,stiff){}                      // 월드 고정점에 줄/핀으로 매달기
+  applyForce(h,px,py,fx,fy){}  applyImpulse(h,jx,jy){}  applyImpulseAt(h,px,py,jx,jy){}  setVelocity(h,vx,vy){}  damp(h,lin,ang){}  wake(rect){}
+  step(dtMs){}  drainImpacts(){return[]}                  // impacts: [{body,x,y,nx,ny,impulse,rvx,rvy,mat|entity}]
+  snapshot(){}  restore(s){}                              // 롤백/리플레이용 상태 저장/복원
+}
+class MatterBridge extends PhysicsBridge{
+  /* deterministic: 바디 id/순서를 고정하고 checkpoint 틱마다 접촉 캐시를 비워서, 스냅샷에서 복원해 다시 돌려도 비트 단위로 같은 결과가 나오게 함.
+   * 스냅샷은 world.time(= bridge.tickNo)이 checkpoint의 배수일 때 찍어야 정확히 재현됨 */
+  constructor(M,{gravity=.0004,deterministic=true,checkpoint=30}={}){
+    super();this.M=M;this.gravityScale=gravity;this.deterministic=deterministic;this.checkpoint=checkpoint;this.tickNo=0;this.seq=1;this.dt=1000/60;
+    this.engine=M.Engine.create({enableSleeping:false});this.engine.gravity.y=1;this.engine.gravity.scale=gravity;
+    this.engine.positionIterations=16;this.engine.velocityIterations=8;   // 셀 단위의 작은 스케일이라 반복 횟수를 늘려 파고듦을 줄임
+    this.statics=new Map();this.proxies=new Set();this.impacts=[];this.jseq=1;
+    M.Events.on(this.engine,'collisionStart',e=>{for(const p of e.pairs){
+      const a=p.bodyA.parent,b=p.bodyB.parent;if(a.isStatic===b.isStatic)continue;   // 복합체는 부품 단위로 충돌하므로 부모로 환산
+      const dyn=a.isStatic?b:a,st=a.isStatic?a:b,n=p.collision.normal,h=dyn.plugin.handle;if(!h)continue;   // 충돌 직전(솔버 이전) 속도로 충격량 계산
+      const vn=Math.abs((a.velocity.x-b.velocity.x)*n.x+(a.velocity.y-b.velocity.y)*n.y),sp=(p.collision.supports||[]).find(Boolean)||dyn.position;
+      const im={body:h,x:sp.x,y:sp.y,nx:n.x,ny:n.y,impulse:dyn.mass*vn,rvx:dyn.velocity.x,rvy:dyn.velocity.y};
+      if(st.plugin.proxy)im.entity=st.plugin.entity;else im.mat=st.plugin.mat;
+      this.impacts.push(im)}});
+  }
+  setStaticChunk(id,shapes){
+    const M=this.M,C=M.Composite,old=this.statics.get(id);if(old)C.remove(this.engine.world,old);
+    if(!shapes.length){this.statics.delete(id);return}
+    const bs=shapes.map((s,k)=>{const c=M.Vertices.centre(s.verts);
+      const b=M.Bodies.fromVertices(c.x,c.y,[s.verts],{isStatic:true,friction:.7,plugin:{mat:s.mat}});b.id=100000+id*256+k;return b});
+    C.add(this.engine.world,bs);this.statics.set(id,bs)}
+  clearStatics(){const C=this.M.Composite;for(const bs of this.statics.values())C.remove(this.engine.world,bs);this.statics.clear()}
+  _make(h,d){   // 형상별 바디 생성. 항상 원점(복합체는 격자 좌표) 기준의 정해진 위치에서 만들고, 포즈는 addBody가 나중에 적용 → 복원 시 질량/관성이 비트 단위로 같음
+    const M=this.M,o={density:d.density,friction:d.friction,restitution:d.restitution,frictionAir:.005};let b;
+    if(d.kind==='circle')b=M.Bodies.circle(0,0,d.r,o);
+    else if(d.kind==='poly')b=M.Bodies.polygon(0,0,d.sides,d.r,o);
+    else if(d.kind==='convex')b=M.Bodies.fromVertices(0,0,[d.verts],o);
+    else if(d.kind==='compound')b=M.Body.create({parts:d.parts.map(p=>M.Bodies.rectangle(p.x+p.w/2,p.y+p.h/2,p.w,p.h,{density:p.density??d.density,friction:d.friction,restitution:d.restitution})),friction:d.friction,restitution:d.restitution,frictionAir:.005});
+    else b=M.Bodies.rectangle(0,0,d.w,d.h,o);
+    b.id=h.id;b.parts.forEach((p,k)=>{if(k)p.id=4000000+h.id*1024+k;if(d.group){p.collisionFilter.group=d.group}});if(d.group)b.collisionFilter.group=d.group;
+    b.plugin.handle=h;h.body=b;h.mass=b.mass;h.area=b.area;M.Composite.add(this.engine.world,b)}
+  addBody(o){
+    const k=o.kind||'box',d={kind:k,density:o.density??.002,friction:o.friction??.6,restitution:o.restitution??.1,w:o.w,h:o.h,r:o.r,sides:o.sides,verts:o.verts,parts:o.parts,group:o.group||0};
+    const h={id:this.seq++,desc:d,x:0,y:0,angle:0,w:0,h:0,mass:0,area:0,vx:0,vy:0,av:0,data:o.data||{},pins:[],_cons:[]},M=this.M;
+    this._make(h,d);const b=h.body,bd=b.bounds;h.w=bd.max.x-bd.min.x;h.h=bd.max.y-bd.min.y;
+    const a=o.angle||0,ox=k==='compound'?b.position.x:0,oy=k==='compound'?b.position.y:0;
+    if(k==='compound'){h.ox=ox;h.oy=oy}   // 복합체의 무게중심(격자 좌표)
+    if(a)M.Body.setAngle(b,a);const c=Math.cos(a),s=Math.sin(a);
+    M.Body.setPosition(b,{x:o.x+ox*c-oy*s,y:o.y+ox*s+oy*c});
+    if(o.vx||o.vy)M.Body.setVelocity(b,{x:o.vx||0,y:o.vy||0});if(o.av)M.Body.setAngularVelocity(b,o.av);
+    h.x=b.position.x;h.y=b.position.y;h.angle=b.angle;h.vx=b.velocity.x;h.vy=b.velocity.y;h.av=b.angularVelocity;
+    h.px=h.x;h.py=h.y;h.pa=h.angle;this.bodies.push(h);return h}
+  addBox(o){return this.addBody({...o,kind:'box'})}
+  addCircle(o){return this.addBody({...o,kind:'circle'})}
+  addPolygon(o){return this.addBody({...o,kind:'poly'})}   // 정다각형: sides, r
+  addConvex(o){return this.addBody({...o,kind:'convex'})}   // 임의 볼록 다각형: verts [{x,y}..]
+  getPolys(h){const b=h.body;return b.parts.length>1?b.parts.slice(1).map(p=>p.vertices):[b.vertices]}
+  getBounds(h){const bd=h.body.bounds;return{x0:bd.min.x,y0:bd.min.y,x1:bd.max.x,y1:bd.max.y}}
+  setAngularVelocity(h,av){this.M.Body.setAngularVelocity(h.body,av);h.av=av}
+  _joint(j){const o={bodyA:j.a.body,pointA:{x:j.ax,y:j.ay},pointB:{x:j.bx,y:j.by},length:j.len,stiffness:j.stiff,damping:j.damp};if(j.b)o.bodyB=j.b.body;
+    j.c=this.M.Constraint.create(o);j.c.id=800000+j.id;this.M.Composite.add(this.engine.world,j.c)}
+  addJoint(o){   // a의 로컬 앵커(ax,ay) ↔ b의 로컬 앵커(bx,by). b가 없으면 (bx,by)는 월드 고정점. len=0,stiff=1 이면 핀(경첩), len>0 이면 줄/막대, stiff 작으면 스프링
+    const j={id:this.jseq++,a:o.a,b:o.b||null,ax:o.ax||0,ay:o.ay||0,bx:o.bx||0,by:o.by||0,len:o.len||0,stiff:o.stiff??1,damp:o.damping??.02,c:null};
+    this._joint(j);this.joints.push(j);return j}
+  removeJoint(j){if(j.c)this.M.Composite.remove(this.engine.world,j.c);j.c=null;this.joints=this.joints.filter(x=>x!==j)}
+  _pin(h,p){const c=this.M.Constraint.create({pointA:{x:p.ax,y:p.ay},bodyB:h.body,pointB:{x:p.lx,y:p.ly},length:p.len,stiffness:p.stiff,damping:.02});
+    c.id=700000+h.id*8+h._cons.length;h._cons.push(c);this.M.Composite.add(this.engine.world,c)}
+  addPin(h,ax,ay,lx=0,ly=-h.h/2,len=0,stiff=1){const p={ax,ay,lx,ly,len,stiff};h.pins.push(p);this._pin(h,p);return p}
+  removeBody(h){const C=this.M.Composite;for(const j of this.joints.filter(j=>j.a===h||j.b===h))this.removeJoint(j);for(const c of h._cons)C.remove(this.engine.world,c);h._cons=[];
+    C.remove(this.engine.world,h.body);this.bodies=this.bodies.filter(x=>x!==h)}
+  clearDynamic(){for(const h of this.bodies.slice())this.removeBody(h);this.joints=[]}
+  addProxy(e){const M=this.M,b=M.Bodies.rectangle(e.x,e.y,e.hx*2-.2,e.hy*2-.2,{isStatic:true,friction:.2,plugin:{proxy:true,entity:e}});   // 살짝 작게: 맞닿은 상자가 눌리지 않게
+    b.id=200000+e.pid;M.Composite.add(this.engine.world,b);const p={body:b,e};this.proxies.add(p);return p}
+  moveProxy(p,x,y){this.M.Body.setPosition(p.body,{x,y})}
+  removeProxy(p){this.M.Composite.remove(this.engine.world,p.body);this.proxies.delete(p)}
+  clearProxies(){for(const p of [...this.proxies])this.removeProxy(p)}
+  applyForce(h,px,py,fx,fy){this.M.Body.applyForce(h.body,{x:px,y:py},{x:fx,y:fy})}
+  applyImpulseAt(h,px,py,jx,jy){const k=1/(this.dt*this.dt);this.applyForce(h,px,py,jx*k,jy*k)}   // 한 스텝치 힘으로 환산해 가해서 회전력도 생김 (속도 변화 = 힘/질량 x dt²)
+  applyImpulse(h,jx,jy){const b=h.body,v=b.velocity;this.M.Body.setVelocity(b,{x:v.x+jx/b.mass,y:v.y+jy/b.mass})}
+  setVelocity(h,vx,vy){this.M.Body.setVelocity(h.body,{x:vx,y:vy});h.vx=vx;h.vy=vy}
+  damp(h,lin,ang){const b=h.body,v=b.velocity;this.M.Body.setVelocity(b,{x:v.x*lin,y:v.y*lin});this.M.Body.setAngularVelocity(b,b.angularVelocity*ang)}
+  wake(r){for(const h of this.bodies)if(Math.abs(h.x-(r.x+r.w/2))<r.w/2+h.w&&Math.abs(h.y-(r.y+r.h/2))<r.h/2+h.h)this.M.Sleeping.set(h.body,false)}
+  step(dt){const M=this.M,W=this.engine.world;
+    if(this.deterministic){
+      if(this.tickNo%this.checkpoint===0)M.Pairs.clear(this.engine.pairs);   // 접촉 캐시(워밍 임펄스)를 주기적으로 비워 복원 지점을 정확하게 만듦
+      W.bodies.sort((a,b)=>a.id-b.id);W.constraints.sort((a,b)=>a.id-b.id);M.Composite.setModified(W,true,true,false)}   // 생성/삭제 이력과 무관한 고정 순서
+    this.tickNo++;M.Engine.update(this.engine,dt);
+    for(const h of this.bodies){const b=h.body;h.x=b.position.x;h.y=b.position.y;h.angle=b.angle;h.vx=b.velocity.x;h.vy=b.velocity.y;h.av=b.angularVelocity}}
+  drainImpacts(){const r=this.impacts;this.impacts=[];return r}
+  snapshot(){
+    const sp=p=>({pos:{x:p.position.x,y:p.position.y},ang:p.angle,vs:p.vertices.map(v=>[v.x,v.y]),ax:p.axes.map(a=>[a.x,a.y]),bd:[p.bounds.min.x,p.bounds.min.y,p.bounds.max.x,p.bounds.max.y]});
+    const st=b=>({...sp(b),pp:{x:b.positionPrev.x,y:b.positionPrev.y},ap:b.anglePrev,v:{x:b.velocity.x,y:b.velocity.y},
+      av:b.angularVelocity,sp:b.speed,asp:b.angularSpeed,dt:b.deltaTime,
+      pi:{x:b.positionImpulse.x,y:b.positionImpulse.y},ci:{x:b.constraintImpulse.x,y:b.constraintImpulse.y,a:b.constraintImpulse.angle},   // 엔진이 틱 사이에 들고 가는 워밍 임펄스
+      parts:b.parts.length>1?b.parts.slice(1).map(sp):[]});   // 복합체는 모든 부품의 정점/축/경계도 저장
+    return{tickNo:this.tickNo,seq:this.seq,jseq:this.jseq,bs:this.bodies.map(h=>({h,desc:h.desc,pins:h.pins.map(p=>({...p})),st:st(h.body),sm:h._sm?{...h._sm}:null,dat:{...h.data},   // 부력 평활화 상태, 줄 제약의 내부 상태(회전된 앵커/각도)도 저장
+      cons:h._cons.map(c=>({x:c.pointB.x,y:c.pointB.y,a:c.angleB}))})),
+      js:this.joints.map(j=>({j,a:j.a,b:j.b,k:{ax:j.c.pointA.x,ay:j.c.pointA.y,bx:j.c.pointB.x,by:j.c.pointB.y,aa:j.c.angleA,ab:j.c.angleB}}))}}
+  restore(s){
+    for(const h of this.bodies.slice())this.removeBody(h);this.joints=[];this.clearStatics();this.clearProxies();
+    this.tickNo=s.tickNo;this.seq=s.seq;this.jseq=s.jseq;
+    const put=(p,q)=>{p.position.x=q.pos.x;p.position.y=q.pos.y;p.angle=q.ang;
+      q.vs.forEach((v,i)=>{p.vertices[i].x=v[0];p.vertices[i].y=v[1]});q.ax.forEach((a,i)=>{p.axes[i].x=a[0];p.axes[i].y=a[1]});
+      p.bounds.min.x=q.bd[0];p.bounds.min.y=q.bd[1];p.bounds.max.x=q.bd[2];p.bounds.max.y=q.bd[3]};
+    for(const r of s.bs){const h=r.h,q=r.st;h.pins=r.pins;h._cons=[];this._make(h,r.desc);const b=h.body;
+      put(b,q);b.positionPrev.x=q.pp.x;b.positionPrev.y=q.pp.y;b.anglePrev=q.ap;
+      b.velocity.x=q.v.x;b.velocity.y=q.v.y;b.angularVelocity=q.av;b.speed=q.sp;b.angularSpeed=q.asp;b.deltaTime=q.dt;
+      b.positionImpulse.x=q.pi.x;b.positionImpulse.y=q.pi.y;b.constraintImpulse.x=q.ci.x;b.constraintImpulse.y=q.ci.y;b.constraintImpulse.angle=q.ci.a;
+      q.parts.forEach((pq,i)=>put(b.parts[i+1],pq));
+      for(const p of h.pins)this._pin(h,p);
+      h._cons.forEach((c,i)=>{const k=r.cons[i];c.pointB.x=k.x;c.pointB.y=k.y;c.angleB=k.a});h._sm=r.sm?{...r.sm}:undefined;
+      for(const k in h.data)delete h.data[k];Object.assign(h.data,r.dat);   // 가변 상태(굳히기 카운터 등)
+      h.x=q.pos.x;h.y=q.pos.y;h.angle=q.ang;h.vx=q.v.x;h.vy=q.v.y;h.av=q.av;h.px=h.x;h.py=h.y;h.pa=h.angle;this.bodies.push(h)}
+    this.joints=[];for(const r of s.js){const j=r.j;j.a=r.a;j.b=r.b;this._joint(j);const c=j.c;c.pointA.x=r.k.ax;c.pointA.y=r.k.ay;c.pointB.x=r.k.bx;c.pointB.y=r.k.by;c.angleA=r.k.aa;c.angleB=r.k.ab;this.joints.push(j)}
+    this.M.Pairs.clear(this.engine.pairs)}
+}
+
+class Body{
+  constructor(o){
+    Object.assign(this,{shape:'box',x:0,y:0,w:3,h:6,r:3,vx:0,vy:0,gravity:.12,accel:.15,friction:.8,maxFall:3,
+      stepUp:2,jumpV:1.4,coyote:6,jumpBuffer:6,jumpCut:.5,_coy:0,_buf:0,_jh:false,_jumping:false,hp:100,sensor:false,color:'#fff',showHp:false,input:{x:0,jump:false},status:{},
+      mass:.03,maxRise:Infinity,solid:true,_eg:null,_rw:0,pid:null,_proxy:null,_rg:null,_ride:null,ground:false,swim:false,dead:false,contacts:new Map(),onContact:null,onOverlap:null,onDeath:null,data:{}},o);
+    if(this.sensor&&o.gravity==null)this.gravity=0;
+    this.maxHp=this.hp;
+    this.hx=this.shape==='circle'?this.r:this.w/2;this.hy=this.shape==='circle'?this.r:this.h/2;
+  }
+  impulse(ix,iy){this.vx+=ix;this.vy+=iy}
+  save(){return{x:this.x,y:this.y,vx:this.vx,vy:this.vy,hp:this.hp,dead:this.dead,ground:this.ground,swim:this.swim,
+    _coy:this._coy,_buf:this._buf,_jh:this._jh,_jumping:this._jumping,_rw:this._rw,pid:this.pid,_ride:this._ride,
+    status:{...this.status},input:{...this.input},data:{...this.data}}}
+  load(s){const{status,input,data,...r}=s;Object.assign(this,r);
+    for(const k in this.status)delete this.status[k];Object.assign(this.status,status);
+    Object.assign(this.input,input);for(const k in this.data)delete this.data[k];Object.assign(this.data,data)}
+  hurt(a){if(this.dead)return;this.hp-=a;if(this.hp<=0){this.dead=true;if(this.onDeath)this.onDeath(this)}}
+  _cells(x,y,fn){
+    const x0=Math.floor(x-this.hx),x1=Math.floor(x+this.hx-.01),y0=Math.floor(y-this.hy),y1=Math.floor(y+this.hy-.01);
+    for(let yy=y0;yy<=y1;yy++)for(let xx=x0;xx<=x1;xx++){
+      if(this.shape==='circle'){const dx=xx+.5-x,dy=yy+.5-y;if(dx*dx+dy*dy>this.r*this.r)continue}
+      if(fn(xx,yy))return true}
+    return false}
+  _hit(W,x,y){   // 0 = 막힘 없음, 1 = 격자 지형에 막힘, 2 = 강체에 막힘 (this._rg에 해당 강체)
+    if(this._cells(x,y,(xx,yy)=>{
+      if(xx<0||xx>=W.w||yy>=W.h)return true;if(yy<0)return false;
+      const t=W.g[yy*W.w+xx];return t!==0&&W.BL[t]===1}))return 1;
+    const B=W.bridge;
+    if(B&&!this.sensor&&this.rigid!==false){const x0=x-this.hx+.15,x1=x+this.hx-.15,y0=y-this.hy+.15,y1=y+this.hy-.15;   // 프록시를 .1 줄인 만큼 여유를 둬서 얹힌 상자가 계속 겹침으로 잡히지 않게
+      for(const h of B.bodies)if(bodyHit(B,h,x0,y0,x1,y1)){this._rg=h;return 2}}
+    if(this.solid&&!this.sensor){for(const o of W.bodies){   // 엔티티끼리: solid 끼리는 서로 막힘 (AABB, 맞닿기만 하면 겹침 아님)
+      if(o===this||o.dead||o.sensor||!o.solid)continue;
+      if(Math.abs(x-o.x)<this.hx+o.hx-.01&&Math.abs(y-o.y)<this.hy+o.hy-.01){this._eg=o;return 3}}}
+    return 0}
+  _sep(o){   // 겹친 엔티티 분리: 더 얕은 축으로, 가벼운 쪽이 더 많이 물러남
+    const ox=this.hx+o.hx-Math.abs(this.x-o.x),oy=this.hy+o.hy-Math.abs(this.y-o.y);if(ox<=0||oy<=0)return;
+    const m=this.mass+o.mass,ks=o.mass/m,ko=this.mass/m;
+    if(ox<=oy){const sg=this.x<o.x?-1:1;this.x+=sg*ox*ks;o.x-=sg*ox*ko}
+    else{const sg=this.y<o.y?-1:1;this.y+=sg*oy*ks;o.y-=sg*oy*ko}}
+  _unstick(W){   // 상하좌우 중 가장 가까운 빈 자리로 이동 (동률이면 위, 좌, 우, 아래). 8칸 안에 없으면 끼임(압사 피해)
+    const D=[[0,-1],[-1,0],[1,0],[0,1]];
+    for(let d=.25;d<=8;d+=.25)for(const[dx,dy]of D)if(!this._hit(W,this.x+dx*d,this.y+dy*d)){
+      this.x+=dx*d;this.y+=dy*d;
+      if(dy&&Math.sign(dy)!==Math.sign(this.vy))this.vy=0;if(dx&&Math.sign(dx)!==Math.sign(this.vx))this.vx=0;return}
+    this.hurt(.5)}
+  update(W){
+    if(this.dead)return;
+    if(!this.sensor){const k=this._hit(W,this.x,this.y);   // 겹쳤으면 겹침이 최소인 방향으로 빼냄
+      if(!k)this._rw=0;else if(k===2&&this._rw<8)this._rw++;   // 강체와만 겹친 경우는 엔진이 상자를 밀어내도록 잠깐(8틱) 기다림
+      else if(k===3)this._sep(this._eg);
+      else this._unstick(W)}
+    // 1) 몸이 겹친 셀을 재료별로 집계
+    const cnt=this.contacts;cnt.clear();let n=0,sw=0;
+    this._cells(this.x,this.y,(xx,yy)=>{
+      if(xx<0||xx>=W.w||yy<0||yy>=W.h)return;n++;const t=W.g[yy*W.w+xx];
+      if(t){cnt.set(t,(cnt.get(t)||0)+1);if(W.SW[t])sw++}});
+    this.swim=n>0&&sw/n>=.4;
+    // 2) 속도 (입력은 body.input으로 외부에서 주입)
+    const jp=!!this.input.jump;if(jp&&!this._jh)this._buf=this.jumpBuffer;this._jh=jp;   // 점프 버퍼
+    if(this.ground)this._coy=this.coyote;else if(this._coy>0)this._coy--;                // 코요테 타임
+    const ax=this.input.x||0;
+    if(this.swim){this.vx=(this.vx+ax*this.accel*.55)*.85;this.vy=(this.vy+this.gravity*.25-(this.input.jump?.15:0))*.9}
+    else{this.vx=(this.vx+ax*this.accel)*(this.sensor?1:this.friction);this.vy=Math.min(this.vy+this.gravity,this.maxFall);
+      if(this._buf>0&&this._coy>0){this.vy=-this.jumpV;this._buf=0;this._coy=0;this._jumping=true}
+      else if(!jp&&this._jumping&&this.vy<0){this.vy*=this.jumpCut;this._jumping=false}   // 버튼을 떼면 점프 컷
+      if(this.vy>=0)this._jumping=false}
+    if(this.vy<-this.maxRise&&!this._jumping)this.vy=-this.maxRise;   // 상승 속도 한계 (제트팩 등)
+    if(this._buf>0)this._buf--;
+    // 3) 이동과 충돌 (서브스텝, 계단 오르기)
+    if(this.sensor){this.x+=this.vx;this.y+=this.vy}
+    else{
+      if(this.ground&&this._ride){const rx=this._ride.vx;if(rx&&!this._hit(W,this.x+rx,this.y))this.x+=rx}   // 움직이는 강체 위에 타고 이동
+      this._ride=null;
+      const sx=Math.max(1,Math.ceil(Math.abs(this.vx))),dx=this.vx/sx;
+      for(let s=0;s<sx;s++){
+        const k=this._hit(W,this.x+dx,this.y),rh=k===2?this._rg:null,eh=k===3?this._eg:null;
+        if(!k)this.x+=dx;
+        else{let ok=false;for(let up=1;up<=this.stepUp&&!ok;up++)if(!this._hit(W,this.x+dx,this.y-up)){this.x+=dx;this.y-=up;ok=true}
+          if(!ok){
+            if(rh){const v=(this.mass*this.vx+rh.mass*rh.vx)/(this.mass+rh.mass);W.bridge.setVelocity(rh,v,rh.vy);this.vx=v}   // 강체 밀기: 운동량 공유, 무거울수록 느려짐
+            else if(eh){const v=(this.mass*this.vx+eh.mass*eh.vx)/(this.mass+eh.mass);eh.vx=v;this.vx=v}   // 엔티티 밀기도 운동량 공유
+            else this.vx=0;
+            break}}}
+      this.ground=false;
+      const sy=Math.max(1,Math.ceil(Math.abs(this.vy))),dy=this.vy/sy;
+      for(let s=0;s<sy;s++){
+        const k=this._hit(W,this.x,this.y+dy);
+        if(!k)this.y+=dy;
+        else{if(dy>0){this.ground=true;
+            if(k===2){const B=W.bridge;this._ride=this._rg;B.applyForce(this._rg,this.x,this.y+this.hy,0,this.mass*B.gravityScale)}
+            else if(k===3)this._ride=this._eg}   // 올라선 강체에 내 체중이 실림 / 엔티티 위에 서면 같이 이동
+          this.vy=0;break}}
+    }
+    // 4) 재료가 선언한 효과 적용 (onContact이 true를 반환하면 기본 효과를 건너뜀)
+    for(const[t,c]of cnt){const m=W.mats[t],e=m.body;
+      if(this.onContact&&this.onContact(m,c,this)===true)continue;
+      if(!e)continue;
+      if(e.damage)this.hurt(e.damage);
+      if(e.status)this.status[e.status[0]]=Math.max(this.status[e.status[0]]||0,e.status[1])}
+    // 5) 상태이상 틱
+    for(const k in this.status){const s=W.statuses[k]||{};
+      if(s.clearedBy&&s.clearedBy.some(nm=>(cnt.get(W.id[nm])||0)/(n||1)>=.3)){delete this.status[k];continue}
+      if(--this.status[k]<=0){delete this.status[k];continue}
+      if(s.damage)this.hurt(s.damage);
+      if(s.emit&&W.rand()<s.emit.chance){
+        const fx=Math.floor(this.x-this.hx)+W.rnd(Math.ceil(this.hx*2)),fy=Math.floor(this.y-this.hy)-1;
+        if(W.get(fx,fy)===0)W.set(fx,fy,s.emit.material)}
+      if(s.tick)s.tick(this,W)}
+  }
+}
+class PixelRenderer{
+  constructor(canvas,world,{overlay=null}={}){
+    this.ov=overlay;this.ctx=canvas.getContext('2d');this.world=world;canvas.width=world.w;canvas.height=world.h;
+    this.img=this.ctx.createImageData(world.w,world.h);this.px=new Uint32Array(this.img.data.buffer);
+    this.sh=new Uint8Array(world.w*world.h);for(let i=0;i<this.sh.length;i++)this.sh[i]=((i*2654435761)>>>0)%8;
+    this.bg=(255<<24)|(26<<16)|(22<<8)|20;
+  }
+  draw(drawBody,extra){
+    const W=this.world,{g,life}=W;if(W.dirty)W._compile();
+    for(let i=0;i<g.length;i++){const t=g[i];this.px[i]=t?W.PAL[t*8+(W.FL[t]?(life[i]+i)&7:this.sh[i])]:this.bg}
+    this.ctx.putImageData(this.img,0,0);
+    const f=drawBody||this.drawBody;
+    if(this.ov){   // 고해상도 오버레이: 격자와 별개로 개체를 화면 해상도로 그림
+      const o=this.ov,r=o.getBoundingClientRect(),d=window.devicePixelRatio||1,pw=Math.round(r.width*d),ph=Math.round(r.height*d);
+      if(o.width!==pw||o.height!==ph){o.width=pw;o.height=ph}
+      const c=o.getContext('2d');c.clearRect(0,0,pw,ph);const s=pw/W.w;
+      for(const b of W.bodies)f(c,b,s);if(extra)extra(c,s);
+    }else{for(const b of W.bodies)f(this.ctx,b,1);if(extra)extra(this.ctx,1)}
+  }
+  drawBody(ctx,b,s=1){   // 기본 렌더러: 박스/원을 단색으로
+    ctx.fillStyle=b.status.burn?'#ffc23a':b.color;
+    if(b.shape==='circle'){ctx.beginPath();ctx.arc(b.x*s,b.y*s,b.r*s,0,7);ctx.fill()}
+    else ctx.fillRect((b.x-b.hx)*s,(b.y-b.hy)*s,b.w*s,b.h*s);
+    if(b.showHp){const x=(b.x-b.hx-1)*s,y=(b.y-b.hy-3)*s,w=(b.hx*2+2)*s;
+      ctx.fillStyle='#c33';ctx.fillRect(x,y,w,s);ctx.fillStyle='#4c4';ctx.fillRect(x,y,w*Math.max(0,b.hp)/b.maxHp,s)}
+  }
+}
+
+/* =====================================================================
+ * 예제: 플랫포머 (라이브러리 사용 방식 시연 — 게임 로직은 전부 이 아래에만 있음)
+ * ===================================================================== */
+const W=200,H=120,world=new PixelWorld(W,H,{seed:7});
+
+// --- 재료 정의: 이동 종류는 kind, 반응은 선언(reactions) 또는 콜백(react)
+function defineAll(w){
+w.define({name:'bedrock',kind:'solid',color:[60,62,70],indestructible:true});
+w.define({name:'stone',kind:'solid',color:[110,112,122],strength:60,blast:{debris:'sand'},rigid:{density:.006}});   // rigid.density: 붕괴/파편 강체가 되었을 때의 밀도
+w.define({name:'iron',kind:'solid',color:[92,100,116],rigid:{density:.015}});   // 강도 없음: 안 깎이고 안 부서짐
+w.define({name:'sand',kind:'powder',density:15,color:[222,190,110]});
+w.define({name:'water',kind:'liquid',density:10,dispersion:5,color:[60,120,220],body:{swim:true}});
+w.define({name:'oil',kind:'liquid',density:8,dispersion:4,color:[80,55,30],body:{swim:true}});
+w.define({name:'wood',kind:'solid',color:[130,85,45],strength:25,blast:{burn:'fire'},rigid:{density:.0015}});
+w.define({name:'fire',kind:'gas',density:2,rise:.3,noSwap:true,flicker:true,color:[255,140,30],life:[40,80],
+  decay:{to:'smoke',chance:.3},body:{blocks:false,status:['burn',120]},
+  reactions:[{with:['wood','plant'],chance:.04,other:'fire'},{with:'oil',chance:.3,other:'fire'},
+    {with:'ice',chance:.1,other:'water'},{with:'water',self:'empty',other:'steam'}]});
+w.define({name:'rubble',kind:'powder',density:14,color:[150,110,70]});   // 부서진 강체의 파편
+w.define({name:'air',kind:'gas',density:.5,push:13,rise:.6,color:[205,225,250],life:[6,16],decay:{to:'empty'}});   // 공기 분사(제트팩)
+w.define({name:'smoke',kind:'gas',density:1,push:11,rise:.8,color:[110,110,116],life:[40,80],decay:{to:'empty'}});
+w.define({name:'steam',kind:'gas',density:1,push:13,rise:.8,color:[190,205,225],life:[80,140],decay:{to:'water',chance:.5}});
+w.define({name:'lava',kind:'liquid',density:20,dispersion:1,slow:.7,color:[240,80,20],
+  body:{damage:3,status:['burn',180],swim:true},
+  reactions:[{with:'water',self:'stone',other:'steam'},{with:['wood','oil','plant'],chance:.2,other:'fire'},
+    {with:'ice',chance:.3,other:'water'}]});
+w.define({name:'acid',kind:'liquid',density:11,dispersion:3,color:[130,230,60],body:{damage:.6,swim:true},
+  reactions:[{with:['sand','wood','stone','ice','plant'],chance:.15,self:'smoke',other:'empty'}]});
+w.define({name:'ice',kind:'solid',color:[170,220,240],strength:12,rigid:{density:.0009},reactions:[{with:['fire','lava'],chance:.1,self:'water'}]});
+w.define({name:'tnt',kind:'solid',color:[200,50,50],
+  react(c){const I=c.world.id;if(c.other===I.fire||c.other===I.lava){c.world.explode(c.x,c.y,10);return true}}});
+w.define({name:'plant',kind:'solid',color:[60,170,70],blast:{burn:'fire'},   // 물이 닿으면 위로 자람 (콜백 예제)
+  react(c){const w=c.world;if(c.other===w.id.water&&w.get(c.x,c.y-1)===0&&w.rand()<.03)w.set(c.x,c.y-1,'plant')}});
+w.define({name:'door',kind:'solid',color:[200,170,50],indestructible:true});
+w.defineStatus('burn',{damage:.25,emit:{material:'fire',chance:.3},clearedBy:['water']});
+}
+defineAll(world);
+
+// --- 강체(Matter.js): 브릿지가 없으면(CDN 차단 등) 강체 기능만 꺼지고 나머지는 그대로 동작
+world.enableCollapse();   // 지형 붕괴 켜기 (끊긴 덩어리는 강체로 떨어지고, 쉬면 다시 굳음)
+installDeterministicTrig();   // 락스텝 대비: Math.sin/cos를 + - * 만 쓰는 구현으로 교체 (전역)
+let bridge=null;if(window.Matter){bridge=new MatterBridge(Matter);world.attachBridge(bridge)}
+const TYPES={wood:{density:.0015,color:'#b07a3c',edge:'#6b4a22',strength:30},stone:{density:.006,color:'#8b8e99',edge:'#50535c',strength:200},iron:{density:.015,color:'#5a6270',edge:'#2e333c'}};   // strength: 충격 에너지가 넘으면 부서짐(철은 안 부서짐)
+const AMMO=[{type:'wood',shape:'box'},{type:'stone',shape:'box'},{type:'iron',shape:'box'},{type:'stone',shape:'circle'},{type:'wood',shape:'hex'}],AMMO_KO=['나무 상자','돌 상자','철 상자','돌 공','나무 육각'];let ammo=0;   // 4번 도구를 다시 누르면 순환
+const FLUIDS=['water','oil','acid','lava','air','steam','smoke'],FLUID_KO=['물','기름','산성','용암','공기','증기','연기'],FLUID_RATE=[3,2,2,1,3,3,3],FLUID_SPEED=[2.4,2.4,2.4,2.4,4.2,4.2,4.2],GAS0=4,FUEL_MAX=100;let fl=0,fuel=FUEL_MAX;   // GAS0 이후는 기체(제트팩, 연료 소모)   // 틱당 발사 수: 느리게 퍼지는 용암은 적게
+const RECOIL=.25;   // 반발력 세기 배율 (실제 크기는 유체 밀도 x 발사 속도로 정해짐)
+function crate(type,x,y,vx=0,vy=0,shape='box'){const T=TYPES[type],o={x,y,density:T.density,vx,vy,data:{type,mat:type,born:world.time,strength:T.strength,debris:'rubble'}};   // data.mat: 파편화 때 이 재료의 셀로 나뉨
+  return shape==='circle'?bridge.addCircle({r:3.4,...o}):shape==='hex'?bridge.addPolygon({sides:6,r:3.8,...o}):bridge.addBox({w:6,h:6,...o})}
+function aim(){const dx=mouse.x-player.x,dy=mouse.y-player.y,d=hyp(dx,dy);   // 마우스가 있으면 마우스 방향, 없으면 캐릭터가 보는 방향
+  return mouse.seen&&d>1?[dx/d,dy/d]:[player.data.face||1,-.15]}
+function shoot(){const[ax,ay]=aim(),gas=fl>=GAS0;
+  if(gas){if(fuel<=0)return;fuel-=1}   // 제트팩 연료
+  player.data.face=ax<0?-1:1;   // 쏘는 방향을 캐릭터가 바라봄
+  for(let i=0;i<FLUID_RATE[fl];i++){const sp=FLUID_SPEED[fl]+world.rand()*.6,a=(world.rand()-.5)*(gas?.5:.25),c=Math.cos(a),s=Math.sin(a);
+    world.spray(player.x+ax*3,player.y-1+ay*3,(ax*c-ay*s)*sp,(ax*s+ay*c)*sp,FLUIDS[fl],{shooter:player,recoil:RECOIL})}}
+function launch(){const dx=mouse.x-player.x,dy=mouse.y-player.y,d=hyp(dx,dy)||1,cs=bridge.bodies.filter(h=>h.data.type&&!h.data.plank);player.data.face=dx<0?-1:1;
+  if(cs.length>=25)bridge.removeBody(cs[0]);const A=AMMO[ammo];crate(A.type,player.x+dx/d*6,player.y+dy/d*6,dx/d*4,dy/d*4,A.shape)}
+
+// --- 레벨
+let player,hasKey,won,respawnAt,doorOpen;
+function build(){
+  world.g.fill(0);world.life.fill(0);world.bodies=[];if(bridge)bridge.clearDynamic();hasKey=won=doorOpen=false;respawnAt=0;
+  world.rect(0,100,W-1,H-4,'stone');world.rect(0,H-3,W-1,H-1,'bedrock');
+  world.rect(20,100,30,112,'empty');world.rect(20,103,30,112,'lava');world.rect(20,100,30,101,'ice');   // 용암 구덩이 위의 얼음 다리
+  world.rect(40,100,80,112,'empty');world.rect(40,103,80,112,'water');                            // 수영장
+  world.rect(88,80,92,99,'wood');world.rect(89,77,91,79,'fire');                                  // 타는 나무 탑
+  world.rect(100,100,112,112,'empty');world.rect(100,104,112,112,'acid');world.rect(100,113,112,116,'bedrock');world.rect(105,96,107,112,'iron'); // 산성 웅덩이 + 철 기둥 (산성에 안 녹음)
+  world.rect(116,96,119,99,'tnt');                                                                // TNT
+  world.rect(130,40,133,99,'bedrock');world.rect(130,88,133,99,'door');                           // 금고 벽 + 문
+  world.rect(160,97,160,99,'plant');world.rect(162,99,164,99,'water');                            // 식물 + 물
+  spawn();
+  const key=new Body({shape:'circle',x:106,y:93,r:2,sensor:true,color:'#ffd84a',data:{kind:'key'}});
+  key.onOverlap=o=>{if(o===player){hasKey=true;key.dead=true}};world.bodies.push(key);
+  const goal=new Body({x:192,y:95,w:3,h:8,sensor:true,color:'#ff5ca8',data:{kind:'goal'}});
+  goal.onOverlap=o=>{if(o===player)won=true};world.bodies.push(goal);
+  [165,172,186].forEach(mob);
+  world.rect(34,90,37,99,'stone');world.rect(84,92,86,99,'wood');   // 발사체로 깎아볼 벽
+  world.rect(177,84,179,99,'wood');world.rect(168,78,188,83,'stone');   // 기둥 위의 돌 슬랩: 기둥을 파거나 태우면 슬랩이 통째로 강체가 되어 떨어지고, 충격으로 쪼개짐
+  world.rect(139,100,149,112,'empty');                                  // 구덩이
+  if(bridge){[58,68,74].forEach(x=>crate('wood',x,94));crate('wood',14,97);   // 수영장에 뜨는 나무 상자
+    const ball=crate('iron',96,84);bridge.addPin(ball,96,56,0,-3,28,.9);          // 줄에 매달린 철구 (폭발·충돌로 흔들어 벽을 깎음)
+    const pl=[0,1,2,3].map(i=>bridge.addBox({x:138.2+1.6+3.2*i,y:99.2,w:3.2,h:1.6,density:.005,group:-1,data:{type:'wood',plank:true,born:world.time}}));   // 구덩이 위 판자 다리: 경첩 조인트 4개 + 양끝 월드 고정
+    bridge.addJoint({a:pl[0],ax:-1.6,ay:0,bx:138.2,by:99.2});bridge.addJoint({a:pl[3],ax:1.6,ay:0,bx:150.8,by:99.2});
+    for(let i=0;i<3;i++)bridge.addJoint({a:pl[i],ax:1.6,ay:0,b:pl[i+1],bx:-1.6,by:0})}
+  world.markAllDirty();
+}
+function spawn(){
+  fuel=FUEL_MAX;player=new Body({x:8,y:92,w:3,h:6,jumpV:2.1,accel:.2,mass:.035,maxRise:.8,color:'#6fd0ff',showHp:true,data:{kind:'player',face:1},onDeath:()=>{respawnAt=world.time+90}});
+  world.bodies.push(player);
+}
+function mob(x){
+  const b=new Body({x,y:92,w:5,h:4,hp:12,accel:.1,mass:.02,color:'#9be36b',showHp:true,data:{kind:'slime',dir:1}});
+  b.onOverlap=o=>{if(o===player&&world.time>=(player.data.inv||0)){player.hurt(8);player.data.inv=world.time+40;player.impulse(Math.sign(player.x-b.x)*1.5,-1)}};
+  b.onDeath=()=>world.paint(Math.round(b.x),Math.round(b.y),2,'smoke');
+  world.bodies.push(b);
+}
+
+// --- 입력
+const keys={l:0,r:0,u:0},KM={ArrowLeft:'l',KeyA:'l',ArrowRight:'r',KeyD:'r',ArrowUp:'u',KeyW:'u',Space:'u'};
+addEventListener('keydown',e=>{const k=KM[e.code];if(k){keys[k]=1;e.preventDefault()}if(e.code==='KeyG')toggleDebug();if('Digit1Digit2Digit3Digit4'.includes(e.code)&&e.code.length===6)setTool(+e.code[5])});
+addEventListener('keyup',e=>{const k=KM[e.code];if(k)keys[k]=0});
+const cv=document.getElementById('c'),mouse={x:0,y:0,down:false};
+function mpos(e){mouse.seen=true;const r=cv.getBoundingClientRect();mouse.x=Math.floor((e.clientX-r.left)/r.width*W);mouse.y=Math.floor((e.clientY-r.top)/r.height*H)}
+cv.addEventListener('pointerdown',e=>{mouse.down=true;mpos(e);cv.setPointerCapture(e.pointerId);if(tool===2||tool===4)useTool()});
+cv.addEventListener('pointermove',mpos);
+['pointerup','pointercancel'].forEach(n=>cv.addEventListener(n,()=>mouse.down=false));
+let tool=1,cool=0;const NAMES=['','곡괭이','폭탄','유체 발사','강체 발사'];
+const tb=document.getElementById('tools');
+NAMES.slice(1).forEach((n,i)=>{const b=document.createElement('button');b.textContent=(i+1)+' '+n;b.onclick=()=>setTool(i+1);tb.appendChild(b)});
+function setTool(t){if(t===4&&tool===4)ammo=(ammo+1)%AMMO.length;if(t===3&&tool===3)fl=(fl+1)%FLUIDS.length;tool=t;[...tb.children].forEach((b,i)=>b.classList.toggle('on',i+1===t));
+  if(tb.children[2])tb.children[2].textContent='3 유체 발사: '+FLUID_KO[fl];
+  if(tb.children[3])tb.children[3].textContent='4 강체 발사: '+AMMO_KO[ammo]}
+function useTool(){
+  if(player.dead)return;const d=hyp(mouse.x-player.x,mouse.y-player.y);
+  if(tool===1&&d<14)world.carve(mouse.x,mouse.y,3);
+  else if(tool===2&&cool<=0&&d<60){world.explode(mouse.x,mouse.y,9);cool=45}
+  else if(tool===3)shoot();
+  else if(tool===4&&cool<=0&&bridge){launch();cool=20}
+}
+document.getElementById('reset').onclick=build;
+
+// --- 개체 렌더: 격자는 저해상도, 개체는 화면 해상도 오버레이에 벡터로 그림 (drawBody(ctx, body, scale) 훅)
+let alpha=0;const ipx=b=>b.px==null?b.x:b.px+(b.x-b.px)*alpha,ipy=b=>b.py==null?b.y:b.py+(b.y-b.py)*alpha;   // 고정 틱 사이를 보간해서 그림
+function drawActor(c,b,s){
+  const k=b.data.kind,t=world.time,X=ipx(b),Y=ipy(b);
+  c.save();c.translate(X*s,Y*s);
+  if(k==='player'){
+    const f=b.data.face||1,sw=b.ground&&Math.abs(b.vx)>.1?Math.sin(X*.9):0;
+    if(t<(b.data.inv||0)&&t%6<3)c.globalAlpha=.4;
+    c.scale(f,1);if(b.swim)c.rotate(.5);
+    c.lineCap='round';c.lineWidth=1.1*s;c.strokeStyle='#2c3e70';
+    c.beginPath();c.moveTo(-.5*s,1.5*s);c.lineTo(-.5*s+sw*1.1*s,3.1*s);c.moveTo(.6*s,1.5*s);c.lineTo(.6*s-sw*1.1*s,3.1*s);c.stroke();
+    const fl=Math.min(2.5,Math.abs(b.vx)*3+(b.ground?0:Math.abs(b.vy)))*s;
+    c.fillStyle='#d94a4a';c.beginPath();c.moveTo(-.9*s,-1.2*s);   // 망토
+    c.quadraticCurveTo(-2.4*s-fl,.2*s+Math.sin(t*.3)*.4*s,-2*s-fl,1.9*s);c.lineTo(-.6*s,1.4*s);c.fill();
+    c.fillStyle='#4f8fe0';c.beginPath();c.roundRect(-1.3*s,-1.4*s,2.6*s,3.2*s,.7*s);c.fill();   // 몸
+    c.fillStyle='#f2d2b0';c.beginPath();c.arc(.1*s,-2.2*s,1.55*s,0,7);c.fill();                 // 머리
+    c.fillStyle='#3a2a1a';c.beginPath();c.arc(0,-2.6*s,1.5*s,Math.PI,0);c.fill();               // 머리카락
+    c.fillStyle='#111';c.beginPath();c.arc(.8*s,-2.1*s,.25*s,0,7);c.fill();                     // 눈
+  }else if(k==='slime'){
+    const sq=1+Math.min(.35,Math.abs(b.vy)*.25),d=b.data.dir||1,rx=2.9*s*sq;
+    c.fillStyle='rgba(120,220,90,.92)';c.beginPath();c.ellipse(0,.4*s,rx,2.1*s/sq,0,Math.PI,0);
+    c.lineTo(rx,1.9*s);c.lineTo(-rx,1.9*s);c.fill();
+    c.fillStyle='rgba(255,255,255,.45)';c.beginPath();c.ellipse(-1.2*s,-.9*s,.7*s,.4*s,-.5,0,7);c.fill();
+    for(const ex of[-.9,.9]){c.fillStyle='#fff';c.beginPath();c.arc((ex+d*.3)*s,-.1*s,.6*s,0,7);c.fill();
+      c.fillStyle='#124';c.beginPath();c.arc((ex+d*.5)*s,-.1*s,.28*s,0,7);c.fill()}
+  }else if(k==='key'){
+    c.translate(0,Math.sin(t*.1)*.6*s);c.strokeStyle='#ffd84a';c.lineWidth=.7*s;c.beginPath();c.arc(0,-.8*s,1*s,0,7);
+    c.moveTo(0,.2*s);c.lineTo(0,2.4*s);c.moveTo(0,1.6*s);c.lineTo(.9*s,1.6*s);c.moveTo(0,2.4*s);c.lineTo(.9*s,2.4*s);c.stroke();
+    c.fillStyle='rgba(255,255,255,'+(.4+.4*Math.sin(t*.2))+')';c.beginPath();c.arc(-.4*s,-1.2*s,.3*s,0,7);c.fill();
+  }else if(k==='goal'){
+    c.strokeStyle='#ddd';c.lineWidth=.5*s;c.beginPath();c.moveTo(0,4*s);c.lineTo(0,-4*s);c.stroke();
+    c.fillStyle='#ff5ca8';c.beginPath();c.moveTo(0,-4*s);c.lineTo(3.6*s,(-3+Math.sin(t*.15)*.4)*s);c.lineTo(0,-2*s);c.fill();
+  }
+  c.restore();
+  if(b.status.burn){c.save();c.translate(X*s,Y*s);   // 불붙음: 몸 위로 불꽃
+    for(let i=0;i<4;i++){const a=t*.3+i*1.7;c.fillStyle=i%2?'rgba(255,200,60,.85)':'rgba(255,110,20,.85)';
+      c.beginPath();c.arc(Math.sin(a)*b.hx*s,(-b.hy-Math.abs(Math.sin(a*1.3))*1.5)*s,.7*s,0,7);c.fill()}
+    c.restore()}
+  if(b.showHp){const x=(X-b.hx-1)*s,y=(Y-b.hy-2.5)*s,w=(b.hx*2+2)*s;
+    c.fillStyle='#c33';c.fillRect(x,y,w,.6*s);c.fillStyle='#4c4';c.fillRect(x,y,w*Math.max(0,b.hp)/b.maxHp,.6*s)}
+}
+
+function drawJets(c,s){   // 액체는 점, 기체는 퍼지며 옅어지는 구름으로 그림
+  for(const p of world.proj){const m=world.mats[p.id];
+    if(world.K[p.id]===3){c.fillStyle='rgba('+m.color+','+Math.max(.1,.6-p.t*.02)+')';c.beginPath();c.arc(p.x*s,p.y*s,Math.min(2.4,.8+p.t*.1)*s,0,7);c.fill()}
+    else{c.fillStyle='rgb('+m.color+')';c.beginPath();c.arc(p.x*s,p.y*s,.75*s,0,7);c.fill()}}}
+function spriteOf(h){   // 마스크 강체(셀 집합)는 셀당 1픽셀 스프라이트를 한 번 만들어 두고 회전해서 그림
+  if(h._spr)return h._spr;let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;for(const q of h.cells){if(q.x<x0)x0=q.x;if(q.x>x1)x1=q.x;if(q.y<y0)y0=q.y;if(q.y>y1)y1=q.y}
+  const cv=document.createElement('canvas');cv.width=x1-x0+1;cv.height=y1-y0+1;const cx=cv.getContext('2d'),im=cx.createImageData(cv.width,cv.height),px=new Uint32Array(im.data.buffer);
+  for(const q of h.cells)px[(q.y-y0)*cv.width+q.x-x0]=world.PAL[q.t*8+((q.x*7+q.y*13)&7)];
+  cx.putImageData(im,0,0);return h._spr={cv,x0,y0}}
+function drawRigid(c,s){   // 강체는 고해상도 오버레이에 회전해서 그림 (줄/조인트 포함, 틱 사이 보간). 형상별: 마스크(스프라이트) / 박스 / 원 / 다각형
+  if(!bridge)return;
+  const I=h=>[h.px==null?h.x:h.px+(h.x-h.px)*alpha,h.py==null?h.y:h.py+(h.y-h.py)*alpha,h.pa==null?h.angle:h.pa+(h.angle-h.pa)*alpha];
+  for(const h of bridge.bodies){const T=TYPES[h.data.type]||TYPES.wood,[x,y,a]=I(h);
+    for(const p of h.pins){const ca=Math.cos(a),sa=Math.sin(a),ex=x+p.lx*ca-p.ly*sa,ey=y+p.lx*sa+p.ly*ca;   // 줄: 고정점에서 상자 매달린 점까지
+      c.strokeStyle='#cdbb8a';c.lineWidth=.4*s;c.beginPath();c.moveTo(p.ax*s,p.ay*s);c.lineTo(ex*s,ey*s);c.stroke()}
+    c.save();c.translate(x*s,y*s);c.rotate(a);
+    if(h.cells){const sp=spriteOf(h);c.imageSmoothingEnabled=false;c.drawImage(sp.cv,(sp.x0-h.ox)*s,(sp.y0-h.oy)*s,sp.cv.width*s,sp.cv.height*s)}
+    else{const k=h.desc.kind;c.fillStyle=T.color;c.strokeStyle=T.edge;c.lineWidth=.5*s;
+      if(k==='circle'){c.beginPath();c.arc(0,0,h.desc.r*s,0,7);c.fill();c.stroke();c.beginPath();c.moveTo(0,0);c.lineTo(h.desc.r*s,0);c.stroke()}
+      else if(k==='box'){c.beginPath();c.roundRect(-h.desc.w/2*s,-h.desc.h/2*s,h.desc.w*s,h.desc.h*s,.6*s);c.fill();c.stroke();
+        if(h.desc.h>3){c.beginPath();c.moveTo(-h.desc.w/2*s,-h.desc.h/2*s);c.lineTo(h.desc.w/2*s,h.desc.h/2*s);c.moveTo(h.desc.w/2*s,-h.desc.h/2*s);c.lineTo(-h.desc.w/2*s,h.desc.h/2*s);c.stroke()}}
+      else{const ca=Math.cos(h.angle),sa=Math.sin(h.angle);   // 다각형: 월드 정점을 현재 각도로 되돌려 로컬 좌표로
+        for(const v of bridge.getPolys(h)){c.beginPath();v.forEach((p,i)=>{const dx=p.x-h.x,dy=p.y-h.y,lx=dx*ca+dy*sa,ly=-dx*sa+dy*ca;i?c.lineTo(lx*s,ly*s):c.moveTo(lx*s,ly*s)});c.closePath();c.fill();c.stroke()}}}
+    c.restore()}
+  c.strokeStyle='#cdbb8a';c.lineWidth=.35*s;   // 조인트: 두 앵커 사이에 선과 점
+  for(const j of bridge.joints){const[xa,ya,aa]=I(j.a),ca=Math.cos(aa),sa=Math.sin(aa),px=xa+j.ax*ca-j.ay*sa,py=ya+j.ax*sa+j.ay*ca;
+    c.fillStyle='#e8d9a8';c.beginPath();c.arc(px*s,py*s,.5*s,0,7);c.fill();
+    if(!j.b){c.beginPath();c.moveTo(j.bx*s,j.by*s);c.lineTo(px*s,py*s);c.stroke()}}
+}
+
+let debugOn=false;
+function toggleDebug(){debugOn=!debugOn;document.getElementById('dbg').classList.toggle('on',debugOn)}
+function arrow(c,x,y,dy,col){if(Math.abs(dy)<.5)return;c.strokeStyle=c.fillStyle=col;c.lineWidth=2;c.beginPath();c.moveTo(x,y);c.lineTo(x,y+dy);c.stroke();c.beginPath();c.arc(x,y+dy,2.5,0,7);c.fill()}
+function poly(c,v,s){c.beginPath();c.moveTo(v[0].x*s,v[0].y*s);for(let i=1;i<v.length;i++)c.lineTo(v[i].x*s,v[i].y*s);c.closePath();c.stroke()}
+function drawDebug(c,s){   // 노랑 칠: 깨어 있는 청크 / 빨강 테두리: 최근 지형 충돌체 재생성 / 초록: 지형 충돌체 / 주황: 엔티티 프록시 / 하늘: 유령 solid, 부력(위) / 빨강 화살표: 가루 하중(아래)
+  c.save();c.lineWidth=1;
+  for(let cy=0;cy<world.chh;cy++)for(let cx=0;cx<world.cw;cx++){const k=cy*world.cw+cx,x=cx*16*s,y=cy*16*s,z=16*s;
+    if(world.awake[k]||world.reac[k]){c.fillStyle='rgba(255,230,0,.08)';c.fillRect(x,y,z,z)}
+    c.strokeStyle=world.time-world.chunkTick[k]<20?'rgba(255,70,70,.9)':'rgba(255,255,255,.1)';c.strokeRect(x+.5,y+.5,z-1,z-1)}
+  if(bridge){
+    c.strokeStyle='rgba(60,255,120,.85)';for(const bs of bridge.statics.values())for(const b of bs)poly(c,b.vertices,s);
+    c.strokeStyle='rgba(255,170,0,.95)';for(const p of bridge.proxies)poly(c,p.body.vertices,s);
+    for(const h of bridge.bodies){
+      c.fillStyle='rgba(0,200,255,.35)';for(const r of h._rows||[])c.fillRect(r.xa*s,r.y*s,(r.xb-r.xa+1)*s,s);
+      const wgt=h.mass*bridge.gravityScale;   // 무게 대비 힘의 비 (1이면 무게와 같음)
+      arrow(c,h.x*s,h.y*s,-(h.dbg||0)/wgt*6*s,'#4af');arrow(c,h.x*s,(h.y-h.h/2)*s,(h.dbgLoad||0)/wgt*6*s,'#f84');
+      c.strokeStyle='rgba(255,90,255,.8)';for(const v of bridge.getPolys(h))poly(c,v,s)}}   // 보라: 강체 충돌 다각형
+  c.restore()}
+const outEl=document.getElementById('out');
+function show(t){outEl.style.display='block';outEl.textContent=t}
+function makeSim(seed,sleep=true){   // 게임과 별개의 독립 시뮬레이션 (검사/벤치용)
+  const w=new PixelWorld(W,H,{seed});defineAll(w);w.sleepEnabled=sleep;const B=new MatterBridge(Matter);w.attachBridge(B);
+  w.rect(0,100,W-1,H-4,'stone');w.rect(0,H-3,W-1,H-1,'bedrock');w.rect(40,100,80,112,'empty');w.rect(40,103,80,112,'water');
+  w.rect(100,80,103,99,'stone');w.rect(10,60,30,70,'sand');w.rect(120,96,123,99,'tnt');
+  B.addBox({x:60,y:90,w:6,h:6,density:.0015,data:{born:-99,strength:30,debris:'rubble'}});B.addBox({x:90,y:70,w:6,h:6,density:.015,vx:2,data:{born:-99}});
+  const h=B.addBox({x:140,y:90,w:6,h:6,density:.006,data:{born:-99}});B.addPin(h,140,60,0,-3,28,.9);
+  w.enableCollapse();w.rect(150,70,170,75,'stone');w.rect(159,76,161,99,'wood');   // 붕괴 + 파편화 + 굳히기 경로 포함
+  B.addCircle({x:30,y:80,r:3.4,density:.0015,data:{born:-99,mat:'wood',strength:30}});B.addPolygon({x:45,y:80,sides:6,r:3.8,density:.006,data:{born:-99}});
+  const pl=[0,1].map(i=>B.addBox({x:170+i*3.2,y:60,w:3.2,h:1.6,density:.005,group:-1,data:{born:-99}}));B.addJoint({a:pl[0],ax:-1.6,ay:0,bx:168.4,by:60});B.addJoint({a:pl[0],ax:1.6,ay:0,b:pl[1],bx:-1.6,by:0});
+  const e=new Body({x:20,y:96,w:3,h:6,mass:.035,hp:1e9});w.bodies.push(e);return{w,B,e}}
+function simRun(S,f,t){for(let k=f;k<t;k++){S.e.input.x=(k%120<60)?1:-1;S.e.input.jump=k%45===0;if(k===60)S.w.rect(159,92,161,99,'empty');S.w.tick()}}   // 60틱에 기둥을 끊어 붕괴/파편화를 일으킴   // 입력은 틱 번호만의 함수(스크립트)
+const hx=n=>n.toString(16).padStart(8,'0'),ok=b=>b?'일치':'불일치';
+function runDeterminism(){
+  if(!window.Matter){show('Matter.js가 로드되지 않아 강체 결정성 검사를 할 수 없습니다.');return}
+  const A=makeSim(5),B=makeSim(5);simRun(A,0,300);simRun(B,0,300);const ha=A.w.hash(),hb=B.w.hash();
+  const C=makeSim(5);simRun(C,0,120);const cp=C.w.isCheckpoint(),snap=C.w.snapshot();simRun(C,120,300);const h1=C.w.hash();
+  C.w.restore(snap);simRun(C,120,300);const h2=C.w.hash();
+  const D=makeSim(5);simRun(D,0,125);const snap2=D.w.snapshot();simRun(D,125,300);const h3=D.w.hash();D.w.restore(snap2);simRun(D,125,300);const h4=D.w.hash();
+  show('결정성 검사 (시드 5, 같은 입력 스크립트로 300틱, 입자 + 엔티티 + Matter 강체 + 줄 전체의 해시)\n'
+   +'독립 인스턴스 A '+hx(ha)+' / B '+hx(hb)+'  →  '+ok(ha===hb)+'\n'
+   +'롤백(120틱 스냅샷, 체크포인트 '+cp+') '+hx(h1)+' → 복원 후 재실행 '+hx(h2)+'  →  '+ok(h1===h2)+'\n'
+   +'비체크포인트(125틱) 스냅샷은 접촉 캐시가 달라 '+ok(h3===h4)+' — 스냅샷은 isCheckpoint() 틱에 찍으세요\n'
+   +'같은 브라우저 엔진 안에서의 검사입니다. 서로 다른 엔진/CPU 간에는 installDeterministicTrig()를 쓰고 hash 교환으로 디싱크를 확인하세요.')}
+function runBench(){
+  const res=[];
+  for(const sl of[true,false]){
+    const w=new PixelWorld(W,H,{seed:3});defineAll(w);w.sleepEnabled=sl;
+    w.rect(0,100,W-1,H-4,'stone');w.rect(0,H-3,W-1,H-1,'bedrock');w.rect(0,40,W-1,70,'sand');w.rect(0,71,W-1,99,'water');   // 입자 약 2만 개
+    for(let i=0;i<300;i++)w.tick();            // 쏟아지고 가라앉는 구간
+    let ms=0,act=0;for(let i=0;i<150;i++){w.tick();ms+=w.stats.ms;act+=w.stats.active}
+    res.push({sl,ms:ms/150,act:act/150,tot:w.stats.total})}
+  show('벤치마크 (입자 약 2만 개, 300틱 정착 후 150틱 평균, 강체 없음)\n'
+   +'청크 sleep 켬: '+res[0].ms.toFixed(2)+' ms/틱, 평균 활성 청크 '+res[0].act.toFixed(0)+'/'+res[0].tot+'\n'
+   +'청크 sleep 끔: '+res[1].ms.toFixed(2)+' ms/틱 ('+(res[1].ms/Math.max(.001,res[0].ms)).toFixed(1)+'배)')}
+function statText(){
+  const n=bridge?[...bridge.statics.values()].reduce((a,b)=>a+b.length,0):0;
+  return '활성 청크 '+world.stats.active+'/'+world.stats.total+' · 틱 '+world.stats.ms.toFixed(2)+'ms · 지형 충돌체 '+n+' · 강체 '+(bridge?bridge.bodies.length:0)+' · tick '+world.time+' · hash '+hx(world.hash())}
+
+// --- 게임 루프
+const R=new PixelRenderer(cv,world,{overlay:document.getElementById('o')}),hud=document.getElementById('hud'),stat=document.getElementById('stat');
+function update(){
+  if(cool>0)cool--;
+  if(mouse.down&&tool!==2&&tool!==4)useTool();
+  if(player.dead&&respawnAt&&world.time>=respawnAt){respawnAt=0;spawn()}
+  if(!player.dead){player.input.x=keys.r-keys.l;player.input.jump=!!keys.u;if(keys.r-keys.l&&!(mouse.down&&tool===3))player.data.face=keys.r-keys.l}
+  for(const b of world.bodies)if(b.data.dir){b.input.x=b.data.dir;if(world.time%20===0&&Math.abs(b.vx)<.05)b.data.dir*=-1}
+  if(hasKey&&!doorOpen&&!player.dead&&player.x>122&&player.x<130&&player.y>86){world.rect(130,88,133,99,'empty');doorOpen=true}
+  if(bridge)for(const h of bridge.bodies.slice())if(h.y>H+40)bridge.removeBody(h);
+  if(player.y<8){player.y=8;if(player.vy<0)player.vy=0}   // 천장
+  if(player.ground&&!(mouse.down&&tool===3&&fl>=GAS0))fuel=Math.min(FUEL_MAX,fuel+1.5);   // 연료는 땅에 서 있을 때 충전
+  world.tick();
+  const st=Object.keys(player.status).join(',');
+  hud.textContent=won?'클리어!':player.dead?'사망, 곧 부활':'HP '+(Math.max(0,player.hp)|0)+(hasKey?' / 열쇠':'')+(doorOpen?' / 문 열림':'')+(st?' / '+st:'')+(player.swim?' / 수영':'')+(fuel<FUEL_MAX?' / 연료 '+(fuel|0):'');
+}
+build();setTool(1);
+document.getElementById('dbg').onclick=toggleDebug;document.getElementById('det').onclick=runDeterminism;document.getElementById('bench').onclick=runBench;
+let last=0,acc=0,frames=0;const DT=1000/60;   // 고정 틱(60Hz) + 렌더 보간: 모니터 주사율과 무관하게 같은 속도로 진행
+function frame(t){
+  if(!last)last=t;acc+=Math.min(100,t-last);last=t;
+  while(acc>=DT){update();acc-=DT}
+  alpha=acc/DT;R.draw(drawActor,(c,s)=>{drawRigid(c,s);drawJets(c,s);if(debugOn)drawDebug(c,s)});
+  if(++frames%10===0)stat.textContent=statText();
+  requestAnimationFrame(frame)}
+requestAnimationFrame(frame);
+</script></body></html>

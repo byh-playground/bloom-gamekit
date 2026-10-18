@@ -1,3 +1,7 @@
+## v0.12.3 (2026-10-18)
+
+사용자가 제공한 PixelPhysics HTML에서 픽셀 재료·엔티티·강체 연동·Canvas 렌더링을 독립 `pixel-physics` ESM으로 이전합니다. Matter.js 0.19.0은 선택형 `pixel-physics-matter` 번들로 고정하며 플랫포머 예제와 단일 HTML 프리뷰를 함께 제공합니다. 원본 파일과 SHA-256은 모듈 출처 문서에 보존합니다. 물리의 시간 단위는 원본의 60Hz 고정 틱이며, Matter 스냅샷은 체크포인트 제약을 유지합니다. 서로 다른 브라우저·CPU 사이의 결정성이나 기존 rollback Adapter와의 통합을 보장하지 않습니다.
+
 ## v0.12.2 (2026-10-18)
 
 `deterministic` 모듈에 count-only `createRollJob()` / `restoreRollJob()`을 추가해 PRD 대량 배치를 고정 성공 간격 예산으로 나누고 재개할 수 있습니다. job snapshot은 PRD·`SeededPRNG` state와 전체/처리/잔여 추첨 수, 누적 성공 수만 보존합니다. 기존 `roll()`·`rollMany()` 경로와 확률 분포는 유지하며, 고정 브라우저 시나리오는 작은 chunk의 중단·복원·chunk 크기 불변성과 0/1 경계를 확인합니다. Stage 61 규모에서는 yield가 동기 블로킹을 나눌 뿐 전체 처리 시간은 여전히 매우 깁니다.

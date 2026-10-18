@@ -1,0 +1,1302 @@
+<!doctype html>
+<html lang="ko">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+        <title>PixelPhysics 라이브러리 + 플랫포머 예제</title>
+        <style>
+            :root {
+                --bg: #e9e7e2;
+                --fg: #1b1d21;
+                --mut: #5d6168;
+                --panel: #f6f5f2;
+                --line: #cfccc5;
+                color-scheme: light;
+            }
+            @media (prefers-color-scheme: dark) {
+                :root {
+                    --bg: #111316;
+                    --fg: #e8e8e6;
+                    --mut: #9a9ea6;
+                    --panel: #1a1d21;
+                    --line: #2d3138;
+                    color-scheme: dark;
+                }
+            }
+            * {
+                box-sizing: border-box;
+            }
+            body {
+                margin: 0;
+                padding: 16px;
+                background: var(--bg);
+                color: var(--fg);
+                font:
+                    15px/1.5 system-ui,
+                    -apple-system,
+                    'Apple SD Gothic Neo',
+                    'Noto Sans KR',
+                    sans-serif;
+            }
+            main {
+                max-width: 900px;
+                margin: 0 auto;
+            }
+            h1 {
+                font-size: 20px;
+                margin: 0 0 4px;
+            }
+            p {
+                margin: 0 0 10px;
+                color: var(--mut);
+            }
+            canvas {
+                display: block;
+                width: 100%;
+                aspect-ratio: 200/120;
+                image-rendering: pixelated;
+                touch-action: none;
+                border: 1px solid var(--line);
+                border-radius: 6px;
+                cursor: crosshair;
+            }
+            .stage {
+                position: relative;
+            }
+            #o {
+                position: absolute;
+                inset: 0;
+                height: 100%;
+                aspect-ratio: auto;
+                pointer-events: none;
+                border: 0;
+                image-rendering: auto;
+            }
+            .bar {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 6px;
+                margin: 10px 0;
+                align-items: center;
+            }
+            button {
+                font: inherit;
+                color: var(--fg);
+                background: var(--panel);
+                border: 1px solid var(--line);
+                border-radius: 6px;
+                padding: 6px 10px;
+                cursor: pointer;
+            }
+            button.on {
+                border-color: var(--fg);
+                box-shadow: inset 0 0 0 1px var(--fg);
+            }
+            #hud {
+                margin-left: auto;
+                color: var(--mut);
+            }
+            #stat {
+                color: var(--mut);
+                font:
+                    12px/1.4 ui-monospace,
+                    SFMono-Regular,
+                    Menlo,
+                    monospace;
+                min-height: 1.4em;
+            }
+            pre#out {
+                margin: 8px 0 0;
+                padding: 8px 10px;
+                background: var(--panel);
+                border: 1px solid var(--line);
+                border-radius: 6px;
+                white-space: pre-wrap;
+                color: var(--mut);
+                font:
+                    13px/1.5 ui-monospace,
+                    SFMono-Regular,
+                    Menlo,
+                    monospace;
+                display: none;
+            }
+        </style>
+    </head>
+    <body>
+        <main>
+            <h1>PixelPhysics 라이브러리 + 플랫포머 예제</h1>
+            <p>
+                이동 ← → / A D, 점프·수영 Space / W (짧게 누르면 낮게, 길게 누르면 높게). 도구 1 곡괭이, 2 폭탄, 3 유체
+                발사(다시 누르면 물/기름/산성/용암/공기/증기/연기 전환 — 기체는 제트팩: 아래로 뿜으면 떠오르고 연료가
+                닳으며 땅에서 충전됨, 마우스 방향으로 쏘고 캐릭터가 그쪽을 보며, 유체 밀도에 비례한 반발력으로 뒤로
+                밀리고 맞은 상자·몬스터도 밀려남), 4 사각형 발사(다시 누르면 나무/돌/철 전환) — 상자는 밀고 올라탈 수
+                있고, 빠르게 떨어지거나 날아오는 상자에 맞으면 피해를 입습니다. 물에 뜬 상자 위에서는 내 체중에
+                가라앉기도 합니다. 상자가 물에 들어가면 수면이 오르고, 모래는 상자 위에 쌓여 무게로 상자를 누릅니다(물에
+                뜬 상자에 모래를 쌓으면 가라앉음) — 캔버스를 클릭하거나 드래그. 캐릭터와 몬스터는 격자(저해상도)가
+                아니라 고해상도 오버레이 위에 벡터로 그립니다. 열쇠를 먹고 문(노란색) 앞으로 가면 열립니다. 오른쪽 끝
+                깃발이 목표입니다.
+            </p>
+            <div class="stage"><canvas id="c"></canvas><canvas id="o"></canvas></div>
+            <div class="bar" id="tools"></div>
+            <div class="bar">
+                <button id="reset">다시 시작</button><button id="dbg" title="G">디버그 오버레이</button
+                ><button id="det">결정성 검사</button><button id="bench">벤치마크</button><span id="hud"></span>
+            </div>
+            <div id="stat"></div>
+            <pre id="out"></pre>
+        </main>
+        <script type="module">
+            import {
+                PixelWorld,
+                Body,
+                MatterBridge,
+                PixelRenderer,
+                installDeterministicTrig,
+                hyp,
+            } from '/dist/pixel-physics.js';
+            import { Matter } from '/dist/pixel-physics-matter.js';
+            /* =====================================================================
+             * 예제: 플랫포머 (라이브러리 사용 방식 시연 — 게임 로직은 전부 이 아래에만 있음)
+             * ===================================================================== */
+            const W = 200,
+                H = 120,
+                WORLD = new PixelWorld(W, H, { seed: 7 });
+
+            // --- 재료 정의: 이동 종류는 kind, 반응은 선언(reactions) 또는 콜백(react)
+            function defineAll(w) {
+                w.define({ name: 'bedrock', kind: 'solid', color: [60, 62, 70], indestructible: true });
+                w.define({
+                    name: 'stone',
+                    kind: 'solid',
+                    color: [110, 112, 122],
+                    strength: 60,
+                    blast: { debris: 'sand' },
+                    rigid: { density: 0.006 },
+                }); // rigid.density: 붕괴/파편 강체가 되었을 때의 밀도
+                w.define({ name: 'iron', kind: 'solid', color: [92, 100, 116], rigid: { density: 0.015 } }); // 강도 없음: 안 깎이고 안 부서짐
+                w.define({ name: 'sand', kind: 'powder', density: 15, color: [222, 190, 110] });
+                w.define({
+                    name: 'water',
+                    kind: 'liquid',
+                    density: 10,
+                    dispersion: 5,
+                    color: [60, 120, 220],
+                    body: { swim: true },
+                });
+                w.define({
+                    name: 'oil',
+                    kind: 'liquid',
+                    density: 8,
+                    dispersion: 4,
+                    color: [80, 55, 30],
+                    body: { swim: true },
+                });
+                w.define({
+                    name: 'wood',
+                    kind: 'solid',
+                    color: [130, 85, 45],
+                    strength: 25,
+                    blast: { burn: 'fire' },
+                    rigid: { density: 0.0015 },
+                });
+                w.define({
+                    name: 'fire',
+                    kind: 'gas',
+                    density: 2,
+                    rise: 0.3,
+                    noSwap: true,
+                    flicker: true,
+                    color: [255, 140, 30],
+                    life: [40, 80],
+                    decay: { to: 'smoke', chance: 0.3 },
+                    body: { blocks: false, status: ['burn', 120] },
+                    reactions: [
+                        { with: ['wood', 'plant'], chance: 0.04, other: 'fire' },
+                        { with: 'oil', chance: 0.3, other: 'fire' },
+                        { with: 'ice', chance: 0.1, other: 'water' },
+                        { with: 'water', self: 'empty', other: 'steam' },
+                    ],
+                });
+                w.define({ name: 'rubble', kind: 'powder', density: 14, color: [150, 110, 70] }); // 부서진 강체의 파편
+                w.define({
+                    name: 'air',
+                    kind: 'gas',
+                    density: 0.5,
+                    push: 13,
+                    rise: 0.6,
+                    color: [205, 225, 250],
+                    life: [6, 16],
+                    decay: { to: 'empty' },
+                }); // 공기 분사(제트팩)
+                w.define({
+                    name: 'smoke',
+                    kind: 'gas',
+                    density: 1,
+                    push: 11,
+                    rise: 0.8,
+                    color: [110, 110, 116],
+                    life: [40, 80],
+                    decay: { to: 'empty' },
+                });
+                w.define({
+                    name: 'steam',
+                    kind: 'gas',
+                    density: 1,
+                    push: 13,
+                    rise: 0.8,
+                    color: [190, 205, 225],
+                    life: [80, 140],
+                    decay: { to: 'water', chance: 0.5 },
+                });
+                w.define({
+                    name: 'lava',
+                    kind: 'liquid',
+                    density: 20,
+                    dispersion: 1,
+                    slow: 0.7,
+                    color: [240, 80, 20],
+                    body: { damage: 3, status: ['burn', 180], swim: true },
+                    reactions: [
+                        { with: 'water', self: 'stone', other: 'steam' },
+                        { with: ['wood', 'oil', 'plant'], chance: 0.2, other: 'fire' },
+                        { with: 'ice', chance: 0.3, other: 'water' },
+                    ],
+                });
+                w.define({
+                    name: 'acid',
+                    kind: 'liquid',
+                    density: 11,
+                    dispersion: 3,
+                    color: [130, 230, 60],
+                    body: { damage: 0.6, swim: true },
+                    reactions: [
+                        {
+                            with: ['sand', 'wood', 'stone', 'ice', 'plant'],
+                            chance: 0.15,
+                            self: 'smoke',
+                            other: 'empty',
+                        },
+                    ],
+                });
+                w.define({
+                    name: 'ice',
+                    kind: 'solid',
+                    color: [170, 220, 240],
+                    strength: 12,
+                    rigid: { density: 0.0009 },
+                    reactions: [{ with: ['fire', 'lava'], chance: 0.1, self: 'water' }],
+                });
+                w.define({
+                    name: 'tnt',
+                    kind: 'solid',
+                    color: [200, 50, 50],
+                    react(c) {
+                        const I = c.world.id;
+                        if (c.other === I.fire || c.other === I.lava) {
+                            c.world.explode(c.x, c.y, 10);
+                            return true;
+                        }
+                    },
+                });
+                w.define({
+                    name: 'plant',
+                    kind: 'solid',
+                    color: [60, 170, 70],
+                    blast: { burn: 'fire' }, // 물이 닿으면 위로 자람 (콜백 예제)
+                    react(c) {
+                        const W_VALUE = c.world;
+                        if (c.other === W_VALUE.id.water && W_VALUE.get(c.x, c.y - 1) === 0 && W_VALUE.rand() < 0.03) {
+                            W_VALUE.set(c.x, c.y - 1, 'plant');
+                        }
+                    },
+                });
+                w.define({ name: 'door', kind: 'solid', color: [200, 170, 50], indestructible: true });
+                w.defineStatus('burn', { damage: 0.25, emit: { material: 'fire', chance: 0.3 }, clearedBy: ['water'] });
+            }
+            defineAll(WORLD);
+
+            // --- 강체(Matter.js): 별도 독립 번들의 구현을 주입
+            WORLD.enableCollapse(); // 지형 붕괴 켜기 (끊긴 덩어리는 강체로 떨어지고, 쉬면 다시 굳음)
+            installDeterministicTrig(); // 락스텝 대비: Math.sin/cos를 + - * 만 쓰는 구현으로 교체 (전역)
+            const BRIDGE = new MatterBridge(Matter);
+            WORLD.attachBridge(BRIDGE);
+            const TYPES = {
+                wood: { density: 0.0015, color: '#b07a3c', edge: '#6b4a22', strength: 30 },
+                stone: { density: 0.006, color: '#8b8e99', edge: '#50535c', strength: 200 },
+                iron: { density: 0.015, color: '#5a6270', edge: '#2e333c' },
+            }; // strength: 충격 에너지가 넘으면 부서짐(철은 안 부서짐)
+            const AMMO = [
+                    { type: 'wood', shape: 'box' },
+                    { type: 'stone', shape: 'box' },
+                    { type: 'iron', shape: 'box' },
+                    { type: 'stone', shape: 'circle' },
+                    { type: 'wood', shape: 'hex' },
+                ],
+                AMMO_KO = ['나무 상자', '돌 상자', '철 상자', '돌 공', '나무 육각'];
+            let ammo = 0; // 4번 도구를 다시 누르면 순환
+            const FLUIDS = ['water', 'oil', 'acid', 'lava', 'air', 'steam', 'smoke'],
+                FLUID_KO = ['물', '기름', '산성', '용암', '공기', '증기', '연기'],
+                FLUID_RATE = [3, 2, 2, 1, 3, 3, 3],
+                FLUID_SPEED = [2.4, 2.4, 2.4, 2.4, 4.2, 4.2, 4.2],
+                GAS0 = 4,
+                FUEL_MAX = 100;
+            let fl = 0,
+                fuel = FUEL_MAX; // GAS0 이후는 기체(제트팩, 연료 소모)   // 틱당 발사 수: 느리게 퍼지는 용암은 적게
+            const RECOIL = 0.25; // 반발력 세기 배율 (실제 크기는 유체 밀도 x 발사 속도로 정해짐)
+            function crate(type, x, y, vx = 0, vy = 0, shape = 'box') {
+                const T = TYPES[type],
+                    O = {
+                        x,
+                        y,
+                        density: T.density,
+                        vx,
+                        vy,
+                        data: { type, mat: type, born: WORLD.time, strength: T.strength, debris: 'rubble' },
+                    }; // data.mat: 파편화 때 이 재료의 셀로 나뉨
+                return shape === 'circle'
+                    ? BRIDGE.addCircle({ r: 3.4, ...O })
+                    : shape === 'hex'
+                      ? BRIDGE.addPolygon({ sides: 6, r: 3.8, ...O })
+                      : BRIDGE.addBox({ w: 6, h: 6, ...O });
+            }
+            function aim() {
+                const DX = MOUSE.x - player.x,
+                    DY = MOUSE.y - player.y,
+                    D_VALUE = hyp(DX, DY); // 마우스가 있으면 마우스 방향, 없으면 캐릭터가 보는 방향
+                return MOUSE.seen && D_VALUE > 1 ? [DX / D_VALUE, DY / D_VALUE] : [player.data.face || 1, -0.15];
+            }
+            function shoot() {
+                const [AX, AY] = aim(),
+                    GAS = fl >= GAS0;
+                if (GAS) {
+                    if (fuel <= 0) {
+                        return;
+                    }
+                    fuel -= 1;
+                } // 제트팩 연료
+                player.data.face = AX < 0 ? -1 : 1; // 쏘는 방향을 캐릭터가 바라봄
+                for (let i = 0; i < FLUID_RATE[fl]; i++) {
+                    const SP = FLUID_SPEED[fl] + WORLD.rand() * 0.6,
+                        A_VALUE = (WORLD.rand() - 0.5) * (GAS ? 0.5 : 0.25),
+                        C_VALUE = Math.cos(A_VALUE),
+                        S_VALUE = Math.sin(A_VALUE);
+                    WORLD.spray(
+                        player.x + AX * 3,
+                        player.y - 1 + AY * 3,
+                        (AX * C_VALUE - AY * S_VALUE) * SP,
+                        (AX * S_VALUE + AY * C_VALUE) * SP,
+                        FLUIDS[fl],
+                        { shooter: player, recoil: RECOIL },
+                    );
+                }
+            }
+            function launch() {
+                const DX = MOUSE.x - player.x,
+                    DY = MOUSE.y - player.y,
+                    D_VALUE = hyp(DX, DY) || 1,
+                    CS = BRIDGE.bodies.filter((h) => h.data.type && !h.data.plank);
+                player.data.face = DX < 0 ? -1 : 1;
+                if (CS.length >= 25) {
+                    BRIDGE.removeBody(CS[0]);
+                }
+                const A = AMMO[ammo];
+                crate(
+                    A.type,
+                    player.x + (DX / D_VALUE) * 6,
+                    player.y + (DY / D_VALUE) * 6,
+                    (DX / D_VALUE) * 4,
+                    (DY / D_VALUE) * 4,
+                    A.shape,
+                );
+            }
+
+            // --- 레벨
+            let player, hasKey, won, respawnAt, doorOpen;
+            function build() {
+                WORLD.g.fill(0);
+                WORLD.life.fill(0);
+                WORLD.bodies = [];
+                if (BRIDGE) {
+                    BRIDGE.clearDynamic();
+                }
+                hasKey = won = doorOpen = false;
+                respawnAt = 0;
+                WORLD.rect(0, 100, W - 1, H - 4, 'stone');
+                WORLD.rect(0, H - 3, W - 1, H - 1, 'bedrock');
+                WORLD.rect(20, 100, 30, 112, 'empty');
+                WORLD.rect(20, 103, 30, 112, 'lava');
+                WORLD.rect(20, 100, 30, 101, 'ice'); // 용암 구덩이 위의 얼음 다리
+                WORLD.rect(40, 100, 80, 112, 'empty');
+                WORLD.rect(40, 103, 80, 112, 'water'); // 수영장
+                WORLD.rect(88, 80, 92, 99, 'wood');
+                WORLD.rect(89, 77, 91, 79, 'fire'); // 타는 나무 탑
+                WORLD.rect(100, 100, 112, 112, 'empty');
+                WORLD.rect(100, 104, 112, 112, 'acid');
+                WORLD.rect(100, 113, 112, 116, 'bedrock');
+                WORLD.rect(105, 96, 107, 112, 'iron'); // 산성 웅덩이 + 철 기둥 (산성에 안 녹음)
+                WORLD.rect(116, 96, 119, 99, 'tnt'); // TNT
+                WORLD.rect(130, 40, 133, 99, 'bedrock');
+                WORLD.rect(130, 88, 133, 99, 'door'); // 금고 벽 + 문
+                WORLD.rect(160, 97, 160, 99, 'plant');
+                WORLD.rect(162, 99, 164, 99, 'water'); // 식물 + 물
+                spawn();
+                const KEY = new Body({
+                    shape: 'circle',
+                    x: 106,
+                    y: 93,
+                    r: 2,
+                    sensor: true,
+                    color: '#ffd84a',
+                    data: { kind: 'key' },
+                });
+                KEY.onOverlap = (o) => {
+                    if (o === player) {
+                        hasKey = true;
+                        KEY.dead = true;
+                    }
+                };
+                WORLD.bodies.push(KEY);
+                const GOAL = new Body({
+                    x: 192,
+                    y: 95,
+                    w: 3,
+                    h: 8,
+                    sensor: true,
+                    color: '#ff5ca8',
+                    data: { kind: 'goal' },
+                });
+                GOAL.onOverlap = (o) => {
+                    if (o === player) {
+                        won = true;
+                    }
+                };
+                WORLD.bodies.push(GOAL);
+                [165, 172, 186].forEach(mob);
+                WORLD.rect(34, 90, 37, 99, 'stone');
+                WORLD.rect(84, 92, 86, 99, 'wood'); // 발사체로 깎아볼 벽
+                WORLD.rect(177, 84, 179, 99, 'wood');
+                WORLD.rect(168, 78, 188, 83, 'stone'); // 기둥 위의 돌 슬랩: 기둥을 파거나 태우면 슬랩이 통째로 강체가 되어 떨어지고, 충격으로 쪼개짐
+                WORLD.rect(139, 100, 149, 112, 'empty'); // 구덩이
+                if (BRIDGE) {
+                    [58, 68, 74].forEach((x) => crate('wood', x, 94));
+                    crate('wood', 14, 97); // 수영장에 뜨는 나무 상자
+                    const BALL = crate('iron', 96, 84);
+                    BRIDGE.addPin(BALL, 96, 56, 0, -3, 28, 0.9); // 줄에 매달린 철구 (폭발·충돌로 흔들어 벽을 깎음)
+                    const PL = [0, 1, 2, 3].map((i) =>
+                        BRIDGE.addBox({
+                            x: 138.2 + 1.6 + 3.2 * i,
+                            y: 99.2,
+                            w: 3.2,
+                            h: 1.6,
+                            density: 0.005,
+                            group: -1,
+                            data: { type: 'wood', plank: true, born: WORLD.time },
+                        }),
+                    ); // 구덩이 위 판자 다리: 경첩 조인트 4개 + 양끝 월드 고정
+                    BRIDGE.addJoint({ a: PL[0], ax: -1.6, ay: 0, bx: 138.2, by: 99.2 });
+                    BRIDGE.addJoint({ a: PL[3], ax: 1.6, ay: 0, bx: 150.8, by: 99.2 });
+                    for (let i = 0; i < 3; i++) {
+                        BRIDGE.addJoint({ a: PL[i], ax: 1.6, ay: 0, b: PL[i + 1], bx: -1.6, by: 0 });
+                    }
+                }
+                WORLD.markAllDirty();
+            }
+            function spawn() {
+                fuel = FUEL_MAX;
+                player = new Body({
+                    x: 8,
+                    y: 92,
+                    w: 3,
+                    h: 6,
+                    jumpV: 2.1,
+                    accel: 0.2,
+                    mass: 0.035,
+                    maxRise: 0.8,
+                    color: '#6fd0ff',
+                    showHp: true,
+                    data: { kind: 'player', face: 1 },
+                    onDeath: () => {
+                        respawnAt = WORLD.time + 90;
+                    },
+                });
+                WORLD.bodies.push(player);
+            }
+            function mob(x) {
+                const B_VALUE = new Body({
+                    x,
+                    y: 92,
+                    w: 5,
+                    h: 4,
+                    hp: 12,
+                    accel: 0.1,
+                    mass: 0.02,
+                    color: '#9be36b',
+                    showHp: true,
+                    data: { kind: 'slime', dir: 1 },
+                });
+                B_VALUE.onOverlap = (o) => {
+                    if (o === player && WORLD.time >= (player.data.inv || 0)) {
+                        player.hurt(8);
+                        player.data.inv = WORLD.time + 40;
+                        player.impulse(Math.sign(player.x - B_VALUE.x) * 1.5, -1);
+                    }
+                };
+                B_VALUE.onDeath = () => WORLD.paint(Math.round(B_VALUE.x), Math.round(B_VALUE.y), 2, 'smoke');
+                WORLD.bodies.push(B_VALUE);
+            }
+
+            // --- 입력
+            const KEYS = { l: 0, r: 0, u: 0 },
+                KM = { ArrowLeft: 'l', KeyA: 'l', ArrowRight: 'r', KeyD: 'r', ArrowUp: 'u', KeyW: 'u', Space: 'u' };
+            addEventListener('keydown', (e) => {
+                const K = KM[e.code];
+                if (K) {
+                    KEYS[K] = 1;
+                    e.preventDefault();
+                }
+                if (e.code === 'KeyG') {
+                    toggleDebug();
+                }
+                if ('Digit1Digit2Digit3Digit4'.includes(e.code) && e.code.length === 6) {
+                    setTool(+e.code[5]);
+                }
+            });
+            addEventListener('keyup', (e) => {
+                const K = KM[e.code];
+                if (K) {
+                    KEYS[K] = 0;
+                }
+            });
+            const CV = document.getElementById('c'),
+                MOUSE = { x: 0, y: 0, down: false };
+            function mpos(e) {
+                MOUSE.seen = true;
+                const R_VALUE = CV.getBoundingClientRect();
+                MOUSE.x = Math.floor(((e.clientX - R_VALUE.left) / R_VALUE.width) * W);
+                MOUSE.y = Math.floor(((e.clientY - R_VALUE.top) / R_VALUE.height) * H);
+            }
+            CV.addEventListener('pointerdown', (e) => {
+                MOUSE.down = true;
+                mpos(e);
+                CV.setPointerCapture(e.pointerId);
+                if (tool === 2 || tool === 4) {
+                    useTool();
+                }
+            });
+            CV.addEventListener('pointermove', mpos);
+            ['pointerup', 'pointercancel'].forEach((n) => CV.addEventListener(n, () => (MOUSE.down = false)));
+            let tool = 1,
+                cool = 0;
+            const NAMES = ['', '곡괭이', '폭탄', '유체 발사', '강체 발사'];
+            const TB = document.getElementById('tools');
+            NAMES.slice(1).forEach((n, i) => {
+                const B_VALUE = document.createElement('button');
+                B_VALUE.textContent = i + 1 + ' ' + n;
+                B_VALUE.onclick = () => setTool(i + 1);
+                TB.appendChild(B_VALUE);
+            });
+            function setTool(t) {
+                if (t === 4 && tool === 4) {
+                    ammo = (ammo + 1) % AMMO.length;
+                }
+                if (t === 3 && tool === 3) {
+                    fl = (fl + 1) % FLUIDS.length;
+                }
+                tool = t;
+                [...TB.children].forEach((b, i) => b.classList.toggle('on', i + 1 === t));
+                if (TB.children[2]) {
+                    TB.children[2].textContent = '3 유체 발사: ' + FLUID_KO[fl];
+                }
+                if (TB.children[3]) {
+                    TB.children[3].textContent = '4 강체 발사: ' + AMMO_KO[ammo];
+                }
+            }
+            function useTool() {
+                if (player.dead) {
+                    return;
+                }
+                const D_VALUE = hyp(MOUSE.x - player.x, MOUSE.y - player.y);
+                if (tool === 1 && D_VALUE < 14) {
+                    WORLD.carve(MOUSE.x, MOUSE.y, 3);
+                } else if (tool === 2 && cool <= 0 && D_VALUE < 60) {
+                    WORLD.explode(MOUSE.x, MOUSE.y, 9);
+                    cool = 45;
+                } else if (tool === 3) {
+                    shoot();
+                } else if (tool === 4 && cool <= 0 && BRIDGE) {
+                    launch();
+                    cool = 20;
+                }
+            }
+            document.getElementById('reset').onclick = build;
+
+            // --- 개체 렌더: 격자는 저해상도, 개체는 화면 해상도 오버레이에 벡터로 그림 (drawBody(ctx, body, scale) 훅)
+            let alpha = 0;
+            const IPX = (b) => (b.px == null ? b.x : b.px + (b.x - b.px) * alpha),
+                IPY = (b) => (b.py == null ? b.y : b.py + (b.y - b.py) * alpha); // 고정 틱 사이를 보간해서 그림
+            function drawActor(c, b, s) {
+                const K = b.data.kind,
+                    T_VALUE = WORLD.time,
+                    X = IPX(b),
+                    Y = IPY(b);
+                c.save();
+                c.translate(X * s, Y * s);
+                if (K === 'player') {
+                    const F = b.data.face || 1,
+                        SW = b.ground && Math.abs(b.vx) > 0.1 ? Math.sin(X * 0.9) : 0;
+                    if (T_VALUE < (b.data.inv || 0) && T_VALUE % 6 < 3) {
+                        c.globalAlpha = 0.4;
+                    }
+                    c.scale(F, 1);
+                    if (b.swim) {
+                        c.rotate(0.5);
+                    }
+                    c.lineCap = 'round';
+                    c.lineWidth = 1.1 * s;
+                    c.strokeStyle = '#2c3e70';
+                    c.beginPath();
+                    c.moveTo(-0.5 * s, 1.5 * s);
+                    c.lineTo(-0.5 * s + SW * 1.1 * s, 3.1 * s);
+                    c.moveTo(0.6 * s, 1.5 * s);
+                    c.lineTo(0.6 * s - SW * 1.1 * s, 3.1 * s);
+                    c.stroke();
+                    const FL = Math.min(2.5, Math.abs(b.vx) * 3 + (b.ground ? 0 : Math.abs(b.vy))) * s;
+                    c.fillStyle = '#d94a4a';
+                    c.beginPath();
+                    c.moveTo(-0.9 * s, -1.2 * s); // 망토
+                    c.quadraticCurveTo(
+                        -2.4 * s - FL,
+                        0.2 * s + Math.sin(T_VALUE * 0.3) * 0.4 * s,
+                        -2 * s - FL,
+                        1.9 * s,
+                    );
+                    c.lineTo(-0.6 * s, 1.4 * s);
+                    c.fill();
+                    c.fillStyle = '#4f8fe0';
+                    c.beginPath();
+                    c.roundRect(-1.3 * s, -1.4 * s, 2.6 * s, 3.2 * s, 0.7 * s);
+                    c.fill(); // 몸
+                    c.fillStyle = '#f2d2b0';
+                    c.beginPath();
+                    c.arc(0.1 * s, -2.2 * s, 1.55 * s, 0, 7);
+                    c.fill(); // 머리
+                    c.fillStyle = '#3a2a1a';
+                    c.beginPath();
+                    c.arc(0, -2.6 * s, 1.5 * s, Math.PI, 0);
+                    c.fill(); // 머리카락
+                    c.fillStyle = '#111';
+                    c.beginPath();
+                    c.arc(0.8 * s, -2.1 * s, 0.25 * s, 0, 7);
+                    c.fill(); // 눈
+                } else if (K === 'slime') {
+                    const SQ = 1 + Math.min(0.35, Math.abs(b.vy) * 0.25),
+                        D_VALUE = b.data.dir || 1,
+                        RX = 2.9 * s * SQ;
+                    c.fillStyle = 'rgba(120,220,90,.92)';
+                    c.beginPath();
+                    c.ellipse(0, 0.4 * s, RX, (2.1 * s) / SQ, 0, Math.PI, 0);
+                    c.lineTo(RX, 1.9 * s);
+                    c.lineTo(-RX, 1.9 * s);
+                    c.fill();
+                    c.fillStyle = 'rgba(255,255,255,.45)';
+                    c.beginPath();
+                    c.ellipse(-1.2 * s, -0.9 * s, 0.7 * s, 0.4 * s, -0.5, 0, 7);
+                    c.fill();
+                    for (const EX of [-0.9, 0.9]) {
+                        c.fillStyle = '#fff';
+                        c.beginPath();
+                        c.arc((EX + D_VALUE * 0.3) * s, -0.1 * s, 0.6 * s, 0, 7);
+                        c.fill();
+                        c.fillStyle = '#124';
+                        c.beginPath();
+                        c.arc((EX + D_VALUE * 0.5) * s, -0.1 * s, 0.28 * s, 0, 7);
+                        c.fill();
+                    }
+                } else if (K === 'key') {
+                    c.translate(0, Math.sin(T_VALUE * 0.1) * 0.6 * s);
+                    c.strokeStyle = '#ffd84a';
+                    c.lineWidth = 0.7 * s;
+                    c.beginPath();
+                    c.arc(0, -0.8 * s, 1 * s, 0, 7);
+                    c.moveTo(0, 0.2 * s);
+                    c.lineTo(0, 2.4 * s);
+                    c.moveTo(0, 1.6 * s);
+                    c.lineTo(0.9 * s, 1.6 * s);
+                    c.moveTo(0, 2.4 * s);
+                    c.lineTo(0.9 * s, 2.4 * s);
+                    c.stroke();
+                    c.fillStyle = 'rgba(255,255,255,' + (0.4 + 0.4 * Math.sin(T_VALUE * 0.2)) + ')';
+                    c.beginPath();
+                    c.arc(-0.4 * s, -1.2 * s, 0.3 * s, 0, 7);
+                    c.fill();
+                } else if (K === 'goal') {
+                    c.strokeStyle = '#ddd';
+                    c.lineWidth = 0.5 * s;
+                    c.beginPath();
+                    c.moveTo(0, 4 * s);
+                    c.lineTo(0, -4 * s);
+                    c.stroke();
+                    c.fillStyle = '#ff5ca8';
+                    c.beginPath();
+                    c.moveTo(0, -4 * s);
+                    c.lineTo(3.6 * s, (-3 + Math.sin(T_VALUE * 0.15) * 0.4) * s);
+                    c.lineTo(0, -2 * s);
+                    c.fill();
+                }
+                c.restore();
+                if (b.status.burn) {
+                    c.save();
+                    c.translate(X * s, Y * s); // 불붙음: 몸 위로 불꽃
+                    for (let i = 0; i < 4; i++) {
+                        const A_VALUE = T_VALUE * 0.3 + i * 1.7;
+                        c.fillStyle = i % 2 ? 'rgba(255,200,60,.85)' : 'rgba(255,110,20,.85)';
+                        c.beginPath();
+                        c.arc(
+                            Math.sin(A_VALUE) * b.hx * s,
+                            (-b.hy - Math.abs(Math.sin(A_VALUE * 1.3)) * 1.5) * s,
+                            0.7 * s,
+                            0,
+                            7,
+                        );
+                        c.fill();
+                    }
+                    c.restore();
+                }
+                if (b.showHp) {
+                    const X_VALUE = (X - b.hx - 1) * s,
+                        Y_VALUE = (Y - b.hy - 2.5) * s,
+                        W_VALUE = (b.hx * 2 + 2) * s;
+                    c.fillStyle = '#c33';
+                    c.fillRect(X_VALUE, Y_VALUE, W_VALUE, 0.6 * s);
+                    c.fillStyle = '#4c4';
+                    c.fillRect(X_VALUE, Y_VALUE, (W_VALUE * Math.max(0, b.hp)) / b.maxHp, 0.6 * s);
+                }
+            }
+
+            function drawJets(c, s) {
+                // 액체는 점, 기체는 퍼지며 옅어지는 구름으로 그림
+                for (const P of WORLD.proj) {
+                    const M = WORLD.mats[P.id];
+                    if (WORLD.K[P.id] === 3) {
+                        c.fillStyle = 'rgba(' + M.color + ',' + Math.max(0.1, 0.6 - P.t * 0.02) + ')';
+                        c.beginPath();
+                        c.arc(P.x * s, P.y * s, Math.min(2.4, 0.8 + P.t * 0.1) * s, 0, 7);
+                        c.fill();
+                    } else {
+                        c.fillStyle = 'rgb(' + M.color + ')';
+                        c.beginPath();
+                        c.arc(P.x * s, P.y * s, 0.75 * s, 0, 7);
+                        c.fill();
+                    }
+                }
+            }
+            function spriteOf(h) {
+                // 마스크 강체(셀 집합)는 셀당 1픽셀 스프라이트를 한 번 만들어 두고 회전해서 그림
+                if (h._spr) {
+                    return h._spr;
+                }
+                let x0 = 1e9,
+                    y0 = 1e9,
+                    x1 = -1e9,
+                    y1 = -1e9;
+                for (const Q of h.cells) {
+                    if (Q.x < x0) {
+                        x0 = Q.x;
+                    }
+                    if (Q.x > x1) {
+                        x1 = Q.x;
+                    }
+                    if (Q.y < y0) {
+                        y0 = Q.y;
+                    }
+                    if (Q.y > y1) {
+                        y1 = Q.y;
+                    }
+                }
+                const CV_VALUE = document.createElement('canvas');
+                CV_VALUE.width = x1 - x0 + 1;
+                CV_VALUE.height = y1 - y0 + 1;
+                const CX = CV_VALUE.getContext('2d'),
+                    IM = CX.createImageData(CV_VALUE.width, CV_VALUE.height),
+                    PX = new Uint32Array(IM.data.buffer);
+                for (const Q of h.cells) {
+                    PX[(Q.y - y0) * CV_VALUE.width + Q.x - x0] = WORLD.PAL[Q.t * 8 + ((Q.x * 7 + Q.y * 13) & 7)];
+                }
+                CX.putImageData(IM, 0, 0);
+                return (h._spr = { cv: CV_VALUE, x0, y0 });
+            }
+            function drawRigid(c, s) {
+                // 강체는 고해상도 오버레이에 회전해서 그림 (줄/조인트 포함, 틱 사이 보간). 형상별: 마스크(스프라이트) / 박스 / 원 / 다각형
+                if (!BRIDGE) {
+                    return;
+                }
+                const I = (h) => [
+                    h.px == null ? h.x : h.px + (h.x - h.px) * alpha,
+                    h.py == null ? h.y : h.py + (h.y - h.py) * alpha,
+                    h.pa == null ? h.angle : h.pa + (h.angle - h.pa) * alpha,
+                ];
+                for (const H_VALUE of BRIDGE.bodies) {
+                    const T = TYPES[H_VALUE.data.type] || TYPES.wood,
+                        [X_VALUE, Y_VALUE, A_VALUE] = I(H_VALUE);
+                    for (const P of H_VALUE.pins) {
+                        const CA = Math.cos(A_VALUE),
+                            SA = Math.sin(A_VALUE),
+                            EX = X_VALUE + P.lx * CA - P.ly * SA,
+                            EY = Y_VALUE + P.lx * SA + P.ly * CA; // 줄: 고정점에서 상자 매달린 점까지
+                        c.strokeStyle = '#cdbb8a';
+                        c.lineWidth = 0.4 * s;
+                        c.beginPath();
+                        c.moveTo(P.ax * s, P.ay * s);
+                        c.lineTo(EX * s, EY * s);
+                        c.stroke();
+                    }
+                    c.save();
+                    c.translate(X_VALUE * s, Y_VALUE * s);
+                    c.rotate(A_VALUE);
+                    if (H_VALUE.cells) {
+                        const SP = spriteOf(H_VALUE);
+                        c.imageSmoothingEnabled = false;
+                        c.drawImage(
+                            SP.cv,
+                            (SP.x0 - H_VALUE.ox) * s,
+                            (SP.y0 - H_VALUE.oy) * s,
+                            SP.cv.width * s,
+                            SP.cv.height * s,
+                        );
+                    } else {
+                        const K = H_VALUE.desc.kind;
+                        c.fillStyle = T.color;
+                        c.strokeStyle = T.edge;
+                        c.lineWidth = 0.5 * s;
+                        if (K === 'circle') {
+                            c.beginPath();
+                            c.arc(0, 0, H_VALUE.desc.r * s, 0, 7);
+                            c.fill();
+                            c.stroke();
+                            c.beginPath();
+                            c.moveTo(0, 0);
+                            c.lineTo(H_VALUE.desc.r * s, 0);
+                            c.stroke();
+                        } else if (K === 'box') {
+                            c.beginPath();
+                            c.roundRect(
+                                (-H_VALUE.desc.w / 2) * s,
+                                (-H_VALUE.desc.h / 2) * s,
+                                H_VALUE.desc.w * s,
+                                H_VALUE.desc.h * s,
+                                0.6 * s,
+                            );
+                            c.fill();
+                            c.stroke();
+                            if (H_VALUE.desc.h > 3) {
+                                c.beginPath();
+                                c.moveTo((-H_VALUE.desc.w / 2) * s, (-H_VALUE.desc.h / 2) * s);
+                                c.lineTo((H_VALUE.desc.w / 2) * s, (H_VALUE.desc.h / 2) * s);
+                                c.moveTo((H_VALUE.desc.w / 2) * s, (-H_VALUE.desc.h / 2) * s);
+                                c.lineTo((-H_VALUE.desc.w / 2) * s, (H_VALUE.desc.h / 2) * s);
+                                c.stroke();
+                            }
+                        } else {
+                            const CA = Math.cos(H_VALUE.angle),
+                                SA = Math.sin(H_VALUE.angle); // 다각형: 월드 정점을 현재 각도로 되돌려 로컬 좌표로
+                            for (const V of BRIDGE.getPolys(H_VALUE)) {
+                                c.beginPath();
+                                V.forEach((p, i) => {
+                                    const DX = p.x - H_VALUE.x,
+                                        DY = p.y - H_VALUE.y,
+                                        LX = DX * CA + DY * SA,
+                                        LY = -DX * SA + DY * CA;
+                                    i ? c.lineTo(LX * s, LY * s) : c.moveTo(LX * s, LY * s);
+                                });
+                                c.closePath();
+                                c.fill();
+                                c.stroke();
+                            }
+                        }
+                    }
+                    c.restore();
+                }
+                c.strokeStyle = '#cdbb8a';
+                c.lineWidth = 0.35 * s; // 조인트: 두 앵커 사이에 선과 점
+                for (const J of BRIDGE.joints) {
+                    const [XA, YA, AA] = I(J.a),
+                        CA = Math.cos(AA),
+                        SA = Math.sin(AA),
+                        PX = XA + J.ax * CA - J.ay * SA,
+                        PY = YA + J.ax * SA + J.ay * CA;
+                    c.fillStyle = '#e8d9a8';
+                    c.beginPath();
+                    c.arc(PX * s, PY * s, 0.5 * s, 0, 7);
+                    c.fill();
+                    if (!J.b) {
+                        c.beginPath();
+                        c.moveTo(J.bx * s, J.by * s);
+                        c.lineTo(PX * s, PY * s);
+                        c.stroke();
+                    }
+                }
+            }
+
+            let debugOn = false;
+            function toggleDebug() {
+                debugOn = !debugOn;
+                document.getElementById('dbg').classList.toggle('on', debugOn);
+            }
+            function arrow(c, x, y, dy, col) {
+                if (Math.abs(dy) < 0.5) {
+                    return;
+                }
+                c.strokeStyle = c.fillStyle = col;
+                c.lineWidth = 2;
+                c.beginPath();
+                c.moveTo(x, y);
+                c.lineTo(x, y + dy);
+                c.stroke();
+                c.beginPath();
+                c.arc(x, y + dy, 2.5, 0, 7);
+                c.fill();
+            }
+            function poly(c, v, s) {
+                c.beginPath();
+                c.moveTo(v[0].x * s, v[0].y * s);
+                for (let i = 1; i < v.length; i++) {
+                    c.lineTo(v[i].x * s, v[i].y * s);
+                }
+                c.closePath();
+                c.stroke();
+            }
+            function drawDebug(c, s) {
+                // 노랑 칠: 깨어 있는 청크 / 빨강 테두리: 최근 지형 충돌체 재생성 / 초록: 지형 충돌체 / 주황: 엔티티 프록시 / 하늘: 유령 solid, 부력(위) / 빨강 화살표: 가루 하중(아래)
+                c.save();
+                c.lineWidth = 1;
+                for (let cy = 0; cy < WORLD.chh; cy++) {
+                    for (let cx = 0; cx < WORLD.cw; cx++) {
+                        const K = cy * WORLD.cw + cx,
+                            X_VALUE = cx * 16 * s,
+                            Y_VALUE = cy * 16 * s,
+                            Z = 16 * s;
+                        if (WORLD.awake[K] || WORLD.reac[K]) {
+                            c.fillStyle = 'rgba(255,230,0,.08)';
+                            c.fillRect(X_VALUE, Y_VALUE, Z, Z);
+                        }
+                        c.strokeStyle =
+                            WORLD.time - WORLD.chunkTick[K] < 20 ? 'rgba(255,70,70,.9)' : 'rgba(255,255,255,.1)';
+                        c.strokeRect(X_VALUE + 0.5, Y_VALUE + 0.5, Z - 1, Z - 1);
+                    }
+                }
+                if (BRIDGE) {
+                    c.strokeStyle = 'rgba(60,255,120,.85)';
+                    for (const BS of BRIDGE.statics.values()) {
+                        for (const B_VALUE of BS) {
+                            poly(c, B_VALUE.vertices, s);
+                        }
+                    }
+                    c.strokeStyle = 'rgba(255,170,0,.95)';
+                    for (const P of BRIDGE.proxies) {
+                        poly(c, P.body.vertices, s);
+                    }
+                    for (const H_VALUE of BRIDGE.bodies) {
+                        c.fillStyle = 'rgba(0,200,255,.35)';
+                        for (const R_VALUE of H_VALUE._rows || []) {
+                            c.fillRect(R_VALUE.xa * s, R_VALUE.y * s, (R_VALUE.xb - R_VALUE.xa + 1) * s, s);
+                        }
+                        const WGT = H_VALUE.mass * BRIDGE.gravityScale; // 무게 대비 힘의 비 (1이면 무게와 같음)
+                        arrow(c, H_VALUE.x * s, H_VALUE.y * s, (-(H_VALUE.dbg || 0) / WGT) * 6 * s, '#4af');
+                        arrow(
+                            c,
+                            H_VALUE.x * s,
+                            (H_VALUE.y - H_VALUE.h / 2) * s,
+                            ((H_VALUE.dbgLoad || 0) / WGT) * 6 * s,
+                            '#f84',
+                        );
+                        c.strokeStyle = 'rgba(255,90,255,.8)';
+                        for (const V of BRIDGE.getPolys(H_VALUE)) {
+                            poly(c, V, s);
+                        }
+                    }
+                } // 보라: 강체 충돌 다각형
+                c.restore();
+            }
+            const OUT_EL = document.getElementById('out');
+            function show(t) {
+                OUT_EL.style.display = 'block';
+                OUT_EL.textContent = t;
+            }
+            function makeSim(seed, sleep = true) {
+                // 게임과 별개의 독립 시뮬레이션 (검사/벤치용)
+                const W_VALUE = new PixelWorld(W, H, { seed });
+                defineAll(W_VALUE);
+                W_VALUE.sleepEnabled = sleep;
+                const B = new MatterBridge(Matter);
+                W_VALUE.attachBridge(B);
+                W_VALUE.rect(0, 100, W - 1, H - 4, 'stone');
+                W_VALUE.rect(0, H - 3, W - 1, H - 1, 'bedrock');
+                W_VALUE.rect(40, 100, 80, 112, 'empty');
+                W_VALUE.rect(40, 103, 80, 112, 'water');
+                W_VALUE.rect(100, 80, 103, 99, 'stone');
+                W_VALUE.rect(10, 60, 30, 70, 'sand');
+                W_VALUE.rect(120, 96, 123, 99, 'tnt');
+                B.addBox({
+                    x: 60,
+                    y: 90,
+                    w: 6,
+                    h: 6,
+                    density: 0.0015,
+                    data: { born: -99, strength: 30, debris: 'rubble' },
+                });
+                B.addBox({ x: 90, y: 70, w: 6, h: 6, density: 0.015, vx: 2, data: { born: -99 } });
+                const H_VALUE = B.addBox({ x: 140, y: 90, w: 6, h: 6, density: 0.006, data: { born: -99 } });
+                B.addPin(H_VALUE, 140, 60, 0, -3, 28, 0.9);
+                W_VALUE.enableCollapse();
+                W_VALUE.rect(150, 70, 170, 75, 'stone');
+                W_VALUE.rect(159, 76, 161, 99, 'wood'); // 붕괴 + 파편화 + 굳히기 경로 포함
+                B.addCircle({ x: 30, y: 80, r: 3.4, density: 0.0015, data: { born: -99, mat: 'wood', strength: 30 } });
+                B.addPolygon({ x: 45, y: 80, sides: 6, r: 3.8, density: 0.006, data: { born: -99 } });
+                const PL = [0, 1].map((i) =>
+                    B.addBox({
+                        x: 170 + i * 3.2,
+                        y: 60,
+                        w: 3.2,
+                        h: 1.6,
+                        density: 0.005,
+                        group: -1,
+                        data: { born: -99 },
+                    }),
+                );
+                B.addJoint({ a: PL[0], ax: -1.6, ay: 0, bx: 168.4, by: 60 });
+                B.addJoint({ a: PL[0], ax: 1.6, ay: 0, b: PL[1], bx: -1.6, by: 0 });
+                const E = new Body({ x: 20, y: 96, w: 3, h: 6, mass: 0.035, hp: 1e9 });
+                W_VALUE.bodies.push(E);
+                return { w: W_VALUE, B, e: E };
+            }
+            function simRun(sValue, f, t) {
+                for (let k = f; k < t; k++) {
+                    sValue.e.input.x = k % 120 < 60 ? 1 : -1;
+                    sValue.e.input.jump = k % 45 === 0;
+                    if (k === 60) {
+                        sValue.w.rect(159, 92, 161, 99, 'empty');
+                    }
+                    sValue.w.tick();
+                }
+            } // 60틱에 기둥을 끊어 붕괴/파편화를 일으킴   // 입력은 틱 번호만의 함수(스크립트)
+            const HX = (n) => n.toString(16).padStart(8, '0'),
+                OK = (b) => (b ? '일치' : '불일치');
+            function runDeterminism() {
+                const A = makeSim(5),
+                    B = makeSim(5);
+                simRun(A, 0, 300);
+                simRun(B, 0, 300);
+                const HA = A.w.hash(),
+                    HB = B.w.hash();
+                const C = makeSim(5);
+                simRun(C, 0, 120);
+                const CP = C.w.isCheckpoint(),
+                    SNAP = C.w.snapshot();
+                simRun(C, 120, 300);
+                const H1 = C.w.hash();
+                C.w.restore(SNAP);
+                simRun(C, 120, 300);
+                const H2 = C.w.hash();
+                const D = makeSim(5);
+                simRun(D, 0, 125);
+                const SNAP2 = D.w.snapshot();
+                simRun(D, 125, 300);
+                const H3 = D.w.hash();
+                D.w.restore(SNAP2);
+                simRun(D, 125, 300);
+                const H4 = D.w.hash();
+                show(
+                    '결정성 검사 (시드 5, 같은 입력 스크립트로 300틱, 입자 + 엔티티 + Matter 강체 + 줄 전체의 해시)\n' +
+                        '독립 인스턴스 A ' +
+                        HX(HA) +
+                        ' / B ' +
+                        HX(HB) +
+                        '  →  ' +
+                        OK(HA === HB) +
+                        '\n' +
+                        '롤백(120틱 스냅샷, 체크포인트 ' +
+                        CP +
+                        ') ' +
+                        HX(H1) +
+                        ' → 복원 후 재실행 ' +
+                        HX(H2) +
+                        '  →  ' +
+                        OK(H1 === H2) +
+                        '\n' +
+                        '비체크포인트(125틱) 스냅샷은 접촉 캐시가 달라 ' +
+                        OK(H3 === H4) +
+                        ' — 스냅샷은 isCheckpoint() 틱에 찍으세요\n' +
+                        '같은 브라우저 엔진 안에서의 검사입니다. 서로 다른 엔진/CPU 간에는 installDeterministicTrig()를 쓰고 hash 교환으로 디싱크를 확인하세요.',
+                );
+            }
+            function runBench() {
+                const RES = [];
+                for (const SL of [true, false]) {
+                    const W_VALUE = new PixelWorld(W, H, { seed: 3 });
+                    defineAll(W_VALUE);
+                    W_VALUE.sleepEnabled = SL;
+                    W_VALUE.rect(0, 100, W - 1, H - 4, 'stone');
+                    W_VALUE.rect(0, H - 3, W - 1, H - 1, 'bedrock');
+                    W_VALUE.rect(0, 40, W - 1, 70, 'sand');
+                    W_VALUE.rect(0, 71, W - 1, 99, 'water'); // 입자 약 2만 개
+                    for (let i = 0; i < 300; i++) {
+                        W_VALUE.tick();
+                    } // 쏟아지고 가라앉는 구간
+                    let ms = 0,
+                        act = 0;
+                    for (let i = 0; i < 150; i++) {
+                        W_VALUE.tick();
+                        ms += W_VALUE.stats.ms;
+                        act += W_VALUE.stats.active;
+                    }
+                    RES.push({ sl: SL, ms: ms / 150, act: act / 150, tot: W_VALUE.stats.total });
+                }
+                show(
+                    '벤치마크 (입자 약 2만 개, 300틱 정착 후 150틱 평균, 강체 없음)\n' +
+                        '청크 sleep 켬: ' +
+                        RES[0].ms.toFixed(2) +
+                        ' ms/틱, 평균 활성 청크 ' +
+                        RES[0].act.toFixed(0) +
+                        '/' +
+                        RES[0].tot +
+                        '\n' +
+                        '청크 sleep 끔: ' +
+                        RES[1].ms.toFixed(2) +
+                        ' ms/틱 (' +
+                        (RES[1].ms / Math.max(0.001, RES[0].ms)).toFixed(1) +
+                        '배)',
+                );
+            }
+            function statText() {
+                const N = BRIDGE ? [...BRIDGE.statics.values()].reduce((a, b) => a + b.length, 0) : 0;
+                return (
+                    '활성 청크 ' +
+                    WORLD.stats.active +
+                    '/' +
+                    WORLD.stats.total +
+                    ' · 틱 ' +
+                    WORLD.stats.ms.toFixed(2) +
+                    'ms · 지형 충돌체 ' +
+                    N +
+                    ' · 강체 ' +
+                    (BRIDGE ? BRIDGE.bodies.length : 0) +
+                    ' · tick ' +
+                    WORLD.time +
+                    ' · hash ' +
+                    HX(WORLD.hash())
+                );
+            }
+
+            // --- 게임 루프
+            const R = new PixelRenderer(CV, WORLD, { overlay: document.getElementById('o') }),
+                HUD = document.getElementById('hud'),
+                STAT = document.getElementById('stat');
+            function update() {
+                if (cool > 0) {
+                    cool--;
+                }
+                if (MOUSE.down && tool !== 2 && tool !== 4) {
+                    useTool();
+                }
+                if (player.dead && respawnAt && WORLD.time >= respawnAt) {
+                    respawnAt = 0;
+                    spawn();
+                }
+                if (!player.dead) {
+                    player.input.x = KEYS.r - KEYS.l;
+                    player.input.jump = !!KEYS.u;
+                    if (KEYS.r - KEYS.l && !(MOUSE.down && tool === 3)) {
+                        player.data.face = KEYS.r - KEYS.l;
+                    }
+                }
+                for (const B_VALUE of WORLD.bodies) {
+                    if (B_VALUE.data.dir) {
+                        B_VALUE.input.x = B_VALUE.data.dir;
+                        if (WORLD.time % 20 === 0 && Math.abs(B_VALUE.vx) < 0.05) {
+                            B_VALUE.data.dir *= -1;
+                        }
+                    }
+                }
+                if (hasKey && !doorOpen && !player.dead && player.x > 122 && player.x < 130 && player.y > 86) {
+                    WORLD.rect(130, 88, 133, 99, 'empty');
+                    doorOpen = true;
+                }
+                if (BRIDGE) {
+                    for (const H_VALUE of BRIDGE.bodies.slice()) {
+                        if (H_VALUE.y > H + 40) {
+                            BRIDGE.removeBody(H_VALUE);
+                        }
+                    }
+                }
+                if (player.y < 8) {
+                    player.y = 8;
+                    if (player.vy < 0) {
+                        player.vy = 0;
+                    }
+                } // 천장
+                if (player.ground && !(MOUSE.down && tool === 3 && fl >= GAS0)) {
+                    fuel = Math.min(FUEL_MAX, fuel + 1.5);
+                } // 연료는 땅에 서 있을 때 충전
+                WORLD.tick();
+                const ST = Object.keys(player.status).join(',');
+                HUD.textContent = won
+                    ? '클리어!'
+                    : player.dead
+                      ? '사망, 곧 부활'
+                      : 'HP ' +
+                        (Math.max(0, player.hp) | 0) +
+                        (hasKey ? ' / 열쇠' : '') +
+                        (doorOpen ? ' / 문 열림' : '') +
+                        (ST ? ' / ' + ST : '') +
+                        (player.swim ? ' / 수영' : '') +
+                        (fuel < FUEL_MAX ? ' / 연료 ' + (fuel | 0) : '');
+            }
+            build();
+            setTool(1);
+            document.getElementById('dbg').onclick = toggleDebug;
+            document.getElementById('det').onclick = runDeterminism;
+            document.getElementById('bench').onclick = runBench;
+            let last = 0,
+                acc = 0,
+                frames = 0;
+            const DT = 1000 / 60; // 고정 틱(60Hz) + 렌더 보간: 모니터 주사율과 무관하게 같은 속도로 진행
+            function frame(t) {
+                if (!last) {
+                    last = t;
+                }
+                acc += Math.min(100, t - last);
+                last = t;
+                while (acc >= DT) {
+                    update();
+                    acc -= DT;
+                }
+                alpha = acc / DT;
+                R.draw(drawActor, (c, s) => {
+                    drawRigid(c, s);
+                    drawJets(c, s);
+                    if (debugOn) {
+                        drawDebug(c, s);
+                    }
+                });
+                if (++frames % 10 === 0) {
+                    STAT.textContent = statText();
+                }
+                requestAnimationFrame(frame);
+            }
+            requestAnimationFrame(frame);
+
+            Object.defineProperty(window, 'pixelPhysicsExample', {
+                get() {
+                    return {
+                        diagnostics: {
+                            tick: WORLD.time,
+                            player: { x: player.x, y: player.y, hp: player.hp },
+                            rigidCount: BRIDGE.bodies.length,
+                            tool,
+                        },
+                    };
+                },
+            });
+        </script>
+    </body>
+</html>
