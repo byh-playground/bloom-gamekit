@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { bundledAssetSource, bundledStyleExamplesSource } from '../modules/vector-assets/compiler.js';
+import { MATTER_URL } from '../modules/pixel-physics/dependencies.js';
 
 // Every maintained example HTML entry. Test harnesses and provenance archives are not demos.
 export const EXAMPLES = [
@@ -28,6 +29,7 @@ export async function buildPreviews(root) {
         recursive: true,
     });
     for (const [NAME, SOURCE] of EXAMPLES) {
+        const EXTERNAL_IMPORTS = NAME === 'pixel-physics' ? [MATTER_URL] : [];
         let html = await readFile(resolve(root, SOURCE), 'utf8');
         const SCRIPTS = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)];
         for (const [WHOLE, ATTRIBUTES, BODY] of SCRIPTS) {
@@ -43,7 +45,8 @@ export async function buildPreviews(root) {
                     sourcefile: SOURCE,
                 },
                 bundle: true,
-                format: 'iife',
+                format: EXTERNAL_IMPORTS.length ? 'esm' : 'iife',
+                external: EXTERNAL_IMPORTS,
                 platform: 'browser',
                 target: 'es2022',
                 charset: 'utf8',
@@ -113,13 +116,20 @@ export async function buildPreviews(root) {
             });
             if (
                 RESULT.outputFiles.length !== 1 ||
-                Object.values(RESULT.metafile.outputs).some((o) => o.imports.length)
+                Object.values(RESULT.metafile.outputs).some(
+                    (o) =>
+                        o.imports.length !== EXTERNAL_IMPORTS.length ||
+                        o.imports.some(
+                            (entry) => entry.kind !== 'import-statement' || !EXTERNAL_IMPORTS.includes(entry.path),
+                        ),
+                )
             ) {
-                throw new Error(`Preview has external imports: ${SOURCE}`);
+                throw new Error(`Preview has undeclared external imports: ${SOURCE}`);
             }
             html = html.replace(
                 WHOLE,
-                () => `<script>\n${RESULT.outputFiles[0].text.replace(/<\/script/gi, '<\\/script')}\n</script>`,
+                () =>
+                    `<script${EXTERNAL_IMPORTS.length ? ' type="module"' : ''}>\n${RESULT.outputFiles[0].text.replace(/<\/script/gi, '<\\/script')}\n</script>`,
             );
         }
         html = html.replace(/href=["'](\.[^"']*)["']/g, (_whole, target) => {
@@ -138,7 +148,7 @@ export async function buildPreviews(root) {
             EXAMPLES.map(([name]) => `<li><a href="${PREVIEW_URL(name)}">${name}</a></li>`).join('') +
             '</ul>',
     );
-    console.log(`Built ${EXAMPLES.length} standalone HTML previews`);
+    console.log(`Built ${EXAMPLES.length} HTML previews`);
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
     buildPreviews(fileURLToPath(new URL('../', import.meta.url))).catch((error) => {

@@ -12,7 +12,7 @@ const NAMES = new Set(EXAMPLES.map(([name]) => name));
 let server;
 let browser;
 const REPORT = {
-    mode: PUBLIC_MODE ? 'public-htmlpreview' : 'local-standalone-html',
+    mode: PUBLIC_MODE ? 'public-htmlpreview' : 'local-html',
     examples: [],
 };
 try {

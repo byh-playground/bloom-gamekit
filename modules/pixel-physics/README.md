@@ -4,7 +4,6 @@
 
 ```js
 import { PixelWorld, Body, MatterBridge, PixelRenderer } from './pixel-physics.js';
-import { Matter } from './pixel-physics-matter.js';
 
 const WORLD = new PixelWorld(200, 120, { seed: 7 });
 WORLD.define({ name: 'stone', kind: 'solid', color: [110, 112, 122] });
@@ -12,14 +11,14 @@ WORLD.define({ name: 'sand', kind: 'powder', density: 15, color: [222, 190, 110]
 WORLD.define({ name: 'water', kind: 'liquid', density: 10, dispersion: 5, color: [60, 120, 220] });
 WORLD.rect(0, 100, 199, 119, 'stone');
 WORLD.paint(100, 30, 10, 'sand');
-WORLD.attachBridge(new MatterBridge(Matter));
+WORLD.attachBridge(new MatterBridge());
 WORLD.bodies.push(new Body({ x: 20, y: 80, w: 3, h: 6 }));
 const RENDERER = new PixelRenderer(document.querySelector('canvas'), WORLD);
 WORLD.tick();
 RENDERER.draw();
 ```
 
-Matter는 선택 사항입니다. 입자·엔티티만 사용하면 `pixel-physics.js`만 가져옵니다. 강체를 사용할 때 별도 번들의 Matter 0.19.0을 `new MatterBridge(Matter, options)`에 주입합니다. core에는 Matter·DOM import가 없으며 Canvas2D 출력은 renderer가 소유합니다. 두 배포 파일은 각각 외부 runtime import 없는 단일 ESM입니다.
+픽셀 셀·엔티티·강체는 `pixel-physics` 하나의 기능 묶음입니다. 소비자는 `pixel-physics.js` 하나를 가져오고 `new MatterBridge(options)`를 사용합니다. Matter는 브라우저가 고정 웹 URL에서 가져오며 GameKit JS·프리뷰 HTML에 포함하지 않습니다. URL과 버전의 단일 원본은 [dependencies.js](./dependencies.js)이며 빌드·프리뷰·브라우저 검증이 같은 정의를 사용합니다. Matter용 npm 패키지·별도 GameKit 공개 모듈·소스 복사본을 관리하지 않습니다. 물리 core에는 DOM import가 없으며 Canvas2D 출력은 renderer가 소유합니다.
 
 ## API와 소유권
 
@@ -48,4 +47,6 @@ Matter는 선택 사항입니다. 입자·엔티티만 사용하면 `pixel-physi
 
 `PixelRenderer.draw()`는 전체 월드 픽셀을 순회하고 업로드하며, overlay의 픽셀 수는 CSS 면적×DPR²에 비례합니다. 예제의 벤치마크 버튼은 해당 기기·브라우저에서만의 입자 CPU 틱 측정이며 GPU 완료시간·범용 FPS 보장이 아닙니다. 예제의 결정성 버튼도 같은 브라우저 내 비교입니다.
 
-저장소 루트에서 `npm run build` 후 HTTP 서버를 열어 `/modules/pixel-physics/examples/index.html`을 실행합니다. 예제는 `/dist/pixel-physics.js`와 `/dist/pixel-physics-matter.js`를 직접 import합니다. 키보드·포인터 조작, 재시작, 디버그, 결정성 검사, 입자 벤치마크를 포함합니다. `window.pixelPhysicsExample.diagnostics`는 E2E가 읽을 수 있는 tick·플레이어·강체 수·도구의 복사본이며 수정해도 게임 상태를 바꾸지 않습니다. 실제 브라우저·게임킷 결합 검증 범위는 PR의 검증 기록을 따릅니다.
+저장소 루트에서 `npm run build` 후 HTTP 서버를 열어 `/modules/pixel-physics/examples/index.html`을 실행합니다. 예제는 `/dist/pixel-physics.js` 하나를 직접 import합니다. 키보드·포인터 조작, 재시작, 디버그, 결정성 검사, 입자 벤치마크를 포함합니다. `window.pixelPhysicsExample.diagnostics`는 E2E가 읽을 수 있는 tick·플레이어·강체 수·도구의 복사본이며 수정해도 게임 상태를 바꾸지 않습니다. 실제 브라우저·게임킷 결합 검증 범위는 PR의 검증 기록을 따릅니다.
+
+Matter.js 0.19.0은 jsDelivr의 ESM 웹 경로로 로드합니다. [jsDelivr ESM 문서](https://www.jsdelivr.com/esm), [Matter 원본](https://github.com/liabru/matter-js/tree/0.19.0)을 참조하세요. GameKit manifest는 자체 JS bytes와 그 안에 고정된 URL을 검증하며 CDN 응답 bytes를 검증하는 파일은 아닙니다. 초기 실행에는 이 URL에 대한 네트워크 접근이 필요합니다. 예제 HTML을 file://로 열어도 Matter는 웹에서 가져오며 엔진을 포함한 오프라인 fallback은 없습니다. 기존 두 파일을 사용하던 소비자는 Matter import를 제거하고 `new MatterBridge(Matter, options)`를 `new MatterBridge(options)`로 바꿉니다. 구 별도 번들과 주입 생성자 호환 경로는 남기지 않습니다.

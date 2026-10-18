@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile, readdir, unlink } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { MODULES, FONT_ASSETS, MANIFEST_FILE, createManifest, serializeManifest } from './distribution.mjs';
+import { MATTER_URL } from '../modules/pixel-physics/dependencies.js';
 const SDK_DEPENDENCIES = {
     scenario: ['simloop'],
     'vector-assets-loader': ['vector-assets'],
@@ -13,14 +14,14 @@ const SDK_DEPENDENCIES = {
     rollback: ['_rollback-shared', 'deterministic'],
 };
 const BUNDLED_PACKAGES = {
-    'pixel-physics-matter': ['node_modules/matter-js/'],
     'vector-assets': ['node_modules/animejs/'],
     'vector-assets-loader': ['node_modules/@xmldom/xmldom/', 'node_modules/three/'],
 };
 export async function buildDistribution(root) {
     const BUNDLES = new Map();
     for (const NAME of MODULES) {
-        // 모듈마다 따로 빌드하여 공유 chunk와 외부 런타임 의존성을 만들지 않습니다.
+        // PixelPhysics의 명시적 웹 의존성만 허용하며 나머지는 외부 import가 없습니다.
+        const EXTERNAL_IMPORTS = NAME === 'pixel-physics' ? [MATTER_URL] : [];
         const RESULT = await build({
             absWorkingDir: root,
             entryPoints: [`modules/${NAME}/index.js`],
@@ -36,14 +37,32 @@ export async function buildDistribution(root) {
             metafile: true,
             write: false,
             logLevel: 'warning',
+            plugins:
+                NAME === 'pixel-physics'
+                    ? [
+                          {
+                              name: 'matter-web-runtime',
+                              setup(b) {
+                                  b.onResolve({ filter: /^matter-js$/ }, () => ({ path: MATTER_URL, external: true }));
+                              },
+                          },
+                      ]
+                    : [],
             logOverride: {
                 'unsupported-dynamic-import': 'error',
                 'unsupported-require-call': 'error',
             },
         });
         const OUTPUTS = Object.values(RESULT.metafile.outputs);
-        if (RESULT.outputFiles.length !== 1 || OUTPUTS.length !== 1 || OUTPUTS[0].imports.length !== 0) {
-            throw new Error(`배포물은 외부 import가 없는 ${NAME}.js 하나여야 합니다.`);
+        if (
+            RESULT.outputFiles.length !== 1 ||
+            OUTPUTS.length !== 1 ||
+            OUTPUTS[0].imports.length !== EXTERNAL_IMPORTS.length ||
+            OUTPUTS[0].imports.some(
+                (entry) => entry.kind !== 'import-statement' || !EXTERNAL_IMPORTS.includes(entry.path),
+            )
+        ) {
+            throw new Error(`배포물은 선언한 웹 의존성만 가진 ${NAME}.js 하나여야 합니다.`);
         }
         for (const INPUT of Object.keys(RESULT.metafile.inputs)) {
             const OWNED = [NAME, ...(SDK_DEPENDENCIES[NAME] ?? [])].some(

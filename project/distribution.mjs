@@ -24,7 +24,6 @@ export const MODULES = Object.freeze([
     'scenario',
     'object-pool',
     'pixel-physics',
-    'pixel-physics-matter',
 ]);
 export const BUNDLE_FILES = Object.freeze(MODULES.map((name) => `${name}.js`));
 export const FONT_ASSETS = Object.freeze([
