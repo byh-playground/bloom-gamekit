@@ -86,6 +86,13 @@ try {
     await PAGE.waitForFunction(() => document.querySelector('#hud').textContent.includes('HP'));
     await PAGE.close();
 
+    // htmlpreview.github.io recreates inline scripts as classic scripts, so a module script or static import cannot run there.
+    const PREVIEW_HTML = await readFile(resolve(ROOT, 'dist/previews/pixel-physics.html'), 'utf8');
+    for (const [, ATTRIBUTES, BODY] of PREVIEW_HTML.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
+        assert(!/\btype\s*=/i.test(ATTRIBUTES) && !/^\s*(?:import|export)\b/m.test(BODY));
+    }
+    REPORT.scenarios.push('preview HTML has only classic inline scripts');
+
     // A local preview still loads Matter from the web; its engine is not embedded.
     const PREVIEW = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true });
     PREVIEW.on('pageerror', (error) => ERRORS.push(error.message));

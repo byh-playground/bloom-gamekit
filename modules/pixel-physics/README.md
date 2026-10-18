@@ -1,6 +1,8 @@
 # pixel-physics
 
-사용자가 제공한 단일 HTML의 픽셀 셀 물리·엔티티·Matter.js 강체 연동을 독립 ESM으로 이전했습니다. [원본과 변경 범위](./docs/provenance/README.md), [플랫포머 예제](./examples/index.html)를 함께 보세요. 게임 규칙·재료·플레이어·몬스터·입력과 실행 루프는 예제에만 있습니다.
+**HTML 실행 프리뷰:** [pixel-physics](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/pixel-physics.html)
+
+사용자가 제공한 단일 HTML의 픽셀 셀 물리·엔티티·Matter.js 강체 연동을 독립 ESM으로 이전했습니다. [원본과 변경 범위](./docs/provenance/README.md), [플랫포머 예제 소스](./examples/index.html)를 함께 보세요. 게임 규칙·재료·플레이어·몬스터·입력과 실행 루프는 예제에만 있습니다.
 
 ```js
 import { PixelWorld, Body, MatterBridge, PixelRenderer } from './pixel-physics.js';
