@@ -3,6 +3,7 @@
 - 공통 경계·설계·리뷰 기준은 [README](./README.md)를 먼저 읽습니다. [코드 규칙](./project/docs/code-conventions.md)에 따라 `npm run format`, `npm run check`를 사용합니다. 빌드 전 검사는 소스를 자동 수정하지 않습니다.
 - 보간 변경은 [모듈 계약](./modules/interpolation/README.md), 공개 JSDoc, [고정 브라우저 시나리오](./project/tests/browser.e2e.mjs)를 함께 확인합니다. 시간·세대·순서·reset 계약을 임의로 바꾸지 않습니다.
 - rendering/input 변경은 해당 modules/*/README.md와 project/tests/browser.e2e.mjs의 실제 WebGL·DOM 검증을 함께 확인합니다. 입력 edge는 명시적 tick 소비 전까지 유지하며 rendering에 게임 정렬·시간선·권위 상태를 넣지 않습니다.
+- 모든 예제는 모바일(터치)과 데스크톱(키보드·마우스)을 기본으로 함께 지원합니다. `viewport` 메타, 손가락 크기(약 56px 이상) 터치 버튼, 가로 스크롤 없음, 첫 화면 안의 캔버스를 지키고, 터치 조작은 고정 브라우저 시나리오에서 터치 에뮬레이션으로 확인합니다. 에뮬레이션은 실제 기기 검증이 아닙니다.
 - 새 기능은 실제 필요가 생긴 모듈에만 구현합니다. rendering/input placeholder나 범용 게임 엔진을 만들지 않습니다.
 - `codex/` 작업 브랜치와 main 대상 Draft PR을 사용합니다. 다른 작업과 미커밋 변경을 보존하며 독립 병렬 수정은 별도 worktree를 사용합니다. 커밋·문서는 한국어를 기본으로 합니다.
 - PR 본문에 의도·담당·상태·실제 검증과 미검증 범위를 문장으로 남깁니다. 별도 작업 계획 파일을 중복 관리하지 않습니다. 명시적 승인 없이 merge하지 않습니다.

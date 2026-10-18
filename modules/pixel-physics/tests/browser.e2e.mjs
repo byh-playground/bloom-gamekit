@@ -121,6 +121,112 @@ try {
     REPORT.scenarios.push('open-world rocket climbs, window follows, crater is evicted to map data');
     await OPEN.close();
 
+    // 모바일(터치 에뮬레이션): 모든 예제는 키보드 없이 터치만으로 조작되어야 합니다. Chromium의 터치 입력(CDP)으로 버튼을 누릅니다.
+    // 실제 기기가 아니라 에뮬레이션이며, 멀티터치는 두 접점을 함께 보내 확인합니다.
+    const TOUCH_CONTEXT = await browser.newContext({
+        viewport: { width: 390, height: 844 },
+        isMobile: true,
+        hasTouch: true,
+        deviceScaleFactor: 2,
+    });
+    const TOUCH_ROUTE = (route) =>
+        route.request().url().startsWith(`http://127.0.0.1:${SERVER.address().port}/`) ||
+        route.request().url() === MATTER_URL
+            ? route.continue()
+            : route.abort();
+    const CENTER = async (page, selector) => {
+        const BOX = await page.locator(selector).boundingBox();
+        return { x: BOX.x + BOX.width / 2, y: BOX.y + BOX.height / 2 };
+    };
+    const NO_HORIZONTAL_SCROLL = (page) => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth);
+
+    const TOUCH_OPEN = await TOUCH_CONTEXT.newPage();
+    TOUCH_OPEN.on('pageerror', (error) => ERRORS.push(error.message));
+    await TOUCH_OPEN.route('**/*', TOUCH_ROUTE);
+    await TOUCH_OPEN.goto(`http://127.0.0.1:${SERVER.address().port}/modules/pixel-physics/examples/open-world.html`);
+    await TOUCH_OPEN.waitForFunction(() => window.openWorldExample?.diagnostics.tick > 10);
+    assert(await NO_HORIZONTAL_SCROLL(TOUCH_OPEN), 'open-world has no horizontal scroll on a phone');
+    const OPEN_CANVAS = await TOUCH_OPEN.locator('#c').boundingBox();
+    assert(OPEN_CANVAS.y + OPEN_CANVAS.height <= 844, 'open-world canvas fits in the first phone screen');
+    for (const ID of ['#bl', '#bt', '#br']) {
+        const BOX = await TOUCH_OPEN.locator(ID).boundingBox();
+        assert(BOX.height >= 56 && BOX.width >= 56, `${ID} is a finger-sized target`);
+    }
+    const TOUCH = await TOUCH_CONTEXT.newCDPSession(TOUCH_OPEN);
+    const THRUST = await CENTER(TOUCH_OPEN, '#bt');
+    const TOUCH_START = await TOUCH_OPEN.evaluate(() => window.openWorldExample.diagnostics);
+    await TOUCH.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...THRUST, id: 1 }] });
+    await TOUCH_OPEN.waitForFunction(() => window.openWorldExample.diagnostics.altitude > 120, undefined, {
+        timeout: 60000,
+    });
+    // 공중에서도 분사 불꽃이 꼬리에서 그려집니다(연기 발사체는 날아가는 동안 격자 셀이 아니라서 따로 그림).
+    const FLAME_PIXELS = await TOUCH_OPEN.evaluate(() => {
+        const CANVAS = document.getElementById('c'),
+            DATA = CANVAS.getContext('2d').getImageData(0, 0, CANVAS.width, CANVAS.height).data;
+        let count = 0;
+        for (let i = 0; i < DATA.length; i += 4) {
+            if (
+                (DATA[i] === 255 && DATA[i + 1] === 216 && DATA[i + 2] === 138) ||
+                (DATA[i] === 255 && DATA[i + 1] === 143 && DATA[i + 2] === 69)
+            ) {
+                count++;
+            }
+        }
+        return count;
+    });
+    assert(FLAME_PIXELS >= 3, 'exhaust flame is visible while flying');
+    assert(await TOUCH_OPEN.locator('#bt').evaluate((button) => button.classList.contains('on')));
+    await TOUCH_OPEN.screenshot({ path: resolve(ROOT, 'test-results/pixel-physics-open-world-touch.png') });
+    await TOUCH.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await TOUCH_OPEN.waitForFunction(() => !document.getElementById('bt').classList.contains('on'));
+    const TOUCH_END = await TOUCH_OPEN.evaluate(() => window.openWorldExample.diagnostics);
+    assert(TOUCH_END.absolute.y < TOUCH_START.absolute.y - 100, 'touch thrust climbed');
+    REPORT.scenarios.push(
+        'open-world works by touch emulation: fits a phone screen, thrust climbs, flame is drawn in the air',
+    );
+    await TOUCH_OPEN.close();
+
+    const TOUCH_PLATFORMER = await TOUCH_CONTEXT.newPage();
+    TOUCH_PLATFORMER.on('pageerror', (error) => ERRORS.push(error.message));
+    await TOUCH_PLATFORMER.route('**/*', TOUCH_ROUTE);
+    await TOUCH_PLATFORMER.goto(`http://127.0.0.1:${SERVER.address().port}/modules/pixel-physics/examples/index.html`);
+    await TOUCH_PLATFORMER.waitForFunction(() => window.pixelPhysicsExample?.diagnostics.tick > 10);
+    assert(await NO_HORIZONTAL_SCROLL(TOUCH_PLATFORMER), 'platformer has no horizontal scroll on a phone');
+    assert(await TOUCH_PLATFORMER.locator('#pad').isVisible(), 'touch controls are shown on a touch device');
+    const PLATFORMER_TOUCH = await TOUCH_CONTEXT.newCDPSession(TOUCH_PLATFORMER);
+    const RIGHT = await CENTER(TOUCH_PLATFORMER, '#tr'),
+        JUMP = await CENTER(TOUCH_PLATFORMER, '#tj');
+    const PLATFORMER_START = await TOUCH_PLATFORMER.evaluate(() => window.pixelPhysicsExample.diagnostics);
+    await PLATFORMER_TOUCH.send('Input.dispatchTouchEvent', {
+        type: 'touchStart',
+        touchPoints: [{ ...RIGHT, id: 1 }],
+    });
+    await TOUCH_PLATFORMER.waitForFunction(
+        (tick) => window.pixelPhysicsExample.diagnostics.tick > tick + 40,
+        PLATFORMER_START.tick,
+    );
+    const PLATFORMER_MOVED = await TOUCH_PLATFORMER.evaluate(() => window.pixelPhysicsExample.diagnostics);
+    assert(PLATFORMER_MOVED.player.x > PLATFORMER_START.player.x + 3, 'touch right button moves the player');
+    // 이동을 누른 채 점프를 함께 누릅니다(멀티터치).
+    await PLATFORMER_TOUCH.send('Input.dispatchTouchEvent', {
+        type: 'touchStart',
+        touchPoints: [
+            { ...RIGHT, id: 1 },
+            { ...JUMP, id: 2 },
+        ],
+    });
+    await TOUCH_PLATFORMER.waitForFunction(
+        (y) => window.pixelPhysicsExample.diagnostics.player.y < y - 6,
+        PLATFORMER_MOVED.player.y,
+    );
+    await PLATFORMER_TOUCH.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await TOUCH_PLATFORMER.waitForFunction(
+        () => ![...document.querySelectorAll('#pad button')].some((button) => button.classList.contains('down')),
+    );
+    REPORT.scenarios.push('platformer works by touch emulation: move and multi-touch jump, buttons release');
+    await TOUCH_PLATFORMER.close();
+    await TOUCH_CONTEXT.close();
+
     // htmlpreview.github.io recreates inline scripts as classic scripts, so a module script or static import cannot run there.
     for (const NAME of ['pixel-physics', 'pixel-physics-open-world']) {
         const PREVIEW_HTML = await readFile(resolve(ROOT, `dist/previews/${NAME}.html`), 'utf8');

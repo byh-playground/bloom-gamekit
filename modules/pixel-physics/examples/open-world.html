@@ -29,6 +29,8 @@
             body {
                 margin: 0;
                 padding: 16px;
+                padding-left: max(16px, env(safe-area-inset-left));
+                padding-right: max(16px, env(safe-area-inset-right));
                 background: var(--bg);
                 color: var(--fg);
                 font:
@@ -52,7 +54,8 @@
             }
             canvas {
                 display: block;
-                width: 100%;
+                width: min(100%, calc(62vh * 160 / 96));
+                margin: 0 auto;
                 aspect-ratio: 160/96;
                 image-rendering: pixelated;
                 touch-action: none;
@@ -73,6 +76,7 @@
             input[type='number'] {
                 width: 5em;
                 font: inherit;
+                font-size: 16px; /* iOS는 16px 미만 입력에 포커스하면 화면을 확대합니다. */
                 color: var(--fg);
                 background: var(--panel);
                 border: 1px solid var(--line);
@@ -87,12 +91,41 @@
                 border-radius: 6px;
                 padding: 6px 12px;
                 cursor: pointer;
-                touch-action: none;
+                touch-action: manipulation;
                 user-select: none;
+                -webkit-user-select: none;
+                -webkit-touch-callout: none;
+                -webkit-tap-highlight-color: transparent;
+            }
+            #pad {
+                display: grid;
+                grid-template-columns: 1fr 1.3fr 1fr;
+                gap: 10px;
+                margin: 10px auto;
+                max-width: 560px;
+            }
+            #pad button {
+                min-height: 68px;
+                font-size: 18px;
+                touch-action: none; /* 누르고 있는 동안 스크롤·확대로 넘어가지 않게 합니다. */
+            }
+            #pad button.on {
+                background: var(--fg);
+                color: var(--bg);
             }
             #hud {
-                margin-left: auto;
+                margin: 8px 0 0;
+                text-align: center;
+                color: var(--fg);
+                font-weight: 600;
+            }
+            details {
+                margin: 10px 0;
+            }
+            summary {
                 color: var(--mut);
+                cursor: pointer;
+                padding: 6px 0;
             }
             #stat {
                 color: var(--mut);
@@ -109,25 +142,32 @@
     <body>
         <main>
             <h1>PixelPhysics 열린 월드 예제 (로켓)</h1>
-            <p>
-                ← → / A D로 기울이고 Space / W로 분사해 위로 오릅니다(터치는 아래 버튼). 격자는 320x240 창 하나뿐이고,
-                큰 맵은 절대 좌표의 맵 데이터입니다. 로켓이 여유 구간(margin)을 벗어나면 <code>scrollTo</code>가 창을
-                step 단위로 옮기고, 새로 드러난 영역을 <code>load</code>가 맵 데이터에서 읽어 채웁니다. 캔버스를
-                클릭하면 그 자리를 폭파하는데, 밀려나는 영역은 <code>evict</code>가 맵 데이터에 되써서 멀리 갔다
-                돌아와도 파인 자국이 남습니다. 지형은 절대 좌표 해시로 만들어 두었지만 같은 자리에 파일에서 읽어 온
-                데이터를 넣어도 됩니다. 기본 플랫포머 예제는 <a href="./index.html">여기</a>입니다.
-            </p>
+            <p>← → / A D로 기울이고 Space / W로 분사합니다. 캔버스를 탭하면 그 자리가 폭파됩니다.</p>
             <canvas id="c"></canvas>
-            <div class="bar">
-                <label>margin(셀) <input id="margin" type="number" min="0" step="8" /></label>
-                <label>step(셀, 16의 배수) <input id="step" type="number" min="16" step="16" /></label>
-                <button id="apply">적용</button>
-                <button id="reset">다시 시작</button>
-                <span id="hud"></span>
+            <div id="hud"></div>
+            <div id="pad">
+                <button id="bl">◀ 왼쪽</button><button id="bt">▲ 분사</button><button id="br">오른쪽 ▶</button>
             </div>
-            <div class="bar">
-                <button id="bl">◀ 기울이기</button><button id="bt">▲ 분사</button><button id="br">기울이기 ▶</button>
-            </div>
+            <div class="bar"><button id="reset">다시 시작</button></div>
+            <details>
+                <summary>스트리밍 설정(margin·step)</summary>
+                <div class="bar">
+                    <label>margin(셀) <input id="margin" type="number" min="0" step="8" /></label>
+                    <label>step(셀, 16의 배수) <input id="step" type="number" min="16" step="16" /></label>
+                    <button id="apply">적용</button>
+                </div>
+            </details>
+            <details>
+                <summary>이 예제가 보여 주는 것</summary>
+                <p>
+                    ← → / A D로 기울이고 Space / W로 분사해 위로 오릅니다. 격자는 320x240 창 하나뿐이고, 큰 맵은 절대
+                    좌표의 맵 데이터입니다. 로켓이 여유 구간(margin)을 벗어나면 <code>scrollTo</code>가 창을 step 단위로
+                    옮기고, 새로 드러난 영역을 <code>load</code>가 맵 데이터에서 읽어 채웁니다. 캔버스를 클릭(탭)하면 그
+                    자리를 폭파하는데, 밀려나는 영역은 <code>evict</code>가 맵 데이터에 되써서 멀리 갔다 돌아와도 파인
+                    자국이 남습니다. 지형은 절대 좌표 해시로 만들어 두었지만 같은 자리에 파일에서 읽어 온 데이터를
+                    넣어도 됩니다. 기본 플랫포머 예제는 <a href="./index.html">여기</a>입니다.
+                </p>
+            </details>
             <div id="stat"></div>
         </main>
         <script type="module">
@@ -246,7 +286,7 @@
                 world.attachBridge(bridge);
                 load({ world, x0: 0, y0: 0, x1: W, y1: H, originX: world.originX, originY: world.originY });
                 rocket = bridge.addBox({ x: W / 2, y: 140 - 12, w: 5, h: 14, density: 0.004 });
-                rocket.data.color = '#d8dde6';
+                rocket.data.color = '#e4572e';
                 renderer = new PixelRenderer(CV, world, { view: { x: 0, y: 0, w: VIEW_W, h: VIEW_H } });
                 document.getElementById('margin').value = world.stream.margin;
                 document.getElementById('step').value = world.stream.step;
@@ -293,7 +333,63 @@
                 }
             }
 
+            // 고도가 오를수록 하늘이 파랑에서 남색으로 어두워집니다. 빈 셀은 이 배경색으로 칠해집니다(0xAABBGGRR).
+            const SKY_LOW = [124, 176, 232],
+                SKY_HIGH = [8, 10, 28],
+                SKY_SPAN = 900;
+            function skyColor(altitude) {
+                const T = Math.max(0, Math.min(1, altitude / SKY_SPAN)),
+                    C = SKY_LOW.map((low, i) => Math.round(low + (SKY_HIGH[i] - low) * T));
+                return (255 << 24) | (C[2] << 16) | (C[1] << 8) | C[0];
+            }
+            // 별: 화면 기준 격자에 해시로 깔고 카메라의 절대 좌표에 0.3배로 따라 움직입니다. 빈 셀 위에만, 높을수록 또렷하게 그립니다.
+            const STAR_TILE = 32;
+            function drawStars(ctx) {
+                const FADE = Math.max(0, Math.min(1, (ALTITUDE() - 150) / 450));
+                if (FADE <= 0) {
+                    return;
+                }
+                const V = renderer.view,
+                    CAMERA_X = Math.floor((world.originX + V.x) * 0.3),
+                    CAMERA_Y = Math.floor((world.originY + V.y) * 0.3);
+                ctx.fillStyle = `rgba(255,255,255,${FADE})`;
+                for (let ty = 0; ty < Math.ceil(V.h / STAR_TILE) + 1; ty++) {
+                    for (let tx = 0; tx < Math.ceil(V.w / STAR_TILE) + 1; tx++) {
+                        const GX = Math.floor(CAMERA_X / STAR_TILE) + tx,
+                            GY = Math.floor(CAMERA_Y / STAR_TILE) + ty,
+                            R = hashCell(SEED + 1, GX, GY);
+                        if (R % 3) {
+                            continue;
+                        }
+                        const SX = GX * STAR_TILE + ((R >>> 4) % STAR_TILE) - CAMERA_X,
+                            SY = GY * STAR_TILE + ((R >>> 12) % STAR_TILE) - CAMERA_Y;
+                        const X = V.x + SX,
+                            Y = V.y + SY;
+                        if (SX >= 0 && SX < V.w && SY >= 0 && SY < V.h && world.g[Y * W + X] === 0) {
+                            ctx.fillRect(X, Y, 1, 1);
+                        }
+                    }
+                }
+            }
+
+            // 분사 불꽃: 연기 발사체는 날아가는 동안 셀이 아니라 world.proj의 입자라서 격자에 그려지지 않고, 막히거나 힘이 다해야 셀로
+            // 내려앉습니다(지면 위에서는 금방 닿고 공중에서는 멀리 날아간 뒤에야 보임). 그래서 로켓이 쏜 입자를 나이에 따라
+            // 흰색 → 주황 → 회색으로 직접 그립니다. 읽기만 하며 월드 상태는 바꾸지 않습니다.
+            function drawExhaust(ctx) {
+                const SMOKE = world.id.smoke;
+                for (const P of world.proj) {
+                    if (P.id !== SMOKE || P.src !== rocket || P.t > 40) {
+                        continue;
+                    }
+                    ctx.fillStyle =
+                        P.t < 5 ? '#ffffff' : P.t < 12 ? '#ffd88a' : P.t < 22 ? '#ff8f45' : 'rgba(205,205,214,0.7)';
+                    ctx.fillRect(Math.floor(P.x), Math.floor(P.y), 1, 1);
+                }
+            }
+
             function drawRocket(ctx) {
+                drawStars(ctx);
+                drawExhaust(ctx);
                 for (const H_VALUE of bridge.bodies) {
                     ctx.fillStyle = H_VALUE.data.color ?? '#aaa';
                     for (const V of bridge.getPolys(H_VALUE)) {
@@ -334,6 +430,7 @@
                     w: VIEW_W,
                     h: VIEW_H,
                 });
+                renderer.bg = skyColor(ALTITUDE());
                 renderer.draw(null, drawRocket);
                 if (++frames % 6 === 0) {
                     HUD.textContent = `고도 ${ALTITUDE()}  ·  연료 ${Math.round(fuel)}%`;
@@ -362,9 +459,21 @@
                 ['br', 'r'],
                 ['bt', 't'],
             ]) {
-                const B = document.getElementById(ID);
-                B.onpointerdown = () => (KEYS[K] = 1);
-                B.onpointerup = B.onpointerleave = B.onpointercancel = () => (KEYS[K] = 0);
+                const B = document.getElementById(ID),
+                    SET = (down) => {
+                        KEYS[K] = down ? 1 : 0;
+                        B.classList.toggle('on', down);
+                    };
+                // 포인터를 버튼에 붙잡아 두어(capture) 손가락이 버튼 밖으로 미끄러져도 뗄 때까지 눌린 상태를 유지하고, 버튼마다 독립이라 동시에 누를 수 있습니다.
+                B.addEventListener('pointerdown', (e) => {
+                    B.setPointerCapture(e.pointerId);
+                    SET(true);
+                    e.preventDefault();
+                });
+                for (const NAME of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+                    B.addEventListener(NAME, () => SET(false));
+                }
+                B.addEventListener('contextmenu', (e) => e.preventDefault());
             }
             CV.addEventListener('pointerdown', (e) => {
                 const R = CV.getBoundingClientRect(),
