@@ -154,7 +154,11 @@ export const fixedPoint: Readonly<{
     mul(a: number, b: number): number;
     div(a: number, b: number): number;
 }>;
-export type CodecValue = null | boolean | number | string | Uint8Array | CodecValue[] | { [key: string]: CodecValue };
+/** 바이너리 코덱은 Uint8Array 외에 아래 정수·실수 typed array도 받습니다. 실수 요소는 유한해야 하며 -0은 0이 됩니다. */
+export type CodecTypedArray =
+    Int8Array | Int16Array | Uint16Array | Int32Array | Uint32Array | Float32Array | Float64Array;
+export type CodecValue =
+    null | boolean | number | string | Uint8Array | CodecTypedArray | CodecValue[] | { [key: string]: CodecValue };
 export interface ValueCodec {
     readonly format: 'binary' | 'json';
     encode(value: CodecValue): Uint8Array;
@@ -165,6 +169,8 @@ export function createValueCodec(options?: {
     maxBytes?: number;
     maxDepth?: number;
     maxEntries?: number;
+    /** true이면 값이 undefined인 레코드 키를 건너뜁니다. 기본은 undefined를 거부합니다. */
+    omitUndefined?: boolean;
 }): ValueCodec;
 export const binaryCodec: ValueCodec;
 export const jsonCodec: ValueCodec;

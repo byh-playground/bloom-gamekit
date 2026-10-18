@@ -1,13 +1,45 @@
+/**
+ * 정수·실수 typed array 태그 10의 종류 표. Uint8Array는 기존 태그 7이라 여기에 없습니다.
+ * 요소는 항상 little-endian으로 쓰고 읽어 호스트 endianness와 무관합니다.
+ */
+const TYPED_KINDS = [
+    [Int8Array, 'getInt8', 'setInt8', 1],
+    [Int16Array, 'getInt16', 'setInt16', 2],
+    [Uint16Array, 'getUint16', 'setUint16', 2],
+    [Int32Array, 'getInt32', 'setInt32', 4],
+    [Uint32Array, 'getUint32', 'setUint32', 4],
+    [Float32Array, 'getFloat32', 'setFloat32', 4],
+    [Float64Array, 'getFloat64', 'setFloat64', 8],
+];
+const FLOAT_KIND_START = 5;
+/** encode가 재사용하는 작업 버퍼의 최대 크기. 이보다 크게 자라면 보관하지 않습니다. */
+const SCRATCH_LIMIT = 8 * 1024 * 1024;
+function typedKindOf(value) {
+    for (let i = 0; i < TYPED_KINDS.length; i++) {
+        if (value instanceof TYPED_KINDS[i][0]) {
+            return i;
+        }
+    }
+    return -1;
+}
 /** 게임 구조를 가정하지 않는 값 ↔ bytes capability. Core는 이 모듈에 의존하지 않는다. */
 export function createValueCodec({
     format = 'binary',
     maxBytes = 16 * 1024 * 1024,
     maxDepth = 128,
     maxEntries = 1000000,
+    omitUndefined = false,
 } = {}) {
     if (!['binary', 'json'].includes(format)) {
         throw new TypeError('Unknown codec format');
     }
+    if (typeof omitUndefined !== 'boolean') {
+        throw new TypeError('omitUndefined must be boolean');
+    }
+    const KEYS_OF = (value) =>
+        Object.keys(value)
+            .filter((key) => !omitUndefined || value[key] !== undefined)
+            .sort();
     for (const LIMIT of [maxBytes, maxDepth, maxEntries]) {
         if (!Number.isSafeInteger(LIMIT) || LIMIT < 1) {
             throw new RangeError('Invalid codec limit');
@@ -49,7 +81,7 @@ export function createValueCodec({
         }
         seen.add(value);
         let result;
-        if (value instanceof Uint8Array) {
+        if (value instanceof Uint8Array || typedKindOf(value) >= 0) {
             if (format === 'json') {
                 throw new TypeError('JSON codec does not support byte values');
             }
@@ -61,7 +93,7 @@ export function createValueCodec({
                 throw new TypeError('Plain records required');
             }
             result = {};
-            for (const KEY of Object.keys(value).sort()) {
+            for (const KEY of KEYS_OF(value)) {
                 normalize(KEY, depth + 1, seen, budget);
                 Object.defineProperty(result, KEY, {
                     value: normalize(value[KEY], depth + 1, seen, budget),
@@ -74,6 +106,8 @@ export function createValueCodec({
         seen.delete(value);
         return result;
     }
+    let scratch = null,
+        encoding = false;
     const STRING_CACHE = new Map();
     let cachedStringBytes = 0;
     function stringBytes(value) {
@@ -107,7 +141,11 @@ export function createValueCodec({
             }
             return BYTES;
         }
-        let bytes = new Uint8Array(Math.min(1024, maxBytes));
+        // 호출마다 확장·복사하지 않도록 직전 작업 버퍼를 재사용합니다(반환값은 항상 새 복사본).
+        // 값의 getter가 encode를 다시 부르면(재진입) 공유 버퍼를 건드리지 않고 새 버퍼를 씁니다.
+        const NESTED = encoding;
+        encoding = true;
+        let bytes = !NESTED && scratch ? scratch : new Uint8Array(Math.min(1024, maxBytes));
         let offset = 0;
         let view = new DataView(bytes.buffer);
         let entries = 0;
@@ -188,6 +226,28 @@ export function createValueCodec({
                     raw(v);
                     return;
                 }
+                const KIND = typedKindOf(v);
+                if (KIND >= 0) {
+                    const [, , SET, SIZE] = TYPED_KINDS[KIND];
+                    byte(10);
+                    byte(KIND);
+                    length(v.length);
+                    reserve(v.length * SIZE);
+                    for (let i = 0; i < v.length; i++) {
+                        let element = v[i];
+                        if (KIND >= FLOAT_KIND_START) {
+                            if (!Number.isFinite(element)) {
+                                throw new TypeError('Finite numbers required');
+                            }
+                            if (element === 0) {
+                                element = 0; // -0은 정규 표현이 아니므로 0으로 쓴다
+                            }
+                        }
+                        view[SET](offset, element, true);
+                        offset += SIZE;
+                    }
+                    return;
+                }
                 SEEN.add(v);
                 if (Array.isArray(v)) {
                     byte(5);
@@ -201,7 +261,7 @@ export function createValueCodec({
                         throw new TypeError('Plain records required');
                     }
                     byte(6);
-                    const KEYS = Object.keys(v).sort();
+                    const KEYS = KEYS_OF(v);
                     length(KEYS.length);
                     for (const KEY of KEYS) {
                         write(KEY, depth + 1);
@@ -211,11 +271,18 @@ export function createValueCodec({
                 SEEN.delete(v);
             }
         }
-        byte(82);
-        byte(86);
-        byte(1);
-        write(value);
-        return bytes.slice(0, offset);
+        try {
+            byte(82);
+            byte(86);
+            byte(1);
+            write(value);
+            return bytes.slice(0, offset);
+        } finally {
+            if (!NESTED) {
+                scratch = bytes.length <= SCRATCH_LIMIT ? bytes : null;
+                encoding = false;
+            }
+        }
     }
     function decode(input) {
         const BYTES =
@@ -324,6 +391,25 @@ export function createValueCodec({
                 }
                 if (TAG === 7) {
                     return raw().slice();
+                }
+                if (TAG === 10) {
+                    const KIND = byte();
+                    if (KIND >= TYPED_KINDS.length) {
+                        throw new TypeError('Invalid typed array kind');
+                    }
+                    const [TYPE, GET, , SIZE] = TYPED_KINDS[KIND];
+                    const COUNT = length();
+                    need(COUNT * SIZE);
+                    const ARRAY = new TYPE(COUNT);
+                    for (let i = 0; i < COUNT; i++) {
+                        const ELEMENT = VIEW[GET](offset, true);
+                        if (KIND >= FLOAT_KIND_START && (!Number.isFinite(ELEMENT) || Object.is(ELEMENT, -0))) {
+                            throw new TypeError('Noncanonical typed array number');
+                        }
+                        ARRAY[i] = ELEMENT;
+                        offset += SIZE;
+                    }
+                    return ARRAY;
                 }
                 if (TAG !== 5 && TAG !== 6) {
                     throw new TypeError('Invalid codec tag');

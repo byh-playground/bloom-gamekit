@@ -1421,13 +1421,15 @@ class PixelWorld {
         return body;
     }
     /* ---- 스냅샷 / 해시 (롤백, 리플레이, 락스텝 디싱크 검출) ---- */
-    snapshot() {
+    snapshot(copyGrid = true) {
+        // copyGrid=false는 격자 배열을 복사하지 않고 살아 있는 배열을 돌려줍니다. 바이트로 즉시 인코딩할 때만 쓰고 보관하지 마세요.
+        const GRID = copyGrid ? (array) => array.slice() : (array) => array;
         const S_VALUE = {
-            g: this.g.slice(),
-            life: this.life.slice(),
-            u: this.u.slice(),
-            awake: this.awake.slice(),
-            reac: this.reac.slice(),
+            g: GRID(this.g),
+            life: GRID(this.life),
+            u: GRID(this.u),
+            awake: GRID(this.awake),
+            reac: GRID(this.reac),
             flag: this.flag,
             dir: this.dir,
             seed: this.seed,
