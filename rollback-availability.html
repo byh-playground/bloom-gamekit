@@ -83,8 +83,9 @@
   }
   function hashBytes(value, seed = 2166136261) {
     let h = seed >>> 0;
-    for (const B of bytes(value)) {
-      h = Math.imul(h ^ B, 16777619) >>> 0;
+    const DATA = bytes(value);
+    for (let i = 0; i < DATA.length; i++) {
+      h = Math.imul(h ^ DATA[i], 16777619) >>> 0;
     }
     return h;
   }
@@ -111,7 +112,7 @@
       return SIGNED(Number(BigInt(SIGNED(a)) * 1024n / BigInt(b)));
     }
   });
-  var VERSION = "0.14.0";
+  var VERSION = "0.14.1";
   var REPLAY_FORMAT_VERSION = "0.2.0-dev";
   var PROTOCOL_VERSION = 3;
   var CHUNK_SIZE = 16384;

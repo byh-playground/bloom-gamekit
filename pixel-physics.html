@@ -1751,6 +1751,11 @@ var PixelWorld = class _PixelWorld {
       this._compile();
     }
     const T0 = NOW();
+    if (this.time === 0) {
+      for (let c = 0; c < this.reac.length; c++) {
+        this._refreshReac(c);
+      }
+    }
     if (this.bridge) {
       for (const H_VALUE of this.bridge.bodies) {
         H_VALUE.px = H_VALUE.x;
