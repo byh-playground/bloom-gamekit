@@ -87,6 +87,29 @@ export class SeededPRNG {
     nextUint32(): number;
     nextInt(bound: number): number;
 }
+export interface PseudoRandomDistributionState {
+    readonly version: 1;
+    readonly probability: number;
+    readonly consecutiveFailures: number;
+    readonly pendingTrials: number;
+}
+export interface Uint32RandomSource {
+    nextUint32(): number;
+}
+export class PseudoRandomDistribution {
+    /** 확률은 0 또는 0.0001~1이어야 합니다. RNG 소유권은 호출자에게 있습니다. */
+    constructor(options: { probability: number; rng: Uint32RandomSource });
+    readonly probability: number;
+    readonly consecutiveFailures: number;
+    roll(): boolean;
+    /** 표본화한 실패 간격을 건너뛰며 배치의 성공 횟수를 반환합니다. */
+    rollMany(draws: number): number;
+    setProbability(probability: number): void;
+    capture(): PseudoRandomDistributionState;
+    restore(state: PseudoRandomDistributionState): void;
+    reset(): void;
+    dispose(): void;
+}
 export function statelessRandom(seed: number, eventId: number): number;
 export function hashBytes(value: Bytes, seed?: number): number;
 export const fixedPoint: Readonly<{
