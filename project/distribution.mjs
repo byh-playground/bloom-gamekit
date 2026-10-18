@@ -11,6 +11,7 @@ export const MODULES = Object.freeze([
     'input',
     'deterministic',
     'simloop',
+    'work-scheduler',
     'transport',
     'replay',
     'rollback',

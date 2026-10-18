@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="ko">
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>비긴급 작업 예산 · bloom-gamekit</title>
+    <style>
+        body {
+            font:
+                16px system-ui,
+                sans-serif;
+            max-width: 860px;
+            margin: 2rem auto;
+            padding: 0 1rem;
+            background: #111c24;
+            color: #e6f1f3;
+            line-height: 1.55;
+        }
+        button {
+            padding: 0.5rem 0.8rem;
+            margin-right: 0.5rem;
+        }
+        pre {
+            padding: 1rem;
+            background: #091117;
+            border: 1px solid #40535e;
+            white-space: pre-wrap;
+        }
+    </style>
+    <h1>비긴급 탐색 작업 분산</h1>
+    <p>
+        아래 버튼 한 번이 기존 논리 tick 한 번을 뜻합니다. 각 tick은 후보 7개까지만 검사하고, urgent/standard/low 작업은
+        4:2:1 quantum 비율로 순환합니다.
+    </p>
+    <p>
+        <button id="tick">논리 tick 실행</button>
+        <button id="delete">low 개체 삭제</button>
+    </p>
+    <pre id="output"></pre>
+    <script type="module">
+        import { createBudgetedScheduler } from '../../../dist/work-scheduler.js';
+        import { FrameMetrics } from '../../../dist/debug-tools.js';
+
+        const SCHEDULER = createBudgetedScheduler({
+                unitsPerTick: 7,
+                quantumUnits: 1,
+            }),
+            FRAME_METRICS = new FrameMetrics({
+                capacity: 30,
+                counters: ['search.units', 'search.waitTicks', 'search.budgetExhausted'],
+            }),
+            ACTORS = [
+                { id: 'low', generation: 1, alive: true, priority: 0, cursor: 0, target: null },
+                { id: 'standard', generation: 1, alive: true, priority: 1, cursor: 0, target: null },
+                { id: 'urgent', generation: 1, alive: true, priority: 2, cursor: 0, target: null },
+            ],
+            CANDIDATES = Array.from({ length: 30 }, (_, index) => ({
+                id: 'candidate-' + index,
+                matches: index === 13,
+            }));
+        let tick = 0;
+
+        function enqueueActor(actor) {
+            const KEY = actor.id + ':' + actor.generation;
+            SCHEDULER.enqueue({
+                key: KEY,
+                owner: actor,
+                priority: actor.priority,
+                isValid: () => actor.alive && actor.generation === 1,
+                step({ maxUnits }) {
+                    let unitsUsed = 0;
+                    while (unitsUsed < maxUnits && actor.cursor < CANDIDATES.length) {
+                        const CANDIDATE = CANDIDATES[actor.cursor++];
+                        if (CANDIDATE.matches) {
+                            actor.target = CANDIDATE.id;
+                        }
+                        unitsUsed++;
+                    }
+                    return {
+                        done: actor.cursor >= CANDIDATES.length,
+                        unitsUsed,
+                        result: actor.target,
+                    };
+                },
+                onComplete({ result }) {
+                    if (actor.alive) {
+                        actor.target = result;
+                    }
+                },
+            });
+        }
+
+        for (const ACTOR of ACTORS) {
+            enqueueActor(ACTOR);
+        }
+
+        function render() {
+            const METRICS = SCHEDULER.metrics,
+                FRAME = FRAME_METRICS.snapshot({ limit: 4 });
+            document.querySelector('#output').textContent = JSON.stringify(
+                {
+                    tick: tick,
+                    actors: ACTORS.map((actor) => ({
+                        id: actor.id,
+                        alive: actor.alive,
+                        inspectedCandidates: actor.cursor,
+                        target: actor.target,
+                    })),
+                    scheduler: METRICS,
+                    recentFrameMetrics: FRAME.frames.map((frame) => frame.counts),
+                },
+                null,
+                2,
+            );
+        }
+
+        document.querySelector('#tick').addEventListener('click', () => {
+            tick++;
+            FRAME_METRICS.beginFrame(performance.now());
+            SCHEDULER.tick(tick);
+            const METRICS = SCHEDULER.metrics;
+            FRAME_METRICS.count('search.units', METRICS.lastTickUnits);
+            FRAME_METRICS.count('search.waitTicks', METRICS.lastTickWaitingTicks);
+            FRAME_METRICS.count('search.budgetExhausted', Number(METRICS.lastTickBudgetExhausted));
+            FRAME_METRICS.endFrame();
+            render();
+        });
+        document.querySelector('#delete').addEventListener('click', () => {
+            const LOW_ACTOR = ACTORS[0];
+            LOW_ACTOR.alive = false;
+            SCHEDULER.cancelOwner(LOW_ACTOR);
+            render();
+        });
+        addEventListener(
+            'pagehide',
+            () => {
+                SCHEDULER.dispose();
+            },
+            { once: true },
+        );
+        render();
+    </script>
+</html>
