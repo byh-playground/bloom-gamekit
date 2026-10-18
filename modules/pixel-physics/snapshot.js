@@ -4,9 +4,105 @@
 import { createValueCodec } from '../deterministic/value-codec.js';
 import { Body } from './core.js';
 
-const CODEC = createValueCodec({ format: 'binary', maxBytes: 64 << 20, maxEntries: 1 << 22, maxDepth: 64 });
-const TYPED = { Uint8Array, Int8Array, Uint16Array, Int16Array, Uint32Array, Int32Array, Float32Array, Float64Array };
+// 격자 배열은 같은 값 구간으로 줄인 Uint8Array 한 덩어리로, 셀 집합은 Int32Array 한 덩어리로 싣습니다. undefined 키는 생략합니다.
+const CODEC = createValueCodec({
+    format: 'binary',
+    maxBytes: 64 << 20,
+    maxEntries: 1 << 22,
+    maxDepth: 64,
+    omitUndefined: true,
+});
 const GRID_KEYS = ['g', 'life', 'u', 'awake', 'reac'];
+const RAW = 0,
+    RUNS = 1;
+
+/**
+ * 격자 바이트를 같은 값의 연속 구간(run)으로 줄입니다: 첫 바이트가 방식(0 원본, 1 run)이고, run은
+ * `[값][길이-1 (LEB128)]`의 반복입니다. 정지한 월드는 대부분 같은 값이 이어져 20~50배 줄고, 줄지 않으면 원본을 씁니다.
+ * 같은 입력은 항상 같은 바이트를 냅니다(탐욕적 최대 구간).
+ */
+function encodeGrid(array) {
+    const LIMIT = array.length;
+    const OUT = new Uint8Array(LIMIT + 1);
+    OUT[0] = RUNS;
+    let used = 1;
+    for (let i = 0; i < LIMIT;) {
+        const VALUE = array[i];
+        let end = i + 1;
+        while (end < LIMIT && array[end] === VALUE) {
+            end++;
+        }
+        let rest = end - i - 1;
+        if (used + 2 > LIMIT) {
+            used = LIMIT + 1;
+            break;
+        }
+        OUT[used++] = VALUE;
+        while (rest >= 128) {
+            if (used + 1 > LIMIT) {
+                used = LIMIT + 1;
+                break;
+            }
+            OUT[used++] = (rest % 128) + 128;
+            rest = Math.floor(rest / 128);
+        }
+        if (used > LIMIT) {
+            break;
+        }
+        OUT[used++] = rest;
+        i = end;
+    }
+    if (used <= LIMIT) {
+        return OUT.slice(0, used);
+    }
+    const RAW_OUT = new Uint8Array(LIMIT + 1);
+    RAW_OUT[0] = RAW;
+    RAW_OUT.set(array, 1);
+    return RAW_OUT;
+}
+
+/** encodeGrid의 역변환. 길이·구간·정규성(인접 구간의 값이 달라야 함)을 모두 검사합니다. */
+function decodeGrid(data, length) {
+    if (!(data instanceof Uint8Array) || data.length < 1) {
+        throw new RangeError('격자 형식이 잘못됐습니다.');
+    }
+    if (data[0] === RAW) {
+        if (data.length !== length + 1) {
+            throw new RangeError('격자 길이가 다릅니다.');
+        }
+        return data.slice(1);
+    }
+    if (data[0] !== RUNS) {
+        throw new RangeError('알 수 없는 격자 방식입니다.');
+    }
+    const OUT = new Uint8Array(length);
+    let at = 0,
+        previous = -1;
+    for (let i = 1; i < data.length;) {
+        const VALUE = data[i++];
+        let run = 0,
+            scale = 1,
+            part;
+        do {
+            if (i >= data.length || scale > 2 ** 28) {
+                throw new RangeError('격자 구간이 잘렸습니다.');
+            }
+            part = data[i++];
+            run += (part & 127) * scale;
+            scale *= 128;
+        } while (part >= 128);
+        if (VALUE === previous || (part === 0 && scale > 128) || at + run + 1 > length) {
+            throw new RangeError('격자 구간이 비정규이거나 범위를 넘습니다.');
+        }
+        OUT.fill(VALUE, at, at + run + 1);
+        at += run + 1;
+        previous = VALUE;
+    }
+    if (at !== length) {
+        throw new RangeError('격자 길이가 다릅니다.');
+    }
+    return OUT;
+}
 
 function ref(o) {
     if (o === null || o === undefined) {
@@ -46,52 +142,13 @@ function unpackCells(flat) {
     return OUT;
 }
 
-function pack(v) {
-    // undefined는 키를 생략하고 typed array는 {$, b}로 바꿔 deterministic 값 코덱이 받는 형태로 만듭니다.
-    if (v === null || typeof v !== 'object') {
-        return v;
-    }
-    if (ArrayBuffer.isView(v)) {
-        const BYTES = new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
-        return { $: v.constructor.name, b: BYTES.slice() };
-    }
-    if (Array.isArray(v)) {
-        return v.map(pack);
-    }
-    const OUT = {};
-    for (const KEY of Object.keys(v)) {
-        if (v[KEY] !== undefined) {
-            OUT[KEY] = pack(v[KEY]);
-        }
-    }
-    return OUT;
-}
-
-function unpack(v) {
-    if (v === null || typeof v !== 'object') {
-        return v;
-    }
-    if (Array.isArray(v)) {
-        return v.map(unpack);
-    }
-    if (typeof v.$ === 'string') {
-        const TYPE = TYPED[v.$];
-        if (!TYPE) {
-            throw new TypeError('알 수 없는 typed array: ' + v.$);
-        }
-        return new TYPE(v.b.slice().buffer);
-    }
-    const OUT = {};
-    for (const KEY of Object.keys(v)) {
-        OUT[KEY] = unpack(v[KEY]);
-    }
-    return OUT;
-}
-
 /** 월드 전체 상태를 바이트로 만듭니다. 엔티티는 world.addEntity로 등록돼 있어야 합니다. */
 export function savePixelWorld(world) {
-    const S = world.snapshot();
+    const S = world.snapshot(false); // 인코더가 바로 복사하므로 격자 배열을 한 번 덜 복사합니다.
     const OUT = { ...S, entRefs: S.entRefs.map(ref), proj: S.proj.map((p) => ({ ...p, src: ref(p.src) })) };
+    for (const KEY of GRID_KEYS) {
+        OUT[KEY] = encodeGrid(S[KEY]);
+    }
     OUT.ents = S.ents.map((e) => ({ ...e, _ride: ref(e._ride) }));
     if (S.bridge) {
         OUT.bridge = {
@@ -100,15 +157,13 @@ export function savePixelWorld(world) {
             js: S.bridge.js.map((r) => ({ ...r, j: ref(r.j), a: ref(r.a), b: ref(r.b) })),
         };
     }
-    return CODEC.encode(pack(OUT));
+    return CODEC.encode(OUT);
 }
 
 function decode(world, bytes) {
-    const V = unpack(CODEC.decode(bytes));
+    const V = CODEC.decode(bytes);
     for (const KEY of GRID_KEYS) {
-        if (!(V[KEY] instanceof Uint8Array) || V[KEY].length !== world[KEY].length) {
-            throw new RangeError('월드 크기나 형식이 다른 snapshot입니다: ' + KEY);
-        }
+        V[KEY] = decodeGrid(V[KEY], world[KEY].length);
     }
     if (Boolean(V.bridge) !== Boolean(world.bridge)) {
         throw new RangeError('강체 브리지 유무가 다른 snapshot입니다.');

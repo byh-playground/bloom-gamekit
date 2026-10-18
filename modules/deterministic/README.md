@@ -6,6 +6,10 @@
 
 기존 rollback-netcode의 동일 함수를 책임별로 이동했습니다. [공개 타입](./index.d.ts), [개발 계약](../rollback/CONTRACT.md), [상세 사용법과 이전](../rollback/docs/api-migration.md)을 따릅니다. 이 모듈은 게임 규칙·권위 상태를 정의하지 않습니다.
 
+## 값 codec 형식
+
+`createValueCodec({format, maxBytes, maxDepth, maxEntries, omitUndefined=false})`은 `null`·불리언·유한 숫자·문자열·`Uint8Array`·배열·일반 레코드를 정규(canonical) 바이트로 만듭니다. 바이너리 형식은 여기에 `Int8Array`·`Int16Array`·`Uint16Array`·`Int32Array`·`Uint32Array`·`Float32Array`·`Float64Array`를 받으며 요소는 항상 little-endian으로 씁니다. 격자·수치 배열을 요소별 값으로 풀지 않아 `maxEntries`를 쓰지 않고 `Uint8Array`처럼 한 번의 복사에 가깝게 처리합니다. 실수 요소는 유한해야 하며 `-0`은 `0`으로 정규화됩니다. 디코더는 `-0`·`NaN`·`Infinity` 비트 패턴을 비정규로 거부합니다. `Uint8ClampedArray`와 BigInt 배열은 지원하지 않고, JSON 형식은 어떤 typed array도 받지 않습니다. `omitUndefined:true`이면 값이 `undefined`인 레코드 키를 건너뜁니다(기본은 거부, 배열 항목의 `undefined`는 항상 거부). typed array 태그는 추가 형식이라 이전 SDK의 디코더는 이 태그가 든 payload를 읽지 못합니다. 같은 방에서 SDK 버전이 섞이면 해당 payload를 쓰지 마세요. 기존 payload는 그대로 읽힙니다.
+
 ## 소유권과 비용
 
 codec은 권위 값을 선택하지 않습니다. 어댑터가 이후 결과에 영향을 주는 모든 값을 선택·검증해야 합니다. Synctest는 실제 공통 frame/StateHistory를 재사용하며 추가 저장·load·재실행 CPU를 사용합니다. 단일 브라우저 검사는 교차 엔진 결정성 증명이 아닙니다.

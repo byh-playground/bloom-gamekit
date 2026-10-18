@@ -12,6 +12,7 @@ const SUITES = {
     core: [
         'modules/vector-assets/tests/compiler.mjs',
         'modules/deterministic/tests/hash-bytes.mjs',
+        'modules/deterministic/tests/value-codec-typed.mjs',
         'project/previews.mjs',
         'modules/rollback/scripts/local-fastpath-browser.mjs',
         'project/tests/browser.e2e.mjs',

@@ -10,7 +10,7 @@ import {
     savePixelWorld,
     validatePixelWorld,
 } from '../index.js';
-import { runSyncTest } from '../../deterministic/index.js';
+import { createValueCodec, runSyncTest } from '../../deterministic/index.js';
 
 installDeterministicTrig();
 const TICKS = 400,
@@ -148,4 +148,74 @@ console.log(
     }
     assert.equal(WORLD.stats.active, 0, '정지한 월드의 활성 청크는 0이어야 합니다.');
     console.log('sleep warm-up ok, total chunks:', WORLD.stats.total);
+}
+
+// 격자 snapshot 형식: 큰 정지 월드는 크게 줄고, 줄지 않는 잡음 격자는 원본으로 저장되며, 손상된 구간은 거부됩니다.
+{
+    const CODEC = createValueCodec({ maxBytes: 64 << 20, maxEntries: 1 << 22, omitUndefined: true });
+    const BIG = new PixelWorld(1280, 720, { seed: 2 });
+    BIG.define({ name: 'stone', kind: 'solid', color: [110, 112, 122] });
+    BIG.define({ name: 'sand', kind: 'powder', density: 15, color: [222, 190, 110] });
+    BIG.rect(0, 700, 1279, 719, 'stone');
+    BIG.paint(640, 100, 40, 'sand');
+    for (let tick = 0; tick < 300; tick++) {
+        BIG.tick();
+    }
+    const BIG_BYTES = savePixelWorld(BIG);
+    assert.ok(BIG_BYTES.length < 200 * 1024, '큰 월드 snapshot이 줄지 않았습니다: ' + BIG_BYTES.length);
+    const BEFORE_HASH = BIG.hash();
+    loadPixelWorld(BIG, BIG_BYTES);
+    assert.equal(BIG.hash(), BEFORE_HASH);
+    assert.deepEqual(savePixelWorld(BIG), BIG_BYTES, '저장 → 복원 → 저장 바이트가 같아야 합니다.');
+
+    const NOISY = new PixelWorld(64, 64, { seed: 3 });
+    NOISY.define({ name: 'stone', kind: 'solid', color: [110, 112, 122] });
+    NOISY.define({ name: 'sand', kind: 'powder', density: 15, color: [222, 190, 110] });
+    NOISY.define({ name: 'water', kind: 'liquid', density: 10, dispersion: 5, color: [60, 120, 220] });
+    for (let y = 0; y < 64; y++) {
+        for (let x = 0; x < 64; x++) {
+            NOISY.set(x, y, ['stone', 'sand', 'water', 'empty'][(x * 7 + y * 13 + ((x * y) % 5)) % 4]);
+        }
+    }
+    const NOISY_BYTES = savePixelWorld(NOISY);
+    const NOISY_HASH = NOISY.hash();
+    NOISY.paint(32, 32, 10, 'water');
+    loadPixelWorld(NOISY, NOISY_BYTES);
+    assert.equal(NOISY.hash(), NOISY_HASH, '원본(raw) 방식 왕복이 달라졌습니다.');
+
+    const TAMPER = (change) => {
+        const VALUE = CODEC.decode(BIG_BYTES);
+        change(VALUE);
+        return CODEC.encode(VALUE);
+    };
+    assert.ok(validatePixelWorld(BIG, BIG_BYTES));
+    assert.ok(
+        !validatePixelWorld(
+            BIG,
+            TAMPER((v) => (v.g = v.g.subarray(0, v.g.length - 1))),
+        ),
+        '잘린 구간',
+    );
+    assert.ok(
+        !validatePixelWorld(
+            BIG,
+            TAMPER((v) => (v.g[0] = 9)),
+        ),
+        '알 수 없는 방식',
+    );
+    assert.ok(
+        !validatePixelWorld(
+            BIG,
+            TAMPER((v) => (v.u = Uint8Array.of(1, 5, 0, 5, 0))),
+        ),
+        '인접 구간의 값이 같음',
+    );
+    assert.ok(
+        !validatePixelWorld(
+            BIG,
+            TAMPER((v) => (v.life = Uint8Array.of(1, 0, 255, 255, 255, 255, 15))),
+        ),
+        '범위 초과',
+    );
+    console.log('grid format ok, 1280x720 snapshot bytes:', BIG_BYTES.length);
 }
