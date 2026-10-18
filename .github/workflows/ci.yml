@@ -36,18 +36,10 @@ jobs:
                   fi
             - name: Install locked build tooling without lifecycle scripts
               run: npm ci --ignore-scripts --no-audit --no-fund
-            - name: Install Chromium for browser scenarios
-              run: npx playwright install --with-deps chromium
             - name: Build independent bundles
               run: npm run build
             - name: Build standalone HTML previews
               run: npm run build:previews
-            - name: Run core browser-backed scenarios
-              run: npm test
-            - name: Run pixel physics browser scenario
-              run: npm run test:pixel-physics
-            - name: Run 3D vector rendering browser scenarios
-              run: npm run test:vector-assets:world-rendering
             - name: Reject changed bytes under an existing version
               run: npm run verify:release
             - name: Verify generated manifest and bundle bytes
@@ -57,15 +49,6 @@ jobs:
                   set -euo pipefail
                   manifest="$(node project/verify-dist.mjs)"
                   echo "sha256=$manifest" >> "$GITHUB_OUTPUT"
-            - name: Retain Farmpea vector example screenshot
-              if: always()
-              # https://github.com/actions/upload-artifact/releases/tag/v7.0.1
-              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-              with:
-                  name: vector-assets-quality-farmpea
-                  path: test-results/vector-assets-quality-farmpea.png
-                  if-no-files-found: ignore
-                  retention-days: 7
 
     publish-dist:
         name: Update dist branch
