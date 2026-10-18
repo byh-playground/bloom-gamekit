@@ -1,0 +1,1242 @@
+<!doctype html>
+<html lang="ko">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+        <title>PixelPhysics 소환수 전투 시험판</title>
+        <style>
+            :root {
+                --bg: #e9e7e2;
+                --fg: #1b1d21;
+                --mut: #5d6168;
+                --panel: #f6f5f2;
+                --line: #cfccc5;
+                --accent: #3b82f6;
+                color-scheme: light;
+            }
+            @media (prefers-color-scheme: dark) {
+                :root {
+                    --bg: #111316;
+                    --fg: #e8e8e6;
+                    --mut: #9a9ea6;
+                    --panel: #1a1d21;
+                    --line: #2d3138;
+                    color-scheme: dark;
+                }
+            }
+            * {
+                box-sizing: border-box;
+            }
+            body {
+                margin: 0;
+                padding: 16px;
+                padding-left: max(16px, env(safe-area-inset-left));
+                padding-right: max(16px, env(safe-area-inset-right));
+                background: var(--bg);
+                color: var(--fg);
+                font:
+                    15px/1.5 system-ui,
+                    -apple-system,
+                    'Apple SD Gothic Neo',
+                    'Noto Sans KR',
+                    sans-serif;
+            }
+            main {
+                max-width: 900px;
+                margin: 0 auto;
+            }
+            h1 {
+                font-size: 20px;
+                margin: 0 0 4px;
+            }
+            p {
+                margin: 0 0 10px;
+                color: var(--mut);
+            }
+            .stage {
+                position: relative;
+                width: min(100%, calc(56vh * 160 / 80));
+                margin: 0 auto;
+            }
+            canvas {
+                display: block;
+                width: 100%;
+                aspect-ratio: 160/80;
+                image-rendering: pixelated;
+                touch-action: none;
+                border: 1px solid var(--line);
+                border-radius: 6px;
+            }
+            #o {
+                position: absolute;
+                inset: 0;
+                height: 100%;
+                aspect-ratio: auto;
+                pointer-events: none;
+                border: 0;
+                image-rendering: auto;
+            }
+            button {
+                font: inherit;
+                color: var(--fg);
+                background: var(--panel);
+                border: 1px solid var(--line);
+                border-radius: 6px;
+                padding: 6px 12px;
+                cursor: pointer;
+                touch-action: manipulation;
+                user-select: none;
+                -webkit-user-select: none;
+                -webkit-touch-callout: none;
+                -webkit-tap-highlight-color: transparent;
+            }
+            #hud {
+                margin: 8px 0 4px;
+                text-align: center;
+                font-weight: 600;
+            }
+            #mana {
+                height: 8px;
+                margin: 0 auto 8px;
+                max-width: 560px;
+                background: var(--line);
+                border-radius: 4px;
+                overflow: hidden;
+            }
+            #manabar {
+                display: block;
+                height: 100%;
+                width: 0;
+                background: var(--accent);
+            }
+            #tools {
+                display: grid;
+                grid-template-columns: 1fr 1fr 1fr;
+                gap: 8px;
+                margin: 8px auto;
+                max-width: 560px;
+            }
+            #tools button {
+                min-height: 56px;
+            }
+            #tools button.on {
+                background: var(--fg);
+                color: var(--bg);
+            }
+            #summons,
+            #pad {
+                display: grid;
+                gap: 8px;
+                margin: 8px auto;
+                max-width: 560px;
+            }
+            #summons {
+                grid-template-columns: repeat(5, 1fr);
+            }
+            #summons button {
+                min-height: 60px;
+                padding: 4px 2px;
+                font-size: 14px;
+                line-height: 1.25;
+            }
+            #summons button.off {
+                opacity: 0.45;
+            }
+            #pad {
+                grid-template-columns: 1fr 1fr 1.4fr;
+            }
+            #pad button {
+                min-height: 68px;
+                font-size: 22px;
+                touch-action: none; /* 누르고 있는 동안 스크롤·확대로 넘어가지 않게 합니다. */
+            }
+            #pad button.down {
+                background: var(--fg);
+                color: var(--bg);
+            }
+            details {
+                margin: 10px 0;
+            }
+            summary {
+                color: var(--mut);
+                cursor: pointer;
+                padding: 6px 0;
+            }
+            .bar {
+                margin: 10px 0;
+            }
+        </style>
+    </head>
+    <body>
+        <main>
+            <h1>PixelPhysics 소환수 전투 시험판</h1>
+            <p>
+                소환수를 불러 충격량과 재료 반응(물·용암·산성)으로 적을 쓸어 내고, 오른쪽 끝 둥지를 부수세요. ← → / A D
+                이동, W / Space 점프, 1~5 소환. 마우스 좌클릭은 공기 분사(이동기), 우클릭은 누르는 동안 포인터 지점에
+                흙을 모래처럼 뭉쳐 붙잡습니다(아래로는 흘러내림). 놓으면 모래처럼 퍼져 떨어져 지형과 합쳐지고, 붙잡은 채
+                좌클릭하면 뭉치가 분사 방향으로 날아가 적을 밀고 칩니다. 흙 더미에 가까이 분사하면 흩날립니다. 터치는
+                아래 도구로 고르고, 던지기는 끌어모았다 놓으면 던집니다.
+            </p>
+            <div class="stage"><canvas id="c"></canvas><canvas id="o"></canvas></div>
+            <div id="hud"></div>
+            <div id="mana"><i id="manabar"></i></div>
+            <div id="tools">
+                <button id="toolJet" class="on">분사 (좌클릭)</button><button id="toolSoil">흙 (우클릭)</button
+                ><button id="toolThrow">던지기</button>
+            </div>
+            <div id="summons"></div>
+            <div id="pad"><button id="tl">◀</button><button id="tr">▶</button><button id="tj">▲ 점프</button></div>
+            <div class="bar"><button id="reset">다시 시작</button></div>
+            <details>
+                <summary>소환수와 규칙</summary>
+                <p>
+                    <b>물고기</b>: 앞 땅을 파 연못을 만들고 물대포로 적을 밀어냅니다. 연못은 수영으로 건너는 길이
+                    됩니다. <b>불</b>: 용암을 던집니다(물과 만나면 돌과 증기). <b>산성</b>: 산성을 뱉어 나무 장벽과 돌을
+                    녹입니다. <b>골렘</b>: 큰 돌덩이(강체)를 던지고 구덩이 앞에서는 돌 다리를 놓습니다. <b>마법사</b>:
+                    뒤에서 공기 충격파로 적을 밀어 함정에 빠뜨립니다. 적이 가볍고 약한 슬라임, 무겁고 단단한 딱정벌레는
+                    큰 충격량이 필요합니다. 소환은 마나를 쓰고 적을 처치하면 조금 돌아오며, 소환수는 시간이 지나면
+                    사라집니다. 용암·산성은 아군도 다치게 합니다.
+                </p>
+            </details>
+        </main>
+        <script type="module">
+            import {
+                PixelWorld,
+                Body,
+                MatterBridge,
+                PixelRenderer,
+                installDeterministicTrig,
+            } from '/dist/pixel-physics.js';
+            installDeterministicTrig();
+
+            /* =====================================================================
+             * 소환수 전투 시험판: 플레이어는 이동·점프만 하고, 전투는 소환수가 충격량(분사·강체)과 재료 반응으로 합니다.
+             * 규칙의 숫자는 재미를 보려는 초안이며 확정값이 아닙니다.
+             * ===================================================================== */
+            const W = 360,
+                H = 90,
+                GROUND = 70,
+                VIEW_W = 160,
+                VIEW_H = 80,
+                DT = 1000 / 60;
+            const MANA_MAX = 100,
+                MANA_REGEN = 0.12,
+                KILL_MANA = 8,
+                ALLY_CAP = 8,
+                BOULDER_CAP = 8;
+            const SUMMONS = {
+                fish: { name: '물고기', cost: 20, life: 900 },
+                fire: { name: '불', cost: 30, life: 700 },
+                acid: { name: '산성', cost: 25, life: 800 },
+                golem: { name: '골렘', cost: 35, life: 1200 },
+                mage: { name: '마법사', cost: 20, life: 900 },
+            };
+            const FOES = {
+                slime: { w: 5, h: 4, hp: 12, accel: 0.1, mass: 0.02, dmg: 6, color: '#7fd35a', sight: 90 },
+                beetle: { w: 7, h: 5, hp: 40, accel: 0.07, mass: 0.08, dmg: 10, color: '#8a5a3c', sight: 90 },
+            };
+            const SKY = (255 << 24) | (232 << 16) | (176 << 8) | 124;
+            const FUEL_MAX = 100,
+                SOIL_MAX = 160,
+                SOIL_REGEN = 0.15,
+                SOIL_RANGE = 26,
+                BLOB_MAX = 110,
+                BLOB_GROW = 3,
+                BLOB_MIN_THROW = 6,
+                THROW_SPEED = 3.6,
+                DIRT_DMG = 0.6,
+                JET_FAR = 18,
+                KICK_DV = 1.0,
+                JET_REACH = 9,
+                RECOIL = 0.25;
+            // 흙뭉치 브러시 모양: 중심에서 가까운 순서로 정렬한 칸 오프셋 (앞에서 n개를 쓰면 지름이 자라는 원판)
+            const DISC = [];
+            for (let dy = -9; dy <= 9; dy++) {
+                for (let dx = -9; dx <= 9; dx++) {
+                    if (dx * dx + dy * dy <= 90) {
+                        DISC.push([dx, dy]);
+                    }
+                }
+            }
+            DISC.sort(
+                (a, b) =>
+                    a[0] * a[0] + a[1] * a[1] - (b[0] * b[0] + b[1] * b[1]) ||
+                    ((a[0] * 5 + a[1] * 3) & 7) - ((b[0] * 5 + b[1] * 3) & 7),
+            );
+            const KEYS = { l: 0, r: 0, u: 0 };
+            // 포인터: 마우스는 좌클릭=분사, 우클릭=흙 놓기. 터치는 아래 도구 버튼으로 고른 모드를 씁니다.
+            const POINTER = {
+                cx: 0,
+                cy: 0,
+                x: 0,
+                y: 0,
+                id: null,
+                jet: false,
+                soil: false,
+                throw: false,
+                prevJet: false,
+                holding: false,
+            };
+            let blob = { n: 0, cells: [], x: 0, y: 0 },
+                throws = 0;
+            let world, bridge, player, renderer, nest, mana, kills, won, respawnAt, alpha, fuel, soil, tool;
+
+            function defineAll(w) {
+                w.define({ name: 'bedrock', kind: 'solid', color: [60, 62, 70], indestructible: true });
+                w.define({
+                    name: 'stone',
+                    kind: 'solid',
+                    color: [110, 112, 122],
+                    strength: 60,
+                    blast: { debris: 'sand' },
+                    rigid: { density: 0.006 },
+                });
+                w.define({ name: 'dirt', kind: 'powder', density: 16, color: [150, 108, 62] });
+                w.define({ name: 'sand', kind: 'powder', density: 15, color: [222, 190, 110] });
+                w.define({ name: 'rubble', kind: 'powder', density: 14, color: [150, 110, 70] });
+                w.define({
+                    name: 'water',
+                    kind: 'liquid',
+                    density: 10,
+                    dispersion: 5,
+                    color: [60, 120, 220],
+                    body: { swim: true },
+                });
+                w.define({
+                    name: 'oil',
+                    kind: 'liquid',
+                    density: 8,
+                    dispersion: 4,
+                    color: [80, 55, 30],
+                    body: { swim: true },
+                });
+                w.define({
+                    name: 'wood',
+                    kind: 'solid',
+                    color: [130, 85, 45],
+                    strength: 25,
+                    blast: { burn: 'fire' },
+                    rigid: { density: 0.0015 },
+                });
+                w.define({
+                    name: 'fire',
+                    kind: 'gas',
+                    density: 2,
+                    rise: 0.3,
+                    noSwap: true,
+                    flicker: true,
+                    color: [255, 140, 30],
+                    life: [40, 80],
+                    decay: { to: 'smoke', chance: 0.3 },
+                    body: { blocks: false, status: ['burn', 120] },
+                    reactions: [
+                        { with: 'wood', chance: 0.04, other: 'fire' },
+                        { with: 'oil', chance: 0.3, other: 'fire' },
+                        { with: 'water', self: 'empty', other: 'steam' },
+                    ],
+                });
+                w.define({
+                    name: 'smoke',
+                    kind: 'gas',
+                    density: 1,
+                    push: 11,
+                    rise: 0.8,
+                    color: [110, 110, 116],
+                    life: [40, 80],
+                    decay: { to: 'empty' },
+                });
+                w.define({
+                    name: 'steam',
+                    kind: 'gas',
+                    density: 1,
+                    push: 13,
+                    rise: 0.8,
+                    color: [190, 205, 225],
+                    life: [80, 140],
+                    decay: { to: 'water', chance: 0.5 },
+                });
+                w.define({
+                    name: 'air',
+                    kind: 'gas',
+                    density: 0.5,
+                    push: 13,
+                    rise: 0.6,
+                    color: [205, 225, 250],
+                    life: [6, 16],
+                    decay: { to: 'empty' },
+                });
+                w.define({
+                    name: 'lava',
+                    kind: 'liquid',
+                    density: 20,
+                    dispersion: 1,
+                    slow: 0.7,
+                    color: [240, 80, 20],
+                    body: { damage: 3, status: ['burn', 180], swim: true },
+                    reactions: [
+                        { with: 'water', self: 'stone', other: 'steam' },
+                        { with: ['wood', 'oil'], chance: 0.2, other: 'fire' },
+                    ],
+                });
+                w.define({
+                    name: 'acid',
+                    kind: 'liquid',
+                    density: 11,
+                    dispersion: 3,
+                    color: [130, 230, 60],
+                    body: { damage: 0.6, swim: true },
+                    reactions: [{ with: ['sand', 'wood', 'stone'], chance: 0.15, self: 'smoke', other: 'empty' }],
+                });
+                w.defineStatus('burn', { damage: 0.25, emit: { material: 'fire', chance: 0.3 }, clearedBy: ['water'] });
+            }
+
+            // 지형: 시작 평지 → 구덩이 → 나무 장벽 → 기름 웅덩이 → 둥지 요새
+            function buildLevel() {
+                world.rect(0, GROUND, W - 1, H - 5, 'stone');
+                world.rect(0, H - 4, W - 1, H - 1, 'bedrock');
+                world.rect(110, GROUND, 140, GROUND + 13, 'empty'); // 구덩이: 점프로는 못 건넘
+                world.rect(176, 50, 179, GROUND - 1, 'wood'); // 나무 장벽
+                world.rect(215, GROUND, 245, GROUND + 5, 'oil'); // 기름 웅덩이
+                world.rect(316, 54, 318, GROUND - 1, 'stone');
+                world.rect(346, 54, 348, GROUND - 1, 'stone');
+                world.rect(316, 50, 348, 53, 'stone'); // 둥지 요새
+                world.markAllDirty();
+            }
+
+            const ALLIES = () => world.bodies.filter((b) => b.data.team === 'ally' && !b.dead);
+            const SUMMONED = () => ALLIES().filter((b) => b !== player);
+            const FOE_LIST = () => world.bodies.filter((b) => b.data.team === 'foe' && !b.dead);
+            const NEAREST = (from, list, range) => {
+                let best = null,
+                    bestD = range;
+                for (const B of list) {
+                    const D = Math.abs(B.x - from.x) + Math.abs(B.y - from.y) * 0.5;
+                    if (D < bestD) {
+                        best = B;
+                        bestD = D;
+                    }
+                }
+                return best;
+            };
+            function isSolid(x, y) {
+                const V = world.get(x, y);
+                return V > 0 && world.K[V] === 0;
+            }
+            function surface(x) {
+                for (let y = 20; y < H; y++) {
+                    if (isSolid(Math.round(x), y)) {
+                        return y;
+                    }
+                }
+                return GROUND;
+            }
+
+            function spawnPlayer() {
+                player = new Body({
+                    x: 8,
+                    y: GROUND - 8,
+                    w: 3,
+                    h: 6,
+                    jumpV: 2.1,
+                    accel: 0.2,
+                    mass: 0.035,
+                    hp: 60,
+                    color: '#6fd0ff',
+                    data: { kind: 'player', team: 'ally', face: 1, rock: Infinity }, // rock: 강체 충돌 피해 쿨다운. 무한대면 자기 흙뭉치에 다치지 않음
+                    onDeath: () => {
+                        respawnAt = world.time + 120;
+                    },
+                });
+                world.addEntity(player);
+            }
+
+            function makeFoe(kind, x) {
+                const T = FOES[kind];
+                const FOE = new Body({
+                    x,
+                    y: GROUND - 8,
+                    w: T.w,
+                    h: T.h,
+                    hp: T.hp,
+                    accel: T.accel,
+                    mass: T.mass,
+                    color: T.color,
+                    data: { kind, team: 'foe', cd: 0, face: -1 },
+                });
+                FOE.onDeath = () => {
+                    mana = Math.min(MANA_MAX, mana + KILL_MANA);
+                    kills++;
+                    world.paint(Math.round(FOE.x), Math.round(FOE.y), 2, 'smoke');
+                };
+                return world.addEntity(FOE);
+            }
+
+            function makeNest() {
+                nest = new Body({
+                    x: 332,
+                    y: GROUND - 8,
+                    w: 12,
+                    h: 10,
+                    hp: 90,
+                    mass: 0.5,
+                    color: '#a33',
+                    data: { kind: 'nest', team: 'foe', cd: 200, face: -1 },
+                });
+                nest.onDeath = () => {
+                    won = true;
+                    world.explode(Math.round(nest.x), Math.round(nest.y), 10);
+                };
+                world.addEntity(nest);
+            }
+
+            function build() {
+                world = new PixelWorld(W, H, { seed: 11 });
+                defineAll(world);
+                world.enableCollapse();
+                bridge = new MatterBridge();
+                world.attachBridge(bridge);
+                buildLevel();
+                mana = 60;
+                fuel = FUEL_MAX;
+                soil = SOIL_MAX;
+                blob = { n: 0, cells: [], x: 0, y: 0 };
+                kills = 0;
+                won = false;
+                respawnAt = 0;
+                alpha = 0;
+                spawnPlayer();
+                for (const [KIND, X] of [
+                    ['slime', 80],
+                    ['slime', 96],
+                    ['slime', 152],
+                    ['beetle', 192],
+                    ['slime', 204],
+                    ['slime', 222],
+                    ['slime', 238],
+                    ['beetle', 266],
+                    ['slime', 290],
+                ]) {
+                    makeFoe(KIND, X);
+                }
+                makeNest();
+                renderer = new PixelRenderer(document.getElementById('c'), world, {
+                    overlay: document.getElementById('o'),
+                    view: { x: 0, y: H - VIEW_H, w: VIEW_W, h: VIEW_H },
+                });
+                renderer.bg = SKY;
+            }
+
+            // ---- 플레이어 도구: 공기 분사(이동기·깎기·날리기)와 흙 놓기
+            function aimVector() {
+                const DX = POINTER.x - player.x,
+                    DY = POINTER.y - player.y,
+                    D = Math.hypot(DX, DY) || 1;
+                return [DX / D, DY / D];
+            }
+            // 흙 셀 하나를 발사체로 바꿔 날립니다. 막히거나 느려지면 그 자리에서 다시 흙 셀로 내려앉아 지형과 합쳐집니다.
+            function flingDirt(index, ax, ay, speed, spread) {
+                world.setCell(index, 0);
+                world.spray(
+                    (index % W) + 0.5,
+                    ((index / W) | 0) + 0.5,
+                    ax * speed + (world.rand() - 0.5) * spread,
+                    ay * speed + (world.rand() - 0.5) * spread,
+                    'dirt',
+                );
+            }
+            // 분사가 닿는 첫 물체를 찾습니다. 공중의 강체(골렘 돌덩이 등)는 맞은 지점을 밀려 회전하며 날아가고,
+            // 가까운 흙 더미는 분사에 흩날려 날아갑니다.
+            function jetAhead(ax, ay) {
+                const DIRT = world.id.dirt;
+                for (let d = 2; d <= JET_FAR; d++) {
+                    const X = Math.floor(player.x + ax * d),
+                        Y = Math.floor(player.y - 1 + ay * d);
+                    if (X < 0 || Y < 0 || X >= W || Y >= H) {
+                        return;
+                    }
+                    const HIT = bridge.bodies.find((unit) => {
+                        const BOX = bridge.getBounds(unit);
+                        return X + 0.5 >= BOX.x0 && X + 0.5 <= BOX.x1 && Y + 0.5 >= BOX.y0 && Y + 0.5 <= BOX.y1;
+                    });
+                    if (HIT) {
+                        const KICK = HIT.body.mass * KICK_DV * (1 - d / (JET_FAR + 2));
+                        bridge.applyImpulseAt(HIT, X + 0.5, Y + 0.5, ax * KICK, ay * KICK);
+                        return;
+                    }
+                    const ID = world.g[Y * W + X];
+                    if (ID === 0 || world.K[ID] === 3) {
+                        continue;
+                    }
+                    if (ID === DIRT && d <= JET_REACH && !POINTER.holding) {
+                        let blown = 0;
+                        for (const [OX, OY] of DISC) {
+                            const QX = X + OX,
+                                QY = Y + OY;
+                            if (blown >= 8 || OX * OX + OY * OY > 6) {
+                                break;
+                            }
+                            if (QX >= 0 && QY >= 0 && QX < W && QY < H && world.g[QY * W + QX] === DIRT) {
+                                flingDirt(QY * W + QX, ax, ay, 2.6 + world.rand(), 0.8);
+                                blown++;
+                            }
+                        }
+                    }
+                    return;
+                }
+            }
+            function useJet() {
+                const [AX, AY] = aimVector();
+                fuel -= 1;
+                player.data.face = AX < 0 ? -1 : 1;
+                for (let i = 0; i < 3; i++) {
+                    const SPEED = 4.2 + world.rand() * 0.6,
+                        ANGLE = (world.rand() - 0.5) * 0.5,
+                        C = Math.cos(ANGLE),
+                        S = Math.sin(ANGLE);
+                    world.spray(
+                        player.x + AX * 3,
+                        player.y - 1 + AY * 3,
+                        (AX * C - AY * S) * SPEED,
+                        (AX * S + AY * C) * SPEED,
+                        'air',
+                        { shooter: player, recoil: RECOIL },
+                    );
+                }
+                jetAhead(AX, AY);
+            }
+            // 우클릭: 플레이어 근처의 빈 칸에 흙을 놓습니다. 땅에 이어지면 지형, 안 이어지면 붕괴 규칙으로 덩어리째 떨어지는 강체가 됩니다.
+            // 우클릭을 누르는 동안: 포인터(사거리 안)에 흙 셀을 원판 모양으로 칠해 붙잡아 둡니다. 셀은 시뮬레이션이 끝난 뒤에 칠하고
+            // 다음 틱 시뮬레이션 직전에 지우기 때문에 흘러내리지 않고 포인터를 따라다닙니다. 놓으면 지우지 않아서 그대로 모래처럼 퍼져 떨어지고 지형과 합쳐집니다.
+            function clearBlob() {
+                for (const I of blob.cells) {
+                    if (world.g[I] === world.id.dirt) {
+                        world.setCell(I, 0);
+                    }
+                }
+                blob.cells = [];
+            }
+            function stampBlob() {
+                const DIRT = world.id.dirt,
+                    DX = POINTER.x - player.x,
+                    DY = POINTER.y - (player.y - 1),
+                    D = Math.hypot(DX, DY),
+                    K = D > SOIL_RANGE ? SOIL_RANGE / D : 1,
+                    CX = Math.round(player.x + DX * K),
+                    CY = Math.round(player.y - 1 + DY * K),
+                    UNITS = world.bodies.filter((unit) => !unit.dead);
+                blob.x = CX;
+                blob.y = CY;
+                let placed = 0;
+                for (const [OX, OY] of DISC) {
+                    if (placed >= blob.n) {
+                        break;
+                    }
+                    const X = CX + OX,
+                        Y = CY + OY;
+                    if (X < 1 || Y < 1 || X >= W - 1 || Y >= H - 1) {
+                        continue;
+                    }
+                    const I = Y * W + X,
+                        ID = world.g[I];
+                    if (
+                        (ID !== 0 && world.K[ID] !== 3) ||
+                        UNITS.some(
+                            (unit) => Math.abs(unit.x - X) <= unit.hx + 0.5 && Math.abs(unit.y - Y) <= unit.hy + 0.5,
+                        )
+                    ) {
+                        continue;
+                    }
+                    world.setCell(I, DIRT);
+                    blob.cells.push(I);
+                    placed++;
+                }
+            }
+            // 붙잡은 덩어리를 통째로 발사체로 바꿔 플레이어 반대쪽으로 날립니다.
+            function throwBlob() {
+                throws++;
+                const DIRT = world.id.dirt,
+                    DX = blob.x - player.x,
+                    DY = blob.y - (player.y - 1),
+                    D = Math.hypot(DX, DY) || 1;
+                for (const I of blob.cells) {
+                    if (world.g[I] === DIRT) {
+                        flingDirt(I, DX / D, DY / D, THROW_SPEED, 0.6);
+                    }
+                }
+                blob.cells = [];
+                blob.n = 0;
+            }
+            function useTools() {
+                const R = renderer.view,
+                    BOX = document.getElementById('c').getBoundingClientRect();
+                POINTER.x = R.x + ((POINTER.cx - BOX.left) / BOX.width) * R.w;
+                POINTER.y = R.y + ((POINTER.cy - BOX.top) / BOX.height) * R.h;
+                soil = Math.min(SOIL_MAX, soil + SOIL_REGEN);
+                if (player.dead) {
+                    return;
+                }
+                if (POINTER.soil) {
+                    POINTER.holding = true;
+                    // 마우스: 흙을 붙잡은 채 좌클릭을 새로 누르면 던집니다.
+                    if (POINTER.jet && !POINTER.prevJet && blob.cells.length >= BLOB_MIN_THROW) {
+                        throwBlob();
+                    }
+                    clearBlob();
+                    const GROW = Math.min(BLOB_GROW, Math.floor(soil), BLOB_MAX - blob.n);
+                    blob.n += Math.max(0, GROW);
+                    soil -= Math.max(0, GROW);
+                } else if (POINTER.holding) {
+                    POINTER.holding = false;
+                    // 터치(던지기 도구): 끌어모았다 놓으면 던집니다. 흙 도구는 그냥 놓으면 모래처럼 떨어집니다.
+                    if (POINTER.throw && blob.cells.length >= BLOB_MIN_THROW) {
+                        throwBlob();
+                    }
+                    blob.cells = [];
+                    blob.n = 0;
+                }
+                if (POINTER.jet && fuel > 0) {
+                    useJet();
+                } else if (player.ground) {
+                    fuel = Math.min(FUEL_MAX, fuel + 1.5);
+                }
+                POINTER.prevJet = POINTER.jet;
+            }
+            // 던져진 흙 발사체가 적에게 닿으면 속도에 비례해 피해를 줍니다(밀침은 엔진이 처리).
+            function dirtHits() {
+                for (const P of world.proj) {
+                    if (P.id !== world.id.dirt || P.hit) {
+                        continue;
+                    }
+                    for (const FOE of FOE_LIST()) {
+                        if (
+                            Math.abs(P.x + P.vx - FOE.x) <= FOE.hx + 0.5 &&
+                            Math.abs(P.y + P.vy - FOE.y) <= FOE.hy + 0.5
+                        ) {
+                            P.hit = true;
+                            FOE.hurt(DIRT_DMG * Math.min(2, Math.hypot(P.vx, P.vy) / THROW_SPEED));
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // ---- 소환
+            function boulder(x, y, vx, vy) {
+                const OLD = bridge.bodies.filter((h) => h.data.boulder);
+                if (OLD.length >= BOULDER_CAP) {
+                    bridge.removeBody(OLD[0]);
+                }
+                return bridge.addBox({
+                    x,
+                    y,
+                    w: 6,
+                    h: 6,
+                    density: 0.006,
+                    vx,
+                    vy,
+                    data: {
+                        type: 'stone',
+                        mat: 'stone',
+                        boulder: true,
+                        born: world.time,
+                        strength: 200,
+                        debris: 'rubble',
+                    },
+                });
+            }
+            function summon(kind) {
+                const S = SUMMONS[kind];
+                if (!S || player.dead || won || mana < S.cost || SUMMONED().length >= ALLY_CAP) {
+                    return;
+                }
+                mana -= S.cost;
+                const FACE = player.data.face || 1,
+                    X = Math.round(player.x + FACE * 14),
+                    GY = surface(X);
+                const OPTIONS = {
+                    fish: { x: X, y: GY + 2, w: 4, h: 3, hp: 14, accel: 0.1, mass: 0.02, color: '#ffa94d' },
+                    fire: {
+                        x: X,
+                        y: GY - 16,
+                        w: 4,
+                        h: 4,
+                        hp: 16,
+                        accel: 0.12,
+                        mass: 0.015,
+                        gravity: 0.01,
+                        maxFall: 0.4,
+                        color: '#ff6a2a',
+                    },
+                    acid: { x: X, y: GY - 4, w: 5, h: 4, hp: 20, accel: 0.07, mass: 0.03, color: '#9be84a' },
+                    golem: { x: X, y: GY - 6, w: 6, h: 8, hp: 60, accel: 0.08, mass: 0.12, color: '#8d8f99' },
+                    mage: {
+                        x: Math.round(player.x - FACE * 10),
+                        y: GY - 6,
+                        w: 3,
+                        h: 6,
+                        hp: 12,
+                        accel: 0.12,
+                        mass: 0.03,
+                        color: '#b58cff',
+                    },
+                };
+                if (kind === 'fish') {
+                    // 연못: 땅을 둥글게 파고 물을 채웁니다. 용암이 닿으면 돌과 증기가 됩니다.
+                    world.carve(X, GY + 4, 5);
+                    world.paint(X, GY + 4, 5, 'water');
+                }
+                const ALLY = new Body({
+                    ...OPTIONS[kind],
+                    data: { kind, team: 'ally', face: FACE, cd: 30, life: S.life },
+                });
+                world.addEntity(ALLY);
+            }
+
+            // ---- 인공지능
+            function moveToward(b, tx, tolerance) {
+                const DX = tx - b.x;
+                b.input.x = Math.abs(DX) > tolerance ? Math.sign(DX) : 0;
+                if (DX) {
+                    b.data.face = Math.sign(DX);
+                }
+            }
+            // 용암·산성은 아군도 다치게 하므로 맞는 자리 근처에 아군이 있으면 던지지 않습니다.
+            function lob(b, target, material, count) {
+                if (ALLIES().some((a) => a !== b && Math.abs(a.x - target.x) < 16)) {
+                    return false;
+                }
+                const DX = target.x - b.x,
+                    VX = Math.max(-3, Math.min(3, DX / 22));
+                for (let i = 0; i < count; i++) {
+                    world.spray(b.x, b.y - 1, VX + (world.rand() - 0.5) * 0.3, -1.1, material, {});
+                }
+                return true;
+            }
+            function thinkAlly(b) {
+                const D = b.data;
+                if (--D.life <= 0 || b.y > H + 20) {
+                    b.dead = true;
+                    return;
+                }
+                D.cd = Math.max(0, D.cd - 1);
+                D.throwCd = Math.max(0, (D.throwCd ?? 60) - 1);
+                b.input.x = 0;
+                b.input.jump = false;
+                const FOE = NEAREST(b, FOE_LIST(), 110),
+                    DX = FOE ? FOE.x - b.x : 0;
+                if (D.kind === 'fish') {
+                    if (!b.swim) {
+                        D.life -= 3; // 물 밖에서는 빨리 지칩니다.
+                    }
+                    if (FOE && D.cd === 0 && Math.abs(DX) < 55) {
+                        D.face = Math.sign(DX);
+                        for (let i = 0; i < 4; i++) {
+                            world.spray(b.x, b.y - 2, Math.sign(DX) * 3.4, -0.5 + (world.rand() - 0.5) * 0.4, 'water', {
+                                shooter: b,
+                                recoil: 0.4,
+                            });
+                        }
+                        D.cd = 70;
+                    }
+                } else if (D.kind === 'fire') {
+                    b.vy = Math.max(-0.6, Math.min(0.6, (GROUND - 20 - b.y) * 0.08)); // 떠 있기
+                    moveToward(b, FOE ? FOE.x - Math.sign(DX) * 28 : player.x - 10, 4);
+                    if (FOE && D.cd === 0 && Math.abs(DX) < 75) {
+                        D.cd = lob(b, FOE, 'lava', 3) ? 100 : 20;
+                    }
+                } else if (D.kind === 'acid') {
+                    moveToward(b, FOE ? FOE.x : player.x - 8, FOE ? 36 : 12);
+                    if (FOE && D.cd === 0 && Math.abs(DX) < 60) {
+                        D.cd = lob(b, FOE, 'acid', 4) ? 90 : 20;
+                    }
+                } else if (D.kind === 'golem') {
+                    moveToward(b, FOE ? FOE.x : player.x - 6, FOE ? 7 : 14);
+                    if (FOE && Math.abs(DX) < 9 && D.cd === 0) {
+                        FOE.impulse(Math.sign(DX) * 2.4, -1.4); // 밀치기: 충격량으로 날려 보냄
+                        FOE.hurt(2);
+                        D.cd = 40;
+                    } else if (FOE && Math.abs(DX) > 14 && Math.abs(DX) < 70 && D.throwCd === 0) {
+                        boulder(b.x + Math.sign(DX) * 6, b.y - 8, Math.max(-3, Math.min(3, DX / 20)), -1.6);
+                        D.throwCd = 150;
+                    }
+                    if (
+                        D.cd === 0 &&
+                        b.input.x &&
+                        !isSolid(Math.round(b.x + b.input.x * 6), Math.round(b.y + b.hy + 1))
+                    ) {
+                        // 앞에 땅이 없으면 돌 다리를 놓습니다(구덩이 건너기).
+                        for (let i = 0; i < 12; i++) {
+                            const X = Math.round(b.x + b.input.x * (3 + i)),
+                                Y = Math.round(b.y + b.hy);
+                            for (let t = 0; t < 2; t++) {
+                                if (world.get(X, Y + t) === 0) {
+                                    world.set(X, Y + t, 'stone');
+                                }
+                            }
+                        }
+                        D.cd = 60;
+                    }
+                } else if (D.kind === 'mage') {
+                    moveToward(b, player.x - (player.data.face || 1) * 12, 4);
+                    if (FOE && D.cd === 0 && Math.abs(DX) < 85) {
+                        for (let i = 0; i < 6; i++) {
+                            world.spray(b.x, b.y - 2, Math.sign(DX) * 4.2, -0.1 + (world.rand() - 0.5) * 0.3, 'air', {
+                                shooter: b,
+                                recoil: 0.25,
+                            });
+                        }
+                        D.face = Math.sign(DX);
+                        D.cd = 110;
+                    }
+                }
+            }
+            function touching(a, b) {
+                return Math.abs(a.x - b.x) < a.hx + b.hx + 0.5 && Math.abs(a.y - b.y) < a.hy + b.hy + 0.5;
+            }
+            function thinkFoe(b) {
+                const D = b.data;
+                if (b.y > H + 20) {
+                    b.dead = true;
+                    return;
+                }
+                D.cd = Math.max(0, D.cd - 1);
+                if (D.kind === 'nest') {
+                    if (D.cd === 0 && Math.abs(player.x - b.x) < 140 && FOE_LIST().length < 12) {
+                        makeFoe(world.rand() < 0.3 ? 'beetle' : 'slime', Math.round(b.x - 12));
+                        D.cd = 420;
+                    }
+                    return;
+                }
+                const T = FOES[D.kind],
+                    TARGET = NEAREST(b, ALLIES(), T.sight);
+                b.input.x = 0;
+                if (!TARGET) {
+                    return;
+                }
+                moveToward(b, TARGET.x, 1);
+                if (D.cd === 0 && touching(b, TARGET)) {
+                    TARGET.hurt(T.dmg);
+                    TARGET.impulse(Math.sign(TARGET.x - b.x) * 1.2, -0.8);
+                    D.cd = 40;
+                }
+            }
+
+            function update() {
+                mana = Math.min(MANA_MAX, mana + MANA_REGEN);
+                if (player.dead && respawnAt && world.time >= respawnAt) {
+                    respawnAt = 0;
+                    mana = Math.max(mana, 60);
+                    spawnPlayer();
+                }
+                if (!player.dead) {
+                    player.input.x = KEYS.r - KEYS.l;
+                    player.input.jump = !!KEYS.u;
+                    if (KEYS.r - KEYS.l) {
+                        player.data.face = KEYS.r - KEYS.l;
+                    }
+                }
+                useTools();
+                dirtHits();
+                for (const B of world.bodies.slice()) {
+                    if (B.dead || B === player) {
+                        continue;
+                    }
+                    if (B.data.team === 'ally') {
+                        thinkAlly(B);
+                    } else if (B.data.team === 'foe') {
+                        thinkFoe(B);
+                    }
+                }
+                for (const H_VALUE of bridge.bodies.slice()) {
+                    if (H_VALUE.y > H + 40 || world.time - (H_VALUE.data.born ?? world.time) > 1500) {
+                        bridge.removeBody(H_VALUE);
+                    }
+                }
+                world.tick();
+                if (POINTER.holding && !player.dead) {
+                    stampBlob();
+                }
+            }
+
+            // ---- 그리기
+            function drawActor(c, b, s) {
+                const X = b.px == null ? b.x : b.px + (b.x - b.px) * alpha,
+                    Y = b.py == null ? b.y : b.py + (b.y - b.py) * alpha,
+                    D = b.data;
+                c.save();
+                c.translate(X * s, Y * s);
+                c.fillStyle = b.color;
+                if (D.kind === 'player') {
+                    c.scale(D.face || 1, 1);
+                    c.fillStyle = '#4f8fe0';
+                    c.fillRect(-1.3 * s, -2 * s, 2.6 * s, 4 * s);
+                    c.fillStyle = '#f2d2b0';
+                    c.beginPath();
+                    c.arc(0, -3 * s, 1.5 * s, 0, 7);
+                    c.fill();
+                    c.fillStyle = '#d94a4a';
+                    c.fillRect(-2.2 * s, -1.5 * s, 1 * s, 3 * s);
+                } else if (D.kind === 'fish') {
+                    c.beginPath();
+                    c.ellipse(0, 0, 2.4 * s, 1.4 * s, 0, 0, 7);
+                    c.fill();
+                    c.beginPath();
+                    c.moveTo(-2.2 * s * (D.face || 1), 0);
+                    c.lineTo(-3.6 * s * (D.face || 1), -1.2 * s);
+                    c.lineTo(-3.6 * s * (D.face || 1), 1.2 * s);
+                    c.fill();
+                } else if (D.kind === 'fire') {
+                    c.beginPath();
+                    c.arc(0, 0, 2 * s, 0, 7);
+                    c.fill();
+                    c.fillStyle = '#ffd36a';
+                    c.beginPath();
+                    c.arc(0, 0.3 * s, 1 * s, 0, 7);
+                    c.fill();
+                } else if (D.kind === 'mage') {
+                    c.beginPath();
+                    c.moveTo(0, -3.6 * s);
+                    c.lineTo(1.8 * s, 3 * s);
+                    c.lineTo(-1.8 * s, 3 * s);
+                    c.fill();
+                } else if (D.kind === 'nest') {
+                    c.fillRect(-b.hx * s, -b.hy * s, b.hx * 2 * s, b.hy * 2 * s);
+                    c.fillStyle = '#511';
+                    c.fillRect(-2 * s, -1 * s, 4 * s, 4 * s);
+                } else {
+                    c.beginPath();
+                    c.ellipse(0, 0.4 * s, b.hx * s, b.hy * s, 0, Math.PI, 0);
+                    c.lineTo(b.hx * s, b.hy * s);
+                    c.lineTo(-b.hx * s, b.hy * s);
+                    c.fill();
+                }
+                if (b.hp < b.maxHp && !b.dead) {
+                    c.fillStyle = 'rgba(0,0,0,.55)';
+                    c.fillRect(-b.hx * s, (-b.hy - 2.4) * s, b.hx * 2 * s, 0.9 * s);
+                    c.fillStyle = D.team === 'foe' ? '#e5484d' : '#4ade80';
+                    c.fillRect(-b.hx * s, (-b.hy - 2.4) * s, b.hx * 2 * s * Math.max(0, b.hp / b.maxHp), 0.9 * s);
+                }
+                c.restore();
+            }
+            function drawExtra(c, s) {
+                for (const P of world.proj) {
+                    if (world.K[P.id] === 3) {
+                        continue;
+                    }
+                    const COLOR = world.PAL[P.id * 8];
+                    c.fillStyle = `rgb(${COLOR & 255},${(COLOR >> 8) & 255},${(COLOR >> 16) & 255})`;
+                    c.fillRect(Math.floor(P.x) * s, Math.floor(P.y) * s, s, s);
+                }
+                c.lineWidth = 0.4 * s;
+                c.fillStyle = '#8b8e99';
+                c.strokeStyle = '#50535c';
+                for (const H_VALUE of bridge.bodies) {
+                    for (const V of bridge.getPolys(H_VALUE)) {
+                        c.beginPath();
+                        V.forEach((point, i) =>
+                            i ? c.lineTo(point.x * s, point.y * s) : c.moveTo(point.x * s, point.y * s),
+                        );
+                        c.closePath();
+                        c.fill();
+                        c.stroke();
+                    }
+                }
+                if ((POINTER.jet || POINTER.soil) && !player.dead) {
+                    c.strokeStyle = POINTER.soil ? '#d9a35a' : '#ffffff';
+                    c.lineWidth = 0.3 * s;
+                    c.beginPath();
+                    c.arc(POINTER.x * s, POINTER.y * s, 2 * s, 0, 7);
+                    c.stroke();
+                }
+            }
+
+            // ---- 입력과 화면
+            const HUD = document.getElementById('hud'),
+                BAR = document.getElementById('manabar'),
+                BUTTONS = {};
+            for (const [KIND, S] of Object.entries(SUMMONS)) {
+                const BUTTON = document.createElement('button');
+                BUTTON.innerHTML = `${S.name}<br />${S.cost}`;
+                BUTTON.addEventListener('pointerdown', (e) => {
+                    e.preventDefault();
+                    summon(KIND);
+                });
+                BUTTON.addEventListener('contextmenu', (e) => e.preventDefault());
+                document.getElementById('summons').appendChild(BUTTON);
+                BUTTONS[KIND] = BUTTON;
+            }
+            const KEY_MAP = {
+                ArrowLeft: 'l',
+                KeyA: 'l',
+                ArrowRight: 'r',
+                KeyD: 'r',
+                ArrowUp: 'u',
+                KeyW: 'u',
+                Space: 'u',
+            };
+            addEventListener('keydown', (e) => {
+                const K = KEY_MAP[e.code];
+                if (K) {
+                    KEYS[K] = 1;
+                    e.preventDefault();
+                }
+                const INDEX = 'Digit1Digit2Digit3Digit4Digit5'.indexOf(e.code);
+                if (INDEX >= 0 && e.code.length === 6) {
+                    summon(Object.keys(SUMMONS)[INDEX / 6]);
+                }
+            });
+            addEventListener('keyup', (e) => {
+                const K = KEY_MAP[e.code];
+                if (K) {
+                    KEYS[K] = 0;
+                }
+            });
+            // 터치 버튼: 포인터를 버튼에 붙잡아 손가락이 밖으로 미끄러져도 뗄 때까지 눌린 상태를 유지합니다. 버튼마다 독립이라 이동+점프를 동시에 누를 수 있습니다.
+            for (const [ID, K] of [
+                ['tl', 'l'],
+                ['tr', 'r'],
+                ['tj', 'u'],
+            ]) {
+                const B = document.getElementById(ID),
+                    SET = (down) => {
+                        KEYS[K] = down ? 1 : 0;
+                        B.classList.toggle('down', down);
+                    };
+                B.addEventListener('pointerdown', (e) => {
+                    B.setPointerCapture(e.pointerId);
+                    SET(true);
+                    e.preventDefault();
+                });
+                for (const NAME of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+                    B.addEventListener(NAME, () => SET(false));
+                }
+                B.addEventListener('contextmenu', (e) => e.preventDefault());
+            }
+            // 캔버스 포인터: 손가락·마우스가 가리킨 곳으로 분사하거나 흙을 놓습니다.
+            const CANVAS = document.getElementById('c');
+            tool = 'jet';
+            for (const [ID, MODE] of [
+                ['toolJet', 'jet'],
+                ['toolSoil', 'soil'],
+                ['toolThrow', 'throw'],
+            ]) {
+                document.getElementById(ID).addEventListener('pointerdown', (e) => {
+                    e.preventDefault();
+                    tool = MODE;
+                    document.getElementById('toolJet').classList.toggle('on', MODE === 'jet');
+                    document.getElementById('toolSoil').classList.toggle('on', MODE === 'soil');
+                    document.getElementById('toolThrow').classList.toggle('on', MODE === 'throw');
+                });
+            }
+            // 마우스는 buttons 비트로 좌(분사)·우(흙)를 동시에 누를 수 있고, 누르지 않아도 조준점은 따라갑니다. 터치는 고른 도구 하나를 씁니다.
+            const SYNC_MOUSE = (e) => {
+                POINTER.cx = e.clientX;
+                POINTER.cy = e.clientY;
+                POINTER.jet = (e.buttons & 1) === 1;
+                POINTER.soil = (e.buttons & 2) === 2;
+                POINTER.throw = false;
+            };
+            CANVAS.addEventListener('pointerdown', (e) => {
+                CANVAS.setPointerCapture(e.pointerId);
+                e.preventDefault();
+                if (e.pointerType === 'mouse') {
+                    SYNC_MOUSE(e);
+                    return;
+                }
+                POINTER.id = e.pointerId;
+                POINTER.cx = e.clientX;
+                POINTER.cy = e.clientY;
+                POINTER.jet = tool === 'jet';
+                POINTER.soil = tool === 'soil' || tool === 'throw';
+                POINTER.throw = tool === 'throw';
+            });
+            CANVAS.addEventListener('pointermove', (e) => {
+                if (e.pointerType === 'mouse') {
+                    SYNC_MOUSE(e);
+                } else if (e.pointerId === POINTER.id) {
+                    POINTER.cx = e.clientX;
+                    POINTER.cy = e.clientY;
+                }
+            });
+            for (const NAME of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+                CANVAS.addEventListener(NAME, (e) => {
+                    if (e.pointerType === 'mouse') {
+                        SYNC_MOUSE(e);
+                    } else if (e.pointerId === POINTER.id) {
+                        POINTER.id = null;
+                        POINTER.jet = false;
+                        POINTER.soil = false;
+                    }
+                });
+            }
+            CANVAS.addEventListener('contextmenu', (e) => e.preventDefault());
+            document.getElementById('reset').onclick = build;
+
+            let last = 0,
+                acc = 0,
+                frames = 0;
+            function frame(t) {
+                if (!last) {
+                    last = t;
+                }
+                acc += Math.min(100, t - last);
+                last = t;
+                while (acc >= DT) {
+                    update();
+                    acc -= DT;
+                }
+                alpha = acc / DT;
+                renderer.setView({
+                    x: Math.max(0, Math.min(W - VIEW_W, Math.round(player.x - VIEW_W / 2))),
+                    y: H - VIEW_H,
+                    w: VIEW_W,
+                    h: VIEW_H,
+                });
+                renderer.draw(drawActor, drawExtra);
+                if (++frames % 6 === 0) {
+                    HUD.textContent = won
+                        ? `둥지를 부쉈습니다! 처치 ${kills}`
+                        : player.dead
+                          ? '쓰러졌습니다. 곧 되살아납니다'
+                          : `HP ${Math.max(0, player.hp) | 0} · 마나 ${mana | 0} · 소환수 ${SUMMONED().length} · 연료 ${fuel | 0} · 흙 ${soil | 0} · 처치 ${kills}`;
+                    BAR.style.width = `${(mana / MANA_MAX) * 100}%`;
+                    for (const [KIND, S] of Object.entries(SUMMONS)) {
+                        BUTTONS[KIND].classList.toggle('off', mana < S.cost);
+                    }
+                }
+                requestAnimationFrame(frame);
+            }
+
+            build();
+            requestAnimationFrame(frame);
+            Object.defineProperty(window, 'summonExample', {
+                get() {
+                    return {
+                        diagnostics: {
+                            tick: world.time,
+                            player: { x: player.x, y: player.y, hp: player.hp },
+                            mana,
+                            fuel,
+                            soil,
+                            aim: { x: POINTER.x, y: POINTER.y },
+                            blob: blob.cells.length,
+                            throws,
+                            dirt: world.g.reduce((n, id) => n + (id === world.id.dirt ? 1 : 0), 0),
+                            bodies: bridge.bodies.map((unit) => ({
+                                x: unit.x,
+                                y: unit.y,
+                                vx: unit.vx,
+                                vy: unit.vy,
+                                mat: unit.data.mat,
+                            })),
+                            allies: SUMMONED().length,
+                            foes: FOE_LIST().length,
+                            kills,
+                            won,
+                        },
+                    };
+                },
+            });
+        </script>
+    </body>
+</html>

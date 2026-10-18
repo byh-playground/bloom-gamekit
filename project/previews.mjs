@@ -9,6 +9,7 @@ import { MATTER_URL } from '../modules/pixel-physics/dependencies.js';
 export const EXAMPLES = [
     ['pixel-physics', 'modules/pixel-physics/examples/index.html'],
     ['pixel-physics-open-world', 'modules/pixel-physics/examples/open-world.html'],
+    ['pixel-physics-summon', 'modules/pixel-physics/examples/summon.html'],
     ['interpolation', 'modules/interpolation/examples/index.html'],
     ['interpolation-frame', 'modules/interpolation/examples/frame.html'],
     ['simloop-input-preview', 'modules/simloop/examples/input-preview/index.html'],
