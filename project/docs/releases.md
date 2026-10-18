@@ -1,3 +1,7 @@
+## v0.12.0 (2026-10-18)
+
+Adds a fixed-work-unit scheduler for resumable non-urgent tasks. It supports bounded per-task quanta, deterministic 4:2:1 priority rotation, duplicate-key coalescing, owner cancellation, and opt-in numeric diagnostics. Wall-clock timing never affects scheduling. The fixed browser scenario covers budget limits, resumption, fairness, cancellation, waiting-age counters, and FrameMetrics integration.
+
 ## v0.11.8 (2026-10-17)
 
 Vector asset players accept a caller-owned `Set` of excluded part IDs on each `draw()` call.
@@ -120,7 +124,7 @@ import { PresentationRuntime } from 'https://cdn.jsdelivr.net/gh/byh-playground/
 
 ## 실행 HTML 프리뷰
 
-[프리뷰 목록](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/index.html)은 9개 기존 예제를 모두 포함합니다. [previews.mjs](../previews.mjs)의 EXAMPLES가 목록입니다. 원본 예제는 소유 모듈 아래에 있으며 API 설명만 있는 모듈에 빈 데모를 만들지 않습니다.
+[프리뷰 목록](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/index.html)은 10개 기존 예제를 모두 포함합니다. [previews.mjs](../previews.mjs)의 EXAMPLES가 목록입니다. 원본 예제는 소유 모듈 아래에 있으며 API 설명만 있는 모듈에 빈 데모를 만들지 않습니다.
 
 기존 html-share 문서처럼 HTML Preview를 사용합니다. 원본 ESM 예제를 직접 열면 상대 import와 module 실행이 실패하므로 `npm run build:previews`가 각 예제를 독립 IIFE script가 포함된 HTML 하나로 묶습니다. 외부 SDK import·CDN·공유 chunk가 없고 예제 간 링크는 공개 프리뷰 URL로 변환합니다. 소스 보기 링크는 GitHub 파일로 연결합니다. `dist/*.js`의 독립 ESM 계약과 프리뷰 빌드는 별개입니다.
 

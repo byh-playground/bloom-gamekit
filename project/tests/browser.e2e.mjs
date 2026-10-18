@@ -1,4 +1,5 @@
 import { exerciseFrameMetrics } from '../../modules/debug-tools/tests/frame-metrics.browser.mjs';
+import { exerciseBudgetedScheduler } from '../../modules/work-scheduler/tests/work-scheduler.browser.mjs';
 /* global demo, inputPreviewDemo, renderProbe */
 import { runFrameChecks } from '../../modules/interpolation/tests/presentation-frame.browser.js';
 import { exerciseVectorAssets } from '../../modules/vector-assets/tests/runtime.browser.mjs';
@@ -1155,6 +1156,7 @@ try {
         ['device', exerciseWebGLDevice],
         ['vectorRenderer', exerciseVectorRenderer],
         ['frameMetrics', exerciseFrameMetrics],
+        ['workScheduler', exerciseBudgetedScheduler],
         ['reusableMeshes', (p) => exerciseReusableMeshes(p)],
         ['fontAssets', (p) => exerciseFontAssetLoader(p, `http://127.0.0.1:${SERVER.address().port}`)],
     ]) {
