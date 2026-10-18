@@ -43,7 +43,7 @@
     },
     {
       "file": "rollback.js",
-      "sha256": "6277879afa9ff7723bbc91805b40d4740ad9026cfe46cbbc4c67bb67ca9511a9"
+      "sha256": "038888405e75a888649327826caa8a32018056c0c6174edc3a93420716f2ad12"
     },
     {
       "file": "camera.js",
@@ -76,6 +76,14 @@
     {
       "file": "object-pool.js",
       "sha256": "4291d6d90f23b47024153e2d2db9e1af7f8b78586c8c0ee279621d42dc54f10b"
+    },
+    {
+      "file": "pixel-physics.js",
+      "sha256": "00bba9cef8527a82d89bc2ed1c4c3762994b7848ee54da10f3af5c011e274ae9"
+    },
+    {
+      "file": "pixel-physics-matter.js",
+      "sha256": "4f8c0c8c0507dc2d1b77a263b971f7a17bda01d6178fe3a5763e2016f6427a50"
     }
   ],
   "assets": [
