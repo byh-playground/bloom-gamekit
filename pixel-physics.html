@@ -87,6 +87,47 @@
                 border-radius: 6px;
                 padding: 6px 10px;
                 cursor: pointer;
+                touch-action: manipulation;
+                user-select: none;
+                -webkit-user-select: none;
+                -webkit-touch-callout: none;
+                -webkit-tap-highlight-color: transparent;
+            }
+            #pad {
+                display: none; /* 터치 기기에서만 보입니다(키보드가 있으면 필요 없음). */
+                justify-content: space-between;
+                gap: 10px;
+                margin: 10px 0;
+            }
+            #pad > div {
+                display: flex;
+                gap: 10px;
+            }
+            #pad button {
+                min-width: 84px;
+                min-height: 68px;
+                font-size: 22px;
+                touch-action: none; /* 누르고 있는 동안 스크롤·확대로 넘어가지 않게 합니다. */
+            }
+            #pad button.down {
+                background: var(--fg);
+                color: var(--bg);
+            }
+            @media (hover: none) and (pointer: coarse) {
+                #pad {
+                    display: flex;
+                }
+                .bar button {
+                    min-height: 44px;
+                }
+            }
+            details {
+                margin: 10px 0;
+            }
+            summary {
+                color: var(--mut);
+                cursor: pointer;
+                padding: 6px 0;
             }
             button.on {
                 border-color: var(--fg);
@@ -125,23 +166,31 @@
     <body>
         <main>
             <h1>PixelPhysics 라이브러리 + 플랫포머 예제</h1>
-            <p>
-                이동 ← → / A D, 점프·수영 Space / W (짧게 누르면 낮게, 길게 누르면 높게). 도구 1 곡괭이, 2 폭탄, 3 유체
-                발사(다시 누르면 물/기름/산성/용암/공기/증기/연기 전환 — 기체는 제트팩: 아래로 뿜으면 떠오르고 연료가
-                닳으며 땅에서 충전됨, 마우스 방향으로 쏘고 캐릭터가 그쪽을 보며, 유체 밀도에 비례한 반발력으로 뒤로
-                밀리고 맞은 상자·몬스터도 밀려남), 4 사각형 발사(다시 누르면 나무/돌/철 전환) — 상자는 밀고 올라탈 수
-                있고, 빠르게 떨어지거나 날아오는 상자에 맞으면 피해를 입습니다. 물에 뜬 상자 위에서는 내 체중에
-                가라앉기도 합니다. 상자가 물에 들어가면 수면이 오르고, 모래는 상자 위에 쌓여 무게로 상자를 누릅니다(물에
-                뜬 상자에 모래를 쌓으면 가라앉음) — 캔버스를 클릭하거나 드래그. 캐릭터와 몬스터는 격자(저해상도)가
-                아니라 고해상도 오버레이 위에 벡터로 그립니다. 열쇠를 먹고 문(노란색) 앞으로 가면 열립니다. 오른쪽 끝
-                깃발이 목표입니다.
-            </p>
+            <p>이동 ← → / A D, 점프·수영 Space / W, 캔버스를 클릭·드래그해 도구를 씁니다(터치는 아래 버튼).</p>
             <div class="stage"><canvas id="c"></canvas><canvas id="o"></canvas></div>
+            <div id="pad">
+                <div><button id="tl">◀</button><button id="tr">▶</button></div>
+                <button id="tj">▲ 점프</button>
+            </div>
             <div class="bar" id="tools"></div>
             <div class="bar">
                 <button id="reset">다시 시작</button><button id="dbg" title="G">디버그 오버레이</button
                 ><button id="det">결정성 검사</button><button id="bench">벤치마크</button><span id="hud"></span>
             </div>
+            <details>
+                <summary>도구와 규칙 설명</summary>
+                <p>
+                    이동 ← → / A D, 점프·수영 Space / W (짧게 누르면 낮게, 길게 누르면 높게). 도구 1 곡괭이, 2 폭탄, 3
+                    유체 발사(다시 누르면 물/기름/산성/용암/공기/증기/연기 전환 — 기체는 제트팩: 아래로 뿜으면 떠오르고
+                    연료가 닳으며 땅에서 충전됨, 마우스 방향으로 쏘고 캐릭터가 그쪽을 보며, 유체 밀도에 비례한
+                    반발력으로 뒤로 밀리고 맞은 상자·몬스터도 밀려남), 4 사각형 발사(다시 누르면 나무/돌/철 전환) —
+                    상자는 밀고 올라탈 수 있고, 빠르게 떨어지거나 날아오는 상자에 맞으면 피해를 입습니다. 물에 뜬 상자
+                    위에서는 내 체중에 가라앉기도 합니다. 상자가 물에 들어가면 수면이 오르고, 모래는 상자 위에 쌓여
+                    무게로 상자를 누릅니다(물에 뜬 상자에 모래를 쌓으면 가라앉음) — 캔버스를 클릭하거나 드래그. 캐릭터와
+                    몬스터는 격자(저해상도)가 아니라 고해상도 오버레이 위에 벡터로 그립니다. 열쇠를 먹고 문(노란색)
+                    앞으로 가면 열립니다. 오른쪽 끝 깃발이 목표입니다.
+                </p>
+            </details>
             <div id="stat"></div>
             <pre id="out"></pre>
         </main>
@@ -4065,6 +4114,25 @@ globalThis.__bloomPreviewImports = Object.fromEntries(["https://cdn.jsdelivr.net
       KEYS[K] = 0;
     }
   });
+  for (const [ID, K] of [
+    ["tl", "l"],
+    ["tr", "r"],
+    ["tj", "u"]
+  ]) {
+    const B_VALUE = document.getElementById(ID), SET = (down) => {
+      KEYS[K] = down ? 1 : 0;
+      B_VALUE.classList.toggle("down", down);
+    };
+    B_VALUE.addEventListener("pointerdown", (e) => {
+      B_VALUE.setPointerCapture(e.pointerId);
+      SET(true);
+      e.preventDefault();
+    });
+    for (const NAME of ["pointerup", "pointercancel", "lostpointercapture"]) {
+      B_VALUE.addEventListener(NAME, () => SET(false));
+    }
+    B_VALUE.addEventListener("contextmenu", (e) => e.preventDefault());
+  }
   var CV = document.getElementById("c");
   var MOUSE = { x: 0, y: 0, down: false };
   function mpos(e) {
