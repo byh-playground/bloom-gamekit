@@ -1,3 +1,5 @@
+import { GRID_BACKGROUND, createGridShade, writeGridPixels } from './pixels.js';
+
 class PixelRenderer {
     constructor(canvas, world, { overlay = null } = {}) {
         this.ov = overlay;
@@ -7,22 +9,12 @@ class PixelRenderer {
         canvas.height = world.h;
         this.img = this.ctx.createImageData(world.w, world.h);
         this.px = new Uint32Array(this.img.data.buffer);
-        this.sh = new Uint8Array(world.w * world.h);
-        for (let i = 0; i < this.sh.length; i++) {
-            this.sh[i] = ((i * 2654435761) >>> 0) % 8;
-        }
-        this.bg = (255 << 24) | (26 << 16) | (22 << 8) | 20;
+        this.sh = createGridShade(world.w * world.h);
+        this.bg = GRID_BACKGROUND;
     }
     draw(drawBody, extra) {
-        const W = this.world,
-            { g: G, life: LIFE } = W;
-        if (W.dirty) {
-            W._compile();
-        }
-        for (let i = 0; i < G.length; i++) {
-            const T = G[i];
-            this.px[i] = T ? W.PAL[T * 8 + (W.FL[T] ? (LIFE[i] + i) & 7 : this.sh[i])] : this.bg;
-        }
+        const W = this.world;
+        writeGridPixels(W, this.px, this.sh, this.bg);
         this.ctx.putImageData(this.img, 0, 0);
         const F = drawBody || this.drawBody;
         if (this.ov) {

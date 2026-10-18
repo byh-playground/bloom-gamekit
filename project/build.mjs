@@ -9,6 +9,7 @@ const SDK_DEPENDENCIES = {
     'vector-assets-loader': ['vector-assets'],
     deterministic: ['_rollback-shared'],
     simloop: [],
+    'pixel-physics': ['deterministic'],
     transport: ['_rollback-shared', 'deterministic'],
     replay: ['_rollback-shared', 'deterministic'],
     rollback: ['_rollback-shared', 'deterministic'],
