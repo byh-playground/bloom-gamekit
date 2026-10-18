@@ -30,6 +30,10 @@
       "sha256": "c25a8f7f4999e4fe8beb6b08167fa4d0934c34098db2bf912335e81db53c4ef8"
     },
     {
+      "file": "work-scheduler.js",
+      "sha256": "d3d3ba0deb261a2a17da2ef6950450d45b28bc4870208037d0833b01ad010a25"
+    },
+    {
       "file": "transport.js",
       "sha256": "f4fc7d3eab8d77ad4437ca3de37948ce2e1c313c3525ab2ee00a28000ece41b2"
     },
@@ -39,7 +43,7 @@
     },
     {
       "file": "rollback.js",
-      "sha256": "8b3de4c43eeda5f130ad2e597ef2056fabbd510d2eee0f17e35e0eb8b4b7348e"
+      "sha256": "207a4cd98355b8065af2d4581d3042c6f5fcdfcd8d5573cc8822e5367ea7468b"
     },
     {
       "file": "camera.js",
