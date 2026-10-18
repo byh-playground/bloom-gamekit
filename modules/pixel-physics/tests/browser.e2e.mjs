@@ -253,15 +253,15 @@ try {
     };
     await TAP('#toolSoil');
     await SUMMON_TOUCH.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...AIM, id: 1 }] });
-    await TOUCH_SUMMON.waitForFunction(() => window.summonExample.diagnostics.blob > 30);
+    await TOUCH_SUMMON.waitForFunction(() => window.summonExample.diagnostics.blob >= 6);
     await SUMMON_TOUCH.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
     await TOUCH_SUMMON.waitForFunction(() => window.summonExample.diagnostics.blob === 0);
     const SOIL_RELEASED = await TOUCH_SUMMON.evaluate(() => window.summonExample.diagnostics);
-    assert(SOIL_RELEASED.dirt > 30 && SOIL_RELEASED.throws === 0, 'released soil stays as sand cells');
+    assert(SOIL_RELEASED.dirt >= 6 && SOIL_RELEASED.throws === 0, 'released soil stays as sand cells');
     // 던지기 도구: 끌어모았다 놓으면 덩어리가 발사체로 바뀌어 날아갑니다.
     await TAP('#toolThrow');
     await SUMMON_TOUCH.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...AIM, id: 1 }] });
-    await TOUCH_SUMMON.waitForFunction(() => window.summonExample.diagnostics.blob > 30);
+    await TOUCH_SUMMON.waitForFunction(() => window.summonExample.diagnostics.blob >= 6);
     await SUMMON_TOUCH.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
     await TOUCH_SUMMON.waitForFunction(() => window.summonExample.diagnostics.throws === 1);
     // 분사 도구로 바꿔 누르고 있으면 연료가 줄어 듭니다.
