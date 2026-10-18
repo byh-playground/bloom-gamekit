@@ -454,7 +454,7 @@
                         KEY.dead = true;
                     }
                 };
-                WORLD.bodies.push(KEY);
+                WORLD.addEntity(KEY);
                 const GOAL = new Body({
                     x: 192,
                     y: 95,
@@ -469,7 +469,7 @@
                         won = true;
                     }
                 };
-                WORLD.bodies.push(GOAL);
+                WORLD.addEntity(GOAL);
                 [165, 172, 186].forEach(mob);
                 WORLD.rect(34, 90, 37, 99, 'stone');
                 WORLD.rect(84, 92, 86, 99, 'wood'); // 발사체로 깎아볼 벽
@@ -518,7 +518,7 @@
                         respawnAt = WORLD.time + 90;
                     },
                 });
-                WORLD.bodies.push(player);
+                WORLD.addEntity(player);
             }
             function mob(x) {
                 const B_VALUE = new Body({
@@ -541,7 +541,7 @@
                     }
                 };
                 B_VALUE.onDeath = () => WORLD.paint(Math.round(B_VALUE.x), Math.round(B_VALUE.y), 2, 'smoke');
-                WORLD.bodies.push(B_VALUE);
+                WORLD.addEntity(B_VALUE);
             }
 
             // --- 입력
@@ -1065,7 +1065,7 @@
                 B.addJoint({ a: PL[0], ax: -1.6, ay: 0, bx: 168.4, by: 60 });
                 B.addJoint({ a: PL[0], ax: 1.6, ay: 0, b: PL[1], bx: -1.6, by: 0 });
                 const E = new Body({ x: 20, y: 96, w: 3, h: 6, mass: 0.035, hp: 1e9 });
-                W_VALUE.bodies.push(E);
+                W_VALUE.addEntity(E);
                 return { w: W_VALUE, B, e: E };
             }
             function simRun(sValue, f, t) {

@@ -2,7 +2,12 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const SUITES = {
-    'pixel-physics': ['project/previews.mjs', 'modules/pixel-physics/tests/browser.e2e.mjs'],
+    'pixel-physics': [
+        'project/previews.mjs',
+        'modules/pixel-physics/tests/rollback.mjs',
+        'modules/pixel-physics/tests/browser.e2e.mjs',
+        'modules/pixel-physics/tests/rendering.e2e.mjs',
+    ],
     previews: ['project/tests/previews.mjs'],
     core: [
         'modules/vector-assets/tests/compiler.mjs',

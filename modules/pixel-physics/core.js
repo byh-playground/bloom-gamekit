@@ -15,7 +15,7 @@ import Matter from 'matter-js';
  *                reactions:[{with:name|[names], chance, self:name, other:name}],  // 선언형 반응
  *                react(ctx){...return true}});                         // 코드형 반응(콜백)
  *  world.defineStatus(name,{damage, emit:{material,chance}, clearedBy:[materials], tick(body,world)});
- *  world.bodies.push(new Body({shape:'box'|'circle', x,y,w,h,r, sensor, onContact, onOverlap, onDeath}));
+ *  world.addEntity(new Body({shape:'box'|'circle', x,y,w,h,r, sensor, onContact, onOverlap, onDeath}));
  *  world.tick();  world.explode(x,y,r);  world.carve(x,y,r);  world.paint(x,y,r,mat);  world.rect(...)
  *  new PixelRenderer(canvas, world, {overlay: 고해상도 canvas}).draw(drawBodyFn?)
  *     // drawBodyFn(ctx, body, scale): 개체를 화면 해상도로 직접 그리는 훅 (scale = 화면px / 격자셀)
@@ -168,6 +168,7 @@ class PixelWorld {
         this.mats = [{ name: 'empty', kind: 'solid', color: [0, 0, 0], reactions: [] }];
         this.id = { empty: 0 };
         this.bodies = [];
+        this.eseq = 1; // 엔티티 식별자 발급기: 바이트 snapshot이 엔티티를 가리키는 키
         this.statuses = {};
         this.flag = 1;
         this.dir = 0;
@@ -1410,6 +1411,15 @@ class PixelWorld {
         this.bridge.removeBody(h);
         this.emit('shatter', { x: h.x, y: h.y, body: h });
     }
+    addEntity(body) {
+        // 엔티티를 월드에 등록하고 snapshot용 식별자 eid를 부여합니다. 발급 순서는 시뮬레이션 호출 순서이므로 결정적입니다.
+        if (body.eid !== undefined) {
+            throw new Error('이미 등록된 엔티티입니다.');
+        }
+        body.eid = this.eseq++;
+        this.bodies.push(body);
+        return body;
+    }
     /* ---- 스냅샷 / 해시 (롤백, 리플레이, 락스텝 디싱크 검출) ---- */
     snapshot() {
         const S_VALUE = {
@@ -1423,6 +1433,7 @@ class PixelWorld {
             seed: this.seed,
             time: this.time,
             pseq: this.pseq,
+            eseq: this.eseq,
             supDirty: this.supDirty,
             supT: this._supT,
             proj: this.proj.map((p) => ({ ...p })),
@@ -1445,6 +1456,7 @@ class PixelWorld {
         this.seed = s.seed;
         this.time = s.time;
         this.pseq = s.pseq;
+        this.eseq = s.eseq;
         this.supDirty = s.supDirty;
         this._supT = s.supT;
         this.proj = s.proj.map((p) => ({ ...p }));
@@ -2417,6 +2429,11 @@ class MatterBridge extends PhysicsBridge {
             jseq: this.jseq,
             bs: this.bodies.map((h) => ({
                 h,
+                w: h.w,
+                hh: h.h,
+                cells: h.cells, // 마스크 강체의 셀 집합(생성 뒤 불변)과 무게중심 격자 좌표
+                ox: h.ox,
+                oy: h.oy,
                 desc: h.desc,
                 pins: h.pins.map((p) => ({ ...p })),
                 st: ST_VALUE(h.body),
@@ -2428,6 +2445,7 @@ class MatterBridge extends PhysicsBridge {
                 j,
                 a: j.a,
                 b: j.b,
+                d: { ax: j.ax, ay: j.ay, bx: j.bx, by: j.by, len: j.len, stiff: j.stiff, damp: j.damp },
                 k: {
                     ax: j.c.pointA.x,
                     ay: j.c.pointA.y,
@@ -2471,6 +2489,13 @@ class MatterBridge extends PhysicsBridge {
                 Q = R_VALUE.st;
             H_VALUE.pins = R_VALUE.pins;
             H_VALUE._cons = [];
+            H_VALUE.w = R_VALUE.w;
+            H_VALUE.h = R_VALUE.hh;
+            if (R_VALUE.cells) {
+                H_VALUE.cells = R_VALUE.cells;
+                H_VALUE.ox = R_VALUE.ox;
+                H_VALUE.oy = R_VALUE.oy;
+            }
             this._make(H_VALUE, R_VALUE.desc);
             const B_VALUE = H_VALUE.body;
             PUT(B_VALUE, Q);
@@ -2517,6 +2542,7 @@ class MatterBridge extends PhysicsBridge {
         this.joints = [];
         for (const R_VALUE of s.js) {
             const J = R_VALUE.j;
+            Object.assign(J, R_VALUE.d);
             J.a = R_VALUE.a;
             J.b = R_VALUE.b;
             this._joint(J);
@@ -2625,6 +2651,9 @@ class Body {
             delete this.status[K_VALUE];
         }
         Object.assign(this.status, STATUS);
+        for (const K_VALUE in this.input) {
+            delete this.input[K_VALUE];
+        }
         Object.assign(this.input, INPUT);
         for (const K_VALUE in this.data) {
             delete this.data[K_VALUE];
