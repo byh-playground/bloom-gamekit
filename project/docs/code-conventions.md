@@ -34,7 +34,7 @@
 - 불가피한 개별 규칙 예외는 해당 줄과 이유에 한정하며 사용하지 않는 disable 지시도 오류입니다.
 - `eslint.config.js`의 `CORE_FILES`는 순수 runtime 소유자만 명시합니다. 이 파일에서 DOM·localStorage와 rendering/HUD/navigation/DOM/storage adapter import를 금지합니다. 동적 import와 require도 같은 경계를 검사합니다.
 - rendering, input DOM, audio, navigation, transport/session의 persistence, 브라우저 예제는 실제 adapter이므로 순수 core 규칙을 무차별 적용하지 않습니다. simloop의 loop는 visibility/rAF adapter이며 deadline·rate·input-preview는 순수 core 검사 대상입니다.
-- 기존 빌드의 모듈별 소스·dependency 허용 목록과 외부 import 없는 단일 bundle 검사를 유지합니다.
+- 빌드의 모듈별 소스·dependency 허용 목록을 유지합니다. PixelPhysics는 소유 모듈에 선언한 Matter 웹 URL import만 허용하며, 나머지는 외부 import 없는 단일 bundle을 검사합니다.
 
 ## 생성 코드와 검증
 

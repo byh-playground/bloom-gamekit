@@ -4,9 +4,12 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { chromium } from 'playwright';
+import { MATTER_URL } from '../dependencies.js';
 
 const ROOT = resolve(fileURLToPath(new URL('../../../', import.meta.url)));
 const ERRORS = [];
+const MODULE_REQUESTS = [];
+const MATTER_REQUESTS = [];
 const REPORT = { status: 'FAIL', scenarios: [] };
 const SERVER = createServer(async (req, res) => {
     try {
@@ -32,14 +35,27 @@ try {
     REPORT.browser = browser.version();
     const PAGE = await browser.newPage({ viewport: { width: 1100, height: 900 } });
     PAGE.on('pageerror', (error) => ERRORS.push(error.message));
+    PAGE.on('request', (request) => {
+        if (request.url() === MATTER_URL) {
+            MATTER_REQUESTS.push(request.url());
+        }
+        const PATH = new URL(request.url()).pathname;
+        if (PATH.startsWith('/dist/') && PATH.endsWith('.js')) {
+            MODULE_REQUESTS.push(PATH);
+        }
+    });
     await PAGE.route('**/*', (route) =>
         route.request().url().startsWith(`http://127.0.0.1:${SERVER.address().port}/`) ||
-        route.request().url().startsWith('file:')
+        route.request().url() === MATTER_URL
             ? route.continue()
             : route.abort(),
     );
     await PAGE.goto(`http://127.0.0.1:${SERVER.address().port}/modules/pixel-physics/examples/index.html`);
     await PAGE.waitForFunction(() => window.pixelPhysicsExample?.diagnostics.tick > 10);
+    assert.deepEqual(MODULE_REQUESTS, ['/dist/pixel-physics.js']);
+    assert.deepEqual(MATTER_REQUESTS, [MATTER_URL]);
+    REPORT.matterUrl = MATTER_URL;
+    REPORT.scenarios.push('single GameKit module imports Matter from its declared web URL');
     const START = await PAGE.evaluate(() => window.pixelPhysicsExample.diagnostics);
     await PAGE.keyboard.down('d');
     await PAGE.waitForFunction((tick) => window.pixelPhysicsExample.diagnostics.tick > tick + 25, START.tick);
@@ -70,19 +86,34 @@ try {
     await PAGE.waitForFunction(() => document.querySelector('#hud').textContent.includes('HP'));
     await PAGE.close();
 
-    // Built preview must run as a single file with all network requests blocked.
+    // A local preview still loads Matter from the web; its engine is not embedded.
     const PREVIEW = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true });
     PREVIEW.on('pageerror', (error) => ERRORS.push(error.message));
     await PREVIEW.route('**/*', (route) =>
-        route.request().url().startsWith('file:') ? route.continue() : route.abort(),
+        route.request().url().startsWith('file:') || route.request().url() === MATTER_URL
+            ? route.continue()
+            : route.abort(),
     );
     await PREVIEW.goto(pathToFileURL(resolve(ROOT, 'dist/previews/pixel-physics.html')).href);
     await PREVIEW.waitForFunction(() => window.pixelPhysicsExample?.diagnostics.tick > 10);
     assert(await PREVIEW.locator('#c').isVisible());
     await PREVIEW.click('#dbg');
     await PREVIEW.screenshot({ path: resolve(ROOT, 'test-results/pixel-physics-mobile.png'), fullPage: true });
-    REPORT.scenarios.push('network-blocked standalone HTML at mobile viewport');
+    REPORT.scenarios.push('file HTML loads external Matter at mobile viewport');
     assert.deepEqual(ERRORS, []);
+    const BLOCKED = await browser.newPage();
+    let blockedMatter = false;
+    await BLOCKED.route('**/*', (route) => {
+        if (route.request().url() === MATTER_URL) {
+            blockedMatter = true;
+            return route.abort();
+        }
+        return route.request().url().startsWith('file:') ? route.continue() : route.abort();
+    });
+    await BLOCKED.goto(pathToFileURL(resolve(ROOT, 'dist/previews/pixel-physics.html')).href);
+    assert(blockedMatter);
+    assert(await BLOCKED.evaluate(() => window.pixelPhysicsExample === undefined));
+    REPORT.scenarios.push('blocked Matter web URL prevents startup with no embedded fallback');
     REPORT.status = 'PASS';
 } catch (error) {
     REPORT.error = error.stack;

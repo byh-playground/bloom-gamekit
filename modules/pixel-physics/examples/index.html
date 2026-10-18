@@ -154,7 +154,6 @@
                 installDeterministicTrig,
                 hyp,
             } from '/dist/pixel-physics.js';
-            import { Matter } from '/dist/pixel-physics-matter.js';
             /* =====================================================================
              * 예제: 플랫포머 (라이브러리 사용 방식 시연 — 게임 로직은 전부 이 아래에만 있음)
              * ===================================================================== */
@@ -315,10 +314,10 @@
             }
             defineAll(WORLD);
 
-            // --- 강체(Matter.js): 별도 독립 번들의 구현을 주입
+            // --- 강체: PixelPhysics에 포함된 고정 Matter.js 사용
             WORLD.enableCollapse(); // 지형 붕괴 켜기 (끊긴 덩어리는 강체로 떨어지고, 쉬면 다시 굳음)
             installDeterministicTrig(); // 락스텝 대비: Math.sin/cos를 + - * 만 쓰는 구현으로 교체 (전역)
-            const BRIDGE = new MatterBridge(Matter);
+            const BRIDGE = new MatterBridge();
             WORLD.attachBridge(BRIDGE);
             const TYPES = {
                 wood: { density: 0.0015, color: '#b07a3c', edge: '#6b4a22', strength: 30 },
@@ -1027,7 +1026,7 @@
                 const W_VALUE = new PixelWorld(W, H, { seed });
                 defineAll(W_VALUE);
                 W_VALUE.sleepEnabled = sleep;
-                const B = new MatterBridge(Matter);
+                const B = new MatterBridge();
                 W_VALUE.attachBridge(B);
                 W_VALUE.rect(0, 100, W - 1, H - 4, 'stone');
                 W_VALUE.rect(0, H - 3, W - 1, H - 1, 'bedrock');

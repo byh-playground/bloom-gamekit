@@ -1,9 +1,11 @@
+import Matter from 'matter-js';
+
 /**
  * 사용자 제공 PixelPhysics의 동작 보존 이전입니다. 시간·snapshot·전역 Math 교체의
  * 제한은 README.md를 따릅니다. 아래 원본 API 설명은 교차 환경 결정성 보장이 아닙니다.
  */
 /* =====================================================================
- * PixelPhysics 라이브러리 (이 블록만 복사해서 쓰면 됨)
+ * PixelPhysics 픽셀·강체 물리 — pixel-physics.js 단일 배포 모듈
  *
  *  const world = new PixelWorld(w, h, {seed});
  *  world.define({name, kind:'solid|powder|liquid|gas', density, dispersion, rise, slow,
@@ -17,13 +19,13 @@
  *  world.tick();  world.explode(x,y,r);  world.carve(x,y,r);  world.paint(x,y,r,mat);  world.rect(...)
  *  new PixelRenderer(canvas, world, {overlay: 고해상도 canvas}).draw(drawBodyFn?)
  *     // drawBodyFn(ctx, body, scale): 개체를 화면 해상도로 직접 그리는 훅 (scale = 화면px / 격자셀)
- *  world.attachBridge(new MatterBridge(Matter));   // 강체 연동. 재료의 strength: 충격 에너지가 이보다 크면 깎임
+ *  world.attachBridge(new MatterBridge());   // 강체 연동. 재료의 strength: 충격 에너지가 이보다 크면 깎임
  *  // 강체 -> 입자: 유령 solid로 밀어냄(수면 상승, 모래가 위에 쌓임), 잠긴 셀 기준 부력
  *  // 입자 -> 강체: 윗면에 쌓인 가루 기둥의 무게가 강체를 누름
  *  world.on('chip'|'explosion'|'hit', fn);   // hit: 강체가 엔티티를 때림. 엔티티는 강체를 막힘/밀기/탑승으로 상호작용
  *    bridge.addBox({x,y,w,h,density,vx,vy})  // 지형 셀이 SSOT, 변화는 청크 dirty 이벤트로 전달
  *  world.snapshot() / restore(s) / hash() / isCheckpoint()   // 롤백, 리플레이, 디싱크 검출
- *    락스텝용: 같은 시드 + 같은 입력 + new MatterBridge(Matter,{deterministic:true}) + installDeterministicTrig() (Matter 생성 전)
+ *    락스텝용: 같은 시드 + 같은 입력 + new MatterBridge({deterministic:true}) + installDeterministicTrig() (Matter 생성 전)
  *    스냅샷은 isCheckpoint()가 true인 틱에서 찍으면 복원 후 재실행이 비트 단위로 일치
  *  world.spray(x,y,vx,vy,mat,{shooter,recoil})   // 유체 발사: 날아가다 막힌 곳에 그 재료 셀로 내려앉음. shooter(엔티티/강체)는 밀도 x 속도만큼 반발력을 받고,
  *                                              //   맞은 엔티티/강체도 같은 운동량으로 밀림 (world.jetPush로 세기 조절, 강체는 맞은 지점 기준이라 회전도 함)
@@ -1998,16 +2000,16 @@ class PhysicsBridge {
 class MatterBridge extends PhysicsBridge {
     /* deterministic: 바디 id/순서를 고정하고 checkpoint 틱마다 접촉 캐시를 비워서, 스냅샷에서 복원해 다시 돌려도 비트 단위로 같은 결과가 나오게 함.
      * 스냅샷은 world.time(= bridge.tickNo)이 checkpoint의 배수일 때 찍어야 정확히 재현됨 */
-    constructor(mValue, { gravity = 0.0004, deterministic = true, checkpoint = 30 } = {}) {
+    constructor({ gravity = 0.0004, deterministic = true, checkpoint = 30 } = {}) {
         super();
-        this.M = mValue;
+        this.M = Matter;
         this.gravityScale = gravity;
         this.deterministic = deterministic;
         this.checkpoint = checkpoint;
         this.tickNo = 0;
         this.seq = 1;
         this.dt = 1000 / 60;
-        this.engine = mValue.Engine.create({ enableSleeping: false });
+        this.engine = Matter.Engine.create({ enableSleeping: false });
         this.engine.gravity.y = 1;
         this.engine.gravity.scale = gravity;
         this.engine.positionIterations = 16;
@@ -2016,7 +2018,7 @@ class MatterBridge extends PhysicsBridge {
         this.proxies = new Set();
         this.impacts = [];
         this.jseq = 1;
-        mValue.Events.on(this.engine, 'collisionStart', (e) => {
+        Matter.Events.on(this.engine, 'collisionStart', (e) => {
             for (const P_VALUE of e.pairs) {
                 const A = P_VALUE.bodyA.parent,
                     B_VALUE = P_VALUE.bodyB.parent;

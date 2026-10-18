@@ -1,3 +1,7 @@
+## v0.13.0 (2026-10-18)
+
+픽셀·강체 물리는 `pixel-physics.js` 하나로 제공하고 Matter.js 0.19.0은 고정 웹 URL에서 가져옵니다. URL의 단일 원본은 소유 모듈의 dependencies.js이며 빌드·프리뷰·E2E가 공유합니다. Matter 엔진 소스는 GameKit 번들·예제 HTML에 포함하지 않습니다. 생성자는 `new MatterBridge(options)`이며 소비자는 별도 Matter import와 기존 첫 생성자 인자를 제거합니다. 별도 `pixel-physics-matter` 공개 모듈·npm 패키지 의존성·구 생성자 호환 경로를 제거합니다. 물리 계산·60Hz·체크포인트 계약은 유지하며 초기 실행에는 Matter 웹 URL 접근이 필요합니다.
+
 ## v0.12.3 (2026-10-18)
 
 사용자가 제공한 PixelPhysics HTML에서 픽셀 재료·엔티티·강체 연동·Canvas 렌더링을 독립 `pixel-physics` ESM으로 이전합니다. Matter.js 0.19.0은 선택형 `pixel-physics-matter` 번들로 고정하며 플랫포머 예제와 단일 HTML 프리뷰를 함께 제공합니다. 원본 파일과 SHA-256은 모듈 출처 문서에 보존합니다. 물리의 시간 단위는 원본의 60Hz 고정 틱이며, Matter 스냅샷은 체크포인트 제약을 유지합니다. 서로 다른 브라우저·CPU 사이의 결정성이나 기존 rollback Adapter와의 통합을 보장하지 않습니다.
@@ -138,6 +142,6 @@ import { PresentationRuntime } from 'https://cdn.jsdelivr.net/gh/byh-playground/
 
 [프리뷰 목록](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/index.html)은 10개 기존 예제를 모두 포함합니다. [previews.mjs](../previews.mjs)의 EXAMPLES가 목록입니다. 원본 예제는 소유 모듈 아래에 있으며 API 설명만 있는 모듈에 빈 데모를 만들지 않습니다.
 
-기존 html-share 문서처럼 HTML Preview를 사용합니다. 원본 ESM 예제를 직접 열면 상대 import와 module 실행이 실패하므로 `npm run build:previews`가 각 예제를 독립 IIFE script가 포함된 HTML 하나로 묶습니다. 외부 SDK import·CDN·공유 chunk가 없고 예제 간 링크는 공개 프리뷰 URL로 변환합니다. 소스 보기 링크는 GitHub 파일로 연결합니다. `dist/*.js`의 독립 ESM 계약과 프리뷰 빌드는 별개입니다.
+기존 html-share 문서처럼 HTML Preview를 사용합니다. 원본 ESM 예제를 직접 열면 상대 import와 module 실행이 실패하므로 `npm run build:previews`가 각 예제를 독립 IIFE script가 포함된 HTML 하나로 묶습니다. 예제 간 링크는 공개 프리뷰 URL로 변환합니다. PixelPhysics는 ESM script에서 정의된 Matter 웹 URL을 import하며 엔진 코드를 HTML에 넣지 않습니다. 나머지 예제는 외부 SDK import·CDN·공유 chunk가 없습니다. 소스 보기 링크는 GitHub 파일로 연결합니다. `dist/*.js`의 독립 ESM 계약과 프리뷰 빌드는 별개입니다.
 
 같은 main CI가 생성 HTML만 별도 `previews` 브랜치에 게시합니다. SDK bytes가 그대로인 예제 수정은 프리뷰만 갱신합니다. 새 계정·토큰·유료 호스팅·Pages 설정은 필요하지 않습니다. 프리뷰는 최신 main의 예제이며 불변 SDK 릴리스 URL과 혼동하지 마세요. Nostr 온라인 예제는 여전히 공용 relay·NAT 환경 영향을 받습니다. 오디오 재생에는 사용자의 시작 동작이 필요합니다.
