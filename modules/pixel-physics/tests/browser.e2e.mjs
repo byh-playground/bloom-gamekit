@@ -86,10 +86,47 @@ try {
     await PAGE.waitForFunction(() => document.querySelector('#hud').textContent.includes('HP'));
     await PAGE.close();
 
+    // Open-world example: holding thrust climbs, the 320x240 window follows the rocket, and a crater left at the
+    // start is written back to the map data once its rows scroll out of the window.
+    const OPEN = await browser.newPage({ viewport: { width: 900, height: 700 } });
+    OPEN.on('pageerror', (error) => ERRORS.push(error.message));
+    await OPEN.route('**/*', (route) =>
+        route.request().url().startsWith(`http://127.0.0.1:${SERVER.address().port}/`) ||
+        route.request().url() === MATTER_URL
+            ? route.continue()
+            : route.abort(),
+    );
+    await OPEN.goto(`http://127.0.0.1:${SERVER.address().port}/modules/pixel-physics/examples/open-world.html`);
+    await OPEN.waitForFunction(() => window.openWorldExample?.diagnostics.tick > 10);
+    const OPEN_START = await OPEN.evaluate(() => window.openWorldExample.diagnostics);
+    assert.equal(OPEN_START.shifts, 0);
+    const OPEN_STAGE = await OPEN.locator('#c').boundingBox();
+    await OPEN.mouse.click(OPEN_STAGE.x + OPEN_STAGE.width * 0.5, OPEN_STAGE.y + OPEN_STAGE.height * 0.78);
+    await OPEN.keyboard.down('Space');
+    await OPEN.waitForFunction(
+        () => {
+            const D = window.openWorldExample.diagnostics;
+            return D.altitude > 260 && D.shifts >= 3 && D.edits > 0;
+        },
+        undefined,
+        { timeout: 60000 },
+    );
+    await OPEN.keyboard.up('Space');
+    const OPEN_END = await OPEN.evaluate(() => window.openWorldExample.diagnostics);
+    assert(OPEN_END.origin.y < OPEN_START.origin.y, 'window moved up with the rocket');
+    assert(OPEN_END.absolute.y < OPEN_START.absolute.y - 200);
+    assert.deepEqual(OPEN_END.stream, OPEN_START.stream);
+    await OPEN.screenshot({ path: resolve(ROOT, 'test-results/pixel-physics-open-world.png'), fullPage: true });
+    REPORT.openWorld = OPEN_END;
+    REPORT.scenarios.push('open-world rocket climbs, window follows, crater is evicted to map data');
+    await OPEN.close();
+
     // htmlpreview.github.io recreates inline scripts as classic scripts, so a module script or static import cannot run there.
-    const PREVIEW_HTML = await readFile(resolve(ROOT, 'dist/previews/pixel-physics.html'), 'utf8');
-    for (const [, ATTRIBUTES, BODY] of PREVIEW_HTML.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
-        assert(!/\btype\s*=/i.test(ATTRIBUTES) && !/^\s*(?:import|export)\b/m.test(BODY));
+    for (const NAME of ['pixel-physics', 'pixel-physics-open-world']) {
+        const PREVIEW_HTML = await readFile(resolve(ROOT, `dist/previews/${NAME}.html`), 'utf8');
+        for (const [, ATTRIBUTES, BODY] of PREVIEW_HTML.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
+            assert(!/\btype\s*=/i.test(ATTRIBUTES) && !/^\s*(?:import|export)\b/m.test(BODY));
+        }
     }
     REPORT.scenarios.push('preview HTML has only classic inline scripts');
 

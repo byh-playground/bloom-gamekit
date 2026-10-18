@@ -1,6 +1,6 @@
 # pixel-physics
 
-**HTML 실행 프리뷰:** [pixel-physics](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/pixel-physics.html)
+**HTML 실행 프리뷰:** [pixel-physics](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/pixel-physics.html) · [pixel-physics-open-world](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/pixel-physics-open-world.html)
 
 사용자가 제공한 단일 HTML의 픽셀 셀 물리·엔티티·Matter.js 강체 연동을 독립 ESM으로 이전했습니다. [원본과 변경 범위](./docs/provenance/README.md), [플랫포머 예제 소스](./examples/index.html)를 함께 보세요. 게임 규칙·재료·플레이어·몬스터·입력과 실행 루프는 예제에만 있습니다.
 
@@ -62,9 +62,38 @@ const ADAPTER = {
 - **크기와 비용:** 격자 배열은 같은 값 구간(run)으로 줄여 저장합니다. 정지한 1280×720 월드는 원본 배열 2.77MB가 약 24KB(tests/rollback.mjs 측정), 모래가 흐르는 장면은 36~76KB 수준이며, 구간이 줄지 않는 잡음 격자는 원본 그대로 저장합니다. 크기는 격자 크기가 아니라 변화의 복잡도에 비례하므로 64MB 히스토리 예산과 4MiB 스냅샷 한도 안에 큰 월드도 들어옵니다. 저장은 1280×720에서 약 4ms(원본 배열 복사 포함)입니다.
 - **검증 범위:** Node의 `runSyncTest`로 8틱 되감기를 400틱 동안 비교하고, 붕괴·파편화·굳히기·폭발·조인트가 일어나는 장면에서 통과했습니다. 새 월드에 불러와도 이후 200틱의 바이트가 같습니다. 브라우저·다른 기기·큰 월드는 검증하지 않았습니다.
 
+## 열린 월드: 창 이동과 뷰포트
+
+격자(`PixelWorld(w, h)`)는 항상 고정 크기 **창** 하나이고, 큰 세계는 게임이 소유한 맵 데이터입니다. 절대 좌표 = `originX/originY + 창 좌표`이며, 창이 맵 위를 움직입니다. 예제: [열린 월드(로켓)](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/pixel-physics-open-world.html) · [소스](./examples/open-world.html).
+
+```js
+const WORLD = new PixelWorld(320, 240, { originX: -160, originY: -140, stream: { margin: 88, step: 32 } });
+// 맵 데이터에서 읽기: rect = {world, x0, y0, x1, y1, originX, originY} (창 좌표 사각형, 절대 = origin + 창 좌표)
+const load = (rect) =>
+    rect.world.writeRegion(rect.x0, rect.y0, w, h, cellsFromMap(rect.originX + rect.x0, rect.originY + rect.y0, w, h));
+const evict = (rect) =>
+    saveToMap(rect.originX + rect.x0, rect.originY + rect.y0, rect.world.readRegion(rect.x0, rect.y0, w, h));
+// 틱이 끝난 뒤 초점(절대 좌표)을 알려 주면, 여유 구간을 벗어났을 때만 창을 옮깁니다.
+const MOVED = WORLD.scrollTo(WORLD.originX + rocket.x, WORLD.originY + rocket.y, { load, evict });
+```
+
+- **미리 불러오기 설정:** `stream: { margin, step }`(생성 옵션) 또는 `setStreaming({margin, step})`입니다. `margin`은 초점이 창 가장자리에서 이만큼 안쪽을 벗어나면 옮기는 "미리 불러둘 거리"(셀)로, 카메라 시야의 반 크기보다 커야 시야가 불러온 영역 안에 있습니다. `step`은 한 번에 옮기는 단위(셀, 16의 배수)로, 크면 드물게 크게 불러오고 작으면 자주 조금씩 불러옵니다. `step <= min(w,h) - 2*margin`이어야 하며 어기면 RangeError입니다. 생략하면 margin은 짧은 변의 1/4, step은 16 이상 32 이하의 가능한 최대값입니다. 이 설정은 시뮬레이션 상태가 아니라서 snapshot에 들어가지 않으니 모든 참가자가 같게 두세요. 청크 크기 16은 sleep 단위라 고정입니다.
+- **`shiftWindow(dx, dy, {load, evict})`:** `scrollTo`가 부르는 원형입니다. dx, dy는 16의 배수 정수이며 틱 사이에만 호출합니다. 창 좌표 (x,y)의 셀은 (x-dx, y-dy)로 옮겨지고 origin이 dx, dy만큼 늘어납니다. 가로·세로·대각선이 모두 되고 창보다 큰 이동도 됩니다(전부 다시 불러옴). `evict(rect)`는 밀려나기 직전에 옛 origin 기준으로 불려 `readRegion`으로 편집을 맵에 되쓰게 하고, `load(rect)`는 새로 드러난 영역(최대 두 사각형)마다 새 origin 기준으로 불립니다. 호출하지 않은 영역은 빈 셀입니다.
+- **함께 옮겨지는 것:** 셀(`g`/`life`/`u`), 청크 플래그(`awake`/`reac`/`chd`/`chunkTick`)와 정적 지형 충돌체(청크 id를 바꿔 이동하고 새로 드러난 이음매 청크만 다시 만듦), 발사체(좌우·아래로 나가면 사라지고 위로 나간 것은 유지), 엔티티와 강체의 위치(속도·각도는 그대로), 핀과 월드 고정 조인트의 고정점, 부력 평활화 상태, 붕괴 지지 검사 요청(`supDirty`)입니다. 접촉 캐시는 옛 좌표 기준이라 비웁니다.
+- **지우지 않는 것:** 창 밖으로 나간 엔티티와 강체는 지우지 않고 반환값 `{entities, bodies, projectiles}`로 돌려줍니다. 지우거나 다른 구간으로 옮기는 것은 게임이 정합니다. 밖으로 나간 개체는 지형과 충돌하지 않습니다.
+- **결정성:** `shiftWindow`/`scrollTo`를 부르는 틱은 게임 규칙이므로 초점 같은 시뮬레이션 상태로만 정해야 합니다(`scrollTo`는 초점 좌표와 설정이 같으면 같은 이동을 합니다). `load`는 월드 난수열(`rand`, 수명 범위가 있는 재료의 `set`)을 쓰지 않아야 같은 절대 좌표가 언제 불러도 같습니다. `writeRegion`은 life를 주지 않으면 재료의 수명 최솟값을 쓰며 난수열을 소비하지 않습니다. 절차 생성이라면 월드 난수열 대신 `hashCell(seed, 절대x, 절대y)`처럼 절대 좌표와 시드만으로 정해지는 함수를 쓰세요.
+- **붕괴(`enableCollapse`):** 앵커는 바닥·좌우 가장자리와 앵커 재료입니다. 창의 위쪽 가장자리는 맵을 자른 선일 뿐이라 위로 이어진 구조물이 허공 덩어리로 오인될 수 있으니, 위쪽도 앵커로 쓰려면 `enableCollapse({ anchorTop: true })`를 켜세요(기본 꺼짐).
+- **`readRegion(x,y,w,h)` / `writeRegion(x,y,w,h,cells,life?)`:** 창 안 사각형을 `Uint8Array`로 읽고 쓰는 일괄 경로입니다. 쓴 영역과 이웃 청크는 깨우고 충돌체와 붕괴 검사를 다시 계산합니다. 창 밖 사각형, 길이가 다른 배열, 정의되지 않은 재료 id는 RangeError입니다.
+
+**snapshot / restore / hash / savePixelWorld:** `originX`/`originY`는 시뮬레이션 상태입니다. `snapshot()`/`restore()`/`savePixelWorld()`/`loadPixelWorld()`는 창 안의 셀과 청크·분사체·엔티티·강체와 origin을 함께 저장하고 복원하며, `hash()`는 origin을 섞습니다(셀이 같아도 origin이 다르면 다른 상태). **창 밖의 맵 데이터는 저장되지 않습니다.** 그 데이터(와 `evict`로 되써 둔 편집)는 게임 소유이므로, 되감기에서는 맵 데이터도 같은 시점으로 되돌리거나(편집을 시간순 로그로 두고 되감기), `load`/`evict`가 되감기 중 부수효과를 내지 않게 하세요. 창 이동 이전 시점의 snapshot으로 되감으면 그 시점의 창(origin 포함)이 복원되고, 이후 틱을 다시 돌릴 때 같은 틱에서 같은 이동이 일어나면 같은 해시가 됩니다(Node, `checkpoint:1`, `tests/open-world.mjs`). 되감은 뒤 창 밖에서 일어난 편집이 맵에 남아 있으면 다른 결과가 나옵니다.
+
+**뷰포트 렌더:** `writeGridPixels(world, pixels, shade, background, view)`에 `view = {x, y, w, h}`(창 좌표 정수)를 주면 그 사각형만 `view.w*view.h` 크기의 `pixels`에 행 우선으로 씁니다. view가 격자 밖에 걸치면 밖의 칸은 `background`이고 오류가 아닙니다(완전히 밖이어도 전부 배경). `pixels` 길이가 맞지 않거나 view가 정수가 아니거나 w, h가 음수면 RangeError입니다. 음영은 절대 좌표를 격자 크기로 감아 `shade`를 찾으므로 창이 움직여도 같은 셀은 같은 색입니다(origin이 0이면 이전과 같은 결과). `PixelRenderer`는 `{ view }` 옵션과 `setView(view)`를 받으며, 크기가 같으면 위치만 바꾸는 비용이 없습니다. 개체와 `extra` 훅은 창 좌표 그대로 그리면 view에 맞춰 이동됩니다. WebGL이면 view 크기의 텍스처를 한 번 만들고 `writeGridPixels(..., view)` 뒤 `updateTexture`로 올립니다.
+
+**측정(Node, 브라우저 아님, 시나리오당 짧은 반복의 중앙값, 이 개발 환경):** 지면과 희소한 암석이 있는 1M셀 창(512×2048, 1024×1024)에서 `shiftWindow` 32칸 이동은 가로·세로·대각선 모두 약 4~7ms(`load` 포함), 640×360 뷰포트 쓰기는 약 2~3ms(전체 격자 쓰기는 11~20ms)였습니다. 지형 밀도와 정적 충돌체 수에 따라 달라지며, 모든 셀이 잘게 쪼개진 무작위 지형은 Matter 정적 충돌체 수가 폭증해 틱 자체가 수백 ms가 되었습니다. 브라우저·GPU 업로드 비용은 재지 않았습니다.
+
 ## rendering 연동
 
-`writeGridPixels(world, pixels, shade)`는 격자만 `Uint32Array` RGBA로 씁니다(엔티티·강체는 제외, DOM·Canvas 비의존). `PixelRenderer`도 같은 함수를 씁니다. [rendering](../rendering/README.md)의 `createTexture({width,height,data}, {filter:'nearest'})`로 한 번 올리고, 틱마다 `writeGridPixels` 뒤 `updateTexture`로 갱신해 `Renderer2D.sprite`로 그립니다(불투명 격자는 premultiply를 건너뛰고, 바뀐 영역만 `{x,y,width,height}`로 올릴 수 있습니다). 엔티티와 강체는 같은 프레임에서 `rect`·`ellipse`·폴리곤으로 그리고, 강체 다각형은 `bridge.getPolys(h)`를 씁니다. 그림 순서와 카메라는 rendering의 `setCamera`와 호출 순서가 정합니다. [tests/rendering.e2e.mjs](./tests/rendering.e2e.mjs)가 실제 WebGL 픽셀을 읽어 격자와 비교합니다(헤드리스 Chromium 한 대, 40×30 월드). 큰 월드를 카메라 영역만 올리는 부분 갱신은 아직 없습니다.
+`writeGridPixels(world, pixels, shade)`는 격자만 `Uint32Array` RGBA로 씁니다(엔티티·강체는 제외, DOM·Canvas 비의존). `PixelRenderer`도 같은 함수를 씁니다. [rendering](../rendering/README.md)의 `createTexture({width,height,data}, {filter:'nearest'})`로 한 번 올리고, 틱마다 `writeGridPixels` 뒤 `updateTexture`로 갱신해 `Renderer2D.sprite`로 그립니다(불투명 격자는 premultiply를 건너뛰고, 바뀐 영역만 `{x,y,width,height}`로 올릴 수 있습니다). 엔티티와 강체는 같은 프레임에서 `rect`·`ellipse`·폴리곤으로 그리고, 강체 다각형은 `bridge.getPolys(h)`를 씁니다. 그림 순서와 카메라는 rendering의 `setCamera`와 호출 순서가 정합니다. [tests/rendering.e2e.mjs](./tests/rendering.e2e.mjs)가 실제 WebGL 픽셀을 읽어 격자와 비교합니다(헤드리스 Chromium 한 대, 40×30 월드). 큰 월드는 아래 "뷰포트 렌더"처럼 카메라 영역만 쓰고 올릴 수 있습니다.
 
 `installDeterministicTrig()`를 명시적으로 호출하면 **전역 `Math.sin`과 `Math.cos`를 다항식 구현으로 덮어씁니다.** 자동 설치·복원 API는 없으며 같은 realm의 다른 라이브러리에도 영향을 줍니다. 예제는 Matter 생성 전에 호출합니다. 이를 사용해도 서로 다른 브라우저·CPU·Matter 버전 사이의 비트 단위 일치는 보장하지 않습니다. 실제 대상 환경에서 같은 입력과 체크포인트 해시를 비교해야 합니다. 이 모듈을 가져오는 것만으로 전역 함수를 바꾸지는 않습니다.
 

@@ -165,6 +165,11 @@ function decode(world, bytes) {
     for (const KEY of GRID_KEYS) {
         V[KEY] = decodeGrid(V[KEY], world[KEY].length);
     }
+    if (!Number.isFinite(V.originX) || !Number.isFinite(V.originY)) {
+        throw new RangeError(
+            '창 원점(originX, originY)이 없는 snapshot입니다. v0.15.0 이전 SDK에서 만든 바이트입니다.',
+        );
+    }
     if (Boolean(V.bridge) !== Boolean(world.bridge)) {
         throw new RangeError('강체 브리지 유무가 다른 snapshot입니다.');
     }
