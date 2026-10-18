@@ -1,0 +1,788 @@
+<!doctype html>
+<html lang="ko">
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>비긴급 작업 예산 · bloom-gamekit</title>
+    <style>
+        body {
+            font:
+                16px system-ui,
+                sans-serif;
+            max-width: 860px;
+            margin: 2rem auto;
+            padding: 0 1rem;
+            background: #111c24;
+            color: #e6f1f3;
+            line-height: 1.55;
+        }
+        button {
+            padding: 0.5rem 0.8rem;
+            margin-right: 0.5rem;
+        }
+        pre {
+            padding: 1rem;
+            background: #091117;
+            border: 1px solid #40535e;
+            white-space: pre-wrap;
+        }
+    </style>
+    <h1>비긴급 탐색 작업 분산</h1>
+    <p>
+        아래 버튼 한 번이 기존 논리 tick 한 번을 뜻합니다. 각 tick은 후보 7개까지만 검사하고, urgent/standard/low 작업은
+        4:2:1 quantum 비율로 순환합니다.
+    </p>
+    <p>
+        <button id="tick">논리 tick 실행</button>
+        <button id="delete">low 개체 삭제</button>
+    </p>
+    <pre id="output"></pre>
+    <script>
+(() => {
+  // dist/work-scheduler.js
+  var PRIORITY_SLOTS = Object.freeze([2, 1, 2, 0, 2, 1, 2]);
+  function createBudgetedScheduler(options = {}) {
+    if (options === null || typeof options !== "object" || Array.isArray(options)) {
+      throw new TypeError("options must be an object");
+    }
+    const {
+      unitsPerTick: UNITS_PER_TICK = 24,
+      quantumUnits: QUANTUM_UNITS = 1,
+      now: NOW = () => performance.now()
+    } = options;
+    if (!Number.isSafeInteger(UNITS_PER_TICK) || UNITS_PER_TICK < 1) {
+      throw new RangeError("unitsPerTick must be a positive safe integer");
+    }
+    if (!Number.isSafeInteger(QUANTUM_UNITS) || QUANTUM_UNITS < 1 || QUANTUM_UNITS > UNITS_PER_TICK) {
+      throw new RangeError("quantumUnits must be a positive safe integer no greater than unitsPerTick");
+    }
+    if (typeof NOW !== "function") {
+      throw new TypeError("now must be a function");
+    }
+    const QUEUES = Array.from({ length: 3 }, () => ({ head: null, tail: null, count: 0 })), BY_KEY = /* @__PURE__ */ new Map(), BY_OWNER = /* @__PURE__ */ new Map(), DEFERRED_PROMOTIONS = /* @__PURE__ */ new Set(), STEP_CONTEXT = { tickId: 0, key: null, maxUnits: 0 }, STATS = {
+      ticks: 0,
+      jobsQueued: 0,
+      jobsMerged: 0,
+      jobsCompleted: 0,
+      jobsCancelled: 0,
+      unitsProcessed: 0,
+      waitedJobs: 0,
+      waitingTicksTotal: 0,
+      maxWaitTicks: 0,
+      budgetExhaustions: 0,
+      totalTickMs: 0,
+      maxTickMs: 0,
+      lastTickId: null,
+      lastTickUnits: 0,
+      lastTickCompleted: 0,
+      lastTickWaitedJobs: 0,
+      lastTickWaitingTicks: 0,
+      lastTickMaxWaitTicks: 0,
+      lastTickBudgetExhausted: false,
+      lastTickMs: 0
+    };
+    let pendingHead = null;
+    let pendingTail = null;
+    let pendingCount = 0;
+    let activeCount = 0;
+    let queueCount = 0;
+    let nextSequence = 1;
+    let priorityCursor = 0;
+    let lastTickId = null;
+    let lastClock = null;
+    let sequenceCutoff = 0;
+    let eligibleRemaining = 0;
+    let ticking = false;
+    let disposed = false;
+    function assertUsable() {
+      if (disposed) {
+        throw new Error("budgeted scheduler disposed");
+      }
+    }
+    function readClock() {
+      const VALUE = NOW();
+      if (!Number.isFinite(VALUE) || lastClock !== null && VALUE < lastClock) {
+        throw new RangeError("now() must return a finite monotonic timestamp");
+      }
+      lastClock = VALUE;
+      return VALUE;
+    }
+    function appendActive(job) {
+      const QUEUE = QUEUES[job.priority];
+      job.pending = false;
+      job.previous = QUEUE.tail;
+      job.next = null;
+      if (QUEUE.tail) {
+        QUEUE.tail.next = job;
+      } else {
+        QUEUE.head = job;
+      }
+      QUEUE.tail = job;
+      QUEUE.count++;
+      activeCount++;
+    }
+    function removeActive(job) {
+      const QUEUE = QUEUES[job.priority];
+      if (job.previous) {
+        job.previous.next = job.next;
+      } else {
+        QUEUE.head = job.next;
+      }
+      if (job.next) {
+        job.next.previous = job.previous;
+      } else {
+        QUEUE.tail = job.previous;
+      }
+      job.previous = null;
+      job.next = null;
+      QUEUE.count--;
+      activeCount--;
+    }
+    function appendPending(job) {
+      job.pending = true;
+      job.previous = pendingTail;
+      job.next = null;
+      if (pendingTail) {
+        pendingTail.next = job;
+      } else {
+        pendingHead = job;
+      }
+      pendingTail = job;
+      pendingCount++;
+    }
+    function removePending(job) {
+      if (job.previous) {
+        job.previous.next = job.next;
+      } else {
+        pendingHead = job.next;
+      }
+      if (job.next) {
+        job.next.previous = job.previous;
+      } else {
+        pendingTail = job.previous;
+      }
+      job.previous = null;
+      job.next = null;
+      pendingCount--;
+    }
+    function addOwner(job) {
+      if (job.owner === void 0) {
+        return;
+      }
+      let ownerJobs = BY_OWNER.get(job.owner);
+      if (!ownerJobs) {
+        ownerJobs = /* @__PURE__ */ new Set();
+        BY_OWNER.set(job.owner, ownerJobs);
+      }
+      ownerJobs.add(job);
+    }
+    function removeOwner(job) {
+      if (job.owner === void 0) {
+        return;
+      }
+      const OWNER_JOBS = BY_OWNER.get(job.owner);
+      if (!OWNER_JOBS) {
+        return;
+      }
+      OWNER_JOBS.delete(job);
+      if (OWNER_JOBS.size === 0) {
+        BY_OWNER.delete(job.owner);
+      }
+    }
+    function retire(job, reason) {
+      if (!job.active) {
+        return false;
+      }
+      if (job.pending) {
+        removePending(job);
+      } else {
+        removeActive(job);
+        if (ticking && job.sequence <= sequenceCutoff) {
+          eligibleRemaining--;
+        }
+      }
+      job.active = false;
+      queueCount--;
+      BY_KEY.delete(job.key);
+      removeOwner(job);
+      DEFERRED_PROMOTIONS.delete(job);
+      if (reason === "completed") {
+        STATS.jobsCompleted++;
+        STATS.lastTickCompleted++;
+      } else {
+        STATS.jobsCancelled++;
+      }
+      return true;
+    }
+    function promote(job, priority) {
+      if (priority <= (job.pendingPriority ?? job.priority)) {
+        return;
+      }
+      if (job.pending) {
+        job.priority = priority;
+        return;
+      }
+      if (ticking) {
+        job.pendingPriority = Math.max(job.pendingPriority ?? job.priority, priority);
+        DEFERRED_PROMOTIONS.add(job);
+        return;
+      }
+      removeActive(job);
+      job.priority = priority;
+      appendActive(job);
+    }
+    function flushPending() {
+      while (pendingHead) {
+        const JOB = pendingHead;
+        removePending(JOB);
+        if (!JOB.active) {
+          continue;
+        }
+        appendActive(JOB);
+      }
+    }
+    function applyDeferredPromotions() {
+      for (const JOB of DEFERRED_PROMOTIONS) {
+        const PRIORITY = JOB.pendingPriority;
+        JOB.pendingPriority = null;
+        if (!JOB.active || PRIORITY === null || PRIORITY <= JOB.priority) {
+          continue;
+        }
+        removeActive(JOB);
+        JOB.priority = PRIORITY;
+        appendActive(JOB);
+      }
+      DEFERRED_PROMOTIONS.clear();
+    }
+    function nextJob() {
+      for (let attempt = 0; attempt < PRIORITY_SLOTS.length; attempt++) {
+        const PRIORITY = PRIORITY_SLOTS[priorityCursor];
+        priorityCursor = (priorityCursor + 1) % PRIORITY_SLOTS.length;
+        const QUEUE = QUEUES[PRIORITY];
+        if (!QUEUE.head) {
+          continue;
+        }
+        const JOB = QUEUE.head;
+        if (QUEUE.head !== QUEUE.tail) {
+          QUEUE.head = JOB.next;
+          QUEUE.head.previous = null;
+          JOB.previous = QUEUE.tail;
+          JOB.next = null;
+          QUEUE.tail.next = JOB;
+          QUEUE.tail = JOB;
+        }
+        return JOB;
+      }
+      return null;
+    }
+    function recordFirstService(job, tickId) {
+      if (job.firstServed) {
+        return;
+      }
+      const WAIT_TICKS = job.enqueuedAtTick === null ? 0 : Math.max(0, tickId - job.enqueuedAtTick);
+      job.firstServed = true;
+      STATS.waitedJobs++;
+      STATS.waitingTicksTotal += WAIT_TICKS;
+      STATS.maxWaitTicks = Math.max(STATS.maxWaitTicks, WAIT_TICKS);
+      STATS.lastTickWaitedJobs++;
+      STATS.lastTickWaitingTicks += WAIT_TICKS;
+      STATS.lastTickMaxWaitTicks = Math.max(STATS.lastTickMaxWaitTicks, WAIT_TICKS);
+    }
+    function validateStepResult(job, value, maxUnits) {
+      if (value === null || typeof value !== "object" || Array.isArray(value) || typeof value.done !== "boolean" || !Number.isSafeInteger(value.unitsUsed) || value.unitsUsed < 1 || value.unitsUsed > maxUnits) {
+        retire(job, "cancelled");
+        throw new TypeError("step() must return {done, unitsUsed} within its supplied maxUnits");
+      }
+      return value;
+    }
+    function isValid(job) {
+      if (!job.isValid) {
+        return true;
+      }
+      try {
+        return job.isValid();
+      } catch (error) {
+        retire(job, "cancelled");
+        throw error;
+      }
+    }
+    function enqueue(request) {
+      assertUsable();
+      if (request === null || typeof request !== "object" || Array.isArray(request)) {
+        throw new TypeError("request must be an object");
+      }
+      const {
+        key: KEY,
+        owner: OWNER,
+        priority: PRIORITY = 1,
+        step: STEP,
+        isValid: IS_VALID,
+        onComplete: ON_COMPLETE
+      } = request;
+      if (!(typeof KEY === "string" || typeof KEY === "number" && Number.isSafeInteger(KEY)) || typeof STEP !== "function") {
+        throw new TypeError("key must be a string or safe integer and step must be a function");
+      }
+      if (!Number.isSafeInteger(PRIORITY) || PRIORITY < 0 || PRIORITY > 2) {
+        throw new RangeError("priority must be 0, 1 or 2");
+      }
+      if (IS_VALID !== void 0 && typeof IS_VALID !== "function") {
+        throw new TypeError("isValid must be a function");
+      }
+      if (ON_COMPLETE !== void 0 && typeof ON_COMPLETE !== "function") {
+        throw new TypeError("onComplete must be a function");
+      }
+      const EXISTING = BY_KEY.get(KEY);
+      if (EXISTING) {
+        if (EXISTING.owner !== OWNER) {
+          throw new Error("duplicate key must use the same owner");
+        }
+        STATS.jobsMerged++;
+        promote(EXISTING, PRIORITY);
+        return false;
+      }
+      const JOB = {
+        key: KEY,
+        owner: OWNER,
+        priority: PRIORITY,
+        step: STEP,
+        isValid: IS_VALID,
+        onComplete: ON_COMPLETE,
+        sequence: nextSequence++,
+        enqueuedAtTick: lastTickId,
+        firstServed: false,
+        active: true,
+        pending: false,
+        pendingPriority: null,
+        previous: null,
+        next: null
+      };
+      BY_KEY.set(KEY, JOB);
+      addOwner(JOB);
+      queueCount++;
+      STATS.jobsQueued++;
+      if (ticking) {
+        appendPending(JOB);
+      } else {
+        appendActive(JOB);
+      }
+      return true;
+    }
+    function cancel(key) {
+      if (disposed) {
+        return false;
+      }
+      const JOB = BY_KEY.get(key);
+      return JOB ? retire(JOB, "cancelled") : false;
+    }
+    function cancelOwner(owner) {
+      if (disposed) {
+        return 0;
+      }
+      const OWNER_JOBS = BY_OWNER.get(owner);
+      if (!OWNER_JOBS) {
+        return 0;
+      }
+      let cancelled = 0;
+      for (const JOB of OWNER_JOBS) {
+        if (retire(JOB, "cancelled")) {
+          cancelled++;
+        }
+      }
+      return cancelled;
+    }
+    function tick2(tickId) {
+      assertUsable();
+      if (!Number.isSafeInteger(tickId) || tickId < 0 || lastTickId !== null && tickId <= lastTickId) {
+        throw new RangeError("tickId must be a strictly increasing non-negative safe integer");
+      }
+      if (ticking) {
+        throw new Error("tick() is not reentrant");
+      }
+      const STARTED_AT = readClock();
+      ticking = true;
+      lastTickId = tickId;
+      sequenceCutoff = nextSequence - 1;
+      eligibleRemaining = activeCount;
+      STATS.ticks++;
+      STATS.lastTickId = tickId;
+      STATS.lastTickUnits = 0;
+      STATS.lastTickCompleted = 0;
+      STATS.lastTickWaitedJobs = 0;
+      STATS.lastTickWaitingTicks = 0;
+      STATS.lastTickMaxWaitTicks = 0;
+      STATS.lastTickBudgetExhausted = false;
+      try {
+        while (STATS.lastTickUnits < UNITS_PER_TICK && eligibleRemaining > 0) {
+          const JOB = nextJob();
+          if (!JOB) {
+            break;
+          }
+          const VALID = isValid(JOB);
+          if (!JOB.active) {
+            continue;
+          }
+          if (!VALID) {
+            retire(JOB, "cancelled");
+            continue;
+          }
+          const MAX_UNITS = Math.min(QUANTUM_UNITS, UNITS_PER_TICK - STATS.lastTickUnits);
+          STEP_CONTEXT.tickId = tickId;
+          STEP_CONTEXT.key = JOB.key;
+          STEP_CONTEXT.maxUnits = MAX_UNITS;
+          recordFirstService(JOB, tickId);
+          let result;
+          try {
+            result = validateStepResult(JOB, JOB.step(STEP_CONTEXT), MAX_UNITS);
+          } catch (error) {
+            if (JOB.active) {
+              retire(JOB, "cancelled");
+            }
+            throw error;
+          }
+          STATS.lastTickUnits += result.unitsUsed;
+          STATS.unitsProcessed += result.unitsUsed;
+          if (!JOB.active || !result.done) {
+            continue;
+          }
+          const STILL_VALID = isValid(JOB);
+          if (!JOB.active) {
+            continue;
+          }
+          if (!STILL_VALID) {
+            retire(JOB, "cancelled");
+            continue;
+          }
+          retire(JOB, "completed");
+          if (JOB.onComplete) {
+            JOB.onComplete({ key: JOB.key, owner: JOB.owner, result: result.result });
+          }
+        }
+        STATS.lastTickBudgetExhausted = STATS.lastTickUnits === UNITS_PER_TICK && eligibleRemaining > 0;
+        if (STATS.lastTickBudgetExhausted) {
+          STATS.budgetExhaustions++;
+        }
+        return STATS.lastTickUnits;
+      } finally {
+        try {
+          const ELAPSED_MS = readClock() - STARTED_AT;
+          STATS.lastTickMs = ELAPSED_MS;
+          STATS.totalTickMs += ELAPSED_MS;
+          STATS.maxTickMs = Math.max(STATS.maxTickMs, ELAPSED_MS);
+        } finally {
+          if (!disposed) {
+            applyDeferredPromotions();
+            flushPending();
+          } else {
+            DEFERRED_PROMOTIONS.clear();
+          }
+          STEP_CONTEXT.key = null;
+          STEP_CONTEXT.maxUnits = 0;
+          ticking = false;
+        }
+      }
+    }
+    function dispose() {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
+      for (const JOB of BY_KEY.values()) {
+        retire(JOB, "cancelled");
+      }
+      BY_OWNER.clear();
+      DEFERRED_PROMOTIONS.clear();
+      pendingHead = null;
+      pendingTail = null;
+      pendingCount = 0;
+      activeCount = 0;
+      queueCount = 0;
+      for (const QUEUE of QUEUES) {
+        QUEUE.head = null;
+        QUEUE.tail = null;
+        QUEUE.count = 0;
+      }
+      STEP_CONTEXT.key = null;
+      STEP_CONTEXT.maxUnits = 0;
+    }
+    return {
+      enqueue,
+      cancel,
+      cancelOwner,
+      tick: tick2,
+      dispose,
+      get metrics() {
+        const ACTIVE_BY_PRIORITY = QUEUES.map((queue) => queue.count);
+        return Object.freeze({
+          ticks: STATS.ticks,
+          jobsQueued: STATS.jobsQueued,
+          jobsMerged: STATS.jobsMerged,
+          jobsCompleted: STATS.jobsCompleted,
+          jobsCancelled: STATS.jobsCancelled,
+          queueDepth: queueCount,
+          activeJobs: activeCount,
+          pendingJobs: pendingCount,
+          activeByPriority: Object.freeze(ACTIVE_BY_PRIORITY),
+          unitsProcessed: STATS.unitsProcessed,
+          throughputUnitsPerTick: STATS.ticks ? STATS.unitsProcessed / STATS.ticks : 0,
+          throughputUnitsPerSecond: STATS.totalTickMs > 0 ? STATS.unitsProcessed * 1e3 / STATS.totalTickMs : 0,
+          waitedJobs: STATS.waitedJobs,
+          waitingTicksTotal: STATS.waitingTicksTotal,
+          averageWaitTicks: STATS.waitedJobs ? STATS.waitingTicksTotal / STATS.waitedJobs : 0,
+          maxWaitTicks: STATS.maxWaitTicks,
+          budgetExhaustions: STATS.budgetExhaustions,
+          lastTickId: STATS.lastTickId,
+          lastTickUnits: STATS.lastTickUnits,
+          lastTickCompleted: STATS.lastTickCompleted,
+          lastTickWaitedJobs: STATS.lastTickWaitedJobs,
+          lastTickWaitingTicks: STATS.lastTickWaitingTicks,
+          lastTickMaxWaitTicks: STATS.lastTickMaxWaitTicks,
+          lastTickBudgetExhausted: STATS.lastTickBudgetExhausted,
+          lastTickMs: STATS.lastTickMs,
+          totalTickMs: STATS.totalTickMs,
+          maxTickMs: STATS.maxTickMs
+        });
+      }
+    };
+  }
+
+  // dist/debug-tools.js
+  function names(values) {
+    if (!Array.isArray(values) || values.length > 128 || new Set(values).size !== values.length) {
+      throw new RangeError("Expected at most 128 unique metric names");
+    }
+    for (const NAME of values) {
+      if (typeof NAME !== "string" || !/^[a-zA-Z][a-zA-Z0-9_.-]{0,63}$/.test(NAME)) {
+        throw new TypeError("Invalid metric name");
+      }
+    }
+    return Object.freeze(values.slice());
+  }
+  function summary(values) {
+    const SORTED = values.slice().sort((a, b) => a - b), TOTAL = values.reduce((sum, value) => sum + value, 0), COUNT = values.length;
+    return {
+      count: COUNT,
+      total: TOTAL,
+      mean: COUNT ? TOTAL / COUNT : 0,
+      p50: COUNT ? SORTED[Math.floor((COUNT - 1) * 0.5)] : 0,
+      p95: COUNT ? SORTED[Math.floor((COUNT - 1) * 0.95)] : 0,
+      max: COUNT ? SORTED[COUNT - 1] : 0
+    };
+  }
+  var FrameMetrics = class {
+    constructor({ capacity = 240, stages = [], counters = [], now = () => performance.now() } = {}) {
+      if (!Number.isSafeInteger(capacity) || capacity < 1 || capacity > 3600 || typeof now !== "function") {
+        throw new RangeError("Invalid frame metric capacity or clock");
+      }
+      this.capacity = capacity;
+      this.stages = names(stages);
+      this.counters = names(counters);
+      this.stageIndex = new Map(this.stages.map((name, index) => [name, index + 3]));
+      this.counterIndex = new Map(this.counters.map((name, index) => [name, index + 3 + this.stages.length]));
+      this.stride = 3 + this.stages.length + this.counters.length;
+      this.samples = new Float64Array(this.stride * capacity);
+      this.current = new Float64Array(this.stride);
+      this.now = now;
+      this.clear();
+    }
+    clear() {
+      this.size = 0;
+      this.write = 0;
+      this.sequence = 0;
+      this.lastTimestampMs = null;
+      this.active = false;
+      this.samples.fill(0);
+      this.current.fill(0);
+    }
+    beginFrame(timestampMs) {
+      if (!Number.isFinite(timestampMs) || this.lastTimestampMs !== null && timestampMs < this.lastTimestampMs) {
+        throw new RangeError("Frame timestamp must be finite and monotonic");
+      }
+      if (this.active) {
+        throw new Error("endFrame required");
+      }
+      this.current.fill(0);
+      this.current[0] = timestampMs;
+      if (this.size > 0 && this.lastTimestampMs !== null) {
+        const PREVIOUS = (this.write - 1 + this.capacity) % this.capacity * this.stride;
+        this.samples[PREVIOUS + 1] = timestampMs - this.lastTimestampMs;
+      }
+      this.lastTimestampMs = timestampMs;
+      this.startedAtMs = this.now();
+      this.active = true;
+    }
+    stage(name, durationMs) {
+      return this.record(this.stageIndex, name, durationMs);
+    }
+    count(name, amount = 1) {
+      return this.record(this.counterIndex, name, amount);
+    }
+    record(index, name, value) {
+      const COLUMN = index.get(name);
+      if (!this.active && this.size === 0 || COLUMN === void 0) {
+        return false;
+      }
+      if (!Number.isFinite(value) || value < 0) {
+        throw new RangeError("Metric values must be finite and non-negative");
+      }
+      if (this.active) {
+        this.current[COLUMN] += value;
+      } else {
+        const PREVIOUS = (this.write - 1 + this.capacity) % this.capacity * this.stride;
+        this.samples[PREVIOUS + COLUMN] += value;
+      }
+      return true;
+    }
+    endFrame() {
+      if (!this.active) {
+        return false;
+      }
+      this.current[2] = Math.max(0, this.now() - this.startedAtMs);
+      this.samples.set(this.current, this.write * this.stride);
+      this.write = (this.write + 1) % this.capacity;
+      this.size = Math.min(this.capacity, this.size + 1);
+      this.sequence++;
+      this.active = false;
+      return true;
+    }
+    snapshot({ limit = 0, slowFrameMs = 50, slowLimit = 3 } = {}) {
+      if (!Number.isSafeInteger(limit) || limit < 0 || limit > this.capacity || !Number.isSafeInteger(slowLimit) || slowLimit < 0 || slowLimit > this.capacity || !Number.isFinite(slowFrameMs) || slowFrameMs < 0) {
+        throw new RangeError("Invalid snapshot limits");
+      }
+      const FRAMES = [];
+      for (let offset = 0; offset < this.size; offset++) {
+        const INDEX = (this.write - this.size + offset + this.capacity) % this.capacity * this.stride, FRAME = {
+          sequence: this.sequence - this.size + offset + 1,
+          timestampMs: this.samples[INDEX],
+          intervalMs: this.samples[INDEX + 1],
+          cpuMs: this.samples[INDEX + 2],
+          stagesMs: {},
+          counts: {}
+        };
+        for (const [NAME, COLUMN] of this.stageIndex) {
+          FRAME.stagesMs[NAME] = this.samples[INDEX + COLUMN];
+        }
+        for (const [NAME, COLUMN] of this.counterIndex) {
+          FRAME.counts[NAME] = this.samples[INDEX + COLUMN];
+        }
+        FRAMES.push(FRAME);
+      }
+      const INTERVALS = FRAMES.map((frame) => frame.intervalMs).filter((value) => value > 0), WINDOW_MS = INTERVALS.reduce((sum, value) => sum + value, 0);
+      return {
+        format: "bloom numeric frame metrics v1",
+        capacity: this.capacity,
+        retainedFrames: this.size,
+        firstSequence: FRAMES[0]?.sequence ?? 0,
+        lastSequence: FRAMES.at(-1)?.sequence ?? 0,
+        windowMs: WINDOW_MS,
+        fps: WINDOW_MS > 0 ? INTERVALS.length * 1e3 / WINDOW_MS : null,
+        intervalMs: summary(INTERVALS),
+        cpuMs: summary(FRAMES.map((frame) => frame.cpuMs)),
+        stagesMs: Object.fromEntries(
+          this.stages.map((name) => [name, summary(FRAMES.map((frame) => frame.stagesMs[name]))])
+        ),
+        counts: Object.fromEntries(
+          this.counters.map((name) => [name, summary(FRAMES.map((frame) => frame.counts[name]))])
+        ),
+        slowFrames: FRAMES.filter((frame) => frame.intervalMs >= slowFrameMs).sort((a, b) => b.intervalMs - a.intervalMs).slice(0, slowLimit),
+        frames: limit ? FRAMES.slice(-limit) : []
+      };
+    }
+  };
+
+  // modules/work-scheduler/examples/modules/work-scheduler/examples/index.html
+  var SCHEDULER = createBudgetedScheduler({
+    unitsPerTick: 7,
+    quantumUnits: 1
+  });
+  var FRAME_METRICS = new FrameMetrics({
+    capacity: 30,
+    counters: ["search.units", "search.waitTicks", "search.budgetExhausted"]
+  });
+  var ACTORS = [
+    { id: "low", generation: 1, alive: true, priority: 0, cursor: 0, target: null },
+    { id: "standard", generation: 1, alive: true, priority: 1, cursor: 0, target: null },
+    { id: "urgent", generation: 1, alive: true, priority: 2, cursor: 0, target: null }
+  ];
+  var CANDIDATES = Array.from({ length: 30 }, (_, index) => ({
+    id: "candidate-" + index,
+    matches: index === 13
+  }));
+  var tick = 0;
+  function enqueueActor(actor) {
+    const KEY = actor.id + ":" + actor.generation;
+    SCHEDULER.enqueue({
+      key: KEY,
+      owner: actor,
+      priority: actor.priority,
+      isValid: () => actor.alive && actor.generation === 1,
+      step({ maxUnits }) {
+        let unitsUsed = 0;
+        while (unitsUsed < maxUnits && actor.cursor < CANDIDATES.length) {
+          const CANDIDATE = CANDIDATES[actor.cursor++];
+          if (CANDIDATE.matches) {
+            actor.target = CANDIDATE.id;
+          }
+          unitsUsed++;
+        }
+        return {
+          done: actor.cursor >= CANDIDATES.length,
+          unitsUsed,
+          result: actor.target
+        };
+      },
+      onComplete({ result }) {
+        if (actor.alive) {
+          actor.target = result;
+        }
+      }
+    });
+  }
+  for (const ACTOR of ACTORS) {
+    enqueueActor(ACTOR);
+  }
+  function render() {
+    const METRICS = SCHEDULER.metrics, FRAME = FRAME_METRICS.snapshot({ limit: 4 });
+    document.querySelector("#output").textContent = JSON.stringify(
+      {
+        tick,
+        actors: ACTORS.map((actor) => ({
+          id: actor.id,
+          alive: actor.alive,
+          inspectedCandidates: actor.cursor,
+          target: actor.target
+        })),
+        scheduler: METRICS,
+        recentFrameMetrics: FRAME.frames.map((frame) => frame.counts)
+      },
+      null,
+      2
+    );
+  }
+  document.querySelector("#tick").addEventListener("click", () => {
+    tick++;
+    FRAME_METRICS.beginFrame(performance.now());
+    SCHEDULER.tick(tick);
+    const METRICS = SCHEDULER.metrics;
+    FRAME_METRICS.count("search.units", METRICS.lastTickUnits);
+    FRAME_METRICS.count("search.waitTicks", METRICS.lastTickWaitingTicks);
+    FRAME_METRICS.count("search.budgetExhausted", Number(METRICS.lastTickBudgetExhausted));
+    FRAME_METRICS.endFrame();
+    render();
+  });
+  document.querySelector("#delete").addEventListener("click", () => {
+    const LOW_ACTOR = ACTORS[0];
+    LOW_ACTOR.alive = false;
+    SCHEDULER.cancelOwner(LOW_ACTOR);
+    render();
+  });
+  addEventListener(
+    "pagehide",
+    () => {
+      SCHEDULER.dispose();
+    },
+    { once: true }
+  );
+  render();
+})();
+
+</script>
+</html>
