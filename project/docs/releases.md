@@ -1,3 +1,7 @@
+## v0.14.0 (2026-10-18)
+
+`pixel-physics`가 rollback·deterministic·rendering과 맞물립니다. `savePixelWorld`/`loadPixelWorld`/`validatePixelWorld`가 월드를 deterministic 값 코덱 바이트로 저장·복원하고, `writeGridPixels`가 격자를 rendering 텍스처로 올릴 RGBA로 씁니다. 엔티티는 `world.addEntity(body)`로 등록해야 하며 `world.bodies.push`로 넣은 엔티티는 바이트 저장에서 오류입니다. 스냅샷에 마스크 강체 셀·강체 크기·조인트 파라미터를 추가했습니다. rollback 모드는 `MatterBridge({checkpoint:1})`과 60Hz가 필요합니다. 검증은 Node syncTest와 헤드리스 Chromium 한 대이며 다른 기기 결정성과 큰 월드는 검증하지 않았습니다.
+
 ## v0.13.0 (2026-10-18)
 
 픽셀·강체 물리는 `pixel-physics.js` 하나로 제공하고 Matter.js 0.19.0은 고정 웹 URL에서 가져옵니다. URL의 단일 원본은 소유 모듈의 dependencies.js이며 빌드·프리뷰·E2E가 공유합니다. Matter 엔진 소스는 GameKit 번들·예제 HTML에 포함하지 않습니다. 생성자는 `new MatterBridge(options)`이며 소비자는 별도 Matter import와 기존 첫 생성자 인자를 제거합니다. 별도 `pixel-physics-matter` 공개 모듈·npm 패키지 의존성·구 생성자 호환 경로를 제거합니다. 물리 계산·60Hz·체크포인트 계약은 유지하며 초기 실행에는 Matter 웹 URL 접근이 필요합니다.
