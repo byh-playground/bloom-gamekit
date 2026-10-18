@@ -32,8 +32,9 @@ function equalBytes(a, b) {
 }
 function hashBytes(value, seed = 2166136261) {
   let h = seed >>> 0;
-  for (const B of bytes(value)) {
-    h = Math.imul(h ^ B, 16777619) >>> 0;
+  const DATA = bytes(value);
+  for (let i = 0; i < DATA.length; i++) {
+    h = Math.imul(h ^ DATA[i], 16777619) >>> 0;
   }
   return h;
 }
@@ -62,7 +63,7 @@ var FIXED_POINT = Object.freeze({
 });
 
 // modules/_rollback-shared/version.js
-var VERSION = "0.14.0";
+var VERSION = "0.14.1";
 
 // modules/_rollback-shared/protocol.js
 var REPLAY_FORMAT_VERSION = "0.2.0-dev";

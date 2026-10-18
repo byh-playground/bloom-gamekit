@@ -7939,6 +7939,24 @@ function positive2(value, name) {
     throw new RangeError(`${name} must be positive`);
   }
 }
+function premultiplyBytes(bytes, start, end) {
+  let opaque = true;
+  for (let i = start + 3; i < end; i += 4) {
+    if (bytes[i] !== 255) {
+      opaque = false;
+      break;
+    }
+  }
+  if (opaque) {
+    return;
+  }
+  for (let i = start; i < end; i += 4) {
+    const A = bytes[i + 3] / 255;
+    bytes[i] = Math.round(bytes[i] * A);
+    bytes[i + 1] = Math.round(bytes[i + 1] * A);
+    bytes[i + 2] = Math.round(bytes[i + 2] * A);
+  }
+}
 function color(value) {
   if (!value || value.length !== 4) {
     throw new TypeError("color must be [r,g,b,a]");
@@ -8209,7 +8227,7 @@ var Renderer2D = class {
     out.y = S * DX + C * DY + CAMERA.y;
     return out;
   }
-  _source(source, filter) {
+  _source(source, filter, premultiplied = false) {
     if (filter !== "nearest" && filter !== "linear") {
       throw new RangeError("filter must be nearest or linear");
     }
@@ -8218,7 +8236,7 @@ var Renderer2D = class {
     }
     const WIDTH = source?.naturalWidth ?? source?.videoWidth ?? source?.width;
     const HEIGHT = source?.naturalHeight ?? source?.videoHeight ?? source?.height;
-    const MAX = this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE);
+    const MAX = this.maxTextureSize ??= this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE);
     if (!Number.isSafeInteger(WIDTH) || !Number.isSafeInteger(HEIGHT) || WIDTH < 1 || HEIGHT < 1 || WIDTH > MAX || HEIGHT > MAX) {
       throw new RangeError("texture dimensions are invalid");
     }
@@ -8228,11 +8246,8 @@ var Renderer2D = class {
         throw new TypeError("texture data must be width*height*4 RGBA bytes");
       }
       retained = new Uint8Array(source.data);
-      for (let i = 0; i < retained.length; i += 4) {
-        const A = retained[i + 3] / 255;
-        retained[i] = Math.round(retained[i] * A);
-        retained[i + 1] = Math.round(retained[i + 1] * A);
-        retained[i + 2] = Math.round(retained[i + 2] * A);
+      if (!premultiplied) {
+        premultiplyBytes(retained, 0, retained.length);
       }
     }
     return {
@@ -8240,6 +8255,7 @@ var Renderer2D = class {
       height: HEIGHT,
       source: retained,
       filter,
+      premultiplied,
       texture: null
     };
   }
@@ -8285,10 +8301,16 @@ var Renderer2D = class {
       throw error;
     }
   }
-  /** Loaded origin-clean image/canvas, or {width,height,data: RGBA bytes}. */
-  createTexture(source, { filter = "linear" } = {}) {
+  /**
+   * Loaded origin-clean image/canvas, or {width,height,data: RGBA bytes}.
+   * `premultiplied:true` declares that RGBA bytes already have alpha multiplied into RGB, so no CPU pass runs.
+   */
+  createTexture(source, { filter = "linear", premultiplied = false } = {}) {
     this._ready();
-    const RECORD = this._source(source, filter);
+    if (typeof premultiplied !== "boolean") {
+      throw new TypeError("premultiplied must be boolean");
+    }
+    const RECORD = this._source(source, filter, premultiplied);
     if (this.active) {
       this.flush();
     }
@@ -8301,23 +8323,96 @@ var Renderer2D = class {
     this.stats.textureCount = this.textures.size;
     return HANDLE;
   }
-  /** Replacement dimensions must match the handle. Upload is explicit, never per sprite. */
-  updateTexture(handle, source) {
+  /**
+   * Replacement dimensions must match the handle. Upload is explicit, never per sprite.
+   * RGBA byte sources update the existing GPU texture in place (no reallocation) and may name the changed
+   * `{x,y,width,height}` region: only those rows are copied, premultiplied and uploaded. The source is still the
+   * full image, and pixels outside the region must be unchanged since the previous upload. Bytes follow the
+   * `premultiplied` flag the texture was created with.
+   */
+  updateTexture(handle, source, { x = 0, y = 0, width = handle.width, height = handle.height } = {}) {
     this._ready();
     const PREVIOUS = this.textures.get(handle);
     if (!PREVIOUS) {
       throw new Error("unknown/deleted texture");
     }
-    const RECORD = this._source(source, PREVIOUS.filter);
-    if (RECORD.width !== handle.width || RECORD.height !== handle.height) {
+    const PREMULTIPLIED = PREVIOUS.premultiplied === true;
+    const WHOLE = x === 0 && y === 0 && width === handle.width && height === handle.height;
+    const IN_PLACE = source?.data !== void 0 && PREVIOUS.source instanceof Uint8Array;
+    if (!IN_PLACE) {
+      if (!WHOLE) {
+        throw new TypeError("region updates require RGBA byte data on a byte texture");
+      }
+      const RECORD = this._source(source, PREVIOUS.filter, PREMULTIPLIED);
+      if (RECORD.width !== handle.width || RECORD.height !== handle.height) {
+        throw new RangeError("texture update dimensions must match");
+      }
+      if (this.active) {
+        this.flush();
+      }
+      this._upload(RECORD);
+      this.gl.deleteTexture(PREVIOUS.texture);
+      this.textures.set(handle, RECORD);
+      return;
+    }
+    for (const [VALUE, NAME] of [
+      [x, "x"],
+      [y, "y"],
+      [width, "width"],
+      [height, "height"]
+    ]) {
+      if (!Number.isSafeInteger(VALUE) || VALUE < (NAME === "width" || NAME === "height" ? 1 : 0)) {
+        throw new RangeError(`${NAME} must be an integer`);
+      }
+    }
+    if (x + width > handle.width || y + height > handle.height) {
+      throw new RangeError("texture region outside bounds");
+    }
+    const DATA = source.data;
+    if (source.width !== handle.width || source.height !== handle.height || !(DATA instanceof Uint8Array || DATA instanceof Uint8ClampedArray) || DATA.length !== handle.width * handle.height * 4) {
       throw new RangeError("texture update dimensions must match");
     }
     if (this.active) {
       this.flush();
     }
-    this._upload(RECORD);
-    this.gl.deleteTexture(PREVIOUS.texture);
-    this.textures.set(handle, RECORD);
+    const RETAINED = PREVIOUS.source, ROW = handle.width * 4;
+    if (WHOLE) {
+      RETAINED.set(DATA);
+      if (!PREMULTIPLIED) {
+        premultiplyBytes(RETAINED, 0, RETAINED.length);
+      }
+    } else {
+      for (let row = 0; row < height; row++) {
+        const START = (y + row) * ROW + x * 4;
+        RETAINED.set(DATA.subarray(START, START + width * 4), START);
+        if (!PREMULTIPLIED) {
+          premultiplyBytes(RETAINED, START, START + width * 4);
+        }
+      }
+    }
+    const GL = this.gl;
+    let pixels = RETAINED;
+    if (!WHOLE) {
+      const NEEDED = width * height * 4;
+      if (!this.regionBytes || this.regionBytes.length !== NEEDED) {
+        this.regionBytes = new Uint8Array(NEEDED);
+      }
+      for (let row = 0; row < height; row++) {
+        const START = (y + row) * ROW + x * 4;
+        this.regionBytes.set(RETAINED.subarray(START, START + width * 4), row * width * 4);
+      }
+      pixels = this.regionBytes;
+    }
+    GL.bindTexture(GL.TEXTURE_2D, PREVIOUS.texture);
+    GL.pixelStorei(GL.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    GL.pixelStorei(GL.UNPACK_ALIGNMENT, 1);
+    GL.texSubImage2D(GL.TEXTURE_2D, 0, x, y, width, height, GL.RGBA, GL.UNSIGNED_BYTE, pixels);
+    const ERROR = GL.getError();
+    if (ERROR !== GL.NO_ERROR) {
+      throw new Error(`WebGL texture upload error ${ERROR}`);
+    }
+    this.stats.textureUploads++;
+    this.stats.totalTextureUploads++;
   }
   deleteTexture(handle) {
     if (this.state === "disposed") {

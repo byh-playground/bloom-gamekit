@@ -7,7 +7,7 @@
     },
     {
       "file": "rendering.js",
-      "sha256": "5233499a02ebf6881cc49c941823dd193f20ed0c5f8af9440afa7d10677e9be7"
+      "sha256": "021b11f83b49be3e94cfe0a67769dcd248b9463325b6dcc55ea4943a0ea6c18b"
     },
     {
       "file": "vector-assets.js",
@@ -23,7 +23,7 @@
     },
     {
       "file": "deterministic.js",
-      "sha256": "a6c381346a263a724719733762c5b7d02caf7385ac74e06cb4ef96e1fd7f9210"
+      "sha256": "e8294735a58b115c6e1125b51523e8c53d3d2f1d8585f05161ef8a2238df1eb7"
     },
     {
       "file": "simloop.js",
@@ -35,15 +35,15 @@
     },
     {
       "file": "transport.js",
-      "sha256": "f4fc7d3eab8d77ad4437ca3de37948ce2e1c313c3525ab2ee00a28000ece41b2"
+      "sha256": "cb509226a9644e86857f12e137943bf0cc04c5f4bace4dbdf4137efa6240fc3a"
     },
     {
       "file": "replay.js",
-      "sha256": "775668958524b272d8e3c4822c4a1d851c127848661a5944cfac2be2c8e87334"
+      "sha256": "c91ec3fb12e22f2fe29ce1555bd90f95dff81ae4959cde4c5a8b2d6f7a985122"
     },
     {
       "file": "rollback.js",
-      "sha256": "cf54404afea263553407f81336ebb983ef6233cc19cafefcc8ae149b6c05d4b2"
+      "sha256": "a9313c6264b8a657c41ea85af6bb37a8b57840e78a68480a8948df479024327d"
     },
     {
       "file": "camera.js",
@@ -79,7 +79,7 @@
     },
     {
       "file": "pixel-physics.js",
-      "sha256": "87774015259089b52f7b6f1344a78c69f94f72920aa0a889330e6a44076c0d32"
+      "sha256": "91015d0da8afdbed1f51393dd7a9568af93d08cca30014c8c9650067bcd0dbcc"
     }
   ],
   "assets": [
