@@ -202,6 +202,12 @@ export async function exerciseVectorGradientClip(browser, moduleURL, screenshotP
                     IDENTICAL.addColorStop(1, '#b78f75');
                     CTX.fillStyle = IDENTICAL;
                     CTX.fillRect(-8, -8, 16, 16);
+                    CTX.strokeStyle = GRADIENT;
+                    CTX.lineWidth = 2;
+                    CTX.beginPath();
+                    CTX.moveTo(-6, 5);
+                    CTX.lineTo(6, 5);
+                    CTX.stroke();
                     CTX.restore();
                     CTX.endFrame();
                     const REF = REFERENCE.getContext('2d');
@@ -227,6 +233,12 @@ export async function exerciseVectorGradientClip(browser, moduleURL, screenshotP
                     NATIVE_IDENTICAL.addColorStop(1, '#b78f75');
                     REF.fillStyle = NATIVE_IDENTICAL;
                     REF.fillRect(-8, -8, 16, 16);
+                    REF.strokeStyle = NATIVE_GRADIENT;
+                    REF.lineWidth = 2;
+                    REF.beginPath();
+                    REF.moveTo(-6, 5);
+                    REF.lineTo(6, 5);
+                    REF.stroke();
                     REF.restore();
                     const GL_PIXELS = new Uint8Array(CANVAS.width * CANVAS.height * 4);
                     DEVICE.gl.readPixels(
@@ -270,7 +282,8 @@ export async function exerciseVectorGradientClip(browser, moduleURL, screenshotP
                     }
                     const IDENTICAL_X = Math.floor((CENTER + 60 * SCALE) * DPR),
                         IDENTICAL_Y = Math.floor(CENTER * DPR),
-                        IDENTICAL_PIXEL = new Uint8Array(4);
+                        IDENTICAL_PIXEL = new Uint8Array(4),
+                        RADIAL_STROKE_PIXEL = new Uint8Array(4);
                     DEVICE.gl.readPixels(
                         IDENTICAL_X,
                         CANVAS.height - 1 - IDENTICAL_Y,
@@ -280,6 +293,15 @@ export async function exerciseVectorGradientClip(browser, moduleURL, screenshotP
                         DEVICE.gl.UNSIGNED_BYTE,
                         IDENTICAL_PIXEL,
                     );
+                    DEVICE.gl.readPixels(
+                        Math.floor((CENTER + 60 * SCALE) * DPR),
+                        CANVAS.height - 1 - Math.floor((CENTER + 5 * SCALE) * DPR),
+                        1,
+                        1,
+                        DEVICE.gl.RGBA,
+                        DEVICE.gl.UNSIGNED_BYTE,
+                        RADIAL_STROKE_PIXEL,
+                    );
                     RADIAL_COMPARISONS[ID] = {
                         size: SIZE,
                         dpr: DPR,
@@ -288,6 +310,7 @@ export async function exerciseVectorGradientClip(browser, moduleURL, screenshotP
                         meanDiff: totalDiff / compared,
                         notchOrBackgroundMismatch,
                         identicalCirclePixel: [...IDENTICAL_PIXEL],
+                        radialStrokePixel: [...RADIAL_STROKE_PIXEL],
                         glError: DEVICE.gl.getError(),
                     };
                     CTX.dispose();
@@ -313,6 +336,34 @@ export async function exerciseVectorGradientClip(browser, moduleURL, screenshotP
                 const CTX = new VECTOR_CONTEXT(DEVICE, {
                     vectorRenderer: VECTOR,
                 });
+                const VECTOR_DRAWS = [],
+                    VECTOR_UPLOADS = [],
+                    ORIGINAL_DRAW = DEVICE.draw,
+                    ORIGINAL_UPLOAD = DEVICE.uploadVertices;
+                DEVICE.draw = function (command) {
+                    if (command.buffer === VECTOR.buffer) {
+                        VECTOR_DRAWS.push({
+                            role:
+                                command.pipeline === VECTOR.pipeline
+                                    ? 'radial'
+                                    : command.pipeline === VECTOR.nonRadialPipeline
+                                      ? 'non-radial'
+                                      : 'unexpected',
+                            count: command.count,
+                            uniformKeys: Object.keys(command.uniforms).sort(),
+                            radial: command.uniforms.u_radial ?? null,
+                            textured: command.uniforms.u_textured,
+                            stencil: command.stencil === false ? false : { ...command.stencil },
+                        });
+                    }
+                    return ORIGINAL_DRAW.call(this, command);
+                };
+                DEVICE.uploadVertices = function (buffer, data) {
+                    if (buffer === VECTOR.buffer) {
+                        VECTOR_UPLOADS.push(data.length / 8);
+                    }
+                    return ORIGINAL_UPLOAD.call(this, buffer, data);
+                };
                 const CORNERS = [
                     [20, 20],
                     [100, 20],
@@ -362,6 +413,21 @@ export async function exerciseVectorGradientClip(browser, moduleURL, screenshotP
                 CTX.save();
                 CTX.clipPath(CLIP160);
                 CTX.drawMesh(MESH);
+                const CLIP_TRACE_START = VECTOR_DRAWS.length,
+                    CLIP_UPLOAD_START = VECTOR_UPLOADS.length,
+                    CLIP_SUBMISSIONS_START = DEVICE.stats.vectorSubmissions,
+                    CLIP_LINEAR = CTX.createLinearGradient(20, 80, 100, 80);
+                CLIP_LINEAR.addColorStop(0, '#ff0000');
+                CLIP_LINEAR.addColorStop(1, '#0000ff');
+                const CLIP_RADIAL = CTX.createRadialGradient(48, 84, 2, 60, 84, 18);
+                CLIP_RADIAL.addColorStop(0, '#fff000');
+                CLIP_RADIAL.addColorStop(1, '#00aaff');
+                CTX.fillStyle = CLIP_LINEAR;
+                CTX.fillRect(22, 80, 18, 12);
+                CTX.fillStyle = CLIP_RADIAL;
+                CTX.fillRect(44, 80, 18, 12);
+                CTX.fillStyle = CLIP_LINEAR;
+                CTX.fillRect(66, 80, 18, 12);
                 CTX.save();
                 CTX.clipPath(INNER);
                 CTX.fillStyle = '#ffffff';
@@ -378,6 +444,11 @@ export async function exerciseVectorGradientClip(browser, moduleURL, screenshotP
                 CTX.endGroup();
                 CTX.endFrame();
                 CHECKPOINT('retained clip, mesh and group rendered');
+                const CLIP_PIPELINE_TRACE = {
+                    draws: VECTOR_DRAWS.slice(CLIP_TRACE_START),
+                    uploads: VECTOR_UPLOADS.slice(CLIP_UPLOAD_START),
+                    submissions: DEVICE.stats.vectorSubmissions - CLIP_SUBMISSIONS_START,
+                };
                 const CLIP_PIXELS = {
                     innerAndGroup: PIXEL(40, 30),
                     rightArm: PIXEL(85, 60),
@@ -527,6 +598,7 @@ export async function exerciseVectorGradientClip(browser, moduleURL, screenshotP
                     gradientSamples: GRADIENT_SAMPLES,
                     radialComparisons: RADIAL_COMPARISONS,
                     clipPixels: CLIP_PIXELS,
+                    clipPipelineTrace: CLIP_PIPELINE_TRACE,
                     gradientStopLimitRejected,
                     clipPointLimitRejected,
                     missingStencilRejected,
@@ -588,6 +660,10 @@ export async function exerciseVectorGradientClip(browser, moduleURL, screenshotP
                 [0, 255, 0, 255],
                 `${NAME}: identical circles paint nothing per the Canvas radial-gradient algorithm`,
             );
+            assert.ok(
+                SAMPLE.radialStrokePixel[3] > 0 && (SAMPLE.radialStrokePixel[0] > 0 || SAMPLE.radialStrokePixel[2] > 0),
+                NAME + ': transformed radial gradient stroke paints pixels ' + JSON.stringify(SAMPLE.radialStrokePixel),
+            );
             assert.equal(SAMPLE.glError, 0);
         }
         assert.ok(
@@ -601,6 +677,34 @@ export async function exerciseVectorGradientClip(browser, moduleURL, screenshotP
         assert.deepEqual(RESULT.clipPixels.openNotch, [0, 0, 255, 255]);
         assert.deepEqual(RESULT.clipPixels.outside, [0, 0, 255, 255]);
         assert.equal(RESULT.clipPixels.error, 0);
+        const CLIP_TRACE = RESULT.clipPipelineTrace;
+        assert.ok(CLIP_TRACE.draws.length >= 3);
+        assert.deepEqual(
+            CLIP_TRACE.draws.slice(0, 3).map(({ role }) => role),
+            ['non-radial', 'radial', 'non-radial'],
+            'linear/radial/linear draws preserve painter order inside the concave stencil clip',
+        );
+        assert.deepEqual(
+            CLIP_TRACE.uploads,
+            CLIP_TRACE.draws.map(({ count }) => count),
+            'each ordered vector submission uploads its matching vertex count',
+        );
+        assert.equal(CLIP_TRACE.submissions, CLIP_TRACE.draws.length);
+        assert.deepEqual(CLIP_TRACE.draws[0].uniformKeys, ['u_projection', 'u_texture', 'u_textured', 'u_whiteFlash']);
+        assert.deepEqual(CLIP_TRACE.draws[1].uniformKeys, [
+            'u_projection',
+            'u_radial',
+            'u_radial_params',
+            'u_texture',
+            'u_textured',
+            'u_whiteFlash',
+        ]);
+        assert.deepEqual(CLIP_TRACE.draws[2].uniformKeys, ['u_projection', 'u_texture', 'u_textured', 'u_whiteFlash']);
+        assert.equal(CLIP_TRACE.draws[1].radial, 1);
+        assert.ok(
+            CLIP_TRACE.draws.slice(0, 3).every((draw) => draw.textured === 1 && draw.stencil?.func === 'equal'),
+            'both selected programs retain gradient sampling and the active stencil test',
+        );
         assert.equal(RESULT.selfIntersectionRejected, true);
         assert.equal(RESULT.dynamicConcaveRejected, true);
         assert.equal(RESULT.savedClipDeletionRejected, true);
