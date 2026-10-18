@@ -23,7 +23,7 @@
     },
     {
       "file": "deterministic.js",
-      "sha256": "e8294735a58b115c6e1125b51523e8c53d3d2f1d8585f05161ef8a2238df1eb7"
+      "sha256": "1917d9766f1a1a2bbd4eab3bf214205979e7881c8cfb34cd1183f462a47ba62f"
     },
     {
       "file": "simloop.js",
@@ -43,7 +43,7 @@
     },
     {
       "file": "rollback.js",
-      "sha256": "a9313c6264b8a657c41ea85af6bb37a8b57840e78a68480a8948df479024327d"
+      "sha256": "db2b96d1cd68dc31d0fc96ad9702937fe35b009a6a63ddf0c507c4b2a1b5e054"
     },
     {
       "file": "camera.js",
@@ -79,7 +79,7 @@
     },
     {
       "file": "pixel-physics.js",
-      "sha256": "91015d0da8afdbed1f51393dd7a9568af93d08cca30014c8c9650067bcd0dbcc"
+      "sha256": "fdf0d5e8002863512a0cb74d9b9501e3f3bded0883fe03307c7c77e2e3bedc3b"
     }
   ],
   "assets": [

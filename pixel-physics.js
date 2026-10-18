@@ -1183,13 +1183,14 @@ var PixelWorld = class _PixelWorld {
     return body;
   }
   /* ---- 스냅샷 / 해시 (롤백, 리플레이, 락스텝 디싱크 검출) ---- */
-  snapshot() {
+  snapshot(copyGrid = true) {
+    const GRID = copyGrid ? (array) => array.slice() : (array) => array;
     const S_VALUE = {
-      g: this.g.slice(),
-      life: this.life.slice(),
-      u: this.u.slice(),
-      awake: this.awake.slice(),
-      reac: this.reac.slice(),
+      g: GRID(this.g),
+      life: GRID(this.life),
+      u: GRID(this.u),
+      awake: GRID(this.awake),
+      reac: GRID(this.reac),
       flag: this.flag,
       dir: this.dir,
       seed: this.seed,
@@ -1341,12 +1342,12 @@ var PixelWorld = class _PixelWorld {
           }
         }
       }
-      const Q = B_VALUE.sub, RAW = Q.n ? { n: Q.n, r: Q.rho / Q.n, x: Q.sx / Q.n, y: Q.sy / Q.n } : { n: 0, r: 0, x: B_VALUE.x, y: B_VALUE.y }, P_VALUE = B_VALUE._sm || (B_VALUE._sm = RAW);
-      P_VALUE.n += (RAW.n - P_VALUE.n) * 0.25;
-      if (RAW.n) {
-        P_VALUE.r += (RAW.r - P_VALUE.r) * 0.25;
-        P_VALUE.x += (RAW.x - P_VALUE.x) * 0.25;
-        P_VALUE.y += (RAW.y - P_VALUE.y) * 0.25;
+      const Q = B_VALUE.sub, RAW2 = Q.n ? { n: Q.n, r: Q.rho / Q.n, x: Q.sx / Q.n, y: Q.sy / Q.n } : { n: 0, r: 0, x: B_VALUE.x, y: B_VALUE.y }, P_VALUE = B_VALUE._sm || (B_VALUE._sm = RAW2);
+      P_VALUE.n += (RAW2.n - P_VALUE.n) * 0.25;
+      if (RAW2.n) {
+        P_VALUE.r += (RAW2.r - P_VALUE.r) * 0.25;
+        P_VALUE.x += (RAW2.x - P_VALUE.x) * 0.25;
+        P_VALUE.y += (RAW2.y - P_VALUE.y) * 0.25;
       }
       B_VALUE.sub = {
         n: P_VALUE.n,
@@ -2755,15 +2756,39 @@ var PixelRenderer = class {
 };
 
 // modules/deterministic/value-codec.js
+var TYPED_KINDS = [
+  [Int8Array, "getInt8", "setInt8", 1],
+  [Int16Array, "getInt16", "setInt16", 2],
+  [Uint16Array, "getUint16", "setUint16", 2],
+  [Int32Array, "getInt32", "setInt32", 4],
+  [Uint32Array, "getUint32", "setUint32", 4],
+  [Float32Array, "getFloat32", "setFloat32", 4],
+  [Float64Array, "getFloat64", "setFloat64", 8]
+];
+var FLOAT_KIND_START = 5;
+var SCRATCH_LIMIT = 8 * 1024 * 1024;
+function typedKindOf(value) {
+  for (let i = 0; i < TYPED_KINDS.length; i++) {
+    if (value instanceof TYPED_KINDS[i][0]) {
+      return i;
+    }
+  }
+  return -1;
+}
 function createValueCodec({
   format = "binary",
   maxBytes = 16 * 1024 * 1024,
   maxDepth = 128,
-  maxEntries = 1e6
+  maxEntries = 1e6,
+  omitUndefined = false
 } = {}) {
   if (!["binary", "json"].includes(format)) {
     throw new TypeError("Unknown codec format");
   }
+  if (typeof omitUndefined !== "boolean") {
+    throw new TypeError("omitUndefined must be boolean");
+  }
+  const KEYS_OF = (value) => Object.keys(value).filter((key) => !omitUndefined || value[key] !== void 0).sort();
   for (const LIMIT of [maxBytes, maxDepth, maxEntries]) {
     if (!Number.isSafeInteger(LIMIT) || LIMIT < 1) {
       throw new RangeError("Invalid codec limit");
@@ -2799,7 +2824,7 @@ function createValueCodec({
     }
     seen.add(value);
     let result;
-    if (value instanceof Uint8Array) {
+    if (value instanceof Uint8Array || typedKindOf(value) >= 0) {
       if (format === "json") {
         throw new TypeError("JSON codec does not support byte values");
       }
@@ -2811,7 +2836,7 @@ function createValueCodec({
         throw new TypeError("Plain records required");
       }
       result = {};
-      for (const KEY of Object.keys(value).sort()) {
+      for (const KEY of KEYS_OF(value)) {
         normalize(KEY, depth + 1, seen, budget);
         Object.defineProperty(result, KEY, {
           value: normalize(value[KEY], depth + 1, seen, budget),
@@ -2824,6 +2849,7 @@ function createValueCodec({
     seen.delete(value);
     return result;
   }
+  let scratch = null, encoding = false;
   const STRING_CACHE = /* @__PURE__ */ new Map();
   let cachedStringBytes = 0;
   function stringBytes(value) {
@@ -2857,7 +2883,9 @@ function createValueCodec({
       }
       return BYTES;
     }
-    let bytes = new Uint8Array(Math.min(1024, maxBytes));
+    const NESTED = encoding;
+    encoding = true;
+    let bytes = !NESTED && scratch ? scratch : new Uint8Array(Math.min(1024, maxBytes));
     let offset = 0;
     let view = new DataView(bytes.buffer);
     let entries = 0;
@@ -2937,6 +2965,28 @@ function createValueCodec({
           raw(v);
           return;
         }
+        const KIND = typedKindOf(v);
+        if (KIND >= 0) {
+          const [, , SET, SIZE] = TYPED_KINDS[KIND];
+          byte(10);
+          byte(KIND);
+          length(v.length);
+          reserve(v.length * SIZE);
+          for (let i = 0; i < v.length; i++) {
+            let element = v[i];
+            if (KIND >= FLOAT_KIND_START) {
+              if (!Number.isFinite(element)) {
+                throw new TypeError("Finite numbers required");
+              }
+              if (element === 0) {
+                element = 0;
+              }
+            }
+            view[SET](offset, element, true);
+            offset += SIZE;
+          }
+          return;
+        }
         SEEN.add(v);
         if (Array.isArray(v)) {
           byte(5);
@@ -2950,7 +3000,7 @@ function createValueCodec({
             throw new TypeError("Plain records required");
           }
           byte(6);
-          const KEYS = Object.keys(v).sort();
+          const KEYS = KEYS_OF(v);
           length(KEYS.length);
           for (const KEY of KEYS) {
             write(KEY, depth + 1);
@@ -2960,11 +3010,18 @@ function createValueCodec({
         SEEN.delete(v);
       }
     }
-    byte(82);
-    byte(86);
-    byte(1);
-    write(value);
-    return bytes.slice(0, offset);
+    try {
+      byte(82);
+      byte(86);
+      byte(1);
+      write(value);
+      return bytes.slice(0, offset);
+    } finally {
+      if (!NESTED) {
+        scratch = bytes.length <= SCRATCH_LIMIT ? bytes : null;
+        encoding = false;
+      }
+    }
   }
   function decode2(input) {
     const BYTES = input instanceof Uint8Array ? input : input instanceof ArrayBuffer ? new Uint8Array(input) : ArrayBuffer.isView(input) ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength) : null;
@@ -3054,6 +3111,25 @@ function createValueCodec({
         if (TAG === 7) {
           return raw().slice();
         }
+        if (TAG === 10) {
+          const KIND = byte();
+          if (KIND >= TYPED_KINDS.length) {
+            throw new TypeError("Invalid typed array kind");
+          }
+          const [TYPE, GET, , SIZE] = TYPED_KINDS[KIND];
+          const COUNT = length();
+          need(COUNT * SIZE);
+          const ARRAY = new TYPE(COUNT);
+          for (let i = 0; i < COUNT; i++) {
+            const ELEMENT = VIEW[GET](offset, true);
+            if (KIND >= FLOAT_KIND_START && (!Number.isFinite(ELEMENT) || Object.is(ELEMENT, -0))) {
+              throw new TypeError("Noncanonical typed array number");
+            }
+            ARRAY[i] = ELEMENT;
+            offset += SIZE;
+          }
+          return ARRAY;
+        }
         if (TAG !== 5 && TAG !== 6) {
           throw new TypeError("Invalid codec tag");
         }
@@ -3121,9 +3197,93 @@ var JSON_CODEC = createValueCodec({
 });
 
 // modules/pixel-physics/snapshot.js
-var CODEC = createValueCodec({ format: "binary", maxBytes: 64 << 20, maxEntries: 1 << 22, maxDepth: 64 });
-var TYPED = { Uint8Array, Int8Array, Uint16Array, Int16Array, Uint32Array, Int32Array, Float32Array, Float64Array };
+var CODEC = createValueCodec({
+  format: "binary",
+  maxBytes: 64 << 20,
+  maxEntries: 1 << 22,
+  maxDepth: 64,
+  omitUndefined: true
+});
 var GRID_KEYS = ["g", "life", "u", "awake", "reac"];
+var RAW = 0;
+var RUNS = 1;
+function encodeGrid(array) {
+  const LIMIT = array.length;
+  const OUT = new Uint8Array(LIMIT + 1);
+  OUT[0] = RUNS;
+  let used = 1;
+  for (let i = 0; i < LIMIT; ) {
+    const VALUE = array[i];
+    let end = i + 1;
+    while (end < LIMIT && array[end] === VALUE) {
+      end++;
+    }
+    let rest = end - i - 1;
+    if (used + 2 > LIMIT) {
+      used = LIMIT + 1;
+      break;
+    }
+    OUT[used++] = VALUE;
+    while (rest >= 128) {
+      if (used + 1 > LIMIT) {
+        used = LIMIT + 1;
+        break;
+      }
+      OUT[used++] = rest % 128 + 128;
+      rest = Math.floor(rest / 128);
+    }
+    if (used > LIMIT) {
+      break;
+    }
+    OUT[used++] = rest;
+    i = end;
+  }
+  if (used <= LIMIT) {
+    return OUT.slice(0, used);
+  }
+  const RAW_OUT = new Uint8Array(LIMIT + 1);
+  RAW_OUT[0] = RAW;
+  RAW_OUT.set(array, 1);
+  return RAW_OUT;
+}
+function decodeGrid(data, length) {
+  if (!(data instanceof Uint8Array) || data.length < 1) {
+    throw new RangeError("격자 형식이 잘못됐습니다.");
+  }
+  if (data[0] === RAW) {
+    if (data.length !== length + 1) {
+      throw new RangeError("격자 길이가 다릅니다.");
+    }
+    return data.slice(1);
+  }
+  if (data[0] !== RUNS) {
+    throw new RangeError("알 수 없는 격자 방식입니다.");
+  }
+  const OUT = new Uint8Array(length);
+  let at = 0, previous = -1;
+  for (let i = 1; i < data.length; ) {
+    const VALUE = data[i++];
+    let run = 0, scale = 1, part;
+    do {
+      if (i >= data.length || scale > 2 ** 28) {
+        throw new RangeError("격자 구간이 잘렸습니다.");
+      }
+      part = data[i++];
+      run += (part & 127) * scale;
+      scale *= 128;
+    } while (part >= 128);
+    if (VALUE === previous || part === 0 && scale > 128 || at + run + 1 > length) {
+      throw new RangeError("격자 구간이 비정규이거나 범위를 넘습니다.");
+    }
+    OUT.fill(VALUE, at, at + run + 1);
+    at += run + 1;
+    previous = VALUE;
+  }
+  if (at !== length) {
+    throw new RangeError("격자 길이가 다릅니다.");
+  }
+  return OUT;
+}
 function ref(o) {
   if (o === null || o === void 0) {
     return null;
@@ -3158,48 +3318,12 @@ function unpackCells(flat) {
   }
   return OUT;
 }
-function pack(v) {
-  if (v === null || typeof v !== "object") {
-    return v;
-  }
-  if (ArrayBuffer.isView(v)) {
-    const BYTES = new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
-    return { $: v.constructor.name, b: BYTES.slice() };
-  }
-  if (Array.isArray(v)) {
-    return v.map(pack);
-  }
-  const OUT = {};
-  for (const KEY of Object.keys(v)) {
-    if (v[KEY] !== void 0) {
-      OUT[KEY] = pack(v[KEY]);
-    }
-  }
-  return OUT;
-}
-function unpack(v) {
-  if (v === null || typeof v !== "object") {
-    return v;
-  }
-  if (Array.isArray(v)) {
-    return v.map(unpack);
-  }
-  if (typeof v.$ === "string") {
-    const TYPE = TYPED[v.$];
-    if (!TYPE) {
-      throw new TypeError("알 수 없는 typed array: " + v.$);
-    }
-    return new TYPE(v.b.slice().buffer);
-  }
-  const OUT = {};
-  for (const KEY of Object.keys(v)) {
-    OUT[KEY] = unpack(v[KEY]);
-  }
-  return OUT;
-}
 function savePixelWorld(world) {
-  const S = world.snapshot();
+  const S = world.snapshot(false);
   const OUT = { ...S, entRefs: S.entRefs.map(ref), proj: S.proj.map((p) => ({ ...p, src: ref(p.src) })) };
+  for (const KEY of GRID_KEYS) {
+    OUT[KEY] = encodeGrid(S[KEY]);
+  }
   OUT.ents = S.ents.map((e) => ({ ...e, _ride: ref(e._ride) }));
   if (S.bridge) {
     OUT.bridge = {
@@ -3208,14 +3332,12 @@ function savePixelWorld(world) {
       js: S.bridge.js.map((r) => ({ ...r, j: ref(r.j), a: ref(r.a), b: ref(r.b) }))
     };
   }
-  return CODEC.encode(pack(OUT));
+  return CODEC.encode(OUT);
 }
 function decode(world, bytes) {
-  const V = unpack(CODEC.decode(bytes));
+  const V = CODEC.decode(bytes);
   for (const KEY of GRID_KEYS) {
-    if (!(V[KEY] instanceof Uint8Array) || V[KEY].length !== world[KEY].length) {
-      throw new RangeError("월드 크기나 형식이 다른 snapshot입니다: " + KEY);
-    }
+    V[KEY] = decodeGrid(V[KEY], world[KEY].length);
   }
   if (Boolean(V.bridge) !== Boolean(world.bridge)) {
     throw new RangeError("강체 브리지 유무가 다른 snapshot입니다.");
