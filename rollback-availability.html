@@ -111,7 +111,7 @@
       return SIGNED(Number(BigInt(SIGNED(a)) * 1024n / BigInt(b)));
     }
   });
-  var VERSION = "0.12.0";
+  var VERSION = "0.12.1";
   var REPLAY_FORMAT_VERSION = "0.2.0-dev";
   var PROTOCOL_VERSION = 3;
   var CHUNK_SIZE = 16384;
@@ -8929,6 +8929,7 @@
       return SIGNED3(Number(BigInt(SIGNED3(a)) * 1024n / BigInt(b)));
     }
   });
+  var MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
   function createValueCodec2({
     format = "binary",
     maxBytes = 16 * 1024 * 1024,
