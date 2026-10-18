@@ -93,6 +93,35 @@ export interface PseudoRandomDistributionState {
     readonly consecutiveFailures: number;
     readonly pendingTrials: number;
 }
+export interface PseudoRandomDistributionJobState {
+    readonly version: 1;
+    readonly totalTrials: number;
+    readonly processedTrials: number;
+    readonly remainingTrials: number;
+    readonly successes: number;
+    readonly distributionState: PseudoRandomDistributionState;
+    readonly rngState: number;
+}
+export interface PseudoRandomDistributionJobStep {
+    readonly done: boolean;
+    /** 평가한 성공 간격 수입니다. 각 단위에서 RNG 표본과 누적분포 조회는 최대 한 번입니다. */
+    readonly unitsUsed: number;
+    readonly processedTrials: number;
+    readonly remainingTrials: number;
+    readonly successes: number;
+}
+export interface PseudoRandomDistributionJob {
+    readonly done: boolean;
+    readonly processedTrials: number;
+    readonly remainingTrials: number;
+    readonly successes: number;
+    /** 성공 간격을 maxUnits회 이하로 평가합니다. */
+    step(maxUnits: number): PseudoRandomDistributionJobStep;
+    /** PRD·SeededPRNG 상태, 추첨 cursor, 누적 성공 수를 저장합니다. */
+    capture(): PseudoRandomDistributionJobState;
+    /** 현재 PRD/RNG 상태를 유지하면서 job 점유만 해제합니다. */
+    dispose(): void;
+}
 export interface Uint32RandomSource {
     nextUint32(): number;
 }
@@ -104,6 +133,10 @@ export class PseudoRandomDistribution {
     roll(): boolean;
     /** 표본화한 실패 간격을 건너뛰며 배치의 성공 횟수를 반환합니다. */
     rollMany(draws: number): number;
+    /** 예산형 집계 job을 만듭니다. 재개 기능은 rng.state에 쓰기 가능한 own uint32 속성이 필요합니다. */
+    createRollJob(draws: number): PseudoRandomDistributionJob;
+    /** 저장한 job snapshot에서 PRD와 RNG 진행을 함께 복원합니다. */
+    restoreRollJob(state: PseudoRandomDistributionJobState): PseudoRandomDistributionJob;
     setProbability(probability: number): void;
     capture(): PseudoRandomDistributionState;
     restore(state: PseudoRandomDistributionState): void;

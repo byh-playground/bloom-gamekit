@@ -1,6 +1,9 @@
 import { exerciseFrameMetrics } from '../../modules/debug-tools/tests/frame-metrics.browser.mjs';
 import { exerciseBudgetedScheduler } from '../../modules/work-scheduler/tests/work-scheduler.browser.mjs';
-import { exercisePseudoRandomDistribution } from '../../modules/deterministic/tests/pseudo-random-distribution.mjs';
+import {
+    exercisePseudoRandomDistribution,
+    exercisePseudoRandomDistributionJobs,
+} from '../../modules/deterministic/tests/pseudo-random-distribution.mjs';
 /* global demo, inputPreviewDemo, renderProbe */
 import { runFrameChecks } from '../../modules/interpolation/tests/presentation-frame.browser.js';
 import { exerciseVectorAssets } from '../../modules/vector-assets/tests/runtime.browser.mjs';
@@ -27,6 +30,7 @@ import { createHash } from 'node:crypto';
 import { compileVectorAsset } from '../../modules/vector-assets/compiler.js';
 const ROOT = resolve('.');
 const DETERMINISTIC_RANDOMNESS = exercisePseudoRandomDistribution();
+const DETERMINISTIC_RANDOMNESS_JOBS = exercisePseudoRandomDistributionJobs();
 let retryFontRequests = 0;
 let sharedFontRequests = 0;
 let vectorSvgFetches = 0;
@@ -85,8 +89,10 @@ let browser;
 const REPORT = {
     stages: [],
     deterministicRandomness: DETERMINISTIC_RANDOMNESS,
+    deterministicRandomnessJobs: DETERMINISTIC_RANDOMNESS_JOBS,
 };
 REPORT.stages.push('deterministic PRD mean, variance, failure streaks, seeded replay, and state restore');
+REPORT.stages.push('bounded PRD job chunk invariance, capture/restore, and aggregate-only completion');
 try {
     browser = await chromium.launch({
         headless: true,

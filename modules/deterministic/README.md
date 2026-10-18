@@ -32,3 +32,36 @@ const SAVE = {
 ```
 
 `capture()`에는 입력 확률, 연속 실패 횟수, 다음 성공까지의 대기 시도가 들어갑니다. 이 상태와 함께 호출자가 소유한 `SeededPRNG.state`도 저장해야 재현 가능합니다. `restore()`는 난수 스트림을 변경하지 않습니다. `setProbability()`는 실패 횟수를 보존하고 아직 진행 중인 대기만 폐기해 새 확률에서 현재 실패 횟수 조건으로 다시 추출합니다. 실패 이력을 지우려면 `reset()`을 명시적으로 호출합니다. 일반/이벤트처럼 서로 다른 확률 흐름은 별도의 PRNG와 PRD 인스턴스로 나눌 수 있습니다.
+
+### 예산형 재개 job
+
+`rollMany(draws)`는 기존과 같이 한 번의 동기 호출에서 전체 배치를 끝냅니다. 큰 배치를 여러 게임 tick으로 나누려면 `createRollJob(draws)`를 사용합니다. `step(maxUnits)`는 성공 간격 평가를 최대 `maxUnits`회 수행하고 현재까지의 성공 누계와 남은 추첨 수를 반환합니다. job은 당첨 개별 기록을 만들지 않습니다.
+
+```js
+const RNG = new SeededPRNG(0x51f15e);
+const CRITICAL_HITS = new PseudoRandomDistribution({ probability: 0.02, rng: RNG });
+const JOB = CRITICAL_HITS.createRollJob(36_768_468_716);
+
+SCHEDULER.enqueue({
+    key: 'farm:stage-61-drops',
+    step({ maxUnits }) {
+        const PROGRESS = JOB.step(maxUnits);
+        return {
+            done: PROGRESS.done,
+            unitsUsed: PROGRESS.unitsUsed,
+            result: PROGRESS.done ? PROGRESS.successes : undefined,
+        };
+    },
+    onComplete({ result }) {
+        applyAggregateRewards(result);
+    },
+});
+```
+
+각 작업 단위는 성공까지의 wait 분포를 한 번 평가합니다. 확률이 0 또는 1이면 전체 구간을 O(1)로 처리하고, 그 외에는 uint32 난수를 최대 하나 소비해 사전 계산된 누적분포에서 이진 탐색합니다. 누적분포 임계값은 서로 다른 uint32 정수이므로 이진 탐색 비교는 작업 단위당 최대 32회입니다. 마지막의 미완성 성공 간격도 작업 단위 하나를 사용합니다. 따라서 `unitsUsed`는 호출 예산을 넘지 않고 성공 건수만 반환합니다.
+
+job을 중단하기 전에 `JOB.capture()` 결과를 게임 저장 상태에 원자적으로 기록합니다. snapshot은 버전, 전체·처리·잔여 trial, 누적 성공 수, PRD state, `rngState`만 포함합니다. 재개 시 새 `SeededPRNG`와 PRD를 만든 뒤 `restoreRollJob(snapshot)`을 호출하면 RNG 진행과 PRD 상태를 함께 복원합니다. snapshot은 일반 JSON 직렬화가 가능하며 범위와 trial 카운터를 복원 시 검증합니다. 재개 API는 RNG에 쓰기 가능한 own `state` 속성을 요구하므로 `SeededPRNG`를 사용해야 합니다. 일반 `roll()`/`rollMany()`는 기존처럼 `nextUint32()`만 구현한 RNG도 계속 받을 수 있습니다.
+
+job이 살아 있는 동안 해당 PRD의 직접 `roll()`, `rollMany()`, `reset()`, `setProbability()`와 별도 `capture()`/`restore()`는 거부됩니다. caller-owned RNG도 job 전용으로 두고 다른 코드에서 소비하지 마세요. snapshot을 저장한 뒤 `dispose()`하면 현재 PRD/RNG 위치를 보존하면서 job 점유만 해제합니다. chunk 크기는 같은 RNG 순서를 이어가므로 총 성공 수와 최종 PRD/RNG state를 바꾸지 않습니다.
+
+bounded step은 한 호출의 동기 점유 시간을 제한하지만 총 계산량을 줄이지는 않습니다. stage 61의 `36,768,468,716`회 추첨은 입력 평균 2%에서 약 `735,369,374`개 성공 간격 평가를 요구합니다. 보수적 상한으로 이진 탐색 비교만 약 `23,531,819,978`회(약 235억 회)까지 발생할 수 있어, 여러 tick에 나눠도 완료 시간은 매우 깁니다. Farm은 필요한 총 시도를 줄이거나 취소·진행 저장을 게임 정책으로 다뤄야 합니다. 추첨 수나 성공 수 cap, 근사 분포는 적용하지 않습니다.
