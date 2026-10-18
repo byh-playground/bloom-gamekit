@@ -1,5 +1,6 @@
 import { exerciseFrameMetrics } from '../../modules/debug-tools/tests/frame-metrics.browser.mjs';
 import { exerciseBudgetedScheduler } from '../../modules/work-scheduler/tests/work-scheduler.browser.mjs';
+import { exercisePseudoRandomDistribution } from '../../modules/deterministic/tests/pseudo-random-distribution.mjs';
 /* global demo, inputPreviewDemo, renderProbe */
 import { runFrameChecks } from '../../modules/interpolation/tests/presentation-frame.browser.js';
 import { exerciseVectorAssets } from '../../modules/vector-assets/tests/runtime.browser.mjs';
@@ -25,6 +26,7 @@ import { runRenderObjectChecks } from '../../modules/interpolation/tests/render-
 import { createHash } from 'node:crypto';
 import { compileVectorAsset } from '../../modules/vector-assets/compiler.js';
 const ROOT = resolve('.');
+const DETERMINISTIC_RANDOMNESS = exercisePseudoRandomDistribution();
 let retryFontRequests = 0;
 let sharedFontRequests = 0;
 let vectorSvgFetches = 0;
@@ -82,7 +84,9 @@ await new Promise((resolve) => SERVER.listen(0, '127.0.0.1', resolve));
 let browser;
 const REPORT = {
     stages: [],
+    deterministicRandomness: DETERMINISTIC_RANDOMNESS,
 };
+REPORT.stages.push('deterministic PRD mean, variance, failure streaks, seeded replay, and state restore');
 try {
     browser = await chromium.launch({
         headless: true,

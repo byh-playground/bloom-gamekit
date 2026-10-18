@@ -1,3 +1,7 @@
+## v0.12.1 (2026-10-18)
+
+`deterministic` 모듈에 호출자가 소유한 결정론적 uint32 스트림용 `PseudoRandomDistribution`을 추가합니다. 선형 hazard `min(1, n * C)`의 계수를 설정 확률의 장기 평균에 맞춰 계산하고, 성공 후 실패 횟수를 초기화하며, 성공 횟수만 필요한 배치에서는 실패 간격을 건너뜁니다. 저장 상태에는 설정 확률·실패 횟수·대기 시도가 들어가며 PRNG 상태는 게임이 별도로 저장합니다. 고정 브라우저 시나리오는 평균과 분산, 연속 실패, seed 재현, 상태 복원, 확률 경계와 입력 검증을 확인합니다. 낮은 확률에서도 배치 비용은 실제 표본 성공 수만큼 처리됩니다.
+
 ## v0.12.0 (2026-10-18)
 
 Adds a fixed-work-unit scheduler for resumable non-urgent tasks. It supports bounded per-task quanta, deterministic 4:2:1 priority rotation, duplicate-key coalescing, owner cancellation, and opt-in numeric diagnostics. Wall-clock timing never affects scheduling. The fixed browser scenario covers budget limits, resumption, fairness, cancellation, waiting-age counters, and FrameMetrics integration.
