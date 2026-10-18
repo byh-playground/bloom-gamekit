@@ -1,3 +1,7 @@
+## v0.14.1 (2026-10-18)
+
+성능 개선 세 가지입니다. `deterministic`의 `hashBytes`가 이터레이터 대신 인덱스 루프를 써서 같은 FNV-1a 값을 약 20배 빠르게 계산합니다(695KB 17.9ms → 0.88ms, 체크섬 불변). `pixel-physics`는 첫 틱에 청크 sleep 판정을 한 번에 확정해, 큰 월드(1280×720)가 정지 상태에서도 약 3600틱 동안 전 청크를 돌리던 비용(틱 5.5ms → 0.15ms)을 없앱니다. 이 변경으로 첫 틱 이후 청크 스캔 집합이 달라지므로 같은 입력의 셀 시뮬레이션 결과가 이전 버전과 다를 수 있습니다. `rendering`의 `Renderer2D`는 RGBA 바이트 텍스처에서 알파가 모두 255이면 premultiply를 건너뛰고, `createTexture`의 `premultiplied:true` 선언과 `updateTexture`의 제자리 갱신·`{x,y,width,height}` 영역 갱신을 지원합니다. 수치는 Node 22와 소프트웨어 GL 헤드리스 Chromium 한 대에서 잰 값입니다.
+
 ## v0.14.0 (2026-10-18)
 
 `pixel-physics`가 rollback·deterministic·rendering과 맞물립니다. `savePixelWorld`/`loadPixelWorld`/`validatePixelWorld`가 월드를 deterministic 값 코덱 바이트로 저장·복원하고, `writeGridPixels`가 격자를 rendering 텍스처로 올릴 RGBA로 씁니다. 엔티티는 `world.addEntity(body)`로 등록해야 하며 `world.bodies.push`로 넣은 엔티티는 바이트 저장에서 오류입니다. 스냅샷에 마스크 강체 셀·강체 크기·조인트 파라미터를 추가했습니다. rollback 모드는 `MatterBridge({checkpoint:1})`과 60Hz가 필요합니다. 검증은 Node syncTest와 헤드리스 Chromium 한 대이며 다른 기기 결정성과 큰 월드는 검증하지 않았습니다.

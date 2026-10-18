@@ -11,6 +11,7 @@ const SUITES = {
     previews: ['project/tests/previews.mjs'],
     core: [
         'modules/vector-assets/tests/compiler.mjs',
+        'modules/deterministic/tests/hash-bytes.mjs',
         'project/previews.mjs',
         'modules/rollback/scripts/local-fastpath-browser.mjs',
         'project/tests/browser.e2e.mjs',
