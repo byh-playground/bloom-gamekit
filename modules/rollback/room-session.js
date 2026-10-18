@@ -1767,6 +1767,11 @@ export class RoomSession {
                 this._incomingBytes -= MESSAGE.size ?? 0;
                 this._handle(MESSAGE.from, MESSAGE.value);
             }
+            if (this._departing) {
+                // A commit can remove this peer while draining messages; departure must bypass join deadlines.
+                this._flush();
+                return;
+            }
             if (
                 this._core &&
                 !this._transition &&

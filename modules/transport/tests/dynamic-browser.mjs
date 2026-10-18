@@ -557,6 +557,75 @@ export async function runDynamicRoomScenario({
         RESUMED_GUEST.queueCommand(new Uint8Array([8]));
         await until(() => ACTORS[0].state().commands.length === 6 + handoffCommands, 'post-refresh command');
         await checkpoint('guest-refresh');
+        let gracefulGuestReentry = null;
+        if (!available && !prepared && !paced && simulationMode === 'lockstep') {
+            const PRE_LEAVE_SESSIONS = SESSIONS.filter((s) => !s.closed);
+            assert(PRE_LEAVE_SESSIONS.length === 5, 'guest leave starts at full room capacity');
+            RESUMED_GUEST._startedAt = RESUMED_GUEST.clock() - RESUMED_GUEST.membership.transitionTimeoutMs - 1;
+            const ORIGINAL_SEND = RESUMED_GUEST._send.bind(RESUMED_GUEST);
+            let duplicatedCommitAck = false;
+            RESUMED_GUEST._send = (to, op, detail = {}) => {
+                ORIGINAL_SEND(to, op, detail);
+                if (op === 'committed' && !duplicatedCommitAck) {
+                    duplicatedCommitAck = true;
+                    ORIGINAL_SEND(to, op, detail);
+                }
+            };
+            const DEPARTURE = RESUMED_GUEST.leave();
+            const DEPARTURE_RESULT = DEPARTURE.then(
+                () => ({ resolved: true }),
+                (error) => ({ error }),
+            );
+            assert(RESUMED_GUEST.leave() === DEPARTURE, 'duplicate leave calls share one operation');
+            try {
+                await until(
+                    () =>
+                        RESUMED_GUEST.closed &&
+                        host.players.length === 4 &&
+                        SESSIONS.filter((s) => !s.closed).every((s) => s.players.length === 4),
+                    'graceful guest leave',
+                );
+                const DEPARTURE_OUTCOME = await DEPARTURE_RESULT;
+                assert(DEPARTURE_OUTCOME.resolved, 'graceful guest leave promise resolved');
+                assert(duplicatedCommitAck, 'departure sent a duplicate committed acknowledgement');
+                assert(
+                    EVENTS.filter((e) => e.reason === 'leave').length === PRE_LEAVE_SESSIONS.length,
+                    'duplicate leave acknowledgement committed exactly once per participant',
+                );
+                assert(
+                    [...SESSIONS.filter((s) => !s.closed), RESUMED_GUEST].every(
+                        (s) => ACTORS[SESSIONS.indexOf(s)].state().leaves === 1,
+                    ),
+                    'host and guests apply the graceful leave exactly once',
+                );
+                await checkpoint('graceful-guest-left');
+                const REENTRY = await add('join', 5);
+                assert(
+                    REENTRY.localPlayerId !== RESUMED_GUEST.localPlayerId,
+                    'same-room re-entry uses a fresh identity',
+                );
+                await until(
+                    () =>
+                        REENTRY.ready &&
+                        host.players.length === 5 &&
+                        SESSIONS.filter((s) => !s.closed).every((s) => s.ready && s.players.length === 5),
+                    'same-room guest re-entry',
+                );
+                await checkpoint('graceful-guest-rejoined');
+                assert(
+                    ACTORS[0].state().joins === 6 && ACTORS[0].state().leaves === 1,
+                    're-entry updates host roster once',
+                );
+                gracefulGuestReentry = {
+                    duplicateLeaveCalls: 2,
+                    duplicateCommitAcknowledgements: 2,
+                    playersAfterLeave: 4,
+                    playersAfterReentry: 5,
+                };
+            } finally {
+                RESUMED_GUEST._send = ORIGINAL_SEND;
+            }
+        }
         const OLD_HOST_ID = host.localPlayerId;
         host.close();
         host = await add('host', 0);
@@ -591,8 +660,12 @@ export async function runDynamicRoomScenario({
         const PRIOR = Math.max(...SESSIONS.filter((s) => !s.closed).map((s) => s.tick));
         await until(() => SESSIONS.filter((s) => !s.closed).every((s) => s.tick >= PRIOR + 25), 'successor simulation');
         await checkpoint('coordinator-left');
+        const EXPECTED_JOINS = gracefulGuestReentry ? 6 : 5;
+        const EXPECTED_LEAVES = gracefulGuestReentry ? 2 : 1;
         assert(
-            ACTORS.filter((_a, i) => !SESSIONS[i].closed).every((a) => a.state().joins === 5 && a.state().leaves === 1),
+            ACTORS.filter((_a, i) => !SESSIONS[i].closed).every(
+                (a) => a.state().joins === EXPECTED_JOINS && a.state().leaves === EXPECTED_LEAVES,
+            ),
             'membership exactly-once',
         );
         return {
@@ -610,6 +683,7 @@ export async function runDynamicRoomScenario({
             metrics: SESSIONS.map((s) => s.metrics),
             snapshotSaves: ACTORS.map((a) => a.saves),
             confirmedPresentations: ACTORS.map((a) => a.presentations),
+            gracefulGuestReentry,
             events: EVENTS,
         };
     } finally {
