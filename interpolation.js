@@ -9,8 +9,13 @@ function bufferInterval(track, old, { origin, timeMs, previousTimeMs, stepMs, de
   track.bornAt = continuous ? old.bornAt : reset ? origin + timeMs - delayMs : origin + START;
   track.removedAt = Infinity;
   track.buffered = true;
-  const HISTORY = continuous ? [...old.history ?? [], old] : [];
-  track.history = HISTORY.slice(-Math.ceil(delayMs / stepMs) - 2).map(({ history, ...item }) => item);
+  const HISTORY = continuous ? old.history ?? [] : [];
+  if (continuous) {
+    old.history = void 0;
+    HISTORY.push(old);
+    HISTORY.splice(0, Math.max(0, HISTORY.length - Math.ceil(delayMs / stepMs) - 2));
+  }
+  track.history = HISTORY;
   return START;
 }
 function intervalAt(track, at) {
