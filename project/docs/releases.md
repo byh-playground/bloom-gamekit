@@ -1,3 +1,7 @@
+## v0.15.1 (2026-10-18)
+
+`rendering`의 `VectorRenderer`가 일반 solid/linear gradient 드로우에서 radial gradient 계산을 사용하지 않는 fragment shader pipeline을 선택합니다. radial shader와 픽셀, painter order, texture, clipping 동작은 기존 계약을 유지합니다. 기존 Chromium/WebGL E2E에서 pipeline 전환, radial 결과, clipping, context 복원과 자원 정리를 확인했습니다. SwiftShader 합성 측정은 mixed alternating에서 프레임 중앙값 40.32ms에서 20.77ms로 줄었고, radial-only는 127.60ms에서 128.04ms였습니다. 실물 GPU와 모바일 기기 성능은 검증하지 않았습니다.
+
 ## v0.15.0 (2026-10-18)
 
 `pixel-physics`에 열린 월드(창 이동)와 뷰포트 렌더를 추가합니다. 격자는 고정 크기 창이고 큰 맵은 게임의 맵 데이터입니다. `shiftWindow(dx, dy, {load, evict})`가 셀·청크 플래그·발사체·엔티티·강체·핀·고정 조인트·정적 충돌체를 16의 배수 칸만큼 함께 옮기고, `scrollTo(focusX, focusY, hooks)`가 `stream: {margin, step}` 설정(미리 불러올 거리와 한 번에 옮기는 단위)에 따라 필요할 때만 옮깁니다. `readRegion`/`writeRegion`으로 맵 데이터를 일괄 읽고 쓰며, `hashCell(seed, x, y)`는 절대 좌표 기반 해시입니다. `writeGridPixels`와 `PixelRenderer`는 `view` 사각형만 쓰고 올리며(격자 밖은 배경), 음영은 절대 좌표 기준이라 창이 움직여도 같은 셀은 같은 색입니다. `enableCollapse`에 `anchorTop` 옵션을 추가했습니다(기본 꺼짐).
