@@ -1,3 +1,7 @@
+## v0.15.2 (2026-10-19)
+
+`interpolation`의 지연 버퍼(`delayMs > 0`)가 캡처마다 엔티티별로 이력 항목을 구조분해로 복사하던 것을 없앴습니다. 교체되는 트랙은 다시 바뀌지 않으므로 이력 링에 그대로 넣고 자체 history만 떼어냅니다. 샘플 결과·시간·세대·reset 계약은 그대로입니다. 이전/이후 구현의 `sampleInto` 출력을 delay 0/50/100/200ms, reset·teleport·generation·revision 변경·소멸이 섞인 40개 무작위 시나리오로 비교해 불일치가 없었고, 100 엔티티 × 41 필드 · delay 50ms · 3000 캡처 마이크로벤치는 840ms에서 625ms로 줄었습니다(Node 22 한 대). 게임(budmori-io) 85마리 헤드리스 프로파일에서는 이 함수와 GC가 CPU 바쁜 시간의 약 절반이었습니다. 브라우저 E2E와 실기기는 검증하지 않았습니다.
+
 ## v0.15.1 (2026-10-18)
 
 `rendering`의 `VectorRenderer`가 일반 solid/linear gradient 드로우에서 radial gradient 계산을 사용하지 않는 fragment shader pipeline을 선택합니다. radial shader와 픽셀, painter order, texture, clipping 동작은 기존 계약을 유지합니다. 기존 Chromium/WebGL E2E에서 pipeline 전환, radial 결과, clipping, context 복원과 자원 정리를 확인했습니다. SwiftShader 합성 측정은 mixed alternating에서 프레임 중앙값 40.32ms에서 20.77ms로 줄었고, radial-only는 127.60ms에서 128.04ms였습니다. 실물 GPU와 모바일 기기 성능은 검증하지 않았습니다.
