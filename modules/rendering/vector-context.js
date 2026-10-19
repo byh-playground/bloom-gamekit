@@ -80,7 +80,25 @@ function finite(value, name) {
         throw new TypeError(`${name} must be finite`);
     }
 }
+// CSS color strings parse the same every time, and games repeat a small palette every frame.
+// currentcolor and browser-resolved names depend on the document, so only pure parses are cached.
+const COLOR_CACHE = new Map();
+function cacheColor(key, rgbaValue) {
+    if (typeof key === 'string') {
+        if (COLOR_CACHE.size >= 512) {
+            COLOR_CACHE.clear();
+        }
+        COLOR_CACHE.set(key, rgbaValue);
+    }
+    return rgbaValue.slice();
+}
 export function normalizeColor(value) {
+    if (typeof value === 'string') {
+        const HIT = COLOR_CACHE.get(value);
+        if (HIT) {
+            return HIT.slice();
+        }
+    }
     if (Array.isArray(value) || ArrayBuffer.isView(value)) {
         if (value.length !== 4) {
             throw new TypeError('RGBA paint must have four channels');
@@ -106,12 +124,12 @@ export function normalizeColor(value) {
         if (hex.length < 5) {
             hex = [...hex].map((c) => c + c).join('');
         }
-        return [
+        return cacheColor(value, [
             parseInt(hex.slice(0, 2), 16) / 255,
             parseInt(hex.slice(2, 4), 16) / 255,
             parseInt(hex.slice(4, 6), 16) / 255,
             hex.length === 8 ? parseInt(hex.slice(6, 8), 16) / 255 : 1,
-        ];
+        ]);
     }
     const RGB = text.match(/^rgba?\((.*)\)$/);
     if (RGB) {
@@ -132,7 +150,7 @@ export function normalizeColor(value) {
         if (OUT.some(Number.isNaN)) {
             throw new TypeError(`Invalid CSS color: ${value}`);
         }
-        return OUT;
+        return cacheColor(value, OUT);
     }
     const HSL = text.match(/^hsla?\((.*)\)$/);
     if (HSL) {
@@ -155,7 +173,7 @@ export function normalizeColor(value) {
             const K = (n + H * 12) % 12;
             return L - S * Math.min(L, 1 - L) * Math.max(-1, Math.min(K - 3, 9 - K, 1));
         };
-        return [F(0), F(8), F(4), A];
+        return cacheColor(value, [F(0), F(8), F(4), A]);
     }
     if (typeof document !== 'undefined' && document.createElement && document.body) {
         const PROBE = document.createElement('span');

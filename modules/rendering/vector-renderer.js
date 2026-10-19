@@ -24,8 +24,14 @@ const FINITE = (n, label) => {
     }
 };
 function rgba(value) {
-    if (!value || value.length !== 4 || Array.from(value).some((n) => !Number.isFinite(n) || n < 0 || n > 1)) {
+    if (!value || value.length !== 4) {
         throw new TypeError('RGBA channels must be in [0,1]');
+    }
+    for (let i = 0; i < 4; i++) {
+        const N = value[i];
+        if (!Number.isFinite(N) || N < 0 || N > 1) {
+            throw new TypeError('RGBA channels must be in [0,1]');
+        }
     }
     return value;
 }
