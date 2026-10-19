@@ -1246,8 +1246,14 @@ var FINITE = (n, label) => {
   }
 };
 function rgba(value) {
-  if (!value || value.length !== 4 || Array.from(value).some((n) => !Number.isFinite(n) || n < 0 || n > 1)) {
+  if (!value || value.length !== 4) {
     throw new TypeError("RGBA channels must be in [0,1]");
+  }
+  for (let i = 0; i < 4; i++) {
+    const N = value[i];
+    if (!Number.isFinite(N) || N < 0 || N > 1) {
+      throw new TypeError("RGBA channels must be in [0,1]");
+    }
   }
   return value;
 }
@@ -4530,7 +4536,23 @@ function finite(value, name) {
     throw new TypeError(`${name} must be finite`);
   }
 }
+var COLOR_CACHE = /* @__PURE__ */ new Map();
+function cacheColor(key, rgbaValue) {
+  if (typeof key === "string") {
+    if (COLOR_CACHE.size >= 512) {
+      COLOR_CACHE.clear();
+    }
+    COLOR_CACHE.set(key, rgbaValue);
+  }
+  return rgbaValue.slice();
+}
 function normalizeColor(value) {
+  if (typeof value === "string") {
+    const HIT = COLOR_CACHE.get(value);
+    if (HIT) {
+      return HIT.slice();
+    }
+  }
   if (Array.isArray(value) || ArrayBuffer.isView(value)) {
     if (value.length !== 4) {
       throw new TypeError("RGBA paint must have four channels");
@@ -4554,12 +4576,12 @@ function normalizeColor(value) {
     if (hex.length < 5) {
       hex = [...hex].map((c) => c + c).join("");
     }
-    return [
+    return cacheColor(value, [
       parseInt(hex.slice(0, 2), 16) / 255,
       parseInt(hex.slice(2, 4), 16) / 255,
       parseInt(hex.slice(4, 6), 16) / 255,
       hex.length === 8 ? parseInt(hex.slice(6, 8), 16) / 255 : 1
-    ];
+    ]);
   }
   const RGB = text.match(/^rgba?\((.*)\)$/);
   if (RGB) {
@@ -4573,7 +4595,7 @@ function normalizeColor(value) {
     if (OUT.some(Number.isNaN)) {
       throw new TypeError(`Invalid CSS color: ${value}`);
     }
-    return OUT;
+    return cacheColor(value, OUT);
   }
   const HSL = text.match(/^hsla?\((.*)\)$/);
   if (HSL) {
@@ -4586,7 +4608,7 @@ function normalizeColor(value) {
       const K = (n + H * 12) % 12;
       return L - S * Math.min(L, 1 - L) * Math.max(-1, Math.min(K - 3, 9 - K, 1));
     };
-    return [F(0), F(8), F(4), A];
+    return cacheColor(value, [F(0), F(8), F(4), A]);
   }
   if (typeof document !== "undefined" && document.createElement && document.body) {
     const PROBE = document.createElement("span");
