@@ -14,8 +14,15 @@ export function bufferInterval(
     track.bornAt = continuous ? old.bornAt : reset ? origin + timeMs - delayMs : origin + START;
     track.removedAt = Infinity;
     track.buffered = true;
-    const HISTORY = continuous ? [...(old.history ?? []), old] : [];
-    track.history = HISTORY.slice(-Math.ceil(delayMs / stepMs) - 2).map(({ history, ...item }) => item);
+    // A buffered track is replaced, never mutated, so the retired track joins the ring as-is. Detaching its own
+    // history keeps the chain flat without copying every field of every entity on every capture.
+    const HISTORY = continuous ? (old.history ?? []) : [];
+    if (continuous) {
+        old.history = undefined;
+        HISTORY.push(old);
+        HISTORY.splice(0, Math.max(0, HISTORY.length - Math.ceil(delayMs / stepMs) - 2));
+    }
+    track.history = HISTORY;
     return START;
 }
 export function intervalAt(track, at) {
