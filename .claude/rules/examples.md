@@ -1,7 +1,7 @@
 ---
 paths:
-  - "modules/*/examples/**"
-  - "project/previews/**"
+    - 'modules/*/examples/**'
+    - 'project/previews/**'
 ---
 
 # 예제 작성 규칙
