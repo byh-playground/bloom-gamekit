@@ -15,14 +15,23 @@ float radialParameter(vec2 q){
   if(r0+dr*t0>0.0)chosen=t0;if(r0+dr*t1>0.0)chosen=max(chosen,t1);return chosen;
 }
 void main(){if(u_radial>1.5)discard;float t=u_radial>0.5?radialParameter(v_uv):0.0;if(u_radial>0.5&&t< -1000.0)discard;vec2 uv=u_radial>0.5?vec2(clamp(t,0.0,1.0),0.5):v_uv;vec4 texel=mix(vec4(1.0),texture2D(u_texture,uv),u_textured);float a=texel.a*v_color.a;vec3 rgb=mix(texel.rgb*v_color.rgb*v_color.a,vec3(a),u_whiteFlash);gl_FragColor=vec4(rgb,a);}`;
+const NON_RADIAL_FRAGMENT = `precision mediump float; uniform sampler2D u_texture; uniform float u_textured; uniform float u_whiteFlash;
+varying vec2 v_uv; varying vec4 v_color;
+void main(){vec4 texel=mix(vec4(1.0),texture2D(u_texture,v_uv),u_textured);float a=texel.a*v_color.a;vec3 rgb=mix(texel.rgb*v_color.rgb*v_color.a,vec3(a),u_whiteFlash);gl_FragColor=vec4(rgb,a);}`;
 const FINITE = (n, label) => {
     if (!Number.isFinite(n)) {
         throw new TypeError(`${label} must be finite`);
     }
 };
 function rgba(value) {
-    if (!value || value.length !== 4 || Array.from(value).some((n) => !Number.isFinite(n) || n < 0 || n > 1)) {
+    if (!value || value.length !== 4) {
         throw new TypeError('RGBA channels must be in [0,1]');
+    }
+    for (let i = 0; i < 4; i++) {
+        const N = value[i];
+        if (!Number.isFinite(N) || N < 0 || N > 1) {
+            throw new TypeError('RGBA channels must be in [0,1]');
+        }
     }
     return value;
 }
@@ -372,6 +381,44 @@ export class VectorRenderer {
         this.canvas.addEventListener('webglcontextlost', this.onLost);
         this.canvas.addEventListener('webglcontextrestored', this.onRestored);
         this.projection = new Float32Array([2 / this.canvas.width, 0, 0, 0, -2 / this.canvas.height, 0, -1, 1, 1]);
+        this.nonRadialPipeline = null;
+        try {
+            this.nonRadialPipeline = device.createPipeline({
+                vertex: VERTEX,
+                fragment: NON_RADIAL_FRAGMENT,
+                stride: 32,
+                attributes: [
+                    {
+                        name: 'a_position',
+                        size: 2,
+                        offset: 0,
+                    },
+                    {
+                        name: 'a_uv',
+                        size: 2,
+                        offset: 8,
+                    },
+                    {
+                        name: 'a_color',
+                        size: 4,
+                        offset: 16,
+                    },
+                ],
+                uniforms: {
+                    u_projection: 'matrix3fv',
+                    u_texture: '1i',
+                    u_textured: '1f',
+                    u_whiteFlash: '1f',
+                },
+            });
+        } catch (error) {
+            try {
+                this.dispose();
+            } catch {
+                // Preserve the original pipeline creation error.
+            }
+            throw error;
+        }
     }
     _frame() {
         if (this.state !== 'ready') {
@@ -883,19 +930,24 @@ export class VectorRenderer {
         }
         this.device.stats.vectorSubmissions++;
         const TEXTURE = this.activeTexture ?? this.white,
-            GRADIENT = this.activeGradient;
+            GRADIENT = this.activeGradient,
+            RADIAL = this.activeRadial;
         this.device.uploadVertices(this.buffer, this.vertices.subarray(0, this.count * 8));
         this.device.draw({
-            pipeline: this.pipeline,
+            pipeline: RADIAL ? this.pipeline : this.nonRadialPipeline,
             buffer: this.buffer,
             count: this.count,
             uniforms: {
                 u_projection: this.projection,
                 u_texture: 0,
                 u_textured: TEXTURE === this.white ? 0 : 1,
-                u_radial: this.activeRadial ? (GRADIENT?.radialEmpty ? 2 : 1) : 0,
-                u_radial_params: GRADIENT?.radialParams ?? [0, 0, 0, 0],
                 u_whiteFlash: this.activeWhiteFlash ? 1 : 0,
+                ...(RADIAL
+                    ? {
+                          u_radial: GRADIENT?.radialEmpty ? 2 : 1,
+                          u_radial_params: GRADIENT?.radialParams ?? [0, 0, 0, 0],
+                      }
+                    : {}),
             },
             textures: [TEXTURE],
             blend: 'source-over',
@@ -1430,9 +1482,16 @@ export class VectorRenderer {
         this.device.deleteVertexBuffer(this.dynamicClipBuffer);
         this.device.deleteVertexBuffer(this.buffer);
         this.device.deletePipeline(this.clipPipeline);
+        this.device.deletePipeline(this.nonRadialPipeline);
         this.device.deletePipeline(this.pipeline);
         this.device.deleteTexture(this.white);
-        this.buffer = this.dynamicClipBuffer = this.clipPipeline = this.pipeline = this.white = null;
+        this.buffer =
+            this.dynamicClipBuffer =
+            this.clipPipeline =
+            this.nonRadialPipeline =
+            this.pipeline =
+            this.white =
+                null;
         this.state = 'disposed';
     }
 }

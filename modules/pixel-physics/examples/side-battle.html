@@ -250,6 +250,23 @@
                 background: var(--ink);
                 color: #101215;
             }
+            .screen details {
+                max-width: 560px;
+                color: var(--dim);
+                font-size: 13px;
+                text-align: left;
+            }
+            .screen summary {
+                cursor: pointer;
+                text-align: center;
+            }
+            .screen ul {
+                margin: 6px 0 0;
+                padding-left: 20px;
+                max-height: 34vh;
+                overflow: auto;
+                touch-action: pan-y;
+            }
             .touch-only {
                 display: none;
             }
@@ -328,18 +345,22 @@
 
         <div id="title" class="screen">
             <h1>PixelPhysics 횡스크롤 전투</h1>
-            <p>
-                공기 분사로 몸을 튕겨 구덩이와 벽을 넘고, 흙을 뭉쳐 길을 만들거나 던져 적을 쓸어 낸 뒤 오른쪽 끝 둥지를
-                부수세요.
-            </p>
+            <p><b>분사와 흙으로 길을 만들고 적을 쓸어 내 오른쪽 둥지를 부수세요.</b></p>
             <p class="desk-only">
-                ← → / A D 이동 · W / Space 점프 · 좌클릭 공기 분사(0.5초 쿨다운) · 우클릭 꾹 흙 뭉치 · 흙을 쥔 채 좌클릭
-                던지기 · R 다시 시작
+                조작: ← → / A D 이동, W / Space 점프, 마우스 좌클릭 분사, 우클릭 흙 붙잡기, R 다시 시작.
             </p>
-            <p class="touch-only">
-                ◀ ▶ 이동 · ▲ 점프 · 위쪽 도구를 고른 뒤 화면을 누르세요. 분사는 탭, 흙은 누르고 있기, 던지기는 모았다가
-                손을 떼면 날아갑니다.
-            </p>
+            <p class="touch-only">조작: ◀ ▶ 이동, ▲ 점프, 위쪽 도구를 고른 뒤 화면을 누릅니다.</p>
+            <details>
+                <summary>규칙과 예외</summary>
+                <ul>
+                    <li>분사는 클릭한 방향으로 공기를 뿜어 몸을 튕기며, 연료를 쓰고 쓴 뒤 0.5초 쿨다운이 있습니다.</li>
+                    <li>흙은 누르는 동안 머리만 한 뭉치를 붙잡고, 놓으면 모래처럼 떨어져 지형과 합쳐집니다.</li>
+                    <li>흙을 붙잡은 채 좌클릭하면 뭉친 채로 날아가다 부딪히면 흩어집니다(터치는 던지기 도구).</li>
+                    <li>흙 더미에 가까이 분사하면 흙이 흩날립니다.</li>
+                    <li>가볍고 약한 슬라임은 쉽게 밀리고, 무겁고 단단한 딱정벌레는 큰 충격량이 필요합니다.</li>
+                    <li>쓰러지면 지나온 체크포인트에서 되살아나고, 적을 처치하면 체력이 조금 돌아옵니다.</li>
+                </ul>
+            </details>
             <button id="start">시작</button>
         </div>
         <div id="end" class="screen" hidden>
