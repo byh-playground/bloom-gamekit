@@ -2,204 +2,356 @@
 <html lang="ko">
     <head>
         <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-        <title>PixelPhysics 소환수 전투 시험판</title>
+        <meta
+            name="viewport"
+            content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+        />
+        <meta name="mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-capable" content="yes" />
+        <meta name="theme-color" content="#07080a" />
+        <title>PixelPhysics 횡스크롤 전투</title>
         <style>
             :root {
-                --bg: #e9e7e2;
-                --fg: #1b1d21;
-                --mut: #5d6168;
-                --panel: #f6f5f2;
-                --line: #cfccc5;
-                --accent: #3b82f6;
-                color-scheme: light;
-            }
-            @media (prefers-color-scheme: dark) {
-                :root {
-                    --bg: #111316;
-                    --fg: #e8e8e6;
-                    --mut: #9a9ea6;
-                    --panel: #1a1d21;
-                    --line: #2d3138;
-                    color-scheme: dark;
-                }
+                --ink: #eef0f2;
+                --dim: #a4a9b2;
+                --panel: rgba(18, 20, 24, 0.62);
+                --line: rgba(255, 255, 255, 0.22);
+                --hp: #ef5350;
+                --fuel: #5fb4ff;
+                --soil: #d9a35a;
+                --pad: 76px;
+                color-scheme: dark;
             }
             * {
                 box-sizing: border-box;
             }
+            html,
             body {
                 margin: 0;
-                padding: 16px;
-                padding-left: max(16px, env(safe-area-inset-left));
-                padding-right: max(16px, env(safe-area-inset-right));
-                background: var(--bg);
-                color: var(--fg);
+                height: 100%;
+                overflow: hidden;
+                background: #07080a;
+                overscroll-behavior: none;
+                touch-action: none;
+            }
+            body {
+                position: fixed;
+                inset: 0;
+                color: var(--ink);
                 font:
                     15px/1.5 system-ui,
                     -apple-system,
                     'Apple SD Gothic Neo',
                     'Noto Sans KR',
                     sans-serif;
-            }
-            main {
-                max-width: 900px;
-                margin: 0 auto;
-            }
-            h1 {
-                font-size: 20px;
-                margin: 0 0 4px;
-            }
-            p {
-                margin: 0 0 10px;
-                color: var(--mut);
-            }
-            .stage {
-                position: relative;
-                width: min(100%, calc(56vh * 160 / 80));
-                margin: 0 auto;
-            }
-            canvas {
-                display: block;
-                width: 100%;
-                aspect-ratio: 160/80;
-                image-rendering: pixelated;
-                touch-action: none;
-                border: 1px solid var(--line);
-                border-radius: 6px;
-            }
-            #o {
-                position: absolute;
-                inset: 0;
-                height: 100%;
-                aspect-ratio: auto;
-                pointer-events: none;
-                border: 0;
-                image-rendering: auto;
-            }
-            button {
-                font: inherit;
-                color: var(--fg);
-                background: var(--panel);
-                border: 1px solid var(--line);
-                border-radius: 6px;
-                padding: 6px 12px;
-                cursor: pointer;
-                touch-action: manipulation;
                 user-select: none;
                 -webkit-user-select: none;
                 -webkit-touch-callout: none;
                 -webkit-tap-highlight-color: transparent;
             }
-            #hud {
-                margin: 8px 0 4px;
-                text-align: center;
-                font-weight: 600;
+            #game {
+                position: absolute;
+                inset: 0;
+                display: grid;
+                place-items: center;
             }
-            #mana {
+            /* 게임 화면은 높이 80칸에 가로는 화면 비율(2:1~2.4:1)에 맞춰 160~192칸을 보여 줍니다. 그보다 좁으면 남는 곳은 검은 띠로 둡니다. */
+            .stage {
+                position: relative;
+                width: min(100vw, calc(100vh * var(--aspect, 2)));
+                aspect-ratio: var(--aspect, 2);
+            }
+            @supports (height: 100dvh) {
+                .stage {
+                    width: min(100vw, calc(100dvh * var(--aspect, 2)));
+                }
+            }
+            .stage canvas {
+                position: absolute;
+                inset: 0;
+                width: 100%;
+                height: 100%;
+                image-rendering: pixelated;
+                touch-action: none;
+            }
+            #o {
+                pointer-events: none;
+                image-rendering: auto;
+            }
+            button {
+                font: inherit;
+                color: var(--ink);
+                background: var(--panel);
+                border: 1px solid var(--line);
+                border-radius: 12px;
+                padding: 6px 12px;
+                cursor: pointer;
+                touch-action: none;
+                user-select: none;
+                -webkit-user-select: none;
+                -webkit-touch-callout: none;
+                -webkit-tap-highlight-color: transparent;
+                backdrop-filter: blur(4px);
+            }
+            button.on,
+            button.down {
+                background: var(--ink);
+                color: #101215;
+            }
+
+            /* 왼쪽 위 상태 표시 */
+            #hud {
+                position: fixed;
+                top: max(10px, env(safe-area-inset-top));
+                left: max(12px, env(safe-area-inset-left));
+                width: min(34vw, 190px);
+                display: grid;
+                gap: 5px;
+                font-size: 12px;
+                font-weight: 600;
+                text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+                pointer-events: none;
+            }
+            .stat {
+                display: grid;
+                grid-template-columns: 30px 1fr;
+                align-items: center;
+                gap: 6px;
+            }
+            .stat i {
+                display: block;
                 height: 8px;
-                margin: 0 auto 8px;
-                max-width: 560px;
-                background: var(--line);
                 border-radius: 4px;
+                background: rgba(0, 0, 0, 0.5);
+                border: 1px solid var(--line);
                 overflow: hidden;
             }
-            #manabar {
+            .stat b {
                 display: block;
                 height: 100%;
                 width: 0;
-                background: var(--accent);
+            }
+            #hpBar {
+                background: var(--hp);
+            }
+            #fuelBar {
+                background: var(--fuel);
+            }
+            #soilBar {
+                background: var(--soil);
+            }
+            #toast {
+                position: fixed;
+                top: max(10px, env(safe-area-inset-top));
+                left: 50%;
+                transform: translateX(-50%);
+                padding: 4px 14px;
+                border-radius: 999px;
+                background: var(--panel);
+                font-weight: 700;
+                pointer-events: none;
+            }
+            #toast:empty {
+                display: none;
+            }
+
+            /* 오른쪽 위: 도구 선택(터치) + 전체 화면·다시 시작 */
+            #top {
+                position: fixed;
+                top: max(10px, env(safe-area-inset-top));
+                right: max(12px, env(safe-area-inset-right));
+                display: flex;
+                gap: 8px;
+            }
+            #top button {
+                min-width: 48px;
+                min-height: 48px;
             }
             #tools {
-                display: grid;
-                grid-template-columns: 1fr 1fr 1fr;
+                display: none;
                 gap: 8px;
-                margin: 8px auto;
-                max-width: 560px;
             }
-            #tools button {
+            .touch #tools {
+                display: flex;
+            }
+            .touch #top button {
                 min-height: 56px;
             }
-            #tools button.on {
-                background: var(--fg);
-                color: var(--bg);
+            .touch #tools button {
+                min-width: 64px;
             }
-            #summons,
+
+            /* 아래쪽 이동·점프 패드(터치) */
             #pad {
-                display: grid;
-                gap: 8px;
-                margin: 8px auto;
+                position: fixed;
+                bottom: max(14px, env(safe-area-inset-bottom));
+                left: max(16px, env(safe-area-inset-left));
+                display: none;
+                gap: 12px;
+            }
+            #jump {
+                position: fixed;
+                bottom: max(14px, env(safe-area-inset-bottom));
+                right: max(18px, env(safe-area-inset-right));
+                display: none;
+            }
+            .touch #pad {
+                display: flex;
+            }
+            .touch #jump {
+                display: block;
+            }
+            #pad button,
+            #jump {
+                width: var(--pad);
+                height: var(--pad);
+                font-size: 28px;
+                padding: 0;
+                border-radius: 50%;
+                opacity: 0.7;
+            }
+            #jump {
+                width: calc(var(--pad) + 8px);
+                height: calc(var(--pad) + 8px);
+            }
+
+            /* 화면 덮개: 시작 · 끝 · 세로 화면 안내 */
+            .screen {
+                position: fixed;
+                inset: 0;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                gap: 10px;
+                padding: 16px;
+                text-align: center;
+                background: rgba(7, 8, 10, 0.86);
+            }
+            .screen[hidden] {
+                display: none;
+            }
+            .screen h1,
+            .screen h2 {
+                margin: 0;
+                font-size: 26px;
+            }
+            .screen p {
+                margin: 0;
                 max-width: 560px;
-            }
-            #summons {
-                grid-template-columns: repeat(5, 1fr);
-            }
-            #summons button {
-                min-height: 60px;
-                padding: 4px 2px;
+                color: var(--dim);
                 font-size: 14px;
-                line-height: 1.25;
             }
-            #summons button.off {
-                opacity: 0.45;
+            .screen button {
+                min-width: 160px;
+                min-height: 56px;
+                font-size: 18px;
+                font-weight: 700;
+                background: var(--ink);
+                color: #101215;
             }
-            #pad {
-                grid-template-columns: 1fr 1fr 1.4fr;
+            .touch-only {
+                display: none;
             }
-            #pad button {
-                min-height: 68px;
-                font-size: 22px;
-                touch-action: none; /* 누르고 있는 동안 스크롤·확대로 넘어가지 않게 합니다. */
+            .touch .touch-only {
+                display: block;
             }
-            #pad button.down {
-                background: var(--fg);
-                color: var(--bg);
+            .touch .desk-only {
+                display: none;
             }
-            details {
-                margin: 10px 0;
+            #rotate {
+                display: none;
+                z-index: 10;
+                background: #07080a;
             }
-            summary {
-                color: var(--mut);
-                cursor: pointer;
-                padding: 6px 0;
+            #rotate .phone {
+                font-size: 56px;
+                animation: turn 2.4s ease-in-out infinite;
             }
-            .bar {
-                margin: 10px 0;
+            @keyframes turn {
+                0%,
+                20% {
+                    transform: rotate(0deg);
+                }
+                60%,
+                100% {
+                    transform: rotate(-90deg);
+                }
+            }
+            @media (orientation: portrait) {
+                .touch #rotate {
+                    display: flex;
+                }
+            }
+            @media (max-height: 420px) {
+                .screen h1,
+                .screen h2 {
+                    font-size: 22px;
+                }
+                .screen p {
+                    font-size: 13px;
+                }
+                .screen {
+                    gap: 6px;
+                }
             }
         </style>
     </head>
     <body>
-        <main>
-            <h1>PixelPhysics 소환수 전투 시험판</h1>
-            <p>
-                소환수를 불러 충격량과 재료 반응(물·용암·산성)으로 적을 쓸어 내고, 오른쪽 끝 둥지를 부수세요. ← → / A D
-                이동, W / Space 점프, 1~5 소환. 마우스 좌클릭은 클릭한 방향으로 공기를 순간적으로 확 뿜어 플레이어를
-                튕겨 내는 분사(이동기, 0.5초 쿨다운), 우클릭은 누르는 동안 포인터 지점에 플레이어 머리만 한 흙 셀 뭉치를
-                붙잡습니다. 놓으면 모래처럼 퍼져 떨어져 지형과 합쳐지고, 붙잡은 채 좌클릭하면 뭉친 채로 날아가다
-                지형이나 적에 부딪히면 흩어집니다. 흙 더미에 가까이 분사하면 흩날립니다. 터치는 아래 도구로 고르고,
-                던지기는 끌어모았다 놓으면 던집니다.
-            </p>
+        <div id="game">
             <div class="stage"><canvas id="c"></canvas><canvas id="o"></canvas></div>
-            <div id="hud"></div>
-            <div id="mana"><i id="manabar"></i></div>
+        </div>
+
+        <div id="hud">
+            <div class="stat">
+                HP<i><b id="hpBar"></b></i>
+            </div>
+            <div class="stat">
+                분사<i><b id="fuelBar"></b></i>
+            </div>
+            <div class="stat">
+                흙<i><b id="soilBar"></b></i>
+            </div>
+            <div id="killText">처치 0</div>
+        </div>
+        <div id="toast"></div>
+
+        <div id="top">
             <div id="tools">
-                <button id="toolJet" class="on">분사 (좌클릭)</button><button id="toolSoil">흙 (우클릭)</button
+                <button id="toolJet" class="on">분사</button><button id="toolSoil">흙</button
                 ><button id="toolThrow">던지기</button>
             </div>
-            <div id="summons"></div>
-            <div id="pad"><button id="tl">◀</button><button id="tr">▶</button><button id="tj">▲ 점프</button></div>
-            <div class="bar"><button id="reset">다시 시작</button></div>
-            <details>
-                <summary>소환수와 규칙</summary>
-                <p>
-                    <b>물고기</b>: 앞 땅을 파 연못을 만들고 물대포로 적을 밀어냅니다. 연못은 수영으로 건너는 길이
-                    됩니다. <b>불</b>: 용암을 던집니다(물과 만나면 돌과 증기). <b>산성</b>: 산성을 뱉어 나무 장벽과 돌을
-                    녹입니다. <b>골렘</b>: 큰 돌덩이(강체)를 던지고 구덩이 앞에서는 돌 다리를 놓습니다. <b>마법사</b>:
-                    뒤에서 공기 충격파로 적을 밀어 함정에 빠뜨립니다. 적이 가볍고 약한 슬라임, 무겁고 단단한 딱정벌레는
-                    큰 충격량이 필요합니다. 소환은 마나를 쓰고 적을 처치하면 조금 돌아오며, 소환수는 시간이 지나면
-                    사라집니다. 용암·산성은 아군도 다치게 합니다.
-                </p>
-            </details>
-        </main>
+            <button id="full" aria-label="전체 화면">⛶</button><button id="reset" aria-label="다시 시작">↻</button>
+        </div>
+        <div id="pad"><button id="tl" aria-label="왼쪽">◀</button><button id="tr" aria-label="오른쪽">▶</button></div>
+        <button id="jump" aria-label="점프">▲</button>
+
+        <div id="title" class="screen">
+            <h1>PixelPhysics 횡스크롤 전투</h1>
+            <p>
+                공기 분사로 몸을 튕겨 구덩이와 벽을 넘고, 흙을 뭉쳐 길을 만들거나 던져 적을 쓸어 낸 뒤 오른쪽 끝 둥지를
+                부수세요.
+            </p>
+            <p class="desk-only">
+                ← → / A D 이동 · W / Space 점프 · 좌클릭 공기 분사(0.5초 쿨다운) · 우클릭 꾹 흙 뭉치 · 흙을 쥔 채 좌클릭
+                던지기 · R 다시 시작
+            </p>
+            <p class="touch-only">
+                ◀ ▶ 이동 · ▲ 점프 · 위쪽 도구를 고른 뒤 화면을 누르세요. 분사는 탭, 흙은 누르고 있기, 던지기는 모았다가
+                손을 떼면 날아갑니다.
+            </p>
+            <button id="start">시작</button>
+        </div>
+        <div id="end" class="screen" hidden>
+            <h2 id="endText"></h2>
+            <button id="again">다시 하기</button>
+        </div>
+        <div id="rotate" class="screen">
+            <div class="phone">📱</div>
+            <h2>화면을 가로로 돌려 주세요</h2>
+            <p>가로 화면에서 게임이 이어집니다.</p>
+        </div>
+
         <script type="module">
             import {
                 PixelWorld,
@@ -211,27 +363,16 @@
             installDeterministicTrig();
 
             /* =====================================================================
-             * 소환수 전투 시험판: 플레이어는 이동·점프만 하고, 전투는 소환수가 충격량(분사·강체)과 재료 반응으로 합니다.
+             * 횡스크롤 전투: 플레이어는 공기 분사(이동·밀치기)와 흙 뭉치(지형 만들기·던지기)로 싸웁니다.
              * 규칙의 숫자는 재미를 보려는 초안이며 확정값이 아닙니다.
              * ===================================================================== */
             const W = 360,
                 H = 90,
                 GROUND = 70,
-                VIEW_W = 160,
                 VIEW_H = 80,
                 DT = 1000 / 60;
-            const MANA_MAX = 100,
-                MANA_REGEN = 0.12,
-                KILL_MANA = 8,
-                ALLY_CAP = 8,
-                BOULDER_CAP = 8;
-            const SUMMONS = {
-                fish: { name: '물고기', cost: 20, life: 900 },
-                fire: { name: '불', cost: 30, life: 700 },
-                acid: { name: '산성', cost: 25, life: 800 },
-                golem: { name: '골렘', cost: 35, life: 1200 },
-                mage: { name: '마법사', cost: 20, life: 900 },
-            };
+            const KILL_HEAL = 4,
+                CHECKPOINTS = [8, 100, 152, 222, 292];
             const FOES = {
                 slime: { w: 5, h: 4, hp: 12, accel: 0.1, mass: 0.02, dmg: 6, color: '#7fd35a', sight: 90 },
                 beetle: { w: 7, h: 5, hp: 40, accel: 0.07, mass: 0.08, dmg: 10, color: '#8a5a3c', sight: 90 },
@@ -252,7 +393,7 @@
                 JET_FAR = 18,
                 KICK_DV = 3.0,
                 JET_REACH = 9,
-                RECOIL = 0.18;
+                RECOIL = 0.12;
             // 흙뭉치 브러시 모양: 중심에서 가까운 순서로 정렬한 칸 오프셋 (앞에서 n개를 쓰면 지름이 자라는 원판)
             const DISC = [];
             for (let dy = -9; dy <= 9; dy++) {
@@ -268,7 +409,7 @@
                     ((a[0] * 5 + a[1] * 3) & 7) - ((b[0] * 5 + b[1] * 3) & 7),
             );
             const KEYS = { l: 0, r: 0, u: 0 };
-            // 포인터: 마우스는 좌클릭=분사, 우클릭=흙 놓기. 터치는 아래 도구 버튼으로 고른 모드를 씁니다.
+            // 포인터: 마우스는 좌클릭=분사, 우클릭=흙 놓기. 터치는 위쪽 도구 버튼으로 고른 모드를 씁니다.
             const POINTER = {
                 cx: 0,
                 cy: 0,
@@ -286,7 +427,10 @@
                 jetLeft = 0,
                 jetCool = 0,
                 jetDir = [1, 0];
-            let world, bridge, player, renderer, nest, mana, kills, won, respawnAt, alpha, fuel, soil, tool;
+            let world, bridge, player, renderer, nest, kills, won, wonAt, respawnAt, alpha, fuel, soil, tool, checkX;
+            let started = false,
+                ended = false,
+                viewW = 160;
 
             function defineAll(w) {
                 w.define({ name: 'bedrock', kind: 'solid', color: [60, 62, 70], indestructible: true });
@@ -306,68 +450,6 @@
                     rigid: { density: 0.03 },
                 });
                 w.define({ name: 'sand', kind: 'powder', density: 15, color: [222, 190, 110] });
-                w.define({ name: 'rubble', kind: 'powder', density: 14, color: [150, 110, 70] });
-                w.define({
-                    name: 'water',
-                    kind: 'liquid',
-                    density: 10,
-                    dispersion: 5,
-                    color: [60, 120, 220],
-                    body: { swim: true },
-                });
-                w.define({
-                    name: 'oil',
-                    kind: 'liquid',
-                    density: 8,
-                    dispersion: 4,
-                    color: [80, 55, 30],
-                    body: { swim: true },
-                });
-                w.define({
-                    name: 'wood',
-                    kind: 'solid',
-                    color: [130, 85, 45],
-                    strength: 25,
-                    blast: { burn: 'fire' },
-                    rigid: { density: 0.0015 },
-                });
-                w.define({
-                    name: 'fire',
-                    kind: 'gas',
-                    density: 2,
-                    rise: 0.3,
-                    noSwap: true,
-                    flicker: true,
-                    color: [255, 140, 30],
-                    life: [40, 80],
-                    decay: { to: 'smoke', chance: 0.3 },
-                    body: { blocks: false, status: ['burn', 120] },
-                    reactions: [
-                        { with: 'wood', chance: 0.04, other: 'fire' },
-                        { with: 'oil', chance: 0.3, other: 'fire' },
-                        { with: 'water', self: 'empty', other: 'steam' },
-                    ],
-                });
-                w.define({
-                    name: 'smoke',
-                    kind: 'gas',
-                    density: 1,
-                    push: 11,
-                    rise: 0.8,
-                    color: [110, 110, 116],
-                    life: [40, 80],
-                    decay: { to: 'empty' },
-                });
-                w.define({
-                    name: 'steam',
-                    kind: 'gas',
-                    density: 1,
-                    push: 13,
-                    rise: 0.8,
-                    color: [190, 205, 225],
-                    life: [80, 140],
-                    decay: { to: 'water', chance: 0.5 },
-                });
                 w.define({
                     name: 'air',
                     kind: 'gas',
@@ -378,46 +460,20 @@
                     life: [6, 16],
                     decay: { to: 'empty' },
                 });
-                w.define({
-                    name: 'lava',
-                    kind: 'liquid',
-                    density: 20,
-                    dispersion: 1,
-                    slow: 0.7,
-                    color: [240, 80, 20],
-                    body: { damage: 3, status: ['burn', 180], swim: true },
-                    reactions: [
-                        { with: 'water', self: 'stone', other: 'steam' },
-                        { with: ['wood', 'oil'], chance: 0.2, other: 'fire' },
-                    ],
-                });
-                w.define({
-                    name: 'acid',
-                    kind: 'liquid',
-                    density: 11,
-                    dispersion: 3,
-                    color: [130, 230, 60],
-                    body: { damage: 0.6, swim: true },
-                    reactions: [{ with: ['sand', 'wood', 'stone'], chance: 0.15, self: 'smoke', other: 'empty' }],
-                });
-                w.defineStatus('burn', { damage: 0.25, emit: { material: 'fire', chance: 0.3 }, clearedBy: ['water'] });
             }
 
-            // 지형: 시작 평지 → 구덩이 → 나무 장벽 → 기름 웅덩이 → 둥지 요새
+            // 지형: 시작 평지 → 구덩이 → 돌 단 → 돌벽 → 열린 둥지 요새
             function buildLevel() {
                 world.rect(0, GROUND, W - 1, H - 5, 'stone');
                 world.rect(0, H - 4, W - 1, H - 1, 'bedrock');
-                world.rect(110, GROUND, 140, GROUND + 13, 'empty'); // 구덩이: 점프로는 못 건넘
-                world.rect(176, 50, 179, GROUND - 1, 'wood'); // 나무 장벽
-                world.rect(215, GROUND, 245, GROUND + 5, 'oil'); // 기름 웅덩이
-                world.rect(316, 54, 318, GROUND - 1, 'stone');
+                world.rect(112, GROUND, 147, GROUND + 11, 'empty'); // 구덩이: 분사로 뛰어넘거나 흙을 채워 건넘
+                world.rect(160, GROUND - 5, 171, GROUND - 1, 'stone'); // 낮은 단
+                world.rect(206, 42, 209, GROUND - 1, 'stone'); // 돌벽: 분사로 날아오르거나 흙을 쌓아 넘음
                 world.rect(346, 54, 348, GROUND - 1, 'stone');
-                world.rect(316, 50, 348, 53, 'stone'); // 둥지 요새
+                world.rect(316, 50, 348, 53, 'stone'); // 둥지 요새: 왼쪽이 열려 있음
                 world.markAllDirty();
             }
 
-            const ALLIES = () => world.bodies.filter((b) => b.data.team === 'ally' && !b.dead);
-            const SUMMONED = () => ALLIES().filter((b) => b !== player);
             const FOE_LIST = () => world.bodies.filter((b) => b.data.team === 'foe' && !b.dead);
             const NEAREST = (from, list, range) => {
                 let best = null,
@@ -431,22 +487,10 @@
                 }
                 return best;
             };
-            function isSolid(x, y) {
-                const V = world.get(x, y);
-                return V > 0 && world.K[V] === 0;
-            }
-            function surface(x) {
-                for (let y = 20; y < H; y++) {
-                    if (isSolid(Math.round(x), y)) {
-                        return y;
-                    }
-                }
-                return GROUND;
-            }
 
-            function spawnPlayer() {
+            function spawnPlayer(x) {
                 player = new Body({
-                    x: 8,
+                    x,
                     y: GROUND - 8,
                     w: 3,
                     h: 6,
@@ -461,6 +505,8 @@
                     },
                 });
                 world.addEntity(player);
+                fuel = FUEL_MAX;
+                soil = SOIL_MAX;
             }
 
             function makeFoe(kind, x) {
@@ -477,9 +523,11 @@
                     data: { kind, team: 'foe', cd: 0, face: -1 },
                 });
                 FOE.onDeath = () => {
-                    mana = Math.min(MANA_MAX, mana + KILL_MANA);
                     kills++;
-                    world.paint(Math.round(FOE.x), Math.round(FOE.y), 2, 'smoke');
+                    if (!player.dead) {
+                        player.hp = Math.min(player.maxHp, player.hp + KILL_HEAL);
+                    }
+                    world.paint(Math.round(FOE.x), Math.round(FOE.y), 2, 'sand');
                 };
                 return world.addEntity(FOE);
             }
@@ -497,6 +545,7 @@
                 });
                 nest.onDeath = () => {
                     won = true;
+                    wonAt = world.time;
                     world.explode(Math.round(nest.x), Math.round(nest.y), 10);
                 };
                 world.addEntity(nest);
@@ -509,34 +558,35 @@
                 bridge = new MatterBridge();
                 world.attachBridge(bridge);
                 buildLevel();
-                mana = 60;
-                fuel = FUEL_MAX;
-                soil = SOIL_MAX;
                 blob = { n: 0, f: 0, cells: [], x: 0, y: 0 };
+                POINTER.holding = false;
+                POINTER.press = false;
                 jetLeft = 0;
                 jetCool = 0;
                 kills = 0;
                 won = false;
+                wonAt = 0;
+                ended = false;
                 respawnAt = 0;
                 alpha = 0;
-                spawnPlayer();
+                checkX = CHECKPOINTS[0];
+                spawnPlayer(checkX);
                 for (const [KIND, X] of [
                     ['slime', 80],
                     ['slime', 96],
-                    ['slime', 152],
-                    ['beetle', 192],
-                    ['slime', 204],
-                    ['slime', 222],
-                    ['slime', 238],
-                    ['beetle', 266],
-                    ['slime', 290],
+                    ['slime', 158],
+                    ['beetle', 184],
+                    ['slime', 232],
+                    ['slime', 246],
+                    ['beetle', 272],
+                    ['slime', 296],
                 ]) {
                     makeFoe(KIND, X);
                 }
                 makeNest();
                 renderer = new PixelRenderer(document.getElementById('c'), world, {
                     overlay: document.getElementById('o'),
-                    view: { x: 0, y: H - VIEW_H, w: VIEW_W, h: VIEW_H },
+                    view: { x: 0, y: H - VIEW_H, w: viewW, h: VIEW_H },
                 });
                 renderer.bg = SKY;
                 world.on('hit', (e) => {
@@ -544,6 +594,7 @@
                         e.rigid.data.shatter = true;
                     }
                 });
+                document.getElementById('end').hidden = true;
             }
 
             // ---- 플레이어 도구: 공기 분사(이동기·깎기·날리기)와 흙 놓기
@@ -564,7 +615,7 @@
                     'dirt',
                 );
             }
-            // 분사가 닿는 첫 물체를 찾습니다. 공중의 강체(골렘 돌덩이 등)는 맞은 지점을 밀려 회전하며 날아가고,
+            // 분사가 닿는 첫 물체를 찾습니다. 공중의 강체(던진 흙뭉치 등)는 맞은 지점을 밀려 회전하며 날아가고,
             // 가까운 흙 더미는 분사에 흩날려 날아갑니다.
             function jetAhead(ax, ay) {
                 const DIRT = world.id.dirt;
@@ -776,174 +827,12 @@
                 }
             }
 
-            // ---- 소환
-            function boulder(x, y, vx, vy) {
-                const OLD = bridge.bodies.filter((h) => h.data.boulder);
-                if (OLD.length >= BOULDER_CAP) {
-                    bridge.removeBody(OLD[0]);
-                }
-                return bridge.addBox({
-                    x,
-                    y,
-                    w: 6,
-                    h: 6,
-                    density: 0.006,
-                    vx,
-                    vy,
-                    data: {
-                        type: 'stone',
-                        mat: 'stone',
-                        boulder: true,
-                        born: world.time,
-                        strength: 200,
-                        debris: 'rubble',
-                    },
-                });
-            }
-            function summon(kind) {
-                const S = SUMMONS[kind];
-                if (!S || player.dead || won || mana < S.cost || SUMMONED().length >= ALLY_CAP) {
-                    return;
-                }
-                mana -= S.cost;
-                const FACE = player.data.face || 1,
-                    X = Math.round(player.x + FACE * 14),
-                    GY = surface(X);
-                const OPTIONS = {
-                    fish: { x: X, y: GY + 2, w: 4, h: 3, hp: 14, accel: 0.1, mass: 0.02, color: '#ffa94d' },
-                    fire: {
-                        x: X,
-                        y: GY - 16,
-                        w: 4,
-                        h: 4,
-                        hp: 16,
-                        accel: 0.12,
-                        mass: 0.015,
-                        gravity: 0.01,
-                        maxFall: 0.4,
-                        color: '#ff6a2a',
-                    },
-                    acid: { x: X, y: GY - 4, w: 5, h: 4, hp: 20, accel: 0.07, mass: 0.03, color: '#9be84a' },
-                    golem: { x: X, y: GY - 6, w: 6, h: 8, hp: 60, accel: 0.08, mass: 0.12, color: '#8d8f99' },
-                    mage: {
-                        x: Math.round(player.x - FACE * 10),
-                        y: GY - 6,
-                        w: 3,
-                        h: 6,
-                        hp: 12,
-                        accel: 0.12,
-                        mass: 0.03,
-                        color: '#b58cff',
-                    },
-                };
-                if (kind === 'fish') {
-                    // 연못: 땅을 둥글게 파고 물을 채웁니다. 용암이 닿으면 돌과 증기가 됩니다.
-                    world.carve(X, GY + 4, 5);
-                    world.paint(X, GY + 4, 5, 'water');
-                }
-                const ALLY = new Body({
-                    ...OPTIONS[kind],
-                    data: { kind, team: 'ally', face: FACE, cd: 30, life: S.life },
-                });
-                world.addEntity(ALLY);
-            }
-
             // ---- 인공지능
             function moveToward(b, tx, tolerance) {
                 const DX = tx - b.x;
                 b.input.x = Math.abs(DX) > tolerance ? Math.sign(DX) : 0;
                 if (DX) {
                     b.data.face = Math.sign(DX);
-                }
-            }
-            // 용암·산성은 아군도 다치게 하므로 맞는 자리 근처에 아군이 있으면 던지지 않습니다.
-            function lob(b, target, material, count) {
-                if (ALLIES().some((a) => a !== b && Math.abs(a.x - target.x) < 16)) {
-                    return false;
-                }
-                const DX = target.x - b.x,
-                    VX = Math.max(-3, Math.min(3, DX / 22));
-                for (let i = 0; i < count; i++) {
-                    world.spray(b.x, b.y - 1, VX + (world.rand() - 0.5) * 0.3, -1.1, material, {});
-                }
-                return true;
-            }
-            function thinkAlly(b) {
-                const D = b.data;
-                if (--D.life <= 0 || b.y > H + 20) {
-                    b.dead = true;
-                    return;
-                }
-                D.cd = Math.max(0, D.cd - 1);
-                D.throwCd = Math.max(0, (D.throwCd ?? 60) - 1);
-                b.input.x = 0;
-                b.input.jump = false;
-                const FOE = NEAREST(b, FOE_LIST(), 110),
-                    DX = FOE ? FOE.x - b.x : 0;
-                if (D.kind === 'fish') {
-                    if (!b.swim) {
-                        D.life -= 3; // 물 밖에서는 빨리 지칩니다.
-                    }
-                    if (FOE && D.cd === 0 && Math.abs(DX) < 55) {
-                        D.face = Math.sign(DX);
-                        for (let i = 0; i < 4; i++) {
-                            world.spray(b.x, b.y - 2, Math.sign(DX) * 3.4, -0.5 + (world.rand() - 0.5) * 0.4, 'water', {
-                                shooter: b,
-                                recoil: 0.4,
-                            });
-                        }
-                        D.cd = 70;
-                    }
-                } else if (D.kind === 'fire') {
-                    b.vy = Math.max(-0.6, Math.min(0.6, (GROUND - 20 - b.y) * 0.08)); // 떠 있기
-                    moveToward(b, FOE ? FOE.x - Math.sign(DX) * 28 : player.x - 10, 4);
-                    if (FOE && D.cd === 0 && Math.abs(DX) < 75) {
-                        D.cd = lob(b, FOE, 'lava', 3) ? 100 : 20;
-                    }
-                } else if (D.kind === 'acid') {
-                    moveToward(b, FOE ? FOE.x : player.x - 8, FOE ? 36 : 12);
-                    if (FOE && D.cd === 0 && Math.abs(DX) < 60) {
-                        D.cd = lob(b, FOE, 'acid', 4) ? 90 : 20;
-                    }
-                } else if (D.kind === 'golem') {
-                    moveToward(b, FOE ? FOE.x : player.x - 6, FOE ? 7 : 14);
-                    if (FOE && Math.abs(DX) < 9 && D.cd === 0) {
-                        FOE.impulse(Math.sign(DX) * 2.4, -1.4); // 밀치기: 충격량으로 날려 보냄
-                        FOE.hurt(2);
-                        D.cd = 40;
-                    } else if (FOE && Math.abs(DX) > 14 && Math.abs(DX) < 70 && D.throwCd === 0) {
-                        boulder(b.x + Math.sign(DX) * 6, b.y - 8, Math.max(-3, Math.min(3, DX / 20)), -1.6);
-                        D.throwCd = 150;
-                    }
-                    if (
-                        D.cd === 0 &&
-                        b.input.x &&
-                        !isSolid(Math.round(b.x + b.input.x * 6), Math.round(b.y + b.hy + 1))
-                    ) {
-                        // 앞에 땅이 없으면 돌 다리를 놓습니다(구덩이 건너기).
-                        for (let i = 0; i < 12; i++) {
-                            const X = Math.round(b.x + b.input.x * (3 + i)),
-                                Y = Math.round(b.y + b.hy);
-                            for (let t = 0; t < 2; t++) {
-                                if (world.get(X, Y + t) === 0) {
-                                    world.set(X, Y + t, 'stone');
-                                }
-                            }
-                        }
-                        D.cd = 60;
-                    }
-                } else if (D.kind === 'mage') {
-                    moveToward(b, player.x - (player.data.face || 1) * 12, 4);
-                    if (FOE && D.cd === 0 && Math.abs(DX) < 85) {
-                        for (let i = 0; i < 6; i++) {
-                            world.spray(b.x, b.y - 2, Math.sign(DX) * 4.2, -0.1 + (world.rand() - 0.5) * 0.3, 'air', {
-                                shooter: b,
-                                recoil: 0.25,
-                            });
-                        }
-                        D.face = Math.sign(DX);
-                        D.cd = 110;
-                    }
                 }
             }
             function touching(a, b) {
@@ -964,7 +853,7 @@
                     return;
                 }
                 const T = FOES[D.kind],
-                    TARGET = NEAREST(b, ALLIES(), T.sight);
+                    TARGET = NEAREST(b, player.dead ? [] : [player], T.sight);
                 b.input.x = 0;
                 if (!TARGET) {
                     return;
@@ -978,13 +867,19 @@
             }
 
             function update() {
-                mana = Math.min(MANA_MAX, mana + MANA_REGEN);
                 if (player.dead && respawnAt && world.time >= respawnAt) {
                     respawnAt = 0;
-                    mana = Math.max(mana, 60);
-                    spawnPlayer();
+                    spawnPlayer(checkX);
                 }
                 if (!player.dead) {
+                    for (const X of CHECKPOINTS) {
+                        if (player.x > X && X > checkX) {
+                            checkX = X;
+                        }
+                    }
+                    if (player.ground && world.time % 90 === 0) {
+                        player.hp = Math.min(player.maxHp, player.hp + 1);
+                    }
                     player.input.x = KEYS.r - KEYS.l;
                     player.input.jump = !!KEYS.u;
                     if (KEYS.r - KEYS.l) {
@@ -994,12 +889,7 @@
                 useTools();
                 updateDirtBodies();
                 for (const B of world.bodies.slice()) {
-                    if (B.dead || B === player) {
-                        continue;
-                    }
-                    if (B.data.team === 'ally') {
-                        thinkAlly(B);
-                    } else if (B.data.team === 'foe') {
+                    if (!B.dead && B !== player && B.data.team === 'foe') {
                         thinkFoe(B);
                     }
                 }
@@ -1032,29 +922,6 @@
                     c.fill();
                     c.fillStyle = '#d94a4a';
                     c.fillRect(-2.2 * s, -1.5 * s, 1 * s, 3 * s);
-                } else if (D.kind === 'fish') {
-                    c.beginPath();
-                    c.ellipse(0, 0, 2.4 * s, 1.4 * s, 0, 0, 7);
-                    c.fill();
-                    c.beginPath();
-                    c.moveTo(-2.2 * s * (D.face || 1), 0);
-                    c.lineTo(-3.6 * s * (D.face || 1), -1.2 * s);
-                    c.lineTo(-3.6 * s * (D.face || 1), 1.2 * s);
-                    c.fill();
-                } else if (D.kind === 'fire') {
-                    c.beginPath();
-                    c.arc(0, 0, 2 * s, 0, 7);
-                    c.fill();
-                    c.fillStyle = '#ffd36a';
-                    c.beginPath();
-                    c.arc(0, 0.3 * s, 1 * s, 0, 7);
-                    c.fill();
-                } else if (D.kind === 'mage') {
-                    c.beginPath();
-                    c.moveTo(0, -3.6 * s);
-                    c.lineTo(1.8 * s, 3 * s);
-                    c.lineTo(-1.8 * s, 3 * s);
-                    c.fill();
                 } else if (D.kind === 'nest') {
                     c.fillRect(-b.hx * s, -b.hy * s, b.hx * 2 * s, b.hy * 2 * s);
                     c.fillStyle = '#511';
@@ -1066,10 +933,10 @@
                     c.lineTo(-b.hx * s, b.hy * s);
                     c.fill();
                 }
-                if (b.hp < b.maxHp && !b.dead) {
+                if (b.hp < b.maxHp && !b.dead && D.team === 'foe') {
                     c.fillStyle = 'rgba(0,0,0,.55)';
                     c.fillRect(-b.hx * s, (-b.hy - 2.4) * s, b.hx * 2 * s, 0.9 * s);
-                    c.fillStyle = D.team === 'foe' ? '#e5484d' : '#4ade80';
+                    c.fillStyle = '#e5484d';
                     c.fillRect(-b.hx * s, (-b.hy - 2.4) * s, b.hx * 2 * s * Math.max(0, b.hp / b.maxHp), 0.9 * s);
                 }
                 c.restore();
@@ -1155,21 +1022,70 @@
                 }
             }
 
-            // ---- 입력과 화면
-            const HUD = document.getElementById('hud'),
-                BAR = document.getElementById('manabar'),
-                BUTTONS = {};
-            for (const [KIND, S] of Object.entries(SUMMONS)) {
-                const BUTTON = document.createElement('button');
-                BUTTON.innerHTML = `${S.name}<br />${S.cost}`;
-                BUTTON.addEventListener('pointerdown', (e) => {
-                    e.preventDefault();
-                    summon(KIND);
-                });
-                BUTTON.addEventListener('contextmenu', (e) => e.preventDefault());
-                document.getElementById('summons').appendChild(BUTTON);
-                BUTTONS[KIND] = BUTTON;
+            // ---- 화면: 터치 감지, 시작·끝·가로 화면 안내
+            const BODY_CLASS = document.body.classList,
+                PORTRAIT = matchMedia('(orientation: portrait)');
+            if (matchMedia('(pointer: coarse)').matches) {
+                BODY_CLASS.add('touch');
             }
+            // 화면 비율에 맞춰 보이는 가로 칸 수를 정합니다(스테이지 크기는 CSS 변수 --aspect).
+            function fitView() {
+                const ASPECT = Math.max(2, Math.min(2.4, innerWidth / innerHeight));
+                viewW = Math.round(VIEW_H * ASPECT);
+                document.documentElement.style.setProperty('--aspect', String(viewW / VIEW_H));
+            }
+            addEventListener('resize', fitView);
+            fitView();
+            function needsRotate() {
+                return BODY_CLASS.contains('touch') && PORTRAIT.matches;
+            }
+            function isPaused() {
+                return !started || ended || needsRotate();
+            }
+
+            async function goFullscreen() {
+                try {
+                    if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+                        await document.documentElement.requestFullscreen();
+                    }
+                    await screen.orientation?.lock?.('landscape');
+                } catch {
+                    // 지원하지 않는 브라우저(예: iPhone)에서는 그대로 진행합니다. 가로로 돌리기만 하면 됩니다.
+                }
+            }
+            function startGame() {
+                if (started) {
+                    return;
+                }
+                started = true;
+                document.getElementById('title').hidden = true;
+                if (BODY_CLASS.contains('touch')) {
+                    goFullscreen();
+                }
+            }
+            function restart() {
+                build();
+            }
+            document.getElementById('start').addEventListener('click', startGame);
+            document.getElementById('again').addEventListener('click', restart);
+            document.getElementById('reset').addEventListener('click', restart);
+            document.getElementById('full').addEventListener('click', () => {
+                if (document.fullscreenElement) {
+                    document.exitFullscreen();
+                } else {
+                    goFullscreen();
+                }
+            });
+            if (!document.documentElement.requestFullscreen) {
+                document.getElementById('full').hidden = true;
+            }
+            // 눌린 버튼에 포커스가 남으면 Space(점프)가 버튼을 다시 누르게 되므로 바로 풀어 줍니다.
+            document.addEventListener('click', (e) => e.target.closest?.('button')?.blur());
+            for (const BUTTON of document.querySelectorAll('button')) {
+                BUTTON.addEventListener('contextmenu', (e) => e.preventDefault());
+            }
+
+            // ---- 입력
             const KEY_MAP = {
                 ArrowLeft: 'l',
                 KeyA: 'l',
@@ -1185,9 +1101,10 @@
                     KEYS[K] = 1;
                     e.preventDefault();
                 }
-                const INDEX = 'Digit1Digit2Digit3Digit4Digit5'.indexOf(e.code);
-                if (INDEX >= 0 && e.code.length === 6) {
-                    summon(Object.keys(SUMMONS)[INDEX / 6]);
+                if (e.code === 'Enter' && !started) {
+                    startGame();
+                } else if (e.code === 'KeyR' && started) {
+                    restart();
                 }
             });
             addEventListener('keyup', (e) => {
@@ -1200,7 +1117,7 @@
             for (const [ID, K] of [
                 ['tl', 'l'],
                 ['tr', 'r'],
-                ['tj', 'u'],
+                ['jump', 'u'],
             ]) {
                 const B = document.getElementById(ID),
                     SET = (down) => {
@@ -1215,9 +1132,8 @@
                 for (const NAME of ['pointerup', 'pointercancel', 'lostpointercapture']) {
                     B.addEventListener(NAME, () => SET(false));
                 }
-                B.addEventListener('contextmenu', (e) => e.preventDefault());
             }
-            // 캔버스 포인터: 손가락·마우스가 가리킨 곳으로 분사하거나 흙을 놓습니다.
+            // 위쪽 도구 버튼(터치): 화면을 눌렀을 때 무엇을 할지 고릅니다.
             const CANVAS = document.getElementById('c');
             tool = 'jet';
             for (const [ID, MODE] of [
@@ -1251,6 +1167,7 @@
                     SYNC_MOUSE(e);
                     return;
                 }
+                BODY_CLASS.add('touch');
                 POINTER.id = e.pointerId;
                 POINTER.cx = e.clientX;
                 POINTER.cy = e.clientY;
@@ -1279,7 +1196,33 @@
                 });
             }
             CANVAS.addEventListener('contextmenu', (e) => e.preventDefault());
-            document.getElementById('reset').onclick = build;
+            // 화면을 돌리거나 탭을 숨기면 눌린 입력을 모두 풉니다.
+            function releaseAll() {
+                KEYS.l = KEYS.r = KEYS.u = 0;
+                POINTER.jet = POINTER.soil = false;
+                POINTER.id = null;
+            }
+            PORTRAIT.addEventListener('change', releaseAll);
+            document.addEventListener('visibilitychange', releaseAll);
+
+            // ---- 상태 표시
+            const HP_BAR = document.getElementById('hpBar'),
+                FUEL_BAR = document.getElementById('fuelBar'),
+                SOIL_BAR = document.getElementById('soilBar'),
+                KILL_TEXT = document.getElementById('killText'),
+                TOAST = document.getElementById('toast');
+            function showHud() {
+                HP_BAR.style.width = `${Math.max(0, (player.hp / player.maxHp) * 100)}%`;
+                FUEL_BAR.style.width = `${(fuel / FUEL_MAX) * 100}%`;
+                SOIL_BAR.style.width = `${(soil / SOIL_MAX) * 100}%`;
+                KILL_TEXT.textContent = `처치 ${kills}`;
+                TOAST.textContent = player.dead ? '쓰러졌습니다. 곧 되살아납니다' : '';
+                if (won && !ended && world.time - wonAt > 90) {
+                    ended = true;
+                    document.getElementById('endText').textContent = `둥지를 부쉈습니다! 처치 ${kills}`;
+                    document.getElementById('end').hidden = false;
+                }
+            }
 
             let last = 0,
                 acc = 0,
@@ -1288,43 +1231,49 @@
                 if (!last) {
                     last = t;
                 }
-                acc += Math.min(100, t - last);
+                const STEP = Math.min(100, t - last);
                 last = t;
-                while (acc >= DT) {
-                    update();
-                    acc -= DT;
+                if (!isPaused()) {
+                    acc += STEP;
+                    while (acc >= DT) {
+                        update();
+                        acc -= DT;
+                    }
                 }
                 alpha = acc / DT;
                 renderer.setView({
-                    x: Math.max(0, Math.min(W - VIEW_W, Math.round(player.x - VIEW_W / 2))),
+                    x: Math.max(0, Math.min(W - viewW, Math.round(player.x - viewW / 2))),
                     y: H - VIEW_H,
-                    w: VIEW_W,
+                    w: viewW,
                     h: VIEW_H,
                 });
                 renderer.draw(drawActor, drawExtra);
-                if (++frames % 6 === 0) {
-                    HUD.textContent = won
-                        ? `둥지를 부쉈습니다! 처치 ${kills}`
-                        : player.dead
-                          ? '쓰러졌습니다. 곧 되살아납니다'
-                          : `HP ${Math.max(0, player.hp) | 0} · 마나 ${mana | 0} · 소환수 ${SUMMONED().length} · 연료 ${fuel | 0} · 흙 ${soil | 0} · 처치 ${kills}`;
-                    BAR.style.width = `${(mana / MANA_MAX) * 100}%`;
-                    for (const [KIND, S] of Object.entries(SUMMONS)) {
-                        BUTTONS[KIND].classList.toggle('off', mana < S.cost);
-                    }
+                if (++frames % 3 === 0) {
+                    showHud();
                 }
                 requestAnimationFrame(frame);
             }
 
             build();
             requestAnimationFrame(frame);
-            Object.defineProperty(window, 'summonExample', {
+            Object.defineProperty(window, 'sideBattle', {
                 get() {
                     return {
+                        // 시험용: 구간별 확인을 위해 플레이어를 지면 위 x 로 옮깁니다.
+                        teleport(x) {
+                            player.x = x;
+                            player.y = GROUND - 8;
+                            player.vx = 0;
+                            player.vy = 0;
+                            player.px = null;
+                            player.py = null;
+                        },
                         diagnostics: {
                             tick: world.time,
-                            player: { x: player.x, y: player.y, hp: player.hp },
-                            mana,
+                            started,
+                            paused: isPaused(),
+                            player: { x: player.x, y: player.y, hp: player.hp, dead: player.dead },
+                            checkpoint: checkX,
                             fuel,
                             soil,
                             aim: { x: POINTER.x, y: POINTER.y },
@@ -1338,8 +1287,10 @@
                                 vy: unit.vy,
                                 mat: unit.data.mat,
                             })),
-                            allies: SUMMONED().length,
                             foes: FOE_LIST().length,
+                            view: renderer.view.x,
+                            viewW,
+                            nest: { hp: nest.hp, dead: nest.dead },
                             kills,
                             won,
                         },

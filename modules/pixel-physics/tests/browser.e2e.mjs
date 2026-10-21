@@ -226,57 +226,125 @@ try {
     REPORT.scenarios.push('platformer works by touch emulation: move and multi-touch jump, buttons release');
     await TOUCH_PLATFORMER.close();
 
-    // 소환수 전투 시험판: 소환 버튼, 흙 놓기/분사 도구 전환, 캔버스 터치 조준을 터치만으로 확인합니다.
-    const TOUCH_SUMMON = await TOUCH_CONTEXT.newPage();
-    TOUCH_SUMMON.on('pageerror', (error) => ERRORS.push(error.message));
-    await TOUCH_SUMMON.route('**/*', TOUCH_ROUTE);
-    await TOUCH_SUMMON.goto(`http://127.0.0.1:${SERVER.address().port}/modules/pixel-physics/examples/summon.html`);
-    await TOUCH_SUMMON.waitForFunction(() => window.summonExample?.diagnostics.tick > 10);
-    assert(await NO_HORIZONTAL_SCROLL(TOUCH_SUMMON), 'summon has no horizontal scroll on a phone');
-    const SUMMON_TOUCH = await TOUCH_CONTEXT.newCDPSession(TOUCH_SUMMON);
-    const GOLEM = await CENTER(TOUCH_SUMMON, '#summons button:nth-child(4)');
-    await SUMMON_TOUCH.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...GOLEM, id: 1 }] });
-    await SUMMON_TOUCH.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-    await TOUCH_SUMMON.waitForFunction(() => window.summonExample.diagnostics.allies >= 1);
-    // 흙 도구: 누르고 있는 동안 포인터에 흙 셀 덩어리를 붙잡고, 놓으면 모래처럼 떨어져 지형 셀이 됩니다.
-    const SUMMON_CANVAS = await TOUCH_SUMMON.locator('#c').boundingBox();
-    const AIM = {
-        x: SUMMON_CANVAS.x + SUMMON_CANVAS.width * (14 / 160),
-        y: SUMMON_CANVAS.y + SUMMON_CANVAS.height * (44 / 80),
-    };
-    const TAP = async (selector) => {
-        await SUMMON_TOUCH.send('Input.dispatchTouchEvent', {
-            type: 'touchStart',
-            touchPoints: [{ ...(await CENTER(TOUCH_SUMMON, selector)), id: 1 }],
-        });
-        await SUMMON_TOUCH.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-    };
-    await TAP('#toolSoil');
-    await SUMMON_TOUCH.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...AIM, id: 1 }] });
-    await TOUCH_SUMMON.waitForFunction(() => window.summonExample.diagnostics.blob >= 6);
-    await SUMMON_TOUCH.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-    await TOUCH_SUMMON.waitForFunction(() => window.summonExample.diagnostics.blob === 0);
-    const SOIL_RELEASED = await TOUCH_SUMMON.evaluate(() => window.summonExample.diagnostics);
-    assert(SOIL_RELEASED.dirt >= 6 && SOIL_RELEASED.throws === 0, 'released soil stays as sand cells');
-    // 던지기 도구: 끌어모았다 놓으면 덩어리가 발사체로 바뀌어 날아갑니다.
-    await TAP('#toolThrow');
-    await SUMMON_TOUCH.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...AIM, id: 1 }] });
-    await TOUCH_SUMMON.waitForFunction(() => window.summonExample.diagnostics.blob >= 6);
-    await SUMMON_TOUCH.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-    await TOUCH_SUMMON.waitForFunction(() => window.summonExample.diagnostics.throws === 1);
-    // 분사 도구로 바꿔 누르고 있으면 연료가 줄어 듭니다.
-    await TAP('#toolJet');
-    await SUMMON_TOUCH.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...AIM, id: 1 }] });
-    await TOUCH_SUMMON.waitForFunction(() => window.summonExample.diagnostics.fuel < 80);
-    await SUMMON_TOUCH.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-    REPORT.scenarios.push(
-        'summon works by touch emulation: summon button, soil tool holds and drops a sand clump, throw tool flings it, jet tool burns fuel',
-    );
-    await TOUCH_SUMMON.close();
     await TOUCH_CONTEXT.close();
 
+    // 횡스크롤 전투: 가로 화면 휴대폰(터치 에뮬레이션). 시작 화면, 이동·점프 버튼, 도구 전환, 세로 화면 안내와 일시정지를 확인합니다.
+    const LANDSCAPE_CONTEXT = await browser.newContext({
+        viewport: { width: 844, height: 390 },
+        isMobile: true,
+        hasTouch: true,
+        deviceScaleFactor: 2,
+    });
+    const BATTLE = await LANDSCAPE_CONTEXT.newPage();
+    BATTLE.on('pageerror', (error) => ERRORS.push(error.message));
+    await BATTLE.route('**/*', TOUCH_ROUTE);
+    await BATTLE.goto(`http://127.0.0.1:${SERVER.address().port}/modules/pixel-physics/examples/side-battle.html`);
+    await BATTLE.waitForFunction(() => window.sideBattle);
+    assert.equal((await BATTLE.evaluate(() => window.sideBattle.diagnostics)).started, false, 'waits on the title');
+    assert(await NO_HORIZONTAL_SCROLL(BATTLE), 'side-battle has no horizontal scroll in landscape');
+    const BATTLE_TOUCH = await LANDSCAPE_CONTEXT.newCDPSession(BATTLE);
+    const BATTLE_TAP = async (selector) => {
+        await BATTLE_TOUCH.send('Input.dispatchTouchEvent', {
+            type: 'touchStart',
+            touchPoints: [{ ...(await CENTER(BATTLE, selector)), id: 1 }],
+        });
+        await BATTLE_TOUCH.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    };
+    await BATTLE_TAP('#start');
+    await BATTLE.waitForFunction(() => window.sideBattle.diagnostics.tick > 10);
+    for (const ID of ['tl', 'tr', 'jump', 'toolJet', 'toolSoil', 'toolThrow']) {
+        const BOX = await BATTLE.locator(`#${ID}`).boundingBox();
+        assert(BOX.width >= 56 && BOX.height >= 56, `${ID} is at least 56px`);
+    }
+    const BATTLE_STAGE = await BATTLE.locator('.stage').boundingBox();
+    assert(BATTLE_STAGE.height >= 389 && BATTLE_STAGE.width >= 800, 'the stage fills a landscape phone');
+    // 오른쪽 버튼을 누르고 있으면 걷고, 점프 버튼을 함께 누르면(멀티터치) 공중으로 뜹니다.
+    const BATTLE_X0 = (await BATTLE.evaluate(() => window.sideBattle.diagnostics)).player.x;
+    const BATTLE_RIGHT = await CENTER(BATTLE, '#tr');
+    const BATTLE_JUMP = await CENTER(BATTLE, '#jump');
+    await BATTLE_TOUCH.send('Input.dispatchTouchEvent', {
+        type: 'touchStart',
+        touchPoints: [
+            { ...BATTLE_RIGHT, id: 1 },
+            { ...BATTLE_JUMP, id: 2 },
+        ],
+    });
+    await BATTLE.waitForFunction((x0) => {
+        const D = window.sideBattle.diagnostics;
+        return D.player.x > x0 + 10 && D.player.y < 60;
+    }, BATTLE_X0);
+    await BATTLE_TOUCH.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    // 흙 도구: 누르고 있는 동안 포인터에 흙 셀 덩어리를 붙잡고, 놓으면 모래처럼 떨어져 지형 셀이 됩니다.
+    await BATTLE.evaluate(() => window.sideBattle.teleport(30));
+    await BATTLE.waitForTimeout(300);
+    const BATTLE_VIEW = await BATTLE.evaluate(() => window.sideBattle.diagnostics);
+    const BATTLE_CANVAS = await BATTLE.locator('#c').boundingBox();
+    const AIM = {
+        x: BATTLE_CANVAS.x + BATTLE_CANVAS.width * ((38 - BATTLE_VIEW.view) / BATTLE_VIEW.viewW),
+        y: BATTLE_CANVAS.y + BATTLE_CANVAS.height * (60 / 80),
+    };
+    await BATTLE_TAP('#toolSoil');
+    await BATTLE_TOUCH.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...AIM, id: 1 }] });
+    await BATTLE.waitForFunction(() => window.sideBattle.diagnostics.blob >= 6);
+    await BATTLE_TOUCH.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await BATTLE.waitForFunction(() => window.sideBattle.diagnostics.blob === 0);
+    const SOIL_RELEASED = await BATTLE.evaluate(() => window.sideBattle.diagnostics);
+    assert(SOIL_RELEASED.dirt >= 6 && SOIL_RELEASED.throws === 0, 'released soil stays as sand cells');
+    // 던지기 도구: 끌어모았다 놓으면 덩어리가 발사체로 바뀌어 날아갑니다.
+    await BATTLE_TAP('#toolThrow');
+    await BATTLE_TOUCH.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...AIM, id: 1 }] });
+    await BATTLE.waitForFunction(() => window.sideBattle.diagnostics.blob >= 6);
+    await BATTLE_TOUCH.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await BATTLE.waitForFunction(() => window.sideBattle.diagnostics.throws === 1);
+    // 분사 도구: 탭하면 연료가 줄고 플레이어가 튕깁니다.
+    await BATTLE_TAP('#toolJet');
+    await BATTLE_TOUCH.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...AIM, id: 1 }] });
+    await BATTLE.waitForFunction(() => window.sideBattle.diagnostics.fuel < 80);
+    await BATTLE_TOUCH.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    // 세로로 돌리면 안내 화면이 뜨고 게임이 멈추며, 다시 가로로 돌리면 이어집니다.
+    await BATTLE.setViewportSize({ width: 390, height: 844 });
+    await BATTLE.waitForFunction(() => window.sideBattle.diagnostics.paused);
+    assert(await BATTLE.locator('#rotate').isVisible(), 'portrait shows the rotate prompt');
+    const PAUSED_TICK = (await BATTLE.evaluate(() => window.sideBattle.diagnostics)).tick;
+    await BATTLE.waitForTimeout(300);
+    assert.equal((await BATTLE.evaluate(() => window.sideBattle.diagnostics)).tick, PAUSED_TICK, 'game is paused');
+    await BATTLE.setViewportSize({ width: 844, height: 390 });
+    await BATTLE.waitForFunction((tick) => window.sideBattle.diagnostics.tick > tick, PAUSED_TICK);
+    assert(!(await BATTLE.locator('#rotate').isVisible()), 'landscape hides the rotate prompt');
+    await BATTLE.screenshot({ path: resolve(ROOT, 'test-results/pixel-physics-side-battle.png') });
+    REPORT.scenarios.push(
+        'side-battle works by landscape touch emulation: start, move+jump multi-touch, soil/throw/jet tools, portrait pauses with rotate prompt',
+    );
+    await BATTLE.close();
+
+    // 데스크톱: 마우스 우클릭으로 흙을 쥐고, 쥔 채 좌클릭하면 던집니다.
+    const DESKTOP = await browser.newPage({ viewport: { width: 1100, height: 560 } });
+    DESKTOP.on('pageerror', (error) => ERRORS.push(error.message));
+    await DESKTOP.route('**/*', TOUCH_ROUTE);
+    await DESKTOP.goto(`http://127.0.0.1:${SERVER.address().port}/modules/pixel-physics/examples/side-battle.html`);
+    await DESKTOP.click('#start');
+    await DESKTOP.waitForFunction(() => window.sideBattle.diagnostics.tick > 10);
+    assert(!(await DESKTOP.locator('#jump').isVisible()), 'touch controls are hidden on desktop');
+    await DESKTOP.evaluate(() => window.sideBattle.teleport(30));
+    await DESKTOP.waitForTimeout(300);
+    const DESKTOP_VIEW = await DESKTOP.evaluate(() => window.sideBattle.diagnostics);
+    const DESKTOP_CANVAS = await DESKTOP.locator('#c').boundingBox();
+    await DESKTOP.mouse.move(
+        DESKTOP_CANVAS.x + DESKTOP_CANVAS.width * ((38 - DESKTOP_VIEW.view) / DESKTOP_VIEW.viewW),
+        DESKTOP_CANVAS.y + DESKTOP_CANVAS.height * (60 / 80),
+    );
+    await DESKTOP.mouse.down({ button: 'right' });
+    await DESKTOP.waitForFunction(() => window.sideBattle.diagnostics.blob >= 6);
+    await DESKTOP.mouse.down({ button: 'left' });
+    await DESKTOP.mouse.up({ button: 'left' });
+    await DESKTOP.waitForFunction(() => window.sideBattle.diagnostics.throws === 1);
+    await DESKTOP.mouse.up({ button: 'right' });
+    REPORT.scenarios.push('side-battle desktop: touch controls hidden, right-hold soil then left-click throws');
+    await DESKTOP.close();
+    await LANDSCAPE_CONTEXT.close();
+
     // htmlpreview.github.io recreates inline scripts as classic scripts, so a module script or static import cannot run there.
-    for (const NAME of ['pixel-physics', 'pixel-physics-open-world', 'pixel-physics-summon']) {
+    for (const NAME of ['pixel-physics', 'pixel-physics-open-world', 'pixel-physics-side-battle']) {
         const PREVIEW_HTML = await readFile(resolve(ROOT, `dist/previews/${NAME}.html`), 'utf8');
         for (const [, ATTRIBUTES, BODY] of PREVIEW_HTML.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
             assert(!/\btype\s*=/i.test(ATTRIBUTES) && !/^\s*(?:import|export)\b/m.test(BODY));
