@@ -249,14 +249,14 @@ export function installShowcase({
         TIME.textContent = '0 / ' + Math.ceil(durationMs / 1000) + '초';
         PROGRESS.style.width = '0%';
         PAUSE_BUTTON.textContent = '일시정지';
-        const URL = new URL(location.href);
-        URL.searchParams.set(DEMO_PARAMETER, '1');
-        URL.hash = '';
+        const INTRO_URL = new URL(location.href);
+        INTRO_URL.searchParams.set(DEMO_PARAMETER, '1');
+        INTRO_URL.hash = '';
         const NEXT = document.createElement('iframe');
         NEXT.title = title + ' 격리된 실제 플레이';
         NEXT.tabIndex = -1;
         NEXT.allow = 'autoplay';
-        NEXT.src = URL.href;
+        NEXT.src = INTRO_URL.href;
         frame = NEXT;
         VIEWPORT.replaceChildren(frame);
         await new Promise((resolve, reject) => {
