@@ -874,6 +874,7 @@ function installShowcase({
   launcher,
   timeline,
   durationMs = 27e3,
+  readyTimeoutMs = 15e3,
   playSelector,
   custom,
   ready = () => true
@@ -997,7 +998,7 @@ function installShowcase({
           }
         } catch {
         }
-        if (performance.now() - LOADED_AT > 15e3) {
+        if (performance.now() - LOADED_AT > readyTimeoutMs) {
           reject(new Error("실제 게임 준비 시간이 초과되었습니다"));
           return;
         }
