@@ -1,0 +1,20 @@
+name: Format live showcase source (temporary)
+on:
+  push:
+    branches: [codex/shared-live-showcase-host-20261024]
+permissions:
+  contents: read
+jobs:
+  format-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Format and print encoded source
+        run: |
+          npx prettier --write modules/scenario/showcase-host.js
+          node -e "const f=require('fs');console.log('SHOWCASE_SOURCE_START');console.log(f.readFileSync('modules/scenario/showcase-host.js').toString('base64'));console.log('SHOWCASE_SOURCE_END')"
