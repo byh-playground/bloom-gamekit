@@ -118,30 +118,34 @@ function execute(win, event, custom) {
 function style() {
     const TAG = document.createElement('style');
     TAG.textContent = `
+    /* Match the Bounko film-like introduction: gameplay is the entire scene, not a boxed preview. */
     .bloom-showcase-link{min-height:44px;min-width:44px;touch-action:manipulation;cursor:pointer;border:1px solid currentColor;border-radius:10px;background:transparent;color:inherit;padding:10px 18px;font:inherit;font-weight:700;opacity:.95}
     .bloom-showcase-link:hover{opacity:1;filter:brightness(1.15)}
-    #bloom-showcase{position:fixed;z-index:2147483000;inset:0;display:flex;align-items:center;justify-content:center;padding:max(12px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) max(12px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));background:#080c0def;color:#f1f5ef;font-family:system-ui,-apple-system,"Malgun Gothic",sans-serif}
+    #bloom-showcase{position:fixed;z-index:2147483000;inset:0;display:block;overflow:hidden;background:#071920;color:#e9fff9;font-family:system-ui,-apple-system,"Malgun Gothic",sans-serif;isolation:isolate}
     #bloom-showcase[hidden]{display:none!important}
     #bloom-showcase *{box-sizing:border-box}
-    .bloom-showcase-shell{width:min(1120px,100%);height:min(760px,100%);min-height:0;display:grid;grid-template-rows:auto minmax(0,1fr) auto;gap:12px}
-    .bloom-showcase-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
-    .bloom-showcase-name{font-size:clamp(13px,2vw,19px);font-weight:800;letter-spacing:-.025em}
-    .bloom-showcase-controls{display:flex;gap:8px;align-items:center}
-    .bloom-showcase-controls button,.bloom-showcase-foot button{min-height:44px;min-width:44px;padding:9px 14px;border-radius:10px;border:1px solid #65756b;background:#1a2620;color:#f4f7f1;font:inherit;font-size:13px;font-weight:700;cursor:pointer;touch-action:manipulation}
-    .bloom-showcase-controls button:hover,.bloom-showcase-foot button:hover{background:#283c2f}
-    .bloom-showcase-stage{position:relative;min-height:0;overflow:hidden;border:1px solid #42564b;border-radius:18px;background:#111c18}
-    .bloom-showcase-stage iframe{display:block;border:0;width:100%;height:100%;pointer-events:none}
-    .bloom-showcase-stage::after{content:"";position:absolute;inset:0;pointer-events:none;box-shadow:inset 0 0 70px #090e1299}
-    .bloom-showcase-foot{display:grid;gap:9px}
-    .bloom-showcase-caption h2{margin:0;font-size:clamp(16px,2.8vw,27px);font-weight:850;line-height:1.2}
-    .bloom-showcase-caption p{margin:5px 0 0;font-size:clamp(12px,1.7vw,15px);color:#b9c9bc;line-height:1.5}
-    .bloom-showcase-row{display:flex;justify-content:space-between;align-items:center;gap:12px}
-    .bloom-showcase-row strong{font-size:12px;color:#b8c9c0;font-variant-numeric:tabular-nums}
-    .bloom-showcase-foot .bloom-showcase-play{background:#d3f576;border-color:#d3f576;color:#16241a;font-weight:850}
-    .bloom-showcase-track{height:4px;width:100%;background:#385043;border-radius:2px;overflow:hidden}
-    .bloom-showcase-track span{display:block;background:#d3f576;width:0;height:100%;transition:width .08s linear}
-    #bloom-showcase button:focus-visible{outline:3px solid #d3f576;outline-offset:3px}
-    @media(max-height:520px){.bloom-showcase-shell{gap:4px}.bloom-showcase-head{min-height:44px}.bloom-showcase-caption p{margin:1px 0}.bloom-showcase-foot{gap:3px}.bloom-showcase-stage{border-radius:10px}}
+    .bloom-showcase-shell{position:absolute;inset:0;width:100%;height:100%;overflow:hidden}
+    .bloom-showcase-stage{position:absolute;inset:0;overflow:hidden;background:#091b20}
+    .bloom-showcase-stage iframe{display:block;width:100%;height:100%;border:0;pointer-events:none}
+    .bloom-showcase-stage::after{content:"";position:absolute;inset:0;z-index:1;pointer-events:none;background:linear-gradient(180deg,#071920d9 0%,#0719206c 13%,transparent 34%,transparent 53%,#07192070 78%,#071920dd 100%)}
+    .bloom-showcase-head{position:absolute;z-index:2;top:0;left:0;right:0;display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:calc(16px + env(safe-area-inset-top,0px)) 20px 14px;pointer-events:none}
+    .bloom-showcase-name{padding-top:8px;font-size:clamp(11px,1.4vw,14px);font-weight:800;letter-spacing:.12em;color:#a0e8db;text-shadow:0 2px 12px #061922}
+    .bloom-showcase-controls{display:flex;gap:8px;align-items:center;pointer-events:auto}
+    .bloom-showcase-controls button,.bloom-showcase-actions button{min-height:44px;min-width:44px;padding:9px 14px;border:1px solid #99ddd94d;border-radius:10px;background:#0d2834dc;color:#e2fff8;font:inherit;font-size:12px;font-weight:700;cursor:pointer;touch-action:manipulation;backdrop-filter:blur(8px)}
+    .bloom-showcase-controls button:hover,.bloom-showcase-actions button:hover{filter:brightness(1.16)}
+    .bloom-showcase-foot{position:absolute;z-index:2;right:0;bottom:0;left:0;display:grid;justify-items:center;gap:10px;padding:56px clamp(18px,4vw,56px) calc(15px + env(safe-area-inset-bottom,0px));background:linear-gradient(transparent,#071920d9 48%,#071920ec);text-align:center;pointer-events:none}
+    .bloom-showcase-caption{max-width:min(980px,100%)}
+    .bloom-showcase-caption h2{margin:0 0 8px;font-size:clamp(27px,4.7vw,52px);font-weight:900;letter-spacing:-.045em;line-height:1.13;text-shadow:0 2px 20px #061922}
+    .bloom-showcase-caption p{margin:0;font-size:clamp(12px,1.5vw,15px);color:#b2ddd3;line-height:1.5;text-shadow:0 1px 12px #061922}
+    .bloom-showcase-actions{display:flex;flex-wrap:wrap;justify-content:center;gap:8px;pointer-events:auto}
+    .bloom-showcase-actions .bloom-showcase-play{min-width:160px;border-color:#a5f3bc;background:#a5f3bc;color:#102d30;font-size:15px;font-weight:850;backdrop-filter:none}
+    .bloom-showcase-track{width:100%;height:3px;margin-top:7px;overflow:hidden;border-radius:3px;background:#244b53}
+    .bloom-showcase-track span{display:block;width:0;height:100%;background:#99fbd6;transition:width .08s linear}
+    .bloom-showcase-time{font-size:10px;font-weight:600;color:#a5c8be;font-variant-numeric:tabular-nums}
+    #bloom-showcase[data-chapter=final] .bloom-showcase-caption h2{font-size:clamp(45px,10vw,86px);letter-spacing:-.065em}
+    #bloom-showcase button:focus-visible{outline:3px solid #a5f3bc;outline-offset:3px}
+    @media(max-width:450px){.bloom-showcase-head{padding-left:14px;padding-right:14px}.bloom-showcase-name{max-width:44%;font-size:10px;letter-spacing:.04em}.bloom-showcase-controls{gap:5px}.bloom-showcase-controls button{padding:8px 10px;font-size:11px}.bloom-showcase-foot{padding-left:17px;padding-right:17px}}
+    @media(max-height:540px){.bloom-showcase-head{padding-top:calc(5px + env(safe-area-inset-top,0px));padding-bottom:4px}.bloom-showcase-foot{gap:4px;padding-top:18px;padding-bottom:calc(5px + env(safe-area-inset-bottom,0px))}.bloom-showcase-caption h2{margin-bottom:2px;font-size:clamp(20px,3.5vw,33px)}.bloom-showcase-caption p{font-size:11px}.bloom-showcase-actions button{min-height:40px;padding:7px 12px}.bloom-showcase-track{margin-top:2px}}
     @media(prefers-reduced-motion:reduce){.bloom-showcase-track span{transition:none}}
     `;
     document.head.append(TAG);
@@ -173,18 +177,21 @@ export function installShowcase({
     ROOT.setAttribute('aria-label', title + ' 소개');
     ROOT.innerHTML = `
        <div class="bloom-showcase-shell">
+         <div class="bloom-showcase-stage" data-viewport></div>
          <header class="bloom-showcase-head"><strong class="bloom-showcase-name"></strong>
            <nav class="bloom-showcase-controls" aria-label="소개 재생 제어">
              <button type="button" data-action="pause">일시정지</button>
-             <button type="button" data-action="replay">다시 보기</button>
              <button type="button" data-action="close">닫기</button>
            </nav>
          </header>
-         <div class="bloom-showcase-stage" data-viewport></div>
          <footer class="bloom-showcase-foot">
-           <div class="bloom-showcase-caption"><h2 data-copy>실제 플레이 소개</h2><p data-sub>게임을 준비하는 중입니다.</p></div>
-           <div class="bloom-showcase-row"><strong data-time>0초</strong><button class="bloom-showcase-play" type="button" data-action="play">직접 플레이</button></div>
+           <div class="bloom-showcase-caption"><h2 data-copy>실제 플레이 소개</h2><p data-sub role="status" aria-live="polite">게임을 준비하는 중입니다.</p></div>
+           <div class="bloom-showcase-actions">
+             <button class="bloom-showcase-play" type="button" data-action="play">직접 플레이</button>
+             <button type="button" data-action="replay">다시 보기</button>
+           </div>
            <div class="bloom-showcase-track" aria-hidden="true"><span data-progress></span></div>
+           <small class="bloom-showcase-time" data-time>0초</small>
          </footer>
        </div>`;
     document.body.append(ROOT);
@@ -245,6 +252,7 @@ export function installShowcase({
     }
     async function mount() {
         destroy();
+        ROOT.dataset.chapter = 'opening';
         HEADING.textContent = '실제 플레이 소개';
         SUBTITLE.textContent = '게임을 준비하는 중입니다.';
         TIME.textContent = '0 / ' + Math.ceil(durationMs / 1000) + '초';
@@ -312,6 +320,7 @@ export function installShowcase({
                         for (let i = 0; i < QUEUE.length;) {
                             const EVENT = QUEUE[i];
                             if (EVENT.action === 'chapter') {
+                                ROOT.dataset.chapter = String(EVENT.index ?? 'scene');
                                 HEADING.textContent = EVENT.title || title;
                                 SUBTITLE.textContent = EVENT.caption || '';
                                 QUEUE.splice(i, 1);
@@ -352,6 +361,7 @@ export function installShowcase({
                 if (!IS_OPEN()) {
                     return;
                 }
+                ROOT.dataset.chapter = 'final';
                 HEADING.textContent = title;
                 SUBTITLE.textContent = '소개가 끝났습니다. 바로 플레이하거나 다시 볼 수 있습니다.';
                 PAUSE_BUTTON.disabled = true;
@@ -382,6 +392,7 @@ export function installShowcase({
             if (!IS_OPEN()) {
                 return;
             }
+            ROOT.dataset.chapter = 'error';
             HEADING.textContent = '소개를 실행하지 못했습니다';
             SUBTITLE.textContent = String(error.message || error);
             console.warn('[BLOOM showcase]', error);
