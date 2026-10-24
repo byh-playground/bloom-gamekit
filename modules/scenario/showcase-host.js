@@ -6,14 +6,18 @@ const DEMO_PARAMETER = 'showcaseDemo';
 const ROUTE = '#/showcase';
 
 function element(name, className = '', label = '') {
-    const node = document.createElement(name);
-    if (className) node.className = className;
-    if (label) node.textContent = label;
-    return node;
+    const NODE = document.createElement(name);
+    if (className) {
+        NODE.className = className;
+    }
+    if (label) {
+        NODE.textContent = label;
+    }
+    return NODE;
 }
 
 function sendKey(win, code, down) {
-    const key =
+    const KEY =
         code === 'Space'
             ? ' '
             : code.startsWith('Key')
@@ -21,24 +25,28 @@ function sendKey(win, code, down) {
               : code.startsWith('Digit')
                 ? code.slice(5)
                 : code;
-    const event = new win.KeyboardEvent(down ? 'keydown' : 'keyup', {
+    const EVENT = new win.KeyboardEvent(down ? 'keydown' : 'keyup', {
         bubbles: true,
         cancelable: true,
         code,
-        key,
+        key: KEY,
         repeat: false,
     });
-    win.document.dispatchEvent(event);
+    win.document.dispatchEvent(EVENT);
 }
 
 function point(win, selector, phase, u = 0.5, v = 0.5) {
-    const target = win.document.querySelector(selector);
-    if (!target) return false;
-    const bounds = target.getBoundingClientRect();
-    if (!bounds.width || !bounds.height) return false;
-    const x = bounds.left + bounds.width * u;
-    const y = bounds.top + bounds.height * v;
-    const event = new win.PointerEvent(phase, {
+    const TARGET = win.document.querySelector(selector);
+    if (!TARGET) {
+        return false;
+    }
+    const BOUNDS = TARGET.getBoundingClientRect();
+    if (!BOUNDS.width || !BOUNDS.height) {
+        return false;
+    }
+    const X = BOUNDS.left + BOUNDS.width * u;
+    const Y = BOUNDS.top + BOUNDS.height * v;
+    const EVENT = new win.PointerEvent(phase, {
         bubbles: true,
         cancelable: true,
         composed: true,
@@ -47,46 +55,60 @@ function point(win, selector, phase, u = 0.5, v = 0.5) {
         isPrimary: true,
         button: 0,
         buttons: phase === 'pointerup' ? 0 : 1,
-        clientX: x,
-        clientY: y,
+        clientX: X,
+        clientY: Y,
     });
-    target.dispatchEvent(event);
+    TARGET.dispatchEvent(EVENT);
     return true;
 }
 
 function execute(win, event, custom) {
-    if (event.action === 'chapter') return true;
-    if (event.action === 'custom') return custom ? custom(event.name, win) !== false : true;
+    if (event.action === 'chapter') {
+        return true;
+    }
+    if (event.action === 'custom') {
+        return custom ? custom(event.name, win) !== false : true;
+    }
     if (event.action === 'click') {
-        const target = win.document.querySelector(event.selector);
-        if (!target || target.disabled) return false;
-        target.click();
+        const TARGET = win.document.querySelector(event.selector);
+        if (!TARGET || TARGET.disabled) {
+            return false;
+        }
+        TARGET.click();
         return true;
     }
     if (event.action === 'select') {
-        const target = win.document.querySelector(event.selector);
-        if (!target) return false;
-        target.value = event.value;
-        target.dispatchEvent(new win.Event('input', { bubbles: true }));
-        target.dispatchEvent(new win.Event('change', { bubbles: true }));
+        const TARGET = win.document.querySelector(event.selector);
+        if (!TARGET) {
+            return false;
+        }
+        TARGET.value = event.value;
+        TARGET.dispatchEvent(new win.Event('input', { bubbles: true }));
+        TARGET.dispatchEvent(new win.Event('change', { bubbles: true }));
         return true;
     }
     if (event.action === 'key') {
         sendKey(win, event.code, event.down);
         return true;
     }
-    if (event.action === 'pointer') return point(win, event.selector, event.phase, event.u, event.v);
+    if (event.action === 'pointer') {
+        return point(win, event.selector, event.phase, event.u, event.v);
+    }
     if (event.action === 'draw') {
-        const target = win.document.querySelector(event.selector);
-        if (!target) return false;
-        const shape = event.shape || 'circle';
-        const total = shape === 'line' ? 18 : 48;
-        for (let index = 0; index <= total; index++) {
-            const t = index / total;
-            const u = shape === 'line' ? 0.24 + t * 0.5 : 0.51 + Math.cos(t * Math.PI * 2) * 0.1;
-            const v = shape === 'line' ? 0.6 - t * 0.26 : 0.47 + Math.sin(t * Math.PI * 2) * 0.14;
-            const phase = index === 0 ? 'pointerdown' : index === total ? 'pointerup' : 'pointermove';
-            if (!point(win, event.selector, phase, u, v)) return false;
+        const TARGET = win.document.querySelector(event.selector);
+        if (!TARGET) {
+            return false;
+        }
+        const SHAPE = event.shape || 'circle';
+        const TOTAL = SHAPE === 'line' ? 18 : 48;
+        for (let index = 0; index <= TOTAL; index++) {
+            const T = index / TOTAL;
+            const U = SHAPE === 'line' ? 0.24 + T * 0.5 : 0.51 + Math.cos(T * Math.PI * 2) * 0.1;
+            const V = SHAPE === 'line' ? 0.6 - T * 0.26 : 0.47 + Math.sin(T * Math.PI * 2) * 0.14;
+            const PHASE = index === 0 ? 'pointerdown' : index === TOTAL ? 'pointerup' : 'pointermove';
+            if (!point(win, event.selector, PHASE, U, V)) {
+                return false;
+            }
         }
         return true;
     }
@@ -94,8 +116,8 @@ function execute(win, event, custom) {
 }
 
 function style() {
-    const tag = document.createElement('style');
-    tag.textContent = `
+    const TAG = document.createElement('style');
+    TAG.textContent = `
     .bloom-showcase-link{min-height:44px;min-width:44px;touch-action:manipulation;cursor:pointer;border:1px solid currentColor;border-radius:10px;background:transparent;color:inherit;padding:10px 18px;font:inherit;font-weight:700;opacity:.95}
     .bloom-showcase-link:hover{opacity:1;filter:brightness(1.15)}
     #bloom-showcase{position:fixed;z-index:2147483000;inset:0;display:flex;align-items:center;justify-content:center;padding:max(12px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) max(12px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));background:#080c0def;color:#f1f5ef;font-family:system-ui,-apple-system,"Malgun Gothic",sans-serif}
@@ -122,8 +144,8 @@ function style() {
     @media(max-height:520px){.bloom-showcase-shell{gap:4px}.bloom-showcase-head{min-height:44px}.bloom-showcase-caption p{margin:1px 0}.bloom-showcase-foot{gap:3px}.bloom-showcase-stage{border-radius:10px}}
     @media(prefers-reduced-motion:reduce){.bloom-showcase-track span{transition:none}}
     `;
-    document.head.append(tag);
-    return tag;
+    document.head.append(TAG);
+    return TAG;
 }
 
 export function installShowcase({
@@ -135,17 +157,20 @@ export function installShowcase({
     custom,
     ready = () => true,
 } = {}) {
-    if (new URLSearchParams(location.search).get(DEMO_PARAMETER) === '1') return null;
-    if (!title || !launcher || !Array.isArray(timeline) || durationMs < 1000)
+    if (new URLSearchParams(location.search).get(DEMO_PARAMETER) === '1') {
+        return null;
+    }
+    if (!title || !launcher || !Array.isArray(timeline) || durationMs < 1000) {
         throw new TypeError('showcase configuration');
-    const css = style();
-    const root = element('section');
-    root.id = 'bloom-showcase';
-    root.hidden = true;
-    root.setAttribute('role', 'dialog');
-    root.setAttribute('aria-modal', 'true');
-    root.setAttribute('aria-label', title + ' 소개');
-    root.innerHTML = `
+    }
+    const CSS = style();
+    const ROOT = element('section');
+    ROOT.id = 'bloom-showcase';
+    ROOT.hidden = true;
+    ROOT.setAttribute('role', 'dialog');
+    ROOT.setAttribute('aria-modal', 'true');
+    ROOT.setAttribute('aria-label', title + ' 소개');
+    ROOT.innerHTML = `
        <div class="bloom-showcase-shell">
          <header class="bloom-showcase-head"><strong class="bloom-showcase-name"></strong>
            <nav class="bloom-showcase-controls" aria-label="소개 재생 제어">
@@ -161,19 +186,19 @@ export function installShowcase({
            <div class="bloom-showcase-track" aria-hidden="true"><span data-progress></span></div>
          </footer>
        </div>`;
-    document.body.append(root);
-    const pick = (s) => root.querySelector(s);
-    const viewport = pick('[data-viewport]');
-    const name = pick('.bloom-showcase-name');
-    const heading = pick('[data-copy]');
-    const subtitle = pick('[data-sub]');
-    const progress = pick('[data-progress]');
-    const time = pick('[data-time]');
-    const pauseButton = pick('[data-action=pause]');
-    name.textContent = title + ' · 플레이 소개';
-    const launchButton = element('button', 'bloom-showcase-link', '▶ 소개 보기');
-    launchButton.type = 'button';
-    launchButton.setAttribute('aria-label', title + ' 플레이 소개 보기');
+    document.body.append(ROOT);
+    const PICK = (s) => ROOT.querySelector(s);
+    const VIEWPORT = PICK('[data-viewport]');
+    const NAME = PICK('.bloom-showcase-name');
+    const HEADING = PICK('[data-copy]');
+    const SUBTITLE = PICK('[data-sub]');
+    const PROGRESS = PICK('[data-progress]');
+    const TIME = PICK('[data-time]');
+    const PAUSE_BUTTON = PICK('[data-action=pause]');
+    NAME.textContent = title + ' · 플레이 소개';
+    const LAUNCH_BUTTON = element('button', 'bloom-showcase-link', '▶ 소개 보기');
+    LAUNCH_BUTTON.type = 'button';
+    LAUNCH_BUTTON.setAttribute('aria-label', title + ' 플레이 소개 보기');
     let frame = null,
         runner = null,
         focus = null,
@@ -181,26 +206,34 @@ export function installShowcase({
     let held = new Set(),
         restored = [];
 
-    const isOpen = () => !root.hidden;
-    const contentWindow = () => frame?.contentWindow || null;
+    const IS_OPEN = () => !ROOT.hidden;
+    const CONTENT_WINDOW = () => frame?.contentWindow || null;
     function restoreBackground() {
-        for (const [node, value] of restored) node.inert = value;
+        for (const [NODE, VALUE] of restored) {
+            NODE.inert = VALUE;
+        }
         restored = [];
     }
     function destroy() {
         runner?.dispose();
         runner = null;
-        const win = contentWindow();
-        if (win && win.document) for (const code of held) sendKey(win, code, false);
+        const WIN = CONTENT_WINDOW();
+        if (WIN && WIN.document) {
+            for (const CODE of held) {
+                sendKey(WIN, CODE, false);
+            }
+        }
         held = new Set();
         frame?.remove();
         frame = null;
-        viewport.replaceChildren();
+        VIEWPORT.replaceChildren();
     }
     function stop(clearRoute = true) {
-        if (!isOpen()) return;
+        if (!IS_OPEN()) {
+            return;
+        }
         destroy();
-        root.hidden = true;
+        ROOT.hidden = true;
         restoreBackground();
         if (clearRoute && location.hash === ROUTE) {
             history.replaceState(null, '', previousUrl || location.pathname + location.search);
@@ -211,50 +244,56 @@ export function installShowcase({
     }
     async function mount() {
         destroy();
-        heading.textContent = '실제 플레이 소개';
-        subtitle.textContent = '게임을 준비하는 중입니다.';
-        time.textContent = '0 / ' + Math.ceil(durationMs / 1000) + '초';
-        progress.style.width = '0%';
-        pauseButton.textContent = '일시정지';
-        const url = new URL(location.href);
-        url.searchParams.set(DEMO_PARAMETER, '1');
-        url.hash = '';
-        const next = document.createElement('iframe');
-        next.title = title + ' 격리된 실제 플레이';
-        next.tabIndex = -1;
-        next.allow = 'autoplay';
-        next.src = url.href;
-        frame = next;
-        viewport.replaceChildren(frame);
+        HEADING.textContent = '실제 플레이 소개';
+        SUBTITLE.textContent = '게임을 준비하는 중입니다.';
+        TIME.textContent = '0 / ' + Math.ceil(durationMs / 1000) + '초';
+        PROGRESS.style.width = '0%';
+        PAUSE_BUTTON.textContent = '일시정지';
+        const URL = new URL(location.href);
+        URL.searchParams.set(DEMO_PARAMETER, '1');
+        URL.hash = '';
+        const NEXT = document.createElement('iframe');
+        NEXT.title = title + ' 격리된 실제 플레이';
+        NEXT.tabIndex = -1;
+        NEXT.allow = 'autoplay';
+        NEXT.src = URL.href;
+        frame = NEXT;
+        VIEWPORT.replaceChildren(frame);
         await new Promise((resolve, reject) => {
-            next.addEventListener('load', resolve, { once: true });
-            next.addEventListener('error', () => reject(new Error('소개 게임을 불러오지 못했습니다')), { once: true });
+            NEXT.addEventListener('load', resolve, { once: true });
+            NEXT.addEventListener('error', () => reject(new Error('소개 게임을 불러오지 못했습니다')), { once: true });
         });
-        if (!isOpen() || next !== frame) return;
-        const win = contentWindow();
-        const loadedAt = performance.now();
+        if (!IS_OPEN() || NEXT !== frame) {
+            return;
+        }
+        const WIN = CONTENT_WINDOW();
+        const LOADED_AT = performance.now();
         await new Promise((resolve, reject) => {
-            const check = () => {
-                if (!isOpen() || next !== frame) {
+            const CHECK = () => {
+                if (!IS_OPEN() || NEXT !== frame) {
                     resolve();
                     return;
                 }
                 try {
-                    if (ready(win)) {
+                    if (ready(WIN)) {
                         resolve();
                         return;
                     }
-                } catch { /* Optional readiness probes may throw before the game loads. */ }
-                if (performance.now() - loadedAt > 15000) {
+                } catch {
+                    /* Optional readiness probes may throw before the game loads. */
+                }
+                if (performance.now() - LOADED_AT > 15000) {
                     reject(new Error('실제 게임 준비 시간이 초과되었습니다'));
                     return;
                 }
-                requestAnimationFrame(check);
+                requestAnimationFrame(CHECK);
             };
-            check();
+            CHECK();
         });
-        if (!isOpen() || next !== frame) return;
-        const queue = [];
+        if (!IS_OPEN() || NEXT !== frame) {
+            return;
+        }
+        const QUEUE = [];
         runner = createScenario({
             definition: {
                 seed: 28101,
@@ -265,130 +304,164 @@ export function installShowcase({
             createRun() {
                 return {
                     initialize({ events }) {
-                        queue.push(...events);
+                        QUEUE.push(...events);
                     },
                     step({ events, timeMs }) {
-                        queue.push(...events);
-                        for (let i = 0; i < queue.length;) {
-                            const event = queue[i];
-                            if (event.action === 'chapter') {
-                                heading.textContent = event.title || title;
-                                subtitle.textContent = event.caption || '';
-                                queue.splice(i, 1);
+                        QUEUE.push(...events);
+                        for (let i = 0; i < QUEUE.length;) {
+                            const EVENT = QUEUE[i];
+                            if (EVENT.action === 'chapter') {
+                                HEADING.textContent = EVENT.title || title;
+                                SUBTITLE.textContent = EVENT.caption || '';
+                                QUEUE.splice(i, 1);
                                 continue;
                             }
-                            if (execute(win, event, custom)) {
-                                if (event.action === 'key') {
-                                    if (event.down) held.add(event.code);
-                                    else held.delete(event.code);
+                            if (execute(WIN, EVENT, custom)) {
+                                if (EVENT.action === 'key') {
+                                    if (EVENT.down) {
+                                        held.add(EVENT.code);
+                                    } else {
+                                        held.delete(EVENT.code);
+                                    }
                                 }
-                                queue.splice(i, 1);
+                                QUEUE.splice(i, 1);
                                 continue;
                             }
-                            if (timeMs - (event.atMs || 0) > 6000) {
-                                queue.splice(i, 1);
+                            if (timeMs - (EVENT.atMs || 0) > 6000) {
+                                QUEUE.splice(i, 1);
                                 continue;
                             }
                             break;
                         }
                     },
                     render({ timeMs }) {
-                        const elapsed = Math.min(durationMs, timeMs);
-                        time.textContent = Math.floor(elapsed / 1000) + ' / ' + Math.ceil(durationMs / 1000) + '초';
-                        progress.style.width = Math.min(100, (elapsed / durationMs) * 100) + '%';
+                        const ELAPSED = Math.min(durationMs, timeMs);
+                        TIME.textContent = Math.floor(ELAPSED / 1000) + ' / ' + Math.ceil(durationMs / 1000) + '초';
+                        PROGRESS.style.width = Math.min(100, (ELAPSED / durationMs) * 100) + '%';
                     },
                     pause() {
-                        pauseButton.textContent = '이어 보기';
+                        PAUSE_BUTTON.textContent = '이어 보기';
                     },
                     dispose() {
-                        queue.length = 0;
+                        QUEUE.length = 0;
                     },
                 };
             },
             onEnd() {
-                if (!isOpen()) return;
-                heading.textContent = title;
-                subtitle.textContent = '소개가 끝났습니다. 바로 플레이하거나 다시 볼 수 있습니다.';
-                pauseButton.disabled = true;
+                if (!IS_OPEN()) {
+                    return;
+                }
+                HEADING.textContent = title;
+                SUBTITLE.textContent = '소개가 끝났습니다. 바로 플레이하거나 다시 볼 수 있습니다.';
+                PAUSE_BUTTON.disabled = true;
             },
         });
-        pauseButton.disabled = false;
+        PAUSE_BUTTON.disabled = false;
         runner.play();
     }
     function open(viaButton) {
-        if (isOpen()) return;
+        if (IS_OPEN()) {
+            return;
+        }
         previousUrl = viaButton ? location.href : location.pathname + location.search;
-        focus = viaButton ? launchButton : document.activeElement;
-        if (viaButton) history.pushState(null, '', location.pathname + location.search + ROUTE);
-        root.hidden = false;
+        focus = viaButton ? LAUNCH_BUTTON : document.activeElement;
+        if (viaButton) {
+            history.pushState(null, '', location.pathname + location.search + ROUTE);
+        }
+        ROOT.hidden = false;
         restored = [...document.body.children]
-            .filter((n) => n !== root && n.tagName !== 'SCRIPT')
+            .filter((n) => n !== ROOT && n.tagName !== 'SCRIPT')
             .map((n) => [n, n.inert]);
-        for (const [node] of restored) node.inert = true;
-        pick('[data-action=close]').focus({ preventScroll: true });
+        for (const [NODE] of restored) {
+            NODE.inert = true;
+        }
+        PICK('[data-action=close]').focus({ preventScroll: true });
         window.dispatchEvent(new Event('bloom-showcase-opened'));
         void mount().catch((error) => {
-            if (!isOpen()) return;
-            heading.textContent = '소개를 실행하지 못했습니다';
-            subtitle.textContent = String(error.message || error);
+            if (!IS_OPEN()) {
+                return;
+            }
+            HEADING.textContent = '소개를 실행하지 못했습니다';
+            SUBTITLE.textContent = String(error.message || error);
             console.warn('[BLOOM showcase]', error);
         });
     }
     function syncRoute() {
         if (location.hash === ROUTE) {
-            if (!isOpen()) open(false);
-        } else if (isOpen()) stop(false);
+            if (!IS_OPEN()) {
+                open(false);
+            }
+        } else if (IS_OPEN()) {
+            stop(false);
+        }
     }
-    launchButton.onclick = () => open(true);
-    pick('[data-action=close]').onclick = () => stop();
-    pick('[data-action=replay]').onclick = () => {
-        if (isOpen())
+    LAUNCH_BUTTON.onclick = () => open(true);
+    PICK('[data-action=close]').onclick = () => stop();
+    PICK('[data-action=replay]').onclick = () => {
+        if (IS_OPEN()) {
             void mount().catch((error) => {
-                subtitle.textContent = String(error.message || error);
+                SUBTITLE.textContent = String(error.message || error);
             });
+        }
     };
-    pauseButton.onclick = () => {
-        if (!runner) return;
-        if (runner.state === 'playing') runner.pause();
-        else if (runner.state === 'paused') runner.play();
-        pauseButton.textContent = runner.state === 'playing' ? '일시정지' : '이어 보기';
+    PAUSE_BUTTON.onclick = () => {
+        if (!runner) {
+            return;
+        }
+        if (runner.state === 'playing') {
+            runner.pause();
+        } else if (runner.state === 'paused') {
+            runner.play();
+        }
+        PAUSE_BUTTON.textContent = runner.state === 'playing' ? '일시정지' : '이어 보기';
     };
-    pick('[data-action=play]').onclick = () => {
+    PICK('[data-action=play]').onclick = () => {
         stop();
-        const target = playSelector && document.querySelector(playSelector);
-        if (target && !target.disabled) target.click();
-        else launchButton.focus({ preventScroll: true });
+        const TARGET = playSelector && document.querySelector(playSelector);
+        if (TARGET && !TARGET.disabled) {
+            TARGET.click();
+        } else {
+            LAUNCH_BUTTON.focus({ preventScroll: true });
+        }
     };
-    const onKey = (event) => {
-        if (!isOpen()) return;
+    const ON_KEY = (event) => {
+        if (!IS_OPEN()) {
+            return;
+        }
         if (event.key === 'Escape') {
             event.preventDefault();
             event.stopImmediatePropagation();
             stop();
             return;
         }
-        if (event.key !== 'Tab') return;
-        const buttons = [...root.querySelectorAll('button:not(:disabled)')];
-        const first = buttons[0],
-            last = buttons.at(-1);
-        if (event.shiftKey && document.activeElement === first) {
+        if (event.key !== 'Tab') {
+            return;
+        }
+        const BUTTONS = [...ROOT.querySelectorAll('button:not(:disabled)')];
+        const FIRST = BUTTONS[0],
+            LAST = BUTTONS.at(-1);
+        if (event.shiftKey && document.activeElement === FIRST) {
             event.preventDefault();
-            last.focus();
-        } else if (!event.shiftKey && document.activeElement === last) {
+            LAST.focus();
+        } else if (!event.shiftKey && document.activeElement === LAST) {
             event.preventDefault();
-            first.focus();
+            FIRST.focus();
         }
     };
-    document.addEventListener('keydown', onKey, true);
+    document.addEventListener('keydown', ON_KEY, true);
     window.addEventListener('popstate', syncRoute);
     window.addEventListener('hashchange', syncRoute);
-    const observer = new MutationObserver(() => attach());
+    const OBSERVER = new MutationObserver(() => attach());
     function attach() {
-        if (launchButton.isConnected) return;
-        const anchor = document.querySelector(launcher);
-        if (anchor && !anchor.closest('#bloom-showcase')) anchor.insertAdjacentElement('afterend', launchButton);
+        if (LAUNCH_BUTTON.isConnected) {
+            return;
+        }
+        const ANCHOR = document.querySelector(launcher);
+        if (ANCHOR && !ANCHOR.closest('#bloom-showcase')) {
+            ANCHOR.insertAdjacentElement('afterend', LAUNCH_BUTTON);
+        }
     }
-    observer.observe(document.body, { subtree: true, childList: true });
+    OBSERVER.observe(document.body, { subtree: true, childList: true });
     attach();
     queueMicrotask(syncRoute);
     return {
@@ -396,16 +469,16 @@ export function installShowcase({
         close: stop,
         dispose() {
             stop();
-            observer.disconnect();
-            document.removeEventListener('keydown', onKey, true);
+            OBSERVER.disconnect();
+            document.removeEventListener('keydown', ON_KEY, true);
             window.removeEventListener('popstate', syncRoute);
             window.removeEventListener('hashchange', syncRoute);
-            launchButton.remove();
-            root.remove();
-            css.remove();
+            LAUNCH_BUTTON.remove();
+            ROOT.remove();
+            CSS.remove();
         },
         get active() {
-            return isOpen();
+            return IS_OPEN();
         },
     };
 }
