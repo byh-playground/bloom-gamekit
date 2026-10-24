@@ -58,6 +58,57 @@ try {
     assert.equal(STOPPED.created, STOPPED.disposed);
     assert.equal(STOPPED.state, 'stopped');
     assert.match(STOPPED.backend, /WebGL/);
+    // Live introductions must occupy the whole viewport like Bounko, not a fixed preview card.
+    await PAGE.evaluate(async () => {
+        const { installShowcase } = await import('/modules/scenario/index.js');
+        window.showcaseLayoutTest = installShowcase({
+            title: '시연 게임',
+            launcher: '#play',
+            playSelector: '#play',
+            durationMs: 1500,
+            ready: () => true,
+            timeline: [
+                { atMs: 0, action: 'chapter', index: 0, title: '실제 게임 장면', caption: '전체 화면 소개' },
+            ],
+        });
+    });
+    await PAGE.click('.bloom-showcase-link');
+    await PAGE.waitForSelector('#bloom-showcase:not([hidden]) iframe');
+    for (const VIEW of [
+        { width: 1280, height: 800 },
+        { width: 390, height: 844 },
+        { width: 844, height: 390 },
+    ]) {
+        await PAGE.setViewportSize(VIEW);
+        const LAYOUT = await PAGE.evaluate(() => {
+            const RECT = (selector) => {
+                const ELEMENT = document.querySelector(selector);
+                const BOX = ELEMENT.getBoundingClientRect();
+                return { left: BOX.left, top: BOX.top, right: BOX.right, bottom: BOX.bottom, width: BOX.width, height: BOX.height };
+            };
+            return {
+                stage: RECT('.bloom-showcase-stage'),
+                root: RECT('#bloom-showcase'),
+                close: RECT('#bloom-showcase [data-action=close]'),
+                play: RECT('#bloom-showcase [data-action=play]'),
+                replay: RECT('#bloom-showcase [data-action=replay]'),
+                border: getComputedStyle(document.querySelector('.bloom-showcase-stage')).borderTopWidth,
+                chapter: document.querySelector('#bloom-showcase').dataset.chapter,
+            };
+        });
+        assert.ok(LAYOUT.stage.width >= VIEW.width - 1 && LAYOUT.stage.height >= VIEW.height - 1, 'The live scene must fill the viewport');
+        assert.equal(LAYOUT.border, '0px', 'There must be no inset preview card border');
+        for (const BUTTON of [LAYOUT.close, LAYOUT.play, LAYOUT.replay]) {
+            assert.ok(BUTTON.left >= 0 && BUTTON.right <= VIEW.width + 1, 'Controls fit horizontally');
+            assert.ok(BUTTON.top >= 0 && BUTTON.bottom <= VIEW.height + 1, 'Controls fit vertically');
+        }
+        assert.equal(LAYOUT.root.width, VIEW.width);
+        assert.equal(LAYOUT.root.height, VIEW.height);
+    }
+    await PAGE.click('#bloom-showcase [data-action=close]');
+    assert.equal(await PAGE.locator('#bloom-showcase').isHidden(), true);
+    assert.equal(new URL(PAGE.url()).hash, '');
+    await PAGE.evaluate(() => window.showcaseLayoutTest.dispose());
     assert.deepEqual(ERRORS, []);
     console.log(
         JSON.stringify({
