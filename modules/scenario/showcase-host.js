@@ -153,6 +153,7 @@ export function installShowcase({
     launcher,
     timeline,
     durationMs = 27000,
+    readyTimeoutMs = 15000,
     playSelector,
     custom,
     ready = () => true,
@@ -282,7 +283,7 @@ export function installShowcase({
                 } catch {
                     /* Optional readiness probes may throw before the game loads. */
                 }
-                if (performance.now() - LOADED_AT > 15000) {
+                if (performance.now() - LOADED_AT > readyTimeoutMs) {
                     reject(new Error('실제 게임 준비 시간이 초과되었습니다'));
                     return;
                 }
