@@ -179,7 +179,7 @@ export function installShowcase({
         focus = null,
         previousUrl = null;
     let held = new Set(),
-        restored = [],
+        restored = [];
 
     const isOpen = () => !root.hidden;
     const contentWindow = () => frame?.contentWindow || null;
