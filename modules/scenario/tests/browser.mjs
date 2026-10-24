@@ -58,6 +58,49 @@ try {
     assert.equal(STOPPED.created, STOPPED.disposed);
     assert.equal(STOPPED.state, 'stopped');
     assert.match(STOPPED.backend, /WebGL/);
+    // Live introductions must fill the viewport, not a centered preview card.
+    await PAGE.evaluate(async () => {
+        const { installShowcase: INSTALL_SHOWCASE } = await import('/modules/scenario/index.js');
+        window.showcaseLayoutTest = INSTALL_SHOWCASE({
+            title: '시연 게임',
+            launcher: '#play',
+            playSelector: '#play',
+            durationMs: 1500,
+            ready: () => true,
+            timeline: [{ atMs: 0, action: 'chapter', title: '전체 화면 소개' }],
+        });
+    });
+    await PAGE.click('.bloom-showcase-link');
+    await PAGE.waitForSelector('#bloom-showcase:not([hidden]) iframe');
+    for (const VIEW of [
+        { width: 1280, height: 800 },
+        { width: 390, height: 844 },
+        { width: 844, height: 390 },
+    ]) {
+        await PAGE.setViewportSize(VIEW);
+        const BOXES = await PAGE.evaluate(() => {
+            const ROOT = document.querySelector('#bloom-showcase');
+            const SELECTORS = [
+                '.bloom-showcase-stage',
+                '[data-action=close]',
+                '[data-action=play]',
+                '[data-action=replay]',
+            ];
+            return SELECTORS.map((selector) => {
+                const BOUNDS = ROOT.querySelector(selector).getBoundingClientRect();
+                return [BOUNDS.left, BOUNDS.top, BOUNDS.right, BOUNDS.bottom];
+            });
+        });
+        assert.deepEqual(BOXES[0], [0, 0, VIEW.width, VIEW.height]);
+        for (const BOUNDS of BOXES.slice(1)) {
+            assert.ok(BOUNDS[0] >= 0 && BOUNDS[2] <= VIEW.width + 1);
+            assert.ok(BOUNDS[1] >= 0 && BOUNDS[3] <= VIEW.height + 1);
+        }
+    }
+    await PAGE.click('#bloom-showcase [data-action=close]');
+    assert.equal(await PAGE.locator('#bloom-showcase').isHidden(), true);
+    assert.equal(new URL(PAGE.url()).hash, '');
+    await PAGE.evaluate(() => window.showcaseLayoutTest.dispose());
     assert.deepEqual(ERRORS, []);
     console.log(
         JSON.stringify({
