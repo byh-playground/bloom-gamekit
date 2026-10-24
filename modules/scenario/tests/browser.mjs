@@ -60,8 +60,8 @@ try {
     assert.match(STOPPED.backend, /WebGL/);
     // Live introductions must fill the viewport, not a centered preview card.
     await PAGE.evaluate(async () => {
-        const { installShowcase } = await import('/modules/scenario/index.js');
-        window.showcaseLayoutTest = installShowcase({
+        const { installShowcase: INSTALL_SHOWCASE } = await import('/modules/scenario/index.js');
+        window.showcaseLayoutTest = INSTALL_SHOWCASE({
             title: '시연 게임',
             launcher: '#play',
             playSelector: '#play',
