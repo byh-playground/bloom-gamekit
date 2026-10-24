@@ -13,10 +13,20 @@ function element(name, className = '', label = '') {
 }
 
 function sendKey(win, code, down) {
-    const key = code === 'Space' ? ' ' : code.startsWith('Key') ? code.slice(3).toLowerCase()
-        : code.startsWith('Digit') ? code.slice(5) : code;
+    const key =
+        code === 'Space'
+            ? ' '
+            : code.startsWith('Key')
+              ? code.slice(3).toLowerCase()
+              : code.startsWith('Digit')
+                ? code.slice(5)
+                : code;
     const event = new win.KeyboardEvent(down ? 'keydown' : 'keyup', {
-        bubbles: true, cancelable: true, code, key, repeat: false,
+        bubbles: true,
+        cancelable: true,
+        code,
+        key,
+        repeat: false,
     });
     win.document.dispatchEvent(event);
 }
@@ -29,10 +39,16 @@ function point(win, selector, phase, u = 0.5, v = 0.5) {
     const x = bounds.left + bounds.width * u;
     const y = bounds.top + bounds.height * v;
     const event = new win.PointerEvent(phase, {
-        bubbles: true, cancelable: true, composed: true,
-        pointerId: 71, pointerType: 'mouse', isPrimary: true,
-        button: 0, buttons: phase === 'pointerup' ? 0 : 1,
-        clientX: x, clientY: y,
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        pointerId: 71,
+        pointerType: 'mouse',
+        isPrimary: true,
+        button: 0,
+        buttons: phase === 'pointerup' ? 0 : 1,
+        clientX: x,
+        clientY: y,
     });
     target.dispatchEvent(event);
     return true;
@@ -67,8 +83,8 @@ function execute(win, event, custom) {
         const total = shape === 'line' ? 18 : 48;
         for (let index = 0; index <= total; index++) {
             const t = index / total;
-            const u = shape === 'line' ? 0.24 + t * 0.50 : 0.51 + Math.cos(t * Math.PI * 2) * 0.10;
-            const v = shape === 'line' ? 0.60 - t * 0.26 : 0.47 + Math.sin(t * Math.PI * 2) * 0.14;
+            const u = shape === 'line' ? 0.24 + t * 0.5 : 0.51 + Math.cos(t * Math.PI * 2) * 0.1;
+            const v = shape === 'line' ? 0.6 - t * 0.26 : 0.47 + Math.sin(t * Math.PI * 2) * 0.14;
             const phase = index === 0 ? 'pointerdown' : index === total ? 'pointerup' : 'pointermove';
             if (!point(win, event.selector, phase, u, v)) return false;
         }
@@ -111,11 +127,17 @@ function style() {
 }
 
 export function installShowcase({
-    title, launcher, timeline, durationMs = 27000,
-    playSelector, custom, ready = () => true,
+    title,
+    launcher,
+    timeline,
+    durationMs = 27000,
+    playSelector,
+    custom,
+    ready = () => true,
 } = {}) {
     if (new URLSearchParams(location.search).get(DEMO_PARAMETER) === '1') return null;
-    if (!title || !launcher || !Array.isArray(timeline) || durationMs < 1000) throw new TypeError('showcase configuration');
+    if (!title || !launcher || !Array.isArray(timeline) || durationMs < 1000)
+        throw new TypeError('showcase configuration');
     const css = style();
     const root = element('section');
     root.id = 'bloom-showcase';
@@ -140,7 +162,7 @@ export function installShowcase({
          </footer>
        </div>`;
     document.body.append(root);
-    const pick = s => root.querySelector(s);
+    const pick = (s) => root.querySelector(s);
     const viewport = pick('[data-viewport]');
     const name = pick('.bloom-showcase-name');
     const heading = pick('[data-copy]');
@@ -152,8 +174,15 @@ export function installShowcase({
     const launchButton = element('button', 'bloom-showcase-link', '▶ 소개 보기');
     launchButton.type = 'button';
     launchButton.setAttribute('aria-label', title + ' 플레이 소개 보기');
-    let frame = null, runner = null, opening = false, focus = null, previousUrl = null;
-    let held = new Set(), restored = [], live = false, stopped = false;
+    let frame = null,
+        runner = null,
+        opening = false,
+        focus = null,
+        previousUrl = null;
+    let held = new Set(),
+        restored = [],
+        live = false,
+        stopped = false;
     const isOpen = () => !root.hidden;
     const contentWindow = () => frame?.contentWindow || null;
     function restoreBackground() {
@@ -161,23 +190,31 @@ export function installShowcase({
         restored = [];
     }
     function destroy() {
-        runner?.dispose(); runner = null;
+        runner?.dispose();
+        runner = null;
         const win = contentWindow();
         if (win && win.document) for (const code of held) sendKey(win, code, false);
         held = new Set();
-        frame?.remove(); frame = null; viewport.replaceChildren();
+        frame?.remove();
+        frame = null;
+        viewport.replaceChildren();
     }
     function stop(clearRoute = true) {
         if (!isOpen()) return;
-        destroy(); root.hidden = true; restoreBackground();
+        destroy();
+        root.hidden = true;
+        restoreBackground();
         if (clearRoute && location.hash === ROUTE) {
             history.replaceState(null, '', previousUrl || location.pathname + location.search);
         }
-        focus?.focus?.({preventScroll: true}); focus = null;
+        focus?.focus?.({ preventScroll: true });
+        focus = null;
         window.dispatchEvent(new Event('bloom-showcase-closed'));
     }
     async function mount() {
-        destroy(); live = false; stopped = false;
+        destroy();
+        live = false;
+        stopped = false;
         heading.textContent = '실제 플레이 소개';
         subtitle.textContent = '게임을 준비하는 중입니다.';
         time.textContent = '0 / ' + Math.ceil(durationMs / 1000) + '초';
@@ -194,17 +231,28 @@ export function installShowcase({
         frame = next;
         viewport.replaceChildren(frame);
         await new Promise((resolve, reject) => {
-            next.addEventListener('load', resolve, {once:true});
-            next.addEventListener('error', () => reject(new Error('소개 게임을 불러오지 못했습니다')), {once:true});
+            next.addEventListener('load', resolve, { once: true });
+            next.addEventListener('error', () => reject(new Error('소개 게임을 불러오지 못했습니다')), { once: true });
         });
         if (!isOpen() || next !== frame) return;
         const win = contentWindow();
         const loadedAt = performance.now();
         await new Promise((resolve, reject) => {
             const check = () => {
-                if (!isOpen() || next !== frame) {resolve(); return;}
-                try { if (ready(win)) {resolve(); return;} } catch {}
-                if (performance.now() - loadedAt > 15000) {reject(new Error('실제 게임 준비 시간이 초과되었습니다')); return;}
+                if (!isOpen() || next !== frame) {
+                    resolve();
+                    return;
+                }
+                try {
+                    if (ready(win)) {
+                        resolve();
+                        return;
+                    }
+                } catch {}
+                if (performance.now() - loadedAt > 15000) {
+                    reject(new Error('실제 게임 준비 시간이 초과되었습니다'));
+                    return;
+                }
                 requestAnimationFrame(check);
             };
             check();
@@ -216,13 +264,15 @@ export function installShowcase({
             definition: {
                 seed: 28101,
                 tickRate: 30,
-                endTick: Math.ceil(durationMs * 30 / 1000),
+                endTick: Math.ceil((durationMs * 30) / 1000),
                 timeline,
             },
             createRun() {
                 return {
-                    initialize({events}) { queue.push(...events); },
-                    step({events, timeMs}) {
+                    initialize({ events }) {
+                        queue.push(...events);
+                    },
+                    step({ events, timeMs }) {
                         queue.push(...events);
                         for (let i = 0; i < queue.length;) {
                             const event = queue[i];
@@ -235,7 +285,8 @@ export function installShowcase({
                             }
                             if (execute(win, event, custom)) {
                                 if (event.action === 'key') {
-                                    if (event.down) held.add(event.code); else held.delete(event.code);
+                                    if (event.down) held.add(event.code);
+                                    else held.delete(event.code);
                                 }
                                 queue.splice(i, 1);
                                 continue;
@@ -247,13 +298,17 @@ export function installShowcase({
                             break;
                         }
                     },
-                    render({timeMs}) {
+                    render({ timeMs }) {
                         const elapsed = Math.min(durationMs, timeMs);
                         time.textContent = Math.floor(elapsed / 1000) + ' / ' + Math.ceil(durationMs / 1000) + '초';
-                        progress.style.width = Math.min(100, elapsed / durationMs * 100) + '%';
+                        progress.style.width = Math.min(100, (elapsed / durationMs) * 100) + '%';
                     },
-                    pause() { pauseButton.textContent = '이어 보기'; },
-                    dispose() { queue.length = 0; },
+                    pause() {
+                        pauseButton.textContent = '이어 보기';
+                    },
+                    dispose() {
+                        queue.length = 0;
+                    },
                 };
             },
             onEnd() {
@@ -273,24 +328,33 @@ export function installShowcase({
         focus = viaButton ? launchButton : document.activeElement;
         if (viaButton) history.pushState(null, '', location.pathname + location.search + ROUTE);
         root.hidden = false;
-        restored = [...document.body.children].filter(n => n !== root && n.tagName !== 'SCRIPT').map(n => [n, n.inert]);
+        restored = [...document.body.children]
+            .filter((n) => n !== root && n.tagName !== 'SCRIPT')
+            .map((n) => [n, n.inert]);
         for (const [node] of restored) node.inert = true;
-        pick('[data-action=close]').focus({preventScroll:true});
+        pick('[data-action=close]').focus({ preventScroll: true });
         window.dispatchEvent(new Event('bloom-showcase-opened'));
-        void mount().catch(error => {
+        void mount().catch((error) => {
             if (!isOpen()) return;
-            live = false; heading.textContent = '소개를 실행하지 못했습니다';
+            live = false;
+            heading.textContent = '소개를 실행하지 못했습니다';
             subtitle.textContent = String(error.message || error);
             console.warn('[BLOOM showcase]', error);
         });
     }
     function syncRoute() {
-        if (location.hash === ROUTE) { if (!isOpen()) open(false); }
-        else if (isOpen()) stop(false);
+        if (location.hash === ROUTE) {
+            if (!isOpen()) open(false);
+        } else if (isOpen()) stop(false);
     }
     launchButton.onclick = () => open(true);
     pick('[data-action=close]').onclick = () => stop();
-    pick('[data-action=replay]').onclick = () => {if (isOpen()) void mount().catch(error => {subtitle.textContent = String(error.message || error);});};
+    pick('[data-action=replay]').onclick = () => {
+        if (isOpen())
+            void mount().catch((error) => {
+                subtitle.textContent = String(error.message || error);
+            });
+    };
     pauseButton.onclick = () => {
         if (!runner) return;
         if (runner.state === 'playing') runner.pause();
@@ -301,16 +365,27 @@ export function installShowcase({
         stop();
         const target = playSelector && document.querySelector(playSelector);
         if (target && !target.disabled) target.click();
-        else launchButton.focus({preventScroll:true});
+        else launchButton.focus({ preventScroll: true });
     };
-    const onKey = event => {
+    const onKey = (event) => {
         if (!isOpen()) return;
-        if (event.key === 'Escape') {event.preventDefault();event.stopImmediatePropagation();stop();return;}
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            stop();
+            return;
+        }
         if (event.key !== 'Tab') return;
         const buttons = [...root.querySelectorAll('button:not(:disabled)')];
-        const first = buttons[0], last = buttons.at(-1);
-        if (event.shiftKey && document.activeElement === first) {event.preventDefault();last.focus();}
-        else if (!event.shiftKey && document.activeElement === last) {event.preventDefault();first.focus();}
+        const first = buttons[0],
+            last = buttons.at(-1);
+        if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first.focus();
+        }
     };
     document.addEventListener('keydown', onKey, true);
     window.addEventListener('popstate', syncRoute);
@@ -321,12 +396,24 @@ export function installShowcase({
         const anchor = document.querySelector(launcher);
         if (anchor && !anchor.closest('#bloom-showcase')) anchor.insertAdjacentElement('afterend', launchButton);
     }
-    observer.observe(document.body, {subtree:true, childList:true});
+    observer.observe(document.body, { subtree: true, childList: true });
     attach();
     queueMicrotask(syncRoute);
     return {
-        open: () => open(true), close: stop,
-        dispose() { stop(); observer.disconnect(); document.removeEventListener('keydown', onKey, true);window.removeEventListener('popstate', syncRoute);window.removeEventListener('hashchange', syncRoute);launchButton.remove();root.remove();css.remove();},
-        get active() {return isOpen();},
+        open: () => open(true),
+        close: stop,
+        dispose() {
+            stop();
+            observer.disconnect();
+            document.removeEventListener('keydown', onKey, true);
+            window.removeEventListener('popstate', syncRoute);
+            window.removeEventListener('hashchange', syncRoute);
+            launchButton.remove();
+            root.remove();
+            css.remove();
+        },
+        get active() {
+            return isOpen();
+        },
     };
 }
