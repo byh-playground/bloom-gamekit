@@ -36,12 +36,6 @@ jobs:
                   fi
             - name: Install locked build tooling without lifecycle scripts
               run: npm ci --ignore-scripts --no-audit --no-fund
-            - name: Show formatted showcase content (temporary)
-              run: |
-                  echo FORMAT_BEGIN
-                  npx prettier modules/scenario/showcase-host.js | base64 -w0
-                  echo
-                  echo FORMAT_END
             - name: Build independent bundles
               run: npm run build
             - name: Build standalone HTML previews
