@@ -176,13 +176,11 @@ export function installShowcase({
     launchButton.setAttribute('aria-label', title + ' 플레이 소개 보기');
     let frame = null,
         runner = null,
-        opening = false,
         focus = null,
         previousUrl = null;
     let held = new Set(),
         restored = [],
-        live = false,
-        stopped = false;
+
     const isOpen = () => !root.hidden;
     const contentWindow = () => frame?.contentWindow || null;
     function restoreBackground() {
@@ -213,8 +211,6 @@ export function installShowcase({
     }
     async function mount() {
         destroy();
-        live = false;
-        stopped = false;
         heading.textContent = '실제 플레이 소개';
         subtitle.textContent = '게임을 준비하는 중입니다.';
         time.textContent = '0 / ' + Math.ceil(durationMs / 1000) + '초';
@@ -248,7 +244,7 @@ export function installShowcase({
                         resolve();
                         return;
                     }
-                } catch {}
+                } catch { /* Optional readiness probes may throw before the game loads. */ }
                 if (performance.now() - loadedAt > 15000) {
                     reject(new Error('실제 게임 준비 시간이 초과되었습니다'));
                     return;
@@ -259,7 +255,6 @@ export function installShowcase({
         });
         if (!isOpen() || next !== frame) return;
         const queue = [];
-        let index = -1;
         runner = createScenario({
             definition: {
                 seed: 28101,
@@ -277,7 +272,6 @@ export function installShowcase({
                         for (let i = 0; i < queue.length;) {
                             const event = queue[i];
                             if (event.action === 'chapter') {
-                                index = Math.max(0, Number(event.index) || 0);
                                 heading.textContent = event.title || title;
                                 subtitle.textContent = event.caption || '';
                                 queue.splice(i, 1);
@@ -320,7 +314,6 @@ export function installShowcase({
         });
         pauseButton.disabled = false;
         runner.play();
-        live = true;
     }
     function open(viaButton) {
         if (isOpen()) return;
@@ -336,7 +329,6 @@ export function installShowcase({
         window.dispatchEvent(new Event('bloom-showcase-opened'));
         void mount().catch((error) => {
             if (!isOpen()) return;
-            live = false;
             heading.textContent = '소개를 실행하지 못했습니다';
             subtitle.textContent = String(error.message || error);
             console.warn('[BLOOM showcase]', error);
