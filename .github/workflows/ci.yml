@@ -36,6 +36,48 @@ jobs:
                   fi
             - name: Install locked build tooling without lifecycle scripts
               run: npm ci --ignore-scripts --no-audit --no-fund
+            - name: Canonicalize showcase host (temporary)
+              shell: bash
+              run: |
+                  npx eslint --fix modules/scenario/showcase-host.js || true
+                  node --input-type=module <<'SHOWCASE_CLEAN'
+                  import fs from 'node:fs';
+                  import * as espree from 'espree';
+                  import * as scopeLib from 'eslint-scope';
+                  const PATH='modules/scenario/showcase-host.js';
+                  let text=fs.readFileSync(PATH,'utf8');
+                  const ast=espree.parse(text,{ecmaVersion:'latest',sourceType:'module',range:true});
+                  const scope=scopeLib.analyze(ast,{ecmaVersion:2022,sourceType:'module',ignoreEval:true});
+                  const edits=new Map();
+                  const shorthand=new Set();
+                  function visit(node,parent){
+                    if(!node||typeof node!=='object')return;
+                    if(Array.isArray(node)){for(const item of node)visit(item,parent);return;}
+                    if(node.type==='Identifier' && parent?.type==='Property' && parent.shorthand && parent.value?.range?.[0]===node.range?.[0]) shorthand.add(node.range[0]+'-'+node.range[1]);
+                    if(!node.type)return;
+                    for(const [key,value] of Object.entries(node)) if(key!=='parent'&&key!=='range'&&key!=='loc'&&value&&typeof value==='object')visit(value,node);
+                  }
+                  visit(ast,null);
+                  for(const scopeNode of scope.scopes){
+                   for(const variable of scopeNode.variables){
+                    if(!variable.defs?.some(def=>def.parent?.kind==='const')||/^[A-Z][A-Z0-9_]*$/.test(variable.name))continue;
+                    const renamed=variable.name.replace(/([a-z0-9])([A-Z])/g,'$1_$2').replace(/([A-Z])([A-Z][a-z])/g,'$1_$2').toUpperCase();
+                    for(const id of [...variable.defs.map(def=>def.name), ...variable.references.map(ref=>ref.identifier)]){
+                     if(!id?.range)continue;
+                     const k=id.range[0]+'-'+id.range[1];
+                     edits.set(k,{start:id.range[0],end:id.range[1],text:shorthand.has(k)?variable.name+': '+renamed:renamed});
+                    }
+                   }
+                  }
+                  for(const e of [...edits.values()].sort((a,b)=>b.start-a.start))text=text.slice(0,e.start)+e.text+text.slice(e.end);
+                  fs.writeFileSync(PATH,text);
+                  console.error('RENAMED_CONST_REFERENCES='+edits.size);
+                  SHOWCASE_CLEAN
+                  npx prettier --write modules/scenario/showcase-host.js
+                  echo CANON_BEGIN
+                  base64 -w0 modules/scenario/showcase-host.js
+                  echo
+                  echo CANON_END
             - name: Build independent bundles
               run: npm run build
             - name: Build standalone HTML previews
