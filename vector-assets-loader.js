@@ -24832,7 +24832,8 @@ var ATTRIBUTES = /* @__PURE__ */ new Set([
   "stroke-linejoin",
   "stroke-miterlimit",
   "vector-effect",
-  "opacity"
+  "opacity",
+  "display"
 ]);
 var GRADIENT_ATTRIBUTES = /* @__PURE__ */ new Set(["id", "gradientUnits", "spreadMethod", "x1", "y1", "x2", "y2"]);
 var STOP_ATTRIBUTES = /* @__PURE__ */ new Set(["id", "offset", "stop-color", "stop-opacity"]);
@@ -25045,6 +25046,11 @@ function collectIds(root) {
         const GRADIENT_PAINT = KEY === "fill" && /^url\(\s*#[A-Za-z_][A-Za-z0-9_.:-]{0,127}\s*\)$/.test(VALUE);
         if (!ALLOWED_ATTRIBUTES.has(KEY) || /^on/i.test(KEY) || /url\s*\(/i.test(VALUE) && !GRADIENT_PAINT || /(?:https?:|data:|file:|\/\/)/i.test(VALUE)) {
           throw new TypeError("Unsupported SVG attribute or external reference: " + KEY);
+        }
+        if (KEY === "display" && VALUE !== "none") {
+          throw new TypeError(
+            'Only display="none" is supported, on expression parts hidden by defaultExpression'
+          );
         }
         if (KEY === "vector-effect") {
           if (!["none", "non-scaling-stroke"].includes(VALUE)) {
@@ -26561,8 +26567,29 @@ function compileSourcePaths(paths, partIndices, parts) {
     };
   });
 }
+function validateDefaultPoseSource(ids, metadata) {
+  const HIDDEN = new Set(metadata.expressions[metadata.defaultExpression].hide);
+  for (const [ID, NODE] of ids) {
+    const IS_NONE = NODE.getAttribute("display") === "none";
+    if (HIDDEN.has(ID) && !IS_NONE) {
+      throw new TypeError(
+        `Part "${ID}" is hidden by defaultExpression "${metadata.defaultExpression}" but its SVG node lacks display="none", so the source file does not draw the default pose`
+      );
+    }
+    if (IS_NONE && !HIDDEN.has(ID)) {
+      throw new TypeError(
+        `display="none" on "${ID}" is only allowed for parts that defaultExpression "${metadata.defaultExpression}" hides`
+      );
+    }
+  }
+}
 function withoutMetadata(document2) {
   const ROOT = document2.documentElement.cloneNode(true);
+  const NODES = ROOT.getElementsByTagName("*");
+  ROOT.removeAttribute("display");
+  for (let i = 0; i < NODES.length; i++) {
+    NODES.item(i).removeAttribute("display");
+  }
   for (let child = ROOT.firstChild; child; child = child.nextSibling) {
     if (child.nodeType === 1 && child.nodeName === "metadata" && child.getAttribute("id") === "vector-asset") {
       ROOT.removeChild(child);
@@ -26674,6 +26701,7 @@ function compileVectorAssetCore(svgBytes, sourcePath = "asset.svg", options = {}
   const METADATA_BLOCK = directMetadata(ROOT);
   const VIEW_BOX = NORMALIZE_CENTERED_VIEW_BOX ? normalizeCenteredViewBoxInput(ROOT, METADATA_BLOCK.value) : validateRoot(ROOT);
   const METADATA = validateAssetMetadata(METADATA_BLOCK.value, IDS);
+  validateDefaultPoseSource(IDS, METADATA);
   const SERIALIZED = new import_xmldom.XMLSerializer().serializeToString(ORIGINAL);
   const ROUND_TRIP = parseXml(SERIALIZED, "editor-save round trip");
   const ROUND_TRIP_IDS = collectIds(ROUND_TRIP.documentElement);
