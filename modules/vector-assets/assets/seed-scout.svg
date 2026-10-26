@@ -85,14 +85,14 @@
     <ellipse id="neutral-eye-shine-right" cx="120" cy="116" rx="1.5" ry="2" fill="#fffae7"/>
     <path id="neutral-mouth" d="M89 143 Q100 154 111 143" fill="none" stroke="#293e36" stroke-width="4" stroke-linecap="round"/>
   </g>
-  <g id="face-happy">
+  <g id="face-happy" display="none">
     <path id="happy-eye-left" d="M73 121 Q79 113 85 121" fill="none" stroke="#293e36" stroke-width="4" stroke-linecap="round"/>
     <path id="happy-eye-right" d="M115 121 Q121 113 127 121" fill="none" stroke="#293e36" stroke-width="4" stroke-linecap="round"/>
     <path id="happy-mouth" d="M87 138 Q100 159 113 138 Q100 148 87 138 Z" fill="#293e36"/>
     <ellipse id="happy-cheek-left" cx="67" cy="138" rx="6" ry="3" fill="#e9a39c"/>
     <ellipse id="happy-cheek-right" cx="133" cy="138" rx="6" ry="3" fill="#e9a39c"/>
   </g>
-  <g id="face-surprised">
+  <g id="face-surprised" display="none">
     <ellipse id="surprised-eye-left" cx="79" cy="119" rx="6" ry="9" fill="#293e36"/>
     <ellipse id="surprised-eye-right" cx="121" cy="119" rx="6" ry="9" fill="#293e36"/>
     <ellipse id="surprised-mouth" cx="100" cy="145" rx="6" ry="9" fill="#293e36"/>

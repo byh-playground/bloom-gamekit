@@ -6,6 +6,12 @@ An SVG file is the only authored visual source. `assets/seed-scout.svg` contains
 
 The same page includes SVG-authored yarn and sketch samples. Stitch layout, hatch pattern, contour wobble, color contrast, and deterministic seed live in each SVG metadata node; the build emits retained vector triangles, never a raster texture. The yarn shell uses SVG-authored linear-gradient stops for the surface and samples those same stops along each generated stitch, edge loop, and fiber vertex, with a scalloped outline generated from the source path's edge metric, two Bézier stitch loops with layered yarn/light passes, edge loops, and deterministically seeded fibers that extend outward from the scalloped edge. The sketch style has two fixed-topology morph targets sampled from absolute display time.
 
+## Authoring rule: the source file draws the default pose
+
+An SVG that a plain viewer, `<img>`, or an editor opens must show the same pose the runtime starts in. Every part that `metadata.expressions[defaultExpression].hide` lists carries `display="none"` on its SVG node, and no other node may carry it. Parts the default expression shows, or does not mention, stay visible, matching how the player applies expressions. The compiler rejects an asset that breaks either direction, naming the part, so a file that overlaps every expression or draws a hidden variant cannot ship.
+
+`display="none"` is the only `display` value the schema accepts. It marks the default pose in the source file only: the compiler removes it from its in-memory input, so every expression variant still compiles to the same geometry and the runtime decides visibility. The source SHA-256 covers the attribute, so adding it to an existing asset changes its hash. Game UI that shows a species outside the WebGL scene (icons, portraits, collection pages) can therefore reference the original file directly instead of re-deriving the pose from metadata. Idle-clip start opacities are not part of this rule.
+
 ## Build and runtime
 
 The public example compares that exact authored SVG, the compiled triangle topology, and the real GameKit WebGL 1 mesh in three side-by-side views. It fetches the source SVG directly and checks its SHA-256 against the compiled asset before displaying it; the example derives display-only part groups and poses from the same paths and metadata. One set of clip, time, expression, zoom, and pan controls drives all views. Drag any panel to pan; Center restores the shared camera. On narrow portrait screens the panels stack, while landscape viewports keep all three visible.
