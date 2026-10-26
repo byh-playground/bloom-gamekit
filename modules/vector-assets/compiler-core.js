@@ -278,7 +278,9 @@ function collectIds(root) {
                     throw new TypeError('Unsupported SVG attribute or external reference: ' + KEY);
                 }
                 if (KEY === 'display' && VALUE !== 'none') {
-                    throw new TypeError('Only display="none" is supported, on expression parts hidden by defaultExpression');
+                    throw new TypeError(
+                        'Only display="none" is supported, on expression parts hidden by defaultExpression',
+                    );
                 }
                 if (KEY === 'vector-effect') {
                     if (!['none', 'non-scaling-stroke'].includes(VALUE)) {
