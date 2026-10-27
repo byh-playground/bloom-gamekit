@@ -56,6 +56,7 @@ const STATE = {
     fpsSamples: [],
     fps: null,
     layout: null,
+    benchmark: null,
     last: null,
     error: null,
     disposed: false,
@@ -66,9 +67,86 @@ let nextReadoutMs = 0;
 let frameHandle = null;
 let benchmarkRunning = false;
 
+function benchmarkConfigKey(config = {}) {
+    return JSON.stringify({
+        scene: config.scene ?? SCENE_INPUT.value,
+        count: config.count ?? (SCENE_INPUT.value === 'single' ? 1 : Number(COUNT_INPUT.value)),
+        pixelSize: config.pixelSize ?? Number(PIXEL_SIZE_INPUT.value),
+        spread: config.spread ?? Number(SPREAD_INPUT.value),
+        seed: config.seed ?? Number(SEED_INPUT.value),
+        clip: CLIP_INPUT.value,
+        expression: EXPRESSION_INPUT.value,
+        resolution: Number(RESOLUTION_INPUT.value),
+        interval: Number(SAMPLE_INTERVAL_INPUT.value),
+        mixed: MIXED_INPUT.checked,
+        zoom: Number(ZOOM_INPUT.value),
+        canvasWidth: CANVAS.width,
+        canvasHeight: CANVAS.height,
+        dpr: devicePixelRatio || 1,
+        restores: DEVICE.stats.restores,
+    });
+}
+
+function benchmarkValue(value, suffix = ' ms') {
+    return value === null || value === undefined ? 'unavailable' : `${value.toFixed(2)}${suffix}`;
+}
+
+function showBenchmarkResult(result) {
+    const RESULTS = document.querySelector('.benchmark-results');
+    RESULTS.replaceChildren();
+    const TABLE = document.createElement('table');
+    const HEAD = document.createElement('thead');
+    const HEADER_ROW = document.createElement('tr');
+    for (const LABEL of [
+        'Path',
+        'FPS',
+        'Frame interval p50 / p95',
+        'CPU total p50 / p95',
+        'CPU submit p50 / p95',
+        'GPU p50 / p95',
+    ]) {
+        const CELL = document.createElement('th');
+        CELL.textContent = LABEL;
+        HEADER_ROW.append(CELL);
+    }
+    HEAD.append(HEADER_ROW);
+    TABLE.append(HEAD);
+    const BODY = document.createElement('tbody');
+    for (const METHOD of result.methods) {
+        const ROW = document.createElement('tr');
+        const COVERAGE = `${METHOD.gpuMs.count}/${METHOD.gpuMs.expectedCount ?? METHOD.measuredFrames}`;
+        const GPU =
+            METHOD.gpuMs.status === 'available'
+                ? `${benchmarkValue(METHOD.gpuMs.p50)} / ${benchmarkValue(METHOD.gpuMs.p95)} (${COVERAGE})`
+                : `${METHOD.gpuMs.status} (${COVERAGE})`;
+        for (const VALUE of [
+            METHOD.mode,
+            benchmarkValue(METHOD.fps, ' FPS'),
+            `${benchmarkValue(METHOD.frameIntervalMs.p50)} / ${benchmarkValue(METHOD.frameIntervalMs.p95)}`,
+            `${benchmarkValue(METHOD.cpuTotalMs.p50)} / ${benchmarkValue(METHOD.cpuTotalMs.p95)}`,
+            `${benchmarkValue(METHOD.submitMs.p50)} / ${benchmarkValue(METHOD.submitMs.p95)}`,
+            GPU,
+        ]) {
+            const CELL = document.createElement('td');
+            CELL.textContent = VALUE;
+            ROW.append(CELL);
+        }
+        BODY.append(ROW);
+    }
+    TABLE.append(BODY);
+    const CAPTION = document.createElement('p');
+    CAPTION.textContent = `Sequential full-viewport comparison · ${result.config.scene} · ${result.config.count} characters · ${result.config.pixelSize} CSS px · spread ${result.config.spread}% · seed ${result.config.seed} · ${CLIP_INPUT.value}/${EXPRESSION_INPUT.value}`;
+    RESULTS.append(CAPTION, TABLE);
+}
+
 async function runBenchmark(options = {}) {
     if (benchmarkRunning) {
         throw new Error('Comparison already running');
+    }
+    if (CLIP_INPUT.value !== 'transform-repeat' || MIXED_INPUT.checked) {
+        document.querySelector('.benchmark-results').textContent =
+            'Select transform-repeat and turn off mixed start phases for the repeatable sequential comparison.';
+        throw new Error('Sequential comparison requires transform-repeat and mixed start phases off.');
     }
     benchmarkRunning = true;
     const BUTTON = BY_ID('benchmark');
@@ -83,15 +161,8 @@ async function runBenchmark(options = {}) {
         'Measuring sequential full-viewport paths. Atlas preparation is separate from measured frames.';
     try {
         const RESULT = await runComparison(globalThis.__rasterComparison, options);
-        RESULTS.textContent =
-            `Scene ${RESULT.config.scene} · ${RESULT.config.count} characters · ${RESULT.config.pixelSize} CSS px · spread ${RESULT.config.spread}% · seed ${RESULT.config.seed} · clip ${CLIP_INPUT.value} (${ASSET.metadata.clips[CLIP_INPUT.value].loop}) · expression ${EXPRESSION_INPUT.value}\n` +
-            RESULT.methods
-                .map(
-                    (method) =>
-                        `${method.mode}: ${method.fps?.toFixed(1) ?? 'unavailable'} FPS · CPU submit p50 ${method.submitMs.p50?.toFixed(2) ?? 'unavailable'} ms · GPU ${method.gpuMs.p50 === null ? method.gpuMs.status : `${method.gpuMs.p50.toFixed(2)} ms`}`,
-                )
-                .join('\n') +
-            `\n${RESULT.presentation}`;
+        STATE.benchmark = { key: benchmarkConfigKey(RESULT.config), methods: RESULT.methods };
+        showBenchmarkResult(RESULT);
         return RESULT;
     } catch (error) {
         RESULTS.textContent = `Comparison failed: ${error.message}`;
@@ -400,6 +471,7 @@ function setScene(value) {
     BY_ID('single-tab').setAttribute('aria-selected', String(value === 'single'));
     BY_ID('crowd-tab').setAttribute('aria-selected', String(value === 'crowd'));
     if (!benchmarkRunning) {
+        STATE.benchmark = null;
         document.querySelector('.benchmark-results').textContent =
             'Scene changed. Run the sequential comparison again.';
     }
@@ -700,6 +772,11 @@ function writeMetrics(cpuMs, animationMs, submitMs, pathCpuMs, rasterResult, spr
         GPU.label?.resolution === Number(RESOLUTION_INPUT.value) &&
         GPU.label?.sampleIntervalMs === Number(SAMPLE_INTERVAL_INPUT.value);
     const GPU_MS = GPU_CURRENT ? GPU.ms : null;
+    if (!benchmarkRunning && STATE.benchmark && STATE.benchmark.key !== benchmarkConfigKey()) {
+        STATE.benchmark = null;
+        document.querySelector('.benchmark-results').textContent =
+            'Previous measurement is stale after a scene, display, or graphics change. Run the comparison again.';
+    }
     if (updateReadout) {
         BY_ID('part-label').textContent = rasterResult.vectorFallbacks
             ? `2 벡터 + 부위 텍스처 · 벡터 대체 ${rasterResult.vectorFallbacks}/${PLAYERS.length}`
@@ -708,17 +785,34 @@ function writeMetrics(cpuMs, animationMs, submitMs, pathCpuMs, rasterResult, spr
             ? `3 텍스처 · 벡터 대체 ${spriteResult.vectorFallbacks}/${PLAYERS.length}`
             : '3 텍스처 · 전체 프레임';
         const GPU_TEXT = GPU_MS === null ? GPU.condition : `${GPU_MS.toFixed(2)} ms (${GPU.condition})`;
+        const BENCHMARK_CURRENT = STATE.benchmark?.key === benchmarkConfigKey();
         for (const [SIDE, CARD] of [
             ['vector', BY_ID('vector-card')],
             ['raster', BY_ID('raster-card')],
             ['sprite', BY_ID('sprite-card')],
         ]) {
-            CARD.querySelector('.fps').textContent = STATE.fps === null ? '—' : `${STATE.fps.toFixed(1)} FPS`;
-            const CPU_PATH = MODE_INPUT.value === SIDE ? submitMs : pathCpuMs[SIDE];
-            CARD.querySelector('.cpu-label').textContent = MODE_INPUT.value === SIDE ? 'Submit' : 'Draw calls';
-            CARD.querySelector('.cpu').textContent = CPU_PATH === null ? '—' : `${CPU_PATH.toFixed(2)} ms`;
-            CARD.querySelector('.gpu').textContent =
-                GPU_MS !== null && MODE_INPUT.value === SIDE ? `${GPU_MS.toFixed(2)} ms` : '—';
+            const METHOD = BENCHMARK_CURRENT ? STATE.benchmark.methods.find((item) => item.mode === SIDE) : null;
+            if (METHOD) {
+                CARD.querySelector('.fps').textContent = `Sequential ${benchmarkValue(METHOD.fps, ' FPS')}`;
+                CARD.querySelector('.cpu-label').textContent = 'Submit p50 / p95';
+                CARD.querySelector('.cpu').textContent =
+                    `${benchmarkValue(METHOD.submitMs.p50)} / ${benchmarkValue(METHOD.submitMs.p95)}`;
+                const GPU_STATS = METHOD.gpuMs;
+                const COVERAGE = `${GPU_STATS.count}/${GPU_STATS.expectedCount ?? METHOD.measuredFrames}`;
+                CARD.querySelector('.gpu').textContent =
+                    GPU_STATS.status === 'available'
+                        ? `${benchmarkValue(GPU_STATS.p50)} / ${benchmarkValue(GPU_STATS.p95)} (${COVERAGE})`
+                        : `${GPU_STATS.status} (${COVERAGE})`;
+            } else {
+                CARD.querySelector('.fps').textContent =
+                    STATE.fps === null ? 'Shared RAF unavailable' : `Shared RAF ${STATE.fps.toFixed(1)} FPS`;
+                const CPU_PATH = MODE_INPUT.value === SIDE ? submitMs : pathCpuMs[SIDE];
+                CARD.querySelector('.cpu-label').textContent = MODE_INPUT.value === SIDE ? 'Submit' : 'Draw calls';
+                CARD.querySelector('.cpu').textContent =
+                    CPU_PATH === null ? 'unavailable' : `${CPU_PATH.toFixed(2)} ms`;
+                CARD.querySelector('.gpu').textContent =
+                    GPU_MS !== null && MODE_INPUT.value === SIDE ? `${GPU_MS.toFixed(2)} ms` : 'unavailable';
+            }
         }
         FRAME_METRICS.textContent =
             `CPU 전체 ${cpuMs.toFixed(2)} ms (동작 준비 ${animationMs.toFixed(2)} / 제출 ${submitMs.toFixed(2)} ms) · ` +
@@ -1096,8 +1190,23 @@ BY_ID('benchmark').addEventListener('click', () => {
         seed: Number(SEED_INPUT.value),
     }).catch(console.error);
 });
-document.querySelector('header').addEventListener('change', () => {
-    if (!benchmarkRunning) {
+document.querySelector('header').addEventListener('change', (event) => {
+    if (
+        !benchmarkRunning &&
+        [
+            'count',
+            'pixel-size',
+            'spread',
+            'seed',
+            'clip',
+            'expression',
+            'resolution',
+            'sample-interval',
+            'mixed',
+            'zoom',
+        ].includes(event.target.id)
+    ) {
+        STATE.benchmark = null;
         document.querySelector('.benchmark-results').textContent =
             'Settings changed. Run the sequential comparison again.';
     }

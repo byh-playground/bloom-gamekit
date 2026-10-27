@@ -82,12 +82,28 @@
                 grid-column: 1 / -1;
             }
             .hud .fps {
-                font-size: 1.15rem;
+                font-size: 1.3rem;
                 font-weight: 700;
             }
+            .hud .cpu,
+            .hud .gpu {
+                font-size: 1.07rem;
+            }
             .benchmark-results {
-                white-space: pre-wrap;
                 overflow-wrap: anywhere;
+                overflow-x: auto;
+            }
+            .benchmark-results table {
+                width: 100%;
+                border-collapse: collapse;
+                font-variant-numeric: tabular-nums;
+            }
+            .benchmark-results th,
+            .benchmark-results td {
+                padding: 0.3rem;
+                border-bottom: 1px solid #cbd8c7;
+                text-align: left;
+                min-width: 6.5rem;
             }
             label {
                 display: grid;
@@ -242,6 +258,10 @@
                 }
                 .hud .fps {
                     font-size: 0.9rem;
+                }
+                .hud .cpu,
+                .hud .gpu {
+                    font-size: 0.82rem;
                 }
                 select,
                 button,
