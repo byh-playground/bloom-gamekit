@@ -1,6 +1,7 @@
 import { WebGLDevice, MeshRenderer, createSpriteAnimation } from '/dist/rendering.js';
 import { createVectorAsset, createVectorRasterAtlas, createVectorSpriteAtlas } from '/dist/vector-assets.js';
-import { seedScout } from '../seed-scout-raster-comparison.compiled.js';
+import { createVectorAssetLoader } from '/dist/vector-assets-loader.js';
+import { seedScout, seedScoutSvg } from '../seed-scout-raster-comparison.compiled.js';
 import { runComparison } from './raster-benchmark.js';
 
 const BY_ID = (id) => document.getElementById(id);
@@ -13,6 +14,7 @@ const PIXEL_SIZE_INPUT = BY_ID('pixel-size');
 const SPREAD_INPUT = BY_ID('spread');
 const SEED_INPUT = BY_ID('seed');
 const RESOLUTION_INPUT = BY_ID('resolution');
+const QUALITY_INPUT = BY_ID('quality');
 const CLIP_INPUT = BY_ID('clip');
 const EXPRESSION_INPUT = BY_ID('expression');
 const MIXED_INPUT = BY_ID('mixed');
@@ -29,8 +31,14 @@ const PREPARATION_METRICS = BY_ID('preparation-metrics');
 const PATH_METRICS = BY_ID('path-metrics');
 const DEVICE = new WebGLDevice(CANVAS, { alpha: true, antialias: true });
 const MESHES = new MeshRenderer(DEVICE, { maxMeshes: 16, maxInstances: 1024 });
-const ASSET = createVectorAsset(MESHES, seedScout);
-const VIEW_BOX = ASSET.viewBox;
+let compiled = seedScout;
+let asset = createVectorAsset(MESHES, compiled);
+let viewBox = asset.viewBox;
+const QUALITY_PRESETS = Object.freeze({ low: 2, standard: 4, high: 16 });
+const QUALITY_LOADER = createVectorAssetLoader({ maxEntries: 3 });
+const QUALITY_CACHE = new Map([['standard', seedScout]]);
+const SVG_DATA_URL = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(seedScoutSvg)}`;
+const SVG_SOURCE_PATH = 'modules/vector-assets/assets/seed-scout-raster-comparison.svg';
 const SPRITE_CLIPS = ['transform-repeat', 'bounce', 'idle'];
 const SPRITE_EXPRESSIONS = ['neutral', 'happy', 'surprised'];
 const ATLAS_BUDGET_BYTES = 128 * 1024 * 1024;
@@ -57,6 +65,15 @@ const STATE = {
     fps: null,
     layout: null,
     benchmark: null,
+    qualityKey: 'standard',
+    qualityGeneration: 0,
+    qualityAppliedGeneration: 0,
+    qualityLoading: false,
+    compileCount: 0,
+    compileWallMs: null,
+    loadWallMs: null,
+    previousImageTexUploadCount: null,
+    renderBaseline: { drawCalls: 0, vertices: 0 },
     last: null,
     error: null,
     disposed: false,
@@ -80,6 +97,9 @@ function benchmarkConfigKey(config = {}) {
         interval: Number(SAMPLE_INTERVAL_INPUT.value),
         mixed: MIXED_INPUT.checked,
         zoom: Number(ZOOM_INPUT.value),
+        quality: STATE.qualityKey,
+        curveSegments: compiled.compilerOptions.curveSegments,
+        strokeArcDivisions: compiled.compilerOptions.strokeArcDivisions,
         canvasWidth: CANVAS.width,
         canvasHeight: CANVAS.height,
         dpr: devicePixelRatio || 1,
@@ -334,7 +354,8 @@ function setStatus(message, error = false) {
 
 function invalidatePreparation(force = false) {
     const CONFIG_KEY = JSON.stringify([
-        ASSET.sourceSha256,
+        asset.sourceSha256,
+        STATE.qualityKey,
         Number(RESOLUTION_INPUT.value),
         Number(SAMPLE_INTERVAL_INPUT.value),
         DEVICE.stats.restores ?? 0,
@@ -357,7 +378,7 @@ function phaseFor(index, clip) {
     if (index === 0) {
         return 0;
     }
-    return Math.floor((((index * 73) % 997) / 997) * ASSET.metadata.clips[clip].durationMs);
+    return Math.floor((((index * 73) % 997) / 997) * asset.metadata.clips[clip].durationMs);
 }
 
 function clipFor(index) {
@@ -373,7 +394,7 @@ function synchronizePlayers() {
     while (PLAYERS.length < COUNT) {
         const INDEX = PLAYERS.length;
         const CLIP = clipFor(INDEX);
-        const PLAYER = ASSET.createPlayer({ clip: CLIP, startedAtMs: -phaseFor(INDEX, CLIP) });
+        const PLAYER = asset.createPlayer({ clip: CLIP, startedAtMs: -phaseFor(INDEX, CLIP) });
         PLAYER.setExpression(EXPRESSION_INPUT.value);
         PLAYERS.push(PLAYER);
     }
@@ -435,7 +456,7 @@ function cameraLayout(side, width, height, points) {
         : Number(PIXEL_SIZE_INPUT.value);
     const MARGIN_X = Math.min(PANEL_WIDTH / 2, SIZE * 0.75);
     const MARGIN_Y = Math.min(height / 2, SIZE * 0.75);
-    const SCALE = SIZE / Math.max(VIEW_BOX[2], VIEW_BOX[3]);
+    const SCALE = SIZE / Math.max(viewBox[2], viewBox[3]);
     const POSITIONS = new Array(COUNT);
     for (let i = 0; i < COUNT; i++) {
         const CENTER_X = PANEL_X + MARGIN_X + (SINGLE ? 0.5 : points[i][0]) * (PANEL_WIDTH - 2 * MARGIN_X);
@@ -445,15 +466,15 @@ function cameraLayout(side, width, height, points) {
             0,
             0,
             SCALE,
-            CENTER_X - (VIEW_BOX[0] + VIEW_BOX[2] / 2) * SCALE,
-            CENTER_Y - (VIEW_BOX[1] + VIEW_BOX[3] / 2) * SCALE,
+            CENTER_X - (viewBox[0] + viewBox[2] / 2) * SCALE,
+            CENTER_Y - (viewBox[1] + viewBox[3] / 2) * SCALE,
         ];
     }
     return POSITIONS;
 }
 
 function synchronizeTimeControl() {
-    const CLIP = ASSET.metadata.clips[CLIP_INPUT.value];
+    const CLIP = asset.metadata.clips[CLIP_INPUT.value];
     const DURATION = CLIP.durationMs * (CLIP.loop === 'alternate' ? 2 : 1);
     const DISPLAY_TIME = CLIP.loop === 'once' ? Math.min(DURATION, STATE.timeMs) : STATE.timeMs % DURATION;
     TIME_INPUT.max = String(DURATION);
@@ -508,6 +529,81 @@ function setSeed(value) {
     resetTimer();
 }
 
+async function setQuality(value) {
+    if (!Object.hasOwn(QUALITY_PRESETS, value)) {
+        throw new RangeError('Quality must be low, standard, or high');
+    }
+    QUALITY_INPUT.value = value;
+    const GENERATION = ++STATE.qualityGeneration;
+    if (value === STATE.qualityKey) {
+        STATE.qualityLoading = false;
+        scheduleNextFrame();
+        return STATE.qualityKey;
+    }
+    STATE.qualityLoading = true;
+    STATE.ready = false;
+    STATE.previousFrameMs = null;
+    setStatus(`Loading ${value} SVG mesh quality…`);
+    const STARTED = performance.now();
+    let descriptor;
+    let compiledNow = false;
+    try {
+        descriptor = QUALITY_CACHE.get(value);
+        if (!descriptor) {
+            descriptor = await QUALITY_LOADER.load(SVG_DATA_URL, {
+                sourcePath: SVG_SOURCE_PATH,
+                expectedSha256: seedScout.sourceSha256,
+                curveSegments: QUALITY_PRESETS[value],
+                strokeArcDivisions: 2,
+            });
+            compiledNow = true;
+            if (!STATE.disposed && !QUALITY_CACHE.has(value)) {
+                QUALITY_CACHE.set(value, descriptor);
+                STATE.compileCount++;
+            }
+        }
+        const LOAD_WALL_MS = compiledNow ? performance.now() - STARTED : null;
+        if (STATE.disposed || GENERATION !== STATE.qualityGeneration) {
+            return null;
+        }
+        if (STATE.contextLost || DEVICE.state !== 'ready' || DEVICE.gl.isContextLost()) {
+            throw new Error('Graphics context is unavailable during mesh quality switch');
+        }
+        const NEXT_ASSET = createVectorAsset(MESHES, descriptor);
+        clearSpriteSets();
+        STATE.atlas?.dispose();
+        STATE.atlas = null;
+        STATE.atlasResolution = 0;
+        for (const PLAYER of PLAYERS.splice(0)) {
+            PLAYER.dispose();
+        }
+        asset.dispose();
+        asset = NEXT_ASSET;
+        compiled = descriptor;
+        viewBox = asset.viewBox;
+        STATE.qualityKey = value;
+        STATE.benchmark = null;
+        STATE.qualityAppliedGeneration++;
+        STATE.compileWallMs = null;
+        STATE.loadWallMs = LOAD_WALL_MS;
+        STATE.qualityLoading = false;
+        STATE.previousFrameMs = null;
+        invalidatePreparation(true);
+        setStatus(`${value} mesh quality ready; preparing atlases…`);
+        scheduleNextFrame();
+        return value;
+    } catch (error) {
+        if (!STATE.disposed && GENERATION === STATE.qualityGeneration) {
+            QUALITY_INPUT.value = STATE.qualityKey;
+            STATE.qualityLoading = false;
+            STATE.previousFrameMs = null;
+            setStatus(`Mesh quality load failed: ${error.message}`, true);
+            scheduleNextFrame();
+        }
+        throw error;
+    }
+}
+
 function ensureAtlas() {
     const RESOLUTION = Number(RESOLUTION_INPUT.value);
     if (STATE.atlasResolution === RESOLUTION) {
@@ -520,8 +616,8 @@ function ensureAtlas() {
     const STARTED = performance.now();
     let candidate = null;
     try {
-        candidate = createVectorRasterAtlas(MESHES, ASSET, seedScout, {
-            pixelsPerUnit: RESOLUTION / Math.max(VIEW_BOX[2], VIEW_BOX[3]),
+        candidate = createVectorRasterAtlas(MESHES, asset, compiled, {
+            pixelsPerUnit: RESOLUTION / Math.max(viewBox[2], viewBox[3]),
             padding: 2,
             maxAtlasSize: Math.min(DEVICE.maxTextureSize, 8192),
             maxAtlasBytes: ATLAS_BUDGET_BYTES,
@@ -534,7 +630,7 @@ function ensureAtlas() {
             candidate.dispose();
         }
         STATE.bakeCpuMs = performance.now() - STARTED;
-        setStatus(`같은 SVG ${ASSET.sourceSha256.slice(0, 12)} · 래스터 부위 그림 ${RESOLUTION}px`);
+        setStatus(`같은 SVG ${asset.sourceSha256.slice(0, 12)} · 래스터 부위 그림 ${RESOLUTION}px`);
     } catch (error) {
         candidate?.dispose();
         STATE.atlasReason = error.message;
@@ -560,7 +656,8 @@ function clearSpriteSets() {
 
 function ensureSpriteSets(forceAll = false) {
     const CONFIG_KEY = JSON.stringify([
-        ASSET.sourceSha256,
+        asset.sourceSha256,
+        STATE.qualityKey,
         Number(RESOLUTION_INPUT.value),
         Number(SAMPLE_INTERVAL_INPUT.value),
         DEVICE.stats.restores ?? 0,
@@ -600,11 +697,11 @@ function ensureSpriteSets(forceAll = false) {
         let plannedBytes = 0;
         let bakeCount = 0;
         try {
-            baker = createVectorSpriteAtlas(MESHES, ASSET, seedScout, {
+            baker = createVectorSpriteAtlas(MESHES, asset, compiled, {
                 clip: CLIP,
                 expression: EXPRESSION,
                 sampleIntervalMs: Number(SAMPLE_INTERVAL_INPUT.value),
-                pixelsPerUnit: Number(RESOLUTION_INPUT.value) / Math.max(VIEW_BOX[2], VIEW_BOX[3]),
+                pixelsPerUnit: Number(RESOLUTION_INPUT.value) / Math.max(viewBox[2], viewBox[3]),
                 padding: 2,
                 maxAtlasSize: Math.min(DEVICE.maxTextureSize, 8192),
                 maxAtlasBytes: ATLAS_BUDGET_BYTES,
@@ -675,12 +772,151 @@ function ensureSpriteSets(forceAll = false) {
 
 function spriteKey(clip, expression = EXPRESSION_INPUT.value) {
     return JSON.stringify([
-        ASSET.sourceSha256,
+        asset.sourceSha256,
+        STATE.qualityKey,
         clip,
         expression,
         Number(RESOLUTION_INPUT.value),
         Number(SAMPLE_INTERVAL_INPUT.value),
     ]);
+}
+
+function qualitySnapshot() {
+    const GEOMETRY = compiled.geometry;
+    const EXPRESSION_INDICES = GEOMETRY.expressionIndices?.[EXPRESSION_INPUT.value] ?? GEOMETRY.indices;
+    const EXPRESSION_BYTES = Object.values(GEOMETRY.expressionIndices ?? {}).reduce(
+        (sum, indices) => sum + indices.byteLength,
+        0,
+    );
+    return {
+        key: STATE.qualityKey,
+        generation: STATE.qualityAppliedGeneration,
+        loadStatus: STATE.qualityLoading ? 'loading' : 'ready',
+        curveSegments: compiled.compilerOptions.curveSegments,
+        strokeArcDivisions: compiled.compilerOptions.strokeArcDivisions,
+        compileCount: STATE.compileCount,
+        compileWallMs: STATE.compileWallMs,
+        loadWallMs: STATE.loadWallMs,
+        sourceVertexCount: GEOMETRY.vertices.length / 11,
+        expressionTriangles: EXPRESSION_INDICES.length / 3,
+        cpuSourceGeometryBytes: GEOMETRY.vertices.byteLength + GEOMETRY.indices.byteLength + EXPRESSION_BYTES,
+    };
+}
+
+function tradeoffSnapshot(submitMs, gpuMs, atlasStats, spriteSets, deviceStats) {
+    const QUALITY = qualitySnapshot();
+    const SELECTED_SPRITE = STATE.spriteSets.get(spriteKey(CLIP_INPUT.value, EXPRESSION_INPUT.value));
+    const BENCHMARK = STATE.benchmark?.key === benchmarkConfigKey() ? STATE.benchmark : null;
+    const PATHS = {};
+    for (const SIDE of ['vector', 'raster', 'sprite']) {
+        const METHOD = BENCHMARK?.methods.find((entry) => entry.mode === SIDE);
+        const FULL_PATH = MODE_INPUT.value === SIDE;
+        PATHS[SIDE] = {
+            scope: METHOD ? 'sequential' : FULL_PATH ? 'current full viewport' : 'not individually measured',
+            uniqueVerticesPerActor:
+                SIDE === 'vector'
+                    ? QUALITY.sourceVertexCount
+                    : SIDE === 'raster'
+                      ? atlasStats
+                          ? atlasStats.runCount * 4
+                          : null
+                      : 4,
+            geometryTrianglesPerActor:
+                SIDE === 'vector'
+                    ? QUALITY.expressionTriangles
+                    : SIDE === 'raster'
+                      ? atlasStats
+                          ? atlasStats.runCount * 2
+                          : null
+                      : 2,
+            drawCalls: METHOD?.drawCalls?.p50 ?? null,
+            liveDrawCalls: FULL_PATH ? deviceStats.drawCalls - STATE.renderBaseline.drawCalls : null,
+            fps: METHOD?.fps ?? null,
+            liveFps: FULL_PATH ? STATE.fps : null,
+            submitMsP50: METHOD?.submitMs.p50 ?? null,
+            submitMsP95: METHOD?.submitMs.p95 ?? null,
+            liveSubmitMs: FULL_PATH ? submitMs : null,
+            gpuMsP50: METHOD?.gpuMs.p50 ?? null,
+            gpuMsP95: METHOD?.gpuMs.p95 ?? null,
+            liveGpuMs: FULL_PATH ? gpuMs : null,
+            gpuStatus:
+                METHOD?.gpuMs.status ??
+                (FULL_PATH ? (gpuMs === null ? 'pending or unsupported' : 'available') : 'not individually measured'),
+            logicalRgbaBytes:
+                SIDE === 'vector'
+                    ? 0
+                    : SIDE === 'raster'
+                      ? (atlasStats?.allocatedBytes ?? null)
+                      : (SELECTED_SPRITE?.baker?.stats.allocatedBytes ?? null),
+            initialPrepareMs:
+                SIDE === 'vector'
+                    ? null
+                    : SIDE === 'raster'
+                      ? STATE.bakeCpuMs
+                      : spriteSets.length
+                        ? spriteSets.reduce((sum, entry) => sum + entry.bakeCpuMs, 0)
+                        : null,
+            submittedTriangles: FULL_PATH ? (deviceStats.vertices - STATE.renderBaseline.vertices) / 3 : null,
+        };
+    }
+    return {
+        paths: PATHS,
+        activeCpuSourceGeometryBytes: QUALITY.cpuSourceGeometryBytes,
+        retainedMeshBytes: MESHES.stats().retainedBytes,
+        selectedSpriteLogicalRgbaBytes: PATHS.sprite.logicalRgbaBytes,
+        partLogicalRgbaBytes: PATHS.raster.logicalRgbaBytes,
+        allPreparedAtlasBytes: STATE.preparation?.allocatedBytes ?? null,
+        gpuTextureBytesIncludingTargets: deviceStats.gpuTextureBytes,
+        imageTexUploadDelta:
+            STATE.previousImageTexUploadCount === null
+                ? null
+                : deviceStats.imageTexUploadCount - STATE.previousImageTexUploadCount,
+    };
+}
+
+function showTradeoffTable(tradeoff, quality) {
+    BY_ID('quality-metrics').textContent =
+        `${quality.key} · curve ${quality.curveSegments} / stroke arc ${quality.strokeArcDivisions} · ${quality.loadStatus} · loader compilations ${quality.compileCount} · ${quality.loadWallMs === null ? 'build-precompiled or cached; compile wall time not separately measured' : `first loader call (fetch + SHA + compile) ${quality.loadWallMs.toFixed(1)} ms`}`;
+    const FORMAT = (value, suffix = '') =>
+        value === null || value === undefined ? 'not measured' : `${Number(value).toLocaleString()}${suffix}`;
+    const ROWS = [
+        ['Unique geometry vertices / actor', 'uniqueVerticesPerActor'],
+        ['Geometry triangles / actor', 'geometryTrianglesPerActor'],
+        ['Sequential draw calls p50', 'drawCalls'],
+        ['Sequential FPS', 'fps'],
+        ['Sequential CPU submit p50 / p95 ms', 'submitMsP50', 'submitMsP95'],
+        ['Sequential GPU p50 / p95 ms', 'gpuMsP50', 'gpuMsP95'],
+        ['Live full-path draw calls', 'liveDrawCalls'],
+        ['Live submitted triangles', 'submittedTriangles'],
+        ['Live shared RAF FPS', 'liveFps'],
+        ['Live full-path CPU submit ms', 'liveSubmitMs'],
+        ['Live full-path GPU ms', 'liveGpuMs'],
+        ['Logical RGBA atlas bytes', 'logicalRgbaBytes'],
+        ['Initial preparation ms', 'initialPrepareMs'],
+    ];
+    const TABLE = document.createElement('table');
+    const HEADER = TABLE.createTHead().insertRow();
+    for (const LABEL of ['Measure', 'Vector', 'Part atlas', 'Sprite']) {
+        const CELL = document.createElement('th');
+        CELL.textContent = LABEL;
+        HEADER.append(CELL);
+    }
+    const BODY = TABLE.createTBody();
+    for (const [LABEL, FIELD, P95] of ROWS) {
+        const ROW = BODY.insertRow();
+        const TITLE = ROW.insertCell();
+        TITLE.textContent = LABEL;
+        for (const SIDE of ['vector', 'raster', 'sprite']) {
+            const PATH = tradeoff.paths[SIDE];
+            const CELL = ROW.insertCell();
+            CELL.textContent = P95
+                ? `${FORMAT(PATH[FIELD])} / ${FORMAT(PATH[P95])}${FIELD === 'gpuMsP50' ? ` (${PATH.gpuStatus})` : ''}`
+                : FORMAT(PATH[FIELD]);
+        }
+    }
+    const NOTE = document.createElement('p');
+    NOTE.textContent = `Current full-viewport submitted triangles exclude preparation draws and are measured only in single-path mode. CPU source geometry ${FORMAT(tradeoff.activeCpuSourceGeometryBytes, ' B')} (active descriptor only); MeshRenderer retained ${FORMAT(tradeoff.retainedMeshBytes, ' B')} (aggregate). Logical image bytes are RGBA target/sheet allocation, not physical VRAM or per-actor copies. Sprite initial preparation sums all 9 clip/expression sheets; the sprite image-byte column shows only the selected sheet. All 9 prepared atlases ${FORMAT(tradeoff.allPreparedAtlasBytes, ' B')}; Device GPU texture total ${FORMAT(tradeoff.gpuTextureBytesIncludingTargets, ' B')} already includes render-target color. Current-frame image upload delta ${FORMAT(tradeoff.imageTexUploadDelta)} (shared; not assigned to paths).`;
+    BY_ID('tradeoff-table').replaceChildren(TABLE, NOTE);
 }
 
 function drawActors(side, positions, projection) {
@@ -714,7 +950,7 @@ function drawSpriteActors(positions, projection) {
     let spriteDraws = 0;
     let vectorFallbacks = 0;
     const REASONS = new Set();
-    const PIXELS_PER_UNIT = Number(RESOLUTION_INPUT.value) / Math.max(VIEW_BOX[2], VIEW_BOX[3]);
+    const PIXELS_PER_UNIT = Number(RESOLUTION_INPUT.value) / Math.max(viewBox[2], viewBox[3]);
     for (let i = 0; i < PLAYERS.length; i++) {
         const VECTOR_PLAYER = PLAYERS[i];
         const ENTRY = STATE.spriteSets.get(spriteKey(VECTOR_PLAYER.currentClip, VECTOR_PLAYER.currentExpression));
@@ -751,8 +987,7 @@ function writeMetrics(cpuMs, animationMs, submitMs, pathCpuMs, rasterResult, spr
     const GPU = timer.result;
     const DEVICE_STATS = DEVICE.stats;
     const VECTOR_TRIANGLES =
-        (seedScout.geometry.expressionIndices?.[EXPRESSION_INPUT.value]?.length ?? seedScout.geometry.indices.length) /
-        3;
+        (compiled.geometry.expressionIndices?.[EXPRESSION_INPUT.value]?.length ?? compiled.geometry.indices.length) / 3;
     const SPRITE_SETS = [...STATE.spriteSets.values()];
     const SPRITE_BYTES = SPRITE_SETS.reduce((sum, entry) => sum + entry.plannedBytes, 0);
     const SPRITE_ALLOCATED_BYTES = SPRITE_SETS.reduce(
@@ -764,6 +999,7 @@ function writeMetrics(cpuMs, animationMs, submitMs, pathCpuMs, rasterResult, spr
     const PREPARATION = STATE.preparation;
     const GPU_CURRENT =
         GPU.label?.mode === MODE_INPUT.value &&
+        GPU.label?.quality === STATE.qualityKey &&
         GPU.label?.scene === SCENE_INPUT.value &&
         GPU.label?.seed === Number(SEED_INPUT.value) &&
         GPU.label?.pixelSize === Number(PIXEL_SIZE_INPUT.value) &&
@@ -781,6 +1017,8 @@ function writeMetrics(cpuMs, animationMs, submitMs, pathCpuMs, rasterResult, spr
         document.querySelector('.benchmark-results').textContent =
             'Previous measurement is stale after a scene, display, or graphics change. Run the comparison again.';
     }
+    const QUALITY = qualitySnapshot();
+    const TRADEOFF = tradeoffSnapshot(submitMs, GPU_MS, ATLAS_STATS, SPRITE_SETS, DEVICE_STATS);
     if (updateReadout) {
         BY_ID('part-label').textContent = rasterResult.vectorFallbacks
             ? `2 벡터 + 부위 텍스처 · 벡터 대체 ${rasterResult.vectorFallbacks}/${PLAYERS.length}`
@@ -837,7 +1075,7 @@ function writeMetrics(cpuMs, animationMs, submitMs, pathCpuMs, rasterResult, spr
             ? `${PREPARATION.status} ${PREPARATION.completed}/${PREPARATION.total} · planned ${PREPARATION.estimatedBytes.toLocaleString()} B · allocated ${PREPARATION.allocatedBytes.toLocaleString()} / ${PREPARATION.budgetBytes.toLocaleString()} B · initial CPU ${PREPARATION.cpuMs.toFixed(1)} ms · ${PREPARATION.entries.filter((entry) => entry.ready).length} separate sprite textures (no multi-page sheet)${FAILED_PREPARATIONS.length ? ` · ${FAILED_PREPARATIONS.map((entry) => `${entry.clip}/${entry.expression}:${entry.reason}`).join(', ')}` : ''}`
             : 'Preparing atlas manifest…';
         PATH_METRICS.textContent =
-            `SVG SHA ${ASSET.sourceSha256.slice(0, 12)} · 래스터 ${rasterResult.rasterDraws}개 · 벡터 대체 ${rasterResult.vectorFallbacks}개` +
+            `SVG SHA ${asset.sourceSha256.slice(0, 12)} · 래스터 ${rasterResult.rasterDraws}개 · 벡터 대체 ${rasterResult.vectorFallbacks}개` +
             (rasterResult.reasons.length ? ` (${rasterResult.reasons.join(', ')})` : '') +
             ` · GPU pose ${POSES?.gpuDrawInstances ?? 0}개 · CPU pose ${POSES?.cpuDrawInstances ?? 0}개 · ` +
             `GPU 버퍼 ${DEVICE_STATS.gpuBufferBytes.toLocaleString()} B · GPU 텍스처 ${DEVICE_STATS.gpuTextureBytes.toLocaleString()} B · ` +
@@ -846,16 +1084,24 @@ function writeMetrics(cpuMs, animationMs, submitMs, pathCpuMs, rasterResult, spr
             `${hardware.backend} · ${hardware.renderer} · ${hardware.vendor}`;
         BY_ID('memory-metrics').textContent =
             `GPU buffers ${DEVICE_STATS.gpuBufferBytes.toLocaleString()} B · textures ${DEVICE_STATS.gpuTextureBytes.toLocaleString()} B (render-target color included) · render targets ${DEVICE_STATS.gpuRenderTargetBytes.toLocaleString()} B (overlap with textures; do not sum)`;
+        showTradeoffTable(TRADEOFF, QUALITY);
     }
     STATE.last = {
         frame: STATE.frameOrdinal,
-        assetId: ASSET.id,
-        sourceSha256: ASSET.sourceSha256,
+        assetId: asset.id,
+        sourceSha256: asset.sourceSha256,
         mode: MODE_INPUT.value,
         layout: STATE.layout,
         count: PLAYERS.length,
         clip: CLIP_INPUT.value,
         expression: EXPRESSION_INPUT.value,
+        zoom: Number(ZOOM_INPUT.value),
+        mixed: MIXED_INPUT.checked,
+        phaseSignature: Array.from({ length: Math.min(PLAYERS.length, 8) }, (_, index) =>
+            phaseFor(index, clipFor(index)),
+        ).join(','),
+        quality: QUALITY,
+        tradeoff: TRADEOFF,
         resolution: Number(RESOLUTION_INPUT.value),
         timeMs: STATE.timeMs,
         cpuMs,
@@ -865,6 +1111,8 @@ function writeMetrics(cpuMs, animationMs, submitMs, pathCpuMs, rasterResult, spr
         gpuStatus: GPU.condition,
         gpuDiscardedCount: GPU.discardedCount,
         drawCalls: DEVICE_STATS.drawCalls,
+        renderDrawCalls: DEVICE_STATS.drawCalls - STATE.renderBaseline.drawCalls,
+        renderTrianglesSubmitted: (DEVICE_STATS.vertices - STATE.renderBaseline.vertices) / 3,
         uploadedBytes: DEVICE_STATS.bufferBytes,
         textureBytes: DEVICE_STATS.textureBytes,
         gpuBufferBytes: DEVICE_STATS.gpuBufferBytes,
@@ -901,7 +1149,7 @@ function writeMetrics(cpuMs, animationMs, submitMs, pathCpuMs, rasterResult, spr
             })),
         },
         playbackRate: Number(PLAYBACK_RATE_INPUT.value),
-        sourceTriangles: seedScout.geometry.indices.length / 3,
+        sourceTriangles: compiled.geometry.indices.length / 3,
         vectorTriangles: VECTOR_TRIANGLES,
         rasterTriangles: ATLAS_STATS ? ATLAS_STATS.runCount * 2 : 0,
         backend: hardware.backend,
@@ -910,6 +1158,7 @@ function writeMetrics(cpuMs, animationMs, submitMs, pathCpuMs, rasterResult, spr
         canvasWidth: CANVAS.width,
         canvasHeight: CANVAS.height,
     };
+    STATE.previousImageTexUploadCount = DEVICE_STATS.imageTexUploadCount;
 }
 
 function render(now, forcePreparation = false, updateReadout = true) {
@@ -922,6 +1171,12 @@ function render(now, forcePreparation = false, updateReadout = true) {
         STATE.ready = false;
         STATE.previousFrameMs = null;
         setStatus('그래픽 화면을 복구하고 있습니다. 재생 시간은 멈춰 있습니다.');
+        scheduleNextFrame();
+        return;
+    }
+    if (STATE.qualityLoading) {
+        STATE.ready = false;
+        STATE.previousFrameMs = null;
         scheduleNextFrame();
         return;
     }
@@ -947,7 +1202,7 @@ function render(now, forcePreparation = false, updateReadout = true) {
         timer.poll();
         if (STATE.previousFrameMs !== null && STATE.playing) {
             STATE.timeMs += Math.max(0, Math.min(80, now - STATE.previousFrameMs)) * Number(PLAYBACK_RATE_INPUT.value);
-            const CLIP = ASSET.metadata.clips[CLIP_INPUT.value];
+            const CLIP = asset.metadata.clips[CLIP_INPUT.value];
             if (CLIP.loop === 'once' && STATE.timeMs >= CLIP.durationMs) {
                 STATE.timeMs = CLIP.durationMs;
                 STATE.playing = false;
@@ -990,9 +1245,11 @@ function render(now, forcePreparation = false, updateReadout = true) {
             scheduleNextFrame();
             return;
         }
+        STATE.renderBaseline = { drawCalls: DEVICE.stats.drawCalls, vertices: DEVICE.stats.vertices };
         const QUERY = timer.begin({
             frame: ++STATE.frameOrdinal,
             mode: MODE_INPUT.value,
+            quality: STATE.qualityKey,
             scene: SCENE_INPUT.value,
             seed: Number(SEED_INPUT.value),
             pixelSize: Number(PIXEL_SIZE_INPUT.value),
@@ -1078,6 +1335,9 @@ function disposeComparison() {
         return false;
     }
     STATE.disposed = true;
+    STATE.qualityGeneration++;
+    QUALITY_LOADER.dispose();
+    QUALITY_CACHE.clear();
     if (frameHandle !== null) {
         cancelAnimationFrame(frameHandle);
         frameHandle = null;
@@ -1091,7 +1351,7 @@ function disposeComparison() {
     clearSpriteSets();
     STATE.atlas?.dispose();
     STATE.atlas = null;
-    ASSET.dispose();
+    asset.dispose();
     MESHES.dispose();
     DEVICE.dispose();
     return true;
@@ -1161,6 +1421,9 @@ RESOLUTION_INPUT.addEventListener('change', () => {
     resetTimer();
     invalidatePreparation();
 });
+QUALITY_INPUT.addEventListener('change', () => {
+    setQuality(QUALITY_INPUT.value).catch(console.error);
+});
 SAMPLE_INTERVAL_INPUT.addEventListener('change', () => {
     resetTimer();
     invalidatePreparation();
@@ -1178,7 +1441,7 @@ TIME_INPUT.addEventListener('input', () => {
 });
 PLAY_BUTTON.addEventListener('click', () => {
     resetTimer();
-    const CLIP = ASSET.metadata.clips[CLIP_INPUT.value];
+    const CLIP = asset.metadata.clips[CLIP_INPUT.value];
     if (!STATE.playing && CLIP.loop === 'once' && STATE.timeMs >= CLIP.durationMs) {
         STATE.timeMs = 0;
     }
@@ -1218,6 +1481,9 @@ document.querySelector('header').addEventListener('change', (event) => {
 window.addEventListener('pagehide', disposeComparison, { once: true });
 
 globalThis.__rasterComparison = {
+    get quality() {
+        return qualitySnapshot();
+    },
     get gpuTimerSupported() {
         return timer.supported;
     },
@@ -1271,6 +1537,20 @@ globalThis.__rasterComparison = {
             : null;
     },
     dispose: disposeComparison,
+    setQuality,
+    capturePixels() {
+        if (STATE.contextLost || DEVICE.gl.isContextLost() || !STATE.ready) {
+            throw new Error('Graphics frame is unavailable');
+        }
+        const GL = DEVICE.gl;
+        const PIXELS = new Uint8Array(CANVAS.width * CANVAS.height * 4);
+        GL.readPixels(0, 0, CANVAS.width, CANVAS.height, GL.RGBA, GL.UNSIGNED_BYTE, PIXELS);
+        const ERROR = GL.getError();
+        if (ERROR !== GL.NO_ERROR) {
+            throw new Error(`Pixel capture failed: WebGL ${ERROR}`);
+        }
+        return { width: CANVAS.width, height: CANVAS.height, pixels: PIXELS };
+    },
     setAutoRender,
     pollGpuTimers() {
         return STATE.contextLost || DEVICE.gl.isContextLost() ? timer.result : timer.poll();
@@ -1280,6 +1560,9 @@ globalThis.__rasterComparison = {
     },
     runBenchmark,
     renderOnce({ timeMs, updateReadout = true } = {}) {
+        if (STATE.qualityLoading) {
+            throw new Error('Mesh quality is still loading');
+        }
         setAutoRender(false);
         if (timeMs !== undefined) {
             if (!Number.isFinite(timeMs)) {

@@ -149,15 +149,20 @@ export async function buildPreviews(root) {
                                         args.path === 'seed-scout'
                                             ? await bundledAssetSource(root)
                                             : args.path === 'seed-scout-raster-comparison'
-                                              ? compiledAssetModuleSource(
-                                                    await compileVectorAssetFile(
-                                                        resolve(
-                                                            root,
-                                                            'modules/vector-assets/assets/seed-scout-raster-comparison.svg',
-                                                        ),
-                                                    ),
-                                                    'seedScout',
-                                                )
+                                              ? await (async () => {
+                                                    const SVG_PATH = resolve(
+                                                        root,
+                                                        'modules/vector-assets/assets/seed-scout-raster-comparison.svg',
+                                                    );
+                                                    const [COMPILED, SOURCE] = await Promise.all([
+                                                        compileVectorAssetFile(SVG_PATH),
+                                                        readFile(SVG_PATH, 'utf8'),
+                                                    ]);
+                                                    return (
+                                                        compiledAssetModuleSource(COMPILED, 'seedScout') +
+                                                        `export const seedScoutSvg = ${JSON.stringify(SOURCE)};\n`
+                                                    );
+                                                })()
                                               : await bundledStyleExamplesSource(root),
                                     loader: 'js',
                                 }),

@@ -105,6 +105,23 @@
                 text-align: left;
                 min-width: 6.5rem;
             }
+            .tradeoff {
+                margin-bottom: 0.65rem;
+            }
+            #tradeoff-table {
+                overflow-x: auto;
+            }
+            #tradeoff-table table {
+                width: 100%;
+                border-collapse: collapse;
+                font-variant-numeric: tabular-nums;
+            }
+            #tradeoff-table th,
+            #tradeoff-table td {
+                padding: 0.18rem 0.38rem;
+                border-bottom: 1px solid #cbd8c7;
+                text-align: left;
+            }
             label {
                 display: grid;
                 gap: 0.18rem;
@@ -340,6 +357,14 @@
                     </select></label
                 >
                 <label
+                    >Mesh quality
+                    <select id="quality">
+                        <option value="low">Low - 2 curve segments</option>
+                        <option value="standard" selected>Standard - 4 curve segments</option>
+                        <option value="high">High - 16 curve segments</option>
+                    </select>
+                </label>
+                <label
                     >스프라이트 간격
                     <select id="sample-interval">
                         <option value="16">16ms · 약 60fps</option>
@@ -409,6 +434,11 @@
             </div>
         </main>
         <footer>
+            <section class="tradeoff" aria-label="Rendering path tradeoffs">
+                <strong>Mesh quality and rendering tradeoffs</strong>
+                <div id="quality-metrics">Standard mesh - precompiled at build time</div>
+                <div id="tradeoff-table"></div>
+            </section>
             <button id="benchmark" type="button">Run sequential comparison</button>
             <div class="benchmark-results" aria-live="polite"></div>
             <div id="memory-metrics"></div>
