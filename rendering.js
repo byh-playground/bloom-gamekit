@@ -3321,6 +3321,59 @@ var PoseRenderer = class {
   }
 };
 
+// modules/rendering/paint-regions.js
+var MAX_PAINT_REGIONS = 8;
+function validatePaintRegionName(name) {
+  if (typeof name !== "string" || !/^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/.test(name)) {
+    throw new TypeError("A paint region requires a stable name");
+  }
+  return name;
+}
+function validatePaintRegionData(data, vertexCount, indices) {
+  if (data === void 0) {
+    return;
+  }
+  if (!data || Object.keys(data).length !== 2 || !Array.isArray(data.names) || !data.names.length || data.names.length > MAX_PAINT_REGIONS || new Set(data.names).size !== data.names.length || !(data.indices instanceof Uint16Array) || data.indices.length !== vertexCount) {
+    throw new TypeError("Named paint regions require 1..8 unique names and one Uint16 index per vertex");
+  }
+  data.names.forEach(validatePaintRegionName);
+  if (data.indices.some((index) => index > data.names.length)) {
+    throw new RangeError("Vertex paint region index exceeds its names");
+  }
+  for (let offset = 0; offset < (indices?.length ?? vertexCount); offset += 3) {
+    const A = data.indices[indices?.[offset] ?? offset], B = data.indices[indices?.[offset + 1] ?? offset + 1], C = data.indices[indices?.[offset + 2] ?? offset + 2];
+    if (A !== B || A !== C) {
+      throw new TypeError("A painted triangle must belong to one region");
+    }
+  }
+}
+function packPaintRegions(names, overrides, output) {
+  output.fill(0);
+  if (overrides === null || overrides === void 0) {
+    return output;
+  }
+  if (typeof overrides !== "object" || Array.isArray(overrides)) {
+    throw new TypeError("paintRegions must be a name-to-RGB object or null");
+  }
+  for (const NAME in overrides) {
+    if (!Object.hasOwn(overrides, NAME)) {
+      continue;
+    }
+    const RGB = overrides[NAME];
+    const INDEX = names.indexOf(NAME);
+    if (INDEX < 0) {
+      throw new TypeError("Unknown paint region: " + NAME);
+    }
+    if (!(Array.isArray(RGB) || RGB instanceof Float32Array) || RGB.length !== 3 || !Number.isFinite(RGB[0]) || RGB[0] < 0 || RGB[0] > 1 || !Number.isFinite(RGB[1]) || RGB[1] < 0 || RGB[1] > 1 || !Number.isFinite(RGB[2]) || RGB[2] < 0 || RGB[2] > 1) {
+      throw new RangeError("Paint region RGB must contain three finite channels in [0,1]");
+    }
+    const AT = (INDEX + 1) * 4;
+    output.set(RGB, AT);
+    output[AT + 3] = 1;
+  }
+  return output;
+}
+
 // modules/rendering/mesh-renderer.js
 var IDENTITY2 = Object.freeze([1, 0, 0, 1, 0, 0]);
 var ZERO_MORPH = Object.freeze([0, 0]);
@@ -3371,7 +3424,8 @@ var TEXTURE_INSTANCE_ATTRIBUTES = ["i_uvRect", "i_localRect"].map((name, i) => (
   offset: 64 + i * 16,
   source: "instance"
 }));
-function shader(instanced, partCount, morphCount, clipped, nonScalingStroke, worldMode = false, textured = false, poseTexture = false) {
+function shader(instanced, partCount, morphCount, clipped, nonScalingStroke, worldMode = false, textured = false, poseTexture = false, paintRegionCount = 0) {
+  const PAINT_INPUT = paintRegionCount ? `attribute float a_paintRegion;uniform vec4 u_paintRegions[${paintRegionCount + 1}];` : "", PAINT_COLOR = paintRegionCount ? "vec4 authored=a_color;vec4 paint=u_paintRegions[int(a_paintRegion)];authored.rgb=mix(authored.rgb,paint.rgb,paint.a);" : "", BASE_COLOR = paintRegionCount ? "authored" : "a_color";
   const PART_POSE = partCount > 1 || poseTexture;
   const PART_INPUTS = PART_POSE ? `${partCount > 1 ? "attribute float a_part;" : ""}uniform vec4 u_parts[${partCount * 3}];` : "";
   const PART_SETUP = PART_POSE ? `int index=${partCount > 1 ? "int(a_part)*3" : "0"};vec4 row0=u_parts[index];vec4 row1=u_parts[index+1];vec4 pose=u_parts[index+2];` : "";
@@ -3411,25 +3465,25 @@ if(dot(a_stroke.xy,a_stroke.xy)>0.5){
     projected.xy+=pxOffset*2.0/u_strokeViewportSize*projected.w;${clipped ? "vec4 clippedWorld=u_inverseViewProjection*projected;v_position=clippedWorld.xy/clippedWorld.w;" : ""}}
 }` : "";
     return `attribute vec2 a_position; attribute vec4 a_color; ${morphCount ? "attribute vec4 a_morph;" : ""} ${PART_INPUTS}
-${WORLD_INPUTS}${WORLD_STROKE_INPUTS}${TEXTURE_INPUTS}
+${WORLD_INPUTS}${WORLD_STROKE_INPUTS}${TEXTURE_INPUTS}${PAINT_INPUT}
 uniform mat4 u_viewProjection; uniform vec4 u_color; varying vec4 v_color; ${clipped ? "varying vec2 v_position;" : ""}
 void main(){${PART_SETUP}
 vec2 local=${LOCAL};${RECT_LOCAL}vec2 plane=${PART_POSE ? "vec2(dot(row0.xyz,vec3(local,1.0)),dot(row1.xyz,vec3(local,1.0)))" : "local"};
 vec3 world=vec3(dot(i_row0.xyz,vec3(plane,1.0)),dot(i_row1.xyz,vec3(plane,1.0)),dot(i_row2.xyz,vec3(plane,1.0)));
 vec4 projected=u_viewProjection*vec4(world,1.0);${clipped ? "v_position=world.xy;" : ""}${WORLD_STROKE}
 projected.z+=(i_params.w+${PART_POSE ? "pose.w" : "0.0"})*projected.w;gl_Position=projected;
-vec4 color=mix(a_color*u_color,u_color,i_row1.w);color.a*=i_row0.w${PART_POSE ? "*pose.z" : ""};color.rgb=mix(color.rgb,vec3(1.0),i_row2.w);v_color=vec4(color.rgb*color.a,color.a);${textured ? "v_uv=i_uvRect.xy+a_uv*i_uvRect.zw;v_forceColor=i_row1.w;v_whiteFlash=i_row2.w;" : ""}
+${PAINT_COLOR}vec4 color=mix(${BASE_COLOR}*u_color,u_color,i_row1.w);color.a*=i_row0.w${PART_POSE ? "*pose.z" : ""};color.rgb=mix(color.rgb,vec3(1.0),i_row2.w);v_color=vec4(color.rgb*color.a,color.a);${textured ? "v_uv=i_uvRect.xy+a_uv*i_uvRect.zw;v_forceColor=i_row1.w;v_whiteFlash=i_row2.w;" : ""}
 }`;
   }
   return `attribute vec2 a_position; attribute vec4 a_color; ${morphCount ? "attribute vec4 a_morph;" : ""} ${PART_INPUTS}
-${INPUTS}${STROKE_INPUTS}${TEXTURE_INPUTS}
+${INPUTS}${STROKE_INPUTS}${TEXTURE_INPUTS}${PAINT_INPUT}
 uniform mat3 u_projection; varying vec4 v_color; ${clipped ? "varying vec2 v_position;" : ""}${STROKE_VARYING}
 void main(){${PART_SETUP}
 vec2 local=${LOCAL};${RECT_LOCAL}vec2 p=${PART_POSE ? "vec2(dot(row0.xyz,vec3(local,1.0)),dot(row1.xyz,vec3(local,1.0)))" : "local"};
 vec2 world=vec2(dot(i_row0.xyz,vec3(p,1.0)),dot(i_row1.xyz,vec3(p,1.0)));
 vec3 projected=u_projection*vec3(world,1.0);${clipped ? "v_position=world;" : ""}${STROKE_POSITION}
 gl_Position=vec4(projected.xy,(i_params.w+${PART_POSE ? "pose.w" : "0.0"})*projected.z,projected.z);
-vec4 color=mix(a_color*i_color,i_color,i_row1.w);color.a*=i_row0.w${PART_POSE ? "*pose.z" : ""};
+${PAINT_COLOR}vec4 color=mix(${BASE_COLOR}*i_color,i_color,i_row1.w);color.a*=i_row0.w${PART_POSE ? "*pose.z" : ""};
 color.rgb=mix(color.rgb,vec3(1.0),i_params.z);v_color=vec4(color.rgb*color.a,color.a);${textured ? "v_uv=i_uvRect.xy+a_uv*i_uvRect.zw;v_forceColor=i_row1.w;v_whiteFlash=i_params.z;" : ""}}`;
 }
 function fragment(maxPlanes, clipped, textured = false) {
@@ -3448,6 +3502,17 @@ function poseTextureShader(source) {
     /(int index=(?:int\(a_part\)\*3|0);)vec4 row0=u_parts\[index\];vec4 row1=u_parts\[index\+1\];vec4 pose=u_parts\[index\+2\];/,
     "$1int poseRow=int(-i_params.x-1.0);vec4 row0=texelFetch(u_poseTexture,ivec2(index,poseRow),0);vec4 row1=texelFetch(u_poseTexture,ivec2(index+1,poseRow),0);vec4 pose=texelFetch(u_poseTexture,ivec2(index+2,poseRow),0);"
   ).replaceAll("(i_params.x+pose.x)", "(pose.x)").replaceAll("(i_params.y+pose.y)", "(pose.y)");
+}
+function paintVertexStream(vertices, regions) {
+  if (!regions) {
+    return vertices;
+  }
+  const PACKED = new Float32Array(vertices.length / 11 * 12);
+  for (let index = 0; index < regions.length; index++) {
+    PACKED.set(vertices.subarray(index * 11, index * 11 + 11), index * 12);
+    PACKED[index * 12 + 11] = regions[index];
+  }
+  return PACKED;
 }
 function finiteArray2(value, size, name) {
   if (!value || value.length !== size) {
@@ -3688,6 +3753,8 @@ var MeshRenderer = class {
     this.pending = null;
     this.planes = new Float32Array(this.maxPlanes * 3);
     this.partScratch = new Float32Array(16 * 12);
+    this.paintScratch = null;
+    this.paintState = null;
     this.alphaRunScratch = [];
     this.alphaRunCache = /* @__PURE__ */ new WeakMap();
     this.alphaQueue = new Array(maxInstances);
@@ -3803,7 +3870,7 @@ var MeshRenderer = class {
     return this.poseRenderer?.stats() ?? null;
   }
   _pipeline(mesh, clipped, worldMode = false, poseTexture = false) {
-    const KEY = mesh.partCount + ":" + mesh.morphCount + ":" + Number(clipped) + ":" + Number(mesh.hasNonScalingStroke) + ":" + Number(worldMode) + ":" + Number(poseTexture) + ":" + Number(mesh.hasTextureCoordinates);
+    const KEY = mesh.partCount + ":" + mesh.morphCount + ":" + Number(clipped) + ":" + Number(mesh.hasNonScalingStroke) + ":" + Number(worldMode) + ":" + Number(poseTexture) + ":" + Number(mesh.hasTextureCoordinates) + ":" + (mesh.paintRegionNames?.length ?? 0);
     let pipeline = this.pipelines.get(KEY);
     if (pipeline) {
       return pipeline;
@@ -3841,6 +3908,9 @@ var MeshRenderer = class {
         UNIFORMS2.i_localRect = "4f";
       }
     }
+    if (mesh.paintRegionNames) {
+      UNIFORMS2["u_paintRegions[0]"] = "4fv";
+    }
     if (!this.instanced) {
       for (const NAME of worldMode ? ["i_row0", "i_row1", "i_row2", "i_params"] : ["i_row0", "i_row1", "i_color", "i_params"]) {
         UNIFORMS2[NAME] = "4f";
@@ -3856,7 +3926,8 @@ var MeshRenderer = class {
           mesh.hasNonScalingStroke,
           worldMode,
           mesh.hasTextureCoordinates,
-          poseTexture
+          poseTexture,
+          mesh.paintRegionNames?.length ?? 0
         )
       ),
       fragment: fragment(this.maxPlanes, clipped, mesh.hasTextureCoordinates),
@@ -3865,6 +3936,7 @@ var MeshRenderer = class {
         instanceStride: mesh.hasTextureCoordinates ? 96 : 64
       } : {},
       attributes: [
+        ...mesh.paintRegionNames ? [{ name: "a_paintRegion", size: 1, offset: 44 }] : [],
         ...mesh.hasNonScalingStroke ? ATTRIBUTES.filter((attribute) => attribute.name !== "a_morph") : ATTRIBUTES,
         ...mesh.hasNonScalingStroke ? [
           {
@@ -3931,13 +4003,23 @@ var MeshRenderer = class {
       (total, [, variant]) => total + variant.byteLength,
       0
     );
-    const GPU_VERTEX_BYTES = UVS === null ? data.vertices.byteLength : data.vertices.length / 11 * 13 * 4;
+    validatePaintRegionData(data.paintRegions, data.vertices.length / 11, INDICES);
+    if (data.paintRegions && UVS !== null) {
+      throw new TypeError("Named fill regions require an untextured solid-fill mesh");
+    }
+    if (data.paintRegions) {
+      for (const [, VARIANT] of [...EXPRESSION_ENTRIES, ...INDEX_VARIANT_ENTRIES]) {
+        validatePaintRegionData(data.paintRegions, data.vertices.length / 11, VARIANT);
+      }
+    }
+    const PAINT_INDICES = data.paintRegions?.indices, BUFFER_STRIDE = UVS !== null ? 13 : PAINT_INDICES ? 12 : 11;
+    const GPU_VERTEX_BYTES = data.vertices.length / 11 * BUFFER_STRIDE * 4;
     const UPLOAD_BYTE_LENGTH = GPU_VERTEX_BYTES + (INDICES?.byteLength ?? 0) + VARIANT_BYTE_LENGTH;
-    const BYTE_LENGTH = UPLOAD_BYTE_LENGTH + (UVS === null ? 0 : data.vertices.byteLength);
+    const BYTE_LENGTH = UPLOAD_BYTE_LENGTH + (UVS !== null || PAINT_INDICES ? data.vertices.byteLength : 0);
     if (this.meshes.size >= this.maxMeshes || this.bytes + BYTE_LENGTH > this.maxMeshBytes) {
       throw new RangeError("Retained mesh budget exceeded");
     }
-    const VERTICES = data.vertices.slice(), GPU_VERTICES = UVS === null ? VERTICES : new Float32Array(VERTICES.length / 11 * 13), OWNED_INDICES = INDICES?.slice(), BUFFER = this.device.createVertexBuffer({
+    const VERTICES = data.vertices.slice(), GPU_VERTICES = UVS === null ? paintVertexStream(VERTICES, PAINT_INDICES) : new Float32Array(VERTICES.length / 11 * 13), OWNED_INDICES = INDICES?.slice(), BUFFER = this.device.createVertexBuffer({
       capacityBytes: GPU_VERTICES.byteLength
     });
     if (UVS !== null) {
@@ -4018,7 +4100,8 @@ var MeshRenderer = class {
       partCount: data.partCount,
       morphCount: data.morphCount,
       strideFloats: 11,
-      bufferStrideFloats: UVS === null ? 11 : 13,
+      bufferStrideFloats: BUFFER_STRIDE,
+      paintRegionNames: data.paintRegions ? Object.freeze(data.paintRegions.names.slice()) : null,
       hasTextureCoordinates: UVS !== null,
       hasNonScalingStroke: NON_SCALING_STROKE,
       partBounds: meshPartBounds(VERTICES, data.partCount, data.morphCount)
@@ -4068,6 +4151,7 @@ var MeshRenderer = class {
       uvRect: UV_RECT = IDENTITY_RECT,
       localRect: LOCAL_RECT = IDENTITY_RECT,
       color: COLOR = WHITE,
+      paintRegions: PAINT_REGIONS = null,
       forceColor: FORCE_COLOR = false,
       alpha: ALPHA = 1,
       whiteFlash: WHITE_FLASH = false,
@@ -4097,6 +4181,7 @@ var MeshRenderer = class {
       uvRect: UV_RECT,
       localRect: LOCAL_RECT,
       color: COLOR,
+      paintRegions: PAINT_REGIONS,
       forceColor: FORCE_COLOR,
       alpha: ALPHA,
       whiteFlash: WHITE_FLASH,
@@ -4111,6 +4196,20 @@ var MeshRenderer = class {
       strokeViewport: STROKE_VIEWPORT,
       stencilRef: STENCIL_REF
     });
+  }
+  _setPaintRegions(mesh, overrides) {
+    const NAMES = mesh.paintRegionNames ?? [], SIZE = NAMES.length ? (NAMES.length + 1) * 4 : 0;
+    this.paintScratch ??= new Float32Array((MAX_PAINT_REGIONS + 1) * 4);
+    packPaintRegions(NAMES, overrides, this.paintScratch);
+    let same = (this.paintState?.length ?? 0) === SIZE;
+    for (let index = 0; same && index < SIZE; index++) {
+      same = this.paintState[index] === this.paintScratch[index];
+    }
+    if (same) {
+      return;
+    }
+    this.flush("paintRegions");
+    this.paintState = SIZE ? this.paintScratch.slice(0, SIZE) : null;
   }
   _screenBounds(mesh, matrices, instanceIndex, projection, morph) {
     if (mesh.hasNonScalingStroke || projection[2] !== 0 || projection[5] !== 0 || Math.abs(projection[8]) < 1e-12) {
@@ -4219,6 +4318,9 @@ var MeshRenderer = class {
         u_planeCount: CLIP.count
       });
     }
+    if (MESH.paintRegionNames) {
+      UNIFORMS2["u_paintRegions[0]"] = this.paintState;
+    }
     if (MESH.partCount > 1) {
       UNIFORMS2["u_parts[0]"] = PARTS;
     }
@@ -4279,6 +4381,7 @@ var MeshRenderer = class {
     uvRect = IDENTITY_RECT,
     localRect = IDENTITY_RECT,
     color: color2 = WHITE,
+    paintRegions = null,
     forceColor = false,
     alpha = 1,
     whiteFlash = false,
@@ -4412,7 +4515,7 @@ var MeshRenderer = class {
     if (indexRange !== null && depthWriteAlphaThreshold !== null) {
       throw new TypeError("indexRange is currently supported only for ordinary ordered mesh draws");
     }
-    const CLIP = clipState(clips, this.maxPlanes), PENDING = this.pending;
+    const CLIP = clipState(clips, this.maxPlanes);
     const VARIANT = indexVariant === null ? null : mesh.indexVariants.get(indexVariant) ?? mesh.expressionIndices.get(indexVariant);
     const FIRST_INDEX = indexRange?.[0] ?? 0, INDEX_COUNT = indexRange?.[1] ?? VARIANT?.count ?? mesh.count;
     if (FIRST_INDEX + INDEX_COUNT > (VARIANT?.count ?? mesh.count)) {
@@ -4437,6 +4540,10 @@ var MeshRenderer = class {
         throw new RangeError("combined mesh and part depth must be in [-1,1]");
       }
     }
+    if (mesh.paintRegionNames || paintRegions !== null || this.paintState) {
+      this._setPaintRegions(mesh, paintRegions);
+    }
+    const PENDING = this.pending;
     const DEPTH_STATE_KEY = Number(depthTest) + ":" + Number(depthWrite) + ":" + depthFunc;
     const ALPHA_DEPTH_WRITE = depthWrite && depthWriteAlphaThreshold !== null;
     if (!ALPHA_DEPTH_WRITE) {
@@ -4851,6 +4958,9 @@ var MeshRenderer = class {
     if (mesh.partCount > 1) {
       UNIFORMS2["u_parts[0]"] = parts;
     }
+    if (mesh.paintRegionNames) {
+      UNIFORMS2["u_paintRegions[0]"] = this.paintState;
+    }
     if (!this.instanced) {
       for (let j = 0; j < 4; j++) {
         UNIFORMS2[["i_row0", "i_row1", "i_color", "i_params"][j]] = this.instances.subarray(j * 4, j * 4 + 4);
@@ -4947,6 +5057,9 @@ var MeshRenderer = class {
           u_inverseProjection: INVERSE_STROKE_PROJECTION
         } : {}
       });
+    }
+    if (MESH.paintRegionNames) {
+      UNIFORMS2["u_paintRegions[0]"] = this.paintState;
     }
     if (POSE_TEXTURE) {
       UNIFORMS2.u_poseTexture = 0;

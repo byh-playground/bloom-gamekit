@@ -3153,6 +3153,59 @@ var createTimeline = (parameters) => {
  * @copyright 2026 - Julian Garnier
  */
 
+// modules/rendering/paint-regions.js
+var MAX_PAINT_REGIONS = 8;
+function validatePaintRegionName(name) {
+  if (typeof name !== "string" || !/^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/.test(name)) {
+    throw new TypeError("A paint region requires a stable name");
+  }
+  return name;
+}
+function validatePaintRegionData(data, vertexCount, indices) {
+  if (data === void 0) {
+    return;
+  }
+  if (!data || Object.keys(data).length !== 2 || !Array.isArray(data.names) || !data.names.length || data.names.length > MAX_PAINT_REGIONS || new Set(data.names).size !== data.names.length || !(data.indices instanceof Uint16Array) || data.indices.length !== vertexCount) {
+    throw new TypeError("Named paint regions require 1..8 unique names and one Uint16 index per vertex");
+  }
+  data.names.forEach(validatePaintRegionName);
+  if (data.indices.some((index) => index > data.names.length)) {
+    throw new RangeError("Vertex paint region index exceeds its names");
+  }
+  for (let offset = 0; offset < (indices?.length ?? vertexCount); offset += 3) {
+    const A = data.indices[indices?.[offset] ?? offset], B = data.indices[indices?.[offset + 1] ?? offset + 1], C = data.indices[indices?.[offset + 2] ?? offset + 2];
+    if (A !== B || A !== C) {
+      throw new TypeError("A painted triangle must belong to one region");
+    }
+  }
+}
+function packPaintRegions(names, overrides, output) {
+  output.fill(0);
+  if (overrides === null || overrides === void 0) {
+    return output;
+  }
+  if (typeof overrides !== "object" || Array.isArray(overrides)) {
+    throw new TypeError("paintRegions must be a name-to-RGB object or null");
+  }
+  for (const NAME in overrides) {
+    if (!Object.hasOwn(overrides, NAME)) {
+      continue;
+    }
+    const RGB = overrides[NAME];
+    const INDEX = names.indexOf(NAME);
+    if (INDEX < 0) {
+      throw new TypeError("Unknown paint region: " + NAME);
+    }
+    if (!(Array.isArray(RGB) || RGB instanceof Float32Array) || RGB.length !== 3 || !Number.isFinite(RGB[0]) || RGB[0] < 0 || RGB[0] > 1 || !Number.isFinite(RGB[1]) || RGB[1] < 0 || RGB[1] > 1 || !Number.isFinite(RGB[2]) || RGB[2] < 0 || RGB[2] > 1) {
+      throw new RangeError("Paint region RGB must contain three finite channels in [0,1]");
+    }
+    const AT = (INDEX + 1) * 4;
+    output.set(RGB, AT);
+    output[AT + 3] = 1;
+  }
+  return output;
+}
+
 // modules/vector-assets/schema.js
 var VECTOR_ASSET_SCHEMA_VERSION = 1;
 var VECTOR_ASSET_COMPILER_VERSION = "0.11.0";
@@ -3184,6 +3237,7 @@ function validateCompiledAsset(asset) {
   if (INDICES === void 0 && VERTEX_COUNT % 3) {
     throw new TypeError("Non-indexed compiled SVG geometry must contain complete triangles");
   }
+  validatePaintRegionData(asset.geometry.paintRegions, VERTEX_COUNT, INDICES);
   if (["0.8.0", "0.9.0", "0.10.0", VECTOR_ASSET_COMPILER_VERSION].includes(asset.compilerVersion) && asset.compilerOptions === void 0) {
     throw new TypeError("Current SVG compiler options are required");
   }
@@ -3214,6 +3268,11 @@ function validateCompiledAsset(asset) {
   for (const [NAME, VARIANT] of Object.entries(INDEX_VARIANTS ?? {})) {
     if (!/^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/.test(NAME) || Object.hasOwn(EXPRESSION_INDICES ?? {}, NAME) || !(VARIANT instanceof Uint16Array) || VARIANT.length % 3 || VARIANT.some((index) => index >= VERTEX_COUNT)) {
       throw new TypeError("Invalid compiled SVG named index variant: " + NAME);
+    }
+  }
+  if (asset.geometry.paintRegions) {
+    for (const VARIANT of [...Object.values(EXPRESSION_INDICES ?? {}), ...Object.values(INDEX_VARIANTS ?? {})]) {
+      validatePaintRegionData(asset.geometry.paintRegions, VERTEX_COUNT, VARIANT);
     }
   }
   const SURFACES = asset.geometry.shaderSurfaces;
@@ -4212,6 +4271,7 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
       matrix = IDENTITY,
       alpha = 1,
       color = [1, 1, 1, 1],
+      paintRegions = null,
       forceColor = false,
       whiteFlash = false,
       clips = [],
@@ -4225,6 +4285,9 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
     } = {}) => {
       ASSERT_PLAYER();
       VALIDATE_EXCLUSIONS(excludeParts);
+      if (!mesh && paintRegions !== null) {
+        throw new TypeError("This asset has no named mesh fills");
+      }
       if (GEOMETRY.shaderSurfaces?.length) {
         validateShaderSurfaceClipCapacity(clips, surfaceRenderer.maxClipPlanes);
       }
@@ -4241,6 +4304,7 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
             alpha,
             color,
             forceColor,
+            paintRegions,
             whiteFlash,
             clips,
             stencilRef,
@@ -4288,6 +4352,7 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
               alpha,
               color,
               forceColor,
+              paintRegions,
               whiteFlash,
               clips,
               stencilRef,
@@ -4347,6 +4412,7 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
         alpha,
         color,
         forceColor,
+        paintRegions,
         whiteFlash,
         clips,
         stencilRef,
@@ -5188,8 +5254,51 @@ var VECTOR_ASSET_QUALITY_PRESETS = Object.freeze({
     strokeArcDivisions: 2
   })
 });
+
+// modules/vector-assets/paint-regions.js
+var SVG_PAINT_REGION_ATTRIBUTE = "data-paint-region";
+function svgPaintRegion(node) {
+  if (!node.hasAttribute(SVG_PAINT_REGION_ATTRIBUTE)) {
+    return null;
+  }
+  return validatePaintRegionName(node.getAttribute(SVG_PAINT_REGION_ATTRIBUTE));
+}
+function applySvgPaintRegions(root, overrides) {
+  if (!root || root.nodeType !== 1 || root.localName !== "svg") {
+    throw new TypeError("An original SVG root element is required");
+  }
+  const OUTPUT = root.cloneNode(true), SHAPES = [...OUTPUT.getElementsByTagName("*")].filter((node) => svgPaintRegion(node) !== null), NAMES = [...new Set(SHAPES.map(svgPaintRegion))];
+  if (NAMES.length > MAX_PAINT_REGIONS) {
+    throw new RangeError("An SVG supports at most eight paint regions");
+  }
+  const PAINT = packPaintRegions(NAMES, overrides, new Float32Array((NAMES.length + 1) * 4));
+  for (const NODE of SHAPES) {
+    if (!["path", "rect", "circle", "ellipse", "polygon", "polyline"].includes(NODE.localName)) {
+      throw new TypeError("A paint region must name an authored filled shape");
+    }
+    const STYLE = NODE.getAttribute("style") || "", INLINE_FILL = STYLE.match(/(?:^|;)\s*fill\s*:\s*([^;]+)/i)?.[1]?.trim(), FILL = INLINE_FILL ?? NODE.getAttribute("fill");
+    if (!FILL || FILL === "none" || /url\s*\(/i.test(FILL)) {
+      throw new TypeError("Paint regions require an explicit solid fill");
+    }
+  }
+  for (const NODE of SHAPES) {
+    const INDEX = NAMES.indexOf(svgPaintRegion(NODE)) + 1, AT = INDEX * 4;
+    if (!PAINT[AT + 3]) {
+      continue;
+    }
+    const COLOR = `rgb(${[0, 1, 2].map((channel) => PAINT[AT + channel] * 255).join(",")})`;
+    NODE.setAttribute("fill", COLOR);
+    const STYLE = NODE.getAttribute("style");
+    if (STYLE && /(?:^|;)\s*fill\s*:/i.test(STYLE)) {
+      NODE.setAttribute("style", STYLE.replace(/(^|;)\s*fill\s*:[^;]*/gi, "$1fill:" + COLOR));
+    }
+  }
+  return OUTPUT;
+}
 export {
+  SVG_PAINT_REGION_ATTRIBUTE,
   VECTOR_ASSET_QUALITY_PRESETS,
+  applySvgPaintRegions,
   createVectorAsset,
   createVectorRasterAtlas,
   createVectorSpriteAtlas

@@ -24527,6 +24527,15 @@ function addStops(canvasGradient, stops) {
   }
 }
 
+// modules/rendering/paint-regions.js
+var MAX_PAINT_REGIONS = 8;
+function validatePaintRegionName(name) {
+  if (typeof name !== "string" || !/^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/.test(name)) {
+    throw new TypeError("A paint region requires a stable name");
+  }
+  return name;
+}
+
 // modules/vector-assets/schema.js
 var VECTOR_ASSET_SCHEMA_VERSION = 1;
 var VECTOR_ASSET_COMPILER_VERSION = "0.11.0";
@@ -24794,6 +24803,15 @@ var VECTOR_ASSET_QUALITY_PRESETS = Object.freeze({
   })
 });
 
+// modules/vector-assets/paint-regions.js
+var SVG_PAINT_REGION_ATTRIBUTE = "data-paint-region";
+function svgPaintRegion(node) {
+  if (!node.hasAttribute(SVG_PAINT_REGION_ATTRIBUTE)) {
+    return null;
+  }
+  return validatePaintRegionName(node.getAttribute(SVG_PAINT_REGION_ATTRIBUTE));
+}
+
 // modules/vector-assets/compiler-core.js
 var SVG_NS = "http://www.w3.org/2000/svg";
 var MAX_SOURCE_BYTES = 512 * 1024;
@@ -24833,7 +24851,8 @@ var ATTRIBUTES = /* @__PURE__ */ new Set([
   "stroke-miterlimit",
   "vector-effect",
   "opacity",
-  "display"
+  "display",
+  SVG_PAINT_REGION_ATTRIBUTE
 ]);
 var GRADIENT_ATTRIBUTES = /* @__PURE__ */ new Set(["id", "gradientUnits", "spreadMethod", "x1", "y1", "x2", "y2"]);
 var STOP_ATTRIBUTES = /* @__PURE__ */ new Set(["id", "offset", "stop-color", "stop-opacity"]);
@@ -25051,6 +25070,9 @@ function collectIds(root) {
           throw new TypeError(
             'Only display="none" is supported, on expression parts hidden by defaultExpression'
           );
+        }
+        if (KEY === SVG_PAINT_REGION_ATTRIBUTE && !["path", "rect", "circle", "ellipse", "polygon", "polyline"].includes(NAME)) {
+          throw new TypeError("A paint region must name an authored filled shape");
         }
         if (KEY === "vector-effect") {
           if (!["none", "non-scaling-stroke"].includes(VALUE)) {
@@ -26312,7 +26334,8 @@ function appendNonScalingLine(vertices, start, end, rgba, partIndex, width, line
   }
 }
 function compilePaths(paths, partIndices, _parts, metadata, gradients, curveSegments, strokeArcDivisions) {
-  const VERTICES = [], SHADER_SURFACES = [], DRAW_ORDER = [];
+  const VERTICES = [], SHADER_SURFACES = [], DRAW_ORDER = [], REGION_NAMES = [];
+  let expandedRegions = null;
   let hasNonScalingStroke = false;
   const STYLED = new Map((metadata.styles ?? []).map((style) => [style.target, style]));
   const SHADER_ORDERED = metadata.styles?.some((style) => style.backend === "shader") ?? false;
@@ -26335,6 +26358,21 @@ function compilePaths(paths, partIndices, _parts, metadata, gradients, curveSegm
     const GRADIENT_BOUNDS = FILL_GRADIENT && SHAPES.length ? shapeBounds(SHAPES, FILL_GRADIENT.units === "objectBoundingBox" ? PATH.userData.transform : null) : null;
     const STYLE_COLOR = FILL_GRADIENT ? colorFromComponents(gradientColorAtT(FILL_GRADIENT, 0.53)) : PATH.color;
     const MESH_FIRST = VERTICES.length / 11;
+    const REGION = svgPaintRegion(SOURCE_NODE);
+    let regionIndex = 0;
+    if (REGION !== null) {
+      if (AUTHORED_STYLE || FILL_GRADIENT || !SHAPES.length || !SOURCE_NODE.getAttribute("fill")) {
+        throw new TypeError("Paint regions require an unstyled solid fill: " + REGION);
+      }
+      if (!REGION_NAMES.includes(REGION)) {
+        REGION_NAMES.push(REGION);
+        if (REGION_NAMES.length > MAX_PAINT_REGIONS) {
+          throw new RangeError("An SVG supports at most eight paint regions");
+        }
+      }
+      regionIndex = REGION_NAMES.indexOf(REGION) + 1;
+      expandedRegions ??= new Array(MESH_FIRST).fill(0);
+    }
     if (AUTHORED_STYLE?.backend === "shader") {
       if (SHAPES.length !== 1) {
         throw new TypeError(
@@ -26412,6 +26450,7 @@ function compilePaths(paths, partIndices, _parts, metadata, gradients, curveSegm
         }
       }
     }
+    const FILL_END = VERTICES.length / 11;
     if (STYLE.stroke !== void 0 && STYLE.stroke !== "none" && STYLE.strokeWidth > 0) {
       const OPACITY = (STYLE.strokeOpacity ?? 1) * OVERALL_OPACITY;
       if (OPACITY > 0) {
@@ -26463,6 +26502,9 @@ function compilePaths(paths, partIndices, _parts, metadata, gradients, curveSegm
       }
     }
     appendOrderedMeshRange(DRAW_ORDER, MESH_FIRST, VERTICES.length / 11 - MESH_FIRST, PART_INDEX);
+    for (let vertex = MESH_FIRST; expandedRegions && vertex < VERTICES.length / 11; vertex++) {
+      expandedRegions.push(vertex < FILL_END ? regionIndex : 0);
+    }
   }
   if (!VERTICES.length && !SHADER_SURFACES.length || VERTICES.length % 33) {
     throw new TypeError(
@@ -26471,10 +26513,10 @@ function compilePaths(paths, partIndices, _parts, metadata, gradients, curveSegm
   }
   const EXPANDED = new Float32Array(VERTICES);
   const STRIDE_FLOATS = 11;
-  const UNIQUE_VERTICES = [], INDICES = [], VERTEX_IDS = /* @__PURE__ */ new Map();
+  const UNIQUE_VERTICES = [], UNIQUE_REGIONS = expandedRegions ? [] : null, INDICES = [], VERTEX_IDS = /* @__PURE__ */ new Map();
   const WORDS = new Uint32Array(EXPANDED.buffer, EXPANDED.byteOffset, EXPANDED.length);
   for (let offset = 0; offset < EXPANDED.length; offset += STRIDE_FLOATS) {
-    const KEY = WORDS.subarray(offset, offset + STRIDE_FLOATS).join(",");
+    const REGION_INDEX = expandedRegions?.[offset / STRIDE_FLOATS], KEY = WORDS.subarray(offset, offset + STRIDE_FLOATS).join(",") + (REGION_NAMES.length ? ":" + REGION_INDEX : "");
     let index = VERTEX_IDS.get(KEY);
     if (index === void 0) {
       index = UNIQUE_VERTICES.length / STRIDE_FLOATS;
@@ -26484,6 +26526,7 @@ function compilePaths(paths, partIndices, _parts, metadata, gradients, curveSegm
         );
       }
       VERTEX_IDS.set(KEY, index);
+      UNIQUE_REGIONS?.push(REGION_INDEX);
       for (let field = 0; field < STRIDE_FLOATS; field++) {
         UNIQUE_VERTICES.push(EXPANDED[offset + field]);
       }
@@ -26495,6 +26538,7 @@ function compilePaths(paths, partIndices, _parts, metadata, gradients, curveSegm
     indices: new Uint16Array(INDICES),
     morphCount: MORPH_COUNT,
     strideFloats: STRIDE_FLOATS,
+    ...REGION_NAMES.length ? { paintRegions: { names: REGION_NAMES, indices: new Uint16Array(UNIQUE_REGIONS) } } : {},
     ...hasNonScalingStroke ? {
       nonScalingStroke: true
     } : {},
@@ -26551,6 +26595,7 @@ function compileSourcePaths(paths, partIndices, parts) {
       id: ID,
       part: parts[PART_INDEX].id,
       fill: STYLE.fill ?? "none",
+      ...svgPaintRegion(NODE) === null ? {} : { paintRegion: svgPaintRegion(NODE) },
       fillOpacity: STYLE.fillOpacity ?? 1,
       fillRule: STYLE.fillRule ?? "nonzero",
       stroke: STYLE.stroke ?? "none",
