@@ -13,7 +13,7 @@ import { exerciseNonScalingStroke } from './non-scaling-stroke.browser.mjs';
 import { exerciseWorldVectorRendering } from './world-rendering.browser.mjs';
 const ROOT = resolve('.');
 const SOURCE_URL =
-    'https://raw.githubusercontent.com/byh-playground/budmori-io/0dab58e201b5c08f5073108121eeae91acc34774/assets/troops/pea.svg';
+    'https://raw.githubusercontent.com/byh-playground/budmori-io/69b267960252e009e754ae1aa38b03bfa0329d4f/assets/troops/pea.svg';
 const SOURCE_BYTES = await readFile(resolve(ROOT, 'modules/vector-assets/assets/seed-scout.svg'));
 const RENDERING_BUNDLE = await readFile(resolve(ROOT, 'dist/rendering.js'));
 const RENDERING_MODULE_URL = 'data:text/javascript;base64,' + RENDERING_BUNDLE.toString('base64');

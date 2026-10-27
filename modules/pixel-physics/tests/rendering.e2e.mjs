@@ -62,7 +62,7 @@ try {
             BYTES = new Uint8ClampedArray(PIXELS.buffer);
         PIXEL.writeGridPixels(WORLD, PIXELS, SHADE);
         const TEXTURE = RENDERER.createTexture({ width: W, height: H, data: BYTES }, { filter: 'nearest' });
-        const GL = CANVAS.getContext('webgl');
+        const GL = CANVAS.getContext('webgl2');
         const READ = (cellX, cellY) => {
             const OUT = new Uint8Array(4);
             GL.readPixels(cellX * ZOOM + 2, H * ZOOM - (cellY * ZOOM + 2) - 1, 1, 1, GL.RGBA, GL.UNSIGNED_BYTE, OUT);
@@ -105,7 +105,7 @@ try {
         const RENDERER = new RENDERING.Renderer2D(CANVAS);
         RENDERER.resize(16, 16, 1);
         RENDERER.setCamera({ x: 2, y: 2, zoom: 4 });
-        const GL = CANVAS.getContext('webgl');
+        const GL = CANVAS.getContext('webgl2');
         const BYTES = (rgba) => new Uint8ClampedArray(16 * 4).map((_, i) => rgba[i % 4]);
         const PIXEL_AT = (cellX, cellY) => {
             const OUT = new Uint8Array(4);

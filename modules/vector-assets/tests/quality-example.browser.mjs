@@ -12,8 +12,8 @@ export async function exerciseVectorAssetQualityExample(
     const FIXTURE_BYTES = await readFile(FIXTURE_PATH);
     const EXPECTED_SHA256 = createHash('sha256').update(FIXTURE_BYTES).digest('hex');
     const FARMPEA_URL =
-        'https://raw.githubusercontent.com/byh-playground/budmori-io/0dab58e201b5c08f5073108121eeae91acc34774/assets/troops/pea.svg';
-    const FARMPEA_SHA256 = 'c5db5b9ad6dbe4683f3eb21d53ffaee476ce06b90b4a36ced13ce7c1d758ef51';
+        'https://raw.githubusercontent.com/byh-playground/budmori-io/69b267960252e009e754ae1aa38b03bfa0329d4f/assets/troops/pea.svg';
+    const FARMPEA_SHA256 = 'f3f3d480579373ba7fe4bb7961de59c80b81db6cf08153d75ebe842d0845ce1e';
     const BLOB_URL =
         'https://github.com/byh-playground/bloom-gamekit/blob/main/modules/vector-assets/assets/seed-scout.svg';
     const RAW_URL =
