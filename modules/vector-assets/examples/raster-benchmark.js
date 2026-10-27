@@ -63,6 +63,9 @@ function assertPrepared(frame, baseline, mode, count, sourceTimeMs) {
     if (frame.mode !== mode || frame.count !== count) {
         throw new Error(`Benchmark scene changed during ${mode} sampling`);
     }
+    if (!frame.atlas?.baked || frame.atlas.bakeCount !== baseline.partBakeCount) {
+        throw new Error(`Part atlas rebaked during ${mode} benchmark`);
+    }
     if (
         frame.sourceSha256 !== baseline.sourceSha256 ||
         frame.clip !== baseline.clip ||
@@ -154,7 +157,7 @@ export async function runComparison(
             if (!Number.isFinite(SAMPLE.gpuMs) || SAMPLE.gpuMs < 0) {
                 throw new Error('Invalid asynchronous GPU timer sample');
             }
-            SCOPE.raw.gpuSamples.push({ frame: SAMPLE.frame, ms: SAMPLE.gpuMs });
+            SCOPE.raw.gpuSamples.push({ ...SAMPLE, ms: SAMPLE.gpuMs });
         }
         return STATUS;
     };
@@ -183,6 +186,7 @@ export async function runComparison(
         }
         const BASELINE = {
             generation: INITIAL.preparation.generation,
+            partBakeCount: INITIAL.atlas?.bakeCount,
             bakeCounts: INITIAL.preparation.entries.map((entry) => entry.bakeCount),
             imageTexUploadCount: INITIAL.imageTexUploadCount,
             imageTexUploadBytes: INITIAL.imageTexUploadBytes,
