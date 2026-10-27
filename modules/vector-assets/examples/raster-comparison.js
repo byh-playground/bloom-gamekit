@@ -1048,15 +1048,19 @@ function writeMetrics(cpuMs, animationMs, submitMs, pathCpuMs, rasterResult, spr
             } else {
                 CARD.querySelector('.fps').textContent =
                     STATE.fps === null ? 'Shared RAF unavailable' : `Shared RAF ${STATE.fps.toFixed(1)} FPS`;
-                const CPU_PATH = MODE_INPUT.value === SIDE ? submitMs : pathCpuMs[SIDE];
-                CARD.querySelector('.cpu-label').textContent = MODE_INPUT.value === SIDE ? 'Submit' : 'Draw calls';
-                CARD.querySelector('.cpu').textContent =
-                    CPU_PATH === null ? 'unavailable' : `${CPU_PATH.toFixed(2)} ms`;
+                // Split calls can flush the previous path's pending mesh. Only
+                // a full-viewport submission includes its own final flush.
+                const FULL_PATH = MODE_INPUT.value === SIDE;
+                CARD.querySelector('.cpu-label').textContent = FULL_PATH ? 'Live submit (incl. flush)' : 'CPU timing';
+                CARD.querySelector('.cpu').textContent = FULL_PATH
+                    ? `${submitMs.toFixed(2)} ms`
+                    : 'Use sequential comparison';
                 CARD.querySelector('.gpu').textContent =
                     GPU_MS !== null && MODE_INPUT.value === SIDE ? `${GPU_MS.toFixed(2)} ms` : 'unavailable';
             }
         }
         FRAME_METRICS.textContent =
+            `${MODE_INPUT.value.startsWith('split') ? 'Shared visible paths' : 'Current full viewport'} · ` +
             `CPU 전체 ${cpuMs.toFixed(2)} ms (동작 준비 ${animationMs.toFixed(2)} / 제출 ${submitMs.toFixed(2)} ms) · ` +
             `GPU ${GPU_TEXT} · 드로우 ${DEVICE_STATS.drawCalls}회 · ` +
             `버퍼 업로드 ${DEVICE_STATS.bufferBytes.toLocaleString()} B · 텍스처 업로드 ${DEVICE_STATS.textureBytes.toLocaleString()} B`;

@@ -404,8 +404,8 @@
         </header>
         <aside class="hud" aria-label="Live rendering metrics">
             <small class="hud-note"
-                >Shared animation-frame FPS across visible paths; draw-call time excludes shared flush in split
-                views.</small
+                >Split views show shared RAF FPS only. Per-path CPU/GPU render timings require the sequential
+                comparison; a single full-viewport path shows live submission including its final flush.</small
             >
             <article id="vector-card">
                 <strong>Vector</strong
