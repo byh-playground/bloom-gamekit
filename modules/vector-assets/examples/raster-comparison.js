@@ -135,7 +135,11 @@ function showBenchmarkResult(result) {
     }
     TABLE.append(BODY);
     const CAPTION = document.createElement('p');
-    CAPTION.textContent = `Sequential full-viewport comparison · ${result.config.scene} · ${result.config.count} characters · ${result.config.pixelSize} CSS px · spread ${result.config.spread}% · seed ${result.config.seed} · ${CLIP_INPUT.value}/${EXPRESSION_INPUT.value}`;
+    const PLACEMENT =
+        result.config.scene === 'single'
+            ? `zoom ${Number(ZOOM_INPUT.value).toFixed(1)}×`
+            : `${result.config.pixelSize} CSS px · spread ${result.config.spread}% · seed ${result.config.seed}`;
+    CAPTION.textContent = `Sequential full-viewport comparison · ${result.config.scene} · ${result.config.count} characters · ${PLACEMENT} · ${CLIP_INPUT.value}/${EXPRESSION_INPUT.value}`;
     RESULTS.append(CAPTION, TABLE);
 }
 
@@ -145,8 +149,8 @@ async function runBenchmark(options = {}) {
     }
     if (CLIP_INPUT.value !== 'transform-repeat' || MIXED_INPUT.checked) {
         document.querySelector('.benchmark-results').textContent =
-            'Select transform-repeat and turn off mixed start phases for the repeatable sequential comparison.';
-        throw new Error('Sequential comparison requires transform-repeat and mixed start phases off.');
+            'Select transform-repeat and turn off mixed motion for the repeatable sequential comparison.';
+        throw new Error('Sequential comparison requires transform-repeat and mixed motion off.');
     }
     benchmarkRunning = true;
     const BUTTON = BY_ID('benchmark');
