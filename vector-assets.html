@@ -2291,6 +2291,7 @@ void main(){vec4 texel=mix(vec4(1.0),texture2D(u_texture,v_uv),u_textured);float
       this.activeRadial = false;
       this.activeWhiteFlash = false;
       this.activeGradient = null;
+      this.blend = "source-over";
       this.stencilClips = [];
       this.clipPaths = /* @__PURE__ */ new Map();
       this.clipPathBytes = 0;
@@ -2854,7 +2855,7 @@ void main(){vec4 texel=mix(vec4(1.0),texture2D(u_texture,v_uv),u_textured);float
           } : {}
         },
         textures: [TEXTURE],
-        blend: "source-over",
+        blend: this.blend,
         stencil: this.stencilDepth ? {
           func: "equal",
           ref: this.stencilDepth,
@@ -2864,6 +2865,16 @@ void main(){vec4 texel=mix(vec4(1.0),texture2D(u_texture,v_uv),u_textured);float
         } : false
       });
       this.count = 0;
+    }
+    // Only source-over and the additive 'lighter' are offered; a change submits what the other operation queued.
+    setBlend(blend) {
+      if (blend !== "source-over" && blend !== "lighter") {
+        throw new RangeError("VectorRenderer supports only source-over and lighter blending");
+      }
+      if (blend !== this.blend) {
+        this._submit();
+        this.blend = blend;
+      }
     }
     _useTexture(texture, { radial = false, whiteFlash = false, gradient = null } = {}) {
       if (this.activeTexture !== texture || this.activeRadial !== radial || this.activeWhiteFlash !== whiteFlash || this.activeGradient?.gradient !== gradient?.gradient) {
@@ -5746,7 +5757,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       this.frameStats = this._emptyStats();
     }
     _sameState(state, next) {
-      if (state.clip.key !== next.clip.key || state.stencilRef !== next.stencilRef || state.projection.length !== next.projection.length) {
+      if (state.clip.key !== next.clip.key || state.stencilRef !== next.stencilRef || state.blend !== next.blend || state.projection.length !== next.projection.length) {
         return false;
       }
       for (let i = 0; i < state.projection.length; i++) {
@@ -5756,7 +5767,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       }
       return true;
     }
-    draw({ matrix, color: color2, params, projection, clips, stencilRef = null }) {
+    draw({ matrix, color: color2, params, projection, clips, stencilRef = null, blend = "source-over" }) {
       if (this.disposed) {
         throw new Error("PrimitiveRenderer is disposed");
       }
@@ -5767,7 +5778,8 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       const NEXT_STATE = {
         clip: CLIP,
         projection,
-        stencilRef
+        stencilRef,
+        blend
       };
       if (this.pendingCount && !this._sameState(this.pendingState, NEXT_STATE)) {
         this.flush("stateChange");
@@ -5812,7 +5824,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
         buffer: this.vertexBuffer,
         count: QUAD_VERTICES.length / 2,
         uniforms: UNIFORMS2,
-        blend: "source-over",
+        blend: state.blend,
         stencil: stencilState(state.stencilRef)
       });
     }
@@ -5844,7 +5856,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
         instances: this.pendingCount,
         count: QUAD_VERTICES.length / 2,
         uniforms: UNIFORMS2,
-        blend: "source-over",
+        blend: STATE.blend,
         stencil: stencilState(STATE.stencilRef)
       });
       this.frameStats.draws++;
@@ -6302,6 +6314,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       this._textBaseline = "alphabetic";
       this._direction = "inherit";
       this._filter = "none";
+      this._composite = "source-over";
       this.forceColor = null;
       this.stack = [];
       this.frameStats = {};
@@ -6416,6 +6429,17 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
         throw new RangeError("VectorContext supports only none and brightness(0) invert(1) filters");
       }
       this._filter = v;
+    }
+    get globalCompositeOperation() {
+      return this._composite;
+    }
+    set globalCompositeOperation(v) {
+      this._frame();
+      if (v !== "source-over" && v !== "lighter") {
+        throw new RangeError("VectorContext supports only source-over and lighter composite operations");
+      }
+      this.vector.setBlend(v);
+      this._composite = v;
     }
     get stencilRef() {
       return this.vector.stencilDepth || null;
@@ -6618,6 +6642,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
         textBaseline: this._textBaseline,
         direction: this._direction,
         filter: this._filter,
+        composite: this._composite,
         forceColor: this.forceColor
       });
       this.vector.save();
@@ -6646,8 +6671,10 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
         _textBaseline: S.textBaseline,
         _direction: S.direction,
         _filter: S.filter,
+        _composite: S.composite,
         forceColor: S.forceColor
       });
+      this.vector.setBlend(S.composite);
     }
     setTransform(a, b, c, d, e, f) {
       this.vector.setTransform(a, b, c, d, e, f);
@@ -6894,7 +6921,8 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
         params,
         projection: this.vector.projection,
         clips: this.vector.clips,
-        stencilRef: this.vector.stencilDepth || null
+        stencilRef: this.vector.stencilDepth || null,
+        blend: this._composite
       });
     }
     _tryPrimitiveFill() {

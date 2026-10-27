@@ -1713,6 +1713,7 @@ void main(){vec4 texel=mix(vec4(1.0),texture2D(u_texture,v_uv),u_textured);float
       this.activeRadial = false;
       this.activeWhiteFlash = false;
       this.activeGradient = null;
+      this.blend = "source-over";
       this.stencilClips = [];
       this.clipPaths = /* @__PURE__ */ new Map();
       this.clipPathBytes = 0;
@@ -2276,7 +2277,7 @@ void main(){vec4 texel=mix(vec4(1.0),texture2D(u_texture,v_uv),u_textured);float
           } : {}
         },
         textures: [TEXTURE],
-        blend: "source-over",
+        blend: this.blend,
         stencil: this.stencilDepth ? {
           func: "equal",
           ref: this.stencilDepth,
@@ -2286,6 +2287,16 @@ void main(){vec4 texel=mix(vec4(1.0),texture2D(u_texture,v_uv),u_textured);float
         } : false
       });
       this.count = 0;
+    }
+    // Only source-over and the additive 'lighter' are offered; a change submits what the other operation queued.
+    setBlend(blend) {
+      if (blend !== "source-over" && blend !== "lighter") {
+        throw new RangeError("VectorRenderer supports only source-over and lighter blending");
+      }
+      if (blend !== this.blend) {
+        this._submit();
+        this.blend = blend;
+      }
     }
     _useTexture(texture, { radial = false, whiteFlash = false, gradient = null } = {}) {
       if (this.activeTexture !== texture || this.activeRadial !== radial || this.activeWhiteFlash !== whiteFlash || this.activeGradient?.gradient !== gradient?.gradient) {
