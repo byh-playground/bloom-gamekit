@@ -57,18 +57,23 @@ try {
             vendor: INFO ? GL.getParameter(INFO.UNMASKED_VENDOR_WEBGL) : GL.getParameter(GL.VENDOR),
             version: GL.getParameter(GL.VERSION),
         };
-        const SHEET_BYTES = new Uint8Array(8 * 4 * 4);
+        const SHEET_BYTES = new Uint8Array(14 * 6 * 4);
         // Row zero is the GPU bottom row. Each 2x2 cell has a one-pixel
         // transparent gutter, so linear filtering cannot sample its neighbor.
         for (let row = 1; row <= 2; row++) {
             for (let column = 1; column <= 2; column++) {
-                SHEET_BYTES.set([255, 0, 0, 255], (row * 8 + column) * 4);
+                SHEET_BYTES.set([255, 0, 0, 255], (row * 14 + column) * 4);
             }
             for (let column = 5; column <= 6; column++) {
-                SHEET_BYTES.set([0, 255, 0, 128], (row * 8 + column) * 4);
+                SHEET_BYTES.set([0, 255, 0, 128], (row * 14 + column) * 4);
             }
         }
-        const TEXTURE = DEVICE.createTexture({ width: 8, height: 4, data: SHEET_BYTES }, { filter: 'linear' });
+        for (let row = 1; row <= 3; row++) {
+            for (let column = 10; column <= 12; column++) {
+                SHEET_BYTES.set([0, 0, 255, 255], (row * 14 + column) * 4);
+            }
+        }
+        const TEXTURE = DEVICE.createTexture({ width: 14, height: 6, data: SHEET_BYTES }, { filter: 'linear' });
         const DEFINITION = {
             textureOrigin: 'bottom-left',
             sourceWidth: 4,
@@ -79,15 +84,33 @@ try {
             frames: [
                 { x: 1, y: 1, width: 2, height: 2, sourceX: 1, sourceY: 1, durationMs: 50 },
                 { x: 5, y: 1, width: 2, height: 2, sourceX: 1, sourceY: 1, durationMs: 100 },
+                {
+                    x: 10,
+                    y: 1,
+                    width: 3,
+                    height: 3,
+                    sourceX: 1,
+                    sourceY: 1,
+                    sourceWidth: 6,
+                    sourceHeight: 5,
+                    pivotX: 2,
+                    pivotY: 2,
+                    durationMs: 75,
+                },
             ],
             clips: {
                 loop: { frames: [0, 1], loop: 'loop' },
                 once: { frames: [0, 1], loop: 'once' },
+                large: { frames: [2], loop: 'once' },
             },
         };
         let sprite;
         let first;
         let second;
+        let third;
+        let fallbackMeshes;
+        let fallbackSprite;
+        let fallbackPlayer;
         try {
             const EXPECT_THROW = (action, label) => {
                 let threw = false;
@@ -114,13 +137,18 @@ try {
             first = sprite.createPlayer({ clip: 'loop', startedAtMs: 0 });
             second = sprite.createPlayer({ clip: 'loop', startedAtMs: 50 });
             const STATS = sprite.stats();
+            const UNIT_MESH = [...MESHES.meshes][0];
             CHECK(
-                STATS.frameCount === 2 &&
-                    STATS.clipCount === 2 &&
+                STATS.frameCount === 3 &&
+                    STATS.clipCount === 3 &&
                     STATS.playerCount === 2 &&
                     STATS.retainedBytes > 0 &&
                     STATS.textureOwned === false,
                 'one retained sprite mesh and borrowed texture accounted',
+            );
+            CHECK(
+                MESHES.meshes.size === 1 && UNIT_MESH.vertices.length === 4 * 11 && UNIT_MESH.indices.length === 6,
+                'all atlas frames reuse one four-vertex indexed quad',
             );
             CHECK(first.sample(-100).frameIndex === 0, 'negative time clamps to first frame');
             CHECK(first.sample(50).frameIndex === 1, 'exact frame boundary selects next frame');
@@ -168,7 +196,23 @@ try {
             NEAR(BEFORE.second, [255, 0, 0, 255], 'independent first atlas frame');
             NEAR(BEFORE.trimOutside, [0, 0, 0, 255], 'trim and pivot place quad correctly');
             CHECK(BEFORE.gutterEdge[0] === 0 && BEFORE.gutterEdge[2] === 0, 'linear edge cannot bleed other frame');
-            CHECK(COLD.drawCalls >= 2, 'index ranges are submitted in player order');
+            CHECK(COLD.drawCalls === 1, 'different atlas frames share one compatible instanced batch');
+            third = sprite.createPlayer({ clip: 'large' });
+            const ROTATED_MATRIX = [0, 16, -16, 0, 100, 50];
+            CHECK(DEVICE.beginFrame({ width: 128, height: 128, clearColor: [0, 0, 0, 1] }), 'mixed frame available');
+            MESHES.beginFrame();
+            const MIXED_PROJECTION = [2 / 128, 0, 0, 0, -2 / 128, 0, -1, 1, 1];
+            first.draw({ timeMs: 75, matrix: [16, 0, 0, 16, 64, 64], projection: MIXED_PROJECTION });
+            second.draw({ timeMs: 75, matrix: [16, 0, 0, 16, 64, 64], projection: MIXED_PROJECTION });
+            third.draw({ timeMs: 75, matrix: ROTATED_MATRIX, projection: MIXED_PROJECTION });
+            MESHES.flush();
+            const MIXED_FRAME = DEVICE.endFrame();
+            CHECK(GL.getError() === GL.NO_ERROR, 'mixed sprite frame GL error');
+            CHECK(MIXED_FRAME.drawCalls === 1, 'mixed trim, size, and UV rects share one batch');
+            NEAR(PIXEL(64, 64), [255, 0, 0, 255], 'opaque later frame preserves painter order');
+            NEAR(PIXEL(100, 50), [0, 0, 255, 255], 'rotated, differently trimmed frame uses its own local rect');
+            NEAR(PIXEL(124, 50), [0, 0, 0, 255], 'trimmed frame outside remains transparent');
+            CHECK(ROTATED_MATRIX.join(',') === '0,16,-16,0,100,50', 'caller matrix remains unchanged');
             const DOM_SHEET = document.createElement('canvas');
             DOM_SHEET.width = DOM_SHEET.height = 2;
             DOM_SHEET.getContext('2d').putImageData(
@@ -224,8 +268,32 @@ try {
             const AFTER = { first: PIXEL(24, 24), second: PIXEL(72, 24) };
             NEAR(AFTER.first, BEFORE.first, 'retained atlas and UV mesh restored');
             NEAR(AFTER.second, BEFORE.second, 'second player phase restored');
+            DEVICE.instancingSupported = false;
+            try {
+                fallbackMeshes = new MESH_RENDERER(DEVICE);
+            } finally {
+                DEVICE.instancingSupported = true;
+            }
+            CHECK(!fallbackMeshes.instanced, 'noninstanced renderer selected');
+            fallbackSprite = CREATE_SPRITE(fallbackMeshes, TEXTURE, DEFINITION);
+            fallbackPlayer = fallbackSprite.createPlayer({ clip: 'large' });
+            CHECK(DEVICE.beginFrame({ width: 160, height: 128, clearColor: [0, 0, 0, 1] }), 'fallback frame available');
+            fallbackMeshes.beginFrame();
+            fallbackPlayer.draw({
+                timeMs: 0,
+                matrix: [0, 16, -16, 0, 80, 80],
+                projection: [2 / 160, 0, 0, 0, -2 / 128, 0, -1, 1, 1],
+            });
+            fallbackMeshes.flush();
+            DEVICE.endFrame();
+            CHECK(GL.getError() === GL.NO_ERROR, 'noninstanced sprite draw GL error');
+            NEAR(PIXEL(80, 80), [0, 0, 255, 255], 'noninstanced path applies UV and local rect uniforms');
+            fallbackPlayer.dispose();
+            fallbackSprite.dispose();
+            fallbackMeshes.dispose();
             first.dispose();
             second.dispose();
+            third.dispose();
             CHECK(
                 sprite.dispose() && DEVICE.textures.has(TEXTURE),
                 'sprite releases only its mesh, not borrowed texture',
@@ -256,6 +324,10 @@ try {
         } finally {
             first?.dispose();
             second?.dispose();
+            third?.dispose();
+            fallbackPlayer?.dispose();
+            fallbackSprite?.dispose();
+            fallbackMeshes?.dispose();
             sprite?.dispose();
             MESHES.dispose();
             DEVICE.dispose();

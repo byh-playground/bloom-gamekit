@@ -1,5 +1,5 @@
 /**
- * Retained atlas quads on one mesh; the Device texture remains owned by the caller.
+ * Retained unit quad shared by every atlas frame; the Device texture remains owned by the caller.
  * Atlas x/y/width/height are top-left pixel coordinates into texture.width/height.
  * sourceX/Y and sourceWidth/Height describe the trimmed image in its untrimmed
  * viewport; pivotX/Y are viewport pixels, defaulting to the top-left origin.
@@ -35,9 +35,10 @@ export function createSpriteAnimation(meshRenderer, texture, definition) {
         throw new TypeError('Named sprite clips are required');
     }
     const FRAMES = [];
-    const VERTICES = new Float32Array(INPUT_FRAMES.length * 4 * 11);
-    const UVS = new Float32Array(INPUT_FRAMES.length * 4 * 2);
-    const INDICES = new Uint16Array(INPUT_FRAMES.length * 6);
+    const FRAME_RECTS = [];
+    const VERTICES = new Float32Array(4 * 11);
+    const UVS = new Float32Array(4 * 2);
+    const INDICES = new Uint16Array([0, 1, 2, 0, 2, 3]);
     const VERTEX = (index, x, y, u, v) => {
         const OFFSET = index * 11;
         VERTICES.set([x, y, 1, 1, 1, 1], OFFSET);
@@ -48,6 +49,10 @@ export function createSpriteAnimation(meshRenderer, texture, definition) {
             throw new TypeError(`${name} must be an integer >= ${minimum}`);
         }
     };
+    VERTEX(0, 0, 0, 0, 0);
+    VERTEX(1, 1, 0, 1, 0);
+    VERTEX(2, 1, 1, 1, 1);
+    VERTEX(3, 0, 1, 0, 1);
     for (let index = 0; index < INPUT_FRAMES.length; index++) {
         const FRAME = INPUT_FRAMES[index];
         const X = FRAME?.x;
@@ -93,18 +98,15 @@ export function createSpriteAnimation(meshRenderer, texture, definition) {
         }
         const LEFT = SOURCE_X - PIVOT_X;
         const TOP = SOURCE_Y - PIVOT_Y;
-        const RIGHT = LEFT + WIDTH;
-        const BOTTOM = TOP + HEIGHT;
         const U0 = X / ATLAS_WIDTH;
-        const U1 = (X + WIDTH) / ATLAS_WIDTH;
         const V0 = TEXTURE_ORIGIN === 'bottom-left' ? 1 - Y / ATLAS_HEIGHT : Y / ATLAS_HEIGHT;
         const V1 = TEXTURE_ORIGIN === 'bottom-left' ? 1 - (Y + HEIGHT) / ATLAS_HEIGHT : (Y + HEIGHT) / ATLAS_HEIGHT;
-        const BASE = index * 4;
-        VERTEX(BASE, LEFT, TOP, U0, V0);
-        VERTEX(BASE + 1, RIGHT, TOP, U1, V0);
-        VERTEX(BASE + 2, RIGHT, BOTTOM, U1, V1);
-        VERTEX(BASE + 3, LEFT, BOTTOM, U0, V1);
-        INDICES.set([BASE, BASE + 1, BASE + 2, BASE, BASE + 2, BASE + 3], index * 6);
+        FRAME_RECTS.push(
+            Object.freeze({
+                localRect: Object.freeze([LEFT, TOP, WIDTH, HEIGHT]),
+                uvRect: Object.freeze([U0, V0, WIDTH / ATLAS_WIDTH, V1 - V0]),
+            }),
+        );
         FRAMES.push(
             Object.freeze({
                 index,
@@ -241,7 +243,7 @@ export function createSpriteAnimation(meshRenderer, texture, definition) {
                     const SAMPLE = this.sample(timeMs);
                     meshRenderer.drawMesh(MESH, {
                         ...options,
-                        indexRange: [SAMPLE.frameIndex * 6, 6],
+                        ...FRAME_RECTS[SAMPLE.frameIndex],
                         texture,
                     });
                     return SAMPLE;

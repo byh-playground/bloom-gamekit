@@ -2,7 +2,7 @@
 
 ## Sprite animation
 
-`createSpriteAnimation(meshes, texture, definition)` is independent of SVG. It accepts a borrowed Device texture, frames with pixel rectangles and positive `durationMs`, and named clips with ordered frame indices and `loop: 'loop' | 'once'`. An external sprite sheet and an SVG-generated atlas use the same playback API. It retains one UV quad per frame in a shared mesh; it does not generate pixels during playback or reorder actors by frame.
+`createSpriteAnimation(meshes, texture, definition)` is independent of SVG. It accepts a borrowed Device texture, frames with pixel rectangles and positive `durationMs`, and named clips with ordered frame indices and `loop: 'loop' | 'once'`. An external sprite sheet and an SVG-generated atlas use the same playback API. All frames share one retained unit quad. Per-instance UV and local rectangles select the image and preserve trim/pivot before part poses, without changing the caller's matrix. Different frames remain in one compatible batch in submission order; playback does not generate pixels or reorder actors by frame.
 
 ```js
 const SPRITES = createSpriteAnimation(MESHES, TEXTURE, {
@@ -29,6 +29,8 @@ Players sample an absolute caller clock, select one frame and hold it for its du
 `MeshRenderer.createMesh()` accepts optional `uvs`, two floats per existing 11-float source vertex. Supply the device-owned image texture or RGBA render target as `drawMesh(mesh, { texture, ...options })`; `VectorContext.drawMesh` forwards the same material. Texture and pose samplers use separate units. The shader applies the existing instance/part pose and premultiplied tint, preserving submission order across texture changes. Linear/nearest filtering belongs to the image texture; pose data remains nearest-filtered.
 
 The caller owns the texture lifetime. A UV mesh requires a live texture from the same device, and a mesh without UVs rejects a texture. Texture alpha cannot be classified by the CPU depth-write threshold path, so that combination is rejected. UVs and packed GPU vertices are retained for context restoration and included in resource accounting. A restored render target has empty contents; its producer must repaint it. `createVectorRasterAtlas` in vector-assets implements that repaint contract for SVG-derived atlases.
+
+Textured mesh draw options `uvRect` and `localRect` are `[offsetX, offsetY, extentX, extentY]`, defaulting to `[0, 0, 1, 1]`. UV extents may be negative for image orientation. Local rectangles apply after morph and before part pose; clip, stencil, depth, projection and texture boundaries still flush as required. These values occupy separate instance attributes, preserving the existing morph/pose/flash/depth parameters. Plain instances retain the 64-byte layout; textured instances upload 96 bytes. The shared GPU stream grows only when needed, and the uniform fallback uses the same rectangle values.
 
 **HTML 실행 프리뷰:** [rendering-vector](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rendering-vector.html)
 

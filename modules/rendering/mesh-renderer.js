@@ -7,6 +7,7 @@ const EMPTY_CLIP = Object.freeze({
     count: 0,
 });
 const WHITE = Object.freeze([1, 1, 1, 1]);
+const IDENTITY_RECT = Object.freeze([0, 0, 1, 1]);
 const ATTRIBUTES = [
     {
         name: 'a_position',
@@ -41,6 +42,12 @@ const WORLD_INSTANCE_ATTRIBUTES = ['i_row0', 'i_row1', 'i_row2', 'i_params'].map
     offset: i * 16,
     source: 'instance',
 }));
+const TEXTURE_INSTANCE_ATTRIBUTES = ['i_uvRect', 'i_localRect'].map((name, i) => ({
+    name,
+    size: 4,
+    offset: 64 + i * 16,
+    source: 'instance',
+}));
 function shader(
     instanced,
     partCount,
@@ -70,11 +77,12 @@ function shader(
     const STROKE_INPUTS = nonScalingStroke ? 'attribute vec4 a_stroke;uniform vec2 u_strokeViewportSize;' : '';
     const STROKE_VARYING = clipped && nonScalingStroke ? 'uniform mat3 u_inverseProjection;' : '';
     const TEXTURE_INPUTS = textured
-        ? 'attribute highp vec2 a_uv;varying highp vec2 v_uv;varying float v_forceColor;varying float v_whiteFlash;'
+        ? `attribute highp vec2 a_uv;${instanced ? 'attribute' : 'uniform'} highp vec4 i_uvRect;${instanced ? 'attribute' : 'uniform'} vec4 i_localRect;varying highp vec2 v_uv;varying float v_forceColor;varying float v_whiteFlash;`
         : '';
+    const RECT_LOCAL = textured ? 'local=i_localRect.xy+local*i_localRect.zw;' : '';
     const STROKE_POSITION = nonScalingStroke
         ? `
-vec2 tangentLocal=local+a_stroke.xy;
+vec2 tangentLocal=local+a_stroke.xy${textured ? '*i_localRect.zw' : ''};
 vec2 tangentPart=${PART_POSE ? 'vec2(dot(row0.xyz,vec3(tangentLocal,1.0)),dot(row1.xyz,vec3(tangentLocal,1.0)))' : 'tangentLocal'};
 vec2 tangentWorld=vec2(dot(i_row0.xyz,vec3(tangentPart,1.0)),dot(i_row1.xyz,vec3(tangentPart,1.0)));
 vec3 tangentProjected=u_projection*vec3(tangentWorld,1.0);
@@ -100,7 +108,7 @@ if(dot(a_stroke.xy,a_stroke.xy)>0.5){
             : '';
         const WORLD_STROKE = nonScalingStroke
             ? `
-vec2 tangentLocal=local+a_stroke.xy;
+vec2 tangentLocal=local+a_stroke.xy${textured ? '*i_localRect.zw' : ''};
 vec2 tangentPlane=${partCount > 1 ? 'vec2(dot(row0.xyz,vec3(tangentLocal,1.0)),dot(row1.xyz,vec3(tangentLocal,1.0)))' : 'tangentLocal'};
 vec3 tangentWorld=vec3(dot(i_row0.xyz,vec3(tangentPlane,1.0)),dot(i_row1.xyz,vec3(tangentPlane,1.0)),dot(i_row2.xyz,vec3(tangentPlane,1.0)));
 vec4 tangentProjected=u_viewProjection*vec4(tangentWorld,1.0);vec2 tangent=(tangentProjected.xy/tangentProjected.w-projected.xy/projected.w)*u_strokeViewportSize*0.5;float tangentLength=length(tangent);
@@ -114,23 +122,23 @@ if(dot(a_stroke.xy,a_stroke.xy)>0.5){
 ${WORLD_INPUTS}${WORLD_STROKE_INPUTS}${TEXTURE_INPUTS}
 uniform mat4 u_viewProjection; uniform vec4 u_color; varying vec4 v_color; ${clipped ? 'varying vec2 v_position;' : ''}
 void main(){${PART_SETUP}
-vec2 local=${LOCAL};vec2 plane=${PART_POSE ? 'vec2(dot(row0.xyz,vec3(local,1.0)),dot(row1.xyz,vec3(local,1.0)))' : 'local'};
+vec2 local=${LOCAL};${RECT_LOCAL}vec2 plane=${PART_POSE ? 'vec2(dot(row0.xyz,vec3(local,1.0)),dot(row1.xyz,vec3(local,1.0)))' : 'local'};
 vec3 world=vec3(dot(i_row0.xyz,vec3(plane,1.0)),dot(i_row1.xyz,vec3(plane,1.0)),dot(i_row2.xyz,vec3(plane,1.0)));
 vec4 projected=u_viewProjection*vec4(world,1.0);${clipped ? 'v_position=world.xy;' : ''}${WORLD_STROKE}
 projected.z+=(i_params.w+${PART_POSE ? 'pose.w' : '0.0'})*projected.w;gl_Position=projected;
-vec4 color=mix(a_color*u_color,u_color,i_row1.w);color.a*=i_row0.w${PART_POSE ? '*pose.z' : ''};color.rgb=mix(color.rgb,vec3(1.0),i_row2.w);v_color=vec4(color.rgb*color.a,color.a);${textured ? 'v_uv=a_uv;v_forceColor=i_row1.w;v_whiteFlash=i_row2.w;' : ''}
+vec4 color=mix(a_color*u_color,u_color,i_row1.w);color.a*=i_row0.w${PART_POSE ? '*pose.z' : ''};color.rgb=mix(color.rgb,vec3(1.0),i_row2.w);v_color=vec4(color.rgb*color.a,color.a);${textured ? 'v_uv=i_uvRect.xy+a_uv*i_uvRect.zw;v_forceColor=i_row1.w;v_whiteFlash=i_row2.w;' : ''}
 }`;
     }
     return `attribute vec2 a_position; attribute vec4 a_color; ${morphCount ? 'attribute vec4 a_morph;' : ''} ${PART_INPUTS}
 ${INPUTS}${STROKE_INPUTS}${TEXTURE_INPUTS}
 uniform mat3 u_projection; varying vec4 v_color; ${clipped ? 'varying vec2 v_position;' : ''}${STROKE_VARYING}
 void main(){${PART_SETUP}
-vec2 local=${LOCAL};vec2 p=${PART_POSE ? 'vec2(dot(row0.xyz,vec3(local,1.0)),dot(row1.xyz,vec3(local,1.0)))' : 'local'};
+vec2 local=${LOCAL};${RECT_LOCAL}vec2 p=${PART_POSE ? 'vec2(dot(row0.xyz,vec3(local,1.0)),dot(row1.xyz,vec3(local,1.0)))' : 'local'};
 vec2 world=vec2(dot(i_row0.xyz,vec3(p,1.0)),dot(i_row1.xyz,vec3(p,1.0)));
 vec3 projected=u_projection*vec3(world,1.0);${clipped ? 'v_position=world;' : ''}${STROKE_POSITION}
 gl_Position=vec4(projected.xy,(i_params.w+${PART_POSE ? 'pose.w' : '0.0'})*projected.z,projected.z);
 vec4 color=mix(a_color*i_color,i_color,i_row1.w);color.a*=i_row0.w${PART_POSE ? '*pose.z' : ''};
-color.rgb=mix(color.rgb,vec3(1.0),i_params.z);v_color=vec4(color.rgb*color.a,color.a);${textured ? 'v_uv=a_uv;v_forceColor=i_row1.w;v_whiteFlash=i_params.z;' : ''}}`;
+color.rgb=mix(color.rgb,vec3(1.0),i_params.z);v_color=vec4(color.rgb*color.a,color.a);${textured ? 'v_uv=i_uvRect.xy+a_uv*i_uvRect.zw;v_forceColor=i_row1.w;v_whiteFlash=i_params.z;' : ''}}`;
 }
 function fragment(maxPlanes, clipped, textured = false) {
     const TEXTURE_INPUTS = textured
@@ -419,7 +427,11 @@ export class MeshRenderer {
         }
         this.maxPlanes = Math.max(1, Math.min(32, device.gl.getParameter(device.gl.MAX_FRAGMENT_UNIFORM_VECTORS) - 2));
         this.instanced = device.instancingSupported === true;
+        this.maxTexturedInstances = this.instanced
+            ? Math.min(maxInstances, Math.floor(device.maxBufferBytes / 96))
+            : maxInstances;
         this.instances = new Float32Array(maxInstances * 16);
+        this.texturedInstances = null;
         this.instanceBuffer = this.instanced
             ? device.createVertexBuffer({
                   capacityBytes: this.instances.byteLength,
@@ -595,6 +607,10 @@ export class MeshRenderer {
         }
         if (mesh.hasTextureCoordinates) {
             UNIFORMS.u_texture = '1i';
+            if (!this.instanced) {
+                UNIFORMS.i_uvRect = '4f';
+                UNIFORMS.i_localRect = '4f';
+            }
         }
         if (!this.instanced) {
             for (const NAME of worldMode
@@ -620,7 +636,7 @@ export class MeshRenderer {
             stride: mesh.bufferStrideFloats * 4,
             ...(this.instanced
                 ? {
-                      instanceStride: 64,
+                      instanceStride: mesh.hasTextureCoordinates ? 96 : 64,
                   }
                 : {}),
             attributes: [
@@ -646,6 +662,7 @@ export class MeshRenderer {
                       ]
                     : []),
                 ...(this.instanced ? (worldMode ? WORLD_INSTANCE_ATTRIBUTES : INSTANCE_ATTRIBUTES) : []),
+                ...(this.instanced && mesh.hasTextureCoordinates ? TEXTURE_INSTANCE_ATTRIBUTES : []),
             ],
             uniforms: UNIFORMS,
         });
@@ -883,6 +900,8 @@ export class MeshRenderer {
             parts: PARTS = null,
             pose: POSE = null,
             texture: TEXTURE = null,
+            uvRect: UV_RECT = IDENTITY_RECT,
+            localRect: LOCAL_RECT = IDENTITY_RECT,
             color: COLOR = WHITE,
             forceColor: FORCE_COLOR = false,
             alpha: ALPHA = 1,
@@ -910,6 +929,8 @@ export class MeshRenderer {
             parts: PARTS,
             pose: POSE,
             texture: TEXTURE,
+            uvRect: UV_RECT,
+            localRect: LOCAL_RECT,
             color: COLOR,
             forceColor: FORCE_COLOR,
             alpha: ALPHA,
@@ -1143,6 +1164,8 @@ export class MeshRenderer {
             parts = null,
             pose = null,
             texture = null,
+            uvRect = IDENTITY_RECT,
+            localRect = IDENTITY_RECT,
             color = WHITE,
             forceColor = false,
             alpha = 1,
@@ -1171,6 +1194,23 @@ export class MeshRenderer {
             (texture !== null && !this.device.textures.has(texture))
         ) {
             throw new TypeError('Textured meshes require a live texture; plain meshes cannot sample one');
+        }
+        if (uvRect !== IDENTITY_RECT) {
+            finiteArray(uvRect, 4, 'uvRect');
+        }
+        if (localRect !== IDENTITY_RECT) {
+            finiteArray(localRect, 4, 'localRect');
+        }
+        if (
+            !mesh.hasTextureCoordinates &&
+            ((uvRect !== IDENTITY_RECT && Array.from(uvRect).some((value, index) => value !== IDENTITY_RECT[index])) ||
+                (localRect !== IDENTITY_RECT &&
+                    Array.from(localRect).some((value, index) => value !== IDENTITY_RECT[index])))
+        ) {
+            throw new TypeError('uvRect and localRect require a textured mesh');
+        }
+        if (mesh.hasTextureCoordinates && this.maxTexturedInstances < 1) {
+            throw new RangeError('A textured instance exceeds device maxBufferBytes');
         }
         if (
             indexVariant !== null &&
@@ -1327,6 +1367,11 @@ export class MeshRenderer {
         const DEPTH_STATE_KEY = Number(depthTest) + ':' + Number(depthWrite) + ':' + depthFunc;
         const ALPHA_DEPTH_WRITE = depthWrite && depthWriteAlphaThreshold !== null;
         if (!ALPHA_DEPTH_WRITE) {
+            const INSTANCE_LIMIT = mesh.hasTextureCoordinates ? this.maxTexturedInstances : this.maxInstances;
+            const INSTANCE_FLOATS = mesh.hasTextureCoordinates ? 24 : 16;
+            const DATA = mesh.hasTextureCoordinates
+                ? (this.texturedInstances ??= new Float32Array(this.maxTexturedInstances * 24))
+                : this.instances;
             if (this.alphaQueueCount) {
                 this._flushAlphaQueue('alphaBoundary');
             }
@@ -1362,7 +1407,7 @@ export class MeshRenderer {
                                                   mesh.partCount > 1 &&
                                                   PENDING.parts.some((n, i) => n !== this.partScratch[i])
                                                 ? 'parts'
-                                                : this.count === this.maxInstances
+                                                : this.count === INSTANCE_LIMIT
                                                   ? 'capacity'
                                                   : null;
                 if (REASON) {
@@ -1375,7 +1420,7 @@ export class MeshRenderer {
             const PART = this.partScratch,
                 SINGLE_PART = mesh.partCount === 1 && !POSE_DRAW;
             for (let i = 0; i < count; i++) {
-                if (this.count === this.maxInstances) {
+                if (this.count === INSTANCE_LIMIT) {
                     this.flush('capacity');
                 }
                 if (!this.pending) {
@@ -1430,8 +1475,7 @@ export class MeshRenderer {
                 }
                 const INSTANCE_COLOR = i < prefixCount ? prefixColor : color;
                 const INSTANCE_FORCE_COLOR = i < forceColorPrefixCount ? true : forceColor,
-                    AT = this.count++ * 16,
-                    DATA = this.instances;
+                    AT = this.count++ * INSTANCE_FLOATS;
                 const INSTANCE_DEPTH = depth + (SINGLE_PART ? PART[11] : 0);
                 if (POSE_DRAW) {
                     this.poseRenderer.noteDraw(pose);
@@ -1470,6 +1514,10 @@ export class MeshRenderer {
                     DATA[AT + 13] = weight1;
                     DATA[AT + 14] = whiteFlash ? 1 : 0;
                     DATA[AT + 15] = INSTANCE_DEPTH;
+                }
+                if (mesh.hasTextureCoordinates) {
+                    DATA.set(uvRect, AT + 16);
+                    DATA.set(localRect, AT + 20);
                 }
             }
             return;
@@ -1951,8 +1999,10 @@ export class MeshRenderer {
         const INSTANCE_UNIFORMS = WORLD_MODE
             ? ['i_row0', 'i_row1', 'i_row2', 'i_params']
             : ['i_row0', 'i_row1', 'i_color', 'i_params'];
+        const INSTANCE_FLOATS = MESH.hasTextureCoordinates ? 24 : 16;
+        const INSTANCE_DATA = MESH.hasTextureCoordinates ? this.texturedInstances : this.instances;
         if (this.instanced) {
-            this.device.uploadVertices(this.instanceBuffer, this.instances.subarray(0, this.count * 16));
+            this.device.uploadVertices(this.instanceBuffer, INSTANCE_DATA.subarray(0, this.count * INSTANCE_FLOATS));
             this.device.draw({
                 pipeline: PIPELINE,
                 buffer: MESH.buffer,
@@ -1975,7 +2025,7 @@ export class MeshRenderer {
                               pass: 'keep',
                           },
             });
-            this.metrics.instanceBytesUploaded += this.count * 64;
+            this.metrics.instanceBytesUploaded += this.count * INSTANCE_FLOATS * 4;
             this.metrics.draws++;
             this.metrics.drawDispatchReasons[reason] = (this.metrics.drawDispatchReasons[reason] ?? 0) + 1;
             if (MESH.partCount > 1 && !POSE_TEXTURE) {
@@ -1984,7 +2034,14 @@ export class MeshRenderer {
         } else {
             for (let i = 0; i < this.count; i++) {
                 for (let j = 0; j < 4; j++) {
-                    UNIFORMS[INSTANCE_UNIFORMS[j]] = this.instances.subarray(i * 16 + j * 4, i * 16 + j * 4 + 4);
+                    UNIFORMS[INSTANCE_UNIFORMS[j]] = INSTANCE_DATA.subarray(
+                        i * INSTANCE_FLOATS + j * 4,
+                        i * INSTANCE_FLOATS + j * 4 + 4,
+                    );
+                }
+                if (MESH.hasTextureCoordinates) {
+                    UNIFORMS.i_uvRect = INSTANCE_DATA.subarray(i * 24 + 16, i * 24 + 20);
+                    UNIFORMS.i_localRect = INSTANCE_DATA.subarray(i * 24 + 20, i * 24 + 24);
                 }
                 this.device.draw({
                     pipeline: PIPELINE,
@@ -2055,7 +2112,11 @@ export class MeshRenderer {
             pipelineCount: this.pipelines.size,
             meshCount: this.meshes.size,
             retainedBytes: this.bytes,
-            stagingBytes: this.instances.byteLength + this.planes.byteLength + this.partScratch.byteLength,
+            stagingBytes:
+                this.instances.byteLength +
+                (this.texturedInstances?.byteLength ?? 0) +
+                this.planes.byteLength +
+                this.partScratch.byteLength,
             instanced: this.instanced,
             maxClipPlanes: this.maxPlanes,
             poses: this.poseStats(),
@@ -2066,6 +2127,7 @@ export class MeshRenderer {
             return;
         }
         this.discard();
+        this.texturedInstances = null;
         this.poseRenderer?.dispose();
         this.device.canvas.removeEventListener('webglcontextlost', this.onLost);
         this.device.canvas.removeEventListener('webglcontextrestored', this.onRestored);
