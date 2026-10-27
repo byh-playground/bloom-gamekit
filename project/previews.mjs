@@ -18,6 +18,7 @@ export const EXAMPLES = [
     ['navigation', 'modules/navigation/examples/index.html'],
     ['rendering-vector', 'modules/rendering/examples/vector/index.html'],
     ['vector-assets', 'modules/vector-assets/examples/index.html'],
+    ['vector-raster-comparison', 'modules/vector-assets/examples/raster-comparison.html'],
     ['rollback-availability', 'modules/rollback/examples/availability/index.html'],
     ['rollback-reference', 'modules/rollback/examples/reference/index.html'],
     ['scenario', 'modules/scenario/examples/index.html'],

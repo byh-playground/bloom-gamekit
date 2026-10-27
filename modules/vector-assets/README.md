@@ -1,8 +1,62 @@
 # Vector assets
 
+## Runtime part atlas comparison
+
+The same example also includes sampled sprite playback. `createVectorSpriteAtlas(meshes, asset, compiledAsset, { clip, expression, sampleIntervalMs, pixelsPerUnit, padding, maxAtlasBytes })` samples an authored SVG clip at the midpoint of each interval and bakes complete poses into an RGBA atlas. The final interval keeps its shorter duration, so playback keeps the authored clip length. It returns a generic sprite definition and texture rather than an SVG-dependent player:
+
+```js
+const BAKER = createVectorSpriteAtlas(MESHES, ASSET, COMPILED, {
+    clip: 'bounce',
+    expression: 'neutral',
+    sampleIntervalMs: 100,
+    pixelsPerUnit: 1,
+    padding: 2,
+});
+BAKER.bake(); // in an active device frame, before constructing SPRITES
+const SPRITES = createSpriteAnimation(MESHES, BAKER.texture, BAKER.definition);
+const PLAYER = SPRITES.createPlayer({ clip: 'bounce', startedAtMs: 0 });
+PLAYER.draw({ timeMs: displayTimeMs, projection: PROJECTION, matrix: MATRIX });
+// Reuse during playback; do not bake in the animation render loop.
+SPRITES.dispose(); // the texture is borrowed
+BAKER.dispose();
+```
+
+Sprite coordinates are pixels; when `pixelsPerUnit` differs from 1, divide the vector-local matrix scale by it. The baker keeps a fixed union of sampled transformed/morphed bounds and encodes the original SVG origin in the sprite pivot, preventing per-frame trim jitter. SVG expressions and opacity are composed into each frame. A private source player samples only during planning/bake and leaves caller players untouched. Identical source-asset/clip/appearance/interval/resolution requests share a reference-counted atlas; changed inputs and context restoration require another bake. Dispose sprite resources before releasing their baker. Unsupported shader surfaces/non-scaling strokes and allocation limits return an explicit vector reason with no usable sprite texture.
+
+This is a sampled approximation: animation time selects and holds a complete image. The example exposes the interval and its temporal error bound; it does not claim continuous pose interpolation. Enlarging a baked frame blurs its pixels. Morph can be baked at sampled times, but arbitrary live overrides, sockets and transitions are not evaluated by the generic sprite player. Use the vector path for those dynamic contracts. Initial planning/bake CPU wall time and texture capacity are separate from steady playback measurements.
+
+**Interactive HTML:** [vector-raster-comparison](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/vector-raster-comparison.html)
+
+The optional `createVectorRasterAtlas(meshes, asset, compiledAsset, options)` bakes the retained source mesh into an RGBA8 render target. Each contiguous run of triangles belonging to a part becomes a padded atlas tile and an ordered quad. Separated runs remain separated. It uses the same player clock, hierarchy, easing, transitions and borrowed pose handle as vector rendering; it does not bake animation frames or evaluate a second animation system.
+
+```js
+const ATLAS = createVectorRasterAtlas(MESHES, ASSET, COMPILED, {
+    pixelsPerUnit: 1,
+    padding: 2,
+    maxAtlasBytes: 64 * 1024 * 1024,
+});
+DEVICE.beginFrame({ width: 800, height: 600 });
+MESHES.beginFrame();
+ATLAS.bake(); // optional explicit first bake; requires an active device frame
+PLAYER.seek(displayTimeMs);
+PLAYER.preparePose();
+MESHES.preparePoses();
+const RESULT = ATLAS.draw(PLAYER, { projection: PROJECTION, matrix: MATRIX });
+MESHES.flush();
+DEVICE.endFrame();
+// RESULT.backend is raster or vector; RESULT.reason explains fallback.
+ATLAS.dispose();
+```
+
+The atlas borrows the source mesh and players. Dispose it before disposing its source asset or renderer. It owns only its render target and quad mesh. Texture pixels are premultiplied by the existing source-over render pass and sampled with linear filtering; numeric pose textures retain nearest filtering on a separate sampler. Initial bake CPU submission cost, atlas allocation, normal frame uploads and draw counts are reported separately in `atlas.stats` and the example. `gpuTextureBytes` already includes render-target texture storage; do not add `gpuRenderTargetBytes` to it again.
+
+Animation frames reuse the atlas. A changed resolution requires a new atlas. After context restoration, the retained source geometry rebakes the lost render-target contents once. Limits or allocation failures report vector fallback. Fixed pixel resolution introduces sampling and enlargement blur; there is no clip-frame quantization. Seed Scout bounce is the default raster comparison. Idle includes an opacity channel and demonstrates explicit fallback rather than silently changing translucent triangle composition.
+
+Morph targets, time-dependent shader surfaces, non-scaling strokes, expressions selecting only part of a paint run and unsupported alpha composition use the vector path. Force-color and depth-write alpha classification also use vector rendering. A texture atlas is an alternative representation, not a promise of faster rendering: compare both paths after warmup and include initial bake cost. The example supports split/A-B views, pause/scrub, clips, expressions, independent phases, population, resolution and zoom. Split-view counters include both submissions; use single-path A-B modes for performance comparison.
+
 **Public HTML example:** [vector-assets](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/vector-assets.html)
 
-An SVG file is the only authored visual source. `assets/seed-scout.svg` contains paths, paint, strokes, SVG ids, the part hierarchy and pivots, sockets, expression variants, clips, keyframes, easings, and loop mode in one direct JSON `metadata#vector-asset` node. No separately edited visual JSON or raster textures are used.
+An SVG file is the only authored visual source. `assets/seed-scout.svg` contains paths, paint, strokes, SVG ids, the part hierarchy and pivots, sockets, expression variants, clips, keyframes, easings, and loop mode in one direct JSON `metadata#vector-asset` node. No separately edited visual JSON or raster textures are used. The optional runtime raster atlas below derives its pixels from that same compiled SVG geometry.
 
 The same page includes SVG-authored yarn and sketch samples. Stitch layout, hatch pattern, contour wobble, color contrast, and deterministic seed live in each SVG metadata node; the build emits retained vector triangles, never a raster texture. The yarn shell uses SVG-authored linear-gradient stops for the surface and samples those same stops along each generated stitch, edge loop, and fiber vertex, with a scalloped outline generated from the source path's edge metric, two Bézier stitch loops with layered yarn/light passes, edge loops, and deterministically seeded fibers that extend outward from the scalloped edge. The sketch style has two fixed-topology morph targets sampled from absolute display time.
 

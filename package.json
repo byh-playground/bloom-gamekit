@@ -43,7 +43,11 @@
         "verify:release": "node project/release.mjs",
         "test:previews": "node project/test-scenarios.mjs previews",
         "prebuild": "npm run check",
-        "test:pixel-physics": "node project/test-scenarios.mjs pixel-physics"
+        "test:pixel-physics": "node project/test-scenarios.mjs pixel-physics",
+        "test:rendering:textured-mesh": "npm run build && node modules/rendering/tests/run-textured-mesh.browser.mjs",
+        "test:vector-assets:raster-comparison": "npm run build && npm run build:previews && node modules/vector-assets/tests/run-raster-comparison.browser.mjs",
+        "test:rendering:sprite-animation": "npm run build && node modules/rendering/tests/run-sprite-animation.browser.mjs",
+        "benchmark:vector-assets-raster": "npm run build && npm run build:previews && node modules/vector-assets/tests/benchmark-raster-comparison.mjs"
     },
     "devDependencies": {
         "@eslint/js": "10.0.1",
