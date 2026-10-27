@@ -114,6 +114,24 @@ try {
             throw new Error(DEMO.error);
         }
         DEMO.setAutoRender(false);
+        const DEFAULT_FRAME = DEMO.renderOnce({ timeMs: 130 });
+        const DEFAULT_PATHS = {
+            modes: DEFAULT_FRAME.comparisonModes,
+            mode: DEFAULT_FRAME.mode,
+            atlas: DEFAULT_FRAME.atlas,
+            rasterDraws: DEFAULT_FRAME.rasterResult.rasterDraws,
+            partBytes: DEFAULT_FRAME.preparation.partAtlasBytes,
+            tradeoffPaths: Object.keys(DEFAULT_FRAME.tradeoff.paths),
+            partCardDisplay: getComputedStyle(document.getElementById('raster-card')).display,
+        };
+        document.getElementById('part-enabled').click();
+        const ADVANCED_FRAME = DEMO.renderOnce({ timeMs: 130 });
+        const ADVANCED_PATHS = {
+            modes: ADVANCED_FRAME.comparisonModes,
+            mode: ADVANCED_FRAME.mode,
+            partBytes: ADVANCED_FRAME.preparation.partAtlasBytes,
+            partCardDisplay: getComputedStyle(document.getElementById('raster-card')).display,
+        };
         DEMO.setCount(1);
         DEMO.setClip('bounce');
         const LIVE_HUD = [];
@@ -400,6 +418,29 @@ try {
         await RESIZE_RUN;
         const AFTER_RESIZE = DEMO.accumulation;
         const STOP_STATUS = document.getElementById('accumulation-status').textContent;
+        const TOGGLE_RUN = DEMO.startAccumulation();
+        DEMO.setPartEnabled(false);
+        await TOGGLE_RUN;
+        const BASIC_FRAME = DEMO.renderOnce({ timeMs: 130 });
+        const BASIC_MEASUREMENT = await DEMO.runBenchmark();
+        const BASIC_HISTORY = await DEMO.startAccumulation({ maxRounds: 1 });
+        const BEFORE_RESELECT = DEMO.renderOnce({ timeMs: 130 });
+        DEMO.setPartEnabled(false);
+        const AFTER_RESELECT = DEMO.renderOnce({ timeMs: 150 });
+        const BASIC_PATHS = {
+            atlas: BASIC_FRAME.atlas,
+            partBytes: BASIC_FRAME.preparation.partAtlasBytes,
+            rasterDraws: BASIC_FRAME.rasterResult.rasterDraws,
+            methods: BASIC_MEASUREMENT.methods.map((method) => method.mode),
+            historyModes: BASIC_HISTORY.map((condition) => condition.methods.map((method) => method.mode)),
+            historyKeys: BASIC_HISTORY.map((condition) => JSON.parse(condition.key).paths),
+            partCardDisplay: getComputedStyle(document.getElementById('raster-card')).display,
+            stableGeneration: BEFORE_RESELECT.preparation.generation === AFTER_RESELECT.preparation.generation,
+            stableImages: BEFORE_RESELECT.imageTexUploadCount === AFTER_RESELECT.imageTexUploadCount,
+            stableBakeCounts:
+                JSON.stringify(BEFORE_RESELECT.preparation.entries.map((entry) => entry.bakeCount)) ===
+                JSON.stringify(AFTER_RESELECT.preparation.entries.map((entry) => entry.bakeCount)),
+        };
         document.getElementById('accumulate-reset').click();
         const RESET_HISTORY = DEMO.accumulation;
         const ACCUMULATION_STATE_RESTORED = DEMO.benchmarkState.mode === BEFORE_BENCHMARK.mode;
@@ -409,6 +450,7 @@ try {
         return {
             frames: FRAMES,
             liveHud: LIVE_HUD,
+            pathSelection: { defaults: DEFAULT_PATHS, advanced: ADVANCED_PATHS, basic: BASIC_PATHS },
             sameResolution: SAME_RESOLUTION,
             opacity: OPACITY,
             prewarmCases: PREWARM_CASES,
@@ -432,6 +474,28 @@ try {
         };
     });
     assert.equal(preview.disposed, true);
+    assert.deepEqual(preview.pathSelection.defaults.modes, ['vector', 'sprite']);
+    assert.equal(preview.pathSelection.defaults.mode, 'split2');
+    assert.equal(preview.pathSelection.defaults.atlas, null);
+    assert.equal(preview.pathSelection.defaults.partBytes, 0);
+    assert.equal(preview.pathSelection.defaults.rasterDraws, 0);
+    assert.deepEqual(preview.pathSelection.defaults.tradeoffPaths, ['vector', 'sprite']);
+    assert.equal(preview.pathSelection.defaults.partCardDisplay, 'none');
+    assert.deepEqual(preview.pathSelection.advanced.modes, ['vector', 'raster', 'sprite']);
+    assert.equal(preview.pathSelection.advanced.mode, 'split3');
+    assert.ok(preview.pathSelection.advanced.partBytes > 0);
+    assert.notEqual(preview.pathSelection.advanced.partCardDisplay, 'none');
+    assert.equal(preview.pathSelection.basic.atlas, null);
+    assert.equal(preview.pathSelection.basic.partBytes, 0);
+    assert.equal(preview.pathSelection.basic.rasterDraws, 0);
+    assert.deepEqual(preview.pathSelection.basic.methods, ['vector', 'sprite']);
+    assert.deepEqual(preview.pathSelection.basic.historyModes.at(-1), ['vector', 'sprite']);
+    assert.deepEqual(preview.pathSelection.basic.historyModes[0], ['vector', 'raster', 'sprite']);
+    assert.deepEqual(preview.pathSelection.basic.historyKeys.at(-1), ['vector', 'sprite']);
+    assert.equal(preview.pathSelection.basic.partCardDisplay, 'none');
+    assert.equal(preview.pathSelection.basic.stableGeneration, true);
+    assert.equal(preview.pathSelection.basic.stableImages, true);
+    assert.equal(preview.pathSelection.basic.stableBakeCounts, true);
     for (const HUD of preview.liveHud) {
         assert.ok(
             HUD.frameText.startsWith(HUD.mode.startsWith('split') ? 'Shared visible paths' : 'Current full viewport'),

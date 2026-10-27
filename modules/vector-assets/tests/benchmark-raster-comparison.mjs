@@ -45,7 +45,10 @@ try {
     PAGE.on('pageerror', (error) => ERRORS.push(error.stack));
     await PAGE.goto(pathToFileURL(resolve(ROOT, 'dist/previews/vector-raster-comparison.html')).href);
     await PAGE.waitForFunction(() => globalThis.__rasterComparison?.ready, null, { timeout: 30000 });
-    const BOOT = await PAGE.evaluate(() => globalThis.__rasterComparison.snapshot);
+    const BOOT = await PAGE.evaluate(() => {
+        globalThis.__rasterComparison.setPartEnabled(true);
+        return globalThis.__rasterComparison.renderOnce({ timeMs: 0 });
+    });
     await PAGE.evaluate(() => globalThis.__rasterComparison.setAutoRender(false));
     await PAGE.addStyleTag({
         content:

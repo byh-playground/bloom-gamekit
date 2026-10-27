@@ -59,6 +59,24 @@
             body[data-scene='crowd'] .single-control {
                 display: none;
             }
+            body[data-parts='false'] .part-only {
+                display: none !important;
+            }
+            body[data-parts='false'] .hud {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+            .stage[data-mode='split2'] .labels span:nth-child(2) {
+                display: none;
+            }
+            .stage[data-mode='split2']::after {
+                content: '';
+                position: absolute;
+                top: 0;
+                bottom: 0;
+                left: 50%;
+                border-left: 1px dashed #63856d;
+                pointer-events: none;
+            }
             .hud {
                 display: grid;
                 grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -304,12 +322,13 @@
             }
         </style>
     </head>
-    <body data-scene="single">
+    <body data-scene="single" data-parts="false">
         <header>
             <h1>같은 SVG, 벡터와 구운 그림 비교</h1>
             <p>
                 원본 Seed Scout와 같은 형상입니다. transform-repeat는 예제용 반복 clip이며 원본 bounce의 once 의미는
-                유지합니다. 1 순수 벡터, 2 벡터 + 부위 텍스처, 3 텍스처를 같은 시간과 카메라로 비교합니다.
+                유지합니다. 기본은 벡터와 전체 스프라이트를, 고급 옵션에서는 부위 텍스처도 같은 시간과 카메라로
+                비교합니다.
             </p>
             <p>
                 스프라이트는 시간 간격에 따라 움직임이 계단처럼 보일 수 있습니다. 부위 래스터는 실시간 자세를
@@ -320,15 +339,20 @@
                 <button id="crowd-tab" type="button" role="tab" aria-selected="false">Crowd · N characters</button>
             </div>
             <input id="scene" type="hidden" value="single" />
+            <details>
+                <summary>고급 옵션</summary>
+                <label>부위 텍스처 비교에 포함 <input id="part-enabled" type="checkbox" /></label>
+            </details>
             <div class="controls">
                 <label
                     >보기
                     <select id="mode">
-                        <option value="split3" selected>세 방식 나란히</option>
-                        <option value="split">벡터 / 부위 래스터</option>
-                        <option value="vector">1 순수 벡터</option>
-                        <option value="raster">2 벡터 + 부위 텍스처</option>
-                        <option value="sprite">3 텍스처 · 전체 프레임</option>
+                        <option value="split2" selected>벡터 / 전체 스프라이트</option>
+                        <option value="split3" hidden disabled>벡터 / 부위 텍스처 / 전체 스프라이트</option>
+                        <option value="split" hidden disabled>벡터 / 부위 텍스처</option>
+                        <option value="vector">벡터</option>
+                        <option value="raster" hidden disabled>부위 텍스처</option>
+                        <option value="sprite">전체 스프라이트</option>
                     </select></label
                 >
                 <button id="play" type="button" aria-pressed="true">일시정지</button>
@@ -418,28 +442,28 @@
                 comparison; a single full-viewport path shows live submission including its final flush.</small
             >
             <article id="vector-card">
-                <strong>Vector</strong
+                <strong>벡터</strong
                 ><span class="fps" title="Shared requestAnimationFrame FPS across visible paths">—</span
                 ><span><span class="cpu-label">Submit</span> <b class="cpu">—</b></span
                 ><span>GPU <b class="gpu">—</b></span>
             </article>
-            <article id="raster-card">
-                <strong>Part atlas</strong
+            <article id="raster-card" class="part-only">
+                <strong>부위 텍스처</strong
                 ><span class="fps" title="Shared requestAnimationFrame FPS across visible paths">—</span
                 ><span><span class="cpu-label">Submit</span> <b class="cpu">—</b></span
                 ><span>GPU <b class="gpu">—</b></span>
             </article>
             <article id="sprite-card">
-                <strong>Sprite</strong
+                <strong>전체 스프라이트</strong
                 ><span class="fps" title="Shared requestAnimationFrame FPS across visible paths">—</span
                 ><span><span class="cpu-label">Submit</span> <b class="cpu">—</b></span
                 ><span>GPU <b class="gpu">—</b></span>
             </article>
         </aside>
-        <main class="stage" id="stage" data-mode="split3">
+        <main class="stage" id="stage" data-mode="split2">
             <canvas id="canvas" aria-label="같은 SVG의 벡터와 래스터 렌더 비교"></canvas>
             <div class="labels">
-                <span>1 순수 벡터</span><span id="part-label">2 벡터 + 부위 텍스처</span
+                <span>1 순수 벡터</span><span id="part-label" class="part-only">2 벡터 + 부위 텍스처</span
                 ><span id="sprite-label">3 텍스처 · 전체 프레임</span>
             </div>
         </main>

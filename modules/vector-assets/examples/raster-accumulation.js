@@ -2,7 +2,6 @@ import { summarizeSamples } from './raster-benchmark.js';
 
 export const ACCUMULATION_LIMIT = 6000;
 const HISTORY_LIMIT = 5;
-const MODES = ['vector', 'raster', 'sprite'];
 
 /** Bounded exact samples: completed, balanced rounds only; no reservoir or zero-filled GPU gaps. */
 export function createAccumulation() {
@@ -12,7 +11,18 @@ export function createAccumulation() {
             CONDITIONS.clear();
         },
         append(key, label, result) {
+            const MODES = result.methods.map((method) => method.mode);
             let condition = CONDITIONS.get(key);
+            if (condition && JSON.stringify(condition.methods.map((method) => method.mode)) !== JSON.stringify(MODES)) {
+                // Reverse sampling order is allowed; changing enabled paths under
+                // one condition key is not.
+                if (
+                    condition.methods.length !== MODES.length ||
+                    condition.methods.some((method) => !MODES.includes(method.mode))
+                ) {
+                    throw new Error('Enabled paths differ under the same accumulation key');
+                }
+            }
             if (!condition) {
                 condition = {
                     key,

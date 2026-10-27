@@ -40,15 +40,15 @@ export function summarizeSamples(values) {
     };
 }
 
-function validateOrders(orders) {
+function validateOrders(orders, modes) {
     if (!Array.isArray(orders) || !orders.length) {
         throw new TypeError('At least one benchmark mode order is required');
     }
     for (const ORDER of orders) {
-        if (!Array.isArray(ORDER) || ORDER.length !== MODES.length || new Set(ORDER).size !== MODES.length) {
-            throw new TypeError('Each benchmark order must contain vector, raster, and sprite once');
+        if (!Array.isArray(ORDER) || ORDER.length !== modes.length || new Set(ORDER).size !== modes.length) {
+            throw new TypeError('Each benchmark order must contain each enabled path once');
         }
-        if (ORDER.some((mode) => !MODES.includes(mode))) {
+        if (ORDER.some((mode) => !MODES.includes(mode) || !modes.includes(mode))) {
             throw new TypeError('Unknown benchmark mode');
         }
     }
@@ -84,8 +84,14 @@ function assertPrepared(frame, baseline, mode, count, sourceTimeMs) {
     if (!Number.isSafeInteger(frame.renderDrawCalls) || frame.renderDrawCalls < 0) {
         throw new Error('Post-preparation render draw-call count is unavailable');
     }
-    if (!frame.atlas?.baked || frame.atlas.bakeCount !== baseline.partBakeCount) {
+    if (baseline.partEnabled && (!frame.atlas?.baked || frame.atlas.bakeCount !== baseline.partBakeCount)) {
         throw new Error(`Part atlas rebaked during ${mode} benchmark`);
+    }
+    if (!baseline.partEnabled && frame.atlas) {
+        throw new Error('Disabled part atlas allocated during benchmark');
+    }
+    if (JSON.stringify(frame.comparisonModes) !== JSON.stringify(baseline.modes)) {
+        throw new Error('Enabled comparison paths changed during benchmark');
     }
     if (
         frame.sourceSha256 !== baseline.sourceSha256 ||
@@ -131,7 +137,7 @@ export async function runComparison(
         seed,
         warmupFrames = 30,
         sampleFrames = 60,
-        orders = [MODES],
+        orders,
         signal,
         shouldCancel,
         onProgress,
@@ -167,7 +173,9 @@ export async function runComparison(
     if (!Number.isSafeInteger(sampleFrames) || sampleFrames < 60) {
         throw new RangeError('Benchmark requires at least 60 measured frames');
     }
-    validateOrders(orders);
+    const ENABLED_MODES = bridge.comparisonModes ?? MODES;
+    orders ??= [ENABLED_MODES];
+    validateOrders(orders, ENABLED_MODES);
     const PREVIOUS = bridge.benchmarkState;
     if (!PREVIOUS) {
         throw new TypeError('Benchmark bridge must expose benchmarkState');
@@ -181,6 +189,7 @@ export async function runComparison(
         warmupFrames,
         sampleFrames,
         orders: orders.map((order) => [...order]),
+        modes: [...ENABLED_MODES],
     };
     if (CONFIG.scene === 'single') {
         CONFIG.count = 1;
@@ -227,6 +236,8 @@ export async function runComparison(
             }
         }
         const BASELINE = {
+            modes: INITIAL.comparisonModes,
+            partEnabled: ENABLED_MODES.includes('raster'),
             generation: INITIAL.preparation.generation,
             partBakeCount: INITIAL.atlas?.bakeCount,
             bakeCounts: INITIAL.preparation.entries.map((entry) => entry.bakeCount),

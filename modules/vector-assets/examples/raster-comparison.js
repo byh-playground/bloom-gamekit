@@ -9,6 +9,8 @@ const BY_ID = (id) => document.getElementById(id);
 const CANVAS = BY_ID('canvas');
 const STAGE = BY_ID('stage');
 const MODE_INPUT = BY_ID('mode');
+const PART_INPUT = BY_ID('part-enabled');
+const PATH_LABELS = { vector: '벡터', raster: '부위 텍스처', sprite: '전체 스프라이트' };
 const SCENE_INPUT = BY_ID('scene');
 const COUNT_INPUT = BY_ID('count');
 const PIXEL_SIZE_INPUT = BY_ID('pixel-size');
@@ -79,6 +81,7 @@ const STATE = {
     error: null,
     disposed: false,
     contextLost: false,
+    partEnabled: false,
 };
 const PLAYERS = [];
 let nextReadoutMs = 0;
@@ -87,9 +90,42 @@ let benchmarkRunning = false;
 const ACCUMULATION = createAccumulation();
 let accumulationController = null;
 
+function comparisonModes() {
+    return PART_INPUT.checked ? ['vector', 'raster', 'sprite'] : ['vector', 'sprite'];
+}
+
+function setPartEnabled(value) {
+    if (STATE.partEnabled === Boolean(value)) {
+        return;
+    }
+    stopAccumulation();
+    PART_INPUT.checked = Boolean(value);
+    STATE.partEnabled = PART_INPUT.checked;
+    document.body.dataset.parts = String(PART_INPUT.checked);
+    for (const OPTION of MODE_INPUT.options) {
+        if (['raster', 'split', 'split3'].includes(OPTION.value)) {
+            OPTION.hidden = !PART_INPUT.checked;
+            OPTION.disabled = !PART_INPUT.checked;
+        }
+    }
+    if (PART_INPUT.checked && MODE_INPUT.value === 'split2') {
+        MODE_INPUT.value = 'split3';
+    }
+    if (!PART_INPUT.checked && ['raster', 'split', 'split3'].includes(MODE_INPUT.value)) {
+        MODE_INPUT.value = 'split2';
+    }
+    STATE.benchmark = null;
+    document.querySelector('.benchmark-results').textContent = 'Enabled paths changed. Run the comparison again.';
+    ensureAtlas();
+    invalidatePreparation(true);
+    resetTimer();
+    synchronizeTimeControl();
+}
+
 function benchmarkConfigKey(config = {}) {
     return JSON.stringify({
         scene: config.scene ?? SCENE_INPUT.value,
+        paths: comparisonModes(),
         count: config.count ?? (SCENE_INPUT.value === 'single' ? 1 : Number(COUNT_INPUT.value)),
         pixelSize: config.pixelSize ?? Number(PIXEL_SIZE_INPUT.value),
         spread: config.spread ?? Number(SPREAD_INPUT.value),
@@ -148,7 +184,7 @@ function showAccumulation() {
                     ? `${STATS.count}/${STATS.expectedCount} (${(STATS.coverage * 100).toFixed(0)}%)`
                     : String(STATS.count);
                 for (const VALUE of [
-                    `${METHOD.mode} · ${LABEL}`,
+                    `${PATH_LABELS[METHOD.mode]} · ${LABEL}`,
                     COUNT,
                     ...['mean', 'p50', 'p95', 'p99', 'max'].map((field) => benchmarkValue(STATS[field], '')),
                     STATS.count ? String(STATS.overBudgetCount) : 'not measured',
@@ -193,7 +229,7 @@ async function startAccumulation({ maxRounds = 100 } = {}) {
     }
     const KEY = benchmarkConfigKey();
     const CONFIG = JSON.parse(KEY);
-    const LABEL = `${CONFIG.scene} N=${CONFIG.count} · ${CONFIG.quality} curve=${CONFIG.curveSegments}/arc=${CONFIG.strokeArcDivisions} · image=${CONFIG.resolution}px step=${CONFIG.interval}ms · ${CONFIG.clip}/${CONFIG.expression} · size=${CONFIG.pixelSize}px spread=${CONFIG.spread}% seed=${CONFIG.seed} zoom=${CONFIG.zoom} · ${CONFIG.canvasWidth}×${CONFIG.canvasHeight} DPR=${CONFIG.dpr} · speed=${CONFIG.playbackRate} · restore=${CONFIG.restores}`;
+    const LABEL = `${CONFIG.paths.join(' / ')} · ${CONFIG.scene} N=${CONFIG.count} · ${CONFIG.quality} curve=${CONFIG.curveSegments}/arc=${CONFIG.strokeArcDivisions} · image=${CONFIG.resolution}px step=${CONFIG.interval}ms · ${CONFIG.clip}/${CONFIG.expression} · size=${CONFIG.pixelSize}px spread=${CONFIG.spread}% seed=${CONFIG.seed} zoom=${CONFIG.zoom} · ${CONFIG.canvasWidth}×${CONFIG.canvasHeight} DPR=${CONFIG.dpr} · speed=${CONFIG.playbackRate} · restore=${CONFIG.restores}`;
     const CONTROLLER = new AbortController();
     accumulationController = CONTROLLER;
     benchmarkRunning = true;
@@ -224,7 +260,10 @@ async function startAccumulation({ maxRounds = 100 } = {}) {
                 STATUS_TEXT.textContent = '6,000 exact samples per path reached. Reset or choose another condition.';
                 break;
             }
-            const ORDER = (PREVIOUS?.rounds ?? 0) % 2 ? ['sprite', 'raster', 'vector'] : ['vector', 'raster', 'sprite'];
+            const ORDER = comparisonModes();
+            if ((PREVIOUS?.rounds ?? 0) % 2) {
+                ORDER.reverse();
+            }
             const RESULT = await runComparison(globalThis.__rasterComparison, {
                 orders: [ORDER],
                 signal: CONTROLLER.signal,
@@ -296,7 +335,7 @@ function showBenchmarkResult(result) {
                 ? `${benchmarkValue(METHOD.gpuMs.p50)} / ${benchmarkValue(METHOD.gpuMs.p95)} (${COVERAGE})`
                 : `${METHOD.gpuMs.status} (${COVERAGE})`;
         for (const VALUE of [
-            METHOD.mode,
+            PATH_LABELS[METHOD.mode],
             benchmarkValue(METHOD.fps, ' FPS'),
             `${benchmarkValue(METHOD.frameIntervalMs.p50)} / ${benchmarkValue(METHOD.frameIntervalMs.p95)}`,
             `${benchmarkValue(METHOD.cpuTotalMs.p50)} / ${benchmarkValue(METHOD.cpuTotalMs.p95)}`,
@@ -516,6 +555,7 @@ function invalidatePreparation(force = false) {
     const CONFIG_KEY = JSON.stringify([
         asset.sourceSha256,
         STATE.qualityKey,
+        PART_INPUT.checked,
         Number(RESOLUTION_INPUT.value),
         Number(SAMPLE_INTERVAL_INPUT.value),
         DEVICE.stats.restores ?? 0,
@@ -598,7 +638,7 @@ function layoutPoints(count) {
 
 function cameraLayout(side, width, height, points) {
     const THREE_WAY = MODE_INPUT.value === 'split3';
-    const SPLIT = MODE_INPUT.value === 'split';
+    const SPLIT = MODE_INPUT.value === 'split' || MODE_INPUT.value === 'split2';
     const PANEL_WIDTH = THREE_WAY ? width / 3 : SPLIT ? width / 2 : width;
     const PANEL_X = THREE_WAY
         ? side === 'vector'
@@ -606,7 +646,7 @@ function cameraLayout(side, width, height, points) {
             : side === 'raster'
               ? width / 3
               : (width * 2) / 3
-        : SPLIT && side === 'raster'
+        : SPLIT && side !== 'vector'
           ? width / 2
           : 0;
     const COUNT = PLAYERS.length;
@@ -765,6 +805,14 @@ async function setQuality(value) {
 }
 
 function ensureAtlas() {
+    if (!PART_INPUT.checked) {
+        STATE.atlas?.dispose();
+        STATE.atlas = null;
+        STATE.atlasResolution = 0;
+        STATE.atlasReason = 'advancedDisabled';
+        STATE.bakeCpuMs = null;
+        return;
+    }
     const RESOLUTION = Number(RESOLUTION_INPUT.value);
     if (STATE.atlasResolution === RESOLUTION) {
         return;
@@ -818,6 +866,7 @@ function ensureSpriteSets(forceAll = false) {
     const CONFIG_KEY = JSON.stringify([
         asset.sourceSha256,
         STATE.qualityKey,
+        PART_INPUT.checked,
         Number(RESOLUTION_INPUT.value),
         Number(SAMPLE_INTERVAL_INPUT.value),
         DEVICE.stats.restores ?? 0,
@@ -920,7 +969,10 @@ function ensureSpriteSets(forceAll = false) {
         PREPARATION_METRICS.textContent = `${PREPARATION.completed}/${PREPARATION.total} prepared · estimated ${PREPARATION.estimatedBytes.toLocaleString()} B · allocated ${PREPARATION.allocatedBytes.toLocaleString()} / ${ATLAS_BUDGET_BYTES.toLocaleString()} B`;
     }
     if (PREPARATION.completed === PREPARATION.total) {
-        PREPARATION.status = PREPARATION.entries.every((entry) => entry.ready) && STATE.atlas ? 'ready' : 'degraded';
+        PREPARATION.status =
+            PREPARATION.entries.every((entry) => entry.ready) && (!PART_INPUT.checked || STATE.atlas)
+                ? 'ready'
+                : 'degraded';
         const FIRST_FAILURE = PREPARATION.entries.find((entry) => !entry.ready);
         setStatus(
             `Atlas preparation ${PREPARATION.completed}/${PREPARATION.total} · ${PREPARATION.status}${FIRST_FAILURE ? ` · ${FIRST_FAILURE.clip}/${FIRST_FAILURE.expression}: ${FIRST_FAILURE.reason}` : ''} · ${PREPARATION.allocatedBytes.toLocaleString()} / ${ATLAS_BUDGET_BYTES.toLocaleString()} B`,
@@ -968,7 +1020,7 @@ function tradeoffSnapshot(submitMs, gpuMs, atlasStats, spriteSets, deviceStats) 
     const SELECTED_SPRITE = STATE.spriteSets.get(spriteKey(CLIP_INPUT.value, EXPRESSION_INPUT.value));
     const BENCHMARK = STATE.benchmark?.key === benchmarkConfigKey() ? STATE.benchmark : null;
     const PATHS = {};
-    for (const SIDE of ['vector', 'raster', 'sprite']) {
+    for (const SIDE of comparisonModes()) {
         const METHOD = BENCHMARK?.methods.find((entry) => entry.mode === SIDE);
         const FULL_PATH = MODE_INPUT.value === SIDE;
         PATHS[SIDE] = {
@@ -1024,7 +1076,7 @@ function tradeoffSnapshot(submitMs, gpuMs, atlasStats, spriteSets, deviceStats) 
         activeCpuSourceGeometryBytes: QUALITY.cpuSourceGeometryBytes,
         retainedMeshBytes: MESHES.stats().retainedBytes,
         selectedSpriteLogicalRgbaBytes: PATHS.sprite.logicalRgbaBytes,
-        partLogicalRgbaBytes: PATHS.raster.logicalRgbaBytes,
+        partLogicalRgbaBytes: PATHS.raster?.logicalRgbaBytes ?? 0,
         allPreparedAtlasBytes: STATE.preparation?.allocatedBytes ?? null,
         gpuTextureBytesIncludingTargets: deviceStats.gpuTextureBytes,
         imageTexUploadDelta:
@@ -1056,7 +1108,12 @@ function showTradeoffTable(tradeoff, quality) {
     ];
     const TABLE = document.createElement('table');
     const HEADER = TABLE.createTHead().insertRow();
-    for (const LABEL of ['Measure', 'Vector', 'Part atlas', 'Sprite']) {
+    for (const LABEL of [
+        'Measure',
+        ...comparisonModes().map(
+            (mode) => ({ vector: '벡터', raster: '부위 텍스처', sprite: '전체 스프라이트' })[mode],
+        ),
+    ]) {
         const CELL = document.createElement('th');
         CELL.textContent = LABEL;
         HEADER.append(CELL);
@@ -1066,7 +1123,7 @@ function showTradeoffTable(tradeoff, quality) {
         const ROW = BODY.insertRow();
         const TITLE = ROW.insertCell();
         TITLE.textContent = LABEL;
-        for (const SIDE of ['vector', 'raster', 'sprite']) {
+        for (const SIDE of comparisonModes()) {
             const PATH = tradeoff.paths[SIDE];
             const CELL = ROW.insertCell();
             CELL.textContent = P95
@@ -1181,11 +1238,11 @@ function writeMetrics(cpuMs, animationMs, submitMs, pathCpuMs, rasterResult, spr
     const TRADEOFF = tradeoffSnapshot(submitMs, GPU_MS, ATLAS_STATS, SPRITE_SETS, DEVICE_STATS);
     if (updateReadout) {
         BY_ID('part-label').textContent = rasterResult.vectorFallbacks
-            ? `2 벡터 + 부위 텍스처 · 벡터 대체 ${rasterResult.vectorFallbacks}/${PLAYERS.length}`
-            : '2 벡터 + 부위 텍스처';
+            ? `부위 텍스처 · 벡터 대체 ${rasterResult.vectorFallbacks}/${PLAYERS.length}`
+            : '부위 텍스처';
         BY_ID('sprite-label').textContent = spriteResult.vectorFallbacks
-            ? `3 텍스처 · 벡터 대체 ${spriteResult.vectorFallbacks}/${PLAYERS.length}`
-            : '3 텍스처 · 전체 프레임';
+            ? `전체 스프라이트 · 벡터 대체 ${spriteResult.vectorFallbacks}/${PLAYERS.length}`
+            : '전체 스프라이트';
         const GPU_TEXT = GPU_MS === null ? GPU.condition : `${GPU_MS.toFixed(2)} ms (${GPU.condition})`;
         const BENCHMARK_CURRENT = STATE.benchmark?.key === benchmarkConfigKey();
         for (const [SIDE, CARD] of [
@@ -1193,6 +1250,9 @@ function writeMetrics(cpuMs, animationMs, submitMs, pathCpuMs, rasterResult, spr
             ['raster', BY_ID('raster-card')],
             ['sprite', BY_ID('sprite-card')],
         ]) {
+            if (!comparisonModes().includes(SIDE)) {
+                continue;
+            }
             const METHOD = BENCHMARK_CURRENT ? STATE.benchmark.methods.find((item) => item.mode === SIDE) : null;
             if (METHOD) {
                 CARD.querySelector('.fps').textContent = `Sequential ${benchmarkValue(METHOD.fps, ' FPS')}`;
@@ -1224,11 +1284,13 @@ function writeMetrics(cpuMs, animationMs, submitMs, pathCpuMs, rasterResult, spr
             `CPU 전체 ${cpuMs.toFixed(2)} ms (동작 준비 ${animationMs.toFixed(2)} / 제출 ${submitMs.toFixed(2)} ms) · ` +
             `GPU ${GPU_TEXT} · 드로우 ${DEVICE_STATS.drawCalls}회 · ` +
             `버퍼 업로드 ${DEVICE_STATS.bufferBytes.toLocaleString()} B · 텍스처 업로드 ${DEVICE_STATS.textureBytes.toLocaleString()} B`;
-        BAKE_METRICS.textContent = ATLAS_STATS
-            ? `${RESOLUTION_INPUT.value}px / 큰 축 · 굽기 ${ATLAS_STATS.bakeCpuMs.toFixed(1)} ms (호출 벽시계 ${STATE.bakeCpuMs?.toFixed(1) ?? '—'} ms) · ` +
-              `${ATLAS_STATS.runCount}개 부위 그림 · ${ATLAS_STATS.atlasWidth}×${ATLAS_STATS.atlasHeight} · ` +
-              `${ATLAS_STATS.atlasBytes.toLocaleString()} B · 굽기 ${ATLAS_STATS.bakeCount}회`
-            : `래스터 아틀라스를 사용할 수 없습니다 · 시도 ${STATE.bakeCpuMs?.toFixed(1) ?? '—'} ms`;
+        BAKE_METRICS.textContent = !PART_INPUT.checked
+            ? '부위 텍스처 OFF · 준비/보유 이미지 메모리 0 B'
+            : ATLAS_STATS
+              ? `${RESOLUTION_INPUT.value}px / 큰 축 · 굽기 ${ATLAS_STATS.bakeCpuMs.toFixed(1)} ms (호출 벽시계 ${STATE.bakeCpuMs?.toFixed(1) ?? '—'} ms) · ` +
+                `${ATLAS_STATS.runCount}개 부위 그림 · ${ATLAS_STATS.atlasWidth}×${ATLAS_STATS.atlasHeight} · ` +
+                `${ATLAS_STATS.atlasBytes.toLocaleString()} B · 굽기 ${ATLAS_STATS.bakeCount}회`
+              : `래스터 아틀라스를 사용할 수 없습니다 · 시도 ${STATE.bakeCpuMs?.toFixed(1) ?? '—'} ms`;
         SPRITE_METRICS.textContent =
             `${SAMPLE_INTERVAL_INPUT.value}ms 간격 · ${SPRITE_FRAMES}프레임 · 처음 굽기 ${SPRITE_BAKE_MS.toFixed(1)} ms · ` +
             `아틀라스 ${SPRITE_BYTES.toLocaleString()} B · 프레임 선택 오차 최대 ${SAMPLE_INTERVAL_INPUT.value}ms · ` +
@@ -1251,6 +1313,7 @@ function writeMetrics(cpuMs, animationMs, submitMs, pathCpuMs, rasterResult, spr
         showTradeoffTable(TRADEOFF, QUALITY);
     }
     STATE.last = {
+        comparisonModes: comparisonModes(),
         frame: STATE.frameOrdinal,
         assetId: asset.id,
         sourceSha256: asset.sourceSha256,
@@ -1444,7 +1507,7 @@ function render(now, forcePreparation = false, updateReadout = true) {
         const ANIMATION_MS = performance.now() - ANIMATION_START;
         const SUBMIT_START = performance.now();
         const PATH_CPU_MS = { vector: null, raster: null, sprite: null };
-        if (MODE === 'vector' || MODE === 'split' || MODE === 'split3') {
+        if (MODE === 'vector' || MODE === 'split' || MODE === 'split2' || MODE === 'split3') {
             const PATH_START = performance.now();
             drawActors('vector', cameraLayout('vector', CSS_WIDTH, CSS_HEIGHT, POINTS), PROJECTION);
             PATH_CPU_MS.vector = performance.now() - PATH_START;
@@ -1459,10 +1522,10 @@ function render(now, forcePreparation = false, updateReadout = true) {
         }
         const SPRITE_START = performance.now();
         const SPRITE_RESULT =
-            MODE === 'sprite' || MODE === 'split3'
+            MODE === 'sprite' || MODE === 'split2' || MODE === 'split3'
                 ? drawSpriteActors(cameraLayout('sprite', CSS_WIDTH, CSS_HEIGHT, POINTS), PROJECTION)
                 : { spriteDraws: 0, vectorFallbacks: 0, reasons: [] };
-        if (MODE === 'sprite' || MODE === 'split3') {
+        if (MODE === 'sprite' || MODE === 'split2' || MODE === 'split3') {
             PATH_CPU_MS.sprite = performance.now() - SPRITE_START;
         }
         MESHES.flush();
@@ -1627,6 +1690,7 @@ BY_ID('accumulate-start').addEventListener('click', () => {
 });
 BY_ID('accumulate-stop').addEventListener('click', stopAccumulation);
 BY_ID('accumulate-reset').addEventListener('click', resetAccumulation);
+PART_INPUT.addEventListener('change', () => setPartEnabled(PART_INPUT.checked));
 document.querySelector('header').addEventListener('change', (event) => {
     if (
         !benchmarkRunning &&
@@ -1684,7 +1748,8 @@ globalThis.__rasterComparison = {
         }
         setAutoRender(false);
         setScene(state.scene);
-        MODE_INPUT.value = state.mode;
+        MODE_INPUT.value =
+            !PART_INPUT.checked && ['raster', 'split', 'split3'].includes(state.mode) ? 'split2' : state.mode;
         COUNT_INPUT.value = String(state.count);
         setPixelSize(state.pixelSize);
         setSpread(state.spread);
@@ -1725,6 +1790,10 @@ globalThis.__rasterComparison = {
         return { width: CANVAS.width, height: CANVAS.height, pixels: PIXELS };
     },
     setAutoRender,
+    get comparisonModes() {
+        return comparisonModes();
+    },
+    setPartEnabled,
     pollGpuTimers() {
         return STATE.contextLost || DEVICE.gl.isContextLost() ? timer.result : timer.poll();
     },
@@ -1760,6 +1829,9 @@ globalThis.__rasterComparison = {
         return STATE.last;
     },
     setMode(value) {
+        if (!PART_INPUT.checked && ['raster', 'split', 'split3'].includes(value)) {
+            throw new Error('Enable advanced part textures before selecting this view');
+        }
         MODE_INPUT.value = value;
         MODE_INPUT.dispatchEvent(new Event('change'));
     },
