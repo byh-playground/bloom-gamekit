@@ -12,6 +12,7 @@ const SUITES = {
     previews: ['project/tests/previews.mjs'],
     core: [
         'modules/vector-assets/tests/compiler.mjs',
+        'modules/rendering/tests/paint-regions.mjs',
         'modules/deterministic/tests/hash-bytes.mjs',
         'modules/deterministic/tests/value-codec-typed.mjs',
         'project/previews.mjs',

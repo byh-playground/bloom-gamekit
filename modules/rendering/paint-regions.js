@@ -59,7 +59,15 @@ export function packPaintRegions(names, overrides, output) {
         if (
             !(Array.isArray(RGB) || RGB instanceof Float32Array) ||
             RGB.length !== 3 ||
-            RGB.some((value) => !Number.isFinite(value) || value < 0 || value > 1)
+            !Number.isFinite(RGB[0]) ||
+            RGB[0] < 0 ||
+            RGB[0] > 1 ||
+            !Number.isFinite(RGB[1]) ||
+            RGB[1] < 0 ||
+            RGB[1] > 1 ||
+            !Number.isFinite(RGB[2]) ||
+            RGB[2] < 0 ||
+            RGB[2] > 1
         ) {
             throw new RangeError('Paint region RGB must contain three finite channels in [0,1]');
         }

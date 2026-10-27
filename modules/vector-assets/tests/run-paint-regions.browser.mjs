@@ -224,6 +224,13 @@ try {
                         maxDifference <= 1,
                         'Named RGB override changed original alpha, stroke, expression or geometry: ' + maxDifference,
                     );
+                    if (backend === 'auto') {
+                        const POSE_STATS = MESHES.poseStats();
+                        CHECK(
+                            POSE_STATS.gpuDrawInstances > 0 && POSE_STATS.cpuDrawInstances === 0,
+                            'Auto named-fill comparison must actually use GPU poses without CPU fallback',
+                        );
+                    }
                 }
                 const BASELINE = frame(ACTUAL, [null, null, null]);
                 const RESET = frame(ACTUAL, [{}, null, {}]);
@@ -341,6 +348,7 @@ try {
                     'VectorContext forwards the same named fill contract',
                 );
                 const STATS = MESHES.stats();
+                const POSE_STATS = MESHES.poseStats();
                 const BEFORE_DISPOSE = {
                     contextRestoreGeometryUploads: geometryUpdates,
                     retainedMeshes: MESHES.meshes.size,
@@ -356,6 +364,7 @@ try {
                 DEVICE.dispose();
                 return {
                     backend,
+                    poseStats: POSE_STATS,
                     gpu: GPU,
                     maxDifference,
                     scenarios: CASES.length,
