@@ -110,6 +110,22 @@ try {
                 if (RUN.glError) {
                     throw new Error(`WebGL error ${RUN.glError} in measured run`);
                 }
+                if (
+                    RUN.initial.preparation?.status !== 'ready' ||
+                    RUN.samples.some(
+                        (sample) =>
+                            sample.preparation?.generation !== RUN.initial.preparation.generation ||
+                            sample.imageTexUploadCount !== RUN.initial.imageTexUploadCount ||
+                            sample.imageTexUploadBytes !== RUN.initial.imageTexUploadBytes ||
+                            sample.atlas.bakeCount !== RUN.initial.atlas.bakeCount ||
+                            sample.sprite.sets.some(
+                                (entry, index) =>
+                                    entry.stats?.bakeCount !== RUN.initial.sprite.sets[index].stats?.bakeCount,
+                            ),
+                    )
+                ) {
+                    throw new Error('Steady playback changed a prepared atlas or uploaded image data');
+                }
                 if (RUN.samples.some((sample) => sample.canvasWidth !== 1100 || sample.canvasHeight !== 360)) {
                     throw new Error('Render dimensions changed across comparison paths');
                 }
