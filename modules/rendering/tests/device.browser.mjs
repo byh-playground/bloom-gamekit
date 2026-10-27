@@ -36,7 +36,7 @@ export async function exerciseWebGLDevice(page) {
         });
         const GL = D.gl;
         CHECK(
-            contextRequest.kind === 'webgl' &&
+            contextRequest.kind === 'webgl2' &&
                 contextRequest.options.powerPreference === 'high-performance' &&
                 contextRequest.options.failIfMajorPerformanceCaveat === false,
             'consumer GPU preference forwarded to real WebGL context',
@@ -602,7 +602,7 @@ export async function exerciseWebGLDevice(page) {
     return RESULT;
 }
 
-/** Stable path/text/group-opacity scenario over an actual WebGL1 framebuffer. */
+/** Stable path/text/group-opacity scenario over an actual WebGL2 framebuffer. */
 export async function exerciseVectorRenderer(page) {
     const SOURCE = await readFile(new URL('../vector-renderer.js', import.meta.url), 'utf8');
     const FRAGMENT = SOURCE.match(/^const FRAGMENT = `([\s\S]*?)`;/m)?.[1];

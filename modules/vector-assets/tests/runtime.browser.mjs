@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import { compileVectorAssetFile } from '../compiler.js';
 
-/** Exercises the compiled SVG through GameKit's real WebGL1 device and retained mesh renderer. */
+/** Exercises the compiled SVG through GameKit's real WebGL 2 device and retained mesh renderer. */
 export async function exerciseVectorAssets(page, { includePopulationTimingDiagnostics = false } = {}) {
     const COMPILE_START = performance.now();
     const REFERENCE_ASSET = await compileVectorAssetFile(
@@ -120,9 +120,7 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
             compiledTriangles: DEMO.asset.mesh.indices.length / 3,
             visibleTriangles: DEMO.lastFrame.topology.visibleTriangles,
             uniqueEdges: DEMO.topology.uniqueEdges,
-            webglBackend: DEMO.device.instancingSupported
-                ? 'WebGL 1 + ANGLE instancing'
-                : 'WebGL 1 + per-draw uniforms',
+            webglBackend: DEMO.device.instancingSupported ? 'WebGL 2 + core instancing' : 'WebGL 2 + per-draw uniforms',
             drawCalls: DEMO.lastFrame.gamekit.device.drawCalls,
             meshBytes: DEMO.asset.mesh.byteLength,
             sourceMetrics: document.querySelector('#source-metrics').textContent,
@@ -191,7 +189,7 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
     assert.equal(PANEL_STATE.triangles, PANEL_STATE.compiledTriangles);
     assert.ok(PANEL_STATE.visibleTriangles > 0 && PANEL_STATE.visibleTriangles < PANEL_STATE.triangles);
     assert.ok(PANEL_STATE.uniqueEdges > PANEL_STATE.triangles);
-    assert.match(PANEL_STATE.webglBackend, /^WebGL 1/);
+    assert.match(PANEL_STATE.webglBackend, /^WebGL 2/);
     assert.ok(
         PANEL_STATE.drawCalls > 0 &&
             PANEL_STATE.meshBytes === STANDARD_MESH_BYTES &&
@@ -318,10 +316,17 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
             const MESHES = new MESH_RENDERER(DEVICE, {
                 maxMeshes: 4,
                 maxInstances: 1024,
+                poseBackend: 'uniform',
             });
+            // Keep the historical CPU part submission assertions on an explicit uniform reference renderer.
+            const CPU_REFERENCE = {
+                createMesh: (...args) => MESHES.createMesh(...args),
+                drawMesh: (...args) => MESHES.drawMesh(...args),
+                deleteMesh: (...args) => MESHES.deleteMesh(...args),
+            };
             const RENDERER_INITIALIZATION_MS = performance.now() - RENDERER_INIT_START;
             const COLD_START = performance.now(),
-                ASSET = CREATE_SEED_SCOUT(MESHES),
+                ASSET = CREATE_SEED_SCOUT(CPU_REFERENCE),
                 INITIALIZATION_MS = performance.now() - COLD_START;
             const RESOURCE_CREATION_STATS = MESHES.stats();
             const PLAYER = ASSET.createPlayer({
@@ -414,7 +419,7 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
                     Array.isArray(submittedMorph) &&
                     submittedMorph[0] === 0 &&
                     submittedMorph[1] === 0,
-                'render-only part poses omit discarded per-part morph arrays and retain the draw-level morph value',
+                'uniform reference part poses omit discarded per-part morph arrays and retain draw-level morph',
             );
             console.log('VECTOR_STAGE initial-frame');
             const BODY_PIXEL = PIXEL(100, 112),
@@ -424,6 +429,53 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
                 BODY_PIXEL[1] > 100 && BODY_PIXEL[0] < BACKGROUND[0] && BODY_PIXEL[0] > 60,
                 `SVG body color reaches WebGL pixels: ${BODY_PIXEL}`,
             );
+            const CPU_REFERENCE_PIXELS = new Uint8Array(200 * 220 * 4);
+            DEVICE.gl.readPixels(0, 0, 200, 220, DEVICE.gl.RGBA, DEVICE.gl.UNSIGNED_BYTE, CPU_REFERENCE_PIXELS);
+            const GPU_CANVAS = document.createElement('canvas');
+            GPU_CANVAS.width = 200;
+            GPU_CANVAS.height = 220;
+            const GPU_DEVICE = new WEB_GL_DEVICE(GPU_CANVAS, {
+                alpha: false,
+                antialias: false,
+                depth: false,
+                stencil: false,
+                preserveDrawingBuffer: true,
+                checkGLErrors: true,
+            });
+            const GPU_MESHES = new MESH_RENDERER(GPU_DEVICE);
+            const GPU_ASSET = CREATE_SEED_SCOUT(GPU_MESHES);
+            const GPU_PLAYER = GPU_ASSET.createPlayer({ clip: 'idle', startedAtMs: 0 });
+            GPU_DEVICE.beginFrame({ width: 200, height: 220, clearColor: [0.875, 0.91, 0.8, 1] });
+            GPU_MESHES.beginFrame();
+            GPU_PLAYER.draw({ projection: PROJECTION });
+            GPU_MESHES.flush();
+            GPU_DEVICE.endFrame();
+            const GPU_POSE_STATS = GPU_MESHES.poseStats();
+            const GPU_PLAYER_METRICS = GPU_PLAYER.poseMetrics;
+            const GPU_PIXELS = new Uint8Array(CPU_REFERENCE_PIXELS.length);
+            GPU_DEVICE.gl.readPixels(0, 0, 200, 220, GPU_DEVICE.gl.RGBA, GPU_DEVICE.gl.UNSIGNED_BYTE, GPU_PIXELS);
+            let gpuPixelDifferences = 0;
+            for (let index = 0; index < GPU_PIXELS.length; index++) {
+                if (Math.abs(GPU_PIXELS[index] - CPU_REFERENCE_PIXELS[index]) > 2) {
+                    gpuPixelDifferences++;
+                }
+            }
+            ASSERT_THAT(
+                GPU_POSE_STATS?.gpuDrawInstances === 1 &&
+                    GPU_POSE_STATS?.cpuDrawInstances === 0 &&
+                    GPU_POSE_STATS?.cpuFallbackRatio === 0 &&
+                    GPU_POSE_STATS?.gpuPoseRows === 1 &&
+                    GPU_MESHES.stats().partUniformBytesSubmitted === 0 &&
+                    GPU_PLAYER_METRICS.fullSamples === 0 &&
+                    GPU_PLAYER_METRICS.gpuPrepares === 1 &&
+                    GPU_DEVICE.gl.getError() === 0 &&
+                    gpuPixelDifferences === 0,
+                `default GPU pose must match CPU reference pixels without full timeline sampling (${gpuPixelDifferences} changed channels; ${JSON.stringify(GPU_POSE_STATS)})`,
+            );
+            GPU_PLAYER.dispose();
+            GPU_ASSET.dispose();
+            GPU_MESHES.dispose();
+            GPU_DEVICE.dispose();
             const ORIGINAL_EXPRESSION = PLAYER.currentExpression;
             PLAYER.setExpression('happy');
             const EXCLUDED_FACE_PARTS = new Set(['face-neutral', 'face-happy', 'face-surprised']),
@@ -505,6 +557,28 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
                 BATCH_EXCLUSION_OPTIONS = SUBMITTED_EXCLUSION_OPTIONS.slice(BATCH_OPTIONS_START);
             DEVICE.endFrame();
             MESHES.drawMesh = ORIGINAL_EXCLUSION_DRAW_MESH;
+            const BODY_EXCLUDED_DRAW = CAPTURE_PLAYER_DRAW({ ...FULL_DRAW_OPTIONS, excludeParts: new Set(['body']) });
+            const BODY_AND_SPROUT_EXCLUDED_DRAW = CAPTURE_PLAYER_DRAW({
+                ...FULL_DRAW_OPTIONS,
+                excludeParts: new Set(['body', 'sprout']),
+            });
+            let childPixelsRemaining = 0;
+            for (let offset = 0; offset < BODY_EXCLUDED_DRAW.pixels.length; offset += 4) {
+                if (
+                    BODY_EXCLUDED_DRAW.pixels[offset] !== BODY_AND_SPROUT_EXCLUDED_DRAW.pixels[offset] ||
+                    BODY_EXCLUDED_DRAW.pixels[offset + 1] !== BODY_AND_SPROUT_EXCLUDED_DRAW.pixels[offset + 1] ||
+                    BODY_EXCLUDED_DRAW.pixels[offset + 2] !== BODY_AND_SPROUT_EXCLUDED_DRAW.pixels[offset + 2] ||
+                    BODY_EXCLUDED_DRAW.pixels[offset + 3] !== BODY_AND_SPROUT_EXCLUDED_DRAW.pixels[offset + 3]
+                ) {
+                    childPixelsRemaining++;
+                }
+            }
+            ASSERT_THAT(
+                childPixelsRemaining > 0 &&
+                    BODY_EXCLUDED_DRAW.glError === 0 &&
+                    BODY_AND_SPROUT_EXCLUDED_DRAW.glError === 0,
+                'excluding parent body for one draw preserves visible child sprout pixels in the CPU reference',
+            );
             const BODY_PART_INDEX = SEED_SCOUT_METADATA.parts.findIndex((part) => part.id === 'body'),
                 FACE_PART_INDICES = SEED_SCOUT_METADATA.parts
                     .map((part, index) => (EXCLUDED_FACE_PARTS.has(part.id) ? index : -1))
@@ -794,12 +868,12 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
                 startedAtMs: 1000,
             });
             BOUNDARY_PLAYER.transitionTo('bounce', 1000, 200);
-            const DIRECT_SOURCE_MAPS = MAP_CONSTRUCTIONS_DURING(() => IDLE_PROBE.seek(1100));
-            const DIRECT_TARGET_MAPS = MAP_CONSTRUCTIONS_DURING(() => BOUNCE_PROBE.seek(1100));
-            const BEFORE_START_MAPS = MAP_CONSTRUCTIONS_DURING(() => BOUNDARY_PLAYER.seek(999));
-            const AT_START_MAPS = MAP_CONSTRUCTIONS_DURING(() => BOUNDARY_PLAYER.seek(1000));
-            const ACTIVE_TRANSITION_MAPS = MAP_CONSTRUCTIONS_DURING(() => BOUNDARY_PLAYER.seek(1100));
-            const COMPLETED_TRANSITION_MAPS = MAP_CONSTRUCTIONS_DURING(() => BOUNDARY_PLAYER.seek(1200));
+            const DIRECT_SOURCE_MAPS = MAP_CONSTRUCTIONS_DURING(() => IDLE_PROBE.seek(1100).partPoses());
+            const DIRECT_TARGET_MAPS = MAP_CONSTRUCTIONS_DURING(() => BOUNCE_PROBE.seek(1100).partPoses());
+            const BEFORE_START_MAPS = MAP_CONSTRUCTIONS_DURING(() => BOUNDARY_PLAYER.seek(999).partPoses());
+            const AT_START_MAPS = MAP_CONSTRUCTIONS_DURING(() => BOUNDARY_PLAYER.seek(1000).partPoses());
+            const ACTIVE_TRANSITION_MAPS = MAP_CONSTRUCTIONS_DURING(() => BOUNDARY_PLAYER.seek(1100).partPoses());
+            const COMPLETED_TRANSITION_MAPS = MAP_CONSTRUCTIONS_DURING(() => BOUNDARY_PLAYER.seek(1200).partPoses());
             const BEFORE_TRANSITION = BOUNDARY_PLAYER.seek(999).getPartPose('body');
             const AT_TRANSITION_START = BOUNDARY_PLAYER.seek(1000).getPartPose('body');
             const AT_TRANSITION_END = BOUNDARY_PLAYER.seek(1200).getPartPose('body');
@@ -842,7 +916,7 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
                 'a zero-duration transition keeps its source before its start',
             );
             ASSERT_THAT(
-                MAP_CONSTRUCTIONS_DURING(() => ZERO_DURATION_PLAYER.seek(1000)) === DIRECT_TARGET_MAPS,
+                MAP_CONSTRUCTIONS_DURING(() => ZERO_DURATION_PLAYER.seek(1000).partPoses()) === DIRECT_TARGET_MAPS,
                 'a zero-duration transition samples only its target at the start boundary',
             );
             ASSERT_THAT(
@@ -881,10 +955,10 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
             }
             const SETTLED_TIME = 1000 + 15 * 300 + 500;
             const SIMPLE_SEEK_MAP_CONSTRUCTIONS = MAP_CONSTRUCTIONS_DURING(() =>
-                SIMPLE_SAMPLING_PROBE.seek(SETTLED_TIME),
+                SIMPLE_SAMPLING_PROBE.seek(SETTLED_TIME).partPoses(),
             );
             const COMPLETED_CHAIN_MAP_CONSTRUCTIONS = MAP_CONSTRUCTIONS_DURING(() =>
-                COMPLETED_CHAIN_PROBE.seek(SETTLED_TIME),
+                COMPLETED_CHAIN_PROBE.seek(SETTLED_TIME).partPoses(),
             );
             ASSERT_THAT(
                 COMPLETED_CHAIN_MAP_CONSTRUCTIONS === SIMPLE_SEEK_MAP_CONSTRUCTIONS,
@@ -940,7 +1014,7 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
                 gpuDrawCalls: INITIAL_FRAME.device.drawCalls,
                 rendererInitializationMs: RENDERER_INITIALIZATION_MS,
                 gpuTimerExtension: Boolean(DEVICE.gl.getExtension('EXT_disjoint_timer_query')),
-                backend: DEVICE.instancingSupported ? 'ANGLE_instanced_arrays' : 'uniform-per-actor',
+                backend: DEVICE.instancingSupported ? 'core-instancing' : 'uniform-per-actor',
                 viewportCss: [innerWidth, innerHeight],
                 socket: PLAYER.getSocket('mouth'),
             };

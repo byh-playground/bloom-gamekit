@@ -374,7 +374,7 @@
                         type="url"
                         spellcheck="false"
                         autocomplete="url"
-                        value="https://raw.githubusercontent.com/byh-playground/budmori-io/0dab58e201b5c08f5073108121eeae91acc34774/assets/troops/pea.svg"
+                        value="https://raw.githubusercontent.com/byh-playground/budmori-io/69b267960252e009e754ae1aa38b03bfa0329d4f/assets/troops/pea.svg"
                 /></label>
                 <button id="load-asset" type="button">Load &amp; compile</button>
                 <label for="curve-segments"
@@ -567,7 +567,7 @@
                 <div class="metrics" id="topology-metrics">Waiting for compiled geometry…</div>
             </section>
             <section class="panel" aria-labelledby="gamekit-title">
-                <h2 id="gamekit-title">3 · GameKit render <small>Actual WebGL 1 mesh output</small></h2>
+                <h2 id="gamekit-title">3 · GameKit render <small>Actual WebGL 2 mesh output</small></h2>
                 <div class="stage" id="gamekit-stage">
                     <canvas id="gamekit-canvas" aria-label="Seed Scout rendered through GameKit WebGL"></canvas>
                 </div>
@@ -623,7 +623,7 @@
             import { createStyleSample, styleSamples } from './style-samples.js';
             const NS = 'http://www.w3.org/2000/svg';
             const DEFAULT_SOURCE_URL =
-                'https://raw.githubusercontent.com/byh-playground/budmori-io/0dab58e201b5c08f5073108121eeae91acc34774/assets/troops/pea.svg';
+                'https://raw.githubusercontent.com/byh-playground/budmori-io/69b267960252e009e754ae1aa38b03bfa0329d4f/assets/troops/pea.svg';
             const MAX_SOURCE_BYTES = 512 * 1024;
             const BACKGROUND = [0.875, 0.91, 0.8, 1];
             const CANVAS = document.querySelector('#gamekit-canvas');
@@ -825,6 +825,7 @@
                 'stroke-miterlimit',
                 'vector-effect',
                 'opacity',
+                'display',
                 'd',
                 'x',
                 'y',
@@ -863,6 +864,7 @@
                     }
                     if (
                         !ALLOWED.has(NAME) ||
+                        (NAME === 'display' && VALUE !== 'none') ||
                         /^on/i.test(NAME) ||
                         (/(?:https?:|data:|file:|\/\/)/i.test(VALUE) &&
                             !(NAME === 'fill' && /^url\(\s*#[A-Za-z_][A-Za-z0-9_.:-]{0,127}\s*\)$/.test(VALUE)))
@@ -955,6 +957,42 @@
                         }),
                     );
                 }
+                const QUERY = new URLSearchParams(location.search);
+                document.querySelector('#asset-url').value =
+                    QUERY.get('fixture') === 'seed-scout'
+                        ? new URL('/modules/vector-assets/assets/seed-scout.svg', location.href).href
+                        : DEFAULT_SOURCE_URL;
+                const SOURCE_URL = normalizeSvgUrl(document.querySelector('#asset-url').value);
+                const INITIAL_SOURCE = await LOADER.load(SOURCE_URL, {
+                    sourcePath: SOURCE_URL,
+                    maxBytes: MAX_SOURCE_BYTES,
+                    ...VECTOR_ASSET_QUALITY_PRESETS.standard,
+                });
+                const INITIAL_BYTES = SOURCE_BYTE_CACHE.get(SOURCE_URL);
+                if (!INITIAL_BYTES) {
+                    throw new Error('The bounded SVG source response was unavailable.');
+                }
+                const INITIAL_SHA = [...new Uint8Array(await crypto.subtle.digest('SHA-256', INITIAL_BYTES))]
+                    .map((value) => value.toString(16).padStart(2, '0'))
+                    .join('');
+                if (INITIAL_SHA !== INITIAL_SOURCE.sourceSha256) {
+                    throw new Error('The source changed between compile and safe display reads.');
+                }
+                const INITIAL_DISPLAY = createSafeDisplaySvg(INITIAL_BYTES, INITIAL_SOURCE);
+                document.querySelector('#source-svg')?.replaceWith(INITIAL_DISPLAY.display);
+                DEMO.sourceSvg = INITIAL_DISPLAY.display;
+                DEMO.sourcePathCount = INITIAL_DISPLAY.shapeCount;
+                DEMO.sourceBytes = INITIAL_BYTES.byteLength;
+                DEMO.sourceSha256 = INITIAL_SHA;
+                DEMO.sourceUrl = SOURCE_URL;
+                DEMO.sourceLoaded = true;
+                document.querySelector('#source-metrics').textContent =
+                    'Sanitized native SVG ・ ' +
+                    INITIAL_DISPLAY.shapeCount.toLocaleString() +
+                    ' shapes ・ ' +
+                    INITIAL_BYTES.byteLength.toLocaleString() +
+                    ' source bytes ・ SHA ' +
+                    INITIAL_SHA.slice(0, 12);
                 const RENDERER_INITIALIZATION_START = performance.now();
                 const DEVICE = new WebGLDevice(CANVAS, {
                     alpha: false,
@@ -1568,8 +1606,8 @@
                         topologyFrame.cpuMs.toFixed(2) +
                         ' ms draw';
                     const BACKEND = DEVICE.instancingSupported
-                        ? 'WebGL 1 + ANGLE instancing'
-                        : 'WebGL 1 + per-draw uniforms';
+                        ? 'WebGL 2 + core instancing'
+                        : 'WebGL 2 + per-draw uniforms';
                     const GEOMETRY = compiledAsset.geometry,
                         RETAINED_BYTES = asset.mesh?.byteLength ?? 0;
                     document.querySelector('#gamekit-metrics').textContent =
@@ -1767,11 +1805,6 @@
                         once: true,
                     },
                 );
-                const QUERY = new URLSearchParams(location.search);
-                document.querySelector('#asset-url').value =
-                    QUERY.get('fixture') === 'seed-scout'
-                        ? new URL('/modules/vector-assets/assets/seed-scout.svg', location.href).href
-                        : DEFAULT_SOURCE_URL;
                 await loadAsset();
                 DEMO.ready = true;
                 requestAnimationFrame(frame);
@@ -1780,9 +1813,9 @@
                 DEMO.error = error.message;
                 const STATUS = document.querySelector('#status');
                 STATUS.classList.add('error');
-                if (DEMO.sourceSvg && error.message === 'WebGL 1 required') {
+                if (DEMO.sourceSvg && error.message === 'WebGL 2 required') {
                     const MESSAGE =
-                        'WebGL unavailable: this browser or environment did not provide a WebGL 1 context. The independently loaded source SVG remains visible in panel 1.';
+                        'WebGL unavailable: this browser or environment did not provide a WebGL 2 context. The independently loaded source SVG remains visible in panel 1.';
                     const GAMEKIT_METRICS = document.querySelector('#gamekit-metrics');
                     GAMEKIT_METRICS.classList.add('error');
                     GAMEKIT_METRICS.textContent = MESSAGE;

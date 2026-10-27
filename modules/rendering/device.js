@@ -1,4 +1,4 @@
-/** Programmable WebGL 1 resource/stream/pass core. Game owns geometry and materials. */
+/** Programmable WebGL 2 resource/stream/pass core. Game owns geometry and materials. */
 const FUNCTIONS = Object.freeze({
     never: 'NEVER',
     less: 'LESS',
@@ -48,12 +48,33 @@ function finiteArray(value, count, name) {
         throw new TypeError(`${name} needs ${count} finite numbers`);
     }
 }
+function normalizeShader(source, fragment) {
+    if (/^\s*#version\s+300\s+es\b/.test(source)) {
+        return source.trimStart();
+    }
+    if (/^\s*#version\s+100\b/.test(source)) {
+        source = source.replace(/^\s*#version\s+100[^\r\n]*(?:\r?\n|$)/, '');
+    } else if (/^\s*#version\b/.test(source)) {
+        throw new Error('Only GLSL ES 100 and 300 shaders are supported');
+    }
+    let converted = source
+        .replace(/^\s*#extension\s+GL_OES_standard_derivatives\s*:\s*enable\s*$/gm, '')
+        .replace(/\battribute\b/g, 'in')
+        .replace(/\bvarying\b/g, fragment ? 'in' : 'out')
+        .replace(/\btexture2D\b/g, 'texture')
+        .replace(/\btextureCube\b/g, 'texture');
+    if (fragment) {
+        converted = converted.replace(/\bgl_FragColor\b/g, '_deviceFragColor');
+        return `#version 300 es\nprecision mediump float;\nout vec4 _deviceFragColor;\n${converted}`;
+    }
+    return `#version 300 es\n${converted}`;
+}
 function compile(gl, type, source) {
     const SHADER = gl.createShader(type);
     if (!SHADER) {
         throw new Error('Shader allocation failed');
     }
-    gl.shaderSource(SHADER, source);
+    gl.shaderSource(SHADER, normalizeShader(source, type === gl.FRAGMENT_SHADER));
     gl.compileShader(SHADER);
     if (!gl.getShaderParameter(SHADER, gl.COMPILE_STATUS)) {
         const MESSAGE = gl.getShaderInfoLog(SHADER);
@@ -101,7 +122,8 @@ export class WebGLDevice {
         integer(maxBufferBytes, 'maxBufferBytes', 4);
         this.canvas = canvas;
         this.maxBufferBytes = maxBufferBytes;
-        this.gl = canvas.getContext('webgl', {
+        this.requestedMaxTextures = maxTextures;
+        this.gl = canvas.getContext('webgl2', {
             alpha,
             antialias,
             depth,
@@ -112,10 +134,15 @@ export class WebGLDevice {
             failIfMajorPerformanceCaveat,
         });
         if (!this.gl) {
-            throw new Error('WebGL 1 required');
+            throw new Error('WebGL 2 required');
         }
-        this._instancingExtension = this.gl.getExtension('ANGLE_instanced_arrays');
-        this.instancingSupported = !!this._instancingExtension;
+        this.instancingSupported = true;
+        this.floatRenderTargetsSupported = !!this.gl.getExtension('EXT_color_buffer_float');
+        this.vertexArray = this.gl.createVertexArray();
+        if (!this.vertexArray) {
+            throw new Error('Vertex array allocation failed');
+        }
+        this.maxVertexAttributes = this.gl.getParameter(this.gl.MAX_VERTEX_ATTRIBS);
         this.maxTextures = Math.min(maxTextures, this.gl.getParameter(this.gl.MAX_TEXTURE_IMAGE_UNITS));
         this.maxTextureSize = this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE);
         this.depthAvailable = !!this.gl.getContextAttributes().depth;
@@ -130,7 +157,6 @@ export class WebGLDevice {
         this.renderTargets = new Map();
         this.renderTargetStack = [];
         this.activeRenderTarget = null;
-        this.enabledAttributes = new Set();
         this.stats = {
             frame: 0,
             vectorFlushCalls: 0,
@@ -149,6 +175,7 @@ export class WebGLDevice {
             bufferAllocations: 0,
             gpuBufferBytes: 0,
             gpuRenderTargetBytes: 0,
+            gpuTextureBytes: 0,
             pipelineCount: 0,
             bufferCount: 0,
             textureCount: 0,
@@ -167,10 +194,20 @@ export class WebGLDevice {
                 return;
             }
             try {
-                this.enabledAttributes.clear();
                 this.boundTextureCount = 0;
-                this._instancingExtension = this.gl.getExtension('ANGLE_instanced_arrays');
-                this.instancingSupported = !!this._instancingExtension;
+                this.floatRenderTargetsSupported = !!this.gl.getExtension('EXT_color_buffer_float');
+                this.maxTextures = Math.min(
+                    this.requestedMaxTextures,
+                    this.gl.getParameter(this.gl.MAX_TEXTURE_IMAGE_UNITS),
+                );
+                this.maxTextureSize = this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE);
+                this.maxVertexAttributes = this.gl.getParameter(this.gl.MAX_VERTEX_ATTRIBS);
+                this.depthAvailable = !!this.gl.getContextAttributes().depth;
+                this.stencilAvailable = !!this.gl.getContextAttributes().stencil;
+                this.vertexArray = this.gl.createVertexArray();
+                if (!this.vertexArray) {
+                    throw new Error('Vertex array allocation failed');
+                }
                 for (const RECORD of this.pipelines.values()) {
                     this._pipeline(RECORD);
                 }
@@ -189,7 +226,21 @@ export class WebGLDevice {
                     this._texture(RECORD);
                 }
                 for (const RECORD of this.renderTargets.values()) {
-                    this._renderTarget(RECORD);
+                    RECORD.framebuffer = null;
+                    RECORD.stencilBuffer = null;
+                    if (RECORD.format === 'rgba32f' && !this.floatRenderTargetsSupported) {
+                        RECORD.available = false;
+                        continue;
+                    }
+                    try {
+                        this._renderTarget(RECORD);
+                        RECORD.available = true;
+                    } catch (error) {
+                        if (RECORD.format !== 'rgba32f') {
+                            throw error;
+                        }
+                        RECORD.available = false;
+                    }
                 }
                 this.state = 'ready';
                 this.failure = null;
@@ -381,6 +432,7 @@ export class WebGLDevice {
         if (!GPU) {
             throw new Error('Index buffer allocation failed');
         }
+        GL.bindVertexArray(null);
         GL.bindBuffer(GL.ELEMENT_ARRAY_BUFFER, GPU);
         GL.bufferData(GL.ELEMENT_ARRAY_BUFFER, capacityBytes, GL.DYNAMIC_DRAW);
         const HANDLE = Object.freeze({});
@@ -434,6 +486,7 @@ export class WebGLDevice {
             throw new RangeError('Index stream exceeds maxBufferBytes');
         }
         const GL = this.gl;
+        GL.bindVertexArray(null);
         GL.bindBuffer(GL.ELEMENT_ARRAY_BUFFER, R.gpu);
         if (data.byteLength > R.capacity) {
             let capacity = Math.max(2, R.capacity);
@@ -533,27 +586,38 @@ export class WebGLDevice {
         try {
             GL.activeTexture(GL.TEXTURE0);
             GL.bindTexture(GL.TEXTURE_2D, record.gpu);
+            GL.bindBuffer(GL.PIXEL_UNPACK_BUFFER, null);
             this.boundTextureCount = Math.max(1, this.boundTextureCount);
             GL.pixelStorei(GL.UNPACK_ALIGNMENT, 1);
+            GL.pixelStorei(GL.UNPACK_ROW_LENGTH, 0);
+            GL.pixelStorei(GL.UNPACK_SKIP_PIXELS, 0);
+            GL.pixelStorei(GL.UNPACK_SKIP_ROWS, 0);
             GL.pixelStorei(GL.UNPACK_FLIP_Y_WEBGL, false);
             GL.pixelStorei(GL.UNPACK_COLORSPACE_CONVERSION_WEBGL, GL.NONE);
-            const PIXELS = record.source === null || record.source instanceof Uint8Array,
-                FORMAT = record.copyFormat === 'rgb' ? GL.RGB : record.format === 'rgba' ? GL.RGBA : GL.LUMINANCE;
+            const PIXELS =
+                    record.source === null ||
+                    record.source instanceof Uint8Array ||
+                    record.source instanceof Float32Array,
+                FORMAT =
+                    record.copyFormat === 'rgb'
+                        ? GL.RGB
+                        : record.format === 'rgba' || record.format === 'rgba32f'
+                          ? GL.RGBA
+                          : GL.LUMINANCE,
+                INTERNAL =
+                    record.copyFormat === 'rgb'
+                        ? GL.RGB8
+                        : record.format === 'rgba32f'
+                          ? GL.RGBA32F
+                          : record.format === 'rgba'
+                            ? GL.RGBA8
+                            : GL.LUMINANCE,
+                TYPE = record.format === 'rgba32f' ? GL.FLOAT : GL.UNSIGNED_BYTE;
             GL.pixelStorei(GL.UNPACK_PREMULTIPLY_ALPHA_WEBGL, !PIXELS);
             if (PIXELS) {
-                GL.texImage2D(
-                    GL.TEXTURE_2D,
-                    0,
-                    FORMAT,
-                    record.width,
-                    record.height,
-                    0,
-                    FORMAT,
-                    GL.UNSIGNED_BYTE,
-                    record.source,
-                );
+                GL.texImage2D(GL.TEXTURE_2D, 0, INTERNAL, record.width, record.height, 0, FORMAT, TYPE, record.source);
             } else {
-                GL.texImage2D(GL.TEXTURE_2D, 0, FORMAT, FORMAT, GL.UNSIGNED_BYTE, record.source);
+                GL.texImage2D(GL.TEXTURE_2D, 0, INTERNAL, FORMAT, TYPE, record.source);
             }
             this._filter(record.filter);
             GL.texParameteri(GL.TEXTURE_2D, GL.TEXTURE_WRAP_S, GL.CLAMP_TO_EDGE);
@@ -563,12 +627,19 @@ export class WebGLDevice {
                 throw new Error(`Texture upload error ${ERROR}`);
             }
             this.stats.textureUploads++;
-            this.stats.textureBytes += record.width * record.height * (record.format === 'rgba' ? 4 : 1);
+            this.stats.textureBytes += this._textureBytes(record);
         } catch (error) {
             GL.deleteTexture(record.gpu);
             record.gpu = null;
             throw error;
         }
+    }
+    _textureBytes(record) {
+        return (
+            record.width *
+            record.height *
+            (record.copyFormat === 'rgb' ? 3 : record.format === 'rgba32f' ? 16 : record.format === 'rgba' ? 4 : 1)
+        );
     }
     _filter(filter) {
         if (filter !== 'nearest' && filter !== 'linear') {
@@ -617,11 +688,12 @@ export class WebGLDevice {
             GL.bindRenderbuffer(GL.RENDERBUFFER, PREVIOUS_RENDERBUFFER);
         }
     }
-    /** Creates a reusable, premultiplied RGBA texture/FBO pair; the handle is also a draw texture. */
-    createRenderTarget(width, height, { filter = 'linear', stencil = false } = {}) {
+    /** Creates a reusable RGBA texture/FBO pair; the handle is also a draw texture. */
+    createRenderTarget(width, height, { format = 'rgba', filter, stencil = false } = {}) {
         this._ready();
         integer(width, 'render target width', 1, this.maxTextureSize);
         integer(height, 'render target height', 1, this.maxTextureSize);
+        filter = filter ?? (format === 'rgba32f' ? 'nearest' : 'linear');
         if (filter !== 'nearest' && filter !== 'linear') {
             throw new TypeError('filter must be nearest or linear');
         }
@@ -631,10 +703,16 @@ export class WebGLDevice {
         if (stencil && !this.stencilAvailable) {
             throw new Error('Context has no stencil buffer');
         }
+        if (format !== 'rgba' && format !== 'rgba32f') {
+            throw new TypeError('render target format must be rgba or rgba32f');
+        }
+        if (format === 'rgba32f' && !this.floatRenderTargetsSupported) {
+            throw new Error('EXT_color_buffer_float required for RGBA32F render targets');
+        }
         const RECORD = {
             width,
             height,
-            format: 'rgba',
+            format,
             premultiplied: true,
             source: null,
             filter,
@@ -642,6 +720,7 @@ export class WebGLDevice {
             gpu: null,
             framebuffer: null,
             stencilBuffer: null,
+            available: true,
         };
         this._texture(RECORD);
         try {
@@ -660,8 +739,15 @@ export class WebGLDevice {
         this.renderTargets.set(HANDLE, RECORD);
         this.stats.textureCount = this.textures.size;
         this.stats.renderTargetCount = this.renderTargets.size;
-        this.stats.gpuRenderTargetBytes += width * height * (4 + (stencil ? 1 : 0));
+        this.stats.gpuTextureBytes += this._textureBytes(RECORD);
+        this.stats.gpuRenderTargetBytes +=
+            width * height * (format === 'rgba32f' ? 16 : 4) + width * height * (stencil ? 1 : 0);
         return HANDLE;
+    }
+    /** Float targets can become unavailable after restore while ordinary rendering stays ready. */
+    isRenderTargetAvailable(handle) {
+        const R = this._handle(this.renderTargets, handle, 'render target');
+        return this.state === 'ready' && R.available === true;
     }
     /** Binds a target inside an active frame. Bindings may nest and must unwind in LIFO order. */
     bindRenderTarget(handle) {
@@ -670,6 +756,9 @@ export class WebGLDevice {
             throw new Error('beginFrame required');
         }
         const RECORD = this._handle(this.renderTargets, handle, 'render target');
+        if (!RECORD.available) {
+            throw new Error('Render target is unavailable after context restoration');
+        }
         if (this.activeRenderTarget === handle || this.renderTargetStack.some((entry) => entry.handle === handle)) {
             throw new Error('Render target is already bound');
         }
@@ -720,7 +809,10 @@ export class WebGLDevice {
         this.textures.delete(handle);
         this.stats.textureCount = this.textures.size;
         this.stats.renderTargetCount = this.renderTargets.size;
-        this.stats.gpuRenderTargetBytes -= RECORD.width * RECORD.height * (4 + (RECORD.stencil ? 1 : 0));
+        this.stats.gpuTextureBytes -= this._textureBytes(RECORD);
+        this.stats.gpuRenderTargetBytes -=
+            RECORD.width * RECORD.height * (RECORD.format === 'rgba32f' ? 16 : 4) +
+            RECORD.width * RECORD.height * (RECORD.stencil ? 1 : 0);
         return true;
     }
     createTexture(source, { format = 'rgba', premultiplied = false, filter = 'linear' } = {}) {
@@ -740,7 +832,69 @@ export class WebGLDevice {
         });
         this.textures.set(HANDLE, RECORD);
         this.stats.textureCount = this.textures.size;
+        this.stats.gpuTextureBytes += this._textureBytes(RECORD);
         return HANDLE;
+    }
+    /** Retained RGBA32F pixels; usable for sampling without float render-target support. */
+    createDataTexture(width, height, { data = null } = {}) {
+        this._ready();
+        integer(width, 'data texture width', 1, this.maxTextureSize);
+        integer(height, 'data texture height', 1, this.maxTextureSize);
+        if (data !== null && (!(data instanceof Float32Array) || data.length !== width * height * 4)) {
+            throw new TypeError('RGBA32F data must match the texture dimensions');
+        }
+        const RECORD = {
+            width,
+            height,
+            format: 'rgba32f',
+            premultiplied: false,
+            source: data === null ? new Float32Array(width * height * 4) : new Float32Array(data),
+            filter: 'nearest',
+            gpu: null,
+        };
+        this._texture(RECORD);
+        const HANDLE = Object.freeze({ width, height });
+        this.textures.set(HANDLE, RECORD);
+        this.stats.textureCount = this.textures.size;
+        this.stats.gpuTextureBytes += this._textureBytes(RECORD);
+        return HANDLE;
+    }
+    /** Updates a packed subregion and retains the full pixel plane for context restoration. */
+    updateDataTexture(handle, data, { x = 0, y = 0, width = handle.width, height = handle.height } = {}) {
+        this._ready();
+        const R = this._handle(this.textures, handle, 'data texture');
+        if (R.format !== 'rgba32f' || this.renderTargets.has(handle)) {
+            throw new TypeError('A CPU-owned RGBA32F data texture is required');
+        }
+        integer(x, 'x');
+        integer(y, 'y');
+        integer(width, 'width', 1);
+        integer(height, 'height', 1);
+        if (x + width > R.width || y + height > R.height) {
+            throw new RangeError('Data texture region outside bounds');
+        }
+        if (!(data instanceof Float32Array) || data.length !== width * height * 4) {
+            throw new TypeError('RGBA32F region data must match dimensions');
+        }
+        const GL = this.gl;
+        GL.activeTexture(GL.TEXTURE0);
+        GL.bindTexture(GL.TEXTURE_2D, R.gpu);
+        GL.bindBuffer(GL.PIXEL_UNPACK_BUFFER, null);
+        this.boundTextureCount = Math.max(1, this.boundTextureCount);
+        GL.pixelStorei(GL.UNPACK_ALIGNMENT, 1);
+        GL.pixelStorei(GL.UNPACK_ROW_LENGTH, 0);
+        GL.pixelStorei(GL.UNPACK_SKIP_PIXELS, 0);
+        GL.pixelStorei(GL.UNPACK_SKIP_ROWS, 0);
+        GL.texSubImage2D(GL.TEXTURE_2D, 0, x, y, width, height, GL.RGBA, GL.FLOAT, data);
+        const ERROR = GL.getError();
+        if (ERROR !== GL.NO_ERROR) {
+            throw new Error(`Data texture update error ${ERROR}`);
+        }
+        for (let row = 0; row < height; row++) {
+            R.source.set(data.subarray(row * width * 4, (row + 1) * width * 4), ((y + row) * R.width + x) * 4);
+        }
+        this.stats.textureUploads++;
+        this.stats.textureBytes += data.byteLength;
     }
     /** Full source remains restoration authority; region describes only bytes changed since prior upload. */
     updateTexture(handle, source, { x = 0, y = 0, width = handle.width, height = handle.height } = {}) {
@@ -748,6 +902,9 @@ export class WebGLDevice {
         const R = this._handle(this.textures, handle, 'texture');
         if (this.renderTargets.has(handle)) {
             throw new Error('Render targets cannot be updated from CPU pixels');
+        }
+        if (R.format === 'rgba32f') {
+            throw new TypeError('Use updateDataTexture for RGBA32F pixels');
         }
         integer(x, 'x');
         integer(y, 'y');
@@ -761,13 +918,10 @@ export class WebGLDevice {
             throw new RangeError('Update requires matching full source');
         }
         if (R.copyFormat) {
-            const REPLACEMENT = {
-                ...NEXT,
-                filter: R.filter,
-                gpu: null,
-            };
+            const REPLACEMENT = { ...NEXT, filter: R.filter, gpu: null };
             this._texture(REPLACEMENT);
             this.gl.deleteTexture(R.gpu);
+            this.stats.gpuTextureBytes += this._textureBytes(REPLACEMENT) - this._textureBytes(R);
             Object.assign(R, REPLACEMENT);
             delete R.copyFormat;
             return;
@@ -817,6 +971,7 @@ export class WebGLDevice {
         }
         GL.activeTexture(GL.TEXTURE0);
         GL.bindTexture(GL.TEXTURE_2D, R.gpu);
+        GL.bindBuffer(GL.PIXEL_UNPACK_BUFFER, null);
         this.boundTextureCount = Math.max(1, this.boundTextureCount);
         GL.pixelStorei(GL.UNPACK_ALIGNMENT, 1);
         if (pixels instanceof Uint8Array) {
@@ -850,13 +1005,12 @@ export class WebGLDevice {
         GL.activeTexture(GL.TEXTURE0);
         GL.bindTexture(GL.TEXTURE_2D, R.gpu);
         this.boundTextureCount = Math.max(1, this.boundTextureCount);
-        // WebGL 1 cannot copy RGB default-framebuffer pixels into RGBA storage.
-        // Preserve RGB-only contexts (both games) without requesting an alpha buffer.
         let allocated = false;
         if (!GL.getContextAttributes().alpha && R.copyFormat !== 'rgb') {
-            GL.texImage2D(GL.TEXTURE_2D, 0, GL.RGB, R.width, R.height, 0, GL.RGB, GL.UNSIGNED_BYTE, null);
+            GL.texImage2D(GL.TEXTURE_2D, 0, GL.RGB8, R.width, R.height, 0, GL.RGB, GL.UNSIGNED_BYTE, null);
             R.copyFormat = 'rgb';
             allocated = true;
+            this.stats.gpuTextureBytes -= R.width * R.height;
             this.stats.textureUploads++;
             this.stats.textureBytes += R.width * R.height * 3;
         }
@@ -880,6 +1034,7 @@ export class WebGLDevice {
         }
         this.gl.deleteTexture(R.gpu);
         this.textures.delete(handle);
+        this.stats.gpuTextureBytes -= this._textureBytes(R);
         this.stats.textureCount = this.textures.size;
         return true;
     }
@@ -1013,9 +1168,6 @@ export class WebGLDevice {
         integer(instances, 'instances', 1);
         let instanceRecord;
         if (P.instanced) {
-            if (!this._instancingExtension) {
-                throw new Error('ANGLE_instanced_arrays required for instance attributes');
-            }
             instanceRecord = this._handle(this.buffers, instanceBuffer, 'instance buffer');
             if (instanceRecord.target !== this.gl.ARRAY_BUFFER) {
                 throw new TypeError('An instance vertex buffer is required');
@@ -1090,128 +1242,124 @@ export class WebGLDevice {
         if (filter !== undefined && filter !== 'nearest' && filter !== 'linear') {
             throw new TypeError('Unsupported filter');
         }
-        const GL = this.gl,
-            INSTANCING = this._instancingExtension;
+        const GL = this.gl;
         GL.useProgram(P.gpu);
-        for (const INDEX of this.enabledAttributes) {
-            if (INSTANCING) {
-                INSTANCING.vertexAttribDivisorANGLE(INDEX, 0);
+        GL.bindVertexArray(this.vertexArray);
+        try {
+            for (let index = 0; index < this.maxVertexAttributes; index++) {
+                GL.vertexAttribDivisor(index, 0);
+                GL.disableVertexAttribArray(index);
             }
-            GL.disableVertexAttribArray(INDEX);
-        }
-        this.enabledAttributes.clear();
-        let boundBuffer = null;
-        for (const A of P.locations) {
-            if (A.location >= 0) {
-                const IS_INSTANCE = A.source === 'instance',
-                    SOURCE_BUFFER = IS_INSTANCE ? instanceRecord : B;
-                if (boundBuffer !== SOURCE_BUFFER.gpu) {
-                    GL.bindBuffer(GL.ARRAY_BUFFER, SOURCE_BUFFER.gpu);
-                    boundBuffer = SOURCE_BUFFER.gpu;
+            let boundBuffer = null;
+            for (const A of P.locations) {
+                if (A.location >= 0) {
+                    const IS_INSTANCE = A.source === 'instance',
+                        SOURCE_BUFFER = IS_INSTANCE ? instanceRecord : B;
+                    if (boundBuffer !== SOURCE_BUFFER.gpu) {
+                        GL.bindBuffer(GL.ARRAY_BUFFER, SOURCE_BUFFER.gpu);
+                        boundBuffer = SOURCE_BUFFER.gpu;
+                    }
+                    GL.enableVertexAttribArray(A.location);
+                    GL.vertexAttribPointer(
+                        A.location,
+                        A.size,
+                        GL.FLOAT,
+                        false,
+                        IS_INSTANCE ? P.instanceStride : P.stride,
+                        A.offset,
+                    );
+                    GL.vertexAttribDivisor(A.location, IS_INSTANCE ? 1 : 0);
                 }
-                GL.enableVertexAttribArray(A.location);
-                GL.vertexAttribPointer(
-                    A.location,
-                    A.size,
-                    GL.FLOAT,
-                    false,
-                    IS_INSTANCE ? P.instanceStride : P.stride,
-                    A.offset,
+            }
+            for (const [NAME, VALUE] of Object.entries(uniforms)) {
+                const TYPE = P.uniforms[NAME];
+                if (!TYPE) {
+                    throw new TypeError(`Undeclared uniform ${NAME}`);
+                }
+                const LOCATION = P.uniformLocations.get(NAME);
+                if (LOCATION === null) {
+                    continue;
+                }
+                if (TYPE.startsWith('matrix')) {
+                    GL[`uniformMatrix${TYPE[6]}fv`](LOCATION, false, VALUE);
+                } else if (TYPE.endsWith('v')) {
+                    GL[`uniform${TYPE}`](LOCATION, VALUE);
+                } else if (TYPE[0] === '1') {
+                    GL[`uniform${TYPE}`](LOCATION, VALUE);
+                } else {
+                    GL[`uniform${TYPE}`](LOCATION, ...VALUE);
+                }
+            }
+            const TEXTURE_UNITS = Math.max(this.boundTextureCount, textures.length);
+            for (let i = 0; i < TEXTURE_UNITS; i++) {
+                GL.activeTexture(GL.TEXTURE0 + i);
+                const R = i < textures.length ? this.textures.get(textures[i]) : null;
+                GL.bindTexture(GL.TEXTURE_2D, R?.gpu ?? null);
+                if (R) {
+                    this._filter(filter ?? R.filter);
+                }
+            }
+            if (TEXTURE_UNITS) {
+                GL.activeTexture(GL.TEXTURE0);
+            }
+            this.boundTextureCount = textures.length;
+            if (blend === false) {
+                GL.disable(GL.BLEND);
+            } else {
+                GL.enable(GL.BLEND);
+                GL.blendEquation(GL.FUNC_ADD);
+                const FACTORS =
+                    blend === 'source-over'
+                        ? [GL.ONE, GL.ONE_MINUS_SRC_ALPHA]
+                        : blend === 'straight-alpha'
+                          ? [GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA]
+                          : blend === 'copy'
+                            ? [GL.ONE, GL.ZERO]
+                            : blend === 'lighter'
+                              ? [GL.ONE, GL.ONE]
+                              : blend === 'source-in'
+                                ? [GL.DST_ALPHA, GL.ZERO]
+                                : [GL.ZERO, GL.SRC_ALPHA];
+                GL.blendFunc(...FACTORS);
+            }
+            if (DEPTH_STATE?.test) {
+                GL.enable(GL.DEPTH_TEST);
+                GL.depthFunc(GL[FUNCTIONS[DEPTH_STATE.func]]);
+            } else {
+                GL.disable(GL.DEPTH_TEST);
+            }
+            GL.depthMask(DEPTH_STATE?.write ?? false);
+            if (stencil) {
+                GL.enable(GL.STENCIL_TEST);
+                GL.stencilFunc(GL[FUNCTIONS[stencil.func ?? 'always']], stencil.ref ?? 0, stencil.mask ?? 255);
+                GL.stencilMask(stencil.writeMask ?? 255);
+                GL.stencilOp(
+                    GL[OPERATIONS[stencil.fail ?? 'keep']],
+                    GL[OPERATIONS[stencil.zfail ?? 'keep']],
+                    GL[OPERATIONS[stencil.pass ?? 'keep']],
                 );
-                if (INSTANCING) {
-                    INSTANCING.vertexAttribDivisorANGLE(A.location, IS_INSTANCE ? 1 : 0);
+            } else {
+                GL.disable(GL.STENCIL_TEST);
+            }
+            GL.colorMask(...colorMask);
+            GL.disable(GL.CULL_FACE);
+            GL.disable(GL.DITHER);
+            GL.disable(GL.SCISSOR_TEST);
+            GL.bindBuffer(GL.ELEMENT_ARRAY_BUFFER, ELEMENTS?.gpu ?? null);
+            if (P.instanced) {
+                if (ELEMENTS) {
+                    GL.drawElementsInstanced(GL.TRIANGLES, count, GL.UNSIGNED_SHORT, first * 2, instances);
+                } else {
+                    GL.drawArraysInstanced(GL.TRIANGLES, first, count, instances);
                 }
-                this.enabledAttributes.add(A.location);
-            }
-        }
-        for (const [NAME, VALUE] of Object.entries(uniforms)) {
-            const TYPE = P.uniforms[NAME];
-            if (!TYPE) {
-                throw new TypeError(`Undeclared uniform ${NAME}`);
-            }
-            const LOCATION = P.uniformLocations.get(NAME);
-            if (LOCATION === null) {
-                continue;
-            }
-            if (TYPE.startsWith('matrix')) {
-                GL[`uniformMatrix${TYPE[6]}fv`](LOCATION, false, VALUE);
-            } else if (TYPE.endsWith('v')) {
-                GL[`uniform${TYPE}`](LOCATION, VALUE);
-            } else if (TYPE[0] === '1') {
-                GL[`uniform${TYPE}`](LOCATION, VALUE);
+                this.stats.instancedDrawCalls++;
+            } else if (ELEMENTS) {
+                GL.drawElements(GL.TRIANGLES, count, GL.UNSIGNED_SHORT, first * 2);
             } else {
-                GL[`uniform${TYPE}`](LOCATION, ...VALUE);
+                GL.drawArrays(GL.TRIANGLES, first, count);
             }
-        }
-        const TEXTURE_UNITS = Math.max(this.boundTextureCount, textures.length);
-        for (let i = 0; i < TEXTURE_UNITS; i++) {
-            GL.activeTexture(GL.TEXTURE0 + i);
-            const R = i < textures.length ? this.textures.get(textures[i]) : null;
-            GL.bindTexture(GL.TEXTURE_2D, R?.gpu ?? null);
-            if (R) {
-                this._filter(filter ?? R.filter);
-            }
-        }
-        if (TEXTURE_UNITS) {
-            GL.activeTexture(GL.TEXTURE0);
-        }
-        this.boundTextureCount = textures.length;
-        if (blend === false) {
-            GL.disable(GL.BLEND);
-        } else {
-            GL.enable(GL.BLEND);
-            GL.blendEquation(GL.FUNC_ADD);
-            const FACTORS =
-                blend === 'source-over'
-                    ? [GL.ONE, GL.ONE_MINUS_SRC_ALPHA]
-                    : blend === 'straight-alpha'
-                      ? [GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA]
-                      : blend === 'copy'
-                        ? [GL.ONE, GL.ZERO]
-                        : blend === 'lighter'
-                          ? [GL.ONE, GL.ONE]
-                          : blend === 'source-in'
-                            ? [GL.DST_ALPHA, GL.ZERO]
-                            : [GL.ZERO, GL.SRC_ALPHA];
-            GL.blendFunc(...FACTORS);
-        }
-        if (DEPTH_STATE?.test) {
-            GL.enable(GL.DEPTH_TEST);
-            GL.depthFunc(GL[FUNCTIONS[DEPTH_STATE.func]]);
-        } else {
-            GL.disable(GL.DEPTH_TEST);
-        }
-        GL.depthMask(DEPTH_STATE?.write ?? false);
-        if (stencil) {
-            GL.enable(GL.STENCIL_TEST);
-            GL.stencilFunc(GL[FUNCTIONS[stencil.func ?? 'always']], stencil.ref ?? 0, stencil.mask ?? 255);
-            GL.stencilMask(stencil.writeMask ?? 255);
-            GL.stencilOp(
-                GL[OPERATIONS[stencil.fail ?? 'keep']],
-                GL[OPERATIONS[stencil.zfail ?? 'keep']],
-                GL[OPERATIONS[stencil.pass ?? 'keep']],
-            );
-        } else {
-            GL.disable(GL.STENCIL_TEST);
-        }
-        GL.colorMask(...colorMask);
-        GL.disable(GL.CULL_FACE);
-        GL.disable(GL.DITHER);
-        GL.disable(GL.SCISSOR_TEST);
-        if (ELEMENTS) {
-            GL.bindBuffer(GL.ELEMENT_ARRAY_BUFFER, ELEMENTS.gpu);
-        }
-        if (P.instanced) {
-            if (ELEMENTS) {
-                INSTANCING.drawElementsInstancedANGLE(GL.TRIANGLES, count, GL.UNSIGNED_SHORT, first * 2, instances);
-            } else {
-                INSTANCING.drawArraysInstancedANGLE(GL.TRIANGLES, first, count, instances);
-            }
-            this.stats.instancedDrawCalls++;
-        } else if (ELEMENTS) {
-            GL.drawElements(GL.TRIANGLES, count, GL.UNSIGNED_SHORT, first * 2);
-        } else {
-            GL.drawArrays(GL.TRIANGLES, first, count);
+        } finally {
+            GL.bindVertexArray(null);
         }
         this.stats.drawCalls++;
         this.stats.vertices += count * instances;
@@ -1229,7 +1377,13 @@ export class WebGLDevice {
     }
     _deleteGPU() {
         const GL = this.gl;
+        if (GL.isContextLost()) {
+            return;
+        }
         GL.useProgram(null);
+        GL.bindVertexArray(null);
+        GL.deleteVertexArray(this.vertexArray);
+        this.vertexArray = null;
         GL.bindBuffer(GL.ARRAY_BUFFER, null);
         GL.bindBuffer(GL.ELEMENT_ARRAY_BUFFER, null);
         GL.bindRenderbuffer(GL.RENDERBUFFER, null);
@@ -1261,13 +1415,13 @@ export class WebGLDevice {
         this.canvas.removeEventListener('webglcontextlost', this.onLost);
         this.canvas.removeEventListener('webglcontextrestored', this.onRestored);
         this._deleteGPU();
+        this.vertexArray = null;
         this.pipelines.clear();
         this.buffers.clear();
         this.textures.clear();
         this.renderTargets.clear();
         this.renderTargetStack.length = 0;
         this.activeRenderTarget = null;
-        this.enabledAttributes.clear();
         this.regionCanvas = this.regionContext = this.regionBytes = null;
         this.stats.pipelineCount =
             this.stats.bufferCount =
@@ -1275,6 +1429,7 @@ export class WebGLDevice {
             this.stats.renderTargetCount =
             this.stats.gpuBufferBytes =
             this.stats.gpuRenderTargetBytes =
+            this.stats.gpuTextureBytes =
                 0;
         this.active = false;
         this.state = 'disposed';
