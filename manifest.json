@@ -7,11 +7,11 @@
     },
     {
       "file": "rendering.js",
-      "sha256": "1c9a8e0546605ff39aa404fe386dac991453851e42919745754d99c5fa2213ff"
+      "sha256": "65b65c37c9d1804d246e9e68b6ac7bd7f8a0e4ba88d14ec73a07a46d00db3934"
     },
     {
       "file": "vector-assets.js",
-      "sha256": "db671f40e1317e9b1812267ce2e859fd9da3a4d1fd6752538f14e26433a56524"
+      "sha256": "771fb43aa76eefe1c66da35deaba64fba19b2f130fd8e6aa97e9ae8668767d18"
     },
     {
       "file": "vector-assets-loader.js",
@@ -43,7 +43,7 @@
     },
     {
       "file": "rollback.js",
-      "sha256": "92f59f1a1ed59a970021c1dfd69a039e7c29a7a52f3f0123f30590e8145bb6f2"
+      "sha256": "ca9b5cfa3f2a9189f32e1b208323eebd2f684fd38b57a11f49989e8c3ff9e2c5"
     },
     {
       "file": "camera.js",
