@@ -1,12 +1,17 @@
 import { WebGLDevice, MeshRenderer, createSpriteAnimation } from '/dist/rendering.js';
 import { createVectorAsset, createVectorRasterAtlas, createVectorSpriteAtlas } from '/dist/vector-assets.js';
 import { seedScout } from '../seed-scout-raster-comparison.compiled.js';
+import { runComparison } from './raster-benchmark.js';
 
 const BY_ID = (id) => document.getElementById(id);
 const CANVAS = BY_ID('canvas');
 const STAGE = BY_ID('stage');
 const MODE_INPUT = BY_ID('mode');
+const SCENE_INPUT = BY_ID('scene');
 const COUNT_INPUT = BY_ID('count');
+const PIXEL_SIZE_INPUT = BY_ID('pixel-size');
+const SPREAD_INPUT = BY_ID('spread');
+const SEED_INPUT = BY_ID('seed');
 const RESOLUTION_INPUT = BY_ID('resolution');
 const CLIP_INPUT = BY_ID('clip');
 const EXPRESSION_INPUT = BY_ID('expression');
@@ -48,6 +53,10 @@ const STATE = {
     preparationGeneration: 0,
     preparation: null,
     frameOrdinal: 0,
+    fpsSamples: [],
+    fps: null,
+    layout: null,
+    benchmark: null,
     last: null,
     error: null,
     disposed: false,
@@ -56,6 +65,119 @@ const STATE = {
 const PLAYERS = [];
 let nextReadoutMs = 0;
 let frameHandle = null;
+let benchmarkRunning = false;
+
+function benchmarkConfigKey(config = {}) {
+    return JSON.stringify({
+        scene: config.scene ?? SCENE_INPUT.value,
+        count: config.count ?? (SCENE_INPUT.value === 'single' ? 1 : Number(COUNT_INPUT.value)),
+        pixelSize: config.pixelSize ?? Number(PIXEL_SIZE_INPUT.value),
+        spread: config.spread ?? Number(SPREAD_INPUT.value),
+        seed: config.seed ?? Number(SEED_INPUT.value),
+        clip: CLIP_INPUT.value,
+        expression: EXPRESSION_INPUT.value,
+        resolution: Number(RESOLUTION_INPUT.value),
+        interval: Number(SAMPLE_INTERVAL_INPUT.value),
+        mixed: MIXED_INPUT.checked,
+        zoom: Number(ZOOM_INPUT.value),
+        canvasWidth: CANVAS.width,
+        canvasHeight: CANVAS.height,
+        dpr: devicePixelRatio || 1,
+        restores: DEVICE.stats.restores,
+    });
+}
+
+function benchmarkValue(value, suffix = ' ms') {
+    return value === null || value === undefined ? 'unavailable' : `${value.toFixed(2)}${suffix}`;
+}
+
+function showBenchmarkResult(result) {
+    const RESULTS = document.querySelector('.benchmark-results');
+    RESULTS.replaceChildren();
+    const TABLE = document.createElement('table');
+    const HEAD = document.createElement('thead');
+    const HEADER_ROW = document.createElement('tr');
+    for (const LABEL of [
+        'Path',
+        'FPS',
+        'Frame interval p50 / p95',
+        'CPU total p50 / p95',
+        'CPU submit p50 / p95',
+        'GPU p50 / p95',
+    ]) {
+        const CELL = document.createElement('th');
+        CELL.textContent = LABEL;
+        HEADER_ROW.append(CELL);
+    }
+    HEAD.append(HEADER_ROW);
+    TABLE.append(HEAD);
+    const BODY = document.createElement('tbody');
+    for (const METHOD of result.methods) {
+        const ROW = document.createElement('tr');
+        const COVERAGE = `${METHOD.gpuMs.count}/${METHOD.gpuMs.expectedCount ?? METHOD.measuredFrames}`;
+        const GPU =
+            METHOD.gpuMs.status === 'available'
+                ? `${benchmarkValue(METHOD.gpuMs.p50)} / ${benchmarkValue(METHOD.gpuMs.p95)} (${COVERAGE})`
+                : `${METHOD.gpuMs.status} (${COVERAGE})`;
+        for (const VALUE of [
+            METHOD.mode,
+            benchmarkValue(METHOD.fps, ' FPS'),
+            `${benchmarkValue(METHOD.frameIntervalMs.p50)} / ${benchmarkValue(METHOD.frameIntervalMs.p95)}`,
+            `${benchmarkValue(METHOD.cpuTotalMs.p50)} / ${benchmarkValue(METHOD.cpuTotalMs.p95)}`,
+            `${benchmarkValue(METHOD.submitMs.p50)} / ${benchmarkValue(METHOD.submitMs.p95)}`,
+            GPU,
+        ]) {
+            const CELL = document.createElement('td');
+            CELL.textContent = VALUE;
+            ROW.append(CELL);
+        }
+        BODY.append(ROW);
+    }
+    TABLE.append(BODY);
+    const CAPTION = document.createElement('p');
+    const PLACEMENT =
+        result.config.scene === 'single'
+            ? `zoom ${Number(ZOOM_INPUT.value).toFixed(1)}×`
+            : `${result.config.pixelSize} CSS px · spread ${result.config.spread}% · seed ${result.config.seed}`;
+    CAPTION.textContent = `Sequential full-viewport comparison · ${result.config.scene} · ${result.config.count} characters · ${PLACEMENT} · ${CLIP_INPUT.value}/${EXPRESSION_INPUT.value}`;
+    RESULTS.append(CAPTION, TABLE);
+}
+
+async function runBenchmark(options = {}) {
+    if (benchmarkRunning) {
+        throw new Error('Comparison already running');
+    }
+    if (CLIP_INPUT.value !== 'transform-repeat' || MIXED_INPUT.checked) {
+        document.querySelector('.benchmark-results').textContent =
+            'Select transform-repeat and turn off mixed motion for the repeatable sequential comparison.';
+        throw new Error('Sequential comparison requires transform-repeat and mixed motion off.');
+    }
+    benchmarkRunning = true;
+    const BUTTON = BY_ID('benchmark');
+    const RESULTS = document.querySelector('.benchmark-results');
+    const CONTROLS = [...document.querySelectorAll('header input, header select, header button, #benchmark')];
+    const DISABLED = CONTROLS.map((control) => control.disabled);
+    for (const CONTROL of CONTROLS) {
+        CONTROL.disabled = true;
+    }
+    BUTTON.disabled = true;
+    RESULTS.textContent =
+        'Measuring sequential full-viewport paths. Atlas preparation is separate from measured frames.';
+    try {
+        const RESULT = await runComparison(globalThis.__rasterComparison, options);
+        STATE.benchmark = { key: benchmarkConfigKey(RESULT.config), methods: RESULT.methods };
+        showBenchmarkResult(RESULT);
+        return RESULT;
+    } catch (error) {
+        RESULTS.textContent = `Comparison failed: ${error.message}`;
+        throw error;
+    } finally {
+        CONTROLS.forEach((control, index) => {
+            control.disabled = DISABLED[index];
+        });
+        benchmarkRunning = false;
+    }
+}
 
 function readHardware() {
     const GL = DEVICE.gl;
@@ -110,6 +232,9 @@ function createGpuTimer(gl) {
         condition = '측정 무효 · GPU disjoint';
     };
     return {
+        get supported() {
+            return Boolean(EXTENSION);
+        },
         begin(label) {
             if (!EXTENSION || activeEntry || PENDING.length >= 6) {
                 return null;
@@ -241,7 +366,7 @@ function clipFor(index) {
 }
 
 function synchronizePlayers() {
-    const COUNT = Number(COUNT_INPUT.value);
+    const COUNT = SCENE_INPUT.value === 'single' ? 1 : Number(COUNT_INPUT.value);
     while (PLAYERS.length > COUNT) {
         PLAYERS.pop().dispose();
     }
@@ -264,7 +389,33 @@ function synchronizePlayers() {
     }
 }
 
-function cameraLayout(side, width, height) {
+function unitHash(index, seed, axis) {
+    let value = (Math.imul(index + 1, 0x9e3779b1) ^ Math.imul(seed, 0x85ebca6b) ^ axis) >>> 0;
+    value ^= value >>> 16;
+    value = Math.imul(value, 0x7feb352d);
+    value ^= value >>> 15;
+    value = Math.imul(value, 0x846ca68b);
+    value ^= value >>> 16;
+    return (value >>> 0) / 4294967296;
+}
+
+function layoutPoints(count) {
+    if (SCENE_INPUT.value === 'single') {
+        return [[0.5, 0.5]];
+    }
+    const SEED = Number(SEED_INPUT.value);
+    const SPREAD = Number(SPREAD_INPUT.value) / 100;
+    const POINTS = new Array(count);
+    for (let index = 0; index < count; index++) {
+        POINTS[index] = [
+            0.5 + (unitHash(index, SEED, 0x243f6a88) - 0.5) * SPREAD,
+            0.5 + (unitHash(index, SEED, 0x13198a2e) - 0.5) * SPREAD,
+        ];
+    }
+    return POINTS;
+}
+
+function cameraLayout(side, width, height, points) {
     const THREE_WAY = MODE_INPUT.value === 'split3';
     const SPLIT = MODE_INPUT.value === 'split';
     const PANEL_WIDTH = THREE_WAY ? width / 3 : SPLIT ? width / 2 : width;
@@ -278,17 +429,17 @@ function cameraLayout(side, width, height) {
           ? width / 2
           : 0;
     const COUNT = PLAYERS.length;
-    const COLUMNS = Math.max(1, Math.ceil(Math.sqrt((COUNT * PANEL_WIDTH) / Math.max(1, height))));
-    const ROWS = Math.max(1, Math.ceil(COUNT / COLUMNS));
-    const CELL = Math.min((PANEL_WIDTH - 16) / COLUMNS, (height - 16) / ROWS);
-    const SIZE = Math.max(1, Math.min(CELL * 0.74, 180) * Number(ZOOM_INPUT.value));
+    const SINGLE = SCENE_INPUT.value === 'single';
+    const SIZE = SINGLE
+        ? Math.max(1, Math.min(PANEL_WIDTH, height) * 0.68 * Number(ZOOM_INPUT.value))
+        : Number(PIXEL_SIZE_INPUT.value);
+    const MARGIN_X = Math.min(PANEL_WIDTH / 2, SIZE * 0.75);
+    const MARGIN_Y = Math.min(height / 2, SIZE * 0.75);
     const SCALE = SIZE / Math.max(VIEW_BOX[2], VIEW_BOX[3]);
     const POSITIONS = new Array(COUNT);
     for (let i = 0; i < COUNT; i++) {
-        const COLUMN = i % COLUMNS;
-        const ROW = Math.floor(i / COLUMNS);
-        const CENTER_X = PANEL_X + ((COLUMN + 0.5) * PANEL_WIDTH) / COLUMNS;
-        const CENTER_Y = ((ROW + 0.5) * height) / ROWS;
+        const CENTER_X = PANEL_X + MARGIN_X + (SINGLE ? 0.5 : points[i][0]) * (PANEL_WIDTH - 2 * MARGIN_X);
+        const CENTER_Y = MARGIN_Y + (SINGLE ? 0.5 : points[i][1]) * (height - 2 * MARGIN_Y);
         POSITIONS[i] = [
             SCALE,
             0,
@@ -311,7 +462,50 @@ function synchronizeTimeControl() {
     BY_ID('zoom-value').value = `${Number(ZOOM_INPUT.value).toFixed(1)}×`;
     PLAY_BUTTON.textContent = STATE.playing ? '일시정지' : '재생';
     PLAY_BUTTON.setAttribute('aria-pressed', String(STATE.playing));
+    BY_ID('spread-value').value = `${SPREAD_INPUT.value}%`;
     STAGE.dataset.mode = MODE_INPUT.value;
+}
+
+function setScene(value) {
+    if (value !== 'single' && value !== 'crowd') {
+        throw new RangeError('Scene must be single or crowd');
+    }
+    SCENE_INPUT.value = value;
+    document.body.dataset.scene = value;
+    BY_ID('single-tab').setAttribute('aria-selected', String(value === 'single'));
+    BY_ID('crowd-tab').setAttribute('aria-selected', String(value === 'crowd'));
+    if (!benchmarkRunning) {
+        STATE.benchmark = null;
+        document.querySelector('.benchmark-results').textContent =
+            'Scene changed. Run the sequential comparison again.';
+    }
+    resetTimer();
+    synchronizePlayers();
+}
+
+function setPixelSize(value) {
+    if (!Number.isFinite(value) || value < 1 || value > 512) {
+        throw new RangeError('Character CSS pixel size must be between 1 and 512');
+    }
+    PIXEL_SIZE_INPUT.value = String(value);
+    resetTimer();
+}
+
+function setSpread(value) {
+    if (!Number.isFinite(value) || value < 25 || value > 100) {
+        throw new RangeError('Spread must be between 25 and 100');
+    }
+    SPREAD_INPUT.value = String(value);
+    synchronizeTimeControl();
+    resetTimer();
+}
+
+function setSeed(value) {
+    if (!Number.isSafeInteger(value)) {
+        throw new TypeError('Seed must be a safe integer');
+    }
+    SEED_INPUT.value = String(value);
+    resetTimer();
 }
 
 function ensureAtlas() {
@@ -550,13 +744,7 @@ function drawSpriteActors(positions, projection) {
     return { spriteDraws, vectorFallbacks, reasons: [...REASONS] };
 }
 
-function writeMetrics(cpuMs, animationMs, submitMs, rasterResult, spriteResult) {
-    BY_ID('part-label').textContent = rasterResult.vectorFallbacks
-        ? `2 벡터 + 부위 텍스처 · 벡터 대체 ${rasterResult.vectorFallbacks}/${PLAYERS.length}`
-        : '2 벡터 + 부위 텍스처';
-    BY_ID('sprite-label').textContent = spriteResult.vectorFallbacks
-        ? `3 텍스처 · 벡터 대체 ${spriteResult.vectorFallbacks}/${PLAYERS.length}`
-        : '3 텍스처 · 전체 프레임';
+function writeMetrics(cpuMs, animationMs, submitMs, pathCpuMs, rasterResult, spriteResult, updateReadout = true) {
     const POSES = MESHES.poseStats();
     const MESH_STATS = MESHES.stats();
     const ATLAS_STATS = STATE.atlas?.stats ?? null;
@@ -565,22 +753,6 @@ function writeMetrics(cpuMs, animationMs, submitMs, rasterResult, spriteResult) 
     const VECTOR_TRIANGLES =
         (seedScout.geometry.expressionIndices?.[EXPRESSION_INPUT.value]?.length ?? seedScout.geometry.indices.length) /
         3;
-    const GPU_CURRENT =
-        GPU.label?.mode === MODE_INPUT.value &&
-        GPU.label?.count === PLAYERS.length &&
-        GPU.label?.resolution === Number(RESOLUTION_INPUT.value) &&
-        GPU.label?.sampleIntervalMs === Number(SAMPLE_INTERVAL_INPUT.value);
-    const GPU_MS = GPU_CURRENT ? GPU.ms : null;
-    const GPU_TEXT = GPU_MS === null ? GPU.condition : `${GPU_MS.toFixed(2)} ms (${GPU.condition})`;
-    FRAME_METRICS.textContent =
-        `CPU 전체 ${cpuMs.toFixed(2)} ms (동작 준비 ${animationMs.toFixed(2)} / 제출 ${submitMs.toFixed(2)} ms) · ` +
-        `GPU ${GPU_TEXT} · 드로우 ${DEVICE_STATS.drawCalls}회 · ` +
-        `버퍼 업로드 ${DEVICE_STATS.bufferBytes.toLocaleString()} B · 텍스처 업로드 ${DEVICE_STATS.textureBytes.toLocaleString()} B`;
-    BAKE_METRICS.textContent = ATLAS_STATS
-        ? `${RESOLUTION_INPUT.value}px / 큰 축 · 굽기 ${ATLAS_STATS.bakeCpuMs.toFixed(1)} ms (호출 벽시계 ${STATE.bakeCpuMs?.toFixed(1) ?? '—'} ms) · ` +
-          `${ATLAS_STATS.runCount}개 부위 그림 · ${ATLAS_STATS.atlasWidth}×${ATLAS_STATS.atlasHeight} · ` +
-          `${ATLAS_STATS.atlasBytes.toLocaleString()} B · 굽기 ${ATLAS_STATS.bakeCount}회`
-        : `래스터 아틀라스를 사용할 수 없습니다 · 시도 ${STATE.bakeCpuMs?.toFixed(1) ?? '—'} ms`;
     const SPRITE_SETS = [...STATE.spriteSets.values()];
     const SPRITE_BYTES = SPRITE_SETS.reduce((sum, entry) => sum + entry.plannedBytes, 0);
     const SPRITE_ALLOCATED_BYTES = SPRITE_SETS.reduce(
@@ -589,29 +761,98 @@ function writeMetrics(cpuMs, animationMs, submitMs, rasterResult, spriteResult) 
     );
     const SPRITE_FRAMES = SPRITE_SETS.reduce((sum, entry) => sum + (entry.baker?.stats?.frameCount ?? 0), 0);
     const SPRITE_BAKE_MS = SPRITE_SETS.reduce((sum, entry) => sum + entry.bakeCpuMs, 0);
-    SPRITE_METRICS.textContent =
-        `${SAMPLE_INTERVAL_INPUT.value}ms 간격 · ${SPRITE_FRAMES}프레임 · 처음 굽기 ${SPRITE_BAKE_MS.toFixed(1)} ms · ` +
-        `아틀라스 ${SPRITE_BYTES.toLocaleString()} B · 프레임 선택 오차 최대 ${SAMPLE_INTERVAL_INPUT.value}ms · ` +
-        `스프라이트 ${spriteResult.spriteDraws}개 / 벡터 대체 ${spriteResult.vectorFallbacks}개` +
-        (spriteResult.reasons.length ? ` (${spriteResult.reasons.join(', ')})` : '');
     const PREPARATION = STATE.preparation;
-    const FAILED_PREPARATIONS = PREPARATION?.entries.filter((entry) => !entry.ready) ?? [];
-    PREPARATION_METRICS.textContent = PREPARATION
-        ? `${PREPARATION.status} ${PREPARATION.completed}/${PREPARATION.total} · planned ${PREPARATION.estimatedBytes.toLocaleString()} B · allocated ${PREPARATION.allocatedBytes.toLocaleString()} / ${PREPARATION.budgetBytes.toLocaleString()} B · initial CPU ${PREPARATION.cpuMs.toFixed(1)} ms · ${PREPARATION.entries.filter((entry) => entry.ready).length} separate sprite textures (no multi-page sheet)${FAILED_PREPARATIONS.length ? ` · ${FAILED_PREPARATIONS.map((entry) => `${entry.clip}/${entry.expression}:${entry.reason}`).join(', ')}` : ''}`
-        : 'Preparing atlas manifest…';
-    PATH_METRICS.textContent =
-        `SVG SHA ${ASSET.sourceSha256.slice(0, 12)} · 래스터 ${rasterResult.rasterDraws}개 · 벡터 대체 ${rasterResult.vectorFallbacks}개` +
-        (rasterResult.reasons.length ? ` (${rasterResult.reasons.join(', ')})` : '') +
-        ` · GPU pose ${POSES?.gpuDrawInstances ?? 0}개 · CPU pose ${POSES?.cpuDrawInstances ?? 0}개 · ` +
-        `GPU 버퍼 ${DEVICE_STATS.gpuBufferBytes.toLocaleString()} B · GPU 텍스처 ${DEVICE_STATS.gpuTextureBytes.toLocaleString()} B · ` +
-        `메시 업로드 ${MESH_STATS.geometryBytesUploaded.toLocaleString()} B · ` +
-        `선택 표정 벡터 ${VECTOR_TRIANGLES} 삼각형 / 부위 atlas ${ATLAS_STATS ? ATLAS_STATS.runCount * 2 : 0} 삼각형 · ` +
-        `${hardware.backend} · ${hardware.renderer} · ${hardware.vendor}`;
+    const GPU_CURRENT =
+        GPU.label?.mode === MODE_INPUT.value &&
+        GPU.label?.scene === SCENE_INPUT.value &&
+        GPU.label?.seed === Number(SEED_INPUT.value) &&
+        GPU.label?.pixelSize === Number(PIXEL_SIZE_INPUT.value) &&
+        GPU.label?.spread === Number(SPREAD_INPUT.value) &&
+        GPU.label?.clip === CLIP_INPUT.value &&
+        GPU.label?.expression === EXPRESSION_INPUT.value &&
+        GPU.label?.mixed === MIXED_INPUT.checked &&
+        GPU.label?.zoom === Number(ZOOM_INPUT.value) &&
+        GPU.label?.count === PLAYERS.length &&
+        GPU.label?.resolution === Number(RESOLUTION_INPUT.value) &&
+        GPU.label?.sampleIntervalMs === Number(SAMPLE_INTERVAL_INPUT.value);
+    const GPU_MS = GPU_CURRENT ? GPU.ms : null;
+    if (!benchmarkRunning && STATE.benchmark && STATE.benchmark.key !== benchmarkConfigKey()) {
+        STATE.benchmark = null;
+        document.querySelector('.benchmark-results').textContent =
+            'Previous measurement is stale after a scene, display, or graphics change. Run the comparison again.';
+    }
+    if (updateReadout) {
+        BY_ID('part-label').textContent = rasterResult.vectorFallbacks
+            ? `2 벡터 + 부위 텍스처 · 벡터 대체 ${rasterResult.vectorFallbacks}/${PLAYERS.length}`
+            : '2 벡터 + 부위 텍스처';
+        BY_ID('sprite-label').textContent = spriteResult.vectorFallbacks
+            ? `3 텍스처 · 벡터 대체 ${spriteResult.vectorFallbacks}/${PLAYERS.length}`
+            : '3 텍스처 · 전체 프레임';
+        const GPU_TEXT = GPU_MS === null ? GPU.condition : `${GPU_MS.toFixed(2)} ms (${GPU.condition})`;
+        const BENCHMARK_CURRENT = STATE.benchmark?.key === benchmarkConfigKey();
+        for (const [SIDE, CARD] of [
+            ['vector', BY_ID('vector-card')],
+            ['raster', BY_ID('raster-card')],
+            ['sprite', BY_ID('sprite-card')],
+        ]) {
+            const METHOD = BENCHMARK_CURRENT ? STATE.benchmark.methods.find((item) => item.mode === SIDE) : null;
+            if (METHOD) {
+                CARD.querySelector('.fps').textContent = `Sequential ${benchmarkValue(METHOD.fps, ' FPS')}`;
+                CARD.querySelector('.cpu-label').textContent = 'Submit p50 / p95';
+                CARD.querySelector('.cpu').textContent =
+                    `${benchmarkValue(METHOD.submitMs.p50)} / ${benchmarkValue(METHOD.submitMs.p95)}`;
+                const GPU_STATS = METHOD.gpuMs;
+                const COVERAGE = `${GPU_STATS.count}/${GPU_STATS.expectedCount ?? METHOD.measuredFrames}`;
+                CARD.querySelector('.gpu').textContent =
+                    GPU_STATS.status === 'available'
+                        ? `${benchmarkValue(GPU_STATS.p50)} / ${benchmarkValue(GPU_STATS.p95)} (${COVERAGE})`
+                        : `${GPU_STATS.status} (${COVERAGE})`;
+            } else {
+                CARD.querySelector('.fps').textContent =
+                    STATE.fps === null ? 'Shared RAF unavailable' : `Shared RAF ${STATE.fps.toFixed(1)} FPS`;
+                const CPU_PATH = MODE_INPUT.value === SIDE ? submitMs : pathCpuMs[SIDE];
+                CARD.querySelector('.cpu-label').textContent = MODE_INPUT.value === SIDE ? 'Submit' : 'Draw calls';
+                CARD.querySelector('.cpu').textContent =
+                    CPU_PATH === null ? 'unavailable' : `${CPU_PATH.toFixed(2)} ms`;
+                CARD.querySelector('.gpu').textContent =
+                    GPU_MS !== null && MODE_INPUT.value === SIDE ? `${GPU_MS.toFixed(2)} ms` : 'unavailable';
+            }
+        }
+        FRAME_METRICS.textContent =
+            `CPU 전체 ${cpuMs.toFixed(2)} ms (동작 준비 ${animationMs.toFixed(2)} / 제출 ${submitMs.toFixed(2)} ms) · ` +
+            `GPU ${GPU_TEXT} · 드로우 ${DEVICE_STATS.drawCalls}회 · ` +
+            `버퍼 업로드 ${DEVICE_STATS.bufferBytes.toLocaleString()} B · 텍스처 업로드 ${DEVICE_STATS.textureBytes.toLocaleString()} B`;
+        BAKE_METRICS.textContent = ATLAS_STATS
+            ? `${RESOLUTION_INPUT.value}px / 큰 축 · 굽기 ${ATLAS_STATS.bakeCpuMs.toFixed(1)} ms (호출 벽시계 ${STATE.bakeCpuMs?.toFixed(1) ?? '—'} ms) · ` +
+              `${ATLAS_STATS.runCount}개 부위 그림 · ${ATLAS_STATS.atlasWidth}×${ATLAS_STATS.atlasHeight} · ` +
+              `${ATLAS_STATS.atlasBytes.toLocaleString()} B · 굽기 ${ATLAS_STATS.bakeCount}회`
+            : `래스터 아틀라스를 사용할 수 없습니다 · 시도 ${STATE.bakeCpuMs?.toFixed(1) ?? '—'} ms`;
+        SPRITE_METRICS.textContent =
+            `${SAMPLE_INTERVAL_INPUT.value}ms 간격 · ${SPRITE_FRAMES}프레임 · 처음 굽기 ${SPRITE_BAKE_MS.toFixed(1)} ms · ` +
+            `아틀라스 ${SPRITE_BYTES.toLocaleString()} B · 프레임 선택 오차 최대 ${SAMPLE_INTERVAL_INPUT.value}ms · ` +
+            `스프라이트 ${spriteResult.spriteDraws}개 / 벡터 대체 ${spriteResult.vectorFallbacks}개` +
+            (spriteResult.reasons.length ? ` (${spriteResult.reasons.join(', ')})` : '');
+        const FAILED_PREPARATIONS = PREPARATION?.entries.filter((entry) => !entry.ready) ?? [];
+        PREPARATION_METRICS.textContent = PREPARATION
+            ? `${PREPARATION.status} ${PREPARATION.completed}/${PREPARATION.total} · planned ${PREPARATION.estimatedBytes.toLocaleString()} B · allocated ${PREPARATION.allocatedBytes.toLocaleString()} / ${PREPARATION.budgetBytes.toLocaleString()} B · initial CPU ${PREPARATION.cpuMs.toFixed(1)} ms · ${PREPARATION.entries.filter((entry) => entry.ready).length} separate sprite textures (no multi-page sheet)${FAILED_PREPARATIONS.length ? ` · ${FAILED_PREPARATIONS.map((entry) => `${entry.clip}/${entry.expression}:${entry.reason}`).join(', ')}` : ''}`
+            : 'Preparing atlas manifest…';
+        PATH_METRICS.textContent =
+            `SVG SHA ${ASSET.sourceSha256.slice(0, 12)} · 래스터 ${rasterResult.rasterDraws}개 · 벡터 대체 ${rasterResult.vectorFallbacks}개` +
+            (rasterResult.reasons.length ? ` (${rasterResult.reasons.join(', ')})` : '') +
+            ` · GPU pose ${POSES?.gpuDrawInstances ?? 0}개 · CPU pose ${POSES?.cpuDrawInstances ?? 0}개 · ` +
+            `GPU 버퍼 ${DEVICE_STATS.gpuBufferBytes.toLocaleString()} B · GPU 텍스처 ${DEVICE_STATS.gpuTextureBytes.toLocaleString()} B · ` +
+            `메시 업로드 ${MESH_STATS.geometryBytesUploaded.toLocaleString()} B · ` +
+            `선택 표정 벡터 ${VECTOR_TRIANGLES} 삼각형 / 부위 atlas ${ATLAS_STATS ? ATLAS_STATS.runCount * 2 : 0} 삼각형 · ` +
+            `${hardware.backend} · ${hardware.renderer} · ${hardware.vendor}`;
+        BY_ID('memory-metrics').textContent =
+            `GPU buffers ${DEVICE_STATS.gpuBufferBytes.toLocaleString()} B · textures ${DEVICE_STATS.gpuTextureBytes.toLocaleString()} B (render-target color included) · render targets ${DEVICE_STATS.gpuRenderTargetBytes.toLocaleString()} B (overlap with textures; do not sum)`;
+    }
     STATE.last = {
         frame: STATE.frameOrdinal,
         assetId: ASSET.id,
         sourceSha256: ASSET.sourceSha256,
         mode: MODE_INPUT.value,
+        layout: STATE.layout,
         count: PLAYERS.length,
         clip: CLIP_INPUT.value,
         expression: EXPRESSION_INPUT.value,
@@ -626,6 +867,11 @@ function writeMetrics(cpuMs, animationMs, submitMs, rasterResult, spriteResult) 
         drawCalls: DEVICE_STATS.drawCalls,
         uploadedBytes: DEVICE_STATS.bufferBytes,
         textureBytes: DEVICE_STATS.textureBytes,
+        gpuBufferBytes: DEVICE_STATS.gpuBufferBytes,
+        gpuTextureBytes: DEVICE_STATS.gpuTextureBytes,
+        gpuRenderTargetBytes: DEVICE_STATS.gpuRenderTargetBytes,
+        pathCpuMs,
+        fps: STATE.fps,
         imageTexUploadCount: DEVICE_STATS.imageTexUploadCount,
         imageTexUploadBytes: DEVICE_STATS.imageTexUploadBytes,
         atlas: ATLAS_STATS,
@@ -666,7 +912,7 @@ function writeMetrics(cpuMs, animationMs, submitMs, rasterResult, spriteResult) 
     };
 }
 
-function render(now, forcePreparation = false) {
+function render(now, forcePreparation = false, updateReadout = true) {
     frameHandle = null;
     if (STATE.disposed) {
         return;
@@ -688,6 +934,16 @@ function render(now, forcePreparation = false) {
     }
     try {
         const STARTED = performance.now();
+        if (STATE.autoRender) {
+            STATE.fpsSamples.push(now);
+            while (STATE.fpsSamples.length > 1 && now - STATE.fpsSamples[0] > 1000) {
+                STATE.fpsSamples.shift();
+            }
+            STATE.fps =
+                STATE.fpsSamples.length > 1
+                    ? ((STATE.fpsSamples.length - 1) * 1000) / (now - STATE.fpsSamples[0])
+                    : null;
+        }
         timer.poll();
         if (STATE.previousFrameMs !== null && STATE.playing) {
             STATE.timeMs += Math.max(0, Math.min(80, now - STATE.previousFrameMs)) * Number(PLAYBACK_RATE_INPUT.value);
@@ -710,6 +966,18 @@ function render(now, forcePreparation = false) {
         DEVICE.beginFrame({ width: WIDTH, height: HEIGHT, clearColor: [0, 0, 0, 0] });
         MESHES.beginFrame();
         const MODE = MODE_INPUT.value;
+        const POINTS = layoutPoints(PLAYERS.length);
+        STATE.layout = {
+            scene: SCENE_INPUT.value,
+            coordinateSpace: 'normalized-panel',
+            seed: Number(SEED_INPUT.value),
+            pixelSize: Number(PIXEL_SIZE_INPUT.value),
+            spread: Number(SPREAD_INPUT.value),
+            positionSignature: (SCENE_INPUT.value === 'single' ? POINTS : layoutPoints(8))
+                .map((point) => point.map((value) => value.toFixed(8)).join(','))
+                .join(';'),
+            positions: POINTS.slice(0, 8).map((point) => point.slice()),
+        };
         const PREPARATION_STARTED = performance.now();
         ensureAtlas();
         const PREPARED = ensureSpriteSets(forcePreparation);
@@ -725,6 +993,14 @@ function render(now, forcePreparation = false) {
         const QUERY = timer.begin({
             frame: ++STATE.frameOrdinal,
             mode: MODE_INPUT.value,
+            scene: SCENE_INPUT.value,
+            seed: Number(SEED_INPUT.value),
+            pixelSize: Number(PIXEL_SIZE_INPUT.value),
+            spread: Number(SPREAD_INPUT.value),
+            clip: CLIP_INPUT.value,
+            expression: EXPRESSION_INPUT.value,
+            mixed: MIXED_INPUT.checked,
+            zoom: Number(ZOOM_INPUT.value),
             count: PLAYERS.length,
             resolution: Number(RESOLUTION_INPUT.value),
             sampleIntervalMs: Number(SAMPLE_INTERVAL_INPUT.value),
@@ -746,25 +1022,38 @@ function render(now, forcePreparation = false) {
         }
         const ANIMATION_MS = performance.now() - ANIMATION_START;
         const SUBMIT_START = performance.now();
+        const PATH_CPU_MS = { vector: null, raster: null, sprite: null };
         if (MODE === 'vector' || MODE === 'split' || MODE === 'split3') {
-            drawActors('vector', cameraLayout('vector', CSS_WIDTH, CSS_HEIGHT), PROJECTION);
+            const PATH_START = performance.now();
+            drawActors('vector', cameraLayout('vector', CSS_WIDTH, CSS_HEIGHT, POINTS), PROJECTION);
+            PATH_CPU_MS.vector = performance.now() - PATH_START;
         }
+        const RASTER_START = performance.now();
         const RASTER_RESULT =
             MODE === 'raster' || MODE === 'split' || MODE === 'split3'
-                ? drawActors('raster', cameraLayout('raster', CSS_WIDTH, CSS_HEIGHT), PROJECTION)
+                ? drawActors('raster', cameraLayout('raster', CSS_WIDTH, CSS_HEIGHT, POINTS), PROJECTION)
                 : { rasterDraws: 0, vectorFallbacks: 0, reasons: [] };
+        if (MODE === 'raster' || MODE === 'split' || MODE === 'split3') {
+            PATH_CPU_MS.raster = performance.now() - RASTER_START;
+        }
+        const SPRITE_START = performance.now();
         const SPRITE_RESULT =
             MODE === 'sprite' || MODE === 'split3'
-                ? drawSpriteActors(cameraLayout('sprite', CSS_WIDTH, CSS_HEIGHT), PROJECTION)
+                ? drawSpriteActors(cameraLayout('sprite', CSS_WIDTH, CSS_HEIGHT, POINTS), PROJECTION)
                 : { spriteDraws: 0, vectorFallbacks: 0, reasons: [] };
+        if (MODE === 'sprite' || MODE === 'split3') {
+            PATH_CPU_MS.sprite = performance.now() - SPRITE_START;
+        }
         MESHES.flush();
         const SUBMIT_MS = performance.now() - SUBMIT_START;
         timer.end(QUERY);
         DEVICE.endFrame();
         const CPU_MS = Math.max(0, performance.now() - STARTED - PREPARATION_MS);
         if (!STATE.autoRender || now >= nextReadoutMs || !STATE.ready) {
-            writeMetrics(CPU_MS, ANIMATION_MS, SUBMIT_MS, RASTER_RESULT, SPRITE_RESULT);
+            writeMetrics(CPU_MS, ANIMATION_MS, SUBMIT_MS, PATH_CPU_MS, RASTER_RESULT, SPRITE_RESULT, updateReadout);
             nextReadoutMs = now + 250;
+        } else {
+            writeMetrics(CPU_MS, ANIMATION_MS, SUBMIT_MS, PATH_CPU_MS, RASTER_RESULT, SPRITE_RESULT, false);
         }
         STATE.ready = true;
     } catch (error) {
@@ -845,6 +1134,11 @@ MODE_INPUT.addEventListener('change', () => {
     resetTimer();
     synchronizeTimeControl();
 });
+BY_ID('single-tab').addEventListener('click', () => setScene('single'));
+BY_ID('crowd-tab').addEventListener('click', () => setScene('crowd'));
+PIXEL_SIZE_INPUT.addEventListener('change', resetTimer);
+SPREAD_INPUT.addEventListener('input', () => setSpread(Number(SPREAD_INPUT.value)));
+SEED_INPUT.addEventListener('change', () => setSeed(Number(SEED_INPUT.value)));
 COUNT_INPUT.addEventListener('change', () => {
     resetTimer();
     synchronizePlayers();
@@ -891,9 +1185,77 @@ PLAY_BUTTON.addEventListener('click', () => {
     STATE.playing = !STATE.playing;
     synchronizeTimeControl();
 });
+BY_ID('benchmark').addEventListener('click', () => {
+    runBenchmark({
+        scene: SCENE_INPUT.value,
+        count: SCENE_INPUT.value === 'single' ? 1 : Number(COUNT_INPUT.value),
+        pixelSize: Number(PIXEL_SIZE_INPUT.value),
+        spread: Number(SPREAD_INPUT.value),
+        seed: Number(SEED_INPUT.value),
+    }).catch(console.error);
+});
+document.querySelector('header').addEventListener('change', (event) => {
+    if (
+        !benchmarkRunning &&
+        [
+            'count',
+            'pixel-size',
+            'spread',
+            'seed',
+            'clip',
+            'expression',
+            'resolution',
+            'sample-interval',
+            'mixed',
+            'zoom',
+        ].includes(event.target.id)
+    ) {
+        STATE.benchmark = null;
+        document.querySelector('.benchmark-results').textContent =
+            'Settings changed. Run the sequential comparison again.';
+    }
+});
 window.addEventListener('pagehide', disposeComparison, { once: true });
 
 globalThis.__rasterComparison = {
+    get gpuTimerSupported() {
+        return timer.supported;
+    },
+    get benchmarkState() {
+        return {
+            scene: SCENE_INPUT.value,
+            mode: MODE_INPUT.value,
+            count: Number(COUNT_INPUT.value),
+            pixelSize: Number(PIXEL_SIZE_INPUT.value),
+            spread: Number(SPREAD_INPUT.value),
+            seed: Number(SEED_INPUT.value),
+            timeMs: STATE.timeMs,
+            playing: STATE.playing,
+            autoRender: STATE.autoRender,
+        };
+    },
+    graphicsStatus() {
+        return {
+            state: DEVICE.state,
+            contextLost: STATE.contextLost || DEVICE.gl.isContextLost(),
+            glError: DEVICE.gl.getError(),
+            error: STATE.error,
+        };
+    },
+    restoreBenchmarkState(state) {
+        setAutoRender(false);
+        setScene(state.scene);
+        MODE_INPUT.value = state.mode;
+        COUNT_INPUT.value = String(state.count);
+        setPixelSize(state.pixelSize);
+        setSpread(state.spread);
+        setSeed(state.seed);
+        synchronizePlayers();
+        STATE.timeMs = state.timeMs;
+        STATE.playing = state.playing;
+        synchronizeTimeControl();
+        setAutoRender(state.autoRender);
+    },
     get ready() {
         return STATE.ready;
     },
@@ -916,7 +1278,8 @@ globalThis.__rasterComparison = {
     drainGpuSamples() {
         return timer.drain();
     },
-    renderOnce({ timeMs } = {}) {
+    runBenchmark,
+    renderOnce({ timeMs, updateReadout = true } = {}) {
         setAutoRender(false);
         if (timeMs !== undefined) {
             if (!Number.isFinite(timeMs)) {
@@ -925,7 +1288,7 @@ globalThis.__rasterComparison = {
             STATE.timeMs = timeMs;
             STATE.playing = false;
         }
-        render(performance.now(), true);
+        render(performance.now(), true, updateReadout);
         if (STATE.contextLost) {
             throw new Error('Graphics context is temporarily unavailable');
         }
@@ -938,6 +1301,10 @@ globalThis.__rasterComparison = {
         MODE_INPUT.value = value;
         MODE_INPUT.dispatchEvent(new Event('change'));
     },
+    setScene,
+    setPixelSize,
+    setSpread,
+    setSeed,
     setCount(value) {
         COUNT_INPUT.value = String(value);
         COUNT_INPUT.dispatchEvent(new Event('change'));
