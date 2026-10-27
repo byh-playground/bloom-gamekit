@@ -1674,6 +1674,7 @@ var VectorRenderer = class {
     this.activeRadial = false;
     this.activeWhiteFlash = false;
     this.activeGradient = null;
+    this.blend = "source-over";
     this.stencilClips = [];
     this.clipPaths = /* @__PURE__ */ new Map();
     this.clipPathBytes = 0;
@@ -2237,7 +2238,7 @@ var VectorRenderer = class {
         } : {}
       },
       textures: [TEXTURE],
-      blend: "source-over",
+      blend: this.blend,
       stencil: this.stencilDepth ? {
         func: "equal",
         ref: this.stencilDepth,
@@ -2247,6 +2248,16 @@ var VectorRenderer = class {
       } : false
     });
     this.count = 0;
+  }
+  // Only source-over and the additive 'lighter' are offered; a change submits what the other operation queued.
+  setBlend(blend) {
+    if (blend !== "source-over" && blend !== "lighter") {
+      throw new RangeError("VectorRenderer supports only source-over and lighter blending");
+    }
+    if (blend !== this.blend) {
+      this._submit();
+      this.blend = blend;
+    }
   }
   _useTexture(texture, { radial = false, whiteFlash = false, gradient = null } = {}) {
     if (this.activeTexture !== texture || this.activeRadial !== radial || this.activeWhiteFlash !== whiteFlash || this.activeGradient?.gradient !== gradient?.gradient) {
@@ -5135,7 +5146,7 @@ var PrimitiveRenderer = class {
     this.frameStats = this._emptyStats();
   }
   _sameState(state, next) {
-    if (state.clip.key !== next.clip.key || state.stencilRef !== next.stencilRef || state.projection.length !== next.projection.length) {
+    if (state.clip.key !== next.clip.key || state.stencilRef !== next.stencilRef || state.blend !== next.blend || state.projection.length !== next.projection.length) {
       return false;
     }
     for (let i = 0; i < state.projection.length; i++) {
@@ -5145,7 +5156,7 @@ var PrimitiveRenderer = class {
     }
     return true;
   }
-  draw({ matrix, color: color2, params, projection, clips, stencilRef = null }) {
+  draw({ matrix, color: color2, params, projection, clips, stencilRef = null, blend = "source-over" }) {
     if (this.disposed) {
       throw new Error("PrimitiveRenderer is disposed");
     }
@@ -5156,7 +5167,8 @@ var PrimitiveRenderer = class {
     const NEXT_STATE = {
       clip: CLIP,
       projection,
-      stencilRef
+      stencilRef,
+      blend
     };
     if (this.pendingCount && !this._sameState(this.pendingState, NEXT_STATE)) {
       this.flush("stateChange");
@@ -5201,7 +5213,7 @@ var PrimitiveRenderer = class {
       buffer: this.vertexBuffer,
       count: QUAD_VERTICES.length / 2,
       uniforms: UNIFORMS2,
-      blend: "source-over",
+      blend: state.blend,
       stencil: stencilState(state.stencilRef)
     });
   }
@@ -5233,7 +5245,7 @@ var PrimitiveRenderer = class {
       instances: this.pendingCount,
       count: QUAD_VERTICES.length / 2,
       uniforms: UNIFORMS2,
-      blend: "source-over",
+      blend: STATE.blend,
       stencil: stencilState(STATE.stencilRef)
     });
     this.frameStats.draws++;
@@ -5693,6 +5705,7 @@ var VectorContext = class {
     this._textBaseline = "alphabetic";
     this._direction = "inherit";
     this._filter = "none";
+    this._composite = "source-over";
     this.forceColor = null;
     this.stack = [];
     this.frameStats = {};
@@ -5807,6 +5820,17 @@ var VectorContext = class {
       throw new RangeError("VectorContext supports only none and brightness(0) invert(1) filters");
     }
     this._filter = v;
+  }
+  get globalCompositeOperation() {
+    return this._composite;
+  }
+  set globalCompositeOperation(v) {
+    this._frame();
+    if (v !== "source-over" && v !== "lighter") {
+      throw new RangeError("VectorContext supports only source-over and lighter composite operations");
+    }
+    this.vector.setBlend(v);
+    this._composite = v;
   }
   get stencilRef() {
     return this.vector.stencilDepth || null;
@@ -6009,6 +6033,7 @@ var VectorContext = class {
       textBaseline: this._textBaseline,
       direction: this._direction,
       filter: this._filter,
+      composite: this._composite,
       forceColor: this.forceColor
     });
     this.vector.save();
@@ -6037,8 +6062,10 @@ var VectorContext = class {
       _textBaseline: S.textBaseline,
       _direction: S.direction,
       _filter: S.filter,
+      _composite: S.composite,
       forceColor: S.forceColor
     });
+    this.vector.setBlend(S.composite);
   }
   setTransform(a, b, c, d, e, f) {
     this.vector.setTransform(a, b, c, d, e, f);
@@ -6285,7 +6312,8 @@ var VectorContext = class {
       params,
       projection: this.vector.projection,
       clips: this.vector.clips,
-      stencilRef: this.vector.stencilDepth || null
+      stencilRef: this.vector.stencilDepth || null,
+      blend: this._composite
     });
   }
   _tryPrimitiveFill() {
