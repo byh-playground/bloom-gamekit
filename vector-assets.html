@@ -3357,6 +3357,7 @@ void main(){int col=int(gl_FragCoord.x),row=int(gl_FragCoord.y),part=col/3,compo
       this.quadBuffer = null;
       this.rowBuffer = null;
       this.frameMetrics = {};
+      this.pendingUpdates = false;
       this.disposed = false;
       this.gpuUnavailableReason = backend !== "auto" ? "cpuRequested" : !device.floatRenderTargetsSupported ? "floatRenderTargets" : null;
       this.onRestored = () => {
@@ -3386,6 +3387,7 @@ void main(){int col=int(gl_FragCoord.x),row=int(gl_FragCoord.y),part=col/3,compo
           RECORD.cpuDirty = RECORD.mode === "cpu";
           RECORD.usedFrame = -1;
         }
+        this.pendingUpdates = true;
       };
       device.canvas.addEventListener("webglcontextrestored", this.onRestored);
       this.beginFrame();
@@ -3405,7 +3407,10 @@ void main(){int col=int(gl_FragCoord.x),row=int(gl_FragCoord.y),part=col/3,compo
         cpuPoseUploadBytes: 0,
         stateUploadBytes: 0,
         overrideUploadBytes: 0,
-        fallbackReasons: /* @__PURE__ */ Object.create(null)
+        fallbackReasons: /* @__PURE__ */ Object.create(null),
+        flushCalls: 0,
+        flushRecordVisits: 0,
+        cleanFlushSkips: 0
       };
     }
     _boundary() {
@@ -3466,6 +3471,7 @@ void main(){int col=int(gl_FragCoord.x),row=int(gl_FragCoord.y),part=col/3,compo
       for (const RECORD of this.instances.values()) {
         RECORD.dirty = true;
       }
+      this.pendingUpdates = true;
     }
     deleteSource(handle) {
       if (!this.sources.has(handle)) {
@@ -3552,6 +3558,7 @@ void main(){int col=int(gl_FragCoord.x),row=int(gl_FragCoord.y),part=col/3,compo
         RECORD.overrideDirty = true;
         RECORD.cpuDirty = RECORD.mode === "cpu";
       }
+      this.pendingUpdates = true;
       if (this.rowBuffer) {
         this.device.deleteVertexBuffer(this.rowBuffer);
         this.rowBuffer = null;
@@ -3580,6 +3587,7 @@ void main(){int col=int(gl_FragCoord.x),row=int(gl_FragCoord.y),part=col/3,compo
       };
       this.instances.set(HANDLE, RECORD);
       this.rows[ROW] = RECORD;
+      this.pendingUpdates = true;
       return HANDLE;
     }
     deleteInstance(handle) {
@@ -3663,6 +3671,7 @@ void main(){int col=int(gl_FragCoord.x),row=int(gl_FragCoord.y),part=col/3,compo
         RECORD.overrideDirty = true;
       }
       RECORD.dirty ||= STATE_CHANGED || BASE_CHANGED || RECORD.mode !== "gpu";
+      this.pendingUpdates ||= RECORD.dirty;
       RECORD.mode = "gpu";
       RECORD.reason = null;
       return handle;
@@ -3702,6 +3711,7 @@ void main(){int col=int(gl_FragCoord.x),row=int(gl_FragCoord.y),part=col/3,compo
       RECORD.reason = reason;
       RECORD.cpuDirty = true;
       RECORD.dirty = false;
+      this.pendingUpdates = true;
       return handle;
     }
     resolve(handle) {
@@ -3743,6 +3753,7 @@ void main(){int col=int(gl_FragCoord.x),row=int(gl_FragCoord.y),part=col/3,compo
       let last = -1;
       const UPLOADING = [];
       for (const RECORD of this.instances.values()) {
+        this.frameMetrics.flushRecordVisits++;
         if (RECORD[dirtyKey]) {
           first = Math.min(first, RECORD.row);
           last = Math.max(last, RECORD.row);
@@ -3761,7 +3772,13 @@ void main(){int col=int(gl_FragCoord.x),row=int(gl_FragCoord.y),part=col/3,compo
     }
     flushUpdates() {
       this._ready();
+      this.frameMetrics.flushCalls++;
       if (!this.instances.size) {
+        this.pendingUpdates = false;
+        return;
+      }
+      if (!this.pendingUpdates) {
+        this.frameMetrics.cleanFlushSkips++;
         return;
       }
       if (this.cpuTexture) {
@@ -3769,6 +3786,7 @@ void main(){int col=int(gl_FragCoord.x),row=int(gl_FragCoord.y),part=col/3,compo
       }
       const GROUPS = /* @__PURE__ */ new Map();
       for (const RECORD of this.instances.values()) {
+        this.frameMetrics.flushRecordVisits++;
         if (RECORD.dirty && RECORD.mode === "gpu") {
           if (!GROUPS.has(RECORD.source)) {
             GROUPS.set(RECORD.source, []);
@@ -3777,6 +3795,7 @@ void main(){int col=int(gl_FragCoord.x),row=int(gl_FragCoord.y),part=col/3,compo
         }
       }
       if (!GROUPS.size) {
+        this.pendingUpdates = false;
         return;
       }
       this._uploadRows("stateData", "stateDirty", this.stateTexture, 2, "stateUploadBytes");
@@ -3839,6 +3858,7 @@ void main(){int col=int(gl_FragCoord.x),row=int(gl_FragCoord.y),part=col/3,compo
       } finally {
         this.device.unbindRenderTarget(this.gpuTarget);
       }
+      this.pendingUpdates = false;
     }
     stats() {
       const TOTAL = this.frameMetrics.gpuDrawInstances + this.frameMetrics.cpuDrawInstances + this.frameMetrics.uniformDrawInstances;
@@ -11978,6 +11998,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
       let poseRevision = 0;
       let resolvedRevision = -1;
       let resolvedPose = null;
+      let preparedPose = null;
       const RESOLVED_MATRICES = /* @__PURE__ */ new Map();
       let playerDisposed = false;
       const POSE_INSTANCE = poseSource ? meshRenderer.createPoseInstance(poseSource) : null;
@@ -11988,10 +12009,12 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         partialParts: 0,
         partialSampleMs: 0,
         gpuPrepares: 0,
-        cpuFallbacks: 0
+        cpuFallbacks: 0,
+        preparedPoseCacheHits: 0
       };
       const INVALIDATE_POSE = () => {
         poseRevision++;
+        preparedPose = null;
       };
       const ASSERT_PLAYER = () => {
         REQUIRE_READY();
@@ -12276,23 +12299,46 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
       };
       const VALIDATE_EXCLUSIONS = (excludeParts) => {
         if (excludeParts === null) {
-          return;
+          return 0;
         }
         if (!(excludeParts instanceof Set)) {
           throw new TypeError("excludeParts must be a Set of known part ids");
         }
+        let excludedMask = 0;
         for (const PART_ID of excludeParts) {
           if (!PART_INDICES.has(PART_ID)) {
             throw new TypeError(`Unknown vector part: ${PART_ID}`);
           }
+          excludedMask |= 1 << PART_INDICES.get(PART_ID);
         }
+        return excludedMask;
       };
       const PREPARE_POSE = ({ excludeParts = null } = {}) => {
         ASSERT_PLAYER();
-        VALIDATE_EXCLUSIONS(excludeParts);
+        const EXCLUDED_MASK = VALIDATE_EXCLUSIONS(excludeParts);
         if (!POSE_INSTANCE) {
           return null;
         }
+        const DEVICE = meshRenderer.device;
+        const FRAME = DEVICE?.stats?.frame;
+        const RESTORES = DEVICE?.stats?.restores ?? 0;
+        const GPU_UNAVAILABLE = meshRenderer.poseRenderer?.gpuUnavailableReason ?? null;
+        const CACHEABLE = Number.isSafeInteger(FRAME) && (DEVICE?.state === void 0 || DEVICE.state === "ready") && (meshRenderer.state === void 0 || meshRenderer.state === "ready");
+        if (CACHEABLE && preparedPose?.revision === poseRevision && preparedPose.frame === FRAME && preparedPose.restores === RESTORES && preparedPose.gpuUnavailable === GPU_UNAVAILABLE && preparedPose.excludedMask === EXCLUDED_MASK) {
+          POSE_METRICS.preparedPoseCacheHits++;
+          return preparedPose.handle;
+        }
+        const CACHE_PREPARED = (handle) => {
+          preparedPose = CACHEABLE && handle ? {
+            revision: poseRevision,
+            frame: FRAME,
+            restores: RESTORES,
+            gpuUnavailable: meshRenderer.poseRenderer?.gpuUnavailableReason ?? null,
+            excludedMask: EXCLUDED_MASK,
+            handle
+          } : null;
+          return handle;
+        };
         const MORPH = authoredMorph(SKETCH_MORPH_STYLE, displayTimeMs2);
         const ACTIVE = GPU_CLIP();
         if (ACTIVE) {
@@ -12306,7 +12352,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
           });
           if (HANDLE) {
             POSE_METRICS.gpuPrepares++;
-            return HANDLE;
+            return CACHE_PREPARED(HANDLE);
           }
         }
         const RESOLVED = WORLD_MATRICES();
@@ -12318,7 +12364,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         const ACTIVE_PLAYBACK = ACTIVE_CLIP(rootPlayback, displayTimeMs2);
         const REASON = ACTIVE ? meshRenderer.poseRenderer?.gpuUnavailableReason ?? "gpuUnavailable" : ACTIVE_PLAYBACK ? POSE_PROGRAM.clips[ACTIVE_PLAYBACK.name]?.reason ?? "unsupportedClip" : "transitionBlend";
         POSE_METRICS.cpuFallbacks++;
-        return meshRenderer.prepareCpuPose(POSE_INSTANCE, PARTS, MORPH, REASON);
+        return CACHE_PREPARED(meshRenderer.prepareCpuPose(POSE_INSTANCE, PARTS, MORPH, REASON));
       };
       const DRAW = ({
         projection,
@@ -43230,6 +43276,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
       let poseRevision = 0;
       let resolvedRevision = -1;
       let resolvedPose = null;
+      let preparedPose = null;
       const RESOLVED_MATRICES = /* @__PURE__ */ new Map();
       let playerDisposed = false;
       const POSE_INSTANCE = poseSource ? meshRenderer.createPoseInstance(poseSource) : null;
@@ -43240,10 +43287,12 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         partialParts: 0,
         partialSampleMs: 0,
         gpuPrepares: 0,
-        cpuFallbacks: 0
+        cpuFallbacks: 0,
+        preparedPoseCacheHits: 0
       };
       const INVALIDATE_POSE = () => {
         poseRevision++;
+        preparedPose = null;
       };
       const ASSERT_PLAYER = () => {
         REQUIRE_READY();
@@ -43528,23 +43577,46 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
       };
       const VALIDATE_EXCLUSIONS = (excludeParts) => {
         if (excludeParts === null) {
-          return;
+          return 0;
         }
         if (!(excludeParts instanceof Set)) {
           throw new TypeError("excludeParts must be a Set of known part ids");
         }
+        let excludedMask = 0;
         for (const PART_ID of excludeParts) {
           if (!PART_INDICES.has(PART_ID)) {
             throw new TypeError(`Unknown vector part: ${PART_ID}`);
           }
+          excludedMask |= 1 << PART_INDICES.get(PART_ID);
         }
+        return excludedMask;
       };
       const PREPARE_POSE = ({ excludeParts = null } = {}) => {
         ASSERT_PLAYER();
-        VALIDATE_EXCLUSIONS(excludeParts);
+        const EXCLUDED_MASK = VALIDATE_EXCLUSIONS(excludeParts);
         if (!POSE_INSTANCE) {
           return null;
         }
+        const DEVICE = meshRenderer.device;
+        const FRAME = DEVICE?.stats?.frame;
+        const RESTORES = DEVICE?.stats?.restores ?? 0;
+        const GPU_UNAVAILABLE = meshRenderer.poseRenderer?.gpuUnavailableReason ?? null;
+        const CACHEABLE = Number.isSafeInteger(FRAME) && (DEVICE?.state === void 0 || DEVICE.state === "ready") && (meshRenderer.state === void 0 || meshRenderer.state === "ready");
+        if (CACHEABLE && preparedPose?.revision === poseRevision && preparedPose.frame === FRAME && preparedPose.restores === RESTORES && preparedPose.gpuUnavailable === GPU_UNAVAILABLE && preparedPose.excludedMask === EXCLUDED_MASK) {
+          POSE_METRICS.preparedPoseCacheHits++;
+          return preparedPose.handle;
+        }
+        const CACHE_PREPARED = (handle) => {
+          preparedPose = CACHEABLE && handle ? {
+            revision: poseRevision,
+            frame: FRAME,
+            restores: RESTORES,
+            gpuUnavailable: meshRenderer.poseRenderer?.gpuUnavailableReason ?? null,
+            excludedMask: EXCLUDED_MASK,
+            handle
+          } : null;
+          return handle;
+        };
         const MORPH = authoredMorph2(SKETCH_MORPH_STYLE, displayTimeMs2);
         const ACTIVE = GPU_CLIP();
         if (ACTIVE) {
@@ -43558,7 +43630,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
           });
           if (HANDLE) {
             POSE_METRICS.gpuPrepares++;
-            return HANDLE;
+            return CACHE_PREPARED(HANDLE);
           }
         }
         const RESOLVED = WORLD_MATRICES();
@@ -43570,7 +43642,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         const ACTIVE_PLAYBACK = ACTIVE_CLIP(rootPlayback, displayTimeMs2);
         const REASON = ACTIVE ? meshRenderer.poseRenderer?.gpuUnavailableReason ?? "gpuUnavailable" : ACTIVE_PLAYBACK ? POSE_PROGRAM.clips[ACTIVE_PLAYBACK.name]?.reason ?? "unsupportedClip" : "transitionBlend";
         POSE_METRICS.cpuFallbacks++;
-        return meshRenderer.prepareCpuPose(POSE_INSTANCE, PARTS, MORPH, REASON);
+        return CACHE_PREPARED(meshRenderer.prepareCpuPose(POSE_INSTANCE, PARTS, MORPH, REASON));
       };
       const DRAW = ({
         projection,
