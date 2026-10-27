@@ -664,6 +664,10 @@
   });
   var ALL_COLOR = Object.freeze([true, true, true, true]);
   var IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
+  var MAX_PARTS = 16;
+  var POSE_WIDTH = MAX_PARTS * 3;
+  var OVERRIDE_WIDTH = MAX_PARTS * 2;
+  var QUAD = new Float32Array([0, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 1]);
   var IDENTITY2 = Object.freeze([1, 0, 0, 1, 0, 0]);
   var ZERO_MORPH = Object.freeze([0, 0]);
   var EMPTY_CLIP = Object.freeze({
@@ -730,27 +734,28 @@
   var WHITE3 = Object.freeze([1, 1, 1, 1]);
   var WHITE4 = Object.freeze([1, 1, 1, 1]);
   var CLEAR = Object.freeze([0, 0, 0, 0]);
-  var VERTEX3 = `
-attribute vec2 a_position;
-attribute vec2 a_uv;
-attribute vec4 a_color;
+  var VERTEX4 = `#version 300 es
+in vec2 a_position;
+in vec2 a_uv;
+in vec4 a_color;
 uniform mat3 u_projection;
-varying vec2 v_uv;
-varying vec4 v_color;
+out vec2 v_uv;
+out vec4 v_color;
 void main() {
   vec3 p = u_projection * vec3(a_position, 1.0);
   gl_Position = vec4(p.xy, 0.0, 1.0);
   v_uv = a_uv; v_color = a_color;
 }`;
-  var FRAGMENT2 = `
+  var FRAGMENT3 = `#version 300 es
 precision mediump float;
 uniform sampler2D u_texture;
-varying vec2 v_uv;
-varying vec4 v_color;
+in vec2 v_uv;
+in vec4 v_color;
+out vec4 outColor;
 void main() {
-  vec4 t = texture2D(u_texture, v_uv);
+  vec4 t = texture(u_texture, v_uv);
   float alpha = t.a * v_color.a;
-  gl_FragColor = vec4(t.rgb * v_color.rgb * v_color.a, alpha);
+  outColor = vec4(t.rgb * v_color.rgb * v_color.a, alpha);
 }`;
   function finite3(value, name) {
     if (!Number.isFinite(value)) {
@@ -817,7 +822,7 @@ void main() {
         throw new TypeError("depth must be boolean");
       }
       this.canvas = canvas;
-      this.gl = canvas.getContext("webgl", {
+      this.gl = canvas.getContext("webgl2", {
         alpha: true,
         premultipliedAlpha: true,
         antialias,
@@ -826,7 +831,7 @@ void main() {
         preserveDrawingBuffer
       });
       if (!this.gl) {
-        throw new Error("WebGL 1 is required; no Canvas2D fallback");
+        throw new Error("WebGL 2 is required");
       }
       this.state = "ready";
       this.failure = null;
@@ -845,7 +850,7 @@ void main() {
         rotation: 0
       };
       this.stats = {
-        backend: "webgl1",
+        backend: "webgl2",
         frame: 0,
         drawCalls: 0,
         vertices: 0,
@@ -904,8 +909,8 @@ void main() {
       let vertex;
       let fragment3;
       try {
-        vertex = compile2(GL, GL.VERTEX_SHADER, VERTEX3);
-        fragment3 = compile2(GL, GL.FRAGMENT_SHADER, FRAGMENT2);
+        vertex = compile2(GL, GL.VERTEX_SHADER, VERTEX4);
+        fragment3 = compile2(GL, GL.FRAGMENT_SHADER, FRAGMENT3);
         this.program = GL.createProgram();
         if (!this.program) {
           throw new Error("WebGL program allocation failed");
@@ -932,7 +937,8 @@ void main() {
       GL.bufferData(GL.ARRAY_BUFFER, this.vertices.byteLength, GL.DYNAMIC_DRAW);
       this.stats.bufferAllocations++;
       GL.useProgram(this.program);
-      this.instancingExtension = GL.getExtension("ANGLE_instanced_arrays");
+      GL.bindVertexArray(null);
+      this.maxVertexAttributes = GL.getParameter(GL.MAX_VERTEX_ATTRIBS);
       this.attributeLocations = [];
       for (const [NAME, SIZE, OFFSET] of [
         ["a_position", 2, 0],
@@ -942,6 +948,7 @@ void main() {
         const LOCATION = GL.getAttribLocation(this.program, NAME);
         this.attributeLocations.push([LOCATION, SIZE, OFFSET]);
         GL.enableVertexAttribArray(LOCATION);
+        GL.vertexAttribDivisor(LOCATION, 0);
         GL.vertexAttribPointer(LOCATION, SIZE, GL.FLOAT, false, 32, OFFSET);
       }
       this.uProjection = GL.getUniformLocation(this.program, "u_projection");
@@ -1091,13 +1098,19 @@ void main() {
       }
       record.texture = TEXTURE;
       try {
+        GL.activeTexture(GL.TEXTURE0);
         GL.bindTexture(GL.TEXTURE_2D, TEXTURE);
+        GL.bindBuffer(GL.PIXEL_UNPACK_BUFFER, null);
+        GL.pixelStorei(GL.UNPACK_ALIGNMENT, 1);
+        GL.pixelStorei(GL.UNPACK_ROW_LENGTH, 0);
+        GL.pixelStorei(GL.UNPACK_SKIP_PIXELS, 0);
+        GL.pixelStorei(GL.UNPACK_SKIP_ROWS, 0);
         GL.pixelStorei(GL.UNPACK_PREMULTIPLY_ALPHA_WEBGL, !(record.source instanceof Uint8Array));
         if (record.source instanceof Uint8Array) {
           GL.texImage2D(
             GL.TEXTURE_2D,
             0,
-            GL.RGBA,
+            GL.RGBA8,
             record.width,
             record.height,
             0,
@@ -1106,7 +1119,7 @@ void main() {
             record.source
           );
         } else {
-          GL.texImage2D(GL.TEXTURE_2D, 0, GL.RGBA, GL.RGBA, GL.UNSIGNED_BYTE, record.source);
+          GL.texImage2D(GL.TEXTURE_2D, 0, GL.RGBA8, GL.RGBA, GL.UNSIGNED_BYTE, record.source);
         }
         const FILTER = record.filter === "linear" ? GL.LINEAR : GL.NEAREST;
         GL.texParameteri(GL.TEXTURE_2D, GL.TEXTURE_MIN_FILTER, FILTER);
@@ -1227,9 +1240,14 @@ void main() {
         }
         pixels = this.regionBytes;
       }
+      GL.activeTexture(GL.TEXTURE0);
       GL.bindTexture(GL.TEXTURE_2D, PREVIOUS.texture);
+      GL.bindBuffer(GL.PIXEL_UNPACK_BUFFER, null);
       GL.pixelStorei(GL.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
       GL.pixelStorei(GL.UNPACK_ALIGNMENT, 1);
+      GL.pixelStorei(GL.UNPACK_ROW_LENGTH, 0);
+      GL.pixelStorei(GL.UNPACK_SKIP_PIXELS, 0);
+      GL.pixelStorei(GL.UNPACK_SKIP_ROWS, 0);
       GL.texSubImage2D(GL.TEXTURE_2D, 0, x, y, width, height, GL.RGBA, GL.UNSIGNED_BYTE, pixels);
       const ERROR = GL.getError();
       if (ERROR !== GL.NO_ERROR) {
@@ -1384,10 +1402,15 @@ void main() {
       }
       const GL = this.gl, VIEW = this.vertices.subarray(0, this.vertexCount * 8);
       GL.useProgram(this.program);
+      GL.bindVertexArray(null);
+      for (let index = 0; index < this.maxVertexAttributes; index++) {
+        GL.disableVertexAttribArray(index);
+        GL.vertexAttribDivisor(index, 0);
+      }
       GL.bindBuffer(GL.ARRAY_BUFFER, this.buffer);
       for (const [LOCATION, SIZE, OFFSET] of this.attributeLocations) {
         GL.enableVertexAttribArray(LOCATION);
-        this.instancingExtension?.vertexAttribDivisorANGLE(LOCATION, 0);
+        GL.vertexAttribDivisor(LOCATION, 0);
         GL.vertexAttribPointer(LOCATION, SIZE, GL.FLOAT, false, 32, OFFSET);
       }
       GL.activeTexture(GL.TEXTURE0);
@@ -1421,7 +1444,11 @@ void main() {
     }
     _deleteGPU() {
       const GL = this.gl;
+      if (GL.isContextLost()) {
+        return;
+      }
       GL.useProgram(null);
+      GL.bindVertexArray(null);
       GL.bindBuffer(GL.ARRAY_BUFFER, null);
       GL.bindTexture(GL.TEXTURE_2D, null);
       for (const RECORD of this.textures.values()) {
@@ -4151,7 +4178,7 @@ void main() {
       return SIGNED(Number(BigInt(SIGNED(a)) * 1024n / BigInt(b)));
     }
   });
-  var VERSION = "0.16.0";
+  var VERSION = "0.17.0";
   var REPLAY_FORMAT_VERSION = "0.2.0-dev";
   var PROTOCOL_VERSION = 3;
   var CHUNK_SIZE = 16384;
