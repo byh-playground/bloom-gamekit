@@ -59,6 +59,7 @@ export class PoseRenderer {
         this.quadBuffer = null;
         this.rowBuffer = null;
         this.frameMetrics = {};
+        this.pendingUpdates = false;
         this.disposed = false;
         this.gpuUnavailableReason =
             backend !== 'auto' ? 'cpuRequested' : !device.floatRenderTargetsSupported ? 'floatRenderTargets' : null;
@@ -95,6 +96,7 @@ export class PoseRenderer {
                 RECORD.cpuDirty = RECORD.mode === 'cpu';
                 RECORD.usedFrame = -1;
             }
+            this.pendingUpdates = true;
         };
         device.canvas.addEventListener('webglcontextrestored', this.onRestored);
         this.beginFrame();
@@ -115,6 +117,9 @@ export class PoseRenderer {
             stateUploadBytes: 0,
             overrideUploadBytes: 0,
             fallbackReasons: Object.create(null),
+            flushCalls: 0,
+            flushRecordVisits: 0,
+            cleanFlushSkips: 0,
         };
     }
     _boundary() {
@@ -183,6 +188,7 @@ export class PoseRenderer {
         for (const RECORD of this.instances.values()) {
             RECORD.dirty = true;
         }
+        this.pendingUpdates = true;
     }
     deleteSource(handle) {
         if (!this.sources.has(handle)) {
@@ -273,6 +279,7 @@ export class PoseRenderer {
             RECORD.overrideDirty = true;
             RECORD.cpuDirty = RECORD.mode === 'cpu';
         }
+        this.pendingUpdates = true;
         if (this.rowBuffer) {
             this.device.deleteVertexBuffer(this.rowBuffer);
             this.rowBuffer = null;
@@ -301,6 +308,7 @@ export class PoseRenderer {
         };
         this.instances.set(HANDLE, RECORD);
         this.rows[ROW] = RECORD;
+        this.pendingUpdates = true;
         return HANDLE;
     }
     deleteInstance(handle) {
@@ -396,6 +404,7 @@ export class PoseRenderer {
             RECORD.overrideDirty = true;
         }
         RECORD.dirty ||= STATE_CHANGED || BASE_CHANGED || RECORD.mode !== 'gpu';
+        this.pendingUpdates ||= RECORD.dirty;
         RECORD.mode = 'gpu';
         RECORD.reason = null;
         return handle;
@@ -435,6 +444,7 @@ export class PoseRenderer {
         RECORD.reason = reason;
         RECORD.cpuDirty = true;
         RECORD.dirty = false;
+        this.pendingUpdates = true;
         return handle;
     }
     resolve(handle) {
@@ -476,6 +486,7 @@ export class PoseRenderer {
         let last = -1;
         const UPLOADING = [];
         for (const RECORD of this.instances.values()) {
+            this.frameMetrics.flushRecordVisits++;
             if (RECORD[dirtyKey]) {
                 first = Math.min(first, RECORD.row);
                 last = Math.max(last, RECORD.row);
@@ -494,7 +505,13 @@ export class PoseRenderer {
     }
     flushUpdates() {
         this._ready();
+        this.frameMetrics.flushCalls++;
         if (!this.instances.size) {
+            this.pendingUpdates = false;
+            return;
+        }
+        if (!this.pendingUpdates) {
+            this.frameMetrics.cleanFlushSkips++;
             return;
         }
         if (this.cpuTexture) {
@@ -502,6 +519,7 @@ export class PoseRenderer {
         }
         const GROUPS = new Map();
         for (const RECORD of this.instances.values()) {
+            this.frameMetrics.flushRecordVisits++;
             if (RECORD.dirty && RECORD.mode === 'gpu') {
                 if (!GROUPS.has(RECORD.source)) {
                     GROUPS.set(RECORD.source, []);
@@ -510,6 +528,7 @@ export class PoseRenderer {
             }
         }
         if (!GROUPS.size) {
+            this.pendingUpdates = false;
             return;
         }
         this._uploadRows('stateData', 'stateDirty', this.stateTexture, 2, 'stateUploadBytes');
@@ -572,6 +591,7 @@ export class PoseRenderer {
         } finally {
             this.device.unbindRenderTarget(this.gpuTarget);
         }
+        this.pendingUpdates = false;
     }
     stats() {
         const TOTAL =
