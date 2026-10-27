@@ -5005,7 +5005,8 @@ function createVectorSpriteAtlas(meshRenderer, asset, compiledAsset, {
   pixelsPerUnit = 1,
   padding = 2,
   maxAtlasSize = null,
-  maxAtlasBytes = DEFAULT_MAX_BYTES2
+  maxAtlasBytes = DEFAULT_MAX_BYTES2,
+  paintRegions = null
 } = {}) {
   validateCompiledAsset(compiledAsset);
   const DEVICE = meshRenderer?.device, GEOMETRY = compiledAsset.geometry, SOURCE_MESH_MATCHES = asset?.mesh ? asset.mesh.renderer === meshRenderer && asset.mesh.partCount === GEOMETRY.partCount && sameGeometry2(asset.mesh, GEOMETRY) : GEOMETRY.vertices.length === 0;
@@ -5019,6 +5020,12 @@ function createVectorSpriteAtlas(meshRenderer, asset, compiledAsset, {
   if (!Number.isFinite(sampleIntervalMs) || sampleIntervalMs <= 0 || !Number.isFinite(pixelsPerUnit) || pixelsPerUnit <= 0 || !Number.isSafeInteger(padding) || padding < 1 || !Number.isSafeInteger(maxAtlasSize) || maxAtlasSize < 1 || maxAtlasSize > DEVICE.maxTextureSize || !Number.isSafeInteger(maxAtlasBytes) || maxAtlasBytes < 4) {
     throw new TypeError("Finite positive sample interval, pixel scale, padding and atlas budgets required");
   }
+  const PAINT_NAMES = GEOMETRY.paintRegions?.names ?? [], PAINT = packPaintRegions(PAINT_NAMES, paintRegions, new Float32Array((PAINT_NAMES.length + 1) * 4)), CAPTURED_PAINT = Object.fromEntries(
+    PAINT_NAMES.flatMap((name, index) => {
+      const AT = (index + 1) * 4;
+      return PAINT[AT + 3] ? [[name, Array.from(PAINT.subarray(AT, AT + 3))]] : [];
+    })
+  );
   const KEY = JSON.stringify([
     clip,
     expression,
@@ -5026,7 +5033,8 @@ function createVectorSpriteAtlas(meshRenderer, asset, compiledAsset, {
     pixelsPerUnit,
     padding,
     maxAtlasSize,
-    maxAtlasBytes
+    maxAtlasBytes,
+    Array.from(PAINT)
   ]);
   let cached = CACHE.get(asset);
   if (!cached) {
@@ -5134,6 +5142,7 @@ function createVectorSpriteAtlas(meshRenderer, asset, compiledAsset, {
         const SAMPLE = record.samples[index], FRAME = record.definition.frames[index], TX = FRAME.x - pixelsPerUnit * MIN_X, TY = FRAME.y - pixelsPerUnit * MIN_Y;
         record.player.seek(SAMPLE.timeMs);
         record.player.draw({
+          paintRegions: CAPTURED_PAINT,
           projection: [
             2 * pixelsPerUnit / record.packed.width,
             0,
