@@ -215,7 +215,11 @@ try {
             cache: QUALITY_CACHE(frame),
             vectorGpuPoses: frame.poses.gpuDrawInstances,
         });
-        const STANDARD_BEFORE = QUALITY_FRAME(DEMO.renderOnce({ timeMs: 230 }));
+        const STEADY_QUALITY_FRAME = (timeMs) => {
+            DEMO.renderOnce({ timeMs });
+            return QUALITY_FRAME(DEMO.renderOnce({ timeMs }));
+        };
+        const STANDARD_BEFORE = STEADY_QUALITY_FRAME(230);
         const QUALITY_PATHS = [];
         const COMPARE_QUALITY_PIXELS = (vector, raster) => {
             if (vector.width !== raster.width || vector.height !== raster.height) {
@@ -270,16 +274,16 @@ try {
             });
         };
         await DEMO.setQuality('low');
-        const LOW = QUALITY_FRAME(DEMO.renderOnce({ timeMs: 230 }));
+        const LOW = STEADY_QUALITY_FRAME(230);
         CHECK_QUALITY_PATHS('low');
         await DEMO.setQuality('high');
-        const HIGH = QUALITY_FRAME(DEMO.renderOnce({ timeMs: 230 }));
+        const HIGH = STEADY_QUALITY_FRAME(230);
         CHECK_QUALITY_PATHS('high');
         await DEMO.setQuality('high');
-        const HIGH_RESELECTED = QUALITY_FRAME(DEMO.renderOnce({ timeMs: 230 }));
+        const HIGH_RESELECTED = STEADY_QUALITY_FRAME(230);
         const HIGH_NORMAL_FRAME = QUALITY_FRAME(DEMO.renderOnce({ timeMs: 246 }));
         await DEMO.setQuality('standard');
-        const STANDARD_AFTER = QUALITY_FRAME(DEMO.renderOnce({ timeMs: 230 }));
+        const STANDARD_AFTER = STEADY_QUALITY_FRAME(230);
         const QUALITY_CASES = {
             standardBefore: STANDARD_BEFORE,
             low: LOW,
