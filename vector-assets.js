@@ -3729,6 +3729,13 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
   const SKETCH_MORPH_STYLE = METADATA.styles?.find((style) => style.kind === "sketch") ?? null;
   const PART_INDICES = new Map(METADATA.parts.map((part, index) => [part.id, index]));
   const CLIPS = METADATA.clips;
+  const OPACITY_CLIPS = new Set(
+    Object.entries(CLIPS).filter(
+      ([, definition]) => definition.keyframes.some(
+        (frame) => Object.values(frame.parts).some((pose) => Object.hasOwn(pose, "opacity"))
+      )
+    ).map(([name]) => name)
+  );
   const POSE_API = typeof meshRenderer.createPoseSource === "function" && typeof meshRenderer.createPoseInstance === "function" && typeof meshRenderer.preparePose === "function" && typeof meshRenderer.prepareCpuPose === "function" && typeof meshRenderer.deletePoseInstance === "function" && typeof meshRenderer.deletePoseSource === "function";
   const GEOMETRY = compiledAsset.geometry, SHADER_GEOMETRY = GEOMETRY.shaderSurfaces ?? [];
   if (SHADER_GEOMETRY.length && (!surfaceRenderer?.createSurface || !surfaceRenderer?.drawSurface || !surfaceRenderer?.deleteSurface)) {
@@ -3894,6 +3901,19 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
     const GPU_CLIP = () => {
       const ACTIVE = ACTIVE_CLIP(rootPlayback, displayTimeMs);
       return ACTIVE && POSE_PROGRAM?.clips[ACTIVE.name]?.supported ? ACTIVE : null;
+    };
+    const HAS_OPACITY_CHANNEL = (playback, timeMs) => {
+      if (playback.kind === "clip") {
+        return OPACITY_CLIPS.has(playback.name);
+      }
+      const ELAPSED = timeMs - playback.atMs;
+      if (ELAPSED <= 0 && playback.durationMs !== 0) {
+        return HAS_OPACITY_CHANNEL(playback.from, timeMs);
+      }
+      if (playback.durationMs === 0 || ELAPSED >= playback.durationMs) {
+        return HAS_OPACITY_CHANNEL(playback.to, timeMs);
+      }
+      return HAS_OPACITY_CHANNEL(playback.from, timeMs) || HAS_OPACITY_CHANNEL(playback.to, timeMs);
     };
     const ENSURE_CURRENT_POSE = () => {
       if (sampledTimeMs !== displayTimeMs || sampledPlaybackRevision !== playbackRevision) {
@@ -4390,6 +4410,17 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
       get currentTimeMs() {
         return displayTimeMs;
       },
+      get hasOpacityChannel() {
+        return HAS_OPACITY_CHANNEL(rootPlayback, displayTimeMs);
+      },
+      get hasNonUnitBaseOpacity() {
+        for (const POSE of BASE_POSE.values()) {
+          if (POSE.opacity < 1) {
+            return true;
+          }
+        }
+        return false;
+      },
       get disposed() {
         return playerDisposed;
       },
@@ -4430,12 +4461,718 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
     mesh,
     surfaces: Object.freeze(RETAINED_SURFACES),
     createPlayer: CREATE_PLAYER,
+    ownsPlayer(player) {
+      return PLAYERS.has(player) && !player.disposed;
+    },
     dispose: DISPOSE,
     get disposed() {
       return disposed;
     },
     get playerCount() {
       return PLAYERS.size;
+    }
+  });
+}
+
+// modules/vector-assets/raster-atlas.js
+var DEFAULT_MAX_BYTES = 64 * 1024 * 1024;
+var WHITE = [1, 1, 1, 1];
+var NOW2 = () => globalThis.performance?.now?.() ?? null;
+function nextPowerOfTwo(value) {
+  return 2 ** Math.ceil(Math.log2(value));
+}
+function sourceRuns(geometry) {
+  const { vertices: VERTICES, indices: INDICES, partCount: PART_COUNT } = geometry;
+  if (!(INDICES instanceof Uint16Array)) {
+    return null;
+  }
+  const RUNS = [];
+  for (let offset = 0; offset < INDICES.length; offset += 3) {
+    const A = INDICES[offset], B = INDICES[offset + 1], C = INDICES[offset + 2], PART = VERTICES[A * 11 + 10];
+    if (!Number.isSafeInteger(PART) || PART < 0 || PART >= PART_COUNT || VERTICES[B * 11 + 10] !== PART || VERTICES[C * 11 + 10] !== PART) {
+      return null;
+    }
+    let run = RUNS.at(-1);
+    if (!run || run.partIndex !== PART) {
+      run = {
+        partIndex: PART,
+        firstIndex: offset,
+        indexCount: 0,
+        minX: Infinity,
+        minY: Infinity,
+        maxX: -Infinity,
+        maxY: -Infinity
+      };
+      RUNS.push(run);
+    }
+    run.indexCount += 3;
+    for (const VERTEX of [A, B, C]) {
+      const X = VERTICES[VERTEX * 11], Y = VERTICES[VERTEX * 11 + 1];
+      run.minX = Math.min(run.minX, X);
+      run.minY = Math.min(run.minY, Y);
+      run.maxX = Math.max(run.maxX, X);
+      run.maxY = Math.max(run.maxY, Y);
+    }
+  }
+  return RUNS;
+}
+function sameGeometry(mesh, geometry) {
+  const VERTICES = mesh.vertices, INDICES = mesh.indices;
+  return VERTICES?.length === geometry.vertices.length && VERTICES.every((value, index) => value === geometry.vertices[index]) && (geometry.indices === void 0 ? INDICES === void 0 : INDICES instanceof Uint16Array && INDICES.length === geometry.indices.length && INDICES.every((value, index) => value === geometry.indices[index]));
+}
+function wholeRunExpressions(geometry, runs) {
+  const SOURCE = geometry.indices;
+  for (const VARIANT of Object.values(geometry.expressionIndices ?? {})) {
+    let offset = 0;
+    for (const RUN of runs) {
+      if (offset + RUN.indexCount > VARIANT.length) {
+        continue;
+      }
+      let matches = true;
+      for (let index = 0; index < RUN.indexCount; index++) {
+        if (VARIANT[offset + index] !== SOURCE[RUN.firstIndex + index]) {
+          matches = false;
+          break;
+        }
+      }
+      if (matches) {
+        offset += RUN.indexCount;
+      }
+    }
+    if (offset !== VARIANT.length) {
+      return false;
+    }
+  }
+  return true;
+}
+function packRuns(runs, maxSize, maxBytes) {
+  const WIDEST = Math.max(...runs.map((run) => run.tileWidth));
+  if (WIDEST > maxSize || runs.some((run) => run.tileHeight > maxSize)) {
+    return null;
+  }
+  const WIDTHS = /* @__PURE__ */ new Set([WIDEST, maxSize]);
+  for (let width = nextPowerOfTwo(WIDEST); width < maxSize; width *= 2) {
+    WIDTHS.add(width);
+  }
+  let best = null;
+  for (const WIDTH of WIDTHS) {
+    let x = 0, y = 0, rowHeight = 0;
+    const POSITIONS = [];
+    for (const RUN of runs) {
+      if (x + RUN.tileWidth > WIDTH) {
+        x = 0;
+        y += rowHeight;
+        rowHeight = 0;
+      }
+      POSITIONS.push([x, y]);
+      x += RUN.tileWidth;
+      rowHeight = Math.max(rowHeight, RUN.tileHeight);
+    }
+    const HEIGHT = y + rowHeight;
+    const BYTES = WIDTH * HEIGHT * 4;
+    if (HEIGHT > maxSize || BYTES > maxBytes || best && BYTES >= best.bytes) {
+      continue;
+    }
+    best = { width: WIDTH, height: HEIGHT, bytes: BYTES, positions: POSITIONS };
+  }
+  return best;
+}
+function quadGeometry(runs, packed, partCount, pixelsPerUnit, padding) {
+  const VERTICES = new Float32Array(runs.length * 4 * 11);
+  const UVS = new Float32Array(runs.length * 4 * 2);
+  const INDICES = new Uint16Array(runs.length * 6);
+  for (let runIndex = 0; runIndex < runs.length; runIndex++) {
+    const RUN = runs[runIndex], [TILE_X, TILE_Y] = packed.positions[runIndex], LEFT = RUN.minX - padding / pixelsPerUnit, TOP = RUN.minY - padding / pixelsPerUnit, RIGHT = LEFT + RUN.tileWidth / pixelsPerUnit, BOTTOM = TOP + RUN.tileHeight / pixelsPerUnit, U0 = TILE_X / packed.width, U1 = (TILE_X + RUN.tileWidth) / packed.width, V0 = 1 - TILE_Y / packed.height, V1 = 1 - (TILE_Y + RUN.tileHeight) / packed.height;
+    const CORNERS = [
+      [LEFT, TOP, U0, V0],
+      [RIGHT, TOP, U1, V0],
+      [RIGHT, BOTTOM, U1, V1],
+      [LEFT, BOTTOM, U0, V1]
+    ];
+    for (let corner = 0; corner < 4; corner++) {
+      const [X, Y, U, V] = CORNERS[corner], VERTEX = runIndex * 4 + corner, OFFSET = VERTEX * 11;
+      VERTICES.set([X, Y, ...WHITE, 0, 0, 0, 0, RUN.partIndex], OFFSET);
+      UVS.set([U, V], VERTEX * 2);
+    }
+    const FIRST = runIndex * 4;
+    INDICES.set([FIRST, FIRST + 1, FIRST + 2, FIRST, FIRST + 2, FIRST + 3], runIndex * 6);
+  }
+  return { vertices: VERTICES, uvs: UVS, indices: INDICES, partCount, morphCount: 0, strideFloats: 11 };
+}
+function createVectorRasterAtlas(meshRenderer, asset, compiledAsset, { pixelsPerUnit = 1, padding = 2, maxAtlasSize = null, maxAtlasBytes = DEFAULT_MAX_BYTES } = {}) {
+  validateCompiledAsset(compiledAsset);
+  const DEVICE = meshRenderer?.device;
+  const SOURCE_MESH_MATCHES = asset?.mesh ? asset.mesh.renderer === meshRenderer && asset.mesh.partCount === compiledAsset.geometry.partCount && sameGeometry(asset.mesh, compiledAsset.geometry) : compiledAsset.geometry.vertices.length === 0;
+  if (!DEVICE?.createRenderTarget || !DEVICE?.bindRenderTarget || !DEVICE?.unbindRenderTarget || !asset?.ownsPlayer || asset.disposed || asset.sourceSha256 !== compiledAsset.sourceSha256 || !SOURCE_MESH_MATCHES) {
+    throw new TypeError("A matching live vector asset and MeshRenderer are required");
+  }
+  maxAtlasSize ??= DEVICE.maxTextureSize;
+  if (!Number.isFinite(pixelsPerUnit) || pixelsPerUnit <= 0 || !Number.isSafeInteger(padding) || padding < 1 || !Number.isSafeInteger(maxAtlasSize) || maxAtlasSize < 1 || maxAtlasSize > DEVICE.maxTextureSize || !Number.isSafeInteger(maxAtlasBytes) || maxAtlasBytes < 4) {
+    throw new TypeError("Positive pixel scale, padding, atlas dimensions and byte budget required");
+  }
+  const GEOMETRY = compiledAsset.geometry;
+  let unsupportedReason = null;
+  if (GEOMETRY.morphCount) {
+    unsupportedReason = "morphTargets";
+  } else if (GEOMETRY.shaderSurfaces?.length || GEOMETRY.drawOrder?.length) {
+    unsupportedReason = "shaderSurfaces";
+  } else if (GEOMETRY.nonScalingStroke) {
+    unsupportedReason = "nonScalingStroke";
+  }
+  const RUNS = unsupportedReason ? [] : sourceRuns(GEOMETRY);
+  if (!unsupportedReason && (!RUNS || !RUNS.length)) {
+    unsupportedReason = "partTriangles";
+  } else if (!unsupportedReason && !wholeRunExpressions(GEOMETRY, RUNS)) {
+    unsupportedReason = "expressionRunSelection";
+  } else if (!unsupportedReason && RUNS.length * 4 > 65536) {
+    unsupportedReason = "tooManyRuns";
+  }
+  if (!unsupportedReason) {
+    for (const RUN of RUNS) {
+      RUN.tileWidth = Math.max(1, Math.ceil((RUN.maxX - RUN.minX) * pixelsPerUnit)) + padding * 2;
+      RUN.tileHeight = Math.max(1, Math.ceil((RUN.maxY - RUN.minY) * pixelsPerUnit)) + padding * 2;
+      if (!Number.isSafeInteger(RUN.tileWidth) || !Number.isSafeInteger(RUN.tileHeight)) {
+        unsupportedReason = "atlasLimit";
+        break;
+      }
+    }
+  }
+  const PACKED = unsupportedReason ? null : packRuns(RUNS, maxAtlasSize, maxAtlasBytes);
+  if (!unsupportedReason && !PACKED) {
+    unsupportedReason = "atlasLimit";
+  }
+  let target = null;
+  let quad = null;
+  let bakedRestores = -1;
+  let failedFrame = -1;
+  let failedRestores = -1;
+  let lastFailure = null;
+  let disposed = false;
+  let bakeCount = 0;
+  let bakeCpuMs = 0;
+  let rasterDraws = 0;
+  let sampledCpuDraws = 0;
+  let vectorDraws = 0;
+  const FALLBACK_REASONS = /* @__PURE__ */ Object.create(null);
+  const FALLBACK = (player, options, reason) => {
+    vectorDraws++;
+    FALLBACK_REASONS[reason] = (FALLBACK_REASONS[reason] ?? 0) + 1;
+    player.draw(options);
+    return { backend: "vector", reason };
+  };
+  const RELEASE = () => {
+    const QUAD = quad, TARGET = target;
+    quad = null;
+    target = null;
+    try {
+      if (QUAD) {
+        meshRenderer.deleteMesh(QUAD);
+      }
+    } finally {
+      if (TARGET) {
+        DEVICE.deleteRenderTarget(TARGET);
+      }
+    }
+  };
+  const BAKE = () => {
+    if (disposed || asset.disposed) {
+      throw new Error("Vector raster atlas or source asset is disposed");
+    }
+    if (unsupportedReason) {
+      return { backend: "vector", reason: unsupportedReason };
+    }
+    if (!DEVICE.active || DEVICE.state !== "ready") {
+      return { backend: "vector", reason: "frameUnavailable" };
+    }
+    const RESTORES = DEVICE.stats.restores ?? 0;
+    if (target && bakedRestores === RESTORES && DEVICE.isRenderTargetAvailable(target)) {
+      return { backend: "raster", reason: null };
+    }
+    if (failedFrame === DEVICE.stats.frame && failedRestores === RESTORES) {
+      return { backend: "vector", reason: "bakeFailed" };
+    }
+    const START = NOW2();
+    let bound = false;
+    try {
+      meshRenderer.flush("rasterAtlasBakeBoundary");
+      if (target && !DEVICE.isRenderTargetAvailable(target)) {
+        DEVICE.deleteRenderTarget(target);
+        target = null;
+      }
+      target ??= DEVICE.createRenderTarget(PACKED.width, PACKED.height, { format: "rgba", filter: "linear" });
+      quad ??= meshRenderer.createMesh(quadGeometry(RUNS, PACKED, GEOMETRY.partCount, pixelsPerUnit, padding));
+      DEVICE.bindRenderTarget(target);
+      bound = true;
+      DEVICE.clear({ color: [0, 0, 0, 0] });
+      for (let index = 0; index < RUNS.length; index++) {
+        const RUN = RUNS[index], [TILE_X, TILE_Y] = PACKED.positions[index], TX = TILE_X + padding - pixelsPerUnit * RUN.minX, TY = TILE_Y + padding - pixelsPerUnit * RUN.minY;
+        meshRenderer.drawMesh(asset.mesh, {
+          projection: [
+            2 * pixelsPerUnit / PACKED.width,
+            0,
+            0,
+            0,
+            -2 * pixelsPerUnit / PACKED.height,
+            0,
+            2 * TX / PACKED.width - 1,
+            1 - 2 * TY / PACKED.height,
+            1
+          ],
+          indexRange: [RUN.firstIndex, RUN.indexCount]
+        });
+      }
+      meshRenderer.flush("rasterAtlasBake");
+      DEVICE.unbindRenderTarget(target);
+      bound = false;
+      bakedRestores = RESTORES;
+      bakeCount++;
+      if (START !== null) {
+        bakeCpuMs += NOW2() - START;
+      }
+      lastFailure = null;
+      return { backend: "raster", reason: null };
+    } catch (error) {
+      if (bound) {
+        meshRenderer.discard();
+        try {
+          DEVICE.unbindRenderTarget(target);
+        } catch {
+        }
+      }
+      try {
+        RELEASE();
+      } catch {
+      }
+      bakedRestores = -1;
+      failedFrame = DEVICE.stats.frame;
+      failedRestores = DEVICE.stats.restores ?? 0;
+      lastFailure = error.message;
+      return { backend: "vector", reason: "bakeFailed" };
+    }
+  };
+  const DRAW = (player, options = {}) => {
+    if (disposed || asset.disposed) {
+      throw new Error("Vector raster atlas or source asset is disposed");
+    }
+    if (!asset.ownsPlayer(player)) {
+      throw new TypeError("A live player owned by this vector asset is required");
+    }
+    if (unsupportedReason) {
+      return FALLBACK(player, options, unsupportedReason);
+    }
+    if (options.forceColor === true) {
+      return FALLBACK(player, options, "forceColor");
+    }
+    if (options.alpha !== void 0 && options.alpha < 1 || options.color?.[3] < 1) {
+      return FALLBACK(player, options, "globalOpacity");
+    }
+    if (player.hasOpacityChannel) {
+      return FALLBACK(player, options, "opacityChannel");
+    }
+    if (player.hasNonUnitBaseOpacity) {
+      return FALLBACK(player, options, "baseOpacity");
+    }
+    if (options.depthWriteAlphaThreshold != null) {
+      return FALLBACK(player, options, "depthWriteAlphaThreshold");
+    }
+    const RESULT = BAKE();
+    if (RESULT.backend !== "raster") {
+      return FALLBACK(player, options, RESULT.reason);
+    }
+    const { excludeParts: EXCLUDE_PARTS = null, ...DRAW_OPTIONS } = options;
+    const POSE = player.preparePose({ excludeParts: EXCLUDE_PARTS });
+    let parts = null;
+    if (!POSE) {
+      parts = player.partPoses().map((part, index) => ({
+        ...part,
+        visible: part.visible && !EXCLUDE_PARTS?.has(compiledAsset.metadata.parts[index].id)
+      }));
+    }
+    meshRenderer.drawMesh(quad, {
+      ...DRAW_OPTIONS,
+      texture: target,
+      pose: POSE,
+      parts
+    });
+    rasterDraws++;
+    if (!POSE) {
+      sampledCpuDraws++;
+    }
+    return { backend: "raster", reason: null };
+  };
+  const DISPOSE = () => {
+    if (disposed) {
+      return false;
+    }
+    if (DEVICE.state === "ready" && DEVICE.active) {
+      meshRenderer.flush("rasterAtlasDispose");
+    }
+    try {
+      RELEASE();
+    } finally {
+      disposed = true;
+    }
+    return true;
+  };
+  return Object.freeze({
+    bake: BAKE,
+    draw: DRAW,
+    dispose: DISPOSE,
+    get stats() {
+      return {
+        baked: Boolean(
+          !disposed && !asset.disposed && target && bakedRestores === (DEVICE.stats.restores ?? 0)
+        ),
+        disposed,
+        reason: unsupportedReason ?? (lastFailure ? "bakeFailed" : null),
+        lastError: lastFailure,
+        runCount: RUNS?.length ?? 0,
+        atlasWidth: PACKED?.width ?? 0,
+        atlasHeight: PACKED?.height ?? 0,
+        // Planned RGBA capacity; allocatedBytes tracks the live target.
+        atlasBytes: PACKED?.bytes ?? 0,
+        allocatedBytes: !disposed && target ? PACKED?.bytes ?? 0 : 0,
+        bakeCount,
+        bakeCpuMs,
+        rasterDraws,
+        sampledCpuDraws,
+        vectorDraws,
+        fallbackReasons: { ...FALLBACK_REASONS }
+      };
+    }
+  });
+}
+
+// modules/vector-assets/sprite-atlas.js
+var CACHE = /* @__PURE__ */ new WeakMap();
+var DEFAULT_MAX_BYTES2 = 64 * 1024 * 1024;
+var MAX_FRAMES = 512;
+var NOW3 = () => globalThis.performance?.now?.() ?? null;
+function sameGeometry2(mesh, geometry) {
+  const VERTICES = mesh.vertices, INDICES = mesh.indices;
+  return VERTICES?.length === geometry.vertices.length && VERTICES.every((value, index) => value === geometry.vertices[index]) && (geometry.indices === void 0 ? INDICES === void 0 : INDICES instanceof Uint16Array && INDICES.length === geometry.indices.length && INDICES.every((value, index) => value === geometry.indices[index]));
+}
+function sampleFrames(clip, interval) {
+  const COUNT = Math.ceil(clip.durationMs / interval);
+  if (!Number.isSafeInteger(COUNT) || COUNT < 1 || COUNT > MAX_FRAMES) {
+    return null;
+  }
+  return Array.from({ length: COUNT }, (_, index) => {
+    const START = index * interval, DURATION = Math.min(interval, clip.durationMs - START);
+    return {
+      timeMs: clip.loop === "once" && index === COUNT - 1 ? clip.durationMs : START + DURATION / 2,
+      durationMs: DURATION
+    };
+  });
+}
+function sampledBounds(player, geometry, samples) {
+  const VERTICES = geometry.vertices;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const SAMPLE of samples) {
+    player.seek(SAMPLE.timeMs);
+    const POSES = player.partPoses();
+    for (let offset = 0; offset < VERTICES.length; offset += 11) {
+      const POSE = POSES[VERTICES[offset + 10]];
+      if (!POSE.visible || POSE.opacity <= 0) {
+        continue;
+      }
+      const X = VERTICES[offset] + VERTICES[offset + 6] * POSE.morph[0] + VERTICES[offset + 8] * POSE.morph[1], Y = VERTICES[offset + 1] + VERTICES[offset + 7] * POSE.morph[0] + VERTICES[offset + 9] * POSE.morph[1], M = POSE.transform, TX = M[0] * X + M[2] * Y + M[4], TY = M[1] * X + M[3] * Y + M[5];
+      minX = Math.min(minX, TX);
+      minY = Math.min(minY, TY);
+      maxX = Math.max(maxX, TX);
+      maxY = Math.max(maxY, TY);
+    }
+  }
+  return Number.isFinite(minX) ? { minX, minY, maxX, maxY } : null;
+}
+function packFrames(count, tileWidth, tileHeight, maxSize, maxBytes) {
+  if (tileWidth > maxSize || tileHeight > maxSize) {
+    return null;
+  }
+  let best = null;
+  for (let columns = 1; columns <= count && columns * tileWidth <= maxSize; columns++) {
+    const ROWS = Math.ceil(count / columns), WIDTH = columns * tileWidth, HEIGHT = ROWS * tileHeight, BYTES = WIDTH * HEIGHT * 4;
+    if (HEIGHT > maxSize || BYTES > maxBytes || best && BYTES >= best.bytes) {
+      continue;
+    }
+    best = { columns, width: WIDTH, height: HEIGHT, bytes: BYTES };
+  }
+  return best;
+}
+function spriteDefinition(clipName, clip, samples, packed, contentWidth, contentHeight, padding, bounds, ppu) {
+  const FRAMES = samples.map((sample, index) => ({
+    x: index % packed.columns * (contentWidth + padding * 2) + padding,
+    y: Math.floor(index / packed.columns) * (contentHeight + padding * 2) + padding,
+    width: contentWidth,
+    height: contentHeight,
+    durationMs: sample.durationMs,
+    sourceX: 0,
+    sourceY: 0,
+    sourceWidth: contentWidth,
+    sourceHeight: contentHeight,
+    pivotX: -bounds.minX * ppu,
+    pivotY: -bounds.minY * ppu,
+    gutter: padding
+  }));
+  const ORDER = FRAMES.map((_, index) => index);
+  if (clip.loop === "alternate") {
+    ORDER.push(...ORDER.slice().reverse());
+  }
+  return Object.freeze({
+    textureOrigin: "bottom-left",
+    sourceWidth: contentWidth,
+    sourceHeight: contentHeight,
+    gutter: padding,
+    frames: Object.freeze(FRAMES.map((frame) => Object.freeze(frame))),
+    clips: Object.freeze({
+      [clipName]: Object.freeze({
+        frames: Object.freeze(ORDER),
+        loop: clip.loop === "once" ? "once" : "loop"
+      })
+    })
+  });
+}
+function createVectorSpriteAtlas(meshRenderer, asset, compiledAsset, {
+  clip,
+  expression = compiledAsset?.metadata?.defaultExpression,
+  sampleIntervalMs = 100,
+  pixelsPerUnit = 1,
+  padding = 2,
+  maxAtlasSize = null,
+  maxAtlasBytes = DEFAULT_MAX_BYTES2
+} = {}) {
+  validateCompiledAsset(compiledAsset);
+  const DEVICE = meshRenderer?.device, GEOMETRY = compiledAsset.geometry, SOURCE_MESH_MATCHES = asset?.mesh ? asset.mesh.renderer === meshRenderer && asset.mesh.partCount === GEOMETRY.partCount && sameGeometry2(asset.mesh, GEOMETRY) : GEOMETRY.vertices.length === 0;
+  if (!DEVICE?.createRenderTarget || !DEVICE?.bindRenderTarget || !DEVICE?.unbindRenderTarget || !asset?.ownsPlayer || asset.disposed || asset.sourceSha256 !== compiledAsset.sourceSha256 || !SOURCE_MESH_MATCHES) {
+    throw new TypeError("A matching live vector asset and MeshRenderer are required");
+  }
+  if (!Object.hasOwn(compiledAsset.metadata.clips, clip) || !Object.hasOwn(compiledAsset.metadata.expressions, expression)) {
+    throw new TypeError("Known authored clip and expression required");
+  }
+  maxAtlasSize ??= DEVICE.maxTextureSize;
+  if (!Number.isFinite(sampleIntervalMs) || sampleIntervalMs <= 0 || !Number.isFinite(pixelsPerUnit) || pixelsPerUnit <= 0 || !Number.isSafeInteger(padding) || padding < 1 || !Number.isSafeInteger(maxAtlasSize) || maxAtlasSize < 1 || maxAtlasSize > DEVICE.maxTextureSize || !Number.isSafeInteger(maxAtlasBytes) || maxAtlasBytes < 4) {
+    throw new TypeError("Finite positive sample interval, pixel scale, padding and atlas budgets required");
+  }
+  const KEY = JSON.stringify([
+    clip,
+    expression,
+    sampleIntervalMs,
+    pixelsPerUnit,
+    padding,
+    maxAtlasSize,
+    maxAtlasBytes
+  ]);
+  let cached = CACHE.get(asset);
+  if (!cached) {
+    cached = /* @__PURE__ */ new Map();
+    CACHE.set(asset, cached);
+  }
+  let record = cached.get(KEY);
+  if (!record) {
+    const DEFINITION = compiledAsset.metadata.clips[clip];
+    let reason = null;
+    if (GEOMETRY.shaderSurfaces?.length || GEOMETRY.drawOrder?.length) {
+      reason = "shaderSurfaces";
+    } else if (GEOMETRY.morphCount && compiledAsset.metadata.styles?.some((style) => style.kind === "sketch")) {
+      reason = "timeDependentMorph";
+    } else if (GEOMETRY.nonScalingStroke) {
+      reason = "nonScalingStroke";
+    } else if (!asset.mesh) {
+      reason = "sourceMeshUnavailable";
+    }
+    const SAMPLES = reason ? null : sampleFrames(DEFINITION, sampleIntervalMs);
+    if (!reason && !SAMPLES) {
+      reason = "frameLimit";
+    }
+    const PLAYER = reason ? null : asset.createPlayer({ clip, startedAtMs: 0 });
+    if (PLAYER && expression !== compiledAsset.metadata.defaultExpression) {
+      PLAYER.setExpression(expression);
+    }
+    const BOUNDS = PLAYER ? sampledBounds(PLAYER, GEOMETRY, SAMPLES) : null;
+    if (!reason && !BOUNDS) {
+      reason = "emptyFrames";
+    }
+    const CONTENT_WIDTH = BOUNDS ? Math.max(1, Math.ceil((BOUNDS.maxX - BOUNDS.minX) * pixelsPerUnit)) : 0, CONTENT_HEIGHT = BOUNDS ? Math.max(1, Math.ceil((BOUNDS.maxY - BOUNDS.minY) * pixelsPerUnit)) : 0, TILE_WIDTH = CONTENT_WIDTH + padding * 2, TILE_HEIGHT = CONTENT_HEIGHT + padding * 2;
+    const PACKED = reason ? null : packFrames(SAMPLES.length, TILE_WIDTH, TILE_HEIGHT, maxAtlasSize, maxAtlasBytes);
+    if (!reason && !PACKED) {
+      reason = "atlasLimit";
+    }
+    if (reason) {
+      PLAYER?.dispose();
+    }
+    record = {
+      key: KEY,
+      refs: 0,
+      reason,
+      lastError: null,
+      player: reason ? null : PLAYER,
+      samples: SAMPLES,
+      bounds: BOUNDS,
+      packed: PACKED,
+      definition: reason ? null : spriteDefinition(
+        clip,
+        DEFINITION,
+        SAMPLES,
+        PACKED,
+        CONTENT_WIDTH,
+        CONTENT_HEIGHT,
+        padding,
+        BOUNDS,
+        pixelsPerUnit
+      ),
+      texture: null,
+      bakedRestores: -1,
+      failedFrame: -1,
+      failedRestores: -1,
+      bakeCount: 0,
+      bakeCpuMs: 0
+    };
+    cached.set(KEY, record);
+  }
+  record.refs++;
+  let disposed = false;
+  const BAKE = () => {
+    if (disposed || asset.disposed) {
+      throw new Error("Vector sprite atlas or source asset is disposed");
+    }
+    if (record.reason) {
+      return { backend: "vector", reason: record.reason };
+    }
+    if (!DEVICE.active || DEVICE.state !== "ready") {
+      return { backend: "vector", reason: "frameUnavailable" };
+    }
+    const RESTORES = DEVICE.stats.restores ?? 0;
+    if (record.texture && record.bakedRestores === RESTORES && DEVICE.isRenderTargetAvailable(record.texture)) {
+      return { backend: "sprite", reason: null };
+    }
+    if (record.failedFrame === DEVICE.stats.frame && record.failedRestores === RESTORES) {
+      return { backend: "vector", reason: "bakeFailed" };
+    }
+    const START = NOW3();
+    let bound = false;
+    try {
+      meshRenderer.flush("spriteAtlasBakeBoundary");
+      if (record.texture && !DEVICE.isRenderTargetAvailable(record.texture)) {
+        DEVICE.deleteRenderTarget(record.texture);
+        record.texture = null;
+      }
+      record.texture ??= DEVICE.createRenderTarget(record.packed.width, record.packed.height, {
+        format: "rgba",
+        filter: "linear"
+      });
+      DEVICE.bindRenderTarget(record.texture);
+      bound = true;
+      DEVICE.clear({ color: [0, 0, 0, 0] });
+      const { minX: MIN_X, minY: MIN_Y } = record.bounds;
+      for (let index = 0; index < record.samples.length; index++) {
+        const SAMPLE = record.samples[index], FRAME = record.definition.frames[index], TX = FRAME.x - pixelsPerUnit * MIN_X, TY = FRAME.y - pixelsPerUnit * MIN_Y;
+        record.player.seek(SAMPLE.timeMs);
+        record.player.draw({
+          projection: [
+            2 * pixelsPerUnit / record.packed.width,
+            0,
+            0,
+            0,
+            -2 * pixelsPerUnit / record.packed.height,
+            0,
+            2 * TX / record.packed.width - 1,
+            1 - 2 * TY / record.packed.height,
+            1
+          ]
+        });
+        meshRenderer.flush("spriteAtlasSample");
+      }
+      DEVICE.unbindRenderTarget(record.texture);
+      bound = false;
+      record.bakedRestores = RESTORES;
+      record.bakeCount++;
+      if (START !== null) {
+        record.bakeCpuMs += NOW3() - START;
+      }
+      record.lastError = null;
+      return { backend: "sprite", reason: null };
+    } catch (error) {
+      if (bound) {
+        meshRenderer.discard();
+        try {
+          DEVICE.unbindRenderTarget(record.texture);
+        } catch {
+        }
+      }
+      try {
+        if (record.texture) {
+          DEVICE.deleteRenderTarget(record.texture);
+          record.texture = null;
+        }
+      } catch {
+      }
+      record.bakedRestores = -1;
+      record.failedFrame = DEVICE.stats.frame;
+      record.failedRestores = DEVICE.stats.restores ?? 0;
+      record.lastError = error.message;
+      return { backend: "vector", reason: "bakeFailed" };
+    }
+  };
+  const DISPOSE = () => {
+    if (disposed) {
+      return false;
+    }
+    disposed = true;
+    record.refs--;
+    if (record.refs === 0) {
+      try {
+        if (DEVICE.state === "ready" && DEVICE.active) {
+          meshRenderer.flush("spriteAtlasDispose");
+        }
+        if (record.texture) {
+          DEVICE.deleteRenderTarget(record.texture);
+          record.texture = null;
+        }
+      } finally {
+        record.player?.dispose();
+        cached.delete(KEY);
+        if (cached.size === 0) {
+          CACHE.delete(asset);
+        }
+      }
+    }
+    return true;
+  };
+  return Object.freeze({
+    bake: BAKE,
+    dispose: DISPOSE,
+    get texture() {
+      return disposed ? null : record.texture;
+    },
+    get definition() {
+      return disposed ? null : record.definition;
+    },
+    get stats() {
+      return {
+        disposed,
+        reason: record.reason ?? (record.lastError ? "bakeFailed" : null),
+        lastError: record.lastError,
+        cacheKey: KEY,
+        refCount: record.refs,
+        clip,
+        expression,
+        pixelsPerUnit,
+        sampleIntervalMs,
+        sampleTimesMs: record.samples?.map((sample) => sample.timeMs) ?? [],
+        sampleDurationsMs: record.samples?.map((sample) => sample.durationMs) ?? [],
+        sampledDurationMs: record.samples?.reduce((sum, sample) => sum + sample.durationMs, 0) ?? 0,
+        frameCount: record.samples?.length ?? 0,
+        atlasWidth: record.packed?.width ?? 0,
+        atlasHeight: record.packed?.height ?? 0,
+        // Planned RGBA capacity; allocatedBytes tracks the live shared texture.
+        atlasBytes: record.packed?.bytes ?? 0,
+        allocatedBytes: !disposed && record.texture ? record.packed?.bytes ?? 0 : 0,
+        bakeCount: record.bakeCount,
+        bakeCpuMs: record.bakeCpuMs,
+        baked: Boolean(
+          !disposed && !asset.disposed && record.texture && record.bakedRestores === (DEVICE.stats.restores ?? 0)
+        )
+      };
     }
   });
 }
@@ -4453,5 +5190,7 @@ var VECTOR_ASSET_QUALITY_PRESETS = Object.freeze({
 });
 export {
   VECTOR_ASSET_QUALITY_PRESETS,
-  createVectorAsset
+  createVectorAsset,
+  createVectorRasterAtlas,
+  createVectorSpriteAtlas
 };

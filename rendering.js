@@ -161,6 +161,8 @@ var WebGLDevice = class {
       bufferBytes: 0,
       textureUploads: 0,
       textureBytes: 0,
+      imageTexUploadCount: 0,
+      imageTexUploadBytes: 0,
       frameCopies: 0,
       bufferAllocations: 0,
       gpuBufferBytes: 0,
@@ -511,7 +513,18 @@ var WebGLDevice = class {
     if (R.target !== target) {
       throw new TypeError("Buffer target does not match delete operation");
     }
-    this.gl.deleteBuffer(R.gpu);
+    const GL = this.gl;
+    if (target === GL.ARRAY_BUFFER && this.state === "ready" && this.vertexArray && !GL.isContextLost()) {
+      const PREVIOUS_VERTEX_ARRAY = GL.getParameter(GL.VERTEX_ARRAY_BINDING);
+      try {
+        GL.bindVertexArray(this.vertexArray);
+        GL.deleteBuffer(R.gpu);
+      } finally {
+        GL.bindVertexArray(PREVIOUS_VERTEX_ARRAY);
+      }
+    } else {
+      GL.deleteBuffer(R.gpu);
+    }
     this.buffers.delete(handle);
     this.stats.gpuBufferBytes -= R.capacity;
     this.stats.bufferCount = this.buffers.size;
@@ -592,6 +605,10 @@ var WebGLDevice = class {
       }
       this.stats.textureUploads++;
       this.stats.textureBytes += this._textureBytes(record);
+      if (record.kind === "image" && record.source !== null) {
+        this.stats.imageTexUploadCount++;
+        this.stats.imageTexUploadBytes += this._textureBytes(record);
+      }
     } catch (error) {
       GL.deleteTexture(record.gpu);
       record.gpu = null;
@@ -666,6 +683,7 @@ var WebGLDevice = class {
       throw new Error("EXT_color_buffer_float required for RGBA32F render targets");
     }
     const RECORD = {
+      kind: "renderTarget",
       width,
       height,
       format,
@@ -774,6 +792,7 @@ var WebGLDevice = class {
     }
     const RECORD = {
       ...this._source(source, format, premultiplied),
+      kind: "image",
       filter,
       gpu: null
     };
@@ -796,6 +815,7 @@ var WebGLDevice = class {
       throw new TypeError("RGBA32F data must match the texture dimensions");
     }
     const RECORD = {
+      kind: "numeric",
       width,
       height,
       format: "rgba32f",
@@ -870,7 +890,7 @@ var WebGLDevice = class {
       throw new RangeError("Update requires matching full source");
     }
     if (R.copyFormat) {
-      const REPLACEMENT = { ...NEXT, filter: R.filter, gpu: null };
+      const REPLACEMENT = { ...NEXT, kind: R.kind, filter: R.filter, gpu: null };
       this._texture(REPLACEMENT);
       this.gl.deleteTexture(R.gpu);
       this.stats.gpuTextureBytes += this._textureBytes(REPLACEMENT) - this._textureBytes(R);
@@ -938,6 +958,10 @@ var WebGLDevice = class {
     R.source = NEXT.source;
     this.stats.textureUploads++;
     this.stats.textureBytes += width * height * (R.format === "rgba" ? 4 : 1);
+    if (R.kind === "image") {
+      this.stats.imageTexUploadCount++;
+      this.stats.imageTexUploadBytes += width * height * (R.format === "rgba" ? 4 : 1);
+    }
   }
   /** Copies the resolved framebuffer on-GPU. Recopy after restore; pixels are not CPU-retained. */
   copyFrameToTexture(handle, { x = 0, y = 0 } = {}) {
@@ -3306,6 +3330,7 @@ var EMPTY_CLIP = Object.freeze({
   count: 0
 });
 var WHITE = Object.freeze([1, 1, 1, 1]);
+var IDENTITY_RECT = Object.freeze([0, 0, 1, 1]);
 var ATTRIBUTES = [
   {
     name: "a_position",
@@ -3340,14 +3365,25 @@ var WORLD_INSTANCE_ATTRIBUTES = ["i_row0", "i_row1", "i_row2", "i_params"].map((
   offset: i * 16,
   source: "instance"
 }));
-function shader(instanced, partCount, morphCount, clipped, nonScalingStroke, worldMode = false) {
+var TEXTURE_INSTANCE_ATTRIBUTES = ["i_uvRect", "i_localRect"].map((name, i) => ({
+  name,
+  size: 4,
+  offset: 64 + i * 16,
+  source: "instance"
+}));
+function shader(instanced, partCount, morphCount, clipped, nonScalingStroke, worldMode = false, textured = false, poseTexture = false) {
+  const PART_POSE = partCount > 1 || poseTexture;
+  const PART_INPUTS = PART_POSE ? `${partCount > 1 ? "attribute float a_part;" : ""}uniform vec4 u_parts[${partCount * 3}];` : "";
+  const PART_SETUP = PART_POSE ? `int index=${partCount > 1 ? "int(a_part)*3" : "0"};vec4 row0=u_parts[index];vec4 row1=u_parts[index+1];vec4 pose=u_parts[index+2];` : "";
   const INPUTS = ["i_row0", "i_row1", "i_color", "i_params"].map((name) => `${instanced ? "attribute" : "uniform"} vec4 ${name};`).join("\n");
-  const LOCAL = morphCount ? "a_position+a_morph.xy*(i_params.x" + (partCount > 1 ? "+pose.x" : "") + ")" + (morphCount > 1 ? "+a_morph.zw*(i_params.y" + (partCount > 1 ? "+pose.y" : "") + ")" : "") : "a_position";
+  const LOCAL = morphCount ? "a_position+a_morph.xy*(i_params.x" + (PART_POSE ? "+pose.x" : "") + ")" + (morphCount > 1 ? "+a_morph.zw*(i_params.y" + (PART_POSE ? "+pose.y" : "") + ")" : "") : "a_position";
   const STROKE_INPUTS = nonScalingStroke ? "attribute vec4 a_stroke;uniform vec2 u_strokeViewportSize;" : "";
   const STROKE_VARYING = clipped && nonScalingStroke ? "uniform mat3 u_inverseProjection;" : "";
+  const TEXTURE_INPUTS = textured ? `attribute highp vec2 a_uv;${instanced ? "attribute" : "uniform"} highp vec4 i_uvRect;${instanced ? "attribute" : "uniform"} vec4 i_localRect;varying highp vec2 v_uv;varying float v_forceColor;varying float v_whiteFlash;` : "";
+  const RECT_LOCAL = textured ? "local=i_localRect.xy+local*i_localRect.zw;" : "";
   const STROKE_POSITION = nonScalingStroke ? `
-vec2 tangentLocal=local+a_stroke.xy;
-vec2 tangentPart=${partCount > 1 ? "vec2(dot(row0.xyz,vec3(tangentLocal,1.0)),dot(row1.xyz,vec3(tangentLocal,1.0)))" : "tangentLocal"};
+vec2 tangentLocal=local+a_stroke.xy${textured ? "*i_localRect.zw" : ""};
+vec2 tangentPart=${PART_POSE ? "vec2(dot(row0.xyz,vec3(tangentLocal,1.0)),dot(row1.xyz,vec3(tangentLocal,1.0)))" : "tangentLocal"};
 vec2 tangentWorld=vec2(dot(i_row0.xyz,vec3(tangentPart,1.0)),dot(i_row1.xyz,vec3(tangentPart,1.0)));
 vec3 tangentProjected=u_projection*vec3(tangentWorld,1.0);
 vec2 tangent=(tangentProjected.xy/tangentProjected.z-projected.xy/projected.z)*u_strokeViewportSize*0.5;float tangentLength=length(tangent);
@@ -3365,7 +3401,7 @@ if(dot(a_stroke.xy,a_stroke.xy)>0.5){
     const WORLD_INPUTS = ["i_row0", "i_row1", "i_row2", "i_params"].map((name) => `${instanced ? "attribute" : "uniform"} vec4 ${name};`).join("\n");
     const WORLD_STROKE_INPUTS = nonScalingStroke ? "attribute vec4 a_stroke;uniform vec2 u_strokeViewportSize;" + (clipped ? "uniform mat4 u_inverseViewProjection;" : "") : "";
     const WORLD_STROKE = nonScalingStroke ? `
-vec2 tangentLocal=local+a_stroke.xy;
+vec2 tangentLocal=local+a_stroke.xy${textured ? "*i_localRect.zw" : ""};
 vec2 tangentPlane=${partCount > 1 ? "vec2(dot(row0.xyz,vec3(tangentLocal,1.0)),dot(row1.xyz,vec3(tangentLocal,1.0)))" : "tangentLocal"};
 vec3 tangentWorld=vec3(dot(i_row0.xyz,vec3(tangentPlane,1.0)),dot(i_row1.xyz,vec3(tangentPlane,1.0)),dot(i_row2.xyz,vec3(tangentPlane,1.0)));
 vec4 tangentProjected=u_viewProjection*vec4(tangentWorld,1.0);vec2 tangent=(tangentProjected.xy/tangentProjected.w-projected.xy/projected.w)*u_strokeViewportSize*0.5;float tangentLength=length(tangent);
@@ -3374,40 +3410,43 @@ if(dot(a_stroke.xy,a_stroke.xy)>0.5){
   else{tangent/=tangentLength;vec2 normal=vec2(-tangent.y,tangent.x);vec2 pxOffset=tangent*a_stroke.z+normal*a_stroke.w;
     projected.xy+=pxOffset*2.0/u_strokeViewportSize*projected.w;${clipped ? "vec4 clippedWorld=u_inverseViewProjection*projected;v_position=clippedWorld.xy/clippedWorld.w;" : ""}}
 }` : "";
-    return `attribute vec2 a_position; attribute vec4 a_color; ${morphCount ? "attribute vec4 a_morph;" : ""} ${partCount > 1 ? "attribute float a_part;uniform vec4 u_parts[" + partCount * 3 + "];" : ""}
-${WORLD_INPUTS}${WORLD_STROKE_INPUTS}
+    return `attribute vec2 a_position; attribute vec4 a_color; ${morphCount ? "attribute vec4 a_morph;" : ""} ${PART_INPUTS}
+${WORLD_INPUTS}${WORLD_STROKE_INPUTS}${TEXTURE_INPUTS}
 uniform mat4 u_viewProjection; uniform vec4 u_color; varying vec4 v_color; ${clipped ? "varying vec2 v_position;" : ""}
-void main(){${partCount > 1 ? "int index=int(a_part)*3;vec4 row0=u_parts[index];vec4 row1=u_parts[index+1];vec4 pose=u_parts[index+2];" : ""}
-vec2 local=${LOCAL};vec2 plane=${partCount > 1 ? "vec2(dot(row0.xyz,vec3(local,1.0)),dot(row1.xyz,vec3(local,1.0)))" : "local"};
+void main(){${PART_SETUP}
+vec2 local=${LOCAL};${RECT_LOCAL}vec2 plane=${PART_POSE ? "vec2(dot(row0.xyz,vec3(local,1.0)),dot(row1.xyz,vec3(local,1.0)))" : "local"};
 vec3 world=vec3(dot(i_row0.xyz,vec3(plane,1.0)),dot(i_row1.xyz,vec3(plane,1.0)),dot(i_row2.xyz,vec3(plane,1.0)));
 vec4 projected=u_viewProjection*vec4(world,1.0);${clipped ? "v_position=world.xy;" : ""}${WORLD_STROKE}
-projected.z+=(i_params.w+${partCount > 1 ? "pose.w" : "0.0"})*projected.w;gl_Position=projected;
-vec4 color=mix(a_color*u_color,u_color,i_row1.w);color.a*=i_row0.w${partCount > 1 ? "*pose.z" : ""};color.rgb=mix(color.rgb,vec3(1.0),i_row2.w);v_color=vec4(color.rgb*color.a,color.a);
+projected.z+=(i_params.w+${PART_POSE ? "pose.w" : "0.0"})*projected.w;gl_Position=projected;
+vec4 color=mix(a_color*u_color,u_color,i_row1.w);color.a*=i_row0.w${PART_POSE ? "*pose.z" : ""};color.rgb=mix(color.rgb,vec3(1.0),i_row2.w);v_color=vec4(color.rgb*color.a,color.a);${textured ? "v_uv=i_uvRect.xy+a_uv*i_uvRect.zw;v_forceColor=i_row1.w;v_whiteFlash=i_row2.w;" : ""}
 }`;
   }
-  return `attribute vec2 a_position; attribute vec4 a_color; ${morphCount ? "attribute vec4 a_morph;" : ""} ${partCount > 1 ? "attribute float a_part;uniform vec4 u_parts[" + partCount * 3 + "];" : ""}
-${INPUTS}${STROKE_INPUTS}
+  return `attribute vec2 a_position; attribute vec4 a_color; ${morphCount ? "attribute vec4 a_morph;" : ""} ${PART_INPUTS}
+${INPUTS}${STROKE_INPUTS}${TEXTURE_INPUTS}
 uniform mat3 u_projection; varying vec4 v_color; ${clipped ? "varying vec2 v_position;" : ""}${STROKE_VARYING}
-void main(){${partCount > 1 ? "int index=int(a_part)*3;vec4 row0=u_parts[index];vec4 row1=u_parts[index+1];vec4 pose=u_parts[index+2];" : ""}
-vec2 local=${LOCAL};vec2 p=${partCount > 1 ? "vec2(dot(row0.xyz,vec3(local,1.0)),dot(row1.xyz,vec3(local,1.0)))" : "local"};
+void main(){${PART_SETUP}
+vec2 local=${LOCAL};${RECT_LOCAL}vec2 p=${PART_POSE ? "vec2(dot(row0.xyz,vec3(local,1.0)),dot(row1.xyz,vec3(local,1.0)))" : "local"};
 vec2 world=vec2(dot(i_row0.xyz,vec3(p,1.0)),dot(i_row1.xyz,vec3(p,1.0)));
 vec3 projected=u_projection*vec3(world,1.0);${clipped ? "v_position=world;" : ""}${STROKE_POSITION}
-gl_Position=vec4(projected.xy,(i_params.w+${partCount > 1 ? "pose.w" : "0.0"})*projected.z,projected.z);
-vec4 color=mix(a_color*i_color,i_color,i_row1.w);color.a*=i_row0.w${partCount > 1 ? "*pose.z" : ""};
-color.rgb=mix(color.rgb,vec3(1.0),i_params.z);v_color=vec4(color.rgb*color.a,color.a);}`;
+gl_Position=vec4(projected.xy,(i_params.w+${PART_POSE ? "pose.w" : "0.0"})*projected.z,projected.z);
+vec4 color=mix(a_color*i_color,i_color,i_row1.w);color.a*=i_row0.w${PART_POSE ? "*pose.z" : ""};
+color.rgb=mix(color.rgb,vec3(1.0),i_params.z);v_color=vec4(color.rgb*color.a,color.a);${textured ? "v_uv=i_uvRect.xy+a_uv*i_uvRect.zw;v_forceColor=i_row1.w;v_whiteFlash=i_params.z;" : ""}}`;
 }
-function fragment(maxPlanes, clipped) {
+function fragment(maxPlanes, clipped, textured = false) {
+  const TEXTURE_INPUTS = textured ? "uniform sampler2D u_texture;varying highp vec2 v_uv;varying float v_forceColor;varying float v_whiteFlash;" : "";
+  const OUTPUT = textured ? "vec4 sampleColor=texture2D(u_texture,v_uv);float alpha=sampleColor.a*v_color.a;vec3 rgb=v_whiteFlash>0.5?vec3(alpha):v_forceColor>0.5?sampleColor.a*v_color.rgb:sampleColor.rgb*v_color.rgb;gl_FragColor=vec4(rgb,alpha);" : "gl_FragColor=v_color;";
   if (!clipped) {
-    return "precision mediump float;varying vec4 v_color;void main(){gl_FragColor=v_color;}";
+    return `precision mediump float;varying vec4 v_color;${TEXTURE_INPUTS}void main(){${OUTPUT}}`;
   }
   return `precision mediump float; varying vec4 v_color; varying vec2 v_position;
+${TEXTURE_INPUTS}
 uniform vec3 u_planes[${maxPlanes}]; uniform int u_planeCount;
-void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_planes[i],vec3(v_position,1.0))<0.0)discard;}gl_FragColor=v_color;}`;
+void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_planes[i],vec3(v_position,1.0))<0.0)discard;}${OUTPUT}}`;
 }
 function poseTextureShader(source) {
   return source.replace(/uniform vec4 u_parts\[\d+\];/, "uniform sampler2D u_poseTexture;").replace(
-    "int index=int(a_part)*3;vec4 row0=u_parts[index];vec4 row1=u_parts[index+1];vec4 pose=u_parts[index+2];",
-    "int index=int(a_part)*3;int poseRow=int(-i_params.x-1.0);vec4 row0=texelFetch(u_poseTexture,ivec2(index,poseRow),0);vec4 row1=texelFetch(u_poseTexture,ivec2(index+1,poseRow),0);vec4 pose=texelFetch(u_poseTexture,ivec2(index+2,poseRow),0);"
+    /(int index=(?:int\(a_part\)\*3|0);)vec4 row0=u_parts\[index\];vec4 row1=u_parts\[index\+1\];vec4 pose=u_parts\[index\+2\];/,
+    "$1int poseRow=int(-i_params.x-1.0);vec4 row0=texelFetch(u_poseTexture,ivec2(index,poseRow),0);vec4 row1=texelFetch(u_poseTexture,ivec2(index+1,poseRow),0);vec4 pose=texelFetch(u_poseTexture,ivec2(index+2,poseRow),0);"
   ).replaceAll("(i_params.x+pose.x)", "(pose.x)").replaceAll("(i_params.y+pose.y)", "(pose.y)");
 }
 function finiteArray2(value, size, name) {
@@ -3636,7 +3675,9 @@ var MeshRenderer = class {
     }
     this.maxPlanes = Math.max(1, Math.min(32, device.gl.getParameter(device.gl.MAX_FRAGMENT_UNIFORM_VECTORS) - 2));
     this.instanced = device.instancingSupported === true;
+    this.maxTexturedInstances = this.instanced ? Math.min(maxInstances, Math.floor(device.maxBufferBytes / 96)) : maxInstances;
     this.instances = new Float32Array(maxInstances * 16);
+    this.texturedInstances = null;
     this.instanceBuffer = this.instanced ? device.createVertexBuffer({
       capacityBytes: this.instances.byteLength
     }) : null;
@@ -3698,7 +3739,7 @@ var MeshRenderer = class {
           throw new Error("Restored context no longer supports mesh instancing");
         }
         for (const MESH of this.meshes) {
-          device.uploadVertices(MESH.buffer, MESH.vertices);
+          device.uploadVertices(MESH.buffer, MESH.gpuVertices);
           if (MESH.indices) {
             device.uploadIndices(MESH.indexBuffer, MESH.indices);
           }
@@ -3762,7 +3803,7 @@ var MeshRenderer = class {
     return this.poseRenderer?.stats() ?? null;
   }
   _pipeline(mesh, clipped, worldMode = false, poseTexture = false) {
-    const KEY = mesh.partCount + ":" + mesh.morphCount + ":" + Number(clipped) + ":" + Number(mesh.hasNonScalingStroke) + ":" + Number(worldMode) + ":" + Number(poseTexture);
+    const KEY = mesh.partCount + ":" + mesh.morphCount + ":" + Number(clipped) + ":" + Number(mesh.hasNonScalingStroke) + ":" + Number(worldMode) + ":" + Number(poseTexture) + ":" + Number(mesh.hasTextureCoordinates);
     let pipeline = this.pipelines.get(KEY);
     if (pipeline) {
       return pipeline;
@@ -3793,6 +3834,13 @@ var MeshRenderer = class {
     } else if (mesh.partCount > 1) {
       UNIFORMS2["u_parts[0]"] = "4fv";
     }
+    if (mesh.hasTextureCoordinates) {
+      UNIFORMS2.u_texture = "1i";
+      if (!this.instanced) {
+        UNIFORMS2.i_uvRect = "4f";
+        UNIFORMS2.i_localRect = "4f";
+      }
+    }
     if (!this.instanced) {
       for (const NAME of worldMode ? ["i_row0", "i_row1", "i_row2", "i_params"] : ["i_row0", "i_row1", "i_color", "i_params"]) {
         UNIFORMS2[NAME] = "4f";
@@ -3806,13 +3854,15 @@ var MeshRenderer = class {
           mesh.morphCount,
           clipped,
           mesh.hasNonScalingStroke,
-          worldMode
+          worldMode,
+          mesh.hasTextureCoordinates,
+          poseTexture
         )
       ),
-      fragment: fragment(this.maxPlanes, clipped),
-      stride: mesh.strideFloats * 4,
+      fragment: fragment(this.maxPlanes, clipped, mesh.hasTextureCoordinates),
+      stride: mesh.bufferStrideFloats * 4,
       ...this.instanced ? {
-        instanceStride: 64
+        instanceStride: mesh.hasTextureCoordinates ? 96 : 64
       } : {},
       attributes: [
         ...mesh.hasNonScalingStroke ? ATTRIBUTES.filter((attribute) => attribute.name !== "a_morph") : ATTRIBUTES,
@@ -3823,7 +3873,15 @@ var MeshRenderer = class {
             offset: 24
           }
         ] : [],
-        ...this.instanced ? worldMode ? WORLD_INSTANCE_ATTRIBUTES : INSTANCE_ATTRIBUTES : []
+        ...mesh.hasTextureCoordinates ? [
+          {
+            name: "a_uv",
+            size: 2,
+            offset: 44
+          }
+        ] : [],
+        ...this.instanced ? worldMode ? WORLD_INSTANCE_ATTRIBUTES : INSTANCE_ATTRIBUTES : [],
+        ...this.instanced && mesh.hasTextureCoordinates ? TEXTURE_INSTANCE_ATTRIBUTES : []
       ],
       uniforms: UNIFORMS2
     });
@@ -3833,6 +3891,7 @@ var MeshRenderer = class {
   createMesh(data) {
     this._ready();
     const INDICES = data?.indices;
+    const UVS = data?.uvs === void 0 ? null : data.uvs;
     const EXPRESSION_INDICES = data?.expressionIndices === void 0 ? {} : data.expressionIndices;
     const INDEX_VARIANTS = data?.indexVariants === void 0 ? {} : data.indexVariants;
     const NON_SCALING_STROKE = data?.nonScalingStroke ?? false;
@@ -3847,6 +3906,9 @@ var MeshRenderer = class {
       ([name, variant]) => !/^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/.test(name) || VARIANT_NAMES.has(name) || !(variant instanceof Uint16Array) || variant.length % 3 || variant.some((index) => index >= data.vertices.length / 11)
     )) {
       throw new TypeError("Invalid named mesh index variants or expression index variants");
+    }
+    if (UVS !== null && (!(UVS instanceof Float32Array) || UVS.length !== data.vertices.length / 11 * 2 || UVS.some((value) => !Number.isFinite(value)))) {
+      throw new TypeError("uvs must contain two finite coordinates per mesh vertex");
     }
     if (data.vertices.some((n) => !Number.isFinite(n))) {
       throw new TypeError("Mesh values must be finite");
@@ -3869,17 +3931,26 @@ var MeshRenderer = class {
       (total, [, variant]) => total + variant.byteLength,
       0
     );
-    const BYTE_LENGTH = data.vertices.byteLength + (INDICES?.byteLength ?? 0) + VARIANT_BYTE_LENGTH;
+    const GPU_VERTEX_BYTES = UVS === null ? data.vertices.byteLength : data.vertices.length / 11 * 13 * 4;
+    const UPLOAD_BYTE_LENGTH = GPU_VERTEX_BYTES + (INDICES?.byteLength ?? 0) + VARIANT_BYTE_LENGTH;
+    const BYTE_LENGTH = UPLOAD_BYTE_LENGTH + (UVS === null ? 0 : data.vertices.byteLength);
     if (this.meshes.size >= this.maxMeshes || this.bytes + BYTE_LENGTH > this.maxMeshBytes) {
       throw new RangeError("Retained mesh budget exceeded");
     }
-    const VERTICES = data.vertices.slice(), OWNED_INDICES = INDICES?.slice(), BUFFER = this.device.createVertexBuffer({
-      capacityBytes: VERTICES.byteLength
+    const VERTICES = data.vertices.slice(), GPU_VERTICES = UVS === null ? VERTICES : new Float32Array(VERTICES.length / 11 * 13), OWNED_INDICES = INDICES?.slice(), BUFFER = this.device.createVertexBuffer({
+      capacityBytes: GPU_VERTICES.byteLength
     });
+    if (UVS !== null) {
+      for (let vertex = 0; vertex < VERTICES.length / 11; vertex++) {
+        GPU_VERTICES.set(VERTICES.subarray(vertex * 11, vertex * 11 + 11), vertex * 13);
+        GPU_VERTICES[vertex * 13 + 11] = UVS[vertex * 2];
+        GPU_VERTICES[vertex * 13 + 12] = UVS[vertex * 2 + 1];
+      }
+    }
     let indexBuffer;
     const OWNED_EXPRESSIONS = /* @__PURE__ */ new Map(), OWNED_VARIANTS = /* @__PURE__ */ new Map();
     try {
-      this.device.uploadVertices(BUFFER, VERTICES);
+      this.device.uploadVertices(BUFFER, GPU_VERTICES);
       if (OWNED_INDICES) {
         indexBuffer = this.device.createIndexBuffer({
           capacityBytes: OWNED_INDICES.byteLength
@@ -3938,6 +4009,7 @@ var MeshRenderer = class {
       buffer: BUFFER,
       indexBuffer,
       vertices: VERTICES,
+      gpuVertices: GPU_VERTICES,
       indices: OWNED_INDICES,
       expressionIndices: OWNED_EXPRESSIONS,
       indexVariants: OWNED_VARIANTS,
@@ -3946,6 +4018,8 @@ var MeshRenderer = class {
       partCount: data.partCount,
       morphCount: data.morphCount,
       strideFloats: 11,
+      bufferStrideFloats: UVS === null ? 11 : 13,
+      hasTextureCoordinates: UVS !== null,
       hasNonScalingStroke: NON_SCALING_STROKE,
       partBounds: meshPartBounds(VERTICES, data.partCount, data.morphCount)
     });
@@ -3953,7 +4027,7 @@ var MeshRenderer = class {
     this.bytes += BYTE_LENGTH;
     this.device.stats.meshCreates++;
     this.metrics.geometryUploads++;
-    this.metrics.geometryBytesUploaded += BYTE_LENGTH;
+    this.metrics.geometryBytesUploaded += UPLOAD_BYTE_LENGTH;
     return MESH;
   }
   deleteMesh(mesh) {
@@ -3990,6 +4064,9 @@ var MeshRenderer = class {
       morph: MORPH = [0, 0],
       parts: PARTS = null,
       pose: POSE = null,
+      texture: TEXTURE = null,
+      uvRect: UV_RECT = IDENTITY_RECT,
+      localRect: LOCAL_RECT = IDENTITY_RECT,
       color: COLOR = WHITE,
       forceColor: FORCE_COLOR = false,
       alpha: ALPHA = 1,
@@ -4016,6 +4093,9 @@ var MeshRenderer = class {
       morph: MORPH,
       parts: PARTS,
       pose: POSE,
+      texture: TEXTURE,
+      uvRect: UV_RECT,
+      localRect: LOCAL_RECT,
       color: COLOR,
       forceColor: FORCE_COLOR,
       alpha: ALPHA,
@@ -4195,6 +4275,9 @@ var MeshRenderer = class {
     morph = [0, 0],
     parts = null,
     pose = null,
+    texture = null,
+    uvRect = IDENTITY_RECT,
+    localRect = IDENTITY_RECT,
     color: color2 = WHITE,
     forceColor = false,
     alpha = 1,
@@ -4216,6 +4299,21 @@ var MeshRenderer = class {
     this._ready();
     if (!this.meshes.has(mesh)) {
       throw new TypeError("Mesh owned by this renderer required");
+    }
+    if (mesh.hasTextureCoordinates !== (texture !== null) || texture !== null && !this.device.textures.has(texture)) {
+      throw new TypeError("Textured meshes require a live texture; plain meshes cannot sample one");
+    }
+    if (uvRect !== IDENTITY_RECT) {
+      finiteArray2(uvRect, 4, "uvRect");
+    }
+    if (localRect !== IDENTITY_RECT) {
+      finiteArray2(localRect, 4, "localRect");
+    }
+    if (!mesh.hasTextureCoordinates && (uvRect !== IDENTITY_RECT && Array.from(uvRect).some((value, index) => value !== IDENTITY_RECT[index]) || localRect !== IDENTITY_RECT && Array.from(localRect).some((value, index) => value !== IDENTITY_RECT[index]))) {
+      throw new TypeError("uvRect and localRect require a textured mesh");
+    }
+    if (mesh.hasTextureCoordinates && this.maxTexturedInstances < 1) {
+      throw new RangeError("A textured instance exceeds device maxBufferBytes");
     }
     if (indexVariant !== null && (typeof indexVariant !== "string" || !mesh.expressionIndices.has(indexVariant) && !mesh.indexVariants.has(indexVariant))) {
       throw new TypeError("Known mesh index variant required");
@@ -4327,6 +4425,12 @@ var MeshRenderer = class {
     if (POSE_DRAW && depthWriteAlphaThreshold !== null) {
       throw new TypeError("Alpha depth classification requires ordinary CPU part poses");
     }
+    if (texture !== null && depthWriteAlphaThreshold !== null) {
+      throw new TypeError("Alpha depth classification cannot inspect raster texel alpha");
+    }
+    if (texture !== null && POSE_DRAW?.texture && this.device.maxTextures < 2) {
+      throw new RangeError("Textured GPU poses require two texture units");
+    }
     packParts(parts, mesh.partCount, this.partScratch);
     for (let i = 0; i < mesh.partCount; i++) {
       if (depth + this.partScratch[i * 12 + 11] < -1 || depth + this.partScratch[i * 12 + 11] > 1) {
@@ -4336,13 +4440,16 @@ var MeshRenderer = class {
     const DEPTH_STATE_KEY = Number(depthTest) + ":" + Number(depthWrite) + ":" + depthFunc;
     const ALPHA_DEPTH_WRITE = depthWrite && depthWriteAlphaThreshold !== null;
     if (!ALPHA_DEPTH_WRITE) {
+      const INSTANCE_LIMIT = mesh.hasTextureCoordinates ? this.maxTexturedInstances : this.maxInstances;
+      const INSTANCE_FLOATS = mesh.hasTextureCoordinates ? 24 : 16;
+      const DATA = mesh.hasTextureCoordinates ? this.texturedInstances ??= new Float32Array(this.maxTexturedInstances * 24) : this.instances;
       if (this.alphaQueueCount) {
         this._flushAlphaQueue("alphaBoundary");
       }
       if (PENDING) {
         const MATRIX = WORLD_MODE ? viewProjection : projection;
         const PREVIOUS_COLOR = PENDING.color;
-        const REASON = (PENDING.poseTexture ?? null) !== (POSE_DRAW?.texture ?? null) ? "poseBackend" : PENDING.mesh !== mesh ? "mesh" : PENDING.worldMode !== WORLD_MODE ? "transformMode" : PENDING.indexVariant !== indexVariant ? "indexVariant" : PENDING.firstIndex !== FIRST_INDEX || PENDING.indexCount !== INDEX_COUNT ? "indexRange" : PENDING.clip.key !== CLIP.key ? "clip" : PENDING.stencilRef !== stencilRef ? "stencil" : PENDING.depthStateKey !== DEPTH_STATE_KEY ? "depthState" : MATRIX.some((n, i) => Math.fround(n) !== PENDING.projection[i]) ? "projection" : strokeSize && strokeSize.some((n, i) => n !== PENDING.strokeSize?.[i]) ? "strokeViewport" : WORLD_MODE && color2.some((n, i) => n !== PREVIOUS_COLOR[i]) ? "color" : !POSE_DRAW && mesh.partCount > 1 && PENDING.parts.some((n, i) => n !== this.partScratch[i]) ? "parts" : this.count === this.maxInstances ? "capacity" : null;
+        const REASON = (PENDING.poseTexture ?? null) !== (POSE_DRAW?.texture ?? null) ? "poseBackend" : PENDING.texture !== texture ? "texture" : PENDING.mesh !== mesh ? "mesh" : PENDING.worldMode !== WORLD_MODE ? "transformMode" : PENDING.indexVariant !== indexVariant ? "indexVariant" : PENDING.firstIndex !== FIRST_INDEX || PENDING.indexCount !== INDEX_COUNT ? "indexRange" : PENDING.clip.key !== CLIP.key ? "clip" : PENDING.stencilRef !== stencilRef ? "stencil" : PENDING.depthStateKey !== DEPTH_STATE_KEY ? "depthState" : MATRIX.some((n, i) => Math.fround(n) !== PENDING.projection[i]) ? "projection" : strokeSize && strokeSize.some((n, i) => n !== PENDING.strokeSize?.[i]) ? "strokeViewport" : WORLD_MODE && color2.some((n, i) => n !== PREVIOUS_COLOR[i]) ? "color" : !POSE_DRAW && mesh.partCount > 1 && PENDING.parts.some((n, i) => n !== this.partScratch[i]) ? "parts" : this.count === INSTANCE_LIMIT ? "capacity" : null;
         if (REASON) {
           this.flush(REASON);
         }
@@ -4352,13 +4459,14 @@ var MeshRenderer = class {
       }
       const PART2 = this.partScratch, SINGLE_PART2 = mesh.partCount === 1 && !POSE_DRAW;
       for (let i = 0; i < count; i++) {
-        if (this.count === this.maxInstances) {
+        if (this.count === INSTANCE_LIMIT) {
           this.flush("capacity");
         }
         if (!this.pending) {
           this.pending = {
             mesh,
             poseTexture: POSE_DRAW?.texture ?? null,
+            texture,
             projection: Float32Array.from(WORLD_MODE ? viewProjection : projection),
             worldMode: WORLD_MODE,
             color: Float32Array.from(color2),
@@ -4402,7 +4510,7 @@ var MeshRenderer = class {
           weight1 += PART2[9];
         }
         const INSTANCE_COLOR = i < prefixCount ? prefixColor : color2;
-        const INSTANCE_FORCE_COLOR = i < forceColorPrefixCount ? true : forceColor, AT = this.count++ * 16, DATA = this.instances;
+        const INSTANCE_FORCE_COLOR = i < forceColorPrefixCount ? true : forceColor, AT = this.count++ * INSTANCE_FLOATS;
         const INSTANCE_DEPTH = depth + (SINGLE_PART2 ? PART2[11] : 0);
         if (POSE_DRAW) {
           this.poseRenderer.noteDraw(pose);
@@ -4441,6 +4549,10 @@ var MeshRenderer = class {
           DATA[AT + 13] = weight1;
           DATA[AT + 14] = whiteFlash ? 1 : 0;
           DATA[AT + 15] = INSTANCE_DEPTH;
+        }
+        if (mesh.hasTextureCoordinates) {
+          DATA.set(uvRect, AT + 16);
+          DATA.set(localRect, AT + 20);
         }
       }
       return;
@@ -4583,7 +4695,7 @@ var MeshRenderer = class {
       }
       const WRITE = RUNS[2], STATE_KEY = Number(depthTest) + ":" + Number(WRITE) + ":" + depthFunc;
       if (this.pending) {
-        const CURRENT = this.pending, REASON = CURRENT.mesh !== mesh ? "mesh" : CURRENT.worldMode ? "transformMode" : CURRENT.indexVariant !== indexVariant ? "indexVariant" : CURRENT.firstIndex !== FIRST_INDEX || CURRENT.indexCount !== INDEX_COUNT ? "indexRange" : CURRENT.clip.key !== CLIP.key ? "clip" : CURRENT.stencilRef !== stencilRef ? "stencil" : CURRENT.depthStateKey !== STATE_KEY ? "depthState" : projection.some((n, j) => Math.fround(n) !== CURRENT.projection[j]) ? "projection" : strokeSize && strokeSize.some((n, j) => n !== CURRENT.strokeSize?.[j]) ? "strokeViewport" : mesh.partCount > 1 && CURRENT.parts.some((n, j) => n !== this.partScratch[j]) ? "parts" : this.count === this.maxInstances ? "capacity" : null;
+        const CURRENT = this.pending, REASON = CURRENT.mesh !== mesh ? "mesh" : CURRENT.texture !== texture ? "texture" : CURRENT.worldMode ? "transformMode" : CURRENT.indexVariant !== indexVariant ? "indexVariant" : CURRENT.firstIndex !== FIRST_INDEX || CURRENT.indexCount !== INDEX_COUNT ? "indexRange" : CURRENT.clip.key !== CLIP.key ? "clip" : CURRENT.stencilRef !== stencilRef ? "stencil" : CURRENT.depthStateKey !== STATE_KEY ? "depthState" : projection.some((n, j) => Math.fround(n) !== CURRENT.projection[j]) ? "projection" : strokeSize && strokeSize.some((n, j) => n !== CURRENT.strokeSize?.[j]) ? "strokeViewport" : mesh.partCount > 1 && CURRENT.parts.some((n, j) => n !== this.partScratch[j]) ? "parts" : this.count === this.maxInstances ? "capacity" : null;
         if (REASON) {
           this.flush(REASON);
         }
@@ -4591,6 +4703,7 @@ var MeshRenderer = class {
       if (!this.pending) {
         this.pending = {
           mesh,
+          texture,
           projection: Float32Array.from(projection),
           worldMode: false,
           clip: CLIP,
@@ -4802,7 +4915,8 @@ var MeshRenderer = class {
       inverseStrokeProjection: INVERSE_STROKE_PROJECTION,
       inverseViewProjection: INVERSE_VIEW_PROJECTION,
       stencilRef: STENCIL_REF,
-      poseTexture: POSE_TEXTURE
+      poseTexture: POSE_TEXTURE,
+      texture: TEXTURE
     } = this.pending;
     const VARIANT = INDEX_VARIANT === null ? null : MESH.indexVariants.get(INDEX_VARIANT) ?? MESH.expressionIndices.get(INDEX_VARIANT);
     this.planes.fill(0);
@@ -4839,9 +4953,15 @@ var MeshRenderer = class {
     } else if (MESH.partCount > 1) {
       UNIFORMS2["u_parts[0]"] = PARTS;
     }
+    if (TEXTURE) {
+      UNIFORMS2.u_texture = POSE_TEXTURE ? 1 : 0;
+    }
+    const TEXTURES = POSE_TEXTURE ? TEXTURE ? [POSE_TEXTURE, TEXTURE] : [POSE_TEXTURE] : TEXTURE ? [TEXTURE] : [];
     const INSTANCE_UNIFORMS = WORLD_MODE ? ["i_row0", "i_row1", "i_row2", "i_params"] : ["i_row0", "i_row1", "i_color", "i_params"];
+    const INSTANCE_FLOATS = MESH.hasTextureCoordinates ? 24 : 16;
+    const INSTANCE_DATA = MESH.hasTextureCoordinates ? this.texturedInstances : this.instances;
     if (this.instanced) {
-      this.device.uploadVertices(this.instanceBuffer, this.instances.subarray(0, this.count * 16));
+      this.device.uploadVertices(this.instanceBuffer, INSTANCE_DATA.subarray(0, this.count * INSTANCE_FLOATS));
       this.device.draw({
         pipeline: PIPELINE,
         buffer: MESH.buffer,
@@ -4851,7 +4971,7 @@ var MeshRenderer = class {
         instanceBuffer: this.instanceBuffer,
         instances: this.count,
         uniforms: UNIFORMS2,
-        textures: POSE_TEXTURE ? [POSE_TEXTURE] : [],
+        textures: TEXTURES,
         depth: DEPTH_STATE,
         stencil: STENCIL_REF === null ? false : {
           func: "equal",
@@ -4861,7 +4981,7 @@ var MeshRenderer = class {
           pass: "keep"
         }
       });
-      this.metrics.instanceBytesUploaded += this.count * 64;
+      this.metrics.instanceBytesUploaded += this.count * INSTANCE_FLOATS * 4;
       this.metrics.draws++;
       this.metrics.drawDispatchReasons[reason] = (this.metrics.drawDispatchReasons[reason] ?? 0) + 1;
       if (MESH.partCount > 1 && !POSE_TEXTURE) {
@@ -4870,7 +4990,14 @@ var MeshRenderer = class {
     } else {
       for (let i = 0; i < this.count; i++) {
         for (let j = 0; j < 4; j++) {
-          UNIFORMS2[INSTANCE_UNIFORMS[j]] = this.instances.subarray(i * 16 + j * 4, i * 16 + j * 4 + 4);
+          UNIFORMS2[INSTANCE_UNIFORMS[j]] = INSTANCE_DATA.subarray(
+            i * INSTANCE_FLOATS + j * 4,
+            i * INSTANCE_FLOATS + j * 4 + 4
+          );
+        }
+        if (MESH.hasTextureCoordinates) {
+          UNIFORMS2.i_uvRect = INSTANCE_DATA.subarray(i * 24 + 16, i * 24 + 20);
+          UNIFORMS2.i_localRect = INSTANCE_DATA.subarray(i * 24 + 20, i * 24 + 24);
         }
         this.device.draw({
           pipeline: PIPELINE,
@@ -4879,6 +5006,7 @@ var MeshRenderer = class {
           first: FIRST_INDEX,
           count: INDEX_COUNT,
           uniforms: UNIFORMS2,
+          textures: TEXTURES,
           depth: DEPTH_STATE,
           stencil: STENCIL_REF === null ? false : {
             func: "equal",
@@ -4937,7 +5065,7 @@ var MeshRenderer = class {
       pipelineCount: this.pipelines.size,
       meshCount: this.meshes.size,
       retainedBytes: this.bytes,
-      stagingBytes: this.instances.byteLength + this.planes.byteLength + this.partScratch.byteLength,
+      stagingBytes: this.instances.byteLength + (this.texturedInstances?.byteLength ?? 0) + this.planes.byteLength + this.partScratch.byteLength,
       instanced: this.instanced,
       maxClipPlanes: this.maxPlanes,
       poses: this.poseStats()
@@ -4948,6 +5076,7 @@ var MeshRenderer = class {
       return;
     }
     this.discard();
+    this.texturedInstances = null;
     this.poseRenderer?.dispose();
     this.device.canvas.removeEventListener("webglcontextlost", this.onLost);
     this.device.canvas.removeEventListener("webglcontextrestored", this.onRestored);
@@ -6719,7 +6848,7 @@ var VectorContext = class {
     return this.meshRenderer?.deleteMesh(mesh) ?? false;
   }
   /** Local transform composes with current Canvas-style transform; all paint state is captured by value. */
-  drawMesh(mesh, { transform = null, morph = [0, 0], parts = null } = {}) {
+  drawMesh(mesh, { transform = null, morph = [0, 0], parts = null, texture = null, uvRect, localRect } = {}) {
     this._frame();
     if (!this.meshRenderer) {
       throw new TypeError("createMesh required");
@@ -6747,6 +6876,9 @@ var VectorContext = class {
       clips: this.vector.clips,
       morph,
       parts,
+      texture,
+      uvRect,
+      localRect,
       color: this.forceColor ?? [1, 1, 1, 1],
       forceColor: this.forceColor !== null,
       alpha: this._globalAlpha,
@@ -7242,6 +7374,306 @@ var MeshBuilder = class _MeshBuilder {
     });
   }
 };
+
+// modules/rendering/sprite-animation.js
+function createSpriteAnimation(meshRenderer, texture, definition) {
+  if (!meshRenderer?.createMesh || !meshRenderer?.drawMesh || !meshRenderer?.deleteMesh) {
+    throw new TypeError("A MeshRenderer is required");
+  }
+  if (!meshRenderer.device?.textures?.has(texture)) {
+    throw new TypeError("A live Device texture owned by the mesh renderer is required");
+  }
+  const ATLAS_WIDTH = texture.width;
+  const ATLAS_HEIGHT = texture.height;
+  const INPUT_FRAMES = definition?.frames;
+  const INPUT_CLIPS = definition?.clips;
+  const TEXTURE_ORIGIN = definition?.textureOrigin ?? "top-left";
+  if (TEXTURE_ORIGIN !== "top-left" && TEXTURE_ORIGIN !== "bottom-left") {
+    throw new TypeError("textureOrigin must be top-left or bottom-left");
+  }
+  if (!Array.isArray(INPUT_FRAMES) || INPUT_FRAMES.length < 1 || INPUT_FRAMES.length > 4096) {
+    throw new RangeError("Sprite animation requires 1..4096 atlas frames");
+  }
+  if (!INPUT_CLIPS || typeof INPUT_CLIPS !== "object" || Array.isArray(INPUT_CLIPS)) {
+    throw new TypeError("Named sprite clips are required");
+  }
+  const FRAMES = [];
+  const FRAME_RECTS = [];
+  const VERTICES = new Float32Array(4 * 11);
+  const UVS = new Float32Array(4 * 2);
+  const INDICES = new Uint16Array([0, 1, 2, 0, 2, 3]);
+  const VERTEX5 = (index, x, y, u, v) => {
+    const OFFSET = index * 11;
+    VERTICES.set([x, y, 1, 1, 1, 1], OFFSET);
+    UVS.set([u, v], index * 2);
+  };
+  const INTEGER = (value, name, minimum = 0) => {
+    if (!Number.isSafeInteger(value) || value < minimum) {
+      throw new TypeError(`${name} must be an integer >= ${minimum}`);
+    }
+  };
+  VERTEX5(0, 0, 0, 0, 0);
+  VERTEX5(1, 1, 0, 1, 0);
+  VERTEX5(2, 1, 1, 1, 1);
+  VERTEX5(3, 0, 1, 0, 1);
+  for (let index = 0; index < INPUT_FRAMES.length; index++) {
+    const FRAME = INPUT_FRAMES[index];
+    const X = FRAME?.x;
+    const Y = FRAME?.y;
+    const WIDTH = FRAME?.width;
+    const HEIGHT = FRAME?.height;
+    const GUTTER = FRAME?.gutter ?? definition.gutter ?? 0;
+    const SOURCE_WIDTH = FRAME?.sourceWidth ?? definition.sourceWidth ?? WIDTH;
+    const SOURCE_HEIGHT = FRAME?.sourceHeight ?? definition.sourceHeight ?? HEIGHT;
+    const SOURCE_X = FRAME?.sourceX ?? 0;
+    const SOURCE_Y = FRAME?.sourceY ?? 0;
+    const PIVOT_X = FRAME?.pivotX ?? definition.pivotX ?? 0;
+    const PIVOT_Y = FRAME?.pivotY ?? definition.pivotY ?? 0;
+    const DURATION_MS = FRAME?.durationMs;
+    for (const [NAME, VALUE, MINIMUM] of [
+      ["frame x", X, 0],
+      ["frame y", Y, 0],
+      ["frame width", WIDTH, 1],
+      ["frame height", HEIGHT, 1],
+      ["frame gutter", GUTTER, 0],
+      ["source width", SOURCE_WIDTH, 1],
+      ["source height", SOURCE_HEIGHT, 1],
+      ["source x", SOURCE_X, 0],
+      ["source y", SOURCE_Y, 0]
+    ]) {
+      INTEGER(VALUE, NAME, MINIMUM);
+    }
+    if (X - GUTTER < 0 || Y - GUTTER < 0 || X + WIDTH + GUTTER > ATLAS_WIDTH || Y + HEIGHT + GUTTER > ATLAS_HEIGHT || SOURCE_X + WIDTH > SOURCE_WIDTH || SOURCE_Y + HEIGHT > SOURCE_HEIGHT) {
+      throw new RangeError("Sprite frame, its gutter, or its trim exceeds its atlas/source viewport");
+    }
+    if (!Number.isFinite(PIVOT_X) || !Number.isFinite(PIVOT_Y)) {
+      throw new TypeError("Sprite pivot coordinates must be finite");
+    }
+    if (!Number.isFinite(DURATION_MS) || DURATION_MS <= 0 || DURATION_MS > 1e9) {
+      throw new RangeError("Sprite frame durationMs must be positive and at most 1,000,000,000");
+    }
+    const LEFT = SOURCE_X - PIVOT_X;
+    const TOP = SOURCE_Y - PIVOT_Y;
+    const U0 = X / ATLAS_WIDTH;
+    const V0 = TEXTURE_ORIGIN === "bottom-left" ? 1 - Y / ATLAS_HEIGHT : Y / ATLAS_HEIGHT;
+    const V1 = TEXTURE_ORIGIN === "bottom-left" ? 1 - (Y + HEIGHT) / ATLAS_HEIGHT : (Y + HEIGHT) / ATLAS_HEIGHT;
+    FRAME_RECTS.push(
+      Object.freeze({
+        localRect: Object.freeze([LEFT, TOP, WIDTH, HEIGHT]),
+        uvRect: Object.freeze([U0, V0, WIDTH / ATLAS_WIDTH, V1 - V0])
+      })
+    );
+    FRAMES.push(
+      Object.freeze({
+        index,
+        x: X,
+        y: Y,
+        width: WIDTH,
+        height: HEIGHT,
+        sourceX: SOURCE_X,
+        sourceY: SOURCE_Y,
+        sourceWidth: SOURCE_WIDTH,
+        sourceHeight: SOURCE_HEIGHT,
+        pivotX: PIVOT_X,
+        pivotY: PIVOT_Y,
+        gutter: GUTTER,
+        durationMs: DURATION_MS
+      })
+    );
+  }
+  const CLIPS = /* @__PURE__ */ new Map();
+  for (const [NAME, INPUT] of Object.entries(INPUT_CLIPS)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/.test(NAME) || !INPUT || typeof INPUT !== "object") {
+      throw new TypeError("Valid named sprite clips are required");
+    }
+    if (!Array.isArray(INPUT.frames) || !INPUT.frames.length || INPUT.frames.length > 4096) {
+      throw new RangeError("A sprite clip must reference 1..4096 frames");
+    }
+    const LOOP = INPUT.loop ?? "loop";
+    if (LOOP !== "loop" && LOOP !== "once") {
+      throw new TypeError("Sprite clip loop must be loop or once");
+    }
+    let durationMs = 0;
+    const ENDS = [];
+    for (const INDEX of INPUT.frames) {
+      INTEGER(INDEX, "clip frame index");
+      if (INDEX >= FRAMES.length) {
+        throw new RangeError("Clip frame index exceeds atlas frame count");
+      }
+      durationMs += FRAMES[INDEX].durationMs;
+      if (!Number.isFinite(durationMs) || durationMs > Number.MAX_SAFE_INTEGER) {
+        throw new RangeError("Sprite clip duration exceeds safe milliseconds");
+      }
+      ENDS.push(durationMs);
+    }
+    CLIPS.set(
+      NAME,
+      Object.freeze({
+        name: NAME,
+        frames: Object.freeze([...INPUT.frames]),
+        ends: Object.freeze(ENDS),
+        loop: LOOP,
+        durationMs
+      })
+    );
+  }
+  if (!CLIPS.size) {
+    throw new TypeError("At least one sprite clip is required");
+  }
+  const MESH = meshRenderer.createMesh({
+    vertices: VERTICES,
+    uvs: UVS,
+    indices: INDICES,
+    strideFloats: 11,
+    partCount: 1,
+    morphCount: 0
+  });
+  const PLAYERS = /* @__PURE__ */ new Set();
+  let disposed = false;
+  const READY = () => {
+    if (disposed) {
+      throw new Error("Sprite animation disposed");
+    }
+  };
+  const GET_CLIP = (name) => {
+    const CLIP = CLIPS.get(name);
+    if (!CLIP) {
+      throw new TypeError("Known sprite clip required");
+    }
+    return CLIP;
+  };
+  const CLOCK = (value) => {
+    if (!Number.isFinite(value)) {
+      throw new TypeError("Finite absolute timeMs required");
+    }
+  };
+  return Object.freeze({
+    createPlayer({ clip = CLIPS.keys().next().value, startedAtMs = 0, rate = 1 } = {}) {
+      READY();
+      CLOCK(startedAtMs);
+      if (!Number.isFinite(rate) || rate <= 0 || rate > 1e3) {
+        throw new RangeError("Sprite playback rate must be in (0,1000]");
+      }
+      let selectedClip = GET_CLIP(clip);
+      let anchorMs = startedAtMs;
+      let offsetMs = 0;
+      let playbackRate = rate;
+      let paused = false;
+      let playerDisposed = false;
+      const PLAYER_READY = () => {
+        READY();
+        if (playerDisposed) {
+          throw new Error("Sprite player disposed");
+        }
+      };
+      const ELAPSED = (timeMs) => {
+        PLAYER_READY();
+        CLOCK(timeMs);
+        const VALUE = Math.max(0, offsetMs + (paused ? 0 : (timeMs - anchorMs) * playbackRate));
+        if (!Number.isFinite(VALUE)) {
+          throw new RangeError("Sprite elapsed time exceeds finite milliseconds");
+        }
+        return VALUE;
+      };
+      const PLAYER = Object.freeze({
+        sample(timeMs) {
+          const ELAPSED_MS = ELAPSED(timeMs);
+          const TIME = selectedClip.loop === "loop" ? ELAPSED_MS % selectedClip.durationMs : Math.min(ELAPSED_MS, selectedClip.durationMs);
+          let slot = 0;
+          while (slot < selectedClip.ends.length - 1 && TIME >= selectedClip.ends[slot]) {
+            slot++;
+          }
+          const FRAME_INDEX = selectedClip.frames[slot];
+          return Object.freeze({
+            clip: selectedClip.name,
+            frameIndex: FRAME_INDEX,
+            frame: FRAMES[FRAME_INDEX],
+            elapsedMs: ELAPSED_MS,
+            finished: selectedClip.loop === "once" && ELAPSED_MS >= selectedClip.durationMs
+          });
+        },
+        draw({ timeMs, ...options } = {}) {
+          const SAMPLE = this.sample(timeMs);
+          meshRenderer.drawMesh(MESH, {
+            ...options,
+            ...FRAME_RECTS[SAMPLE.frameIndex],
+            texture
+          });
+          return SAMPLE;
+        },
+        seek(elapsedMs, timeMs) {
+          PLAYER_READY();
+          CLOCK(elapsedMs);
+          CLOCK(timeMs);
+          if (elapsedMs < 0) {
+            throw new RangeError("Sprite seek elapsedMs must be nonnegative");
+          }
+          offsetMs = elapsedMs;
+          anchorMs = timeMs;
+          return this;
+        },
+        setPaused(value, timeMs) {
+          PLAYER_READY();
+          if (typeof value !== "boolean") {
+            throw new TypeError("Sprite paused state must be boolean");
+          }
+          const CURRENT = ELAPSED(timeMs);
+          offsetMs = CURRENT;
+          anchorMs = timeMs;
+          paused = value;
+          return this;
+        },
+        setRate(value, timeMs) {
+          PLAYER_READY();
+          if (!Number.isFinite(value) || value <= 0 || value > 1e3) {
+            throw new RangeError("Sprite playback rate must be in (0,1000]");
+          }
+          const CURRENT = ELAPSED(timeMs);
+          offsetMs = CURRENT;
+          anchorMs = timeMs;
+          playbackRate = value;
+          return this;
+        },
+        setClip(name, timeMs) {
+          PLAYER_READY();
+          CLOCK(timeMs);
+          selectedClip = GET_CLIP(name);
+          offsetMs = 0;
+          anchorMs = timeMs;
+          return this;
+        },
+        dispose() {
+          if (playerDisposed) {
+            return false;
+          }
+          playerDisposed = true;
+          PLAYERS.delete(PLAYER);
+          return true;
+        }
+      });
+      PLAYERS.add(PLAYER);
+      return PLAYER;
+    },
+    stats() {
+      return Object.freeze({
+        frameCount: FRAMES.length,
+        clipCount: CLIPS.size,
+        playerCount: PLAYERS.size,
+        retainedBytes: disposed ? 0 : MESH.byteLength,
+        textureOwned: false
+      });
+    },
+    dispose() {
+      if (disposed) {
+        return false;
+      }
+      disposed = true;
+      PLAYERS.clear();
+      meshRenderer.deleteMesh(MESH);
+      return true;
+    }
+  });
+}
 
 // modules/rendering/yarn-shader.js
 var STRIDE_FLOATS = 9;
@@ -9594,5 +10026,6 @@ export {
   VectorRenderer,
   WebGLDevice,
   YarnSurfaceRenderer,
-  buildYarnSurfaceGeometry
+  buildYarnSurfaceGeometry,
+  createSpriteAnimation
 };
