@@ -65,7 +65,7 @@ try {
             timeout: 20000,
         },
     );
-    preview = await PREVIEW_PAGE.evaluate(() => {
+    preview = await PREVIEW_PAGE.evaluate(async () => {
         const DEMO = window.__rasterComparison;
         if (DEMO.error) {
             throw new Error(DEMO.error);
@@ -130,12 +130,97 @@ try {
             }
             PREWARM_CASES.push({ resolution: RESOLUTION, interval: INTERVAL, baseline: BASELINE, switches: SWITCHES });
         }
+        DEMO.setMode('vector');
+        DEMO.setClip('transform-repeat');
+        DEMO.setExpression('neutral');
+        DEMO.setPixelSize(64);
+        DEMO.setSpread(100);
+        DEMO.setSeed(4242);
+        DEMO.setCount(100);
+        document.getElementById('single-tab').click();
+        const SINGLE = DEMO.renderOnce({ timeMs: 500 });
+        const SINGLE_SELECTED = document.getElementById('single-tab').getAttribute('aria-selected');
+        document.getElementById('crowd-tab').click();
+        DEMO.setCount(1);
+        const CROWD_ONE = DEMO.renderOnce({ timeMs: 500 });
+        DEMO.setCount(100);
+        const CROWD_HUNDRED = DEMO.renderOnce({ timeMs: 500 });
+        DEMO.setCount(500);
+        const CROWD_FIVE_HUNDRED = DEMO.renderOnce({ timeMs: 500 });
+        DEMO.setCount(1000);
+        const CROWD_THOUSAND = DEMO.renderOnce({ timeMs: 500 });
+        DEMO.setSpread(35);
+        const NARROW_SPREAD = DEMO.renderOnce({ timeMs: 500 });
+        DEMO.setSpread(100);
+        DEMO.setSeed(4243);
+        const DIFFERENT_SEED = DEMO.renderOnce({ timeMs: 500 });
+        DEMO.setSeed(4242);
+        const RESTORED_LAYOUT = DEMO.renderOnce({ timeMs: 500 });
+        const CROWD_SELECTED = document.getElementById('crowd-tab').getAttribute('aria-selected');
+        const CACHE = (frame) => ({
+            generation: frame.preparation.generation,
+            bakeCounts: frame.preparation.entries.map((entry) => entry.bakeCount),
+            imageTexUploadCount: frame.imageTexUploadCount,
+            imageTexUploadBytes: frame.imageTexUploadBytes,
+        });
+        const LAYOUT_CASES = {
+            single: { count: SINGLE.count, layout: SINGLE.layout, selected: SINGLE_SELECTED },
+            one: { count: CROWD_ONE.count, layout: CROWD_ONE.layout },
+            hundred: { count: CROWD_HUNDRED.count, layout: CROWD_HUNDRED.layout },
+            fiveHundred: { count: CROWD_FIVE_HUNDRED.count, layout: CROWD_FIVE_HUNDRED.layout },
+            thousand: { count: CROWD_THOUSAND.count, layout: CROWD_THOUSAND.layout },
+            narrow: NARROW_SPREAD.layout,
+            differentSeed: DIFFERENT_SEED.layout,
+            restored: RESTORED_LAYOUT.layout,
+            crowdSelected: CROWD_SELECTED,
+            caches: [
+                CROWD_ONE,
+                CROWD_HUNDRED,
+                CROWD_FIVE_HUNDRED,
+                CROWD_THOUSAND,
+                NARROW_SPREAD,
+                DIFFERENT_SEED,
+                RESTORED_LAYOUT,
+            ].map(CACHE),
+        };
+        DEMO.setCount(1);
+        const BEFORE_BENCHMARK = DEMO.benchmarkState;
+        const BENCHMARK_RESULT = await DEMO.runBenchmark({
+            scene: 'crowd',
+            count: 1,
+            pixelSize: 64,
+            spread: 100,
+            seed: 4242,
+            warmupFrames: 30,
+            sampleFrames: 60,
+        });
+        const BENCHMARK = {
+            config: BENCHMARK_RESULT.config,
+            preparationGeneration: BENCHMARK_RESULT.preparationGeneration,
+            methods: BENCHMARK_RESULT.methods.map((method) => ({
+                mode: method.mode,
+                warmupFrames: method.warmupFrames,
+                measuredFrames: method.measuredFrames,
+                fps: method.fps,
+                frameIntervalMs: method.frameIntervalMs,
+                cpuTotalMs: method.cpuTotalMs,
+                submitMs: method.submitMs,
+                gpuMs: method.gpuMs,
+                rawFrames: method.raw.frames.length,
+                rawIntervals: method.raw.frameIntervalsMs.length,
+                firstDisplayTime: method.raw.frames[0]?.sourceTimeMs,
+                lastDisplayTime: method.raw.frames.at(-1)?.sourceTimeMs,
+            })),
+            stateRestored: JSON.stringify(DEMO.benchmarkState) === JSON.stringify(BEFORE_BENCHMARK),
+        };
         const DISPOSED = DEMO.dispose();
         return {
             frames: FRAMES,
             sameResolution: SAME_RESOLUTION,
             opacity: OPACITY,
             prewarmCases: PREWARM_CASES,
+            layoutCases: LAYOUT_CASES,
+            benchmark: BENCHMARK,
             disposed: DISPOSED,
         };
     });
@@ -195,6 +280,60 @@ try {
                 `${LABEL}: no image texture bytes during prepared playback`,
             );
         }
+    }
+    assert.equal(preview.layoutCases.single.selected, 'true');
+    assert.equal(preview.layoutCases.single.count, 1);
+    assert.equal(preview.layoutCases.single.layout.scene, 'single');
+    assert.equal(preview.layoutCases.crowdSelected, 'true');
+    assert.equal(preview.layoutCases.one.count, 1);
+    assert.equal(preview.layoutCases.hundred.count, 100);
+    assert.equal(preview.layoutCases.fiveHundred.count, 500);
+    assert.equal(preview.layoutCases.thousand.count, 1000);
+    assert.equal(preview.layoutCases.hundred.layout.pixelSize, 64);
+    assert.equal(preview.layoutCases.fiveHundred.layout.pixelSize, 64);
+    assert.equal(preview.layoutCases.thousand.layout.pixelSize, 64);
+    assert.deepEqual(
+        preview.layoutCases.one.layout.positions,
+        preview.layoutCases.hundred.layout.positions.slice(0, 1),
+    );
+    assert.deepEqual(preview.layoutCases.hundred.layout.positions, preview.layoutCases.fiveHundred.layout.positions);
+    assert.deepEqual(preview.layoutCases.fiveHundred.layout.positions, preview.layoutCases.thousand.layout.positions);
+    for (const CACHE of preview.layoutCases.caches) {
+        assert.deepEqual(
+            CACHE,
+            preview.layoutCases.caches[0],
+            'Count, spread, and seed changes reuse prepared atlases',
+        );
+    }
+    assert.notEqual(
+        preview.layoutCases.narrow.positionSignature,
+        preview.layoutCases.fiveHundred.layout.positionSignature,
+    );
+    assert.notEqual(
+        preview.layoutCases.differentSeed.positionSignature,
+        preview.layoutCases.fiveHundred.layout.positionSignature,
+    );
+    assert.equal(
+        preview.layoutCases.restored.positionSignature,
+        preview.layoutCases.fiveHundred.layout.positionSignature,
+    );
+    assert.equal(preview.benchmark.stateRestored, true);
+    assert.deepEqual(
+        preview.benchmark.methods.map((method) => method.mode),
+        ['vector', 'raster', 'sprite'],
+    );
+    for (const METHOD of preview.benchmark.methods) {
+        assert.equal(METHOD.warmupFrames, 30);
+        assert.equal(METHOD.measuredFrames, 60);
+        assert.equal(METHOD.rawFrames, 60);
+        assert.equal(METHOD.rawIntervals, 60);
+        assert.equal(METHOD.firstDisplayTime, 500);
+        assert.ok(Math.abs(METHOD.lastDisplayTime - (500 + (59 * 1000) / 60)) < 1e-6);
+        assert.ok(METHOD.fps > 0 && Number.isFinite(METHOD.fps));
+        assert.ok(METHOD.frameIntervalMs.p50 > 0 && METHOD.frameIntervalMs.p95 > 0);
+        assert.ok(METHOD.cpuTotalMs.p50 >= 0 && METHOD.cpuTotalMs.p95 >= 0);
+        assert.ok(METHOD.submitMs.p50 >= 0 && METHOD.submitMs.p95 >= 0);
+        assert.ok(['available', 'unsupported', 'pending', 'unavailable', 'disjoint'].includes(METHOD.gpuMs.status));
     }
     await PREVIEW_PAGE.close();
 
