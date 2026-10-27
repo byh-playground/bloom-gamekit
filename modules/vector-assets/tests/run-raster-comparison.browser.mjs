@@ -183,6 +183,116 @@ try {
                 RESTORED_LAYOUT,
             ].map(CACHE),
         };
+        DEMO.setCount(100);
+        DEMO.setMode('vector');
+        DEMO.setClip('transform-repeat');
+        DEMO.setExpression('happy');
+        DEMO.setSpread(35);
+        DEMO.setZoom(2);
+        const QUALITY_STATE = (frame) => ({
+            clip: frame.clip,
+            expression: frame.expression,
+            count: frame.count,
+            timeMs: frame.timeMs,
+            zoom: frame.zoom,
+            mixed: frame.mixed,
+            phaseSignature: frame.phaseSignature,
+            layout: frame.layout,
+        });
+        const QUALITY_CACHE = (frame) => ({
+            compileCount: frame.quality.compileCount,
+            preparationGeneration: frame.preparation.generation,
+            bakeCounts: frame.preparation.entries.map((entry) => entry.bakeCount),
+            atlasBakeCount: frame.atlas.bakeCount,
+            imageTexUploadCount: frame.imageTexUploadCount,
+            imageTexUploadBytes: frame.imageTexUploadBytes,
+        });
+        const QUALITY_FRAME = (frame) => ({
+            sourceSha256: frame.sourceSha256,
+            quality: frame.quality,
+            tradeoff: frame.tradeoff,
+            state: QUALITY_STATE(frame),
+            cache: QUALITY_CACHE(frame),
+            vectorGpuPoses: frame.poses.gpuDrawInstances,
+        });
+        const STEADY_QUALITY_FRAME = (timeMs) => {
+            DEMO.renderOnce({ timeMs });
+            return QUALITY_FRAME(DEMO.renderOnce({ timeMs }));
+        };
+        const STANDARD_BEFORE = STEADY_QUALITY_FRAME(230);
+        const QUALITY_PATHS = [];
+        const COMPARE_QUALITY_PIXELS = (vector, raster) => {
+            if (vector.width !== raster.width || vector.height !== raster.height) {
+                throw new Error('Quality path comparison viewport mismatch');
+            }
+            let foreground = 0;
+            let difference = 0;
+            let changed = 0;
+            let spurious = 0;
+            for (let offset = 0; offset < vector.pixels.length; offset += 4) {
+                const VECTOR_PAINT = vector.pixels[offset + 3] > 8;
+                const RASTER_PAINT = raster.pixels[offset + 3] > 8;
+                if (!VECTOR_PAINT && !RASTER_PAINT) {
+                    continue;
+                }
+                foreground++;
+                let channelMax = 0;
+                for (let channel = 0; channel < 4; channel++) {
+                    const DELTA = Math.abs(vector.pixels[offset + channel] - raster.pixels[offset + channel]);
+                    difference += DELTA;
+                    channelMax = Math.max(channelMax, DELTA);
+                }
+                changed += Number(channelMax > 48);
+                spurious += Number(!VECTOR_PAINT && RASTER_PAINT && channelMax > 32);
+            }
+            return {
+                foregroundPixels: foreground,
+                meanForegroundChannelError: foreground ? difference / (foreground * 4) : 0,
+                changedFraction: foreground ? changed / foreground : 0,
+                spuriousFraction: foreground ? spurious / foreground : 0,
+            };
+        };
+        const CHECK_QUALITY_PATHS = (preset) => {
+            DEMO.setCount(1);
+            DEMO.setMode('vector');
+            DEMO.renderOnce({ timeMs: 230 });
+            const VECTOR_PIXELS = DEMO.capturePixels();
+            DEMO.setMode('raster');
+            const RASTER = DEMO.renderOnce({ timeMs: 230 });
+            const RASTER_PIXELS = DEMO.capturePixels();
+            DEMO.setMode('sprite');
+            const SPRITE = DEMO.renderOnce({ timeMs: 230 });
+            DEMO.setMode('vector');
+            DEMO.setCount(100);
+            QUALITY_PATHS.push({
+                preset,
+                rasterDraws: RASTER.rasterResult.rasterDraws,
+                rasterFallbacks: RASTER.rasterResult.vectorFallbacks,
+                spriteDraws: SPRITE.spriteResult.spriteDraws,
+                spriteFallbacks: SPRITE.spriteResult.vectorFallbacks,
+                vectorRasterPixels: COMPARE_QUALITY_PIXELS(VECTOR_PIXELS, RASTER_PIXELS),
+            });
+        };
+        await DEMO.setQuality('low');
+        const LOW = STEADY_QUALITY_FRAME(230);
+        CHECK_QUALITY_PATHS('low');
+        await DEMO.setQuality('high');
+        const HIGH = STEADY_QUALITY_FRAME(230);
+        CHECK_QUALITY_PATHS('high');
+        await DEMO.setQuality('high');
+        const HIGH_RESELECTED = STEADY_QUALITY_FRAME(230);
+        const HIGH_NORMAL_FRAME = QUALITY_FRAME(DEMO.renderOnce({ timeMs: 246 }));
+        await DEMO.setQuality('standard');
+        const STANDARD_AFTER = STEADY_QUALITY_FRAME(230);
+        const QUALITY_CASES = {
+            standardBefore: STANDARD_BEFORE,
+            low: LOW,
+            high: HIGH,
+            highReselected: HIGH_RESELECTED,
+            highNormalFrame: HIGH_NORMAL_FRAME,
+            standardAfter: STANDARD_AFTER,
+            paths: QUALITY_PATHS,
+        };
         DEMO.setCount(1);
         const BEFORE_BENCHMARK = DEMO.benchmarkState;
         const BENCHMARK_RESULT = await DEMO.runBenchmark({
@@ -220,6 +330,7 @@ try {
             opacity: OPACITY,
             prewarmCases: PREWARM_CASES,
             layoutCases: LAYOUT_CASES,
+            qualityCases: QUALITY_CASES,
             benchmark: BENCHMARK,
             disposed: DISPOSED,
         };
@@ -317,6 +428,67 @@ try {
         preview.layoutCases.restored.positionSignature,
         preview.layoutCases.fiveHundred.layout.positionSignature,
     );
+    const QUALITY = preview.qualityCases;
+    assert.deepEqual(
+        [QUALITY.low.quality.key, QUALITY.high.quality.key, QUALITY.standardAfter.quality.key],
+        ['low', 'high', 'standard'],
+    );
+    assert.deepEqual(
+        [
+            QUALITY.low.quality.curveSegments,
+            QUALITY.standardAfter.quality.curveSegments,
+            QUALITY.high.quality.curveSegments,
+        ],
+        [2, 4, 16],
+    );
+    for (const FRAME of [QUALITY.low, QUALITY.high, QUALITY.standardAfter]) {
+        assert.equal(FRAME.quality.strokeArcDivisions, 2);
+        assert.equal(FRAME.quality.compileWallMs, null, 'Loader does not claim a compiler-only duration');
+        assert.equal(FRAME.quality.loadStatus, 'ready');
+        assert.equal(
+            FRAME.sourceSha256,
+            QUALITY.standardBefore.sourceSha256,
+            'All quality levels use the same source SVG',
+        );
+        assert.deepEqual(
+            FRAME.state,
+            QUALITY.standardBefore.state,
+            'Quality switch preserves scene and animation state',
+        );
+        assert.equal(FRAME.vectorGpuPoses, 100);
+        assert.equal(FRAME.tradeoff.activeCpuSourceGeometryBytes, FRAME.quality.cpuSourceGeometryBytes);
+        assert.equal(FRAME.tradeoff.paths.vector.uniqueVerticesPerActor, FRAME.quality.sourceVertexCount);
+        assert.equal(FRAME.tradeoff.paths.vector.logicalRgbaBytes, 0);
+        assert.equal(FRAME.tradeoff.paths.vector.initialPrepareMs, null);
+        assert.ok(FRAME.tradeoff.paths.raster.logicalRgbaBytes > 0);
+        assert.ok(FRAME.tradeoff.paths.sprite.logicalRgbaBytes > 0);
+        assert.equal(FRAME.cache.imageTexUploadCount, QUALITY.standardBefore.cache.imageTexUploadCount);
+        assert.equal(FRAME.cache.imageTexUploadBytes, QUALITY.standardBefore.cache.imageTexUploadBytes);
+    }
+    assert.ok(QUALITY.low.quality.loadWallMs > 0);
+    assert.ok(QUALITY.high.quality.loadWallMs > 0);
+    assert.ok(QUALITY.high.quality.sourceVertexCount > QUALITY.low.quality.sourceVertexCount);
+    assert.ok(QUALITY.high.quality.expressionTriangles > QUALITY.low.quality.expressionTriangles);
+    assert.ok(QUALITY.high.quality.cpuSourceGeometryBytes > QUALITY.low.quality.cpuSourceGeometryBytes);
+    assert.ok(QUALITY.standardAfter.quality.sourceVertexCount >= QUALITY.low.quality.sourceVertexCount);
+    assert.ok(QUALITY.standardAfter.quality.sourceVertexCount <= QUALITY.high.quality.sourceVertexCount);
+    assert.equal(QUALITY.low.cache.compileCount, QUALITY.standardBefore.cache.compileCount + 1);
+    assert.equal(QUALITY.high.cache.compileCount, QUALITY.low.cache.compileCount + 1);
+    assert.equal(QUALITY.standardAfter.cache.compileCount, QUALITY.high.cache.compileCount);
+    assert.deepEqual(QUALITY.highReselected.cache, QUALITY.high.cache, 'Reselecting high does not recompile or rebake');
+    assert.deepEqual(QUALITY.highNormalFrame.cache, QUALITY.high.cache, 'Ordinary frames do not recompile or rebake');
+    assert.equal(QUALITY.paths.length, 2);
+    for (const PATH of QUALITY.paths) {
+        assert.ok(['low', 'high'].includes(PATH.preset));
+        assert.equal(PATH.rasterDraws, 1);
+        assert.equal(PATH.rasterFallbacks, 0);
+        assert.equal(PATH.spriteDraws, 1);
+        assert.equal(PATH.spriteFallbacks, 0);
+        assert.ok(PATH.vectorRasterPixels.foregroundPixels > 100, JSON.stringify(PATH));
+        assert.ok(PATH.vectorRasterPixels.meanForegroundChannelError <= 5, JSON.stringify(PATH));
+        assert.ok(PATH.vectorRasterPixels.changedFraction <= 0.05, JSON.stringify(PATH));
+        assert.ok(PATH.vectorRasterPixels.spuriousFraction <= 0.01, JSON.stringify(PATH));
+    }
     assert.equal(preview.benchmark.stateRestored, true);
     assert.deepEqual(
         preview.benchmark.methods.map((method) => method.mode),
