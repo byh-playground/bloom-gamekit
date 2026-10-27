@@ -85,6 +85,12 @@ try {
                     addPlayer(i);
                 }
                 const FRAMES = [];
+                const FAULTS = {
+                    uploadDirtyRetained: null,
+                    restoredStateRefresh: null,
+                    capacityRollback: null,
+                    programRebuildRollback: null,
+                };
                 let maxPoseError = 0;
                 let maxOpacityError = 0;
                 let maxMorphError = 0;
@@ -145,6 +151,25 @@ try {
                         const HANDLE = CULLED ? null : PLAYER.preparePose({ excludeParts: EXCLUDED });
                         PREPARED.push({ handle: HANDLE, excluded: EXCLUDED, culled: CULLED });
                         CLOCKS.push(PLAYER.currentTimeMs);
+                    }
+                    if (frame === 0 && backend === 'auto' && DEVICE.floatRenderTargetsSupported) {
+                        const UPDATE = DEVICE.updateDataTexture;
+                        DEVICE.updateDataTexture = () => {
+                            throw new Error('Injected pose state upload failure');
+                        };
+                        try {
+                            MESHES.preparePoses();
+                            throw new Error('Upload failure injection did not execute');
+                        } catch (error) {
+                            if (error.message !== 'Injected pose state upload failure') {
+                                throw error;
+                            }
+                            FAULTS.uploadDirtyRetained = [...MESHES.poseRenderer.instances.values()]
+                                .filter((record) => record.mode === 'gpu')
+                                .every((record) => record.stateDirty && record.dirty);
+                        } finally {
+                            DEVICE.updateDataTexture = UPDATE;
+                        }
                     }
                     MESHES.preparePoses();
                     for (let i = 0; i < PLAYERS.length; i++) {
@@ -248,6 +273,11 @@ try {
                         const RESTORED = new Promise((resolve) =>
                             CANVAS.addEventListener('webglcontextrestored', resolve, { once: true }),
                         );
+                        if (backend === 'auto' && MESHES.poseRenderer?.gpuTarget) {
+                            // Emulate retained pixels lagging staged CPU state after an interrupted upload.
+                            DEVICE.textures.get(MESHES.poseRenderer.stateTexture).source.fill(0);
+                            DEVICE.textures.get(MESHES.poseRenderer.overrideTexture).source.fill(0);
+                        }
                         EXTENSION.loseContext();
                         await LOST;
                         await new Promise((resolve) => setTimeout(resolve, 50));
@@ -261,6 +291,11 @@ try {
                         if (DEVICE.state !== 'ready') {
                             throw new Error('Device did not restore: ' + DEVICE.state);
                         }
+                        if (backend === 'auto' && MESHES.poseRenderer?.gpuTarget) {
+                            FAULTS.restoredStateRefresh = [...MESHES.poseRenderer.instances.values()]
+                                .filter((record) => record.mode === 'gpu')
+                                .every((record) => record.stateDirty && record.overrideDirty && record.dirty);
+                        }
                     }
                 }
                 const SNAPSHOT = {
@@ -270,7 +305,58 @@ try {
                     maxPoseError,
                     maxOpacityError,
                     maxMorphError,
+                    faults: FAULTS,
                 };
+                if (backend === 'auto' && MESHES.poseRenderer?.sources.size > 1) {
+                    const POSES = MESHES.poseRenderer;
+                    const CREATE = DEVICE.createDataTexture;
+                    const CAPACITY = POSES.capacity;
+                    const STATE_TEXTURE = POSES.stateTexture;
+                    const OVERRIDE_TEXTURE = POSES.overrideTexture;
+                    const TARGET = POSES.gpuTarget;
+                    const TEXTURE_COUNT = DEVICE.textures.size;
+                    DEVICE.createDataTexture = () => {
+                        throw new Error('Injected pose data allocation failure');
+                    };
+                    try {
+                        POSES._ensureCapacity(CAPACITY + 1);
+                        throw new Error('Capacity failure injection did not execute');
+                    } catch (error) {
+                        if (error.message !== 'Injected pose data allocation failure') {
+                            throw error;
+                        }
+                        FAULTS.capacityRollback =
+                            POSES.capacity === CAPACITY &&
+                            POSES.stateTexture === STATE_TEXTURE &&
+                            POSES.overrideTexture === OVERRIDE_TEXTURE &&
+                            POSES.gpuTarget === TARGET &&
+                            DEVICE.textures.size === TEXTURE_COUNT;
+                    } finally {
+                        DEVICE.createDataTexture = CREATE;
+                    }
+                    const BEFORE_SOURCES = [...POSES.sources].map(([handle, source]) => ({
+                        handle,
+                        offset: source.offset,
+                    }));
+                    const PROGRAM_TEXTURE = POSES.programTexture;
+                    DEVICE.createDataTexture = () => {
+                        throw new Error('Injected pose program allocation failure');
+                    };
+                    try {
+                        RESOURCES[0].dispose();
+                        throw new Error('Program failure injection did not execute');
+                    } catch (error) {
+                        if (error.message !== 'Injected pose program allocation failure') {
+                            throw error;
+                        }
+                        FAULTS.programRebuildRollback =
+                            POSES.sources.size === BEFORE_SOURCES.length &&
+                            POSES.programTexture === PROGRAM_TEXTURE &&
+                            BEFORE_SOURCES.every(({ handle, offset }) => POSES.sources.get(handle)?.offset === offset);
+                    } finally {
+                        DEVICE.createDataTexture = CREATE;
+                    }
+                }
                 for (const RESOURCE of RESOURCES) {
                     RESOURCE.dispose();
                 }
@@ -294,6 +380,42 @@ try {
     const DIFFERENCES = [];
     const REFERENCE_PIXELS = RESULTS[0].frames.map((frame) => Buffer.from(frame.pixels, 'base64'));
     for (const RESULT of RESULTS) {
+        if (RESULT.backend === 'auto' && RESULT.hardware.floatTargets) {
+            assert.ok(
+                RESULT.frames[0].stats.gpuDrawInstances > 0,
+                'supported auto backend must actually draw GPU poses',
+            );
+            for (const FRAME of [2, 3]) {
+                assert.ok(
+                    RESULT.frames[FRAME].stats.cpuDrawInstances > 0 &&
+                        RESULT.frames[FRAME].stats.fallbackReasons.transitionBlend > 0,
+                    'nested transition must use the declared CPU blend path',
+                );
+            }
+            assert.ok(
+                RESULT.frames[4].stats.gpuDrawInstances > 0 && RESULT.frames[4].stats.cpuDrawInstances === 0,
+                'completed transitions must return to GPU without resetting clocks',
+            );
+            assert.ok(RESULT.frames[7].stats.gpuDrawInstances > 0, 'restored supported context must resume GPU poses');
+            assert.deepEqual(RESULT.faults, {
+                uploadDirtyRetained: true,
+                restoredStateRefresh: true,
+                capacityRollback: true,
+                programRebuildRollback: true,
+            });
+        }
+        if (RESULT.backend === 'noFloat') {
+            assert.equal(
+                RESULT.frames[0].stats.gpuDrawInstances,
+                0,
+                'float-disabled startup cannot claim GPU animation',
+            );
+            assert.ok(
+                RESULT.frames[0].stats.cpuDrawInstances > 0 &&
+                    RESULT.frames[0].stats.fallbackReasons.floatRenderTargets > 0,
+                'float-disabled startup must report its CPU fallback reason',
+            );
+        }
         assert.deepEqual(RESULT.afterDispose, { buffers: 0, textures: 0, targets: 0, pipelines: 0 });
         assert.ok(RESULT.maxPoseError <= 0.001, 'GPU matrix error in SVG units: ' + RESULT.maxPoseError);
         assert.ok(RESULT.maxOpacityError <= 0.000001);

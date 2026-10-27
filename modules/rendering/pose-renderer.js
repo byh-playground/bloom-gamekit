@@ -90,6 +90,9 @@ export class PoseRenderer {
             }
             for (const RECORD of this.instances.values()) {
                 RECORD.dirty = true;
+                RECORD.stateDirty = true;
+                RECORD.overrideDirty = true;
+                RECORD.cpuDirty = RECORD.mode === 'cpu';
                 RECORD.usedFrame = -1;
             }
         };
@@ -147,8 +150,9 @@ export class PoseRenderer {
     }
     _rebuildPrograms() {
         let length = 0;
+        const OFFSETS = new Map();
         for (const SOURCE of this.sources.values()) {
-            SOURCE.offset = length / 4;
+            OFFSETS.set(SOURCE, length / 4);
             length += SOURCE.program.data.length;
         }
         if (!length) {
@@ -165,9 +169,13 @@ export class PoseRenderer {
         }
         const DATA = new Float32Array(WIDTH * HEIGHT * 4);
         for (const SOURCE of this.sources.values()) {
-            DATA.set(SOURCE.program.data, SOURCE.offset * 4);
+            DATA.set(SOURCE.program.data, OFFSETS.get(SOURCE) * 4);
         }
         const TEXTURE = this.device.createDataTexture(WIDTH, HEIGHT, { data: DATA });
+        // Commit offsets only after the replacement texture owns the matching bytes.
+        for (const [SOURCE, OFFSET] of OFFSETS) {
+            SOURCE.offset = OFFSET;
+        }
         if (this.programTexture) {
             this.device.deleteTexture(this.programTexture);
         }
@@ -184,8 +192,14 @@ export class PoseRenderer {
             throw new Error('Dispose pose instances before their source');
         }
         this._boundary();
+        const SOURCE = this.sources.get(handle);
         this.sources.delete(handle);
-        this._rebuildPrograms();
+        try {
+            this._rebuildPrograms();
+        } catch (error) {
+            this.sources.set(handle, SOURCE);
+            throw error;
+        }
         return true;
     }
     _releaseAtlas() {
@@ -217,16 +231,23 @@ export class PoseRenderer {
             OVERRIDES.set(this.overrideData);
             CPU.set(this.cpuData);
         }
-        this._releaseAtlas();
-        this.capacity = CAPACITY;
-        this.stateData = STATE;
-        this.overrideData = OVERRIDES;
-        this.cpuData = CPU;
-        this.stateTexture = this.device.createDataTexture(2, CAPACITY, { data: STATE });
-        this.overrideTexture = this.device.createDataTexture(OVERRIDE_WIDTH, CAPACITY, { data: OVERRIDES });
+        let stateTexture = null;
+        let overrideTexture = null;
+        let gpuTarget = null;
+        try {
+            stateTexture = this.device.createDataTexture(2, CAPACITY, { data: STATE });
+            overrideTexture = this.device.createDataTexture(OVERRIDE_WIDTH, CAPACITY, { data: OVERRIDES });
+        } catch (error) {
+            for (const TEXTURE of [stateTexture, overrideTexture]) {
+                if (TEXTURE) {
+                    this.device.deleteTexture(TEXTURE);
+                }
+            }
+            throw error;
+        }
         if (!this.gpuUnavailableReason) {
             try {
-                this.gpuTarget = this.device.createRenderTarget(POSE_WIDTH, CAPACITY, {
+                gpuTarget = this.device.createRenderTarget(POSE_WIDTH, CAPACITY, {
                     format: 'rgba32f',
                     filter: 'nearest',
                 });
@@ -236,6 +257,14 @@ export class PoseRenderer {
                 this.gpuUnavailableReason = `floatRenderTarget:${error.message}`;
             }
         }
+        this._releaseAtlas();
+        this.capacity = CAPACITY;
+        this.stateData = STATE;
+        this.overrideData = OVERRIDES;
+        this.cpuData = CPU;
+        this.stateTexture = stateTexture;
+        this.overrideTexture = overrideTexture;
+        this.gpuTarget = gpuTarget;
         for (const RECORD of this.instances.values()) {
             RECORD.dirty = true;
             RECORD.stateDirty = true;
@@ -443,11 +472,12 @@ export class PoseRenderer {
     _uploadRows(key, dirtyKey, texture, width, metric) {
         let first = Infinity;
         let last = -1;
+        const UPLOADING = [];
         for (const RECORD of this.instances.values()) {
             if (RECORD[dirtyKey]) {
                 first = Math.min(first, RECORD.row);
                 last = Math.max(last, RECORD.row);
-                RECORD[dirtyKey] = false;
+                UPLOADING.push(RECORD);
             }
         }
         if (last < 0) {
@@ -455,6 +485,9 @@ export class PoseRenderer {
         }
         const DATA = this[key].subarray(first * width * 4, (last + 1) * width * 4);
         this.device.updateDataTexture(texture, DATA, { y: first, width, height: last - first + 1 });
+        for (const RECORD of UPLOADING) {
+            RECORD[dirtyKey] = false;
+        }
         this.frameMetrics[metric] += DATA.byteLength;
     }
     flushUpdates() {
