@@ -404,8 +404,8 @@
         </header>
         <aside class="hud" aria-label="Live rendering metrics">
             <small class="hud-note"
-                >Shared animation-frame FPS across visible paths; draw-call time excludes shared flush in split
-                views.</small
+                >Split views show shared RAF FPS only. Per-path CPU/GPU render timings require the sequential
+                comparison; a single full-viewport path shows live submission including its final flush.</small
             >
             <article id="vector-card">
                 <strong>Vector</strong
@@ -37960,13 +37960,13 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
           CARD.querySelector(".gpu").textContent = GPU_STATS.status === "available" ? `${benchmarkValue(GPU_STATS.p50)} / ${benchmarkValue(GPU_STATS.p95)} (${COVERAGE})` : `${GPU_STATS.status} (${COVERAGE})`;
         } else {
           CARD.querySelector(".fps").textContent = STATE.fps === null ? "Shared RAF unavailable" : `Shared RAF ${STATE.fps.toFixed(1)} FPS`;
-          const CPU_PATH = MODE_INPUT.value === SIDE ? submitMs : pathCpuMs[SIDE];
-          CARD.querySelector(".cpu-label").textContent = MODE_INPUT.value === SIDE ? "Submit" : "Draw calls";
-          CARD.querySelector(".cpu").textContent = CPU_PATH === null ? "unavailable" : `${CPU_PATH.toFixed(2)} ms`;
+          const FULL_PATH = MODE_INPUT.value === SIDE;
+          CARD.querySelector(".cpu-label").textContent = FULL_PATH ? "Live submit (incl. flush)" : "CPU timing";
+          CARD.querySelector(".cpu").textContent = FULL_PATH ? `${submitMs.toFixed(2)} ms` : "Use sequential comparison";
           CARD.querySelector(".gpu").textContent = GPU_MS !== null && MODE_INPUT.value === SIDE ? `${GPU_MS.toFixed(2)} ms` : "unavailable";
         }
       }
-      FRAME_METRICS.textContent = `CPU 전체 ${cpuMs.toFixed(2)} ms (동작 준비 ${animationMs.toFixed(2)} / 제출 ${submitMs.toFixed(2)} ms) · GPU ${GPU_TEXT} · 드로우 ${DEVICE_STATS.drawCalls}회 · 버퍼 업로드 ${DEVICE_STATS.bufferBytes.toLocaleString()} B · 텍스처 업로드 ${DEVICE_STATS.textureBytes.toLocaleString()} B`;
+      FRAME_METRICS.textContent = `${MODE_INPUT.value.startsWith("split") ? "Shared visible paths" : "Current full viewport"} · CPU 전체 ${cpuMs.toFixed(2)} ms (동작 준비 ${animationMs.toFixed(2)} / 제출 ${submitMs.toFixed(2)} ms) · GPU ${GPU_TEXT} · 드로우 ${DEVICE_STATS.drawCalls}회 · 버퍼 업로드 ${DEVICE_STATS.bufferBytes.toLocaleString()} B · 텍스처 업로드 ${DEVICE_STATS.textureBytes.toLocaleString()} B`;
       BAKE_METRICS.textContent = ATLAS_STATS ? `${RESOLUTION_INPUT.value}px / 큰 축 · 굽기 ${ATLAS_STATS.bakeCpuMs.toFixed(1)} ms (호출 벽시계 ${STATE.bakeCpuMs?.toFixed(1) ?? "—"} ms) · ${ATLAS_STATS.runCount}개 부위 그림 · ${ATLAS_STATS.atlasWidth}×${ATLAS_STATS.atlasHeight} · ${ATLAS_STATS.atlasBytes.toLocaleString()} B · 굽기 ${ATLAS_STATS.bakeCount}회` : `래스터 아틀라스를 사용할 수 없습니다 · 시도 ${STATE.bakeCpuMs?.toFixed(1) ?? "—"} ms`;
       SPRITE_METRICS.textContent = `${SAMPLE_INTERVAL_INPUT.value}ms 간격 · ${SPRITE_FRAMES}프레임 · 처음 굽기 ${SPRITE_BAKE_MS.toFixed(1)} ms · 아틀라스 ${SPRITE_BYTES.toLocaleString()} B · 프레임 선택 오차 최대 ${SAMPLE_INTERVAL_INPUT.value}ms · 스프라이트 ${spriteResult.spriteDraws}개 / 벡터 대체 ${spriteResult.vectorFallbacks}개` + (spriteResult.reasons.length ? ` (${spriteResult.reasons.join(", ")})` : "");
       const FAILED_PREPARATIONS = PREPARATION?.entries.filter((entry) => !entry.ready) ?? [];
