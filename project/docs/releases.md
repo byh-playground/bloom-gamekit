@@ -1,3 +1,7 @@
+## v0.19.8 (2026-10-27)
+
+SVG 전체 스프라이트의 초기 bake에 `supersample: 1 | 2 | 4` 옵션을 추가합니다(기본 1 유지). 높은 해상도의 RGBA 표본을 준비 때만 그린 뒤 기존 shared sprite quad의 2:1 linear 축소를 반복해 최종 이미지에 저장합니다. 최종 해상도·프레임 정의·재생 경로는 바꾸지 않으며, 큰 초기 target과 임시 target을 해제합니다. MAX_TEXTURE_SIZE와 `maxAtlasBytes`는 임시 준비 peak까지 검사하며 `stats.bakeWorkingBytes`로 최종 보유량과 구분합니다. 색상 캡처·premultiplied alpha·복구와 실패 자원 회수를 검증합니다. 앨리어싱을 줄이는 옵션이며 native MSAA와의 픽셀 동일성이나 게임 품질 기준 통과를 보장하지 않습니다. 게임 적용은 별도 검증 중입니다.
+
 ## v0.19.7 (2026-10-27)
 
 `createVectorSpriteAtlas`의 `paintRegions` 옵션으로 원본 SVG의 명시적 RGB 영역을 전체 프레임에 함께 굽습니다. 기존 runtime과 같은 검증을 사용하고 값으로 캡처하며, 이름 순서와 무관한 캐시 키로 같은 팔레트를 공유합니다. 다른 팔레트와 분리하고 복구 시에도 처음 캡처한 색상을 유지합니다. geometry 재컴파일이나 공통 렌더러 변경은 없습니다. 게임 적용과 성능 결과는 이 SDK 변경에 포함하지 않습니다.

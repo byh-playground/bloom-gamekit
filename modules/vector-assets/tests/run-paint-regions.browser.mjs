@@ -285,7 +285,7 @@ try {
                 // The same named fills must survive sampled sprite preparation,
                 // including deferred bake, cache reuse and context restoration.
                 const MUTABLE_BAKE_PAINT = { cheeks: [1, 0, 0], badge: [0, 1, 0] };
-                const ATLAS_OPTIONS = { clip: 'idle', sampleIntervalMs: 100, pixelsPerUnit: 1 };
+                const ATLAS_OPTIONS = { clip: 'idle', sampleIntervalMs: 100, pixelsPerUnit: 1, supersample: 4 };
                 const ATLAS = V.createVectorSpriteAtlas(MESHES, RESOURCES[0], COMPILED[0], {
                     ...ATLAS_OPTIONS,
                     paintRegions: MUTABLE_BAKE_PAINT,
@@ -301,6 +301,17 @@ try {
                 const REFERENCE_ATLAS = V.createVectorSpriteAtlas(MESHES, RESOURCES[1], COMPILED[1], ATLAS_OPTIONS);
                 CHECK(ATLAS.stats.cacheKey === SHARED_ATLAS.stats.cacheKey, 'Equivalent paint values share cache');
                 CHECK(ATLAS.stats.cacheKey !== OTHER_ATLAS.stats.cacheKey, 'Distinct paint values isolate cache');
+                CHECK(
+                    ATLAS.stats.bakeWorkingBytes === ATLAS.stats.atlasBytes * 21,
+                    'Supersampling peak includes all live targets',
+                );
+                const LIMITED = V.createVectorSpriteAtlas(MESHES, RESOURCES[0], COMPILED[0], {
+                    ...ATLAS_OPTIONS,
+                    maxAtlasSize: 128,
+                });
+                CHECK(LIMITED.stats.reason === 'atlasLimit', 'High-resolution preparation respects MAX_TEXTURE_SIZE');
+                CHECK(LIMITED.texture === null, 'Rejected preparation allocates no image');
+                LIMITED.dispose();
                 MUTABLE_BAKE_PAINT.cheeks[0] = 0;
                 MUTABLE_BAKE_PAINT.cheeks[2] = 1;
                 let invalidBakePaintRejected = false;
@@ -339,6 +350,41 @@ try {
                 bakedPixels(SHARED_ATLAS);
                 CHECK(ATLAS.texture === SHARED_ATLAS.texture, 'Equivalent paint shares prepared GPU texture');
                 CHECK(ATLAS.stats.bakeCount === BAKE_COUNT, 'Repeated playback preparation does not rebake');
+                const FAULT_ATLAS = V.createVectorSpriteAtlas(MESHES, RESOURCES[0], COMPILED[0], {
+                    ...ATLAS_OPTIONS,
+                    padding: 3,
+                });
+                const CREATE_TARGET = DEVICE.createRenderTarget.bind(DEVICE);
+                let targetCreates = 0;
+                DEVICE.createRenderTarget = (...args) => {
+                    if (++targetCreates === 3) {
+                        throw new Error('Injected atlas reduction allocation failure');
+                    }
+                    return CREATE_TARGET(...args);
+                };
+                DEVICE.beginFrame({ width: 480, height: 100 });
+                MESHES.beginFrame();
+                const TARGETS_BEFORE_FAULT = DEVICE.renderTargets.size,
+                    MESHES_BEFORE_FAULT = MESHES.meshes.size;
+                CHECK(FAULT_ATLAS.bake().reason === 'bakeFailed', 'Preparation allocation failure is explicit');
+                CHECK(DEVICE.renderTargets.size === TARGETS_BEFORE_FAULT, 'Failed preparation releases image targets');
+                CHECK(MESHES.meshes.size === MESHES_BEFORE_FAULT, 'Failed preparation releases reduction mesh');
+                CHECK(FAULT_ATLAS.stats.allocatedBytes === 0, 'Failed preparation retains no image bytes');
+                CHECK(DEVICE.activeRenderTarget === null, 'Failed preparation restores framebuffer');
+                DEVICE.createRenderTarget = CREATE_TARGET;
+                DEVICE.endFrame();
+                bakedPixels(FAULT_ATLAS);
+                FAULT_ATLAS.dispose();
+                const DOUBLE_ATLAS = V.createVectorSpriteAtlas(MESHES, RESOURCES[0], COMPILED[0], {
+                    ...ATLAS_OPTIONS,
+                    supersample: 2,
+                });
+                bakedPixels(DOUBLE_ATLAS);
+                CHECK(
+                    DOUBLE_ATLAS.stats.bakeWorkingBytes === DOUBLE_ATLAS.stats.atlasBytes * 5,
+                    '2x preparation working set',
+                );
+                DOUBLE_ATLAS.dispose();
                 // Browser context recovery must re-upload the packed region attribute, not the 11-float source layout.
                 const EXT = DEVICE.gl.getExtension('WEBGL_lose_context');
                 CHECK(EXT, 'Context loss extension required');
@@ -444,6 +490,8 @@ try {
                         distinctPaintIsolated: true,
                         playbackRebakes: 0,
                         restoreRebakes: ATLAS.stats.bakeCount - BAKE_COUNT,
+                        supersample: ATLAS.stats.supersample,
+                        bakeWorkingBytes: ATLAS.stats.bakeWorkingBytes,
                     },
                     beforeDispose: BEFORE_DISPOSE,
                 };
