@@ -31,6 +31,8 @@ const ASSET_URL =
 const SINGLE_PART_ASSET_URL =
     'data:text/javascript;base64,' +
     Buffer.from(compiledAssetModuleSource(SINGLE_PART_ASSET, 'asset')).toString('base64');
+const SCRUB_INLINE_MODULES = (value) =>
+    String(value).replace(/data:text\/javascript;base64,[A-Za-z0-9+/=]+/g, '<inline module>');
 const BROWSER = await chromium.launch({
     headless: true,
     ...(process.env.CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.CHROMIUM_EXECUTABLE_PATH } : {}),
@@ -40,7 +42,7 @@ let report = { status: 'FAIL', provenance: { ...PROVENANCE, browserVersion: BROW
 try {
     const PAGE = await BROWSER.newPage({ viewport: { width: 128, height: 128 }, deviceScaleFactor: 1 });
     const ERRORS = [];
-    PAGE.on('pageerror', (error) => ERRORS.push(error.stack));
+    PAGE.on('pageerror', (error) => ERRORS.push(SCRUB_INLINE_MODULES(error.stack)));
     await PAGE.setContent('<canvas width="128" height="128"></canvas>');
     const RESULT = await PAGE.evaluate(
         async ({ renderingURL, vectorAssetsURL, assetURL, singlePartAssetURL }) => {
@@ -201,6 +203,45 @@ try {
                 CHECK(FIRST.mesh.drawDispatchReasons.texture > 0, 'texture switch flushed a batch');
                 CHECK(GL.getError() === GL.NO_ERROR, 'paint scene GL error');
 
+                const STENCIL_PATH = CTX.createClipPath(new Float32Array([72, 8, 88, 8, 88, 40, 72, 40]));
+                BEGIN();
+                CTX.save();
+                CTX.clipRect(16, 8, 16, 32);
+                DRAW(TEXTURED, TEXTURE_B, 8, 8);
+                CTX.restore();
+                DRAW(PLAIN, null, 40, 8);
+                CTX.save();
+                CTX.clipPath(STENCIL_PATH);
+                CHECK(CTX.stencilRef === 1, 'retained clip activates stencil for textured mesh');
+                DRAW(TEXTURED, TEXTURE_A, 64, 8);
+                CTX.restore();
+                DRAW(TEXTURED, TEXTURE_B, 96, 8);
+                CTX.endFrame();
+                const CLIPPED_SAMPLES = {
+                    planeOutside: PIXEL(12, 16),
+                    planeInside: PIXEL(20, 16),
+                    planeOutsideRight: PIXEL(36, 16),
+                    afterPlane: PIXEL(52, 16),
+                    stencilOutside: PIXEL(68, 16),
+                    stencilInside: PIXEL(76, 16),
+                    stencilOutsideRight: PIXEL(92, 16),
+                    afterStencil: PIXEL(108, 16),
+                };
+                NEAR(CLIPPED_SAMPLES.planeOutside, [0, 0, 0, 255], 'textured mesh clip plane excludes left');
+                NEAR(CLIPPED_SAMPLES.planeInside, [0, 255, 255, 255], 'textured mesh clip plane includes center');
+                NEAR(CLIPPED_SAMPLES.planeOutsideRight, [0, 0, 0, 255], 'textured mesh clip plane excludes right');
+                NEAR(CLIPPED_SAMPLES.afterPlane, [255, 255, 0, 255], 'plain mesh after clip plane');
+                NEAR(
+                    CLIPPED_SAMPLES.stencilOutside,
+                    [255, 255, 0, 255],
+                    'textured mesh stencil retains prior plain mesh',
+                );
+                NEAR(CLIPPED_SAMPLES.stencilInside, [0, 0, 255, 255], 'textured mesh stencil includes center');
+                NEAR(CLIPPED_SAMPLES.stencilOutsideRight, [0, 0, 0, 255], 'textured mesh stencil excludes right');
+                NEAR(CLIPPED_SAMPLES.afterStencil, [0, 255, 255, 255], 'textured mesh after stencil restore');
+                CHECK(GL.getError() === GL.NO_ERROR, 'clipped textured scene GL error');
+                CTX.deleteClipPath(STENCIL_PATH);
+
                 resource = V.createVectorAsset(CTX.meshRenderer, COMPILED);
                 player = resource.createPlayer({ clip: Object.keys(COMPILED.metadata.clips)[0], startedAtMs: 0 });
                 player.seek(120);
@@ -296,6 +337,7 @@ try {
                 return {
                     hardware: HARDWARE,
                     samples: SAMPLES,
+                    clippedSamples: CLIPPED_SAMPLES,
                     restoredSamples: RESTORED_SAMPLES,
                     first: FIRST.mesh,
                     pose: POSE_STATS,
@@ -322,6 +364,7 @@ try {
     report = { status: 'PASS', provenance: report.provenance, scene: RESULT };
     console.log(JSON.stringify(report, null, 2));
 } catch (error) {
+    error.stack = SCRUB_INLINE_MODULES(error.stack);
     report = { ...report, error: error.stack };
     throw error;
 } finally {

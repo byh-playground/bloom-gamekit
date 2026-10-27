@@ -122,38 +122,11 @@ try {
             const CHECK_GL = (label) => {
                 const ERROR = GL.getError();
                 if (ERROR !== GL.NO_ERROR) {
-                    const PROGRAM = GL.getParameter(GL.CURRENT_PROGRAM);
-                    const SAMPLERS = [];
-                    if (PROGRAM) {
-                        for (let index = 0; index < GL.getProgramParameter(PROGRAM, GL.ACTIVE_UNIFORMS); index++) {
-                            const UNIFORM = GL.getActiveUniform(PROGRAM, index);
-                            if (UNIFORM?.type === GL.SAMPLER_2D) {
-                                const LOCATION = GL.getUniformLocation(PROGRAM, UNIFORM.name);
-                                SAMPLERS.push({ name: UNIFORM.name, unit: GL.getUniform(PROGRAM, LOCATION) });
-                            }
-                        }
-                    }
                     window.__rasterDebug = {
                         label,
                         previousStage: stage,
                         glError: ERROR,
-                        framebufferBound: Boolean(GL.getParameter(GL.FRAMEBUFFER_BINDING)),
-                        programBound: Boolean(PROGRAM),
-                        programLinked: PROGRAM ? GL.getProgramParameter(PROGRAM, GL.LINK_STATUS) : null,
-                        samplers: SAMPLERS,
-                        maxTextureUnits: GL.getParameter(GL.MAX_TEXTURE_IMAGE_UNITS),
-                        activeTexture: GL.getParameter(GL.ACTIVE_TEXTURE) - GL.TEXTURE0,
-                        activeRenderTarget: Boolean(DEVICE.activeRenderTarget),
-                        deviceActive: DEVICE.active,
-                        deviceState: DEVICE.state,
-                        deviceStats: {
-                            frame: DEVICE.stats.frame,
-                            drawCalls: DEVICE.stats.drawCalls,
-                            bufferBytes: DEVICE.stats.bufferBytes,
-                            textureBytes: DEVICE.stats.textureBytes,
-                            textureCount: DEVICE.stats.textureCount,
-                            renderTargetCount: DEVICE.stats.renderTargetCount,
-                        },
+                        deviceFrame: DEVICE.stats.frame,
                         meshStats: MESHES.stats(),
                     };
                     throw new Error(`WebGL error ${ERROR} at ${label}; previous stage ${stage}`);
@@ -338,7 +311,7 @@ try {
             };
             const FAULT_ATLAS = V.createVectorRasterAtlas(MESHES, ASSET, COMPILED_ASSET, { pixelsPerUnit: 3 });
             BEGIN('black');
-            FALLBACKS.bakeFailure = FAULT_ATLAS.draw(PLAYER, { projection: PROJECTION, matrix: MATRIX(1) });
+            FALLBACKS.bakeFailed = FAULT_ATLAS.draw(PLAYER, { projection: PROJECTION, matrix: MATRIX(1) });
             END();
             DEVICE.createRenderTarget = ORIGINAL_CREATE;
             BEGIN('black');
@@ -396,6 +369,13 @@ try {
             SAMPLED_ASSET.dispose();
             SAMPLED_MESHES.dispose();
             CHECK_GL('after sampled-cpu-atlas dispose');
+            window.__rasterPartial = {
+                comparisons: COMPARISONS,
+                expressionComparisons: EXPRESSION_COMPARISONS,
+                fallbacks: FALLBACKS,
+                cpuPose: CPU_POSE,
+                sampledCpu: SAMPLED,
+            };
             STAGE('sprite-baker-create');
             const SPRITE_BAKER = V.createVectorSpriteAtlas(MESHES, ASSET, COMPILED_ASSET, {
                 clip: 'bounce',
@@ -421,8 +401,10 @@ try {
                 sourceDurationMs: COMPILED_ASSET.metadata.clips.bounce.durationMs,
                 backend: SPRITE_BAKE.backend,
             };
-            const SPRITE = R.createSpriteAnimation(MESHES, SPRITE_BAKER.texture, SPRITE_BAKER.definition),
-                SPRITE_PLAYER = SPRITE.createPlayer({ clip: 'bounce' }),
+            const SPRITE = R.createSpriteAnimation(MESHES, SPRITE_BAKER.texture, SPRITE_BAKER.definition);
+            CHECK_GL('after create seed sprite');
+
+            const SPRITE_PLAYER = SPRITE.createPlayer({ clip: 'bounce' }),
                 VECTOR_REFERENCE = ASSET.createPlayer({ clip: 'bounce' });
             VECTOR_REFERENCE.setExpression('happy');
             const SAMPLE_TIME = SPRITE_BAKER.stats.sampleTimesMs[1],
@@ -441,12 +423,28 @@ try {
                 projection: PROJECTION,
                 matrix: SPRITE_MATRIX,
             });
-            CHECK_GL('after seed sprite submit before flush');
             const SPRITE_PIXELS = END();
             const SPRITE_COMPARISON = {
                 frameIndex: SPRITE_SAMPLE.frameIndex,
                 sampleTimeMs: SAMPLE_TIME,
                 ...COMPARE(EMPTY_SPRITE_BACKGROUND, SVG_SAMPLE, SPRITE_PIXELS),
+            };
+            const END_TIME = COMPILED_ASSET.metadata.clips.bounce.durationMs;
+            BEGIN('black');
+            VECTOR_REFERENCE.seek(END_TIME);
+            VECTOR_REFERENCE.draw({ projection: PROJECTION, matrix: MATRIX(1) });
+            const SVG_END = END();
+            BEGIN('black');
+            const SPRITE_END_SAMPLE = SPRITE_PLAYER.draw({
+                timeMs: END_TIME,
+                projection: PROJECTION,
+                matrix: SPRITE_MATRIX,
+            });
+            const SPRITE_END_PIXELS = END();
+            const SPRITE_END_COMPARISON = {
+                frameIndex: SPRITE_END_SAMPLE.frameIndex,
+                sampleTimeMs: SPRITE_BAKER.stats.sampleTimesMs.at(-1),
+                ...COMPARE(EMPTY_SPRITE_BACKGROUND, SVG_END, SPRITE_END_PIXELS),
             };
             const BAKE_COUNT = SPRITE_BAKER.stats.bakeCount;
             BEGIN('black');
@@ -455,8 +453,6 @@ try {
             SPRITE_CACHE.unchangedAcrossOrdinaryFrame = SPRITE_BAKER.stats.bakeCount === BAKE_COUNT;
             SPRITE_COPY.dispose();
             SPRITE_CACHE.refAfterCopyDispose = SPRITE_BAKER.stats.refCount;
-            SPRITE_PLAYER.dispose();
-            SPRITE.dispose();
             VECTOR_REFERENCE.dispose();
             CHECK_GL('after seed sprite resource dispose');
             STAGE('sketch-asset-create');
@@ -473,31 +469,21 @@ try {
             BEGIN('black');
             const SKETCH_BAKE = SKETCH_BAKER.bake();
             END();
-            const SKETCH_SPRITE = R.createSpriteAnimation(MESHES, SKETCH_BAKER.texture, SKETCH_BAKER.definition),
-                SKETCH_SPRITE_PLAYER = SKETCH_SPRITE.createPlayer({ clip: 'idle' }),
-                SKETCH_TIME = SKETCH_BAKER.stats.sampleTimesMs[1],
-                EMPTY_SKETCH_BACKGROUND = BACKGROUND('black');
+            const EMPTY_SKETCH_BACKGROUND = BACKGROUND('black');
             BEGIN('black');
-            SKETCH_PLAYER.seek(SKETCH_TIME);
+            SKETCH_PLAYER.seek(450);
             SKETCH_PLAYER.draw({ projection: PROJECTION, matrix: MATRIX_FOR(SKETCH_COMPILED_ASSET.viewBox, 1) });
-            const SKETCH_SVG = END();
-            BEGIN('black');
-            const SKETCH_MATRIX = MATRIX_FOR(SKETCH_COMPILED_ASSET.viewBox, 1);
-            for (let index = 0; index < 4; index++) {
-                SKETCH_MATRIX[index] /= 4;
-            }
-            SKETCH_SPRITE_PLAYER.draw({ timeMs: SKETCH_TIME, projection: PROJECTION, matrix: SKETCH_MATRIX });
-            const SKETCH_PIXELS = END();
+            const SKETCH_VECTOR = END();
             const SKETCH_COMPARISON = {
                 backend: SKETCH_BAKE.backend,
+                reason: SKETCH_BAKE.reason,
+                texture: SKETCH_BAKER.texture,
+                definition: SKETCH_BAKER.definition,
                 frameCount: SKETCH_BAKER.stats.frameCount,
-                alternateSlots: SKETCH_BAKER.definition.clips.idle.frames.length,
-                sampledDurationMs: SKETCH_BAKER.stats.sampledDurationMs,
-                sourceDurationMs: SKETCH_COMPILED_ASSET.metadata.clips.idle.durationMs,
-                ...COMPARE(EMPTY_SKETCH_BACKGROUND, SKETCH_SVG, SKETCH_PIXELS),
+                bakeCount: SKETCH_BAKER.stats.bakeCount,
+                allocatedBytes: SKETCH_BAKER.stats.allocatedBytes,
+                vectorForegroundPixels: COMPARE(EMPTY_SKETCH_BACKGROUND, SKETCH_VECTOR, SKETCH_VECTOR).foregroundPixels,
             };
-            SKETCH_SPRITE_PLAYER.dispose();
-            SKETCH_SPRITE.dispose();
             SKETCH_PLAYER.dispose();
             SKETCH_BAKER.dispose();
             SKETCH_ASSET.dispose();
@@ -545,6 +531,9 @@ try {
                 const RESULT = ATLAS.draw(PLAYER, { projection: PROJECTION, matrix: MATRIX(1) });
                 const SPRITE_RESULT = SPRITE_BAKER.bake();
                 END();
+                BEGIN('black');
+                SPRITE_PLAYER.draw({ timeMs: SAMPLE_TIME, projection: PROJECTION, matrix: SPRITE_MATRIX });
+                const RESTORED_SPRITE_PIXELS = END();
                 restore = {
                     supported: true,
                     before: BEFORE_RESTORE,
@@ -552,8 +541,11 @@ try {
                     backend: RESULT.backend,
                     spriteBackend: SPRITE_RESULT.backend,
                     spriteBakeCount: SPRITE_BAKER.stats.bakeCount,
+                    spritePixels: COMPARE(EMPTY_SPRITE_BACKGROUND, SPRITE_PIXELS, RESTORED_SPRITE_PIXELS),
                 };
             }
+            SPRITE_PLAYER.dispose();
+            SPRITE.dispose();
             SPRITE_BAKER.dispose();
             const DEAD_ASSET = V.createVectorAsset(MESHES, COMPILED_ASSET),
                 DEAD_BAKER = V.createVectorSpriteAtlas(MESHES, DEAD_ASSET, COMPILED_ASSET, { clip: 'bounce' });
@@ -587,6 +579,7 @@ try {
                 sampledCpu: SAMPLED,
                 spriteCache: SPRITE_CACHE,
                 spriteComparison: SPRITE_COMPARISON,
+                spriteEndComparison: SPRITE_END_COMPARISON,
                 sketchComparison: SKETCH_COMPARISON,
                 shaderFallback: SHADER_FALLBACK,
                 deletedSourceThrows,
@@ -610,16 +603,16 @@ try {
     for (const COMPARISON of direct.comparisons) {
         assert.equal(COMPARISON.backend, 'raster', JSON.stringify(COMPARISON));
         assert.ok(COMPARISON.foregroundPixels > 100, JSON.stringify(COMPARISON));
-        assert.ok(COMPARISON.meanForegroundChannelError <= 55, JSON.stringify(COMPARISON));
-        assert.ok(COMPARISON.changedFraction <= 0.6, JSON.stringify(COMPARISON));
-        assert.ok(COMPARISON.spuriousFraction <= 0.35, JSON.stringify(COMPARISON));
+        assert.ok(COMPARISON.meanForegroundChannelError <= 5, JSON.stringify(COMPARISON));
+        assert.ok(COMPARISON.changedFraction <= 0.05, JSON.stringify(COMPARISON));
+        assert.ok(COMPARISON.spuriousFraction <= 0.01, JSON.stringify(COMPARISON));
     }
     assert.equal(direct.expressionComparisons.length, 5);
     for (const COMPARISON of direct.expressionComparisons) {
         assert.equal(COMPARISON.backend, 'raster', JSON.stringify(COMPARISON));
         assert.ok(COMPARISON.foregroundPixels > 40, JSON.stringify(COMPARISON));
-        assert.ok(COMPARISON.meanForegroundChannelError <= 55, JSON.stringify(COMPARISON));
-        assert.ok(COMPARISON.changedFraction <= 0.6, JSON.stringify(COMPARISON));
+        assert.ok(COMPARISON.meanForegroundChannelError <= 5, JSON.stringify(COMPARISON));
+        assert.ok(COMPARISON.changedFraction <= 0.05, JSON.stringify(COMPARISON));
     }
     assert.ok(direct.expressionComparisons.every((comparison) => comparison.faceVisible !== false));
     assert.equal(direct.expressionComparisons.at(-1).childStillVisible, true);
@@ -643,12 +636,19 @@ try {
     assert.equal(direct.spriteCache.frameCount, 4);
     assert.equal(direct.spriteComparison.frameIndex, 1);
     assert.ok(direct.spriteComparison.foregroundPixels > 100);
-    assert.ok(direct.spriteComparison.meanForegroundChannelError <= 55, JSON.stringify(direct.spriteComparison));
-    assert.equal(direct.sketchComparison.backend, 'sprite');
-    assert.equal(direct.sketchComparison.alternateSlots, direct.sketchComparison.frameCount * 2);
-    assert.equal(direct.sketchComparison.sampledDurationMs, direct.sketchComparison.sourceDurationMs);
-    assert.ok(direct.sketchComparison.foregroundPixels > 100);
-    assert.ok(direct.sketchComparison.meanForegroundChannelError <= 55, JSON.stringify(direct.sketchComparison));
+    assert.ok(direct.spriteComparison.meanForegroundChannelError <= 5, JSON.stringify(direct.spriteComparison));
+    assert.equal(direct.spriteEndComparison.frameIndex, direct.spriteCache.frameCount - 1);
+    assert.equal(direct.spriteEndComparison.sampleTimeMs, direct.spriteCache.sourceDurationMs);
+    assert.ok(direct.spriteEndComparison.foregroundPixels > 100);
+    assert.ok(direct.spriteEndComparison.meanForegroundChannelError <= 5, JSON.stringify(direct.spriteEndComparison));
+    assert.equal(direct.sketchComparison.backend, 'vector');
+    assert.equal(direct.sketchComparison.reason, 'timeDependentMorph');
+    assert.equal(direct.sketchComparison.texture, null);
+    assert.equal(direct.sketchComparison.definition, null);
+    assert.equal(direct.sketchComparison.frameCount, 0);
+    assert.equal(direct.sketchComparison.bakeCount, 0);
+    assert.equal(direct.sketchComparison.allocatedBytes, 0);
+    assert.ok(direct.sketchComparison.vectorForegroundPixels > 100);
     assert.deepEqual(direct.shaderFallback, {
         raster: 'shaderSurfaces',
         sprite: 'shaderSurfaces',
@@ -661,6 +661,8 @@ try {
     assert.ok(direct.restore.after > direct.restore.before);
     assert.equal(direct.restore.spriteBackend, 'sprite');
     assert.equal(direct.restore.spriteBakeCount, 2);
+    assert.ok(direct.restore.spritePixels.foregroundPixels > 100);
+    assert.ok(direct.restore.spritePixels.meanForegroundChannelError <= 5);
     assert.equal(direct.sourcePreserved, true);
     assert.equal(direct.resources.renderTargets, 0);
     assert.equal(direct.resources.textures, 0);
@@ -678,9 +680,9 @@ try {
         browser: await BROWSER.version(),
         thresholds: {
             foregroundPixelsMin: 100,
-            meanForegroundChannelErrorMax: 55,
-            changedFractionOver48Max: 0.6,
-            spuriousFractionOver32Max: 0.35,
+            meanForegroundChannelErrorMax: 5,
+            changedFractionOver48Max: 0.05,
+            spuriousFractionOver32Max: 0.01,
         },
         preview: preview,
         direct: direct,
@@ -703,7 +705,9 @@ try {
         pageErrors: ERRORS,
         consoleMessages: CONSOLE_MESSAGES,
         preview,
+        directScene: direct,
         debug: directPage ? await directPage.evaluate(() => window.__rasterDebug ?? null).catch(() => null) : null,
+        partial: directPage ? await directPage.evaluate(() => window.__rasterPartial ?? null).catch(() => null) : null,
     };
     await mkdir(resolve(ROOT, 'test-results'), { recursive: true });
     await writeFile(resolve(ROOT, 'test-results/raster-comparison-failure.json'), JSON.stringify(FAILURE, null, 2));

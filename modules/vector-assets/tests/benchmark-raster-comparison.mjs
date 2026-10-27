@@ -34,6 +34,7 @@ try {
     await PAGE.waitForFunction(() => globalThis.__rasterComparison?.ready, null, { timeout: 30000 });
     const BOOT = await PAGE.evaluate(() => globalThis.__rasterComparison.snapshot);
     await PAGE.evaluate(() => globalThis.__rasterComparison.setAutoRender(false));
+    await PAGE.evaluate(() => document.querySelector('canvas').getContext('webgl2').finish());
     for (const COUNT of [100, 500, 1000]) {
         for (const [ROUND, ORDER] of [
             ['forward', ['vector', 'raster', 'sprite']],
@@ -50,7 +51,10 @@ try {
                         BRIDGE.setSampleInterval(100);
                         BRIDGE.setMixed(false);
                         BRIDGE.setZoom(1);
+                        const SETUP_START = performance.now();
                         const INITIAL = BRIDGE.renderOnce({ timeMs: 0 });
+                        document.querySelector('canvas').getContext('webgl2').finish();
+                        const SETUP_COMPLETE_WALL_MS = performance.now() - SETUP_START;
                         for (let frame = 0; frame < 30; frame++) {
                             BRIDGE.renderOnce({ timeMs: (frame * 16.6667) % 500 });
                             await new Promise((resolve) => setTimeout(resolve, 16));
@@ -66,6 +70,7 @@ try {
                         const MEASURED_FRAMES = new Set(SAMPLES.map((sample) => sample.frame));
                         return {
                             initial: INITIAL,
+                            setupCompleteWallMs: SETUP_COMPLETE_WALL_MS,
                             samples: SAMPLES,
                             gpuSamples: BRIDGE.drainGpuSamples().filter((sample) => MEASURED_FRAMES.has(sample.frame)),
                         };
@@ -101,10 +106,17 @@ try {
             run.samples.map((sample) => sample.submitMs),
             0.5,
         ),
-        gpuP50: PERCENTILE(run.gpuSamples.map((sample) => sample.gpuMs), 0.5),
-        gpuP95: PERCENTILE(run.gpuSamples.map((sample) => sample.gpuMs), 0.95),
+        gpuP50: PERCENTILE(
+            run.gpuSamples.map((sample) => sample.gpuMs),
+            0.5,
+        ),
+        gpuP95: PERCENTILE(
+            run.gpuSamples.map((sample) => sample.gpuMs),
+            0.95,
+        ),
         gpuSamples: run.gpuSamples,
         first: run.initial,
+        setupCompleteWallMs: run.setupCompleteWallMs,
         last: run.samples.at(-1),
     }));
     const REPORT = {

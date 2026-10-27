@@ -27,7 +27,10 @@ function sampleFrames(clip, interval) {
     return Array.from({ length: COUNT }, (_, index) => {
         const START = index * interval,
             DURATION = Math.min(interval, clip.durationMs - START);
-        return { timeMs: START + DURATION / 2, durationMs: DURATION };
+        return {
+            timeMs: clip.loop === 'once' && index === COUNT - 1 ? clip.durationMs : START + DURATION / 2,
+            durationMs: DURATION,
+        };
     });
 }
 
@@ -187,6 +190,8 @@ export function createVectorSpriteAtlas(
         let reason = null;
         if (GEOMETRY.shaderSurfaces?.length || GEOMETRY.drawOrder?.length) {
             reason = 'shaderSurfaces';
+        } else if (GEOMETRY.morphCount && compiledAsset.metadata.styles?.some((style) => style.kind === 'sketch')) {
+            reason = 'timeDependentMorph';
         } else if (GEOMETRY.nonScalingStroke) {
             reason = 'nonScalingStroke';
         } else if (!asset.mesh) {
@@ -387,7 +392,9 @@ export function createVectorSpriteAtlas(
                 frameCount: record.samples?.length ?? 0,
                 atlasWidth: record.packed?.width ?? 0,
                 atlasHeight: record.packed?.height ?? 0,
+                // Planned RGBA capacity; allocatedBytes tracks the live shared texture.
                 atlasBytes: record.packed?.bytes ?? 0,
+                allocatedBytes: !disposed && record.texture ? (record.packed?.bytes ?? 0) : 0,
                 bakeCount: record.bakeCount,
                 bakeCpuMs: record.bakeCpuMs,
                 baked: Boolean(

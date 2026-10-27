@@ -89,6 +89,7 @@ function createGpuTimer(gl) {
     let lastLabel = null;
     let condition = EXTENSION ? '대기 중' : '지원하지 않음';
     let discardedCount = 0;
+    let activeEntry = null;
     let evictedCount = 0;
     const DISCARD_DISJOINT = () => {
         discardedCount += PENDING.length + COMPLETED.length;
@@ -102,7 +103,7 @@ function createGpuTimer(gl) {
     };
     return {
         begin(label) {
-            if (!EXTENSION || PENDING.length >= 6) {
+            if (!EXTENSION || activeEntry || PENDING.length >= 6) {
                 return null;
             }
             if (gl.getParameter(EXTENSION.GPU_DISJOINT_EXT)) {
@@ -114,13 +115,15 @@ function createGpuTimer(gl) {
                 return null;
             }
             gl.beginQuery(EXTENSION.TIME_ELAPSED_EXT, QUERY);
-            return { query: QUERY, label };
+            activeEntry = { query: QUERY, label };
+            return activeEntry;
         },
         end(entry) {
             if (!entry) {
                 return;
             }
             gl.endQuery(EXTENSION.TIME_ELAPSED_EXT);
+            activeEntry = null;
             PENDING.push(entry);
         },
         poll() {
@@ -170,6 +173,13 @@ function createGpuTimer(gl) {
             condition = EXTENSION ? '대기 중' : '지원하지 않음';
         },
         reset() {
+            if (activeEntry) {
+                if (!gl.isContextLost()) {
+                    gl.endQuery(EXTENSION.TIME_ELAPSED_EXT);
+                }
+                gl.deleteQuery(activeEntry.query);
+                activeEntry = null;
+            }
             for (const ENTRY of PENDING.splice(0)) {
                 gl.deleteQuery(ENTRY.query);
             }
@@ -465,6 +475,9 @@ function writeMetrics(cpuMs, animationMs, submitMs, rasterResult, spriteResult) 
     const ATLAS_STATS = STATE.atlas?.stats ?? null;
     const GPU = timer.result;
     const DEVICE_STATS = DEVICE.stats;
+    const VECTOR_TRIANGLES =
+        (seedScout.geometry.expressionIndices?.[EXPRESSION_INPUT.value]?.length ?? seedScout.geometry.indices.length) /
+        3;
     const GPU_CURRENT =
         GPU.label?.mode === MODE_INPUT.value &&
         GPU.label?.count === PLAYERS.length &&
@@ -496,7 +509,7 @@ function writeMetrics(cpuMs, animationMs, submitMs, rasterResult, spriteResult) 
         ` · GPU pose ${POSES?.gpuDrawInstances ?? 0}개 · CPU pose ${POSES?.cpuDrawInstances ?? 0}개 · ` +
         `GPU 버퍼 ${DEVICE_STATS.gpuBufferBytes.toLocaleString()} B · GPU 텍스처 ${DEVICE_STATS.gpuTextureBytes.toLocaleString()} B · ` +
         `메시 업로드 ${MESH_STATS.geometryBytesUploaded.toLocaleString()} B · ` +
-        `원본 ${seedScout.geometry.indices.length / 3} 삼각형 / 래스터 ${ATLAS_STATS ? ATLAS_STATS.runCount * 2 : 0} 삼각형 · ` +
+        `선택 표정 벡터 ${VECTOR_TRIANGLES} 삼각형 / 부위 atlas ${ATLAS_STATS ? ATLAS_STATS.runCount * 2 : 0} 삼각형 · ` +
         `${hardware.backend} · ${hardware.renderer} · ${hardware.vendor}`;
     STATE.last = {
         frame: STATE.frameOrdinal,
@@ -534,6 +547,7 @@ function writeMetrics(cpuMs, animationMs, submitMs, rasterResult, spriteResult) 
         },
         playbackRate: Number(PLAYBACK_RATE_INPUT.value),
         sourceTriangles: seedScout.geometry.indices.length / 3,
+        vectorTriangles: VECTOR_TRIANGLES,
         rasterTriangles: ATLAS_STATS ? ATLAS_STATS.runCount * 2 : 0,
         backend: hardware.backend,
         renderer: hardware.renderer,
@@ -647,7 +661,7 @@ function render(now) {
         STATE.error = error.message;
         setStatus(error.message, true);
         console.error(error);
-        STATE.disposed = true;
+        disposeComparison();
     }
     scheduleNextFrame();
 }

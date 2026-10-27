@@ -427,7 +427,9 @@ export function createVectorRasterAtlas(
                 runCount: RUNS?.length ?? 0,
                 atlasWidth: PACKED?.width ?? 0,
                 atlasHeight: PACKED?.height ?? 0,
+                // Planned RGBA capacity; allocatedBytes tracks the live target.
                 atlasBytes: PACKED?.bytes ?? 0,
+                allocatedBytes: !disposed && target ? (PACKED?.bytes ?? 0) : 0,
                 bakeCount,
                 bakeCpuMs,
                 rasterDraws,

@@ -523,7 +523,18 @@ export class WebGLDevice {
         if (R.target !== target) {
             throw new TypeError('Buffer target does not match delete operation');
         }
-        this.gl.deleteBuffer(R.gpu);
+        const GL = this.gl;
+        if (target === GL.ARRAY_BUFFER && this.state === 'ready' && this.vertexArray && !GL.isContextLost()) {
+            const PREVIOUS_VERTEX_ARRAY = GL.getParameter(GL.VERTEX_ARRAY_BINDING);
+            try {
+                GL.bindVertexArray(this.vertexArray);
+                GL.deleteBuffer(R.gpu);
+            } finally {
+                GL.bindVertexArray(PREVIOUS_VERTEX_ARRAY);
+            }
+        } else {
+            GL.deleteBuffer(R.gpu);
+        }
         this.buffers.delete(handle);
         this.stats.gpuBufferBytes -= R.capacity;
         this.stats.bufferCount = this.buffers.size;
