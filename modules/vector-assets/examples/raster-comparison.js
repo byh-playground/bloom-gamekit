@@ -20,11 +20,15 @@ const STATUS = BY_ID('status');
 const FRAME_METRICS = BY_ID('frame-metrics');
 const BAKE_METRICS = BY_ID('bake-metrics');
 const SPRITE_METRICS = BY_ID('sprite-metrics');
+const PREPARATION_METRICS = BY_ID('preparation-metrics');
 const PATH_METRICS = BY_ID('path-metrics');
 const DEVICE = new WebGLDevice(CANVAS, { alpha: true, antialias: true });
-const MESHES = new MeshRenderer(DEVICE, { maxMeshes: 4, maxInstances: 1024 });
+const MESHES = new MeshRenderer(DEVICE, { maxMeshes: 16, maxInstances: 1024 });
 const ASSET = createVectorAsset(MESHES, seedScout);
 const VIEW_BOX = ASSET.viewBox;
+const SPRITE_CLIPS = ['transform-repeat', 'bounce', 'idle'];
+const SPRITE_EXPRESSIONS = ['neutral', 'happy', 'surprised'];
+const ATLAS_BUDGET_BYTES = 128 * 1024 * 1024;
 let timer = createGpuTimer(DEVICE.gl);
 let hardware = readHardware();
 const STATE = {
@@ -35,10 +39,14 @@ const STATE = {
     previousFrameMs: null,
     atlas: null,
     atlasResolution: 0,
+    atlasReason: null,
     bakeCpuMs: null,
     spriteSets: new Map(),
     spriteBakeCpuMs: null,
     spriteNeedsRebuild: false,
+    preparationKey: null,
+    preparationGeneration: 0,
+    preparation: null,
     frameOrdinal: 0,
     last: null,
     error: null,
@@ -199,6 +207,18 @@ function setStatus(message, error = false) {
     STATUS.classList.toggle('error', error);
 }
 
+function invalidatePreparation() {
+    STATE.preparationKey = null;
+    STATE.spriteNeedsRebuild = true;
+    STATE.ready = false;
+    STATE.previousFrameMs = null;
+    if (STATE.preparation) {
+        STATE.preparation.status = 'stale';
+    }
+    PREPARATION_METRICS.textContent = 'Atlas preparation pending configuration change';
+    scheduleNextFrame();
+}
+
 function phaseFor(index, clip) {
     if (index === 0) {
         return 0;
@@ -287,12 +307,12 @@ function synchronizeTimeControl() {
 
 function ensureAtlas() {
     const RESOLUTION = Number(RESOLUTION_INPUT.value);
-    if (STATE.atlas && STATE.atlasResolution === RESOLUTION) {
-        STATE.atlas.bake();
+    if (STATE.atlasResolution === RESOLUTION) {
         return;
     }
     STATE.atlas?.dispose();
     STATE.atlas = null;
+    STATE.atlasReason = null;
     STATE.atlasResolution = RESOLUTION;
     const STARTED = performance.now();
     let candidate = null;
@@ -301,14 +321,20 @@ function ensureAtlas() {
             pixelsPerUnit: RESOLUTION / Math.max(VIEW_BOX[2], VIEW_BOX[3]),
             padding: 2,
             maxAtlasSize: Math.min(DEVICE.maxTextureSize, 8192),
-            maxAtlasBytes: 128 * 1024 * 1024,
+            maxAtlasBytes: ATLAS_BUDGET_BYTES,
         });
-        candidate.bake();
-        STATE.atlas = candidate;
+        const RESULT = candidate.bake();
+        if (RESULT.backend === 'raster') {
+            STATE.atlas = candidate;
+        } else {
+            STATE.atlasReason = RESULT.reason ?? candidate.stats.reason ?? 'atlasUnavailable';
+            candidate.dispose();
+        }
         STATE.bakeCpuMs = performance.now() - STARTED;
         setStatus(`같은 SVG ${ASSET.sourceSha256.slice(0, 12)} · 래스터 부위 그림 ${RESOLUTION}px`);
     } catch (error) {
         candidate?.dispose();
+        STATE.atlasReason = error.message;
         STATE.bakeCpuMs = performance.now() - STARTED;
         setStatus(`래스터 굽기에 실패해 벡터로 표시합니다: ${error.message}`, true);
     }
@@ -329,82 +355,126 @@ function clearSpriteSets() {
     STATE.spriteSets.clear();
 }
 
-function ensureSpriteSets() {
-    if (STATE.spriteNeedsRebuild) {
+function ensureSpriteSets(forceAll = false) {
+    const CONFIG_KEY = JSON.stringify([
+        ASSET.sourceSha256,
+        Number(RESOLUTION_INPUT.value),
+        Number(SAMPLE_INTERVAL_INPUT.value),
+        DEVICE.stats.restores ?? 0,
+    ]);
+    if (STATE.spriteNeedsRebuild || STATE.preparationKey !== CONFIG_KEY) {
         clearSpriteSets();
         STATE.spriteNeedsRebuild = false;
+        STATE.preparationKey = CONFIG_KEY;
+        const PART_BYTES = STATE.atlas?.stats.allocatedBytes ?? 0;
+        STATE.preparation = {
+            generation: ++STATE.preparationGeneration,
+            status: 'preparing',
+            completed: 0,
+            total: SPRITE_CLIPS.length * SPRITE_EXPRESSIONS.length,
+            estimatedBytes: STATE.atlas?.stats.atlasBytes ?? 0,
+            allocatedBytes: PART_BYTES,
+            budgetBytes: ATLAS_BUDGET_BYTES,
+            partAtlasBytes: PART_BYTES,
+            cpuMs: STATE.bakeCpuMs ?? 0,
+            entries: [],
+        };
     }
-    const REQUIRED = new Set(PLAYERS.map((player) => player.currentClip));
-    for (const [KEY, ENTRY] of STATE.spriteSets) {
-        if (!REQUIRED.has(ENTRY.clip) || ENTRY.key !== spriteKey(ENTRY.clip)) {
-            releaseSpriteSet(ENTRY);
-            STATE.spriteSets.delete(KEY);
-        }
+    const PREPARATION = STATE.preparation;
+    if (PREPARATION.status !== 'preparing') {
+        return true;
     }
-    for (const CLIP of REQUIRED) {
-        const KEY = spriteKey(CLIP);
-        if (STATE.spriteSets.has(KEY)) {
-            const ENTRY = STATE.spriteSets.get(KEY);
-            if (!ENTRY.resource && ENTRY.baker) {
-                try {
-                    const RESULT = ENTRY.baker.bake();
-                    if (ENTRY.baker.texture) {
-                        ENTRY.resource = createSpriteAnimation(MESHES, ENTRY.baker.texture, ENTRY.baker.definition);
-                        ENTRY.reason = null;
-                    } else {
-                        ENTRY.reason = RESULT?.reason ?? ENTRY.baker.stats?.reason ?? 'spriteUnavailable';
-                    }
-                } catch (error) {
-                    ENTRY.reason = error.message;
-                }
-            }
-            continue;
-        }
-        const STARTED = performance.now();
+    const ATTEMPTS = forceAll ? PREPARATION.total - PREPARATION.completed : 1;
+    for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
+        const INDEX = PREPARATION.completed;
+        const CLIP = SPRITE_CLIPS[Math.floor(INDEX / SPRITE_EXPRESSIONS.length)];
+        const EXPRESSION = SPRITE_EXPRESSIONS[INDEX % SPRITE_EXPRESSIONS.length];
+        const KEY = spriteKey(CLIP, EXPRESSION);
+        const ENTRY_STARTED = performance.now();
         let baker = null;
         let resource = null;
         let reason = null;
+        let plannedBytes = 0;
+        let bakeCount = 0;
         try {
-            const RESOLUTION = Number(RESOLUTION_INPUT.value);
             baker = createVectorSpriteAtlas(MESHES, ASSET, seedScout, {
                 clip: CLIP,
-                expression: EXPRESSION_INPUT.value,
+                expression: EXPRESSION,
                 sampleIntervalMs: Number(SAMPLE_INTERVAL_INPUT.value),
-                pixelsPerUnit: RESOLUTION / Math.max(VIEW_BOX[2], VIEW_BOX[3]),
+                pixelsPerUnit: Number(RESOLUTION_INPUT.value) / Math.max(VIEW_BOX[2], VIEW_BOX[3]),
                 padding: 2,
                 maxAtlasSize: Math.min(DEVICE.maxTextureSize, 8192),
-                maxAtlasBytes: 128 * 1024 * 1024,
+                maxAtlasBytes: ATLAS_BUDGET_BYTES,
             });
-            const RESULT = baker.bake();
-            if (baker.texture && baker.definition) {
-                resource = createSpriteAnimation(MESHES, baker.texture, baker.definition);
+            plannedBytes = baker.stats.atlasBytes;
+            PREPARATION.estimatedBytes += plannedBytes;
+            if (baker.stats.reason) {
+                reason = baker.stats.reason;
+            } else if (PREPARATION.allocatedBytes + plannedBytes > ATLAS_BUDGET_BYTES) {
+                reason = 'manifestBudgetExceeded';
             } else {
-                reason = RESULT?.reason ?? baker.stats?.reason ?? 'spriteUnavailable';
+                const RESULT = baker.bake();
+                bakeCount = baker.stats.bakeCount;
+                if (RESULT.backend === 'sprite' && baker.texture && baker.definition) {
+                    resource = createSpriteAnimation(MESHES, baker.texture, baker.definition);
+                    PREPARATION.allocatedBytes += baker.stats.allocatedBytes;
+                } else {
+                    reason = RESULT.reason ?? baker.stats.reason ?? 'spriteUnavailable';
+                }
             }
         } catch (error) {
             reason = error.message;
             resource?.dispose();
-            baker?.dispose();
             resource = null;
+        }
+        if (!resource) {
+            baker?.dispose();
             baker = null;
         }
-        STATE.spriteSets.set(KEY, {
+        const ENTRY = {
             key: KEY,
             clip: CLIP,
+            expression: EXPRESSION,
             baker,
             resource,
             reason,
+            plannedBytes,
+            bakeCount,
             players: new Map(),
-            bakeCpuMs: performance.now() - STARTED,
+            bakeCpuMs: performance.now() - ENTRY_STARTED,
+        };
+        STATE.spriteSets.set(KEY, ENTRY);
+        PREPARATION.entries.push({
+            key: KEY,
+            clip: CLIP,
+            expression: EXPRESSION,
+            reason,
+            ready: Boolean(resource),
+            bakeCount,
+            atlasBytes: plannedBytes,
+            allocatedBytes: baker?.stats.allocatedBytes ?? 0,
         });
+        PREPARATION.completed++;
+        PREPARATION.cpuMs += performance.now() - ENTRY_STARTED;
+        setStatus(`Sprite preparation ${PREPARATION.completed}/${PREPARATION.total}`);
+        PREPARATION_METRICS.textContent = `${PREPARATION.completed}/${PREPARATION.total} prepared · estimated ${PREPARATION.estimatedBytes.toLocaleString()} B · allocated ${PREPARATION.allocatedBytes.toLocaleString()} / ${ATLAS_BUDGET_BYTES.toLocaleString()} B`;
     }
+    if (PREPARATION.completed === PREPARATION.total) {
+        PREPARATION.status = PREPARATION.entries.every((entry) => entry.ready) && STATE.atlas ? 'ready' : 'degraded';
+        const FIRST_FAILURE = PREPARATION.entries.find((entry) => !entry.ready);
+        setStatus(
+            `Atlas preparation ${PREPARATION.completed}/${PREPARATION.total} · ${PREPARATION.status}${FIRST_FAILURE ? ` · ${FIRST_FAILURE.clip}/${FIRST_FAILURE.expression}: ${FIRST_FAILURE.reason}` : ''} · ${PREPARATION.allocatedBytes.toLocaleString()} / ${ATLAS_BUDGET_BYTES.toLocaleString()} B`,
+            PREPARATION.status !== 'ready',
+        );
+    }
+    return PREPARATION.status !== 'preparing';
 }
 
-function spriteKey(clip) {
+function spriteKey(clip, expression = EXPRESSION_INPUT.value) {
     return JSON.stringify([
         ASSET.sourceSha256,
         clip,
-        EXPRESSION_INPUT.value,
+        expression,
         Number(RESOLUTION_INPUT.value),
         Number(SAMPLE_INTERVAL_INPUT.value),
     ]);
@@ -444,7 +514,7 @@ function drawSpriteActors(positions, projection) {
     const PIXELS_PER_UNIT = Number(RESOLUTION_INPUT.value) / Math.max(VIEW_BOX[2], VIEW_BOX[3]);
     for (let i = 0; i < PLAYERS.length; i++) {
         const VECTOR_PLAYER = PLAYERS[i];
-        const ENTRY = STATE.spriteSets.get(spriteKey(VECTOR_PLAYER.currentClip));
+        const ENTRY = STATE.spriteSets.get(spriteKey(VECTOR_PLAYER.currentClip, VECTOR_PLAYER.currentExpression));
         const OPTIONS = { projection, matrix: positions[i] };
         if (!ENTRY?.resource) {
             VECTOR_PLAYER.draw(OPTIONS);
@@ -503,7 +573,11 @@ function writeMetrics(cpuMs, animationMs, submitMs, rasterResult, spriteResult) 
           `${ATLAS_STATS.atlasBytes.toLocaleString()} B · 굽기 ${ATLAS_STATS.bakeCount}회`
         : `래스터 아틀라스를 사용할 수 없습니다 · 시도 ${STATE.bakeCpuMs?.toFixed(1) ?? '—'} ms`;
     const SPRITE_SETS = [...STATE.spriteSets.values()];
-    const SPRITE_BYTES = SPRITE_SETS.reduce((sum, entry) => sum + (entry.baker?.stats?.atlasBytes ?? 0), 0);
+    const SPRITE_BYTES = SPRITE_SETS.reduce((sum, entry) => sum + entry.plannedBytes, 0);
+    const SPRITE_ALLOCATED_BYTES = SPRITE_SETS.reduce(
+        (sum, entry) => sum + (entry.baker?.stats.allocatedBytes ?? 0),
+        0,
+    );
     const SPRITE_FRAMES = SPRITE_SETS.reduce((sum, entry) => sum + (entry.baker?.stats?.frameCount ?? 0), 0);
     const SPRITE_BAKE_MS = SPRITE_SETS.reduce((sum, entry) => sum + entry.bakeCpuMs, 0);
     SPRITE_METRICS.textContent =
@@ -511,6 +585,11 @@ function writeMetrics(cpuMs, animationMs, submitMs, rasterResult, spriteResult) 
         `아틀라스 ${SPRITE_BYTES.toLocaleString()} B · 프레임 선택 오차 최대 ${SAMPLE_INTERVAL_INPUT.value}ms · ` +
         `스프라이트 ${spriteResult.spriteDraws}개 / 벡터 대체 ${spriteResult.vectorFallbacks}개` +
         (spriteResult.reasons.length ? ` (${spriteResult.reasons.join(', ')})` : '');
+    const PREPARATION = STATE.preparation;
+    const FAILED_PREPARATIONS = PREPARATION?.entries.filter((entry) => !entry.ready) ?? [];
+    PREPARATION_METRICS.textContent = PREPARATION
+        ? `${PREPARATION.status} ${PREPARATION.completed}/${PREPARATION.total} · planned ${PREPARATION.estimatedBytes.toLocaleString()} B · allocated ${PREPARATION.allocatedBytes.toLocaleString()} / ${PREPARATION.budgetBytes.toLocaleString()} B · initial CPU ${PREPARATION.cpuMs.toFixed(1)} ms · ${PREPARATION.entries.filter((entry) => entry.ready).length} separate sprite textures (no multi-page sheet)${FAILED_PREPARATIONS.length ? ` · ${FAILED_PREPARATIONS.map((entry) => `${entry.clip}/${entry.expression}:${entry.reason}`).join(', ')}` : ''}`
+        : 'Preparing atlas manifest…';
     PATH_METRICS.textContent =
         `SVG SHA ${ASSET.sourceSha256.slice(0, 12)} · 래스터 ${rasterResult.rasterDraws}개 · 벡터 대체 ${rasterResult.vectorFallbacks}개` +
         (rasterResult.reasons.length ? ` (${rasterResult.reasons.join(', ')})` : '') +
@@ -538,20 +617,31 @@ function writeMetrics(cpuMs, animationMs, submitMs, rasterResult, spriteResult) 
         drawCalls: DEVICE_STATS.drawCalls,
         uploadedBytes: DEVICE_STATS.bufferBytes,
         textureBytes: DEVICE_STATS.textureBytes,
+        imageTexUploadCount: DEVICE_STATS.imageTexUploadCount,
+        imageTexUploadBytes: DEVICE_STATS.imageTexUploadBytes,
         atlas: ATLAS_STATS,
         bakeCpuMs: STATE.bakeCpuMs,
         poses: POSES,
         rasterResult,
         spriteResult,
+        preparation: PREPARATION
+            ? { ...PREPARATION, entries: PREPARATION.entries.map((entry) => ({ ...entry })) }
+            : null,
         sprite: {
             sampleIntervalMs: Number(SAMPLE_INTERVAL_INPUT.value),
             quantizationMaxMs: Number(SAMPLE_INTERVAL_INPUT.value),
             frameCount: SPRITE_FRAMES,
             atlasBytes: SPRITE_BYTES,
+            allocatedBytes: SPRITE_ALLOCATED_BYTES,
             bakeCpuMs: SPRITE_BAKE_MS,
             sets: SPRITE_SETS.map((entry) => ({
+                key: entry.key,
                 clip: entry.clip,
+                expression: entry.expression,
                 reason: entry.reason,
+                ready: Boolean(entry.resource),
+                bakeCount: entry.bakeCount,
+                atlasBytes: entry.plannedBytes,
                 stats: entry.baker?.stats ?? null,
             })),
         },
@@ -567,7 +657,7 @@ function writeMetrics(cpuMs, animationMs, submitMs, rasterResult, spriteResult) 
     };
 }
 
-function render(now) {
+function render(now, forcePreparation = false) {
     frameHandle = null;
     if (STATE.disposed) {
         return;
@@ -611,11 +701,17 @@ function render(now) {
         DEVICE.beginFrame({ width: WIDTH, height: HEIGHT, clearColor: [0, 0, 0, 0] });
         MESHES.beginFrame();
         const MODE = MODE_INPUT.value;
-        if (MODE === 'raster' || MODE === 'split' || MODE === 'split3') {
-            ensureAtlas();
-        }
-        if (MODE === 'sprite' || MODE === 'split3') {
-            ensureSpriteSets();
+        const PREPARATION_STARTED = performance.now();
+        ensureAtlas();
+        const PREPARED = ensureSpriteSets(forcePreparation);
+        const PREPARATION_MS = performance.now() - PREPARATION_STARTED;
+        if (!PREPARED) {
+            MESHES.flush();
+            DEVICE.endFrame();
+            STATE.ready = false;
+            STATE.previousFrameMs = null;
+            scheduleNextFrame();
+            return;
         }
         const QUERY = timer.begin({
             frame: ++STATE.frameOrdinal,
@@ -627,7 +723,10 @@ function render(now) {
         const ANIMATION_START = performance.now();
         const VECTOR_PLAYERS =
             MODE === 'sprite'
-                ? PLAYERS.filter((player) => !STATE.spriteSets.get(spriteKey(player.currentClip))?.resource)
+                ? PLAYERS.filter(
+                      (player) =>
+                          !STATE.spriteSets.get(spriteKey(player.currentClip, player.currentExpression))?.resource,
+                  )
                 : PLAYERS;
         for (const PLAYER of VECTOR_PLAYERS) {
             PLAYER.seek(STATE.timeMs);
@@ -653,7 +752,7 @@ function render(now) {
         const SUBMIT_MS = performance.now() - SUBMIT_START;
         timer.end(QUERY);
         DEVICE.endFrame();
-        const CPU_MS = performance.now() - STARTED;
+        const CPU_MS = Math.max(0, performance.now() - STARTED - PREPARATION_MS);
         if (!STATE.autoRender || now >= nextReadoutMs || !STATE.ready) {
             writeMetrics(CPU_MS, ANIMATION_MS, SUBMIT_MS, RASTER_RESULT, SPRITE_RESULT);
             nextReadoutMs = now + 250;
@@ -705,6 +804,9 @@ CANVAS.addEventListener('webglcontextlost', (event) => {
     STATE.contextLost = true;
     STATE.ready = false;
     STATE.previousFrameMs = null;
+    if (STATE.preparation) {
+        STATE.preparation.status = 'stale';
+    }
     setStatus('그래픽 화면을 복구하고 있습니다. 재생 시간은 멈춰 있습니다.');
 });
 CANVAS.addEventListener('webglcontextrestored', () => {
@@ -724,7 +826,7 @@ CANVAS.addEventListener('webglcontextrestored', () => {
         STATE.contextLost = false;
         STATE.previousFrameMs = null;
         STATE.atlasResolution = 0;
-        STATE.spriteNeedsRebuild = true;
+        invalidatePreparation();
         setStatus('그래픽 화면을 복구했습니다.');
         scheduleNextFrame();
     }, 0);
@@ -754,8 +856,12 @@ MIXED_INPUT.addEventListener('change', () => {
 });
 RESOLUTION_INPUT.addEventListener('change', () => {
     resetTimer();
+    invalidatePreparation();
 });
-SAMPLE_INTERVAL_INPUT.addEventListener('change', resetTimer);
+SAMPLE_INTERVAL_INPUT.addEventListener('change', () => {
+    resetTimer();
+    invalidatePreparation();
+});
 PLAYBACK_RATE_INPUT.addEventListener('change', resetTimer);
 ZOOM_INPUT.addEventListener('input', () => {
     resetTimer();
@@ -788,6 +894,11 @@ globalThis.__rasterComparison = {
     get snapshot() {
         return STATE.last;
     },
+    get preparation() {
+        return STATE.preparation
+            ? { ...STATE.preparation, entries: STATE.preparation.entries.map((entry) => ({ ...entry })) }
+            : null;
+    },
     dispose: disposeComparison,
     setAutoRender,
     pollGpuTimers() {
@@ -805,7 +916,7 @@ globalThis.__rasterComparison = {
             STATE.timeMs = timeMs;
             STATE.playing = false;
         }
-        render(performance.now());
+        render(performance.now(), true);
         if (STATE.contextLost) {
             throw new Error('Graphics context is temporarily unavailable');
         }

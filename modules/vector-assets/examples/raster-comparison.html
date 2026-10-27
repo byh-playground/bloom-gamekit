@@ -167,7 +167,7 @@
             }
             .metrics {
                 display: grid;
-                grid-template-columns: repeat(4, minmax(0, 1fr));
+                grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
                 gap: 0.75rem;
             }
             .metrics section {
@@ -313,6 +313,10 @@
                 <section>
                     <strong>경로와 메모리</strong>
                     <div id="path-metrics">준비 중…</div>
+                </section>
+                <section>
+                    <strong>아틀라스 준비</strong>
+                    <div id="preparation-metrics">준비 중…</div>
                 </section>
             </div>
             <div id="status" role="status">SVG 에셋을 준비하고 있습니다.</div>
