@@ -245,6 +245,32 @@ try {
                 CHECK(GL.getError() === GL.NO_ERROR, 'clipped textured scene GL error');
                 CTX.deleteClipPath(STENCIL_PATH);
 
+                BEGIN();
+                CTX.fillStyle = 'rgba(255,0,0,0.5)';
+                CTX.fillRect(8, 8, 32, 32);
+                CTX.save();
+                CTX.globalCompositeOperation = 'lighter';
+                CTX.fillStyle = 'rgba(0,255,0,0.5)';
+                CTX.fillRect(8, 8, 32, 32);
+                // Image meshes retain their source-over material contract while
+                // forcing the preceding additive primitive batch to submit.
+                DRAW(TEXTURED, TEXTURE_B, 48, 8);
+                CTX.beginPath();
+                CTX.moveTo(8, 48);
+                CTX.lineTo(40, 48);
+                CTX.lineTo(24, 80);
+                CTX.closePath();
+                CTX.fill();
+                CTX.restore();
+                CTX.fillStyle = 'rgba(0,0,255,0.5)';
+                CTX.fillRect(8, 8, 32, 32);
+                CTX.endFrame();
+                NEAR(PIXEL(24, 24), [64, 64, 128, 255], 'additive primitive then texture then restored source-over');
+                NEAR(PIXEL(64, 24), [0, 255, 255, 255], 'texture boundary preserves image material');
+                NEAR(PIXEL(24, 56), [0, 128, 0, 255], 'additive vector path after texture');
+                CHECK(CTX.globalCompositeOperation === 'source-over', 'composite state restored');
+                CHECK(GL.getError() === GL.NO_ERROR, 'additive/vector/texture boundary GL error');
+
                 const LARGE_WIDTH = Math.min(8192, DEVICE.maxTextureSize);
                 CHECK(LARGE_WIDTH >= 2048, 'WebGL2 texture size supports precision scene');
                 const LARGE_PIXELS = new Uint8Array(LARGE_WIDTH * 4 * 4);
