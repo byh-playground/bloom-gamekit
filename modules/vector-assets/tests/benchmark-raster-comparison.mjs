@@ -61,6 +61,10 @@ try {
                 const RUN = await PAGE.evaluate(
                     async ({ mode, count, clip }) => {
                         const BRIDGE = globalThis.__rasterComparison;
+                        BRIDGE.setScene('crowd');
+                        BRIDGE.setPixelSize(64);
+                        BRIDGE.setSpread(100);
+                        BRIDGE.setSeed(4242);
                         BRIDGE.setMode(mode);
                         BRIDGE.setCount(count);
                         BRIDGE.setClip(clip);

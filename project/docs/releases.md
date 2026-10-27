@@ -1,3 +1,7 @@
+## v0.19.2 (2026-10-27)
+
+SVG 비교 예제를 단건 품질 확인과 N마리 비교 탭으로 나눕니다. 군집의 마릿수, CSS 픽셀 크기, 배치 영역을 독립 조절하고 동일 seed의 위치와 개체별 위상을 유지합니다. 큰 카드에 공통 RAF FPS와 순차 측정 결과를 구분하며, 순차 측정은 같은 전체 화면에서 CPU 제출·전체 렌더·GPU 시간과 프레임 간격 p50/p95를 보여 줍니다. 미지원·disjoint·부족한 GPU 표본은 0ms로 표시하지 않습니다. 기존 준비 캐시·이미지 업로드 0 계약과 v0.19.1 팔레트·가산 합성은 유지하며 게임 적용은 포함하지 않습니다.
+
 ## v0.19.1 (2026-10-27)
 
 원본 SVG의 solid fill에 `data-paint-region` 이름을 지정하고 `player.draw({ paintRegions })`로 해당 RGB만 바꿀 수 있습니다. 원본 선·alpha·표정·소켓과 geometry를 유지하며 UI도 원본을 보존하는 `applySvgPaintRegions` helper로 같은 계약을 사용합니다. 서로 다른 개체의 팔레트는 제출 시 값으로 캡처하고 mesh와 표정 index를 공유합니다. 팔레트 변경 시 geometry 재컴파일·업로드를 하지 않습니다. UV texture/shared quad와 sampled sprite, additive blend 경로는 유지합니다. 이 팔레트는 원본 untextured fill 전용이며 baked texture의 색 영역을 추정하지 않습니다.
