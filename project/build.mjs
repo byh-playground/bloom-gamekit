@@ -81,7 +81,10 @@ export async function buildDistribution(root) {
             });
             const GENERATED_ASSET = NAME === 'vector-assets' && INPUT.startsWith('vector-asset:');
             const PAINT_CONTRACT = SHARED_PAINT_SOURCE.has(NAME) && INPUT === 'modules/rendering/paint-regions.js';
-            if (!OWNED && !PACKAGE_OWNED && !GENERATED_ASSET && !PAINT_CONTRACT) {
+            // Reuse the retained textured quad for offline atlas reduction;
+            // never bundle Device/renderer initialization into vector-assets.
+            const SPRITE_PREPARATION = NAME === 'vector-assets' && INPUT === 'modules/rendering/sprite-animation.js';
+            if (!OWNED && !PACKAGE_OWNED && !GENERATED_ASSET && !PAINT_CONTRACT && !SPRITE_PREPARATION) {
                 throw new Error(`${NAME} 소스 밖의 런타임 의존성은 허용하지 않습니다: ${INPUT}`);
             }
         }
