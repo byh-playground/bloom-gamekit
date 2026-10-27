@@ -1,3 +1,4 @@
+import { PoseRenderer } from './pose-renderer.js';
 const IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
 const ZERO_MORPH = Object.freeze([0, 0]);
 const EMPTY_CLIP = Object.freeze({
@@ -119,6 +120,16 @@ function fragment(maxPlanes, clipped) {
     return `precision mediump float; varying vec4 v_color; varying vec2 v_position;
 uniform vec3 u_planes[${maxPlanes}]; uniform int u_planeCount;
 void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_planes[i],vec3(v_position,1.0))<0.0)discard;}gl_FragColor=v_color;}`;
+}
+function poseTextureShader(source) {
+    return source
+        .replace(/uniform vec4 u_parts\[\d+\];/, 'uniform sampler2D u_poseTexture;')
+        .replace(
+            'int index=int(a_part)*3;vec4 row0=u_parts[index];vec4 row1=u_parts[index+1];vec4 pose=u_parts[index+2];',
+            'int index=int(a_part)*3;int poseRow=int(-i_params.x-1.0);vec4 row0=texelFetch(u_poseTexture,ivec2(index,poseRow),0);vec4 row1=texelFetch(u_poseTexture,ivec2(index+1,poseRow),0);vec4 pose=texelFetch(u_poseTexture,ivec2(index+2,poseRow),0);',
+        )
+        .replaceAll('(i_params.x+pose.x)', '(pose.x)')
+        .replaceAll('(i_params.y+pose.y)', '(pose.y)');
 }
 function finiteArray(value, size, name) {
     if (!value || value.length !== size) {
@@ -347,7 +358,13 @@ function meshPartBounds(vertices, partCount, morphCount) {
 export class MeshRenderer {
     constructor(
         device,
-        { maxMeshes = 512, maxMeshBytes = 32 * 1024 * 1024, maxInstances = 2048, safeAlphaRunBatching = true } = {},
+        {
+            maxMeshes = 512,
+            maxMeshBytes = 32 * 1024 * 1024,
+            maxInstances = 2048,
+            safeAlphaRunBatching = true,
+            poseBackend = 'auto',
+        } = {},
     ) {
         for (const [KEY, VALUE] of Object.entries({
             maxMeshes,
@@ -362,6 +379,11 @@ export class MeshRenderer {
             throw new TypeError('safeAlphaRunBatching must be a boolean');
         }
         this.device = device;
+        if (!['auto', 'cpu', 'uniform'].includes(poseBackend)) {
+            throw new TypeError('poseBackend must be auto, cpu or uniform');
+        }
+        this.poseBackend = poseBackend;
+        this.poseRenderer = null;
         this.maxMeshes = maxMeshes;
         this.maxMeshBytes = maxMeshBytes;
         this.maxInstances = maxInstances;
@@ -461,7 +483,44 @@ export class MeshRenderer {
         device.canvas.addEventListener('webglcontextrestored', this.onRestored);
         this.disposed = false;
     }
-    _pipeline(mesh, clipped, worldMode = false) {
+    _poses() {
+        if (!this.poseRenderer) {
+            this.poseRenderer = new PoseRenderer(this.device, {
+                backend: this.poseBackend,
+                onBoundary: () => this.flush('poseResourceBoundary'),
+            });
+        }
+        return this.poseRenderer;
+    }
+    createPoseSource(program) {
+        return this._poses().createSource(program);
+    }
+    deletePoseSource(source) {
+        return this.poseRenderer?.deleteSource(source) ?? false;
+    }
+    createPoseInstance(source) {
+        return this._poses().createInstance(source);
+    }
+    deletePoseInstance(instance) {
+        return this.poseRenderer?.deleteInstance(instance) ?? false;
+    }
+    preparePose(instance, options) {
+        return this._poses().prepare(instance, options);
+    }
+    prepareCpuPose(instance, parts, morph, reason) {
+        return this._poses().prepareCpu(instance, parts, morph, reason);
+    }
+    recordPoseFallback(reason) {
+        this._poses().recordFallback(reason);
+    }
+    /** Updates all prepared numeric poses without changing visible submission order. */
+    preparePoses() {
+        this.poseRenderer?.flushUpdates();
+    }
+    poseStats() {
+        return this.poseRenderer?.stats() ?? null;
+    }
+    _pipeline(mesh, clipped, worldMode = false, poseTexture = false) {
         const KEY =
             mesh.partCount +
             ':' +
@@ -471,7 +530,9 @@ export class MeshRenderer {
             ':' +
             Number(mesh.hasNonScalingStroke) +
             ':' +
-            Number(worldMode);
+            Number(worldMode) +
+            ':' +
+            Number(poseTexture);
         let pipeline = this.pipelines.get(KEY);
         if (pipeline) {
             return pipeline;
@@ -499,7 +560,9 @@ export class MeshRenderer {
                 UNIFORMS.u_inverseProjection = 'matrix3fv';
             }
         }
-        if (mesh.partCount > 1) {
+        if (poseTexture) {
+            UNIFORMS.u_poseTexture = '1i';
+        } else if (mesh.partCount > 1) {
             UNIFORMS['u_parts[0]'] = '4fv';
         }
         if (!this.instanced) {
@@ -510,13 +573,15 @@ export class MeshRenderer {
             }
         }
         pipeline = this.device.createPipeline({
-            vertex: shader(
-                this.instanced,
-                mesh.partCount,
-                mesh.morphCount,
-                clipped,
-                mesh.hasNonScalingStroke,
-                worldMode,
+            vertex: (poseTexture ? poseTextureShader : (source) => source)(
+                shader(
+                    this.instanced,
+                    poseTexture ? Math.max(2, mesh.partCount) : mesh.partCount,
+                    mesh.morphCount,
+                    clipped,
+                    mesh.hasNonScalingStroke,
+                    worldMode,
+                ),
             ),
             fragment: fragment(this.maxPlanes, clipped),
             stride: mesh.strideFloats * 4,
@@ -752,6 +817,7 @@ export class MeshRenderer {
             projection: PROJECTION,
             morph: MORPH = [0, 0],
             parts: PARTS = null,
+            pose: POSE = null,
             color: COLOR = WHITE,
             forceColor: FORCE_COLOR = false,
             alpha: ALPHA = 1,
@@ -777,6 +843,7 @@ export class MeshRenderer {
             worldMatrix: WORLD_MATRIX,
             morph: MORPH,
             parts: PARTS,
+            pose: POSE,
             color: COLOR,
             forceColor: FORCE_COLOR,
             alpha: ALPHA,
@@ -1008,6 +1075,7 @@ export class MeshRenderer {
             worldMatrix,
             morph = [0, 0],
             parts = null,
+            pose = null,
             color = WHITE,
             forceColor = false,
             alpha = 1,
@@ -1164,6 +1232,13 @@ export class MeshRenderer {
         if (FIRST_INDEX + INDEX_COUNT > (VARIANT?.count ?? mesh.count)) {
             throw new RangeError('indexRange exceeds the selected mesh index data');
         }
+        const POSE_DRAW = pose === null ? null : this._poses().resolve(pose);
+        if (POSE_DRAW && POSE_DRAW.partCount !== mesh.partCount) {
+            throw new TypeError('Pose and mesh part counts must match');
+        }
+        if (POSE_DRAW && depthWriteAlphaThreshold !== null) {
+            throw new TypeError('Alpha depth classification requires ordinary CPU part poses');
+        }
         packParts(parts, mesh.partCount, this.partScratch);
         for (let i = 0; i < mesh.partCount; i++) {
             if (depth + this.partScratch[i * 12 + 11] < -1 || depth + this.partScratch[i * 12 + 11] > 1) {
@@ -1180,32 +1255,35 @@ export class MeshRenderer {
                 const MATRIX = WORLD_MODE ? viewProjection : projection;
                 const PREVIOUS_COLOR = PENDING.color;
                 const REASON =
-                    PENDING.mesh !== mesh
-                        ? 'mesh'
-                        : PENDING.worldMode !== WORLD_MODE
-                          ? 'transformMode'
-                          : PENDING.indexVariant !== indexVariant
-                            ? 'indexVariant'
-                            : PENDING.firstIndex !== FIRST_INDEX || PENDING.indexCount !== INDEX_COUNT
-                              ? 'indexRange'
-                              : PENDING.clip.key !== CLIP.key
-                                ? 'clip'
-                                : PENDING.stencilRef !== stencilRef
-                                  ? 'stencil'
-                                  : PENDING.depthStateKey !== DEPTH_STATE_KEY
-                                    ? 'depthState'
-                                    : MATRIX.some((n, i) => Math.fround(n) !== PENDING.projection[i])
-                                      ? 'projection'
-                                      : strokeSize && strokeSize.some((n, i) => n !== PENDING.strokeSize?.[i])
-                                        ? 'strokeViewport'
-                                        : WORLD_MODE && color.some((n, i) => n !== PREVIOUS_COLOR[i])
-                                          ? 'color'
-                                          : mesh.partCount > 1 &&
-                                              PENDING.parts.some((n, i) => n !== this.partScratch[i])
-                                            ? 'parts'
-                                            : this.count === this.maxInstances
-                                              ? 'capacity'
-                                              : null;
+                    (PENDING.poseTexture ?? null) !== (POSE_DRAW?.texture ?? null)
+                        ? 'poseBackend'
+                        : PENDING.mesh !== mesh
+                          ? 'mesh'
+                          : PENDING.worldMode !== WORLD_MODE
+                            ? 'transformMode'
+                            : PENDING.indexVariant !== indexVariant
+                              ? 'indexVariant'
+                              : PENDING.firstIndex !== FIRST_INDEX || PENDING.indexCount !== INDEX_COUNT
+                                ? 'indexRange'
+                                : PENDING.clip.key !== CLIP.key
+                                  ? 'clip'
+                                  : PENDING.stencilRef !== stencilRef
+                                    ? 'stencil'
+                                    : PENDING.depthStateKey !== DEPTH_STATE_KEY
+                                      ? 'depthState'
+                                      : MATRIX.some((n, i) => Math.fround(n) !== PENDING.projection[i])
+                                        ? 'projection'
+                                        : strokeSize && strokeSize.some((n, i) => n !== PENDING.strokeSize?.[i])
+                                          ? 'strokeViewport'
+                                          : WORLD_MODE && color.some((n, i) => n !== PREVIOUS_COLOR[i])
+                                            ? 'color'
+                                            : !POSE_DRAW &&
+                                                mesh.partCount > 1 &&
+                                                PENDING.parts.some((n, i) => n !== this.partScratch[i])
+                                              ? 'parts'
+                                              : this.count === this.maxInstances
+                                                ? 'capacity'
+                                                : null;
                 if (REASON) {
                     this.flush(REASON);
                 }
@@ -1214,7 +1292,7 @@ export class MeshRenderer {
                 return;
             }
             const PART = this.partScratch,
-                SINGLE_PART = mesh.partCount === 1;
+                SINGLE_PART = mesh.partCount === 1 && !POSE_DRAW;
             for (let i = 0; i < count; i++) {
                 if (this.count === this.maxInstances) {
                     this.flush('capacity');
@@ -1222,6 +1300,7 @@ export class MeshRenderer {
                 if (!this.pending) {
                     this.pending = {
                         mesh,
+                        poseTexture: POSE_DRAW?.texture ?? null,
                         projection: Float32Array.from(WORLD_MODE ? viewProjection : projection),
                         worldMode: WORLD_MODE,
                         color: Float32Array.from(color),
@@ -1249,7 +1328,7 @@ export class MeshRenderer {
                 let m3 = matrices[OFFSET + 3];
                 let m4 = matrices[OFFSET + 4];
                 let m5 = matrices[OFFSET + 5];
-                let weight0 = morph[0];
+                let weight0 = POSE_DRAW ? -1 - POSE_DRAW.row : morph[0];
                 let weight1 = morph[1];
                 let instanceAlpha = alpha;
                 if (SINGLE_PART) {
@@ -1272,6 +1351,9 @@ export class MeshRenderer {
                     AT = this.count++ * 16,
                     DATA = this.instances;
                 const INSTANCE_DEPTH = depth + (SINGLE_PART ? PART[11] : 0);
+                if (POSE_DRAW) {
+                    this.poseRenderer.noteDraw(pose);
+                }
                 if (WORLD_MODE) {
                     DATA[AT] = worldMatrix[0] * m0 + worldMatrix[4] * m1;
                     DATA[AT + 1] = worldMatrix[0] * m2 + worldMatrix[4] * m3;
@@ -1729,6 +1811,7 @@ export class MeshRenderer {
             inverseStrokeProjection: INVERSE_STROKE_PROJECTION,
             inverseViewProjection: INVERSE_VIEW_PROJECTION,
             stencilRef: STENCIL_REF,
+            poseTexture: POSE_TEXTURE,
         } = this.pending;
         const VARIANT =
             INDEX_VARIANT === null
@@ -1738,7 +1821,10 @@ export class MeshRenderer {
         if (CLIP.values) {
             this.planes.set(CLIP.values);
         }
-        const PIPELINE = this._pipeline(MESH, CLIP.count > 0, WORLD_MODE),
+        if (POSE_TEXTURE) {
+            this.poseRenderer.flushUpdates();
+        }
+        const PIPELINE = this._pipeline(MESH, CLIP.count > 0, WORLD_MODE, !!POSE_TEXTURE),
             UNIFORMS = WORLD_MODE
                 ? {
                       u_viewProjection: PROJECTION,
@@ -1767,7 +1853,9 @@ export class MeshRenderer {
                     : {}),
             });
         }
-        if (MESH.partCount > 1) {
+        if (POSE_TEXTURE) {
+            UNIFORMS.u_poseTexture = 0;
+        } else if (MESH.partCount > 1) {
             UNIFORMS['u_parts[0]'] = PARTS;
         }
         const INSTANCE_UNIFORMS = WORLD_MODE
@@ -1784,6 +1872,7 @@ export class MeshRenderer {
                 instanceBuffer: this.instanceBuffer,
                 instances: this.count,
                 uniforms: UNIFORMS,
+                textures: POSE_TEXTURE ? [POSE_TEXTURE] : [],
                 depth: DEPTH_STATE,
                 stencil:
                     STENCIL_REF === null
@@ -1799,7 +1888,7 @@ export class MeshRenderer {
             this.metrics.instanceBytesUploaded += this.count * 64;
             this.metrics.draws++;
             this.metrics.drawDispatchReasons[reason] = (this.metrics.drawDispatchReasons[reason] ?? 0) + 1;
-            if (MESH.partCount > 1) {
+            if (MESH.partCount > 1 && !POSE_TEXTURE) {
                 this.metrics.partUniformBytesSubmitted += PARTS.byteLength;
             }
         } else {
@@ -1850,6 +1939,7 @@ export class MeshRenderer {
     }
     beginFrame() {
         this.discard();
+        this.poseRenderer?.beginFrame();
         for (const KEY of Object.keys(this.metrics)) {
             if (KEY !== 'flushReasons' && KEY !== 'drawDispatchReasons') {
                 this.metrics[KEY] = 0;
@@ -1877,6 +1967,7 @@ export class MeshRenderer {
             stagingBytes: this.instances.byteLength + this.planes.byteLength + this.partScratch.byteLength,
             instanced: this.instanced,
             maxClipPlanes: this.maxPlanes,
+            poses: this.poseStats(),
         };
     }
     dispose() {
@@ -1884,6 +1975,7 @@ export class MeshRenderer {
             return;
         }
         this.discard();
+        this.poseRenderer?.dispose();
         this.device.canvas.removeEventListener('webglcontextlost', this.onLost);
         this.device.canvas.removeEventListener('webglcontextrestored', this.onRestored);
         for (const MESH of this.meshes) {

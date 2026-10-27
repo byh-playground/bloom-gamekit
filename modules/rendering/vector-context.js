@@ -1647,6 +1647,22 @@ export class VectorContext {
             BOUNDS,
         );
     }
+    /** Submit a native vector player after earlier paint, without flushing a compatible mesh run. */
+    drawVectorAsset(player, options = {}) {
+        this._frame();
+        if (typeof player?.draw !== 'function') {
+            throw new TypeError('A vector asset player is required');
+        }
+        this.primitiveRenderer?.flush('vectorAssetBoundary');
+        this.vector.flush();
+        const WORLD_MODE = options.viewProjection !== undefined || options.worldMatrix !== undefined;
+        player.draw({
+            ...(!WORLD_MODE ? { projection: this.vector.projection } : {}),
+            clips: this.vector.clips,
+            stencilRef: this.vector.stencilDepth || null,
+            ...options,
+        });
+    }
     flush(reason = 'explicit') {
         this._frame();
         this.primitiveRenderer?.flush(reason);
@@ -1730,7 +1746,7 @@ export class VectorContext {
     }
     stats() {
         return {
-            backend: 'webgl1',
+            backend: 'webgl2',
             available: this.device.state === 'ready',
             contextLost: this.device.state === 'lost',
             failure: this.device.failure ?? null,

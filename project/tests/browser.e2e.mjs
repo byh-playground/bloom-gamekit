@@ -118,7 +118,7 @@ try {
     });
     await PAGE.goto(`http://127.0.0.1:${SERVER.address().port}/modules/interpolation/examples/index.html`);
     await PAGE.waitForFunction(() => window.demo?.diagnostics.frames >= 30);
-    assert.equal(await PAGE.evaluate(() => demo.renderer.stats.backend), 'webgl1');
+    assert.equal(await PAGE.evaluate(() => demo.renderer.stats.backend), 'webgl2');
     const CLOCK_CHECK = await PAGE.evaluate(async () => {
         const {
             createLoop: CREATE_LOOP,
@@ -767,7 +767,7 @@ try {
     );
     assert.equal(REPORT.rendererInterleaving.glError, 0, 'interleaved draw stream leaves no WebGL error');
     REPORT.stages.push(
-        'Renderer2D and MeshRenderer interleave ordered draws on one WebGL1 canvas with clean state and expected pixels',
+        'Renderer2D and MeshRenderer interleave ordered draws on one WebGL2 canvas with clean state and expected pixels',
     );
     REPORT.orderedAssetBatch = await exerciseOrderedAssetBatch(PAGE);
     assert.equal(
@@ -1206,13 +1206,23 @@ try {
     });
     assert.equal(ERRORS.length, 0, ERRORS.join('\n'));
     assert.equal(MODULE_ERRORS.length, 0, MODULE_ERRORS.join('\n'));
-    assert.equal(
-        REPORT.reusableMeshes?.scenes.length,
-        4,
-        'reusable mesh helper must execute both native backends with and without MSAA',
+    assert.deepEqual(
+        REPORT.reusableMeshes?.scenes.map(({ backend, legacyExtensionMasked, legacyExtensionQueries, antialias }) => [
+            backend,
+            legacyExtensionMasked,
+            legacyExtensionQueries,
+            antialias,
+        ]),
+        [
+            ['webgl2-core-instanced-mesh', false, 0, false],
+            ['webgl2-core-instanced-mesh', true, 0, false],
+            ['webgl2-core-instanced-mesh', false, 0, true],
+            ['webgl2-core-instanced-mesh', true, 0, true],
+        ],
+        'reusable mesh helper must exercise core instancing with and without legacy ANGLE availability and MSAA',
     );
     REPORT.stages.push(
-        'retained animated mesh → silhouette/instance batching → vector painter order → nested/rotated clipping → native context restoration/disposal, ANGLE and uniform backends, MSAA off/on',
+        'retained animated mesh → silhouette/instance batching → vector painter order → nested/rotated clipping → native context restoration/disposal, WebGL2 core instancing with legacy extension masked, MSAA off/on',
     );
     const VECTOR_EXAMPLE = await browser.newPage({
             viewport: {
@@ -2313,7 +2323,7 @@ try {
         geometrySha256: LOADED_STARTUP.geometrySha256,
         lowQuality: LOADED_STARTUP.lowQualityResults,
         requests: STARTUP_FETCHES,
-        scope: 'same-key promise/cache deduplication, low-quality browser/Node geometry parity, expected-hash rejection before caching, and actual WebGL1 draw of the browser-compiled SVG',
+        scope: 'same-key promise/cache deduplication, low-quality browser/Node geometry parity, expected-hash rejection before caching, and actual WebGL2 draw of the browser-compiled SVG',
     };
     REPORT.stages.push(
         'browser SVG startup loader verifies source SHA-256, compiles once with bounded cache, and renders the same geometry as Node',
@@ -2588,7 +2598,7 @@ try {
     REPORT.browser = await browser.version();
     REPORT.contextLoss = SUPPORTS_LOSS;
     REPORT.scope =
-        'Headless Chromium with actual WebGL1/SwiftShader pixels and built ESMs. CPU/interval observations are not mobile FPS or hardware-GPU certification. No screenshot/artifact retention.';
+        'Headless Chromium with actual WebGL2/SwiftShader pixels and built ESMs. CPU/interval observations are not mobile FPS or hardware-GPU certification. No screenshot/artifact retention.';
     console.log(JSON.stringify(REPORT, null, 2));
 } finally {
     await browser?.close();

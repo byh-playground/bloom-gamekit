@@ -2,7 +2,7 @@
 
 **HTML 실행 프리뷰:** [rendering-vector](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rendering-vector.html)
 
-게임·시뮬레이션·보간·DOM 입력과 독립적인 **WebGL 1 2D 제출 kernel**입니다. WebGL 2 전용 기능이나 Canvas2D 전장 fallback은 사용하지 않습니다. 불가능한 브라우저에서는 생성이 실패합니다.
+게임·시뮬레이션·보간·DOM 입력과 독립적인 **WebGL 2 2D 제출 kernel**입니다. Core instancing과 VAO를 사용하며 Canvas2D 전장 fallback은 사용하지 않습니다. 불가능한 브라우저에서는 생성이 실패합니다.
 
 ```js
 import { Renderer2D } from './rendering.js';
@@ -18,10 +18,10 @@ if (renderer.beginFrame([0.03, 0.05, 0.08, 1])) {
 
 ## Shared-canvas renderer interleaving
 
-`Renderer2D` and `WebGLDevice`/`MeshRenderer` may submit ordered passes to the same default-framebuffer WebGL 1 canvas. Each pass must be flushed before switching renderers. `Renderer2D.flush()` rebinds its program, stream buffer, attributes, texture, projection, and blend state; the device draw path establishes its own GL state before every mesh draw. The two renderers share a context but keep separate buffers and resource ownership.
+`Renderer2D` and `WebGLDevice`/`MeshRenderer` may submit ordered passes to the same default-framebuffer WebGL 2 canvas. Each pass must be flushed before switching renderers. `Renderer2D.flush()` rebinds its program, stream buffer, attributes, texture, projection, and blend state; the device draw path establishes its own GL state before every mesh draw. The two renderers share a context but keep separate buffers and resource ownership.
 
 ```js
-const renderer = new Renderer2D(canvas); // this creates the canvas WebGL 1 context
+const renderer = new Renderer2D(canvas); // this creates the canvas WebGL 2 context
 const device = new WebGLDevice(canvas); // reuses that same context
 const meshes = new MeshRenderer(device);
 
@@ -95,7 +95,7 @@ The bounds are computed from per-part ranges retained at mesh creation; the rend
 
 ## 공개 API와 공간 계약
 
-- `new Renderer2D(canvas, {batchVertices=6144, antialias=true, depth=false, preserveDrawingBuffer=false})`: acquires the canvas WebGL 1 context. It owns its program and stream buffer and can interleave with `WebGLDevice`/`MeshRenderer` on the same default framebuffer when each pass is flushed before switching; each renderer rebinds its own program, buffers, attributes, and blend state. Set `depth:true` when a depth-tested `MeshRenderer` pass will share the canvas and `Renderer2D` acquires the context first. `gl` remains available for context-loss and pixel-readback checks. Set `preserveDrawingBuffer` only when needed for checks.
+- `new Renderer2D(canvas, {batchVertices=6144, antialias=true, depth=false, preserveDrawingBuffer=false})`: acquires the canvas WebGL 2 context. It owns its program and stream buffer and can interleave with `WebGLDevice`/`MeshRenderer` on the same default framebuffer when each pass is flushed before switching; each renderer rebinds its own program, buffers, attributes, and blend state. Set `depth:true` when a depth-tested `MeshRenderer` pass will share the canvas and `Renderer2D` acquires the context first. `gl` remains available for context-loss and pixel-readback checks. Set `preserveDrawingBuffer` only when needed for checks.
 - `resize(cssWidth, cssHeight, dpr=1)`: 양의 유한 수, 실제 backing store는 반올림한 CSS×DPR입니다. CSS 스타일이나 카메라를 바꾸지 않습니다. frame 밖에서 호출하세요. frame 중 resize는 throw합니다. DPR 상한은 게임의 비용 정책입니다. 예제는 2로 제한합니다.
 - `setCamera({x,y,zoom,rotation})`: 세계의 카메라 중심, CSS pixel/world unit 확대율, radians 회전입니다. 생략 필드는 유지합니다. 생성 기본값은 초기 canvas 크기의 중심, zoom 1, rotation 0입니다. +x 오른쪽, +y 아래입니다. frame 도중 변경하면 기존 batch를 먼저 제출합니다.
 - `worldToScreenInto(x,y,out)`, `screenToWorldInto(x,y,out)`: 재사용 가능한 out의 x/y에 CSS 화면 또는 world 좌표를 기록합니다. 게임의 3D/isometric 투영·높이·카메라 추적은 호출자가 계산합니다.
@@ -113,7 +113,7 @@ The bounds are computed from per-part ranges retained at mesh creation; the rend
 
 ## 텍스처·생명주기
 
-- `createTexture(source,{filter='linear',premultiplied=false}) → handle`: origin-clean하고 로딩 완료한 image/canvas 또는 `{width,height,data: Uint8Array|Uint8ClampedArray}` RGBA bytes입니다. nearest/linear, CLAMP_TO_EDGE, mipmap 없음으로 WebGL 1 NPOT를 지원합니다. handle은 해당 renderer만 사용할 수 있습니다.
+- `createTexture(source,{filter='linear',premultiplied=false}) → handle`: origin-clean하고 로딩 완료한 image/canvas 또는 `{width,height,data: Uint8Array|Uint8ClampedArray}` RGBA bytes입니다. nearest/linear, CLAMP_TO_EDGE, mipmap 없음으로 WebGL 2 NPOT를 지원합니다. handle은 해당 renderer만 사용할 수 있습니다.
 - byte data는 복사·premultiply해 보관하므로 caller의 이후 변경이 반영되지 않습니다. DOM source는 참조를 보관합니다. context 복구 시 최신 DOM pixels를 다시 올립니다. source를 닫거나 해제하지 마세요. ImageBitmap은 premultiplyAlpha 생성 옵션을 검사할 수 없으므로 명시적으로 거부합니다. byte data 또는 일반 image/canvas를 사용하세요. byte data의 알파가 모두 255이면 곱셈이 항등이라 premultiply 패스를 건너뜁니다. `premultiplied:true`는 RGB에 알파가 이미 곱해진 바이트임을 선언하며 CPU 패스를 생략합니다(텍스처가 이 선언을 기억해 이후 `updateTexture`에도 적용).
 - `updateTexture(handle,source,{x=0,y=0,width=handle.width,height=handle.height})`: 같은 크기로 명시적 재업로드. 기존 batch를 먼저 제출하므로 이전 sprite 호출의 내용은 유지됩니다. RGBA byte source는 기존 GPU texture를 제자리에서 `texSubImage2D`로 갱신하며(재할당 없음), 영역을 주면 그 행만 복사·premultiply·업로드합니다. source는 전체 이미지이고 영역 밖 픽셀은 직전 업로드 이후 바뀌지 않아야 합니다. 영역 갱신은 byte texture에서만 가능하고 DOM source는 전체 갱신만 합니다. 크기를 바꾸려면 새 texture를 만들고 기존 것을 삭제하세요. sprite마다 자동 upload하지 않습니다.
 - `deleteTexture(handle) → boolean`: GPU texture와 retained source를 해제합니다. 이미 삭제한 handle은 false. 삭제/다른 renderer handle의 sprite 호출은 throw합니다.
@@ -196,7 +196,7 @@ ctx.deleteMesh(mesh);
 - 기본 `drawMeshSilhouette` 경로는 같은 retained mesh pose의 10개 color/transform instance를 한 번에 append해 callback 반복과 per-instance submit을 없애지만 instance 업로드와 overdraw는 유지합니다. 선택적 `outlineScale` 경로는 outline용 복제 mesh를 한 번만 내어 instance 업로드와 overdraw를 줄이는 대신 기존 8방향 외곽선과 픽셀 모양이 달라집니다. 색상·순서·재사용 handle 및 context 복구는 `tests/mesh.browser.mjs`의 실제 WebGL E2E에서 검사합니다.
 - MeshRenderer의 part transform/morph 유한값 검증은 입력 배열을 직접 순회하고, 생략된 morph/clip 상태는 불변 기본값을 공유합니다. 따라서 part마다 `Array.from` 검증 복사본과 `[0,0]` morph 배열을 만들지 않지만, 값 검증·part packing·instance 업로드 비용은 남습니다.
 - 내부 `MeshRenderer(device,{maxMeshes=512,maxMeshBytes=33554432,maxInstances=2048})`는 같은 mesh·projection·clip의 **인접 호출만** 합칩니다. 게임의 y-sort를 바꾸거나 다른 메시를 재정렬하지 않습니다. 직접 사용할 때 `drawMesh(mesh,{matrix,projection,morph,color,forceColor,alpha,whiteFlash,clips})`와 `flush()`를 호출하고 외부 pass 전 flush 책임을 집니다. clip은 기존 vector와 같은 convex half-plane 교집합이며, edge plane 상한은 `min(32, MAX_FRAGMENT_UNIFORM_VECTORS-2)`입니다. 넘으면 명시적으로 거부하고 clip을 무시하지 않습니다.
-- ANGLE_instanced_arrays 지원 시 static geometry + 64-byte/instance 값만 올립니다. 미지원 시 **같은 retained GPU geometry**를 instance uniform별로 제출하며 도형을 다시 만들지 않습니다. 이 경로는 draw call을 합치지 않습니다. 정렬·서로 다른 part·벡터 text·opacity target 경계는 batch를 끊으므로 모든 유닛이 한 draw call이라는 보장은 없습니다.
+- WebGL 2 core instancing은 static geometry와 64-byte instance 값을 사용합니다. 호환되는 연속 제출만 합치며 서로 다른 재질·표정 index buffer·벡터 paint·opacity target 경계는 유지합니다. 모든 유닛이 한 draw라는 보장은 없습니다.
 - mesh clip은 fragment half-plane discard입니다. 벡터의 CPU 삼각형 clip과 내부/외부는 같지만, 직접 MSAA target의 회전 clip 경계는 sample coverage가 달라질 수 있습니다. 따라서 해당 경계를 pixel-exact parity로 주장하지 않습니다. 정수 pixel의 축 정렬 opacity bounds와 일반 authored mesh 실루엣은 별도로 실제 화면에서 확인합니다.
 - partIndex는 FLOAT attribute 하나이며 두 morph를 vec4 하나에 담아 vertex/instance attribute 총8개(WebGL1 최소 보장)를 사용합니다. part uniform은 최대48vec4 + projection/instance 값이며 최소 vertex uniform128vec4 안에 들어갑니다. shader는 partCount(1..16)·morphCount(0..2)·clip 유무에 따라 첫 제출 때 생성해 보관합니다(최대96개, 실제 pipelineCount 계측). 사용하지 않는 조각 배열·변형·fragment clip 경로를 컴파일하지 않습니다. 단일 part의 transform/morph/visibility는 CPU에서 instance 값에 한 번 합쳐 vertex별 part 연산을 없앱니다. 불투명 direct group은 GPU pass 변경이 아니므로 인접한 유닛 batch를 끊지 않으며, 실제 opacity target 경계는 반드시 flush합니다. 초기 shader compile·program 보관과 균일하지 않은 part pose의 uniform 갱신 및 shader 변형 연산은 추가 비용이므로 geometry upload 감소를 FPS 개선으로 환산하지 않습니다.
 - `partUniformBytesSubmitted`는 draw마다 제출한 part pose uniform 데이터 길이이며 vertex/instance buffer upload와 별개입니다(실제 GPU 버스 전송량 측정은 아님). default instance CPU staging128KiB에 plane/part scratch 최대1,152 bytes가 추가되며 `stagingBytes`는 둘을 포함합니다. 순간적인 queue projection/part 값 복사와 caller의 pose 배열 할당은 별도입니다.
@@ -282,14 +282,14 @@ if (device.beginFrame({ width: canvas.width, height: canvas.height })) {
 
 ### 생성·자원 계약
 
-- `new WebGLDevice(canvas,{alpha=false,antialias=true,depth=true,stencil=true,preserveDrawingBuffer=false,powerPreference='default',failIfMajorPerformanceCaveat=false,checkGLErrors=false,maxTextures=8,maxBufferBytes=134217728})`. WebGL 1 전용이며 canvas를 독점 소유합니다. `gl`은 읽기 진단/상수/context-loss 테스트용입니다. 직접 GL state 변경은 지원하지 않습니다. `maxTextures`는 실제 fragment texture unit 한도 이하로 정해지고 `maxTextureSize`도 공개합니다.
+- `new WebGLDevice(canvas,{alpha=false,antialias=true,depth=true,stencil=true,preserveDrawingBuffer=false,powerPreference='default',failIfMajorPerformanceCaveat=false,checkGLErrors=false,maxTextures=8,maxBufferBytes=134217728})`. WebGL 2 전용이며 canvas의 GPU 자원을 소유합니다. `gl`은 읽기 진단/상수/context-loss 테스트용입니다. 직접 GL state 변경은 지원하지 않습니다. `maxTextures`는 실제 fragment texture unit 한도 이하로 정해지고 `maxTextureSize`도 공개합니다.
 - `powerPreference`는 `default`/`low-power`/`high-performance`만, `failIfMajorPerformanceCaveat`는 boolean만 허용하며 context 생성 전에 검사합니다. 두 값을 `getContext('webgl', options)`에 그대로 전달합니다. GPU 선택은 브라우저의 hint 처리이며 특정 GPU나 성능을 보장하지 않습니다.
 - `checkGLErrors`는 boolean 개발 진단 옵션입니다(기본 false). 반복 `updateTexture`/`copyFrameToTexture`에서 동기식 `gl.getError()` polling은 true일 때만 합니다. 새 texture allocation과 첫 RGB copy storage 전환, shader compile/link 검사는 항상 유지합니다. CPU 인자·크기·범위 검증도 유지합니다. production에서는 드라이버 오류를 매 호출마다 즉시 보고하지 않으며 진단/테스트는 이 옵션 또는 명시적 프레임 경계 검사를 사용하세요. 오류 검사는 GPU 완료 대기를 유발할 수 있으므로 측정 시 옵션을 기록합니다.
 - `createPipeline({vertex,fragment,stride,attributes,uniforms})`: GLSL ES 1.00 shader 문자열, 4-byte 정렬 stride(4..252), FLOAT attribute `{name,size:1..4,offset}`. uniform descriptor는 `1f/2f/3f/4f/1i/2i/3i/4i/1iv/1fv/2fv/3fv/4fv/matrix3fv/matrix4fv`입니다. sampler는 1i 또는 1iv로 texture unit을 정합니다. 예: array 첫 위치 이름 `u_tex[0]`. 최적화로 사라진 attribute/uniform은 건너뜁니다. shader compile/link 실패는 throw하고 임시 GPU 자원을 해제합니다.
 - `createVertexBuffer({capacityBytes=0})`, `uploadVertices(handle,Float32Array)`: caller view를 동기 upload하며 다른 CPU arena에 복사하거나 붙잡지 않습니다. 필요할 때만 GPU capacity를 두 배씩 늘리며 maxBufferBytes 초과는 거부합니다. 마지막 upload의 used bytes 밖 draw는 거부합니다. `deleteVertexBuffer`, `deletePipeline`은 반복해도 false를 반환하는 명시적 해제입니다.
 - `createTexture(fullSource,{format='rgba',premultiplied=false,filter='linear'})`: source는 image/canvas 또는 `{width,height,data}`. rgba data는 4채널, luminance data는 1채널의 byte 배열입니다. data:null은 비어 있는 GPU texture로 frame composition 등에 사용합니다. NPOT·nearest/linear·CLAMP_TO_EDGE를 지원합니다. raw rgba 기본값은 straight alpha이며 CPU에서 한 번 premultiply합니다. 이미 premultiplied인 gradient bytes에는 true를 명시하세요. DOM source는 rgba/default alpha 옵션만 사용합니다. ImageBitmap은 거부합니다.
 - `updateTexture(handle,fullSource,{x=0,y=0,width=handle.width,height=handle.height})`: 크기가 같은 **전체 source**와 변경 region을 전달합니다. GPU에는 region만 texSubImage2D로 갱신하지만 복구 원본은 전체 source입니다. raw bytes는 복사하여 보존하고 DOM은 참조를 보존합니다. DOM atlas crop에는 자산 region 전용 작은 Canvas2D를 재사용하며 전장 frame을 rasterize하지 않습니다. 원본이 resize되면 새 handle을 만들고 이전 것을 삭제하세요.
-- `copyFrameToTexture(handle,{x=0,y=0})`: 현재 resolved framebuffer에서 RGBA texture 전체 크기만큼 GPU copy합니다. 좌표는 WebGL framebuffer의 아래/왼쪽 기준입니다. CPU world-canvas upload가 아닙니다. alpha:false context에서는 WebGL 1의 copy 호환성에 맞게 첫 copy 때 RGB storage로 전환합니다(이후 같은 크기는 재사용). copy texture를 다시 updateTexture하면 전체 source로 storage를 재구성합니다. copy 후 복구 원본은 blank가 되므로 복구 후 새 frame에서 다시 copy하세요. 이전 texel은 시뮬레이션 상태가 아닙니다.
+- `copyFrameToTexture(handle,{x=0,y=0})`: 현재 resolved framebuffer에서 RGBA texture 전체 크기만큼 GPU copy합니다. 좌표는 WebGL framebuffer의 아래/왼쪽 기준입니다. CPU world-canvas upload가 아닙니다. alpha:false context에서는 RGB copy 호환성에 맞게 첫 copy 때 RGB storage로 전환합니다(이후 같은 크기는 재사용). copy texture를 다시 updateTexture하면 전체 source로 storage를 재구성합니다. copy 후 복구 원본은 blank가 되므로 복구 후 새 frame에서 다시 copy하세요. 이전 texel은 시뮬레이션 상태가 아닙니다.
 - `deleteTexture(handle)`: texture와 retained source를 해제합니다. update/delete는 즉시 적용되므로 그 전에 끝난 draw에는 영향을 주지 않습니다. 텍스처 내용은 draw 제출 순서에서 결정됩니다.
 
 ### 프레임·draw state
@@ -300,7 +300,7 @@ if (device.beginFrame({ width: canvas.width, height: canvas.height })) {
 - blend: source-over(premultiplied ONE/ONE_MINUS_SRC_ALPHA), straight-alpha(SRC_ALPHA/ONE_MINUS_SRC_ALPHA, Rally 기존 출력 보존), copy, lighter, source-in, destination-in, false. shader output alpha 형식에 맞게 게임이 정합니다. straight-alpha는 alpha 채널도 같은 factor로 계산합니다.
 - depth: false 또는 `{func='lequal',write=true}`. func는 never/less/equal/lequal/greater/notequal/gequal/always. true depth가 없는 context에 요청하면 throw합니다.
 - stencil: false 또는 `{func='always',ref=0,mask=255,writeMask=255,fail='keep',zfail='keep',pass='keep'}`. func는 depth와 같은 enum; operation은 keep/zero/replace/increment/decrement/invert/increment-wrap/decrement-wrap. 각 draw는 state를 완전히 지정하므로 클립·silhouette·다음 color pass 사이에 숨은 상태 의존이 없습니다. stencil 없는 context에 요청하면 throw합니다.
-- `createRenderTarget(width,height,{filter='linear'})`: 검증된 RGBA8 color texture/FBO를 만들며 반환 handle은 `draw({textures:[target]})`에 사용할 수 있습니다. active frame에서 `bindRenderTarget(target)` / `unbindRenderTarget(target)`은 framebuffer와 viewport를 LIFO로 저장·복구합니다. target은 nesting, context loss/restore, disposal에 참여하고 현재 바인딩된 target을 sampler에 전달하면 throw합니다. target은 WebGL 1 color-only이며 depth/stencil attachment가 없습니다. `deleteRenderTarget`로 명시 해제합니다. `stats.gpuRenderTargetBytes`와 `renderTargetCount`는 현재 GPU 할당량을 나타냅니다.
+- `createRenderTarget(width,height,{filter='linear'})`: 검증된 RGBA8 color texture/FBO를 만들며 반환 handle은 `draw({textures:[target]})`에 사용할 수 있습니다. active frame에서 `bindRenderTarget(target)` / `unbindRenderTarget(target)`은 framebuffer와 viewport를 LIFO로 저장·복구합니다. target은 nesting, context loss/restore, disposal에 참여하고 현재 바인딩된 target을 sampler에 전달하면 throw합니다. target은 WebGL 2 color-only이며 depth/stencil attachment가 없습니다. `deleteRenderTarget`로 명시 해제합니다. `stats.gpuRenderTargetBytes`와 `renderTargetCount`는 현재 GPU 할당량을 나타냅니다.
 - cull/dither/scissor는 매 draw 꺼집니다. draw는 정렬·게임 loop·카메라·시뮬레이션 tick을 소유하지 않습니다.
 - `endFrame() → stats`, `dispose()`와 state ready/lost/failed/disposed, failure 문자열. context 복구에서 pipeline·texture handle identity를 보존하며 GPU 자원을 재생성합니다. **dynamic vertex buffer는 빈 상태로 복구하므로 게임이 다음 frame의 geometry를 다시 upload해야 합니다.** DOM source는 복구 때의 현재 pixels를 사용하므로 살아 있는 로딩 완료 source를 유지하세요.
 
@@ -322,7 +322,7 @@ The browser's network cache is origin/top-site partitioned and browser-managed. 
 
 ## Indexed retained geometry
 
-`WebGLDevice.createIndexBuffer()` and `uploadIndices(handle, Uint16Array)` own WebGL 1 element buffers. `MeshRenderer.createMesh()` accepts complete expanded triangles or a `Uint16Array` of triangle indices over its 11-float vertex records; indexed meshes submit with `drawElements` or the matching ANGLE instanced call. The retained byte budget, context restoration, and disposal include both buffers. `MeshBuilder.combine()` remaps and preserves indexed inputs while retaining painter order.
+`WebGLDevice.createIndexBuffer()` and `uploadIndices(handle, Uint16Array)` own WebGL 2 element buffers. `MeshRenderer.createMesh()` accepts complete expanded triangles or a `Uint16Array` of triangle indices over its 11-float vertex records; indexed meshes submit with `drawElements` or the matching ANGLE instanced call. The retained byte budget, context restoration, and disposal include both buffers. `MeshBuilder.combine()` remaps and preserves indexed inputs while retaining painter order.
 
 `MeshRenderer.createMesh()` accepts two separate name-to-`Uint16Array` maps over the same vertex records: `expressionIndices` for semantic expression variants and `indexVariants` for generic host-selected triangle ranges. Keys must be stable names and cannot appear in both maps. `drawMesh(mesh,{indexVariant:name})` selects a list from either map; without a name it draws the base `indices` list (or expanded triangles). Each selected list replaces that draw's base list; the host submits multiple ranges in painter order and flushes at boundaries such as shader-surface draws. The renderer does not sort or transform the lists. Both maps' buffers are retained, included in the byte budget, restored after context loss, and released with the mesh. The legacy `expressionIndices` field remains supported by `MeshRenderer.createMesh()`; vector assets validate it against `metadata.expressions` and auto-select only authored expression names.
 
@@ -334,7 +334,7 @@ The browser's network cache is origin/top-site partitioned and browser-managed. 
 
 ## Shader yarn and sketch surfaces
 
-`YarnSurfaceRenderer` is an opt-in WebGL 1 material path for SVG-authored filled surfaces. It keeps the triangulated fill in local vector coordinates and evaluates yarn stitches, edge loops, fibers, sketch hatching, and animated sketch echoes in fragment shaders. The only extra retained geometry is a fixed strip following the closed SVG contour; changing `stitchWidth`, `stitchHeight`, `fiberSpacing`, or `fiberMax` does not add vertices. It creates no per-stitch or per-fiber triangles and no artwork texture.
+`YarnSurfaceRenderer` is an opt-in WebGL 2 material path for SVG-authored filled surfaces. It keeps the triangulated fill in local vector coordinates and evaluates yarn stitches, edge loops, fibers, sketch hatching, and animated sketch echoes in fragment shaders. The only extra retained geometry is a fixed strip following the closed SVG contour; changing `stitchWidth`, `stitchHeight`, `fiberSpacing`, or `fiberMax` does not add vertices. It creates no per-stitch or per-fiber triangles and no artwork texture.
 
 The source compiler supplies a complete triangle list with six floats per vertex (`x, y, r, g, b, a`), one closed contour as flat `x, y` pairs, the original SVG style object, and optional per-contour RGBA values for gradient fills. Edge colors default to the mean fill color. Style values remain authored in the SVG metadata and invalid or incomplete styles throw; this renderer does not silently fall back to tessellated effect triangles.
 
@@ -389,12 +389,12 @@ Use FrameMetrics from debug-tools to retain selected numbers with the same frame
 VectorContext routes eligible simple shapes through one module-owned unit quad.
 The fast path supports full circles and ellipses, rectangle fills and eligible strokes, and one-segment strokes.
 Each instance captures its transform, paint color and alpha, stroke width, and cap or join.
-ANGLE devices batch adjacent instances in painter order.
+WebGL 2 devices batch adjacent instances in painter order.
 Devices without instancing draw the same quad with uniforms.
 
 After initialization, the fast path uploads no primitive geometry and samples no full-ellipse path points.
 It builds path geometry only when a fallback or a later path command needs the original contour.
-ANGLE devices upload 64 bytes of instance data per primitive.
+WebGL 2 devices upload 64 bytes of instance data per primitive.
 The `primitives` stats field has frame and lifetime records.
 It exposes `instances`, `instanceUploads`, `instanceBytesUploaded`, and `draws` counters.
 It also exposes `instancedDraws`, `flushes`, instancing availability, and pending instances.
@@ -407,3 +407,18 @@ VectorContext owns primitive buffers and shader programs and restores and releas
 The integrated `npm run test:browser` scenario checks real Chromium/WebGL pixels for fills, strokes, transforms, alpha, and clips.
 It also checks warm-frame tessellation and instance-upload counters.
 This correctness check does not measure GPU completion or mobile performance.
+
+## Authored animation pose data (v0.17)
+
+WebGL 2가 기본이며 ANGLE 확장 유무와 관계없이 core instancing을 사용합니다. 기존 GLSL ES 100 shader 입력은 ES 300으로 정규화하고 native ES 300도 허용합니다. shader·VAO·buffer·texture는 context 복구와 dispose의 동일 소유권을 따릅니다.
+
+- createDataTexture(width,height,{data=null})와 updateDataTexture(handle,Float32Array,{x,y,width,height}): nearest RGBA32F 숫자 데이터입니다. CPU 원본을 보존해 context restore 후 다시 만듭니다. 그림 asset API가 아닙니다.
+- createRenderTarget(width,height,{format:'rgba32f',filter:'nearest'}): GPU 평가 결과용 float target입니다. floatRenderTargetsSupported와 isRenderTargetAvailable(handle)로 지원·복구 가능 여부를 확인합니다. EXT_color_buffer_float가 필요하며, 해당 target의 복구 실패가 일반 WebGL 2 렌더링을 중단시키지는 않습니다.
+- new MeshRenderer(device,{poseBackend:'auto'|'cpu'|'uniform'}): auto는 GPU 평가를 시도하고 명시적 CPU pose fallback을 유지합니다. cpu는 같은 atlas/instancing에 CPU pose를 올리는 진단 경로, uniform은 기존 CPU pose uniform 참조 경로입니다.
+- player.preparePose({excludeParts})로 표시 상태를 준비하고 meshes.preparePoses()로 모아 평가합니다. 보이지 않는 pose 준비만 source별로 묶으며 visible mesh/alpha/paint를 재정렬하지 않습니다. 준비하지 않은 player.draw도 동작하지만 뒤늦은 개별 준비는 pose pass를 나눌 수 있습니다.
+- context.drawVectorAsset(player,options)는 앞선 analytic primitive와 vector paint를 먼저 제출하고 player.draw를 호출합니다. 같은 mesh run 자체를 actor마다 강제로 flush하지 않습니다. 몸체→얼굴 overlay→다음 actor 순서는 그대로입니다. 직접 player.draw를 호출하는 소비자는 이전 renderer의 순서 경계를 책임집니다.
+- meshes.poseStats(): GPU/CPU/uniform draw instance 수, CPU fallback 비율/이유, GPU pose pass/행 수, state/base/CPU pose upload byte, atlas/프로그램 할당 byte를 보고합니다. prepare 호출 횟수와 실제 draw 사용량은 다릅니다.
+
+서로 다른 행을 가진 같은 mesh의 연속 제출은 u_parts 변경으로 분리되지 않습니다. 표정 index buffer·shader surface·paint·clip·stencil·depth state 경계는 유지합니다. 깊이 쓰기 alpha 분류처럼 CPU 삼각형 분석이 필요한 일반 draw API는 기존 parts 경로를 사용합니다. GPU pose atlas handle과 alpha depth 분류 옵션을 함께 넘기는 것은 지원하지 않습니다. 기존 vector asset draw API에는 해당 alpha 분류 옵션이 없습니다.
+
+숫자 프로그램은 원본 SVG 채널을 공유합니다. translation/rotation/nonuniform scale/opacity, pivot·부모 계층, 표정/가시성·부위 제외·base pose·morph를 유지합니다. 미지원 easing/매우 긴 채널과 진행 중 중첩 전환은 CPU pose atlas, SVG shader surface/drawOrder는 기존 CPU 제출 경로를 사용합니다. 완료된 전환은 시계를 초기화하지 않고 GPU 경로로 복귀합니다. GPU readback은 제품 루프에서 사용하지 않습니다.

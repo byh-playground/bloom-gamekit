@@ -17,6 +17,7 @@ const SUITES = {
         'project/previews.mjs',
         'modules/rollback/scripts/local-fastpath-browser.mjs',
         'project/tests/browser.e2e.mjs',
+        'modules/vector-assets/tests/run-gpu-poses.browser.mjs',
     ],
     consumer: ['modules/scenario/tests/bounko.mjs'],
     execution: ['modules/scenario/tests/browser.mjs'],

@@ -1,4 +1,4 @@
-/** Checks ordered Renderer2D/MeshRenderer submission on one shared WebGL1 canvas. */
+/** Checks ordered Renderer2D/MeshRenderer submission on one shared WebGL2 canvas. */
 export async function exerciseRendererInterleaving(page, moduleURL = '/dist/rendering.js') {
     return page.evaluate(async (url) => {
         const { Renderer2D: RENDERER2_D, WebGLDevice: WEB_GL_DEVICE, MeshRenderer: MESH_RENDERER } = await import(url);

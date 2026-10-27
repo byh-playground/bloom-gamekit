@@ -1,4 +1,4 @@
-/** Exercises alpha-aware depth writes on retained, indexed and expanded WebGL1 meshes. */
+/** Exercises alpha-aware depth writes on retained, indexed and expanded WebGL2 meshes. */
 export async function exerciseMeshAlphaDepthWrite(page, moduleURL = '/dist/rendering.js') {
     return page.evaluate(async (url) => {
         const { WebGLDevice: WEB_GL_DEVICE, MeshRenderer: MESH_RENDERER } = await import(url);

@@ -4,10 +4,10 @@ import assert from 'node:assert/strict';
 export async function exerciseReusableMeshes(page) {
     const RESULTS = [];
     for (const ANTIALIAS of [false, true]) {
-        for (const WITHOUT_ANGLE of [false, true]) {
+        for (const MASK_LEGACY_EXTENSION of [false, true]) {
             RESULTS.push(
                 await page.evaluate(
-                    async ({ withoutANGLE, antialias }) => {
+                    async ({ maskLegacyExtension, antialias }) => {
                         const {
                             WebGLDevice: WEB_GL_DEVICE,
                             VectorContext: VECTOR_CONTEXT,
@@ -30,29 +30,33 @@ export async function exerciseReusableMeshes(page) {
                         const NATIVE_GET_CONTEXT = CANVAS.getContext.bind(CANVAS);
                         let interceptedGL;
                         let nativeGetExtension;
-                        if (withoutANGLE) {
-                            CANVAS.getContext = (...args) => {
-                                const GL = NATIVE_GET_CONTEXT(...args);
-                                interceptedGL = GL;
-                                nativeGetExtension = GL.getExtension;
-                                GL.getExtension = (name) =>
-                                    name === 'ANGLE_instanced_arrays' ? null : nativeGetExtension.call(GL, name);
-                                return GL;
+                        let legacyExtensionQueries = 0;
+                        CANVAS.getContext = (...args) => {
+                            const GL = NATIVE_GET_CONTEXT(...args);
+                            interceptedGL = GL;
+                            nativeGetExtension = GL.getExtension;
+                            GL.getExtension = (name) => {
+                                if (name === 'ANGLE_instanced_arrays') {
+                                    legacyExtensionQueries++;
+                                    if (maskLegacyExtension) {
+                                        return null;
+                                    }
+                                }
+                                return nativeGetExtension.call(GL, name);
                             };
-                        }
+                            return GL;
+                        };
                         const DEVICE = new WEB_GL_DEVICE(CANVAS, {
                             alpha: false,
                             antialias,
                             preserveDrawingBuffer: true,
                         });
-                        if (withoutANGLE) {
-                            interceptedGL.getExtension = nativeGetExtension;
-                            CANVAS.getContext = NATIVE_GET_CONTEXT;
-                        }
+                        CANVAS.getContext = NATIVE_GET_CONTEXT;
                         const CTX = new VECTOR_CONTEXT(DEVICE),
                             GL = DEVICE.gl;
                         try {
-                            CHECK(DEVICE.instancingSupported === !withoutANGLE, 'real device backend selection');
+                            CHECK(DEVICE.instancingSupported === true, 'WebGL2 core instancing is available');
+                            CHECK(GL.getParameter(GL.VERSION).startsWith('WebGL 2.0'), 'real WebGL2 context');
                             const SAMPLES_LOCAL = GL.getParameter(GL.SAMPLES);
                             CHECK(
                                 !antialias || (GL.getContextAttributes().antialias && SAMPLES_LOCAL > 1),
@@ -130,18 +134,11 @@ export async function exerciseReusableMeshes(page) {
                                 WARM.mesh.geometryUploads === 0 && WARM.mesh.geometryBytesUploaded === 0,
                                 'warm scene never rebuilds/uploads geometry',
                             );
+                            CHECK(WARM.mesh.draws === 1 && WARM.mesh.instances === 3, 'adjacent same-mesh batch');
+                            CHECK(DEVICE.stats.instancedDrawCalls === 1, 'device records actual instanced draw');
                             CHECK(
-                                WARM.mesh.draws === (withoutANGLE ? 3 : 1) && WARM.mesh.instances === 3,
-                                'adjacent same-mesh batch',
-                            );
-                            CHECK(
-                                DEVICE.stats.instancedDrawCalls === (withoutANGLE ? 0 : 1),
-                                'device records actual instanced draw',
-                            );
-                            CHECK(
-                                WARM.uploadedBytes === (withoutANGLE ? 0 : 3 * 64) &&
-                                    WARM.mesh.instanceBytesUploaded === WARM.uploadedBytes,
-                                'warm upload contains only instance records, uniform backend uploads none',
+                                WARM.uploadedBytes === 3 * 64 && WARM.mesh.instanceBytesUploaded === WARM.uploadedBytes,
+                                'warm upload contains only instance records',
                             );
                             BEGIN();
                             CTX.drawMesh(MESH, {
@@ -212,7 +209,7 @@ export async function exerciseReusableMeshes(page) {
                                 'hidden single part remains absent after pose mutation',
                             );
                             CHECK(
-                                SINGLE_POSE_STATS.mesh.draws === (withoutANGLE ? 3 : 1) &&
+                                SINGLE_POSE_STATS.mesh.draws === 1 &&
                                     SINGLE_POSE_STATS.mesh.partUniformBytesSubmitted === 0,
                                 'single-part pose is folded into adjacent instances, not per-vertex uniforms',
                             );
@@ -1002,8 +999,11 @@ export async function exerciseReusableMeshes(page) {
                                     DEVICE.stats.renderTargetCount === 0,
                                 'scene disposal releases its resources without disposing caller device',
                             );
+                            CHECK(legacyExtensionQueries === 0, 'WebGL2 path never queries legacy ANGLE instancing');
                             return {
-                                backend: withoutANGLE ? 'uniform-retained-mesh' : 'ANGLE-instanced-mesh',
+                                backend: 'webgl2-core-instanced-mesh',
+                                legacyExtensionMasked: maskLegacyExtension,
+                                legacyExtensionQueries,
                                 antialias,
                                 samples: SAMPLES_LOCAL,
                                 cold: COLD.mesh,
@@ -1054,11 +1054,12 @@ export async function exerciseReusableMeshes(page) {
                         } finally {
                             CTX.dispose();
                             DEVICE.dispose();
+                            interceptedGL.getExtension = nativeGetExtension;
                             CANVAS.remove();
                         }
                     },
                     {
-                        withoutANGLE: WITHOUT_ANGLE,
+                        maskLegacyExtension: MASK_LEGACY_EXTENSION,
                         antialias: ANTIALIAS,
                     },
                 ),
@@ -1068,6 +1069,6 @@ export async function exerciseReusableMeshes(page) {
     assert.equal(RESULTS.length, 4);
     return {
         scenes: RESULTS,
-        scope: 'Actual Chromium WebGL1 pixels, retained geometry and instance-upload counters; forced extension absence uses the same native GL context, not fake GL. Not a mobile performance benchmark.',
+        scope: 'Actual Chromium WebGL2 pixels, retained geometry and instance-upload counters; legacy ANGLE extension absence uses the same native GL context while core instancing remains active. Not a mobile performance benchmark.',
     };
 }

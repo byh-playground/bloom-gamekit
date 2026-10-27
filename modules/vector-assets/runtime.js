@@ -1,5 +1,6 @@
 import { createTimeline } from 'animejs/timeline';
 import { validateCompiledAsset } from './schema.js';
+import { compilePoseChannels, samplePartTransform, samplePoseChannels } from './pose-channels.js';
 const IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
 const DEFAULT_POSE = Object.freeze({
     x: 0,
@@ -10,6 +11,7 @@ const DEFAULT_POSE = Object.freeze({
     opacity: 1,
 });
 const POSE_FIELDS = Object.keys(DEFAULT_POSE);
+const NOW = () => globalThis.performance?.now?.() ?? null;
 const FINITE_TIME = (value, name) => {
     if (!Number.isFinite(value)) {
         throw new TypeError(`${name} must be a finite absolute display time in milliseconds`);
@@ -215,6 +217,13 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
     const SKETCH_MORPH_STYLE = METADATA.styles?.find((style) => style.kind === 'sketch') ?? null;
     const PART_INDICES = new Map(METADATA.parts.map((part, index) => [part.id, index]));
     const CLIPS = METADATA.clips;
+    const POSE_API =
+        typeof meshRenderer.createPoseSource === 'function' &&
+        typeof meshRenderer.createPoseInstance === 'function' &&
+        typeof meshRenderer.preparePose === 'function' &&
+        typeof meshRenderer.prepareCpuPose === 'function' &&
+        typeof meshRenderer.deletePoseInstance === 'function' &&
+        typeof meshRenderer.deletePoseSource === 'function';
     const GEOMETRY = compiledAsset.geometry,
         SHADER_GEOMETRY = GEOMETRY.shaderSurfaces ?? [];
     if (
@@ -225,9 +234,14 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
             'This SVG declares backend:"shader"; pass a GameKit YarnSurfaceRenderer when creating the vector asset',
         );
     }
-    const MESH = GEOMETRY.vertices.length ? meshRenderer.createMesh(GEOMETRY) : null;
+    const POSE_PROGRAM =
+        POSE_API && !GEOMETRY.drawOrder && !SHADER_GEOMETRY.length ? compilePoseChannels(METADATA) : null;
+    let mesh = null;
+    let poseSource = null;
     const RETAINED_SURFACES = [];
     try {
+        mesh = GEOMETRY.vertices.length ? meshRenderer.createMesh(GEOMETRY) : null;
+        poseSource = POSE_PROGRAM ? meshRenderer.createPoseSource(POSE_PROGRAM) : null;
         for (const DESCRIPTOR of SHADER_GEOMETRY) {
             RETAINED_SURFACES.push(surfaceRenderer.createSurface(DESCRIPTOR));
         }
@@ -235,8 +249,11 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
         for (const SURFACE of RETAINED_SURFACES) {
             surfaceRenderer.deleteSurface(SURFACE);
         }
-        if (MESH) {
-            meshRenderer.deleteMesh(MESH);
+        if (mesh) {
+            meshRenderer.deleteMesh(mesh);
+        }
+        if (poseSource) {
+            meshRenderer.deletePoseSource(poseSource);
         }
         throw error;
     }
@@ -294,10 +311,25 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
         );
         let playbackRevision = 0;
         let sampledPlaybackRevision = -1;
+        let soughtPlaybackRevision = -1;
+        let sampledTimeMs = NaN;
         let poseRevision = 0;
         let resolvedRevision = -1;
         let resolvedPose = null;
+        // The matrix cache belongs to this player; public pose results remain detached.
+        // Reuse its map instead of allocating another world-map on each lazy sample.
+        const RESOLVED_MATRICES = new Map();
         let playerDisposed = false;
+        const POSE_INSTANCE = poseSource ? meshRenderer.createPoseInstance(poseSource) : null;
+        const POSE_METRICS = {
+            fullSamples: 0,
+            fullSampleMs: 0,
+            partialQueries: 0,
+            partialParts: 0,
+            partialSampleMs: 0,
+            gpuPrepares: 0,
+            cpuFallbacks: 0,
+        };
         const INVALIDATE_POSE = () => {
             poseRevision++;
         };
@@ -345,13 +377,41 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
                 METADATA.parts.map((part) => part.id),
             );
         };
+        const ACTIVE_CLIP = (playback, timeMs) => {
+            if (playback.kind === 'clip') {
+                return playback;
+            }
+            const ELAPSED = timeMs - playback.atMs;
+            if (ELAPSED < 0 || (ELAPSED === 0 && playback.durationMs !== 0)) {
+                return ACTIVE_CLIP(playback.from, timeMs);
+            }
+            if (playback.durationMs === 0 || ELAPSED >= playback.durationMs) {
+                return ACTIVE_CLIP(playback.to, timeMs);
+            }
+            return null;
+        };
+        const GPU_CLIP = () => {
+            const ACTIVE = ACTIVE_CLIP(rootPlayback, displayTimeMs);
+            return ACTIVE && POSE_PROGRAM?.clips[ACTIVE.name]?.supported ? ACTIVE : null;
+        };
+        const ENSURE_CURRENT_POSE = () => {
+            if (sampledTimeMs !== displayTimeMs || sampledPlaybackRevision !== playbackRevision) {
+                const START = NOW();
+                currentPose = SAMPLE(rootPlayback, displayTimeMs);
+                if (START !== null) {
+                    POSE_METRICS.fullSampleMs += NOW() - START;
+                }
+                sampledTimeMs = displayTimeMs;
+                sampledPlaybackRevision = playbackRevision;
+                POSE_METRICS.fullSamples++;
+            }
+        };
         const SEEK = (timeMs) => {
             ASSERT_PLAYER();
             const NEXT_TIME_MS = FINITE_TIME(timeMs, 'displayTimeMs');
-            if (NEXT_TIME_MS !== displayTimeMs || sampledPlaybackRevision !== playbackRevision) {
+            if (NEXT_TIME_MS !== displayTimeMs || soughtPlaybackRevision !== playbackRevision) {
                 displayTimeMs = NEXT_TIME_MS;
-                currentPose = SAMPLE(rootPlayback, displayTimeMs);
-                sampledPlaybackRevision = playbackRevision;
+                soughtPlaybackRevision = playbackRevision;
                 INVALIDATE_POSE();
             }
             return PLAYER;
@@ -361,6 +421,9 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
             const VARIANT = METADATA.expressions[name];
             if (!VARIANT) {
                 throw new TypeError(`Unknown vector expression: ${name}`);
+            }
+            if (name === expression && !visibilityOverridden) {
+                return PLAYER;
             }
             for (const ID of EXPRESSION_PARTS) {
                 VISIBLE.set(ID, false);
@@ -402,9 +465,17 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
                 if ((FIELD === 'scaleX' || FIELD === 'scaleY') && VALUE === 0) {
                     throw new RangeError('Part scale cannot be zero');
                 }
-                CURRENT[FIELD] = VALUE;
             }
-            INVALIDATE_POSE();
+            let changed = false;
+            for (const [FIELD, VALUE] of Object.entries(pose)) {
+                if (CURRENT[FIELD] !== VALUE) {
+                    CURRENT[FIELD] = VALUE;
+                    changed = true;
+                }
+            }
+            if (changed) {
+                INVALIDATE_POSE();
+            }
             return PLAYER;
         };
         const PLAY = (name, atMs = displayTimeMs) => {
@@ -447,7 +518,9 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
             if (resolvedRevision === poseRevision) {
                 return resolvedPose;
             }
-            const OUTPUT = new Map();
+            ENSURE_CURRENT_POSE();
+            const OUTPUT = RESOLVED_MATRICES;
+            OUTPUT.clear();
             const RESOLVE_PART = (id) => {
                 if (OUTPUT.has(id)) {
                     return OUTPUT.get(id);
@@ -478,13 +551,43 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
             resolvedRevision = poseRevision;
             return resolvedPose;
         };
+        const PARTIAL_POSE = (id, activeClip) => {
+            const START = NOW();
+            const BASE_POSES = METADATA.parts.map((part) => BASE_POSE.get(part.id));
+            const ELAPSED = displayTimeMs - activeClip.startedAtMs;
+            const RESULT = samplePartTransform(
+                POSE_PROGRAM,
+                activeClip.name,
+                ELAPSED,
+                PART_INDICES.get(id),
+                BASE_POSES,
+            );
+            let partId = id;
+            let visible = true;
+            let sampledParts = 0;
+            while (partId !== null) {
+                visible &&= VISIBLE.get(partId) !== false;
+                sampledParts++;
+                partId = METADATA.parts[PART_INDICES.get(partId)].parent;
+            }
+            POSE_METRICS.partialQueries++;
+            POSE_METRICS.partialParts += sampledParts;
+            if (START !== null) {
+                POSE_METRICS.partialSampleMs += NOW() - START;
+            }
+            return { ...RESULT, visible };
+        };
         const GET_SOCKET = (id) => {
             ASSERT_PLAYER();
             const SOCKET = METADATA.sockets[id];
             if (!SOCKET) {
                 throw new TypeError(`Unknown vector socket: ${id}`);
             }
-            return transformPoint(WORLD_MATRICES().matrices.get(SOCKET.part), SOCKET.point);
+            const ACTIVE = GPU_CLIP();
+            const MATRIX = ACTIVE
+                ? PARTIAL_POSE(SOCKET.part, ACTIVE).transform
+                : WORLD_MATRICES().matrices.get(SOCKET.part);
+            return transformPoint(MATRIX, SOCKET.point);
         };
         const RESOLVE_PART_POSE = (part, matrices) => {
             let parentVisible = true;
@@ -514,6 +617,56 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
                 };
             });
         };
+        const VALIDATE_EXCLUSIONS = (excludeParts) => {
+            if (excludeParts === null) {
+                return;
+            }
+            if (!(excludeParts instanceof Set)) {
+                throw new TypeError('excludeParts must be a Set of known part ids');
+            }
+            for (const PART_ID of excludeParts) {
+                if (!PART_INDICES.has(PART_ID)) {
+                    throw new TypeError(`Unknown vector part: ${PART_ID}`);
+                }
+            }
+        };
+        const PREPARE_POSE = ({ excludeParts = null } = {}) => {
+            ASSERT_PLAYER();
+            VALIDATE_EXCLUSIONS(excludeParts);
+            if (!POSE_INSTANCE) {
+                return null;
+            }
+            const MORPH = authoredMorph(SKETCH_MORPH_STYLE, displayTimeMs);
+            const ACTIVE = GPU_CLIP();
+            if (ACTIVE) {
+                const HANDLE = meshRenderer.preparePose(POSE_INSTANCE, {
+                    clipName: ACTIVE.name,
+                    elapsedMs: displayTimeMs - ACTIVE.startedAtMs,
+                    basePoses: METADATA.parts.map((part) => BASE_POSE.get(part.id)),
+                    visible: METADATA.parts.map((part) => VISIBLE.get(part.id) !== false),
+                    excluded: METADATA.parts.map((part) => excludeParts?.has(part.id) ?? false),
+                    morph: MORPH,
+                });
+                if (HANDLE) {
+                    POSE_METRICS.gpuPrepares++;
+                    return HANDLE;
+                }
+            }
+            const RESOLVED = WORLD_MATRICES();
+            const PARTS = RESOLVED.parts.map((pose, index) => ({
+                transform: pose.transform,
+                opacity: pose.opacity,
+                visible: pose.visible && !excludeParts?.has(METADATA.parts[index].id),
+            }));
+            const ACTIVE_PLAYBACK = ACTIVE_CLIP(rootPlayback, displayTimeMs);
+            const REASON = ACTIVE
+                ? (meshRenderer.poseRenderer?.gpuUnavailableReason ?? 'gpuUnavailable')
+                : ACTIVE_PLAYBACK
+                  ? (POSE_PROGRAM.clips[ACTIVE_PLAYBACK.name]?.reason ?? 'unsupportedClip')
+                  : 'transitionBlend';
+            POSE_METRICS.cpuFallbacks++;
+            return meshRenderer.prepareCpuPose(POSE_INSTANCE, PARTS, MORPH, REASON);
+        };
         const DRAW = ({
             projection,
             viewProjection,
@@ -533,18 +686,43 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
             excludeParts = null,
         } = {}) => {
             ASSERT_PLAYER();
-            if (excludeParts !== null) {
-                if (!(excludeParts instanceof Set)) {
-                    throw new TypeError('excludeParts must be a Set of known part ids');
-                }
-                for (const PART_ID of excludeParts) {
-                    if (!PART_INDICES.has(PART_ID)) {
-                        throw new TypeError(`Unknown vector part: ${PART_ID}`);
-                    }
-                }
-            }
+            VALIDATE_EXCLUSIONS(excludeParts);
             if (GEOMETRY.shaderSurfaces?.length) {
                 validateShaderSurfaceClipCapacity(clips, surfaceRenderer.maxClipPlanes);
+            }
+            const SPECIAL_GEOMETRY = Boolean(GEOMETRY.drawOrder || GEOMETRY.shaderSurfaces?.length);
+            if (!SPECIAL_GEOMETRY && POSE_INSTANCE) {
+                const POSE = PREPARE_POSE({ excludeParts });
+                if (POSE) {
+                    const INDEX_VARIANT =
+                        !visibilityOverridden && compiledAsset.geometry.expressionIndices?.[expression]
+                            ? expression
+                            : null;
+                    const WORLD_MODE = viewProjection !== undefined || worldMatrix !== undefined;
+                    meshRenderer.drawMesh(mesh, {
+                        ...(WORLD_MODE ? { viewProjection, worldMatrix } : { projection }),
+                        matrix,
+                        pose: POSE,
+                        alpha,
+                        color,
+                        forceColor,
+                        whiteFlash,
+                        clips,
+                        stencilRef,
+                        depth,
+                        depthTest,
+                        depthWrite,
+                        depthFunc,
+                        indexVariant: INDEX_VARIANT,
+                        strokeViewport,
+                    });
+                    return;
+                }
+            }
+            if (SPECIAL_GEOMETRY) {
+                meshRenderer.recordPoseFallback?.(GEOMETRY.drawOrder ? 'drawOrder' : 'shaderSurfaces');
+            } else if (!POSE_INSTANCE) {
+                meshRenderer.recordPoseFallback?.('uniformPose');
             }
             const RESOLVED = WORLD_MATRICES();
             const POSES = RESOLVED.parts.map((pose, index) => ({
@@ -559,10 +737,10 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
                         if (!POSES[COMMAND.partIndex].visible || POSES[COMMAND.partIndex].opacity <= 0) {
                             continue;
                         }
-                        if (!MESH) {
+                        if (!mesh) {
                             throw new Error('SVG draw order references mesh geometry that was not retained');
                         }
-                        meshRenderer.drawMesh(MESH, {
+                        meshRenderer.drawMesh(mesh, {
                             ...(WORLD_MODE
                                 ? {
                                       viewProjection,
@@ -630,7 +808,7 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
             const INDEX_VARIANT =
                 !visibilityOverridden && compiledAsset.geometry.expressionIndices?.[expression] ? expression : null;
             const WORLD_MODE = viewProjection !== undefined || worldMatrix !== undefined;
-            meshRenderer.drawMesh(MESH, {
+            meshRenderer.drawMesh(mesh, {
                 ...(WORLD_MODE
                     ? {
                           viewProjection,
@@ -661,10 +839,14 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
             if (!PART_INDICES.has(id)) {
                 throw new TypeError(`Unknown vector part: ${id}`);
             }
-            const INDEX = PART_INDICES.get(id),
-                EFFECTIVE = WORLD_MATRICES().parts[INDEX];
+            const INDEX = PART_INDICES.get(id);
+            const ACTIVE = GPU_CLIP();
+            const EFFECTIVE = ACTIVE ? PARTIAL_POSE(id, ACTIVE) : WORLD_MATRICES().parts[INDEX];
+            const AUTHORED = ACTIVE
+                ? samplePoseChannels(POSE_PROGRAM, ACTIVE.name, displayTimeMs - ACTIVE.startedAtMs, INDEX)
+                : currentPose.get(id);
             return {
-                ...currentPose.get(id),
+                ...AUTHORED,
                 visible: EFFECTIVE.visible,
                 transform: EFFECTIVE.transform.slice(),
             };
@@ -677,6 +859,9 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
                 TIMELINE.pause();
             }
             TIMELINES.clear();
+            if (POSE_INSTANCE) {
+                meshRenderer.deletePoseInstance(POSE_INSTANCE);
+            }
             PLAYERS.delete(PLAYER);
             playerDisposed = true;
             return true;
@@ -691,6 +876,7 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
             getPartPose: GET_PART_POSE,
             getSocket: GET_SOCKET,
             partPoses: PART_POSES,
+            preparePose: PREPARE_POSE,
             draw: DRAW,
             dispose: DISPOSE_PLAYER,
             get currentClip() {
@@ -705,6 +891,9 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
             get disposed() {
                 return playerDisposed;
             },
+            get poseMetrics() {
+                return { ...POSE_METRICS };
+            },
         });
         PLAYERS.add(PLAYER);
         SEEK(startedAtMs);
@@ -717,11 +906,14 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
         for (const PLAYER of [...PLAYERS]) {
             PLAYER.dispose();
         }
-        if (MESH) {
-            meshRenderer.deleteMesh(MESH);
+        if (mesh) {
+            meshRenderer.deleteMesh(mesh);
         }
         for (const SURFACE of RETAINED_SURFACES) {
             surfaceRenderer.deleteSurface(SURFACE);
+        }
+        if (poseSource) {
+            meshRenderer.deletePoseSource(poseSource);
         }
         disposed = true;
         return true;
@@ -733,7 +925,7 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
         compilerVersion: compiledAsset.compilerVersion,
         viewBox: Object.freeze([...compiledAsset.viewBox]),
         metadata: METADATA,
-        mesh: MESH,
+        mesh: mesh,
         surfaces: Object.freeze(RETAINED_SURFACES),
         createPlayer: CREATE_PLAYER,
         dispose: DISPOSE,

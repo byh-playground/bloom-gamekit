@@ -14,6 +14,7 @@
         "vector-assets:compile": "node modules/vector-assets/scripts/compile.mjs",
         "test:vector-assets": "node modules/vector-assets/tests/compiler.mjs && npm run build && npm run build:previews && node modules/vector-assets/tests/run-browser.mjs",
         "test:vector-assets:world-rendering": "node modules/vector-assets/tests/run-world-rendering.browser.mjs",
+        "test:vector-assets:gpu-poses": "npm run build && node modules/vector-assets/tests/run-gpu-poses.browser.mjs",
         "benchmark:vector-assets-population": "npm run build && node modules/vector-assets/tests/run-browser.mjs --population-timing",
         "test:vector-assets:index-variants": "npm run build && node modules/vector-assets/tests/index-variants.mjs && node modules/vector-assets/tests/run-index-variants.browser.mjs",
         "test:vector-assets:non-scaling-stroke": "npm run build && node modules/vector-assets/tests/run-non-scaling-stroke.browser.mjs",

@@ -13,7 +13,7 @@ import { exerciseNonScalingStroke } from './non-scaling-stroke.browser.mjs';
 import { exerciseWorldVectorRendering } from './world-rendering.browser.mjs';
 const ROOT = resolve('.');
 const SOURCE_URL =
-    'https://raw.githubusercontent.com/byh-playground/bloom-gamekit/main/modules/vector-assets/assets/seed-scout.svg';
+    'https://raw.githubusercontent.com/byh-playground/budmori-io/0dab58e201b5c08f5073108121eeae91acc34774/assets/troops/pea.svg';
 const SOURCE_BYTES = await readFile(resolve(ROOT, 'modules/vector-assets/assets/seed-scout.svg'));
 const RENDERING_BUNDLE = await readFile(resolve(ROOT, 'dist/rendering.js'));
 const RENDERING_MODULE_URL = 'data:text/javascript;base64,' + RENDERING_BUNDLE.toString('base64');
@@ -54,7 +54,7 @@ try {
     await FALLBACK_PAGE.addInitScript(() => {
         const GET_CONTEXT = HTMLCanvasElement.prototype.getContext;
         HTMLCanvasElement.prototype.getContext = function (type, ...options) {
-            if (type === 'webgl' || type === 'experimental-webgl') {
+            if (type === 'webgl2') {
                 return null;
             }
             return GET_CONTEXT.call(this, type, ...options);
@@ -108,8 +108,8 @@ try {
     );
     assert.match(FALLBACK.webglNotice, /WebGL unavailable/i);
     assert.equal(FALLBACK.webglNoticeVisible, true, 'the WebGL error appears in the GameKit panel');
-    assert.match(FALLBACK.gamekitMetrics, /did not provide a WebGL 1 context/i);
-    assert.equal(FALLBACK.exampleError, 'WebGL 1 required');
+    assert.match(FALLBACK.gamekitMetrics, /did not provide a WebGL 2 context/i);
+    assert.equal(FALLBACK.exampleError, 'WebGL 2 required');
     if (FALLBACK_ERRORS.length) {
         throw new Error('WebGL-unavailable page errors: ' + FALLBACK_ERRORS.join('; '));
     }
@@ -330,7 +330,7 @@ try {
                 fallback: FALLBACK,
                 browser: await BROWSER.version(),
                 execution:
-                    'file:// standalone HTML; browser fetch served the exact committed source SVG bytes for offline determinism; Chromium WebGL1 / SwiftShader and WebGL-disabled fallback',
+                    'file:// standalone HTML; browser fetch served the exact committed source SVG bytes for offline determinism; Chromium WebGL 2 / SwiftShader and WebGL-disabled fallback',
             },
             null,
             2,

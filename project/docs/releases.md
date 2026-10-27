@@ -1,3 +1,11 @@
+## v0.17.0 (2026-10-27)
+
+공통 렌더러의 기본 backend를 WebGL 2로 전환합니다. Core instancing과 VAO를 사용하며 기존 analytic 도형과 공유 캔버스 순서를 유지합니다. 숫자 애니메이션 데이터 텍스처와 공유 pose atlas를 추가해 원본 SVG의 transform 채널·pivot·부모 계층을 GPU에서 평가합니다. CPU 소켓/부위 조회는 같은 채널의 Float64 데이터로 필요한 조상만 평가하고, 진행 중 중첩 전환·미지원 easing 등은 시계를 바꾸지 않고 명시적 CPU pose 경로를 사용합니다. Float render target 미지원/복구 실패도 CPU 숫자 텍스처로 처리합니다. 사용 비율·업로드·할당은 `MeshRenderer.poseStats()`로 구분합니다.
+
+`player.preparePose()`, `MeshRenderer.preparePoses()`, `VectorContext.drawVectorAsset()`는 포즈 준비와 순서 보존 제출을 연결합니다. 종별 재정렬이나 메시 제거, 새 래스터 이미지 텍스처 시스템은 추가하지 않습니다. 독립 고정 브라우저 시나리오가 전환·표정/base pose·소켓/모프·반투명 paint·행 재사용/용량 증가·resize·context 복구·dispose를 CPU 참조와 비교합니다. 물리 모바일과 소비자 게임 전체 성능은 별도 검증 범위입니다.
+
+**호환:** WebGL 2가 없는 환경에서는 생성이 실패합니다. 공개 시계/포즈/소켓 계약과 CPU 판정용 정밀도를 유지하며, GLSL ES 100의 기존 shader 입력은 device에서 ES 300으로 정규화합니다. WebGL 1/ANGLE 전용 backend 및 확장 객체에 의존한 직접 GL 호출은 core API로 이관해야 합니다.
+
 ## v0.16.0 (2026-10-27)
 
 `vector-assets`가 소스 SVG 파일 자체가 기본 표정을 그리도록 강제합니다. `defaultExpression`의 `hide`에 있는 파트의 SVG 노드에는 `display="none"`이 있어야 하고, 그 밖의 노드에는 있으면 안 됩니다. 어느 쪽이든 어기면 컴파일 오류가 파트 id를 알려 줍니다. 컴파일러는 이 속성을 메모리 입력에서만 지우므로 모든 표정 변형은 이전과 같은 지오메트리로 컴파일되고, 런타임이 보임 여부를 정합니다. 표정이 여럿 들어 있는 SVG를 `<img>`나 미리보기로 열면 전부 겹쳐 보이던 문제가 없어져, 게임 UI가 아이콘·초상화·도감에서 원본 파일을 그대로 참조할 수 있습니다. 허용하는 `display` 값은 `none` 하나뿐입니다.
