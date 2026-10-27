@@ -307,7 +307,39 @@ try {
                     RESTORED_PIXELS.every((value, index) => Math.abs(value - EXPECTED_RESTORED[index]) <= 1),
                     'Restored named fills match originals',
                 );
-                frame(ACTUAL, palettes);
+                const CONTEXT = new R.VectorContext(DEVICE);
+                CONTEXT.meshRenderer = MESHES;
+                CONTEXT.beginFrame({ width: 480, height: 100, clearColor: [0, 0, 0, 0] });
+                CONTEXT.drawVectorAsset(ACTUAL[0], { paintRegions: palettes[0] });
+                CONTEXT.fillStyle = '#400000';
+                CONTEXT.fillRect(400, 0, 20, 20);
+                CONTEXT.save();
+                CONTEXT.globalCompositeOperation = 'lighter';
+                CONTEXT.fillRect(400, 0, 20, 20);
+                CONTEXT.restore();
+                CHECK(CONTEXT.globalCompositeOperation === 'source-over', 'Additive save/restore preserved');
+                CONTEXT.fillRect(410, 0, 10, 20);
+                CONTEXT.endFrame();
+                const BLEND_PIXELS = new Uint8Array(480 * 100 * 4);
+                DEVICE.gl.readPixels(0, 0, 480, 100, DEVICE.gl.RGBA, DEVICE.gl.UNSIGNED_BYTE, BLEND_PIXELS);
+                CHECK(
+                    Math.abs(BLEND_PIXELS[(95 * 480 + 405) * 4] - 128) <= 1,
+                    'Additive blend preserved after named mesh submission',
+                );
+                CHECK(
+                    Math.abs(BLEND_PIXELS[(95 * 480 + 415) * 4] - 64) <= 1,
+                    'Source-over restored after additive draw',
+                );
+                CONTEXT.meshRenderer = null;
+                CONTEXT.dispose();
+                const CONTEXT_REFERENCE = frame(ACTUAL, palettes);
+                CHECK(
+                    BLEND_PIXELS.every(
+                        (value, index) =>
+                            Math.floor(index / 4) % 480 >= 160 || Math.abs(value - CONTEXT_REFERENCE[index]) <= 1,
+                    ),
+                    'VectorContext forwards the same named fill contract',
+                );
                 const STATS = MESHES.stats();
                 const BEFORE_DISPOSE = {
                     contextRestoreGeometryUploads: geometryUpdates,

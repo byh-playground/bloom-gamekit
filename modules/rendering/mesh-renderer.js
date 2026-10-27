@@ -595,7 +595,9 @@ export class MeshRenderer {
             ':' +
             Number(poseTexture) +
             ':' +
-            Number(mesh.hasTextureCoordinates) + ':' + (mesh.paintRegionNames?.length ?? 0);
+            Number(mesh.hasTextureCoordinates) +
+            ':' +
+            (mesh.paintRegionNames?.length ?? 0);
         let pipeline = this.pipelines.get(KEY);
         if (pipeline) {
             return pipeline;
@@ -804,7 +806,10 @@ export class MeshRenderer {
             throw new RangeError('Retained mesh budget exceeded');
         }
         const VERTICES = data.vertices.slice(),
-            GPU_VERTICES = UVS === null ? paintVertexStream(VERTICES, PAINT_INDICES) : new Float32Array((VERTICES.length / 11) * 13),
+            GPU_VERTICES =
+                UVS === null
+                    ? paintVertexStream(VERTICES, PAINT_INDICES)
+                    : new Float32Array((VERTICES.length / 11) * 13),
             OWNED_INDICES = INDICES?.slice(),
             BUFFER = this.device.createVertexBuffer({
                 capacityBytes: GPU_VERTICES.byteLength,
