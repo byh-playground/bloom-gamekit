@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="160" height="100" viewBox="0 0 160 100">
+  <metadata id="vector-asset">{"schemaVersion":1,"id":"named-paint-scout","defaultExpression":"neutral","parts":[{"id":"body","parent":null,"pivot":[80,50]},{"id":"face-neutral","parent":"body","pivot":[80,50]},{"id":"face-happy","parent":"body","pivot":[80,50]},{"id":"weapon","parent":"body","pivot":[140,40]}],"expressions":{"neutral":{"show":["face-neutral"],"hide":["face-happy"]},"happy":{"show":["face-happy"],"hide":["face-neutral"]}},"sockets":{"mouth":{"part":"body","point":[80,53]}},"clips":{"idle":{"durationMs":1000,"loop":"repeat","easing":"linear","keyframes":[{"timeMs":0,"easing":"linear","parts":{"body":{"x":0}}},{"timeMs":1000,"easing":"linear","parts":{"body":{"x":0}}}]},"walk":{"durationMs":1000,"loop":"repeat","easing":"inOutSine","keyframes":[{"timeMs":0,"easing":"inOutSine","parts":{"body":{"y":0,"rotation":-0.025}}},{"timeMs":500,"easing":"inOutSine","parts":{"body":{"y":-3,"rotation":0.025}}},{"timeMs":1000,"easing":"inOutSine","parts":{"body":{"y":0,"rotation":-0.025}}}]}}}</metadata>
+  <g id="body">
+    <rect id="body-fill" x="6" y="6" width="148" height="88" rx="14" fill="#dab78e" fill-opacity="0.6" stroke="#49382d" stroke-width="3"/>
+    <rect id="badge" data-paint-region="badge" x="70" y="72" width="20" height="12" fill="#438e81" stroke="#49382d" stroke-width="2"/>
+    <g id="face-neutral">
+      <circle id="eye-left" cx="55" cy="32" r="5" fill="#342a20"/>
+      <circle id="eye-right" cx="105" cy="32" r="5" fill="#342a20"/>
+      <ellipse id="cheek-left" data-paint-region="cheeks" cx="40" cy="55" rx="12" ry="6" fill="#e08070" fill-opacity="0.7" stroke="#552211" stroke-width="2"/>
+      <ellipse id="cheek-right" data-paint-region="cheeks" cx="120" cy="55" rx="12" ry="6" fill="#e08070" fill-opacity="0.7" stroke="#552211" stroke-width="2"/>
+      <path id="mouth" d="M70 50 Q80 60 90 50" fill="none" stroke="#342a20" stroke-width="3" stroke-linecap="round"/>
+    </g>
+    <g id="face-happy" display="none" opacity="0.8">
+      <path id="happy-eyes" d="M50 34 Q55 25 60 34 M100 34 Q105 25 110 34" fill="none" stroke="#342a20" stroke-width="3"/>
+      <ellipse id="happy-cheek-left" data-paint-region="cheeks" cx="40" cy="60" rx="12" ry="7" fill="#e08070" fill-opacity="0.5" stroke="#552211" stroke-width="2"/>
+      <ellipse id="happy-cheek-right" data-paint-region="cheeks" cx="120" cy="60" rx="12" ry="7" fill="#e08070" fill-opacity="0.5" stroke="#552211" stroke-width="2"/>
+      <path id="happy-mouth" d="M70 50 Q80 68 90 50 Z" fill="#342a20"/>
+    </g>
+    <g id="weapon"><path id="weapon-stroke" d="M140 18 L140 62 M132 26 L148 26" fill="none" stroke="#84674f" stroke-width="5" stroke-linecap="round"/></g>
+  </g>
+</svg>

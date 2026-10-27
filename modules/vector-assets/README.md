@@ -54,6 +54,26 @@ Animation frames reuse the atlas. A changed resolution requires a new atlas. Aft
 
 Morph targets, time-dependent shader surfaces, non-scaling strokes, expressions selecting only part of a paint run and unsupported alpha composition use the vector path. Force-color and depth-write alpha classification also use vector rendering. A texture atlas is an alternative representation, not a promise of faster rendering: compare both paths after warmup and include initial bake cost. The example supports split/A-B views, pause/scrub, clips, expressions, independent phases, population, resolution and zoom. Split-view counters include both submissions; use single-path A-B modes for performance comparison.
 
+## Named fill regions
+
+An authored solid-filled shape can declare `data-paint-region="cheeks"`. The name is independent of rig parts and can be repeated on corresponding shapes in every expression. Up to eight names are supported. Regions must be explicit `path`, `rect`, `circle`, `ellipse`, `polygon`, or `polyline` fills; group inheritance, gradients, and authored yarn/sketch material targets are rejected. UV-textured meshes reject named fill regions explicitly rather than recolouring baked texture pixels. Only fill RGB changes. Strokes, vertex/fill alpha, geometry, sockets, rig transforms and expression visibility stay authored.
+
+```js
+const paintRegions = { cheeks: [0.35, 0.6, 0.9] }; // three finite RGB channels in [0,1]
+player.draw({ projection, matrix, paintRegions });
+player.draw({ projection, matrix }); // original fill colours
+
+// The UI uses the same source and named fills. The input SVG stays unchanged.
+const portrait = applySvgPaintRegions(originalSvgRoot, paintRegions);
+container.replaceChildren(portrait);
+```
+
+Unknown region names, alpha overrides, invalid RGB channels and triangles crossing region ids fail explicitly. `applySvgPaintRegions` returns a clone and changes the same named fills across hidden expressions too. Independent UI palettes cannot contaminate their reusable original. The helper adds no face geometry and preserves every other attribute. Consumers can cache finite portrait variants; the helper does not belong in a render loop.
+
+Compiled geometry keeps its original 11-float records and optional `paintRegions: { names, indices }`, with one `Uint16` region id per unique vertex (`0` means the original material). Fill triangles receive ids and strokes stay at zero. The renderer adds one float to the GPU stream of tagged meshes once at creation/restoration. It shares that mesh and its expression index variants across all player palettes. Changed palettes flush ordered submissions before changing RGB uniforms; no palette recompiles or uploads geometry. Untagged assets keep the existing GPU layout and shader. Compiled region ids require two CPU bytes per vertex. The renderer retains one 12-float packed stream alongside its 11-float source, adding 48 retained CPU bytes and four GPU bytes per tagged vertex relative to an untextured mesh. Context restoration reuses that packed stream. Different palettes can split an adjacent instance batch. Explicit global tint, forceColor and whiteFlash keep their established later-stage behavior.
+
+`npm run test:vector-assets:paint-regions` runs the original SVG/UI-helper/reference-mesh flow in Chromium WebGL. It compares RGB and alpha through expression/motion/clipping/world passes, checks independent palettes and reset, observes zero per-frame geometry uploads, restores the context, and disposes resources. Its SwiftShader pixels verify function, not physical-device performance.
+
 **Public HTML example:** [vector-assets](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/vector-assets.html)
 
 An SVG file is the only authored visual source. `assets/seed-scout.svg` contains paths, paint, strokes, SVG ids, the part hierarchy and pivots, sockets, expression variants, clips, keyframes, easings, and loop mode in one direct JSON `metadata#vector-asset` node. No separately edited visual JSON or raster textures are used. The optional runtime raster atlas below derives its pixels from that same compiled SVG geometry.

@@ -735,6 +735,7 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
             matrix = IDENTITY,
             alpha = 1,
             color = [1, 1, 1, 1],
+            paintRegions = null,
             forceColor = false,
             whiteFlash = false,
             clips = [],
@@ -748,6 +749,9 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
         } = {}) => {
             ASSERT_PLAYER();
             VALIDATE_EXCLUSIONS(excludeParts);
+            if (!mesh && paintRegions !== null) {
+                throw new TypeError('This asset has no named mesh fills');
+            }
             if (GEOMETRY.shaderSurfaces?.length) {
                 validateShaderSurfaceClipCapacity(clips, surfaceRenderer.maxClipPlanes);
             }
@@ -767,6 +771,7 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
                         alpha,
                         color,
                         forceColor,
+                        paintRegions,
                         whiteFlash,
                         clips,
                         stencilRef,
@@ -816,6 +821,7 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
                             alpha,
                             color,
                             forceColor,
+                            paintRegions,
                             whiteFlash,
                             clips,
                             stencilRef,
@@ -884,6 +890,7 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
                 alpha,
                 color,
                 forceColor,
+                paintRegions,
                 whiteFlash,
                 clips,
                 stencilRef,

@@ -1,3 +1,7 @@
+## v0.19.1 (2026-10-27)
+
+원본 SVG의 solid fill에 `data-paint-region` 이름을 지정하고 `player.draw({ paintRegions })`로 해당 RGB만 바꿀 수 있습니다. 원본 선·alpha·표정·소켓과 geometry를 유지하며 UI도 원본을 보존하는 `applySvgPaintRegions` helper로 같은 계약을 사용합니다. 서로 다른 개체의 팔레트는 제출 시 값으로 캡처하고 mesh와 표정 index를 공유합니다. 팔레트 변경 시 geometry 재컴파일·업로드를 하지 않습니다. UV texture/shared quad와 sampled sprite, additive blend 경로는 유지합니다. 이 팔레트는 원본 untextured fill 전용이며 baked texture의 색 영역을 추정하지 않습니다.
+
 ## v0.19.0 (2026-10-27)
 
 UV가 있는 retained mesh에 이미지 texture material을 추가하고 SVG와 독립적인 `createSpriteAnimation`을 제공합니다. 프레임 rect·기간·clip·loop, trim·pivot·gutter, 절대 표시 시각·속도·pause·scrub을 처리하며 texture는 호출자에게 빌립니다. 기존 기본 벡터 렌더 경로는 그대로입니다.

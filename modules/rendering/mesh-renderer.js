@@ -1,4 +1,5 @@
 import { PoseRenderer } from './pose-renderer.js';
+import { MAX_PAINT_REGIONS, packPaintRegions, validatePaintRegionData } from './paint-regions.js';
 const IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
 const ZERO_MORPH = Object.freeze([0, 0]);
 const EMPTY_CLIP = Object.freeze({
@@ -57,7 +58,15 @@ function shader(
     worldMode = false,
     textured = false,
     poseTexture = false,
+    paintRegionCount = 0,
 ) {
+    const PAINT_INPUT = paintRegionCount
+            ? `attribute float a_paintRegion;uniform vec4 u_paintRegions[${paintRegionCount + 1}];`
+            : '',
+        PAINT_COLOR = paintRegionCount
+            ? 'vec4 authored=a_color;vec4 paint=u_paintRegions[int(a_paintRegion)];authored.rgb=mix(authored.rgb,paint.rgb,paint.a);'
+            : '',
+        BASE_COLOR = paintRegionCount ? 'authored' : 'a_color';
     const PART_POSE = partCount > 1 || poseTexture;
     const PART_INPUTS = PART_POSE
         ? `${partCount > 1 ? 'attribute float a_part;' : ''}uniform vec4 u_parts[${partCount * 3}];`
@@ -119,25 +128,25 @@ if(dot(a_stroke.xy,a_stroke.xy)>0.5){
 }`
             : '';
         return `attribute vec2 a_position; attribute vec4 a_color; ${morphCount ? 'attribute vec4 a_morph;' : ''} ${PART_INPUTS}
-${WORLD_INPUTS}${WORLD_STROKE_INPUTS}${TEXTURE_INPUTS}
+${WORLD_INPUTS}${WORLD_STROKE_INPUTS}${TEXTURE_INPUTS}${PAINT_INPUT}
 uniform mat4 u_viewProjection; uniform vec4 u_color; varying vec4 v_color; ${clipped ? 'varying vec2 v_position;' : ''}
 void main(){${PART_SETUP}
 vec2 local=${LOCAL};${RECT_LOCAL}vec2 plane=${PART_POSE ? 'vec2(dot(row0.xyz,vec3(local,1.0)),dot(row1.xyz,vec3(local,1.0)))' : 'local'};
 vec3 world=vec3(dot(i_row0.xyz,vec3(plane,1.0)),dot(i_row1.xyz,vec3(plane,1.0)),dot(i_row2.xyz,vec3(plane,1.0)));
 vec4 projected=u_viewProjection*vec4(world,1.0);${clipped ? 'v_position=world.xy;' : ''}${WORLD_STROKE}
 projected.z+=(i_params.w+${PART_POSE ? 'pose.w' : '0.0'})*projected.w;gl_Position=projected;
-vec4 color=mix(a_color*u_color,u_color,i_row1.w);color.a*=i_row0.w${PART_POSE ? '*pose.z' : ''};color.rgb=mix(color.rgb,vec3(1.0),i_row2.w);v_color=vec4(color.rgb*color.a,color.a);${textured ? 'v_uv=i_uvRect.xy+a_uv*i_uvRect.zw;v_forceColor=i_row1.w;v_whiteFlash=i_row2.w;' : ''}
+${PAINT_COLOR}vec4 color=mix(${BASE_COLOR}*u_color,u_color,i_row1.w);color.a*=i_row0.w${PART_POSE ? '*pose.z' : ''};color.rgb=mix(color.rgb,vec3(1.0),i_row2.w);v_color=vec4(color.rgb*color.a,color.a);${textured ? 'v_uv=i_uvRect.xy+a_uv*i_uvRect.zw;v_forceColor=i_row1.w;v_whiteFlash=i_row2.w;' : ''}
 }`;
     }
     return `attribute vec2 a_position; attribute vec4 a_color; ${morphCount ? 'attribute vec4 a_morph;' : ''} ${PART_INPUTS}
-${INPUTS}${STROKE_INPUTS}${TEXTURE_INPUTS}
+${INPUTS}${STROKE_INPUTS}${TEXTURE_INPUTS}${PAINT_INPUT}
 uniform mat3 u_projection; varying vec4 v_color; ${clipped ? 'varying vec2 v_position;' : ''}${STROKE_VARYING}
 void main(){${PART_SETUP}
 vec2 local=${LOCAL};${RECT_LOCAL}vec2 p=${PART_POSE ? 'vec2(dot(row0.xyz,vec3(local,1.0)),dot(row1.xyz,vec3(local,1.0)))' : 'local'};
 vec2 world=vec2(dot(i_row0.xyz,vec3(p,1.0)),dot(i_row1.xyz,vec3(p,1.0)));
 vec3 projected=u_projection*vec3(world,1.0);${clipped ? 'v_position=world;' : ''}${STROKE_POSITION}
 gl_Position=vec4(projected.xy,(i_params.w+${PART_POSE ? 'pose.w' : '0.0'})*projected.z,projected.z);
-vec4 color=mix(a_color*i_color,i_color,i_row1.w);color.a*=i_row0.w${PART_POSE ? '*pose.z' : ''};
+${PAINT_COLOR}vec4 color=mix(${BASE_COLOR}*i_color,i_color,i_row1.w);color.a*=i_row0.w${PART_POSE ? '*pose.z' : ''};
 color.rgb=mix(color.rgb,vec3(1.0),i_params.z);v_color=vec4(color.rgb*color.a,color.a);${textured ? 'v_uv=i_uvRect.xy+a_uv*i_uvRect.zw;v_forceColor=i_row1.w;v_whiteFlash=i_params.z;' : ''}}`;
 }
 function fragment(maxPlanes, clipped, textured = false) {
@@ -164,6 +173,18 @@ function poseTextureShader(source) {
         )
         .replaceAll('(i_params.x+pose.x)', '(pose.x)')
         .replaceAll('(i_params.y+pose.y)', '(pose.y)');
+}
+// One startup/context-restore conversion, never a palette-specific geometry or per-frame upload.
+function paintVertexStream(vertices, regions) {
+    if (!regions) {
+        return vertices;
+    }
+    const PACKED = new Float32Array((vertices.length / 11) * 12);
+    for (let index = 0; index < regions.length; index++) {
+        PACKED.set(vertices.subarray(index * 11, index * 11 + 11), index * 12);
+        PACKED[index * 12 + 11] = regions[index];
+    }
+    return PACKED;
 }
 function finiteArray(value, size, name) {
     if (!value || value.length !== size) {
@@ -444,6 +465,8 @@ export class MeshRenderer {
         this.pending = null;
         this.planes = new Float32Array(this.maxPlanes * 3);
         this.partScratch = new Float32Array(16 * 12);
+        this.paintScratch = null;
+        this.paintState = null;
         this.alphaRunScratch = [];
         this.alphaRunCache = new WeakMap();
         this.alphaQueue = new Array(maxInstances);
@@ -572,7 +595,9 @@ export class MeshRenderer {
             ':' +
             Number(poseTexture) +
             ':' +
-            Number(mesh.hasTextureCoordinates);
+            Number(mesh.hasTextureCoordinates) +
+            ':' +
+            (mesh.paintRegionNames?.length ?? 0);
         let pipeline = this.pipelines.get(KEY);
         if (pipeline) {
             return pipeline;
@@ -612,6 +637,9 @@ export class MeshRenderer {
                 UNIFORMS.i_localRect = '4f';
             }
         }
+        if (mesh.paintRegionNames) {
+            UNIFORMS['u_paintRegions[0]'] = '4fv';
+        }
         if (!this.instanced) {
             for (const NAME of worldMode
                 ? ['i_row0', 'i_row1', 'i_row2', 'i_params']
@@ -630,6 +658,7 @@ export class MeshRenderer {
                     worldMode,
                     mesh.hasTextureCoordinates,
                     poseTexture,
+                    mesh.paintRegionNames?.length ?? 0,
                 ),
             ),
             fragment: fragment(this.maxPlanes, clipped, mesh.hasTextureCoordinates),
@@ -640,6 +669,7 @@ export class MeshRenderer {
                   }
                 : {}),
             attributes: [
+                ...(mesh.paintRegionNames ? [{ name: 'a_paintRegion', size: 1, offset: 44 }] : []),
                 ...(mesh.hasNonScalingStroke
                     ? ATTRIBUTES.filter((attribute) => attribute.name !== 'a_morph')
                     : ATTRIBUTES),
@@ -758,14 +788,28 @@ export class MeshRenderer {
             (total, [, variant]) => total + variant.byteLength,
             0,
         );
-        const GPU_VERTEX_BYTES = UVS === null ? data.vertices.byteLength : (data.vertices.length / 11) * 13 * 4;
+        validatePaintRegionData(data.paintRegions, data.vertices.length / 11, INDICES);
+        if (data.paintRegions && UVS !== null) {
+            throw new TypeError('Named fill regions require an untextured solid-fill mesh');
+        }
+        if (data.paintRegions) {
+            for (const [, VARIANT] of [...EXPRESSION_ENTRIES, ...INDEX_VARIANT_ENTRIES]) {
+                validatePaintRegionData(data.paintRegions, data.vertices.length / 11, VARIANT);
+            }
+        }
+        const PAINT_INDICES = data.paintRegions?.indices,
+            BUFFER_STRIDE = UVS !== null ? 13 : PAINT_INDICES ? 12 : 11;
+        const GPU_VERTEX_BYTES = (data.vertices.length / 11) * BUFFER_STRIDE * 4;
         const UPLOAD_BYTE_LENGTH = GPU_VERTEX_BYTES + (INDICES?.byteLength ?? 0) + VARIANT_BYTE_LENGTH;
-        const BYTE_LENGTH = UPLOAD_BYTE_LENGTH + (UVS === null ? 0 : data.vertices.byteLength);
+        const BYTE_LENGTH = UPLOAD_BYTE_LENGTH + (UVS !== null || PAINT_INDICES ? data.vertices.byteLength : 0);
         if (this.meshes.size >= this.maxMeshes || this.bytes + BYTE_LENGTH > this.maxMeshBytes) {
             throw new RangeError('Retained mesh budget exceeded');
         }
         const VERTICES = data.vertices.slice(),
-            GPU_VERTICES = UVS === null ? VERTICES : new Float32Array((VERTICES.length / 11) * 13),
+            GPU_VERTICES =
+                UVS === null
+                    ? paintVertexStream(VERTICES, PAINT_INDICES)
+                    : new Float32Array((VERTICES.length / 11) * 13),
             OWNED_INDICES = INDICES?.slice(),
             BUFFER = this.device.createVertexBuffer({
                 capacityBytes: GPU_VERTICES.byteLength,
@@ -853,7 +897,8 @@ export class MeshRenderer {
             partCount: data.partCount,
             morphCount: data.morphCount,
             strideFloats: 11,
-            bufferStrideFloats: UVS === null ? 11 : 13,
+            bufferStrideFloats: BUFFER_STRIDE,
+            paintRegionNames: data.paintRegions ? Object.freeze(data.paintRegions.names.slice()) : null,
             hasTextureCoordinates: UVS !== null,
             hasNonScalingStroke: NON_SCALING_STROKE,
             partBounds: meshPartBounds(VERTICES, data.partCount, data.morphCount),
@@ -903,6 +948,7 @@ export class MeshRenderer {
             uvRect: UV_RECT = IDENTITY_RECT,
             localRect: LOCAL_RECT = IDENTITY_RECT,
             color: COLOR = WHITE,
+            paintRegions: PAINT_REGIONS = null,
             forceColor: FORCE_COLOR = false,
             alpha: ALPHA = 1,
             whiteFlash: WHITE_FLASH = false,
@@ -932,6 +978,7 @@ export class MeshRenderer {
             uvRect: UV_RECT,
             localRect: LOCAL_RECT,
             color: COLOR,
+            paintRegions: PAINT_REGIONS,
             forceColor: FORCE_COLOR,
             alpha: ALPHA,
             whiteFlash: WHITE_FLASH,
@@ -946,6 +993,22 @@ export class MeshRenderer {
             strokeViewport: STROKE_VIEWPORT,
             stencilRef: STENCIL_REF,
         });
+    }
+    _setPaintRegions(mesh, overrides) {
+        const NAMES = mesh.paintRegionNames ?? [],
+            SIZE = NAMES.length ? (NAMES.length + 1) * 4 : 0;
+        this.paintScratch ??= new Float32Array((MAX_PAINT_REGIONS + 1) * 4);
+        packPaintRegions(NAMES, overrides, this.paintScratch);
+        let same = (this.paintState?.length ?? 0) === SIZE;
+        for (let index = 0; same && index < SIZE; index++) {
+            same = this.paintState[index] === this.paintScratch[index];
+        }
+        if (same) {
+            return;
+        }
+        // Both the ordinary batch and alpha-run queue still belong to the previous palette.
+        this.flush('paintRegions');
+        this.paintState = SIZE ? this.paintScratch.slice(0, SIZE) : null;
     }
     _screenBounds(mesh, matrices, instanceIndex, projection, morph) {
         if (mesh.hasNonScalingStroke || projection[2] !== 0 || projection[5] !== 0 || Math.abs(projection[8]) < 1e-12) {
@@ -1102,6 +1165,9 @@ export class MeshRenderer {
                 u_planeCount: CLIP.count,
             });
         }
+        if (MESH.paintRegionNames) {
+            UNIFORMS['u_paintRegions[0]'] = this.paintState;
+        }
         if (MESH.partCount > 1) {
             UNIFORMS['u_parts[0]'] = PARTS;
         }
@@ -1167,6 +1233,7 @@ export class MeshRenderer {
             uvRect = IDENTITY_RECT,
             localRect = IDENTITY_RECT,
             color = WHITE,
+            paintRegions = null,
             forceColor = false,
             alpha = 1,
             whiteFlash = false,
@@ -1334,8 +1401,7 @@ export class MeshRenderer {
         if (indexRange !== null && depthWriteAlphaThreshold !== null) {
             throw new TypeError('indexRange is currently supported only for ordinary ordered mesh draws');
         }
-        const CLIP = clipState(clips, this.maxPlanes),
-            PENDING = this.pending;
+        const CLIP = clipState(clips, this.maxPlanes);
         const VARIANT =
             indexVariant === null
                 ? null
@@ -1364,6 +1430,10 @@ export class MeshRenderer {
                 throw new RangeError('combined mesh and part depth must be in [-1,1]');
             }
         }
+        if (mesh.paintRegionNames || paintRegions !== null || this.paintState) {
+            this._setPaintRegions(mesh, paintRegions);
+        }
+        const PENDING = this.pending;
         const DEPTH_STATE_KEY = Number(depthTest) + ':' + Number(depthWrite) + ':' + depthFunc;
         const ALPHA_DEPTH_WRITE = depthWrite && depthWriteAlphaThreshold !== null;
         if (!ALPHA_DEPTH_WRITE) {
@@ -1876,6 +1946,9 @@ export class MeshRenderer {
         if (mesh.partCount > 1) {
             UNIFORMS['u_parts[0]'] = parts;
         }
+        if (mesh.paintRegionNames) {
+            UNIFORMS['u_paintRegions[0]'] = this.paintState;
+        }
         if (!this.instanced) {
             for (let j = 0; j < 4; j++) {
                 UNIFORMS[['i_row0', 'i_row1', 'i_color', 'i_params'][j]] = this.instances.subarray(j * 4, j * 4 + 4);
@@ -1986,6 +2059,9 @@ export class MeshRenderer {
                           }
                     : {}),
             });
+        }
+        if (MESH.paintRegionNames) {
+            UNIFORMS['u_paintRegions[0]'] = this.paintState;
         }
         if (POSE_TEXTURE) {
             UNIFORMS.u_poseTexture = 0;

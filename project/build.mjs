@@ -18,6 +18,8 @@ const BUNDLED_PACKAGES = {
     'vector-assets': ['node_modules/animejs/'],
     'vector-assets-loader': ['node_modules/@xmldom/xmldom/', 'node_modules/three/'],
 };
+// The SVG compiler/runtime and mesh renderer share only the named RGB contract, not renderer initialization.
+const SHARED_PAINT_SOURCE = new Set(['vector-assets', 'vector-assets-loader']);
 export async function buildDistribution(root) {
     const BUNDLES = new Map();
     for (const NAME of MODULES) {
@@ -78,7 +80,8 @@ export async function buildDistribution(root) {
                 return INPUT.startsWith(PACKAGE_PATH) || INPUT.includes('/' + PACKAGE_PATH);
             });
             const GENERATED_ASSET = NAME === 'vector-assets' && INPUT.startsWith('vector-asset:');
-            if (!OWNED && !PACKAGE_OWNED && !GENERATED_ASSET) {
+            const PAINT_CONTRACT = SHARED_PAINT_SOURCE.has(NAME) && INPUT === 'modules/rendering/paint-regions.js';
+            if (!OWNED && !PACKAGE_OWNED && !GENERATED_ASSET && !PAINT_CONTRACT) {
                 throw new Error(`${NAME} 소스 밖의 런타임 의존성은 허용하지 않습니다: ${INPUT}`);
             }
         }
