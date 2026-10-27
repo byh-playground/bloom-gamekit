@@ -93,6 +93,16 @@
                 overflow-wrap: anywhere;
                 overflow-x: auto;
             }
+            #accumulated-results {
+                height: 260px;
+                overflow: auto;
+                margin: 0.5rem 0;
+                border: 1px solid #cbd8c7;
+                padding: 0.5rem;
+            }
+            #accumulation-status {
+                min-height: 3em;
+            }
             .benchmark-results table {
                 width: 100%;
                 border-collapse: collapse;
@@ -441,6 +451,31 @@
             </section>
             <button id="benchmark" type="button">Run sequential comparison</button>
             <div class="benchmark-results" aria-live="polite"></div>
+            <section aria-label="Accumulated full-viewport measurements">
+                <h2>누적 측정 · 전체 화면 순차 비교</h2>
+                <button id="accumulate-start" type="button">Start / resume accumulation</button>
+                <button id="accumulate-stop" type="button" disabled>Stop / cancel round</button>
+                <button id="accumulate-reset" type="button">Reset history</button>
+                <p id="accumulation-status" role="status">
+                    Ready. Stop before changing settings; previous conditions remain labelled below.
+                </p>
+                <div id="accumulated-results" class="benchmark-results">No accumulated samples.</div>
+                <p>
+                    CPU total: animation update + render preparation/submission (final flush included). CPU submit is a
+                    subset. GPU: render commands including pose pass, asynchronous valid queries only. RAF interval:
+                    browser frame cadence including waiting and other work. These overlap; do not add CPU and GPU. Split
+                    live FPS is shared. Comparison source time uses fixed 60 Hz steps, independent of live playback
+                    speed.
+                </p>
+                <p>
+                    Each balanced round: 30 warmup + 60 measured frames per path, alternating forward/reverse order,
+                    identical display times. Duration is the sum of measured RAF intervals per path, excluding warmup,
+                    preparation, stops and query drain. &gt;16.7 ms is a reference 60 Hz budget (strictly greater, not a
+                    detected missed presentation). Exact linearly interpolated percentiles; maximum 6,000 samples/path
+                    and 5 recent conditions. GPU gaps are not zero-filled. Hidden page/resize cancels the incomplete
+                    round. Results stay in this page only.
+                </p>
+            </section>
             <div id="memory-metrics"></div>
             <div class="metrics">
                 <section>
@@ -36745,23 +36780,40 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
   // modules/vector-assets/examples/raster-benchmark.js
   var MODES = ["vector", "raster", "sprite"];
   var DISPLAY_STEP_MS = 1e3 / 60;
-  var NEXT_FRAME = () => new Promise((resolve) => requestAnimationFrame(resolve));
-  function percentile(values, fraction) {
-    if (!values.length) {
+  var NEXT_FRAME = (signal) => new Promise((resolve, reject) => {
+    const ABORT = () => {
+      cancelAnimationFrame(HANDLE);
+      reject(new DOMException("Measurement stopped", "AbortError"));
+    };
+    const HANDLE = requestAnimationFrame((timestamp) => {
+      signal?.removeEventListener("abort", ABORT);
+      resolve(timestamp);
+    });
+    signal?.addEventListener("abort", ABORT, { once: true });
+    if (signal?.aborted) {
+      ABORT();
+    }
+  });
+  function percentile(sorted, fraction) {
+    if (!sorted.length) {
       return null;
     }
-    const SORTED = [...values].sort((left, right) => left - right);
-    const POSITION = (SORTED.length - 1) * fraction;
+    const POSITION = (sorted.length - 1) * fraction;
     const LOWER = Math.floor(POSITION);
     const UPPER = Math.ceil(POSITION);
-    return SORTED[LOWER] + (SORTED[UPPER] - SORTED[LOWER]) * (POSITION - LOWER);
+    return sorted[LOWER] + (sorted[UPPER] - sorted[LOWER]) * (POSITION - LOWER);
   }
-  function summary(values, includeMean = false) {
-    const RESULT = { p50: percentile(values, 0.5), p95: percentile(values, 0.95) };
-    if (includeMean) {
-      RESULT.mean = values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
-    }
-    return RESULT;
+  function summarizeSamples(values) {
+    const SORTED = [...values].sort((left, right) => left - right);
+    return {
+      count: values.length,
+      mean: values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null,
+      p50: percentile(SORTED, 0.5),
+      p95: percentile(SORTED, 0.95),
+      p99: percentile(SORTED, 0.99),
+      max: SORTED.at(-1) ?? null,
+      overBudgetCount: values.filter((value) => value > 16.7).length
+    };
   }
   function validateOrders(orders) {
     if (!Array.isArray(orders) || !orders.length) {
@@ -36819,7 +36871,25 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       );
     }
   }
-  async function runComparison(bridge, { scene, count, pixelSize, spread, seed, warmupFrames = 30, sampleFrames: sampleFrames2 = 60, orders = [MODES] } = {}) {
+  async function runComparison(bridge, {
+    scene,
+    count,
+    pixelSize,
+    spread,
+    seed,
+    warmupFrames = 30,
+    sampleFrames: sampleFrames2 = 60,
+    orders = [MODES],
+    signal,
+    shouldCancel,
+    onProgress
+  } = {}) {
+    const CHECK_CANCELLED = () => {
+      if (signal?.aborted || shouldCancel?.() || document.hidden) {
+        throw new DOMException("Measurement stopped; incomplete round discarded", "AbortError");
+      }
+    };
+    CHECK_CANCELLED();
     for (const NAME of [
       "setAutoRender",
       "setScene",
@@ -36935,12 +37005,18 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       for (const ORDER of CONFIG.orders) {
         const METHODS = [];
         for (const MODE of ORDER) {
+          CHECK_CANCELLED();
+          onProgress?.({ mode: MODE, phase: "warmup" });
           bridge.setMode(MODE);
           let previousTimestamp = null;
           const RAW = { frameIntervalsMs: [], cpuTotalMs: [], submitMs: [], frames: [], gpuSamples: [] };
           const SCOPE = { mode: MODE, raw: RAW };
           for (let index = 0; index < warmupFrames + sampleFrames2; index++) {
-            const TIMESTAMP = await NEXT_FRAME();
+            const TIMESTAMP = await NEXT_FRAME(signal);
+            CHECK_CANCELLED();
+            if (index === warmupFrames) {
+              onProgress?.({ mode: MODE, phase: "sampling" });
+            }
             assertGraphics(bridge);
             const DISPLAY_TIME_MS = 500 + (index - warmupFrames) * DISPLAY_STEP_MS;
             const FRAME = bridge.renderOnce({ timeMs: DISPLAY_TIME_MS, updateReadout: false });
@@ -36984,7 +37060,8 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       let timerEnd = COLLECT_GPU();
       if (bridge.gpuTimerSupported && timerEnd.pendingCount) {
         for (let attempt = 0; attempt < 120 && timerEnd.pendingCount; attempt++) {
-          await NEXT_FRAME();
+          await NEXT_FRAME(signal);
+          CHECK_CANCELLED();
           assertGraphics(bridge);
           timerEnd = COLLECT_GPU();
         }
@@ -36993,17 +37070,17 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       for (const ROUND of ROUNDS) {
         for (const METHOD of ROUND.methods) {
           const RAW = METHOD.raw;
-          const INTERVAL = summary(RAW.frameIntervalsMs, true);
+          const INTERVAL = summarizeSamples(RAW.frameIntervalsMs);
           const GPU_VALUES = RAW.gpuSamples.map((sample) => sample.ms);
           const GPU_STATUS = !bridge.gpuTimerSupported ? "unsupported" : DISCARDED_COUNT > 0 ? "disjoint" : GPU_VALUES.length === sampleFrames2 ? "available" : GPU_VALUES.length ? "partial" : timerEnd?.pendingCount ? "pending" : "unavailable";
           Object.assign(METHOD, {
             fps: INTERVAL.mean ? 1e3 / INTERVAL.mean : null,
             frameIntervalMs: INTERVAL,
-            cpuTotalMs: summary(RAW.cpuTotalMs),
-            submitMs: summary(RAW.submitMs),
-            drawCalls: summary(RAW.frames.map((frame) => frame.drawCalls)),
+            cpuTotalMs: summarizeSamples(RAW.cpuTotalMs),
+            submitMs: summarizeSamples(RAW.submitMs),
+            drawCalls: summarizeSamples(RAW.frames.map((frame) => frame.drawCalls)),
             gpuMs: {
-              ...GPU_STATUS === "available" ? summary(GPU_VALUES) : { p50: null, p95: null },
+              ...GPU_STATUS === "available" ? summarizeSamples(GPU_VALUES) : { p50: null, p95: null },
               count: GPU_VALUES.length,
               expectedCount: sampleFrames2,
               coverage: GPU_VALUES.length / sampleFrames2,
@@ -37025,6 +37102,99 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
     } finally {
       bridge.restoreBenchmarkState(PREVIOUS);
     }
+  }
+
+  // modules/vector-assets/examples/raster-accumulation.js
+  var ACCUMULATION_LIMIT = 6e3;
+  var HISTORY_LIMIT = 5;
+  var MODES2 = ["vector", "raster", "sprite"];
+  function createAccumulation() {
+    const CONDITIONS = /* @__PURE__ */ new Map();
+    return {
+      reset() {
+        CONDITIONS.clear();
+      },
+      append(key2, label, result) {
+        let condition = CONDITIONS.get(key2);
+        if (!condition) {
+          condition = {
+            key: key2,
+            label,
+            rounds: 0,
+            setup: result.setup,
+            methods: MODES2.map((mode) => ({
+              mode,
+              cpu: [],
+              submit: [],
+              intervals: [],
+              gpu: [],
+              draws: [],
+              expected: 0,
+              invalidGpuRounds: 0,
+              gpuStatuses: []
+            }))
+          };
+        }
+        for (const MODE of MODES2) {
+          const METHOD = result.methods.find((method) => method.mode === MODE);
+          const STORED = condition.methods.find((method) => method.mode === MODE);
+          if (!METHOD || STORED.cpu.length + METHOD.raw.cpuTotalMs.length > ACCUMULATION_LIMIT) {
+            throw new RangeError("Accumulation limit reached; reset or choose another condition");
+          }
+        }
+        for (const METHOD of result.methods) {
+          const STORED = condition.methods.find((method) => method.mode === METHOD.mode);
+          STORED.cpu.push(...METHOD.raw.cpuTotalMs);
+          STORED.submit.push(...METHOD.raw.submitMs);
+          STORED.intervals.push(...METHOD.raw.frameIntervalsMs);
+          STORED.draws.push(...METHOD.raw.frames.map((frame) => frame.drawCalls));
+          STORED.expected += METHOD.measuredFrames;
+          if (METHOD.gpuMs.status === "disjoint") {
+            STORED.invalidGpuRounds++;
+          } else {
+            STORED.gpu.push(...METHOD.raw.gpuSamples.map((sample) => sample.ms));
+          }
+          if (!STORED.gpuStatuses.includes(METHOD.gpuMs.status)) {
+            STORED.gpuStatuses.push(METHOD.gpuMs.status);
+          }
+        }
+        condition.rounds++;
+        CONDITIONS.delete(key2);
+        CONDITIONS.set(key2, condition);
+        if (CONDITIONS.size > HISTORY_LIMIT) {
+          CONDITIONS.delete(CONDITIONS.keys().next().value);
+        }
+        return this.snapshot();
+      },
+      snapshot() {
+        return [...CONDITIONS.values()].map((condition) => ({
+          key: condition.key,
+          label: condition.label,
+          rounds: condition.rounds,
+          setupWallMs: condition.setup.wallMs,
+          initialPreparationCpuMs: condition.setup.snapshot.preparation.cpuMs,
+          atlasAllocatedBytes: condition.setup.atlasAllocatedBytes,
+          methods: condition.methods.map((method) => ({
+            mode: method.mode,
+            measuredFrames: method.cpu.length,
+            measuredDurationMs: method.intervals.reduce((sum, value) => sum + value, 0),
+            cpuTotalMs: summarizeSamples(method.cpu),
+            submitMs: summarizeSamples(method.submit),
+            frameIntervalMs: summarizeSamples(method.intervals),
+            drawCalls: summarizeSamples(method.draws),
+            gpuMs: {
+              ...summarizeSamples(method.gpu),
+              expectedCount: method.expected,
+              coverage: method.expected ? method.gpu.length / method.expected : null,
+              status: method.gpu.length === method.expected ? "available" : method.gpu.length ? "partial" : method.gpuStatuses.join(", "),
+              observedStatuses: method.gpuStatuses.join(", "),
+              invalidRounds: method.invalidGpuRounds
+            },
+            fps: method.intervals.length ? 1e3 / summarizeSamples(method.intervals).mean : null
+          }))
+        }));
+      }
+    };
   }
 
   // modules/vector-assets/examples/raster-comparison.js
@@ -37107,6 +37277,8 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
   var nextReadoutMs = 0;
   var frameHandle = null;
   var benchmarkRunning = false;
+  var ACCUMULATION = createAccumulation();
+  var accumulationController = null;
   function benchmarkConfigKey(config = {}) {
     return JSON.stringify({
       scene: config.scene ?? SCENE_INPUT.value,
@@ -37118,6 +37290,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       expression: EXPRESSION_INPUT.value,
       resolution: Number(RESOLUTION_INPUT.value),
       interval: Number(SAMPLE_INTERVAL_INPUT.value),
+      playbackRate: Number(PLAYBACK_RATE_INPUT.value),
       mixed: MIXED_INPUT.checked,
       zoom: Number(ZOOM_INPUT.value),
       quality: STATE.qualityKey,
@@ -37128,6 +37301,149 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       dpr: devicePixelRatio || 1,
       restores: DEVICE.stats.restores
     });
+  }
+  function showAccumulation() {
+    const RESULTS = BY_ID("accumulated-results");
+    RESULTS.replaceChildren();
+    for (const CONDITION of ACCUMULATION.snapshot().reverse()) {
+      const TITLE = document.createElement("p");
+      TITLE.textContent = `${CONDITION.label} · ${CONDITION.rounds} balanced rounds · setup wall ${benchmarkValue(CONDITION.setupWallMs)} · initial atlas CPU ${benchmarkValue(CONDITION.initialPreparationCpuMs)} · logical atlas ${CONDITION.atlasAllocatedBytes.toLocaleString()} B · steady image upload / bake Δ0`;
+      const TABLE = document.createElement("table");
+      const HEAD = TABLE.createTHead().insertRow();
+      for (const LABEL of [
+        "Path / metric (ms)",
+        "n / expected",
+        "Mean",
+        "p50",
+        "p95",
+        "p99",
+        "Max",
+        ">16.7 ms",
+        "Sampled time / RAF FPS"
+      ]) {
+        const CELL = document.createElement("th");
+        CELL.textContent = LABEL;
+        HEAD.append(CELL);
+      }
+      const BODY = TABLE.createTBody();
+      for (const METHOD of CONDITION.methods) {
+        for (const [LABEL, STATS] of [
+          ["CPU total", METHOD.cpuTotalMs],
+          ["CPU submit", METHOD.submitMs],
+          ["GPU", METHOD.gpuMs],
+          ["RAF interval", METHOD.frameIntervalMs]
+        ]) {
+          const ROW = BODY.insertRow();
+          const GPU = LABEL === "GPU";
+          const COUNT = GPU ? `${STATS.count}/${STATS.expectedCount} (${(STATS.coverage * 100).toFixed(0)}%)` : String(STATS.count);
+          for (const VALUE of [
+            `${METHOD.mode} · ${LABEL}`,
+            COUNT,
+            ...["mean", "p50", "p95", "p99", "max"].map((field) => benchmarkValue(STATS[field], "")),
+            STATS.count ? String(STATS.overBudgetCount) : "not measured",
+            `${(METHOD.measuredDurationMs / 1e3).toFixed(2)} s / ${benchmarkValue(METHOD.fps, " FPS")}`
+          ]) {
+            ROW.insertCell().textContent = VALUE;
+          }
+        }
+        const NOTE = BODY.insertRow().insertCell();
+        NOTE.colSpan = 9;
+        NOTE.textContent = `${METHOD.mode}: GPU ${METHOD.gpuMs.status} (${METHOD.gpuMs.observedStatuses}); disjoint rounds discarded ${METHOD.gpuMs.invalidRounds}. GPU statistics cover only valid returned samples. Draw calls p50 ${METHOD.drawCalls.p50}.`;
+      }
+      RESULTS.append(TITLE, TABLE);
+    }
+    if (!RESULTS.childNodes.length) {
+      RESULTS.textContent = "No accumulated samples. Start to collect balanced full-viewport rounds.";
+    }
+  }
+  function stopAccumulation() {
+    accumulationController?.abort();
+  }
+  function resetAccumulation() {
+    if (accumulationController) {
+      throw new Error("Stop measurement before resetting");
+    }
+    ACCUMULATION.reset();
+    STATE.benchmark = null;
+    document.querySelector(".benchmark-results").textContent = "Measurements cleared.";
+    showAccumulation();
+    BY_ID("accumulation-status").textContent = "Cleared. No accumulated samples.";
+  }
+  async function startAccumulation({ maxRounds = 100 } = {}) {
+    if (benchmarkRunning || STATE.qualityLoading || !STATE.ready) {
+      throw new Error("Wait for preparation or the current comparison to finish");
+    }
+    if (CLIP_INPUT.value !== "transform-repeat" || MIXED_INPUT.checked) {
+      BY_ID("accumulation-status").textContent = "Select transform-repeat and turn off mixed motion.";
+      return ACCUMULATION.snapshot();
+    }
+    const KEY = benchmarkConfigKey();
+    const CONFIG = JSON.parse(KEY);
+    const LABEL = `${CONFIG.scene} N=${CONFIG.count} · ${CONFIG.quality} curve=${CONFIG.curveSegments}/arc=${CONFIG.strokeArcDivisions} · image=${CONFIG.resolution}px step=${CONFIG.interval}ms · ${CONFIG.clip}/${CONFIG.expression} · size=${CONFIG.pixelSize}px spread=${CONFIG.spread}% seed=${CONFIG.seed} zoom=${CONFIG.zoom} · ${CONFIG.canvasWidth}×${CONFIG.canvasHeight} DPR=${CONFIG.dpr} · speed=${CONFIG.playbackRate} · restore=${CONFIG.restores}`;
+    const CONTROLLER = new AbortController();
+    accumulationController = CONTROLLER;
+    benchmarkRunning = true;
+    const CONTROLS = [
+      ...document.querySelectorAll(
+        "header input, header select, header button, #benchmark, #accumulate-start, #accumulate-reset"
+      )
+    ];
+    const DISABLED = CONTROLS.map((control) => control.disabled);
+    CONTROLS.forEach((control) => {
+      control.disabled = true;
+    });
+    BY_ID("accumulate-stop").disabled = false;
+    const STATUS_TEXT = BY_ID("accumulation-status");
+    const INTERRUPT = () => CONTROLLER.abort();
+    const HIDDEN = () => {
+      if (document.hidden) {
+        INTERRUPT();
+      }
+    };
+    window.addEventListener("resize", INTERRUPT);
+    document.addEventListener("visibilitychange", HIDDEN);
+    CANVAS.addEventListener("webglcontextlost", INTERRUPT);
+    try {
+      for (let round2 = 0; round2 < maxRounds; round2++) {
+        const PREVIOUS = ACCUMULATION.snapshot().find((entry) => entry.key === KEY);
+        if ((PREVIOUS?.methods[0].measuredFrames ?? 0) >= ACCUMULATION_LIMIT) {
+          STATUS_TEXT.textContent = "6,000 exact samples per path reached. Reset or choose another condition.";
+          break;
+        }
+        const ORDER = (PREVIOUS?.rounds ?? 0) % 2 ? ["sprite", "raster", "vector"] : ["vector", "raster", "sprite"];
+        const RESULT = await runComparison(globalThis.__rasterComparison, {
+          orders: [ORDER],
+          signal: CONTROLLER.signal,
+          shouldCancel: () => benchmarkConfigKey() !== KEY,
+          onProgress: ({ mode, phase }) => {
+            STATUS_TEXT.textContent = `${mode}: ${phase} · ${PREVIOUS?.rounds ?? 0} completed rounds. Stop discards only the incomplete round.`;
+          }
+        });
+        if (CONTROLLER.signal.aborted || benchmarkConfigKey() !== KEY) {
+          throw new DOMException("Conditions changed", "AbortError");
+        }
+        const HISTORY = ACCUMULATION.append(KEY, LABEL, RESULT);
+        STATE.benchmark = { key: KEY, methods: HISTORY.find((entry) => entry.key === KEY).methods };
+        showAccumulation();
+        STATUS_TEXT.textContent = "Round saved. Initial preparation and 30 warmup frames per path excluded.";
+      }
+    } catch (error2) {
+      STATUS_TEXT.textContent = error2.name === "AbortError" ? "Stopped. Completed balanced rounds retained; incomplete round discarded. Resume with unchanged settings to append." : `Measurement failed: ${error2.message}. Completed rounds retained.`;
+      if (error2.name !== "AbortError") {
+        throw error2;
+      }
+    } finally {
+      window.removeEventListener("resize", INTERRUPT);
+      document.removeEventListener("visibilitychange", HIDDEN);
+      CANVAS.removeEventListener("webglcontextlost", INTERRUPT);
+      CONTROLS.forEach((control, index) => {
+        control.disabled = DISABLED[index];
+      });
+      BY_ID("accumulate-stop").disabled = true;
+      accumulationController = null;
+      benchmarkRunning = false;
+    }
+    return ACCUMULATION.snapshot();
   }
   function benchmarkValue(value, suffix = " ms") {
     return value === null || value === void 0 ? "unavailable" : `${value.toFixed(2)}${suffix}`;
@@ -37188,7 +37504,11 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
     benchmarkRunning = true;
     const BUTTON = BY_ID("benchmark");
     const RESULTS = document.querySelector(".benchmark-results");
-    const CONTROLS = [...document.querySelectorAll("header input, header select, header button, #benchmark")];
+    const CONTROLS = [
+      ...document.querySelectorAll(
+        "header input, header select, header button, #benchmark, #accumulate-start, #accumulate-reset"
+      )
+    ];
     const DISABLED = CONTROLS.map((control) => control.disabled);
     for (const CONTROL of CONTROLS) {
       CONTROL.disabled = true;
@@ -38202,6 +38522,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
     scheduleNextFrame();
   }
   function disposeComparison() {
+    stopAccumulation();
     if (STATE.disposed) {
       return false;
     }
@@ -38326,6 +38647,11 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       seed: Number(SEED_INPUT.value)
     }).catch(console.error);
   });
+  BY_ID("accumulate-start").addEventListener("click", () => {
+    startAccumulation().catch(console.error);
+  });
+  BY_ID("accumulate-stop").addEventListener("click", stopAccumulation);
+  BY_ID("accumulate-reset").addEventListener("click", resetAccumulation);
   document.querySelector("header").addEventListener("change", (event) => {
     if (!benchmarkRunning && [
       "count",
@@ -38373,6 +38699,9 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       };
     },
     restoreBenchmarkState(state) {
+      if (STATE.disposed) {
+        return;
+      }
       setAutoRender(false);
       setScene(state.scene);
       MODE_INPUT.value = state.mode;
@@ -38421,6 +38750,12 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       return timer.drain();
     },
     runBenchmark,
+    startAccumulation,
+    stopAccumulation,
+    resetAccumulation,
+    get accumulation() {
+      return { running: Boolean(accumulationController), history: ACCUMULATION.snapshot() };
+    },
     renderOnce({ timeMs, updateReadout = true } = {}) {
       if (STATE.qualityLoading) {
         throw new Error("Mesh quality is still loading");
