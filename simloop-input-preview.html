@@ -676,6 +676,7 @@
     count: 0
   });
   var WHITE = Object.freeze([1, 1, 1, 1]);
+  var IDENTITY_RECT = Object.freeze([0, 0, 1, 1]);
   var INSTANCE_ATTRIBUTES = ["i_row0", "i_row1", "i_color", "i_params"].map((name, i) => ({
     name,
     size: 4,
@@ -686,6 +687,12 @@
     name,
     size: 4,
     offset: i * 16,
+    source: "instance"
+  }));
+  var TEXTURE_INSTANCE_ATTRIBUTES = ["i_uvRect", "i_localRect"].map((name, i) => ({
+    name,
+    size: 4,
+    offset: 64 + i * 16,
     source: "instance"
   }));
   var INSTANCE_STRIDE_FLOATS = 16;
@@ -4178,7 +4185,7 @@ void main() {
       return SIGNED(Number(BigInt(SIGNED(a)) * 1024n / BigInt(b)));
     }
   });
-  var VERSION = "0.18.0";
+  var VERSION = "0.19.0";
   var REPLAY_FORMAT_VERSION = "0.2.0-dev";
   var PROTOCOL_VERSION = 3;
   var CHUNK_SIZE = 16384;

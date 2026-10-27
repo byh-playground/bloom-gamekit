@@ -949,6 +949,7 @@
     count: 0
   });
   var WHITE = Object.freeze([1, 1, 1, 1]);
+  var IDENTITY_RECT = Object.freeze([0, 0, 1, 1]);
   var INSTANCE_ATTRIBUTES = ["i_row0", "i_row1", "i_color", "i_params"].map((name, i) => ({
     name,
     size: 4,
@@ -959,6 +960,12 @@
     name,
     size: 4,
     offset: i * 16,
+    source: "instance"
+  }));
+  var TEXTURE_INSTANCE_ATTRIBUTES = ["i_uvRect", "i_localRect"].map((name, i) => ({
+    name,
+    size: 4,
+    offset: 64 + i * 16,
     source: "instance"
   }));
   var INSTANCE_STRIDE_FLOATS = 16;
