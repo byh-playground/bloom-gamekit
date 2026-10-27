@@ -130,7 +130,11 @@ try {
                 'gutter outside atlas rejected',
             );
             EXPECT_THROW(
-                () => CREATE_SPRITE(MESHES, TEXTURE, { ...DEFINITION, clips: { bad: { frames: [2] } } }),
+                () =>
+                    CREATE_SPRITE(MESHES, TEXTURE, {
+                        ...DEFINITION,
+                        clips: { bad: { frames: [DEFINITION.frames.length] } },
+                    }),
                 'unknown clip frame rejected',
             );
             sprite = CREATE_SPRITE(MESHES, TEXTURE, DEFINITION);
