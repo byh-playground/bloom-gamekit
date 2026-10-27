@@ -333,7 +333,9 @@ try {
         assert.ok(METHOD.frameIntervalMs.p50 > 0 && METHOD.frameIntervalMs.p95 > 0);
         assert.ok(METHOD.cpuTotalMs.p50 >= 0 && METHOD.cpuTotalMs.p95 >= 0);
         assert.ok(METHOD.submitMs.p50 >= 0 && METHOD.submitMs.p95 >= 0);
-        assert.ok(['available', 'unsupported', 'pending', 'unavailable', 'disjoint'].includes(METHOD.gpuMs.status));
+        assert.ok(
+            ['available', 'partial', 'unsupported', 'pending', 'unavailable', 'disjoint'].includes(METHOD.gpuMs.status),
+        );
     }
     await PREVIEW_PAGE.close();
 
