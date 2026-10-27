@@ -177,6 +177,7 @@ try {
                         }
                     }
                     MESHES.preparePoses();
+                    const PREPARED_STATS = MESHES.poseStats();
                     for (let i = 0; i < PLAYERS.length; i++) {
                         if (PREPARED[i].culled) {
                             continue;
@@ -216,6 +217,12 @@ try {
                         binary += String.fromCharCode(...PIXELS.subarray(i, i + 32768));
                     }
                     const POSE_STATS = MESHES.poseStats();
+                    if (POSE_STATS.flushRecordVisits !== PREPARED_STATS.flushRecordVisits) {
+                        throw new Error('Drawing unchanged prepared poses must not rescan the atlas');
+                    }
+                    if (POSE_STATS.cpuPoseUploadBytes !== PREPARED_STATS.cpuPoseUploadBytes) {
+                        throw new Error('Drawing unchanged prepared CPU poses must not upload rows again');
+                    }
                     if (MESHES.poseRenderer?.gpuTarget && backend === 'auto') {
                         const TARGET = MESHES.poseRenderer.gpuTarget;
                         const GPU_POSES = new Float32Array(TARGET.width * TARGET.height * 4);

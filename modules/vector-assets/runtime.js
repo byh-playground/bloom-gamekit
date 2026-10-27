@@ -316,6 +316,7 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
         let poseRevision = 0;
         let resolvedRevision = -1;
         let resolvedPose = null;
+        let preparedPose = null;
         // The matrix cache belongs to this player; public pose results remain detached.
         // Reuse its map instead of allocating another world-map on each lazy sample.
         const RESOLVED_MATRICES = new Map();
@@ -329,9 +330,11 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
             partialSampleMs: 0,
             gpuPrepares: 0,
             cpuFallbacks: 0,
+            preparedPoseCacheHits: 0,
         };
         const INVALIDATE_POSE = () => {
             poseRevision++;
+            preparedPose = null;
         };
         const ASSERT_PLAYER = () => {
             REQUIRE_READY();
@@ -619,23 +622,59 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
         };
         const VALIDATE_EXCLUSIONS = (excludeParts) => {
             if (excludeParts === null) {
-                return;
+                return 0;
             }
             if (!(excludeParts instanceof Set)) {
                 throw new TypeError('excludeParts must be a Set of known part ids');
             }
+            let excludedMask = 0;
             for (const PART_ID of excludeParts) {
                 if (!PART_INDICES.has(PART_ID)) {
                     throw new TypeError(`Unknown vector part: ${PART_ID}`);
                 }
+                excludedMask |= 1 << PART_INDICES.get(PART_ID);
             }
+            return excludedMask;
         };
         const PREPARE_POSE = ({ excludeParts = null } = {}) => {
             ASSERT_PLAYER();
-            VALIDATE_EXCLUSIONS(excludeParts);
+            const EXCLUDED_MASK = VALIDATE_EXCLUSIONS(excludeParts);
             if (!POSE_INSTANCE) {
                 return null;
             }
+            const DEVICE = meshRenderer.device;
+            const FRAME = DEVICE?.stats?.frame;
+            const RESTORES = DEVICE?.stats?.restores ?? 0;
+            const GPU_UNAVAILABLE = meshRenderer.poseRenderer?.gpuUnavailableReason ?? null;
+            const CACHEABLE =
+                Number.isSafeInteger(FRAME) &&
+                (DEVICE?.state === undefined || DEVICE.state === 'ready') &&
+                (meshRenderer.state === undefined || meshRenderer.state === 'ready');
+            if (
+                CACHEABLE &&
+                preparedPose?.revision === poseRevision &&
+                preparedPose.frame === FRAME &&
+                preparedPose.restores === RESTORES &&
+                preparedPose.gpuUnavailable === GPU_UNAVAILABLE &&
+                preparedPose.excludedMask === EXCLUDED_MASK
+            ) {
+                POSE_METRICS.preparedPoseCacheHits++;
+                return preparedPose.handle;
+            }
+            const CACHE_PREPARED = (handle) => {
+                preparedPose =
+                    CACHEABLE && handle
+                        ? {
+                              revision: poseRevision,
+                              frame: FRAME,
+                              restores: RESTORES,
+                              gpuUnavailable: meshRenderer.poseRenderer?.gpuUnavailableReason ?? null,
+                              excludedMask: EXCLUDED_MASK,
+                              handle,
+                          }
+                        : null;
+                return handle;
+            };
             const MORPH = authoredMorph(SKETCH_MORPH_STYLE, displayTimeMs);
             const ACTIVE = GPU_CLIP();
             if (ACTIVE) {
@@ -649,7 +688,7 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
                 });
                 if (HANDLE) {
                     POSE_METRICS.gpuPrepares++;
-                    return HANDLE;
+                    return CACHE_PREPARED(HANDLE);
                 }
             }
             const RESOLVED = WORLD_MATRICES();
@@ -665,7 +704,7 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
                   ? (POSE_PROGRAM.clips[ACTIVE_PLAYBACK.name]?.reason ?? 'unsupportedClip')
                   : 'transitionBlend';
             POSE_METRICS.cpuFallbacks++;
-            return meshRenderer.prepareCpuPose(POSE_INSTANCE, PARTS, MORPH, REASON);
+            return CACHE_PREPARED(meshRenderer.prepareCpuPose(POSE_INSTANCE, PARTS, MORPH, REASON));
         };
         const DRAW = ({
             projection,

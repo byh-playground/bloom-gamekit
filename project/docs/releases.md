@@ -1,3 +1,7 @@
+## v0.17.1 (2026-10-27)
+
+Prepared vector poses are reused within the same frame and pose revision, including mutable exclusion contents and context restoration. Drawing a previously prepared CPU pose no longer uploads its row again. Clean pose atlases return without scanning all actors on each visible mesh flush. `poseStats()` exposes `flushCalls`, `flushRecordVisits`, and `cleanFlushSkips`; player metrics expose `preparedPoseCacheHits`. Animation, paint order, geometry and image quality are unchanged. This fixes measured preparation overhead; it does not claim that every consumer scene is faster than its earlier renderer.
+
 ## v0.17.0 (2026-10-27)
 
 공통 렌더러의 기본 backend를 WebGL 2로 전환합니다. Core instancing과 VAO를 사용하며 기존 analytic 도형과 공유 캔버스 순서를 유지합니다. 숫자 애니메이션 데이터 텍스처와 공유 pose atlas를 추가해 원본 SVG의 transform 채널·pivot·부모 계층을 GPU에서 평가합니다. CPU 소켓/부위 조회는 같은 채널의 Float64 데이터로 필요한 조상만 평가하고, 진행 중 중첩 전환·미지원 easing 등은 시계를 바꾸지 않고 명시적 CPU pose 경로를 사용합니다. Float render target 미지원/복구 실패도 CPU 숫자 텍스처로 처리합니다. 사용 비율·업로드·할당은 `MeshRenderer.poseStats()`로 구분합니다.
