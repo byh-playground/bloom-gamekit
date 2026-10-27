@@ -70,7 +70,7 @@ function shader(
     const STROKE_INPUTS = nonScalingStroke ? 'attribute vec4 a_stroke;uniform vec2 u_strokeViewportSize;' : '';
     const STROKE_VARYING = clipped && nonScalingStroke ? 'uniform mat3 u_inverseProjection;' : '';
     const TEXTURE_INPUTS = textured
-        ? 'attribute vec2 a_uv;varying vec2 v_uv;varying float v_forceColor;varying float v_whiteFlash;'
+        ? 'attribute highp vec2 a_uv;varying highp vec2 v_uv;varying float v_forceColor;varying float v_whiteFlash;'
         : '';
     const STROKE_POSITION = nonScalingStroke
         ? `
@@ -134,7 +134,7 @@ color.rgb=mix(color.rgb,vec3(1.0),i_params.z);v_color=vec4(color.rgb*color.a,col
 }
 function fragment(maxPlanes, clipped, textured = false) {
     const TEXTURE_INPUTS = textured
-        ? 'uniform sampler2D u_texture;varying vec2 v_uv;varying float v_forceColor;varying float v_whiteFlash;'
+        ? 'uniform sampler2D u_texture;varying highp vec2 v_uv;varying float v_forceColor;varying float v_whiteFlash;'
         : '';
     const OUTPUT = textured
         ? 'vec4 sampleColor=texture2D(u_texture,v_uv);float alpha=sampleColor.a*v_color.a;vec3 rgb=v_whiteFlash>0.5?vec3(alpha):v_forceColor>0.5?sampleColor.a*v_color.rgb:sampleColor.rgb*v_color.rgb;gl_FragColor=vec4(rgb,alpha);'

@@ -273,10 +273,12 @@ function cameraLayout(side, width, height) {
 }
 
 function synchronizeTimeControl() {
-    const DURATION = ASSET.metadata.clips[CLIP_INPUT.value].durationMs;
+    const CLIP = ASSET.metadata.clips[CLIP_INPUT.value];
+    const DURATION = CLIP.durationMs * (CLIP.loop === 'alternate' ? 2 : 1);
+    const DISPLAY_TIME = CLIP.loop === 'once' ? Math.min(DURATION, STATE.timeMs) : STATE.timeMs % DURATION;
     TIME_INPUT.max = String(DURATION);
-    TIME_INPUT.value = String(Math.min(DURATION, Math.max(0, Math.round(STATE.timeMs))));
-    BY_ID('time-value').value = `${Math.round(STATE.timeMs)} / ${DURATION} ms`;
+    TIME_INPUT.value = String(Math.max(0, Math.round(DISPLAY_TIME)));
+    BY_ID('time-value').value = `${Math.round(DISPLAY_TIME)} / ${DURATION} ms`;
     BY_ID('zoom-value').value = `${Number(ZOOM_INPUT.value).toFixed(1)}×`;
     PLAY_BUTTON.textContent = STATE.playing ? '일시정지' : '재생';
     PLAY_BUTTON.setAttribute('aria-pressed', String(STATE.playing));
@@ -470,6 +472,12 @@ function drawSpriteActors(positions, projection) {
 }
 
 function writeMetrics(cpuMs, animationMs, submitMs, rasterResult, spriteResult) {
+    BY_ID('part-label').textContent = rasterResult.vectorFallbacks
+        ? `2 벡터 + 부위 텍스처 · 벡터 대체 ${rasterResult.vectorFallbacks}/${PLAYERS.length}`
+        : '2 벡터 + 부위 텍스처';
+    BY_ID('sprite-label').textContent = spriteResult.vectorFallbacks
+        ? `3 텍스처 · 벡터 대체 ${spriteResult.vectorFallbacks}/${PLAYERS.length}`
+        : '3 텍스처 · 전체 프레임';
     const POSES = MESHES.poseStats();
     const MESH_STATS = MESHES.stats();
     const ATLAS_STATS = STATE.atlas?.stats ?? null;
@@ -744,7 +752,6 @@ MIXED_INPUT.addEventListener('change', () => {
 });
 RESOLUTION_INPUT.addEventListener('change', () => {
     resetTimer();
-    STATE.atlasResolution = 0;
 });
 SAMPLE_INTERVAL_INPUT.addEventListener('change', resetTimer);
 PLAYBACK_RATE_INPUT.addEventListener('change', resetTimer);
@@ -760,7 +767,8 @@ TIME_INPUT.addEventListener('input', () => {
 });
 PLAY_BUTTON.addEventListener('click', () => {
     resetTimer();
-    if (!STATE.playing && STATE.timeMs >= ASSET.metadata.clips[CLIP_INPUT.value].durationMs) {
+    const CLIP = ASSET.metadata.clips[CLIP_INPUT.value];
+    if (!STATE.playing && CLIP.loop === 'once' && STATE.timeMs >= CLIP.durationMs) {
         STATE.timeMs = 0;
     }
     STATE.playing = !STATE.playing;

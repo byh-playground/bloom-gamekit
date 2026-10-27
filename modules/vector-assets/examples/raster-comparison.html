@@ -212,7 +212,7 @@
             </p>
             <p>
                 스프라이트는 시간 간격에 따라 움직임이 계단처럼 보일 수 있습니다. 부위 래스터는 실시간 자세를
-                유지합니다.
+                유지합니다. 선택한 간격은 초기·설정 변경 시 굽기에만 사용하며 재생 프레임마다 다시 굽지 않습니다.
             </p>
             <div class="controls">
                 <label
@@ -220,17 +220,17 @@
                     <select id="mode">
                         <option value="split3" selected>세 방식 나란히</option>
                         <option value="split">벡터 / 부위 래스터</option>
-                        <option value="vector">벡터만</option>
-                        <option value="raster">부위 래스터만</option>
-                        <option value="sprite">스프라이트만</option>
+                        <option value="vector">1 순수 벡터</option>
+                        <option value="raster">2 벡터 + 부위 텍스처</option>
+                        <option value="sprite">3 텍스처 · 전체 프레임</option>
                     </select></label
                 >
                 <button id="play" type="button" aria-pressed="true">일시정지</button>
                 <label
                     >동작
                     <select id="clip">
-                        <option value="bounce" selected>bounce</option>
-                        <option value="idle">idle · opacity는 벡터 대체</option>
+                        <option value="bounce">bounce · once</option>
+                        <option value="idle" selected>idle · 반복 (부위 텍스처는 벡터 대체)</option>
                     </select></label
                 >
                 <label
@@ -263,9 +263,9 @@
                     >스프라이트 간격
                     <select id="sample-interval">
                         <option value="16">16ms · 약 60fps</option>
-                        <option value="33" selected>33ms · 약 30fps</option>
+                        <option value="33">33ms · 약 30fps</option>
                         <option value="50">50ms · 20fps</option>
-                        <option value="100">100ms · 10fps</option>
+                        <option value="100" selected>100ms · 10fps</option>
                     </select></label
                 >
                 <label
@@ -291,7 +291,8 @@
         <main class="stage" id="stage" data-mode="split3">
             <canvas id="canvas" aria-label="같은 SVG의 벡터와 래스터 렌더 비교"></canvas>
             <div class="labels">
-                <span>벡터 · 원본 도형</span><span>래스터 · 구운 부위</span><span>스프라이트 · 구운 프레임</span>
+                <span>1 순수 벡터</span><span id="part-label">2 벡터 + 부위 텍스처</span
+                ><span id="sprite-label">3 텍스처 · 전체 프레임</span>
             </div>
         </main>
         <footer>

@@ -12,6 +12,18 @@ const ROOT = resolve('.');
 const RAW = [];
 const ERRORS = [];
 const HASHES = {};
+const CLIPS = process.argv.includes('--loop-only')
+    ? ['idle']
+    : process.argv.includes('--once-only')
+      ? ['bounce']
+      : ['idle', 'bounce'];
+const COUNTS = process.argv.includes('--full') ? [100, 500, 1000] : [500];
+const CASES = CLIPS.flatMap((clip) => COUNTS.map((count) => ({ clip, count })));
+const REPORT_NAME = process.argv.includes('--loop-only')
+    ? 'loop'
+    : process.argv.includes('--once-only')
+      ? 'once'
+      : 'all';
 for (const FILE of [
     'dist/rendering.js',
     'dist/vector-assets.js',
@@ -35,18 +47,18 @@ try {
     const BOOT = await PAGE.evaluate(() => globalThis.__rasterComparison.snapshot);
     await PAGE.evaluate(() => globalThis.__rasterComparison.setAutoRender(false));
     await PAGE.evaluate(() => document.querySelector('canvas').getContext('webgl2').finish());
-    for (const COUNT of [100, 500, 1000]) {
+    for (const { count: COUNT, clip: CLIP } of CASES) {
         for (const [ROUND, ORDER] of [
             ['forward', ['vector', 'raster', 'sprite']],
             ['reverse', ['sprite', 'raster', 'vector']],
         ]) {
             for (const MODE of ORDER) {
                 const RUN = await PAGE.evaluate(
-                    async ({ mode, count }) => {
+                    async ({ mode, count, clip }) => {
                         const BRIDGE = globalThis.__rasterComparison;
                         BRIDGE.setMode(mode);
                         BRIDGE.setCount(count);
-                        BRIDGE.setClip('bounce');
+                        BRIDGE.setClip(clip);
                         BRIDGE.setResolution(256);
                         BRIDGE.setSampleInterval(100);
                         BRIDGE.setMixed(false);
@@ -56,13 +68,19 @@ try {
                         document.querySelector('canvas').getContext('webgl2').finish();
                         const SETUP_COMPLETE_WALL_MS = performance.now() - SETUP_START;
                         for (let frame = 0; frame < 30; frame++) {
-                            BRIDGE.renderOnce({ timeMs: (frame * 16.6667) % 500 });
+                            BRIDGE.renderOnce({
+                                timeMs: clip === 'bounce' ? (frame * 16.6667) % 500 : frame * 16.6667,
+                            });
                             await new Promise((resolve) => setTimeout(resolve, 16));
                         }
                         BRIDGE.drainGpuSamples();
                         const SAMPLES = [];
                         for (let frame = 0; frame < 60; frame++) {
-                            SAMPLES.push(BRIDGE.renderOnce({ timeMs: (frame * 16.6667) % 500 }));
+                            SAMPLES.push(
+                                BRIDGE.renderOnce({
+                                    timeMs: clip === 'bounce' ? (frame * 16.6667) % 500 : 500 + frame * 16.6667,
+                                }),
+                            );
                             await new Promise((resolve) => setTimeout(resolve, 16));
                         }
                         await new Promise((resolve) => setTimeout(resolve, 50));
@@ -75,10 +93,10 @@ try {
                             gpuSamples: BRIDGE.drainGpuSamples().filter((sample) => MEASURED_FRAMES.has(sample.frame)),
                         };
                     },
-                    { mode: MODE, count: COUNT },
+                    { mode: MODE, count: COUNT, clip: CLIP },
                 );
-                RAW.push({ count: COUNT, round: ROUND, mode: MODE, ...RUN });
-                console.log(`${COUNT} ${ROUND} ${MODE} complete`);
+                RAW.push({ count: COUNT, clip: CLIP, round: ROUND, mode: MODE, ...RUN });
+                console.log(`${CLIP} ${COUNT} ${ROUND} ${MODE} complete`);
             }
         }
     }
@@ -88,6 +106,7 @@ try {
     };
     const SUMMARY = RAW.map((run) => ({
         count: run.count,
+        clip: run.clip,
         round: run.round,
         mode: run.mode,
         cpuP50: PERCENTILE(
@@ -131,7 +150,10 @@ try {
         raw: RAW,
     };
     await mkdir(resolve(ROOT, 'test-results'), { recursive: true });
-    await writeFile(resolve(ROOT, 'test-results/raster-comparison-benchmark.json'), JSON.stringify(REPORT, null, 2));
+    await writeFile(
+        resolve(ROOT, `test-results/raster-comparison-benchmark-${REPORT_NAME}.json`),
+        JSON.stringify(REPORT, null, 2),
+    );
     if (ERRORS.length) {
         throw new Error(ERRORS.join('\n'));
     }

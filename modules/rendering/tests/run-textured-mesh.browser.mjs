@@ -106,6 +106,9 @@ try {
             let player;
             let singlePartResource;
             let singlePartPlayer;
+            let largeLeft;
+            let largeRight;
+            let largeTexture;
             try {
                 EXPECT_THROW(
                     () => CTX.createMesh({ ...QUAD_DATA, uvs: new Float32Array([0, 1]) }),
@@ -242,6 +245,44 @@ try {
                 CHECK(GL.getError() === GL.NO_ERROR, 'clipped textured scene GL error');
                 CTX.deleteClipPath(STENCIL_PATH);
 
+                const LARGE_WIDTH = Math.min(8192, DEVICE.maxTextureSize);
+                CHECK(LARGE_WIDTH >= 2048, 'WebGL2 texture size supports precision scene');
+                const LARGE_PIXELS = new Uint8Array(LARGE_WIDTH * 4 * 4);
+                for (let pixel = 3; pixel < LARGE_PIXELS.length; pixel += 4) {
+                    LARGE_PIXELS[pixel] = 255;
+                }
+                for (let row = 1; row <= 2; row++) {
+                    for (let column = 0; column < 2; column++) {
+                        LARGE_PIXELS[(row * LARGE_WIDTH + column) * 4] = 255;
+                        LARGE_PIXELS[(row * LARGE_WIDTH + LARGE_WIDTH - 4 + column) * 4 + 1] = 255;
+                    }
+                }
+                largeTexture = DEVICE.createTexture(
+                    { width: LARGE_WIDTH, height: 4, data: LARGE_PIXELS },
+                    { filter: 'nearest' },
+                );
+                const TILE_UVS = (start, end) =>
+                    new Float32Array([
+                        start / LARGE_WIDTH,
+                        0.75,
+                        end / LARGE_WIDTH,
+                        0.75,
+                        end / LARGE_WIDTH,
+                        0.25,
+                        start / LARGE_WIDTH,
+                        0.25,
+                    ]);
+                largeLeft = CTX.createMesh({ ...QUAD_DATA, uvs: TILE_UVS(0, 2) });
+                largeRight = CTX.createMesh({ ...QUAD_DATA, uvs: TILE_UVS(LARGE_WIDTH - 4, LARGE_WIDTH - 2) });
+                BEGIN();
+                DRAW(largeLeft, largeTexture, 8, 8);
+                DRAW(largeRight, largeTexture, 48, 8);
+                CTX.endFrame();
+                const LARGE_UV_SAMPLES = { left: PIXEL(24, 24), right: PIXEL(64, 24) };
+                NEAR(LARGE_UV_SAMPLES.left, [255, 0, 0, 255], 'large atlas left red tile');
+                NEAR(LARGE_UV_SAMPLES.right, [0, 255, 0, 255], 'large atlas right green tile before gutter');
+                CHECK(GL.getError() === GL.NO_ERROR, 'large atlas UV scene GL error');
+
                 resource = V.createVectorAsset(CTX.meshRenderer, COMPILED);
                 player = resource.createPlayer({ clip: Object.keys(COMPILED.metadata.clips)[0], startedAtMs: 0 });
                 player.seek(120);
@@ -318,8 +359,10 @@ try {
                 CTX.deleteMesh(TINTED);
                 CTX.deleteMesh(TEXTURED_POSE);
                 CTX.deleteMesh(TEXTURED_SINGLE_POSE);
+                CTX.deleteMesh(largeLeft);
+                CTX.deleteMesh(largeRight);
                 CTX.dispose();
-                for (const TEXTURE of [TEXTURE_A, TEXTURE_B, TEXTURE_LINEAR, WHITE_TEXTURE]) {
+                for (const TEXTURE of [TEXTURE_A, TEXTURE_B, TEXTURE_LINEAR, WHITE_TEXTURE, largeTexture]) {
                     DEVICE.deleteTexture(TEXTURE);
                 }
                 const COUNTS = {
@@ -338,6 +381,7 @@ try {
                     hardware: HARDWARE,
                     samples: SAMPLES,
                     clippedSamples: CLIPPED_SAMPLES,
+                    largeUv: { width: LARGE_WIDTH, samples: LARGE_UV_SAMPLES },
                     restoredSamples: RESTORED_SAMPLES,
                     first: FIRST.mesh,
                     pose: POSE_STATS,

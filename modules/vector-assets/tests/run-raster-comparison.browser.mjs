@@ -72,10 +72,12 @@ try {
             DEMO.setZoom(ZOOM);
             FRAMES.push(DEMO.renderOnce({ timeMs: 130 }));
         }
+        DEMO.setResolution(512);
+        const SAME_RESOLUTION = DEMO.renderOnce({ timeMs: 130 });
         DEMO.setClip('idle');
         const OPACITY = DEMO.renderOnce({ timeMs: 130 });
         const DISPOSED = DEMO.dispose();
-        return { frames: FRAMES, opacity: OPACITY, disposed: DISPOSED };
+        return { frames: FRAMES, sameResolution: SAME_RESOLUTION, opacity: OPACITY, disposed: DISPOSED };
     });
     assert.equal(preview.disposed, true);
     for (const FRAME of preview.frames) {
@@ -85,6 +87,7 @@ try {
         assert.ok(FRAME.atlas.atlasBytes > 0);
     }
     assert.equal(preview.opacity.rasterResult.vectorFallbacks, 1);
+    assert.ok(preview.sameResolution.textureBytes < preview.sameResolution.atlas.atlasBytes);
     assert.ok(preview.opacity.rasterResult.reasons.includes('opacityChannel'));
     await PREVIEW_PAGE.close();
 
