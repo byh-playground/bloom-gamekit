@@ -638,7 +638,8 @@ export async function exerciseWebGLDevice(page) {
 /** Stable path/text/group-opacity scenario over an actual WebGL2 framebuffer. */
 export async function exerciseVectorRenderer(page) {
     const SOURCE = await readFile(new URL('../vector-renderer.js', import.meta.url), 'utf8');
-    const FRAGMENT = SOURCE.match(/^const FRAGMENT = `([\s\S]*?)`;/m)?.[1];
+    // JavaScript template literals normalize CRLF to LF before WebGL receives the shader.
+    const FRAGMENT = SOURCE.match(/^const FRAGMENT = `([\s\S]*?)`;/m)?.[1]?.replace(/\r\n/g, '\n');
     assert.ok(FRAGMENT, 'the original two-circle radial fragment remains present');
     assert.equal(
         createHash('sha256').update(FRAGMENT.replaceAll('\r\n', '\n')).digest('hex'),

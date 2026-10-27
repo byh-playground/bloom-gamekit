@@ -1,3 +1,4 @@
+import { validatePaintRegionData } from '../rendering/paint-regions.js';
 export const VECTOR_ASSET_SCHEMA_VERSION = 1;
 export const VECTOR_ASSET_COMPILER_VERSION = '0.11.0';
 const ACCEPTED_COMPILER_VERSIONS = new Set([
@@ -354,6 +355,7 @@ export function validateCompiledAsset(asset) {
     if (INDICES === undefined && VERTEX_COUNT % 3) {
         throw new TypeError('Non-indexed compiled SVG geometry must contain complete triangles');
     }
+    validatePaintRegionData(asset.geometry.paintRegions, VERTEX_COUNT, INDICES);
     if (
         ['0.8.0', '0.9.0', '0.10.0', VECTOR_ASSET_COMPILER_VERSION].includes(asset.compilerVersion) &&
         asset.compilerOptions === undefined
@@ -412,6 +414,11 @@ export function validateCompiledAsset(asset) {
             VARIANT.some((index) => index >= VERTEX_COUNT)
         ) {
             throw new TypeError('Invalid compiled SVG named index variant: ' + NAME);
+        }
+    }
+    if (asset.geometry.paintRegions) {
+        for (const VARIANT of [...Object.values(EXPRESSION_INDICES ?? {}), ...Object.values(INDEX_VARIANTS ?? {})]) {
+            validatePaintRegionData(asset.geometry.paintRegions, VERTEX_COUNT, VARIANT);
         }
     }
     const SURFACES = asset.geometry.shaderSurfaces;
