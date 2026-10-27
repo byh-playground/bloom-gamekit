@@ -2,7 +2,12 @@ import { build } from 'esbuild';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { bundledAssetSource, bundledStyleExamplesSource } from '../modules/vector-assets/compiler.js';
+import {
+    bundledAssetSource,
+    bundledStyleExamplesSource,
+    compileVectorAssetFile,
+    compiledAssetModuleSource,
+} from '../modules/vector-assets/compiler.js';
 import { MATTER_URL } from '../modules/pixel-physics/dependencies.js';
 
 // Every maintained example HTML entry. Test harnesses and provenance archives are not demos.
@@ -18,6 +23,7 @@ export const EXAMPLES = [
     ['navigation', 'modules/navigation/examples/index.html'],
     ['rendering-vector', 'modules/rendering/examples/vector/index.html'],
     ['vector-assets', 'modules/vector-assets/examples/index.html'],
+    ['vector-raster-comparison', 'modules/vector-assets/examples/raster-comparison.html'],
     ['rollback-availability', 'modules/rollback/examples/availability/index.html'],
     ['rollback-reference', 'modules/rollback/examples/reference/index.html'],
     ['scenario', 'modules/scenario/examples/index.html'],
@@ -100,6 +106,11 @@ export async function buildPreviews(root) {
                     {
                         name: 'vector-asset-example',
                         setup(b) {
+                            b.onResolve({ filter: /^\.\.\/seed-scout-raster-comparison\.compiled\.js$/ }, (args) =>
+                                /[\\/]examples[\\/]raster-comparison\.js$/.test(args.importer)
+                                    ? { path: 'seed-scout-raster-comparison', namespace: 'vector-asset-example' }
+                                    : null,
+                            );
                             b.onResolve(
                                 {
                                     filter: /^\.\.\/seed-scout\.compiled\.js$/,
@@ -137,7 +148,17 @@ export async function buildPreviews(root) {
                                     contents:
                                         args.path === 'seed-scout'
                                             ? await bundledAssetSource(root)
-                                            : await bundledStyleExamplesSource(root),
+                                            : args.path === 'seed-scout-raster-comparison'
+                                              ? compiledAssetModuleSource(
+                                                    await compileVectorAssetFile(
+                                                        resolve(
+                                                            root,
+                                                            'modules/vector-assets/assets/seed-scout-raster-comparison.svg',
+                                                        ),
+                                                    ),
+                                                    'seedScout',
+                                                )
+                                              : await bundledStyleExamplesSource(root),
                                     loader: 'js',
                                 }),
                             );

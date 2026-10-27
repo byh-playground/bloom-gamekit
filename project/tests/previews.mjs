@@ -57,6 +57,7 @@ try {
                     navigation: 'navigationDemo',
                     'rendering-vector': 'vectorExample',
                     'vector-assets': 'vectorAssetDemo',
+                    'vector-raster-comparison': '__rasterComparison',
                     'rollback-reference': 'reference',
                     scenario: 'scenarioDemo',
                     'pixel-physics': 'pixelPhysicsExample',
@@ -76,6 +77,11 @@ try {
         );
         if (NAME === 'interpolation') {
             await PAGE.waitForFunction(() => demo.diagnostics.frames > 5);
+        }
+        if (NAME === 'vector-raster-comparison') {
+            await PAGE.waitForFunction(() => globalThis.__rasterComparison.ready);
+            assert.equal(await PAGE.evaluate(() => globalThis.__rasterComparison.error), null);
+            assert.equal(await PAGE.evaluate(() => globalThis.__rasterComparison.snapshot.count), 1);
         }
         if (NAME === 'work-scheduler') {
             await PAGE.click('#tick');

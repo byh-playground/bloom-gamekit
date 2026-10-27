@@ -171,6 +171,8 @@ export class WebGLDevice {
             bufferBytes: 0,
             textureUploads: 0,
             textureBytes: 0,
+            imageTexUploadCount: 0,
+            imageTexUploadBytes: 0,
             frameCopies: 0,
             bufferAllocations: 0,
             gpuBufferBytes: 0,
@@ -523,7 +525,18 @@ export class WebGLDevice {
         if (R.target !== target) {
             throw new TypeError('Buffer target does not match delete operation');
         }
-        this.gl.deleteBuffer(R.gpu);
+        const GL = this.gl;
+        if (target === GL.ARRAY_BUFFER && this.state === 'ready' && this.vertexArray && !GL.isContextLost()) {
+            const PREVIOUS_VERTEX_ARRAY = GL.getParameter(GL.VERTEX_ARRAY_BINDING);
+            try {
+                GL.bindVertexArray(this.vertexArray);
+                GL.deleteBuffer(R.gpu);
+            } finally {
+                GL.bindVertexArray(PREVIOUS_VERTEX_ARRAY);
+            }
+        } else {
+            GL.deleteBuffer(R.gpu);
+        }
         this.buffers.delete(handle);
         this.stats.gpuBufferBytes -= R.capacity;
         this.stats.bufferCount = this.buffers.size;
@@ -628,6 +641,10 @@ export class WebGLDevice {
             }
             this.stats.textureUploads++;
             this.stats.textureBytes += this._textureBytes(record);
+            if (record.kind === 'image' && record.source !== null) {
+                this.stats.imageTexUploadCount++;
+                this.stats.imageTexUploadBytes += this._textureBytes(record);
+            }
         } catch (error) {
             GL.deleteTexture(record.gpu);
             record.gpu = null;
@@ -710,6 +727,7 @@ export class WebGLDevice {
             throw new Error('EXT_color_buffer_float required for RGBA32F render targets');
         }
         const RECORD = {
+            kind: 'renderTarget',
             width,
             height,
             format,
@@ -822,6 +840,7 @@ export class WebGLDevice {
         }
         const RECORD = {
             ...this._source(source, format, premultiplied),
+            kind: 'image',
             filter,
             gpu: null,
         };
@@ -844,6 +863,7 @@ export class WebGLDevice {
             throw new TypeError('RGBA32F data must match the texture dimensions');
         }
         const RECORD = {
+            kind: 'numeric',
             width,
             height,
             format: 'rgba32f',
@@ -918,7 +938,7 @@ export class WebGLDevice {
             throw new RangeError('Update requires matching full source');
         }
         if (R.copyFormat) {
-            const REPLACEMENT = { ...NEXT, filter: R.filter, gpu: null };
+            const REPLACEMENT = { ...NEXT, kind: R.kind, filter: R.filter, gpu: null };
             this._texture(REPLACEMENT);
             this.gl.deleteTexture(R.gpu);
             this.stats.gpuTextureBytes += this._textureBytes(REPLACEMENT) - this._textureBytes(R);
@@ -988,6 +1008,10 @@ export class WebGLDevice {
         R.source = NEXT.source;
         this.stats.textureUploads++;
         this.stats.textureBytes += width * height * (R.format === 'rgba' ? 4 : 1);
+        if (R.kind === 'image') {
+            this.stats.imageTexUploadCount++;
+            this.stats.imageTexUploadBytes += width * height * (R.format === 'rgba' ? 4 : 1);
+        }
     }
     /** Copies the resolved framebuffer on-GPU. Recopy after restore; pixels are not CPU-retained. */
     copyFrameToTexture(handle, { x = 0, y = 0 } = {}) {

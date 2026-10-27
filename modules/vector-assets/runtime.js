@@ -217,6 +217,15 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
     const SKETCH_MORPH_STYLE = METADATA.styles?.find((style) => style.kind === 'sketch') ?? null;
     const PART_INDICES = new Map(METADATA.parts.map((part, index) => [part.id, index]));
     const CLIPS = METADATA.clips;
+    const OPACITY_CLIPS = new Set(
+        Object.entries(CLIPS)
+            .filter(([, definition]) =>
+                definition.keyframes.some((frame) =>
+                    Object.values(frame.parts).some((pose) => Object.hasOwn(pose, 'opacity')),
+                ),
+            )
+            .map(([name]) => name),
+    );
     const POSE_API =
         typeof meshRenderer.createPoseSource === 'function' &&
         typeof meshRenderer.createPoseInstance === 'function' &&
@@ -396,6 +405,19 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
         const GPU_CLIP = () => {
             const ACTIVE = ACTIVE_CLIP(rootPlayback, displayTimeMs);
             return ACTIVE && POSE_PROGRAM?.clips[ACTIVE.name]?.supported ? ACTIVE : null;
+        };
+        const HAS_OPACITY_CHANNEL = (playback, timeMs) => {
+            if (playback.kind === 'clip') {
+                return OPACITY_CLIPS.has(playback.name);
+            }
+            const ELAPSED = timeMs - playback.atMs;
+            if (ELAPSED <= 0 && playback.durationMs !== 0) {
+                return HAS_OPACITY_CHANNEL(playback.from, timeMs);
+            }
+            if (playback.durationMs === 0 || ELAPSED >= playback.durationMs) {
+                return HAS_OPACITY_CHANNEL(playback.to, timeMs);
+            }
+            return HAS_OPACITY_CHANNEL(playback.from, timeMs) || HAS_OPACITY_CHANNEL(playback.to, timeMs);
         };
         const ENSURE_CURRENT_POSE = () => {
             if (sampledTimeMs !== displayTimeMs || sampledPlaybackRevision !== playbackRevision) {
@@ -927,6 +949,17 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
             get currentTimeMs() {
                 return displayTimeMs;
             },
+            get hasOpacityChannel() {
+                return HAS_OPACITY_CHANNEL(rootPlayback, displayTimeMs);
+            },
+            get hasNonUnitBaseOpacity() {
+                for (const POSE of BASE_POSE.values()) {
+                    if (POSE.opacity < 1) {
+                        return true;
+                    }
+                }
+                return false;
+            },
             get disposed() {
                 return playerDisposed;
             },
@@ -967,6 +1000,9 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
         mesh: mesh,
         surfaces: Object.freeze(RETAINED_SURFACES),
         createPlayer: CREATE_PLAYER,
+        ownsPlayer(player) {
+            return PLAYERS.has(player) && !player.disposed;
+        },
         dispose: DISPOSE,
         get disposed() {
             return disposed;

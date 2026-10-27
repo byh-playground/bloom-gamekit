@@ -246,6 +246,15 @@ export async function exerciseWebGLDevice(page) {
             height: 1,
             data: new Uint8Array([255, 0, 0, 128, 0, 255, 0, 255]),
         };
+        const IMAGE_STATS = () => [D.stats.imageTexUploadCount, D.stats.imageTexUploadBytes];
+        const IMAGE_DELTA = (before, count, bytes, label) => {
+            const AFTER = IMAGE_STATS();
+            CHECK(
+                AFTER[0] - before[0] === count && AFTER[1] - before[1] === bytes,
+                `${label}: image uploads ${AFTER}, before ${before}, expected +${count}/+${bytes}`,
+            );
+        };
+        const BEFORE_IMAGE_CREATE = IMAGE_STATS();
         const TEXTURE = D.createTexture(BYTES, {
             filter: 'nearest',
         });
@@ -259,6 +268,7 @@ export async function exerciseWebGLDevice(page) {
                 filter: 'nearest',
             },
         );
+        IMAGE_DELTA(BEFORE_IMAGE_CREATE, 2, 12, 'RGBA byte image creation');
         const ARENA = D.createVertexBuffer();
         function quad(slot, mode, white, u = 0.25) {
             const OUT = [];
@@ -297,12 +307,14 @@ export async function exerciseWebGLDevice(page) {
         NEAR(PIXEL(), [0, 255, 0, 255], 'radial gradient lookup');
         D.endFrame();
         BYTES.data.set([0, 0, 255, 255], 0);
+        const BEFORE_BYTE_UPDATE = IMAGE_STATS();
         D.updateTexture(TEXTURE, BYTES, {
             x: 0,
             y: 0,
             width: 1,
             height: 1,
         });
+        IMAGE_DELTA(BEFORE_BYTE_UPDATE, 1, 4, 'one-pixel RGBA image update');
         D.beginFrame();
         D.uploadVertices(ARENA, quad(0, 1, 0));
         D.draw(COMMAND);
@@ -314,6 +326,7 @@ export async function exerciseWebGLDevice(page) {
         const CTX = DOM.getContext('2d');
         CTX.fillStyle = 'red';
         CTX.fillRect(0, 0, 2, 1);
+        const BEFORE_DOM_UPLOAD = IMAGE_STATS();
         const DOM_TEXTURE = D.createTexture(DOM, {
             filter: 'nearest',
         });
@@ -325,6 +338,7 @@ export async function exerciseWebGLDevice(page) {
             width: 1,
             height: 1,
         });
+        IMAGE_DELTA(BEFORE_DOM_UPLOAD, 2, 12, 'DOM image create and one-pixel update');
         COMMAND.textures[0] = DOM_TEXTURE;
         D.beginFrame();
         D.uploadVertices(ARENA, quad(0, 1, 0));
@@ -351,6 +365,7 @@ export async function exerciseWebGLDevice(page) {
         });
         const FULL = D.createVertexBuffer();
         D.uploadVertices(FULL, new Float32Array([-1, -1, 1, -1, 1, 1, -1, -1, 1, 1, -1, 1]));
+        const BEFORE_LUMINANCE = IMAGE_STATS();
         const DARK = D.createTexture(
                 {
                     width: 3,
@@ -371,6 +386,7 @@ export async function exerciseWebGLDevice(page) {
                     format: 'luminance',
                 },
             );
+        IMAGE_DELTA(BEFORE_LUMINANCE, 2, 6, 'luminance image creation');
         D.beginFrame();
         D.draw({
             pipeline: FOG,
@@ -384,12 +400,22 @@ export async function exerciseWebGLDevice(page) {
             textures: [DARK, LIGHT],
         });
         NEAR(PIXEL(), [128, 0, 0, 255], 'two NPOT luminance fog masks');
+        const BEFORE_GPU_ONLY = IMAGE_STATS();
         const COPIED = D.createTexture({
             width: 64,
             height: 64,
             data: null,
         });
         D.copyFrameToTexture(COPIED);
+        const NUMERIC = D.createDataTexture(2, 1, { data: new Float32Array(8) });
+        D.updateDataTexture(NUMERIC, new Float32Array(4), { x: 1, y: 0, width: 1, height: 1 });
+        const TARGET = D.createRenderTarget(2, 1, { stencil: false });
+        D.bindRenderTarget(TARGET);
+        D.clear({ color: [0, 0, 0, 0] });
+        D.unbindRenderTarget(TARGET);
+        IMAGE_DELTA(BEFORE_GPU_ONLY, 0, 0, 'numeric data, empty render target and GPU copy excluded');
+        D.deleteRenderTarget(TARGET);
+        D.deleteTexture(NUMERIC);
         NEAR(PIXEL(), [128, 0, 0, 255], 'framebuffer remains after GPU copy');
         D.clear({
             color: [0, 0, 0, 1],
@@ -539,6 +565,7 @@ export async function exerciseWebGLDevice(page) {
             pixel: PIXEL,
             full: FULL,
             domTexture: DOM_TEXTURE,
+            imageBeforeRestore: IMAGE_STATS(),
         };
         return {
             productionErrorPolls,
@@ -553,6 +580,7 @@ export async function exerciseWebGLDevice(page) {
             partialAtlas: true,
             luminanceFog: true,
             frameCopy: true,
+            imageUploads: IMAGE_STATS(),
             stats: STATS,
             invalidRejected,
         };
@@ -582,12 +610,17 @@ export async function exerciseWebGLDevice(page) {
                 pixel: P.pixel(),
                 error: P.d.gl.getError(),
                 restores: P.d.stats.restores,
+                imageUploadDelta: [
+                    P.d.stats.imageTexUploadCount - P.imageBeforeRestore[0],
+                    P.d.stats.imageTexUploadBytes - P.imageBeforeRestore[1],
+                ],
             };
         });
         assert.deepEqual(RESTORED, {
             pixel: [0, 255, 0, 255],
             error: 0,
             restores: 1,
+            imageUploadDelta: [5, 26],
         });
     }
     RESULT.restoration = LOSS;

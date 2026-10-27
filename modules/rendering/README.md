@@ -1,5 +1,39 @@
 # rendering
 
+## Sprite animation
+
+`createSpriteAnimation(meshes, texture, definition)` is independent of SVG. It accepts a borrowed Device texture, frames with pixel rectangles and positive `durationMs`, and named clips with ordered frame indices and `loop: 'loop' | 'once'`. An external sprite sheet and an SVG-generated atlas use the same playback API. All frames share one retained unit quad. Per-instance UV and local rectangles select the image and preserve trim/pivot before part poses, without changing the caller's matrix. Different frames remain in one compatible batch in submission order; playback does not generate pixels or reorder actors by frame.
+
+```js
+const SPRITES = createSpriteAnimation(MESHES, TEXTURE, {
+    frames: [
+        { x: 2, y: 2, width: 32, height: 32, gutter: 2, durationMs: 120 },
+        { x: 38, y: 2, width: 32, height: 32, gutter: 2, durationMs: 80 },
+    ],
+    clips: { walk: { frames: [0, 1], loop: 'loop' } },
+});
+const PLAYER = SPRITES.createPlayer({ clip: 'walk', startedAtMs: 0 });
+PLAYER.draw({ timeMs: displayTimeMs, projection: PROJECTION, matrix: MATRIX });
+PLAYER.setPaused(true, displayTimeMs);
+PLAYER.seek(150, displayTimeMs); // elapsed clip time, then absolute clock anchor
+PLAYER.setRate(2, displayTimeMs); // preserves the current phase
+SPRITES.dispose(); // releases its mesh and invalidates players, not TEXTURE
+```
+
+Frame rectangles use logical top-left atlas pixel coordinates. `sourceWidth/sourceHeight` describe the untrimmed viewport; `sourceX/sourceY` place the trimmed rectangle in it. `pivotX/pivotY` are viewport pixel coordinates, with top-left as the default. Transparent gutter is outside the content rectangle and must fit in the texture. Set definition.textureOrigin to top-left (default) for ordinary image uploads or bottom-left for a render target. Texture filtering must match the upload source; render-target producers declare the opposite vertical storage orientation to ordinary image uploads. UVs span the content rectangle without shrinking its pixel footprint.
+
+Players sample an absolute caller clock, select one frame and hold it for its duration. There is no geometric interpolation or crossfade. Before the start time the first frame is held; loop clips wrap at total duration and once clips hold the last frame, including large clock jumps. Pause and speed changes preserve phase at the supplied clock time. Clocks and durations must be finite. Sprite texture memory and its initialization cost remain the producer's responsibility; context restore retains uploaded source textures but render-target producers must rebake their pixels.
+
+## Textured retained meshes
+
+`MeshRenderer.createMesh()` accepts optional `uvs`, two floats per existing 11-float source vertex. Supply the device-owned image texture or RGBA render target as `drawMesh(mesh, { texture, ...options })`; `VectorContext.drawMesh` forwards the same material. Texture and pose samplers use separate units. The shader applies the existing instance/part pose and premultiplied tint, preserving submission order across texture changes. Linear/nearest filtering belongs to the image texture; pose data remains nearest-filtered.
+
+The caller owns the texture lifetime. A UV mesh requires a live texture from the same device, and a mesh without UVs rejects a texture. Texture alpha cannot be classified by the CPU depth-write threshold path, so that combination is rejected. UVs and packed GPU vertices are retained for context restoration and included in resource accounting. A restored render target has empty contents; its producer must repaint it. `createVectorRasterAtlas` in vector-assets implements that repaint contract for SVG-derived atlases.
+
+Textured mesh draw options `uvRect` and `localRect` are `[offsetX, offsetY, extentX, extentY]`, defaulting to `[0, 0, 1, 1]`. UV extents may be negative for image orientation. Local rectangles apply after morph and before part pose; clip, stencil, depth, projection and texture boundaries still flush as required. These values occupy separate instance attributes, preserving the existing morph/pose/flash/depth parameters. Plain instances retain the 64-byte layout; textured instances upload 96 bytes. The shared GPU stream grows only when needed, and the uniform fallback uses the same rectangle values.
+
+`WebGLDevice.stats.imageTexUploadCount` and `imageTexUploadBytes` accumulate successful CPU/DOM image pixel transfers over the device lifetime; they do not reset at `beginFrame()`. `createTexture()` counts a supplied image or byte plane, and `updateTexture()` counts the uploaded region. Retained image pixels uploaded again after context restoration count again. Empty texture allocation, RGBA32F numeric pose data, render-target allocation and GPU atlas baking, and framebuffer-to-texture copies do not count as image uploads. Compare counter snapshots for a frame delta. The existing `textureUploads`/`textureBytes` counters keep their broader meaning; `gpuTextureBytes` measures live logical texture storage, including render-target color textures, so do not add `gpuRenderTargetBytes` to it as another color allocation.
+
 **HTML 실행 프리뷰:** [rendering-vector](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rendering-vector.html)
 
 게임·시뮬레이션·보간·DOM 입력과 독립적인 **WebGL 2 2D 제출 kernel**입니다. Core instancing과 VAO를 사용하며 Canvas2D 전장 fallback은 사용하지 않습니다. 불가능한 브라우저에서는 생성이 실패합니다.
