@@ -68,6 +68,9 @@ function assertPrepared(frame, baseline, mode, count, sourceTimeMs) {
     }
     if (
         frame.sourceSha256 !== baseline.sourceSha256 ||
+        frame.quality?.key !== baseline.qualityKey ||
+        frame.quality?.curveSegments !== baseline.curveSegments ||
+        frame.quality?.strokeArcDivisions !== baseline.strokeArcDivisions ||
         frame.clip !== baseline.clip ||
         frame.expression !== baseline.expression ||
         frame.canvasWidth !== baseline.canvasWidth ||
@@ -191,6 +194,9 @@ export async function runComparison(
             imageTexUploadCount: INITIAL.imageTexUploadCount,
             imageTexUploadBytes: INITIAL.imageTexUploadBytes,
             sourceSha256: INITIAL.sourceSha256,
+            qualityKey: INITIAL.quality?.key,
+            curveSegments: INITIAL.quality?.curveSegments,
+            strokeArcDivisions: INITIAL.quality?.strokeArcDivisions,
             clip: INITIAL.clip,
             expression: INITIAL.expression,
             canvasWidth: INITIAL.canvasWidth,
