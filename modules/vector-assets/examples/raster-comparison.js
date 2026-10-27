@@ -116,7 +116,12 @@ function setPartEnabled(value) {
     }
     STATE.benchmark = null;
     document.querySelector('.benchmark-results').textContent = 'Enabled paths changed. Run the comparison again.';
-    ensureAtlas();
+    if (PART_INPUT.checked) {
+        // Baking requires an active render frame, never an input event.
+        STATE.atlasResolution = 0;
+    } else {
+        ensureAtlas();
+    }
     invalidatePreparation(true);
     resetTimer();
     synchronizeTimeControl();
