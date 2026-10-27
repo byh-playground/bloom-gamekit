@@ -73,6 +73,24 @@ try {
         DEMO.setAutoRender(false);
         DEMO.setCount(1);
         DEMO.setClip('bounce');
+        const LIVE_HUD = [];
+        for (const MODE of ['split3', 'split', 'vector', 'raster', 'sprite']) {
+            DEMO.setMode(MODE);
+            const FRAME = DEMO.renderOnce({ timeMs: 130 });
+            LIVE_HUD.push({
+                mode: MODE,
+                submitMs: FRAME.submitMs,
+                frameText: document.getElementById('frame-metrics').textContent,
+                cards: ['vector', 'raster', 'sprite'].map((side) => {
+                    const CARD = document.getElementById(`${side}-card`);
+                    return {
+                        side,
+                        label: CARD.querySelector('.cpu-label').textContent,
+                        cpu: CARD.querySelector('.cpu').textContent,
+                    };
+                }),
+            });
+        }
         DEMO.setMode('raster');
         DEMO.setResolution(512);
         const FRAMES = [];
@@ -326,6 +344,7 @@ try {
         const DISPOSED = DEMO.dispose();
         return {
             frames: FRAMES,
+            liveHud: LIVE_HUD,
             sameResolution: SAME_RESOLUTION,
             opacity: OPACITY,
             prewarmCases: PREWARM_CASES,
@@ -336,6 +355,20 @@ try {
         };
     });
     assert.equal(preview.disposed, true);
+    for (const HUD of preview.liveHud) {
+        assert.ok(
+            HUD.frameText.startsWith(HUD.mode.startsWith('split') ? 'Shared visible paths' : 'Current full viewport'),
+        );
+        for (const CARD of HUD.cards) {
+            if (HUD.mode === CARD.side) {
+                assert.equal(CARD.label, 'Live submit (incl. flush)');
+                assert.equal(CARD.cpu, `${HUD.submitMs.toFixed(2)} ms`);
+            } else {
+                assert.equal(CARD.label, 'CPU timing');
+                assert.equal(CARD.cpu, 'Use sequential comparison');
+            }
+        }
+    }
     for (const FRAME of preview.frames) {
         assert.equal(FRAME.rasterResult.rasterDraws, 1, JSON.stringify(FRAME.rasterResult));
         assert.equal(FRAME.rasterResult.vectorFallbacks, 0);
