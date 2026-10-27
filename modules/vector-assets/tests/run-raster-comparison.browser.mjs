@@ -10,6 +10,14 @@ import { buildPreviews } from '../../../project/previews.mjs';
 const ROOT = resolve('.');
 const SOURCE = 'modules/vector-assets/assets/seed-scout.svg';
 const COMPILED = await compileVectorAssetFile(SOURCE, SOURCE);
+const LOOP_SOURCE = 'modules/vector-assets/assets/seed-scout-raster-comparison.svg';
+const LOOP_FIXTURE = await compileVectorAssetFile(LOOP_SOURCE, LOOP_SOURCE);
+assert.deepEqual(LOOP_FIXTURE.geometry, COMPILED.geometry, 'Comparison fixture preserves original SVG geometry');
+assert.deepEqual(LOOP_FIXTURE.metadata.clips.bounce, COMPILED.metadata.clips.bounce, 'Original once clip is unchanged');
+assert.deepEqual(LOOP_FIXTURE.metadata.clips['transform-repeat'], {
+    ...COMPILED.metadata.clips.bounce,
+    loop: 'repeat',
+});
 const SKETCH_SOURCE = 'modules/vector-assets/assets/sketch-fox.svg';
 const SKETCH_COMPILED = await compileVectorAssetFile(SKETCH_SOURCE, SKETCH_SOURCE);
 const SHADER_SOURCE = 'modules/vector-assets/tests/world-shader.svg';

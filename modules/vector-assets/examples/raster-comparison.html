@@ -207,8 +207,8 @@
         <header>
             <h1>같은 SVG, 벡터와 구운 그림 비교</h1>
             <p>
-                Seed Scout의 같은 애니메이션과 위치를 그립니다. 래스터는 부위 그림만 선택한 해상도로 굽고, 움직임은 매
-                프레임 적용합니다.
+                원본 Seed Scout와 같은 형상입니다. transform-repeat는 예제용 반복 clip이며 원본 bounce의 once 의미는
+                유지합니다. 1 순수 벡터, 2 벡터 + 부위 텍스처, 3 텍스처를 같은 시간과 카메라로 비교합니다.
             </p>
             <p>
                 스프라이트는 시간 간격에 따라 움직임이 계단처럼 보일 수 있습니다. 부위 래스터는 실시간 자세를
@@ -230,7 +230,8 @@
                     >동작
                     <select id="clip">
                         <option value="bounce">bounce · once</option>
-                        <option value="idle" selected>idle · 반복 (부위 텍스처는 벡터 대체)</option>
+                        <option value="transform-repeat" selected>transform-repeat · 예제용 반복 fixture</option>
+                        <option value="idle">idle · 반복 (부위 텍스처는 벡터 대체)</option>
                     </select></label
                 >
                 <label

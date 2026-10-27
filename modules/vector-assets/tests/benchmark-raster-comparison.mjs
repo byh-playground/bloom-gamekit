@@ -13,10 +13,10 @@ const RAW = [];
 const ERRORS = [];
 const HASHES = {};
 const CLIPS = process.argv.includes('--loop-only')
-    ? ['idle']
+    ? ['transform-repeat']
     : process.argv.includes('--once-only')
       ? ['bounce']
-      : ['idle', 'bounce'];
+      : ['transform-repeat', 'bounce'];
 const COUNTS = process.argv.includes('--full') ? [100, 500, 1000] : [500];
 const CASES = CLIPS.flatMap((clip) => COUNTS.map((count) => ({ clip, count })));
 const REPORT_NAME = process.argv.includes('--loop-only')
@@ -29,6 +29,7 @@ for (const FILE of [
     'dist/vector-assets.js',
     'dist/previews/vector-raster-comparison.html',
     'modules/vector-assets/assets/seed-scout.svg',
+    'modules/vector-assets/assets/seed-scout-raster-comparison.svg',
 ]) {
     HASHES[FILE] = createHash('sha256')
         .update(await readFile(resolve(ROOT, FILE)))
@@ -46,6 +47,10 @@ try {
     await PAGE.waitForFunction(() => globalThis.__rasterComparison?.ready, null, { timeout: 30000 });
     const BOOT = await PAGE.evaluate(() => globalThis.__rasterComparison.snapshot);
     await PAGE.evaluate(() => globalThis.__rasterComparison.setAutoRender(false));
+    await PAGE.addStyleTag({
+        content:
+            'body{grid-template-rows:auto 360px auto!important;overflow:hidden!important}.stage{height:360px!important;min-height:360px!important;max-height:360px!important}',
+    });
     await PAGE.evaluate(() => document.querySelector('canvas').getContext('webgl2').finish());
     for (const { count: COUNT, clip: CLIP } of CASES) {
         for (const [ROUND, ORDER] of [
@@ -83,19 +88,46 @@ try {
                             );
                             await new Promise((resolve) => setTimeout(resolve, 16));
                         }
-                        await new Promise((resolve) => setTimeout(resolve, 50));
-                        BRIDGE.pollGpuTimers();
+                        document.querySelector('canvas').getContext('webgl2').flush();
+                        for (let poll = 0; poll < 30; poll++) {
+                            await new Promise((resolve) => setTimeout(resolve, 16));
+                            if (!BRIDGE.pollGpuTimers().pendingCount) {
+                                break;
+                            }
+                        }
                         const MEASURED_FRAMES = new Set(SAMPLES.map((sample) => sample.frame));
                         return {
                             initial: INITIAL,
                             setupCompleteWallMs: SETUP_COMPLETE_WALL_MS,
                             samples: SAMPLES,
                             gpuSamples: BRIDGE.drainGpuSamples().filter((sample) => MEASURED_FRAMES.has(sample.frame)),
+                            glError: document.querySelector('canvas').getContext('webgl2').getError(),
                         };
                     },
                     { mode: MODE, count: COUNT, clip: CLIP },
                 );
                 RAW.push({ count: COUNT, clip: CLIP, round: ROUND, mode: MODE, ...RUN });
+                if (RUN.glError) {
+                    throw new Error(`WebGL error ${RUN.glError} in measured run`);
+                }
+                if (RUN.samples.some((sample) => sample.canvasWidth !== 1100 || sample.canvasHeight !== 360)) {
+                    throw new Error('Render dimensions changed across comparison paths');
+                }
+                if (/SwiftShader/i.test(RUN.initial.renderer)) {
+                    throw new Error('Software GPU is not a hardware benchmark');
+                }
+                if (
+                    CLIP === 'transform-repeat' &&
+                    RUN.samples.some((sample) =>
+                        MODE === 'raster'
+                            ? sample.rasterResult.rasterDraws !== COUNT || sample.rasterResult.vectorFallbacks !== 0
+                            : MODE === 'sprite'
+                              ? sample.spriteResult.spriteDraws !== COUNT || sample.spriteResult.vectorFallbacks !== 0
+                              : sample.poses.gpuDrawInstances !== COUNT,
+                    )
+                ) {
+                    throw new Error('Representative comparison did not use its actual rendering backend');
+                }
                 console.log(`${CLIP} ${COUNT} ${ROUND} ${MODE} complete`);
             }
         }
@@ -157,6 +189,13 @@ try {
     if (ERRORS.length) {
         throw new Error(ERRORS.join('\n'));
     }
+} catch (error) {
+    await mkdir(resolve(ROOT, 'test-results'), { recursive: true });
+    await writeFile(
+        resolve(ROOT, `test-results/raster-benchmark-failure-${REPORT_NAME}.json`),
+        JSON.stringify({ error: error.message, hashes: HASHES, raw: RAW }, null, 2),
+    );
+    throw error;
 } finally {
     await BROWSER.close();
 }

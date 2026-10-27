@@ -1,0 +1,315 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="220" viewBox="0 0 200 220">
+  <metadata id="vector-asset">{
+  "schemaVersion": 1,
+  "id": "seed-scout-raster-comparison-fixture",
+  "defaultExpression": "neutral",
+  "parts": [
+    {
+      "id": "body",
+      "parent": null,
+      "pivot": [
+        100,
+        128
+      ]
+    },
+    {
+      "id": "sprout",
+      "parent": "body",
+      "pivot": [
+        100,
+        69
+      ]
+    },
+    {
+      "id": "leaf-left",
+      "parent": "sprout",
+      "pivot": [
+        81,
+        51
+      ]
+    },
+    {
+      "id": "leaf-right",
+      "parent": "sprout",
+      "pivot": [
+        118,
+        51
+      ]
+    },
+    {
+      "id": "face-neutral",
+      "parent": "body",
+      "pivot": [
+        100,
+        128
+      ]
+    },
+    {
+      "id": "face-happy",
+      "parent": "body",
+      "pivot": [
+        100,
+        128
+      ]
+    },
+    {
+      "id": "face-surprised",
+      "parent": "body",
+      "pivot": [
+        100,
+        128
+      ]
+    }
+  ],
+  "expressions": {
+    "neutral": {
+      "show": [
+        "face-neutral"
+      ],
+      "hide": [
+        "face-happy",
+        "face-surprised"
+      ]
+    },
+    "happy": {
+      "show": [
+        "face-happy"
+      ],
+      "hide": [
+        "face-neutral",
+        "face-surprised"
+      ]
+    },
+    "surprised": {
+      "show": [
+        "face-surprised"
+      ],
+      "hide": [
+        "face-neutral",
+        "face-happy"
+      ]
+    }
+  },
+  "sockets": {
+    "mouth": {
+      "part": "body",
+      "point": [
+        100,
+        146
+      ]
+    },
+    "sprout-tip": {
+      "part": "sprout",
+      "point": [
+        100,
+        35
+      ]
+    }
+  },
+  "clips": {
+    "idle": {
+      "durationMs": 1200,
+      "loop": "repeat",
+      "easing": "inOutSine",
+      "keyframes": [
+        {
+          "timeMs": 0,
+          "easing": "inOutSine",
+          "parts": {
+            "body": {
+              "y": 0,
+              "rotation": 0,
+              "scaleX": 1,
+              "scaleY": 1,
+              "opacity": 1
+            },
+            "sprout": {
+              "rotation": 0
+            },
+            "leaf-left": {
+              "rotation": -0.08
+            },
+            "leaf-right": {
+              "rotation": 0.08
+            }
+          }
+        },
+        {
+          "timeMs": 600,
+          "easing": "inOutSine",
+          "parts": {
+            "body": {
+              "y": -3,
+              "rotation": 0.018,
+              "scaleX": 1.015,
+              "scaleY": 0.985,
+              "opacity": 0.94
+            },
+            "sprout": {
+              "rotation": -0.045
+            },
+            "leaf-left": {
+              "rotation": -0.19
+            },
+            "leaf-right": {
+              "rotation": 0.2
+            }
+          }
+        },
+        {
+          "timeMs": 1200,
+          "easing": "inOutSine",
+          "parts": {
+            "body": {
+              "y": 0,
+              "rotation": 0,
+              "scaleX": 1,
+              "scaleY": 1,
+              "opacity": 1
+            },
+            "sprout": {
+              "rotation": 0
+            },
+            "leaf-left": {
+              "rotation": -0.08
+            },
+            "leaf-right": {
+              "rotation": 0.08
+            }
+          }
+        }
+      ]
+    },
+    "bounce": {
+      "durationMs": 500,
+      "loop": "once",
+      "easing": "outQuad",
+      "keyframes": [
+        {
+          "timeMs": 0,
+          "easing": "outQuad",
+          "parts": {
+            "body": {
+              "y": 0,
+              "scaleX": 1,
+              "scaleY": 1
+            }
+          }
+        },
+        {
+          "timeMs": 180,
+          "easing": "outQuad",
+          "parts": {
+            "body": {
+              "y": -18,
+              "scaleX": 0.96,
+              "scaleY": 1.06
+            },
+            "sprout": {
+              "rotation": -0.08
+            }
+          }
+        },
+        {
+          "timeMs": 500,
+          "easing": "outQuad",
+          "parts": {
+            "body": {
+              "y": 0,
+              "scaleX": 1,
+              "scaleY": 1
+            },
+            "sprout": {
+              "rotation": 0
+            }
+          }
+        }
+      ]
+    },
+    "transform-repeat": {
+      "durationMs": 500,
+      "loop": "repeat",
+      "easing": "outQuad",
+      "keyframes": [
+        {
+          "timeMs": 0,
+          "easing": "outQuad",
+          "parts": {
+            "body": {
+              "y": 0,
+              "scaleX": 1,
+              "scaleY": 1
+            }
+          }
+        },
+        {
+          "timeMs": 180,
+          "easing": "outQuad",
+          "parts": {
+            "body": {
+              "y": -18,
+              "scaleX": 0.96,
+              "scaleY": 1.06
+            },
+            "sprout": {
+              "rotation": -0.08
+            }
+          }
+        },
+        {
+          "timeMs": 500,
+          "easing": "outQuad",
+          "parts": {
+            "body": {
+              "y": 0,
+              "scaleX": 1,
+              "scaleY": 1
+            },
+            "sprout": {
+              "rotation": 0
+            }
+          }
+        }
+      ]
+    }
+  }
+}</metadata>
+  <g id="body">
+    <path id="body-outline" d="M100 41 C139 41 166 72 166 118 C166 158 140 188 100 188 C60 188 34 158 34 118 C34 72 61 41 100 41 Z" fill="#49684a"/>
+    <path id="body-shade" d="M100 47 C137 47 160 76 160 118 C160 153 137 181 100 181 C64 181 40 153 40 118 C40 76 64 47 100 47 Z" fill="#688851"/>
+    <path id="body-shell" d="M98 50 C132 50 153 75 153 114 C153 148 132 174 98 174 C65 174 45 149 45 114 C45 75 67 50 98 50 Z" fill="#8fac68"/>
+    <path id="body-highlight" d="M65 78 C76 63 95 57 112 60 C101 62 93 69 89 79 C85 89 75 93 67 89 C63 87 62 83 65 78 Z" fill="#c7dc8d"/>
+    <path id="body-glint" d="M60 104 C63 95 73 89 83 89" fill="none" stroke="#dce9ac" stroke-width="3" stroke-linecap="round"/>
+  </g>
+  <g id="sprout" transform="translate(0 -2)">
+    <path id="stem" d="M100 75 C100 66 100 56 100 47" fill="none" stroke="#49684a" stroke-width="8" stroke-linecap="round"/>
+    <path id="stem-light" d="M99 68 C99 60 99 54 99 49" fill="none" stroke="#8fac68" stroke-width="3" stroke-linecap="round"/>
+    <g id="leaf-left">
+      <path id="leaf-ring" d="M96 52 C88 29 66 27 51 42 C59 63 77 71 96 52 Z M77 42 C84 40 89 44 89 49 C84 55 76 55 71 50 C72 46 74 44 77 42 Z" fill="#48754b" fill-rule="evenodd" stroke="#49684a" stroke-width="3" stroke-linejoin="round"/>
+      <path id="leaf-vein-left" d="M58 43 C70 45 80 48 91 52" fill="none" stroke="#a7c77a" stroke-width="2" stroke-linecap="round"/>
+    </g>
+    <g id="leaf-right">
+      <path id="leaf-shape-right" d="M104 52 C112 29 134 27 149 42 C141 63 123 71 104 52 Z" fill="#6d9254" stroke="#49684a" stroke-width="3" stroke-linejoin="round"/>
+      <path id="leaf-vein-right" d="M142 43 C130 45 120 48 109 52" fill="none" stroke="#b5d285" stroke-width="2" stroke-linecap="round"/>
+    </g>
+  </g>
+  <g id="face-neutral">
+    <ellipse id="neutral-eye-left" cx="79" cy="119" rx="5.5" ry="8" fill="#293e36"/>
+    <ellipse id="neutral-eye-right" cx="121" cy="119" rx="5.5" ry="8" fill="#293e36"/>
+    <ellipse id="neutral-eye-shine-left" cx="78" cy="116" rx="1.5" ry="2" fill="#fffae7"/>
+    <ellipse id="neutral-eye-shine-right" cx="120" cy="116" rx="1.5" ry="2" fill="#fffae7"/>
+    <path id="neutral-mouth" d="M89 143 Q100 154 111 143" fill="none" stroke="#293e36" stroke-width="4" stroke-linecap="round"/>
+  </g>
+  <g id="face-happy" display="none">
+    <path id="happy-eye-left" d="M73 121 Q79 113 85 121" fill="none" stroke="#293e36" stroke-width="4" stroke-linecap="round"/>
+    <path id="happy-eye-right" d="M115 121 Q121 113 127 121" fill="none" stroke="#293e36" stroke-width="4" stroke-linecap="round"/>
+    <path id="happy-mouth" d="M87 138 Q100 159 113 138 Q100 148 87 138 Z" fill="#293e36"/>
+    <ellipse id="happy-cheek-left" cx="67" cy="138" rx="6" ry="3" fill="#e9a39c"/>
+    <ellipse id="happy-cheek-right" cx="133" cy="138" rx="6" ry="3" fill="#e9a39c"/>
+  </g>
+  <g id="face-surprised" display="none">
+    <ellipse id="surprised-eye-left" cx="79" cy="119" rx="6" ry="9" fill="#293e36"/>
+    <ellipse id="surprised-eye-right" cx="121" cy="119" rx="6" ry="9" fill="#293e36"/>
+    <ellipse id="surprised-mouth" cx="100" cy="145" rx="6" ry="9" fill="#293e36"/>
+  </g>
+</svg>

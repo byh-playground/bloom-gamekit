@@ -1,6 +1,6 @@
 import { WebGLDevice, MeshRenderer, createSpriteAnimation } from '/dist/rendering.js';
-import { createVectorRasterAtlas, createVectorSpriteAtlas } from '/dist/vector-assets.js';
-import { createSeedScout, seedScout } from './seed-scout.js';
+import { createVectorAsset, createVectorRasterAtlas, createVectorSpriteAtlas } from '/dist/vector-assets.js';
+import { seedScout } from '../seed-scout-raster-comparison.compiled.js';
 
 const BY_ID = (id) => document.getElementById(id);
 const CANVAS = BY_ID('canvas');
@@ -23,7 +23,7 @@ const SPRITE_METRICS = BY_ID('sprite-metrics');
 const PATH_METRICS = BY_ID('path-metrics');
 const DEVICE = new WebGLDevice(CANVAS, { alpha: true, antialias: true });
 const MESHES = new MeshRenderer(DEVICE, { maxMeshes: 4, maxInstances: 1024 });
-const ASSET = createSeedScout(MESHES);
+const ASSET = createVectorAsset(MESHES, seedScout);
 const VIEW_BOX = ASSET.viewBox;
 let timer = createGpuTimer(DEVICE.gl);
 let hardware = readHardware();
@@ -521,6 +521,8 @@ function writeMetrics(cpuMs, animationMs, submitMs, rasterResult, spriteResult) 
         `${hardware.backend} · ${hardware.renderer} · ${hardware.vendor}`;
     STATE.last = {
         frame: STATE.frameOrdinal,
+        assetId: ASSET.id,
+        sourceSha256: ASSET.sourceSha256,
         mode: MODE_INPUT.value,
         count: PLAYERS.length,
         clip: CLIP_INPUT.value,
