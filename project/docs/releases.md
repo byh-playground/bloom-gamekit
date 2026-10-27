@@ -1,3 +1,11 @@
+## v0.19.0 (2026-10-27)
+
+UV가 있는 retained mesh에 이미지 texture material을 추가하고 SVG와 독립적인 `createSpriteAnimation`을 제공합니다. 프레임 rect·기간·clip·loop, trim·pivot·gutter, 절대 표시 시각·속도·pause·scrub을 처리하며 texture는 호출자에게 빌립니다. 기존 기본 벡터 렌더 경로는 그대로입니다.
+
+`createVectorRasterAtlas`는 원본 SVG의 연속 부위 paint run을 한 번 구워 같은 GPU pose로 움직입니다. `createVectorSpriteAtlas`는 성긴 clip 시각을 완성 이미지로 구워 범용 sprite 정의로 전달합니다. 반복 재생은 texture를 재사용하고 context restore에서는 잃은 픽셀을 다시 굽습니다. once의 마지막 이미지는 원본 종료 자세이며, 모프·시간 효과·opacity·특수 paint 등 각 경로가 동등하게 처리할 수 없는 조합은 사유가 있는 벡터 fallback입니다. 자동 sketch 시간 모프는 sampled sprite 반복과 같지 않아 지원으로 표시하지 않습니다.
+
+비교 예제 `vector-raster-comparison`에서 같은 SVG의 벡터·부위 atlas·sampled sprite를 전환하고 시간·표정·수량·해상도·확대·샘플 간격과 초기 bake/용량 및 CPU/GPU 비용을 비교합니다. Sprite의 시간 양자화와 확대 흐림은 별도 비용입니다. 여러 MeshRenderer가 공유하는 Device VAO에 남은 instance 속성 참조를 삭제 시 정리해, 보조 renderer 해제 후 새 index buffer를 그릴 때의 실제 GPU 오류도 수정했습니다. 물리 모바일은 미검증이며 게임 pin은 변경하지 않습니다.
+
 ## v0.18.0 (2026-10-27)
 
 - `VectorContext.globalCompositeOperation`을 추가합니다. `source-over`(기본)와 가산 `lighter`를 지원하며 단순 도형 painter와 vector path/stroke/text에 적용되고 save/restore에 포함됩니다. `PrimitiveRenderer.draw`는 batch 상태에 `blend`를 포함합니다. 불·전기·폭발처럼 겹치면 밝아지는 효과를 게임이 반투명 원 겹침으로 흉내 내지 않아도 됩니다.
