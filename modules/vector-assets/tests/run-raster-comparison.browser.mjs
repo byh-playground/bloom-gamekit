@@ -6,6 +6,49 @@ import { pathToFileURL } from 'node:url';
 import { chromium } from 'playwright';
 import { compileVectorAssetFile, compiledAssetModuleSource } from '../compiler.js';
 import { buildPreviews } from '../../../project/previews.mjs';
+import { summarizeSamples } from '../examples/raster-benchmark.js';
+import { createAccumulation } from '../examples/raster-accumulation.js';
+
+const STAT_CHECK = summarizeSamples([1, 2, 100]);
+assert.equal(STAT_CHECK.mean, 103 / 3);
+assert.equal(STAT_CHECK.p95, 90.19999999999999);
+assert.ok(Math.abs(STAT_CHECK.p99 - 98.04) < 1e-10);
+assert.equal(STAT_CHECK.max, 100);
+assert.equal(STAT_CHECK.overBudgetCount, 1);
+assert.equal(summarizeSamples([]).mean, null);
+const ACCUMULATOR_CHECK = createAccumulation();
+const ROUND_FIXTURE = (status) => ({
+    setup: { wallMs: 2, atlasAllocatedBytes: 16, snapshot: { preparation: { cpuMs: 10 } } },
+    methods: ['vector', 'raster', 'sprite'].map((mode) => ({
+        mode,
+        measuredFrames: 3,
+        gpuMs: { status },
+        raw: {
+            cpuTotalMs: [1, 2, 100],
+            submitMs: [0.5, 1, 90],
+            frameIntervalsMs: [16, 17, 100],
+            gpuSamples: [{ ms: 0.3 }],
+            frames: [{ drawCalls: 1 }, { drawCalls: 1 }, { drawCalls: 1 }],
+        },
+    })),
+});
+ACCUMULATOR_CHECK.append('same', 'same condition', ROUND_FIXTURE('partial'));
+const ACCUMULATED_CHECK = ACCUMULATOR_CHECK.append('same', 'same condition', ROUND_FIXTURE('disjoint'));
+assert.equal(ACCUMULATED_CHECK[0].methods[0].measuredFrames, 6);
+assert.equal(ACCUMULATED_CHECK[0].methods[0].gpuMs.count, 1);
+assert.equal(ACCUMULATED_CHECK[0].methods[0].gpuMs.expectedCount, 6);
+assert.equal(ACCUMULATED_CHECK[0].methods[0].gpuMs.mean, 0.3);
+assert.equal(ACCUMULATED_CHECK[0].methods[0].gpuMs.invalidRounds, 1);
+for (let index = 0; index < 6; index++) {
+    ACCUMULATOR_CHECK.append(String(index), 'distinct condition', ROUND_FIXTURE('unsupported'));
+}
+assert.equal(ACCUMULATOR_CHECK.snapshot().length, 5);
+assert.equal(ACCUMULATOR_CHECK.snapshot()[0].key, '1');
+const OVERSIZE = ROUND_FIXTURE('available');
+OVERSIZE.methods[0].raw.cpuTotalMs = new Array(6001).fill(1);
+assert.throws(() => ACCUMULATOR_CHECK.append('oversize', 'limit', OVERSIZE), RangeError);
+ACCUMULATOR_CHECK.reset();
+assert.deepEqual(ACCUMULATOR_CHECK.snapshot(), []);
 
 const ROOT = resolve('.');
 const SOURCE = 'modules/vector-assets/assets/seed-scout.svg';
@@ -341,7 +384,28 @@ try {
             })),
             stateRestored: JSON.stringify(DEMO.benchmarkState) === JSON.stringify(BEFORE_BENCHMARK),
         };
+        const ACCUMULATION_FIRST = await DEMO.startAccumulation({ maxRounds: 1 });
+        const ACCUMULATION_RESUMED = await DEMO.startAccumulation({ maxRounds: 1 });
+        const BEFORE_CANCEL = JSON.stringify(DEMO.accumulation.history);
+        const CANCELLED_RUN = DEMO.startAccumulation();
+        document.getElementById('accumulate-stop').click();
+        await CANCELLED_RUN;
+        const CANCEL_PRESERVED = JSON.stringify(DEMO.accumulation.history) === BEFORE_CANCEL;
+        const AFTER_CANCEL = DEMO.accumulation;
+        DEMO.setScene('single');
+        const ACCUMULATION_NEW_CONDITION = await DEMO.startAccumulation({ maxRounds: 1 });
+        const NEW_CONDITION_TEXT = document.getElementById('accumulated-results').textContent;
+        const RESIZE_RUN = DEMO.startAccumulation();
+        window.dispatchEvent(new Event('resize'));
+        await RESIZE_RUN;
+        const AFTER_RESIZE = DEMO.accumulation;
+        const STOP_STATUS = document.getElementById('accumulation-status').textContent;
+        document.getElementById('accumulate-reset').click();
+        const RESET_HISTORY = DEMO.accumulation;
+        const ACCUMULATION_STATE_RESTORED = DEMO.benchmarkState.mode === BEFORE_BENCHMARK.mode;
+        const DISPOSE_RUN = DEMO.startAccumulation();
         const DISPOSED = DEMO.dispose();
+        await DISPOSE_RUN;
         return {
             frames: FRAMES,
             liveHud: LIVE_HUD,
@@ -351,6 +415,19 @@ try {
             layoutCases: LAYOUT_CASES,
             qualityCases: QUALITY_CASES,
             benchmark: BENCHMARK,
+            accumulation: {
+                first: ACCUMULATION_FIRST,
+                resumed: ACCUMULATION_RESUMED,
+                cancelPreserved: CANCEL_PRESERVED,
+                afterCancel: AFTER_CANCEL,
+                newCondition: ACCUMULATION_NEW_CONDITION,
+                newConditionText: NEW_CONDITION_TEXT,
+                afterResize: AFTER_RESIZE,
+                stopStatus: STOP_STATUS,
+                reset: RESET_HISTORY,
+                stateRestored: ACCUMULATION_STATE_RESTORED,
+                disposeRunning: DEMO.accumulation.running,
+            },
             disposed: DISPOSED,
         };
     });
@@ -523,6 +600,34 @@ try {
         assert.ok(PATH.vectorRasterPixels.spuriousFraction <= 0.01, JSON.stringify(PATH));
     }
     assert.equal(preview.benchmark.stateRestored, true);
+    const ACCUMULATION = preview.accumulation;
+    assert.equal(ACCUMULATION.first.length, 1);
+    assert.equal(ACCUMULATION.first[0].methods[0].measuredFrames, 60);
+    assert.equal(ACCUMULATION.resumed[0].methods[0].measuredFrames, 120);
+    assert.equal(ACCUMULATION.cancelPreserved, true);
+    assert.equal(ACCUMULATION.afterCancel.running, false);
+    assert.equal(ACCUMULATION.newCondition.length, 2);
+    assert.equal(ACCUMULATION.newCondition[0].methods[0].measuredFrames, 120);
+    assert.equal(ACCUMULATION.newCondition[1].methods[0].measuredFrames, 60);
+    assert.ok(ACCUMULATION.newConditionText.includes('p99'));
+    assert.ok(ACCUMULATION.newConditionText.includes('steady image upload / bake Δ0'));
+    assert.equal(ACCUMULATION.afterResize.running, false);
+    assert.ok(ACCUMULATION.stopStatus.startsWith('Stopped.'));
+    assert.deepEqual(ACCUMULATION.reset.history, []);
+    assert.equal(ACCUMULATION.stateRestored, true);
+    assert.equal(ACCUMULATION.disposeRunning, false);
+    for (const CONDITION of ACCUMULATION.newCondition) {
+        for (const METHOD of CONDITION.methods) {
+            assert.equal(METHOD.cpuTotalMs.count, METHOD.measuredFrames);
+            assert.equal(METHOD.frameIntervalMs.count, METHOD.measuredFrames);
+            assert.ok(METHOD.cpuTotalMs.p50 <= METHOD.cpuTotalMs.p95);
+            assert.ok(METHOD.cpuTotalMs.p95 <= METHOD.cpuTotalMs.p99);
+            assert.ok(METHOD.cpuTotalMs.p99 <= METHOD.cpuTotalMs.max);
+            assert.ok(METHOD.measuredDurationMs > 0);
+            assert.ok(METHOD.gpuMs.count <= METHOD.gpuMs.expectedCount);
+            assert.ok(METHOD.gpuMs.count > 0 || METHOD.gpuMs.mean === null);
+        }
+    }
     assert.deepEqual(
         preview.benchmark.methods.map((method) => method.mode),
         ['vector', 'raster', 'sprite'],

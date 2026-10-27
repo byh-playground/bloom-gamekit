@@ -1,25 +1,43 @@
 const MODES = ['vector', 'raster', 'sprite'];
 const DISPLAY_STEP_MS = 1000 / 60;
 
-const NEXT_FRAME = () => new Promise((resolve) => requestAnimationFrame(resolve));
+const NEXT_FRAME = (signal) =>
+    new Promise((resolve, reject) => {
+        const ABORT = () => {
+            cancelAnimationFrame(HANDLE);
+            reject(new DOMException('Measurement stopped', 'AbortError'));
+        };
+        const HANDLE = requestAnimationFrame((timestamp) => {
+            signal?.removeEventListener('abort', ABORT);
+            resolve(timestamp);
+        });
+        signal?.addEventListener('abort', ABORT, { once: true });
+        if (signal?.aborted) {
+            ABORT();
+        }
+    });
 
-function percentile(values, fraction) {
-    if (!values.length) {
+function percentile(sorted, fraction) {
+    if (!sorted.length) {
         return null;
     }
-    const SORTED = [...values].sort((left, right) => left - right);
-    const POSITION = (SORTED.length - 1) * fraction;
+    const POSITION = (sorted.length - 1) * fraction;
     const LOWER = Math.floor(POSITION);
     const UPPER = Math.ceil(POSITION);
-    return SORTED[LOWER] + (SORTED[UPPER] - SORTED[LOWER]) * (POSITION - LOWER);
+    return sorted[LOWER] + (sorted[UPPER] - sorted[LOWER]) * (POSITION - LOWER);
 }
 
-function summary(values, includeMean = false) {
-    const RESULT = { p50: percentile(values, 0.5), p95: percentile(values, 0.95) };
-    if (includeMean) {
-        RESULT.mean = values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
-    }
-    return RESULT;
+export function summarizeSamples(values) {
+    const SORTED = [...values].sort((left, right) => left - right);
+    return {
+        count: values.length,
+        mean: values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null,
+        p50: percentile(SORTED, 0.5),
+        p95: percentile(SORTED, 0.95),
+        p99: percentile(SORTED, 0.99),
+        max: SORTED.at(-1) ?? null,
+        overBudgetCount: values.filter((value) => value > 16.7).length,
+    };
 }
 
 function validateOrders(orders) {
@@ -105,8 +123,26 @@ function assertPrepared(frame, baseline, mode, count, sourceTimeMs) {
 /** Measures each full-viewport backend in separate, identically timed rAF sequences. */
 export async function runComparison(
     bridge,
-    { scene, count, pixelSize, spread, seed, warmupFrames = 30, sampleFrames = 60, orders = [MODES] } = {},
+    {
+        scene,
+        count,
+        pixelSize,
+        spread,
+        seed,
+        warmupFrames = 30,
+        sampleFrames = 60,
+        orders = [MODES],
+        signal,
+        shouldCancel,
+        onProgress,
+    } = {},
 ) {
+    const CHECK_CANCELLED = () => {
+        if (signal?.aborted || shouldCancel?.() || document.hidden) {
+            throw new DOMException('Measurement stopped; incomplete round discarded', 'AbortError');
+        }
+    };
+    CHECK_CANCELLED();
     for (const NAME of [
         'setAutoRender',
         'setScene',
@@ -222,12 +258,18 @@ export async function runComparison(
         for (const ORDER of CONFIG.orders) {
             const METHODS = [];
             for (const MODE of ORDER) {
+                CHECK_CANCELLED();
+                onProgress?.({ mode: MODE, phase: 'warmup' });
                 bridge.setMode(MODE);
                 let previousTimestamp = null;
                 const RAW = { frameIntervalsMs: [], cpuTotalMs: [], submitMs: [], frames: [], gpuSamples: [] };
                 const SCOPE = { mode: MODE, raw: RAW };
                 for (let index = 0; index < warmupFrames + sampleFrames; index++) {
-                    const TIMESTAMP = await NEXT_FRAME();
+                    const TIMESTAMP = await NEXT_FRAME(signal);
+                    CHECK_CANCELLED();
+                    if (index === warmupFrames) {
+                        onProgress?.({ mode: MODE, phase: 'sampling' });
+                    }
                     assertGraphics(bridge);
                     const DISPLAY_TIME_MS = 500 + (index - warmupFrames) * DISPLAY_STEP_MS;
                     const FRAME = bridge.renderOnce({ timeMs: DISPLAY_TIME_MS, updateReadout: false });
@@ -271,7 +313,8 @@ export async function runComparison(
         let timerEnd = COLLECT_GPU();
         if (bridge.gpuTimerSupported && timerEnd.pendingCount) {
             for (let attempt = 0; attempt < 120 && timerEnd.pendingCount; attempt++) {
-                await NEXT_FRAME();
+                await NEXT_FRAME(signal);
+                CHECK_CANCELLED();
                 assertGraphics(bridge);
                 timerEnd = COLLECT_GPU();
             }
@@ -280,7 +323,7 @@ export async function runComparison(
         for (const ROUND of ROUNDS) {
             for (const METHOD of ROUND.methods) {
                 const RAW = METHOD.raw;
-                const INTERVAL = summary(RAW.frameIntervalsMs, true);
+                const INTERVAL = summarizeSamples(RAW.frameIntervalsMs);
                 const GPU_VALUES = RAW.gpuSamples.map((sample) => sample.ms);
                 const GPU_STATUS = !bridge.gpuTimerSupported
                     ? 'unsupported'
@@ -296,11 +339,11 @@ export async function runComparison(
                 Object.assign(METHOD, {
                     fps: INTERVAL.mean ? 1000 / INTERVAL.mean : null,
                     frameIntervalMs: INTERVAL,
-                    cpuTotalMs: summary(RAW.cpuTotalMs),
-                    submitMs: summary(RAW.submitMs),
-                    drawCalls: summary(RAW.frames.map((frame) => frame.drawCalls)),
+                    cpuTotalMs: summarizeSamples(RAW.cpuTotalMs),
+                    submitMs: summarizeSamples(RAW.submitMs),
+                    drawCalls: summarizeSamples(RAW.frames.map((frame) => frame.drawCalls)),
                     gpuMs: {
-                        ...(GPU_STATUS === 'available' ? summary(GPU_VALUES) : { p50: null, p95: null }),
+                        ...(GPU_STATUS === 'available' ? summarizeSamples(GPU_VALUES) : { p50: null, p95: null }),
                         count: GPU_VALUES.length,
                         expectedCount: sampleFrames,
                         coverage: GPU_VALUES.length / sampleFrames,
