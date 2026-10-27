@@ -3262,6 +3262,283 @@ function validateCompiledAsset(asset) {
   return asset;
 }
 
+// modules/vector-assets/pose-channels.js
+var FIELDS = Object.freeze(["x", "y", "rotation", "scaleX", "scaleY", "opacity"]);
+var DEFAULTS = Object.freeze([0, 0, 0, 1, 1, 1]);
+var EASE_CODES = Object.freeze({ linear: 0, inOutSine: 1, outQuad: 2 });
+var MAX_SEGMENTS = 64;
+function requireFinite(value, label) {
+  if (!Number.isFinite(value)) {
+    throw new TypeError(`${label} must be finite`);
+  }
+  return value;
+}
+function fitsFloat32(value) {
+  return Number.isFinite(Math.fround(value));
+}
+function requirePartIndex(program, partIndex) {
+  if (!Number.isInteger(partIndex) || partIndex < 0 || partIndex >= program.partCount) {
+    throw new RangeError(`Invalid vector part index: ${partIndex}`);
+  }
+}
+function requireClip(program, clipName) {
+  const CLIP = program.clips[clipName];
+  if (!CLIP) {
+    throw new TypeError(`Unknown vector clip: ${clipName}`);
+  }
+  if (!CLIP.supported) {
+    throw new Error(`Vector clip ${clipName} requires CPU timeline fallback: ${CLIP.reason}`);
+  }
+  return CLIP;
+}
+function localTime(clip, elapsedMs) {
+  const ELAPSED = requireFinite(elapsedMs, "elapsedMs");
+  if (clip.loop === "once") {
+    return Math.min(clip.durationMs, Math.max(0, ELAPSED));
+  }
+  if (clip.loop === "repeat") {
+    return (ELAPSED % clip.durationMs + clip.durationMs) % clip.durationMs;
+  }
+  const CYCLE = clip.durationMs * 2;
+  const POINT = (ELAPSED % CYCLE + CYCLE) % CYCLE;
+  return POINT <= clip.durationMs ? POINT : CYCLE - POINT;
+}
+function easedAmount(code, fraction) {
+  if (code === 1) {
+    return fraction < 0.5 ? (1 - Math.cos(fraction * 2 * (Math.PI / 2))) / 2 : 1 - (1 - Math.cos((fraction * -2 + 2) * (Math.PI / 2))) / 2;
+  }
+  if (code === 2) {
+    return 1 - (1 - fraction) * (1 - fraction);
+  }
+  return fraction;
+}
+function channelValue(data, headerTexel, timeMs) {
+  const HEADER = headerTexel * 4;
+  const FIRST = data[HEADER];
+  const COUNT = data[HEADER + 1];
+  let value = data[HEADER + 2];
+  for (let segment = 0; segment < COUNT; segment++) {
+    const OFFSET = (FIRST + segment * 2) * 4;
+    const START = data[OFFSET + 2];
+    const END = data[OFFSET + 3];
+    if (timeMs < START) {
+      break;
+    }
+    if (timeMs < END) {
+      const FRACTION = (timeMs - START) / (END - START);
+      return data[OFFSET] + (data[OFFSET + 1] - data[OFFSET]) * easedAmount(data[OFFSET + 4], FRACTION);
+    }
+    value = data[OFFSET + 1];
+  }
+  return value;
+}
+function compilePoseChannels(metadata) {
+  if (!metadata || !Array.isArray(metadata.parts) || !metadata.parts.length || metadata.parts.length > 16 || !metadata.clips || typeof metadata.clips !== "object" || Array.isArray(metadata.clips) || !Object.keys(metadata.clips).length) {
+    throw new TypeError("Vector pose metadata requires parts and clips");
+  }
+  const PARTS = metadata.parts;
+  const PART_COUNT = PARTS.length;
+  const INDICES = /* @__PURE__ */ new Map();
+  for (let index = 0; index < PART_COUNT; index++) {
+    const PART = PARTS[index];
+    if (typeof PART?.id !== "string" || INDICES.has(PART.id) || !Array.isArray(PART.pivot) || PART.pivot.length !== 2) {
+      throw new TypeError(`Invalid vector part at index ${index}`);
+    }
+    requireFinite(PART.pivot[0], `part ${PART.id} pivot x`);
+    requireFinite(PART.pivot[1], `part ${PART.id} pivot y`);
+    if (!fitsFloat32(PART.pivot[0]) || !fitsFloat32(PART.pivot[1])) {
+      throw new RangeError(`Part ${PART.id} pivot exceeds Float32 range`);
+    }
+    INDICES.set(PART.id, index);
+  }
+  const DATA = [];
+  for (const PART of PARTS) {
+    if (PART.parent !== null && !INDICES.has(PART.parent)) {
+      throw new TypeError(`Unknown vector part parent: ${PART.parent}`);
+    }
+    DATA.push(PART.pivot[0], PART.pivot[1], PART.parent === null ? -1 : INDICES.get(PART.parent), 0);
+  }
+  for (let index = 0; index < PART_COUNT; index++) {
+    const SEEN = /* @__PURE__ */ new Set([index]);
+    let parent = DATA[index * 4 + 2];
+    while (parent !== -1) {
+      if (SEEN.has(parent)) {
+        throw new TypeError(`Vector part hierarchy contains a cycle: ${PARTS[index].id}`);
+      }
+      SEEN.add(parent);
+      parent = DATA[parent * 4 + 2];
+    }
+  }
+  const CLIPS = /* @__PURE__ */ Object.create(null);
+  let maxSegments = 0;
+  for (const [NAME, CLIP] of Object.entries(metadata.clips)) {
+    if (!CLIP || !Array.isArray(CLIP.keyframes) || CLIP.keyframes.length < 2) {
+      throw new TypeError(`Clip ${NAME} requires at least two keyframes`);
+    }
+    const DURATION = requireFinite(CLIP.durationMs, `clip ${NAME} durationMs`);
+    if (DURATION <= 0 || !["once", "repeat", "alternate"].includes(CLIP.loop)) {
+      throw new TypeError(`Invalid clip duration or loop: ${NAME}`);
+    }
+    const FRAMES = CLIP.keyframes;
+    let previousTime = -Infinity;
+    for (const FRAME of FRAMES) {
+      const TIME = requireFinite(FRAME?.timeMs, `clip ${NAME} keyframe timeMs`);
+      if (TIME <= previousTime || !FRAME.parts || typeof FRAME.parts !== "object" || Array.isArray(FRAME.parts)) {
+        throw new TypeError(`Invalid clip keyframe: ${NAME}`);
+      }
+      for (const [PART_ID, POSE] of Object.entries(FRAME.parts)) {
+        if (!INDICES.has(PART_ID) || !POSE || typeof POSE !== "object" || Array.isArray(POSE)) {
+          throw new TypeError(`Invalid clip part pose: ${NAME}/${PART_ID}`);
+        }
+        if (!Object.keys(POSE).length) {
+          throw new TypeError(`Empty clip part pose: ${NAME}/${PART_ID}`);
+        }
+        for (const [FIELD, VALUE] of Object.entries(POSE)) {
+          if (!FIELDS.includes(FIELD)) {
+            throw new TypeError(`Unknown clip pose field: ${NAME}/${PART_ID}/${FIELD}`);
+          }
+          requireFinite(VALUE, `clip ${NAME}/${PART_ID}/${FIELD}`);
+          if (FIELD === "opacity" && (VALUE < 0 || VALUE > 1)) {
+            throw new RangeError(`Clip part opacity must be in [0,1]: ${NAME}/${PART_ID}`);
+          }
+          if ((FIELD === "scaleX" || FIELD === "scaleY") && VALUE === 0) {
+            throw new RangeError(`Clip part scale cannot be zero: ${NAME}/${PART_ID}`);
+          }
+        }
+      }
+      previousTime = TIME;
+    }
+    if (FRAMES[0].timeMs !== 0 || previousTime !== DURATION) {
+      throw new RangeError(`Clip ${NAME} keyframes must span 0..durationMs`);
+    }
+    const CHANNELS = Array.from({ length: PART_COUNT * FIELDS.length }, (_, channelIndex) => ({
+      initial: FRAMES[0].parts[PARTS[Math.floor(channelIndex / FIELDS.length)].id]?.[FIELDS[channelIndex % FIELDS.length]] ?? DEFAULTS[channelIndex % FIELDS.length],
+      segments: []
+    }));
+    let reason = null;
+    if (!fitsFloat32(DURATION)) {
+      reason = "durationMs exceeds Float32 range";
+    }
+    for (let frameIndex = 1; frameIndex < FRAMES.length; frameIndex++) {
+      const FRAME = FRAMES[frameIndex];
+      const START = FRAMES[frameIndex - 1].timeMs;
+      const CODE = EASE_CODES[FRAME.easing];
+      for (const [PART_ID, POSE] of Object.entries(FRAME.parts)) {
+        const PART_INDEX = INDICES.get(PART_ID);
+        for (const [FIELD, TARGET] of Object.entries(POSE)) {
+          const CHANNEL = CHANNELS[PART_INDEX * FIELDS.length + FIELDS.indexOf(FIELD)];
+          if (CODE === void 0 && reason === null) {
+            reason = `unsupported easing ${String(FRAME.easing)} at keyframe ${frameIndex}`;
+          }
+          if (CHANNEL.segments.length >= MAX_SEGMENTS && reason === null) {
+            reason = `channel ${PART_ID}.${FIELD} exceeds ${MAX_SEGMENTS} segments`;
+          }
+          const FROM = CHANNEL.segments.length ? CHANNEL.segments.at(-1)[1] : CHANNEL.initial;
+          CHANNEL.segments.push([FROM, TARGET, START, FRAME.timeMs, CODE]);
+        }
+      }
+    }
+    if (reason === null) {
+      for (const CHANNEL of CHANNELS) {
+        if (!fitsFloat32(CHANNEL.initial)) {
+          reason = "initial pose value exceeds Float32 range";
+          break;
+        }
+        for (const [FROM, TARGET, START, END] of CHANNEL.segments) {
+          if (![FROM, TARGET, START, END].every(fitsFloat32)) {
+            reason = "pose value or keyframe time exceeds Float32 range";
+            break;
+          }
+          if (Math.fround(END) <= Math.fround(START)) {
+            reason = "keyframe interval collapses at Float32 precision";
+            break;
+          }
+        }
+        if (reason !== null) {
+          break;
+        }
+      }
+    }
+    if (reason !== null) {
+      CLIPS[NAME] = { supported: false, reason, durationMs: DURATION, loop: CLIP.loop, headerBase: -1 };
+      continue;
+    }
+    const HEADER_BASE = DATA.length / 4;
+    const SEGMENT_BASE = HEADER_BASE + PART_COUNT * FIELDS.length;
+    let nextSegment = SEGMENT_BASE;
+    for (const CHANNEL of CHANNELS) {
+      DATA.push(nextSegment, CHANNEL.segments.length, CHANNEL.initial, 0);
+      nextSegment += CHANNEL.segments.length * 2;
+      maxSegments = Math.max(maxSegments, CHANNEL.segments.length);
+    }
+    for (const CHANNEL of CHANNELS) {
+      for (const [FROM, TARGET, START, END, CODE] of CHANNEL.segments) {
+        DATA.push(FROM, TARGET, START, END, CODE, 0, 0, 0);
+      }
+    }
+    CLIPS[NAME] = { supported: true, reason: null, durationMs: DURATION, loop: CLIP.loop, headerBase: HEADER_BASE };
+  }
+  return {
+    partCount: PART_COUNT,
+    partIds: PARTS.map((part) => part.id),
+    data: Float32Array.from(DATA),
+    cpuData: Float64Array.from(DATA),
+    clips: CLIPS,
+    maxSegments
+  };
+}
+function samplePoseChannels(program, clipName, elapsedMs, partIndex) {
+  requirePartIndex(program, partIndex);
+  const CLIP = requireClip(program, clipName);
+  const TIME = localTime(CLIP, elapsedMs);
+  const HEADER = CLIP.headerBase + partIndex * FIELDS.length;
+  return Object.fromEntries(
+    FIELDS.map((field, index) => [field, channelValue(program.cpuData, HEADER + index, TIME)])
+  );
+}
+function samplePartTransform(program, clipName, elapsedMs, partIndex, basePoses) {
+  requirePartIndex(program, partIndex);
+  const DATA = program.cpuData;
+  const CHAIN = [];
+  let index = partIndex;
+  while (index !== -1) {
+    CHAIN.push(index);
+    index = DATA[index * 4 + 2];
+  }
+  let matrix = [1, 0, 0, 1, 0, 0];
+  let opacity = 1;
+  for (let chainIndex = CHAIN.length - 1; chainIndex >= 0; chainIndex--) {
+    const PART_INDEX = CHAIN[chainIndex];
+    const AUTHORED = samplePoseChannels(program, clipName, elapsedMs, PART_INDEX);
+    const BASE = basePoses?.[PART_INDEX];
+    const X = (BASE?.x ?? 0) + AUTHORED.x;
+    const Y = (BASE?.y ?? 0) + AUTHORED.y;
+    const ROTATION = (BASE?.rotation ?? 0) + AUTHORED.rotation;
+    const SCALE_X = (BASE?.scaleX ?? 1) * AUTHORED.scaleX;
+    const SCALE_Y = (BASE?.scaleY ?? 1) * AUTHORED.scaleY;
+    const PX = DATA[PART_INDEX * 4];
+    const PY = DATA[PART_INDEX * 4 + 1];
+    const COSINE = Math.cos(ROTATION);
+    const SINE = Math.sin(ROTATION);
+    const A = COSINE * SCALE_X;
+    const B = SINE * SCALE_X;
+    const C = -SINE * SCALE_Y;
+    const D = COSINE * SCALE_Y;
+    const E = PX + X - A * PX - C * PY;
+    const F = PY + Y - B * PX - D * PY;
+    matrix = [
+      matrix[0] * A + matrix[2] * B,
+      matrix[1] * A + matrix[3] * B,
+      matrix[0] * C + matrix[2] * D,
+      matrix[1] * C + matrix[3] * D,
+      matrix[0] * E + matrix[2] * F + matrix[4],
+      matrix[1] * E + matrix[3] * F + matrix[5]
+    ];
+    opacity *= (BASE?.opacity ?? 1) * AUTHORED.opacity;
+  }
+  return { transform: matrix, opacity };
+}
+
 // modules/vector-assets/runtime.js
 var IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
 var DEFAULT_POSE = Object.freeze({
@@ -3273,6 +3550,7 @@ var DEFAULT_POSE = Object.freeze({
   opacity: 1
 });
 var POSE_FIELDS = Object.keys(DEFAULT_POSE);
+var NOW = () => globalThis.performance?.now?.() ?? null;
 var FINITE_TIME = (value, name) => {
   if (!Number.isFinite(value)) {
     throw new TypeError(`${name} must be a finite absolute display time in milliseconds`);
@@ -3451,15 +3729,20 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
   const SKETCH_MORPH_STYLE = METADATA.styles?.find((style) => style.kind === "sketch") ?? null;
   const PART_INDICES = new Map(METADATA.parts.map((part, index) => [part.id, index]));
   const CLIPS = METADATA.clips;
+  const POSE_API = typeof meshRenderer.createPoseSource === "function" && typeof meshRenderer.createPoseInstance === "function" && typeof meshRenderer.preparePose === "function" && typeof meshRenderer.prepareCpuPose === "function" && typeof meshRenderer.deletePoseInstance === "function" && typeof meshRenderer.deletePoseSource === "function";
   const GEOMETRY = compiledAsset.geometry, SHADER_GEOMETRY = GEOMETRY.shaderSurfaces ?? [];
   if (SHADER_GEOMETRY.length && (!surfaceRenderer?.createSurface || !surfaceRenderer?.drawSurface || !surfaceRenderer?.deleteSurface)) {
     throw new TypeError(
       'This SVG declares backend:"shader"; pass a GameKit YarnSurfaceRenderer when creating the vector asset'
     );
   }
-  const MESH = GEOMETRY.vertices.length ? meshRenderer.createMesh(GEOMETRY) : null;
+  const POSE_PROGRAM = POSE_API && !GEOMETRY.drawOrder && !SHADER_GEOMETRY.length ? compilePoseChannels(METADATA) : null;
+  let mesh = null;
+  let poseSource = null;
   const RETAINED_SURFACES = [];
   try {
+    mesh = GEOMETRY.vertices.length ? meshRenderer.createMesh(GEOMETRY) : null;
+    poseSource = POSE_PROGRAM ? meshRenderer.createPoseSource(POSE_PROGRAM) : null;
     for (const DESCRIPTOR of SHADER_GEOMETRY) {
       RETAINED_SURFACES.push(surfaceRenderer.createSurface(DESCRIPTOR));
     }
@@ -3467,8 +3750,11 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
     for (const SURFACE of RETAINED_SURFACES) {
       surfaceRenderer.deleteSurface(SURFACE);
     }
-    if (MESH) {
-      meshRenderer.deleteMesh(MESH);
+    if (mesh) {
+      meshRenderer.deleteMesh(mesh);
+    }
+    if (poseSource) {
+      meshRenderer.deletePoseSource(poseSource);
     }
     throw error;
   }
@@ -3526,10 +3812,23 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
     );
     let playbackRevision = 0;
     let sampledPlaybackRevision = -1;
+    let soughtPlaybackRevision = -1;
+    let sampledTimeMs = NaN;
     let poseRevision = 0;
     let resolvedRevision = -1;
     let resolvedPose = null;
+    const RESOLVED_MATRICES = /* @__PURE__ */ new Map();
     let playerDisposed = false;
+    const POSE_INSTANCE = poseSource ? meshRenderer.createPoseInstance(poseSource) : null;
+    const POSE_METRICS = {
+      fullSamples: 0,
+      fullSampleMs: 0,
+      partialQueries: 0,
+      partialParts: 0,
+      partialSampleMs: 0,
+      gpuPrepares: 0,
+      cpuFallbacks: 0
+    };
     const INVALIDATE_POSE = () => {
       poseRevision++;
     };
@@ -3576,13 +3875,41 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
         METADATA.parts.map((part) => part.id)
       );
     };
+    const ACTIVE_CLIP = (playback, timeMs) => {
+      if (playback.kind === "clip") {
+        return playback;
+      }
+      const ELAPSED = timeMs - playback.atMs;
+      if (ELAPSED < 0 || ELAPSED === 0 && playback.durationMs !== 0) {
+        return ACTIVE_CLIP(playback.from, timeMs);
+      }
+      if (playback.durationMs === 0 || ELAPSED >= playback.durationMs) {
+        return ACTIVE_CLIP(playback.to, timeMs);
+      }
+      return null;
+    };
+    const GPU_CLIP = () => {
+      const ACTIVE = ACTIVE_CLIP(rootPlayback, displayTimeMs);
+      return ACTIVE && POSE_PROGRAM?.clips[ACTIVE.name]?.supported ? ACTIVE : null;
+    };
+    const ENSURE_CURRENT_POSE = () => {
+      if (sampledTimeMs !== displayTimeMs || sampledPlaybackRevision !== playbackRevision) {
+        const START = NOW();
+        currentPose = SAMPLE(rootPlayback, displayTimeMs);
+        if (START !== null) {
+          POSE_METRICS.fullSampleMs += NOW() - START;
+        }
+        sampledTimeMs = displayTimeMs;
+        sampledPlaybackRevision = playbackRevision;
+        POSE_METRICS.fullSamples++;
+      }
+    };
     const SEEK = (timeMs) => {
       ASSERT_PLAYER();
       const NEXT_TIME_MS = FINITE_TIME(timeMs, "displayTimeMs");
-      if (NEXT_TIME_MS !== displayTimeMs || sampledPlaybackRevision !== playbackRevision) {
+      if (NEXT_TIME_MS !== displayTimeMs || soughtPlaybackRevision !== playbackRevision) {
         displayTimeMs = NEXT_TIME_MS;
-        currentPose = SAMPLE(rootPlayback, displayTimeMs);
-        sampledPlaybackRevision = playbackRevision;
+        soughtPlaybackRevision = playbackRevision;
         INVALIDATE_POSE();
       }
       return PLAYER;
@@ -3592,6 +3919,9 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
       const VARIANT = METADATA.expressions[name];
       if (!VARIANT) {
         throw new TypeError(`Unknown vector expression: ${name}`);
+      }
+      if (name === expression && !visibilityOverridden) {
+        return PLAYER;
       }
       for (const ID of EXPRESSION_PARTS) {
         VISIBLE.set(ID, false);
@@ -3633,9 +3963,17 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
         if ((FIELD === "scaleX" || FIELD === "scaleY") && VALUE === 0) {
           throw new RangeError("Part scale cannot be zero");
         }
-        CURRENT[FIELD] = VALUE;
       }
-      INVALIDATE_POSE();
+      let changed = false;
+      for (const [FIELD, VALUE] of Object.entries(pose)) {
+        if (CURRENT[FIELD] !== VALUE) {
+          CURRENT[FIELD] = VALUE;
+          changed = true;
+        }
+      }
+      if (changed) {
+        INVALIDATE_POSE();
+      }
       return PLAYER;
     };
     const PLAY = (name, atMs = displayTimeMs) => {
@@ -3678,7 +4016,9 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
       if (resolvedRevision === poseRevision) {
         return resolvedPose;
       }
-      const OUTPUT = /* @__PURE__ */ new Map();
+      ENSURE_CURRENT_POSE();
+      const OUTPUT = RESOLVED_MATRICES;
+      OUTPUT.clear();
       const RESOLVE_PART = (id) => {
         if (OUTPUT.has(id)) {
           return OUTPUT.get(id);
@@ -3709,13 +4049,41 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
       resolvedRevision = poseRevision;
       return resolvedPose;
     };
+    const PARTIAL_POSE = (id, activeClip) => {
+      const START = NOW();
+      const BASE_POSES = METADATA.parts.map((part) => BASE_POSE.get(part.id));
+      const ELAPSED = displayTimeMs - activeClip.startedAtMs;
+      const RESULT = samplePartTransform(
+        POSE_PROGRAM,
+        activeClip.name,
+        ELAPSED,
+        PART_INDICES.get(id),
+        BASE_POSES
+      );
+      let partId = id;
+      let visible = true;
+      let sampledParts = 0;
+      while (partId !== null) {
+        visible &&= VISIBLE.get(partId) !== false;
+        sampledParts++;
+        partId = METADATA.parts[PART_INDICES.get(partId)].parent;
+      }
+      POSE_METRICS.partialQueries++;
+      POSE_METRICS.partialParts += sampledParts;
+      if (START !== null) {
+        POSE_METRICS.partialSampleMs += NOW() - START;
+      }
+      return { ...RESULT, visible };
+    };
     const GET_SOCKET = (id) => {
       ASSERT_PLAYER();
       const SOCKET = METADATA.sockets[id];
       if (!SOCKET) {
         throw new TypeError(`Unknown vector socket: ${id}`);
       }
-      return transformPoint(WORLD_MATRICES().matrices.get(SOCKET.part), SOCKET.point);
+      const ACTIVE = GPU_CLIP();
+      const MATRIX = ACTIVE ? PARTIAL_POSE(SOCKET.part, ACTIVE).transform : WORLD_MATRICES().matrices.get(SOCKET.part);
+      return transformPoint(MATRIX, SOCKET.point);
     };
     const RESOLVE_PART_POSE = (part, matrices) => {
       let parentVisible = true;
@@ -3745,6 +4113,52 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
         };
       });
     };
+    const VALIDATE_EXCLUSIONS = (excludeParts) => {
+      if (excludeParts === null) {
+        return;
+      }
+      if (!(excludeParts instanceof Set)) {
+        throw new TypeError("excludeParts must be a Set of known part ids");
+      }
+      for (const PART_ID of excludeParts) {
+        if (!PART_INDICES.has(PART_ID)) {
+          throw new TypeError(`Unknown vector part: ${PART_ID}`);
+        }
+      }
+    };
+    const PREPARE_POSE = ({ excludeParts = null } = {}) => {
+      ASSERT_PLAYER();
+      VALIDATE_EXCLUSIONS(excludeParts);
+      if (!POSE_INSTANCE) {
+        return null;
+      }
+      const MORPH = authoredMorph(SKETCH_MORPH_STYLE, displayTimeMs);
+      const ACTIVE = GPU_CLIP();
+      if (ACTIVE) {
+        const HANDLE = meshRenderer.preparePose(POSE_INSTANCE, {
+          clipName: ACTIVE.name,
+          elapsedMs: displayTimeMs - ACTIVE.startedAtMs,
+          basePoses: METADATA.parts.map((part) => BASE_POSE.get(part.id)),
+          visible: METADATA.parts.map((part) => VISIBLE.get(part.id) !== false),
+          excluded: METADATA.parts.map((part) => excludeParts?.has(part.id) ?? false),
+          morph: MORPH
+        });
+        if (HANDLE) {
+          POSE_METRICS.gpuPrepares++;
+          return HANDLE;
+        }
+      }
+      const RESOLVED = WORLD_MATRICES();
+      const PARTS = RESOLVED.parts.map((pose, index) => ({
+        transform: pose.transform,
+        opacity: pose.opacity,
+        visible: pose.visible && !excludeParts?.has(METADATA.parts[index].id)
+      }));
+      const ACTIVE_PLAYBACK = ACTIVE_CLIP(rootPlayback, displayTimeMs);
+      const REASON = ACTIVE ? meshRenderer.poseRenderer?.gpuUnavailableReason ?? "gpuUnavailable" : ACTIVE_PLAYBACK ? POSE_PROGRAM.clips[ACTIVE_PLAYBACK.name]?.reason ?? "unsupportedClip" : "transitionBlend";
+      POSE_METRICS.cpuFallbacks++;
+      return meshRenderer.prepareCpuPose(POSE_INSTANCE, PARTS, MORPH, REASON);
+    };
     const DRAW = ({
       projection,
       viewProjection,
@@ -3764,18 +4178,40 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
       excludeParts = null
     } = {}) => {
       ASSERT_PLAYER();
-      if (excludeParts !== null) {
-        if (!(excludeParts instanceof Set)) {
-          throw new TypeError("excludeParts must be a Set of known part ids");
-        }
-        for (const PART_ID of excludeParts) {
-          if (!PART_INDICES.has(PART_ID)) {
-            throw new TypeError(`Unknown vector part: ${PART_ID}`);
-          }
-        }
-      }
+      VALIDATE_EXCLUSIONS(excludeParts);
       if (GEOMETRY.shaderSurfaces?.length) {
         validateShaderSurfaceClipCapacity(clips, surfaceRenderer.maxClipPlanes);
+      }
+      const SPECIAL_GEOMETRY = Boolean(GEOMETRY.drawOrder || GEOMETRY.shaderSurfaces?.length);
+      if (!SPECIAL_GEOMETRY && POSE_INSTANCE) {
+        const POSE = PREPARE_POSE({ excludeParts });
+        if (POSE) {
+          const INDEX_VARIANT2 = !visibilityOverridden && compiledAsset.geometry.expressionIndices?.[expression] ? expression : null;
+          const WORLD_MODE2 = viewProjection !== void 0 || worldMatrix !== void 0;
+          meshRenderer.drawMesh(mesh, {
+            ...WORLD_MODE2 ? { viewProjection, worldMatrix } : { projection },
+            matrix,
+            pose: POSE,
+            alpha,
+            color,
+            forceColor,
+            whiteFlash,
+            clips,
+            stencilRef,
+            depth,
+            depthTest,
+            depthWrite,
+            depthFunc,
+            indexVariant: INDEX_VARIANT2,
+            strokeViewport
+          });
+          return;
+        }
+      }
+      if (SPECIAL_GEOMETRY) {
+        meshRenderer.recordPoseFallback?.(GEOMETRY.drawOrder ? "drawOrder" : "shaderSurfaces");
+      } else if (!POSE_INSTANCE) {
+        meshRenderer.recordPoseFallback?.("uniformPose");
       }
       const RESOLVED = WORLD_MATRICES();
       const POSES = RESOLVED.parts.map((pose, index) => ({
@@ -3790,10 +4226,10 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
             if (!POSES[COMMAND.partIndex].visible || POSES[COMMAND.partIndex].opacity <= 0) {
               continue;
             }
-            if (!MESH) {
+            if (!mesh) {
               throw new Error("SVG draw order references mesh geometry that was not retained");
             }
-            meshRenderer.drawMesh(MESH, {
+            meshRenderer.drawMesh(mesh, {
               ...WORLD_MODE2 ? {
                 viewProjection,
                 worldMatrix
@@ -3852,7 +4288,7 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
       }
       const INDEX_VARIANT = !visibilityOverridden && compiledAsset.geometry.expressionIndices?.[expression] ? expression : null;
       const WORLD_MODE = viewProjection !== void 0 || worldMatrix !== void 0;
-      meshRenderer.drawMesh(MESH, {
+      meshRenderer.drawMesh(mesh, {
         ...WORLD_MODE ? {
           viewProjection,
           worldMatrix
@@ -3881,9 +4317,12 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
       if (!PART_INDICES.has(id)) {
         throw new TypeError(`Unknown vector part: ${id}`);
       }
-      const INDEX = PART_INDICES.get(id), EFFECTIVE = WORLD_MATRICES().parts[INDEX];
+      const INDEX = PART_INDICES.get(id);
+      const ACTIVE = GPU_CLIP();
+      const EFFECTIVE = ACTIVE ? PARTIAL_POSE(id, ACTIVE) : WORLD_MATRICES().parts[INDEX];
+      const AUTHORED = ACTIVE ? samplePoseChannels(POSE_PROGRAM, ACTIVE.name, displayTimeMs - ACTIVE.startedAtMs, INDEX) : currentPose.get(id);
       return {
-        ...currentPose.get(id),
+        ...AUTHORED,
         visible: EFFECTIVE.visible,
         transform: EFFECTIVE.transform.slice()
       };
@@ -3896,6 +4335,9 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
         TIMELINE.pause();
       }
       TIMELINES.clear();
+      if (POSE_INSTANCE) {
+        meshRenderer.deletePoseInstance(POSE_INSTANCE);
+      }
       PLAYERS.delete(PLAYER);
       playerDisposed = true;
       return true;
@@ -3910,6 +4352,7 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
       getPartPose: GET_PART_POSE,
       getSocket: GET_SOCKET,
       partPoses: PART_POSES,
+      preparePose: PREPARE_POSE,
       draw: DRAW,
       dispose: DISPOSE_PLAYER,
       get currentClip() {
@@ -3923,6 +4366,9 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
       },
       get disposed() {
         return playerDisposed;
+      },
+      get poseMetrics() {
+        return { ...POSE_METRICS };
       }
     });
     PLAYERS.add(PLAYER);
@@ -3936,11 +4382,14 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
     for (const PLAYER of [...PLAYERS]) {
       PLAYER.dispose();
     }
-    if (MESH) {
-      meshRenderer.deleteMesh(MESH);
+    if (mesh) {
+      meshRenderer.deleteMesh(mesh);
     }
     for (const SURFACE of RETAINED_SURFACES) {
       surfaceRenderer.deleteSurface(SURFACE);
+    }
+    if (poseSource) {
+      meshRenderer.deletePoseSource(poseSource);
     }
     disposed = true;
     return true;
@@ -3952,7 +4401,7 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
     compilerVersion: compiledAsset.compilerVersion,
     viewBox: Object.freeze([...compiledAsset.viewBox]),
     metadata: METADATA,
-    mesh: MESH,
+    mesh,
     surfaces: Object.freeze(RETAINED_SURFACES),
     createPlayer: CREATE_PLAYER,
     dispose: DISPOSE,
