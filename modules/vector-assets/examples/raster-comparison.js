@@ -207,7 +207,16 @@ function setStatus(message, error = false) {
     STATUS.classList.toggle('error', error);
 }
 
-function invalidatePreparation() {
+function invalidatePreparation(force = false) {
+    const CONFIG_KEY = JSON.stringify([
+        ASSET.sourceSha256,
+        Number(RESOLUTION_INPUT.value),
+        Number(SAMPLE_INTERVAL_INPUT.value),
+        DEVICE.stats.restores ?? 0,
+    ]);
+    if (!force && !STATE.spriteNeedsRebuild && STATE.preparationKey === CONFIG_KEY) {
+        return;
+    }
     STATE.preparationKey = null;
     STATE.spriteNeedsRebuild = true;
     STATE.ready = false;
@@ -826,7 +835,7 @@ CANVAS.addEventListener('webglcontextrestored', () => {
         STATE.contextLost = false;
         STATE.previousFrameMs = null;
         STATE.atlasResolution = 0;
-        invalidatePreparation();
+        invalidatePreparation(true);
         setStatus('그래픽 화면을 복구했습니다.');
         scheduleNextFrame();
     }, 0);
