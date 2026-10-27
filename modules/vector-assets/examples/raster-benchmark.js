@@ -273,11 +273,13 @@ export async function runComparison(
                     ? 'unsupported'
                     : DISCARDED_COUNT > 0
                       ? 'disjoint'
-                      : GPU_VALUES.length
+                      : GPU_VALUES.length === sampleFrames
                         ? 'available'
-                        : timerEnd?.pendingCount
-                          ? 'pending'
-                          : 'unavailable';
+                        : GPU_VALUES.length
+                          ? 'partial'
+                          : timerEnd?.pendingCount
+                            ? 'pending'
+                            : 'unavailable';
                 Object.assign(METHOD, {
                     fps: INTERVAL.mean ? 1000 / INTERVAL.mean : null,
                     frameIntervalMs: INTERVAL,
@@ -286,7 +288,9 @@ export async function runComparison(
                     drawCalls: summary(RAW.frames.map((frame) => frame.drawCalls)),
                     gpuMs: {
                         ...(GPU_STATUS === 'available' ? summary(GPU_VALUES) : { p50: null, p95: null }),
-                        count: GPU_STATUS === 'available' ? GPU_VALUES.length : 0,
+                        count: GPU_VALUES.length,
+                        expectedCount: sampleFrames,
+                        coverage: GPU_VALUES.length / sampleFrames,
                         status: GPU_STATUS,
                     },
                 });
