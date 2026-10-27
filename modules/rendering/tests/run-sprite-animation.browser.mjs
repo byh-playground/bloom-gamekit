@@ -60,7 +60,7 @@ try {
         const SHEET_BYTES = new Uint8Array(14 * 6 * 4);
         // Row zero is the GPU bottom row. Each 2x2 cell has a one-pixel
         // transparent gutter, so linear filtering cannot sample its neighbor.
-        for (let row = 1; row <= 2; row++) {
+        for (let row = 3; row <= 4; row++) {
             for (let column = 1; column <= 2; column++) {
                 SHEET_BYTES.set([255, 0, 0, 255], (row * 14 + column) * 4);
             }
@@ -68,7 +68,7 @@ try {
                 SHEET_BYTES.set([0, 255, 0, 128], (row * 14 + column) * 4);
             }
         }
-        for (let row = 1; row <= 3; row++) {
+        for (let row = 2; row <= 4; row++) {
             for (let column = 10; column <= 12; column++) {
                 SHEET_BYTES.set([0, 0, 255, 255], (row * 14 + column) * 4);
             }
