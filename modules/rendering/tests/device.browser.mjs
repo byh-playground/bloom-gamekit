@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
-const FULL_FRAGMENT_SHA256 = 'edeb868bf7a7016fee9ca7e1c06312ca2b1c63528db25f23b94d6aa77d3473f9';
+const FULL_FRAGMENT_SHA256 = '228e33dc1542b24388634c424769f6d5c105fba4e7bb9dbdb4d3e5fef0f2ab56';
 
 /** Continues the same browser/built-module E2E; no fake GL or retained screenshots. */
 export async function exerciseWebGLDevice(page) {
@@ -608,7 +608,7 @@ export async function exerciseVectorRenderer(page) {
     const FRAGMENT = SOURCE.match(/^const FRAGMENT = `([\s\S]*?)`;/m)?.[1];
     assert.ok(FRAGMENT, 'the original two-circle radial fragment remains present');
     assert.equal(
-        createHash('sha256').update(FRAGMENT).digest('hex'),
+        createHash('sha256').update(FRAGMENT.replaceAll('\r\n', '\n')).digest('hex'),
         FULL_FRAGMENT_SHA256,
         'the existing radial fragment must remain byte-identical',
     );

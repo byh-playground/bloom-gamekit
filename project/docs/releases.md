@@ -1,3 +1,8 @@
+## v0.18.0 (2026-10-27)
+
+- `VectorContext.globalCompositeOperation`을 추가합니다. `source-over`(기본)와 가산 `lighter`를 지원하며 단순 도형 painter와 vector path/stroke/text에 적용되고 save/restore에 포함됩니다. `PrimitiveRenderer.draw`는 batch 상태에 `blend`를 포함합니다. 불·전기·폭발처럼 겹치면 밝아지는 효과를 게임이 반투명 원 겹침으로 흉내 내지 않아도 됩니다.
+- 검증: 실제 Chromium/WebGL에서 단순 도형·path의 가산 포화, save/restore 복원, 잘못된 값 예외를 임시 pixel 검사로 확인했습니다(저장소에는 남기지 않음).
+
 ## v0.17.1 (2026-10-27)
 
 Prepared vector poses are reused within the same frame and pose revision, including mutable exclusion contents and context restoration. Drawing a previously prepared CPU pose no longer uploads its row again. Clean pose atlases return without scanning all actors on each visible mesh flush. `poseStats()` exposes `flushCalls`, `flushRecordVisits`, and `cleanFlushSkips`; player metrics expose `preparedPoseCacheHits`. Animation, paint order, geometry and image quality are unchanged. This fixes measured preparation overhead; it does not claim that every consumer scene is faster than its earlier renderer.
