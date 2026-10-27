@@ -210,6 +210,7 @@ export class PrimitiveRenderer {
         if (
             state.clip.key !== next.clip.key ||
             state.stencilRef !== next.stencilRef ||
+            state.blend !== next.blend ||
             state.projection.length !== next.projection.length
         ) {
             return false;
@@ -221,7 +222,7 @@ export class PrimitiveRenderer {
         }
         return true;
     }
-    draw({ matrix, color, params, projection, clips, stencilRef = null }) {
+    draw({ matrix, color, params, projection, clips, stencilRef = null, blend = 'source-over' }) {
         if (this.disposed) {
             throw new Error('PrimitiveRenderer is disposed');
         }
@@ -233,6 +234,7 @@ export class PrimitiveRenderer {
             clip: CLIP,
             projection,
             stencilRef,
+            blend,
         };
         if (this.pendingCount && !this._sameState(this.pendingState, NEXT_STATE)) {
             this.flush('stateChange');
@@ -277,7 +279,7 @@ export class PrimitiveRenderer {
             buffer: this.vertexBuffer,
             count: QUAD_VERTICES.length / 2,
             uniforms: UNIFORMS,
-            blend: 'source-over',
+            blend: state.blend,
             stencil: stencilState(state.stencilRef),
         });
     }
@@ -309,7 +311,7 @@ export class PrimitiveRenderer {
             instances: this.pendingCount,
             count: QUAD_VERTICES.length / 2,
             uniforms: UNIFORMS,
-            blend: 'source-over',
+            blend: STATE.blend,
             stencil: stencilState(STATE.stencilRef),
         });
         this.frameStats.draws++;

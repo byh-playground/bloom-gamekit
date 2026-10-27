@@ -356,6 +356,7 @@ export class VectorRenderer {
         this.activeRadial = false;
         this.activeWhiteFlash = false;
         this.activeGradient = null;
+        this.blend = 'source-over';
         this.stencilClips = [];
         this.clipPaths = new Map();
         this.clipPathBytes = 0;
@@ -950,7 +951,7 @@ export class VectorRenderer {
                     : {}),
             },
             textures: [TEXTURE],
-            blend: 'source-over',
+            blend: this.blend,
             stencil: this.stencilDepth
                 ? {
                       func: 'equal',
@@ -962,6 +963,16 @@ export class VectorRenderer {
                 : false,
         });
         this.count = 0;
+    }
+    // Only source-over and the additive 'lighter' are offered; a change submits what the other operation queued.
+    setBlend(blend) {
+        if (blend !== 'source-over' && blend !== 'lighter') {
+            throw new RangeError('VectorRenderer supports only source-over and lighter blending');
+        }
+        if (blend !== this.blend) {
+            this._submit();
+            this.blend = blend;
+        }
     }
     _useTexture(texture, { radial = false, whiteFlash = false, gradient = null } = {}) {
         if (

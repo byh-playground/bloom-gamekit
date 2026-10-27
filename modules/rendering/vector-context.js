@@ -452,6 +452,7 @@ export class VectorContext {
         this._textBaseline = 'alphabetic';
         this._direction = 'inherit';
         this._filter = 'none';
+        this._composite = 'source-over';
         this.forceColor = null;
         this.stack = [];
         this.frameStats = {};
@@ -566,6 +567,17 @@ export class VectorContext {
             throw new RangeError('VectorContext supports only none and brightness(0) invert(1) filters');
         }
         this._filter = v;
+    }
+    get globalCompositeOperation() {
+        return this._composite;
+    }
+    set globalCompositeOperation(v) {
+        this._frame();
+        if (v !== 'source-over' && v !== 'lighter') {
+            throw new RangeError('VectorContext supports only source-over and lighter composite operations');
+        }
+        this.vector.setBlend(v);
+        this._composite = v;
     }
     get stencilRef() {
         return this.vector.stencilDepth || null;
@@ -776,6 +788,7 @@ export class VectorContext {
             textBaseline: this._textBaseline,
             direction: this._direction,
             filter: this._filter,
+            composite: this._composite,
             forceColor: this.forceColor,
         });
         this.vector.save();
@@ -804,8 +817,10 @@ export class VectorContext {
             _textBaseline: S.textBaseline,
             _direction: S.direction,
             _filter: S.filter,
+            _composite: S.composite,
             forceColor: S.forceColor,
         });
+        this.vector.setBlend(S.composite);
     }
     setTransform(a, b, c, d, e, f) {
         this.vector.setTransform(a, b, c, d, e, f);
@@ -1072,6 +1087,7 @@ export class VectorContext {
             projection: this.vector.projection,
             clips: this.vector.clips,
             stencilRef: this.vector.stencilDepth || null,
+            blend: this._composite,
         });
     }
     _tryPrimitiveFill() {
