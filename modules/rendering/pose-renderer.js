@@ -192,13 +192,12 @@ export class PoseRenderer {
             throw new Error('Dispose pose instances before their source');
         }
         this._boundary();
-        const SOURCE = this.sources.get(handle);
         this.sources.delete(handle);
-        try {
-            this._rebuildPrograms();
-        } catch (error) {
-            this.sources.set(handle, SOURCE);
-            throw error;
+        // Releasing an asset must not allocate a replacement texture. Live offsets
+        // remain valid; the next registration compacts holes transactionally.
+        if (!this.sources.size && this.programTexture) {
+            this.device.deleteTexture(this.programTexture);
+            this.programTexture = null;
         }
         return true;
     }
@@ -213,6 +212,9 @@ export class PoseRenderer {
             this.device.deleteRenderTarget(this.gpuTarget);
             this.gpuTarget = null;
         }
+        this.stateData = null;
+        this.overrideData = null;
+        this.cpuData = null;
     }
     _ensureCapacity(required) {
         if (required <= this.capacity) {

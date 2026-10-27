@@ -412,6 +412,8 @@ This correctness check does not measure GPU completion or mobile performance.
 
 WebGL 2가 기본이며 ANGLE 확장 유무와 관계없이 core instancing을 사용합니다. 기존 GLSL ES 100 shader 입력은 ES 300으로 정규화하고 native ES 300도 허용합니다. shader·VAO·buffer·texture는 context 복구와 dispose의 동일 소유권을 따릅니다.
 
+Source 해제는 새 texture를 할당하지 않습니다. 남은 프로그램의 offset은 유지하고 여유 공간은 다음 source 등록 때 압축하며, 마지막 source 해제 시 전체 프로그램 texture를 반환합니다. 압축·atlas 증설은 새 데이터 할당에 성공한 뒤 교체합니다. 업로드 실패 시 row의 dirty 상태를 유지하고 context 복구 때 필요한 state/base/CPU pose 데이터를 다시 올립니다.
+
 - createDataTexture(width,height,{data=null})와 updateDataTexture(handle,Float32Array,{x,y,width,height}): nearest RGBA32F 숫자 데이터입니다. CPU 원본을 보존해 context restore 후 다시 만듭니다. 그림 asset API가 아닙니다.
 - createRenderTarget(width,height,{format:'rgba32f',filter:'nearest'}): GPU 평가 결과용 float target입니다. floatRenderTargetsSupported와 isRenderTargetAvailable(handle)로 지원·복구 가능 여부를 확인합니다. EXT_color_buffer_float가 필요하며, 해당 target의 복구 실패가 일반 WebGL 2 렌더링을 중단시키지는 않습니다.
 - new MeshRenderer(device,{poseBackend:'auto'|'cpu'|'uniform'}): auto는 GPU 평가를 시도하고 명시적 CPU pose fallback을 유지합니다. cpu는 같은 atlas/instancing에 CPU pose를 올리는 진단 경로, uniform은 기존 CPU pose uniform 참조 경로입니다.

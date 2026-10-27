@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { chromium } from 'playwright';
+import { execFileSync } from 'node:child_process';
 import { compileVectorAssetFile, compiledAssetModuleSource } from '../compiler.js';
 
 // Fixed user scenario: mixed native assets, interleaved paint, independent clocks,
@@ -33,6 +34,9 @@ const BROWSER = await chromium.launch({
 });
 const RESULTS = [];
 const ERRORS = [];
+const SOURCE_HEAD = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+const SOURCE_DIRTY =
+    execFileSync('git', ['status', '--porcelain', '--untracked-files=no'], { encoding: 'utf8' }).trim().length > 0;
 try {
     for (const BACKEND of ['uniform', 'auto', 'cpu', 'noFloat']) {
         const PAGE = await BROWSER.newPage({ viewport: { width: 800, height: 600 }, deviceScaleFactor: 1 });
@@ -90,6 +94,7 @@ try {
                     restoredStateRefresh: null,
                     capacityRollback: null,
                     programRebuildRollback: null,
+                    sourceReleaseNoAllocation: null,
                 };
                 let maxPoseError = 0;
                 let maxOpacityError = 0;
@@ -334,6 +339,18 @@ try {
                     } finally {
                         DEVICE.createDataTexture = CREATE;
                     }
+                    const RELEASED_PROGRAM = [...POSES.sources.values()][0].program;
+                    const SOURCE_COUNT = POSES.sources.size;
+                    DEVICE.createDataTexture = () => {
+                        throw new Error('Source release must not allocate');
+                    };
+                    try {
+                        RESOURCES[0].dispose();
+                        FAULTS.sourceReleaseNoAllocation =
+                            RESOURCES[0].disposed && POSES.sources.size === SOURCE_COUNT - 1;
+                    } finally {
+                        DEVICE.createDataTexture = CREATE;
+                    }
                     const BEFORE_SOURCES = [...POSES.sources].map(([handle, source]) => ({
                         handle,
                         offset: source.offset,
@@ -343,7 +360,7 @@ try {
                         throw new Error('Injected pose program allocation failure');
                     };
                     try {
-                        RESOURCES[0].dispose();
+                        MESHES.createPoseSource(RELEASED_PROGRAM);
                         throw new Error('Program failure injection did not execute');
                     } catch (error) {
                         if (error.message !== 'Injected pose program allocation failure') {
@@ -402,6 +419,7 @@ try {
                 restoredStateRefresh: true,
                 capacityRollback: true,
                 programRebuildRollback: true,
+                sourceReleaseNoAllocation: true,
             });
         }
         if (RESULT.backend === 'noFloat') {
@@ -471,6 +489,10 @@ try {
     }
     assert.deepEqual(ERRORS, []);
     const REPORT = {
+        sourceHead: SOURCE_HEAD,
+        sourceDirty: SOURCE_DIRTY,
+        execution:
+            'Local Chromium WebGL 2 pixels and reported GPU; GitHub build CI and physical mobile are separate verification scopes.',
         fixtures: ASSETS.map(({ id, sourceSha256 }) => ({ id, sourceSha256 })),
         browser: await BROWSER.version(),
         thresholds: {
