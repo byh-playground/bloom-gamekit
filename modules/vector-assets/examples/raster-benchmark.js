@@ -63,6 +63,9 @@ function assertPrepared(frame, baseline, mode, count, sourceTimeMs) {
     if (frame.mode !== mode || frame.count !== count) {
         throw new Error(`Benchmark scene changed during ${mode} sampling`);
     }
+    if (!Number.isSafeInteger(frame.renderDrawCalls) || frame.renderDrawCalls < 0) {
+        throw new Error('Post-preparation render draw-call count is unavailable');
+    }
     if (!frame.atlas?.baked || frame.atlas.bakeCount !== baseline.partBakeCount) {
         throw new Error(`Part atlas rebaked during ${mode} benchmark`);
     }
@@ -254,7 +257,7 @@ export async function runComparison(
                             gpuTextureBytes: FRAME.gpuTextureBytes,
                             bakeCounts: FRAME.preparation.entries.map((entry) => entry.bakeCount),
                             preparationGeneration: FRAME.preparation.generation,
-                            drawCalls: FRAME.drawCalls,
+                            drawCalls: FRAME.renderDrawCalls,
                         });
                         SCOPES.set(FRAME.frame, SCOPE);
                     }
