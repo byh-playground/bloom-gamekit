@@ -203,6 +203,8 @@ The browser fixture reports shared-pose actors separately from independently pha
 
 ## Pose preparation and CPU queries (v0.17)
 
+`createVectorSpriteAtlas(meshes, asset, compiled, { clip, expression, sampleIntervalMs, pixelsPerUnit, paintRegions })` accepts the same explicit named RGB replacements as `player.draw({ paintRegions })`. The baker validates and captures the values when the atlas is created. Equivalent values share the cache regardless of object key order; distinct values produce distinct textures. Caller mutation cannot change a deferred bake or context-restoration bake. Reset with `null` or `{}` uses the original fills. Alpha, stroke, expression and authored pose remain source-owned. Each palette consumes its own atlas image bytes: hosts must budget and prepare a finite manifest before playback, not create new combinations in their render loop.
+
 Player의 play/seek/transitionTo 시간선은 backend와 독립적입니다. 일반 clip은 원본 채널의 Float32 숫자 프로그램을 GPU에서 평가하고, CPU getSocket/getPartPose는 같은 배치의 Float64 채널로 해당 부위와 조상만 샘플링합니다. partPoses는 전체 CPU pose를 lazy로 계산해 독립 복사본을 반환합니다. 전환 중에는 원래 Anime.js CPU 평가를 사용하며 source/target/중첩/되감기 의미를 보존합니다. 종료된 전환은 GPU 경로로 돌아갈 수 있습니다. CPU 평가·부분 조회 횟수/시간은 player.poseMetrics로 확인합니다.
 
 player.preparePose({excludeParts})와 MeshRenderer.preparePoses()를 actor 제출 전에 호출하면 여러 독립 위상을 한 준비 단계에서 평가할 수 있습니다. 이후 VectorContext.drawVectorAsset(player,options)는 앞선 paint와 순서를 보존합니다. excludeParts는 해당 부위만 숨기며 부모를 제외했다고 자식까지 숨기지 않습니다. setPartVisible의 부모 가시성 전파와 별개입니다. dispose는 소유 pose row를 반환하며 애플리케이션 ID를 GPU 행 번호로 사용하지 않습니다.

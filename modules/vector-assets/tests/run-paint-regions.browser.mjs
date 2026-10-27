@@ -282,6 +282,63 @@ try {
                     CAPTURE_PIXELS.every((value, index) => Math.abs(value - EXPECTED_CAPTURE[index]) <= 1),
                     'Independent player palettes',
                 );
+                // The same named fills must survive sampled sprite preparation,
+                // including deferred bake, cache reuse and context restoration.
+                const MUTABLE_BAKE_PAINT = { cheeks: [1, 0, 0], badge: [0, 1, 0] };
+                const ATLAS_OPTIONS = { clip: 'idle', sampleIntervalMs: 100, pixelsPerUnit: 1 };
+                const ATLAS = V.createVectorSpriteAtlas(MESHES, RESOURCES[0], COMPILED[0], {
+                    ...ATLAS_OPTIONS,
+                    paintRegions: MUTABLE_BAKE_PAINT,
+                });
+                const SHARED_ATLAS = V.createVectorSpriteAtlas(MESHES, RESOURCES[0], COMPILED[0], {
+                    ...ATLAS_OPTIONS,
+                    paintRegions: { badge: [0, 1, 0], cheeks: new Float32Array([1, 0, 0]) },
+                });
+                const OTHER_ATLAS = V.createVectorSpriteAtlas(MESHES, RESOURCES[0], COMPILED[0], {
+                    ...ATLAS_OPTIONS,
+                    paintRegions: palettes[1],
+                });
+                const REFERENCE_ATLAS = V.createVectorSpriteAtlas(MESHES, RESOURCES[1], COMPILED[1], ATLAS_OPTIONS);
+                CHECK(ATLAS.stats.cacheKey === SHARED_ATLAS.stats.cacheKey, 'Equivalent paint values share cache');
+                CHECK(ATLAS.stats.cacheKey !== OTHER_ATLAS.stats.cacheKey, 'Distinct paint values isolate cache');
+                MUTABLE_BAKE_PAINT.cheeks[0] = 0;
+                MUTABLE_BAKE_PAINT.cheeks[2] = 1;
+                let invalidBakePaintRejected = false;
+                try {
+                    V.createVectorSpriteAtlas(MESHES, RESOURCES[0], COMPILED[0], {
+                        ...ATLAS_OPTIONS,
+                        paintRegions: { missing: [1, 0, 0] },
+                    });
+                } catch (error) {
+                    invalidBakePaintRejected = /Unknown paint region/.test(error.message);
+                }
+                CHECK(invalidBakePaintRejected, 'Unknown bake paint rejected before preparation');
+                function bakedPixels(atlas) {
+                    DEVICE.beginFrame({ width: 480, height: 100, clearColor: [0, 0, 0, 0] });
+                    MESHES.beginFrame();
+                    CHECK(atlas.bake().backend === 'sprite', 'Named-fill sprite bake available');
+                    const ANIMATION = R.createSpriteAnimation(MESHES, atlas.texture, atlas.definition),
+                        PLAYER = ANIMATION.createPlayer({ clip: 'idle' });
+                    PLAYER.draw({ timeMs: 0, projection: PROJECTION });
+                    MESHES.flush();
+                    const PIXELS = new Uint8Array(480 * 100 * 4);
+                    DEVICE.gl.readPixels(0, 0, 480, 100, DEVICE.gl.RGBA, DEVICE.gl.UNSIGNED_BYTE, PIXELS);
+                    CHECK(DEVICE.gl.getError() === DEVICE.gl.NO_ERROR, 'Named-fill sprite GL error');
+                    PLAYER.dispose();
+                    ANIMATION.dispose();
+                    DEVICE.endFrame();
+                    return PIXELS;
+                }
+                const EXPECTED_BAKE = bakedPixels(REFERENCE_ATLAS),
+                    PAINTED_BAKE = bakedPixels(ATLAS);
+                CHECK(
+                    PAINTED_BAKE.every((value, index) => Math.abs(value - EXPECTED_BAKE[index]) <= 1),
+                    'Sampled sprite matches separately recoloured original; captures caller values',
+                );
+                const BAKE_COUNT = ATLAS.stats.bakeCount;
+                bakedPixels(SHARED_ATLAS);
+                CHECK(ATLAS.texture === SHARED_ATLAS.texture, 'Equivalent paint shares prepared GPU texture');
+                CHECK(ATLAS.stats.bakeCount === BAKE_COUNT, 'Repeated playback preparation does not rebake');
                 // Browser context recovery must re-upload the packed region attribute, not the 11-float source layout.
                 const EXT = DEVICE.gl.getExtension('WEBGL_lose_context');
                 CHECK(EXT, 'Context loss extension required');
@@ -314,6 +371,18 @@ try {
                     RESTORED_PIXELS.every((value, index) => Math.abs(value - EXPECTED_RESTORED[index]) <= 1),
                     'Restored named fills match originals',
                 );
+                const RESTORED_BAKE = bakedPixels(ATLAS),
+                    REFERENCE_REBAKE = bakedPixels(REFERENCE_ATLAS);
+                CHECK(
+                    RESTORED_BAKE.every((value, index) => Math.abs(value - REFERENCE_REBAKE[index]) <= 1),
+                    'Restored sprite retains captured paint values',
+                );
+                CHECK(ATLAS.stats.bakeCount === BAKE_COUNT + 1, 'Restore explicitly rebakes once');
+                SHARED_ATLAS.dispose();
+                CHECK(ATLAS.texture !== null, 'Shared atlas dispose preserves other owner');
+                ATLAS.dispose();
+                OTHER_ATLAS.dispose();
+                REFERENCE_ATLAS.dispose();
                 const CONTEXT = new R.VectorContext(DEVICE);
                 CONTEXT.meshRenderer = MESHES;
                 CONTEXT.beginFrame({ width: 480, height: 100, clearColor: [0, 0, 0, 0] });
@@ -369,6 +438,13 @@ try {
                     maxDifference,
                     scenarios: CASES.length,
                     framesWithoutGeometryUploads: 60,
+                    sampledSprite: {
+                        capturedPaintMatchesReference: true,
+                        equivalentPaintShared: true,
+                        distinctPaintIsolated: true,
+                        playbackRebakes: 0,
+                        restoreRebakes: ATLAS.stats.bakeCount - BAKE_COUNT,
+                    },
                     beforeDispose: BEFORE_DISPOSE,
                 };
             },

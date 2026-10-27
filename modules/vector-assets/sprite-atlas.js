@@ -1,4 +1,5 @@
 import { validateCompiledAsset } from './schema.js';
+import { packPaintRegions } from '../rendering/paint-regions.js';
 
 const CACHE = new WeakMap();
 const DEFAULT_MAX_BYTES = 64 * 1024 * 1024;
@@ -127,6 +128,7 @@ export function createVectorSpriteAtlas(
         padding = 2,
         maxAtlasSize = null,
         maxAtlasBytes = DEFAULT_MAX_BYTES,
+        paintRegions = null,
     } = {},
 ) {
     validateCompiledAsset(compiledAsset);
@@ -170,6 +172,16 @@ export function createVectorSpriteAtlas(
     ) {
         throw new TypeError('Finite positive sample interval, pixel scale, padding and atlas budgets required');
     }
+    // Capture and validate named RGB values before caching; caller mutation must
+    // never recolour a later bake or its context-restoration bake.
+    const PAINT_NAMES = GEOMETRY.paintRegions?.names ?? [],
+        PAINT = packPaintRegions(PAINT_NAMES, paintRegions, new Float32Array((PAINT_NAMES.length + 1) * 4)),
+        CAPTURED_PAINT = Object.fromEntries(
+            PAINT_NAMES.flatMap((name, index) => {
+                const AT = (index + 1) * 4;
+                return PAINT[AT + 3] ? [[name, Array.from(PAINT.subarray(AT, AT + 3))]] : [];
+            }),
+        );
     const KEY = JSON.stringify([
         clip,
         expression,
@@ -178,6 +190,7 @@ export function createVectorSpriteAtlas(
         padding,
         maxAtlasSize,
         maxAtlasBytes,
+        Array.from(PAINT),
     ]);
     let cached = CACHE.get(asset);
     if (!cached) {
@@ -293,6 +306,7 @@ export function createVectorSpriteAtlas(
                     TY = FRAME.y - pixelsPerUnit * MIN_Y;
                 record.player.seek(SAMPLE.timeMs);
                 record.player.draw({
+                    paintRegions: CAPTURED_PAINT,
                     projection: [
                         (2 * pixelsPerUnit) / record.packed.width,
                         0,
