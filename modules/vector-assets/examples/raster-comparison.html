@@ -93,6 +93,16 @@
                 overflow-wrap: anywhere;
                 overflow-x: auto;
             }
+            #accumulated-results {
+                height: 260px;
+                overflow: auto;
+                margin: 0.5rem 0;
+                border: 1px solid #cbd8c7;
+                padding: 0.5rem;
+            }
+            #accumulation-status {
+                min-height: 3em;
+            }
             .benchmark-results table {
                 width: 100%;
                 border-collapse: collapse;
@@ -441,6 +451,31 @@
             </section>
             <button id="benchmark" type="button">Run sequential comparison</button>
             <div class="benchmark-results" aria-live="polite"></div>
+            <section aria-label="Accumulated full-viewport measurements">
+                <h2>누적 측정 · 전체 화면 순차 비교</h2>
+                <button id="accumulate-start" type="button">Start / resume accumulation</button>
+                <button id="accumulate-stop" type="button" disabled>Stop / cancel round</button>
+                <button id="accumulate-reset" type="button">Reset history</button>
+                <p id="accumulation-status" role="status">
+                    Ready. Stop before changing settings; previous conditions remain labelled below.
+                </p>
+                <div id="accumulated-results" class="benchmark-results">No accumulated samples.</div>
+                <p>
+                    CPU total: animation update + render preparation/submission (final flush included). CPU submit is a
+                    subset. GPU: render commands including pose pass, asynchronous valid queries only. RAF interval:
+                    browser frame cadence including waiting and other work. These overlap; do not add CPU and GPU. Split
+                    live FPS is shared. Comparison source time uses fixed 60 Hz steps, independent of live playback
+                    speed.
+                </p>
+                <p>
+                    Each balanced round: 30 warmup + 60 measured frames per path, alternating forward/reverse order,
+                    identical display times. Duration is the sum of measured RAF intervals per path, excluding warmup,
+                    preparation, stops and query drain. &gt;16.7 ms is a reference 60 Hz budget (strictly greater, not a
+                    detected missed presentation). Exact linearly interpolated percentiles; maximum 6,000 samples/path
+                    and 5 recent conditions. GPU gaps are not zero-filled. Hidden page/resize cancels the incomplete
+                    round. Results stay in this page only.
+                </p>
+            </section>
             <div id="memory-metrics"></div>
             <div class="metrics">
                 <section>

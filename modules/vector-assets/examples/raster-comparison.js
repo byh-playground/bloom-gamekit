@@ -3,6 +3,7 @@ import { createVectorAsset, createVectorRasterAtlas, createVectorSpriteAtlas } f
 import { createVectorAssetLoader } from '/dist/vector-assets-loader.js';
 import { seedScout, seedScoutSvg } from '../seed-scout-raster-comparison.compiled.js';
 import { runComparison } from './raster-benchmark.js';
+import { createAccumulation, ACCUMULATION_LIMIT } from './raster-accumulation.js';
 
 const BY_ID = (id) => document.getElementById(id);
 const CANVAS = BY_ID('canvas');
@@ -83,6 +84,8 @@ const PLAYERS = [];
 let nextReadoutMs = 0;
 let frameHandle = null;
 let benchmarkRunning = false;
+const ACCUMULATION = createAccumulation();
+let accumulationController = null;
 
 function benchmarkConfigKey(config = {}) {
     return JSON.stringify({
@@ -95,6 +98,7 @@ function benchmarkConfigKey(config = {}) {
         expression: EXPRESSION_INPUT.value,
         resolution: Number(RESOLUTION_INPUT.value),
         interval: Number(SAMPLE_INTERVAL_INPUT.value),
+        playbackRate: Number(PLAYBACK_RATE_INPUT.value),
         mixed: MIXED_INPUT.checked,
         zoom: Number(ZOOM_INPUT.value),
         quality: STATE.qualityKey,
@@ -105,6 +109,158 @@ function benchmarkConfigKey(config = {}) {
         dpr: devicePixelRatio || 1,
         restores: DEVICE.stats.restores,
     });
+}
+
+function showAccumulation() {
+    const RESULTS = BY_ID('accumulated-results');
+    RESULTS.replaceChildren();
+    for (const CONDITION of ACCUMULATION.snapshot().reverse()) {
+        const TITLE = document.createElement('p');
+        TITLE.textContent = `${CONDITION.label} · ${CONDITION.rounds} balanced rounds · setup wall ${benchmarkValue(CONDITION.setupWallMs)} · initial atlas CPU ${benchmarkValue(CONDITION.initialPreparationCpuMs)} · logical atlas ${CONDITION.atlasAllocatedBytes.toLocaleString()} B · steady image upload / bake Δ0`;
+        const TABLE = document.createElement('table');
+        const HEAD = TABLE.createTHead().insertRow();
+        for (const LABEL of [
+            'Path / metric (ms)',
+            'n / expected',
+            'Mean',
+            'p50',
+            'p95',
+            'p99',
+            'Max',
+            '>16.7 ms',
+            'Sampled time / RAF FPS',
+        ]) {
+            const CELL = document.createElement('th');
+            CELL.textContent = LABEL;
+            HEAD.append(CELL);
+        }
+        const BODY = TABLE.createTBody();
+        for (const METHOD of CONDITION.methods) {
+            for (const [LABEL, STATS] of [
+                ['CPU total', METHOD.cpuTotalMs],
+                ['CPU submit', METHOD.submitMs],
+                ['GPU', METHOD.gpuMs],
+                ['RAF interval', METHOD.frameIntervalMs],
+            ]) {
+                const ROW = BODY.insertRow();
+                const GPU = LABEL === 'GPU';
+                const COUNT = GPU
+                    ? `${STATS.count}/${STATS.expectedCount} (${(STATS.coverage * 100).toFixed(0)}%)`
+                    : String(STATS.count);
+                for (const VALUE of [
+                    `${METHOD.mode} · ${LABEL}`,
+                    COUNT,
+                    ...['mean', 'p50', 'p95', 'p99', 'max'].map((field) => benchmarkValue(STATS[field], '')),
+                    STATS.count ? String(STATS.overBudgetCount) : 'not measured',
+                    `${(METHOD.measuredDurationMs / 1000).toFixed(2)} s / ${benchmarkValue(METHOD.fps, ' FPS')}`,
+                ]) {
+                    ROW.insertCell().textContent = VALUE;
+                }
+            }
+            const NOTE = BODY.insertRow().insertCell();
+            NOTE.colSpan = 9;
+            NOTE.textContent = `${METHOD.mode}: GPU ${METHOD.gpuMs.status} (${METHOD.gpuMs.observedStatuses}); disjoint rounds discarded ${METHOD.gpuMs.invalidRounds}. GPU statistics cover only valid returned samples. Draw calls p50 ${METHOD.drawCalls.p50}.`;
+        }
+        RESULTS.append(TITLE, TABLE);
+    }
+    if (!RESULTS.childNodes.length) {
+        RESULTS.textContent = 'No accumulated samples. Start to collect balanced full-viewport rounds.';
+    }
+}
+
+function stopAccumulation() {
+    accumulationController?.abort();
+}
+
+function resetAccumulation() {
+    if (accumulationController) {
+        throw new Error('Stop measurement before resetting');
+    }
+    ACCUMULATION.reset();
+    STATE.benchmark = null;
+    document.querySelector('.benchmark-results').textContent = 'Measurements cleared.';
+    showAccumulation();
+    BY_ID('accumulation-status').textContent = 'Cleared. No accumulated samples.';
+}
+
+async function startAccumulation({ maxRounds = 100 } = {}) {
+    if (benchmarkRunning || STATE.qualityLoading || !STATE.ready) {
+        throw new Error('Wait for preparation or the current comparison to finish');
+    }
+    if (CLIP_INPUT.value !== 'transform-repeat' || MIXED_INPUT.checked) {
+        BY_ID('accumulation-status').textContent = 'Select transform-repeat and turn off mixed motion.';
+        return ACCUMULATION.snapshot();
+    }
+    const KEY = benchmarkConfigKey();
+    const CONFIG = JSON.parse(KEY);
+    const LABEL = `${CONFIG.scene} N=${CONFIG.count} · ${CONFIG.quality} curve=${CONFIG.curveSegments}/arc=${CONFIG.strokeArcDivisions} · image=${CONFIG.resolution}px step=${CONFIG.interval}ms · ${CONFIG.clip}/${CONFIG.expression} · size=${CONFIG.pixelSize}px spread=${CONFIG.spread}% seed=${CONFIG.seed} zoom=${CONFIG.zoom} · ${CONFIG.canvasWidth}×${CONFIG.canvasHeight} DPR=${CONFIG.dpr} · speed=${CONFIG.playbackRate} · restore=${CONFIG.restores}`;
+    const CONTROLLER = new AbortController();
+    accumulationController = CONTROLLER;
+    benchmarkRunning = true;
+    const CONTROLS = [
+        ...document.querySelectorAll(
+            'header input, header select, header button, #benchmark, #accumulate-start, #accumulate-reset',
+        ),
+    ];
+    const DISABLED = CONTROLS.map((control) => control.disabled);
+    CONTROLS.forEach((control) => {
+        control.disabled = true;
+    });
+    BY_ID('accumulate-stop').disabled = false;
+    const STATUS_TEXT = BY_ID('accumulation-status');
+    const INTERRUPT = () => CONTROLLER.abort();
+    const HIDDEN = () => {
+        if (document.hidden) {
+            INTERRUPT();
+        }
+    };
+    window.addEventListener('resize', INTERRUPT);
+    document.addEventListener('visibilitychange', HIDDEN);
+    CANVAS.addEventListener('webglcontextlost', INTERRUPT);
+    try {
+        for (let round = 0; round < maxRounds; round++) {
+            const PREVIOUS = ACCUMULATION.snapshot().find((entry) => entry.key === KEY);
+            if ((PREVIOUS?.methods[0].measuredFrames ?? 0) >= ACCUMULATION_LIMIT) {
+                STATUS_TEXT.textContent = '6,000 exact samples per path reached. Reset or choose another condition.';
+                break;
+            }
+            const ORDER = (PREVIOUS?.rounds ?? 0) % 2 ? ['sprite', 'raster', 'vector'] : ['vector', 'raster', 'sprite'];
+            const RESULT = await runComparison(globalThis.__rasterComparison, {
+                orders: [ORDER],
+                signal: CONTROLLER.signal,
+                shouldCancel: () => benchmarkConfigKey() !== KEY,
+                onProgress: ({ mode, phase }) => {
+                    STATUS_TEXT.textContent = `${mode}: ${phase} · ${PREVIOUS?.rounds ?? 0} completed rounds. Stop discards only the incomplete round.`;
+                },
+            });
+            if (CONTROLLER.signal.aborted || benchmarkConfigKey() !== KEY) {
+                throw new DOMException('Conditions changed', 'AbortError');
+            }
+            const HISTORY = ACCUMULATION.append(KEY, LABEL, RESULT);
+            STATE.benchmark = { key: KEY, methods: HISTORY.find((entry) => entry.key === KEY).methods };
+            showAccumulation();
+            STATUS_TEXT.textContent = 'Round saved. Initial preparation and 30 warmup frames per path excluded.';
+        }
+    } catch (error) {
+        STATUS_TEXT.textContent =
+            error.name === 'AbortError'
+                ? 'Stopped. Completed balanced rounds retained; incomplete round discarded. Resume with unchanged settings to append.'
+                : `Measurement failed: ${error.message}. Completed rounds retained.`;
+        if (error.name !== 'AbortError') {
+            throw error;
+        }
+    } finally {
+        window.removeEventListener('resize', INTERRUPT);
+        document.removeEventListener('visibilitychange', HIDDEN);
+        CANVAS.removeEventListener('webglcontextlost', INTERRUPT);
+        CONTROLS.forEach((control, index) => {
+            control.disabled = DISABLED[index];
+        });
+        BY_ID('accumulate-stop').disabled = true;
+        accumulationController = null;
+        benchmarkRunning = false;
+    }
+    return ACCUMULATION.snapshot();
 }
 
 function benchmarkValue(value, suffix = ' ms') {
@@ -175,7 +331,11 @@ async function runBenchmark(options = {}) {
     benchmarkRunning = true;
     const BUTTON = BY_ID('benchmark');
     const RESULTS = document.querySelector('.benchmark-results');
-    const CONTROLS = [...document.querySelectorAll('header input, header select, header button, #benchmark')];
+    const CONTROLS = [
+        ...document.querySelectorAll(
+            'header input, header select, header button, #benchmark, #accumulate-start, #accumulate-reset',
+        ),
+    ];
     const DISABLED = CONTROLS.map((control) => control.disabled);
     for (const CONTROL of CONTROLS) {
         CONTROL.disabled = true;
@@ -1335,6 +1495,7 @@ function render(now, forcePreparation = false, updateReadout = true) {
 }
 
 function disposeComparison() {
+    stopAccumulation();
     if (STATE.disposed) {
         return false;
     }
@@ -1461,6 +1622,11 @@ BY_ID('benchmark').addEventListener('click', () => {
         seed: Number(SEED_INPUT.value),
     }).catch(console.error);
 });
+BY_ID('accumulate-start').addEventListener('click', () => {
+    startAccumulation().catch(console.error);
+});
+BY_ID('accumulate-stop').addEventListener('click', stopAccumulation);
+BY_ID('accumulate-reset').addEventListener('click', resetAccumulation);
 document.querySelector('header').addEventListener('change', (event) => {
     if (
         !benchmarkRunning &&
@@ -1513,6 +1679,9 @@ globalThis.__rasterComparison = {
         };
     },
     restoreBenchmarkState(state) {
+        if (STATE.disposed) {
+            return;
+        }
         setAutoRender(false);
         setScene(state.scene);
         MODE_INPUT.value = state.mode;
@@ -1563,6 +1732,12 @@ globalThis.__rasterComparison = {
         return timer.drain();
     },
     runBenchmark,
+    startAccumulation,
+    stopAccumulation,
+    resetAccumulation,
+    get accumulation() {
+        return { running: Boolean(accumulationController), history: ACCUMULATION.snapshot() };
+    },
     renderOnce({ timeMs, updateReadout = true } = {}) {
         if (STATE.qualityLoading) {
             throw new Error('Mesh quality is still loading');
