@@ -7761,6 +7761,32 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       }
     }
   }
+  function packPaintRegions2(names, overrides, output) {
+    output.fill(0);
+    if (overrides === null || overrides === void 0) {
+      return output;
+    }
+    if (typeof overrides !== "object" || Array.isArray(overrides)) {
+      throw new TypeError("paintRegions must be a name-to-RGB object or null");
+    }
+    for (const NAME in overrides) {
+      if (!Object.hasOwn(overrides, NAME)) {
+        continue;
+      }
+      const RGB = overrides[NAME];
+      const INDEX = names.indexOf(NAME);
+      if (INDEX < 0) {
+        throw new TypeError("Unknown paint region: " + NAME);
+      }
+      if (!(Array.isArray(RGB) || RGB instanceof Float32Array) || RGB.length !== 3 || !Number.isFinite(RGB[0]) || RGB[0] < 0 || RGB[0] > 1 || !Number.isFinite(RGB[1]) || RGB[1] < 0 || RGB[1] > 1 || !Number.isFinite(RGB[2]) || RGB[2] < 0 || RGB[2] > 1) {
+        throw new RangeError("Paint region RGB must contain three finite channels in [0,1]");
+      }
+      const AT = (INDEX + 1) * 4;
+      output.set(RGB, AT);
+      output[AT + 3] = 1;
+    }
+    return output;
+  }
   var VECTOR_ASSET_SCHEMA_VERSION = 1;
   var VECTOR_ASSET_COMPILER_VERSION = "0.11.0";
   var ACCEPTED_COMPILER_VERSIONS = /* @__PURE__ */ new Set([
@@ -9551,7 +9577,8 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
     pixelsPerUnit = 1,
     padding = 2,
     maxAtlasSize = null,
-    maxAtlasBytes = DEFAULT_MAX_BYTES2
+    maxAtlasBytes = DEFAULT_MAX_BYTES2,
+    paintRegions = null
   } = {}) {
     validateCompiledAsset(compiledAsset);
     const DEVICE2 = meshRenderer?.device, GEOMETRY = compiledAsset.geometry, SOURCE_MESH_MATCHES = asset2?.mesh ? asset2.mesh.renderer === meshRenderer && asset2.mesh.partCount === GEOMETRY.partCount && sameGeometry2(asset2.mesh, GEOMETRY) : GEOMETRY.vertices.length === 0;
@@ -9565,6 +9592,12 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
     if (!Number.isFinite(sampleIntervalMs) || sampleIntervalMs <= 0 || !Number.isFinite(pixelsPerUnit) || pixelsPerUnit <= 0 || !Number.isSafeInteger(padding) || padding < 1 || !Number.isSafeInteger(maxAtlasSize) || maxAtlasSize < 1 || maxAtlasSize > DEVICE2.maxTextureSize || !Number.isSafeInteger(maxAtlasBytes) || maxAtlasBytes < 4) {
       throw new TypeError("Finite positive sample interval, pixel scale, padding and atlas budgets required");
     }
+    const PAINT_NAMES = GEOMETRY.paintRegions?.names ?? [], PAINT = packPaintRegions2(PAINT_NAMES, paintRegions, new Float32Array((PAINT_NAMES.length + 1) * 4)), CAPTURED_PAINT = Object.fromEntries(
+      PAINT_NAMES.flatMap((name, index) => {
+        const AT = (index + 1) * 4;
+        return PAINT[AT + 3] ? [[name, Array.from(PAINT.subarray(AT, AT + 3))]] : [];
+      })
+    );
     const KEY = JSON.stringify([
       clip,
       expression,
@@ -9572,7 +9605,8 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       pixelsPerUnit,
       padding,
       maxAtlasSize,
-      maxAtlasBytes
+      maxAtlasBytes,
+      Array.from(PAINT)
     ]);
     let cached = CACHE.get(asset2);
     if (!cached) {
@@ -9680,6 +9714,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
           const SAMPLE = record.samples[index], FRAME = record.definition.frames[index], TX = FRAME.x - pixelsPerUnit * MIN_X, TY = FRAME.y - pixelsPerUnit * MIN_Y;
           record.player.seek(SAMPLE.timeMs);
           record.player.draw({
+            paintRegions: CAPTURED_PAINT,
             projection: [
               2 * pixelsPerUnit / record.packed.width,
               0,
