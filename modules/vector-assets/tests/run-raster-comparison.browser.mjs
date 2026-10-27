@@ -84,8 +84,60 @@ try {
         const SAME_RESOLUTION = DEMO.renderOnce({ timeMs: 130 });
         DEMO.setClip('idle');
         const OPACITY = DEMO.renderOnce({ timeMs: 130 });
+        const PREWARM_CASES = [];
+        for (const [RESOLUTION, INTERVAL] of [
+            [64, 100],
+            [128, 50],
+        ]) {
+            DEMO.setResolution(RESOLUTION);
+            DEMO.setSampleInterval(INTERVAL);
+            DEMO.setExpression('neutral');
+            DEMO.setClip('transform-repeat');
+            DEMO.setMode('sprite');
+            let preparedFrame = null;
+            for (let attempt = 0; attempt < 40; attempt++) {
+                preparedFrame = DEMO.renderOnce({ timeMs: 130 });
+                if (preparedFrame.preparation?.status === 'ready') {
+                    break;
+                }
+            }
+            const BASELINE = {
+                preparation: preparedFrame?.preparation ?? null,
+                imageTexUploadCount: preparedFrame?.imageTexUploadCount,
+                imageTexUploadBytes: preparedFrame?.imageTexUploadBytes,
+            };
+            const SWITCHES = [];
+            for (const CLIP of ['transform-repeat', 'bounce', 'idle']) {
+                DEMO.setClip(CLIP);
+                for (const EXPRESSION of ['neutral', 'happy', 'surprised']) {
+                    DEMO.setExpression(EXPRESSION);
+                    for (const TIME_MS of [40, 230]) {
+                        const FRAME = DEMO.renderOnce({ timeMs: TIME_MS });
+                        SWITCHES.push({
+                            clip: CLIP,
+                            expression: EXPRESSION,
+                            timeMs: TIME_MS,
+                            spriteDraws: FRAME.spriteResult.spriteDraws,
+                            vectorFallbacks: FRAME.spriteResult.vectorFallbacks,
+                            preparationStatus: FRAME.preparation?.status,
+                            generation: FRAME.preparation?.generation,
+                            bakeCounts: FRAME.preparation?.entries?.map((entry) => entry.bakeCount),
+                            imageTexUploadCount: FRAME.imageTexUploadCount,
+                            imageTexUploadBytes: FRAME.imageTexUploadBytes,
+                        });
+                    }
+                }
+            }
+            PREWARM_CASES.push({ resolution: RESOLUTION, interval: INTERVAL, baseline: BASELINE, switches: SWITCHES });
+        }
         const DISPOSED = DEMO.dispose();
-        return { frames: FRAMES, sameResolution: SAME_RESOLUTION, opacity: OPACITY, disposed: DISPOSED };
+        return {
+            frames: FRAMES,
+            sameResolution: SAME_RESOLUTION,
+            opacity: OPACITY,
+            prewarmCases: PREWARM_CASES,
+            disposed: DISPOSED,
+        };
     });
     assert.equal(preview.disposed, true);
     for (const FRAME of preview.frames) {
@@ -97,6 +149,53 @@ try {
     assert.equal(preview.opacity.rasterResult.vectorFallbacks, 1);
     assert.ok(preview.sameResolution.textureBytes < preview.sameResolution.atlas.atlasBytes);
     assert.ok(preview.opacity.rasterResult.reasons.includes('opacityChannel'));
+    assert.equal(preview.prewarmCases.length, 2);
+    assert.ok(preview.prewarmCases.every((entry) => entry.baseline.preparation));
+    assert.notEqual(
+        preview.prewarmCases[0].baseline.preparation.generation,
+        preview.prewarmCases[1].baseline.preparation.generation,
+        'Resolution and interval change require a fresh initial preparation',
+    );
+    for (const CASE of preview.prewarmCases) {
+        const PREPARATION = CASE.baseline.preparation;
+        assert.equal(PREPARATION.status, 'ready', JSON.stringify(PREPARATION));
+        assert.equal(PREPARATION.total, 9);
+        assert.equal(PREPARATION.completed, 9);
+        assert.equal(PREPARATION.entries.length, 9);
+        assert.equal(new Set(PREPARATION.entries.map((entry) => entry.key)).size, 9);
+        assert.deepEqual(
+            new Set(PREPARATION.entries.map((entry) => entry.clip)),
+            new Set(['transform-repeat', 'bounce', 'idle']),
+        );
+        assert.deepEqual(
+            new Set(PREPARATION.entries.map((entry) => entry.expression)),
+            new Set(['neutral', 'happy', 'surprised']),
+        );
+        assert.ok(PREPARATION.entries.every((entry) => entry.ready && entry.bakeCount === 1));
+        assert.ok(PREPARATION.allocatedBytes > 0 && PREPARATION.allocatedBytes <= PREPARATION.budgetBytes);
+        assert.ok(Number.isSafeInteger(CASE.baseline.imageTexUploadCount));
+        assert.ok(Number.isSafeInteger(CASE.baseline.imageTexUploadBytes));
+        const BAKE_COUNTS = PREPARATION.entries.map((entry) => entry.bakeCount);
+        assert.equal(CASE.switches.length, 18);
+        for (const SWITCH of CASE.switches) {
+            const LABEL = `${CASE.resolution}px/${CASE.interval}ms ${SWITCH.clip}/${SWITCH.expression}@${SWITCH.timeMs}`;
+            assert.equal(SWITCH.spriteDraws, 1, LABEL);
+            assert.equal(SWITCH.vectorFallbacks, 0, LABEL);
+            assert.equal(SWITCH.preparationStatus, 'ready', LABEL);
+            assert.equal(SWITCH.generation, PREPARATION.generation, LABEL);
+            assert.deepEqual(SWITCH.bakeCounts, BAKE_COUNTS, `${LABEL}: no bake during prepared playback`);
+            assert.equal(
+                SWITCH.imageTexUploadCount,
+                CASE.baseline.imageTexUploadCount,
+                `${LABEL}: no image texture upload during prepared playback`,
+            );
+            assert.equal(
+                SWITCH.imageTexUploadBytes,
+                CASE.baseline.imageTexUploadBytes,
+                `${LABEL}: no image texture bytes during prepared playback`,
+            );
+        }
+    }
     await PREVIEW_PAGE.close();
 
     const PAGE = await BROWSER.newPage({ viewport: { width: 384, height: 384 }, deviceScaleFactor: 1 });
