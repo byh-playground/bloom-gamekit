@@ -8363,7 +8363,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
 }`;
 var SKETCH_FRAGMENT_BODY = `
 vec3 shadeSketchFill(vec3 base) {
-  float angle=u_effect1.z, spacing=max(u_effect1.w,0.001);
+  float angle=u_effect2.z, spacing=max(u_effect2.w,0.001);
   vec2 direction=vec2(cos(angle),sin(angle));
   float phase=dot(v_position,direction)/spacing + hashCell(vec2(u_effect0.x,0.0),31.0);
   float distanceToHatch=abs(fract(phase)-0.5)*spacing;
