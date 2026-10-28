@@ -457,12 +457,14 @@ WebGL 2가 기본이며 ANGLE 확장 유무와 관계없이 core instancing을 �
 Source 해제는 새 texture를 할당하지 않습니다. 남은 프로그램의 offset은 유지하고 여유 공간은 다음 source 등록 때 압축하며, 마지막 source 해제 시 전체 프로그램 texture를 반환합니다. 압축·atlas 증설은 새 데이터 할당에 성공한 뒤 교체합니다. 업로드 실패 시 row의 dirty 상태를 유지하고 context 복구 때 필요한 state/base/CPU pose 데이터를 다시 올립니다.
 
 - createDataTexture(width,height,{data=null})와 updateDataTexture(handle,Float32Array,{x,y,width,height}): nearest RGBA32F 숫자 데이터입니다. CPU 원본을 보존해 context restore 후 다시 만듭니다. 그림 asset API가 아닙니다.
-- createRenderTarget(width,height,{format:'rgba32f',filter:'nearest'}): GPU 평가 결과용 float target입니다. floatRenderTargetsSupported와 isRenderTargetAvailable(handle)로 지원·복구 가능 여부를 확인합니다. EXT_color_buffer_float가 필요하며, 해당 target의 복구 실패가 일반 WebGL 2 렌더링을 중단시키지는 않습니다.
-- new MeshRenderer(device,{poseBackend:'auto'|'cpu'|'uniform'}): auto는 GPU 평가를 시도하고 명시적 CPU pose fallback을 유지합니다. cpu는 같은 atlas/instancing에 CPU pose를 올리는 진단 경로, uniform은 기존 CPU pose uniform 참조 경로입니다.
-- player.preparePose({excludeParts})로 표시 상태를 준비하고 meshes.preparePoses()로 모아 평가합니다. 보이지 않는 pose 준비만 source별로 묶으며 visible mesh/alpha/paint를 재정렬하지 않습니다. 준비하지 않은 player.draw도 동작하지만 뒤늦은 개별 준비는 pose pass를 나눌 수 있습니다.
+- createRenderTarget(width,height,{format:'rgba32f',filter:'nearest'}): float 렌더 타깃입니다. floatRenderTargetsSupported와 isRenderTargetAvailable(handle)로 지원·복구 가능 여부를 확인합니다. EXT_color_buffer_float가 필요하며, 해당 target의 복구 실패가 일반 WebGL 2 렌더링을 중단시키지는 않습니다. 애니메이션 pose 계산은 이 타깃을 쓰지 않습니다.
+- new MeshRenderer(device,{poseBackend:'auto'|'cpu'|'uniform'}): auto는 정점 셰이더 평가를 시도하고 명시적 CPU pose fallback을 유지합니다. cpu는 같은 atlas/instancing에 CPU pose를 올리는 진단 경로, uniform은 기존 CPU pose uniform 참조 경로입니다.
+- player.preparePose({excludeParts})로 표시 상태를 준비하고 meshes.preparePoses()로 모아 평가합니다. 보이지 않는 pose 준비만 source별로 묶으며 visible mesh/alpha/paint를 재정렬하지 않습니다. 준비하지 않은 player.draw도 동작하지만 뒤늦은 개별 준비는 같은 행을 이미 쓴 배치를 먼저 제출하게 만들 수 있습니다.
 - context.drawVectorAsset(player,options)는 앞선 analytic primitive와 vector paint를 먼저 제출하고 player.draw를 호출합니다. 같은 mesh run 자체를 actor마다 강제로 flush하지 않습니다. 몸체→얼굴 overlay→다음 actor 순서는 그대로입니다. 직접 player.draw를 호출하는 소비자는 이전 renderer의 순서 경계를 책임집니다.
-- meshes.poseStats(): GPU/CPU/uniform draw instance 수, CPU fallback 비율/이유, GPU pose pass/행 수, state/base/CPU pose upload byte, atlas/프로그램 할당 byte를 보고합니다. prepare 호출 횟수와 실제 draw 사용량은 다릅니다.
+- meshes.poseStats(): GPU/CPU/uniform draw instance 수, CPU fallback 비율/이유, state/base/CPU pose upload byte, atlas/프로그램 할당 byte를 보고합니다. prepare 호출 횟수와 실제 draw 사용량은 다릅니다.
 
-서로 다른 행을 가진 같은 mesh의 연속 제출은 u_parts 변경으로 분리되지 않습니다. 표정 index buffer·shader surface·paint·clip·stencil·depth state 경계는 유지합니다. 깊이 쓰기 alpha 분류처럼 CPU 삼각형 분석이 필요한 일반 draw API는 기존 parts 경로를 사용합니다. GPU pose atlas handle과 alpha depth 분류 옵션을 함께 넘기는 것은 지원하지 않습니다. 기존 vector asset draw API에는 해당 alpha 분류 옵션이 없습니다.
+서로 다른 행을 가진 같은 mesh의 연속 제출은 u_parts 변경으로 분리되지 않습니다.
+
+GPU pose는 별도 계산 패스가 없습니다. 키프레임(program)은 데이터 텍스처에 한 번 올리고, 인스턴스마다 상태 한 행(클립 헤더, 클립 시간, 반복 방식, 길이, morph, 숨김 파트 비트마스크, program 오프셋)과 파트 오버라이드 행만 갱신합니다. 정점 셰이더가 그 세 텍스처(program, state, overrides)를 읽어 부모 계층 행렬·이징·투명도를 같은 draw 안에서 계산하므로 pose 계산 때문에 draw가 늘지 않습니다. 정점마다 같은 파트 계산을 반복하는 비용은 GPU ALU 시간으로 옮겨지며, 이 환경의 SwiftShader로는 GPU 시간을 재지 못합니다. 표정 index buffer·shader surface·paint·clip·stencil·depth state 경계는 유지합니다. 깊이 쓰기 alpha 분류처럼 CPU 삼각형 분석이 필요한 일반 draw API는 기존 parts 경로를 사용합니다. GPU pose atlas handle과 alpha depth 분류 옵션을 함께 넘기는 것은 지원하지 않습니다. 기존 vector asset draw API에는 해당 alpha 분류 옵션이 없습니다.
 
 숫자 프로그램은 원본 SVG 채널을 공유합니다. translation/rotation/nonuniform scale/opacity, pivot·부모 계층, 표정/가시성·부위 제외·base pose·morph를 유지합니다. 미지원 easing/매우 긴 채널과 진행 중 중첩 전환은 CPU pose atlas, SVG shader surface/drawOrder는 기존 CPU 제출 경로를 사용합니다. 완료된 전환은 시계를 초기화하지 않고 GPU 경로로 복귀합니다. GPU readback은 제품 루프에서 사용하지 않습니다.

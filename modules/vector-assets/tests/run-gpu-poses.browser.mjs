@@ -38,7 +38,7 @@ const SOURCE_HEAD = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8
 const SOURCE_DIRTY =
     execFileSync('git', ['status', '--porcelain', '--untracked-files=no'], { encoding: 'utf8' }).trim().length > 0;
 try {
-    for (const BACKEND of ['uniform', 'auto', 'cpu', 'noFloat']) {
+    for (const BACKEND of ['uniform', 'auto', 'cpu']) {
         const PAGE = await BROWSER.newPage({ viewport: { width: 800, height: 600 }, deviceScaleFactor: 1 });
         PAGE.on('pageerror', (error) => ERRORS.push(error.stack));
         await PAGE.setContent('<canvas width="800" height="600"></canvas>');
@@ -54,10 +54,7 @@ try {
                     preserveDrawingBuffer: true,
                     checkGLErrors: true,
                 });
-                if (backend === 'noFloat') {
-                    DEVICE.floatRenderTargetsSupported = false;
-                }
-                const MESHES = new R.MeshRenderer(DEVICE, { poseBackend: backend === 'noFloat' ? 'auto' : backend });
+                const MESHES = new R.MeshRenderer(DEVICE, { poseBackend: backend });
                 const CONTEXT = new R.VectorContext(DEVICE);
                 CONTEXT.meshRenderer = MESHES;
                 const SURFACES = new R.YarnSurfaceRenderer(DEVICE);
@@ -73,7 +70,6 @@ try {
                     vendor: INFO
                         ? DEVICE.gl.getParameter(INFO.UNMASKED_VENDOR_WEBGL)
                         : DEVICE.gl.getParameter(DEVICE.gl.VENDOR),
-                    floatTargets: DEVICE.floatRenderTargetsSupported,
                 };
                 function addPlayer(index) {
                     const ASSET_INDEX = index % RESOURCES.length;
@@ -96,9 +92,6 @@ try {
                     programRebuildRollback: null,
                     sourceReleaseNoAllocation: null,
                 };
-                let maxPoseError = 0;
-                let maxOpacityError = 0;
-                let maxMorphError = 0;
                 const TIMES = [0, 37.25, 131, 249, 500.125, 801.3, 1100, 1100, 37.25];
                 for (let frame = 0; frame < TIMES.length; frame++) {
                     const TIME = TIMES[frame];
@@ -157,7 +150,7 @@ try {
                         PREPARED.push({ handle: HANDLE, excluded: EXCLUDED, culled: CULLED });
                         CLOCKS.push(PLAYER.currentTimeMs);
                     }
-                    if (frame === 0 && backend === 'auto' && DEVICE.floatRenderTargetsSupported) {
+                    if (frame === 0 && backend === 'auto') {
                         const UPDATE = DEVICE.updateDataTexture;
                         DEVICE.updateDataTexture = () => {
                             throw new Error('Injected pose state upload failure');
@@ -171,7 +164,7 @@ try {
                             }
                             FAULTS.uploadDirtyRetained = [...MESHES.poseRenderer.instances.values()]
                                 .filter((record) => record.mode === 'gpu')
-                                .every((record) => record.stateDirty && record.dirty);
+                                .every((record) => record.stateDirty);
                         } finally {
                             DEVICE.updateDataTexture = UPDATE;
                         }
@@ -223,48 +216,6 @@ try {
                     if (POSE_STATS.cpuPoseUploadBytes !== PREPARED_STATS.cpuPoseUploadBytes) {
                         throw new Error('Drawing unchanged prepared CPU poses must not upload rows again');
                     }
-                    if (MESHES.poseRenderer?.gpuTarget && backend === 'auto') {
-                        const TARGET = MESHES.poseRenderer.gpuTarget;
-                        const GPU_POSES = new Float32Array(TARGET.width * TARGET.height * 4);
-                        GL.bindFramebuffer(GL.FRAMEBUFFER, DEVICE.renderTargets.get(TARGET).framebuffer);
-                        GL.readPixels(0, 0, TARGET.width, TARGET.height, GL.RGBA, GL.FLOAT, GPU_POSES);
-                        GL.bindFramebuffer(GL.FRAMEBUFFER, null);
-                        for (let i = 0; i < PLAYERS.length; i++) {
-                            const HANDLE = PREPARED[i].handle;
-                            if (!HANDLE || MESHES.poseRenderer.instances.get(HANDLE).mode !== 'gpu') {
-                                continue;
-                            }
-                            const ROW = MESHES.poseRenderer.resolve(HANDLE).row;
-                            const PARTS = PLAYERS[i].player.partPoses();
-                            for (let j = 0; j < PARTS.length; j++) {
-                                const PART = PARTS[j];
-                                const AT = (ROW * TARGET.width + j * 3) * 4;
-                                const ACTUAL = [
-                                    GPU_POSES[AT],
-                                    GPU_POSES[AT + 4],
-                                    GPU_POSES[AT + 1],
-                                    GPU_POSES[AT + 5],
-                                    GPU_POSES[AT + 2],
-                                    GPU_POSES[AT + 6],
-                                ];
-                                for (let k = 0; k < 6; k++) {
-                                    maxPoseError = Math.max(maxPoseError, Math.abs(ACTUAL[k] - PART.transform[k]));
-                                }
-                                const EXCLUDED = PREPARED[i].excluded?.has(
-                                    COMPILED[PLAYERS[i].assetIndex].metadata.parts[j].id,
-                                );
-                                maxOpacityError = Math.max(
-                                    maxOpacityError,
-                                    Math.abs(GPU_POSES[AT + 10] - (PART.visible && !EXCLUDED ? PART.opacity : 0)),
-                                );
-                                maxMorphError = Math.max(
-                                    maxMorphError,
-                                    Math.abs(GPU_POSES[AT + 8] - PART.morph[0]),
-                                    Math.abs(GPU_POSES[AT + 9] - PART.morph[1]),
-                                );
-                            }
-                        }
-                    }
                     FRAMES.push({
                         width: CANVAS.width,
                         height: CANVAS.height,
@@ -285,7 +236,7 @@ try {
                         const RESTORED = new Promise((resolve) =>
                             CANVAS.addEventListener('webglcontextrestored', resolve, { once: true }),
                         );
-                        if (backend === 'auto' && MESHES.poseRenderer?.gpuTarget) {
+                        if (backend === 'auto') {
                             // Emulate retained pixels lagging staged CPU state after an interrupted upload.
                             DEVICE.textures.get(MESHES.poseRenderer.stateTexture).source.fill(0);
                             DEVICE.textures.get(MESHES.poseRenderer.overrideTexture).source.fill(0);
@@ -303,10 +254,10 @@ try {
                         if (DEVICE.state !== 'ready') {
                             throw new Error('Device did not restore: ' + DEVICE.state);
                         }
-                        if (backend === 'auto' && MESHES.poseRenderer?.gpuTarget) {
+                        if (backend === 'auto') {
                             FAULTS.restoredStateRefresh = [...MESHES.poseRenderer.instances.values()]
                                 .filter((record) => record.mode === 'gpu')
-                                .every((record) => record.stateDirty && record.overrideDirty && record.dirty);
+                                .every((record) => record.stateDirty && record.overrideDirty);
                         }
                     }
                 }
@@ -314,9 +265,6 @@ try {
                     backend,
                     hardware: HARDWARE,
                     frames: FRAMES,
-                    maxPoseError,
-                    maxOpacityError,
-                    maxMorphError,
                     faults: FAULTS,
                 };
                 if (backend === 'auto' && MESHES.poseRenderer?.sources.size > 1) {
@@ -325,7 +273,6 @@ try {
                     const CAPACITY = POSES.capacity;
                     const STATE_TEXTURE = POSES.stateTexture;
                     const OVERRIDE_TEXTURE = POSES.overrideTexture;
-                    const TARGET = POSES.gpuTarget;
                     const TEXTURE_COUNT = DEVICE.textures.size;
                     DEVICE.createDataTexture = () => {
                         throw new Error('Injected pose data allocation failure');
@@ -341,7 +288,6 @@ try {
                             POSES.capacity === CAPACITY &&
                             POSES.stateTexture === STATE_TEXTURE &&
                             POSES.overrideTexture === OVERRIDE_TEXTURE &&
-                            POSES.gpuTarget === TARGET &&
                             DEVICE.textures.size === TEXTURE_COUNT;
                     } finally {
                         DEVICE.createDataTexture = CREATE;
@@ -404,7 +350,7 @@ try {
     const DIFFERENCES = [];
     const REFERENCE_PIXELS = RESULTS[0].frames.map((frame) => Buffer.from(frame.pixels, 'base64'));
     for (const RESULT of RESULTS) {
-        if (RESULT.backend === 'auto' && RESULT.hardware.floatTargets) {
+        if (RESULT.backend === 'auto') {
             assert.ok(
                 RESULT.frames[0].stats.gpuDrawInstances > 0,
                 'supported auto backend must actually draw GPU poses',
@@ -429,22 +375,7 @@ try {
                 sourceReleaseNoAllocation: true,
             });
         }
-        if (RESULT.backend === 'noFloat') {
-            assert.equal(
-                RESULT.frames[0].stats.gpuDrawInstances,
-                0,
-                'float-disabled startup cannot claim GPU animation',
-            );
-            assert.ok(
-                RESULT.frames[0].stats.cpuDrawInstances > 0 &&
-                    RESULT.frames[0].stats.fallbackReasons.floatRenderTargets > 0,
-                'float-disabled startup must report its CPU fallback reason',
-            );
-        }
         assert.deepEqual(RESULT.afterDispose, { buffers: 0, textures: 0, targets: 0, pipelines: 0 });
-        assert.ok(RESULT.maxPoseError <= 0.001, 'GPU matrix error in SVG units: ' + RESULT.maxPoseError);
-        assert.ok(RESULT.maxOpacityError <= 0.000001);
-        assert.ok(RESULT.maxMorphError <= 0.000001);
         for (let frame = 0; frame < RESULT.frames.length; frame++) {
             const ACTUAL = RESULT.frames[frame];
             const REFERENCE = RESULTS[0].frames[frame];

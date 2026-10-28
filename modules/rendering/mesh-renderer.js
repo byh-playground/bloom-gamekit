@@ -194,6 +194,43 @@ function poseTextureShader(source) {
         .replaceAll('(i_params.x+pose.x)', '(pose.x)')
         .replaceAll('(i_params.y+pose.y)', '(pose.y)');
 }
+// Keyframes are evaluated in the vertex shader of the same draw: no pose texture, no extra pass.
+// State row layout: texel0 = [clip header, local time, loop mode, duration], texel1 = [morph0, morph1, hidden-part mask, program offset].
+const POSE_PROGRAM_FUNCTIONS = `uniform sampler2D u_program;uniform sampler2D u_state;uniform sampler2D u_overrides;uniform int u_programWidth;
+vec4 poseData(int base,int at){int i=at+base;return texelFetch(u_program,ivec2(i%u_programWidth,i/u_programWidth),0);}
+float poseChannel(int base,int header,float time){vec4 h=poseData(base,header);float value=h.z;
+ for(int i=0;i<64;i++){if(i>=int(h.y))break;vec4 s=poseData(base,int(h.x)+i*2);if(time<s.z)break;
+ if(time>=s.w){value=s.y;continue;}float t=clamp((time-s.z)/(s.w-s.z),0.0,1.0);float ease=poseData(base,int(h.x)+i*2+1).x;
+ if(ease>1.5)t=1.0-(1.0-t)*(1.0-t);else if(ease>0.5)t=0.5-0.5*cos(3.141592653589793*t);
+ value=mix(s.x,s.y,t);break;}return value;}
+mat3 poseLocal(int base,int part,int header,float time,int row,out float opacity){
+ vec4 b0=texelFetch(u_overrides,ivec2(part*2,row),0);vec4 b1=texelFetch(u_overrides,ivec2(part*2+1,row),0);
+ int at=header+part*6;vec2 translation=b0.xy+vec2(poseChannel(base,at,time),poseChannel(base,at+1,time));
+ float rotation=b0.z+poseChannel(base,at+2,time);float sx=b0.w*poseChannel(base,at+3,time);float sy=b1.x*poseChannel(base,at+4,time);
+ float c=cos(rotation);float s=sin(rotation);vec2 x=vec2(c,s)*sx;vec2 y=vec2(-s,c)*sy;vec2 pivot=poseData(base,part).xy;
+ opacity=b1.y*b1.z*poseChannel(base,at+5,time);return mat3(vec3(x,0.0),vec3(y,0.0),vec3(pivot+translation-x*pivot.x-y*pivot.y,1.0));}
+void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
+ vec4 playback=texelFetch(u_state,ivec2(0,row),0);vec4 morph=texelFetch(u_state,ivec2(1,row),0);
+ int base=int(morph.w);float time;
+ if(playback.z<0.5)time=clamp(playback.y,0.0,playback.w);
+ else if(playback.z<1.5)time=mod(playback.y,playback.w);
+ else{float point=mod(playback.y,playback.w*2.0);time=point<=playback.w?point:playback.w*2.0-point;}
+ mat3 matrix=mat3(1.0);float alpha=1.0;int current=part;
+ for(int depth=0;depth<16;depth++){if(current<0)break;float opacity;mat3 m=poseLocal(base,current,int(playback.x),time,row,opacity);matrix=m*matrix;alpha*=opacity;current=int(poseData(base,current).z);}
+ if((int(morph.z)&(1<<part))!=0)alpha=0.0;
+ row0=vec4(matrix[0][0],matrix[1][0],matrix[2][0],0.0);row1=vec4(matrix[0][1],matrix[1][1],matrix[2][1],0.0);pose=vec4(morph.xy,alpha,0.0);}
+`;
+function poseProgramShader(source) {
+    return source
+        .replace(/uniform vec4 u_parts\[\d+\];/, POSE_PROGRAM_FUNCTIONS)
+        .replace(
+            /int index=(int\(a_part\)\*3|0);vec4 row0=u_parts\[index\];vec4 row1=u_parts\[index\+1\];vec4 pose=u_parts\[index\+2\];/,
+            (_match, expression) =>
+                `int poseRow=int(-i_params.x-1.0);vec4 row0;vec4 row1;vec4 pose;poseEval(${expression === '0' ? '0' : 'int(a_part)'},poseRow,row0,row1,pose);`,
+        )
+        .replaceAll('(i_params.x+pose.x)', '(pose.x)')
+        .replaceAll('(i_params.y+pose.y)', '(pose.y)');
+}
 // One startup/context-restore conversion, never a palette-specific geometry or per-frame upload.
 function paintVertexStream(vertices, regions) {
     if (!regions) {
@@ -601,7 +638,7 @@ export class MeshRenderer {
     poseStats() {
         return this.poseRenderer?.stats() ?? null;
     }
-    _pipeline(mesh, clipped, worldMode = false, poseTexture = false, textureArray = false) {
+    _pipeline(mesh, clipped, worldMode = false, poseMode = 0, textureArray = false) {
         const KEY =
             Number(textureArray) +
             ':' +
@@ -615,7 +652,7 @@ export class MeshRenderer {
             ':' +
             Number(worldMode) +
             ':' +
-            Number(poseTexture) +
+            poseMode +
             ':' +
             Number(mesh.hasTextureCoordinates) +
             ':' +
@@ -647,8 +684,10 @@ export class MeshRenderer {
                 UNIFORMS.u_inverseProjection = 'matrix3fv';
             }
         }
-        if (poseTexture) {
+        if (poseMode === 1) {
             UNIFORMS.u_poseTexture = '1i';
+        } else if (poseMode === 2) {
+            Object.assign(UNIFORMS, { u_program: '1i', u_state: '1i', u_overrides: '1i', u_programWidth: '1i' });
         } else if (mesh.partCount > 1) {
             UNIFORMS['u_parts[0]'] = '4fv';
         }
@@ -673,16 +712,16 @@ export class MeshRenderer {
             }
         }
         pipeline = this.device.createPipeline({
-            vertex: (poseTexture ? poseTextureShader : (source) => source)(
+            vertex: [(source) => source, poseTextureShader, poseProgramShader][poseMode](
                 shader(
                     this.instanced,
-                    poseTexture ? Math.max(2, mesh.partCount) : mesh.partCount,
+                    poseMode ? Math.max(2, mesh.partCount) : mesh.partCount,
                     mesh.morphCount,
                     clipped,
                     mesh.hasNonScalingStroke,
                     worldMode,
                     mesh.hasTextureCoordinates,
-                    poseTexture,
+                    poseMode,
                     mesh.paintRegionNames?.length ?? 0,
                     textureArray,
                 ),
@@ -1460,8 +1499,8 @@ export class MeshRenderer {
         if (texture !== null && depthWriteAlphaThreshold !== null) {
             throw new TypeError('Alpha depth classification cannot inspect raster texel alpha');
         }
-        if (texture !== null && POSE_DRAW?.texture && this.device.maxTextures < 2) {
-            throw new RangeError('Textured GPU poses require two texture units');
+        if (texture !== null && POSE_DRAW && this.device.maxTextures < POSE_DRAW.textures.length + 1) {
+            throw new RangeError('Textured GPU poses require ' + (POSE_DRAW.textures.length + 1) + ' texture units');
         }
         packParts(parts, mesh.partCount, this.partScratch);
         for (let i = 0; i < mesh.partCount; i++) {
@@ -1536,6 +1575,9 @@ export class MeshRenderer {
                     this.pending = {
                         mesh,
                         poseTexture: POSE_DRAW?.texture ?? null,
+                        poseTextures: POSE_DRAW?.textures ?? null,
+                        poseKind: POSE_DRAW?.kind ?? null,
+                        poseProgramWidth: POSE_DRAW?.programWidth ?? 0,
                         texture,
                         projection: Float32Array.from(WORLD_MODE ? viewProjection : projection),
                         worldMode: WORLD_MODE,
@@ -2058,6 +2100,9 @@ export class MeshRenderer {
             inverseViewProjection: INVERSE_VIEW_PROJECTION,
             stencilRef: STENCIL_REF,
             poseTexture: POSE_TEXTURE,
+            poseTextures: POSE_TEXTURES,
+            poseKind: POSE_KIND,
+            poseProgramWidth: POSE_PROGRAM_WIDTH,
             texture: TEXTURE,
         } = this.pending;
         const VARIANT =
@@ -2075,7 +2120,7 @@ export class MeshRenderer {
                 MESH,
                 CLIP.count > 0,
                 WORLD_MODE,
-                !!POSE_TEXTURE,
+                POSE_KIND === 'program' ? 2 : POSE_KIND === 'matrix' ? 1 : 0,
                 TEXTURE !== null && this.device.isTextureArray(TEXTURE),
             ),
             UNIFORMS = WORLD_MODE
@@ -2109,15 +2154,17 @@ export class MeshRenderer {
         if (MESH.paintRegionNames) {
             UNIFORMS['u_paintRegions[0]'] = this.paintState;
         }
-        if (POSE_TEXTURE) {
+        if (POSE_KIND === 'program') {
+            Object.assign(UNIFORMS, { u_program: 0, u_state: 1, u_overrides: 2, u_programWidth: POSE_PROGRAM_WIDTH });
+        } else if (POSE_KIND === 'matrix') {
             UNIFORMS.u_poseTexture = 0;
         } else if (MESH.partCount > 1) {
             UNIFORMS['u_parts[0]'] = PARTS;
         }
         if (TEXTURE) {
-            UNIFORMS.u_texture = POSE_TEXTURE ? 1 : 0;
+            UNIFORMS.u_texture = POSE_TEXTURES ? POSE_TEXTURES.length : 0;
         }
-        const TEXTURES = POSE_TEXTURE ? (TEXTURE ? [POSE_TEXTURE, TEXTURE] : [POSE_TEXTURE]) : TEXTURE ? [TEXTURE] : [];
+        const TEXTURES = [...(POSE_TEXTURES ?? []), ...(TEXTURE ? [TEXTURE] : [])];
         const INSTANCE_UNIFORMS = WORLD_MODE
             ? ['i_row0', 'i_row1', 'i_row2', 'i_params']
             : ['i_row0', 'i_row1', 'i_color', 'i_params'];

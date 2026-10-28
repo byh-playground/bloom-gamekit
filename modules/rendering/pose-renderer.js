@@ -2,40 +2,6 @@ const MAX_PARTS = 16;
 const POSE_WIDTH = MAX_PARTS * 3;
 const OVERRIDE_WIDTH = MAX_PARTS * 2;
 const PROGRAM_WIDTH = 256;
-const QUAD = new Float32Array([0, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 1]);
-const VERTEX = `#version 300 es
-precision highp float;
-in vec2 a_position;in float i_row;uniform float u_capacity;
-void main(){gl_Position=vec4(a_position.x*2.0-1.0,(i_row+a_position.y)*2.0/u_capacity-1.0,0,1);}`;
-const FRAGMENT = `#version 300 es
-precision highp float;precision highp int;
-uniform sampler2D u_program;uniform sampler2D u_state;uniform sampler2D u_overrides;
-uniform int u_programBase;uniform int u_partCount;uniform int u_programWidth;
-out vec4 outPose;
-vec4 data(int at){int i=at+u_programBase;return texelFetch(u_program,ivec2(i%u_programWidth,i/u_programWidth),0);}
-float channel(int header,float time){vec4 h=data(header);float value=h.z;
- for(int i=0;i<64;i++){if(i>=int(h.y))break;vec4 s=data(int(h.x)+i*2);if(time<s.z)break;
- if(time>=s.w){value=s.y;continue;}float t=clamp((time-s.z)/(s.w-s.z),0.0,1.0),ease=data(int(h.x)+i*2+1).x;
- if(ease>1.5)t=1.0-(1.0-t)*(1.0-t);else if(ease>0.5)t=0.5-0.5*cos(3.141592653589793*t);
- value=mix(s.x,s.y,t);break;}return value;}
-mat3 local(int part,int header,float time,int row,out float opacity){
- vec4 b0=texelFetch(u_overrides,ivec2(part*2,row),0),b1=texelFetch(u_overrides,ivec2(part*2+1,row),0);
- int at=header+part*6;vec2 translation=b0.xy+vec2(channel(at,time),channel(at+1,time));
- float rotation=b0.z+channel(at+2,time),sx=b0.w*channel(at+3,time),sy=b1.x*channel(at+4,time);
- float c=cos(rotation),s=sin(rotation);vec2 x=vec2(c,s)*sx,y=vec2(-s,c)*sy,pivot=data(part).xy;
- opacity=b1.y*b1.z*channel(at+5,time);return mat3(vec3(x,0),vec3(y,0),vec3(pivot+translation-x*pivot.x-y*pivot.y,1));}
-void main(){int col=int(gl_FragCoord.x),row=int(gl_FragCoord.y),part=col/3,component=col%3;
- if(part>=u_partCount){outPose=component==0?vec4(1,0,0,0):component==1?vec4(0,1,0,0):vec4(0);return;}
- vec4 playback=texelFetch(u_state,ivec2(0,row),0),morph=texelFetch(u_state,ivec2(1,row),0);
- float time;if(playback.z<0.5)time=clamp(playback.y,0.0,playback.w);
- else if(playback.z<1.5)time=mod(playback.y,playback.w);
- else{float point=mod(playback.y,playback.w*2.0);time=point<=playback.w?point:playback.w*2.0-point;}
- mat3 matrix=mat3(1);float alpha=1.0;int current=part;
- for(int depth=0;depth<16;depth++){if(current<0)break;float opacity;mat3 m=local(current,int(playback.x),time,row,opacity);matrix=m*matrix;alpha*=opacity;current=int(data(current).z);}
- if((int(morph.z)&(1<<part))!=0)alpha=0.0;
- outPose=component==0?vec4(matrix[0][0],matrix[1][0],matrix[2][0],0):component==1?vec4(matrix[0][1],matrix[1][1],matrix[2][1],0):vec4(morph.xy,alpha,0);
-}`;
-
 /** Numeric animation data and stable player rows. Visible draws keep caller order. */
 export class PoseRenderer {
     constructor(device, { backend = 'auto', onBoundary = () => {} } = {}) {
@@ -54,43 +20,13 @@ export class PoseRenderer {
         this.stateTexture = null;
         this.overrideTexture = null;
         this.cpuTexture = null;
-        this.gpuTarget = null;
-        this.pipeline = null;
-        this.quadBuffer = null;
-        this.rowBuffer = null;
         this.frameMetrics = {};
         this.pendingUpdates = false;
         this.disposed = false;
-        this.gpuUnavailableReason =
-            backend !== 'auto' ? 'cpuRequested' : !device.floatRenderTargetsSupported ? 'floatRenderTargets' : null;
+        // Keyframes are evaluated inside the mesh vertex shader, so no float render target is required.
+        this.gpuUnavailableReason = backend !== 'auto' ? 'cpuRequested' : null;
         this.onRestored = () => {
-            this.gpuUnavailableReason =
-                this.backend !== 'auto'
-                    ? 'cpuRequested'
-                    : !device.floatRenderTargetsSupported
-                      ? 'floatRenderTargets'
-                      : null;
-            if (this.gpuTarget && !device.isRenderTargetAvailable(this.gpuTarget)) {
-                device.deleteRenderTarget(this.gpuTarget);
-                this.gpuTarget = null;
-                this.gpuUnavailableReason = 'floatRenderTargetRestore';
-            }
-            if (this.quadBuffer) {
-                device.uploadVertices(this.quadBuffer, QUAD);
-            }
-            if (!this.gpuTarget && !this.gpuUnavailableReason && this.capacity) {
-                try {
-                    this.gpuTarget = device.createRenderTarget(POSE_WIDTH, this.capacity, {
-                        format: 'rgba32f',
-                        filter: 'nearest',
-                    });
-                } catch (error) {
-                    // Sampling data still restores when the driver cannot restore a float FBO.
-                    this.gpuUnavailableReason = `floatRenderTargetRestore:${error.message}`;
-                }
-            }
             for (const RECORD of this.instances.values()) {
-                RECORD.dirty = true;
                 RECORD.stateDirty = true;
                 RECORD.overrideDirty = true;
                 RECORD.cpuDirty = RECORD.mode === 'cpu';
@@ -111,8 +47,6 @@ export class PoseRenderer {
             gpuDrawInstances: 0,
             cpuDrawInstances: 0,
             uniformDrawInstances: 0,
-            gpuPoseRows: 0,
-            gpuPoseDraws: 0,
             cpuPoseUploadBytes: 0,
             stateUploadBytes: 0,
             overrideUploadBytes: 0,
@@ -185,8 +119,12 @@ export class PoseRenderer {
             this.device.deleteTexture(this.programTexture);
         }
         this.programTexture = TEXTURE;
+        // Rows carry their source offset, so a compacted program texture must refresh them.
         for (const RECORD of this.instances.values()) {
-            RECORD.dirty = true;
+            if (this.stateData) {
+                this.stateData[RECORD.row * 8 + 7] = this.sources.get(RECORD.source).offset;
+            }
+            RECORD.stateDirty = true;
         }
         this.pendingUpdates = true;
     }
@@ -214,10 +152,6 @@ export class PoseRenderer {
                 this[KEY] = null;
             }
         }
-        if (this.gpuTarget) {
-            this.device.deleteRenderTarget(this.gpuTarget);
-            this.gpuTarget = null;
-        }
         this.stateData = null;
         this.overrideData = null;
         this.cpuData = null;
@@ -241,7 +175,6 @@ export class PoseRenderer {
         }
         let stateTexture = null;
         let overrideTexture = null;
-        let gpuTarget = null;
         try {
             stateTexture = this.device.createDataTexture(2, CAPACITY, { data: STATE });
             overrideTexture = this.device.createDataTexture(OVERRIDE_WIDTH, CAPACITY, { data: OVERRIDES });
@@ -253,18 +186,6 @@ export class PoseRenderer {
             }
             throw error;
         }
-        if (!this.gpuUnavailableReason) {
-            try {
-                gpuTarget = this.device.createRenderTarget(POSE_WIDTH, CAPACITY, {
-                    format: 'rgba32f',
-                    filter: 'nearest',
-                });
-            } catch (error) {
-                // A driver may expose the extension but reject this float framebuffer.
-                // Keep the CPU numeric texture path and expose the exact fallback cause.
-                this.gpuUnavailableReason = `floatRenderTarget:${error.message}`;
-            }
-        }
         this._releaseAtlas();
         this.capacity = CAPACITY;
         this.stateData = STATE;
@@ -272,18 +193,12 @@ export class PoseRenderer {
         this.cpuData = CPU;
         this.stateTexture = stateTexture;
         this.overrideTexture = overrideTexture;
-        this.gpuTarget = gpuTarget;
         for (const RECORD of this.instances.values()) {
-            RECORD.dirty = true;
             RECORD.stateDirty = true;
             RECORD.overrideDirty = true;
             RECORD.cpuDirty = RECORD.mode === 'cpu';
         }
         this.pendingUpdates = true;
-        if (this.rowBuffer) {
-            this.device.deleteVertexBuffer(this.rowBuffer);
-            this.rowBuffer = null;
-        }
     }
     createInstance(source) {
         this._ready();
@@ -298,7 +213,6 @@ export class PoseRenderer {
             source,
             row: ROW,
             mode: null,
-            dirty: true,
             stateDirty: true,
             overrideDirty: true,
             cpuDirty: false,
@@ -325,10 +239,6 @@ export class PoseRenderer {
             this.capacity = 0;
             this.rows = [];
             this.freeRows = [];
-            if (this.rowBuffer) {
-                this.device.deleteVertexBuffer(this.rowBuffer);
-                this.rowBuffer = null;
-            }
         }
         return true;
     }
@@ -344,7 +254,7 @@ export class PoseRenderer {
         const RECORD = this._instance(handle);
         const SOURCE = this.sources.get(RECORD.source);
         const CLIP = SOURCE.program.clips[clipName];
-        if (this.gpuUnavailableReason || !this.gpuTarget || !CLIP?.supported) {
+        if (this.gpuUnavailableReason || !CLIP?.supported) {
             return null;
         }
         if (
@@ -373,7 +283,8 @@ export class PoseRenderer {
             morph[0],
             morph[1],
             EXCLUDED,
-            0,
+            // Slot 7: where this source's keyframes start in the shared program texture.
+            SOURCE.offset,
         ];
         const BASE = RECORD.baseScratch;
         for (let i = 0; i < basePoses.length; i++) {
@@ -403,8 +314,7 @@ export class PoseRenderer {
             this.overrideData.set(BASE, BASE_OFFSET);
             RECORD.overrideDirty = true;
         }
-        RECORD.dirty ||= STATE_CHANGED || BASE_CHANGED || RECORD.mode !== 'gpu';
-        this.pendingUpdates ||= RECORD.dirty;
+        this.pendingUpdates ||= STATE_CHANGED || BASE_CHANGED;
         RECORD.mode = 'gpu';
         RECORD.reason = null;
         return handle;
@@ -443,7 +353,6 @@ export class PoseRenderer {
         RECORD.mode = 'cpu';
         RECORD.reason = reason;
         RECORD.cpuDirty = true;
-        RECORD.dirty = false;
         this.pendingUpdates = true;
         return handle;
     }
@@ -458,10 +367,25 @@ export class PoseRenderer {
                 ROW.cpuDirty = false;
             }
         }
+        const PART_COUNT = this.sources.get(RECORD.source).program.partCount;
+        if (RECORD.mode === 'gpu') {
+            // The vertex shader reads keyframes (program), playback state and per-part overrides directly.
+            return {
+                row: RECORD.row,
+                kind: 'program',
+                texture: this.programTexture,
+                textures: [this.programTexture, this.stateTexture, this.overrideTexture],
+                programWidth: this.programTexture.width,
+                partCount: PART_COUNT,
+            };
+        }
         return {
             row: RECORD.row,
-            texture: RECORD.mode === 'gpu' ? this.gpuTarget : this.cpuTexture,
-            partCount: this.sources.get(RECORD.source).program.partCount,
+            kind: 'matrix',
+            texture: this.cpuTexture,
+            textures: [this.cpuTexture],
+            programWidth: 0,
+            partCount: PART_COUNT,
         };
     }
     noteDraw(handle) {
@@ -517,80 +441,8 @@ export class PoseRenderer {
         if (this.cpuTexture) {
             this._uploadRows('cpuData', 'cpuDirty', this.cpuTexture, POSE_WIDTH, 'cpuPoseUploadBytes');
         }
-        const GROUPS = new Map();
-        for (const RECORD of this.instances.values()) {
-            this.frameMetrics.flushRecordVisits++;
-            if (RECORD.dirty && RECORD.mode === 'gpu') {
-                if (!GROUPS.has(RECORD.source)) {
-                    GROUPS.set(RECORD.source, []);
-                }
-                GROUPS.get(RECORD.source).push(RECORD.row);
-            }
-        }
-        if (!GROUPS.size) {
-            this.pendingUpdates = false;
-            return;
-        }
         this._uploadRows('stateData', 'stateDirty', this.stateTexture, 2, 'stateUploadBytes');
         this._uploadRows('overrideData', 'overrideDirty', this.overrideTexture, OVERRIDE_WIDTH, 'overrideUploadBytes');
-        if (!this.pipeline) {
-            this.pipeline = this.device.createPipeline({
-                vertex: VERTEX,
-                fragment: FRAGMENT,
-                stride: 8,
-                instanceStride: 4,
-                attributes: [
-                    { name: 'a_position', size: 2, offset: 0 },
-                    { name: 'i_row', size: 1, offset: 0, source: 'instance' },
-                ],
-                uniforms: {
-                    u_capacity: '1f',
-                    u_program: '1i',
-                    u_state: '1i',
-                    u_overrides: '1i',
-                    u_programBase: '1i',
-                    u_programWidth: '1i',
-                    u_partCount: '1i',
-                },
-            });
-            this.quadBuffer = this.device.createVertexBuffer({ capacityBytes: QUAD.byteLength });
-            this.device.uploadVertices(this.quadBuffer, QUAD);
-        }
-        if (!this.rowBuffer) {
-            this.rowBuffer = this.device.createVertexBuffer({ capacityBytes: this.capacity * 4 });
-        }
-        this.device.bindRenderTarget(this.gpuTarget);
-        try {
-            for (const [HANDLE, ROWS] of GROUPS) {
-                const SOURCE = this.sources.get(HANDLE);
-                this.device.uploadVertices(this.rowBuffer, Float32Array.from(ROWS));
-                this.device.draw({
-                    pipeline: this.pipeline,
-                    buffer: this.quadBuffer,
-                    instanceBuffer: this.rowBuffer,
-                    instances: ROWS.length,
-                    count: 6,
-                    blend: false,
-                    uniforms: {
-                        u_capacity: this.capacity,
-                        u_program: 0,
-                        u_state: 1,
-                        u_overrides: 2,
-                        u_programBase: SOURCE.offset,
-                        u_programWidth: this.programTexture.width,
-                        u_partCount: SOURCE.program.partCount,
-                    },
-                    textures: [this.programTexture, this.stateTexture, this.overrideTexture],
-                });
-                this.frameMetrics.gpuPoseRows += ROWS.length;
-                this.frameMetrics.gpuPoseDraws++;
-                for (const ROW of ROWS) {
-                    this.rows[ROW].dirty = false;
-                }
-            }
-        } finally {
-            this.device.unbindRenderTarget(this.gpuTarget);
-        }
         this.pendingUpdates = false;
     }
     stats() {
@@ -610,7 +462,6 @@ export class PoseRenderer {
             capacity: this.capacity,
             gpuUnavailableReason: this.gpuUnavailableReason,
             stateBytes: this.capacity * (8 + OVERRIDE_WIDTH * 4) * 4,
-            gpuPoseBytes: this.gpuTarget ? POSE_WIDTH * this.capacity * 16 : 0,
             cpuPoseBytes: this.cpuTexture ? POSE_WIDTH * this.capacity * 16 : 0,
             programBytes: this.programTexture ? this.programTexture.width * this.programTexture.height * 16 : 0,
         };
@@ -621,14 +472,6 @@ export class PoseRenderer {
         }
         this._boundary();
         this._releaseAtlas();
-        for (const BUFFER of [this.quadBuffer, this.rowBuffer]) {
-            if (BUFFER) {
-                this.device.deleteVertexBuffer(BUFFER);
-            }
-        }
-        if (this.pipeline) {
-            this.device.deletePipeline(this.pipeline);
-        }
         if (this.programTexture) {
             this.device.deleteTexture(this.programTexture);
         }

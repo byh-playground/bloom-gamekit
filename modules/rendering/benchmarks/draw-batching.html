@@ -123,6 +123,13 @@
         ready: true,
         actors: PLACEMENTS.length,
         species: SPECIES.length,
+        // Final-frame pixels, for comparing renderer versions on the same scene.
+        readPixels() {
+            const GL = DEVICE.gl;
+            const PIXELS = new Uint8Array(WIDTH * HEIGHT * 4);
+            GL.readPixels(0, 0, WIDTH, HEIGHT, GL.RGBA, GL.UNSIGNED_BYTE, PIXELS);
+            return Array.from(PIXELS);
+        },
         run() {
             for (let frame = 0; frame < WARMUP_FRAMES; frame++) {
                 DRAW_FRAME(frame * 16);
