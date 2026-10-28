@@ -300,7 +300,7 @@ export async function exerciseVectorGameCoverage(page) {
         RESULT.radialLifetime.length === 16 &&
             RESULT.radialLifetime.every(
                 (x) =>
-                    x.textureAfterCreate === x.textureBaseline + x.withinFrameIndex &&
+                    x.textureAfterCreate === x.textureBaseline &&
                     x.textureAfterUpdate === x.textureAfterCreate &&
                     x.cacheAfterUpdate === x.withinFrameIndex,
             ) &&
@@ -341,12 +341,13 @@ export async function exerciseVectorGameCoverage(page) {
         await page.waitForFunction(() => vectorGameCoverageProbe.ctx.state === 'ready');
         assert.equal(
             await page.evaluate(() => {
-                const P = vectorGameCoverageProbe;
+                const P = vectorGameCoverageProbe,
+                    UPLOADS_BEFORE = P.device.stats.imageTexUploadCount;
                 P.ctx.beginFrame();
                 P.ctx.fillStyle = P.gradient;
                 P.ctx.fillRect(0, 0, 16, 16);
                 P.ctx.endFrame();
-                return P.device.stats.textureUploads === 1 && P.device.gl.getError() === 0;
+                return P.device.stats.imageTexUploadCount - UPLOADS_BEFORE === 1 && P.device.gl.getError() === 0;
             }),
             true,
         );

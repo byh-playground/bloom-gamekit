@@ -409,6 +409,7 @@ export class VectorContext {
         this.staticMeshes = new Set();
         this.deferredMeshes = [];
         this.gradientTextures = new Map();
+        this.lostGradientRegions = [];
         this._silhouetteMatrices = new Float32Array(60);
         this._scaledSilhouetteMatrices = new Float32Array(12);
         this._silhouetteColorCache = new Map();
@@ -417,6 +418,11 @@ export class VectorContext {
             this.active = false;
             this.state = 'lost';
             this.meshRenderer?.discard();
+            for (const [GRADIENT, CACHED] of this.gradientTextures) {
+                this.lostGradientRegions.push(CACHED.region);
+                GRADIENT.pixels = null;
+            }
+            this.gradientTextures.clear();
         };
         this.onRestored = () => {
             if (this.state === 'disposed') {
@@ -425,6 +431,10 @@ export class VectorContext {
             try {
                 for (const MESH of this.staticMeshes) {
                     this.device.uploadVertices(MESH.buffer, MESH.vertices);
+                }
+                // Atlas regions cannot be cleared while the context is lost, so the lost frame's ramps are freed here.
+                for (const REGION of this.lostGradientRegions.splice(0)) {
+                    REGION.atlas.release(REGION);
                 }
                 this.state = 'ready';
             } catch (error) {
@@ -736,6 +746,7 @@ export class VectorContext {
             this.flush('frameEnd');
             const STATS = this.device.endFrame();
             this.active = false;
+            this._releaseGradientTextures();
             for (const MESH of this.deferredMeshes.splice(0)) {
                 this.deleteStaticMesh(MESH);
             }

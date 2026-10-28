@@ -1,3 +1,12 @@
+## v0.24.1 (2026-10-28)
+
+어떤 러너도 부르지 않던 렌더링 시나리오 2개(`vector-context`, `vector-game-coverage`)를 고정 브라우저 시나리오에 연결하고, 그 과정에서 드러난 결함 2개를 고칩니다.
+
+- gradient ramp 영역을 `endFrame`에서 해제합니다. README와 시나리오는 "각 endFrame에서 `activeGradientTextureCount`가 0으로 돌아온다"고 적었지만 코드는 `dispose`에서만 해제해, 이전 프레임의 ramp가 최대 64개까지 atlas에 남았습니다. 같은 gradient 객체를 다음 프레임에 다시 쓰면 그 프레임에서 ramp를 다시 올립니다.
+- context 손실 시 gradient 캐시와 CPU ramp를 비우고, atlas 영역 해제는 복원 후로 미룹니다. 손실 중에는 GPU 영역을 지울 수 없어 이전에는 캐시 항목이 남았습니다.
+- 낡은 시나리오 기대값을 현재 구조에 맞췄습니다: 프레임당 draw 1개 검증의 `maxVertices`(4096 → 16384, 사각형 1000개가 정점 6000개를 쓰므로), gradient 생성이 GPU 텍스처를 늘린다는 기대(ramp는 atlas 영역이라 텍스처 수 고정), 복원 후 업로드 수를 누적값 대신 증가분으로 검증.
+- 이 시나리오들은 점선(`setLineDash`), `drawStaticMesh`, gradient 수명, context 손실 복원을 고정 검증하는 유일한 곳입니다.
+
 ## v0.24.0 (2026-10-28)
 
 `PrimitivePainter`가 `Renderer2D`의 도형 호출을 이어받습니다. v0.23.0 안내의 "path로 옮깁니다"를 대체합니다. `line` 한 번이 `beginPath`·`moveTo`·`lineTo`·`lineWidth`·`strokeStyle`·`stroke` 6줄이 되는 이관은 코드량만 늘기 때문입니다.
