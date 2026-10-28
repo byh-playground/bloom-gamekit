@@ -1,7 +1,11 @@
 /** Checks that analytic primitives share the vector stream: one draw, painter order, transforms, clipping, warm-frame uploads. */
 export async function exercisePrimitiveShapes(page, moduleURL = '/dist/rendering.js') {
     return page.evaluate(async (url) => {
-        const { WebGLDevice: WEB_GL_DEVICE, VectorContext: VECTOR_CONTEXT } = await import(url);
+        const {
+            WebGLDevice: WEB_GL_DEVICE,
+            VectorContext: VECTOR_CONTEXT,
+            PrimitivePainter: PRIMITIVE_PAINTER,
+        } = await import(url);
         const CANVAS = document.createElement('canvas');
         CANVAS.width = CANVAS.height = 128;
         const DEVICE = new WEB_GL_DEVICE(CANVAS, {
@@ -94,6 +98,27 @@ export async function exercisePrimitiveShapes(page, moduleURL = '/dist/rendering
             uploadedBytes: FRAME.uploadedBytes,
             vertices: FRAME.vertices,
             glError: ERROR,
+        };
+        const PAINTER = new PRIMITIVE_PAINTER(CONTEXT);
+        CONTEXT.beginFrame({
+            clearColor: [0, 0, 0, 1],
+        });
+        PAINTER.ellipse(30, 30, 20, 8, '#ff0000', 24);
+        PAINTER.ellipse(90, 30, 20, 8, '#00ff00', 24, Math.PI / 2);
+        PAINTER.box(30, 80, 30, 10, '#0000ff');
+        PAINTER.box(90, 80, 30, 10, '#ffff00', Math.PI / 2);
+        const PAINTER_FRAME = CONTEXT.endFrame();
+        RESULT.painter = {
+            ellipseWide: PIXEL(46, 30),
+            ellipseFlat: PIXEL(30, 42),
+            ellipseRotatedTall: PIXEL(90, 46),
+            ellipseRotatedNarrow: PIXEL(106, 30),
+            boxWide: PIXEL(42, 80),
+            boxFlat: PIXEL(30, 90),
+            boxRotatedTall: PIXEL(90, 92),
+            boxRotatedNarrow: PIXEL(102, 80),
+            drawCalls: PAINTER_FRAME.drawCalls,
+            glError: GL.getError(),
         };
         CONTEXT.dispose();
         DEVICE.dispose();

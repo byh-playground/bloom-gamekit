@@ -156,6 +156,8 @@ if (ctx.beginFrame({ width: canvas.width, height: canvas.height, clearColor: [0,
     ctx.arc(80, 100, 18, 0, Math.PI * 2);
     ctx.fill();
     primitive.circle(80, 100, 12, '#f1f8d7', 12); // 원래 authored fan topology 유지
+    primitive.ellipse(40, 100, 16, 6, 'rgba(0,0,0,.4)', 24); // 중심, 반지름 x/y, 색, 분할 수, 회전
+    primitive.box(120, 100, 40, 4, '#44e5ff'); // 중심 기준 사각형(왼쪽 위 기준인 fillRect와 다름), 마지막 인자는 회전
     ctx.endFrame();
 }
 ```

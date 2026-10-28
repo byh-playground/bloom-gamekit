@@ -1892,18 +1892,34 @@ export class PrimitivePainter {
         if (sides < 3 || radius <= 0) {
             return;
         }
-        let unit = PRIMITIVE_DIRECTIONS.get(`${sides}|${rotation}`);
-        if (!unit) {
-            unit = Array.from(
-                {
-                    length: sides,
-                },
-                (_, i) => [Math.cos(rotation + (i / sides) * TAU), Math.sin(rotation + (i / sides) * TAU)],
-            );
-            PRIMITIVE_DIRECTIONS.set(`${sides}|${rotation}`, unit);
-        }
         this.poly(
-            unit.map((p) => [x + p[0] * radius, y + p[1] * radius]),
+            unitDirections(sides, rotation).map((p) => [x + p[0] * radius, y + p[1] * radius]),
+            paint,
+        );
+    }
+    ellipse(x, y, radiusX, radiusY, paint, segments = 24, rotation = 0) {
+        if (segments < 3 || radiusX <= 0 || radiusY <= 0) {
+            return;
+        }
+        const COS = Math.cos(rotation),
+            SIN = Math.sin(rotation);
+        this.poly(
+            unitDirections(segments, 0).map((p) => {
+                const PX = p[0] * radiusX,
+                    PY = p[1] * radiusY;
+                return [x + PX * COS - PY * SIN, y + PX * SIN + PY * COS];
+            }),
+            paint,
+        );
+    }
+    box(centerX, centerY, width, height, paint, angle = 0) {
+        const HALF_W = width / 2,
+            HALF_H = height / 2,
+            COS = Math.cos(angle),
+            SIN = Math.sin(angle),
+            CORNER = (dx, dy) => [centerX + dx * COS - dy * SIN, centerY + dx * SIN + dy * COS];
+        this.poly(
+            [CORNER(-HALF_W, -HALF_H), CORNER(HALF_W, -HALF_H), CORNER(HALF_W, HALF_H), CORNER(-HALF_W, HALF_H)],
             paint,
         );
     }
@@ -1926,3 +1942,17 @@ export class PrimitivePainter {
     }
 }
 const PRIMITIVE_DIRECTIONS = new Map();
+function unitDirections(sides, rotation) {
+    const KEY = `${sides}|${rotation}`;
+    let unit = PRIMITIVE_DIRECTIONS.get(KEY);
+    if (!unit) {
+        unit = Array.from(
+            {
+                length: sides,
+            },
+            (_, i) => [Math.cos(rotation + (i / sides) * TAU), Math.sin(rotation + (i / sides) * TAU)],
+        );
+        PRIMITIVE_DIRECTIONS.set(KEY, unit);
+    }
+    return unit;
+}
