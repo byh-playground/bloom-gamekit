@@ -6237,6 +6237,7 @@ var VectorContext = class {
     this.staticMeshes = /* @__PURE__ */ new Set();
     this.deferredMeshes = [];
     this.gradientTextures = /* @__PURE__ */ new Map();
+    this.lostGradientRegions = [];
     this._silhouetteMatrices = new Float32Array(60);
     this._scaledSilhouetteMatrices = new Float32Array(12);
     this._silhouetteColorCache = /* @__PURE__ */ new Map();
@@ -6245,6 +6246,11 @@ var VectorContext = class {
       this.active = false;
       this.state = "lost";
       this.meshRenderer?.discard();
+      for (const [GRADIENT, CACHED] of this.gradientTextures) {
+        this.lostGradientRegions.push(CACHED.region);
+        GRADIENT.pixels = null;
+      }
+      this.gradientTextures.clear();
     };
     this.onRestored = () => {
       if (this.state === "disposed") {
@@ -6253,6 +6259,9 @@ var VectorContext = class {
       try {
         for (const MESH of this.staticMeshes) {
           this.device.uploadVertices(MESH.buffer, MESH.vertices);
+        }
+        for (const REGION of this.lostGradientRegions.splice(0)) {
+          REGION.atlas.release(REGION);
         }
         this.state = "ready";
       } catch (error) {
@@ -6556,6 +6565,7 @@ var VectorContext = class {
       this.flush("frameEnd");
       const STATS = this.device.endFrame();
       this.active = false;
+      this._releaseGradientTextures();
       for (const MESH of this.deferredMeshes.splice(0)) {
         this.deleteStaticMesh(MESH);
       }
