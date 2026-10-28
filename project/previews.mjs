@@ -22,6 +22,7 @@ export const EXAMPLES = [
     ['audio', 'modules/audio/examples/index.html'],
     ['navigation', 'modules/navigation/examples/index.html'],
     ['rendering-vector', 'modules/rendering/examples/vector/index.html'],
+    ['rendering-texture-array', 'modules/rendering/examples/texture-array/index.html'],
     ['vector-assets', 'modules/vector-assets/examples/index.html'],
     ['vector-raster-comparison', 'modules/vector-assets/examples/raster-comparison.html'],
     ['rollback-availability', 'modules/rollback/examples/availability/index.html'],

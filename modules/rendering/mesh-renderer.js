@@ -49,6 +49,16 @@ const TEXTURE_INSTANCE_ATTRIBUTES = ['i_uvRect', 'i_localRect'].map((name, i) =>
     offset: 64 + i * 16,
     source: 'instance',
 }));
+// Instance record: 16 shared floats, then uvRect (4), localRect (4) and the texture-array layer (1) for textured
+// meshes. Plain 2D textures carry the layer slot too, so one layout serves every textured instance.
+const PLAIN_INSTANCE_FLOATS = 16;
+const TEXTURED_INSTANCE_FLOATS = 25;
+const TEXTURE_LAYER_INSTANCE_ATTRIBUTE = Object.freeze({
+    name: 'i_layer',
+    size: 1,
+    offset: 96,
+    source: 'instance',
+});
 function shader(
     instanced,
     partCount,
@@ -59,6 +69,7 @@ function shader(
     textured = false,
     poseTexture = false,
     paintRegionCount = 0,
+    textureArray = false,
 ) {
     const PAINT_INPUT = paintRegionCount
             ? `attribute float a_paintRegion;uniform vec4 u_paintRegions[${paintRegionCount + 1}];`
@@ -85,8 +96,12 @@ function shader(
         : 'a_position';
     const STROKE_INPUTS = nonScalingStroke ? 'attribute vec4 a_stroke;uniform vec2 u_strokeViewportSize;' : '';
     const STROKE_VARYING = clipped && nonScalingStroke ? 'uniform mat3 u_inverseProjection;' : '';
+    const LAYER_INPUTS = textureArray
+        ? `${instanced ? 'attribute' : 'uniform'} highp float i_layer;varying highp float v_layer;`
+        : '';
+    const LAYER_OUTPUT = textureArray ? 'v_layer=i_layer;' : '';
     const TEXTURE_INPUTS = textured
-        ? `attribute highp vec2 a_uv;${instanced ? 'attribute' : 'uniform'} highp vec4 i_uvRect;${instanced ? 'attribute' : 'uniform'} vec4 i_localRect;varying highp vec2 v_uv;varying float v_forceColor;varying float v_whiteFlash;`
+        ? `attribute highp vec2 a_uv;${instanced ? 'attribute' : 'uniform'} highp vec4 i_uvRect;${instanced ? 'attribute' : 'uniform'} vec4 i_localRect;varying highp vec2 v_uv;varying float v_forceColor;varying float v_whiteFlash;${LAYER_INPUTS}`
         : '';
     const RECT_LOCAL = textured ? 'local=i_localRect.xy+local*i_localRect.zw;' : '';
     const STROKE_POSITION = nonScalingStroke
@@ -135,7 +150,7 @@ vec2 local=${LOCAL};${RECT_LOCAL}vec2 plane=${PART_POSE ? 'vec2(dot(row0.xyz,vec
 vec3 world=vec3(dot(i_row0.xyz,vec3(plane,1.0)),dot(i_row1.xyz,vec3(plane,1.0)),dot(i_row2.xyz,vec3(plane,1.0)));
 vec4 projected=u_viewProjection*vec4(world,1.0);${clipped ? 'v_position=world.xy;' : ''}${WORLD_STROKE}
 projected.z+=(i_params.w+${PART_POSE ? 'pose.w' : '0.0'})*projected.w;gl_Position=projected;
-${PAINT_COLOR}vec4 color=mix(${BASE_COLOR}*u_color,u_color,i_row1.w);color.a*=i_row0.w${PART_POSE ? '*pose.z' : ''};color.rgb=mix(color.rgb,vec3(1.0),i_row2.w);v_color=vec4(color.rgb*color.a,color.a);${textured ? 'v_uv=i_uvRect.xy+a_uv*i_uvRect.zw;v_forceColor=i_row1.w;v_whiteFlash=i_row2.w;' : ''}
+${PAINT_COLOR}vec4 color=mix(${BASE_COLOR}*u_color,u_color,i_row1.w);color.a*=i_row0.w${PART_POSE ? '*pose.z' : ''};color.rgb=mix(color.rgb,vec3(1.0),i_row2.w);v_color=vec4(color.rgb*color.a,color.a);${textured ? `v_uv=i_uvRect.xy+a_uv*i_uvRect.zw;v_forceColor=i_row1.w;v_whiteFlash=i_row2.w;${LAYER_OUTPUT}` : ''}
 }`;
     }
     return `attribute vec2 a_position; attribute vec4 a_color; ${morphCount ? 'attribute vec4 a_morph;' : ''} ${PART_INPUTS}
@@ -147,14 +162,19 @@ vec2 world=vec2(dot(i_row0.xyz,vec3(p,1.0)),dot(i_row1.xyz,vec3(p,1.0)));
 vec3 projected=u_projection*vec3(world,1.0);${clipped ? 'v_position=world;' : ''}${STROKE_POSITION}
 gl_Position=vec4(projected.xy,(i_params.w+${PART_POSE ? 'pose.w' : '0.0'})*projected.z,projected.z);
 ${PAINT_COLOR}vec4 color=mix(${BASE_COLOR}*i_color,i_color,i_row1.w);color.a*=i_row0.w${PART_POSE ? '*pose.z' : ''};
-color.rgb=mix(color.rgb,vec3(1.0),i_params.z);v_color=vec4(color.rgb*color.a,color.a);${textured ? 'v_uv=i_uvRect.xy+a_uv*i_uvRect.zw;v_forceColor=i_row1.w;v_whiteFlash=i_params.z;' : ''}}`;
+color.rgb=mix(color.rgb,vec3(1.0),i_params.z);v_color=vec4(color.rgb*color.a,color.a);${textured ? `v_uv=i_uvRect.xy+a_uv*i_uvRect.zw;v_forceColor=i_row1.w;v_whiteFlash=i_params.z;${LAYER_OUTPUT}` : ''}}`;
 }
-function fragment(maxPlanes, clipped, textured = false) {
+function fragment(maxPlanes, clipped, textured = false, textureArray = false) {
+    // sampler2DArray has no default precision in GLSL ES 300; Device converts this 100-style source to 300 es.
+    const SAMPLER = textureArray
+        ? 'precision mediump sampler2DArray;uniform sampler2DArray u_texture;varying highp float v_layer;'
+        : 'uniform sampler2D u_texture;';
     const TEXTURE_INPUTS = textured
-        ? 'uniform sampler2D u_texture;varying highp vec2 v_uv;varying float v_forceColor;varying float v_whiteFlash;'
+        ? `${SAMPLER}varying highp vec2 v_uv;varying float v_forceColor;varying float v_whiteFlash;`
         : '';
+    const TEXEL = textureArray ? 'texture2D(u_texture,vec3(v_uv,floor(v_layer+0.5)))' : 'texture2D(u_texture,v_uv)';
     const OUTPUT = textured
-        ? 'vec4 sampleColor=texture2D(u_texture,v_uv);float alpha=sampleColor.a*v_color.a;vec3 rgb=v_whiteFlash>0.5?vec3(alpha):v_forceColor>0.5?sampleColor.a*v_color.rgb:sampleColor.rgb*v_color.rgb;gl_FragColor=vec4(rgb,alpha);'
+        ? `vec4 sampleColor=${TEXEL};float alpha=sampleColor.a*v_color.a;vec3 rgb=v_whiteFlash>0.5?vec3(alpha):v_forceColor>0.5?sampleColor.a*v_color.rgb:sampleColor.rgb*v_color.rgb;gl_FragColor=vec4(rgb,alpha);`
         : 'gl_FragColor=v_color;';
     if (!clipped) {
         return `precision mediump float;varying vec4 v_color;${TEXTURE_INPUTS}void main(){${OUTPUT}}`;
@@ -449,7 +469,7 @@ export class MeshRenderer {
         this.maxPlanes = Math.max(1, Math.min(32, device.gl.getParameter(device.gl.MAX_FRAGMENT_UNIFORM_VECTORS) - 2));
         this.instanced = device.instancingSupported === true;
         this.maxTexturedInstances = this.instanced
-            ? Math.min(maxInstances, Math.floor(device.maxBufferBytes / 96))
+            ? Math.min(maxInstances, Math.floor(device.maxBufferBytes / (TEXTURED_INSTANCE_FLOATS * 4)))
             : maxInstances;
         this.instances = new Float32Array(maxInstances * 16);
         this.texturedInstances = null;
@@ -581,8 +601,10 @@ export class MeshRenderer {
     poseStats() {
         return this.poseRenderer?.stats() ?? null;
     }
-    _pipeline(mesh, clipped, worldMode = false, poseTexture = false) {
+    _pipeline(mesh, clipped, worldMode = false, poseTexture = false, textureArray = false) {
         const KEY =
+            Number(textureArray) +
+            ':' +
             mesh.partCount +
             ':' +
             mesh.morphCount +
@@ -635,6 +657,9 @@ export class MeshRenderer {
             if (!this.instanced) {
                 UNIFORMS.i_uvRect = '4f';
                 UNIFORMS.i_localRect = '4f';
+                if (textureArray) {
+                    UNIFORMS.i_layer = '1f';
+                }
             }
         }
         if (mesh.paintRegionNames) {
@@ -659,13 +684,15 @@ export class MeshRenderer {
                     mesh.hasTextureCoordinates,
                     poseTexture,
                     mesh.paintRegionNames?.length ?? 0,
+                    textureArray,
                 ),
             ),
-            fragment: fragment(this.maxPlanes, clipped, mesh.hasTextureCoordinates),
+            fragment: fragment(this.maxPlanes, clipped, mesh.hasTextureCoordinates, textureArray),
             stride: mesh.bufferStrideFloats * 4,
             ...(this.instanced
                 ? {
-                      instanceStride: mesh.hasTextureCoordinates ? 96 : 64,
+                      instanceStride:
+                          (mesh.hasTextureCoordinates ? TEXTURED_INSTANCE_FLOATS : PLAIN_INSTANCE_FLOATS) * 4,
                   }
                 : {}),
             attributes: [
@@ -693,6 +720,7 @@ export class MeshRenderer {
                     : []),
                 ...(this.instanced ? (worldMode ? WORLD_INSTANCE_ATTRIBUTES : INSTANCE_ATTRIBUTES) : []),
                 ...(this.instanced && mesh.hasTextureCoordinates ? TEXTURE_INSTANCE_ATTRIBUTES : []),
+                ...(this.instanced && textureArray ? [TEXTURE_LAYER_INSTANCE_ATTRIBUTE] : []),
             ],
             uniforms: UNIFORMS,
         });
@@ -945,6 +973,7 @@ export class MeshRenderer {
             parts: PARTS = null,
             pose: POSE = null,
             texture: TEXTURE = null,
+            layer: LAYER = 0,
             uvRect: UV_RECT = IDENTITY_RECT,
             localRect: LOCAL_RECT = IDENTITY_RECT,
             color: COLOR = WHITE,
@@ -975,6 +1004,7 @@ export class MeshRenderer {
             parts: PARTS,
             pose: POSE,
             texture: TEXTURE,
+            layer: LAYER,
             uvRect: UV_RECT,
             localRect: LOCAL_RECT,
             color: COLOR,
@@ -1230,6 +1260,7 @@ export class MeshRenderer {
             parts = null,
             pose = null,
             texture = null,
+            layer = 0,
             uvRect = IDENTITY_RECT,
             localRect = IDENTITY_RECT,
             color = WHITE,
@@ -1261,6 +1292,14 @@ export class MeshRenderer {
             (texture !== null && !this.device.textures.has(texture))
         ) {
             throw new TypeError('Textured meshes require a live texture; plain meshes cannot sample one');
+        }
+        const TEXTURE_ARRAY = texture !== null && this.device.isTextureArray(texture);
+        if (TEXTURE_ARRAY) {
+            if (!Number.isInteger(layer) || layer < 0 || layer >= texture.layers) {
+                throw new RangeError(`layer must be an integer in 0..${texture.layers - 1}`);
+            }
+        } else if (layer !== 0) {
+            throw new TypeError('layer requires a texture array');
         }
         if (uvRect !== IDENTITY_RECT) {
             finiteArray(uvRect, 4, 'uvRect');
@@ -1438,9 +1477,9 @@ export class MeshRenderer {
         const ALPHA_DEPTH_WRITE = depthWrite && depthWriteAlphaThreshold !== null;
         if (!ALPHA_DEPTH_WRITE) {
             const INSTANCE_LIMIT = mesh.hasTextureCoordinates ? this.maxTexturedInstances : this.maxInstances;
-            const INSTANCE_FLOATS = mesh.hasTextureCoordinates ? 24 : 16;
+            const INSTANCE_FLOATS = mesh.hasTextureCoordinates ? TEXTURED_INSTANCE_FLOATS : PLAIN_INSTANCE_FLOATS;
             const DATA = mesh.hasTextureCoordinates
-                ? (this.texturedInstances ??= new Float32Array(this.maxTexturedInstances * 24))
+                ? (this.texturedInstances ??= new Float32Array(this.maxTexturedInstances * TEXTURED_INSTANCE_FLOATS))
                 : this.instances;
             if (this.alphaQueueCount) {
                 this._flushAlphaQueue('alphaBoundary');
@@ -1588,6 +1627,7 @@ export class MeshRenderer {
                 if (mesh.hasTextureCoordinates) {
                     DATA.set(uvRect, AT + 16);
                     DATA.set(localRect, AT + 20);
+                    DATA[AT + 24] = layer;
                 }
             }
             return;
@@ -2031,7 +2071,13 @@ export class MeshRenderer {
         if (POSE_TEXTURE) {
             this.poseRenderer.flushUpdates();
         }
-        const PIPELINE = this._pipeline(MESH, CLIP.count > 0, WORLD_MODE, !!POSE_TEXTURE),
+        const PIPELINE = this._pipeline(
+                MESH,
+                CLIP.count > 0,
+                WORLD_MODE,
+                !!POSE_TEXTURE,
+                TEXTURE !== null && this.device.isTextureArray(TEXTURE),
+            ),
             UNIFORMS = WORLD_MODE
                 ? {
                       u_viewProjection: PROJECTION,
@@ -2075,7 +2121,7 @@ export class MeshRenderer {
         const INSTANCE_UNIFORMS = WORLD_MODE
             ? ['i_row0', 'i_row1', 'i_row2', 'i_params']
             : ['i_row0', 'i_row1', 'i_color', 'i_params'];
-        const INSTANCE_FLOATS = MESH.hasTextureCoordinates ? 24 : 16;
+        const INSTANCE_FLOATS = MESH.hasTextureCoordinates ? TEXTURED_INSTANCE_FLOATS : PLAIN_INSTANCE_FLOATS;
         const INSTANCE_DATA = MESH.hasTextureCoordinates ? this.texturedInstances : this.instances;
         if (this.instanced) {
             this.device.uploadVertices(this.instanceBuffer, INSTANCE_DATA.subarray(0, this.count * INSTANCE_FLOATS));
@@ -2116,8 +2162,11 @@ export class MeshRenderer {
                     );
                 }
                 if (MESH.hasTextureCoordinates) {
-                    UNIFORMS.i_uvRect = INSTANCE_DATA.subarray(i * 24 + 16, i * 24 + 20);
-                    UNIFORMS.i_localRect = INSTANCE_DATA.subarray(i * 24 + 20, i * 24 + 24);
+                    UNIFORMS.i_uvRect = INSTANCE_DATA.subarray(i * INSTANCE_FLOATS + 16, i * INSTANCE_FLOATS + 20);
+                    UNIFORMS.i_localRect = INSTANCE_DATA.subarray(i * INSTANCE_FLOATS + 20, i * INSTANCE_FLOATS + 24);
+                    if (TEXTURE !== null && this.device.isTextureArray(TEXTURE)) {
+                        UNIFORMS.i_layer = INSTANCE_DATA[i * INSTANCE_FLOATS + 24];
+                    }
                 }
                 this.device.draw({
                     pipeline: PIPELINE,
