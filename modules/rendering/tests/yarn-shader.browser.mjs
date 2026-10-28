@@ -456,6 +456,82 @@ export async function exerciseYarnShader(browser, moduleURL, screenshotPath) {
                         disposed: DEVICE.stats.gpuBufferBytes === 0 && DEVICE.stats.textureCount === 0,
                     };
                 }
+                {
+                    // Sketch hatching must follow hatchAngle and hatchSpacing: a wrong uniform slot turned the whole
+                    // fill into one flat darker color.
+                    const CANVAS = document.createElement('canvas');
+                    CANVAS.width = 140;
+                    CANVAS.height = 140;
+                    document.body.append(CANVAS);
+                    const DEVICE = new WEB_GL_DEVICE(CANVAS, {
+                        alpha: true,
+                        antialias: false,
+                        depth: false,
+                        stencil: false,
+                        preserveDrawingBuffer: true,
+                    });
+                    const SURFACES = new YARN_SURFACE_RENDERER(DEVICE);
+                    const COLOR = [0.82, 0.48, 0.28, 1];
+                    const SURFACE = SURFACES.createSurface({
+                        fillVertices: Float32Array.from([
+                            10,
+                            10,
+                            ...COLOR,
+                            130,
+                            10,
+                            ...COLOR,
+                            130,
+                            130,
+                            ...COLOR,
+                            10,
+                            10,
+                            ...COLOR,
+                            130,
+                            130,
+                            ...COLOR,
+                            10,
+                            130,
+                            ...COLOR,
+                        ]),
+                        outline: Float32Array.from([10, 10, 130, 10, 130, 130, 10, 130]),
+                        edgeColors: Float32Array.from([...COLOR, ...COLOR, ...COLOR, ...COLOR]),
+                        style: {
+                            kind: 'sketch',
+                            seed: 73,
+                            periodMs: 135,
+                            amplitude: 1.3,
+                            frequency: 4,
+                            echoX: 1.1,
+                            echoY: -0.8,
+                            echoWidth: 1.4,
+                            echoOpacity: 0.24,
+                            hatchAngle: 0.72,
+                            hatchSpacing: 7,
+                            hatchWidth: 0.8,
+                            hatchOpacity: 0.36,
+                        },
+                    });
+                    DEVICE.beginFrame({ width: 140, height: 140, clearColor: [0, 0, 0, 0] });
+                    SURFACES.drawSurface(SURFACE, {
+                        projection: [2 / 140, 0, 0, 0, -2 / 140, 0, -1, 1, 1],
+                        timeMs: 0,
+                    });
+                    DEVICE.endFrame();
+                    const PIXELS = new Uint8Array(140 * 140 * 4);
+                    DEVICE.gl.readPixels(0, 0, 140, 140, DEVICE.gl.RGBA, DEVICE.gl.UNSIGNED_BYTE, PIXELS);
+                    const REDS = [];
+                    for (let y = 40; y < 100; y++) {
+                        for (let x = 40; x < 100; x++) {
+                            REDS.push(PIXELS[(y * 140 + x) * 4]);
+                        }
+                    }
+                    const MEDIAN = REDS.slice().sort((a, b) => a - b)[REDS.length >> 1];
+                    const HATCHED = REDS.filter((red) => Math.abs(red - MEDIAN) > 8).length;
+                    SURFACES.deleteSurface(SURFACE);
+                    SURFACES.dispose();
+                    DEVICE.dispose();
+                    SAMPLES.sketchHatch = { median: MEDIAN, hatchedFraction: HATCHED / REDS.length };
+                }
                 return SAMPLES;
             },
             {
@@ -473,6 +549,10 @@ export async function exerciseYarnShader(browser, moduleURL, screenshotPath) {
             assert.ok(SAMPLE.meshVertices < 1000, `${NAME}: retained vertices must stay bounded`);
         }
         assert.equal(RESULT.mobileRestored.state, 'ready');
+        assert.ok(
+            RESULT.sketchHatch.hatchedFraction > 0.03 && RESULT.sketchHatch.hatchedFraction < 0.5,
+            `sketch fill shows diagonal hatch lines, not one flat color: ${JSON.stringify(RESULT.sketchHatch)}`,
+        );
         assert.ok(
             RESULT.stencil.upperArm[3] > 0 && RESULT.stencil.leftArm[3] > 0,
             `concave stencil keeps both Yarn arms: ${JSON.stringify(RESULT.stencil)}`,
