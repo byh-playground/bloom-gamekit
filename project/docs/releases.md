@@ -1,3 +1,13 @@
+## v0.23.0 (2026-10-28)
+
+**Breaking.** `Renderer2D`를 삭제합니다(호환 코드 없음). 자체 셰이더·버퍼·텍스처로 그려 VectorContext 스트림과 draw를 합칠 수 없었고, 같은 일을 하는 공개 API가 둘이었습니다. 게임의 렌더 진입점은 `VectorContext` 하나입니다.
+
+- 이미지: `createTexture`/`updateTexture`/`sprite` 대신 `device.textureAtlas.allocate`/`upload`와 새 `VectorContext.drawRegion(region, x, y, width, height, { source })`를 씁니다. `TextureAtlasArray.upload`에 영역 안 오프셋 `{ x, y }` 부분 갱신이 추가됐습니다.
+- 카메라: `CameraViewport.rendererCameraInto`/`applyToRenderer`를 `transformInto(out)`/`applyToContext(context)`/`resizeCanvas(canvas)`로 바꿨습니다. 변환은 zoom·회전·shake·DPR을 포함한 6개 affine 값입니다.
+- 도형: `rect`/`triangle`/`ellipse`/`line`은 `fillRect`·path·`ellipse`·`stroke`로 옮깁니다. 색은 `fillStyle = [r, g, b, a]`로 그대로 넘길 수 있습니다.
+- 프레임 중 이미 올린 아틀라스 영역을 다시 올리거나 해제하면 그 전에 쌓인 draw를 먼저 제출해, 앞선 그림이 이전 픽셀을 유지합니다. 새 영역의 첫 업로드(gradient ramp, 글리프 페이지)는 draw를 나누지 않습니다.
+- 보간 데모 2개, 입력 preview 데모, pixel-physics·rollback·presentation·interop·mesh-depth 시나리오를 VectorContext로 옮겼습니다. 보간 통합 예제의 한 프레임은 draw call 1개입니다.
+
 ## v0.22.0 (2026-10-28)
 
 **Breaking.** 우리 모듈로 그리는 모든 것(캐릭터·UI·벡터 path·gradient·글리프·효과)이 한 프레임에 같은 blend·clip 상태에서 draw call 1개로 제출됩니다. 정점은 `VectorRenderer`의 동적 정점 스트림(정점당 80바이트)에 쓰이고, 텍스처는 `device.textureAtlas`의 `TEXTURE_2D_ARRAY` region입니다. 스프라이트·baked 벡터 부위(GPU pose는 같은 정점 셰이더에서 평가)·analytic primitive(원·타원·사각형·선)가 이 스트림에 들어옵니다. 유지되는 배치 경계는 blend 전환, stencil clip 변경, 반투명 group, `MeshRenderer` 직접 메시(morph·opacityChannel·shaderSurfaces·forceColor), YarnSurfaceRenderer입니다.

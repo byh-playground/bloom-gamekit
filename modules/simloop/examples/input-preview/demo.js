@@ -1,5 +1,6 @@
 import { ActionState, createDOMInput } from '../../../../dist/input.js';
-import { Renderer2D } from '../../../../dist/rendering.js';
+import { WebGLDevice, VectorContext } from '../../../../dist/rendering.js';
+import { CameraViewport } from '../../../../dist/camera.js';
 import { PresentationRuntime, RenderObject } from '../../../../dist/interpolation.js';
 import { LocalInputPreview, createLoop } from '../../../../dist/simloop.js';
 import { createSession, profiles } from '../../../../dist/rollback.js';
@@ -28,8 +29,10 @@ class Unit extends RenderObject {
         color: this.STEP,
     };
     render(r, m) {
-        r.rect(m.x, m.y, 24, 28, m.flash ? [1, 0.65, 0.2, 1] : m.color);
-        r.rect(m.x + m.direction * 13, m.y - 19, 11, 3, [1, 1, 1, 0.85]);
+        r.fillStyle = m.flash ? [1, 0.65, 0.2, 1] : m.color;
+        r.fillRect(m.x - 12, m.y - 14, 24, 28);
+        r.fillStyle = [1, 1, 1, 0.85];
+        r.fillRect(m.x + m.direction * 13 - 5.5, m.y - 20.5, 11, 3);
     }
 }
 function stepUnit(unit, input, commands = []) {
@@ -53,11 +56,19 @@ function stepUnit(unit, input, commands = []) {
     }
 }
 export function startInputPreviewDemo(canvas, status) {
-    const RENDERER = new Renderer2D(canvas, {
-        antialias: false,
-        preserveDrawingBuffer: true,
-    });
-    RENDERER.resize(canvas.clientWidth, canvas.clientHeight, devicePixelRatio || 1);
+    const DEVICE = new WebGLDevice(canvas, {
+            antialias: false,
+            preserveDrawingBuffer: true,
+        }),
+        RENDERER = new VectorContext(DEVICE),
+        // World units are the canvas attribute pixels, centered in the CSS box like the authored layout.
+        CAMERA = new CameraViewport({
+            width: canvas.clientWidth,
+            height: canvas.clientHeight,
+            dpr: devicePixelRatio || 1,
+            x: canvas.width / 2,
+            y: canvas.height / 2,
+        }).resizeCanvas(canvas);
     const ACTIONS = new ActionState(),
         INPUT = createDOMInput({
             target: canvas,
@@ -288,8 +299,10 @@ export function startInputPreviewDemo(canvas, status) {
             render() {
                 frames++;
                 const NOW = performance.now();
-                RENDERER.beginFrame([0.035, 0.07, 0.09, 1]);
-                RENDERER.rect(360, 115, 650, 2, [0.25, 0.36, 0.4, 1]);
+                RENDERER.beginFrame({ clearColor: [0.035, 0.07, 0.09, 1] });
+                CAMERA.applyToContext(RENDERER);
+                RENDERER.fillStyle = [0.25, 0.36, 0.4, 1];
+                RENDERER.fillRect(35, 114, 650, 2);
                 presentation.render(unit, RENDERER, NOW);
                 presentation.render(remote, RENDERER, NOW);
                 RENDERER.endFrame();
@@ -381,6 +394,7 @@ export function startInputPreviewDemo(canvas, status) {
             session.close();
             INPUT.dispose();
             RENDERER.dispose();
+            DEVICE.dispose();
         },
     };
 }

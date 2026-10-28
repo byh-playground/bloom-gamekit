@@ -1,6 +1,6 @@
 import { LocalInputPreview } from '../../../dist/simloop.js';
 import { PresentationRuntime, RenderObject } from '../../../dist/interpolation.js';
-import { Renderer2D } from '../../../dist/rendering.js';
+import { WebGLDevice, VectorContext } from '../../../dist/rendering.js';
 import { createRoomSession, profiles } from '../../../dist/rollback.js';
 import { createValueCodec } from '../../../dist/deterministic.js';
 import { createLoop, createDeadlineScheduler } from '../../../dist/simloop.js';
@@ -579,11 +579,11 @@ window.setupLatency = async (id, players, rates) => {
     CANVAS.style.width = '640px';
     CANVAS.style.height = '96px';
     document.body.append(CANVAS);
-    const RENDERER = new Renderer2D(CANVAS, {
-        preserveDrawingBuffer: true,
-        antialias: false,
-    });
-    RENDERER.resize(640, 96, 1);
+    const DEVICE = new WebGLDevice(CANVAS, {
+            preserveDrawingBuffer: true,
+            antialias: false,
+        }),
+        RENDERER = new VectorContext(DEVICE);
     class Unit extends RenderObject {
         static renderSchema = {
             x: this.POSITION_X,
@@ -595,7 +595,8 @@ window.setupLatency = async (id, players, rates) => {
             this.y = 40;
         }
         render(r, m) {
-            r.rect(m.x, m.y, 12, 16, [1, 0.2, 0.1, 1]);
+            r.fillStyle = [1, 0.2, 0.1, 1];
+            r.fillRect(m.x - 6, m.y - 8, 12, 16);
         }
     }
     const UNIT = new Unit(40),
@@ -751,7 +752,7 @@ window.setupLatency = async (id, players, rates) => {
                 COUNTERS.maxRafGapMs = Math.max(COUNTERS.maxRafGapMs, NOW - COUNTERS.lastRender);
             }
             COUNTERS.lastRender = NOW;
-            RENDERER.beginFrame([0, 0, 0, 1]);
+            RENDERER.beginFrame({ clearColor: [0, 0, 0, 1] });
             if (rates.remote) {
                 for (const MARKER of MARKERS) {
                     PRESENTATION.render(MARKER.source, RENDERER, NOW);
@@ -767,13 +768,13 @@ window.setupLatency = async (id, players, rates) => {
                         continue;
                     }
                     const PIXELS = new Uint8Array(64 * 4);
-                    RENDERER.gl.readPixels(
+                    DEVICE.gl.readPixels(
                         MARKER.baseX,
                         96 - MARKER.source.y - 8,
                         64,
                         1,
-                        RENDERER.gl.RGBA,
-                        RENDERER.gl.UNSIGNED_BYTE,
+                        DEVICE.gl.RGBA,
+                        DEVICE.gl.UNSIGNED_BYTE,
                         PIXELS,
                     );
                     const PRIOR = MARKER_ROWS.get(MARKER.marker);
@@ -788,7 +789,7 @@ window.setupLatency = async (id, players, rates) => {
             }
             shown = PRESENTATION.modelFor(UNIT, NOW).x;
             const NEXT = new Uint8Array(row.length);
-            RENDERER.gl.readPixels(0, 48, 640, 1, RENDERER.gl.RGBA, RENDERER.gl.UNSIGNED_BYTE, NEXT);
+            DEVICE.gl.readPixels(0, 48, 640, 1, DEVICE.gl.RGBA, DEVICE.gl.UNSIGNED_BYTE, NEXT);
             const TRACE = TRACES.get(observation);
             if (TRACE) {
                 if (TRACE.screen === undefined && NEXT.some((value, i) => value !== TRACE.priorPixels[i])) {
@@ -1029,6 +1030,7 @@ window.setupLatency = async (id, players, rates) => {
             }
             PREVIEW.dispose();
             RENDERER.dispose();
+            DEVICE.dispose();
         },
     };
     const BUTTON = document.querySelector('#move');
