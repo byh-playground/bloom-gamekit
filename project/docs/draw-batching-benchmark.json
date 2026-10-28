@@ -3,7 +3,7 @@
     "runs": [
         {
             "label": "before",
-            "sourceHead": "94781c42d0507c6ffe430e7091a8eb8824c42cc5",
+            "sourceHead": "93be68609246a62da99a6b2c5db37c400f410065",
             "sourceDirty": true,
             "actors": 250,
             "species": 5,
@@ -51,6 +51,30 @@
                     "fallbackReasons": {}
                 }
             ],
+            "poseStats": {
+                "gpuDrawInstances": 250,
+                "cpuDrawInstances": 0,
+                "uniformDrawInstances": 0,
+                "gpuPoseRows": 250,
+                "gpuPoseDraws": 250,
+                "cpuPoseUploadBytes": 0,
+                "stateUploadBytes": 9568,
+                "overrideUploadBytes": 0,
+                "fallbackReasons": {},
+                "flushCalls": 250,
+                "flushRecordVisits": 186750,
+                "cleanFlushSkips": 1,
+                "totalDrawInstances": 250,
+                "cpuFallbackRatio": 0,
+                "liveInstances": 250,
+                "sources": 5,
+                "capacity": 256,
+                "gpuUnavailableReason": null,
+                "stateBytes": 139264,
+                "gpuPoseBytes": 196608,
+                "cpuPoseBytes": 0,
+                "programBytes": 65536
+            },
             "flushReasons": {
                 "texture": 249,
                 "explicit": 1
@@ -59,8 +83,8 @@
                 "texture": 249,
                 "explicit": 1
             },
-            "submitMsP50": 101,
-            "submitMsP95": 135.20000000001164,
+            "submitMsP50": 103.79999999998836,
+            "submitMsP95": 139.20000000001164,
             "gpuTextureBytes": 1075780,
             "renderer": "WebKit WebGL"
         }
