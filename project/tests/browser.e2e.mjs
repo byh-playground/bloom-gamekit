@@ -794,6 +794,16 @@ try {
     assert.deepEqual(REPORT.primitiveShapes.overlap, [64, 0, 128, 255]);
     assert.deepEqual(REPORT.primitiveShapes.clippedInside, [255, 255, 255, 255]);
     assert.deepEqual(REPORT.primitiveShapes.clippedOutside, [0, 0, 0, 255]);
+    assert.deepEqual(REPORT.primitiveShapes.painter.ellipseWide, [255, 0, 0, 255]);
+    assert.deepEqual(REPORT.primitiveShapes.painter.ellipseFlat, [0, 0, 0, 255]);
+    assert.deepEqual(REPORT.primitiveShapes.painter.ellipseRotatedTall, [0, 255, 0, 255]);
+    assert.deepEqual(REPORT.primitiveShapes.painter.ellipseRotatedNarrow, [0, 0, 0, 255]);
+    assert.deepEqual(REPORT.primitiveShapes.painter.boxWide, [0, 0, 255, 255]);
+    assert.deepEqual(REPORT.primitiveShapes.painter.boxFlat, [0, 0, 0, 255]);
+    assert.deepEqual(REPORT.primitiveShapes.painter.boxRotatedTall, [255, 255, 0, 255]);
+    assert.deepEqual(REPORT.primitiveShapes.painter.boxRotatedNarrow, [0, 0, 0, 255]);
+    assert.equal(REPORT.primitiveShapes.painter.drawCalls, 1);
+    assert.equal(REPORT.primitiveShapes.painter.glError, 0);
     assert.equal(REPORT.primitiveShapes.pathTessellations, 0);
     assert.equal(REPORT.primitiveShapes.pathStrokeBuilds, 0);
     assert.equal(REPORT.primitiveShapes.arcPointBuilds, 0);

@@ -1,3 +1,12 @@
+## v0.24.0 (2026-10-28)
+
+`PrimitivePainter`가 `Renderer2D`의 도형 호출을 이어받습니다. v0.23.0 안내의 "path로 옮깁니다"를 대체합니다. `line` 한 번이 `beginPath`·`moveTo`·`lineTo`·`lineWidth`·`strokeStyle`·`stroke` 6줄이 되는 이관은 코드량만 늘기 때문입니다.
+
+- `ellipse(x, y, radiusX, radiusY, paint, segments = 24, rotation = 0)`와 `box(centerX, centerY, width, height, paint, angle = 0)`를 추가했습니다. 둘 다 기존 `circle`·`line`처럼 fan 삼각형을 스트림에 바로 제출합니다.
+- `box`는 **중심 기준**입니다. Canvas의 `fillRect`(왼쪽 위 기준)와 다르고, 회전 사각형이 자연스럽게 표현돼 `rect` 대신 다른 이름을 썼습니다.
+- 이관 대응: `renderer.line`→`painter.line`, `renderer.triangle`→`painter.tri`, `renderer.ellipse`→`painter.ellipse`, `renderer.rect`→`painter.box`(`angle` 인자 동일).
+- 고정 브라우저 시나리오에 두 도형의 픽셀(반지름 안/밖, 90도 회전)과 draw call 1개를 추가했습니다.
+
 ## v0.23.0 (2026-10-28)
 
 **Breaking.** `Renderer2D`를 삭제합니다(호환 코드 없음). 자체 셰이더·버퍼·텍스처로 그려 VectorContext 스트림과 draw를 합칠 수 없었고, 같은 일을 하는 공개 API가 둘이었습니다. 게임의 렌더 진입점은 `VectorContext` 하나입니다.
