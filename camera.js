@@ -149,7 +149,7 @@ var CameraViewport = class {
       rotation: 0
     };
     this._point = {};
-    this._render = {};
+    this._matrix = new Array(6);
     this.shakeX = 0;
     this.shakeY = 0;
     this.setViewport({
@@ -179,6 +179,8 @@ var CameraViewport = class {
     this.dpr = dpr;
     this.left = left;
     this.top = top;
+    this.backingWidth = Math.max(1, Math.round(width * dpr));
+    this.backingHeight = Math.max(1, Math.round(height * dpr));
     return this;
   }
   setCamera({ x = this.camera.x, y = this.camera.y, zoom = this.camera.zoom, rotation = this.camera.rotation } = {}) {
@@ -216,19 +218,33 @@ var CameraViewport = class {
       y: this.camera.y + (y - this.camera.y) * A
     });
   }
-  rendererCameraInto(out) {
-    const C = this.camera, DX = this.shakeX / C.zoom, DY = this.shakeY / C.zoom;
-    out.x = C.x - this._cos * DX + this._sin * DY;
-    out.y = C.y - this._sin * DX - this._cos * DY;
-    out.zoom = C.zoom;
-    out.rotation = C.rotation;
+  /**
+   * World plane to canvas backing pixels as six affine floats in Canvas `setTransform(a, b, c, d, e, f)` order,
+   * with zoom, rotation, shake and the backing scale folded in.
+   */
+  transformInto(out) {
+    const C = this.camera, SX = this.backingWidth / this.width, SY = this.backingHeight / this.height, A = SX * this._cos * C.zoom, CC = SX * this._sin * C.zoom, B = -SY * this._sin * C.zoom, D = SY * this._cos * C.zoom;
+    out[0] = A;
+    out[1] = B;
+    out[2] = CC;
+    out[3] = D;
+    out[4] = SX * (this.width / 2 + this.shakeX) - A * C.x - CC * C.y;
+    out[5] = SY * (this.height / 2 + this.shakeY) - B * C.x - D * C.y;
     return out;
   }
-  applyToRenderer(renderer, resize = false) {
-    if (resize) {
-      renderer.resize(this.width, this.height, this.dpr);
+  /** Sets the context transform for this frame (`VectorContext` or Canvas2D). */
+  applyToContext(context) {
+    context.setTransform(...this.transformInto(this._matrix));
+    return this;
+  }
+  /** Sizes the canvas backing store to the viewport times dpr; CSS size stays with the page. */
+  resizeCanvas(canvas) {
+    if (canvas.width !== this.backingWidth) {
+      canvas.width = this.backingWidth;
     }
-    renderer.setCamera(this.rendererCameraInto(this._render));
+    if (canvas.height !== this.backingHeight) {
+      canvas.height = this.backingHeight;
+    }
     return this;
   }
   planeToScreenInto(x, y, out) {
@@ -262,8 +278,8 @@ var CameraViewport = class {
     return out;
   }
   screenToBackingInto(x, y, out) {
-    out.x = FINITE(x, "x") * Math.max(1, Math.round(this.width * this.dpr)) / this.width;
-    out.y = FINITE(y, "y") * Math.max(1, Math.round(this.height * this.dpr)) / this.height;
+    out.x = FINITE(x, "x") * this.backingWidth / this.width;
+    out.y = FINITE(y, "y") * this.backingHeight / this.height;
     return out;
   }
   /** Exact flat inverse, or caller terrain intersection hook (returns boolean). No hidden iterative solver. */
