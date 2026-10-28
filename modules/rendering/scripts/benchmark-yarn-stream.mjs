@@ -76,6 +76,24 @@ const PULL_OPTIONS = {
     warmup: 20,
     doVerify: false,
 };
+// The 'sketch' mode measures the sketch material with every structure, then what adding the sketch code to the
+// combined program costs yarn and plain sprites (U_BOTH/UP_BOTH against U_SDF/UP_SDF).
+const SKETCH_SCENES = [
+    { n: 1024, layout: 'layered', yarnRadius: 32, material: 'sketch' },
+    { n: 1024, layout: 'layered', yarnRadius: 64, material: 'sketch' },
+    { n: 256, layout: 'perChar', yarnRadius: 64, material: 'sketch' },
+    { n: 1024, layout: 'fine', yarnRadius: 32, material: 'sketch' },
+    { n: 4096, layout: 'sprinkle', yarnCount: 16, material: 'sketch' },
+    { n: 4096, layout: 'sprinkle', yarnCount: 256, material: 'sketch' },
+];
+const SKETCH_OPTIONS = { configs: ['current', 'S', 'U_BOTH', 'UP_BOTH'], frames: 60, warmup: 20, doVerify: false };
+const TAX_SCENES = [
+    { n: 4096, layout: 'spriteOnly' },
+    { n: 4096, layout: 'sprinkle', yarnCount: 16 },
+    { n: 1024, layout: 'layered', yarnRadius: 64 },
+    { n: 256, layout: 'perChar', yarnRadius: 64 },
+];
+const TAX_OPTIONS = { configs: ['U_SDF', 'UP_SDF', 'U_BOTH', 'UP_BOTH'], frames: 60, warmup: 20, doVerify: false };
 const SCENES =
     process.argv[4] === 'sdf' || process.argv[4] === 'pull'
         ? SDF_SCENES
@@ -157,10 +175,19 @@ try {
         SERVER.close();
         process.exit(0);
     }
-    const RESULT = await PAGE.evaluate((options) => window.yarnStreamBenchmark.run(options), {
-        scenes: SCENES,
-        ...(process.argv[4] === 'sdf' ? SDF_OPTIONS : process.argv[4] === 'pull' ? PULL_OPTIONS : {}),
-    });
+    const RUN = (options) => PAGE.evaluate((payload) => window.yarnStreamBenchmark.run(payload), options);
+    const RUN_SKETCH = async () => {
+        const FIRST = await RUN({ scenes: SKETCH_SCENES, ...SKETCH_OPTIONS });
+        const SECOND = await RUN({ scenes: TAX_SCENES, ...TAX_OPTIONS });
+        return { ...FIRST, scenes: [...FIRST.scenes, ...SECOND.scenes] };
+    };
+    const RESULT =
+        process.argv[4] === 'sketch'
+            ? await RUN_SKETCH()
+            : await RUN({
+                  scenes: SCENES,
+                  ...(process.argv[4] === 'sdf' ? SDF_OPTIONS : process.argv[4] === 'pull' ? PULL_OPTIONS : {}),
+              });
     if (ERRORS.length) {
         throw new Error(ERRORS.join('\n'));
     }
@@ -188,7 +215,7 @@ try {
     for (const SCENE of RESULT.scenes) {
         const D = SCENE.definition;
         console.log(
-            `\n[${D.layout} n=${D.n}${D.yarnRadius ? ' r=' + D.yarnRadius : ''}${D.outlinePoints ? ' pts=' + D.outlinePoints : ''}] runs=${SCENE.runs} yarn=${SCENE.yarnSurfaces} verts/surface=${SCENE.vertsPerSurface}` +
+            `\n[${D.material ?? 'yarn'} ${D.layout} n=${D.n}${D.yarnRadius ? ' r=' + D.yarnRadius : ''}${D.outlinePoints ? ' pts=' + D.outlinePoints : ''}] runs=${SCENE.runs} yarn=${SCENE.yarnSurfaces} verts/surface=${SCENE.vertsPerSurface}` +
                 (SCENE.verify ? ` verify=${JSON.stringify(SCENE.verify)}` : ''),
         );
         for (const [CONFIG_NAME, R] of Object.entries(SCENE.results)) {

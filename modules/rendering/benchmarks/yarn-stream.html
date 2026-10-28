@@ -55,6 +55,8 @@
 
     const VERTEX_FLOATS = 20;
     const MODE_YARN = 6;
+    const MODE_SKETCH = 7;
+    const SKETCH_TIME_MS = 1234;
     const SURFACE_TEXELS = 8;
     const STYLE_BASE = {
         kind: 'yarn',
@@ -93,7 +95,35 @@
             thickness,
         };
     };
-    const SURFACE_INPUT = (points, radius, thickness) => {
+    // Shipped sketch-fox style; lengths scale with the surface radius like the yarn stitch sizes.
+    const SKETCH_STYLE_BASE = {
+        kind: 'sketch',
+        seed: 73,
+        periodMs: 135,
+        amplitude: 1.3,
+        frequency: 4,
+        echoX: 1.1,
+        echoY: -0.8,
+        echoWidth: 1.4,
+        echoOpacity: 0.24,
+        hatchAngle: 0.72,
+        hatchSpacing: 7,
+        hatchWidth: 0.8,
+        hatchOpacity: 0.36,
+    };
+    const SKETCH_STYLE_FOR = (radius) => {
+        const K = radius / 60;
+        return {
+            ...SKETCH_STYLE_BASE,
+            amplitude: SKETCH_STYLE_BASE.amplitude * K,
+            echoX: SKETCH_STYLE_BASE.echoX * K,
+            echoY: SKETCH_STYLE_BASE.echoY * K,
+            echoWidth: SKETCH_STYLE_BASE.echoWidth * K,
+            hatchSpacing: SKETCH_STYLE_BASE.hatchSpacing * K,
+            hatchWidth: SKETCH_STYLE_BASE.hatchWidth * K,
+        };
+    };
+    const SURFACE_INPUT = (points, radius, thickness, material = 'yarn') => {
         const OUTLINE = [];
         for (let i = 0; i < points; i++) {
             const A = (i / points) * Math.PI * 2;
@@ -116,7 +146,7 @@
             fillVertices: Float32Array.from(FILL),
             outline: Float32Array.from(OUTLINE),
             edgeColors: Float32Array.from(COLORS),
-            style: STYLE_FOR(radius, thickness),
+            style: material === 'sketch' ? SKETCH_STYLE_FOR(radius) : STYLE_FOR(radius, thickness),
         };
     };
 
@@ -126,6 +156,7 @@
     new VECTOR_RENDERER(PROBE_DEVICE);
     const PROBE_YARN = new YARN_SURFACE_RENDERER(PROBE_DEVICE);
     PROBE_YARN.createSurface(SURFACE_INPUT(24, 32));
+    PROBE_YARN.createSurface(SURFACE_INPUT(24, 32, undefined, 'sketch'));
     const FIND = (test, label) => {
         const SOURCE = CAPTURED.find(test);
         if (!SOURCE) {
@@ -146,6 +177,7 @@
         'yarn vertex shader',
     );
     const YARN_FS = FIND((s) => s.includes('shadeYarnFill'), 'yarn fragment shader');
+    const SKETCH_FS = FIND((s) => s.includes('shadeSketchFill'), 'sketch fragment shader');
     const BODY_START = YARN_FS.indexOf('float hashCell(');
     if (BODY_START < 0) {
         throw new Error('Yarn fragment body marker not found');
@@ -153,10 +185,20 @@
     const YARN_BODY = YARN_FS.slice(BODY_START)
         .replace(/clipWorld\(\);/g, '')
         .replace(/void\s+main\s*\(\s*\)/, 'void yarnMain()');
+    // Sketch shares the helper block with yarn; only its two shading functions and main differ.
+    const SKETCH_START = SKETCH_FS.indexOf('vec3 shadeSketchFill(');
+    const SKETCH_HELPERS = SKETCH_FS.indexOf('float hashCell(');
+    if (SKETCH_START < 0 || SKETCH_HELPERS < 0) {
+        throw new Error('Sketch fragment markers not found');
+    }
+    const SKETCH_RENAME = (text) =>
+        text.replace(/clipWorld\(\);/g, '').replace(/void\s+main\s*\(\s*\)/, 'void sketchMain()');
+    const SKETCH_FUNCTIONS = SKETCH_RENAME(SKETCH_FS.slice(SKETCH_START));
+    const SKETCH_BODY_ONLY = SKETCH_RENAME(SKETCH_FS.slice(SKETCH_HELPERS));
     const SURFACE_GLOBALS = `
 #define v_position v_uv
 #define v_surface v_radial.xyz
-vec4 u_bounds; vec4 u_effect0; vec4 u_effect1; vec4 u_effect2; vec4 u_effect3; vec4 u_tint; float u_flash; float u_forceColor;
+vec4 u_bounds; vec4 u_effect0; vec4 u_effect1; vec4 u_effect2; vec4 u_effect3; vec4 u_tint; float u_flash; float u_forceColor; float u_timeMs;
 uniform highp sampler2D u_surfaceData;
 void loadSurface(int id) {
   u_bounds = texelFetch(u_surfaceData, ivec2(0, id), 0);
@@ -168,6 +210,7 @@ void loadSurface(int id) {
   vec4 misc = texelFetch(u_surfaceData, ivec2(6, id), 0);
   u_flash = misc.x;
   u_forceColor = misc.y;
+  u_timeMs = misc.z;
 }
 `;
     const STREAM_VARYINGS =
@@ -195,6 +238,37 @@ void main() {
 void main() {
   loadSurface(int(v_paint.x + 0.5));
   yarnMain();
+}
+`;
+    // Material dispatch: one stream program, the surface kind only selects the shading function.
+    const UBER_FS_BOTH =
+        STREAM_FS.replace(/void\s+main\s*\(\s*\)/, 'void streamMain()') +
+        SURFACE_GLOBALS +
+        YARN_BODY +
+        SKETCH_FUNCTIONS +
+        `
+void main() {
+  if (v_paint.z > 5.5) {
+    loadSurface(int(v_paint.x + 0.5));
+    if (v_paint.z > 6.5) {
+      sketchMain();
+    } else {
+      yarnMain();
+    }
+  } else {
+    streamMain();
+  }
+}
+`;
+    const SKETCH_STREAM_FS =
+        '#version 300 es\nprecision mediump float;\nout vec4 _deviceFragColor;\n' +
+        STREAM_VARYINGS +
+        SURFACE_GLOBALS +
+        SKETCH_BODY_ONLY +
+        `
+void main() {
+  loadSurface(int(v_paint.x + 0.5));
+  sketchMain();
 }
 `;
 
@@ -434,7 +508,7 @@ void main() {
     local = g0.xy;
     v_uv = g0.xy;
     v_color = vec4(g0.zw, g1.xy);
-    v_paint = vec4(t.z, 0.0, 6.0, 0.0);
+    v_paint = vec4(t.z, 0.0, texelFetch(u_items, ivec2(2, item), 0).x, 0.0);
     v_radial = vec4(g1.zw, g2.x, 0.0);
   }
   v_rect = vec4(0.0);
@@ -446,6 +520,11 @@ void main() {
     const PULL_ATTRIBUTES = ['a_item', 'a_local'];
     const PULL_PROGRAM = MAKE_PROGRAM(PULL_VS, UBER_FS, PULL_ATTRIBUTES);
     const PULL_PROGRAM_SDF = MAKE_PROGRAM(PULL_VS, PATCH_STITCH_FIELD(UBER_FS), PULL_ATTRIBUTES);
+    const CURRENT_SKETCH_PROGRAM = MAKE_PROGRAM(YARN_VS, SKETCH_FS, ['a_position', 'a_color', 'a_surface']);
+    const SKETCH_STREAM_PROGRAM = MAKE_PROGRAM(STREAM_VS, SKETCH_STREAM_FS, STREAM_ATTRIBUTES);
+    const UBER_PROGRAM_BOTH = MAKE_PROGRAM(STREAM_VS, PATCH_STITCH_FIELD(UBER_FS_BOTH), STREAM_ATTRIBUTES);
+    const PULL_PROGRAM_BOTH = MAKE_PROGRAM(PULL_VS, PATCH_STITCH_FIELD(UBER_FS_BOTH), PULL_ATTRIBUTES);
+    STREAM_PROGRAMS.sketch = SKETCH_STREAM_PROGRAM;
     const PULL_VERTICES_PER_ROW = 256;
     const PULL_GEOMETRY_ROWS = 64;
     const PULL_MAX_ITEMS = 8192;
@@ -460,7 +539,7 @@ void main() {
     const ITEM_TEXTURE = GL.createTexture();
     for (const [TEXTURE, WIDTH_TEXELS, HEIGHT_TEXELS, UNIT] of [
         [GEOMETRY_TEXTURE.texture, PULL_VERTICES_PER_ROW * 3, PULL_GEOMETRY_ROWS, GL.TEXTURE4],
-        [ITEM_TEXTURE, 2, PULL_MAX_ITEMS, GL.TEXTURE3],
+        [ITEM_TEXTURE, 3, PULL_MAX_ITEMS, GL.TEXTURE3],
     ]) {
         GL.activeTexture(UNIT);
         GL.bindTexture(GL.TEXTURE_2D, TEXTURE);
@@ -616,12 +695,12 @@ void main() {
         return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
     const GEOMETRY_CACHE = new Map();
-    const GEOMETRY_FOR = (points, radius, thickness) => {
-        const KEY = points + ':' + radius + ':' + thickness;
+    const GEOMETRY_FOR = (points, radius, thickness, material = 'yarn') => {
+        const KEY = points + ':' + radius + ':' + thickness + ':' + material;
         if (GEOMETRY_CACHE.has(KEY)) {
             return GEOMETRY_CACHE.get(KEY);
         }
-        const GEOMETRY = BUILD_YARN_SURFACE_GEOMETRY(SURFACE_INPUT(points, radius, thickness));
+        const GEOMETRY = BUILD_YARN_SURFACE_GEOMETRY(SURFACE_INPUT(points, radius, thickness, material));
         const VERTICES = GEOMETRY.vertices;
         const BUFFER = GL.createBuffer();
         GL.bindBuffer(GL.ARRAY_BUFFER, BUFFER);
@@ -637,7 +716,7 @@ void main() {
             GL.vertexAttribPointer(index, size, GL.FLOAT, false, 36, offset);
         });
         GL.bindVertexArray(null);
-        const STYLE = SURFACE_INPUT(points, radius, thickness).style;
+        const STYLE = SURFACE_INPUT(points, radius, thickness, material).style;
         const RESULT = {
             geometry: GEOMETRY,
             gBase: REGISTER_GEOMETRY(VERTICES, GEOMETRY),
@@ -645,6 +724,8 @@ void main() {
             vao: VAO,
             style: STYLE,
             totalVertices: GEOMETRY.fillCount + GEOMETRY.edgeCount,
+            material,
+            mode: material === 'sketch' ? MODE_SKETCH : MODE_YARN,
         };
         GEOMETRY_CACHE.set(KEY, RESULT);
         return RESULT;
@@ -653,6 +734,18 @@ void main() {
     const EFFECT_UNIFORMS = (surface, tint, flash) => {
         const STYLE = surface.style,
             GEOMETRY = surface.geometry;
+        if (surface.material === 'sketch') {
+            return {
+                bounds: GEOMETRY.bounds,
+                effect0: [STYLE.seed, STYLE.periodMs, STYLE.frequency, 0],
+                effect1: [STYLE.amplitude, STYLE.echoX, STYLE.echoWidth, STYLE.echoOpacity],
+                effect2: [STYLE.hatchWidth, STYLE.hatchOpacity, STYLE.hatchAngle, STYLE.hatchSpacing],
+                effect3: [0, STYLE.echoY, 0, 0],
+                tint: [tint, tint, tint, 1],
+                flash,
+                timeMs: SKETCH_TIME_MS % STYLE.periodMs,
+            };
+        }
         return {
             bounds: GEOMETRY.bounds,
             effect0: [
@@ -680,11 +773,12 @@ void main() {
         outlinePoints = 24,
         yarnRadius = 32,
         thickness = STYLE_BASE.thickness,
+        material = 'yarn',
         spriteSize = 56,
         seed = 1,
     }) => {
         const RANDOM = MULBERRY(seed);
-        const SURFACE = GEOMETRY_FOR(outlinePoints, yarnRadius, thickness);
+        const SURFACE = GEOMETRY_FOR(outlinePoints, yarnRadius, thickness, material);
         const CHARS = [];
         for (let i = 0; i < n; i++) {
             CHARS.push({
@@ -815,7 +909,7 @@ void main() {
                 out[at + 7] = SRC[P + 5];
                 out[at + 8] = row;
                 out[at + 9] = 0;
-                out[at + 10] = MODE_YARN;
+                out[at + 10] = SURFACE.mode;
                 out[at + 11] = 0;
                 out[at + 12] = SRC[P + 6];
                 out[at + 13] = SRC[P + 7];
@@ -843,6 +937,7 @@ void main() {
         data.set(E.tint, AT + 20);
         data[AT + 24] = E.flash;
         data[AT + 25] = 0;
+        data[AT + 26] = E.timeMs ?? 0;
     };
 
     // --- Configurations ----------------------------------------------------------------------------------------
@@ -1002,24 +1097,30 @@ void main() {
                     if (!VARIANT.curved) {
                         E.effect3 = [E.effect3[0], E.effect3[1], 0, E.effect3[3]];
                     }
-                    const P = VARIANT.program ?? CURRENT_YARN_PROGRAM;
+                    const P =
+                        scene.surface.material === 'sketch'
+                            ? CURRENT_SKETCH_PROGRAM
+                            : (VARIANT.program ?? CURRENT_YARN_PROGRAM);
                     USE_PROGRAM(P);
                     GL.bindVertexArray(scene.surface.vao);
                     SET_PROJECTION(P);
                     GL.uniformMatrix3fv(
-                        P.uniforms.get('u_transform').location,
+                        P.uniforms.get('u_transform')?.location,
                         false,
                         Float32Array.of(COS, SIN, 0, -SIN, COS, 0, C.x + COS * OX, C.y + SIN * OX, 1),
                     );
-                    GL.uniform1f(P.uniforms.get('u_depth').location, 0);
-                    GL.uniform4fv(P.uniforms.get('u_bounds').location, E.bounds);
-                    GL.uniform4fv(P.uniforms.get('u_effect0').location, E.effect0);
-                    GL.uniform4fv(P.uniforms.get('u_effect1').location, E.effect1);
-                    GL.uniform4fv(P.uniforms.get('u_effect2').location, E.effect2);
-                    GL.uniform4fv(P.uniforms.get('u_effect3').location, E.effect3);
-                    GL.uniform4fv(P.uniforms.get('u_tint').location, E.tint);
-                    GL.uniform1f(P.uniforms.get('u_flash').location, E.flash);
-                    GL.uniform1f(P.uniforms.get('u_forceColor').location, 0);
+                    GL.uniform1f(P.uniforms.get('u_depth')?.location, 0);
+                    GL.uniform4fv(P.uniforms.get('u_bounds')?.location, E.bounds);
+                    GL.uniform4fv(P.uniforms.get('u_effect0')?.location, E.effect0);
+                    GL.uniform4fv(P.uniforms.get('u_effect1')?.location, E.effect1);
+                    GL.uniform4fv(P.uniforms.get('u_effect2')?.location, E.effect2);
+                    GL.uniform4fv(P.uniforms.get('u_effect3')?.location, E.effect3);
+                    GL.uniform4fv(P.uniforms.get('u_tint')?.location, E.tint);
+                    GL.uniform1f(P.uniforms.get('u_flash')?.location, E.flash);
+                    GL.uniform1f(P.uniforms.get('u_forceColor')?.location, 0);
+                    if (E.timeMs !== undefined) {
+                        GL.uniform1f(P.uniforms.get('u_timeMs')?.location, E.timeMs);
+                    }
                     const PLANES = P.uniforms.get('u_planes');
                     if (PLANES) {
                         GL.uniform3fv(PLANES.location, new Float32Array(PLANES.size * 3));
@@ -1050,9 +1151,11 @@ void main() {
                     SET_PROJECTION(SPRITE_PROGRAM);
                     BIND_SPRITE_TEXTURE(SPRITE_PROGRAM);
                 } else {
-                    USE_PROGRAM(STREAM_PROGRAMS.yarn);
-                    SET_PROJECTION(STREAM_PROGRAMS.yarn);
-                    BIND_SURFACE_DATA(STREAM_PROGRAMS.yarn);
+                    const SURFACE_PROGRAM =
+                        scene.surface.material === 'sketch' ? STREAM_PROGRAMS.sketch : STREAM_PROGRAMS.yarn;
+                    USE_PROGRAM(SURFACE_PROGRAM);
+                    SET_PROJECTION(SURFACE_PROGRAM);
+                    BIND_SURFACE_DATA(SURFACE_PROGRAM);
                 }
                 DRAW_STREAM(RUN.first, RUN.count);
             }
@@ -1080,7 +1183,7 @@ void main() {
             const SPRITES = scene.ops.filter((op) => op.kind === 'S').length;
             const VERTICES = SPRITES * 6 + scene.yarnCount * TOTAL;
             state = {
-                items: new Float32Array(scene.ops.length * 8),
+                items: new Float32Array(scene.ops.length * 12),
                 itemRefs: new Uint16Array(VERTICES),
                 localRefs: new Uint16Array(VERTICES),
                 localTemplate: Uint16Array.from({ length: TOTAL }, (_, i) => i),
@@ -1103,7 +1206,7 @@ void main() {
             const OX = op.part ? 20 : 0;
             const COS0 = Math.cos(C.rotation),
                 SIN0 = Math.sin(C.rotation);
-            const I = i * 8;
+            const I = i * 12;
             if (op.kind === 'S') {
                 const HALF = scene.spriteSize * 0.5 * C.scale;
                 ITEMS[I] = COS0 * HALF;
@@ -1114,6 +1217,7 @@ void main() {
                 ITEMS[I + 5] = C.y + SIN0 * OX;
                 ITEMS[I + 6] = C.layer;
                 ITEMS[I + 7] = -1;
+                ITEMS[I + 8] = 0;
                 for (let k = 0; k < 6; k++) {
                     ITEM_REFS[at + k] = i;
                     LOCAL_REFS[at + k] = k;
@@ -1130,6 +1234,7 @@ void main() {
                 ITEMS[I + 5] = C.y + SIN * OX;
                 ITEMS[I + 6] = row;
                 ITEMS[I + 7] = scene.surface.gBase;
+                ITEMS[I + 8] = scene.surface.mode;
                 ITEM_REFS.fill(i, at, at + TOTAL);
                 LOCAL_REFS.set(STATE.localTemplate, at);
                 at += TOTAL;
@@ -1152,8 +1257,8 @@ void main() {
         GL.bufferSubData(GL.ARRAY_BUFFER, 0, LOCAL_REFS, 0, at);
         GL.activeTexture(GL.TEXTURE3);
         GL.bindTexture(GL.TEXTURE_2D, ITEM_TEXTURE);
-        GL.texSubImage2D(GL.TEXTURE_2D, 0, 0, 0, 2, scene.ops.length, GL.RGBA, GL.FLOAT, ITEMS);
-        STATS.uploadBytes += BYTES * 2 + scene.ops.length * 32;
+        GL.texSubImage2D(GL.TEXTURE_2D, 0, 0, 0, 3, scene.ops.length, GL.RGBA, GL.FLOAT, ITEMS);
+        STATS.uploadBytes += BYTES * 2 + scene.ops.length * 48;
         UPLOAD_SURFACE_DATA({ rows: row, state: STATE });
         USE_PROGRAM(program);
         SET_PROJECTION(program);
@@ -1169,6 +1274,16 @@ void main() {
     };
     CONFIGS.UP = (scene) => PULL_FRAME(scene, PULL_PROGRAM);
     CONFIGS.UP_SDF = (scene) => PULL_FRAME(scene, PULL_PROGRAM_SDF);
+    // The combined program carries yarn (distance field) and sketch; BOTH draws either material.
+    CONFIGS.U_BOTH = (scene) => {
+        STREAM_PROGRAMS.uber = UBER_PROGRAM_BOTH;
+        try {
+            CONFIGS.U(scene);
+        } finally {
+            STREAM_PROGRAMS.uber = UBER_PROGRAM;
+        }
+    };
+    CONFIGS.UP_BOTH = (scene) => PULL_FRAME(scene, PULL_PROGRAM_BOTH);
     // Each variant swaps in the distance-field yarn programs for the duration of one frame.
     const WITH_STITCH_FIELD = (config) => (scene) => {
         STREAM_PROGRAMS.yarn = YARN_STREAM_PROGRAM_SDF;

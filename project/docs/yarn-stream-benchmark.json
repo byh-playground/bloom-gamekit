@@ -3798,6 +3798,1084 @@
                     }
                 }
             ]
+        },
+        {
+            "label": "sketch-high",
+            "gpuPreference": "high",
+            "sourceHead": "42aaede50192b785354c767010c40c575d3340fd",
+            "sourceDirty": true,
+            "renderer": "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 Ti (0x00002191) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+            "timerQuery": true,
+            "width": 1280,
+            "height": 720,
+            "frames": 60,
+            "repeats": 3,
+            "scenes": [
+                {
+                    "definition": {
+                        "n": 1024,
+                        "layout": "layered",
+                        "yarnRadius": 32,
+                        "material": "sketch"
+                    },
+                    "runs": 2,
+                    "yarnSurfaces": 1024,
+                    "vertsPerSurface": 216,
+                    "results": {
+                        "current": {
+                            "cpuMs": 5.5999999940395355,
+                            "gpuMs": 1.9456,
+                            "gpuStatus": "measured",
+                            "wallMs": 5.584999999900659,
+                            "draws": 2049,
+                            "programSwitches": 2,
+                            "uploadKB": 480,
+                            "vertices": 227328
+                        },
+                        "S": {
+                            "cpuMs": 13.200000017881393,
+                            "gpuMs": 2.377632,
+                            "gpuStatus": "measured",
+                            "wallMs": 13.493333333233993,
+                            "draws": 2,
+                            "programSwitches": 2,
+                            "uploadKB": 17888,
+                            "vertices": 227328
+                        },
+                        "U_BOTH": {
+                            "cpuMs": 13.5,
+                            "gpuMs": 2.53568,
+                            "gpuStatus": "measured",
+                            "wallMs": 13.810000000397364,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 17888,
+                            "vertices": 227328
+                        },
+                        "UP_BOTH": {
+                            "cpuMs": 0.9000000059604645,
+                            "gpuMs": 0.804864,
+                            "gpuStatus": "measured",
+                            "wallMs": 0.9583333333333334,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 1112,
+                            "vertices": 227328
+                        }
+                    }
+                },
+                {
+                    "definition": {
+                        "n": 1024,
+                        "layout": "layered",
+                        "yarnRadius": 64,
+                        "material": "sketch"
+                    },
+                    "runs": 2,
+                    "yarnSurfaces": 1024,
+                    "vertsPerSurface": 216,
+                    "results": {
+                        "current": {
+                            "cpuMs": 5.5,
+                            "gpuMs": 2.154496,
+                            "gpuStatus": "measured",
+                            "wallMs": 5.528333333631356,
+                            "draws": 2049,
+                            "programSwitches": 2,
+                            "uploadKB": 480,
+                            "vertices": 227328
+                        },
+                        "S": {
+                            "cpuMs": 13.300000011920929,
+                            "gpuMs": 2.105344,
+                            "gpuStatus": "measured",
+                            "wallMs": 13.423333333432675,
+                            "draws": 2,
+                            "programSwitches": 2,
+                            "uploadKB": 17888,
+                            "vertices": 227328
+                        },
+                        "U_BOTH": {
+                            "cpuMs": 13.400000005960464,
+                            "gpuMs": 2.879488,
+                            "gpuStatus": "measured",
+                            "wallMs": 13.51333333303531,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 17888,
+                            "vertices": 227328
+                        },
+                        "UP_BOTH": {
+                            "cpuMs": 1,
+                            "gpuMs": 1.922624,
+                            "gpuStatus": "measured",
+                            "wallMs": 0.9933333337306977,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 1112,
+                            "vertices": 227328
+                        }
+                    }
+                },
+                {
+                    "definition": {
+                        "n": 256,
+                        "layout": "perChar",
+                        "yarnRadius": 64,
+                        "material": "sketch"
+                    },
+                    "runs": 512,
+                    "yarnSurfaces": 256,
+                    "vertsPerSurface": 216,
+                    "results": {
+                        "current": {
+                            "cpuMs": 3.9000000059604645,
+                            "gpuMs": 1.937952,
+                            "gpuStatus": "measured",
+                            "wallMs": 4.043333333233992,
+                            "draws": 768,
+                            "programSwitches": 512,
+                            "uploadKB": 120,
+                            "vertices": 56832
+                        },
+                        "S": {
+                            "cpuMs": 4.700000017881393,
+                            "gpuMs": 2.29376,
+                            "gpuStatus": "measured",
+                            "wallMs": 4.961666666467985,
+                            "draws": 512,
+                            "programSwitches": 512,
+                            "uploadKB": 4472,
+                            "vertices": 56832
+                        },
+                        "U_BOTH": {
+                            "cpuMs": 2.600000023841858,
+                            "gpuMs": 0.748672,
+                            "gpuStatus": "measured",
+                            "wallMs": 2.8616666664679844,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 4472,
+                            "vertices": 56832
+                        },
+                        "UP_BOTH": {
+                            "cpuMs": 0.20000001788139343,
+                            "gpuMs": 0.529664,
+                            "gpuStatus": "measured",
+                            "wallMs": 0.2633333335320155,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 278,
+                            "vertices": 56832
+                        }
+                    }
+                },
+                {
+                    "definition": {
+                        "n": 1024,
+                        "layout": "fine",
+                        "yarnRadius": 32,
+                        "material": "sketch"
+                    },
+                    "runs": 4096,
+                    "yarnSurfaces": 2048,
+                    "vertsPerSurface": 216,
+                    "results": {
+                        "current": {
+                            "cpuMs": 30.900000005960464,
+                            "gpuMs": 28.534784,
+                            "gpuStatus": "measured",
+                            "wallMs": 31.826666667064032,
+                            "draws": 6144,
+                            "programSwitches": 4096,
+                            "uploadKB": 960,
+                            "vertices": 454656
+                        },
+                        "S": {
+                            "cpuMs": 37.400000005960464,
+                            "gpuMs": 29.09888,
+                            "gpuStatus": "measured",
+                            "wallMs": 38.73000000019868,
+                            "draws": 4096,
+                            "programSwitches": 4096,
+                            "uploadKB": 35776,
+                            "vertices": 454656
+                        },
+                        "U_BOTH": {
+                            "cpuMs": 27.400000005960464,
+                            "gpuMs": 5.19504,
+                            "gpuStatus": "measured",
+                            "wallMs": 28.72833333313465,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 35776,
+                            "vertices": 454656
+                        },
+                        "UP_BOTH": {
+                            "cpuMs": 1.800000011920929,
+                            "gpuMs": 1.845248,
+                            "gpuStatus": "measured",
+                            "wallMs": 1.8866666669646899,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 2224,
+                            "vertices": 454656
+                        }
+                    }
+                },
+                {
+                    "definition": {
+                        "n": 4096,
+                        "layout": "sprinkle",
+                        "yarnCount": 16,
+                        "material": "sketch"
+                    },
+                    "runs": 32,
+                    "yarnSurfaces": 16,
+                    "vertsPerSurface": 216,
+                    "results": {
+                        "current": {
+                            "cpuMs": 1.5,
+                            "gpuMs": 0.456032,
+                            "gpuStatus": "measured",
+                            "wallMs": 1.5266666665673256,
+                            "draws": 48,
+                            "programSwitches": 32,
+                            "uploadKB": 1920,
+                            "vertices": 28032
+                        },
+                        "S": {
+                            "cpuMs": 1.5,
+                            "gpuMs": 0.474912,
+                            "gpuStatus": "measured",
+                            "wallMs": 1.5333333333333334,
+                            "draws": 32,
+                            "programSwitches": 32,
+                            "uploadKB": 2192,
+                            "vertices": 28032
+                        },
+                        "U_BOTH": {
+                            "cpuMs": 1.5,
+                            "gpuMs": 0.491616,
+                            "gpuStatus": "measured",
+                            "wallMs": 1.5916666666666666,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 2192,
+                            "vertices": 28032
+                        },
+                        "UP_BOTH": {
+                            "cpuMs": 0.5999999940395355,
+                            "gpuMs": 0.402848,
+                            "gpuStatus": "measured",
+                            "wallMs": 0.6833333333333333,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 304.25,
+                            "vertices": 28032
+                        }
+                    }
+                },
+                {
+                    "definition": {
+                        "n": 4096,
+                        "layout": "sprinkle",
+                        "yarnCount": 256,
+                        "material": "sketch"
+                    },
+                    "runs": 512,
+                    "yarnSurfaces": 256,
+                    "vertsPerSurface": 216,
+                    "results": {
+                        "current": {
+                            "cpuMs": 4.299999982118607,
+                            "gpuMs": 2.043008,
+                            "gpuStatus": "measured",
+                            "wallMs": 4.170000000298023,
+                            "draws": 768,
+                            "programSwitches": 512,
+                            "uploadKB": 1920,
+                            "vertices": 79872
+                        },
+                        "S": {
+                            "cpuMs": 5,
+                            "gpuMs": 2.330624,
+                            "gpuStatus": "measured",
+                            "wallMs": 5.045000000298023,
+                            "draws": 512,
+                            "programSwitches": 512,
+                            "uploadKB": 6272,
+                            "vertices": 79872
+                        },
+                        "U_BOTH": {
+                            "cpuMs": 4.4000000059604645,
+                            "gpuMs": 0.915456,
+                            "gpuStatus": "measured",
+                            "wallMs": 4.601666666567326,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 6272,
+                            "vertices": 79872
+                        },
+                        "UP_BOTH": {
+                            "cpuMs": 0.7000000178813934,
+                            "gpuMs": 0.574688,
+                            "gpuStatus": "measured",
+                            "wallMs": 0.7699999998013178,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 548,
+                            "vertices": 79872
+                        }
+                    }
+                },
+                {
+                    "definition": {
+                        "n": 4096,
+                        "layout": "spriteOnly"
+                    },
+                    "runs": 1,
+                    "yarnSurfaces": 0,
+                    "vertsPerSurface": 216,
+                    "results": {
+                        "U_SDF": {
+                            "cpuMs": 1.2999999821186066,
+                            "gpuMs": 0.462848,
+                            "gpuStatus": "measured",
+                            "wallMs": 1.3883333335320154,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 1920,
+                            "vertices": 24576
+                        },
+                        "UP_SDF": {
+                            "cpuMs": 0.5999999940395355,
+                            "gpuMs": 0.401408,
+                            "gpuStatus": "measured",
+                            "wallMs": 0.6566666667660077,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 288,
+                            "vertices": 24576
+                        },
+                        "U_BOTH": {
+                            "cpuMs": 1.2000000178813934,
+                            "gpuMs": 0.468032,
+                            "gpuStatus": "measured",
+                            "wallMs": 1.3233333334326745,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 1920,
+                            "vertices": 24576
+                        },
+                        "UP_BOTH": {
+                            "cpuMs": 0.5,
+                            "gpuMs": 0.398848,
+                            "gpuStatus": "measured",
+                            "wallMs": 0.5983333334326744,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 288,
+                            "vertices": 24576
+                        }
+                    }
+                },
+                {
+                    "definition": {
+                        "n": 4096,
+                        "layout": "sprinkle",
+                        "yarnCount": 16
+                    },
+                    "runs": 32,
+                    "yarnSurfaces": 16,
+                    "vertsPerSurface": 216,
+                    "results": {
+                        "U_SDF": {
+                            "cpuMs": 1.5999999940395355,
+                            "gpuMs": 0.512384,
+                            "gpuStatus": "measured",
+                            "wallMs": 1.6183333332339922,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 2192,
+                            "vertices": 28032
+                        },
+                        "UP_SDF": {
+                            "cpuMs": 0.5,
+                            "gpuMs": 0.437216,
+                            "gpuStatus": "measured",
+                            "wallMs": 0.5433333332339922,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 304.25,
+                            "vertices": 28032
+                        },
+                        "U_BOTH": {
+                            "cpuMs": 1.5,
+                            "gpuMs": 0.522592,
+                            "gpuStatus": "measured",
+                            "wallMs": 1.5583333333333333,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 2192,
+                            "vertices": 28032
+                        },
+                        "UP_BOTH": {
+                            "cpuMs": 0.5999999940395355,
+                            "gpuMs": 0.439232,
+                            "gpuStatus": "measured",
+                            "wallMs": 0.5983333334326744,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 304.25,
+                            "vertices": 28032
+                        }
+                    }
+                },
+                {
+                    "definition": {
+                        "n": 1024,
+                        "layout": "layered",
+                        "yarnRadius": 64
+                    },
+                    "runs": 2,
+                    "yarnSurfaces": 1024,
+                    "vertsPerSurface": 216,
+                    "results": {
+                        "U_SDF": {
+                            "cpuMs": 13.599999994039536,
+                            "gpuMs": 3.836544,
+                            "gpuStatus": "measured",
+                            "wallMs": 13.90333333313465,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 17888,
+                            "vertices": 227328
+                        },
+                        "UP_SDF": {
+                            "cpuMs": 0.9000000059604645,
+                            "gpuMs": 3.403424,
+                            "gpuStatus": "measured",
+                            "wallMs": 0.9183333332339922,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 1112,
+                            "vertices": 227328
+                        },
+                        "U_BOTH": {
+                            "cpuMs": 13.599999994039536,
+                            "gpuMs": 4.125952,
+                            "gpuStatus": "measured",
+                            "wallMs": 13.776666666567326,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 17888,
+                            "vertices": 227328
+                        },
+                        "UP_BOTH": {
+                            "cpuMs": 0.800000011920929,
+                            "gpuMs": 3.663616,
+                            "gpuStatus": "measured",
+                            "wallMs": 0.8716666668653488,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 1112,
+                            "vertices": 227328
+                        }
+                    }
+                },
+                {
+                    "definition": {
+                        "n": 256,
+                        "layout": "perChar",
+                        "yarnRadius": 64
+                    },
+                    "runs": 512,
+                    "yarnSurfaces": 256,
+                    "vertsPerSurface": 216,
+                    "results": {
+                        "U_SDF": {
+                            "cpuMs": 2.7999999821186066,
+                            "gpuMs": 0.955712,
+                            "gpuStatus": "measured",
+                            "wallMs": 2.85,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 4472,
+                            "vertices": 56832
+                        },
+                        "UP_SDF": {
+                            "cpuMs": 0.30000001192092896,
+                            "gpuMs": 0.870976,
+                            "gpuStatus": "measured",
+                            "wallMs": 0.31166666696468986,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 278,
+                            "vertices": 56832
+                        },
+                        "U_BOTH": {
+                            "cpuMs": 2.800000011920929,
+                            "gpuMs": 1.011712,
+                            "gpuStatus": "measured",
+                            "wallMs": 2.9016666665673254,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 4472,
+                            "vertices": 56832
+                        },
+                        "UP_BOTH": {
+                            "cpuMs": 0.20000001788139343,
+                            "gpuMs": 0.929152,
+                            "gpuStatus": "measured",
+                            "wallMs": 0.2599999999006589,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 278,
+                            "vertices": 56832
+                        }
+                    }
+                }
+            ]
+        },
+        {
+            "label": "sketch-low",
+            "gpuPreference": "low",
+            "sourceHead": "42aaede50192b785354c767010c40c575d3340fd",
+            "sourceDirty": true,
+            "renderer": "ANGLE (Intel, Intel(R) UHD Graphics 630 (0x00003E9B) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+            "timerQuery": true,
+            "width": 1280,
+            "height": 720,
+            "frames": 60,
+            "repeats": 3,
+            "scenes": [
+                {
+                    "definition": {
+                        "n": 1024,
+                        "layout": "layered",
+                        "yarnRadius": 32,
+                        "material": "sketch"
+                    },
+                    "runs": 2,
+                    "yarnSurfaces": 1024,
+                    "vertsPerSurface": 216,
+                    "results": {
+                        "current": {
+                            "cpuMs": 7.300000011920929,
+                            "gpuMs": 7.217971,
+                            "gpuStatus": "measured",
+                            "wallMs": 7.233333333333333,
+                            "draws": 2049,
+                            "programSwitches": 2,
+                            "uploadKB": 480,
+                            "vertices": 227328
+                        },
+                        "S": {
+                            "cpuMs": 15.100000023841858,
+                            "gpuMs": 6.255058,
+                            "gpuStatus": "measured",
+                            "wallMs": 15.319999999801318,
+                            "draws": 2,
+                            "programSwitches": 2,
+                            "uploadKB": 17888,
+                            "vertices": 227328
+                        },
+                        "U_BOTH": {
+                            "cpuMs": 15.099999994039536,
+                            "gpuMs": 7.713802,
+                            "gpuStatus": "measured",
+                            "wallMs": 15.348333332935969,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 17888,
+                            "vertices": 227328
+                        },
+                        "UP_BOTH": {
+                            "cpuMs": 1.300000011920929,
+                            "gpuMs": 7.542636,
+                            "gpuStatus": "measured",
+                            "wallMs": 6.0183333337306975,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 1112,
+                            "vertices": 227328
+                        }
+                    }
+                },
+                {
+                    "definition": {
+                        "n": 1024,
+                        "layout": "layered",
+                        "yarnRadius": 64,
+                        "material": "sketch"
+                    },
+                    "runs": 2,
+                    "yarnSurfaces": 1024,
+                    "vertsPerSurface": 216,
+                    "results": {
+                        "current": {
+                            "cpuMs": 17,
+                            "gpuMs": 16.985598,
+                            "gpuStatus": "measured",
+                            "wallMs": 16.9816666662693,
+                            "draws": 2049,
+                            "programSwitches": 2,
+                            "uploadKB": 480,
+                            "vertices": 227328
+                        },
+                        "S": {
+                            "cpuMs": 14.300000011920929,
+                            "gpuMs": 18.012761,
+                            "gpuStatus": "measured",
+                            "wallMs": 14.818333333730697,
+                            "draws": 2,
+                            "programSwitches": 2,
+                            "uploadKB": 17888,
+                            "vertices": 227328
+                        },
+                        "U_BOTH": {
+                            "cpuMs": 15.5,
+                            "gpuMs": 19.243423,
+                            "gpuStatus": "measured",
+                            "wallMs": 16.063333333532015,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 17888,
+                            "vertices": 227328
+                        },
+                        "UP_BOTH": {
+                            "cpuMs": 1.4000000059604645,
+                            "gpuMs": 20.184419,
+                            "gpuStatus": "measured",
+                            "wallMs": 16.80500000019868,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 1112,
+                            "vertices": 227328
+                        }
+                    }
+                },
+                {
+                    "definition": {
+                        "n": 256,
+                        "layout": "perChar",
+                        "yarnRadius": 64,
+                        "material": "sketch"
+                    },
+                    "runs": 512,
+                    "yarnSurfaces": 256,
+                    "vertsPerSurface": 216,
+                    "results": {
+                        "current": {
+                            "cpuMs": 9.399999976158142,
+                            "gpuMs": 9.06488,
+                            "gpuStatus": "measured",
+                            "wallMs": 9.578333333134651,
+                            "draws": 768,
+                            "programSwitches": 512,
+                            "uploadKB": 120,
+                            "vertices": 56832
+                        },
+                        "S": {
+                            "cpuMs": 9.199999988079071,
+                            "gpuMs": 8.375549,
+                            "gpuStatus": "measured",
+                            "wallMs": 9.77333333293597,
+                            "draws": 512,
+                            "programSwitches": 512,
+                            "uploadKB": 4472,
+                            "vertices": 56832
+                        },
+                        "U_BOTH": {
+                            "cpuMs": 3.5,
+                            "gpuMs": 4.905313,
+                            "gpuStatus": "measured",
+                            "wallMs": 4.088333333532016,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 4472,
+                            "vertices": 56832
+                        },
+                        "UP_BOTH": {
+                            "cpuMs": 0.30000001192092896,
+                            "gpuMs": 5.170729,
+                            "gpuStatus": "measured",
+                            "wallMs": 0.3566666667660077,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 278,
+                            "vertices": 56832
+                        }
+                    }
+                },
+                {
+                    "definition": {
+                        "n": 1024,
+                        "layout": "fine",
+                        "yarnRadius": 32,
+                        "material": "sketch"
+                    },
+                    "runs": 4096,
+                    "yarnSurfaces": 2048,
+                    "vertsPerSurface": 216,
+                    "results": {
+                        "current": {
+                            "cpuMs": 63.900000005960464,
+                            "gpuMs": 62.954164,
+                            "gpuStatus": "measured",
+                            "wallMs": 65.01166666646799,
+                            "draws": 6144,
+                            "programSwitches": 4096,
+                            "uploadKB": 960,
+                            "vertices": 454656
+                        },
+                        "S": {
+                            "cpuMs": 61.900000005960464,
+                            "gpuMs": 54.739614,
+                            "gpuStatus": "measured",
+                            "wallMs": 62.875,
+                            "draws": 4096,
+                            "programSwitches": 4096,
+                            "uploadKB": 35776,
+                            "vertices": 454656
+                        },
+                        "U_BOTH": {
+                            "cpuMs": 30.099999994039536,
+                            "gpuMs": 23.072324,
+                            "gpuStatus": "measured",
+                            "wallMs": 30.84666666686535,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 35776,
+                            "vertices": 454656
+                        },
+                        "UP_BOTH": {
+                            "cpuMs": 2.899999976158142,
+                            "gpuMs": 14.93869,
+                            "gpuStatus": "measured",
+                            "wallMs": 15.07166666686535,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 2224,
+                            "vertices": 454656
+                        }
+                    }
+                },
+                {
+                    "definition": {
+                        "n": 4096,
+                        "layout": "sprinkle",
+                        "yarnCount": 16,
+                        "material": "sketch"
+                    },
+                    "runs": 32,
+                    "yarnSurfaces": 16,
+                    "vertsPerSurface": 216,
+                    "results": {
+                        "current": {
+                            "cpuMs": 5.799999982118607,
+                            "gpuMs": 5.786393,
+                            "gpuStatus": "measured",
+                            "wallMs": 5.064999999602636,
+                            "draws": 48,
+                            "programSwitches": 32,
+                            "uploadKB": 1920,
+                            "vertices": 28032
+                        },
+                        "S": {
+                            "cpuMs": 5.5,
+                            "gpuMs": 5.902393,
+                            "gpuStatus": "measured",
+                            "wallMs": 5.08833333303531,
+                            "draws": 32,
+                            "programSwitches": 32,
+                            "uploadKB": 2192,
+                            "vertices": 28032
+                        },
+                        "U_BOTH": {
+                            "cpuMs": 2.199999988079071,
+                            "gpuMs": 6.666223,
+                            "gpuStatus": "measured",
+                            "wallMs": 5.715000000099341,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 2192,
+                            "vertices": 28032
+                        },
+                        "UP_BOTH": {
+                            "cpuMs": 0.9000000059604645,
+                            "gpuMs": 6.345141,
+                            "gpuStatus": "measured",
+                            "wallMs": 0.8416666666666667,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 304.25,
+                            "vertices": 28032
+                        }
+                    }
+                },
+                {
+                    "definition": {
+                        "n": 4096,
+                        "layout": "sprinkle",
+                        "yarnCount": 256,
+                        "material": "sketch"
+                    },
+                    "runs": 512,
+                    "yarnSurfaces": 256,
+                    "vertsPerSurface": 216,
+                    "results": {
+                        "current": {
+                            "cpuMs": 9.800000011920929,
+                            "gpuMs": 9.378879,
+                            "gpuStatus": "measured",
+                            "wallMs": 10.378333333631357,
+                            "draws": 768,
+                            "programSwitches": 512,
+                            "uploadKB": 1920,
+                            "vertices": 79872
+                        },
+                        "S": {
+                            "cpuMs": 10.199999988079071,
+                            "gpuMs": 9.555961,
+                            "gpuStatus": "measured",
+                            "wallMs": 10.616666666666667,
+                            "draws": 512,
+                            "programSwitches": 512,
+                            "uploadKB": 6272,
+                            "vertices": 79872
+                        },
+                        "U_BOTH": {
+                            "cpuMs": 5,
+                            "gpuMs": 7.468803,
+                            "gpuStatus": "measured",
+                            "wallMs": 6.461666666467985,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 6272,
+                            "vertices": 79872
+                        },
+                        "UP_BOTH": {
+                            "cpuMs": 1.0999999940395355,
+                            "gpuMs": 7.825468,
+                            "gpuStatus": "measured",
+                            "wallMs": 4.494999999801318,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 548,
+                            "vertices": 79872
+                        }
+                    }
+                },
+                {
+                    "definition": {
+                        "n": 4096,
+                        "layout": "spriteOnly"
+                    },
+                    "runs": 1,
+                    "yarnSurfaces": 0,
+                    "vertsPerSurface": 216,
+                    "results": {
+                        "U_SDF": {
+                            "cpuMs": 1.9000000059604645,
+                            "gpuMs": 6.51389,
+                            "gpuStatus": "measured",
+                            "wallMs": 5.665000000099341,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 1920,
+                            "vertices": 24576
+                        },
+                        "UP_SDF": {
+                            "cpuMs": 0.7000000178813934,
+                            "gpuMs": 6.52789,
+                            "gpuStatus": "measured",
+                            "wallMs": 0.809999999900659,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 288,
+                            "vertices": 24576
+                        },
+                        "U_BOTH": {
+                            "cpuMs": 2.0999999940395355,
+                            "gpuMs": 6.345807,
+                            "gpuStatus": "measured",
+                            "wallMs": 5.494999999801318,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 1920,
+                            "vertices": 24576
+                        },
+                        "UP_BOTH": {
+                            "cpuMs": 0.5999999940395355,
+                            "gpuMs": 6.374307,
+                            "gpuStatus": "measured",
+                            "wallMs": 0.7033333331346512,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 288,
+                            "vertices": 24576
+                        }
+                    }
+                },
+                {
+                    "definition": {
+                        "n": 4096,
+                        "layout": "sprinkle",
+                        "yarnCount": 16
+                    },
+                    "runs": 32,
+                    "yarnSurfaces": 16,
+                    "vertsPerSurface": 216,
+                    "results": {
+                        "U_SDF": {
+                            "cpuMs": 2,
+                            "gpuMs": 6.704223,
+                            "gpuStatus": "measured",
+                            "wallMs": 5.801666667064031,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 2192,
+                            "vertices": 28032
+                        },
+                        "UP_SDF": {
+                            "cpuMs": 0.5,
+                            "gpuMs": 6.62164,
+                            "gpuStatus": "measured",
+                            "wallMs": 0.6583333333333333,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 304.25,
+                            "vertices": 28032
+                        },
+                        "U_BOTH": {
+                            "cpuMs": 2.300000011920929,
+                            "gpuMs": 6.51939,
+                            "gpuStatus": "measured",
+                            "wallMs": 5.793333333233992,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 2192,
+                            "vertices": 28032
+                        },
+                        "UP_BOTH": {
+                            "cpuMs": 0.5999999940395355,
+                            "gpuMs": 6.623306,
+                            "gpuStatus": "measured",
+                            "wallMs": 0.6716666668653488,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 304.25,
+                            "vertices": 28032
+                        }
+                    }
+                },
+                {
+                    "definition": {
+                        "n": 1024,
+                        "layout": "layered",
+                        "yarnRadius": 64
+                    },
+                    "runs": 2,
+                    "yarnSurfaces": 1024,
+                    "vertsPerSurface": 216,
+                    "results": {
+                        "U_SDF": {
+                            "cpuMs": 41.10000002384186,
+                            "gpuMs": 41.563083,
+                            "gpuStatus": "measured",
+                            "wallMs": 39.84333333323399,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 17888,
+                            "vertices": 227328
+                        },
+                        "UP_SDF": {
+                            "cpuMs": 1.5,
+                            "gpuMs": 41.770999,
+                            "gpuStatus": "measured",
+                            "wallMs": 34.80500000019868,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 1112,
+                            "vertices": 227328
+                        },
+                        "U_BOTH": {
+                            "cpuMs": 41.599999994039536,
+                            "gpuMs": 42.129081,
+                            "gpuStatus": "measured",
+                            "wallMs": 40.07833333313465,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 17888,
+                            "vertices": 227328
+                        },
+                        "UP_BOTH": {
+                            "cpuMs": 1.300000011920929,
+                            "gpuMs": 42.194997,
+                            "gpuStatus": "measured",
+                            "wallMs": 35.53666666696469,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 1112,
+                            "vertices": 227328
+                        }
+                    }
+                },
+                {
+                    "definition": {
+                        "n": 256,
+                        "layout": "perChar",
+                        "yarnRadius": 64
+                    },
+                    "runs": 512,
+                    "yarnSurfaces": 256,
+                    "vertsPerSurface": 216,
+                    "results": {
+                        "U_SDF": {
+                            "cpuMs": 3.5,
+                            "gpuMs": 10.605457,
+                            "gpuStatus": "measured",
+                            "wallMs": 9.94666666686535,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 4472,
+                            "vertices": 56832
+                        },
+                        "UP_SDF": {
+                            "cpuMs": 0.29999998211860657,
+                            "gpuMs": 10.73229,
+                            "gpuStatus": "measured",
+                            "wallMs": 0.28166666676600777,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 278,
+                            "vertices": 56832
+                        },
+                        "U_BOTH": {
+                            "cpuMs": 3.699999988079071,
+                            "gpuMs": 10.889706,
+                            "gpuStatus": "measured",
+                            "wallMs": 10.1,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 4472,
+                            "vertices": 56832
+                        },
+                        "UP_BOTH": {
+                            "cpuMs": 0.20000001788139343,
+                            "gpuMs": 10.842956,
+                            "gpuStatus": "measured",
+                            "wallMs": 0.2783333331346512,
+                            "draws": 1,
+                            "programSwitches": 1,
+                            "uploadKB": 278,
+                            "vertices": 56832
+                        }
+                    }
+                }
+            ]
         }
     ]
 }
