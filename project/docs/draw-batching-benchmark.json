@@ -1,0 +1,68 @@
+{
+    "scope": "Interleaved species drawn in one frame; counts are exact, timing is SwiftShader and not device performance.",
+    "runs": [
+        {
+            "label": "before",
+            "sourceHead": "94781c42d0507c6ffe430e7091a8eb8824c42cc5",
+            "sourceDirty": true,
+            "actors": 250,
+            "species": 5,
+            "frames": 60,
+            "glError": 0,
+            "deviceDrawCalls": 500,
+            "meshDraws": 250,
+            "instances": 250,
+            "rasterDraws": 250,
+            "vectorFallbacks": 0,
+            "atlasStats": [
+                {
+                    "name": "sprout.svg",
+                    "parts": 6,
+                    "rasterDraws": 3500,
+                    "reason": null,
+                    "fallbackReasons": {}
+                },
+                {
+                    "name": "chestnut.svg",
+                    "parts": 3,
+                    "rasterDraws": 3500,
+                    "reason": null,
+                    "fallbackReasons": {}
+                },
+                {
+                    "name": "corn-kernel.svg",
+                    "parts": 6,
+                    "rasterDraws": 3500,
+                    "reason": null,
+                    "fallbackReasons": {}
+                },
+                {
+                    "name": "kidney-bean.svg",
+                    "parts": 6,
+                    "rasterDraws": 3500,
+                    "reason": null,
+                    "fallbackReasons": {}
+                },
+                {
+                    "name": "pea.svg",
+                    "parts": 6,
+                    "rasterDraws": 3500,
+                    "reason": null,
+                    "fallbackReasons": {}
+                }
+            ],
+            "flushReasons": {
+                "texture": 249,
+                "explicit": 1
+            },
+            "drawDispatchReasons": {
+                "texture": 249,
+                "explicit": 1
+            },
+            "submitMsP50": 101,
+            "submitMsP95": 135.20000000001164,
+            "gpuTextureBytes": 1075780,
+            "renderer": "WebKit WebGL"
+        }
+    ]
+}

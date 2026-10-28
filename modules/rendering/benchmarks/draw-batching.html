@@ -1,0 +1,172 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>GameKit draw batching benchmark</title>
+<style>
+    body {
+        margin: 0;
+        background: #101923;
+        color: #dce8f1;
+        font:
+            15px system-ui,
+            sans-serif;
+    }
+    main {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 10px 14px 24px;
+    }
+    canvas {
+        display: block;
+        width: min(100%, calc((100vh - 220px) * 1.8));
+        min-width: 240px;
+        height: auto;
+        margin: 0 auto;
+        border: 1px solid #526374;
+        border-radius: 12px;
+    }
+    pre {
+        white-space: pre-wrap;
+        color: #a9bdcb;
+    }
+</style>
+<main>
+    <h1>그리기 호출·배치 끊김 측정</h1>
+    <p>여러 종의 캐릭터를 섞어 그릴 때 그리기 호출과 배치가 끊긴 사유를 셉니다.</p>
+    <canvas id="scene" width="720" height="400"></canvas>
+    <pre id="result"></pre>
+</main>
+<script type="module">
+    import { WebGLDevice, MeshRenderer } from '/dist/rendering.js';
+    import { createVectorAsset, createVectorRasterAtlas } from '/dist/vector-assets.js';
+    import { createVectorAssetLoader } from '/dist/vector-assets-loader.js';
+    const CANVAS = document.querySelector('#scene');
+    const WIDTH = CANVAS.width;
+    const HEIGHT = CANVAS.height;
+    const SPECIES_URLS = [
+        '/modules/rendering/benchmarks/fixtures/sprout.svg',
+        '/modules/rendering/benchmarks/fixtures/chestnut.svg',
+        '/modules/rendering/benchmarks/fixtures/corn-kernel.svg',
+        '/modules/rendering/benchmarks/fixtures/kidney-bean.svg',
+        '/modules/rendering/benchmarks/fixtures/pea.svg',
+    ];
+    const ACTORS_PER_SPECIES = 50;
+    const WARMUP_FRAMES = 10;
+    const MEASURED_FRAMES = 60;
+    const DEVICE = new WebGLDevice(CANVAS, { alpha: false, antialias: false, preserveDrawingBuffer: true });
+    const MESHES = new MeshRenderer(DEVICE);
+    const LOADER = createVectorAssetLoader({ maxEntries: 0 });
+    const SPECIES = [];
+    for (const URL of SPECIES_URLS) {
+        const COMPILED = await LOADER.load(URL, { sourcePath: URL.slice(1) });
+        const ASSET = createVectorAsset(MESHES, COMPILED);
+        const [, , VIEW_W, VIEW_H] = ASSET.viewBox;
+        const ATLAS = createVectorRasterAtlas(MESHES, ASSET, COMPILED, {
+            pixelsPerUnit: 192 / Math.max(VIEW_W, VIEW_H),
+            padding: 2,
+        });
+        const PLAYERS = Array.from({ length: ACTORS_PER_SPECIES }, (_unused, index) =>
+            ASSET.createPlayer({ clip: Object.keys(COMPILED.metadata.clips)[0], startedAtMs: -index * 37 }),
+        );
+        SPECIES.push({ name: URL.split('/').pop(), asset: ASSET, atlas: ATLAS, players: PLAYERS, view: ASSET.viewBox });
+    }
+    const PROJECTION = [2 / WIDTH, 0, 0, 0, -2 / HEIGHT, 0, -1, 1, 1];
+    let seed = 777;
+    const RANDOM = () => {
+        seed = (seed * 1664525 + 1013904223) >>> 0;
+        return seed / 4294967296;
+    };
+    const PLACEMENTS = Array.from({ length: ACTORS_PER_SPECIES * SPECIES.length }, (_unused, index) => ({
+        species: index % SPECIES.length,
+        player: Math.floor(index / SPECIES.length),
+        x: 40 + RANDOM() * (WIDTH - 80),
+        y: 40 + RANDOM() * (HEIGHT - 80),
+    }));
+    const DRAW_FRAME = (timeMs) => {
+        DEVICE.beginFrame({ width: WIDTH, height: HEIGHT, clearColor: [0.06, 0.1, 0.14, 1] });
+        MESHES.beginFrame();
+        const STARTED = performance.now();
+        let raster = 0;
+        let fallbacks = 0;
+        for (const PLACEMENT of PLACEMENTS) {
+            const S = SPECIES[PLACEMENT.species];
+            const PLAYER = S.players[PLACEMENT.player];
+            PLAYER.seek(timeMs);
+            const SCALE = 0.35;
+            const RESULT = S.atlas.draw(PLAYER, {
+                projection: PROJECTION,
+                matrix: [SCALE, 0, 0, SCALE, PLACEMENT.x, PLACEMENT.y],
+            });
+            if (RESULT.backend === 'raster') {
+                raster++;
+            } else {
+                fallbacks++;
+            }
+        }
+        MESHES.flush();
+        const SUBMIT_MS = performance.now() - STARTED;
+        const MESH_STATS = MESHES.stats();
+        const DEVICE_STATS = DEVICE.endFrame();
+        return {
+            submitMs: SUBMIT_MS,
+            raster,
+            fallbacks,
+            deviceDrawCalls: DEVICE_STATS.drawCalls,
+            meshDraws: MESH_STATS.draws,
+            instances: MESH_STATS.instances,
+            flushReasons: MESH_STATS.flushReasons,
+            drawDispatchReasons: MESH_STATS.drawDispatchReasons,
+        };
+    };
+    window.drawBatchingBenchmark = {
+        ready: true,
+        actors: PLACEMENTS.length,
+        species: SPECIES.length,
+        run() {
+            for (let frame = 0; frame < WARMUP_FRAMES; frame++) {
+                DRAW_FRAME(frame * 16);
+            }
+            const FRAMES = [];
+            for (let frame = 0; frame < MEASURED_FRAMES; frame++) {
+                FRAMES.push(DRAW_FRAME(1000 + frame * 16));
+            }
+            const SORTED = FRAMES.map((frame) => frame.submitMs).sort((a, b) => a - b);
+            const LAST = FRAMES[FRAMES.length - 1];
+            const RESULT = {
+                actors: PLACEMENTS.length,
+                species: SPECIES.length,
+                frames: FRAMES.length,
+                glError: DEVICE.gl.getError(),
+                deviceDrawCalls: LAST.deviceDrawCalls,
+                meshDraws: LAST.meshDraws,
+                instances: LAST.instances,
+                rasterDraws: LAST.raster,
+                vectorFallbacks: LAST.fallbacks,
+                atlasStats: SPECIES.map((species) => ({
+                    name: species.name,
+                    parts: species.asset.mesh?.partCount ?? null,
+                    rasterDraws: species.atlas.stats.rasterDraws,
+                    reason: species.atlas.stats.reason,
+                    fallbackReasons: species.atlas.stats.fallbackReasons,
+                })),
+                flushReasons: LAST.flushReasons,
+                drawDispatchReasons: LAST.drawDispatchReasons,
+                submitMsP50: SORTED[Math.floor(SORTED.length * 0.5)],
+                submitMsP95: SORTED[Math.floor(SORTED.length * 0.95)],
+                gpuTextureBytes: DEVICE.stats.gpuTextureBytes,
+                renderer: DEVICE.gl.getParameter(DEVICE.gl.RENDERER),
+            };
+            document.querySelector('#result').textContent = JSON.stringify(RESULT, null, 2);
+            return RESULT;
+        },
+    };
+    window.addEventListener('pagehide', () => {
+        for (const S of SPECIES) {
+            S.players.forEach((player) => player.dispose());
+            S.atlas.dispose();
+            S.asset.dispose();
+        }
+        MESHES.dispose();
+        DEVICE.dispose();
+    });
+</script>
