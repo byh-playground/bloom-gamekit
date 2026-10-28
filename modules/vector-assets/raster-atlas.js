@@ -434,6 +434,7 @@ export function createVectorRasterAtlas(
                 atlasWidth: PACKED?.width ?? 0,
                 atlasHeight: PACKED?.height ?? 0,
                 atlasBytes: PACKED?.bytes ?? 0,
+                allocatedBytes: !disposed && target ? (PACKED?.bytes ?? 0) : 0,
                 bakeCount,
                 bakeCpuMs,
                 rasterDraws,

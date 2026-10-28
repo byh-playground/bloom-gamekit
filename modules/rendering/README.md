@@ -2,7 +2,7 @@
 
 ## Sprite animation
 
-`createSpriteAnimation(meshes, texture, definition)` is independent of SVG. It accepts a borrowed Device texture, frames with pixel rectangles and positive `durationMs`, and named clips with ordered frame indices and `loop: 'loop' | 'once'`. An external sprite sheet and an SVG-generated atlas use the same playback API. All frames share one retained unit quad. Per-instance UV and local rectangles select the image and preserve trim/pivot before part poses, without changing the caller's matrix. Different frames remain in one compatible batch in submission order; playback does not generate pixels or reorder actors by frame.
+`createSpriteAnimation(meshes, texture, definition)` is independent of SVG. It accepts a borrowed Device texture, frames with pixel rectangles and positive `durationMs`, and named clips with ordered frame indices and `loop: 'loop' | 'once'`. An external sprite sheet and an SVG-generated atlas use the same playback API. All sprites of one renderer share one unit quad (`acquireQuadMesh`), so texture arrays, pages and clips never split a batch on mesh identity. Per-instance UV and local rectangles select the image and preserve trim/pivot before part poses, without changing the caller's matrix. Different frames remain in one compatible batch in submission order; playback does not generate pixels or reorder actors by frame.
 
 ```js
 const SPRITES = createSpriteAnimation(MESHES, TEXTURE, {

@@ -2,12 +2,14 @@
 
 ## Runtime part atlas comparison
 
-The same example also includes sampled sprite playback. `createVectorSpriteAtlas(meshes, asset, compiledAsset, { clip, expression, sampleIntervalMs, pixelsPerUnit, padding, maxAtlasBytes })` samples an authored SVG clip at the midpoint of each interval and bakes complete poses into an RGBA atlas. For a once clip, the final interval uses the exact authored endpoint so the held final image keeps the terminal pose. The final interval keeps its shorter duration, so playback keeps the authored clip length. It returns a generic sprite definition and texture rather than an SVG-dependent player:
+The same example also includes sampled sprite playback. `createVectorSpriteAtlas(meshes, asset, compiledAsset, { clip, expression, textureArray, layer, sampleIntervalMs, pixelsPerUnit, padding })` samples an authored SVG clip at the midpoint of each interval and bakes complete poses into one layer of a caller-owned `TEXTURE_2D_ARRAY` (`device.createTextureArray(width, height, layers)`). The array size bounds the atlas; a frame set that does not fit reports `atlasLimit`. One layer belongs to one atlas (a second claim throws), and the caller deletes the array after disposing its atlases. For a once clip, the final interval uses the exact authored endpoint so the held final image keeps the terminal pose. The final interval keeps its shorter duration, so playback keeps the authored clip length. It returns a generic sprite definition and texture rather than an SVG-dependent player:
 
 ```js
 const BAKER = createVectorSpriteAtlas(MESHES, ASSET, COMPILED, {
     clip: 'bounce',
     expression: 'neutral',
+    textureArray: ARRAY,
+    layer: 0,
     sampleIntervalMs: 100,
     pixelsPerUnit: 1,
     padding: 2,
@@ -39,13 +41,14 @@ The comparison also exposes mesh curve precision: low (2), standard (4) and high
 
 The example has separate **Single** quality/zoom and **Crowd** comparison tabs. Crowd population, character size in CSS pixels (the longest viewBox dimension), placement spread and seed are independent. Adding actors preserves existing seeded positions and never shrinks the characters. A smaller placement area increases density and overlap while preserving painter order. Shared live RAF FPS applies to all simultaneously visible paths; it is not an independent per-backend FPS. The sequential comparison uses the same full canvas for each backend, 30 warmup frames and 60 timed frames, and reports actual RAF cadence separately from CPU render/submit and asynchronous GPU p50/p95. GPU duration is not inverted into screen FPS. The repeat comparison requires the supported `transform-repeat` clip with mixed motion disabled; other clips remain available for visual inspection. Preparation is separate and prepared playback must not bake or upload image data. Changed settings, resize, DPR or context restoration invalidate displayed benchmark results. This example work does not change the rendering pipeline or imply a universal performance winner.
 
-The optional `createVectorRasterAtlas(meshes, asset, compiledAsset, options)` bakes the retained source mesh into an RGBA8 render target. Each contiguous run of triangles belonging to a part becomes a padded atlas tile and an ordered quad. Separated runs remain separated. It uses the same player clock, hierarchy, easing, transitions and borrowed pose handle as vector rendering; it does not bake animation frames or evaluate a second animation system.
+The optional `createVectorRasterAtlas(meshes, asset, compiledAsset, options)` bakes the retained source mesh into one layer of a caller-owned texture array (`textureArray`, `layer`; one layer per atlas). Each contiguous run of triangles belonging to a part becomes a padded atlas tile and one instance of the shared unit quad, drawn through `MeshRenderer.drawQuadRuns` with the GPU pose evaluated in the same draw. Every atlas of one array therefore batches together with other textured draws of that array: the 250-actor, 5-species benchmark scene issues 1 draw call (`project/docs/draw-batching-benchmark.json`). Separated runs remain separated. It uses the same player clock, hierarchy, easing, transitions and borrowed pose handle as vector rendering; it does not bake animation frames or evaluate a second animation system.
 
 ```js
 const ATLAS = createVectorRasterAtlas(MESHES, ASSET, COMPILED, {
+    textureArray: ARRAY,
+    layer: 1,
     pixelsPerUnit: 1,
     padding: 2,
-    maxAtlasBytes: 64 * 1024 * 1024,
 });
 DEVICE.beginFrame({ width: 800, height: 600 });
 MESHES.beginFrame();
@@ -205,7 +208,7 @@ The browser fixture reports shared-pose actors separately from independently pha
 
 `createVectorSpriteAtlas(meshes, asset, compiled, { clip, expression, sampleIntervalMs, pixelsPerUnit, paintRegions })` accepts the same explicit named RGB replacements as `player.draw({ paintRegions })`. The baker validates and captures the values when the atlas is created. Equivalent values share the cache regardless of object key order; distinct values produce distinct textures. Caller mutation cannot change a deferred bake or context-restoration bake. Reset with `null` or `{}` uses the original fills. Alpha, stroke, expression and authored pose remain source-owned. Each palette consumes its own atlas image bytes: hosts must budget and prepare a finite manifest before playback, not create new combinations in their render loop.
 
-`supersample` is 1 (default), 2 or 4. Values above 1 draw the initial samples into a larger premultiplied RGBA target, then reduce in 2:1 linear-filtered steps using the existing retained sprite quad. This improves prepared coverage without enlarging the final image or adding playback work. It is not pixel-identical to native MSAA. `maxAtlasSize` limits every preparation target, so final dimensions cannot exceed `maxAtlasSize / supersample`. `maxAtlasBytes` includes simultaneously live bake targets: 1×, 5× or 21× the final RGBA bytes respectively. `stats.atlasBytes` / `allocatedBytes` are final planned / live image storage; `stats.bakeWorkingBytes` is the planned peak for this bake, including its final image. Hosts must additionally add already resident OTHER atlases when budgeting a scene peak. Rejected preparation reports `atlasLimit` before image allocation. Temporary targets and reduction meshes are released after success/failure, and context restoration repeats the same preparation. No supersampling occurs during normal playback.
+`supersample` is 1 (default), 2 or 4. Values above 1 draw the initial samples into a larger premultiplied RGBA target, then reduce in 2:1 linear-filtered steps using the existing retained sprite quad. This improves prepared coverage without enlarging the final image or adding playback work. It is not pixel-identical to native MSAA. The texture array size limits the final image, and the transient supersample targets are limited by `MAX_TEXTURE_SIZE / supersample`. Transient bake targets cost 1×, 5× or 21× the final RGBA bytes (`stats.bakeWorkingBytes`); the array itself is allocated by the caller up front. `stats.atlasBytes` / `allocatedBytes` are final planned / live image storage; `stats.bakeWorkingBytes` is the planned peak for this bake, including its final image. Hosts must additionally add already resident OTHER atlases when budgeting a scene peak. Rejected preparation reports `atlasLimit` before image allocation. Temporary targets and reduction meshes are released after success/failure, and context restoration repeats the same preparation. No supersampling occurs during normal playback.
 
 Player의 play/seek/transitionTo 시간선은 backend와 독립적입니다. 일반 clip은 원본 채널의 Float32 숫자 프로그램을 GPU에서 평가하고, CPU getSocket/getPartPose는 같은 배치의 Float64 채널로 해당 부위와 조상만 샘플링합니다. partPoses는 전체 CPU pose를 lazy로 계산해 독립 복사본을 반환합니다. 전환 중에는 원래 Anime.js CPU 평가를 사용하며 source/target/중첩/되감기 의미를 보존합니다. 종료된 전환은 GPU 경로로 돌아갈 수 있습니다. CPU 평가·부분 조회 횟수/시간은 player.poseMetrics로 확인합니다.
 
