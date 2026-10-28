@@ -285,7 +285,15 @@ try {
                 // The same named fills must survive sampled sprite preparation,
                 // including deferred bake, cache reuse and context restoration.
                 const MUTABLE_BAKE_PAINT = { cheeks: [1, 0, 0], badge: [0, 1, 0] };
-                const ATLAS_OPTIONS = { clip: 'idle', sampleIntervalMs: 100, pixelsPerUnit: 1, supersample: 4 };
+                const ATLAS_ARRAY = DEVICE.createTextureArray(1024, 1024, 8);
+                const ATLAS_OPTIONS = {
+                    clip: 'idle',
+                    sampleIntervalMs: 100,
+                    pixelsPerUnit: 1,
+                    supersample: 4,
+                    textureArray: ATLAS_ARRAY,
+                    layer: 0,
+                };
                 const ATLAS = V.createVectorSpriteAtlas(MESHES, RESOURCES[0], COMPILED[0], {
                     ...ATLAS_OPTIONS,
                     paintRegions: MUTABLE_BAKE_PAINT,
@@ -296,9 +304,13 @@ try {
                 });
                 const OTHER_ATLAS = V.createVectorSpriteAtlas(MESHES, RESOURCES[0], COMPILED[0], {
                     ...ATLAS_OPTIONS,
+                    layer: 1,
                     paintRegions: palettes[1],
                 });
-                const REFERENCE_ATLAS = V.createVectorSpriteAtlas(MESHES, RESOURCES[1], COMPILED[1], ATLAS_OPTIONS);
+                const REFERENCE_ATLAS = V.createVectorSpriteAtlas(MESHES, RESOURCES[1], COMPILED[1], {
+                    ...ATLAS_OPTIONS,
+                    layer: 2,
+                });
                 CHECK(ATLAS.stats.cacheKey === SHARED_ATLAS.stats.cacheKey, 'Equivalent paint values share cache');
                 CHECK(ATLAS.stats.cacheKey !== OTHER_ATLAS.stats.cacheKey, 'Distinct paint values isolate cache');
                 CHECK(
@@ -307,7 +319,7 @@ try {
                 );
                 const LIMITED = V.createVectorSpriteAtlas(MESHES, RESOURCES[0], COMPILED[0], {
                     ...ATLAS_OPTIONS,
-                    maxAtlasSize: 128,
+                    textureArray: DEVICE.createTextureArray(16, 16, 1),
                 });
                 CHECK(LIMITED.stats.reason === 'atlasLimit', 'High-resolution preparation respects MAX_TEXTURE_SIZE');
                 CHECK(LIMITED.texture === null, 'Rejected preparation allocates no image');
@@ -327,7 +339,11 @@ try {
                 function bakedPixels(atlas) {
                     DEVICE.beginFrame({ width: 480, height: 100, clearColor: [0, 0, 0, 0] });
                     MESHES.beginFrame();
-                    CHECK(atlas.bake().backend === 'sprite', 'Named-fill sprite bake available');
+                    const BAKED = atlas.bake();
+                    CHECK(
+                        BAKED.backend === 'sprite',
+                        `Named-fill sprite bake available: ${BAKED.reason} ${atlas.stats.lastError}`,
+                    );
                     const ANIMATION = R.createSpriteAnimation(MESHES, atlas.texture, atlas.definition),
                         PLAYER = ANIMATION.createPlayer({ clip: 'idle' });
                     PLAYER.draw({ timeMs: 0, projection: PROJECTION });
@@ -352,12 +368,13 @@ try {
                 CHECK(ATLAS.stats.bakeCount === BAKE_COUNT, 'Repeated playback preparation does not rebake');
                 const FAULT_ATLAS = V.createVectorSpriteAtlas(MESHES, RESOURCES[0], COMPILED[0], {
                     ...ATLAS_OPTIONS,
+                    layer: 3,
                     padding: 3,
                 });
                 const CREATE_TARGET = DEVICE.createRenderTarget.bind(DEVICE);
                 let targetCreates = 0;
                 DEVICE.createRenderTarget = (...args) => {
-                    if (++targetCreates === 3) {
+                    if (++targetCreates === 2) {
                         throw new Error('Injected atlas reduction allocation failure');
                     }
                     return CREATE_TARGET(...args);
@@ -377,6 +394,7 @@ try {
                 FAULT_ATLAS.dispose();
                 const DOUBLE_ATLAS = V.createVectorSpriteAtlas(MESHES, RESOURCES[0], COMPILED[0], {
                     ...ATLAS_OPTIONS,
+                    layer: 4,
                     supersample: 2,
                 });
                 bakedPixels(DOUBLE_ATLAS);

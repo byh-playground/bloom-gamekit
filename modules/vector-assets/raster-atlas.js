@@ -1,3 +1,4 @@
+import { claimTextureLayer } from './layer-claims.js';
 import { validateCompiledAsset } from './schema.js';
 
 const IDENTITY_MATRIX = Object.freeze([1, 0, 0, 1, 0, 0]);
@@ -199,6 +200,7 @@ export function createVectorRasterAtlas(
     ) {
         throw new TypeError('A layer inside the texture array, a positive pixel scale and padding are required');
     }
+    const RELEASE_LAYER = claimTextureLayer(textureArray, layer);
     const LAYER_WIDTH = textureArray.width,
         LAYER_HEIGHT = textureArray.height;
     const GEOMETRY = compiledAsset.geometry;
@@ -410,6 +412,7 @@ export function createVectorRasterAtlas(
             RELEASE();
         } finally {
             disposed = true;
+            RELEASE_LAYER();
         }
         return true;
     };
