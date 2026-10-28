@@ -1,3 +1,11 @@
+## v0.24.2 (2026-10-29)
+
+스케치 채움의 해칭이 작성한 각도·간격을 따르도록 고칩니다. `shadeSketchFill`이 `hatchAngle`·`hatchSpacing`을 `u_effect2.z/w`가 아니라 `u_effect1.z/w`(echoWidth·echoOpacity)에서 읽어, 간격이 `echoOpacity`(1 이하)가 되면서 선이 서로 겹쳐 채움 전체가 해칭 없이 균일하게 어두운 한 색으로 그려졌습니다. v0.7.3에서 `YarnSurfaceRenderer`가 들어온 뒤로 있던 결함입니다.
+
+- 읽는 슬롯만 바꾸며 uniform 배치와 API는 그대로입니다. 스케치를 쓰는 게임은 채움 모양이 달라지므로(해칭 줄무늬가 나타남) 원하는 해칭 설정(`hatchWidth`, `hatchOpacity`)을 확인하세요.
+- 고정 브라우저 시나리오(`yarn-shader`)에 스케치 채움이 한 색으로 평평하지 않고 사선 해칭을 그리는지 검사를 추가했습니다.
+- 알려진 남은 항목: `echoY`는 uniform에 실리지만 셰이더가 읽지 않아 에코 오프셋은 `echoX` 방향 하나만 반영됩니다. 이번에는 바꾸지 않았습니다.
+
 ## v0.24.1 (2026-10-28)
 
 어떤 러너도 부르지 않던 렌더링 시나리오 2개(`vector-context`, `vector-game-coverage`)를 고정 브라우저 시나리오에 연결하고, 그 과정에서 드러난 결함 2개를 고칩니다.
