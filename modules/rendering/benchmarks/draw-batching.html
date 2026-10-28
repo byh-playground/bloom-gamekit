@@ -57,11 +57,14 @@
     const MESHES = new MeshRenderer(DEVICE);
     const LOADER = createVectorAssetLoader({ maxEntries: 0 });
     const SPECIES = [];
-    for (const URL of SPECIES_URLS) {
+    const ATLAS_ARRAY = DEVICE.createTextureArray(512, 512, SPECIES_URLS.length);
+    for (const [LAYER, URL] of SPECIES_URLS.entries()) {
         const COMPILED = await LOADER.load(URL, { sourcePath: URL.slice(1) });
         const ASSET = createVectorAsset(MESHES, COMPILED);
         const [, , VIEW_W, VIEW_H] = ASSET.viewBox;
         const ATLAS = createVectorRasterAtlas(MESHES, ASSET, COMPILED, {
+            textureArray: ATLAS_ARRAY,
+            layer: LAYER,
             pixelsPerUnit: 192 / Math.max(VIEW_W, VIEW_H),
             padding: 2,
         });
@@ -154,6 +157,8 @@
                     name: species.name,
                     parts: species.asset.mesh?.partCount ?? null,
                     rasterDraws: species.atlas.stats.rasterDraws,
+                    atlasWidth: species.atlas.stats.atlasWidth,
+                    atlasHeight: species.atlas.stats.atlasHeight,
                     reason: species.atlas.stats.reason,
                     fallbackReasons: species.atlas.stats.fallbackReasons,
                 })),

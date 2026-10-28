@@ -1,7 +1,6 @@
 import { validateCompiledAsset } from './schema.js';
 
-const DEFAULT_MAX_BYTES = 64 * 1024 * 1024;
-const WHITE = [1, 1, 1, 1];
+const IDENTITY_MATRIX = Object.freeze([1, 0, 0, 1, 0, 0]);
 const NOW = () => globalThis.performance?.now?.() ?? null;
 
 function nextPowerOfTwo(value) {
@@ -94,13 +93,13 @@ function wholeRunExpressions(geometry, runs) {
     return true;
 }
 
-function packRuns(runs, maxSize, maxBytes) {
+function packRuns(runs, maxWidth, maxHeight) {
     const WIDEST = Math.max(...runs.map((run) => run.tileWidth));
-    if (WIDEST > maxSize || runs.some((run) => run.tileHeight > maxSize)) {
+    if (WIDEST > maxWidth || runs.some((run) => run.tileHeight > maxHeight)) {
         return null;
     }
-    const WIDTHS = new Set([WIDEST, maxSize]);
-    for (let width = nextPowerOfTwo(WIDEST); width < maxSize; width *= 2) {
+    const WIDTHS = new Set([WIDEST, maxWidth]);
+    for (let width = nextPowerOfTwo(WIDEST); width < maxWidth; width *= 2) {
         WIDTHS.add(width);
     }
     let best = null;
@@ -121,7 +120,7 @@ function packRuns(runs, maxSize, maxBytes) {
         }
         const HEIGHT = y + rowHeight;
         const BYTES = WIDTH * HEIGHT * 4;
-        if (HEIGHT > maxSize || BYTES > maxBytes || (best && BYTES >= best.bytes)) {
+        if (HEIGHT > maxHeight || (best && BYTES >= best.bytes)) {
             continue;
         }
         best = { width: WIDTH, height: HEIGHT, bytes: BYTES, positions: POSITIONS };
@@ -129,46 +128,44 @@ function packRuns(runs, maxSize, maxBytes) {
     return best;
 }
 
-function quadGeometry(runs, packed, partCount, pixelsPerUnit, padding) {
-    const VERTICES = new Float32Array(runs.length * 4 * 11);
-    const UVS = new Float32Array(runs.length * 4 * 2);
-    const INDICES = new Uint16Array(runs.length * 6);
+/**
+ * One shared-quad instance per run: the UV rectangle selects the run's tile inside the layer (v runs downward from
+ * the top because the layer is rendered, not uploaded) and the local rectangle places it in asset space.
+ */
+function runTables(runs, packed, layerWidth, layerHeight, pixelsPerUnit, padding) {
+    const UV_RECTS = new Float32Array(runs.length * 4),
+        LOCAL_RECTS = new Float32Array(runs.length * 4),
+        PARTS = new Float32Array(runs.length);
     for (let runIndex = 0; runIndex < runs.length; runIndex++) {
         const RUN = runs[runIndex],
-            [TILE_X, TILE_Y] = packed.positions[runIndex],
-            LEFT = RUN.minX - padding / pixelsPerUnit,
-            TOP = RUN.minY - padding / pixelsPerUnit,
-            RIGHT = LEFT + RUN.tileWidth / pixelsPerUnit,
-            BOTTOM = TOP + RUN.tileHeight / pixelsPerUnit,
-            U0 = TILE_X / packed.width,
-            U1 = (TILE_X + RUN.tileWidth) / packed.width,
-            V0 = 1 - TILE_Y / packed.height,
-            V1 = 1 - (TILE_Y + RUN.tileHeight) / packed.height;
-        const CORNERS = [
-            [LEFT, TOP, U0, V0],
-            [RIGHT, TOP, U1, V0],
-            [RIGHT, BOTTOM, U1, V1],
-            [LEFT, BOTTOM, U0, V1],
-        ];
-        for (let corner = 0; corner < 4; corner++) {
-            const [X, Y, U, V] = CORNERS[corner],
-                VERTEX = runIndex * 4 + corner,
-                OFFSET = VERTEX * 11;
-            VERTICES.set([X, Y, ...WHITE, 0, 0, 0, 0, RUN.partIndex], OFFSET);
-            UVS.set([U, V], VERTEX * 2);
-        }
-        const FIRST = runIndex * 4;
-        INDICES.set([FIRST, FIRST + 1, FIRST + 2, FIRST, FIRST + 2, FIRST + 3], runIndex * 6);
+            [TILE_X, TILE_Y] = packed.positions[runIndex];
+        UV_RECTS.set(
+            [TILE_X / layerWidth, 1 - TILE_Y / layerHeight, RUN.tileWidth / layerWidth, -RUN.tileHeight / layerHeight],
+            runIndex * 4,
+        );
+        LOCAL_RECTS.set(
+            [
+                RUN.minX - padding / pixelsPerUnit,
+                RUN.minY - padding / pixelsPerUnit,
+                RUN.tileWidth / pixelsPerUnit,
+                RUN.tileHeight / pixelsPerUnit,
+            ],
+            runIndex * 4,
+        );
+        PARTS[runIndex] = RUN.partIndex;
     }
-    return { vertices: VERTICES, uvs: UVS, indices: INDICES, partCount, morphCount: 0, strideFloats: 11 };
+    return { uvRects: UV_RECTS, localRects: LOCAL_RECTS, parts: PARTS };
 }
 
-/** Bakes a retained vector asset into one ordered RGBA atlas without owning its mesh or players. */
+/**
+ * Bakes a retained vector asset into one layer of a caller-owned texture array and draws it as shared-quad runs.
+ * The caller owns the array and dedicates `layer` to this atlas; every atlas of one array batches into one draw.
+ */
 export function createVectorRasterAtlas(
     meshRenderer,
     asset,
     compiledAsset,
-    { pixelsPerUnit = 1, padding = 2, maxAtlasSize = null, maxAtlasBytes = DEFAULT_MAX_BYTES } = {},
+    { textureArray, layer, pixelsPerUnit = 1, padding = 2 } = {},
 ) {
     validateCompiledAsset(compiledAsset);
     const DEVICE = meshRenderer?.device;
@@ -178,7 +175,7 @@ export function createVectorRasterAtlas(
           sameGeometry(asset.mesh, compiledAsset.geometry)
         : compiledAsset.geometry.vertices.length === 0;
     if (
-        !DEVICE?.createRenderTarget ||
+        !DEVICE?.createTextureLayerTarget ||
         !DEVICE?.bindRenderTarget ||
         !DEVICE?.unbindRenderTarget ||
         !asset?.ownsPlayer ||
@@ -188,20 +185,22 @@ export function createVectorRasterAtlas(
     ) {
         throw new TypeError('A matching live vector asset and MeshRenderer are required');
     }
-    maxAtlasSize ??= DEVICE.maxTextureSize;
+    if (!textureArray || !DEVICE.isTextureArray(textureArray)) {
+        throw new TypeError('A texture array created by the same device is required');
+    }
     if (
+        !Number.isSafeInteger(layer) ||
+        layer < 0 ||
+        layer >= textureArray.layers ||
         !Number.isFinite(pixelsPerUnit) ||
         pixelsPerUnit <= 0 ||
         !Number.isSafeInteger(padding) ||
-        padding < 1 ||
-        !Number.isSafeInteger(maxAtlasSize) ||
-        maxAtlasSize < 1 ||
-        maxAtlasSize > DEVICE.maxTextureSize ||
-        !Number.isSafeInteger(maxAtlasBytes) ||
-        maxAtlasBytes < 4
+        padding < 1
     ) {
-        throw new TypeError('Positive pixel scale, padding, atlas dimensions and byte budget required');
+        throw new TypeError('A layer inside the texture array, a positive pixel scale and padding are required');
     }
+    const LAYER_WIDTH = textureArray.width,
+        LAYER_HEIGHT = textureArray.height;
     const GEOMETRY = compiledAsset.geometry;
     let unsupportedReason = null;
     if (GEOMETRY.morphCount) {
@@ -216,8 +215,6 @@ export function createVectorRasterAtlas(
         unsupportedReason = 'partTriangles';
     } else if (!unsupportedReason && !wholeRunExpressions(GEOMETRY, RUNS)) {
         unsupportedReason = 'expressionRunSelection';
-    } else if (!unsupportedReason && RUNS.length * 4 > 0x10000) {
-        unsupportedReason = 'tooManyRuns';
     }
     if (!unsupportedReason) {
         for (const RUN of RUNS) {
@@ -229,12 +226,16 @@ export function createVectorRasterAtlas(
             }
         }
     }
-    const PACKED = unsupportedReason ? null : packRuns(RUNS, maxAtlasSize, maxAtlasBytes);
+    const PACKED = unsupportedReason ? null : packRuns(RUNS, LAYER_WIDTH, LAYER_HEIGHT);
     if (!unsupportedReason && !PACKED) {
         unsupportedReason = 'atlasLimit';
     }
+    const TABLES = unsupportedReason
+        ? null
+        : runTables(RUNS, PACKED, LAYER_WIDTH, LAYER_HEIGHT, pixelsPerUnit, padding);
+    const MATRICES = TABLES ? new Float32Array(RUNS.length * 6) : null;
     let target = null;
-    let quad = null;
+    let quadAcquired = false;
     let bakedRestores = -1;
     let failedFrame = -1;
     let failedRestores = -1;
@@ -243,7 +244,6 @@ export function createVectorRasterAtlas(
     let bakeCount = 0;
     let bakeCpuMs = 0;
     let rasterDraws = 0;
-    let sampledCpuDraws = 0;
     let vectorDraws = 0;
     const FALLBACK_REASONS = Object.create(null);
     const FALLBACK = (player, options, reason) => {
@@ -253,13 +253,13 @@ export function createVectorRasterAtlas(
         return { backend: 'vector', reason };
     };
     const RELEASE = () => {
-        const QUAD = quad,
-            TARGET = target;
-        quad = null;
+        const TARGET = target,
+            ACQUIRED = quadAcquired;
         target = null;
+        quadAcquired = false;
         try {
-            if (QUAD) {
-                meshRenderer.deleteMesh(QUAD);
+            if (ACQUIRED) {
+                meshRenderer.releaseQuadMesh();
             }
         } finally {
             if (TARGET) {
@@ -292,8 +292,11 @@ export function createVectorRasterAtlas(
                 DEVICE.deleteRenderTarget(target);
                 target = null;
             }
-            target ??= DEVICE.createRenderTarget(PACKED.width, PACKED.height, { format: 'rgba', filter: 'linear' });
-            quad ??= meshRenderer.createMesh(quadGeometry(RUNS, PACKED, GEOMETRY.partCount, pixelsPerUnit, padding));
+            target ??= DEVICE.createTextureLayerTarget(textureArray, layer);
+            if (!quadAcquired) {
+                meshRenderer.acquireQuadMesh();
+                quadAcquired = true;
+            }
             DEVICE.bindRenderTarget(target);
             bound = true;
             DEVICE.clear({ color: [0, 0, 0, 0] });
@@ -304,14 +307,14 @@ export function createVectorRasterAtlas(
                     TY = TILE_Y + padding - pixelsPerUnit * RUN.minY;
                 meshRenderer.drawMesh(asset.mesh, {
                     projection: [
-                        (2 * pixelsPerUnit) / PACKED.width,
+                        (2 * pixelsPerUnit) / LAYER_WIDTH,
                         0,
                         0,
                         0,
-                        (-2 * pixelsPerUnit) / PACKED.height,
+                        (-2 * pixelsPerUnit) / LAYER_HEIGHT,
                         0,
-                        (2 * TX) / PACKED.width - 1,
-                        1 - (2 * TY) / PACKED.height,
+                        (2 * TX) / LAYER_WIDTH - 1,
+                        1 - (2 * TY) / LAYER_HEIGHT,
                         1,
                     ],
                     indexRange: [RUN.firstIndex, RUN.indexCount],
@@ -377,25 +380,23 @@ export function createVectorRasterAtlas(
         if (RESULT.backend !== 'raster') {
             return FALLBACK(player, options, RESULT.reason);
         }
-        const { excludeParts: EXCLUDE_PARTS = null, ...DRAW_OPTIONS } = options;
+        const { excludeParts: EXCLUDE_PARTS = null, matrix: MATRIX = IDENTITY_MATRIX, ...DRAW_OPTIONS } = options;
         const POSE = player.preparePose({ excludeParts: EXCLUDE_PARTS });
-        let parts = null;
         if (!POSE) {
-            parts = player.partPoses().map((part, index) => ({
-                ...part,
-                visible: part.visible && !EXCLUDE_PARTS?.has(compiledAsset.metadata.parts[index].id),
-            }));
+            return FALLBACK(player, options, 'poseUnavailable');
         }
-        meshRenderer.drawMesh(quad, {
+        for (let run = 0; run < RUNS.length; run++) {
+            MATRICES.set(MATRIX, run * 6);
+        }
+        meshRenderer.drawQuadRuns({
             ...DRAW_OPTIONS,
-            texture: target,
+            matrices: MATRICES,
+            runs: TABLES,
+            texture: textureArray,
+            layer,
             pose: POSE,
-            parts,
         });
         rasterDraws++;
-        if (!POSE) {
-            sampledCpuDraws++;
-        }
         return { backend: 'raster', reason: null };
     };
     const DISPOSE = () => {
@@ -424,16 +425,15 @@ export function createVectorRasterAtlas(
                 disposed,
                 reason: unsupportedReason ?? (lastFailure ? 'bakeFailed' : null),
                 lastError: lastFailure,
+                layer,
                 runCount: RUNS?.length ?? 0,
+                // Region of the layer the packed runs occupy; the layer itself is owned by the texture array.
                 atlasWidth: PACKED?.width ?? 0,
                 atlasHeight: PACKED?.height ?? 0,
-                // Planned RGBA capacity; allocatedBytes tracks the live target.
                 atlasBytes: PACKED?.bytes ?? 0,
-                allocatedBytes: !disposed && target ? (PACKED?.bytes ?? 0) : 0,
                 bakeCount,
                 bakeCpuMs,
                 rasterDraws,
-                sampledCpuDraws,
                 vectorDraws,
                 fallbackReasons: { ...FALLBACK_REASONS },
             };

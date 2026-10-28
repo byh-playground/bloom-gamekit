@@ -49,10 +49,25 @@ const TEXTURE_INSTANCE_ATTRIBUTES = ['i_uvRect', 'i_localRect'].map((name, i) =>
     offset: 64 + i * 16,
     source: 'instance',
 }));
-// Instance record: 16 shared floats, then uvRect (4), localRect (4) and the texture-array layer (1) for textured
-// meshes. Plain 2D textures carry the layer slot too, so one layout serves every textured instance.
+// Instance record: 16 shared floats, then uvRect (4), localRect (4), the texture-array layer (1) and the pose part
+// index (1) for textured meshes. Plain 2D textures carry both slots too, so one layout serves every textured instance.
 const PLAIN_INSTANCE_FLOATS = 16;
-const TEXTURED_INSTANCE_FLOATS = 25;
+const TEXTURED_INSTANCE_FLOATS = 26;
+// Corners (0,0) (1,0) (1,1) (0,1) as 11-float vertices: position, white color, unused morph and part slots.
+const QUAD_VERTICES = Float32Array.from(
+    [
+        [0, 0],
+        [1, 0],
+        [1, 1],
+        [0, 1],
+    ].flatMap(([x, y]) => [x, y, 1, 1, 1, 1, 0, 0, 0, 0, 0]),
+);
+const TEXTURE_PART_INSTANCE_ATTRIBUTE = Object.freeze({
+    name: 'i_part',
+    size: 1,
+    offset: 100,
+    source: 'instance',
+});
 const TEXTURE_LAYER_INSTANCE_ATTRIBUTE = Object.freeze({
     name: 'i_layer',
     size: 1,
@@ -70,6 +85,7 @@ function shader(
     poseTexture = false,
     paintRegionCount = 0,
     textureArray = false,
+    instancePart = false,
 ) {
     const PAINT_INPUT = paintRegionCount
             ? `attribute float a_paintRegion;uniform vec4 u_paintRegions[${paintRegionCount + 1}];`
@@ -79,11 +95,13 @@ function shader(
             : '',
         BASE_COLOR = paintRegionCount ? 'authored' : 'a_color';
     const PART_POSE = partCount > 1 || poseTexture;
+    // The shared quad has one vertex set for every part, so its part index comes from the instance.
+    const PART_ATTRIBUTE = instancePart ? 'i_part' : 'a_part';
     const PART_INPUTS = PART_POSE
-        ? `${partCount > 1 ? 'attribute float a_part;' : ''}uniform vec4 u_parts[${partCount * 3}];`
+        ? `${instancePart ? `${instanced ? 'attribute' : 'uniform'} highp float i_part;` : partCount > 1 ? 'attribute float a_part;' : ''}uniform vec4 u_parts[${partCount * 3}];`
         : '';
     const PART_SETUP = PART_POSE
-        ? `int index=${partCount > 1 ? 'int(a_part)*3' : '0'};vec4 row0=u_parts[index];vec4 row1=u_parts[index+1];vec4 pose=u_parts[index+2];`
+        ? `int index=${instancePart || partCount > 1 ? `int(${PART_ATTRIBUTE})*3` : '0'};vec4 row0=u_parts[index];vec4 row1=u_parts[index+1];vec4 pose=u_parts[index+2];`
         : '';
     const INPUTS = ['i_row0', 'i_row1', 'i_color', 'i_params']
         .map((name) => `${instanced ? 'attribute' : 'uniform'} vec4 ${name};`)
@@ -188,7 +206,7 @@ function poseTextureShader(source) {
     return source
         .replace(/uniform vec4 u_parts\[\d+\];/, 'uniform sampler2D u_poseTexture;')
         .replace(
-            /(int index=(?:int\(a_part\)\*3|0);)vec4 row0=u_parts\[index\];vec4 row1=u_parts\[index\+1\];vec4 pose=u_parts\[index\+2\];/,
+            /(int index=(?:int\((?:a_part|i_part)\)\*3|0);)vec4 row0=u_parts\[index\];vec4 row1=u_parts\[index\+1\];vec4 pose=u_parts\[index\+2\];/,
             '$1int poseRow=int(-i_params.x-1.0);vec4 row0=texelFetch(u_poseTexture,ivec2(index,poseRow),0);vec4 row1=texelFetch(u_poseTexture,ivec2(index+1,poseRow),0);vec4 pose=texelFetch(u_poseTexture,ivec2(index+2,poseRow),0);',
         )
         .replaceAll('(i_params.x+pose.x)', '(pose.x)')
@@ -224,9 +242,9 @@ function poseProgramShader(source) {
     return source
         .replace(/uniform vec4 u_parts\[\d+\];/, POSE_PROGRAM_FUNCTIONS)
         .replace(
-            /int index=(int\(a_part\)\*3|0);vec4 row0=u_parts\[index\];vec4 row1=u_parts\[index\+1\];vec4 pose=u_parts\[index\+2\];/,
+            /int index=(int\((?:a_part|i_part)\)\*3|0);vec4 row0=u_parts\[index\];vec4 row1=u_parts\[index\+1\];vec4 pose=u_parts\[index\+2\];/,
             (_match, expression) =>
-                `int poseRow=int(-i_params.x-1.0);vec4 row0;vec4 row1;vec4 pose;poseEval(${expression === '0' ? '0' : 'int(a_part)'},poseRow,row0,row1,pose);`,
+                `int poseRow=int(-i_params.x-1.0);vec4 row0;vec4 row1;vec4 pose;poseEval(${expression === '0' ? '0' : expression.slice(0, -2)},poseRow,row0,row1,pose);`,
         )
         .replaceAll('(i_params.x+pose.x)', '(pose.x)')
         .replaceAll('(i_params.y+pose.y)', '(pose.y)');
@@ -517,6 +535,8 @@ export class MeshRenderer {
             : null;
         this.pipelines = new Map();
         this.meshes = new Set();
+        this.sharedQuad = null;
+        this.sharedQuadUsers = 0;
         this.bytes = 0;
         this.count = 0;
         this.pending = null;
@@ -638,7 +658,7 @@ export class MeshRenderer {
     poseStats() {
         return this.poseRenderer?.stats() ?? null;
     }
-    _pipeline(mesh, clipped, worldMode = false, poseMode = 0, textureArray = false) {
+    _pipeline(mesh, clipped, worldMode = false, poseMode = 0, textureArray = false, instancePart = false) {
         const KEY =
             Number(textureArray) +
             ':' +
@@ -656,7 +676,9 @@ export class MeshRenderer {
             ':' +
             Number(mesh.hasTextureCoordinates) +
             ':' +
-            (mesh.paintRegionNames?.length ?? 0);
+            (mesh.paintRegionNames?.length ?? 0) +
+            ':' +
+            Number(instancePart);
         let pipeline = this.pipelines.get(KEY);
         if (pipeline) {
             return pipeline;
@@ -699,6 +721,9 @@ export class MeshRenderer {
                 if (textureArray) {
                     UNIFORMS.i_layer = '1f';
                 }
+                if (instancePart) {
+                    UNIFORMS.i_part = '1f';
+                }
             }
         }
         if (mesh.paintRegionNames) {
@@ -724,6 +749,7 @@ export class MeshRenderer {
                     poseMode,
                     mesh.paintRegionNames?.length ?? 0,
                     textureArray,
+                    instancePart,
                 ),
             ),
             fragment: fragment(this.maxPlanes, clipped, mesh.hasTextureCoordinates, textureArray),
@@ -760,6 +786,7 @@ export class MeshRenderer {
                 ...(this.instanced ? (worldMode ? WORLD_INSTANCE_ATTRIBUTES : INSTANCE_ATTRIBUTES) : []),
                 ...(this.instanced && mesh.hasTextureCoordinates ? TEXTURE_INSTANCE_ATTRIBUTES : []),
                 ...(this.instanced && textureArray ? [TEXTURE_LAYER_INSTANCE_ATTRIBUTE] : []),
+                ...(this.instanced && instancePart ? [TEXTURE_PART_INSTANCE_ATTRIBUTE] : []),
             ],
             uniforms: UNIFORMS,
         });
@@ -977,9 +1004,43 @@ export class MeshRenderer {
         this.metrics.geometryBytesUploaded += UPLOAD_BYTE_LENGTH;
         return MESH;
     }
+    /**
+     * The one unit quad every textured sprite draws (SSOT). The local rectangle, UV rectangle, layer and pose part
+     * come from instances, so sprites of any texture array page or atlas share one mesh and one batch.
+     */
+    acquireQuadMesh() {
+        this._ready();
+        this.sharedQuadUsers++;
+        if (!this.sharedQuad) {
+            this.sharedQuad = this.createMesh({
+                vertices: QUAD_VERTICES.slice(),
+                uvs: Float32Array.from([0, 0, 1, 0, 1, 1, 0, 1]),
+                indices: new Uint16Array([0, 1, 2, 0, 2, 3]),
+                strideFloats: 11,
+                partCount: 1,
+                morphCount: 0,
+            });
+        }
+        return this.sharedQuad;
+    }
+    /** Pairs with acquireQuadMesh; the mesh is deleted with its last user so disposed owners leave no geometry. */
+    releaseQuadMesh() {
+        if (!this.sharedQuad || this.sharedQuadUsers < 1) {
+            return false;
+        }
+        if (--this.sharedQuadUsers === 0) {
+            const MESH = this.sharedQuad;
+            this.sharedQuad = null;
+            this.deleteMesh(MESH);
+        }
+        return true;
+    }
     deleteMesh(mesh) {
         if (!this.meshes.has(mesh)) {
             return false;
+        }
+        if (mesh === this.sharedQuad) {
+            throw new Error('Release the shared quad mesh with releaseQuadMesh');
         }
         if (this.pending?.mesh === mesh || (this.alphaQueueCount && this.alphaQueueState.mesh === mesh)) {
             this.flush('deleteMesh');
@@ -1005,8 +1066,25 @@ export class MeshRenderer {
     }
     /** Captures state by value; subsequent transform/paint changes do not alter queued instances. */
     drawMesh(mesh, options = {}) {
+        this._drawPublic(mesh, options, options.matrix ?? IDENTITY, 1, null);
+    }
+    /**
+     * Draws several rectangles of one texture array layer as instances of the shared quad. `matrices` holds six
+     * affine floats per run, `runs` holds `uvRects`/`localRects` (four floats per run) and, when `pose` is given,
+     * `parts` (the pose part each run follows). Runs batch with every other draw of the same texture array.
+     */
+    drawQuadRuns(options = {}) {
+        const { matrices: MATRICES, runs: RUNS, ...REST } = options;
+        if (!RUNS || !MATRICES || MATRICES.length % 6 || !MATRICES.length) {
+            throw new TypeError('drawQuadRuns requires packed matrices and runs');
+        }
+        if (!this.sharedQuad) {
+            throw new Error('acquireQuadMesh is required before drawQuadRuns');
+        }
+        this._drawPublic(this.sharedQuad, REST, MATRICES, MATRICES.length / 6, RUNS);
+    }
+    _drawPublic(mesh, options, matrices, count, runs) {
         const {
-            matrix: MATRIX = IDENTITY,
             projection: PROJECTION,
             morph: MORPH = [0, 0],
             parts: PARTS = null,
@@ -1034,8 +1112,9 @@ export class MeshRenderer {
             worldMatrix: WORLD_MATRIX,
         } = options;
         this._drawMeshInstances(mesh, {
-            matrices: MATRIX,
-            count: 1,
+            matrices,
+            count,
+            runs,
             projection: PROJECTION,
             viewProjection: VIEW_PROJECTION,
             worldMatrix: WORLD_MATRIX,
@@ -1302,6 +1381,7 @@ export class MeshRenderer {
             layer = 0,
             uvRect = IDENTITY_RECT,
             localRect = IDENTITY_RECT,
+            runs = null,
             color = WHITE,
             paintRegions = null,
             forceColor = false,
@@ -1339,6 +1419,29 @@ export class MeshRenderer {
             }
         } else if (layer !== 0) {
             throw new TypeError('layer requires a texture array');
+        }
+        if (runs !== null) {
+            // One instance per run: each run supplies its own rectangles and, with a pose, its part index.
+            if (
+                mesh !== this.sharedQuad ||
+                !Number.isSafeInteger(count) ||
+                runs.uvRects?.length !== count * 4 ||
+                runs.localRects?.length !== count * 4 ||
+                (runs.parts != null && runs.parts.length !== count)
+            ) {
+                throw new TypeError('runs require the shared quad mesh and one rectangle pair per instance');
+            }
+            for (let i = 0; i < count * 4; i++) {
+                if (!Number.isFinite(runs.uvRects[i]) || !Number.isFinite(runs.localRects[i])) {
+                    throw new TypeError('Run rectangles must be finite');
+                }
+            }
+        }
+        if (pose !== null && mesh === this.sharedQuad && !runs?.parts) {
+            throw new TypeError('A pose on the shared quad requires runs.parts');
+        }
+        if (runs?.parts && pose === null) {
+            throw new TypeError('runs.parts requires a prepared pose');
         }
         if (uvRect !== IDENTITY_RECT) {
             finiteArray(uvRect, 4, 'uvRect');
@@ -1490,8 +1593,16 @@ export class MeshRenderer {
             throw new RangeError('indexRange exceeds the selected mesh index data');
         }
         const POSE_DRAW = pose === null ? null : this._poses().resolve(pose);
-        if (POSE_DRAW && POSE_DRAW.partCount !== mesh.partCount) {
+        if (POSE_DRAW && mesh !== this.sharedQuad && POSE_DRAW.partCount !== mesh.partCount) {
             throw new TypeError('Pose and mesh part counts must match');
+        }
+        if (POSE_DRAW && mesh === this.sharedQuad) {
+            for (let i = 0; i < count; i++) {
+                const PART = runs.parts[i];
+                if (!Number.isInteger(PART) || PART < 0 || PART >= POSE_DRAW.partCount) {
+                    throw new RangeError('runs.parts must be pose part indices');
+                }
+            }
         }
         if (POSE_DRAW && depthWriteAlphaThreshold !== null) {
             throw new TypeError('Alpha depth classification requires ordinary CPU part poses');
@@ -1667,8 +1778,17 @@ export class MeshRenderer {
                     DATA[AT + 15] = INSTANCE_DEPTH;
                 }
                 if (mesh.hasTextureCoordinates) {
-                    DATA.set(uvRect, AT + 16);
-                    DATA.set(localRect, AT + 20);
+                    if (runs) {
+                        for (let k = 0; k < 4; k++) {
+                            DATA[AT + 16 + k] = runs.uvRects[i * 4 + k];
+                            DATA[AT + 20 + k] = runs.localRects[i * 4 + k];
+                        }
+                        DATA[AT + 25] = runs.parts ? runs.parts[i] : 0;
+                    } else {
+                        DATA.set(uvRect, AT + 16);
+                        DATA.set(localRect, AT + 20);
+                        DATA[AT + 25] = 0;
+                    }
                     DATA[AT + 24] = layer;
                 }
             }
@@ -2122,6 +2242,7 @@ export class MeshRenderer {
                 WORLD_MODE,
                 POSE_KIND === 'program' ? 2 : POSE_KIND === 'matrix' ? 1 : 0,
                 TEXTURE !== null && this.device.isTextureArray(TEXTURE),
+                POSE_KIND !== null && MESH === this.sharedQuad,
             ),
             UNIFORMS = WORLD_MODE
                 ? {
@@ -2213,6 +2334,9 @@ export class MeshRenderer {
                     UNIFORMS.i_localRect = INSTANCE_DATA.subarray(i * INSTANCE_FLOATS + 20, i * INSTANCE_FLOATS + 24);
                     if (TEXTURE !== null && this.device.isTextureArray(TEXTURE)) {
                         UNIFORMS.i_layer = INSTANCE_DATA[i * INSTANCE_FLOATS + 24];
+                    }
+                    if (POSE_KIND !== null && MESH === this.sharedQuad) {
+                        UNIFORMS.i_part = INSTANCE_DATA[i * INSTANCE_FLOATS + 25];
                     }
                 }
                 this.device.draw({
@@ -2320,6 +2444,8 @@ export class MeshRenderer {
             }
         }
         this.meshes.clear();
+        this.sharedQuad = null;
+        this.sharedQuadUsers = 0;
         this.bytes = 0;
         this.alphaRunCache = new WeakMap();
         this.alphaRunScratch.length = 0;
