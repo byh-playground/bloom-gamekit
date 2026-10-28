@@ -63,22 +63,20 @@
     }
 </style>
 <main>
-    <h1>텍스처 어레이로 그리기</h1>
+    <h1>공유 아틀라스로 그리기</h1>
     <p>
-        아틀라스 페이지가 달라도 텍스처 어레이 하나를 바인딩하면 한 번에 그립니다. 페이지마다 텍스처를 따로 쓰면
-        페이지가 바뀔 때마다 그리기 호출이 나뉩니다.
+        스프라이트 시트가 여러 장이어도 모두 한 텍스처 어레이의 영역이라서, 도형을 사이사이에 끼워도 한 번에 그립니다.
     </p>
     <div class="controls">
-        <button id="mode-array" type="button" aria-pressed="true">텍스처 어레이 1개</button>
-        <button id="mode-separate" type="button" aria-pressed="false">페이지별 텍스처 4개</button>
+        <button id="mode-sprites" type="button" aria-pressed="true">스프라이트만</button>
+        <button id="mode-mixed" type="button" aria-pressed="false">도형 끼워 그리기</button>
     </div>
     <canvas id="scene" width="720" height="400"></canvas>
     <p id="stats" aria-live="polite"></p>
     <ul>
-        <li>스프라이트는 페이지를 번갈아 가며 같은 순서로 그리므로 두 방식의 화면은 같습니다.</li>
-        <li>어레이의 모든 레이어는 같은 크기이고 남는 영역은 투명입니다.</li>
-        <li>어레이는 쓰는 면적과 관계없이 레이어 전체 메모리를 처음에 할당합니다.</li>
-        <li>mesh가 다르면 어레이여도 그리기 호출이 나뉩니다.</li>
+        <li>시트 4장은 장치가 가진 어레이 하나의 영역 4개이며, 스프라이트는 시트를 번갈아 가며 그립니다.</li>
+        <li>두 번째 방식은 스프라이트마다 앞에 사각형을 그려도 같은 그리기 호출에 들어갑니다.</li>
+        <li>블렌드나 클리핑 방식이 바뀌면 그리기 호출이 나뉩니다.</li>
     </ul>
 </main>
 <script>
@@ -358,6 +356,7 @@ ${converted}`;
       this.checkGLErrors = checkGLErrors;
       this.textureAtlasOptions = { ...textureAtlas };
       this._textureAtlas = null;
+      this.batchers = /* @__PURE__ */ new Set();
       integer(maxTextures, "maxTextures", 1, 32);
       integer(maxBufferBytes, "maxBufferBytes", 4);
       this.canvas = canvas;
@@ -403,6 +402,7 @@ ${converted}`;
         frame: 0,
         vectorFlushCalls: 0,
         vectorSubmissions: 0,
+        spriteRuns: 0,
         pathTessellations: 0,
         pathStrokeBuilds: 0,
         meshCreates: 0,
@@ -414,6 +414,7 @@ ${converted}`;
         textureUploads: 0,
         textureBytes: 0,
         imageTexUploadCount: 0,
+        regionClears: 0,
         imageTexUploadBytes: 0,
         frameCopies: 0,
         bufferAllocations: 0,
@@ -1081,17 +1082,17 @@ ${converted}`;
      */
     createTextureLayerTarget(array, layer) {
       this._ready();
-      const ARRAY2 = this._handle(this.textures, array, "texture array");
-      if (ARRAY2.target !== "array") {
+      const ARRAY = this._handle(this.textures, array, "texture array");
+      if (ARRAY.target !== "array") {
         throw new TypeError("A texture array is required");
       }
-      integer(layer, "layer", 0, ARRAY2.layers - 1);
+      integer(layer, "layer", 0, ARRAY.layers - 1);
       const RECORD = {
         kind: "renderTarget",
-        arrayRecord: ARRAY2,
+        arrayRecord: ARRAY,
         layer,
-        width: ARRAY2.width,
-        height: ARRAY2.height,
+        width: ARRAY.width,
+        height: ARRAY.height,
         format: "rgba",
         premultiplied: true,
         stencil: false,
@@ -1100,10 +1101,44 @@ ${converted}`;
         available: true
       };
       this._renderTarget(RECORD);
-      const HANDLE = Object.freeze({ width: ARRAY2.width, height: ARRAY2.height, layer });
+      const HANDLE = Object.freeze({ width: ARRAY.width, height: ARRAY.height, layer });
       this.renderTargets.set(HANDLE, RECORD);
       this.stats.renderTargetCount = this.renderTargets.size;
       return HANDLE;
+    }
+    /**
+     * Copies `source` into the rectangle (x, y, width, height) of `target`, measured from the target's bottom-left,
+     * with linear filtering when the sizes differ. A 2:1 copy averages exactly each 2x2 texel footprint.
+     */
+    blitRenderTarget(source, target, { x = 0, y = 0, width = target.width, height = target.height } = {}) {
+      this._ready();
+      if (!this.active) {
+        throw new Error("beginFrame required");
+      }
+      const FROM = this._handle(this.renderTargets, source, "render target"), TO = this._handle(this.renderTargets, target, "render target");
+      integer(x, "blit x", 0, TO.width - 1);
+      integer(y, "blit y", 0, TO.height - 1);
+      integer(width, "blit width", 1, TO.width - x);
+      integer(height, "blit height", 1, TO.height - y);
+      if (!FROM.available || !TO.available || FROM === TO) {
+        throw new Error("Blit needs two distinct available render targets");
+      }
+      const GL = this.gl, PREVIOUS = GL.getParameter(GL.FRAMEBUFFER_BINDING);
+      GL.bindFramebuffer(GL.READ_FRAMEBUFFER, FROM.framebuffer);
+      GL.bindFramebuffer(GL.DRAW_FRAMEBUFFER, TO.framebuffer);
+      GL.blitFramebuffer(
+        0,
+        0,
+        FROM.width,
+        FROM.height,
+        x,
+        y,
+        x + width,
+        y + height,
+        GL.COLOR_BUFFER_BIT,
+        width === FROM.width && height === FROM.height ? GL.NEAREST : GL.LINEAR
+      );
+      GL.bindFramebuffer(GL.FRAMEBUFFER, PREVIOUS);
     }
     /** Float targets can become unavailable after restore while ordinary rendering stays ready. */
     isRenderTargetAvailable(handle) {
@@ -1309,6 +1344,7 @@ ${converted}`;
       integer(layer, "layer", 0, R.layers - 1);
       integer(width, "region width", 1, R.width);
       integer(height, "region height", 1, R.height);
+      const IMAGE_UPLOADS = this.stats.imageTexUploadCount, IMAGE_BYTES = this.stats.imageTexUploadBytes;
       this.updateTextureRegion(
         handle,
         layer,
@@ -1317,9 +1353,29 @@ ${converted}`;
         { width, height, data: new Uint8Array(width * height * 4) },
         { premultiplied: true }
       );
+      this.stats.imageTexUploadCount = IMAGE_UPLOADS;
+      this.stats.imageTexUploadBytes = IMAGE_BYTES;
+      this.stats.regionClears++;
       R.layerRegions[layer] = R.layerRegions[layer].filter(
         (r) => !(r.x === x && r.y === y && r.width === width && r.height === height)
       );
+    }
+    /**
+     * A renderer that queues draws registers its flush here, so a shared GPU resource that is about to change
+     * (pose rows, data textures) first submits everything already queued against its old contents.
+     * Returns the function that unregisters it.
+     */
+    registerBatcher(flush) {
+      if (typeof flush !== "function") {
+        throw new TypeError("A flush function is required");
+      }
+      this.batchers.add(flush);
+      return () => this.batchers.delete(flush);
+    }
+    flushBatchers(reason) {
+      for (const FLUSH of this.batchers) {
+        FLUSH(reason);
+      }
     }
     /**
      * The device's shared image atlas (SSOT): vector fills, gradients and glyphs allocate regions here, so every
@@ -1588,6 +1644,7 @@ ${converted}`;
       for (const NAME of [
         "vectorFlushCalls",
         "vectorSubmissions",
+        "spriteRuns",
         "pathTessellations",
         "pathStrokeBuilds",
         "meshCreates",
@@ -1920,33 +1977,60 @@ ${converted}`;
       this.state = "disposed";
     }
   };
-  var IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
-  var VERTEX_FLOATS = 20;
-  var VERTEX_BYTES = VERTEX_FLOATS * 4;
-  var FRAGMENT_VARYINGS = "varying highp vec2 v_uv; varying vec4 v_color; varying highp vec4 v_paint; varying highp vec4 v_radial; varying highp vec4 v_rect;";
-  var FINISH = "float a=texel.a*v_color.a;vec3 rgb=mix(texel.rgb*v_color.rgb*v_color.a,vec3(a),v_paint.y);gl_FragColor=vec4(rgb,a);";
-  var FRAGMENT = `precision mediump float; precision mediump sampler2DArray; uniform sampler2DArray u_texture;
-${FRAGMENT_VARYINGS}
-float radialParameter(vec2 q){
-  vec2 d=v_radial.xy;float r0=v_radial.z,dr=v_radial.w;
-  float a=dot(d,d)-dr*dr,b=-2.0*(dot(q,d)+r0*dr),c=dot(q,q)-r0*r0;
-  if(abs(a)<0.000001){if(abs(b)<0.000001)return -10000.0;float t=-c/b;return r0+dr*t>0.0?t:-10000.0;}
-  float discriminant=b*b-4.0*a*c;if(discriminant<0.0)return -10000.0;
-  float root=sqrt(max(discriminant,0.0)),t0=(-b-root)/(2.0*a),t1=(-b+root)/(2.0*a),chosen=-10000.0;
-  if(r0+dr*t0>0.0)chosen=t0;if(r0+dr*t1>0.0)chosen=max(chosen,t1);return chosen;
-}
-void main(){if(v_paint.z>1.5&&v_paint.z<2.5)discard;vec2 uv=v_uv;
-if(v_paint.z>2.5){uv=v_rect.xy+vec2(clamp(v_uv.x,0.0,1.0),0.5)*v_rect.zw;}
-else if(v_paint.z>0.5){float t=radialParameter(v_uv);if(t< -1000.0)discard;uv=v_rect.xy+vec2(clamp(t,0.0,1.0),0.5)*v_rect.zw;}
-if(v_paint.w>0.5){vec2 size=vec2(textureSize(u_texture,0).xy);uv=(floor(uv*size)+0.5)/size;}
-vec4 texel=texture2D(u_texture,vec3(uv,floor(v_paint.x+0.5)));${FINISH}}`;
-  var GROUP_FRAGMENT = `precision mediump float; uniform sampler2D u_texture;
-${FRAGMENT_VARYINGS}
-void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
+  var EMPTY_CLIP = Object.freeze({
+    key: "",
+    values: null,
+    count: 0
+  });
+  function clipPlanes(clips, maxPlanes) {
+    if (!clips?.length) {
+      return EMPTY_CLIP;
+    }
+    const VALUES = [], KEY = [];
+    for (const POLYGON of clips) {
+      if (!Array.isArray(POLYGON) || POLYGON.length < 3 || POLYGON.some((p) => !Number.isFinite(p?.x) || !Number.isFinite(p?.y))) {
+        throw new TypeError("Finite convex clip polygons required");
+      }
+      let area = 0;
+      for (let i = 0; i < POLYGON.length; i++) {
+        const P = POLYGON[i], Q = POLYGON[(i + 1) % POLYGON.length];
+        area += P.x * Q.y - Q.x * P.y;
+      }
+      if (Math.abs(area) < 1e-12) {
+        return {
+          key: "empty",
+          values: [0, 0, -1],
+          count: 1
+        };
+      }
+      const SIGN = area >= 0 ? 1 : -1;
+      for (let i = 0; i < POLYGON.length; i++) {
+        const P = POLYGON[i], Q = POLYGON[(i + 1) % POLYGON.length], DX = Q.x - P.x, DY = Q.y - P.y, LENGTH = Math.hypot(DX, DY);
+        if (!LENGTH) {
+          continue;
+        }
+        const A_LOCAL = -DY / LENGTH * SIGN, B_LOCAL = DX / LENGTH * SIGN, C_LOCAL = -(A_LOCAL * P.x + B_LOCAL * P.y);
+        VALUES.push(A_LOCAL, B_LOCAL, C_LOCAL);
+        KEY.push(A_LOCAL, B_LOCAL, C_LOCAL);
+      }
+    }
+    if (VALUES.length / 3 > maxPlanes) {
+      throw new RangeError(`Clipping exceeds ${maxPlanes} edge planes`);
+    }
+    return {
+      key: KEY.join(","),
+      values: VALUES,
+      count: VALUES.length / 3
+    };
+  }
   var MAX_PARTS = 16;
   var POSE_WIDTH = MAX_PARTS * 3;
   var OVERRIDE_WIDTH = MAX_PARTS * 2;
   var PROGRAM_WIDTH = 256;
+  var OWNERS = /* @__PURE__ */ new WeakMap();
+  function poseRendererOf(handle) {
+    return OWNERS.get(handle) ?? null;
+  }
   var PoseRenderer = class {
     constructor(device, { backend = "auto", onBoundary = () => {
     } } = {}) {
@@ -2154,6 +2238,7 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
         baseScratch: new Float32Array(OVERRIDE_WIDTH * 4)
       };
       this.instances.set(HANDLE, RECORD);
+      OWNERS.set(HANDLE, this);
       this.rows[ROW] = RECORD;
       this.pendingUpdates = true;
       return HANDLE;
@@ -2396,6 +2481,1648 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
       this.disposed = true;
     }
   };
+  var POSE_PROGRAM_FUNCTIONS = `uniform sampler2D u_program;uniform sampler2D u_state;uniform sampler2D u_overrides;uniform int u_programWidth;
+vec4 poseData(int base,int at){int i=at+base;return texelFetch(u_program,ivec2(i%u_programWidth,i/u_programWidth),0);}
+float poseChannel(int base,int header,float time){vec4 h=poseData(base,header);float value=h.z;
+ for(int i=0;i<64;i++){if(i>=int(h.y))break;vec4 s=poseData(base,int(h.x)+i*2);if(time<s.z)break;
+ if(time>=s.w){value=s.y;continue;}float t=clamp((time-s.z)/(s.w-s.z),0.0,1.0);float ease=poseData(base,int(h.x)+i*2+1).x;
+ if(ease>1.5)t=1.0-(1.0-t)*(1.0-t);else if(ease>0.5)t=0.5-0.5*cos(3.141592653589793*t);
+ value=mix(s.x,s.y,t);break;}return value;}
+mat3 poseLocal(int base,int part,int header,float time,int row,out float opacity){
+ vec4 b0=texelFetch(u_overrides,ivec2(part*2,row),0);vec4 b1=texelFetch(u_overrides,ivec2(part*2+1,row),0);
+ int at=header+part*6;vec2 translation=b0.xy+vec2(poseChannel(base,at,time),poseChannel(base,at+1,time));
+ float rotation=b0.z+poseChannel(base,at+2,time);float sx=b0.w*poseChannel(base,at+3,time);float sy=b1.x*poseChannel(base,at+4,time);
+ float c=cos(rotation);float s=sin(rotation);vec2 x=vec2(c,s)*sx;vec2 y=vec2(-s,c)*sy;vec2 pivot=poseData(base,part).xy;
+ opacity=b1.y*b1.z*poseChannel(base,at+5,time);return mat3(vec3(x,0.0),vec3(y,0.0),vec3(pivot+translation-x*pivot.x-y*pivot.y,1.0));}
+void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
+ vec4 playback=texelFetch(u_state,ivec2(0,row),0);vec4 morph=texelFetch(u_state,ivec2(1,row),0);
+ int base=int(morph.w);float time;
+ if(playback.z<0.5)time=clamp(playback.y,0.0,playback.w);
+ else if(playback.z<1.5)time=mod(playback.y,playback.w);
+ else{float point=mod(playback.y,playback.w*2.0);time=point<=playback.w?point:playback.w*2.0-point;}
+ mat3 matrix=mat3(1.0);float alpha=1.0;int current=part;
+ for(int depth=0;depth<16;depth++){if(current<0)break;float opacity;mat3 m=poseLocal(base,current,int(playback.x),time,row,opacity);matrix=m*matrix;alpha*=opacity;current=int(poseData(base,current).z);}
+ if((int(morph.z)&(1<<part))!=0)alpha=0.0;
+ row0=vec4(matrix[0][0],matrix[1][0],matrix[2][0],0.0);row1=vec4(matrix[0][1],matrix[1][1],matrix[2][1],0.0);pose=vec4(morph.xy,alpha,0.0);}
+`;
+  var IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
+  var VERTEX_FLOATS = 20;
+  var VERTEX_BYTES = VERTEX_FLOATS * 4;
+  var MODE_POSED = 4;
+  var MODE_PRIMITIVE = 5;
+  var POSED_CORNERS = [
+    [0, 0],
+    [1, 0],
+    [1, 1],
+    [0, 0],
+    [1, 1],
+    [0, 1]
+  ];
+  var VERTEX_ATTRIBUTES = [
+    { name: "a_position", size: 2, offset: 0 },
+    { name: "a_uv", size: 2, offset: 8 },
+    { name: "a_color", size: 4, offset: 16 },
+    { name: "a_paint", size: 4, offset: 32 },
+    { name: "a_radial", size: 4, offset: 48 },
+    { name: "a_rect", size: 4, offset: 64 }
+  ];
+  var FRAGMENT_VARYINGS = "varying highp vec2 v_uv; varying vec4 v_color; varying highp vec4 v_paint; varying highp vec4 v_radial; varying highp vec4 v_rect;";
+  var POSED_CORNER = `if(a_paint.z>3.5&&a_paint.z<4.5){vec4 row0;vec4 row1;vec4 pose;
+poseEval(int(a_rect.w+0.5),int(a_rect.z+0.5),row0,row1,pose);
+vec2 q=vec2(dot(row0.xy,a_position)+row0.z,dot(row1.xy,a_position)+row1.z);
+position=vec2(a_radial.x*q.x+a_radial.z*q.y+a_rect.x,a_radial.y*q.x+a_radial.w*q.y+a_rect.y);
+color.a*=pose.z;paint.z=0.0;radial=vec4(0.0);rect=vec4(0.0);}`;
+  function vertexShader(posed) {
+    return `attribute vec2 a_position; attribute vec2 a_uv; attribute vec4 a_color; attribute vec4 a_paint; attribute vec4 a_radial; attribute vec4 a_rect;
+uniform mat3 u_projection; ${FRAGMENT_VARYINGS}${posed ? " varying highp vec2 v_position;" : ""}
+${posed ? POSE_PROGRAM_FUNCTIONS : ""}
+void main(){vec2 position=a_position;vec4 color=a_color;vec4 paint=a_paint;vec4 radial=a_radial;vec4 rect=a_rect;
+${posed ? POSED_CORNER : ""}
+vec3 p=u_projection*vec3(position,1.0);gl_Position=vec4(p.xy,0.0,1.0);${posed ? "v_position=position;" : ""}v_uv=a_uv;v_color=color;v_paint=paint;v_radial=radial;v_rect=rect;}`;
+  }
+  var VERTEX = vertexShader(false);
+  var CLIP_VERTEX = `attribute vec2 a_position;uniform mat3 u_projection;uniform mat3 u_transform;void main(){vec3 p=u_projection*u_transform*vec3(a_position,1.0);gl_Position=vec4(p.xy,0.0,1.0);}`;
+  var CLIP_FRAGMENT = "precision mediump float;void main(){gl_FragColor=vec4(1.0);}";
+  var FINISH = "float a=texel.a*v_color.a;vec3 rgb=v_paint.y>1.5?v_color.rgb*a:mix(texel.rgb*v_color.rgb*v_color.a,vec3(a),v_paint.y);gl_FragColor=vec4(rgb,a);";
+  var PRIMITIVE_OUTSIDE = `bool primitiveOutside(vec2 l,vec4 p,vec4 m){
+  float kind=p.x,stroke=p.y,width=p.z,option=p.w;
+  if(kind<0.5){
+    if(stroke<0.5)return length(l)>1.0;
+    float ql=length(l);vec2 n=ql>0.000001?l/ql:vec2(1.0,0.0);float det=m.x*m.w-m.y*m.z;
+    vec2 g=vec2(m.w*n.x-m.z*n.y,-m.y*n.x+m.x*n.y)/max(abs(det),0.000001);
+    return abs((ql-1.0)/max(length(g),0.000001))>width*0.5;
+  }
+  if(kind<1.5){
+    if(stroke<0.5)return max(abs(l.x),abs(l.y))>1.0;
+    float sx=length(vec2(m.x,m.z));float sy=length(vec2(m.y,m.w));
+    if(option>0.5){
+      float ox=1.0+width/(2.0*max(sx,0.000001));float oy=1.0+width/(2.0*max(sy,0.000001));
+      float ix=max(0.0,1.0-width/(2.0*max(sx,0.000001)));float iy=max(0.0,1.0-width/(2.0*max(sy,0.000001)));
+      return max(abs(l.x)/ox,abs(l.y)/oy)>1.0||max(abs(l.x)/max(ix,0.000001),abs(l.y)/max(iy,0.000001))<1.0;
+    }
+    vec2 q=(abs(l)-vec2(1.0))*vec2(sx,sy);float sd=length(max(q,vec2(0.0)))+min(max(q.x,q.y),0.0);
+    return abs(sd)>width*0.5;
+  }
+  float halfLength=length(vec2(m.x,m.z));float halfWidth=length(vec2(m.y,m.w));
+  float x=l.x*halfLength;float y=l.y*halfWidth;float center=halfLength-(option>0.5?halfWidth:0.0);float d;
+  if(option<0.5)d=max(abs(x)-center,abs(y)-halfWidth);
+  else if(option<1.5)d=max(abs(x)-center-halfWidth,abs(y)-halfWidth);
+  else d=length(vec2(max(abs(x)-center,0.0),y))-halfWidth;
+  return d>0.0;
+}`;
+  function fragmentShader(planes) {
+    const PLANES = planes ? `varying highp vec2 v_position; uniform vec3 u_planes[${planes}]; uniform int u_planeCount;` : "";
+    const CLIP = planes ? `for(int i=0;i<${planes};i++){if(i>=u_planeCount)break;if(dot(u_planes[i],vec3(v_position,1.0))<0.0)discard;}` : "";
+    return `precision mediump float; precision mediump sampler2DArray; uniform sampler2DArray u_texture;
+${FRAGMENT_VARYINGS}${PLANES}
+float radialParameter(vec2 q){
+  vec2 d=v_radial.xy;float r0=v_radial.z,dr=v_radial.w;
+  float a=dot(d,d)-dr*dr,b=-2.0*(dot(q,d)+r0*dr),c=dot(q,q)-r0*r0;
+  if(abs(a)<0.000001){if(abs(b)<0.000001)return -10000.0;float t=-c/b;return r0+dr*t>0.0?t:-10000.0;}
+  float discriminant=b*b-4.0*a*c;if(discriminant<0.0)return -10000.0;
+  float root=sqrt(max(discriminant,0.0)),t0=(-b-root)/(2.0*a),t1=(-b+root)/(2.0*a),chosen=-10000.0;
+  if(r0+dr*t0>0.0)chosen=t0;if(r0+dr*t1>0.0)chosen=max(chosen,t1);return chosen;
+}
+${PRIMITIVE_OUTSIDE}
+void main(){${CLIP}if(v_paint.z>4.5){if(primitiveOutside(v_uv,v_radial,v_rect))discard;gl_FragColor=vec4(v_color.rgb*v_color.a,v_color.a);return;}
+if(v_paint.z>1.5&&v_paint.z<2.5)discard;vec2 uv=v_uv;
+if(v_paint.z>2.5){uv=v_rect.xy+vec2(clamp(v_uv.x,0.0,1.0),0.5)*v_rect.zw;}
+else if(v_paint.z>0.5){float t=radialParameter(v_uv);if(t< -1000.0)discard;uv=v_rect.xy+vec2(clamp(t,0.0,1.0),0.5)*v_rect.zw;}
+if(v_paint.w>0.5){vec2 size=vec2(textureSize(u_texture,0).xy);uv=(floor(uv*size)+0.5)/size;}
+vec4 texel=texture2D(u_texture,vec3(uv,floor(v_paint.x+0.5)));${FINISH}}`;
+  }
+  var FRAGMENT = fragmentShader(0);
+  var GROUP_FRAGMENT = `precision mediump float; uniform sampler2D u_texture;
+${FRAGMENT_VARYINGS}
+void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
+  var FINITE = (n, label) => {
+    if (!Number.isFinite(n)) {
+      throw new TypeError(`${label} must be finite`);
+    }
+  };
+  function rgba(value) {
+    if (!value || value.length !== 4) {
+      throw new TypeError("RGBA channels must be in [0,1]");
+    }
+    for (let i = 0; i < 4; i++) {
+      const N = value[i];
+      if (!Number.isFinite(N) || N < 0 || N > 1) {
+        throw new TypeError("RGBA channels must be in [0,1]");
+      }
+    }
+    return value;
+  }
+  function point(m, x, y) {
+    return {
+      x: m[0] * x + m[2] * y + m[4],
+      y: m[1] * x + m[3] * y + m[5]
+    };
+  }
+  function compose(a, b) {
+    return [
+      a[0] * b[0] + a[2] * b[1],
+      a[1] * b[0] + a[3] * b[1],
+      a[0] * b[2] + a[2] * b[3],
+      a[1] * b[2] + a[3] * b[3],
+      a[0] * b[4] + a[2] * b[5] + a[4],
+      a[1] * b[4] + a[3] * b[5] + a[5]
+    ];
+  }
+  function tessellate(contours, rule) {
+    const EDGES = [], YS = [];
+    for (const CONTOUR of contours) {
+      if (CONTOUR.length < 3) {
+        continue;
+      }
+      for (let i = 0; i < CONTOUR.length; i++) {
+        const A = CONTOUR[i], B = CONTOUR[(i + 1) % CONTOUR.length];
+        if (Math.abs(A.y - B.y) < 1e-9) {
+          continue;
+        }
+        const MIN_Y = Math.min(A.y, B.y), MAX_Y = Math.max(A.y, B.y);
+        EDGES.push({
+          a: A,
+          b: B,
+          sign: B.y > A.y ? 1 : -1,
+          minY: MIN_Y,
+          maxY: MAX_Y
+        });
+        YS.push(A.y, B.y);
+      }
+    }
+    YS.sort((a, b) => a - b);
+    const LEVELS = [];
+    for (const Y of YS) {
+      if (!LEVELS.length || Y - LEVELS.at(-1) > 1e-8) {
+        LEVELS.push(Y);
+      }
+    }
+    const STARTS = EDGES.slice().sort((a, b) => a.minY - b.minY), ACTIVE = [], TRIANGLES = [];
+    let nextStart = 0;
+    for (let band = 0; band + 1 < LEVELS.length; band++) {
+      const Y0 = LEVELS[band], Y1 = LEVELS[band + 1], YM = (Y0 + Y1) / 2;
+      if (Y1 - Y0 < 1e-8) {
+        continue;
+      }
+      while (nextStart < STARTS.length && STARTS[nextStart].minY < YM) {
+        ACTIVE.push(STARTS[nextStart++]);
+      }
+      for (let i = ACTIVE.length - 1; i >= 0; i--) {
+        if (ACTIVE[i].maxY <= YM) {
+          ACTIVE[i] = ACTIVE[ACTIVE.length - 1];
+          ACTIVE.pop();
+        }
+      }
+      ACTIVE.sort((a, b) => xAt(a, YM) - xAt(b, YM));
+      let winding = 0;
+      let inside = false;
+      let left = null;
+      for (const EDGE of ACTIVE) {
+        const BEFORE = rule === "evenodd" ? inside : winding !== 0;
+        if (rule === "evenodd") {
+          inside = !inside;
+        } else {
+          winding += EDGE.sign;
+        }
+        const AFTER = rule === "evenodd" ? inside : winding !== 0;
+        if (!BEFORE && AFTER) {
+          left = EDGE;
+        } else if (BEFORE && !AFTER && left) {
+          const A = {
+            x: xAt(left, Y0),
+            y: Y0
+          }, B = {
+            x: xAt(EDGE, Y0),
+            y: Y0
+          }, C = {
+            x: xAt(EDGE, Y1),
+            y: Y1
+          }, D = {
+            x: xAt(left, Y1),
+            y: Y1
+          };
+          TRIANGLES.push(A, B, C, A, C, D);
+          left = null;
+        }
+      }
+    }
+    return TRIANGLES;
+  }
+  function xAt(edge, y) {
+    const { a: A, b: B } = edge;
+    return A.x + (B.x - A.x) * (y - A.y) / (B.y - A.y);
+  }
+  function clipContour(points, rule) {
+    if (rule !== "nonzero" && rule !== "evenodd") {
+      throw new TypeError("clip rule must be nonzero or evenodd");
+    }
+    if (!(points instanceof Float32Array) && !(points instanceof Float64Array) && !Array.isArray(points)) {
+      throw new TypeError("Clip contour must be a flat numeric array of x/y pairs");
+    }
+    if (points.length % 2) {
+      throw new RangeError("Clip contour needs x/y pairs");
+    }
+    const FLAT = Float32Array.from(points);
+    if (FLAT.some((value) => !Number.isFinite(value))) {
+      throw new TypeError("Clip contour coordinates must be finite");
+    }
+    const COUNT = FLAT.length / 2;
+    if (COUNT > 256) {
+      throw new RangeError("Retained clip contours support at most 256 authored points");
+    }
+    let end = COUNT;
+    if (COUNT > 3 && FLAT[0] === FLAT[(COUNT - 1) * 2] && FLAT[1] === FLAT[(COUNT - 1) * 2 + 1]) {
+      end--;
+    }
+    if (end < 3) {
+      throw new RangeError("Clip contour requires at least three distinct points");
+    }
+    const CONTOUR = Array.from(
+      {
+        length: end
+      },
+      (_, i) => ({
+        x: FLAT[i * 2],
+        y: FLAT[i * 2 + 1]
+      })
+    );
+    for (let i = 0; i < end; i++) {
+      const A = CONTOUR[i], B = CONTOUR[(i + 1) % end];
+      if (A.x === B.x && A.y === B.y) {
+        throw new RangeError("Clip contour cannot contain consecutive duplicate points");
+      }
+    }
+    const ORIENT = (a, b, c) => (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x), ON = (a, b, p) => Math.abs(ORIENT(a, b, p)) < 1e-9 && p.x >= Math.min(a.x, b.x) - 1e-9 && p.x <= Math.max(a.x, b.x) + 1e-9 && p.y >= Math.min(a.y, b.y) - 1e-9 && p.y <= Math.max(a.y, b.y) + 1e-9;
+    for (let i = 0; i < end; i++) {
+      for (let j = i + 1; j < end; j++) {
+        if (j === i + 1 || i === 0 && j === end - 1) {
+          continue;
+        }
+        const A = CONTOUR[i], B = CONTOUR[(i + 1) % end], C = CONTOUR[j], D = CONTOUR[(j + 1) % end], O1 = ORIENT(A, B, C), O2 = ORIENT(A, B, D), O3 = ORIENT(C, D, A), O4 = ORIENT(C, D, B);
+        if (O1 * O2 < 0 && O3 * O4 < 0 || ON(A, B, C) || ON(A, B, D) || ON(C, D, A) || ON(C, D, B)) {
+          throw new RangeError("Retained clip contours must be simple and non-self-intersecting");
+        }
+      }
+    }
+    let area = 0;
+    for (let i = 0; i < end; i++) {
+      const A = CONTOUR[i], B = CONTOUR[(i + 1) % end];
+      area += A.x * B.y - B.x * A.y;
+    }
+    if (Math.abs(area) < 1e-9) {
+      throw new RangeError("Clip contour area must be nonzero");
+    }
+    const TRIANGLES = tessellate([CONTOUR], rule);
+    if (!TRIANGLES.length) {
+      throw new RangeError("Clip contour could not be tessellated");
+    }
+    if (TRIANGLES.length / 3 > 16384) {
+      throw new RangeError("Retained clip tessellation exceeds 16384 triangles");
+    }
+    return {
+      flat: FLAT,
+      triangles: Float32Array.from(TRIANGLES.flatMap((p) => [p.x, p.y]))
+    };
+  }
+  function convexContour(contour) {
+    let sign = 0;
+    for (let i = 0; i < contour.length; i++) {
+      const A = contour[i], B = contour[(i + 1) % contour.length], C = contour[(i + 2) % contour.length], CROSS = (B.x - A.x) * (C.y - B.y) - (B.y - A.y) * (C.x - B.x);
+      if (Math.abs(CROSS) < 1e-8) {
+        continue;
+      }
+      const NEXT = Math.sign(CROSS);
+      if (sign && NEXT !== sign) {
+        return false;
+      }
+      sign = NEXT;
+    }
+    return sign !== 0;
+  }
+  var VectorRenderer = class {
+    constructor(device, { initialVertices = 4096, maxVertices = 262144, glyphAtlas = null } = {}) {
+      if (!device?.createPipeline || !device?.draw) {
+        throw new TypeError("A WebGLDevice is required");
+      }
+      if (!Number.isSafeInteger(maxVertices) || maxVertices < 3 || !Number.isSafeInteger(initialVertices) || initialVertices < 3 || initialVertices > maxVertices) {
+        throw new RangeError("3 <= initialVertices <= maxVertices is required");
+      }
+      if (initialVertices * VERTEX_BYTES > device.maxBufferBytes) {
+        throw new RangeError("initial vector buffer exceeds the device byte limit");
+      }
+      this.device = device;
+      this.gl = device.gl;
+      this.canvas = device.canvas;
+      this.glyphAtlas = glyphAtlas;
+      this.maxVertices = Math.min(maxVertices, Math.floor(device.maxBufferBytes / VERTEX_BYTES));
+      this.maxClipPlanes = Math.max(
+        1,
+        Math.min(32, device.gl.getParameter(device.gl.MAX_FRAGMENT_UNIFORM_VECTORS) - 2)
+      );
+      this.pipeline = device.createPipeline({
+        vertex: VERTEX,
+        fragment: FRAGMENT,
+        stride: VERTEX_BYTES,
+        attributes: VERTEX_ATTRIBUTES,
+        uniforms: {
+          u_projection: "matrix3fv",
+          u_texture: "1i"
+        }
+      });
+      this.posePipeline = null;
+      this.poseBatch = null;
+      this.clipSerial = 0;
+      this.batchSerial = 0;
+      this.planeScratch = new Float32Array(this.maxClipPlanes * 3);
+      this.clipPipeline = device.createPipeline({
+        vertex: CLIP_VERTEX,
+        fragment: CLIP_FRAGMENT,
+        stride: 8,
+        attributes: [
+          {
+            name: "a_position",
+            size: 2,
+            offset: 0
+          }
+        ],
+        uniforms: {
+          u_projection: "matrix3fv",
+          u_transform: "matrix3fv"
+        }
+      });
+      this.buffer = device.createVertexBuffer({
+        capacityBytes: initialVertices * VERTEX_BYTES
+      });
+      this.dynamicClipBuffer = device.createVertexBuffer({
+        capacityBytes: 0
+      });
+      this.atlas = device.textureAtlas;
+      this.whiteRegion = this.atlas.allocate(1, 1);
+      this.atlas.upload(
+        this.whiteRegion,
+        { width: 1, height: 1, data: new Uint8Array([255, 255, 255, 255]) },
+        { premultiplied: true, extendEdges: true }
+      );
+      this.vertices = new Float32Array(initialVertices * VERTEX_FLOATS);
+      this.count = 0;
+      this.matrix = IDENTITY.slice();
+      this.stack = [];
+      this.path = [];
+      this.cursor = null;
+      this.subpath = null;
+      this.clips = [];
+      this.groups = [];
+      this.groupTargets = [];
+      this.activeTarget = null;
+      this.activePaint = null;
+      this.activeRadial = false;
+      this.activeWhiteFlash = false;
+      this.activeGradient = null;
+      this.paintTemplate = new Float32Array(12);
+      this._setPaint(this.whiteRegion);
+      this.blend = "source-over";
+      this.stencilClips = [];
+      this.clipPaths = /* @__PURE__ */ new Map();
+      this.clipPathBytes = 0;
+      this.stencilDepth = 0;
+      this.stencilNeedsRebuild = false;
+      this.state = "ready";
+      this.unregisterBatcher = device.registerBatcher(() => {
+        if (this.state === "ready" && this.device.active) {
+          this._submit();
+        }
+      });
+      this.onLost = () => {
+        this.count = 0;
+        this.poseBatch = null;
+        this.stencilNeedsRebuild = this.stencilClips.length > 0;
+      };
+      this.onRestored = () => {
+        if (this.state === "disposed") {
+          return;
+        }
+        try {
+          for (const RECORD of this.clipPaths.values()) {
+            this.device.uploadVertices(RECORD.buffer, RECORD.triangles);
+          }
+        } catch {
+          this.state = "failed";
+        }
+      };
+      this.canvas.addEventListener("webglcontextlost", this.onLost);
+      this.canvas.addEventListener("webglcontextrestored", this.onRestored);
+      this.projection = new Float32Array([2 / this.canvas.width, 0, 0, 0, -2 / this.canvas.height, 0, -1, 1, 1]);
+      this.groupPipeline = null;
+      try {
+        this.groupPipeline = device.createPipeline({
+          vertex: VERTEX,
+          fragment: GROUP_FRAGMENT,
+          stride: VERTEX_BYTES,
+          attributes: VERTEX_ATTRIBUTES,
+          uniforms: {
+            u_projection: "matrix3fv",
+            u_texture: "1i"
+          }
+        });
+      } catch (error) {
+        try {
+          this.dispose();
+        } catch {
+        }
+        throw error;
+      }
+    }
+    get clips() {
+      return this._clips;
+    }
+    // Every change bumps the serial, so a batch can tell cheaply whether its clip may have changed.
+    set clips(value) {
+      this._clips = value;
+      this.clipSerial++;
+    }
+    _pushClip(contour) {
+      this._clips.push(contour);
+      this.clipSerial++;
+    }
+    _frame() {
+      if (this.state !== "ready") {
+        throw new Error(`VectorRenderer is ${this.state}`);
+      }
+      if (!this.device.active) {
+        throw new Error("WebGLDevice.beginFrame is required");
+      }
+      const G = [...this.groups].reverse().find((group) => !group.direct);
+      if (G) {
+        this._setProjection(G.bounds, G.target);
+      } else {
+        this._setProjection(null);
+      }
+      if (this.stencilNeedsRebuild) {
+        this._rebuildStencil();
+        this.stencilNeedsRebuild = false;
+      }
+    }
+    _setProjection(bounds, target = null) {
+      const W = target?.width ?? this.canvas.width, H = target?.height ?? this.canvas.height, X = bounds?.x ?? 0, Y = bounds?.y ?? 0;
+      this.projection[0] = 2 / W;
+      this.projection[1] = 0;
+      this.projection[2] = 0;
+      this.projection[3] = 0;
+      this.projection[4] = -2 / H;
+      this.projection[5] = 0;
+      this.projection[6] = -1 - 2 * X / W;
+      this.projection[7] = 1 + 2 * Y / H;
+      this.projection[8] = 1;
+    }
+    beginPath() {
+      this._frame();
+      this.path = [];
+      this.cursor = this.subpath = null;
+    }
+    moveTo(x, y) {
+      this._frame();
+      FINITE(x, "x");
+      FINITE(y, "y");
+      const P = point(this.matrix, x, y);
+      this.path.push([P]);
+      this.cursor = this.subpath = P;
+    }
+    lineTo(x, y) {
+      this._frame();
+      FINITE(x, "x");
+      FINITE(y, "y");
+      if (!this.cursor) {
+        return this.moveTo(x, y);
+      }
+      const P = point(this.matrix, x, y);
+      this.path.at(-1).push(P);
+      this.cursor = P;
+    }
+    quadraticCurveTo(cx, cy, x, y, segments = 12) {
+      this._curve([cx, cy, x, y], segments, false);
+    }
+    bezierCurveTo(a, b, c, d, x, y, segments = 16) {
+      this._curve([a, b, c, d, x, y], segments, true);
+    }
+    _curve(v, n, cubic) {
+      this._frame();
+      if (!Number.isSafeInteger(n) || n < 2 || n > 256) {
+        throw new RangeError("curve segments must be 2..256");
+      }
+      if (!this.cursor) {
+        return this.moveTo(v[0], v[1]);
+      }
+      const START = this.cursor, P = cubic ? [point(this.matrix, v[0], v[1]), point(this.matrix, v[2], v[3]), point(this.matrix, v[4], v[5])] : [point(this.matrix, v[0], v[1]), point(this.matrix, v[2], v[3])];
+      for (let i = 1; i <= n; i++) {
+        const T = i / n, Q = 1 - T;
+        let x;
+        let y;
+        if (cubic) {
+          x = Q * Q * Q * START.x + 3 * Q * Q * T * P[0].x + 3 * Q * T * T * P[1].x + T * T * T * P[2].x;
+          y = Q * Q * Q * START.y + 3 * Q * Q * T * P[0].y + 3 * Q * T * T * P[1].y + T * T * T * P[2].y;
+        } else {
+          x = Q * Q * START.x + 2 * Q * T * P[0].x + T * T * P[1].x;
+          y = Q * Q * START.y + 2 * Q * T * P[0].y + T * T * P[1].y;
+        }
+        this.path.at(-1).push({
+          x,
+          y
+        });
+      }
+      this.cursor = this.path.at(-1).at(-1);
+    }
+    closePath() {
+      if (this.cursor && this.subpath) {
+        const P = this.path.at(-1);
+        if (P.at(-1) !== this.subpath) {
+          P.push(this.subpath);
+        }
+        this.cursor = this.subpath;
+      }
+    }
+    save() {
+      this._frame();
+      this.stack.push({
+        matrix: this.matrix.slice(),
+        clips: this.clips.map(
+          (polygon) => polygon.map((p) => ({
+            ...p
+          }))
+        ),
+        stencilClips: this.stencilClips.slice()
+      });
+    }
+    restore() {
+      this._frame();
+      const S = this.stack.pop();
+      if (!S) {
+        throw new Error("restore without save");
+      }
+      this.matrix = S.matrix;
+      this.clips = S.clips;
+      if (S.stencilClips.length !== this.stencilClips.length || S.stencilClips.some((clip, i) => clip !== this.stencilClips[i])) {
+        this._submit();
+        this.stencilClips = S.stencilClips;
+        this._rebuildStencil();
+      }
+    }
+    setTransform(a, b, c, d, e, f) {
+      this._frame();
+      [a, b, c, d, e, f].forEach((n, i) => FINITE(n, `transform[${i}]`));
+      this.matrix = [a, b, c, d, e, f];
+    }
+    transform(a, b, c, d, e, f) {
+      const M = this.matrix;
+      this.setTransform(
+        M[0] * a + M[2] * b,
+        M[1] * a + M[3] * b,
+        M[0] * c + M[2] * d,
+        M[1] * c + M[3] * d,
+        M[0] * e + M[2] * f + M[4],
+        M[1] * e + M[3] * f + M[5]
+      );
+    }
+    translate(x, y) {
+      this.transform(1, 0, 0, 1, x, y);
+    }
+    rotate(angle) {
+      this.transform(Math.cos(angle), Math.sin(angle), -Math.sin(angle), Math.cos(angle), 0, 0);
+    }
+    scale(x, y = x) {
+      this.transform(x, 0, 0, y, 0, 0);
+    }
+    clipRect(x, y, width, height) {
+      this._frame();
+      if (width < 0 || height < 0) {
+        throw new RangeError("clip size must be non-negative");
+      }
+      const CONTOUR = [
+        point(this.matrix, x, y),
+        point(this.matrix, x + width, y),
+        point(this.matrix, x + width, y + height),
+        point(this.matrix, x, y + height)
+      ];
+      if (width === 0 || height === 0) {
+        this._pushClip(CONTOUR);
+      } else {
+        this._addConvexClip(CONTOUR);
+      }
+    }
+    /** Add the current transformed path contours to the clip stack. */
+    _addConvexClip(contour) {
+      if (contour.length > 1024) {
+        throw new RangeError("Dynamic convex clips support at most 1024 authored points");
+      }
+      if (!convexContour(contour)) {
+        throw new RangeError("clip() accepts convex contours; create a retained ClipPath for concave contours");
+      }
+      const AREA = contour.reduce(
+        (sum, p, i) => sum + p.x * contour[(i + 1) % contour.length].y - contour[(i + 1) % contour.length].x * p.y,
+        0
+      );
+      if (Math.abs(AREA) < 1e-9) {
+        this._pushClip(contour);
+        return;
+      }
+      const PLANE_COUNT = this.clips.reduce((sum, polygon) => sum + polygon.length, 0);
+      if (PLANE_COUNT + contour.length > this.maxClipPlanes) {
+        this._pushDynamicStencilClip(contour);
+        return;
+      }
+      this._pushClip(contour);
+    }
+    _pushDynamicStencilClip(contour) {
+      if (!this.device.activeStencilAvailable) {
+        throw new Error(
+          "Clip contours exceeding the mesh edge-plane limit require stencil; no fallback is available"
+        );
+      }
+      if (this.stencilClips.length >= 255) {
+        throw new RangeError("At most 255 nested stencil clips are supported");
+      }
+      const TRIANGLES = new Float32Array((contour.length - 2) * 6);
+      let at = 0;
+      for (let i = 1; i + 1 < contour.length; i++) {
+        for (const P of [contour[0], contour[i], contour[i + 1]]) {
+          TRIANGLES[at++] = P.x;
+          TRIANGLES[at++] = P.y;
+        }
+      }
+      this._submit();
+      if (!this.stencilDepth) {
+        this.device.clear({
+          stencil: 0
+        });
+      }
+      const ENTRY = {
+        dynamic: true,
+        triangles: TRIANGLES
+      };
+      this._drawStencilClip(ENTRY, this.stencilDepth);
+      this.stencilClips = [...this.stencilClips, ENTRY];
+      this.stencilDepth++;
+    }
+    clip(rule = "nonzero") {
+      this._frame();
+      if (rule !== "nonzero" && rule !== "evenodd") {
+        throw new TypeError("rule must be nonzero or evenodd");
+      }
+      const CONTOURS = this.path.filter((path) => path.length >= 3).map(
+        (path) => path.map((p) => ({
+          ...p
+        }))
+      );
+      if (!CONTOURS.length) {
+        return;
+      }
+      if (CONTOURS.length !== 1) {
+        throw new RangeError("clip() accepts one contour; use a retained ClipPath for multi-contour geometry");
+      }
+      const CONTOUR = CONTOURS[0];
+      if (CONTOUR.length > 3 && CONTOUR[0].x === CONTOUR.at(-1).x && CONTOUR[0].y === CONTOUR.at(-1).y) {
+        CONTOUR.pop();
+      }
+      this._addConvexClip(CONTOUR);
+    }
+    createClipPath(points, { rule = "nonzero" } = {}) {
+      if (this.state !== "ready" || this.device.state !== "ready") {
+        throw new Error("VectorRenderer is not ready");
+      }
+      if (this.device.active) {
+        throw new Error("Create retained ClipPaths outside an active frame");
+      }
+      if (this.clipPaths.size >= 64) {
+        throw new RangeError("At most 64 retained ClipPaths may be live");
+      }
+      const GEOMETRY = clipContour(points, rule);
+      if (this.clipPathBytes + GEOMETRY.triangles.byteLength > 16 * 1024 * 1024) {
+        throw new RangeError("Retained ClipPaths exceed the 16 MiB budget");
+      }
+      const BUFFER = this.device.createVertexBuffer({
+        capacityBytes: GEOMETRY.triangles.byteLength
+      });
+      try {
+        this.device.uploadVertices(BUFFER, GEOMETRY.triangles);
+      } catch (error) {
+        this.device.deleteVertexBuffer(BUFFER);
+        throw error;
+      }
+      const HANDLE = Object.freeze({
+        renderer: this,
+        buffer: BUFFER
+      });
+      this.clipPaths.set(HANDLE, {
+        buffer: BUFFER,
+        triangles: GEOMETRY.triangles,
+        count: GEOMETRY.triangles.length / 2,
+        byteLength: GEOMETRY.triangles.byteLength,
+        contour: GEOMETRY.flat,
+        rule
+      });
+      this.clipPathBytes += GEOMETRY.triangles.byteLength;
+      return HANDLE;
+    }
+    deleteClipPath(handle) {
+      const RECORD = this.clipPaths.get(handle);
+      if (!RECORD) {
+        return false;
+      }
+      const REFERENCED = this.stencilClips.some((entry) => entry.handle === handle) || this.stack.some((state) => state.stencilClips.some((entry) => entry.handle === handle)) || this.groups.some((group) => group.stencilClips?.some((entry) => entry.handle === handle));
+      if (REFERENCED) {
+        throw new Error("Remove a ClipPath from every saved clip stack before deleting it");
+      }
+      this.device.deleteVertexBuffer(RECORD.buffer);
+      this.clipPaths.delete(handle);
+      this.clipPathBytes -= RECORD.byteLength;
+      return true;
+    }
+    clipPath(handle, { transform = null } = {}) {
+      this._frame();
+      const RECORD = this.clipPaths.get(handle);
+      if (!RECORD) {
+        throw new TypeError("ClipPath owned by this VectorRenderer is required");
+      }
+      if (!this.device.activeStencilAvailable) {
+        throw new Error("Concave ClipPath requires an active stencil attachment; no fallback is available");
+      }
+      if (this.stencilClips.length >= 255) {
+        throw new RangeError("At most 255 nested stencil ClipPaths are supported");
+      }
+      const LOCAL = transform ?? IDENTITY;
+      if (LOCAL.length !== 6 || Array.from(LOCAL).some((value) => !Number.isFinite(value))) {
+        throw new TypeError("ClipPath transform needs six finite values");
+      }
+      const MATRIX = compose(this.matrix, LOCAL);
+      if (Math.abs(MATRIX[0] * MATRIX[3] - MATRIX[1] * MATRIX[2]) < 1e-12) {
+        throw new RangeError("ClipPath transform must be invertible");
+      }
+      this._submit();
+      if (!this.stencilDepth) {
+        this.device.clear({
+          stencil: 0
+        });
+      }
+      const ENTRY = {
+        handle,
+        matrix: Float32Array.from(MATRIX)
+      };
+      this._drawStencilClip(ENTRY, this.stencilDepth);
+      this.stencilClips = [...this.stencilClips, ENTRY];
+      this.stencilDepth++;
+    }
+    _drawStencilClip(entry, ref) {
+      let buffer;
+      let count;
+      let transform;
+      if (entry.dynamic) {
+        buffer = this.dynamicClipBuffer;
+        this.device.uploadVertices(buffer, entry.triangles);
+        count = entry.triangles.length / 2;
+        transform = Float32Array.from([1, 0, 0, 0, 1, 0, 0, 0, 1]);
+      } else {
+        const RECORD = this.clipPaths.get(entry.handle);
+        if (!RECORD) {
+          throw new Error("A ClipPath in the active stack was deleted");
+        }
+        buffer = RECORD.buffer;
+        count = RECORD.count;
+        const M = entry.matrix;
+        transform = Float32Array.from([M[0], M[1], 0, M[2], M[3], 0, M[4], M[5], 1]);
+      }
+      this.device.draw({
+        pipeline: this.clipPipeline,
+        buffer,
+        count,
+        uniforms: {
+          u_projection: this.projection,
+          u_transform: transform
+        },
+        blend: false,
+        colorMask: [false, false, false, false],
+        stencil: {
+          func: "equal",
+          ref,
+          mask: 255,
+          writeMask: 255,
+          pass: "increment"
+        }
+      });
+    }
+    _rebuildStencil() {
+      if (!this.stencilClips.length) {
+        this.stencilDepth = 0;
+        this.stencilNeedsRebuild = false;
+        return;
+      }
+      if (!this.device.activeStencilAvailable) {
+        throw new Error("Saved concave ClipPath requires a stencil attachment");
+      }
+      this.device.clear({
+        stencil: 0
+      });
+      this.stencilDepth = 0;
+      for (const ENTRY of this.stencilClips) {
+        this._drawStencilClip(ENTRY, this.stencilDepth);
+        this.stencilDepth++;
+      }
+      this.stencilNeedsRebuild = false;
+    }
+    _clipTriangle(a, b, c, uv) {
+      let poly = [a, b, c].map(
+        (p, i) => uv ? {
+          ...p,
+          u: uv[i][0],
+          v: uv[i][1]
+        } : p
+      );
+      for (const CLIP of this.clips) {
+        let orientation = 0;
+        for (let i = 0; i < CLIP.length; i++) {
+          orientation += CLIP[i].x * CLIP[(i + 1) % CLIP.length].y - CLIP[(i + 1) % CLIP.length].x * CLIP[i].y;
+        }
+        const DIRECTION = orientation >= 0 ? 1 : -1;
+        for (let i = 0; i < CLIP.length; i++) {
+          const P = CLIP[i], Q = CLIP[(i + 1) % CLIP.length], SIDE = (v) => DIRECTION * ((Q.x - P.x) * (v.y - P.y) - (Q.y - P.y) * (v.x - P.x)), OUT = [];
+          let prev = poly.at(-1);
+          let pv = SIDE(prev);
+          for (const CUR of poly) {
+            const CV = SIDE(CUR);
+            if (pv < -1e-8 !== CV < -1e-8) {
+              const T = pv / (pv - CV), VERTEX_LOCAL = {
+                x: prev.x + (CUR.x - prev.x) * T,
+                y: prev.y + (CUR.y - prev.y) * T
+              };
+              if (uv) {
+                VERTEX_LOCAL.u = prev.u + (CUR.u - prev.u) * T;
+                VERTEX_LOCAL.v = prev.v + (CUR.v - prev.v) * T;
+              }
+              OUT.push(VERTEX_LOCAL);
+            }
+            if (CV >= -1e-8) {
+              OUT.push(CUR);
+            }
+            prev = CUR;
+            pv = CV;
+          }
+          poly = OUT;
+          if (!poly.length) {
+            return poly;
+          }
+        }
+      }
+      return poly;
+    }
+    /** Makes room for `vertexCount` more vertices, submitting first when the buffer limit would be exceeded. */
+    _reserve(vertexCount) {
+      if (this.count + vertexCount > this.maxVertices) {
+        this._submit();
+      }
+      if (!this.count) {
+        this.batchSerial = this.clipSerial;
+      }
+      if ((this.count + vertexCount) * VERTEX_FLOATS > this.vertices.length) {
+        const SIZE = Math.min(this.maxVertices, Math.max(this.count + vertexCount, this.count * 2));
+        const NEXT = new Float32Array(SIZE * VERTEX_FLOATS);
+        NEXT.set(this.vertices.subarray(0, this.count * VERTEX_FLOATS));
+        this.vertices = NEXT;
+      }
+    }
+    /** A batch holding posed sprites tests one plane set per fragment; CPU-clipped vertices must lie inside it. */
+    _planesAllow() {
+      const BATCH = this.poseBatch;
+      if (!BATCH || BATCH.planeCount === 0 || BATCH.serial === this.clipSerial) {
+        return true;
+      }
+      return clipPlanes(this.clips, this.maxClipPlanes).key === BATCH.planeKey;
+    }
+    _emitTriangle(a, b, c, color2, uv = null) {
+      rgba(color2);
+      if (!this._planesAllow()) {
+        this._submit();
+      }
+      if (this.activeGradient && !uv) {
+        uv = [this._gradientUV(a), this._gradientUV(b), this._gradientUV(c)];
+      }
+      const POLY = this.clips.length ? this._clipTriangle(a, b, c, uv) : uv ? [a, b, c].map((point2, i) => ({
+        ...point2,
+        u: uv[i][0],
+        v: uv[i][1]
+      })) : [a, b, c];
+      for (let i = 1; i + 1 < POLY.length; i++) {
+        this._reserve(3);
+        for (const POINT of [POLY[0], POLY[i], POLY[i + 1]]) {
+          const K = this.count++ * VERTEX_FLOATS;
+          this.vertices[K] = POINT.x;
+          this.vertices[K + 1] = POINT.y;
+          this.vertices[K + 2] = POINT.u ?? this.flatUV[0];
+          this.vertices[K + 3] = POINT.v ?? this.flatUV[1];
+          this.vertices.set(color2, K + 4);
+          this.vertices.set(this.paintTemplate, K + 8);
+        }
+      }
+    }
+    _submit() {
+      if (!this.count) {
+        return;
+      }
+      this.device.stats.vectorSubmissions++;
+      const POSED = this.poseBatch;
+      this.poseBatch = null;
+      if (POSED) {
+        POSED.owner.flushUpdates();
+        this.posePipeline ??= this._createPosePipeline();
+        this.planeScratch.fill(0);
+        if (POSED.planes) {
+          this.planeScratch.set(POSED.planes);
+        }
+      }
+      this.device.uploadVertices(this.buffer, this.vertices.subarray(0, this.count * VERTEX_FLOATS));
+      this.device.draw({
+        pipeline: POSED ? this.posePipeline : this.activeTarget ? this.groupPipeline : this.pipeline,
+        buffer: this.buffer,
+        count: this.count,
+        uniforms: POSED ? {
+          u_projection: this.projection,
+          u_program: 0,
+          u_state: 1,
+          u_overrides: 2,
+          u_texture: 3,
+          u_programWidth: POSED.programWidth,
+          "u_planes[0]": this.planeScratch,
+          u_planeCount: POSED.planeCount
+        } : {
+          u_projection: this.projection,
+          u_texture: 0
+        },
+        textures: POSED ? [...POSED.textures, this.atlas.texture] : [this.activeTarget ?? this.atlas.texture],
+        blend: this.blend,
+        stencil: this.stencilDepth ? {
+          func: "equal",
+          ref: this.stencilDepth,
+          mask: 255,
+          writeMask: 0,
+          pass: "keep"
+        } : false
+      });
+      this.count = 0;
+    }
+    _createPosePipeline() {
+      return this.device.createPipeline({
+        vertex: vertexShader(true),
+        fragment: fragmentShader(this.maxClipPlanes),
+        stride: VERTEX_BYTES,
+        attributes: VERTEX_ATTRIBUTES,
+        uniforms: {
+          u_projection: "matrix3fv",
+          u_program: "1i",
+          u_state: "1i",
+          u_overrides: "1i",
+          u_texture: "1i",
+          u_programWidth: "1i",
+          "u_planes[0]": "3fv",
+          u_planeCount: "1i"
+        }
+      });
+    }
+    // Only source-over and the additive 'lighter' are offered; a change submits what the other operation queued.
+    setBlend(blend) {
+      if (blend !== "source-over" && blend !== "lighter") {
+        throw new RangeError("VectorRenderer supports only source-over and lighter blending");
+      }
+      if (blend !== this.blend) {
+        this._submit();
+        this.blend = blend;
+      }
+    }
+    /**
+     * Selects the atlas region later vertices sample. Paint is vertex data, so changing it never submits: only the
+     * switch between the atlas and an offscreen group target (a different sampler) does.
+     */
+    _setPaint(region, { radial = false, whiteFlash = false, gradient = null } = {}) {
+      if (this.activeTarget) {
+        this._submit();
+        this.activeTarget = null;
+      }
+      const [U, V, W, H] = region.uvRect, MODE = radial ? gradient?.radialEmpty ? 2 : 1 : gradient ? 3 : 0, PARAMS = radial ? gradient?.radialParams ?? [0, 0, 0, 0] : [0, 0, 0, 0];
+      this.activeRadial = radial;
+      this.activeWhiteFlash = whiteFlash;
+      this.activeGradient = gradient;
+      this.activeRegion = region;
+      this.flatUV = [U + W / 2, V + H / 2];
+      this.paintTemplate.set([
+        region.layer,
+        whiteFlash ? 1 : 0,
+        MODE,
+        region.filter === "nearest" ? 1 : 0,
+        ...PARAMS,
+        U,
+        V,
+        W,
+        H
+      ]);
+    }
+    /** Switches later vertices to plain per-vertex paint (no atlas region, gradient or group target). */
+    _useVertexPaint(template, whiteFlash = false) {
+      if (this.activeTarget) {
+        this._submit();
+        this.activeTarget = null;
+      }
+      this.activeRegion = null;
+      this.activeRadial = false;
+      this.activeWhiteFlash = whiteFlash;
+      this.activeGradient = null;
+      this.paintTemplate.set(template);
+    }
+    /**
+     * Fills or strokes one analytic primitive: `matrix` maps the local square [-1,1]^2 to screen space (the caller
+     * has applied the current transform) and `params` is [kind (0 ellipse, 1 rectangle, 2 line), stroke, width, option].
+     */
+    drawPrimitive({ matrix, color: color2, params }) {
+      this._frame();
+      rgba(color2);
+      if (matrix?.length !== 6 || params?.length !== 4) {
+        throw new TypeError("drawPrimitive requires a 6-value matrix and 4 parameters");
+      }
+      for (const VALUE of [...matrix, ...params]) {
+        FINITE(VALUE, "drawPrimitive value");
+      }
+      const M = matrix;
+      this._useVertexPaint([0, 0, MODE_PRIMITIVE, 0, ...params, M[0], M[2], M[1], M[3]]);
+      const CORNERS = [
+        [-1, -1],
+        [1, -1],
+        [1, 1],
+        [-1, 1]
+      ];
+      const WORLD = CORNERS.map((corner) => point(M, corner[0], corner[1]));
+      this._emitTriangle(WORLD[0], WORLD[1], WORLD[2], color2, [CORNERS[0], CORNERS[1], CORNERS[2]]);
+      this._emitTriangle(WORLD[0], WORLD[2], WORLD[3], color2, [CORNERS[0], CORNERS[2], CORNERS[3]]);
+    }
+    /**
+     * Draws atlas rectangles in painter order. Run i places `localRects[i]` (x, y, width, height) on the current
+     * transform composed with `matrix` and samples `uvRects[i]` of `layer`; uv and size may be negative for content that
+     * was rendered rather than uploaded. With `pose` (a handle of a PoseRenderer, evaluated on the GPU from its
+     * keyframe program) every run also follows the pose part `parts[i]`. All runs join the current batch, so one
+     * blend/clip state is one draw whatever mix of sprites, shapes and glyphs it holds.
+     */
+    drawQuads({
+      layer,
+      uvRects,
+      localRects,
+      parts = null,
+      pose = null,
+      matrix = IDENTITY,
+      color: color2 = [1, 1, 1, 1],
+      alpha = 1,
+      whiteFlash = false,
+      forceColor = false,
+      filter = "linear"
+    } = {}) {
+      this._frame();
+      const COUNT = uvRects?.length / 4;
+      if (!Number.isSafeInteger(layer) || layer < 0 || !Number.isInteger(COUNT) || COUNT < 1 || localRects?.length !== COUNT * 4 || matrix.length !== 6 || filter !== "linear" && filter !== "nearest") {
+        throw new TypeError("drawQuads requires a layer and matching uvRects and localRects");
+      }
+      for (const LIST of [uvRects, localRects, matrix]) {
+        for (let i = 0; i < LIST.length; i++) {
+          FINITE(LIST[i], "drawQuads value");
+        }
+      }
+      if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1) {
+        throw new RangeError("alpha must be in [0,1]");
+      }
+      rgba(color2);
+      const TINT = [color2[0], color2[1], color2[2], color2[3] * alpha], M = compose(this.matrix, matrix);
+      this._useVertexPaint(
+        [layer, whiteFlash ? 1 : forceColor ? 2 : 0, 0, filter === "nearest" ? 1 : 0, 0, 0, 0, 0, 0, 0, 1, 1],
+        whiteFlash
+      );
+      if (pose === null) {
+        if (parts !== null) {
+          throw new TypeError("parts require a pose");
+        }
+        this.device.stats.spriteRuns += COUNT;
+        for (let i = 0; i < COUNT; i++) {
+          const [LX, LY, LW, LH] = localRects.subarray(i * 4, i * 4 + 4), [U, V, UW, VH] = uvRects.subarray(i * 4, i * 4 + 4), CORNERS = [
+            [point(M, LX, LY), [U, V]],
+            [point(M, LX + LW, LY), [U + UW, V]],
+            [point(M, LX + LW, LY + LH), [U + UW, V + VH]],
+            [point(M, LX, LY + LH), [U, V + VH]]
+          ];
+          this._emitTriangle(CORNERS[0][0], CORNERS[1][0], CORNERS[2][0], TINT, [
+            CORNERS[0][1],
+            CORNERS[1][1],
+            CORNERS[2][1]
+          ]);
+          this._emitTriangle(CORNERS[0][0], CORNERS[2][0], CORNERS[3][0], TINT, [
+            CORNERS[0][1],
+            CORNERS[2][1],
+            CORNERS[3][1]
+          ]);
+        }
+        return;
+      }
+      const OWNER = poseRendererOf(pose);
+      if (!OWNER || parts?.length !== COUNT) {
+        throw new TypeError("A live pose handle and one part per run are required");
+      }
+      const DRAW = OWNER.resolve(pose);
+      if (DRAW.kind !== "program") {
+        throw new TypeError("Posed sprites require a keyframe program pose");
+      }
+      for (let i = 0; i < COUNT; i++) {
+        if (!Number.isInteger(parts[i]) || parts[i] < 0 || parts[i] >= DRAW.partCount) {
+          throw new RangeError("parts must be pose part indices");
+        }
+      }
+      this._beginPosed(OWNER, DRAW);
+      OWNER.noteDraw(pose);
+      this.device.stats.spriteRuns += COUNT;
+      for (let i = 0; i < COUNT; i++) {
+        const [LX, LY, LW, LH] = localRects.subarray(i * 4, i * 4 + 4), [U, V, UW, VH] = uvRects.subarray(i * 4, i * 4 + 4);
+        this._reserve(6);
+        for (const [CX, CY] of POSED_CORNERS) {
+          const K = this.count++ * VERTEX_FLOATS;
+          this.vertices[K] = LX + CX * LW;
+          this.vertices[K + 1] = LY + CY * LH;
+          this.vertices[K + 2] = U + CX * UW;
+          this.vertices[K + 3] = V + CY * VH;
+          this.vertices.set(TINT, K + 4);
+          this.vertices.set(this.paintTemplate, K + 8);
+          this.vertices[K + 10] = MODE_POSED;
+          this.vertices[K + 12] = M[0];
+          this.vertices[K + 13] = M[1];
+          this.vertices[K + 14] = M[2];
+          this.vertices[K + 15] = M[3];
+          this.vertices[K + 16] = M[4];
+          this.vertices[K + 17] = M[5];
+          this.vertices[K + 18] = DRAW.row;
+          this.vertices[K + 19] = parts[i];
+        }
+      }
+    }
+    /** Joins or opens the batch's posed section: one pose texture set and one clip plane set per draw. */
+    _beginPosed(owner, draw) {
+      const PLANES = clipPlanes(this.clips, this.maxClipPlanes), BATCH = this.poseBatch;
+      if (BATCH && (BATCH.owner !== owner || BATCH.textures.some((texture, i) => texture !== draw.textures[i]) || BATCH.planeKey !== PLANES.key && BATCH.planeCount + PLANES.count > 0)) {
+        this._submit();
+      } else if (!BATCH && this.count && PLANES.count > 0 && this.batchSerial !== this.clipSerial) {
+        this._submit();
+      }
+      if (!this.poseBatch) {
+        this.poseBatch = {
+          owner,
+          textures: draw.textures,
+          programWidth: draw.programWidth,
+          planeKey: PLANES.key,
+          planeCount: PLANES.count,
+          planes: PLANES.values,
+          serial: this.clipSerial
+        };
+      }
+    }
+    _useTarget(target) {
+      if (this.activeTarget !== target) {
+        this._submit();
+      }
+      this.activeTarget = target;
+      this.activeRegion = null;
+      this.activeRadial = false;
+      this.activeWhiteFlash = false;
+      this.activeGradient = null;
+      this.flatUV = [0, 0];
+      this.paintTemplate.set([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]);
+    }
+    fill(colorValue = [0, 0, 0, 1], rule = "nonzero") {
+      this._frame();
+      if (rule !== "nonzero" && rule !== "evenodd") {
+        throw new TypeError("rule must be nonzero or evenodd");
+      }
+      this._setPaint(this.whiteRegion);
+      this.device.stats.pathTessellations++;
+      const COL = rgba(colorValue), VERTICES = tessellate(this.path, rule);
+      for (let i = 0; i + 2 < VERTICES.length; i += 3) {
+        this._emitTriangle(VERTICES[i], VERTICES[i + 1], VERTICES[i + 2], COL);
+      }
+    }
+    fillRadialGradient(gradient) {
+      this._frame();
+      if (!gradient?.region || !gradient.matrixInverse || !Number.isFinite(gradient.radialScale) || gradient.radialScale <= 0 || !Array.isArray(gradient.radialParams) || gradient.radialParams.length !== 4 || gradient.radialParams.some((value) => !Number.isFinite(value))) {
+        throw new TypeError("valid two-circle radial gradient texture and transform are required");
+      }
+      this._setPaint(gradient.region, {
+        radial: true,
+        whiteFlash: gradient.whiteFlash,
+        gradient
+      });
+      this.device.stats.pathTessellations++;
+      const VERTICES = tessellate(this.path, gradient.rule ?? "nonzero");
+      for (let i = 0; i + 2 < VERTICES.length; i += 3) {
+        this._emitTriangle(VERTICES[i], VERTICES[i + 1], VERTICES[i + 2], gradient.color);
+      }
+    }
+    fillLinearGradient(gradient) {
+      this._frame();
+      if (!gradient?.region || !gradient.matrixInverse || ![gradient.x0, gradient.y0, gradient.x1, gradient.y1].every(Number.isFinite)) {
+        throw new TypeError("valid linear gradient texture and transform are required");
+      }
+      this._setPaint(gradient.region, {
+        whiteFlash: gradient.whiteFlash,
+        gradient
+      });
+      const VERTICES = tessellate(this.path, gradient.rule ?? "nonzero");
+      for (let i = 0; i + 2 < VERTICES.length; i += 3) {
+        this._emitTriangle(VERTICES[i], VERTICES[i + 1], VERTICES[i + 2], gradient.color);
+      }
+    }
+    _gradientUV(p) {
+      const G = this.activeGradient, M = G.matrixInverse, X = M[0] * p.x + M[2] * p.y + M[4], Y = M[1] * p.x + M[3] * p.y + M[5];
+      if (this.activeRadial) {
+        return [(X - G.x0) / G.radialScale, (Y - G.y0) / G.radialScale];
+      }
+      const DX = G.x1 - G.x0, DY = G.y1 - G.y0, DENOM = DX * DX + DY * DY;
+      return [DENOM ? ((X - G.x0) * DX + (Y - G.y0) * DY) / DENOM : 1, 0.5];
+    }
+    stroke(colorValue = [0, 0, 0, 1], width = 1, { lineCap = "butt", lineJoin = "miter", miterLimit = 10 } = {}, gradient = null) {
+      this._frame();
+      this._setPaint(gradient?.region ?? this.whiteRegion, {
+        radial: gradient?.kind === "radial",
+        whiteFlash: gradient?.whiteFlash ?? false,
+        gradient
+      });
+      this.device.stats.pathStrokeBuilds++;
+      rgba(colorValue);
+      if (!Number.isFinite(width) || width <= 0) {
+        throw new RangeError("line width must be positive");
+      }
+      if (!["butt", "round", "square"].includes(lineCap) || !["miter", "round", "bevel"].includes(lineJoin) || !Number.isFinite(miterLimit) || miterLimit <= 0) {
+        throw new TypeError("invalid stroke style");
+      }
+      const HALF = width / 2, FAN = (center, points) => {
+        for (let i = 1; i < points.length; i++) {
+          this._emitTriangle(center, points[i - 1], points[i], colorValue);
+        }
+      };
+      for (const SOURCE of this.path) {
+        const CONTOUR = SOURCE.filter((p, i) => !i || p.x !== SOURCE[i - 1].x || p.y !== SOURCE[i - 1].y);
+        if (CONTOUR.length < 2) {
+          continue;
+        }
+        const CLOSED = CONTOUR.length > 2 && CONTOUR[0].x === CONTOUR.at(-1).x && CONTOUR[0].y === CONTOUR.at(-1).y;
+        if (CLOSED) {
+          CONTOUR.pop();
+        }
+        const COUNT = CLOSED ? CONTOUR.length : CONTOUR.length - 1, DIRS = [], NORMALS = [];
+        for (let i = 0; i < COUNT; i++) {
+          const A = CONTOUR[i], B = CONTOUR[(i + 1) % CONTOUR.length], DX = B.x - A.x, DY = B.y - A.y, L = Math.hypot(DX, DY);
+          if (!L) {
+            DIRS.push({
+              x: 0,
+              y: 0
+            });
+            NORMALS.push({
+              x: 0,
+              y: 0
+            });
+            continue;
+          }
+          DIRS.push({
+            x: DX / L,
+            y: DY / L
+          });
+          NORMALS.push({
+            x: -DY / L * HALF,
+            y: DX / L * HALF
+          });
+        }
+        for (let i = 0; i < COUNT; i++) {
+          const A = CONTOUR[i], B = CONTOUR[(i + 1) % CONTOUR.length], D = DIRS[i], N = NORMALS[i];
+          if (!D.x && !D.y) {
+            continue;
+          }
+          const EXTEND = !CLOSED && lineCap === "square" && (i === 0 || i === COUNT - 1) ? HALF : 0, AX = A.x - D.x * EXTEND, AY = A.y - D.y * EXTEND, BX = B.x + D.x * EXTEND, BY = B.y + D.y * EXTEND, P = {
+            x: AX + N.x,
+            y: AY + N.y
+          }, Q = {
+            x: BX + N.x,
+            y: BY + N.y
+          }, R = {
+            x: BX - N.x,
+            y: BY - N.y
+          }, S = {
+            x: AX - N.x,
+            y: AY - N.y
+          };
+          this._emitTriangle(P, Q, R, colorValue);
+          this._emitTriangle(P, R, S, colorValue);
+        }
+        const JOIN_START = CLOSED ? 0 : 1, JOIN_END = CLOSED ? CONTOUR.length : CONTOUR.length - 1;
+        for (let i = JOIN_START; i < JOIN_END; i++) {
+          const PREV = (i - 1 + COUNT) % COUNT, NEXT = i % COUNT, V = CONTOUR[i % CONTOUR.length], D0 = DIRS[PREV], D1 = DIRS[NEXT], N0 = NORMALS[PREV], N1 = NORMALS[NEXT], CROSS = D0.x * D1.y - D0.y * D1.x;
+          if (Math.abs(CROSS) < 1e-8) {
+            continue;
+          }
+          const SIGN = CROSS > 0 ? -1 : 1, A = {
+            x: V.x + N0.x * SIGN,
+            y: V.y + N0.y * SIGN
+          }, B = {
+            x: V.x + N1.x * SIGN,
+            y: V.y + N1.y * SIGN
+          };
+          if (lineJoin === "round") {
+            const START = Math.atan2(A.y - V.y, A.x - V.x);
+            const END = Math.atan2(B.y - V.y, B.x - V.x);
+            let sweep = END - START;
+            if (CROSS > 0) {
+              while (sweep > 0) {
+                sweep -= Math.PI * 2;
+              }
+            } else {
+              while (sweep < 0) {
+                sweep += Math.PI * 2;
+              }
+            }
+            const STEPS = Math.max(1, Math.ceil(Math.abs(sweep) / (Math.PI / 8))), ARC = [A];
+            for (let j = 1; j <= STEPS; j++) {
+              const T = START + sweep * j / STEPS;
+              ARC.push({
+                x: V.x + Math.cos(T) * HALF,
+                y: V.y + Math.sin(T) * HALF
+              });
+            }
+            FAN(V, ARC);
+          } else if (lineJoin === "miter") {
+            const MX = N0.x * SIGN + N1.x * SIGN, MY = N0.y * SIGN + N1.y * SIGN, ML = Math.hypot(MX, MY), DENOM = ML ? MX / ML * (N1.x * SIGN) + MY / ML * (N1.y * SIGN) : 0, MITER = DENOM ? HALF / DENOM : Infinity;
+            if (Number.isFinite(MITER) && Math.abs(MITER) <= HALF * miterLimit) {
+              const TIP = {
+                x: V.x + MX / ML * MITER,
+                y: V.y + MY / ML * MITER
+              };
+              this._emitTriangle(A, TIP, B, colorValue);
+            } else {
+              this._emitTriangle(V, A, B, colorValue);
+            }
+          } else {
+            this._emitTriangle(V, A, B, colorValue);
+          }
+        }
+        if (!CLOSED && lineCap === "round") {
+          for (const [INDEX, ANGLE] of [
+            [0, Math.atan2(DIRS[0].y, DIRS[0].x) + Math.PI],
+            [COUNT - 1, Math.atan2(DIRS[COUNT - 1].y, DIRS[COUNT - 1].x)]
+          ]) {
+            const V = CONTOUR[INDEX === 0 ? 0 : CONTOUR.length - 1], START = ANGLE - Math.PI / 2, ARC = [];
+            for (let j = 0; j <= 8; j++) {
+              const T = START + Math.PI * j / 8;
+              ARC.push({
+                x: V.x + Math.cos(T) * HALF,
+                y: V.y + Math.sin(T) * HALF
+              });
+            }
+            FAN(V, ARC);
+          }
+        }
+      }
+    }
+    polygon(points, colorValue = [0, 0, 0, 1]) {
+      this.beginPath();
+      points.forEach((p, i) => i ? this.lineTo(p[0], p[1]) : this.moveTo(p[0], p[1]));
+      this.closePath();
+      this.fill(colorValue);
+    }
+    /** Submit the caller's authored fan topology directly, including clipping. */
+    triangleFan(points, colorValue = [1, 1, 1, 1]) {
+      this._frame();
+      if (!points || points.length < 3) {
+        return;
+      }
+      this._setPaint(this.whiteRegion);
+      const M = this.matrix, ANCHOR = point(M, points[0][0], points[0][1]);
+      let previous = point(M, points[1][0], points[1][1]);
+      for (let i = 2; i < points.length; i++) {
+        const CURRENT = point(M, points[i][0], points[i][1]);
+        this._emitTriangle(ANCHOR, previous, CURRENT, colorValue);
+        previous = CURRENT;
+      }
+    }
+    fillText(text, x, y, options = {}) {
+      this._frame();
+      if (!this.glyphAtlas) {
+        throw new Error("GlyphAtlas is not configured");
+      }
+      return this.glyphAtlas.fillText(this, text, x, y, options);
+    }
+    strokeText(text, x, y, options = {}) {
+      this._frame();
+      if (!this.glyphAtlas) {
+        throw new Error("GlyphAtlas is not configured");
+      }
+      return this.glyphAtlas.strokeText(this, text, x, y, options);
+    }
+    measureText(text, options = {}) {
+      if (!this.glyphAtlas) {
+        throw new Error("GlyphAtlas is not configured");
+      }
+      return this.glyphAtlas.measureText(text, options);
+    }
+    /** `region` is the glyph atlas region (its layer selects the page); `uv` is already in array coordinates. */
+    drawGlyphQuad(region, x, y, width, height, uv, colorValue) {
+      this._frame();
+      this._setPaint(region);
+      const A = {
+        ...point(this.matrix, x, y)
+      }, B = {
+        ...point(this.matrix, x + width, y)
+      }, C = {
+        ...point(this.matrix, x + width, y + height)
+      }, D = {
+        ...point(this.matrix, x, y + height)
+      };
+      this._emitTriangle(A, B, C, colorValue, [
+        [uv.u0, uv.v0],
+        [uv.u1, uv.v0],
+        [uv.u1, uv.v1]
+      ]);
+      this._emitTriangle(A, C, D, colorValue, [
+        [uv.u0, uv.v0],
+        [uv.u1, uv.v1],
+        [uv.u0, uv.v1]
+      ]);
+    }
+    flush() {
+      this._frame();
+      this.device.stats.vectorFlushCalls++;
+      this._submit();
+    }
+    beginGroup(opacity = 1, bounds = null) {
+      this._frame();
+      if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) {
+        throw new RangeError("group opacity must be in [0,1]");
+      }
+      this._submit();
+      if (opacity === 1) {
+        this.groups.push({
+          direct: true
+        });
+        return;
+      }
+      const REQUESTED = bounds ?? {
+        x: 0,
+        y: 0,
+        width: this.canvas.width,
+        height: this.canvas.height
+      };
+      for (const KEY of ["x", "y", "width", "height"]) {
+        if (!Number.isFinite(REQUESTED[KEY])) {
+          throw new TypeError(`group bounds.${KEY} must be finite`);
+        }
+      }
+      if (REQUESTED.width <= 0 || REQUESTED.height <= 0) {
+        throw new RangeError("group bounds must have positive size");
+      }
+      const X = Math.max(0, Math.floor(REQUESTED.x)), Y = Math.max(0, Math.floor(REQUESTED.y)), RIGHT = Math.min(this.canvas.width, Math.ceil(REQUESTED.x + REQUESTED.width)), BOTTOM = Math.min(this.canvas.height, Math.ceil(REQUESTED.y + REQUESTED.height)), WIDTH2 = RIGHT - X, HEIGHT2 = BOTTOM - Y;
+      if (WIDTH2 <= 0 || HEIGHT2 <= 0) {
+        this.groups.push({
+          direct: true,
+          empty: true
+        });
+        return;
+      }
+      const DEPTH = this.groups.filter((g) => !g.direct).length;
+      let target = this.groupTargets[DEPTH];
+      const ALLOCATION = (n) => Math.min(this.device.maxTextureSize, 2 ** Math.ceil(Math.log2(n))), NEED_W = ALLOCATION(WIDTH2), NEED_H = ALLOCATION(HEIGHT2), NEED_STENCIL = this.device.stencilAvailable;
+      if (!target || target.width < WIDTH2 || target.height < HEIGHT2 || Boolean(this.device.renderTargets.get(target)?.stencil) !== NEED_STENCIL) {
+        if (target) {
+          this.device.deleteRenderTarget(target);
+        }
+        target = this.groupTargets[DEPTH] = this.device.createRenderTarget(NEED_W, NEED_H, {
+          filter: "nearest",
+          stencil: NEED_STENCIL
+        });
+      }
+      const GROUP = {
+        target,
+        opacity,
+        bounds: {
+          x: X,
+          y: Y,
+          width: WIDTH2,
+          height: HEIGHT2
+        },
+        matrix: this.matrix.slice(),
+        clips: this.clips,
+        stencilClips: this.stencilClips.slice(),
+        projection: this.projection.slice()
+      };
+      this.device.bindRenderTarget(target);
+      this.groups.push(GROUP);
+      this._setProjection(GROUP.bounds, target);
+      this.device.clear({
+        color: [0, 0, 0, 0],
+        ...this.device.activeStencilAvailable ? {
+          stencil: 0
+        } : {}
+      });
+      this.stencilDepth = 0;
+      if (this.stencilClips.length) {
+        this._rebuildStencil();
+      }
+      this.clips = [
+        ...this.clips,
+        [
+          {
+            x: X,
+            y: Y
+          },
+          {
+            x: RIGHT,
+            y: Y
+          },
+          {
+            x: RIGHT,
+            y: BOTTOM
+          },
+          {
+            x: X,
+            y: BOTTOM
+          }
+        ]
+      ];
+    }
+    endGroup() {
+      this._frame();
+      const GROUP = this.groups.pop();
+      if (!GROUP) {
+        throw new Error("endGroup without beginGroup");
+      }
+      this._submit();
+      if (GROUP.direct) {
+        return;
+      }
+      this.device.unbindRenderTarget(GROUP.target);
+      this.matrix = GROUP.matrix;
+      this.clips = GROUP.clips;
+      this.stencilClips = GROUP.stencilClips;
+      this.stencilDepth = this.stencilClips.length;
+      this.projection.set(GROUP.projection);
+      this._useTarget(GROUP.target);
+      const { x: X, y: Y, width: WIDTH2, height: HEIGHT2 } = GROUP.bounds, U = WIDTH2 / GROUP.target.width, V = HEIGHT2 / GROUP.target.height, A = {
+        x: X,
+        y: Y
+      }, B = {
+        x: X + WIDTH2,
+        y: Y
+      }, C = {
+        x: X + WIDTH2,
+        y: Y + HEIGHT2
+      }, D = {
+        x: X,
+        y: Y + HEIGHT2
+      }, ALPHA = [1, 1, 1, GROUP.opacity];
+      this._emitTriangle(A, B, C, ALPHA, [
+        [0, 1],
+        [U, 1],
+        [U, 1 - V]
+      ]);
+      this._emitTriangle(A, C, D, ALPHA, [
+        [0, 1],
+        [U, 1 - V],
+        [0, 1 - V]
+      ]);
+      this._submit();
+      this._setPaint(this.whiteRegion);
+    }
+    dispose() {
+      if (this.state === "disposed") {
+        return;
+      }
+      this.canvas.removeEventListener("webglcontextlost", this.onLost);
+      this.canvas.removeEventListener("webglcontextrestored", this.onRestored);
+      this.count = 0;
+      for (const TARGET of this.groupTargets) {
+        this.device.deleteRenderTarget(TARGET);
+      }
+      for (const RECORD of this.clipPaths.values()) {
+        this.device.deleteVertexBuffer(RECORD.buffer);
+      }
+      this.clipPaths.clear();
+      this.clipPathBytes = 0;
+      this.device.deleteVertexBuffer(this.dynamicClipBuffer);
+      this.device.deleteVertexBuffer(this.buffer);
+      this.device.deletePipeline(this.clipPipeline);
+      this.device.deletePipeline(this.groupPipeline);
+      this.device.deletePipeline(this.pipeline);
+      if (this.posePipeline) {
+        this.device.deletePipeline(this.posePipeline);
+      }
+      this.unregisterBatcher();
+      if (this.whiteRegion && this.device.state === "ready") {
+        this.atlas.release(this.whiteRegion);
+      }
+      this.buffer = this.dynamicClipBuffer = this.clipPipeline = this.groupPipeline = this.posePipeline = this.pipeline = this.whiteRegion = null;
+      this.state = "disposed";
+    }
+  };
   var MAX_PAINT_REGIONS = 8;
   function validatePaintRegionName(name) {
     if (typeof name !== "string" || !/^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/.test(name)) {
@@ -2449,13 +4176,7 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
   }
   var IDENTITY2 = Object.freeze([1, 0, 0, 1, 0, 0]);
   var ZERO_MORPH = Object.freeze([0, 0]);
-  var EMPTY_CLIP = Object.freeze({
-    key: "",
-    values: null,
-    count: 0
-  });
   var WHITE = Object.freeze([1, 1, 1, 1]);
-  var IDENTITY_RECT = Object.freeze([0, 0, 1, 1]);
   var ATTRIBUTES = [
     {
       name: "a_position",
@@ -2490,50 +4211,18 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
     offset: i * 16,
     source: "instance"
   }));
-  var TEXTURE_INSTANCE_ATTRIBUTES = ["i_uvRect", "i_localRect"].map((name, i) => ({
-    name,
-    size: 4,
-    offset: 64 + i * 16,
-    source: "instance"
-  }));
   var PLAIN_INSTANCE_FLOATS = 16;
-  var TEXTURED_INSTANCE_FLOATS = 26;
-  var QUAD_VERTICES = Float32Array.from(
-    [
-      [0, 0],
-      [1, 0],
-      [1, 1],
-      [0, 1]
-    ].flatMap(([x, y]) => [x, y, 1, 1, 1, 1, 0, 0, 0, 0, 0])
-  );
-  var TEXTURE_PART_INSTANCE_ATTRIBUTE = Object.freeze({
-    name: "i_part",
-    size: 1,
-    offset: 100,
-    source: "instance"
-  });
-  var TEXTURE_LAYER_INSTANCE_ATTRIBUTE = Object.freeze({
-    name: "i_layer",
-    size: 1,
-    offset: 96,
-    source: "instance"
-  });
-  function shader(instanced, partCount, morphCount, clipped, nonScalingStroke, worldMode = false, textured = false, poseTexture = false, paintRegionCount = 0, textureArray = false, instancePart = false) {
+  function shader(instanced, partCount, morphCount, clipped, nonScalingStroke, worldMode = false, poseTexture = false, paintRegionCount = 0) {
     const PAINT_INPUT = paintRegionCount ? `attribute float a_paintRegion;uniform vec4 u_paintRegions[${paintRegionCount + 1}];` : "", PAINT_COLOR = paintRegionCount ? "vec4 authored=a_color;vec4 paint=u_paintRegions[int(a_paintRegion)];authored.rgb=mix(authored.rgb,paint.rgb,paint.a);" : "", BASE_COLOR = paintRegionCount ? "authored" : "a_color";
     const PART_POSE = partCount > 1 || poseTexture;
-    const PART_ATTRIBUTE = instancePart ? "i_part" : "a_part";
-    const PART_INPUTS = PART_POSE ? `${instancePart ? `${instanced ? "attribute" : "uniform"} highp float i_part;` : partCount > 1 ? "attribute float a_part;" : ""}uniform vec4 u_parts[${partCount * 3}];` : "";
-    const PART_SETUP = PART_POSE ? `int index=${instancePart || partCount > 1 ? `int(${PART_ATTRIBUTE})*3` : "0"};vec4 row0=u_parts[index];vec4 row1=u_parts[index+1];vec4 pose=u_parts[index+2];` : "";
+    const PART_INPUTS = PART_POSE ? `${partCount > 1 ? "attribute float a_part;" : ""}uniform vec4 u_parts[${partCount * 3}];` : "";
+    const PART_SETUP = PART_POSE ? `int index=${partCount > 1 ? "int(a_part)*3" : "0"};vec4 row0=u_parts[index];vec4 row1=u_parts[index+1];vec4 pose=u_parts[index+2];` : "";
     const INPUTS = ["i_row0", "i_row1", "i_color", "i_params"].map((name) => `${instanced ? "attribute" : "uniform"} vec4 ${name};`).join("\n");
     const LOCAL = morphCount ? "a_position+a_morph.xy*(i_params.x" + (PART_POSE ? "+pose.x" : "") + ")" + (morphCount > 1 ? "+a_morph.zw*(i_params.y" + (PART_POSE ? "+pose.y" : "") + ")" : "") : "a_position";
     const STROKE_INPUTS = nonScalingStroke ? "attribute vec4 a_stroke;uniform vec2 u_strokeViewportSize;" : "";
     const STROKE_VARYING = clipped && nonScalingStroke ? "uniform mat3 u_inverseProjection;" : "";
-    const LAYER_INPUTS = textureArray ? `${instanced ? "attribute" : "uniform"} highp float i_layer;varying highp float v_layer;` : "";
-    const LAYER_OUTPUT = textureArray ? "v_layer=i_layer;" : "";
-    const TEXTURE_INPUTS = textured ? `attribute highp vec2 a_uv;${instanced ? "attribute" : "uniform"} highp vec4 i_uvRect;${instanced ? "attribute" : "uniform"} vec4 i_localRect;varying highp vec2 v_uv;varying float v_forceColor;varying float v_whiteFlash;${LAYER_INPUTS}` : "";
-    const RECT_LOCAL = textured ? "local=i_localRect.xy+local*i_localRect.zw;" : "";
     const STROKE_POSITION = nonScalingStroke ? `
-vec2 tangentLocal=local+a_stroke.xy${textured ? "*i_localRect.zw" : ""};
+vec2 tangentLocal=local+a_stroke.xy;
 vec2 tangentPart=${PART_POSE ? "vec2(dot(row0.xyz,vec3(tangentLocal,1.0)),dot(row1.xyz,vec3(tangentLocal,1.0)))" : "tangentLocal"};
 vec2 tangentWorld=vec2(dot(i_row0.xyz,vec3(tangentPart,1.0)),dot(i_row1.xyz,vec3(tangentPart,1.0)));
 vec3 tangentProjected=u_projection*vec3(tangentWorld,1.0);
@@ -2552,7 +4241,7 @@ if(dot(a_stroke.xy,a_stroke.xy)>0.5){
       const WORLD_INPUTS = ["i_row0", "i_row1", "i_row2", "i_params"].map((name) => `${instanced ? "attribute" : "uniform"} vec4 ${name};`).join("\n");
       const WORLD_STROKE_INPUTS = nonScalingStroke ? "attribute vec4 a_stroke;uniform vec2 u_strokeViewportSize;" + (clipped ? "uniform mat4 u_inverseViewProjection;" : "") : "";
       const WORLD_STROKE = nonScalingStroke ? `
-vec2 tangentLocal=local+a_stroke.xy${textured ? "*i_localRect.zw" : ""};
+vec2 tangentLocal=local+a_stroke.xy;
 vec2 tangentPlane=${partCount > 1 ? "vec2(dot(row0.xyz,vec3(tangentLocal,1.0)),dot(row1.xyz,vec3(tangentLocal,1.0)))" : "tangentLocal"};
 vec3 tangentWorld=vec3(dot(i_row0.xyz,vec3(tangentPlane,1.0)),dot(i_row1.xyz,vec3(tangentPlane,1.0)),dot(i_row2.xyz,vec3(tangentPlane,1.0)));
 vec4 tangentProjected=u_viewProjection*vec4(tangentWorld,1.0);vec2 tangent=(tangentProjected.xy/tangentProjected.w-projected.xy/projected.w)*u_strokeViewportSize*0.5;float tangentLength=length(tangent);
@@ -2562,73 +4251,44 @@ if(dot(a_stroke.xy,a_stroke.xy)>0.5){
     projected.xy+=pxOffset*2.0/u_strokeViewportSize*projected.w;${clipped ? "vec4 clippedWorld=u_inverseViewProjection*projected;v_position=clippedWorld.xy/clippedWorld.w;" : ""}}
 }` : "";
       return `attribute vec2 a_position; attribute vec4 a_color; ${morphCount ? "attribute vec4 a_morph;" : ""} ${PART_INPUTS}
-${WORLD_INPUTS}${WORLD_STROKE_INPUTS}${TEXTURE_INPUTS}${PAINT_INPUT}
+${WORLD_INPUTS}${WORLD_STROKE_INPUTS}${PAINT_INPUT}
 uniform mat4 u_viewProjection; uniform vec4 u_color; varying vec4 v_color; ${clipped ? "varying vec2 v_position;" : ""}
 void main(){${PART_SETUP}
-vec2 local=${LOCAL};${RECT_LOCAL}vec2 plane=${PART_POSE ? "vec2(dot(row0.xyz,vec3(local,1.0)),dot(row1.xyz,vec3(local,1.0)))" : "local"};
+vec2 local=${LOCAL};vec2 plane=${PART_POSE ? "vec2(dot(row0.xyz,vec3(local,1.0)),dot(row1.xyz,vec3(local,1.0)))" : "local"};
 vec3 world=vec3(dot(i_row0.xyz,vec3(plane,1.0)),dot(i_row1.xyz,vec3(plane,1.0)),dot(i_row2.xyz,vec3(plane,1.0)));
 vec4 projected=u_viewProjection*vec4(world,1.0);${clipped ? "v_position=world.xy;" : ""}${WORLD_STROKE}
 projected.z+=(i_params.w+${PART_POSE ? "pose.w" : "0.0"})*projected.w;gl_Position=projected;
-${PAINT_COLOR}vec4 color=mix(${BASE_COLOR}*u_color,u_color,i_row1.w);color.a*=i_row0.w${PART_POSE ? "*pose.z" : ""};color.rgb=mix(color.rgb,vec3(1.0),i_row2.w);v_color=vec4(color.rgb*color.a,color.a);${textured ? `v_uv=i_uvRect.xy+a_uv*i_uvRect.zw;v_forceColor=i_row1.w;v_whiteFlash=i_row2.w;${LAYER_OUTPUT}` : ""}
+${PAINT_COLOR}vec4 color=mix(${BASE_COLOR}*u_color,u_color,i_row1.w);color.a*=i_row0.w${PART_POSE ? "*pose.z" : ""};color.rgb=mix(color.rgb,vec3(1.0),i_row2.w);v_color=vec4(color.rgb*color.a,color.a);
 }`;
     }
     return `attribute vec2 a_position; attribute vec4 a_color; ${morphCount ? "attribute vec4 a_morph;" : ""} ${PART_INPUTS}
-${INPUTS}${STROKE_INPUTS}${TEXTURE_INPUTS}${PAINT_INPUT}
+${INPUTS}${STROKE_INPUTS}${PAINT_INPUT}
 uniform mat3 u_projection; varying vec4 v_color; ${clipped ? "varying vec2 v_position;" : ""}${STROKE_VARYING}
 void main(){${PART_SETUP}
-vec2 local=${LOCAL};${RECT_LOCAL}vec2 p=${PART_POSE ? "vec2(dot(row0.xyz,vec3(local,1.0)),dot(row1.xyz,vec3(local,1.0)))" : "local"};
+vec2 local=${LOCAL};vec2 p=${PART_POSE ? "vec2(dot(row0.xyz,vec3(local,1.0)),dot(row1.xyz,vec3(local,1.0)))" : "local"};
 vec2 world=vec2(dot(i_row0.xyz,vec3(p,1.0)),dot(i_row1.xyz,vec3(p,1.0)));
 vec3 projected=u_projection*vec3(world,1.0);${clipped ? "v_position=world;" : ""}${STROKE_POSITION}
 gl_Position=vec4(projected.xy,(i_params.w+${PART_POSE ? "pose.w" : "0.0"})*projected.z,projected.z);
 ${PAINT_COLOR}vec4 color=mix(${BASE_COLOR}*i_color,i_color,i_row1.w);color.a*=i_row0.w${PART_POSE ? "*pose.z" : ""};
-color.rgb=mix(color.rgb,vec3(1.0),i_params.z);v_color=vec4(color.rgb*color.a,color.a);${textured ? `v_uv=i_uvRect.xy+a_uv*i_uvRect.zw;v_forceColor=i_row1.w;v_whiteFlash=i_params.z;${LAYER_OUTPUT}` : ""}}`;
+color.rgb=mix(color.rgb,vec3(1.0),i_params.z);v_color=vec4(color.rgb*color.a,color.a);}`;
   }
-  function fragment(maxPlanes, clipped, textured = false, textureArray = false) {
-    const SAMPLER = textureArray ? "precision mediump sampler2DArray;uniform sampler2DArray u_texture;varying highp float v_layer;" : "uniform sampler2D u_texture;";
-    const TEXTURE_INPUTS = textured ? `${SAMPLER}varying highp vec2 v_uv;varying float v_forceColor;varying float v_whiteFlash;` : "";
-    const TEXEL = textureArray ? "texture2D(u_texture,vec3(v_uv,floor(v_layer+0.5)))" : "texture2D(u_texture,v_uv)";
-    const OUTPUT = textured ? `vec4 sampleColor=${TEXEL};float alpha=sampleColor.a*v_color.a;vec3 rgb=v_whiteFlash>0.5?vec3(alpha):v_forceColor>0.5?sampleColor.a*v_color.rgb:sampleColor.rgb*v_color.rgb;gl_FragColor=vec4(rgb,alpha);` : "gl_FragColor=v_color;";
+  function fragment(maxPlanes, clipped) {
     if (!clipped) {
-      return `precision mediump float;varying vec4 v_color;${TEXTURE_INPUTS}void main(){${OUTPUT}}`;
+      return "precision mediump float;varying vec4 v_color;void main(){gl_FragColor=v_color;}";
     }
     return `precision mediump float; varying vec4 v_color; varying vec2 v_position;
-${TEXTURE_INPUTS}
 uniform vec3 u_planes[${maxPlanes}]; uniform int u_planeCount;
-void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_planes[i],vec3(v_position,1.0))<0.0)discard;}${OUTPUT}}`;
+void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_planes[i],vec3(v_position,1.0))<0.0)discard;}gl_FragColor=v_color;}`;
   }
   function poseTextureShader(source) {
     return source.replace(/uniform vec4 u_parts\[\d+\];/, "uniform sampler2D u_poseTexture;").replace(
-      /(int index=(?:int\((?:a_part|i_part)\)\*3|0);)vec4 row0=u_parts\[index\];vec4 row1=u_parts\[index\+1\];vec4 pose=u_parts\[index\+2\];/,
+      /(int index=(?:int\(a_part\)\*3|0);)vec4 row0=u_parts\[index\];vec4 row1=u_parts\[index\+1\];vec4 pose=u_parts\[index\+2\];/,
       "$1int poseRow=int(-i_params.x-1.0);vec4 row0=texelFetch(u_poseTexture,ivec2(index,poseRow),0);vec4 row1=texelFetch(u_poseTexture,ivec2(index+1,poseRow),0);vec4 pose=texelFetch(u_poseTexture,ivec2(index+2,poseRow),0);"
     ).replaceAll("(i_params.x+pose.x)", "(pose.x)").replaceAll("(i_params.y+pose.y)", "(pose.y)");
   }
-  var POSE_PROGRAM_FUNCTIONS = `uniform sampler2D u_program;uniform sampler2D u_state;uniform sampler2D u_overrides;uniform int u_programWidth;
-vec4 poseData(int base,int at){int i=at+base;return texelFetch(u_program,ivec2(i%u_programWidth,i/u_programWidth),0);}
-float poseChannel(int base,int header,float time){vec4 h=poseData(base,header);float value=h.z;
- for(int i=0;i<64;i++){if(i>=int(h.y))break;vec4 s=poseData(base,int(h.x)+i*2);if(time<s.z)break;
- if(time>=s.w){value=s.y;continue;}float t=clamp((time-s.z)/(s.w-s.z),0.0,1.0);float ease=poseData(base,int(h.x)+i*2+1).x;
- if(ease>1.5)t=1.0-(1.0-t)*(1.0-t);else if(ease>0.5)t=0.5-0.5*cos(3.141592653589793*t);
- value=mix(s.x,s.y,t);break;}return value;}
-mat3 poseLocal(int base,int part,int header,float time,int row,out float opacity){
- vec4 b0=texelFetch(u_overrides,ivec2(part*2,row),0);vec4 b1=texelFetch(u_overrides,ivec2(part*2+1,row),0);
- int at=header+part*6;vec2 translation=b0.xy+vec2(poseChannel(base,at,time),poseChannel(base,at+1,time));
- float rotation=b0.z+poseChannel(base,at+2,time);float sx=b0.w*poseChannel(base,at+3,time);float sy=b1.x*poseChannel(base,at+4,time);
- float c=cos(rotation);float s=sin(rotation);vec2 x=vec2(c,s)*sx;vec2 y=vec2(-s,c)*sy;vec2 pivot=poseData(base,part).xy;
- opacity=b1.y*b1.z*poseChannel(base,at+5,time);return mat3(vec3(x,0.0),vec3(y,0.0),vec3(pivot+translation-x*pivot.x-y*pivot.y,1.0));}
-void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
- vec4 playback=texelFetch(u_state,ivec2(0,row),0);vec4 morph=texelFetch(u_state,ivec2(1,row),0);
- int base=int(morph.w);float time;
- if(playback.z<0.5)time=clamp(playback.y,0.0,playback.w);
- else if(playback.z<1.5)time=mod(playback.y,playback.w);
- else{float point=mod(playback.y,playback.w*2.0);time=point<=playback.w?point:playback.w*2.0-point;}
- mat3 matrix=mat3(1.0);float alpha=1.0;int current=part;
- for(int depth=0;depth<16;depth++){if(current<0)break;float opacity;mat3 m=poseLocal(base,current,int(playback.x),time,row,opacity);matrix=m*matrix;alpha*=opacity;current=int(poseData(base,current).z);}
- if((int(morph.z)&(1<<part))!=0)alpha=0.0;
- row0=vec4(matrix[0][0],matrix[1][0],matrix[2][0],0.0);row1=vec4(matrix[0][1],matrix[1][1],matrix[2][1],0.0);pose=vec4(morph.xy,alpha,0.0);}
-`;
   function poseProgramShader(source) {
     return source.replace(/uniform vec4 u_parts\[\d+\];/, POSE_PROGRAM_FUNCTIONS).replace(
-      /int index=(int\((?:a_part|i_part)\)\*3|0);vec4 row0=u_parts\[index\];vec4 row1=u_parts\[index\+1\];vec4 pose=u_parts\[index\+2\];/,
+      /int index=(int\(a_part\)\*3|0);vec4 row0=u_parts\[index\];vec4 row1=u_parts\[index\+1\];vec4 pose=u_parts\[index\+2\];/,
       (_match, expression) => `int poseRow=int(-i_params.x-1.0);vec4 row0;vec4 row1;vec4 pose;poseEval(${expression === "0" ? "0" : expression.slice(0, -2)},poseRow,row0,row1,pose);`
     ).replaceAll("(i_params.x+pose.x)", "(pose.x)").replaceAll("(i_params.y+pose.y)", "(pose.y)");
   }
@@ -2744,47 +4404,6 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
       output[AT + 11] = DEPTH;
     }
   }
-  function clipState(clips, maxPlanes) {
-    if (!clips?.length) {
-      return EMPTY_CLIP;
-    }
-    const VALUES = [], KEY = [];
-    for (const POLYGON of clips) {
-      if (!Array.isArray(POLYGON) || POLYGON.length < 3 || POLYGON.some((p) => !Number.isFinite(p?.x) || !Number.isFinite(p?.y))) {
-        throw new TypeError("Finite convex clip polygons required");
-      }
-      let area = 0;
-      for (let i = 0; i < POLYGON.length; i++) {
-        const P = POLYGON[i], Q = POLYGON[(i + 1) % POLYGON.length];
-        area += P.x * Q.y - Q.x * P.y;
-      }
-      if (Math.abs(area) < 1e-12) {
-        return {
-          key: "empty",
-          values: [0, 0, -1],
-          count: 1
-        };
-      }
-      const SIGN = area >= 0 ? 1 : -1;
-      for (let i = 0; i < POLYGON.length; i++) {
-        const P = POLYGON[i], Q = POLYGON[(i + 1) % POLYGON.length], DX = Q.x - P.x, DY = Q.y - P.y, LENGTH = Math.hypot(DX, DY);
-        if (!LENGTH) {
-          continue;
-        }
-        const A_LOCAL = -DY / LENGTH * SIGN, B_LOCAL = DX / LENGTH * SIGN, C_LOCAL = -(A_LOCAL * P.x + B_LOCAL * P.y);
-        VALUES.push(A_LOCAL, B_LOCAL, C_LOCAL);
-        KEY.push(A_LOCAL, B_LOCAL, C_LOCAL);
-      }
-    }
-    if (VALUES.length / 3 > maxPlanes) {
-      throw new RangeError(`Mesh clipping exceeds ${maxPlanes} edge planes`);
-    }
-    return {
-      key: KEY.join(","),
-      values: VALUES,
-      count: VALUES.length / 3
-    };
-  }
   function meshPartBounds(vertices, partCount, morphCount) {
     const BOUNDS = Array.from(
       {
@@ -2869,16 +4488,12 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
       }
       this.maxPlanes = Math.max(1, Math.min(32, device.gl.getParameter(device.gl.MAX_FRAGMENT_UNIFORM_VECTORS) - 2));
       this.instanced = device.instancingSupported === true;
-      this.maxTexturedInstances = this.instanced ? Math.min(maxInstances, Math.floor(device.maxBufferBytes / (TEXTURED_INSTANCE_FLOATS * 4))) : maxInstances;
       this.instances = new Float32Array(maxInstances * 16);
-      this.texturedInstances = null;
       this.instanceBuffer = this.instanced ? device.createVertexBuffer({
         capacityBytes: this.instances.byteLength
       }) : null;
       this.pipelines = /* @__PURE__ */ new Map();
       this.meshes = /* @__PURE__ */ new Set();
-      this.sharedQuad = null;
-      this.sharedQuadUsers = 0;
       this.bytes = 0;
       this.count = 0;
       this.pending = null;
@@ -2961,13 +4576,14 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
       };
       device.canvas.addEventListener("webglcontextlost", this.onLost);
       device.canvas.addEventListener("webglcontextrestored", this.onRestored);
+      this.unregisterBatcher = device.registerBatcher((reason) => this.flush(reason));
       this.disposed = false;
     }
     _poses() {
       if (!this.poseRenderer) {
         this.poseRenderer = new PoseRenderer(this.device, {
           backend: this.poseBackend,
-          onBoundary: () => this.flush("poseResourceBoundary")
+          onBoundary: () => this.device.flushBatchers("poseResourceBoundary")
         });
       }
       return this.poseRenderer;
@@ -3000,8 +4616,8 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
     poseStats() {
       return this.poseRenderer?.stats() ?? null;
     }
-    _pipeline(mesh, clipped, worldMode = false, poseMode = 0, textureArray = false, instancePart = false) {
-      const KEY = Number(textureArray) + ":" + mesh.partCount + ":" + mesh.morphCount + ":" + Number(clipped) + ":" + Number(mesh.hasNonScalingStroke) + ":" + Number(worldMode) + ":" + poseMode + ":" + Number(mesh.hasTextureCoordinates) + ":" + (mesh.paintRegionNames?.length ?? 0) + ":" + Number(instancePart);
+    _pipeline(mesh, clipped, worldMode = false, poseMode = 0) {
+      const KEY = mesh.partCount + ":" + mesh.morphCount + ":" + Number(clipped) + ":" + Number(mesh.hasNonScalingStroke) + ":" + Number(worldMode) + ":" + poseMode + ":" + (mesh.paintRegionNames?.length ?? 0);
       let pipeline = this.pipelines.get(KEY);
       if (pipeline) {
         return pipeline;
@@ -3034,19 +4650,6 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
       } else if (mesh.partCount > 1) {
         UNIFORMS2["u_parts[0]"] = "4fv";
       }
-      if (mesh.hasTextureCoordinates) {
-        UNIFORMS2.u_texture = "1i";
-        if (!this.instanced) {
-          UNIFORMS2.i_uvRect = "4f";
-          UNIFORMS2.i_localRect = "4f";
-          if (textureArray) {
-            UNIFORMS2.i_layer = "1f";
-          }
-          if (instancePart) {
-            UNIFORMS2.i_part = "1f";
-          }
-        }
-      }
       if (mesh.paintRegionNames) {
         UNIFORMS2["u_paintRegions[0]"] = "4fv";
       }
@@ -3064,18 +4667,13 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
             clipped,
             mesh.hasNonScalingStroke,
             worldMode,
-            mesh.hasTextureCoordinates,
             poseMode,
-            mesh.paintRegionNames?.length ?? 0,
-            textureArray,
-            instancePart
+            mesh.paintRegionNames?.length ?? 0
           )
         ),
-        fragment: fragment(this.maxPlanes, clipped, mesh.hasTextureCoordinates, textureArray),
+        fragment: fragment(this.maxPlanes, clipped),
         stride: mesh.bufferStrideFloats * 4,
-        ...this.instanced ? {
-          instanceStride: (mesh.hasTextureCoordinates ? TEXTURED_INSTANCE_FLOATS : PLAIN_INSTANCE_FLOATS) * 4
-        } : {},
+        ...this.instanced ? { instanceStride: PLAIN_INSTANCE_FLOATS * 4 } : {},
         attributes: [
           ...mesh.paintRegionNames ? [{ name: "a_paintRegion", size: 1, offset: 44 }] : [],
           ...mesh.hasNonScalingStroke ? ATTRIBUTES.filter((attribute) => attribute.name !== "a_morph") : ATTRIBUTES,
@@ -3086,17 +4684,7 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
               offset: 24
             }
           ] : [],
-          ...mesh.hasTextureCoordinates ? [
-            {
-              name: "a_uv",
-              size: 2,
-              offset: 44
-            }
-          ] : [],
-          ...this.instanced ? worldMode ? WORLD_INSTANCE_ATTRIBUTES : INSTANCE_ATTRIBUTES : [],
-          ...this.instanced && mesh.hasTextureCoordinates ? TEXTURE_INSTANCE_ATTRIBUTES : [],
-          ...this.instanced && textureArray ? [TEXTURE_LAYER_INSTANCE_ATTRIBUTE] : [],
-          ...this.instanced && instancePart ? [TEXTURE_PART_INSTANCE_ATTRIBUTE] : []
+          ...this.instanced ? worldMode ? WORLD_INSTANCE_ATTRIBUTES : INSTANCE_ATTRIBUTES : []
         ],
         uniforms: UNIFORMS2
       });
@@ -3106,7 +4694,6 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
     createMesh(data) {
       this._ready();
       const INDICES = data?.indices;
-      const UVS = data?.uvs === void 0 ? null : data.uvs;
       const EXPRESSION_INDICES = data?.expressionIndices === void 0 ? {} : data.expressionIndices;
       const INDEX_VARIANTS = data?.indexVariants === void 0 ? {} : data.indexVariants;
       const NON_SCALING_STROKE = data?.nonScalingStroke ?? false;
@@ -3121,9 +4708,6 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
         ([name, variant]) => !/^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/.test(name) || VARIANT_NAMES.has(name) || !(variant instanceof Uint16Array) || variant.length % 3 || variant.some((index) => index >= data.vertices.length / 11)
       )) {
         throw new TypeError("Invalid named mesh index variants or expression index variants");
-      }
-      if (UVS !== null && (!(UVS instanceof Float32Array) || UVS.length !== data.vertices.length / 11 * 2 || UVS.some((value) => !Number.isFinite(value)))) {
-        throw new TypeError("uvs must contain two finite coordinates per mesh vertex");
       }
       if (data.vertices.some((n) => !Number.isFinite(n))) {
         throw new TypeError("Mesh values must be finite");
@@ -3147,31 +4731,21 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
         0
       );
       validatePaintRegionData(data.paintRegions, data.vertices.length / 11, INDICES);
-      if (data.paintRegions && UVS !== null) {
-        throw new TypeError("Named fill regions require an untextured solid-fill mesh");
-      }
       if (data.paintRegions) {
         for (const [, VARIANT] of [...EXPRESSION_ENTRIES, ...INDEX_VARIANT_ENTRIES]) {
           validatePaintRegionData(data.paintRegions, data.vertices.length / 11, VARIANT);
         }
       }
-      const PAINT_INDICES = data.paintRegions?.indices, BUFFER_STRIDE = UVS !== null ? 13 : PAINT_INDICES ? 12 : 11;
+      const PAINT_INDICES = data.paintRegions?.indices, BUFFER_STRIDE = PAINT_INDICES ? 12 : 11;
       const GPU_VERTEX_BYTES = data.vertices.length / 11 * BUFFER_STRIDE * 4;
       const UPLOAD_BYTE_LENGTH = GPU_VERTEX_BYTES + (INDICES?.byteLength ?? 0) + VARIANT_BYTE_LENGTH;
-      const BYTE_LENGTH = UPLOAD_BYTE_LENGTH + (UVS !== null || PAINT_INDICES ? data.vertices.byteLength : 0);
+      const BYTE_LENGTH = UPLOAD_BYTE_LENGTH + (PAINT_INDICES ? data.vertices.byteLength : 0);
       if (this.meshes.size >= this.maxMeshes || this.bytes + BYTE_LENGTH > this.maxMeshBytes) {
         throw new RangeError("Retained mesh budget exceeded");
       }
-      const VERTICES = data.vertices.slice(), GPU_VERTICES = UVS === null ? paintVertexStream(VERTICES, PAINT_INDICES) : new Float32Array(VERTICES.length / 11 * 13), OWNED_INDICES = INDICES?.slice(), BUFFER = this.device.createVertexBuffer({
+      const VERTICES = data.vertices.slice(), GPU_VERTICES = paintVertexStream(VERTICES, PAINT_INDICES), OWNED_INDICES = INDICES?.slice(), BUFFER = this.device.createVertexBuffer({
         capacityBytes: GPU_VERTICES.byteLength
       });
-      if (UVS !== null) {
-        for (let vertex = 0; vertex < VERTICES.length / 11; vertex++) {
-          GPU_VERTICES.set(VERTICES.subarray(vertex * 11, vertex * 11 + 11), vertex * 13);
-          GPU_VERTICES[vertex * 13 + 11] = UVS[vertex * 2];
-          GPU_VERTICES[vertex * 13 + 12] = UVS[vertex * 2 + 1];
-        }
-      }
       let indexBuffer;
       const OWNED_EXPRESSIONS = /* @__PURE__ */ new Map(), OWNED_VARIANTS = /* @__PURE__ */ new Map();
       try {
@@ -3245,7 +4819,6 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
         strideFloats: 11,
         bufferStrideFloats: BUFFER_STRIDE,
         paintRegionNames: data.paintRegions ? Object.freeze(data.paintRegions.names.slice()) : null,
-        hasTextureCoordinates: UVS !== null,
         hasNonScalingStroke: NON_SCALING_STROKE,
         partBounds: meshPartBounds(VERTICES, data.partCount, data.morphCount)
       });
@@ -3256,43 +4829,9 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
       this.metrics.geometryBytesUploaded += UPLOAD_BYTE_LENGTH;
       return MESH;
     }
-    /**
-     * The one unit quad every textured sprite draws (SSOT). The local rectangle, UV rectangle, layer and pose part
-     * come from instances, so sprites of any texture array page or atlas share one mesh and one batch.
-     */
-    acquireQuadMesh() {
-      this._ready();
-      this.sharedQuadUsers++;
-      if (!this.sharedQuad) {
-        this.sharedQuad = this.createMesh({
-          vertices: QUAD_VERTICES.slice(),
-          uvs: Float32Array.from([0, 0, 1, 0, 1, 1, 0, 1]),
-          indices: new Uint16Array([0, 1, 2, 0, 2, 3]),
-          strideFloats: 11,
-          partCount: 1,
-          morphCount: 0
-        });
-      }
-      return this.sharedQuad;
-    }
-    /** Pairs with acquireQuadMesh; the mesh is deleted with its last user so disposed owners leave no geometry. */
-    releaseQuadMesh() {
-      if (!this.sharedQuad || this.sharedQuadUsers < 1) {
-        return false;
-      }
-      if (--this.sharedQuadUsers === 0) {
-        const MESH = this.sharedQuad;
-        this.sharedQuad = null;
-        this.deleteMesh(MESH);
-      }
-      return true;
-    }
     deleteMesh(mesh) {
       if (!this.meshes.has(mesh)) {
         return false;
-      }
-      if (mesh === this.sharedQuad) {
-        throw new Error("Release the shared quad mesh with releaseQuadMesh");
       }
       if (this.pending?.mesh === mesh || this.alphaQueueCount && this.alphaQueueState.mesh === mesh) {
         this.flush("deleteMesh");
@@ -3318,33 +4857,14 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
     }
     /** Captures state by value; subsequent transform/paint changes do not alter queued instances. */
     drawMesh(mesh, options = {}) {
-      this._drawPublic(mesh, options, options.matrix ?? IDENTITY2, 1, null);
+      this._drawPublic(mesh, options, options.matrix ?? IDENTITY2, 1);
     }
-    /**
-     * Draws several rectangles of one texture array layer as instances of the shared quad. `matrices` holds six
-     * affine floats per run, `runs` holds `uvRects`/`localRects` (four floats per run) and, when `pose` is given,
-     * `parts` (the pose part each run follows). Runs batch with every other draw of the same texture array.
-     */
-    drawQuadRuns(options = {}) {
-      const { matrices: MATRICES, runs: RUNS, ...REST } = options;
-      if (!RUNS || !MATRICES || MATRICES.length % 6 || !MATRICES.length) {
-        throw new TypeError("drawQuadRuns requires packed matrices and runs");
-      }
-      if (!this.sharedQuad) {
-        throw new Error("acquireQuadMesh is required before drawQuadRuns");
-      }
-      this._drawPublic(this.sharedQuad, REST, MATRICES, MATRICES.length / 6, RUNS);
-    }
-    _drawPublic(mesh, options, matrices, count, runs) {
+    _drawPublic(mesh, options, matrices, count) {
       const {
-        projection: PROJECTION2,
+        projection: PROJECTION,
         morph: MORPH = [0, 0],
         parts: PARTS = null,
         pose: POSE = null,
-        texture: TEXTURE = null,
-        layer: LAYER = 0,
-        uvRect: UV_RECT = IDENTITY_RECT,
-        localRect: LOCAL_RECT = IDENTITY_RECT,
         color: COLOR = WHITE,
         paintRegions: PAINT_REGIONS = null,
         forceColor: FORCE_COLOR = false,
@@ -3366,17 +4886,12 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
       this._drawMeshInstances(mesh, {
         matrices,
         count,
-        runs,
-        projection: PROJECTION2,
+        projection: PROJECTION,
         viewProjection: VIEW_PROJECTION,
         worldMatrix: WORLD_MATRIX,
         morph: MORPH,
         parts: PARTS,
         pose: POSE,
-        texture: TEXTURE,
-        layer: LAYER,
-        uvRect: UV_RECT,
-        localRect: LOCAL_RECT,
         color: COLOR,
         paintRegions: PAINT_REGIONS,
         forceColor: FORCE_COLOR,
@@ -3502,8 +5017,8 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
       }
       const STATE = this.alphaQueueState, MESH = STATE.mesh, PARTS = this.alphaQueueParts.subarray(0, MESH.partCount * 12);
       const INDEX_BUFFER_VARIANT = STATE.indexVariant === null ? null : MESH.indexVariants.get(STATE.indexVariant) ?? MESH.expressionIndices.get(STATE.indexVariant);
-      const PROJECTION2 = STATE.projection, CLIP = STATE.clip, PIPELINE = this._pipeline(MESH, CLIP.count > 0), UNIFORMS2 = {
-        u_projection: PROJECTION2
+      const PROJECTION = STATE.projection, CLIP = STATE.clip, PIPELINE = this._pipeline(MESH, CLIP.count > 0), UNIFORMS2 = {
+        u_projection: PROJECTION
       };
       this.planes.fill(0);
       if (CLIP.values) {
@@ -3574,11 +5089,6 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
       morph = [0, 0],
       parts = null,
       pose = null,
-      texture = null,
-      layer = 0,
-      uvRect = IDENTITY_RECT,
-      localRect = IDENTITY_RECT,
-      runs = null,
       color: color2 = WHITE,
       paintRegions = null,
       forceColor = false,
@@ -3601,45 +5111,6 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
       this._ready();
       if (!this.meshes.has(mesh)) {
         throw new TypeError("Mesh owned by this renderer required");
-      }
-      if (mesh.hasTextureCoordinates !== (texture !== null) || texture !== null && !this.device.textures.has(texture)) {
-        throw new TypeError("Textured meshes require a live texture; plain meshes cannot sample one");
-      }
-      const TEXTURE_ARRAY = texture !== null && this.device.isTextureArray(texture);
-      if (TEXTURE_ARRAY) {
-        if (!Number.isInteger(layer) || layer < 0 || layer >= texture.layers) {
-          throw new RangeError(`layer must be an integer in 0..${texture.layers - 1}`);
-        }
-      } else if (layer !== 0) {
-        throw new TypeError("layer requires a texture array");
-      }
-      if (runs !== null) {
-        if (mesh !== this.sharedQuad || !Number.isSafeInteger(count) || runs.uvRects?.length !== count * 4 || runs.localRects?.length !== count * 4 || runs.parts != null && runs.parts.length !== count) {
-          throw new TypeError("runs require the shared quad mesh and one rectangle pair per instance");
-        }
-        for (let i = 0; i < count * 4; i++) {
-          if (!Number.isFinite(runs.uvRects[i]) || !Number.isFinite(runs.localRects[i])) {
-            throw new TypeError("Run rectangles must be finite");
-          }
-        }
-      }
-      if (pose !== null && mesh === this.sharedQuad && !runs?.parts) {
-        throw new TypeError("A pose on the shared quad requires runs.parts");
-      }
-      if (runs?.parts && pose === null) {
-        throw new TypeError("runs.parts requires a prepared pose");
-      }
-      if (uvRect !== IDENTITY_RECT) {
-        finiteArray2(uvRect, 4, "uvRect");
-      }
-      if (localRect !== IDENTITY_RECT) {
-        finiteArray2(localRect, 4, "localRect");
-      }
-      if (!mesh.hasTextureCoordinates && (uvRect !== IDENTITY_RECT && Array.from(uvRect).some((value, index) => value !== IDENTITY_RECT[index]) || localRect !== IDENTITY_RECT && Array.from(localRect).some((value, index) => value !== IDENTITY_RECT[index]))) {
-        throw new TypeError("uvRect and localRect require a textured mesh");
-      }
-      if (mesh.hasTextureCoordinates && this.maxTexturedInstances < 1) {
-        throw new RangeError("A textured instance exceeds device maxBufferBytes");
       }
       if (indexVariant !== null && (typeof indexVariant !== "string" || !mesh.expressionIndices.has(indexVariant) && !mesh.indexVariants.has(indexVariant))) {
         throw new TypeError("Known mesh index variant required");
@@ -3693,7 +5164,7 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
         }
         if (!WORLD_MODE) {
           inverseStrokeProjection = invertProjection(projection);
-        } else if (clipState(clips, this.maxPlanes).count) {
+        } else if (clipPlanes(clips, this.maxPlanes).count) {
           inverseViewProjection = invertMatrix4(viewProjection);
         }
       }
@@ -3738,32 +5209,18 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
       if (indexRange !== null && depthWriteAlphaThreshold !== null) {
         throw new TypeError("indexRange is currently supported only for ordinary ordered mesh draws");
       }
-      const CLIP = clipState(clips, this.maxPlanes);
+      const CLIP = clipPlanes(clips, this.maxPlanes);
       const VARIANT = indexVariant === null ? null : mesh.indexVariants.get(indexVariant) ?? mesh.expressionIndices.get(indexVariant);
       const FIRST_INDEX = indexRange?.[0] ?? 0, INDEX_COUNT = indexRange?.[1] ?? VARIANT?.count ?? mesh.count;
       if (FIRST_INDEX + INDEX_COUNT > (VARIANT?.count ?? mesh.count)) {
         throw new RangeError("indexRange exceeds the selected mesh index data");
       }
       const POSE_DRAW = pose === null ? null : this._poses().resolve(pose);
-      if (POSE_DRAW && mesh !== this.sharedQuad && POSE_DRAW.partCount !== mesh.partCount) {
+      if (POSE_DRAW && POSE_DRAW.partCount !== mesh.partCount) {
         throw new TypeError("Pose and mesh part counts must match");
-      }
-      if (POSE_DRAW && mesh === this.sharedQuad) {
-        for (let i = 0; i < count; i++) {
-          const PART2 = runs.parts[i];
-          if (!Number.isInteger(PART2) || PART2 < 0 || PART2 >= POSE_DRAW.partCount) {
-            throw new RangeError("runs.parts must be pose part indices");
-          }
-        }
       }
       if (POSE_DRAW && depthWriteAlphaThreshold !== null) {
         throw new TypeError("Alpha depth classification requires ordinary CPU part poses");
-      }
-      if (texture !== null && depthWriteAlphaThreshold !== null) {
-        throw new TypeError("Alpha depth classification cannot inspect raster texel alpha");
-      }
-      if (texture !== null && POSE_DRAW && this.device.maxTextures < POSE_DRAW.textures.length + 1) {
-        throw new RangeError("Textured GPU poses require " + (POSE_DRAW.textures.length + 1) + " texture units");
       }
       packParts(parts, mesh.partCount, this.partScratch);
       for (let i = 0; i < mesh.partCount; i++) {
@@ -3778,16 +5235,16 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
       const DEPTH_STATE_KEY = Number(depthTest) + ":" + Number(depthWrite) + ":" + depthFunc;
       const ALPHA_DEPTH_WRITE = depthWrite && depthWriteAlphaThreshold !== null;
       if (!ALPHA_DEPTH_WRITE) {
-        const INSTANCE_LIMIT = mesh.hasTextureCoordinates ? this.maxTexturedInstances : this.maxInstances;
-        const INSTANCE_FLOATS = mesh.hasTextureCoordinates ? TEXTURED_INSTANCE_FLOATS : PLAIN_INSTANCE_FLOATS;
-        const DATA = mesh.hasTextureCoordinates ? this.texturedInstances ??= new Float32Array(this.maxTexturedInstances * TEXTURED_INSTANCE_FLOATS) : this.instances;
+        const INSTANCE_LIMIT = this.maxInstances;
+        const INSTANCE_FLOATS = PLAIN_INSTANCE_FLOATS;
+        const DATA = this.instances;
         if (this.alphaQueueCount) {
           this._flushAlphaQueue("alphaBoundary");
         }
         if (PENDING) {
           const MATRIX = WORLD_MODE ? viewProjection : projection;
           const PREVIOUS_COLOR = PENDING.color;
-          const REASON = (PENDING.poseTexture ?? null) !== (POSE_DRAW?.texture ?? null) ? "poseBackend" : PENDING.texture !== texture ? "texture" : PENDING.mesh !== mesh ? "mesh" : PENDING.worldMode !== WORLD_MODE ? "transformMode" : PENDING.indexVariant !== indexVariant ? "indexVariant" : PENDING.firstIndex !== FIRST_INDEX || PENDING.indexCount !== INDEX_COUNT ? "indexRange" : PENDING.clip.key !== CLIP.key ? "clip" : PENDING.stencilRef !== stencilRef ? "stencil" : PENDING.depthStateKey !== DEPTH_STATE_KEY ? "depthState" : MATRIX.some((n, i) => Math.fround(n) !== PENDING.projection[i]) ? "projection" : strokeSize && strokeSize.some((n, i) => n !== PENDING.strokeSize?.[i]) ? "strokeViewport" : WORLD_MODE && color2.some((n, i) => n !== PREVIOUS_COLOR[i]) ? "color" : !POSE_DRAW && mesh.partCount > 1 && PENDING.parts.some((n, i) => n !== this.partScratch[i]) ? "parts" : this.count === INSTANCE_LIMIT ? "capacity" : null;
+          const REASON = (PENDING.poseTexture ?? null) !== (POSE_DRAW?.texture ?? null) ? "poseBackend" : PENDING.mesh !== mesh ? "mesh" : PENDING.worldMode !== WORLD_MODE ? "transformMode" : PENDING.indexVariant !== indexVariant ? "indexVariant" : PENDING.firstIndex !== FIRST_INDEX || PENDING.indexCount !== INDEX_COUNT ? "indexRange" : PENDING.clip.key !== CLIP.key ? "clip" : PENDING.stencilRef !== stencilRef ? "stencil" : PENDING.depthStateKey !== DEPTH_STATE_KEY ? "depthState" : MATRIX.some((n, i) => Math.fround(n) !== PENDING.projection[i]) ? "projection" : strokeSize && strokeSize.some((n, i) => n !== PENDING.strokeSize?.[i]) ? "strokeViewport" : WORLD_MODE && color2.some((n, i) => n !== PREVIOUS_COLOR[i]) ? "color" : !POSE_DRAW && mesh.partCount > 1 && PENDING.parts.some((n, i) => n !== this.partScratch[i]) ? "parts" : this.count === INSTANCE_LIMIT ? "capacity" : null;
           if (REASON) {
             this.flush(REASON);
           }
@@ -3807,7 +5264,6 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
               poseTextures: POSE_DRAW?.textures ?? null,
               poseKind: POSE_DRAW?.kind ?? null,
               poseProgramWidth: POSE_DRAW?.programWidth ?? 0,
-              texture,
               projection: Float32Array.from(WORLD_MODE ? viewProjection : projection),
               worldMode: WORLD_MODE,
               color: Float32Array.from(color2),
@@ -3890,20 +5346,6 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
             DATA[AT + 13] = weight1;
             DATA[AT + 14] = whiteFlash ? 1 : 0;
             DATA[AT + 15] = INSTANCE_DEPTH;
-          }
-          if (mesh.hasTextureCoordinates) {
-            if (runs) {
-              for (let k = 0; k < 4; k++) {
-                DATA[AT + 16 + k] = runs.uvRects[i * 4 + k];
-                DATA[AT + 20 + k] = runs.localRects[i * 4 + k];
-              }
-              DATA[AT + 25] = runs.parts ? runs.parts[i] : 0;
-            } else {
-              DATA.set(uvRect, AT + 16);
-              DATA.set(localRect, AT + 20);
-              DATA[AT + 25] = 0;
-            }
-            DATA[AT + 24] = layer;
           }
         }
         return;
@@ -4046,7 +5488,7 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
         }
         const WRITE = RUNS[2], STATE_KEY = Number(depthTest) + ":" + Number(WRITE) + ":" + depthFunc;
         if (this.pending) {
-          const CURRENT = this.pending, REASON = CURRENT.mesh !== mesh ? "mesh" : CURRENT.texture !== texture ? "texture" : CURRENT.worldMode ? "transformMode" : CURRENT.indexVariant !== indexVariant ? "indexVariant" : CURRENT.firstIndex !== FIRST_INDEX || CURRENT.indexCount !== INDEX_COUNT ? "indexRange" : CURRENT.clip.key !== CLIP.key ? "clip" : CURRENT.stencilRef !== stencilRef ? "stencil" : CURRENT.depthStateKey !== STATE_KEY ? "depthState" : projection.some((n, j) => Math.fround(n) !== CURRENT.projection[j]) ? "projection" : strokeSize && strokeSize.some((n, j) => n !== CURRENT.strokeSize?.[j]) ? "strokeViewport" : mesh.partCount > 1 && CURRENT.parts.some((n, j) => n !== this.partScratch[j]) ? "parts" : this.count === this.maxInstances ? "capacity" : null;
+          const CURRENT = this.pending, REASON = CURRENT.mesh !== mesh ? "mesh" : CURRENT.worldMode ? "transformMode" : CURRENT.indexVariant !== indexVariant ? "indexVariant" : CURRENT.firstIndex !== FIRST_INDEX || CURRENT.indexCount !== INDEX_COUNT ? "indexRange" : CURRENT.clip.key !== CLIP.key ? "clip" : CURRENT.stencilRef !== stencilRef ? "stencil" : CURRENT.depthStateKey !== STATE_KEY ? "depthState" : projection.some((n, j) => Math.fround(n) !== CURRENT.projection[j]) ? "projection" : strokeSize && strokeSize.some((n, j) => n !== CURRENT.strokeSize?.[j]) ? "strokeViewport" : mesh.partCount > 1 && CURRENT.parts.some((n, j) => n !== this.partScratch[j]) ? "parts" : this.count === this.maxInstances ? "capacity" : null;
           if (REASON) {
             this.flush(REASON);
           }
@@ -4054,7 +5496,6 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
         if (!this.pending) {
           this.pending = {
             mesh,
-            texture,
             projection: Float32Array.from(projection),
             worldMode: false,
             clip: CLIP,
@@ -4256,7 +5697,7 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
       this._ready();
       const {
         mesh: MESH,
-        projection: PROJECTION2,
+        projection: PROJECTION,
         worldMode: WORLD_MODE,
         color: COLOR,
         clip: CLIP,
@@ -4272,8 +5713,7 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
         poseTexture: POSE_TEXTURE,
         poseTextures: POSE_TEXTURES,
         poseKind: POSE_KIND,
-        poseProgramWidth: POSE_PROGRAM_WIDTH,
-        texture: TEXTURE
+        poseProgramWidth: POSE_PROGRAM_WIDTH
       } = this.pending;
       const VARIANT = INDEX_VARIANT === null ? null : MESH.indexVariants.get(INDEX_VARIANT) ?? MESH.expressionIndices.get(INDEX_VARIANT);
       this.planes.fill(0);
@@ -4287,14 +5727,12 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
         MESH,
         CLIP.count > 0,
         WORLD_MODE,
-        POSE_KIND === "program" ? 2 : POSE_KIND === "matrix" ? 1 : 0,
-        TEXTURE !== null && this.device.isTextureArray(TEXTURE),
-        POSE_KIND !== null && MESH === this.sharedQuad
+        POSE_KIND === "program" ? 2 : POSE_KIND === "matrix" ? 1 : 0
       ), UNIFORMS2 = WORLD_MODE ? {
-        u_viewProjection: PROJECTION2,
+        u_viewProjection: PROJECTION,
         u_color: COLOR
       } : {
-        u_projection: PROJECTION2
+        u_projection: PROJECTION
       };
       if (CLIP.count) {
         Object.assign(UNIFORMS2, {
@@ -4322,13 +5760,10 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
       } else if (MESH.partCount > 1) {
         UNIFORMS2["u_parts[0]"] = PARTS;
       }
-      if (TEXTURE) {
-        UNIFORMS2.u_texture = POSE_TEXTURES ? POSE_TEXTURES.length : 0;
-      }
-      const TEXTURES = [...POSE_TEXTURES ?? [], ...TEXTURE ? [TEXTURE] : []];
+      const TEXTURES = POSE_TEXTURES ?? [];
       const INSTANCE_UNIFORMS = WORLD_MODE ? ["i_row0", "i_row1", "i_row2", "i_params"] : ["i_row0", "i_row1", "i_color", "i_params"];
-      const INSTANCE_FLOATS = MESH.hasTextureCoordinates ? TEXTURED_INSTANCE_FLOATS : PLAIN_INSTANCE_FLOATS;
-      const INSTANCE_DATA = MESH.hasTextureCoordinates ? this.texturedInstances : this.instances;
+      const INSTANCE_FLOATS = PLAIN_INSTANCE_FLOATS;
+      const INSTANCE_DATA = this.instances;
       if (this.instanced) {
         this.device.uploadVertices(this.instanceBuffer, INSTANCE_DATA.subarray(0, this.count * INSTANCE_FLOATS));
         this.device.draw({
@@ -4363,16 +5798,6 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
               i * INSTANCE_FLOATS + j * 4,
               i * INSTANCE_FLOATS + j * 4 + 4
             );
-          }
-          if (MESH.hasTextureCoordinates) {
-            UNIFORMS2.i_uvRect = INSTANCE_DATA.subarray(i * INSTANCE_FLOATS + 16, i * INSTANCE_FLOATS + 20);
-            UNIFORMS2.i_localRect = INSTANCE_DATA.subarray(i * INSTANCE_FLOATS + 20, i * INSTANCE_FLOATS + 24);
-            if (TEXTURE !== null && this.device.isTextureArray(TEXTURE)) {
-              UNIFORMS2.i_layer = INSTANCE_DATA[i * INSTANCE_FLOATS + 24];
-            }
-            if (POSE_KIND !== null && MESH === this.sharedQuad) {
-              UNIFORMS2.i_part = INSTANCE_DATA[i * INSTANCE_FLOATS + 25];
-            }
           }
           this.device.draw({
             pipeline: PIPELINE,
@@ -4440,7 +5865,7 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
         pipelineCount: this.pipelines.size,
         meshCount: this.meshes.size,
         retainedBytes: this.bytes,
-        stagingBytes: this.instances.byteLength + (this.texturedInstances?.byteLength ?? 0) + this.planes.byteLength + this.partScratch.byteLength,
+        stagingBytes: this.instances.byteLength + this.planes.byteLength + this.partScratch.byteLength,
         instanced: this.instanced,
         maxClipPlanes: this.maxPlanes,
         poses: this.poseStats()
@@ -4451,8 +5876,8 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
         return;
       }
       this.discard();
-      this.texturedInstances = null;
       this.poseRenderer?.dispose();
+      this.unregisterBatcher();
       this.device.canvas.removeEventListener("webglcontextlost", this.onLost);
       this.device.canvas.removeEventListener("webglcontextrestored", this.onRestored);
       for (const MESH of this.meshes) {
@@ -4472,8 +5897,6 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
         }
       }
       this.meshes.clear();
-      this.sharedQuad = null;
-      this.sharedQuadUsers = 0;
       this.bytes = 0;
       this.alphaRunCache = /* @__PURE__ */ new WeakMap();
       this.alphaRunScratch.length = 0;
@@ -4488,10 +5911,10 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
       this.state = "disposed";
     }
   };
-  var INSTANCE_STRIDE_FLOATS = 16;
-  var INSTANCE_STRIDE_BYTES = INSTANCE_STRIDE_FLOATS * Float32Array.BYTES_PER_ELEMENT;
-  var QUAD_VERTICES2 = new Float32Array([-1, -1, 1, -1, 1, 1, -1, -1, 1, 1, -1, 1]);
   var TAU = Math.PI * 2;
+  var MAX_LINEAR_GRADIENT_STOPS = 32;
+  var LINEAR_GRADIENT_SIZE = 1024;
+  var MAX_GRADIENT_TEXTURES = 64;
   var SILHOUETTE_OFFSETS = Object.freeze(
     Array.from(
       {
@@ -4502,6 +5925,38 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
   );
   var IDENTITY3 = Object.freeze([1, 0, 0, 1, 0, 0]);
   var WHITE2 = Object.freeze([1, 1, 1, 1]);
+  function composeTransform(a, b) {
+    return [
+      a[0] * b[0] + a[2] * b[1],
+      a[1] * b[0] + a[3] * b[1],
+      a[0] * b[2] + a[2] * b[3],
+      a[1] * b[2] + a[3] * b[3],
+      a[0] * b[4] + a[2] * b[5] + a[4],
+      a[1] * b[4] + a[3] * b[5] + a[5]
+    ];
+  }
+  function transformedPoint(matrix, x, y) {
+    return [matrix[0] * x + matrix[2] * y + matrix[4], matrix[1] * x + matrix[3] * y + matrix[5]];
+  }
+  function isFullArc(start, end, ccw) {
+    let sweep = end - start;
+    if (!ccw) {
+      if (sweep >= TAU) {
+        return true;
+      }
+      while (sweep < 0) {
+        sweep += TAU;
+      }
+    } else {
+      if (sweep <= -TAU) {
+        return true;
+      }
+      while (sweep > 0) {
+        sweep -= TAU;
+      }
+    }
+    return Math.abs(sweep) >= TAU;
+  }
   var NAMED = Object.freeze({
     black: "#000000",
     white: "#ffffff",
@@ -4527,16 +5982,1610 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
     rebeccapurple: "#663399",
     transparent: "#00000000"
   });
-  function createSpriteAnimation(meshRenderer, texture, definition) {
-    if (!meshRenderer?.acquireQuadMesh || !meshRenderer?.drawMesh || !meshRenderer?.releaseQuadMesh) {
-      throw new TypeError("A MeshRenderer is required");
+  function clamp(value, min = 0, max = 1) {
+    return Math.max(min, Math.min(max, value));
+  }
+  function finite(value, name) {
+    if (!Number.isFinite(value)) {
+      throw new TypeError(`${name} must be finite`);
     }
-    if (!meshRenderer.device?.textures?.has(texture)) {
-      throw new TypeError("A live Device texture owned by the mesh renderer is required");
+  }
+  var COLOR_CACHE = /* @__PURE__ */ new Map();
+  function cacheColor(key, rgbaValue) {
+    if (typeof key === "string") {
+      if (COLOR_CACHE.size >= 512) {
+        COLOR_CACHE.clear();
+      }
+      COLOR_CACHE.set(key, rgbaValue);
     }
-    const ATLAS_WIDTH = texture.width;
-    const ATLAS_HEIGHT = texture.height;
-    const LAYER_COUNT = meshRenderer.device.isTextureArray(texture) ? texture.layers : 1;
+    return rgbaValue.slice();
+  }
+  function normalizeColor(value) {
+    if (typeof value === "string") {
+      const HIT = COLOR_CACHE.get(value);
+      if (HIT) {
+        return HIT.slice();
+      }
+    }
+    if (Array.isArray(value) || ArrayBuffer.isView(value)) {
+      if (value.length !== 4) {
+        throw new TypeError("RGBA paint must have four channels");
+      }
+      const OUT = Array.from(value);
+      if (OUT.some((v) => !Number.isFinite(v) || v < 0 || v > 1)) {
+        throw new RangeError("RGBA channels must be in [0,1]");
+      }
+      return OUT;
+    }
+    let text = String(value ?? "black").trim().toLowerCase();
+    text = NAMED[text] ?? text;
+    if (text === "currentcolor" && typeof getComputedStyle === "function") {
+      text = getComputedStyle(document.documentElement).color;
+    }
+    if (text[0] === "#") {
+      let hex = text.slice(1);
+      if (!/^(?:[\da-f]{3,4}|[\da-f]{6}|[\da-f]{8})$/i.test(hex)) {
+        throw new TypeError(`Invalid CSS color: ${value}`);
+      }
+      if (hex.length < 5) {
+        hex = [...hex].map((c) => c + c).join("");
+      }
+      return cacheColor(value, [
+        parseInt(hex.slice(0, 2), 16) / 255,
+        parseInt(hex.slice(2, 4), 16) / 255,
+        parseInt(hex.slice(4, 6), 16) / 255,
+        hex.length === 8 ? parseInt(hex.slice(6, 8), 16) / 255 : 1
+      ]);
+    }
+    const RGB = text.match(/^rgba?\((.*)\)$/);
+    if (RGB) {
+      const FIELDS = RGB[1].trim().replace(/\s*\/\s*/, " ").split(/[\s,]+/).filter(Boolean);
+      if (FIELDS.length < 3 || FIELDS.length > 4) {
+        throw new TypeError(`Invalid CSS color: ${value}`);
+      }
+      const CHANNEL = (s) => clamp(s.endsWith("%") ? parseFloat(s) / 100 : parseFloat(s) / 255);
+      const ALPHA = FIELDS[3] === void 0 ? 1 : clamp(FIELDS[3].endsWith("%") ? parseFloat(FIELDS[3]) / 100 : parseFloat(FIELDS[3]));
+      const OUT = [...FIELDS.slice(0, 3).map(CHANNEL), ALPHA];
+      if (OUT.some(Number.isNaN)) {
+        throw new TypeError(`Invalid CSS color: ${value}`);
+      }
+      return cacheColor(value, OUT);
+    }
+    const HSL = text.match(/^hsla?\((.*)\)$/);
+    if (HSL) {
+      const FIELDS = HSL[1].trim().replace(/\s*\/\s*/, " ").split(/[\s,]+/).filter(Boolean);
+      if (FIELDS.length < 3 || FIELDS.length > 4) {
+        throw new TypeError(`Invalid CSS color: ${value}`);
+      }
+      const H = (parseFloat(FIELDS[0]) % 360 + 360) % 360 / 360, S = clamp(parseFloat(FIELDS[1]) / 100), L = clamp(parseFloat(FIELDS[2]) / 100), A = FIELDS[3] === void 0 ? 1 : clamp(FIELDS[3].endsWith("%") ? parseFloat(FIELDS[3]) / 100 : parseFloat(FIELDS[3]));
+      const F = (n) => {
+        const K = (n + H * 12) % 12;
+        return L - S * Math.min(L, 1 - L) * Math.max(-1, Math.min(K - 3, 9 - K, 1));
+      };
+      return cacheColor(value, [F(0), F(8), F(4), A]);
+    }
+    if (typeof document !== "undefined" && document.createElement && document.body) {
+      const PROBE = document.createElement("span");
+      PROBE.style.color = "";
+      PROBE.style.color = text;
+      if (PROBE.style.color) {
+        document.body.append(PROBE);
+        const RESOLVED = getComputedStyle(PROBE).color;
+        PROBE.remove();
+        if (RESOLVED !== text) {
+          return normalizeColor(RESOLVED);
+        }
+      }
+    }
+    throw new TypeError(`Unsupported CSS color: ${value}`);
+  }
+  function transformed(matrix, x, y) {
+    return {
+      x: matrix[0] * x + matrix[2] * y + matrix[4],
+      y: matrix[1] * x + matrix[3] * y + matrix[5]
+    };
+  }
+  function invert(matrix) {
+    const D = matrix[0] * matrix[3] - matrix[1] * matrix[2];
+    if (Math.abs(D) < 1e-15) {
+      return null;
+    }
+    return [
+      matrix[3] / D,
+      -matrix[1] / D,
+      -matrix[2] / D,
+      matrix[0] / D,
+      (matrix[2] * matrix[5] - matrix[3] * matrix[4]) / D,
+      (matrix[1] * matrix[4] - matrix[0] * matrix[5]) / D
+    ];
+  }
+  var RadialGradient = class {
+    constructor(matrix, x0, y0, r0, x1, y1, r1) {
+      for (const [N, V] of Object.entries({
+        x0,
+        y0,
+        r0,
+        x1,
+        y1,
+        r1
+      })) {
+        finite(V, N);
+      }
+      if (r0 < 0 || r1 < 0) {
+        throw new RangeError("Gradient radii must be non-negative");
+      }
+      this.matrix = matrix.slice();
+      this.x0 = x0;
+      this.y0 = y0;
+      this.r0 = r0;
+      this.x1 = x1;
+      this.y1 = y1;
+      this.r1 = r1;
+      this.stops = [];
+      this.pixels = null;
+      this.revision = 0;
+    }
+    addColorStop(offset, value) {
+      if (!Number.isFinite(offset) || offset < 0 || offset > 1) {
+        throw new RangeError("Invalid gradient stop");
+      }
+      this.stops.push({
+        offset,
+        color: normalizeColor(value)
+      });
+      this.stops.sort((a, b) => a.offset - b.offset);
+      this.pixels = null;
+      this.revision++;
+    }
+    raster() {
+      if (this.pixels) {
+        return this.pixels;
+      }
+      const DATA = new Uint8Array(256 * 4), STOPS = this.stops.length ? this.stops : [
+        {
+          offset: 0,
+          color: [0, 0, 0, 0]
+        }
+      ];
+      for (let i = 0; i < 256; i++) {
+        const T = i / 255;
+        let lo = STOPS[0];
+        let hi = STOPS.at(-1);
+        for (let j = 1; j < STOPS.length; j++) {
+          if (T < STOPS[j].offset) {
+            lo = STOPS[j - 1];
+            hi = STOPS[j];
+            break;
+          }
+        }
+        const Q = clamp((T - lo.offset) / (hi.offset - lo.offset || 1)), ALPHA = lo.color[3] + (hi.color[3] - lo.color[3]) * Q;
+        for (let k = 0; k < 3; k++) {
+          DATA[i * 4 + k] = Math.round((lo.color[k] + (hi.color[k] - lo.color[k]) * Q) * ALPHA * 255);
+        }
+        DATA[i * 4 + 3] = Math.round(ALPHA * 255);
+      }
+      this.pixels = DATA;
+      return DATA;
+    }
+  };
+  var LinearGradient = class {
+    constructor(matrix, x0, y0, x1, y1) {
+      for (const [NAME, VALUE] of Object.entries({
+        x0,
+        y0,
+        x1,
+        y1
+      })) {
+        finite(VALUE, NAME);
+      }
+      this.matrix = matrix.slice();
+      this.x0 = x0;
+      this.y0 = y0;
+      this.x1 = x1;
+      this.y1 = y1;
+      this.stops = [];
+      this.pixels = null;
+      this.revision = 0;
+    }
+    addColorStop(offset, value) {
+      if (!Number.isFinite(offset) || offset < 0 || offset > 1) {
+        throw new RangeError("Invalid gradient stop");
+      }
+      if (this.stops.length >= MAX_LINEAR_GRADIENT_STOPS) {
+        throw new RangeError(`Linear gradients support at most ${MAX_LINEAR_GRADIENT_STOPS} color stops`);
+      }
+      const STOP = {
+        offset,
+        color: normalizeColor(value),
+        order: this.stops.length
+      };
+      this.stops.push(STOP);
+      this.stops.sort((a, b) => a.offset - b.offset || a.order - b.order);
+      this.pixels = null;
+      this.revision++;
+    }
+    raster() {
+      if (this.pixels) {
+        return this.pixels;
+      }
+      const DATA = new Uint8Array(LINEAR_GRADIENT_SIZE * 4), STOPS = this.stops;
+      for (let i = 0; i < LINEAR_GRADIENT_SIZE; i++) {
+        const T = i / (LINEAR_GRADIENT_SIZE - 1);
+        let lo;
+        let hi;
+        let q;
+        if (!STOPS.length) {
+          lo = hi = {
+            color: [0, 0, 0, 0]
+          };
+          q = 0;
+        } else if (STOPS.length === 1 || T < STOPS[0].offset) {
+          lo = hi = STOPS[0];
+          q = 0;
+        } else {
+          let next = 0;
+          while (next < STOPS.length && T >= STOPS[next].offset) {
+            next++;
+          }
+          if (next === STOPS.length) {
+            lo = hi = STOPS.at(-1);
+            q = 0;
+          } else {
+            lo = STOPS[next - 1];
+            hi = STOPS[next];
+            q = (T - lo.offset) / (hi.offset - lo.offset);
+          }
+        }
+        const ALPHA = lo.color[3] + (hi.color[3] - lo.color[3]) * q, AT = i * 4;
+        for (let k = 0; k < 3; k++) {
+          DATA[AT + k] = Math.round((lo.color[k] + (hi.color[k] - lo.color[k]) * q) * ALPHA * 255);
+        }
+        DATA[AT + 3] = Math.round(ALPHA * 255);
+      }
+      this.pixels = DATA;
+      return DATA;
+    }
+  };
+  var VectorContext = class {
+    constructor(device, {
+      vectorRenderer = null,
+      glyphAtlas = vectorRenderer?.glyphAtlas ?? null,
+      initialVertices = 4096,
+      maxVertices = 262144,
+      onError = null,
+      safeAlphaRunBatching = true
+    } = {}) {
+      if (!device?.beginFrame || !device?.endFrame || !device?.createVertexBuffer) {
+        throw new TypeError("WebGLDevice is required");
+      }
+      if (vectorRenderer && vectorRenderer.device !== device) {
+        throw new TypeError("vectorRenderer must use the supplied WebGLDevice");
+      }
+      this.device = device;
+      this.canvas = device.canvas;
+      this.vector = vectorRenderer ?? new VectorRenderer(device, {
+        initialVertices,
+        maxVertices,
+        glyphAtlas
+      });
+      this.ownsVector = !vectorRenderer;
+      this.glyphAtlas = glyphAtlas ?? this.vector.glyphAtlas;
+      this.onError = typeof onError === "function" ? onError : null;
+      if (typeof safeAlphaRunBatching !== "boolean") {
+        throw new TypeError("safeAlphaRunBatching must be a boolean");
+      }
+      this.safeAlphaRunBatching = safeAlphaRunBatching;
+      this.meshRenderer = null;
+      this.primitivePath = {
+        type: "empty"
+      };
+      this.active = false;
+      this.state = "ready";
+      this.frame = 0;
+      this.pathCount = 0;
+      this.staticMeshes = /* @__PURE__ */ new Set();
+      this.deferredMeshes = [];
+      this.gradientTextures = /* @__PURE__ */ new Map();
+      this._silhouetteMatrices = new Float32Array(60);
+      this._scaledSilhouetteMatrices = new Float32Array(12);
+      this._silhouetteColorCache = /* @__PURE__ */ new Map();
+      this.onLost = (event) => {
+        event.preventDefault();
+        this.active = false;
+        this.state = "lost";
+        this.meshRenderer?.discard();
+      };
+      this.onRestored = () => {
+        if (this.state === "disposed") {
+          return;
+        }
+        try {
+          for (const MESH of this.staticMeshes) {
+            this.device.uploadVertices(MESH.buffer, MESH.vertices);
+          }
+          this.state = "ready";
+        } catch (error) {
+          this.state = "failed";
+          this.onError?.(error, {
+            phase: "restore"
+          });
+        }
+      };
+      this.canvas.addEventListener("webglcontextlost", this.onLost);
+      this.canvas.addEventListener("webglcontextrestored", this.onRestored);
+      this._fillStyle = "#000";
+      this._strokeStyle = "#000";
+      this._globalAlpha = 1;
+      this._lineWidth = 1;
+      this._lineCap = "butt";
+      this._lineJoin = "round";
+      this._miterLimit = 10;
+      this._lineDash = [];
+      this._lineDashOffset = 0;
+      this._font = "10px sans-serif";
+      this._textAlign = "start";
+      this._textBaseline = "alphabetic";
+      this._direction = "inherit";
+      this._filter = "none";
+      this._composite = "source-over";
+      this.forceColor = null;
+      this.stack = [];
+      this.frameStats = {};
+      this.total = {
+        frames: 0,
+        drawCalls: 0,
+        vertices: 0,
+        uploadedBytes: 0
+      };
+    }
+    get globalAlpha() {
+      return this._globalAlpha;
+    }
+    set globalAlpha(v) {
+      finite(v, "globalAlpha");
+      this._globalAlpha = clamp(v);
+    }
+    get fillStyle() {
+      return this._fillStyle;
+    }
+    set fillStyle(v) {
+      if (!(v instanceof RadialGradient) && !(v instanceof LinearGradient)) {
+        normalizeColor(v);
+      }
+      this._fillStyle = v;
+    }
+    get strokeStyle() {
+      return this._strokeStyle;
+    }
+    set strokeStyle(v) {
+      if (!(v instanceof RadialGradient) && !(v instanceof LinearGradient)) {
+        normalizeColor(v);
+      }
+      this._strokeStyle = v;
+    }
+    get lineWidth() {
+      return this._lineWidth;
+    }
+    set lineWidth(v) {
+      finite(v, "lineWidth");
+      if (v >= 0) {
+        this._lineWidth = v;
+      }
+    }
+    get lineCap() {
+      return this._lineCap;
+    }
+    set lineCap(v) {
+      if (["butt", "round", "square"].includes(v)) {
+        this._lineCap = v;
+      }
+    }
+    get lineJoin() {
+      return this._lineJoin;
+    }
+    set lineJoin(v) {
+      if (["round", "bevel", "miter"].includes(v)) {
+        this._lineJoin = v;
+      }
+    }
+    get miterLimit() {
+      return this._miterLimit;
+    }
+    set miterLimit(v) {
+      finite(v, "miterLimit");
+      if (v > 0) {
+        this._miterLimit = v;
+      }
+    }
+    get lineDashOffset() {
+      return this._lineDashOffset;
+    }
+    set lineDashOffset(v) {
+      finite(v, "lineDashOffset");
+      this._lineDashOffset = v;
+    }
+    get font() {
+      return this._font;
+    }
+    set font(v) {
+      this._font = String(v);
+    }
+    get textAlign() {
+      return this._textAlign;
+    }
+    set textAlign(v) {
+      if (["start", "end", "left", "right", "center"].includes(v)) {
+        this._textAlign = v;
+      }
+    }
+    get textBaseline() {
+      return this._textBaseline;
+    }
+    set textBaseline(v) {
+      if (["top", "hanging", "middle", "alphabetic", "ideographic", "bottom"].includes(v)) {
+        this._textBaseline = v;
+      }
+    }
+    get direction() {
+      return this._direction;
+    }
+    set direction(v) {
+      if (["ltr", "rtl", "inherit"].includes(v)) {
+        this._direction = v;
+      }
+    }
+    get filter() {
+      return this._filter;
+    }
+    set filter(v) {
+      if (v !== "none" && v !== "brightness(0) invert(1)") {
+        throw new RangeError("VectorContext supports only none and brightness(0) invert(1) filters");
+      }
+      this._filter = v;
+    }
+    get globalCompositeOperation() {
+      return this._composite;
+    }
+    set globalCompositeOperation(v) {
+      this._frame();
+      if (v !== "source-over" && v !== "lighter") {
+        throw new RangeError("VectorContext supports only source-over and lighter composite operations");
+      }
+      this.vector.setBlend(v);
+      this._composite = v;
+    }
+    get stencilRef() {
+      return this.vector.stencilDepth || null;
+    }
+    _frame() {
+      if (!this.active || this.device.state !== "ready") {
+        throw new Error("VectorContext frame is unavailable");
+      }
+    }
+    _paint(style) {
+      if (style instanceof RadialGradient || style instanceof LinearGradient) {
+        throw new TypeError("Gradient paint must be submitted through a vector fill or stroke");
+      }
+      const COLOR = normalizeColor(this.forceColor ?? style);
+      COLOR[3] *= this._globalAlpha;
+      if (this._filter === "brightness(0) invert(1)") {
+        COLOR[0] = COLOR[1] = COLOR[2] = 1;
+      }
+      return COLOR;
+    }
+    _gradientPaint(gradient) {
+      let cached = this.gradientTextures.get(gradient);
+      if (!cached) {
+        if (this.gradientTextures.size >= MAX_GRADIENT_TEXTURES) {
+          const EXPIRED = [...this.gradientTextures].find(([, entry]) => entry.lastFrame < this.frame);
+          if (!EXPIRED) {
+            throw new RangeError(
+              `VectorContext supports at most ${MAX_GRADIENT_TEXTURES} distinct gradients in one frame`
+            );
+          }
+          EXPIRED[1].region.atlas.release(EXPIRED[1].region);
+          this.gradientTextures.delete(EXPIRED[0]);
+        }
+        const LINEAR = gradient instanceof LinearGradient, WIDTH2 = LINEAR ? LINEAR_GRADIENT_SIZE : 256, HEIGHT2 = 1, DATA = gradient.raster();
+        const REGION = this.device.textureAtlas.allocate(WIDTH2, HEIGHT2);
+        this.device.textureAtlas.upload(
+          REGION,
+          { width: WIDTH2, height: HEIGHT2, data: DATA },
+          { premultiplied: true, extendEdges: true }
+        );
+        cached = {
+          region: REGION,
+          revision: gradient.revision,
+          lastFrame: this.frame,
+          linear: LINEAR
+        };
+        this.gradientTextures.set(gradient, cached);
+      } else if (cached.revision !== gradient.revision) {
+        this.vector.flush();
+        const LINEAR = gradient instanceof LinearGradient, WIDTH2 = LINEAR ? LINEAR_GRADIENT_SIZE : 256;
+        cached.region.atlas.upload(
+          cached.region,
+          { width: WIDTH2, height: 1, data: gradient.raster() },
+          { premultiplied: true, extendEdges: true }
+        );
+        cached.revision = gradient.revision;
+        cached.linear = LINEAR;
+      }
+      cached.lastFrame = this.frame;
+      const MATRIX_INVERSE = invert(gradient.matrix);
+      if (!MATRIX_INVERSE) {
+        throw new RangeError("Gradient transform is singular");
+      }
+      const COLOR = normalizeColor(this.forceColor ?? [1, 1, 1, 1]);
+      COLOR[3] *= this._globalAlpha;
+      if (gradient instanceof LinearGradient) {
+        return {
+          region: cached.region,
+          kind: "linear",
+          gradient,
+          x0: gradient.x0,
+          y0: gradient.y0,
+          x1: gradient.x1,
+          y1: gradient.y1,
+          matrixInverse: MATRIX_INVERSE,
+          color: COLOR,
+          whiteFlash: this._filter === "brightness(0) invert(1)"
+        };
+      }
+      const DX = gradient.x1 - gradient.x0, DY = gradient.y1 - gradient.y0, DR = gradient.r1 - gradient.r0, SCALE = Math.max(1, Math.hypot(DX, DY), Math.abs(gradient.r0), Math.abs(gradient.r1));
+      return {
+        region: cached.region,
+        kind: "radial",
+        gradient,
+        x0: gradient.x0,
+        y0: gradient.y0,
+        radialScale: SCALE,
+        radialParams: [DX / SCALE, DY / SCALE, gradient.r0 / SCALE, DR / SCALE],
+        radialEmpty: DX === 0 && DY === 0 && DR === 0,
+        matrixInverse: MATRIX_INVERSE,
+        color: COLOR,
+        whiteFlash: this._filter === "brightness(0) invert(1)"
+      };
+    }
+    _releaseGradientTextures() {
+      for (const [GRADIENT, CACHED] of this.gradientTextures) {
+        try {
+          CACHED.region.atlas.release(CACHED.region);
+        } catch (error) {
+          try {
+            this.onError?.(error, {
+              phase: "gradient-release"
+            });
+          } catch {
+          }
+        } finally {
+          GRADIENT.pixels = null;
+        }
+      }
+      this.gradientTextures.clear();
+    }
+    beginFrame({ width = this.canvas.width, height = this.canvas.height, clearColor = [0, 0, 0, 0] } = {}) {
+      if (this.active) {
+        throw new Error("endFrame is required before beginFrame");
+      }
+      if (this.state === "lost" || this.device.state === "lost") {
+        return false;
+      }
+      if (this.state !== "ready") {
+        throw new Error(`VectorContext is ${this.state}`);
+      }
+      try {
+        const READY = this.device.beginFrame({
+          width,
+          height,
+          clearColor
+        });
+        if (!READY) {
+          return false;
+        }
+        this.active = true;
+        this.meshRenderer?.beginFrame();
+        this.frame++;
+        this.pathCount = 0;
+        this.vector.beginPath();
+        this.primitivePath = {
+          type: "empty"
+        };
+        return true;
+      } catch (error) {
+        this.onError?.(error, {
+          phase: "beginFrame"
+        });
+        throw error;
+      }
+    }
+    endFrame() {
+      this._frame();
+      try {
+        this.flush("frameEnd");
+        const STATS = this.device.endFrame();
+        this.active = false;
+        for (const MESH of this.deferredMeshes.splice(0)) {
+          this.deleteStaticMesh(MESH);
+        }
+        this.frameStats = {
+          drawCalls: STATS.drawCalls,
+          vertices: STATS.vertices,
+          uploadedBytes: STATS.bufferBytes ?? STATS.uploadedBytes ?? 0,
+          textureUploads: STATS.textureUploads ?? 0,
+          textureBytes: STATS.textureBytes ?? 0,
+          gpuRenderTargetBytes: STATS.gpuRenderTargetBytes ?? 0,
+          paths: this.pathCount
+        };
+        this.total.frames++;
+        this.total.drawCalls += this.frameStats.drawCalls;
+        this.total.vertices += this.frameStats.vertices;
+        this.total.uploadedBytes += this.frameStats.uploadedBytes;
+        return this.stats();
+      } catch (error) {
+        this.active = false;
+        this.vector.count = 0;
+        this.onError?.(error, {
+          phase: "endFrame"
+        });
+        throw error;
+      }
+    }
+    save() {
+      this._frame();
+      this.stack.push({
+        fillStyle: this._fillStyle,
+        strokeStyle: this._strokeStyle,
+        globalAlpha: this._globalAlpha,
+        lineWidth: this._lineWidth,
+        lineCap: this._lineCap,
+        lineJoin: this._lineJoin,
+        miterLimit: this._miterLimit,
+        lineDash: this._lineDash.slice(),
+        lineDashOffset: this._lineDashOffset,
+        font: this._font,
+        textAlign: this._textAlign,
+        textBaseline: this._textBaseline,
+        direction: this._direction,
+        filter: this._filter,
+        composite: this._composite,
+        forceColor: this.forceColor
+      });
+      this.vector.save();
+    }
+    restore() {
+      this._frame();
+      const S = this.stack.pop();
+      if (!S) {
+        return;
+      }
+      this.meshRenderer?.flush("stateRestore");
+      this.vector.restore();
+      Object.assign(this, {
+        _fillStyle: S.fillStyle,
+        _strokeStyle: S.strokeStyle,
+        _globalAlpha: S.globalAlpha,
+        _lineWidth: S.lineWidth,
+        _lineCap: S.lineCap,
+        _lineJoin: S.lineJoin,
+        _miterLimit: S.miterLimit,
+        _lineDash: S.lineDash,
+        _lineDashOffset: S.lineDashOffset,
+        _font: S.font,
+        _textAlign: S.textAlign,
+        _textBaseline: S.textBaseline,
+        _direction: S.direction,
+        _filter: S.filter,
+        _composite: S.composite,
+        forceColor: S.forceColor
+      });
+      this.vector.setBlend(S.composite);
+    }
+    setTransform(a, b, c, d, e, f) {
+      this.vector.setTransform(a, b, c, d, e, f);
+    }
+    resetTransform() {
+      this.vector.setTransform(...IDENTITY3);
+    }
+    getTransform() {
+      const M = this.vector.matrix;
+      return {
+        a: M[0],
+        b: M[1],
+        c: M[2],
+        d: M[3],
+        e: M[4],
+        f: M[5]
+      };
+    }
+    transform(a, b, c, d, e, f) {
+      this.vector.transform(a, b, c, d, e, f);
+    }
+    translate(x, y) {
+      this.vector.translate(x, y);
+    }
+    rotate(angle) {
+      this.vector.rotate(angle);
+    }
+    scale(x, y) {
+      this.vector.scale(x, y);
+    }
+    beginPath() {
+      this._frame();
+      this.pathCount++;
+      this.vector.beginPath();
+      this.primitivePath = {
+        type: "empty"
+      };
+    }
+    _materializePrimitivePath() {
+      const PATH = this.primitivePath;
+      if (PATH?.type !== "ellipse") {
+        return;
+      }
+      const MATRIX = this.vector.matrix;
+      this.primitivePath = null;
+      this.vector.matrix = PATH.matrix.slice();
+      try {
+        const POINTS = this._arcPoints(
+          PATH.x,
+          PATH.y,
+          PATH.rx,
+          PATH.ry,
+          PATH.rotation,
+          PATH.start,
+          PATH.end,
+          PATH.ccw
+        );
+        this.vector.moveTo(...POINTS[0]);
+        for (let i = 1; i < POINTS.length; i++) {
+          this.vector.lineTo(...POINTS[i]);
+        }
+      } finally {
+        this.vector.matrix = MATRIX;
+      }
+    }
+    moveTo(x, y) {
+      this._materializePrimitivePath();
+      const POINT = transformedPoint(this.vector.matrix, x, y);
+      this.primitivePath = this.primitivePath?.type === "empty" ? {
+        type: "line",
+        start: POINT,
+        end: null
+      } : null;
+      this.vector.moveTo(x, y);
+    }
+    lineTo(x, y) {
+      this._materializePrimitivePath();
+      if (!this.vector.cursor && this.primitivePath?.type === "empty") {
+        this.primitivePath = {
+          type: "line",
+          start: transformedPoint(this.vector.matrix, x, y),
+          end: null
+        };
+      } else if (this.primitivePath?.type === "line" && !this.primitivePath.end) {
+        this.primitivePath.end = transformedPoint(this.vector.matrix, x, y);
+      } else {
+        this.primitivePath = null;
+      }
+      this.vector.lineTo(x, y);
+    }
+    closePath() {
+      this._materializePrimitivePath();
+      this.primitivePath = null;
+      this.vector.closePath();
+    }
+    quadraticCurveTo(cx, cy, x, y) {
+      this._materializePrimitivePath();
+      this.primitivePath = null;
+      this.vector.quadraticCurveTo(cx, cy, x, y);
+    }
+    bezierCurveTo(x1, y1, x2, y2, x, y) {
+      this._materializePrimitivePath();
+      this.primitivePath = null;
+      this.vector.bezierCurveTo(x1, y1, x2, y2, x, y);
+    }
+    _arcPoints(x, y, rx, ry, rotation, start, end, ccw) {
+      if (rx < 0 || ry < 0) {
+        throw new RangeError("ellipse radii must be non-negative");
+      }
+      let sweep = end - start;
+      if (!ccw) {
+        if (sweep >= TAU) {
+          sweep = TAU;
+        } else {
+          while (sweep < 0) {
+            sweep += TAU;
+          }
+        }
+      } else if (sweep <= -TAU) {
+        sweep = -TAU;
+      } else {
+        while (sweep > 0) {
+          sweep -= TAU;
+        }
+      }
+      const M = this.vector.matrix, R = Math.max(rx, ry) * Math.max(Math.hypot(M[0], M[1]), Math.hypot(M[2], M[3])), STEP = R > 0.2 ? 2 * Math.acos(clamp(1 - 0.2 / R, -1, 1)) : Math.PI / 2, N = Math.max(1, Math.min(256, Math.ceil(Math.abs(sweep) / Math.max(0.01, STEP)))), C = Math.cos(rotation), S = Math.sin(rotation), OUT = [];
+      for (let i = 0; i <= N; i++) {
+        const A = start + sweep * i / N;
+        OUT.push([
+          x + Math.cos(A) * rx * C - Math.sin(A) * ry * S,
+          y + Math.cos(A) * rx * S + Math.sin(A) * ry * C
+        ]);
+      }
+      return OUT;
+    }
+    arc(x, y, r, start, end, ccw = false) {
+      this.ellipse(x, y, r, r, 0, start, end, ccw);
+    }
+    ellipse(x, y, rx, ry, rotation = 0, start = 0, end = TAU, ccw = false) {
+      if (rx < 0 || ry < 0) {
+        throw new RangeError("ellipse radii must be non-negative");
+      }
+      this._frame();
+      this._materializePrimitivePath();
+      const MATRIX = this.vector.matrix.slice();
+      const FULL = isFullArc(start, end, ccw);
+      const FAST = this.primitivePath?.type === "empty" && !this.vector.cursor && FULL && [x, y, rx, ry, rotation, start, end].every(Number.isFinite);
+      this.primitivePath = FAST ? {
+        type: "ellipse",
+        x,
+        y,
+        rx,
+        ry,
+        rotation,
+        start,
+        end,
+        ccw,
+        matrix: MATRIX
+      } : null;
+      if (FAST) {
+        return;
+      }
+      const POINTS = this._arcPoints(x, y, rx, ry, rotation, start, end, ccw);
+      if (!this.vector.cursor) {
+        this.vector.moveTo(...POINTS[0]);
+      } else {
+        this.vector.lineTo(...POINTS[0]);
+      }
+      for (let i = 1; i < POINTS.length; i++) {
+        this.vector.lineTo(...POINTS[i]);
+      }
+    }
+    rect(x, y, w, h) {
+      this._materializePrimitivePath();
+      const MATRIX = this.vector.matrix.slice();
+      this.primitivePath = this.primitivePath?.type === "empty" && !this.vector.cursor ? {
+        type: "rect",
+        x,
+        y,
+        w,
+        h,
+        matrix: MATRIX
+      } : null;
+      this.vector.moveTo(x, y);
+      this.vector.lineTo(x + w, y);
+      this.vector.lineTo(x + w, y + h);
+      this.vector.lineTo(x, y + h);
+      this.vector.closePath();
+    }
+    roundRect(x, y, w, h, r = 0) {
+      this._materializePrimitivePath();
+      this.primitivePath = null;
+      const RADII = Array.isArray(r) ? r : [r, r, r, r];
+      const MAX = Math.min(Math.abs(w) / 2, Math.abs(h) / 2);
+      const Q = RADII.map((v) => clamp(Number(v) || 0, 0, MAX));
+      this.moveTo(x + Q[0], y);
+      this.lineTo(x + w - Q[1], y);
+      this.arc(x + w - Q[1], y + Q[1], Q[1], -Math.PI / 2, 0);
+      this.lineTo(x + w, y + h - Q[2]);
+      this.arc(x + w - Q[2], y + h - Q[2], Q[2], 0, Math.PI / 2);
+      this.lineTo(x + Q[3], y + h);
+      this.arc(x + Q[3], y + h - Q[3], Q[3], Math.PI / 2, Math.PI);
+      this.lineTo(x, y + Q[0]);
+      this.arc(x + Q[0], y + Q[0], Q[0], Math.PI, Math.PI * 1.5);
+      this.closePath();
+    }
+    _temporaryPath(callback) {
+      const V = this.vector, SAVED = {
+        path: V.path,
+        cursor: V.cursor,
+        subpath: V.subpath,
+        primitivePath: this.primitivePath
+      };
+      try {
+        this.primitivePath = {
+          type: "empty"
+        };
+        callback();
+      } finally {
+        V.path = SAVED.path;
+        V.cursor = SAVED.cursor;
+        V.subpath = SAVED.subpath;
+        this.primitivePath = SAVED.primitivePath;
+      }
+    }
+    _primitiveTransform(path) {
+      let local;
+      if (path.type === "ellipse") {
+        const COS = Math.cos(path.rotation);
+        const SIN = Math.sin(path.rotation);
+        local = [path.rx * COS, path.rx * SIN, -path.ry * SIN, path.ry * COS, path.x, path.y];
+      } else {
+        local = [path.w / 2, 0, 0, path.h / 2, path.x + path.w / 2, path.y + path.h / 2];
+      }
+      return composeTransform(path.matrix, local);
+    }
+    _submitPrimitive(matrix, color2, params) {
+      this.meshRenderer?.flush("primitiveBoundary");
+      this.vector.drawPrimitive({ matrix, color: color2, params });
+      return true;
+    }
+    _tryPrimitiveFill() {
+      const PATH = this.primitivePath;
+      if (!PATH || PATH.type !== "ellipse" && PATH.type !== "rect") {
+        return false;
+      }
+      if (this._fillStyle instanceof RadialGradient || this._fillStyle instanceof LinearGradient) {
+        return false;
+      }
+      if (PATH.type === "ellipse" && (!PATH.rx || !PATH.ry)) {
+        return true;
+      }
+      if (PATH.type === "rect" && (!PATH.w || !PATH.h)) {
+        return true;
+      }
+      const TYPE = PATH.type === "ellipse" ? 0 : 1;
+      return this._submitPrimitive(this._primitiveTransform(PATH), this._paint(this._fillStyle), [TYPE, 0, 0, 0]);
+    }
+    _tryPrimitiveStroke(width) {
+      const PATH = this.primitivePath;
+      if (!PATH || this._strokeStyle instanceof RadialGradient || this._strokeStyle instanceof LinearGradient) {
+        return false;
+      }
+      if (PATH.type === "ellipse") {
+        if (!PATH.rx || !PATH.ry) {
+          return false;
+        }
+        return this._submitPrimitive(this._primitiveTransform(PATH), this._paint(this._strokeStyle), [
+          0,
+          1,
+          width,
+          0
+        ]);
+      }
+      if (PATH.type === "rect") {
+        if (!PATH.w || !PATH.h) {
+          return false;
+        }
+        const MATRIX = this._primitiveTransform(PATH);
+        const SCALE_X = Math.hypot(MATRIX[0], MATRIX[1]);
+        const SCALE_Y = Math.hypot(MATRIX[2], MATRIX[3]);
+        const DOT = MATRIX[0] * MATRIX[2] + MATRIX[1] * MATRIX[3];
+        if (Math.abs(DOT) > 1e-6 * SCALE_X * SCALE_Y) {
+          return false;
+        }
+        if (this._lineJoin === "miter") {
+          if (this._miterLimit < Math.SQRT2) {
+            return false;
+          }
+        } else if (this._lineJoin !== "round") {
+          return false;
+        }
+        return this._submitPrimitive(MATRIX, this._paint(this._strokeStyle), [
+          1,
+          1,
+          width,
+          this._lineJoin === "miter" ? 1 : 0
+        ]);
+      }
+      if (PATH.type === "line" && PATH.end) {
+        const DX = PATH.end[0] - PATH.start[0];
+        const DY = PATH.end[1] - PATH.start[1];
+        const LENGTH = Math.hypot(DX, DY);
+        if (!LENGTH) {
+          return false;
+        }
+        const CAP = this._lineCap === "butt" ? 0 : this._lineCap === "square" ? 1 : 2;
+        const UNIT_X = DX / LENGTH;
+        const UNIT_Y = DY / LENGTH;
+        const PAD = CAP === 0 ? 0 : width / 2;
+        const HALF_LENGTH = LENGTH / 2 + PAD;
+        const MATRIX = [
+          UNIT_X * HALF_LENGTH,
+          UNIT_Y * HALF_LENGTH,
+          -UNIT_Y * width / 2,
+          UNIT_X * width / 2,
+          (PATH.start[0] + PATH.end[0]) / 2,
+          (PATH.start[1] + PATH.end[1]) / 2
+        ];
+        return this._submitPrimitive(MATRIX, this._paint(this._strokeStyle), [2, 1, width, CAP]);
+      }
+      return false;
+    }
+    fill(rule = "nonzero") {
+      this._frame();
+      if ((rule === "nonzero" || rule === "evenodd") && this._tryPrimitiveFill()) {
+        return;
+      }
+      this._materializePrimitivePath();
+      this.meshRenderer?.flush("vectorBoundary");
+      if (this._fillStyle instanceof RadialGradient) {
+        this.vector.fillRadialGradient({
+          ...this._gradientPaint(this._fillStyle),
+          rule
+        });
+      } else if (this._fillStyle instanceof LinearGradient) {
+        this.vector.fillLinearGradient({
+          ...this._gradientPaint(this._fillStyle),
+          rule
+        });
+      } else {
+        this.vector.fill(this._paint(this._fillStyle), rule);
+      }
+    }
+    fillRect(x, y, w, h) {
+      this._frame();
+      this._temporaryPath(() => {
+        this.vector.beginPath();
+        this.rect(x, y, w, h);
+        this.fill();
+      });
+    }
+    stroke() {
+      this._frame();
+      if (!(this._lineWidth > 0)) {
+        return;
+      }
+      const M = this.vector.matrix, WIDTH2 = this._lineWidth * Math.max(Math.hypot(M[0], M[1]), Math.hypot(M[2], M[3])), GRADIENT = this._strokeStyle instanceof RadialGradient || this._strokeStyle instanceof LinearGradient ? this._gradientPaint(this._strokeStyle) : null, PAINT = GRADIENT ? GRADIENT.color : this._paint(this._strokeStyle), STYLE = {
+        lineCap: this._lineCap,
+        lineJoin: this._lineJoin,
+        miterLimit: this._miterLimit
+      }, DASH = this._lineDash, PERIOD = DASH.reduce((a, b) => a + b, 0);
+      if ((!DASH.length || !PERIOD) && !GRADIENT && this._tryPrimitiveStroke(WIDTH2)) {
+        return;
+      }
+      this._materializePrimitivePath();
+      this.meshRenderer?.flush("vectorBoundary");
+      if (!DASH.length || !PERIOD) {
+        this.vector.stroke(PAINT, WIDTH2, STYLE, GRADIENT);
+        return;
+      }
+      const V = this.vector, ORIGINAL = V.path, MATRIX = V.matrix.slice();
+      V.beginPath();
+      V.setTransform(...IDENTITY3);
+      let phase = (this._lineDashOffset % PERIOD + PERIOD) % PERIOD;
+      let index = 0;
+      while (phase >= DASH[index] && DASH[index] > 0) {
+        phase -= DASH[index];
+        index = (index + 1) % DASH.length;
+      }
+      let remaining = DASH[index] - phase;
+      for (const PATH of ORIGINAL) {
+        for (let i = 1; i < PATH.length; i++) {
+          const A = PATH[i - 1], B = PATH[i], LENGTH = Math.hypot(B.x - A.x, B.y - A.y);
+          let at = 0;
+          while (at < LENGTH - 1e-7) {
+            if (remaining <= 1e-7) {
+              index = (index + 1) % DASH.length;
+              remaining = DASH[index];
+              continue;
+            }
+            const STOP = Math.min(LENGTH, at + remaining);
+            if (index % 2 === 0) {
+              V.moveTo(A.x + (B.x - A.x) * at / LENGTH, A.y + (B.y - A.y) * at / LENGTH);
+              V.lineTo(A.x + (B.x - A.x) * STOP / LENGTH, A.y + (B.y - A.y) * STOP / LENGTH);
+            }
+            remaining -= STOP - at;
+            at = STOP;
+          }
+        }
+      }
+      V.stroke(PAINT, WIDTH2, STYLE, GRADIENT);
+      V.matrix = MATRIX;
+      V.path = ORIGINAL;
+      V.cursor = ORIGINAL.at(-1)?.at(-1) ?? null;
+      V.subpath = ORIGINAL[0]?.[0] ?? null;
+    }
+    strokeRect(x, y, w, h) {
+      this._frame();
+      this._temporaryPath(() => {
+        this.vector.beginPath();
+        this.rect(x, y, w, h);
+        this.stroke();
+      });
+    }
+    setLineDash(values) {
+      if (!Array.isArray(values) || values.some((v) => !Number.isFinite(v) || v < 0)) {
+        throw new TypeError("dash must contain non-negative finite values");
+      }
+      if (values.length % 2) {
+        values = values.concat(values);
+      }
+      this._lineDash = values.slice();
+    }
+    getLineDash() {
+      return this._lineDash.slice();
+    }
+    clip(rule = "nonzero") {
+      this._frame();
+      this._materializePrimitivePath();
+      this.meshRenderer?.flush("clipBoundary");
+      if (this.vector.path.filter((p) => p.length >= 3).length > 1) {
+        throw new RangeError("clip supports one contour per clip call");
+      }
+      this.vector.clip(rule);
+    }
+    createClipPath(points, { rule = "nonzero" } = {}) {
+      return this.vector.createClipPath(points, {
+        rule
+      });
+    }
+    clipPath(handle, { transform = null } = {}) {
+      this._frame();
+      this.meshRenderer?.flush("stencilChange");
+      this.vector.flush();
+      this.vector.clipPath(handle, {
+        transform
+      });
+    }
+    deleteClipPath(handle) {
+      return this.vector.deleteClipPath(handle);
+    }
+    clipRect(x, y, w, h) {
+      this._frame();
+      this.meshRenderer?.flush("clipBoundary");
+      this.vector.clipRect(x, y, w, h);
+    }
+    fillTriangleFan(points, paint = this._fillStyle) {
+      this._frame();
+      this.meshRenderer?.flush("vectorBoundary");
+      if (points.length < 3) {
+        return;
+      }
+      this.vector.triangleFan(points, this._paint(paint));
+    }
+    beginGroup(opacity = 1, bounds = null) {
+      this._frame();
+      if (opacity !== 1) {
+        this.meshRenderer?.flush("groupBoundary");
+      }
+      this.vector.beginGroup(opacity, bounds);
+    }
+    endGroup() {
+      if (!this.vector.groups.at(-1)?.direct) {
+        this.meshRenderer?.flush("groupBoundary");
+      }
+      this.vector.endGroup();
+    }
+    withGroupOpacity(opacity, callback, bounds = null) {
+      this._frame();
+      const PREVIOUS = this._globalAlpha;
+      this.beginGroup(opacity, bounds);
+      this._globalAlpha = 1;
+      try {
+        return callback();
+      } finally {
+        try {
+          this.endGroup();
+        } finally {
+          this._globalAlpha = PREVIOUS;
+        }
+      }
+    }
+    groupBounds(x, y, radius) {
+      const M = this.vector.matrix, P = transformed(M, x, y), R = radius * Math.max(Math.hypot(M[0], M[1]), Math.hypot(M[2], M[3]));
+      return {
+        x: P.x - R,
+        y: P.y - R,
+        width: R * 2,
+        height: R * 2
+      };
+    }
+    withColor(color2, callback) {
+      const PREVIOUS = this.forceColor;
+      this.forceColor = normalizeColor(color2);
+      try {
+        return callback();
+      } finally {
+        this.forceColor = PREVIOUS;
+      }
+    }
+    withSilhouette(color2, width, paint, radius = 128) {
+      const ALPHA = this._globalAlpha, BOUNDS = this.groupBounds(0, 0, radius + width);
+      return this.withGroupOpacity(
+        ALPHA,
+        () => {
+          this.withColor(color2, () => {
+            for (let i = 0; i < 8; i++) {
+              this.save();
+              const A = i * TAU / 8;
+              this.translate(Math.cos(A) * width, Math.sin(A) * width);
+              try {
+                paint();
+              } finally {
+                this.restore();
+              }
+            }
+            paint();
+          });
+          paint();
+        },
+        BOUNDS
+      );
+    }
+    _fontSize() {
+      const M = this._font.match(/(?:^|\s)(\d+(?:\.\d+)?)px(?:\s|\/|$)/);
+      return M ? Number(M[1]) : 10;
+    }
+    _align() {
+      if (this._textAlign === "center") {
+        return "center";
+      }
+      if (this._textAlign === "right" || this._textAlign === "end" && this._direction !== "rtl" || this._textAlign === "start" && this._direction === "rtl") {
+        return "right";
+      }
+      return "left";
+    }
+    measureText(text) {
+      if (!this.glyphAtlas) {
+        throw new Error("GlyphAtlas is not configured");
+      }
+      return this.glyphAtlas.measureText(String(text), {
+        fontSize: this._fontSize(),
+        align: this._align()
+      });
+    }
+    fillText(text, x, y, maxWidth) {
+      this._frame();
+      this.meshRenderer?.flush("vectorBoundary");
+      if (!this.glyphAtlas) {
+        throw new Error("GlyphAtlas is not configured");
+      }
+      const COLOR = this._paint(this._fillStyle), FONT_SIZE = this._fontSize(), ALIGN = this._align(), BASELINE = this._textBaseline, MEASURED = this.glyphAtlas.measureText(String(text), {
+        fontSize: FONT_SIZE
+      }).width, SCALE = maxWidth && Number.isFinite(maxWidth) ? Math.min(1, maxWidth / (MEASURED || 1)) : 1;
+      if (SCALE !== 1) {
+        this.vector.save();
+        this.vector.translate(x, y);
+        this.vector.scale(SCALE, 1);
+        this.vector.translate(-x, -y);
+      }
+      try {
+        return this.vector.fillText(String(text), x, y, {
+          fontSize: FONT_SIZE,
+          align: ALIGN,
+          baseline: BASELINE,
+          color: COLOR
+        });
+      } finally {
+        if (SCALE !== 1) {
+          this.vector.restore();
+        }
+      }
+    }
+    strokeText(text, x, y, maxWidth) {
+      this._frame();
+      this.meshRenderer?.flush("vectorBoundary");
+      if (!this.glyphAtlas) {
+        throw new Error("GlyphAtlas is not configured");
+      }
+      const SCALE = maxWidth && Number.isFinite(maxWidth) ? Math.min(
+        1,
+        maxWidth / (this.glyphAtlas.measureText(String(text), {
+          fontSize: this._fontSize()
+        }).width || 1)
+      ) : 1;
+      this.vector.save();
+      try {
+        if (SCALE !== 1) {
+          this.vector.translate(x, y);
+          this.vector.scale(SCALE, 1);
+          this.vector.translate(-x, -y);
+        }
+        return this.vector.strokeText(String(text), x, y, {
+          fontSize: this._fontSize(),
+          align: this._align(),
+          baseline: this._textBaseline,
+          color: this._paint(this._strokeStyle),
+          lineWidth: this._lineWidth
+        });
+      } finally {
+        this.vector.restore();
+      }
+    }
+    createLinearGradient(x0, y0, x1, y1) {
+      return new LinearGradient(this.vector.matrix, x0, y0, x1, y1);
+    }
+    createRadialGradient(x0, y0, r0, x1, y1, r1) {
+      return new RadialGradient(this.vector.matrix, x0, y0, r0, x1, y1, r1);
+    }
+    /** Retains caller-authored local-space triangles once; caller explicitly releases the handle. */
+    createMesh(data) {
+      return this.acquireMeshRenderer().createMesh(data);
+    }
+    /** The retained-mesh renderer this context shares with the vector assets and atlases built on it. */
+    acquireMeshRenderer() {
+      if (this.state !== "ready" || this.device.state !== "ready") {
+        throw new Error("VectorContext is not ready");
+      }
+      this.meshRenderer ??= new MeshRenderer(this.device, {
+        safeAlphaRunBatching: this.safeAlphaRunBatching
+      });
+      return this.meshRenderer;
+    }
+    /**
+     * Atlas rectangles (sprites, baked vector runs, posed parts) on the current transform and clip; they join the
+     * vector stream, so they share a draw with the shapes and text around them. See VectorRenderer.drawQuads.
+     */
+    drawQuads(options) {
+      this._frame();
+      this.meshRenderer?.flush("quadBoundary");
+      this.vector.drawQuads(options);
+    }
+    deleteMesh(mesh) {
+      return this.meshRenderer?.deleteMesh(mesh) ?? false;
+    }
+    /** Local transform composes with current Canvas-style transform; all paint state is captured by value. */
+    drawMesh(mesh, { transform = null, morph = [0, 0], parts = null } = {}) {
+      this._frame();
+      if (!this.meshRenderer) {
+        throw new TypeError("createMesh required");
+      }
+      this.vector.flush();
+      let matrix = this.vector.matrix;
+      if (transform) {
+        if (transform.length !== 6 || Array.from(transform).some((n) => !Number.isFinite(n))) {
+          throw new TypeError("Six finite transform values required");
+        }
+        const M = matrix, [A, B, C, D, E, F] = transform;
+        matrix = [
+          M[0] * A + M[2] * B,
+          M[1] * A + M[3] * B,
+          M[0] * C + M[2] * D,
+          M[1] * C + M[3] * D,
+          M[0] * E + M[2] * F + M[4],
+          M[1] * E + M[3] * F + M[5]
+        ];
+      }
+      this.meshRenderer.drawMesh(mesh, {
+        matrix,
+        projection: this.vector.projection,
+        clips: this.vector.clips,
+        morph,
+        parts,
+        color: this.forceColor ?? [1, 1, 1, 1],
+        forceColor: this.forceColor !== null,
+        alpha: this._globalAlpha,
+        whiteFlash: this._filter === "brightness(0) invert(1)",
+        stencilRef: this.vector.stencilDepth || null
+      });
+    }
+    /** Draw a retained mesh silhouette and body in one ordered instance batch. */
+    drawMeshSilhouette(mesh, {
+      transform = null,
+      morph = [0, 0],
+      parts = null,
+      color: color2 = "black",
+      width,
+      radius = 128,
+      outlineScale = null
+    } = {}) {
+      this._frame();
+      if (!this.meshRenderer) {
+        throw new TypeError("createMesh required");
+      }
+      finite(width, "silhouette width");
+      finite(radius, "silhouette radius");
+      if (width < 0 || radius < 0) {
+        throw new RangeError("silhouette dimensions must be non-negative");
+      }
+      if (outlineScale !== null) {
+        finite(outlineScale, "silhouette outlineScale");
+        if (outlineScale < 1) {
+          throw new RangeError("silhouette outlineScale must be at least one");
+        }
+      }
+      let outline;
+      if (typeof color2 === "string" && color2[0] === "#") {
+        outline = this._silhouetteColorCache.get(color2);
+        if (!outline) {
+          outline = normalizeColor(color2);
+          if (this._silhouetteColorCache.size === 16) {
+            this._silhouetteColorCache.delete(this._silhouetteColorCache.keys().next().value);
+          }
+          this._silhouetteColorCache.set(color2, outline);
+        }
+      } else {
+        outline = normalizeColor(color2);
+      }
+      const OUTLINE_INSTANCES = outlineScale === null ? 9 : 1, COUNT = OUTLINE_INSTANCES + 1, MATRICES = outlineScale === null ? this._silhouetteMatrices : this._scaledSilhouetteMatrices;
+      const BOUNDS = this.groupBounds(0, 0, Math.max(radius + width, radius * (outlineScale ?? 1)));
+      return this.withGroupOpacity(
+        this._globalAlpha,
+        () => {
+          this.vector.flush();
+          const SOURCE = this.vector.matrix, A = SOURCE[0], B = SOURCE[1], C = SOURCE[2], D = SOURCE[3], E = SOURCE[4], F = SOURCE[5];
+          let ta = 1;
+          let tb = 0;
+          let tc = 0;
+          let td = 1;
+          let te = 0;
+          let tf = 0;
+          if (transform) {
+            if (transform.length !== 6 || Array.from(transform).some((n) => !Number.isFinite(n))) {
+              throw new TypeError("Six finite transform values required");
+            }
+            [ta, tb, tc, td, te, tf] = transform;
+          }
+          for (let i = 0; i < COUNT; i++) {
+            const OUTLINE_PASS = i < OUTLINE_INSTANCES, OFFSET = outlineScale === null && OUTLINE_PASS && i < 8, DIRECTION = OFFSET ? SILHOUETTE_OFFSETS[i] : null, DX = DIRECTION ? DIRECTION[0] * width : 0, DY = DIRECTION ? DIRECTION[1] * width : 0, SCALE = outlineScale !== null && i === 0 ? outlineScale : 1, AT = i * 6;
+            const E_OFFSET = E + A * DX + C * DY, F_OFFSET = F + B * DX + D * DY;
+            MATRICES[AT] = (A * ta + C * tb) * SCALE;
+            MATRICES[AT + 1] = (B * ta + D * tb) * SCALE;
+            MATRICES[AT + 2] = (A * tc + C * td) * SCALE;
+            MATRICES[AT + 3] = (B * tc + D * td) * SCALE;
+            MATRICES[AT + 4] = A * te + C * tf + E_OFFSET;
+            MATRICES[AT + 5] = B * te + D * tf + F_OFFSET;
+          }
+          this.meshRenderer._drawMeshInstances(mesh, {
+            matrices: MATRICES,
+            count: COUNT,
+            projection: this.vector.projection,
+            morph,
+            parts,
+            color: this.forceColor ?? WHITE2,
+            forceColor: this.forceColor !== null,
+            prefixColor: outline,
+            prefixCount: OUTLINE_INSTANCES,
+            forceColorPrefixCount: OUTLINE_INSTANCES,
+            alpha: this._globalAlpha,
+            whiteFlash: this._filter === "brightness(0) invert(1)",
+            clips: this.vector.clips,
+            stencilRef: this.vector.stencilDepth || null
+          });
+        },
+        BOUNDS
+      );
+    }
+    /** Submit a native vector player after earlier paint, without flushing a compatible mesh run. */
+    drawVectorAsset(player, options = {}) {
+      this._frame();
+      if (typeof player?.draw !== "function") {
+        throw new TypeError("A vector asset player is required");
+      }
+      this.vector.flush();
+      const WORLD_MODE = options.viewProjection !== void 0 || options.worldMatrix !== void 0;
+      player.draw({
+        ...!WORLD_MODE ? { projection: this.vector.projection } : {},
+        clips: this.vector.clips,
+        stencilRef: this.vector.stencilDepth || null,
+        ...options
+      });
+    }
+    flush(reason = "explicit") {
+      this._frame();
+      this.meshRenderer?.flush(reason);
+      this.vector.flush();
+    }
+    createStaticMesh(vertices, { strideFloats = 6 } = {}) {
+      if (this.state !== "ready" || this.device.state !== "ready") {
+        throw new Error("VectorContext is not ready");
+      }
+      if (!(vertices instanceof Float32Array) || !Number.isSafeInteger(strideFloats) || strideFloats < 2 || vertices.length % strideFloats) {
+        throw new TypeError("mesh requires Float32Array and a matching strideFloats");
+      }
+      const BUFFER = this.device.createVertexBuffer({
+        capacityBytes: vertices.byteLength
+      });
+      this.device.uploadVertices(BUFFER, vertices);
+      const MESH = {
+        context: this,
+        buffer: BUFFER,
+        vertices,
+        count: vertices.length / strideFloats,
+        strideFloats
+      };
+      this.staticMeshes.add(MESH);
+      return MESH;
+    }
+    deleteStaticMesh(mesh) {
+      if (!mesh || mesh.context !== this || !this.staticMeshes.has(mesh)) {
+        return false;
+      }
+      this.device.deleteVertexBuffer(mesh.buffer);
+      this.staticMeshes.delete(mesh);
+      return true;
+    }
+    deferDeleteStaticMesh(mesh) {
+      if (!mesh || mesh.context !== this || !this.staticMeshes.has(mesh) || this.deferredMeshes.includes(mesh)) {
+        return false;
+      }
+      this.deferredMeshes.push(mesh);
+      return true;
+    }
+    drawStaticMesh(mesh, { pipeline, projection, uniforms = {}, textures = [], blend = "source-over", depth = null } = {}) {
+      this._frame();
+      if (!mesh || mesh.context !== this || !this.staticMeshes.has(mesh) || !pipeline) {
+        throw new TypeError("mesh owned by this context and caller pipeline are required");
+      }
+      this.flush("staticMeshBoundary");
+      const VALUES = {
+        ...uniforms
+      };
+      if (projection) {
+        VALUES.u_projection = projection;
+      }
+      this.device.draw({
+        pipeline,
+        buffer: mesh.buffer,
+        count: mesh.count,
+        uniforms: VALUES,
+        textures,
+        blend,
+        depth,
+        stencil: this.vector.stencilDepth ? {
+          func: "equal",
+          ref: this.vector.stencilDepth,
+          mask: 255,
+          writeMask: 0,
+          pass: "keep"
+        } : false
+      });
+    }
+    stats() {
+      return {
+        backend: "webgl2",
+        available: this.device.state === "ready",
+        contextLost: this.device.state === "lost",
+        failure: this.device.failure ?? null,
+        frame: this.frame,
+        ...this.frameStats,
+        mesh: this.meshRenderer?.stats() ?? null,
+        stagingBytes: this.vector.vertices.byteLength,
+        gpuBufferBytes: this.device.stats.gpuBufferBytes ?? 0,
+        gpuRenderTargetBytes: this.device.stats.gpuRenderTargetBytes ?? 0,
+        textureCount: this.device.stats.textureCount ?? 0,
+        activeGradientTextureCount: this.gradientTextures.size,
+        renderTargetCount: this.device.stats.renderTargetCount ?? 0,
+        bufferAllocations: this.device.stats.bufferAllocations ?? 0,
+        totals: {
+          ...this.total
+        }
+      };
+    }
+    dispose() {
+      if (this.state === "disposed") {
+        return;
+      }
+      this.vector.count = 0;
+      this.canvas.removeEventListener("webglcontextlost", this.onLost);
+      this.canvas.removeEventListener("webglcontextrestored", this.onRestored);
+      this.meshRenderer?.dispose();
+      for (const MESH of this.staticMeshes) {
+        this.device.deleteVertexBuffer(MESH.buffer);
+      }
+      this._releaseGradientTextures();
+      this.staticMeshes.clear();
+      this.deferredMeshes.length = 0;
+      if (this.ownsVector) {
+        this.vector.dispose();
+      }
+      this.active = false;
+      this.state = "disposed";
+    }
+  };
+  function createSpriteAnimation(context, region, definition) {
+    if (!context?.drawQuads || !context?.device?.textureAtlas) {
+      throw new TypeError("A VectorContext is required");
+    }
+    if (!region?.atlas?.regions?.has(region) || region.atlas !== context.device.textureAtlas) {
+      throw new TypeError("A live region of the device texture atlas is required");
+    }
+    const ATLAS_WIDTH = region.atlas.width;
+    const ATLAS_HEIGHT = region.atlas.height;
+    const REGION_WIDTH = region.width;
+    const REGION_HEIGHT = region.height;
     const INPUT_FRAMES = definition?.frames;
     const INPUT_CLIPS = definition?.clips;
     const TEXTURE_ORIGIN = definition?.textureOrigin ?? "top-left";
@@ -4570,9 +7619,7 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
       const PIVOT_X = FRAME?.pivotX ?? definition.pivotX ?? 0;
       const PIVOT_Y = FRAME?.pivotY ?? definition.pivotY ?? 0;
       const DURATION_MS = FRAME?.durationMs;
-      const LAYER = FRAME?.layer ?? 0;
       for (const [NAME, VALUE, MINIMUM] of [
-        ["frame layer", LAYER, 0],
         ["frame x", X, 0],
         ["frame y", Y, 0],
         ["frame width", WIDTH2, 1],
@@ -4585,11 +7632,8 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
       ]) {
         INTEGER(VALUE, NAME, MINIMUM);
       }
-      if (LAYER >= LAYER_COUNT) {
-        throw new RangeError("Sprite frame layer exceeds the texture layer count");
-      }
-      if (X - GUTTER < 0 || Y - GUTTER < 0 || X + WIDTH2 + GUTTER > ATLAS_WIDTH || Y + HEIGHT2 + GUTTER > ATLAS_HEIGHT || SOURCE_X + WIDTH2 > SOURCE_WIDTH || SOURCE_Y + HEIGHT2 > SOURCE_HEIGHT) {
-        throw new RangeError("Sprite frame, its gutter, or its trim exceeds its atlas/source viewport");
+      if (X - GUTTER < 0 || Y - GUTTER < 0 || X + WIDTH2 + GUTTER > REGION_WIDTH || Y + HEIGHT2 + GUTTER > REGION_HEIGHT || SOURCE_X + WIDTH2 > SOURCE_WIDTH || SOURCE_Y + HEIGHT2 > SOURCE_HEIGHT) {
+        throw new RangeError("Sprite frame, its gutter, or its trim exceeds its region/source viewport");
       }
       if (!Number.isFinite(PIVOT_X) || !Number.isFinite(PIVOT_Y)) {
         throw new TypeError("Sprite pivot coordinates must be finite");
@@ -4599,20 +7643,19 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
       }
       const LEFT = SOURCE_X - PIVOT_X;
       const TOP = SOURCE_Y - PIVOT_Y;
-      const U0 = X / ATLAS_WIDTH;
-      const V0 = TEXTURE_ORIGIN === "bottom-left" ? 1 - Y / ATLAS_HEIGHT : Y / ATLAS_HEIGHT;
-      const V1 = TEXTURE_ORIGIN === "bottom-left" ? 1 - (Y + HEIGHT2) / ATLAS_HEIGHT : (Y + HEIGHT2) / ATLAS_HEIGHT;
+      const BOTTOM_UP = TEXTURE_ORIGIN === "bottom-left";
+      const U0 = (region.x + X) / ATLAS_WIDTH;
+      const V0 = BOTTOM_UP ? (region.y + REGION_HEIGHT - Y) / ATLAS_HEIGHT : (region.y + Y) / ATLAS_HEIGHT;
+      const V_HEIGHT = (BOTTOM_UP ? -HEIGHT2 : HEIGHT2) / ATLAS_HEIGHT;
       FRAME_RECTS.push(
         Object.freeze({
-          localRect: Object.freeze([LEFT, TOP, WIDTH2, HEIGHT2]),
-          uvRect: Object.freeze([U0, V0, WIDTH2 / ATLAS_WIDTH, V1 - V0]),
-          layer: LAYER
+          localRect: Float32Array.of(LEFT, TOP, WIDTH2, HEIGHT2),
+          uvRect: Float32Array.of(U0, V0, WIDTH2 / ATLAS_WIDTH, V_HEIGHT)
         })
       );
       FRAMES.push(
         Object.freeze({
           index,
-          layer: LAYER,
           x: X,
           y: Y,
           width: WIDTH2,
@@ -4667,8 +7710,7 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
     if (!CLIPS.size) {
       throw new TypeError("At least one sprite clip is required");
     }
-    const MESH = meshRenderer.acquireQuadMesh();
-    const PLAYERS = /* @__PURE__ */ new Set();
+    const PLAYERS2 = /* @__PURE__ */ new Set();
     let disposed = false;
     const READY = () => {
       if (disposed) {
@@ -4732,12 +7774,16 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
               finished: selectedClip.loop === "once" && ELAPSED_MS >= selectedClip.durationMs
             });
           },
+          /** options: matrix (composed with the context transform), color, alpha, whiteFlash, forceColor. */
           draw({ timeMs, ...options } = {}) {
             const SAMPLE = this.sample(timeMs);
-            meshRenderer.drawMesh(MESH, {
+            PLAYER_READY();
+            context.drawQuads({
               ...options,
-              ...FRAME_RECTS[SAMPLE.frameIndex],
-              texture
+              uvRects: FRAME_RECTS[SAMPLE.frameIndex].uvRect,
+              localRects: FRAME_RECTS[SAMPLE.frameIndex].localRect,
+              layer: region.layer,
+              filter: region.filter
             });
             return SAMPLE;
           },
@@ -4787,18 +7833,18 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
               return false;
             }
             playerDisposed = true;
-            PLAYERS.delete(PLAYER);
+            PLAYERS2.delete(PLAYER);
             return true;
           }
         });
-        PLAYERS.add(PLAYER);
+        PLAYERS2.add(PLAYER);
         return PLAYER;
       },
       stats() {
         return Object.freeze({
           frameCount: FRAMES.length,
           clipCount: CLIPS.size,
-          playerCount: PLAYERS.size,
+          playerCount: PLAYERS2.size,
           retainedBytes: 0,
           textureOwned: false
         });
@@ -4808,8 +7854,7 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
           return false;
         }
         disposed = true;
-        PLAYERS.clear();
-        meshRenderer.releaseQuadMesh();
+        PLAYERS2.clear();
         return true;
       }
     });
@@ -4835,61 +7880,52 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
     antialias: false,
     preserveDrawingBuffer: true
   });
-  var MESHES = new MeshRenderer(DEVICE);
+  var CONTEXT = new VectorContext(DEVICE);
   var DRAW_PAGE = (page) => {
     const SHEET = document.createElement("canvas");
     SHEET.width = SHEET.height = PAGE_SIZE;
-    const CONTEXT = SHEET.getContext("2d");
+    const CANVAS_2D = SHEET.getContext("2d");
     for (let cell = 0; cell < 4; cell++) {
       const X = cell % 2 * CELL + CELL / 2;
       const Y = Math.floor(cell / 2) * CELL + CELL / 2;
       const R = CELL * 0.42;
-      CONTEXT.fillStyle = `hsl(${page * 90 + 20}, 80%, ${45 + cell * 6}%)`;
-      CONTEXT.beginPath();
+      CANVAS_2D.fillStyle = `hsl(${page * 90 + 20}, 80%, ${45 + cell * 6}%)`;
+      CANVAS_2D.beginPath();
       if (cell === 0) {
-        CONTEXT.arc(X, Y, R, 0, Math.PI * 2);
+        CANVAS_2D.arc(X, Y, R, 0, Math.PI * 2);
       } else if (cell === 1) {
-        CONTEXT.rect(X - R, Y - R, R * 2, R * 2);
+        CANVAS_2D.rect(X - R, Y - R, R * 2, R * 2);
       } else if (cell === 2) {
-        CONTEXT.moveTo(X, Y - R);
-        CONTEXT.lineTo(X + R, Y + R);
-        CONTEXT.lineTo(X - R, Y + R);
-        CONTEXT.closePath();
+        CANVAS_2D.moveTo(X, Y - R);
+        CANVAS_2D.lineTo(X + R, Y + R);
+        CANVAS_2D.lineTo(X - R, Y + R);
+        CANVAS_2D.closePath();
       } else {
-        CONTEXT.moveTo(X, Y - R);
-        CONTEXT.lineTo(X + R, Y);
-        CONTEXT.lineTo(X, Y + R);
-        CONTEXT.lineTo(X - R, Y);
-        CONTEXT.closePath();
+        CANVAS_2D.moveTo(X, Y - R);
+        CANVAS_2D.lineTo(X + R, Y);
+        CANVAS_2D.lineTo(X, Y + R);
+        CANVAS_2D.lineTo(X - R, Y);
+        CANVAS_2D.closePath();
       }
-      CONTEXT.fill();
+      CANVAS_2D.fill();
     }
     return SHEET;
   };
-  var SHEETS = Array.from({ length: PAGE_COUNT }, (_unused, page) => DRAW_PAGE(page));
   var CELL_RECT = (cell) => ({ x: cell % 2 * CELL, y: Math.floor(cell / 2) * CELL, width: CELL, height: CELL });
-  var ARRAY = DEVICE.createTextureArray(PAGE_SIZE, PAGE_SIZE, PAGE_COUNT, { filter: "nearest" });
-  SHEETS.forEach((sheet, page) => DEVICE.updateTextureLayer(ARRAY, page, sheet));
-  var ARRAY_FRAMES = [];
-  for (let page = 0; page < PAGE_COUNT; page++) {
-    for (let cell = 0; cell < 4; cell++) {
-      ARRAY_FRAMES.push({ ...CELL_RECT(cell), layer: page, durationMs: 100 });
-    }
-  }
-  var ARRAY_SPRITES = createSpriteAnimation(MESHES, ARRAY, {
-    frames: ARRAY_FRAMES,
-    clips: Object.fromEntries(ARRAY_FRAMES.map((_frame, index) => [`f${index}`, { frames: [index] }]))
+  var REGIONS = Array.from({ length: PAGE_COUNT }, (_unused, page) => {
+    const REGION = DEVICE.textureAtlas.allocate(PAGE_SIZE, PAGE_SIZE, { filter: "nearest" });
+    DEVICE.textureAtlas.upload(REGION, DRAW_PAGE(page));
+    return REGION;
   });
-  var ARRAY_PLAYERS = ARRAY_FRAMES.map((_frame, index) => ARRAY_SPRITES.createPlayer({ clip: `f${index}` }));
-  var PAGE_TEXTURES = SHEETS.map((sheet) => DEVICE.createTexture(sheet, { filter: "nearest" }));
-  var SEPARATE_SPRITES = PAGE_TEXTURES.map(
-    (texture) => createSpriteAnimation(MESHES, texture, {
+  var SPRITES = REGIONS.map(
+    (region) => createSpriteAnimation(CONTEXT, region, {
       frames: [0, 1, 2, 3].map((cell) => ({ ...CELL_RECT(cell), durationMs: 100 })),
       clips: Object.fromEntries([0, 1, 2, 3].map((cell) => [`c${cell}`, { frames: [cell] }]))
     })
   );
-  var SEPARATE_PLAYERS = ARRAY_FRAMES.map(
-    (_frame, index) => SEPARATE_SPRITES[Math.floor(index / 4)].createPlayer({ clip: `c${index % 4}` })
+  var PLAYERS = Array.from(
+    { length: PAGE_COUNT * 4 },
+    (_unused, index) => SPRITES[Math.floor(index / 4)].createPlayer({ clip: `c${index % 4}` })
   );
   var seed = 12345;
   var RANDOM = () => {
@@ -4901,37 +7937,36 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
     x: Math.floor(RANDOM() * (WIDTH - CELL)),
     y: Math.floor(RANDOM() * (HEIGHT - CELL))
   }));
-  var PROJECTION = [2 / WIDTH, 0, 0, 0, -2 / HEIGHT, 0, -1, 1, 1];
   var BUTTONS = {
-    array: document.querySelector("#mode-array"),
-    separate: document.querySelector("#mode-separate")
+    sprites: document.querySelector("#mode-sprites"),
+    mixed: document.querySelector("#mode-mixed")
   };
   var EXAMPLE = {
     device: DEVICE,
-    mode: "array",
+    mode: "sprites",
     drawCalls: 0,
     spriteCount: SPRITE_COUNT,
     setMode(mode) {
-      if (mode !== "array" && mode !== "separate") {
-        throw new TypeError("mode must be array or separate");
+      if (mode !== "sprites" && mode !== "mixed") {
+        throw new TypeError("mode must be sprites or mixed");
       }
       EXAMPLE.mode = mode;
-      const PLAYERS = mode === "array" ? ARRAY_PLAYERS : SEPARATE_PLAYERS;
-      DEVICE.beginFrame({ width: WIDTH, height: HEIGHT, clearColor: [0.06, 0.1, 0.14, 1] });
-      MESHES.beginFrame();
+      CONTEXT.beginFrame({ width: WIDTH, height: HEIGHT, clearColor: [0.06, 0.1, 0.14, 1] });
       for (const PLACEMENT of PLACEMENTS) {
+        if (mode === "mixed") {
+          CONTEXT.fillStyle = "rgba(255, 255, 255, 0.25)";
+          CONTEXT.fillRect(PLACEMENT.x - 2, PLACEMENT.y - 2, CELL + 4, CELL + 4);
+        }
         PLAYERS[PLACEMENT.frame].draw({
           timeMs: 0,
-          matrix: [1, 0, 0, 1, PLACEMENT.x, PLACEMENT.y],
-          projection: PROJECTION
+          matrix: [1, 0, 0, 1, PLACEMENT.x, PLACEMENT.y]
         });
       }
-      MESHES.flush();
-      EXAMPLE.drawCalls = DEVICE.endFrame().drawCalls;
+      EXAMPLE.drawCalls = CONTEXT.endFrame().drawCalls;
       for (const [NAME, BUTTON] of Object.entries(BUTTONS)) {
         BUTTON.setAttribute("aria-pressed", String(NAME === mode));
       }
-      document.querySelector("#stats").textContent = `그리기 호출 ${EXAMPLE.drawCalls}회 · 스프라이트 ${SPRITE_COUNT}개 · ` + (mode === "array" ? "바인딩한 텍스처 1개" : `바인딩한 텍스처 ${PAGE_COUNT}개를 번갈아 사용`);
+      document.querySelector("#stats").textContent = `그리기 호출 ${EXAMPLE.drawCalls}회 · 스프라이트 ${SPRITE_COUNT}개` + (mode === "mixed" ? ` · 사각형 ${SPRITE_COUNT}개 끼워 그림` : "");
       return EXAMPLE.drawCalls;
     },
     readPixels() {
@@ -4941,16 +7976,15 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
       return PIXELS;
     }
   };
-  BUTTONS.array.addEventListener("click", () => EXAMPLE.setMode("array"));
-  BUTTONS.separate.addEventListener("click", () => EXAMPLE.setMode("separate"));
-  EXAMPLE.setMode("array");
+  BUTTONS.sprites.addEventListener("click", () => EXAMPLE.setMode("sprites"));
+  BUTTONS.mixed.addEventListener("click", () => EXAMPLE.setMode("mixed"));
+  EXAMPLE.setMode("sprites");
   window.textureArrayExample = EXAMPLE;
   window.addEventListener(
     "pagehide",
     () => {
-      ARRAY_SPRITES.dispose();
-      SEPARATE_SPRITES.forEach((sprites) => sprites.dispose());
-      MESHES.dispose();
+      SPRITES.forEach((sprites) => sprites.dispose());
+      CONTEXT.dispose();
       DEVICE.dispose();
     },
     { once: true }

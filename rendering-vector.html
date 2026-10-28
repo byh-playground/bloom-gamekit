@@ -314,6 +314,7 @@ ${converted}`;
       this.checkGLErrors = checkGLErrors;
       this.textureAtlasOptions = { ...textureAtlas };
       this._textureAtlas = null;
+      this.batchers = /* @__PURE__ */ new Set();
       integer(maxTextures, "maxTextures", 1, 32);
       integer(maxBufferBytes, "maxBufferBytes", 4);
       this.canvas = canvas;
@@ -359,6 +360,7 @@ ${converted}`;
         frame: 0,
         vectorFlushCalls: 0,
         vectorSubmissions: 0,
+        spriteRuns: 0,
         pathTessellations: 0,
         pathStrokeBuilds: 0,
         meshCreates: 0,
@@ -370,6 +372,7 @@ ${converted}`;
         textureUploads: 0,
         textureBytes: 0,
         imageTexUploadCount: 0,
+        regionClears: 0,
         imageTexUploadBytes: 0,
         frameCopies: 0,
         bufferAllocations: 0,
@@ -1061,6 +1064,40 @@ ${converted}`;
       this.stats.renderTargetCount = this.renderTargets.size;
       return HANDLE;
     }
+    /**
+     * Copies `source` into the rectangle (x, y, width, height) of `target`, measured from the target's bottom-left,
+     * with linear filtering when the sizes differ. A 2:1 copy averages exactly each 2x2 texel footprint.
+     */
+    blitRenderTarget(source, target, { x = 0, y = 0, width = target.width, height = target.height } = {}) {
+      this._ready();
+      if (!this.active) {
+        throw new Error("beginFrame required");
+      }
+      const FROM = this._handle(this.renderTargets, source, "render target"), TO = this._handle(this.renderTargets, target, "render target");
+      integer(x, "blit x", 0, TO.width - 1);
+      integer(y, "blit y", 0, TO.height - 1);
+      integer(width, "blit width", 1, TO.width - x);
+      integer(height, "blit height", 1, TO.height - y);
+      if (!FROM.available || !TO.available || FROM === TO) {
+        throw new Error("Blit needs two distinct available render targets");
+      }
+      const GL = this.gl, PREVIOUS = GL.getParameter(GL.FRAMEBUFFER_BINDING);
+      GL.bindFramebuffer(GL.READ_FRAMEBUFFER, FROM.framebuffer);
+      GL.bindFramebuffer(GL.DRAW_FRAMEBUFFER, TO.framebuffer);
+      GL.blitFramebuffer(
+        0,
+        0,
+        FROM.width,
+        FROM.height,
+        x,
+        y,
+        x + width,
+        y + height,
+        GL.COLOR_BUFFER_BIT,
+        width === FROM.width && height === FROM.height ? GL.NEAREST : GL.LINEAR
+      );
+      GL.bindFramebuffer(GL.FRAMEBUFFER, PREVIOUS);
+    }
     /** Float targets can become unavailable after restore while ordinary rendering stays ready. */
     isRenderTargetAvailable(handle) {
       const R = this._handle(this.renderTargets, handle, "render target");
@@ -1265,6 +1302,7 @@ ${converted}`;
       integer(layer, "layer", 0, R.layers - 1);
       integer(width, "region width", 1, R.width);
       integer(height, "region height", 1, R.height);
+      const IMAGE_UPLOADS = this.stats.imageTexUploadCount, IMAGE_BYTES = this.stats.imageTexUploadBytes;
       this.updateTextureRegion(
         handle,
         layer,
@@ -1273,9 +1311,29 @@ ${converted}`;
         { width, height, data: new Uint8Array(width * height * 4) },
         { premultiplied: true }
       );
+      this.stats.imageTexUploadCount = IMAGE_UPLOADS;
+      this.stats.imageTexUploadBytes = IMAGE_BYTES;
+      this.stats.regionClears++;
       R.layerRegions[layer] = R.layerRegions[layer].filter(
         (r) => !(r.x === x && r.y === y && r.width === width && r.height === height)
       );
+    }
+    /**
+     * A renderer that queues draws registers its flush here, so a shared GPU resource that is about to change
+     * (pose rows, data textures) first submits everything already queued against its old contents.
+     * Returns the function that unregisters it.
+     */
+    registerBatcher(flush) {
+      if (typeof flush !== "function") {
+        throw new TypeError("A flush function is required");
+      }
+      this.batchers.add(flush);
+      return () => this.batchers.delete(flush);
+    }
+    flushBatchers(reason) {
+      for (const FLUSH of this.batchers) {
+        FLUSH(reason);
+      }
     }
     /**
      * The device's shared image atlas (SSOT): vector fills, gradients and glyphs allocate regions here, so every
@@ -1544,6 +1602,7 @@ ${converted}`;
       for (const NAME of [
         "vectorFlushCalls",
         "vectorSubmissions",
+        "spriteRuns",
         "pathTessellations",
         "pathStrokeBuilds",
         "meshCreates",
@@ -1876,18 +1935,153 @@ ${converted}`;
       this.state = "disposed";
     }
   };
+  var EMPTY_CLIP = Object.freeze({
+    key: "",
+    values: null,
+    count: 0
+  });
+  function clipPlanes(clips, maxPlanes) {
+    if (!clips?.length) {
+      return EMPTY_CLIP;
+    }
+    const VALUES = [], KEY = [];
+    for (const POLYGON of clips) {
+      if (!Array.isArray(POLYGON) || POLYGON.length < 3 || POLYGON.some((p) => !Number.isFinite(p?.x) || !Number.isFinite(p?.y))) {
+        throw new TypeError("Finite convex clip polygons required");
+      }
+      let area = 0;
+      for (let i = 0; i < POLYGON.length; i++) {
+        const P = POLYGON[i], Q = POLYGON[(i + 1) % POLYGON.length];
+        area += P.x * Q.y - Q.x * P.y;
+      }
+      if (Math.abs(area) < 1e-12) {
+        return {
+          key: "empty",
+          values: [0, 0, -1],
+          count: 1
+        };
+      }
+      const SIGN = area >= 0 ? 1 : -1;
+      for (let i = 0; i < POLYGON.length; i++) {
+        const P = POLYGON[i], Q = POLYGON[(i + 1) % POLYGON.length], DX = Q.x - P.x, DY = Q.y - P.y, LENGTH = Math.hypot(DX, DY);
+        if (!LENGTH) {
+          continue;
+        }
+        const A_LOCAL = -DY / LENGTH * SIGN, B_LOCAL = DX / LENGTH * SIGN, C_LOCAL = -(A_LOCAL * P.x + B_LOCAL * P.y);
+        VALUES.push(A_LOCAL, B_LOCAL, C_LOCAL);
+        KEY.push(A_LOCAL, B_LOCAL, C_LOCAL);
+      }
+    }
+    if (VALUES.length / 3 > maxPlanes) {
+      throw new RangeError(`Clipping exceeds ${maxPlanes} edge planes`);
+    }
+    return {
+      key: KEY.join(","),
+      values: VALUES,
+      count: VALUES.length / 3
+    };
+  }
+  var MAX_PARTS = 16;
+  var POSE_WIDTH = MAX_PARTS * 3;
+  var OVERRIDE_WIDTH = MAX_PARTS * 2;
+  var OWNERS = /* @__PURE__ */ new WeakMap();
+  function poseRendererOf(handle) {
+    return OWNERS.get(handle) ?? null;
+  }
+  var POSE_PROGRAM_FUNCTIONS = `uniform sampler2D u_program;uniform sampler2D u_state;uniform sampler2D u_overrides;uniform int u_programWidth;
+vec4 poseData(int base,int at){int i=at+base;return texelFetch(u_program,ivec2(i%u_programWidth,i/u_programWidth),0);}
+float poseChannel(int base,int header,float time){vec4 h=poseData(base,header);float value=h.z;
+ for(int i=0;i<64;i++){if(i>=int(h.y))break;vec4 s=poseData(base,int(h.x)+i*2);if(time<s.z)break;
+ if(time>=s.w){value=s.y;continue;}float t=clamp((time-s.z)/(s.w-s.z),0.0,1.0);float ease=poseData(base,int(h.x)+i*2+1).x;
+ if(ease>1.5)t=1.0-(1.0-t)*(1.0-t);else if(ease>0.5)t=0.5-0.5*cos(3.141592653589793*t);
+ value=mix(s.x,s.y,t);break;}return value;}
+mat3 poseLocal(int base,int part,int header,float time,int row,out float opacity){
+ vec4 b0=texelFetch(u_overrides,ivec2(part*2,row),0);vec4 b1=texelFetch(u_overrides,ivec2(part*2+1,row),0);
+ int at=header+part*6;vec2 translation=b0.xy+vec2(poseChannel(base,at,time),poseChannel(base,at+1,time));
+ float rotation=b0.z+poseChannel(base,at+2,time);float sx=b0.w*poseChannel(base,at+3,time);float sy=b1.x*poseChannel(base,at+4,time);
+ float c=cos(rotation);float s=sin(rotation);vec2 x=vec2(c,s)*sx;vec2 y=vec2(-s,c)*sy;vec2 pivot=poseData(base,part).xy;
+ opacity=b1.y*b1.z*poseChannel(base,at+5,time);return mat3(vec3(x,0.0),vec3(y,0.0),vec3(pivot+translation-x*pivot.x-y*pivot.y,1.0));}
+void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
+ vec4 playback=texelFetch(u_state,ivec2(0,row),0);vec4 morph=texelFetch(u_state,ivec2(1,row),0);
+ int base=int(morph.w);float time;
+ if(playback.z<0.5)time=clamp(playback.y,0.0,playback.w);
+ else if(playback.z<1.5)time=mod(playback.y,playback.w);
+ else{float point=mod(playback.y,playback.w*2.0);time=point<=playback.w?point:playback.w*2.0-point;}
+ mat3 matrix=mat3(1.0);float alpha=1.0;int current=part;
+ for(int depth=0;depth<16;depth++){if(current<0)break;float opacity;mat3 m=poseLocal(base,current,int(playback.x),time,row,opacity);matrix=m*matrix;alpha*=opacity;current=int(poseData(base,current).z);}
+ if((int(morph.z)&(1<<part))!=0)alpha=0.0;
+ row0=vec4(matrix[0][0],matrix[1][0],matrix[2][0],0.0);row1=vec4(matrix[0][1],matrix[1][1],matrix[2][1],0.0);pose=vec4(morph.xy,alpha,0.0);}
+`;
   var IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
   var VERTEX_FLOATS = 20;
   var VERTEX_BYTES = VERTEX_FLOATS * 4;
-  var VERTEX = `attribute vec2 a_position; attribute vec2 a_uv; attribute vec4 a_color; attribute vec4 a_paint; attribute vec4 a_radial; attribute vec4 a_rect;
-uniform mat3 u_projection; varying highp vec2 v_uv; varying vec4 v_color; varying highp vec4 v_paint; varying highp vec4 v_radial; varying highp vec4 v_rect;
-void main(){vec3 p=u_projection*vec3(a_position,1.0);gl_Position=vec4(p.xy,0.0,1.0);v_uv=a_uv;v_color=a_color;v_paint=a_paint;v_radial=a_radial;v_rect=a_rect;}`;
+  var MODE_POSED = 4;
+  var MODE_PRIMITIVE = 5;
+  var POSED_CORNERS = [
+    [0, 0],
+    [1, 0],
+    [1, 1],
+    [0, 0],
+    [1, 1],
+    [0, 1]
+  ];
+  var VERTEX_ATTRIBUTES = [
+    { name: "a_position", size: 2, offset: 0 },
+    { name: "a_uv", size: 2, offset: 8 },
+    { name: "a_color", size: 4, offset: 16 },
+    { name: "a_paint", size: 4, offset: 32 },
+    { name: "a_radial", size: 4, offset: 48 },
+    { name: "a_rect", size: 4, offset: 64 }
+  ];
+  var FRAGMENT_VARYINGS = "varying highp vec2 v_uv; varying vec4 v_color; varying highp vec4 v_paint; varying highp vec4 v_radial; varying highp vec4 v_rect;";
+  var POSED_CORNER = `if(a_paint.z>3.5&&a_paint.z<4.5){vec4 row0;vec4 row1;vec4 pose;
+poseEval(int(a_rect.w+0.5),int(a_rect.z+0.5),row0,row1,pose);
+vec2 q=vec2(dot(row0.xy,a_position)+row0.z,dot(row1.xy,a_position)+row1.z);
+position=vec2(a_radial.x*q.x+a_radial.z*q.y+a_rect.x,a_radial.y*q.x+a_radial.w*q.y+a_rect.y);
+color.a*=pose.z;paint.z=0.0;radial=vec4(0.0);rect=vec4(0.0);}`;
+  function vertexShader(posed) {
+    return `attribute vec2 a_position; attribute vec2 a_uv; attribute vec4 a_color; attribute vec4 a_paint; attribute vec4 a_radial; attribute vec4 a_rect;
+uniform mat3 u_projection; ${FRAGMENT_VARYINGS}${posed ? " varying highp vec2 v_position;" : ""}
+${posed ? POSE_PROGRAM_FUNCTIONS : ""}
+void main(){vec2 position=a_position;vec4 color=a_color;vec4 paint=a_paint;vec4 radial=a_radial;vec4 rect=a_rect;
+${posed ? POSED_CORNER : ""}
+vec3 p=u_projection*vec3(position,1.0);gl_Position=vec4(p.xy,0.0,1.0);${posed ? "v_position=position;" : ""}v_uv=a_uv;v_color=color;v_paint=paint;v_radial=radial;v_rect=rect;}`;
+  }
+  var VERTEX = vertexShader(false);
   var CLIP_VERTEX = `attribute vec2 a_position;uniform mat3 u_projection;uniform mat3 u_transform;void main(){vec3 p=u_projection*u_transform*vec3(a_position,1.0);gl_Position=vec4(p.xy,0.0,1.0);}`;
   var CLIP_FRAGMENT = "precision mediump float;void main(){gl_FragColor=vec4(1.0);}";
-  var FRAGMENT_VARYINGS = "varying highp vec2 v_uv; varying vec4 v_color; varying highp vec4 v_paint; varying highp vec4 v_radial; varying highp vec4 v_rect;";
-  var FINISH = "float a=texel.a*v_color.a;vec3 rgb=mix(texel.rgb*v_color.rgb*v_color.a,vec3(a),v_paint.y);gl_FragColor=vec4(rgb,a);";
-  var FRAGMENT = `precision mediump float; precision mediump sampler2DArray; uniform sampler2DArray u_texture;
-${FRAGMENT_VARYINGS}
+  var FINISH = "float a=texel.a*v_color.a;vec3 rgb=v_paint.y>1.5?v_color.rgb*a:mix(texel.rgb*v_color.rgb*v_color.a,vec3(a),v_paint.y);gl_FragColor=vec4(rgb,a);";
+  var PRIMITIVE_OUTSIDE = `bool primitiveOutside(vec2 l,vec4 p,vec4 m){
+  float kind=p.x,stroke=p.y,width=p.z,option=p.w;
+  if(kind<0.5){
+    if(stroke<0.5)return length(l)>1.0;
+    float ql=length(l);vec2 n=ql>0.000001?l/ql:vec2(1.0,0.0);float det=m.x*m.w-m.y*m.z;
+    vec2 g=vec2(m.w*n.x-m.z*n.y,-m.y*n.x+m.x*n.y)/max(abs(det),0.000001);
+    return abs((ql-1.0)/max(length(g),0.000001))>width*0.5;
+  }
+  if(kind<1.5){
+    if(stroke<0.5)return max(abs(l.x),abs(l.y))>1.0;
+    float sx=length(vec2(m.x,m.z));float sy=length(vec2(m.y,m.w));
+    if(option>0.5){
+      float ox=1.0+width/(2.0*max(sx,0.000001));float oy=1.0+width/(2.0*max(sy,0.000001));
+      float ix=max(0.0,1.0-width/(2.0*max(sx,0.000001)));float iy=max(0.0,1.0-width/(2.0*max(sy,0.000001)));
+      return max(abs(l.x)/ox,abs(l.y)/oy)>1.0||max(abs(l.x)/max(ix,0.000001),abs(l.y)/max(iy,0.000001))<1.0;
+    }
+    vec2 q=(abs(l)-vec2(1.0))*vec2(sx,sy);float sd=length(max(q,vec2(0.0)))+min(max(q.x,q.y),0.0);
+    return abs(sd)>width*0.5;
+  }
+  float halfLength=length(vec2(m.x,m.z));float halfWidth=length(vec2(m.y,m.w));
+  float x=l.x*halfLength;float y=l.y*halfWidth;float center=halfLength-(option>0.5?halfWidth:0.0);float d;
+  if(option<0.5)d=max(abs(x)-center,abs(y)-halfWidth);
+  else if(option<1.5)d=max(abs(x)-center-halfWidth,abs(y)-halfWidth);
+  else d=length(vec2(max(abs(x)-center,0.0),y))-halfWidth;
+  return d>0.0;
+}`;
+  function fragmentShader(planes) {
+    const PLANES = planes ? `varying highp vec2 v_position; uniform vec3 u_planes[${planes}]; uniform int u_planeCount;` : "";
+    const CLIP = planes ? `for(int i=0;i<${planes};i++){if(i>=u_planeCount)break;if(dot(u_planes[i],vec3(v_position,1.0))<0.0)discard;}` : "";
+    return `precision mediump float; precision mediump sampler2DArray; uniform sampler2DArray u_texture;
+${FRAGMENT_VARYINGS}${PLANES}
 float radialParameter(vec2 q){
   vec2 d=v_radial.xy;float r0=v_radial.z,dr=v_radial.w;
   float a=dot(d,d)-dr*dr,b=-2.0*(dot(q,d)+r0*dr),c=dot(q,q)-r0*r0;
@@ -1896,11 +2090,15 @@ float radialParameter(vec2 q){
   float root=sqrt(max(discriminant,0.0)),t0=(-b-root)/(2.0*a),t1=(-b+root)/(2.0*a),chosen=-10000.0;
   if(r0+dr*t0>0.0)chosen=t0;if(r0+dr*t1>0.0)chosen=max(chosen,t1);return chosen;
 }
-void main(){if(v_paint.z>1.5&&v_paint.z<2.5)discard;vec2 uv=v_uv;
+${PRIMITIVE_OUTSIDE}
+void main(){${CLIP}if(v_paint.z>4.5){if(primitiveOutside(v_uv,v_radial,v_rect))discard;gl_FragColor=vec4(v_color.rgb*v_color.a,v_color.a);return;}
+if(v_paint.z>1.5&&v_paint.z<2.5)discard;vec2 uv=v_uv;
 if(v_paint.z>2.5){uv=v_rect.xy+vec2(clamp(v_uv.x,0.0,1.0),0.5)*v_rect.zw;}
 else if(v_paint.z>0.5){float t=radialParameter(v_uv);if(t< -1000.0)discard;uv=v_rect.xy+vec2(clamp(t,0.0,1.0),0.5)*v_rect.zw;}
 if(v_paint.w>0.5){vec2 size=vec2(textureSize(u_texture,0).xy);uv=(floor(uv*size)+0.5)/size;}
 vec4 texel=texture2D(u_texture,vec3(uv,floor(v_paint.x+0.5)));${FINISH}}`;
+  }
+  var FRAGMENT = fragmentShader(0);
   var GROUP_FRAGMENT = `precision mediump float; uniform sampler2D u_texture;
 ${FRAGMENT_VARYINGS}
 void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
@@ -2132,19 +2330,17 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
         vertex: VERTEX,
         fragment: FRAGMENT,
         stride: VERTEX_BYTES,
-        attributes: [
-          { name: "a_position", size: 2, offset: 0 },
-          { name: "a_uv", size: 2, offset: 8 },
-          { name: "a_color", size: 4, offset: 16 },
-          { name: "a_paint", size: 4, offset: 32 },
-          { name: "a_radial", size: 4, offset: 48 },
-          { name: "a_rect", size: 4, offset: 64 }
-        ],
+        attributes: VERTEX_ATTRIBUTES,
         uniforms: {
           u_projection: "matrix3fv",
           u_texture: "1i"
         }
       });
+      this.posePipeline = null;
+      this.poseBatch = null;
+      this.clipSerial = 0;
+      this.batchSerial = 0;
+      this.planeScratch = new Float32Array(this.maxClipPlanes * 3);
       this.clipPipeline = device.createPipeline({
         vertex: CLIP_VERTEX,
         fragment: CLIP_FRAGMENT,
@@ -2198,8 +2394,14 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
       this.stencilDepth = 0;
       this.stencilNeedsRebuild = false;
       this.state = "ready";
+      this.unregisterBatcher = device.registerBatcher(() => {
+        if (this.state === "ready" && this.device.active) {
+          this._submit();
+        }
+      });
       this.onLost = () => {
         this.count = 0;
+        this.poseBatch = null;
         this.stencilNeedsRebuild = this.stencilClips.length > 0;
       };
       this.onRestored = () => {
@@ -2223,14 +2425,7 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
           vertex: VERTEX,
           fragment: GROUP_FRAGMENT,
           stride: VERTEX_BYTES,
-          attributes: [
-            { name: "a_position", size: 2, offset: 0 },
-            { name: "a_uv", size: 2, offset: 8 },
-            { name: "a_color", size: 4, offset: 16 },
-            { name: "a_paint", size: 4, offset: 32 },
-            { name: "a_radial", size: 4, offset: 48 },
-            { name: "a_rect", size: 4, offset: 64 }
-          ],
+          attributes: VERTEX_ATTRIBUTES,
           uniforms: {
             u_projection: "matrix3fv",
             u_texture: "1i"
@@ -2243,6 +2438,18 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
         }
         throw error;
       }
+    }
+    get clips() {
+      return this._clips;
+    }
+    // Every change bumps the serial, so a batch can tell cheaply whether its clip may have changed.
+    set clips(value) {
+      this._clips = value;
+      this.clipSerial++;
+    }
+    _pushClip(contour) {
+      this._clips.push(contour);
+      this.clipSerial++;
     }
     _frame() {
       if (this.state !== "ready") {
@@ -2358,10 +2565,10 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
       if (!S) {
         throw new Error("restore without save");
       }
-      this._submit();
       this.matrix = S.matrix;
       this.clips = S.clips;
       if (S.stencilClips.length !== this.stencilClips.length || S.stencilClips.some((clip, i) => clip !== this.stencilClips[i])) {
+        this._submit();
         this.stencilClips = S.stencilClips;
         this._rebuildStencil();
       }
@@ -2403,7 +2610,7 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
         point(this.matrix, x, y + height)
       ];
       if (width === 0 || height === 0) {
-        this.clips.push(CONTOUR);
+        this._pushClip(CONTOUR);
       } else {
         this._addConvexClip(CONTOUR);
       }
@@ -2421,7 +2628,7 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
         0
       );
       if (Math.abs(AREA) < 1e-9) {
-        this.clips.push(contour);
+        this._pushClip(contour);
         return;
       }
       const PLANE_COUNT = this.clips.reduce((sum, polygon) => sum + polygon.length, 0);
@@ -2429,7 +2636,7 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
         this._pushDynamicStencilClip(contour);
         return;
       }
-      this.clips.push(contour);
+      this._pushClip(contour);
     }
     _pushDynamicStencilClip(contour) {
       if (!this.device.activeStencilAvailable) {
@@ -2672,8 +2879,34 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
       }
       return poly;
     }
+    /** Makes room for `vertexCount` more vertices, submitting first when the buffer limit would be exceeded. */
+    _reserve(vertexCount) {
+      if (this.count + vertexCount > this.maxVertices) {
+        this._submit();
+      }
+      if (!this.count) {
+        this.batchSerial = this.clipSerial;
+      }
+      if ((this.count + vertexCount) * VERTEX_FLOATS > this.vertices.length) {
+        const SIZE = Math.min(this.maxVertices, Math.max(this.count + vertexCount, this.count * 2));
+        const NEXT = new Float32Array(SIZE * VERTEX_FLOATS);
+        NEXT.set(this.vertices.subarray(0, this.count * VERTEX_FLOATS));
+        this.vertices = NEXT;
+      }
+    }
+    /** A batch holding posed sprites tests one plane set per fragment; CPU-clipped vertices must lie inside it. */
+    _planesAllow() {
+      const BATCH = this.poseBatch;
+      if (!BATCH || BATCH.planeCount === 0 || BATCH.serial === this.clipSerial) {
+        return true;
+      }
+      return clipPlanes(this.clips, this.maxClipPlanes).key === BATCH.planeKey;
+    }
     _emitTriangle(a, b, c, color2, uv = null) {
       rgba(color2);
+      if (!this._planesAllow()) {
+        this._submit();
+      }
       if (this.activeGradient && !uv) {
         uv = [this._gradientUV(a), this._gradientUV(b), this._gradientUV(c)];
       }
@@ -2683,15 +2916,7 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
         v: uv[i][1]
       })) : [a, b, c];
       for (let i = 1; i + 1 < POLY.length; i++) {
-        if (this.count + 3 > this.maxVertices) {
-          this._submit();
-        }
-        if ((this.count + 3) * VERTEX_FLOATS > this.vertices.length) {
-          const SIZE = Math.min(this.maxVertices, Math.max(this.count + 3, this.count * 2));
-          const NEXT = new Float32Array(SIZE * VERTEX_FLOATS);
-          NEXT.set(this.vertices);
-          this.vertices = NEXT;
-        }
+        this._reserve(3);
         for (const POINT of [POLY[0], POLY[i], POLY[i + 1]]) {
           const K = this.count++ * VERTEX_FLOATS;
           this.vertices[K] = POINT.x;
@@ -2708,16 +2933,35 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
         return;
       }
       this.device.stats.vectorSubmissions++;
+      const POSED = this.poseBatch;
+      this.poseBatch = null;
+      if (POSED) {
+        POSED.owner.flushUpdates();
+        this.posePipeline ??= this._createPosePipeline();
+        this.planeScratch.fill(0);
+        if (POSED.planes) {
+          this.planeScratch.set(POSED.planes);
+        }
+      }
       this.device.uploadVertices(this.buffer, this.vertices.subarray(0, this.count * VERTEX_FLOATS));
       this.device.draw({
-        pipeline: this.activeTarget ? this.groupPipeline : this.pipeline,
+        pipeline: POSED ? this.posePipeline : this.activeTarget ? this.groupPipeline : this.pipeline,
         buffer: this.buffer,
         count: this.count,
-        uniforms: {
+        uniforms: POSED ? {
+          u_projection: this.projection,
+          u_program: 0,
+          u_state: 1,
+          u_overrides: 2,
+          u_texture: 3,
+          u_programWidth: POSED.programWidth,
+          "u_planes[0]": this.planeScratch,
+          u_planeCount: POSED.planeCount
+        } : {
           u_projection: this.projection,
           u_texture: 0
         },
-        textures: [this.activeTarget ?? this.atlas.texture],
+        textures: POSED ? [...POSED.textures, this.atlas.texture] : [this.activeTarget ?? this.atlas.texture],
         blend: this.blend,
         stencil: this.stencilDepth ? {
           func: "equal",
@@ -2728,6 +2972,24 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
         } : false
       });
       this.count = 0;
+    }
+    _createPosePipeline() {
+      return this.device.createPipeline({
+        vertex: vertexShader(true),
+        fragment: fragmentShader(this.maxClipPlanes),
+        stride: VERTEX_BYTES,
+        attributes: VERTEX_ATTRIBUTES,
+        uniforms: {
+          u_projection: "matrix3fv",
+          u_program: "1i",
+          u_state: "1i",
+          u_overrides: "1i",
+          u_texture: "1i",
+          u_programWidth: "1i",
+          "u_planes[0]": "3fv",
+          u_planeCount: "1i"
+        }
+      });
     }
     // Only source-over and the additive 'lighter' are offered; a change submits what the other operation queued.
     setBlend(blend) {
@@ -2765,6 +3027,166 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
         W,
         H
       ]);
+    }
+    /** Switches later vertices to plain per-vertex paint (no atlas region, gradient or group target). */
+    _useVertexPaint(template, whiteFlash = false) {
+      if (this.activeTarget) {
+        this._submit();
+        this.activeTarget = null;
+      }
+      this.activeRegion = null;
+      this.activeRadial = false;
+      this.activeWhiteFlash = whiteFlash;
+      this.activeGradient = null;
+      this.paintTemplate.set(template);
+    }
+    /**
+     * Fills or strokes one analytic primitive: `matrix` maps the local square [-1,1]^2 to screen space (the caller
+     * has applied the current transform) and `params` is [kind (0 ellipse, 1 rectangle, 2 line), stroke, width, option].
+     */
+    drawPrimitive({ matrix, color: color2, params }) {
+      this._frame();
+      rgba(color2);
+      if (matrix?.length !== 6 || params?.length !== 4) {
+        throw new TypeError("drawPrimitive requires a 6-value matrix and 4 parameters");
+      }
+      for (const VALUE of [...matrix, ...params]) {
+        FINITE(VALUE, "drawPrimitive value");
+      }
+      const M = matrix;
+      this._useVertexPaint([0, 0, MODE_PRIMITIVE, 0, ...params, M[0], M[2], M[1], M[3]]);
+      const CORNERS = [
+        [-1, -1],
+        [1, -1],
+        [1, 1],
+        [-1, 1]
+      ];
+      const WORLD = CORNERS.map((corner) => point(M, corner[0], corner[1]));
+      this._emitTriangle(WORLD[0], WORLD[1], WORLD[2], color2, [CORNERS[0], CORNERS[1], CORNERS[2]]);
+      this._emitTriangle(WORLD[0], WORLD[2], WORLD[3], color2, [CORNERS[0], CORNERS[2], CORNERS[3]]);
+    }
+    /**
+     * Draws atlas rectangles in painter order. Run i places `localRects[i]` (x, y, width, height) on the current
+     * transform composed with `matrix` and samples `uvRects[i]` of `layer`; uv and size may be negative for content that
+     * was rendered rather than uploaded. With `pose` (a handle of a PoseRenderer, evaluated on the GPU from its
+     * keyframe program) every run also follows the pose part `parts[i]`. All runs join the current batch, so one
+     * blend/clip state is one draw whatever mix of sprites, shapes and glyphs it holds.
+     */
+    drawQuads({
+      layer,
+      uvRects,
+      localRects,
+      parts = null,
+      pose = null,
+      matrix = IDENTITY,
+      color: color2 = [1, 1, 1, 1],
+      alpha = 1,
+      whiteFlash = false,
+      forceColor = false,
+      filter = "linear"
+    } = {}) {
+      this._frame();
+      const COUNT = uvRects?.length / 4;
+      if (!Number.isSafeInteger(layer) || layer < 0 || !Number.isInteger(COUNT) || COUNT < 1 || localRects?.length !== COUNT * 4 || matrix.length !== 6 || filter !== "linear" && filter !== "nearest") {
+        throw new TypeError("drawQuads requires a layer and matching uvRects and localRects");
+      }
+      for (const LIST of [uvRects, localRects, matrix]) {
+        for (let i = 0; i < LIST.length; i++) {
+          FINITE(LIST[i], "drawQuads value");
+        }
+      }
+      if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1) {
+        throw new RangeError("alpha must be in [0,1]");
+      }
+      rgba(color2);
+      const TINT = [color2[0], color2[1], color2[2], color2[3] * alpha], M = compose(this.matrix, matrix);
+      this._useVertexPaint(
+        [layer, whiteFlash ? 1 : forceColor ? 2 : 0, 0, filter === "nearest" ? 1 : 0, 0, 0, 0, 0, 0, 0, 1, 1],
+        whiteFlash
+      );
+      if (pose === null) {
+        if (parts !== null) {
+          throw new TypeError("parts require a pose");
+        }
+        this.device.stats.spriteRuns += COUNT;
+        for (let i = 0; i < COUNT; i++) {
+          const [LX, LY, LW, LH] = localRects.subarray(i * 4, i * 4 + 4), [U, V, UW, VH] = uvRects.subarray(i * 4, i * 4 + 4), CORNERS = [
+            [point(M, LX, LY), [U, V]],
+            [point(M, LX + LW, LY), [U + UW, V]],
+            [point(M, LX + LW, LY + LH), [U + UW, V + VH]],
+            [point(M, LX, LY + LH), [U, V + VH]]
+          ];
+          this._emitTriangle(CORNERS[0][0], CORNERS[1][0], CORNERS[2][0], TINT, [
+            CORNERS[0][1],
+            CORNERS[1][1],
+            CORNERS[2][1]
+          ]);
+          this._emitTriangle(CORNERS[0][0], CORNERS[2][0], CORNERS[3][0], TINT, [
+            CORNERS[0][1],
+            CORNERS[2][1],
+            CORNERS[3][1]
+          ]);
+        }
+        return;
+      }
+      const OWNER = poseRendererOf(pose);
+      if (!OWNER || parts?.length !== COUNT) {
+        throw new TypeError("A live pose handle and one part per run are required");
+      }
+      const DRAW = OWNER.resolve(pose);
+      if (DRAW.kind !== "program") {
+        throw new TypeError("Posed sprites require a keyframe program pose");
+      }
+      for (let i = 0; i < COUNT; i++) {
+        if (!Number.isInteger(parts[i]) || parts[i] < 0 || parts[i] >= DRAW.partCount) {
+          throw new RangeError("parts must be pose part indices");
+        }
+      }
+      this._beginPosed(OWNER, DRAW);
+      OWNER.noteDraw(pose);
+      this.device.stats.spriteRuns += COUNT;
+      for (let i = 0; i < COUNT; i++) {
+        const [LX, LY, LW, LH] = localRects.subarray(i * 4, i * 4 + 4), [U, V, UW, VH] = uvRects.subarray(i * 4, i * 4 + 4);
+        this._reserve(6);
+        for (const [CX, CY] of POSED_CORNERS) {
+          const K = this.count++ * VERTEX_FLOATS;
+          this.vertices[K] = LX + CX * LW;
+          this.vertices[K + 1] = LY + CY * LH;
+          this.vertices[K + 2] = U + CX * UW;
+          this.vertices[K + 3] = V + CY * VH;
+          this.vertices.set(TINT, K + 4);
+          this.vertices.set(this.paintTemplate, K + 8);
+          this.vertices[K + 10] = MODE_POSED;
+          this.vertices[K + 12] = M[0];
+          this.vertices[K + 13] = M[1];
+          this.vertices[K + 14] = M[2];
+          this.vertices[K + 15] = M[3];
+          this.vertices[K + 16] = M[4];
+          this.vertices[K + 17] = M[5];
+          this.vertices[K + 18] = DRAW.row;
+          this.vertices[K + 19] = parts[i];
+        }
+      }
+    }
+    /** Joins or opens the batch's posed section: one pose texture set and one clip plane set per draw. */
+    _beginPosed(owner, draw) {
+      const PLANES = clipPlanes(this.clips, this.maxClipPlanes), BATCH = this.poseBatch;
+      if (BATCH && (BATCH.owner !== owner || BATCH.textures.some((texture, i) => texture !== draw.textures[i]) || BATCH.planeKey !== PLANES.key && BATCH.planeCount + PLANES.count > 0)) {
+        this._submit();
+      } else if (!BATCH && this.count && PLANES.count > 0 && this.batchSerial !== this.clipSerial) {
+        this._submit();
+      }
+      if (!this.poseBatch) {
+        this.poseBatch = {
+          owner,
+          textures: draw.textures,
+          programWidth: draw.programWidth,
+          planeKey: PLANES.key,
+          planeCount: PLANES.count,
+          planes: PLANES.values,
+          serial: this.clipSerial
+        };
+      }
     }
     _useTarget(target) {
       if (this.activeTarget !== target) {
@@ -3197,25 +3619,20 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
       this.device.deletePipeline(this.clipPipeline);
       this.device.deletePipeline(this.groupPipeline);
       this.device.deletePipeline(this.pipeline);
+      if (this.posePipeline) {
+        this.device.deletePipeline(this.posePipeline);
+      }
+      this.unregisterBatcher();
       if (this.whiteRegion && this.device.state === "ready") {
         this.atlas.release(this.whiteRegion);
       }
-      this.buffer = this.dynamicClipBuffer = this.clipPipeline = this.groupPipeline = this.pipeline = this.whiteRegion = null;
+      this.buffer = this.dynamicClipBuffer = this.clipPipeline = this.groupPipeline = this.posePipeline = this.pipeline = this.whiteRegion = null;
       this.state = "disposed";
     }
   };
-  var MAX_PARTS = 16;
-  var POSE_WIDTH = MAX_PARTS * 3;
-  var OVERRIDE_WIDTH = MAX_PARTS * 2;
   var IDENTITY2 = Object.freeze([1, 0, 0, 1, 0, 0]);
   var ZERO_MORPH = Object.freeze([0, 0]);
-  var EMPTY_CLIP = Object.freeze({
-    key: "",
-    values: null,
-    count: 0
-  });
   var WHITE = Object.freeze([1, 1, 1, 1]);
-  var IDENTITY_RECT = Object.freeze([0, 0, 1, 1]);
   var INSTANCE_ATTRIBUTES = ["i_row0", "i_row1", "i_color", "i_params"].map((name, i) => ({
     name,
     size: 4,
@@ -3228,35 +3645,6 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
     offset: i * 16,
     source: "instance"
   }));
-  var TEXTURE_INSTANCE_ATTRIBUTES = ["i_uvRect", "i_localRect"].map((name, i) => ({
-    name,
-    size: 4,
-    offset: 64 + i * 16,
-    source: "instance"
-  }));
-  var QUAD_VERTICES = Float32Array.from(
-    [
-      [0, 0],
-      [1, 0],
-      [1, 1],
-      [0, 1]
-    ].flatMap(([x, y]) => [x, y, 1, 1, 1, 1, 0, 0, 0, 0, 0])
-  );
-  var TEXTURE_PART_INSTANCE_ATTRIBUTE = Object.freeze({
-    name: "i_part",
-    size: 1,
-    offset: 100,
-    source: "instance"
-  });
-  var TEXTURE_LAYER_INSTANCE_ATTRIBUTE = Object.freeze({
-    name: "i_layer",
-    size: 1,
-    offset: 96,
-    source: "instance"
-  });
-  var INSTANCE_STRIDE_FLOATS = 16;
-  var INSTANCE_STRIDE_BYTES = INSTANCE_STRIDE_FLOATS * Float32Array.BYTES_PER_ELEMENT;
-  var QUAD_VERTICES2 = new Float32Array([-1, -1, 1, -1, 1, 1, -1, -1, 1, 1, -1, 1]);
   var TAU = Math.PI * 2;
   var SILHOUETTE_OFFSETS = Object.freeze(
     Array.from(
