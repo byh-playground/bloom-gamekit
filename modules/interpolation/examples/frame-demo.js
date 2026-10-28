@@ -1,5 +1,5 @@
 import { RenderObject as R, PresentationRuntime } from '../../../dist/interpolation.js';
-import { Renderer2D } from '../../../dist/rendering.js';
+import { WebGLDevice, VectorContext } from '../../../dist/rendering.js';
 class Shot extends R {
     static renderSchema = {
         x: R.POSITION_X,
@@ -15,7 +15,8 @@ class Shot extends R {
 }
 // Shape, bend and lifetime are game rules. The module owns display-time sampling.
 export function startFrameDemo(canvas, status) {
-    const RENDERER = new Renderer2D(canvas),
+    const DEVICE = new WebGLDevice(canvas),
+        CONTEXT = new VectorContext(DEVICE),
         VIEW = new PresentationRuntime({
             stepMs: 100,
             delayMs: 200,
@@ -122,16 +123,24 @@ export function startFrameDemo(canvas, status) {
         const NOW = performance.now(),
             FRAME = VIEW.frame(NOW);
         let count = 0;
-        if (RENDERER.beginFrame([0.03, 0.06, 0.09, 1])) {
+        if (CONTEXT.beginFrame({ clearColor: [0.03, 0.06, 0.09, 1] })) {
+            CONTEXT.strokeStyle = [0.2, 0.7, 0.9, 0.7];
+            CONTEXT.lineWidth = 3;
+            CONTEXT.fillStyle = [0.3, 1, 0.8, 1];
             FRAME.forEach((model, id, generation) => {
                 count++;
                 FRAME.pathInto(id, generation, PATH);
-                for (let i = 1; i < PATH.length; i++) {
-                    RENDERER.line(PATH[i - 1].x, PATH[i - 1].y, PATH[i].x, PATH[i].y, 3, [0.2, 0.7, 0.9, 0.7]);
+                if (PATH.length > 1) {
+                    CONTEXT.beginPath();
+                    CONTEXT.moveTo(PATH[0].x, PATH[0].y);
+                    for (let i = 1; i < PATH.length; i++) {
+                        CONTEXT.lineTo(PATH[i].x, PATH[i].y);
+                    }
+                    CONTEXT.stroke();
                 }
-                RENDERER.rect(model.x, model.y, 12, 12, [0.3, 1, 0.8, 1]);
+                CONTEXT.fillRect(model.x - 6, model.y - 6, 12, 12);
             });
-            RENDERER.endFrame();
+            CONTEXT.endFrame();
         }
         status.textContent = `authority alive: ${alive} / displayed: ${count} / display ms: ${FRAME.timeMs.toFixed(0)}`;
         requestAnimationFrame(paint);
@@ -144,7 +153,8 @@ export function startFrameDemo(canvas, status) {
         dispose() {
             stopped = true;
             clearInterval(TIMER);
-            RENDERER.dispose();
+            CONTEXT.dispose();
+            DEVICE.dispose();
         },
     };
 }

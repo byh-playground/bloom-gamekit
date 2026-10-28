@@ -1,10 +1,9 @@
-/** Exercises WebGL depth per mesh instance/part and the following 2D painter pass. */
+/** Exercises WebGL depth per mesh instance/part and the following vector stream pass. */
 export async function exerciseMeshDepth(page, moduleURL = '/dist/rendering.js') {
     return page.evaluate(async (url) => {
         const {
-            Renderer2D: RENDERER2_D,
+            VectorContext: VECTOR_CONTEXT,
             WebGLDevice: WEB_GL_DEVICE,
-            MeshRenderer: MESH_RENDERER,
             MeshBuilder: MESH_BUILDER,
         } = await import(url);
         const CHECK = (condition, message) => {
@@ -14,21 +13,14 @@ export async function exerciseMeshDepth(page, moduleURL = '/dist/rendering.js') 
         };
         const CANVAS = document.createElement('canvas');
         CANVAS.width = CANVAS.height = 64;
-        const RENDERER2D = new RENDERER2_D(CANVAS, {
-            antialias: false,
-            depth: true,
-            preserveDrawingBuffer: true,
-        });
         const DEVICE = new WEB_GL_DEVICE(CANVAS, {
             alpha: false,
             antialias: false,
             preserveDrawingBuffer: true,
             checkGLErrors: true,
         });
-        const MESHES = new MESH_RENDERER(DEVICE, {
-            maxMeshes: 4,
-            maxInstances: 8,
-        });
+        const CONTEXT = new VECTOR_CONTEXT(DEVICE),
+            MESHES = CONTEXT.acquireMeshRenderer();
         const BUILDER = new MESH_BUILDER();
         BUILDER.fillTriangleFan(
             [
@@ -67,14 +59,11 @@ export async function exerciseMeshDepth(page, moduleURL = '/dist/rendering.js') 
             return [...PIXEL];
         };
         try {
-            DEVICE.beginFrame({
+            CONTEXT.beginFrame({
                 width: 64,
                 height: 64,
                 clearColor: [0, 0, 0, 1],
-                clearDepth: 1,
             });
-            MESHES.beginFrame();
-            RENDERER2D.beginFrame([0, 0, 0, 1]);
             MESHES.drawMesh(MESH, {
                 projection: PROJECTION,
                 color: [1, 0, 0, 1],
@@ -106,16 +95,21 @@ export async function exerciseMeshDepth(page, moduleURL = '/dist/rendering.js') 
                 enabled: GL.isEnabled(GL.DEPTH_TEST),
                 write: GL.getParameter(GL.DEPTH_WRITEMASK),
             };
-            RENDERER2D.triangle(8, 8, 56, 8, 32, 56, [1, 1, 0, 1]);
-            RENDERER2D.flush();
+            CONTEXT.fillStyle = [1, 1, 0, 1];
+            CONTEXT.beginPath();
+            CONTEXT.moveTo(8, 8);
+            CONTEXT.lineTo(56, 8);
+            CONTEXT.lineTo(32, 56);
+            CONTEXT.closePath();
+            CONTEXT.fill();
+            CONTEXT.flush();
             GL.finish();
             const INTERLEAVED_PIXEL = READ();
-            const DEPTH_STATE_AFTER2_D = {
+            const DEPTH_STATE_AFTER_VECTOR = {
                 enabled: GL.isEnabled(GL.DEPTH_TEST),
                 write: GL.getParameter(GL.DEPTH_WRITEMASK),
             };
-            RENDERER2D.endFrame();
-            DEVICE.endFrame();
+            CONTEXT.endFrame();
             DEVICE.beginFrame({
                 width: 64,
                 height: 64,
@@ -144,7 +138,7 @@ export async function exerciseMeshDepth(page, moduleURL = '/dist/rendering.js') 
                 transparentDepthPixel: TRANSPARENT_DEPTH_PIXEL,
                 depthStateAfterMeshes: DEPTH_STATE_AFTER_MESHES,
                 interleavedPixel: INTERLEAVED_PIXEL,
-                depthStateAfter2D: DEPTH_STATE_AFTER2_D,
+                depthStateAfterVector: DEPTH_STATE_AFTER_VECTOR,
                 partDepthPixel: PART_DEPTH_PIXEL,
                 draws: MESHES.stats().draws,
                 instances: MESHES.stats().instances,
@@ -165,11 +159,12 @@ export async function exerciseMeshDepth(page, moduleURL = '/dist/rendering.js') 
             );
             CHECK(
                 INTERLEAVED_PIXEL[0] >= 253 && INTERLEAVED_PIXEL[1] >= 253 && INTERLEAVED_PIXEL[2] <= 2,
-                '2D pass paints above a depth-tested mesh on the same default framebuffer: ' + JSON.stringify(REPORT),
+                'vector pass paints above a depth-tested mesh on the same default framebuffer: ' +
+                    JSON.stringify(REPORT),
             );
             CHECK(
-                !DEPTH_STATE_AFTER2_D.enabled && DEPTH_STATE_AFTER2_D.write === false,
-                '2D flush resets depth test and write state',
+                !DEPTH_STATE_AFTER_VECTOR.enabled && DEPTH_STATE_AFTER_VECTOR.write === false,
+                'vector flush resets depth test and write state',
             );
             CHECK(
                 PART_DEPTH_PIXEL[0] >= 253 && PART_DEPTH_PIXEL[2] <= 2,
@@ -200,8 +195,7 @@ export async function exerciseMeshDepth(page, moduleURL = '/dist/rendering.js') 
             CHECK(rejectsDepthOutsideClip, 'depth outside the clip-space interval is rejected');
             return REPORT;
         } finally {
-            MESHES.dispose();
-            RENDERER2D.dispose();
+            CONTEXT.dispose();
             DEVICE.dispose();
             CANVAS.remove();
         }

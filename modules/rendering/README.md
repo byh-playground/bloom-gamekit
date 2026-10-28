@@ -38,42 +38,37 @@ Players sample an absolute caller clock, select one frame and hold it for its du
 
 **HTML 실행 프리뷰:** [rendering-vector](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rendering-vector.html) · [rendering-texture-array](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rendering-texture-array.html)
 
-게임·시뮬레이션·보간·DOM 입력과 독립적인 **WebGL 2 2D 제출 kernel**입니다. Core instancing과 VAO를 사용하며 Canvas2D 전장 fallback은 사용하지 않습니다. 불가능한 브라우저에서는 생성이 실패합니다.
+게임·시뮬레이션·보간·DOM 입력과 독립적인 **WebGL 2 제출 kernel**입니다. 게임이 그리는 진입점은 `VectorContext` 하나이며, 도형·path·글자·gradient·아틀라스 이미지가 같은 정점 스트림의 draw call 하나로 나갑니다. Canvas2D 전장 fallback은 없고, WebGL 2가 없는 브라우저에서는 생성이 실패합니다. 카메라(중심·zoom·회전·DPR)는 [camera](../camera/README.md)의 `CameraViewport`가 변환 행렬로 넘깁니다.
 
 ```js
-import { Renderer2D } from './rendering.js';
-const renderer = new Renderer2D(canvas);
-renderer.resize(720, 400, devicePixelRatio); // CSS 크기, 실제 backing store는 DPR 적용
-renderer.setCamera({ x: 360, y: 200, zoom: 1, rotation: 0 });
-if (renderer.beginFrame([0.03, 0.05, 0.08, 1])) {
-    renderer.ellipse(pose.x, pose.y, 16, 5, [0, 0, 0, 0.3]);
-    renderer.rect(pose.x, pose.y - pose.z, 24, 24, [0.2, 0.8, 0.6, 1], pose.angle);
-    renderer.endFrame();
+import { WebGLDevice, VectorContext } from './rendering.js';
+import { CameraViewport } from './camera.js';
+const device = new WebGLDevice(canvas);
+const ctx = new VectorContext(device);
+const camera = new CameraViewport({ width: 720, height: 400, dpr: devicePixelRatio, x: 360, y: 200 });
+camera.resizeCanvas(canvas); // backing store = CSS 크기 × DPR
+const icon = device.textureAtlas.allocate(32, 32, { filter: 'nearest' });
+device.textureAtlas.upload(icon, iconCanvas);
+if (ctx.beginFrame({ clearColor: [0.03, 0.05, 0.08, 1] })) {
+    camera.applyToContext(ctx);
+    ctx.fillStyle = [0, 0, 0, 0.3];
+    ctx.beginPath();
+    ctx.ellipse(pose.x, pose.y, 16, 5);
+    ctx.fill();
+    ctx.fillStyle = [0.2, 0.8, 0.6, 1];
+    ctx.fillRect(pose.x - 12, pose.y - pose.z - 12, 24, 24);
+    ctx.drawRegion(icon, 600, 40, 32, 32);
+    ctx.endFrame(); // { drawCalls: 1, ... }
 }
 ```
 
-## Shared-canvas renderer interleaving
+색은 CSS 문자열이나 straight-alpha `[r,g,b,a]`(각 채널 `[0,1]`)이며, 셰이더 경계에서 premultiplied alpha로 바꿔 ONE/ONE_MINUS_SRC_ALPHA로 합성합니다. **호출 순서가 painter order**이고 렌더러는 재정렬하지 않습니다. y-sort·그림자/body/HUD 순서는 게임이 정합니다.
 
-`Renderer2D` and `WebGLDevice`/`MeshRenderer` may submit ordered passes to the same default-framebuffer WebGL 2 canvas. Each pass must be flushed before switching renderers. `Renderer2D.flush()` rebinds its program, stream buffer, attributes, texture, projection, and blend state; the device draw path establishes its own GL state before every mesh draw. The two renderers share a context but keep separate buffers and resource ownership.
+`drawRegion(region, x, y, width, height, { source })`는 Canvas `drawImage`처럼 왼쪽 위 기준으로 아틀라스 영역을 그립니다. `source: [x, y, width, height]`는 영역 안 일부 픽셀을 고릅니다. `device.textureAtlas.upload(region, source, { x, y })`는 영역보다 작은 바이트·DOM 소스를 영역 안 오프셋에 올려 바뀐 부분만 갱신합니다. 프레임 중 이미 올린 영역을 다시 올리거나 해제하면 그 전에 쌓인 draw를 먼저 제출하므로, 앞선 그림은 이전 픽셀을 유지합니다. 새 영역의 첫 업로드는 제출하지 않아 draw가 나뉘지 않습니다. ImageBitmap은 알파 방식을 검사할 수 없어 거부합니다.
 
-```js
-const renderer = new Renderer2D(canvas); // this creates the canvas WebGL 2 context
-const device = new WebGLDevice(canvas); // reuses that same context
-const meshes = new MeshRenderer(device);
+### VectorContext and MeshRenderer on one canvas
 
-device.beginFrame({ width: canvas.width, height: canvas.height });
-meshes.beginFrame();
-renderer.beginFrame([0, 0, 0, 1]);
-renderer.triangle(8, 8, 16, 8, 12, 16, [1, 0, 0, 1]);
-renderer.flush();
-meshes.drawMesh(mesh, { projection });
-meshes.flush();
-renderer.triangle(46, 8, 54, 8, 50, 16, [0, 1, 0, 1]);
-renderer.endFrame();
-device.endFrame();
-```
-
-Use the same default framebuffer and painter order for all interleaved passes. `Renderer2D.beginFrame()` clears the canvas, so start it before any mesh draw whose pixels must remain on screen. Do not interleave while a `WebGLDevice` render target is bound; `Renderer2D` has no render-target selection API. GPU object ownership remains local: dispose each renderer/device with its existing owner.
+`VectorContext.createMesh`/`drawMesh`/`drawVectorAsset` share the context's `MeshRenderer` (`acquireMeshRenderer()`). Mesh draws first submit the vector stream queued before them, so vector paint, meshes and later vector paint keep submission order on the same default framebuffer. Meshes that stay on `MeshRenderer` (morph, opacity channel, shader surfaces, force-color fallbacks) are batch boundaries.
 
 ## Mesh depth
 
@@ -83,11 +78,11 @@ The vector-asset compiler retains `vector-effect="non-scaling-stroke"` as a mesh
 
 `MeshRenderer.drawMesh(mesh, { viewProjection, worldMatrix, matrix, clips, depth, depthTest, depthWrite, depthFunc })` also supports a 3D world pass. `viewProjection` and the affine `worldMatrix` are column-major 4×4 matrices; `matrix` remains the optional 2D per-draw transform and is composed into world space. Do not pass `projection` with this mode. Convex clip polygons stay in transformed world XY coordinates, so one world clip can be reused unchanged by actors with different transforms. The mesh and Yarn shader-surface paths use the same clip planes. Clipped non-scaling strokes convert their screen-expanded positions back through the inverse view-projection before evaluating those world-space planes.
 
-`MeshRenderer.drawMesh(mesh, { projection, depth, depthTest, depthWrite, depthFunc })` gives a mesh instance an explicit normalized device depth in `[-1, 1]`. `depthTest` and `depthWrite` default to `false`, preserving the painter-ordered 2D behavior. When interleaving with `Renderer2D`, create it with `{ depth: true }` before the WebGL context is first acquired. With a `WebGLDevice` created first, request its depth buffer using `new WebGLDevice(canvas, { depth: true })`. `depthFunc` accepts the device's `never`, `less`, `equal`, `lequal`, `greater`, `notequal`, `gequal`, or `always` functions and defaults to `lequal`.
+`MeshRenderer.drawMesh(mesh, { projection, depth, depthTest, depthWrite, depthFunc })` gives a mesh instance an explicit normalized device depth in `[-1, 1]`. `depthTest` and `depthWrite` default to `false`, preserving the painter-ordered 2D behavior. Request the depth buffer with `new WebGLDevice(canvas, { depth: true })`. `depthFunc` accepts the device's `never`, `less`, `equal`, `lequal`, `greater`, `notequal`, `gequal`, or `always` functions and defaults to `lequal`.
 
 Each `drawMesh()` call can carry a different depth while adjacent calls using the same mesh and depth policy still share the instanced draw. `parts` entries may also supply `depth` in `[-1, 1]`; it is added to that instance's depth. Their sum must remain in `[-1, 1]`. Depth-policy changes split a pending batch so one draw never mixes depth-test/write settings. The renderer does not sort transparent geometry; submit it in the required painter order and normally set `depthWrite: false` for translucent overlays.
 
-The mesh pass writes a clip-space Z value and reasserts depth test/write state for each draw. A following `Renderer2D.flush()` disables depth testing and depth writes before drawing its next ordered pass. A Canvas2D context and a WebGL context cannot both be acquired on one canvas: callers currently drawing a field entirely with Canvas2D need a separate canvas/composition layer or a field-wide move to GameKit WebGL before they can insert meshes into that field's painter order.
+The mesh pass writes a clip-space Z value and reasserts depth test/write state for each draw. A following vector stream flush disables depth testing and depth writes before drawing its next ordered pass. A Canvas2D context and a WebGL context cannot both be acquired on one canvas: callers currently drawing a field entirely with Canvas2D need a separate canvas/composition layer or a field-wide move to GameKit WebGL before they can insert meshes into that field's painter order.
 
 When drawMesh() uses depthWrite: true with `depthWriteAlphaThreshold`, it enables depth writes only for contiguous triangles whose three effective vertex alpha values are positive and meet the threshold. Effective alpha includes vertex alpha (unless forceColor replaces it), draw alpha, color alpha, and the opacity of each referenced part. Indexed expression variants are classified in their selected index order. The renderer submits each contiguous run in its original vertex/index order; it never moves opaque triangles ahead of translucent triangles. A mesh that needs several runs is emitted per instance to preserve painter order; one-run meshes retain adjacent instancing. Repeated classifications are reused in a bounded per-mesh cache. Omitting the threshold keeps the existing mesh-wide depthWrite boolean behavior.
 
@@ -128,41 +123,6 @@ The immediate `clip()` path accepts one convex contour at a time, with at most 1
 The bounds are computed from per-part ranges retained at mesh creation; the renderer does not rescan or tessellate triangles each frame. `stats()` distinguishes actual `draws` from `instances` and reports `alphaRunSafeBatches`, `alphaRunBatchedInstances`, `alphaRunDrawsSaved`, `alphaRunSafeRunDraws`, `alphaRunImmediateRunDraws`, `alphaRunOverlapBoundaries`, `alphaRunSignatureBoundaries`, `alphaRunUnbatchableBounds`, `alphaRunImmediateInstances`, `flushReasons`, and `drawDispatchReasons`. Flush reasons count queue boundaries; dispatch reasons classify every `device.draw()` issued by this renderer, so their total equals `draws`. These are submission counters, not GPU timing measurements.
 
 `npm run test:rendering:vector-gradient-clip` covers gradient pixels at 47px and 74px, a 160-point concave clip through vectors/meshes/groups, limits, context restoration, and disposal. `npm run test:rendering:alpha-run-batching` compares fixed overlapping and disjoint mixed-alpha units against the original per-unit painter order using browser `readPixels`; it is a correctness test, not a performance benchmark.
-
-## 공개 API와 공간 계약
-
-- `new Renderer2D(canvas, {batchVertices=6144, antialias=true, depth=false, preserveDrawingBuffer=false})`: acquires the canvas WebGL 2 context. It owns its program and stream buffer and can interleave with `WebGLDevice`/`MeshRenderer` on the same default framebuffer when each pass is flushed before switching; each renderer rebinds its own program, buffers, attributes, and blend state. Set `depth:true` when a depth-tested `MeshRenderer` pass will share the canvas and `Renderer2D` acquires the context first. `gl` remains available for context-loss and pixel-readback checks. Set `preserveDrawingBuffer` only when needed for checks.
-- `resize(cssWidth, cssHeight, dpr=1)`: 양의 유한 수, 실제 backing store는 반올림한 CSS×DPR입니다. CSS 스타일이나 카메라를 바꾸지 않습니다. frame 밖에서 호출하세요. frame 중 resize는 throw합니다. DPR 상한은 게임의 비용 정책입니다. 예제는 2로 제한합니다.
-- `setCamera({x,y,zoom,rotation})`: 세계의 카메라 중심, CSS pixel/world unit 확대율, radians 회전입니다. 생략 필드는 유지합니다. 생성 기본값은 초기 canvas 크기의 중심, zoom 1, rotation 0입니다. +x 오른쪽, +y 아래입니다. frame 도중 변경하면 기존 batch를 먼저 제출합니다.
-- `worldToScreenInto(x,y,out)`, `screenToWorldInto(x,y,out)`: 재사용 가능한 out의 x/y에 CSS 화면 또는 world 좌표를 기록합니다. 게임의 3D/isometric 투영·높이·카메라 추적은 호출자가 계산합니다.
-- `beginFrame(clearRGBA=[0,0,0,0]) → boolean`, `endFrame() → stats`: 명시적 시작/종료입니다. 순서 위반은 throw합니다. context lost 중 beginFrame은 false이므로 frame을 건너뛰세요. rect·triangle·ellipse·line은 texture가 없는 실제 GPU geometry입니다.
-- `rect(x,y,width,height,tint=[1,1,1,1],angle=0)`: 중심 기준, 양의 크기, radians 회전.
-- `triangle(x0,y0,x1,y1,x2,y2,tint)`: 임의 삼각형.
-- `ellipse(x,y,radiusX,radiusY,tint,segments=24)`: 3..256 삼각 fan으로 근사합니다. segments는 게임의 품질/비용 선택입니다.
-- `line(x0,y0,x1,y1,width,tint)`: butt-cap 직사각형, 길이 0은 그리지 않습니다.
-- `sprite(texture,x,y,width=texture.width,height=texture.height,{angle=0,tint=[1,1,1,1],u0=0,v0=0,u1=1,v1=1})`: 중심 기준 quad. UV는 위/왼쪽 원점, `[0,1]` 범위입니다. atlas 일부를 선택하거나 endpoints를 반대로 주어 뒤집을 수 있습니다. 매 호출 option 객체가 필요하면 재사용하세요.
-- `flush()`: 현재 batch를 명시적으로 제출합니다. 보통 endFrame만 호출하면 됩니다.
-
-모든 색은 straight-alpha `[r,g,b,a]`, 각 채널 `[0,1]`입니다. shader/texture 경계에서 premultiplied alpha로 변환하고 ONE/ONE_MINUS_SRC_ALPHA로 합성합니다. 투명 픽셀의 RGB가 bilinear filter에 번지지 않도록 RGBA byte source도 upload 전에 premultiply합니다.
-
-깊이 버퍼·정렬은 없습니다. **호출 순서가 painter order**이며 texture 변경 때문에 투명 객체를 재정렬하지 않습니다. 같은 texture의 연속 도형만 batch로 묶습니다. y-sort·그림자/body/HUD pass는 게임이 정합니다. 예제는 동일 pose의 그림자를 먼저 그리고 body를 y-sort합니다.
-
-## 텍스처·생명주기
-
-- `createTexture(source,{filter='linear',premultiplied=false}) → handle`: origin-clean하고 로딩 완료한 image/canvas 또는 `{width,height,data: Uint8Array|Uint8ClampedArray}` RGBA bytes입니다. nearest/linear, CLAMP_TO_EDGE, mipmap 없음으로 WebGL 2 NPOT를 지원합니다. handle은 해당 renderer만 사용할 수 있습니다.
-- byte data는 복사·premultiply해 보관하므로 caller의 이후 변경이 반영되지 않습니다. DOM source는 참조를 보관합니다. context 복구 시 최신 DOM pixels를 다시 올립니다. source를 닫거나 해제하지 마세요. ImageBitmap은 premultiplyAlpha 생성 옵션을 검사할 수 없으므로 명시적으로 거부합니다. byte data 또는 일반 image/canvas를 사용하세요. byte data의 알파가 모두 255이면 곱셈이 항등이라 premultiply 패스를 건너뜁니다. `premultiplied:true`는 RGB에 알파가 이미 곱해진 바이트임을 선언하며 CPU 패스를 생략합니다(텍스처가 이 선언을 기억해 이후 `updateTexture`에도 적용).
-- `updateTexture(handle,source,{x=0,y=0,width=handle.width,height=handle.height})`: 같은 크기로 명시적 재업로드. 기존 batch를 먼저 제출하므로 이전 sprite 호출의 내용은 유지됩니다. RGBA byte source는 기존 GPU texture를 제자리에서 `texSubImage2D`로 갱신하며(재할당 없음), 영역을 주면 그 행만 복사·premultiply·업로드합니다. source는 전체 이미지이고 영역 밖 픽셀은 직전 업로드 이후 바뀌지 않아야 합니다. 영역 갱신은 byte texture에서만 가능하고 DOM source는 전체 갱신만 합니다. 크기를 바꾸려면 새 texture를 만들고 기존 것을 삭제하세요. sprite마다 자동 upload하지 않습니다.
-- `deleteTexture(handle) → boolean`: GPU texture와 retained source를 해제합니다. 이미 삭제한 handle은 false. 삭제/다른 renderer handle의 sprite 호출은 throw합니다.
-- `state`: ready/lost/failed/disposed. webglcontextlost는 preventDefault 후 현재 frame을 취소합니다. 복구 event에서 shader·buffer·retained texture를 다시 생성합니다. handle identity는 유지합니다. 복구 실패는 failed 및 failure 문자열로 드러나며 게임은 dispose/recreate를 선택합니다.
-- `dispose()`: 반복해도 안전하며 context listener·GPU 자원·retained source를 해제합니다. canvas/DOM 노드를 제거하지 않습니다. 그 뒤 draw/create/resize는 지원하지 않습니다.
-
-## 비용·지원 범위
-
-고정 Float32 staging buffer 하나와 같은 크기의 GPU buffer를 재사용합니다. batch capacity나 texture 경계에서 bufferSubData + drawArrays로 제출하며 capacity 때문에 동적으로 전체 buffer를 늘리지 않습니다. 전체 화면 Canvas raster upload는 없습니다. flush마다 작은 TypedArray subarray **view 하나**를 만듭니다. view는 pixels/vertex data를 복사하지 않지만 JS 객체 할당이므로 0-allocation이라고 부르지 않습니다. sprite 기본 옵션과 caller option 생성·ellipse 삼각화 비용도 사라진 것이 아닙니다.
-
-`stats`는 재사용 객체입니다. frame/drawCalls/vertices/uploadedBytes/bufferViews/textureUploads는 실제 제출과 연결되고, totalTextureUploads/bufferAllocations는 수명 누적입니다. textureCount는 caller texture만 셉니다(내부 white texture 제외). stagingBytes는 고정 CPU staging 크기입니다. textureUploads에는 흰 texture와 복구 upload가 포함되며 frame 시작 때 해당 frame counter가 0으로 초기화됩니다. CPU submit 시간은 예제 caller가 측정하며 GPU 완료시간이 아닙니다.
-
-`Renderer2D`는 의도적으로 단순한 primitive 편의 API입니다. path·곡선·clip·group opacity와 사전 생성 glyph 텍스트는 아래 `VectorRenderer`/`GlyphAtlas` 조합을 사용합니다. 자동 asset loading·sprite animation·terrain/fog·scenegraph·game art·기본 3D scene 처리는 여전히 게임 소유입니다. DOM UI 또는 게임별 projection/layer로 조합하세요.
 
 ## 공유 텍스처 atlas 배열
 
@@ -289,7 +249,7 @@ The [native rendering example](./examples/vector/index.html) demonstrates polygo
 
 ## WebGLDevice: 게임이 만든 geometry/pass를 제출하는 공통 GPU core
 
-Budmori의 FPV11 texture/gradient/white-mask stream과 Rally의 xyz/depth·alpha-cutoff·두 fog texture·frame composition을 같은 GPU 자원 경계로 처리합니다. 기존 `Renderer2D` 편의 API는 유지됩니다. `WebGLDevice`는 별도 canvas/context를 소유하는 낮은 수준 API이며 두 renderer를 같은 context에서 섞지 않습니다.
+Budmori의 FPV11 texture/gradient/white-mask stream과 Rally의 xyz/depth·alpha-cutoff·두 fog texture·frame composition을 같은 GPU 자원 경계로 처리합니다. `WebGLDevice`는 canvas의 WebGL 2 context를 소유하는 낮은 수준 API이고, 게임은 그 위의 `VectorContext`로 그립니다.
 
 게임에 남는 것: path/curve tessellation, art/text atlas 내용과 갱신 version, GLSL material 정의, fog 판단, 카메라/projection, pass 순서와 depth/stencil 정책. 공통 core가 소유하는 것: context·shader compile/link·attribute/uniform binding·GPU buffer/texture 생성과 upload·draw state·실제 draw call·context 복구·dispose. shader 정의만 바꿔 다양한 게임을 지원하며 Canvas2D 전장 fallback은 없습니다.
 
@@ -372,7 +332,7 @@ The browser's network cache is origin/top-site partitioned and browser-managed. 
 
 ## Ordered submission and batching
 
-`MeshRenderer.drawMesh()` appends an ordered instance to its pending batch; call `flush()` at a real painter-order boundary or before ending the frame, rather than after every actor. Adjacent submissions batch only while the mesh, projection, clip, and (for multi-part meshes) packed part pose match. Root transforms and instance colors may vary inside that batch. A different mesh or part pose closes the batch because part poses are currently shared uniforms. Flush the legacy `Renderer2D` queue before entering a vector block, then flush `MeshRenderer` before the next legacy draw. Repeated outline offsets with the same mesh and pose can be submitted consecutively and flushed once when no other renderer needs to draw between them. If legacy effects genuinely alternate around each actor, those are painter-order boundaries and the current single-pass API cannot merge the calls without changing layering.
+`MeshRenderer.drawMesh()` appends an ordered instance to its pending batch; call `flush()` at a real painter-order boundary or before ending the frame, rather than after every actor. Adjacent submissions batch only while the mesh, projection, clip, and (for multi-part meshes) packed part pose match. Root transforms and instance colors may vary inside that batch. A different mesh or part pose closes the batch because part poses are currently shared uniforms. Repeated outline offsets with the same mesh and pose can be submitted consecutively and flushed once. Vector paint that genuinely alternates with mesh draws around each actor is a painter-order boundary; the renderer does not merge those calls by changing layering.
 
 ## Shader yarn and sketch surfaces
 

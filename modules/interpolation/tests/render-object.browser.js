@@ -2,7 +2,7 @@ export async function runRenderObjectChecks(page) {
     return page.evaluate(async () => {
         const { RenderObject: RENDER_OBJECT, PresentationRuntime: PRESENTATION_RUNTIME } =
             await import('/dist/interpolation.js');
-        const { Renderer2D: RENDERER2_D } = await import('/dist/rendering.js');
+        const { WebGLDevice: WEB_GL_DEVICE, VectorContext: VECTOR_CONTEXT } = await import('/dist/rendering.js');
         const { ActionState: ACTION_STATE, createDOMInput: CREATE_DOM_INPUT } = await import('/dist/input.js');
         const CHECK = (ok, message) => {
             if (!ok) {
@@ -44,7 +44,8 @@ export async function runRenderObjectChecks(page) {
             }
             render(renderer, model) {
                 this.#renders++;
-                renderer.rect(model.x, model.y, 8, 8, model.color);
+                renderer.fillStyle = model.color;
+                renderer.fillRect(model.x - 4, model.y - 4, 8, 8);
             }
             get renders() {
                 return this.#renders;
@@ -52,15 +53,11 @@ export async function runRenderObjectChecks(page) {
         }
         const CANVAS = document.createElement('canvas');
         document.body.append(CANVAS);
-        const RENDERER = new RENDERER2_D(CANVAS, {
-            preserveDrawingBuffer: true,
-        });
-        RENDERER.resize(64, 64, 1);
-        RENDERER.setCamera({
-            x: 32,
-            y: 32,
-            zoom: 1,
-        });
+        CANVAS.width = CANVAS.height = 64;
+        const DEVICE = new WEB_GL_DEVICE(CANVAS, {
+                preserveDrawingBuffer: true,
+            }),
+            RENDERER = new VECTOR_CONTEXT(DEVICE);
         const ACTOR = new Actor(),
             RUNTIME = new PRESENTATION_RUNTIME({
                 stepMs: 100,
@@ -105,11 +102,11 @@ export async function runRenderObjectChecks(page) {
             MODEL.roll !== ACTOR.roll && MODEL.color !== ACTOR.color && !('update' in MODEL),
             'detached field-only model',
         );
-        RENDERER.beginFrame([0, 0, 0, 1]);
+        RENDERER.beginFrame({ clearColor: [0, 0, 0, 1] });
         RUNTIME.render(ACTOR, RENDERER, 150);
         RENDERER.endFrame();
         const PIXEL = new Uint8Array(4);
-        RENDERER.gl.readPixels(32, 32, 1, 1, RENDERER.gl.RGBA, RENDERER.gl.UNSIGNED_BYTE, PIXEL);
+        DEVICE.gl.readPixels(32, 32, 1, 1, DEVICE.gl.RGBA, DEVICE.gl.UNSIGNED_BYTE, PIXEL);
         CHECK(PIXEL[1] > 240 && PIXEL[0] < 10, 'real WebGL draws interpolated midpoint');
         CHECK(ACTOR.renders === 1 && ACTOR.x === 48, 'normal this retains private fields and authority');
         CHECK(
@@ -173,11 +170,11 @@ export async function runRenderObjectChecks(page) {
             RUNTIME.sample('actor', 0, 175) === PREVIEW_MODEL && PREVIEW_MODEL.x === 40,
             'same-time preview recapture starts at displayed pose',
         );
-        RENDERER.beginFrame([0, 0, 0, 1]);
+        RENDERER.beginFrame({ clearColor: [0, 0, 0, 1] });
         RUNTIME.render(ACTOR, RENDERER, 225);
         RENDERER.endFrame();
         const PREVIEW_PIXEL = new Uint8Array(4);
-        RENDERER.gl.readPixels(48, 32, 1, 1, RENDERER.gl.RGBA, RENDERER.gl.UNSIGNED_BYTE, PREVIEW_PIXEL);
+        DEVICE.gl.readPixels(48, 32, 1, 1, DEVICE.gl.RGBA, DEVICE.gl.UNSIGNED_BYTE, PREVIEW_PIXEL);
         CHECK(
             PREVIEW_MODEL.x === 48 && PREVIEW_PIXEL[1] > 240 && ACTOR.x === 48,
             'recaptured preview reaches new midpoint through WebGL without changing authority',
@@ -212,7 +209,8 @@ export async function runRenderObjectChecks(page) {
             };
             extent = 8;
             render(renderer, model) {
-                renderer.rect(model.point.u, model.point.v, model.extent, 4, [0, 0, 1, 1]);
+                renderer.fillStyle = [0, 0, 1, 1];
+                renderer.fillRect(model.point.u - model.extent / 2, model.point.v - 2, model.extent, 4);
             }
         }
         const SPARK = new Spark(),
@@ -234,11 +232,11 @@ export async function runRenderObjectChecks(page) {
             },
             0,
         );
-        RENDERER.beginFrame([0, 0, 0, 1]);
+        RENDERER.beginFrame({ clearColor: [0, 0, 0, 1] });
         SPARKS.render(SPARK, RENDERER, 50);
         RENDERER.endFrame();
         const SPAWNED = new Uint8Array(4);
-        RENDERER.gl.readPixels(32, 32, 1, 1, RENDERER.gl.RGBA, RENDERER.gl.UNSIGNED_BYTE, SPAWNED);
+        DEVICE.gl.readPixels(32, 32, 1, 1, DEVICE.gl.RGBA, DEVICE.gl.UNSIGNED_BYTE, SPAWNED);
         CHECK(
             SPAWNED[2] > 240 && SPAWNED[0] < 10,
             'generic origin roles draw newborn midpoint with foreign field names',
@@ -257,6 +255,7 @@ export async function runRenderObjectChecks(page) {
         };
         INPUT.dispose();
         RENDERER.dispose();
+        DEVICE.dispose();
         CANVAS.remove();
         return RESULT;
     });

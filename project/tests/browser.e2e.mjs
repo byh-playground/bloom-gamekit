@@ -118,7 +118,7 @@ try {
     });
     await PAGE.goto(`http://127.0.0.1:${SERVER.address().port}/modules/interpolation/examples/index.html`);
     await PAGE.waitForFunction(() => window.demo?.diagnostics.frames >= 30);
-    assert.equal(await PAGE.evaluate(() => demo.renderer.stats.backend), 'webgl2');
+    assert.equal(await PAGE.evaluate(() => demo.renderer.stats().backend), 'webgl2');
     const CLOCK_CHECK = await PAGE.evaluate(async () => {
         const {
             createLoop: CREATE_LOOP,
@@ -702,7 +702,8 @@ try {
     });
     REPORT.scene = await PAGE.evaluate(() => {
         const D = demo.diagnostics,
-            R = demo.renderer;
+            R = demo.renderer,
+            GL = R.device.gl;
         const INTERVALS = D.frameIntervals.slice().sort((a, b) => a - b);
         return {
             frames: D.frames,
@@ -711,16 +712,14 @@ try {
             cpuSubmitMs: D.cpuSubmitMs,
             intervalP50Ms: INTERVALS[Math.floor(INTERVALS.length / 2)],
             intervalP95Ms: INTERVALS[Math.floor(INTERVALS.length * 0.95)],
-            viewport: [...R.gl.getParameter(R.gl.VIEWPORT)],
-            stats: {
-                ...R.stats,
-            },
-            error: R.gl.getError(),
+            viewport: [...GL.getParameter(GL.VIEWPORT)],
+            stats: R.stats(),
+            error: GL.getError(),
         };
     });
     assert.equal(REPORT.scene.error, 0);
     assert.equal(REPORT.scene.stats.textureUploads, 0);
-    assert.equal(REPORT.scene.stats.bufferAllocations, 1);
+    assert.equal(REPORT.scene.stats.drawCalls, 1, 'the composed example draws its frame in one stream draw');
     assert.ok(REPORT.scene.stats.vertices > 500);
     assert.ok(REPORT.scene.stats.uploadedBytes > 0);
     REPORT.scenePixels = await PAGE.evaluate(
@@ -728,7 +727,7 @@ try {
             new Promise((resolve) =>
                 requestAnimationFrame(() => {
                     const R = demo.renderer,
-                        GL = R.gl,
+                        GL = R.device.gl,
                         PIXELS = new Uint8Array(R.canvas.width * R.canvas.height * 4);
                     GL.readPixels(0, 0, R.canvas.width, R.canvas.height, GL.RGBA, GL.UNSIGNED_BYTE, PIXELS);
                     let colored = 0;
@@ -750,24 +749,20 @@ try {
 
     // Continue the same built-bundle/browser flow with focused pixel/lifecycle probes.
     REPORT.rendererInterleaving = await exerciseRendererInterleaving(PAGE);
-    assert.deepEqual(
-        REPORT.rendererInterleaving.red2d,
-        [255, 0, 0, 255],
-        'Renderer2D retains its program/buffer/attributes after prior device setup',
-    );
+    assert.deepEqual(REPORT.rendererInterleaving.redVector, [255, 0, 0, 255], 'vector fill before the mesh');
     assert.deepEqual(
         REPORT.rendererInterleaving.blueMesh,
         [0, 0, 255, 255],
-        'MeshRenderer draws between Renderer2D submissions',
+        'MeshRenderer draws between vector stream submissions',
     );
     assert.deepEqual(
-        REPORT.rendererInterleaving.green2d,
+        REPORT.rendererInterleaving.greenVector,
         [0, 255, 0, 255],
-        'Renderer2D rebinds after MeshRenderer changes WebGL state',
+        'vector stream rebinds after MeshRenderer changes WebGL state',
     );
     assert.equal(REPORT.rendererInterleaving.glError, 0, 'interleaved draw stream leaves no WebGL error');
     REPORT.stages.push(
-        'Renderer2D and MeshRenderer interleave ordered draws on one WebGL2 canvas with clean state and expected pixels',
+        'VectorContext stream and MeshRenderer interleave ordered draws on one WebGL2 canvas with clean state and expected pixels',
     );
     REPORT.orderedAssetBatch = await exerciseOrderedAssetBatch(PAGE);
     assert.equal(
@@ -781,7 +776,7 @@ try {
     );
     REPORT.meshDepth = await exerciseMeshDepth(PAGE);
     assert.equal(REPORT.meshDepth.glError, 0, 'per-instance/per-part depth leaves a clean WebGL state');
-    REPORT.stages.push('MeshRenderer depth and transparent painter order compose with a following Renderer2D pass');
+    REPORT.stages.push('MeshRenderer depth and transparent painter order compose with a following vector stream pass');
     REPORT.meshAlphaDepthWrite = await exerciseMeshAlphaDepthWrite(PAGE);
     assert.deepEqual(REPORT.meshAlphaDepthWrite.orderedRuns.pixel, [0, 0, 255, 255]);
     assert.deepEqual(REPORT.meshAlphaDepthWrite.partOpacity.pixel, [0, 0, 255, 255]);
@@ -814,7 +809,8 @@ try {
         'analytic primitives in the vector stream draw circles, ellipses, rectangles, and capped lines with order, clips, alpha, and transforms',
     );
     REPORT.rendering = await PAGE.evaluate(async () => {
-        const { Renderer2D: RENDERER2_D } = await import('/dist/rendering.js');
+        const { WebGLDevice: WEB_GL_DEVICE, VectorContext: VECTOR_CONTEXT } = await import('/dist/rendering.js');
+        const { CameraViewport: CAMERA_VIEWPORT } = await import('/dist/camera.js');
         const CHECK = (condition, message) => {
             if (!condition) {
                 throw new Error(message);
@@ -826,20 +822,16 @@ try {
                 `${message}: ${actual} expected ${expected}`,
             );
         const CANVAS = document.createElement('canvas');
-        CANVAS.width = CANVAS.height = 64;
         CANVAS.style.cssText = 'width:64px;height:64px';
         document.body.append(CANVAS);
-        const R = new RENDERER2_D(CANVAS, {
-            batchVertices: 12,
+        const CAMERA = new CAMERA_VIEWPORT({ width: 64, height: 64, dpr: 2, x: 32, y: 32 }).resizeCanvas(CANVAS);
+        const DEVICE = new WEB_GL_DEVICE(CANVAS, {
             antialias: false,
             preserveDrawingBuffer: true,
         });
-        R.resize(64, 64, 2);
-        R.setCamera({
-            x: 32,
-            y: 32,
-        });
-        const GL = R.gl;
+        const CONTEXT = new VECTOR_CONTEXT(DEVICE);
+        const ATLAS = DEVICE.textureAtlas;
+        const GL = DEVICE.gl;
         const PIXEL = (x, y) => {
             const OUT = new Uint8Array(4);
             GL.readPixels(
@@ -853,115 +845,95 @@ try {
             );
             return [...OUT];
         };
+        const FRAME = (clearColor, draw) => {
+            CHECK(CONTEXT.beginFrame({ clearColor }), 'frame available');
+            CAMERA.applyToContext(CONTEXT);
+            draw();
+            return { ...CONTEXT.endFrame() };
+        };
+        // Center-anchored helpers in camera world units.
+        const RECT = (x, y, width, height, paint) => {
+            CONTEXT.fillStyle = paint;
+            CONTEXT.fillRect(x - width / 2, y - height / 2, width, height);
+        };
+        const IMAGE_AT = (region, x, y, width, height) =>
+            CONTEXT.drawRegion(region, x - width / 2, y - height / 2, width, height);
+        const BYTES = (width, height, data, filter = 'nearest') => {
+            const REGION = ATLAS.allocate(width, height, { filter });
+            ATLAS.upload(REGION, { width, height, data: new Uint8Array(data) });
+            return REGION;
+        };
         const RED = [1, 0, 0, 0.5],
             BLUE = [0, 0, 1, 1],
             GREEN = [0, 1, 0, 1];
-        const TEXTURE = R.createTexture(
-            {
-                width: 1,
-                height: 1,
-                data: new Uint8Array([255, 0, 0, 128]),
-            },
-            {
-                filter: 'nearest',
-            },
-        );
-        R.beginFrame(BLUE);
-        R.rect(16, 32, 20, 30, RED);
-        R.sprite(TEXTURE, 48, 32, 20, 30);
-        R.endFrame();
+        const HALF_RED = BYTES(1, 1, [255, 0, 0, 128]);
+        FRAME(BLUE, () => {
+            RECT(16, 32, 20, 30, RED);
+            IMAGE_AT(HALF_RED, 48, 32, 20, 30);
+        });
         const PRIMITIVE_ALPHA = PIXEL(16, 32),
             TEXTURE_ALPHA = PIXEL(48, 32);
         NEAR(PRIMITIVE_ALPHA, [128, 0, 127, 255], 'primitive premultiplied alpha');
-        NEAR(TEXTURE_ALPHA, [128, 0, 127, 255], 'byte texture must be premultiplied exactly once');
+        NEAR(TEXTURE_ALPHA, [128, 0, 127, 255], 'byte region must be premultiplied exactly once');
         const IMAGE = document.createElement('canvas');
         IMAGE.width = IMAGE.height = 1;
         IMAGE.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray([255, 0, 0, 128]), 1, 1), 0, 0);
-        const DOM_TEXTURE = R.createTexture(IMAGE);
-        R.beginFrame(BLUE);
-        R.sprite(DOM_TEXTURE, 32, 32, 32, 32);
-        R.endFrame();
+        const DOM_REGION = ATLAS.allocate(1, 1, { filter: 'nearest' });
+        ATLAS.upload(DOM_REGION, IMAGE);
+        FRAME(BLUE, () => IMAGE_AT(DOM_REGION, 32, 32, 32, 32));
         NEAR(PIXEL(32, 32), [128, 0, 127, 255], 'DOM source alpha');
         const BITMAP = await createImageBitmap(IMAGE, {
             premultiplyAlpha: 'none',
         });
         let bitmapRejected = false;
         try {
-            R.createTexture(BITMAP);
+            ATLAS.upload(DOM_REGION, BITMAP);
         } catch {
             bitmapRejected = true;
         } finally {
             BITMAP.close();
         }
         CHECK(bitmapRejected, 'ambiguous bitmap alpha must be rejected');
-        R.beginFrame(BLUE);
-        R.sprite(TEXTURE, 32, 32, 40, 40);
-        R.rect(32, 32, 40, 40, GREEN);
-        R.sprite(TEXTURE, 32, 32, 20, 20);
-        R.endFrame();
-        NEAR(PIXEL(32, 32), [128, 127, 0, 255], 'texture switches preserve transparent painter order');
-        NEAR(PIXEL(17, 32), [0, 255, 0, 255], 'outer opaque layer');
-        const ATLAS = R.createTexture(
-            {
-                width: 2,
-                height: 2,
-                data: new Uint8Array([255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255]),
-            },
-            {
-                filter: 'nearest',
-            },
-        );
-        R.beginFrame();
-        R.sprite(ATLAS, 32, 32, 40, 40);
-        R.endFrame();
-        NEAR(PIXEL(20, 20), [255, 0, 0, 255], 'atlas top-left');
-        NEAR(PIXEL(44, 20), [0, 255, 0, 255], 'atlas top-right');
-        NEAR(PIXEL(20, 44), [0, 0, 255, 255], 'atlas bottom-left');
-        // NPOT and transparent border linear filtering operate on premultiplied texels.
-        const LINEAR = R.createTexture({
-            width: 3,
-            height: 1,
-            data: new Uint8Array([255, 0, 0, 255, 0, 255, 0, 0, 0, 255, 0, 0]),
+        const ORDER_STATS = FRAME(BLUE, () => {
+            IMAGE_AT(HALF_RED, 32, 32, 40, 40);
+            RECT(32, 32, 40, 40, GREEN);
+            IMAGE_AT(HALF_RED, 32, 32, 20, 20);
         });
-        R.beginFrame(BLUE);
-        R.sprite(LINEAR, 32, 32, 48, 20);
-        R.endFrame();
+        NEAR(PIXEL(32, 32), [128, 127, 0, 255], 'regions and fills keep transparent painter order');
+        NEAR(PIXEL(17, 32), [0, 255, 0, 255], 'outer opaque layer');
+        CHECK(ORDER_STATS.drawCalls === 1, `regions and fills share one stream draw: ${ORDER_STATS.drawCalls}`);
+        const QUAD = BYTES(2, 2, [255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255]);
+        FRAME([0, 0, 0, 0], () => IMAGE_AT(QUAD, 32, 32, 40, 40));
+        NEAR(PIXEL(20, 20), [255, 0, 0, 255], 'region top-left');
+        NEAR(PIXEL(44, 20), [0, 255, 0, 255], 'region top-right');
+        NEAR(PIXEL(20, 44), [0, 0, 255, 255], 'region bottom-left');
+        // NPOT and transparent gutter linear filtering operate on premultiplied texels.
+        const LINEAR = BYTES(3, 1, [255, 0, 0, 255, 0, 255, 0, 0, 0, 255, 0, 0], 'linear');
+        FRAME(BLUE, () => IMAGE_AT(LINEAR, 32, 32, 48, 20));
         const FILTERED = PIXEL(24, 32);
         CHECK(FILTERED[0] > 60 && FILTERED[0] < 200 && FILTERED[1] <= 2, `filtered fringe: ${FILTERED}`);
-        // Updating a queued texture first flushes old pixels; the next draw uses the update.
-        R.beginFrame(BLUE);
-        R.sprite(TEXTURE, 16, 32, 20, 20);
-        R.updateTexture(TEXTURE, {
-            width: 1,
-            height: 1,
-            data: new Uint8Array([0, 255, 0, 255]),
+        // Updating a region with queued draws first submits them; the next draw sees the update.
+        FRAME(BLUE, () => {
+            IMAGE_AT(HALF_RED, 16, 32, 20, 20);
+            ATLAS.upload(HALF_RED, { width: 1, height: 1, data: new Uint8Array([0, 255, 0, 255]) });
+            IMAGE_AT(HALF_RED, 48, 32, 20, 20);
         });
-        R.sprite(TEXTURE, 48, 32, 20, 20);
-        R.endFrame();
-        NEAR(PIXEL(16, 32), [128, 0, 127, 255], 'queued old texture');
-        NEAR(PIXEL(48, 32), [0, 255, 0, 255], 'updated texture');
-        const STAGING = R.vertices,
-            BUFFER = R.buffer;
-        R.beginFrame();
-        for (let i = 0; i < 25; i++) {
-            R.rect(i * 2, 32, 2, 2, GREEN);
-        }
-        const STATS = {
-            ...R.endFrame(),
+        NEAR(PIXEL(16, 32), [128, 0, 127, 255], 'queued old region pixels');
+        NEAR(PIXEL(48, 32), [0, 255, 0, 255], 'updated region pixels');
+        const RECTS = () => {
+            for (let i = 0; i < 25; i++) {
+                RECT(i * 2, 32, 2, 2, GREEN);
+            }
         };
+        FRAME([0, 0, 0, 0], RECTS);
+        const ALLOCATIONS = DEVICE.stats.bufferAllocations;
+        const STATS = FRAME([0, 0, 0, 0], RECTS);
         CHECK(
-            STATS.drawCalls === 13 && STATS.vertices === 150 && STATS.uploadedBytes === 4800,
-            `bounded batch counts ${JSON.stringify(STATS)}`,
+            STATS.drawCalls === 1 && STATS.textureUploads === 0 && STATS.uploadedBytes > 0,
+            `steady frame is one stream draw without texture uploads: ${JSON.stringify(STATS)}`,
         );
-        CHECK(
-            R.vertices === STAGING &&
-                R.buffer === BUFFER &&
-                STATS.bufferAllocations === 1 &&
-                STATS.textureUploads === 0,
-            'steady buffers/textures reused',
-        );
-        CHECK(STATS.bufferViews === STATS.drawCalls, 'view allocation counter matches flush');
-        R.setCamera({
+        CHECK(DEVICE.stats.bufferAllocations === ALLOCATIONS, 'steady frames reuse the stream buffer');
+        CAMERA.setCamera({
             x: 12,
             y: 24,
             zoom: 2,
@@ -969,43 +941,32 @@ try {
         });
         const SCREEN = {},
             WORLD = {};
-        R.worldToScreenInto(15, 28, SCREEN);
-        R.screenToWorldInto(SCREEN.x, SCREEN.y, WORLD);
+        CAMERA.planeToScreenInto(15, 28, SCREEN);
+        CAMERA.screenToPlaneInto(SCREEN.x, SCREEN.y, WORLD);
         CHECK(Math.abs(WORLD.x - 15) < 1e-6 && Math.abs(WORLD.y - 28) < 1e-6, 'camera inverse roundtrip');
-        R.beginFrame();
-        R.rect(12, 24, 2, 2, GREEN);
-        R.rect(16, 24, 2, 2, GREEN);
-        R.endFrame();
+        FRAME([0, 0, 0, 0], () => {
+            RECT(12, 24, 2, 2, GREEN);
+            RECT(16, 24, 2, 2, GREEN);
+        });
         NEAR(PIXEL(32, 32), [0, 255, 0, 255], 'camera center at viewport center');
         NEAR(PIXEL(32, 24), [0, 255, 0, 255], 'camera rotation/zoom moves positive world x upward');
-        R.beginFrame();
-        let resizeRejected = false;
-        try {
-            R.resize(20, 20);
-        } catch {
-            resizeRejected = true;
-        }
-        R.endFrame();
-        CHECK(resizeRejected, 'active resize must not silently erase draws');
         CHECK(GL.getError() === GL.NO_ERROR, 'actual GL error must be NO_ERROR');
-        const VERSION_LOCAL = GL.getParameter(GL.VERSION),
-            SHADING_LANGUAGE = GL.getParameter(GL.SHADING_LANGUAGE_VERSION);
         window.renderProbe = {
-            r: R,
-            texture: TEXTURE,
-            pixel: PIXEL,
             canvas: CANVAS,
-            buffers: {
-                buffer: BUFFER,
-                program: R.program,
-            },
+            device: DEVICE,
+            context: CONTEXT,
+            camera: CAMERA,
+            region: HALF_RED,
+            pixel: PIXEL,
+            frame: FRAME,
+            imageAt: IMAGE_AT,
         };
         return {
             primitiveAlpha: PRIMITIVE_ALPHA,
             textureAlpha: TEXTURE_ALPHA,
             filtered: FILTERED,
-            version: VERSION_LOCAL,
-            shadingLanguage: SHADING_LANGUAGE,
+            version: GL.getParameter(GL.VERSION),
+            shadingLanguage: GL.getParameter(GL.SHADING_LANGUAGE_VERSION),
             stats: STATS,
             viewport: [...GL.getParameter(GL.VIEWPORT)],
             bitmapRejected,
@@ -1013,11 +974,10 @@ try {
     });
     assert.deepEqual(REPORT.rendering.viewport, [0, 0, 128, 128]);
     REPORT.stages.push(
-        'actual WebGL shader/link, readPixels alpha/order/atlas/update, NPOT, camera/DPR, bounded reused buffers',
+        'actual WebGL readPixels alpha/order/region orientation/update, NPOT, camera/DPR, one reused stream buffer',
     );
     const SUPPORTS_LOSS = await PAGE.evaluate(() => {
-        const { r: R } = renderProbe;
-        renderProbe.loss = R.gl.getExtension('WEBGL_lose_context');
+        renderProbe.loss = renderProbe.device.gl.getExtension('WEBGL_lose_context');
         if (!renderProbe.loss) {
             return false;
         }
@@ -1025,31 +985,27 @@ try {
         return true;
     });
     if (SUPPORTS_LOSS) {
-        await PAGE.waitForFunction(() => renderProbe.r.state === 'lost');
-        assert.equal(await PAGE.evaluate(() => renderProbe.r.beginFrame()), false);
+        await PAGE.waitForFunction(() => renderProbe.device.state === 'lost');
+        assert.equal(await PAGE.evaluate(() => renderProbe.context.beginFrame()), false);
         await PAGE.evaluate(() => renderProbe.loss.restoreContext());
-        await PAGE.waitForFunction(() => renderProbe.r.state === 'ready');
+        await PAGE.waitForFunction(() => renderProbe.device.state === 'ready' && renderProbe.context.state === 'ready');
         const RESTORED = await PAGE.evaluate(() => {
-            const { r: R, texture: TEXTURE, pixel: PIXEL } = renderProbe;
-            R.setCamera({
+            const { camera: CAMERA, region: REGION, pixel: PIXEL, frame: FRAME, imageAt: IMAGE_AT } = renderProbe;
+            CAMERA.setCamera({
                 x: 32,
                 y: 32,
                 zoom: 1,
                 rotation: 0,
             });
-            R.beginFrame([0, 0, 1, 1]);
-            R.sprite(TEXTURE, 32, 32, 24, 24);
-            R.endFrame();
+            FRAME([0, 0, 1, 1], () => IMAGE_AT(REGION, 32, 32, 24, 24));
             return {
                 pixel: PIXEL(32, 32),
-                error: R.gl.getError(),
-                allocations: R.stats.bufferAllocations,
+                error: renderProbe.device.gl.getError(),
             };
         });
         assert.deepEqual(RESTORED.pixel, [0, 255, 0, 255]);
         assert.equal(RESTORED.error, 0);
-        assert.equal(RESTORED.allocations, 2);
-        REPORT.stages.push('WEBGL_lose_context → skipped lost frame → shader/buffer/texture handle restoration');
+        REPORT.stages.push('WEBGL_lose_context → skipped lost frame → stream, pipeline and atlas region restoration');
     } else {
         REPORT.stages.push('WEBGL_lose_context unavailable: restoration not executed');
     }
@@ -1174,26 +1130,27 @@ try {
         'concurrent devices and loaders share one fetch and CPU decode in this JavaScript realm',
     );
     const DISPOSAL = await PAGE.evaluate(() => {
-        const { r: R } = renderProbe,
-            GL = R.gl,
-            BUFFER = R.buffer,
-            PROGRAM = R.program;
-        R.dispose();
-        R.dispose();
+        const { device: DEVICE, context: CONTEXT } = renderProbe;
+        CONTEXT.dispose();
+        CONTEXT.dispose();
+        DEVICE.dispose();
+        DEVICE.dispose();
         const RESULT = {
-            state: R.state,
-            bufferReleased: !GL.isBuffer(BUFFER),
-            programReleased: !GL.isProgram(PROGRAM),
-            textures: R.stats.textureCount,
+            contextState: CONTEXT.state,
+            deviceState: DEVICE.state,
+            buffers: DEVICE.buffers.size,
+            textures: DEVICE.textures.size,
+            pipelines: DEVICE.pipelines.size,
         };
         demo.dispose();
         return RESULT;
     });
     assert.deepEqual(DISPOSAL, {
-        state: 'disposed',
-        bufferReleased: true,
-        programReleased: true,
+        contextState: 'disposed',
+        deviceState: 'disposed',
+        buffers: 0,
         textures: 0,
+        pipelines: 0,
     });
     assert.equal(ERRORS.length, 0, ERRORS.join('\n'));
     assert.equal(MODULE_ERRORS.length, 0, MODULE_ERRORS.join('\n'));
@@ -1387,7 +1344,7 @@ try {
     );
     const RENDERED_PREVIEW_PIXEL = await PREVIEW_PAGE.evaluate(() => {
         const { renderer: RENDERER } = window.inputPreviewDemo,
-            GL = RENDERER.gl,
+            GL = RENDERER.device.gl,
             PIXELS = new Uint8Array(RENDERER.canvas.width * RENDERER.canvas.height * 4);
         GL.readPixels(0, 0, RENDERER.canvas.width, RENDERER.canvas.height, GL.RGBA, GL.UNSIGNED_BYTE, PIXELS);
         let green = 0;
@@ -1574,7 +1531,7 @@ try {
     );
     REPORT.inputPreview = await PREVIEW_PAGE.evaluate(() => ({
         diagnostics: window.inputPreviewDemo.diagnostics,
-        glError: window.inputPreviewDemo.renderer.gl.getError(),
+        glError: window.inputPreviewDemo.renderer.device.gl.getError(),
     }));
     assert.equal(REPORT.inputPreview.glError, 0);
     assert.equal(PREVIEW_ERRORS.length, 0, PREVIEW_ERRORS.join('\n'));

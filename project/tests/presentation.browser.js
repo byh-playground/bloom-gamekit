@@ -12,7 +12,7 @@ export async function runPresentationChecks(page) {
             PerformanceProfiler: PERFORMANCE_PROFILER,
             copyDiagnostic: COPY_DIAGNOSTIC,
         } = await import('/dist/debug-tools.js');
-        const { Renderer2D: RENDERER2_D } = await import('/dist/rendering.js');
+        const { WebGLDevice: WEB_GL_DEVICE, VectorContext: VECTOR_CONTEXT } = await import('/dist/rendering.js');
         const CHECK = (condition, message) => {
             if (!condition) {
                 throw Error(message);
@@ -24,10 +24,11 @@ export async function runPresentationChecks(page) {
         const CANVAS = document.createElement('canvas');
         CANVAS.style.cssText = 'width:100px;height:100px;aspect-ratio:auto';
         HOST.append(CANVAS);
-        const RENDERER = new RENDERER2_D(CANVAS, {
-            antialias: false,
-            preserveDrawingBuffer: true,
-        });
+        const DEVICE = new WEB_GL_DEVICE(CANVAS, {
+                antialias: false,
+                preserveDrawingBuffer: true,
+            }),
+            RENDERER = new VECTOR_CONTEXT(DEVICE);
         const CAMERA = new CAMERA_VIEWPORT({
             projection: new ORTHOGRAPHIC_PROJECTION(),
             width: 100,
@@ -39,7 +40,7 @@ export async function runPresentationChecks(page) {
             rotation: 0.2,
         });
         CAMERA.setShake(3, -2);
-        CAMERA.applyToRenderer(RENDERER, true);
+        CAMERA.resizeCanvas(CANVAS);
         const HUD = new DOM_HUD({
             camera: CAMERA,
             root: HOST,
@@ -62,16 +63,18 @@ export async function runPresentationChecks(page) {
         CAMERA.projection.projectInto(WORLD.x, WORLD.y, WORLD.z, PLANE);
         CAMERA.worldToScreenInto(WORLD.x, WORLD.y, WORLD.z, SCREEN);
         RENDERER.beginFrame();
-        RENDERER.rect(PLANE.x, PLANE.y, 6, 6, [0, 1, 0, 1]);
+        CAMERA.applyToContext(RENDERER);
+        RENDERER.fillStyle = [0, 1, 0, 1];
+        RENDERER.fillRect(PLANE.x - 3, PLANE.y - 3, 6, 6);
         RENDERER.endFrame();
         const PIXEL = new Uint8Array(4);
-        RENDERER.gl.readPixels(
+        DEVICE.gl.readPixels(
             Math.floor(SCREEN.x * 2),
             CANVAS.height - 1 - Math.floor(SCREEN.y * 2),
             1,
             1,
-            RENDERER.gl.RGBA,
-            RENDERER.gl.UNSIGNED_BYTE,
+            DEVICE.gl.RGBA,
+            DEVICE.gl.UNSIGNED_BYTE,
             PIXEL,
         );
         CHECK(
@@ -102,20 +105,21 @@ export async function runPresentationChecks(page) {
             CAMERA.setCamera({
                 zoom: 3 / DISTANCE,
             });
-            CAMERA.applyToRenderer(RENDERER);
             HUD.update();
             CAMERA.worldToScreenInto(WORLD.x, WORLD.y, WORLD.z, SCREEN);
             RENDERER.beginFrame();
-            RENDERER.rect(PLANE.x, PLANE.y, 6, 6, [0, 1, 0, 1]);
+            CAMERA.applyToContext(RENDERER);
+            RENDERER.fillStyle = [0, 1, 0, 1];
+            RENDERER.fillRect(PLANE.x - 3, PLANE.y - 3, 6, 6);
             RENDERER.endFrame();
             const RGBA_LOCAL = new Uint8Array(4);
-            RENDERER.gl.readPixels(
+            DEVICE.gl.readPixels(
                 Math.floor(SCREEN.x * 2),
                 CANVAS.height - 1 - Math.floor(SCREEN.y * 2),
                 1,
                 1,
-                RENDERER.gl.RGBA,
-                RENDERER.gl.UNSIGNED_BYTE,
+                DEVICE.gl.RGBA,
+                DEVICE.gl.UNSIGNED_BYTE,
                 RGBA_LOCAL,
             );
             CHECK(
@@ -144,7 +148,6 @@ export async function runPresentationChecks(page) {
         CAMERA.setCamera({
             zoom: 1.5,
         });
-        CAMERA.applyToRenderer(RENDERER);
         HUD.update();
         let starts = 0;
         let sounds = 0;
@@ -261,7 +264,9 @@ export async function runPresentationChecks(page) {
             PROFILER.measure('hud', () => HUD.update());
             PROFILER.measure('render', () => {
                 RENDERER.beginFrame();
-                RENDERER.rect(PLANE.x, PLANE.y, 6, 6, [0, 1, 0, 1]);
+                CAMERA.applyToContext(RENDERER);
+                RENDERER.fillStyle = [0, 1, 0, 1];
+                RENDERER.fillRect(PLANE.x - 3, PLANE.y - 3, 6, 6);
                 RENDERER.endFrame();
             });
             CHECK(
@@ -393,6 +398,7 @@ export async function runPresentationChecks(page) {
         HUD.dispose();
         RING.dispose();
         RENDERER.dispose();
+        DEVICE.dispose();
         HOST.remove();
         return {
             cameraHudPixel: [...PIXEL],

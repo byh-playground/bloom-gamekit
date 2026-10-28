@@ -1502,6 +1502,39 @@ export class VectorContext {
         this.meshRenderer?.flush('quadBoundary');
         this.vector.drawQuads(options);
     }
+    /**
+     * Draws a texture atlas region like Canvas `drawImage(image, x, y, width, height)`: top-left anchored on the
+     * current transform, in the same stream draw as the surrounding paint. `source` (`[x, y, width, height]` region
+     * pixels) selects part of the region. Uses `globalAlpha`, white flash and `forceColor` like other paint.
+     */
+    drawRegion(region, x, y, width = region?.width, height = region?.height, { source = null } = {}) {
+        if (!region?.atlas?.regions?.has(region) || region.atlas !== this.device.textureAtlas) {
+            throw new TypeError('A live region of the device texture atlas is required');
+        }
+        const [SX, SY, SW, SH] = source ?? [0, 0, region.width, region.height];
+        for (const VALUE of [x, y, width, height, SX, SY, SW, SH]) {
+            finite(VALUE, 'drawRegion value');
+        }
+        if (SX < 0 || SY < 0 || SW <= 0 || SH <= 0 || SX + SW > region.width || SY + SH > region.height) {
+            throw new RangeError('source must lie inside the region');
+        }
+        const ATLAS = region.atlas;
+        this.drawQuads({
+            layer: region.layer,
+            filter: region.filter,
+            uvRects: Float32Array.of(
+                (region.x + SX) / ATLAS.width,
+                (region.y + SY) / ATLAS.height,
+                SW / ATLAS.width,
+                SH / ATLAS.height,
+            ),
+            localRects: Float32Array.of(x, y, width, height),
+            color: normalizeColor(this.forceColor ?? [1, 1, 1, 1]),
+            forceColor: this.forceColor !== null,
+            alpha: this._globalAlpha,
+            whiteFlash: this._filter === 'brightness(0) invert(1)',
+        });
+    }
     deleteMesh(mesh) {
         return this.meshRenderer?.deleteMesh(mesh) ?? false;
     }

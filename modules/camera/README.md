@@ -32,7 +32,7 @@ boom.reset(desiredDistance);
 - `CameraViewport({projection,width,height,dpr,left,top,x,y,zoom,rotation})`: x/y는 위 투영 평면의 중심입니다. CSS 픽셀과 backing 픽셀을 구별합니다. `setViewport`, `setCamera`, `setShake(CSSx,CSSy)`는 명시적 설정입니다.
 - `worldToScreenInto(x,y,z,out)`, `planeToScreenInto(x,y,out)`, `screenToPlaneInto(x,y,out)`, `clientToScreenInto`, `screenToClientInto`, `screenToBackingInto`.
 - `screenToGroundInto(x,y,out,{z=0,intersect=null})`: 평면 지면 역변환은 정확합니다. 언덕은 `intersect(projectedX,projectedY,projection,out) → boolean`에 게임의 terrain solver를 연결합니다. 임의 지형을 고정 횟수로 근사해 성공했다고 주장하지 않습니다.
-- `rendererCameraInto(out)`, `applyToRenderer(renderer,resize=false)`: rendering의 기존 2D 중심/zoom/radians 계약과 같은 회전 수식을 사용합니다. plane geometry에 XYZ를 다시 투영하지 않습니다. renderer 변환과 이 API의 픽셀 일치를 실제 WebGL E2E로 검사합니다.
+- `transformInto(out)`, `applyToContext(context)`, `resizeCanvas(canvas)`: 투영 평면 → canvas backing 픽셀 변환을 Canvas `setTransform(a,b,c,d,e,f)` 순서의 6개 값으로 만들고(zoom·회전·shake·DPR 포함) `VectorContext`에 넘깁니다. `resizeCanvas`는 backing 크기만 viewport×DPR로 맞춥니다. plane geometry에 XYZ를 다시 투영하지 않습니다. 이 변환과 `planeToScreenInto`의 픽셀 일치를 실제 WebGL E2E로 검사합니다.
 - `follow(projectedX,projectedY,elapsedMs,halfLifeMs=0)`: 반감기 기반 시간 독립 지수 추적입니다. 0이면 즉시 이동합니다. bounds/zoom 제한/추적 대상을 게임이 정합니다. 흔들림 파형·RNG·타이머를 소유하지 않습니다.
 
 화면 좌표는 canvas 내용 영역 CSS 기준입니다. left/top은 client offset입니다. CSS rotate/skew/border는 자동 추측하지 않으므로 caller가 입력 좌표를 내용 영역으로 정규화하세요. DPR은 출력 backing 좌표에만 적용합니다. Rally는 자신의 (x,z 지면 / y 높이) 축을 API 경계에서 매핑합니다. 카메라 흔들림을 입력 역변환에서 제외하는 게임은 camera shake를 0으로 유지하고 최종 합성에 별도로 적용합니다.

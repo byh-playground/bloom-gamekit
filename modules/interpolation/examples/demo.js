@@ -1,6 +1,6 @@
 import { createLoop } from '../../../dist/simloop.js';
 import { InterpolationTimeline } from '../../../dist/interpolation.js';
-import { Renderer2D } from '../../../dist/rendering.js';
+import { WebGLDevice, VectorContext } from '../../../dist/rendering.js';
 import { ActionState, createDOMInput } from '../../../dist/input.js';
 import { OrthographicProjection, CameraViewport } from '../../../dist/camera.js';
 import { PresentationEventQueue } from '../../../dist/presentation-events.js';
@@ -51,7 +51,8 @@ const COLORS = Object.freeze({
 
 /** Returns controls/diagnostics; dispose stops its own loop and all DOM/GPU resources. */
 export function startDemo(canvas, status, { autoStart = true } = {}) {
-    const RENDERER = new Renderer2D(canvas);
+    const DEVICE = new WebGLDevice(canvas),
+        RENDERER = new VectorContext(DEVICE);
     const PROJECTION = new OrthographicProjection(),
         CAMERA = new CameraViewport({
             projection: PROJECTION,
@@ -123,20 +124,22 @@ export function startDemo(canvas, status, { autoStart = true } = {}) {
         health: 100,
         state: 'idle',
     };
-    const SPRITE_OPTIONS = {
-        angle: 0,
+    // Small static RGBA asset uploaded once into the shared atlas. Never uploads a rasterized world canvas.
+    const SPRITE = DEVICE.textureAtlas.allocate(2, 2, { filter: 'nearest' });
+    DEVICE.textureAtlas.upload(SPRITE, {
+        width: 2,
+        height: 2,
+        data: new Uint8Array([255, 255, 255, 255, 255, 166, 80, 255, 255, 166, 80, 255, 255, 255, 255, 255]),
+    });
+    /** Center-anchored rectangle rotated by `angle` radians, in the current camera transform. */
+    const FILL_CENTERED = (x, y, width, height, paint, angle = 0) => {
+        RENDERER.fillStyle = paint;
+        RENDERER.save();
+        RENDERER.translate(x, y);
+        RENDERER.rotate(angle);
+        RENDERER.fillRect(-width / 2, -height / 2, width, height);
+        RENDERER.restore();
     };
-    // Small static RGBA asset uploaded once. Never uploads a rasterized world canvas.
-    const TEXTURE = RENDERER.createTexture(
-        {
-            width: 2,
-            height: 2,
-            data: new Uint8Array([255, 255, 255, 255, 255, 166, 80, 255, 255, 166, 80, 255, 255, 255, 255, 255]),
-        },
-        {
-            filter: 'nearest',
-        },
-    );
     const POSES = Array.from(
         {
             length: 25,
@@ -209,7 +212,7 @@ export function startDemo(canvas, status, { autoStart = true } = {}) {
         },
     });
     function resize() {
-        if (RENDERER.state !== 'ready') {
+        if (RENDERER.state !== 'ready' || DEVICE.state !== 'ready') {
             return;
         }
         const RECT = canvas.getBoundingClientRect();
@@ -220,7 +223,7 @@ export function startDemo(canvas, status, { autoStart = true } = {}) {
             left: RECT.left,
             top: RECT.top,
         });
-        CAMERA.applyToRenderer(RENDERER, true);
+        CAMERA.resizeCanvas(canvas);
     }
     function authorityStep() {
         tick++;
@@ -299,30 +302,42 @@ export function startDemo(canvas, status, { autoStart = true } = {}) {
     function render(now) {
         const START = performance.now();
         const POSE = APP.frame(now);
-        if (!POSE || !RENDERER.beginFrame(COLORS.clear)) {
+        if (!POSE || !RENDERER.beginFrame({ clearColor: COLORS.clear })) {
             return;
         }
-        const SCALE = Math.min(RENDERER.width / WORLD_WIDTH, RENDERER.height / WORLD_HEIGHT) * zoom;
+        const SCALE = Math.min(CAMERA.width / WORLD_WIDTH, CAMERA.height / WORLD_HEIGHT) * zoom;
         CAMERA.setCamera({
             x: 360 + (POSE.x - 360) * 0.15,
             y: 200 * PROJECTION.K,
             zoom: SCALE,
         });
-        CAMERA.applyToRenderer(RENDERER);
+        CAMERA.applyToContext(RENDERER);
+        RENDERER.strokeStyle = COLORS.grid;
+        RENDERER.lineWidth = 1;
+        RENDERER.beginPath();
         for (let x = 0; x <= WORLD_WIDTH; x += 40) {
-            RENDERER.line(x, 0, x, WORLD_HEIGHT * PROJECTION.K, 1, COLORS.grid);
+            RENDERER.moveTo(x, 0);
+            RENDERER.lineTo(x, WORLD_HEIGHT * PROJECTION.K);
         }
         for (let y = 0; y <= WORLD_HEIGHT; y += 40) {
-            RENDERER.line(0, y * PROJECTION.K, WORLD_WIDTH, y * PROJECTION.K, 1, COLORS.grid);
+            RENDERER.moveTo(0, y * PROJECTION.K);
+            RENDERER.lineTo(WORLD_WIDTH, y * PROJECTION.K);
         }
+        RENDERER.stroke();
         if (target) {
-            RENDERER.ellipse(target.x, target.y * PROJECTION.K, 8, 4, COLORS.target, 12);
+            RENDERER.fillStyle = COLORS.target;
+            RENDERER.beginPath();
+            RENDERER.ellipse(target.x, target.y * PROJECTION.K, 8, 4);
+            RENDERER.fill();
         }
         // Game chooses explicit painter order: all shadows, then sorted body + health.
         for (let i = 0; i < RECORDS.length; i++) {
             APP.timeline.sampleInto(RECORDS[i].id, 0, now, POSES[i]);
             POSES[i].actor = i === 0;
-            RENDERER.ellipse(POSES[i].x, POSES[i].y * PROJECTION.K, i ? 9 : 16, i ? 4 : 6, COLORS.shadow, 12);
+            RENDERER.fillStyle = COLORS.shadow;
+            RENDERER.beginPath();
+            RENDERER.ellipse(POSES[i].x, POSES[i].y * PROJECTION.K, i ? 9 : 16, i ? 4 : 6);
+            RENDERER.fill();
         }
         // Reuse sortable view; pose sampling/authority are not sorted or mutated by renderer.
         SORTED.length = 0;
@@ -332,7 +347,7 @@ export function startDemo(canvas, status, { autoStart = true } = {}) {
         SORTED.sort((a, b) => a.y - b.y);
         for (const ITEM of SORTED) {
             PROJECTION.projectInto(ITEM.x, ITEM.y, ITEM.z, PROJECTED);
-            RENDERER.rect(
+            FILL_CENTERED(
                 PROJECTED.x,
                 PROJECTED.y - 8,
                 ITEM.actor ? 24 : 14,
@@ -340,8 +355,8 @@ export function startDemo(canvas, status, { autoStart = true } = {}) {
                 ITEM.actor ? COLORS.body : COLORS.satellite,
                 ITEM.angle,
             );
-            RENDERER.rect(PROJECTED.x, PROJECTED.y - 28, 26, 3, COLORS.healthBack);
-            RENDERER.rect(
+            FILL_CENTERED(PROJECTED.x, PROJECTED.y - 28, 26, 3, COLORS.healthBack);
+            FILL_CENTERED(
                 PROJECTED.x - 13 + (13 * ITEM.health) / 100,
                 PROJECTED.y - 28,
                 (26 * ITEM.health) / 100,
@@ -349,8 +364,11 @@ export function startDemo(canvas, status, { autoStart = true } = {}) {
                 COLORS.health,
             );
         }
-        SPRITE_OPTIONS.angle = (tick * STEP_MS) / 1000;
-        RENDERER.sprite(TEXTURE, 640, 65, 34, 34, SPRITE_OPTIONS);
+        RENDERER.save();
+        RENDERER.translate(640, 65);
+        RENDERER.rotate((tick * STEP_MS) / 1000);
+        RENDERER.drawRegion(SPRITE, -17, -17, 34, 34);
+        RENDERER.restore();
         const STATS = RENDERER.endFrame();
         EFFECTS.update(now);
         HUD.setAnchor('actor', {
@@ -470,6 +488,7 @@ export function startDemo(canvas, status, { autoStart = true } = {}) {
             WRAPPER.before(canvas);
             WRAPPER.remove();
             RENDERER.dispose();
+            DEVICE.dispose();
             window.removeEventListener('resize', resize);
         },
     };

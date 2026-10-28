@@ -14,7 +14,7 @@ function createGridShade(cellCount) {
 
 /**
  * 월드 셀을 pixels(Uint32Array, 한 칸이 RGBA 한 픽셀)에 씁니다. 엔티티·강체는 그리지 않습니다.
- * 바이트로 보려면 `new Uint8ClampedArray(pixels.buffer)`를 rendering의 `createTexture/updateTexture`에 넘기세요.
+ * 바이트로 보려면 `new Uint8ClampedArray(pixels.buffer)`를 rendering의 `device.textureAtlas.upload(region, {width, height, data})`에 넘기세요.
  *
  * view를 주지 않으면 전체 격자(pixels.length === w*h)를 씁니다. view = {x, y, w, h}(창 좌표, 정수)를 주면 그 사각형만
  * view.w*view.h 크기의 pixels에 행 우선으로 씁니다. view가 격자 밖에 걸치면 밖의 칸은 background로 쓰며 오류가 아닙니다

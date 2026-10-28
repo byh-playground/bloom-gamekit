@@ -20,6 +20,8 @@ export class TextureAtlasArray {
         this.layerShelves = Array.from({ length: layers }, () => ({ shelves: [], usedHeight: 0 }));
         this.free = new Map();
         this.regions = new Set();
+        // Regions whose pixels may already be sampled by queued draws.
+        this.written = new WeakSet();
         this.disposed = false;
     }
     /** Reserves width x height content pixels. Returns the content rectangle, its normalized `uvRect` and its sampling `filter`
@@ -81,24 +83,49 @@ export class TextureAtlasArray {
         return REGION;
     }
     /**
-     * Writes the region's pixels. `source` is a DOM image/canvas or `{ width, height, data }` RGBA bytes of the
-     * region size. With `extendEdges`, byte sources fill the gutter with their edge pixels (clamp-to-edge look).
+     * Writes the region's pixels. `source` is a DOM image/canvas or `{ width, height, data }` RGBA bytes. A source
+     * of the region size fills it; a smaller source at content offset `x`, `y` updates only that rectangle.
+     * With `extendEdges`, a whole-region byte source also fills the gutter with its edge pixels (clamp-to-edge look).
      */
-    upload(region, source, { premultiplied = false, extendEdges = false } = {}) {
+    upload(region, source, { premultiplied = false, extendEdges = false, x = 0, y = 0 } = {}) {
         this._live();
         if (!this.regions.has(region)) {
             throw new TypeError('A live region from this atlas is required');
         }
-        const G = this.gutter;
+        // Draws queued against the old pixels are submitted first, so painter order sees each version.
+        // A region's first upload needs no flush: nothing can have sampled it yet.
+        if (this.written.has(region) && this.device.active) {
+            this.device.flushBatchers('atlasRegionUpdate');
+        }
+        this.written.add(region);
+        const G = this.gutter,
+            WIDTH = source?.naturalWidth ?? source?.width,
+            HEIGHT = source?.naturalHeight ?? source?.height;
+        if (x !== 0 || y !== 0 || WIDTH !== region.width || HEIGHT !== region.height) {
+            if (extendEdges) {
+                throw new TypeError('extendEdges requires a whole-region upload');
+            }
+            if (
+                !Number.isSafeInteger(x) ||
+                !Number.isSafeInteger(y) ||
+                x < 0 ||
+                y < 0 ||
+                !(x + WIDTH <= region.width) ||
+                !(y + HEIGHT <= region.height)
+            ) {
+                throw new RangeError('Upload rectangle must lie inside the region');
+            }
+            this.device.updateTextureRegion(this.texture, region.layer, region.x + x, region.y + y, source, {
+                premultiplied,
+            });
+            return;
+        }
         if (source.data === undefined) {
             if (extendEdges) {
                 throw new TypeError('extendEdges requires RGBA byte data');
             }
             this.device.updateTextureRegion(this.texture, region.layer, region.x, region.y, source, { premultiplied });
             return;
-        }
-        if (source.width !== region.width || source.height !== region.height) {
-            throw new RangeError('Source size must equal the region size');
         }
         if (!G) {
             this.device.updateTextureRegion(this.texture, region.layer, region.x, region.y, source, { premultiplied });
@@ -142,6 +169,9 @@ export class TextureAtlasArray {
         if (!this.regions.size) {
             this.dispose();
             return true;
+        }
+        if (this.device.active) {
+            this.device.flushBatchers('atlasRegionRelease');
         }
         const G = this.gutter,
             PW = region.width + G * 2,
