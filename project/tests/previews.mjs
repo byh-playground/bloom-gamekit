@@ -1,4 +1,4 @@
-/* global audioExample, demo, reference, scenarioDemo, vectorExample */
+/* global audioExample, demo, reference, scenarioDemo, textureArrayExample, vectorExample */
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
@@ -56,6 +56,7 @@ try {
                     audio: 'audioExample',
                     navigation: 'navigationDemo',
                     'rendering-vector': 'vectorExample',
+                    'rendering-texture-array': 'textureArrayExample',
                     'vector-assets': 'vectorAssetDemo',
                     'vector-raster-comparison': '__rasterComparison',
                     'rollback-reference': 'reference',
@@ -111,6 +112,12 @@ try {
                     () => vectorExample.device.stats.drawCalls > 0 && vectorExample.device.gl.getError() === 0,
                 ),
             );
+        }
+        if (NAME === 'rendering-texture-array') {
+            assert.equal(await PAGE.evaluate(() => textureArrayExample.drawCalls), 1);
+            await PAGE.click('#mode-separate');
+            assert(await PAGE.evaluate(() => textureArrayExample.drawCalls > 1));
+            assert.equal(await PAGE.evaluate(() => textureArrayExample.device.gl.getError()), 0);
         }
         if (NAME === 'rollback-reference') {
             await PAGE.click('#start');

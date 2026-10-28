@@ -5,6 +5,9 @@
  * viewport; pivotX/Y are viewport pixels, defaulting to the top-left origin.
  * gutter is transparent padding OUTSIDE the frame rect and only validates atlas
  * bounds: UVs span the full content rect, without a half-texel shrink.
+ * When texture is a Device texture array, each frame's layer (default 0) picks the atlas page and
+ * x/y/width/height address inside that layer; consecutive frames on different layers stay in one batch.
+ * A 2D texture has the single layer 0.
  * textureOrigin defaults to top-left for external DOM sheet uploads. Select
  * bottom-left for raw pixel data or GPU render targets whose first row is bottom.
  *
@@ -22,6 +25,7 @@ export function createSpriteAnimation(meshRenderer, texture, definition) {
     }
     const ATLAS_WIDTH = texture.width;
     const ATLAS_HEIGHT = texture.height;
+    const LAYER_COUNT = meshRenderer.device.isTextureArray(texture) ? texture.layers : 1;
     const INPUT_FRAMES = definition?.frames;
     const INPUT_CLIPS = definition?.clips;
     const TEXTURE_ORIGIN = definition?.textureOrigin ?? 'top-left';
@@ -67,7 +71,9 @@ export function createSpriteAnimation(meshRenderer, texture, definition) {
         const PIVOT_X = FRAME?.pivotX ?? definition.pivotX ?? 0;
         const PIVOT_Y = FRAME?.pivotY ?? definition.pivotY ?? 0;
         const DURATION_MS = FRAME?.durationMs;
+        const LAYER = FRAME?.layer ?? 0;
         for (const [NAME, VALUE, MINIMUM] of [
+            ['frame layer', LAYER, 0],
             ['frame x', X, 0],
             ['frame y', Y, 0],
             ['frame width', WIDTH, 1],
@@ -79,6 +85,9 @@ export function createSpriteAnimation(meshRenderer, texture, definition) {
             ['source y', SOURCE_Y, 0],
         ]) {
             INTEGER(VALUE, NAME, MINIMUM);
+        }
+        if (LAYER >= LAYER_COUNT) {
+            throw new RangeError('Sprite frame layer exceeds the texture layer count');
         }
         if (
             X - GUTTER < 0 ||
@@ -105,11 +114,13 @@ export function createSpriteAnimation(meshRenderer, texture, definition) {
             Object.freeze({
                 localRect: Object.freeze([LEFT, TOP, WIDTH, HEIGHT]),
                 uvRect: Object.freeze([U0, V0, WIDTH / ATLAS_WIDTH, V1 - V0]),
+                layer: LAYER,
             }),
         );
         FRAMES.push(
             Object.freeze({
                 index,
+                layer: LAYER,
                 x: X,
                 y: Y,
                 width: WIDTH,

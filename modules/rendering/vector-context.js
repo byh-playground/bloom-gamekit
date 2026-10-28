@@ -1522,7 +1522,7 @@ export class VectorContext {
         return this.meshRenderer?.deleteMesh(mesh) ?? false;
     }
     /** Local transform composes with current Canvas-style transform; all paint state is captured by value. */
-    drawMesh(mesh, { transform = null, morph = [0, 0], parts = null, texture = null, uvRect, localRect } = {}) {
+    drawMesh(mesh, { transform = null, morph = [0, 0], parts = null, texture = null, layer, uvRect, localRect } = {}) {
         this._frame();
         if (!this.meshRenderer) {
             throw new TypeError('createMesh required');
@@ -1552,6 +1552,7 @@ export class VectorContext {
             morph,
             parts,
             texture,
+            layer,
             uvRect,
             localRect,
             color: this.forceColor ?? [1, 1, 1, 1],

@@ -1,0 +1,224 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>GameKit texture array</title>
+<style>
+    body {
+        margin: 0;
+        background: #101923;
+        color: #dce8f1;
+        font:
+            15px system-ui,
+            sans-serif;
+    }
+    main {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 10px 14px 24px;
+    }
+    h1 {
+        margin: 4px 0 6px;
+        font-size: 20px;
+    }
+    p,
+    li {
+        color: #a9bdcb;
+        line-height: 1.5;
+    }
+    p {
+        margin: 6px 0;
+    }
+    ul {
+        margin: 6px 0;
+        padding-left: 20px;
+    }
+    .controls {
+        display: flex;
+        gap: 10px;
+        margin: 10px 0;
+    }
+    button {
+        flex: 1;
+        min-height: 56px;
+        border: 1px solid #526374;
+        border-radius: 12px;
+        background: #1b2a38;
+        color: #dce8f1;
+        font: inherit;
+        cursor: pointer;
+        touch-action: manipulation;
+    }
+    button[aria-pressed='true'] {
+        border-color: #8fd0ea;
+        background: #2f6f8f;
+    }
+    canvas {
+        display: block;
+        width: min(100%, calc((100vh - 240px) * 1.8));
+        min-width: 240px;
+        height: auto;
+        margin: 0 auto;
+        border: 1px solid #526374;
+        border-radius: 12px;
+    }
+</style>
+<main>
+    <h1>텍스처 어레이로 그리기</h1>
+    <p>
+        아틀라스 페이지가 달라도 텍스처 어레이 하나를 바인딩하면 한 번에 그립니다. 페이지마다 텍스처를 따로 쓰면
+        페이지가 바뀔 때마다 그리기 호출이 나뉩니다.
+    </p>
+    <div class="controls">
+        <button id="mode-array" type="button" aria-pressed="true">텍스처 어레이 1개</button>
+        <button id="mode-separate" type="button" aria-pressed="false">페이지별 텍스처 4개</button>
+    </div>
+    <canvas id="scene" width="720" height="400"></canvas>
+    <p id="stats" aria-live="polite"></p>
+    <ul>
+        <li>스프라이트는 페이지를 번갈아 가며 같은 순서로 그리므로 두 방식의 화면은 같습니다.</li>
+        <li>어레이의 모든 레이어는 같은 크기이고 남는 영역은 투명입니다.</li>
+        <li>어레이는 쓰는 면적과 관계없이 레이어 전체 메모리를 처음에 할당합니다.</li>
+        <li>mesh가 다르면 어레이여도 그리기 호출이 나뉩니다.</li>
+    </ul>
+</main>
+<script type="module">
+    import { WebGLDevice, MeshRenderer, createSpriteAnimation } from '/dist/rendering.js';
+    const CANVAS = document.querySelector('#scene');
+    const WIDTH = CANVAS.width;
+    const HEIGHT = CANVAS.height;
+    const PAGE_COUNT = 4;
+    const CELL = 32;
+    const PAGE_SIZE = CELL * 2;
+    const SPRITE_COUNT = 240;
+    const DEVICE = new WebGLDevice(CANVAS, {
+        alpha: false,
+        antialias: false,
+        preserveDrawingBuffer: true,
+    });
+    const MESHES = new MeshRenderer(DEVICE);
+    // Page p is a 2x2 sheet of four shapes in one hue; the hue identifies the page on screen.
+    const DRAW_PAGE = (page) => {
+        const SHEET = document.createElement('canvas');
+        SHEET.width = SHEET.height = PAGE_SIZE;
+        const CONTEXT = SHEET.getContext('2d');
+        for (let cell = 0; cell < 4; cell++) {
+            const X = (cell % 2) * CELL + CELL / 2;
+            const Y = Math.floor(cell / 2) * CELL + CELL / 2;
+            const R = CELL * 0.42;
+            CONTEXT.fillStyle = `hsl(${page * 90 + 20}, 80%, ${45 + cell * 6}%)`;
+            CONTEXT.beginPath();
+            if (cell === 0) {
+                CONTEXT.arc(X, Y, R, 0, Math.PI * 2);
+            } else if (cell === 1) {
+                CONTEXT.rect(X - R, Y - R, R * 2, R * 2);
+            } else if (cell === 2) {
+                CONTEXT.moveTo(X, Y - R);
+                CONTEXT.lineTo(X + R, Y + R);
+                CONTEXT.lineTo(X - R, Y + R);
+                CONTEXT.closePath();
+            } else {
+                CONTEXT.moveTo(X, Y - R);
+                CONTEXT.lineTo(X + R, Y);
+                CONTEXT.lineTo(X, Y + R);
+                CONTEXT.lineTo(X - R, Y);
+                CONTEXT.closePath();
+            }
+            CONTEXT.fill();
+        }
+        return SHEET;
+    };
+    const SHEETS = Array.from({ length: PAGE_COUNT }, (_unused, page) => DRAW_PAGE(page));
+    const CELL_RECT = (cell) => ({ x: (cell % 2) * CELL, y: Math.floor(cell / 2) * CELL, width: CELL, height: CELL });
+    // Array mode: one texture, the page is the frame layer.
+    const ARRAY = DEVICE.createTextureArray(PAGE_SIZE, PAGE_SIZE, PAGE_COUNT, { filter: 'nearest' });
+    SHEETS.forEach((sheet, page) => DEVICE.updateTextureLayer(ARRAY, page, sheet));
+    const ARRAY_FRAMES = [];
+    for (let page = 0; page < PAGE_COUNT; page++) {
+        for (let cell = 0; cell < 4; cell++) {
+            ARRAY_FRAMES.push({ ...CELL_RECT(cell), layer: page, durationMs: 100 });
+        }
+    }
+    const ARRAY_SPRITES = createSpriteAnimation(MESHES, ARRAY, {
+        frames: ARRAY_FRAMES,
+        clips: Object.fromEntries(ARRAY_FRAMES.map((_frame, index) => [`f${index}`, { frames: [index] }])),
+    });
+    const ARRAY_PLAYERS = ARRAY_FRAMES.map((_frame, index) => ARRAY_SPRITES.createPlayer({ clip: `f${index}` }));
+    // Separate mode: one 2D texture per page, so a page change is a texture change.
+    const PAGE_TEXTURES = SHEETS.map((sheet) => DEVICE.createTexture(sheet, { filter: 'nearest' }));
+    const SEPARATE_SPRITES = PAGE_TEXTURES.map((texture) =>
+        createSpriteAnimation(MESHES, texture, {
+            frames: [0, 1, 2, 3].map((cell) => ({ ...CELL_RECT(cell), durationMs: 100 })),
+            clips: Object.fromEntries([0, 1, 2, 3].map((cell) => [`c${cell}`, { frames: [cell] }])),
+        }),
+    );
+    const SEPARATE_PLAYERS = ARRAY_FRAMES.map((_frame, index) =>
+        SEPARATE_SPRITES[Math.floor(index / 4)].createPlayer({ clip: `c${index % 4}` }),
+    );
+    // Deterministic placement; sprite i uses page i % 4, so consecutive sprites never share a page.
+    let seed = 12345;
+    const RANDOM = () => {
+        seed = (seed * 1664525 + 1013904223) >>> 0;
+        return seed / 4294967296;
+    };
+    const PLACEMENTS = Array.from({ length: SPRITE_COUNT }, (_unused, index) => ({
+        frame: (index % PAGE_COUNT) * 4 + (Math.floor(index / PAGE_COUNT) % 4),
+        x: Math.floor(RANDOM() * (WIDTH - CELL)),
+        y: Math.floor(RANDOM() * (HEIGHT - CELL)),
+    }));
+    const PROJECTION = [2 / WIDTH, 0, 0, 0, -2 / HEIGHT, 0, -1, 1, 1];
+    const BUTTONS = {
+        array: document.querySelector('#mode-array'),
+        separate: document.querySelector('#mode-separate'),
+    };
+    const EXAMPLE = {
+        device: DEVICE,
+        mode: 'array',
+        drawCalls: 0,
+        spriteCount: SPRITE_COUNT,
+        setMode(mode) {
+            if (mode !== 'array' && mode !== 'separate') {
+                throw new TypeError('mode must be array or separate');
+            }
+            EXAMPLE.mode = mode;
+            const PLAYERS = mode === 'array' ? ARRAY_PLAYERS : SEPARATE_PLAYERS;
+            DEVICE.beginFrame({ width: WIDTH, height: HEIGHT, clearColor: [0.06, 0.1, 0.14, 1] });
+            MESHES.beginFrame();
+            for (const PLACEMENT of PLACEMENTS) {
+                PLAYERS[PLACEMENT.frame].draw({
+                    timeMs: 0,
+                    matrix: [1, 0, 0, 1, PLACEMENT.x, PLACEMENT.y],
+                    projection: PROJECTION,
+                });
+            }
+            MESHES.flush();
+            EXAMPLE.drawCalls = DEVICE.endFrame().drawCalls;
+            for (const [NAME, BUTTON] of Object.entries(BUTTONS)) {
+                BUTTON.setAttribute('aria-pressed', String(NAME === mode));
+            }
+            document.querySelector('#stats').textContent =
+                `그리기 호출 ${EXAMPLE.drawCalls}회 · 스프라이트 ${SPRITE_COUNT}개 · ` +
+                (mode === 'array' ? '바인딩한 텍스처 1개' : `바인딩한 텍스처 ${PAGE_COUNT}개를 번갈아 사용`);
+            return EXAMPLE.drawCalls;
+        },
+        readPixels() {
+            const GL = DEVICE.gl;
+            const PIXELS = new Uint8Array(WIDTH * HEIGHT * 4);
+            GL.readPixels(0, 0, WIDTH, HEIGHT, GL.RGBA, GL.UNSIGNED_BYTE, PIXELS);
+            return PIXELS;
+        },
+    };
+    BUTTONS.array.addEventListener('click', () => EXAMPLE.setMode('array'));
+    BUTTONS.separate.addEventListener('click', () => EXAMPLE.setMode('separate'));
+    EXAMPLE.setMode('array');
+    window.textureArrayExample = EXAMPLE;
+    window.addEventListener(
+        'pagehide',
+        () => {
+            ARRAY_SPRITES.dispose();
+            SEPARATE_SPRITES.forEach((sprites) => sprites.dispose());
+            MESHES.dispose();
+            DEVICE.dispose();
+        },
+        { once: true },
+    );
+</script>

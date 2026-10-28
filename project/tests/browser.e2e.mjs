@@ -1258,6 +1258,64 @@ try {
     assert.equal(EXAMPLE_ERRORS.length, 0, EXAMPLE_ERRORS.join('\n'));
     await VECTOR_EXAMPLE.close();
     REPORT.stages.push('native vector/text/group-opacity example draws WebGL pixels');
+    REPORT.textureArrayExample = [];
+    for (const [NAME, OPTIONS] of [
+        ['desktop', { viewport: { width: 1000, height: 700 } }],
+        ['touch', { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 }],
+    ]) {
+        const TEXTURE_ARRAY_PAGE = await browser.newPage(OPTIONS),
+            TEXTURE_ARRAY_ERRORS = [];
+        TEXTURE_ARRAY_PAGE.on('pageerror', (error) => TEXTURE_ARRAY_ERRORS.push(error.message));
+        await TEXTURE_ARRAY_PAGE.goto(
+            `http://127.0.0.1:${SERVER.address().port}/modules/rendering/examples/texture-array/index.html`,
+        );
+        await TEXTURE_ARRAY_PAGE.waitForFunction(() => Boolean(window.textureArrayExample));
+        const LAYOUT = await TEXTURE_ARRAY_PAGE.evaluate(() => {
+            const CANVAS_RECT = document.querySelector('#scene').getBoundingClientRect();
+            return {
+                horizontalOverflow: document.documentElement.scrollWidth - window.innerWidth,
+                canvasBottom: CANVAS_RECT.bottom,
+                viewportHeight: window.innerHeight,
+                buttonHeights: [...document.querySelectorAll('button')].map((b) => b.getBoundingClientRect().height),
+            };
+        });
+        assert.ok(LAYOUT.horizontalOverflow <= 0, `${NAME}: no horizontal scroll`);
+        assert.ok(LAYOUT.canvasBottom <= LAYOUT.viewportHeight, `${NAME}: canvas inside the first screen`);
+        assert.ok(
+            LAYOUT.buttonHeights.every((height) => height >= 56),
+            `${NAME}: buttons are at least 56px tall`,
+        );
+        const ARRAY_RESULT = await TEXTURE_ARRAY_PAGE.evaluate(() => ({
+            drawCalls: window.textureArrayExample.drawCalls,
+            pixels: [...window.textureArrayExample.readPixels()],
+        }));
+        if (NAME === 'touch') {
+            await TEXTURE_ARRAY_PAGE.tap('#mode-separate');
+        } else {
+            await TEXTURE_ARRAY_PAGE.click('#mode-separate');
+        }
+        const SEPARATE_RESULT = await TEXTURE_ARRAY_PAGE.evaluate(() => ({
+            mode: window.textureArrayExample.mode,
+            drawCalls: window.textureArrayExample.drawCalls,
+            pixels: [...window.textureArrayExample.readPixels()],
+            glError: window.textureArrayExample.device.gl.getError(),
+        }));
+        assert.equal(SEPARATE_RESULT.mode, 'separate', `${NAME}: mode button switches`);
+        assert.equal(ARRAY_RESULT.drawCalls, 1, `${NAME}: array mode draws 240 sprites in one draw call`);
+        assert.ok(SEPARATE_RESULT.drawCalls >= 4, `${NAME}: separate textures split the batch per page change`);
+        assert.equal(SEPARATE_RESULT.glError, 0);
+        assert.deepEqual(ARRAY_RESULT.pixels, SEPARATE_RESULT.pixels, `${NAME}: both modes render identical pixels`);
+        assert.equal(TEXTURE_ARRAY_ERRORS.length, 0, TEXTURE_ARRAY_ERRORS.join('\n'));
+        REPORT.textureArrayExample.push({
+            name: NAME,
+            arrayDrawCalls: ARRAY_RESULT.drawCalls,
+            separateDrawCalls: SEPARATE_RESULT.drawCalls,
+        });
+        await TEXTURE_ARRAY_PAGE.close();
+    }
+    REPORT.stages.push(
+        'texture-array example: 1 draw call vs per-page textures with identical pixels, desktop and touch emulation (not real-device verification)',
+    );
     const PREVIEW_PAGE = await browser.newPage({
             viewport: {
                 width: 900,
