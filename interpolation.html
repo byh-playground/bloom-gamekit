@@ -968,6 +968,12 @@
     offset: 64 + i * 16,
     source: "instance"
   }));
+  var TEXTURE_LAYER_INSTANCE_ATTRIBUTE = Object.freeze({
+    name: "i_layer",
+    size: 1,
+    offset: 96,
+    source: "instance"
+  });
   var INSTANCE_STRIDE_FLOATS = 16;
   var INSTANCE_STRIDE_BYTES = INSTANCE_STRIDE_FLOATS * Float32Array.BYTES_PER_ELEMENT;
   var QUAD_VERTICES = new Float32Array([-1, -1, 1, -1, 1, 1, -1, -1, 1, 1, -1, 1]);

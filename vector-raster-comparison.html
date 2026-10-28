@@ -668,12 +668,14 @@ ${converted}`;
       this.maxVertexAttributes = this.gl.getParameter(this.gl.MAX_VERTEX_ATTRIBS);
       this.maxTextures = Math.min(maxTextures, this.gl.getParameter(this.gl.MAX_TEXTURE_IMAGE_UNITS));
       this.maxTextureSize = this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE);
+      this.maxArrayTextureLayers = this.gl.getParameter(this.gl.MAX_ARRAY_TEXTURE_LAYERS);
       this.depthAvailable = !!this.gl.getContextAttributes().depth;
       this.stencilAvailable = !!this.gl.getContextAttributes().stencil;
       this.state = "ready";
       this.failure = null;
       this.active = false;
       this.boundTextureCount = 0;
+      this.arrayTextureUnits = /* @__PURE__ */ new Set();
       this.pipelines = /* @__PURE__ */ new Map();
       this.buffers = /* @__PURE__ */ new Map();
       this.textures = /* @__PURE__ */ new Map();
@@ -720,12 +722,14 @@ ${converted}`;
         }
         try {
           this.boundTextureCount = 0;
+          this.arrayTextureUnits.clear();
           this.floatRenderTargetsSupported = !!this.gl.getExtension("EXT_color_buffer_float");
           this.maxTextures = Math.min(
             this.requestedMaxTextures,
             this.gl.getParameter(this.gl.MAX_TEXTURE_IMAGE_UNITS)
           );
           this.maxTextureSize = this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE);
+          this.maxArrayTextureLayers = this.gl.getParameter(this.gl.MAX_ARRAY_TEXTURE_LAYERS);
           this.maxVertexAttributes = this.gl.getParameter(this.gl.MAX_VERTEX_ATTRIBS);
           this.depthAvailable = !!this.gl.getContextAttributes().depth;
           this.stencilAvailable = !!this.gl.getContextAttributes().stencil;
@@ -1112,26 +1116,36 @@ ${converted}`;
         throw new Error("Texture allocation failed");
       }
       try {
-        GL.activeTexture(GL.TEXTURE0);
-        GL.bindTexture(GL.TEXTURE_2D, record.gpu);
-        GL.bindBuffer(GL.PIXEL_UNPACK_BUFFER, null);
+        this._bindTexture(0, record);
         this.boundTextureCount = Math.max(1, this.boundTextureCount);
-        GL.pixelStorei(GL.UNPACK_ALIGNMENT, 1);
-        GL.pixelStorei(GL.UNPACK_ROW_LENGTH, 0);
-        GL.pixelStorei(GL.UNPACK_SKIP_PIXELS, 0);
-        GL.pixelStorei(GL.UNPACK_SKIP_ROWS, 0);
-        GL.pixelStorei(GL.UNPACK_FLIP_Y_WEBGL, false);
-        GL.pixelStorei(GL.UNPACK_COLORSPACE_CONVERSION_WEBGL, GL.NONE);
-        const PIXELS = record.source === null || record.source instanceof Uint8Array || record.source instanceof Float32Array, FORMAT = record.copyFormat === "rgb" ? GL.RGB : record.format === "rgba" || record.format === "rgba32f" ? GL.RGBA : GL.LUMINANCE, INTERNAL = record.copyFormat === "rgb" ? GL.RGB8 : record.format === "rgba32f" ? GL.RGBA32F : record.format === "rgba" ? GL.RGBA8 : GL.LUMINANCE, TYPE = record.format === "rgba32f" ? GL.FLOAT : GL.UNSIGNED_BYTE;
-        GL.pixelStorei(GL.UNPACK_PREMULTIPLY_ALPHA_WEBGL, !PIXELS);
-        if (PIXELS) {
-          GL.texImage2D(GL.TEXTURE_2D, 0, INTERNAL, record.width, record.height, 0, FORMAT, TYPE, record.source);
+        this._resetUnpackState();
+        if (record.target === "array") {
+          GL.texStorage3D(GL.TEXTURE_2D_ARRAY, 1, GL.RGBA8, record.width, record.height, record.layers);
+          for (let layer = 0; layer < record.layers; layer++) {
+            this._uploadLayer(record, layer);
+          }
         } else {
-          GL.texImage2D(GL.TEXTURE_2D, 0, INTERNAL, FORMAT, TYPE, record.source);
+          const PIXELS = record.source === null || record.source instanceof Uint8Array || record.source instanceof Float32Array, FORMAT = record.copyFormat === "rgb" ? GL.RGB : record.format === "rgba" || record.format === "rgba32f" ? GL.RGBA : GL.LUMINANCE, INTERNAL = record.copyFormat === "rgb" ? GL.RGB8 : record.format === "rgba32f" ? GL.RGBA32F : record.format === "rgba" ? GL.RGBA8 : GL.LUMINANCE, TYPE = record.format === "rgba32f" ? GL.FLOAT : GL.UNSIGNED_BYTE;
+          GL.pixelStorei(GL.UNPACK_PREMULTIPLY_ALPHA_WEBGL, !PIXELS);
+          if (PIXELS) {
+            GL.texImage2D(
+              GL.TEXTURE_2D,
+              0,
+              INTERNAL,
+              record.width,
+              record.height,
+              0,
+              FORMAT,
+              TYPE,
+              record.source
+            );
+          } else {
+            GL.texImage2D(GL.TEXTURE_2D, 0, INTERNAL, FORMAT, TYPE, record.source);
+          }
         }
-        this._filter(record.filter);
-        GL.texParameteri(GL.TEXTURE_2D, GL.TEXTURE_WRAP_S, GL.CLAMP_TO_EDGE);
-        GL.texParameteri(GL.TEXTURE_2D, GL.TEXTURE_WRAP_T, GL.CLAMP_TO_EDGE);
+        this._filter(record.filter, record);
+        GL.texParameteri(this._glTarget(record), GL.TEXTURE_WRAP_S, GL.CLAMP_TO_EDGE);
+        GL.texParameteri(this._glTarget(record), GL.TEXTURE_WRAP_T, GL.CLAMP_TO_EDGE);
         const ERROR = GL.getError();
         if (ERROR !== GL.NO_ERROR) {
           throw new Error(`Texture upload error ${ERROR}`);
@@ -1148,16 +1162,91 @@ ${converted}`;
         throw error2;
       }
     }
-    _textureBytes(record) {
-      return record.width * record.height * (record.copyFormat === "rgb" ? 3 : record.format === "rgba32f" ? 16 : record.format === "rgba" ? 4 : 1);
+    /** WebGL binding point of a texture record; the record's target is the only place that decides it. */
+    _glTarget(record) {
+      return record.target === "array" ? this.gl.TEXTURE_2D_ARRAY : this.gl.TEXTURE_2D;
     }
-    _filter(filter) {
+    /** Binds a record to a texture unit; leaves that unit active. */
+    _bindTexture(unit, record) {
+      const GL = this.gl;
+      GL.activeTexture(GL.TEXTURE0 + unit);
+      GL.bindTexture(this._glTarget(record), record.gpu);
+      if (record.target === "array") {
+        this.arrayTextureUnits.add(unit);
+      }
+    }
+    /** Pixel-unpack state every CPU upload assumes; premultiply is set per upload. */
+    _resetUnpackState() {
+      const GL = this.gl;
+      GL.bindBuffer(GL.PIXEL_UNPACK_BUFFER, null);
+      GL.pixelStorei(GL.UNPACK_ALIGNMENT, 1);
+      GL.pixelStorei(GL.UNPACK_ROW_LENGTH, 0);
+      GL.pixelStorei(GL.UNPACK_SKIP_PIXELS, 0);
+      GL.pixelStorei(GL.UNPACK_SKIP_ROWS, 0);
+      GL.pixelStorei(GL.UNPACK_FLIP_Y_WEBGL, false);
+      GL.pixelStorei(GL.UNPACK_COLORSPACE_CONVERSION_WEBGL, GL.NONE);
+    }
+    /** Clears the 2D binding point, and the array binding point only if this device bound an array to the unit. */
+    _unbindTextureUnit(unit) {
+      const GL = this.gl;
+      GL.activeTexture(GL.TEXTURE0 + unit);
+      GL.bindTexture(GL.TEXTURE_2D, null);
+      if (this.arrayTextureUnits.delete(unit)) {
+        GL.bindTexture(GL.TEXTURE_2D_ARRAY, null);
+      }
+    }
+    /** Uploads one retained layer of the array bound to the active unit; empty layers stay transparent. */
+    _uploadLayer(record, layer) {
+      const GL = this.gl, LAYER = record.layerSources[layer];
+      if (LAYER === null) {
+        return;
+      }
+      const PIXELS = LAYER.source instanceof Uint8Array;
+      GL.pixelStorei(GL.UNPACK_PREMULTIPLY_ALPHA_WEBGL, !PIXELS);
+      if (PIXELS) {
+        GL.texSubImage3D(
+          GL.TEXTURE_2D_ARRAY,
+          0,
+          0,
+          0,
+          layer,
+          record.width,
+          record.height,
+          1,
+          GL.RGBA,
+          GL.UNSIGNED_BYTE,
+          LAYER.source
+        );
+      } else {
+        GL.texSubImage3D(
+          GL.TEXTURE_2D_ARRAY,
+          0,
+          0,
+          0,
+          layer,
+          record.width,
+          record.height,
+          1,
+          GL.RGBA,
+          GL.UNSIGNED_BYTE,
+          LAYER.source
+        );
+      }
+      this.stats.textureUploads++;
+      this.stats.textureBytes += record.width * record.height * 4;
+      this.stats.imageTexUploadCount++;
+      this.stats.imageTexUploadBytes += record.width * record.height * 4;
+    }
+    _textureBytes(record) {
+      return record.width * record.height * (record.layers ?? 1) * (record.copyFormat === "rgb" ? 3 : record.format === "rgba32f" ? 16 : record.format === "rgba" ? 4 : 1);
+    }
+    _filter(filter, record) {
       if (filter !== "nearest" && filter !== "linear") {
         throw new TypeError("filter must be nearest or linear");
       }
-      const GL = this.gl, VALUE = filter === "nearest" ? GL.NEAREST : GL.LINEAR;
-      GL.texParameteri(GL.TEXTURE_2D, GL.TEXTURE_MIN_FILTER, VALUE);
-      GL.texParameteri(GL.TEXTURE_2D, GL.TEXTURE_MAG_FILTER, VALUE);
+      const GL = this.gl, TARGET = this._glTarget(record), VALUE = filter === "nearest" ? GL.NEAREST : GL.LINEAR;
+      GL.texParameteri(TARGET, GL.TEXTURE_MIN_FILTER, VALUE);
+      GL.texParameteri(TARGET, GL.TEXTURE_MAG_FILTER, VALUE);
     }
     _renderTarget(record) {
       const GL = this.gl, PREVIOUS = GL.getParameter(GL.FRAMEBUFFER_BINDING), PREVIOUS_RENDERBUFFER = GL.getParameter(GL.RENDERBUFFER_BINDING), FRAMEBUFFER_LOCAL = GL.createFramebuffer();
@@ -1339,6 +1428,72 @@ ${converted}`;
       this.stats.gpuTextureBytes += this._textureBytes(RECORD);
       return HANDLE;
     }
+    /**
+     * One TEXTURE_2D_ARRAY of equally sized RGBA layers, bound as a single sampler2DArray. Every layer is allocated
+     * up front, so memory is width * height * 4 * layers regardless of how much of each layer an atlas fills;
+     * unused layers and unused layer area stay transparent.
+     */
+    createTextureArray(width, height, layers, { filter = "linear" } = {}) {
+      this._ready();
+      integer(width, "texture array width", 1, this.maxTextureSize);
+      integer(height, "texture array height", 1, this.maxTextureSize);
+      integer(layers, "texture array layers", 1, this.maxArrayTextureLayers);
+      if (filter !== "nearest" && filter !== "linear") {
+        throw new TypeError("Invalid filter");
+      }
+      const RECORD = {
+        kind: "imageArray",
+        target: "array",
+        width,
+        height,
+        layers,
+        layerSources: new Array(layers).fill(null),
+        format: "rgba",
+        premultiplied: true,
+        source: null,
+        filter,
+        gpu: null
+      };
+      this._texture(RECORD);
+      const HANDLE = Object.freeze({ width, height, layers });
+      this.textures.set(HANDLE, RECORD);
+      this.stats.textureCount = this.textures.size;
+      this.stats.gpuTextureBytes += this._textureBytes(RECORD);
+      return HANDLE;
+    }
+    /** Replaces one whole layer; the source must have the array's width and height. */
+    updateTextureLayer(handle, layer, source, { premultiplied = false } = {}) {
+      this._ready();
+      const R = this._handle(this.textures, handle, "texture array");
+      if (R.target !== "array") {
+        throw new TypeError("A texture array is required");
+      }
+      integer(layer, "layer", 0, R.layers - 1);
+      const NEXT = this._source(source, "rgba", premultiplied);
+      if (NEXT.width !== R.width || NEXT.height !== R.height || NEXT.source === null) {
+        throw new RangeError("Layer source must supply every pixel at the array width and height");
+      }
+      const PREVIOUS = R.layerSources[layer];
+      R.layerSources[layer] = NEXT;
+      try {
+        this._bindTexture(0, R);
+        this.boundTextureCount = Math.max(1, this.boundTextureCount);
+        this._resetUnpackState();
+        this._uploadLayer(R, layer);
+        if (this.checkGLErrors) {
+          const ERROR = this.gl.getError();
+          if (ERROR !== this.gl.NO_ERROR) {
+            throw new Error(`Texture layer upload error ${ERROR}`);
+          }
+        }
+      } catch (error2) {
+        R.layerSources[layer] = PREVIOUS;
+        throw error2;
+      }
+    }
+    isTextureArray(handle) {
+      return this._handle(this.textures, handle, "texture").target === "array";
+    }
     /** Retained RGBA32F pixels; usable for sampling without float render-target support. */
     createDataTexture(width, height, { data = null } = {}) {
       this._ready();
@@ -1382,8 +1537,7 @@ ${converted}`;
         throw new TypeError("RGBA32F region data must match dimensions");
       }
       const GL = this.gl;
-      GL.activeTexture(GL.TEXTURE0);
-      GL.bindTexture(GL.TEXTURE_2D, R.gpu);
+      this._bindTexture(0, R);
       GL.bindBuffer(GL.PIXEL_UNPACK_BUFFER, null);
       this.boundTextureCount = Math.max(1, this.boundTextureCount);
       GL.pixelStorei(GL.UNPACK_ALIGNMENT, 1);
@@ -1410,6 +1564,9 @@ ${converted}`;
       }
       if (R.format === "rgba32f") {
         throw new TypeError("Use updateDataTexture for RGBA32F pixels");
+      }
+      if (R.target === "array") {
+        throw new TypeError("Use updateTextureLayer for texture arrays");
       }
       integer(x, "x");
       integer(y, "y");
@@ -1472,8 +1629,7 @@ ${converted}`;
         }
         GL.pixelStorei(GL.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
       }
-      GL.activeTexture(GL.TEXTURE0);
-      GL.bindTexture(GL.TEXTURE_2D, R.gpu);
+      this._bindTexture(0, R);
       GL.bindBuffer(GL.PIXEL_UNPACK_BUFFER, null);
       this.boundTextureCount = Math.max(1, this.boundTextureCount);
       GL.pixelStorei(GL.UNPACK_ALIGNMENT, 1);
@@ -1503,14 +1659,16 @@ ${converted}`;
       if (this.renderTargets.has(handle)) {
         throw new Error("Render targets cannot be copied from the default framebuffer");
       }
+      if (R.target === "array") {
+        throw new TypeError("Texture arrays cannot receive a framebuffer copy");
+      }
       integer(x, "x");
       integer(y, "y");
       if (R.format !== "rgba" || x + R.width > this.canvas.width || y + R.height > this.canvas.height) {
         throw new RangeError("Framebuffer copy outside bounds");
       }
       const GL = this.gl;
-      GL.activeTexture(GL.TEXTURE0);
-      GL.bindTexture(GL.TEXTURE_2D, R.gpu);
+      this._bindTexture(0, R);
       this.boundTextureCount = Math.max(1, this.boundTextureCount);
       let allocated = false;
       if (!GL.getContextAttributes().alpha && R.copyFormat !== "rgb") {
@@ -1782,11 +1940,12 @@ ${converted}`;
         }
         const TEXTURE_UNITS = Math.max(this.boundTextureCount, textures.length);
         for (let i = 0; i < TEXTURE_UNITS; i++) {
-          GL.activeTexture(GL.TEXTURE0 + i);
-          const R = i < textures.length ? this.textures.get(textures[i]) : null;
-          GL.bindTexture(GL.TEXTURE_2D, R?.gpu ?? null);
-          if (R) {
-            this._filter(filter ?? R.filter);
+          if (i < textures.length) {
+            const R = this.textures.get(textures[i]);
+            this._bindTexture(i, R);
+            this._filter(filter ?? R.filter, R);
+          } else {
+            this._unbindTextureUnit(i);
           }
         }
         if (TEXTURE_UNITS) {
@@ -1867,8 +2026,7 @@ ${converted}`;
       GL.bindBuffer(GL.ELEMENT_ARRAY_BUFFER, null);
       GL.bindRenderbuffer(GL.RENDERBUFFER, null);
       for (let i = 0; i < this.maxTextures; i++) {
-        GL.activeTexture(GL.TEXTURE0 + i);
-        GL.bindTexture(GL.TEXTURE_2D, null);
+        this._unbindTextureUnit(i);
       }
       GL.activeTexture(GL.TEXTURE0);
       for (const R of this.pipelines.values()) {
@@ -2611,7 +2769,15 @@ void main(){int col=int(gl_FragCoord.x),row=int(gl_FragCoord.y),part=col/3,compo
     offset: 64 + i * 16,
     source: "instance"
   }));
-  function shader(instanced, partCount, morphCount, clipped, nonScalingStroke, worldMode = false, textured = false, poseTexture = false, paintRegionCount = 0) {
+  var PLAIN_INSTANCE_FLOATS = 16;
+  var TEXTURED_INSTANCE_FLOATS = 25;
+  var TEXTURE_LAYER_INSTANCE_ATTRIBUTE = Object.freeze({
+    name: "i_layer",
+    size: 1,
+    offset: 96,
+    source: "instance"
+  });
+  function shader(instanced, partCount, morphCount, clipped, nonScalingStroke, worldMode = false, textured = false, poseTexture = false, paintRegionCount = 0, textureArray = false) {
     const PAINT_INPUT = paintRegionCount ? `attribute float a_paintRegion;uniform vec4 u_paintRegions[${paintRegionCount + 1}];` : "", PAINT_COLOR = paintRegionCount ? "vec4 authored=a_color;vec4 paint=u_paintRegions[int(a_paintRegion)];authored.rgb=mix(authored.rgb,paint.rgb,paint.a);" : "", BASE_COLOR = paintRegionCount ? "authored" : "a_color";
     const PART_POSE = partCount > 1 || poseTexture;
     const PART_INPUTS = PART_POSE ? `${partCount > 1 ? "attribute float a_part;" : ""}uniform vec4 u_parts[${partCount * 3}];` : "";
@@ -2620,7 +2786,9 @@ void main(){int col=int(gl_FragCoord.x),row=int(gl_FragCoord.y),part=col/3,compo
     const LOCAL = morphCount ? "a_position+a_morph.xy*(i_params.x" + (PART_POSE ? "+pose.x" : "") + ")" + (morphCount > 1 ? "+a_morph.zw*(i_params.y" + (PART_POSE ? "+pose.y" : "") + ")" : "") : "a_position";
     const STROKE_INPUTS = nonScalingStroke ? "attribute vec4 a_stroke;uniform vec2 u_strokeViewportSize;" : "";
     const STROKE_VARYING = clipped && nonScalingStroke ? "uniform mat3 u_inverseProjection;" : "";
-    const TEXTURE_INPUTS = textured ? `attribute highp vec2 a_uv;${instanced ? "attribute" : "uniform"} highp vec4 i_uvRect;${instanced ? "attribute" : "uniform"} vec4 i_localRect;varying highp vec2 v_uv;varying float v_forceColor;varying float v_whiteFlash;` : "";
+    const LAYER_INPUTS = textureArray ? `${instanced ? "attribute" : "uniform"} highp float i_layer;varying highp float v_layer;` : "";
+    const LAYER_OUTPUT = textureArray ? "v_layer=i_layer;" : "";
+    const TEXTURE_INPUTS = textured ? `attribute highp vec2 a_uv;${instanced ? "attribute" : "uniform"} highp vec4 i_uvRect;${instanced ? "attribute" : "uniform"} vec4 i_localRect;varying highp vec2 v_uv;varying float v_forceColor;varying float v_whiteFlash;${LAYER_INPUTS}` : "";
     const RECT_LOCAL = textured ? "local=i_localRect.xy+local*i_localRect.zw;" : "";
     const STROKE_POSITION = nonScalingStroke ? `
 vec2 tangentLocal=local+a_stroke.xy${textured ? "*i_localRect.zw" : ""};
@@ -2659,7 +2827,7 @@ vec2 local=${LOCAL};${RECT_LOCAL}vec2 plane=${PART_POSE ? "vec2(dot(row0.xyz,vec
 vec3 world=vec3(dot(i_row0.xyz,vec3(plane,1.0)),dot(i_row1.xyz,vec3(plane,1.0)),dot(i_row2.xyz,vec3(plane,1.0)));
 vec4 projected=u_viewProjection*vec4(world,1.0);${clipped ? "v_position=world.xy;" : ""}${WORLD_STROKE}
 projected.z+=(i_params.w+${PART_POSE ? "pose.w" : "0.0"})*projected.w;gl_Position=projected;
-${PAINT_COLOR}vec4 color=mix(${BASE_COLOR}*u_color,u_color,i_row1.w);color.a*=i_row0.w${PART_POSE ? "*pose.z" : ""};color.rgb=mix(color.rgb,vec3(1.0),i_row2.w);v_color=vec4(color.rgb*color.a,color.a);${textured ? "v_uv=i_uvRect.xy+a_uv*i_uvRect.zw;v_forceColor=i_row1.w;v_whiteFlash=i_row2.w;" : ""}
+${PAINT_COLOR}vec4 color=mix(${BASE_COLOR}*u_color,u_color,i_row1.w);color.a*=i_row0.w${PART_POSE ? "*pose.z" : ""};color.rgb=mix(color.rgb,vec3(1.0),i_row2.w);v_color=vec4(color.rgb*color.a,color.a);${textured ? `v_uv=i_uvRect.xy+a_uv*i_uvRect.zw;v_forceColor=i_row1.w;v_whiteFlash=i_row2.w;${LAYER_OUTPUT}` : ""}
 }`;
     }
     return `attribute vec2 a_position; attribute vec4 a_color; ${morphCount ? "attribute vec4 a_morph;" : ""} ${PART_INPUTS}
@@ -2671,11 +2839,13 @@ vec2 world=vec2(dot(i_row0.xyz,vec3(p,1.0)),dot(i_row1.xyz,vec3(p,1.0)));
 vec3 projected=u_projection*vec3(world,1.0);${clipped ? "v_position=world;" : ""}${STROKE_POSITION}
 gl_Position=vec4(projected.xy,(i_params.w+${PART_POSE ? "pose.w" : "0.0"})*projected.z,projected.z);
 ${PAINT_COLOR}vec4 color=mix(${BASE_COLOR}*i_color,i_color,i_row1.w);color.a*=i_row0.w${PART_POSE ? "*pose.z" : ""};
-color.rgb=mix(color.rgb,vec3(1.0),i_params.z);v_color=vec4(color.rgb*color.a,color.a);${textured ? "v_uv=i_uvRect.xy+a_uv*i_uvRect.zw;v_forceColor=i_row1.w;v_whiteFlash=i_params.z;" : ""}}`;
+color.rgb=mix(color.rgb,vec3(1.0),i_params.z);v_color=vec4(color.rgb*color.a,color.a);${textured ? `v_uv=i_uvRect.xy+a_uv*i_uvRect.zw;v_forceColor=i_row1.w;v_whiteFlash=i_params.z;${LAYER_OUTPUT}` : ""}}`;
   }
-  function fragment(maxPlanes, clipped, textured = false) {
-    const TEXTURE_INPUTS = textured ? "uniform sampler2D u_texture;varying highp vec2 v_uv;varying float v_forceColor;varying float v_whiteFlash;" : "";
-    const OUTPUT = textured ? "vec4 sampleColor=texture2D(u_texture,v_uv);float alpha=sampleColor.a*v_color.a;vec3 rgb=v_whiteFlash>0.5?vec3(alpha):v_forceColor>0.5?sampleColor.a*v_color.rgb:sampleColor.rgb*v_color.rgb;gl_FragColor=vec4(rgb,alpha);" : "gl_FragColor=v_color;";
+  function fragment(maxPlanes, clipped, textured = false, textureArray = false) {
+    const SAMPLER = textureArray ? "precision mediump sampler2DArray;uniform sampler2DArray u_texture;varying highp float v_layer;" : "uniform sampler2D u_texture;";
+    const TEXTURE_INPUTS = textured ? `${SAMPLER}varying highp vec2 v_uv;varying float v_forceColor;varying float v_whiteFlash;` : "";
+    const TEXEL = textureArray ? "texture2D(u_texture,vec3(v_uv,floor(v_layer+0.5)))" : "texture2D(u_texture,v_uv)";
+    const OUTPUT = textured ? `vec4 sampleColor=${TEXEL};float alpha=sampleColor.a*v_color.a;vec3 rgb=v_whiteFlash>0.5?vec3(alpha):v_forceColor>0.5?sampleColor.a*v_color.rgb:sampleColor.rgb*v_color.rgb;gl_FragColor=vec4(rgb,alpha);` : "gl_FragColor=v_color;";
     if (!clipped) {
       return `precision mediump float;varying vec4 v_color;${TEXTURE_INPUTS}void main(){${OUTPUT}}`;
     }
@@ -2927,7 +3097,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       }
       this.maxPlanes = Math.max(1, Math.min(32, device.gl.getParameter(device.gl.MAX_FRAGMENT_UNIFORM_VECTORS) - 2));
       this.instanced = device.instancingSupported === true;
-      this.maxTexturedInstances = this.instanced ? Math.min(maxInstances, Math.floor(device.maxBufferBytes / 96)) : maxInstances;
+      this.maxTexturedInstances = this.instanced ? Math.min(maxInstances, Math.floor(device.maxBufferBytes / (TEXTURED_INSTANCE_FLOATS * 4))) : maxInstances;
       this.instances = new Float32Array(maxInstances * 16);
       this.texturedInstances = null;
       this.instanceBuffer = this.instanced ? device.createVertexBuffer({
@@ -3056,8 +3226,8 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
     poseStats() {
       return this.poseRenderer?.stats() ?? null;
     }
-    _pipeline(mesh, clipped, worldMode = false, poseTexture = false) {
-      const KEY = mesh.partCount + ":" + mesh.morphCount + ":" + Number(clipped) + ":" + Number(mesh.hasNonScalingStroke) + ":" + Number(worldMode) + ":" + Number(poseTexture) + ":" + Number(mesh.hasTextureCoordinates) + ":" + (mesh.paintRegionNames?.length ?? 0);
+    _pipeline(mesh, clipped, worldMode = false, poseTexture = false, textureArray = false) {
+      const KEY = Number(textureArray) + ":" + mesh.partCount + ":" + mesh.morphCount + ":" + Number(clipped) + ":" + Number(mesh.hasNonScalingStroke) + ":" + Number(worldMode) + ":" + Number(poseTexture) + ":" + Number(mesh.hasTextureCoordinates) + ":" + (mesh.paintRegionNames?.length ?? 0);
       let pipeline = this.pipelines.get(KEY);
       if (pipeline) {
         return pipeline;
@@ -3093,6 +3263,9 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
         if (!this.instanced) {
           UNIFORMS2.i_uvRect = "4f";
           UNIFORMS2.i_localRect = "4f";
+          if (textureArray) {
+            UNIFORMS2.i_layer = "1f";
+          }
         }
       }
       if (mesh.paintRegionNames) {
@@ -3114,13 +3287,14 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
             worldMode,
             mesh.hasTextureCoordinates,
             poseTexture,
-            mesh.paintRegionNames?.length ?? 0
+            mesh.paintRegionNames?.length ?? 0,
+            textureArray
           )
         ),
-        fragment: fragment(this.maxPlanes, clipped, mesh.hasTextureCoordinates),
+        fragment: fragment(this.maxPlanes, clipped, mesh.hasTextureCoordinates, textureArray),
         stride: mesh.bufferStrideFloats * 4,
         ...this.instanced ? {
-          instanceStride: mesh.hasTextureCoordinates ? 96 : 64
+          instanceStride: (mesh.hasTextureCoordinates ? TEXTURED_INSTANCE_FLOATS : PLAIN_INSTANCE_FLOATS) * 4
         } : {},
         attributes: [
           ...mesh.paintRegionNames ? [{ name: "a_paintRegion", size: 1, offset: 44 }] : [],
@@ -3140,7 +3314,8 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
             }
           ] : [],
           ...this.instanced ? worldMode ? WORLD_INSTANCE_ATTRIBUTES : INSTANCE_ATTRIBUTES : [],
-          ...this.instanced && mesh.hasTextureCoordinates ? TEXTURE_INSTANCE_ATTRIBUTES : []
+          ...this.instanced && mesh.hasTextureCoordinates ? TEXTURE_INSTANCE_ATTRIBUTES : [],
+          ...this.instanced && textureArray ? [TEXTURE_LAYER_INSTANCE_ATTRIBUTE] : []
         ],
         uniforms: UNIFORMS2
       });
@@ -3335,6 +3510,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
         parts: PARTS = null,
         pose: POSE = null,
         texture: TEXTURE = null,
+        layer: LAYER = 0,
         uvRect: UV_RECT = IDENTITY_RECT,
         localRect: LOCAL_RECT = IDENTITY_RECT,
         color: COLOR = WHITE,
@@ -3365,6 +3541,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
         parts: PARTS,
         pose: POSE,
         texture: TEXTURE,
+        layer: LAYER,
         uvRect: UV_RECT,
         localRect: LOCAL_RECT,
         color: COLOR,
@@ -3565,6 +3742,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       parts = null,
       pose = null,
       texture = null,
+      layer = 0,
       uvRect = IDENTITY_RECT,
       localRect = IDENTITY_RECT,
       color: color2 = WHITE,
@@ -3592,6 +3770,14 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       }
       if (mesh.hasTextureCoordinates !== (texture !== null) || texture !== null && !this.device.textures.has(texture)) {
         throw new TypeError("Textured meshes require a live texture; plain meshes cannot sample one");
+      }
+      const TEXTURE_ARRAY = texture !== null && this.device.isTextureArray(texture);
+      if (TEXTURE_ARRAY) {
+        if (!Number.isInteger(layer) || layer < 0 || layer >= texture.layers) {
+          throw new RangeError(`layer must be an integer in 0..${texture.layers - 1}`);
+        }
+      } else if (layer !== 0) {
+        throw new TypeError("layer requires a texture array");
       }
       if (uvRect !== IDENTITY_RECT) {
         finiteArray2(uvRect, 4, "uvRect");
@@ -3735,8 +3921,8 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       const ALPHA_DEPTH_WRITE = depthWrite && depthWriteAlphaThreshold !== null;
       if (!ALPHA_DEPTH_WRITE) {
         const INSTANCE_LIMIT = mesh.hasTextureCoordinates ? this.maxTexturedInstances : this.maxInstances;
-        const INSTANCE_FLOATS = mesh.hasTextureCoordinates ? 24 : 16;
-        const DATA2 = mesh.hasTextureCoordinates ? this.texturedInstances ??= new Float32Array(this.maxTexturedInstances * 24) : this.instances;
+        const INSTANCE_FLOATS = mesh.hasTextureCoordinates ? TEXTURED_INSTANCE_FLOATS : PLAIN_INSTANCE_FLOATS;
+        const DATA2 = mesh.hasTextureCoordinates ? this.texturedInstances ??= new Float32Array(this.maxTexturedInstances * TEXTURED_INSTANCE_FLOATS) : this.instances;
         if (this.alphaQueueCount) {
           this._flushAlphaQueue("alphaBoundary");
         }
@@ -3847,6 +4033,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
           if (mesh.hasTextureCoordinates) {
             DATA2.set(uvRect, AT + 16);
             DATA2.set(localRect, AT + 20);
+            DATA2[AT + 24] = layer;
           }
         }
         return;
@@ -4223,7 +4410,13 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       if (POSE_TEXTURE) {
         this.poseRenderer.flushUpdates();
       }
-      const PIPELINE = this._pipeline(MESH, CLIP.count > 0, WORLD_MODE, !!POSE_TEXTURE), UNIFORMS2 = WORLD_MODE ? {
+      const PIPELINE = this._pipeline(
+        MESH,
+        CLIP.count > 0,
+        WORLD_MODE,
+        !!POSE_TEXTURE,
+        TEXTURE !== null && this.device.isTextureArray(TEXTURE)
+      ), UNIFORMS2 = WORLD_MODE ? {
         u_viewProjection: PROJECTION,
         u_color: COLOR
       } : {
@@ -4258,7 +4451,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       }
       const TEXTURES = POSE_TEXTURE ? TEXTURE ? [POSE_TEXTURE, TEXTURE] : [POSE_TEXTURE] : TEXTURE ? [TEXTURE] : [];
       const INSTANCE_UNIFORMS = WORLD_MODE ? ["i_row0", "i_row1", "i_row2", "i_params"] : ["i_row0", "i_row1", "i_color", "i_params"];
-      const INSTANCE_FLOATS = MESH.hasTextureCoordinates ? 24 : 16;
+      const INSTANCE_FLOATS = MESH.hasTextureCoordinates ? TEXTURED_INSTANCE_FLOATS : PLAIN_INSTANCE_FLOATS;
       const INSTANCE_DATA = MESH.hasTextureCoordinates ? this.texturedInstances : this.instances;
       if (this.instanced) {
         this.device.uploadVertices(this.instanceBuffer, INSTANCE_DATA.subarray(0, this.count * INSTANCE_FLOATS));
@@ -4296,8 +4489,11 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
             );
           }
           if (MESH.hasTextureCoordinates) {
-            UNIFORMS2.i_uvRect = INSTANCE_DATA.subarray(i * 24 + 16, i * 24 + 20);
-            UNIFORMS2.i_localRect = INSTANCE_DATA.subarray(i * 24 + 20, i * 24 + 24);
+            UNIFORMS2.i_uvRect = INSTANCE_DATA.subarray(i * INSTANCE_FLOATS + 16, i * INSTANCE_FLOATS + 20);
+            UNIFORMS2.i_localRect = INSTANCE_DATA.subarray(i * INSTANCE_FLOATS + 20, i * INSTANCE_FLOATS + 24);
+            if (TEXTURE !== null && this.device.isTextureArray(TEXTURE)) {
+              UNIFORMS2.i_layer = INSTANCE_DATA[i * INSTANCE_FLOATS + 24];
+            }
           }
           this.device.draw({
             pipeline: PIPELINE,
@@ -4459,6 +4655,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
     }
     const ATLAS_WIDTH = texture.width;
     const ATLAS_HEIGHT = texture.height;
+    const LAYER_COUNT = meshRenderer.device.isTextureArray(texture) ? texture.layers : 1;
     const INPUT_FRAMES = definition?.frames;
     const INPUT_CLIPS = definition?.clips;
     const TEXTURE_ORIGIN = definition?.textureOrigin ?? "top-left";
@@ -4504,7 +4701,9 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       const PIVOT_X = FRAME?.pivotX ?? definition.pivotX ?? 0;
       const PIVOT_Y = FRAME?.pivotY ?? definition.pivotY ?? 0;
       const DURATION_MS = FRAME?.durationMs;
+      const LAYER = FRAME?.layer ?? 0;
       for (const [NAME, VALUE, MINIMUM] of [
+        ["frame layer", LAYER, 0],
         ["frame x", X, 0],
         ["frame y", Y, 0],
         ["frame width", WIDTH, 1],
@@ -4516,6 +4715,9 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
         ["source y", SOURCE_Y, 0]
       ]) {
         INTEGER(VALUE, NAME, MINIMUM);
+      }
+      if (LAYER >= LAYER_COUNT) {
+        throw new RangeError("Sprite frame layer exceeds the texture layer count");
       }
       if (X - GUTTER < 0 || Y - GUTTER < 0 || X + WIDTH + GUTTER > ATLAS_WIDTH || Y + HEIGHT + GUTTER > ATLAS_HEIGHT || SOURCE_X + WIDTH > SOURCE_WIDTH || SOURCE_Y + HEIGHT > SOURCE_HEIGHT) {
         throw new RangeError("Sprite frame, its gutter, or its trim exceeds its atlas/source viewport");
@@ -4534,12 +4736,14 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       FRAME_RECTS.push(
         Object.freeze({
           localRect: Object.freeze([LEFT, TOP, WIDTH, HEIGHT]),
-          uvRect: Object.freeze([U0, V0, WIDTH / ATLAS_WIDTH, V1 - V0])
+          uvRect: Object.freeze([U0, V0, WIDTH / ATLAS_WIDTH, V1 - V0]),
+          layer: LAYER
         })
       );
       FRAMES.push(
         Object.freeze({
           index,
+          layer: LAYER,
           x: X,
           y: Y,
           width: WIDTH,
@@ -9491,6 +9695,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
     }
     const ATLAS_WIDTH = texture.width;
     const ATLAS_HEIGHT = texture.height;
+    const LAYER_COUNT = meshRenderer.device.isTextureArray(texture) ? texture.layers : 1;
     const INPUT_FRAMES = definition?.frames;
     const INPUT_CLIPS = definition?.clips;
     const TEXTURE_ORIGIN = definition?.textureOrigin ?? "top-left";
@@ -9536,7 +9741,9 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       const PIVOT_X = FRAME?.pivotX ?? definition.pivotX ?? 0;
       const PIVOT_Y = FRAME?.pivotY ?? definition.pivotY ?? 0;
       const DURATION_MS = FRAME?.durationMs;
+      const LAYER = FRAME?.layer ?? 0;
       for (const [NAME, VALUE, MINIMUM] of [
+        ["frame layer", LAYER, 0],
         ["frame x", X, 0],
         ["frame y", Y, 0],
         ["frame width", WIDTH, 1],
@@ -9548,6 +9755,9 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
         ["source y", SOURCE_Y, 0]
       ]) {
         INTEGER(VALUE, NAME, MINIMUM);
+      }
+      if (LAYER >= LAYER_COUNT) {
+        throw new RangeError("Sprite frame layer exceeds the texture layer count");
       }
       if (X - GUTTER < 0 || Y - GUTTER < 0 || X + WIDTH + GUTTER > ATLAS_WIDTH || Y + HEIGHT + GUTTER > ATLAS_HEIGHT || SOURCE_X + WIDTH > SOURCE_WIDTH || SOURCE_Y + HEIGHT > SOURCE_HEIGHT) {
         throw new RangeError("Sprite frame, its gutter, or its trim exceeds its atlas/source viewport");
@@ -9566,12 +9776,14 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       FRAME_RECTS.push(
         Object.freeze({
           localRect: Object.freeze([LEFT, TOP, WIDTH, HEIGHT]),
-          uvRect: Object.freeze([U0, V0, WIDTH / ATLAS_WIDTH, V1 - V0])
+          uvRect: Object.freeze([U0, V0, WIDTH / ATLAS_WIDTH, V1 - V0]),
+          layer: LAYER
         })
       );
       FRAMES.push(
         Object.freeze({
           index,
+          layer: LAYER,
           x: X,
           y: Y,
           width: WIDTH,
