@@ -8824,6 +8824,87 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
   var DEFAULT_LIMIT_BYTES = 32 * 1024 * 1024;
   var IDENTITY4 = Object.freeze([1, 0, 0, 1, 0, 0]);
   var WHITE3 = Object.freeze([1, 1, 1, 1]);
+  var STITCH_FIELD_EXTENT = 0.8;
+  var STITCH_FIELD_MAX_DISTANCE = 0.25;
+  var YARN_FRAGMENT_BODY = `
+vec3 shadeYarnFill(vec3 base) {
+  float stitchWidth = abs(u_effect0.y), stitchHeight = u_effect0.z;
+  if (u_effect0.w < 0.0 || stitchWidth <= 0.0 || stitchHeight <= 0.0) return base;
+  float cols = max(2.0, ceil(u_bounds.z / stitchWidth));
+  float rows = max(2.0, ceil(u_bounds.w / stitchHeight));
+  float sx = u_bounds.z / cols, sy = u_bounds.w / rows;
+  vec2 local = v_position;
+  if (u_effect3.z > 0.5) {
+    float rx = max(u_bounds.z * 0.5, 0.0001), ry = max(u_bounds.w * 0.5, 0.0001);
+    float nx = clamp((local.x - (u_bounds.x + rx)) / rx, -1.35, 1.35);
+    float ny = (local.y - (u_bounds.y + ry)) / ry;
+    local.x += (sin(nx * 1.1) / 0.89120736 - nx) * rx;
+    local.y += ry * 0.13 * nx * nx * (1.0 - ny * 0.24);
+  }
+  vec2 cell = (local - u_bounds.xy) / vec2(sx, sy);
+  vec2 index = floor(cell);
+  float jitterX = (hashCell(index, 71.0) - 0.5) * u_effect1.x;
+  float jitterY = (hashCell(index, 39.0) - 0.5) * u_effect1.x;
+  float scaleX = 1.0 + (hashCell(index, 57.0) - 0.5) * u_effect1.x;
+  float scaleY = 1.0 + (hashCell(index, 91.0) - 0.5) * u_effect1.x;
+  vec2 p = (fract(cell) - vec2(0.5 + jitterX, 0.5 + jitterY)) / vec2(scaleX, scaleY);
+  p *= vec2(sx, sy);
+  float stroke = min(sx, sy) * (abs(u_effect0.w) / stitchHeight);
+  vec2 cellSize = vec2(sx, sy);
+  float fieldScale = ${STITCH_FIELD_MAX_DISTANCE.toFixed(4)} * sqrt(sx * sy);
+  vec2 qBase = p / cellSize;
+  vec2 grooveShift = vec2(0.0, stroke * 0.06) / cellSize;
+  vec2 lightShift = vec2(stroke * 0.14, stroke * 0.13) / cellSize;
+  vec4 fieldMain = texture2D(u_stitchField, (qBase + ${STITCH_FIELD_EXTENT.toFixed(4)}) / ${(STITCH_FIELD_EXTENT * 2).toFixed(4)});
+  vec4 fieldGroove = texture2D(u_stitchField, (qBase - grooveShift + ${STITCH_FIELD_EXTENT.toFixed(4)}) / ${(STITCH_FIELD_EXTENT * 2).toFixed(4)});
+  vec4 fieldLight = texture2D(u_stitchField, (qBase + lightShift + ${STITCH_FIELD_EXTENT.toFixed(4)}) / ${(STITCH_FIELD_EXTENT * 2).toFixed(4)});
+  float under = lineMask(fieldGroove.g * fieldScale, stroke*0.5) * 0.5;
+  float groove = lineMask(fieldGroove.r * fieldScale, stroke*1.08) * 0.85;
+  float yarn = lineMask(fieldMain.r * fieldScale, stroke*0.89);
+  float light = lineMask(fieldLight.r * fieldScale, stroke*0.34) * 0.57;
+  float twist = 0.0;
+  if (mod(index.x + index.y, 2.0) < 1.0) {
+    twist = lineMask(fieldMain.b * fieldScale, stroke*0.075) * 0.5;
+  }
+  vec3 dark = tintTo(base,-0.28), grooveColor = tintTo(base,-u_effect1.y);
+  vec3 yarnColor = tintTo(base,0.10), highlight = tintTo(base,0.38);
+  vec3 color = mix(base,dark,under);
+  color = mix(color,grooveColor,groove);
+  color = mix(color,yarnColor,yarn);
+  color = mix(color,highlight,max(light*0.57,twist));
+  return color;
+}
+void shadeYarnEdge(inout vec3 rgb, float alpha) {
+  float radial = v_surface.z;
+  float along = v_surface.y * u_effect3.y;
+  float edgeWidth = u_effect1.w;
+  float lobe = fract(along / max(u_effect1.z, 0.001));
+  float relief = min(u_effect3.w, edgeWidth * 0.75);
+  float wave = sin(lobe * 6.2831853) * relief * 0.35;
+  float seam = lineMask(abs(radial - wave),edgeWidth*0.56);
+  float seamDark = lineMask(abs(radial - wave - edgeWidth*0.06),edgeWidth*0.8)*0.7;
+  float seamLight = lineMask(abs(radial - wave + edgeWidth*0.09),edgeWidth*0.17)*0.55;
+  float spacing = max(u_effect2.x,0.001);
+  float fiberIndex = floor(along / spacing);
+  float jitter = hashCell(vec2(fiberIndex,0.0),22.0);
+  float start = spacing * (fiberIndex + 0.22 + jitter * 0.48);
+  float randomLength = 0.45 + hashCell(vec2(fiberIndex,0.0),5.0) * 0.95;
+  float lengthLimit = min(u_effect2.y,max(u_bounds.z,u_bounds.w)*0.12)*randomLength;
+  float lean = (hashCell(vec2(fiberIndex,0.0),14.0)-0.5)*lengthLimit*1.5;
+  float alongDistance = abs(along - start - lean * clamp(radial/max(lengthLimit,0.001),0.0,1.0));
+  float fiber = 0.0;
+  if (u_effect3.x > 0.0 && fiberIndex < u_effect3.x && radial >= 0.0 && radial <= lengthLimit) {
+    fiber = lineMask(alongDistance,u_effect2.z);
+  }
+  float coverage = max(max(seam,seamDark*0.6),max(seamLight,fiber*u_effect2.w));
+  if (coverage < 0.012) discard;
+  vec3 dark=tintTo(rgb,-0.28), yarn=tintTo(rgb,0.10), light=tintTo(rgb,0.38);
+  rgb=mix(rgb,dark,seamDark*0.7);
+  rgb=mix(rgb,yarn,seam);
+  rgb=mix(rgb,light,max(seamLight,fiber*0.7));
+  float outAlpha=alpha*coverage;
+  gl_FragColor=vec4(rgb*outAlpha,outAlpha);
+}`;
 
   // modules/interpolation/examples/frame-demo.js
   var Shot = class extends RenderObject {

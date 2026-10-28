@@ -8252,7 +8252,7 @@ void clipWorld() {
 varying vec2 v_position; varying vec2 v_world; varying vec4 v_color; varying vec3 v_surface;
 uniform vec4 u_bounds; uniform vec4 u_effect0; uniform vec4 u_effect1; uniform vec4 u_effect2; uniform vec4 u_effect3;
 uniform vec4 u_tint; uniform float u_flash; uniform float u_forceColor;
-${kind === "sketch" ? "uniform float u_timeMs;" : ""}
+${kind === "sketch" ? "uniform float u_timeMs;" : "uniform sampler2D u_stitchField;"}
 ${CLIPS}
 float hashCell(vec2 cell, float salt) {
   return fract(sin(dot(cell, vec2(127.1, 311.7)) + u_effect0.x * 74.7 + salt * 19.19) * 43758.5453);
@@ -8300,6 +8300,89 @@ void main() {
   ${kind === "yarn" ? "shadeYarnEdge(rgb, alpha);" : "shadeSketchEdge(rgb, alpha);"}
 }`;
   }
+  var STITCH_FIELD_SIZE = 256;
+  var STITCH_FIELD_EXTENT = 0.8;
+  var STITCH_FIELD_MAX_DISTANCE = 0.25;
+  var STITCH_STRANDS = {
+    left: [
+      [-0.34, -0.36],
+      [-0.32, -0.06],
+      [-0.18, 0.17],
+      [-0.025, 0.34]
+    ],
+    right: [
+      [0.34, -0.36],
+      [0.32, -0.06],
+      [0.18, 0.17],
+      [0.025, 0.34]
+    ],
+    under: [
+      [-0.48, -0.46],
+      [-0.22, -0.57],
+      [0.22, -0.57],
+      [0.48, -0.46]
+    ]
+  };
+  var STITCH_TWISTS = [
+    [
+      [-0.32, -0.12],
+      [-0.16, -0.13]
+    ],
+    [
+      [0.22, 0.18],
+      [0.37, 0.08]
+    ]
+  ];
+  var stitchFieldCache = null;
+  function stitchSegmentDistance(px2, py2, a, b) {
+    const DX = b[0] - a[0], DY = b[1] - a[1];
+    const T = Math.max(0, Math.min(1, ((px2 - a[0]) * DX + (py2 - a[1]) * DY) / Math.max(DX * DX + DY * DY, 1e-6)));
+    return Math.hypot(px2 - (a[0] + DX * T), py2 - (a[1] + DY * T));
+  }
+  function stitchPolyline([a, b, c, d]) {
+    const POINTS = [a];
+    for (let i = 1; i <= 5; i++) {
+      const T = i * 0.2, S = 1 - T;
+      POINTS.push([
+        S * S * S * a[0] + 3 * S * S * T * b[0] + 3 * S * T * T * c[0] + T * T * T * d[0],
+        S * S * S * a[1] + 3 * S * S * T * b[1] + 3 * S * T * T * c[1] + T * T * T * d[1]
+      ]);
+    }
+    return POINTS;
+  }
+  function stitchPolylineDistance(points, px2, py2) {
+    let best = Infinity;
+    for (let i = 1; i < points.length; i++) {
+      best = Math.min(best, stitchSegmentDistance(px2, py2, points[i - 1], points[i]));
+    }
+    return best;
+  }
+  function stitchFieldPixels() {
+    if (stitchFieldCache) {
+      return stitchFieldCache;
+    }
+    const N = STITCH_FIELD_SIZE;
+    const LEFT = stitchPolyline(STITCH_STRANDS.left), RIGHT = stitchPolyline(STITCH_STRANDS.right), UNDER = stitchPolyline(STITCH_STRANDS.under);
+    const PACK = (distance) => Math.round(Math.min(1, distance / STITCH_FIELD_MAX_DISTANCE) * 255);
+    const DATA2 = new Uint8Array(N * N * 4);
+    for (let j = 0; j < N; j++) {
+      for (let i = 0; i < N; i++) {
+        const QX = -STITCH_FIELD_EXTENT + (i + 0.5) / N * STITCH_FIELD_EXTENT * 2, QY = -STITCH_FIELD_EXTENT + (j + 0.5) / N * STITCH_FIELD_EXTENT * 2;
+        const AT = (j * N + i) * 4;
+        DATA2[AT] = PACK(Math.min(stitchPolylineDistance(LEFT, QX, QY), stitchPolylineDistance(RIGHT, QX, QY)));
+        DATA2[AT + 1] = PACK(stitchPolylineDistance(UNDER, QX, QY));
+        DATA2[AT + 2] = PACK(
+          Math.min(
+            stitchSegmentDistance(QX, QY, STITCH_TWISTS[0][0], STITCH_TWISTS[0][1]),
+            stitchSegmentDistance(QX, QY, STITCH_TWISTS[1][0], STITCH_TWISTS[1][1])
+          )
+        );
+        DATA2[AT + 3] = 255;
+      }
+    }
+    stitchFieldCache = DATA2;
+    return DATA2;
+  }
   var YARN_FRAGMENT_BODY = `
 vec3 shadeYarnFill(vec3 base) {
   float stitchWidth = abs(u_effect0.y), stitchHeight = u_effect0.z;
@@ -8324,24 +8407,21 @@ vec3 shadeYarnFill(vec3 base) {
   vec2 p = (fract(cell) - vec2(0.5 + jitterX, 0.5 + jitterY)) / vec2(scaleX, scaleY);
   p *= vec2(sx, sy);
   float stroke = min(sx, sy) * (abs(u_effect0.w) / stitchHeight);
-  float underDistance = cubicDistance(p-vec2(0.0,stroke*0.06), vec2(-0.48,-0.46)*vec2(sx,sy), vec2(-0.22,-0.57)*vec2(sx,sy), vec2(0.22,-0.57)*vec2(sx,sy), vec2(0.48,-0.46)*vec2(sx,sy));
-  vec2 leftA=vec2(-0.34,-0.36)*vec2(sx,sy), leftB=vec2(-0.32,-0.06)*vec2(sx,sy), leftC=vec2(-0.18,0.17)*vec2(sx,sy), leftD=vec2(-0.025,0.34)*vec2(sx,sy);
-  vec2 rightA=vec2(0.34,-0.36)*vec2(sx,sy), rightB=vec2(0.32,-0.06)*vec2(sx,sy), rightC=vec2(0.18,0.17)*vec2(sx,sy), rightD=vec2(0.025,0.34)*vec2(sx,sy);
-  float leftDistance = cubicDistance(p,leftA,leftB,leftC,leftD);
-  float rightDistance = cubicDistance(p,rightA,rightB,rightC,rightD);
-  float under = lineMask(underDistance, stroke*0.5) * 0.5;
-  float grooveLeft = cubicDistance(p-vec2(0.0,stroke*0.06),leftA,leftB,leftC,leftD);
-  float grooveRight = cubicDistance(p-vec2(0.0,stroke*0.06),rightA,rightB,rightC,rightD);
-  float groove = max(lineMask(grooveLeft,stroke*1.08),lineMask(grooveRight,stroke*1.08))*0.85;
-  float yarn = max(lineMask(leftDistance,stroke*0.89),lineMask(rightDistance,stroke*0.89));
-  float lightLeft = cubicDistance(p+vec2(stroke*0.14,stroke*0.13),leftA,leftB,leftC,leftD);
-  float lightRight = cubicDistance(p+vec2(stroke*0.14,stroke*0.13),rightA,rightB,rightC,rightD);
-  float light = max(lineMask(lightLeft,stroke*0.34),lineMask(lightRight,stroke*0.34))*0.57;
+  vec2 cellSize = vec2(sx, sy);
+  float fieldScale = ${STITCH_FIELD_MAX_DISTANCE.toFixed(4)} * sqrt(sx * sy);
+  vec2 qBase = p / cellSize;
+  vec2 grooveShift = vec2(0.0, stroke * 0.06) / cellSize;
+  vec2 lightShift = vec2(stroke * 0.14, stroke * 0.13) / cellSize;
+  vec4 fieldMain = texture2D(u_stitchField, (qBase + ${STITCH_FIELD_EXTENT.toFixed(4)}) / ${(STITCH_FIELD_EXTENT * 2).toFixed(4)});
+  vec4 fieldGroove = texture2D(u_stitchField, (qBase - grooveShift + ${STITCH_FIELD_EXTENT.toFixed(4)}) / ${(STITCH_FIELD_EXTENT * 2).toFixed(4)});
+  vec4 fieldLight = texture2D(u_stitchField, (qBase + lightShift + ${STITCH_FIELD_EXTENT.toFixed(4)}) / ${(STITCH_FIELD_EXTENT * 2).toFixed(4)});
+  float under = lineMask(fieldGroove.g * fieldScale, stroke*0.5) * 0.5;
+  float groove = lineMask(fieldGroove.r * fieldScale, stroke*1.08) * 0.85;
+  float yarn = lineMask(fieldMain.r * fieldScale, stroke*0.89);
+  float light = lineMask(fieldLight.r * fieldScale, stroke*0.34) * 0.57;
   float twist = 0.0;
   if (mod(index.x + index.y, 2.0) < 1.0) {
-    float a = segmentDistance(p,vec2(-0.32,-0.12)*vec2(sx,sy),vec2(-0.16,-0.13)*vec2(sx,sy));
-    float b = segmentDistance(p,vec2(0.22,0.18)*vec2(sx,sy),vec2(0.37,0.08)*vec2(sx,sy));
-    twist = max(lineMask(a,stroke*0.075),lineMask(b,stroke*0.075))*0.5;
+    twist = lineMask(fieldMain.b * fieldScale, stroke*0.075) * 0.5;
   }
   vec3 dark = tintTo(base,-0.28), grooveColor = tintTo(base,-u_effect1.y);
   vec3 yarnColor = tintTo(base,0.10), highlight = tintTo(base,0.38);
@@ -8708,6 +8788,8 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
       this.surfaces = /* @__PURE__ */ new Set();
       this.bytes = 0;
       this.pipelines = /* @__PURE__ */ new Map();
+      this.stitchField = null;
+      this.stitchTextures = null;
       this.state = "ready";
       this.failure = null;
       this.disposed = false;
@@ -8728,6 +8810,18 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
       };
       device.canvas.addEventListener("webglcontextlost", this.onLost);
       device.canvas.addEventListener("webglcontextrestored", this.onRestored);
+    }
+    // The shared stitch distance field is created with the first yarn surface; the device restores it after a lost
+    // context like any other texture.
+    _stitchField() {
+      if (!this.stitchField) {
+        this.stitchField = this.device.createTexture(
+          { width: STITCH_FIELD_SIZE, height: STITCH_FIELD_SIZE, data: stitchFieldPixels() },
+          { premultiplied: true, filter: "linear" }
+        );
+        this.stitchTextures = Object.freeze([this.stitchField]);
+      }
+      return this.stitchField;
     }
     _pipeline(kind, worldMode = false) {
       const KEY = kind + ":" + Number(worldMode);
@@ -8781,6 +8875,9 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         throw new RangeError("Retained yarn surface byte budget exceeded");
       }
       const PIPELINE = this._pipeline(style.kind);
+      if (style.kind === "yarn") {
+        this._stitchField();
+      }
       const BUFFER = this.device.createVertexBuffer({
         capacityBytes: VERTICES.byteLength
       });
@@ -8906,6 +9003,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         pipeline: this._pipeline(surface.kind, WORLD_MODE),
         buffer: surface.buffer,
         uniforms: UNIFORMS2,
+        textures: YARN ? this.stitchTextures : [],
         blend,
         depth,
         stencil: stencilRef === null ? false : {
@@ -8966,6 +9064,11 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
       }
       for (const PIPELINE of this.pipelines.values()) {
         this.device.deletePipeline(PIPELINE);
+      }
+      if (this.stitchField) {
+        this.device.deleteTexture(this.stitchField);
+        this.stitchField = null;
+        this.stitchTextures = null;
       }
       this.surfaces.clear();
       this.pipelines.clear();
