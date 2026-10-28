@@ -1,3 +1,11 @@
+## v0.22.0 (2026-10-28)
+
+**Breaking.** 우리 모듈로 그리는 모든 것(캐릭터·UI·벡터 path·gradient·글리프·효과)이 한 프레임에 같은 blend·clip 상태에서 draw call 1개로 제출됩니다. 정점은 `VectorRenderer`의 동적 정점 스트림(정점당 80바이트)에 쓰이고, 텍스처는 `device.textureAtlas`의 `TEXTURE_2D_ARRAY` region입니다. 스프라이트·baked 벡터 부위(GPU pose는 같은 정점 셰이더에서 평가)·analytic primitive(원·타원·사각형·선)가 이 스트림에 들어옵니다. 유지되는 배치 경계는 blend 전환, stencil clip 변경, 반투명 group, `MeshRenderer` 직접 메시(morph·opacityChannel·shaderSurfaces·forceColor), YarnSurfaceRenderer입니다.
+
+제거(호환 코드 없음): `PrimitiveRenderer`와 `primitives` 통계, `MeshRenderer`의 텍스처·`uvs`·`acquireQuadMesh`/`releaseQuadMesh`/`drawQuadRuns`와 `VectorContext.drawMesh`의 `texture/layer/uvRect/localRect`, `layer-claims`. `createSpriteAnimation(context, region, definition)`, `createVectorRasterAtlas(context, asset, compiled, options)`, `createVectorSpriteAtlas(context, asset, compiled, options)`는 `VectorContext`와 공유 아틀라스 region을 받고 `textureArray`/`layer` 옵션이 없어졌으며 스프라이트 atlas는 `texture` 대신 `region`을 돌려줍니다. 새 `VectorContext.drawQuads`/`VectorRenderer.drawQuads`, `WebGLDevice.registerBatcher/flushBatchers/blitRenderTarget`, 통계 `spriteRuns`·`regionClears`가 추가되고, 해제된 region 비우기는 이미지 업로드 통계에서 제외됩니다.
+
+벤치마크(`project/docs/draw-batching-benchmark.json`, SwiftShader이므로 시간은 장치 성능이 아님): 500 draw → pose를 정점 셰이더에서 평가 250 → 공유 사각형 인스턴싱 1 → 정점 스트림 1. 정점 스트림은 250 캐릭터 프레임당 648,000 B(인스턴싱 파생값 140,400 B)를 올립니다. 사각형당 정점 6개(비인덱스)라서 업로드가 약 4.6배이며, 인덱스 사각형이나 더 작은 정점이 후속 최적화 후보입니다.
+
 ## v0.21.0 (2026-10-28)
 
 `WebGLDevice.textureAtlas`(`TextureAtlasArray`)와 `updateTextureRegion`/`clearTextureRegion`을 추가하고 VectorRenderer의 흰 texel, VectorContext의 gradient ramp, GlyphAtlas 페이지를 이 공유 `TEXTURE_2D_ARRAY`의 region으로 옮깁니다. 정점이 layer·gradient 모드·white flash·nearest·radial 파라미터를 담으므로 fill, 선형/radial gradient, 글리프가 한 draw로 묶이고 blend 전환·stencil clip 변경·반투명 group만 배치를 끊습니다(같은 gradient 장면 draw 7→1, 기존 radial 프래그먼트와 Canvas2D 비교 오차 최대 1). 공개 계약 변경: gradient 객체 `texture` → `region`, `GlyphAtlas` callback `texture` → `region`과 배열 좌표 uv, `drawGlyphQuad`의 첫 인자는 region, VectorRenderer의 `white`/`nonRadialPipeline`은 제거(별도 `groupPipeline` 추가). 이미지 캐시·Renderer2D·group target은 기존 텍스처를 씁니다. 측정은 SwiftShader이며 GPU 시간·모바일 메모리는 검증하지 않았습니다.

@@ -2,25 +2,23 @@
 
 ## Runtime part atlas comparison
 
-The same example also includes sampled sprite playback. `createVectorSpriteAtlas(meshes, asset, compiledAsset, { clip, expression, textureArray, layer, sampleIntervalMs, pixelsPerUnit, padding })` samples an authored SVG clip at the midpoint of each interval and bakes complete poses into one layer of a caller-owned `TEXTURE_2D_ARRAY` (`device.createTextureArray(width, height, layers)`). The array size bounds the atlas; a frame set that does not fit reports `atlasLimit`. One layer belongs to one atlas (a second claim throws), and the caller deletes the array after disposing its atlases. For a once clip, the final interval uses the exact authored endpoint so the held final image keeps the terminal pose. The final interval keeps its shorter duration, so playback keeps the authored clip length. It returns a generic sprite definition and texture rather than an SVG-dependent player:
+The same example also includes sampled sprite playback. `createVectorSpriteAtlas(context, asset, compiledAsset, { clip, expression, sampleIntervalMs, pixelsPerUnit, padding, supersample, paintRegions })` samples an authored SVG clip at the midpoint of each interval and bakes complete poses into one region of the device's shared texture atlas (`device.textureAtlas`); `context` is the `VectorContext` whose mesh renderer owns `asset`. The atlas size bounds the sheet; a frame set that does not fit reports `atlasLimit`. Equivalent bake settings of one asset share one ref-counted region. For a once clip, the final interval uses the exact authored endpoint so the held final image keeps the terminal pose. The final interval keeps its shorter duration, so playback keeps the authored clip length. It returns a generic sprite definition and region rather than an SVG-dependent player:
 
 ```js
-const BAKER = createVectorSpriteAtlas(MESHES, ASSET, COMPILED, {
+const BAKER = createVectorSpriteAtlas(CONTEXT, ASSET, COMPILED, {
     clip: 'bounce',
     expression: 'neutral',
-    textureArray: ARRAY,
-    layer: 0,
     sampleIntervalMs: 100,
     pixelsPerUnit: 1,
     padding: 2,
 });
 BAKER.bake(); // in an active device frame, before constructing SPRITES
-const SPRITES = createSpriteAnimation(MESHES, BAKER.texture, BAKER.definition);
+const SPRITES = createSpriteAnimation(CONTEXT, BAKER.region, BAKER.definition);
 const PLAYER = SPRITES.createPlayer({ clip: 'bounce', startedAtMs: 0 });
-PLAYER.draw({ timeMs: displayTimeMs, projection: PROJECTION, matrix: MATRIX });
+PLAYER.draw({ timeMs: displayTimeMs, matrix: MATRIX });
 // Reuse during playback; do not bake in the animation render loop.
-SPRITES.dispose(); // the texture is borrowed
-BAKER.dispose();
+SPRITES.dispose();
+BAKER.dispose(); // releases the region with its last user
 ```
 
 Sprite coordinates are pixels; when `pixelsPerUnit` differs from 1, divide the vector-local matrix scale by it. The baker keeps a fixed union of sampled transformed/morphed bounds and encodes the original SVG origin in the sprite pivot, preventing per-frame trim jitter. SVG expressions and opacity are composed into each frame. A private source player samples only during planning/bake and leaves caller players untouched. Identical source-asset/clip/appearance/interval/resolution requests share a reference-counted atlas; changed inputs and context restoration require another bake. Dispose sprite resources before releasing their baker. Unsupported shader surfaces, automatic sketch time morphs, non-scaling strokes and allocation limits return an explicit vector reason with no usable sprite texture.
@@ -41,29 +39,25 @@ The comparison also exposes mesh curve precision: low (2), standard (4) and high
 
 The example has separate **Single** quality/zoom and **Crowd** comparison tabs. Crowd population, character size in CSS pixels (the longest viewBox dimension), placement spread and seed are independent. Adding actors preserves existing seeded positions and never shrinks the characters. A smaller placement area increases density and overlap while preserving painter order. Shared live RAF FPS applies to all simultaneously visible paths; it is not an independent per-backend FPS. The sequential comparison uses the same full canvas for each backend, 30 warmup frames and 60 timed frames, and reports actual RAF cadence separately from CPU render/submit and asynchronous GPU p50/p95. GPU duration is not inverted into screen FPS. The repeat comparison requires the supported `transform-repeat` clip with mixed motion disabled; other clips remain available for visual inspection. Preparation is separate and prepared playback must not bake or upload image data. Changed settings, resize, DPR or context restoration invalidate displayed benchmark results. This example work does not change the rendering pipeline or imply a universal performance winner.
 
-The optional `createVectorRasterAtlas(meshes, asset, compiledAsset, options)` bakes the retained source mesh into one layer of a caller-owned texture array (`textureArray`, `layer`; one layer per atlas). Each contiguous run of triangles belonging to a part becomes a padded atlas tile and one instance of the shared unit quad, drawn through `MeshRenderer.drawQuadRuns` with the GPU pose evaluated in the same draw. Every atlas of one array therefore batches together with other textured draws of that array: the 250-actor, 5-species benchmark scene issues 1 draw call (`project/docs/draw-batching-benchmark.json`). Separated runs remain separated. It uses the same player clock, hierarchy, easing, transitions and borrowed pose handle as vector rendering; it does not bake animation frames or evaluate a second animation system.
+The optional `createVectorRasterAtlas(context, asset, compiledAsset, { pixelsPerUnit, padding })` bakes the retained source mesh into one region of the device's shared texture atlas. Each contiguous run of triangles belonging to a part becomes a padded tile and one rectangle in the context's vector stream (`VectorContext.drawQuads`) with the GPU pose evaluated in the same vertex shader. Every baked asset, shape, glyph and sprite of the same blend and clip state is therefore one draw call: the 250-actor, 5-species benchmark scene issues 1 draw call (`project/docs/draw-batching-benchmark.json`). Separated runs remain separated. It uses the same player clock, hierarchy, easing, transitions and borrowed pose handle as vector rendering; it does not bake animation frames or evaluate a second animation system. Assets with `morph`, `opacityChannel`, shader surfaces or `forceColor` fallbacks keep drawing through `MeshRenderer` and are reported as vector fallbacks.
 
 ```js
-const ATLAS = createVectorRasterAtlas(MESHES, ASSET, COMPILED, {
-    textureArray: ARRAY,
-    layer: 1,
+const ATLAS = createVectorRasterAtlas(CONTEXT, ASSET, COMPILED, {
     pixelsPerUnit: 1,
     padding: 2,
 });
-DEVICE.beginFrame({ width: 800, height: 600 });
-MESHES.beginFrame();
+CONTEXT.beginFrame({ width: 800, height: 600 });
 ATLAS.bake(); // optional explicit first bake; requires an active device frame
 PLAYER.seek(displayTimeMs);
 PLAYER.preparePose();
 MESHES.preparePoses();
-const RESULT = ATLAS.draw(PLAYER, { projection: PROJECTION, matrix: MATRIX });
-MESHES.flush();
-DEVICE.endFrame();
+const RESULT = ATLAS.draw(PLAYER, { matrix: MATRIX });
+CONTEXT.endFrame();
 // RESULT.backend is raster or vector; RESULT.reason explains fallback.
 ATLAS.dispose();
 ```
 
-The atlas borrows the source mesh and players. Dispose it before disposing its source asset or renderer. It owns only its render target and quad mesh. Texture pixels are premultiplied by the existing source-over render pass and sampled with linear filtering; numeric pose textures retain nearest filtering on a separate sampler. Initial bake CPU submission cost, atlas allocation, normal frame uploads and draw counts are reported separately in `atlas.stats` and the example. `gpuTextureBytes` already includes render-target texture storage; do not add `gpuRenderTargetBytes` to it again.
+The atlas borrows the source mesh and players. Dispose it before disposing its source asset or renderer. It owns only its atlas region and bake target. Texture pixels are premultiplied by the existing source-over render pass and sampled with linear filtering; numeric pose textures retain nearest filtering on a separate sampler. Initial bake CPU submission cost, atlas allocation, normal frame uploads and draw counts are reported separately in `atlas.stats` and the example. `gpuTextureBytes` already includes render-target texture storage; do not add `gpuRenderTargetBytes` to it again.
 
 Animation frames reuse the atlas. A changed resolution requires a new atlas. After context restoration, the retained source geometry rebakes the lost render-target contents once. Limits or allocation failures report vector fallback. Fixed pixel resolution introduces sampling and enlargement blur; there is no clip-frame quantization. The default comparison uses an explicit `transform-repeat` fixture: the original Seed Scout geometry and bounce transforms, with a separate repeat clip added for continuous independent-phase measurements. The original once clip remains unchanged. Idle includes an opacity channel and demonstrates explicit part-atlas fallback rather than silently changing translucent triangle composition. The three comparison labels are pure vector (retained mesh plus GPU pose), vector plus part texture (part atlas plus the same GPU pose), and texture (sampled whole-frame sprite). The default sampling interval is 100ms, independently configurable from the render rate.
 
@@ -206,7 +200,7 @@ The browser fixture reports shared-pose actors separately from independently pha
 
 ## Pose preparation and CPU queries (v0.17)
 
-`createVectorSpriteAtlas(meshes, asset, compiled, { clip, expression, sampleIntervalMs, pixelsPerUnit, paintRegions })` accepts the same explicit named RGB replacements as `player.draw({ paintRegions })`. The baker validates and captures the values when the atlas is created. Equivalent values share the cache regardless of object key order; distinct values produce distinct textures. Caller mutation cannot change a deferred bake or context-restoration bake. Reset with `null` or `{}` uses the original fills. Alpha, stroke, expression and authored pose remain source-owned. Each palette consumes its own atlas image bytes: hosts must budget and prepare a finite manifest before playback, not create new combinations in their render loop.
+`createVectorSpriteAtlas(context, asset, compiled, { clip, expression, sampleIntervalMs, pixelsPerUnit, paintRegions })` accepts the same explicit named RGB replacements as `player.draw({ paintRegions })`. The baker validates and captures the values when the atlas is created. Equivalent values share the cache regardless of object key order; distinct values produce distinct textures. Caller mutation cannot change a deferred bake or context-restoration bake. Reset with `null` or `{}` uses the original fills. Alpha, stroke, expression and authored pose remain source-owned. Each palette consumes its own atlas image bytes: hosts must budget and prepare a finite manifest before playback, not create new combinations in their render loop.
 
 `supersample` is 1 (default), 2 or 4. Values above 1 draw the initial samples into a larger premultiplied RGBA target, then reduce in 2:1 linear-filtered steps using the existing retained sprite quad. This improves prepared coverage without enlarging the final image or adding playback work. It is not pixel-identical to native MSAA. The texture array size limits the final image, and the transient supersample targets are limited by `MAX_TEXTURE_SIZE / supersample`. Transient bake targets cost 1×, 5× or 21× the final RGBA bytes (`stats.bakeWorkingBytes`); the array itself is allocated by the caller up front. `stats.atlasBytes` / `allocatedBytes` are final planned / live image storage; `stats.bakeWorkingBytes` is the planned peak for this bake, including its final image. Hosts must additionally add already resident OTHER atlases when budgeting a scene peak. Rejected preparation reports `atlasLimit` before image allocation. Temporary targets and reduction meshes are released after success/failure, and context restoration repeats the same preparation. No supersampling occurs during normal playback.
 

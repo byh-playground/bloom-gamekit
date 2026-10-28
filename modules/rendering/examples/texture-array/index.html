@@ -63,26 +63,24 @@
     }
 </style>
 <main>
-    <h1>텍스처 어레이로 그리기</h1>
+    <h1>공유 아틀라스로 그리기</h1>
     <p>
-        아틀라스 페이지가 달라도 텍스처 어레이 하나를 바인딩하면 한 번에 그립니다. 페이지마다 텍스처를 따로 쓰면
-        페이지가 바뀔 때마다 그리기 호출이 나뉩니다.
+        스프라이트 시트가 여러 장이어도 모두 한 텍스처 어레이의 영역이라서, 도형을 사이사이에 끼워도 한 번에 그립니다.
     </p>
     <div class="controls">
-        <button id="mode-array" type="button" aria-pressed="true">텍스처 어레이 1개</button>
-        <button id="mode-separate" type="button" aria-pressed="false">페이지별 텍스처 4개</button>
+        <button id="mode-sprites" type="button" aria-pressed="true">스프라이트만</button>
+        <button id="mode-mixed" type="button" aria-pressed="false">도형 끼워 그리기</button>
     </div>
     <canvas id="scene" width="720" height="400"></canvas>
     <p id="stats" aria-live="polite"></p>
     <ul>
-        <li>스프라이트는 페이지를 번갈아 가며 같은 순서로 그리므로 두 방식의 화면은 같습니다.</li>
-        <li>어레이의 모든 레이어는 같은 크기이고 남는 영역은 투명입니다.</li>
-        <li>어레이는 쓰는 면적과 관계없이 레이어 전체 메모리를 처음에 할당합니다.</li>
-        <li>mesh가 다르면 어레이여도 그리기 호출이 나뉩니다.</li>
+        <li>시트 4장은 장치가 가진 어레이 하나의 영역 4개이며, 스프라이트는 시트를 번갈아 가며 그립니다.</li>
+        <li>두 번째 방식은 스프라이트마다 앞에 사각형을 그려도 같은 그리기 호출에 들어갑니다.</li>
+        <li>블렌드나 클리핑 방식이 바뀌면 그리기 호출이 나뉩니다.</li>
     </ul>
 </main>
 <script type="module">
-    import { WebGLDevice, MeshRenderer, createSpriteAnimation } from '/dist/rendering.js';
+    import { WebGLDevice, VectorContext, createSpriteAnimation } from '/dist/rendering.js';
     const CANVAS = document.querySelector('#scene');
     const WIDTH = CANVAS.width;
     const HEIGHT = CANVAS.height;
@@ -95,64 +93,53 @@
         antialias: false,
         preserveDrawingBuffer: true,
     });
-    const MESHES = new MeshRenderer(DEVICE);
+    const CONTEXT = new VectorContext(DEVICE);
     // Page p is a 2x2 sheet of four shapes in one hue; the hue identifies the page on screen.
     const DRAW_PAGE = (page) => {
         const SHEET = document.createElement('canvas');
         SHEET.width = SHEET.height = PAGE_SIZE;
-        const CONTEXT = SHEET.getContext('2d');
+        const CANVAS_2D = SHEET.getContext('2d');
         for (let cell = 0; cell < 4; cell++) {
             const X = (cell % 2) * CELL + CELL / 2;
             const Y = Math.floor(cell / 2) * CELL + CELL / 2;
             const R = CELL * 0.42;
-            CONTEXT.fillStyle = `hsl(${page * 90 + 20}, 80%, ${45 + cell * 6}%)`;
-            CONTEXT.beginPath();
+            CANVAS_2D.fillStyle = `hsl(${page * 90 + 20}, 80%, ${45 + cell * 6}%)`;
+            CANVAS_2D.beginPath();
             if (cell === 0) {
-                CONTEXT.arc(X, Y, R, 0, Math.PI * 2);
+                CANVAS_2D.arc(X, Y, R, 0, Math.PI * 2);
             } else if (cell === 1) {
-                CONTEXT.rect(X - R, Y - R, R * 2, R * 2);
+                CANVAS_2D.rect(X - R, Y - R, R * 2, R * 2);
             } else if (cell === 2) {
-                CONTEXT.moveTo(X, Y - R);
-                CONTEXT.lineTo(X + R, Y + R);
-                CONTEXT.lineTo(X - R, Y + R);
-                CONTEXT.closePath();
+                CANVAS_2D.moveTo(X, Y - R);
+                CANVAS_2D.lineTo(X + R, Y + R);
+                CANVAS_2D.lineTo(X - R, Y + R);
+                CANVAS_2D.closePath();
             } else {
-                CONTEXT.moveTo(X, Y - R);
-                CONTEXT.lineTo(X + R, Y);
-                CONTEXT.lineTo(X, Y + R);
-                CONTEXT.lineTo(X - R, Y);
-                CONTEXT.closePath();
+                CANVAS_2D.moveTo(X, Y - R);
+                CANVAS_2D.lineTo(X + R, Y);
+                CANVAS_2D.lineTo(X, Y + R);
+                CANVAS_2D.lineTo(X - R, Y);
+                CANVAS_2D.closePath();
             }
-            CONTEXT.fill();
+            CANVAS_2D.fill();
         }
         return SHEET;
     };
-    const SHEETS = Array.from({ length: PAGE_COUNT }, (_unused, page) => DRAW_PAGE(page));
     const CELL_RECT = (cell) => ({ x: (cell % 2) * CELL, y: Math.floor(cell / 2) * CELL, width: CELL, height: CELL });
-    // Array mode: one texture, the page is the frame layer.
-    const ARRAY = DEVICE.createTextureArray(PAGE_SIZE, PAGE_SIZE, PAGE_COUNT, { filter: 'nearest' });
-    SHEETS.forEach((sheet, page) => DEVICE.updateTextureLayer(ARRAY, page, sheet));
-    const ARRAY_FRAMES = [];
-    for (let page = 0; page < PAGE_COUNT; page++) {
-        for (let cell = 0; cell < 4; cell++) {
-            ARRAY_FRAMES.push({ ...CELL_RECT(cell), layer: page, durationMs: 100 });
-        }
-    }
-    const ARRAY_SPRITES = createSpriteAnimation(MESHES, ARRAY, {
-        frames: ARRAY_FRAMES,
-        clips: Object.fromEntries(ARRAY_FRAMES.map((_frame, index) => [`f${index}`, { frames: [index] }])),
+    // One atlas region per sheet; the device array holds all four.
+    const REGIONS = Array.from({ length: PAGE_COUNT }, (_unused, page) => {
+        const REGION = DEVICE.textureAtlas.allocate(PAGE_SIZE, PAGE_SIZE, { filter: 'nearest' });
+        DEVICE.textureAtlas.upload(REGION, DRAW_PAGE(page));
+        return REGION;
     });
-    const ARRAY_PLAYERS = ARRAY_FRAMES.map((_frame, index) => ARRAY_SPRITES.createPlayer({ clip: `f${index}` }));
-    // Separate mode: one 2D texture per page, so a page change is a texture change.
-    const PAGE_TEXTURES = SHEETS.map((sheet) => DEVICE.createTexture(sheet, { filter: 'nearest' }));
-    const SEPARATE_SPRITES = PAGE_TEXTURES.map((texture) =>
-        createSpriteAnimation(MESHES, texture, {
+    const SPRITES = REGIONS.map((region) =>
+        createSpriteAnimation(CONTEXT, region, {
             frames: [0, 1, 2, 3].map((cell) => ({ ...CELL_RECT(cell), durationMs: 100 })),
             clips: Object.fromEntries([0, 1, 2, 3].map((cell) => [`c${cell}`, { frames: [cell] }])),
         }),
     );
-    const SEPARATE_PLAYERS = ARRAY_FRAMES.map((_frame, index) =>
-        SEPARATE_SPRITES[Math.floor(index / 4)].createPlayer({ clip: `c${index % 4}` }),
+    const PLAYERS = Array.from({ length: PAGE_COUNT * 4 }, (_unused, index) =>
+        SPRITES[Math.floor(index / 4)].createPlayer({ clip: `c${index % 4}` }),
     );
     // Deterministic placement; sprite i uses page i % 4, so consecutive sprites never share a page.
     let seed = 12345;
@@ -165,39 +152,38 @@
         x: Math.floor(RANDOM() * (WIDTH - CELL)),
         y: Math.floor(RANDOM() * (HEIGHT - CELL)),
     }));
-    const PROJECTION = [2 / WIDTH, 0, 0, 0, -2 / HEIGHT, 0, -1, 1, 1];
     const BUTTONS = {
-        array: document.querySelector('#mode-array'),
-        separate: document.querySelector('#mode-separate'),
+        sprites: document.querySelector('#mode-sprites'),
+        mixed: document.querySelector('#mode-mixed'),
     };
     const EXAMPLE = {
         device: DEVICE,
-        mode: 'array',
+        mode: 'sprites',
         drawCalls: 0,
         spriteCount: SPRITE_COUNT,
         setMode(mode) {
-            if (mode !== 'array' && mode !== 'separate') {
-                throw new TypeError('mode must be array or separate');
+            if (mode !== 'sprites' && mode !== 'mixed') {
+                throw new TypeError('mode must be sprites or mixed');
             }
             EXAMPLE.mode = mode;
-            const PLAYERS = mode === 'array' ? ARRAY_PLAYERS : SEPARATE_PLAYERS;
-            DEVICE.beginFrame({ width: WIDTH, height: HEIGHT, clearColor: [0.06, 0.1, 0.14, 1] });
-            MESHES.beginFrame();
+            CONTEXT.beginFrame({ width: WIDTH, height: HEIGHT, clearColor: [0.06, 0.1, 0.14, 1] });
             for (const PLACEMENT of PLACEMENTS) {
+                if (mode === 'mixed') {
+                    CONTEXT.fillStyle = 'rgba(255, 255, 255, 0.25)';
+                    CONTEXT.fillRect(PLACEMENT.x - 2, PLACEMENT.y - 2, CELL + 4, CELL + 4);
+                }
                 PLAYERS[PLACEMENT.frame].draw({
                     timeMs: 0,
                     matrix: [1, 0, 0, 1, PLACEMENT.x, PLACEMENT.y],
-                    projection: PROJECTION,
                 });
             }
-            MESHES.flush();
-            EXAMPLE.drawCalls = DEVICE.endFrame().drawCalls;
+            EXAMPLE.drawCalls = CONTEXT.endFrame().drawCalls;
             for (const [NAME, BUTTON] of Object.entries(BUTTONS)) {
                 BUTTON.setAttribute('aria-pressed', String(NAME === mode));
             }
             document.querySelector('#stats').textContent =
-                `그리기 호출 ${EXAMPLE.drawCalls}회 · 스프라이트 ${SPRITE_COUNT}개 · ` +
-                (mode === 'array' ? '바인딩한 텍스처 1개' : `바인딩한 텍스처 ${PAGE_COUNT}개를 번갈아 사용`);
+                `그리기 호출 ${EXAMPLE.drawCalls}회 · 스프라이트 ${SPRITE_COUNT}개` +
+                (mode === 'mixed' ? ` · 사각형 ${SPRITE_COUNT}개 끼워 그림` : '');
             return EXAMPLE.drawCalls;
         },
         readPixels() {
@@ -207,16 +193,15 @@
             return PIXELS;
         },
     };
-    BUTTONS.array.addEventListener('click', () => EXAMPLE.setMode('array'));
-    BUTTONS.separate.addEventListener('click', () => EXAMPLE.setMode('separate'));
-    EXAMPLE.setMode('array');
+    BUTTONS.sprites.addEventListener('click', () => EXAMPLE.setMode('sprites'));
+    BUTTONS.mixed.addEventListener('click', () => EXAMPLE.setMode('mixed'));
+    EXAMPLE.setMode('sprites');
     window.textureArrayExample = EXAMPLE;
     window.addEventListener(
         'pagehide',
         () => {
-            ARRAY_SPRITES.dispose();
-            SEPARATE_SPRITES.forEach((sprites) => sprites.dispose());
-            MESHES.dispose();
+            SPRITES.forEach((sprites) => sprites.dispose());
+            CONTEXT.dispose();
             DEVICE.dispose();
         },
         { once: true },

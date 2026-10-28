@@ -4,10 +4,11 @@ import { execFileSync } from 'node:child_process';
 import { extname, resolve } from 'node:path';
 import { chromium } from 'playwright';
 
-// Run: npm run benchmark:draw-batching -- <label>
+// Run: npm run benchmark:draw-batching -- <label> [shapes]
 // Counts draw calls and batch-break reasons for interleaved species. SwiftShader timing verifies function only.
 const ROOT = resolve('.');
 const LABEL = process.argv[2] ?? 'unlabeled';
+const SHAPES = Number(process.argv[3] ?? 0);
 const REPORT_PATH = resolve(ROOT, 'project/docs/draw-batching-benchmark.json');
 const TYPES = {
     '.html': 'text/html; charset=utf-8',
@@ -36,7 +37,9 @@ try {
     PAGE.on('pageerror', (error) => ERRORS.push(error.message));
     await PAGE.goto(`http://127.0.0.1:${SERVER.address().port}/modules/rendering/benchmarks/draw-batching.html`);
     await PAGE.waitForFunction(() => window.drawBatchingBenchmark?.ready, null, { timeout: 60000 });
-    const RESULT = await PAGE.evaluate(() => window.drawBatchingBenchmark.run());
+    const RESULT = await PAGE.evaluate(({ shapes }) => window.drawBatchingBenchmark.run({ shapes }), {
+        shapes: SHAPES,
+    });
     if (ERRORS.length) {
         throw new Error(ERRORS.join('\n'));
     }

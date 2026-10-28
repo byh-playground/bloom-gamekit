@@ -1,4 +1,3 @@
-import { claimTextureLayer } from './layer-claims.js';
 import { validateCompiledAsset } from './schema.js';
 
 const IDENTITY_MATRIX = Object.freeze([1, 0, 0, 1, 0, 0]);
@@ -130,18 +129,24 @@ function packRuns(runs, maxWidth, maxHeight) {
 }
 
 /**
- * One shared-quad instance per run: the UV rectangle selects the run's tile inside the layer (v runs downward from
- * the top because the layer is rendered, not uploaded) and the local rectangle places it in asset space.
+ * One atlas rectangle per run: the UV rectangle selects the run's tile inside the shared array (rendered content is
+ * stored bottom-up, so v runs downward from the region's top texture row) and the local rectangle places it in asset space.
  */
-function runTables(runs, packed, layerWidth, layerHeight, pixelsPerUnit, padding) {
-    const UV_RECTS = new Float32Array(runs.length * 4),
+function runTables(runs, packed, region, pixelsPerUnit, padding) {
+    const ATLAS = region.atlas,
+        UV_RECTS = new Float32Array(runs.length * 4),
         LOCAL_RECTS = new Float32Array(runs.length * 4),
         PARTS = new Float32Array(runs.length);
     for (let runIndex = 0; runIndex < runs.length; runIndex++) {
         const RUN = runs[runIndex],
             [TILE_X, TILE_Y] = packed.positions[runIndex];
         UV_RECTS.set(
-            [TILE_X / layerWidth, 1 - TILE_Y / layerHeight, RUN.tileWidth / layerWidth, -RUN.tileHeight / layerHeight],
+            [
+                (region.x + TILE_X) / ATLAS.width,
+                (region.y + region.height - TILE_Y) / ATLAS.height,
+                RUN.tileWidth / ATLAS.width,
+                -RUN.tileHeight / ATLAS.height,
+            ],
             runIndex * 4,
         );
         LOCAL_RECTS.set(
@@ -159,23 +164,22 @@ function runTables(runs, packed, layerWidth, layerHeight, pixelsPerUnit, padding
 }
 
 /**
- * Bakes a retained vector asset into one layer of a caller-owned texture array and draws it as shared-quad runs.
- * The caller owns the array and dedicates `layer` to this atlas; every atlas of one array batches into one draw.
+ * Bakes a retained vector asset into one region of the device's shared texture atlas and draws it as atlas
+ * rectangles in the context's vector stream, so every baked asset, shape and glyph of one state is one draw.
+ * The asset must belong to `context.meshRenderer`; the atlas owns its region until `dispose`.
  */
-export function createVectorRasterAtlas(
-    meshRenderer,
-    asset,
-    compiledAsset,
-    { textureArray, layer, pixelsPerUnit = 1, padding = 2 } = {},
-) {
+export function createVectorRasterAtlas(context, asset, compiledAsset, { pixelsPerUnit = 1, padding = 2 } = {}) {
     validateCompiledAsset(compiledAsset);
-    const DEVICE = meshRenderer?.device;
+    const DEVICE = context?.device;
+    const MESHES = context?.meshRenderer;
     const SOURCE_MESH_MATCHES = asset?.mesh
-        ? asset.mesh.renderer === meshRenderer &&
+        ? asset.mesh.renderer === MESHES &&
           asset.mesh.partCount === compiledAsset.geometry.partCount &&
           sameGeometry(asset.mesh, compiledAsset.geometry)
         : compiledAsset.geometry.vertices.length === 0;
     if (
+        !context?.drawQuads ||
+        !context?.drawVectorAsset ||
         !DEVICE?.createTextureLayerTarget ||
         !DEVICE?.bindRenderTarget ||
         !DEVICE?.unbindRenderTarget ||
@@ -184,25 +188,14 @@ export function createVectorRasterAtlas(
         asset.sourceSha256 !== compiledAsset.sourceSha256 ||
         !SOURCE_MESH_MATCHES
     ) {
-        throw new TypeError('A matching live vector asset and MeshRenderer are required');
+        throw new TypeError(
+            'A VectorContext and a matching live vector asset created on its mesh renderer are required',
+        );
     }
-    if (!textureArray || !DEVICE.isTextureArray(textureArray)) {
-        throw new TypeError('A texture array created by the same device is required');
+    if (!Number.isFinite(pixelsPerUnit) || pixelsPerUnit <= 0 || !Number.isSafeInteger(padding) || padding < 1) {
+        throw new TypeError('A positive pixel scale and padding are required');
     }
-    if (
-        !Number.isSafeInteger(layer) ||
-        layer < 0 ||
-        layer >= textureArray.layers ||
-        !Number.isFinite(pixelsPerUnit) ||
-        pixelsPerUnit <= 0 ||
-        !Number.isSafeInteger(padding) ||
-        padding < 1
-    ) {
-        throw new TypeError('A layer inside the texture array, a positive pixel scale and padding are required');
-    }
-    const RELEASE_LAYER = claimTextureLayer(textureArray, layer);
-    const LAYER_WIDTH = textureArray.width,
-        LAYER_HEIGHT = textureArray.height;
+    const ATLAS = DEVICE.textureAtlas;
     const GEOMETRY = compiledAsset.geometry;
     let unsupportedReason = null;
     if (GEOMETRY.morphCount) {
@@ -228,16 +221,25 @@ export function createVectorRasterAtlas(
             }
         }
     }
-    const PACKED = unsupportedReason ? null : packRuns(RUNS, LAYER_WIDTH, LAYER_HEIGHT);
+    const PACKED = unsupportedReason
+        ? null
+        : packRuns(RUNS, ATLAS.width - ATLAS.gutter * 2, ATLAS.height - ATLAS.gutter * 2);
     if (!unsupportedReason && !PACKED) {
         unsupportedReason = 'atlasLimit';
     }
-    const TABLES = unsupportedReason
-        ? null
-        : runTables(RUNS, PACKED, LAYER_WIDTH, LAYER_HEIGHT, pixelsPerUnit, padding);
-    const MATRICES = TABLES ? new Float32Array(RUNS.length * 6) : null;
+    let region = null;
+    if (!unsupportedReason) {
+        try {
+            region = ATLAS.allocate(PACKED.width, PACKED.height);
+        } catch (error) {
+            if (!(error instanceof RangeError)) {
+                throw error;
+            }
+            unsupportedReason = 'atlasLimit';
+        }
+    }
+    const TABLES = region ? runTables(RUNS, PACKED, region, pixelsPerUnit, padding) : null;
     let target = null;
-    let quadAcquired = false;
     let bakedRestores = -1;
     let failedFrame = -1;
     let failedRestores = -1;
@@ -251,22 +253,14 @@ export function createVectorRasterAtlas(
     const FALLBACK = (player, options, reason) => {
         vectorDraws++;
         FALLBACK_REASONS[reason] = (FALLBACK_REASONS[reason] ?? 0) + 1;
-        player.draw(options);
+        context.drawVectorAsset(player, options);
         return { backend: 'vector', reason };
     };
-    const RELEASE = () => {
-        const TARGET = target,
-            ACQUIRED = quadAcquired;
+    const RELEASE_TARGET = () => {
+        const TARGET = target;
         target = null;
-        quadAcquired = false;
-        try {
-            if (ACQUIRED) {
-                meshRenderer.releaseQuadMesh();
-            }
-        } finally {
-            if (TARGET) {
-                DEVICE.deleteRenderTarget(TARGET);
-            }
+        if (TARGET) {
+            DEVICE.deleteRenderTarget(TARGET);
         }
     };
     const BAKE = () => {
@@ -289,40 +283,45 @@ export function createVectorRasterAtlas(
         const START = NOW();
         let bound = false;
         try {
-            meshRenderer.flush('rasterAtlasBakeBoundary');
+            DEVICE.flushBatchers('rasterAtlasBakeBoundary');
             if (target && !DEVICE.isRenderTargetAvailable(target)) {
-                DEVICE.deleteRenderTarget(target);
-                target = null;
+                RELEASE_TARGET();
             }
-            target ??= DEVICE.createTextureLayerTarget(textureArray, layer);
-            if (!quadAcquired) {
-                meshRenderer.acquireQuadMesh();
-                quadAcquired = true;
-            }
+            target ??= DEVICE.createTextureLayerTarget(ATLAS.texture, region.layer);
+            // The region is cleared in texture space; its gutter stays transparent so linear taps never bleed.
+            DEVICE.clearTextureRegion(
+                ATLAS.texture,
+                region.layer,
+                region.paddedX,
+                region.paddedY,
+                region.width + ATLAS.gutter * 2,
+                region.height + ATLAS.gutter * 2,
+            );
             DEVICE.bindRenderTarget(target);
             bound = true;
-            DEVICE.clear({ color: [0, 0, 0, 0] });
+            // Rendered rows run bottom-up: the region's top edge sits `top` pixels below the layer's top edge.
+            const TOP = ATLAS.height - (region.y + region.height);
             for (let index = 0; index < RUNS.length; index++) {
                 const RUN = RUNS[index],
                     [TILE_X, TILE_Y] = PACKED.positions[index],
-                    TX = TILE_X + padding - pixelsPerUnit * RUN.minX,
-                    TY = TILE_Y + padding - pixelsPerUnit * RUN.minY;
-                meshRenderer.drawMesh(asset.mesh, {
+                    TX = region.x + TILE_X + padding - pixelsPerUnit * RUN.minX,
+                    TY = TOP + TILE_Y + padding - pixelsPerUnit * RUN.minY;
+                MESHES.drawMesh(asset.mesh, {
                     projection: [
-                        (2 * pixelsPerUnit) / LAYER_WIDTH,
+                        (2 * pixelsPerUnit) / ATLAS.width,
                         0,
                         0,
                         0,
-                        (-2 * pixelsPerUnit) / LAYER_HEIGHT,
+                        (-2 * pixelsPerUnit) / ATLAS.height,
                         0,
-                        (2 * TX) / LAYER_WIDTH - 1,
-                        1 - (2 * TY) / LAYER_HEIGHT,
+                        (2 * TX) / ATLAS.width - 1,
+                        1 - (2 * TY) / ATLAS.height,
                         1,
                     ],
                     indexRange: [RUN.firstIndex, RUN.indexCount],
                 });
             }
-            meshRenderer.flush('rasterAtlasBake');
+            MESHES.flush('rasterAtlasBake');
             DEVICE.unbindRenderTarget(target);
             bound = false;
             bakedRestores = RESTORES;
@@ -334,7 +333,7 @@ export function createVectorRasterAtlas(
             return { backend: 'raster', reason: null };
         } catch (error) {
             if (bound) {
-                meshRenderer.discard();
+                MESHES.discard();
                 try {
                     DEVICE.unbindRenderTarget(target);
                 } catch {
@@ -342,7 +341,7 @@ export function createVectorRasterAtlas(
                 }
             }
             try {
-                RELEASE();
+                RELEASE_TARGET();
             } catch {
                 // Preserve the original bake error for diagnostics and vector fallback.
             }
@@ -387,16 +386,13 @@ export function createVectorRasterAtlas(
         if (!POSE) {
             return FALLBACK(player, options, 'poseUnavailable');
         }
-        for (let run = 0; run < RUNS.length; run++) {
-            MATRICES.set(MATRIX, run * 6);
-        }
-        meshRenderer.drawQuadRuns({
+        context.drawQuads({
             ...DRAW_OPTIONS,
-            matrices: MATRICES,
-            runs: TABLES,
-            texture: textureArray,
-            layer,
+            matrix: MATRIX,
+            layer: region.layer,
+            filter: region.filter,
             pose: POSE,
+            ...TABLES,
         });
         rasterDraws++;
         return { backend: 'raster', reason: null };
@@ -406,13 +402,15 @@ export function createVectorRasterAtlas(
             return false;
         }
         if (DEVICE.state === 'ready' && DEVICE.active) {
-            meshRenderer.flush('rasterAtlasDispose');
+            DEVICE.flushBatchers('rasterAtlasDispose');
         }
+        disposed = true;
         try {
-            RELEASE();
+            RELEASE_TARGET();
         } finally {
-            disposed = true;
-            RELEASE_LAYER();
+            if (region && DEVICE.state === 'ready') {
+                ATLAS.release(region);
+            }
         }
         return true;
     };
@@ -428,9 +426,9 @@ export function createVectorRasterAtlas(
                 disposed,
                 reason: unsupportedReason ?? (lastFailure ? 'bakeFailed' : null),
                 lastError: lastFailure,
-                layer,
+                layer: region?.layer ?? null,
                 runCount: RUNS?.length ?? 0,
-                // Region of the layer the packed runs occupy; the layer itself is owned by the texture array.
+                // The packed runs' region of the shared atlas array.
                 atlasWidth: PACKED?.width ?? 0,
                 atlasHeight: PACKED?.height ?? 0,
                 atlasBytes: PACKED?.bytes ?? 0,

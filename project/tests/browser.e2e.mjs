@@ -18,7 +18,7 @@ import { exerciseRendererInterleaving } from '../../modules/rendering/tests/inte
 import { exerciseOrderedAssetBatch } from '../../modules/rendering/tests/ordered-batch.browser.mjs';
 import { exerciseMeshDepth } from '../../modules/rendering/tests/mesh-depth.browser.mjs';
 import { exerciseMeshAlphaDepthWrite } from '../../modules/rendering/tests/mesh-alpha-depth.browser.mjs';
-import { exercisePrimitiveInstances } from '../../modules/rendering/tests/primitive-instances.browser.mjs';
+import { exercisePrimitiveShapes } from '../../modules/rendering/tests/primitive-shapes.browser.mjs';
 import { runPresentationChecks } from './presentation.browser.js';
 import { chromium } from 'playwright';
 import { createServer } from 'node:http';
@@ -790,37 +790,28 @@ try {
     REPORT.stages.push(
         'MeshRenderer alpha-threshold depth writes preserve triangle and instance painter order, opacity variants, and lifecycle',
     );
-    REPORT.primitiveInstances = await exercisePrimitiveInstances(PAGE);
-    assert.deepEqual(REPORT.primitiveInstances.circle, [0, 255, 0, 255]);
-    assert.deepEqual(REPORT.primitiveInstances.ellipse, [255, 0, 0, 255]);
-    assert.deepEqual(REPORT.primitiveInstances.rect, [0, 0, 255, 255]);
-    assert.deepEqual(REPORT.primitiveInstances.rotatedRect, [255, 0, 255, 255]);
-    assert.deepEqual(REPORT.primitiveInstances.line, [255, 255, 0, 255]);
-    assert.deepEqual(REPORT.primitiveInstances.overlap, [64, 0, 128, 255]);
-    assert.deepEqual(REPORT.primitiveInstances.clippedInside, [255, 255, 255, 255]);
-    assert.deepEqual(REPORT.primitiveInstances.clippedOutside, [0, 0, 0, 255]);
-    assert.equal(REPORT.primitiveInstances.pathTessellations, 0);
-    assert.equal(REPORT.primitiveInstances.pathStrokeBuilds, 0);
-    assert.equal(REPORT.primitiveInstances.arcPointBuilds, 0);
-    assert.equal(REPORT.primitiveInstances.bufferAllocationsAfterWarmup, 0);
+    REPORT.primitiveShapes = await exercisePrimitiveShapes(PAGE);
+    assert.deepEqual(REPORT.primitiveShapes.circle, [0, 255, 0, 255]);
+    assert.deepEqual(REPORT.primitiveShapes.ellipse, [255, 0, 0, 255]);
+    assert.deepEqual(REPORT.primitiveShapes.rect, [0, 0, 255, 255]);
+    assert.deepEqual(REPORT.primitiveShapes.rotatedRect, [255, 0, 255, 255]);
+    assert.deepEqual(REPORT.primitiveShapes.line, [255, 255, 0, 255]);
+    assert.deepEqual(REPORT.primitiveShapes.overlap, [64, 0, 128, 255]);
+    assert.deepEqual(REPORT.primitiveShapes.clippedInside, [255, 255, 255, 255]);
+    assert.deepEqual(REPORT.primitiveShapes.clippedOutside, [0, 0, 0, 255]);
+    assert.equal(REPORT.primitiveShapes.pathTessellations, 0);
+    assert.equal(REPORT.primitiveShapes.pathStrokeBuilds, 0);
+    assert.equal(REPORT.primitiveShapes.arcPointBuilds, 0);
+    assert.equal(REPORT.primitiveShapes.bufferAllocationsAfterWarmup, 0);
     assert.equal(
-        REPORT.primitiveInstances.bufferUploads,
-        REPORT.primitiveInstances.primitives.frame.instanceUploads,
-        'warm primitive frames upload instance records only',
+        REPORT.primitiveShapes.drawCalls,
+        1,
+        'circles, ellipses, rectangles, lines, alpha and plane clips share one stream draw',
     );
-    assert.equal(
-        REPORT.primitiveInstances.primitives.frame.instanceBytesUploaded,
-        REPORT.primitiveInstances.primitives.frame.instances * 64,
-    );
-    if (REPORT.primitiveInstances.primitives.instanced) {
-        assert.ok(
-            REPORT.primitiveInstances.primitives.frame.draws < REPORT.primitiveInstances.primitives.frame.instances,
-            'adjacent primitive instances batch into fewer draws than shapes',
-        );
-    }
-    assert.equal(REPORT.primitiveInstances.glError, 0);
+    assert.ok(REPORT.primitiveShapes.uploadedBytes > 0, 'warm primitive frames upload the vertex stream');
+    assert.equal(REPORT.primitiveShapes.glError, 0);
     REPORT.stages.push(
-        'shared primitive instances draw circles, ellipses, rectangles, and capped lines with order, clips, alpha, and transforms',
+        'analytic primitives in the vector stream draw circles, ellipses, rectangles, and capped lines with order, clips, alpha, and transforms',
     );
     REPORT.rendering = await PAGE.evaluate(async () => {
         const { Renderer2D: RENDERER2_D } = await import('/dist/rendering.js');
@@ -1290,31 +1281,31 @@ try {
             pixels: [...window.textureArrayExample.readPixels()],
         }));
         if (NAME === 'touch') {
-            await TEXTURE_ARRAY_PAGE.tap('#mode-separate');
+            await TEXTURE_ARRAY_PAGE.tap('#mode-mixed');
         } else {
-            await TEXTURE_ARRAY_PAGE.click('#mode-separate');
+            await TEXTURE_ARRAY_PAGE.click('#mode-mixed');
         }
-        const SEPARATE_RESULT = await TEXTURE_ARRAY_PAGE.evaluate(() => ({
+        const MIXED_RESULT = await TEXTURE_ARRAY_PAGE.evaluate(() => ({
             mode: window.textureArrayExample.mode,
             drawCalls: window.textureArrayExample.drawCalls,
             pixels: [...window.textureArrayExample.readPixels()],
             glError: window.textureArrayExample.device.gl.getError(),
         }));
-        assert.equal(SEPARATE_RESULT.mode, 'separate', `${NAME}: mode button switches`);
-        assert.equal(ARRAY_RESULT.drawCalls, 1, `${NAME}: array mode draws 240 sprites in one draw call`);
-        assert.ok(SEPARATE_RESULT.drawCalls >= 4, `${NAME}: separate textures split the batch per page change`);
-        assert.equal(SEPARATE_RESULT.glError, 0);
-        assert.deepEqual(ARRAY_RESULT.pixels, SEPARATE_RESULT.pixels, `${NAME}: both modes render identical pixels`);
+        assert.equal(MIXED_RESULT.mode, 'mixed', `${NAME}: mode button switches`);
+        assert.equal(ARRAY_RESULT.drawCalls, 1, `${NAME}: 240 sprites from 4 atlas regions in one draw call`);
+        assert.equal(MIXED_RESULT.drawCalls, 1, `${NAME}: 240 interleaved rectangles keep the single draw call`);
+        assert.equal(MIXED_RESULT.glError, 0);
+        assert.notDeepEqual(ARRAY_RESULT.pixels, MIXED_RESULT.pixels, `${NAME}: interleaved rectangles are visible`);
         assert.equal(TEXTURE_ARRAY_ERRORS.length, 0, TEXTURE_ARRAY_ERRORS.join('\n'));
         REPORT.textureArrayExample.push({
             name: NAME,
             arrayDrawCalls: ARRAY_RESULT.drawCalls,
-            separateDrawCalls: SEPARATE_RESULT.drawCalls,
+            mixedDrawCalls: MIXED_RESULT.drawCalls,
         });
         await TEXTURE_ARRAY_PAGE.close();
     }
     REPORT.stages.push(
-        'texture-array example: 1 draw call vs per-page textures with identical pixels, desktop and touch emulation (not real-device verification)',
+        'texture-array example: sprites from several atlas regions plus interleaved rectangles in 1 draw call, desktop and touch emulation (not real-device verification)',
     );
     const PREVIEW_PAGE = await browser.newPage({
             viewport: {

@@ -2,6 +2,11 @@ const MAX_PARTS = 16;
 const POSE_WIDTH = MAX_PARTS * 3;
 const OVERRIDE_WIDTH = MAX_PARTS * 2;
 const PROGRAM_WIDTH = 256;
+const OWNERS = new WeakMap();
+/** The PoseRenderer that issued a pose handle, so any renderer can resolve and submit it. */
+export function poseRendererOf(handle) {
+    return OWNERS.get(handle) ?? null;
+}
 /** Numeric animation data and stable player rows. Visible draws keep caller order. */
 export class PoseRenderer {
     constructor(device, { backend = 'auto', onBoundary = () => {} } = {}) {
@@ -221,6 +226,7 @@ export class PoseRenderer {
             baseScratch: new Float32Array(OVERRIDE_WIDTH * 4),
         };
         this.instances.set(HANDLE, RECORD);
+        OWNERS.set(HANDLE, this);
         this.rows[ROW] = RECORD;
         this.pendingUpdates = true;
         return HANDLE;
