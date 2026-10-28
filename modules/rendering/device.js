@@ -89,6 +89,10 @@ function compile(gl, type, source) {
  * empty on restore: upload this frame's geometry again. No loop, sorting, art or game state.
  * Shader outputs select explicit premultiplied or straight-alpha blending per draw.
  */
+function overlaps(a, b) {
+    return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+}
+
 export class WebGLDevice {
     constructor(
         canvas,
@@ -700,6 +704,9 @@ export class WebGLDevice {
     }
     /** Uploads one retained layer of the array bound to the active unit; empty layers stay transparent. */
     _uploadLayer(record, layer) {
+        for (const REGION of record.layerRegions[layer]) {
+            this._uploadRegion(layer, REGION);
+        }
         const GL = this.gl,
             LAYER = record.layerSources[layer];
         if (LAYER === null) {
@@ -724,6 +731,28 @@ export class WebGLDevice {
         this.stats.textureBytes += record.width * record.height * 4;
         this.stats.imageTexUploadCount++;
         this.stats.imageTexUploadBytes += record.width * record.height * 4;
+    }
+    /** Uploads one retained rectangle of the array bound to the active unit. */
+    _uploadRegion(layer, region) {
+        const GL = this.gl;
+        GL.pixelStorei(GL.UNPACK_PREMULTIPLY_ALPHA_WEBGL, !(region.source instanceof Uint8Array));
+        GL.texSubImage3D(
+            GL.TEXTURE_2D_ARRAY,
+            0,
+            region.x,
+            region.y,
+            layer,
+            region.width,
+            region.height,
+            1,
+            GL.RGBA,
+            GL.UNSIGNED_BYTE,
+            region.source,
+        );
+        this.stats.textureUploads++;
+        this.stats.textureBytes += region.width * region.height * 4;
+        this.stats.imageTexUploadCount++;
+        this.stats.imageTexUploadBytes += region.width * region.height * 4;
     }
     _textureBytes(record) {
         return (
@@ -997,6 +1026,7 @@ export class WebGLDevice {
             height,
             layers,
             layerSources: new Array(layers).fill(null),
+            layerRegions: Array.from({ length: layers }, () => []),
             format: 'rgba',
             premultiplied: true,
             source: null,
@@ -1039,6 +1069,65 @@ export class WebGLDevice {
             R.layerSources[layer] = PREVIOUS;
             throw error;
         }
+    }
+    /**
+     * Writes a rectangle inside one layer without touching the rest, so many small images (glyph pages, gradient
+     * ramps, a 1x1 white texel) share a layer. The source is retained and replayed after context restoration; a
+     * rectangle replaces any retained rectangle it overlaps.
+     */
+    updateTextureRegion(handle, layer, x, y, source, { premultiplied = false } = {}) {
+        this._ready();
+        const R = this._handle(this.textures, handle, 'texture array');
+        if (R.target !== 'array') {
+            throw new TypeError('A texture array is required');
+        }
+        integer(layer, 'layer', 0, R.layers - 1);
+        integer(x, 'region x', 0, R.width - 1);
+        integer(y, 'region y', 0, R.height - 1);
+        const NEXT = this._source(source, 'rgba', premultiplied);
+        if (NEXT.source === null || x + NEXT.width > R.width || y + NEXT.height > R.height) {
+            throw new RangeError('Region must be fully supplied and inside the layer');
+        }
+        const REGION = { x, y, width: NEXT.width, height: NEXT.height, source: NEXT.source },
+            PREVIOUS = R.layerRegions[layer];
+        R.layerRegions[layer] = [...PREVIOUS.filter((r) => !overlaps(r, REGION)), REGION];
+        try {
+            this._bindTexture(0, R);
+            this.boundTextureCount = Math.max(1, this.boundTextureCount);
+            this._resetUnpackState();
+            this._uploadRegion(layer, REGION);
+            if (this.checkGLErrors) {
+                const ERROR = this.gl.getError();
+                if (ERROR !== this.gl.NO_ERROR) {
+                    throw new Error(`Texture region upload error ${ERROR}`);
+                }
+            }
+        } catch (error) {
+            R.layerRegions[layer] = PREVIOUS;
+            throw error;
+        }
+    }
+    /** Forgets a retained rectangle and makes its pixels transparent so a later owner starts clean. */
+    clearTextureRegion(handle, layer, x, y, width, height) {
+        this._ready();
+        const R = this._handle(this.textures, handle, 'texture array');
+        if (R.target !== 'array') {
+            throw new TypeError('A texture array is required');
+        }
+        integer(layer, 'layer', 0, R.layers - 1);
+        integer(width, 'region width', 1, R.width);
+        integer(height, 'region height', 1, R.height);
+        this.updateTextureRegion(
+            handle,
+            layer,
+            x,
+            y,
+            { width, height, data: new Uint8Array(width * height * 4) },
+            { premultiplied: true },
+        );
+        R.layerRegions[layer] = R.layerRegions[layer].filter(
+            (r) => !(r.x === x && r.y === y && r.width === width && r.height === height),
+        );
     }
     isTextureArray(handle) {
         return this._handle(this.textures, handle, 'texture').target === 'array';
