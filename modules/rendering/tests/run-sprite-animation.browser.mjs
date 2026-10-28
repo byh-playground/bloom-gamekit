@@ -146,9 +146,10 @@ try {
                 STATS.frameCount === 3 &&
                     STATS.clipCount === 3 &&
                     STATS.playerCount === 2 &&
-                    STATS.retainedBytes > 0 &&
+                    STATS.retainedBytes === 0 &&
+                    MESHES.stats().retainedBytes > 0 &&
                     STATS.textureOwned === false,
-                'one retained sprite mesh and borrowed texture accounted',
+                'the renderer-owned shared quad and borrowed texture accounted',
             );
             CHECK(
                 MESHES.meshes.size === 1 && UNIT_MESH.vertices.length === 4 * 11 && UNIT_MESH.indices.length === 6,

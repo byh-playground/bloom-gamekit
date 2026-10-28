@@ -17,7 +17,7 @@
  * pausing and rate changes anchor to that same clock without a phase jump.
  */
 export function createSpriteAnimation(meshRenderer, texture, definition) {
-    if (!meshRenderer?.createMesh || !meshRenderer?.drawMesh || !meshRenderer?.deleteMesh) {
+    if (!meshRenderer?.acquireQuadMesh || !meshRenderer?.drawMesh || !meshRenderer?.releaseQuadMesh) {
         throw new TypeError('A MeshRenderer is required');
     }
     if (!meshRenderer.device?.textures?.has(texture)) {
@@ -40,23 +40,11 @@ export function createSpriteAnimation(meshRenderer, texture, definition) {
     }
     const FRAMES = [];
     const FRAME_RECTS = [];
-    const VERTICES = new Float32Array(4 * 11);
-    const UVS = new Float32Array(4 * 2);
-    const INDICES = new Uint16Array([0, 1, 2, 0, 2, 3]);
-    const VERTEX = (index, x, y, u, v) => {
-        const OFFSET = index * 11;
-        VERTICES.set([x, y, 1, 1, 1, 1], OFFSET);
-        UVS.set([u, v], index * 2);
-    };
     const INTEGER = (value, name, minimum = 0) => {
         if (!Number.isSafeInteger(value) || value < minimum) {
             throw new TypeError(`${name} must be an integer >= ${minimum}`);
         }
     };
-    VERTEX(0, 0, 0, 0, 0);
-    VERTEX(1, 1, 0, 1, 0);
-    VERTEX(2, 1, 1, 1, 1);
-    VERTEX(3, 0, 1, 0, 1);
     for (let index = 0; index < INPUT_FRAMES.length; index++) {
         const FRAME = INPUT_FRAMES[index];
         const X = FRAME?.x;
@@ -175,14 +163,7 @@ export function createSpriteAnimation(meshRenderer, texture, definition) {
     if (!CLIPS.size) {
         throw new TypeError('At least one sprite clip is required');
     }
-    const MESH = meshRenderer.createMesh({
-        vertices: VERTICES,
-        uvs: UVS,
-        indices: INDICES,
-        strideFloats: 11,
-        partCount: 1,
-        morphCount: 0,
-    });
+    const MESH = meshRenderer.acquireQuadMesh();
     const PLAYERS = new Set();
     let disposed = false;
     const READY = () => {
@@ -317,7 +298,7 @@ export function createSpriteAnimation(meshRenderer, texture, definition) {
                 frameCount: FRAMES.length,
                 clipCount: CLIPS.size,
                 playerCount: PLAYERS.size,
-                retainedBytes: disposed ? 0 : MESH.byteLength,
+                retainedBytes: 0,
                 textureOwned: false,
             });
         },
@@ -327,7 +308,7 @@ export function createSpriteAnimation(meshRenderer, texture, definition) {
             }
             disposed = true;
             PLAYERS.clear();
-            meshRenderer.deleteMesh(MESH);
+            meshRenderer.releaseQuadMesh();
             return true;
         },
     });

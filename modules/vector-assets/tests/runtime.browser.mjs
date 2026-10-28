@@ -464,7 +464,6 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
                 GPU_POSE_STATS?.gpuDrawInstances === 1 &&
                     GPU_POSE_STATS?.cpuDrawInstances === 0 &&
                     GPU_POSE_STATS?.cpuFallbackRatio === 0 &&
-                    GPU_POSE_STATS?.gpuPoseRows === 1 &&
                     GPU_MESHES.stats().partUniformBytesSubmitted === 0 &&
                     GPU_PLAYER_METRICS.fullSamples === 0 &&
                     GPU_PLAYER_METRICS.gpuPrepares === 1 &&

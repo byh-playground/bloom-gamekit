@@ -1,3 +1,7 @@
+## v0.20.0 (2026-10-28)
+
+벡터 raster atlas와 스프라이트 atlas가 호출자 소유 `TEXTURE_2D_ARRAY`의 레이어 하나에 구워지고(`textureArray`, `layer`), raster atlas는 공통 단위 사각 메시를 `MeshRenderer.drawQuadRuns`로 부위마다 인스턴스로 그립니다. 포즈는 같은 draw의 정점 셰이더가 키프레임 텍스처에서 계산하므로 별도 pose pass가 없습니다. 같은 장면(액터 250, 종 5)의 draw call이 500 → 250 → 1이고 texture·mesh 끊김이 249 → 0입니다(`project/docs/draw-batching-benchmark.json`, `npm run benchmark:draw-batching -- <label>`). `maxAtlasSize`/`maxAtlasBytes` 옵션은 제거되고 크기는 배열이 정하며, `Device.createTextureLayerTarget`, `MeshRenderer.acquireQuadMesh/releaseQuadMesh/drawQuadRuns`가 추가됩니다. 모핑·opacityChannel·셰이더 표면 에셋은 기존처럼 벡터 경로로 그립니다. VectorRenderer, 글리프 아틀라스, Renderer2D는 아직 기존 텍스처를 씁니다. 벤치마크는 SwiftShader 소프트웨어 렌더러에서 측정했으므로 GPU 시간·모바일 메모리는 검증하지 않았습니다.
+
 ## v0.19.9 (2026-10-28)
 
 `WebGLDevice.createTextureArray`/`updateTextureLayer`/`isTextureArray`로 같은 크기의 아틀라스 페이지를 `TEXTURE_2D_ARRAY` 하나에 담습니다. 텍스처 인스턴스에 `layer`가 추가되어(100바이트) 같은 어레이·mesh·상태이면 페이지가 달라도 한 번에 그립니다. 스프라이트 프레임은 `layer`(기본 0)를 받고 `VectorContext.drawMesh`가 전달합니다. 어레이는 레이어 전체 메모리를 처음에 할당하고 컨텍스트 복구 때 올린 레이어를 다시 올립니다. 이번 변경은 mesh·스프라이트 경로뿐이며 vector-assets 렌더 타깃 아틀라스, VectorRenderer, 글리프 아틀라스, Renderer2D는 아직 기존 텍스처를 씁니다. 게임 적용과 실기기 성능은 포함하지 않습니다.

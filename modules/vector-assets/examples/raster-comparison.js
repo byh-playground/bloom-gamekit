@@ -44,7 +44,11 @@ const SVG_DATA_URL = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(seed
 const SVG_SOURCE_PATH = 'modules/vector-assets/assets/seed-scout-raster-comparison.svg';
 const SPRITE_CLIPS = ['transform-repeat', 'bounce', 'idle'];
 const SPRITE_EXPRESSIONS = ['neutral', 'happy', 'surprised'];
-const ATLAS_BUDGET_BYTES = 128 * 1024 * 1024;
+const ATLAS_BUDGET_BYTES = 192 * 1024 * 1024;
+// One part atlas layer plus one sprite layer per clip/expression; every textured draw samples this one array.
+const LAYER_COUNT = 1 + SPRITE_CLIPS.length * SPRITE_EXPRESSIONS.length;
+let layerArray = null;
+let layerArrayResolution = 0;
 let timer = createGpuTimer(DEVICE.gl);
 let hardware = readHardware();
 const STATE = {
@@ -809,6 +813,25 @@ async function setQuality(value) {
     }
 }
 
+/** Layers are all one size, so the array is rebuilt (after its atlases are released) when the resolution changes. */
+function ensureLayerArray(resolution) {
+    if (layerArray && layerArrayResolution === resolution) {
+        return layerArray;
+    }
+    clearSpriteSets();
+    STATE.atlas?.dispose();
+    STATE.atlas = null;
+    STATE.atlasResolution = 0;
+    STATE.spriteNeedsRebuild = true;
+    if (layerArray) {
+        DEVICE.deleteTexture(layerArray);
+    }
+    const SIZE = Math.min(DEVICE.maxTextureSize, 2048, 2 ** Math.ceil(Math.log2(resolution * 8)));
+    layerArray = DEVICE.createTextureArray(SIZE, SIZE, LAYER_COUNT);
+    layerArrayResolution = resolution;
+    return layerArray;
+}
+
 function ensureAtlas() {
     if (!PART_INPUT.checked) {
         STATE.atlas?.dispose();
@@ -819,9 +842,10 @@ function ensureAtlas() {
         return;
     }
     const RESOLUTION = Number(RESOLUTION_INPUT.value);
-    if (STATE.atlasResolution === RESOLUTION) {
+    if (STATE.atlasResolution === RESOLUTION && layerArrayResolution === RESOLUTION) {
         return;
     }
+    ensureLayerArray(RESOLUTION);
     STATE.atlas?.dispose();
     STATE.atlas = null;
     STATE.atlasReason = null;
@@ -832,8 +856,8 @@ function ensureAtlas() {
         candidate = createVectorRasterAtlas(MESHES, asset, compiled, {
             pixelsPerUnit: RESOLUTION / Math.max(viewBox[2], viewBox[3]),
             padding: 2,
-            maxAtlasSize: Math.min(DEVICE.maxTextureSize, 8192),
-            maxAtlasBytes: ATLAS_BUDGET_BYTES,
+            textureArray: layerArray,
+            layer: 0,
         });
         const RESULT = candidate.bake();
         if (RESULT.backend === 'raster') {
@@ -877,6 +901,7 @@ function ensureSpriteSets(forceAll = false) {
         DEVICE.stats.restores ?? 0,
     ]);
     if (STATE.spriteNeedsRebuild || STATE.preparationKey !== CONFIG_KEY) {
+        ensureLayerArray(Number(RESOLUTION_INPUT.value));
         clearSpriteSets();
         STATE.spriteNeedsRebuild = false;
         STATE.preparationKey = CONFIG_KEY;
@@ -917,8 +942,8 @@ function ensureSpriteSets(forceAll = false) {
                 sampleIntervalMs: Number(SAMPLE_INTERVAL_INPUT.value),
                 pixelsPerUnit: Number(RESOLUTION_INPUT.value) / Math.max(viewBox[2], viewBox[3]),
                 padding: 2,
-                maxAtlasSize: Math.min(DEVICE.maxTextureSize, 8192),
-                maxAtlasBytes: ATLAS_BUDGET_BYTES,
+                textureArray: layerArray,
+                layer: 1 + INDEX,
             });
             plannedBytes = baker.stats.atlasBytes;
             PREPARATION.estimatedBytes += plannedBytes;
@@ -1303,7 +1328,7 @@ function writeMetrics(cpuMs, animationMs, submitMs, pathCpuMs, rasterResult, spr
             (spriteResult.reasons.length ? ` (${spriteResult.reasons.join(', ')})` : '');
         const FAILED_PREPARATIONS = PREPARATION?.entries.filter((entry) => !entry.ready) ?? [];
         PREPARATION_METRICS.textContent = PREPARATION
-            ? `${PREPARATION.status} ${PREPARATION.completed}/${PREPARATION.total} · planned ${PREPARATION.estimatedBytes.toLocaleString()} B · allocated ${PREPARATION.allocatedBytes.toLocaleString()} / ${PREPARATION.budgetBytes.toLocaleString()} B · initial CPU ${PREPARATION.cpuMs.toFixed(1)} ms · ${PREPARATION.entries.filter((entry) => entry.ready).length} separate sprite textures (no multi-page sheet)${FAILED_PREPARATIONS.length ? ` · ${FAILED_PREPARATIONS.map((entry) => `${entry.clip}/${entry.expression}:${entry.reason}`).join(', ')}` : ''}`
+            ? `${PREPARATION.status} ${PREPARATION.completed}/${PREPARATION.total} · planned ${PREPARATION.estimatedBytes.toLocaleString()} B · allocated ${PREPARATION.allocatedBytes.toLocaleString()} / ${PREPARATION.budgetBytes.toLocaleString()} B · initial CPU ${PREPARATION.cpuMs.toFixed(1)} ms · ${PREPARATION.entries.filter((entry) => entry.ready).length} sprite layers of one texture array${FAILED_PREPARATIONS.length ? ` · ${FAILED_PREPARATIONS.map((entry) => `${entry.clip}/${entry.expression}:${entry.reason}`).join(', ')}` : ''}`
             : 'Preparing atlas manifest…';
         PATH_METRICS.textContent =
             `SVG SHA ${asset.sourceSha256.slice(0, 12)} · 래스터 ${rasterResult.rasterDraws}개 · 벡터 대체 ${rasterResult.vectorFallbacks}개` +

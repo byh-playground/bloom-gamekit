@@ -705,37 +705,21 @@ export class WebGLDevice {
         if (LAYER === null) {
             return;
         }
-        const PIXELS = LAYER.source instanceof Uint8Array;
-        GL.pixelStorei(GL.UNPACK_PREMULTIPLY_ALPHA_WEBGL, !PIXELS);
-        if (PIXELS) {
-            GL.texSubImage3D(
-                GL.TEXTURE_2D_ARRAY,
-                0,
-                0,
-                0,
-                layer,
-                record.width,
-                record.height,
-                1,
-                GL.RGBA,
-                GL.UNSIGNED_BYTE,
-                LAYER.source,
-            );
-        } else {
-            GL.texSubImage3D(
-                GL.TEXTURE_2D_ARRAY,
-                0,
-                0,
-                0,
-                layer,
-                record.width,
-                record.height,
-                1,
-                GL.RGBA,
-                GL.UNSIGNED_BYTE,
-                LAYER.source,
-            );
-        }
+        // DOM sources are premultiplied by the browser on upload; byte planes already carry their alpha form.
+        GL.pixelStorei(GL.UNPACK_PREMULTIPLY_ALPHA_WEBGL, !(LAYER.source instanceof Uint8Array));
+        GL.texSubImage3D(
+            GL.TEXTURE_2D_ARRAY,
+            0,
+            0,
+            0,
+            layer,
+            record.width,
+            record.height,
+            1,
+            GL.RGBA,
+            GL.UNSIGNED_BYTE,
+            LAYER.source,
+        );
         this.stats.textureUploads++;
         this.stats.textureBytes += record.width * record.height * 4;
         this.stats.imageTexUploadCount++;
@@ -770,7 +754,17 @@ export class WebGLDevice {
         }
         try {
             GL.bindFramebuffer(GL.FRAMEBUFFER, FRAMEBUFFER_LOCAL);
-            GL.framebufferTexture2D(GL.FRAMEBUFFER, GL.COLOR_ATTACHMENT0, GL.TEXTURE_2D, record.gpu, 0);
+            if (record.arrayRecord) {
+                GL.framebufferTextureLayer(
+                    GL.FRAMEBUFFER,
+                    GL.COLOR_ATTACHMENT0,
+                    record.arrayRecord.gpu,
+                    0,
+                    record.layer,
+                );
+            } else {
+                GL.framebufferTexture2D(GL.FRAMEBUFFER, GL.COLOR_ATTACHMENT0, GL.TEXTURE_2D, record.gpu, 0);
+            }
             if (record.stencil) {
                 stencilBuffer = GL.createRenderbuffer();
                 if (!stencilBuffer) {
@@ -854,6 +848,37 @@ export class WebGLDevice {
             width * height * (format === 'rgba32f' ? 16 : 4) + width * height * (stencil ? 1 : 0);
         return HANDLE;
     }
+    /**
+     * Renders into one layer of a texture array. The handle works with bind/unbindRenderTarget but is not a draw
+     * texture: draw the array and select the layer. Contents are empty after context restoration, so the producer
+     * repaints them. The array stays owned by the caller and must outlive the target.
+     */
+    createTextureLayerTarget(array, layer) {
+        this._ready();
+        const ARRAY = this._handle(this.textures, array, 'texture array');
+        if (ARRAY.target !== 'array') {
+            throw new TypeError('A texture array is required');
+        }
+        integer(layer, 'layer', 0, ARRAY.layers - 1);
+        const RECORD = {
+            kind: 'renderTarget',
+            arrayRecord: ARRAY,
+            layer,
+            width: ARRAY.width,
+            height: ARRAY.height,
+            format: 'rgba',
+            premultiplied: true,
+            stencil: false,
+            framebuffer: null,
+            stencilBuffer: null,
+            available: true,
+        };
+        this._renderTarget(RECORD);
+        const HANDLE = Object.freeze({ width: ARRAY.width, height: ARRAY.height, layer });
+        this.renderTargets.set(HANDLE, RECORD);
+        this.stats.renderTargetCount = this.renderTargets.size;
+        return HANDLE;
+    }
     /** Float targets can become unavailable after restore while ordinary rendering stays ready. */
     isRenderTargetAvailable(handle) {
         const R = this._handle(this.renderTargets, handle, 'render target');
@@ -911,6 +936,12 @@ export class WebGLDevice {
             throw new Error('Cannot delete a bound render target');
         }
         this.gl.deleteFramebuffer(RECORD.framebuffer);
+        if (RECORD.arrayRecord) {
+            // A layer view owns only its framebuffer; the array texture and its bytes belong to the caller.
+            this.renderTargets.delete(handle);
+            this.stats.renderTargetCount = this.renderTargets.size;
+            return true;
+        }
         if (RECORD.stencilBuffer) {
             this.gl.deleteRenderbuffer(RECORD.stencilBuffer);
         }
@@ -1216,6 +1247,9 @@ export class WebGLDevice {
         }
         if (this.renderTargets.has(handle)) {
             throw new Error('Use deleteRenderTarget for render targets');
+        }
+        if (R.target === 'array' && [...this.renderTargets.values()].some((target) => target.arrayRecord === R)) {
+            throw new Error('Delete the texture array layer targets first');
         }
         this.gl.deleteTexture(R.gpu);
         this.textures.delete(handle);

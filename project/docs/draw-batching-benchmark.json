@@ -1,0 +1,268 @@
+{
+    "scope": "Interleaved species drawn in one frame; counts are exact, timing is SwiftShader and not device performance.",
+    "runs": [
+        {
+            "label": "before",
+            "sourceHead": "93be68609246a62da99a6b2c5db37c400f410065",
+            "sourceDirty": true,
+            "actors": 250,
+            "species": 5,
+            "frames": 60,
+            "glError": 0,
+            "deviceDrawCalls": 500,
+            "meshDraws": 250,
+            "instances": 250,
+            "rasterDraws": 250,
+            "vectorFallbacks": 0,
+            "atlasStats": [
+                {
+                    "name": "sprout.svg",
+                    "parts": 6,
+                    "rasterDraws": 3500,
+                    "reason": null,
+                    "fallbackReasons": {}
+                },
+                {
+                    "name": "chestnut.svg",
+                    "parts": 3,
+                    "rasterDraws": 3500,
+                    "reason": null,
+                    "fallbackReasons": {}
+                },
+                {
+                    "name": "corn-kernel.svg",
+                    "parts": 6,
+                    "rasterDraws": 3500,
+                    "reason": null,
+                    "fallbackReasons": {}
+                },
+                {
+                    "name": "kidney-bean.svg",
+                    "parts": 6,
+                    "rasterDraws": 3500,
+                    "reason": null,
+                    "fallbackReasons": {}
+                },
+                {
+                    "name": "pea.svg",
+                    "parts": 6,
+                    "rasterDraws": 3500,
+                    "reason": null,
+                    "fallbackReasons": {}
+                }
+            ],
+            "poseStats": {
+                "gpuDrawInstances": 250,
+                "cpuDrawInstances": 0,
+                "uniformDrawInstances": 0,
+                "gpuPoseRows": 250,
+                "gpuPoseDraws": 250,
+                "cpuPoseUploadBytes": 0,
+                "stateUploadBytes": 9568,
+                "overrideUploadBytes": 0,
+                "fallbackReasons": {},
+                "flushCalls": 250,
+                "flushRecordVisits": 186750,
+                "cleanFlushSkips": 1,
+                "totalDrawInstances": 250,
+                "cpuFallbackRatio": 0,
+                "liveInstances": 250,
+                "sources": 5,
+                "capacity": 256,
+                "gpuUnavailableReason": null,
+                "stateBytes": 139264,
+                "gpuPoseBytes": 196608,
+                "cpuPoseBytes": 0,
+                "programBytes": 65536
+            },
+            "flushReasons": {
+                "texture": 249,
+                "explicit": 1
+            },
+            "drawDispatchReasons": {
+                "texture": 249,
+                "explicit": 1
+            },
+            "submitMsP50": 103.79999999998836,
+            "submitMsP95": 139.20000000001164,
+            "gpuTextureBytes": 1075780,
+            "renderer": "WebKit WebGL"
+        },
+        {
+            "label": "pose-in-vertex-shader",
+            "sourceHead": "3d8c80557cd5e04fb7b7d9eb7c7219222dcb4fdc",
+            "sourceDirty": true,
+            "actors": 250,
+            "species": 5,
+            "frames": 60,
+            "glError": 0,
+            "deviceDrawCalls": 250,
+            "meshDraws": 250,
+            "instances": 250,
+            "rasterDraws": 250,
+            "vectorFallbacks": 0,
+            "atlasStats": [
+                {
+                    "name": "sprout.svg",
+                    "parts": 6,
+                    "rasterDraws": 3500,
+                    "reason": null,
+                    "fallbackReasons": {}
+                },
+                {
+                    "name": "chestnut.svg",
+                    "parts": 3,
+                    "rasterDraws": 3500,
+                    "reason": null,
+                    "fallbackReasons": {}
+                },
+                {
+                    "name": "corn-kernel.svg",
+                    "parts": 6,
+                    "rasterDraws": 3500,
+                    "reason": null,
+                    "fallbackReasons": {}
+                },
+                {
+                    "name": "kidney-bean.svg",
+                    "parts": 6,
+                    "rasterDraws": 3500,
+                    "reason": null,
+                    "fallbackReasons": {}
+                },
+                {
+                    "name": "pea.svg",
+                    "parts": 6,
+                    "rasterDraws": 3500,
+                    "reason": null,
+                    "fallbackReasons": {}
+                }
+            ],
+            "poseStats": {
+                "gpuDrawInstances": 250,
+                "cpuDrawInstances": 0,
+                "uniformDrawInstances": 0,
+                "cpuPoseUploadBytes": 0,
+                "stateUploadBytes": 9568,
+                "overrideUploadBytes": 0,
+                "fallbackReasons": {},
+                "flushCalls": 250,
+                "flushRecordVisits": 124500,
+                "cleanFlushSkips": 1,
+                "totalDrawInstances": 250,
+                "cpuFallbackRatio": 0,
+                "liveInstances": 250,
+                "sources": 5,
+                "capacity": 256,
+                "gpuUnavailableReason": null,
+                "stateBytes": 139264,
+                "cpuPoseBytes": 0,
+                "programBytes": 65536
+            },
+            "flushReasons": {
+                "texture": 249,
+                "explicit": 1
+            },
+            "drawDispatchReasons": {
+                "texture": 249,
+                "explicit": 1
+            },
+            "submitMsP50": 58.90000000002328,
+            "submitMsP95": 124.79999999993015,
+            "gpuTextureBytes": 879172,
+            "renderer": "WebKit WebGL"
+        },
+        {
+            "label": "shared-quad-array",
+            "sourceHead": "bfb546df5a3b8ce46d86388caece3ea44c311a19",
+            "sourceDirty": true,
+            "actors": 250,
+            "species": 5,
+            "frames": 60,
+            "glError": 0,
+            "deviceDrawCalls": 1,
+            "meshDraws": 1,
+            "instances": 1350,
+            "rasterDraws": 250,
+            "vectorFallbacks": 0,
+            "atlasStats": [
+                {
+                    "name": "sprout.svg",
+                    "parts": 6,
+                    "rasterDraws": 3500,
+                    "atlasWidth": 109,
+                    "atlasHeight": 234,
+                    "reason": null,
+                    "fallbackReasons": {}
+                },
+                {
+                    "name": "chestnut.svg",
+                    "parts": 3,
+                    "rasterDraws": 3500,
+                    "atlasWidth": 150,
+                    "atlasHeight": 187,
+                    "reason": null,
+                    "fallbackReasons": {}
+                },
+                {
+                    "name": "corn-kernel.svg",
+                    "parts": 6,
+                    "rasterDraws": 3500,
+                    "atlasWidth": 158,
+                    "atlasHeight": 259,
+                    "reason": null,
+                    "fallbackReasons": {}
+                },
+                {
+                    "name": "kidney-bean.svg",
+                    "parts": 6,
+                    "rasterDraws": 3500,
+                    "atlasWidth": 128,
+                    "atlasHeight": 243,
+                    "reason": null,
+                    "fallbackReasons": {}
+                },
+                {
+                    "name": "pea.svg",
+                    "parts": 6,
+                    "rasterDraws": 3500,
+                    "atlasWidth": 177,
+                    "atlasHeight": 243,
+                    "reason": null,
+                    "fallbackReasons": {}
+                }
+            ],
+            "poseStats": {
+                "gpuDrawInstances": 1350,
+                "cpuDrawInstances": 0,
+                "uniformDrawInstances": 0,
+                "cpuPoseUploadBytes": 0,
+                "stateUploadBytes": 8000,
+                "overrideUploadBytes": 0,
+                "fallbackReasons": {},
+                "flushCalls": 1,
+                "flushRecordVisits": 500,
+                "cleanFlushSkips": 0,
+                "totalDrawInstances": 1350,
+                "cpuFallbackRatio": 0,
+                "liveInstances": 250,
+                "sources": 5,
+                "capacity": 256,
+                "gpuUnavailableReason": null,
+                "stateBytes": 139264,
+                "cpuPoseBytes": 0,
+                "programBytes": 65536
+            },
+            "flushReasons": {
+                "explicit": 1
+            },
+            "drawDispatchReasons": {
+                "explicit": 1
+            },
+            "submitMsP50": 2.6000000000931323,
+            "submitMsP95": 7.7999999998137355,
+            "gpuTextureBytes": 5447680,
+            "renderer": "WebKit WebGL"
+        }
+    ]
+}
