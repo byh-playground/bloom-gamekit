@@ -195,7 +195,9 @@
         text.replace(/clipWorld\(\);/g, '').replace(/void\s+main\s*\(\s*\)/, 'void sketchMain()');
     const SKETCH_FUNCTIONS = SKETCH_RENAME(SKETCH_FS.slice(SKETCH_START));
     const SKETCH_BODY_ONLY = SKETCH_RENAME(SKETCH_FS.slice(SKETCH_HELPERS));
+    // The field sampler is declared here for sources built from the shader body once the module ships the field.
     const SURFACE_GLOBALS = `
+${YARN_FS.includes('u_stitchField') ? 'uniform mediump sampler2D u_stitchField;' : ''}
 #define v_position v_uv
 #define v_surface v_radial.xyz
 vec4 u_bounds; vec4 u_effect0; vec4 u_effect1; vec4 u_effect2; vec4 u_effect3; vec4 u_tint; float u_flash; float u_forceColor; float u_timeMs;
@@ -420,6 +422,14 @@ void main() {
         GL.texParameteri(GL.TEXTURE_2D, GL.TEXTURE_WRAP_T, GL.CLAMP_TO_EDGE);
     }
     const PATCH_STITCH_FIELD = (source) => {
+        // From v0.24.3 the module's fill shader already reads the field; sources built from its body only lack the
+        // sampler declaration (the full shader has it in its header).
+        if (!source.includes('float underDistance =')) {
+            if (source.includes('sampler2D u_stitchField')) {
+                return source;
+            }
+            return source.replace('float hashCell(', 'uniform mediump sampler2D u_stitchField;\nfloat hashCell(');
+        }
         const START = source.indexOf('float underDistance =');
         const END = source.indexOf('vec3 dark = tintTo(base,-0.28)');
         if (START < 0 || END < START || !source.includes('float hashCell(')) {
@@ -591,18 +601,28 @@ void main() {
     // layer removed.
     const VARIANT = { program: null, parts: 'both', pattern: true, fiber: true, curved: true };
     const VARIANT_PROGRAMS = new Map();
-    const YARN_FS_EDITS = {
-        noUnder: [[/float underDistance = [^;]*;/, 'float underDistance = 1000.0;']],
-        noGroove: [
-            [/float grooveLeft = [^;]*;/, 'float grooveLeft = 1000.0;'],
-            [/float grooveRight = [^;]*;/, 'float grooveRight = 1000.0;'],
-        ],
-        noLight: [
-            [/float lightLeft = [^;]*;/, 'float lightLeft = 1000.0;'],
-            [/float lightRight = [^;]*;/, 'float lightRight = 1000.0;'],
-        ],
-        noTwist: [['if (mod(index.x + index.y, 2.0) < 1.0) {', 'if (false) {']],
-    };
+    // Stage removals for the decomposition: the analytic shader (before v0.24.3) and the field shader name their
+    // layers differently.
+    const ANALYTIC_FILL = YARN_FS.includes('float underDistance =');
+    const YARN_FS_EDITS = ANALYTIC_FILL
+        ? {
+              noUnder: [[/float underDistance = [^;]*;/, 'float underDistance = 1000.0;']],
+              noGroove: [
+                  [/float grooveLeft = [^;]*;/, 'float grooveLeft = 1000.0;'],
+                  [/float grooveRight = [^;]*;/, 'float grooveRight = 1000.0;'],
+              ],
+              noLight: [
+                  [/float lightLeft = [^;]*;/, 'float lightLeft = 1000.0;'],
+                  [/float lightRight = [^;]*;/, 'float lightRight = 1000.0;'],
+              ],
+              noTwist: [['if (mod(index.x + index.y, 2.0) < 1.0) {', 'if (false) {']],
+          }
+        : {
+              noUnder: [[/float under = [^;]*;/, 'float under = 0.0;']],
+              noGroove: [[/float groove = [^;]*;/, 'float groove = 0.0;']],
+              noLight: [[/float light = [^;]*;/, 'float light = 0.0;']],
+              noTwist: [['if (mod(index.x + index.y, 2.0) < 1.0) {', 'if (false) {']],
+          };
     const VARIANT_PROGRAM = (name) => {
         if (!VARIANT_PROGRAMS.has(name)) {
             let source = YARN_FS;
