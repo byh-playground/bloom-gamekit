@@ -144,9 +144,9 @@ try {
         includePopulationTimingDiagnostics: INCLUDE_POPULATION_TIMING_DIAGNOSTICS,
     });
     REPORT.rendererInterleaving = await exerciseRendererInterleaving(PAGE, RENDERING_MODULE_URL);
-    assert.deepEqual(REPORT.rendererInterleaving.red2d, [255, 0, 0, 255]);
+    assert.deepEqual(REPORT.rendererInterleaving.redVector, [255, 0, 0, 255]);
     assert.deepEqual(REPORT.rendererInterleaving.blueMesh, [0, 0, 255, 255]);
-    assert.deepEqual(REPORT.rendererInterleaving.green2d, [0, 255, 0, 255]);
+    assert.deepEqual(REPORT.rendererInterleaving.greenVector, [0, 255, 0, 255]);
     assert.equal(REPORT.rendererInterleaving.glError, 0);
     REPORT.orderedAssetBatch = await exerciseOrderedAssetBatch(PAGE, RENDERING_MODULE_URL);
     assert.equal(REPORT.orderedAssetBatch.pixelMismatch, 0);
