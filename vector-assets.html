@@ -618,6 +618,165 @@
         <script>
 (() => {
   // dist/rendering.js
+  var TextureAtlasArray = class {
+    constructor(device, { width = 2048, height = 1024, layers = 2, gutter = 1, filter = "linear" } = {}) {
+      if (!device?.createTextureArray || !device.updateTextureRegion) {
+        throw new TypeError("A WebGLDevice with texture arrays is required");
+      }
+      if (!Number.isSafeInteger(gutter) || gutter < 0) {
+        throw new RangeError("gutter must be a non-negative integer");
+      }
+      this.device = device;
+      this.gutter = gutter;
+      this.width = width;
+      this.height = height;
+      this.texture = device.createTextureArray(width, height, layers, { filter });
+      this.layerShelves = Array.from({ length: layers }, () => ({ shelves: [], usedHeight: 0 }));
+      this.free = /* @__PURE__ */ new Map();
+      this.regions = /* @__PURE__ */ new Set();
+      this.disposed = false;
+    }
+    /** Reserves width x height content pixels. Returns the content rectangle, its normalized `uvRect` and its sampling `filter`
+     * (`nearest` snaps the lookup to texel centers in the shader, since the array has one hardware filter). */
+    allocate(width, height, { filter = "linear" } = {}) {
+      this._live();
+      if (filter !== "nearest" && filter !== "linear") {
+        throw new TypeError("filter must be nearest or linear");
+      }
+      if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1) {
+        throw new RangeError("Region size must be positive integers");
+      }
+      const G = this.gutter, PW = width + G * 2, PH = height + G * 2, KEY = `${PW}x${PH}`, REUSED = this.free.get(KEY)?.pop();
+      if (REUSED) {
+        return this._region(REUSED.layer, REUSED.x, REUSED.y, width, height, filter);
+      }
+      for (let layer = 0; layer < this.layerShelves.length; layer++) {
+        const STATE = this.layerShelves[layer];
+        for (const SHELF of STATE.shelves) {
+          if (SHELF.height >= PH && SHELF.x + PW <= this.width) {
+            const X = SHELF.x;
+            SHELF.x += PW;
+            return this._region(layer, X, SHELF.y, width, height, filter);
+          }
+        }
+        if (PW <= this.width && STATE.usedHeight + PH <= this.height) {
+          const SHELF = { y: STATE.usedHeight, height: PH, x: PW };
+          STATE.shelves.push(SHELF);
+          STATE.usedHeight += PH;
+          return this._region(layer, 0, SHELF.y, width, height, filter);
+        }
+      }
+      throw new RangeError("Texture atlas array is full");
+    }
+    _region(layer, paddedX, paddedY, width, height, filter) {
+      const G = this.gutter, REGION = Object.freeze({
+        layer,
+        x: paddedX + G,
+        y: paddedY + G,
+        width,
+        height,
+        filter,
+        atlas: this,
+        paddedX,
+        paddedY,
+        uvRect: Object.freeze([
+          (paddedX + G) / this.width,
+          (paddedY + G) / this.height,
+          width / this.width,
+          height / this.height
+        ])
+      });
+      this.regions.add(REGION);
+      return REGION;
+    }
+    /**
+     * Writes the region's pixels. `source` is a DOM image/canvas or `{ width, height, data }` RGBA bytes of the
+     * region size. With `extendEdges`, byte sources fill the gutter with their edge pixels (clamp-to-edge look).
+     */
+    upload(region, source, { premultiplied = false, extendEdges = false } = {}) {
+      this._live();
+      if (!this.regions.has(region)) {
+        throw new TypeError("A live region from this atlas is required");
+      }
+      const G = this.gutter;
+      if (source.data === void 0) {
+        if (extendEdges) {
+          throw new TypeError("extendEdges requires RGBA byte data");
+        }
+        this.device.updateTextureRegion(this.texture, region.layer, region.x, region.y, source, { premultiplied });
+        return;
+      }
+      if (source.width !== region.width || source.height !== region.height) {
+        throw new RangeError("Source size must equal the region size");
+      }
+      if (!G) {
+        this.device.updateTextureRegion(this.texture, region.layer, region.x, region.y, source, { premultiplied });
+        return;
+      }
+      const PW = region.width + G * 2, PH = region.height + G * 2, PADDED = new Uint8Array(PW * PH * 4);
+      for (let y = 0; y < PH; y++) {
+        for (let x = 0; x < PW; x++) {
+          const SX = x - G, SY = y - G;
+          const INSIDE = SX >= 0 && SY >= 0 && SX < region.width && SY < region.height;
+          if (!INSIDE && !extendEdges) {
+            continue;
+          }
+          const FROM = (Math.min(region.height - 1, Math.max(0, SY)) * region.width + Math.min(region.width - 1, Math.max(0, SX))) * 4;
+          PADDED.set(source.data.subarray(FROM, FROM + 4), (y * PW + x) * 4);
+        }
+      }
+      this.device.updateTextureRegion(
+        this.texture,
+        region.layer,
+        region.paddedX,
+        region.paddedY,
+        { width: PW, height: PH, data: PADDED },
+        { premultiplied }
+      );
+    }
+    /**
+     * Frees the region. Its pixels are cleared and the rectangle is reused for the next same-size allocation; when
+     * the last region goes, the array itself is deleted and the device creates a fresh one on next use.
+     */
+    release(region) {
+      if (this.disposed || !this.regions.delete(region)) {
+        return false;
+      }
+      if (!this.regions.size) {
+        this.dispose();
+        return true;
+      }
+      const G = this.gutter, PW = region.width + G * 2, PH = region.height + G * 2;
+      this.device.clearTextureRegion(this.texture, region.layer, region.paddedX, region.paddedY, PW, PH);
+      const KEY = `${PW}x${PH}`;
+      if (!this.free.has(KEY)) {
+        this.free.set(KEY, []);
+      }
+      this.free.get(KEY).push({ layer: region.layer, x: region.paddedX, y: region.paddedY });
+      return true;
+    }
+    get stats() {
+      return {
+        layers: this.layerShelves.length,
+        liveRegions: this.regions.size,
+        bytes: this.width * this.height * 4 * this.layerShelves.length
+      };
+    }
+    _live() {
+      if (this.disposed) {
+        throw new Error("TextureAtlasArray is disposed");
+      }
+    }
+    dispose() {
+      if (this.disposed) {
+        return false;
+      }
+      this.disposed = true;
+      this.regions.clear();
+      this.device.textureAtlasDisposed(this);
+      return true;
+    }
+  };
   var FUNCTIONS = Object.freeze({
     never: "NEVER",
     less: "LESS",
@@ -701,6 +860,9 @@ ${converted}`;
     }
     return SHADER;
   }
+  function overlaps(a, b) {
+    return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+  }
   var WebGLDevice = class {
     constructor(canvas, {
       alpha = false,
@@ -712,7 +874,8 @@ ${converted}`;
       failIfMajorPerformanceCaveat = false,
       checkGLErrors = false,
       maxTextures = 8,
-      maxBufferBytes = 128 * 1024 * 1024
+      maxBufferBytes = 128 * 1024 * 1024,
+      textureAtlas = {}
     } = {}) {
       if (!canvas?.getContext || !canvas?.addEventListener) {
         throw new TypeError("canvas required");
@@ -727,6 +890,8 @@ ${converted}`;
         throw new TypeError("checkGLErrors must be boolean");
       }
       this.checkGLErrors = checkGLErrors;
+      this.textureAtlasOptions = { ...textureAtlas };
+      this._textureAtlas = null;
       integer(maxTextures, "maxTextures", 1, 32);
       integer(maxBufferBytes, "maxBufferBytes", 4);
       this.canvas = canvas;
@@ -1283,6 +1448,9 @@ ${converted}`;
     }
     /** Uploads one retained layer of the array bound to the active unit; empty layers stay transparent. */
     _uploadLayer(record, layer) {
+      for (const REGION of record.layerRegions[layer]) {
+        this._uploadRegion(layer, REGION);
+      }
       const GL = this.gl, LAYER = record.layerSources[layer];
       if (LAYER === null) {
         return;
@@ -1305,6 +1473,28 @@ ${converted}`;
       this.stats.textureBytes += record.width * record.height * 4;
       this.stats.imageTexUploadCount++;
       this.stats.imageTexUploadBytes += record.width * record.height * 4;
+    }
+    /** Uploads one retained rectangle of the array bound to the active unit. */
+    _uploadRegion(layer, region) {
+      const GL = this.gl;
+      GL.pixelStorei(GL.UNPACK_PREMULTIPLY_ALPHA_WEBGL, !(region.source instanceof Uint8Array));
+      GL.texSubImage3D(
+        GL.TEXTURE_2D_ARRAY,
+        0,
+        region.x,
+        region.y,
+        layer,
+        region.width,
+        region.height,
+        1,
+        GL.RGBA,
+        GL.UNSIGNED_BYTE,
+        region.source
+      );
+      this.stats.textureUploads++;
+      this.stats.textureBytes += region.width * region.height * 4;
+      this.stats.imageTexUploadCount++;
+      this.stats.imageTexUploadBytes += region.width * region.height * 4;
     }
     _textureBytes(record) {
       return record.width * record.height * (record.layers ?? 1) * (record.copyFormat === "rgb" ? 3 : record.format === "rgba32f" ? 16 : record.format === "rgba" ? 4 : 1);
@@ -1563,6 +1753,7 @@ ${converted}`;
         height,
         layers,
         layerSources: new Array(layers).fill(null),
+        layerRegions: Array.from({ length: layers }, () => []),
         format: "rgba",
         premultiplied: true,
         source: null,
@@ -1604,6 +1795,82 @@ ${converted}`;
       } catch (error2) {
         R.layerSources[layer] = PREVIOUS;
         throw error2;
+      }
+    }
+    /**
+     * Writes a rectangle inside one layer without touching the rest, so many small images (glyph pages, gradient
+     * ramps, a 1x1 white texel) share a layer. The source is retained and replayed after context restoration; a
+     * rectangle replaces any retained rectangle it overlaps.
+     */
+    updateTextureRegion(handle, layer, x, y, source, { premultiplied = false } = {}) {
+      this._ready();
+      const R = this._handle(this.textures, handle, "texture array");
+      if (R.target !== "array") {
+        throw new TypeError("A texture array is required");
+      }
+      integer(layer, "layer", 0, R.layers - 1);
+      integer(x, "region x", 0, R.width - 1);
+      integer(y, "region y", 0, R.height - 1);
+      const NEXT = this._source(source, "rgba", premultiplied);
+      if (NEXT.source === null || x + NEXT.width > R.width || y + NEXT.height > R.height) {
+        throw new RangeError("Region must be fully supplied and inside the layer");
+      }
+      const REGION = { x, y, width: NEXT.width, height: NEXT.height, source: NEXT.source }, PREVIOUS = R.layerRegions[layer];
+      R.layerRegions[layer] = [...PREVIOUS.filter((r) => !overlaps(r, REGION)), REGION];
+      try {
+        this._bindTexture(0, R);
+        this.boundTextureCount = Math.max(1, this.boundTextureCount);
+        this._resetUnpackState();
+        this._uploadRegion(layer, REGION);
+        if (this.checkGLErrors) {
+          const ERROR = this.gl.getError();
+          if (ERROR !== this.gl.NO_ERROR) {
+            throw new Error(`Texture region upload error ${ERROR}`);
+          }
+        }
+      } catch (error2) {
+        R.layerRegions[layer] = PREVIOUS;
+        throw error2;
+      }
+    }
+    /** Forgets a retained rectangle and makes its pixels transparent so a later owner starts clean. */
+    clearTextureRegion(handle, layer, x, y, width, height) {
+      this._ready();
+      const R = this._handle(this.textures, handle, "texture array");
+      if (R.target !== "array") {
+        throw new TypeError("A texture array is required");
+      }
+      integer(layer, "layer", 0, R.layers - 1);
+      integer(width, "region width", 1, R.width);
+      integer(height, "region height", 1, R.height);
+      this.updateTextureRegion(
+        handle,
+        layer,
+        x,
+        y,
+        { width, height, data: new Uint8Array(width * height * 4) },
+        { premultiplied: true }
+      );
+      R.layerRegions[layer] = R.layerRegions[layer].filter(
+        (r) => !(r.x === x && r.y === y && r.width === width && r.height === height)
+      );
+    }
+    /**
+     * The device's shared image atlas (SSOT): vector fills, gradients and glyphs allocate regions here, so every
+     * vector draw samples one TEXTURE_2D_ARRAY. Created on first use from the `textureAtlas` device option.
+     */
+    get textureAtlas() {
+      this._ready();
+      this._textureAtlas ??= new TextureAtlasArray(this, this.textureAtlasOptions);
+      return this._textureAtlas;
+    }
+    /** Called by the atlas when it is disposed: deletes its array and lets the next user create a fresh atlas. */
+    textureAtlasDisposed(atlas) {
+      if (this._textureAtlas === atlas) {
+        this._textureAtlas = null;
+      }
+      if (this.state === "ready" && this.textures.has(atlas.texture)) {
+        this.deleteTexture(atlas.texture);
       }
     }
     isTextureArray(handle) {
@@ -2178,31 +2445,43 @@ ${converted}`;
       this.renderTargetStack.length = 0;
       this.activeRenderTarget = null;
       this.regionCanvas = this.regionContext = this.regionBytes = null;
+      if (this._textureAtlas) {
+        this._textureAtlas.disposed = true;
+        this._textureAtlas = null;
+      }
       this.stats.pipelineCount = this.stats.bufferCount = this.stats.textureCount = this.stats.renderTargetCount = this.stats.gpuBufferBytes = this.stats.gpuRenderTargetBytes = this.stats.gpuTextureBytes = 0;
       this.active = false;
       this.state = "disposed";
     }
   };
   var IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
-  var VERTEX = `attribute vec2 a_position; attribute vec2 a_uv; attribute vec4 a_color;
-uniform mat3 u_projection; varying vec2 v_uv; varying vec4 v_color;
-void main(){vec3 p=u_projection*vec3(a_position,1.0);gl_Position=vec4(p.xy,0.0,1.0);v_uv=a_uv;v_color=a_color;}`;
+  var VERTEX_FLOATS = 20;
+  var VERTEX_BYTES = VERTEX_FLOATS * 4;
+  var VERTEX = `attribute vec2 a_position; attribute vec2 a_uv; attribute vec4 a_color; attribute vec4 a_paint; attribute vec4 a_radial; attribute vec4 a_rect;
+uniform mat3 u_projection; varying highp vec2 v_uv; varying vec4 v_color; varying highp vec4 v_paint; varying highp vec4 v_radial; varying highp vec4 v_rect;
+void main(){vec3 p=u_projection*vec3(a_position,1.0);gl_Position=vec4(p.xy,0.0,1.0);v_uv=a_uv;v_color=a_color;v_paint=a_paint;v_radial=a_radial;v_rect=a_rect;}`;
   var CLIP_VERTEX = `attribute vec2 a_position;uniform mat3 u_projection;uniform mat3 u_transform;void main(){vec3 p=u_projection*u_transform*vec3(a_position,1.0);gl_Position=vec4(p.xy,0.0,1.0);}`;
   var CLIP_FRAGMENT = "precision mediump float;void main(){gl_FragColor=vec4(1.0);}";
-  var FRAGMENT = `precision mediump float; uniform sampler2D u_texture; uniform float u_textured; uniform float u_radial; uniform vec4 u_radial_params; uniform float u_whiteFlash;
-varying vec2 v_uv; varying vec4 v_color;
+  var FRAGMENT_VARYINGS = "varying highp vec2 v_uv; varying vec4 v_color; varying highp vec4 v_paint; varying highp vec4 v_radial; varying highp vec4 v_rect;";
+  var FINISH = "float a=texel.a*v_color.a;vec3 rgb=mix(texel.rgb*v_color.rgb*v_color.a,vec3(a),v_paint.y);gl_FragColor=vec4(rgb,a);";
+  var FRAGMENT = `precision mediump float; precision mediump sampler2DArray; uniform sampler2DArray u_texture;
+${FRAGMENT_VARYINGS}
 float radialParameter(vec2 q){
-  vec2 d=u_radial_params.xy;float r0=u_radial_params.z,dr=u_radial_params.w;
+  vec2 d=v_radial.xy;float r0=v_radial.z,dr=v_radial.w;
   float a=dot(d,d)-dr*dr,b=-2.0*(dot(q,d)+r0*dr),c=dot(q,q)-r0*r0;
   if(abs(a)<0.000001){if(abs(b)<0.000001)return -10000.0;float t=-c/b;return r0+dr*t>0.0?t:-10000.0;}
   float discriminant=b*b-4.0*a*c;if(discriminant<0.0)return -10000.0;
   float root=sqrt(max(discriminant,0.0)),t0=(-b-root)/(2.0*a),t1=(-b+root)/(2.0*a),chosen=-10000.0;
   if(r0+dr*t0>0.0)chosen=t0;if(r0+dr*t1>0.0)chosen=max(chosen,t1);return chosen;
 }
-void main(){if(u_radial>1.5)discard;float t=u_radial>0.5?radialParameter(v_uv):0.0;if(u_radial>0.5&&t< -1000.0)discard;vec2 uv=u_radial>0.5?vec2(clamp(t,0.0,1.0),0.5):v_uv;vec4 texel=mix(vec4(1.0),texture2D(u_texture,uv),u_textured);float a=texel.a*v_color.a;vec3 rgb=mix(texel.rgb*v_color.rgb*v_color.a,vec3(a),u_whiteFlash);gl_FragColor=vec4(rgb,a);}`;
-  var NON_RADIAL_FRAGMENT = `precision mediump float; uniform sampler2D u_texture; uniform float u_textured; uniform float u_whiteFlash;
-varying vec2 v_uv; varying vec4 v_color;
-void main(){vec4 texel=mix(vec4(1.0),texture2D(u_texture,v_uv),u_textured);float a=texel.a*v_color.a;vec3 rgb=mix(texel.rgb*v_color.rgb*v_color.a,vec3(a),u_whiteFlash);gl_FragColor=vec4(rgb,a);}`;
+void main(){if(v_paint.z>1.5&&v_paint.z<2.5)discard;vec2 uv=v_uv;
+if(v_paint.z>2.5){uv=v_rect.xy+vec2(clamp(v_uv.x,0.0,1.0),0.5)*v_rect.zw;}
+else if(v_paint.z>0.5){float t=radialParameter(v_uv);if(t< -1000.0)discard;uv=v_rect.xy+vec2(clamp(t,0.0,1.0),0.5)*v_rect.zw;}
+if(v_paint.w>0.5){vec2 size=vec2(textureSize(u_texture,0).xy);uv=(floor(uv*size)+0.5)/size;}
+vec4 texel=texture2D(u_texture,vec3(uv,floor(v_paint.x+0.5)));${FINISH}}`;
+  var GROUP_FRAGMENT = `precision mediump float; uniform sampler2D u_texture;
+${FRAGMENT_VARYINGS}
+void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
   var FINITE = (n, label) => {
     if (!Number.isFinite(n)) {
       throw new TypeError(`${label} must be finite`);
@@ -2415,14 +2694,14 @@ void main(){vec4 texel=mix(vec4(1.0),texture2D(u_texture,v_uv),u_textured);float
       if (!Number.isSafeInteger(maxVertices) || maxVertices < 3 || !Number.isSafeInteger(initialVertices) || initialVertices < 3 || initialVertices > maxVertices) {
         throw new RangeError("3 <= initialVertices <= maxVertices is required");
       }
-      if (initialVertices * 32 > device.maxBufferBytes) {
+      if (initialVertices * VERTEX_BYTES > device.maxBufferBytes) {
         throw new RangeError("initial vector buffer exceeds the device byte limit");
       }
       this.device = device;
       this.gl = device.gl;
       this.canvas = device.canvas;
       this.glyphAtlas = glyphAtlas;
-      this.maxVertices = Math.min(maxVertices, Math.floor(device.maxBufferBytes / 32));
+      this.maxVertices = Math.min(maxVertices, Math.floor(device.maxBufferBytes / VERTEX_BYTES));
       this.maxClipPlanes = Math.max(
         1,
         Math.min(32, device.gl.getParameter(device.gl.MAX_FRAGMENT_UNIFORM_VECTORS) - 2)
@@ -2430,31 +2709,18 @@ void main(){vec4 texel=mix(vec4(1.0),texture2D(u_texture,v_uv),u_textured);float
       this.pipeline = device.createPipeline({
         vertex: VERTEX,
         fragment: FRAGMENT,
-        stride: 32,
+        stride: VERTEX_BYTES,
         attributes: [
-          {
-            name: "a_position",
-            size: 2,
-            offset: 0
-          },
-          {
-            name: "a_uv",
-            size: 2,
-            offset: 8
-          },
-          {
-            name: "a_color",
-            size: 4,
-            offset: 16
-          }
+          { name: "a_position", size: 2, offset: 0 },
+          { name: "a_uv", size: 2, offset: 8 },
+          { name: "a_color", size: 4, offset: 16 },
+          { name: "a_paint", size: 4, offset: 32 },
+          { name: "a_radial", size: 4, offset: 48 },
+          { name: "a_rect", size: 4, offset: 64 }
         ],
         uniforms: {
           u_projection: "matrix3fv",
-          u_texture: "1i",
-          u_textured: "1f",
-          u_radial: "1f",
-          u_radial_params: "4f",
-          u_whiteFlash: "1f"
+          u_texture: "1i"
         }
       });
       this.clipPipeline = device.createPipeline({
@@ -2474,24 +2740,19 @@ void main(){vec4 texel=mix(vec4(1.0),texture2D(u_texture,v_uv),u_textured);float
         }
       });
       this.buffer = device.createVertexBuffer({
-        capacityBytes: initialVertices * 32
+        capacityBytes: initialVertices * VERTEX_BYTES
       });
       this.dynamicClipBuffer = device.createVertexBuffer({
         capacityBytes: 0
       });
-      this.white = device.createTexture(
-        {
-          width: 1,
-          height: 1,
-          data: new Uint8Array([255, 255, 255, 255])
-        },
-        {
-          format: "rgba",
-          premultiplied: true,
-          filter: "nearest"
-        }
+      this.atlas = device.textureAtlas;
+      this.whiteRegion = this.atlas.allocate(1, 1);
+      this.atlas.upload(
+        this.whiteRegion,
+        { width: 1, height: 1, data: new Uint8Array([255, 255, 255, 255]) },
+        { premultiplied: true, extendEdges: true }
       );
-      this.vertices = new Float32Array(initialVertices * 8);
+      this.vertices = new Float32Array(initialVertices * VERTEX_FLOATS);
       this.count = 0;
       this.matrix = IDENTITY.slice();
       this.stack = [];
@@ -2501,10 +2762,13 @@ void main(){vec4 texel=mix(vec4(1.0),texture2D(u_texture,v_uv),u_textured);float
       this.clips = [];
       this.groups = [];
       this.groupTargets = [];
-      this.activeTexture = this.white;
+      this.activeTarget = null;
+      this.activePaint = null;
       this.activeRadial = false;
       this.activeWhiteFlash = false;
       this.activeGradient = null;
+      this.paintTemplate = new Float32Array(12);
+      this._setPaint(this.whiteRegion);
       this.blend = "source-over";
       this.stencilClips = [];
       this.clipPaths = /* @__PURE__ */ new Map();
@@ -2531,34 +2795,23 @@ void main(){vec4 texel=mix(vec4(1.0),texture2D(u_texture,v_uv),u_textured);float
       this.canvas.addEventListener("webglcontextlost", this.onLost);
       this.canvas.addEventListener("webglcontextrestored", this.onRestored);
       this.projection = new Float32Array([2 / this.canvas.width, 0, 0, 0, -2 / this.canvas.height, 0, -1, 1, 1]);
-      this.nonRadialPipeline = null;
+      this.groupPipeline = null;
       try {
-        this.nonRadialPipeline = device.createPipeline({
+        this.groupPipeline = device.createPipeline({
           vertex: VERTEX,
-          fragment: NON_RADIAL_FRAGMENT,
-          stride: 32,
+          fragment: GROUP_FRAGMENT,
+          stride: VERTEX_BYTES,
           attributes: [
-            {
-              name: "a_position",
-              size: 2,
-              offset: 0
-            },
-            {
-              name: "a_uv",
-              size: 2,
-              offset: 8
-            },
-            {
-              name: "a_color",
-              size: 4,
-              offset: 16
-            }
+            { name: "a_position", size: 2, offset: 0 },
+            { name: "a_uv", size: 2, offset: 8 },
+            { name: "a_color", size: 4, offset: 16 },
+            { name: "a_paint", size: 4, offset: 32 },
+            { name: "a_radial", size: 4, offset: 48 },
+            { name: "a_rect", size: 4, offset: 64 }
           ],
           uniforms: {
             u_projection: "matrix3fv",
-            u_texture: "1i",
-            u_textured: "1f",
-            u_whiteFlash: "1f"
+            u_texture: "1i"
           }
         });
       } catch (error2) {
@@ -3002,26 +3255,6 @@ void main(){vec4 texel=mix(vec4(1.0),texture2D(u_texture,v_uv),u_textured);float
       if (this.activeGradient && !uv) {
         uv = [this._gradientUV(a), this._gradientUV(b), this._gradientUV(c)];
       }
-      if (!this.clips.length && !uv) {
-        if (this.count + 3 > this.maxVertices) {
-          this._submit();
-        }
-        if (this.count + 3 > this.vertices.length / 8) {
-          const SIZE = Math.min(this.maxVertices, Math.max(this.count + 3, this.vertices.length / 4));
-          const NEXT = new Float32Array(SIZE * 8);
-          NEXT.set(this.vertices);
-          this.vertices = NEXT;
-        }
-        const DATA2 = this.vertices;
-        for (let i = 0; i < 3; i++) {
-          const POINT = i === 0 ? a : i === 1 ? b : c, K3 = this.count++ * 8;
-          DATA2[K3] = POINT.x;
-          DATA2[K3 + 1] = POINT.y;
-          DATA2[K3 + 2] = DATA2[K3 + 3] = 0;
-          DATA2.set(color2, K3 + 4);
-        }
-        return;
-      }
       const POLY = this.clips.length ? this._clipTriangle(a, b, c, uv) : uv ? [a, b, c].map((point2, i) => ({
         ...point2,
         u: uv[i][0],
@@ -3031,19 +3264,20 @@ void main(){vec4 texel=mix(vec4(1.0),texture2D(u_texture,v_uv),u_textured);float
         if (this.count + 3 > this.maxVertices) {
           this._submit();
         }
-        if (this.count + 3 > this.vertices.length / 8) {
-          const SIZE = Math.min(this.maxVertices, Math.max(this.count + 3, this.vertices.length / 4));
-          const NEXT = new Float32Array(SIZE * 8);
+        if ((this.count + 3) * VERTEX_FLOATS > this.vertices.length) {
+          const SIZE = Math.min(this.maxVertices, Math.max(this.count + 3, this.count * 2));
+          const NEXT = new Float32Array(SIZE * VERTEX_FLOATS);
           NEXT.set(this.vertices);
           this.vertices = NEXT;
         }
         for (const POINT of [POLY[0], POLY[i], POLY[i + 1]]) {
-          const K3 = this.count++ * 8;
+          const K3 = this.count++ * VERTEX_FLOATS;
           this.vertices[K3] = POINT.x;
           this.vertices[K3 + 1] = POINT.y;
-          this.vertices[K3 + 2] = POINT.u ?? 0;
-          this.vertices[K3 + 3] = POINT.v ?? 0;
+          this.vertices[K3 + 2] = POINT.u ?? this.flatUV[0];
+          this.vertices[K3 + 3] = POINT.v ?? this.flatUV[1];
           this.vertices.set(color2, K3 + 4);
+          this.vertices.set(this.paintTemplate, K3 + 8);
         }
       }
     }
@@ -3052,23 +3286,16 @@ void main(){vec4 texel=mix(vec4(1.0),texture2D(u_texture,v_uv),u_textured);float
         return;
       }
       this.device.stats.vectorSubmissions++;
-      const TEXTURE = this.activeTexture ?? this.white, GRADIENT = this.activeGradient, RADIAL = this.activeRadial;
-      this.device.uploadVertices(this.buffer, this.vertices.subarray(0, this.count * 8));
+      this.device.uploadVertices(this.buffer, this.vertices.subarray(0, this.count * VERTEX_FLOATS));
       this.device.draw({
-        pipeline: RADIAL ? this.pipeline : this.nonRadialPipeline,
+        pipeline: this.activeTarget ? this.groupPipeline : this.pipeline,
         buffer: this.buffer,
         count: this.count,
         uniforms: {
           u_projection: this.projection,
-          u_texture: 0,
-          u_textured: TEXTURE === this.white ? 0 : 1,
-          u_whiteFlash: this.activeWhiteFlash ? 1 : 0,
-          ...RADIAL ? {
-            u_radial: GRADIENT?.radialEmpty ? 2 : 1,
-            u_radial_params: GRADIENT?.radialParams ?? [0, 0, 0, 0]
-          } : {}
+          u_texture: 0
         },
-        textures: [TEXTURE],
+        textures: [this.activeTarget ?? this.atlas.texture],
         blend: this.blend,
         stencil: this.stencilDepth ? {
           func: "equal",
@@ -3090,21 +3317,51 @@ void main(){vec4 texel=mix(vec4(1.0),texture2D(u_texture,v_uv),u_textured);float
         this.blend = blend;
       }
     }
-    _useTexture(texture, { radial = false, whiteFlash = false, gradient = null } = {}) {
-      if (this.activeTexture !== texture || this.activeRadial !== radial || this.activeWhiteFlash !== whiteFlash || this.activeGradient?.gradient !== gradient?.gradient) {
+    /**
+     * Selects the atlas region later vertices sample. Paint is vertex data, so changing it never submits: only the
+     * switch between the atlas and an offscreen group target (a different sampler) does.
+     */
+    _setPaint(region, { radial = false, whiteFlash = false, gradient = null } = {}) {
+      if (this.activeTarget) {
         this._submit();
+        this.activeTarget = null;
       }
-      this.activeTexture = texture;
+      const [U, V, W, H] = region.uvRect, MODE = radial ? gradient?.radialEmpty ? 2 : 1 : gradient ? 3 : 0, PARAMS = radial ? gradient?.radialParams ?? [0, 0, 0, 0] : [0, 0, 0, 0];
       this.activeRadial = radial;
       this.activeWhiteFlash = whiteFlash;
       this.activeGradient = gradient;
+      this.activeRegion = region;
+      this.flatUV = [U + W / 2, V + H / 2];
+      this.paintTemplate.set([
+        region.layer,
+        whiteFlash ? 1 : 0,
+        MODE,
+        region.filter === "nearest" ? 1 : 0,
+        ...PARAMS,
+        U,
+        V,
+        W,
+        H
+      ]);
+    }
+    _useTarget(target) {
+      if (this.activeTarget !== target) {
+        this._submit();
+      }
+      this.activeTarget = target;
+      this.activeRegion = null;
+      this.activeRadial = false;
+      this.activeWhiteFlash = false;
+      this.activeGradient = null;
+      this.flatUV = [0, 0];
+      this.paintTemplate.set([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]);
     }
     fill(colorValue = [0, 0, 0, 1], rule = "nonzero") {
       this._frame();
       if (rule !== "nonzero" && rule !== "evenodd") {
         throw new TypeError("rule must be nonzero or evenodd");
       }
-      this._useTexture(this.white);
+      this._setPaint(this.whiteRegion);
       this.device.stats.pathTessellations++;
       const COL = rgba(colorValue), VERTICES = tessellate(this.path, rule);
       for (let i = 0; i + 2 < VERTICES.length; i += 3) {
@@ -3113,10 +3370,10 @@ void main(){vec4 texel=mix(vec4(1.0),texture2D(u_texture,v_uv),u_textured);float
     }
     fillRadialGradient(gradient) {
       this._frame();
-      if (!gradient?.texture || !gradient.matrixInverse || !Number.isFinite(gradient.radialScale) || gradient.radialScale <= 0 || !Array.isArray(gradient.radialParams) || gradient.radialParams.length !== 4 || gradient.radialParams.some((value) => !Number.isFinite(value))) {
+      if (!gradient?.region || !gradient.matrixInverse || !Number.isFinite(gradient.radialScale) || gradient.radialScale <= 0 || !Array.isArray(gradient.radialParams) || gradient.radialParams.length !== 4 || gradient.radialParams.some((value) => !Number.isFinite(value))) {
         throw new TypeError("valid two-circle radial gradient texture and transform are required");
       }
-      this._useTexture(gradient.texture, {
+      this._setPaint(gradient.region, {
         radial: true,
         whiteFlash: gradient.whiteFlash,
         gradient
@@ -3129,10 +3386,10 @@ void main(){vec4 texel=mix(vec4(1.0),texture2D(u_texture,v_uv),u_textured);float
     }
     fillLinearGradient(gradient) {
       this._frame();
-      if (!gradient?.texture || !gradient.matrixInverse || ![gradient.x0, gradient.y0, gradient.x1, gradient.y1].every(Number.isFinite)) {
+      if (!gradient?.region || !gradient.matrixInverse || ![gradient.x0, gradient.y0, gradient.x1, gradient.y1].every(Number.isFinite)) {
         throw new TypeError("valid linear gradient texture and transform are required");
       }
-      this._useTexture(gradient.texture, {
+      this._setPaint(gradient.region, {
         whiteFlash: gradient.whiteFlash,
         gradient
       });
@@ -3151,7 +3408,7 @@ void main(){vec4 texel=mix(vec4(1.0),texture2D(u_texture,v_uv),u_textured);float
     }
     stroke(colorValue = [0, 0, 0, 1], width = 1, { lineCap = "butt", lineJoin = "miter", miterLimit = 10 } = {}, gradient = null) {
       this._frame();
-      this._useTexture(gradient?.texture ?? this.white, {
+      this._setPaint(gradient?.region ?? this.whiteRegion, {
         radial: gradient?.kind === "radial",
         whiteFlash: gradient?.whiteFlash ?? false,
         gradient
@@ -3302,7 +3559,7 @@ void main(){vec4 texel=mix(vec4(1.0),texture2D(u_texture,v_uv),u_textured);float
       if (!points || points.length < 3) {
         return;
       }
-      this._useTexture(this.white);
+      this._setPaint(this.whiteRegion);
       const M = this.matrix, ANCHOR = point(M, points[0][0], points[0][1]);
       let previous = point(M, points[1][0], points[1][1]);
       for (let i = 2; i < points.length; i++) {
@@ -3331,9 +3588,10 @@ void main(){vec4 texel=mix(vec4(1.0),texture2D(u_texture,v_uv),u_textured);float
       }
       return this.glyphAtlas.measureText(text, options);
     }
-    drawGlyphQuad(texture, x, y, width, height, uv, colorValue) {
+    /** `region` is the glyph atlas region (its layer selects the page); `uv` is already in array coordinates. */
+    drawGlyphQuad(region, x, y, width, height, uv, colorValue) {
       this._frame();
-      this._useTexture(texture);
+      this._setPaint(region);
       const A = {
         ...point(this.matrix, x, y)
       }, B = {
@@ -3470,7 +3728,7 @@ void main(){vec4 texel=mix(vec4(1.0),texture2D(u_texture,v_uv),u_textured);float
       this.stencilClips = GROUP.stencilClips;
       this.stencilDepth = this.stencilClips.length;
       this.projection.set(GROUP.projection);
-      this._useTexture(GROUP.target);
+      this._useTarget(GROUP.target);
       const { x: X, y: Y, width: WIDTH, height: HEIGHT } = GROUP.bounds, U = WIDTH / GROUP.target.width, V = HEIGHT / GROUP.target.height, A = {
         x: X,
         y: Y
@@ -3495,7 +3753,7 @@ void main(){vec4 texel=mix(vec4(1.0),texture2D(u_texture,v_uv),u_textured);float
         [0, 1 - V]
       ]);
       this._submit();
-      this._useTexture(this.white);
+      this._setPaint(this.whiteRegion);
     }
     dispose() {
       if (this.state === "disposed") {
@@ -3515,10 +3773,12 @@ void main(){vec4 texel=mix(vec4(1.0),texture2D(u_texture,v_uv),u_textured);float
       this.device.deleteVertexBuffer(this.dynamicClipBuffer);
       this.device.deleteVertexBuffer(this.buffer);
       this.device.deletePipeline(this.clipPipeline);
-      this.device.deletePipeline(this.nonRadialPipeline);
+      this.device.deletePipeline(this.groupPipeline);
       this.device.deletePipeline(this.pipeline);
-      this.device.deleteTexture(this.white);
-      this.buffer = this.dynamicClipBuffer = this.clipPipeline = this.nonRadialPipeline = this.pipeline = this.white = null;
+      if (this.whiteRegion && this.device.state === "ready") {
+        this.atlas.release(this.whiteRegion);
+      }
+      this.buffer = this.dynamicClipBuffer = this.clipPipeline = this.groupPipeline = this.pipeline = this.whiteRegion = null;
       this.state = "disposed";
     }
   };
@@ -6942,23 +7202,18 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
               `VectorContext supports at most ${MAX_GRADIENT_TEXTURES} distinct gradients in one frame`
             );
           }
-          this.device.deleteTexture(EXPIRED[1].texture);
+          EXPIRED[1].region.atlas.release(EXPIRED[1].region);
           this.gradientTextures.delete(EXPIRED[0]);
         }
         const LINEAR = gradient instanceof LinearGradient, WIDTH = LINEAR ? LINEAR_GRADIENT_SIZE : 256, HEIGHT = 1, DATA2 = gradient.raster();
+        const REGION = this.device.textureAtlas.allocate(WIDTH, HEIGHT);
+        this.device.textureAtlas.upload(
+          REGION,
+          { width: WIDTH, height: HEIGHT, data: DATA2 },
+          { premultiplied: true, extendEdges: true }
+        );
         cached = {
-          texture: this.device.createTexture(
-            {
-              width: WIDTH,
-              height: HEIGHT,
-              data: DATA2
-            },
-            {
-              format: "rgba",
-              premultiplied: true,
-              filter: "linear"
-            }
-          ),
+          region: REGION,
           revision: gradient.revision,
           lastFrame: this.frame,
           linear: LINEAR
@@ -6967,11 +7222,11 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
       } else if (cached.revision !== gradient.revision) {
         this.vector.flush();
         const LINEAR = gradient instanceof LinearGradient, WIDTH = LINEAR ? LINEAR_GRADIENT_SIZE : 256;
-        this.device.updateTexture(cached.texture, {
-          width: WIDTH,
-          height: 1,
-          data: gradient.raster()
-        });
+        cached.region.atlas.upload(
+          cached.region,
+          { width: WIDTH, height: 1, data: gradient.raster() },
+          { premultiplied: true, extendEdges: true }
+        );
         cached.revision = gradient.revision;
         cached.linear = LINEAR;
       }
@@ -6984,7 +7239,7 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
       COLOR[3] *= this._globalAlpha;
       if (gradient instanceof LinearGradient) {
         return {
-          texture: cached.texture,
+          region: cached.region,
           kind: "linear",
           gradient,
           x0: gradient.x0,
@@ -6998,7 +7253,7 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
       }
       const DX = gradient.x1 - gradient.x0, DY = gradient.y1 - gradient.y0, DR = gradient.r1 - gradient.r0, SCALE = Math.max(1, Math.hypot(DX, DY), Math.abs(gradient.r0), Math.abs(gradient.r1));
       return {
-        texture: cached.texture,
+        region: cached.region,
         kind: "radial",
         gradient,
         x0: gradient.x0,
@@ -7014,7 +7269,7 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
     _releaseGradientTextures() {
       for (const [GRADIENT, CACHED] of this.gradientTextures) {
         try {
-          this.device.deleteTexture(CACHED.texture);
+          CACHED.region.atlas.release(CACHED.region);
         } catch (error2) {
           try {
             this.onError?.(error2, {
