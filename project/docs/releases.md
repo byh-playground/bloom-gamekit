@@ -1,3 +1,7 @@
+## v0.19.9 (2026-10-28)
+
+`WebGLDevice.createTextureArray`/`updateTextureLayer`/`isTextureArray`로 같은 크기의 아틀라스 페이지를 `TEXTURE_2D_ARRAY` 하나에 담습니다. 텍스처 인스턴스에 `layer`가 추가되어(100바이트) 같은 어레이·mesh·상태이면 페이지가 달라도 한 번에 그립니다. 스프라이트 프레임은 `layer`(기본 0)를 받고 `VectorContext.drawMesh`가 전달합니다. 어레이는 레이어 전체 메모리를 처음에 할당하고 컨텍스트 복구 때 올린 레이어를 다시 올립니다. 이번 변경은 mesh·스프라이트 경로뿐이며 vector-assets 렌더 타깃 아틀라스, VectorRenderer, 글리프 아틀라스, Renderer2D는 아직 기존 텍스처를 씁니다. 게임 적용과 실기기 성능은 포함하지 않습니다.
+
 ## v0.19.8 (2026-10-27)
 
 SVG 전체 스프라이트의 초기 bake에 `supersample: 1 | 2 | 4` 옵션을 추가합니다(기본 1 유지). 높은 해상도의 RGBA 표본을 준비 때만 그린 뒤 기존 shared sprite quad의 2:1 linear 축소를 반복해 최종 이미지에 저장합니다. 최종 해상도·프레임 정의·재생 경로는 바꾸지 않으며, 큰 초기 target과 임시 target을 해제합니다. MAX_TEXTURE_SIZE와 `maxAtlasBytes`는 임시 준비 peak까지 검사하며 `stats.bakeWorkingBytes`로 최종 보유량과 구분합니다. 색상 캡처·premultiplied alpha·복구와 실패 자원 회수를 검증합니다. 앨리어싱을 줄이는 옵션이며 native MSAA와의 픽셀 동일성이나 게임 품질 기준 통과를 보장하지 않습니다. 게임 적용은 별도 검증 중입니다.
