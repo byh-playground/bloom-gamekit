@@ -2,10 +2,12 @@
 
 ## Sprite animation
 
-`createSpriteAnimation(meshes, texture, definition)` is independent of SVG. It accepts a borrowed Device texture, frames with pixel rectangles and positive `durationMs`, and named clips with ordered frame indices and `loop: 'loop' | 'once'`. An external sprite sheet and an SVG-generated atlas use the same playback API. All sprites of one renderer share one unit quad (`acquireQuadMesh`), so texture arrays, pages and clips never split a batch on mesh identity. Per-instance UV and local rectangles select the image and preserve trim/pivot before part poses, without changing the caller's matrix. Different frames remain in one compatible batch in submission order; playback does not generate pixels or reorder actors by frame.
+`createSpriteAnimation(context, region, definition)` is independent of SVG. It takes a `VectorContext` and a live region of the device's shared texture atlas (`device.textureAtlas.allocate`), frames with pixel rectangles inside that region and positive `durationMs`, and named clips with ordered frame indices and `loop: 'loop' | 'once'`. An external sprite sheet and an SVG-generated atlas use the same playback API. Every draw goes through `VectorContext.drawQuads`, so sprites of any region, clip and frame share the draw of the surrounding shapes, glyphs and gradients while blend and clip state are unchanged; no mesh or per-texture state exists to split a batch. The per-run UV and local rectangles select the image and preserve trim/pivot, and the caller's matrix composes with the context transform. Playback does not generate pixels or reorder actors by frame.
 
 ```js
-const SPRITES = createSpriteAnimation(MESHES, TEXTURE, {
+const REGION = device.textureAtlas.allocate(80, 40);
+device.textureAtlas.upload(REGION, SHEET_CANVAS);
+const SPRITES = createSpriteAnimation(CONTEXT, REGION, {
     frames: [
         { x: 2, y: 2, width: 32, height: 32, gutter: 2, durationMs: 120 },
         { x: 38, y: 2, width: 32, height: 32, gutter: 2, durationMs: 80 },
@@ -13,34 +15,26 @@ const SPRITES = createSpriteAnimation(MESHES, TEXTURE, {
     clips: { walk: { frames: [0, 1], loop: 'loop' } },
 });
 const PLAYER = SPRITES.createPlayer({ clip: 'walk', startedAtMs: 0 });
-PLAYER.draw({ timeMs: displayTimeMs, projection: PROJECTION, matrix: MATRIX });
+PLAYER.draw({ timeMs: displayTimeMs, matrix: MATRIX });
 PLAYER.setPaused(true, displayTimeMs);
 PLAYER.seek(150, displayTimeMs); // elapsed clip time, then absolute clock anchor
 PLAYER.setRate(2, displayTimeMs); // preserves the current phase
-SPRITES.dispose(); // releases its mesh and invalidates players, not TEXTURE
+SPRITES.dispose(); // invalidates players; REGION stays with its owner
 ```
 
 Frame rectangles use logical top-left atlas pixel coordinates. `sourceWidth/sourceHeight` describe the untrimmed viewport; `sourceX/sourceY` place the trimmed rectangle in it. `pivotX/pivotY` are viewport pixel coordinates, with top-left as the default. Transparent gutter is outside the content rectangle and must fit in the texture. Set definition.textureOrigin to top-left (default) for ordinary image uploads or bottom-left for a render target. Texture filtering must match the upload source; render-target producers declare the opposite vertical storage orientation to ordinary image uploads. UVs span the content rectangle without shrinking its pixel footprint.
 
-Players sample an absolute caller clock, select one frame and hold it for its duration. There is no geometric interpolation or crossfade. Before the start time the first frame is held; loop clips wrap at total duration and once clips hold the last frame, including large clock jumps. Pause and speed changes preserve phase at the supplied clock time. Clocks and durations must be finite. Sprite texture memory and its initialization cost remain the producer's responsibility; context restore retains uploaded source textures but render-target producers must rebake their pixels.
+Players sample an absolute caller clock, select one frame and hold it for its duration. There is no geometric interpolation or crossfade. Before the start time the first frame is held; loop clips wrap at total duration and once clips hold the last frame, including large clock jumps. Pause and speed changes preserve phase at the supplied clock time. Clocks and durations must be finite. Region memory and its initialization cost remain the producer's responsibility; context restore re-uploads retained region sources but render-target producers must rebake their pixels.
 
-## Textured retained meshes
+## Textures in the vector stream
 
-`MeshRenderer.createMesh()` accepts optional `uvs`, two floats per existing 11-float source vertex. Supply the device-owned image texture or RGBA render target as `drawMesh(mesh, { texture, ...options })`; `VectorContext.drawMesh` forwards the same material. Texture and pose samplers use separate units. The shader applies the existing instance/part pose and premultiplied tint, preserving submission order across texture changes. Linear/nearest filtering belongs to the image texture; pose data remains nearest-filtered.
+`MeshRenderer` meshes are untextured. Every textured draw (sprites, baked vector runs, posed parts, glyphs, gradient ramps) is a rectangle in the `VectorRenderer` vertex stream, sampled from the device's one `TEXTURE_2D_ARRAY` (`device.textureAtlas`, see below). `VectorContext.drawQuads({ layer, uvRects, localRects, matrix, color, alpha, whiteFlash, forceColor, filter })` appends rectangles on the current transform and clip; with `pose` (a prepared GPU pose handle) and `parts` the runs also follow that pose part, evaluated in the same vertex shader. `uvRects`/`localRects` hold four floats per run `[offsetX, offsetY, extentX, extentY]`; a negative UV height flips a bottom-up render target. Stream vertices are 80 bytes, six per rectangle.
 
-The caller owns the texture lifetime. A UV mesh requires a live texture from the same device, and a mesh without UVs rejects a texture. Texture alpha cannot be classified by the CPU depth-write threshold path, so that combination is rejected. UVs and packed GPU vertices are retained for context restoration and included in resource accounting. A restored render target has empty contents; its producer must repaint it. `createVectorRasterAtlas` in vector-assets implements that repaint contract for SVG-derived atlases.
-
-Textured mesh draw options `uvRect` and `localRect` are `[offsetX, offsetY, extentX, extentY]`, defaulting to `[0, 0, 1, 1]`. UV extents may be negative for image orientation. Local rectangles apply after morph and before part pose; clip, stencil, depth, projection and texture boundaries still flush as required. These values occupy separate instance attributes, preserving the existing morph/pose/flash/depth parameters. Plain instances retain the 64-byte layout; textured instances upload 100 bytes (the last float is the texture-array layer). The shared GPU stream grows only when needed, and the uniform fallback uses the same rectangle values.
-
-### Texture array
-
-`WebGLDevice.createTextureArray(width, height, layers, { filter })` allocates one `TEXTURE_2D_ARRAY` whose layers share one size; `layers` must not exceed `maxArrayTextureLayers` (at least 256). The whole `width × height × layers × 4` byte storage is allocated immediately, so size layers for the largest atlas page and leave unused area transparent. `updateTextureLayer(handle, layer, source, { premultiplied })` replaces one whole layer, and the source size must equal the layer size. `isTextureArray(handle)` identifies the handle; `updateTexture` and `copyFrameToTexture` reject arrays. The caller owns the array lifetime, and uploaded layer sources are retained and re-uploaded after context restore.
-
-Pass the array as `drawMesh(mesh, { texture: ARRAY, layer })` or as the texture of `createSpriteAnimation`; sprite frames take `layer` (default 0, an integer below the layer count). Instances with different `layer` values and the same array, mesh and state stay in one draw call, whereas separate textures per page split the batch at every page change. Each array occupies one texture unit regardless of layer count. A different mesh, clip, stencil, depth state or projection still splits the batch.
+`WebGLDevice.createTextureArray(width, height, layers, { filter })`, `updateTextureLayer` and `isTextureArray` remain the device primitives under the atlas. Retained layer and region sources are re-uploaded after context restore.
 
 **HTML 실행 프리뷰:** [rendering-texture-array](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rendering-texture-array.html)
 
-`WebGLDevice.stats.imageTexUploadCount` and `imageTexUploadBytes` accumulate successful CPU/DOM image pixel transfers over the device lifetime; they do not reset at `beginFrame()`. `createTexture()` counts a supplied image or byte plane, and `updateTexture()` counts the uploaded region. Retained image pixels uploaded again after context restoration count again. Empty texture allocation, RGBA32F numeric pose data, render-target allocation and GPU atlas baking, and framebuffer-to-texture copies do not count as image uploads. Compare counter snapshots for a frame delta. The existing `textureUploads`/`textureBytes` counters keep their broader meaning; `gpuTextureBytes` measures live logical texture storage, including render-target color textures, so do not add `gpuRenderTargetBytes` to it as another color allocation.
+`WebGLDevice.stats.imageTexUploadCount` and `imageTexUploadBytes` accumulate successful CPU/DOM image pixel transfers over the device lifetime; they do not reset at `beginFrame()`. `createTexture()` counts a supplied image or byte plane, and `updateTexture()` counts the uploaded region. Retained image pixels uploaded again after context restoration count again. Empty texture allocation, RGBA32F numeric pose data, render-target allocation and GPU atlas baking, and framebuffer-to-texture copies do not count as image uploads. `clearTextureRegion` zeroing of a released atlas rectangle is counted as `regionClears`, not as an image upload. Compare counter snapshots for a frame delta. The existing `textureUploads`/`textureBytes` counters keep their broader meaning; `gpuTextureBytes` measures live logical texture storage, including render-target color textures, so do not add `gpuRenderTargetBytes` to it as another color allocation.
 
 **HTML 실행 프리뷰:** [rendering-vector](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rendering-vector.html) · [rendering-texture-array](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rendering-texture-array.html)
 
@@ -432,29 +426,13 @@ Existing drawCalls, bufferUploads and bufferBytes count actual device submission
 MeshRenderer has no per-frame geometry rebuild API: geometryUploads measures retained creation/restoration, not instance buffer uploads.
 Use FrameMetrics from debug-tools to retain selected numbers with the same frame's CPU stage observations; no profiler is installed automatically.
 
-## Shared primitive instances (0.11.6)
+## Analytic primitives in the vector stream
 
-VectorContext routes eligible simple shapes through one module-owned unit quad.
-The fast path supports full circles and ellipses, rectangle fills and eligible strokes, and one-segment strokes.
-Each instance captures its transform, paint color and alpha, stroke width, and cap or join.
-WebGL 2 devices batch adjacent instances in painter order.
-Devices without instancing draw the same quad with uniforms.
+VectorContext emits eligible simple shapes as analytic primitive vertices (mode 5 in the stream): full circles and ellipses, rectangle fills and eligible strokes, and one-segment strokes. The fragment shader evaluates the shape's distance function, so no contour points are tessellated. Each primitive captures its transform, paint color and alpha, stroke width, and cap or join, and joins the same draw as the surrounding fills, gradients, glyphs and sprites.
 
-After initialization, the fast path uploads no primitive geometry and samples no full-ellipse path points.
-It builds path geometry only when a fallback or a later path command needs the original contour.
-WebGL 2 devices upload 64 bytes of instance data per primitive.
-The `primitives` stats field has frame and lifetime records.
-It exposes `instances`, `instanceUploads`, `instanceBytesUploaded`, and `draws` counters.
-It also exposes `instancedDraws`, `flushes`, instancing availability, and pending instances.
-The device's `bufferUploads` counter also includes these instance uploads.
+After initialization the fast path samples no full-ellipse path points; it builds path geometry only when a fallback or a later path command needs the original contour. Per-frame vertex bytes appear in the context's `uploadedBytes`.
 
-Fast paths retain Canvas path transforms, effective alpha, convex clips, stencil clips, and submission order.
-Partial arcs, compound paths, holes, rounded rectangles, gradients, and dashed strokes use the existing path renderer.
-Bevel rectangle joins and sheared rectangle strokes also use the existing path renderer.
-VectorContext owns primitive buffers and shader programs and restores and releases them with the context.
-The integrated `npm run test:browser` scenario checks real Chromium/WebGL pixels for fills, strokes, transforms, alpha, and clips.
-It also checks warm-frame tessellation and instance-upload counters.
-This correctness check does not measure GPU completion or mobile performance.
+Fast paths retain Canvas path transforms, effective alpha, convex clips, stencil clips, and submission order. Partial arcs, compound paths, holes, rounded rectangles and dashed strokes use the path tessellator, still in the same stream. VectorContext restores and releases the stream with the context. The integrated `npm run test:browser` scenario checks real Chromium/WebGL pixels, the single draw call and warm-frame tessellation counters. This correctness check does not measure GPU completion or mobile performance.
 
 ## Authored animation pose data (v0.17)
 

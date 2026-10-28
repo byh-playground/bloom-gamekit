@@ -1,20 +1,93 @@
+import { clipPlanes } from './clip-planes.js';
+import { poseRendererOf } from './pose-renderer.js';
+import { POSE_PROGRAM_FUNCTIONS } from './pose-shader.js';
+
 const IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
-// One vertex layout for every textured vector draw: texture identity, gradient kind and flash are vertex data,
-// so fills, gradients and glyphs of one blend/clip state batch together. Floats per vertex: position 2, uv 2,
-// color 4, paint (atlas layer, white flash, mode, nearest) 4, radial parameters 4, ramp rectangle 4.
+// One vertex layout for every textured draw: texture identity, gradient kind and flash are vertex data,
+// so fills, gradients, glyphs and sprites of one blend/clip state batch together. Floats per vertex: position 2,
+// uv 2, color 4, paint (atlas layer, white flash, mode, nearest) 4, radial parameters 4, ramp rectangle 4.
+// Mode 4 is a posed sprite corner: position is the part-local corner, radial holds the entity matrix a,b,c,d and
+// the ramp rectangle holds its e,f plus the pose row and part, so the vertex shader evaluates the keyframes.
 const VERTEX_FLOATS = 20;
 const VERTEX_BYTES = VERTEX_FLOATS * 4;
-const VERTEX = `attribute vec2 a_position; attribute vec2 a_uv; attribute vec4 a_color; attribute vec4 a_paint; attribute vec4 a_radial; attribute vec4 a_rect;
-uniform mat3 u_projection; varying highp vec2 v_uv; varying vec4 v_color; varying highp vec4 v_paint; varying highp vec4 v_radial; varying highp vec4 v_rect;
-void main(){vec3 p=u_projection*vec3(a_position,1.0);gl_Position=vec4(p.xy,0.0,1.0);v_uv=a_uv;v_color=a_color;v_paint=a_paint;v_radial=a_radial;v_rect=a_rect;}`;
-const CLIP_VERTEX = `attribute vec2 a_position;uniform mat3 u_projection;uniform mat3 u_transform;void main(){vec3 p=u_projection*u_transform*vec3(a_position,1.0);gl_Position=vec4(p.xy,0.0,1.0);}`;
-const CLIP_FRAGMENT = 'precision mediump float;void main(){gl_FragColor=vec4(1.0);}';
+const MODE_POSED = 4;
+// Mode 5 is an analytic primitive (circle, rectangle, capsule line; filled or stroked): uv carries the local
+// [-1,1] coordinates, radial the kind/stroke/width/option parameters and the ramp rectangle the matrix a,c,b,d.
+const MODE_PRIMITIVE = 5;
+const POSED_CORNERS = [
+    [0, 0],
+    [1, 0],
+    [1, 1],
+    [0, 0],
+    [1, 1],
+    [0, 1],
+];
+const VERTEX_ATTRIBUTES = [
+    { name: 'a_position', size: 2, offset: 0 },
+    { name: 'a_uv', size: 2, offset: 8 },
+    { name: 'a_color', size: 4, offset: 16 },
+    { name: 'a_paint', size: 4, offset: 32 },
+    { name: 'a_radial', size: 4, offset: 48 },
+    { name: 'a_rect', size: 4, offset: 64 },
+];
 const FRAGMENT_VARYINGS =
     'varying highp vec2 v_uv; varying vec4 v_color; varying highp vec4 v_paint; varying highp vec4 v_radial; varying highp vec4 v_rect;';
+const POSED_CORNER = `if(a_paint.z>3.5&&a_paint.z<4.5){vec4 row0;vec4 row1;vec4 pose;
+poseEval(int(a_rect.w+0.5),int(a_rect.z+0.5),row0,row1,pose);
+vec2 q=vec2(dot(row0.xy,a_position)+row0.z,dot(row1.xy,a_position)+row1.z);
+position=vec2(a_radial.x*q.x+a_radial.z*q.y+a_rect.x,a_radial.y*q.x+a_radial.w*q.y+a_rect.y);
+color.a*=pose.z;paint.z=0.0;radial=vec4(0.0);rect=vec4(0.0);}`;
+function vertexShader(posed) {
+    return `attribute vec2 a_position; attribute vec2 a_uv; attribute vec4 a_color; attribute vec4 a_paint; attribute vec4 a_radial; attribute vec4 a_rect;
+uniform mat3 u_projection; ${FRAGMENT_VARYINGS}${posed ? ' varying highp vec2 v_position;' : ''}
+${posed ? POSE_PROGRAM_FUNCTIONS : ''}
+void main(){vec2 position=a_position;vec4 color=a_color;vec4 paint=a_paint;vec4 radial=a_radial;vec4 rect=a_rect;
+${posed ? POSED_CORNER : ''}
+vec3 p=u_projection*vec3(position,1.0);gl_Position=vec4(p.xy,0.0,1.0);${posed ? 'v_position=position;' : ''}v_uv=a_uv;v_color=color;v_paint=paint;v_radial=radial;v_rect=rect;}`;
+}
+const VERTEX = vertexShader(false);
+const CLIP_VERTEX = `attribute vec2 a_position;uniform mat3 u_projection;uniform mat3 u_transform;void main(){vec3 p=u_projection*u_transform*vec3(a_position,1.0);gl_Position=vec4(p.xy,0.0,1.0);}`;
+const CLIP_FRAGMENT = 'precision mediump float;void main(){gl_FragColor=vec4(1.0);}';
+// paint.y: 0 normal, 1 white flash, 2 forced color (the texel only contributes its coverage).
 const FINISH =
-    'float a=texel.a*v_color.a;vec3 rgb=mix(texel.rgb*v_color.rgb*v_color.a,vec3(a),v_paint.y);gl_FragColor=vec4(rgb,a);';
-const FRAGMENT = `precision mediump float; precision mediump sampler2DArray; uniform sampler2DArray u_texture;
-${FRAGMENT_VARYINGS}
+    'float a=texel.a*v_color.a;vec3 rgb=v_paint.y>1.5?v_color.rgb*a:mix(texel.rgb*v_color.rgb*v_color.a,vec3(a),v_paint.y);gl_FragColor=vec4(rgb,a);';
+const PRIMITIVE_OUTSIDE = `bool primitiveOutside(vec2 l,vec4 p,vec4 m){
+  float kind=p.x,stroke=p.y,width=p.z,option=p.w;
+  if(kind<0.5){
+    if(stroke<0.5)return length(l)>1.0;
+    float ql=length(l);vec2 n=ql>0.000001?l/ql:vec2(1.0,0.0);float det=m.x*m.w-m.y*m.z;
+    vec2 g=vec2(m.w*n.x-m.z*n.y,-m.y*n.x+m.x*n.y)/max(abs(det),0.000001);
+    return abs((ql-1.0)/max(length(g),0.000001))>width*0.5;
+  }
+  if(kind<1.5){
+    if(stroke<0.5)return max(abs(l.x),abs(l.y))>1.0;
+    float sx=length(vec2(m.x,m.z));float sy=length(vec2(m.y,m.w));
+    if(option>0.5){
+      float ox=1.0+width/(2.0*max(sx,0.000001));float oy=1.0+width/(2.0*max(sy,0.000001));
+      float ix=max(0.0,1.0-width/(2.0*max(sx,0.000001)));float iy=max(0.0,1.0-width/(2.0*max(sy,0.000001)));
+      return max(abs(l.x)/ox,abs(l.y)/oy)>1.0||max(abs(l.x)/max(ix,0.000001),abs(l.y)/max(iy,0.000001))<1.0;
+    }
+    vec2 q=(abs(l)-vec2(1.0))*vec2(sx,sy);float sd=length(max(q,vec2(0.0)))+min(max(q.x,q.y),0.0);
+    return abs(sd)>width*0.5;
+  }
+  float halfLength=length(vec2(m.x,m.z));float halfWidth=length(vec2(m.y,m.w));
+  float x=l.x*halfLength;float y=l.y*halfWidth;float center=halfLength-(option>0.5?halfWidth:0.0);float d;
+  if(option<0.5)d=max(abs(x)-center,abs(y)-halfWidth);
+  else if(option<1.5)d=max(abs(x)-center-halfWidth,abs(y)-halfWidth);
+  else d=length(vec2(max(abs(x)-center,0.0),y))-halfWidth;
+  return d>0.0;
+}`;
+// Posed sprites move on the GPU, so their clip is tested per fragment against the batch's edge planes; every
+// other vertex was clipped on the CPU and passes this test trivially.
+function fragmentShader(planes) {
+    const PLANES = planes
+        ? `varying highp vec2 v_position; uniform vec3 u_planes[${planes}]; uniform int u_planeCount;`
+        : '';
+    const CLIP = planes
+        ? `for(int i=0;i<${planes};i++){if(i>=u_planeCount)break;if(dot(u_planes[i],vec3(v_position,1.0))<0.0)discard;}`
+        : '';
+    return `precision mediump float; precision mediump sampler2DArray; uniform sampler2DArray u_texture;
+${FRAGMENT_VARYINGS}${PLANES}
 float radialParameter(vec2 q){
   vec2 d=v_radial.xy;float r0=v_radial.z,dr=v_radial.w;
   float a=dot(d,d)-dr*dr,b=-2.0*(dot(q,d)+r0*dr),c=dot(q,q)-r0*r0;
@@ -23,11 +96,15 @@ float radialParameter(vec2 q){
   float root=sqrt(max(discriminant,0.0)),t0=(-b-root)/(2.0*a),t1=(-b+root)/(2.0*a),chosen=-10000.0;
   if(r0+dr*t0>0.0)chosen=t0;if(r0+dr*t1>0.0)chosen=max(chosen,t1);return chosen;
 }
-void main(){if(v_paint.z>1.5&&v_paint.z<2.5)discard;vec2 uv=v_uv;
+${PRIMITIVE_OUTSIDE}
+void main(){${CLIP}if(v_paint.z>4.5){if(primitiveOutside(v_uv,v_radial,v_rect))discard;gl_FragColor=vec4(v_color.rgb*v_color.a,v_color.a);return;}
+if(v_paint.z>1.5&&v_paint.z<2.5)discard;vec2 uv=v_uv;
 if(v_paint.z>2.5){uv=v_rect.xy+vec2(clamp(v_uv.x,0.0,1.0),0.5)*v_rect.zw;}
 else if(v_paint.z>0.5){float t=radialParameter(v_uv);if(t< -1000.0)discard;uv=v_rect.xy+vec2(clamp(t,0.0,1.0),0.5)*v_rect.zw;}
 if(v_paint.w>0.5){vec2 size=vec2(textureSize(u_texture,0).xy);uv=(floor(uv*size)+0.5)/size;}
 vec4 texel=texture2D(u_texture,vec3(uv,floor(v_paint.x+0.5)));${FINISH}}`;
+}
+const FRAGMENT = fragmentShader(0);
 // Offscreen groups are the one render-target (not atlas) sample, so they keep a plain 2D sampler.
 const GROUP_FRAGMENT = `precision mediump float; uniform sampler2D u_texture;
 ${FRAGMENT_VARYINGS}
@@ -296,19 +373,18 @@ export class VectorRenderer {
             vertex: VERTEX,
             fragment: FRAGMENT,
             stride: VERTEX_BYTES,
-            attributes: [
-                { name: 'a_position', size: 2, offset: 0 },
-                { name: 'a_uv', size: 2, offset: 8 },
-                { name: 'a_color', size: 4, offset: 16 },
-                { name: 'a_paint', size: 4, offset: 32 },
-                { name: 'a_radial', size: 4, offset: 48 },
-                { name: 'a_rect', size: 4, offset: 64 },
-            ],
+            attributes: VERTEX_ATTRIBUTES,
             uniforms: {
                 u_projection: 'matrix3fv',
                 u_texture: '1i',
             },
         });
+        // Created with the first posed sprite: it adds the keyframe evaluator and the edge-plane clip.
+        this.posePipeline = null;
+        this.poseBatch = null;
+        this.clipSerial = 0;
+        this.batchSerial = 0;
+        this.planeScratch = new Float32Array(this.maxClipPlanes * 3);
         this.clipPipeline = device.createPipeline({
             vertex: CLIP_VERTEX,
             fragment: CLIP_FRAGMENT,
@@ -362,8 +438,14 @@ export class VectorRenderer {
         this.stencilDepth = 0;
         this.stencilNeedsRebuild = false;
         this.state = 'ready';
+        this.unregisterBatcher = device.registerBatcher(() => {
+            if (this.state === 'ready' && this.device.active) {
+                this._submit();
+            }
+        });
         this.onLost = () => {
             this.count = 0;
+            this.poseBatch = null;
             this.stencilNeedsRebuild = this.stencilClips.length > 0;
         };
         this.onRestored = () => {
@@ -387,14 +469,7 @@ export class VectorRenderer {
                 vertex: VERTEX,
                 fragment: GROUP_FRAGMENT,
                 stride: VERTEX_BYTES,
-                attributes: [
-                    { name: 'a_position', size: 2, offset: 0 },
-                    { name: 'a_uv', size: 2, offset: 8 },
-                    { name: 'a_color', size: 4, offset: 16 },
-                    { name: 'a_paint', size: 4, offset: 32 },
-                    { name: 'a_radial', size: 4, offset: 48 },
-                    { name: 'a_rect', size: 4, offset: 64 },
-                ],
+                attributes: VERTEX_ATTRIBUTES,
                 uniforms: {
                     u_projection: 'matrix3fv',
                     u_texture: '1i',
@@ -408,6 +483,18 @@ export class VectorRenderer {
             }
             throw error;
         }
+    }
+    get clips() {
+        return this._clips;
+    }
+    // Every change bumps the serial, so a batch can tell cheaply whether its clip may have changed.
+    set clips(value) {
+        this._clips = value;
+        this.clipSerial++;
+    }
+    _pushClip(contour) {
+        this._clips.push(contour);
+        this.clipSerial++;
     }
     _frame() {
         if (this.state !== 'ready') {
@@ -530,13 +617,14 @@ export class VectorRenderer {
         if (!S) {
             throw new Error('restore without save');
         }
-        this._submit();
+        // Queued vertices already hold final positions, so only a stencil change needs the batch submitted first.
         this.matrix = S.matrix;
         this.clips = S.clips;
         if (
             S.stencilClips.length !== this.stencilClips.length ||
             S.stencilClips.some((clip, i) => clip !== this.stencilClips[i])
         ) {
+            this._submit();
             this.stencilClips = S.stencilClips;
             this._rebuildStencil();
         }
@@ -578,7 +666,7 @@ export class VectorRenderer {
             point(this.matrix, x, y + height),
         ];
         if (width === 0 || height === 0) {
-            this.clips.push(CONTOUR);
+            this._pushClip(CONTOUR);
         } else {
             this._addConvexClip(CONTOUR);
         }
@@ -596,7 +684,7 @@ export class VectorRenderer {
             0,
         );
         if (Math.abs(AREA) < 1e-9) {
-            this.clips.push(contour);
+            this._pushClip(contour);
             return;
         }
         const PLANE_COUNT = this.clips.reduce((sum, polygon) => sum + polygon.length, 0);
@@ -604,7 +692,7 @@ export class VectorRenderer {
             this._pushDynamicStencilClip(contour);
             return;
         }
-        this.clips.push(contour);
+        this._pushClip(contour);
     }
     _pushDynamicStencilClip(contour) {
         if (!this.device.activeStencilAvailable) {
@@ -858,8 +946,34 @@ export class VectorRenderer {
         }
         return poly;
     }
+    /** Makes room for `vertexCount` more vertices, submitting first when the buffer limit would be exceeded. */
+    _reserve(vertexCount) {
+        if (this.count + vertexCount > this.maxVertices) {
+            this._submit();
+        }
+        if (!this.count) {
+            this.batchSerial = this.clipSerial;
+        }
+        if ((this.count + vertexCount) * VERTEX_FLOATS > this.vertices.length) {
+            const SIZE = Math.min(this.maxVertices, Math.max(this.count + vertexCount, this.count * 2));
+            const NEXT = new Float32Array(SIZE * VERTEX_FLOATS);
+            NEXT.set(this.vertices.subarray(0, this.count * VERTEX_FLOATS));
+            this.vertices = NEXT;
+        }
+    }
+    /** A batch holding posed sprites tests one plane set per fragment; CPU-clipped vertices must lie inside it. */
+    _planesAllow() {
+        const BATCH = this.poseBatch;
+        if (!BATCH || BATCH.planeCount === 0 || BATCH.serial === this.clipSerial) {
+            return true;
+        }
+        return clipPlanes(this.clips, this.maxClipPlanes).key === BATCH.planeKey;
+    }
     _emitTriangle(a, b, c, color, uv = null) {
         rgba(color);
+        if (!this._planesAllow()) {
+            this._submit();
+        }
         if (this.activeGradient && !uv) {
             uv = [this._gradientUV(a), this._gradientUV(b), this._gradientUV(c)];
         }
@@ -873,15 +987,7 @@ export class VectorRenderer {
                 }))
               : [a, b, c];
         for (let i = 1; i + 1 < POLY.length; i++) {
-            if (this.count + 3 > this.maxVertices) {
-                this._submit();
-            }
-            if ((this.count + 3) * VERTEX_FLOATS > this.vertices.length) {
-                const SIZE = Math.min(this.maxVertices, Math.max(this.count + 3, this.count * 2));
-                const NEXT = new Float32Array(SIZE * VERTEX_FLOATS);
-                NEXT.set(this.vertices);
-                this.vertices = NEXT;
-            }
+            this._reserve(3);
             for (const POINT of [POLY[0], POLY[i], POLY[i + 1]]) {
                 const K = this.count++ * VERTEX_FLOATS;
                 this.vertices[K] = POINT.x;
@@ -898,16 +1004,37 @@ export class VectorRenderer {
             return;
         }
         this.device.stats.vectorSubmissions++;
+        const POSED = this.poseBatch;
+        this.poseBatch = null;
+        if (POSED) {
+            POSED.owner.flushUpdates();
+            this.posePipeline ??= this._createPosePipeline();
+            this.planeScratch.fill(0);
+            if (POSED.planes) {
+                this.planeScratch.set(POSED.planes);
+            }
+        }
         this.device.uploadVertices(this.buffer, this.vertices.subarray(0, this.count * VERTEX_FLOATS));
         this.device.draw({
-            pipeline: this.activeTarget ? this.groupPipeline : this.pipeline,
+            pipeline: POSED ? this.posePipeline : this.activeTarget ? this.groupPipeline : this.pipeline,
             buffer: this.buffer,
             count: this.count,
-            uniforms: {
-                u_projection: this.projection,
-                u_texture: 0,
-            },
-            textures: [this.activeTarget ?? this.atlas.texture],
+            uniforms: POSED
+                ? {
+                      u_projection: this.projection,
+                      u_program: 0,
+                      u_state: 1,
+                      u_overrides: 2,
+                      u_texture: 3,
+                      u_programWidth: POSED.programWidth,
+                      'u_planes[0]': this.planeScratch,
+                      u_planeCount: POSED.planeCount,
+                  }
+                : {
+                      u_projection: this.projection,
+                      u_texture: 0,
+                  },
+            textures: POSED ? [...POSED.textures, this.atlas.texture] : [this.activeTarget ?? this.atlas.texture],
             blend: this.blend,
             stencil: this.stencilDepth
                 ? {
@@ -920,6 +1047,24 @@ export class VectorRenderer {
                 : false,
         });
         this.count = 0;
+    }
+    _createPosePipeline() {
+        return this.device.createPipeline({
+            vertex: vertexShader(true),
+            fragment: fragmentShader(this.maxClipPlanes),
+            stride: VERTEX_BYTES,
+            attributes: VERTEX_ATTRIBUTES,
+            uniforms: {
+                u_projection: 'matrix3fv',
+                u_program: '1i',
+                u_state: '1i',
+                u_overrides: '1i',
+                u_texture: '1i',
+                u_programWidth: '1i',
+                'u_planes[0]': '3fv',
+                u_planeCount: '1i',
+            },
+        });
     }
     // Only source-over and the additive 'lighter' are offered; a change submits what the other operation queued.
     setBlend(blend) {
@@ -959,6 +1104,185 @@ export class VectorRenderer {
             W,
             H,
         ]);
+    }
+    /** Switches later vertices to plain per-vertex paint (no atlas region, gradient or group target). */
+    _useVertexPaint(template, whiteFlash = false) {
+        if (this.activeTarget) {
+            this._submit();
+            this.activeTarget = null;
+        }
+        this.activeRegion = null;
+        this.activeRadial = false;
+        this.activeWhiteFlash = whiteFlash;
+        this.activeGradient = null;
+        this.paintTemplate.set(template);
+    }
+    /**
+     * Fills or strokes one analytic primitive: `matrix` maps the local square [-1,1]^2 to screen space (the caller
+     * has applied the current transform) and `params` is [kind (0 ellipse, 1 rectangle, 2 line), stroke, width, option].
+     */
+    drawPrimitive({ matrix, color, params }) {
+        this._frame();
+        rgba(color);
+        if (matrix?.length !== 6 || params?.length !== 4) {
+            throw new TypeError('drawPrimitive requires a 6-value matrix and 4 parameters');
+        }
+        for (const VALUE of [...matrix, ...params]) {
+            FINITE(VALUE, 'drawPrimitive value');
+        }
+        const M = matrix;
+        this._useVertexPaint([0, 0, MODE_PRIMITIVE, 0, ...params, M[0], M[2], M[1], M[3]]);
+        const CORNERS = [
+            [-1, -1],
+            [1, -1],
+            [1, 1],
+            [-1, 1],
+        ];
+        const WORLD = CORNERS.map((corner) => point(M, corner[0], corner[1]));
+        this._emitTriangle(WORLD[0], WORLD[1], WORLD[2], color, [CORNERS[0], CORNERS[1], CORNERS[2]]);
+        this._emitTriangle(WORLD[0], WORLD[2], WORLD[3], color, [CORNERS[0], CORNERS[2], CORNERS[3]]);
+    }
+    /**
+     * Draws atlas rectangles in painter order. Run i places `localRects[i]` (x, y, width, height) on the current
+     * transform composed with `matrix` and samples `uvRects[i]` of `layer`; uv and size may be negative for content that
+     * was rendered rather than uploaded. With `pose` (a handle of a PoseRenderer, evaluated on the GPU from its
+     * keyframe program) every run also follows the pose part `parts[i]`. All runs join the current batch, so one
+     * blend/clip state is one draw whatever mix of sprites, shapes and glyphs it holds.
+     */
+    drawQuads({
+        layer,
+        uvRects,
+        localRects,
+        parts = null,
+        pose = null,
+        matrix = IDENTITY,
+        color = [1, 1, 1, 1],
+        alpha = 1,
+        whiteFlash = false,
+        forceColor = false,
+        filter = 'linear',
+    } = {}) {
+        this._frame();
+        const COUNT = uvRects?.length / 4;
+        if (
+            !Number.isSafeInteger(layer) ||
+            layer < 0 ||
+            !Number.isInteger(COUNT) ||
+            COUNT < 1 ||
+            localRects?.length !== COUNT * 4 ||
+            matrix.length !== 6 ||
+            (filter !== 'linear' && filter !== 'nearest')
+        ) {
+            throw new TypeError('drawQuads requires a layer and matching uvRects and localRects');
+        }
+        for (const LIST of [uvRects, localRects, matrix]) {
+            for (let i = 0; i < LIST.length; i++) {
+                FINITE(LIST[i], 'drawQuads value');
+            }
+        }
+        if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1) {
+            throw new RangeError('alpha must be in [0,1]');
+        }
+        rgba(color);
+        const TINT = [color[0], color[1], color[2], color[3] * alpha],
+            M = compose(this.matrix, matrix);
+        this._useVertexPaint(
+            [layer, whiteFlash ? 1 : forceColor ? 2 : 0, 0, filter === 'nearest' ? 1 : 0, 0, 0, 0, 0, 0, 0, 1, 1],
+            whiteFlash,
+        );
+        if (pose === null) {
+            if (parts !== null) {
+                throw new TypeError('parts require a pose');
+            }
+            this.device.stats.spriteRuns += COUNT;
+            for (let i = 0; i < COUNT; i++) {
+                const [LX, LY, LW, LH] = localRects.subarray(i * 4, i * 4 + 4),
+                    [U, V, UW, VH] = uvRects.subarray(i * 4, i * 4 + 4),
+                    CORNERS = [
+                        [point(M, LX, LY), [U, V]],
+                        [point(M, LX + LW, LY), [U + UW, V]],
+                        [point(M, LX + LW, LY + LH), [U + UW, V + VH]],
+                        [point(M, LX, LY + LH), [U, V + VH]],
+                    ];
+                this._emitTriangle(CORNERS[0][0], CORNERS[1][0], CORNERS[2][0], TINT, [
+                    CORNERS[0][1],
+                    CORNERS[1][1],
+                    CORNERS[2][1],
+                ]);
+                this._emitTriangle(CORNERS[0][0], CORNERS[2][0], CORNERS[3][0], TINT, [
+                    CORNERS[0][1],
+                    CORNERS[2][1],
+                    CORNERS[3][1],
+                ]);
+            }
+            return;
+        }
+        const OWNER = poseRendererOf(pose);
+        if (!OWNER || parts?.length !== COUNT) {
+            throw new TypeError('A live pose handle and one part per run are required');
+        }
+        const DRAW = OWNER.resolve(pose);
+        if (DRAW.kind !== 'program') {
+            throw new TypeError('Posed sprites require a keyframe program pose');
+        }
+        for (let i = 0; i < COUNT; i++) {
+            if (!Number.isInteger(parts[i]) || parts[i] < 0 || parts[i] >= DRAW.partCount) {
+                throw new RangeError('parts must be pose part indices');
+            }
+        }
+        this._beginPosed(OWNER, DRAW);
+        OWNER.noteDraw(pose);
+        this.device.stats.spriteRuns += COUNT;
+        for (let i = 0; i < COUNT; i++) {
+            const [LX, LY, LW, LH] = localRects.subarray(i * 4, i * 4 + 4),
+                [U, V, UW, VH] = uvRects.subarray(i * 4, i * 4 + 4);
+            this._reserve(6);
+            for (const [CX, CY] of POSED_CORNERS) {
+                const K = this.count++ * VERTEX_FLOATS;
+                this.vertices[K] = LX + CX * LW;
+                this.vertices[K + 1] = LY + CY * LH;
+                this.vertices[K + 2] = U + CX * UW;
+                this.vertices[K + 3] = V + CY * VH;
+                this.vertices.set(TINT, K + 4);
+                this.vertices.set(this.paintTemplate, K + 8);
+                this.vertices[K + 10] = MODE_POSED;
+                this.vertices[K + 12] = M[0];
+                this.vertices[K + 13] = M[1];
+                this.vertices[K + 14] = M[2];
+                this.vertices[K + 15] = M[3];
+                this.vertices[K + 16] = M[4];
+                this.vertices[K + 17] = M[5];
+                this.vertices[K + 18] = DRAW.row;
+                this.vertices[K + 19] = parts[i];
+            }
+        }
+    }
+    /** Joins or opens the batch's posed section: one pose texture set and one clip plane set per draw. */
+    _beginPosed(owner, draw) {
+        const PLANES = clipPlanes(this.clips, this.maxClipPlanes),
+            BATCH = this.poseBatch;
+        if (
+            BATCH &&
+            (BATCH.owner !== owner ||
+                BATCH.textures.some((texture, i) => texture !== draw.textures[i]) ||
+                (BATCH.planeKey !== PLANES.key && BATCH.planeCount + PLANES.count > 0))
+        ) {
+            this._submit();
+        } else if (!BATCH && this.count && PLANES.count > 0 && this.batchSerial !== this.clipSerial) {
+            // CPU-clipped vertices of an earlier clip would be cut by this clip's planes.
+            this._submit();
+        }
+        if (!this.poseBatch) {
+            this.poseBatch = {
+                owner,
+                textures: draw.textures,
+                programWidth: draw.programWidth,
+                planeKey: PLANES.key,
+                planeCount: PLANES.count,
+                planes: PLANES.values,
+                serial: this.clipSerial,
+            };
+        }
     }
     _useTarget(target) {
         if (this.activeTarget !== target) {
@@ -1480,6 +1804,10 @@ export class VectorRenderer {
         this.device.deletePipeline(this.clipPipeline);
         this.device.deletePipeline(this.groupPipeline);
         this.device.deletePipeline(this.pipeline);
+        if (this.posePipeline) {
+            this.device.deletePipeline(this.posePipeline);
+        }
+        this.unregisterBatcher();
         if (this.whiteRegion && this.device.state === 'ready') {
             this.atlas.release(this.whiteRegion);
         }
@@ -1487,6 +1815,7 @@ export class VectorRenderer {
             this.dynamicClipBuffer =
             this.clipPipeline =
             this.groupPipeline =
+            this.posePipeline =
             this.pipeline =
             this.whiteRegion =
                 null;

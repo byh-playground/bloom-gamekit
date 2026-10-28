@@ -1,6 +1,5 @@
 import { VectorRenderer } from './vector-renderer.js';
 import { MeshRenderer } from './mesh-renderer.js';
-import { PrimitiveRenderer } from './primitive-renderer.js';
 const TAU = Math.PI * 2;
 const MAX_LINEAR_GRADIENT_STOPS = 32;
 const LINEAR_GRADIENT_SIZE = 1024;
@@ -400,7 +399,6 @@ export class VectorContext {
         }
         this.safeAlphaRunBatching = safeAlphaRunBatching;
         this.meshRenderer = null;
-        this.primitiveRenderer = null;
         this.primitivePath = {
             type: 'empty',
         };
@@ -718,7 +716,6 @@ export class VectorContext {
             }
             this.active = true;
             this.meshRenderer?.beginFrame();
-            this.primitiveRenderer?.beginFrame();
             this.frame++;
             this.pathCount = 0;
             this.vector.beginPath();
@@ -750,7 +747,6 @@ export class VectorContext {
                 textureBytes: STATS.textureBytes ?? 0,
                 gpuRenderTargetBytes: STATS.gpuRenderTargetBytes ?? 0,
                 paths: this.pathCount,
-                primitives: this.primitiveRenderer?.stats().frame ?? null,
             };
             this.total.frames++;
             this.total.drawCalls += this.frameStats.drawCalls;
@@ -794,7 +790,6 @@ export class VectorContext {
         if (!S) {
             return;
         }
-        this.primitiveRenderer?.flush('stateRestore');
         this.meshRenderer?.flush('stateRestore');
         this.vector.restore();
         Object.assign(this, {
@@ -1073,17 +1068,8 @@ export class VectorContext {
     }
     _submitPrimitive(matrix, color, params) {
         this.meshRenderer?.flush('primitiveBoundary');
-        this.vector.flush();
-        this.primitiveRenderer ??= new PrimitiveRenderer(this.device);
-        return this.primitiveRenderer.draw({
-            matrix,
-            color,
-            params,
-            projection: this.vector.projection,
-            clips: this.vector.clips,
-            stencilRef: this.vector.stencilDepth || null,
-            blend: this._composite,
-        });
+        this.vector.drawPrimitive({ matrix, color, params });
+        return true;
     }
     _tryPrimitiveFill() {
         const PATH = this.primitivePath;
@@ -1173,7 +1159,6 @@ export class VectorContext {
             return;
         }
         this._materializePrimitivePath();
-        this.primitiveRenderer?.flush('vectorBoundary');
         this.meshRenderer?.flush('vectorBoundary');
         if (this._fillStyle instanceof RadialGradient) {
             this.vector.fillRadialGradient({
@@ -1220,7 +1205,6 @@ export class VectorContext {
             return;
         }
         this._materializePrimitivePath();
-        this.primitiveRenderer?.flush('vectorBoundary');
         this.meshRenderer?.flush('vectorBoundary');
         if (!DASH.length || !PERIOD) {
             this.vector.stroke(PAINT, WIDTH, STYLE, GRADIENT);
@@ -1289,7 +1273,6 @@ export class VectorContext {
     clip(rule = 'nonzero') {
         this._frame();
         this._materializePrimitivePath();
-        this.primitiveRenderer?.flush('clipBoundary');
         this.meshRenderer?.flush('clipBoundary');
         if (this.vector.path.filter((p) => p.length >= 3).length > 1) {
             throw new RangeError('clip supports one contour per clip call');
@@ -1303,7 +1286,6 @@ export class VectorContext {
     }
     clipPath(handle, { transform = null } = {}) {
         this._frame();
-        this.primitiveRenderer?.flush('stencilChange');
         this.meshRenderer?.flush('stencilChange');
         this.vector.flush();
         this.vector.clipPath(handle, {
@@ -1315,13 +1297,11 @@ export class VectorContext {
     }
     clipRect(x, y, w, h) {
         this._frame();
-        this.primitiveRenderer?.flush('clipBoundary');
         this.meshRenderer?.flush('clipBoundary');
         this.vector.clipRect(x, y, w, h);
     }
     fillTriangleFan(points, paint = this._fillStyle) {
         this._frame();
-        this.primitiveRenderer?.flush('vectorBoundary');
         this.meshRenderer?.flush('vectorBoundary');
         if (points.length < 3) {
             return;
@@ -1330,7 +1310,6 @@ export class VectorContext {
     }
     beginGroup(opacity = 1, bounds = null) {
         this._frame();
-        this.primitiveRenderer?.flush('groupBoundary');
         if (opacity !== 1) {
             this.meshRenderer?.flush('groupBoundary');
         }
@@ -1338,7 +1317,6 @@ export class VectorContext {
     }
     endGroup() {
         if (!this.vector.groups.at(-1)?.direct) {
-            this.primitiveRenderer?.flush('groupBoundary');
             this.meshRenderer?.flush('groupBoundary');
         }
         this.vector.endGroup();
@@ -1430,7 +1408,6 @@ export class VectorContext {
     }
     fillText(text, x, y, maxWidth) {
         this._frame();
-        this.primitiveRenderer?.flush('vectorBoundary');
         this.meshRenderer?.flush('vectorBoundary');
         if (!this.glyphAtlas) {
             throw new Error('GlyphAtlas is not configured');
@@ -1464,7 +1441,6 @@ export class VectorContext {
     }
     strokeText(text, x, y, maxWidth) {
         this._frame();
-        this.primitiveRenderer?.flush('vectorBoundary');
         this.meshRenderer?.flush('vectorBoundary');
         if (!this.glyphAtlas) {
             throw new Error('GlyphAtlas is not configured');
@@ -1505,24 +1481,36 @@ export class VectorContext {
     }
     /** Retains caller-authored local-space triangles once; caller explicitly releases the handle. */
     createMesh(data) {
+        return this.acquireMeshRenderer().createMesh(data);
+    }
+    /** The retained-mesh renderer this context shares with the vector assets and atlases built on it. */
+    acquireMeshRenderer() {
         if (this.state !== 'ready' || this.device.state !== 'ready') {
             throw new Error('VectorContext is not ready');
         }
         this.meshRenderer ??= new MeshRenderer(this.device, {
             safeAlphaRunBatching: this.safeAlphaRunBatching,
         });
-        return this.meshRenderer.createMesh(data);
+        return this.meshRenderer;
+    }
+    /**
+     * Atlas rectangles (sprites, baked vector runs, posed parts) on the current transform and clip; they join the
+     * vector stream, so they share a draw with the shapes and text around them. See VectorRenderer.drawQuads.
+     */
+    drawQuads(options) {
+        this._frame();
+        this.meshRenderer?.flush('quadBoundary');
+        this.vector.drawQuads(options);
     }
     deleteMesh(mesh) {
         return this.meshRenderer?.deleteMesh(mesh) ?? false;
     }
     /** Local transform composes with current Canvas-style transform; all paint state is captured by value. */
-    drawMesh(mesh, { transform = null, morph = [0, 0], parts = null, texture = null, layer, uvRect, localRect } = {}) {
+    drawMesh(mesh, { transform = null, morph = [0, 0], parts = null } = {}) {
         this._frame();
         if (!this.meshRenderer) {
             throw new TypeError('createMesh required');
         }
-        this.primitiveRenderer?.flush('meshBoundary');
         this.vector.flush();
         let matrix = this.vector.matrix;
         if (transform) {
@@ -1546,10 +1534,6 @@ export class VectorContext {
             clips: this.vector.clips,
             morph,
             parts,
-            texture,
-            layer,
-            uvRect,
-            localRect,
             color: this.forceColor ?? [1, 1, 1, 1],
             forceColor: this.forceColor !== null,
             alpha: this._globalAlpha,
@@ -1668,7 +1652,6 @@ export class VectorContext {
         if (typeof player?.draw !== 'function') {
             throw new TypeError('A vector asset player is required');
         }
-        this.primitiveRenderer?.flush('vectorAssetBoundary');
         this.vector.flush();
         const WORLD_MODE = options.viewProjection !== undefined || options.worldMatrix !== undefined;
         player.draw({
@@ -1680,7 +1663,6 @@ export class VectorContext {
     }
     flush(reason = 'explicit') {
         this._frame();
-        this.primitiveRenderer?.flush(reason);
         this.meshRenderer?.flush(reason);
         this.vector.flush();
     }
@@ -1768,7 +1750,6 @@ export class VectorContext {
             frame: this.frame,
             ...this.frameStats,
             mesh: this.meshRenderer?.stats() ?? null,
-            primitives: this.primitiveRenderer?.stats() ?? null,
             stagingBytes: this.vector.vertices.byteLength,
             gpuBufferBytes: this.device.stats.gpuBufferBytes ?? 0,
             gpuRenderTargetBytes: this.device.stats.gpuRenderTargetBytes ?? 0,
@@ -1788,7 +1769,6 @@ export class VectorContext {
         this.vector.count = 0;
         this.canvas.removeEventListener('webglcontextlost', this.onLost);
         this.canvas.removeEventListener('webglcontextrestored', this.onRestored);
-        this.primitiveRenderer?.dispose();
         this.meshRenderer?.dispose();
         for (const MESH of this.staticMeshes) {
             this.device.deleteVertexBuffer(MESH.buffer);

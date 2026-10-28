@@ -115,6 +115,8 @@ try {
                     ACTUAL = Array.from({ length: 3 }, () => RESOURCES[0].createPlayer({ clip: 'idle' })),
                     REFERENCES = RESOURCES.slice(1).map((asset) => asset.createPlayer({ clip: 'idle' })),
                     PROJECTION = new Float32Array([2 / 480, 0, 0, 0, -2 / 100, 0, -1, 1, 1]);
+                const CTX = new R.VectorContext(DEVICE);
+                CTX.meshRenderer = MESHES;
                 const CHECK = (value, message) => {
                     if (!value) {
                         throw new Error(message);
@@ -285,31 +287,26 @@ try {
                 // The same named fills must survive sampled sprite preparation,
                 // including deferred bake, cache reuse and context restoration.
                 const MUTABLE_BAKE_PAINT = { cheeks: [1, 0, 0], badge: [0, 1, 0] };
-                const ATLAS_ARRAY = DEVICE.createTextureArray(1024, 1024, 8);
                 const ATLAS_OPTIONS = {
                     clip: 'idle',
                     sampleIntervalMs: 100,
                     pixelsPerUnit: 1,
                     supersample: 4,
-                    textureArray: ATLAS_ARRAY,
-                    layer: 0,
                 };
-                const ATLAS = V.createVectorSpriteAtlas(MESHES, RESOURCES[0], COMPILED[0], {
+                const ATLAS = V.createVectorSpriteAtlas(CTX, RESOURCES[0], COMPILED[0], {
                     ...ATLAS_OPTIONS,
                     paintRegions: MUTABLE_BAKE_PAINT,
                 });
-                const SHARED_ATLAS = V.createVectorSpriteAtlas(MESHES, RESOURCES[0], COMPILED[0], {
+                const SHARED_ATLAS = V.createVectorSpriteAtlas(CTX, RESOURCES[0], COMPILED[0], {
                     ...ATLAS_OPTIONS,
                     paintRegions: { badge: [0, 1, 0], cheeks: new Float32Array([1, 0, 0]) },
                 });
-                const OTHER_ATLAS = V.createVectorSpriteAtlas(MESHES, RESOURCES[0], COMPILED[0], {
+                const OTHER_ATLAS = V.createVectorSpriteAtlas(CTX, RESOURCES[0], COMPILED[0], {
                     ...ATLAS_OPTIONS,
-                    layer: 1,
                     paintRegions: palettes[1],
                 });
-                const REFERENCE_ATLAS = V.createVectorSpriteAtlas(MESHES, RESOURCES[1], COMPILED[1], {
+                const REFERENCE_ATLAS = V.createVectorSpriteAtlas(CTX, RESOURCES[1], COMPILED[1], {
                     ...ATLAS_OPTIONS,
-                    layer: 2,
                 });
                 CHECK(ATLAS.stats.cacheKey === SHARED_ATLAS.stats.cacheKey, 'Equivalent paint values share cache');
                 CHECK(ATLAS.stats.cacheKey !== OTHER_ATLAS.stats.cacheKey, 'Distinct paint values isolate cache');
@@ -317,18 +314,18 @@ try {
                     ATLAS.stats.bakeWorkingBytes === ATLAS.stats.atlasBytes * 21,
                     'Supersampling peak includes all live targets',
                 );
-                const LIMITED = V.createVectorSpriteAtlas(MESHES, RESOURCES[0], COMPILED[0], {
+                const LIMITED = V.createVectorSpriteAtlas(CTX, RESOURCES[0], COMPILED[0], {
                     ...ATLAS_OPTIONS,
-                    textureArray: DEVICE.createTextureArray(16, 16, 1),
+                    pixelsPerUnit: 100000,
                 });
                 CHECK(LIMITED.stats.reason === 'atlasLimit', 'High-resolution preparation respects MAX_TEXTURE_SIZE');
-                CHECK(LIMITED.texture === null, 'Rejected preparation allocates no image');
+                CHECK(LIMITED.region === null, 'Rejected preparation allocates no image');
                 LIMITED.dispose();
                 MUTABLE_BAKE_PAINT.cheeks[0] = 0;
                 MUTABLE_BAKE_PAINT.cheeks[2] = 1;
                 let invalidBakePaintRejected = false;
                 try {
-                    V.createVectorSpriteAtlas(MESHES, RESOURCES[0], COMPILED[0], {
+                    V.createVectorSpriteAtlas(CTX, RESOURCES[0], COMPILED[0], {
                         ...ATLAS_OPTIONS,
                         paintRegions: { missing: [1, 0, 0] },
                     });
@@ -337,23 +334,22 @@ try {
                 }
                 CHECK(invalidBakePaintRejected, 'Unknown bake paint rejected before preparation');
                 function bakedPixels(atlas) {
-                    DEVICE.beginFrame({ width: 480, height: 100, clearColor: [0, 0, 0, 0] });
-                    MESHES.beginFrame();
+                    CTX.beginFrame({ width: 480, height: 100, clearColor: [0, 0, 0, 0] });
                     const BAKED = atlas.bake();
                     CHECK(
                         BAKED.backend === 'sprite',
                         `Named-fill sprite bake available: ${BAKED.reason} ${atlas.stats.lastError}`,
                     );
-                    const ANIMATION = R.createSpriteAnimation(MESHES, atlas.texture, atlas.definition),
+                    const ANIMATION = R.createSpriteAnimation(CTX, atlas.region, atlas.definition),
                         PLAYER = ANIMATION.createPlayer({ clip: 'idle' });
-                    PLAYER.draw({ timeMs: 0, projection: PROJECTION });
-                    MESHES.flush();
+                    PLAYER.draw({ timeMs: 0 });
+                    CTX.flush();
                     const PIXELS = new Uint8Array(480 * 100 * 4);
                     DEVICE.gl.readPixels(0, 0, 480, 100, DEVICE.gl.RGBA, DEVICE.gl.UNSIGNED_BYTE, PIXELS);
                     CHECK(DEVICE.gl.getError() === DEVICE.gl.NO_ERROR, 'Named-fill sprite GL error');
                     PLAYER.dispose();
                     ANIMATION.dispose();
-                    DEVICE.endFrame();
+                    CTX.endFrame();
                     return PIXELS;
                 }
                 const EXPECTED_BAKE = bakedPixels(REFERENCE_ATLAS),
@@ -364,11 +360,10 @@ try {
                 );
                 const BAKE_COUNT = ATLAS.stats.bakeCount;
                 bakedPixels(SHARED_ATLAS);
-                CHECK(ATLAS.texture === SHARED_ATLAS.texture, 'Equivalent paint shares prepared GPU texture');
+                CHECK(ATLAS.region === SHARED_ATLAS.region, 'Equivalent paint shares prepared atlas region');
                 CHECK(ATLAS.stats.bakeCount === BAKE_COUNT, 'Repeated playback preparation does not rebake');
-                const FAULT_ATLAS = V.createVectorSpriteAtlas(MESHES, RESOURCES[0], COMPILED[0], {
+                const FAULT_ATLAS = V.createVectorSpriteAtlas(CTX, RESOURCES[0], COMPILED[0], {
                     ...ATLAS_OPTIONS,
-                    layer: 3,
                     padding: 3,
                 });
                 const CREATE_TARGET = DEVICE.createRenderTarget.bind(DEVICE);
@@ -379,8 +374,7 @@ try {
                     }
                     return CREATE_TARGET(...args);
                 };
-                DEVICE.beginFrame({ width: 480, height: 100 });
-                MESHES.beginFrame();
+                CTX.beginFrame({ width: 480, height: 100 });
                 const TARGETS_BEFORE_FAULT = DEVICE.renderTargets.size,
                     MESHES_BEFORE_FAULT = MESHES.meshes.size;
                 CHECK(FAULT_ATLAS.bake().reason === 'bakeFailed', 'Preparation allocation failure is explicit');
@@ -389,12 +383,11 @@ try {
                 CHECK(FAULT_ATLAS.stats.allocatedBytes === 0, 'Failed preparation retains no image bytes');
                 CHECK(DEVICE.activeRenderTarget === null, 'Failed preparation restores framebuffer');
                 DEVICE.createRenderTarget = CREATE_TARGET;
-                DEVICE.endFrame();
+                CTX.endFrame();
                 bakedPixels(FAULT_ATLAS);
                 FAULT_ATLAS.dispose();
-                const DOUBLE_ATLAS = V.createVectorSpriteAtlas(MESHES, RESOURCES[0], COMPILED[0], {
+                const DOUBLE_ATLAS = V.createVectorSpriteAtlas(CTX, RESOURCES[0], COMPILED[0], {
                     ...ATLAS_OPTIONS,
-                    layer: 4,
                     supersample: 2,
                 });
                 bakedPixels(DOUBLE_ATLAS);
@@ -443,12 +436,11 @@ try {
                 );
                 CHECK(ATLAS.stats.bakeCount === BAKE_COUNT + 1, 'Restore explicitly rebakes once');
                 SHARED_ATLAS.dispose();
-                CHECK(ATLAS.texture !== null, 'Shared atlas dispose preserves other owner');
+                CHECK(ATLAS.region !== null, 'Shared atlas dispose preserves other owner');
                 ATLAS.dispose();
                 OTHER_ATLAS.dispose();
                 REFERENCE_ATLAS.dispose();
-                const CONTEXT = new R.VectorContext(DEVICE);
-                CONTEXT.meshRenderer = MESHES;
+                const CONTEXT = CTX;
                 CONTEXT.beginFrame({ width: 480, height: 100, clearColor: [0, 0, 0, 0] });
                 CONTEXT.drawVectorAsset(ACTUAL[0], { paintRegions: palettes[0] });
                 CONTEXT.fillStyle = '#400000';
@@ -470,8 +462,6 @@ try {
                     Math.abs(BLEND_PIXELS[(95 * 480 + 415) * 4] - 64) <= 1,
                     'Source-over restored after additive draw',
                 );
-                CONTEXT.meshRenderer = null;
-                CONTEXT.dispose();
                 const CONTEXT_REFERENCE = frame(ACTUAL, palettes);
                 CHECK(
                     BLEND_PIXELS.every(
@@ -493,7 +483,7 @@ try {
                     RESOURCE.dispose();
                 }
                 CHECK(MESHES.meshes.size === 0 && MESHES.bytes === 0, 'Dispose releases retained mesh resources');
-                MESHES.dispose();
+                CTX.dispose();
                 DEVICE.dispose();
                 return {
                     backend,

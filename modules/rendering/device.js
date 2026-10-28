@@ -126,6 +126,7 @@ export class WebGLDevice {
         this.checkGLErrors = checkGLErrors;
         this.textureAtlasOptions = { ...textureAtlas };
         this._textureAtlas = null;
+        this.batchers = new Set();
         integer(maxTextures, 'maxTextures', 1, 32);
         integer(maxBufferBytes, 'maxBufferBytes', 4);
         this.canvas = canvas;
@@ -171,6 +172,7 @@ export class WebGLDevice {
             frame: 0,
             vectorFlushCalls: 0,
             vectorSubmissions: 0,
+            spriteRuns: 0,
             pathTessellations: 0,
             pathStrokeBuilds: 0,
             meshCreates: 0,
@@ -182,6 +184,7 @@ export class WebGLDevice {
             textureUploads: 0,
             textureBytes: 0,
             imageTexUploadCount: 0,
+            regionClears: 0,
             imageTexUploadBytes: 0,
             frameCopies: 0,
             bufferAllocations: 0,
@@ -912,6 +915,42 @@ export class WebGLDevice {
         this.stats.renderTargetCount = this.renderTargets.size;
         return HANDLE;
     }
+    /**
+     * Copies `source` into the rectangle (x, y, width, height) of `target`, measured from the target's bottom-left,
+     * with linear filtering when the sizes differ. A 2:1 copy averages exactly each 2x2 texel footprint.
+     */
+    blitRenderTarget(source, target, { x = 0, y = 0, width = target.width, height = target.height } = {}) {
+        this._ready();
+        if (!this.active) {
+            throw new Error('beginFrame required');
+        }
+        const FROM = this._handle(this.renderTargets, source, 'render target'),
+            TO = this._handle(this.renderTargets, target, 'render target');
+        integer(x, 'blit x', 0, TO.width - 1);
+        integer(y, 'blit y', 0, TO.height - 1);
+        integer(width, 'blit width', 1, TO.width - x);
+        integer(height, 'blit height', 1, TO.height - y);
+        if (!FROM.available || !TO.available || FROM === TO) {
+            throw new Error('Blit needs two distinct available render targets');
+        }
+        const GL = this.gl,
+            PREVIOUS = GL.getParameter(GL.FRAMEBUFFER_BINDING);
+        GL.bindFramebuffer(GL.READ_FRAMEBUFFER, FROM.framebuffer);
+        GL.bindFramebuffer(GL.DRAW_FRAMEBUFFER, TO.framebuffer);
+        GL.blitFramebuffer(
+            0,
+            0,
+            FROM.width,
+            FROM.height,
+            x,
+            y,
+            x + width,
+            y + height,
+            GL.COLOR_BUFFER_BIT,
+            width === FROM.width && height === FROM.height ? GL.NEAREST : GL.LINEAR,
+        );
+        GL.bindFramebuffer(GL.FRAMEBUFFER, PREVIOUS);
+    }
     /** Float targets can become unavailable after restore while ordinary rendering stays ready. */
     isRenderTargetAvailable(handle) {
         const R = this._handle(this.renderTargets, handle, 'render target');
@@ -1121,6 +1160,9 @@ export class WebGLDevice {
         integer(layer, 'layer', 0, R.layers - 1);
         integer(width, 'region width', 1, R.width);
         integer(height, 'region height', 1, R.height);
+        // Zeroing a released rectangle is maintenance, not an image upload: it is counted as a clear.
+        const IMAGE_UPLOADS = this.stats.imageTexUploadCount,
+            IMAGE_BYTES = this.stats.imageTexUploadBytes;
         this.updateTextureRegion(
             handle,
             layer,
@@ -1129,9 +1171,29 @@ export class WebGLDevice {
             { width, height, data: new Uint8Array(width * height * 4) },
             { premultiplied: true },
         );
+        this.stats.imageTexUploadCount = IMAGE_UPLOADS;
+        this.stats.imageTexUploadBytes = IMAGE_BYTES;
+        this.stats.regionClears++;
         R.layerRegions[layer] = R.layerRegions[layer].filter(
             (r) => !(r.x === x && r.y === y && r.width === width && r.height === height),
         );
+    }
+    /**
+     * A renderer that queues draws registers its flush here, so a shared GPU resource that is about to change
+     * (pose rows, data textures) first submits everything already queued against its old contents.
+     * Returns the function that unregisters it.
+     */
+    registerBatcher(flush) {
+        if (typeof flush !== 'function') {
+            throw new TypeError('A flush function is required');
+        }
+        this.batchers.add(flush);
+        return () => this.batchers.delete(flush);
+    }
+    flushBatchers(reason) {
+        for (const FLUSH of this.batchers) {
+            FLUSH(reason);
+        }
     }
     /**
      * The device's shared image atlas (SSOT): vector fills, gradients and glyphs allocate regions here, so every
@@ -1403,6 +1465,7 @@ export class WebGLDevice {
         for (const NAME of [
             'vectorFlushCalls',
             'vectorSubmissions',
+            'spriteRuns',
             'pathTessellations',
             'pathStrokeBuilds',
             'meshCreates',

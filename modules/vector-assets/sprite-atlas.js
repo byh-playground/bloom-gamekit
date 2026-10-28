@@ -1,7 +1,5 @@
-import { claimTextureLayer, textureArrayId } from './layer-claims.js';
 import { validateCompiledAsset } from './schema.js';
 import { packPaintRegions } from '../rendering/paint-regions.js';
-import { createSpriteAnimation } from '../rendering/sprite-animation.js';
 
 const CACHE = new WeakMap();
 const MAX_FRAMES = 512;
@@ -82,13 +80,12 @@ function packFrames(count, tileWidth, tileHeight, maxWidth, maxHeight) {
     return best;
 }
 
-function spriteDefinition(clipName, clip, samples, packed, contentWidth, contentHeight, padding, bounds, ppu, layer) {
+function spriteDefinition(clipName, clip, samples, packed, contentWidth, contentHeight, padding, bounds, ppu) {
     const FRAMES = samples.map((sample, index) => ({
         x: (index % packed.columns) * (contentWidth + padding * 2) + padding,
         y: Math.floor(index / packed.columns) * (contentHeight + padding * 2) + padding,
         width: contentWidth,
         height: contentHeight,
-        layer,
         durationMs: sample.durationMs,
         sourceX: 0,
         sourceY: 0,
@@ -118,11 +115,11 @@ function spriteDefinition(clipName, clip, samples, packed, contentWidth, content
 }
 
 /**
- * Samples one authored clip at bake time; borrows the source asset and the caller's texture array, and owns a
- * ref-counted bake into one dedicated array layer.
+ * Samples one authored clip at bake time; borrows the source asset and owns a ref-counted bake into one region of
+ * the device's shared texture atlas. Play it with createSpriteAnimation(context, atlas.region, atlas.definition).
  */
 export function createVectorSpriteAtlas(
-    meshRenderer,
+    context,
     asset,
     compiledAsset,
     {
@@ -131,22 +128,23 @@ export function createVectorSpriteAtlas(
         sampleIntervalMs = 100,
         pixelsPerUnit = 1,
         padding = 2,
-        textureArray,
-        layer,
         paintRegions = null,
         supersample = 1,
     } = {},
 ) {
     validateCompiledAsset(compiledAsset);
-    const DEVICE = meshRenderer?.device,
+    const DEVICE = context?.device,
+        MESHES = context?.meshRenderer,
         GEOMETRY = compiledAsset.geometry,
         SOURCE_MESH_MATCHES = asset?.mesh
-            ? asset.mesh.renderer === meshRenderer &&
+            ? asset.mesh.renderer === MESHES &&
               asset.mesh.partCount === GEOMETRY.partCount &&
               sameGeometry(asset.mesh, GEOMETRY)
             : GEOMETRY.vertices.length === 0;
     if (
+        !context?.drawQuads ||
         !DEVICE?.createRenderTarget ||
+        !DEVICE?.blitRenderTarget ||
         !DEVICE?.createTextureLayerTarget ||
         !DEVICE?.bindRenderTarget ||
         !DEVICE?.unbindRenderTarget ||
@@ -155,7 +153,9 @@ export function createVectorSpriteAtlas(
         asset.sourceSha256 !== compiledAsset.sourceSha256 ||
         !SOURCE_MESH_MATCHES
     ) {
-        throw new TypeError('A matching live vector asset and MeshRenderer are required');
+        throw new TypeError(
+            'A VectorContext and a matching live vector asset created on its mesh renderer are required',
+        );
     }
     if (
         !Object.hasOwn(compiledAsset.metadata.clips, clip) ||
@@ -163,21 +163,15 @@ export function createVectorSpriteAtlas(
     ) {
         throw new TypeError('Known authored clip and expression required');
     }
-    if (!textureArray || !DEVICE.isTextureArray(textureArray)) {
-        throw new TypeError('A texture array created by the same device is required');
-    }
     if (
         !Number.isFinite(sampleIntervalMs) ||
         sampleIntervalMs <= 0 ||
         !Number.isFinite(pixelsPerUnit) ||
         pixelsPerUnit <= 0 ||
         !Number.isSafeInteger(padding) ||
-        padding < 1 ||
-        !Number.isSafeInteger(layer) ||
-        layer < 0 ||
-        layer >= textureArray.layers
+        padding < 1
     ) {
-        throw new TypeError('Finite positive sample interval, pixel scale, padding and an array layer required');
+        throw new TypeError('Finite positive sample interval, pixel scale and padding required');
     }
     if (![1, 2, 4].includes(supersample)) {
         throw new RangeError('Sprite bake supersample must be 1, 2 or 4');
@@ -200,11 +194,10 @@ export function createVectorSpriteAtlas(
         sampleIntervalMs,
         pixelsPerUnit,
         padding,
-        textureArrayId(textureArray),
-        layer,
         Array.from(PAINT),
         supersample,
     ]);
+    const ATLAS = DEVICE.textureAtlas;
     let cached = CACHE.get(asset);
     if (!cached) {
         cached = new Map();
@@ -245,11 +238,22 @@ export function createVectorSpriteAtlas(
                   SAMPLES.length,
                   TILE_WIDTH,
                   TILE_HEIGHT,
-                  Math.min(textureArray.width, Math.floor(DEVICE.maxTextureSize / supersample)),
-                  Math.min(textureArray.height, Math.floor(DEVICE.maxTextureSize / supersample)),
+                  Math.min(ATLAS.width - ATLAS.gutter * 2, Math.floor(DEVICE.maxTextureSize / supersample)),
+                  Math.min(ATLAS.height - ATLAS.gutter * 2, Math.floor(DEVICE.maxTextureSize / supersample)),
               );
         if (!reason && !PACKED) {
             reason = 'atlasLimit';
+        }
+        let region = null;
+        if (!reason) {
+            try {
+                region = ATLAS.allocate(PACKED.width, PACKED.height);
+            } catch (error) {
+                if (!(error instanceof RangeError)) {
+                    throw error;
+                }
+                reason = 'atlasLimit';
+            }
         }
         if (reason) {
             PLAYER?.dispose();
@@ -275,9 +279,8 @@ export function createVectorSpriteAtlas(
                       padding,
                       BOUNDS,
                       pixelsPerUnit,
-                      layer,
                   ),
-            releaseLayer: reason ? null : claimTextureLayer(textureArray, layer),
+            region,
             target: null,
             bakedRestores: -1,
             failedFrame: -1,
@@ -308,15 +311,15 @@ export function createVectorSpriteAtlas(
         }
         const START = NOW();
         let boundTarget = null;
-        let reduction = null;
         const TRANSIENTS = new Set();
         try {
-            meshRenderer.flush('spriteAtlasBakeBoundary');
+            DEVICE.flushBatchers('spriteAtlasBakeBoundary');
             if (record.target && !DEVICE.isRenderTargetAvailable(record.target)) {
                 DEVICE.deleteRenderTarget(record.target);
                 record.target = null;
             }
-            record.target ??= DEVICE.createTextureLayerTarget(textureArray, layer);
+            const REGION = record.region;
+            record.target ??= DEVICE.createTextureLayerTarget(ATLAS.texture, REGION.layer);
             let source = record.target;
             if (supersample > 1) {
                 source = DEVICE.createRenderTarget(
@@ -328,19 +331,34 @@ export function createVectorSpriteAtlas(
                     },
                 );
                 TRANSIENTS.add(source);
+            } else {
+                DEVICE.clearTextureRegion(
+                    ATLAS.texture,
+                    REGION.layer,
+                    REGION.paddedX,
+                    REGION.paddedY,
+                    REGION.width + ATLAS.gutter * 2,
+                    REGION.height + ATLAS.gutter * 2,
+                );
             }
             DEVICE.bindRenderTarget(source);
             boundTarget = source;
-            DEVICE.clear({ color: [0, 0, 0, 0] });
+            if (supersample > 1) {
+                DEVICE.clear({ color: [0, 0, 0, 0] });
+            }
             const { minX: MIN_X, minY: MIN_Y } = record.bounds;
-            // Without supersampling the samples land straight in the layer, whose size is the coordinate space.
-            const BAKE_WIDTH = supersample === 1 ? textureArray.width : record.packed.width,
-                BAKE_HEIGHT = supersample === 1 ? textureArray.height : record.packed.height;
+            // Without supersampling the samples land straight in the layer: the region's top edge sits `top` pixels
+            // below the layer's top edge because rendered rows run bottom-up. Otherwise the source target is region-sized.
+            const DIRECT = supersample === 1,
+                BAKE_WIDTH = DIRECT ? ATLAS.width : record.packed.width,
+                BAKE_HEIGHT = DIRECT ? ATLAS.height : record.packed.height,
+                ORIGIN_X = DIRECT ? REGION.x : 0,
+                ORIGIN_Y = DIRECT ? ATLAS.height - (REGION.y + REGION.height) : 0;
             for (let index = 0; index < record.samples.length; index++) {
                 const SAMPLE = record.samples[index],
                     FRAME = record.definition.frames[index],
-                    TX = FRAME.x - pixelsPerUnit * MIN_X,
-                    TY = FRAME.y - pixelsPerUnit * MIN_Y;
+                    TX = ORIGIN_X + FRAME.x - pixelsPerUnit * MIN_X,
+                    TY = ORIGIN_Y + FRAME.y - pixelsPerUnit * MIN_Y;
                 record.player.seek(SAMPLE.timeMs);
                 record.player.draw({
                     paintRegions: CAPTURED_PAINT,
@@ -357,41 +375,28 @@ export function createVectorSpriteAtlas(
                     ],
                 });
                 // One player reuses one pose row; dispatch before seeking the next sampled time.
-                meshRenderer.flush('spriteAtlasSample');
+                MESHES.flush('spriteAtlasSample');
             }
             DEVICE.unbindRenderTarget(source);
             boundTarget = null;
-            // Each 2:1 linear step samples exactly a 2x2 texel footprint. A
-            // single 4:1 bilinear resize would skip samples and retain aliasing.
-            for (let scale = supersample / 2; scale >= 1; scale /= 2) {
-                const TARGET =
-                    scale === 1
-                        ? record.target
-                        : DEVICE.createRenderTarget(record.packed.width * scale, record.packed.height * scale, {
-                              format: 'rgba',
-                              filter: 'linear',
-                          });
-                if (scale > 1) {
-                    TRANSIENTS.add(TARGET);
+            // Each 2:1 linear blit averages exactly a 2x2 texel footprint. A single 4:1 bilinear
+            // resize would skip samples and retain aliasing.
+            for (let scale = supersample / 2; supersample > 1 && scale >= 1; scale /= 2) {
+                if (scale === 1) {
+                    DEVICE.blitRenderTarget(source, record.target, {
+                        x: REGION.x,
+                        y: REGION.y,
+                        width: record.packed.width,
+                        height: record.packed.height,
+                    });
+                    break;
                 }
-                reduction = createSpriteAnimation(meshRenderer, source, {
-                    textureOrigin: 'bottom-left',
-                    frames: [{ x: 0, y: 0, width: source.width, height: source.height, durationMs: 1 }],
-                    clips: { reduction: { frames: [0], loop: 'once' } },
+                const TARGET = DEVICE.createRenderTarget(record.packed.width * scale, record.packed.height * scale, {
+                    format: 'rgba',
+                    filter: 'linear',
                 });
-                DEVICE.bindRenderTarget(TARGET);
-                boundTarget = TARGET;
-                DEVICE.clear({ color: [0, 0, 0, 0] });
-                reduction.createPlayer().draw({
-                    timeMs: 0,
-                    projection: [2 / TARGET.width, 0, 0, 0, -2 / TARGET.height, 0, -1, 1, 1],
-                    matrix: [0.5, 0, 0, 0.5, 0, 0],
-                });
-                meshRenderer.flush('spriteAtlasReduction');
-                DEVICE.unbindRenderTarget(TARGET);
-                boundTarget = null;
-                reduction.dispose();
-                reduction = null;
+                TRANSIENTS.add(TARGET);
+                DEVICE.blitRenderTarget(source, TARGET);
                 DEVICE.deleteRenderTarget(source);
                 TRANSIENTS.delete(source);
                 source = TARGET;
@@ -405,7 +410,7 @@ export function createVectorSpriteAtlas(
             return { backend: 'sprite', reason: null };
         } catch (error) {
             if (boundTarget) {
-                meshRenderer.discard();
+                MESHES.discard();
                 try {
                     DEVICE.unbindRenderTarget(boundTarget);
                 } catch {
@@ -426,7 +431,6 @@ export function createVectorSpriteAtlas(
             record.lastError = error.message;
             return { backend: 'vector', reason: 'bakeFailed' };
         } finally {
-            reduction?.dispose();
             for (const TARGET of TRANSIENTS) {
                 DEVICE.deleteRenderTarget(TARGET);
             }
@@ -441,14 +445,16 @@ export function createVectorSpriteAtlas(
         if (record.refs === 0) {
             try {
                 if (DEVICE.state === 'ready' && DEVICE.active) {
-                    meshRenderer.flush('spriteAtlasDispose');
+                    DEVICE.flushBatchers('spriteAtlasDispose');
                 }
                 if (record.target) {
                     DEVICE.deleteRenderTarget(record.target);
                     record.target = null;
                 }
             } finally {
-                record.releaseLayer?.();
+                if (record.region && DEVICE.state === 'ready') {
+                    ATLAS.release(record.region);
+                }
                 record.player?.dispose();
                 cached.delete(KEY);
                 if (cached.size === 0) {
@@ -461,8 +467,9 @@ export function createVectorSpriteAtlas(
     return Object.freeze({
         bake: BAKE,
         dispose: DISPOSE,
-        get texture() {
-            return disposed || !record.target ? null : textureArray;
+        /** The shared-atlas region holding the baked frames; pass it to createSpriteAnimation. */
+        get region() {
+            return disposed || !record.target ? null : record.region;
         },
         get definition() {
             return disposed ? null : record.definition;

@@ -1,4 +1,4 @@
-import { WebGLDevice, MeshRenderer, createSpriteAnimation } from '/dist/rendering.js';
+import { WebGLDevice, VectorContext, createSpriteAnimation } from '/dist/rendering.js';
 import { createVectorAsset, createVectorRasterAtlas, createVectorSpriteAtlas } from '/dist/vector-assets.js';
 import { createVectorAssetLoader } from '/dist/vector-assets-loader.js';
 import { seedScout, seedScoutSvg } from '../seed-scout-raster-comparison.compiled.js';
@@ -32,8 +32,14 @@ const BAKE_METRICS = BY_ID('bake-metrics');
 const SPRITE_METRICS = BY_ID('sprite-metrics');
 const PREPARATION_METRICS = BY_ID('preparation-metrics');
 const PATH_METRICS = BY_ID('path-metrics');
-const DEVICE = new WebGLDevice(CANVAS, { alpha: true, antialias: true });
-const MESHES = new MeshRenderer(DEVICE, { maxMeshes: 16, maxInstances: 1024 });
+// The part atlas and every clip/expression sprite sheet are regions of the device's one shared texture array.
+const DEVICE = new WebGLDevice(CANVAS, {
+    alpha: true,
+    antialias: true,
+    textureAtlas: { width: 2048, height: 2048, layers: 4 },
+});
+const CONTEXT = new VectorContext(DEVICE);
+const MESHES = CONTEXT.acquireMeshRenderer();
 let compiled = seedScout;
 let asset = createVectorAsset(MESHES, compiled);
 let viewBox = asset.viewBox;
@@ -45,10 +51,7 @@ const SVG_SOURCE_PATH = 'modules/vector-assets/assets/seed-scout-raster-comparis
 const SPRITE_CLIPS = ['transform-repeat', 'bounce', 'idle'];
 const SPRITE_EXPRESSIONS = ['neutral', 'happy', 'surprised'];
 const ATLAS_BUDGET_BYTES = 192 * 1024 * 1024;
-// One part atlas layer plus one sprite layer per clip/expression; every textured draw samples this one array.
-const LAYER_COUNT = 1 + SPRITE_CLIPS.length * SPRITE_EXPRESSIONS.length;
-let layerArray = null;
-let layerArrayResolution = 0;
+let atlasConfigResolution = 0;
 let timer = createGpuTimer(DEVICE.gl);
 let hardware = readHardware();
 const STATE = {
@@ -813,23 +816,17 @@ async function setQuality(value) {
     }
 }
 
-/** Layers are all one size, so the array is rebuilt (after its atlases are released) when the resolution changes. */
-function ensureLayerArray(resolution) {
-    if (layerArray && layerArrayResolution === resolution) {
-        return layerArray;
+/** Regions of one resolution share the atlas; a resolution change releases every region before baking new ones. */
+function ensureResolution(resolution) {
+    if (atlasConfigResolution === resolution) {
+        return;
     }
     clearSpriteSets();
     STATE.atlas?.dispose();
     STATE.atlas = null;
     STATE.atlasResolution = 0;
     STATE.spriteNeedsRebuild = true;
-    if (layerArray) {
-        DEVICE.deleteTexture(layerArray);
-    }
-    const SIZE = Math.min(DEVICE.maxTextureSize, 2048, 2 ** Math.ceil(Math.log2(resolution * 8)));
-    layerArray = DEVICE.createTextureArray(SIZE, SIZE, LAYER_COUNT);
-    layerArrayResolution = resolution;
-    return layerArray;
+    atlasConfigResolution = resolution;
 }
 
 function ensureAtlas() {
@@ -842,10 +839,10 @@ function ensureAtlas() {
         return;
     }
     const RESOLUTION = Number(RESOLUTION_INPUT.value);
-    if (STATE.atlasResolution === RESOLUTION && layerArrayResolution === RESOLUTION) {
+    if (STATE.atlasResolution === RESOLUTION && atlasConfigResolution === RESOLUTION) {
         return;
     }
-    ensureLayerArray(RESOLUTION);
+    ensureResolution(RESOLUTION);
     STATE.atlas?.dispose();
     STATE.atlas = null;
     STATE.atlasReason = null;
@@ -853,11 +850,9 @@ function ensureAtlas() {
     const STARTED = performance.now();
     let candidate = null;
     try {
-        candidate = createVectorRasterAtlas(MESHES, asset, compiled, {
+        candidate = createVectorRasterAtlas(CONTEXT, asset, compiled, {
             pixelsPerUnit: RESOLUTION / Math.max(viewBox[2], viewBox[3]),
             padding: 2,
-            textureArray: layerArray,
-            layer: 0,
         });
         const RESULT = candidate.bake();
         if (RESULT.backend === 'raster') {
@@ -901,7 +896,7 @@ function ensureSpriteSets(forceAll = false) {
         DEVICE.stats.restores ?? 0,
     ]);
     if (STATE.spriteNeedsRebuild || STATE.preparationKey !== CONFIG_KEY) {
-        ensureLayerArray(Number(RESOLUTION_INPUT.value));
+        ensureResolution(Number(RESOLUTION_INPUT.value));
         clearSpriteSets();
         STATE.spriteNeedsRebuild = false;
         STATE.preparationKey = CONFIG_KEY;
@@ -936,14 +931,12 @@ function ensureSpriteSets(forceAll = false) {
         let plannedBytes = 0;
         let bakeCount = 0;
         try {
-            baker = createVectorSpriteAtlas(MESHES, asset, compiled, {
+            baker = createVectorSpriteAtlas(CONTEXT, asset, compiled, {
                 clip: CLIP,
                 expression: EXPRESSION,
                 sampleIntervalMs: Number(SAMPLE_INTERVAL_INPUT.value),
                 pixelsPerUnit: Number(RESOLUTION_INPUT.value) / Math.max(viewBox[2], viewBox[3]),
                 padding: 2,
-                textureArray: layerArray,
-                layer: 1 + INDEX,
             });
             plannedBytes = baker.stats.atlasBytes;
             PREPARATION.estimatedBytes += plannedBytes;
@@ -954,8 +947,8 @@ function ensureSpriteSets(forceAll = false) {
             } else {
                 const RESULT = baker.bake();
                 bakeCount = baker.stats.bakeCount;
-                if (RESULT.backend === 'sprite' && baker.texture && baker.definition) {
-                    resource = createSpriteAnimation(MESHES, baker.texture, baker.definition);
+                if (RESULT.backend === 'sprite' && baker.region && baker.definition) {
+                    resource = createSpriteAnimation(CONTEXT, baker.region, baker.definition);
                     PREPARATION.allocatedBytes += baker.stats.allocatedBytes;
                 } else {
                     reason = RESULT.reason ?? baker.stats.reason ?? 'spriteUnavailable';
@@ -1166,18 +1159,18 @@ function showTradeoffTable(tradeoff, quality) {
     BY_ID('tradeoff-table').replaceChildren(TABLE, NOTE);
 }
 
-function drawActors(side, positions, projection) {
+function drawActors(side, positions) {
     let rasterDraws = 0;
     let vectorFallbacks = 0;
     const REASONS = new Set();
     for (let i = 0; i < PLAYERS.length; i++) {
-        const OPTIONS = { projection, matrix: positions[i] };
+        const OPTIONS = { matrix: positions[i] };
         if (side === 'vector') {
-            PLAYERS[i].draw(OPTIONS);
+            CONTEXT.drawVectorAsset(PLAYERS[i], OPTIONS);
             continue;
         }
         if (!STATE.atlas) {
-            PLAYERS[i].draw(OPTIONS);
+            CONTEXT.drawVectorAsset(PLAYERS[i], OPTIONS);
             vectorFallbacks++;
             REASONS.add('atlas unavailable');
             continue;
@@ -1193,7 +1186,7 @@ function drawActors(side, positions, projection) {
     return { rasterDraws, vectorFallbacks, reasons: [...REASONS] };
 }
 
-function drawSpriteActors(positions, projection) {
+function drawSpriteActors(positions) {
     let spriteDraws = 0;
     let vectorFallbacks = 0;
     const REASONS = new Set();
@@ -1201,9 +1194,9 @@ function drawSpriteActors(positions, projection) {
     for (let i = 0; i < PLAYERS.length; i++) {
         const VECTOR_PLAYER = PLAYERS[i];
         const ENTRY = STATE.spriteSets.get(spriteKey(VECTOR_PLAYER.currentClip, VECTOR_PLAYER.currentExpression));
-        const OPTIONS = { projection, matrix: positions[i] };
+        const OPTIONS = { matrix: positions[i] };
         if (!ENTRY?.resource) {
-            VECTOR_PLAYER.draw(OPTIONS);
+            CONTEXT.drawVectorAsset(VECTOR_PLAYER, OPTIONS);
             vectorFallbacks++;
             REASONS.add(ENTRY?.reason ?? 'spriteUnavailable');
             continue;
@@ -1221,7 +1214,7 @@ function drawSpriteActors(positions, projection) {
         MATRIX[1] /= PIXELS_PER_UNIT;
         MATRIX[2] /= PIXELS_PER_UNIT;
         MATRIX[3] /= PIXELS_PER_UNIT;
-        spritePlayer.draw({ timeMs: STATE.timeMs, projection, matrix: MATRIX });
+        spritePlayer.draw({ timeMs: STATE.timeMs, matrix: MATRIX });
         spriteDraws++;
     }
     return { spriteDraws, vectorFallbacks, reasons: [...REASONS] };
@@ -1474,9 +1467,8 @@ function render(now, forcePreparation = false, updateReadout = true) {
         const CSS_HEIGHT = Math.max(1, RECT.height);
         const WIDTH = Math.max(1, Math.round(CSS_WIDTH * DPR));
         const HEIGHT = Math.max(1, Math.round(CSS_HEIGHT * DPR));
-        const PROJECTION = [2 / CSS_WIDTH, 0, 0, 0, -2 / CSS_HEIGHT, 0, -1, 1, 1];
-        DEVICE.beginFrame({ width: WIDTH, height: HEIGHT, clearColor: [0, 0, 0, 0] });
-        MESHES.beginFrame();
+        CONTEXT.beginFrame({ width: WIDTH, height: HEIGHT, clearColor: [0, 0, 0, 0] });
+        CONTEXT.scale(WIDTH / CSS_WIDTH, HEIGHT / CSS_HEIGHT);
         const MODE = MODE_INPUT.value;
         const POINTS = layoutPoints(PLAYERS.length);
         STATE.layout = {
@@ -1495,8 +1487,7 @@ function render(now, forcePreparation = false, updateReadout = true) {
         const PREPARED = ensureSpriteSets(forcePreparation);
         const PREPARATION_MS = performance.now() - PREPARATION_STARTED;
         if (!PREPARED) {
-            MESHES.flush();
-            DEVICE.endFrame();
+            CONTEXT.endFrame();
             STATE.ready = false;
             STATE.previousFrameMs = null;
             scheduleNextFrame();
@@ -1539,13 +1530,13 @@ function render(now, forcePreparation = false, updateReadout = true) {
         const PATH_CPU_MS = { vector: null, raster: null, sprite: null };
         if (MODE === 'vector' || MODE === 'split' || MODE === 'split2' || MODE === 'split3') {
             const PATH_START = performance.now();
-            drawActors('vector', cameraLayout('vector', CSS_WIDTH, CSS_HEIGHT, POINTS), PROJECTION);
+            drawActors('vector', cameraLayout('vector', CSS_WIDTH, CSS_HEIGHT, POINTS));
             PATH_CPU_MS.vector = performance.now() - PATH_START;
         }
         const RASTER_START = performance.now();
         const RASTER_RESULT =
             MODE === 'raster' || MODE === 'split' || MODE === 'split3'
-                ? drawActors('raster', cameraLayout('raster', CSS_WIDTH, CSS_HEIGHT, POINTS), PROJECTION)
+                ? drawActors('raster', cameraLayout('raster', CSS_WIDTH, CSS_HEIGHT, POINTS))
                 : { rasterDraws: 0, vectorFallbacks: 0, reasons: [] };
         if (MODE === 'raster' || MODE === 'split' || MODE === 'split3') {
             PATH_CPU_MS.raster = performance.now() - RASTER_START;
@@ -1553,15 +1544,15 @@ function render(now, forcePreparation = false, updateReadout = true) {
         const SPRITE_START = performance.now();
         const SPRITE_RESULT =
             MODE === 'sprite' || MODE === 'split2' || MODE === 'split3'
-                ? drawSpriteActors(cameraLayout('sprite', CSS_WIDTH, CSS_HEIGHT, POINTS), PROJECTION)
+                ? drawSpriteActors(cameraLayout('sprite', CSS_WIDTH, CSS_HEIGHT, POINTS))
                 : { spriteDraws: 0, vectorFallbacks: 0, reasons: [] };
         if (MODE === 'sprite' || MODE === 'split2' || MODE === 'split3') {
             PATH_CPU_MS.sprite = performance.now() - SPRITE_START;
         }
-        MESHES.flush();
+        CONTEXT.flush();
         const SUBMIT_MS = performance.now() - SUBMIT_START;
         timer.end(QUERY);
-        DEVICE.endFrame();
+        CONTEXT.endFrame();
         const CPU_MS = Math.max(0, performance.now() - STARTED - PREPARATION_MS);
         if (!STATE.autoRender || now >= nextReadoutMs || !STATE.ready) {
             writeMetrics(CPU_MS, ANIMATION_MS, SUBMIT_MS, PATH_CPU_MS, RASTER_RESULT, SPRITE_RESULT, updateReadout);
@@ -1610,7 +1601,7 @@ function disposeComparison() {
     STATE.atlas?.dispose();
     STATE.atlas = null;
     asset.dispose();
-    MESHES.dispose();
+    CONTEXT.dispose();
     DEVICE.dispose();
     return true;
 }

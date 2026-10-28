@@ -115,8 +115,8 @@ try {
         }
         if (NAME === 'rendering-texture-array') {
             assert.equal(await PAGE.evaluate(() => textureArrayExample.drawCalls), 1);
-            await PAGE.click('#mode-separate');
-            assert(await PAGE.evaluate(() => textureArrayExample.drawCalls > 1));
+            await PAGE.click('#mode-mixed');
+            assert.equal(await PAGE.evaluate(() => textureArrayExample.drawCalls), 1);
             assert.equal(await PAGE.evaluate(() => textureArrayExample.device.gl.getError()), 0);
         }
         if (NAME === 'rollback-reference') {

@@ -1,5 +1,5 @@
-/** Checks shared primitive batching, painter order, transforms, clipping, and warm-frame uploads. */
-export async function exercisePrimitiveInstances(page, moduleURL = '/dist/rendering.js') {
+/** Checks that analytic primitives share the vector stream: one draw, painter order, transforms, clipping, warm-frame uploads. */
+export async function exercisePrimitiveShapes(page, moduleURL = '/dist/rendering.js') {
     return page.evaluate(async (url) => {
         const { WebGLDevice: WEB_GL_DEVICE, VectorContext: VECTOR_CONTEXT } = await import(url);
         const CANVAS = document.createElement('canvas');
@@ -90,7 +90,9 @@ export async function exercisePrimitiveInstances(page, moduleURL = '/dist/render
             arcPointBuilds,
             bufferUploads: DEVICE.stats.bufferUploads,
             bufferAllocationsAfterWarmup: DEVICE.stats.bufferAllocations - WARM_CAPACITY,
-            primitives: FRAME.primitives,
+            drawCalls: FRAME.drawCalls,
+            uploadedBytes: FRAME.uploadedBytes,
+            vertices: FRAME.vertices,
             glError: ERROR,
         };
         CONTEXT.dispose();

@@ -1,31 +1,31 @@
 /**
- * Retained unit quad shared by every atlas frame; the Device texture remains owned by the caller.
- * Atlas x/y/width/height are top-left pixel coordinates into texture.width/height.
+ * Frame clips over one region of the device's shared texture atlas; the region stays owned by the caller.
+ * Frame x/y/width/height are top-left pixel coordinates inside the region's content rectangle.
  * sourceX/Y and sourceWidth/Height describe the trimmed image in its untrimmed
  * viewport; pivotX/Y are viewport pixels, defaulting to the top-left origin.
- * gutter is transparent padding OUTSIDE the frame rect and only validates atlas
+ * gutter is transparent padding OUTSIDE the frame rect and only validates region
  * bounds: UVs span the full content rect, without a half-texel shrink.
- * When texture is a Device texture array, each frame's layer (default 0) picks the atlas page and
- * x/y/width/height address inside that layer; consecutive frames on different layers stay in one batch.
- * A 2D texture has the single layer 0.
- * textureOrigin defaults to top-left for external DOM sheet uploads. Select
+ * textureOrigin defaults to top-left for uploaded DOM sheets. Select
  * bottom-left for raw pixel data or GPU render targets whose first row is bottom.
+ * Draws join the context's vector stream (VectorContext.drawQuads), so every sprite of any region shares
+ * one draw with the shapes and text of the same blend and clip state.
  *
  * A player's timeMs is an absolute caller clock. Before startedAtMs it displays
  * the first frame. Loop clips wrap at their total duration; once clips hold their
  * final frame. seek(elapsedMs,timeMs) scrubs the clip at an absolute clock point;
  * pausing and rate changes anchor to that same clock without a phase jump.
  */
-export function createSpriteAnimation(meshRenderer, texture, definition) {
-    if (!meshRenderer?.acquireQuadMesh || !meshRenderer?.drawMesh || !meshRenderer?.releaseQuadMesh) {
-        throw new TypeError('A MeshRenderer is required');
+export function createSpriteAnimation(context, region, definition) {
+    if (!context?.drawQuads || !context?.device?.textureAtlas) {
+        throw new TypeError('A VectorContext is required');
     }
-    if (!meshRenderer.device?.textures?.has(texture)) {
-        throw new TypeError('A live Device texture owned by the mesh renderer is required');
+    if (!region?.atlas?.regions?.has(region) || region.atlas !== context.device.textureAtlas) {
+        throw new TypeError('A live region of the device texture atlas is required');
     }
-    const ATLAS_WIDTH = texture.width;
-    const ATLAS_HEIGHT = texture.height;
-    const LAYER_COUNT = meshRenderer.device.isTextureArray(texture) ? texture.layers : 1;
+    const ATLAS_WIDTH = region.atlas.width;
+    const ATLAS_HEIGHT = region.atlas.height;
+    const REGION_WIDTH = region.width;
+    const REGION_HEIGHT = region.height;
     const INPUT_FRAMES = definition?.frames;
     const INPUT_CLIPS = definition?.clips;
     const TEXTURE_ORIGIN = definition?.textureOrigin ?? 'top-left';
@@ -59,9 +59,7 @@ export function createSpriteAnimation(meshRenderer, texture, definition) {
         const PIVOT_X = FRAME?.pivotX ?? definition.pivotX ?? 0;
         const PIVOT_Y = FRAME?.pivotY ?? definition.pivotY ?? 0;
         const DURATION_MS = FRAME?.durationMs;
-        const LAYER = FRAME?.layer ?? 0;
         for (const [NAME, VALUE, MINIMUM] of [
-            ['frame layer', LAYER, 0],
             ['frame x', X, 0],
             ['frame y', Y, 0],
             ['frame width', WIDTH, 1],
@@ -74,18 +72,15 @@ export function createSpriteAnimation(meshRenderer, texture, definition) {
         ]) {
             INTEGER(VALUE, NAME, MINIMUM);
         }
-        if (LAYER >= LAYER_COUNT) {
-            throw new RangeError('Sprite frame layer exceeds the texture layer count');
-        }
         if (
             X - GUTTER < 0 ||
             Y - GUTTER < 0 ||
-            X + WIDTH + GUTTER > ATLAS_WIDTH ||
-            Y + HEIGHT + GUTTER > ATLAS_HEIGHT ||
+            X + WIDTH + GUTTER > REGION_WIDTH ||
+            Y + HEIGHT + GUTTER > REGION_HEIGHT ||
             SOURCE_X + WIDTH > SOURCE_WIDTH ||
             SOURCE_Y + HEIGHT > SOURCE_HEIGHT
         ) {
-            throw new RangeError('Sprite frame, its gutter, or its trim exceeds its atlas/source viewport');
+            throw new RangeError('Sprite frame, its gutter, or its trim exceeds its region/source viewport');
         }
         if (!Number.isFinite(PIVOT_X) || !Number.isFinite(PIVOT_Y)) {
             throw new TypeError('Sprite pivot coordinates must be finite');
@@ -95,20 +90,20 @@ export function createSpriteAnimation(meshRenderer, texture, definition) {
         }
         const LEFT = SOURCE_X - PIVOT_X;
         const TOP = SOURCE_Y - PIVOT_Y;
-        const U0 = X / ATLAS_WIDTH;
-        const V0 = TEXTURE_ORIGIN === 'bottom-left' ? 1 - Y / ATLAS_HEIGHT : Y / ATLAS_HEIGHT;
-        const V1 = TEXTURE_ORIGIN === 'bottom-left' ? 1 - (Y + HEIGHT) / ATLAS_HEIGHT : (Y + HEIGHT) / ATLAS_HEIGHT;
+        // Rendered content is stored upside down: its first row is the region's bottom texture row.
+        const BOTTOM_UP = TEXTURE_ORIGIN === 'bottom-left';
+        const U0 = (region.x + X) / ATLAS_WIDTH;
+        const V0 = BOTTOM_UP ? (region.y + REGION_HEIGHT - Y) / ATLAS_HEIGHT : (region.y + Y) / ATLAS_HEIGHT;
+        const V_HEIGHT = (BOTTOM_UP ? -HEIGHT : HEIGHT) / ATLAS_HEIGHT;
         FRAME_RECTS.push(
             Object.freeze({
-                localRect: Object.freeze([LEFT, TOP, WIDTH, HEIGHT]),
-                uvRect: Object.freeze([U0, V0, WIDTH / ATLAS_WIDTH, V1 - V0]),
-                layer: LAYER,
+                localRect: Float32Array.of(LEFT, TOP, WIDTH, HEIGHT),
+                uvRect: Float32Array.of(U0, V0, WIDTH / ATLAS_WIDTH, V_HEIGHT),
             }),
         );
         FRAMES.push(
             Object.freeze({
                 index,
-                layer: LAYER,
                 x: X,
                 y: Y,
                 width: WIDTH,
@@ -163,7 +158,6 @@ export function createSpriteAnimation(meshRenderer, texture, definition) {
     if (!CLIPS.size) {
         throw new TypeError('At least one sprite clip is required');
     }
-    const MESH = meshRenderer.acquireQuadMesh();
     const PLAYERS = new Set();
     let disposed = false;
     const READY = () => {
@@ -231,12 +225,16 @@ export function createSpriteAnimation(meshRenderer, texture, definition) {
                         finished: selectedClip.loop === 'once' && ELAPSED_MS >= selectedClip.durationMs,
                     });
                 },
+                /** options: matrix (composed with the context transform), color, alpha, whiteFlash, forceColor. */
                 draw({ timeMs, ...options } = {}) {
                     const SAMPLE = this.sample(timeMs);
-                    meshRenderer.drawMesh(MESH, {
+                    PLAYER_READY();
+                    context.drawQuads({
                         ...options,
-                        ...FRAME_RECTS[SAMPLE.frameIndex],
-                        texture,
+                        uvRects: FRAME_RECTS[SAMPLE.frameIndex].uvRect,
+                        localRects: FRAME_RECTS[SAMPLE.frameIndex].localRect,
+                        layer: region.layer,
+                        filter: region.filter,
                     });
                     return SAMPLE;
                 },
@@ -308,7 +306,6 @@ export function createSpriteAnimation(meshRenderer, texture, definition) {
             }
             disposed = true;
             PLAYERS.clear();
-            meshRenderer.releaseQuadMesh();
             return true;
         },
     });
