@@ -548,6 +548,7 @@
       this.layerShelves = Array.from({ length: layers }, () => ({ shelves: [], usedHeight: 0 }));
       this.free = /* @__PURE__ */ new Map();
       this.regions = /* @__PURE__ */ new Set();
+      this.written = /* @__PURE__ */ new WeakSet();
       this.disposed = false;
     }
     /** Reserves width x height content pixels. Returns the content rectangle, its normalized `uvRect` and its sampling `filter`
@@ -604,15 +605,32 @@
       return REGION;
     }
     /**
-     * Writes the region's pixels. `source` is a DOM image/canvas or `{ width, height, data }` RGBA bytes of the
-     * region size. With `extendEdges`, byte sources fill the gutter with their edge pixels (clamp-to-edge look).
+     * Writes the region's pixels. `source` is a DOM image/canvas or `{ width, height, data }` RGBA bytes. A source
+     * of the region size fills it; a smaller source at content offset `x`, `y` updates only that rectangle.
+     * With `extendEdges`, a whole-region byte source also fills the gutter with its edge pixels (clamp-to-edge look).
      */
-    upload(region, source, { premultiplied = false, extendEdges = false } = {}) {
+    upload(region, source, { premultiplied = false, extendEdges = false, x = 0, y = 0 } = {}) {
       this._live();
       if (!this.regions.has(region)) {
         throw new TypeError("A live region from this atlas is required");
       }
-      const G = this.gutter;
+      if (this.written.has(region) && this.device.active) {
+        this.device.flushBatchers("atlasRegionUpdate");
+      }
+      this.written.add(region);
+      const G = this.gutter, WIDTH = source?.naturalWidth ?? source?.width, HEIGHT = source?.naturalHeight ?? source?.height;
+      if (x !== 0 || y !== 0 || WIDTH !== region.width || HEIGHT !== region.height) {
+        if (extendEdges) {
+          throw new TypeError("extendEdges requires a whole-region upload");
+        }
+        if (!Number.isSafeInteger(x) || !Number.isSafeInteger(y) || x < 0 || y < 0 || !(x + WIDTH <= region.width) || !(y + HEIGHT <= region.height)) {
+          throw new RangeError("Upload rectangle must lie inside the region");
+        }
+        this.device.updateTextureRegion(this.texture, region.layer, region.x + x, region.y + y, source, {
+          premultiplied
+        });
+        return;
+      }
       if (source.data === void 0) {
         if (extendEdges) {
           throw new TypeError("extendEdges requires RGBA byte data");
@@ -620,23 +638,20 @@
         this.device.updateTextureRegion(this.texture, region.layer, region.x, region.y, source, { premultiplied });
         return;
       }
-      if (source.width !== region.width || source.height !== region.height) {
-        throw new RangeError("Source size must equal the region size");
-      }
       if (!G) {
         this.device.updateTextureRegion(this.texture, region.layer, region.x, region.y, source, { premultiplied });
         return;
       }
       const PW = region.width + G * 2, PH = region.height + G * 2, PADDED = new Uint8Array(PW * PH * 4);
-      for (let y = 0; y < PH; y++) {
-        for (let x = 0; x < PW; x++) {
-          const SX = x - G, SY = y - G;
+      for (let y2 = 0; y2 < PH; y2++) {
+        for (let x2 = 0; x2 < PW; x2++) {
+          const SX = x2 - G, SY = y2 - G;
           const INSIDE = SX >= 0 && SY >= 0 && SX < region.width && SY < region.height;
           if (!INSIDE && !extendEdges) {
             continue;
           }
           const FROM = (Math.min(region.height - 1, Math.max(0, SY)) * region.width + Math.min(region.width - 1, Math.max(0, SX))) * 4;
-          PADDED.set(source.data.subarray(FROM, FROM + 4), (y * PW + x) * 4);
+          PADDED.set(source.data.subarray(FROM, FROM + 4), (y2 * PW + x2) * 4);
         }
       }
       this.device.updateTextureRegion(
@@ -659,6 +674,9 @@
       if (!this.regions.size) {
         this.dispose();
         return true;
+      }
+      if (this.device.active) {
+        this.device.flushBatchers("atlasRegionRelease");
       }
       const G = this.gutter, PW = region.width + G * 2, PH = region.height + G * 2;
       this.device.clearTextureRegion(this.texture, region.layer, region.paddedX, region.paddedY, PW, PH);
@@ -2117,14 +2135,14 @@ ${converted}`;
       });
       return true;
     }
-    clear({ color: color2, depth, stencil } = {}) {
+    clear({ color, depth, stencil } = {}) {
       this._ready();
       const GL = this.gl;
       let flags = 0;
-      if (color2 !== void 0) {
-        finiteArray(color2, 4, "clear color");
+      if (color !== void 0) {
+        finiteArray(color, 4, "clear color");
         GL.colorMask(true, true, true, true);
-        GL.clearColor(...color2);
+        GL.clearColor(...color);
         flags |= GL.COLOR_BUFFER_BIT;
       }
       if (depth !== void 0) {
@@ -3845,8 +3863,8 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
       }
       return clipPlanes(this.clips, this.maxClipPlanes).key === BATCH.planeKey;
     }
-    _emitTriangle(a, b, c, color2, uv = null) {
-      rgba(color2);
+    _emitTriangle(a, b, c, color, uv = null) {
+      rgba(color);
       if (!this._planesAllow()) {
         this._submit();
       }
@@ -3866,7 +3884,7 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
           this.vertices[K2 + 1] = POINT.y;
           this.vertices[K2 + 2] = POINT.u ?? this.flatUV[0];
           this.vertices[K2 + 3] = POINT.v ?? this.flatUV[1];
-          this.vertices.set(color2, K2 + 4);
+          this.vertices.set(color, K2 + 4);
           this.vertices.set(this.paintTemplate, K2 + 8);
         }
       }
@@ -3987,9 +4005,9 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
      * Fills or strokes one analytic primitive: `matrix` maps the local square [-1,1]^2 to screen space (the caller
      * has applied the current transform) and `params` is [kind (0 ellipse, 1 rectangle, 2 line), stroke, width, option].
      */
-    drawPrimitive({ matrix, color: color2, params }) {
+    drawPrimitive({ matrix, color, params }) {
       this._frame();
-      rgba(color2);
+      rgba(color);
       if (matrix?.length !== 6 || params?.length !== 4) {
         throw new TypeError("drawPrimitive requires a 6-value matrix and 4 parameters");
       }
@@ -4005,8 +4023,8 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
         [-1, 1]
       ];
       const WORLD = CORNERS.map((corner) => point(M, corner[0], corner[1]));
-      this._emitTriangle(WORLD[0], WORLD[1], WORLD[2], color2, [CORNERS[0], CORNERS[1], CORNERS[2]]);
-      this._emitTriangle(WORLD[0], WORLD[2], WORLD[3], color2, [CORNERS[0], CORNERS[2], CORNERS[3]]);
+      this._emitTriangle(WORLD[0], WORLD[1], WORLD[2], color, [CORNERS[0], CORNERS[1], CORNERS[2]]);
+      this._emitTriangle(WORLD[0], WORLD[2], WORLD[3], color, [CORNERS[0], CORNERS[2], CORNERS[3]]);
     }
     /**
      * Draws atlas rectangles in painter order. Run i places `localRects[i]` (x, y, width, height) on the current
@@ -4022,7 +4040,7 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
       parts = null,
       pose = null,
       matrix = IDENTITY,
-      color: color2 = [1, 1, 1, 1],
+      color = [1, 1, 1, 1],
       alpha = 1,
       whiteFlash = false,
       forceColor = false,
@@ -4041,8 +4059,8 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
       if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1) {
         throw new RangeError("alpha must be in [0,1]");
       }
-      rgba(color2);
-      const TINT = [color2[0], color2[1], color2[2], color2[3] * alpha], M = compose(this.matrix, matrix);
+      rgba(color);
+      const TINT = [color[0], color[1], color[2], color[3] * alpha], M = compose(this.matrix, matrix);
       this._useVertexPaint(
         [layer, whiteFlash ? 1 : forceColor ? 2 : 0, 0, filter === "nearest" ? 1 : 0, 0, 0, 0, 0, 0, 0, 1, 1],
         whiteFlash
@@ -5539,7 +5557,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       morph = [0, 0],
       parts = null,
       pose = null,
-      color: color2 = WHITE,
+      color = WHITE,
       paintRegions = null,
       forceColor = false,
       alpha = 1,
@@ -5595,7 +5613,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
         finiteArray2(projection, 9, "projection");
       }
       finiteArray2(morph, 2, "morph");
-      finiteArray2(color2, 4, "color");
+      finiteArray2(color, 4, "color");
       let strokeSize = null;
       let inverseStrokeProjection = null;
       let inverseViewProjection = null;
@@ -5618,7 +5636,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
           inverseViewProjection = invertMatrix4(viewProjection);
         }
       }
-      if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1 || color2.some((n) => n < 0 || n > 1)) {
+      if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1 || color.some((n) => n < 0 || n > 1)) {
         throw new RangeError("RGBA/alpha in [0,1] required");
       }
       if (!Number.isFinite(depth) || depth < -1 || depth > 1) {
@@ -5694,7 +5712,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
         if (PENDING) {
           const MATRIX = WORLD_MODE ? viewProjection : projection;
           const PREVIOUS_COLOR = PENDING.color;
-          const REASON = (PENDING.poseTexture ?? null) !== (POSE_DRAW?.texture ?? null) ? "poseBackend" : PENDING.mesh !== mesh ? "mesh" : PENDING.worldMode !== WORLD_MODE ? "transformMode" : PENDING.indexVariant !== indexVariant ? "indexVariant" : PENDING.firstIndex !== FIRST_INDEX || PENDING.indexCount !== INDEX_COUNT ? "indexRange" : PENDING.clip.key !== CLIP.key ? "clip" : PENDING.stencilRef !== stencilRef ? "stencil" : PENDING.depthStateKey !== DEPTH_STATE_KEY ? "depthState" : MATRIX.some((n, i) => Math.fround(n) !== PENDING.projection[i]) ? "projection" : strokeSize && strokeSize.some((n, i) => n !== PENDING.strokeSize?.[i]) ? "strokeViewport" : WORLD_MODE && color2.some((n, i) => n !== PREVIOUS_COLOR[i]) ? "color" : !POSE_DRAW && mesh.partCount > 1 && PENDING.parts.some((n, i) => n !== this.partScratch[i]) ? "parts" : this.count === INSTANCE_LIMIT ? "capacity" : null;
+          const REASON = (PENDING.poseTexture ?? null) !== (POSE_DRAW?.texture ?? null) ? "poseBackend" : PENDING.mesh !== mesh ? "mesh" : PENDING.worldMode !== WORLD_MODE ? "transformMode" : PENDING.indexVariant !== indexVariant ? "indexVariant" : PENDING.firstIndex !== FIRST_INDEX || PENDING.indexCount !== INDEX_COUNT ? "indexRange" : PENDING.clip.key !== CLIP.key ? "clip" : PENDING.stencilRef !== stencilRef ? "stencil" : PENDING.depthStateKey !== DEPTH_STATE_KEY ? "depthState" : MATRIX.some((n, i) => Math.fround(n) !== PENDING.projection[i]) ? "projection" : strokeSize && strokeSize.some((n, i) => n !== PENDING.strokeSize?.[i]) ? "strokeViewport" : WORLD_MODE && color.some((n, i) => n !== PREVIOUS_COLOR[i]) ? "color" : !POSE_DRAW && mesh.partCount > 1 && PENDING.parts.some((n, i) => n !== this.partScratch[i]) ? "parts" : this.count === INSTANCE_LIMIT ? "capacity" : null;
           if (REASON) {
             this.flush(REASON);
           }
@@ -5716,7 +5734,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
               poseProgramWidth: POSE_DRAW?.programWidth ?? 0,
               projection: Float32Array.from(WORLD_MODE ? viewProjection : projection),
               worldMode: WORLD_MODE,
-              color: Float32Array.from(color2),
+              color: Float32Array.from(color),
               clip: CLIP,
               stencilRef,
               depthStateKey: DEPTH_STATE_KEY,
@@ -5756,7 +5774,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
             weight0 += PART2[8];
             weight1 += PART2[9];
           }
-          const INSTANCE_COLOR = i < prefixCount ? prefixColor : color2;
+          const INSTANCE_COLOR = i < prefixCount ? prefixColor : color;
           const INSTANCE_FORCE_COLOR = i < forceColorPrefixCount ? true : forceColor, AT = this.count++ * INSTANCE_FLOATS;
           const INSTANCE_DEPTH = depth + (SINGLE_PART2 ? PART2[11] : 0);
           if (POSE_DRAW) {
@@ -5829,7 +5847,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
           weight0 += PART[8];
           weight1 += PART[9];
         }
-        const INSTANCE_COLOR = i < prefixCount ? prefixColor : color2;
+        const INSTANCE_COLOR = i < prefixCount ? prefixColor : color;
         const INSTANCE_FORCE_COLOR = i < forceColorPrefixCount ? true : forceColor, AT = slot * 16, DATA2 = this.instances;
         DATA2[AT] = m0;
         DATA2[AT + 1] = m2;
@@ -5849,7 +5867,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
         DATA2[AT + 15] = depth + (SINGLE_PART ? PART[11] : 0);
       };
       for (let i = 0; i < count; i++) {
-        const INSTANCE_COLOR = i < prefixCount ? prefixColor : color2;
+        const INSTANCE_COLOR = i < prefixCount ? prefixColor : color;
         const INSTANCE_FORCE_COLOR = i < forceColorPrefixCount ? true : forceColor;
         const RUNS = this._collectAlphaDepthRuns(
           mesh,
@@ -7366,9 +7384,9 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       }
       return composeTransform(path.matrix, local);
     }
-    _submitPrimitive(matrix, color2, params) {
+    _submitPrimitive(matrix, color, params) {
       this.meshRenderer?.flush("primitiveBoundary");
-      this.vector.drawPrimitive({ matrix, color: color2, params });
+      this.vector.drawPrimitive({ matrix, color, params });
       return true;
     }
     _tryPrimitiveFill() {
@@ -7632,21 +7650,21 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
         height: R * 2
       };
     }
-    withColor(color2, callback) {
+    withColor(color, callback) {
       const PREVIOUS = this.forceColor;
-      this.forceColor = normalizeColor(color2);
+      this.forceColor = normalizeColor(color);
       try {
         return callback();
       } finally {
         this.forceColor = PREVIOUS;
       }
     }
-    withSilhouette(color2, width, paint, radius = 128) {
+    withSilhouette(color, width, paint, radius = 128) {
       const ALPHA = this._globalAlpha, BOUNDS = this.groupBounds(0, 0, radius + width);
       return this.withGroupOpacity(
         ALPHA,
         () => {
-          this.withColor(color2, () => {
+          this.withColor(color, () => {
             for (let i = 0; i < 8; i++) {
               this.save();
               const A = i * TAU / 8;
@@ -7773,6 +7791,39 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       this.meshRenderer?.flush("quadBoundary");
       this.vector.drawQuads(options);
     }
+    /**
+     * Draws a texture atlas region like Canvas `drawImage(image, x, y, width, height)`: top-left anchored on the
+     * current transform, in the same stream draw as the surrounding paint. `source` (`[x, y, width, height]` region
+     * pixels) selects part of the region. Uses `globalAlpha`, white flash and `forceColor` like other paint.
+     */
+    drawRegion(region, x, y, width = region?.width, height = region?.height, { source = null } = {}) {
+      if (!region?.atlas?.regions?.has(region) || region.atlas !== this.device.textureAtlas) {
+        throw new TypeError("A live region of the device texture atlas is required");
+      }
+      const [SX, SY, SW, SH] = source ?? [0, 0, region.width, region.height];
+      for (const VALUE of [x, y, width, height, SX, SY, SW, SH]) {
+        finite(VALUE, "drawRegion value");
+      }
+      if (SX < 0 || SY < 0 || SW <= 0 || SH <= 0 || SX + SW > region.width || SY + SH > region.height) {
+        throw new RangeError("source must lie inside the region");
+      }
+      const ATLAS = region.atlas;
+      this.drawQuads({
+        layer: region.layer,
+        filter: region.filter,
+        uvRects: Float32Array.of(
+          (region.x + SX) / ATLAS.width,
+          (region.y + SY) / ATLAS.height,
+          SW / ATLAS.width,
+          SH / ATLAS.height
+        ),
+        localRects: Float32Array.of(x, y, width, height),
+        color: normalizeColor(this.forceColor ?? [1, 1, 1, 1]),
+        forceColor: this.forceColor !== null,
+        alpha: this._globalAlpha,
+        whiteFlash: this._filter === "brightness(0) invert(1)"
+      });
+    }
     deleteMesh(mesh) {
       return this.meshRenderer?.deleteMesh(mesh) ?? false;
     }
@@ -7816,7 +7867,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       transform = null,
       morph = [0, 0],
       parts = null,
-      color: color2 = "black",
+      color = "black",
       width,
       radius = 128,
       outlineScale = null
@@ -7837,17 +7888,17 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
         }
       }
       let outline;
-      if (typeof color2 === "string" && color2[0] === "#") {
-        outline = this._silhouetteColorCache.get(color2);
+      if (typeof color === "string" && color[0] === "#") {
+        outline = this._silhouetteColorCache.get(color);
         if (!outline) {
-          outline = normalizeColor(color2);
+          outline = normalizeColor(color);
           if (this._silhouetteColorCache.size === 16) {
             this._silhouetteColorCache.delete(this._silhouetteColorCache.keys().next().value);
           }
-          this._silhouetteColorCache.set(color2, outline);
+          this._silhouetteColorCache.set(color, outline);
         }
       } else {
-        outline = normalizeColor(color2);
+        outline = normalizeColor(color);
       }
       const OUTLINE_INSTANCES = outlineScale === null ? 9 : 1, COUNT = OUTLINE_INSTANCES + 1, MATRICES = outlineScale === null ? this._silhouetteMatrices : this._scaledSilhouetteMatrices;
       const BOUNDS = this.groupBounds(0, 0, Math.max(radius + width, radius * (outlineScale ?? 1)));
@@ -8314,8 +8365,6 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
   var DEFAULT_LIMIT_BYTES = 32 * 1024 * 1024;
   var IDENTITY4 = Object.freeze([1, 0, 0, 1, 0, 0]);
   var WHITE3 = Object.freeze([1, 1, 1, 1]);
-  var WHITE4 = Object.freeze([1, 1, 1, 1]);
-  var CLEAR = Object.freeze([0, 0, 0, 0]);
 
   // dist/vector-assets.js
   var isBrowser = typeof window !== "undefined";
@@ -40428,7 +40477,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
         }
       }
     };
-    const CLEAR2 = () => {
+    const CLEAR = () => {
       const COUNT = CACHE2.size;
       CACHE2.clear();
       return COUNT;
@@ -40444,7 +40493,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
     };
     return Object.freeze({
       load: LOAD,
-      clear: CLEAR2,
+      clear: CLEAR,
       dispose: DISPOSE,
       get size() {
         return CACHE2.size;
