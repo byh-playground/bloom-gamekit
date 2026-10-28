@@ -819,4 +819,5 @@ export { MeshRenderer } from './mesh-renderer.js';
 export { createSpriteAnimation } from './sprite-animation.js';
 export { YarnSurfaceRenderer, buildYarnSurfaceGeometry } from './yarn-shader.js';
 export { GlyphAtlas } from './glyph-atlas.js';
+export { TextureAtlasArray } from './texture-atlas.js';
 export { FontAssetLoader } from './font-assets.js';

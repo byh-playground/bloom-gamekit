@@ -3,7 +3,7 @@
  * Glyph drawing is delegated to a renderer callback so VectorRenderer can apply
  * its current transform, clipping, painter order, and color pipeline.
  *
- * Atlas bytes are top-left-origin RGBA and are uploaded once through WebGLDevice.
+ * Atlas bytes are top-left-origin RGBA and are uploaded once into a region of the device texture atlas array.
  * No DOM canvas, runtime rasterizer, or pixel readback is used here.
  *
  * Metric records are keyed by Unicode code point and have this shape:
@@ -27,8 +27,8 @@ export class GlyphAtlas {
             replacement = '\uFFFD',
         } = {},
     ) {
-        if (!device || typeof device.createTexture !== 'function' || typeof device.deleteTexture !== 'function') {
-            throw new TypeError('device must provide WebGLDevice createTexture/deleteTexture');
+        if (!device?.textureAtlas) {
+            throw new TypeError('device must provide a WebGLDevice texture atlas');
         }
         positiveInteger(width, 'width');
         positiveInteger(height, 'height');
@@ -63,17 +63,14 @@ export class GlyphAtlas {
         if (filter !== 'nearest' && filter !== 'linear') {
             throw new RangeError('filter must be nearest or linear');
         }
-        this.texture = device.createTexture(
-            {
-                width,
-                height,
-                data,
-            },
-            {
-                format: 'rgba',
-                filter,
-            },
-        );
+        // The glyph page is one region of the device's shared atlas array; edges extend like CLAMP_TO_EDGE.
+        this.region = device.textureAtlas.allocate(width, height, { filter });
+        try {
+            device.textureAtlas.upload(this.region, { width, height, data }, { extendEdges: true });
+        } catch (error) {
+            device.textureAtlas.release(this.region);
+            throw error;
+        }
         this.disposed = false;
     }
 
@@ -95,10 +92,10 @@ export class GlyphAtlas {
     }
 
     /**
-     * Emits one callback per visible glyph. The callback receives texture, atlas
+     * Emits one callback per visible glyph. The callback receives region (atlas array layer), atlas
      * UVs, destination rectangle, RGBA color, and operation='fill'.
      * Also accepts `(renderer, text, x, y, options)` when renderer provides
-     * `drawGlyphQuad(texture, x, y, width, height, uv, color)`.
+     * `drawGlyphQuad(region, x, y, width, height, uv, color)`.
      */
     fillText(textOrRenderer, xOrText, yOrX, optionsOrY = {}, drawGlyphOrOptions = {}) {
         const ARGS = normalizeDrawArguments(textOrRenderer, xOrText, yOrX, optionsOrY, drawGlyphOrOptions);
@@ -146,6 +143,7 @@ export class GlyphAtlas {
         positive(FONT_SIZE, 'fontSize');
         validateAlign(ALIGN);
         validateColor(COLOR, 'color');
+        const [RU, RV, RW, RH] = this.region.uvRect;
         const RESOLVED = this._resolve(text);
         const SCALE = FONT_SIZE / this.unitsPerEm;
         const ADVANCE = RESOLVED.reduce((sum, glyph) => sum + glyph.advance, 0) * SCALE;
@@ -169,17 +167,17 @@ export class GlyphAtlas {
                 const TOP = BASELINE_Y - GLYPH.bearingY * SCALE;
                 for (const [OX, OY] of OFFSETS) {
                     drawGlyph({
-                        texture: this.texture,
+                        region: this.region,
                         glyph: GLYPH,
                         codePoint: GLYPH.codePoint,
                         x: LEFT + OX * lineWidth,
                         y: TOP + OY * lineWidth,
                         width: GLYPH.width * SCALE,
                         height: GLYPH.height * SCALE,
-                        u0: GLYPH.x / this.width,
-                        v0: GLYPH.y / this.height,
-                        u1: (GLYPH.x + GLYPH.width) / this.width,
-                        v1: (GLYPH.y + GLYPH.height) / this.height,
+                        u0: RU + (GLYPH.x / this.width) * RW,
+                        v0: RV + (GLYPH.y / this.height) * RH,
+                        u1: RU + ((GLYPH.x + GLYPH.width) / this.width) * RW,
+                        v1: RV + ((GLYPH.y + GLYPH.height) / this.height) * RH,
                         color: COLOR,
                         operation: lineWidth ? 'stroke' : operation,
                     });
@@ -225,8 +223,10 @@ export class GlyphAtlas {
             return false;
         }
         this.disposed = true;
-        this.device.deleteTexture(this.texture);
-        this.texture = null;
+        if (this.device.state === 'ready') {
+            this.region.atlas.release(this.region);
+        }
+        this.region = null;
         return true;
     }
 }
@@ -257,7 +257,7 @@ function normalizeDrawArguments(first, second, third, fourth, fifth) {
             options: OPTIONS,
             drawGlyph: (glyph) =>
                 RENDERER.drawGlyphQuad(
-                    glyph.texture,
+                    glyph.region,
                     glyph.x,
                     glyph.y,
                     glyph.width,

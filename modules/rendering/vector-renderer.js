@@ -1,23 +1,37 @@
 const IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
-const VERTEX = `attribute vec2 a_position; attribute vec2 a_uv; attribute vec4 a_color;
-uniform mat3 u_projection; varying vec2 v_uv; varying vec4 v_color;
-void main(){vec3 p=u_projection*vec3(a_position,1.0);gl_Position=vec4(p.xy,0.0,1.0);v_uv=a_uv;v_color=a_color;}`;
+// One vertex layout for every textured vector draw: texture identity, gradient kind and flash are vertex data,
+// so fills, gradients and glyphs of one blend/clip state batch together. Floats per vertex: position 2, uv 2,
+// color 4, paint (atlas layer, white flash, mode, nearest) 4, radial parameters 4, ramp rectangle 4.
+const VERTEX_FLOATS = 20;
+const VERTEX_BYTES = VERTEX_FLOATS * 4;
+const VERTEX = `attribute vec2 a_position; attribute vec2 a_uv; attribute vec4 a_color; attribute vec4 a_paint; attribute vec4 a_radial; attribute vec4 a_rect;
+uniform mat3 u_projection; varying highp vec2 v_uv; varying vec4 v_color; varying highp vec4 v_paint; varying highp vec4 v_radial; varying highp vec4 v_rect;
+void main(){vec3 p=u_projection*vec3(a_position,1.0);gl_Position=vec4(p.xy,0.0,1.0);v_uv=a_uv;v_color=a_color;v_paint=a_paint;v_radial=a_radial;v_rect=a_rect;}`;
 const CLIP_VERTEX = `attribute vec2 a_position;uniform mat3 u_projection;uniform mat3 u_transform;void main(){vec3 p=u_projection*u_transform*vec3(a_position,1.0);gl_Position=vec4(p.xy,0.0,1.0);}`;
 const CLIP_FRAGMENT = 'precision mediump float;void main(){gl_FragColor=vec4(1.0);}';
-const FRAGMENT = `precision mediump float; uniform sampler2D u_texture; uniform float u_textured; uniform float u_radial; uniform vec4 u_radial_params; uniform float u_whiteFlash;
-varying vec2 v_uv; varying vec4 v_color;
+const FRAGMENT_VARYINGS =
+    'varying highp vec2 v_uv; varying vec4 v_color; varying highp vec4 v_paint; varying highp vec4 v_radial; varying highp vec4 v_rect;';
+const FINISH =
+    'float a=texel.a*v_color.a;vec3 rgb=mix(texel.rgb*v_color.rgb*v_color.a,vec3(a),v_paint.y);gl_FragColor=vec4(rgb,a);';
+const FRAGMENT = `precision mediump float; precision mediump sampler2DArray; uniform sampler2DArray u_texture;
+${FRAGMENT_VARYINGS}
 float radialParameter(vec2 q){
-  vec2 d=u_radial_params.xy;float r0=u_radial_params.z,dr=u_radial_params.w;
+  vec2 d=v_radial.xy;float r0=v_radial.z,dr=v_radial.w;
   float a=dot(d,d)-dr*dr,b=-2.0*(dot(q,d)+r0*dr),c=dot(q,q)-r0*r0;
   if(abs(a)<0.000001){if(abs(b)<0.000001)return -10000.0;float t=-c/b;return r0+dr*t>0.0?t:-10000.0;}
   float discriminant=b*b-4.0*a*c;if(discriminant<0.0)return -10000.0;
   float root=sqrt(max(discriminant,0.0)),t0=(-b-root)/(2.0*a),t1=(-b+root)/(2.0*a),chosen=-10000.0;
   if(r0+dr*t0>0.0)chosen=t0;if(r0+dr*t1>0.0)chosen=max(chosen,t1);return chosen;
 }
-void main(){if(u_radial>1.5)discard;float t=u_radial>0.5?radialParameter(v_uv):0.0;if(u_radial>0.5&&t< -1000.0)discard;vec2 uv=u_radial>0.5?vec2(clamp(t,0.0,1.0),0.5):v_uv;vec4 texel=mix(vec4(1.0),texture2D(u_texture,uv),u_textured);float a=texel.a*v_color.a;vec3 rgb=mix(texel.rgb*v_color.rgb*v_color.a,vec3(a),u_whiteFlash);gl_FragColor=vec4(rgb,a);}`;
-const NON_RADIAL_FRAGMENT = `precision mediump float; uniform sampler2D u_texture; uniform float u_textured; uniform float u_whiteFlash;
-varying vec2 v_uv; varying vec4 v_color;
-void main(){vec4 texel=mix(vec4(1.0),texture2D(u_texture,v_uv),u_textured);float a=texel.a*v_color.a;vec3 rgb=mix(texel.rgb*v_color.rgb*v_color.a,vec3(a),u_whiteFlash);gl_FragColor=vec4(rgb,a);}`;
+void main(){if(v_paint.z>1.5&&v_paint.z<2.5)discard;vec2 uv=v_uv;
+if(v_paint.z>2.5){uv=v_rect.xy+vec2(clamp(v_uv.x,0.0,1.0),0.5)*v_rect.zw;}
+else if(v_paint.z>0.5){float t=radialParameter(v_uv);if(t< -1000.0)discard;uv=v_rect.xy+vec2(clamp(t,0.0,1.0),0.5)*v_rect.zw;}
+if(v_paint.w>0.5){vec2 size=vec2(textureSize(u_texture,0).xy);uv=(floor(uv*size)+0.5)/size;}
+vec4 texel=texture2D(u_texture,vec3(uv,floor(v_paint.x+0.5)));${FINISH}}`;
+// Offscreen groups are the one render-target (not atlas) sample, so they keep a plain 2D sampler.
+const GROUP_FRAGMENT = `precision mediump float; uniform sampler2D u_texture;
+${FRAGMENT_VARYINGS}
+void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
 const FINITE = (n, label) => {
     if (!Number.isFinite(n)) {
         throw new TypeError(`${label} must be finite`);
@@ -266,14 +280,14 @@ export class VectorRenderer {
         ) {
             throw new RangeError('3 <= initialVertices <= maxVertices is required');
         }
-        if (initialVertices * 32 > device.maxBufferBytes) {
+        if (initialVertices * VERTEX_BYTES > device.maxBufferBytes) {
             throw new RangeError('initial vector buffer exceeds the device byte limit');
         }
         this.device = device;
         this.gl = device.gl;
         this.canvas = device.canvas;
         this.glyphAtlas = glyphAtlas;
-        this.maxVertices = Math.min(maxVertices, Math.floor(device.maxBufferBytes / 32));
+        this.maxVertices = Math.min(maxVertices, Math.floor(device.maxBufferBytes / VERTEX_BYTES));
         this.maxClipPlanes = Math.max(
             1,
             Math.min(32, device.gl.getParameter(device.gl.MAX_FRAGMENT_UNIFORM_VECTORS) - 2),
@@ -281,31 +295,18 @@ export class VectorRenderer {
         this.pipeline = device.createPipeline({
             vertex: VERTEX,
             fragment: FRAGMENT,
-            stride: 32,
+            stride: VERTEX_BYTES,
             attributes: [
-                {
-                    name: 'a_position',
-                    size: 2,
-                    offset: 0,
-                },
-                {
-                    name: 'a_uv',
-                    size: 2,
-                    offset: 8,
-                },
-                {
-                    name: 'a_color',
-                    size: 4,
-                    offset: 16,
-                },
+                { name: 'a_position', size: 2, offset: 0 },
+                { name: 'a_uv', size: 2, offset: 8 },
+                { name: 'a_color', size: 4, offset: 16 },
+                { name: 'a_paint', size: 4, offset: 32 },
+                { name: 'a_radial', size: 4, offset: 48 },
+                { name: 'a_rect', size: 4, offset: 64 },
             ],
             uniforms: {
                 u_projection: 'matrix3fv',
                 u_texture: '1i',
-                u_textured: '1f',
-                u_radial: '1f',
-                u_radial_params: '4f',
-                u_whiteFlash: '1f',
             },
         });
         this.clipPipeline = device.createPipeline({
@@ -325,24 +326,19 @@ export class VectorRenderer {
             },
         });
         this.buffer = device.createVertexBuffer({
-            capacityBytes: initialVertices * 32,
+            capacityBytes: initialVertices * VERTEX_BYTES,
         });
         this.dynamicClipBuffer = device.createVertexBuffer({
             capacityBytes: 0,
         });
-        this.white = device.createTexture(
-            {
-                width: 1,
-                height: 1,
-                data: new Uint8Array([255, 255, 255, 255]),
-            },
-            {
-                format: 'rgba',
-                premultiplied: true,
-                filter: 'nearest',
-            },
+        this.atlas = device.textureAtlas;
+        this.whiteRegion = this.atlas.allocate(1, 1);
+        this.atlas.upload(
+            this.whiteRegion,
+            { width: 1, height: 1, data: new Uint8Array([255, 255, 255, 255]) },
+            { premultiplied: true, extendEdges: true },
         );
-        this.vertices = new Float32Array(initialVertices * 8);
+        this.vertices = new Float32Array(initialVertices * VERTEX_FLOATS);
         this.count = 0;
         this.matrix = IDENTITY.slice();
         this.stack = [];
@@ -352,10 +348,13 @@ export class VectorRenderer {
         this.clips = [];
         this.groups = [];
         this.groupTargets = [];
-        this.activeTexture = this.white;
+        this.activeTarget = null;
+        this.activePaint = null;
         this.activeRadial = false;
         this.activeWhiteFlash = false;
         this.activeGradient = null;
+        this.paintTemplate = new Float32Array(12);
+        this._setPaint(this.whiteRegion);
         this.blend = 'source-over';
         this.stencilClips = [];
         this.clipPaths = new Map();
@@ -382,34 +381,23 @@ export class VectorRenderer {
         this.canvas.addEventListener('webglcontextlost', this.onLost);
         this.canvas.addEventListener('webglcontextrestored', this.onRestored);
         this.projection = new Float32Array([2 / this.canvas.width, 0, 0, 0, -2 / this.canvas.height, 0, -1, 1, 1]);
-        this.nonRadialPipeline = null;
+        this.groupPipeline = null;
         try {
-            this.nonRadialPipeline = device.createPipeline({
+            this.groupPipeline = device.createPipeline({
                 vertex: VERTEX,
-                fragment: NON_RADIAL_FRAGMENT,
-                stride: 32,
+                fragment: GROUP_FRAGMENT,
+                stride: VERTEX_BYTES,
                 attributes: [
-                    {
-                        name: 'a_position',
-                        size: 2,
-                        offset: 0,
-                    },
-                    {
-                        name: 'a_uv',
-                        size: 2,
-                        offset: 8,
-                    },
-                    {
-                        name: 'a_color',
-                        size: 4,
-                        offset: 16,
-                    },
+                    { name: 'a_position', size: 2, offset: 0 },
+                    { name: 'a_uv', size: 2, offset: 8 },
+                    { name: 'a_color', size: 4, offset: 16 },
+                    { name: 'a_paint', size: 4, offset: 32 },
+                    { name: 'a_radial', size: 4, offset: 48 },
+                    { name: 'a_rect', size: 4, offset: 64 },
                 ],
                 uniforms: {
                     u_projection: 'matrix3fv',
                     u_texture: '1i',
-                    u_textured: '1f',
-                    u_whiteFlash: '1f',
                 },
             });
         } catch (error) {
@@ -875,27 +863,6 @@ export class VectorRenderer {
         if (this.activeGradient && !uv) {
             uv = [this._gradientUV(a), this._gradientUV(b), this._gradientUV(c)];
         }
-        if (!this.clips.length && !uv) {
-            if (this.count + 3 > this.maxVertices) {
-                this._submit();
-            }
-            if (this.count + 3 > this.vertices.length / 8) {
-                const SIZE = Math.min(this.maxVertices, Math.max(this.count + 3, this.vertices.length / 4));
-                const NEXT = new Float32Array(SIZE * 8);
-                NEXT.set(this.vertices);
-                this.vertices = NEXT;
-            }
-            const DATA = this.vertices;
-            for (let i = 0; i < 3; i++) {
-                const POINT = i === 0 ? a : i === 1 ? b : c,
-                    K = this.count++ * 8;
-                DATA[K] = POINT.x;
-                DATA[K + 1] = POINT.y;
-                DATA[K + 2] = DATA[K + 3] = 0;
-                DATA.set(color, K + 4);
-            }
-            return;
-        }
         const POLY = this.clips.length
             ? this._clipTriangle(a, b, c, uv)
             : uv
@@ -909,19 +876,20 @@ export class VectorRenderer {
             if (this.count + 3 > this.maxVertices) {
                 this._submit();
             }
-            if (this.count + 3 > this.vertices.length / 8) {
-                const SIZE = Math.min(this.maxVertices, Math.max(this.count + 3, this.vertices.length / 4));
-                const NEXT = new Float32Array(SIZE * 8);
+            if ((this.count + 3) * VERTEX_FLOATS > this.vertices.length) {
+                const SIZE = Math.min(this.maxVertices, Math.max(this.count + 3, this.count * 2));
+                const NEXT = new Float32Array(SIZE * VERTEX_FLOATS);
                 NEXT.set(this.vertices);
                 this.vertices = NEXT;
             }
             for (const POINT of [POLY[0], POLY[i], POLY[i + 1]]) {
-                const K = this.count++ * 8;
+                const K = this.count++ * VERTEX_FLOATS;
                 this.vertices[K] = POINT.x;
                 this.vertices[K + 1] = POINT.y;
-                this.vertices[K + 2] = POINT.u ?? 0;
-                this.vertices[K + 3] = POINT.v ?? 0;
+                this.vertices[K + 2] = POINT.u ?? this.flatUV[0];
+                this.vertices[K + 3] = POINT.v ?? this.flatUV[1];
                 this.vertices.set(color, K + 4);
+                this.vertices.set(this.paintTemplate, K + 8);
             }
         }
     }
@@ -930,27 +898,16 @@ export class VectorRenderer {
             return;
         }
         this.device.stats.vectorSubmissions++;
-        const TEXTURE = this.activeTexture ?? this.white,
-            GRADIENT = this.activeGradient,
-            RADIAL = this.activeRadial;
-        this.device.uploadVertices(this.buffer, this.vertices.subarray(0, this.count * 8));
+        this.device.uploadVertices(this.buffer, this.vertices.subarray(0, this.count * VERTEX_FLOATS));
         this.device.draw({
-            pipeline: RADIAL ? this.pipeline : this.nonRadialPipeline,
+            pipeline: this.activeTarget ? this.groupPipeline : this.pipeline,
             buffer: this.buffer,
             count: this.count,
             uniforms: {
                 u_projection: this.projection,
                 u_texture: 0,
-                u_textured: TEXTURE === this.white ? 0 : 1,
-                u_whiteFlash: this.activeWhiteFlash ? 1 : 0,
-                ...(RADIAL
-                    ? {
-                          u_radial: GRADIENT?.radialEmpty ? 2 : 1,
-                          u_radial_params: GRADIENT?.radialParams ?? [0, 0, 0, 0],
-                      }
-                    : {}),
             },
-            textures: [TEXTURE],
+            textures: [this.activeTarget ?? this.atlas.texture],
             blend: this.blend,
             stencil: this.stencilDepth
                 ? {
@@ -974,26 +931,53 @@ export class VectorRenderer {
             this.blend = blend;
         }
     }
-    _useTexture(texture, { radial = false, whiteFlash = false, gradient = null } = {}) {
-        if (
-            this.activeTexture !== texture ||
-            this.activeRadial !== radial ||
-            this.activeWhiteFlash !== whiteFlash ||
-            this.activeGradient?.gradient !== gradient?.gradient
-        ) {
+    /**
+     * Selects the atlas region later vertices sample. Paint is vertex data, so changing it never submits: only the
+     * switch between the atlas and an offscreen group target (a different sampler) does.
+     */
+    _setPaint(region, { radial = false, whiteFlash = false, gradient = null } = {}) {
+        if (this.activeTarget) {
             this._submit();
+            this.activeTarget = null;
         }
-        this.activeTexture = texture;
+        const [U, V, W, H] = region.uvRect,
+            MODE = radial ? (gradient?.radialEmpty ? 2 : 1) : gradient ? 3 : 0,
+            PARAMS = radial ? (gradient?.radialParams ?? [0, 0, 0, 0]) : [0, 0, 0, 0];
         this.activeRadial = radial;
         this.activeWhiteFlash = whiteFlash;
         this.activeGradient = gradient;
+        this.activeRegion = region;
+        this.flatUV = [U + W / 2, V + H / 2];
+        this.paintTemplate.set([
+            region.layer,
+            whiteFlash ? 1 : 0,
+            MODE,
+            region.filter === 'nearest' ? 1 : 0,
+            ...PARAMS,
+            U,
+            V,
+            W,
+            H,
+        ]);
+    }
+    _useTarget(target) {
+        if (this.activeTarget !== target) {
+            this._submit();
+        }
+        this.activeTarget = target;
+        this.activeRegion = null;
+        this.activeRadial = false;
+        this.activeWhiteFlash = false;
+        this.activeGradient = null;
+        this.flatUV = [0, 0];
+        this.paintTemplate.set([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]);
     }
     fill(colorValue = [0, 0, 0, 1], rule = 'nonzero') {
         this._frame();
         if (rule !== 'nonzero' && rule !== 'evenodd') {
             throw new TypeError('rule must be nonzero or evenodd');
         }
-        this._useTexture(this.white);
+        this._setPaint(this.whiteRegion);
         this.device.stats.pathTessellations++;
         const COL = rgba(colorValue),
             VERTICES = tessellate(this.path, rule);
@@ -1004,7 +988,7 @@ export class VectorRenderer {
     fillRadialGradient(gradient) {
         this._frame();
         if (
-            !gradient?.texture ||
+            !gradient?.region ||
             !gradient.matrixInverse ||
             !Number.isFinite(gradient.radialScale) ||
             gradient.radialScale <= 0 ||
@@ -1014,7 +998,7 @@ export class VectorRenderer {
         ) {
             throw new TypeError('valid two-circle radial gradient texture and transform are required');
         }
-        this._useTexture(gradient.texture, {
+        this._setPaint(gradient.region, {
             radial: true,
             whiteFlash: gradient.whiteFlash,
             gradient,
@@ -1028,13 +1012,13 @@ export class VectorRenderer {
     fillLinearGradient(gradient) {
         this._frame();
         if (
-            !gradient?.texture ||
+            !gradient?.region ||
             !gradient.matrixInverse ||
             ![gradient.x0, gradient.y0, gradient.x1, gradient.y1].every(Number.isFinite)
         ) {
             throw new TypeError('valid linear gradient texture and transform are required');
         }
-        this._useTexture(gradient.texture, {
+        this._setPaint(gradient.region, {
             whiteFlash: gradient.whiteFlash,
             gradient,
         });
@@ -1063,7 +1047,7 @@ export class VectorRenderer {
         gradient = null,
     ) {
         this._frame();
-        this._useTexture(gradient?.texture ?? this.white, {
+        this._setPaint(gradient?.region ?? this.whiteRegion, {
             radial: gradient?.kind === 'radial',
             whiteFlash: gradient?.whiteFlash ?? false,
             gradient,
@@ -1254,7 +1238,7 @@ export class VectorRenderer {
         if (!points || points.length < 3) {
             return;
         }
-        this._useTexture(this.white);
+        this._setPaint(this.whiteRegion);
         const M = this.matrix,
             ANCHOR = point(M, points[0][0], points[0][1]);
         let previous = point(M, points[1][0], points[1][1]);
@@ -1284,9 +1268,10 @@ export class VectorRenderer {
         }
         return this.glyphAtlas.measureText(text, options);
     }
-    drawGlyphQuad(texture, x, y, width, height, uv, colorValue) {
+    /** `region` is the glyph atlas region (its layer selects the page); `uv` is already in array coordinates. */
+    drawGlyphQuad(region, x, y, width, height, uv, colorValue) {
         this._frame();
-        this._useTexture(texture);
+        this._setPaint(region);
         const A = {
                 ...point(this.matrix, x, y),
             },
@@ -1441,7 +1426,7 @@ export class VectorRenderer {
         this.stencilClips = GROUP.stencilClips;
         this.stencilDepth = this.stencilClips.length;
         this.projection.set(GROUP.projection);
-        this._useTexture(GROUP.target);
+        this._useTarget(GROUP.target);
         const { x: X, y: Y, width: WIDTH, height: HEIGHT } = GROUP.bounds,
             U = WIDTH / GROUP.target.width,
             V = HEIGHT / GROUP.target.height,
@@ -1473,7 +1458,7 @@ export class VectorRenderer {
             [0, 1 - V],
         ]);
         this._submit();
-        this._useTexture(this.white);
+        this._setPaint(this.whiteRegion);
     }
     dispose() {
         if (this.state === 'disposed') {
@@ -1493,15 +1478,17 @@ export class VectorRenderer {
         this.device.deleteVertexBuffer(this.dynamicClipBuffer);
         this.device.deleteVertexBuffer(this.buffer);
         this.device.deletePipeline(this.clipPipeline);
-        this.device.deletePipeline(this.nonRadialPipeline);
+        this.device.deletePipeline(this.groupPipeline);
         this.device.deletePipeline(this.pipeline);
-        this.device.deleteTexture(this.white);
+        if (this.whiteRegion && this.device.state === 'ready') {
+            this.atlas.release(this.whiteRegion);
+        }
         this.buffer =
             this.dynamicClipBuffer =
             this.clipPipeline =
-            this.nonRadialPipeline =
+            this.groupPipeline =
             this.pipeline =
-            this.white =
+            this.whiteRegion =
                 null;
         this.state = 'disposed';
     }

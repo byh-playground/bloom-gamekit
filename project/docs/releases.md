@@ -1,3 +1,7 @@
+## v0.21.0 (2026-10-28)
+
+`WebGLDevice.textureAtlas`(`TextureAtlasArray`)와 `updateTextureRegion`/`clearTextureRegion`을 추가하고 VectorRenderer의 흰 texel, VectorContext의 gradient ramp, GlyphAtlas 페이지를 이 공유 `TEXTURE_2D_ARRAY`의 region으로 옮깁니다. 정점이 layer·gradient 모드·white flash·nearest·radial 파라미터를 담으므로 fill, 선형/radial gradient, 글리프가 한 draw로 묶이고 blend 전환·stencil clip 변경·반투명 group만 배치를 끊습니다(같은 gradient 장면 draw 7→1, 기존 radial 프래그먼트와 Canvas2D 비교 오차 최대 1). 공개 계약 변경: gradient 객체 `texture` → `region`, `GlyphAtlas` callback `texture` → `region`과 배열 좌표 uv, `drawGlyphQuad`의 첫 인자는 region, VectorRenderer의 `white`/`nonRadialPipeline`은 제거(별도 `groupPipeline` 추가). 이미지 캐시·Renderer2D·group target은 기존 텍스처를 씁니다. 측정은 SwiftShader이며 GPU 시간·모바일 메모리는 검증하지 않았습니다.
+
 ## v0.20.0 (2026-10-28)
 
 벡터 raster atlas와 스프라이트 atlas가 호출자 소유 `TEXTURE_2D_ARRAY`의 레이어 하나에 구워지고(`textureArray`, `layer`), raster atlas는 공통 단위 사각 메시를 `MeshRenderer.drawQuadRuns`로 부위마다 인스턴스로 그립니다. 포즈는 같은 draw의 정점 셰이더가 키프레임 텍스처에서 계산하므로 별도 pose pass가 없습니다. 같은 장면(액터 250, 종 5)의 draw call이 500 → 250 → 1이고 texture·mesh 끊김이 249 → 0입니다(`project/docs/draw-batching-benchmark.json`, `npm run benchmark:draw-batching -- <label>`). `maxAtlasSize`/`maxAtlasBytes` 옵션은 제거되고 크기는 배열이 정하며, `Device.createTextureLayerTarget`, `MeshRenderer.acquireQuadMesh/releaseQuadMesh/drawQuadRuns`가 추가됩니다. 모핑·opacityChannel·셰이더 표면 에셋은 기존처럼 벡터 경로로 그립니다. VectorRenderer, 글리프 아틀라스, Renderer2D는 아직 기존 텍스처를 씁니다. 벤치마크는 SwiftShader 소프트웨어 렌더러에서 측정했으므로 GPU 시간·모바일 메모리는 검증하지 않았습니다.
