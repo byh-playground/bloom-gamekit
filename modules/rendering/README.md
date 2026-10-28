@@ -338,7 +338,7 @@ The browser's network cache is origin/top-site partitioned and browser-managed. 
 
 ## Shader yarn and sketch surfaces
 
-`YarnSurfaceRenderer` is an opt-in WebGL 2 material path for SVG-authored filled surfaces. It keeps the triangulated fill in local vector coordinates and evaluates yarn stitches, edge loops, fibers, sketch hatching, and animated sketch echoes in fragment shaders. The only extra retained geometry is a fixed strip following the closed SVG contour; changing `stitchWidth`, `stitchHeight`, `fiberSpacing`, or `fiberMax` does not add vertices. It creates no per-stitch or per-fiber triangles and no artwork texture.
+`YarnSurfaceRenderer` is an opt-in WebGL 2 material path for SVG-authored filled surfaces. It keeps the triangulated fill in local vector coordinates and evaluates yarn stitches, edge loops, fibers, sketch hatching, and animated sketch echoes in fragment shaders. The only extra retained geometry is a fixed strip following the closed SVG contour; changing `stitchWidth`, `stitchHeight`, `fiberSpacing`, or `fiberMax` does not add vertices. It creates no per-stitch or per-fiber triangles and no artwork texture (the first yarn surface creates one shared 256x256 stitch distance field, identical for every asset, which `dispose()` releases and the device restores after a lost context).
 
 The source compiler supplies a complete triangle list with six floats per vertex (`x, y, r, g, b, a`), one closed contour as flat `x, y` pairs, the original SVG style object, and optional per-contour RGBA values for gradient fills. Edge colors default to the mean fill color. Style values remain authored in the SVG metadata and invalid or incomplete styles throw; this renderer does not silently fall back to tessellated effect triangles.
 
