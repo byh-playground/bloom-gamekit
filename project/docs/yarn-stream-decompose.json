@@ -1,0 +1,252 @@
+{
+    "runs": [
+        {
+            "label": "decomp-high",
+            "gpuPreference": "high",
+            "renderer": "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 Ti (0x00002191) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+            "frames": 60,
+            "repeats": 3,
+            "scenes": [
+                {
+                    "definition": {
+                        "n": 1024,
+                        "layout": "layered"
+                    },
+                    "yarnSurfaces": 1024,
+                    "variants": {
+                        "none": {
+                            "gpuMs": 0.115008,
+                            "cpuMs": 0.20000001788139343
+                        },
+                        "full": {
+                            "gpuMs": 2.03024,
+                            "cpuMs": 4.100000023841858
+                        },
+                        "fillOnly": {
+                            "gpuMs": 1.603072,
+                            "cpuMs": 3.699999988079071
+                        },
+                        "edgeOnly": {
+                            "gpuMs": 0.30896,
+                            "cpuMs": 3.600000023841858
+                        },
+                        "fillFlat": {
+                            "gpuMs": 0.32752,
+                            "cpuMs": 3.7000000178813934
+                        },
+                        "noPattern": {
+                            "gpuMs": 1.319168,
+                            "cpuMs": 3.9000000059604645
+                        },
+                        "noFiber": {
+                            "gpuMs": 1.89952,
+                            "cpuMs": 3.7000000178813934
+                        },
+                        "noCurve": {
+                            "gpuMs": 1.9624,
+                            "cpuMs": 3.9000000059604645
+                        },
+                        "noUnder": {
+                            "gpuMs": 1.76672,
+                            "cpuMs": 3.7999999821186066
+                        },
+                        "noGroove": {
+                            "gpuMs": 1.7336,
+                            "cpuMs": 3.699999988079071
+                        },
+                        "noLight": {
+                            "gpuMs": 1.724416,
+                            "cpuMs": 3.7000000178813934
+                        },
+                        "noTwist": {
+                            "gpuMs": 1.831488,
+                            "cpuMs": 3.699999988079071
+                        }
+                    }
+                },
+                {
+                    "definition": {
+                        "n": 1024,
+                        "layout": "layered",
+                        "yarnRadius": 64
+                    },
+                    "yarnSurfaces": 1024,
+                    "variants": {
+                        "none": {
+                            "gpuMs": 0.12288,
+                            "cpuMs": 0.30000001192092896
+                        },
+                        "full": {
+                            "gpuMs": 6.587392,
+                            "cpuMs": 8.5
+                        },
+                        "fillOnly": {
+                            "gpuMs": 5.877856,
+                            "cpuMs": 4
+                        },
+                        "edgeOnly": {
+                            "gpuMs": 0.679392,
+                            "cpuMs": 3.699999988079071
+                        },
+                        "fillFlat": {
+                            "gpuMs": 0.70096,
+                            "cpuMs": 3.5999999940395355
+                        },
+                        "noPattern": {
+                            "gpuMs": 1.816576,
+                            "cpuMs": 4.300000011920929
+                        },
+                        "noFiber": {
+                            "gpuMs": 6.708736,
+                            "cpuMs": 4
+                        },
+                        "noCurve": {
+                            "gpuMs": 6.958112,
+                            "cpuMs": 4
+                        },
+                        "noUnder": {
+                            "gpuMs": 5.8336,
+                            "cpuMs": 3.800000011920929
+                        },
+                        "noGroove": {
+                            "gpuMs": 6.171936,
+                            "cpuMs": 3.7999999821186066
+                        },
+                        "noLight": {
+                            "gpuMs": 5.851936,
+                            "cpuMs": 4.199999988079071
+                        },
+                        "noTwist": {
+                            "gpuMs": 6.381312,
+                            "cpuMs": 4.199999988079071
+                        }
+                    }
+                }
+            ]
+        },
+        {
+            "label": "decomp-low",
+            "gpuPreference": "low",
+            "renderer": "ANGLE (Intel, Intel(R) UHD Graphics 630 (0x00003E9B) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+            "frames": 60,
+            "repeats": 3,
+            "scenes": [
+                {
+                    "definition": {
+                        "n": 1024,
+                        "layout": "layered"
+                    },
+                    "yarnSurfaces": 1024,
+                    "variants": {
+                        "none": {
+                            "gpuMs": 1.433744,
+                            "cpuMs": 0.4000000059604645
+                        },
+                        "full": {
+                            "gpuMs": 31.185208,
+                            "cpuMs": 31.5
+                        },
+                        "fillOnly": {
+                            "gpuMs": 26.167728,
+                            "cpuMs": 26.30000001192093
+                        },
+                        "edgeOnly": {
+                            "gpuMs": 5.679227,
+                            "cpuMs": 6.5
+                        },
+                        "fillFlat": {
+                            "gpuMs": 5.67806,
+                            "cpuMs": 6.700000017881393
+                        },
+                        "noPattern": {
+                            "gpuMs": 8.518882,
+                            "cpuMs": 8.400000005960464
+                        },
+                        "noFiber": {
+                            "gpuMs": 30.172545,
+                            "cpuMs": 31.19999998807907
+                        },
+                        "noCurve": {
+                            "gpuMs": 29.747131,
+                            "cpuMs": 30
+                        },
+                        "noUnder": {
+                            "gpuMs": 27.172641,
+                            "cpuMs": 27
+                        },
+                        "noGroove": {
+                            "gpuMs": 25.367815,
+                            "cpuMs": 25.200000017881393
+                        },
+                        "noLight": {
+                            "gpuMs": 25.270565,
+                            "cpuMs": 25.399999976158142
+                        },
+                        "noTwist": {
+                            "gpuMs": 28.476969,
+                            "cpuMs": 28.599999994039536
+                        }
+                    }
+                },
+                {
+                    "definition": {
+                        "n": 1024,
+                        "layout": "layered",
+                        "yarnRadius": 64
+                    },
+                    "yarnSurfaces": 1024,
+                    "variants": {
+                        "none": {
+                            "gpuMs": 1.506327,
+                            "cpuMs": 0.5
+                        },
+                        "full": {
+                            "gpuMs": 98.048107,
+                            "cpuMs": 95.90000000596046
+                        },
+                        "fillOnly": {
+                            "gpuMs": 86.357987,
+                            "cpuMs": 86.69999998807907
+                        },
+                        "edgeOnly": {
+                            "gpuMs": 12.227951,
+                            "cpuMs": 12.400000005960464
+                        },
+                        "fillFlat": {
+                            "gpuMs": 11.741619,
+                            "cpuMs": 11.700000017881393
+                        },
+                        "noPattern": {
+                            "gpuMs": 22.35391,
+                            "cpuMs": 22.299999982118607
+                        },
+                        "noFiber": {
+                            "gpuMs": 94.92437,
+                            "cpuMs": 95.19999998807907
+                        },
+                        "noCurve": {
+                            "gpuMs": 95.205869,
+                            "cpuMs": 96.09999999403954
+                        },
+                        "noUnder": {
+                            "gpuMs": 86.209488,
+                            "cpuMs": 88.7000000178814
+                        },
+                        "noGroove": {
+                            "gpuMs": 81.280674,
+                            "cpuMs": 81
+                        },
+                        "noLight": {
+                            "gpuMs": 83.135667,
+                            "cpuMs": 84.19999998807907
+                        },
+                        "noTwist": {
+                            "gpuMs": 92.094631,
+                            "cpuMs": 92.59999999403954
+                        }
+                    }
+                }
+            ]
+        }
+    ]
+}
