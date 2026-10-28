@@ -940,7 +940,6 @@
   var MAX_PARTS = 16;
   var POSE_WIDTH = MAX_PARTS * 3;
   var OVERRIDE_WIDTH = MAX_PARTS * 2;
-  var QUAD = new Float32Array([0, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 1]);
   var IDENTITY2 = Object.freeze([1, 0, 0, 1, 0, 0]);
   var ZERO_MORPH = Object.freeze([0, 0]);
   var EMPTY_CLIP = Object.freeze({
@@ -968,6 +967,20 @@
     offset: 64 + i * 16,
     source: "instance"
   }));
+  var QUAD_VERTICES = Float32Array.from(
+    [
+      [0, 0],
+      [1, 0],
+      [1, 1],
+      [0, 1]
+    ].flatMap(([x, y]) => [x, y, 1, 1, 1, 1, 0, 0, 0, 0, 0])
+  );
+  var TEXTURE_PART_INSTANCE_ATTRIBUTE = Object.freeze({
+    name: "i_part",
+    size: 1,
+    offset: 100,
+    source: "instance"
+  });
   var TEXTURE_LAYER_INSTANCE_ATTRIBUTE = Object.freeze({
     name: "i_layer",
     size: 1,
@@ -976,7 +989,7 @@
   });
   var INSTANCE_STRIDE_FLOATS = 16;
   var INSTANCE_STRIDE_BYTES = INSTANCE_STRIDE_FLOATS * Float32Array.BYTES_PER_ELEMENT;
-  var QUAD_VERTICES = new Float32Array([-1, -1, 1, -1, 1, 1, -1, -1, 1, 1, -1, 1]);
+  var QUAD_VERTICES2 = new Float32Array([-1, -1, 1, -1, 1, 1, -1, -1, 1, 1, -1, 1]);
   var TAU2 = Math.PI * 2;
   var SILHOUETTE_OFFSETS = Object.freeze(
     Array.from(
@@ -1020,7 +1033,7 @@
   var WHITE3 = Object.freeze([1, 1, 1, 1]);
   var WHITE4 = Object.freeze([1, 1, 1, 1]);
   var CLEAR = Object.freeze([0, 0, 0, 0]);
-  var VERTEX4 = `#version 300 es
+  var VERTEX3 = `#version 300 es
 in vec2 a_position;
 in vec2 a_uv;
 in vec4 a_color;
@@ -1032,7 +1045,7 @@ void main() {
   gl_Position = vec4(p.xy, 0.0, 1.0);
   v_uv = a_uv; v_color = a_color;
 }`;
-  var FRAGMENT3 = `#version 300 es
+  var FRAGMENT2 = `#version 300 es
 precision mediump float;
 uniform sampler2D u_texture;
 in vec2 v_uv;
@@ -1195,8 +1208,8 @@ void main() {
       let vertex;
       let fragment3;
       try {
-        vertex = compile2(GL, GL.VERTEX_SHADER, VERTEX4);
-        fragment3 = compile2(GL, GL.FRAGMENT_SHADER, FRAGMENT3);
+        vertex = compile2(GL, GL.VERTEX_SHADER, VERTEX3);
+        fragment3 = compile2(GL, GL.FRAGMENT_SHADER, FRAGMENT2);
         this.program = GL.createProgram();
         if (!this.program) {
           throw new Error("WebGL program allocation failed");
