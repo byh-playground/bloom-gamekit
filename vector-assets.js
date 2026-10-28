@@ -4540,37 +4540,6 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
   });
 }
 
-// modules/vector-assets/layer-claims.js
-var CLAIMS = /* @__PURE__ */ new WeakMap();
-var nextArrayId = 1;
-var IDS = /* @__PURE__ */ new WeakMap();
-function textureArrayId(textureArray) {
-  let id = IDS.get(textureArray);
-  if (id === void 0) {
-    id = nextArrayId++;
-    IDS.set(textureArray, id);
-  }
-  return id;
-}
-function claimTextureLayer(textureArray, layer) {
-  let layers = CLAIMS.get(textureArray);
-  if (!layers) {
-    layers = /* @__PURE__ */ new Set();
-    CLAIMS.set(textureArray, layers);
-  }
-  if (layers.has(layer)) {
-    throw new RangeError(`Texture array layer ${layer} already belongs to another atlas`);
-  }
-  layers.add(layer);
-  let released = false;
-  return () => {
-    if (!released) {
-      released = true;
-      layers.delete(layer);
-    }
-  };
-}
-
 // modules/vector-assets/raster-atlas.js
 var IDENTITY_MATRIX = Object.freeze([1, 0, 0, 1, 0, 0]);
 var NOW2 = () => globalThis.performance?.now?.() ?? null;
@@ -4673,12 +4642,17 @@ function packRuns(runs, maxWidth, maxHeight) {
   }
   return best;
 }
-function runTables(runs, packed, layerWidth, layerHeight, pixelsPerUnit, padding) {
-  const UV_RECTS = new Float32Array(runs.length * 4), LOCAL_RECTS = new Float32Array(runs.length * 4), PARTS = new Float32Array(runs.length);
+function runTables(runs, packed, region, pixelsPerUnit, padding) {
+  const ATLAS = region.atlas, UV_RECTS = new Float32Array(runs.length * 4), LOCAL_RECTS = new Float32Array(runs.length * 4), PARTS = new Float32Array(runs.length);
   for (let runIndex = 0; runIndex < runs.length; runIndex++) {
     const RUN = runs[runIndex], [TILE_X, TILE_Y] = packed.positions[runIndex];
     UV_RECTS.set(
-      [TILE_X / layerWidth, 1 - TILE_Y / layerHeight, RUN.tileWidth / layerWidth, -RUN.tileHeight / layerHeight],
+      [
+        (region.x + TILE_X) / ATLAS.width,
+        (region.y + region.height - TILE_Y) / ATLAS.height,
+        RUN.tileWidth / ATLAS.width,
+        -RUN.tileHeight / ATLAS.height
+      ],
       runIndex * 4
     );
     LOCAL_RECTS.set(
@@ -4694,21 +4668,20 @@ function runTables(runs, packed, layerWidth, layerHeight, pixelsPerUnit, padding
   }
   return { uvRects: UV_RECTS, localRects: LOCAL_RECTS, parts: PARTS };
 }
-function createVectorRasterAtlas(meshRenderer, asset, compiledAsset, { textureArray, layer, pixelsPerUnit = 1, padding = 2 } = {}) {
+function createVectorRasterAtlas(context, asset, compiledAsset, { pixelsPerUnit = 1, padding = 2 } = {}) {
   validateCompiledAsset(compiledAsset);
-  const DEVICE = meshRenderer?.device;
-  const SOURCE_MESH_MATCHES = asset?.mesh ? asset.mesh.renderer === meshRenderer && asset.mesh.partCount === compiledAsset.geometry.partCount && sameGeometry(asset.mesh, compiledAsset.geometry) : compiledAsset.geometry.vertices.length === 0;
-  if (!DEVICE?.createTextureLayerTarget || !DEVICE?.bindRenderTarget || !DEVICE?.unbindRenderTarget || !asset?.ownsPlayer || asset.disposed || asset.sourceSha256 !== compiledAsset.sourceSha256 || !SOURCE_MESH_MATCHES) {
-    throw new TypeError("A matching live vector asset and MeshRenderer are required");
+  const DEVICE = context?.device;
+  const MESHES = context?.meshRenderer;
+  const SOURCE_MESH_MATCHES = asset?.mesh ? asset.mesh.renderer === MESHES && asset.mesh.partCount === compiledAsset.geometry.partCount && sameGeometry(asset.mesh, compiledAsset.geometry) : compiledAsset.geometry.vertices.length === 0;
+  if (!context?.drawQuads || !context?.drawVectorAsset || !DEVICE?.createTextureLayerTarget || !DEVICE?.bindRenderTarget || !DEVICE?.unbindRenderTarget || !asset?.ownsPlayer || asset.disposed || asset.sourceSha256 !== compiledAsset.sourceSha256 || !SOURCE_MESH_MATCHES) {
+    throw new TypeError(
+      "A VectorContext and a matching live vector asset created on its mesh renderer are required"
+    );
   }
-  if (!textureArray || !DEVICE.isTextureArray(textureArray)) {
-    throw new TypeError("A texture array created by the same device is required");
+  if (!Number.isFinite(pixelsPerUnit) || pixelsPerUnit <= 0 || !Number.isSafeInteger(padding) || padding < 1) {
+    throw new TypeError("A positive pixel scale and padding are required");
   }
-  if (!Number.isSafeInteger(layer) || layer < 0 || layer >= textureArray.layers || !Number.isFinite(pixelsPerUnit) || pixelsPerUnit <= 0 || !Number.isSafeInteger(padding) || padding < 1) {
-    throw new TypeError("A layer inside the texture array, a positive pixel scale and padding are required");
-  }
-  const RELEASE_LAYER = claimTextureLayer(textureArray, layer);
-  const LAYER_WIDTH = textureArray.width, LAYER_HEIGHT = textureArray.height;
+  const ATLAS = DEVICE.textureAtlas;
   const GEOMETRY = compiledAsset.geometry;
   let unsupportedReason = null;
   if (GEOMETRY.morphCount) {
@@ -4734,14 +4707,23 @@ function createVectorRasterAtlas(meshRenderer, asset, compiledAsset, { textureAr
       }
     }
   }
-  const PACKED = unsupportedReason ? null : packRuns(RUNS, LAYER_WIDTH, LAYER_HEIGHT);
+  const PACKED = unsupportedReason ? null : packRuns(RUNS, ATLAS.width - ATLAS.gutter * 2, ATLAS.height - ATLAS.gutter * 2);
   if (!unsupportedReason && !PACKED) {
     unsupportedReason = "atlasLimit";
   }
-  const TABLES = unsupportedReason ? null : runTables(RUNS, PACKED, LAYER_WIDTH, LAYER_HEIGHT, pixelsPerUnit, padding);
-  const MATRICES = TABLES ? new Float32Array(RUNS.length * 6) : null;
+  let region = null;
+  if (!unsupportedReason) {
+    try {
+      region = ATLAS.allocate(PACKED.width, PACKED.height);
+    } catch (error) {
+      if (!(error instanceof RangeError)) {
+        throw error;
+      }
+      unsupportedReason = "atlasLimit";
+    }
+  }
+  const TABLES = region ? runTables(RUNS, PACKED, region, pixelsPerUnit, padding) : null;
   let target = null;
-  let quadAcquired = false;
   let bakedRestores = -1;
   let failedFrame = -1;
   let failedRestores = -1;
@@ -4755,21 +4737,14 @@ function createVectorRasterAtlas(meshRenderer, asset, compiledAsset, { textureAr
   const FALLBACK = (player, options, reason) => {
     vectorDraws++;
     FALLBACK_REASONS[reason] = (FALLBACK_REASONS[reason] ?? 0) + 1;
-    player.draw(options);
+    context.drawVectorAsset(player, options);
     return { backend: "vector", reason };
   };
-  const RELEASE = () => {
-    const TARGET = target, ACQUIRED = quadAcquired;
+  const RELEASE_TARGET = () => {
+    const TARGET = target;
     target = null;
-    quadAcquired = false;
-    try {
-      if (ACQUIRED) {
-        meshRenderer.releaseQuadMesh();
-      }
-    } finally {
-      if (TARGET) {
-        DEVICE.deleteRenderTarget(TARGET);
-      }
+    if (TARGET) {
+      DEVICE.deleteRenderTarget(TARGET);
     }
   };
   const BAKE = () => {
@@ -4792,37 +4767,40 @@ function createVectorRasterAtlas(meshRenderer, asset, compiledAsset, { textureAr
     const START = NOW2();
     let bound = false;
     try {
-      meshRenderer.flush("rasterAtlasBakeBoundary");
+      DEVICE.flushBatchers("rasterAtlasBakeBoundary");
       if (target && !DEVICE.isRenderTargetAvailable(target)) {
-        DEVICE.deleteRenderTarget(target);
-        target = null;
+        RELEASE_TARGET();
       }
-      target ??= DEVICE.createTextureLayerTarget(textureArray, layer);
-      if (!quadAcquired) {
-        meshRenderer.acquireQuadMesh();
-        quadAcquired = true;
-      }
+      target ??= DEVICE.createTextureLayerTarget(ATLAS.texture, region.layer);
+      DEVICE.clearTextureRegion(
+        ATLAS.texture,
+        region.layer,
+        region.paddedX,
+        region.paddedY,
+        region.width + ATLAS.gutter * 2,
+        region.height + ATLAS.gutter * 2
+      );
       DEVICE.bindRenderTarget(target);
       bound = true;
-      DEVICE.clear({ color: [0, 0, 0, 0] });
+      const TOP = ATLAS.height - (region.y + region.height);
       for (let index = 0; index < RUNS.length; index++) {
-        const RUN = RUNS[index], [TILE_X, TILE_Y] = PACKED.positions[index], TX = TILE_X + padding - pixelsPerUnit * RUN.minX, TY = TILE_Y + padding - pixelsPerUnit * RUN.minY;
-        meshRenderer.drawMesh(asset.mesh, {
+        const RUN = RUNS[index], [TILE_X, TILE_Y] = PACKED.positions[index], TX = region.x + TILE_X + padding - pixelsPerUnit * RUN.minX, TY = TOP + TILE_Y + padding - pixelsPerUnit * RUN.minY;
+        MESHES.drawMesh(asset.mesh, {
           projection: [
-            2 * pixelsPerUnit / LAYER_WIDTH,
+            2 * pixelsPerUnit / ATLAS.width,
             0,
             0,
             0,
-            -2 * pixelsPerUnit / LAYER_HEIGHT,
+            -2 * pixelsPerUnit / ATLAS.height,
             0,
-            2 * TX / LAYER_WIDTH - 1,
-            1 - 2 * TY / LAYER_HEIGHT,
+            2 * TX / ATLAS.width - 1,
+            1 - 2 * TY / ATLAS.height,
             1
           ],
           indexRange: [RUN.firstIndex, RUN.indexCount]
         });
       }
-      meshRenderer.flush("rasterAtlasBake");
+      MESHES.flush("rasterAtlasBake");
       DEVICE.unbindRenderTarget(target);
       bound = false;
       bakedRestores = RESTORES;
@@ -4834,14 +4812,14 @@ function createVectorRasterAtlas(meshRenderer, asset, compiledAsset, { textureAr
       return { backend: "raster", reason: null };
     } catch (error) {
       if (bound) {
-        meshRenderer.discard();
+        MESHES.discard();
         try {
           DEVICE.unbindRenderTarget(target);
         } catch {
         }
       }
       try {
-        RELEASE();
+        RELEASE_TARGET();
       } catch {
       }
       bakedRestores = -1;
@@ -4885,16 +4863,13 @@ function createVectorRasterAtlas(meshRenderer, asset, compiledAsset, { textureAr
     if (!POSE) {
       return FALLBACK(player, options, "poseUnavailable");
     }
-    for (let run = 0; run < RUNS.length; run++) {
-      MATRICES.set(MATRIX, run * 6);
-    }
-    meshRenderer.drawQuadRuns({
+    context.drawQuads({
       ...DRAW_OPTIONS,
-      matrices: MATRICES,
-      runs: TABLES,
-      texture: textureArray,
-      layer,
-      pose: POSE
+      matrix: MATRIX,
+      layer: region.layer,
+      filter: region.filter,
+      pose: POSE,
+      ...TABLES
     });
     rasterDraws++;
     return { backend: "raster", reason: null };
@@ -4904,13 +4879,15 @@ function createVectorRasterAtlas(meshRenderer, asset, compiledAsset, { textureAr
       return false;
     }
     if (DEVICE.state === "ready" && DEVICE.active) {
-      meshRenderer.flush("rasterAtlasDispose");
+      DEVICE.flushBatchers("rasterAtlasDispose");
     }
+    disposed = true;
     try {
-      RELEASE();
+      RELEASE_TARGET();
     } finally {
-      disposed = true;
-      RELEASE_LAYER();
+      if (region && DEVICE.state === "ready") {
+        ATLAS.release(region);
+      }
     }
     return true;
   };
@@ -4926,9 +4903,9 @@ function createVectorRasterAtlas(meshRenderer, asset, compiledAsset, { textureAr
         disposed,
         reason: unsupportedReason ?? (lastFailure ? "bakeFailed" : null),
         lastError: lastFailure,
-        layer,
+        layer: region?.layer ?? null,
         runCount: RUNS?.length ?? 0,
-        // Region of the layer the packed runs occupy; the layer itself is owned by the texture array.
+        // The packed runs' region of the shared atlas array.
         atlasWidth: PACKED?.width ?? 0,
         atlasHeight: PACKED?.height ?? 0,
         atlasBytes: PACKED?.bytes ?? 0,
@@ -4939,295 +4916,6 @@ function createVectorRasterAtlas(meshRenderer, asset, compiledAsset, { textureAr
         vectorDraws,
         fallbackReasons: { ...FALLBACK_REASONS }
       };
-    }
-  });
-}
-
-// modules/rendering/sprite-animation.js
-function createSpriteAnimation(meshRenderer, texture, definition) {
-  if (!meshRenderer?.acquireQuadMesh || !meshRenderer?.drawMesh || !meshRenderer?.releaseQuadMesh) {
-    throw new TypeError("A MeshRenderer is required");
-  }
-  if (!meshRenderer.device?.textures?.has(texture)) {
-    throw new TypeError("A live Device texture owned by the mesh renderer is required");
-  }
-  const ATLAS_WIDTH = texture.width;
-  const ATLAS_HEIGHT = texture.height;
-  const LAYER_COUNT = meshRenderer.device.isTextureArray(texture) ? texture.layers : 1;
-  const INPUT_FRAMES = definition?.frames;
-  const INPUT_CLIPS = definition?.clips;
-  const TEXTURE_ORIGIN = definition?.textureOrigin ?? "top-left";
-  if (TEXTURE_ORIGIN !== "top-left" && TEXTURE_ORIGIN !== "bottom-left") {
-    throw new TypeError("textureOrigin must be top-left or bottom-left");
-  }
-  if (!Array.isArray(INPUT_FRAMES) || INPUT_FRAMES.length < 1 || INPUT_FRAMES.length > 4096) {
-    throw new RangeError("Sprite animation requires 1..4096 atlas frames");
-  }
-  if (!INPUT_CLIPS || typeof INPUT_CLIPS !== "object" || Array.isArray(INPUT_CLIPS)) {
-    throw new TypeError("Named sprite clips are required");
-  }
-  const FRAMES = [];
-  const FRAME_RECTS = [];
-  const INTEGER = (value, name, minimum = 0) => {
-    if (!Number.isSafeInteger(value) || value < minimum) {
-      throw new TypeError(`${name} must be an integer >= ${minimum}`);
-    }
-  };
-  for (let index = 0; index < INPUT_FRAMES.length; index++) {
-    const FRAME = INPUT_FRAMES[index];
-    const X = FRAME?.x;
-    const Y = FRAME?.y;
-    const WIDTH = FRAME?.width;
-    const HEIGHT = FRAME?.height;
-    const GUTTER = FRAME?.gutter ?? definition.gutter ?? 0;
-    const SOURCE_WIDTH = FRAME?.sourceWidth ?? definition.sourceWidth ?? WIDTH;
-    const SOURCE_HEIGHT = FRAME?.sourceHeight ?? definition.sourceHeight ?? HEIGHT;
-    const SOURCE_X = FRAME?.sourceX ?? 0;
-    const SOURCE_Y = FRAME?.sourceY ?? 0;
-    const PIVOT_X = FRAME?.pivotX ?? definition.pivotX ?? 0;
-    const PIVOT_Y = FRAME?.pivotY ?? definition.pivotY ?? 0;
-    const DURATION_MS = FRAME?.durationMs;
-    const LAYER = FRAME?.layer ?? 0;
-    for (const [NAME, VALUE, MINIMUM] of [
-      ["frame layer", LAYER, 0],
-      ["frame x", X, 0],
-      ["frame y", Y, 0],
-      ["frame width", WIDTH, 1],
-      ["frame height", HEIGHT, 1],
-      ["frame gutter", GUTTER, 0],
-      ["source width", SOURCE_WIDTH, 1],
-      ["source height", SOURCE_HEIGHT, 1],
-      ["source x", SOURCE_X, 0],
-      ["source y", SOURCE_Y, 0]
-    ]) {
-      INTEGER(VALUE, NAME, MINIMUM);
-    }
-    if (LAYER >= LAYER_COUNT) {
-      throw new RangeError("Sprite frame layer exceeds the texture layer count");
-    }
-    if (X - GUTTER < 0 || Y - GUTTER < 0 || X + WIDTH + GUTTER > ATLAS_WIDTH || Y + HEIGHT + GUTTER > ATLAS_HEIGHT || SOURCE_X + WIDTH > SOURCE_WIDTH || SOURCE_Y + HEIGHT > SOURCE_HEIGHT) {
-      throw new RangeError("Sprite frame, its gutter, or its trim exceeds its atlas/source viewport");
-    }
-    if (!Number.isFinite(PIVOT_X) || !Number.isFinite(PIVOT_Y)) {
-      throw new TypeError("Sprite pivot coordinates must be finite");
-    }
-    if (!Number.isFinite(DURATION_MS) || DURATION_MS <= 0 || DURATION_MS > 1e9) {
-      throw new RangeError("Sprite frame durationMs must be positive and at most 1,000,000,000");
-    }
-    const LEFT = SOURCE_X - PIVOT_X;
-    const TOP = SOURCE_Y - PIVOT_Y;
-    const U0 = X / ATLAS_WIDTH;
-    const V0 = TEXTURE_ORIGIN === "bottom-left" ? 1 - Y / ATLAS_HEIGHT : Y / ATLAS_HEIGHT;
-    const V1 = TEXTURE_ORIGIN === "bottom-left" ? 1 - (Y + HEIGHT) / ATLAS_HEIGHT : (Y + HEIGHT) / ATLAS_HEIGHT;
-    FRAME_RECTS.push(
-      Object.freeze({
-        localRect: Object.freeze([LEFT, TOP, WIDTH, HEIGHT]),
-        uvRect: Object.freeze([U0, V0, WIDTH / ATLAS_WIDTH, V1 - V0]),
-        layer: LAYER
-      })
-    );
-    FRAMES.push(
-      Object.freeze({
-        index,
-        layer: LAYER,
-        x: X,
-        y: Y,
-        width: WIDTH,
-        height: HEIGHT,
-        sourceX: SOURCE_X,
-        sourceY: SOURCE_Y,
-        sourceWidth: SOURCE_WIDTH,
-        sourceHeight: SOURCE_HEIGHT,
-        pivotX: PIVOT_X,
-        pivotY: PIVOT_Y,
-        gutter: GUTTER,
-        durationMs: DURATION_MS
-      })
-    );
-  }
-  const CLIPS = /* @__PURE__ */ new Map();
-  for (const [NAME, INPUT] of Object.entries(INPUT_CLIPS)) {
-    if (!/^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/.test(NAME) || !INPUT || typeof INPUT !== "object") {
-      throw new TypeError("Valid named sprite clips are required");
-    }
-    if (!Array.isArray(INPUT.frames) || !INPUT.frames.length || INPUT.frames.length > 4096) {
-      throw new RangeError("A sprite clip must reference 1..4096 frames");
-    }
-    const LOOP = INPUT.loop ?? "loop";
-    if (LOOP !== "loop" && LOOP !== "once") {
-      throw new TypeError("Sprite clip loop must be loop or once");
-    }
-    let durationMs = 0;
-    const ENDS = [];
-    for (const INDEX of INPUT.frames) {
-      INTEGER(INDEX, "clip frame index");
-      if (INDEX >= FRAMES.length) {
-        throw new RangeError("Clip frame index exceeds atlas frame count");
-      }
-      durationMs += FRAMES[INDEX].durationMs;
-      if (!Number.isFinite(durationMs) || durationMs > Number.MAX_SAFE_INTEGER) {
-        throw new RangeError("Sprite clip duration exceeds safe milliseconds");
-      }
-      ENDS.push(durationMs);
-    }
-    CLIPS.set(
-      NAME,
-      Object.freeze({
-        name: NAME,
-        frames: Object.freeze([...INPUT.frames]),
-        ends: Object.freeze(ENDS),
-        loop: LOOP,
-        durationMs
-      })
-    );
-  }
-  if (!CLIPS.size) {
-    throw new TypeError("At least one sprite clip is required");
-  }
-  const MESH = meshRenderer.acquireQuadMesh();
-  const PLAYERS = /* @__PURE__ */ new Set();
-  let disposed = false;
-  const READY = () => {
-    if (disposed) {
-      throw new Error("Sprite animation disposed");
-    }
-  };
-  const GET_CLIP = (name) => {
-    const CLIP = CLIPS.get(name);
-    if (!CLIP) {
-      throw new TypeError("Known sprite clip required");
-    }
-    return CLIP;
-  };
-  const CLOCK = (value) => {
-    if (!Number.isFinite(value)) {
-      throw new TypeError("Finite absolute timeMs required");
-    }
-  };
-  return Object.freeze({
-    createPlayer({ clip = CLIPS.keys().next().value, startedAtMs = 0, rate = 1 } = {}) {
-      READY();
-      CLOCK(startedAtMs);
-      if (!Number.isFinite(rate) || rate <= 0 || rate > 1e3) {
-        throw new RangeError("Sprite playback rate must be in (0,1000]");
-      }
-      let selectedClip = GET_CLIP(clip);
-      let anchorMs = startedAtMs;
-      let offsetMs = 0;
-      let playbackRate = rate;
-      let paused = false;
-      let playerDisposed = false;
-      const PLAYER_READY = () => {
-        READY();
-        if (playerDisposed) {
-          throw new Error("Sprite player disposed");
-        }
-      };
-      const ELAPSED = (timeMs) => {
-        PLAYER_READY();
-        CLOCK(timeMs);
-        const VALUE = Math.max(0, offsetMs + (paused ? 0 : (timeMs - anchorMs) * playbackRate));
-        if (!Number.isFinite(VALUE)) {
-          throw new RangeError("Sprite elapsed time exceeds finite milliseconds");
-        }
-        return VALUE;
-      };
-      const PLAYER = Object.freeze({
-        sample(timeMs) {
-          const ELAPSED_MS = ELAPSED(timeMs);
-          const TIME = selectedClip.loop === "loop" ? ELAPSED_MS % selectedClip.durationMs : Math.min(ELAPSED_MS, selectedClip.durationMs);
-          let slot = 0;
-          while (slot < selectedClip.ends.length - 1 && TIME >= selectedClip.ends[slot]) {
-            slot++;
-          }
-          const FRAME_INDEX = selectedClip.frames[slot];
-          return Object.freeze({
-            clip: selectedClip.name,
-            frameIndex: FRAME_INDEX,
-            frame: FRAMES[FRAME_INDEX],
-            elapsedMs: ELAPSED_MS,
-            finished: selectedClip.loop === "once" && ELAPSED_MS >= selectedClip.durationMs
-          });
-        },
-        draw({ timeMs, ...options } = {}) {
-          const SAMPLE = this.sample(timeMs);
-          meshRenderer.drawMesh(MESH, {
-            ...options,
-            ...FRAME_RECTS[SAMPLE.frameIndex],
-            texture
-          });
-          return SAMPLE;
-        },
-        seek(elapsedMs, timeMs) {
-          PLAYER_READY();
-          CLOCK(elapsedMs);
-          CLOCK(timeMs);
-          if (elapsedMs < 0) {
-            throw new RangeError("Sprite seek elapsedMs must be nonnegative");
-          }
-          offsetMs = elapsedMs;
-          anchorMs = timeMs;
-          return this;
-        },
-        setPaused(value, timeMs) {
-          PLAYER_READY();
-          if (typeof value !== "boolean") {
-            throw new TypeError("Sprite paused state must be boolean");
-          }
-          const CURRENT = ELAPSED(timeMs);
-          offsetMs = CURRENT;
-          anchorMs = timeMs;
-          paused = value;
-          return this;
-        },
-        setRate(value, timeMs) {
-          PLAYER_READY();
-          if (!Number.isFinite(value) || value <= 0 || value > 1e3) {
-            throw new RangeError("Sprite playback rate must be in (0,1000]");
-          }
-          const CURRENT = ELAPSED(timeMs);
-          offsetMs = CURRENT;
-          anchorMs = timeMs;
-          playbackRate = value;
-          return this;
-        },
-        setClip(name, timeMs) {
-          PLAYER_READY();
-          CLOCK(timeMs);
-          selectedClip = GET_CLIP(name);
-          offsetMs = 0;
-          anchorMs = timeMs;
-          return this;
-        },
-        dispose() {
-          if (playerDisposed) {
-            return false;
-          }
-          playerDisposed = true;
-          PLAYERS.delete(PLAYER);
-          return true;
-        }
-      });
-      PLAYERS.add(PLAYER);
-      return PLAYER;
-    },
-    stats() {
-      return Object.freeze({
-        frameCount: FRAMES.length,
-        clipCount: CLIPS.size,
-        playerCount: PLAYERS.size,
-        retainedBytes: 0,
-        textureOwned: false
-      });
-    },
-    dispose() {
-      if (disposed) {
-        return false;
-      }
-      disposed = true;
-      PLAYERS.clear();
-      meshRenderer.releaseQuadMesh();
-      return true;
     }
   });
 }
@@ -5287,13 +4975,12 @@ function packFrames(count, tileWidth, tileHeight, maxWidth, maxHeight) {
   }
   return best;
 }
-function spriteDefinition(clipName, clip, samples, packed, contentWidth, contentHeight, padding, bounds, ppu, layer) {
+function spriteDefinition(clipName, clip, samples, packed, contentWidth, contentHeight, padding, bounds, ppu) {
   const FRAMES = samples.map((sample, index) => ({
     x: index % packed.columns * (contentWidth + padding * 2) + padding,
     y: Math.floor(index / packed.columns) * (contentHeight + padding * 2) + padding,
     width: contentWidth,
     height: contentHeight,
-    layer,
     durationMs: sample.durationMs,
     sourceX: 0,
     sourceY: 0,
@@ -5321,30 +5008,27 @@ function spriteDefinition(clipName, clip, samples, packed, contentWidth, content
     })
   });
 }
-function createVectorSpriteAtlas(meshRenderer, asset, compiledAsset, {
+function createVectorSpriteAtlas(context, asset, compiledAsset, {
   clip,
   expression = compiledAsset?.metadata?.defaultExpression,
   sampleIntervalMs = 100,
   pixelsPerUnit = 1,
   padding = 2,
-  textureArray,
-  layer,
   paintRegions = null,
   supersample = 1
 } = {}) {
   validateCompiledAsset(compiledAsset);
-  const DEVICE = meshRenderer?.device, GEOMETRY = compiledAsset.geometry, SOURCE_MESH_MATCHES = asset?.mesh ? asset.mesh.renderer === meshRenderer && asset.mesh.partCount === GEOMETRY.partCount && sameGeometry2(asset.mesh, GEOMETRY) : GEOMETRY.vertices.length === 0;
-  if (!DEVICE?.createRenderTarget || !DEVICE?.createTextureLayerTarget || !DEVICE?.bindRenderTarget || !DEVICE?.unbindRenderTarget || !asset?.ownsPlayer || asset.disposed || asset.sourceSha256 !== compiledAsset.sourceSha256 || !SOURCE_MESH_MATCHES) {
-    throw new TypeError("A matching live vector asset and MeshRenderer are required");
+  const DEVICE = context?.device, MESHES = context?.meshRenderer, GEOMETRY = compiledAsset.geometry, SOURCE_MESH_MATCHES = asset?.mesh ? asset.mesh.renderer === MESHES && asset.mesh.partCount === GEOMETRY.partCount && sameGeometry2(asset.mesh, GEOMETRY) : GEOMETRY.vertices.length === 0;
+  if (!context?.drawQuads || !DEVICE?.createRenderTarget || !DEVICE?.blitRenderTarget || !DEVICE?.createTextureLayerTarget || !DEVICE?.bindRenderTarget || !DEVICE?.unbindRenderTarget || !asset?.ownsPlayer || asset.disposed || asset.sourceSha256 !== compiledAsset.sourceSha256 || !SOURCE_MESH_MATCHES) {
+    throw new TypeError(
+      "A VectorContext and a matching live vector asset created on its mesh renderer are required"
+    );
   }
   if (!Object.hasOwn(compiledAsset.metadata.clips, clip) || !Object.hasOwn(compiledAsset.metadata.expressions, expression)) {
     throw new TypeError("Known authored clip and expression required");
   }
-  if (!textureArray || !DEVICE.isTextureArray(textureArray)) {
-    throw new TypeError("A texture array created by the same device is required");
-  }
-  if (!Number.isFinite(sampleIntervalMs) || sampleIntervalMs <= 0 || !Number.isFinite(pixelsPerUnit) || pixelsPerUnit <= 0 || !Number.isSafeInteger(padding) || padding < 1 || !Number.isSafeInteger(layer) || layer < 0 || layer >= textureArray.layers) {
-    throw new TypeError("Finite positive sample interval, pixel scale, padding and an array layer required");
+  if (!Number.isFinite(sampleIntervalMs) || sampleIntervalMs <= 0 || !Number.isFinite(pixelsPerUnit) || pixelsPerUnit <= 0 || !Number.isSafeInteger(padding) || padding < 1) {
+    throw new TypeError("Finite positive sample interval, pixel scale and padding required");
   }
   if (![1, 2, 4].includes(supersample)) {
     throw new RangeError("Sprite bake supersample must be 1, 2 or 4");
@@ -5362,11 +5046,10 @@ function createVectorSpriteAtlas(meshRenderer, asset, compiledAsset, {
     sampleIntervalMs,
     pixelsPerUnit,
     padding,
-    textureArrayId(textureArray),
-    layer,
     Array.from(PAINT),
     supersample
   ]);
+  const ATLAS = DEVICE.textureAtlas;
   let cached = CACHE.get(asset);
   if (!cached) {
     cached = /* @__PURE__ */ new Map();
@@ -5402,11 +5085,22 @@ function createVectorSpriteAtlas(meshRenderer, asset, compiledAsset, {
       SAMPLES.length,
       TILE_WIDTH,
       TILE_HEIGHT,
-      Math.min(textureArray.width, Math.floor(DEVICE.maxTextureSize / supersample)),
-      Math.min(textureArray.height, Math.floor(DEVICE.maxTextureSize / supersample))
+      Math.min(ATLAS.width - ATLAS.gutter * 2, Math.floor(DEVICE.maxTextureSize / supersample)),
+      Math.min(ATLAS.height - ATLAS.gutter * 2, Math.floor(DEVICE.maxTextureSize / supersample))
     );
     if (!reason && !PACKED) {
       reason = "atlasLimit";
+    }
+    let region = null;
+    if (!reason) {
+      try {
+        region = ATLAS.allocate(PACKED.width, PACKED.height);
+      } catch (error) {
+        if (!(error instanceof RangeError)) {
+          throw error;
+        }
+        reason = "atlasLimit";
+      }
     }
     if (reason) {
       PLAYER?.dispose();
@@ -5429,10 +5123,9 @@ function createVectorSpriteAtlas(meshRenderer, asset, compiledAsset, {
         CONTENT_HEIGHT,
         padding,
         BOUNDS,
-        pixelsPerUnit,
-        layer
+        pixelsPerUnit
       ),
-      releaseLayer: reason ? null : claimTextureLayer(textureArray, layer),
+      region,
       target: null,
       bakedRestores: -1,
       failedFrame: -1,
@@ -5463,15 +5156,15 @@ function createVectorSpriteAtlas(meshRenderer, asset, compiledAsset, {
     }
     const START = NOW3();
     let boundTarget = null;
-    let reduction = null;
     const TRANSIENTS = /* @__PURE__ */ new Set();
     try {
-      meshRenderer.flush("spriteAtlasBakeBoundary");
+      DEVICE.flushBatchers("spriteAtlasBakeBoundary");
       if (record.target && !DEVICE.isRenderTargetAvailable(record.target)) {
         DEVICE.deleteRenderTarget(record.target);
         record.target = null;
       }
-      record.target ??= DEVICE.createTextureLayerTarget(textureArray, layer);
+      const REGION = record.region;
+      record.target ??= DEVICE.createTextureLayerTarget(ATLAS.texture, REGION.layer);
       let source = record.target;
       if (supersample > 1) {
         source = DEVICE.createRenderTarget(
@@ -5483,14 +5176,25 @@ function createVectorSpriteAtlas(meshRenderer, asset, compiledAsset, {
           }
         );
         TRANSIENTS.add(source);
+      } else {
+        DEVICE.clearTextureRegion(
+          ATLAS.texture,
+          REGION.layer,
+          REGION.paddedX,
+          REGION.paddedY,
+          REGION.width + ATLAS.gutter * 2,
+          REGION.height + ATLAS.gutter * 2
+        );
       }
       DEVICE.bindRenderTarget(source);
       boundTarget = source;
-      DEVICE.clear({ color: [0, 0, 0, 0] });
+      if (supersample > 1) {
+        DEVICE.clear({ color: [0, 0, 0, 0] });
+      }
       const { minX: MIN_X, minY: MIN_Y } = record.bounds;
-      const BAKE_WIDTH = supersample === 1 ? textureArray.width : record.packed.width, BAKE_HEIGHT = supersample === 1 ? textureArray.height : record.packed.height;
+      const DIRECT = supersample === 1, BAKE_WIDTH = DIRECT ? ATLAS.width : record.packed.width, BAKE_HEIGHT = DIRECT ? ATLAS.height : record.packed.height, ORIGIN_X = DIRECT ? REGION.x : 0, ORIGIN_Y = DIRECT ? ATLAS.height - (REGION.y + REGION.height) : 0;
       for (let index = 0; index < record.samples.length; index++) {
-        const SAMPLE = record.samples[index], FRAME = record.definition.frames[index], TX = FRAME.x - pixelsPerUnit * MIN_X, TY = FRAME.y - pixelsPerUnit * MIN_Y;
+        const SAMPLE = record.samples[index], FRAME = record.definition.frames[index], TX = ORIGIN_X + FRAME.x - pixelsPerUnit * MIN_X, TY = ORIGIN_Y + FRAME.y - pixelsPerUnit * MIN_Y;
         record.player.seek(SAMPLE.timeMs);
         record.player.draw({
           paintRegions: CAPTURED_PAINT,
@@ -5506,36 +5210,26 @@ function createVectorSpriteAtlas(meshRenderer, asset, compiledAsset, {
             1
           ]
         });
-        meshRenderer.flush("spriteAtlasSample");
+        MESHES.flush("spriteAtlasSample");
       }
       DEVICE.unbindRenderTarget(source);
       boundTarget = null;
-      for (let scale = supersample / 2; scale >= 1; scale /= 2) {
-        const TARGET = scale === 1 ? record.target : DEVICE.createRenderTarget(record.packed.width * scale, record.packed.height * scale, {
+      for (let scale = supersample / 2; supersample > 1 && scale >= 1; scale /= 2) {
+        if (scale === 1) {
+          DEVICE.blitRenderTarget(source, record.target, {
+            x: REGION.x,
+            y: REGION.y,
+            width: record.packed.width,
+            height: record.packed.height
+          });
+          break;
+        }
+        const TARGET = DEVICE.createRenderTarget(record.packed.width * scale, record.packed.height * scale, {
           format: "rgba",
           filter: "linear"
         });
-        if (scale > 1) {
-          TRANSIENTS.add(TARGET);
-        }
-        reduction = createSpriteAnimation(meshRenderer, source, {
-          textureOrigin: "bottom-left",
-          frames: [{ x: 0, y: 0, width: source.width, height: source.height, durationMs: 1 }],
-          clips: { reduction: { frames: [0], loop: "once" } }
-        });
-        DEVICE.bindRenderTarget(TARGET);
-        boundTarget = TARGET;
-        DEVICE.clear({ color: [0, 0, 0, 0] });
-        reduction.createPlayer().draw({
-          timeMs: 0,
-          projection: [2 / TARGET.width, 0, 0, 0, -2 / TARGET.height, 0, -1, 1, 1],
-          matrix: [0.5, 0, 0, 0.5, 0, 0]
-        });
-        meshRenderer.flush("spriteAtlasReduction");
-        DEVICE.unbindRenderTarget(TARGET);
-        boundTarget = null;
-        reduction.dispose();
-        reduction = null;
+        TRANSIENTS.add(TARGET);
+        DEVICE.blitRenderTarget(source, TARGET);
         DEVICE.deleteRenderTarget(source);
         TRANSIENTS.delete(source);
         source = TARGET;
@@ -5549,7 +5243,7 @@ function createVectorSpriteAtlas(meshRenderer, asset, compiledAsset, {
       return { backend: "sprite", reason: null };
     } catch (error) {
       if (boundTarget) {
-        meshRenderer.discard();
+        MESHES.discard();
         try {
           DEVICE.unbindRenderTarget(boundTarget);
         } catch {
@@ -5568,7 +5262,6 @@ function createVectorSpriteAtlas(meshRenderer, asset, compiledAsset, {
       record.lastError = error.message;
       return { backend: "vector", reason: "bakeFailed" };
     } finally {
-      reduction?.dispose();
       for (const TARGET of TRANSIENTS) {
         DEVICE.deleteRenderTarget(TARGET);
       }
@@ -5583,14 +5276,16 @@ function createVectorSpriteAtlas(meshRenderer, asset, compiledAsset, {
     if (record.refs === 0) {
       try {
         if (DEVICE.state === "ready" && DEVICE.active) {
-          meshRenderer.flush("spriteAtlasDispose");
+          DEVICE.flushBatchers("spriteAtlasDispose");
         }
         if (record.target) {
           DEVICE.deleteRenderTarget(record.target);
           record.target = null;
         }
       } finally {
-        record.releaseLayer?.();
+        if (record.region && DEVICE.state === "ready") {
+          ATLAS.release(record.region);
+        }
         record.player?.dispose();
         cached.delete(KEY);
         if (cached.size === 0) {
@@ -5603,8 +5298,9 @@ function createVectorSpriteAtlas(meshRenderer, asset, compiledAsset, {
   return Object.freeze({
     bake: BAKE,
     dispose: DISPOSE,
-    get texture() {
-      return disposed || !record.target ? null : textureArray;
+    /** The shared-atlas region holding the baked frames; pass it to createSpriteAnimation. */
+    get region() {
+      return disposed || !record.target ? null : record.region;
     },
     get definition() {
       return disposed ? null : record.definition;
