@@ -343,16 +343,9 @@ export async function exerciseVectorGradientClip(browser, moduleURL, screenshotP
                 DEVICE.draw = function (command) {
                     if (command.buffer === VECTOR.buffer) {
                         VECTOR_DRAWS.push({
-                            role:
-                                command.pipeline === VECTOR.pipeline
-                                    ? 'radial'
-                                    : command.pipeline === VECTOR.nonRadialPipeline
-                                      ? 'non-radial'
-                                      : 'unexpected',
+                            role: command.pipeline === VECTOR.pipeline ? 'atlas' : 'unexpected',
                             count: command.count,
                             uniformKeys: Object.keys(command.uniforms).sort(),
-                            radial: command.uniforms.u_radial ?? null,
-                            textured: command.uniforms.u_textured,
                             stencil: command.stencil === false ? false : { ...command.stencil },
                         });
                     }
@@ -360,7 +353,7 @@ export async function exerciseVectorGradientClip(browser, moduleURL, screenshotP
                 };
                 DEVICE.uploadVertices = function (buffer, data) {
                     if (buffer === VECTOR.buffer) {
-                        VECTOR_UPLOADS.push(data.length / 8);
+                        VECTOR_UPLOADS.push(data.length / 20);
                     }
                     return ORIGINAL_UPLOAD.call(this, buffer, data);
                 };
@@ -646,10 +639,7 @@ export async function exerciseVectorGradientClip(browser, moduleURL, screenshotP
         for (const [NAME, SAMPLE] of Object.entries(RESULT.radialComparisons)) {
             assert.equal(SAMPLE.size, NAME === 'radial-mobile' ? 47 : 74);
             assert.ok(SAMPLE.compared > 1000, `${NAME}: compare actual rendered pixels against native Canvas2D`);
-            assert.ok(
-                SAMPLE.maxDiff <= 10 && SAMPLE.meanDiff <= 2.5,
-                `${NAME}: two-circle gradient pixel parity ${JSON.stringify(SAMPLE)}`,
-            );
+            assert.ok(SAMPLE.maxDiff <= 10 && SAMPLE.meanDiff <= 2.5, `${NAME}: two-circle gradient pixel parity`);
             assert.equal(
                 SAMPLE.notchOrBackgroundMismatch,
                 0,
@@ -678,11 +668,12 @@ export async function exerciseVectorGradientClip(browser, moduleURL, screenshotP
         assert.deepEqual(RESULT.clipPixels.outside, [0, 0, 255, 255]);
         assert.equal(RESULT.clipPixels.error, 0);
         const CLIP_TRACE = RESULT.clipPipelineTrace;
-        assert.ok(CLIP_TRACE.draws.length >= 3);
+        assert.ok(CLIP_TRACE.draws.length >= 1);
+        // Linear, radial, linear: gradient kind is vertex data, so all three quads share one draw in painter order.
         assert.deepEqual(
-            CLIP_TRACE.draws.slice(0, 3).map(({ role }) => role),
-            ['non-radial', 'radial', 'non-radial'],
-            'linear/radial/linear draws preserve painter order inside the concave stencil clip',
+            [CLIP_TRACE.draws[0].role, CLIP_TRACE.draws[0].count],
+            ['atlas', 18],
+            'linear/radial/linear gradient fills batch into one ordered draw inside the concave stencil clip',
         );
         assert.deepEqual(
             CLIP_TRACE.uploads,
@@ -690,21 +681,8 @@ export async function exerciseVectorGradientClip(browser, moduleURL, screenshotP
             'each ordered vector submission uploads its matching vertex count',
         );
         assert.equal(CLIP_TRACE.submissions, CLIP_TRACE.draws.length);
-        assert.deepEqual(CLIP_TRACE.draws[0].uniformKeys, ['u_projection', 'u_texture', 'u_textured', 'u_whiteFlash']);
-        assert.deepEqual(CLIP_TRACE.draws[1].uniformKeys, [
-            'u_projection',
-            'u_radial',
-            'u_radial_params',
-            'u_texture',
-            'u_textured',
-            'u_whiteFlash',
-        ]);
-        assert.deepEqual(CLIP_TRACE.draws[2].uniformKeys, ['u_projection', 'u_texture', 'u_textured', 'u_whiteFlash']);
-        assert.equal(CLIP_TRACE.draws[1].radial, 1);
-        assert.ok(
-            CLIP_TRACE.draws.slice(0, 3).every((draw) => draw.textured === 1 && draw.stencil?.func === 'equal'),
-            'both selected programs retain gradient sampling and the active stencil test',
-        );
+        assert.deepEqual(CLIP_TRACE.draws[0].uniformKeys, ['u_projection', 'u_texture']);
+        assert.equal(CLIP_TRACE.draws[0].stencil?.func, 'equal', 'the batch keeps the active stencil test');
         assert.equal(RESULT.selfIntersectionRejected, true);
         assert.equal(RESULT.dynamicConcaveRejected, true);
         assert.equal(RESULT.savedClipDeletionRejected, true);

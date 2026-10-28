@@ -170,6 +170,12 @@ The bounds are computed from per-part ranges retained at mesh creation; the rend
 
 `Renderer2D`는 의도적으로 단순한 primitive 편의 API입니다. path·곡선·clip·group opacity와 사전 생성 glyph 텍스트는 아래 `VectorRenderer`/`GlyphAtlas` 조합을 사용합니다. 자동 asset loading·sprite animation·terrain/fog·scenegraph·game art·기본 3D scene 처리는 여전히 게임 소유입니다. DOM UI 또는 게임별 projection/layer로 조합하세요.
 
+## 공유 텍스처 atlas 배열
+
+`device.textureAtlas`(`TextureAtlasArray`, 옵션 `new WebGLDevice(canvas,{ textureAtlas:{width=2048,height=1024,layers=2,gutter=1} })`)는 작은 이미지를 한 `TEXTURE_2D_ARRAY`의 영역(region)으로 나눠 담는 장치 단위 단일 원본입니다. `allocate(w,h,{filter})`는 `{layer,x,y,width,height,uvRect,filter}`를 돌려주고 `upload(region,source,{premultiplied,extendEdges})`가 픽셀을 씁니다(`extendEdges`는 바이트 소스의 가장자리를 gutter로 복제해 CLAMP_TO_EDGE처럼 보이게 함). `release(region)`은 픽셀을 지우고 같은 크기 요청에 재사용하며, 마지막 region을 풀면 배열도 삭제됩니다. 영역 업로드는 `Device.updateTextureRegion`이 원본을 보관해 컨텍스트 복구 때 다시 올립니다. `filter:'nearest'` region은 배열의 하드웨어 필터가 하나뿐이므로 셰이더가 texel 중심으로 맞춥니다.
+
+`VectorRenderer`의 흰 texel, `VectorContext`의 gradient ramp, `GlyphAtlas` 페이지가 모두 이 배열의 region입니다. 정점은 layer·gradient 종류(없음/선형/radial/radial 빈 영역)·white flash·nearest 여부·radial 파라미터·ramp 사각형을 담아(정점당 80바이트), 같은 blend·clip 상태의 fill, 선형·radial gradient, 글리프가 한 draw로 제출됩니다. 배치를 끊는 것은 blend 전환, stencil clip 변경, 반투명 group(render target을 다른 sampler로 합성)뿐입니다. `drawGlyphQuad(region, x, y, w, h, uv, color)`의 `uv`는 배열 좌표이고 `GlyphAtlas`가 callback에 주는 `texture`는 `region`으로 바뀌었습니다. gradient 객체의 `texture`도 `region`입니다.
+
 ## VectorContext와 재사용 primitive painter
 
 `VectorContext(device,{vectorRenderer,glyphAtlas,onError,initialVertices,maxVertices})`는 게임의 2D draw adapter에서 반복되기 쉬운 paint/state/path 알고리즘을 공개합니다. canvas와 WebGL context, 프레임 자원은 caller가 만들고, 이미 사용하는 `VectorRenderer`와 `GlyphAtlas`를 주입하면 같은 painter queue와 glyph texture를 공유합니다. vector를 생략한 경우에만 context가 VectorRenderer를 만들고 해제합니다. WebGLDevice와 GlyphAtlas는 항상 caller 소유이며 import만으로 DOM·GPU·asset 작업을 하지 않습니다.

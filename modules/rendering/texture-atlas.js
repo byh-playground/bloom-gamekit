@@ -5,7 +5,7 @@
  * and a DOM source leaves it transparent. Released rectangles are cleared on the GPU and reused for the same size.
  */
 export class TextureAtlasArray {
-    constructor(device, { width = 2048, height = 2048, layers = 4, gutter = 1, filter = 'linear' } = {}) {
+    constructor(device, { width = 2048, height = 1024, layers = 2, gutter = 1, filter = 'linear' } = {}) {
         if (!device?.createTextureArray || !device.updateTextureRegion) {
             throw new TypeError('A WebGLDevice with texture arrays is required');
         }
@@ -22,9 +22,13 @@ export class TextureAtlasArray {
         this.regions = new Set();
         this.disposed = false;
     }
-    /** Reserves width x height content pixels. Returns the content rectangle and its normalized `uvRect`. */
-    allocate(width, height) {
+    /** Reserves width x height content pixels. Returns the content rectangle, its normalized `uvRect` and its sampling `filter`
+     * (`nearest` snaps the lookup to texel centers in the shader, since the array has one hardware filter). */
+    allocate(width, height, { filter = 'linear' } = {}) {
         this._live();
+        if (filter !== 'nearest' && filter !== 'linear') {
+            throw new TypeError('filter must be nearest or linear');
+        }
         if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1) {
             throw new RangeError('Region size must be positive integers');
         }
@@ -34,7 +38,7 @@ export class TextureAtlasArray {
             KEY = `${PW}x${PH}`,
             REUSED = this.free.get(KEY)?.pop();
         if (REUSED) {
-            return this._region(REUSED.layer, REUSED.x, REUSED.y, width, height);
+            return this._region(REUSED.layer, REUSED.x, REUSED.y, width, height, filter);
         }
         for (let layer = 0; layer < this.layerShelves.length; layer++) {
             const STATE = this.layerShelves[layer];
@@ -42,19 +46,19 @@ export class TextureAtlasArray {
                 if (SHELF.height >= PH && SHELF.x + PW <= this.width) {
                     const X = SHELF.x;
                     SHELF.x += PW;
-                    return this._region(layer, X, SHELF.y, width, height);
+                    return this._region(layer, X, SHELF.y, width, height, filter);
                 }
             }
             if (PW <= this.width && STATE.usedHeight + PH <= this.height) {
                 const SHELF = { y: STATE.usedHeight, height: PH, x: PW };
                 STATE.shelves.push(SHELF);
                 STATE.usedHeight += PH;
-                return this._region(layer, 0, SHELF.y, width, height);
+                return this._region(layer, 0, SHELF.y, width, height, filter);
             }
         }
         throw new RangeError('Texture atlas array is full');
     }
-    _region(layer, paddedX, paddedY, width, height) {
+    _region(layer, paddedX, paddedY, width, height, filter) {
         const G = this.gutter,
             REGION = Object.freeze({
                 layer,
@@ -62,6 +66,8 @@ export class TextureAtlasArray {
                 y: paddedY + G,
                 width,
                 height,
+                filter,
+                atlas: this,
                 paddedX,
                 paddedY,
                 uvRect: Object.freeze([
@@ -125,11 +131,17 @@ export class TextureAtlasArray {
             { premultiplied },
         );
     }
-    /** Clears the region's pixels (gutter included) and keeps its rectangle for the next same-size allocation. */
+    /**
+     * Frees the region. Its pixels are cleared and the rectangle is reused for the next same-size allocation; when
+     * the last region goes, the array itself is deleted and the device creates a fresh one on next use.
+     */
     release(region) {
-        this._live();
-        if (!this.regions.delete(region)) {
+        if (this.disposed || !this.regions.delete(region)) {
             return false;
+        }
+        if (!this.regions.size) {
+            this.dispose();
+            return true;
         }
         const G = this.gutter,
             PW = region.width + G * 2,
@@ -159,8 +171,8 @@ export class TextureAtlasArray {
             return false;
         }
         this.disposed = true;
-        this.device.deleteTexture(this.texture);
         this.regions.clear();
+        this.device.textureAtlasDisposed(this);
         return true;
     }
 }

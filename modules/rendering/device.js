@@ -1,3 +1,4 @@
+import { TextureAtlasArray } from './texture-atlas.js';
 /** Programmable WebGL 2 resource/stream/pass core. Game owns geometry and materials. */
 const FUNCTIONS = Object.freeze({
     never: 'NEVER',
@@ -107,6 +108,7 @@ export class WebGLDevice {
             checkGLErrors = false,
             maxTextures = 8,
             maxBufferBytes = 128 * 1024 * 1024,
+            textureAtlas = {},
         } = {},
     ) {
         if (!canvas?.getContext || !canvas?.addEventListener) {
@@ -122,6 +124,8 @@ export class WebGLDevice {
             throw new TypeError('checkGLErrors must be boolean');
         }
         this.checkGLErrors = checkGLErrors;
+        this.textureAtlasOptions = { ...textureAtlas };
+        this._textureAtlas = null;
         integer(maxTextures, 'maxTextures', 1, 32);
         integer(maxBufferBytes, 'maxBufferBytes', 4);
         this.canvas = canvas;
@@ -1129,6 +1133,24 @@ export class WebGLDevice {
             (r) => !(r.x === x && r.y === y && r.width === width && r.height === height),
         );
     }
+    /**
+     * The device's shared image atlas (SSOT): vector fills, gradients and glyphs allocate regions here, so every
+     * vector draw samples one TEXTURE_2D_ARRAY. Created on first use from the `textureAtlas` device option.
+     */
+    get textureAtlas() {
+        this._ready();
+        this._textureAtlas ??= new TextureAtlasArray(this, this.textureAtlasOptions);
+        return this._textureAtlas;
+    }
+    /** Called by the atlas when it is disposed: deletes its array and lets the next user create a fresh atlas. */
+    textureAtlasDisposed(atlas) {
+        if (this._textureAtlas === atlas) {
+            this._textureAtlas = null;
+        }
+        if (this.state === 'ready' && this.textures.has(atlas.texture)) {
+            this.deleteTexture(atlas.texture);
+        }
+    }
     isTextureArray(handle) {
         return this._handle(this.textures, handle, 'texture').target === 'array';
     }
@@ -1731,6 +1753,10 @@ export class WebGLDevice {
         this.renderTargetStack.length = 0;
         this.activeRenderTarget = null;
         this.regionCanvas = this.regionContext = this.regionBytes = null;
+        if (this._textureAtlas) {
+            this._textureAtlas.disposed = true;
+            this._textureAtlas = null;
+        }
         this.stats.pipelineCount =
             this.stats.bufferCount =
             this.stats.textureCount =

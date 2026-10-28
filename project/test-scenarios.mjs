@@ -20,6 +20,8 @@ const SUITES = {
         'project/tests/browser.e2e.mjs',
         'modules/vector-assets/tests/run-gpu-poses.browser.mjs',
         'modules/vector-assets/tests/run-paint-regions.browser.mjs',
+        'modules/rendering/tests/run-texture-atlas.browser.mjs',
+        'modules/rendering/tests/run-vector-gradient-clip.browser.mjs',
         'modules/rendering/tests/run-textured-mesh.browser.mjs',
         'modules/rendering/tests/run-sprite-animation.browser.mjs',
         'modules/vector-assets/tests/run-raster-comparison.browser.mjs',

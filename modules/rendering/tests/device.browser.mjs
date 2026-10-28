@@ -1,9 +1,5 @@
 /* global deviceProbe, vectorProbe */
-import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
-
-const FULL_FRAGMENT_SHA256 = '228e33dc1542b24388634c424769f6d5c105fba4e7bb9dbdb4d3e5fef0f2ab56';
 
 /** Continues the same browser/built-module E2E; no fake GL or retained screenshots. */
 export async function exerciseWebGLDevice(page) {
@@ -637,15 +633,6 @@ export async function exerciseWebGLDevice(page) {
 
 /** Stable path/text/group-opacity scenario over an actual WebGL2 framebuffer. */
 export async function exerciseVectorRenderer(page) {
-    const SOURCE = await readFile(new URL('../vector-renderer.js', import.meta.url), 'utf8');
-    // JavaScript template literals normalize CRLF to LF before WebGL receives the shader.
-    const FRAGMENT = SOURCE.match(/^const FRAGMENT = `([\s\S]*?)`;/m)?.[1]?.replace(/\r\n/g, '\n');
-    assert.ok(FRAGMENT, 'the original two-circle radial fragment remains present');
-    assert.equal(
-        createHash('sha256').update(FRAGMENT.replaceAll('\r\n', '\n')).digest('hex'),
-        FULL_FRAGMENT_SHA256,
-        'the existing radial fragment must remain byte-identical',
-    );
     const RESULT = await page.evaluate(async () => {
         const {
             WebGLDevice: WEB_GL_DEVICE,
@@ -694,29 +681,22 @@ export async function exerciseVectorRenderer(page) {
             initialVertices: 128,
             maxVertices: 2048,
         });
-        const FULL_RECORD = DEVICE.pipelines.get(RENDERER.pipeline),
-            NON_RADIAL_RECORD = DEVICE.pipelines.get(RENDERER.nonRadialPipeline),
-            EXPECTED_FULL_UNIFORMS = [
-                'u_projection',
-                'u_radial',
-                'u_radial_params',
-                'u_texture',
-                'u_textured',
-                'u_whiteFlash',
-            ],
-            EXPECTED_NON_RADIAL_UNIFORMS = ['u_projection', 'u_texture', 'u_textured', 'u_whiteFlash'];
+        const ATLAS_RECORD = DEVICE.pipelines.get(RENDERER.pipeline),
+            GROUP_RECORD = DEVICE.pipelines.get(RENDERER.groupPipeline),
+            EXPECTED_UNIFORMS = ['u_projection', 'u_texture'];
+        // Paint (layer, gradient mode, flash, filter) is vertex data: one atlas pipeline plus the group-target sampler.
         const PIPELINE_DESCRIPTORS = {
             count: DEVICE.stats.pipelineCount - RESOURCE_BASELINE.pipelineCount,
-            fullUniforms: Object.keys(FULL_RECORD.uniforms).sort(),
-            nonRadialUniforms: Object.keys(NON_RADIAL_RECORD.uniforms).sort(),
-            sameVertex: FULL_RECORD.vertex === NON_RADIAL_RECORD.vertex,
-            sameStride: FULL_RECORD.stride === NON_RADIAL_RECORD.stride && NON_RADIAL_RECORD.stride === 32,
-            sameAttributes: JSON.stringify(FULL_RECORD.attributes) === JSON.stringify(NON_RADIAL_RECORD.attributes),
+            atlasUniforms: Object.keys(ATLAS_RECORD.uniforms).sort(),
+            groupUniforms: Object.keys(GROUP_RECORD.uniforms).sort(),
+            sameVertex: ATLAS_RECORD.vertex === GROUP_RECORD.vertex,
+            sameStride: ATLAS_RECORD.stride === GROUP_RECORD.stride && GROUP_RECORD.stride === 80,
+            sameAttributes: JSON.stringify(ATLAS_RECORD.attributes) === JSON.stringify(GROUP_RECORD.attributes),
         };
         if (
             PIPELINE_DESCRIPTORS.count !== 3 ||
-            JSON.stringify(PIPELINE_DESCRIPTORS.fullUniforms) !== JSON.stringify(EXPECTED_FULL_UNIFORMS) ||
-            JSON.stringify(PIPELINE_DESCRIPTORS.nonRadialUniforms) !== JSON.stringify(EXPECTED_NON_RADIAL_UNIFORMS) ||
+            JSON.stringify(PIPELINE_DESCRIPTORS.atlasUniforms) !== JSON.stringify(EXPECTED_UNIFORMS) ||
+            JSON.stringify(PIPELINE_DESCRIPTORS.groupUniforms) !== JSON.stringify(EXPECTED_UNIFORMS) ||
             !PIPELINE_DESCRIPTORS.sameVertex ||
             !PIPELINE_DESCRIPTORS.sameStride ||
             !PIPELINE_DESCRIPTORS.sameAttributes
@@ -818,20 +798,14 @@ export async function exerciseVectorRenderer(page) {
             }),
             ERROR = DEVICE.gl.getError();
         DEVICE.endFrame();
-        const GRADIENT_TEXTURE = DEVICE.createTexture(
-            {
-                width: 2,
-                height: 1,
-                data: new Uint8Array([255, 0, 0, 255, 0, 0, 255, 255]),
-            },
-            {
-                format: 'rgba',
-                premultiplied: true,
-                filter: 'nearest',
-            },
+        const GRADIENT_REGION = DEVICE.textureAtlas.allocate(2, 1);
+        DEVICE.textureAtlas.upload(
+            GRADIENT_REGION,
+            { width: 2, height: 1, data: new Uint8Array([255, 0, 0, 255, 0, 0, 255, 255]) },
+            { premultiplied: true, extendEdges: true },
         );
         const LINEAR_A = {
-                texture: GRADIENT_TEXTURE,
+                region: GRADIENT_REGION,
                 gradient: {},
                 matrixInverse: [1, 0, 0, 1, 0, 0],
                 x0: 0,
@@ -870,53 +844,31 @@ export async function exerciseVectorRenderer(page) {
                 target.fillLinearGradient(gradient);
             }
         };
-        const FRAME_FIXTURE = (legacy = false) => {
+        // flushEach submits after every primitive: the same frame without any batching, as the pixel oracle.
+        const FRAME_FIXTURE = (flushEach = false) => {
             const DRAWS = [],
                 UPLOADS = [],
                 ORIGINAL_DRAW = DEVICE.draw,
                 ORIGINAL_UPLOAD = DEVICE.uploadVertices;
             DEVICE.draw = function (command) {
                 if (command.buffer === RENDERER.buffer) {
-                    const ROLE =
-                            command.pipeline === RENDERER.pipeline
-                                ? 'radial'
-                                : command.pipeline === RENDERER.nonRadialPipeline
-                                  ? 'non-radial'
-                                  : 'unexpected',
-                        TEXTURE = command.textures[0];
                     DRAWS.push({
-                        role: ROLE,
+                        role:
+                            command.pipeline === RENDERER.pipeline
+                                ? 'atlas'
+                                : command.pipeline === RENDERER.groupPipeline
+                                  ? 'group'
+                                  : 'unexpected',
                         count: command.count,
                         uniformKeys: Object.keys(command.uniforms).sort(),
-                        radial: command.uniforms.u_radial ?? null,
-                        textured: command.uniforms.u_textured,
-                        whiteFlash: command.uniforms.u_whiteFlash,
-                        texture:
-                            TEXTURE === RENDERER.white
-                                ? 'white'
-                                : TEXTURE === ATLAS.texture
-                                  ? 'glyph'
-                                  : TEXTURE === GRADIENT_TEXTURE
-                                    ? 'gradient'
-                                    : 'group-target',
+                        sampler: command.textures[0] === DEVICE.textureAtlas.texture ? 'atlas-array' : 'group-target',
                     });
-                    if (legacy && ROLE === 'non-radial') {
-                        return ORIGINAL_DRAW.call(this, {
-                            ...command,
-                            pipeline: RENDERER.pipeline,
-                            uniforms: {
-                                ...command.uniforms,
-                                u_radial: 0,
-                                u_radial_params: [0, 0, 0, 0],
-                            },
-                        });
-                    }
                 }
                 return ORIGINAL_DRAW.call(this, command);
             };
             DEVICE.uploadVertices = function (buffer, data) {
                 if (buffer === RENDERER.buffer) {
-                    UPLOADS.push(data.length / 8);
+                    UPLOADS.push(data.length / 20);
                 }
                 return ORIGINAL_UPLOAD.call(this, buffer, data);
             };
@@ -928,13 +880,25 @@ export async function exerciseVectorRenderer(page) {
                     submissions: DEVICE.stats.vectorSubmissions,
                     uploads: DEVICE.stats.bufferUploads,
                 };
+                const STEP = () => {
+                    if (flushEach) {
+                        RENDERER.flush();
+                    }
+                };
                 DRAW_TRIANGLE(RENDERER, 4, 3, 'solid');
+                STEP();
                 DRAW_TRIANGLE(RENDERER, 24, 3, 'radial', RADIAL);
+                STEP();
                 DRAW_TRIANGLE(RENDERER, 44, 3, 'solid');
+                STEP();
                 DRAW_TRIANGLE(RENDERER, 4, 24, 'linear', LINEAR_A);
+                STEP();
                 DRAW_TRIANGLE(RENDERER, 24, 24, 'radial', RADIAL);
+                STEP();
                 DRAW_TRIANGLE(RENDERER, 44, 24, 'linear', LINEAR_B);
+                STEP();
                 DRAW_TRIANGLE(RENDERER, 4, 44, 'radial', RADIAL_EMPTY);
+                STEP();
                 RENDERER.beginGroup(0.5, {
                     x: 20,
                     y: 40,
@@ -950,6 +914,7 @@ export async function exerciseVectorRenderer(page) {
                     ],
                     [1, 0, 0, 1],
                 );
+                STEP();
                 RENDERER.polygon(
                     [
                         [28, 40],
@@ -960,6 +925,7 @@ export async function exerciseVectorRenderer(page) {
                     [1, 0, 0, 1],
                 );
                 RENDERER.endGroup();
+                STEP();
                 RENDERER.fillText('A', 52, 48, {
                     fontSize: 8,
                     align: 'left',
@@ -986,13 +952,13 @@ export async function exerciseVectorRenderer(page) {
                 DEVICE.uploadVertices = ORIGINAL_UPLOAD;
             }
         };
-        const LEGACY_FIXTURE = FRAME_FIXTURE(true),
-            NON_RADIAL_FIXTURE = FRAME_FIXTURE(false),
+        const UNBATCHED_FIXTURE = FRAME_FIXTURE(true),
+            BATCHED_FIXTURE = FRAME_FIXTURE(false),
             FIXTURE_MATCH =
-                LEGACY_FIXTURE.pixels.length === NON_RADIAL_FIXTURE.pixels.length &&
-                LEGACY_FIXTURE.pixels.every((value, index) => value === NON_RADIAL_FIXTURE.pixels[index]);
+                UNBATCHED_FIXTURE.pixels.length === BATCHED_FIXTURE.pixels.length &&
+                UNBATCHED_FIXTURE.pixels.every((value, index) => value === BATCHED_FIXTURE.pixels[index]);
         if (!FIXTURE_MATCH) {
-            throw new Error('non-radial pipeline changed whole-frame fixture pixels');
+            throw new Error('batching changed whole-frame fixture pixels');
         }
         const SMALL = new VECTOR_RENDERER(DEVICE, {
             initialVertices: 3,
@@ -1005,24 +971,16 @@ export async function exerciseVectorRenderer(page) {
         DEVICE.draw = function (command) {
             if (command.buffer === SMALL.buffer) {
                 SMALL_DRAWS.push({
-                    role:
-                        command.pipeline === SMALL.pipeline
-                            ? 'radial'
-                            : command.pipeline === SMALL.nonRadialPipeline
-                              ? 'non-radial'
-                              : 'unexpected',
+                    role: command.pipeline === SMALL.pipeline ? 'atlas' : 'unexpected',
                     count: command.count,
                     uniformKeys: Object.keys(command.uniforms).sort(),
-                    radial: command.uniforms.u_radial ?? null,
-                    textured: command.uniforms.u_textured,
-                    texture: command.textures[0] === SMALL.white ? 'white' : 'gradient',
                 });
             }
             return ORIGINAL_DRAW.call(this, command);
         };
         DEVICE.uploadVertices = function (buffer, data) {
             if (buffer === SMALL.buffer) {
-                SMALL_UPLOADS.push(data.length / 8);
+                SMALL_UPLOADS.push(data.length / 20);
             }
             return ORIGINAL_UPLOAD.call(this, buffer, data);
         };
@@ -1106,24 +1064,23 @@ export async function exerciseVectorRenderer(page) {
                 ADDED_LISTENERS.every(([type, listener]) =>
                     REMOVED_LISTENERS.some((entry) => entry[0] === type && entry[1] === listener),
                 ),
-            atlasRetained: !ATLAS.disposed && DEVICE.textures.has(ATLAS.texture),
+            atlasRetained: !ATLAS.disposed && DEVICE.textures.has(DEVICE.textureAtlas.texture),
             deviceReady: DEVICE.state === 'ready',
             glError: DEVICE.gl.getError(),
         };
         SMALL.dispose();
         SMALL.dispose();
         const PIPELINE_TRACE = {
-            legacy: LEGACY_FIXTURE.draws,
-            legacyUploads: LEGACY_FIXTURE.uploads,
-            legacyDelta: LEGACY_FIXTURE.delta,
-            nonRadial: NON_RADIAL_FIXTURE.draws,
-            nonRadialUploads: NON_RADIAL_FIXTURE.uploads,
-            nonRadialDelta: NON_RADIAL_FIXTURE.delta,
+            unbatched: UNBATCHED_FIXTURE.draws,
+            batched: BATCHED_FIXTURE.draws,
+            batchedUploads: BATCHED_FIXTURE.uploads,
+            batchedDelta: BATCHED_FIXTURE.delta,
+            unbatchedDelta: UNBATCHED_FIXTURE.delta,
             capacity: SMALL_DRAWS,
             capacityUploads: SMALL_UPLOADS,
             capacityDelta: SMALL_DELTA,
             fixtureMatch: FIXTURE_MATCH,
-            radialEmptyPixel: NON_RADIAL_FIXTURE.radialEmptyPixel,
+            radialEmptyPixel: BATCHED_FIXTURE.radialEmptyPixel,
             descriptors: PIPELINE_DESCRIPTORS,
             failureCleanup: FAILURE_CLEANUP,
         };
@@ -1134,12 +1091,12 @@ export async function exerciseVectorRenderer(page) {
             atlas: ATLAS,
             canvas: CANVAS,
             pixel: PIXEL,
-            pipelineHandles: [RENDERER.pipeline, RENDERER.nonRadialPipeline],
+            pipelineHandles: [RENDERER.pipeline, RENDERER.groupPipeline],
             resourceBaseline: RESOURCE_BASELINE,
             resourceSnapshot: RESOURCE_SNAPSHOT,
             restorationResources: RESTORATION_RESOURCES,
-            gradientTexture: GRADIENT_TEXTURE,
-            fixturePixels: NON_RADIAL_FIXTURE.pixels,
+            gradientRegion: GRADIENT_REGION,
+            fixturePixels: BATCHED_FIXTURE.pixels,
             pipelineTrace: PIPELINE_TRACE,
             drawPipelineFixture: () => FRAME_FIXTURE(false),
         };
@@ -1190,57 +1147,34 @@ export async function exerciseVectorRenderer(page) {
     assert.equal(RESULT.stats.gpuRenderTargetBytes, (64 * 32 + 8 * 8) * 5);
     assert.ok(RESULT.stats.drawCalls >= 5);
     const TRACE = RESULT.pipelineTrace,
-        RADIAL_UNIFORMS = ['u_projection', 'u_radial', 'u_radial_params', 'u_texture', 'u_textured', 'u_whiteFlash'],
-        NON_RADIAL_UNIFORMS = ['u_projection', 'u_texture', 'u_textured', 'u_whiteFlash'];
-    assert.equal(TRACE.fixtureMatch, true, 'legacy and selected-pipeline frames are pixel-identical');
+        ATLAS_UNIFORMS = ['u_projection', 'u_texture'];
+    assert.equal(TRACE.fixtureMatch, true, 'batched and per-primitive frames are pixel-identical');
     assert.deepEqual(TRACE.radialEmptyPixel, [0, 0, 255, 255]);
+    // Fills, linear/radial gradients, white flash and text only change vertex data, so they share one draw.
+    // Only the offscreen group (a different sampler and render target) splits the frame.
     assert.deepEqual(
-        TRACE.legacy.map(({ role, count, texture }) => [role, count, texture]),
-        TRACE.nonRadial.map(({ role, count, texture }) => [role, count, texture]),
-        'pipeline selection preserves draw order, vertex count, and texture sequence',
+        TRACE.batched.map(({ role, count, sampler }) => [role, count, sampler]),
+        [
+            ['atlas', 42, 'atlas-array'],
+            ['atlas', 12, 'atlas-array'],
+            ['group', 6, 'group-target'],
+            ['atlas', 6, 'atlas-array'],
+        ],
+        'paint changes do not split batches; groups do',
     );
-    assert.deepEqual(
-        TRACE.nonRadial.slice(0, 7).map(({ role }) => role),
-        ['non-radial', 'radial', 'non-radial', 'non-radial', 'radial', 'non-radial', 'radial'],
-    );
-    assert.ok(
-        TRACE.nonRadial.some(({ radial }) => radial === 2),
-        'radialEmpty selects discard mode',
-    );
-    assert.ok(
-        ['gradient', 'glyph', 'group-target', 'white'].every((texture) =>
-            TRACE.nonRadial.some((draw) => draw.texture === texture),
-        ),
-    );
-    for (const DRAW of TRACE.nonRadial) {
-        assert.deepEqual(DRAW.uniformKeys, DRAW.role === 'radial' ? RADIAL_UNIFORMS : NON_RADIAL_UNIFORMS);
+    assert.ok(TRACE.unbatched.length > TRACE.batched.length, 'the oracle frame submits more draws');
+    for (const DRAW of [...TRACE.batched, ...TRACE.unbatched]) {
+        assert.deepEqual(DRAW.uniformKeys, ATLAS_UNIFORMS);
     }
     assert.deepEqual(
-        TRACE.legacyUploads,
-        TRACE.legacy.map(({ count }) => count),
+        TRACE.batchedUploads,
+        TRACE.batched.map(({ count }) => count),
     );
-    assert.deepEqual(
-        TRACE.nonRadialUploads,
-        TRACE.nonRadial.map(({ count }) => count),
-    );
-    assert.equal(TRACE.legacyDelta.submissions, TRACE.legacy.length);
-    assert.equal(TRACE.nonRadialDelta.submissions, TRACE.nonRadial.length);
-    assert.equal(TRACE.legacyDelta.uploads, TRACE.legacy.length);
-    assert.equal(TRACE.nonRadialDelta.uploads, TRACE.nonRadial.length);
+    assert.equal(TRACE.batchedDelta.submissions, TRACE.batched.length);
+    assert.equal(TRACE.batchedDelta.uploads, TRACE.batched.length);
     assert.deepEqual(
         TRACE.capacity.map(({ role, count }) => [role, count]),
-        [
-            ['non-radial', 6],
-            ['radial', 6],
-            ['non-radial', 6],
-            ['non-radial', 6],
-            ['radial', 6],
-            ['non-radial', 6],
-            ['radial', 6],
-            ['non-radial', 6],
-            ['non-radial', 6],
-            ['non-radial', 6],
-        ],
+        Array.from({ length: 10 }, () => ['atlas', 6]),
         'small capacity flushes the single vertex stream without reordering',
     );
     assert.deepEqual(
@@ -1249,10 +1183,6 @@ export async function exerciseVectorRenderer(page) {
     );
     assert.equal(TRACE.capacityDelta.submissions, TRACE.capacity.length);
     assert.equal(TRACE.capacityDelta.uploads, TRACE.capacity.length);
-    assert.equal(TRACE.capacity[6].radial, 2);
-    for (const DRAW of TRACE.capacity) {
-        assert.deepEqual(DRAW.uniformKeys, DRAW.role === 'radial' ? RADIAL_UNIFORMS : NON_RADIAL_UNIFORMS);
-    }
     assert.equal(TRACE.failureCleanup.originalError, true);
     assert.equal(TRACE.failureCleanup.pipelineCalls, 3);
     assert.equal(TRACE.failureCleanup.resourcesRestored, true);
@@ -1308,8 +1238,7 @@ export async function exerciseVectorRenderer(page) {
                     FIXTURE.pixels.every((value, index) => value === P.fixturePixels[index]),
                 pipelinesUsed: new Set(FIXTURE.draws.map(({ role }) => role)).size === 2,
                 handlesStable:
-                    P.renderer.pipeline === P.pipelineHandles[0] &&
-                    P.renderer.nonRadialPipeline === P.pipelineHandles[1],
+                    P.renderer.pipeline === P.pipelineHandles[0] && P.renderer.groupPipeline === P.pipelineHandles[1],
                 resourcesStable: JSON.stringify(P.resourceSnapshot()) === JSON.stringify(P.restorationResources),
                 restores: P.device.stats.restores,
                 error: P.device.gl.getError(),
@@ -1342,7 +1271,7 @@ export async function exerciseVectorRenderer(page) {
                 FIXTURE.pixels.every((value, index) => value === P.fixturePixels[index]),
             pipelinesUsed: new Set(FIXTURE.draws.map(({ role }) => role)).size === 2,
             handlesStable:
-                P.renderer.pipeline === P.pipelineHandles[0] && P.renderer.nonRadialPipeline === P.pipelineHandles[1],
+                P.renderer.pipeline === P.pipelineHandles[0] && P.renderer.groupPipeline === P.pipelineHandles[1],
             resourcesStable: JSON.stringify(P.resourceSnapshot()) === JSON.stringify(P.restorationResources),
             restores: P.device.stats.restores,
             error: P.device.gl.getError(),
@@ -1356,11 +1285,11 @@ export async function exerciseVectorRenderer(page) {
     assert.equal(RESULT.secondTargetRestoration.error, 0);
     RESULT.disposed = await page.evaluate(() => {
         const P = vectorProbe;
-        P.device.deleteTexture(P.gradientTexture);
+        P.gradientRegion.atlas.release(P.gradientRegion);
         P.renderer.dispose();
         P.renderer.dispose();
         const RENDERER_BASELINE_RESTORED = JSON.stringify(P.resourceSnapshot()) === JSON.stringify(P.resourceBaseline);
-        const ATLAS_RETAINED = !P.atlas.disposed && P.device.textures.has(P.atlas.texture);
+        const ATLAS_RETAINED = !P.atlas.disposed && P.device.textures.has(P.device.textureAtlas.texture);
         P.atlas.dispose();
         const EMPTY = Object.values(P.resourceSnapshot()).every((value) => value === 0);
         P.device.dispose();

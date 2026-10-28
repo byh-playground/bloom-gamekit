@@ -608,26 +608,21 @@ export class VectorContext {
                         `VectorContext supports at most ${MAX_GRADIENT_TEXTURES} distinct gradients in one frame`,
                     );
                 }
-                this.device.deleteTexture(EXPIRED[1].texture);
+                EXPIRED[1].region.atlas.release(EXPIRED[1].region);
                 this.gradientTextures.delete(EXPIRED[0]);
             }
             const LINEAR = gradient instanceof LinearGradient,
                 WIDTH = LINEAR ? LINEAR_GRADIENT_SIZE : 256,
                 HEIGHT = 1,
                 DATA = gradient.raster();
+            const REGION = this.device.textureAtlas.allocate(WIDTH, HEIGHT);
+            this.device.textureAtlas.upload(
+                REGION,
+                { width: WIDTH, height: HEIGHT, data: DATA },
+                { premultiplied: true, extendEdges: true },
+            );
             cached = {
-                texture: this.device.createTexture(
-                    {
-                        width: WIDTH,
-                        height: HEIGHT,
-                        data: DATA,
-                    },
-                    {
-                        format: 'rgba',
-                        premultiplied: true,
-                        filter: 'linear',
-                    },
-                ),
+                region: REGION,
                 revision: gradient.revision,
                 lastFrame: this.frame,
                 linear: LINEAR,
@@ -637,11 +632,11 @@ export class VectorContext {
             this.vector.flush();
             const LINEAR = gradient instanceof LinearGradient,
                 WIDTH = LINEAR ? LINEAR_GRADIENT_SIZE : 256;
-            this.device.updateTexture(cached.texture, {
-                width: WIDTH,
-                height: 1,
-                data: gradient.raster(),
-            });
+            cached.region.atlas.upload(
+                cached.region,
+                { width: WIDTH, height: 1, data: gradient.raster() },
+                { premultiplied: true, extendEdges: true },
+            );
             cached.revision = gradient.revision;
             cached.linear = LINEAR;
         }
@@ -654,7 +649,7 @@ export class VectorContext {
         COLOR[3] *= this._globalAlpha;
         if (gradient instanceof LinearGradient) {
             return {
-                texture: cached.texture,
+                region: cached.region,
                 kind: 'linear',
                 gradient,
                 x0: gradient.x0,
@@ -671,7 +666,7 @@ export class VectorContext {
             DR = gradient.r1 - gradient.r0,
             SCALE = Math.max(1, Math.hypot(DX, DY), Math.abs(gradient.r0), Math.abs(gradient.r1));
         return {
-            texture: cached.texture,
+            region: cached.region,
             kind: 'radial',
             gradient,
             x0: gradient.x0,
@@ -687,7 +682,7 @@ export class VectorContext {
     _releaseGradientTextures() {
         for (const [GRADIENT, CACHED] of this.gradientTextures) {
             try {
-                this.device.deleteTexture(CACHED.texture);
+                CACHED.region.atlas.release(CACHED.region);
             } catch (error) {
                 try {
                     this.onError?.(error, {
