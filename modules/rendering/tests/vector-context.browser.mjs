@@ -42,7 +42,7 @@ export async function exerciseVectorContext(page) {
         const VECTOR = new VECTOR_RENDERER(DEVICE, {
             glyphAtlas: ATLAS,
             initialVertices: 128,
-            maxVertices: 4096,
+            maxVertices: 16384,
         });
         const CTX = new VECTOR_CONTEXT(DEVICE, {
             vectorRenderer: VECTOR,

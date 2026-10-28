@@ -19,6 +19,8 @@ import { exerciseOrderedAssetBatch } from '../../modules/rendering/tests/ordered
 import { exerciseMeshDepth } from '../../modules/rendering/tests/mesh-depth.browser.mjs';
 import { exerciseMeshAlphaDepthWrite } from '../../modules/rendering/tests/mesh-alpha-depth.browser.mjs';
 import { exercisePrimitiveShapes } from '../../modules/rendering/tests/primitive-shapes.browser.mjs';
+import { exerciseVectorContext } from '../../modules/rendering/tests/vector-context.browser.mjs';
+import { exerciseVectorGameCoverage } from '../../modules/rendering/tests/vector-game-coverage.browser.mjs';
 import { runPresentationChecks } from './presentation.browser.js';
 import { chromium } from 'playwright';
 import { createServer } from 'node:http';
@@ -804,6 +806,15 @@ try {
     assert.deepEqual(REPORT.primitiveShapes.painter.boxRotatedNarrow, [0, 0, 0, 255]);
     assert.equal(REPORT.primitiveShapes.painter.drawCalls, 1);
     assert.equal(REPORT.primitiveShapes.painter.glError, 0);
+    const VECTOR_CONTEXT_RESULT = await exerciseVectorContext(PAGE);
+    REPORT.vectorContext = {
+        batchedDrawCalls: VECTOR_CONTEXT_RESULT.batched.drawCalls,
+        contextLossRestored: VECTOR_CONTEXT_RESULT.restored,
+    };
+    const VECTOR_GAME_COVERAGE_RESULT = await exerciseVectorGameCoverage(PAGE);
+    REPORT.vectorGameCoverage = {
+        contextLossRestored: VECTOR_GAME_COVERAGE_RESULT.restored,
+    };
     assert.equal(REPORT.primitiveShapes.pathTessellations, 0);
     assert.equal(REPORT.primitiveShapes.pathStrokeBuilds, 0);
     assert.equal(REPORT.primitiveShapes.arcPointBuilds, 0);
