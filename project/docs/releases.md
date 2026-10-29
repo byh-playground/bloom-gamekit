@@ -28,6 +28,28 @@ crowd.stop(600);
 - 시험: `test:audio`가 패닝(한쪽 채널 에너지), 디튠(옥타브 교차 횟수 2배·1/2배), 베드 level·stop·swell·노드 정리를 OfflineAudioContext로, 실제 Chromium에서 베드 재생·같은 핸들 반환·stopAll 생존·category 음량 0 무음·dispose 정리를 확인합니다.
 - 이번에 하지 않은 것: 베드 덕킹(다른 소리가 날 때 자동으로 낮추기), 음악, 샘플 파일 로딩, 거리 감쇠. 실제 스피커·기기에서의 청취와 모바일 CPU 부하는 검증하지 못했습니다.
 
+## v0.26.6 (2026-10-30)
+
+GPU 포즈(`poseBackend: 'auto'`, 기본값)가 실제 NVIDIA에서 `'uniform'`보다 최대 9배 느리던 문제를 고칩니다. API 변경은 없습니다. 같은 장면에서 `auto`가 `uniform` 수준이 됩니다.
+
+원인은 정점 셰이더의 키프레임 계산이 아니었습니다. 서로 다른 메시의 액터가 번갈아 그려져 draw가 액터 수만큼 쪼개지면, `PoseRenderer`가 draw마다 호출되는 `flushUpdates`에서 두 가지 일을 했습니다.
+
+- `updateDataTexture`가 호출마다 동기식 `gl.getError()`를 불렀습니다. rendering README가 반복 `updateTexture`/`copyFrameToTexture`에는 `checkGLErrors`일 때만 부른다고 적은 규칙을, 이 함수만 지키지 않았습니다. Chrome에서 `getError`는 GPU 프로세스와 왕복 동기화라 호출당 약 0.1~0.2ms가 들었습니다(CPU 프로파일에서 `updateDataTexture`가 프레임의 75%). 이제 `checkGLErrors`일 때만 부릅니다.
+- `_uploadRows`가 flush마다 살아 있는 인스턴스 전부를 훑어 dirty 여부를 찾았습니다. draw가 N번이면 N×N번 방문하고 프레임당 `flushRecordVisits`가 인스턴스 수의 제곱으로 늘었습니다. 이제 state/override/CPU별 dirty 집합을 두고 바뀐 행만 방문합니다.
+
+측정(실제 Chrome, ANGLE D3D11, GTX 1660 Ti, 1280x720, sketch-town 적 3종을 번갈아 그린 액터 수별 프레임, 60프레임 중앙값을 3회 반복한 중앙값, 단위 ms):
+
+| 액터 수 | auto 이전 (GPU/CPU) | auto 이후   | uniform     |
+| ------- | ------------------- | ----------- | ----------- |
+| 40      | 9.8 / 9.8           | 1.1 / 1.1   | 1.4 / 1.3   |
+| 200     | 43.5 / 43.8         | 5.8 / 6.1   | 6.3 / 6.5   |
+| 1000    | 251 / 253           | 27.6 / 27.7 | 26.8 / 26.8 |
+
+bloom-bounko 에셋 5종으로도 같습니다(200개: 이전 43.0 → 이후 4.8, uniform 4.5). 메시별로 묶어 그리면 `auto`는 원래도 빨랐습니다(200개, 이전 코드 1.7ms 대 uniform 4.5ms). 이전 README의 "정점마다 같은 파트 계산을 반복하는 비용은 GPU ALU 시간으로 옮겨진다"는 우려는 이 GPU에서 병목이 아니었고, 그 문장을 측정 사실로 바꿨습니다. 측정은 project/docs/rendering-benchmark.json의 `gpu-pose-flush-cost`에 있습니다.
+
+- 시험: `test:vector-assets:gpu-poses`는 실제 Chrome에서 통과하고 auto와 uniform의 픽셀 차이가 0입니다. 이 시험이 내부 `stateDirty`/`overrideDirty` 플래그를 읽던 곳은 새 dirty 집합을 읽도록 바꿨습니다. SwiftShader에서는 이 변경 전후 모두 같은 픽셀 임계(`changedFraction` 0.00102 대 0.001)에서 실패하는 기존 문제가 그대로입니다.
+- 이번에 하지 않은 것: 포즈를 파트당 한 번 별도 패스로 계산해 행렬 텍스처에 쓰는 방식은 시도했다가 버렸습니다. 원인이 정점 계산이 아니라서 이득이 없었고(40개 번갈아 그리기 9.1ms로 uniform 1.2ms보다 느림), 이 변경만으로 `uniform`과 같아졌습니다.
+
 ## v0.26.5 (2026-10-30)
 
 **Breaking.** budmori-io와 bloom-bounko 이관에서 나온 모듈 빈틈 네 가지를 메웁니다.
