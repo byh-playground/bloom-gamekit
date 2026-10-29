@@ -659,8 +659,21 @@ function retainVectorAsset(meshRenderer, compiledAsset) {
             depthWriteAlphaThreshold = null,
             strokeViewport = null,
             excludeParts = null,
+            instances = null,
         } = {}) => {
             ASSERT_ACTOR();
+            // With `instances` (silhouettes) the retained pose is drawn once per packed matrix, in one ordered batch.
+            const SUBMIT = (options) =>
+                instances
+                    ? meshRenderer.drawMeshInstances(mesh, {
+                          ...options,
+                          matrices: instances.matrices,
+                          count: instances.count,
+                          prefixColor: instances.prefixColor,
+                          prefixCount: instances.prefixCount,
+                          forceColorPrefixCount: instances.forceColorPrefixCount,
+                      })
+                    : meshRenderer.drawMesh(mesh, options);
             VALIDATE_EXCLUSIONS(excludeParts);
             if (!mesh && paintRegions !== null) {
                 throw new TypeError('This asset has no named mesh fills');
@@ -675,7 +688,7 @@ function retainVectorAsset(meshRenderer, compiledAsset) {
                             ? expression
                             : null;
                     const WORLD_MODE = viewProjection !== undefined || worldMatrix !== undefined;
-                    meshRenderer.drawMesh(mesh, {
+                    SUBMIT({
                         ...(WORLD_MODE ? { viewProjection, worldMatrix } : { projection }),
                         matrix,
                         pose: POSE,
@@ -709,7 +722,7 @@ function retainVectorAsset(meshRenderer, compiledAsset) {
             const INDEX_VARIANT =
                 !visibilityOverridden && compiledAsset.geometry.expressionIndices?.[expression] ? expression : null;
             const WORLD_MODE = viewProjection !== undefined || worldMatrix !== undefined;
-            meshRenderer.drawMesh(mesh, {
+            SUBMIT({
                 ...(WORLD_MODE
                     ? {
                           viewProjection,
