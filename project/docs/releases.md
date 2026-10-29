@@ -1,3 +1,20 @@
+## v0.30.0 (2026-10-30)
+
+호환 추가. 베드 레이어에 `compressor`를 추가합니다. 음악처럼 곡 안에서 크기가 크게 변하는 buffer 레이어를 고르게 만드는 레벨러입니다. 발배구가 배경 음악을 깔아 보니 도입부는 묻히고 하이라이트는 튀었고(곡의 3초 구간 음량 편차 10.8dB), 마스터 컴프레서는 곡이 임계값 아래라 걸리지 않았습니다.
+
+- `compressor: { threshold(-100..0 dB), ratio(1..20), knee?(기본 10), attackMs?(20), releaseMs?(250) }`. 필터 뒤, gain 앞에 붙고 noise·buffer 레이어 모두에 줄 수 있습니다. 범위를 벗어난 값은 RangeError입니다.
+- WebAudio 컴프레서의 자동 보정 gain 때문에 전체가 커집니다(실측 약 +5dB). 적용 뒤 레이어 `gain`을 다시 맞춥니다.
+
+```js
+// 이전: 곡의 도입부가 묻히고 하이라이트가 튄다(3초 구간 편차 10.8dB)
+{ kind: 'buffer', bufferId: 'bgm', gain: 1 }
+// 이후: 편차 2.5dB, 전체 약 +5dB 커지므로 gain을 낮춘다
+{ kind: 'buffer', bufferId: 'bgm', gain: 0.65, compressor: { threshold: -50, ratio: 10, attackMs: 100, releaseMs: 900 } }
+```
+
+- 시험: `test:audio`가 28dB 크기 차이의 두 구간이 컴프레서로 8dB 넘게 좁혀지는지와 범위 밖 설정 네 가지의 거부를 OfflineAudioContext로 확인합니다.
+- 이번에 하지 않은 것: 룩어헤드, 사이드체인(다른 소리가 날 때 음악을 자동으로 낮추기). 덕킹은 게임이 `setLevel`로 합니다. 실제 청취는 검증하지 못했습니다.
+
 ## v0.29.0 (2026-10-30)
 
 호환 추가. 환경음 베드 레이어에 `kind: 'buffer'`를 추가합니다. 게임이 읽어 디코드한 AudioBuffer(음악 루프, 긴 환경 소리)를 베드로 깔고 `setLevel`·`swell`·`stop`으로 다룰 수 있습니다. 발배구가 배경 음악을 깔려는 데서 나온 공통 필요입니다.

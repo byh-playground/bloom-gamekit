@@ -104,7 +104,16 @@
                 ...CROWD_BEDS,
                 loop: {
                     category: 'ambience',
-                    layers: [{ kind: 'buffer', bufferId: 'demo-loop', gain: 0.6, type: 'highpass', hz: 150 }],
+                    layers: [
+                        {
+                            kind: 'buffer',
+                            bufferId: 'demo-loop',
+                            gain: 0.6,
+                            type: 'highpass',
+                            hz: 150,
+                            compressor: { threshold: -40, ratio: 6 },
+                        },
+                    ],
                 },
             },
             sounds: {
