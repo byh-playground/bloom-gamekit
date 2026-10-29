@@ -4196,6 +4196,7 @@ function retainVectorAsset(meshRenderer, compiledAsset) {
       depthTest = false,
       depthWrite = false,
       depthFunc = "lequal",
+      depthWriteAlphaThreshold = null,
       strokeViewport = null,
       excludeParts = null
     } = {}) => {
@@ -4204,7 +4205,8 @@ function retainVectorAsset(meshRenderer, compiledAsset) {
       if (!mesh && paintRegions !== null) {
         throw new TypeError("This asset has no named mesh fills");
       }
-      if (POSE_INSTANCE) {
+      const ALPHA_DEPTH = depthWriteAlphaThreshold !== null;
+      if (POSE_INSTANCE && !ALPHA_DEPTH) {
         const POSE = PREPARE_POSE({ excludeParts });
         if (POSE) {
           const INDEX_VARIANT2 = !visibilityOverridden && compiledAsset.geometry.expressionIndices?.[expression] ? expression : null;
@@ -4231,8 +4233,8 @@ function retainVectorAsset(meshRenderer, compiledAsset) {
           return;
         }
       }
-      if (!POSE_INSTANCE) {
-        meshRenderer.recordPoseFallback?.("uniformPose");
+      if (!POSE_INSTANCE || ALPHA_DEPTH) {
+        meshRenderer.recordPoseFallback?.(ALPHA_DEPTH ? "alphaDepthClassification" : "uniformPose");
       }
       const RESOLVED = WORLD_MATRICES();
       const POSES = RESOLVED.parts.map((pose, index) => ({
@@ -4263,6 +4265,7 @@ function retainVectorAsset(meshRenderer, compiledAsset) {
         depthTest,
         depthWrite,
         depthFunc,
+        depthWriteAlphaThreshold,
         indexVariant: INDEX_VARIANT,
         strokeViewport,
         timeMs: displayTimeMs
