@@ -3206,9 +3206,14 @@ function packPaintRegions(names, overrides, output) {
   return output;
 }
 
+// modules/rendering/yarn-material-record.js
+var MATERIAL_KIND = Object.freeze({ none: 0, yarnFill: 1, yarnEdge: 2, sketchFill: 3, sketchEdge: 4 });
+var MATERIAL_RECORD_FLOATS = 20;
+var MAX_MATERIAL_SURFACES = 16;
+
 // modules/vector-assets/schema.js
 var VECTOR_ASSET_SCHEMA_VERSION = 1;
-var VECTOR_ASSET_COMPILER_VERSION = "0.11.0";
+var VECTOR_ASSET_COMPILER_VERSION = "0.12.0";
 var ACCEPTED_COMPILER_VERSIONS = /* @__PURE__ */ new Set([
   "0.2.0",
   "0.3.0",
@@ -3219,19 +3224,18 @@ var ACCEPTED_COMPILER_VERSIONS = /* @__PURE__ */ new Set([
   "0.8.0",
   "0.9.0",
   "0.10.0",
+  "0.11.0",
   VECTOR_ASSET_COMPILER_VERSION
 ]);
 var NUMERIC_POSE_FIELDS = Object.freeze(["x", "y", "rotation", "scaleX", "scaleY", "opacity"]);
 var IS_OBJECT = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 var EXACT_KEYS = (value, keys) => IS_OBJECT(value) && Object.keys(value).length === keys.length && keys.every((key2) => Object.hasOwn(value, key2));
 function validateCompiledAsset(asset) {
-  const SHADER_SURFACES = asset?.geometry?.shaderSurfaces;
-  const SURFACE_ONLY = Array.isArray(SHADER_SURFACES) && SHADER_SURFACES.length > 0;
-  if (!IS_OBJECT(asset) || asset.schemaVersion !== VECTOR_ASSET_SCHEMA_VERSION || !ACCEPTED_COMPILER_VERSIONS.has(asset.compilerVersion) || typeof asset.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/.test(asset.sourceSha256) || !IS_OBJECT(asset.metadata) || !IS_OBJECT(asset.geometry) || !(asset.geometry.vertices instanceof Float32Array) || asset.geometry.vertices.length < 33 && !(SURFACE_ONLY && asset.geometry.vertices.length === 0) || asset.geometry.vertices.length % 11 || asset.geometry.strideFloats !== 11 || asset.geometry.nonScalingStroke !== void 0 && typeof asset.geometry.nonScalingStroke !== "boolean" || asset.geometry.nonScalingStroke && asset.geometry.morphCount !== 0 || asset.geometry.partCount !== asset.metadata.parts?.length || ![0, 2].includes(asset.geometry.morphCount)) {
+  if (!IS_OBJECT(asset) || asset.schemaVersion !== VECTOR_ASSET_SCHEMA_VERSION || !ACCEPTED_COMPILER_VERSIONS.has(asset.compilerVersion) || typeof asset.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/.test(asset.sourceSha256) || !IS_OBJECT(asset.metadata) || !IS_OBJECT(asset.geometry) || !(asset.geometry.vertices instanceof Float32Array) || asset.geometry.vertices.length < 33 || asset.geometry.vertices.length % 11 || asset.geometry.strideFloats !== 11 || asset.geometry.nonScalingStroke !== void 0 && typeof asset.geometry.nonScalingStroke !== "boolean" || asset.geometry.nonScalingStroke && asset.geometry.morphCount !== 0 || asset.geometry.partCount !== asset.metadata.parts?.length || ![0, 2].includes(asset.geometry.morphCount)) {
     throw new TypeError("Invalid compiled SVG vector asset");
   }
   const VERTEX_COUNT = asset.geometry.vertices.length / 11, INDICES = asset.geometry.indices;
-  if (INDICES !== void 0 && (!(INDICES instanceof Uint16Array) || INDICES.length < 3 && !(SURFACE_ONLY && INDICES.length === 0) || INDICES.length % 3 || VERTEX_COUNT > 65536 || INDICES.some((index) => index >= VERTEX_COUNT))) {
+  if (INDICES !== void 0 && (!(INDICES instanceof Uint16Array) || INDICES.length < 3 || INDICES.length % 3 || VERTEX_COUNT > 65536 || INDICES.some((index) => index >= VERTEX_COUNT))) {
     throw new TypeError("Invalid compiled SVG vertex indices");
   }
   if (INDICES === void 0 && VERTEX_COUNT % 3) {
@@ -3275,47 +3279,26 @@ function validateCompiledAsset(asset) {
       validatePaintRegionData(asset.geometry.paintRegions, VERTEX_COUNT, VARIANT);
     }
   }
-  const SURFACES = asset.geometry.shaderSurfaces;
-  const DRAW_ORDER = asset.geometry.drawOrder;
-  if (SURFACES !== void 0 || DRAW_ORDER !== void 0) {
-    if (!Array.isArray(SURFACES) || !Array.isArray(DRAW_ORDER) || !DRAW_ORDER.length || SURFACES.length > 128 || DRAW_ORDER.length > 512) {
-      throw new TypeError("Shader-backed SVG assets require bounded shaderSurfaces and drawOrder arrays");
+  if (asset.geometry.shaderSurfaces !== void 0 || asset.geometry.drawOrder !== void 0) {
+    throw new TypeError(
+      "Compiled SVG assets from compiler 0.11.0 or earlier keep shader surfaces outside the mesh; compile the SVG again"
+    );
+  }
+  const MATERIALS = asset.geometry.materials;
+  if (MATERIALS !== void 0) {
+    const SURFACES = MATERIALS?.table?.length / MATERIAL_RECORD_FLOATS;
+    if (!IS_OBJECT(MATERIALS) || !(MATERIALS.vertices instanceof Float32Array) || !(MATERIALS.table instanceof Float32Array) || MATERIALS.vertices.length !== VERTEX_COUNT * 4 || !Number.isSafeInteger(SURFACES) || SURFACES < 1 || SURFACES > MAX_MATERIAL_SURFACES || MATERIALS.table.some((value) => !Number.isFinite(value))) {
+      throw new TypeError("Invalid compiled SVG materials");
     }
-    for (const [INDEX, SURFACE] of SURFACES.entries()) {
-      const STYLE = asset.metadata.styles?.find(
-        (entry) => entry.target === SURFACE?.target && entry.backend === "shader"
-      );
-      const CONTOUR = SURFACE?.outline;
-      if (!STYLE || !Number.isSafeInteger(SURFACE.partIndex) || SURFACE.partIndex < 0 || SURFACE.partIndex >= asset.geometry.partCount || !(SURFACE.fillVertices instanceof Float32Array) || SURFACE.fillVertices.length < 18 || SURFACE.fillVertices.length % 18 || !(CONTOUR instanceof Float32Array) || CONTOUR.length < 6 || CONTOUR.length % 2 || !(SURFACE.edgeColors instanceof Float32Array) || SURFACE.edgeColors.length !== CONTOUR.length * 2) {
-        throw new TypeError("Invalid retained SVG shader surface at index " + INDEX);
-      }
-      if (SURFACE.fillVertices.some(
-        (value, offset) => !Number.isFinite(value) || offset % 6 >= 2 && (value < 0 || value > 1)
-      ) || CONTOUR.some((value) => !Number.isFinite(value)) || SURFACE.edgeColors.some((value) => !Number.isFinite(value) || value < 0 || value > 1)) {
-        throw new TypeError("SVG shader surface values must be finite and colors in [0,1]");
-      }
-      const SURFACE_STYLE = SURFACE.style, STYLE_KEYS = Object.keys(STYLE);
-      if (!IS_OBJECT(SURFACE_STYLE) || Object.keys(SURFACE_STYLE).length !== STYLE_KEYS.length || STYLE_KEYS.some((key2) => !Object.hasOwn(SURFACE_STYLE, key2) || SURFACE_STYLE[key2] !== STYLE[key2])) {
-        throw new TypeError("SVG shader surface style must exactly match its authored metadata target");
-      }
+    const SHADER_STYLES = (asset.metadata.styles ?? []).filter((style) => style.backend === "shader");
+    if (!SHADER_STYLES.length) {
+      throw new TypeError("Compiled SVG materials need a shader-backed style in the metadata");
     }
-    const REFERENCED = /* @__PURE__ */ new Set();
-    for (const COMMAND of DRAW_ORDER) {
-      if (COMMAND?.kind === "mesh") {
-        if (!Number.isSafeInteger(COMMAND.firstIndex) || !Number.isSafeInteger(COMMAND.indexCount) || COMMAND.firstIndex < 0 || !Number.isSafeInteger(COMMAND.partIndex) || COMMAND.partIndex < 0 || COMMAND.partIndex >= asset.geometry.partCount || COMMAND.indexCount < 3 || COMMAND.indexCount % 3 || COMMAND.firstIndex % 3 || COMMAND.firstIndex + COMMAND.indexCount > (INDICES?.length ?? VERTEX_COUNT)) {
-          throw new TypeError("Invalid ordered SVG mesh range");
-        }
-      } else if (COMMAND?.kind === "surface") {
-        if (!Number.isSafeInteger(COMMAND.surfaceIndex) || COMMAND.surfaceIndex < 0 || COMMAND.surfaceIndex >= SURFACES.length || REFERENCED.has(COMMAND.surfaceIndex)) {
-          throw new TypeError("Invalid or repeated ordered SVG shader surface reference");
-        }
-        REFERENCED.add(COMMAND.surfaceIndex);
-      } else {
-        throw new TypeError("Unsupported SVG painter-order command");
+    for (let at = 0; at < MATERIALS.vertices.length; at += 4) {
+      const KIND = MATERIALS.vertices[at], SURFACE = MATERIALS.vertices[at + 1];
+      if (!Number.isInteger(KIND) || KIND < MATERIAL_KIND.none || KIND > MATERIAL_KIND.sketchEdge || !Number.isInteger(SURFACE) || SURFACE < 0 || SURFACE >= SURFACES || !Number.isFinite(MATERIALS.vertices[at + 2]) || !Number.isFinite(MATERIALS.vertices[at + 3])) {
+        throw new TypeError("Invalid compiled SVG material vertex");
       }
-    }
-    if (REFERENCED.size !== SURFACES.length) {
-      throw new TypeError("Every retained SVG shader surface must appear once in drawOrder");
     }
   }
   return asset;
@@ -3631,61 +3614,6 @@ function multiply(a, b) {
     a[1] * b[4] + a[3] * b[5] + a[5]
   ];
 }
-function composeWorldMatrix(world, local) {
-  if (!world || world.length !== 16 || local.length !== 6 || Array.from(local).some((value) => !Number.isFinite(value))) {
-    throw new TypeError("Six finite root matrix values required");
-  }
-  const [A, B, C, D, E, F] = local, OUT = Float32Array.from(world);
-  for (const VALUE of OUT) {
-    if (!Number.isFinite(VALUE)) {
-      throw new TypeError("worldMatrix must contain 16 finite values");
-    }
-  }
-  if (Math.abs(OUT[3]) > 1e-7 || Math.abs(OUT[7]) > 1e-7 || Math.abs(OUT[11]) > 1e-7 || Math.abs(OUT[15] - 1) > 1e-7) {
-    throw new TypeError("worldMatrix must be an affine column-major 4x4 matrix");
-  }
-  OUT[0] = world[0] * A + world[4] * B;
-  OUT[1] = world[1] * A + world[5] * B;
-  OUT[2] = world[2] * A + world[6] * B;
-  OUT[3] = world[3] * A + world[7] * B;
-  OUT[4] = world[0] * C + world[4] * D;
-  OUT[5] = world[1] * C + world[5] * D;
-  OUT[6] = world[2] * C + world[6] * D;
-  OUT[7] = world[3] * C + world[7] * D;
-  OUT[12] = world[0] * E + world[4] * F + world[12];
-  OUT[13] = world[1] * E + world[5] * F + world[13];
-  OUT[14] = world[2] * E + world[6] * F + world[14];
-  OUT[15] = world[3] * E + world[7] * F + world[15];
-  return OUT;
-}
-function validateShaderSurfaceClipCapacity(clips, maxPlanes) {
-  if (!clips?.length) {
-    return;
-  }
-  if (!Array.isArray(clips)) {
-    throw new TypeError("clips must be an array of convex polygons");
-  }
-  let edgeCount = 0;
-  for (const POLYGON of clips) {
-    if (!Array.isArray(POLYGON) || POLYGON.length < 3 || POLYGON.some((point) => !Number.isFinite(point?.x) || !Number.isFinite(point?.y))) {
-      throw new TypeError("Finite convex clip polygons required");
-    }
-    let area = 0;
-    for (let i = 0; i < POLYGON.length; i++) {
-      const A = POLYGON[i], B = POLYGON[(i + 1) % POLYGON.length];
-      area += A.x * B.y - B.x * A.y;
-      if (Math.hypot(B.x - A.x, B.y - A.y) > 0) {
-        edgeCount++;
-      }
-    }
-    if (Math.abs(area) < 1e-8) {
-      throw new RangeError("A clip polygon must have nonzero area");
-    }
-    if (edgeCount > maxPlanes) {
-      throw new RangeError(`Vector asset clipping exceeds the shader surface limit of ${maxPlanes} edge planes`);
-    }
-  }
-}
 function transformPoint(matrix, point) {
   return {
     x: matrix[0] * point[0] + matrix[2] * point[1] + matrix[4],
@@ -3779,7 +3707,7 @@ function blendPoses(from, to, amount, partIds) {
   }
   return OUTPUT;
 }
-function retainVectorAsset(meshRenderer, compiledAsset, surfaceRenderer) {
+function retainVectorAsset(meshRenderer, compiledAsset) {
   if (!meshRenderer?.createMesh || !meshRenderer?.drawMesh || !meshRenderer?.deleteMesh) {
     throw new TypeError("A GameKit MeshRenderer is required");
   }
@@ -3796,24 +3724,14 @@ function retainVectorAsset(meshRenderer, compiledAsset, surfaceRenderer) {
     ).map(([name]) => name)
   );
   const POSE_API = typeof meshRenderer.createPoseSource === "function" && typeof meshRenderer.createPoseInstance === "function" && typeof meshRenderer.preparePose === "function" && typeof meshRenderer.prepareCpuPose === "function" && typeof meshRenderer.deletePoseInstance === "function" && typeof meshRenderer.deletePoseSource === "function";
-  const GEOMETRY = compiledAsset.geometry, SHADER_GEOMETRY = GEOMETRY.shaderSurfaces ?? [];
-  if (SHADER_GEOMETRY.length && (!surfaceRenderer?.createSurface || !surfaceRenderer?.drawSurface || !surfaceRenderer?.deleteSurface)) {
-    throw new TypeError('This SVG declares backend:"shader" and needs a GameKit YarnSurfaceRenderer');
-  }
-  const POSE_PROGRAM = POSE_API && !GEOMETRY.drawOrder && !SHADER_GEOMETRY.length ? compilePoseChannels(METADATA) : null;
+  const GEOMETRY = compiledAsset.geometry;
+  const POSE_PROGRAM = POSE_API ? compilePoseChannels(METADATA) : null;
   let mesh = null;
   let poseSource = null;
-  const RETAINED_SURFACES = [];
   try {
     mesh = GEOMETRY.vertices.length ? meshRenderer.createMesh(GEOMETRY) : null;
     poseSource = POSE_PROGRAM ? meshRenderer.createPoseSource(POSE_PROGRAM) : null;
-    for (const DESCRIPTOR of SHADER_GEOMETRY) {
-      RETAINED_SURFACES.push(surfaceRenderer.createSurface(DESCRIPTOR));
-    }
   } catch (error) {
-    for (const SURFACE of RETAINED_SURFACES) {
-      surfaceRenderer.deleteSurface(SURFACE);
-    }
     if (mesh) {
       meshRenderer.deleteMesh(mesh);
     }
@@ -4286,11 +4204,7 @@ function retainVectorAsset(meshRenderer, compiledAsset, surfaceRenderer) {
       if (!mesh && paintRegions !== null) {
         throw new TypeError("This asset has no named mesh fills");
       }
-      if (GEOMETRY.shaderSurfaces?.length) {
-        validateShaderSurfaceClipCapacity(clips, surfaceRenderer.maxClipPlanes);
-      }
-      const SPECIAL_GEOMETRY = Boolean(GEOMETRY.drawOrder || GEOMETRY.shaderSurfaces?.length);
-      if (!SPECIAL_GEOMETRY && POSE_INSTANCE) {
+      if (POSE_INSTANCE) {
         const POSE = PREPARE_POSE({ excludeParts });
         if (POSE) {
           const INDEX_VARIANT2 = !visibilityOverridden && compiledAsset.geometry.expressionIndices?.[expression] ? expression : null;
@@ -4311,14 +4225,13 @@ function retainVectorAsset(meshRenderer, compiledAsset, surfaceRenderer) {
             depthWrite,
             depthFunc,
             indexVariant: INDEX_VARIANT2,
-            strokeViewport
+            strokeViewport,
+            timeMs: displayTimeMs
           });
           return;
         }
       }
-      if (SPECIAL_GEOMETRY) {
-        meshRenderer.recordPoseFallback?.(GEOMETRY.drawOrder ? "drawOrder" : "shaderSurfaces");
-      } else if (!POSE_INSTANCE) {
+      if (!POSE_INSTANCE) {
         meshRenderer.recordPoseFallback?.("uniformPose");
       }
       const RESOLVED = WORLD_MATRICES();
@@ -4327,74 +4240,6 @@ function retainVectorAsset(meshRenderer, compiledAsset, surfaceRenderer) {
         opacity: pose.opacity,
         visible: pose.visible && !excludeParts?.has(METADATA.parts[index].id)
       }));
-      if (GEOMETRY.drawOrder) {
-        const WORLD_MODE2 = viewProjection !== void 0 || worldMatrix !== void 0;
-        for (const COMMAND of GEOMETRY.drawOrder) {
-          if (COMMAND.kind === "mesh") {
-            if (!POSES[COMMAND.partIndex].visible || POSES[COMMAND.partIndex].opacity <= 0) {
-              continue;
-            }
-            if (!mesh) {
-              throw new Error("SVG draw order references mesh geometry that was not retained");
-            }
-            meshRenderer.drawMesh(mesh, {
-              ...WORLD_MODE2 ? {
-                viewProjection,
-                worldMatrix
-              } : {
-                projection
-              },
-              matrix,
-              parts: POSES,
-              morph: RESOLVED.morph.slice(),
-              alpha,
-              color,
-              forceColor,
-              paintRegions,
-              whiteFlash,
-              clips,
-              stencilRef,
-              depth,
-              depthTest,
-              depthWrite,
-              depthFunc,
-              strokeViewport,
-              indexRange: [COMMAND.firstIndex, COMMAND.indexCount]
-            });
-            continue;
-          }
-          const SURFACE = RETAINED_SURFACES[COMMAND.surfaceIndex], POSE = POSES[GEOMETRY.shaderSurfaces[COMMAND.surfaceIndex].partIndex];
-          if (!POSE.visible || POSE.opacity <= 0) {
-            continue;
-          }
-          meshRenderer.flush("vectorShaderSurfaceBoundary");
-          const MATERIAL_TRANSFORM = WORLD_MODE2 ? POSE.transform : multiply(matrix, POSE.transform);
-          const SHADER_DEPTH = depthTest || depthWrite ? {
-            test: depthTest,
-            write: depthWrite,
-            func: depthFunc
-          } : false;
-          surfaceRenderer.drawSurface(SURFACE, {
-            ...WORLD_MODE2 ? {
-              viewProjection,
-              worldMatrix: composeWorldMatrix(worldMatrix, matrix)
-            } : {
-              projection
-            },
-            transform: MATERIAL_TRANSFORM,
-            color,
-            alpha: alpha * POSE.opacity,
-            forceColor,
-            whiteFlash: whiteFlash ? 1 : 0,
-            timeMs: displayTimeMs,
-            clips,
-            stencilRef,
-            z: depth,
-            depth: SHADER_DEPTH
-          });
-        }
-        return;
-      }
       const INDEX_VARIANT = !visibilityOverridden && compiledAsset.geometry.expressionIndices?.[expression] ? expression : null;
       const WORLD_MODE = viewProjection !== void 0 || worldMatrix !== void 0;
       meshRenderer.drawMesh(mesh, {
@@ -4419,7 +4264,8 @@ function retainVectorAsset(meshRenderer, compiledAsset, surfaceRenderer) {
         depthWrite,
         depthFunc,
         indexVariant: INDEX_VARIANT,
-        strokeViewport
+        strokeViewport,
+        timeMs: displayTimeMs
       });
     };
     const GET_PART_POSE = (id) => {
@@ -4507,9 +4353,6 @@ function retainVectorAsset(meshRenderer, compiledAsset, surfaceRenderer) {
     if (mesh) {
       meshRenderer.deleteMesh(mesh);
     }
-    for (const SURFACE of RETAINED_SURFACES) {
-      surfaceRenderer.deleteSurface(SURFACE);
-    }
     if (poseSource) {
       meshRenderer.deletePoseSource(poseSource);
     }
@@ -4524,7 +4367,6 @@ function retainVectorAsset(meshRenderer, compiledAsset, surfaceRenderer) {
     viewBox: Object.freeze([...compiledAsset.viewBox]),
     metadata: METADATA,
     mesh,
-    surfaces: Object.freeze(RETAINED_SURFACES),
     createActor: CREATE_ACTOR,
     ownsActor(actor) {
       return ACTORS.has(actor) && !actor.disposed;
@@ -4540,7 +4382,7 @@ function retainVectorAsset(meshRenderer, compiledAsset, surfaceRenderer) {
 }
 var SHARED_ASSETS = /* @__PURE__ */ new WeakMap();
 function acquireVectorAsset(context, compiledAsset) {
-  if (!context?.acquireMeshRenderer || !context?.acquireSurfaceRenderer || !context?.onDispose) {
+  if (!context?.acquireMeshRenderer || !context?.onDispose) {
     throw new TypeError("A GameKit VectorContext is required");
   }
   let table = SHARED_ASSETS.get(context);
@@ -4558,9 +4400,8 @@ function acquireVectorAsset(context, compiledAsset) {
   }
   let entry = table.get(compiledAsset);
   if (!entry) {
-    const SURFACES = compiledAsset?.geometry?.shaderSurfaces?.length ? context.acquireSurfaceRenderer() : null;
     entry = {
-      asset: retainVectorAsset(context.acquireMeshRenderer(), compiledAsset, SURFACES),
+      asset: retainVectorAsset(context.acquireMeshRenderer(), compiledAsset),
       refs: 0
     };
     table.set(compiledAsset, entry);
@@ -4740,7 +4581,7 @@ function bakeRasterAtlas(context, asset, release, compiledAsset, { pixelsPerUnit
   let unsupportedReason = null;
   if (GEOMETRY.morphCount) {
     unsupportedReason = "morphTargets";
-  } else if (GEOMETRY.shaderSurfaces?.length || GEOMETRY.drawOrder?.length) {
+  } else if (GEOMETRY.materials) {
     unsupportedReason = "shaderSurfaces";
   } else if (GEOMETRY.nonScalingStroke) {
     unsupportedReason = "nonScalingStroke";
@@ -5120,7 +4961,7 @@ function bakeSpriteAtlas(context, asset, release, compiledAsset, {
   if (!record) {
     const DEFINITION = compiledAsset.metadata.clips[clip];
     let reason = null;
-    if (GEOMETRY.shaderSurfaces?.length || GEOMETRY.drawOrder?.length) {
+    if (GEOMETRY.materials) {
       reason = "shaderSurfaces";
     } else if (GEOMETRY.morphCount && compiledAsset.metadata.styles?.some((style) => style.kind === "sketch")) {
       reason = "timeDependentMorph";

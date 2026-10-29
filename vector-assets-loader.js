@@ -24536,9 +24536,27 @@ function validatePaintRegionName(name) {
   return name;
 }
 
+// modules/rendering/yarn-material-record.js
+var MATERIAL_KIND = Object.freeze({ none: 0, yarnFill: 1, yarnEdge: 2, sketchFill: 3, sketchEdge: 4 });
+var MAX_MATERIAL_SURFACES = 16;
+function materialRecord(style, bounds, contourLength) {
+  const YARN = style.kind === "yarn";
+  const STITCH_PATTERN = style.pattern !== false;
+  const EFFECT0 = YARN ? [style.seed, style.stitchWidth, style.stitchHeight, (STITCH_PATTERN ? 1 : -1) * style.thickness] : [style.seed, style.periodMs, style.frequency, 0];
+  const EFFECT1 = YARN ? [style.irregularity, style.contrast, style.edgeSpacing, style.edgeWidth] : [style.amplitude, style.echoX, style.echoWidth, style.echoOpacity];
+  const EFFECT2 = YARN ? [style.fiberSpacing ?? 4, style.fiberLength, style.fiberWidth, style.fiberOpacity] : [style.hatchWidth, style.hatchOpacity, style.hatchAngle, style.hatchSpacing];
+  const EFFECT3 = YARN ? [
+    style.fiber === false ? 0 : style.fiberMax,
+    contourLength,
+    style.curved === false ? 0 : 1,
+    style.edgeRelief * (style.detail ? 0.3 : 1)
+  ] : [0, style.echoY, 0, 0];
+  return Float32Array.from([...bounds, ...EFFECT0, ...EFFECT1, ...EFFECT2, ...EFFECT3]);
+}
+
 // modules/vector-assets/schema.js
 var VECTOR_ASSET_SCHEMA_VERSION = 1;
-var VECTOR_ASSET_COMPILER_VERSION = "0.11.0";
+var VECTOR_ASSET_COMPILER_VERSION = "0.12.0";
 var NUMERIC_POSE_FIELDS = Object.freeze(["x", "y", "rotation", "scaleX", "scaleY", "opacity"]);
 var EASINGS = /* @__PURE__ */ new Set([
   "linear",
@@ -24810,6 +24828,267 @@ function svgPaintRegion(node) {
     return null;
   }
   return validatePaintRegionName(node.getAttribute(SVG_PAINT_REGION_ATTRIBUTE));
+}
+
+// modules/rendering/yarn-geometry.js
+var STRIDE_FLOATS = 9;
+function validateStyle(style) {
+  if (!style || typeof style !== "object" || Array.isArray(style)) {
+    throw new TypeError("A complete SVG-authored yarn or sketch style is required");
+  }
+  const YARN_REQUIRED = [
+    "seed",
+    "stitchWidth",
+    "stitchHeight",
+    "thickness",
+    "irregularity",
+    "contrast",
+    "edgeSpacing",
+    "edgeRelief",
+    "edgeWidth",
+    "fiberLength",
+    "fiberWidth",
+    "fiberOpacity",
+    "fiberMax"
+  ];
+  const SKETCH_REQUIRED = [
+    "seed",
+    "periodMs",
+    "amplitude",
+    "frequency",
+    "echoX",
+    "echoY",
+    "echoWidth",
+    "echoOpacity",
+    "hatchAngle",
+    "hatchSpacing",
+    "hatchWidth",
+    "hatchOpacity"
+  ];
+  const FIELDS = style.kind === "yarn" ? YARN_REQUIRED : style.kind === "sketch" ? SKETCH_REQUIRED : null;
+  if (!FIELDS || FIELDS.some((key) => !Number.isFinite(style[key]))) {
+    throw new TypeError("Unsupported or incomplete SVG surface style");
+  }
+  if (style.seed < 0 || style.seed > 2147483647 || !Number.isSafeInteger(style.seed)) {
+    throw new RangeError("Surface seed must be a nonnegative 31-bit integer");
+  }
+  if (style.kind === "yarn") {
+    for (const KEY of [
+      "stitchWidth",
+      "stitchHeight",
+      "thickness",
+      "edgeSpacing",
+      "edgeRelief",
+      "edgeWidth",
+      "fiberLength",
+      "fiberWidth"
+    ]) {
+      if (style[KEY] <= 0) {
+        throw new RangeError(`Yarn ${KEY} must be positive`);
+      }
+    }
+    for (const KEY of ["irregularity", "contrast", "fiberOpacity"]) {
+      if (style[KEY] < 0 || style[KEY] > 1) {
+        throw new RangeError(`Yarn ${KEY} must be in [0,1]`);
+      }
+    }
+    if (!Number.isSafeInteger(style.fiberMax) || style.fiberMax < 0 || style.fiberMax > 512) {
+      throw new RangeError("Yarn fiberMax must be an integer from 0 to 512");
+    }
+    for (const KEY of ["fiberSpacing", "curved", "pattern", "detail", "fiber"]) {
+      if (style[KEY] !== void 0 && (KEY === "fiberSpacing" ? !Number.isFinite(style[KEY]) || style[KEY] <= 0 : typeof style[KEY] !== "boolean")) {
+        throw new TypeError(`Invalid Yarn ${KEY}`);
+      }
+    }
+  } else {
+    if (!Number.isSafeInteger(style.periodMs) || style.periodMs < 16 || style.periodMs > 1e4) {
+      throw new RangeError("Sketch periodMs must be 16..10000");
+    }
+    for (const KEY of ["amplitude", "frequency", "echoWidth", "hatchSpacing", "hatchWidth"]) {
+      if (style[KEY] <= 0) {
+        throw new RangeError(`Sketch ${KEY} must be positive`);
+      }
+    }
+    for (const KEY of ["echoOpacity", "hatchOpacity"]) {
+      if (style[KEY] < 0 || style[KEY] > 1) {
+        throw new RangeError(`Sketch ${KEY} must be in [0,1]`);
+      }
+    }
+  }
+}
+function normalizeOutline(outline, sourceIndices) {
+  if (!(outline instanceof Float32Array || Array.isArray(outline)) || outline.length < 8 || outline.length % 2) {
+    throw new TypeError("Closed SVG contour must contain at least four x/y points");
+  }
+  const POINTS = [];
+  for (let i = 0; i < outline.length; i += 2) {
+    const X = outline[i], Y = outline[i + 1];
+    if (!Number.isFinite(X) || !Number.isFinite(Y)) {
+      throw new TypeError("SVG contour points must be finite");
+    }
+    if (!POINTS.length || Math.hypot(X - POINTS.at(-1)[0], Y - POINTS.at(-1)[1]) > 1e-6) {
+      POINTS.push([X, Y]);
+      sourceIndices?.push(i / 2);
+    }
+  }
+  if (POINTS.length > 4 && Math.hypot(POINTS[0][0] - POINTS.at(-1)[0], POINTS[0][1] - POINTS.at(-1)[1]) < 1e-6) {
+    POINTS.pop();
+    sourceIndices?.pop();
+  }
+  if (POINTS.length < 3) {
+    throw new TypeError("SVG contour requires at least three distinct points");
+  }
+  return POINTS;
+}
+function surfaceGeometry(fillVertices, outline, edgeColors, style) {
+  if (!(fillVertices instanceof Float32Array) || fillVertices.length < 18 || fillVertices.length % 18) {
+    throw new TypeError("Filled surface requires complete triangles in a six-float position/color layout");
+  }
+  const SOURCE_INDICES = [], POINTS = normalizeOutline(outline, SOURCE_INDICES);
+  if (edgeColors !== void 0 && (!(edgeColors instanceof Float32Array) || edgeColors.length !== POINTS.length * 4 && edgeColors.length !== outline.length * 2)) {
+    throw new TypeError("edgeColors must contain one RGBA color per contour point");
+  }
+  if (edgeColors && edgeColors.some((value) => !Number.isFinite(value) || value < 0 || value > 1)) {
+    throw new RangeError("edgeColors must contain finite RGBA values in [0,1]");
+  }
+  if (edgeColors && edgeColors.length !== POINTS.length * 4) {
+    const ORIGINAL_COLORS = edgeColors;
+    edgeColors = Float32Array.from(
+      SOURCE_INDICES.flatMap((index) => Array.from(ORIGINAL_COLORS.subarray(index * 4, index * 4 + 4)))
+    );
+  }
+  for (let i = 0; i < fillVertices.length; i++) {
+    if (!Number.isFinite(fillVertices[i])) {
+      throw new TypeError("Filled surface vertices must be finite");
+    }
+    const FIELD = i % 6;
+    if (FIELD >= 2 && (fillVertices[i] < 0 || fillVertices[i] > 1)) {
+      throw new RangeError("Surface colors must be in [0,1]");
+    }
+  }
+  const LENGTHS = [], NORMALS = [];
+  let total = 0;
+  let signedArea2 = 0;
+  for (let i = 0; i < POINTS.length; i++) {
+    const A = POINTS[i], B = POINTS[(i + 1) % POINTS.length], DX = B[0] - A[0], DY = B[1] - A[1], LENGTH = Math.hypot(DX, DY);
+    if (!LENGTH) {
+      throw new TypeError("SVG contour cannot contain zero-length edges");
+    }
+    LENGTHS.push(LENGTH);
+    total += LENGTH;
+    signedArea2 += A[0] * B[1] - B[0] * A[1];
+    NORMALS.push([DY / LENGTH, -DX / LENGTH]);
+  }
+  if (Math.abs(signedArea2) < 1e-6) {
+    throw new TypeError("SVG contour cannot have zero area");
+  }
+  const WINDING = signedArea2 >= 0 ? 1 : -1;
+  const BOUNDS = [Infinity, Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < fillVertices.length; i += 6) {
+    BOUNDS[0] = Math.min(BOUNDS[0], fillVertices[i]);
+    BOUNDS[1] = Math.min(BOUNDS[1], fillVertices[i + 1]);
+    BOUNDS[2] = Math.max(BOUNDS[2], fillVertices[i]);
+    BOUNDS[3] = Math.max(BOUNDS[3], fillVertices[i + 1]);
+  }
+  if (!(BOUNDS[2] > BOUNDS[0] && BOUNDS[3] > BOUNDS[1])) {
+    throw new TypeError("Filled surface bounds must have positive area");
+  }
+  const RGBA = edgeColors ? edgeColors : (() => {
+    const COLOR = [0, 0, 0, 0];
+    for (let i = 0; i < fillVertices.length; i += 6) {
+      for (let c = 0; c < 4; c++) {
+        COLOR[c] += fillVertices[i + 2 + c];
+      }
+    }
+    for (let c = 0; c < 4; c++) {
+      COLOR[c] /= fillVertices.length / 6;
+    }
+    return Float32Array.from(POINTS.flatMap(() => COLOR));
+  })();
+  const EDGE_WIDTH = style.kind === "yarn" ? style.edgeWidth : Math.max(style.echoWidth, Math.hypot(style.echoX, style.echoY) + style.amplitude + style.echoWidth);
+  const FIBER_LENGTH = style.kind === "yarn" && style.fiber !== false ? style.fiberLength : EDGE_WIDTH;
+  const FILL_RECORDS = new Float32Array(fillVertices.length / 6 * STRIDE_FLOATS);
+  let write = 0;
+  for (let i = 0; i < fillVertices.length; i += 6) {
+    FILL_RECORDS.set(fillVertices.subarray(i, i + 6), write);
+    FILL_RECORDS[write + 6] = 0;
+    write += STRIDE_FLOATS;
+  }
+  const CUMULATIVE = [0];
+  for (const LENGTH of LENGTHS) {
+    CUMULATIVE.push(CUMULATIVE.at(-1) + LENGTH);
+  }
+  const RING = [];
+  for (let i = 0; i < POINTS.length; i++) {
+    const PREVIOUS = NORMALS[(i + POINTS.length - 1) % POINTS.length], CURRENT = NORMALS[i];
+    let mx = (PREVIOUS[0] + CURRENT[0]) * WINDING;
+    let my = (PREVIOUS[1] + CURRENT[1]) * WINDING;
+    const MITER_LENGTH = Math.hypot(mx, my);
+    if (MITER_LENGTH < 1e-5) {
+      mx = CURRENT[0] * WINDING;
+      my = CURRENT[1] * WINDING;
+    } else {
+      mx /= MITER_LENGTH;
+      my /= MITER_LENGTH;
+    }
+    const DENOMINATOR = Math.max(0.25, Math.abs(mx * CURRENT[0] * WINDING + my * CURRENT[1] * WINDING));
+    const SCALE = Math.min(4, 1 / DENOMINATOR);
+    RING.push([mx * SCALE, my * SCALE]);
+  }
+  const EDGE_RECORDS = [];
+  const COLOR_AT = (index) => RGBA.subarray(index * 4, index * 4 + 4);
+  for (let i = 0; i < POINTS.length; i++) {
+    const J = (i + 1) % POINTS.length;
+    const EMIT = (pointIndex, distance) => {
+      const POINT = POINTS[pointIndex], NORMAL = RING[pointIndex], X = POINT[0] + NORMAL[0] * distance, Y = POINT[1] + NORMAL[1] * distance;
+      EDGE_RECORDS.push(X, Y, ...COLOR_AT(pointIndex), 1, CUMULATIVE[pointIndex] / total, distance);
+    };
+    EMIT(i, -EDGE_WIDTH);
+    EMIT(i, FIBER_LENGTH);
+    EMIT(J, FIBER_LENGTH);
+    EMIT(i, -EDGE_WIDTH);
+    EMIT(J, FIBER_LENGTH);
+    EMIT(J, -EDGE_WIDTH);
+  }
+  const EDGE_RECORD_ARRAY = Float32Array.from(EDGE_RECORDS);
+  const VERTICES = new Float32Array(FILL_RECORDS.length + EDGE_RECORD_ARRAY.length);
+  VERTICES.set(FILL_RECORDS);
+  VERTICES.set(EDGE_RECORD_ARRAY, FILL_RECORDS.length);
+  return Object.freeze({
+    vertices: VERTICES,
+    fillFirst: 0,
+    fillCount: fillVertices.length / 6,
+    edgeFirst: fillVertices.length / 6,
+    edgeCount: EDGE_RECORD_ARRAY.length / STRIDE_FLOATS,
+    edgeByteOffset: FILL_RECORDS.length * 4,
+    bounds: Float32Array.of(BOUNDS[0], BOUNDS[1], BOUNDS[2] - BOUNDS[0], BOUNDS[3] - BOUNDS[1]),
+    contourLength: total
+  });
+}
+function appendSurfaceVertices(vertices, materials, surface, surfaceIndex, style, partIndex) {
+  const YARN = style.kind === "yarn";
+  for (let record = 0; record < surface.fillCount + surface.edgeCount; record++) {
+    const AT = record * STRIDE_FLOATS, EDGE = record >= surface.edgeFirst;
+    vertices.push(
+      surface.vertices[AT],
+      surface.vertices[AT + 1],
+      surface.vertices[AT + 2],
+      surface.vertices[AT + 3],
+      surface.vertices[AT + 4],
+      surface.vertices[AT + 5],
+      0,
+      0,
+      0,
+      0,
+      partIndex
+    );
+    materials.push(
+      EDGE ? YARN ? MATERIAL_KIND.yarnEdge : MATERIAL_KIND.sketchEdge : YARN ? MATERIAL_KIND.yarnFill : MATERIAL_KIND.sketchFill,
+      surfaceIndex,
+      EDGE ? surface.vertices[AT + 7] : 0,
+      EDGE ? surface.vertices[AT + 8] : 0
+    );
+  }
 }
 
 // modules/vector-assets/compiler-core.js
@@ -26201,12 +26480,15 @@ function compileSketchStyle(vertices, style, shape, fillColor, opacity, partInde
     );
   }
 }
-function compileShaderSurface(style, shape, fillColor, opacity, partIndex, gradient, gradientBounds, transform, curveSegments) {
+function appendShaderSurface(vertices, materials, table, style, shape, fillColor, opacity, partIndex, gradient, gradientBounds, transform, curveSegments) {
   const EXTRACTED = shape.extractPoints(curveSegments);
   if (EXTRACTED.shape.length < 3 || EXTRACTED.holes.length) {
     throw new TypeError(
       "Shader-backed SVG yarn/sketch surfaces currently require one closed contour without holes: " + style.target
     );
+  }
+  if (table.length >= MAX_MATERIAL_SURFACES) {
+    throw new RangeError("An SVG supports at most " + MAX_MATERIAL_SURFACES + " shader-backed surfaces");
   }
   const GEOMETRY = new ShapeGeometry(shape, curveSegments), POSITION = GEOMETRY.attributes.position, INDEX = GEOMETRY.index;
   const COUNT = INDEX ? INDEX.count : POSITION.count, FILL = new Float32Array(COUNT * 6);
@@ -26237,32 +26519,11 @@ function compileShaderSurface(style, shape, fillColor, opacity, partIndex, gradi
     OUTLINE[point * 2 + 1] = CURRENT.y;
     EDGE_COLORS.set(COLOR_AT(CURRENT), point * 4);
   }
-  return {
-    target: style.target,
-    partIndex,
-    fillVertices: FILL,
-    outline: OUTLINE,
-    edgeColors: EDGE_COLORS,
-    style: {
-      ...style
-    }
-  };
-}
-function appendOrderedMeshRange(drawOrder, firstIndex, indexCount, partIndex) {
-  if (!indexCount) {
-    return;
-  }
-  const PREVIOUS = drawOrder.at(-1);
-  if (PREVIOUS?.kind === "mesh" && PREVIOUS.partIndex === partIndex && PREVIOUS.firstIndex + PREVIOUS.indexCount === firstIndex) {
-    PREVIOUS.indexCount += indexCount;
-  } else {
-    drawOrder.push({
-      kind: "mesh",
-      firstIndex,
-      indexCount,
-      partIndex
-    });
-  }
+  validateStyle(style);
+  const SURFACE = surfaceGeometry(FILL, OUTLINE, EDGE_COLORS, style);
+  const SURFACE_INDEX = table.length;
+  table.push(materialRecord(style, SURFACE.bounds, SURFACE.contourLength));
+  appendSurfaceVertices(vertices, materials, SURFACE, SURFACE_INDEX, style, partIndex);
 }
 function ownerPart(node, partIndices) {
   for (let current = node; current; current = current.parentNode) {
@@ -26334,11 +26595,15 @@ function appendNonScalingLine(vertices, start, end, rgba, partIndex, width, line
   }
 }
 function compilePaths(paths, partIndices, _parts, metadata, gradients, curveSegments, strokeArcDivisions) {
-  const VERTICES = [], SHADER_SURFACES = [], DRAW_ORDER = [], REGION_NAMES = [];
+  const VERTICES = [], MATERIAL_VERTICES = [], MATERIAL_TABLE = [], REGION_NAMES = [];
+  const PAD_MATERIALS = () => {
+    while (MATERIAL_VERTICES.length < VERTICES.length / 11 * 4) {
+      MATERIAL_VERTICES.push(0, 0, 0, 0);
+    }
+  };
   let expandedRegions = null;
   let hasNonScalingStroke = false;
   const STYLED = new Map((metadata.styles ?? []).map((style) => [style.target, style]));
-  const SHADER_ORDERED = metadata.styles?.some((style) => style.backend === "shader") ?? false;
   const MORPH_COUNT = metadata.styles?.some((style) => style.kind === "sketch" && style.backend !== "shader") ? 2 : 0;
   for (const PATH of paths) {
     const SOURCE_NODE = PATH.userData?.node;
@@ -26380,23 +26645,21 @@ function compilePaths(paths, partIndices, _parts, metadata, gradients, curveSegm
         );
       }
       if (FILL_OPACITY > 0) {
-        const SURFACE_INDEX = SHADER_SURFACES.push(
-          compileShaderSurface(
-            AUTHORED_STYLE,
-            SHAPES[0],
-            PATH.color,
-            FILL_OPACITY,
-            PART_INDEX,
-            FILL_GRADIENT,
-            GRADIENT_BOUNDS,
-            PATH.userData.transform,
-            curveSegments
-          )
-        ) - 1;
-        DRAW_ORDER.push({
-          kind: "surface",
-          surfaceIndex: SURFACE_INDEX
-        });
+        PAD_MATERIALS();
+        appendShaderSurface(
+          VERTICES,
+          MATERIAL_VERTICES,
+          MATERIAL_TABLE,
+          AUTHORED_STYLE,
+          SHAPES[0],
+          PATH.color,
+          FILL_OPACITY,
+          PART_INDEX,
+          FILL_GRADIENT,
+          GRADIENT_BOUNDS,
+          PATH.userData.transform,
+          curveSegments
+        );
       }
     } else if (AUTHORED_STYLE?.kind === "yarn") {
       if (SHAPES.length !== 1) {
@@ -26501,25 +26764,26 @@ function compilePaths(paths, partIndices, _parts, metadata, gradients, curveSegm
         }
       }
     }
-    appendOrderedMeshRange(DRAW_ORDER, MESH_FIRST, VERTICES.length / 11 - MESH_FIRST, PART_INDEX);
+    PAD_MATERIALS();
     for (let vertex = MESH_FIRST; expandedRegions && vertex < VERTICES.length / 11; vertex++) {
       expandedRegions.push(vertex < FILL_END ? regionIndex : 0);
     }
   }
-  if (!VERTICES.length && !SHADER_SURFACES.length || VERTICES.length % 33) {
+  if (!VERTICES.length || VERTICES.length % 33) {
     throw new TypeError(
-      "SVG did not produce complete painted triangles or shader surfaces at this tessellation; increase the selected subdivision or use a non-degenerate shape"
+      "SVG did not produce complete painted triangles at this tessellation; increase the selected subdivision or use a non-degenerate shape"
     );
   }
   const EXPANDED = new Float32Array(VERTICES);
-  const STRIDE_FLOATS = 11;
+  const STRIDE_FLOATS2 = 11;
   const UNIQUE_VERTICES = [], UNIQUE_REGIONS = expandedRegions ? [] : null, INDICES = [], VERTEX_IDS = /* @__PURE__ */ new Map();
   const WORDS = new Uint32Array(EXPANDED.buffer, EXPANDED.byteOffset, EXPANDED.length);
-  for (let offset = 0; offset < EXPANDED.length; offset += STRIDE_FLOATS) {
-    const REGION_INDEX = expandedRegions?.[offset / STRIDE_FLOATS], KEY = WORDS.subarray(offset, offset + STRIDE_FLOATS).join(",") + (REGION_NAMES.length ? ":" + REGION_INDEX : "");
+  const EXPANDED_MATERIALS = MATERIAL_TABLE.length ? new Float32Array(MATERIAL_VERTICES) : null, MATERIAL_WORDS = EXPANDED_MATERIALS ? new Uint32Array(EXPANDED_MATERIALS.buffer, EXPANDED_MATERIALS.byteOffset, EXPANDED_MATERIALS.length) : null, UNIQUE_MATERIALS = EXPANDED_MATERIALS ? [] : null;
+  for (let offset = 0; offset < EXPANDED.length; offset += STRIDE_FLOATS2) {
+    const REGION_INDEX = expandedRegions?.[offset / STRIDE_FLOATS2], MATERIAL_AT = offset / STRIDE_FLOATS2 * 4, KEY = WORDS.subarray(offset, offset + STRIDE_FLOATS2).join(",") + (REGION_NAMES.length ? ":" + REGION_INDEX : "") + (MATERIAL_WORDS ? ":" + MATERIAL_WORDS.subarray(MATERIAL_AT, MATERIAL_AT + 4).join(",") : "");
     let index = VERTEX_IDS.get(KEY);
     if (index === void 0) {
-      index = UNIQUE_VERTICES.length / STRIDE_FLOATS;
+      index = UNIQUE_VERTICES.length / STRIDE_FLOATS2;
       if (index > 65535) {
         throw new RangeError(
           "SVG needs more than 65,536 distinct vertices; split the authored asset into bounded meshes"
@@ -26527,7 +26791,10 @@ function compilePaths(paths, partIndices, _parts, metadata, gradients, curveSegm
       }
       VERTEX_IDS.set(KEY, index);
       UNIQUE_REGIONS?.push(REGION_INDEX);
-      for (let field = 0; field < STRIDE_FLOATS; field++) {
+      if (EXPANDED_MATERIALS) {
+        UNIQUE_MATERIALS.push(...EXPANDED_MATERIALS.subarray(MATERIAL_AT, MATERIAL_AT + 4));
+      }
+      for (let field = 0; field < STRIDE_FLOATS2; field++) {
         UNIQUE_VERTICES.push(EXPANDED[offset + field]);
       }
     }
@@ -26537,14 +26804,16 @@ function compilePaths(paths, partIndices, _parts, metadata, gradients, curveSegm
     vertices: new Float32Array(UNIQUE_VERTICES),
     indices: new Uint16Array(INDICES),
     morphCount: MORPH_COUNT,
-    strideFloats: STRIDE_FLOATS,
+    strideFloats: STRIDE_FLOATS2,
     ...REGION_NAMES.length ? { paintRegions: { names: REGION_NAMES, indices: new Uint16Array(UNIQUE_REGIONS) } } : {},
     ...hasNonScalingStroke ? {
       nonScalingStroke: true
     } : {},
-    ...SHADER_ORDERED ? {
-      shaderSurfaces: SHADER_SURFACES,
-      drawOrder: DRAW_ORDER
+    ...EXPANDED_MATERIALS ? {
+      materials: {
+        vertices: new Float32Array(UNIQUE_MATERIALS),
+        table: Float32Array.from(MATERIAL_TABLE.flatMap((record) => Array.from(record)))
+      }
     } : {}
   };
 }
