@@ -43,7 +43,7 @@
     },
     {
       "file": "rollback.js",
-      "sha256": "fdfe00979540bbe2b4af60d3934d2b35acbf64a158d1c6212be448f949ccb91e"
+      "sha256": "a9e62d9e32c95a64aad9e00685e9db052798bcc93d0ed0f9a25d0a614736b837"
     },
     {
       "file": "camera.js",
@@ -63,7 +63,7 @@
     },
     {
       "file": "audio.js",
-      "sha256": "3357e5c45aad618c5d16c121142c464789dbd5001d0e59303001a2405519a2e2"
+      "sha256": "d6c5146dcafa188d5a0825441bee160ea291a8d12b25121114fe77a0de454a3a"
     },
     {
       "file": "navigation.js",
