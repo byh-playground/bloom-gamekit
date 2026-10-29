@@ -57,11 +57,11 @@ function validateBed(recipe) {
       throw new TypeError("bed layer lfoHz/lfoDepth were replaced by lfos: [{ hz, depth }]");
     }
     const LFOS = LAYER.lfos ?? [];
-    if (LAYER.kind !== "noise" || !Number.isFinite(LAYER.hz) || LAYER.hz <= 0 || !Number.isFinite(LAYER.gain) || LAYER.gain < 0 || LAYER.gain > 1 || !BED_FILTERS.includes(LAYER.type ?? "lowpass") || !(LAYER.q === void 0 || Number.isFinite(LAYER.q) && LAYER.q > 0 && LAYER.q <= 30) || !Number.isFinite(LAYER.pan ?? 0) || Math.abs(LAYER.pan ?? 0) > 1 || !Number.isFinite(LAYER.offsetMs ?? 0) || (LAYER.offsetMs ?? 0) < 0 || (LAYER.offsetMs ?? 0) > 6e4 || !Array.isArray(LFOS) || LFOS.length > 4 || LFOS.some(
+    if (LAYER.kind !== "noise" && LAYER.kind !== "buffer" || LAYER.kind === "buffer" && (typeof LAYER.bufferId !== "string" || !LAYER.bufferId) || (LAYER.kind === "noise" || LAYER.type !== void 0) && (!Number.isFinite(LAYER.hz) || LAYER.hz <= 0) || !Number.isFinite(LAYER.gain) || LAYER.gain < 0 || LAYER.gain > 1 || !BED_FILTERS.includes(LAYER.type ?? "lowpass") || !(LAYER.q === void 0 || Number.isFinite(LAYER.q) && LAYER.q > 0 && LAYER.q <= 30) || !Number.isFinite(LAYER.pan ?? 0) || Math.abs(LAYER.pan ?? 0) > 1 || !Number.isFinite(LAYER.offsetMs ?? 0) || (LAYER.offsetMs ?? 0) < 0 || (LAYER.offsetMs ?? 0) > 6e4 || !Array.isArray(LFOS) || LFOS.length > 4 || LFOS.some(
       (lfo) => !Number.isFinite(lfo?.hz) || lfo.hz < 0.01 || lfo.hz > 20 || !Number.isFinite(lfo.depth) || lfo.depth < 0 || lfo.depth > 1
     ) || LFOS.reduce((sum, lfo) => sum + lfo.depth, 0) > 1) {
       throw new RangeError(
-        "bed layers need a noise cutoff/center hz, gain 0..1, optional type lowpass|bandpass|highpass, q 0..30, pan -1..1, offsetMs 0..60000 and up to 4 lfos {hz 0.01..20, depth 0..1} whose depths sum to at most 1"
+        "bed layers are noise {hz} or buffer {bufferId} (hz only with a type), gain 0..1, optional type lowpass|bandpass|highpass, q 0..30, pan -1..1, offsetMs 0..60000 and up to 4 lfos {hz 0.01..20, depth 0..1} whose depths sum to at most 1"
       );
     }
   }
@@ -197,9 +197,14 @@ function renderSound(context, destination, recipe, buffer, {
     }
   };
 }
-function renderBed(context, destination, recipe, buffer, { at = context.currentTime, scale = 1, level = 1, fadeMs = 0, onEnded = () => {
+function renderBed(context, destination, recipe, buffer, { at = context.currentTime, scale = 1, level = 1, fadeMs = 0, buffers = /* @__PURE__ */ new Map(), onEnded = () => {
 } } = {}) {
   validateBed(recipe);
+  for (const LAYER of recipe.layers) {
+    if (LAYER.kind === "buffer" && !buffers.has(LAYER.bufferId)) {
+      throw new Error("AudioBuffer not registered: " + LAYER.bufferId);
+    }
+  }
   const LEVEL = context.createGain(), SWELL = context.createGain(), NODES = [LEVEL, SWELL], SOURCES = [];
   let amount = Math.max(0, Math.min(1, level)), factor = scale, stopped = false;
   SWELL.gain.value = 1;
@@ -208,18 +213,25 @@ function renderBed(context, destination, recipe, buffer, { at = context.currentT
   LEVEL.gain.setValueAtTime(0, at);
   LEVEL.gain.linearRampToValueAtTime(amount * factor, at + Math.max(fadeMs, 1) / 1e3);
   for (const LAYER of recipe.layers) {
-    const SOURCE = context.createBufferSource(), FILTER = context.createBiquadFilter(), GAIN = context.createGain(), LFOS = LAYER.lfos ?? [], DEPTH = LFOS.reduce((sum, lfo) => sum + lfo.depth, 0), PAN = clampPan(LAYER.pan ?? 0);
-    SOURCE.buffer = buffer;
+    const SOURCE = context.createBufferSource(), FILTER = LAYER.kind === "noise" || LAYER.type !== void 0 ? context.createBiquadFilter() : null, SAMPLE = LAYER.kind === "buffer" ? buffers.get(LAYER.bufferId) : buffer, GAIN = context.createGain(), LFOS = LAYER.lfos ?? [], DEPTH = LFOS.reduce((sum, lfo) => sum + lfo.depth, 0), PAN = clampPan(LAYER.pan ?? 0);
+    SOURCE.buffer = SAMPLE;
     SOURCE.loop = true;
-    FILTER.type = LAYER.type ?? "lowpass";
-    FILTER.frequency.value = LAYER.hz;
-    if (LAYER.q !== void 0) {
-      FILTER.Q.value = LAYER.q;
+    if (FILTER) {
+      FILTER.type = LAYER.type ?? "lowpass";
+      FILTER.frequency.value = LAYER.hz;
+      if (LAYER.q !== void 0) {
+        FILTER.Q.value = LAYER.q;
+      }
     }
     GAIN.gain.value = LAYER.gain * (1 - DEPTH / 2);
-    SOURCE.connect(FILTER);
-    FILTER.connect(GAIN);
-    NODES.push(FILTER, GAIN);
+    if (FILTER) {
+      SOURCE.connect(FILTER);
+      FILTER.connect(GAIN);
+      NODES.push(FILTER);
+    } else {
+      SOURCE.connect(GAIN);
+    }
+    NODES.push(GAIN);
     if (PAN !== 0 && typeof context.createStereoPanner === "function") {
       const PANNER = context.createStereoPanner();
       PANNER.pan.value = PAN;
@@ -229,7 +241,7 @@ function renderBed(context, destination, recipe, buffer, { at = context.currentT
     } else {
       GAIN.connect(SWELL);
     }
-    SOURCE.start(at, (LAYER.offsetMs ?? 0) / 1e3 % buffer.duration);
+    SOURCE.start(at, (LAYER.offsetMs ?? 0) / 1e3 % SAMPLE.duration);
     SOURCES.push(SOURCE);
     for (const LFO_SPEC of LFOS) {
       if (LFO_SPEC.depth <= 0) {
@@ -602,6 +614,7 @@ var AudioPlayer = class {
     }
     const BED = { category: RECIPE.category, handle: null };
     BED.handle = renderBed(this.context, this.mix.input, RECIPE, this.noise, {
+      buffers: this.buffers,
       scale: this.categoryVolumes.get(RECIPE.category),
       level,
       fadeMs,
