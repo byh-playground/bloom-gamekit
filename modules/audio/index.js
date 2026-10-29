@@ -67,6 +67,24 @@ function validateRecipe(recipe) {
 }
 const BED_FILTERS = ['lowpass', 'bandpass', 'highpass'];
 // Per-layer leveler for music/long loops: threshold dB -100..0, ratio 1..20, optional knee 0..40, attackMs/releaseMs 0..1000.
+const EQ_TYPES = ['lowshelf', 'highshelf', 'peaking', 'notch'];
+// Per-layer equalizer bands: type lowshelf|highshelf|peaking|notch, hz 20..20000, gainDb -24..24 (required for shelves and peaking), q 0.1..18.
+function validBedEq(eq) {
+    const IN_RANGE = (value, low, high) => Number.isFinite(value) && value >= low && value <= high;
+    return (
+        Array.isArray(eq) &&
+        eq.length <= 8 &&
+        eq.every(
+            (band) =>
+                band !== null &&
+                typeof band === 'object' &&
+                EQ_TYPES.includes(band.type) &&
+                IN_RANGE(band.hz, 20, 20000) &&
+                (band.type === 'notch' ? band.gainDb === undefined : IN_RANGE(band.gainDb, -24, 24)) &&
+                (band.q === undefined || IN_RANGE(band.q, 0.1, 18)),
+        )
+    );
+}
 function validBedCompressor(compressor) {
     const IN_RANGE = (value, low, high) => Number.isFinite(value) && value >= low && value <= high;
     return (
@@ -106,6 +124,7 @@ function validateBed(recipe) {
                 LAYER.lowCutHz === undefined ||
                 (Number.isFinite(LAYER.lowCutHz) && LAYER.lowCutHz >= 10 && LAYER.lowCutHz <= 400)
             ) ||
+            !(LAYER.eq === undefined || validBedEq(LAYER.eq)) ||
             !(LAYER.compressor === undefined || validBedCompressor(LAYER.compressor)) ||
             !Array.isArray(LFOS) ||
             LFOS.length > 4 ||
@@ -121,7 +140,7 @@ function validateBed(recipe) {
             LFOS.reduce((sum, lfo) => sum + lfo.depth, 0) > 1
         ) {
             throw new RangeError(
-                'bed layers are noise {hz} or buffer {bufferId} (hz only with a type), gain 0..1, optional type lowpass|bandpass|highpass, q 0..30, lowCutHz 10..400, compressor {threshold -100..0, ratio 1..20, knee?, attackMs?, releaseMs?}, pan -1..1, offsetMs 0..60000 and up to 4 lfos {hz 0.01..20, depth 0..1} whose depths sum to at most 1',
+                'bed layers are noise {hz} or buffer {bufferId} (hz only with a type), gain 0..1, optional type lowpass|bandpass|highpass, q 0..30, lowCutHz 10..400, eq up to 8 bands {type lowshelf|highshelf|peaking|notch, hz 20..20000, gainDb -24..24, q?}, compressor {threshold -100..0, ratio 1..20, knee?, attackMs?, releaseMs?}, pan -1..1, offsetMs 0..60000 and up to 4 lfos {hz 0.01..20, depth 0..1} whose depths sum to at most 1',
             );
         }
     }
@@ -320,7 +339,7 @@ export function renderBed(
         }
         // Gain swings between gain*(1-sum of depths) and gain: each LFO adds +-gain*depth/2 around gain*(1-sum/2).
         GAIN.gain.value = LAYER.gain * (1 - DEPTH / 2);
-        // source -> [low cut] -> [filter] -> [compressor] -> gain. The low cut (2nd-order highpass) removes rumble that small speakers
+        // source -> [low cut] -> [eq bands] -> [filter] -> [compressor] -> gain. The low cut (2nd-order highpass) removes rumble that small speakers
         // cannot play and that only distorts them (and drives the master compressor).
         // The filter is the layer's own type/hz/q. The compressor levels a layer whose loudness swings (music), so quiet
         // passages stay audible and loud ones stop jumping out; WebAudio compressors add automatic makeup gain, so re-check the level.
@@ -332,6 +351,18 @@ export function renderBed(
             tail.connect(LOW_CUT);
             tail = LOW_CUT;
             NODES.push(LOW_CUT);
+        }
+        for (const BAND of LAYER.eq ?? []) {
+            const EQ_FILTER = context.createBiquadFilter();
+            EQ_FILTER.type = BAND.type;
+            EQ_FILTER.frequency.value = BAND.hz;
+            if (BAND.gainDb !== undefined) {
+                EQ_FILTER.gain.value = BAND.gainDb;
+            }
+            EQ_FILTER.Q.value = BAND.q ?? (BAND.type === 'peaking' || BAND.type === 'notch' ? 1 : 0.7071);
+            tail.connect(EQ_FILTER);
+            tail = EQ_FILTER;
+            NODES.push(EQ_FILTER);
         }
         if (FILTER) {
             tail.connect(FILTER);

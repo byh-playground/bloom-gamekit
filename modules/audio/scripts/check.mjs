@@ -497,6 +497,60 @@ try {
                 CUT.badRejected = (CUT.badRejected ?? 0) + (error instanceof RangeError ? 1 : 0);
             }
         }
+        // 이퀄라이저: 사인파가 밴드 설정대로 커지고 작아지는지(dB를 비율로 환산)와 밖의 주파수가 그대로인지 본다.
+        const EQUALIZER = {};
+        {
+            // 믹스의 마스터 컴프레서(임계값 -18dB, 니 12dB)가 부스트를 누르지 않도록 -32dB 아래의 작은 신호로 잰다.
+            const RUN_EQ = async (hz, bands) => {
+                const CONTEXT = new OfflineAudioContext(1, 2 * 48000, 48000),
+                    MIX = CREATE_MIX(CONTEXT, CONTEXT.destination),
+                    TONE_BUFFER = CONTEXT.createBuffer(1, 2 * 48000, 48000),
+                    DATA = TONE_BUFFER.getChannelData(0);
+                for (let i = 0; i < DATA.length; i++) {
+                    DATA[i] = Math.sin((2 * Math.PI * hz * i) / 48000) * 0.05;
+                }
+                RENDER_BED(
+                    CONTEXT,
+                    MIX.input,
+                    NOISE_BED([{ kind: 'buffer', bufferId: 'tone', gain: 0.25, ...(bands ? { eq: bands } : {}) }]),
+                    MAKE_NOISE(CONTEXT),
+                    { buffers: new Map([['tone', TONE_BUFFER]]), fadeMs: 1 },
+                );
+                return RMS((await CONTEXT.startRendering()).getChannelData(0), 0.5, 1.8);
+            };
+            const RATIO = async (hz, bands) => (await RUN_EQ(hz, bands)) / (await RUN_EQ(hz));
+            const PEAK = [{ type: 'peaking', hz: 1000, gainDb: -12, q: 1 }],
+                HIGH_SHELF = [{ type: 'highshelf', hz: 3000, gainDb: -6 }],
+                LOW_SHELF = [{ type: 'lowshelf', hz: 200, gainDb: 6 }];
+            EQUALIZER.peakAtCenter = await RATIO(1000, PEAK);
+            EQUALIZER.peakFarAway = await RATIO(150, PEAK);
+            EQUALIZER.highShelfTop = await RATIO(8000, HIGH_SHELF);
+            EQUALIZER.highShelfLow = await RATIO(300, HIGH_SHELF);
+            EQUALIZER.lowShelfBottom = await RATIO(40, LOW_SHELF);
+            EQUALIZER.lowShelfTop = await RATIO(2000, LOW_SHELF);
+            const BANDS_9 = Array.from({ length: 9 }, () => ({ type: 'peaking', hz: 1000, gainDb: 1 }));
+            for (const BAD of [
+                [{ type: 'bogus', hz: 1000, gainDb: 1 }],
+                [{ type: 'peaking', hz: 1000, gainDb: 40 }],
+                [{ type: 'peaking', hz: 5, gainDb: 1 }],
+                [{ type: 'peaking', hz: 1000 }],
+                [{ type: 'notch', hz: 1000, gainDb: 3 }],
+                BANDS_9,
+            ]) {
+                try {
+                    const CONTEXT = new OfflineAudioContext(1, 4800, 48000);
+                    RENDER_BED(
+                        CONTEXT,
+                        CREATE_MIX(CONTEXT, CONTEXT.destination).input,
+                        NOISE_BED([{ kind: 'noise', hz: 500, gain: 0.1, eq: BAD }]),
+                        MAKE_NOISE(CONTEXT),
+                    );
+                    EQUALIZER.badAccepted = true;
+                } catch (error) {
+                    EQUALIZER.badRejected = (EQUALIZER.badRejected ?? 0) + (error instanceof RangeError ? 1 : 0);
+                }
+            }
+        }
         return {
             pan: PAN,
             crossings: CENTS,
@@ -505,6 +559,7 @@ try {
             buffered: BUFFERED,
             leveled: LEVELED,
             cut: CUT,
+            equalizer: EQUALIZER,
         };
     });
     {
@@ -530,6 +585,22 @@ try {
                 T['swingDb0.9'] > 10 &&
                 T.legacyLfoRejected,
             'Bed bandpass/offset decorrelation/lfos or legacy lfo rejection failed',
+        );
+        const EQ = V.equalizer;
+        ASSERT(
+            EQ.peakAtCenter > 0.22 &&
+                EQ.peakAtCenter < 0.29 &&
+                EQ.peakFarAway > 0.95 &&
+                EQ.highShelfTop > 0.45 &&
+                EQ.highShelfTop < 0.56 &&
+                EQ.highShelfLow > 0.97 &&
+                EQ.lowShelfBottom > 1.8 &&
+                EQ.lowShelfBottom < 2.2 &&
+                EQ.lowShelfTop > 0.97 &&
+                EQ.lowShelfTop < 1.05 &&
+                EQ.badRejected === 6 &&
+                !EQ.badAccepted,
+            'Layer equalizer bands did not change the level as set or accepted a bad band',
         );
         const CT = V.cut;
         ASSERT(
