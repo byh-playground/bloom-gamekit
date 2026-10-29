@@ -76,9 +76,9 @@ function validateBed(recipe) {
         }
         const LFOS = LAYER.lfos ?? [];
         if (
-            LAYER.kind !== 'noise' ||
-            !Number.isFinite(LAYER.hz) ||
-            LAYER.hz <= 0 ||
+            (LAYER.kind !== 'noise' && LAYER.kind !== 'buffer') ||
+            (LAYER.kind === 'buffer' && (typeof LAYER.bufferId !== 'string' || !LAYER.bufferId)) ||
+            ((LAYER.kind === 'noise' || LAYER.type !== undefined) && (!Number.isFinite(LAYER.hz) || LAYER.hz <= 0)) ||
             !Number.isFinite(LAYER.gain) ||
             LAYER.gain < 0 ||
             LAYER.gain > 1 ||
@@ -103,7 +103,7 @@ function validateBed(recipe) {
             LFOS.reduce((sum, lfo) => sum + lfo.depth, 0) > 1
         ) {
             throw new RangeError(
-                'bed layers need a noise cutoff/center hz, gain 0..1, optional type lowpass|bandpass|highpass, q 0..30, pan -1..1, offsetMs 0..60000 and up to 4 lfos {hz 0.01..20, depth 0..1} whose depths sum to at most 1',
+                'bed layers are noise {hz} or buffer {bufferId} (hz only with a type), gain 0..1, optional type lowpass|bandpass|highpass, q 0..30, pan -1..1, offsetMs 0..60000 and up to 4 lfos {hz 0.01..20, depth 0..1} whose depths sum to at most 1',
             );
         }
     }
@@ -262,9 +262,14 @@ export function renderBed(
     destination,
     recipe,
     buffer,
-    { at = context.currentTime, scale = 1, level = 1, fadeMs = 0, onEnded = () => {} } = {},
+    { at = context.currentTime, scale = 1, level = 1, fadeMs = 0, buffers = new Map(), onEnded = () => {} } = {},
 ) {
     validateBed(recipe);
+    for (const LAYER of recipe.layers) {
+        if (LAYER.kind === 'buffer' && !buffers.has(LAYER.bufferId)) {
+            throw new Error('AudioBuffer not registered: ' + LAYER.bufferId);
+        }
+    }
     const LEVEL = context.createGain(),
         SWELL = context.createGain(),
         NODES = [LEVEL, SWELL],
@@ -278,24 +283,33 @@ export function renderBed(
     LEVEL.gain.setValueAtTime(0, at);
     LEVEL.gain.linearRampToValueAtTime(amount * factor, at + Math.max(fadeMs, 1) / 1000);
     for (const LAYER of recipe.layers) {
+        // A noise layer always has a filter; a buffer layer (music, loops) has one only when a type is given.
         const SOURCE = context.createBufferSource(),
-            FILTER = context.createBiquadFilter(),
+            FILTER = LAYER.kind === 'noise' || LAYER.type !== undefined ? context.createBiquadFilter() : null,
+            SAMPLE = LAYER.kind === 'buffer' ? buffers.get(LAYER.bufferId) : buffer,
             GAIN = context.createGain(),
             LFOS = LAYER.lfos ?? [],
             DEPTH = LFOS.reduce((sum, lfo) => sum + lfo.depth, 0),
             PAN = clampPan(LAYER.pan ?? 0);
-        SOURCE.buffer = buffer;
+        SOURCE.buffer = SAMPLE;
         SOURCE.loop = true;
-        FILTER.type = LAYER.type ?? 'lowpass';
-        FILTER.frequency.value = LAYER.hz;
-        if (LAYER.q !== undefined) {
-            FILTER.Q.value = LAYER.q;
+        if (FILTER) {
+            FILTER.type = LAYER.type ?? 'lowpass';
+            FILTER.frequency.value = LAYER.hz;
+            if (LAYER.q !== undefined) {
+                FILTER.Q.value = LAYER.q;
+            }
         }
         // Gain swings between gain*(1-sum of depths) and gain: each LFO adds +-gain*depth/2 around gain*(1-sum/2).
         GAIN.gain.value = LAYER.gain * (1 - DEPTH / 2);
-        SOURCE.connect(FILTER);
-        FILTER.connect(GAIN);
-        NODES.push(FILTER, GAIN);
+        if (FILTER) {
+            SOURCE.connect(FILTER);
+            FILTER.connect(GAIN);
+            NODES.push(FILTER);
+        } else {
+            SOURCE.connect(GAIN);
+        }
+        NODES.push(GAIN);
         if (PAN !== 0 && typeof context.createStereoPanner === 'function') {
             const PANNER = context.createStereoPanner();
             PANNER.pan.value = PAN;
@@ -306,7 +320,7 @@ export function renderBed(
             GAIN.connect(SWELL);
         }
         // Layers sharing one noise buffer start at different points so they are not copies of each other.
-        SOURCE.start(at, ((LAYER.offsetMs ?? 0) / 1000) % buffer.duration);
+        SOURCE.start(at, ((LAYER.offsetMs ?? 0) / 1000) % SAMPLE.duration);
         SOURCES.push(SOURCE);
         for (const LFO_SPEC of LFOS) {
             if (LFO_SPEC.depth <= 0) {
@@ -702,6 +716,7 @@ export class AudioPlayer {
         }
         const BED = { category: RECIPE.category, handle: null };
         BED.handle = renderBed(this.context, this.mix.input, RECIPE, this.noise, {
+            buffers: this.buffers,
             scale: this.categoryVolumes.get(RECIPE.category),
             level,
             fadeMs,
