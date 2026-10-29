@@ -34,6 +34,7 @@
     ><button id="right">오른쪽 타격</button
     ><button id="bed">환경음 켜기</button
     ><button id="swell">환호</button
+    ><button id="loop">음원 루프 켜기</button
     ><button id="mute">음소거</button
     ><label>음량 <input id="volume" type="range" min="0" max="100" value="70" /></label>
     <pre id="status"></pre>
@@ -98,11 +99,11 @@
         throw new TypeError("bed layer lfoHz/lfoDepth were replaced by lfos: [{ hz, depth }]");
       }
       const LFOS = LAYER.lfos ?? [];
-      if (LAYER.kind !== "noise" || !Number.isFinite(LAYER.hz) || LAYER.hz <= 0 || !Number.isFinite(LAYER.gain) || LAYER.gain < 0 || LAYER.gain > 1 || !BED_FILTERS.includes(LAYER.type ?? "lowpass") || !(LAYER.q === void 0 || Number.isFinite(LAYER.q) && LAYER.q > 0 && LAYER.q <= 30) || !Number.isFinite(LAYER.pan ?? 0) || Math.abs(LAYER.pan ?? 0) > 1 || !Number.isFinite(LAYER.offsetMs ?? 0) || (LAYER.offsetMs ?? 0) < 0 || (LAYER.offsetMs ?? 0) > 6e4 || !Array.isArray(LFOS) || LFOS.length > 4 || LFOS.some(
+      if (LAYER.kind !== "noise" && LAYER.kind !== "buffer" || LAYER.kind === "buffer" && (typeof LAYER.bufferId !== "string" || !LAYER.bufferId) || (LAYER.kind === "noise" || LAYER.type !== void 0) && (!Number.isFinite(LAYER.hz) || LAYER.hz <= 0) || !Number.isFinite(LAYER.gain) || LAYER.gain < 0 || LAYER.gain > 1 || !BED_FILTERS.includes(LAYER.type ?? "lowpass") || !(LAYER.q === void 0 || Number.isFinite(LAYER.q) && LAYER.q > 0 && LAYER.q <= 30) || !Number.isFinite(LAYER.pan ?? 0) || Math.abs(LAYER.pan ?? 0) > 1 || !Number.isFinite(LAYER.offsetMs ?? 0) || (LAYER.offsetMs ?? 0) < 0 || (LAYER.offsetMs ?? 0) > 6e4 || !Array.isArray(LFOS) || LFOS.length > 4 || LFOS.some(
         (lfo) => !Number.isFinite(lfo?.hz) || lfo.hz < 0.01 || lfo.hz > 20 || !Number.isFinite(lfo.depth) || lfo.depth < 0 || lfo.depth > 1
       ) || LFOS.reduce((sum, lfo) => sum + lfo.depth, 0) > 1) {
         throw new RangeError(
-          "bed layers need a noise cutoff/center hz, gain 0..1, optional type lowpass|bandpass|highpass, q 0..30, pan -1..1, offsetMs 0..60000 and up to 4 lfos {hz 0.01..20, depth 0..1} whose depths sum to at most 1"
+          "bed layers are noise {hz} or buffer {bufferId} (hz only with a type), gain 0..1, optional type lowpass|bandpass|highpass, q 0..30, pan -1..1, offsetMs 0..60000 and up to 4 lfos {hz 0.01..20, depth 0..1} whose depths sum to at most 1"
         );
       }
     }
@@ -238,9 +239,14 @@
       }
     };
   }
-  function renderBed(context, destination, recipe, buffer, { at = context.currentTime, scale = 1, level = 1, fadeMs = 0, onEnded = () => {
+  function renderBed(context, destination, recipe, buffer, { at = context.currentTime, scale = 1, level = 1, fadeMs = 0, buffers = /* @__PURE__ */ new Map(), onEnded = () => {
   } } = {}) {
     validateBed(recipe);
+    for (const LAYER of recipe.layers) {
+      if (LAYER.kind === "buffer" && !buffers.has(LAYER.bufferId)) {
+        throw new Error("AudioBuffer not registered: " + LAYER.bufferId);
+      }
+    }
     const LEVEL = context.createGain(), SWELL = context.createGain(), NODES = [LEVEL, SWELL], SOURCES = [];
     let amount = Math.max(0, Math.min(1, level)), factor = scale, stopped = false;
     SWELL.gain.value = 1;
@@ -249,18 +255,25 @@
     LEVEL.gain.setValueAtTime(0, at);
     LEVEL.gain.linearRampToValueAtTime(amount * factor, at + Math.max(fadeMs, 1) / 1e3);
     for (const LAYER of recipe.layers) {
-      const SOURCE = context.createBufferSource(), FILTER = context.createBiquadFilter(), GAIN = context.createGain(), LFOS = LAYER.lfos ?? [], DEPTH = LFOS.reduce((sum, lfo) => sum + lfo.depth, 0), PAN = clampPan(LAYER.pan ?? 0);
-      SOURCE.buffer = buffer;
+      const SOURCE = context.createBufferSource(), FILTER = LAYER.kind === "noise" || LAYER.type !== void 0 ? context.createBiquadFilter() : null, SAMPLE = LAYER.kind === "buffer" ? buffers.get(LAYER.bufferId) : buffer, GAIN = context.createGain(), LFOS = LAYER.lfos ?? [], DEPTH = LFOS.reduce((sum, lfo) => sum + lfo.depth, 0), PAN = clampPan(LAYER.pan ?? 0);
+      SOURCE.buffer = SAMPLE;
       SOURCE.loop = true;
-      FILTER.type = LAYER.type ?? "lowpass";
-      FILTER.frequency.value = LAYER.hz;
-      if (LAYER.q !== void 0) {
-        FILTER.Q.value = LAYER.q;
+      if (FILTER) {
+        FILTER.type = LAYER.type ?? "lowpass";
+        FILTER.frequency.value = LAYER.hz;
+        if (LAYER.q !== void 0) {
+          FILTER.Q.value = LAYER.q;
+        }
       }
       GAIN.gain.value = LAYER.gain * (1 - DEPTH / 2);
-      SOURCE.connect(FILTER);
-      FILTER.connect(GAIN);
-      NODES.push(FILTER, GAIN);
+      if (FILTER) {
+        SOURCE.connect(FILTER);
+        FILTER.connect(GAIN);
+        NODES.push(FILTER);
+      } else {
+        SOURCE.connect(GAIN);
+      }
+      NODES.push(GAIN);
       if (PAN !== 0 && typeof context.createStereoPanner === "function") {
         const PANNER = context.createStereoPanner();
         PANNER.pan.value = PAN;
@@ -270,7 +283,7 @@
       } else {
         GAIN.connect(SWELL);
       }
-      SOURCE.start(at, (LAYER.offsetMs ?? 0) / 1e3 % buffer.duration);
+      SOURCE.start(at, (LAYER.offsetMs ?? 0) / 1e3 % SAMPLE.duration);
       SOURCES.push(SOURCE);
       for (const LFO_SPEC of LFOS) {
         if (LFO_SPEC.depth <= 0) {
@@ -643,6 +656,7 @@
       }
       const BED = { category: RECIPE.category, handle: null };
       BED.handle = renderBed(this.context, this.mix.input, RECIPE, this.noise, {
+        buffers: this.buffers,
         scale: this.categoryVolumes.get(RECIPE.category),
         level,
         fadeMs,
@@ -1120,6 +1134,38 @@
   };
 
   // modules/audio/examples/modules/audio/examples/index.html
+  var CROWD_BEDS = {
+    crowd: {
+      category: "ambience",
+      layers: [
+        {
+          kind: "noise",
+          type: "bandpass",
+          hz: 480,
+          q: 0.9,
+          gain: 0.5,
+          pan: -0.6,
+          lfos: [
+            { hz: 0.22, depth: 0.25 },
+            { hz: 4.3, depth: 0.3 }
+          ]
+        },
+        {
+          kind: "noise",
+          type: "bandpass",
+          hz: 520,
+          q: 0.9,
+          gain: 0.5,
+          pan: 0.6,
+          offsetMs: 1700,
+          lfos: [
+            { hz: 0.31, depth: 0.25 },
+            { hz: 5.1, depth: 0.3 }
+          ]
+        }
+      ]
+    }
+  };
   var CONFIG = {
     storageKey: "gamekit-audio-example",
     maxVoices: 4,
@@ -1146,36 +1192,12 @@
     synthesis: {
       noiseMs: 4e3
     },
+    // 음원(buffer) 베드: 게임이 읽어 디코드한 AudioBuffer를 setBuffer로 등록하고 켠다. 필터는 선택이다.
     beds: {
-      crowd: {
+      ...CROWD_BEDS,
+      loop: {
         category: "ambience",
-        layers: [
-          {
-            kind: "noise",
-            type: "bandpass",
-            hz: 480,
-            q: 0.9,
-            gain: 0.5,
-            pan: -0.6,
-            lfos: [
-              { hz: 0.22, depth: 0.25 },
-              { hz: 4.3, depth: 0.3 }
-            ]
-          },
-          {
-            kind: "noise",
-            type: "bandpass",
-            hz: 520,
-            q: 0.9,
-            gain: 0.5,
-            pan: 0.6,
-            offsetMs: 1700,
-            lfos: [
-              { hz: 0.31, depth: 0.25 },
-              { hz: 5.1, depth: 0.3 }
-            ]
-          }
-        ]
+        layers: [{ kind: "buffer", bufferId: "demo-loop", gain: 0.6, type: "highpass", hz: 150 }]
       }
     },
     sounds: {
@@ -1282,6 +1304,24 @@
       bed = PLAYER.startBed("crowd", { level: 0.6, fadeMs: 600 });
     }
     document.querySelector("#bed").textContent = bed ? "환경음 끄기" : "환경음 켜기";
+    STATUS();
+  };
+  var loop = null;
+  document.querySelector("#loop").onclick = async () => {
+    if (loop) {
+      loop.stop(500);
+      loop = null;
+    } else {
+      await PLAYER.unlock();
+      const RATE = PLAYER.context.sampleRate, BUFFER = PLAYER.context.createBuffer(1, RATE * 2, RATE), DATA = BUFFER.getChannelData(0);
+      for (let i = 0; i < DATA.length; i++) {
+        const NOTE = Math.floor(i / RATE * 4) % 3, T = i / RATE % 0.5;
+        DATA[i] = Math.sin(2 * Math.PI * [261.6, 329.6, 392][NOTE] * (i / RATE)) * 0.4 * Math.exp(-T * 4);
+      }
+      PLAYER.setBuffer("demo-loop", BUFFER);
+      loop = PLAYER.startBed("loop", { level: 0.8, fadeMs: 400 });
+    }
+    document.querySelector("#loop").textContent = loop ? "음원 루프 끄기" : "음원 루프 켜기";
     STATUS();
   };
   document.querySelector("#swell").onclick = () => {
