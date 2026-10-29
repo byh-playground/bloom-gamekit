@@ -1,4 +1,4 @@
-import { acquireVectorAsset } from './runtime.js';
+import { acquireVectorAsset, rejectUnknownOptions } from './runtime.js';
 
 const IDENTITY_MATRIX = Object.freeze([1, 0, 0, 1, 0, 0]);
 const NOW = () => globalThis.performance?.now?.() ?? null;
@@ -163,7 +163,14 @@ export function createVectorRasterAtlas(context, compiledAsset, options = {}) {
         throw error;
     }
 }
-function bakeRasterAtlas(context, asset, release, compiledAsset, { pixelsPerUnit = 1, padding = 2 } = {}) {
+function bakeRasterAtlas(
+    context,
+    asset,
+    release,
+    compiledAsset,
+    { pixelsPerUnit = 1, padding = 2, ...unknownOptions } = {},
+) {
+    rejectUnknownOptions(unknownOptions);
     const DEVICE = context.device;
     const MESHES = context.meshRenderer;
     if (

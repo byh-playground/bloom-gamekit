@@ -1,3 +1,14 @@
+## v0.26.5 (2026-10-30)
+
+**Breaking.** budmori-io와 bloom-bounko 이관에서 나온 모듈 빈틈 네 가지를 메웁니다.
+
+- `holdVectorAsset(context, compiled)`(vector-assets): 액터 없이 GPU 메시·포즈 원본·표면을 붙잡는 핸들입니다. 마지막 액터가 사라질 때 메시가 해제되고 다음 액터가 다시 올리던 반복(budmori 측정: 열 종을 지웠다 다시 만드는 한 번에 생성·해제 각 9회)을 없앱니다. 게임이 자주 쓰는 종을 `hold.release()` 전까지 붙잡아 두면 됩니다. `context.dispose()`는 남은 것을 해제합니다.
+- `VectorContext.preparePoses()`: 준비된 액터 포즈를 한 번에 평가합니다. 게임이 `acquireMeshRenderer().preparePoses()`를 부르지 않아도 됩니다. 포즈 통계는 `stats().mesh.poses`이며 메시 렌더러가 아직 없으면 `mesh`는 null입니다.
+- `drawVectorActorSilhouette`의 `outlineExpression`: 외곽선 복사본만 그 표정으로 그리고 본체는 액터의 현재 표정으로 그립니다. SVG에 외곽선 전용 표정을 둔 에셋(bounko)은 8방향 반복 draw 대신 이걸 쓸 수 있습니다. 순서 있는 draw 두 번(외곽선, 본체)이고, `setPartVisible`을 덮어쓴 액터와는 함께 쓰지 못해 오류입니다. 액터에 `expression` 읽기 속성이 생겼습니다.
+- `createVectorSpriteAtlas`, `createVectorRasterAtlas`가 알 수 없는 옵션을 오류로 거부합니다. 옛 `maxAtlasBytes`처럼 사라진 옵션이 조용히 무시되던 문제입니다.
+- 이번에 하지 않은 것: GPU 없는 `readSocket(compiled, clip, timeMs)`. 액터 생성이 메시와 포즈 원본을 만드는 구조라 GPU 없이 읽으려면 액터 내부를 나눠야 하고, `holdVectorAsset`으로 임시 액터(소켓 읽기용)의 메시 올리고 내리기는 이미 사라집니다. 그래도 필요하면 별도 변경으로 합니다. atlas 용량은 장치 옵션 `textureAtlas` 그대로입니다.
+- 시험: `test:vector-assets:paint-regions`가 hold의 한 번 해제, `preparePoses`, 표정 외곽선(본체 픽셀 불변, 표정 복구, 외곽선이 별도 draw), 알 수 없는 옵션 거부를 확인합니다.
+
 ## v0.26.4 (2026-10-30)
 
 액터 외곽선을 지원합니다. v0.26.3에서 하지 않았던 부분이고, 게임이 외곽선을 위해 액터를 오프셋마다 따로 그리던 방식을 한 번의 인스턴스 draw로 바꿉니다.
