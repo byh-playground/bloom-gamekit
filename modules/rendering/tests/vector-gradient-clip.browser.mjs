@@ -26,11 +26,7 @@ export async function exerciseVectorGradientClip(browser, moduleURL, screenshotP
         const RESULT = await PAGE.evaluate(
             async ({ moduleURL }) => {
                 const CHECKPOINT = (name) => console.log(`checkpoint: ${name}`);
-                const {
-                    WebGLDevice: WEB_GL_DEVICE,
-                    VectorRenderer: VECTOR_RENDERER,
-                    VectorContext: VECTOR_CONTEXT,
-                } = await import(moduleURL);
+                const { WebGLDevice: WEB_GL_DEVICE, VectorContext: VECTOR_CONTEXT } = await import(moduleURL);
                 CHECKPOINT('module imported');
                 const GRADIENT_SAMPLES = {};
                 const GRADIENT_CANVASES = [];
@@ -65,13 +61,11 @@ export async function exerciseVectorGradientClip(browser, moduleURL, screenshotP
                         stencil: true,
                         preserveDrawingBuffer: true,
                     });
-                    const VECTOR = new VECTOR_RENDERER(DEVICE, {
+                    const CTX = new VECTOR_CONTEXT(DEVICE, {
                         initialVertices: 128,
                         maxVertices: 8192,
                     });
-                    const CTX = new VECTOR_CONTEXT(DEVICE, {
-                        vectorRenderer: VECTOR,
-                    });
+                    const VECTOR = CTX.vector;
                     CTX.beginFrame({
                         clearColor: [0, 0, 0, 0],
                     });
@@ -170,13 +164,10 @@ export async function exerciseVectorGradientClip(browser, moduleURL, screenshotP
                         stencil: false,
                         preserveDrawingBuffer: true,
                     });
-                    const VECTOR = new VECTOR_RENDERER(DEVICE, {
-                            initialVertices: 128,
-                            maxVertices: 8192,
-                        }),
-                        CTX = new VECTOR_CONTEXT(DEVICE, {
-                            vectorRenderer: VECTOR,
-                        });
+                    const CTX = new VECTOR_CONTEXT(DEVICE, {
+                        initialVertices: 128,
+                        maxVertices: 8192,
+                    });
                     CTX.beginFrame({
                         clearColor: [0, 0, 0, 0],
                     });
@@ -314,7 +305,6 @@ export async function exerciseVectorGradientClip(browser, moduleURL, screenshotP
                         glError: DEVICE.gl.getError(),
                     };
                     CTX.dispose();
-                    VECTOR.dispose();
                     DEVICE.dispose();
                 }
                 const CANVAS = document.getElementById('clip');
@@ -329,13 +319,11 @@ export async function exerciseVectorGradientClip(browser, moduleURL, screenshotP
                     stencil: true,
                     preserveDrawingBuffer: true,
                 });
-                const VECTOR = new VECTOR_RENDERER(DEVICE, {
+                const CTX = new VECTOR_CONTEXT(DEVICE, {
                     initialVertices: 128,
                     maxVertices: 8192,
                 });
-                const CTX = new VECTOR_CONTEXT(DEVICE, {
-                    vectorRenderer: VECTOR,
-                });
+                const VECTOR = CTX.vector;
                 const VECTOR_DRAWS = [],
                     VECTOR_UPLOADS = [],
                     ORIGINAL_DRAW = DEVICE.draw,
@@ -573,11 +561,9 @@ export async function exerciseVectorGradientClip(browser, moduleURL, screenshotP
                 CTX.dispose();
                 for (const SAMPLE of GRADIENT_CANVASES) {
                     SAMPLE.ctx.dispose();
-                    SAMPLE.vector.dispose();
                     SAMPLE.device.dispose();
                     SAMPLE.canvas.remove();
                 }
-                VECTOR.dispose();
                 DEVICE.dispose();
                 CANVAS.remove();
                 const DISPOSED =

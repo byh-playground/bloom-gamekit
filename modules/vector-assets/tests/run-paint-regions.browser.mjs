@@ -110,13 +110,11 @@ try {
                         preserveDrawingBuffer: true,
                         checkGLErrors: true,
                     }),
-                    MESHES = new R.MeshRenderer(DEVICE, { poseBackend: backend }),
-                    RESOURCES = COMPILED.map((asset) => V.createVectorAsset(MESHES, asset)),
-                    ACTUAL = Array.from({ length: 3 }, () => RESOURCES[0].createPlayer({ clip: 'idle' })),
-                    REFERENCES = RESOURCES.slice(1).map((asset) => asset.createPlayer({ clip: 'idle' })),
+                    CTX = new R.VectorContext(DEVICE, { mesh: { poseBackend: backend } }),
+                    MESHES = CTX.acquireMeshRenderer(),
+                    ACTUAL = Array.from({ length: 3 }, () => V.createVectorActor(CTX, COMPILED[0], { clip: 'idle' })),
+                    REFERENCES = COMPILED.slice(1).map((asset) => V.createVectorActor(CTX, asset, { clip: 'idle' })),
                     PROJECTION = new Float32Array([2 / 480, 0, 0, 0, -2 / 100, 0, -1, 1, 1]);
-                const CTX = new R.VectorContext(DEVICE);
-                CTX.meshRenderer = MESHES;
                 const CHECK = (value, message) => {
                     if (!value) {
                         throw new Error(message);
@@ -140,7 +138,7 @@ try {
                 const GPU = INFO
                     ? DEVICE.gl.getParameter(INFO.UNMASKED_RENDERER_WEBGL)
                     : DEVICE.gl.getParameter(DEVICE.gl.RENDERER);
-                const GEOMETRY_BUFFERS = new Set(RESOURCES.map((resource) => resource.mesh.buffer));
+                const GEOMETRY_BUFFERS = new Set([...MESHES.meshes].map((mesh) => mesh.buffer));
                 let geometryUpdates = 0;
                 const UPLOAD = DEVICE.uploadVertices.bind(DEVICE);
                 DEVICE.uploadVertices = (handle, data) => {
@@ -293,19 +291,19 @@ try {
                     pixelsPerUnit: 1,
                     supersample: 4,
                 };
-                const ATLAS = V.createVectorSpriteAtlas(CTX, RESOURCES[0], COMPILED[0], {
+                const ATLAS = V.createVectorSpriteAtlas(CTX, COMPILED[0], {
                     ...ATLAS_OPTIONS,
                     paintRegions: MUTABLE_BAKE_PAINT,
                 });
-                const SHARED_ATLAS = V.createVectorSpriteAtlas(CTX, RESOURCES[0], COMPILED[0], {
+                const SHARED_ATLAS = V.createVectorSpriteAtlas(CTX, COMPILED[0], {
                     ...ATLAS_OPTIONS,
                     paintRegions: { badge: [0, 1, 0], cheeks: new Float32Array([1, 0, 0]) },
                 });
-                const OTHER_ATLAS = V.createVectorSpriteAtlas(CTX, RESOURCES[0], COMPILED[0], {
+                const OTHER_ATLAS = V.createVectorSpriteAtlas(CTX, COMPILED[0], {
                     ...ATLAS_OPTIONS,
                     paintRegions: palettes[1],
                 });
-                const REFERENCE_ATLAS = V.createVectorSpriteAtlas(CTX, RESOURCES[1], COMPILED[1], {
+                const REFERENCE_ATLAS = V.createVectorSpriteAtlas(CTX, COMPILED[1], {
                     ...ATLAS_OPTIONS,
                 });
                 CHECK(ATLAS.stats.cacheKey === SHARED_ATLAS.stats.cacheKey, 'Equivalent paint values share cache');
@@ -314,7 +312,7 @@ try {
                     ATLAS.stats.bakeWorkingBytes === ATLAS.stats.atlasBytes * 21,
                     'Supersampling peak includes all live targets',
                 );
-                const LIMITED = V.createVectorSpriteAtlas(CTX, RESOURCES[0], COMPILED[0], {
+                const LIMITED = V.createVectorSpriteAtlas(CTX, COMPILED[0], {
                     ...ATLAS_OPTIONS,
                     pixelsPerUnit: 100000,
                 });
@@ -325,7 +323,7 @@ try {
                 MUTABLE_BAKE_PAINT.cheeks[2] = 1;
                 let invalidBakePaintRejected = false;
                 try {
-                    V.createVectorSpriteAtlas(CTX, RESOURCES[0], COMPILED[0], {
+                    V.createVectorSpriteAtlas(CTX, COMPILED[0], {
                         ...ATLAS_OPTIONS,
                         paintRegions: { missing: [1, 0, 0] },
                     });
@@ -362,7 +360,7 @@ try {
                 bakedPixels(SHARED_ATLAS);
                 CHECK(ATLAS.region === SHARED_ATLAS.region, 'Equivalent paint shares prepared atlas region');
                 CHECK(ATLAS.stats.bakeCount === BAKE_COUNT, 'Repeated playback preparation does not rebake');
-                const FAULT_ATLAS = V.createVectorSpriteAtlas(CTX, RESOURCES[0], COMPILED[0], {
+                const FAULT_ATLAS = V.createVectorSpriteAtlas(CTX, COMPILED[0], {
                     ...ATLAS_OPTIONS,
                     padding: 3,
                 });
@@ -386,7 +384,7 @@ try {
                 CTX.endFrame();
                 bakedPixels(FAULT_ATLAS);
                 FAULT_ATLAS.dispose();
-                const DOUBLE_ATLAS = V.createVectorSpriteAtlas(CTX, RESOURCES[0], COMPILED[0], {
+                const DOUBLE_ATLAS = V.createVectorSpriteAtlas(CTX, COMPILED[0], {
                     ...ATLAS_OPTIONS,
                     supersample: 2,
                 });
@@ -442,7 +440,7 @@ try {
                 REFERENCE_ATLAS.dispose();
                 const CONTEXT = CTX;
                 CONTEXT.beginFrame({ width: 480, height: 100, clearColor: [0, 0, 0, 0] });
-                CONTEXT.drawVectorAsset(ACTUAL[0], { paintRegions: palettes[0] });
+                CONTEXT.drawVectorActor(ACTUAL[0], { paintRegions: palettes[0] });
                 CONTEXT.fillStyle = '#400000';
                 CONTEXT.fillRect(400, 0, 20, 20);
                 CONTEXT.save();
@@ -475,12 +473,12 @@ try {
                 const BEFORE_DISPOSE = {
                     contextRestoreGeometryUploads: geometryUpdates,
                     retainedMeshes: MESHES.meshes.size,
-                    sharedAssetPlayers: RESOURCES[0].playerCount,
+                    sharedAssetActors: ACTUAL.filter((actor) => !actor.disposed).length,
                     geometryUploads: STATS.geometryUploads,
                     meshCreates: DEVICE.stats.meshCreates,
                 };
-                for (const RESOURCE of RESOURCES) {
-                    RESOURCE.dispose();
+                for (const ACTOR of [...ACTUAL, ...REFERENCES]) {
+                    ACTOR.dispose();
                 }
                 CHECK(MESHES.meshes.size === 0 && MESHES.bytes === 0, 'Dispose releases retained mesh resources');
                 CTX.dispose();

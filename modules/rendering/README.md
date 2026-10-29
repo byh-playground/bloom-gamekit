@@ -68,7 +68,7 @@ if (ctx.beginFrame({ clearColor: [0.03, 0.05, 0.08, 1] })) {
 
 ### VectorContext and MeshRenderer on one canvas
 
-`VectorContext.createMesh`/`drawMesh`/`drawVectorAsset` share the context's `MeshRenderer` (`acquireMeshRenderer()`). Mesh draws first submit the vector stream queued before them, so vector paint, meshes and later vector paint keep submission order on the same default framebuffer. Meshes that stay on `MeshRenderer` (morph, opacity channel, shader surfaces, force-color fallbacks) are batch boundaries.
+`VectorContext.createMesh`/`drawMesh`/`drawVectorActor` share the context's `MeshRenderer` (`acquireMeshRenderer()`); shader surfaces use its `YarnSurfaceRenderer` (`acquireSurfaceRenderer()`). Mesh draws first submit the vector stream queued before them, so vector paint, meshes and later vector paint keep submission order on the same default framebuffer. Meshes that stay on `MeshRenderer` (morph, opacity channel, shader surfaces, force-color fallbacks) are batch boundaries.
 
 ## Mesh depth
 
@@ -132,13 +132,12 @@ The bounds are computed from per-part ranges retained at mesh creation; the rend
 
 ## VectorContext와 재사용 primitive painter
 
-`VectorContext(device,{vectorRenderer,glyphAtlas,onError,initialVertices,maxVertices})`는 게임의 2D draw adapter에서 반복되기 쉬운 paint/state/path 알고리즘을 공개합니다. canvas와 WebGL context, 프레임 자원은 caller가 만들고, 이미 사용하는 `VectorRenderer`와 `GlyphAtlas`를 주입하면 같은 painter queue와 glyph texture를 공유합니다. vector를 생략한 경우에만 context가 VectorRenderer를 만들고 해제합니다. WebGLDevice와 GlyphAtlas는 항상 caller 소유이며 import만으로 DOM·GPU·asset 작업을 하지 않습니다.
+`VectorContext(device,{glyphAtlas,onError,initialVertices,maxVertices,safeAlphaRunBatching,mesh,surfaces})`는 게임의 2D draw adapter에서 반복되기 쉬운 paint/state/path 알고리즘을 공개합니다. canvas와 WebGL context, 프레임 자원은 caller가 만들고, context가 `VectorRenderer`, 첫 사용 때 만드는 `MeshRenderer`와 `YarnSurfaceRenderer`를 모두 소유하고 `dispose()`에서 해제합니다. 렌더러를 따로 만들어 주입하거나 `context.meshRenderer`에 대입하지 않습니다. 메시와 털실·스케치 표면의 한도는 `mesh:{maxMeshes,maxMeshBytes,maxInstances,poseBackend}`와 `surfaces:{maxSurfaces,maxSurfaceBytes}` 옵션으로 넘깁니다. WebGLDevice와 GlyphAtlas는 항상 caller 소유이며 import만으로 DOM·GPU·asset 작업을 하지 않습니다.
 
 ```js
-import { WebGLDevice, VectorRenderer, VectorContext, PrimitivePainter } from './rendering.js';
+import { WebGLDevice, VectorContext, PrimitivePainter } from './rendering.js';
 const device = new WebGLDevice(canvas, { depth: false, stencil: false });
-const vector = new VectorRenderer(device, { glyphAtlas });
-const ctx = new VectorContext(device, { vectorRenderer: vector, glyphAtlas, onError: reportRenderError });
+const ctx = new VectorContext(device, { glyphAtlas, onError: reportRenderError });
 const primitive = new PrimitivePainter(ctx, { point: transformArtPoint, alphaMultiplier: () => artAlpha });
 if (ctx.beginFrame({ width: canvas.width, height: canvas.height, clearColor: [0, 0, 0, 0] })) {
     ctx.fillStyle = 'rgba(32, 78, 54, .8)';
@@ -338,7 +337,7 @@ The browser's network cache is origin/top-site partitioned and browser-managed. 
 
 ## Shader yarn and sketch surfaces
 
-`YarnSurfaceRenderer` is an opt-in WebGL 2 material path for SVG-authored filled surfaces. It keeps the triangulated fill in local vector coordinates and evaluates yarn stitches, edge loops, fibers, sketch hatching, and animated sketch echoes in fragment shaders. The only extra retained geometry is a fixed strip following the closed SVG contour; changing `stitchWidth`, `stitchHeight`, `fiberSpacing`, or `fiberMax` does not add vertices. It creates no per-stitch or per-fiber triangles and no artwork texture (the first yarn surface creates one shared 256x256 stitch distance field, identical for every asset, which `dispose()` releases and the device restores after a lost context).
+`YarnSurfaceRenderer` is an opt-in WebGL 2 material path for SVG-authored filled surfaces. Games that load SVG assets never create it: the `VectorContext` creates and owns one for the actors that need it (see vector-assets). Direct use below is for low-level callers. It keeps the triangulated fill in local vector coordinates and evaluates yarn stitches, edge loops, fibers, sketch hatching, and animated sketch echoes in fragment shaders. The only extra retained geometry is a fixed strip following the closed SVG contour; changing `stitchWidth`, `stitchHeight`, `fiberSpacing`, or `fiberMax` does not add vertices. It creates no per-stitch or per-fiber triangles and no artwork texture (the first yarn surface creates one shared 256x256 stitch distance field, identical for every asset, which `dispose()` releases and the device restores after a lost context).
 
 The source compiler supplies a complete triangle list with six floats per vertex (`x, y, r, g, b, a`), one closed contour as flat `x, y` pairs, the original SVG style object, and optional per-contour RGBA values for gradient fills. Edge colors default to the mean fill color. Style values remain authored in the SVG metadata and invalid or incomplete styles throw; this renderer does not silently fall back to tessellated effect triangles.
 
@@ -406,7 +405,7 @@ Source 해제는 새 texture를 할당하지 않습니다. 남은 프로그램�
 - createRenderTarget(width,height,{format:'rgba32f',filter:'nearest'}): float 렌더 타깃입니다. floatRenderTargetsSupported와 isRenderTargetAvailable(handle)로 지원·복구 가능 여부를 확인합니다. EXT_color_buffer_float가 필요하며, 해당 target의 복구 실패가 일반 WebGL 2 렌더링을 중단시키지는 않습니다. 애니메이션 pose 계산은 이 타깃을 쓰지 않습니다.
 - new MeshRenderer(device,{poseBackend:'auto'|'cpu'|'uniform'}): auto는 정점 셰이더 평가를 시도하고 명시적 CPU pose fallback을 유지합니다. cpu는 같은 atlas/instancing에 CPU pose를 올리는 진단 경로, uniform은 기존 CPU pose uniform 참조 경로입니다.
 - player.preparePose({excludeParts})로 표시 상태를 준비하고 meshes.preparePoses()로 모아 평가합니다. 보이지 않는 pose 준비만 source별로 묶으며 visible mesh/alpha/paint를 재정렬하지 않습니다. 준비하지 않은 player.draw도 동작하지만 뒤늦은 개별 준비는 같은 행을 이미 쓴 배치를 먼저 제출하게 만들 수 있습니다.
-- context.drawVectorAsset(player,options)는 앞선 analytic primitive와 vector paint를 먼저 제출하고 player.draw를 호출합니다. 같은 mesh run 자체를 actor마다 강제로 flush하지 않습니다. 몸체→얼굴 overlay→다음 actor 순서는 그대로입니다. 직접 player.draw를 호출하는 소비자는 이전 renderer의 순서 경계를 책임집니다.
+- context.drawVectorActor(actor,options)는 앞선 analytic primitive와 vector paint를 먼저 제출하고 actor.draw를 호출합니다. 같은 mesh run 자체를 actor마다 강제로 flush하지 않습니다. 몸체→얼굴 overlay→다음 actor 순서는 그대로입니다. 직접 actor.draw를 호출하는 소비자는 이전 renderer의 순서 경계를 책임집니다.
 - meshes.poseStats(): GPU/CPU/uniform draw instance 수, CPU fallback 비율/이유, state/base/CPU pose upload byte, atlas/프로그램 할당 byte를 보고합니다. prepare 호출 횟수와 실제 draw 사용량은 다릅니다.
 
 서로 다른 행을 가진 같은 mesh의 연속 제출은 u_parts 변경으로 분리되지 않습니다.

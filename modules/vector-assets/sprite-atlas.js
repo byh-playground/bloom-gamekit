@@ -1,23 +1,10 @@
 import { validateCompiledAsset } from './schema.js';
+import { acquireVectorAsset } from './runtime.js';
 import { packPaintRegions } from '../rendering/paint-regions.js';
 
 const CACHE = new WeakMap();
 const MAX_FRAMES = 512;
 const NOW = () => globalThis.performance?.now?.() ?? null;
-
-function sameGeometry(mesh, geometry) {
-    const VERTICES = mesh.vertices,
-        INDICES = mesh.indices;
-    return (
-        VERTICES?.length === geometry.vertices.length &&
-        VERTICES.every((value, index) => value === geometry.vertices[index]) &&
-        (geometry.indices === undefined
-            ? INDICES === undefined
-            : INDICES instanceof Uint16Array &&
-              INDICES.length === geometry.indices.length &&
-              INDICES.every((value, index) => value === geometry.indices[index]))
-    );
-}
 
 function sampleFrames(clip, interval) {
     const COUNT = Math.ceil(clip.durationMs / interval);
@@ -34,15 +21,15 @@ function sampleFrames(clip, interval) {
     });
 }
 
-function sampledBounds(player, geometry, samples) {
+function sampledBounds(actor, geometry, samples) {
     const VERTICES = geometry.vertices;
     let minX = Infinity,
         minY = Infinity,
         maxX = -Infinity,
         maxY = -Infinity;
     for (const SAMPLE of samples) {
-        player.seek(SAMPLE.timeMs);
-        const POSES = player.partPoses();
+        actor.seek(SAMPLE.timeMs);
+        const POSES = actor.partPoses();
         for (let offset = 0; offset < VERTICES.length; offset += 11) {
             const POSE = POSES[VERTICES[offset + 10]];
             if (!POSE.visible || POSE.opacity <= 0) {
@@ -115,12 +102,23 @@ function spriteDefinition(clipName, clip, samples, packed, contentWidth, content
 }
 
 /**
- * Samples one authored clip at bake time; borrows the source asset and owns a ref-counted bake into one region of
- * the device's shared texture atlas. Play it with createSpriteAnimation(context, atlas.region, atlas.definition).
+ * Samples one authored clip at bake time; shares the context's GPU resources for `compiledAsset` and owns a
+ * ref-counted bake into one region of the device's shared texture atlas. Play it with
+ * createSpriteAnimation(context, atlas.region, atlas.definition).
  */
-export function createVectorSpriteAtlas(
+export function createVectorSpriteAtlas(context, compiledAsset, options = {}) {
+    const { asset: ASSET, release: RELEASE } = acquireVectorAsset(context, compiledAsset);
+    try {
+        return bakeSpriteAtlas(context, ASSET, RELEASE, compiledAsset, options);
+    } catch (error) {
+        RELEASE();
+        throw error;
+    }
+}
+function bakeSpriteAtlas(
     context,
     asset,
+    release,
     compiledAsset,
     {
         clip,
@@ -133,29 +131,18 @@ export function createVectorSpriteAtlas(
     } = {},
 ) {
     validateCompiledAsset(compiledAsset);
-    const DEVICE = context?.device,
-        MESHES = context?.meshRenderer,
-        GEOMETRY = compiledAsset.geometry,
-        SOURCE_MESH_MATCHES = asset?.mesh
-            ? asset.mesh.renderer === MESHES &&
-              asset.mesh.partCount === GEOMETRY.partCount &&
-              sameGeometry(asset.mesh, GEOMETRY)
-            : GEOMETRY.vertices.length === 0;
+    const DEVICE = context.device,
+        MESHES = context.meshRenderer,
+        GEOMETRY = compiledAsset.geometry;
     if (
-        !context?.drawQuads ||
+        !context.drawQuads ||
         !DEVICE?.createRenderTarget ||
         !DEVICE?.blitRenderTarget ||
         !DEVICE?.createTextureLayerTarget ||
         !DEVICE?.bindRenderTarget ||
-        !DEVICE?.unbindRenderTarget ||
-        !asset?.ownsPlayer ||
-        asset.disposed ||
-        asset.sourceSha256 !== compiledAsset.sourceSha256 ||
-        !SOURCE_MESH_MATCHES
+        !DEVICE?.unbindRenderTarget
     ) {
-        throw new TypeError(
-            'A VectorContext and a matching live vector asset created on its mesh renderer are required',
-        );
+        throw new TypeError('A VectorContext is required');
     }
     if (
         !Object.hasOwn(compiledAsset.metadata.clips, clip) ||
@@ -220,11 +207,11 @@ export function createVectorSpriteAtlas(
         if (!reason && !SAMPLES) {
             reason = 'frameLimit';
         }
-        const PLAYER = reason ? null : asset.createPlayer({ clip, startedAtMs: 0 });
-        if (PLAYER && expression !== compiledAsset.metadata.defaultExpression) {
-            PLAYER.setExpression(expression);
+        const ACTOR = reason ? null : asset.createActor({ clip, startedAtMs: 0 });
+        if (ACTOR && expression !== compiledAsset.metadata.defaultExpression) {
+            ACTOR.setExpression(expression);
         }
-        const BOUNDS = PLAYER ? sampledBounds(PLAYER, GEOMETRY, SAMPLES) : null;
+        const BOUNDS = ACTOR ? sampledBounds(ACTOR, GEOMETRY, SAMPLES) : null;
         if (!reason && !BOUNDS) {
             reason = 'emptyFrames';
         }
@@ -256,14 +243,14 @@ export function createVectorSpriteAtlas(
             }
         }
         if (reason) {
-            PLAYER?.dispose();
+            ACTOR?.dispose();
         }
         record = {
             key: KEY,
             refs: 0,
             reason,
             lastError: null,
-            player: reason ? null : PLAYER,
+            actor: reason ? null : ACTOR,
             samples: SAMPLES,
             bounds: BOUNDS,
             packed: PACKED,
@@ -359,8 +346,8 @@ export function createVectorSpriteAtlas(
                     FRAME = record.definition.frames[index],
                     TX = ORIGIN_X + FRAME.x - pixelsPerUnit * MIN_X,
                     TY = ORIGIN_Y + FRAME.y - pixelsPerUnit * MIN_Y;
-                record.player.seek(SAMPLE.timeMs);
-                record.player.draw({
+                record.actor.seek(SAMPLE.timeMs);
+                record.actor.draw({
                     paintRegions: CAPTURED_PAINT,
                     projection: [
                         (2 * pixelsPerUnit) / BAKE_WIDTH,
@@ -374,7 +361,7 @@ export function createVectorSpriteAtlas(
                         1,
                     ],
                 });
-                // One player reuses one pose row; dispatch before seeking the next sampled time.
+                // One actor reuses one pose row; dispatch before seeking the next sampled time.
                 MESHES.flush('spriteAtlasSample');
             }
             DEVICE.unbindRenderTarget(source);
@@ -455,13 +442,14 @@ export function createVectorSpriteAtlas(
                 if (record.region && DEVICE.state === 'ready') {
                     ATLAS.release(record.region);
                 }
-                record.player?.dispose();
+                record.actor?.dispose();
                 cached.delete(KEY);
                 if (cached.size === 0) {
                     CACHE.delete(asset);
                 }
             }
         }
+        release();
         return true;
     };
     return Object.freeze({

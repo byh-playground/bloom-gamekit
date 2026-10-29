@@ -54,13 +54,8 @@ try {
                     preserveDrawingBuffer: true,
                     checkGLErrors: true,
                 });
-                const MESHES = new R.MeshRenderer(DEVICE, { poseBackend: backend });
-                const CONTEXT = new R.VectorContext(DEVICE);
-                CONTEXT.meshRenderer = MESHES;
-                const SURFACES = new R.YarnSurfaceRenderer(DEVICE);
-                const RESOURCES = COMPILED.map((asset) =>
-                    V.createVectorAsset(MESHES, asset, { surfaceRenderer: SURFACES }),
-                );
+                const CONTEXT = new R.VectorContext(DEVICE, { mesh: { poseBackend: backend } });
+                const MESHES = CONTEXT.acquireMeshRenderer();
                 const PLAYERS = [];
                 const INFO = DEVICE.gl.getExtension('WEBGL_debug_renderer_info');
                 const HARDWARE = {
@@ -72,11 +67,14 @@ try {
                         : DEVICE.gl.getParameter(DEVICE.gl.VENDOR),
                 };
                 function addPlayer(index) {
-                    const ASSET_INDEX = index % RESOURCES.length;
+                    const ASSET_INDEX = index % COMPILED.length;
                     const NAMES = Object.keys(COMPILED[ASSET_INDEX].metadata.clips);
                     const CLIP = NAMES.includes('walk') ? 'walk' : NAMES[0];
                     PLAYERS[index] = {
-                        player: RESOURCES[ASSET_INDEX].createPlayer({ clip: CLIP, startedAtMs: -index * 37.197 }),
+                        player: V.createVectorActor(CONTEXT, COMPILED[ASSET_INDEX], {
+                            clip: CLIP,
+                            startedAtMs: -index * 37.197,
+                        }),
                         assetIndex: ASSET_INDEX,
                         names: NAMES,
                     };
@@ -108,7 +106,7 @@ try {
                         // Grow the row atlas while an earlier visible mesh is queued.
                         const FIRST = PLAYERS[0].player;
                         FIRST.seek(TIME);
-                        CONTEXT.drawVectorAsset(FIRST, { matrix: [0.13, 0, 0, 0.13, 15, 10], alpha: 0.65 });
+                        CONTEXT.drawVectorActor(FIRST, { matrix: [0.13, 0, 0, 0.13, 15, 10], alpha: 0.65 });
                         for (let i = 20; i < 80; i++) {
                             addPlayer(i);
                         }
@@ -180,7 +178,7 @@ try {
                         const X = (i % 10) * 65 + 10;
                         const Y = Math.floor(i / 10) * 58 + 15;
                         const SCALE = 48 / COMPILED[ENTRY.assetIndex].viewBox[3];
-                        CONTEXT.drawVectorAsset(ENTRY.player, {
+                        CONTEXT.drawVectorActor(ENTRY.player, {
                             matrix: [SCALE, 0, 0, SCALE, X, Y],
                             alpha: i % 4 === 0 ? 0.55 : 1,
                             excludeParts: PREPARED[i].excluded,
@@ -298,9 +296,11 @@ try {
                         throw new Error('Source release must not allocate');
                     };
                     try {
-                        RESOURCES[0].dispose();
+                        const FIRST_ASSET_ACTORS = PLAYERS.filter((entry) => entry.assetIndex === 0);
+                        FIRST_ASSET_ACTORS.forEach((entry) => entry.player.dispose());
                         FAULTS.sourceReleaseNoAllocation =
-                            RESOURCES[0].disposed && POSES.sources.size === SOURCE_COUNT - 1;
+                            FIRST_ASSET_ACTORS.every((entry) => entry.player.disposed) &&
+                            POSES.sources.size === SOURCE_COUNT - 1;
                     } finally {
                         DEVICE.createDataTexture = CREATE;
                     }
@@ -327,12 +327,10 @@ try {
                         DEVICE.createDataTexture = CREATE;
                     }
                 }
-                for (const RESOURCE of RESOURCES) {
-                    RESOURCE.dispose();
+                for (const ENTRY of PLAYERS) {
+                    ENTRY?.player.dispose();
                 }
-                SURFACES.dispose();
                 CONTEXT.dispose();
-                MESHES.dispose();
                 SNAPSHOT.afterDispose = {
                     buffers: DEVICE.buffers.size,
                     textures: DEVICE.textures.size,

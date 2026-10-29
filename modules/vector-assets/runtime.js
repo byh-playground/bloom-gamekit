@@ -207,8 +207,8 @@ function blendPoses(from, to, amount, partIds) {
     return OUTPUT;
 }
 
-/** Owns one retained GPU mesh; its players own only independent pose/timeline state. */
-export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null } = {}) {
+/** Owns one retained GPU mesh; its actors own only independent pose/timeline state. */
+function retainVectorAsset(meshRenderer, compiledAsset, surfaceRenderer) {
     if (!meshRenderer?.createMesh || !meshRenderer?.drawMesh || !meshRenderer?.deleteMesh) {
         throw new TypeError('A GameKit MeshRenderer is required');
     }
@@ -239,9 +239,7 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
         SHADER_GEOMETRY.length &&
         (!surfaceRenderer?.createSurface || !surfaceRenderer?.drawSurface || !surfaceRenderer?.deleteSurface)
     ) {
-        throw new TypeError(
-            'This SVG declares backend:"shader"; pass a GameKit YarnSurfaceRenderer when creating the vector asset',
-        );
+        throw new TypeError('This SVG declares backend:"shader" and needs a GameKit YarnSurfaceRenderer');
     }
     const POSE_PROGRAM =
         POSE_API && !GEOMETRY.drawOrder && !SHADER_GEOMETRY.length ? compilePoseChannels(METADATA) : null;
@@ -266,14 +264,14 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
         }
         throw error;
     }
-    const PLAYERS = new Set();
+    const ACTORS = new Set();
     let disposed = false;
     const REQUIRE_READY = () => {
         if (disposed) {
             throw new Error('Vector asset is disposed');
         }
     };
-    const CREATE_PLAYER = ({ clip = Object.keys(CLIPS)[0], startedAtMs = 0 } = {}) => {
+    const CREATE_ACTOR = ({ clip = Object.keys(CLIPS)[0], startedAtMs = 0 } = {}, release = null) => {
         REQUIRE_READY();
         if (!Object.hasOwn(CLIPS, clip)) {
             throw new TypeError(`Unknown vector clip: ${clip}`);
@@ -326,10 +324,10 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
         let resolvedRevision = -1;
         let resolvedPose = null;
         let preparedPose = null;
-        // The matrix cache belongs to this player; public pose results remain detached.
+        // The matrix cache belongs to this actor; public pose results remain detached.
         // Reuse its map instead of allocating another world-map on each lazy sample.
         const RESOLVED_MATRICES = new Map();
-        let playerDisposed = false;
+        let actorDisposed = false;
         const POSE_INSTANCE = poseSource ? meshRenderer.createPoseInstance(poseSource) : null;
         const POSE_METRICS = {
             fullSamples: 0,
@@ -345,10 +343,10 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
             poseRevision++;
             preparedPose = null;
         };
-        const ASSERT_PLAYER = () => {
+        const ASSERT_ACTOR = () => {
             REQUIRE_READY();
-            if (playerDisposed) {
-                throw new Error('Vector player is disposed');
+            if (actorDisposed) {
+                throw new Error('Vector actor is disposed');
             }
         };
         const SAMPLE_CLIP = (playback, timeMs) => {
@@ -432,23 +430,23 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
             }
         };
         const SEEK = (timeMs) => {
-            ASSERT_PLAYER();
+            ASSERT_ACTOR();
             const NEXT_TIME_MS = FINITE_TIME(timeMs, 'displayTimeMs');
             if (NEXT_TIME_MS !== displayTimeMs || soughtPlaybackRevision !== playbackRevision) {
                 displayTimeMs = NEXT_TIME_MS;
                 soughtPlaybackRevision = playbackRevision;
                 INVALIDATE_POSE();
             }
-            return PLAYER;
+            return ACTOR;
         };
         const SET_EXPRESSION = (name) => {
-            ASSERT_PLAYER();
+            ASSERT_ACTOR();
             const VARIANT = METADATA.expressions[name];
             if (!VARIANT) {
                 throw new TypeError(`Unknown vector expression: ${name}`);
             }
             if (name === expression && !visibilityOverridden) {
-                return PLAYER;
+                return ACTOR;
             }
             for (const ID of EXPRESSION_PARTS) {
                 VISIBLE.set(ID, false);
@@ -462,20 +460,20 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
             expression = name;
             visibilityOverridden = false;
             INVALIDATE_POSE();
-            return PLAYER;
+            return ACTOR;
         };
         const SET_PART_VISIBLE = (id, isVisible) => {
-            ASSERT_PLAYER();
+            ASSERT_ACTOR();
             if (!PART_INDICES.has(id) || typeof isVisible !== 'boolean') {
                 throw new TypeError('Known part id and boolean visibility required');
             }
             VISIBLE.set(id, isVisible);
             visibilityOverridden = true;
             INVALIDATE_POSE();
-            return PLAYER;
+            return ACTOR;
         };
         const SET_BASE_POSE = (id, pose) => {
-            ASSERT_PLAYER();
+            ASSERT_ACTOR();
             if (!PART_INDICES.has(id) || !pose || typeof pose !== 'object' || Array.isArray(pose)) {
                 throw new TypeError('Known part and pose object required');
             }
@@ -501,10 +499,10 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
             if (changed) {
                 INVALIDATE_POSE();
             }
-            return PLAYER;
+            return ACTOR;
         };
         const PLAY = (name, atMs = displayTimeMs) => {
-            ASSERT_PLAYER();
+            ASSERT_ACTOR();
             if (!Object.hasOwn(CLIPS, name)) {
                 throw new TypeError(`Unknown vector clip: ${name}`);
             }
@@ -517,7 +515,7 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
             return SEEK(atMs);
         };
         const TRANSITION_TO = (name, atMs = displayTimeMs, durationMs = 0) => {
-            ASSERT_PLAYER();
+            ASSERT_ACTOR();
             if (!Object.hasOwn(CLIPS, name)) {
                 throw new TypeError(`Unknown vector clip: ${name}`);
             }
@@ -603,7 +601,7 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
             return { ...RESULT, visible };
         };
         const GET_SOCKET = (id) => {
-            ASSERT_PLAYER();
+            ASSERT_ACTOR();
             const SOCKET = METADATA.sockets[id];
             if (!SOCKET) {
                 throw new TypeError(`Unknown vector socket: ${id}`);
@@ -630,7 +628,7 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
             };
         };
         const PART_POSES = () => {
-            ASSERT_PLAYER();
+            ASSERT_ACTOR();
             const RESOLVED = WORLD_MATRICES();
             return RESOLVED.parts.map((pose, index) => {
                 return {
@@ -659,7 +657,7 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
             return excludedMask;
         };
         const PREPARE_POSE = ({ excludeParts = null } = {}) => {
-            ASSERT_PLAYER();
+            ASSERT_ACTOR();
             const EXCLUDED_MASK = VALIDATE_EXCLUSIONS(excludeParts);
             if (!POSE_INSTANCE) {
                 return null;
@@ -747,7 +745,7 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
             strokeViewport = null,
             excludeParts = null,
         } = {}) => {
-            ASSERT_PLAYER();
+            ASSERT_ACTOR();
             VALIDATE_EXCLUSIONS(excludeParts);
             if (!mesh && paintRegions !== null) {
                 throw new TypeError('This asset has no named mesh fills');
@@ -903,7 +901,7 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
             });
         };
         const GET_PART_POSE = (id) => {
-            ASSERT_PLAYER();
+            ASSERT_ACTOR();
             if (!PART_INDICES.has(id)) {
                 throw new TypeError(`Unknown vector part: ${id}`);
             }
@@ -919,8 +917,8 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
                 transform: EFFECTIVE.transform.slice(),
             };
         };
-        const DISPOSE_PLAYER = () => {
-            if (playerDisposed) {
+        const DISPOSE_ACTOR = () => {
+            if (actorDisposed) {
                 return false;
             }
             for (const { timeline: TIMELINE } of TIMELINES.values()) {
@@ -930,11 +928,12 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
             if (POSE_INSTANCE) {
                 meshRenderer.deletePoseInstance(POSE_INSTANCE);
             }
-            PLAYERS.delete(PLAYER);
-            playerDisposed = true;
+            ACTORS.delete(ACTOR);
+            actorDisposed = true;
+            release?.();
             return true;
         };
-        const PLAYER = Object.freeze({
+        const ACTOR = Object.freeze({
             seek: SEEK,
             play: PLAY,
             transitionTo: TRANSITION_TO,
@@ -946,7 +945,7 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
             partPoses: PART_POSES,
             preparePose: PREPARE_POSE,
             draw: DRAW,
-            dispose: DISPOSE_PLAYER,
+            dispose: DISPOSE_ACTOR,
             get currentClip() {
                 return rootPlayback.kind === 'clip' ? rootPlayback.name : rootPlayback.to.name;
             },
@@ -968,22 +967,22 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
                 return false;
             },
             get disposed() {
-                return playerDisposed;
+                return actorDisposed;
             },
             get poseMetrics() {
                 return { ...POSE_METRICS };
             },
         });
-        PLAYERS.add(PLAYER);
+        ACTORS.add(ACTOR);
         SEEK(startedAtMs);
-        return PLAYER;
+        return ACTOR;
     };
     const DISPOSE = () => {
         if (disposed) {
             return false;
         }
-        for (const PLAYER of [...PLAYERS]) {
-            PLAYER.dispose();
+        for (const ACTOR of [...ACTORS]) {
+            ACTOR.dispose();
         }
         if (mesh) {
             meshRenderer.deleteMesh(mesh);
@@ -1006,16 +1005,81 @@ export function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer
         metadata: METADATA,
         mesh: mesh,
         surfaces: Object.freeze(RETAINED_SURFACES),
-        createPlayer: CREATE_PLAYER,
-        ownsPlayer(player) {
-            return PLAYERS.has(player) && !player.disposed;
+        createActor: CREATE_ACTOR,
+        ownsActor(actor) {
+            return ACTORS.has(actor) && !actor.disposed;
         },
         dispose: DISPOSE,
         get disposed() {
             return disposed;
         },
-        get playerCount() {
-            return PLAYERS.size;
+        get actorCount() {
+            return ACTORS.size;
         },
     });
+}
+
+// Every actor of one compiled SVG on one context shares that context's GPU mesh, pose source and yarn/sketch
+// surfaces. The compiled object is the identity: the caller keeps the object it loaded and passes it again.
+const SHARED_ASSETS = new WeakMap();
+
+/**
+ * Acquires the context's shared GPU resources for `compiledAsset`, creating them for the first holder. `release`
+ * returns this reference; the last release frees the resources. `context.dispose()` frees whatever is left.
+ */
+export function acquireVectorAsset(context, compiledAsset) {
+    if (!context?.acquireMeshRenderer || !context?.acquireSurfaceRenderer || !context?.onDispose) {
+        throw new TypeError('A GameKit VectorContext is required');
+    }
+    let table = SHARED_ASSETS.get(context);
+    if (!table) {
+        table = new Map();
+        SHARED_ASSETS.set(context, table);
+        const TABLE = table;
+        context.onDispose(() => {
+            const ENTRIES = [...TABLE.values()];
+            TABLE.clear();
+            for (const ENTRY of ENTRIES) {
+                ENTRY.asset.dispose();
+            }
+        });
+    }
+    let entry = table.get(compiledAsset);
+    if (!entry) {
+        const SURFACES = compiledAsset?.geometry?.shaderSurfaces?.length ? context.acquireSurfaceRenderer() : null;
+        entry = {
+            asset: retainVectorAsset(context.acquireMeshRenderer(), compiledAsset, SURFACES),
+            refs: 0,
+        };
+        table.set(compiledAsset, entry);
+    }
+    entry.refs++;
+    const ENTRY = entry,
+        TABLE = table;
+    let released = false;
+    return {
+        asset: ENTRY.asset,
+        release() {
+            if (released) {
+                return false;
+            }
+            released = true;
+            if (--ENTRY.refs === 0 && TABLE.get(compiledAsset) === ENTRY) {
+                TABLE.delete(compiledAsset);
+                ENTRY.asset.dispose();
+            }
+            return true;
+        },
+    };
+}
+
+/** Creates an independent actor (clip, expression and part-pose state) of a compiled SVG on the context. */
+export function createVectorActor(context, compiledAsset, options = {}) {
+    const { asset: ASSET, release: RELEASE } = acquireVectorAsset(context, compiledAsset);
+    try {
+        return ASSET.createActor(options, RELEASE);
+    } catch (error) {
+        RELEASE();
+        throw error;
+    }
 }

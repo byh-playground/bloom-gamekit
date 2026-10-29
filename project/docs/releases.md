@@ -1,3 +1,45 @@
+## v0.25.0 (2026-10-30)
+
+**Breaking.** SVG 에셋을 쓰는 게임이 렌더러를 직접 만들고 이어 붙이던 구조를 없앱니다. `VectorContext` 하나가 `VectorRenderer`, `MeshRenderer`, `YarnSurfaceRenderer`를 모두 소유하고, 게임은 `WebGLDevice`와 `VectorContext`만 만듭니다. 에셋과 플레이어라는 두 단계도 액터 하나로 합칩니다.
+
+```js
+// 이전
+const meshes = new MeshRenderer(device);
+const surfaces = new YarnSurfaceRenderer(device);
+const vector = new VectorRenderer(device);
+const context = new VectorContext(device, { vectorRenderer: vector });
+context.meshRenderer = meshes;
+const asset = createVectorAsset(meshes, compiled, { surfaceRenderer: surfaces });
+const player = asset.createPlayer({ clip: 'walk' });
+player.draw({
+    projection: context.vector.projection,
+    clips: context.vector.clips,
+    stencilRef: context.vector.stencilDepth || null,
+    matrix,
+});
+player.dispose();
+asset.dispose();
+surfaces.dispose();
+context.dispose();
+vector.dispose();
+
+// 이후
+const context = new VectorContext(device);
+const actor = createVectorActor(context, compiled, { clip: 'walk' });
+context.drawVectorActor(actor, { matrix });
+actor.dispose();
+context.dispose();
+```
+
+- `createVectorAsset(meshRenderer, compiled, { surfaceRenderer })`와 `asset.createPlayer()`를 `createVectorActor(context, compiled, options)`로 바꿉니다. `ownsPlayer`, `playerCount`, `asset.mesh`, `asset.surfaces`, `asset.dispose()`는 없어집니다. 같은 `compiled` 객체의 액터들은 그 context의 GPU 메시, 포즈 소스, 털실·스케치 표면을 공유하고, 첫 액터가 만들고 마지막 액터가 해제됩니다. 공유 기준은 `compiled` 객체이므로 로더가 돌려준 객체를 보관했다가 액터마다 다시 넘깁니다.
+- `VectorContext`의 `vectorRenderer` 주입 옵션과 `context.meshRenderer` 대입을 제거합니다. 한도는 `new VectorContext(device, { mesh: { maxMeshes, maxMeshBytes, maxInstances, poseBackend }, surfaces: { maxSurfaces, maxSurfaceBytes } })`로 넘깁니다. `context.dispose()`가 액터가 남긴 자원과 세 렌더러를 해제합니다.
+- `context.drawVectorAsset(player, options)`는 `context.drawVectorActor(actor, options)`가 됩니다. `projection`, `clips`, `stencilRef`는 context가 채웁니다.
+- `createVectorRasterAtlas(context, asset, compiled, options)`와 `createVectorSpriteAtlas(context, asset, compiled, options)`는 `asset` 인자 없이 `(context, compiled, options)`가 됩니다. 아틀라스가 자원에 자기 참조를 하나 잡으므로 모든 액터를 해제해도 원본이 사라지지 않습니다.
+- `VectorContext`에 `acquireSurfaceRenderer()`와 `onDispose(callback)`가 추가됩니다. 애드온 모듈이 정리 콜백을 등록하는 용도입니다.
+- 게임 저장소는 아직 옮기지 않았습니다. 소비처 이관은 모듈이 정리된 뒤에 따로 진행합니다.
+
+검증: `npm run check`, `test:vector-assets`, `world-rendering`, `paint-regions`, `yarn-shader`, `vector-gradient-clip`, `alpha-run-batching`, `texture-atlas`, `sprite-animation`, `project/tests/browser.e2e.mjs`를 이 PC의 Chromium(SwiftShader)에서 통과했습니다. `run-gpu-poses`는 main에서도 나던 같은 픽셀 차이(변경 0.1%, 최대 오차 58)에서 멈추고, `run-raster-comparison`은 main과 같은 수치(평균 오차 3.86)로 미리보기 단계에서 멈춥니다. 후자의 직접 실행 블록은 이전부터 현재 구현과 맞지 않았습니다(MeshRenderer를 context로 넘기고, 기존 구현에 없는 `sampledCpuDraws`를 기대함). 새 API로 옮겼고 `cpu-pose-atlas` 단계까지 실행을 확인했습니다. 모바일 실기기와 게임 화면은 검증하지 않았습니다.
+
 ## v0.24.3 (2026-10-29)
 
 털실 채움 셰이더가 스티치 곡선 거리를 픽셀마다 계산하지 않고 공통 거리장 텍스처에서 읽습니다. 털실 비용의 약 75%를 차지하던 채움의 곡선 거리 계산(`cubicDistance` 7회, 35개 선분 거리)이 텍스처 샘플 3회로 바뀝니다.
