@@ -1616,6 +1616,41 @@ export class VectorContext {
         if (!this.meshRenderer) {
             throw new TypeError('createMesh required');
         }
+        return this._silhouette({ transform, color, width, radius, outlineScale }, (instances) =>
+            this.meshRenderer.drawMeshInstances(mesh, {
+                ...instances,
+                morph,
+                parts,
+                color: this.forceColor ?? WHITE,
+                forceColor: this.forceColor !== null,
+                alpha: this._globalAlpha,
+                whiteFlash: this._filter === 'brightness(0) invert(1)',
+                clips: this.vector.clips,
+                stencilRef: this.vector.stencilDepth || null,
+            }),
+        );
+    }
+    /**
+     * Draw a vector actor's silhouette and body in one ordered instance batch, like drawMeshSilhouette. `matrix` is
+     * the actor's local matrix; the other options are drawVectorActor's (no world mode).
+     */
+    drawVectorActorSilhouette(
+        actor,
+        { matrix = null, color = 'black', width, radius = 128, outlineScale = null, ...options } = {},
+    ) {
+        this._frame();
+        if (typeof actor?.draw !== 'function') {
+            throw new TypeError('A vector actor is required');
+        }
+        if (options.viewProjection !== undefined || options.worldMatrix !== undefined) {
+            throw new TypeError('Actor silhouettes are 2D only');
+        }
+        return this._silhouette({ transform: matrix, color, width, radius, outlineScale }, (instances) =>
+            actor.draw({ ...this._actorParams(options), projection: instances.projection, instances }),
+        );
+    }
+    /** Silhouette instance transforms for the current context transform; `submit` appends them as one draw. */
+    _silhouette({ transform, color, width, radius, outlineScale }, submit) {
         finite(width, 'silhouette width');
         finite(radius, 'silhouette radius');
         if (width < 0 || radius < 0) {
@@ -1684,25 +1719,30 @@ export class VectorContext {
                     MATRICES[AT + 4] = A * te + C * tf + E_OFFSET;
                     MATRICES[AT + 5] = B * te + D * tf + F_OFFSET;
                 }
-                this.meshRenderer._drawMeshInstances(mesh, {
+                submit({
                     matrices: MATRICES,
                     count: COUNT,
                     projection: this.vector.projection,
-                    morph,
-                    parts,
-                    color: this.forceColor ?? WHITE,
-                    forceColor: this.forceColor !== null,
                     prefixColor: outline,
                     prefixCount: OUTLINE_INSTANCES,
                     forceColorPrefixCount: OUTLINE_INSTANCES,
-                    alpha: this._globalAlpha,
-                    whiteFlash: this._filter === 'brightness(0) invert(1)',
-                    clips: this.vector.clips,
-                    stencilRef: this.vector.stencilDepth || null,
                 });
             },
             BOUNDS,
         );
+    }
+    /** Actor draw parameters from the context state: paint state applies and the caller's alpha multiplies. */
+    _actorParams(options) {
+        const FORCED = options.forceColor ?? this.forceColor !== null;
+        return {
+            clips: this.vector.clips,
+            stencilRef: this.vector.stencilDepth || null,
+            ...options,
+            alpha: (options.alpha ?? 1) * this._globalAlpha,
+            forceColor: FORCED,
+            color: options.color ?? (this.forceColor && FORCED ? this.forceColor : [1, 1, 1, 1]),
+            whiteFlash: options.whiteFlash ?? this._filter === 'brightness(0) invert(1)',
+        };
     }
     /** Submit a vector actor after earlier paint, without flushing a compatible mesh run. */
     drawVectorActor(actor, options = {}) {
@@ -1712,17 +1752,7 @@ export class VectorContext {
         }
         this.vector.flush();
         const WORLD_MODE = options.viewProjection !== undefined || options.worldMatrix !== undefined,
-            FORCED = options.forceColor ?? this.forceColor !== null;
-        const PARAMS = {
-            clips: this.vector.clips,
-            stencilRef: this.vector.stencilDepth || null,
-            ...options,
-            // Like drawMesh: paint state of the context applies, and the caller's alpha multiplies the context's.
-            alpha: (options.alpha ?? 1) * this._globalAlpha,
-            forceColor: FORCED,
-            color: options.color ?? (this.forceColor && FORCED ? this.forceColor : [1, 1, 1, 1]),
-            whiteFlash: options.whiteFlash ?? this._filter === 'brightness(0) invert(1)',
-        };
+            PARAMS = this._actorParams(options);
         if (!WORLD_MODE) {
             // The actor's matrix composes with the context transform (the camera), as drawMesh's transform does.
             PARAMS.projection = this.vector.projection;

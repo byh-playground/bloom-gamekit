@@ -499,6 +499,29 @@ try {
                 });
                 CONTEXT.endFrame();
                 CHECK(DEVICE.gl.getError() === 0, 'Actor draw accepts depthWriteAlphaThreshold on the CPU pose path');
+                // The actor silhouette is one ordered batch: outline first, then the unchanged body on top.
+                const PLAIN = READ_FRAME(() => CONTEXT.drawVectorActor(ACTUAL[0], { matrix: [1, 0, 0, 1, 40, 0] })),
+                    OUTLINED = READ_FRAME(() =>
+                        CONTEXT.drawVectorActorSilhouette(ACTUAL[0], {
+                            matrix: [1, 0, 0, 1, 40, 0],
+                            color: '#000',
+                            width: 3,
+                            radius: 100,
+                        }),
+                    );
+                let outlinePixels = 0;
+                for (let at = 0; at < PLAIN.length; at += 4) {
+                    if (PLAIN[at + 3] > 250) {
+                        CHECK(
+                            [0, 1, 2, 3].every((k) => Math.abs(OUTLINED[at + k] - PLAIN[at + k]) <= 1),
+                            'Silhouette keeps the opaque body pixels unchanged',
+                        );
+                    } else if (PLAIN[at + 3] === 0 && OUTLINED[at + 3] > 200) {
+                        CHECK(OUTLINED[at] + OUTLINED[at + 1] + OUTLINED[at + 2] === 0, 'Silhouette outline is black');
+                        outlinePixels++;
+                    }
+                }
+                CHECK(outlinePixels > 20, 'Actor silhouette adds outline pixels around the body');
                 const CONTEXT_REFERENCE = frame(ACTUAL, palettes);
                 CHECK(
                     BLEND_PIXELS.every(

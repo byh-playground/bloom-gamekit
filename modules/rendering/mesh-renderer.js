@@ -947,7 +947,7 @@ export class MeshRenderer {
             viewProjection: VIEW_PROJECTION,
             worldMatrix: WORLD_MATRIX,
         } = options;
-        this._drawMeshInstances(mesh, {
+        this.drawMeshInstances(mesh, {
             matrices,
             count,
             projection: PROJECTION,
@@ -1198,11 +1198,12 @@ export class MeshRenderer {
         this.alphaQueueState = null;
     }
     /**
-     * Internal ordered instance append used when one retained pose has several transforms. A mesh with materials that
+     * Ordered instance append used when one retained pose has several transforms (silhouettes). `matrices` holds
+     * six floats per instance and the first `prefixCount` instances use `prefixColor`. A mesh with materials that
      * writes depth is drawn in runs so a yarn or sketch edge, whose pixels are only partly covered, never writes depth;
      * the runs keep the triangle order, so painter order is unchanged.
      */
-    _drawMeshInstances(mesh, options = {}) {
+    drawMeshInstances(mesh, options = {}) {
         if (
             mesh?.materials &&
             options.depthWrite === true &&

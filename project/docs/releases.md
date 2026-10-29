@@ -1,3 +1,22 @@
+## v0.26.4 (2026-10-30)
+
+액터 외곽선을 지원합니다. v0.26.3에서 하지 않았던 부분이고, 게임이 외곽선을 위해 액터를 오프셋마다 따로 그리던 방식을 한 번의 인스턴스 draw로 바꿉니다.
+
+```js
+// 이전: 외곽선 8방향을 게임이 직접 반복 (각 호출이 포즈 준비와 draw 제출)
+for (const [dx, dy] of OFFSETS)
+    ctx.drawVectorActor(actor, { matrix: translate(dx * w, dy * w, local), color: black, forceColor: true });
+ctx.drawVectorActor(actor, { matrix: local });
+
+// 이후
+ctx.drawVectorActorSilhouette(actor, { matrix: local, color: '#000', width: 3, radius: 100 });
+```
+
+- `VectorContext.drawVectorActorSilhouette(actor, { matrix, color, width, radius, outlineScale, ...drawVectorActor 옵션 })`: `drawMeshSilhouette`와 같은 규칙입니다. 아래 외곽선 9개(8방향+가운데)와 본체를 한 번의 순서 있는 인스턴스 draw로 제출하고, 그룹 opacity는 한 번만 합성합니다. `outlineScale`을 주면 외곽선 1개를 확대해 그립니다. 월드 모드는 지원하지 않아 오류입니다.
+- 액터 `draw`가 `instances` 옵션(`matrices`, `count`, `prefixColor`, `prefixCount`, `forceColorPrefixCount`)을 받습니다. 한 포즈를 변환 여러 개로 그리는 경로라서 GPU 포즈에서도 포즈 준비는 한 번입니다.
+- `MeshRenderer.drawMeshInstances`: 내부 이름이던 `_drawMeshInstances`를 공개 이름으로 바꿨습니다(`VectorContext`와 액터가 함께 씁니다).
+- 시험: `test:vector-assets:paint-regions`가 세 포즈 백엔드(uniform, auto, cpu)에서 본체 불투명 픽셀이 평범한 draw와 같음, 외곽선이 본체 바깥에 검은색으로 생김을 확인합니다. `world-rendering`, `alpha-run-batching`, `yarn-shader`, 브라우저 e2e도 통과했습니다. 성능 수치(외곽선 8회 draw 대비)는 이번에 측정하지 않았고, 게임 화면은 확인하지 않았습니다.
+
 ## v0.26.3 (2026-10-30)
 
 **Breaking.** `VectorContext.drawVectorActor`가 `drawMesh`와 같은 규칙으로 context 상태를 따릅니다. 게임 이관(yarn-mayhem, bloom-bounko, squish-born, rally-frontier)에서 같은 곳이 반복해서 막혔기 때문입니다. 게임은 이제 카메라 행렬을 액터마다 손으로 곱하지 않습니다.
