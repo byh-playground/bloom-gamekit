@@ -1386,9 +1386,11 @@ var WebGLDevice = class {
     GL.pixelStorei(GL.UNPACK_SKIP_PIXELS, 0);
     GL.pixelStorei(GL.UNPACK_SKIP_ROWS, 0);
     GL.texSubImage2D(GL.TEXTURE_2D, 0, x, y, width, height, GL.RGBA, GL.FLOAT, data);
-    const ERROR = GL.getError();
-    if (ERROR !== GL.NO_ERROR) {
-      throw new Error(`Data texture update error ${ERROR}`);
+    if (this.checkGLErrors) {
+      const ERROR = GL.getError();
+      if (ERROR !== GL.NO_ERROR) {
+        throw new Error(`Data texture update error ${ERROR}`);
+      }
     }
     for (let row = 0; row < height; row++) {
       R.source.set(data.subarray(row * width * 4, (row + 1) * width * 4), ((y + row) * R.width + x) * 4);
@@ -1990,15 +1992,14 @@ var PoseRenderer = class {
     this.stateTexture = null;
     this.overrideTexture = null;
     this.cpuTexture = null;
+    this.dirty = { state: /* @__PURE__ */ new Set(), override: /* @__PURE__ */ new Set(), cpu: /* @__PURE__ */ new Set() };
     this.frameMetrics = {};
     this.pendingUpdates = false;
     this.disposed = false;
     this.gpuUnavailableReason = backend !== "auto" ? "cpuRequested" : null;
     this.onRestored = () => {
       for (const RECORD of this.instances.values()) {
-        RECORD.stateDirty = true;
-        RECORD.overrideDirty = true;
-        RECORD.cpuDirty = RECORD.mode === "cpu";
+        this._markAll(RECORD);
         RECORD.usedFrame = -1;
       }
       this.pendingUpdates = true;
@@ -2024,6 +2025,13 @@ var PoseRenderer = class {
       flushRecordVisits: 0,
       cleanFlushSkips: 0
     };
+  }
+  _markAll(record) {
+    this.dirty.state.add(record);
+    this.dirty.override.add(record);
+    if (record.mode === "cpu") {
+      this.dirty.cpu.add(record);
+    }
   }
   _boundary() {
     if (this.device.active) {
@@ -2084,7 +2092,7 @@ var PoseRenderer = class {
       if (this.stateData) {
         this.stateData[RECORD.row * 8 + 7] = this.sources.get(RECORD.source).offset;
       }
-      RECORD.stateDirty = true;
+      this.dirty.state.add(RECORD);
     }
     this.pendingUpdates = true;
   }
@@ -2113,6 +2121,9 @@ var PoseRenderer = class {
     this.stateData = null;
     this.overrideData = null;
     this.cpuData = null;
+    for (const SET of Object.values(this.dirty)) {
+      SET.clear();
+    }
   }
   _ensureCapacity(required) {
     if (required <= this.capacity) {
@@ -2152,9 +2163,7 @@ var PoseRenderer = class {
     this.stateTexture = stateTexture;
     this.overrideTexture = overrideTexture;
     for (const RECORD of this.instances.values()) {
-      RECORD.stateDirty = true;
-      RECORD.overrideDirty = true;
-      RECORD.cpuDirty = RECORD.mode === "cpu";
+      this._markAll(RECORD);
     }
     this.pendingUpdates = true;
   }
@@ -2171,9 +2180,6 @@ var PoseRenderer = class {
       source,
       row: ROW,
       mode: null,
-      stateDirty: true,
-      overrideDirty: true,
-      cpuDirty: false,
       usedFrame: -1,
       reason: null,
       baseScratch: new Float32Array(OVERRIDE_WIDTH * 4)
@@ -2181,6 +2187,7 @@ var PoseRenderer = class {
     this.instances.set(HANDLE, RECORD);
     OWNERS.set(HANDLE, this);
     this.rows[ROW] = RECORD;
+    this._markAll(RECORD);
     this.pendingUpdates = true;
     return HANDLE;
   }
@@ -2191,6 +2198,9 @@ var PoseRenderer = class {
     }
     this._boundary();
     this.instances.delete(handle);
+    for (const SET of Object.values(this.dirty)) {
+      SET.delete(RECORD);
+    }
     this.rows[RECORD.row] = null;
     this.freeRows.push(RECORD.row);
     if (!this.instances.size) {
@@ -2255,11 +2265,11 @@ var PoseRenderer = class {
     }
     if (STATE_CHANGED) {
       this.stateData.set(STATE, OFFSET);
-      RECORD.stateDirty = true;
+      this.dirty.state.add(RECORD);
     }
     if (BASE_CHANGED) {
       this.overrideData.set(BASE, BASE_OFFSET);
-      RECORD.overrideDirty = true;
+      this.dirty.override.add(RECORD);
     }
     this.pendingUpdates ||= STATE_CHANGED || BASE_CHANGED;
     RECORD.mode = "gpu";
@@ -2299,7 +2309,7 @@ var PoseRenderer = class {
     }
     RECORD.mode = "cpu";
     RECORD.reason = reason;
-    RECORD.cpuDirty = true;
+    this.dirty.cpu.add(RECORD);
     this.pendingUpdates = true;
     return handle;
   }
@@ -2310,9 +2320,7 @@ var PoseRenderer = class {
     }
     if (RECORD.mode === "cpu" && !this.cpuTexture) {
       this.cpuTexture = this.device.createDataTexture(POSE_WIDTH, this.capacity, { data: this.cpuData });
-      for (const ROW of this.instances.values()) {
-        ROW.cpuDirty = false;
-      }
+      this.dirty.cpu.clear();
     }
     const PART_COUNT = this.sources.get(RECORD.source).program.partCount;
     if (RECORD.mode === "gpu") {
@@ -2351,26 +2359,20 @@ var PoseRenderer = class {
     this.frameMetrics.uniformDrawInstances++;
     this._fallback(reason);
   }
-  _uploadRows(key, dirtyKey, texture, width, metric) {
+  _uploadRows(key, dirty, texture, width, metric) {
+    if (!dirty.size) {
+      return;
+    }
     let first = Infinity;
     let last = -1;
-    const UPLOADING = [];
-    for (const RECORD of this.instances.values()) {
+    for (const RECORD of dirty) {
       this.frameMetrics.flushRecordVisits++;
-      if (RECORD[dirtyKey]) {
-        first = Math.min(first, RECORD.row);
-        last = Math.max(last, RECORD.row);
-        UPLOADING.push(RECORD);
-      }
-    }
-    if (last < 0) {
-      return;
+      first = Math.min(first, RECORD.row);
+      last = Math.max(last, RECORD.row);
     }
     const DATA = this[key].subarray(first * width * 4, (last + 1) * width * 4);
     this.device.updateDataTexture(texture, DATA, { y: first, width, height: last - first + 1 });
-    for (const RECORD of UPLOADING) {
-      RECORD[dirtyKey] = false;
-    }
+    dirty.clear();
     this.frameMetrics[metric] += DATA.byteLength;
   }
   flushUpdates() {
@@ -2385,10 +2387,16 @@ var PoseRenderer = class {
       return;
     }
     if (this.cpuTexture) {
-      this._uploadRows("cpuData", "cpuDirty", this.cpuTexture, POSE_WIDTH, "cpuPoseUploadBytes");
+      this._uploadRows("cpuData", this.dirty.cpu, this.cpuTexture, POSE_WIDTH, "cpuPoseUploadBytes");
     }
-    this._uploadRows("stateData", "stateDirty", this.stateTexture, 2, "stateUploadBytes");
-    this._uploadRows("overrideData", "overrideDirty", this.overrideTexture, OVERRIDE_WIDTH, "overrideUploadBytes");
+    this._uploadRows("stateData", this.dirty.state, this.stateTexture, 2, "stateUploadBytes");
+    this._uploadRows(
+      "overrideData",
+      this.dirty.override,
+      this.overrideTexture,
+      OVERRIDE_WIDTH,
+      "overrideUploadBytes"
+    );
     this.pendingUpdates = false;
   }
   stats() {
