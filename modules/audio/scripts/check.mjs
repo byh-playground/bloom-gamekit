@@ -409,7 +409,53 @@ try {
                 BUFFERED.missingRejected = error.message.includes('not registered');
             }
         }
-        return { pan: PAN, crossings: CENTS, bed: BED, texture: TEXTURE, buffered: BUFFERED };
+        // 레이어 컴프레서: 28dB 크기 차이가 나는 두 구간(0.02 -> 0.5 진폭)의 차이를 줄인다.
+        const LEVELED = {};
+        for (const WITH of [false, true]) {
+            const CONTEXT = new OfflineAudioContext(1, 2 * 48000, 48000),
+                MIX = CREATE_MIX(CONTEXT, CONTEXT.destination),
+                STEP = CONTEXT.createBuffer(1, 2 * 48000, 48000),
+                DATA = STEP.getChannelData(0);
+            for (let i = 0; i < DATA.length; i++) {
+                DATA[i] = Math.sin((2 * Math.PI * 300 * i) / 48000) * (i < 48000 ? 0.02 : 0.5);
+            }
+            RENDER_BED(
+                CONTEXT,
+                MIX.input,
+                NOISE_BED([
+                    {
+                        kind: 'buffer',
+                        bufferId: 'step',
+                        gain: 0.5,
+                        ...(WITH ? { compressor: { threshold: -35, ratio: 8, attackMs: 5, releaseMs: 100 } } : {}),
+                    },
+                ]),
+                MAKE_NOISE(CONTEXT),
+                { buffers: new Map([['step', STEP]]), fadeMs: 1 },
+            );
+            const OUT = (await CONTEXT.startRendering()).getChannelData(0);
+            LEVELED[WITH ? 'withDb' : 'withoutDb'] = 20 * Math.log10(RMS(OUT, 1.3, 1.9) / RMS(OUT, 0.3, 0.9));
+        }
+        for (const BAD of [
+            { threshold: 5, ratio: 4 },
+            { threshold: -30, ratio: 0 },
+            { threshold: -30, ratio: 4, attackMs: -1 },
+            'x',
+        ]) {
+            try {
+                const CONTEXT = new OfflineAudioContext(1, 4800, 48000);
+                RENDER_BED(
+                    CONTEXT,
+                    CREATE_MIX(CONTEXT, CONTEXT.destination).input,
+                    NOISE_BED([{ kind: 'noise', hz: 500, gain: 0.1, compressor: BAD }]),
+                    MAKE_NOISE(CONTEXT),
+                );
+                LEVELED.badAccepted = true;
+            } catch (error) {
+                LEVELED.badRejected = (LEVELED.badRejected ?? 0) + (error instanceof RangeError ? 1 : 0);
+            }
+        }
+        return { pan: PAN, crossings: CENTS, bed: BED, texture: TEXTURE, buffered: BUFFERED, leveled: LEVELED };
     });
     {
         const V = REPORT.offlineVariation;
@@ -434,6 +480,11 @@ try {
                 T['swingDb0.9'] > 10 &&
                 T.legacyLfoRejected,
             'Bed bandpass/offset decorrelation/lfos or legacy lfo rejection failed',
+        );
+        const LV = V.leveled;
+        ASSERT(
+            LV.withoutDb > 24 && LV.withDb < LV.withoutDb - 8 && LV.badRejected === 4 && !LV.badAccepted,
+            'Layer compressor did not even out the level or accepted a bad setting',
         );
         const U = V.buffered;
         ASSERT(

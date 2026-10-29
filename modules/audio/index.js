@@ -66,6 +66,19 @@ function validateRecipe(recipe) {
     }
 }
 const BED_FILTERS = ['lowpass', 'bandpass', 'highpass'];
+// Per-layer leveler for music/long loops: threshold dB -100..0, ratio 1..20, optional knee 0..40, attackMs/releaseMs 0..1000.
+function validBedCompressor(compressor) {
+    const IN_RANGE = (value, low, high) => Number.isFinite(value) && value >= low && value <= high;
+    return (
+        compressor !== null &&
+        typeof compressor === 'object' &&
+        IN_RANGE(compressor.threshold, -100, 0) &&
+        IN_RANGE(compressor.ratio, 1, 20) &&
+        (compressor.knee === undefined || IN_RANGE(compressor.knee, 0, 40)) &&
+        (compressor.attackMs === undefined || IN_RANGE(compressor.attackMs, 0, 1000)) &&
+        (compressor.releaseMs === undefined || IN_RANGE(compressor.releaseMs, 0, 1000))
+    );
+}
 function validateBed(recipe) {
     if (!recipe || !Array.isArray(recipe.layers) || !recipe.layers.length) {
         throw new TypeError('bed.layers required');
@@ -89,6 +102,7 @@ function validateBed(recipe) {
             !Number.isFinite(LAYER.offsetMs ?? 0) ||
             (LAYER.offsetMs ?? 0) < 0 ||
             (LAYER.offsetMs ?? 0) > 60000 ||
+            !(LAYER.compressor === undefined || validBedCompressor(LAYER.compressor)) ||
             !Array.isArray(LFOS) ||
             LFOS.length > 4 ||
             LFOS.some(
@@ -103,7 +117,7 @@ function validateBed(recipe) {
             LFOS.reduce((sum, lfo) => sum + lfo.depth, 0) > 1
         ) {
             throw new RangeError(
-                'bed layers are noise {hz} or buffer {bufferId} (hz only with a type), gain 0..1, optional type lowpass|bandpass|highpass, q 0..30, pan -1..1, offsetMs 0..60000 and up to 4 lfos {hz 0.01..20, depth 0..1} whose depths sum to at most 1',
+                'bed layers are noise {hz} or buffer {bufferId} (hz only with a type), gain 0..1, optional type lowpass|bandpass|highpass, q 0..30, compressor {threshold -100..0, ratio 1..20, knee?, attackMs?, releaseMs?}, pan -1..1, offsetMs 0..60000 and up to 4 lfos {hz 0.01..20, depth 0..1} whose depths sum to at most 1',
             );
         }
     }
@@ -302,13 +316,26 @@ export function renderBed(
         }
         // Gain swings between gain*(1-sum of depths) and gain: each LFO adds +-gain*depth/2 around gain*(1-sum/2).
         GAIN.gain.value = LAYER.gain * (1 - DEPTH / 2);
+        // source -> [filter] -> [compressor] -> gain. The compressor levels a layer whose loudness swings (music), so quiet
+        // passages stay audible and loud ones stop jumping out; WebAudio compressors add automatic makeup gain, so re-check the level.
+        let tail = SOURCE;
         if (FILTER) {
-            SOURCE.connect(FILTER);
-            FILTER.connect(GAIN);
+            tail.connect(FILTER);
+            tail = FILTER;
             NODES.push(FILTER);
-        } else {
-            SOURCE.connect(GAIN);
         }
+        if (LAYER.compressor) {
+            const COMPRESSOR = context.createDynamicsCompressor();
+            COMPRESSOR.threshold.value = LAYER.compressor.threshold;
+            COMPRESSOR.ratio.value = LAYER.compressor.ratio;
+            COMPRESSOR.knee.value = LAYER.compressor.knee ?? 10;
+            COMPRESSOR.attack.value = (LAYER.compressor.attackMs ?? 20) / 1000;
+            COMPRESSOR.release.value = (LAYER.compressor.releaseMs ?? 250) / 1000;
+            tail.connect(COMPRESSOR);
+            tail = COMPRESSOR;
+            NODES.push(COMPRESSOR);
+        }
+        tail.connect(GAIN);
         NODES.push(GAIN);
         if (PAN !== 0 && typeof context.createStereoPanner === 'function') {
             const PANNER = context.createStereoPanner();
