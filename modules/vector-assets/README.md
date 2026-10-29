@@ -161,7 +161,7 @@ const actor = createVectorActor(context, compiledAsset, { clip: 'idle', startedA
 // Inside the host render frame:
 context.beginFrame({ width: canvas.width, height: canvas.height });
 actor.seek(displayTimeMs); // the absolute display time already chosen by the host
-context.drawVectorActor(actor, { matrix });
+context.drawVectorActor(actor, { matrix }); // composes with the context transform (camera) and globalAlpha
 context.endFrame();
 
 // On owner shutdown:

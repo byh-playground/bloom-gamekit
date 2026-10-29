@@ -460,6 +460,45 @@ try {
                     Math.abs(BLEND_PIXELS[(95 * 480 + 415) * 4] - 64) <= 1,
                     'Source-over restored after additive draw',
                 );
+                // An actor follows the context transform, alpha and depth options the same way drawMesh does.
+                const READ_FRAME = (draw) => {
+                    CONTEXT.beginFrame({ width: 480, height: 100, clearColor: [0, 0, 0, 0] });
+                    draw();
+                    CONTEXT.endFrame();
+                    const PIXELS = new Uint8Array(480 * 100 * 4);
+                    DEVICE.gl.readPixels(0, 0, 480, 100, DEVICE.gl.RGBA, DEVICE.gl.UNSIGNED_BYTE, PIXELS);
+                    return PIXELS;
+                };
+                const SHIFTED = READ_FRAME(() => CONTEXT.drawVectorActor(ACTUAL[0], { matrix: [1, 0, 0, 1, 200, 0] })),
+                    CAMERA = READ_FRAME(() => {
+                        CONTEXT.save();
+                        CONTEXT.setTransform(1, 0, 0, 1, 200, 0);
+                        CONTEXT.drawVectorActor(ACTUAL[0], { matrix: [1, 0, 0, 1, 0, 0] });
+                        CONTEXT.restore();
+                    });
+                CHECK(
+                    SHIFTED.some((value) => value !== 0) && SHIFTED.every((value, index) => value === CAMERA[index]),
+                    'Actor matrix composes with the context transform',
+                );
+                const HALF = READ_FRAME(() => {
+                    CONTEXT.save();
+                    CONTEXT.globalAlpha = 0.5;
+                    CONTEXT.drawVectorActor(ACTUAL[0]);
+                    CONTEXT.restore();
+                });
+                const EXPLICIT_HALF = READ_FRAME(() => CONTEXT.drawVectorActor(ACTUAL[0], { alpha: 0.5 }));
+                CHECK(
+                    HALF.every((value, index) => Math.abs(value - EXPLICIT_HALF[index]) <= 1),
+                    'Actor honors the context globalAlpha',
+                );
+                CONTEXT.beginFrame({ width: 480, height: 100, clearColor: [0, 0, 0, 0] });
+                CONTEXT.drawVectorActor(ACTUAL[0], {
+                    depthTest: true,
+                    depthWrite: true,
+                    depthWriteAlphaThreshold: 0.999,
+                });
+                CONTEXT.endFrame();
+                CHECK(DEVICE.gl.getError() === 0, 'Actor draw accepts depthWriteAlphaThreshold on the CPU pose path');
                 const CONTEXT_REFERENCE = frame(ACTUAL, palettes);
                 CHECK(
                     BLEND_PIXELS.every(

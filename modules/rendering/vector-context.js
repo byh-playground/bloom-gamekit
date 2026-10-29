@@ -214,6 +214,18 @@ function invert(matrix) {
 const RAMP_KEY = (gradient) =>
     (gradient instanceof LinearGradient ? 'L' : 'R') +
     gradient.stops.map((stop) => `${stop.offset}:${stop.color.join(',')}`).join(';');
+/** Canvas-style product `outer · inner` of two six-value affine matrices. */
+const COMPOSE_AFFINE = (outer, inner) => {
+    const [A, B, C, D, E, F] = inner;
+    return [
+        outer[0] * A + outer[2] * B,
+        outer[1] * A + outer[3] * B,
+        outer[0] * C + outer[2] * D,
+        outer[1] * C + outer[3] * D,
+        outer[0] * E + outer[2] * F + outer[4],
+        outer[1] * E + outer[3] * F + outer[5],
+    ];
+};
 class RadialGradient {
     constructor(matrix, x0, y0, r0, x1, y1, r1) {
         for (const [N, V] of Object.entries({
@@ -1572,16 +1584,7 @@ export class VectorContext {
             if (transform.length !== 6 || Array.from(transform).some((n) => !Number.isFinite(n))) {
                 throw new TypeError('Six finite transform values required');
             }
-            const M = matrix,
-                [A, B, C, D, E, F] = transform;
-            matrix = [
-                M[0] * A + M[2] * B,
-                M[1] * A + M[3] * B,
-                M[0] * C + M[2] * D,
-                M[1] * C + M[3] * D,
-                M[0] * E + M[2] * F + M[4],
-                M[1] * E + M[3] * F + M[5],
-            ];
+            matrix = COMPOSE_AFFINE(matrix, transform);
         }
         this.meshRenderer.drawMesh(mesh, {
             matrix,
@@ -1708,13 +1711,31 @@ export class VectorContext {
             throw new TypeError('A vector actor is required');
         }
         this.vector.flush();
-        const WORLD_MODE = options.viewProjection !== undefined || options.worldMatrix !== undefined;
-        actor.draw({
-            ...(!WORLD_MODE ? { projection: this.vector.projection } : {}),
+        const WORLD_MODE = options.viewProjection !== undefined || options.worldMatrix !== undefined,
+            FORCED = options.forceColor ?? this.forceColor !== null;
+        const PARAMS = {
             clips: this.vector.clips,
             stencilRef: this.vector.stencilDepth || null,
             ...options,
-        });
+            // Like drawMesh: paint state of the context applies, and the caller's alpha multiplies the context's.
+            alpha: (options.alpha ?? 1) * this._globalAlpha,
+            forceColor: FORCED,
+            color: options.color ?? (this.forceColor && FORCED ? this.forceColor : [1, 1, 1, 1]),
+            whiteFlash: options.whiteFlash ?? this._filter === 'brightness(0) invert(1)',
+        };
+        if (!WORLD_MODE) {
+            // The actor's matrix composes with the context transform (the camera), as drawMesh's transform does.
+            PARAMS.projection = this.vector.projection;
+            if (options.matrix) {
+                if (options.matrix.length !== 6 || Array.from(options.matrix).some((n) => !Number.isFinite(n))) {
+                    throw new TypeError('Six finite matrix values required');
+                }
+                PARAMS.matrix = COMPOSE_AFFINE(this.vector.matrix, options.matrix);
+            } else {
+                PARAMS.matrix = this.vector.matrix.slice();
+            }
+        }
+        actor.draw(PARAMS);
     }
     flush(reason = 'explicit') {
         this._frame();
