@@ -8440,6 +8440,10 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       }
       actor.draw(PARAMS);
     }
+    /** Evaluates every prepared actor pose now, before the actors are submitted. */
+    preparePoses() {
+      this.meshRenderer?.preparePoses();
+    }
     flush(reason = "explicit") {
       this._frame();
       this.meshRenderer?.flush(reason);
@@ -12837,7 +12841,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
         POSE_METRICS.cpuFallbacks++;
         return CACHE_PREPARED(meshRenderer.prepareCpuPose(POSE_INSTANCE, PARTS, MORPH, REASON));
       };
-      const DRAW = ({
+      const DRAW_ONE = ({
         projection,
         viewProjection,
         worldMatrix,
@@ -12937,6 +12941,42 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
           timeMs: displayTimeMs
         });
       };
+      const DRAW = (options = {}) => {
+        const { outlineExpression: OUTLINE_EXPRESSION = null, instances: INSTANCES = null } = options;
+        if (OUTLINE_EXPRESSION === null) {
+          return DRAW_ONE(options);
+        }
+        if (!INSTANCES || INSTANCES.prefixCount < 1 || INSTANCES.prefixCount >= INSTANCES.count) {
+          throw new TypeError("outlineExpression requires silhouette instances");
+        }
+        if (visibilityOverridden) {
+          throw new TypeError("outlineExpression cannot be combined with setPartVisible overrides");
+        }
+        const BODY_EXPRESSION = expression, OUTLINES = INSTANCES.prefixCount;
+        SET_EXPRESSION(OUTLINE_EXPRESSION);
+        try {
+          DRAW_ONE({
+            ...options,
+            instances: {
+              ...INSTANCES,
+              matrices: INSTANCES.matrices.subarray(0, OUTLINES * 6),
+              count: OUTLINES
+            }
+          });
+        } finally {
+          SET_EXPRESSION(BODY_EXPRESSION);
+        }
+        DRAW_ONE({
+          ...options,
+          instances: {
+            matrices: INSTANCES.matrices.subarray(OUTLINES * 6, INSTANCES.count * 6),
+            count: INSTANCES.count - OUTLINES,
+            prefixColor: null,
+            prefixCount: 0,
+            forceColorPrefixCount: 0
+          }
+        });
+      };
       const GET_PART_POSE = (id) => {
         ASSERT_ACTOR();
         if (!PART_INDICES.has(id)) {
@@ -12969,6 +13009,9 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
         return true;
       };
       const ACTOR = Object.freeze({
+        get expression() {
+          return expression;
+        },
         seek: SEEK,
         play: PLAY,
         transitionTo: TRANSITION_TO,
@@ -13048,6 +13091,12 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
         return ACTORS.size;
       }
     });
+  }
+  function rejectUnknownOptions(unknownOptions) {
+    const NAMES = Object.keys(unknownOptions);
+    if (NAMES.length) {
+      throw new TypeError(`Unknown option${NAMES.length > 1 ? "s" : ""}: ${NAMES.join(", ")}`);
+    }
   }
   var SHARED_ASSETS = /* @__PURE__ */ new WeakMap();
   function acquireVectorAsset(context, compiledAsset) {
@@ -13234,7 +13283,8 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       throw error2;
     }
   }
-  function bakeRasterAtlas(context, asset, release, compiledAsset, { pixelsPerUnit = 1, padding = 2 } = {}) {
+  function bakeRasterAtlas(context, asset, release, compiledAsset, { pixelsPerUnit = 1, padding = 2, ...unknownOptions } = {}) {
+    rejectUnknownOptions(unknownOptions);
     const DEVICE2 = context.device;
     const MESHES2 = context.meshRenderer;
     if (!context.drawQuads || !context.drawVectorActor || !DEVICE2?.createTextureLayerTarget || !DEVICE2?.bindRenderTarget || !DEVICE2?.unbindRenderTarget) {
@@ -13584,8 +13634,10 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
     pixelsPerUnit = 1,
     padding = 2,
     paintRegions = null,
-    supersample = 1
+    supersample = 1,
+    ...unknownOptions
   } = {}) {
+    rejectUnknownOptions(unknownOptions);
     validateCompiledAsset(compiledAsset);
     const DEVICE2 = context.device, MESHES2 = context.meshRenderer, GEOMETRY = compiledAsset.geometry;
     if (!context.drawQuads || !DEVICE2?.createRenderTarget || !DEVICE2?.blitRenderTarget || !DEVICE2?.createTextureLayerTarget || !DEVICE2?.bindRenderTarget || !DEVICE2?.unbindRenderTarget) {

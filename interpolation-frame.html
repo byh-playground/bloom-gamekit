@@ -9173,6 +9173,10 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       }
       actor.draw(PARAMS);
     }
+    /** Evaluates every prepared actor pose now, before the actors are submitted. */
+    preparePoses() {
+      this.meshRenderer?.preparePoses();
+    }
     flush(reason = "explicit") {
       this._frame();
       this.meshRenderer?.flush(reason);
