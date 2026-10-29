@@ -1,3 +1,33 @@
+## v0.27.0 (2026-10-30)
+
+**Breaking.** `audio`에 재생마다 달라지는 소리(패닝·피치 변주)와 합성 환경음(베드)을 추가합니다. 발배구의 타격감과 관중 분위기 개선에서 나온 공통 필요입니다.
+
+- `start(id, strength, options)`: 세 번째 인자가 함수에서 `{ pan, detune, onEnded }` 객체로 바뀝니다. 함수를 넘기면 TypeError입니다(별칭 없음). `createAdapter`는 payload의 `pan`·`detune`을 그대로 전달합니다.
+- `startBed(id)`: 노이즈 루프 환경음입니다. `setLevel`로 크기를 바꾸고 `swell`로 순간적으로 키우며 `stop(fadeMs)`로 끝냅니다. `stopAll()`과 mute로는 끝나지 않고 `dispose()`가 끝냅니다.
+- `beds` 설정, `renderBed`(OfflineAudioContext 시험용 export), `snapshot().beds`.
+
+```js
+// 이전
+player.start('kick', strength, () => journal.finish(event));
+// 이후
+player.start('kick', strength, {
+    pan: event.position.z / halfWidth, // -1..1, 0이면 패너 노드 없음
+    detune: (Math.random() - 0.5) * 70, // cent, 난수는 호출자 몫
+    onEnded: () => journal.finish(event),
+});
+
+config.beds = {
+    crowd: { category: 'ambience', layers: [{ kind: 'noise', hz: 900, gain: 0.1, lfoHz: 0.35, lfoDepth: 0.4 }] },
+};
+await player.unlock();
+const crowd = player.startBed('crowd', { level: 0.6, fadeMs: 600 });
+crowd.swell(1, 120, 900); // 득점 환호
+crowd.stop(600);
+```
+
+- 시험: `test:audio`가 패닝(한쪽 채널 에너지), 디튠(옥타브 교차 횟수 2배·1/2배), 베드 level·stop·swell·노드 정리를 OfflineAudioContext로, 실제 Chromium에서 베드 재생·같은 핸들 반환·stopAll 생존·category 음량 0 무음·dispose 정리를 확인합니다.
+- 이번에 하지 않은 것: 베드 덕킹(다른 소리가 날 때 자동으로 낮추기), 음악, 샘플 파일 로딩, 거리 감쇠. 실제 스피커·기기에서의 청취와 모바일 CPU 부하는 검증하지 못했습니다.
+
 ## v0.26.5 (2026-10-30)
 
 **Breaking.** budmori-io와 bloom-bounko 이관에서 나온 모듈 빈틈 네 가지를 메웁니다.
