@@ -11,6 +11,9 @@ const IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
 const VERTEX_FLOATS = 20;
 const VERTEX_BYTES = VERTEX_FLOATS * 4;
 const MODE_POSED = 4;
+// Round joins and caps are arcs whose chord may deviate from the true circle by at most this many pixels, so thin
+// lines get few segments and thick lines get enough to stay round.
+const ARC_TOLERANCE = 0.125;
 // Mode 5 is an analytic primitive (circle, rectangle, capsule line; filled or stroked): uv carries the local
 // [-1,1] coordinates, radial the kind/stroke/width/option parameters and the ramp rectangle the matrix a,c,b,d.
 const MODE_PRIMITIVE = 5;
@@ -971,8 +974,24 @@ export class VectorRenderer {
     }
     _emitTriangle(a, b, c, color, uv = null) {
         rgba(color);
+        this._emit(a, b, c, color, uv);
+    }
+    /**
+     * Emits one triangle; the caller has validated `color`. Without a clip, uv or gradient (the common case of every
+     * fill and stroke) the three vertices are written directly, without temporary arrays.
+     */
+    _emit(a, b, c, color, uv = null) {
         if (!this._planesAllow()) {
             this._submit();
+        }
+        if (!uv && !this.clips.length && !this.activeGradient) {
+            this._reserve(3);
+            const U = this.flatUV[0],
+                V = this.flatUV[1];
+            this._writeVertex(a.x, a.y, a.u ?? U, a.v ?? V, color);
+            this._writeVertex(b.x, b.y, b.u ?? U, b.v ?? V, color);
+            this._writeVertex(c.x, c.y, c.u ?? U, c.v ?? V, color);
+            return;
         }
         if (this.activeGradient && !uv) {
             uv = [this._gradientUV(a), this._gradientUV(b), this._gradientUV(c)];
@@ -998,6 +1017,19 @@ export class VectorRenderer {
                 this.vertices.set(this.paintTemplate, K + 8);
             }
         }
+    }
+    _writeVertex(x, y, u, v, color) {
+        const K = this.count++ * VERTEX_FLOATS,
+            DATA = this.vertices;
+        DATA[K] = x;
+        DATA[K + 1] = y;
+        DATA[K + 2] = u;
+        DATA[K + 3] = v;
+        DATA[K + 4] = color[0];
+        DATA[K + 5] = color[1];
+        DATA[K + 6] = color[2];
+        DATA[K + 7] = color[3];
+        DATA.set(this.paintTemplate, K + 8);
     }
     _submit() {
         if (!this.count) {
@@ -1306,7 +1338,7 @@ export class VectorRenderer {
         const COL = rgba(colorValue),
             VERTICES = tessellate(this.path, rule);
         for (let i = 0; i + 2 < VERTICES.length; i += 3) {
-            this._emitTriangle(VERTICES[i], VERTICES[i + 1], VERTICES[i + 2], COL);
+            this._emit(VERTICES[i], VERTICES[i + 1], VERTICES[i + 2], COL);
         }
     }
     fillRadialGradient(gradient) {
@@ -1390,9 +1422,11 @@ export class VectorRenderer {
             throw new TypeError('invalid stroke style');
         }
         const HALF = width / 2,
+            ARC_STEP =
+                HALF > ARC_TOLERANCE ? Math.min(Math.PI / 2, 2 * Math.acos(1 - ARC_TOLERANCE / HALF)) : Math.PI / 2,
             FAN = (center, points) => {
                 for (let i = 1; i < points.length; i++) {
-                    this._emitTriangle(center, points[i - 1], points[i], colorValue);
+                    this._emit(center, points[i - 1], points[i], colorValue);
                 }
             };
         for (const SOURCE of this.path) {
@@ -1462,8 +1496,8 @@ export class VectorRenderer {
                         x: AX - N.x,
                         y: AY - N.y,
                     };
-                this._emitTriangle(P, Q, R, colorValue);
-                this._emitTriangle(P, R, S, colorValue);
+                this._emit(P, Q, R, colorValue);
+                this._emit(P, R, S, colorValue);
             }
             const JOIN_START = CLOSED ? 0 : 1,
                 JOIN_END = CLOSED ? CONTOUR.length : CONTOUR.length - 1;
@@ -1490,18 +1524,15 @@ export class VectorRenderer {
                     };
                 if (lineJoin === 'round') {
                     const START = Math.atan2(A.y - V.y, A.x - V.x);
-                    const END = Math.atan2(B.y - V.y, B.x - V.x);
-                    let sweep = END - START;
-                    if (CROSS > 0) {
-                        while (sweep > 0) {
-                            sweep -= Math.PI * 2;
-                        }
-                    } else {
-                        while (sweep < 0) {
-                            sweep += Math.PI * 2;
-                        }
+                    // The join is the short arc between the two outer offset points.
+                    let sweep = Math.atan2(B.y - V.y, B.x - V.x) - START;
+                    while (sweep > Math.PI) {
+                        sweep -= Math.PI * 2;
                     }
-                    const STEPS = Math.max(1, Math.ceil(Math.abs(sweep) / (Math.PI / 8))),
+                    while (sweep < -Math.PI) {
+                        sweep += Math.PI * 2;
+                    }
+                    const STEPS = Math.max(1, Math.ceil(Math.abs(sweep) / ARC_STEP)),
                         ARC = [A];
                     for (let j = 1; j <= STEPS; j++) {
                         const T = START + (sweep * j) / STEPS;
@@ -1522,12 +1553,12 @@ export class VectorRenderer {
                             x: V.x + (MX / ML) * MITER,
                             y: V.y + (MY / ML) * MITER,
                         };
-                        this._emitTriangle(A, TIP, B, colorValue);
+                        this._emit(A, TIP, B, colorValue);
                     } else {
-                        this._emitTriangle(V, A, B, colorValue);
+                        this._emit(V, A, B, colorValue);
                     }
                 } else {
-                    this._emitTriangle(V, A, B, colorValue);
+                    this._emit(V, A, B, colorValue);
                 }
             }
             if (!CLOSED && lineCap === 'round') {
@@ -1538,8 +1569,9 @@ export class VectorRenderer {
                     const V = CONTOUR[INDEX === 0 ? 0 : CONTOUR.length - 1],
                         START = ANGLE - Math.PI / 2,
                         ARC = [];
-                    for (let j = 0; j <= 8; j++) {
-                        const T = START + (Math.PI * j) / 8;
+                    const CAP_STEPS = Math.max(2, Math.ceil(Math.PI / ARC_STEP));
+                    for (let j = 0; j <= CAP_STEPS; j++) {
+                        const T = START + (Math.PI * j) / CAP_STEPS;
                         ARC.push({
                             x: V.x + Math.cos(T) * HALF,
                             y: V.y + Math.sin(T) * HALF,

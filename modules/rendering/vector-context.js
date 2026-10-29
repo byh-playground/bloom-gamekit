@@ -209,6 +209,11 @@ function invert(matrix) {
         (matrix[1] * matrix[4] - matrix[0] * matrix[5]) / D,
     ];
 }
+// Two gradients with the same kind and stops share one ramp texture, so a gradient built again every frame is not
+// rasterized and uploaded again.
+const RAMP_KEY = (gradient) =>
+    (gradient instanceof LinearGradient ? 'L' : 'R') +
+    gradient.stops.map((stop) => `${stop.offset}:${stop.color.join(',')}`).join(';');
 class RadialGradient {
     constructor(matrix, x0, y0, r0, x1, y1, r1) {
         for (const [N, V] of Object.entries({
@@ -410,6 +415,7 @@ export class VectorContext {
         this.staticMeshes = new Set();
         this.deferredMeshes = [];
         this.gradientTextures = new Map();
+        this.rampCache = new Map();
         this.lostGradientRegions = [];
         this._silhouetteMatrices = new Float32Array(60);
         this._scaledSilhouetteMatrices = new Float32Array(12);
@@ -419,10 +425,10 @@ export class VectorContext {
             this.active = false;
             this.state = 'lost';
             this.meshRenderer?.discard();
-            for (const [GRADIENT, CACHED] of this.gradientTextures) {
-                this.lostGradientRegions.push(CACHED.region);
-                GRADIENT.pixels = null;
+            for (const RAMP of this.rampCache.values()) {
+                this.lostGradientRegions.push(RAMP.region);
             }
+            this.rampCache.clear();
             this.gradientTextures.clear();
         };
         this.onRestored = () => {
@@ -609,47 +615,14 @@ export class VectorContext {
     }
     _gradientPaint(gradient) {
         let cached = this.gradientTextures.get(gradient);
-        if (!cached) {
-            if (this.gradientTextures.size >= MAX_GRADIENT_TEXTURES) {
-                const EXPIRED = [...this.gradientTextures].find(([, entry]) => entry.lastFrame < this.frame);
-                if (!EXPIRED) {
-                    throw new RangeError(
-                        `VectorContext supports at most ${MAX_GRADIENT_TEXTURES} distinct gradients in one frame`,
-                    );
-                }
-                EXPIRED[1].region.atlas.release(EXPIRED[1].region);
-                this.gradientTextures.delete(EXPIRED[0]);
-            }
-            const LINEAR = gradient instanceof LinearGradient,
-                WIDTH = LINEAR ? LINEAR_GRADIENT_SIZE : 256,
-                HEIGHT = 1,
-                DATA = gradient.raster();
-            const REGION = this.device.textureAtlas.allocate(WIDTH, HEIGHT);
-            this.device.textureAtlas.upload(
-                REGION,
-                { width: WIDTH, height: HEIGHT, data: DATA },
-                { premultiplied: true, extendEdges: true },
-            );
+        if (!cached || cached.revision !== gradient.revision) {
             cached = {
-                region: REGION,
+                ramp: this._ramp(gradient),
                 revision: gradient.revision,
-                lastFrame: this.frame,
-                linear: LINEAR,
             };
             this.gradientTextures.set(gradient, cached);
-        } else if (cached.revision !== gradient.revision) {
-            this.vector.flush();
-            const LINEAR = gradient instanceof LinearGradient,
-                WIDTH = LINEAR ? LINEAR_GRADIENT_SIZE : 256;
-            cached.region.atlas.upload(
-                cached.region,
-                { width: WIDTH, height: 1, data: gradient.raster() },
-                { premultiplied: true, extendEdges: true },
-            );
-            cached.revision = gradient.revision;
-            cached.linear = LINEAR;
         }
-        cached.lastFrame = this.frame;
+        cached.ramp.lastFrame = this.frame;
         const MATRIX_INVERSE = invert(gradient.matrix);
         if (!MATRIX_INVERSE) {
             throw new RangeError('Gradient transform is singular');
@@ -658,7 +631,7 @@ export class VectorContext {
         COLOR[3] *= this._globalAlpha;
         if (gradient instanceof LinearGradient) {
             return {
-                region: cached.region,
+                region: cached.ramp.region,
                 kind: 'linear',
                 gradient,
                 x0: gradient.x0,
@@ -675,7 +648,7 @@ export class VectorContext {
             DR = gradient.r1 - gradient.r0,
             SCALE = Math.max(1, Math.hypot(DX, DY), Math.abs(gradient.r0), Math.abs(gradient.r1));
         return {
-            region: cached.region,
+            region: cached.ramp.region,
             kind: 'radial',
             gradient,
             x0: gradient.x0,
@@ -688,8 +661,38 @@ export class VectorContext {
             whiteFlash: this._filter === 'brightness(0) invert(1)',
         };
     }
+    /** Returns the retained ramp texture for the gradient's stops, rasterizing and uploading it on first use. */
+    _ramp(gradient) {
+        const KEY = RAMP_KEY(gradient);
+        let ramp = this.rampCache.get(KEY);
+        if (ramp) {
+            return ramp;
+        }
+        if (this.rampCache.size >= MAX_GRADIENT_TEXTURES) {
+            // Ramps used earlier in this frame may still be referenced by batched draws; only older ones are evictable.
+            const EXPIRED = [...this.rampCache].find(([, entry]) => entry.lastFrame < this.frame);
+            if (!EXPIRED) {
+                throw new RangeError(
+                    `VectorContext supports at most ${MAX_GRADIENT_TEXTURES} distinct gradients in one frame`,
+                );
+            }
+            EXPIRED[1].region.atlas.release(EXPIRED[1].region);
+            this.rampCache.delete(EXPIRED[0]);
+        }
+        const WIDTH = gradient instanceof LinearGradient ? LINEAR_GRADIENT_SIZE : 256,
+            REGION = this.device.textureAtlas.allocate(WIDTH, 1);
+        this.device.textureAtlas.upload(
+            REGION,
+            { width: WIDTH, height: 1, data: gradient.raster() },
+            { premultiplied: true, extendEdges: true },
+        );
+        gradient.pixels = null;
+        ramp = { region: REGION, lastFrame: this.frame };
+        this.rampCache.set(KEY, ramp);
+        return ramp;
+    }
     _releaseGradientTextures() {
-        for (const [GRADIENT, CACHED] of this.gradientTextures) {
+        for (const CACHED of this.rampCache.values()) {
             try {
                 CACHED.region.atlas.release(CACHED.region);
             } catch (error) {
@@ -700,10 +703,9 @@ export class VectorContext {
                 } catch {
                     // An error observer must not prevent the gradient resources from being released.
                 }
-            } finally {
-                GRADIENT.pixels = null;
             }
         }
+        this.rampCache.clear();
         this.gradientTextures.clear();
     }
     beginFrame({ width = this.canvas.width, height = this.canvas.height, clearColor = [0, 0, 0, 0] } = {}) {
@@ -747,7 +749,7 @@ export class VectorContext {
             this.flush('frameEnd');
             const STATS = this.device.endFrame();
             this.active = false;
-            this._releaseGradientTextures();
+            this.gradientTextures.clear();
             for (const MESH of this.deferredMeshes.splice(0)) {
                 this.deleteStaticMesh(MESH);
             }
@@ -1808,6 +1810,7 @@ export class VectorContext {
             gpuRenderTargetBytes: this.device.stats.gpuRenderTargetBytes ?? 0,
             textureCount: this.device.stats.textureCount ?? 0,
             activeGradientTextureCount: this.gradientTextures.size,
+            retainedGradientRampCount: this.rampCache.size,
             renderTargetCount: this.device.stats.renderTargetCount ?? 0,
             bufferAllocations: this.device.stats.bufferAllocations ?? 0,
             totals: {
