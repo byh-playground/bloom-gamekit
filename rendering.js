@@ -8821,18 +8821,28 @@ function appendSurfaceVertices(vertices, materials, surface, surfaceIndex, style
     );
   }
 }
-function buildYarnSurfaceMesh({ fillVertices, outline, edgeColors, style, partIndex = 0 }) {
-  validateStyle(style);
-  const SURFACE = surfaceGeometry(fillVertices, outline, edgeColors, style), VERTICES = [], MATERIALS = [];
-  appendSurfaceVertices(VERTICES, MATERIALS, SURFACE, 0, style, partIndex);
+function buildYarnSurfaceMesh(surfaces) {
+  const LIST = Array.isArray(surfaces) ? surfaces : [surfaces];
+  if (!LIST.length || LIST.length > MAX_MATERIAL_SURFACES) {
+    throw new RangeError("A mesh holds 1.." + MAX_MATERIAL_SURFACES + " surfaces");
+  }
+  const VERTICES = [], MATERIALS = [], TABLE = [];
+  let partCount = 1;
+  LIST.forEach(({ fillVertices, outline, edgeColors, style, partIndex = 0 }, index) => {
+    validateStyle(style);
+    const SURFACE = surfaceGeometry(fillVertices, outline, edgeColors, style);
+    TABLE.push(...materialRecord(style, SURFACE.bounds, SURFACE.contourLength));
+    appendSurfaceVertices(VERTICES, MATERIALS, SURFACE, index, style, partIndex);
+    partCount = Math.max(partCount, partIndex + 1);
+  });
   return {
     vertices: Float32Array.from(VERTICES),
     strideFloats: 11,
-    partCount: partIndex + 1,
+    partCount,
     morphCount: 0,
     materials: {
       vertices: Float32Array.from(MATERIALS),
-      table: materialRecord(style, SURFACE.bounds, SURFACE.contourLength)
+      table: Float32Array.from(TABLE)
     }
   };
 }
