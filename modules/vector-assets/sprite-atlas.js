@@ -194,7 +194,7 @@ function bakeSpriteAtlas(
     if (!record) {
         const DEFINITION = compiledAsset.metadata.clips[clip];
         let reason = null;
-        if (GEOMETRY.shaderSurfaces?.length || GEOMETRY.drawOrder?.length) {
+        if (GEOMETRY.materials) {
             reason = 'shaderSurfaces';
         } else if (GEOMETRY.morphCount && compiledAsset.metadata.styles?.some((style) => style.kind === 'sketch')) {
             reason = 'timeDependentMorph';

@@ -245,7 +245,7 @@ BOUNDED_LOADER.dispose();
 STROKE_LOADER.dispose();
 QUALITY_LOADER.dispose();
 assert.equal(ASSET.schemaVersion, 1);
-assert.equal(ASSET.compilerVersion, '0.11.0');
+assert.equal(ASSET.compilerVersion, '0.12.0');
 const { compilerOptions: IGNORED_COMPILER_OPTIONS, ...ASSET_WITHOUT_COMPILER_OPTIONS } = ASSET;
 assert.doesNotThrow(
     () =>
@@ -989,51 +989,58 @@ assert.deepEqual(
 const SHADER_SURFACE_SVG = await readFile('modules/vector-assets/tests/world-shader.svg', 'utf8');
 const SHADER_SURFACE_ASSET = compileVectorAsset(Buffer.from(SHADER_SURFACE_SVG), 'shader-surface-fixture.svg');
 validateCompiledAsset(SHADER_SURFACE_ASSET);
-assert.equal(SHADER_SURFACE_ASSET.compilerVersion, '0.11.0');
+assert.equal(SHADER_SURFACE_ASSET.compilerVersion, '0.12.0');
 assert.equal(
     SHADER_SURFACE_ASSET.geometry.morphCount,
     0,
     'shader-backed sketch/yarn do not generate dynamic mesh morph data',
 );
+assert.equal(SHADER_SURFACE_ASSET.geometry.shaderSurfaces, undefined, 'surfaces are mesh triangles, not a second list');
+assert.equal(SHADER_SURFACE_ASSET.geometry.drawOrder, undefined, 'painter order is the index order');
+const MATERIALS = SHADER_SURFACE_ASSET.geometry.materials;
+assert.equal(MATERIALS.table.length, 20, 'one surface is one five-vec4 record');
 assert.equal(
-    SHADER_SURFACE_ASSET.geometry.shaderSurfaces.length,
-    1,
-    'the compiler retains one shader surface descriptor',
+    MATERIALS.vertices.length,
+    (SHADER_SURFACE_ASSET.geometry.vertices.length / 11) * 4,
+    'every vertex has a material record',
 );
-assert.ok(SHADER_SURFACE_ASSET.geometry.shaderSurfaces[0].fillVertices instanceof Float32Array);
+// Ordinary rectangles paint before and after the surface; the surface is a fill run followed by its edge strip.
+const KIND_OF_TRIANGLE = (triangle) => MATERIALS.vertices[SHADER_SURFACE_ASSET.geometry.indices[triangle * 3] * 4];
+const TRIANGLE_KINDS = Array.from({ length: SHADER_SURFACE_ASSET.geometry.indices.length / 3 }, (_, index) =>
+    KIND_OF_TRIANGLE(index),
+);
+assert.deepEqual(TRIANGLE_KINDS.slice(0, 2), [0, 0], 'ordinary geometry paints before the surface');
+assert.deepEqual(TRIANGLE_KINDS.slice(-2), [0, 0], 'ordinary geometry paints after the surface');
+const SURFACE_KINDS = TRIANGLE_KINDS.slice(2, -2);
+const FIRST_EDGE = SURFACE_KINDS.findIndex((kind) => kind === 2 || kind === 4);
+assert.ok(FIRST_EDGE > 0, 'the surface fill precedes its contour strip');
 assert.ok(
-    SHADER_SURFACE_ASSET.geometry.shaderSurfaces[0].outline.length >= 6,
-    'shader material retains the sampled authored contour',
+    SURFACE_KINDS.slice(0, FIRST_EDGE).every((kind) => kind === 1 || kind === 3) &&
+        SURFACE_KINDS.slice(FIRST_EDGE).every((kind) => kind === 2 || kind === 4),
+    'fill triangles then edge triangles, nothing else between the ordinary rectangles',
 );
-assert.deepEqual(
-    SHADER_SURFACE_ASSET.geometry.drawOrder.map((command) => command.kind),
-    ['mesh', 'surface', 'mesh'],
-    'ordinary SVG paint ranges keep their exact order around shader-backed surfaces',
+assert.throws(
+    () =>
+        validateCompiledAsset({
+            ...SHADER_SURFACE_ASSET,
+            geometry: { ...SHADER_SURFACE_ASSET.geometry, shaderSurfaces: [] },
+        }),
+    /compile the SVG again/i,
+    'assets compiled with the old surface list are rejected instead of drawn wrongly',
 );
-assert.deepEqual(
-    SHADER_SURFACE_ASSET.geometry.drawOrder
-        .filter((command) => command.kind === 'mesh')
-        .map((command) => command.indexCount),
-    [6, 6],
-);
-const MISMATCHED_SURFACE_STYLE = {
-    ...SHADER_SURFACE_ASSET.geometry.shaderSurfaces[0],
-    style: {
-        ...SHADER_SURFACE_ASSET.geometry.shaderSurfaces[0].style,
-        edgeWidth: 9,
-    },
-};
+const BAD_MATERIAL_VERTICES = MATERIALS.vertices.slice();
+BAD_MATERIAL_VERTICES[(SHADER_SURFACE_ASSET.geometry.vertices.length / 11 - 1) * 4] = 9;
 assert.throws(
     () =>
         validateCompiledAsset({
             ...SHADER_SURFACE_ASSET,
             geometry: {
                 ...SHADER_SURFACE_ASSET.geometry,
-                shaderSurfaces: [MISMATCHED_SURFACE_STYLE],
+                materials: { ...MATERIALS, vertices: BAD_MATERIAL_VERTICES },
             },
         }),
-    /exactly match/i,
-    'retained surface style cannot diverge from its authored metadata',
+    /material/i,
+    'an unknown material kind is rejected',
 );
 const SHADER_ONLY_SVG = SHADER_SURFACE_SVG.replace(/\s*<rect id="under"[^>]*\/>/, '').replace(
     /\s*<rect id="over"[^>]*\/>/,
@@ -1041,18 +1048,14 @@ const SHADER_ONLY_SVG = SHADER_SURFACE_SVG.replace(/\s*<rect id="under"[^>]*\/>/
 );
 const SHADER_ONLY_ASSET = compileVectorAsset(Buffer.from(SHADER_ONLY_SVG), 'shader-only-fixture.svg');
 validateCompiledAsset(SHADER_ONLY_ASSET);
-assert.equal(
-    SHADER_ONLY_ASSET.geometry.vertices.length,
-    0,
-    'surface-only assets do not need a transparent sentinel mesh',
+assert.ok(
+    SHADER_ONLY_ASSET.geometry.vertices.length >= 33 &&
+        Array.from(
+            SHADER_ONLY_ASSET.geometry.indices,
+            (index) => SHADER_ONLY_ASSET.geometry.materials.vertices[index * 4],
+        ).every((kind) => kind >= 1),
+    'a surface-only asset is a mesh made only of material triangles',
 );
-assert.equal(SHADER_ONLY_ASSET.geometry.indices.length, 0);
-assert.deepEqual(SHADER_ONLY_ASSET.geometry.drawOrder, [
-    {
-        kind: 'surface',
-        surfaceIndex: 0,
-    },
-]);
 assert.throws(
     () =>
         compileVectorAsset(

@@ -20,6 +20,12 @@ const BUNDLED_PACKAGES = {
 };
 // The SVG compiler/runtime and mesh renderer share only the named RGB contract, not renderer initialization.
 const SHARED_PAINT_SOURCE = new Set(['vector-assets', 'vector-assets-loader']);
+// The compiler also writes the yarn/sketch surface geometry and the material record the mesh renderer reads. Both files
+// are plain data code: no shader source and no renderer initialization.
+const SHARED_SURFACE_SOURCE = new Set([
+    'modules/rendering/yarn-geometry.js',
+    'modules/rendering/yarn-material-record.js',
+]);
 export async function buildDistribution(root) {
     const BUNDLES = new Map();
     for (const NAME of MODULES) {
@@ -81,10 +87,18 @@ export async function buildDistribution(root) {
             });
             const GENERATED_ASSET = NAME === 'vector-assets' && INPUT.startsWith('vector-asset:');
             const PAINT_CONTRACT = SHARED_PAINT_SOURCE.has(NAME) && INPUT === 'modules/rendering/paint-regions.js';
+            const SURFACE_CONTRACT = SHARED_PAINT_SOURCE.has(NAME) && SHARED_SURFACE_SOURCE.has(INPUT);
             // Reuse the retained textured quad for offline atlas reduction;
             // never bundle Device/renderer initialization into vector-assets.
             const SPRITE_PREPARATION = NAME === 'vector-assets' && INPUT === 'modules/rendering/sprite-animation.js';
-            if (!OWNED && !PACKAGE_OWNED && !GENERATED_ASSET && !PAINT_CONTRACT && !SPRITE_PREPARATION) {
+            if (
+                !OWNED &&
+                !PACKAGE_OWNED &&
+                !GENERATED_ASSET &&
+                !PAINT_CONTRACT &&
+                !SURFACE_CONTRACT &&
+                !SPRITE_PREPARATION
+            ) {
                 throw new Error(`${NAME} 소스 밖의 런타임 의존성은 허용하지 않습니다: ${INPUT}`);
             }
         }

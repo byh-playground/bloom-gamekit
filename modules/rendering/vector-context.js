@@ -1,6 +1,5 @@
 import { VectorRenderer } from './vector-renderer.js';
 import { MeshRenderer } from './mesh-renderer.js';
-import { YarnSurfaceRenderer } from './yarn-shader.js';
 const TAU = Math.PI * 2;
 const MAX_LINEAR_GRADIENT_STOPS = 32;
 const LINEAR_GRADIENT_SIZE = 1024;
@@ -375,14 +374,13 @@ export class VectorContext {
             onError = null,
             safeAlphaRunBatching = true,
             mesh = {},
-            surfaces = {},
         } = {},
     ) {
         if (!device?.beginFrame || !device?.endFrame || !device?.createVertexBuffer) {
             throw new TypeError('WebGLDevice is required');
         }
-        if (mesh === null || typeof mesh !== 'object' || surfaces === null || typeof surfaces !== 'object') {
-            throw new TypeError('mesh and surfaces must be option objects');
+        if (mesh === null || typeof mesh !== 'object') {
+            throw new TypeError('mesh must be an option object');
         }
         this.device = device;
         this.canvas = device.canvas;
@@ -392,10 +390,8 @@ export class VectorContext {
             glyphAtlas,
         });
         this.glyphAtlas = glyphAtlas ?? this.vector.glyphAtlas;
-        // Limits for the retained-mesh and yarn/sketch surface renderers, created with the first asset that needs them.
+        // Limits for the retained-mesh renderer, which is created with the first mesh or actor that needs it.
         this.meshOptions = mesh;
-        this.surfaceOptions = surfaces;
-        this.surfaceRenderer = null;
         // Add-on modules (vector actors) register cleanup here; it runs before the renderers are disposed.
         this.disposers = [];
         this.onError = typeof onError === 'function' ? onError : null;
@@ -1510,14 +1506,6 @@ export class VectorContext {
         });
         return this.meshRenderer;
     }
-    /** The yarn/sketch surface renderer this context shares with the vector actors built on it. */
-    acquireSurfaceRenderer() {
-        if (this.state !== 'ready' || this.device.state !== 'ready') {
-            throw new Error('VectorContext is not ready');
-        }
-        this.surfaceRenderer ??= new YarnSurfaceRenderer(this.device, this.surfaceOptions);
-        return this.surfaceRenderer;
-    }
     /** Registers cleanup that `dispose()` runs, newest first, before it disposes the renderers it owns. */
     onDispose(callback) {
         if (typeof callback !== 'function') {
@@ -1837,7 +1825,6 @@ export class VectorContext {
         for (const CALLBACK of this.disposers.splice(0).reverse()) {
             CALLBACK();
         }
-        this.surfaceRenderer?.dispose();
         this.meshRenderer?.dispose();
         for (const MESH of this.staticMeshes) {
             this.device.deleteVertexBuffer(MESH.buffer);

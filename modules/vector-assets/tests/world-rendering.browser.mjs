@@ -39,12 +39,12 @@ export async function exerciseWorldVectorRendering(browser, renderingURL, vector
                                 Uint16Array.from(value),
                             ]),
                         ),
-                        shaderSurfaces: compiled.geometry.shaderSurfaces?.map((surface) => ({
-                            ...surface,
-                            fillVertices: Float32Array.from(surface.fillVertices),
-                            outline: Float32Array.from(surface.outline),
-                            edgeColors: Float32Array.from(surface.edgeColors),
-                        })),
+                        materials: compiled.geometry.materials
+                            ? {
+                                  vertices: Float32Array.from(compiled.geometry.materials.vertices),
+                                  table: Float32Array.from(compiled.geometry.materials.table),
+                              }
+                            : undefined,
                     },
                 };
                 const CANVAS = document.querySelector('canvas');
@@ -61,13 +61,12 @@ export async function exerciseWorldVectorRendering(browser, renderingURL, vector
                         startedAtMs: 0,
                     }),
                     MESHES = CONTEXT.meshRenderer,
-                    SURFACES = CONTEXT.surfaceRenderer,
                     [DATA_MESH] = MESHES.meshes;
                 const FALLBACK_GEOMETRY = {
                     ...DATA.geometry,
                 };
-                delete FALLBACK_GEOMETRY.drawOrder;
-                delete FALLBACK_GEOMETRY.shaderSurfaces;
+                // The same triangles without the material stream draw as plain flat colors.
+                delete FALLBACK_GEOMETRY.materials;
                 const FALLBACK_DATA = {
                     ...DATA,
                     geometry: FALLBACK_GEOMETRY,
@@ -173,7 +172,6 @@ export async function exerciseWorldVectorRendering(browser, renderingURL, vector
                     EMPTY_EXCLUSIONS = new Set(),
                     EXCLUDED_BODY_PARTS = new Set(['body']),
                     ORIGINAL_EXCLUSION_DRAW_MESH = MESHES.drawMesh,
-                    ORIGINAL_EXCLUSION_DRAW_SURFACE = SURFACES.drawSurface,
                     POSES_BEFORE_EXCLUSION = JSON.stringify(PLAYER.partPoses()),
                     EXPRESSION_BEFORE_EXCLUSION = PLAYER.currentExpression;
                 MESHES.drawMesh = function (mesh, options) {
@@ -182,13 +180,6 @@ export async function exerciseWorldVectorRendering(browser, renderingURL, vector
                         options,
                     });
                     return ORIGINAL_EXCLUSION_DRAW_MESH.call(this, mesh, options);
-                };
-                SURFACES.drawSurface = function (surface, options) {
-                    ORDERED_DRAW_EVENTS.push({
-                        kind: 'surface',
-                        options,
-                    });
-                    return ORIGINAL_EXCLUSION_DRAW_SURFACE.call(this, surface, options);
                 };
                 DEVICE.beginFrame({
                     width: CANVAS.width,
@@ -210,26 +201,14 @@ export async function exerciseWorldVectorRendering(browser, renderingURL, vector
                     INCLUDED_MESH_DRAWS = MESHES.stats().draws,
                     INCLUDED_DRAW_ERROR = DEVICE.gl.getError();
                 DEVICE.endFrame();
-                const EXPECTED_DRAW_KINDS = DATA.geometry.drawOrder.map((command) =>
-                        command.kind === 'mesh' ? 'mesh' : 'surface',
-                    ),
-                    EXPECTED_MESH_RANGES = DATA.geometry.drawOrder
-                        .filter((command) => command.kind === 'mesh')
-                        .map((command) => [command.firstIndex, command.indexCount]),
-                    INCLUDED_MESH_OPTIONS = INCLUDED_DRAW_EVENTS.filter((event) => event.kind === 'mesh').map(
-                        (event) => event.options,
-                    ),
-                    INCLUDED_SURFACE_OPTIONS = INCLUDED_DRAW_EVENTS.filter((event) => event.kind === 'surface').map(
-                        (event) => event.options,
-                    );
+                // A mesh with materials is one draw for the whole actor, yarn surface included.
+                const INCLUDED_MESH_OPTIONS = INCLUDED_DRAW_EVENTS.map((event) => event.options);
                 const ORDERED_DRAW_COMPATIBLE =
-                    JSON.stringify(INCLUDED_DRAW_EVENTS.map((event) => event.kind)) ===
-                        JSON.stringify(EXPECTED_DRAW_KINDS) &&
-                    JSON.stringify(INCLUDED_MESH_OPTIONS.map((options) => options.indexRange)) ===
-                        JSON.stringify(EXPECTED_MESH_RANGES) &&
-                    INCLUDED_MESH_DRAWS === EXPECTED_MESH_RANGES.length &&
-                    INCLUDED_MESH_OPTIONS.every((options) => options.alpha === 0.625 && options.clips === CLIPS) &&
-                    INCLUDED_SURFACE_OPTIONS.every((options) => options.alpha === 0.625 && options.clips === CLIPS) &&
+                    INCLUDED_DRAW_EVENTS.length === 1 &&
+                    INCLUDED_MESH_DRAWS === 1 &&
+                    INCLUDED_MESH_OPTIONS.every(
+                        (options) => options.alpha === 0.625 && options.clips === CLIPS && options.timeMs === 50,
+                    ) &&
                     INCLUDED_DRAW_ERROR === 0;
                 ORDERED_DRAW_EVENTS.length = 0;
                 DEVICE.beginFrame({
@@ -245,7 +224,17 @@ export async function exerciseWorldVectorRendering(browser, renderingURL, vector
                     excludeParts: EXCLUDED_BODY_PARTS,
                 });
                 MESHES.flush();
-                const EXCLUDED_BODY_DRAW_SUPPRESSED = ORDERED_DRAW_EVENTS.length === 0;
+                const EXCLUDED_PIXELS = new Uint8Array(CANVAS.width * CANVAS.height * 4);
+                DEVICE.gl.readPixels(
+                    0,
+                    0,
+                    CANVAS.width,
+                    CANVAS.height,
+                    DEVICE.gl.RGBA,
+                    DEVICE.gl.UNSIGNED_BYTE,
+                    EXCLUDED_PIXELS,
+                );
+                const EXCLUDED_BODY_DRAW_SUPPRESSED = EXCLUDED_PIXELS.every((value, at) => at % 4 !== 3 || value === 0);
                 DEVICE.endFrame();
                 ORDERED_DRAW_EVENTS.length = 0;
                 DEVICE.beginFrame({
@@ -283,7 +272,7 @@ export async function exerciseWorldVectorRendering(browser, renderingURL, vector
                     ORDERED_DRAW_EVENTS.length === 0;
                 DEVICE.endFrame();
                 ORDERED_DRAW_EVENTS.length = 0;
-                const CLIP_TRIANGLE_COUNT = Math.ceil((SURFACES.stats().maxClipPlanes + 1) / 3);
+                const CLIP_TRIANGLE_COUNT = Math.ceil((MESHES.maxPlanes + 1) / 3);
                 const OVERFLOW_CLIPS = Array.from(
                     {
                         length: CLIP_TRIANGLE_COUNT,
@@ -326,15 +315,57 @@ export async function exerciseWorldVectorRendering(browser, renderingURL, vector
                 }
                 MESHES.flush();
                 const CLIP_LIMIT_PREFLIGHT =
-                    /shader surface limit/.test(clipLimitError) &&
-                    MESHES.stats().draws === CLIP_LIMIT_BEFORE &&
-                    ORDERED_DRAW_EVENTS.length === 0;
+                    /Clipping exceeds/.test(clipLimitError) && MESHES.stats().draws === CLIP_LIMIT_BEFORE;
                 DEVICE.endFrame();
-                SURFACES.drawSurface = ORIGINAL_EXCLUSION_DRAW_SURFACE;
                 MESHES.drawMesh = ORIGINAL_EXCLUSION_DRAW_MESH;
                 const EXCLUSION_STATE_PRESERVED =
                     JSON.stringify(PLAYER.partPoses()) === POSES_BEFORE_EXCLUSION &&
                     PLAYER.currentExpression === EXPRESSION_BEFORE_EXCLUSION;
+                DEVICE.beginFrame({
+                    width: CANVAS.width,
+                    height: CANVAS.height,
+                    clearColor: [0, 0, 0, 0],
+                });
+                MESHES.beginFrame();
+                MESHES.flush();
+                DEVICE.endFrame();
+                // Depth writes split the actor into fill and edge runs (an edge never writes depth) without changing
+                // the painter order, so the pixels match the single-draw result.
+                const DRAW_ACTOR = (options) => {
+                    DEVICE.beginFrame({
+                        width: CANVAS.width,
+                        height: CANVAS.height,
+                        clearColor: [0, 0, 0, 0],
+                    });
+                    MESHES.beginFrame();
+                    PLAYER.draw({
+                        viewProjection: VP,
+                        worldMatrix: MODEL(59, 47),
+                        ...options,
+                    });
+                    MESHES.flush();
+                    const DRAWS = MESHES.stats().draws,
+                        READ = new Uint8Array(CANVAS.width * CANVAS.height * 4);
+                    DEVICE.gl.readPixels(
+                        0,
+                        0,
+                        CANVAS.width,
+                        CANVAS.height,
+                        DEVICE.gl.RGBA,
+                        DEVICE.gl.UNSIGNED_BYTE,
+                        READ,
+                    );
+                    DEVICE.endFrame();
+                    return { draws: DRAWS, pixels: READ };
+                };
+                const PLAIN_ACTOR = DRAW_ACTOR({ depthTest: false, depthWrite: false }),
+                    SPLIT_ACTOR = DRAW_ACTOR({ depthTest: true, depthWrite: true });
+                let splitDifferences = 0;
+                for (let at = 0; at < PLAIN_ACTOR.pixels.length; at++) {
+                    if (Math.abs(PLAIN_ACTOR.pixels[at] - SPLIT_ACTOR.pixels[at]) > 2) {
+                        splitDifferences++;
+                    }
+                }
                 DEVICE.beginFrame({
                     width: CANVAS.width,
                     height: CANVAS.height,
@@ -465,8 +496,11 @@ export async function exerciseWorldVectorRendering(browser, renderingURL, vector
                     meshDraws: MESHES.stats().draws,
                     meshUploadsAtCreation: MESH_UPLOADS_AT_CREATION,
                     meshUploadsAfterFrame: MESHES.stats().geometryUploads,
-                    surfaceCount: SURFACES.stats().surfaceCount,
-                    retainedSurfaceBytes: SURFACES.stats().retainedBytes,
+                    materialSurfaces: DATA_MESH.materials.count,
+                    materialTableBytes: DATA_MESH.materials.table.byteLength,
+                    plainActorDraws: PLAIN_ACTOR.draws,
+                    splitActorDraws: SPLIT_ACTOR.draws,
+                    splitDifferences,
                     glError: DEVICE.gl.getError(),
                 };
                 const LOSE = DEVICE.gl.getExtension('WEBGL_lose_context');
@@ -475,14 +509,10 @@ export async function exerciseWorldVectorRendering(browser, renderingURL, vector
                         new Promise((resolve, reject) => {
                             const END = performance.now() + 8000;
                             const POLL = () => {
-                                if (MESHES.stats().state === expected && SURFACES.stats().state === expected) {
+                                if (MESHES.stats().state === expected) {
                                     return resolve();
                                 }
-                                if (
-                                    MESHES.stats().state === 'failed' ||
-                                    SURFACES.stats().state === 'failed' ||
-                                    performance.now() > END
-                                ) {
+                                if (MESHES.stats().state === 'failed' || performance.now() > END) {
                                     return reject(new Error('WebGL retained SVG context ' + expected + ' failed'));
                                 }
                                 requestAnimationFrame(POLL);
@@ -506,13 +536,11 @@ export async function exerciseWorldVectorRendering(browser, renderingURL, vector
                     dispose() {
                         PLAYER.dispose();
                         FALLBACK_PLAYER.dispose();
-                        const MESH_COUNT = MESHES.stats().meshCount,
-                            RETAINED_SURFACES = SURFACES.stats().surfaceCount;
+                        const MESH_COUNT = MESHES.stats().meshCount;
                         CONTEXT.dispose();
                         DEVICE.dispose();
                         return {
                             meshCount: MESH_COUNT,
-                            retainedSurfaces: RETAINED_SURFACES,
                         };
                     },
                 };
@@ -550,7 +578,7 @@ export async function exerciseWorldVectorRendering(browser, renderingURL, vector
                 RESULT.excludedBodyDrawSuppressed &&
                 RESULT.invalidExclusionPreflight &&
                 RESULT.exclusionStatePreserved,
-            'call-scoped part exclusions preserve painter ranges, alpha/clips, shader surfaces, and player state',
+            'call-scoped part exclusions preserve the single draw, alpha/clips, shader surfaces, and actor state',
         );
         assert.ok(
             RESULT.over[1] > RESULT.over[0] && RESULT.over[3] > 240,
@@ -568,7 +596,10 @@ export async function exerciseWorldVectorRendering(browser, renderingURL, vector
             'shared clip capacity is rejected before any painter-order geometry is submitted',
         );
         assert.equal(RESULT.glError, 0, 'WebGL reports no error after the mixed 3D painter-order draw');
-        assert.equal(RESULT.surfaceCount, 1, 'the shader surface is retained once for both actors');
+        assert.equal(RESULT.materialSurfaces, 1, 'the shader surface is one entry of the shared material table');
+        assert.equal(RESULT.plainActorDraws, 1, 'an actor with a yarn surface is one mesh draw');
+        assert.ok(RESULT.splitActorDraws > 1, 'depth writes draw the fill and edge runs separately');
+        assert.equal(RESULT.splitDifferences, 0, 'the fill and edge runs keep the painter order of the single draw');
         assert.ok(RESULT.restoredPixel?.[3] > 0, 'the retained SVG mesh and surface redraw after context restoration');
         if (ERRORS.length) {
             throw new Error('3D vector browser page errors: ' + ERRORS.join('; '));
@@ -582,9 +613,8 @@ export async function exerciseWorldVectorRendering(browser, renderingURL, vector
             DISPOSED,
             {
                 meshCount: 0,
-                retainedSurfaces: 0,
             },
-            'asset disposal releases its mesh and shader surface',
+            'disposing the actors releases their mesh with its material table',
         );
         return {
             ...RESULT,

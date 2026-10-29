@@ -48,9 +48,6 @@ assert.throws(
 );
 const FAKE_CONTEXT = (renderer) => ({
     acquireMeshRenderer: () => renderer,
-    acquireSurfaceRenderer() {
-        throw new Error('this asset has no shader surfaces');
-    },
     onDispose() {},
 });
 assert.throws(

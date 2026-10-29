@@ -636,7 +636,6 @@
                 device: null,
                 context: null,
                 meshes: null,
-                surfaces: null,
                 mesh: null,
                 actor: null,
                 compiledAsset: null,
@@ -1005,14 +1004,12 @@
                     },
                 });
                 const MESHES = CONTEXT.acquireMeshRenderer();
-                const SURFACES = CONTEXT.acquireSurfaceRenderer();
                 const RENDERER_INITIALIZATION_MS = performance.now() - RENDERER_INITIALIZATION_START;
                 const POINT_KEY = (x, y) => Number(x.toFixed(4)) + ',' + Number(y.toFixed(4));
                 Object.assign(DEMO, {
                     device: DEVICE,
                     context: CONTEXT,
                     meshes: MESHES,
-                    surfaces: SURFACES,
                     rendererInitializationMs: RENDERER_INITIALIZATION_MS,
                 });
                 DEMO.rendererInitializationMs = RENDERER_INITIALIZATION_MS;

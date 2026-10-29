@@ -1,3 +1,17 @@
+## v0.26.0 (2026-10-30)
+
+**Breaking.** 털실·스케치 표면을 별도 렌더러가 아니라 `MeshRenderer` 메시의 재질로 옮깁니다. `YarnSurfaceRenderer`와 표면별 draw가 사라지고, 털실 에셋도 다른 에셋과 같은 경로(인스턴싱, GPU 포즈, 클립, 스텐실, 깊이)를 탑니다. 게임 코드는 v0.25.0의 `createVectorActor`에서 바뀌지 않습니다.
+
+- 컴파일러(0.12.0)가 `backend:"shader"` 표면을 메시 삼각형(채움, 그다음 윤곽 띠)으로 내보냅니다. 정점마다 재질 4 float(종류, 표면 번호, 윤곽 따라 거리, 윤곽 가로 거리)가 붙고 표면 상수는 메시의 작은 표(표면당 vec4 5개, 최대 16개)에 둡니다. `geometry.shaderSurfaces`와 `geometry.drawOrder`는 없어지고 `geometry.materials`가 생깁니다. 이전 컴파일러로 만든 에셋은 다시 컴파일하라는 오류로 거부합니다(게임이 시작할 때 SVG에서 컴파일하면 영향이 없습니다).
+- `createVectorActor`: 표면이 있어도 에셋이 CPU 포즈와 메시 조각 draw + flush 경로로 떨어지지 않습니다. 액터 하나는 인스턴스 draw 하나이고 같은 메시의 액터들은 한 draw로 묶입니다.
+- `MeshRenderer`: 재질이 있는 메시만 재질 정점 스트림, 재질 표, 인스턴스별 표시 시간(인스턴스 레코드 +4 float), 더 큰 프래그먼트 셰이더를 씁니다. 다른 메시의 셰이더와 인스턴스 크기는 그대로입니다. `drawMesh({ timeMs })`가 추가되고, `indexRange`를 `indexVariant`와 함께 쓸 수 있습니다. `depthWrite: true`이면 채움·테두리 삼각형을 원래 순서 그대로 구간으로 나눠 그려 테두리는 깊이를 쓰지 않습니다. 재질이 있는 메시는 `depthWriteAlphaThreshold`를 지원하지 않습니다.
+- `VectorContext`: `acquireSurfaceRenderer()`, `surfaces` 옵션, `context.surfaceRenderer`를 제거합니다. 이 버전 v0.25.0에서 막 들어갔던 이름들입니다.
+- rendering: `YarnSurfaceRenderer`를 삭제합니다. `buildYarnSurfaceGeometry`는 유지하고 `buildYarnSurfaceMesh({ fillVertices, outline, edgeColors, style })`를 추가해 컴파일된 SVG 밖의 표면을 메시로 만듭니다. 빌드는 vector-assets가 읽는 데이터 파일(`yarn-geometry.js`, `yarn-material-record.js`)을 허용 목록에 추가했습니다. 셰이더 소스는 vector-assets 번들에 들어가지 않습니다.
+- 화질: 옛 `YarnSurfaceRenderer`와 같은 표면을 같은 크기·시간으로 그려 비교한 결과 채널 차이는 최대 0~1단계(털실 1배·2.5배, 스케치 시간 0·400·123456.7ms)입니다.
+- 성능(같은 표면 N개를 한 프레임에 그림, `EXT_disjoint_timer_query`, 옛 방식 대비): draw 수 2N → 1. CPU 시간 -50~-99%. GPU 시간은 GTX 1660 Ti에서 16개 -17%, 256개 -46%, 256개 2배 확대 0%, 1024개 -82%이고, UHD 630에서 +1~+9%(256개 +6%, 256개 2배 +9%, 1024개 +1%)입니다. Intel처럼 GPU가 병목인 장면에서는 프레임 시간이 소폭 늘 수 있습니다. 재질 표를 프래그먼트당 한 번만 읽도록 한 뒤의 값입니다(그 전에는 Intel +8~+38%).
+- 시험: 이 PC의 Chromium(SwiftShader)에서 `npm run check`, `test:vector-assets`(컴파일러, 브라우저), `world-rendering`(깊이 쓰기 분할이 단일 draw와 같은 픽셀임을 포함), `paint-regions`, `yarn-shader`(해칭 비율 12.86%), `vector-gradient-clip`, `alpha-run-batching`, `texture-atlas`, `sprite-animation`를 통과했습니다. `run-gpu-poses`와 `run-raster-comparison`은 main에서도 같은 수치로 멈춥니다(v0.25.0 노트 참고). 모바일 실기기와 게임 화면은 검증하지 않았습니다.
+- 삭제: `benchmark:yarn-stream` 벤치 페이지와 스크립트(옛 렌더러를 측정하던 도구). 측정 기록 `project/docs/yarn-stream-*.json`은 그대로 둡니다.
+
 ## v0.25.0 (2026-10-30)
 
 **Breaking.** SVG 에셋을 쓰는 게임이 렌더러를 직접 만들고 이어 붙이던 구조를 없앱니다. `VectorContext` 하나가 `VectorRenderer`, `MeshRenderer`, `YarnSurfaceRenderer`를 모두 소유하고, 게임은 `WebGLDevice`와 `VectorContext`만 만듭니다. 에셋과 플레이어라는 두 단계도 액터 하나로 합칩니다.

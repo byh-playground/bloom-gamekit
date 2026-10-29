@@ -26,12 +26,9 @@ const COMPILED = {
         indexVariants: Object.fromEntries(
             Object.entries(GEOMETRY.indexVariants ?? {}).map(([key, value]) => [key, Array.from(value)]),
         ),
-        shaderSurfaces: GEOMETRY.shaderSurfaces?.map((surface) => ({
-            ...surface,
-            fillVertices: Array.from(surface.fillVertices),
-            outline: Array.from(surface.outline),
-            edgeColors: Array.from(surface.edgeColors),
-        })),
+        materials: GEOMETRY.materials
+            ? { vertices: Array.from(GEOMETRY.materials.vertices), table: Array.from(GEOMETRY.materials.table) }
+            : undefined,
     },
 };
 const RENDERING_BUNDLE = await readFile(resolve(ROOT, 'dist/rendering.js'));

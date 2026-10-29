@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { buildYarnSurfaceGeometry } from '../yarn-shader.js';
+import { buildYarnSurfaceGeometry } from '../yarn-geometry.js';
 const STYLE = {
     kind: 'yarn',
     seed: 41,

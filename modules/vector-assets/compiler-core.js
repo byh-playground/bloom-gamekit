@@ -5,6 +5,8 @@ import { VECTOR_ASSET_COMPILER_VERSION, VECTOR_ASSET_SCHEMA_VERSION, validateAss
 import { VECTOR_ASSET_QUALITY_PRESETS } from './quality-presets.js';
 import { svgPaintRegion, SVG_PAINT_REGION_ATTRIBUTE } from './paint-regions.js';
 import { MAX_PAINT_REGIONS } from '../rendering/paint-regions.js';
+import { appendSurfaceVertices, surfaceGeometry, validateStyle } from '../rendering/yarn-geometry.js';
+import { MAX_MATERIAL_SURFACES, materialRecord } from '../rendering/yarn-material-record.js';
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const MAX_SOURCE_BYTES = 512 * 1024;
 const MAX_ELEMENTS = 4096;
@@ -1594,7 +1596,12 @@ function compileSketchStyle(vertices, style, shape, fillColor, opacity, partInde
         );
     }
 }
-function compileShaderSurface(
+// A yarn or sketch surface becomes ordinary mesh triangles (fill, then the contour strip) in painter order. The
+// per-vertex material stream says which kind each belongs to; the surface constants go in the material table.
+function appendShaderSurface(
+    vertices,
+    materials,
+    table,
     style,
     shape,
     fillColor,
@@ -1611,6 +1618,9 @@ function compileShaderSurface(
             'Shader-backed SVG yarn/sketch surfaces currently require one closed contour without holes: ' +
                 style.target,
         );
+    }
+    if (table.length >= MAX_MATERIAL_SURFACES) {
+        throw new RangeError('An SVG supports at most ' + MAX_MATERIAL_SURFACES + ' shader-backed surfaces');
     }
     const GEOMETRY = new ShapeGeometry(shape, curveSegments),
         POSITION = GEOMETRY.attributes.position,
@@ -1647,36 +1657,11 @@ function compileShaderSurface(
         OUTLINE[point * 2 + 1] = CURRENT.y;
         EDGE_COLORS.set(COLOR_AT(CURRENT), point * 4);
     }
-    return {
-        target: style.target,
-        partIndex,
-        fillVertices: FILL,
-        outline: OUTLINE,
-        edgeColors: EDGE_COLORS,
-        style: {
-            ...style,
-        },
-    };
-}
-function appendOrderedMeshRange(drawOrder, firstIndex, indexCount, partIndex) {
-    if (!indexCount) {
-        return;
-    }
-    const PREVIOUS = drawOrder.at(-1);
-    if (
-        PREVIOUS?.kind === 'mesh' &&
-        PREVIOUS.partIndex === partIndex &&
-        PREVIOUS.firstIndex + PREVIOUS.indexCount === firstIndex
-    ) {
-        PREVIOUS.indexCount += indexCount;
-    } else {
-        drawOrder.push({
-            kind: 'mesh',
-            firstIndex,
-            indexCount,
-            partIndex,
-        });
-    }
+    validateStyle(style);
+    const SURFACE = surfaceGeometry(FILL, OUTLINE, EDGE_COLORS, style);
+    const SURFACE_INDEX = table.length;
+    table.push(materialRecord(style, SURFACE.bounds, SURFACE.contourLength));
+    appendSurfaceVertices(vertices, materials, SURFACE, SURFACE_INDEX, style, partIndex);
 }
 function ownerPart(node, partIndices) {
     for (let current = node; current; current = current.parentNode) {
@@ -1754,13 +1739,18 @@ function appendNonScalingLine(vertices, start, end, rgba, partIndex, width, line
 }
 function compilePaths(paths, partIndices, _parts, metadata, gradients, curveSegments, strokeArcDivisions) {
     const VERTICES = [],
-        SHADER_SURFACES = [],
-        DRAW_ORDER = [],
+        MATERIAL_VERTICES = [],
+        MATERIAL_TABLE = [],
         REGION_NAMES = [];
+    // Every vertex has a material record; ordinary vertices carry zeros.
+    const PAD_MATERIALS = () => {
+        while (MATERIAL_VERTICES.length < (VERTICES.length / 11) * 4) {
+            MATERIAL_VERTICES.push(0, 0, 0, 0);
+        }
+    };
     let expandedRegions = null;
     let hasNonScalingStroke = false;
     const STYLED = new Map((metadata.styles ?? []).map((style) => [style.target, style]));
-    const SHADER_ORDERED = metadata.styles?.some((style) => style.backend === 'shader') ?? false;
     const MORPH_COUNT = metadata.styles?.some((style) => style.kind === 'sketch' && style.backend !== 'shader') ? 2 : 0;
     for (const PATH of paths) {
         const SOURCE_NODE = PATH.userData?.node;
@@ -1806,24 +1796,21 @@ function compilePaths(paths, partIndices, _parts, metadata, gradients, curveSegm
                 );
             }
             if (FILL_OPACITY > 0) {
-                const SURFACE_INDEX =
-                    SHADER_SURFACES.push(
-                        compileShaderSurface(
-                            AUTHORED_STYLE,
-                            SHAPES[0],
-                            PATH.color,
-                            FILL_OPACITY,
-                            PART_INDEX,
-                            FILL_GRADIENT,
-                            GRADIENT_BOUNDS,
-                            PATH.userData.transform,
-                            curveSegments,
-                        ),
-                    ) - 1;
-                DRAW_ORDER.push({
-                    kind: 'surface',
-                    surfaceIndex: SURFACE_INDEX,
-                });
+                PAD_MATERIALS();
+                appendShaderSurface(
+                    VERTICES,
+                    MATERIAL_VERTICES,
+                    MATERIAL_TABLE,
+                    AUTHORED_STYLE,
+                    SHAPES[0],
+                    PATH.color,
+                    FILL_OPACITY,
+                    PART_INDEX,
+                    FILL_GRADIENT,
+                    GRADIENT_BOUNDS,
+                    PATH.userData.transform,
+                    curveSegments,
+                );
             }
         } else if (AUTHORED_STYLE?.kind === 'yarn') {
             if (SHAPES.length !== 1) {
@@ -1928,14 +1915,14 @@ function compilePaths(paths, partIndices, _parts, metadata, gradients, curveSegm
                 }
             }
         }
-        appendOrderedMeshRange(DRAW_ORDER, MESH_FIRST, VERTICES.length / 11 - MESH_FIRST, PART_INDEX);
+        PAD_MATERIALS();
         for (let vertex = MESH_FIRST; expandedRegions && vertex < VERTICES.length / 11; vertex++) {
             expandedRegions.push(vertex < FILL_END ? regionIndex : 0);
         }
     }
-    if ((!VERTICES.length && !SHADER_SURFACES.length) || VERTICES.length % 33) {
+    if (!VERTICES.length || VERTICES.length % 33) {
         throw new TypeError(
-            'SVG did not produce complete painted triangles or shader surfaces at this tessellation; increase the selected subdivision or use a non-degenerate shape',
+            'SVG did not produce complete painted triangles at this tessellation; increase the selected subdivision or use a non-degenerate shape',
         );
     }
     const EXPANDED = new Float32Array(VERTICES);
@@ -1945,11 +1932,18 @@ function compilePaths(paths, partIndices, _parts, metadata, gradients, curveSegm
         INDICES = [],
         VERTEX_IDS = new Map();
     const WORDS = new Uint32Array(EXPANDED.buffer, EXPANDED.byteOffset, EXPANDED.length);
+    const EXPANDED_MATERIALS = MATERIAL_TABLE.length ? new Float32Array(MATERIAL_VERTICES) : null,
+        MATERIAL_WORDS = EXPANDED_MATERIALS
+            ? new Uint32Array(EXPANDED_MATERIALS.buffer, EXPANDED_MATERIALS.byteOffset, EXPANDED_MATERIALS.length)
+            : null,
+        UNIQUE_MATERIALS = EXPANDED_MATERIALS ? [] : null;
     for (let offset = 0; offset < EXPANDED.length; offset += STRIDE_FLOATS) {
         const REGION_INDEX = expandedRegions?.[offset / STRIDE_FLOATS],
+            MATERIAL_AT = (offset / STRIDE_FLOATS) * 4,
             KEY =
                 WORDS.subarray(offset, offset + STRIDE_FLOATS).join(',') +
-                (REGION_NAMES.length ? ':' + REGION_INDEX : '');
+                (REGION_NAMES.length ? ':' + REGION_INDEX : '') +
+                (MATERIAL_WORDS ? ':' + MATERIAL_WORDS.subarray(MATERIAL_AT, MATERIAL_AT + 4).join(',') : '');
         let index = VERTEX_IDS.get(KEY);
         if (index === undefined) {
             index = UNIQUE_VERTICES.length / STRIDE_FLOATS;
@@ -1960,6 +1954,9 @@ function compilePaths(paths, partIndices, _parts, metadata, gradients, curveSegm
             }
             VERTEX_IDS.set(KEY, index);
             UNIQUE_REGIONS?.push(REGION_INDEX);
+            if (EXPANDED_MATERIALS) {
+                UNIQUE_MATERIALS.push(...EXPANDED_MATERIALS.subarray(MATERIAL_AT, MATERIAL_AT + 4));
+            }
             for (let field = 0; field < STRIDE_FLOATS; field++) {
                 UNIQUE_VERTICES.push(EXPANDED[offset + field]);
             }
@@ -1979,10 +1976,12 @@ function compilePaths(paths, partIndices, _parts, metadata, gradients, curveSegm
                   nonScalingStroke: true,
               }
             : {}),
-        ...(SHADER_ORDERED
+        ...(EXPANDED_MATERIALS
             ? {
-                  shaderSurfaces: SHADER_SURFACES,
-                  drawOrder: DRAW_ORDER,
+                  materials: {
+                      vertices: new Float32Array(UNIQUE_MATERIALS),
+                      table: Float32Array.from(MATERIAL_TABLE.flatMap((record) => Array.from(record))),
+                  },
               }
             : {}),
     };
