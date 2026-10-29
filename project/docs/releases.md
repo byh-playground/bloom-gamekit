@@ -1,3 +1,14 @@
+## v0.26.1 (2026-10-30)
+
+rendering 예제를 한 페이지의 탭으로 합칩니다. 모듈 SDK의 동작은 그대로이고 `buildYarnSurfaceMesh`만 여러 표면을 받습니다.
+
+- 예제: `modules/rendering/examples/index.html` 한 페이지에 탭 4개(벡터, 아틀라스, 재질, 그라디언트)가 있고, 탭은 처음 열 때만 WebGL 장면을 시작합니다. 주소는 `#vector`, `#atlas`, `#materials`, `#paint`입니다. 옛 `examples/vector/`, `examples/texture-array/`와 미리보기 이름 `rendering-vector`, `rendering-texture-array`는 삭제했습니다. README의 "바로 보기"는 `previews/rendering.html` 하나입니다.
+- 벡터 탭: `VectorRenderer`를 직접 만들어 쓰던 옛 방식을 `VectorContext`로 다시 썼습니다. README가 말하는 단일 진입점과 같은 길을 보여 줍니다. 장면은 같습니다.
+- 재질 탭(새로움): 털실·스케치 표면 두 개가 든 메시를 개체 12·60·240개 그리고, 개체마다 다른 시간으로 스케치 테두리를 움직이면서 그리기 호출이 한 번임을 보여 줍니다. 동작 줄이기 설정이면 한 장면만 그립니다.
+- 그라디언트 탭(새로움): 선형·방사 그라디언트와 장면 밖에서 한 번 만든 오목한 클립 경로를 켜고 끌 수 있습니다.
+- `buildYarnSurfaceMesh(surfaces)`: 표면 하나 또는 목록(최대 16개)을 받아 한 메시로 만듭니다.
+- 시험: `project/tests/browser.e2e.mjs`가 새 페이지의 네 탭을 데스크톱과 터치 에뮬레이션에서 확인합니다(그리기 호출 수, 픽셀, 클립 안팎, 가로 스크롤 없음, 첫 화면 안의 캔버스, 56px 이상 버튼). 실제 모바일 기기는 확인하지 않았습니다.
+
 ## v0.26.0 (2026-10-30)
 
 **Breaking.** 털실·스케치 표면을 별도 렌더러가 아니라 `MeshRenderer` 메시의 재질로 옮깁니다. `YarnSurfaceRenderer`와 표면별 draw가 사라지고, 털실 에셋도 다른 에셋과 같은 경로(인스턴싱, GPU 포즈, 클립, 스텐실, 깊이)를 탑니다. 게임 코드는 v0.25.0의 `createVectorActor`에서 바뀌지 않습니다.

@@ -1193,6 +1193,7 @@ try {
     REPORT.stages.push(
         'retained animated mesh → silhouette/instance batching → vector painter order → nested/rotated clipping → native context restoration/disposal, WebGL2 core instancing with legacy extension masked, MSAA off/on',
     );
+    const EXAMPLES_URL = `http://127.0.0.1:${SERVER.address().port}/modules/rendering/examples/index.html`;
     const VECTOR_EXAMPLE = await browser.newPage({
             viewport: {
                 width: 1000,
@@ -1201,10 +1202,17 @@ try {
         }),
         EXAMPLE_ERRORS = [];
     VECTOR_EXAMPLE.on('pageerror', (error) => EXAMPLE_ERRORS.push(error.message));
-    await VECTOR_EXAMPLE.goto(`http://127.0.0.1:${SERVER.address().port}/modules/rendering/examples/vector/index.html`);
-    await VECTOR_EXAMPLE.waitForFunction(() => document.querySelector('#stats')?.textContent.includes('draw calls'));
+    await VECTOR_EXAMPLE.goto(`${EXAMPLES_URL}#vector`);
+    await VECTOR_EXAMPLE.waitForFunction(() =>
+        document.querySelector('#stats-vector')?.textContent.includes('draw calls'),
+    );
+    assert.deepEqual(
+        await VECTOR_EXAMPLE.evaluate(() => Object.keys(window.renderingExamples)),
+        ['vector'],
+        'only the visible tab starts its WebGL scene',
+    );
     REPORT.vectorExample = await VECTOR_EXAMPLE.evaluate(() => {
-        const { device: DEVICE, cpuSubmitMs: CPU_SUBMIT_MS } = window.vectorExample,
+        const { device: DEVICE, cpuSubmitMs: CPU_SUBMIT_MS } = window.renderingExamples.vector,
             GL = DEVICE.gl,
             PIXEL = new Uint8Array(4);
         GL.readPixels(450, 499 - 200, 1, 1, GL.RGBA, GL.UNSIGNED_BYTE, PIXEL);
@@ -1214,7 +1222,7 @@ try {
                 ...DEVICE.stats,
             },
             cpuSubmitMs: CPU_SUBMIT_MS,
-            text: document.querySelector('#stats').textContent,
+            text: document.querySelector('#stats-vector').textContent,
             error: GL.getError(),
         };
     });
@@ -1226,64 +1234,139 @@ try {
     assert.ok(REPORT.vectorExample.stats.gpuRenderTargetBytes > 0);
     assert.equal(EXAMPLE_ERRORS.length, 0, EXAMPLE_ERRORS.join('\n'));
     await VECTOR_EXAMPLE.close();
-    REPORT.stages.push('native vector/text/group-opacity example draws WebGL pixels');
+    REPORT.stages.push('rendering example vector tab draws WebGL pixels through VectorContext');
     REPORT.textureArrayExample = [];
+    REPORT.materialsExample = [];
+    REPORT.paintExample = [];
     for (const [NAME, OPTIONS] of [
         ['desktop', { viewport: { width: 1000, height: 700 } }],
         ['touch', { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 }],
     ]) {
-        const TEXTURE_ARRAY_PAGE = await browser.newPage(OPTIONS),
-            TEXTURE_ARRAY_ERRORS = [];
-        TEXTURE_ARRAY_PAGE.on('pageerror', (error) => TEXTURE_ARRAY_ERRORS.push(error.message));
-        await TEXTURE_ARRAY_PAGE.goto(
-            `http://127.0.0.1:${SERVER.address().port}/modules/rendering/examples/texture-array/index.html`,
-        );
-        await TEXTURE_ARRAY_PAGE.waitForFunction(() => Boolean(window.textureArrayExample));
-        const LAYOUT = await TEXTURE_ARRAY_PAGE.evaluate(() => {
-            const CANVAS_RECT = document.querySelector('#scene').getBoundingClientRect();
-            return {
-                horizontalOverflow: document.documentElement.scrollWidth - window.innerWidth,
-                canvasBottom: CANVAS_RECT.bottom,
-                viewportHeight: window.innerHeight,
-                buttonHeights: [...document.querySelectorAll('button')].map((b) => b.getBoundingClientRect().height),
-            };
-        });
-        assert.ok(LAYOUT.horizontalOverflow <= 0, `${NAME}: no horizontal scroll`);
-        assert.ok(LAYOUT.canvasBottom <= LAYOUT.viewportHeight, `${NAME}: canvas inside the first screen`);
-        assert.ok(
-            LAYOUT.buttonHeights.every((height) => height >= 56),
-            `${NAME}: buttons are at least 56px tall`,
-        );
-        const ARRAY_RESULT = await TEXTURE_ARRAY_PAGE.evaluate(() => ({
-            drawCalls: window.textureArrayExample.drawCalls,
-            pixels: [...window.textureArrayExample.readPixels()],
+        const EXAMPLES_PAGE = await browser.newPage(OPTIONS),
+            EXAMPLES_ERRORS = [];
+        EXAMPLES_PAGE.on('pageerror', (error) => EXAMPLES_ERRORS.push(error.message));
+        const PRESS = (selector) => (NAME === 'touch' ? EXAMPLES_PAGE.tap(selector) : EXAMPLES_PAGE.click(selector));
+        const CHECK_LAYOUT = async (tab) => {
+            const LAYOUT = await EXAMPLES_PAGE.evaluate((tabName) => {
+                const CANVAS_RECT = document.querySelector(`#canvas-${tabName}`).getBoundingClientRect();
+                return {
+                    horizontalOverflow: document.documentElement.scrollWidth - window.innerWidth,
+                    canvasBottom: CANVAS_RECT.bottom,
+                    viewportHeight: window.innerHeight,
+                    buttonHeights: [...document.querySelectorAll('button')]
+                        .filter((b) => b.offsetParent !== null)
+                        .map((b) => b.getBoundingClientRect().height),
+                };
+            }, tab);
+            assert.ok(LAYOUT.horizontalOverflow <= 0, `${NAME} ${tab}: no horizontal scroll`);
+            assert.ok(LAYOUT.canvasBottom <= LAYOUT.viewportHeight, `${NAME} ${tab}: canvas inside the first screen`);
+            assert.ok(
+                LAYOUT.buttonHeights.every((height) => height >= 56),
+                `${NAME} ${tab}: buttons are at least 56px tall`,
+            );
+        };
+        await EXAMPLES_PAGE.goto(`${EXAMPLES_URL}#atlas`);
+        await EXAMPLES_PAGE.waitForFunction(() => Boolean(window.renderingExamples.atlas));
+        await CHECK_LAYOUT('atlas');
+        const ARRAY_RESULT = await EXAMPLES_PAGE.evaluate(() => ({
+            drawCalls: window.renderingExamples.atlas.drawCalls,
+            pixels: [...window.renderingExamples.atlas.readPixels()],
         }));
-        if (NAME === 'touch') {
-            await TEXTURE_ARRAY_PAGE.tap('#mode-mixed');
-        } else {
-            await TEXTURE_ARRAY_PAGE.click('#mode-mixed');
-        }
-        const MIXED_RESULT = await TEXTURE_ARRAY_PAGE.evaluate(() => ({
-            mode: window.textureArrayExample.mode,
-            drawCalls: window.textureArrayExample.drawCalls,
-            pixels: [...window.textureArrayExample.readPixels()],
-            glError: window.textureArrayExample.device.gl.getError(),
+        await PRESS('#atlas-mixed');
+        const MIXED_RESULT = await EXAMPLES_PAGE.evaluate(() => ({
+            mode: window.renderingExamples.atlas.mode,
+            drawCalls: window.renderingExamples.atlas.drawCalls,
+            pixels: [...window.renderingExamples.atlas.readPixels()],
+            glError: window.renderingExamples.atlas.device.gl.getError(),
         }));
         assert.equal(MIXED_RESULT.mode, 'mixed', `${NAME}: mode button switches`);
         assert.equal(ARRAY_RESULT.drawCalls, 1, `${NAME}: 240 sprites from 4 atlas regions in one draw call`);
         assert.equal(MIXED_RESULT.drawCalls, 1, `${NAME}: 240 interleaved rectangles keep the single draw call`);
         assert.equal(MIXED_RESULT.glError, 0);
         assert.notDeepEqual(ARRAY_RESULT.pixels, MIXED_RESULT.pixels, `${NAME}: interleaved rectangles are visible`);
-        assert.equal(TEXTURE_ARRAY_ERRORS.length, 0, TEXTURE_ARRAY_ERRORS.join('\n'));
         REPORT.textureArrayExample.push({
             name: NAME,
             arrayDrawCalls: ARRAY_RESULT.drawCalls,
             mixedDrawCalls: MIXED_RESULT.drawCalls,
         });
-        await TEXTURE_ARRAY_PAGE.close();
+
+        await PRESS('#tab-materials');
+        await EXAMPLES_PAGE.waitForFunction(() => Boolean(window.renderingExamples.materials));
+        await CHECK_LAYOUT('materials');
+        // Stop the animation so two frames at the same time are comparable.
+        await PRESS('#materials-play');
+        const MATERIALS_RESULT = await EXAMPLES_PAGE.evaluate(() => {
+            const EXAMPLE = window.renderingExamples.materials,
+                GL = EXAMPLE.device.gl,
+                SMALL = { draws: EXAMPLE.drawFrame(0), surfaces: EXAMPLE.surfaces },
+                FIRST = [...EXAMPLE.readPixels()],
+                REPEAT = (EXAMPLE.drawFrame(0), [...EXAMPLE.readPixels()]),
+                LATER = (EXAMPLE.drawFrame(400), [...EXAMPLE.readPixels()]);
+            document.querySelector('#materials-large').click();
+            const LARGE = { draws: EXAMPLE.draws, surfaces: EXAMPLE.surfaces, count: EXAMPLE.count };
+            const BACKGROUND = [15, 26, 36];
+            let covered = 0;
+            for (let i = 0; i < FIRST.length; i += 4) {
+                if (Math.abs(FIRST[i] - BACKGROUND[0]) + Math.abs(FIRST[i + 1] - BACKGROUND[1]) > 12) {
+                    covered++;
+                }
+            }
+            return {
+                small: SMALL,
+                large: LARGE,
+                covered,
+                deterministic: JSON.stringify(FIRST) === JSON.stringify(REPEAT),
+                timeChangesPixels: JSON.stringify(FIRST) !== JSON.stringify(LATER),
+                text: document.querySelector('#stats-materials').textContent,
+                glError: GL.getError(),
+            };
+        });
+        assert.equal(MATERIALS_RESULT.small.draws, 1, `${NAME}: yarn and sketch actors are one draw`);
+        assert.equal(MATERIALS_RESULT.large.draws, 1, `${NAME}: more actors stay one draw`);
+        assert.ok(MATERIALS_RESULT.large.surfaces > MATERIALS_RESULT.small.surfaces, `${NAME}: count button applies`);
+        assert.ok(MATERIALS_RESULT.covered > 2000, `${NAME}: material surfaces cover real pixels`);
+        assert.ok(MATERIALS_RESULT.deterministic, `${NAME}: the same time draws the same pixels`);
+        assert.ok(MATERIALS_RESULT.timeChangesPixels, `${NAME}: per-actor time animates the sketch edge`);
+        assert.ok(MATERIALS_RESULT.text.includes('그리기 호출 1회'), `${NAME}: the page reports one draw`);
+        assert.equal(MATERIALS_RESULT.glError, 0);
+        REPORT.materialsExample.push({ name: NAME, ...MATERIALS_RESULT });
+
+        await PRESS('#tab-paint');
+        await EXAMPLES_PAGE.waitForFunction(() => Boolean(window.renderingExamples.paint));
+        await CHECK_LAYOUT('paint');
+        const PAINT_RESULT = await EXAMPLES_PAGE.evaluate(() => {
+            const EXAMPLE = window.renderingExamples.paint,
+                PIXEL = (pixels, x, y) => {
+                    const AT = ((400 - 1 - y) * 720 + x) * 4;
+                    return [...pixels.subarray(AT, AT + 4)];
+                },
+                CLIPPED = EXAMPLE.readPixels();
+            const RESULT = {
+                linearLeft: PIXEL(CLIPPED, 60, 100),
+                linearRight: PIXEL(CLIPPED, 300, 100),
+                inside: PIXEL(CLIPPED, 440, 100),
+                notch: PIXEL(CLIPPED, 600, 300),
+                clippedDrawCalls: EXAMPLE.drawCalls,
+            };
+            document.querySelector('#paint-clip').click();
+            RESULT.unclippedNotch = PIXEL(EXAMPLE.readPixels(), 600, 300);
+            RESULT.clipped = EXAMPLE.clipped;
+            RESULT.glError = EXAMPLE.device.gl.getError();
+            return RESULT;
+        });
+        assert.ok(PAINT_RESULT.linearLeft[0] > PAINT_RESULT.linearLeft[2], `${NAME}: gradient starts red`);
+        assert.ok(PAINT_RESULT.linearRight[2] > PAINT_RESULT.linearRight[0], `${NAME}: gradient ends blue`);
+        assert.ok(PAINT_RESULT.inside[1] > 100, `${NAME}: the concave clip keeps its shape`);
+        assert.deepEqual(PAINT_RESULT.notch.slice(0, 3), [15, 26, 36], `${NAME}: the notch stays clipped away`);
+        assert.ok(PAINT_RESULT.unclippedNotch[1] > 100, `${NAME}: without the clip the notch is painted`);
+        assert.equal(PAINT_RESULT.clipped, false);
+        assert.equal(PAINT_RESULT.glError, 0);
+        REPORT.paintExample.push({ name: NAME, ...PAINT_RESULT });
+        assert.equal(EXAMPLES_ERRORS.length, 0, EXAMPLES_ERRORS.join('\n'));
+        await EXAMPLES_PAGE.close();
     }
     REPORT.stages.push(
-        'texture-array example: sprites from several atlas regions plus interleaved rectangles in 1 draw call, desktop and touch emulation (not real-device verification)',
+        'rendering example tabs: atlas (240 sprites in 1 draw), yarn/sketch materials (1 draw for every count), gradients and a retained concave clip, desktop and touch emulation (not real-device verification)',
     );
     const PREVIEW_PAGE = await browser.newPage({
             viewport: {
