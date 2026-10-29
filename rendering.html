@@ -1,85 +1,151 @@
 <!doctype html>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>GameKit texture array</title>
-<style>
-    body {
-        margin: 0;
-        background: #101923;
-        color: #dce8f1;
-        font:
-            15px system-ui,
-            sans-serif;
-    }
-    main {
-        max-width: 960px;
-        margin: 0 auto;
-        padding: 10px 14px 24px;
-    }
-    h1 {
-        margin: 4px 0 6px;
-        font-size: 20px;
-    }
-    p,
-    li {
-        color: #a9bdcb;
-        line-height: 1.5;
-    }
-    p {
-        margin: 6px 0;
-    }
-    ul {
-        margin: 6px 0;
-        padding-left: 20px;
-    }
-    .controls {
-        display: flex;
-        gap: 10px;
-        margin: 10px 0;
-    }
-    button {
-        flex: 1;
-        min-height: 56px;
-        border: 1px solid #526374;
-        border-radius: 12px;
-        background: #1b2a38;
-        color: #dce8f1;
-        font: inherit;
-        cursor: pointer;
-        touch-action: manipulation;
-    }
-    button[aria-pressed='true'] {
-        border-color: #8fd0ea;
-        background: #2f6f8f;
-    }
-    canvas {
-        display: block;
-        width: min(100%, calc((100vh - 240px) * 1.8));
-        min-width: 240px;
-        height: auto;
-        margin: 0 auto;
-        border: 1px solid #526374;
-        border-radius: 12px;
-    }
-</style>
-<main>
-    <h1>공유 아틀라스로 그리기</h1>
-    <p>
-        스프라이트 시트가 여러 장이어도 모두 한 텍스처 어레이의 영역이라서, 도형을 사이사이에 끼워도 한 번에 그립니다.
-    </p>
-    <div class="controls">
-        <button id="mode-sprites" type="button" aria-pressed="true">스프라이트만</button>
-        <button id="mode-mixed" type="button" aria-pressed="false">도형 끼워 그리기</button>
-    </div>
-    <canvas id="scene" width="720" height="400"></canvas>
-    <p id="stats" aria-live="polite"></p>
-    <ul>
-        <li>시트 4장은 장치가 가진 어레이 하나의 영역 4개이며, 스프라이트는 시트를 번갈아 가며 그립니다.</li>
-        <li>두 번째 방식은 스프라이트마다 앞에 사각형을 그려도 같은 그리기 호출에 들어갑니다.</li>
-        <li>블렌드나 클리핑 방식이 바뀌면 그리기 호출이 나뉩니다.</li>
-    </ul>
-</main>
-<script>
+<html lang="ko">
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>GameKit rendering 예제</title>
+    <style>
+        body {
+            margin: 0;
+            background: #101923;
+            color: #dce8f1;
+            font:
+                15px system-ui,
+                sans-serif;
+        }
+        main {
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 10px 14px 24px;
+        }
+        h1 {
+            margin: 4px 0 8px;
+            font-size: 20px;
+        }
+        p,
+        li {
+            color: #a9bdcb;
+            line-height: 1.5;
+        }
+        p {
+            margin: 6px 0;
+        }
+        ul {
+            margin: 6px 0;
+            padding-left: 20px;
+        }
+        .tabs,
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin: 10px 0;
+        }
+        button {
+            flex: 1 1 0;
+            min-width: 72px;
+            min-height: 56px;
+            border: 1px solid #526374;
+            border-radius: 12px;
+            background: #1b2a38;
+            color: #dce8f1;
+            font: inherit;
+            cursor: pointer;
+            touch-action: manipulation;
+        }
+        button[aria-pressed='true'],
+        button[aria-selected='true'] {
+            border-color: #8fd0ea;
+            background: #2f6f8f;
+        }
+        canvas {
+            display: block;
+            width: min(100%, calc((100vh - 330px) * 1.8));
+            min-width: 240px;
+            height: auto;
+            margin: 0 auto;
+            border: 1px solid #526374;
+            border-radius: 12px;
+        }
+        [hidden] {
+            display: none;
+        }
+    </style>
+    <main>
+        <h1>렌더링 예제</h1>
+        <div class="tabs" role="tablist" aria-label="렌더링 예제">
+            <button id="tab-vector" type="button" role="tab" aria-controls="panel-vector">벡터</button>
+            <button id="tab-atlas" type="button" role="tab" aria-controls="panel-atlas">아틀라스</button>
+            <button id="tab-materials" type="button" role="tab" aria-controls="panel-materials">재질</button>
+            <button id="tab-paint" type="button" role="tab" aria-controls="panel-paint">그라디언트</button>
+        </div>
+
+        <section id="panel-vector" role="tabpanel" aria-labelledby="tab-vector" hidden>
+            <p>도형, 곡선, 클립, 글자, 반투명 그룹을 VectorContext 하나로 그립니다.</p>
+            <canvas id="canvas-vector" width="900" height="500"></canvas>
+            <p id="stats-vector" aria-live="polite"></p>
+            <ul>
+                <li>두 빨간 다각형은 그룹으로 한 번에 합성해서 겹친 곳이 진해지지 않습니다.</li>
+                <li>글자는 미리 구운 비트맵 아틀라스에서 그립니다. 런타임 글꼴 래스터화는 없습니다.</li>
+            </ul>
+        </section>
+
+        <section id="panel-atlas" role="tabpanel" aria-labelledby="tab-atlas" hidden>
+            <p>
+                스프라이트 시트가 여러 장이어도 모두 한 텍스처 어레이의 영역이라서, 도형을 사이사이에 끼워도 한 번에
+                그립니다.
+            </p>
+            <div class="controls">
+                <button id="atlas-sprites" type="button" aria-pressed="true">스프라이트만</button>
+                <button id="atlas-mixed" type="button" aria-pressed="false">도형 끼워 그리기</button>
+            </div>
+            <canvas id="canvas-atlas" width="720" height="400"></canvas>
+            <p id="stats-atlas" aria-live="polite"></p>
+            <ul>
+                <li>시트 4장은 장치가 가진 어레이 하나의 영역 4개이며, 스프라이트는 시트를 번갈아 가며 그립니다.</li>
+                <li>두 번째 방식은 스프라이트마다 앞에 사각형을 그려도 같은 그리기 호출에 들어갑니다.</li>
+                <li>블렌드나 클리핑 방식이 바뀌면 그리기 호출이 나뉩니다.</li>
+            </ul>
+        </section>
+
+        <section id="panel-materials" role="tabpanel" aria-labelledby="tab-materials" hidden>
+            <p>
+                털실과 스케치는 메시의 재질이라서, 몇 개를 그려도 그리기 호출은 한 번이고 개체마다 시간이 달라도
+                그렇습니다.
+            </p>
+            <div class="controls">
+                <button id="materials-small" type="button" aria-pressed="true">적게</button>
+                <button id="materials-medium" type="button" aria-pressed="false">보통</button>
+                <button id="materials-large" type="button" aria-pressed="false">많이</button>
+                <button id="materials-play" type="button" aria-pressed="true">움직임</button>
+            </div>
+            <canvas id="canvas-materials" width="720" height="400"></canvas>
+            <p id="stats-materials" aria-live="polite"></p>
+            <ul>
+                <li>
+                    한 개체는 털실 표면과 스케치 표면이 든 메시 하나이고, 스케치의 일렁임은 개체마다 시간이 다릅니다.
+                </li>
+                <li>움직임을 끄거나 시스템이 동작 줄이기를 요청하면 한 장면만 그립니다.</li>
+                <li>
+                    SVG에서 만드는 에셋은 <code>vector-assets</code>의 <code>createVectorActor</code>가 같은 재질을
+                    씁니다.
+                </li>
+            </ul>
+        </section>
+
+        <section id="panel-paint" role="tabpanel" aria-labelledby="tab-paint" hidden>
+            <p>선형·방사 그라디언트를 채우고, 오목한 모양의 클립 경로 안에만 그립니다.</p>
+            <div class="controls">
+                <button id="paint-clip" type="button" aria-pressed="true">클립 경로 켜기</button>
+            </div>
+            <canvas id="canvas-paint" width="720" height="400"></canvas>
+            <p id="stats-paint" aria-live="polite"></p>
+            <ul>
+                <li>클립 경로는 장면 밖에서 한 번 만들어 두고 매 프레임 스텐실로 적용합니다.</li>
+                <li>스텐실 버퍼가 없는 장치에서는 클립 경로를 적용하지 못하고 오류를 냅니다.</li>
+            </ul>
+        </section>
+    </main>
+    <script>
 (() => {
   // dist/rendering.js
   var TextureAtlasArray = class {
@@ -168,12 +234,12 @@
         this.device.flushBatchers("atlasRegionUpdate");
       }
       this.written.add(region);
-      const G = this.gutter, WIDTH2 = source?.naturalWidth ?? source?.width, HEIGHT2 = source?.naturalHeight ?? source?.height;
-      if (x !== 0 || y !== 0 || WIDTH2 !== region.width || HEIGHT2 !== region.height) {
+      const G = this.gutter, WIDTH = source?.naturalWidth ?? source?.width, HEIGHT = source?.naturalHeight ?? source?.height;
+      if (x !== 0 || y !== 0 || WIDTH !== region.width || HEIGHT !== region.height) {
         if (extendEdges) {
           throw new TypeError("extendEdges requires a whole-region upload");
         }
-        if (!Number.isSafeInteger(x) || !Number.isSafeInteger(y) || x < 0 || y < 0 || !(x + WIDTH2 <= region.width) || !(y + HEIGHT2 <= region.height)) {
+        if (!Number.isSafeInteger(x) || !Number.isSafeInteger(y) || x < 0 || y < 0 || !(x + WIDTH <= region.width) || !(y + HEIGHT <= region.height)) {
           throw new RangeError("Upload rectangle must lie inside the region");
         }
         this.device.updateTextureRegion(this.texture, region.layer, region.x + x, region.y + y, source, {
@@ -598,12 +664,12 @@ ${converted}`;
       if (!Array.isArray(attributes) || !attributes.length) {
         throw new TypeError("attributes required");
       }
-      const NAMES = /* @__PURE__ */ new Set();
+      const NAMES2 = /* @__PURE__ */ new Set();
       for (const A of attributes) {
-        if (!A || typeof A.name !== "string" || !A.name || NAMES.has(A.name)) {
+        if (!A || typeof A.name !== "string" || !A.name || NAMES2.has(A.name)) {
           throw new TypeError("Unique attribute names required");
         }
-        NAMES.add(A.name);
+        NAMES2.add(A.name);
         integer(A.size, "attribute size", 1, 4);
         const SOURCE = A.source ?? "vertex";
         if (SOURCE !== "vertex" && SOURCE !== "instance") {
@@ -813,16 +879,16 @@ ${converted}`;
       if (Object.prototype.toString.call(source) === "[object ImageBitmap]") {
         throw new TypeError("ImageBitmap alpha mode is not inspectable");
       }
-      const WIDTH2 = source?.naturalWidth ?? source?.width, HEIGHT2 = source?.naturalHeight ?? source?.height;
-      integer(WIDTH2, "texture width", 1, this.maxTextureSize);
-      integer(HEIGHT2, "texture height", 1, this.maxTextureSize);
+      const WIDTH = source?.naturalWidth ?? source?.width, HEIGHT = source?.naturalHeight ?? source?.height;
+      integer(WIDTH, "texture width", 1, this.maxTextureSize);
+      integer(HEIGHT, "texture height", 1, this.maxTextureSize);
       if (format !== "rgba" && format !== "luminance") {
         throw new TypeError("texture format must be rgba or luminance");
       }
       let retained = source;
       if (source.data !== void 0) {
         const DATA = source.data, COMPONENTS = format === "rgba" ? 4 : 1;
-        if (DATA !== null && (!(DATA instanceof Uint8Array || DATA instanceof Uint8ClampedArray) || DATA.length !== WIDTH2 * HEIGHT2 * COMPONENTS)) {
+        if (DATA !== null && (!(DATA instanceof Uint8Array || DATA instanceof Uint8ClampedArray) || DATA.length !== WIDTH * HEIGHT * COMPONENTS)) {
           throw new TypeError("Texture byte count does not match dimensions/format");
         }
         retained = DATA === null ? null : new Uint8Array(DATA);
@@ -839,8 +905,8 @@ ${converted}`;
       }
       return {
         source: retained,
-        width: WIDTH2,
-        height: HEIGHT2,
+        width: WIDTH,
+        height: HEIGHT,
         format,
         premultiplied
       };
@@ -2140,16 +2206,16 @@ ${converted}`;
         }
         return;
       }
-      const WIDTH2 = Math.min(PROGRAM_WIDTH, this.device.maxTextureSize);
-      const HEIGHT2 = Math.ceil(length / (WIDTH2 * 4));
-      if (HEIGHT2 > this.device.maxTextureSize) {
+      const WIDTH = Math.min(PROGRAM_WIDTH, this.device.maxTextureSize);
+      const HEIGHT = Math.ceil(length / (WIDTH * 4));
+      if (HEIGHT > this.device.maxTextureSize) {
         throw new RangeError("Pose programs exceed data texture capacity");
       }
-      const DATA = new Float32Array(WIDTH2 * HEIGHT2 * 4);
+      const DATA = new Float32Array(WIDTH * HEIGHT * 4);
       for (const SOURCE of this.sources.values()) {
         DATA.set(SOURCE.program.data, OFFSETS.get(SOURCE) * 4);
       }
-      const TEXTURE = this.device.createDataTexture(WIDTH2, HEIGHT2, { data: DATA });
+      const TEXTURE = this.device.createDataTexture(WIDTH, HEIGHT, { data: DATA });
       for (const [SOURCE, OFFSET] of OFFSETS) {
         SOURCE.offset = OFFSET;
       }
@@ -3063,7 +3129,7 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
       this.stack.push({
         matrix: this.matrix.slice(),
         clips: this.clips.map(
-          (polygon) => polygon.map((p) => ({
+          (polygon2) => polygon2.map((p) => ({
             ...p
           }))
         ),
@@ -3142,7 +3208,7 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
         this._pushClip(contour);
         return;
       }
-      const PLANE_COUNT = this.clips.reduce((sum, polygon) => sum + polygon.length, 0);
+      const PLANE_COUNT = this.clips.reduce((sum, polygon2) => sum + polygon2.length, 0);
       if (PLANE_COUNT + contour.length > this.maxClipPlanes) {
         this._pushDynamicStencilClip(contour);
         return;
@@ -3998,8 +4064,8 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
       if (REQUESTED.width <= 0 || REQUESTED.height <= 0) {
         throw new RangeError("group bounds must have positive size");
       }
-      const X = Math.max(0, Math.floor(REQUESTED.x)), Y = Math.max(0, Math.floor(REQUESTED.y)), RIGHT = Math.min(this.canvas.width, Math.ceil(REQUESTED.x + REQUESTED.width)), BOTTOM = Math.min(this.canvas.height, Math.ceil(REQUESTED.y + REQUESTED.height)), WIDTH2 = RIGHT - X, HEIGHT2 = BOTTOM - Y;
-      if (WIDTH2 <= 0 || HEIGHT2 <= 0) {
+      const X = Math.max(0, Math.floor(REQUESTED.x)), Y = Math.max(0, Math.floor(REQUESTED.y)), RIGHT = Math.min(this.canvas.width, Math.ceil(REQUESTED.x + REQUESTED.width)), BOTTOM = Math.min(this.canvas.height, Math.ceil(REQUESTED.y + REQUESTED.height)), WIDTH = RIGHT - X, HEIGHT = BOTTOM - Y;
+      if (WIDTH <= 0 || HEIGHT <= 0) {
         this.groups.push({
           direct: true,
           empty: true
@@ -4008,8 +4074,8 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
       }
       const DEPTH = this.groups.filter((g) => !g.direct).length;
       let target = this.groupTargets[DEPTH];
-      const ALLOCATION = (n) => Math.min(this.device.maxTextureSize, 2 ** Math.ceil(Math.log2(n))), NEED_W = ALLOCATION(WIDTH2), NEED_H = ALLOCATION(HEIGHT2), NEED_STENCIL = this.device.stencilAvailable;
-      if (!target || target.width < WIDTH2 || target.height < HEIGHT2 || Boolean(this.device.renderTargets.get(target)?.stencil) !== NEED_STENCIL) {
+      const ALLOCATION = (n) => Math.min(this.device.maxTextureSize, 2 ** Math.ceil(Math.log2(n))), NEED_W = ALLOCATION(WIDTH), NEED_H = ALLOCATION(HEIGHT), NEED_STENCIL = this.device.stencilAvailable;
+      if (!target || target.width < WIDTH || target.height < HEIGHT || Boolean(this.device.renderTargets.get(target)?.stencil) !== NEED_STENCIL) {
         if (target) {
           this.device.deleteRenderTarget(target);
         }
@@ -4024,8 +4090,8 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
         bounds: {
           x: X,
           y: Y,
-          width: WIDTH2,
-          height: HEIGHT2
+          width: WIDTH,
+          height: HEIGHT
         },
         matrix: this.matrix.slice(),
         clips: this.clips,
@@ -4084,18 +4150,18 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
       this.stencilDepth = this.stencilClips.length;
       this.projection.set(GROUP.projection);
       this._useTarget(GROUP.target);
-      const { x: X, y: Y, width: WIDTH2, height: HEIGHT2 } = GROUP.bounds, U = WIDTH2 / GROUP.target.width, V = HEIGHT2 / GROUP.target.height, A = {
+      const { x: X, y: Y, width: WIDTH, height: HEIGHT } = GROUP.bounds, U = WIDTH / GROUP.target.width, V = HEIGHT / GROUP.target.height, A = {
         x: X,
         y: Y
       }, B = {
-        x: X + WIDTH2,
+        x: X + WIDTH,
         y: Y
       }, C = {
-        x: X + WIDTH2,
-        y: Y + HEIGHT2
+        x: X + WIDTH,
+        y: Y + HEIGHT
       }, D = {
         x: X,
-        y: Y + HEIGHT2
+        y: Y + HEIGHT
       }, ALPHA = [1, 1, 1, GROUP.opacity];
       this._emitTriangle(A, B, C, ALPHA, [
         [0, 1],
@@ -4195,6 +4261,20 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
   var MATERIAL_KIND = Object.freeze({ none: 0, yarnFill: 1, yarnEdge: 2, sketchFill: 3, sketchEdge: 4 });
   var MATERIAL_RECORD_FLOATS = 20;
   var MAX_MATERIAL_SURFACES = 16;
+  function materialRecord(style, bounds, contourLength) {
+    const YARN = style.kind === "yarn";
+    const STITCH_PATTERN = style.pattern !== false;
+    const EFFECT0 = YARN ? [style.seed, style.stitchWidth, style.stitchHeight, (STITCH_PATTERN ? 1 : -1) * style.thickness] : [style.seed, style.periodMs, style.frequency, 0];
+    const EFFECT1 = YARN ? [style.irregularity, style.contrast, style.edgeSpacing, style.edgeWidth] : [style.amplitude, style.echoX, style.echoWidth, style.echoOpacity];
+    const EFFECT2 = YARN ? [style.fiberSpacing ?? 4, style.fiberLength, style.fiberWidth, style.fiberOpacity] : [style.hatchWidth, style.hatchOpacity, style.hatchAngle, style.hatchSpacing];
+    const EFFECT3 = YARN ? [
+      style.fiber === false ? 0 : style.fiberMax,
+      contourLength,
+      style.curved === false ? 0 : 1,
+      style.edgeRelief * (style.detail ? 0.3 : 1)
+    ] : [0, style.echoY, 0, 0];
+    return Float32Array.from([...bounds, ...EFFECT0, ...EFFECT1, ...EFFECT2, ...EFFECT3]);
+  }
   var STITCH_FIELD_SIZE = 256;
   var STITCH_FIELD_EXTENT = 0.8;
   var STITCH_FIELD_MAX_DISTANCE = 0.25;
@@ -4235,15 +4315,15 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
     return Math.hypot(px - (a[0] + DX * T), py - (a[1] + DY * T));
   }
   function stitchPolyline([a, b, c, d]) {
-    const POINTS = [a];
+    const POINTS2 = [a];
     for (let i = 1; i <= 5; i++) {
       const T = i * 0.2, S = 1 - T;
-      POINTS.push([
+      POINTS2.push([
         S * S * S * a[0] + 3 * S * S * T * b[0] + 3 * S * T * T * c[0] + T * T * T * d[0],
         S * S * S * a[1] + 3 * S * S * T * b[1] + 3 * S * T * T * c[1] + T * T * T * d[1]
       ]);
     }
-    return POINTS;
+    return POINTS2;
   }
   function stitchPolylineDistance(points, px, py) {
     let best = Infinity;
@@ -5222,9 +5302,9 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       });
     }
     _setPaintRegions(mesh, overrides) {
-      const NAMES = mesh.paintRegionNames ?? [], SIZE = NAMES.length ? (NAMES.length + 1) * 4 : 0;
+      const NAMES2 = mesh.paintRegionNames ?? [], SIZE = NAMES2.length ? (NAMES2.length + 1) * 4 : 0;
       this.paintScratch ??= new Float32Array((MAX_PAINT_REGIONS + 1) * 4);
-      packPaintRegions(NAMES, overrides, this.paintScratch);
+      packPaintRegions(NAMES2, overrides, this.paintScratch);
       let same = (this.paintState?.length ?? 0) === SIZE;
       for (let index = 0; same && index < SIZE; index++) {
         same = this.paintState[index] === this.paintScratch[index];
@@ -5239,8 +5319,8 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       if (mesh.hasNonScalingStroke || projection[2] !== 0 || projection[5] !== 0 || Math.abs(projection[8]) < 1e-12) {
         return null;
       }
-      const WIDTH2 = this.device.activeRenderTarget?.width ?? this.device.canvas.width;
-      const HEIGHT2 = this.device.activeRenderTarget?.height ?? this.device.canvas.height;
+      const WIDTH = this.device.activeRenderTarget?.width ?? this.device.canvas.width;
+      const HEIGHT = this.device.activeRenderTarget?.height ?? this.device.canvas.height;
       const MATRIX_AT = instanceIndex * 6, M0 = matrices[MATRIX_AT], M1 = matrices[MATRIX_AT + 1], M2 = matrices[MATRIX_AT + 2], M3 = matrices[MATRIX_AT + 3], M4 = matrices[MATRIX_AT + 4], M5 = matrices[MATRIX_AT + 5];
       let minX = Infinity;
       let minY = Infinity;
@@ -5259,7 +5339,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
             const X = xi ? X1 : X0, Y = yi ? Y1 : Y0, PART_X = PA * X + PC * Y + PE, PART_Y = PB * X + PD * Y + PF;
             const WORLD_X = M0 * PART_X + M2 * PART_Y + M4, WORLD_Y = M1 * PART_X + M3 * PART_Y + M5;
             const CLIP_X = projection[0] * WORLD_X + projection[3] * WORLD_Y + projection[6], CLIP_Y = projection[1] * WORLD_X + projection[4] * WORLD_Y + projection[7];
-            const PX = (CLIP_X / projection[8] + 1) * WIDTH2 / 2, PY = (1 - CLIP_Y / projection[8]) * HEIGHT2 / 2;
+            const PX = (CLIP_X / projection[8] + 1) * WIDTH / 2, PY = (1 - CLIP_Y / projection[8]) * HEIGHT / 2;
             if (!Number.isFinite(PX) || !Number.isFinite(PY)) {
               return null;
             }
@@ -6897,11 +6977,11 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
           EXPIRED[1].region.atlas.release(EXPIRED[1].region);
           this.gradientTextures.delete(EXPIRED[0]);
         }
-        const LINEAR = gradient instanceof LinearGradient, WIDTH2 = LINEAR ? LINEAR_GRADIENT_SIZE : 256, HEIGHT2 = 1, DATA = gradient.raster();
-        const REGION = this.device.textureAtlas.allocate(WIDTH2, HEIGHT2);
+        const LINEAR = gradient instanceof LinearGradient, WIDTH = LINEAR ? LINEAR_GRADIENT_SIZE : 256, HEIGHT = 1, DATA = gradient.raster();
+        const REGION = this.device.textureAtlas.allocate(WIDTH, HEIGHT);
         this.device.textureAtlas.upload(
           REGION,
-          { width: WIDTH2, height: HEIGHT2, data: DATA },
+          { width: WIDTH, height: HEIGHT, data: DATA },
           { premultiplied: true, extendEdges: true }
         );
         cached = {
@@ -6913,10 +6993,10 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
         this.gradientTextures.set(gradient, cached);
       } else if (cached.revision !== gradient.revision) {
         this.vector.flush();
-        const LINEAR = gradient instanceof LinearGradient, WIDTH2 = LINEAR ? LINEAR_GRADIENT_SIZE : 256;
+        const LINEAR = gradient instanceof LinearGradient, WIDTH = LINEAR ? LINEAR_GRADIENT_SIZE : 256;
         cached.region.atlas.upload(
           cached.region,
-          { width: WIDTH2, height: 1, data: gradient.raster() },
+          { width: WIDTH, height: 1, data: gradient.raster() },
           { premultiplied: true, extendEdges: true }
         );
         cached.revision = gradient.revision;
@@ -7139,7 +7219,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       this.primitivePath = null;
       this.vector.matrix = PATH.matrix.slice();
       try {
-        const POINTS = this._arcPoints(
+        const POINTS2 = this._arcPoints(
           PATH.x,
           PATH.y,
           PATH.rx,
@@ -7149,9 +7229,9 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
           PATH.end,
           PATH.ccw
         );
-        this.vector.moveTo(...POINTS[0]);
-        for (let i = 1; i < POINTS.length; i++) {
-          this.vector.lineTo(...POINTS[i]);
+        this.vector.moveTo(...POINTS2[0]);
+        for (let i = 1; i < POINTS2.length; i++) {
+          this.vector.lineTo(...POINTS2[i]);
         }
       } finally {
         this.vector.matrix = MATRIX;
@@ -7254,14 +7334,14 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       if (FAST) {
         return;
       }
-      const POINTS = this._arcPoints(x, y, rx, ry, rotation, start, end, ccw);
+      const POINTS2 = this._arcPoints(x, y, rx, ry, rotation, start, end, ccw);
       if (!this.vector.cursor) {
-        this.vector.moveTo(...POINTS[0]);
+        this.vector.moveTo(...POINTS2[0]);
       } else {
-        this.vector.lineTo(...POINTS[0]);
+        this.vector.lineTo(...POINTS2[0]);
       }
-      for (let i = 1; i < POINTS.length; i++) {
-        this.vector.lineTo(...POINTS[i]);
+      for (let i = 1; i < POINTS2.length; i++) {
+        this.vector.lineTo(...POINTS2[i]);
       }
     }
     rect(x, y, w, h) {
@@ -7449,18 +7529,18 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       if (!(this._lineWidth > 0)) {
         return;
       }
-      const M = this.vector.matrix, WIDTH2 = this._lineWidth * Math.max(Math.hypot(M[0], M[1]), Math.hypot(M[2], M[3])), GRADIENT = this._strokeStyle instanceof RadialGradient || this._strokeStyle instanceof LinearGradient ? this._gradientPaint(this._strokeStyle) : null, PAINT = GRADIENT ? GRADIENT.color : this._paint(this._strokeStyle), STYLE = {
+      const M = this.vector.matrix, WIDTH = this._lineWidth * Math.max(Math.hypot(M[0], M[1]), Math.hypot(M[2], M[3])), GRADIENT = this._strokeStyle instanceof RadialGradient || this._strokeStyle instanceof LinearGradient ? this._gradientPaint(this._strokeStyle) : null, PAINT = GRADIENT ? GRADIENT.color : this._paint(this._strokeStyle), STYLE = {
         lineCap: this._lineCap,
         lineJoin: this._lineJoin,
         miterLimit: this._miterLimit
       }, DASH = this._lineDash, PERIOD = DASH.reduce((a, b) => a + b, 0);
-      if ((!DASH.length || !PERIOD) && !GRADIENT && this._tryPrimitiveStroke(WIDTH2)) {
+      if ((!DASH.length || !PERIOD) && !GRADIENT && this._tryPrimitiveStroke(WIDTH)) {
         return;
       }
       this._materializePrimitivePath();
       this.meshRenderer?.flush("vectorBoundary");
       if (!DASH.length || !PERIOD) {
-        this.vector.stroke(PAINT, WIDTH2, STYLE, GRADIENT);
+        this.vector.stroke(PAINT, WIDTH, STYLE, GRADIENT);
         return;
       }
       const V = this.vector, ORIGINAL = V.path, MATRIX = V.matrix.slice();
@@ -7493,7 +7573,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
           }
         }
       }
-      V.stroke(PAINT, WIDTH2, STYLE, GRADIENT);
+      V.stroke(PAINT, WIDTH, STYLE, GRADIENT);
       V.matrix = MATRIX;
       V.path = ORIGINAL;
       V.cursor = ORIGINAL.at(-1)?.at(-1) ?? null;
@@ -8063,11 +8143,11 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       const FRAME = INPUT_FRAMES[index];
       const X = FRAME?.x;
       const Y = FRAME?.y;
-      const WIDTH2 = FRAME?.width;
-      const HEIGHT2 = FRAME?.height;
+      const WIDTH = FRAME?.width;
+      const HEIGHT = FRAME?.height;
       const GUTTER = FRAME?.gutter ?? definition.gutter ?? 0;
-      const SOURCE_WIDTH = FRAME?.sourceWidth ?? definition.sourceWidth ?? WIDTH2;
-      const SOURCE_HEIGHT = FRAME?.sourceHeight ?? definition.sourceHeight ?? HEIGHT2;
+      const SOURCE_WIDTH = FRAME?.sourceWidth ?? definition.sourceWidth ?? WIDTH;
+      const SOURCE_HEIGHT = FRAME?.sourceHeight ?? definition.sourceHeight ?? HEIGHT;
       const SOURCE_X = FRAME?.sourceX ?? 0;
       const SOURCE_Y = FRAME?.sourceY ?? 0;
       const PIVOT_X = FRAME?.pivotX ?? definition.pivotX ?? 0;
@@ -8076,8 +8156,8 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       for (const [NAME, VALUE, MINIMUM] of [
         ["frame x", X, 0],
         ["frame y", Y, 0],
-        ["frame width", WIDTH2, 1],
-        ["frame height", HEIGHT2, 1],
+        ["frame width", WIDTH, 1],
+        ["frame height", HEIGHT, 1],
         ["frame gutter", GUTTER, 0],
         ["source width", SOURCE_WIDTH, 1],
         ["source height", SOURCE_HEIGHT, 1],
@@ -8086,7 +8166,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       ]) {
         INTEGER(VALUE, NAME, MINIMUM);
       }
-      if (X - GUTTER < 0 || Y - GUTTER < 0 || X + WIDTH2 + GUTTER > REGION_WIDTH || Y + HEIGHT2 + GUTTER > REGION_HEIGHT || SOURCE_X + WIDTH2 > SOURCE_WIDTH || SOURCE_Y + HEIGHT2 > SOURCE_HEIGHT) {
+      if (X - GUTTER < 0 || Y - GUTTER < 0 || X + WIDTH + GUTTER > REGION_WIDTH || Y + HEIGHT + GUTTER > REGION_HEIGHT || SOURCE_X + WIDTH > SOURCE_WIDTH || SOURCE_Y + HEIGHT > SOURCE_HEIGHT) {
         throw new RangeError("Sprite frame, its gutter, or its trim exceeds its region/source viewport");
       }
       if (!Number.isFinite(PIVOT_X) || !Number.isFinite(PIVOT_Y)) {
@@ -8100,11 +8180,11 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       const BOTTOM_UP = TEXTURE_ORIGIN === "bottom-left";
       const U0 = (region.x + X) / ATLAS_WIDTH;
       const V0 = BOTTOM_UP ? (region.y + REGION_HEIGHT - Y) / ATLAS_HEIGHT : (region.y + Y) / ATLAS_HEIGHT;
-      const V_HEIGHT = (BOTTOM_UP ? -HEIGHT2 : HEIGHT2) / ATLAS_HEIGHT;
+      const V_HEIGHT = (BOTTOM_UP ? -HEIGHT : HEIGHT) / ATLAS_HEIGHT;
       FRAME_RECTS.push(
         Object.freeze({
-          localRect: Float32Array.of(LEFT, TOP, WIDTH2, HEIGHT2),
-          uvRect: Float32Array.of(U0, V0, WIDTH2 / ATLAS_WIDTH, V_HEIGHT)
+          localRect: Float32Array.of(LEFT, TOP, WIDTH, HEIGHT),
+          uvRect: Float32Array.of(U0, V0, WIDTH / ATLAS_WIDTH, V_HEIGHT)
         })
       );
       FRAMES.push(
@@ -8112,8 +8192,8 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
           index,
           x: X,
           y: Y,
-          width: WIDTH2,
-          height: HEIGHT2,
+          width: WIDTH,
+          height: HEIGHT,
           sourceX: SOURCE_X,
           sourceY: SOURCE_Y,
           sourceWidth: SOURCE_WIDTH,
@@ -8164,7 +8244,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
     if (!CLIPS.size) {
       throw new TypeError("At least one sprite clip is required");
     }
-    const PLAYERS2 = /* @__PURE__ */ new Set();
+    const PLAYERS = /* @__PURE__ */ new Set();
     let disposed = false;
     const READY = () => {
       if (disposed) {
@@ -8287,18 +8367,18 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
               return false;
             }
             playerDisposed = true;
-            PLAYERS2.delete(PLAYER);
+            PLAYERS.delete(PLAYER);
             return true;
           }
         });
-        PLAYERS2.add(PLAYER);
+        PLAYERS.add(PLAYER);
         return PLAYER;
       },
       stats() {
         return Object.freeze({
           frameCount: FRAMES.length,
           clipCount: CLIPS.size,
-          playerCount: PLAYERS2.size,
+          playerCount: PLAYERS.size,
           retainedBytes: 0,
           textureOwned: false
         });
@@ -8308,134 +8388,1177 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
           return false;
         }
         disposed = true;
-        PLAYERS2.clear();
+        PLAYERS.clear();
         return true;
       }
     });
   }
+  var STRIDE_FLOATS = 9;
+  function validateStyle(style) {
+    if (!style || typeof style !== "object" || Array.isArray(style)) {
+      throw new TypeError("A complete SVG-authored yarn or sketch style is required");
+    }
+    const YARN_REQUIRED = [
+      "seed",
+      "stitchWidth",
+      "stitchHeight",
+      "thickness",
+      "irregularity",
+      "contrast",
+      "edgeSpacing",
+      "edgeRelief",
+      "edgeWidth",
+      "fiberLength",
+      "fiberWidth",
+      "fiberOpacity",
+      "fiberMax"
+    ];
+    const SKETCH_REQUIRED = [
+      "seed",
+      "periodMs",
+      "amplitude",
+      "frequency",
+      "echoX",
+      "echoY",
+      "echoWidth",
+      "echoOpacity",
+      "hatchAngle",
+      "hatchSpacing",
+      "hatchWidth",
+      "hatchOpacity"
+    ];
+    const FIELDS = style.kind === "yarn" ? YARN_REQUIRED : style.kind === "sketch" ? SKETCH_REQUIRED : null;
+    if (!FIELDS || FIELDS.some((key) => !Number.isFinite(style[key]))) {
+      throw new TypeError("Unsupported or incomplete SVG surface style");
+    }
+    if (style.seed < 0 || style.seed > 2147483647 || !Number.isSafeInteger(style.seed)) {
+      throw new RangeError("Surface seed must be a nonnegative 31-bit integer");
+    }
+    if (style.kind === "yarn") {
+      for (const KEY of [
+        "stitchWidth",
+        "stitchHeight",
+        "thickness",
+        "edgeSpacing",
+        "edgeRelief",
+        "edgeWidth",
+        "fiberLength",
+        "fiberWidth"
+      ]) {
+        if (style[KEY] <= 0) {
+          throw new RangeError(`Yarn ${KEY} must be positive`);
+        }
+      }
+      for (const KEY of ["irregularity", "contrast", "fiberOpacity"]) {
+        if (style[KEY] < 0 || style[KEY] > 1) {
+          throw new RangeError(`Yarn ${KEY} must be in [0,1]`);
+        }
+      }
+      if (!Number.isSafeInteger(style.fiberMax) || style.fiberMax < 0 || style.fiberMax > 512) {
+        throw new RangeError("Yarn fiberMax must be an integer from 0 to 512");
+      }
+      for (const KEY of ["fiberSpacing", "curved", "pattern", "detail", "fiber"]) {
+        if (style[KEY] !== void 0 && (KEY === "fiberSpacing" ? !Number.isFinite(style[KEY]) || style[KEY] <= 0 : typeof style[KEY] !== "boolean")) {
+          throw new TypeError(`Invalid Yarn ${KEY}`);
+        }
+      }
+    } else {
+      if (!Number.isSafeInteger(style.periodMs) || style.periodMs < 16 || style.periodMs > 1e4) {
+        throw new RangeError("Sketch periodMs must be 16..10000");
+      }
+      for (const KEY of ["amplitude", "frequency", "echoWidth", "hatchSpacing", "hatchWidth"]) {
+        if (style[KEY] <= 0) {
+          throw new RangeError(`Sketch ${KEY} must be positive`);
+        }
+      }
+      for (const KEY of ["echoOpacity", "hatchOpacity"]) {
+        if (style[KEY] < 0 || style[KEY] > 1) {
+          throw new RangeError(`Sketch ${KEY} must be in [0,1]`);
+        }
+      }
+    }
+  }
+  function normalizeOutline(outline, sourceIndices) {
+    if (!(outline instanceof Float32Array || Array.isArray(outline)) || outline.length < 8 || outline.length % 2) {
+      throw new TypeError("Closed SVG contour must contain at least four x/y points");
+    }
+    const POINTS2 = [];
+    for (let i = 0; i < outline.length; i += 2) {
+      const X = outline[i], Y = outline[i + 1];
+      if (!Number.isFinite(X) || !Number.isFinite(Y)) {
+        throw new TypeError("SVG contour points must be finite");
+      }
+      if (!POINTS2.length || Math.hypot(X - POINTS2.at(-1)[0], Y - POINTS2.at(-1)[1]) > 1e-6) {
+        POINTS2.push([X, Y]);
+        sourceIndices?.push(i / 2);
+      }
+    }
+    if (POINTS2.length > 4 && Math.hypot(POINTS2[0][0] - POINTS2.at(-1)[0], POINTS2[0][1] - POINTS2.at(-1)[1]) < 1e-6) {
+      POINTS2.pop();
+      sourceIndices?.pop();
+    }
+    if (POINTS2.length < 3) {
+      throw new TypeError("SVG contour requires at least three distinct points");
+    }
+    return POINTS2;
+  }
+  function surfaceGeometry(fillVertices, outline, edgeColors, style) {
+    if (!(fillVertices instanceof Float32Array) || fillVertices.length < 18 || fillVertices.length % 18) {
+      throw new TypeError("Filled surface requires complete triangles in a six-float position/color layout");
+    }
+    const SOURCE_INDICES = [], POINTS2 = normalizeOutline(outline, SOURCE_INDICES);
+    if (edgeColors !== void 0 && (!(edgeColors instanceof Float32Array) || edgeColors.length !== POINTS2.length * 4 && edgeColors.length !== outline.length * 2)) {
+      throw new TypeError("edgeColors must contain one RGBA color per contour point");
+    }
+    if (edgeColors && edgeColors.some((value) => !Number.isFinite(value) || value < 0 || value > 1)) {
+      throw new RangeError("edgeColors must contain finite RGBA values in [0,1]");
+    }
+    if (edgeColors && edgeColors.length !== POINTS2.length * 4) {
+      const ORIGINAL_COLORS = edgeColors;
+      edgeColors = Float32Array.from(
+        SOURCE_INDICES.flatMap((index) => Array.from(ORIGINAL_COLORS.subarray(index * 4, index * 4 + 4)))
+      );
+    }
+    for (let i = 0; i < fillVertices.length; i++) {
+      if (!Number.isFinite(fillVertices[i])) {
+        throw new TypeError("Filled surface vertices must be finite");
+      }
+      const FIELD = i % 6;
+      if (FIELD >= 2 && (fillVertices[i] < 0 || fillVertices[i] > 1)) {
+        throw new RangeError("Surface colors must be in [0,1]");
+      }
+    }
+    const LENGTHS = [], NORMALS = [];
+    let total = 0;
+    let signedArea = 0;
+    for (let i = 0; i < POINTS2.length; i++) {
+      const A = POINTS2[i], B = POINTS2[(i + 1) % POINTS2.length], DX = B[0] - A[0], DY = B[1] - A[1], LENGTH = Math.hypot(DX, DY);
+      if (!LENGTH) {
+        throw new TypeError("SVG contour cannot contain zero-length edges");
+      }
+      LENGTHS.push(LENGTH);
+      total += LENGTH;
+      signedArea += A[0] * B[1] - B[0] * A[1];
+      NORMALS.push([DY / LENGTH, -DX / LENGTH]);
+    }
+    if (Math.abs(signedArea) < 1e-6) {
+      throw new TypeError("SVG contour cannot have zero area");
+    }
+    const WINDING = signedArea >= 0 ? 1 : -1;
+    const BOUNDS = [Infinity, Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < fillVertices.length; i += 6) {
+      BOUNDS[0] = Math.min(BOUNDS[0], fillVertices[i]);
+      BOUNDS[1] = Math.min(BOUNDS[1], fillVertices[i + 1]);
+      BOUNDS[2] = Math.max(BOUNDS[2], fillVertices[i]);
+      BOUNDS[3] = Math.max(BOUNDS[3], fillVertices[i + 1]);
+    }
+    if (!(BOUNDS[2] > BOUNDS[0] && BOUNDS[3] > BOUNDS[1])) {
+      throw new TypeError("Filled surface bounds must have positive area");
+    }
+    const RGBA = edgeColors ? edgeColors : (() => {
+      const COLOR = [0, 0, 0, 0];
+      for (let i = 0; i < fillVertices.length; i += 6) {
+        for (let c = 0; c < 4; c++) {
+          COLOR[c] += fillVertices[i + 2 + c];
+        }
+      }
+      for (let c = 0; c < 4; c++) {
+        COLOR[c] /= fillVertices.length / 6;
+      }
+      return Float32Array.from(POINTS2.flatMap(() => COLOR));
+    })();
+    const EDGE_WIDTH = style.kind === "yarn" ? style.edgeWidth : Math.max(style.echoWidth, Math.hypot(style.echoX, style.echoY) + style.amplitude + style.echoWidth);
+    const FIBER_LENGTH = style.kind === "yarn" && style.fiber !== false ? style.fiberLength : EDGE_WIDTH;
+    const FILL_RECORDS = new Float32Array(fillVertices.length / 6 * STRIDE_FLOATS);
+    let write = 0;
+    for (let i = 0; i < fillVertices.length; i += 6) {
+      FILL_RECORDS.set(fillVertices.subarray(i, i + 6), write);
+      FILL_RECORDS[write + 6] = 0;
+      write += STRIDE_FLOATS;
+    }
+    const CUMULATIVE = [0];
+    for (const LENGTH of LENGTHS) {
+      CUMULATIVE.push(CUMULATIVE.at(-1) + LENGTH);
+    }
+    const RING = [];
+    for (let i = 0; i < POINTS2.length; i++) {
+      const PREVIOUS = NORMALS[(i + POINTS2.length - 1) % POINTS2.length], CURRENT = NORMALS[i];
+      let mx = (PREVIOUS[0] + CURRENT[0]) * WINDING;
+      let my = (PREVIOUS[1] + CURRENT[1]) * WINDING;
+      const MITER_LENGTH = Math.hypot(mx, my);
+      if (MITER_LENGTH < 1e-5) {
+        mx = CURRENT[0] * WINDING;
+        my = CURRENT[1] * WINDING;
+      } else {
+        mx /= MITER_LENGTH;
+        my /= MITER_LENGTH;
+      }
+      const DENOMINATOR = Math.max(0.25, Math.abs(mx * CURRENT[0] * WINDING + my * CURRENT[1] * WINDING));
+      const SCALE = Math.min(4, 1 / DENOMINATOR);
+      RING.push([mx * SCALE, my * SCALE]);
+    }
+    const EDGE_RECORDS = [];
+    const COLOR_AT = (index) => RGBA.subarray(index * 4, index * 4 + 4);
+    for (let i = 0; i < POINTS2.length; i++) {
+      const J = (i + 1) % POINTS2.length;
+      const EMIT = (pointIndex, distance) => {
+        const POINT = POINTS2[pointIndex], NORMAL = RING[pointIndex], X = POINT[0] + NORMAL[0] * distance, Y = POINT[1] + NORMAL[1] * distance;
+        EDGE_RECORDS.push(X, Y, ...COLOR_AT(pointIndex), 1, CUMULATIVE[pointIndex] / total, distance);
+      };
+      EMIT(i, -EDGE_WIDTH);
+      EMIT(i, FIBER_LENGTH);
+      EMIT(J, FIBER_LENGTH);
+      EMIT(i, -EDGE_WIDTH);
+      EMIT(J, FIBER_LENGTH);
+      EMIT(J, -EDGE_WIDTH);
+    }
+    const EDGE_RECORD_ARRAY = Float32Array.from(EDGE_RECORDS);
+    const VERTICES = new Float32Array(FILL_RECORDS.length + EDGE_RECORD_ARRAY.length);
+    VERTICES.set(FILL_RECORDS);
+    VERTICES.set(EDGE_RECORD_ARRAY, FILL_RECORDS.length);
+    return Object.freeze({
+      vertices: VERTICES,
+      fillFirst: 0,
+      fillCount: fillVertices.length / 6,
+      edgeFirst: fillVertices.length / 6,
+      edgeCount: EDGE_RECORD_ARRAY.length / STRIDE_FLOATS,
+      edgeByteOffset: FILL_RECORDS.length * 4,
+      bounds: Float32Array.of(BOUNDS[0], BOUNDS[1], BOUNDS[2] - BOUNDS[0], BOUNDS[3] - BOUNDS[1]),
+      contourLength: total
+    });
+  }
+  function appendSurfaceVertices(vertices, materials, surface, surfaceIndex, style, partIndex) {
+    const YARN = style.kind === "yarn";
+    for (let record = 0; record < surface.fillCount + surface.edgeCount; record++) {
+      const AT = record * STRIDE_FLOATS, EDGE = record >= surface.edgeFirst;
+      vertices.push(
+        surface.vertices[AT],
+        surface.vertices[AT + 1],
+        surface.vertices[AT + 2],
+        surface.vertices[AT + 3],
+        surface.vertices[AT + 4],
+        surface.vertices[AT + 5],
+        0,
+        0,
+        0,
+        0,
+        partIndex
+      );
+      materials.push(
+        EDGE ? YARN ? MATERIAL_KIND.yarnEdge : MATERIAL_KIND.sketchEdge : YARN ? MATERIAL_KIND.yarnFill : MATERIAL_KIND.sketchFill,
+        surfaceIndex,
+        EDGE ? surface.vertices[AT + 7] : 0,
+        EDGE ? surface.vertices[AT + 8] : 0
+      );
+    }
+  }
+  function buildYarnSurfaceMesh(surfaces) {
+    const LIST = Array.isArray(surfaces) ? surfaces : [surfaces];
+    if (!LIST.length || LIST.length > MAX_MATERIAL_SURFACES) {
+      throw new RangeError("A mesh holds 1.." + MAX_MATERIAL_SURFACES + " surfaces");
+    }
+    const VERTICES = [], MATERIALS = [], TABLE = [];
+    let partCount = 1;
+    LIST.forEach(({ fillVertices, outline, edgeColors, style, partIndex = 0 }, index) => {
+      validateStyle(style);
+      const SURFACE = surfaceGeometry(fillVertices, outline, edgeColors, style);
+      TABLE.push(...materialRecord(style, SURFACE.bounds, SURFACE.contourLength));
+      appendSurfaceVertices(VERTICES, MATERIALS, SURFACE, index, style, partIndex);
+      partCount = Math.max(partCount, partIndex + 1);
+    });
+    return {
+      vertices: Float32Array.from(VERTICES),
+      strideFloats: 11,
+      partCount,
+      morphCount: 0,
+      materials: {
+        vertices: Float32Array.from(MATERIALS),
+        table: Float32Array.from(TABLE)
+      }
+    };
+  }
+  var GlyphAtlas = class {
+    constructor(device, {
+      width,
+      height,
+      data,
+      glyphs,
+      unitsPerEm = 1,
+      ascent = 0.8,
+      descent = 0.2,
+      filter = "linear",
+      missingGlyph = "error",
+      replacement = "�"
+    } = {}) {
+      if (!device?.textureAtlas) {
+        throw new TypeError("device must provide a WebGLDevice texture atlas");
+      }
+      positiveInteger(width, "width");
+      positiveInteger(height, "height");
+      positive(unitsPerEm, "unitsPerEm");
+      nonNegative(ascent, "ascent");
+      nonNegative(descent, "descent");
+      if (!(data instanceof Uint8Array || data instanceof Uint8ClampedArray) || data.length !== width * height * 4) {
+        throw new TypeError("data must contain width*height*4 RGBA bytes");
+      }
+      if (!glyphs || typeof glyphs !== "object") {
+        throw new TypeError("glyphs must be a code-point keyed metric object");
+      }
+      if (!["error", "skip", "replacement"].includes(missingGlyph)) {
+        throw new RangeError("missingGlyph must be error, skip, or replacement");
+      }
+      if (typeof replacement !== "string" || [...replacement].length !== 1) {
+        throw new TypeError("replacement must be one Unicode code point");
+      }
+      this.device = device;
+      this.width = width;
+      this.height = height;
+      this.unitsPerEm = unitsPerEm;
+      this.ascent = ascent;
+      this.descent = descent;
+      this.missingGlyph = missingGlyph;
+      this.replacement = replacement;
+      this.glyphs = /* @__PURE__ */ new Map();
+      for (const [KEY, VALUE] of Object.entries(glyphs)) {
+        const CODE_POINT = normalizeCodePoint(KEY);
+        this.glyphs.set(CODE_POINT, validateGlyph(VALUE, width, height, CODE_POINT));
+      }
+      if (filter !== "nearest" && filter !== "linear") {
+        throw new RangeError("filter must be nearest or linear");
+      }
+      this.region = device.textureAtlas.allocate(width, height, { filter });
+      try {
+        device.textureAtlas.upload(this.region, { width, height, data }, { extendEdges: true });
+      } catch (error) {
+        device.textureAtlas.release(this.region);
+        throw error;
+      }
+      this.disposed = false;
+    }
+    /** Returns the metrics in the same units as the requested fontSize. */
+    measureText(text, { fontSize = this.unitsPerEm, align = "left" } = {}) {
+      this._live();
+      validateText(text);
+      positive(fontSize, "fontSize");
+      validateAlign(align);
+      const GLYPHS = this._resolve(text);
+      const WIDTH = GLYPHS.reduce((sum, glyph) => sum + glyph.advance, 0) * fontSize / this.unitsPerEm;
+      return {
+        width: WIDTH,
+        ascent: this.ascent * fontSize / this.unitsPerEm,
+        descent: this.descent * fontSize / this.unitsPerEm,
+        actualBoundingBoxLeft: 0,
+        actualBoundingBoxRight: WIDTH
+      };
+    }
+    /**
+     * Emits one callback per visible glyph. The callback receives region (atlas array layer), atlas
+     * UVs, destination rectangle, RGBA color, and operation='fill'.
+     * Also accepts `(renderer, text, x, y, options)` when renderer provides
+     * `drawGlyphQuad(region, x, y, width, height, uv, color)`.
+     */
+    fillText(textOrRenderer, xOrText, yOrX, optionsOrY = {}, drawGlyphOrOptions = {}) {
+      const ARGS = normalizeDrawArguments(textOrRenderer, xOrText, yOrX, optionsOrY, drawGlyphOrOptions);
+      return this._draw("fill", ARGS.text, ARGS.x, ARGS.y, ARGS.options, ARGS.drawGlyph);
+    }
+    /**
+     * Emits an outline as eight offset glyph passes. This is a
+     * geometric atlas outline; it does not modify or rasterize atlas pixels.
+     * `lineWidth` is in destination units.
+     */
+    strokeText(textOrRenderer, xOrText, yOrX, optionsOrY = {}, drawGlyphOrOptions = {}) {
+      const ARGS = normalizeDrawArguments(textOrRenderer, xOrText, yOrX, optionsOrY, drawGlyphOrOptions);
+      const { text: TEXT, x: X, y: Y, options: OPTIONS, drawGlyph: DRAW_GLYPH } = ARGS;
+      const { lineWidth: LINE_WIDTH = 1, strokeColor: STROKE_COLOR = OPTIONS.color ?? [0, 0, 0, 1] } = OPTIONS;
+      positive(LINE_WIDTH, "lineWidth");
+      validateColor(STROKE_COLOR, "strokeColor");
+      return this._draw(
+        "stroke",
+        TEXT,
+        X,
+        Y,
+        {
+          ...OPTIONS,
+          color: STROKE_COLOR
+        },
+        DRAW_GLYPH,
+        LINE_WIDTH
+      );
+    }
+    _draw(operation, text, x, y, options, drawGlyph, lineWidth = 0) {
+      this._live();
+      validateText(text);
+      finite2(x, "x");
+      finite2(y, "y");
+      if (typeof drawGlyph !== "function") {
+        throw new TypeError("drawGlyph callback is required");
+      }
+      const {
+        fontSize: FONT_SIZE = this.unitsPerEm,
+        align: ALIGN = "left",
+        baseline: BASELINE = "alphabetic",
+        color: COLOR = [1, 1, 1, 1]
+      } = options;
+      positive(FONT_SIZE, "fontSize");
+      validateAlign(ALIGN);
+      validateColor(COLOR, "color");
+      const [RU, RV, RW, RH] = this.region.uvRect;
+      const RESOLVED = this._resolve(text);
+      const SCALE = FONT_SIZE / this.unitsPerEm;
+      const ADVANCE = RESOLVED.reduce((sum, glyph) => sum + glyph.advance, 0) * SCALE;
+      let penX = x - (ALIGN === "center" ? ADVANCE / 2 : ALIGN === "right" ? ADVANCE : 0);
+      const BASELINE_Y = baselineOffset(BASELINE, FONT_SIZE, this.unitsPerEm, this.ascent, this.descent, y);
+      const OFFSETS = lineWidth ? [
+        [-1, -1],
+        [0, -1],
+        [1, -1],
+        [-1, 0],
+        [1, 0],
+        [-1, 1],
+        [0, 1],
+        [1, 1]
+      ] : [[0, 0]];
+      for (const GLYPH of RESOLVED) {
+        if (GLYPH.width > 0 && GLYPH.height > 0) {
+          const LEFT = penX + GLYPH.bearingX * SCALE;
+          const TOP = BASELINE_Y - GLYPH.bearingY * SCALE;
+          for (const [OX, OY] of OFFSETS) {
+            drawGlyph({
+              region: this.region,
+              glyph: GLYPH,
+              codePoint: GLYPH.codePoint,
+              x: LEFT + OX * lineWidth,
+              y: TOP + OY * lineWidth,
+              width: GLYPH.width * SCALE,
+              height: GLYPH.height * SCALE,
+              u0: RU + GLYPH.x / this.width * RW,
+              v0: RV + GLYPH.y / this.height * RH,
+              u1: RU + (GLYPH.x + GLYPH.width) / this.width * RW,
+              v1: RV + (GLYPH.y + GLYPH.height) / this.height * RH,
+              color: COLOR,
+              operation: lineWidth ? "stroke" : operation
+            });
+          }
+        }
+        penX += GLYPH.advance * SCALE;
+      }
+      return {
+        x: x - (ALIGN === "center" ? ADVANCE / 2 : ALIGN === "right" ? ADVANCE : 0),
+        y: BASELINE_Y,
+        width: ADVANCE,
+        glyphCount: RESOLVED.length
+      };
+    }
+    _resolve(text) {
+      const RESULT = [];
+      for (const CHARACTER of text) {
+        let glyph = this.glyphs.get(CHARACTER.codePointAt(0));
+        if (!glyph) {
+          if (this.missingGlyph === "skip") {
+            continue;
+          }
+          if (this.missingGlyph === "replacement") {
+            glyph = this.glyphs.get(this.replacement.codePointAt(0));
+          }
+          if (!glyph) {
+            throw new RangeError(`missing glyph U+${CHARACTER.codePointAt(0).toString(16).toUpperCase()}`);
+          }
+        }
+        RESULT.push(glyph);
+      }
+      return RESULT;
+    }
+    _live() {
+      if (this.disposed) {
+        throw new Error("GlyphAtlas is disposed");
+      }
+    }
+    /** Idempotently releases the atlas texture through its owning device. */
+    dispose() {
+      if (this.disposed) {
+        return false;
+      }
+      this.disposed = true;
+      if (this.device.state === "ready") {
+        this.region.atlas.release(this.region);
+      }
+      this.region = null;
+      return true;
+    }
+  };
+  function normalizeCodePoint(key) {
+    if (/^U\+[0-9a-f]{1,6}$/i.test(key)) {
+      return Number.parseInt(key.slice(2), 16);
+    }
+    const CHARS = [...key];
+    if (CHARS.length === 1) {
+      return CHARS[0].codePointAt(0);
+    }
+    if (/^0x[0-9a-f]+$/i.test(key)) {
+      return Number.parseInt(key.slice(2), 16);
+    }
+    throw new TypeError(`invalid glyph key: ${key}`);
+  }
+  function normalizeDrawArguments(first, second, third, fourth, fifth) {
+    if (first && typeof first.drawGlyphQuad === "function") {
+      const RENDERER = first, TEXT2 = second, X2 = third, Y2 = fourth, OPTIONS2 = fifth ?? {};
+      return {
+        text: TEXT2,
+        x: X2,
+        y: Y2,
+        options: OPTIONS2,
+        drawGlyph: (glyph) => RENDERER.drawGlyphQuad(
+          glyph.region,
+          glyph.x,
+          glyph.y,
+          glyph.width,
+          glyph.height,
+          {
+            u0: glyph.u0,
+            v0: glyph.v0,
+            u1: glyph.u1,
+            v1: glyph.v1
+          },
+          glyph.color
+        )
+      };
+    }
+    const TEXT = first, X = second, Y = third, OPTIONS = fourth ?? {};
+    return {
+      text: TEXT,
+      x: X,
+      y: Y,
+      options: OPTIONS,
+      drawGlyph: fifth ?? OPTIONS.drawGlyph
+    };
+  }
+  function validateGlyph(value, atlasWidth, atlasHeight, codePoint) {
+    if (!value || typeof value !== "object") {
+      throw new TypeError(`glyph U+${codePoint.toString(16)} must be a metric object`);
+    }
+    const {
+      x: X,
+      y: Y,
+      width: WIDTH,
+      height: HEIGHT,
+      advance: ADVANCE,
+      bearingX: BEARING_X = 0,
+      bearingY: BEARING_Y = 0
+    } = value;
+    for (const [NAME, NUMBER] of Object.entries({
+      x: X,
+      y: Y,
+      width: WIDTH,
+      height: HEIGHT,
+      advance: ADVANCE,
+      bearingX: BEARING_X,
+      bearingY: BEARING_Y
+    })) {
+      finite2(NUMBER, `glyph.${NAME}`);
+    }
+    if (X < 0 || Y < 0 || WIDTH < 0 || HEIGHT < 0 || X + WIDTH > atlasWidth || Y + HEIGHT > atlasHeight || ADVANCE < 0) {
+      throw new RangeError(`glyph U+${codePoint.toString(16)} has invalid atlas bounds or advance`);
+    }
+    return Object.freeze({
+      codePoint,
+      x: X,
+      y: Y,
+      width: WIDTH,
+      height: HEIGHT,
+      advance: ADVANCE,
+      bearingX: BEARING_X,
+      bearingY: BEARING_Y
+    });
+  }
+  function baselineOffset(baseline, fontSize, units, ascent, descent, y) {
+    const SCALE = fontSize / units;
+    switch (baseline) {
+      case "alphabetic":
+        return y;
+      case "top":
+      case "hanging":
+        return y + ascent * SCALE;
+      case "middle":
+        return y + (ascent - descent) * SCALE / 2;
+      case "bottom":
+      case "ideographic":
+        return y - descent * SCALE;
+      default:
+        throw new RangeError("baseline must be top, hanging, middle, alphabetic, ideographic, or bottom");
+    }
+  }
+  function validateAlign(value) {
+    if (!["left", "center", "right"].includes(value)) {
+      throw new RangeError("align must be left, center, or right");
+    }
+  }
+  function validateColor(value, name) {
+    if (!value || value.length !== 4) {
+      throw new TypeError(`${name} must be [r,g,b,a]`);
+    }
+    for (let i = 0; i < 4; i++) {
+      if (!Number.isFinite(value[i]) || value[i] < 0 || value[i] > 1) {
+        throw new RangeError(`${name} channels must be in [0,1]`);
+      }
+    }
+  }
+  function validateText(text) {
+    if (typeof text !== "string") {
+      throw new TypeError("text must be a string");
+    }
+  }
+  function finite2(value, name) {
+    if (!Number.isFinite(value)) {
+      throw new TypeError(`${name} must be finite`);
+    }
+  }
+  function positive(value, name) {
+    finite2(value, name);
+    if (value <= 0) {
+      throw new RangeError(`${name} must be positive`);
+    }
+  }
+  function nonNegative(value, name) {
+    finite2(value, name);
+    if (value < 0) {
+      throw new RangeError(`${name} must be non-negative`);
+    }
+  }
+  function positiveInteger(value, name) {
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new RangeError(`${name} must be a positive integer`);
+    }
+  }
 
-  // modules/rendering/examples/texture-array/modules/rendering/examples/texture-array/index.html
-  var CANVAS = document.querySelector("#scene");
-  var WIDTH = CANVAS.width;
-  var HEIGHT = CANVAS.height;
+  // modules/rendering/examples/atlas.js
   var PAGE_COUNT = 4;
   var CELL = 32;
   var PAGE_SIZE = CELL * 2;
   var SPRITE_COUNT = 240;
-  var DEVICE = new WebGLDevice(CANVAS, {
-    alpha: false,
-    antialias: false,
-    preserveDrawingBuffer: true
-  });
-  var CONTEXT = new VectorContext(DEVICE);
-  var DRAW_PAGE = (page) => {
+  function drawPage(page) {
     const SHEET = document.createElement("canvas");
     SHEET.width = SHEET.height = PAGE_SIZE;
-    const CANVAS_2D = SHEET.getContext("2d");
+    const SHEET_CONTEXT = SHEET.getContext("2d");
     for (let cell = 0; cell < 4; cell++) {
       const X = cell % 2 * CELL + CELL / 2;
       const Y = Math.floor(cell / 2) * CELL + CELL / 2;
       const R = CELL * 0.42;
-      CANVAS_2D.fillStyle = `hsl(${page * 90 + 20}, 80%, ${45 + cell * 6}%)`;
-      CANVAS_2D.beginPath();
+      SHEET_CONTEXT.fillStyle = `hsl(${page * 90 + 20}, 80%, ${45 + cell * 6}%)`;
+      SHEET_CONTEXT.beginPath();
       if (cell === 0) {
-        CANVAS_2D.arc(X, Y, R, 0, Math.PI * 2);
+        SHEET_CONTEXT.arc(X, Y, R, 0, Math.PI * 2);
       } else if (cell === 1) {
-        CANVAS_2D.rect(X - R, Y - R, R * 2, R * 2);
+        SHEET_CONTEXT.rect(X - R, Y - R, R * 2, R * 2);
       } else if (cell === 2) {
-        CANVAS_2D.moveTo(X, Y - R);
-        CANVAS_2D.lineTo(X + R, Y + R);
-        CANVAS_2D.lineTo(X - R, Y + R);
-        CANVAS_2D.closePath();
+        SHEET_CONTEXT.moveTo(X, Y - R);
+        SHEET_CONTEXT.lineTo(X + R, Y + R);
+        SHEET_CONTEXT.lineTo(X - R, Y + R);
+        SHEET_CONTEXT.closePath();
       } else {
-        CANVAS_2D.moveTo(X, Y - R);
-        CANVAS_2D.lineTo(X + R, Y);
-        CANVAS_2D.lineTo(X, Y + R);
-        CANVAS_2D.lineTo(X - R, Y);
-        CANVAS_2D.closePath();
+        SHEET_CONTEXT.moveTo(X, Y - R);
+        SHEET_CONTEXT.lineTo(X + R, Y);
+        SHEET_CONTEXT.lineTo(X, Y + R);
+        SHEET_CONTEXT.lineTo(X - R, Y);
+        SHEET_CONTEXT.closePath();
       }
-      CANVAS_2D.fill();
+      SHEET_CONTEXT.fill();
     }
     return SHEET;
-  };
-  var CELL_RECT = (cell) => ({ x: cell % 2 * CELL, y: Math.floor(cell / 2) * CELL, width: CELL, height: CELL });
-  var REGIONS = Array.from({ length: PAGE_COUNT }, (_unused, page) => {
-    const REGION = DEVICE.textureAtlas.allocate(PAGE_SIZE, PAGE_SIZE, { filter: "nearest" });
-    DEVICE.textureAtlas.upload(REGION, DRAW_PAGE(page));
-    return REGION;
-  });
-  var SPRITES = REGIONS.map(
-    (region) => createSpriteAnimation(CONTEXT, region, {
-      frames: [0, 1, 2, 3].map((cell) => ({ ...CELL_RECT(cell), durationMs: 100 })),
-      clips: Object.fromEntries([0, 1, 2, 3].map((cell) => [`c${cell}`, { frames: [cell] }]))
-    })
-  );
-  var PLAYERS = Array.from(
-    { length: PAGE_COUNT * 4 },
-    (_unused, index) => SPRITES[Math.floor(index / 4)].createPlayer({ clip: `c${index % 4}` })
-  );
-  var seed = 12345;
-  var RANDOM = () => {
-    seed = seed * 1664525 + 1013904223 >>> 0;
-    return seed / 4294967296;
-  };
-  var PLACEMENTS = Array.from({ length: SPRITE_COUNT }, (_unused, index) => ({
-    frame: index % PAGE_COUNT * 4 + Math.floor(index / PAGE_COUNT) % 4,
-    x: Math.floor(RANDOM() * (WIDTH - CELL)),
-    y: Math.floor(RANDOM() * (HEIGHT - CELL))
-  }));
-  var BUTTONS = {
-    sprites: document.querySelector("#mode-sprites"),
-    mixed: document.querySelector("#mode-mixed")
-  };
-  var EXAMPLE = {
-    device: DEVICE,
-    mode: "sprites",
-    drawCalls: 0,
-    spriteCount: SPRITE_COUNT,
-    setMode(mode) {
-      if (mode !== "sprites" && mode !== "mixed") {
-        throw new TypeError("mode must be sprites or mixed");
-      }
-      EXAMPLE.mode = mode;
-      CONTEXT.beginFrame({ width: WIDTH, height: HEIGHT, clearColor: [0.06, 0.1, 0.14, 1] });
-      for (const PLACEMENT of PLACEMENTS) {
-        if (mode === "mixed") {
-          CONTEXT.fillStyle = "rgba(255, 255, 255, 0.25)";
-          CONTEXT.fillRect(PLACEMENT.x - 2, PLACEMENT.y - 2, CELL + 4, CELL + 4);
+  }
+  function cellRect(cell) {
+    return { x: cell % 2 * CELL, y: Math.floor(cell / 2) * CELL, width: CELL, height: CELL };
+  }
+  function startAtlas(canvas, statsElement) {
+    const WIDTH = canvas.width;
+    const HEIGHT = canvas.height;
+    const DEVICE = new WebGLDevice(canvas, {
+      alpha: false,
+      antialias: false,
+      preserveDrawingBuffer: true
+    });
+    const CONTEXT = new VectorContext(DEVICE);
+    const REGIONS = Array.from({ length: PAGE_COUNT }, (_unused, page) => {
+      const REGION = DEVICE.textureAtlas.allocate(PAGE_SIZE, PAGE_SIZE, { filter: "nearest" });
+      DEVICE.textureAtlas.upload(REGION, drawPage(page));
+      return REGION;
+    });
+    const SPRITES = REGIONS.map(
+      (region) => createSpriteAnimation(CONTEXT, region, {
+        frames: [0, 1, 2, 3].map((cell) => ({ ...cellRect(cell), durationMs: 100 })),
+        clips: Object.fromEntries([0, 1, 2, 3].map((cell) => [`c${cell}`, { frames: [cell] }]))
+      })
+    );
+    const PLAYERS = Array.from(
+      { length: PAGE_COUNT * 4 },
+      (_unused, index) => SPRITES[Math.floor(index / 4)].createPlayer({ clip: `c${index % 4}` })
+    );
+    let seed = 12345;
+    const RANDOM = () => {
+      seed = seed * 1664525 + 1013904223 >>> 0;
+      return seed / 4294967296;
+    };
+    const PLACEMENTS = Array.from({ length: SPRITE_COUNT }, (_unused, index) => ({
+      frame: index % PAGE_COUNT * 4 + Math.floor(index / PAGE_COUNT) % 4,
+      x: Math.floor(RANDOM() * (WIDTH - CELL)),
+      y: Math.floor(RANDOM() * (HEIGHT - CELL))
+    }));
+    const BUTTONS = {
+      sprites: document.querySelector("#atlas-sprites"),
+      mixed: document.querySelector("#atlas-mixed")
+    };
+    const EXAMPLE = {
+      device: DEVICE,
+      mode: "sprites",
+      drawCalls: 0,
+      spriteCount: SPRITE_COUNT,
+      setMode(mode) {
+        if (mode !== "sprites" && mode !== "mixed") {
+          throw new TypeError("mode must be sprites or mixed");
         }
-        PLAYERS[PLACEMENT.frame].draw({
-          timeMs: 0,
-          matrix: [1, 0, 0, 1, PLACEMENT.x, PLACEMENT.y]
-        });
+        EXAMPLE.mode = mode;
+        CONTEXT.beginFrame({ width: WIDTH, height: HEIGHT, clearColor: [0.06, 0.1, 0.14, 1] });
+        for (const PLACEMENT of PLACEMENTS) {
+          if (mode === "mixed") {
+            CONTEXT.fillStyle = "rgba(255, 255, 255, 0.25)";
+            CONTEXT.fillRect(PLACEMENT.x - 2, PLACEMENT.y - 2, CELL + 4, CELL + 4);
+          }
+          PLAYERS[PLACEMENT.frame].draw({
+            timeMs: 0,
+            matrix: [1, 0, 0, 1, PLACEMENT.x, PLACEMENT.y]
+          });
+        }
+        EXAMPLE.drawCalls = CONTEXT.endFrame().drawCalls;
+        for (const [NAME, BUTTON] of Object.entries(BUTTONS)) {
+          BUTTON.setAttribute("aria-pressed", String(NAME === mode));
+        }
+        statsElement.textContent = `그리기 호출 ${EXAMPLE.drawCalls}회 · 스프라이트 ${SPRITE_COUNT}개` + (mode === "mixed" ? ` · 사각형 ${SPRITE_COUNT}개 끼워 그림` : "");
+        return EXAMPLE.drawCalls;
+      },
+      readPixels() {
+        const GL = DEVICE.gl;
+        const PIXELS = new Uint8Array(WIDTH * HEIGHT * 4);
+        GL.readPixels(0, 0, WIDTH, HEIGHT, GL.RGBA, GL.UNSIGNED_BYTE, PIXELS);
+        return PIXELS;
+      },
+      dispose() {
+        SPRITES.forEach((sprites) => sprites.dispose());
+        CONTEXT.dispose();
+        DEVICE.dispose();
       }
-      EXAMPLE.drawCalls = CONTEXT.endFrame().drawCalls;
-      for (const [NAME, BUTTON] of Object.entries(BUTTONS)) {
-        BUTTON.setAttribute("aria-pressed", String(NAME === mode));
-      }
-      document.querySelector("#stats").textContent = `그리기 호출 ${EXAMPLE.drawCalls}회 · 스프라이트 ${SPRITE_COUNT}개` + (mode === "mixed" ? ` · 사각형 ${SPRITE_COUNT}개 끼워 그림` : "");
-      return EXAMPLE.drawCalls;
-    },
-    readPixels() {
-      const GL = DEVICE.gl;
-      const PIXELS = new Uint8Array(WIDTH * HEIGHT * 4);
-      GL.readPixels(0, 0, WIDTH, HEIGHT, GL.RGBA, GL.UNSIGNED_BYTE, PIXELS);
-      return PIXELS;
-    }
+    };
+    BUTTONS.sprites.addEventListener("click", () => EXAMPLE.setMode("sprites"));
+    BUTTONS.mixed.addEventListener("click", () => EXAMPLE.setMode("mixed"));
+    EXAMPLE.setMode("sprites");
+    return EXAMPLE;
+  }
+
+  // modules/rendering/examples/materials.js
+  var YARN_STYLE = {
+    kind: "yarn",
+    seed: 41,
+    stitchWidth: 14.4,
+    stitchHeight: 15.6,
+    thickness: 0.4102564103,
+    irregularity: 0.13,
+    contrast: 0.23,
+    edgeSpacing: 10,
+    edgeRelief: 3.04,
+    edgeWidth: 3.92,
+    fiberLength: 8.8,
+    fiberWidth: 0.88,
+    fiberOpacity: 0.65,
+    fiberSpacing: 4,
+    fiberMax: 155,
+    curved: true,
+    pattern: true,
+    detail: false,
+    fiber: true
   };
-  BUTTONS.sprites.addEventListener("click", () => EXAMPLE.setMode("sprites"));
-  BUTTONS.mixed.addEventListener("click", () => EXAMPLE.setMode("mixed"));
-  EXAMPLE.setMode("sprites");
-  window.textureArrayExample = EXAMPLE;
+  var SKETCH_STYLE = {
+    kind: "sketch",
+    seed: 7,
+    periodMs: 800,
+    amplitude: 1.2,
+    frequency: 2,
+    echoX: 2,
+    echoY: 1.5,
+    echoWidth: 1.4,
+    echoOpacity: 0.7,
+    hatchAngle: 0.7,
+    hatchSpacing: 6,
+    hatchWidth: 1.2,
+    hatchOpacity: 0.6
+  };
+  var COUNTS = { small: 12, medium: 60, large: 240 };
+  var POINTS = 72;
+  var PAIR_WIDTH = 330;
+  var PAIR_HEIGHT = 180;
+  function disc(style, centerX, centerY, color) {
+    const OUTLINE = [], FILL = [], EDGE_COLORS = [];
+    for (let i = 0; i < POINTS; i++) {
+      const A = i / POINTS * Math.PI * 2, B = (i + 1) / POINTS * Math.PI * 2, AX = centerX + Math.cos(A) * 56, AY = centerY + Math.sin(A) * 68, BX = centerX + Math.cos(B) * 56, BY = centerY + Math.sin(B) * 68;
+      OUTLINE.push(AX, AY);
+      FILL.push(centerX, centerY, ...color, AX, AY, ...color, BX, BY, ...color);
+      EDGE_COLORS.push(...color);
+    }
+    return {
+      fillVertices: Float32Array.from(FILL),
+      outline: Float32Array.from(OUTLINE),
+      edgeColors: Float32Array.from(EDGE_COLORS),
+      style
+    };
+  }
+  function startMaterials(canvas, statsElement) {
+    const WIDTH = canvas.width, HEIGHT = canvas.height, PROJECTION = [2 / WIDTH, 0, 0, 0, -2 / HEIGHT, 0, -1, 1, 1];
+    const DEVICE = new WebGLDevice(canvas, {
+      alpha: false,
+      antialias: true,
+      depth: false,
+      stencil: false,
+      preserveDrawingBuffer: true
+    });
+    const CONTEXT = new VectorContext(DEVICE);
+    const MESHES = CONTEXT.acquireMeshRenderer();
+    const MESH = MESHES.createMesh(
+      buildYarnSurfaceMesh([
+        disc(YARN_STYLE, 80, 90, [0.84, 0.49, 0.29, 1]),
+        disc(SKETCH_STYLE, 250, 90, [0.46, 0.72, 0.58, 1])
+      ])
+    );
+    const BUTTONS = {
+      small: document.querySelector("#materials-small"),
+      medium: document.querySelector("#materials-medium"),
+      large: document.querySelector("#materials-large")
+    };
+    const PLAY = document.querySelector("#materials-play");
+    const REDUCED_MOTION = matchMedia("(prefers-reduced-motion: reduce)");
+    let count = COUNTS.small, playing = !REDUCED_MOTION.matches, visible = false, timeMs = 0, frame = 0;
+    const EXAMPLE = {
+      device: DEVICE,
+      context: CONTEXT,
+      meshes: MESHES,
+      mesh: MESH,
+      count,
+      draws: 0,
+      surfaces: 0,
+      // Draws every actor of the grid with its own display time and returns the draw calls the mesh renderer used.
+      drawFrame(atMs = timeMs) {
+        timeMs = atMs;
+        const COLUMNS = Math.ceil(Math.sqrt(count * WIDTH / HEIGHT)), ROWS = Math.ceil(count / COLUMNS), SCALE = Math.min(WIDTH / COLUMNS / PAIR_WIDTH, HEIGHT / ROWS / PAIR_HEIGHT) * 0.94;
+        CONTEXT.beginFrame({ width: WIDTH, height: HEIGHT, clearColor: [0.06, 0.1, 0.14, 1] });
+        for (let i = 0; i < count; i++) {
+          const X = (i % COLUMNS + 0.5) * (WIDTH / COLUMNS) - PAIR_WIDTH / 2 * SCALE, Y = (Math.floor(i / COLUMNS) + 0.5) * (HEIGHT / ROWS) - PAIR_HEIGHT / 2 * SCALE;
+          MESHES.drawMesh(MESH, {
+            projection: PROJECTION,
+            matrix: [SCALE, 0, 0, SCALE, X, Y],
+            // Every actor has its own time, and they still share the one draw.
+            timeMs: atMs + i * 37
+          });
+        }
+        CONTEXT.endFrame();
+        EXAMPLE.draws = MESHES.stats().draws;
+        EXAMPLE.surfaces = count * 2;
+        statsElement.textContent = `개체 ${count}개 · 표면 ${count * 2}개 · 그리기 호출 ${EXAMPLE.draws}회`;
+        return EXAMPLE.draws;
+      },
+      setCount(name) {
+        if (!Object.hasOwn(COUNTS, name)) {
+          throw new RangeError("count must be small, medium or large");
+        }
+        count = COUNTS[name];
+        EXAMPLE.count = count;
+        for (const [KEY, BUTTON] of Object.entries(BUTTONS)) {
+          BUTTON.setAttribute("aria-pressed", String(KEY === name));
+        }
+        return EXAMPLE.drawFrame();
+      },
+      setPlaying(on) {
+        playing = on;
+        PLAY.setAttribute("aria-pressed", String(on));
+        EXAMPLE.resume();
+      },
+      pause() {
+        visible = false;
+        cancelAnimationFrame(frame);
+      },
+      resume() {
+        visible = true;
+        cancelAnimationFrame(frame);
+        if (playing && visible) {
+          const TICK = (now) => {
+            EXAMPLE.drawFrame(now);
+            frame = requestAnimationFrame(TICK);
+          };
+          frame = requestAnimationFrame(TICK);
+        }
+      },
+      readPixels() {
+        const PIXELS = new Uint8Array(WIDTH * HEIGHT * 4);
+        DEVICE.gl.readPixels(0, 0, WIDTH, HEIGHT, DEVICE.gl.RGBA, DEVICE.gl.UNSIGNED_BYTE, PIXELS);
+        return PIXELS;
+      },
+      dispose() {
+        cancelAnimationFrame(frame);
+        CONTEXT.dispose();
+        DEVICE.dispose();
+      }
+    };
+    for (const [NAME, BUTTON] of Object.entries(BUTTONS)) {
+      BUTTON.addEventListener("click", () => EXAMPLE.setCount(NAME));
+    }
+    PLAY.setAttribute("aria-pressed", String(playing));
+    PLAY.addEventListener("click", () => EXAMPLE.setPlaying(!playing));
+    EXAMPLE.drawFrame(0);
+    return EXAMPLE;
+  }
+
+  // modules/rendering/examples/paint.js
+  var CLIP_POINTS = new Float32Array([380, 40, 680, 40, 680, 150, 500, 150, 500, 360, 380, 360]);
+  function startPaint(canvas, statsElement) {
+    const WIDTH = canvas.width, HEIGHT = canvas.height;
+    const DEVICE = new WebGLDevice(canvas, {
+      alpha: false,
+      antialias: true,
+      depth: false,
+      stencil: true,
+      preserveDrawingBuffer: true
+    });
+    const CONTEXT = new VectorContext(DEVICE);
+    const CLIP = CONTEXT.createClipPath(CLIP_POINTS);
+    const BUTTON = document.querySelector("#paint-clip");
+    const EXAMPLE = {
+      device: DEVICE,
+      context: CONTEXT,
+      clipped: true,
+      drawCalls: 0,
+      draw(clipped = EXAMPLE.clipped) {
+        EXAMPLE.clipped = clipped;
+        CONTEXT.beginFrame({ width: WIDTH, height: HEIGHT, clearColor: [0.06, 0.1, 0.14, 1] });
+        const LINEAR = CONTEXT.createLinearGradient(30, 0, 330, 0);
+        LINEAR.addColorStop(0, "#ed5445");
+        LINEAR.addColorStop(0.5, "rgba(248, 198, 72, 0.7)");
+        LINEAR.addColorStop(1, "#344cda");
+        CONTEXT.fillStyle = LINEAR;
+        CONTEXT.beginPath();
+        CONTEXT.roundRect(30, 40, 300, 120, 14);
+        CONTEXT.fill();
+        const RADIAL = CONTEXT.createRadialGradient(180, 280, 4, 180, 280, 86);
+        RADIAL.addColorStop(0, "#fff8d0");
+        RADIAL.addColorStop(1, "#fff8d000");
+        CONTEXT.fillStyle = RADIAL;
+        CONTEXT.beginPath();
+        CONTEXT.arc(180, 280, 86, 0, Math.PI * 2);
+        CONTEXT.fill();
+        CONTEXT.save();
+        if (clipped) {
+          CONTEXT.clipPath(CLIP);
+        }
+        const WIDE = CONTEXT.createLinearGradient(380, 0, 680, 0);
+        WIDE.addColorStop(0, "#5ce3ad");
+        WIDE.addColorStop(1, "#4fa0eb");
+        CONTEXT.fillStyle = WIDE;
+        CONTEXT.fillRect(360, 20, 340, 360);
+        CONTEXT.restore();
+        EXAMPLE.drawCalls = CONTEXT.endFrame().drawCalls;
+        BUTTON.setAttribute("aria-pressed", String(clipped));
+        BUTTON.textContent = clipped ? "클립 경로 끄기" : "클립 경로 켜기";
+        statsElement.textContent = `그리기 호출 ${EXAMPLE.drawCalls}회 · 클립 경로 ${clipped ? "적용" : "없음"}`;
+        return EXAMPLE.drawCalls;
+      },
+      readPixels() {
+        const PIXELS = new Uint8Array(WIDTH * HEIGHT * 4);
+        DEVICE.gl.readPixels(0, 0, WIDTH, HEIGHT, DEVICE.gl.RGBA, DEVICE.gl.UNSIGNED_BYTE, PIXELS);
+        return PIXELS;
+      },
+      dispose() {
+        CONTEXT.deleteClipPath(CLIP);
+        CONTEXT.dispose();
+        DEVICE.dispose();
+      }
+    };
+    BUTTON.addEventListener("click", () => EXAMPLE.draw(!EXAMPLE.clipped));
+    EXAMPLE.draw(true);
+    return EXAMPLE;
+  }
+
+  // modules/rendering/examples/vector.js
+  var BITMAP = {
+    G: [14, 17, 16, 23, 17, 17, 14],
+    F: [31, 16, 16, 30, 16, 16, 16],
+    X: [17, 17, 10, 4, 10, 17, 17]
+  };
+  var CELL_WIDTH = 6;
+  var CELL_HEIGHT = 7;
+  var RED = [0.98, 0.14, 0.12, 1];
+  function bitmapAtlas(device) {
+    const CHARS = Object.keys(BITMAP), WIDTH = CHARS.length * CELL_WIDTH, DATA = new Uint8Array(WIDTH * CELL_HEIGHT * 4), GLYPHS = {};
+    CHARS.forEach((char, index) => {
+      for (let y = 0; y < CELL_HEIGHT; y++) {
+        for (let x = 0; x < 5; x++) {
+          if (BITMAP[char][y] & 1 << 4 - x) {
+            DATA.set([255, 255, 255, 255], (y * WIDTH + index * CELL_WIDTH + x) * 4);
+          }
+        }
+      }
+      GLYPHS[`U+${char.codePointAt(0).toString(16)}`] = {
+        x: index * CELL_WIDTH,
+        y: 0,
+        width: 5,
+        height: CELL_HEIGHT,
+        advance: 6,
+        bearingY: 7
+      };
+    });
+    return new GlyphAtlas(device, {
+      width: WIDTH,
+      height: CELL_HEIGHT,
+      data: DATA,
+      glyphs: GLYPHS,
+      unitsPerEm: 7,
+      ascent: 7,
+      descent: 0,
+      filter: "nearest"
+    });
+  }
+  function polygon(context, points) {
+    context.beginPath();
+    context.moveTo(...points[0]);
+    for (const POINT of points.slice(1)) {
+      context.lineTo(...POINT);
+    }
+    context.closePath();
+    context.fill();
+  }
+  function startVector(canvas, statsElement) {
+    const DEVICE = new WebGLDevice(canvas, {
+      alpha: true,
+      antialias: true,
+      depth: false,
+      stencil: false,
+      preserveDrawingBuffer: true
+    });
+    const ATLAS = bitmapAtlas(DEVICE);
+    const CONTEXT = new VectorContext(DEVICE, { glyphAtlas: ATLAS });
+    const STARTED = performance.now();
+    CONTEXT.beginFrame({ clearColor: [0.035, 0.055, 0.075, 1] });
+    CONTEXT.withGroupOpacity(
+      0.5,
+      () => {
+        CONTEXT.fillStyle = RED;
+        polygon(CONTEXT, [
+          [290, 155],
+          [480, 155],
+          [480, 335],
+          [290, 335]
+        ]);
+        polygon(CONTEXT, [
+          [420, 155],
+          [610, 155],
+          [610, 335],
+          [420, 335]
+        ]);
+      },
+      { x: 200, y: 80, width: 500, height: 300 }
+    );
+    CONTEXT.beginPath();
+    CONTEXT.moveTo(190, 380);
+    CONTEXT.bezierCurveTo(280, 270, 380, 465, 485, 350);
+    CONTEXT.strokeStyle = [0.36, 0.89, 0.68, 1];
+    CONTEXT.lineWidth = 6;
+    CONTEXT.stroke();
+    CONTEXT.save();
+    CONTEXT.beginPath();
+    CONTEXT.rect(660, 100, 160, 250);
+    CONTEXT.clip();
+    CONTEXT.fillStyle = [0.31, 0.63, 0.92, 1];
+    CONTEXT.beginPath();
+    CONTEXT.moveTo(650, 125);
+    CONTEXT.lineTo(840, 125);
+    CONTEXT.lineTo(785, 305);
+    CONTEXT.lineTo(685, 305);
+    CONTEXT.closePath();
+    CONTEXT.fill("evenodd");
+    CONTEXT.restore();
+    CONTEXT.font = "56px sans-serif";
+    CONTEXT.textAlign = "center";
+    CONTEXT.textBaseline = "alphabetic";
+    CONTEXT.fillStyle = [0.94, 0.91, 0.64, 1];
+    CONTEXT.fillText("GFX", 690, 365);
+    CONTEXT.endFrame();
+    const CPU_SUBMIT_MS = performance.now() - STARTED;
+    statsElement.textContent = `${DEVICE.stats.drawCalls} draw calls · ${DEVICE.stats.vertices} vertices · ${DEVICE.stats.bufferBytes.toLocaleString()} uploaded bytes · ${DEVICE.stats.gpuRenderTargetBytes.toLocaleString()} render-target bytes · CPU submit ${CPU_SUBMIT_MS.toFixed(2)} ms`;
+    return {
+      device: DEVICE,
+      context: CONTEXT,
+      atlas: ATLAS,
+      cpuSubmitMs: CPU_SUBMIT_MS,
+      dispose() {
+        CONTEXT.dispose();
+        ATLAS.dispose();
+        DEVICE.dispose();
+      }
+    };
+  }
+
+  // modules/rendering/examples/main.js
+  var TABS = {
+    vector: startVector,
+    atlas: startAtlas,
+    materials: startMaterials,
+    paint: startPaint
+  };
+  var NAMES = Object.keys(TABS);
+  var EXAMPLES = {};
+  var current = null;
+  function select(name) {
+    if (!NAMES.includes(name)) {
+      throw new RangeError(`unknown example tab: ${name}`);
+    }
+    if (current && current !== name) {
+      EXAMPLES[current]?.pause?.();
+    }
+    for (const TAB of NAMES) {
+      const SELECTED = TAB === name;
+      document.querySelector(`#panel-${TAB}`).hidden = !SELECTED;
+      const BUTTON = document.querySelector(`#tab-${TAB}`);
+      BUTTON.setAttribute("aria-selected", String(SELECTED));
+      BUTTON.tabIndex = SELECTED ? 0 : -1;
+    }
+    EXAMPLES[name] ??= TABS[name](document.querySelector(`#canvas-${name}`), document.querySelector(`#stats-${name}`));
+    EXAMPLES[name].resume?.();
+    current = name;
+    history.replaceState(null, "", `#${name}`);
+  }
+  for (const NAME of NAMES) {
+    const BUTTON = document.querySelector(`#tab-${NAME}`);
+    BUTTON.addEventListener("click", () => select(NAME));
+    BUTTON.addEventListener("keydown", (event) => {
+      const STEP = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+      if (STEP) {
+        const NEXT = NAMES[(NAMES.indexOf(NAME) + STEP + NAMES.length) % NAMES.length];
+        select(NEXT);
+        document.querySelector(`#tab-${NEXT}`).focus();
+      }
+    });
+  }
+  window.addEventListener("hashchange", () => {
+    const NAME = location.hash.slice(1);
+    if (NAMES.includes(NAME) && NAME !== current) {
+      select(NAME);
+    }
+  });
+  window.renderingExamples = EXAMPLES;
   window.addEventListener(
     "pagehide",
     () => {
-      SPRITES.forEach((sprites) => sprites.dispose());
-      CONTEXT.dispose();
-      DEVICE.dispose();
+      for (const EXAMPLE of Object.values(EXAMPLES)) {
+        EXAMPLE.dispose();
+      }
     },
     { once: true }
   );
+  select(NAMES.includes(location.hash.slice(1)) ? location.hash.slice(1) : "vector");
 })();
 
 </script>
+</html>
