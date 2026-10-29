@@ -1,3 +1,23 @@
+## v0.26.3 (2026-10-30)
+
+**Breaking.** `VectorContext.drawVectorActor`가 `drawMesh`와 같은 규칙으로 context 상태를 따릅니다. 게임 이관(yarn-mayhem, bloom-bounko, squish-born, rally-frontier)에서 같은 곳이 반복해서 막혔기 때문입니다. 게임은 이제 카메라 행렬을 액터마다 손으로 곱하지 않습니다.
+
+```js
+// 이전: 카메라를 액터 호출마다 직접 곱함
+camera.applyToContext(ctx);
+ctx.drawVectorActor(actor, { matrix: multiply(cameraMatrix, local), alpha: ctx.globalAlpha, color, forceColor });
+
+// 이후
+camera.applyToContext(ctx);
+ctx.drawVectorActor(actor, { matrix: local });
+```
+
+- `matrix`는 현재 context 변환과 합성됩니다. 변환이 항등이면 이전과 같고, `viewProjection`/`worldMatrix`(월드 모드)에서는 합성하지 않습니다. `matrix`가 없으면 context 변환 자체를 씁니다.
+- `alpha`는 context `globalAlpha`와 곱해집니다. `forceColor`와 `whiteFlash`를 지정하지 않으면 context의 `forceColor`와 `filter`를 따릅니다. 이미 `alpha`/`color`/`forceColor`를 명시해 넘기던 코드는 context가 기본값(`globalAlpha` 1, `forceColor` 없음)일 때 그대로 동작합니다.
+- 새 옵션 `depthWriteAlphaThreshold`: 반투명 삼각형이 깊이를 쓰지 않게 하는 `MeshRenderer` 옵션을 액터도 받습니다. 지정하면 액터는 GPU 포즈 대신 CPU 포즈로 그립니다(포즈 통계의 fallback 사유는 `alphaDepthClassification`). 재질이 있는 에셋(털실·스케치)과 월드 모드는 `MeshRenderer`가 이 옵션을 지원하지 않아 오류입니다.
+- 이번에 하지 않은 것: 액터의 외곽선(silhouette) 그리기. 이미 `drawMeshSilhouette`가 있는 메시와 달리 액터에는 아직 없습니다. 외곽선 8방향 draw는 이제 카메라 합성이 되어 게임이 `matrix`만 오프셋하면 됩니다.
+- 시험: `test:vector-assets:paint-regions`에 카메라 변환이 `matrix` 평행이동과 같은 픽셀임, context `globalAlpha`가 `alpha`와 같은 픽셀임, `depthWriteAlphaThreshold`가 GL 오류 없이 그려짐을 추가했습니다. `world-rendering`, `vector-gradient-clip`, `alpha-run-batching`, 브라우저 e2e도 통과했습니다. 모바일과 게임 화면은 확인하지 않았습니다.
+
 ## v0.26.2 (2026-10-30)
 
 2D 프레임 비용 벤치마크(v0.26.1 기록)에서 CPU가 컸던 세 장면(경로, 곡선, 그라디언트)의 원인을 프로파일로 확인해 고칩니다. 경로·곡선은 구조가 아니라 **둥근 접합 버그와 정점 하나마다 임시 배열을 만드는 비효율**, 그라디언트는 **객체마다 램프를 매 프레임 다시 만드는 비효율**이었습니다. 공개 API는 그대로입니다.
