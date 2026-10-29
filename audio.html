@@ -103,11 +103,11 @@
         throw new TypeError("bed layer lfoHz/lfoDepth were replaced by lfos: [{ hz, depth }]");
       }
       const LFOS = LAYER.lfos ?? [];
-      if (LAYER.kind !== "noise" && LAYER.kind !== "buffer" || LAYER.kind === "buffer" && (typeof LAYER.bufferId !== "string" || !LAYER.bufferId) || (LAYER.kind === "noise" || LAYER.type !== void 0) && (!Number.isFinite(LAYER.hz) || LAYER.hz <= 0) || !Number.isFinite(LAYER.gain) || LAYER.gain < 0 || LAYER.gain > 1 || !BED_FILTERS.includes(LAYER.type ?? "lowpass") || !(LAYER.q === void 0 || Number.isFinite(LAYER.q) && LAYER.q > 0 && LAYER.q <= 30) || !Number.isFinite(LAYER.pan ?? 0) || Math.abs(LAYER.pan ?? 0) > 1 || !Number.isFinite(LAYER.offsetMs ?? 0) || (LAYER.offsetMs ?? 0) < 0 || (LAYER.offsetMs ?? 0) > 6e4 || !(LAYER.compressor === void 0 || validBedCompressor(LAYER.compressor)) || !Array.isArray(LFOS) || LFOS.length > 4 || LFOS.some(
+      if (LAYER.kind !== "noise" && LAYER.kind !== "buffer" || LAYER.kind === "buffer" && (typeof LAYER.bufferId !== "string" || !LAYER.bufferId) || (LAYER.kind === "noise" || LAYER.type !== void 0) && (!Number.isFinite(LAYER.hz) || LAYER.hz <= 0) || !Number.isFinite(LAYER.gain) || LAYER.gain < 0 || LAYER.gain > 1 || !BED_FILTERS.includes(LAYER.type ?? "lowpass") || !(LAYER.q === void 0 || Number.isFinite(LAYER.q) && LAYER.q > 0 && LAYER.q <= 30) || !Number.isFinite(LAYER.pan ?? 0) || Math.abs(LAYER.pan ?? 0) > 1 || !Number.isFinite(LAYER.offsetMs ?? 0) || (LAYER.offsetMs ?? 0) < 0 || (LAYER.offsetMs ?? 0) > 6e4 || !(LAYER.lowCutHz === void 0 || Number.isFinite(LAYER.lowCutHz) && LAYER.lowCutHz >= 10 && LAYER.lowCutHz <= 400) || !(LAYER.compressor === void 0 || validBedCompressor(LAYER.compressor)) || !Array.isArray(LFOS) || LFOS.length > 4 || LFOS.some(
         (lfo) => !Number.isFinite(lfo?.hz) || lfo.hz < 0.01 || lfo.hz > 20 || !Number.isFinite(lfo.depth) || lfo.depth < 0 || lfo.depth > 1
       ) || LFOS.reduce((sum, lfo) => sum + lfo.depth, 0) > 1) {
         throw new RangeError(
-          "bed layers are noise {hz} or buffer {bufferId} (hz only with a type), gain 0..1, optional type lowpass|bandpass|highpass, q 0..30, compressor {threshold -100..0, ratio 1..20, knee?, attackMs?, releaseMs?}, pan -1..1, offsetMs 0..60000 and up to 4 lfos {hz 0.01..20, depth 0..1} whose depths sum to at most 1"
+          "bed layers are noise {hz} or buffer {bufferId} (hz only with a type), gain 0..1, optional type lowpass|bandpass|highpass, q 0..30, lowCutHz 10..400, compressor {threshold -100..0, ratio 1..20, knee?, attackMs?, releaseMs?}, pan -1..1, offsetMs 0..60000 and up to 4 lfos {hz 0.01..20, depth 0..1} whose depths sum to at most 1"
         );
       }
     }
@@ -271,6 +271,14 @@
       }
       GAIN.gain.value = LAYER.gain * (1 - DEPTH / 2);
       let tail = SOURCE;
+      if (LAYER.lowCutHz !== void 0) {
+        const LOW_CUT = context.createBiquadFilter();
+        LOW_CUT.type = "highpass";
+        LOW_CUT.frequency.value = LAYER.lowCutHz;
+        tail.connect(LOW_CUT);
+        tail = LOW_CUT;
+        NODES.push(LOW_CUT);
+      }
       if (FILTER) {
         tail.connect(FILTER);
         tail = FILTER;
