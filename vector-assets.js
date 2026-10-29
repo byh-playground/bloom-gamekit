@@ -3779,7 +3779,7 @@ function blendPoses(from, to, amount, partIds) {
   }
   return OUTPUT;
 }
-function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null } = {}) {
+function retainVectorAsset(meshRenderer, compiledAsset, surfaceRenderer) {
   if (!meshRenderer?.createMesh || !meshRenderer?.drawMesh || !meshRenderer?.deleteMesh) {
     throw new TypeError("A GameKit MeshRenderer is required");
   }
@@ -3798,9 +3798,7 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
   const POSE_API = typeof meshRenderer.createPoseSource === "function" && typeof meshRenderer.createPoseInstance === "function" && typeof meshRenderer.preparePose === "function" && typeof meshRenderer.prepareCpuPose === "function" && typeof meshRenderer.deletePoseInstance === "function" && typeof meshRenderer.deletePoseSource === "function";
   const GEOMETRY = compiledAsset.geometry, SHADER_GEOMETRY = GEOMETRY.shaderSurfaces ?? [];
   if (SHADER_GEOMETRY.length && (!surfaceRenderer?.createSurface || !surfaceRenderer?.drawSurface || !surfaceRenderer?.deleteSurface)) {
-    throw new TypeError(
-      'This SVG declares backend:"shader"; pass a GameKit YarnSurfaceRenderer when creating the vector asset'
-    );
+    throw new TypeError('This SVG declares backend:"shader" and needs a GameKit YarnSurfaceRenderer');
   }
   const POSE_PROGRAM = POSE_API && !GEOMETRY.drawOrder && !SHADER_GEOMETRY.length ? compilePoseChannels(METADATA) : null;
   let mesh = null;
@@ -3824,14 +3822,14 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
     }
     throw error;
   }
-  const PLAYERS = /* @__PURE__ */ new Set();
+  const ACTORS = /* @__PURE__ */ new Set();
   let disposed = false;
   const REQUIRE_READY = () => {
     if (disposed) {
       throw new Error("Vector asset is disposed");
     }
   };
-  const CREATE_PLAYER = ({ clip = Object.keys(CLIPS)[0], startedAtMs = 0 } = {}) => {
+  const CREATE_ACTOR = ({ clip = Object.keys(CLIPS)[0], startedAtMs = 0 } = {}, release = null) => {
     REQUIRE_READY();
     if (!Object.hasOwn(CLIPS, clip)) {
       throw new TypeError(`Unknown vector clip: ${clip}`);
@@ -3885,7 +3883,7 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
     let resolvedPose = null;
     let preparedPose = null;
     const RESOLVED_MATRICES = /* @__PURE__ */ new Map();
-    let playerDisposed = false;
+    let actorDisposed = false;
     const POSE_INSTANCE = poseSource ? meshRenderer.createPoseInstance(poseSource) : null;
     const POSE_METRICS = {
       fullSamples: 0,
@@ -3901,10 +3899,10 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
       poseRevision++;
       preparedPose = null;
     };
-    const ASSERT_PLAYER = () => {
+    const ASSERT_ACTOR = () => {
       REQUIRE_READY();
-      if (playerDisposed) {
-        throw new Error("Vector player is disposed");
+      if (actorDisposed) {
+        throw new Error("Vector actor is disposed");
       }
     };
     const SAMPLE_CLIP = (playback, timeMs) => {
@@ -3987,23 +3985,23 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
       }
     };
     const SEEK = (timeMs) => {
-      ASSERT_PLAYER();
+      ASSERT_ACTOR();
       const NEXT_TIME_MS = FINITE_TIME(timeMs, "displayTimeMs");
       if (NEXT_TIME_MS !== displayTimeMs || soughtPlaybackRevision !== playbackRevision) {
         displayTimeMs = NEXT_TIME_MS;
         soughtPlaybackRevision = playbackRevision;
         INVALIDATE_POSE();
       }
-      return PLAYER;
+      return ACTOR;
     };
     const SET_EXPRESSION = (name) => {
-      ASSERT_PLAYER();
+      ASSERT_ACTOR();
       const VARIANT = METADATA.expressions[name];
       if (!VARIANT) {
         throw new TypeError(`Unknown vector expression: ${name}`);
       }
       if (name === expression && !visibilityOverridden) {
-        return PLAYER;
+        return ACTOR;
       }
       for (const ID of EXPRESSION_PARTS) {
         VISIBLE.set(ID, false);
@@ -4017,20 +4015,20 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
       expression = name;
       visibilityOverridden = false;
       INVALIDATE_POSE();
-      return PLAYER;
+      return ACTOR;
     };
     const SET_PART_VISIBLE = (id, isVisible) => {
-      ASSERT_PLAYER();
+      ASSERT_ACTOR();
       if (!PART_INDICES.has(id) || typeof isVisible !== "boolean") {
         throw new TypeError("Known part id and boolean visibility required");
       }
       VISIBLE.set(id, isVisible);
       visibilityOverridden = true;
       INVALIDATE_POSE();
-      return PLAYER;
+      return ACTOR;
     };
     const SET_BASE_POSE = (id, pose) => {
-      ASSERT_PLAYER();
+      ASSERT_ACTOR();
       if (!PART_INDICES.has(id) || !pose || typeof pose !== "object" || Array.isArray(pose)) {
         throw new TypeError("Known part and pose object required");
       }
@@ -4056,10 +4054,10 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
       if (changed) {
         INVALIDATE_POSE();
       }
-      return PLAYER;
+      return ACTOR;
     };
     const PLAY = (name, atMs = displayTimeMs) => {
-      ASSERT_PLAYER();
+      ASSERT_ACTOR();
       if (!Object.hasOwn(CLIPS, name)) {
         throw new TypeError(`Unknown vector clip: ${name}`);
       }
@@ -4072,7 +4070,7 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
       return SEEK(atMs);
     };
     const TRANSITION_TO = (name, atMs = displayTimeMs, durationMs = 0) => {
-      ASSERT_PLAYER();
+      ASSERT_ACTOR();
       if (!Object.hasOwn(CLIPS, name)) {
         throw new TypeError(`Unknown vector clip: ${name}`);
       }
@@ -4158,7 +4156,7 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
       return { ...RESULT, visible };
     };
     const GET_SOCKET = (id) => {
-      ASSERT_PLAYER();
+      ASSERT_ACTOR();
       const SOCKET = METADATA.sockets[id];
       if (!SOCKET) {
         throw new TypeError(`Unknown vector socket: ${id}`);
@@ -4183,7 +4181,7 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
       };
     };
     const PART_POSES = () => {
-      ASSERT_PLAYER();
+      ASSERT_ACTOR();
       const RESOLVED = WORLD_MATRICES();
       return RESOLVED.parts.map((pose, index) => {
         return {
@@ -4212,7 +4210,7 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
       return excludedMask;
     };
     const PREPARE_POSE = ({ excludeParts = null } = {}) => {
-      ASSERT_PLAYER();
+      ASSERT_ACTOR();
       const EXCLUDED_MASK = VALIDATE_EXCLUSIONS(excludeParts);
       if (!POSE_INSTANCE) {
         return null;
@@ -4283,7 +4281,7 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
       strokeViewport = null,
       excludeParts = null
     } = {}) => {
-      ASSERT_PLAYER();
+      ASSERT_ACTOR();
       VALIDATE_EXCLUSIONS(excludeParts);
       if (!mesh && paintRegions !== null) {
         throw new TypeError("This asset has no named mesh fills");
@@ -4425,7 +4423,7 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
       });
     };
     const GET_PART_POSE = (id) => {
-      ASSERT_PLAYER();
+      ASSERT_ACTOR();
       if (!PART_INDICES.has(id)) {
         throw new TypeError(`Unknown vector part: ${id}`);
       }
@@ -4439,8 +4437,8 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
         transform: EFFECTIVE.transform.slice()
       };
     };
-    const DISPOSE_PLAYER = () => {
-      if (playerDisposed) {
+    const DISPOSE_ACTOR = () => {
+      if (actorDisposed) {
         return false;
       }
       for (const { timeline: TIMELINE } of TIMELINES.values()) {
@@ -4450,11 +4448,12 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
       if (POSE_INSTANCE) {
         meshRenderer.deletePoseInstance(POSE_INSTANCE);
       }
-      PLAYERS.delete(PLAYER);
-      playerDisposed = true;
+      ACTORS.delete(ACTOR);
+      actorDisposed = true;
+      release?.();
       return true;
     };
-    const PLAYER = Object.freeze({
+    const ACTOR = Object.freeze({
       seek: SEEK,
       play: PLAY,
       transitionTo: TRANSITION_TO,
@@ -4466,7 +4465,7 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
       partPoses: PART_POSES,
       preparePose: PREPARE_POSE,
       draw: DRAW,
-      dispose: DISPOSE_PLAYER,
+      dispose: DISPOSE_ACTOR,
       get currentClip() {
         return rootPlayback.kind === "clip" ? rootPlayback.name : rootPlayback.to.name;
       },
@@ -4488,22 +4487,22 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
         return false;
       },
       get disposed() {
-        return playerDisposed;
+        return actorDisposed;
       },
       get poseMetrics() {
         return { ...POSE_METRICS };
       }
     });
-    PLAYERS.add(PLAYER);
+    ACTORS.add(ACTOR);
     SEEK(startedAtMs);
-    return PLAYER;
+    return ACTOR;
   };
   const DISPOSE = () => {
     if (disposed) {
       return false;
     }
-    for (const PLAYER of [...PLAYERS]) {
-      PLAYER.dispose();
+    for (const ACTOR of [...ACTORS]) {
+      ACTOR.dispose();
     }
     if (mesh) {
       meshRenderer.deleteMesh(mesh);
@@ -4526,18 +4525,72 @@ function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null
     metadata: METADATA,
     mesh,
     surfaces: Object.freeze(RETAINED_SURFACES),
-    createPlayer: CREATE_PLAYER,
-    ownsPlayer(player) {
-      return PLAYERS.has(player) && !player.disposed;
+    createActor: CREATE_ACTOR,
+    ownsActor(actor) {
+      return ACTORS.has(actor) && !actor.disposed;
     },
     dispose: DISPOSE,
     get disposed() {
       return disposed;
     },
-    get playerCount() {
-      return PLAYERS.size;
+    get actorCount() {
+      return ACTORS.size;
     }
   });
+}
+var SHARED_ASSETS = /* @__PURE__ */ new WeakMap();
+function acquireVectorAsset(context, compiledAsset) {
+  if (!context?.acquireMeshRenderer || !context?.acquireSurfaceRenderer || !context?.onDispose) {
+    throw new TypeError("A GameKit VectorContext is required");
+  }
+  let table = SHARED_ASSETS.get(context);
+  if (!table) {
+    table = /* @__PURE__ */ new Map();
+    SHARED_ASSETS.set(context, table);
+    const TABLE2 = table;
+    context.onDispose(() => {
+      const ENTRIES = [...TABLE2.values()];
+      TABLE2.clear();
+      for (const ENTRY2 of ENTRIES) {
+        ENTRY2.asset.dispose();
+      }
+    });
+  }
+  let entry = table.get(compiledAsset);
+  if (!entry) {
+    const SURFACES = compiledAsset?.geometry?.shaderSurfaces?.length ? context.acquireSurfaceRenderer() : null;
+    entry = {
+      asset: retainVectorAsset(context.acquireMeshRenderer(), compiledAsset, SURFACES),
+      refs: 0
+    };
+    table.set(compiledAsset, entry);
+  }
+  entry.refs++;
+  const ENTRY = entry, TABLE = table;
+  let released = false;
+  return {
+    asset: ENTRY.asset,
+    release() {
+      if (released) {
+        return false;
+      }
+      released = true;
+      if (--ENTRY.refs === 0 && TABLE.get(compiledAsset) === ENTRY) {
+        TABLE.delete(compiledAsset);
+        ENTRY.asset.dispose();
+      }
+      return true;
+    }
+  };
+}
+function createVectorActor(context, compiledAsset, options = {}) {
+  const { asset: ASSET, release: RELEASE } = acquireVectorAsset(context, compiledAsset);
+  try {
+    return ASSET.createActor(options, RELEASE);
+  } catch (error) {
+    RELEASE();
+    throw error;
+  }
 }
 
 // modules/vector-assets/raster-atlas.js
@@ -4580,10 +4633,6 @@ function sourceRuns(geometry) {
     }
   }
   return RUNS;
-}
-function sameGeometry(mesh, geometry) {
-  const VERTICES = mesh.vertices, INDICES = mesh.indices;
-  return VERTICES?.length === geometry.vertices.length && VERTICES.every((value, index) => value === geometry.vertices[index]) && (geometry.indices === void 0 ? INDICES === void 0 : INDICES instanceof Uint16Array && INDICES.length === geometry.indices.length && INDICES.every((value, index) => value === geometry.indices[index]));
 }
 function wholeRunExpressions(geometry, runs) {
   const SOURCE = geometry.indices;
@@ -4668,15 +4717,20 @@ function runTables(runs, packed, region, pixelsPerUnit, padding) {
   }
   return { uvRects: UV_RECTS, localRects: LOCAL_RECTS, parts: PARTS };
 }
-function createVectorRasterAtlas(context, asset, compiledAsset, { pixelsPerUnit = 1, padding = 2 } = {}) {
-  validateCompiledAsset(compiledAsset);
-  const DEVICE = context?.device;
-  const MESHES = context?.meshRenderer;
-  const SOURCE_MESH_MATCHES = asset?.mesh ? asset.mesh.renderer === MESHES && asset.mesh.partCount === compiledAsset.geometry.partCount && sameGeometry(asset.mesh, compiledAsset.geometry) : compiledAsset.geometry.vertices.length === 0;
-  if (!context?.drawQuads || !context?.drawVectorAsset || !DEVICE?.createTextureLayerTarget || !DEVICE?.bindRenderTarget || !DEVICE?.unbindRenderTarget || !asset?.ownsPlayer || asset.disposed || asset.sourceSha256 !== compiledAsset.sourceSha256 || !SOURCE_MESH_MATCHES) {
-    throw new TypeError(
-      "A VectorContext and a matching live vector asset created on its mesh renderer are required"
-    );
+function createVectorRasterAtlas(context, compiledAsset, options = {}) {
+  const { asset: ASSET, release: RELEASE } = acquireVectorAsset(context, compiledAsset);
+  try {
+    return bakeRasterAtlas(context, ASSET, RELEASE, compiledAsset, options);
+  } catch (error) {
+    RELEASE();
+    throw error;
+  }
+}
+function bakeRasterAtlas(context, asset, release, compiledAsset, { pixelsPerUnit = 1, padding = 2 } = {}) {
+  const DEVICE = context.device;
+  const MESHES = context.meshRenderer;
+  if (!context.drawQuads || !context.drawVectorActor || !DEVICE?.createTextureLayerTarget || !DEVICE?.bindRenderTarget || !DEVICE?.unbindRenderTarget) {
+    throw new TypeError("A VectorContext is required");
   }
   if (!Number.isFinite(pixelsPerUnit) || pixelsPerUnit <= 0 || !Number.isSafeInteger(padding) || padding < 1) {
     throw new TypeError("A positive pixel scale and padding are required");
@@ -4734,10 +4788,10 @@ function createVectorRasterAtlas(context, asset, compiledAsset, { pixelsPerUnit 
   let rasterDraws = 0;
   let vectorDraws = 0;
   const FALLBACK_REASONS = /* @__PURE__ */ Object.create(null);
-  const FALLBACK = (player, options, reason) => {
+  const FALLBACK = (actor, options, reason) => {
     vectorDraws++;
     FALLBACK_REASONS[reason] = (FALLBACK_REASONS[reason] ?? 0) + 1;
-    context.drawVectorAsset(player, options);
+    context.drawVectorActor(actor, options);
     return { backend: "vector", reason };
   };
   const RELEASE_TARGET = () => {
@@ -4829,39 +4883,39 @@ function createVectorRasterAtlas(context, asset, compiledAsset, { pixelsPerUnit 
       return { backend: "vector", reason: "bakeFailed" };
     }
   };
-  const DRAW = (player, options = {}) => {
+  const DRAW = (actor, options = {}) => {
     if (disposed || asset.disposed) {
       throw new Error("Vector raster atlas or source asset is disposed");
     }
-    if (!asset.ownsPlayer(player)) {
-      throw new TypeError("A live player owned by this vector asset is required");
+    if (!asset.ownsActor(actor)) {
+      throw new TypeError("A live actor owned by this vector asset is required");
     }
     if (unsupportedReason) {
-      return FALLBACK(player, options, unsupportedReason);
+      return FALLBACK(actor, options, unsupportedReason);
     }
     if (options.forceColor === true) {
-      return FALLBACK(player, options, "forceColor");
+      return FALLBACK(actor, options, "forceColor");
     }
     if (options.alpha !== void 0 && options.alpha < 1 || options.color?.[3] < 1) {
-      return FALLBACK(player, options, "globalOpacity");
+      return FALLBACK(actor, options, "globalOpacity");
     }
-    if (player.hasOpacityChannel) {
-      return FALLBACK(player, options, "opacityChannel");
+    if (actor.hasOpacityChannel) {
+      return FALLBACK(actor, options, "opacityChannel");
     }
-    if (player.hasNonUnitBaseOpacity) {
-      return FALLBACK(player, options, "baseOpacity");
+    if (actor.hasNonUnitBaseOpacity) {
+      return FALLBACK(actor, options, "baseOpacity");
     }
     if (options.depthWriteAlphaThreshold != null) {
-      return FALLBACK(player, options, "depthWriteAlphaThreshold");
+      return FALLBACK(actor, options, "depthWriteAlphaThreshold");
     }
     const RESULT = BAKE();
     if (RESULT.backend !== "raster") {
-      return FALLBACK(player, options, RESULT.reason);
+      return FALLBACK(actor, options, RESULT.reason);
     }
     const { excludeParts: EXCLUDE_PARTS = null, matrix: MATRIX = IDENTITY_MATRIX, ...DRAW_OPTIONS } = options;
-    const POSE = player.preparePose({ excludeParts: EXCLUDE_PARTS });
+    const POSE = actor.preparePose({ excludeParts: EXCLUDE_PARTS });
     if (!POSE) {
-      return FALLBACK(player, options, "poseUnavailable");
+      return FALLBACK(actor, options, "poseUnavailable");
     }
     context.drawQuads({
       ...DRAW_OPTIONS,
@@ -4885,8 +4939,12 @@ function createVectorRasterAtlas(context, asset, compiledAsset, { pixelsPerUnit 
     try {
       RELEASE_TARGET();
     } finally {
-      if (region && DEVICE.state === "ready") {
-        ATLAS.release(region);
+      try {
+        if (region && DEVICE.state === "ready") {
+          ATLAS.release(region);
+        }
+      } finally {
+        release();
       }
     }
     return true;
@@ -4924,10 +4982,6 @@ function createVectorRasterAtlas(context, asset, compiledAsset, { pixelsPerUnit 
 var CACHE = /* @__PURE__ */ new WeakMap();
 var MAX_FRAMES = 512;
 var NOW3 = () => globalThis.performance?.now?.() ?? null;
-function sameGeometry2(mesh, geometry) {
-  const VERTICES = mesh.vertices, INDICES = mesh.indices;
-  return VERTICES?.length === geometry.vertices.length && VERTICES.every((value, index) => value === geometry.vertices[index]) && (geometry.indices === void 0 ? INDICES === void 0 : INDICES instanceof Uint16Array && INDICES.length === geometry.indices.length && INDICES.every((value, index) => value === geometry.indices[index]));
-}
 function sampleFrames(clip, interval) {
   const COUNT = Math.ceil(clip.durationMs / interval);
   if (!Number.isSafeInteger(COUNT) || COUNT < 1 || COUNT > MAX_FRAMES) {
@@ -4941,12 +4995,12 @@ function sampleFrames(clip, interval) {
     };
   });
 }
-function sampledBounds(player, geometry, samples) {
+function sampledBounds(actor, geometry, samples) {
   const VERTICES = geometry.vertices;
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const SAMPLE of samples) {
-    player.seek(SAMPLE.timeMs);
-    const POSES = player.partPoses();
+    actor.seek(SAMPLE.timeMs);
+    const POSES = actor.partPoses();
     for (let offset = 0; offset < VERTICES.length; offset += 11) {
       const POSE = POSES[VERTICES[offset + 10]];
       if (!POSE.visible || POSE.opacity <= 0) {
@@ -5008,7 +5062,16 @@ function spriteDefinition(clipName, clip, samples, packed, contentWidth, content
     })
   });
 }
-function createVectorSpriteAtlas(context, asset, compiledAsset, {
+function createVectorSpriteAtlas(context, compiledAsset, options = {}) {
+  const { asset: ASSET, release: RELEASE } = acquireVectorAsset(context, compiledAsset);
+  try {
+    return bakeSpriteAtlas(context, ASSET, RELEASE, compiledAsset, options);
+  } catch (error) {
+    RELEASE();
+    throw error;
+  }
+}
+function bakeSpriteAtlas(context, asset, release, compiledAsset, {
   clip,
   expression = compiledAsset?.metadata?.defaultExpression,
   sampleIntervalMs = 100,
@@ -5018,11 +5081,9 @@ function createVectorSpriteAtlas(context, asset, compiledAsset, {
   supersample = 1
 } = {}) {
   validateCompiledAsset(compiledAsset);
-  const DEVICE = context?.device, MESHES = context?.meshRenderer, GEOMETRY = compiledAsset.geometry, SOURCE_MESH_MATCHES = asset?.mesh ? asset.mesh.renderer === MESHES && asset.mesh.partCount === GEOMETRY.partCount && sameGeometry2(asset.mesh, GEOMETRY) : GEOMETRY.vertices.length === 0;
-  if (!context?.drawQuads || !DEVICE?.createRenderTarget || !DEVICE?.blitRenderTarget || !DEVICE?.createTextureLayerTarget || !DEVICE?.bindRenderTarget || !DEVICE?.unbindRenderTarget || !asset?.ownsPlayer || asset.disposed || asset.sourceSha256 !== compiledAsset.sourceSha256 || !SOURCE_MESH_MATCHES) {
-    throw new TypeError(
-      "A VectorContext and a matching live vector asset created on its mesh renderer are required"
-    );
+  const DEVICE = context.device, MESHES = context.meshRenderer, GEOMETRY = compiledAsset.geometry;
+  if (!context.drawQuads || !DEVICE?.createRenderTarget || !DEVICE?.blitRenderTarget || !DEVICE?.createTextureLayerTarget || !DEVICE?.bindRenderTarget || !DEVICE?.unbindRenderTarget) {
+    throw new TypeError("A VectorContext is required");
   }
   if (!Object.hasOwn(compiledAsset.metadata.clips, clip) || !Object.hasOwn(compiledAsset.metadata.expressions, expression)) {
     throw new TypeError("Known authored clip and expression required");
@@ -5072,11 +5133,11 @@ function createVectorSpriteAtlas(context, asset, compiledAsset, {
     if (!reason && !SAMPLES) {
       reason = "frameLimit";
     }
-    const PLAYER = reason ? null : asset.createPlayer({ clip, startedAtMs: 0 });
-    if (PLAYER && expression !== compiledAsset.metadata.defaultExpression) {
-      PLAYER.setExpression(expression);
+    const ACTOR = reason ? null : asset.createActor({ clip, startedAtMs: 0 });
+    if (ACTOR && expression !== compiledAsset.metadata.defaultExpression) {
+      ACTOR.setExpression(expression);
     }
-    const BOUNDS = PLAYER ? sampledBounds(PLAYER, GEOMETRY, SAMPLES) : null;
+    const BOUNDS = ACTOR ? sampledBounds(ACTOR, GEOMETRY, SAMPLES) : null;
     if (!reason && !BOUNDS) {
       reason = "emptyFrames";
     }
@@ -5103,14 +5164,14 @@ function createVectorSpriteAtlas(context, asset, compiledAsset, {
       }
     }
     if (reason) {
-      PLAYER?.dispose();
+      ACTOR?.dispose();
     }
     record = {
       key: KEY,
       refs: 0,
       reason,
       lastError: null,
-      player: reason ? null : PLAYER,
+      actor: reason ? null : ACTOR,
       samples: SAMPLES,
       bounds: BOUNDS,
       packed: PACKED,
@@ -5195,8 +5256,8 @@ function createVectorSpriteAtlas(context, asset, compiledAsset, {
       const DIRECT = supersample === 1, BAKE_WIDTH = DIRECT ? ATLAS.width : record.packed.width, BAKE_HEIGHT = DIRECT ? ATLAS.height : record.packed.height, ORIGIN_X = DIRECT ? REGION.x : 0, ORIGIN_Y = DIRECT ? ATLAS.height - (REGION.y + REGION.height) : 0;
       for (let index = 0; index < record.samples.length; index++) {
         const SAMPLE = record.samples[index], FRAME = record.definition.frames[index], TX = ORIGIN_X + FRAME.x - pixelsPerUnit * MIN_X, TY = ORIGIN_Y + FRAME.y - pixelsPerUnit * MIN_Y;
-        record.player.seek(SAMPLE.timeMs);
-        record.player.draw({
+        record.actor.seek(SAMPLE.timeMs);
+        record.actor.draw({
           paintRegions: CAPTURED_PAINT,
           projection: [
             2 * pixelsPerUnit / BAKE_WIDTH,
@@ -5286,13 +5347,14 @@ function createVectorSpriteAtlas(context, asset, compiledAsset, {
         if (record.region && DEVICE.state === "ready") {
           ATLAS.release(record.region);
         }
-        record.player?.dispose();
+        record.actor?.dispose();
         cached.delete(KEY);
         if (cached.size === 0) {
           CACHE.delete(asset);
         }
       }
     }
+    release();
     return true;
   };
   return Object.freeze({
@@ -5393,7 +5455,7 @@ export {
   SVG_PAINT_REGION_ATTRIBUTE,
   VECTOR_ASSET_QUALITY_PRESETS,
   applySvgPaintRegions,
-  createVectorAsset,
+  createVectorActor,
   createVectorRasterAtlas,
   createVectorSpriteAtlas
 };
