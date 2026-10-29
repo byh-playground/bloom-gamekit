@@ -244,7 +244,7 @@ try {
         }
         const BED_RECIPE = {
             category: 'ambience',
-            layers: [{ kind: 'noise', hz: 900, gain: 0.3, lfoHz: 2, lfoDepth: 0.5 }],
+            layers: [{ kind: 'noise', hz: 900, gain: 0.3, lfos: [{ hz: 2, depth: 0.5 }] }],
         };
         const BED = {};
         {
@@ -289,7 +289,80 @@ try {
             const OUT = await CONTEXT.startRendering();
             BED[SWELL ? 'swelled' : 'plain'] = RMS(OUT.getChannelData(0), 0.1, 0.5);
         }
-        return { pan: PAN, crossings: CENTS, bed: BED };
+        const TEXTURE = {};
+        const NOISE_BED = (layers) => ({ category: 'ambience', layers });
+        // 중심이 4배 높은 밴드패스는 교차 횟수도 대략 4배다(절대값은 필터 응답에 따라 달라 비율로 확인한다).
+        for (const CENTER of [500, 2000]) {
+            const CONTEXT = new OfflineAudioContext(1, 48000, 48000),
+                MIX = CREATE_MIX(CONTEXT, CONTEXT.destination);
+            RENDER_BED(
+                CONTEXT,
+                MIX.input,
+                NOISE_BED([{ kind: 'noise', type: 'bandpass', hz: CENTER, q: 8, gain: 0.5 }]),
+                MAKE_NOISE(CONTEXT, 2000),
+                { fadeMs: 1 },
+            );
+            const OUT = await CONTEXT.startRendering();
+            TEXTURE['bandpassCrossings' + CENTER] = CROSSINGS(OUT.getChannelData(0), 0.2, 0.8) / 0.6;
+        }
+        for (const OFFSET of [0, 700]) {
+            const CONTEXT = new OfflineAudioContext(2, 48000, 48000),
+                MIX = CREATE_MIX(CONTEXT, CONTEXT.destination);
+            RENDER_BED(
+                CONTEXT,
+                MIX.input,
+                NOISE_BED([
+                    { kind: 'noise', hz: 1500, gain: 0.4, pan: -1 },
+                    { kind: 'noise', hz: 1500, gain: 0.4, pan: 1, offsetMs: OFFSET },
+                ]),
+                MAKE_NOISE(CONTEXT, 2000),
+                { fadeMs: 1 },
+            );
+            const OUT = await CONTEXT.startRendering(),
+                LEFT = OUT.getChannelData(0),
+                RIGHT = OUT.getChannelData(1);
+            let sl = 0,
+                sr = 0,
+                sx = 0;
+            for (let i = 9600; i < 38400; i++) {
+                sl += LEFT[i] * LEFT[i];
+                sr += RIGHT[i] * RIGHT[i];
+                sx += LEFT[i] * RIGHT[i];
+            }
+            TEXTURE['correlation' + OFFSET] = sx / Math.sqrt(sl * sr);
+        }
+        for (const DEPTH of [0, 0.9]) {
+            const CONTEXT = new OfflineAudioContext(1, 48000, 48000),
+                MIX = CREATE_MIX(CONTEXT, CONTEXT.destination);
+            RENDER_BED(
+                CONTEXT,
+                MIX.input,
+                NOISE_BED([{ kind: 'noise', hz: 1500, gain: 0.4, lfos: DEPTH ? [{ hz: 5, depth: DEPTH }] : [] }]),
+                MAKE_NOISE(CONTEXT, 2000),
+                { fadeMs: 1 },
+            );
+            const DATA = (await CONTEXT.startRendering()).getChannelData(0);
+            let lo = Infinity,
+                hi = 0;
+            for (let t = 0.2; t < 0.95; t += 0.04) {
+                const R = RMS(DATA, t, t + 0.04);
+                lo = Math.min(lo, R);
+                hi = Math.max(hi, R);
+            }
+            TEXTURE['swingDb' + DEPTH] = 20 * Math.log10(hi / lo);
+        }
+        try {
+            const CONTEXT = new OfflineAudioContext(1, 4800, 48000);
+            RENDER_BED(
+                CONTEXT,
+                CREATE_MIX(CONTEXT, CONTEXT.destination).input,
+                NOISE_BED([{ kind: 'noise', hz: 500, gain: 0.1, lfoHz: 1, lfoDepth: 0.2 }]),
+                MAKE_NOISE(CONTEXT),
+            );
+        } catch (error) {
+            TEXTURE.legacyLfoRejected = error instanceof TypeError;
+        }
+        return { pan: PAN, crossings: CENTS, bed: BED, texture: TEXTURE };
     });
     {
         const V = REPORT.offlineVariation;
@@ -304,6 +377,17 @@ try {
         const UP = V.crossings[1200] / V.crossings[0],
             DOWN = V.crossings[-1200] / V.crossings[0];
         ASSERT(UP > 1.8 && UP < 2.2 && DOWN > 0.45 && DOWN < 0.55, 'Detune did not shift pitch by the requested cents');
+        const T = V.texture;
+        ASSERT(
+            T.bandpassCrossings2000 / T.bandpassCrossings500 > 2.5 &&
+                T.bandpassCrossings2000 / T.bandpassCrossings500 < 5 &&
+                Math.abs(T.correlation0) > 0.99 &&
+                Math.abs(T.correlation700) < 0.15 &&
+                T.swingDb0 < 4 &&
+                T['swingDb0.9'] > 10 &&
+                T.legacyLfoRejected,
+            'Bed bandpass/offset decorrelation/lfos or legacy lfo rejection failed',
+        );
         const B = V.bed;
         ASSERT(
             B.full > 1e-4 &&
