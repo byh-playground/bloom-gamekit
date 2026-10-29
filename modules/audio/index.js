@@ -65,11 +65,16 @@ function validateRecipe(recipe) {
         }
     }
 }
+const BED_FILTERS = ['lowpass', 'bandpass', 'highpass'];
 function validateBed(recipe) {
     if (!recipe || !Array.isArray(recipe.layers) || !recipe.layers.length) {
         throw new TypeError('bed.layers required');
     }
     for (const LAYER of recipe.layers) {
+        if ('lfoHz' in LAYER || 'lfoDepth' in LAYER) {
+            throw new TypeError('bed layer lfoHz/lfoDepth were replaced by lfos: [{ hz, depth }]');
+        }
+        const LFOS = LAYER.lfos ?? [];
         if (
             LAYER.kind !== 'noise' ||
             !Number.isFinite(LAYER.hz) ||
@@ -77,15 +82,28 @@ function validateBed(recipe) {
             !Number.isFinite(LAYER.gain) ||
             LAYER.gain < 0 ||
             LAYER.gain > 1 ||
-            !Number.isFinite(LAYER.lfoHz ?? 0.1) ||
-            (LAYER.lfoHz ?? 0.1) < 0.01 ||
-            (LAYER.lfoHz ?? 0.1) > 20 ||
-            !Number.isFinite(LAYER.lfoDepth ?? 0) ||
-            (LAYER.lfoDepth ?? 0) < 0 ||
-            (LAYER.lfoDepth ?? 0) > 1
+            !BED_FILTERS.includes(LAYER.type ?? 'lowpass') ||
+            !(LAYER.q === undefined || (Number.isFinite(LAYER.q) && LAYER.q > 0 && LAYER.q <= 30)) ||
+            !Number.isFinite(LAYER.pan ?? 0) ||
+            Math.abs(LAYER.pan ?? 0) > 1 ||
+            !Number.isFinite(LAYER.offsetMs ?? 0) ||
+            (LAYER.offsetMs ?? 0) < 0 ||
+            (LAYER.offsetMs ?? 0) > 60000 ||
+            !Array.isArray(LFOS) ||
+            LFOS.length > 4 ||
+            LFOS.some(
+                (lfo) =>
+                    !Number.isFinite(lfo?.hz) ||
+                    lfo.hz < 0.01 ||
+                    lfo.hz > 20 ||
+                    !Number.isFinite(lfo.depth) ||
+                    lfo.depth < 0 ||
+                    lfo.depth > 1,
+            ) ||
+            LFOS.reduce((sum, lfo) => sum + lfo.depth, 0) > 1
         ) {
             throw new RangeError(
-                'bed layers need a noise cutoff, gain 0..1, optional lfoHz 0.01..20 and lfoDepth 0..1',
+                'bed layers need a noise cutoff/center hz, gain 0..1, optional type lowpass|bandpass|highpass, q 0..30, pan -1..1, offsetMs 0..60000 and up to 4 lfos {hz 0.01..20, depth 0..1} whose depths sum to at most 1',
             );
         }
     }
@@ -263,25 +281,42 @@ export function renderBed(
         const SOURCE = context.createBufferSource(),
             FILTER = context.createBiquadFilter(),
             GAIN = context.createGain(),
-            DEPTH = LAYER.lfoDepth ?? 0;
+            LFOS = LAYER.lfos ?? [],
+            DEPTH = LFOS.reduce((sum, lfo) => sum + lfo.depth, 0),
+            PAN = clampPan(LAYER.pan ?? 0);
         SOURCE.buffer = buffer;
         SOURCE.loop = true;
-        FILTER.type = 'lowpass';
+        FILTER.type = LAYER.type ?? 'lowpass';
         FILTER.frequency.value = LAYER.hz;
-        // Gain swings between gain*(1-depth) and gain: the LFO adds +-gain*depth/2 around gain*(1-depth/2).
+        if (LAYER.q !== undefined) {
+            FILTER.Q.value = LAYER.q;
+        }
+        // Gain swings between gain*(1-sum of depths) and gain: each LFO adds +-gain*depth/2 around gain*(1-sum/2).
         GAIN.gain.value = LAYER.gain * (1 - DEPTH / 2);
         SOURCE.connect(FILTER);
         FILTER.connect(GAIN);
-        GAIN.connect(SWELL);
-        SOURCE.start(at);
-        SOURCES.push(SOURCE);
         NODES.push(FILTER, GAIN);
-        if (DEPTH > 0) {
+        if (PAN !== 0 && typeof context.createStereoPanner === 'function') {
+            const PANNER = context.createStereoPanner();
+            PANNER.pan.value = PAN;
+            GAIN.connect(PANNER);
+            PANNER.connect(SWELL);
+            NODES.push(PANNER);
+        } else {
+            GAIN.connect(SWELL);
+        }
+        // Layers sharing one noise buffer start at different points so they are not copies of each other.
+        SOURCE.start(at, ((LAYER.offsetMs ?? 0) / 1000) % buffer.duration);
+        SOURCES.push(SOURCE);
+        for (const LFO_SPEC of LFOS) {
+            if (LFO_SPEC.depth <= 0) {
+                continue;
+            }
             const LFO = context.createOscillator(),
                 LFO_GAIN = context.createGain();
             LFO.type = 'sine';
-            LFO.frequency.value = LAYER.lfoHz ?? 0.1;
-            LFO_GAIN.gain.value = (LAYER.gain * DEPTH) / 2;
+            LFO.frequency.value = LFO_SPEC.hz;
+            LFO_GAIN.gain.value = (LAYER.gain * LFO_SPEC.depth) / 2;
             LFO.connect(LFO_GAIN);
             LFO_GAIN.connect(GAIN.gain);
             LFO.start(at);
