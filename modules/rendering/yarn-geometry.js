@@ -1,7 +1,7 @@
 // Pure geometry for SVG-authored yarn and sketch surfaces: a fill triangle list and a contour strip with the
 // distance along and across the contour. No GL, so the vector-assets compiler can use it. The mesh renderer shades
 // the result with the material in yarn-material.js.
-import { MATERIAL_KIND, materialRecord } from './yarn-material-record.js';
+import { MATERIAL_KIND, MAX_MATERIAL_SURFACES, materialRecord } from './yarn-material-record.js';
 const STRIDE_FLOATS = 9;
 export function validateStyle(style) {
     if (!style || typeof style !== 'object' || Array.isArray(style)) {
@@ -303,23 +303,33 @@ export function appendSurfaceVertices(vertices, materials, surface, surfaceIndex
 }
 
 /**
- * A complete one-surface mesh for MeshRenderer.createMesh: the same triangles and material data the SVG compiler
- * writes, for callers that hold a surface outside a compiled SVG.
+ * A complete mesh for MeshRenderer.createMesh: the same triangles and material data the SVG compiler writes, for
+ * callers that hold surfaces outside a compiled SVG. Pass one surface or a list; the surfaces share the mesh, in order.
  */
-export function buildYarnSurfaceMesh({ fillVertices, outline, edgeColors, style, partIndex = 0 }) {
-    validateStyle(style);
-    const SURFACE = surfaceGeometry(fillVertices, outline, edgeColors, style),
-        VERTICES = [],
-        MATERIALS = [];
-    appendSurfaceVertices(VERTICES, MATERIALS, SURFACE, 0, style, partIndex);
+export function buildYarnSurfaceMesh(surfaces) {
+    const LIST = Array.isArray(surfaces) ? surfaces : [surfaces];
+    if (!LIST.length || LIST.length > MAX_MATERIAL_SURFACES) {
+        throw new RangeError('A mesh holds 1..' + MAX_MATERIAL_SURFACES + ' surfaces');
+    }
+    const VERTICES = [],
+        MATERIALS = [],
+        TABLE = [];
+    let partCount = 1;
+    LIST.forEach(({ fillVertices, outline, edgeColors, style, partIndex = 0 }, index) => {
+        validateStyle(style);
+        const SURFACE = surfaceGeometry(fillVertices, outline, edgeColors, style);
+        TABLE.push(...materialRecord(style, SURFACE.bounds, SURFACE.contourLength));
+        appendSurfaceVertices(VERTICES, MATERIALS, SURFACE, index, style, partIndex);
+        partCount = Math.max(partCount, partIndex + 1);
+    });
     return {
         vertices: Float32Array.from(VERTICES),
         strideFloats: 11,
-        partCount: partIndex + 1,
+        partCount,
         morphCount: 0,
         materials: {
             vertices: Float32Array.from(MATERIALS),
-            table: materialRecord(style, SURFACE.bounds, SURFACE.contourLength),
+            table: Float32Array.from(TABLE),
         },
     };
 }

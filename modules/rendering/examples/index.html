@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="ko">
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>GameKit rendering 예제</title>
+    <style>
+        body {
+            margin: 0;
+            background: #101923;
+            color: #dce8f1;
+            font:
+                15px system-ui,
+                sans-serif;
+        }
+        main {
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 10px 14px 24px;
+        }
+        h1 {
+            margin: 4px 0 8px;
+            font-size: 20px;
+        }
+        p,
+        li {
+            color: #a9bdcb;
+            line-height: 1.5;
+        }
+        p {
+            margin: 6px 0;
+        }
+        ul {
+            margin: 6px 0;
+            padding-left: 20px;
+        }
+        .tabs,
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin: 10px 0;
+        }
+        button {
+            flex: 1 1 0;
+            min-width: 72px;
+            min-height: 56px;
+            border: 1px solid #526374;
+            border-radius: 12px;
+            background: #1b2a38;
+            color: #dce8f1;
+            font: inherit;
+            cursor: pointer;
+            touch-action: manipulation;
+        }
+        button[aria-pressed='true'],
+        button[aria-selected='true'] {
+            border-color: #8fd0ea;
+            background: #2f6f8f;
+        }
+        canvas {
+            display: block;
+            width: min(100%, calc((100vh - 330px) * 1.8));
+            min-width: 240px;
+            height: auto;
+            margin: 0 auto;
+            border: 1px solid #526374;
+            border-radius: 12px;
+        }
+        [hidden] {
+            display: none;
+        }
+    </style>
+    <main>
+        <h1>렌더링 예제</h1>
+        <div class="tabs" role="tablist" aria-label="렌더링 예제">
+            <button id="tab-vector" type="button" role="tab" aria-controls="panel-vector">벡터</button>
+            <button id="tab-atlas" type="button" role="tab" aria-controls="panel-atlas">아틀라스</button>
+            <button id="tab-materials" type="button" role="tab" aria-controls="panel-materials">재질</button>
+            <button id="tab-paint" type="button" role="tab" aria-controls="panel-paint">그라디언트</button>
+        </div>
+
+        <section id="panel-vector" role="tabpanel" aria-labelledby="tab-vector" hidden>
+            <p>도형, 곡선, 클립, 글자, 반투명 그룹을 VectorContext 하나로 그립니다.</p>
+            <canvas id="canvas-vector" width="900" height="500"></canvas>
+            <p id="stats-vector" aria-live="polite"></p>
+            <ul>
+                <li>두 빨간 다각형은 그룹으로 한 번에 합성해서 겹친 곳이 진해지지 않습니다.</li>
+                <li>글자는 미리 구운 비트맵 아틀라스에서 그립니다. 런타임 글꼴 래스터화는 없습니다.</li>
+            </ul>
+        </section>
+
+        <section id="panel-atlas" role="tabpanel" aria-labelledby="tab-atlas" hidden>
+            <p>
+                스프라이트 시트가 여러 장이어도 모두 한 텍스처 어레이의 영역이라서, 도형을 사이사이에 끼워도 한 번에
+                그립니다.
+            </p>
+            <div class="controls">
+                <button id="atlas-sprites" type="button" aria-pressed="true">스프라이트만</button>
+                <button id="atlas-mixed" type="button" aria-pressed="false">도형 끼워 그리기</button>
+            </div>
+            <canvas id="canvas-atlas" width="720" height="400"></canvas>
+            <p id="stats-atlas" aria-live="polite"></p>
+            <ul>
+                <li>시트 4장은 장치가 가진 어레이 하나의 영역 4개이며, 스프라이트는 시트를 번갈아 가며 그립니다.</li>
+                <li>두 번째 방식은 스프라이트마다 앞에 사각형을 그려도 같은 그리기 호출에 들어갑니다.</li>
+                <li>블렌드나 클리핑 방식이 바뀌면 그리기 호출이 나뉩니다.</li>
+            </ul>
+        </section>
+
+        <section id="panel-materials" role="tabpanel" aria-labelledby="tab-materials" hidden>
+            <p>
+                털실과 스케치는 메시의 재질이라서, 몇 개를 그려도 그리기 호출은 한 번이고 개체마다 시간이 달라도
+                그렇습니다.
+            </p>
+            <div class="controls">
+                <button id="materials-small" type="button" aria-pressed="true">적게</button>
+                <button id="materials-medium" type="button" aria-pressed="false">보통</button>
+                <button id="materials-large" type="button" aria-pressed="false">많이</button>
+                <button id="materials-play" type="button" aria-pressed="true">움직임</button>
+            </div>
+            <canvas id="canvas-materials" width="720" height="400"></canvas>
+            <p id="stats-materials" aria-live="polite"></p>
+            <ul>
+                <li>
+                    한 개체는 털실 표면과 스케치 표면이 든 메시 하나이고, 스케치의 일렁임은 개체마다 시간이 다릅니다.
+                </li>
+                <li>움직임을 끄거나 시스템이 동작 줄이기를 요청하면 한 장면만 그립니다.</li>
+                <li>
+                    SVG에서 만드는 에셋은 <code>vector-assets</code>의 <code>createVectorActor</code>가 같은 재질을
+                    씁니다.
+                </li>
+            </ul>
+        </section>
+
+        <section id="panel-paint" role="tabpanel" aria-labelledby="tab-paint" hidden>
+            <p>선형·방사 그라디언트를 채우고, 오목한 모양의 클립 경로 안에만 그립니다.</p>
+            <div class="controls">
+                <button id="paint-clip" type="button" aria-pressed="true">클립 경로 켜기</button>
+            </div>
+            <canvas id="canvas-paint" width="720" height="400"></canvas>
+            <p id="stats-paint" aria-live="polite"></p>
+            <ul>
+                <li>클립 경로는 장면 밖에서 한 번 만들어 두고 매 프레임 스텐실로 적용합니다.</li>
+                <li>스텐실 버퍼가 없는 장치에서는 클립 경로를 적용하지 못하고 오류를 냅니다.</li>
+            </ul>
+        </section>
+    </main>
+    <script type="module" src="./main.js"></script>
+</html>

@@ -1,4 +1,4 @@
-/* global audioExample, demo, reference, scenarioDemo, textureArrayExample, vectorExample */
+/* global audioExample, demo, reference, scenarioDemo, renderingExamples */
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
@@ -55,8 +55,7 @@ try {
                     'simloop-input-preview': 'inputPreviewDemo',
                     audio: 'audioExample',
                     navigation: 'navigationDemo',
-                    'rendering-vector': 'vectorExample',
-                    'rendering-texture-array': 'textureArrayExample',
+                    rendering: 'renderingExamples',
                     'vector-assets': 'vectorAssetDemo',
                     'vector-raster-comparison': '__rasterComparison',
                     'rollback-reference': 'reference',
@@ -106,18 +105,26 @@ try {
             await PAGE.waitForFunction(() => scenarioDemo.value > 7);
             await PAGE.click('#stop');
         }
-        if (NAME === 'rendering-vector') {
+        if (NAME === 'rendering') {
             assert(
                 await PAGE.evaluate(
-                    () => vectorExample.device.stats.drawCalls > 0 && vectorExample.device.gl.getError() === 0,
+                    () =>
+                        renderingExamples.vector.device.stats.drawCalls > 0 &&
+                        renderingExamples.vector.device.gl.getError() === 0,
                 ),
             );
-        }
-        if (NAME === 'rendering-texture-array') {
-            assert.equal(await PAGE.evaluate(() => textureArrayExample.drawCalls), 1);
-            await PAGE.click('#mode-mixed');
-            assert.equal(await PAGE.evaluate(() => textureArrayExample.drawCalls), 1);
-            assert.equal(await PAGE.evaluate(() => textureArrayExample.device.gl.getError()), 0);
+            await PAGE.click('#tab-atlas');
+            await PAGE.waitForFunction(() => Boolean(renderingExamples.atlas));
+            assert.equal(await PAGE.evaluate(() => renderingExamples.atlas.drawCalls), 1);
+            await PAGE.click('#atlas-mixed');
+            assert.equal(await PAGE.evaluate(() => renderingExamples.atlas.drawCalls), 1);
+            assert.equal(await PAGE.evaluate(() => renderingExamples.atlas.device.gl.getError()), 0);
+            await PAGE.click('#tab-materials');
+            await PAGE.waitForFunction(() => Boolean(renderingExamples.materials));
+            assert.equal(await PAGE.evaluate(() => renderingExamples.materials.draws), 1);
+            await PAGE.click('#tab-paint');
+            await PAGE.waitForFunction(() => Boolean(renderingExamples.paint));
+            assert.equal(await PAGE.evaluate(() => renderingExamples.paint.device.gl.getError()), 0);
         }
         if (NAME === 'rollback-reference') {
             await PAGE.click('#start');
