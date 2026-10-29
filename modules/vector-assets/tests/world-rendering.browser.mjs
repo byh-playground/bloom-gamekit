@@ -18,12 +18,8 @@ export async function exerciseWorldVectorRendering(browser, renderingURL, vector
         const RESULT = await PAGE.evaluate(
             async ({ renderingURL, vectorAssetsURL, compiled }) => {
                 const [
-                    {
-                        WebGLDevice: WEB_GL_DEVICE,
-                        MeshRenderer: MESH_RENDERER,
-                        YarnSurfaceRenderer: YARN_SURFACE_RENDERER,
-                    },
-                    { createVectorAsset: CREATE_VECTOR_ASSET },
+                    { WebGLDevice: WEB_GL_DEVICE, VectorContext: VECTOR_CONTEXT },
+                    { createVectorActor: CREATE_VECTOR_ACTOR },
                 ] = await Promise.all([import(renderingURL), import(vectorAssetsURL)]);
                 const DATA = {
                     ...compiled,
@@ -59,11 +55,14 @@ export async function exerciseWorldVectorRendering(browser, renderingURL, vector
                     stencil: true,
                     preserveDrawingBuffer: true,
                 });
-                const MESHES = new MESH_RENDERER(DEVICE),
-                    SURFACES = new YARN_SURFACE_RENDERER(DEVICE),
-                    ASSET = CREATE_VECTOR_ASSET(MESHES, DATA, {
-                        surfaceRenderer: SURFACES,
-                    });
+                const CONTEXT = new VECTOR_CONTEXT(DEVICE),
+                    PLAYER = CREATE_VECTOR_ACTOR(CONTEXT, DATA, {
+                        clip: 'idle',
+                        startedAtMs: 0,
+                    }),
+                    MESHES = CONTEXT.meshRenderer,
+                    SURFACES = CONTEXT.surfaceRenderer,
+                    [DATA_MESH] = MESHES.meshes;
                 const FALLBACK_GEOMETRY = {
                     ...DATA.geometry,
                 };
@@ -73,16 +72,11 @@ export async function exerciseWorldVectorRendering(browser, renderingURL, vector
                     ...DATA,
                     geometry: FALLBACK_GEOMETRY,
                 };
-                const FALLBACK_ASSET = CREATE_VECTOR_ASSET(MESHES, FALLBACK_DATA),
-                    FALLBACK_PLAYER = FALLBACK_ASSET.createPlayer({
-                        clip: 'idle',
-                        startedAtMs: 0,
-                    });
-                const MESH_UPLOADS_AT_CREATION = MESHES.stats().geometryUploads;
-                const PLAYER = ASSET.createPlayer({
+                const FALLBACK_PLAYER = CREATE_VECTOR_ACTOR(CONTEXT, FALLBACK_DATA, {
                     clip: 'idle',
                     startedAtMs: 0,
                 });
+                const MESH_UPLOADS_AT_CREATION = MESHES.stats().geometryUploads;
                 PLAYER.seek(50);
                 const VP = Float32Array.of(2 / 240, 0, 0, 0, 0, -2 / 180, 0, 0, 0, 0, 1, 0, -1, 1, 0, 1);
                 const MODEL = (centerX, size, angle = 0.12) => {
@@ -353,7 +347,7 @@ export async function exerciseWorldVectorRendering(browser, renderingURL, vector
                     opacity,
                     visible,
                 }));
-                MESHES.drawMesh(ASSET.mesh, {
+                MESHES.drawMesh(DATA_MESH, {
                     viewProjection: VP,
                     worldMatrix: MODEL(26, 24),
                     parts: DEPTH_PARTS,
@@ -363,7 +357,7 @@ export async function exerciseWorldVectorRendering(browser, renderingURL, vector
                     depthTest: true,
                     depthWrite: true,
                 });
-                MESHES.drawMesh(ASSET.mesh, {
+                MESHES.drawMesh(DATA_MESH, {
                     viewProjection: VP,
                     worldMatrix: MODEL(26, 24),
                     parts: DEPTH_PARTS,
@@ -510,12 +504,11 @@ export async function exerciseWorldVectorRendering(browser, renderingURL, vector
                 await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
                 window.__worldVectorTest = {
                     dispose() {
-                        ASSET.dispose();
-                        FALLBACK_ASSET.dispose();
+                        PLAYER.dispose();
+                        FALLBACK_PLAYER.dispose();
                         const MESH_COUNT = MESHES.stats().meshCount,
                             RETAINED_SURFACES = SURFACES.stats().surfaceCount;
-                        SURFACES.dispose();
-                        MESHES.dispose();
+                        CONTEXT.dispose();
                         DEVICE.dispose();
                         return {
                             meshCount: MESH_COUNT,

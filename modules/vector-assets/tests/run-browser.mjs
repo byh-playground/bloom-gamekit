@@ -269,7 +269,7 @@ try {
             sketchPixelDifference,
             sketchPixelRepeatDifference,
             partMorphWeights: MORPH_FIRST,
-            morphCounts: DEMO.styleInstances.map((item) => item.asset.mesh.morphCount),
+            morphCounts: DEMO.styleInstances.map((item) => item.mesh.morphCount),
             metrics: ['#style-yarn-metrics', '#style-sketch-metrics'].map(
                 (selector) => document.querySelector(selector).textContent,
             ),

@@ -44,7 +44,7 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
         const FAIL = (message) => {
             throw new Error('Three-view example: ' + message);
         };
-        if (!DEMO?.ready || !DEMO.asset || !DEMO.actor) {
+        if (!DEMO?.ready || !DEMO.compiledAsset || !DEMO.actor) {
             FAIL('SVG source and WebGL resources did not finish loading');
         }
         const SUBMITTED_VARIANTS = [];
@@ -107,7 +107,7 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
             timeMs: DEMO.actor.currentTimeMs,
             expression: DEMO.actor.currentExpression,
             zoom: DEMO.camera.zoom,
-            sourceSha256: DEMO.sourceSvg ? DEMO.asset.sourceSha256 : '',
+            sourceSha256: DEMO.sourceSvg ? DEMO.compiledAsset.sourceSha256 : '',
             sourceBodyPoseMatches:
                 SOURCE_MATRIX.length === 6 &&
                 SOURCE_MATRIX.every((value, index) => Math.abs(value - BODY.transform[index]) <= 0.006),
@@ -117,12 +117,12 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
             explicitVisibilityUsesFullGeometry: EXPLICIT_VISIBILITY_USES_FULL_GEOMETRY,
             expressionVariantRestoredAfterOverride: EXPRESSION_VARIANT_RESTORED_AFTER_OVERRIDE,
             triangles: DEMO.topology.triangles,
-            compiledTriangles: DEMO.asset.mesh.indices.length / 3,
+            compiledTriangles: DEMO.mesh.indices.length / 3,
             visibleTriangles: DEMO.lastFrame.topology.visibleTriangles,
             uniqueEdges: DEMO.topology.uniqueEdges,
             webglBackend: DEMO.device.instancingSupported ? 'WebGL 2 + core instancing' : 'WebGL 2 + per-draw uniforms',
             drawCalls: DEMO.lastFrame.gamekit.device.drawCalls,
-            meshBytes: DEMO.asset.mesh.byteLength,
+            meshBytes: DEMO.mesh.byteLength,
             sourceMetrics: document.querySelector('#source-metrics').textContent,
             topologyMetrics: document.querySelector('#topology-metrics').textContent,
             gamekitMetrics: document.querySelector('#gamekit-metrics').textContent,
@@ -249,6 +249,7 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
             includePopulationTimingDiagnostics,
             standardMeshBytes,
             legacyMeshBytes,
+            sourceSha256,
         }) => {
             const MODULES = window.vectorAssetRuntime ?? {
                 ...(await import('/dist/rendering.js')),
@@ -256,7 +257,6 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
             };
             const {
                 WebGLDevice: WEB_GL_DEVICE,
-                MeshRenderer: MESH_RENDERER,
                 VectorContext: VECTOR_CONTEXT,
                 createSeedScout: CREATE_SEED_SCOUT,
                 seedScoutMetadata: SEED_SCOUT_METADATA,
@@ -313,26 +313,40 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
                 preserveDrawingBuffer: true,
                 checkGLErrors: true,
             });
-            const MESHES = new MESH_RENDERER(DEVICE, {
-                maxMeshes: 4,
-                maxInstances: 1024,
-                poseBackend: 'uniform',
+            const REFERENCE_CONTEXT = new VECTOR_CONTEXT(DEVICE, {
+                mesh: {
+                    maxMeshes: 4,
+                    maxInstances: 1024,
+                    poseBackend: 'uniform',
+                },
             });
+            const MESHES = REFERENCE_CONTEXT.acquireMeshRenderer();
             // Keep the historical CPU part submission assertions on an explicit uniform reference renderer.
             const CPU_REFERENCE = {
                 createMesh: (...args) => MESHES.createMesh(...args),
                 drawMesh: (...args) => MESHES.drawMesh(...args),
                 deleteMesh: (...args) => MESHES.deleteMesh(...args),
             };
+            const CPU_CONTEXT = {
+                acquireMeshRenderer: () => CPU_REFERENCE,
+                acquireSurfaceRenderer: () => REFERENCE_CONTEXT.acquireSurfaceRenderer(),
+                onDispose: (callback) => REFERENCE_CONTEXT.onDispose(callback),
+            };
+            const LIVE_ACTORS = new Set();
+            const MAKE_ACTOR = (options) => {
+                const ACTOR = CREATE_SEED_SCOUT(CPU_CONTEXT, options);
+                LIVE_ACTORS.add(ACTOR);
+                return ACTOR;
+            };
             const RENDERER_INITIALIZATION_MS = performance.now() - RENDERER_INIT_START;
             const COLD_START = performance.now(),
-                ASSET = CREATE_SEED_SCOUT(CPU_REFERENCE),
+                PLAYER = MAKE_ACTOR({
+                    clip: 'idle',
+                    startedAtMs: 0,
+                }),
                 INITIALIZATION_MS = performance.now() - COLD_START;
             const RESOURCE_CREATION_STATS = MESHES.stats();
-            const PLAYER = ASSET.createPlayer({
-                clip: 'idle',
-                startedAtMs: 0,
-            });
+            const ASSET_MESH = [...MESHES.meshes][0];
             const STATIC_PART_POSES = PLAYER.partPoses();
             ASSERT_THAT(
                 STATIC_PART_POSES.every(
@@ -442,9 +456,9 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
                 preserveDrawingBuffer: true,
                 checkGLErrors: true,
             });
-            const GPU_MESHES = new MESH_RENDERER(GPU_DEVICE);
-            const GPU_ASSET = CREATE_SEED_SCOUT(GPU_MESHES);
-            const GPU_PLAYER = GPU_ASSET.createPlayer({ clip: 'idle', startedAtMs: 0 });
+            const GPU_CONTEXT = new VECTOR_CONTEXT(GPU_DEVICE);
+            const GPU_PLAYER = CREATE_SEED_SCOUT(GPU_CONTEXT, { clip: 'idle', startedAtMs: 0 });
+            const GPU_MESHES = GPU_CONTEXT.meshRenderer;
             GPU_DEVICE.beginFrame({ width: 200, height: 220, clearColor: [0.875, 0.91, 0.8, 1] });
             GPU_MESHES.beginFrame();
             GPU_PLAYER.draw({ projection: PROJECTION });
@@ -472,8 +486,7 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
                 `default GPU pose must match CPU reference pixels without full timeline sampling (${gpuPixelDifferences} changed channels; ${JSON.stringify(GPU_POSE_STATS)})`,
             );
             GPU_PLAYER.dispose();
-            GPU_ASSET.dispose();
-            GPU_MESHES.dispose();
+            GPU_CONTEXT.dispose();
             GPU_DEVICE.dispose();
             const ORIGINAL_EXPRESSION = PLAYER.currentExpression;
             PLAYER.setExpression('happy');
@@ -676,9 +689,9 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
                 'asset geometry was uploaded only at resource creation',
             );
             ASSERT_THAT(
-                ASSET.mesh.byteLength === standardMeshBytes &&
-                    ASSET.mesh.byteLength > 0 &&
-                    ASSET.mesh.byteLength < legacyMeshBytes &&
+                ASSET_MESH.byteLength === standardMeshBytes &&
+                    ASSET_MESH.byteLength > 0 &&
+                    ASSET_MESH.byteLength < legacyMeshBytes &&
                     MESHES.stats().meshCount === 1,
                 'the bundled fixture retains valid default geometry smaller than explicit 16/12',
             );
@@ -702,13 +715,13 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
                 return UPLOAD_INDICES.call(this, buffer, indices);
             };
             const GEOMETRY_INPUT = {
-                vertices: ASSET.mesh.vertices,
+                vertices: ASSET_MESH.vertices,
                 strideFloats: 11,
-                partCount: ASSET.mesh.partCount,
-                morphCount: ASSET.mesh.morphCount,
-                indices: ASSET.mesh.indices,
+                partCount: ASSET_MESH.partCount,
+                morphCount: ASSET_MESH.morphCount,
+                indices: ASSET_MESH.indices,
                 expressionIndices: Object.fromEntries(
-                    [...ASSET.mesh.expressionIndices].map(([name, variant]) => [name, variant.indices]),
+                    [...ASSET_MESH.expressionIndices].map(([name, variant]) => [name, variant.indices]),
                 ),
             };
             try {
@@ -742,18 +755,18 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
                 'an explicit null expression index map is rejected instead of silently treated as absent',
             );
             PLAYER.seek(0);
-            const EXPANDED_VERTICES = new Float32Array(ASSET.mesh.indices.length * 11);
-            for (let i = 0; i < ASSET.mesh.indices.length; i++) {
+            const EXPANDED_VERTICES = new Float32Array(ASSET_MESH.indices.length * 11);
+            for (let i = 0; i < ASSET_MESH.indices.length; i++) {
                 EXPANDED_VERTICES.set(
-                    ASSET.mesh.vertices.subarray(ASSET.mesh.indices[i] * 11, ASSET.mesh.indices[i] * 11 + 11),
+                    ASSET_MESH.vertices.subarray(ASSET_MESH.indices[i] * 11, ASSET_MESH.indices[i] * 11 + 11),
                     i * 11,
                 );
             }
             const EXPANDED_MESH = MESHES.createMesh({
                 vertices: EXPANDED_VERTICES,
                 strideFloats: 11,
-                partCount: ASSET.mesh.partCount,
-                morphCount: ASSET.mesh.morphCount,
+                partCount: ASSET_MESH.partCount,
+                morphCount: ASSET_MESH.morphCount,
             });
             const ACTOR_PARTS = PLAYER.partPoses().map(({ transform, opacity, visible }) => ({
                 transform,
@@ -780,7 +793,7 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
                     glError: DEVICE.gl.getError(),
                 };
             };
-            const INDEXED_CAPTURE = CAPTURE(ASSET.mesh),
+            const INDEXED_CAPTURE = CAPTURE(ASSET_MESH),
                 EXPANDED_CAPTURE = CAPTURE(EXPANDED_MESH);
             let pixelMismatch = 0;
             for (let i = 0; i < INDEXED_CAPTURE.pixels.length; i++) {
@@ -794,9 +807,9 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
             );
             const INDEXED_PARITY = {
                 pixelMismatch,
-                indexedBytes: ASSET.mesh.byteLength,
+                indexedBytes: ASSET_MESH.byteLength,
                 expandedBytes: EXPANDED_VERTICES.byteLength,
-                savedBytes: EXPANDED_VERTICES.byteLength - ASSET.mesh.byteLength,
+                savedBytes: EXPANDED_VERTICES.byteLength - ASSET_MESH.byteLength,
             };
             MESHES.deleteMesh(EXPANDED_MESH);
             const FIRST_POSE = PLAYER.seek(375).getPartPose('body');
@@ -830,39 +843,39 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
                     window.Map = NATIVE_MAP;
                 }
             };
-            const BOUNDARY_PLAYER = ASSET.createPlayer({
+            const BOUNDARY_PLAYER = MAKE_ACTOR({
                 clip: 'idle',
                 startedAtMs: 0,
             });
-            const IDLE_BEFORE_START = ASSET.createPlayer({
+            const IDLE_BEFORE_START = MAKE_ACTOR({
                 clip: 'idle',
                 startedAtMs: 0,
             })
                 .seek(999)
                 .getPartPose('body');
-            const IDLE_AT_START = ASSET.createPlayer({
+            const IDLE_AT_START = MAKE_ACTOR({
                 clip: 'idle',
                 startedAtMs: 0,
             })
                 .seek(1000)
                 .getPartPose('body');
-            const BOUNCE_AT_START = ASSET.createPlayer({
+            const BOUNCE_AT_START = MAKE_ACTOR({
                 clip: 'bounce',
                 startedAtMs: 1000,
             })
                 .seek(1000)
                 .getPartPose('body');
-            const BOUNCE_AT_END = ASSET.createPlayer({
+            const BOUNCE_AT_END = MAKE_ACTOR({
                 clip: 'bounce',
                 startedAtMs: 1000,
             })
                 .seek(1200)
                 .getPartPose('body');
-            const IDLE_PROBE = ASSET.createPlayer({
+            const IDLE_PROBE = MAKE_ACTOR({
                 clip: 'idle',
                 startedAtMs: 0,
             });
-            const BOUNCE_PROBE = ASSET.createPlayer({
+            const BOUNCE_PROBE = MAKE_ACTOR({
                 clip: 'bounce',
                 startedAtMs: 1000,
             });
@@ -904,7 +917,7 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
                 JSON.stringify(AT_TRANSITION_END) === JSON.stringify(BOUNCE_AT_END),
                 'a completed transition returns its target pose exactly at the end boundary',
             );
-            const ZERO_DURATION_PLAYER = ASSET.createPlayer({
+            const ZERO_DURATION_PLAYER = MAKE_ACTOR({
                 clip: 'idle',
                 startedAtMs: 0,
             });
@@ -922,7 +935,7 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
                 JSON.stringify(ZERO_DURATION_PLAYER.seek(1000).getPartPose('body')) === JSON.stringify(BOUNCE_AT_START),
                 'a zero-duration transition selects its target at the start boundary',
             );
-            const OVERLAPPING_PLAYER = ASSET.createPlayer({
+            const OVERLAPPING_PLAYER = MAKE_ACTOR({
                 clip: 'idle',
                 startedAtMs: 0,
             });
@@ -941,11 +954,11 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
                 JSON.stringify(OVERLAPPING_FORWARD) === JSON.stringify(OVERLAPPING_BACKWARD),
                 'overlapping and completed transitions retain deterministic backward seeks across their full history',
             );
-            const SIMPLE_SAMPLING_PROBE = ASSET.createPlayer({
+            const SIMPLE_SAMPLING_PROBE = MAKE_ACTOR({
                 clip: 'bounce',
                 startedAtMs: 0,
             });
-            const COMPLETED_CHAIN_PROBE = ASSET.createPlayer({
+            const COMPLETED_CHAIN_PROBE = MAKE_ACTOR({
                 clip: 'idle',
                 startedAtMs: 0,
             });
@@ -1003,8 +1016,8 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
             });
             const COLD_METRICS = {
                 initializationMs: INITIALIZATION_MS,
-                retainedGeometryBytes: ASSET.mesh.byteLength,
-                sourceSha256: ASSET.sourceSha256,
+                retainedGeometryBytes: ASSET_MESH.byteLength,
+                sourceSha256,
                 partCount: SEED_SCOUT_METADATA.parts.length,
                 instanceUploadsPerActor: INITIAL_FRAME.mesh.instanceBytesUploaded,
                 geometryUploadsAtCreate: RESOURCE_CREATION_STATS.geometryUploads,
@@ -1032,7 +1045,7 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
                         length: COUNT,
                     },
                     () =>
-                        ASSET.createPlayer({
+                        MAKE_ACTOR({
                             clip: 'idle',
                             startedAtMs: 0,
                         }),
@@ -1117,7 +1130,7 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
                           }
                         : {}),
                     sharedPoseState: SHARED_POSE_STATE,
-                    geometryBytes: ASSET.mesh.byteLength,
+                    geometryBytes: ASSET_MESH.byteLength,
                     geometryUploadBytesCold: FIRST_DRAW.geometryBytesUploaded,
                     instanceUploadBytesCold: FIRST_DRAW.instanceBytesUploaded,
                     instanceUploadBytesWarm: WARM.instanceBytesUploaded,
@@ -1160,7 +1173,7 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
                         const DURATION_MS = SEED_SCOUT_METADATA.clips[CLIP].durationMs;
                         const PHASE_SPAN_MS = Math.max(1, DURATION_MS / 3 - 32);
                         const PHASE_MS = ((ORDINAL + 0.5) * PHASE_SPAN_MS) / GROUP_COUNT;
-                        const ACTOR = ASSET.createPlayer({
+                        const ACTOR = MAKE_ACTOR({
                             clip: CLIP,
                             startedAtMs: 1000 - PHASE_MS,
                         });
@@ -1456,18 +1469,20 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
             const OLD_MESH_COUNT = MESHES.stats().meshCount,
                 OLD_BUFFER_BYTES = DEVICE.stats.gpuBufferBytes;
             const DISPOSED_PLAYER = PLAYER;
-            ASSERT_THAT(DISPOSED_PLAYER.dispose(), 'player disposes once');
-            ASSERT_THAT(ASSET.dispose() && !ASSET.dispose(), 'asset disposes idempotently');
+            ASSERT_THAT(DISPOSED_PLAYER.dispose() && !DISPOSED_PLAYER.dispose(), 'actor disposes once');
+            for (const ACTOR of LIVE_ACTORS) {
+                ACTOR.dispose();
+            }
+            LIVE_ACTORS.clear();
             ASSERT_THAT(
                 MESHES.stats().meshCount === OLD_MESH_COUNT - 1 && MESHES.stats().retainedBytes === 0,
-                'asset disposal releases exactly its retained geometry',
+                'disposing the last actor releases exactly the shared retained geometry',
             );
             ASSERT_THAT(
-                OLD_BUFFER_BYTES - DEVICE.stats.gpuBufferBytes === ASSET.mesh.byteLength,
-                'asset disposal releases base and expression index buffer bytes',
+                OLD_BUFFER_BYTES - DEVICE.stats.gpuBufferBytes === ASSET_MESH.byteLength,
+                'releasing the shared resources frees base and expression index buffer bytes',
             );
-            const REPLACEMENT = CREATE_SEED_SCOUT(MESHES),
-                REPLACEMENT_PLAYER = REPLACEMENT.createPlayer();
+            const REPLACEMENT_PLAYER = MAKE_ACTOR();
             PAINT([REPLACEMENT_PLAYER], 0);
             ASSERT_THAT(
                 MESHES.stats().meshCount === 1 && DEVICE.gl.getError() === 0,
@@ -1475,17 +1490,16 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
             );
             REPLACEMENT_PLAYER.dispose();
             const RENDERER_BUFFERS_BEFORE_DISPOSE = DEVICE.stats.gpuBufferBytes;
-            MESHES.dispose();
+            REFERENCE_CONTEXT.dispose();
             ASSERT_THAT(
                 MESHES.stats().retainedBytes === 0 && DEVICE.stats.gpuBufferBytes === 0,
                 `renderer disposal releases every expression buffer (${RENDERER_BUFFERS_BEFORE_DISPOSE} bytes before disposal)`,
             );
-            REPLACEMENT.dispose();
             DEVICE.dispose();
             CANVAS.remove();
             return {
                 status: 'PASS',
-                sourceSha256: ASSET.sourceSha256,
+                sourceSha256,
                 coldMetrics: COLD_METRICS,
                 indexedParity: INDEXED_PARITY,
                 warm: {
@@ -1501,7 +1515,7 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
                     threeBasedProcessing: {
                         svgLoader: 'Three SVGLoader build-time only',
                         runtimeRenderer: 'not introduced',
-                        outputGeometryBytes: ASSET.mesh.byteLength,
+                        outputGeometryBytes: ASSET_MESH.byteLength,
                         gpuPath:
                             'same retained GameKit MeshRenderer mesh; see retainedMeshInstances (compiled source mesh uploaded once)',
                     },
@@ -1510,7 +1524,7 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
                     indexedCreateFailureCleanupBytes: BEFORE_FAILED_CREATE.bytes,
                     seekVariants: OBSERVED_VARIANTS,
                     contextRestorePixelMismatch: restorePixelMismatch,
-                    retainedMeshBytesReleased: ASSET.mesh.byteLength,
+                    retainedMeshBytesReleased: ASSET_MESH.byteLength,
                     rendererBufferBytesReleased: RENDERER_BUFFERS_BEFORE_DISPOSE,
                 },
                 checks: [
@@ -1535,6 +1549,7 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
             includePopulationTimingDiagnostics,
             standardMeshBytes: STANDARD_MESH_BYTES,
             legacyMeshBytes: LEGACY_MESH_BYTES,
+            sourceSha256: REFERENCE_ASSET.sourceSha256,
         },
     );
     assert.equal(REPORT.status, 'PASS');

@@ -38,7 +38,7 @@
 </main>
 <script type="module">
     import { WebGLDevice, VectorContext } from '/dist/rendering.js';
-    import { createVectorAsset, createVectorRasterAtlas } from '/dist/vector-assets.js';
+    import { createVectorActor, createVectorRasterAtlas } from '/dist/vector-assets.js';
     import { createVectorAssetLoader } from '/dist/vector-assets-loader.js';
     const CANVAS = document.querySelector('#scene');
     const WIDTH = CANVAS.width;
@@ -65,16 +65,24 @@
     const SPECIES = [];
     for (const URL of SPECIES_URLS) {
         const COMPILED = await LOADER.load(URL, { sourcePath: URL.slice(1) });
-        const ASSET = createVectorAsset(MESHES, COMPILED);
-        const [, , VIEW_W, VIEW_H] = ASSET.viewBox;
-        const ATLAS = createVectorRasterAtlas(CONTEXT, ASSET, COMPILED, {
+        const [, , VIEW_W, VIEW_H] = COMPILED.viewBox;
+        const ATLAS = createVectorRasterAtlas(CONTEXT, COMPILED, {
             pixelsPerUnit: 192 / Math.max(VIEW_W, VIEW_H),
             padding: 2,
         });
         const PLAYERS = Array.from({ length: ACTORS_PER_SPECIES }, (_unused, index) =>
-            ASSET.createPlayer({ clip: Object.keys(COMPILED.metadata.clips)[0], startedAtMs: -index * 37 }),
+            createVectorActor(CONTEXT, COMPILED, {
+                clip: Object.keys(COMPILED.metadata.clips)[0],
+                startedAtMs: -index * 37,
+            }),
         );
-        SPECIES.push({ name: URL.split('/').pop(), asset: ASSET, atlas: ATLAS, players: PLAYERS, view: ASSET.viewBox });
+        SPECIES.push({
+            name: URL.split('/').pop(),
+            compiled: COMPILED,
+            atlas: ATLAS,
+            players: PLAYERS,
+            view: COMPILED.viewBox,
+        });
     }
     let seed = 777;
     const RANDOM = () => {
@@ -167,7 +175,7 @@
                 vectorFallbacks: LAST.fallbacks,
                 atlasStats: SPECIES.map((species) => ({
                     name: species.name,
-                    parts: species.asset.mesh?.partCount ?? null,
+                    parts: species.compiled.geometry.partCount,
                     rasterDraws: species.atlas.stats.rasterDraws,
                     atlasWidth: species.atlas.stats.atlasWidth,
                     atlasHeight: species.atlas.stats.atlasHeight,
@@ -188,7 +196,6 @@
         for (const S of SPECIES) {
             S.players.forEach((player) => player.dispose());
             S.atlas.dispose();
-            S.asset.dispose();
         }
         CONTEXT.dispose();
         DEVICE.dispose();

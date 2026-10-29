@@ -6,7 +6,6 @@ export async function exerciseVectorContext(page) {
     const RESULT = await page.evaluate(async () => {
         const {
             WebGLDevice: WEB_GL_DEVICE,
-            VectorRenderer: VECTOR_RENDERER,
             VectorContext: VECTOR_CONTEXT,
             PrimitivePainter: PRIMITIVE_PAINTER,
             GlyphAtlas: GLYPH_ATLAS,
@@ -39,15 +38,12 @@ export async function exerciseVectorContext(page) {
                 },
             },
         });
-        const VECTOR = new VECTOR_RENDERER(DEVICE, {
+        const CTX = new VECTOR_CONTEXT(DEVICE, {
             glyphAtlas: ATLAS,
             initialVertices: 128,
             maxVertices: 16384,
         });
-        const CTX = new VECTOR_CONTEXT(DEVICE, {
-            vectorRenderer: VECTOR,
-            glyphAtlas: ATLAS,
-        });
+        const VECTOR = CTX.vector;
         const PRIMITIVE = new PRIMITIVE_PAINTER(CTX);
         const GL = DEVICE.gl;
         const PIPELINE = DEVICE.createPipeline({
@@ -260,7 +256,6 @@ export async function exerciseVectorContext(page) {
     RESULT.disposed = await page.evaluate(() => {
         const P = vectorContextProbe;
         P.ctx.dispose();
-        P.vector.dispose();
         P.atlas.dispose();
         P.device.dispose();
         P.canvas.remove();

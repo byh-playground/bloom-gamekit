@@ -1960,7 +1960,7 @@ try {
     const SKETCH_PIXEL_PARITY = await VECTOR_ASSET_PAGE.evaluate(() => {
         const {
             WebGLDevice: WEB_GL_DEVICE,
-            MeshRenderer: MESH_RENDERER,
+            VectorContext: VECTOR_CONTEXT,
             createStyleSample: CREATE_STYLE_SAMPLE,
         } = window.vectorAssetRuntime;
         const CANVAS = document.createElement('canvas');
@@ -1973,12 +1973,12 @@ try {
             preserveDrawingBuffer: true,
             checkGLErrors: true,
         });
-        const MESHES = new MESH_RENDERER(DEVICE),
-            ASSET = CREATE_STYLE_SAMPLE('sketch-fox', MESHES);
-        const ACTOR = ASSET.createPlayer({
-            clip: 'idle',
-            startedAtMs: 0,
-        });
+        const CONTEXT = new VECTOR_CONTEXT(DEVICE),
+            ACTOR = CREATE_STYLE_SAMPLE('sketch-fox', CONTEXT, {
+                clip: 'idle',
+                startedAtMs: 0,
+            }),
+            MESHES = CONTEXT.meshRenderer;
         const PROJECTION = [2 / 160, 0, 0, 0, -2 / 180, 0, -1, 1, 1];
         const CAPTURE = (timeMs) => {
             ACTOR.seek(timeMs);
@@ -2014,11 +2014,10 @@ try {
             changedChannels,
             repeatedChannels,
             glError: DEVICE.gl.getError(),
-            morphCount: ASSET.mesh.morphCount,
+            morphCount: [...MESHES.meshes][0].morphCount,
         };
         ACTOR.dispose();
-        ASSET.dispose();
-        MESHES.dispose();
+        CONTEXT.dispose();
         DEVICE.dispose();
         CANVAS.remove();
         return RESULT;
@@ -2031,8 +2030,7 @@ try {
     await VECTOR_ASSET_PAGE.evaluate(() => {
         const DEMO = window.vectorAssetDemo;
         DEMO.actor.dispose();
-        DEMO.asset.dispose();
-        DEMO.meshes.dispose();
+        DEMO.context.dispose();
         DEMO.device.dispose();
     });
     await VECTOR_ASSET_PAGE.close();
@@ -2118,8 +2116,8 @@ try {
         async ({ expectedSha256, nodeGeometrySha256, legacyNodeGeometrySha256, lowQualityExpected, sourcePath }) => {
             const { createVectorAssetLoader: CREATE_VECTOR_ASSET_LOADER, VECTOR_ASSET_QUALITY_PRESETS } =
                 await import('/dist/vector-assets-loader.js');
-            const { createVectorAsset: CREATE_VECTOR_ASSET } = await import('/dist/vector-assets.js');
-            const { WebGLDevice: WEB_GL_DEVICE, MeshRenderer: MESH_RENDERER } = await import('/dist/rendering.js');
+            const { createVectorActor: CREATE_VECTOR_ACTOR } = await import('/dist/vector-assets.js');
+            const { WebGLDevice: WEB_GL_DEVICE, VectorContext: VECTOR_CONTEXT } = await import('/dist/rendering.js');
             const URL_LOCAL = '/modules/vector-assets/assets/seed-scout.svg';
             const LOADER = CREATE_VECTOR_ASSET_LOADER({
                 maxEntries: 2,
@@ -2266,12 +2264,12 @@ try {
                 preserveDrawingBuffer: true,
                 checkGLErrors: true,
             });
-            const MESHES = new MESH_RENDERER(DEVICE);
-            const ASSET = CREATE_VECTOR_ASSET(MESHES, COMPILED_ASSET);
-            const ACTOR = ASSET.createPlayer({
+            const CONTEXT = new VECTOR_CONTEXT(DEVICE);
+            const ACTOR = CREATE_VECTOR_ACTOR(CONTEXT, COMPILED_ASSET, {
                 clip: 'idle',
                 startedAtMs: 0,
             });
+            const MESHES = CONTEXT.meshRenderer;
             DEVICE.beginFrame({
                 width: 200,
                 height: 220,
@@ -2292,8 +2290,7 @@ try {
                 throw new Error('The retained SVG mesh uploaded geometry during its draw');
             }
             ACTOR.dispose();
-            ASSET.dispose();
-            MESHES.dispose();
+            CONTEXT.dispose();
             DEVICE.dispose();
             CANVAS.remove();
             const MISMATCH_LOADER = CREATE_VECTOR_ASSET_LOADER({
@@ -2378,8 +2375,8 @@ try {
         async ({ sourcePath, sourceSha256, nodeGeometrySha256 }) => {
             const { createVectorAssetLoader: CREATE_VECTOR_ASSET_LOADER } =
                 await import('/dist/vector-assets-loader.js');
-            const { createVectorAsset: CREATE_VECTOR_ASSET } = await import('/dist/vector-assets.js');
-            const { WebGLDevice: WEB_GL_DEVICE, MeshRenderer: MESH_RENDERER } = await import('/dist/rendering.js');
+            const { createVectorActor: CREATE_VECTOR_ACTOR } = await import('/dist/vector-assets.js');
+            const { WebGLDevice: WEB_GL_DEVICE, VectorContext: VECTOR_CONTEXT } = await import('/dist/rendering.js');
             const URL_LOCAL = '/modules/vector-assets/tests/centered-viewbox.svg';
             const LOADER = CREATE_VECTOR_ASSET_LOADER({
                 maxEntries: 4,
@@ -2504,17 +2501,16 @@ try {
                 preserveDrawingBuffer: true,
                 checkGLErrors: true,
             });
-            const MESHES = new MESH_RENDERER(DEVICE);
-            const NORMALIZED_RESOURCE = CREATE_VECTOR_ASSET(MESHES, NORMALIZED_ASSET);
-            const REFERENCE_RESOURCE = CREATE_VECTOR_ASSET(MESHES, referenceAsset);
-            const NORMALIZED_ACTOR = NORMALIZED_RESOURCE.createPlayer({
+            const CONTEXT = new VECTOR_CONTEXT(DEVICE);
+            const NORMALIZED_ACTOR = CREATE_VECTOR_ACTOR(CONTEXT, NORMALIZED_ASSET, {
                 clip: 'test',
                 startedAtMs: 0,
             });
-            const REFERENCE_ACTOR = REFERENCE_RESOURCE.createPlayer({
+            const REFERENCE_ACTOR = CREATE_VECTOR_ACTOR(CONTEXT, referenceAsset, {
                 clip: 'test',
                 startedAtMs: 0,
             });
+            const MESHES = CONTEXT.meshRenderer;
             const PROJECTION = [2 / 72, 0, 0, 0, -2 / 80, 0, 0, 0, 1];
             const CAPTURE = (actor, timeMs) => {
                 actor.seek(timeMs);
@@ -2591,9 +2587,7 @@ try {
             const FINAL_ERROR = DEVICE.gl.getError();
             NORMALIZED_ACTOR.dispose();
             REFERENCE_ACTOR.dispose();
-            NORMALIZED_RESOURCE.dispose();
-            REFERENCE_RESOURCE.dispose();
-            MESHES.dispose();
+            CONTEXT.dispose();
             DEVICE.dispose();
             CANVAS.remove();
             LOADER.dispose();

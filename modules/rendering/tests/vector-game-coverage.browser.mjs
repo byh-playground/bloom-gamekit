@@ -6,7 +6,6 @@ export async function exerciseVectorGameCoverage(page) {
     const RESULT = await page.evaluate(async () => {
         const {
             WebGLDevice: WEB_GL_DEVICE,
-            VectorRenderer: VECTOR_RENDERER,
             VectorContext: VECTOR_CONTEXT,
             PrimitivePainter: PRIMITIVE_PAINTER,
         } = await import('/dist/rendering.js');
@@ -20,13 +19,11 @@ export async function exerciseVectorGameCoverage(page) {
             stencil: false,
             preserveDrawingBuffer: true,
         });
-        const VECTOR = new VECTOR_RENDERER(DEVICE, {
+        const CTX = new VECTOR_CONTEXT(DEVICE, {
             initialVertices: 256,
             maxVertices: 8192,
         });
-        const CTX = new VECTOR_CONTEXT(DEVICE, {
-            vectorRenderer: VECTOR,
-        });
+        const VECTOR = CTX.vector;
         const GL = DEVICE.gl;
         const PIXEL = (x, y) => {
             const OUT = new Uint8Array(4);
@@ -359,7 +356,6 @@ export async function exerciseVectorGameCoverage(page) {
         if (GRADIENTS.some((g) => g.pixels !== null)) {
             throw new Error('dispose must release gradient rasters');
         }
-        P.vector.dispose();
         P.device.dispose();
         P.canvas.remove();
         return (

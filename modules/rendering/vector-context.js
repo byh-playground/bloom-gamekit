@@ -1,5 +1,6 @@
 import { VectorRenderer } from './vector-renderer.js';
 import { MeshRenderer } from './mesh-renderer.js';
+import { YarnSurfaceRenderer } from './yarn-shader.js';
 const TAU = Math.PI * 2;
 const MAX_LINEAR_GRADIENT_STOPS = 32;
 const LINEAR_GRADIENT_SIZE = 1024;
@@ -368,31 +369,35 @@ export class VectorContext {
     constructor(
         device,
         {
-            vectorRenderer = null,
-            glyphAtlas = vectorRenderer?.glyphAtlas ?? null,
+            glyphAtlas = null,
             initialVertices = 4096,
             maxVertices = 262144,
             onError = null,
             safeAlphaRunBatching = true,
+            mesh = {},
+            surfaces = {},
         } = {},
     ) {
         if (!device?.beginFrame || !device?.endFrame || !device?.createVertexBuffer) {
             throw new TypeError('WebGLDevice is required');
         }
-        if (vectorRenderer && vectorRenderer.device !== device) {
-            throw new TypeError('vectorRenderer must use the supplied WebGLDevice');
+        if (mesh === null || typeof mesh !== 'object' || surfaces === null || typeof surfaces !== 'object') {
+            throw new TypeError('mesh and surfaces must be option objects');
         }
         this.device = device;
         this.canvas = device.canvas;
-        this.vector =
-            vectorRenderer ??
-            new VectorRenderer(device, {
-                initialVertices,
-                maxVertices,
-                glyphAtlas,
-            });
-        this.ownsVector = !vectorRenderer;
+        this.vector = new VectorRenderer(device, {
+            initialVertices,
+            maxVertices,
+            glyphAtlas,
+        });
         this.glyphAtlas = glyphAtlas ?? this.vector.glyphAtlas;
+        // Limits for the retained-mesh and yarn/sketch surface renderers, created with the first asset that needs them.
+        this.meshOptions = mesh;
+        this.surfaceOptions = surfaces;
+        this.surfaceRenderer = null;
+        // Add-on modules (vector actors) register cleanup here; it runs before the renderers are disposed.
+        this.disposers = [];
         this.onError = typeof onError === 'function' ? onError : null;
         if (typeof safeAlphaRunBatching !== 'boolean') {
             throw new TypeError('safeAlphaRunBatching must be a boolean');
@@ -1500,9 +1505,25 @@ export class VectorContext {
             throw new Error('VectorContext is not ready');
         }
         this.meshRenderer ??= new MeshRenderer(this.device, {
+            ...this.meshOptions,
             safeAlphaRunBatching: this.safeAlphaRunBatching,
         });
         return this.meshRenderer;
+    }
+    /** The yarn/sketch surface renderer this context shares with the vector actors built on it. */
+    acquireSurfaceRenderer() {
+        if (this.state !== 'ready' || this.device.state !== 'ready') {
+            throw new Error('VectorContext is not ready');
+        }
+        this.surfaceRenderer ??= new YarnSurfaceRenderer(this.device, this.surfaceOptions);
+        return this.surfaceRenderer;
+    }
+    /** Registers cleanup that `dispose()` runs, newest first, before it disposes the renderers it owns. */
+    onDispose(callback) {
+        if (typeof callback !== 'function') {
+            throw new TypeError('onDispose requires a function');
+        }
+        this.disposers.push(callback);
     }
     /**
      * Atlas rectangles (sprites, baked vector runs, posed parts) on the current transform and clip; they join the
@@ -1690,15 +1711,15 @@ export class VectorContext {
             BOUNDS,
         );
     }
-    /** Submit a native vector player after earlier paint, without flushing a compatible mesh run. */
-    drawVectorAsset(player, options = {}) {
+    /** Submit a vector actor after earlier paint, without flushing a compatible mesh run. */
+    drawVectorActor(actor, options = {}) {
         this._frame();
-        if (typeof player?.draw !== 'function') {
-            throw new TypeError('A vector asset player is required');
+        if (typeof actor?.draw !== 'function') {
+            throw new TypeError('A vector actor is required');
         }
         this.vector.flush();
         const WORLD_MODE = options.viewProjection !== undefined || options.worldMatrix !== undefined;
-        player.draw({
+        actor.draw({
             ...(!WORLD_MODE ? { projection: this.vector.projection } : {}),
             clips: this.vector.clips,
             stencilRef: this.vector.stencilDepth || null,
@@ -1813,6 +1834,10 @@ export class VectorContext {
         this.vector.count = 0;
         this.canvas.removeEventListener('webglcontextlost', this.onLost);
         this.canvas.removeEventListener('webglcontextrestored', this.onRestored);
+        for (const CALLBACK of this.disposers.splice(0).reverse()) {
+            CALLBACK();
+        }
+        this.surfaceRenderer?.dispose();
         this.meshRenderer?.dispose();
         for (const MESH of this.staticMeshes) {
             this.device.deleteVertexBuffer(MESH.buffer);
@@ -1820,9 +1845,7 @@ export class VectorContext {
         this._releaseGradientTextures();
         this.staticMeshes.clear();
         this.deferredMeshes.length = 0;
-        if (this.ownsVector) {
-            this.vector.dispose();
-        }
+        this.vector.dispose();
         this.active = false;
         this.state = 'disposed';
     }

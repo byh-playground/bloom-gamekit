@@ -1,5 +1,5 @@
 import { WebGLDevice, VectorContext, createSpriteAnimation } from '/dist/rendering.js';
-import { createVectorAsset, createVectorRasterAtlas, createVectorSpriteAtlas } from '/dist/vector-assets.js';
+import { createVectorActor, createVectorRasterAtlas, createVectorSpriteAtlas } from '/dist/vector-assets.js';
 import { createVectorAssetLoader } from '/dist/vector-assets-loader.js';
 import { seedScout, seedScoutSvg } from '../seed-scout-raster-comparison.compiled.js';
 import { runComparison } from './raster-benchmark.js';
@@ -41,8 +41,7 @@ const DEVICE = new WebGLDevice(CANVAS, {
 const CONTEXT = new VectorContext(DEVICE);
 const MESHES = CONTEXT.acquireMeshRenderer();
 let compiled = seedScout;
-let asset = createVectorAsset(MESHES, compiled);
-let viewBox = asset.viewBox;
+let viewBox = compiled.viewBox;
 const QUALITY_PRESETS = Object.freeze({ low: 2, standard: 4, high: 16 });
 const QUALITY_LOADER = createVectorAssetLoader({ maxEntries: 3 });
 const QUALITY_CACHE = new Map([['standard', seedScout]]);
@@ -565,7 +564,7 @@ function setStatus(message, error = false) {
 
 function invalidatePreparation(force = false) {
     const CONFIG_KEY = JSON.stringify([
-        asset.sourceSha256,
+        compiled.sourceSha256,
         STATE.qualityKey,
         PART_INPUT.checked,
         Number(RESOLUTION_INPUT.value),
@@ -590,7 +589,7 @@ function phaseFor(index, clip) {
     if (index === 0) {
         return 0;
     }
-    return Math.floor((((index * 73) % 997) / 997) * asset.metadata.clips[clip].durationMs);
+    return Math.floor((((index * 73) % 997) / 997) * compiled.metadata.clips[clip].durationMs);
 }
 
 function clipFor(index) {
@@ -606,7 +605,7 @@ function synchronizePlayers() {
     while (PLAYERS.length < COUNT) {
         const INDEX = PLAYERS.length;
         const CLIP = clipFor(INDEX);
-        const PLAYER = asset.createPlayer({ clip: CLIP, startedAtMs: -phaseFor(INDEX, CLIP) });
+        const PLAYER = createVectorActor(CONTEXT, compiled, { clip: CLIP, startedAtMs: -phaseFor(INDEX, CLIP) });
         PLAYER.setExpression(EXPRESSION_INPUT.value);
         PLAYERS.push(PLAYER);
     }
@@ -686,7 +685,7 @@ function cameraLayout(side, width, height, points) {
 }
 
 function synchronizeTimeControl() {
-    const CLIP = asset.metadata.clips[CLIP_INPUT.value];
+    const CLIP = compiled.metadata.clips[CLIP_INPUT.value];
     const DURATION = CLIP.durationMs * (CLIP.loop === 'alternate' ? 2 : 1);
     const DISPLAY_TIME = CLIP.loop === 'once' ? Math.min(DURATION, STATE.timeMs) : STATE.timeMs % DURATION;
     TIME_INPUT.max = String(DURATION);
@@ -781,7 +780,8 @@ async function setQuality(value) {
         if (STATE.contextLost || DEVICE.state !== 'ready' || DEVICE.gl.isContextLost()) {
             throw new Error('Graphics context is unavailable during mesh quality switch');
         }
-        const NEXT_ASSET = createVectorAsset(MESHES, descriptor);
+        // Created before anything is torn down, so a descriptor the runtime rejects leaves the current view intact.
+        const PROBE = createVectorActor(CONTEXT, descriptor);
         clearSpriteSets();
         STATE.atlas?.dispose();
         STATE.atlas = null;
@@ -789,10 +789,9 @@ async function setQuality(value) {
         for (const PLAYER of PLAYERS.splice(0)) {
             PLAYER.dispose();
         }
-        asset.dispose();
-        asset = NEXT_ASSET;
         compiled = descriptor;
-        viewBox = asset.viewBox;
+        viewBox = compiled.viewBox;
+        PROBE.dispose();
         STATE.qualityKey = value;
         STATE.benchmark = null;
         STATE.qualityAppliedGeneration++;
@@ -850,7 +849,7 @@ function ensureAtlas() {
     const STARTED = performance.now();
     let candidate = null;
     try {
-        candidate = createVectorRasterAtlas(CONTEXT, asset, compiled, {
+        candidate = createVectorRasterAtlas(CONTEXT, compiled, {
             pixelsPerUnit: RESOLUTION / Math.max(viewBox[2], viewBox[3]),
             padding: 2,
         });
@@ -862,7 +861,7 @@ function ensureAtlas() {
             candidate.dispose();
         }
         STATE.bakeCpuMs = performance.now() - STARTED;
-        setStatus(`같은 SVG ${asset.sourceSha256.slice(0, 12)} · 래스터 부위 그림 ${RESOLUTION}px`);
+        setStatus(`같은 SVG ${compiled.sourceSha256.slice(0, 12)} · 래스터 부위 그림 ${RESOLUTION}px`);
     } catch (error) {
         candidate?.dispose();
         STATE.atlasReason = error.message;
@@ -888,7 +887,7 @@ function clearSpriteSets() {
 
 function ensureSpriteSets(forceAll = false) {
     const CONFIG_KEY = JSON.stringify([
-        asset.sourceSha256,
+        compiled.sourceSha256,
         STATE.qualityKey,
         PART_INPUT.checked,
         Number(RESOLUTION_INPUT.value),
@@ -931,7 +930,7 @@ function ensureSpriteSets(forceAll = false) {
         let plannedBytes = 0;
         let bakeCount = 0;
         try {
-            baker = createVectorSpriteAtlas(CONTEXT, asset, compiled, {
+            baker = createVectorSpriteAtlas(CONTEXT, compiled, {
                 clip: CLIP,
                 expression: EXPRESSION,
                 sampleIntervalMs: Number(SAMPLE_INTERVAL_INPUT.value),
@@ -1007,7 +1006,7 @@ function ensureSpriteSets(forceAll = false) {
 
 function spriteKey(clip, expression = EXPRESSION_INPUT.value) {
     return JSON.stringify([
-        asset.sourceSha256,
+        compiled.sourceSha256,
         STATE.qualityKey,
         clip,
         expression,
@@ -1166,11 +1165,11 @@ function drawActors(side, positions) {
     for (let i = 0; i < PLAYERS.length; i++) {
         const OPTIONS = { matrix: positions[i] };
         if (side === 'vector') {
-            CONTEXT.drawVectorAsset(PLAYERS[i], OPTIONS);
+            CONTEXT.drawVectorActor(PLAYERS[i], OPTIONS);
             continue;
         }
         if (!STATE.atlas) {
-            CONTEXT.drawVectorAsset(PLAYERS[i], OPTIONS);
+            CONTEXT.drawVectorActor(PLAYERS[i], OPTIONS);
             vectorFallbacks++;
             REASONS.add('atlas unavailable');
             continue;
@@ -1196,7 +1195,7 @@ function drawSpriteActors(positions) {
         const ENTRY = STATE.spriteSets.get(spriteKey(VECTOR_PLAYER.currentClip, VECTOR_PLAYER.currentExpression));
         const OPTIONS = { matrix: positions[i] };
         if (!ENTRY?.resource) {
-            CONTEXT.drawVectorAsset(VECTOR_PLAYER, OPTIONS);
+            CONTEXT.drawVectorActor(VECTOR_PLAYER, OPTIONS);
             vectorFallbacks++;
             REASONS.add(ENTRY?.reason ?? 'spriteUnavailable');
             continue;
@@ -1324,7 +1323,7 @@ function writeMetrics(cpuMs, animationMs, submitMs, pathCpuMs, rasterResult, spr
             ? `${PREPARATION.status} ${PREPARATION.completed}/${PREPARATION.total} · planned ${PREPARATION.estimatedBytes.toLocaleString()} B · allocated ${PREPARATION.allocatedBytes.toLocaleString()} / ${PREPARATION.budgetBytes.toLocaleString()} B · initial CPU ${PREPARATION.cpuMs.toFixed(1)} ms · ${PREPARATION.entries.filter((entry) => entry.ready).length} sprite layers of one texture array${FAILED_PREPARATIONS.length ? ` · ${FAILED_PREPARATIONS.map((entry) => `${entry.clip}/${entry.expression}:${entry.reason}`).join(', ')}` : ''}`
             : 'Preparing atlas manifest…';
         PATH_METRICS.textContent =
-            `SVG SHA ${asset.sourceSha256.slice(0, 12)} · 래스터 ${rasterResult.rasterDraws}개 · 벡터 대체 ${rasterResult.vectorFallbacks}개` +
+            `SVG SHA ${compiled.sourceSha256.slice(0, 12)} · 래스터 ${rasterResult.rasterDraws}개 · 벡터 대체 ${rasterResult.vectorFallbacks}개` +
             (rasterResult.reasons.length ? ` (${rasterResult.reasons.join(', ')})` : '') +
             ` · GPU pose ${POSES?.gpuDrawInstances ?? 0}개 · CPU pose ${POSES?.cpuDrawInstances ?? 0}개 · ` +
             `GPU 버퍼 ${DEVICE_STATS.gpuBufferBytes.toLocaleString()} B · GPU 텍스처 ${DEVICE_STATS.gpuTextureBytes.toLocaleString()} B · ` +
@@ -1338,8 +1337,8 @@ function writeMetrics(cpuMs, animationMs, submitMs, pathCpuMs, rasterResult, spr
     STATE.last = {
         comparisonModes: comparisonModes(),
         frame: STATE.frameOrdinal,
-        assetId: asset.id,
-        sourceSha256: asset.sourceSha256,
+        assetId: compiled.metadata.id,
+        sourceSha256: compiled.sourceSha256,
         mode: MODE_INPUT.value,
         layout: STATE.layout,
         count: PLAYERS.length,
@@ -1452,7 +1451,7 @@ function render(now, forcePreparation = false, updateReadout = true) {
         timer.poll();
         if (STATE.previousFrameMs !== null && STATE.playing) {
             STATE.timeMs += Math.max(0, Math.min(80, now - STATE.previousFrameMs)) * Number(PLAYBACK_RATE_INPUT.value);
-            const CLIP = asset.metadata.clips[CLIP_INPUT.value];
+            const CLIP = compiled.metadata.clips[CLIP_INPUT.value];
             if (CLIP.loop === 'once' && STATE.timeMs >= CLIP.durationMs) {
                 STATE.timeMs = CLIP.durationMs;
                 STATE.playing = false;
@@ -1600,7 +1599,6 @@ function disposeComparison() {
     clearSpriteSets();
     STATE.atlas?.dispose();
     STATE.atlas = null;
-    asset.dispose();
     CONTEXT.dispose();
     DEVICE.dispose();
     return true;
@@ -1690,7 +1688,7 @@ TIME_INPUT.addEventListener('input', () => {
 });
 PLAY_BUTTON.addEventListener('click', () => {
     resetTimer();
-    const CLIP = asset.metadata.clips[CLIP_INPUT.value];
+    const CLIP = compiled.metadata.clips[CLIP_INPUT.value];
     if (!STATE.playing && CLIP.loop === 'once' && STATE.timeMs >= CLIP.durationMs) {
         STATE.timeMs = 0;
     }

@@ -1,4 +1,4 @@
-import { validateCompiledAsset } from './schema.js';
+import { acquireVectorAsset } from './runtime.js';
 
 const IDENTITY_MATRIX = Object.freeze([1, 0, 0, 1, 0, 0]);
 const NOW = () => globalThis.performance?.now?.() ?? null;
@@ -51,20 +51,6 @@ function sourceRuns(geometry) {
         }
     }
     return RUNS;
-}
-
-function sameGeometry(mesh, geometry) {
-    const VERTICES = mesh.vertices,
-        INDICES = mesh.indices;
-    return (
-        VERTICES?.length === geometry.vertices.length &&
-        VERTICES.every((value, index) => value === geometry.vertices[index]) &&
-        (geometry.indices === undefined
-            ? INDICES === undefined
-            : INDICES instanceof Uint16Array &&
-              INDICES.length === geometry.indices.length &&
-              INDICES.every((value, index) => value === geometry.indices[index]))
-    );
 }
 
 function wholeRunExpressions(geometry, runs) {
@@ -164,33 +150,30 @@ function runTables(runs, packed, region, pixelsPerUnit, padding) {
 }
 
 /**
- * Bakes a retained vector asset into one region of the device's shared texture atlas and draws it as atlas
+ * Bakes a compiled SVG into one region of the device's shared texture atlas and draws its actors as atlas
  * rectangles in the context's vector stream, so every baked asset, shape and glyph of one state is one draw.
- * The asset must belong to `context.meshRenderer`; the atlas owns its region until `dispose`.
+ * The atlas shares the context's GPU resources for `compiledAsset` and owns its region until `dispose`.
  */
-export function createVectorRasterAtlas(context, asset, compiledAsset, { pixelsPerUnit = 1, padding = 2 } = {}) {
-    validateCompiledAsset(compiledAsset);
-    const DEVICE = context?.device;
-    const MESHES = context?.meshRenderer;
-    const SOURCE_MESH_MATCHES = asset?.mesh
-        ? asset.mesh.renderer === MESHES &&
-          asset.mesh.partCount === compiledAsset.geometry.partCount &&
-          sameGeometry(asset.mesh, compiledAsset.geometry)
-        : compiledAsset.geometry.vertices.length === 0;
+export function createVectorRasterAtlas(context, compiledAsset, options = {}) {
+    const { asset: ASSET, release: RELEASE } = acquireVectorAsset(context, compiledAsset);
+    try {
+        return bakeRasterAtlas(context, ASSET, RELEASE, compiledAsset, options);
+    } catch (error) {
+        RELEASE();
+        throw error;
+    }
+}
+function bakeRasterAtlas(context, asset, release, compiledAsset, { pixelsPerUnit = 1, padding = 2 } = {}) {
+    const DEVICE = context.device;
+    const MESHES = context.meshRenderer;
     if (
-        !context?.drawQuads ||
-        !context?.drawVectorAsset ||
+        !context.drawQuads ||
+        !context.drawVectorActor ||
         !DEVICE?.createTextureLayerTarget ||
         !DEVICE?.bindRenderTarget ||
-        !DEVICE?.unbindRenderTarget ||
-        !asset?.ownsPlayer ||
-        asset.disposed ||
-        asset.sourceSha256 !== compiledAsset.sourceSha256 ||
-        !SOURCE_MESH_MATCHES
+        !DEVICE?.unbindRenderTarget
     ) {
-        throw new TypeError(
-            'A VectorContext and a matching live vector asset created on its mesh renderer are required',
-        );
+        throw new TypeError('A VectorContext is required');
     }
     if (!Number.isFinite(pixelsPerUnit) || pixelsPerUnit <= 0 || !Number.isSafeInteger(padding) || padding < 1) {
         throw new TypeError('A positive pixel scale and padding are required');
@@ -250,10 +233,10 @@ export function createVectorRasterAtlas(context, asset, compiledAsset, { pixelsP
     let rasterDraws = 0;
     let vectorDraws = 0;
     const FALLBACK_REASONS = Object.create(null);
-    const FALLBACK = (player, options, reason) => {
+    const FALLBACK = (actor, options, reason) => {
         vectorDraws++;
         FALLBACK_REASONS[reason] = (FALLBACK_REASONS[reason] ?? 0) + 1;
-        context.drawVectorAsset(player, options);
+        context.drawVectorActor(actor, options);
         return { backend: 'vector', reason };
     };
     const RELEASE_TARGET = () => {
@@ -352,39 +335,39 @@ export function createVectorRasterAtlas(context, asset, compiledAsset, { pixelsP
             return { backend: 'vector', reason: 'bakeFailed' };
         }
     };
-    const DRAW = (player, options = {}) => {
+    const DRAW = (actor, options = {}) => {
         if (disposed || asset.disposed) {
             throw new Error('Vector raster atlas or source asset is disposed');
         }
-        if (!asset.ownsPlayer(player)) {
-            throw new TypeError('A live player owned by this vector asset is required');
+        if (!asset.ownsActor(actor)) {
+            throw new TypeError('A live actor owned by this vector asset is required');
         }
         if (unsupportedReason) {
-            return FALLBACK(player, options, unsupportedReason);
+            return FALLBACK(actor, options, unsupportedReason);
         }
         if (options.forceColor === true) {
-            return FALLBACK(player, options, 'forceColor');
+            return FALLBACK(actor, options, 'forceColor');
         }
         if ((options.alpha !== undefined && options.alpha < 1) || options.color?.[3] < 1) {
-            return FALLBACK(player, options, 'globalOpacity');
+            return FALLBACK(actor, options, 'globalOpacity');
         }
-        if (player.hasOpacityChannel) {
-            return FALLBACK(player, options, 'opacityChannel');
+        if (actor.hasOpacityChannel) {
+            return FALLBACK(actor, options, 'opacityChannel');
         }
-        if (player.hasNonUnitBaseOpacity) {
-            return FALLBACK(player, options, 'baseOpacity');
+        if (actor.hasNonUnitBaseOpacity) {
+            return FALLBACK(actor, options, 'baseOpacity');
         }
         if (options.depthWriteAlphaThreshold != null) {
-            return FALLBACK(player, options, 'depthWriteAlphaThreshold');
+            return FALLBACK(actor, options, 'depthWriteAlphaThreshold');
         }
         const RESULT = BAKE();
         if (RESULT.backend !== 'raster') {
-            return FALLBACK(player, options, RESULT.reason);
+            return FALLBACK(actor, options, RESULT.reason);
         }
         const { excludeParts: EXCLUDE_PARTS = null, matrix: MATRIX = IDENTITY_MATRIX, ...DRAW_OPTIONS } = options;
-        const POSE = player.preparePose({ excludeParts: EXCLUDE_PARTS });
+        const POSE = actor.preparePose({ excludeParts: EXCLUDE_PARTS });
         if (!POSE) {
-            return FALLBACK(player, options, 'poseUnavailable');
+            return FALLBACK(actor, options, 'poseUnavailable');
         }
         context.drawQuads({
             ...DRAW_OPTIONS,
@@ -408,8 +391,12 @@ export function createVectorRasterAtlas(context, asset, compiledAsset, { pixelsP
         try {
             RELEASE_TARGET();
         } finally {
-            if (region && DEVICE.state === 'ready') {
-                ATLAS.release(region);
+            try {
+                if (region && DEVICE.state === 'ready') {
+                    ATLAS.release(region);
+                }
+            } finally {
+                release();
             }
         }
         return true;

@@ -20,7 +20,6 @@ export async function exerciseYarnShader(browser, moduleURL, screenshotPath) {
             async ({ moduleURL }) => {
                 const {
                     WebGLDevice: WEB_GL_DEVICE,
-                    VectorRenderer: VECTOR_RENDERER,
                     VectorContext: VECTOR_CONTEXT,
                     YarnSurfaceRenderer: YARN_SURFACE_RENDERER,
                 } = await import(moduleURL);
@@ -260,12 +259,9 @@ export async function exerciseYarnShader(browser, moduleURL, screenshotPath) {
                         stencil: true,
                         preserveDrawingBuffer: true,
                     });
-                    const VECTOR = new VECTOR_RENDERER(DEVICE, {
+                    const CTX = new VECTOR_CONTEXT(DEVICE, {
                             initialVertices: 128,
                             maxVertices: 4096,
-                        }),
-                        CTX = new VECTOR_CONTEXT(DEVICE, {
-                            vectorRenderer: VECTOR,
                         }),
                         SURFACES = new YARN_SURFACE_RENDERER(DEVICE);
                     const QUAD = Float32Array.from([
@@ -445,7 +441,6 @@ export async function exerciseYarnShader(browser, moduleURL, screenshotPath) {
                     }
                     SURFACES.dispose();
                     CTX.dispose();
-                    VECTOR.dispose();
                     DEVICE.dispose();
                     SAMPLES.stencil = {
                         ...FIRST,

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { compiledAsset as pr15Asset } from './fixtures/squish-pr15-enemy-boss.js';
-import { createVectorAsset } from '../runtime.js';
+import { createVectorActor } from '../runtime.js';
 import { validateCompiledAsset } from '../schema.js';
 import { MeshBuilder } from '../../rendering/mesh-builder.js';
 function compileSemanticExpressionIndices(asset) {
@@ -46,18 +46,25 @@ assert.throws(
     /expression index variant: paint_0/,
     'the unmodified PR15 compiled asset reproduces the startup collision',
 );
+const FAKE_CONTEXT = (renderer) => ({
+    acquireMeshRenderer: () => renderer,
+    acquireSurfaceRenderer() {
+        throw new Error('this asset has no shader surfaces');
+    },
+    onDispose() {},
+});
 assert.throws(
     () =>
-        createVectorAsset(
-            {
+        createVectorActor(
+            FAKE_CONTEXT({
                 createMesh() {},
                 drawMesh() {},
                 deleteMesh() {},
-            },
+            }),
             pr15Asset,
         ),
     /expression index variant: paint_0/,
-    'createVectorAsset rejects the unmodified PR15 asset during initialization',
+    'createVectorActor rejects the unmodified PR15 asset during initialization',
 );
 assert.equal(pr15Asset.compilerVersion, '0.6.0');
 assert.deepEqual(Object.keys(pr15Asset.metadata.expressions), ['neutral', 'happy', 'surprised', 'angry']);
@@ -136,25 +143,24 @@ const RENDERER = {
         deleted = true;
     },
 };
-const VECTOR = createVectorAsset(RENDERER, MIGRATED_ASSET);
+const ACTOR = createVectorActor(FAKE_CONTEXT(RENDERER), MIGRATED_ASSET);
 assert.equal(
     capturedGeometry.indexVariants,
     MIGRATED_ASSET.geometry.indexVariants,
-    'createVectorAsset forwards generic painter ranges unchanged',
+    'createVectorActor forwards generic painter ranges unchanged',
 );
 assert.equal(
     capturedGeometry.expressionIndices,
     MIGRATED_ASSET.geometry.expressionIndices,
-    'createVectorAsset forwards semantic expressions separately',
+    'createVectorActor forwards semantic expressions separately',
 );
-const ACTOR = VECTOR.createPlayer();
 ACTOR.draw({
     projection: [1, 0, 0, 0, 1, 0, 0, 0, 1],
 });
 assert.equal(
     RENDERER.lastOptions.indexVariant,
     'neutral',
-    'the vector player auto-selects only the authored default expression',
+    'the vector actor auto-selects only the authored default expression',
 );
 ACTOR.setExpression('happy').draw({
     projection: [1, 0, 0, 0, 1, 0, 0, 0, 1],
@@ -166,8 +172,7 @@ ACTOR.setPartVisible('face-happy', false).draw({
 assert.equal(RENDERER.lastOptions.indexVariant, null, 'manual part visibility disables semantic index optimization');
 assert.equal(capturedDraws, 3);
 ACTOR.dispose();
-VECTOR.dispose();
-assert.equal(deleted, true);
+assert.equal(deleted, true, 'the last actor of a compiled SVG releases its GPU mesh');
 function triangleGeometry(expressionIndices = {}) {
     const VERTICES = new Float32Array(3 * 11);
     for (let index = 0; index < 3; index++) {

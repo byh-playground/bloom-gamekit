@@ -616,8 +616,8 @@
             Metrics report each view's actual rendering path. GPU elapsed time is not inferred from CPU timing.
         </footer>
         <script type="module">
-            import { WebGLDevice, MeshRenderer, VectorContext, YarnSurfaceRenderer } from '/dist/rendering.js';
-            import { createVectorAsset, VECTOR_ASSET_QUALITY_PRESETS } from '/dist/vector-assets.js';
+            import { WebGLDevice, VectorContext } from '/dist/rendering.js';
+            import { createVectorActor, VECTOR_ASSET_QUALITY_PRESETS } from '/dist/vector-assets.js';
             import { createVectorAssetLoader } from '/dist/vector-assets-loader.js';
             import { createSeedScout, seedScoutMetadata } from './seed-scout.js';
             import { createStyleSample, styleSamples } from './style-samples.js';
@@ -634,9 +634,10 @@
                 sourceLoaded: false,
                 loading: false,
                 device: null,
+                context: null,
                 meshes: null,
                 surfaces: null,
-                asset: null,
+                mesh: null,
                 actor: null,
                 compiledAsset: null,
                 sourceSvg: null,
@@ -665,10 +666,8 @@
             };
             window.vectorAssetRuntime = {
                 WebGLDevice,
-                MeshRenderer,
                 VectorContext,
-                YarnSurfaceRenderer,
-                createVectorAsset,
+                createVectorActor,
                 createVectorAssetLoader,
                 VECTOR_ASSET_QUALITY_PRESETS,
                 createSeedScout,
@@ -681,7 +680,6 @@
             let triangles = [];
             let edges = [];
             let compiledAsset = null;
-            let asset = null;
             let actor = null;
             let displayTimeMs = 0;
             let playing = true;
@@ -1000,15 +998,19 @@
                     depth: false,
                     stencil: false,
                 });
-                const MESHES = new MeshRenderer(DEVICE, {
-                    maxMeshes: 4,
-                    maxInstances: 8,
+                const CONTEXT = new VectorContext(DEVICE, {
+                    mesh: {
+                        maxMeshes: 4,
+                        maxInstances: 8,
+                    },
                 });
-                const SURFACES = new YarnSurfaceRenderer(DEVICE);
+                const MESHES = CONTEXT.acquireMeshRenderer();
+                const SURFACES = CONTEXT.acquireSurfaceRenderer();
                 const RENDERER_INITIALIZATION_MS = performance.now() - RENDERER_INITIALIZATION_START;
                 const POINT_KEY = (x, y) => Number(x.toFixed(4)) + ',' + Number(y.toFixed(4));
                 Object.assign(DEMO, {
                     device: DEVICE,
+                    context: CONTEXT,
                     meshes: MESHES,
                     surfaces: SURFACES,
                     rendererInitializationMs: RENDERER_INITIALIZATION_MS,
@@ -1172,20 +1174,16 @@
                         }
                         const DISPLAY_BUILD = createSafeDisplaySvg(SOURCE_BYTES, NEXT_COMPILED);
                         const ASSET_INIT_STARTED = performance.now();
-                        const NEXT_ASSET = createVectorAsset(MESHES, NEXT_COMPILED, {
-                            surfaceRenderer: SURFACES,
-                        });
                         const FIRST_CLIP = Object.keys(NEXT_COMPILED.metadata.clips)[0];
                         const CLIP_NAME = Object.hasOwn(NEXT_COMPILED.metadata.clips, CLIP_INPUT.value)
                             ? CLIP_INPUT.value
                             : FIRST_CLIP;
-                        const NEXT_ACTOR = NEXT_ASSET.createPlayer({
+                        const NEXT_ACTOR = createVectorActor(CONTEXT, NEXT_COMPILED, {
                             clip: CLIP_NAME,
                             startedAtMs: 0,
                         });
                         NEXT_ACTOR.setExpression(NEXT_COMPILED.metadata.defaultExpression);
-                        const OLD_ACTOR = actor,
-                            OLD_ASSET = asset;
+                        const OLD_ACTOR = actor;
                         if (DEMO.sourceSvg?.isConnected) {
                             DEMO.sourceSvg.replaceWith(DISPLAY_BUILD.display);
                         } else {
@@ -1195,7 +1193,6 @@
                                 ?.replaceWith(DISPLAY_BUILD.display);
                         }
                         actor = NEXT_ACTOR;
-                        asset = NEXT_ASSET;
                         compiledAsset = NEXT_COMPILED;
                         sourceWrappers = DISPLAY_BUILD.wrappers;
                         triangles = [];
@@ -1203,7 +1200,7 @@
                         const TOPOLOGY = buildTopology(NEXT_COMPILED);
                         triangles = TOPOLOGY.triangles;
                         edges = TOPOLOGY.edges;
-                        DEMO.asset = asset;
+                        DEMO.mesh = [...MESHES.meshes].at(-1) ?? null;
                         DEMO.actor = actor;
                         DEMO.compiledAsset = compiledAsset;
                         DEMO.sourceSvg = DISPLAY_BUILD.display;
@@ -1266,9 +1263,6 @@
                         if (OLD_ACTOR) {
                             OLD_ACTOR.dispose();
                         }
-                        if (OLD_ASSET) {
-                            OLD_ASSET.dispose();
-                        }
                     } catch (error) {
                         if (REQUEST_ID !== loadSequence) {
                             return;
@@ -1312,22 +1306,25 @@
                             depth: false,
                             stencil: false,
                         });
-                        const STYLE_MESHES = new MeshRenderer(STYLE_DEVICE, {
-                            maxMeshes: 2,
-                            maxInstances: 8,
+                        const STYLE_CONTEXT = new VectorContext(STYLE_DEVICE, {
+                            mesh: {
+                                maxMeshes: 2,
+                                maxInstances: 8,
+                            },
                         });
-                        const STYLE_ASSET = createStyleSample(ID, STYLE_MESHES);
-                        const STYLE_ACTOR = STYLE_ASSET.createPlayer({
+                        const STYLE_ACTOR = createStyleSample(ID, STYLE_CONTEXT, {
                             clip: 'idle',
                             startedAtMs: 0,
                         });
+                        const STYLE_MESHES = STYLE_CONTEXT.meshRenderer;
                         STYLE_INSTANCES.push({
                             id: ID,
                             sourceSha: SOURCE_SHA,
                             canvas: STYLE_CANVAS,
                             device: STYLE_DEVICE,
+                            context: STYLE_CONTEXT,
                             meshes: STYLE_MESHES,
-                            asset: STYLE_ASSET,
+                            mesh: [...STYLE_MESHES.meshes][0],
                             actor: STYLE_ACTOR,
                         });
                     }
@@ -1388,9 +1385,9 @@
                             ' · ' +
                             ITEM.device.stats.drawCalls +
                             ' draw calls · ' +
-                            ITEM.asset.mesh.byteLength.toLocaleString() +
+                            ITEM.mesh.byteLength.toLocaleString() +
                             ' retained B · create upload ' +
-                            ITEM.asset.mesh.byteLength.toLocaleString() +
+                            ITEM.mesh.byteLength.toLocaleString() +
                             ' B · ' +
                             FRAME_GEOMETRY_UPLOAD_BYTES.toLocaleString() +
                             ' B/frame geometry upload';
@@ -1400,8 +1397,7 @@
                 DEMO.disposeStyleSamples = () => {
                     for (const ITEM of STYLE_INSTANCES.splice(0)) {
                         ITEM.actor.dispose();
-                        ITEM.asset.dispose();
-                        ITEM.meshes.dispose();
+                        ITEM.context.dispose();
                         ITEM.device.dispose();
                     }
                     DEMO.styleInstances = [];
@@ -1609,7 +1605,7 @@
                         ? 'WebGL 2 + core instancing'
                         : 'WebGL 2 + per-draw uniforms';
                     const GEOMETRY = compiledAsset.geometry,
-                        RETAINED_BYTES = asset.mesh?.byteLength ?? 0;
+                        RETAINED_BYTES = DEMO.mesh?.byteLength ?? 0;
                     document.querySelector('#gamekit-metrics').textContent =
                         BACKEND +
                         ' · ' +
@@ -1794,10 +1790,8 @@
                     () => {
                         stopped = true;
                         actor?.dispose();
-                        asset?.dispose();
                         LOADER.dispose();
-                        SURFACES.dispose();
-                        MESHES.dispose();
+                        CONTEXT.dispose();
                         DEVICE.dispose();
                         DEMO.disposeStyleSamples();
                     },

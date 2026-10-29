@@ -738,10 +738,10 @@ try {
                     preserveDrawingBuffer: true,
                     checkGLErrors: true,
                 }),
-                MESHES = new R.MeshRenderer(DEVICE),
-                ASSET = V.createVectorAsset(MESHES, COMPILED_ASSET),
-                PLAYER = ASSET.createPlayer({ clip: 'bounce' }),
-                ATLAS = V.createVectorRasterAtlas(MESHES, ASSET, COMPILED_ASSET, { pixelsPerUnit: 4, padding: 2 }),
+                CONTEXT = new R.VectorContext(DEVICE),
+                MESHES = CONTEXT.acquireMeshRenderer(),
+                PLAYER = V.createVectorActor(CONTEXT, COMPILED_ASSET, { clip: 'bounce' }),
+                ATLAS = V.createVectorRasterAtlas(CONTEXT, COMPILED_ASSET, { pixelsPerUnit: 4, padding: 2 }),
                 GL = DEVICE.gl;
             let stage = 'initial-assets';
             const CHECK_GL = (label) => {
@@ -783,20 +783,18 @@ try {
             };
             const BEGIN = (background, width = WIDTH, height = HEIGHT, label = `frame:${background}`) => {
                 STAGE(label);
-                DEVICE.beginFrame({
+                CONTEXT.beginFrame({
                     width,
                     height,
                     clearColor: background === 'white' ? [1, 1, 1, 1] : [0, 0, 0, 1],
                 });
-                MESHES.beginFrame();
                 if (background === 'checker') {
                     CHECKER();
                 }
                 CHECK_GL(`begin ${stage}`);
             };
             const END = () => {
-                MESHES.flush();
-                DEVICE.endFrame();
+                CONTEXT.endFrame();
                 CHECK_GL(`end ${stage}`);
                 return READ();
             };
@@ -925,7 +923,7 @@ try {
             PLAYER.setBasePose(COMPILED_ASSET.metadata.parts[0].id, { opacity: 1 });
             FALLBACKS.globalOpacity = RENDER('raster', 'black', 1, { alpha: 0.5 }).result;
             FALLBACKS.colorOpacity = RENDER('raster', 'black', 1, { color: [1, 1, 1, 0.5] }).result;
-            const LIMIT = V.createVectorRasterAtlas(MESHES, ASSET, COMPILED_ASSET, { maxAtlasBytes: 4 });
+            const LIMIT = V.createVectorRasterAtlas(CONTEXT, COMPILED_ASSET, { maxAtlasBytes: 4 });
             BEGIN('black');
             FALLBACKS.atlasLimit = LIMIT.draw(PLAYER, { projection: PROJECTION, matrix: MATRIX(1) });
             END();
@@ -934,7 +932,7 @@ try {
             DEVICE.createRenderTarget = () => {
                 throw new Error('Injected raster target allocation failure');
             };
-            const FAULT_ATLAS = V.createVectorRasterAtlas(MESHES, ASSET, COMPILED_ASSET, { pixelsPerUnit: 3 });
+            const FAULT_ATLAS = V.createVectorRasterAtlas(CONTEXT, COMPILED_ASSET, { pixelsPerUnit: 3 });
             BEGIN('black');
             FALLBACKS.bakeFailed = FAULT_ATLAS.draw(PLAYER, { projection: PROJECTION, matrix: MATRIX(1) });
             END();
@@ -944,18 +942,16 @@ try {
             END();
             FAULT_ATLAS.dispose();
             STAGE('cpu-pose-create');
-            const CPU_MESHES = new R.MeshRenderer(DEVICE, { poseBackend: 'cpu' }),
-                CPU_ASSET = V.createVectorAsset(CPU_MESHES, COMPILED_ASSET),
-                CPU_PLAYER = CPU_ASSET.createPlayer({ clip: 'bounce' }),
-                CPU_ATLAS = V.createVectorRasterAtlas(CPU_MESHES, CPU_ASSET, COMPILED_ASSET);
+            const CPU_CONTEXT = new R.VectorContext(DEVICE, { mesh: { poseBackend: 'cpu' } }),
+                CPU_MESHES = CPU_CONTEXT.acquireMeshRenderer(),
+                CPU_PLAYER = V.createVectorActor(CPU_CONTEXT, COMPILED_ASSET, { clip: 'bounce' }),
+                CPU_ATLAS = V.createVectorRasterAtlas(CPU_CONTEXT, COMPILED_ASSET);
             CHECK_GL('after cpu-pose-create');
             STAGE('cpu-pose-atlas');
             CPU_PLAYER.seek(130);
-            DEVICE.beginFrame({ width: WIDTH, height: HEIGHT, clearColor: [0, 0, 0, 1] });
-            CPU_MESHES.beginFrame();
+            CPU_CONTEXT.beginFrame({ width: WIDTH, height: HEIGHT, clearColor: [0, 0, 0, 1] });
             const CPU_POSE_RESULT = CPU_ATLAS.draw(CPU_PLAYER, { projection: PROJECTION, matrix: MATRIX(1) });
-            CPU_MESHES.flush();
-            DEVICE.endFrame();
+            CPU_CONTEXT.endFrame();
             CHECK_GL('after cpu-pose-atlas frame');
             const CPU_POSE = {
                 backend: CPU_POSE_RESULT.backend,
@@ -964,25 +960,22 @@ try {
             };
             CPU_ATLAS.dispose();
             CPU_PLAYER.dispose();
-            CPU_ASSET.dispose();
-            CPU_MESHES.dispose();
+            CPU_CONTEXT.dispose();
             CHECK_GL('after cpu-pose-atlas dispose');
             STAGE('sampled-cpu-atlas');
-            const SAMPLED_MESHES = new R.MeshRenderer(DEVICE);
+            const SAMPLED_CONTEXT = new R.VectorContext(DEVICE),
+                SAMPLED_MESHES = SAMPLED_CONTEXT.acquireMeshRenderer();
             SAMPLED_MESHES.createPoseSource = () => null;
-            const SAMPLED_ASSET = V.createVectorAsset(SAMPLED_MESHES, COMPILED_ASSET),
-                SAMPLED_PLAYER = SAMPLED_ASSET.createPlayer({ clip: 'bounce' }),
-                SAMPLED_ATLAS = V.createVectorRasterAtlas(SAMPLED_MESHES, SAMPLED_ASSET, COMPILED_ASSET);
+            const SAMPLED_PLAYER = V.createVectorActor(SAMPLED_CONTEXT, COMPILED_ASSET, { clip: 'bounce' }),
+                SAMPLED_ATLAS = V.createVectorRasterAtlas(SAMPLED_CONTEXT, COMPILED_ASSET);
             delete SAMPLED_MESHES.createPoseSource;
             SAMPLED_PLAYER.seek(130);
-            DEVICE.beginFrame({ width: WIDTH, height: HEIGHT, clearColor: [0, 0, 0, 1] });
-            SAMPLED_MESHES.beginFrame();
+            SAMPLED_CONTEXT.beginFrame({ width: WIDTH, height: HEIGHT, clearColor: [0, 0, 0, 1] });
             const SAMPLED_RESULT = SAMPLED_ATLAS.draw(SAMPLED_PLAYER, {
                 projection: PROJECTION,
                 matrix: MATRIX(1),
             });
-            SAMPLED_MESHES.flush();
-            DEVICE.endFrame();
+            SAMPLED_CONTEXT.endFrame();
             CHECK_GL('after sampled-cpu-atlas frame');
             const SAMPLED = {
                 backend: SAMPLED_RESULT.backend,
@@ -991,8 +984,7 @@ try {
             };
             SAMPLED_ATLAS.dispose();
             SAMPLED_PLAYER.dispose();
-            SAMPLED_ASSET.dispose();
-            SAMPLED_MESHES.dispose();
+            SAMPLED_CONTEXT.dispose();
             CHECK_GL('after sampled-cpu-atlas dispose');
             window.__rasterPartial = {
                 comparisons: COMPARISONS,
@@ -1002,13 +994,13 @@ try {
                 sampledCpu: SAMPLED,
             };
             STAGE('sprite-baker-create');
-            const SPRITE_BAKER = V.createVectorSpriteAtlas(MESHES, ASSET, COMPILED_ASSET, {
+            const SPRITE_BAKER = V.createVectorSpriteAtlas(CONTEXT, COMPILED_ASSET, {
                 clip: 'bounce',
                 expression: 'happy',
                 sampleIntervalMs: 125,
                 pixelsPerUnit: 4,
             });
-            const SPRITE_COPY = V.createVectorSpriteAtlas(MESHES, ASSET, COMPILED_ASSET, {
+            const SPRITE_COPY = V.createVectorSpriteAtlas(CONTEXT, COMPILED_ASSET, {
                 clip: 'bounce',
                 expression: 'happy',
                 sampleIntervalMs: 125,
@@ -1026,11 +1018,11 @@ try {
                 sourceDurationMs: COMPILED_ASSET.metadata.clips.bounce.durationMs,
                 backend: SPRITE_BAKE.backend,
             };
-            const SPRITE = R.createSpriteAnimation(MESHES, SPRITE_BAKER.texture, SPRITE_BAKER.definition);
+            const SPRITE = R.createSpriteAnimation(CONTEXT, SPRITE_BAKER.texture, SPRITE_BAKER.definition);
             CHECK_GL('after create seed sprite');
 
             const SPRITE_PLAYER = SPRITE.createPlayer({ clip: 'bounce' }),
-                VECTOR_REFERENCE = ASSET.createPlayer({ clip: 'bounce' });
+                VECTOR_REFERENCE = V.createVectorActor(CONTEXT, COMPILED_ASSET, { clip: 'bounce' });
             VECTOR_REFERENCE.setExpression('happy');
             const SAMPLE_TIME = SPRITE_BAKER.stats.sampleTimesMs[1],
                 EMPTY_SPRITE_BACKGROUND = BACKGROUND('black');
@@ -1081,15 +1073,14 @@ try {
             VECTOR_REFERENCE.dispose();
             CHECK_GL('after seed sprite resource dispose');
             STAGE('sketch-asset-create');
-            const SKETCH_ASSET = V.createVectorAsset(MESHES, SKETCH_COMPILED_ASSET);
             CHECK_GL('after sketch-asset-create');
             STAGE('sketch-baker-plan');
-            const SKETCH_BAKER = V.createVectorSpriteAtlas(MESHES, SKETCH_ASSET, SKETCH_COMPILED_ASSET, {
+            const SKETCH_BAKER = V.createVectorSpriteAtlas(CONTEXT, SKETCH_COMPILED_ASSET, {
                     clip: 'idle',
                     sampleIntervalMs: 300,
                     pixelsPerUnit: 4,
                 }),
-                SKETCH_PLAYER = SKETCH_ASSET.createPlayer({ clip: 'idle' });
+                SKETCH_PLAYER = V.createVectorActor(CONTEXT, SKETCH_COMPILED_ASSET, { clip: 'idle' });
             CHECK_GL('after sketch-baker-plan');
             BEGIN('black');
             const SKETCH_BAKE = SKETCH_BAKER.bake();
@@ -1111,13 +1102,10 @@ try {
             };
             SKETCH_PLAYER.dispose();
             SKETCH_BAKER.dispose();
-            SKETCH_ASSET.dispose();
             CHECK_GL('after sketch resource dispose');
             STAGE('shader-surface-fallback-create');
-            const SURFACES = new R.YarnSurfaceRenderer(DEVICE),
-                SHADER_ASSET = V.createVectorAsset(MESHES, SHADER_COMPILED_ASSET, { surfaceRenderer: SURFACES }),
-                SHADER_RASTER = V.createVectorRasterAtlas(MESHES, SHADER_ASSET, SHADER_COMPILED_ASSET),
-                SHADER_SPRITE = V.createVectorSpriteAtlas(MESHES, SHADER_ASSET, SHADER_COMPILED_ASSET, {
+            const SHADER_RASTER = V.createVectorRasterAtlas(CONTEXT, SHADER_COMPILED_ASSET),
+                SHADER_SPRITE = V.createVectorSpriteAtlas(CONTEXT, SHADER_COMPILED_ASSET, {
                     clip: Object.keys(SHADER_COMPILED_ASSET.metadata.clips)[0],
                 });
             const SHADER_FALLBACK = {
@@ -1127,16 +1115,13 @@ try {
             };
             SHADER_RASTER.dispose();
             SHADER_SPRITE.dispose();
-            SHADER_ASSET.dispose();
-            SURFACES.dispose();
             CHECK_GL('after shader-surface-fallback dispose');
             BEGIN('black', 448, 384);
             const RESIZE = ATLAS.draw(PLAYER, {
                 projection: [2 / 448, 0, 0, 0, -2 / 384, 0, -1, 1, 1],
                 matrix: MATRIX(1),
             });
-            MESHES.flush();
-            DEVICE.endFrame();
+            CONTEXT.endFrame();
             const BEFORE_RESTORE = ATLAS.stats.bakeCount;
             const LOSE = GL.getExtension('WEBGL_lose_context');
             let restore = { supported: Boolean(LOSE), before: BEFORE_RESTORE, after: null, backend: null };
@@ -1172,22 +1157,22 @@ try {
             SPRITE_PLAYER.dispose();
             SPRITE.dispose();
             SPRITE_BAKER.dispose();
-            const DEAD_ASSET = V.createVectorAsset(MESHES, COMPILED_ASSET),
-                DEAD_BAKER = V.createVectorSpriteAtlas(MESHES, DEAD_ASSET, COMPILED_ASSET, { clip: 'bounce' });
-            DEAD_ASSET.dispose();
-            let deletedSourceThrows = false;
+            // The atlas holds its own reference, so disposing every actor never leaves it without its source.
+            const KEPT_ACTOR = V.createVectorActor(CONTEXT, COMPILED_ASSET, { clip: 'bounce' }),
+                KEPT_BAKER = V.createVectorSpriteAtlas(CONTEXT, COMPILED_ASSET, { clip: 'bounce' });
+            KEPT_ACTOR.dispose();
+            let sourceOutlivesActors = true;
             try {
-                DEAD_BAKER.bake();
+                KEPT_BAKER.bake();
             } catch {
-                deletedSourceThrows = true;
+                sourceOutlivesActors = false;
             }
-            DEAD_BAKER.dispose();
+            KEPT_BAKER.dispose();
             const ATLAS_STATS = ATLAS.stats;
             ATLAS.dispose();
-            const SOURCE_PRESERVED = !ASSET.disposed && ASSET.ownsPlayer(PLAYER);
+            const SOURCE_PRESERVED = !PLAYER.disposed;
             PLAYER.dispose();
-            ASSET.dispose();
-            MESHES.dispose();
+            CONTEXT.dispose();
             const RESOURCES = {
                 renderTargets: DEVICE.stats.renderTargetCount,
                 textures: DEVICE.stats.textureCount,
@@ -1207,7 +1192,7 @@ try {
                 spriteEndComparison: SPRITE_END_COMPARISON,
                 sketchComparison: SKETCH_COMPARISON,
                 shaderFallback: SHADER_FALLBACK,
-                deletedSourceThrows,
+                sourceOutlivesActors,
                 resize: RESIZE,
                 restore: restore,
                 atlas: ATLAS_STATS,
@@ -1279,7 +1264,7 @@ try {
         sprite: 'shaderSurfaces',
         spriteTexture: null,
     });
-    assert.equal(direct.deletedSourceThrows, true);
+    assert.equal(direct.sourceOutlivesActors, true);
     assert.equal(direct.resize.backend, 'raster');
     assert.ok(direct.restore.supported);
     assert.equal(direct.restore.backend, 'raster');
