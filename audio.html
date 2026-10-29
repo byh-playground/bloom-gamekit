@@ -90,6 +90,13 @@
     }
   }
   var BED_FILTERS = ["lowpass", "bandpass", "highpass"];
+  var EQ_TYPES = ["lowshelf", "highshelf", "peaking", "notch"];
+  function validBedEq(eq) {
+    const IN_RANGE = (value, low, high) => Number.isFinite(value) && value >= low && value <= high;
+    return Array.isArray(eq) && eq.length <= 8 && eq.every(
+      (band) => band !== null && typeof band === "object" && EQ_TYPES.includes(band.type) && IN_RANGE(band.hz, 20, 2e4) && (band.type === "notch" ? band.gainDb === void 0 : IN_RANGE(band.gainDb, -24, 24)) && (band.q === void 0 || IN_RANGE(band.q, 0.1, 18))
+    );
+  }
   function validBedCompressor(compressor) {
     const IN_RANGE = (value, low, high) => Number.isFinite(value) && value >= low && value <= high;
     return compressor !== null && typeof compressor === "object" && IN_RANGE(compressor.threshold, -100, 0) && IN_RANGE(compressor.ratio, 1, 20) && (compressor.knee === void 0 || IN_RANGE(compressor.knee, 0, 40)) && (compressor.attackMs === void 0 || IN_RANGE(compressor.attackMs, 0, 1e3)) && (compressor.releaseMs === void 0 || IN_RANGE(compressor.releaseMs, 0, 1e3));
@@ -103,11 +110,11 @@
         throw new TypeError("bed layer lfoHz/lfoDepth were replaced by lfos: [{ hz, depth }]");
       }
       const LFOS = LAYER.lfos ?? [];
-      if (LAYER.kind !== "noise" && LAYER.kind !== "buffer" || LAYER.kind === "buffer" && (typeof LAYER.bufferId !== "string" || !LAYER.bufferId) || (LAYER.kind === "noise" || LAYER.type !== void 0) && (!Number.isFinite(LAYER.hz) || LAYER.hz <= 0) || !Number.isFinite(LAYER.gain) || LAYER.gain < 0 || LAYER.gain > 1 || !BED_FILTERS.includes(LAYER.type ?? "lowpass") || !(LAYER.q === void 0 || Number.isFinite(LAYER.q) && LAYER.q > 0 && LAYER.q <= 30) || !Number.isFinite(LAYER.pan ?? 0) || Math.abs(LAYER.pan ?? 0) > 1 || !Number.isFinite(LAYER.offsetMs ?? 0) || (LAYER.offsetMs ?? 0) < 0 || (LAYER.offsetMs ?? 0) > 6e4 || !(LAYER.lowCutHz === void 0 || Number.isFinite(LAYER.lowCutHz) && LAYER.lowCutHz >= 10 && LAYER.lowCutHz <= 400) || !(LAYER.compressor === void 0 || validBedCompressor(LAYER.compressor)) || !Array.isArray(LFOS) || LFOS.length > 4 || LFOS.some(
+      if (LAYER.kind !== "noise" && LAYER.kind !== "buffer" || LAYER.kind === "buffer" && (typeof LAYER.bufferId !== "string" || !LAYER.bufferId) || (LAYER.kind === "noise" || LAYER.type !== void 0) && (!Number.isFinite(LAYER.hz) || LAYER.hz <= 0) || !Number.isFinite(LAYER.gain) || LAYER.gain < 0 || LAYER.gain > 1 || !BED_FILTERS.includes(LAYER.type ?? "lowpass") || !(LAYER.q === void 0 || Number.isFinite(LAYER.q) && LAYER.q > 0 && LAYER.q <= 30) || !Number.isFinite(LAYER.pan ?? 0) || Math.abs(LAYER.pan ?? 0) > 1 || !Number.isFinite(LAYER.offsetMs ?? 0) || (LAYER.offsetMs ?? 0) < 0 || (LAYER.offsetMs ?? 0) > 6e4 || !(LAYER.lowCutHz === void 0 || Number.isFinite(LAYER.lowCutHz) && LAYER.lowCutHz >= 10 && LAYER.lowCutHz <= 400) || !(LAYER.eq === void 0 || validBedEq(LAYER.eq)) || !(LAYER.compressor === void 0 || validBedCompressor(LAYER.compressor)) || !Array.isArray(LFOS) || LFOS.length > 4 || LFOS.some(
         (lfo) => !Number.isFinite(lfo?.hz) || lfo.hz < 0.01 || lfo.hz > 20 || !Number.isFinite(lfo.depth) || lfo.depth < 0 || lfo.depth > 1
       ) || LFOS.reduce((sum, lfo) => sum + lfo.depth, 0) > 1) {
         throw new RangeError(
-          "bed layers are noise {hz} or buffer {bufferId} (hz only with a type), gain 0..1, optional type lowpass|bandpass|highpass, q 0..30, lowCutHz 10..400, compressor {threshold -100..0, ratio 1..20, knee?, attackMs?, releaseMs?}, pan -1..1, offsetMs 0..60000 and up to 4 lfos {hz 0.01..20, depth 0..1} whose depths sum to at most 1"
+          "bed layers are noise {hz} or buffer {bufferId} (hz only with a type), gain 0..1, optional type lowpass|bandpass|highpass, q 0..30, lowCutHz 10..400, eq up to 8 bands {type lowshelf|highshelf|peaking|notch, hz 20..20000, gainDb -24..24, q?}, compressor {threshold -100..0, ratio 1..20, knee?, attackMs?, releaseMs?}, pan -1..1, offsetMs 0..60000 and up to 4 lfos {hz 0.01..20, depth 0..1} whose depths sum to at most 1"
         );
       }
     }
@@ -278,6 +285,18 @@
         tail.connect(LOW_CUT);
         tail = LOW_CUT;
         NODES.push(LOW_CUT);
+      }
+      for (const BAND of LAYER.eq ?? []) {
+        const EQ_FILTER = context.createBiquadFilter();
+        EQ_FILTER.type = BAND.type;
+        EQ_FILTER.frequency.value = BAND.hz;
+        if (BAND.gainDb !== void 0) {
+          EQ_FILTER.gain.value = BAND.gainDb;
+        }
+        EQ_FILTER.Q.value = BAND.q ?? (BAND.type === "peaking" || BAND.type === "notch" ? 1 : 0.7071);
+        tail.connect(EQ_FILTER);
+        tail = EQ_FILTER;
+        NODES.push(EQ_FILTER);
       }
       if (FILTER) {
         tail.connect(FILTER);
