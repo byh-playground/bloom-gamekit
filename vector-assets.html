@@ -6465,1713 +6465,6 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       this.state = "disposed";
     }
   };
-  var TAU = Math.PI * 2;
-  var MAX_LINEAR_GRADIENT_STOPS = 32;
-  var LINEAR_GRADIENT_SIZE = 1024;
-  var MAX_GRADIENT_TEXTURES = 64;
-  var SILHOUETTE_OFFSETS = Object.freeze(
-    Array.from(
-      {
-        length: 8
-      },
-      (_, i) => Object.freeze([Math.cos(i * TAU / 8), Math.sin(i * TAU / 8)])
-    )
-  );
-  var IDENTITY3 = Object.freeze([1, 0, 0, 1, 0, 0]);
-  var WHITE2 = Object.freeze([1, 1, 1, 1]);
-  function composeTransform(a, b) {
-    return [
-      a[0] * b[0] + a[2] * b[1],
-      a[1] * b[0] + a[3] * b[1],
-      a[0] * b[2] + a[2] * b[3],
-      a[1] * b[2] + a[3] * b[3],
-      a[0] * b[4] + a[2] * b[5] + a[4],
-      a[1] * b[4] + a[3] * b[5] + a[5]
-    ];
-  }
-  function transformedPoint(matrix, x, y) {
-    return [matrix[0] * x + matrix[2] * y + matrix[4], matrix[1] * x + matrix[3] * y + matrix[5]];
-  }
-  function isFullArc(start, end, ccw) {
-    let sweep = end - start;
-    if (!ccw) {
-      if (sweep >= TAU) {
-        return true;
-      }
-      while (sweep < 0) {
-        sweep += TAU;
-      }
-    } else {
-      if (sweep <= -TAU) {
-        return true;
-      }
-      while (sweep > 0) {
-        sweep -= TAU;
-      }
-    }
-    return Math.abs(sweep) >= TAU;
-  }
-  var NAMED = Object.freeze({
-    black: "#000000",
-    white: "#ffffff",
-    red: "#ff0000",
-    green: "#008000",
-    blue: "#0000ff",
-    yellow: "#ffff00",
-    orange: "#ffa500",
-    purple: "#800080",
-    pink: "#ffc0cb",
-    gray: "#808080",
-    grey: "#808080",
-    silver: "#c0c0c0",
-    maroon: "#800000",
-    olive: "#808000",
-    lime: "#00ff00",
-    aqua: "#00ffff",
-    cyan: "#00ffff",
-    teal: "#008080",
-    navy: "#000080",
-    fuchsia: "#ff00ff",
-    magenta: "#ff00ff",
-    rebeccapurple: "#663399",
-    transparent: "#00000000"
-  });
-  function clamp(value, min = 0, max = 1) {
-    return Math.max(min, Math.min(max, value));
-  }
-  function finite(value, name) {
-    if (!Number.isFinite(value)) {
-      throw new TypeError(`${name} must be finite`);
-    }
-  }
-  var COLOR_CACHE = /* @__PURE__ */ new Map();
-  function cacheColor(key3, rgbaValue) {
-    if (typeof key3 === "string") {
-      if (COLOR_CACHE.size >= 512) {
-        COLOR_CACHE.clear();
-      }
-      COLOR_CACHE.set(key3, rgbaValue);
-    }
-    return rgbaValue.slice();
-  }
-  function normalizeColor(value) {
-    if (typeof value === "string") {
-      const HIT = COLOR_CACHE.get(value);
-      if (HIT) {
-        return HIT.slice();
-      }
-    }
-    if (Array.isArray(value) || ArrayBuffer.isView(value)) {
-      if (value.length !== 4) {
-        throw new TypeError("RGBA paint must have four channels");
-      }
-      const OUT = Array.from(value);
-      if (OUT.some((v) => !Number.isFinite(v) || v < 0 || v > 1)) {
-        throw new RangeError("RGBA channels must be in [0,1]");
-      }
-      return OUT;
-    }
-    let text = String(value ?? "black").trim().toLowerCase();
-    text = NAMED[text] ?? text;
-    if (text === "currentcolor" && typeof getComputedStyle === "function") {
-      text = getComputedStyle(document.documentElement).color;
-    }
-    if (text[0] === "#") {
-      let hex = text.slice(1);
-      if (!/^(?:[\da-f]{3,4}|[\da-f]{6}|[\da-f]{8})$/i.test(hex)) {
-        throw new TypeError(`Invalid CSS color: ${value}`);
-      }
-      if (hex.length < 5) {
-        hex = [...hex].map((c) => c + c).join("");
-      }
-      return cacheColor(value, [
-        parseInt(hex.slice(0, 2), 16) / 255,
-        parseInt(hex.slice(2, 4), 16) / 255,
-        parseInt(hex.slice(4, 6), 16) / 255,
-        hex.length === 8 ? parseInt(hex.slice(6, 8), 16) / 255 : 1
-      ]);
-    }
-    const RGB = text.match(/^rgba?\((.*)\)$/);
-    if (RGB) {
-      const FIELDS3 = RGB[1].trim().replace(/\s*\/\s*/, " ").split(/[\s,]+/).filter(Boolean);
-      if (FIELDS3.length < 3 || FIELDS3.length > 4) {
-        throw new TypeError(`Invalid CSS color: ${value}`);
-      }
-      const CHANNEL = (s) => clamp(s.endsWith("%") ? parseFloat(s) / 100 : parseFloat(s) / 255);
-      const ALPHA = FIELDS3[3] === void 0 ? 1 : clamp(FIELDS3[3].endsWith("%") ? parseFloat(FIELDS3[3]) / 100 : parseFloat(FIELDS3[3]));
-      const OUT = [...FIELDS3.slice(0, 3).map(CHANNEL), ALPHA];
-      if (OUT.some(Number.isNaN)) {
-        throw new TypeError(`Invalid CSS color: ${value}`);
-      }
-      return cacheColor(value, OUT);
-    }
-    const HSL = text.match(/^hsla?\((.*)\)$/);
-    if (HSL) {
-      const FIELDS3 = HSL[1].trim().replace(/\s*\/\s*/, " ").split(/[\s,]+/).filter(Boolean);
-      if (FIELDS3.length < 3 || FIELDS3.length > 4) {
-        throw new TypeError(`Invalid CSS color: ${value}`);
-      }
-      const H = (parseFloat(FIELDS3[0]) % 360 + 360) % 360 / 360, S = clamp(parseFloat(FIELDS3[1]) / 100), L = clamp(parseFloat(FIELDS3[2]) / 100), A = FIELDS3[3] === void 0 ? 1 : clamp(FIELDS3[3].endsWith("%") ? parseFloat(FIELDS3[3]) / 100 : parseFloat(FIELDS3[3]));
-      const F = (n) => {
-        const K3 = (n + H * 12) % 12;
-        return L - S * Math.min(L, 1 - L) * Math.max(-1, Math.min(K3 - 3, 9 - K3, 1));
-      };
-      return cacheColor(value, [F(0), F(8), F(4), A]);
-    }
-    if (typeof document !== "undefined" && document.createElement && document.body) {
-      const PROBE = document.createElement("span");
-      PROBE.style.color = "";
-      PROBE.style.color = text;
-      if (PROBE.style.color) {
-        document.body.append(PROBE);
-        const RESOLVED = getComputedStyle(PROBE).color;
-        PROBE.remove();
-        if (RESOLVED !== text) {
-          return normalizeColor(RESOLVED);
-        }
-      }
-    }
-    throw new TypeError(`Unsupported CSS color: ${value}`);
-  }
-  function transformed(matrix, x, y) {
-    return {
-      x: matrix[0] * x + matrix[2] * y + matrix[4],
-      y: matrix[1] * x + matrix[3] * y + matrix[5]
-    };
-  }
-  function invert(matrix) {
-    const D = matrix[0] * matrix[3] - matrix[1] * matrix[2];
-    if (Math.abs(D) < 1e-15) {
-      return null;
-    }
-    return [
-      matrix[3] / D,
-      -matrix[1] / D,
-      -matrix[2] / D,
-      matrix[0] / D,
-      (matrix[2] * matrix[5] - matrix[3] * matrix[4]) / D,
-      (matrix[1] * matrix[4] - matrix[0] * matrix[5]) / D
-    ];
-  }
-  var RadialGradient = class {
-    constructor(matrix, x0, y0, r0, x1, y1, r1) {
-      for (const [N, V] of Object.entries({
-        x0,
-        y0,
-        r0,
-        x1,
-        y1,
-        r1
-      })) {
-        finite(V, N);
-      }
-      if (r0 < 0 || r1 < 0) {
-        throw new RangeError("Gradient radii must be non-negative");
-      }
-      this.matrix = matrix.slice();
-      this.x0 = x0;
-      this.y0 = y0;
-      this.r0 = r0;
-      this.x1 = x1;
-      this.y1 = y1;
-      this.r1 = r1;
-      this.stops = [];
-      this.pixels = null;
-      this.revision = 0;
-    }
-    addColorStop(offset, value) {
-      if (!Number.isFinite(offset) || offset < 0 || offset > 1) {
-        throw new RangeError("Invalid gradient stop");
-      }
-      this.stops.push({
-        offset,
-        color: normalizeColor(value)
-      });
-      this.stops.sort((a, b) => a.offset - b.offset);
-      this.pixels = null;
-      this.revision++;
-    }
-    raster() {
-      if (this.pixels) {
-        return this.pixels;
-      }
-      const DATA2 = new Uint8Array(256 * 4), STOPS = this.stops.length ? this.stops : [
-        {
-          offset: 0,
-          color: [0, 0, 0, 0]
-        }
-      ];
-      for (let i = 0; i < 256; i++) {
-        const T = i / 255;
-        let lo = STOPS[0];
-        let hi = STOPS.at(-1);
-        for (let j = 1; j < STOPS.length; j++) {
-          if (T < STOPS[j].offset) {
-            lo = STOPS[j - 1];
-            hi = STOPS[j];
-            break;
-          }
-        }
-        const Q = clamp((T - lo.offset) / (hi.offset - lo.offset || 1)), ALPHA = lo.color[3] + (hi.color[3] - lo.color[3]) * Q;
-        for (let k = 0; k < 3; k++) {
-          DATA2[i * 4 + k] = Math.round((lo.color[k] + (hi.color[k] - lo.color[k]) * Q) * ALPHA * 255);
-        }
-        DATA2[i * 4 + 3] = Math.round(ALPHA * 255);
-      }
-      this.pixels = DATA2;
-      return DATA2;
-    }
-  };
-  var LinearGradient = class {
-    constructor(matrix, x0, y0, x1, y1) {
-      for (const [NAME, VALUE] of Object.entries({
-        x0,
-        y0,
-        x1,
-        y1
-      })) {
-        finite(VALUE, NAME);
-      }
-      this.matrix = matrix.slice();
-      this.x0 = x0;
-      this.y0 = y0;
-      this.x1 = x1;
-      this.y1 = y1;
-      this.stops = [];
-      this.pixels = null;
-      this.revision = 0;
-    }
-    addColorStop(offset, value) {
-      if (!Number.isFinite(offset) || offset < 0 || offset > 1) {
-        throw new RangeError("Invalid gradient stop");
-      }
-      if (this.stops.length >= MAX_LINEAR_GRADIENT_STOPS) {
-        throw new RangeError(`Linear gradients support at most ${MAX_LINEAR_GRADIENT_STOPS} color stops`);
-      }
-      const STOP = {
-        offset,
-        color: normalizeColor(value),
-        order: this.stops.length
-      };
-      this.stops.push(STOP);
-      this.stops.sort((a, b) => a.offset - b.offset || a.order - b.order);
-      this.pixels = null;
-      this.revision++;
-    }
-    raster() {
-      if (this.pixels) {
-        return this.pixels;
-      }
-      const DATA2 = new Uint8Array(LINEAR_GRADIENT_SIZE * 4), STOPS = this.stops;
-      for (let i = 0; i < LINEAR_GRADIENT_SIZE; i++) {
-        const T = i / (LINEAR_GRADIENT_SIZE - 1);
-        let lo;
-        let hi;
-        let q;
-        if (!STOPS.length) {
-          lo = hi = {
-            color: [0, 0, 0, 0]
-          };
-          q = 0;
-        } else if (STOPS.length === 1 || T < STOPS[0].offset) {
-          lo = hi = STOPS[0];
-          q = 0;
-        } else {
-          let next = 0;
-          while (next < STOPS.length && T >= STOPS[next].offset) {
-            next++;
-          }
-          if (next === STOPS.length) {
-            lo = hi = STOPS.at(-1);
-            q = 0;
-          } else {
-            lo = STOPS[next - 1];
-            hi = STOPS[next];
-            q = (T - lo.offset) / (hi.offset - lo.offset);
-          }
-        }
-        const ALPHA = lo.color[3] + (hi.color[3] - lo.color[3]) * q, AT = i * 4;
-        for (let k = 0; k < 3; k++) {
-          DATA2[AT + k] = Math.round((lo.color[k] + (hi.color[k] - lo.color[k]) * q) * ALPHA * 255);
-        }
-        DATA2[AT + 3] = Math.round(ALPHA * 255);
-      }
-      this.pixels = DATA2;
-      return DATA2;
-    }
-  };
-  var VectorContext = class {
-    constructor(device, {
-      vectorRenderer = null,
-      glyphAtlas = vectorRenderer?.glyphAtlas ?? null,
-      initialVertices = 4096,
-      maxVertices = 262144,
-      onError = null,
-      safeAlphaRunBatching = true
-    } = {}) {
-      if (!device?.beginFrame || !device?.endFrame || !device?.createVertexBuffer) {
-        throw new TypeError("WebGLDevice is required");
-      }
-      if (vectorRenderer && vectorRenderer.device !== device) {
-        throw new TypeError("vectorRenderer must use the supplied WebGLDevice");
-      }
-      this.device = device;
-      this.canvas = device.canvas;
-      this.vector = vectorRenderer ?? new VectorRenderer(device, {
-        initialVertices,
-        maxVertices,
-        glyphAtlas
-      });
-      this.ownsVector = !vectorRenderer;
-      this.glyphAtlas = glyphAtlas ?? this.vector.glyphAtlas;
-      this.onError = typeof onError === "function" ? onError : null;
-      if (typeof safeAlphaRunBatching !== "boolean") {
-        throw new TypeError("safeAlphaRunBatching must be a boolean");
-      }
-      this.safeAlphaRunBatching = safeAlphaRunBatching;
-      this.meshRenderer = null;
-      this.primitivePath = {
-        type: "empty"
-      };
-      this.active = false;
-      this.state = "ready";
-      this.frame = 0;
-      this.pathCount = 0;
-      this.staticMeshes = /* @__PURE__ */ new Set();
-      this.deferredMeshes = [];
-      this.gradientTextures = /* @__PURE__ */ new Map();
-      this.lostGradientRegions = [];
-      this._silhouetteMatrices = new Float32Array(60);
-      this._scaledSilhouetteMatrices = new Float32Array(12);
-      this._silhouetteColorCache = /* @__PURE__ */ new Map();
-      this.onLost = (event) => {
-        event.preventDefault();
-        this.active = false;
-        this.state = "lost";
-        this.meshRenderer?.discard();
-        for (const [GRADIENT, CACHED] of this.gradientTextures) {
-          this.lostGradientRegions.push(CACHED.region);
-          GRADIENT.pixels = null;
-        }
-        this.gradientTextures.clear();
-      };
-      this.onRestored = () => {
-        if (this.state === "disposed") {
-          return;
-        }
-        try {
-          for (const MESH of this.staticMeshes) {
-            this.device.uploadVertices(MESH.buffer, MESH.vertices);
-          }
-          for (const REGION of this.lostGradientRegions.splice(0)) {
-            REGION.atlas.release(REGION);
-          }
-          this.state = "ready";
-        } catch (error2) {
-          this.state = "failed";
-          this.onError?.(error2, {
-            phase: "restore"
-          });
-        }
-      };
-      this.canvas.addEventListener("webglcontextlost", this.onLost);
-      this.canvas.addEventListener("webglcontextrestored", this.onRestored);
-      this._fillStyle = "#000";
-      this._strokeStyle = "#000";
-      this._globalAlpha = 1;
-      this._lineWidth = 1;
-      this._lineCap = "butt";
-      this._lineJoin = "round";
-      this._miterLimit = 10;
-      this._lineDash = [];
-      this._lineDashOffset = 0;
-      this._font = "10px sans-serif";
-      this._textAlign = "start";
-      this._textBaseline = "alphabetic";
-      this._direction = "inherit";
-      this._filter = "none";
-      this._composite = "source-over";
-      this.forceColor = null;
-      this.stack = [];
-      this.frameStats = {};
-      this.total = {
-        frames: 0,
-        drawCalls: 0,
-        vertices: 0,
-        uploadedBytes: 0
-      };
-    }
-    get globalAlpha() {
-      return this._globalAlpha;
-    }
-    set globalAlpha(v) {
-      finite(v, "globalAlpha");
-      this._globalAlpha = clamp(v);
-    }
-    get fillStyle() {
-      return this._fillStyle;
-    }
-    set fillStyle(v) {
-      if (!(v instanceof RadialGradient) && !(v instanceof LinearGradient)) {
-        normalizeColor(v);
-      }
-      this._fillStyle = v;
-    }
-    get strokeStyle() {
-      return this._strokeStyle;
-    }
-    set strokeStyle(v) {
-      if (!(v instanceof RadialGradient) && !(v instanceof LinearGradient)) {
-        normalizeColor(v);
-      }
-      this._strokeStyle = v;
-    }
-    get lineWidth() {
-      return this._lineWidth;
-    }
-    set lineWidth(v) {
-      finite(v, "lineWidth");
-      if (v >= 0) {
-        this._lineWidth = v;
-      }
-    }
-    get lineCap() {
-      return this._lineCap;
-    }
-    set lineCap(v) {
-      if (["butt", "round", "square"].includes(v)) {
-        this._lineCap = v;
-      }
-    }
-    get lineJoin() {
-      return this._lineJoin;
-    }
-    set lineJoin(v) {
-      if (["round", "bevel", "miter"].includes(v)) {
-        this._lineJoin = v;
-      }
-    }
-    get miterLimit() {
-      return this._miterLimit;
-    }
-    set miterLimit(v) {
-      finite(v, "miterLimit");
-      if (v > 0) {
-        this._miterLimit = v;
-      }
-    }
-    get lineDashOffset() {
-      return this._lineDashOffset;
-    }
-    set lineDashOffset(v) {
-      finite(v, "lineDashOffset");
-      this._lineDashOffset = v;
-    }
-    get font() {
-      return this._font;
-    }
-    set font(v) {
-      this._font = String(v);
-    }
-    get textAlign() {
-      return this._textAlign;
-    }
-    set textAlign(v) {
-      if (["start", "end", "left", "right", "center"].includes(v)) {
-        this._textAlign = v;
-      }
-    }
-    get textBaseline() {
-      return this._textBaseline;
-    }
-    set textBaseline(v) {
-      if (["top", "hanging", "middle", "alphabetic", "ideographic", "bottom"].includes(v)) {
-        this._textBaseline = v;
-      }
-    }
-    get direction() {
-      return this._direction;
-    }
-    set direction(v) {
-      if (["ltr", "rtl", "inherit"].includes(v)) {
-        this._direction = v;
-      }
-    }
-    get filter() {
-      return this._filter;
-    }
-    set filter(v) {
-      if (v !== "none" && v !== "brightness(0) invert(1)") {
-        throw new RangeError("VectorContext supports only none and brightness(0) invert(1) filters");
-      }
-      this._filter = v;
-    }
-    get globalCompositeOperation() {
-      return this._composite;
-    }
-    set globalCompositeOperation(v) {
-      this._frame();
-      if (v !== "source-over" && v !== "lighter") {
-        throw new RangeError("VectorContext supports only source-over and lighter composite operations");
-      }
-      this.vector.setBlend(v);
-      this._composite = v;
-    }
-    get stencilRef() {
-      return this.vector.stencilDepth || null;
-    }
-    _frame() {
-      if (!this.active || this.device.state !== "ready") {
-        throw new Error("VectorContext frame is unavailable");
-      }
-    }
-    _paint(style) {
-      if (style instanceof RadialGradient || style instanceof LinearGradient) {
-        throw new TypeError("Gradient paint must be submitted through a vector fill or stroke");
-      }
-      const COLOR = normalizeColor(this.forceColor ?? style);
-      COLOR[3] *= this._globalAlpha;
-      if (this._filter === "brightness(0) invert(1)") {
-        COLOR[0] = COLOR[1] = COLOR[2] = 1;
-      }
-      return COLOR;
-    }
-    _gradientPaint(gradient) {
-      let cached = this.gradientTextures.get(gradient);
-      if (!cached) {
-        if (this.gradientTextures.size >= MAX_GRADIENT_TEXTURES) {
-          const EXPIRED = [...this.gradientTextures].find(([, entry]) => entry.lastFrame < this.frame);
-          if (!EXPIRED) {
-            throw new RangeError(
-              `VectorContext supports at most ${MAX_GRADIENT_TEXTURES} distinct gradients in one frame`
-            );
-          }
-          EXPIRED[1].region.atlas.release(EXPIRED[1].region);
-          this.gradientTextures.delete(EXPIRED[0]);
-        }
-        const LINEAR = gradient instanceof LinearGradient, WIDTH = LINEAR ? LINEAR_GRADIENT_SIZE : 256, HEIGHT = 1, DATA2 = gradient.raster();
-        const REGION = this.device.textureAtlas.allocate(WIDTH, HEIGHT);
-        this.device.textureAtlas.upload(
-          REGION,
-          { width: WIDTH, height: HEIGHT, data: DATA2 },
-          { premultiplied: true, extendEdges: true }
-        );
-        cached = {
-          region: REGION,
-          revision: gradient.revision,
-          lastFrame: this.frame,
-          linear: LINEAR
-        };
-        this.gradientTextures.set(gradient, cached);
-      } else if (cached.revision !== gradient.revision) {
-        this.vector.flush();
-        const LINEAR = gradient instanceof LinearGradient, WIDTH = LINEAR ? LINEAR_GRADIENT_SIZE : 256;
-        cached.region.atlas.upload(
-          cached.region,
-          { width: WIDTH, height: 1, data: gradient.raster() },
-          { premultiplied: true, extendEdges: true }
-        );
-        cached.revision = gradient.revision;
-        cached.linear = LINEAR;
-      }
-      cached.lastFrame = this.frame;
-      const MATRIX_INVERSE = invert(gradient.matrix);
-      if (!MATRIX_INVERSE) {
-        throw new RangeError("Gradient transform is singular");
-      }
-      const COLOR = normalizeColor(this.forceColor ?? [1, 1, 1, 1]);
-      COLOR[3] *= this._globalAlpha;
-      if (gradient instanceof LinearGradient) {
-        return {
-          region: cached.region,
-          kind: "linear",
-          gradient,
-          x0: gradient.x0,
-          y0: gradient.y0,
-          x1: gradient.x1,
-          y1: gradient.y1,
-          matrixInverse: MATRIX_INVERSE,
-          color: COLOR,
-          whiteFlash: this._filter === "brightness(0) invert(1)"
-        };
-      }
-      const DX = gradient.x1 - gradient.x0, DY = gradient.y1 - gradient.y0, DR = gradient.r1 - gradient.r0, SCALE = Math.max(1, Math.hypot(DX, DY), Math.abs(gradient.r0), Math.abs(gradient.r1));
-      return {
-        region: cached.region,
-        kind: "radial",
-        gradient,
-        x0: gradient.x0,
-        y0: gradient.y0,
-        radialScale: SCALE,
-        radialParams: [DX / SCALE, DY / SCALE, gradient.r0 / SCALE, DR / SCALE],
-        radialEmpty: DX === 0 && DY === 0 && DR === 0,
-        matrixInverse: MATRIX_INVERSE,
-        color: COLOR,
-        whiteFlash: this._filter === "brightness(0) invert(1)"
-      };
-    }
-    _releaseGradientTextures() {
-      for (const [GRADIENT, CACHED] of this.gradientTextures) {
-        try {
-          CACHED.region.atlas.release(CACHED.region);
-        } catch (error2) {
-          try {
-            this.onError?.(error2, {
-              phase: "gradient-release"
-            });
-          } catch {
-          }
-        } finally {
-          GRADIENT.pixels = null;
-        }
-      }
-      this.gradientTextures.clear();
-    }
-    beginFrame({ width = this.canvas.width, height = this.canvas.height, clearColor = [0, 0, 0, 0] } = {}) {
-      if (this.active) {
-        throw new Error("endFrame is required before beginFrame");
-      }
-      if (this.state === "lost" || this.device.state === "lost") {
-        return false;
-      }
-      if (this.state !== "ready") {
-        throw new Error(`VectorContext is ${this.state}`);
-      }
-      try {
-        const READY = this.device.beginFrame({
-          width,
-          height,
-          clearColor
-        });
-        if (!READY) {
-          return false;
-        }
-        this.active = true;
-        this.meshRenderer?.beginFrame();
-        this.frame++;
-        this.pathCount = 0;
-        this.vector.beginPath();
-        this.primitivePath = {
-          type: "empty"
-        };
-        return true;
-      } catch (error2) {
-        this.onError?.(error2, {
-          phase: "beginFrame"
-        });
-        throw error2;
-      }
-    }
-    endFrame() {
-      this._frame();
-      try {
-        this.flush("frameEnd");
-        const STATS = this.device.endFrame();
-        this.active = false;
-        this._releaseGradientTextures();
-        for (const MESH of this.deferredMeshes.splice(0)) {
-          this.deleteStaticMesh(MESH);
-        }
-        this.frameStats = {
-          drawCalls: STATS.drawCalls,
-          vertices: STATS.vertices,
-          uploadedBytes: STATS.bufferBytes ?? STATS.uploadedBytes ?? 0,
-          textureUploads: STATS.textureUploads ?? 0,
-          textureBytes: STATS.textureBytes ?? 0,
-          gpuRenderTargetBytes: STATS.gpuRenderTargetBytes ?? 0,
-          paths: this.pathCount
-        };
-        this.total.frames++;
-        this.total.drawCalls += this.frameStats.drawCalls;
-        this.total.vertices += this.frameStats.vertices;
-        this.total.uploadedBytes += this.frameStats.uploadedBytes;
-        return this.stats();
-      } catch (error2) {
-        this.active = false;
-        this.vector.count = 0;
-        this.onError?.(error2, {
-          phase: "endFrame"
-        });
-        throw error2;
-      }
-    }
-    save() {
-      this._frame();
-      this.stack.push({
-        fillStyle: this._fillStyle,
-        strokeStyle: this._strokeStyle,
-        globalAlpha: this._globalAlpha,
-        lineWidth: this._lineWidth,
-        lineCap: this._lineCap,
-        lineJoin: this._lineJoin,
-        miterLimit: this._miterLimit,
-        lineDash: this._lineDash.slice(),
-        lineDashOffset: this._lineDashOffset,
-        font: this._font,
-        textAlign: this._textAlign,
-        textBaseline: this._textBaseline,
-        direction: this._direction,
-        filter: this._filter,
-        composite: this._composite,
-        forceColor: this.forceColor
-      });
-      this.vector.save();
-    }
-    restore() {
-      this._frame();
-      const S = this.stack.pop();
-      if (!S) {
-        return;
-      }
-      this.meshRenderer?.flush("stateRestore");
-      this.vector.restore();
-      Object.assign(this, {
-        _fillStyle: S.fillStyle,
-        _strokeStyle: S.strokeStyle,
-        _globalAlpha: S.globalAlpha,
-        _lineWidth: S.lineWidth,
-        _lineCap: S.lineCap,
-        _lineJoin: S.lineJoin,
-        _miterLimit: S.miterLimit,
-        _lineDash: S.lineDash,
-        _lineDashOffset: S.lineDashOffset,
-        _font: S.font,
-        _textAlign: S.textAlign,
-        _textBaseline: S.textBaseline,
-        _direction: S.direction,
-        _filter: S.filter,
-        _composite: S.composite,
-        forceColor: S.forceColor
-      });
-      this.vector.setBlend(S.composite);
-    }
-    setTransform(a, b, c, d, e, f) {
-      this.vector.setTransform(a, b, c, d, e, f);
-    }
-    resetTransform() {
-      this.vector.setTransform(...IDENTITY3);
-    }
-    getTransform() {
-      const M = this.vector.matrix;
-      return {
-        a: M[0],
-        b: M[1],
-        c: M[2],
-        d: M[3],
-        e: M[4],
-        f: M[5]
-      };
-    }
-    transform(a, b, c, d, e, f) {
-      this.vector.transform(a, b, c, d, e, f);
-    }
-    translate(x, y) {
-      this.vector.translate(x, y);
-    }
-    rotate(angle) {
-      this.vector.rotate(angle);
-    }
-    scale(x, y) {
-      this.vector.scale(x, y);
-    }
-    beginPath() {
-      this._frame();
-      this.pathCount++;
-      this.vector.beginPath();
-      this.primitivePath = {
-        type: "empty"
-      };
-    }
-    _materializePrimitivePath() {
-      const PATH = this.primitivePath;
-      if (PATH?.type !== "ellipse") {
-        return;
-      }
-      const MATRIX = this.vector.matrix;
-      this.primitivePath = null;
-      this.vector.matrix = PATH.matrix.slice();
-      try {
-        const POINTS = this._arcPoints(
-          PATH.x,
-          PATH.y,
-          PATH.rx,
-          PATH.ry,
-          PATH.rotation,
-          PATH.start,
-          PATH.end,
-          PATH.ccw
-        );
-        this.vector.moveTo(...POINTS[0]);
-        for (let i = 1; i < POINTS.length; i++) {
-          this.vector.lineTo(...POINTS[i]);
-        }
-      } finally {
-        this.vector.matrix = MATRIX;
-      }
-    }
-    moveTo(x, y) {
-      this._materializePrimitivePath();
-      const POINT = transformedPoint(this.vector.matrix, x, y);
-      this.primitivePath = this.primitivePath?.type === "empty" ? {
-        type: "line",
-        start: POINT,
-        end: null
-      } : null;
-      this.vector.moveTo(x, y);
-    }
-    lineTo(x, y) {
-      this._materializePrimitivePath();
-      if (!this.vector.cursor && this.primitivePath?.type === "empty") {
-        this.primitivePath = {
-          type: "line",
-          start: transformedPoint(this.vector.matrix, x, y),
-          end: null
-        };
-      } else if (this.primitivePath?.type === "line" && !this.primitivePath.end) {
-        this.primitivePath.end = transformedPoint(this.vector.matrix, x, y);
-      } else {
-        this.primitivePath = null;
-      }
-      this.vector.lineTo(x, y);
-    }
-    closePath() {
-      this._materializePrimitivePath();
-      this.primitivePath = null;
-      this.vector.closePath();
-    }
-    quadraticCurveTo(cx, cy, x, y) {
-      this._materializePrimitivePath();
-      this.primitivePath = null;
-      this.vector.quadraticCurveTo(cx, cy, x, y);
-    }
-    bezierCurveTo(x1, y1, x2, y2, x, y) {
-      this._materializePrimitivePath();
-      this.primitivePath = null;
-      this.vector.bezierCurveTo(x1, y1, x2, y2, x, y);
-    }
-    _arcPoints(x, y, rx, ry, rotation, start, end, ccw) {
-      if (rx < 0 || ry < 0) {
-        throw new RangeError("ellipse radii must be non-negative");
-      }
-      let sweep = end - start;
-      if (!ccw) {
-        if (sweep >= TAU) {
-          sweep = TAU;
-        } else {
-          while (sweep < 0) {
-            sweep += TAU;
-          }
-        }
-      } else if (sweep <= -TAU) {
-        sweep = -TAU;
-      } else {
-        while (sweep > 0) {
-          sweep -= TAU;
-        }
-      }
-      const M = this.vector.matrix, R = Math.max(rx, ry) * Math.max(Math.hypot(M[0], M[1]), Math.hypot(M[2], M[3])), STEP = R > 0.2 ? 2 * Math.acos(clamp(1 - 0.2 / R, -1, 1)) : Math.PI / 2, N = Math.max(1, Math.min(256, Math.ceil(Math.abs(sweep) / Math.max(0.01, STEP)))), C = Math.cos(rotation), S = Math.sin(rotation), OUT = [];
-      for (let i = 0; i <= N; i++) {
-        const A = start + sweep * i / N;
-        OUT.push([
-          x + Math.cos(A) * rx * C - Math.sin(A) * ry * S,
-          y + Math.cos(A) * rx * S + Math.sin(A) * ry * C
-        ]);
-      }
-      return OUT;
-    }
-    arc(x, y, r, start, end, ccw = false) {
-      this.ellipse(x, y, r, r, 0, start, end, ccw);
-    }
-    ellipse(x, y, rx, ry, rotation = 0, start = 0, end = TAU, ccw = false) {
-      if (rx < 0 || ry < 0) {
-        throw new RangeError("ellipse radii must be non-negative");
-      }
-      this._frame();
-      this._materializePrimitivePath();
-      const MATRIX = this.vector.matrix.slice();
-      const FULL = isFullArc(start, end, ccw);
-      const FAST = this.primitivePath?.type === "empty" && !this.vector.cursor && FULL && [x, y, rx, ry, rotation, start, end].every(Number.isFinite);
-      this.primitivePath = FAST ? {
-        type: "ellipse",
-        x,
-        y,
-        rx,
-        ry,
-        rotation,
-        start,
-        end,
-        ccw,
-        matrix: MATRIX
-      } : null;
-      if (FAST) {
-        return;
-      }
-      const POINTS = this._arcPoints(x, y, rx, ry, rotation, start, end, ccw);
-      if (!this.vector.cursor) {
-        this.vector.moveTo(...POINTS[0]);
-      } else {
-        this.vector.lineTo(...POINTS[0]);
-      }
-      for (let i = 1; i < POINTS.length; i++) {
-        this.vector.lineTo(...POINTS[i]);
-      }
-    }
-    rect(x, y, w, h) {
-      this._materializePrimitivePath();
-      const MATRIX = this.vector.matrix.slice();
-      this.primitivePath = this.primitivePath?.type === "empty" && !this.vector.cursor ? {
-        type: "rect",
-        x,
-        y,
-        w,
-        h,
-        matrix: MATRIX
-      } : null;
-      this.vector.moveTo(x, y);
-      this.vector.lineTo(x + w, y);
-      this.vector.lineTo(x + w, y + h);
-      this.vector.lineTo(x, y + h);
-      this.vector.closePath();
-    }
-    roundRect(x, y, w, h, r = 0) {
-      this._materializePrimitivePath();
-      this.primitivePath = null;
-      const RADII = Array.isArray(r) ? r : [r, r, r, r];
-      const MAX = Math.min(Math.abs(w) / 2, Math.abs(h) / 2);
-      const Q = RADII.map((v) => clamp(Number(v) || 0, 0, MAX));
-      this.moveTo(x + Q[0], y);
-      this.lineTo(x + w - Q[1], y);
-      this.arc(x + w - Q[1], y + Q[1], Q[1], -Math.PI / 2, 0);
-      this.lineTo(x + w, y + h - Q[2]);
-      this.arc(x + w - Q[2], y + h - Q[2], Q[2], 0, Math.PI / 2);
-      this.lineTo(x + Q[3], y + h);
-      this.arc(x + Q[3], y + h - Q[3], Q[3], Math.PI / 2, Math.PI);
-      this.lineTo(x, y + Q[0]);
-      this.arc(x + Q[0], y + Q[0], Q[0], Math.PI, Math.PI * 1.5);
-      this.closePath();
-    }
-    _temporaryPath(callback) {
-      const V = this.vector, SAVED = {
-        path: V.path,
-        cursor: V.cursor,
-        subpath: V.subpath,
-        primitivePath: this.primitivePath
-      };
-      try {
-        this.primitivePath = {
-          type: "empty"
-        };
-        callback();
-      } finally {
-        V.path = SAVED.path;
-        V.cursor = SAVED.cursor;
-        V.subpath = SAVED.subpath;
-        this.primitivePath = SAVED.primitivePath;
-      }
-    }
-    _primitiveTransform(path) {
-      let local;
-      if (path.type === "ellipse") {
-        const COS = Math.cos(path.rotation);
-        const SIN = Math.sin(path.rotation);
-        local = [path.rx * COS, path.rx * SIN, -path.ry * SIN, path.ry * COS, path.x, path.y];
-      } else {
-        local = [path.w / 2, 0, 0, path.h / 2, path.x + path.w / 2, path.y + path.h / 2];
-      }
-      return composeTransform(path.matrix, local);
-    }
-    _submitPrimitive(matrix, color, params) {
-      this.meshRenderer?.flush("primitiveBoundary");
-      this.vector.drawPrimitive({ matrix, color, params });
-      return true;
-    }
-    _tryPrimitiveFill() {
-      const PATH = this.primitivePath;
-      if (!PATH || PATH.type !== "ellipse" && PATH.type !== "rect") {
-        return false;
-      }
-      if (this._fillStyle instanceof RadialGradient || this._fillStyle instanceof LinearGradient) {
-        return false;
-      }
-      if (PATH.type === "ellipse" && (!PATH.rx || !PATH.ry)) {
-        return true;
-      }
-      if (PATH.type === "rect" && (!PATH.w || !PATH.h)) {
-        return true;
-      }
-      const TYPE = PATH.type === "ellipse" ? 0 : 1;
-      return this._submitPrimitive(this._primitiveTransform(PATH), this._paint(this._fillStyle), [TYPE, 0, 0, 0]);
-    }
-    _tryPrimitiveStroke(width) {
-      const PATH = this.primitivePath;
-      if (!PATH || this._strokeStyle instanceof RadialGradient || this._strokeStyle instanceof LinearGradient) {
-        return false;
-      }
-      if (PATH.type === "ellipse") {
-        if (!PATH.rx || !PATH.ry) {
-          return false;
-        }
-        return this._submitPrimitive(this._primitiveTransform(PATH), this._paint(this._strokeStyle), [
-          0,
-          1,
-          width,
-          0
-        ]);
-      }
-      if (PATH.type === "rect") {
-        if (!PATH.w || !PATH.h) {
-          return false;
-        }
-        const MATRIX = this._primitiveTransform(PATH);
-        const SCALE_X = Math.hypot(MATRIX[0], MATRIX[1]);
-        const SCALE_Y = Math.hypot(MATRIX[2], MATRIX[3]);
-        const DOT = MATRIX[0] * MATRIX[2] + MATRIX[1] * MATRIX[3];
-        if (Math.abs(DOT) > 1e-6 * SCALE_X * SCALE_Y) {
-          return false;
-        }
-        if (this._lineJoin === "miter") {
-          if (this._miterLimit < Math.SQRT2) {
-            return false;
-          }
-        } else if (this._lineJoin !== "round") {
-          return false;
-        }
-        return this._submitPrimitive(MATRIX, this._paint(this._strokeStyle), [
-          1,
-          1,
-          width,
-          this._lineJoin === "miter" ? 1 : 0
-        ]);
-      }
-      if (PATH.type === "line" && PATH.end) {
-        const DX = PATH.end[0] - PATH.start[0];
-        const DY = PATH.end[1] - PATH.start[1];
-        const LENGTH = Math.hypot(DX, DY);
-        if (!LENGTH) {
-          return false;
-        }
-        const CAP = this._lineCap === "butt" ? 0 : this._lineCap === "square" ? 1 : 2;
-        const UNIT_X = DX / LENGTH;
-        const UNIT_Y = DY / LENGTH;
-        const PAD = CAP === 0 ? 0 : width / 2;
-        const HALF_LENGTH = LENGTH / 2 + PAD;
-        const MATRIX = [
-          UNIT_X * HALF_LENGTH,
-          UNIT_Y * HALF_LENGTH,
-          -UNIT_Y * width / 2,
-          UNIT_X * width / 2,
-          (PATH.start[0] + PATH.end[0]) / 2,
-          (PATH.start[1] + PATH.end[1]) / 2
-        ];
-        return this._submitPrimitive(MATRIX, this._paint(this._strokeStyle), [2, 1, width, CAP]);
-      }
-      return false;
-    }
-    fill(rule = "nonzero") {
-      this._frame();
-      if ((rule === "nonzero" || rule === "evenodd") && this._tryPrimitiveFill()) {
-        return;
-      }
-      this._materializePrimitivePath();
-      this.meshRenderer?.flush("vectorBoundary");
-      if (this._fillStyle instanceof RadialGradient) {
-        this.vector.fillRadialGradient({
-          ...this._gradientPaint(this._fillStyle),
-          rule
-        });
-      } else if (this._fillStyle instanceof LinearGradient) {
-        this.vector.fillLinearGradient({
-          ...this._gradientPaint(this._fillStyle),
-          rule
-        });
-      } else {
-        this.vector.fill(this._paint(this._fillStyle), rule);
-      }
-    }
-    fillRect(x, y, w, h) {
-      this._frame();
-      this._temporaryPath(() => {
-        this.vector.beginPath();
-        this.rect(x, y, w, h);
-        this.fill();
-      });
-    }
-    stroke() {
-      this._frame();
-      if (!(this._lineWidth > 0)) {
-        return;
-      }
-      const M = this.vector.matrix, WIDTH = this._lineWidth * Math.max(Math.hypot(M[0], M[1]), Math.hypot(M[2], M[3])), GRADIENT = this._strokeStyle instanceof RadialGradient || this._strokeStyle instanceof LinearGradient ? this._gradientPaint(this._strokeStyle) : null, PAINT = GRADIENT ? GRADIENT.color : this._paint(this._strokeStyle), STYLE = {
-        lineCap: this._lineCap,
-        lineJoin: this._lineJoin,
-        miterLimit: this._miterLimit
-      }, DASH = this._lineDash, PERIOD = DASH.reduce((a, b) => a + b, 0);
-      if ((!DASH.length || !PERIOD) && !GRADIENT && this._tryPrimitiveStroke(WIDTH)) {
-        return;
-      }
-      this._materializePrimitivePath();
-      this.meshRenderer?.flush("vectorBoundary");
-      if (!DASH.length || !PERIOD) {
-        this.vector.stroke(PAINT, WIDTH, STYLE, GRADIENT);
-        return;
-      }
-      const V = this.vector, ORIGINAL = V.path, MATRIX = V.matrix.slice();
-      V.beginPath();
-      V.setTransform(...IDENTITY3);
-      let phase = (this._lineDashOffset % PERIOD + PERIOD) % PERIOD;
-      let index = 0;
-      while (phase >= DASH[index] && DASH[index] > 0) {
-        phase -= DASH[index];
-        index = (index + 1) % DASH.length;
-      }
-      let remaining = DASH[index] - phase;
-      for (const PATH of ORIGINAL) {
-        for (let i = 1; i < PATH.length; i++) {
-          const A = PATH[i - 1], B = PATH[i], LENGTH = Math.hypot(B.x - A.x, B.y - A.y);
-          let at = 0;
-          while (at < LENGTH - 1e-7) {
-            if (remaining <= 1e-7) {
-              index = (index + 1) % DASH.length;
-              remaining = DASH[index];
-              continue;
-            }
-            const STOP = Math.min(LENGTH, at + remaining);
-            if (index % 2 === 0) {
-              V.moveTo(A.x + (B.x - A.x) * at / LENGTH, A.y + (B.y - A.y) * at / LENGTH);
-              V.lineTo(A.x + (B.x - A.x) * STOP / LENGTH, A.y + (B.y - A.y) * STOP / LENGTH);
-            }
-            remaining -= STOP - at;
-            at = STOP;
-          }
-        }
-      }
-      V.stroke(PAINT, WIDTH, STYLE, GRADIENT);
-      V.matrix = MATRIX;
-      V.path = ORIGINAL;
-      V.cursor = ORIGINAL.at(-1)?.at(-1) ?? null;
-      V.subpath = ORIGINAL[0]?.[0] ?? null;
-    }
-    strokeRect(x, y, w, h) {
-      this._frame();
-      this._temporaryPath(() => {
-        this.vector.beginPath();
-        this.rect(x, y, w, h);
-        this.stroke();
-      });
-    }
-    setLineDash(values) {
-      if (!Array.isArray(values) || values.some((v) => !Number.isFinite(v) || v < 0)) {
-        throw new TypeError("dash must contain non-negative finite values");
-      }
-      if (values.length % 2) {
-        values = values.concat(values);
-      }
-      this._lineDash = values.slice();
-    }
-    getLineDash() {
-      return this._lineDash.slice();
-    }
-    clip(rule = "nonzero") {
-      this._frame();
-      this._materializePrimitivePath();
-      this.meshRenderer?.flush("clipBoundary");
-      if (this.vector.path.filter((p) => p.length >= 3).length > 1) {
-        throw new RangeError("clip supports one contour per clip call");
-      }
-      this.vector.clip(rule);
-    }
-    createClipPath(points, { rule = "nonzero" } = {}) {
-      return this.vector.createClipPath(points, {
-        rule
-      });
-    }
-    clipPath(handle, { transform = null } = {}) {
-      this._frame();
-      this.meshRenderer?.flush("stencilChange");
-      this.vector.flush();
-      this.vector.clipPath(handle, {
-        transform
-      });
-    }
-    deleteClipPath(handle) {
-      return this.vector.deleteClipPath(handle);
-    }
-    clipRect(x, y, w, h) {
-      this._frame();
-      this.meshRenderer?.flush("clipBoundary");
-      this.vector.clipRect(x, y, w, h);
-    }
-    fillTriangleFan(points, paint = this._fillStyle) {
-      this._frame();
-      this.meshRenderer?.flush("vectorBoundary");
-      if (points.length < 3) {
-        return;
-      }
-      this.vector.triangleFan(points, this._paint(paint));
-    }
-    beginGroup(opacity = 1, bounds = null) {
-      this._frame();
-      if (opacity !== 1) {
-        this.meshRenderer?.flush("groupBoundary");
-      }
-      this.vector.beginGroup(opacity, bounds);
-    }
-    endGroup() {
-      if (!this.vector.groups.at(-1)?.direct) {
-        this.meshRenderer?.flush("groupBoundary");
-      }
-      this.vector.endGroup();
-    }
-    withGroupOpacity(opacity, callback, bounds = null) {
-      this._frame();
-      const PREVIOUS = this._globalAlpha;
-      this.beginGroup(opacity, bounds);
-      this._globalAlpha = 1;
-      try {
-        return callback();
-      } finally {
-        try {
-          this.endGroup();
-        } finally {
-          this._globalAlpha = PREVIOUS;
-        }
-      }
-    }
-    groupBounds(x, y, radius) {
-      const M = this.vector.matrix, P = transformed(M, x, y), R = radius * Math.max(Math.hypot(M[0], M[1]), Math.hypot(M[2], M[3]));
-      return {
-        x: P.x - R,
-        y: P.y - R,
-        width: R * 2,
-        height: R * 2
-      };
-    }
-    withColor(color, callback) {
-      const PREVIOUS = this.forceColor;
-      this.forceColor = normalizeColor(color);
-      try {
-        return callback();
-      } finally {
-        this.forceColor = PREVIOUS;
-      }
-    }
-    withSilhouette(color, width, paint, radius = 128) {
-      const ALPHA = this._globalAlpha, BOUNDS = this.groupBounds(0, 0, radius + width);
-      return this.withGroupOpacity(
-        ALPHA,
-        () => {
-          this.withColor(color, () => {
-            for (let i = 0; i < 8; i++) {
-              this.save();
-              const A = i * TAU / 8;
-              this.translate(Math.cos(A) * width, Math.sin(A) * width);
-              try {
-                paint();
-              } finally {
-                this.restore();
-              }
-            }
-            paint();
-          });
-          paint();
-        },
-        BOUNDS
-      );
-    }
-    _fontSize() {
-      const M = this._font.match(/(?:^|\s)(\d+(?:\.\d+)?)px(?:\s|\/|$)/);
-      return M ? Number(M[1]) : 10;
-    }
-    _align() {
-      if (this._textAlign === "center") {
-        return "center";
-      }
-      if (this._textAlign === "right" || this._textAlign === "end" && this._direction !== "rtl" || this._textAlign === "start" && this._direction === "rtl") {
-        return "right";
-      }
-      return "left";
-    }
-    measureText(text) {
-      if (!this.glyphAtlas) {
-        throw new Error("GlyphAtlas is not configured");
-      }
-      return this.glyphAtlas.measureText(String(text), {
-        fontSize: this._fontSize(),
-        align: this._align()
-      });
-    }
-    fillText(text, x, y, maxWidth) {
-      this._frame();
-      this.meshRenderer?.flush("vectorBoundary");
-      if (!this.glyphAtlas) {
-        throw new Error("GlyphAtlas is not configured");
-      }
-      const COLOR = this._paint(this._fillStyle), FONT_SIZE = this._fontSize(), ALIGN = this._align(), BASELINE = this._textBaseline, MEASURED = this.glyphAtlas.measureText(String(text), {
-        fontSize: FONT_SIZE
-      }).width, SCALE = maxWidth && Number.isFinite(maxWidth) ? Math.min(1, maxWidth / (MEASURED || 1)) : 1;
-      if (SCALE !== 1) {
-        this.vector.save();
-        this.vector.translate(x, y);
-        this.vector.scale(SCALE, 1);
-        this.vector.translate(-x, -y);
-      }
-      try {
-        return this.vector.fillText(String(text), x, y, {
-          fontSize: FONT_SIZE,
-          align: ALIGN,
-          baseline: BASELINE,
-          color: COLOR
-        });
-      } finally {
-        if (SCALE !== 1) {
-          this.vector.restore();
-        }
-      }
-    }
-    strokeText(text, x, y, maxWidth) {
-      this._frame();
-      this.meshRenderer?.flush("vectorBoundary");
-      if (!this.glyphAtlas) {
-        throw new Error("GlyphAtlas is not configured");
-      }
-      const SCALE = maxWidth && Number.isFinite(maxWidth) ? Math.min(
-        1,
-        maxWidth / (this.glyphAtlas.measureText(String(text), {
-          fontSize: this._fontSize()
-        }).width || 1)
-      ) : 1;
-      this.vector.save();
-      try {
-        if (SCALE !== 1) {
-          this.vector.translate(x, y);
-          this.vector.scale(SCALE, 1);
-          this.vector.translate(-x, -y);
-        }
-        return this.vector.strokeText(String(text), x, y, {
-          fontSize: this._fontSize(),
-          align: this._align(),
-          baseline: this._textBaseline,
-          color: this._paint(this._strokeStyle),
-          lineWidth: this._lineWidth
-        });
-      } finally {
-        this.vector.restore();
-      }
-    }
-    createLinearGradient(x0, y0, x1, y1) {
-      return new LinearGradient(this.vector.matrix, x0, y0, x1, y1);
-    }
-    createRadialGradient(x0, y0, r0, x1, y1, r1) {
-      return new RadialGradient(this.vector.matrix, x0, y0, r0, x1, y1, r1);
-    }
-    /** Retains caller-authored local-space triangles once; caller explicitly releases the handle. */
-    createMesh(data) {
-      return this.acquireMeshRenderer().createMesh(data);
-    }
-    /** The retained-mesh renderer this context shares with the vector assets and atlases built on it. */
-    acquireMeshRenderer() {
-      if (this.state !== "ready" || this.device.state !== "ready") {
-        throw new Error("VectorContext is not ready");
-      }
-      this.meshRenderer ??= new MeshRenderer(this.device, {
-        safeAlphaRunBatching: this.safeAlphaRunBatching
-      });
-      return this.meshRenderer;
-    }
-    /**
-     * Atlas rectangles (sprites, baked vector runs, posed parts) on the current transform and clip; they join the
-     * vector stream, so they share a draw with the shapes and text around them. See VectorRenderer.drawQuads.
-     */
-    drawQuads(options) {
-      this._frame();
-      this.meshRenderer?.flush("quadBoundary");
-      this.vector.drawQuads(options);
-    }
-    /**
-     * Draws a texture atlas region like Canvas `drawImage(image, x, y, width, height)`: top-left anchored on the
-     * current transform, in the same stream draw as the surrounding paint. `source` (`[x, y, width, height]` region
-     * pixels) selects part of the region. Uses `globalAlpha`, white flash and `forceColor` like other paint.
-     */
-    drawRegion(region, x, y, width = region?.width, height = region?.height, { source = null } = {}) {
-      if (!region?.atlas?.regions?.has(region) || region.atlas !== this.device.textureAtlas) {
-        throw new TypeError("A live region of the device texture atlas is required");
-      }
-      const [SX, SY, SW, SH] = source ?? [0, 0, region.width, region.height];
-      for (const VALUE of [x, y, width, height, SX, SY, SW, SH]) {
-        finite(VALUE, "drawRegion value");
-      }
-      if (SX < 0 || SY < 0 || SW <= 0 || SH <= 0 || SX + SW > region.width || SY + SH > region.height) {
-        throw new RangeError("source must lie inside the region");
-      }
-      const ATLAS = region.atlas;
-      this.drawQuads({
-        layer: region.layer,
-        filter: region.filter,
-        uvRects: Float32Array.of(
-          (region.x + SX) / ATLAS.width,
-          (region.y + SY) / ATLAS.height,
-          SW / ATLAS.width,
-          SH / ATLAS.height
-        ),
-        localRects: Float32Array.of(x, y, width, height),
-        color: normalizeColor(this.forceColor ?? [1, 1, 1, 1]),
-        forceColor: this.forceColor !== null,
-        alpha: this._globalAlpha,
-        whiteFlash: this._filter === "brightness(0) invert(1)"
-      });
-    }
-    deleteMesh(mesh) {
-      return this.meshRenderer?.deleteMesh(mesh) ?? false;
-    }
-    /** Local transform composes with current Canvas-style transform; all paint state is captured by value. */
-    drawMesh(mesh, { transform = null, morph = [0, 0], parts = null } = {}) {
-      this._frame();
-      if (!this.meshRenderer) {
-        throw new TypeError("createMesh required");
-      }
-      this.vector.flush();
-      let matrix = this.vector.matrix;
-      if (transform) {
-        if (transform.length !== 6 || Array.from(transform).some((n) => !Number.isFinite(n))) {
-          throw new TypeError("Six finite transform values required");
-        }
-        const M = matrix, [A, B, C, D, E, F] = transform;
-        matrix = [
-          M[0] * A + M[2] * B,
-          M[1] * A + M[3] * B,
-          M[0] * C + M[2] * D,
-          M[1] * C + M[3] * D,
-          M[0] * E + M[2] * F + M[4],
-          M[1] * E + M[3] * F + M[5]
-        ];
-      }
-      this.meshRenderer.drawMesh(mesh, {
-        matrix,
-        projection: this.vector.projection,
-        clips: this.vector.clips,
-        morph,
-        parts,
-        color: this.forceColor ?? [1, 1, 1, 1],
-        forceColor: this.forceColor !== null,
-        alpha: this._globalAlpha,
-        whiteFlash: this._filter === "brightness(0) invert(1)",
-        stencilRef: this.vector.stencilDepth || null
-      });
-    }
-    /** Draw a retained mesh silhouette and body in one ordered instance batch. */
-    drawMeshSilhouette(mesh, {
-      transform = null,
-      morph = [0, 0],
-      parts = null,
-      color = "black",
-      width,
-      radius = 128,
-      outlineScale = null
-    } = {}) {
-      this._frame();
-      if (!this.meshRenderer) {
-        throw new TypeError("createMesh required");
-      }
-      finite(width, "silhouette width");
-      finite(radius, "silhouette radius");
-      if (width < 0 || radius < 0) {
-        throw new RangeError("silhouette dimensions must be non-negative");
-      }
-      if (outlineScale !== null) {
-        finite(outlineScale, "silhouette outlineScale");
-        if (outlineScale < 1) {
-          throw new RangeError("silhouette outlineScale must be at least one");
-        }
-      }
-      let outline;
-      if (typeof color === "string" && color[0] === "#") {
-        outline = this._silhouetteColorCache.get(color);
-        if (!outline) {
-          outline = normalizeColor(color);
-          if (this._silhouetteColorCache.size === 16) {
-            this._silhouetteColorCache.delete(this._silhouetteColorCache.keys().next().value);
-          }
-          this._silhouetteColorCache.set(color, outline);
-        }
-      } else {
-        outline = normalizeColor(color);
-      }
-      const OUTLINE_INSTANCES = outlineScale === null ? 9 : 1, COUNT = OUTLINE_INSTANCES + 1, MATRICES = outlineScale === null ? this._silhouetteMatrices : this._scaledSilhouetteMatrices;
-      const BOUNDS = this.groupBounds(0, 0, Math.max(radius + width, radius * (outlineScale ?? 1)));
-      return this.withGroupOpacity(
-        this._globalAlpha,
-        () => {
-          this.vector.flush();
-          const SOURCE = this.vector.matrix, A = SOURCE[0], B = SOURCE[1], C = SOURCE[2], D = SOURCE[3], E = SOURCE[4], F = SOURCE[5];
-          let ta = 1;
-          let tb = 0;
-          let tc = 0;
-          let td = 1;
-          let te = 0;
-          let tf = 0;
-          if (transform) {
-            if (transform.length !== 6 || Array.from(transform).some((n) => !Number.isFinite(n))) {
-              throw new TypeError("Six finite transform values required");
-            }
-            [ta, tb, tc, td, te, tf] = transform;
-          }
-          for (let i = 0; i < COUNT; i++) {
-            const OUTLINE_PASS = i < OUTLINE_INSTANCES, OFFSET = outlineScale === null && OUTLINE_PASS && i < 8, DIRECTION = OFFSET ? SILHOUETTE_OFFSETS[i] : null, DX = DIRECTION ? DIRECTION[0] * width : 0, DY = DIRECTION ? DIRECTION[1] * width : 0, SCALE = outlineScale !== null && i === 0 ? outlineScale : 1, AT = i * 6;
-            const E_OFFSET = E + A * DX + C * DY, F_OFFSET = F + B * DX + D * DY;
-            MATRICES[AT] = (A * ta + C * tb) * SCALE;
-            MATRICES[AT + 1] = (B * ta + D * tb) * SCALE;
-            MATRICES[AT + 2] = (A * tc + C * td) * SCALE;
-            MATRICES[AT + 3] = (B * tc + D * td) * SCALE;
-            MATRICES[AT + 4] = A * te + C * tf + E_OFFSET;
-            MATRICES[AT + 5] = B * te + D * tf + F_OFFSET;
-          }
-          this.meshRenderer._drawMeshInstances(mesh, {
-            matrices: MATRICES,
-            count: COUNT,
-            projection: this.vector.projection,
-            morph,
-            parts,
-            color: this.forceColor ?? WHITE2,
-            forceColor: this.forceColor !== null,
-            prefixColor: outline,
-            prefixCount: OUTLINE_INSTANCES,
-            forceColorPrefixCount: OUTLINE_INSTANCES,
-            alpha: this._globalAlpha,
-            whiteFlash: this._filter === "brightness(0) invert(1)",
-            clips: this.vector.clips,
-            stencilRef: this.vector.stencilDepth || null
-          });
-        },
-        BOUNDS
-      );
-    }
-    /** Submit a native vector player after earlier paint, without flushing a compatible mesh run. */
-    drawVectorAsset(player, options = {}) {
-      this._frame();
-      if (typeof player?.draw !== "function") {
-        throw new TypeError("A vector asset player is required");
-      }
-      this.vector.flush();
-      const WORLD_MODE = options.viewProjection !== void 0 || options.worldMatrix !== void 0;
-      player.draw({
-        ...!WORLD_MODE ? { projection: this.vector.projection } : {},
-        clips: this.vector.clips,
-        stencilRef: this.vector.stencilDepth || null,
-        ...options
-      });
-    }
-    flush(reason = "explicit") {
-      this._frame();
-      this.meshRenderer?.flush(reason);
-      this.vector.flush();
-    }
-    createStaticMesh(vertices, { strideFloats = 6 } = {}) {
-      if (this.state !== "ready" || this.device.state !== "ready") {
-        throw new Error("VectorContext is not ready");
-      }
-      if (!(vertices instanceof Float32Array) || !Number.isSafeInteger(strideFloats) || strideFloats < 2 || vertices.length % strideFloats) {
-        throw new TypeError("mesh requires Float32Array and a matching strideFloats");
-      }
-      const BUFFER = this.device.createVertexBuffer({
-        capacityBytes: vertices.byteLength
-      });
-      this.device.uploadVertices(BUFFER, vertices);
-      const MESH = {
-        context: this,
-        buffer: BUFFER,
-        vertices,
-        count: vertices.length / strideFloats,
-        strideFloats
-      };
-      this.staticMeshes.add(MESH);
-      return MESH;
-    }
-    deleteStaticMesh(mesh) {
-      if (!mesh || mesh.context !== this || !this.staticMeshes.has(mesh)) {
-        return false;
-      }
-      this.device.deleteVertexBuffer(mesh.buffer);
-      this.staticMeshes.delete(mesh);
-      return true;
-    }
-    deferDeleteStaticMesh(mesh) {
-      if (!mesh || mesh.context !== this || !this.staticMeshes.has(mesh) || this.deferredMeshes.includes(mesh)) {
-        return false;
-      }
-      this.deferredMeshes.push(mesh);
-      return true;
-    }
-    drawStaticMesh(mesh, { pipeline, projection, uniforms = {}, textures = [], blend = "source-over", depth = null } = {}) {
-      this._frame();
-      if (!mesh || mesh.context !== this || !this.staticMeshes.has(mesh) || !pipeline) {
-        throw new TypeError("mesh owned by this context and caller pipeline are required");
-      }
-      this.flush("staticMeshBoundary");
-      const VALUES = {
-        ...uniforms
-      };
-      if (projection) {
-        VALUES.u_projection = projection;
-      }
-      this.device.draw({
-        pipeline,
-        buffer: mesh.buffer,
-        count: mesh.count,
-        uniforms: VALUES,
-        textures,
-        blend,
-        depth,
-        stencil: this.vector.stencilDepth ? {
-          func: "equal",
-          ref: this.vector.stencilDepth,
-          mask: 255,
-          writeMask: 0,
-          pass: "keep"
-        } : false
-      });
-    }
-    stats() {
-      return {
-        backend: "webgl2",
-        available: this.device.state === "ready",
-        contextLost: this.device.state === "lost",
-        failure: this.device.failure ?? null,
-        frame: this.frame,
-        ...this.frameStats,
-        mesh: this.meshRenderer?.stats() ?? null,
-        stagingBytes: this.vector.vertices.byteLength,
-        gpuBufferBytes: this.device.stats.gpuBufferBytes ?? 0,
-        gpuRenderTargetBytes: this.device.stats.gpuRenderTargetBytes ?? 0,
-        textureCount: this.device.stats.textureCount ?? 0,
-        activeGradientTextureCount: this.gradientTextures.size,
-        renderTargetCount: this.device.stats.renderTargetCount ?? 0,
-        bufferAllocations: this.device.stats.bufferAllocations ?? 0,
-        totals: {
-          ...this.total
-        }
-      };
-    }
-    dispose() {
-      if (this.state === "disposed") {
-        return;
-      }
-      this.vector.count = 0;
-      this.canvas.removeEventListener("webglcontextlost", this.onLost);
-      this.canvas.removeEventListener("webglcontextrestored", this.onRestored);
-      this.meshRenderer?.dispose();
-      for (const MESH of this.staticMeshes) {
-        this.device.deleteVertexBuffer(MESH.buffer);
-      }
-      this._releaseGradientTextures();
-      this.staticMeshes.clear();
-      this.deferredMeshes.length = 0;
-      if (this.ownsVector) {
-        this.vector.dispose();
-      }
-      this.active = false;
-      this.state = "disposed";
-    }
-  };
   var STRIDE_FLOATS = 9;
   var STRIDE_BYTES = STRIDE_FLOATS * 4;
   var MAX_SURFACES = 512;
@@ -8193,8 +6486,8 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       offset: 24
     }
   ];
-  var IDENTITY4 = Object.freeze([1, 0, 0, 1, 0, 0]);
-  var WHITE3 = Object.freeze([1, 1, 1, 1]);
+  var IDENTITY3 = Object.freeze([1, 0, 0, 1, 0, 0]);
+  var WHITE2 = Object.freeze([1, 1, 1, 1]);
   var VERTEX2 = `
 attribute vec2 a_position;
 attribute vec4 a_color;
@@ -8913,8 +7206,8 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
       projection,
       viewProjection,
       worldMatrix,
-      transform = IDENTITY4,
-      color = WHITE3,
+      transform = IDENTITY3,
+      color = WHITE2,
       alpha = 1,
       forceColor = false,
       whiteFlash = 0,
@@ -9076,6 +7369,1735 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
       this.disposed = true;
       this.state = "disposed";
       return true;
+    }
+  };
+  var TAU = Math.PI * 2;
+  var MAX_LINEAR_GRADIENT_STOPS = 32;
+  var LINEAR_GRADIENT_SIZE = 1024;
+  var MAX_GRADIENT_TEXTURES = 64;
+  var SILHOUETTE_OFFSETS = Object.freeze(
+    Array.from(
+      {
+        length: 8
+      },
+      (_, i) => Object.freeze([Math.cos(i * TAU / 8), Math.sin(i * TAU / 8)])
+    )
+  );
+  var IDENTITY4 = Object.freeze([1, 0, 0, 1, 0, 0]);
+  var WHITE3 = Object.freeze([1, 1, 1, 1]);
+  function composeTransform(a, b) {
+    return [
+      a[0] * b[0] + a[2] * b[1],
+      a[1] * b[0] + a[3] * b[1],
+      a[0] * b[2] + a[2] * b[3],
+      a[1] * b[2] + a[3] * b[3],
+      a[0] * b[4] + a[2] * b[5] + a[4],
+      a[1] * b[4] + a[3] * b[5] + a[5]
+    ];
+  }
+  function transformedPoint(matrix, x, y) {
+    return [matrix[0] * x + matrix[2] * y + matrix[4], matrix[1] * x + matrix[3] * y + matrix[5]];
+  }
+  function isFullArc(start, end, ccw) {
+    let sweep = end - start;
+    if (!ccw) {
+      if (sweep >= TAU) {
+        return true;
+      }
+      while (sweep < 0) {
+        sweep += TAU;
+      }
+    } else {
+      if (sweep <= -TAU) {
+        return true;
+      }
+      while (sweep > 0) {
+        sweep -= TAU;
+      }
+    }
+    return Math.abs(sweep) >= TAU;
+  }
+  var NAMED = Object.freeze({
+    black: "#000000",
+    white: "#ffffff",
+    red: "#ff0000",
+    green: "#008000",
+    blue: "#0000ff",
+    yellow: "#ffff00",
+    orange: "#ffa500",
+    purple: "#800080",
+    pink: "#ffc0cb",
+    gray: "#808080",
+    grey: "#808080",
+    silver: "#c0c0c0",
+    maroon: "#800000",
+    olive: "#808000",
+    lime: "#00ff00",
+    aqua: "#00ffff",
+    cyan: "#00ffff",
+    teal: "#008080",
+    navy: "#000080",
+    fuchsia: "#ff00ff",
+    magenta: "#ff00ff",
+    rebeccapurple: "#663399",
+    transparent: "#00000000"
+  });
+  function clamp(value, min = 0, max = 1) {
+    return Math.max(min, Math.min(max, value));
+  }
+  function finite(value, name) {
+    if (!Number.isFinite(value)) {
+      throw new TypeError(`${name} must be finite`);
+    }
+  }
+  var COLOR_CACHE = /* @__PURE__ */ new Map();
+  function cacheColor(key3, rgbaValue) {
+    if (typeof key3 === "string") {
+      if (COLOR_CACHE.size >= 512) {
+        COLOR_CACHE.clear();
+      }
+      COLOR_CACHE.set(key3, rgbaValue);
+    }
+    return rgbaValue.slice();
+  }
+  function normalizeColor(value) {
+    if (typeof value === "string") {
+      const HIT = COLOR_CACHE.get(value);
+      if (HIT) {
+        return HIT.slice();
+      }
+    }
+    if (Array.isArray(value) || ArrayBuffer.isView(value)) {
+      if (value.length !== 4) {
+        throw new TypeError("RGBA paint must have four channels");
+      }
+      const OUT = Array.from(value);
+      if (OUT.some((v) => !Number.isFinite(v) || v < 0 || v > 1)) {
+        throw new RangeError("RGBA channels must be in [0,1]");
+      }
+      return OUT;
+    }
+    let text = String(value ?? "black").trim().toLowerCase();
+    text = NAMED[text] ?? text;
+    if (text === "currentcolor" && typeof getComputedStyle === "function") {
+      text = getComputedStyle(document.documentElement).color;
+    }
+    if (text[0] === "#") {
+      let hex = text.slice(1);
+      if (!/^(?:[\da-f]{3,4}|[\da-f]{6}|[\da-f]{8})$/i.test(hex)) {
+        throw new TypeError(`Invalid CSS color: ${value}`);
+      }
+      if (hex.length < 5) {
+        hex = [...hex].map((c) => c + c).join("");
+      }
+      return cacheColor(value, [
+        parseInt(hex.slice(0, 2), 16) / 255,
+        parseInt(hex.slice(2, 4), 16) / 255,
+        parseInt(hex.slice(4, 6), 16) / 255,
+        hex.length === 8 ? parseInt(hex.slice(6, 8), 16) / 255 : 1
+      ]);
+    }
+    const RGB = text.match(/^rgba?\((.*)\)$/);
+    if (RGB) {
+      const FIELDS3 = RGB[1].trim().replace(/\s*\/\s*/, " ").split(/[\s,]+/).filter(Boolean);
+      if (FIELDS3.length < 3 || FIELDS3.length > 4) {
+        throw new TypeError(`Invalid CSS color: ${value}`);
+      }
+      const CHANNEL = (s) => clamp(s.endsWith("%") ? parseFloat(s) / 100 : parseFloat(s) / 255);
+      const ALPHA = FIELDS3[3] === void 0 ? 1 : clamp(FIELDS3[3].endsWith("%") ? parseFloat(FIELDS3[3]) / 100 : parseFloat(FIELDS3[3]));
+      const OUT = [...FIELDS3.slice(0, 3).map(CHANNEL), ALPHA];
+      if (OUT.some(Number.isNaN)) {
+        throw new TypeError(`Invalid CSS color: ${value}`);
+      }
+      return cacheColor(value, OUT);
+    }
+    const HSL = text.match(/^hsla?\((.*)\)$/);
+    if (HSL) {
+      const FIELDS3 = HSL[1].trim().replace(/\s*\/\s*/, " ").split(/[\s,]+/).filter(Boolean);
+      if (FIELDS3.length < 3 || FIELDS3.length > 4) {
+        throw new TypeError(`Invalid CSS color: ${value}`);
+      }
+      const H = (parseFloat(FIELDS3[0]) % 360 + 360) % 360 / 360, S = clamp(parseFloat(FIELDS3[1]) / 100), L = clamp(parseFloat(FIELDS3[2]) / 100), A = FIELDS3[3] === void 0 ? 1 : clamp(FIELDS3[3].endsWith("%") ? parseFloat(FIELDS3[3]) / 100 : parseFloat(FIELDS3[3]));
+      const F = (n) => {
+        const K3 = (n + H * 12) % 12;
+        return L - S * Math.min(L, 1 - L) * Math.max(-1, Math.min(K3 - 3, 9 - K3, 1));
+      };
+      return cacheColor(value, [F(0), F(8), F(4), A]);
+    }
+    if (typeof document !== "undefined" && document.createElement && document.body) {
+      const PROBE = document.createElement("span");
+      PROBE.style.color = "";
+      PROBE.style.color = text;
+      if (PROBE.style.color) {
+        document.body.append(PROBE);
+        const RESOLVED = getComputedStyle(PROBE).color;
+        PROBE.remove();
+        if (RESOLVED !== text) {
+          return normalizeColor(RESOLVED);
+        }
+      }
+    }
+    throw new TypeError(`Unsupported CSS color: ${value}`);
+  }
+  function transformed(matrix, x, y) {
+    return {
+      x: matrix[0] * x + matrix[2] * y + matrix[4],
+      y: matrix[1] * x + matrix[3] * y + matrix[5]
+    };
+  }
+  function invert(matrix) {
+    const D = matrix[0] * matrix[3] - matrix[1] * matrix[2];
+    if (Math.abs(D) < 1e-15) {
+      return null;
+    }
+    return [
+      matrix[3] / D,
+      -matrix[1] / D,
+      -matrix[2] / D,
+      matrix[0] / D,
+      (matrix[2] * matrix[5] - matrix[3] * matrix[4]) / D,
+      (matrix[1] * matrix[4] - matrix[0] * matrix[5]) / D
+    ];
+  }
+  var RadialGradient = class {
+    constructor(matrix, x0, y0, r0, x1, y1, r1) {
+      for (const [N, V] of Object.entries({
+        x0,
+        y0,
+        r0,
+        x1,
+        y1,
+        r1
+      })) {
+        finite(V, N);
+      }
+      if (r0 < 0 || r1 < 0) {
+        throw new RangeError("Gradient radii must be non-negative");
+      }
+      this.matrix = matrix.slice();
+      this.x0 = x0;
+      this.y0 = y0;
+      this.r0 = r0;
+      this.x1 = x1;
+      this.y1 = y1;
+      this.r1 = r1;
+      this.stops = [];
+      this.pixels = null;
+      this.revision = 0;
+    }
+    addColorStop(offset, value) {
+      if (!Number.isFinite(offset) || offset < 0 || offset > 1) {
+        throw new RangeError("Invalid gradient stop");
+      }
+      this.stops.push({
+        offset,
+        color: normalizeColor(value)
+      });
+      this.stops.sort((a, b) => a.offset - b.offset);
+      this.pixels = null;
+      this.revision++;
+    }
+    raster() {
+      if (this.pixels) {
+        return this.pixels;
+      }
+      const DATA2 = new Uint8Array(256 * 4), STOPS = this.stops.length ? this.stops : [
+        {
+          offset: 0,
+          color: [0, 0, 0, 0]
+        }
+      ];
+      for (let i = 0; i < 256; i++) {
+        const T = i / 255;
+        let lo = STOPS[0];
+        let hi = STOPS.at(-1);
+        for (let j = 1; j < STOPS.length; j++) {
+          if (T < STOPS[j].offset) {
+            lo = STOPS[j - 1];
+            hi = STOPS[j];
+            break;
+          }
+        }
+        const Q = clamp((T - lo.offset) / (hi.offset - lo.offset || 1)), ALPHA = lo.color[3] + (hi.color[3] - lo.color[3]) * Q;
+        for (let k = 0; k < 3; k++) {
+          DATA2[i * 4 + k] = Math.round((lo.color[k] + (hi.color[k] - lo.color[k]) * Q) * ALPHA * 255);
+        }
+        DATA2[i * 4 + 3] = Math.round(ALPHA * 255);
+      }
+      this.pixels = DATA2;
+      return DATA2;
+    }
+  };
+  var LinearGradient = class {
+    constructor(matrix, x0, y0, x1, y1) {
+      for (const [NAME, VALUE] of Object.entries({
+        x0,
+        y0,
+        x1,
+        y1
+      })) {
+        finite(VALUE, NAME);
+      }
+      this.matrix = matrix.slice();
+      this.x0 = x0;
+      this.y0 = y0;
+      this.x1 = x1;
+      this.y1 = y1;
+      this.stops = [];
+      this.pixels = null;
+      this.revision = 0;
+    }
+    addColorStop(offset, value) {
+      if (!Number.isFinite(offset) || offset < 0 || offset > 1) {
+        throw new RangeError("Invalid gradient stop");
+      }
+      if (this.stops.length >= MAX_LINEAR_GRADIENT_STOPS) {
+        throw new RangeError(`Linear gradients support at most ${MAX_LINEAR_GRADIENT_STOPS} color stops`);
+      }
+      const STOP = {
+        offset,
+        color: normalizeColor(value),
+        order: this.stops.length
+      };
+      this.stops.push(STOP);
+      this.stops.sort((a, b) => a.offset - b.offset || a.order - b.order);
+      this.pixels = null;
+      this.revision++;
+    }
+    raster() {
+      if (this.pixels) {
+        return this.pixels;
+      }
+      const DATA2 = new Uint8Array(LINEAR_GRADIENT_SIZE * 4), STOPS = this.stops;
+      for (let i = 0; i < LINEAR_GRADIENT_SIZE; i++) {
+        const T = i / (LINEAR_GRADIENT_SIZE - 1);
+        let lo;
+        let hi;
+        let q;
+        if (!STOPS.length) {
+          lo = hi = {
+            color: [0, 0, 0, 0]
+          };
+          q = 0;
+        } else if (STOPS.length === 1 || T < STOPS[0].offset) {
+          lo = hi = STOPS[0];
+          q = 0;
+        } else {
+          let next = 0;
+          while (next < STOPS.length && T >= STOPS[next].offset) {
+            next++;
+          }
+          if (next === STOPS.length) {
+            lo = hi = STOPS.at(-1);
+            q = 0;
+          } else {
+            lo = STOPS[next - 1];
+            hi = STOPS[next];
+            q = (T - lo.offset) / (hi.offset - lo.offset);
+          }
+        }
+        const ALPHA = lo.color[3] + (hi.color[3] - lo.color[3]) * q, AT = i * 4;
+        for (let k = 0; k < 3; k++) {
+          DATA2[AT + k] = Math.round((lo.color[k] + (hi.color[k] - lo.color[k]) * q) * ALPHA * 255);
+        }
+        DATA2[AT + 3] = Math.round(ALPHA * 255);
+      }
+      this.pixels = DATA2;
+      return DATA2;
+    }
+  };
+  var VectorContext = class {
+    constructor(device, {
+      glyphAtlas = null,
+      initialVertices = 4096,
+      maxVertices = 262144,
+      onError = null,
+      safeAlphaRunBatching = true,
+      mesh = {},
+      surfaces = {}
+    } = {}) {
+      if (!device?.beginFrame || !device?.endFrame || !device?.createVertexBuffer) {
+        throw new TypeError("WebGLDevice is required");
+      }
+      if (mesh === null || typeof mesh !== "object" || surfaces === null || typeof surfaces !== "object") {
+        throw new TypeError("mesh and surfaces must be option objects");
+      }
+      this.device = device;
+      this.canvas = device.canvas;
+      this.vector = new VectorRenderer(device, {
+        initialVertices,
+        maxVertices,
+        glyphAtlas
+      });
+      this.glyphAtlas = glyphAtlas ?? this.vector.glyphAtlas;
+      this.meshOptions = mesh;
+      this.surfaceOptions = surfaces;
+      this.surfaceRenderer = null;
+      this.disposers = [];
+      this.onError = typeof onError === "function" ? onError : null;
+      if (typeof safeAlphaRunBatching !== "boolean") {
+        throw new TypeError("safeAlphaRunBatching must be a boolean");
+      }
+      this.safeAlphaRunBatching = safeAlphaRunBatching;
+      this.meshRenderer = null;
+      this.primitivePath = {
+        type: "empty"
+      };
+      this.active = false;
+      this.state = "ready";
+      this.frame = 0;
+      this.pathCount = 0;
+      this.staticMeshes = /* @__PURE__ */ new Set();
+      this.deferredMeshes = [];
+      this.gradientTextures = /* @__PURE__ */ new Map();
+      this.lostGradientRegions = [];
+      this._silhouetteMatrices = new Float32Array(60);
+      this._scaledSilhouetteMatrices = new Float32Array(12);
+      this._silhouetteColorCache = /* @__PURE__ */ new Map();
+      this.onLost = (event) => {
+        event.preventDefault();
+        this.active = false;
+        this.state = "lost";
+        this.meshRenderer?.discard();
+        for (const [GRADIENT, CACHED] of this.gradientTextures) {
+          this.lostGradientRegions.push(CACHED.region);
+          GRADIENT.pixels = null;
+        }
+        this.gradientTextures.clear();
+      };
+      this.onRestored = () => {
+        if (this.state === "disposed") {
+          return;
+        }
+        try {
+          for (const MESH of this.staticMeshes) {
+            this.device.uploadVertices(MESH.buffer, MESH.vertices);
+          }
+          for (const REGION of this.lostGradientRegions.splice(0)) {
+            REGION.atlas.release(REGION);
+          }
+          this.state = "ready";
+        } catch (error2) {
+          this.state = "failed";
+          this.onError?.(error2, {
+            phase: "restore"
+          });
+        }
+      };
+      this.canvas.addEventListener("webglcontextlost", this.onLost);
+      this.canvas.addEventListener("webglcontextrestored", this.onRestored);
+      this._fillStyle = "#000";
+      this._strokeStyle = "#000";
+      this._globalAlpha = 1;
+      this._lineWidth = 1;
+      this._lineCap = "butt";
+      this._lineJoin = "round";
+      this._miterLimit = 10;
+      this._lineDash = [];
+      this._lineDashOffset = 0;
+      this._font = "10px sans-serif";
+      this._textAlign = "start";
+      this._textBaseline = "alphabetic";
+      this._direction = "inherit";
+      this._filter = "none";
+      this._composite = "source-over";
+      this.forceColor = null;
+      this.stack = [];
+      this.frameStats = {};
+      this.total = {
+        frames: 0,
+        drawCalls: 0,
+        vertices: 0,
+        uploadedBytes: 0
+      };
+    }
+    get globalAlpha() {
+      return this._globalAlpha;
+    }
+    set globalAlpha(v) {
+      finite(v, "globalAlpha");
+      this._globalAlpha = clamp(v);
+    }
+    get fillStyle() {
+      return this._fillStyle;
+    }
+    set fillStyle(v) {
+      if (!(v instanceof RadialGradient) && !(v instanceof LinearGradient)) {
+        normalizeColor(v);
+      }
+      this._fillStyle = v;
+    }
+    get strokeStyle() {
+      return this._strokeStyle;
+    }
+    set strokeStyle(v) {
+      if (!(v instanceof RadialGradient) && !(v instanceof LinearGradient)) {
+        normalizeColor(v);
+      }
+      this._strokeStyle = v;
+    }
+    get lineWidth() {
+      return this._lineWidth;
+    }
+    set lineWidth(v) {
+      finite(v, "lineWidth");
+      if (v >= 0) {
+        this._lineWidth = v;
+      }
+    }
+    get lineCap() {
+      return this._lineCap;
+    }
+    set lineCap(v) {
+      if (["butt", "round", "square"].includes(v)) {
+        this._lineCap = v;
+      }
+    }
+    get lineJoin() {
+      return this._lineJoin;
+    }
+    set lineJoin(v) {
+      if (["round", "bevel", "miter"].includes(v)) {
+        this._lineJoin = v;
+      }
+    }
+    get miterLimit() {
+      return this._miterLimit;
+    }
+    set miterLimit(v) {
+      finite(v, "miterLimit");
+      if (v > 0) {
+        this._miterLimit = v;
+      }
+    }
+    get lineDashOffset() {
+      return this._lineDashOffset;
+    }
+    set lineDashOffset(v) {
+      finite(v, "lineDashOffset");
+      this._lineDashOffset = v;
+    }
+    get font() {
+      return this._font;
+    }
+    set font(v) {
+      this._font = String(v);
+    }
+    get textAlign() {
+      return this._textAlign;
+    }
+    set textAlign(v) {
+      if (["start", "end", "left", "right", "center"].includes(v)) {
+        this._textAlign = v;
+      }
+    }
+    get textBaseline() {
+      return this._textBaseline;
+    }
+    set textBaseline(v) {
+      if (["top", "hanging", "middle", "alphabetic", "ideographic", "bottom"].includes(v)) {
+        this._textBaseline = v;
+      }
+    }
+    get direction() {
+      return this._direction;
+    }
+    set direction(v) {
+      if (["ltr", "rtl", "inherit"].includes(v)) {
+        this._direction = v;
+      }
+    }
+    get filter() {
+      return this._filter;
+    }
+    set filter(v) {
+      if (v !== "none" && v !== "brightness(0) invert(1)") {
+        throw new RangeError("VectorContext supports only none and brightness(0) invert(1) filters");
+      }
+      this._filter = v;
+    }
+    get globalCompositeOperation() {
+      return this._composite;
+    }
+    set globalCompositeOperation(v) {
+      this._frame();
+      if (v !== "source-over" && v !== "lighter") {
+        throw new RangeError("VectorContext supports only source-over and lighter composite operations");
+      }
+      this.vector.setBlend(v);
+      this._composite = v;
+    }
+    get stencilRef() {
+      return this.vector.stencilDepth || null;
+    }
+    _frame() {
+      if (!this.active || this.device.state !== "ready") {
+        throw new Error("VectorContext frame is unavailable");
+      }
+    }
+    _paint(style) {
+      if (style instanceof RadialGradient || style instanceof LinearGradient) {
+        throw new TypeError("Gradient paint must be submitted through a vector fill or stroke");
+      }
+      const COLOR = normalizeColor(this.forceColor ?? style);
+      COLOR[3] *= this._globalAlpha;
+      if (this._filter === "brightness(0) invert(1)") {
+        COLOR[0] = COLOR[1] = COLOR[2] = 1;
+      }
+      return COLOR;
+    }
+    _gradientPaint(gradient) {
+      let cached = this.gradientTextures.get(gradient);
+      if (!cached) {
+        if (this.gradientTextures.size >= MAX_GRADIENT_TEXTURES) {
+          const EXPIRED = [...this.gradientTextures].find(([, entry]) => entry.lastFrame < this.frame);
+          if (!EXPIRED) {
+            throw new RangeError(
+              `VectorContext supports at most ${MAX_GRADIENT_TEXTURES} distinct gradients in one frame`
+            );
+          }
+          EXPIRED[1].region.atlas.release(EXPIRED[1].region);
+          this.gradientTextures.delete(EXPIRED[0]);
+        }
+        const LINEAR = gradient instanceof LinearGradient, WIDTH = LINEAR ? LINEAR_GRADIENT_SIZE : 256, HEIGHT = 1, DATA2 = gradient.raster();
+        const REGION = this.device.textureAtlas.allocate(WIDTH, HEIGHT);
+        this.device.textureAtlas.upload(
+          REGION,
+          { width: WIDTH, height: HEIGHT, data: DATA2 },
+          { premultiplied: true, extendEdges: true }
+        );
+        cached = {
+          region: REGION,
+          revision: gradient.revision,
+          lastFrame: this.frame,
+          linear: LINEAR
+        };
+        this.gradientTextures.set(gradient, cached);
+      } else if (cached.revision !== gradient.revision) {
+        this.vector.flush();
+        const LINEAR = gradient instanceof LinearGradient, WIDTH = LINEAR ? LINEAR_GRADIENT_SIZE : 256;
+        cached.region.atlas.upload(
+          cached.region,
+          { width: WIDTH, height: 1, data: gradient.raster() },
+          { premultiplied: true, extendEdges: true }
+        );
+        cached.revision = gradient.revision;
+        cached.linear = LINEAR;
+      }
+      cached.lastFrame = this.frame;
+      const MATRIX_INVERSE = invert(gradient.matrix);
+      if (!MATRIX_INVERSE) {
+        throw new RangeError("Gradient transform is singular");
+      }
+      const COLOR = normalizeColor(this.forceColor ?? [1, 1, 1, 1]);
+      COLOR[3] *= this._globalAlpha;
+      if (gradient instanceof LinearGradient) {
+        return {
+          region: cached.region,
+          kind: "linear",
+          gradient,
+          x0: gradient.x0,
+          y0: gradient.y0,
+          x1: gradient.x1,
+          y1: gradient.y1,
+          matrixInverse: MATRIX_INVERSE,
+          color: COLOR,
+          whiteFlash: this._filter === "brightness(0) invert(1)"
+        };
+      }
+      const DX = gradient.x1 - gradient.x0, DY = gradient.y1 - gradient.y0, DR = gradient.r1 - gradient.r0, SCALE = Math.max(1, Math.hypot(DX, DY), Math.abs(gradient.r0), Math.abs(gradient.r1));
+      return {
+        region: cached.region,
+        kind: "radial",
+        gradient,
+        x0: gradient.x0,
+        y0: gradient.y0,
+        radialScale: SCALE,
+        radialParams: [DX / SCALE, DY / SCALE, gradient.r0 / SCALE, DR / SCALE],
+        radialEmpty: DX === 0 && DY === 0 && DR === 0,
+        matrixInverse: MATRIX_INVERSE,
+        color: COLOR,
+        whiteFlash: this._filter === "brightness(0) invert(1)"
+      };
+    }
+    _releaseGradientTextures() {
+      for (const [GRADIENT, CACHED] of this.gradientTextures) {
+        try {
+          CACHED.region.atlas.release(CACHED.region);
+        } catch (error2) {
+          try {
+            this.onError?.(error2, {
+              phase: "gradient-release"
+            });
+          } catch {
+          }
+        } finally {
+          GRADIENT.pixels = null;
+        }
+      }
+      this.gradientTextures.clear();
+    }
+    beginFrame({ width = this.canvas.width, height = this.canvas.height, clearColor = [0, 0, 0, 0] } = {}) {
+      if (this.active) {
+        throw new Error("endFrame is required before beginFrame");
+      }
+      if (this.state === "lost" || this.device.state === "lost") {
+        return false;
+      }
+      if (this.state !== "ready") {
+        throw new Error(`VectorContext is ${this.state}`);
+      }
+      try {
+        const READY = this.device.beginFrame({
+          width,
+          height,
+          clearColor
+        });
+        if (!READY) {
+          return false;
+        }
+        this.active = true;
+        this.meshRenderer?.beginFrame();
+        this.frame++;
+        this.pathCount = 0;
+        this.vector.beginPath();
+        this.primitivePath = {
+          type: "empty"
+        };
+        return true;
+      } catch (error2) {
+        this.onError?.(error2, {
+          phase: "beginFrame"
+        });
+        throw error2;
+      }
+    }
+    endFrame() {
+      this._frame();
+      try {
+        this.flush("frameEnd");
+        const STATS = this.device.endFrame();
+        this.active = false;
+        this._releaseGradientTextures();
+        for (const MESH of this.deferredMeshes.splice(0)) {
+          this.deleteStaticMesh(MESH);
+        }
+        this.frameStats = {
+          drawCalls: STATS.drawCalls,
+          vertices: STATS.vertices,
+          uploadedBytes: STATS.bufferBytes ?? STATS.uploadedBytes ?? 0,
+          textureUploads: STATS.textureUploads ?? 0,
+          textureBytes: STATS.textureBytes ?? 0,
+          gpuRenderTargetBytes: STATS.gpuRenderTargetBytes ?? 0,
+          paths: this.pathCount
+        };
+        this.total.frames++;
+        this.total.drawCalls += this.frameStats.drawCalls;
+        this.total.vertices += this.frameStats.vertices;
+        this.total.uploadedBytes += this.frameStats.uploadedBytes;
+        return this.stats();
+      } catch (error2) {
+        this.active = false;
+        this.vector.count = 0;
+        this.onError?.(error2, {
+          phase: "endFrame"
+        });
+        throw error2;
+      }
+    }
+    save() {
+      this._frame();
+      this.stack.push({
+        fillStyle: this._fillStyle,
+        strokeStyle: this._strokeStyle,
+        globalAlpha: this._globalAlpha,
+        lineWidth: this._lineWidth,
+        lineCap: this._lineCap,
+        lineJoin: this._lineJoin,
+        miterLimit: this._miterLimit,
+        lineDash: this._lineDash.slice(),
+        lineDashOffset: this._lineDashOffset,
+        font: this._font,
+        textAlign: this._textAlign,
+        textBaseline: this._textBaseline,
+        direction: this._direction,
+        filter: this._filter,
+        composite: this._composite,
+        forceColor: this.forceColor
+      });
+      this.vector.save();
+    }
+    restore() {
+      this._frame();
+      const S = this.stack.pop();
+      if (!S) {
+        return;
+      }
+      this.meshRenderer?.flush("stateRestore");
+      this.vector.restore();
+      Object.assign(this, {
+        _fillStyle: S.fillStyle,
+        _strokeStyle: S.strokeStyle,
+        _globalAlpha: S.globalAlpha,
+        _lineWidth: S.lineWidth,
+        _lineCap: S.lineCap,
+        _lineJoin: S.lineJoin,
+        _miterLimit: S.miterLimit,
+        _lineDash: S.lineDash,
+        _lineDashOffset: S.lineDashOffset,
+        _font: S.font,
+        _textAlign: S.textAlign,
+        _textBaseline: S.textBaseline,
+        _direction: S.direction,
+        _filter: S.filter,
+        _composite: S.composite,
+        forceColor: S.forceColor
+      });
+      this.vector.setBlend(S.composite);
+    }
+    setTransform(a, b, c, d, e, f) {
+      this.vector.setTransform(a, b, c, d, e, f);
+    }
+    resetTransform() {
+      this.vector.setTransform(...IDENTITY4);
+    }
+    getTransform() {
+      const M = this.vector.matrix;
+      return {
+        a: M[0],
+        b: M[1],
+        c: M[2],
+        d: M[3],
+        e: M[4],
+        f: M[5]
+      };
+    }
+    transform(a, b, c, d, e, f) {
+      this.vector.transform(a, b, c, d, e, f);
+    }
+    translate(x, y) {
+      this.vector.translate(x, y);
+    }
+    rotate(angle) {
+      this.vector.rotate(angle);
+    }
+    scale(x, y) {
+      this.vector.scale(x, y);
+    }
+    beginPath() {
+      this._frame();
+      this.pathCount++;
+      this.vector.beginPath();
+      this.primitivePath = {
+        type: "empty"
+      };
+    }
+    _materializePrimitivePath() {
+      const PATH = this.primitivePath;
+      if (PATH?.type !== "ellipse") {
+        return;
+      }
+      const MATRIX = this.vector.matrix;
+      this.primitivePath = null;
+      this.vector.matrix = PATH.matrix.slice();
+      try {
+        const POINTS = this._arcPoints(
+          PATH.x,
+          PATH.y,
+          PATH.rx,
+          PATH.ry,
+          PATH.rotation,
+          PATH.start,
+          PATH.end,
+          PATH.ccw
+        );
+        this.vector.moveTo(...POINTS[0]);
+        for (let i = 1; i < POINTS.length; i++) {
+          this.vector.lineTo(...POINTS[i]);
+        }
+      } finally {
+        this.vector.matrix = MATRIX;
+      }
+    }
+    moveTo(x, y) {
+      this._materializePrimitivePath();
+      const POINT = transformedPoint(this.vector.matrix, x, y);
+      this.primitivePath = this.primitivePath?.type === "empty" ? {
+        type: "line",
+        start: POINT,
+        end: null
+      } : null;
+      this.vector.moveTo(x, y);
+    }
+    lineTo(x, y) {
+      this._materializePrimitivePath();
+      if (!this.vector.cursor && this.primitivePath?.type === "empty") {
+        this.primitivePath = {
+          type: "line",
+          start: transformedPoint(this.vector.matrix, x, y),
+          end: null
+        };
+      } else if (this.primitivePath?.type === "line" && !this.primitivePath.end) {
+        this.primitivePath.end = transformedPoint(this.vector.matrix, x, y);
+      } else {
+        this.primitivePath = null;
+      }
+      this.vector.lineTo(x, y);
+    }
+    closePath() {
+      this._materializePrimitivePath();
+      this.primitivePath = null;
+      this.vector.closePath();
+    }
+    quadraticCurveTo(cx, cy, x, y) {
+      this._materializePrimitivePath();
+      this.primitivePath = null;
+      this.vector.quadraticCurveTo(cx, cy, x, y);
+    }
+    bezierCurveTo(x1, y1, x2, y2, x, y) {
+      this._materializePrimitivePath();
+      this.primitivePath = null;
+      this.vector.bezierCurveTo(x1, y1, x2, y2, x, y);
+    }
+    _arcPoints(x, y, rx, ry, rotation, start, end, ccw) {
+      if (rx < 0 || ry < 0) {
+        throw new RangeError("ellipse radii must be non-negative");
+      }
+      let sweep = end - start;
+      if (!ccw) {
+        if (sweep >= TAU) {
+          sweep = TAU;
+        } else {
+          while (sweep < 0) {
+            sweep += TAU;
+          }
+        }
+      } else if (sweep <= -TAU) {
+        sweep = -TAU;
+      } else {
+        while (sweep > 0) {
+          sweep -= TAU;
+        }
+      }
+      const M = this.vector.matrix, R = Math.max(rx, ry) * Math.max(Math.hypot(M[0], M[1]), Math.hypot(M[2], M[3])), STEP = R > 0.2 ? 2 * Math.acos(clamp(1 - 0.2 / R, -1, 1)) : Math.PI / 2, N = Math.max(1, Math.min(256, Math.ceil(Math.abs(sweep) / Math.max(0.01, STEP)))), C = Math.cos(rotation), S = Math.sin(rotation), OUT = [];
+      for (let i = 0; i <= N; i++) {
+        const A = start + sweep * i / N;
+        OUT.push([
+          x + Math.cos(A) * rx * C - Math.sin(A) * ry * S,
+          y + Math.cos(A) * rx * S + Math.sin(A) * ry * C
+        ]);
+      }
+      return OUT;
+    }
+    arc(x, y, r, start, end, ccw = false) {
+      this.ellipse(x, y, r, r, 0, start, end, ccw);
+    }
+    ellipse(x, y, rx, ry, rotation = 0, start = 0, end = TAU, ccw = false) {
+      if (rx < 0 || ry < 0) {
+        throw new RangeError("ellipse radii must be non-negative");
+      }
+      this._frame();
+      this._materializePrimitivePath();
+      const MATRIX = this.vector.matrix.slice();
+      const FULL = isFullArc(start, end, ccw);
+      const FAST = this.primitivePath?.type === "empty" && !this.vector.cursor && FULL && [x, y, rx, ry, rotation, start, end].every(Number.isFinite);
+      this.primitivePath = FAST ? {
+        type: "ellipse",
+        x,
+        y,
+        rx,
+        ry,
+        rotation,
+        start,
+        end,
+        ccw,
+        matrix: MATRIX
+      } : null;
+      if (FAST) {
+        return;
+      }
+      const POINTS = this._arcPoints(x, y, rx, ry, rotation, start, end, ccw);
+      if (!this.vector.cursor) {
+        this.vector.moveTo(...POINTS[0]);
+      } else {
+        this.vector.lineTo(...POINTS[0]);
+      }
+      for (let i = 1; i < POINTS.length; i++) {
+        this.vector.lineTo(...POINTS[i]);
+      }
+    }
+    rect(x, y, w, h) {
+      this._materializePrimitivePath();
+      const MATRIX = this.vector.matrix.slice();
+      this.primitivePath = this.primitivePath?.type === "empty" && !this.vector.cursor ? {
+        type: "rect",
+        x,
+        y,
+        w,
+        h,
+        matrix: MATRIX
+      } : null;
+      this.vector.moveTo(x, y);
+      this.vector.lineTo(x + w, y);
+      this.vector.lineTo(x + w, y + h);
+      this.vector.lineTo(x, y + h);
+      this.vector.closePath();
+    }
+    roundRect(x, y, w, h, r = 0) {
+      this._materializePrimitivePath();
+      this.primitivePath = null;
+      const RADII = Array.isArray(r) ? r : [r, r, r, r];
+      const MAX = Math.min(Math.abs(w) / 2, Math.abs(h) / 2);
+      const Q = RADII.map((v) => clamp(Number(v) || 0, 0, MAX));
+      this.moveTo(x + Q[0], y);
+      this.lineTo(x + w - Q[1], y);
+      this.arc(x + w - Q[1], y + Q[1], Q[1], -Math.PI / 2, 0);
+      this.lineTo(x + w, y + h - Q[2]);
+      this.arc(x + w - Q[2], y + h - Q[2], Q[2], 0, Math.PI / 2);
+      this.lineTo(x + Q[3], y + h);
+      this.arc(x + Q[3], y + h - Q[3], Q[3], Math.PI / 2, Math.PI);
+      this.lineTo(x, y + Q[0]);
+      this.arc(x + Q[0], y + Q[0], Q[0], Math.PI, Math.PI * 1.5);
+      this.closePath();
+    }
+    _temporaryPath(callback) {
+      const V = this.vector, SAVED = {
+        path: V.path,
+        cursor: V.cursor,
+        subpath: V.subpath,
+        primitivePath: this.primitivePath
+      };
+      try {
+        this.primitivePath = {
+          type: "empty"
+        };
+        callback();
+      } finally {
+        V.path = SAVED.path;
+        V.cursor = SAVED.cursor;
+        V.subpath = SAVED.subpath;
+        this.primitivePath = SAVED.primitivePath;
+      }
+    }
+    _primitiveTransform(path) {
+      let local;
+      if (path.type === "ellipse") {
+        const COS = Math.cos(path.rotation);
+        const SIN = Math.sin(path.rotation);
+        local = [path.rx * COS, path.rx * SIN, -path.ry * SIN, path.ry * COS, path.x, path.y];
+      } else {
+        local = [path.w / 2, 0, 0, path.h / 2, path.x + path.w / 2, path.y + path.h / 2];
+      }
+      return composeTransform(path.matrix, local);
+    }
+    _submitPrimitive(matrix, color, params) {
+      this.meshRenderer?.flush("primitiveBoundary");
+      this.vector.drawPrimitive({ matrix, color, params });
+      return true;
+    }
+    _tryPrimitiveFill() {
+      const PATH = this.primitivePath;
+      if (!PATH || PATH.type !== "ellipse" && PATH.type !== "rect") {
+        return false;
+      }
+      if (this._fillStyle instanceof RadialGradient || this._fillStyle instanceof LinearGradient) {
+        return false;
+      }
+      if (PATH.type === "ellipse" && (!PATH.rx || !PATH.ry)) {
+        return true;
+      }
+      if (PATH.type === "rect" && (!PATH.w || !PATH.h)) {
+        return true;
+      }
+      const TYPE = PATH.type === "ellipse" ? 0 : 1;
+      return this._submitPrimitive(this._primitiveTransform(PATH), this._paint(this._fillStyle), [TYPE, 0, 0, 0]);
+    }
+    _tryPrimitiveStroke(width) {
+      const PATH = this.primitivePath;
+      if (!PATH || this._strokeStyle instanceof RadialGradient || this._strokeStyle instanceof LinearGradient) {
+        return false;
+      }
+      if (PATH.type === "ellipse") {
+        if (!PATH.rx || !PATH.ry) {
+          return false;
+        }
+        return this._submitPrimitive(this._primitiveTransform(PATH), this._paint(this._strokeStyle), [
+          0,
+          1,
+          width,
+          0
+        ]);
+      }
+      if (PATH.type === "rect") {
+        if (!PATH.w || !PATH.h) {
+          return false;
+        }
+        const MATRIX = this._primitiveTransform(PATH);
+        const SCALE_X = Math.hypot(MATRIX[0], MATRIX[1]);
+        const SCALE_Y = Math.hypot(MATRIX[2], MATRIX[3]);
+        const DOT = MATRIX[0] * MATRIX[2] + MATRIX[1] * MATRIX[3];
+        if (Math.abs(DOT) > 1e-6 * SCALE_X * SCALE_Y) {
+          return false;
+        }
+        if (this._lineJoin === "miter") {
+          if (this._miterLimit < Math.SQRT2) {
+            return false;
+          }
+        } else if (this._lineJoin !== "round") {
+          return false;
+        }
+        return this._submitPrimitive(MATRIX, this._paint(this._strokeStyle), [
+          1,
+          1,
+          width,
+          this._lineJoin === "miter" ? 1 : 0
+        ]);
+      }
+      if (PATH.type === "line" && PATH.end) {
+        const DX = PATH.end[0] - PATH.start[0];
+        const DY = PATH.end[1] - PATH.start[1];
+        const LENGTH = Math.hypot(DX, DY);
+        if (!LENGTH) {
+          return false;
+        }
+        const CAP = this._lineCap === "butt" ? 0 : this._lineCap === "square" ? 1 : 2;
+        const UNIT_X = DX / LENGTH;
+        const UNIT_Y = DY / LENGTH;
+        const PAD = CAP === 0 ? 0 : width / 2;
+        const HALF_LENGTH = LENGTH / 2 + PAD;
+        const MATRIX = [
+          UNIT_X * HALF_LENGTH,
+          UNIT_Y * HALF_LENGTH,
+          -UNIT_Y * width / 2,
+          UNIT_X * width / 2,
+          (PATH.start[0] + PATH.end[0]) / 2,
+          (PATH.start[1] + PATH.end[1]) / 2
+        ];
+        return this._submitPrimitive(MATRIX, this._paint(this._strokeStyle), [2, 1, width, CAP]);
+      }
+      return false;
+    }
+    fill(rule = "nonzero") {
+      this._frame();
+      if ((rule === "nonzero" || rule === "evenodd") && this._tryPrimitiveFill()) {
+        return;
+      }
+      this._materializePrimitivePath();
+      this.meshRenderer?.flush("vectorBoundary");
+      if (this._fillStyle instanceof RadialGradient) {
+        this.vector.fillRadialGradient({
+          ...this._gradientPaint(this._fillStyle),
+          rule
+        });
+      } else if (this._fillStyle instanceof LinearGradient) {
+        this.vector.fillLinearGradient({
+          ...this._gradientPaint(this._fillStyle),
+          rule
+        });
+      } else {
+        this.vector.fill(this._paint(this._fillStyle), rule);
+      }
+    }
+    fillRect(x, y, w, h) {
+      this._frame();
+      this._temporaryPath(() => {
+        this.vector.beginPath();
+        this.rect(x, y, w, h);
+        this.fill();
+      });
+    }
+    stroke() {
+      this._frame();
+      if (!(this._lineWidth > 0)) {
+        return;
+      }
+      const M = this.vector.matrix, WIDTH = this._lineWidth * Math.max(Math.hypot(M[0], M[1]), Math.hypot(M[2], M[3])), GRADIENT = this._strokeStyle instanceof RadialGradient || this._strokeStyle instanceof LinearGradient ? this._gradientPaint(this._strokeStyle) : null, PAINT = GRADIENT ? GRADIENT.color : this._paint(this._strokeStyle), STYLE = {
+        lineCap: this._lineCap,
+        lineJoin: this._lineJoin,
+        miterLimit: this._miterLimit
+      }, DASH = this._lineDash, PERIOD = DASH.reduce((a, b) => a + b, 0);
+      if ((!DASH.length || !PERIOD) && !GRADIENT && this._tryPrimitiveStroke(WIDTH)) {
+        return;
+      }
+      this._materializePrimitivePath();
+      this.meshRenderer?.flush("vectorBoundary");
+      if (!DASH.length || !PERIOD) {
+        this.vector.stroke(PAINT, WIDTH, STYLE, GRADIENT);
+        return;
+      }
+      const V = this.vector, ORIGINAL = V.path, MATRIX = V.matrix.slice();
+      V.beginPath();
+      V.setTransform(...IDENTITY4);
+      let phase = (this._lineDashOffset % PERIOD + PERIOD) % PERIOD;
+      let index = 0;
+      while (phase >= DASH[index] && DASH[index] > 0) {
+        phase -= DASH[index];
+        index = (index + 1) % DASH.length;
+      }
+      let remaining = DASH[index] - phase;
+      for (const PATH of ORIGINAL) {
+        for (let i = 1; i < PATH.length; i++) {
+          const A = PATH[i - 1], B = PATH[i], LENGTH = Math.hypot(B.x - A.x, B.y - A.y);
+          let at = 0;
+          while (at < LENGTH - 1e-7) {
+            if (remaining <= 1e-7) {
+              index = (index + 1) % DASH.length;
+              remaining = DASH[index];
+              continue;
+            }
+            const STOP = Math.min(LENGTH, at + remaining);
+            if (index % 2 === 0) {
+              V.moveTo(A.x + (B.x - A.x) * at / LENGTH, A.y + (B.y - A.y) * at / LENGTH);
+              V.lineTo(A.x + (B.x - A.x) * STOP / LENGTH, A.y + (B.y - A.y) * STOP / LENGTH);
+            }
+            remaining -= STOP - at;
+            at = STOP;
+          }
+        }
+      }
+      V.stroke(PAINT, WIDTH, STYLE, GRADIENT);
+      V.matrix = MATRIX;
+      V.path = ORIGINAL;
+      V.cursor = ORIGINAL.at(-1)?.at(-1) ?? null;
+      V.subpath = ORIGINAL[0]?.[0] ?? null;
+    }
+    strokeRect(x, y, w, h) {
+      this._frame();
+      this._temporaryPath(() => {
+        this.vector.beginPath();
+        this.rect(x, y, w, h);
+        this.stroke();
+      });
+    }
+    setLineDash(values) {
+      if (!Array.isArray(values) || values.some((v) => !Number.isFinite(v) || v < 0)) {
+        throw new TypeError("dash must contain non-negative finite values");
+      }
+      if (values.length % 2) {
+        values = values.concat(values);
+      }
+      this._lineDash = values.slice();
+    }
+    getLineDash() {
+      return this._lineDash.slice();
+    }
+    clip(rule = "nonzero") {
+      this._frame();
+      this._materializePrimitivePath();
+      this.meshRenderer?.flush("clipBoundary");
+      if (this.vector.path.filter((p) => p.length >= 3).length > 1) {
+        throw new RangeError("clip supports one contour per clip call");
+      }
+      this.vector.clip(rule);
+    }
+    createClipPath(points, { rule = "nonzero" } = {}) {
+      return this.vector.createClipPath(points, {
+        rule
+      });
+    }
+    clipPath(handle, { transform = null } = {}) {
+      this._frame();
+      this.meshRenderer?.flush("stencilChange");
+      this.vector.flush();
+      this.vector.clipPath(handle, {
+        transform
+      });
+    }
+    deleteClipPath(handle) {
+      return this.vector.deleteClipPath(handle);
+    }
+    clipRect(x, y, w, h) {
+      this._frame();
+      this.meshRenderer?.flush("clipBoundary");
+      this.vector.clipRect(x, y, w, h);
+    }
+    fillTriangleFan(points, paint = this._fillStyle) {
+      this._frame();
+      this.meshRenderer?.flush("vectorBoundary");
+      if (points.length < 3) {
+        return;
+      }
+      this.vector.triangleFan(points, this._paint(paint));
+    }
+    beginGroup(opacity = 1, bounds = null) {
+      this._frame();
+      if (opacity !== 1) {
+        this.meshRenderer?.flush("groupBoundary");
+      }
+      this.vector.beginGroup(opacity, bounds);
+    }
+    endGroup() {
+      if (!this.vector.groups.at(-1)?.direct) {
+        this.meshRenderer?.flush("groupBoundary");
+      }
+      this.vector.endGroup();
+    }
+    withGroupOpacity(opacity, callback, bounds = null) {
+      this._frame();
+      const PREVIOUS = this._globalAlpha;
+      this.beginGroup(opacity, bounds);
+      this._globalAlpha = 1;
+      try {
+        return callback();
+      } finally {
+        try {
+          this.endGroup();
+        } finally {
+          this._globalAlpha = PREVIOUS;
+        }
+      }
+    }
+    groupBounds(x, y, radius) {
+      const M = this.vector.matrix, P = transformed(M, x, y), R = radius * Math.max(Math.hypot(M[0], M[1]), Math.hypot(M[2], M[3]));
+      return {
+        x: P.x - R,
+        y: P.y - R,
+        width: R * 2,
+        height: R * 2
+      };
+    }
+    withColor(color, callback) {
+      const PREVIOUS = this.forceColor;
+      this.forceColor = normalizeColor(color);
+      try {
+        return callback();
+      } finally {
+        this.forceColor = PREVIOUS;
+      }
+    }
+    withSilhouette(color, width, paint, radius = 128) {
+      const ALPHA = this._globalAlpha, BOUNDS = this.groupBounds(0, 0, radius + width);
+      return this.withGroupOpacity(
+        ALPHA,
+        () => {
+          this.withColor(color, () => {
+            for (let i = 0; i < 8; i++) {
+              this.save();
+              const A = i * TAU / 8;
+              this.translate(Math.cos(A) * width, Math.sin(A) * width);
+              try {
+                paint();
+              } finally {
+                this.restore();
+              }
+            }
+            paint();
+          });
+          paint();
+        },
+        BOUNDS
+      );
+    }
+    _fontSize() {
+      const M = this._font.match(/(?:^|\s)(\d+(?:\.\d+)?)px(?:\s|\/|$)/);
+      return M ? Number(M[1]) : 10;
+    }
+    _align() {
+      if (this._textAlign === "center") {
+        return "center";
+      }
+      if (this._textAlign === "right" || this._textAlign === "end" && this._direction !== "rtl" || this._textAlign === "start" && this._direction === "rtl") {
+        return "right";
+      }
+      return "left";
+    }
+    measureText(text) {
+      if (!this.glyphAtlas) {
+        throw new Error("GlyphAtlas is not configured");
+      }
+      return this.glyphAtlas.measureText(String(text), {
+        fontSize: this._fontSize(),
+        align: this._align()
+      });
+    }
+    fillText(text, x, y, maxWidth) {
+      this._frame();
+      this.meshRenderer?.flush("vectorBoundary");
+      if (!this.glyphAtlas) {
+        throw new Error("GlyphAtlas is not configured");
+      }
+      const COLOR = this._paint(this._fillStyle), FONT_SIZE = this._fontSize(), ALIGN = this._align(), BASELINE = this._textBaseline, MEASURED = this.glyphAtlas.measureText(String(text), {
+        fontSize: FONT_SIZE
+      }).width, SCALE = maxWidth && Number.isFinite(maxWidth) ? Math.min(1, maxWidth / (MEASURED || 1)) : 1;
+      if (SCALE !== 1) {
+        this.vector.save();
+        this.vector.translate(x, y);
+        this.vector.scale(SCALE, 1);
+        this.vector.translate(-x, -y);
+      }
+      try {
+        return this.vector.fillText(String(text), x, y, {
+          fontSize: FONT_SIZE,
+          align: ALIGN,
+          baseline: BASELINE,
+          color: COLOR
+        });
+      } finally {
+        if (SCALE !== 1) {
+          this.vector.restore();
+        }
+      }
+    }
+    strokeText(text, x, y, maxWidth) {
+      this._frame();
+      this.meshRenderer?.flush("vectorBoundary");
+      if (!this.glyphAtlas) {
+        throw new Error("GlyphAtlas is not configured");
+      }
+      const SCALE = maxWidth && Number.isFinite(maxWidth) ? Math.min(
+        1,
+        maxWidth / (this.glyphAtlas.measureText(String(text), {
+          fontSize: this._fontSize()
+        }).width || 1)
+      ) : 1;
+      this.vector.save();
+      try {
+        if (SCALE !== 1) {
+          this.vector.translate(x, y);
+          this.vector.scale(SCALE, 1);
+          this.vector.translate(-x, -y);
+        }
+        return this.vector.strokeText(String(text), x, y, {
+          fontSize: this._fontSize(),
+          align: this._align(),
+          baseline: this._textBaseline,
+          color: this._paint(this._strokeStyle),
+          lineWidth: this._lineWidth
+        });
+      } finally {
+        this.vector.restore();
+      }
+    }
+    createLinearGradient(x0, y0, x1, y1) {
+      return new LinearGradient(this.vector.matrix, x0, y0, x1, y1);
+    }
+    createRadialGradient(x0, y0, r0, x1, y1, r1) {
+      return new RadialGradient(this.vector.matrix, x0, y0, r0, x1, y1, r1);
+    }
+    /** Retains caller-authored local-space triangles once; caller explicitly releases the handle. */
+    createMesh(data) {
+      return this.acquireMeshRenderer().createMesh(data);
+    }
+    /** The retained-mesh renderer this context shares with the vector assets and atlases built on it. */
+    acquireMeshRenderer() {
+      if (this.state !== "ready" || this.device.state !== "ready") {
+        throw new Error("VectorContext is not ready");
+      }
+      this.meshRenderer ??= new MeshRenderer(this.device, {
+        ...this.meshOptions,
+        safeAlphaRunBatching: this.safeAlphaRunBatching
+      });
+      return this.meshRenderer;
+    }
+    /** The yarn/sketch surface renderer this context shares with the vector actors built on it. */
+    acquireSurfaceRenderer() {
+      if (this.state !== "ready" || this.device.state !== "ready") {
+        throw new Error("VectorContext is not ready");
+      }
+      this.surfaceRenderer ??= new YarnSurfaceRenderer(this.device, this.surfaceOptions);
+      return this.surfaceRenderer;
+    }
+    /** Registers cleanup that `dispose()` runs, newest first, before it disposes the renderers it owns. */
+    onDispose(callback) {
+      if (typeof callback !== "function") {
+        throw new TypeError("onDispose requires a function");
+      }
+      this.disposers.push(callback);
+    }
+    /**
+     * Atlas rectangles (sprites, baked vector runs, posed parts) on the current transform and clip; they join the
+     * vector stream, so they share a draw with the shapes and text around them. See VectorRenderer.drawQuads.
+     */
+    drawQuads(options) {
+      this._frame();
+      this.meshRenderer?.flush("quadBoundary");
+      this.vector.drawQuads(options);
+    }
+    /**
+     * Draws a texture atlas region like Canvas `drawImage(image, x, y, width, height)`: top-left anchored on the
+     * current transform, in the same stream draw as the surrounding paint. `source` (`[x, y, width, height]` region
+     * pixels) selects part of the region. Uses `globalAlpha`, white flash and `forceColor` like other paint.
+     */
+    drawRegion(region, x, y, width = region?.width, height = region?.height, { source = null } = {}) {
+      if (!region?.atlas?.regions?.has(region) || region.atlas !== this.device.textureAtlas) {
+        throw new TypeError("A live region of the device texture atlas is required");
+      }
+      const [SX, SY, SW, SH] = source ?? [0, 0, region.width, region.height];
+      for (const VALUE of [x, y, width, height, SX, SY, SW, SH]) {
+        finite(VALUE, "drawRegion value");
+      }
+      if (SX < 0 || SY < 0 || SW <= 0 || SH <= 0 || SX + SW > region.width || SY + SH > region.height) {
+        throw new RangeError("source must lie inside the region");
+      }
+      const ATLAS = region.atlas;
+      this.drawQuads({
+        layer: region.layer,
+        filter: region.filter,
+        uvRects: Float32Array.of(
+          (region.x + SX) / ATLAS.width,
+          (region.y + SY) / ATLAS.height,
+          SW / ATLAS.width,
+          SH / ATLAS.height
+        ),
+        localRects: Float32Array.of(x, y, width, height),
+        color: normalizeColor(this.forceColor ?? [1, 1, 1, 1]),
+        forceColor: this.forceColor !== null,
+        alpha: this._globalAlpha,
+        whiteFlash: this._filter === "brightness(0) invert(1)"
+      });
+    }
+    deleteMesh(mesh) {
+      return this.meshRenderer?.deleteMesh(mesh) ?? false;
+    }
+    /** Local transform composes with current Canvas-style transform; all paint state is captured by value. */
+    drawMesh(mesh, { transform = null, morph = [0, 0], parts = null } = {}) {
+      this._frame();
+      if (!this.meshRenderer) {
+        throw new TypeError("createMesh required");
+      }
+      this.vector.flush();
+      let matrix = this.vector.matrix;
+      if (transform) {
+        if (transform.length !== 6 || Array.from(transform).some((n) => !Number.isFinite(n))) {
+          throw new TypeError("Six finite transform values required");
+        }
+        const M = matrix, [A, B, C, D, E, F] = transform;
+        matrix = [
+          M[0] * A + M[2] * B,
+          M[1] * A + M[3] * B,
+          M[0] * C + M[2] * D,
+          M[1] * C + M[3] * D,
+          M[0] * E + M[2] * F + M[4],
+          M[1] * E + M[3] * F + M[5]
+        ];
+      }
+      this.meshRenderer.drawMesh(mesh, {
+        matrix,
+        projection: this.vector.projection,
+        clips: this.vector.clips,
+        morph,
+        parts,
+        color: this.forceColor ?? [1, 1, 1, 1],
+        forceColor: this.forceColor !== null,
+        alpha: this._globalAlpha,
+        whiteFlash: this._filter === "brightness(0) invert(1)",
+        stencilRef: this.vector.stencilDepth || null
+      });
+    }
+    /** Draw a retained mesh silhouette and body in one ordered instance batch. */
+    drawMeshSilhouette(mesh, {
+      transform = null,
+      morph = [0, 0],
+      parts = null,
+      color = "black",
+      width,
+      radius = 128,
+      outlineScale = null
+    } = {}) {
+      this._frame();
+      if (!this.meshRenderer) {
+        throw new TypeError("createMesh required");
+      }
+      finite(width, "silhouette width");
+      finite(radius, "silhouette radius");
+      if (width < 0 || radius < 0) {
+        throw new RangeError("silhouette dimensions must be non-negative");
+      }
+      if (outlineScale !== null) {
+        finite(outlineScale, "silhouette outlineScale");
+        if (outlineScale < 1) {
+          throw new RangeError("silhouette outlineScale must be at least one");
+        }
+      }
+      let outline;
+      if (typeof color === "string" && color[0] === "#") {
+        outline = this._silhouetteColorCache.get(color);
+        if (!outline) {
+          outline = normalizeColor(color);
+          if (this._silhouetteColorCache.size === 16) {
+            this._silhouetteColorCache.delete(this._silhouetteColorCache.keys().next().value);
+          }
+          this._silhouetteColorCache.set(color, outline);
+        }
+      } else {
+        outline = normalizeColor(color);
+      }
+      const OUTLINE_INSTANCES = outlineScale === null ? 9 : 1, COUNT = OUTLINE_INSTANCES + 1, MATRICES = outlineScale === null ? this._silhouetteMatrices : this._scaledSilhouetteMatrices;
+      const BOUNDS = this.groupBounds(0, 0, Math.max(radius + width, radius * (outlineScale ?? 1)));
+      return this.withGroupOpacity(
+        this._globalAlpha,
+        () => {
+          this.vector.flush();
+          const SOURCE = this.vector.matrix, A = SOURCE[0], B = SOURCE[1], C = SOURCE[2], D = SOURCE[3], E = SOURCE[4], F = SOURCE[5];
+          let ta = 1;
+          let tb = 0;
+          let tc = 0;
+          let td = 1;
+          let te = 0;
+          let tf = 0;
+          if (transform) {
+            if (transform.length !== 6 || Array.from(transform).some((n) => !Number.isFinite(n))) {
+              throw new TypeError("Six finite transform values required");
+            }
+            [ta, tb, tc, td, te, tf] = transform;
+          }
+          for (let i = 0; i < COUNT; i++) {
+            const OUTLINE_PASS = i < OUTLINE_INSTANCES, OFFSET = outlineScale === null && OUTLINE_PASS && i < 8, DIRECTION = OFFSET ? SILHOUETTE_OFFSETS[i] : null, DX = DIRECTION ? DIRECTION[0] * width : 0, DY = DIRECTION ? DIRECTION[1] * width : 0, SCALE = outlineScale !== null && i === 0 ? outlineScale : 1, AT = i * 6;
+            const E_OFFSET = E + A * DX + C * DY, F_OFFSET = F + B * DX + D * DY;
+            MATRICES[AT] = (A * ta + C * tb) * SCALE;
+            MATRICES[AT + 1] = (B * ta + D * tb) * SCALE;
+            MATRICES[AT + 2] = (A * tc + C * td) * SCALE;
+            MATRICES[AT + 3] = (B * tc + D * td) * SCALE;
+            MATRICES[AT + 4] = A * te + C * tf + E_OFFSET;
+            MATRICES[AT + 5] = B * te + D * tf + F_OFFSET;
+          }
+          this.meshRenderer._drawMeshInstances(mesh, {
+            matrices: MATRICES,
+            count: COUNT,
+            projection: this.vector.projection,
+            morph,
+            parts,
+            color: this.forceColor ?? WHITE3,
+            forceColor: this.forceColor !== null,
+            prefixColor: outline,
+            prefixCount: OUTLINE_INSTANCES,
+            forceColorPrefixCount: OUTLINE_INSTANCES,
+            alpha: this._globalAlpha,
+            whiteFlash: this._filter === "brightness(0) invert(1)",
+            clips: this.vector.clips,
+            stencilRef: this.vector.stencilDepth || null
+          });
+        },
+        BOUNDS
+      );
+    }
+    /** Submit a vector actor after earlier paint, without flushing a compatible mesh run. */
+    drawVectorActor(actor2, options = {}) {
+      this._frame();
+      if (typeof actor2?.draw !== "function") {
+        throw new TypeError("A vector actor is required");
+      }
+      this.vector.flush();
+      const WORLD_MODE = options.viewProjection !== void 0 || options.worldMatrix !== void 0;
+      actor2.draw({
+        ...!WORLD_MODE ? { projection: this.vector.projection } : {},
+        clips: this.vector.clips,
+        stencilRef: this.vector.stencilDepth || null,
+        ...options
+      });
+    }
+    flush(reason = "explicit") {
+      this._frame();
+      this.meshRenderer?.flush(reason);
+      this.vector.flush();
+    }
+    createStaticMesh(vertices, { strideFloats = 6 } = {}) {
+      if (this.state !== "ready" || this.device.state !== "ready") {
+        throw new Error("VectorContext is not ready");
+      }
+      if (!(vertices instanceof Float32Array) || !Number.isSafeInteger(strideFloats) || strideFloats < 2 || vertices.length % strideFloats) {
+        throw new TypeError("mesh requires Float32Array and a matching strideFloats");
+      }
+      const BUFFER = this.device.createVertexBuffer({
+        capacityBytes: vertices.byteLength
+      });
+      this.device.uploadVertices(BUFFER, vertices);
+      const MESH = {
+        context: this,
+        buffer: BUFFER,
+        vertices,
+        count: vertices.length / strideFloats,
+        strideFloats
+      };
+      this.staticMeshes.add(MESH);
+      return MESH;
+    }
+    deleteStaticMesh(mesh) {
+      if (!mesh || mesh.context !== this || !this.staticMeshes.has(mesh)) {
+        return false;
+      }
+      this.device.deleteVertexBuffer(mesh.buffer);
+      this.staticMeshes.delete(mesh);
+      return true;
+    }
+    deferDeleteStaticMesh(mesh) {
+      if (!mesh || mesh.context !== this || !this.staticMeshes.has(mesh) || this.deferredMeshes.includes(mesh)) {
+        return false;
+      }
+      this.deferredMeshes.push(mesh);
+      return true;
+    }
+    drawStaticMesh(mesh, { pipeline, projection, uniforms = {}, textures = [], blend = "source-over", depth = null } = {}) {
+      this._frame();
+      if (!mesh || mesh.context !== this || !this.staticMeshes.has(mesh) || !pipeline) {
+        throw new TypeError("mesh owned by this context and caller pipeline are required");
+      }
+      this.flush("staticMeshBoundary");
+      const VALUES = {
+        ...uniforms
+      };
+      if (projection) {
+        VALUES.u_projection = projection;
+      }
+      this.device.draw({
+        pipeline,
+        buffer: mesh.buffer,
+        count: mesh.count,
+        uniforms: VALUES,
+        textures,
+        blend,
+        depth,
+        stencil: this.vector.stencilDepth ? {
+          func: "equal",
+          ref: this.vector.stencilDepth,
+          mask: 255,
+          writeMask: 0,
+          pass: "keep"
+        } : false
+      });
+    }
+    stats() {
+      return {
+        backend: "webgl2",
+        available: this.device.state === "ready",
+        contextLost: this.device.state === "lost",
+        failure: this.device.failure ?? null,
+        frame: this.frame,
+        ...this.frameStats,
+        mesh: this.meshRenderer?.stats() ?? null,
+        stagingBytes: this.vector.vertices.byteLength,
+        gpuBufferBytes: this.device.stats.gpuBufferBytes ?? 0,
+        gpuRenderTargetBytes: this.device.stats.gpuRenderTargetBytes ?? 0,
+        textureCount: this.device.stats.textureCount ?? 0,
+        activeGradientTextureCount: this.gradientTextures.size,
+        renderTargetCount: this.device.stats.renderTargetCount ?? 0,
+        bufferAllocations: this.device.stats.bufferAllocations ?? 0,
+        totals: {
+          ...this.total
+        }
+      };
+    }
+    dispose() {
+      if (this.state === "disposed") {
+        return;
+      }
+      this.vector.count = 0;
+      this.canvas.removeEventListener("webglcontextlost", this.onLost);
+      this.canvas.removeEventListener("webglcontextrestored", this.onRestored);
+      for (const CALLBACK of this.disposers.splice(0).reverse()) {
+        CALLBACK();
+      }
+      this.surfaceRenderer?.dispose();
+      this.meshRenderer?.dispose();
+      for (const MESH of this.staticMeshes) {
+        this.device.deleteVertexBuffer(MESH.buffer);
+      }
+      this._releaseGradientTextures();
+      this.staticMeshes.clear();
+      this.deferredMeshes.length = 0;
+      this.vector.dispose();
+      this.active = false;
+      this.state = "disposed";
     }
   };
 
@@ -12101,34 +12123,34 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
   var NUMERIC_POSE_FIELDS = Object.freeze(["x", "y", "rotation", "scaleX", "scaleY", "opacity"]);
   var IS_OBJECT = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
   var EXACT_KEYS = (value, keys) => IS_OBJECT(value) && Object.keys(value).length === keys.length && keys.every((key22) => Object.hasOwn(value, key22));
-  function validateCompiledAsset(asset2) {
-    const SHADER_SURFACES = asset2?.geometry?.shaderSurfaces;
+  function validateCompiledAsset(asset) {
+    const SHADER_SURFACES = asset?.geometry?.shaderSurfaces;
     const SURFACE_ONLY = Array.isArray(SHADER_SURFACES) && SHADER_SURFACES.length > 0;
-    if (!IS_OBJECT(asset2) || asset2.schemaVersion !== VECTOR_ASSET_SCHEMA_VERSION || !ACCEPTED_COMPILER_VERSIONS.has(asset2.compilerVersion) || typeof asset2.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/.test(asset2.sourceSha256) || !IS_OBJECT(asset2.metadata) || !IS_OBJECT(asset2.geometry) || !(asset2.geometry.vertices instanceof Float32Array) || asset2.geometry.vertices.length < 33 && !(SURFACE_ONLY && asset2.geometry.vertices.length === 0) || asset2.geometry.vertices.length % 11 || asset2.geometry.strideFloats !== 11 || asset2.geometry.nonScalingStroke !== void 0 && typeof asset2.geometry.nonScalingStroke !== "boolean" || asset2.geometry.nonScalingStroke && asset2.geometry.morphCount !== 0 || asset2.geometry.partCount !== asset2.metadata.parts?.length || ![0, 2].includes(asset2.geometry.morphCount)) {
+    if (!IS_OBJECT(asset) || asset.schemaVersion !== VECTOR_ASSET_SCHEMA_VERSION || !ACCEPTED_COMPILER_VERSIONS.has(asset.compilerVersion) || typeof asset.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/.test(asset.sourceSha256) || !IS_OBJECT(asset.metadata) || !IS_OBJECT(asset.geometry) || !(asset.geometry.vertices instanceof Float32Array) || asset.geometry.vertices.length < 33 && !(SURFACE_ONLY && asset.geometry.vertices.length === 0) || asset.geometry.vertices.length % 11 || asset.geometry.strideFloats !== 11 || asset.geometry.nonScalingStroke !== void 0 && typeof asset.geometry.nonScalingStroke !== "boolean" || asset.geometry.nonScalingStroke && asset.geometry.morphCount !== 0 || asset.geometry.partCount !== asset.metadata.parts?.length || ![0, 2].includes(asset.geometry.morphCount)) {
       throw new TypeError("Invalid compiled SVG vector asset");
     }
-    const VERTEX_COUNT = asset2.geometry.vertices.length / 11, INDICES = asset2.geometry.indices;
+    const VERTEX_COUNT = asset.geometry.vertices.length / 11, INDICES = asset.geometry.indices;
     if (INDICES !== void 0 && (!(INDICES instanceof Uint16Array) || INDICES.length < 3 && !(SURFACE_ONLY && INDICES.length === 0) || INDICES.length % 3 || VERTEX_COUNT > 65536 || INDICES.some((index) => index >= VERTEX_COUNT))) {
       throw new TypeError("Invalid compiled SVG vertex indices");
     }
     if (INDICES === void 0 && VERTEX_COUNT % 3) {
       throw new TypeError("Non-indexed compiled SVG geometry must contain complete triangles");
     }
-    validatePaintRegionData2(asset2.geometry.paintRegions, VERTEX_COUNT, INDICES);
-    if (["0.8.0", "0.9.0", "0.10.0", VECTOR_ASSET_COMPILER_VERSION].includes(asset2.compilerVersion) && asset2.compilerOptions === void 0) {
+    validatePaintRegionData2(asset.geometry.paintRegions, VERTEX_COUNT, INDICES);
+    if (["0.8.0", "0.9.0", "0.10.0", VECTOR_ASSET_COMPILER_VERSION].includes(asset.compilerVersion) && asset.compilerOptions === void 0) {
       throw new TypeError("Current SVG compiler options are required");
     }
-    if (asset2.compilerOptions !== void 0) {
-      const CURRENT = asset2.compilerVersion === VECTOR_ASSET_COMPILER_VERSION;
-      const ROUND_STROKE_VERSION = CURRENT || asset2.compilerVersion === "0.10.0";
-      const CENTERED_VIEW_BOX_VERSION = ROUND_STROKE_VERSION || asset2.compilerVersion === "0.9.0";
+    if (asset.compilerOptions !== void 0) {
+      const CURRENT = asset.compilerVersion === VECTOR_ASSET_COMPILER_VERSION;
+      const ROUND_STROKE_VERSION = CURRENT || asset.compilerVersion === "0.10.0";
+      const CENTERED_VIEW_BOX_VERSION = ROUND_STROKE_VERSION || asset.compilerVersion === "0.9.0";
       const EXPECTED_KEYS = ROUND_STROKE_VERSION ? ["curveSegments", "normalizeCenteredViewBox", "strokeArcDivisions"] : CENTERED_VIEW_BOX_VERSION ? ["curveSegments", "normalizeCenteredViewBox"] : ["curveSegments"];
-      if (!EXACT_KEYS(asset2.compilerOptions, EXPECTED_KEYS) || !Number.isSafeInteger(asset2.compilerOptions.curveSegments) || asset2.compilerOptions.curveSegments < 1 || asset2.compilerOptions.curveSegments > 64 || CENTERED_VIEW_BOX_VERSION && typeof asset2.compilerOptions.normalizeCenteredViewBox !== "boolean" || ROUND_STROKE_VERSION && (!Number.isSafeInteger(asset2.compilerOptions.strokeArcDivisions) || asset2.compilerOptions.strokeArcDivisions < 1 || asset2.compilerOptions.strokeArcDivisions > 64)) {
+      if (!EXACT_KEYS(asset.compilerOptions, EXPECTED_KEYS) || !Number.isSafeInteger(asset.compilerOptions.curveSegments) || asset.compilerOptions.curveSegments < 1 || asset.compilerOptions.curveSegments > 64 || CENTERED_VIEW_BOX_VERSION && typeof asset.compilerOptions.normalizeCenteredViewBox !== "boolean" || ROUND_STROKE_VERSION && (!Number.isSafeInteger(asset.compilerOptions.strokeArcDivisions) || asset.compilerOptions.strokeArcDivisions < 1 || asset.compilerOptions.strokeArcDivisions > 64)) {
         throw new TypeError("Invalid SVG compiler options");
       }
     }
-    const EXPRESSION_INDICES = asset2.geometry.expressionIndices;
-    const INDEX_VARIANTS = asset2.geometry.indexVariants;
+    const EXPRESSION_INDICES = asset.geometry.expressionIndices;
+    const INDEX_VARIANTS = asset.geometry.indexVariants;
     if (INDEX_VARIANTS !== void 0 && !IS_OBJECT(INDEX_VARIANTS)) {
       throw new TypeError("Invalid compiled SVG index variants");
     }
@@ -12137,7 +12159,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         throw new TypeError("Invalid compiled SVG expression indices");
       }
       for (const [NAME, VARIANT] of Object.entries(EXPRESSION_INDICES)) {
-        if (!Object.hasOwn(asset2.metadata.expressions ?? {}, NAME) || !(VARIANT instanceof Uint16Array) || VARIANT.length % 3 || VARIANT.some((index) => index >= VERTEX_COUNT)) {
+        if (!Object.hasOwn(asset.metadata.expressions ?? {}, NAME) || !(VARIANT instanceof Uint16Array) || VARIANT.length % 3 || VARIANT.some((index) => index >= VERTEX_COUNT)) {
           throw new TypeError("Invalid compiled SVG expression index variant: " + NAME);
         }
       }
@@ -12147,23 +12169,23 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         throw new TypeError("Invalid compiled SVG named index variant: " + NAME);
       }
     }
-    if (asset2.geometry.paintRegions) {
+    if (asset.geometry.paintRegions) {
       for (const VARIANT of [...Object.values(EXPRESSION_INDICES ?? {}), ...Object.values(INDEX_VARIANTS ?? {})]) {
-        validatePaintRegionData2(asset2.geometry.paintRegions, VERTEX_COUNT, VARIANT);
+        validatePaintRegionData2(asset.geometry.paintRegions, VERTEX_COUNT, VARIANT);
       }
     }
-    const SURFACES = asset2.geometry.shaderSurfaces;
-    const DRAW_ORDER = asset2.geometry.drawOrder;
+    const SURFACES = asset.geometry.shaderSurfaces;
+    const DRAW_ORDER = asset.geometry.drawOrder;
     if (SURFACES !== void 0 || DRAW_ORDER !== void 0) {
       if (!Array.isArray(SURFACES) || !Array.isArray(DRAW_ORDER) || !DRAW_ORDER.length || SURFACES.length > 128 || DRAW_ORDER.length > 512) {
         throw new TypeError("Shader-backed SVG assets require bounded shaderSurfaces and drawOrder arrays");
       }
       for (const [INDEX, SURFACE] of SURFACES.entries()) {
-        const STYLE = asset2.metadata.styles?.find(
+        const STYLE = asset.metadata.styles?.find(
           (entry) => entry.target === SURFACE?.target && entry.backend === "shader"
         );
         const CONTOUR = SURFACE?.outline;
-        if (!STYLE || !Number.isSafeInteger(SURFACE.partIndex) || SURFACE.partIndex < 0 || SURFACE.partIndex >= asset2.geometry.partCount || !(SURFACE.fillVertices instanceof Float32Array) || SURFACE.fillVertices.length < 18 || SURFACE.fillVertices.length % 18 || !(CONTOUR instanceof Float32Array) || CONTOUR.length < 6 || CONTOUR.length % 2 || !(SURFACE.edgeColors instanceof Float32Array) || SURFACE.edgeColors.length !== CONTOUR.length * 2) {
+        if (!STYLE || !Number.isSafeInteger(SURFACE.partIndex) || SURFACE.partIndex < 0 || SURFACE.partIndex >= asset.geometry.partCount || !(SURFACE.fillVertices instanceof Float32Array) || SURFACE.fillVertices.length < 18 || SURFACE.fillVertices.length % 18 || !(CONTOUR instanceof Float32Array) || CONTOUR.length < 6 || CONTOUR.length % 2 || !(SURFACE.edgeColors instanceof Float32Array) || SURFACE.edgeColors.length !== CONTOUR.length * 2) {
           throw new TypeError("Invalid retained SVG shader surface at index " + INDEX);
         }
         if (SURFACE.fillVertices.some(
@@ -12179,7 +12201,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
       const REFERENCED = /* @__PURE__ */ new Set();
       for (const COMMAND of DRAW_ORDER) {
         if (COMMAND?.kind === "mesh") {
-          if (!Number.isSafeInteger(COMMAND.firstIndex) || !Number.isSafeInteger(COMMAND.indexCount) || COMMAND.firstIndex < 0 || !Number.isSafeInteger(COMMAND.partIndex) || COMMAND.partIndex < 0 || COMMAND.partIndex >= asset2.geometry.partCount || COMMAND.indexCount < 3 || COMMAND.indexCount % 3 || COMMAND.firstIndex % 3 || COMMAND.firstIndex + COMMAND.indexCount > (INDICES?.length ?? VERTEX_COUNT)) {
+          if (!Number.isSafeInteger(COMMAND.firstIndex) || !Number.isSafeInteger(COMMAND.indexCount) || COMMAND.firstIndex < 0 || !Number.isSafeInteger(COMMAND.partIndex) || COMMAND.partIndex < 0 || COMMAND.partIndex >= asset.geometry.partCount || COMMAND.indexCount < 3 || COMMAND.indexCount % 3 || COMMAND.firstIndex % 3 || COMMAND.firstIndex + COMMAND.indexCount > (INDICES?.length ?? VERTEX_COUNT)) {
             throw new TypeError("Invalid ordered SVG mesh range");
           }
         } else if (COMMAND?.kind === "surface") {
@@ -12195,7 +12217,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         throw new TypeError("Every retained SVG shader surface must appear once in drawOrder");
       }
     }
-    return asset2;
+    return asset;
   }
   var FIELDS = Object.freeze(["x", "y", "rotation", "scaleX", "scaleY", "opacity"]);
   var DEFAULTS = Object.freeze([0, 0, 0, 1, 1, 1]);
@@ -12652,7 +12674,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
     }
     return OUTPUT;
   }
-  function createVectorAsset(meshRenderer, compiledAsset2, { surfaceRenderer = null } = {}) {
+  function retainVectorAsset(meshRenderer, compiledAsset2, surfaceRenderer) {
     if (!meshRenderer?.createMesh || !meshRenderer?.drawMesh || !meshRenderer?.deleteMesh) {
       throw new TypeError("A GameKit MeshRenderer is required");
     }
@@ -12671,9 +12693,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
     const POSE_API = typeof meshRenderer.createPoseSource === "function" && typeof meshRenderer.createPoseInstance === "function" && typeof meshRenderer.preparePose === "function" && typeof meshRenderer.prepareCpuPose === "function" && typeof meshRenderer.deletePoseInstance === "function" && typeof meshRenderer.deletePoseSource === "function";
     const GEOMETRY = compiledAsset2.geometry, SHADER_GEOMETRY = GEOMETRY.shaderSurfaces ?? [];
     if (SHADER_GEOMETRY.length && (!surfaceRenderer?.createSurface || !surfaceRenderer?.drawSurface || !surfaceRenderer?.deleteSurface)) {
-      throw new TypeError(
-        'This SVG declares backend:"shader"; pass a GameKit YarnSurfaceRenderer when creating the vector asset'
-      );
+      throw new TypeError('This SVG declares backend:"shader" and needs a GameKit YarnSurfaceRenderer');
     }
     const POSE_PROGRAM = POSE_API && !GEOMETRY.drawOrder && !SHADER_GEOMETRY.length ? compilePoseChannels(METADATA) : null;
     let mesh = null;
@@ -12697,14 +12717,14 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
       }
       throw error2;
     }
-    const PLAYERS = /* @__PURE__ */ new Set();
+    const ACTORS = /* @__PURE__ */ new Set();
     let disposed = false;
     const REQUIRE_READY = () => {
       if (disposed) {
         throw new Error("Vector asset is disposed");
       }
     };
-    const CREATE_PLAYER = ({ clip = Object.keys(CLIPS)[0], startedAtMs = 0 } = {}) => {
+    const CREATE_ACTOR = ({ clip = Object.keys(CLIPS)[0], startedAtMs = 0 } = {}, release = null) => {
       REQUIRE_READY();
       if (!Object.hasOwn(CLIPS, clip)) {
         throw new TypeError(`Unknown vector clip: ${clip}`);
@@ -12758,7 +12778,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
       let resolvedPose = null;
       let preparedPose = null;
       const RESOLVED_MATRICES = /* @__PURE__ */ new Map();
-      let playerDisposed = false;
+      let actorDisposed = false;
       const POSE_INSTANCE = poseSource ? meshRenderer.createPoseInstance(poseSource) : null;
       const POSE_METRICS = {
         fullSamples: 0,
@@ -12774,10 +12794,10 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         poseRevision++;
         preparedPose = null;
       };
-      const ASSERT_PLAYER = () => {
+      const ASSERT_ACTOR = () => {
         REQUIRE_READY();
-        if (playerDisposed) {
-          throw new Error("Vector player is disposed");
+        if (actorDisposed) {
+          throw new Error("Vector actor is disposed");
         }
       };
       const SAMPLE_CLIP = (playback, timeMs) => {
@@ -12860,23 +12880,23 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         }
       };
       const SEEK = (timeMs) => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         const NEXT_TIME_MS = FINITE_TIME(timeMs, "displayTimeMs");
         if (NEXT_TIME_MS !== displayTimeMs2 || soughtPlaybackRevision !== playbackRevision) {
           displayTimeMs2 = NEXT_TIME_MS;
           soughtPlaybackRevision = playbackRevision;
           INVALIDATE_POSE();
         }
-        return PLAYER;
+        return ACTOR;
       };
       const SET_EXPRESSION = (name) => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         const VARIANT = METADATA.expressions[name];
         if (!VARIANT) {
           throw new TypeError(`Unknown vector expression: ${name}`);
         }
         if (name === expression && !visibilityOverridden) {
-          return PLAYER;
+          return ACTOR;
         }
         for (const ID of EXPRESSION_PARTS) {
           VISIBLE.set(ID, false);
@@ -12890,20 +12910,20 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         expression = name;
         visibilityOverridden = false;
         INVALIDATE_POSE();
-        return PLAYER;
+        return ACTOR;
       };
       const SET_PART_VISIBLE = (id, isVisible) => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         if (!PART_INDICES.has(id) || typeof isVisible !== "boolean") {
           throw new TypeError("Known part id and boolean visibility required");
         }
         VISIBLE.set(id, isVisible);
         visibilityOverridden = true;
         INVALIDATE_POSE();
-        return PLAYER;
+        return ACTOR;
       };
       const SET_BASE_POSE = (id, pose) => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         if (!PART_INDICES.has(id) || !pose || typeof pose !== "object" || Array.isArray(pose)) {
           throw new TypeError("Known part and pose object required");
         }
@@ -12929,10 +12949,10 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         if (changed) {
           INVALIDATE_POSE();
         }
-        return PLAYER;
+        return ACTOR;
       };
       const PLAY = (name, atMs = displayTimeMs2) => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         if (!Object.hasOwn(CLIPS, name)) {
           throw new TypeError(`Unknown vector clip: ${name}`);
         }
@@ -12945,7 +12965,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         return SEEK(atMs);
       };
       const TRANSITION_TO = (name, atMs = displayTimeMs2, durationMs = 0) => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         if (!Object.hasOwn(CLIPS, name)) {
           throw new TypeError(`Unknown vector clip: ${name}`);
         }
@@ -13031,7 +13051,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         return { ...RESULT, visible };
       };
       const GET_SOCKET = (id) => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         const SOCKET = METADATA.sockets[id];
         if (!SOCKET) {
           throw new TypeError(`Unknown vector socket: ${id}`);
@@ -13056,7 +13076,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         };
       };
       const PART_POSES = () => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         const RESOLVED = WORLD_MATRICES();
         return RESOLVED.parts.map((pose, index) => {
           return {
@@ -13085,7 +13105,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         return excludedMask;
       };
       const PREPARE_POSE = ({ excludeParts = null } = {}) => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         const EXCLUDED_MASK = VALIDATE_EXCLUSIONS(excludeParts);
         if (!POSE_INSTANCE) {
           return null;
@@ -13156,7 +13176,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         strokeViewport = null,
         excludeParts = null
       } = {}) => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         VALIDATE_EXCLUSIONS(excludeParts);
         if (!mesh && paintRegions !== null) {
           throw new TypeError("This asset has no named mesh fills");
@@ -13298,7 +13318,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         });
       };
       const GET_PART_POSE = (id) => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         if (!PART_INDICES.has(id)) {
           throw new TypeError(`Unknown vector part: ${id}`);
         }
@@ -13312,8 +13332,8 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
           transform: EFFECTIVE.transform.slice()
         };
       };
-      const DISPOSE_PLAYER = () => {
-        if (playerDisposed) {
+      const DISPOSE_ACTOR = () => {
+        if (actorDisposed) {
           return false;
         }
         for (const { timeline: TIMELINE } of TIMELINES.values()) {
@@ -13323,11 +13343,12 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         if (POSE_INSTANCE) {
           meshRenderer.deletePoseInstance(POSE_INSTANCE);
         }
-        PLAYERS.delete(PLAYER);
-        playerDisposed = true;
+        ACTORS.delete(ACTOR);
+        actorDisposed = true;
+        release?.();
         return true;
       };
-      const PLAYER = Object.freeze({
+      const ACTOR = Object.freeze({
         seek: SEEK,
         play: PLAY,
         transitionTo: TRANSITION_TO,
@@ -13339,7 +13360,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         partPoses: PART_POSES,
         preparePose: PREPARE_POSE,
         draw: DRAW,
-        dispose: DISPOSE_PLAYER,
+        dispose: DISPOSE_ACTOR,
         get currentClip() {
           return rootPlayback.kind === "clip" ? rootPlayback.name : rootPlayback.to.name;
         },
@@ -13361,22 +13382,22 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
           return false;
         },
         get disposed() {
-          return playerDisposed;
+          return actorDisposed;
         },
         get poseMetrics() {
           return { ...POSE_METRICS };
         }
       });
-      PLAYERS.add(PLAYER);
+      ACTORS.add(ACTOR);
       SEEK(startedAtMs);
-      return PLAYER;
+      return ACTOR;
     };
     const DISPOSE = () => {
       if (disposed) {
         return false;
       }
-      for (const PLAYER of [...PLAYERS]) {
-        PLAYER.dispose();
+      for (const ACTOR of [...ACTORS]) {
+        ACTOR.dispose();
       }
       if (mesh) {
         meshRenderer.deleteMesh(mesh);
@@ -13399,18 +13420,72 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
       metadata: METADATA,
       mesh,
       surfaces: Object.freeze(RETAINED_SURFACES),
-      createPlayer: CREATE_PLAYER,
-      ownsPlayer(player) {
-        return PLAYERS.has(player) && !player.disposed;
+      createActor: CREATE_ACTOR,
+      ownsActor(actor2) {
+        return ACTORS.has(actor2) && !actor2.disposed;
       },
       dispose: DISPOSE,
       get disposed() {
         return disposed;
       },
-      get playerCount() {
-        return PLAYERS.size;
+      get actorCount() {
+        return ACTORS.size;
       }
     });
+  }
+  var SHARED_ASSETS = /* @__PURE__ */ new WeakMap();
+  function acquireVectorAsset(context, compiledAsset2) {
+    if (!context?.acquireMeshRenderer || !context?.acquireSurfaceRenderer || !context?.onDispose) {
+      throw new TypeError("A GameKit VectorContext is required");
+    }
+    let table = SHARED_ASSETS.get(context);
+    if (!table) {
+      table = /* @__PURE__ */ new Map();
+      SHARED_ASSETS.set(context, table);
+      const TABLE2 = table;
+      context.onDispose(() => {
+        const ENTRIES = [...TABLE2.values()];
+        TABLE2.clear();
+        for (const ENTRY2 of ENTRIES) {
+          ENTRY2.asset.dispose();
+        }
+      });
+    }
+    let entry = table.get(compiledAsset2);
+    if (!entry) {
+      const SURFACES = compiledAsset2?.geometry?.shaderSurfaces?.length ? context.acquireSurfaceRenderer() : null;
+      entry = {
+        asset: retainVectorAsset(context.acquireMeshRenderer(), compiledAsset2, SURFACES),
+        refs: 0
+      };
+      table.set(compiledAsset2, entry);
+    }
+    entry.refs++;
+    const ENTRY = entry, TABLE = table;
+    let released = false;
+    return {
+      asset: ENTRY.asset,
+      release() {
+        if (released) {
+          return false;
+        }
+        released = true;
+        if (--ENTRY.refs === 0 && TABLE.get(compiledAsset2) === ENTRY) {
+          TABLE.delete(compiledAsset2);
+          ENTRY.asset.dispose();
+        }
+        return true;
+      }
+    };
+  }
+  function createVectorActor(context, compiledAsset2, options = {}) {
+    const { asset: ASSET, release: RELEASE } = acquireVectorAsset(context, compiledAsset2);
+    try {
+      return ASSET.createActor(options, RELEASE);
+    } catch (error2) {
+      RELEASE();
+      throw error2;
+    }
   }
   var IDENTITY_MATRIX = Object.freeze([1, 0, 0, 1, 0, 0]);
   var VECTOR_ASSET_QUALITY_PRESETS = Object.freeze({
@@ -43491,34 +43566,34 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
   var NUMERIC_POSE_FIELDS3 = Object.freeze(["x", "y", "rotation", "scaleX", "scaleY", "opacity"]);
   var IS_OBJECT3 = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
   var EXACT_KEYS3 = (value, keys) => IS_OBJECT3(value) && Object.keys(value).length === keys.length && keys.every((key3) => Object.hasOwn(value, key3));
-  function validateCompiledAsset2(asset2) {
-    const SHADER_SURFACES = asset2?.geometry?.shaderSurfaces;
+  function validateCompiledAsset2(asset) {
+    const SHADER_SURFACES = asset?.geometry?.shaderSurfaces;
     const SURFACE_ONLY = Array.isArray(SHADER_SURFACES) && SHADER_SURFACES.length > 0;
-    if (!IS_OBJECT3(asset2) || asset2.schemaVersion !== VECTOR_ASSET_SCHEMA_VERSION3 || !ACCEPTED_COMPILER_VERSIONS2.has(asset2.compilerVersion) || typeof asset2.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/.test(asset2.sourceSha256) || !IS_OBJECT3(asset2.metadata) || !IS_OBJECT3(asset2.geometry) || !(asset2.geometry.vertices instanceof Float32Array) || asset2.geometry.vertices.length < 33 && !(SURFACE_ONLY && asset2.geometry.vertices.length === 0) || asset2.geometry.vertices.length % 11 || asset2.geometry.strideFloats !== 11 || asset2.geometry.nonScalingStroke !== void 0 && typeof asset2.geometry.nonScalingStroke !== "boolean" || asset2.geometry.nonScalingStroke && asset2.geometry.morphCount !== 0 || asset2.geometry.partCount !== asset2.metadata.parts?.length || ![0, 2].includes(asset2.geometry.morphCount)) {
+    if (!IS_OBJECT3(asset) || asset.schemaVersion !== VECTOR_ASSET_SCHEMA_VERSION3 || !ACCEPTED_COMPILER_VERSIONS2.has(asset.compilerVersion) || typeof asset.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/.test(asset.sourceSha256) || !IS_OBJECT3(asset.metadata) || !IS_OBJECT3(asset.geometry) || !(asset.geometry.vertices instanceof Float32Array) || asset.geometry.vertices.length < 33 && !(SURFACE_ONLY && asset.geometry.vertices.length === 0) || asset.geometry.vertices.length % 11 || asset.geometry.strideFloats !== 11 || asset.geometry.nonScalingStroke !== void 0 && typeof asset.geometry.nonScalingStroke !== "boolean" || asset.geometry.nonScalingStroke && asset.geometry.morphCount !== 0 || asset.geometry.partCount !== asset.metadata.parts?.length || ![0, 2].includes(asset.geometry.morphCount)) {
       throw new TypeError("Invalid compiled SVG vector asset");
     }
-    const VERTEX_COUNT = asset2.geometry.vertices.length / 11, INDICES = asset2.geometry.indices;
+    const VERTEX_COUNT = asset.geometry.vertices.length / 11, INDICES = asset.geometry.indices;
     if (INDICES !== void 0 && (!(INDICES instanceof Uint16Array) || INDICES.length < 3 && !(SURFACE_ONLY && INDICES.length === 0) || INDICES.length % 3 || VERTEX_COUNT > 65536 || INDICES.some((index) => index >= VERTEX_COUNT))) {
       throw new TypeError("Invalid compiled SVG vertex indices");
     }
     if (INDICES === void 0 && VERTEX_COUNT % 3) {
       throw new TypeError("Non-indexed compiled SVG geometry must contain complete triangles");
     }
-    validatePaintRegionData3(asset2.geometry.paintRegions, VERTEX_COUNT, INDICES);
-    if (["0.8.0", "0.9.0", "0.10.0", VECTOR_ASSET_COMPILER_VERSION3].includes(asset2.compilerVersion) && asset2.compilerOptions === void 0) {
+    validatePaintRegionData3(asset.geometry.paintRegions, VERTEX_COUNT, INDICES);
+    if (["0.8.0", "0.9.0", "0.10.0", VECTOR_ASSET_COMPILER_VERSION3].includes(asset.compilerVersion) && asset.compilerOptions === void 0) {
       throw new TypeError("Current SVG compiler options are required");
     }
-    if (asset2.compilerOptions !== void 0) {
-      const CURRENT = asset2.compilerVersion === VECTOR_ASSET_COMPILER_VERSION3;
-      const ROUND_STROKE_VERSION = CURRENT || asset2.compilerVersion === "0.10.0";
-      const CENTERED_VIEW_BOX_VERSION = ROUND_STROKE_VERSION || asset2.compilerVersion === "0.9.0";
+    if (asset.compilerOptions !== void 0) {
+      const CURRENT = asset.compilerVersion === VECTOR_ASSET_COMPILER_VERSION3;
+      const ROUND_STROKE_VERSION = CURRENT || asset.compilerVersion === "0.10.0";
+      const CENTERED_VIEW_BOX_VERSION = ROUND_STROKE_VERSION || asset.compilerVersion === "0.9.0";
       const EXPECTED_KEYS = ROUND_STROKE_VERSION ? ["curveSegments", "normalizeCenteredViewBox", "strokeArcDivisions"] : CENTERED_VIEW_BOX_VERSION ? ["curveSegments", "normalizeCenteredViewBox"] : ["curveSegments"];
-      if (!EXACT_KEYS3(asset2.compilerOptions, EXPECTED_KEYS) || !Number.isSafeInteger(asset2.compilerOptions.curveSegments) || asset2.compilerOptions.curveSegments < 1 || asset2.compilerOptions.curveSegments > 64 || CENTERED_VIEW_BOX_VERSION && typeof asset2.compilerOptions.normalizeCenteredViewBox !== "boolean" || ROUND_STROKE_VERSION && (!Number.isSafeInteger(asset2.compilerOptions.strokeArcDivisions) || asset2.compilerOptions.strokeArcDivisions < 1 || asset2.compilerOptions.strokeArcDivisions > 64)) {
+      if (!EXACT_KEYS3(asset.compilerOptions, EXPECTED_KEYS) || !Number.isSafeInteger(asset.compilerOptions.curveSegments) || asset.compilerOptions.curveSegments < 1 || asset.compilerOptions.curveSegments > 64 || CENTERED_VIEW_BOX_VERSION && typeof asset.compilerOptions.normalizeCenteredViewBox !== "boolean" || ROUND_STROKE_VERSION && (!Number.isSafeInteger(asset.compilerOptions.strokeArcDivisions) || asset.compilerOptions.strokeArcDivisions < 1 || asset.compilerOptions.strokeArcDivisions > 64)) {
         throw new TypeError("Invalid SVG compiler options");
       }
     }
-    const EXPRESSION_INDICES = asset2.geometry.expressionIndices;
-    const INDEX_VARIANTS = asset2.geometry.indexVariants;
+    const EXPRESSION_INDICES = asset.geometry.expressionIndices;
+    const INDEX_VARIANTS = asset.geometry.indexVariants;
     if (INDEX_VARIANTS !== void 0 && !IS_OBJECT3(INDEX_VARIANTS)) {
       throw new TypeError("Invalid compiled SVG index variants");
     }
@@ -43527,7 +43602,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         throw new TypeError("Invalid compiled SVG expression indices");
       }
       for (const [NAME, VARIANT] of Object.entries(EXPRESSION_INDICES)) {
-        if (!Object.hasOwn(asset2.metadata.expressions ?? {}, NAME) || !(VARIANT instanceof Uint16Array) || VARIANT.length % 3 || VARIANT.some((index) => index >= VERTEX_COUNT)) {
+        if (!Object.hasOwn(asset.metadata.expressions ?? {}, NAME) || !(VARIANT instanceof Uint16Array) || VARIANT.length % 3 || VARIANT.some((index) => index >= VERTEX_COUNT)) {
           throw new TypeError("Invalid compiled SVG expression index variant: " + NAME);
         }
       }
@@ -43537,23 +43612,23 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         throw new TypeError("Invalid compiled SVG named index variant: " + NAME);
       }
     }
-    if (asset2.geometry.paintRegions) {
+    if (asset.geometry.paintRegions) {
       for (const VARIANT of [...Object.values(EXPRESSION_INDICES ?? {}), ...Object.values(INDEX_VARIANTS ?? {})]) {
-        validatePaintRegionData3(asset2.geometry.paintRegions, VERTEX_COUNT, VARIANT);
+        validatePaintRegionData3(asset.geometry.paintRegions, VERTEX_COUNT, VARIANT);
       }
     }
-    const SURFACES = asset2.geometry.shaderSurfaces;
-    const DRAW_ORDER = asset2.geometry.drawOrder;
+    const SURFACES = asset.geometry.shaderSurfaces;
+    const DRAW_ORDER = asset.geometry.drawOrder;
     if (SURFACES !== void 0 || DRAW_ORDER !== void 0) {
       if (!Array.isArray(SURFACES) || !Array.isArray(DRAW_ORDER) || !DRAW_ORDER.length || SURFACES.length > 128 || DRAW_ORDER.length > 512) {
         throw new TypeError("Shader-backed SVG assets require bounded shaderSurfaces and drawOrder arrays");
       }
       for (const [INDEX, SURFACE] of SURFACES.entries()) {
-        const STYLE = asset2.metadata.styles?.find(
+        const STYLE = asset.metadata.styles?.find(
           (entry) => entry.target === SURFACE?.target && entry.backend === "shader"
         );
         const CONTOUR = SURFACE?.outline;
-        if (!STYLE || !Number.isSafeInteger(SURFACE.partIndex) || SURFACE.partIndex < 0 || SURFACE.partIndex >= asset2.geometry.partCount || !(SURFACE.fillVertices instanceof Float32Array) || SURFACE.fillVertices.length < 18 || SURFACE.fillVertices.length % 18 || !(CONTOUR instanceof Float32Array) || CONTOUR.length < 6 || CONTOUR.length % 2 || !(SURFACE.edgeColors instanceof Float32Array) || SURFACE.edgeColors.length !== CONTOUR.length * 2) {
+        if (!STYLE || !Number.isSafeInteger(SURFACE.partIndex) || SURFACE.partIndex < 0 || SURFACE.partIndex >= asset.geometry.partCount || !(SURFACE.fillVertices instanceof Float32Array) || SURFACE.fillVertices.length < 18 || SURFACE.fillVertices.length % 18 || !(CONTOUR instanceof Float32Array) || CONTOUR.length < 6 || CONTOUR.length % 2 || !(SURFACE.edgeColors instanceof Float32Array) || SURFACE.edgeColors.length !== CONTOUR.length * 2) {
           throw new TypeError("Invalid retained SVG shader surface at index " + INDEX);
         }
         if (SURFACE.fillVertices.some(
@@ -43569,7 +43644,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
       const REFERENCED = /* @__PURE__ */ new Set();
       for (const COMMAND of DRAW_ORDER) {
         if (COMMAND?.kind === "mesh") {
-          if (!Number.isSafeInteger(COMMAND.firstIndex) || !Number.isSafeInteger(COMMAND.indexCount) || COMMAND.firstIndex < 0 || !Number.isSafeInteger(COMMAND.partIndex) || COMMAND.partIndex < 0 || COMMAND.partIndex >= asset2.geometry.partCount || COMMAND.indexCount < 3 || COMMAND.indexCount % 3 || COMMAND.firstIndex % 3 || COMMAND.firstIndex + COMMAND.indexCount > (INDICES?.length ?? VERTEX_COUNT)) {
+          if (!Number.isSafeInteger(COMMAND.firstIndex) || !Number.isSafeInteger(COMMAND.indexCount) || COMMAND.firstIndex < 0 || !Number.isSafeInteger(COMMAND.partIndex) || COMMAND.partIndex < 0 || COMMAND.partIndex >= asset.geometry.partCount || COMMAND.indexCount < 3 || COMMAND.indexCount % 3 || COMMAND.firstIndex % 3 || COMMAND.firstIndex + COMMAND.indexCount > (INDICES?.length ?? VERTEX_COUNT)) {
             throw new TypeError("Invalid ordered SVG mesh range");
           }
         } else if (COMMAND?.kind === "surface") {
@@ -43585,7 +43660,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         throw new TypeError("Every retained SVG shader surface must appear once in drawOrder");
       }
     }
-    return asset2;
+    return asset;
   }
 
   // modules/vector-assets/pose-channels.js
@@ -44046,7 +44121,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
     }
     return OUTPUT;
   }
-  function createVectorAsset2(meshRenderer, compiledAsset2, { surfaceRenderer = null } = {}) {
+  function retainVectorAsset2(meshRenderer, compiledAsset2, surfaceRenderer) {
     if (!meshRenderer?.createMesh || !meshRenderer?.drawMesh || !meshRenderer?.deleteMesh) {
       throw new TypeError("A GameKit MeshRenderer is required");
     }
@@ -44065,9 +44140,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
     const POSE_API = typeof meshRenderer.createPoseSource === "function" && typeof meshRenderer.createPoseInstance === "function" && typeof meshRenderer.preparePose === "function" && typeof meshRenderer.prepareCpuPose === "function" && typeof meshRenderer.deletePoseInstance === "function" && typeof meshRenderer.deletePoseSource === "function";
     const GEOMETRY = compiledAsset2.geometry, SHADER_GEOMETRY = GEOMETRY.shaderSurfaces ?? [];
     if (SHADER_GEOMETRY.length && (!surfaceRenderer?.createSurface || !surfaceRenderer?.drawSurface || !surfaceRenderer?.deleteSurface)) {
-      throw new TypeError(
-        'This SVG declares backend:"shader"; pass a GameKit YarnSurfaceRenderer when creating the vector asset'
-      );
+      throw new TypeError('This SVG declares backend:"shader" and needs a GameKit YarnSurfaceRenderer');
     }
     const POSE_PROGRAM = POSE_API && !GEOMETRY.drawOrder && !SHADER_GEOMETRY.length ? compilePoseChannels2(METADATA) : null;
     let mesh = null;
@@ -44091,14 +44164,14 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
       }
       throw error2;
     }
-    const PLAYERS = /* @__PURE__ */ new Set();
+    const ACTORS = /* @__PURE__ */ new Set();
     let disposed = false;
     const REQUIRE_READY = () => {
       if (disposed) {
         throw new Error("Vector asset is disposed");
       }
     };
-    const CREATE_PLAYER = ({ clip = Object.keys(CLIPS)[0], startedAtMs = 0 } = {}) => {
+    const CREATE_ACTOR = ({ clip = Object.keys(CLIPS)[0], startedAtMs = 0 } = {}, release = null) => {
       REQUIRE_READY();
       if (!Object.hasOwn(CLIPS, clip)) {
         throw new TypeError(`Unknown vector clip: ${clip}`);
@@ -44152,7 +44225,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
       let resolvedPose = null;
       let preparedPose = null;
       const RESOLVED_MATRICES = /* @__PURE__ */ new Map();
-      let playerDisposed = false;
+      let actorDisposed = false;
       const POSE_INSTANCE = poseSource ? meshRenderer.createPoseInstance(poseSource) : null;
       const POSE_METRICS = {
         fullSamples: 0,
@@ -44168,10 +44241,10 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         poseRevision++;
         preparedPose = null;
       };
-      const ASSERT_PLAYER = () => {
+      const ASSERT_ACTOR = () => {
         REQUIRE_READY();
-        if (playerDisposed) {
-          throw new Error("Vector player is disposed");
+        if (actorDisposed) {
+          throw new Error("Vector actor is disposed");
         }
       };
       const SAMPLE_CLIP = (playback, timeMs) => {
@@ -44254,23 +44327,23 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         }
       };
       const SEEK = (timeMs) => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         const NEXT_TIME_MS = FINITE_TIME2(timeMs, "displayTimeMs");
         if (NEXT_TIME_MS !== displayTimeMs2 || soughtPlaybackRevision !== playbackRevision) {
           displayTimeMs2 = NEXT_TIME_MS;
           soughtPlaybackRevision = playbackRevision;
           INVALIDATE_POSE();
         }
-        return PLAYER;
+        return ACTOR;
       };
       const SET_EXPRESSION = (name) => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         const VARIANT = METADATA.expressions[name];
         if (!VARIANT) {
           throw new TypeError(`Unknown vector expression: ${name}`);
         }
         if (name === expression && !visibilityOverridden) {
-          return PLAYER;
+          return ACTOR;
         }
         for (const ID of EXPRESSION_PARTS) {
           VISIBLE.set(ID, false);
@@ -44284,20 +44357,20 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         expression = name;
         visibilityOverridden = false;
         INVALIDATE_POSE();
-        return PLAYER;
+        return ACTOR;
       };
       const SET_PART_VISIBLE = (id, isVisible) => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         if (!PART_INDICES.has(id) || typeof isVisible !== "boolean") {
           throw new TypeError("Known part id and boolean visibility required");
         }
         VISIBLE.set(id, isVisible);
         visibilityOverridden = true;
         INVALIDATE_POSE();
-        return PLAYER;
+        return ACTOR;
       };
       const SET_BASE_POSE = (id, pose) => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         if (!PART_INDICES.has(id) || !pose || typeof pose !== "object" || Array.isArray(pose)) {
           throw new TypeError("Known part and pose object required");
         }
@@ -44323,10 +44396,10 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         if (changed) {
           INVALIDATE_POSE();
         }
-        return PLAYER;
+        return ACTOR;
       };
       const PLAY = (name, atMs = displayTimeMs2) => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         if (!Object.hasOwn(CLIPS, name)) {
           throw new TypeError(`Unknown vector clip: ${name}`);
         }
@@ -44339,7 +44412,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         return SEEK(atMs);
       };
       const TRANSITION_TO = (name, atMs = displayTimeMs2, durationMs = 0) => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         if (!Object.hasOwn(CLIPS, name)) {
           throw new TypeError(`Unknown vector clip: ${name}`);
         }
@@ -44425,7 +44498,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         return { ...RESULT, visible };
       };
       const GET_SOCKET = (id) => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         const SOCKET = METADATA.sockets[id];
         if (!SOCKET) {
           throw new TypeError(`Unknown vector socket: ${id}`);
@@ -44450,7 +44523,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         };
       };
       const PART_POSES = () => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         const RESOLVED = WORLD_MATRICES();
         return RESOLVED.parts.map((pose, index) => {
           return {
@@ -44479,7 +44552,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         return excludedMask;
       };
       const PREPARE_POSE = ({ excludeParts = null } = {}) => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         const EXCLUDED_MASK = VALIDATE_EXCLUSIONS(excludeParts);
         if (!POSE_INSTANCE) {
           return null;
@@ -44550,7 +44623,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         strokeViewport = null,
         excludeParts = null
       } = {}) => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         VALIDATE_EXCLUSIONS(excludeParts);
         if (!mesh && paintRegions !== null) {
           throw new TypeError("This asset has no named mesh fills");
@@ -44692,7 +44765,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         });
       };
       const GET_PART_POSE = (id) => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         if (!PART_INDICES.has(id)) {
           throw new TypeError(`Unknown vector part: ${id}`);
         }
@@ -44706,8 +44779,8 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
           transform: EFFECTIVE.transform.slice()
         };
       };
-      const DISPOSE_PLAYER = () => {
-        if (playerDisposed) {
+      const DISPOSE_ACTOR = () => {
+        if (actorDisposed) {
           return false;
         }
         for (const { timeline: TIMELINE } of TIMELINES.values()) {
@@ -44717,11 +44790,12 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         if (POSE_INSTANCE) {
           meshRenderer.deletePoseInstance(POSE_INSTANCE);
         }
-        PLAYERS.delete(PLAYER);
-        playerDisposed = true;
+        ACTORS.delete(ACTOR);
+        actorDisposed = true;
+        release?.();
         return true;
       };
-      const PLAYER = Object.freeze({
+      const ACTOR = Object.freeze({
         seek: SEEK,
         play: PLAY,
         transitionTo: TRANSITION_TO,
@@ -44733,7 +44807,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         partPoses: PART_POSES,
         preparePose: PREPARE_POSE,
         draw: DRAW,
-        dispose: DISPOSE_PLAYER,
+        dispose: DISPOSE_ACTOR,
         get currentClip() {
           return rootPlayback.kind === "clip" ? rootPlayback.name : rootPlayback.to.name;
         },
@@ -44755,22 +44829,22 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
           return false;
         },
         get disposed() {
-          return playerDisposed;
+          return actorDisposed;
         },
         get poseMetrics() {
           return { ...POSE_METRICS };
         }
       });
-      PLAYERS.add(PLAYER);
+      ACTORS.add(ACTOR);
       SEEK(startedAtMs);
-      return PLAYER;
+      return ACTOR;
     };
     const DISPOSE = () => {
       if (disposed) {
         return false;
       }
-      for (const PLAYER of [...PLAYERS]) {
-        PLAYER.dispose();
+      for (const ACTOR of [...ACTORS]) {
+        ACTOR.dispose();
       }
       if (mesh) {
         meshRenderer.deleteMesh(mesh);
@@ -44793,18 +44867,72 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
       metadata: METADATA,
       mesh,
       surfaces: Object.freeze(RETAINED_SURFACES),
-      createPlayer: CREATE_PLAYER,
-      ownsPlayer(player) {
-        return PLAYERS.has(player) && !player.disposed;
+      createActor: CREATE_ACTOR,
+      ownsActor(actor2) {
+        return ACTORS.has(actor2) && !actor2.disposed;
       },
       dispose: DISPOSE,
       get disposed() {
         return disposed;
       },
-      get playerCount() {
-        return PLAYERS.size;
+      get actorCount() {
+        return ACTORS.size;
       }
     });
+  }
+  var SHARED_ASSETS2 = /* @__PURE__ */ new WeakMap();
+  function acquireVectorAsset2(context, compiledAsset2) {
+    if (!context?.acquireMeshRenderer || !context?.acquireSurfaceRenderer || !context?.onDispose) {
+      throw new TypeError("A GameKit VectorContext is required");
+    }
+    let table = SHARED_ASSETS2.get(context);
+    if (!table) {
+      table = /* @__PURE__ */ new Map();
+      SHARED_ASSETS2.set(context, table);
+      const TABLE2 = table;
+      context.onDispose(() => {
+        const ENTRIES = [...TABLE2.values()];
+        TABLE2.clear();
+        for (const ENTRY2 of ENTRIES) {
+          ENTRY2.asset.dispose();
+        }
+      });
+    }
+    let entry = table.get(compiledAsset2);
+    if (!entry) {
+      const SURFACES = compiledAsset2?.geometry?.shaderSurfaces?.length ? context.acquireSurfaceRenderer() : null;
+      entry = {
+        asset: retainVectorAsset2(context.acquireMeshRenderer(), compiledAsset2, SURFACES),
+        refs: 0
+      };
+      table.set(compiledAsset2, entry);
+    }
+    entry.refs++;
+    const ENTRY = entry, TABLE = table;
+    let released = false;
+    return {
+      asset: ENTRY.asset,
+      release() {
+        if (released) {
+          return false;
+        }
+        released = true;
+        if (--ENTRY.refs === 0 && TABLE.get(compiledAsset2) === ENTRY) {
+          TABLE.delete(compiledAsset2);
+          ENTRY.asset.dispose();
+        }
+        return true;
+      }
+    };
+  }
+  function createVectorActor2(context, compiledAsset2, options = {}) {
+    const { asset: ASSET, release: RELEASE } = acquireVectorAsset2(context, compiledAsset2);
+    try {
+      return ASSET.createActor(options, RELEASE);
+    } catch (error2) {
+      RELEASE();
+      throw error2;
+    }
   }
 
   // modules/vector-assets/raster-atlas.js
@@ -44824,8 +44952,8 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
 
   // modules/vector-assets/examples/seed-scout.js
   var SEED_SCOUT_METADATA = seedScout.metadata;
-  function createSeedScout(meshRenderer) {
-    return createVectorAsset2(meshRenderer, seedScout);
+  function createSeedScout(context, options) {
+    return createVectorActor2(context, seedScout, options);
   }
 
   // vector-asset-example:style-samples
@@ -44856,12 +44984,12 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
   })() }), "partCount": 1 }) }) }) });
 
   // modules/vector-assets/examples/style-samples.js
-  function createStyleSample(id, meshRenderer) {
+  function createStyleSample(id, context, options) {
     const SAMPLE = styleSamples[id];
     if (!SAMPLE) {
       throw new TypeError("Unknown vector style sample: " + id);
     }
-    return createVectorAsset2(meshRenderer, SAMPLE.asset);
+    return createVectorActor2(context, SAMPLE.asset, options);
   }
 
   // modules/vector-assets/examples/modules/vector-assets/examples/index.html
@@ -44877,9 +45005,10 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
     sourceLoaded: false,
     loading: false,
     device: null,
+    context: null,
     meshes: null,
     surfaces: null,
-    asset: null,
+    mesh: null,
     actor: null,
     compiledAsset: null,
     sourceSvg: null,
@@ -44908,10 +45037,8 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
   };
   window.vectorAssetRuntime = {
     WebGLDevice,
-    MeshRenderer,
     VectorContext,
-    YarnSurfaceRenderer,
-    createVectorAsset,
+    createVectorActor,
     createVectorAssetLoader,
     VECTOR_ASSET_QUALITY_PRESETS,
     createSeedScout,
@@ -44924,7 +45051,6 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
   var triangles = [];
   var edges = [];
   var compiledAsset = null;
-  var asset = null;
   var actor = null;
   var displayTimeMs = 0;
   var playing = true;
@@ -45210,15 +45336,19 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
       depth: false,
       stencil: false
     });
-    const MESHES = new MeshRenderer(DEVICE, {
-      maxMeshes: 4,
-      maxInstances: 8
+    const CONTEXT = new VectorContext(DEVICE, {
+      mesh: {
+        maxMeshes: 4,
+        maxInstances: 8
+      }
     });
-    const SURFACES = new YarnSurfaceRenderer(DEVICE);
+    const MESHES = CONTEXT.acquireMeshRenderer();
+    const SURFACES = CONTEXT.acquireSurfaceRenderer();
     const RENDERER_INITIALIZATION_MS = performance.now() - RENDERER_INITIALIZATION_START;
     const POINT_KEY = (x, y) => Number(x.toFixed(4)) + "," + Number(y.toFixed(4));
     Object.assign(DEMO, {
       device: DEVICE,
+      context: CONTEXT,
       meshes: MESHES,
       surfaces: SURFACES,
       rendererInitializationMs: RENDERER_INITIALIZATION_MS
@@ -45374,24 +45504,20 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         }
         const DISPLAY_BUILD = createSafeDisplaySvg(SOURCE_BYTES, NEXT_COMPILED);
         const ASSET_INIT_STARTED = performance.now();
-        const NEXT_ASSET = createVectorAsset(MESHES, NEXT_COMPILED, {
-          surfaceRenderer: SURFACES
-        });
         const FIRST_CLIP = Object.keys(NEXT_COMPILED.metadata.clips)[0];
         const CLIP_NAME = Object.hasOwn(NEXT_COMPILED.metadata.clips, CLIP_INPUT.value) ? CLIP_INPUT.value : FIRST_CLIP;
-        const NEXT_ACTOR = NEXT_ASSET.createPlayer({
+        const NEXT_ACTOR = createVectorActor(CONTEXT, NEXT_COMPILED, {
           clip: CLIP_NAME,
           startedAtMs: 0
         });
         NEXT_ACTOR.setExpression(NEXT_COMPILED.metadata.defaultExpression);
-        const OLD_ACTOR = actor, OLD_ASSET = asset;
+        const OLD_ACTOR = actor;
         if (DEMO.sourceSvg?.isConnected) {
           DEMO.sourceSvg.replaceWith(DISPLAY_BUILD.display);
         } else {
           document.querySelector("#source-stage").querySelector("svg")?.replaceWith(DISPLAY_BUILD.display);
         }
         actor = NEXT_ACTOR;
-        asset = NEXT_ASSET;
         compiledAsset = NEXT_COMPILED;
         sourceWrappers = DISPLAY_BUILD.wrappers;
         triangles = [];
@@ -45399,7 +45525,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         const TOPOLOGY = buildTopology(NEXT_COMPILED);
         triangles = TOPOLOGY.triangles;
         edges = TOPOLOGY.edges;
-        DEMO.asset = asset;
+        DEMO.mesh = [...MESHES.meshes].at(-1) ?? null;
         DEMO.actor = actor;
         DEMO.compiledAsset = compiledAsset;
         DEMO.sourceSvg = DISPLAY_BUILD.display;
@@ -45450,9 +45576,6 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         if (OLD_ACTOR) {
           OLD_ACTOR.dispose();
         }
-        if (OLD_ASSET) {
-          OLD_ASSET.dispose();
-        }
       } catch (error2) {
         if (REQUEST_ID !== loadSequence) {
           return;
@@ -45490,22 +45613,25 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
           depth: false,
           stencil: false
         });
-        const STYLE_MESHES = new MeshRenderer(STYLE_DEVICE, {
-          maxMeshes: 2,
-          maxInstances: 8
+        const STYLE_CONTEXT = new VectorContext(STYLE_DEVICE, {
+          mesh: {
+            maxMeshes: 2,
+            maxInstances: 8
+          }
         });
-        const STYLE_ASSET = createStyleSample(ID, STYLE_MESHES);
-        const STYLE_ACTOR = STYLE_ASSET.createPlayer({
+        const STYLE_ACTOR = createStyleSample(ID, STYLE_CONTEXT, {
           clip: "idle",
           startedAtMs: 0
         });
+        const STYLE_MESHES = STYLE_CONTEXT.meshRenderer;
         STYLE_INSTANCES.push({
           id: ID,
           sourceSha: SOURCE_SHA,
           canvas: STYLE_CANVAS,
           device: STYLE_DEVICE,
+          context: STYLE_CONTEXT,
           meshes: STYLE_MESHES,
-          asset: STYLE_ASSET,
+          mesh: [...STYLE_MESHES.meshes][0],
           actor: STYLE_ACTOR
         });
       }
@@ -45552,15 +45678,14 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
         ITEM.device.endFrame();
         const STATS = ITEM.meshes.stats(), BACKEND = ITEM.device.instancingSupported ? "ANGLE instanced" : "uniform fallback";
         const FRAME_GEOMETRY_UPLOAD_BYTES = STATS.geometryBytesUploaded - GEOMETRY_UPLOAD_BYTES_BEFORE;
-        document.querySelector("#style-" + ITEM.id.replace("-fox", "") + "-metrics").textContent = ITEM.id + " · SVG SHA " + ITEM.sourceSha.slice(0, 12) + " · " + BACKEND + " · " + ITEM.device.stats.drawCalls + " draw calls · " + ITEM.asset.mesh.byteLength.toLocaleString() + " retained B · create upload " + ITEM.asset.mesh.byteLength.toLocaleString() + " B · " + FRAME_GEOMETRY_UPLOAD_BYTES.toLocaleString() + " B/frame geometry upload";
+        document.querySelector("#style-" + ITEM.id.replace("-fox", "") + "-metrics").textContent = ITEM.id + " · SVG SHA " + ITEM.sourceSha.slice(0, 12) + " · " + BACKEND + " · " + ITEM.device.stats.drawCalls + " draw calls · " + ITEM.mesh.byteLength.toLocaleString() + " retained B · create upload " + ITEM.mesh.byteLength.toLocaleString() + " B · " + FRAME_GEOMETRY_UPLOAD_BYTES.toLocaleString() + " B/frame geometry upload";
       }
     }
     DEMO.renderStyleSamples = renderStyleSamples;
     DEMO.disposeStyleSamples = () => {
       for (const ITEM of STYLE_INSTANCES.splice(0)) {
         ITEM.actor.dispose();
-        ITEM.asset.dispose();
-        ITEM.meshes.dispose();
+        ITEM.context.dispose();
         ITEM.device.dispose();
       }
       DEMO.styleInstances = [];
@@ -45728,7 +45853,7 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
       document.querySelector("#source-metrics").textContent = "Sanitized native SVG · " + DEMO.sourcePathCount.toLocaleString() + " shapes · " + DEMO.sourceBytes.toLocaleString() + " source bytes · SHA " + DEMO.sourceSha256.slice(0, 12);
       document.querySelector("#topology-metrics").textContent = "Canvas 2D · " + topologyFrame.visibleTriangles.toLocaleString() + "/" + triangles.length.toLocaleString() + " visible triangles · " + DEMO.topology.uniqueVertices.toLocaleString() + " unique vertices · " + compiledAsset.geometry.indices.length.toLocaleString() + " indexed corners · " + (WIREFRAME_INPUT.checked ? edges.length.toLocaleString() + " wire edges" : "wireframe hidden") + " · " + topologyFrame.cpuMs.toFixed(2) + " ms draw";
       const BACKEND = DEVICE.instancingSupported ? "WebGL 2 + core instancing" : "WebGL 2 + per-draw uniforms";
-      const GEOMETRY = compiledAsset.geometry, RETAINED_BYTES = asset.mesh?.byteLength ?? 0;
+      const GEOMETRY = compiledAsset.geometry, RETAINED_BYTES = DEMO.mesh?.byteLength ?? 0;
       document.querySelector("#gamekit-metrics").textContent = BACKEND + " · " + (GEOMETRY.indices.length / 3).toLocaleString() + " triangles · " + (GEOMETRY.vertices.length / 11).toLocaleString() + " unique vertices · " + gamekitFrame.device.drawCalls + " draw calls · " + RETAINED_BYTES.toLocaleString() + " retained mesh bytes · create upload " + DEMO.creationStats.geometryBytesUploaded.toLocaleString() + " B · frame geometry " + gamekitFrame.mesh.geometryBytesUploaded.toLocaleString() + " B · instance " + gamekitFrame.mesh.instanceBytesUploaded.toLocaleString() + " B · GPU buffers " + gamekitFrame.device.gpuBufferBytes.toLocaleString() + " B";
     }
     function syncTimeControls() {
@@ -45893,10 +46018,8 @@ void shadeSketchEdge(inout vec3 rgb, float alpha) {
       () => {
         stopped = true;
         actor?.dispose();
-        asset?.dispose();
         LOADER.dispose();
-        SURFACES.dispose();
-        MESHES.dispose();
+        CONTEXT.dispose();
         DEVICE.dispose();
         DEMO.disposeStyleSamples();
       },

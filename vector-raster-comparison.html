@@ -6379,6 +6379,912 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       this.state = "disposed";
     }
   };
+  var STRIDE_FLOATS = 9;
+  var STRIDE_BYTES = STRIDE_FLOATS * 4;
+  var MAX_SURFACES = 512;
+  var DEFAULT_LIMIT_BYTES = 32 * 1024 * 1024;
+  var ATTRIBUTES2 = [
+    {
+      name: "a_position",
+      size: 2,
+      offset: 0
+    },
+    {
+      name: "a_color",
+      size: 4,
+      offset: 8
+    },
+    {
+      name: "a_surface",
+      size: 3,
+      offset: 24
+    }
+  ];
+  var IDENTITY3 = Object.freeze([1, 0, 0, 1, 0, 0]);
+  var WHITE2 = Object.freeze([1, 1, 1, 1]);
+  var VERTEX2 = `
+attribute vec2 a_position;
+attribute vec4 a_color;
+attribute vec3 a_surface;
+uniform mat3 u_projection;
+uniform mat3 u_transform;
+uniform float u_depth;
+varying vec2 v_position;
+varying vec2 v_world;
+varying vec4 v_color;
+varying vec3 v_surface;
+void main() {
+  vec3 world = u_transform * vec3(a_position, 1.0);
+  vec3 projected = u_projection * world;
+  gl_Position = vec4(projected.xy, u_depth * projected.z, projected.z);
+  v_position = a_position;
+  v_world = world.xy / world.z;
+  v_color = a_color;
+  v_surface = a_surface;
+}`;
+  var VERTEX_WORLD = `
+attribute vec2 a_position;
+attribute vec4 a_color;
+attribute vec3 a_surface;
+uniform mat4 u_viewProjection;
+uniform mat4 u_worldMatrix;
+uniform mat3 u_transform;
+uniform float u_depth;
+varying vec2 v_position;
+varying vec2 v_world;
+varying vec4 v_color;
+varying vec3 v_surface;
+void main() {
+  vec3 plane = u_transform * vec3(a_position, 1.0);
+  vec4 world = u_worldMatrix * vec4(plane.xy / plane.z, 0.0, 1.0);
+  vec4 projected = u_viewProjection * world;
+  projected.z += u_depth * projected.w;
+  gl_Position = projected;
+  v_position = a_position;
+  v_world = world.xy / world.w;
+  v_color = a_color;
+  v_surface = a_surface;
+}`;
+  function fragment2(kind, maxClipPlanes) {
+    const CLIPS = maxClipPlanes ? `
+uniform vec3 u_planes[${maxClipPlanes}];
+void clipWorld() {
+  for (int i = 0; i < ${maxClipPlanes}; i++) {
+    vec3 plane = u_planes[i];
+    if (dot(plane.xy, plane.xy) > 0.0000001 && dot(plane, vec3(v_world, 1.0)) < 0.0) discard;
+  }
+}` : "void clipWorld() {}";
+    const BODY = kind === "yarn" ? YARN_FRAGMENT_BODY : SKETCH_FRAGMENT_BODY;
+    return `precision mediump float;
+varying vec2 v_position; varying vec2 v_world; varying vec4 v_color; varying vec3 v_surface;
+uniform vec4 u_bounds; uniform vec4 u_effect0; uniform vec4 u_effect1; uniform vec4 u_effect2; uniform vec4 u_effect3;
+uniform vec4 u_tint; uniform float u_flash; uniform float u_forceColor;
+${kind === "sketch" ? "uniform float u_timeMs;" : "uniform sampler2D u_stitchField;"}
+${CLIPS}
+float hashCell(vec2 cell, float salt) {
+  return fract(sin(dot(cell, vec2(127.1, 311.7)) + u_effect0.x * 74.7 + salt * 19.19) * 43758.5453);
+}
+float segmentDistance(vec2 p, vec2 a, vec2 b) {
+  vec2 delta = b - a;
+  float denom = max(dot(delta, delta), 0.000001);
+  float t = clamp(dot(p - a, delta) / denom, 0.0, 1.0);
+  return length(p - (a + delta * t));
+}
+vec2 cubicPoint(float t, vec2 a, vec2 b, vec2 c, vec2 d) {
+  float s = 1.0 - t;
+  return s*s*s*a + 3.0*s*s*t*b + 3.0*s*t*t*c + t*t*t*d;
+}
+float cubicDistance(vec2 p, vec2 a, vec2 b, vec2 c, vec2 d) {
+  float result = 100000.0;
+  vec2 previous = a;
+  for (int i = 1; i <= 5; i++) {
+    vec2 next = cubicPoint(float(i) * 0.2, a, b, c, d);
+    result = min(result, segmentDistance(p, previous, next));
+    previous = next;
+  }
+  return result;
+}
+float lineMask(float distanceToLine, float width) {
+  float aa = max(width * 0.16, 0.025);
+  return 1.0 - smoothstep(max(0.0, width * 0.5 - aa), width * 0.5 + aa, distanceToLine);
+}
+vec3 tintTo(vec3 base, float amount) {
+  return amount < 0.0 ? mix(base, vec3(0.0), -amount) : mix(base, vec3(1.0), amount);
+}
+${BODY}
+void main() {
+  clipWorld();
+  float alpha = mix(v_color.a, 1.0, u_forceColor) * u_tint.a;
+  if (alpha <= 0.0001) discard;
+  vec3 base = mix(mix(v_color.rgb * u_tint.rgb, u_tint.rgb, u_forceColor), vec3(1.0), clamp(u_flash, 0.0, 1.0));
+  vec3 rgb = base;
+  float effect = v_surface.x;
+  if (effect < 0.5) {
+    ${kind === "yarn" ? "rgb = shadeYarnFill(rgb);" : "rgb = shadeSketchFill(rgb);"}
+    gl_FragColor = vec4(rgb * alpha, alpha);
+    return;
+  }
+  ${kind === "yarn" ? "shadeYarnEdge(rgb, alpha);" : "shadeSketchEdge(rgb, alpha);"}
+}`;
+  }
+  var STITCH_FIELD_SIZE = 256;
+  var STITCH_FIELD_EXTENT = 0.8;
+  var STITCH_FIELD_MAX_DISTANCE = 0.25;
+  var STITCH_STRANDS = {
+    left: [
+      [-0.34, -0.36],
+      [-0.32, -0.06],
+      [-0.18, 0.17],
+      [-0.025, 0.34]
+    ],
+    right: [
+      [0.34, -0.36],
+      [0.32, -0.06],
+      [0.18, 0.17],
+      [0.025, 0.34]
+    ],
+    under: [
+      [-0.48, -0.46],
+      [-0.22, -0.57],
+      [0.22, -0.57],
+      [0.48, -0.46]
+    ]
+  };
+  var STITCH_TWISTS = [
+    [
+      [-0.32, -0.12],
+      [-0.16, -0.13]
+    ],
+    [
+      [0.22, 0.18],
+      [0.37, 0.08]
+    ]
+  ];
+  var stitchFieldCache = null;
+  function stitchSegmentDistance(px2, py2, a, b) {
+    const DX = b[0] - a[0], DY = b[1] - a[1];
+    const T = Math.max(0, Math.min(1, ((px2 - a[0]) * DX + (py2 - a[1]) * DY) / Math.max(DX * DX + DY * DY, 1e-6)));
+    return Math.hypot(px2 - (a[0] + DX * T), py2 - (a[1] + DY * T));
+  }
+  function stitchPolyline([a, b, c, d]) {
+    const POINTS = [a];
+    for (let i = 1; i <= 5; i++) {
+      const T = i * 0.2, S = 1 - T;
+      POINTS.push([
+        S * S * S * a[0] + 3 * S * S * T * b[0] + 3 * S * T * T * c[0] + T * T * T * d[0],
+        S * S * S * a[1] + 3 * S * S * T * b[1] + 3 * S * T * T * c[1] + T * T * T * d[1]
+      ]);
+    }
+    return POINTS;
+  }
+  function stitchPolylineDistance(points, px2, py2) {
+    let best = Infinity;
+    for (let i = 1; i < points.length; i++) {
+      best = Math.min(best, stitchSegmentDistance(px2, py2, points[i - 1], points[i]));
+    }
+    return best;
+  }
+  function stitchFieldPixels() {
+    if (stitchFieldCache) {
+      return stitchFieldCache;
+    }
+    const N = STITCH_FIELD_SIZE;
+    const LEFT = stitchPolyline(STITCH_STRANDS.left), RIGHT = stitchPolyline(STITCH_STRANDS.right), UNDER = stitchPolyline(STITCH_STRANDS.under);
+    const PACK = (distance) => Math.round(Math.min(1, distance / STITCH_FIELD_MAX_DISTANCE) * 255);
+    const DATA2 = new Uint8Array(N * N * 4);
+    for (let j = 0; j < N; j++) {
+      for (let i = 0; i < N; i++) {
+        const QX = -STITCH_FIELD_EXTENT + (i + 0.5) / N * STITCH_FIELD_EXTENT * 2, QY = -STITCH_FIELD_EXTENT + (j + 0.5) / N * STITCH_FIELD_EXTENT * 2;
+        const AT = (j * N + i) * 4;
+        DATA2[AT] = PACK(Math.min(stitchPolylineDistance(LEFT, QX, QY), stitchPolylineDistance(RIGHT, QX, QY)));
+        DATA2[AT + 1] = PACK(stitchPolylineDistance(UNDER, QX, QY));
+        DATA2[AT + 2] = PACK(
+          Math.min(
+            stitchSegmentDistance(QX, QY, STITCH_TWISTS[0][0], STITCH_TWISTS[0][1]),
+            stitchSegmentDistance(QX, QY, STITCH_TWISTS[1][0], STITCH_TWISTS[1][1])
+          )
+        );
+        DATA2[AT + 3] = 255;
+      }
+    }
+    stitchFieldCache = DATA2;
+    return DATA2;
+  }
+  var YARN_FRAGMENT_BODY = `
+vec3 shadeYarnFill(vec3 base) {
+  float stitchWidth = abs(u_effect0.y), stitchHeight = u_effect0.z;
+  if (u_effect0.w < 0.0 || stitchWidth <= 0.0 || stitchHeight <= 0.0) return base;
+  float cols = max(2.0, ceil(u_bounds.z / stitchWidth));
+  float rows = max(2.0, ceil(u_bounds.w / stitchHeight));
+  float sx = u_bounds.z / cols, sy = u_bounds.w / rows;
+  vec2 local = v_position;
+  if (u_effect3.z > 0.5) {
+    float rx = max(u_bounds.z * 0.5, 0.0001), ry = max(u_bounds.w * 0.5, 0.0001);
+    float nx = clamp((local.x - (u_bounds.x + rx)) / rx, -1.35, 1.35);
+    float ny = (local.y - (u_bounds.y + ry)) / ry;
+    local.x += (sin(nx * 1.1) / 0.89120736 - nx) * rx;
+    local.y += ry * 0.13 * nx * nx * (1.0 - ny * 0.24);
+  }
+  vec2 cell = (local - u_bounds.xy) / vec2(sx, sy);
+  vec2 index = floor(cell);
+  float jitterX = (hashCell(index, 71.0) - 0.5) * u_effect1.x;
+  float jitterY = (hashCell(index, 39.0) - 0.5) * u_effect1.x;
+  float scaleX = 1.0 + (hashCell(index, 57.0) - 0.5) * u_effect1.x;
+  float scaleY = 1.0 + (hashCell(index, 91.0) - 0.5) * u_effect1.x;
+  vec2 p = (fract(cell) - vec2(0.5 + jitterX, 0.5 + jitterY)) / vec2(scaleX, scaleY);
+  p *= vec2(sx, sy);
+  float stroke = min(sx, sy) * (abs(u_effect0.w) / stitchHeight);
+  vec2 cellSize = vec2(sx, sy);
+  float fieldScale = ${STITCH_FIELD_MAX_DISTANCE.toFixed(4)} * sqrt(sx * sy);
+  vec2 qBase = p / cellSize;
+  vec2 grooveShift = vec2(0.0, stroke * 0.06) / cellSize;
+  vec2 lightShift = vec2(stroke * 0.14, stroke * 0.13) / cellSize;
+  vec4 fieldMain = texture2D(u_stitchField, (qBase + ${STITCH_FIELD_EXTENT.toFixed(4)}) / ${(STITCH_FIELD_EXTENT * 2).toFixed(4)});
+  vec4 fieldGroove = texture2D(u_stitchField, (qBase - grooveShift + ${STITCH_FIELD_EXTENT.toFixed(4)}) / ${(STITCH_FIELD_EXTENT * 2).toFixed(4)});
+  vec4 fieldLight = texture2D(u_stitchField, (qBase + lightShift + ${STITCH_FIELD_EXTENT.toFixed(4)}) / ${(STITCH_FIELD_EXTENT * 2).toFixed(4)});
+  float under = lineMask(fieldGroove.g * fieldScale, stroke*0.5) * 0.5;
+  float groove = lineMask(fieldGroove.r * fieldScale, stroke*1.08) * 0.85;
+  float yarn = lineMask(fieldMain.r * fieldScale, stroke*0.89);
+  float light = lineMask(fieldLight.r * fieldScale, stroke*0.34) * 0.57;
+  float twist = 0.0;
+  if (mod(index.x + index.y, 2.0) < 1.0) {
+    twist = lineMask(fieldMain.b * fieldScale, stroke*0.075) * 0.5;
+  }
+  vec3 dark = tintTo(base,-0.28), grooveColor = tintTo(base,-u_effect1.y);
+  vec3 yarnColor = tintTo(base,0.10), highlight = tintTo(base,0.38);
+  vec3 color = mix(base,dark,under);
+  color = mix(color,grooveColor,groove);
+  color = mix(color,yarnColor,yarn);
+  color = mix(color,highlight,max(light*0.57,twist));
+  return color;
+}
+void shadeYarnEdge(inout vec3 rgb, float alpha) {
+  float radial = v_surface.z;
+  float along = v_surface.y * u_effect3.y;
+  float edgeWidth = u_effect1.w;
+  float lobe = fract(along / max(u_effect1.z, 0.001));
+  float relief = min(u_effect3.w, edgeWidth * 0.75);
+  float wave = sin(lobe * 6.2831853) * relief * 0.35;
+  float seam = lineMask(abs(radial - wave),edgeWidth*0.56);
+  float seamDark = lineMask(abs(radial - wave - edgeWidth*0.06),edgeWidth*0.8)*0.7;
+  float seamLight = lineMask(abs(radial - wave + edgeWidth*0.09),edgeWidth*0.17)*0.55;
+  float spacing = max(u_effect2.x,0.001);
+  float fiberIndex = floor(along / spacing);
+  float jitter = hashCell(vec2(fiberIndex,0.0),22.0);
+  float start = spacing * (fiberIndex + 0.22 + jitter * 0.48);
+  float randomLength = 0.45 + hashCell(vec2(fiberIndex,0.0),5.0) * 0.95;
+  float lengthLimit = min(u_effect2.y,max(u_bounds.z,u_bounds.w)*0.12)*randomLength;
+  float lean = (hashCell(vec2(fiberIndex,0.0),14.0)-0.5)*lengthLimit*1.5;
+  float alongDistance = abs(along - start - lean * clamp(radial/max(lengthLimit,0.001),0.0,1.0));
+  float fiber = 0.0;
+  if (u_effect3.x > 0.0 && fiberIndex < u_effect3.x && radial >= 0.0 && radial <= lengthLimit) {
+    fiber = lineMask(alongDistance,u_effect2.z);
+  }
+  float coverage = max(max(seam,seamDark*0.6),max(seamLight,fiber*u_effect2.w));
+  if (coverage < 0.012) discard;
+  vec3 dark=tintTo(rgb,-0.28), yarn=tintTo(rgb,0.10), light=tintTo(rgb,0.38);
+  rgb=mix(rgb,dark,seamDark*0.7);
+  rgb=mix(rgb,yarn,seam);
+  rgb=mix(rgb,light,max(seamLight,fiber*0.7));
+  float outAlpha=alpha*coverage;
+  gl_FragColor=vec4(rgb*outAlpha,outAlpha);
+}`;
+  var SKETCH_FRAGMENT_BODY = `
+vec3 shadeSketchFill(vec3 base) {
+  float angle=u_effect2.z, spacing=max(u_effect2.w,0.001);
+  vec2 direction=vec2(cos(angle),sin(angle));
+  float phase=dot(v_position,direction)/spacing + hashCell(vec2(u_effect0.x,0.0),31.0);
+  float distanceToHatch=abs(fract(phase)-0.5)*spacing;
+  float hatch=lineMask(distanceToHatch,u_effect2.x)*u_effect2.y;
+  return mix(base,tintTo(base,-0.48),hatch);
+}
+void shadeSketchEdge(inout vec3 rgb, float alpha) {
+  float phase=mod(u_timeMs,max(u_effect0.y,16.0))/max(u_effect0.y,16.0)*6.2831853;
+  float wobble=sin(v_surface.y*u_effect0.z*6.2831853+phase+u_effect0.x)*u_effect1.x;
+  float offset=(u_effect1.y+wobble);
+  float echo=lineMask(abs(v_surface.z-offset),u_effect1.z)*u_effect1.w;
+  if(echo<0.012)discard;
+  rgb=mix(rgb,tintTo(rgb,-0.52),echo);
+  float outAlpha=alpha*echo;
+  gl_FragColor=vec4(rgb*outAlpha,outAlpha);
+}`;
+  function finiteArray3(value, count, name) {
+    if (!value || value.length !== count || Array.from(value).some((number) => !Number.isFinite(number))) {
+      throw new TypeError(`${name} needs ${count} finite numbers`);
+    }
+  }
+  function validateStyle(style) {
+    if (!style || typeof style !== "object" || Array.isArray(style)) {
+      throw new TypeError("A complete SVG-authored yarn or sketch style is required");
+    }
+    const YARN_REQUIRED = [
+      "seed",
+      "stitchWidth",
+      "stitchHeight",
+      "thickness",
+      "irregularity",
+      "contrast",
+      "edgeSpacing",
+      "edgeRelief",
+      "edgeWidth",
+      "fiberLength",
+      "fiberWidth",
+      "fiberOpacity",
+      "fiberMax"
+    ];
+    const SKETCH_REQUIRED = [
+      "seed",
+      "periodMs",
+      "amplitude",
+      "frequency",
+      "echoX",
+      "echoY",
+      "echoWidth",
+      "echoOpacity",
+      "hatchAngle",
+      "hatchSpacing",
+      "hatchWidth",
+      "hatchOpacity"
+    ];
+    const FIELDS2 = style.kind === "yarn" ? YARN_REQUIRED : style.kind === "sketch" ? SKETCH_REQUIRED : null;
+    if (!FIELDS2 || FIELDS2.some((key2) => !Number.isFinite(style[key2]))) {
+      throw new TypeError("Unsupported or incomplete SVG surface style");
+    }
+    if (style.seed < 0 || style.seed > 2147483647 || !Number.isSafeInteger(style.seed)) {
+      throw new RangeError("Surface seed must be a nonnegative 31-bit integer");
+    }
+    if (style.kind === "yarn") {
+      for (const KEY of [
+        "stitchWidth",
+        "stitchHeight",
+        "thickness",
+        "edgeSpacing",
+        "edgeRelief",
+        "edgeWidth",
+        "fiberLength",
+        "fiberWidth"
+      ]) {
+        if (style[KEY] <= 0) {
+          throw new RangeError(`Yarn ${KEY} must be positive`);
+        }
+      }
+      for (const KEY of ["irregularity", "contrast", "fiberOpacity"]) {
+        if (style[KEY] < 0 || style[KEY] > 1) {
+          throw new RangeError(`Yarn ${KEY} must be in [0,1]`);
+        }
+      }
+      if (!Number.isSafeInteger(style.fiberMax) || style.fiberMax < 0 || style.fiberMax > 512) {
+        throw new RangeError("Yarn fiberMax must be an integer from 0 to 512");
+      }
+      for (const KEY of ["fiberSpacing", "curved", "pattern", "detail", "fiber"]) {
+        if (style[KEY] !== void 0 && (KEY === "fiberSpacing" ? !Number.isFinite(style[KEY]) || style[KEY] <= 0 : typeof style[KEY] !== "boolean")) {
+          throw new TypeError(`Invalid Yarn ${KEY}`);
+        }
+      }
+    } else {
+      if (!Number.isSafeInteger(style.periodMs) || style.periodMs < 16 || style.periodMs > 1e4) {
+        throw new RangeError("Sketch periodMs must be 16..10000");
+      }
+      for (const KEY of ["amplitude", "frequency", "echoWidth", "hatchSpacing", "hatchWidth"]) {
+        if (style[KEY] <= 0) {
+          throw new RangeError(`Sketch ${KEY} must be positive`);
+        }
+      }
+      for (const KEY of ["echoOpacity", "hatchOpacity"]) {
+        if (style[KEY] < 0 || style[KEY] > 1) {
+          throw new RangeError(`Sketch ${KEY} must be in [0,1]`);
+        }
+      }
+    }
+  }
+  function normalizeOutline(outline, sourceIndices) {
+    if (!(outline instanceof Float32Array || Array.isArray(outline)) || outline.length < 8 || outline.length % 2) {
+      throw new TypeError("Closed SVG contour must contain at least four x/y points");
+    }
+    const POINTS = [];
+    for (let i = 0; i < outline.length; i += 2) {
+      const X = outline[i], Y = outline[i + 1];
+      if (!Number.isFinite(X) || !Number.isFinite(Y)) {
+        throw new TypeError("SVG contour points must be finite");
+      }
+      if (!POINTS.length || Math.hypot(X - POINTS.at(-1)[0], Y - POINTS.at(-1)[1]) > 1e-6) {
+        POINTS.push([X, Y]);
+        sourceIndices?.push(i / 2);
+      }
+    }
+    if (POINTS.length > 4 && Math.hypot(POINTS[0][0] - POINTS.at(-1)[0], POINTS[0][1] - POINTS.at(-1)[1]) < 1e-6) {
+      POINTS.pop();
+      sourceIndices?.pop();
+    }
+    if (POINTS.length < 3) {
+      throw new TypeError("SVG contour requires at least three distinct points");
+    }
+    return POINTS;
+  }
+  function surfaceGeometry(fillVertices, outline, edgeColors, style) {
+    if (!(fillVertices instanceof Float32Array) || fillVertices.length < 18 || fillVertices.length % 18) {
+      throw new TypeError("Filled surface requires complete triangles in a six-float position/color layout");
+    }
+    const SOURCE_INDICES = [], POINTS = normalizeOutline(outline, SOURCE_INDICES);
+    if (edgeColors !== void 0 && (!(edgeColors instanceof Float32Array) || edgeColors.length !== POINTS.length * 4 && edgeColors.length !== outline.length * 2)) {
+      throw new TypeError("edgeColors must contain one RGBA color per contour point");
+    }
+    if (edgeColors && edgeColors.some((value) => !Number.isFinite(value) || value < 0 || value > 1)) {
+      throw new RangeError("edgeColors must contain finite RGBA values in [0,1]");
+    }
+    if (edgeColors && edgeColors.length !== POINTS.length * 4) {
+      const ORIGINAL_COLORS = edgeColors;
+      edgeColors = Float32Array.from(
+        SOURCE_INDICES.flatMap((index) => Array.from(ORIGINAL_COLORS.subarray(index * 4, index * 4 + 4)))
+      );
+    }
+    for (let i = 0; i < fillVertices.length; i++) {
+      if (!Number.isFinite(fillVertices[i])) {
+        throw new TypeError("Filled surface vertices must be finite");
+      }
+      const FIELD = i % 6;
+      if (FIELD >= 2 && (fillVertices[i] < 0 || fillVertices[i] > 1)) {
+        throw new RangeError("Surface colors must be in [0,1]");
+      }
+    }
+    const LENGTHS = [], NORMALS = [];
+    let total = 0;
+    let signedArea2 = 0;
+    for (let i = 0; i < POINTS.length; i++) {
+      const A = POINTS[i], B = POINTS[(i + 1) % POINTS.length], DX = B[0] - A[0], DY = B[1] - A[1], LENGTH = Math.hypot(DX, DY);
+      if (!LENGTH) {
+        throw new TypeError("SVG contour cannot contain zero-length edges");
+      }
+      LENGTHS.push(LENGTH);
+      total += LENGTH;
+      signedArea2 += A[0] * B[1] - B[0] * A[1];
+      NORMALS.push([DY / LENGTH, -DX / LENGTH]);
+    }
+    if (Math.abs(signedArea2) < 1e-6) {
+      throw new TypeError("SVG contour cannot have zero area");
+    }
+    const WINDING = signedArea2 >= 0 ? 1 : -1;
+    const BOUNDS = [Infinity, Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < fillVertices.length; i += 6) {
+      BOUNDS[0] = Math.min(BOUNDS[0], fillVertices[i]);
+      BOUNDS[1] = Math.min(BOUNDS[1], fillVertices[i + 1]);
+      BOUNDS[2] = Math.max(BOUNDS[2], fillVertices[i]);
+      BOUNDS[3] = Math.max(BOUNDS[3], fillVertices[i + 1]);
+    }
+    if (!(BOUNDS[2] > BOUNDS[0] && BOUNDS[3] > BOUNDS[1])) {
+      throw new TypeError("Filled surface bounds must have positive area");
+    }
+    const RGBA = edgeColors ? edgeColors : (() => {
+      const COLOR = [0, 0, 0, 0];
+      for (let i = 0; i < fillVertices.length; i += 6) {
+        for (let c = 0; c < 4; c++) {
+          COLOR[c] += fillVertices[i + 2 + c];
+        }
+      }
+      for (let c = 0; c < 4; c++) {
+        COLOR[c] /= fillVertices.length / 6;
+      }
+      return Float32Array.from(POINTS.flatMap(() => COLOR));
+    })();
+    const EDGE_WIDTH = style.kind === "yarn" ? style.edgeWidth : Math.max(style.echoWidth, Math.hypot(style.echoX, style.echoY) + style.amplitude + style.echoWidth);
+    const FIBER_LENGTH = style.kind === "yarn" && style.fiber !== false ? style.fiberLength : EDGE_WIDTH;
+    const FILL_RECORDS = new Float32Array(fillVertices.length / 6 * STRIDE_FLOATS);
+    let write = 0;
+    for (let i = 0; i < fillVertices.length; i += 6) {
+      FILL_RECORDS.set(fillVertices.subarray(i, i + 6), write);
+      FILL_RECORDS[write + 6] = 0;
+      write += STRIDE_FLOATS;
+    }
+    const CUMULATIVE = [0];
+    for (const LENGTH of LENGTHS) {
+      CUMULATIVE.push(CUMULATIVE.at(-1) + LENGTH);
+    }
+    const RING = [];
+    for (let i = 0; i < POINTS.length; i++) {
+      const PREVIOUS = NORMALS[(i + POINTS.length - 1) % POINTS.length], CURRENT = NORMALS[i];
+      let mx = (PREVIOUS[0] + CURRENT[0]) * WINDING;
+      let my = (PREVIOUS[1] + CURRENT[1]) * WINDING;
+      const MITER_LENGTH = Math.hypot(mx, my);
+      if (MITER_LENGTH < 1e-5) {
+        mx = CURRENT[0] * WINDING;
+        my = CURRENT[1] * WINDING;
+      } else {
+        mx /= MITER_LENGTH;
+        my /= MITER_LENGTH;
+      }
+      const DENOMINATOR = Math.max(0.25, Math.abs(mx * CURRENT[0] * WINDING + my * CURRENT[1] * WINDING));
+      const SCALE = Math.min(4, 1 / DENOMINATOR);
+      RING.push([mx * SCALE, my * SCALE]);
+    }
+    const EDGE_RECORDS = [];
+    const COLOR_AT = (index) => RGBA.subarray(index * 4, index * 4 + 4);
+    for (let i = 0; i < POINTS.length; i++) {
+      const J = (i + 1) % POINTS.length;
+      const EMIT = (pointIndex, distance) => {
+        const POINT = POINTS[pointIndex], NORMAL = RING[pointIndex], X = POINT[0] + NORMAL[0] * distance, Y = POINT[1] + NORMAL[1] * distance;
+        EDGE_RECORDS.push(X, Y, ...COLOR_AT(pointIndex), 1, CUMULATIVE[pointIndex] / total, distance);
+      };
+      EMIT(i, -EDGE_WIDTH);
+      EMIT(i, FIBER_LENGTH);
+      EMIT(J, FIBER_LENGTH);
+      EMIT(i, -EDGE_WIDTH);
+      EMIT(J, FIBER_LENGTH);
+      EMIT(J, -EDGE_WIDTH);
+    }
+    const EDGE_RECORD_ARRAY = Float32Array.from(EDGE_RECORDS);
+    const VERTICES = new Float32Array(FILL_RECORDS.length + EDGE_RECORD_ARRAY.length);
+    VERTICES.set(FILL_RECORDS);
+    VERTICES.set(EDGE_RECORD_ARRAY, FILL_RECORDS.length);
+    return Object.freeze({
+      vertices: VERTICES,
+      fillFirst: 0,
+      fillCount: fillVertices.length / 6,
+      edgeFirst: fillVertices.length / 6,
+      edgeCount: EDGE_RECORD_ARRAY.length / STRIDE_FLOATS,
+      edgeByteOffset: FILL_RECORDS.length * 4,
+      bounds: Float32Array.of(BOUNDS[0], BOUNDS[1], BOUNDS[2] - BOUNDS[0], BOUNDS[3] - BOUNDS[1]),
+      contourLength: total
+    });
+  }
+  function clipPlanes2(clips, maxPlanes) {
+    const PACKED = new Float32Array(maxPlanes * 3);
+    if (!clips?.length) {
+      return PACKED;
+    }
+    if (!Array.isArray(clips)) {
+      throw new TypeError("clips must be an array of convex polygons");
+    }
+    let cursor = 0;
+    for (const POLYGON of clips) {
+      if (!Array.isArray(POLYGON) || POLYGON.length < 3 || POLYGON.some((point2) => !Number.isFinite(point2?.x) || !Number.isFinite(point2?.y))) {
+        throw new TypeError("Finite convex clip polygons required");
+      }
+      let area2 = 0;
+      for (let i = 0; i < POLYGON.length; i++) {
+        const A = POLYGON[i], B = POLYGON[(i + 1) % POLYGON.length];
+        area2 += A.x * B.y - B.x * A.y;
+      }
+      if (Math.abs(area2) < 1e-8) {
+        throw new RangeError("A clip polygon must have nonzero area");
+      }
+      const SIGN = area2 >= 0 ? 1 : -1;
+      for (let i = 0; i < POLYGON.length; i++) {
+        const A = POLYGON[i], B = POLYGON[(i + 1) % POLYGON.length], DX = B.x - A.x, DY = B.y - A.y, LENGTH = Math.hypot(DX, DY);
+        if (!LENGTH) {
+          continue;
+        }
+        if (cursor >= maxPlanes) {
+          throw new RangeError(`Shader surface clipping exceeds the device limit of ${maxPlanes} edge planes`);
+        }
+        const AT = cursor++ * 3, NX = -DY / LENGTH * SIGN, NY = DX / LENGTH * SIGN;
+        PACKED[AT] = NX;
+        PACKED[AT + 1] = NY;
+        PACKED[AT + 2] = -(NX * A.x + NY * A.y);
+      }
+    }
+    return PACKED;
+  }
+  function toMatrix3(matrix) {
+    finiteArray3(matrix, 6, "transform");
+    return Float32Array.of(matrix[0], matrix[1], 0, matrix[2], matrix[3], 0, matrix[4], matrix[5], 1);
+  }
+  function affineMatrix42(matrix, name) {
+    finiteArray3(matrix, 16, name);
+    if (Math.abs(matrix[3]) > 1e-7 || Math.abs(matrix[7]) > 1e-7 || Math.abs(matrix[11]) > 1e-7 || Math.abs(matrix[15] - 1) > 1e-7) {
+      throw new TypeError(`${name} must be an affine column-major 4x4 matrix`);
+    }
+  }
+  var YarnSurfaceRenderer = class {
+    constructor(device, { maxSurfaces = MAX_SURFACES, maxSurfaceBytes = DEFAULT_LIMIT_BYTES } = {}) {
+      if (!device?.createPipeline || !device?.uploadVertices || !device?.draw) {
+        throw new TypeError("A ready GameKit WebGLDevice is required");
+      }
+      if (!Number.isSafeInteger(maxSurfaces) || maxSurfaces < 1 || maxSurfaces > MAX_SURFACES) {
+        throw new RangeError(`maxSurfaces must be 1..${MAX_SURFACES}`);
+      }
+      if (!Number.isSafeInteger(maxSurfaceBytes) || maxSurfaceBytes < STRIDE_BYTES * 3 || maxSurfaceBytes > device.maxBufferBytes) {
+        throw new RangeError("maxSurfaceBytes must fit the device buffer limit");
+      }
+      this.device = device;
+      this.maxSurfaces = maxSurfaces;
+      this.maxSurfaceBytes = maxSurfaceBytes;
+      this.maxClipPlanes = Math.max(
+        1,
+        Math.min(8, device.gl.getParameter(device.gl.MAX_FRAGMENT_UNIFORM_VECTORS) - 8)
+      );
+      this.surfaces = /* @__PURE__ */ new Set();
+      this.bytes = 0;
+      this.pipelines = /* @__PURE__ */ new Map();
+      this.stitchField = null;
+      this.stitchTextures = null;
+      this.state = "ready";
+      this.failure = null;
+      this.disposed = false;
+      this.onLost = () => {
+        this.state = "lost";
+      };
+      this.onRestored = () => {
+        try {
+          for (const SURFACE of this.surfaces) {
+            device.uploadVertices(SURFACE.buffer, SURFACE.vertices);
+          }
+          this.state = "ready";
+          this.failure = null;
+        } catch (error2) {
+          this.state = "failed";
+          this.failure = error2.message;
+        }
+      };
+      device.canvas.addEventListener("webglcontextlost", this.onLost);
+      device.canvas.addEventListener("webglcontextrestored", this.onRestored);
+    }
+    // The shared stitch distance field is created with the first yarn surface; the device restores it after a lost
+    // context like any other texture.
+    _stitchField() {
+      if (!this.stitchField) {
+        this.stitchField = this.device.createTexture(
+          { width: STITCH_FIELD_SIZE, height: STITCH_FIELD_SIZE, data: stitchFieldPixels() },
+          { premultiplied: true, filter: "linear" }
+        );
+        this.stitchTextures = Object.freeze([this.stitchField]);
+      }
+      return this.stitchField;
+    }
+    _pipeline(kind, worldMode = false) {
+      const KEY = kind + ":" + Number(worldMode);
+      let pipeline = this.pipelines.get(KEY);
+      if (pipeline) {
+        return pipeline;
+      }
+      const UNIFORMS2 = {
+        ...worldMode ? {
+          u_viewProjection: "matrix4fv",
+          u_worldMatrix: "matrix4fv"
+        } : {
+          u_projection: "matrix3fv"
+        },
+        u_transform: "matrix3fv",
+        u_depth: "1f",
+        u_bounds: "4f",
+        u_effect0: "4f",
+        u_effect1: "4f",
+        u_effect2: "4f",
+        u_effect3: "4f",
+        u_tint: "4f",
+        u_flash: "1f",
+        u_forceColor: "1f",
+        "u_planes[0]": "3fv",
+        ...kind === "sketch" ? {
+          u_timeMs: "1f"
+        } : {}
+      };
+      pipeline = this.device.createPipeline({
+        vertex: worldMode ? VERTEX_WORLD : VERTEX2,
+        fragment: fragment2(kind, this.maxClipPlanes),
+        stride: STRIDE_BYTES,
+        attributes: ATTRIBUTES2,
+        uniforms: UNIFORMS2
+      });
+      this.pipelines.set(KEY, pipeline);
+      return pipeline;
+    }
+    createSurface({ fillVertices, outline, edgeColors, style }) {
+      if (this.disposed || this.state !== "ready") {
+        throw new Error(`YarnSurfaceRenderer is ${this.state}`);
+      }
+      validateStyle(style);
+      if (this.surfaces.size >= this.maxSurfaces) {
+        throw new RangeError("Retained yarn surface count limit exceeded");
+      }
+      const GEOMETRY = surfaceGeometry(fillVertices, outline, edgeColors, style);
+      const VERTICES = GEOMETRY.vertices.slice();
+      if (this.bytes + VERTICES.byteLength > this.maxSurfaceBytes) {
+        throw new RangeError("Retained yarn surface byte budget exceeded");
+      }
+      const PIPELINE = this._pipeline(style.kind);
+      if (style.kind === "yarn") {
+        this._stitchField();
+      }
+      const BUFFER = this.device.createVertexBuffer({
+        capacityBytes: VERTICES.byteLength
+      });
+      try {
+        this.device.uploadVertices(BUFFER, VERTICES);
+      } catch (error2) {
+        this.device.deleteVertexBuffer(BUFFER);
+        throw error2;
+      }
+      const SURFACE = Object.freeze({
+        renderer: this,
+        buffer: BUFFER,
+        vertices: VERTICES,
+        byteLength: VERTICES.byteLength,
+        style: Object.freeze({
+          ...style
+        }),
+        kind: style.kind,
+        fillFirst: GEOMETRY.fillFirst,
+        fillCount: GEOMETRY.fillCount,
+        edgeFirst: GEOMETRY.edgeFirst,
+        edgeCount: GEOMETRY.edgeCount,
+        edgeByteOffset: GEOMETRY.edgeByteOffset,
+        bounds: GEOMETRY.bounds,
+        contourLength: GEOMETRY.contourLength,
+        pipeline: PIPELINE
+      });
+      this.surfaces.add(SURFACE);
+      this.bytes += SURFACE.byteLength;
+      return SURFACE;
+    }
+    drawSurface(surface, {
+      projection,
+      viewProjection,
+      worldMatrix,
+      transform = IDENTITY3,
+      color = WHITE2,
+      alpha = 1,
+      forceColor = false,
+      whiteFlash = 0,
+      timeMs = 0,
+      clips = [],
+      stencilRef = null,
+      z = 0,
+      depth = false,
+      blend = "source-over"
+    } = {}) {
+      if (this.disposed || this.state !== "ready") {
+        throw new Error(`YarnSurfaceRenderer is ${this.state}${this.failure ? ": " + this.failure : ""}`);
+      }
+      if (!this.surfaces.has(surface)) {
+        throw new TypeError("Surface must belong to this YarnSurfaceRenderer");
+      }
+      const WORLD_MODE = viewProjection !== void 0 || worldMatrix !== void 0;
+      if (WORLD_MODE) {
+        if (projection !== void 0 || viewProjection === void 0 || worldMatrix === void 0) {
+          throw new TypeError(
+            "3D surface draws require viewProjection and worldMatrix and cannot include projection"
+          );
+        }
+        finiteArray3(viewProjection, 16, "viewProjection");
+        affineMatrix42(worldMatrix, "worldMatrix");
+      } else {
+        finiteArray3(projection, 9, "projection");
+      }
+      finiteArray3(color, 4, "color");
+      if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1 || color.some((value) => value < 0 || value > 1)) {
+        throw new RangeError("Surface tint/alpha must be in [0,1]");
+      }
+      if (typeof forceColor !== "boolean") {
+        throw new TypeError("forceColor must be boolean");
+      }
+      if (!Number.isFinite(whiteFlash) || whiteFlash < 0 || whiteFlash > 1) {
+        throw new RangeError("whiteFlash must be in [0,1]");
+      }
+      if (!Number.isFinite(timeMs)) {
+        throw new TypeError("timeMs must be finite");
+      }
+      if (!Number.isFinite(z) || z < -1 || z > 1) {
+        throw new RangeError("z must be in [-1,1]");
+      }
+      if (stencilRef !== null && (!Number.isSafeInteger(stencilRef) || stencilRef < 0 || stencilRef > 255)) {
+        throw new RangeError("stencilRef must be null or in [0,255]");
+      }
+      if (stencilRef !== null && !this.device.activeStencilAvailable) {
+        throw new Error("A stencil-tested yarn surface requires an active stencil attachment");
+      }
+      const PLANES = clipPlanes2(clips, this.maxClipPlanes), STYLE = surface.style;
+      const YARN = surface.kind === "yarn";
+      const STITCH_PATTERN = STYLE.pattern !== false;
+      const EFFECT0 = YARN ? [STYLE.seed, STYLE.stitchWidth, STYLE.stitchHeight, (STITCH_PATTERN ? 1 : -1) * STYLE.thickness] : [STYLE.seed, STYLE.periodMs, STYLE.frequency, 0];
+      const EFFECT1 = YARN ? [STYLE.irregularity, STYLE.contrast, STYLE.edgeSpacing, STYLE.edgeWidth] : [STYLE.amplitude, STYLE.echoX, STYLE.echoWidth, STYLE.echoOpacity];
+      const EFFECT2 = YARN ? [STYLE.fiberSpacing ?? 4, STYLE.fiberLength, STYLE.fiberWidth, STYLE.fiberOpacity] : [STYLE.hatchWidth, STYLE.hatchOpacity, STYLE.hatchAngle, STYLE.hatchSpacing];
+      const EFFECT3 = YARN ? [
+        STYLE.fiber === false ? 0 : STYLE.fiberMax,
+        surface.contourLength,
+        STYLE.curved === false ? 0 : 1,
+        STYLE.edgeRelief * (STYLE.detail ? 0.3 : 1)
+      ] : [0, STYLE.echoY, 0, 0];
+      const UNIFORMS2 = {
+        ...WORLD_MODE ? {
+          u_viewProjection: viewProjection,
+          u_worldMatrix: worldMatrix
+        } : {
+          u_projection: projection
+        },
+        u_transform: toMatrix3(transform),
+        u_depth: z,
+        u_bounds: surface.bounds,
+        u_effect0: EFFECT0,
+        u_effect1: EFFECT1,
+        u_effect2: EFFECT2,
+        u_effect3: EFFECT3,
+        u_tint: [color[0], color[1], color[2], color[3] * alpha],
+        u_flash: whiteFlash,
+        u_forceColor: forceColor ? 1 : 0,
+        "u_planes[0]": PLANES,
+        ...YARN ? {} : {
+          u_timeMs: (timeMs % STYLE.periodMs + STYLE.periodMs) % STYLE.periodMs
+        }
+      };
+      const COMMON = {
+        pipeline: this._pipeline(surface.kind, WORLD_MODE),
+        buffer: surface.buffer,
+        uniforms: UNIFORMS2,
+        textures: YARN ? this.stitchTextures : [],
+        blend,
+        depth,
+        stencil: stencilRef === null ? false : {
+          func: "equal",
+          ref: stencilRef,
+          mask: 255,
+          writeMask: 0,
+          pass: "keep"
+        }
+      };
+      this.device.draw({
+        ...COMMON,
+        first: surface.fillFirst,
+        count: surface.fillCount
+      });
+      if (surface.edgeCount) {
+        const EDGE_DEPTH = depth === true ? {
+          test: true,
+          write: false
+        } : depth && typeof depth === "object" ? {
+          ...depth,
+          write: false
+        } : depth;
+        this.device.draw({
+          ...COMMON,
+          first: surface.edgeFirst,
+          count: surface.edgeCount,
+          depth: EDGE_DEPTH
+        });
+      }
+    }
+    deleteSurface(surface) {
+      if (!this.surfaces.has(surface)) {
+        return false;
+      }
+      this.device.deleteVertexBuffer(surface.buffer);
+      this.surfaces.delete(surface);
+      this.bytes -= surface.byteLength;
+      return true;
+    }
+    stats() {
+      return Object.freeze({
+        state: this.state,
+        surfaceCount: this.surfaces.size,
+        retainedBytes: this.bytes,
+        pipelineCount: this.pipelines.size,
+        maxClipPlanes: this.maxClipPlanes
+      });
+    }
+    dispose() {
+      if (this.disposed) {
+        return false;
+      }
+      this.device.canvas.removeEventListener("webglcontextlost", this.onLost);
+      this.device.canvas.removeEventListener("webglcontextrestored", this.onRestored);
+      for (const SURFACE of this.surfaces) {
+        this.device.deleteVertexBuffer(SURFACE.buffer);
+      }
+      for (const PIPELINE of this.pipelines.values()) {
+        this.device.deletePipeline(PIPELINE);
+      }
+      if (this.stitchField) {
+        this.device.deleteTexture(this.stitchField);
+        this.stitchField = null;
+        this.stitchTextures = null;
+      }
+      this.surfaces.clear();
+      this.pipelines.clear();
+      this.bytes = 0;
+      this.disposed = true;
+      this.state = "disposed";
+      return true;
+    }
+  };
   var TAU = Math.PI * 2;
   var MAX_LINEAR_GRADIENT_STOPS = 32;
   var LINEAR_GRADIENT_SIZE = 1024;
@@ -6391,8 +7297,8 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       (_, i) => Object.freeze([Math.cos(i * TAU / 8), Math.sin(i * TAU / 8)])
     )
   );
-  var IDENTITY3 = Object.freeze([1, 0, 0, 1, 0, 0]);
-  var WHITE2 = Object.freeze([1, 1, 1, 1]);
+  var IDENTITY4 = Object.freeze([1, 0, 0, 1, 0, 0]);
+  var WHITE3 = Object.freeze([1, 1, 1, 1]);
   function composeTransform(a, b) {
     return [
       a[0] * b[0] + a[2] * b[1],
@@ -6716,28 +7622,32 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
   };
   var VectorContext = class {
     constructor(device, {
-      vectorRenderer = null,
-      glyphAtlas = vectorRenderer?.glyphAtlas ?? null,
+      glyphAtlas = null,
       initialVertices = 4096,
       maxVertices = 262144,
       onError = null,
-      safeAlphaRunBatching = true
+      safeAlphaRunBatching = true,
+      mesh = {},
+      surfaces = {}
     } = {}) {
       if (!device?.beginFrame || !device?.endFrame || !device?.createVertexBuffer) {
         throw new TypeError("WebGLDevice is required");
       }
-      if (vectorRenderer && vectorRenderer.device !== device) {
-        throw new TypeError("vectorRenderer must use the supplied WebGLDevice");
+      if (mesh === null || typeof mesh !== "object" || surfaces === null || typeof surfaces !== "object") {
+        throw new TypeError("mesh and surfaces must be option objects");
       }
       this.device = device;
       this.canvas = device.canvas;
-      this.vector = vectorRenderer ?? new VectorRenderer(device, {
+      this.vector = new VectorRenderer(device, {
         initialVertices,
         maxVertices,
         glyphAtlas
       });
-      this.ownsVector = !vectorRenderer;
       this.glyphAtlas = glyphAtlas ?? this.vector.glyphAtlas;
+      this.meshOptions = mesh;
+      this.surfaceOptions = surfaces;
+      this.surfaceRenderer = null;
+      this.disposers = [];
       this.onError = typeof onError === "function" ? onError : null;
       if (typeof safeAlphaRunBatching !== "boolean") {
         throw new TypeError("safeAlphaRunBatching must be a boolean");
@@ -7163,7 +8073,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       this.vector.setTransform(a, b, c, d, e, f);
     }
     resetTransform() {
-      this.vector.setTransform(...IDENTITY3);
+      this.vector.setTransform(...IDENTITY4);
     }
     getTransform() {
       const M = this.vector.matrix;
@@ -7531,7 +8441,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       }
       const V = this.vector, ORIGINAL = V.path, MATRIX = V.matrix.slice();
       V.beginPath();
-      V.setTransform(...IDENTITY3);
+      V.setTransform(...IDENTITY4);
       let phase = (this._lineDashOffset % PERIOD + PERIOD) % PERIOD;
       let index = 0;
       while (phase >= DASH[index] && DASH[index] > 0) {
@@ -7788,9 +8698,25 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
         throw new Error("VectorContext is not ready");
       }
       this.meshRenderer ??= new MeshRenderer(this.device, {
+        ...this.meshOptions,
         safeAlphaRunBatching: this.safeAlphaRunBatching
       });
       return this.meshRenderer;
+    }
+    /** The yarn/sketch surface renderer this context shares with the vector actors built on it. */
+    acquireSurfaceRenderer() {
+      if (this.state !== "ready" || this.device.state !== "ready") {
+        throw new Error("VectorContext is not ready");
+      }
+      this.surfaceRenderer ??= new YarnSurfaceRenderer(this.device, this.surfaceOptions);
+      return this.surfaceRenderer;
+    }
+    /** Registers cleanup that `dispose()` runs, newest first, before it disposes the renderers it owns. */
+    onDispose(callback) {
+      if (typeof callback !== "function") {
+        throw new TypeError("onDispose requires a function");
+      }
+      this.disposers.push(callback);
     }
     /**
      * Atlas rectangles (sprites, baked vector runs, posed parts) on the current transform and clip; they join the
@@ -7945,7 +8871,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
             projection: this.vector.projection,
             morph,
             parts,
-            color: this.forceColor ?? WHITE2,
+            color: this.forceColor ?? WHITE3,
             forceColor: this.forceColor !== null,
             prefixColor: outline,
             prefixCount: OUTLINE_INSTANCES,
@@ -7959,15 +8885,15 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
         BOUNDS
       );
     }
-    /** Submit a native vector player after earlier paint, without flushing a compatible mesh run. */
-    drawVectorAsset(player, options = {}) {
+    /** Submit a vector actor after earlier paint, without flushing a compatible mesh run. */
+    drawVectorActor(actor, options = {}) {
       this._frame();
-      if (typeof player?.draw !== "function") {
-        throw new TypeError("A vector asset player is required");
+      if (typeof actor?.draw !== "function") {
+        throw new TypeError("A vector actor is required");
       }
       this.vector.flush();
       const WORLD_MODE = options.viewProjection !== void 0 || options.worldMatrix !== void 0;
-      player.draw({
+      actor.draw({
         ...!WORLD_MODE ? { projection: this.vector.projection } : {},
         clips: this.vector.clips,
         stencilRef: this.vector.stencilDepth || null,
@@ -8072,6 +8998,10 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       this.vector.count = 0;
       this.canvas.removeEventListener("webglcontextlost", this.onLost);
       this.canvas.removeEventListener("webglcontextrestored", this.onRestored);
+      for (const CALLBACK of this.disposers.splice(0).reverse()) {
+        CALLBACK();
+      }
+      this.surfaceRenderer?.dispose();
       this.meshRenderer?.dispose();
       for (const MESH of this.staticMeshes) {
         this.device.deleteVertexBuffer(MESH.buffer);
@@ -8079,9 +9009,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       this._releaseGradientTextures();
       this.staticMeshes.clear();
       this.deferredMeshes.length = 0;
-      if (this.ownsVector) {
-        this.vector.dispose();
-      }
+      this.vector.dispose();
       this.active = false;
       this.state = "disposed";
     }
@@ -8370,92 +9298,6 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       }
     });
   }
-  var STRIDE_FLOATS = 9;
-  var STRIDE_BYTES = STRIDE_FLOATS * 4;
-  var DEFAULT_LIMIT_BYTES = 32 * 1024 * 1024;
-  var IDENTITY4 = Object.freeze([1, 0, 0, 1, 0, 0]);
-  var WHITE3 = Object.freeze([1, 1, 1, 1]);
-  var STITCH_FIELD_EXTENT = 0.8;
-  var STITCH_FIELD_MAX_DISTANCE = 0.25;
-  var YARN_FRAGMENT_BODY = `
-vec3 shadeYarnFill(vec3 base) {
-  float stitchWidth = abs(u_effect0.y), stitchHeight = u_effect0.z;
-  if (u_effect0.w < 0.0 || stitchWidth <= 0.0 || stitchHeight <= 0.0) return base;
-  float cols = max(2.0, ceil(u_bounds.z / stitchWidth));
-  float rows = max(2.0, ceil(u_bounds.w / stitchHeight));
-  float sx = u_bounds.z / cols, sy = u_bounds.w / rows;
-  vec2 local = v_position;
-  if (u_effect3.z > 0.5) {
-    float rx = max(u_bounds.z * 0.5, 0.0001), ry = max(u_bounds.w * 0.5, 0.0001);
-    float nx = clamp((local.x - (u_bounds.x + rx)) / rx, -1.35, 1.35);
-    float ny = (local.y - (u_bounds.y + ry)) / ry;
-    local.x += (sin(nx * 1.1) / 0.89120736 - nx) * rx;
-    local.y += ry * 0.13 * nx * nx * (1.0 - ny * 0.24);
-  }
-  vec2 cell = (local - u_bounds.xy) / vec2(sx, sy);
-  vec2 index = floor(cell);
-  float jitterX = (hashCell(index, 71.0) - 0.5) * u_effect1.x;
-  float jitterY = (hashCell(index, 39.0) - 0.5) * u_effect1.x;
-  float scaleX = 1.0 + (hashCell(index, 57.0) - 0.5) * u_effect1.x;
-  float scaleY = 1.0 + (hashCell(index, 91.0) - 0.5) * u_effect1.x;
-  vec2 p = (fract(cell) - vec2(0.5 + jitterX, 0.5 + jitterY)) / vec2(scaleX, scaleY);
-  p *= vec2(sx, sy);
-  float stroke = min(sx, sy) * (abs(u_effect0.w) / stitchHeight);
-  vec2 cellSize = vec2(sx, sy);
-  float fieldScale = ${STITCH_FIELD_MAX_DISTANCE.toFixed(4)} * sqrt(sx * sy);
-  vec2 qBase = p / cellSize;
-  vec2 grooveShift = vec2(0.0, stroke * 0.06) / cellSize;
-  vec2 lightShift = vec2(stroke * 0.14, stroke * 0.13) / cellSize;
-  vec4 fieldMain = texture2D(u_stitchField, (qBase + ${STITCH_FIELD_EXTENT.toFixed(4)}) / ${(STITCH_FIELD_EXTENT * 2).toFixed(4)});
-  vec4 fieldGroove = texture2D(u_stitchField, (qBase - grooveShift + ${STITCH_FIELD_EXTENT.toFixed(4)}) / ${(STITCH_FIELD_EXTENT * 2).toFixed(4)});
-  vec4 fieldLight = texture2D(u_stitchField, (qBase + lightShift + ${STITCH_FIELD_EXTENT.toFixed(4)}) / ${(STITCH_FIELD_EXTENT * 2).toFixed(4)});
-  float under = lineMask(fieldGroove.g * fieldScale, stroke*0.5) * 0.5;
-  float groove = lineMask(fieldGroove.r * fieldScale, stroke*1.08) * 0.85;
-  float yarn = lineMask(fieldMain.r * fieldScale, stroke*0.89);
-  float light = lineMask(fieldLight.r * fieldScale, stroke*0.34) * 0.57;
-  float twist = 0.0;
-  if (mod(index.x + index.y, 2.0) < 1.0) {
-    twist = lineMask(fieldMain.b * fieldScale, stroke*0.075) * 0.5;
-  }
-  vec3 dark = tintTo(base,-0.28), grooveColor = tintTo(base,-u_effect1.y);
-  vec3 yarnColor = tintTo(base,0.10), highlight = tintTo(base,0.38);
-  vec3 color = mix(base,dark,under);
-  color = mix(color,grooveColor,groove);
-  color = mix(color,yarnColor,yarn);
-  color = mix(color,highlight,max(light*0.57,twist));
-  return color;
-}
-void shadeYarnEdge(inout vec3 rgb, float alpha) {
-  float radial = v_surface.z;
-  float along = v_surface.y * u_effect3.y;
-  float edgeWidth = u_effect1.w;
-  float lobe = fract(along / max(u_effect1.z, 0.001));
-  float relief = min(u_effect3.w, edgeWidth * 0.75);
-  float wave = sin(lobe * 6.2831853) * relief * 0.35;
-  float seam = lineMask(abs(radial - wave),edgeWidth*0.56);
-  float seamDark = lineMask(abs(radial - wave - edgeWidth*0.06),edgeWidth*0.8)*0.7;
-  float seamLight = lineMask(abs(radial - wave + edgeWidth*0.09),edgeWidth*0.17)*0.55;
-  float spacing = max(u_effect2.x,0.001);
-  float fiberIndex = floor(along / spacing);
-  float jitter = hashCell(vec2(fiberIndex,0.0),22.0);
-  float start = spacing * (fiberIndex + 0.22 + jitter * 0.48);
-  float randomLength = 0.45 + hashCell(vec2(fiberIndex,0.0),5.0) * 0.95;
-  float lengthLimit = min(u_effect2.y,max(u_bounds.z,u_bounds.w)*0.12)*randomLength;
-  float lean = (hashCell(vec2(fiberIndex,0.0),14.0)-0.5)*lengthLimit*1.5;
-  float alongDistance = abs(along - start - lean * clamp(radial/max(lengthLimit,0.001),0.0,1.0));
-  float fiber = 0.0;
-  if (u_effect3.x > 0.0 && fiberIndex < u_effect3.x && radial >= 0.0 && radial <= lengthLimit) {
-    fiber = lineMask(alongDistance,u_effect2.z);
-  }
-  float coverage = max(max(seam,seamDark*0.6),max(seamLight,fiber*u_effect2.w));
-  if (coverage < 0.012) discard;
-  vec3 dark=tintTo(rgb,-0.28), yarn=tintTo(rgb,0.10), light=tintTo(rgb,0.38);
-  rgb=mix(rgb,dark,seamDark*0.7);
-  rgb=mix(rgb,yarn,seam);
-  rgb=mix(rgb,light,max(seamLight,fiber*0.7));
-  float outAlpha=alpha*coverage;
-  gl_FragColor=vec4(rgb*outAlpha,outAlpha);
-}`;
 
   // dist/vector-assets.js
   var isBrowser = typeof window !== "undefined";
@@ -11505,34 +12347,34 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
   var NUMERIC_POSE_FIELDS = Object.freeze(["x", "y", "rotation", "scaleX", "scaleY", "opacity"]);
   var IS_OBJECT = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
   var EXACT_KEYS = (value, keys) => IS_OBJECT(value) && Object.keys(value).length === keys.length && keys.every((key2) => Object.hasOwn(value, key2));
-  function validateCompiledAsset(asset2) {
-    const SHADER_SURFACES = asset2?.geometry?.shaderSurfaces;
+  function validateCompiledAsset(asset) {
+    const SHADER_SURFACES = asset?.geometry?.shaderSurfaces;
     const SURFACE_ONLY = Array.isArray(SHADER_SURFACES) && SHADER_SURFACES.length > 0;
-    if (!IS_OBJECT(asset2) || asset2.schemaVersion !== VECTOR_ASSET_SCHEMA_VERSION || !ACCEPTED_COMPILER_VERSIONS.has(asset2.compilerVersion) || typeof asset2.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/.test(asset2.sourceSha256) || !IS_OBJECT(asset2.metadata) || !IS_OBJECT(asset2.geometry) || !(asset2.geometry.vertices instanceof Float32Array) || asset2.geometry.vertices.length < 33 && !(SURFACE_ONLY && asset2.geometry.vertices.length === 0) || asset2.geometry.vertices.length % 11 || asset2.geometry.strideFloats !== 11 || asset2.geometry.nonScalingStroke !== void 0 && typeof asset2.geometry.nonScalingStroke !== "boolean" || asset2.geometry.nonScalingStroke && asset2.geometry.morphCount !== 0 || asset2.geometry.partCount !== asset2.metadata.parts?.length || ![0, 2].includes(asset2.geometry.morphCount)) {
+    if (!IS_OBJECT(asset) || asset.schemaVersion !== VECTOR_ASSET_SCHEMA_VERSION || !ACCEPTED_COMPILER_VERSIONS.has(asset.compilerVersion) || typeof asset.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/.test(asset.sourceSha256) || !IS_OBJECT(asset.metadata) || !IS_OBJECT(asset.geometry) || !(asset.geometry.vertices instanceof Float32Array) || asset.geometry.vertices.length < 33 && !(SURFACE_ONLY && asset.geometry.vertices.length === 0) || asset.geometry.vertices.length % 11 || asset.geometry.strideFloats !== 11 || asset.geometry.nonScalingStroke !== void 0 && typeof asset.geometry.nonScalingStroke !== "boolean" || asset.geometry.nonScalingStroke && asset.geometry.morphCount !== 0 || asset.geometry.partCount !== asset.metadata.parts?.length || ![0, 2].includes(asset.geometry.morphCount)) {
       throw new TypeError("Invalid compiled SVG vector asset");
     }
-    const VERTEX_COUNT = asset2.geometry.vertices.length / 11, INDICES = asset2.geometry.indices;
+    const VERTEX_COUNT = asset.geometry.vertices.length / 11, INDICES = asset.geometry.indices;
     if (INDICES !== void 0 && (!(INDICES instanceof Uint16Array) || INDICES.length < 3 && !(SURFACE_ONLY && INDICES.length === 0) || INDICES.length % 3 || VERTEX_COUNT > 65536 || INDICES.some((index) => index >= VERTEX_COUNT))) {
       throw new TypeError("Invalid compiled SVG vertex indices");
     }
     if (INDICES === void 0 && VERTEX_COUNT % 3) {
       throw new TypeError("Non-indexed compiled SVG geometry must contain complete triangles");
     }
-    validatePaintRegionData2(asset2.geometry.paintRegions, VERTEX_COUNT, INDICES);
-    if (["0.8.0", "0.9.0", "0.10.0", VECTOR_ASSET_COMPILER_VERSION].includes(asset2.compilerVersion) && asset2.compilerOptions === void 0) {
+    validatePaintRegionData2(asset.geometry.paintRegions, VERTEX_COUNT, INDICES);
+    if (["0.8.0", "0.9.0", "0.10.0", VECTOR_ASSET_COMPILER_VERSION].includes(asset.compilerVersion) && asset.compilerOptions === void 0) {
       throw new TypeError("Current SVG compiler options are required");
     }
-    if (asset2.compilerOptions !== void 0) {
-      const CURRENT = asset2.compilerVersion === VECTOR_ASSET_COMPILER_VERSION;
-      const ROUND_STROKE_VERSION = CURRENT || asset2.compilerVersion === "0.10.0";
-      const CENTERED_VIEW_BOX_VERSION = ROUND_STROKE_VERSION || asset2.compilerVersion === "0.9.0";
+    if (asset.compilerOptions !== void 0) {
+      const CURRENT = asset.compilerVersion === VECTOR_ASSET_COMPILER_VERSION;
+      const ROUND_STROKE_VERSION = CURRENT || asset.compilerVersion === "0.10.0";
+      const CENTERED_VIEW_BOX_VERSION = ROUND_STROKE_VERSION || asset.compilerVersion === "0.9.0";
       const EXPECTED_KEYS = ROUND_STROKE_VERSION ? ["curveSegments", "normalizeCenteredViewBox", "strokeArcDivisions"] : CENTERED_VIEW_BOX_VERSION ? ["curveSegments", "normalizeCenteredViewBox"] : ["curveSegments"];
-      if (!EXACT_KEYS(asset2.compilerOptions, EXPECTED_KEYS) || !Number.isSafeInteger(asset2.compilerOptions.curveSegments) || asset2.compilerOptions.curveSegments < 1 || asset2.compilerOptions.curveSegments > 64 || CENTERED_VIEW_BOX_VERSION && typeof asset2.compilerOptions.normalizeCenteredViewBox !== "boolean" || ROUND_STROKE_VERSION && (!Number.isSafeInteger(asset2.compilerOptions.strokeArcDivisions) || asset2.compilerOptions.strokeArcDivisions < 1 || asset2.compilerOptions.strokeArcDivisions > 64)) {
+      if (!EXACT_KEYS(asset.compilerOptions, EXPECTED_KEYS) || !Number.isSafeInteger(asset.compilerOptions.curveSegments) || asset.compilerOptions.curveSegments < 1 || asset.compilerOptions.curveSegments > 64 || CENTERED_VIEW_BOX_VERSION && typeof asset.compilerOptions.normalizeCenteredViewBox !== "boolean" || ROUND_STROKE_VERSION && (!Number.isSafeInteger(asset.compilerOptions.strokeArcDivisions) || asset.compilerOptions.strokeArcDivisions < 1 || asset.compilerOptions.strokeArcDivisions > 64)) {
         throw new TypeError("Invalid SVG compiler options");
       }
     }
-    const EXPRESSION_INDICES = asset2.geometry.expressionIndices;
-    const INDEX_VARIANTS = asset2.geometry.indexVariants;
+    const EXPRESSION_INDICES = asset.geometry.expressionIndices;
+    const INDEX_VARIANTS = asset.geometry.indexVariants;
     if (INDEX_VARIANTS !== void 0 && !IS_OBJECT(INDEX_VARIANTS)) {
       throw new TypeError("Invalid compiled SVG index variants");
     }
@@ -11541,7 +12383,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
         throw new TypeError("Invalid compiled SVG expression indices");
       }
       for (const [NAME, VARIANT] of Object.entries(EXPRESSION_INDICES)) {
-        if (!Object.hasOwn(asset2.metadata.expressions ?? {}, NAME) || !(VARIANT instanceof Uint16Array) || VARIANT.length % 3 || VARIANT.some((index) => index >= VERTEX_COUNT)) {
+        if (!Object.hasOwn(asset.metadata.expressions ?? {}, NAME) || !(VARIANT instanceof Uint16Array) || VARIANT.length % 3 || VARIANT.some((index) => index >= VERTEX_COUNT)) {
           throw new TypeError("Invalid compiled SVG expression index variant: " + NAME);
         }
       }
@@ -11551,23 +12393,23 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
         throw new TypeError("Invalid compiled SVG named index variant: " + NAME);
       }
     }
-    if (asset2.geometry.paintRegions) {
+    if (asset.geometry.paintRegions) {
       for (const VARIANT of [...Object.values(EXPRESSION_INDICES ?? {}), ...Object.values(INDEX_VARIANTS ?? {})]) {
-        validatePaintRegionData2(asset2.geometry.paintRegions, VERTEX_COUNT, VARIANT);
+        validatePaintRegionData2(asset.geometry.paintRegions, VERTEX_COUNT, VARIANT);
       }
     }
-    const SURFACES = asset2.geometry.shaderSurfaces;
-    const DRAW_ORDER = asset2.geometry.drawOrder;
+    const SURFACES = asset.geometry.shaderSurfaces;
+    const DRAW_ORDER = asset.geometry.drawOrder;
     if (SURFACES !== void 0 || DRAW_ORDER !== void 0) {
       if (!Array.isArray(SURFACES) || !Array.isArray(DRAW_ORDER) || !DRAW_ORDER.length || SURFACES.length > 128 || DRAW_ORDER.length > 512) {
         throw new TypeError("Shader-backed SVG assets require bounded shaderSurfaces and drawOrder arrays");
       }
       for (const [INDEX, SURFACE] of SURFACES.entries()) {
-        const STYLE = asset2.metadata.styles?.find(
+        const STYLE = asset.metadata.styles?.find(
           (entry) => entry.target === SURFACE?.target && entry.backend === "shader"
         );
         const CONTOUR = SURFACE?.outline;
-        if (!STYLE || !Number.isSafeInteger(SURFACE.partIndex) || SURFACE.partIndex < 0 || SURFACE.partIndex >= asset2.geometry.partCount || !(SURFACE.fillVertices instanceof Float32Array) || SURFACE.fillVertices.length < 18 || SURFACE.fillVertices.length % 18 || !(CONTOUR instanceof Float32Array) || CONTOUR.length < 6 || CONTOUR.length % 2 || !(SURFACE.edgeColors instanceof Float32Array) || SURFACE.edgeColors.length !== CONTOUR.length * 2) {
+        if (!STYLE || !Number.isSafeInteger(SURFACE.partIndex) || SURFACE.partIndex < 0 || SURFACE.partIndex >= asset.geometry.partCount || !(SURFACE.fillVertices instanceof Float32Array) || SURFACE.fillVertices.length < 18 || SURFACE.fillVertices.length % 18 || !(CONTOUR instanceof Float32Array) || CONTOUR.length < 6 || CONTOUR.length % 2 || !(SURFACE.edgeColors instanceof Float32Array) || SURFACE.edgeColors.length !== CONTOUR.length * 2) {
           throw new TypeError("Invalid retained SVG shader surface at index " + INDEX);
         }
         if (SURFACE.fillVertices.some(
@@ -11583,7 +12425,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
       const REFERENCED = /* @__PURE__ */ new Set();
       for (const COMMAND of DRAW_ORDER) {
         if (COMMAND?.kind === "mesh") {
-          if (!Number.isSafeInteger(COMMAND.firstIndex) || !Number.isSafeInteger(COMMAND.indexCount) || COMMAND.firstIndex < 0 || !Number.isSafeInteger(COMMAND.partIndex) || COMMAND.partIndex < 0 || COMMAND.partIndex >= asset2.geometry.partCount || COMMAND.indexCount < 3 || COMMAND.indexCount % 3 || COMMAND.firstIndex % 3 || COMMAND.firstIndex + COMMAND.indexCount > (INDICES?.length ?? VERTEX_COUNT)) {
+          if (!Number.isSafeInteger(COMMAND.firstIndex) || !Number.isSafeInteger(COMMAND.indexCount) || COMMAND.firstIndex < 0 || !Number.isSafeInteger(COMMAND.partIndex) || COMMAND.partIndex < 0 || COMMAND.partIndex >= asset.geometry.partCount || COMMAND.indexCount < 3 || COMMAND.indexCount % 3 || COMMAND.firstIndex % 3 || COMMAND.firstIndex + COMMAND.indexCount > (INDICES?.length ?? VERTEX_COUNT)) {
             throw new TypeError("Invalid ordered SVG mesh range");
           }
         } else if (COMMAND?.kind === "surface") {
@@ -11599,7 +12441,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
         throw new TypeError("Every retained SVG shader surface must appear once in drawOrder");
       }
     }
-    return asset2;
+    return asset;
   }
   var FIELDS = Object.freeze(["x", "y", "rotation", "scaleX", "scaleY", "opacity"]);
   var DEFAULTS = Object.freeze([0, 0, 0, 1, 1, 1]);
@@ -12056,7 +12898,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
     }
     return OUTPUT;
   }
-  function createVectorAsset(meshRenderer, compiledAsset, { surfaceRenderer = null } = {}) {
+  function retainVectorAsset(meshRenderer, compiledAsset, surfaceRenderer) {
     if (!meshRenderer?.createMesh || !meshRenderer?.drawMesh || !meshRenderer?.deleteMesh) {
       throw new TypeError("A GameKit MeshRenderer is required");
     }
@@ -12075,9 +12917,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
     const POSE_API = typeof meshRenderer.createPoseSource === "function" && typeof meshRenderer.createPoseInstance === "function" && typeof meshRenderer.preparePose === "function" && typeof meshRenderer.prepareCpuPose === "function" && typeof meshRenderer.deletePoseInstance === "function" && typeof meshRenderer.deletePoseSource === "function";
     const GEOMETRY = compiledAsset.geometry, SHADER_GEOMETRY = GEOMETRY.shaderSurfaces ?? [];
     if (SHADER_GEOMETRY.length && (!surfaceRenderer?.createSurface || !surfaceRenderer?.drawSurface || !surfaceRenderer?.deleteSurface)) {
-      throw new TypeError(
-        'This SVG declares backend:"shader"; pass a GameKit YarnSurfaceRenderer when creating the vector asset'
-      );
+      throw new TypeError('This SVG declares backend:"shader" and needs a GameKit YarnSurfaceRenderer');
     }
     const POSE_PROGRAM = POSE_API && !GEOMETRY.drawOrder && !SHADER_GEOMETRY.length ? compilePoseChannels(METADATA) : null;
     let mesh = null;
@@ -12101,14 +12941,14 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
       }
       throw error2;
     }
-    const PLAYERS2 = /* @__PURE__ */ new Set();
+    const ACTORS = /* @__PURE__ */ new Set();
     let disposed = false;
     const REQUIRE_READY = () => {
       if (disposed) {
         throw new Error("Vector asset is disposed");
       }
     };
-    const CREATE_PLAYER = ({ clip = Object.keys(CLIPS)[0], startedAtMs = 0 } = {}) => {
+    const CREATE_ACTOR = ({ clip = Object.keys(CLIPS)[0], startedAtMs = 0 } = {}, release = null) => {
       REQUIRE_READY();
       if (!Object.hasOwn(CLIPS, clip)) {
         throw new TypeError(`Unknown vector clip: ${clip}`);
@@ -12162,7 +13002,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
       let resolvedPose = null;
       let preparedPose = null;
       const RESOLVED_MATRICES = /* @__PURE__ */ new Map();
-      let playerDisposed = false;
+      let actorDisposed = false;
       const POSE_INSTANCE = poseSource ? meshRenderer.createPoseInstance(poseSource) : null;
       const POSE_METRICS = {
         fullSamples: 0,
@@ -12178,10 +13018,10 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
         poseRevision++;
         preparedPose = null;
       };
-      const ASSERT_PLAYER = () => {
+      const ASSERT_ACTOR = () => {
         REQUIRE_READY();
-        if (playerDisposed) {
-          throw new Error("Vector player is disposed");
+        if (actorDisposed) {
+          throw new Error("Vector actor is disposed");
         }
       };
       const SAMPLE_CLIP = (playback, timeMs) => {
@@ -12264,23 +13104,23 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
         }
       };
       const SEEK = (timeMs) => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         const NEXT_TIME_MS = FINITE_TIME(timeMs, "displayTimeMs");
         if (NEXT_TIME_MS !== displayTimeMs || soughtPlaybackRevision !== playbackRevision) {
           displayTimeMs = NEXT_TIME_MS;
           soughtPlaybackRevision = playbackRevision;
           INVALIDATE_POSE();
         }
-        return PLAYER;
+        return ACTOR;
       };
       const SET_EXPRESSION = (name) => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         const VARIANT = METADATA.expressions[name];
         if (!VARIANT) {
           throw new TypeError(`Unknown vector expression: ${name}`);
         }
         if (name === expression && !visibilityOverridden) {
-          return PLAYER;
+          return ACTOR;
         }
         for (const ID of EXPRESSION_PARTS) {
           VISIBLE.set(ID, false);
@@ -12294,20 +13134,20 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
         expression = name;
         visibilityOverridden = false;
         INVALIDATE_POSE();
-        return PLAYER;
+        return ACTOR;
       };
       const SET_PART_VISIBLE = (id, isVisible) => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         if (!PART_INDICES.has(id) || typeof isVisible !== "boolean") {
           throw new TypeError("Known part id and boolean visibility required");
         }
         VISIBLE.set(id, isVisible);
         visibilityOverridden = true;
         INVALIDATE_POSE();
-        return PLAYER;
+        return ACTOR;
       };
       const SET_BASE_POSE = (id, pose) => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         if (!PART_INDICES.has(id) || !pose || typeof pose !== "object" || Array.isArray(pose)) {
           throw new TypeError("Known part and pose object required");
         }
@@ -12333,10 +13173,10 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
         if (changed) {
           INVALIDATE_POSE();
         }
-        return PLAYER;
+        return ACTOR;
       };
       const PLAY = (name, atMs = displayTimeMs) => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         if (!Object.hasOwn(CLIPS, name)) {
           throw new TypeError(`Unknown vector clip: ${name}`);
         }
@@ -12349,7 +13189,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
         return SEEK(atMs);
       };
       const TRANSITION_TO = (name, atMs = displayTimeMs, durationMs = 0) => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         if (!Object.hasOwn(CLIPS, name)) {
           throw new TypeError(`Unknown vector clip: ${name}`);
         }
@@ -12435,7 +13275,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
         return { ...RESULT, visible };
       };
       const GET_SOCKET = (id) => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         const SOCKET = METADATA.sockets[id];
         if (!SOCKET) {
           throw new TypeError(`Unknown vector socket: ${id}`);
@@ -12460,7 +13300,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
         };
       };
       const PART_POSES = () => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         const RESOLVED = WORLD_MATRICES();
         return RESOLVED.parts.map((pose, index) => {
           return {
@@ -12489,7 +13329,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
         return excludedMask;
       };
       const PREPARE_POSE = ({ excludeParts = null } = {}) => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         const EXCLUDED_MASK = VALIDATE_EXCLUSIONS(excludeParts);
         if (!POSE_INSTANCE) {
           return null;
@@ -12560,7 +13400,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
         strokeViewport = null,
         excludeParts = null
       } = {}) => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         VALIDATE_EXCLUSIONS(excludeParts);
         if (!mesh && paintRegions !== null) {
           throw new TypeError("This asset has no named mesh fills");
@@ -12702,7 +13542,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
         });
       };
       const GET_PART_POSE = (id) => {
-        ASSERT_PLAYER();
+        ASSERT_ACTOR();
         if (!PART_INDICES.has(id)) {
           throw new TypeError(`Unknown vector part: ${id}`);
         }
@@ -12716,8 +13556,8 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
           transform: EFFECTIVE.transform.slice()
         };
       };
-      const DISPOSE_PLAYER = () => {
-        if (playerDisposed) {
+      const DISPOSE_ACTOR = () => {
+        if (actorDisposed) {
           return false;
         }
         for (const { timeline: TIMELINE } of TIMELINES.values()) {
@@ -12727,11 +13567,12 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
         if (POSE_INSTANCE) {
           meshRenderer.deletePoseInstance(POSE_INSTANCE);
         }
-        PLAYERS2.delete(PLAYER);
-        playerDisposed = true;
+        ACTORS.delete(ACTOR);
+        actorDisposed = true;
+        release?.();
         return true;
       };
-      const PLAYER = Object.freeze({
+      const ACTOR = Object.freeze({
         seek: SEEK,
         play: PLAY,
         transitionTo: TRANSITION_TO,
@@ -12743,7 +13584,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
         partPoses: PART_POSES,
         preparePose: PREPARE_POSE,
         draw: DRAW,
-        dispose: DISPOSE_PLAYER,
+        dispose: DISPOSE_ACTOR,
         get currentClip() {
           return rootPlayback.kind === "clip" ? rootPlayback.name : rootPlayback.to.name;
         },
@@ -12765,22 +13606,22 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
           return false;
         },
         get disposed() {
-          return playerDisposed;
+          return actorDisposed;
         },
         get poseMetrics() {
           return { ...POSE_METRICS };
         }
       });
-      PLAYERS2.add(PLAYER);
+      ACTORS.add(ACTOR);
       SEEK(startedAtMs);
-      return PLAYER;
+      return ACTOR;
     };
     const DISPOSE = () => {
       if (disposed) {
         return false;
       }
-      for (const PLAYER of [...PLAYERS2]) {
-        PLAYER.dispose();
+      for (const ACTOR of [...ACTORS]) {
+        ACTOR.dispose();
       }
       if (mesh) {
         meshRenderer.deleteMesh(mesh);
@@ -12803,18 +13644,72 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
       metadata: METADATA,
       mesh,
       surfaces: Object.freeze(RETAINED_SURFACES),
-      createPlayer: CREATE_PLAYER,
-      ownsPlayer(player) {
-        return PLAYERS2.has(player) && !player.disposed;
+      createActor: CREATE_ACTOR,
+      ownsActor(actor) {
+        return ACTORS.has(actor) && !actor.disposed;
       },
       dispose: DISPOSE,
       get disposed() {
         return disposed;
       },
-      get playerCount() {
-        return PLAYERS2.size;
+      get actorCount() {
+        return ACTORS.size;
       }
     });
+  }
+  var SHARED_ASSETS = /* @__PURE__ */ new WeakMap();
+  function acquireVectorAsset(context, compiledAsset) {
+    if (!context?.acquireMeshRenderer || !context?.acquireSurfaceRenderer || !context?.onDispose) {
+      throw new TypeError("A GameKit VectorContext is required");
+    }
+    let table = SHARED_ASSETS.get(context);
+    if (!table) {
+      table = /* @__PURE__ */ new Map();
+      SHARED_ASSETS.set(context, table);
+      const TABLE2 = table;
+      context.onDispose(() => {
+        const ENTRIES = [...TABLE2.values()];
+        TABLE2.clear();
+        for (const ENTRY2 of ENTRIES) {
+          ENTRY2.asset.dispose();
+        }
+      });
+    }
+    let entry = table.get(compiledAsset);
+    if (!entry) {
+      const SURFACES = compiledAsset?.geometry?.shaderSurfaces?.length ? context.acquireSurfaceRenderer() : null;
+      entry = {
+        asset: retainVectorAsset(context.acquireMeshRenderer(), compiledAsset, SURFACES),
+        refs: 0
+      };
+      table.set(compiledAsset, entry);
+    }
+    entry.refs++;
+    const ENTRY = entry, TABLE = table;
+    let released = false;
+    return {
+      asset: ENTRY.asset,
+      release() {
+        if (released) {
+          return false;
+        }
+        released = true;
+        if (--ENTRY.refs === 0 && TABLE.get(compiledAsset) === ENTRY) {
+          TABLE.delete(compiledAsset);
+          ENTRY.asset.dispose();
+        }
+        return true;
+      }
+    };
+  }
+  function createVectorActor(context, compiledAsset, options = {}) {
+    const { asset: ASSET, release: RELEASE } = acquireVectorAsset(context, compiledAsset);
+    try {
+      return ASSET.createActor(options, RELEASE);
+    } catch (error2) {
+      RELEASE();
+      throw error2;
+    }
   }
   var IDENTITY_MATRIX = Object.freeze([1, 0, 0, 1, 0, 0]);
   var NOW2 = () => globalThis.performance?.now?.() ?? null;
@@ -12846,8 +13741,8 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
         RUNS.push(run);
       }
       run.indexCount += 3;
-      for (const VERTEX2 of [A, B, C]) {
-        const X = VERTICES[VERTEX2 * 11], Y = VERTICES[VERTEX2 * 11 + 1];
+      for (const VERTEX3 of [A, B, C]) {
+        const X = VERTICES[VERTEX3 * 11], Y = VERTICES[VERTEX3 * 11 + 1];
         run.minX = Math.min(run.minX, X);
         run.minY = Math.min(run.minY, Y);
         run.maxX = Math.max(run.maxX, X);
@@ -12855,10 +13750,6 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
       }
     }
     return RUNS;
-  }
-  function sameGeometry(mesh, geometry) {
-    const VERTICES = mesh.vertices, INDICES = mesh.indices;
-    return VERTICES?.length === geometry.vertices.length && VERTICES.every((value, index) => value === geometry.vertices[index]) && (geometry.indices === void 0 ? INDICES === void 0 : INDICES instanceof Uint16Array && INDICES.length === geometry.indices.length && INDICES.every((value, index) => value === geometry.indices[index]));
   }
   function wholeRunExpressions(geometry, runs) {
     const SOURCE = geometry.indices;
@@ -12943,15 +13834,20 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
     }
     return { uvRects: UV_RECTS, localRects: LOCAL_RECTS, parts: PARTS };
   }
-  function createVectorRasterAtlas(context, asset2, compiledAsset, { pixelsPerUnit = 1, padding = 2 } = {}) {
-    validateCompiledAsset(compiledAsset);
-    const DEVICE2 = context?.device;
-    const MESHES2 = context?.meshRenderer;
-    const SOURCE_MESH_MATCHES = asset2?.mesh ? asset2.mesh.renderer === MESHES2 && asset2.mesh.partCount === compiledAsset.geometry.partCount && sameGeometry(asset2.mesh, compiledAsset.geometry) : compiledAsset.geometry.vertices.length === 0;
-    if (!context?.drawQuads || !context?.drawVectorAsset || !DEVICE2?.createTextureLayerTarget || !DEVICE2?.bindRenderTarget || !DEVICE2?.unbindRenderTarget || !asset2?.ownsPlayer || asset2.disposed || asset2.sourceSha256 !== compiledAsset.sourceSha256 || !SOURCE_MESH_MATCHES) {
-      throw new TypeError(
-        "A VectorContext and a matching live vector asset created on its mesh renderer are required"
-      );
+  function createVectorRasterAtlas(context, compiledAsset, options = {}) {
+    const { asset: ASSET, release: RELEASE } = acquireVectorAsset(context, compiledAsset);
+    try {
+      return bakeRasterAtlas(context, ASSET, RELEASE, compiledAsset, options);
+    } catch (error2) {
+      RELEASE();
+      throw error2;
+    }
+  }
+  function bakeRasterAtlas(context, asset, release, compiledAsset, { pixelsPerUnit = 1, padding = 2 } = {}) {
+    const DEVICE2 = context.device;
+    const MESHES2 = context.meshRenderer;
+    if (!context.drawQuads || !context.drawVectorActor || !DEVICE2?.createTextureLayerTarget || !DEVICE2?.bindRenderTarget || !DEVICE2?.unbindRenderTarget) {
+      throw new TypeError("A VectorContext is required");
     }
     if (!Number.isFinite(pixelsPerUnit) || pixelsPerUnit <= 0 || !Number.isSafeInteger(padding) || padding < 1) {
       throw new TypeError("A positive pixel scale and padding are required");
@@ -13009,10 +13905,10 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
     let rasterDraws = 0;
     let vectorDraws = 0;
     const FALLBACK_REASONS = /* @__PURE__ */ Object.create(null);
-    const FALLBACK = (player, options, reason) => {
+    const FALLBACK = (actor, options, reason) => {
       vectorDraws++;
       FALLBACK_REASONS[reason] = (FALLBACK_REASONS[reason] ?? 0) + 1;
-      context.drawVectorAsset(player, options);
+      context.drawVectorActor(actor, options);
       return { backend: "vector", reason };
     };
     const RELEASE_TARGET = () => {
@@ -13023,7 +13919,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
       }
     };
     const BAKE = () => {
-      if (disposed || asset2.disposed) {
+      if (disposed || asset.disposed) {
         throw new Error("Vector raster atlas or source asset is disposed");
       }
       if (unsupportedReason) {
@@ -13060,7 +13956,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
         const TOP = ATLAS.height - (region.y + region.height);
         for (let index = 0; index < RUNS.length; index++) {
           const RUN = RUNS[index], [TILE_X, TILE_Y] = PACKED.positions[index], TX = region.x + TILE_X + padding - pixelsPerUnit * RUN.minX, TY = TOP + TILE_Y + padding - pixelsPerUnit * RUN.minY;
-          MESHES2.drawMesh(asset2.mesh, {
+          MESHES2.drawMesh(asset.mesh, {
             projection: [
               2 * pixelsPerUnit / ATLAS.width,
               0,
@@ -13104,39 +14000,39 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
         return { backend: "vector", reason: "bakeFailed" };
       }
     };
-    const DRAW = (player, options = {}) => {
-      if (disposed || asset2.disposed) {
+    const DRAW = (actor, options = {}) => {
+      if (disposed || asset.disposed) {
         throw new Error("Vector raster atlas or source asset is disposed");
       }
-      if (!asset2.ownsPlayer(player)) {
-        throw new TypeError("A live player owned by this vector asset is required");
+      if (!asset.ownsActor(actor)) {
+        throw new TypeError("A live actor owned by this vector asset is required");
       }
       if (unsupportedReason) {
-        return FALLBACK(player, options, unsupportedReason);
+        return FALLBACK(actor, options, unsupportedReason);
       }
       if (options.forceColor === true) {
-        return FALLBACK(player, options, "forceColor");
+        return FALLBACK(actor, options, "forceColor");
       }
       if (options.alpha !== void 0 && options.alpha < 1 || options.color?.[3] < 1) {
-        return FALLBACK(player, options, "globalOpacity");
+        return FALLBACK(actor, options, "globalOpacity");
       }
-      if (player.hasOpacityChannel) {
-        return FALLBACK(player, options, "opacityChannel");
+      if (actor.hasOpacityChannel) {
+        return FALLBACK(actor, options, "opacityChannel");
       }
-      if (player.hasNonUnitBaseOpacity) {
-        return FALLBACK(player, options, "baseOpacity");
+      if (actor.hasNonUnitBaseOpacity) {
+        return FALLBACK(actor, options, "baseOpacity");
       }
       if (options.depthWriteAlphaThreshold != null) {
-        return FALLBACK(player, options, "depthWriteAlphaThreshold");
+        return FALLBACK(actor, options, "depthWriteAlphaThreshold");
       }
       const RESULT = BAKE();
       if (RESULT.backend !== "raster") {
-        return FALLBACK(player, options, RESULT.reason);
+        return FALLBACK(actor, options, RESULT.reason);
       }
       const { excludeParts: EXCLUDE_PARTS = null, matrix: MATRIX = IDENTITY_MATRIX, ...DRAW_OPTIONS } = options;
-      const POSE = player.preparePose({ excludeParts: EXCLUDE_PARTS });
+      const POSE = actor.preparePose({ excludeParts: EXCLUDE_PARTS });
       if (!POSE) {
-        return FALLBACK(player, options, "poseUnavailable");
+        return FALLBACK(actor, options, "poseUnavailable");
       }
       context.drawQuads({
         ...DRAW_OPTIONS,
@@ -13160,8 +14056,12 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
       try {
         RELEASE_TARGET();
       } finally {
-        if (region && DEVICE2.state === "ready") {
-          ATLAS.release(region);
+        try {
+          if (region && DEVICE2.state === "ready") {
+            ATLAS.release(region);
+          }
+        } finally {
+          release();
         }
       }
       return true;
@@ -13173,7 +14073,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
       get stats() {
         return {
           baked: Boolean(
-            !disposed && !asset2.disposed && target && bakedRestores === (DEVICE2.stats.restores ?? 0)
+            !disposed && !asset.disposed && target && bakedRestores === (DEVICE2.stats.restores ?? 0)
           ),
           disposed,
           reason: unsupportedReason ?? (lastFailure ? "bakeFailed" : null),
@@ -13197,10 +14097,6 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
   var CACHE = /* @__PURE__ */ new WeakMap();
   var MAX_FRAMES = 512;
   var NOW3 = () => globalThis.performance?.now?.() ?? null;
-  function sameGeometry2(mesh, geometry) {
-    const VERTICES = mesh.vertices, INDICES = mesh.indices;
-    return VERTICES?.length === geometry.vertices.length && VERTICES.every((value, index) => value === geometry.vertices[index]) && (geometry.indices === void 0 ? INDICES === void 0 : INDICES instanceof Uint16Array && INDICES.length === geometry.indices.length && INDICES.every((value, index) => value === geometry.indices[index]));
-  }
   function sampleFrames(clip, interval) {
     const COUNT = Math.ceil(clip.durationMs / interval);
     if (!Number.isSafeInteger(COUNT) || COUNT < 1 || COUNT > MAX_FRAMES) {
@@ -13214,12 +14110,12 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
       };
     });
   }
-  function sampledBounds(player, geometry, samples) {
+  function sampledBounds(actor, geometry, samples) {
     const VERTICES = geometry.vertices;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const SAMPLE of samples) {
-      player.seek(SAMPLE.timeMs);
-      const POSES = player.partPoses();
+      actor.seek(SAMPLE.timeMs);
+      const POSES = actor.partPoses();
       for (let offset = 0; offset < VERTICES.length; offset += 11) {
         const POSE = POSES[VERTICES[offset + 10]];
         if (!POSE.visible || POSE.opacity <= 0) {
@@ -13281,7 +14177,16 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
       })
     });
   }
-  function createVectorSpriteAtlas(context, asset2, compiledAsset, {
+  function createVectorSpriteAtlas(context, compiledAsset, options = {}) {
+    const { asset: ASSET, release: RELEASE } = acquireVectorAsset(context, compiledAsset);
+    try {
+      return bakeSpriteAtlas(context, ASSET, RELEASE, compiledAsset, options);
+    } catch (error2) {
+      RELEASE();
+      throw error2;
+    }
+  }
+  function bakeSpriteAtlas(context, asset, release, compiledAsset, {
     clip,
     expression = compiledAsset?.metadata?.defaultExpression,
     sampleIntervalMs = 100,
@@ -13291,11 +14196,9 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
     supersample = 1
   } = {}) {
     validateCompiledAsset(compiledAsset);
-    const DEVICE2 = context?.device, MESHES2 = context?.meshRenderer, GEOMETRY = compiledAsset.geometry, SOURCE_MESH_MATCHES = asset2?.mesh ? asset2.mesh.renderer === MESHES2 && asset2.mesh.partCount === GEOMETRY.partCount && sameGeometry2(asset2.mesh, GEOMETRY) : GEOMETRY.vertices.length === 0;
-    if (!context?.drawQuads || !DEVICE2?.createRenderTarget || !DEVICE2?.blitRenderTarget || !DEVICE2?.createTextureLayerTarget || !DEVICE2?.bindRenderTarget || !DEVICE2?.unbindRenderTarget || !asset2?.ownsPlayer || asset2.disposed || asset2.sourceSha256 !== compiledAsset.sourceSha256 || !SOURCE_MESH_MATCHES) {
-      throw new TypeError(
-        "A VectorContext and a matching live vector asset created on its mesh renderer are required"
-      );
+    const DEVICE2 = context.device, MESHES2 = context.meshRenderer, GEOMETRY = compiledAsset.geometry;
+    if (!context.drawQuads || !DEVICE2?.createRenderTarget || !DEVICE2?.blitRenderTarget || !DEVICE2?.createTextureLayerTarget || !DEVICE2?.bindRenderTarget || !DEVICE2?.unbindRenderTarget) {
+      throw new TypeError("A VectorContext is required");
     }
     if (!Object.hasOwn(compiledAsset.metadata.clips, clip) || !Object.hasOwn(compiledAsset.metadata.expressions, expression)) {
       throw new TypeError("Known authored clip and expression required");
@@ -13323,10 +14226,10 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
       supersample
     ]);
     const ATLAS = DEVICE2.textureAtlas;
-    let cached = CACHE.get(asset2);
+    let cached = CACHE.get(asset);
     if (!cached) {
       cached = /* @__PURE__ */ new Map();
-      CACHE.set(asset2, cached);
+      CACHE.set(asset, cached);
     }
     let record = cached.get(KEY);
     if (!record) {
@@ -13338,18 +14241,18 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
         reason = "timeDependentMorph";
       } else if (GEOMETRY.nonScalingStroke) {
         reason = "nonScalingStroke";
-      } else if (!asset2.mesh) {
+      } else if (!asset.mesh) {
         reason = "sourceMeshUnavailable";
       }
       const SAMPLES = reason ? null : sampleFrames(DEFINITION, sampleIntervalMs);
       if (!reason && !SAMPLES) {
         reason = "frameLimit";
       }
-      const PLAYER = reason ? null : asset2.createPlayer({ clip, startedAtMs: 0 });
-      if (PLAYER && expression !== compiledAsset.metadata.defaultExpression) {
-        PLAYER.setExpression(expression);
+      const ACTOR = reason ? null : asset.createActor({ clip, startedAtMs: 0 });
+      if (ACTOR && expression !== compiledAsset.metadata.defaultExpression) {
+        ACTOR.setExpression(expression);
       }
-      const BOUNDS = PLAYER ? sampledBounds(PLAYER, GEOMETRY, SAMPLES) : null;
+      const BOUNDS = ACTOR ? sampledBounds(ACTOR, GEOMETRY, SAMPLES) : null;
       if (!reason && !BOUNDS) {
         reason = "emptyFrames";
       }
@@ -13376,14 +14279,14 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
         }
       }
       if (reason) {
-        PLAYER?.dispose();
+        ACTOR?.dispose();
       }
       record = {
         key: KEY,
         refs: 0,
         reason,
         lastError: null,
-        player: reason ? null : PLAYER,
+        actor: reason ? null : ACTOR,
         samples: SAMPLES,
         bounds: BOUNDS,
         packed: PACKED,
@@ -13411,7 +14314,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
     record.refs++;
     let disposed = false;
     const BAKE = () => {
-      if (disposed || asset2.disposed) {
+      if (disposed || asset.disposed) {
         throw new Error("Vector sprite atlas or source asset is disposed");
       }
       if (record.reason) {
@@ -13468,8 +14371,8 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
         const DIRECT = supersample === 1, BAKE_WIDTH = DIRECT ? ATLAS.width : record.packed.width, BAKE_HEIGHT = DIRECT ? ATLAS.height : record.packed.height, ORIGIN_X = DIRECT ? REGION.x : 0, ORIGIN_Y = DIRECT ? ATLAS.height - (REGION.y + REGION.height) : 0;
         for (let index = 0; index < record.samples.length; index++) {
           const SAMPLE = record.samples[index], FRAME = record.definition.frames[index], TX = ORIGIN_X + FRAME.x - pixelsPerUnit * MIN_X, TY = ORIGIN_Y + FRAME.y - pixelsPerUnit * MIN_Y;
-          record.player.seek(SAMPLE.timeMs);
-          record.player.draw({
+          record.actor.seek(SAMPLE.timeMs);
+          record.actor.draw({
             paintRegions: CAPTURED_PAINT,
             projection: [
               2 * pixelsPerUnit / BAKE_WIDTH,
@@ -13559,13 +14462,14 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
           if (record.region && DEVICE2.state === "ready") {
             ATLAS.release(record.region);
           }
-          record.player?.dispose();
+          record.actor?.dispose();
           cached.delete(KEY);
           if (cached.size === 0) {
-            CACHE.delete(asset2);
+            CACHE.delete(asset);
           }
         }
       }
+      release();
       return true;
     };
     return Object.freeze({
@@ -13603,7 +14507,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
           bakeCount: record.bakeCount,
           bakeCpuMs: record.bakeCpuMs,
           baked: Boolean(
-            !disposed && !asset2.disposed && record.target && record.bakedRestores === (DEVICE2.stats.restores ?? 0)
+            !disposed && !asset.disposed && record.target && record.bakedRestores === (DEVICE2.stats.restores ?? 0)
           )
         };
       }
@@ -38396,7 +39300,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
   var MAX_SOURCE_BYTES = 512 * 1024;
   var MAX_ELEMENTS = 4096;
   var NUMBER = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
-  var ATTRIBUTES2 = /* @__PURE__ */ new Set([
+  var ATTRIBUTES3 = /* @__PURE__ */ new Set([
     "id",
     "xmlns",
     "width",
@@ -38632,7 +39536,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
         if (NAME === "stop" && node.parentNode?.nodeName !== "linearGradient") {
           throw new TypeError("stop must be inside linearGradient");
         }
-        const ALLOWED_ATTRIBUTES = NAME === "linearGradient" ? GRADIENT_ATTRIBUTES : NAME === "stop" ? STOP_ATTRIBUTES : ATTRIBUTES2;
+        const ALLOWED_ATTRIBUTES = NAME === "linearGradient" ? GRADIENT_ATTRIBUTES : NAME === "stop" ? STOP_ATTRIBUTES : ATTRIBUTES3;
         for (let i = 0; i < node.attributes.length; i++) {
           const ATTRIBUTE = node.attributes.item(i), KEY = ATTRIBUTE.name, VALUE = ATTRIBUTE.value;
           if (KEY === "xmlns") {
@@ -38815,8 +39719,8 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
     for (let triangle = 0; triangle + 2 < COUNT; triangle += 3) {
       for (let corner = 0; corner < 3; corner++) {
         const AT = triangle + corner;
-        const VERTEX2 = INDEX ? INDEX.getX(AT) : AT;
-        vertices.push(POSITION.getX(VERTEX2), POSITION.getY(VERTEX2), ...rgba2, 0, 0, 0, 0, partIndex);
+        const VERTEX3 = INDEX ? INDEX.getX(AT) : AT;
+        vertices.push(POSITION.getX(VERTEX3), POSITION.getY(VERTEX3), ...rgba2, 0, 0, 0, 0, partIndex);
       }
     }
   }
@@ -38924,10 +39828,10 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
     );
     for (let triangle = 0; triangle + 2 < COUNT; triangle += 3) {
       const POINTS = [0, 1, 2].map((corner) => {
-        const AT = triangle + corner, VERTEX2 = INDEX ? INDEX.getX(AT) : AT;
+        const AT = triangle + corner, VERTEX3 = INDEX ? INDEX.getX(AT) : AT;
         return {
-          x: POSITION.getX(VERTEX2),
-          y: POSITION.getY(VERTEX2)
+          x: POSITION.getX(VERTEX3),
+          y: POSITION.getY(VERTEX3)
         };
       });
       const TIMES = POINTS.map(GRADIENT_T), LOW = Math.min(...TIMES), HIGH = Math.max(...TIMES);
@@ -39001,10 +39905,10 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
       const CELL_KEY = (x, y) => `${x},${y}`;
       for (let at = 0; at + 2 < COUNT; at += 3) {
         const POINTS = [0, 1, 2].map((corner) => {
-          const VERTEX2 = INDEX ? INDEX.getX(at + corner) : at + corner;
+          const VERTEX3 = INDEX ? INDEX.getX(at + corner) : at + corner;
           return {
-            x: POSITION.getX(VERTEX2),
-            y: POSITION.getY(VERTEX2)
+            x: POSITION.getX(VERTEX3),
+            y: POSITION.getY(VERTEX3)
           };
         });
         const BOUNDS2 = {
@@ -39797,10 +40701,10 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
     let write = 0;
     for (let at = 0; at + 2 < COUNT; at += 3) {
       for (let corner = 0; corner < 3; corner++) {
-        const VERTEX2 = INDEX ? INDEX.getX(at + corner) : at + corner;
+        const VERTEX3 = INDEX ? INDEX.getX(at + corner) : at + corner;
         const POINT = {
-          x: POSITION.getX(VERTEX2),
-          y: POSITION.getY(VERTEX2)
+          x: POSITION.getX(VERTEX3),
+          y: POSITION.getY(VERTEX3)
         };
         FILL[write++] = POINT.x;
         FILL[write++] = POINT.y;
@@ -41094,8 +41998,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
   var CONTEXT = new VectorContext(DEVICE);
   var MESHES = CONTEXT.acquireMeshRenderer();
   var compiled = seedScout;
-  var asset = createVectorAsset(MESHES, compiled);
-  var viewBox = asset.viewBox;
+  var viewBox = compiled.viewBox;
   var QUALITY_PRESETS = Object.freeze({ low: 2, standard: 4, high: 16 });
   var QUALITY_LOADER = createVectorAssetLoader({ maxEntries: 3 });
   var QUALITY_CACHE = /* @__PURE__ */ new Map([["standard", seedScout]]);
@@ -41587,7 +42490,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
   }
   function invalidatePreparation(force = false) {
     const CONFIG_KEY = JSON.stringify([
-      asset.sourceSha256,
+      compiled.sourceSha256,
       STATE.qualityKey,
       PART_INPUT.checked,
       Number(RESOLUTION_INPUT.value),
@@ -41611,7 +42514,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
     if (index === 0) {
       return 0;
     }
-    return Math.floor(index * 73 % 997 / 997 * asset.metadata.clips[clip].durationMs);
+    return Math.floor(index * 73 % 997 / 997 * compiled.metadata.clips[clip].durationMs);
   }
   function clipFor(index) {
     const CHOSEN = CLIP_INPUT.value;
@@ -41625,7 +42528,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
     while (PLAYERS.length < COUNT) {
       const INDEX = PLAYERS.length;
       const CLIP = clipFor(INDEX);
-      const PLAYER = asset.createPlayer({ clip: CLIP, startedAtMs: -phaseFor(INDEX, CLIP) });
+      const PLAYER = createVectorActor(CONTEXT, compiled, { clip: CLIP, startedAtMs: -phaseFor(INDEX, CLIP) });
       PLAYER.setExpression(EXPRESSION_INPUT.value);
       PLAYERS.push(PLAYER);
     }
@@ -41691,7 +42594,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
     return POSITIONS;
   }
   function synchronizeTimeControl() {
-    const CLIP = asset.metadata.clips[CLIP_INPUT.value];
+    const CLIP = compiled.metadata.clips[CLIP_INPUT.value];
     const DURATION = CLIP.durationMs * (CLIP.loop === "alternate" ? 2 : 1);
     const DISPLAY_TIME = CLIP.loop === "once" ? Math.min(DURATION, STATE.timeMs) : STATE.timeMs % DURATION;
     TIME_INPUT.max = String(DURATION);
@@ -41780,7 +42683,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
       if (STATE.contextLost || DEVICE.state !== "ready" || DEVICE.gl.isContextLost()) {
         throw new Error("Graphics context is unavailable during mesh quality switch");
       }
-      const NEXT_ASSET = createVectorAsset(MESHES, descriptor);
+      const PROBE = createVectorActor(CONTEXT, descriptor);
       clearSpriteSets();
       STATE.atlas?.dispose();
       STATE.atlas = null;
@@ -41788,10 +42691,9 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
       for (const PLAYER of PLAYERS.splice(0)) {
         PLAYER.dispose();
       }
-      asset.dispose();
-      asset = NEXT_ASSET;
       compiled = descriptor;
-      viewBox = asset.viewBox;
+      viewBox = compiled.viewBox;
+      PROBE.dispose();
       STATE.qualityKey = value;
       STATE.benchmark = null;
       STATE.qualityAppliedGeneration++;
@@ -41846,7 +42748,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
     const STARTED = performance.now();
     let candidate = null;
     try {
-      candidate = createVectorRasterAtlas(CONTEXT, asset, compiled, {
+      candidate = createVectorRasterAtlas(CONTEXT, compiled, {
         pixelsPerUnit: RESOLUTION / Math.max(viewBox[2], viewBox[3]),
         padding: 2
       });
@@ -41858,7 +42760,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
         candidate.dispose();
       }
       STATE.bakeCpuMs = performance.now() - STARTED;
-      setStatus(`같은 SVG ${asset.sourceSha256.slice(0, 12)} · 래스터 부위 그림 ${RESOLUTION}px`);
+      setStatus(`같은 SVG ${compiled.sourceSha256.slice(0, 12)} · 래스터 부위 그림 ${RESOLUTION}px`);
     } catch (error2) {
       candidate?.dispose();
       STATE.atlasReason = error2.message;
@@ -41881,7 +42783,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
   }
   function ensureSpriteSets(forceAll = false) {
     const CONFIG_KEY = JSON.stringify([
-      asset.sourceSha256,
+      compiled.sourceSha256,
       STATE.qualityKey,
       PART_INPUT.checked,
       Number(RESOLUTION_INPUT.value),
@@ -41924,7 +42826,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
       let plannedBytes = 0;
       let bakeCount = 0;
       try {
-        baker = createVectorSpriteAtlas(CONTEXT, asset, compiled, {
+        baker = createVectorSpriteAtlas(CONTEXT, compiled, {
           clip: CLIP,
           expression: EXPRESSION,
           sampleIntervalMs: Number(SAMPLE_INTERVAL_INPUT.value),
@@ -41996,7 +42898,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
   }
   function spriteKey(clip, expression = EXPRESSION_INPUT.value) {
     return JSON.stringify([
-      asset.sourceSha256,
+      compiled.sourceSha256,
       STATE.qualityKey,
       clip,
       expression,
@@ -42116,11 +43018,11 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
     for (let i = 0; i < PLAYERS.length; i++) {
       const OPTIONS = { matrix: positions[i] };
       if (side === "vector") {
-        CONTEXT.drawVectorAsset(PLAYERS[i], OPTIONS);
+        CONTEXT.drawVectorActor(PLAYERS[i], OPTIONS);
         continue;
       }
       if (!STATE.atlas) {
-        CONTEXT.drawVectorAsset(PLAYERS[i], OPTIONS);
+        CONTEXT.drawVectorActor(PLAYERS[i], OPTIONS);
         vectorFallbacks++;
         REASONS.add("atlas unavailable");
         continue;
@@ -42145,7 +43047,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
       const ENTRY = STATE.spriteSets.get(spriteKey(VECTOR_PLAYER.currentClip, VECTOR_PLAYER.currentExpression));
       const OPTIONS = { matrix: positions[i] };
       if (!ENTRY?.resource) {
-        CONTEXT.drawVectorAsset(VECTOR_PLAYER, OPTIONS);
+        CONTEXT.drawVectorActor(VECTOR_PLAYER, OPTIONS);
         vectorFallbacks++;
         REASONS.add(ENTRY?.reason ?? "spriteUnavailable");
         continue;
@@ -42226,15 +43128,15 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
       SPRITE_METRICS.textContent = `${SAMPLE_INTERVAL_INPUT.value}ms 간격 · ${SPRITE_FRAMES}프레임 · 처음 굽기 ${SPRITE_BAKE_MS.toFixed(1)} ms · 아틀라스 ${SPRITE_BYTES.toLocaleString()} B · 프레임 선택 오차 최대 ${SAMPLE_INTERVAL_INPUT.value}ms · 스프라이트 ${spriteResult.spriteDraws}개 / 벡터 대체 ${spriteResult.vectorFallbacks}개` + (spriteResult.reasons.length ? ` (${spriteResult.reasons.join(", ")})` : "");
       const FAILED_PREPARATIONS = PREPARATION?.entries.filter((entry) => !entry.ready) ?? [];
       PREPARATION_METRICS.textContent = PREPARATION ? `${PREPARATION.status} ${PREPARATION.completed}/${PREPARATION.total} · planned ${PREPARATION.estimatedBytes.toLocaleString()} B · allocated ${PREPARATION.allocatedBytes.toLocaleString()} / ${PREPARATION.budgetBytes.toLocaleString()} B · initial CPU ${PREPARATION.cpuMs.toFixed(1)} ms · ${PREPARATION.entries.filter((entry) => entry.ready).length} sprite layers of one texture array${FAILED_PREPARATIONS.length ? ` · ${FAILED_PREPARATIONS.map((entry) => `${entry.clip}/${entry.expression}:${entry.reason}`).join(", ")}` : ""}` : "Preparing atlas manifest…";
-      PATH_METRICS.textContent = `SVG SHA ${asset.sourceSha256.slice(0, 12)} · 래스터 ${rasterResult.rasterDraws}개 · 벡터 대체 ${rasterResult.vectorFallbacks}개` + (rasterResult.reasons.length ? ` (${rasterResult.reasons.join(", ")})` : "") + ` · GPU pose ${POSES?.gpuDrawInstances ?? 0}개 · CPU pose ${POSES?.cpuDrawInstances ?? 0}개 · GPU 버퍼 ${DEVICE_STATS.gpuBufferBytes.toLocaleString()} B · GPU 텍스처 ${DEVICE_STATS.gpuTextureBytes.toLocaleString()} B · 메시 업로드 ${MESH_STATS.geometryBytesUploaded.toLocaleString()} B · 선택 표정 벡터 ${VECTOR_TRIANGLES} 삼각형 / 부위 atlas ${ATLAS_STATS ? ATLAS_STATS.runCount * 2 : 0} 삼각형 · ${hardware.backend} · ${hardware.renderer} · ${hardware.vendor}`;
+      PATH_METRICS.textContent = `SVG SHA ${compiled.sourceSha256.slice(0, 12)} · 래스터 ${rasterResult.rasterDraws}개 · 벡터 대체 ${rasterResult.vectorFallbacks}개` + (rasterResult.reasons.length ? ` (${rasterResult.reasons.join(", ")})` : "") + ` · GPU pose ${POSES?.gpuDrawInstances ?? 0}개 · CPU pose ${POSES?.cpuDrawInstances ?? 0}개 · GPU 버퍼 ${DEVICE_STATS.gpuBufferBytes.toLocaleString()} B · GPU 텍스처 ${DEVICE_STATS.gpuTextureBytes.toLocaleString()} B · 메시 업로드 ${MESH_STATS.geometryBytesUploaded.toLocaleString()} B · 선택 표정 벡터 ${VECTOR_TRIANGLES} 삼각형 / 부위 atlas ${ATLAS_STATS ? ATLAS_STATS.runCount * 2 : 0} 삼각형 · ${hardware.backend} · ${hardware.renderer} · ${hardware.vendor}`;
       BY_ID("memory-metrics").textContent = `GPU buffers ${DEVICE_STATS.gpuBufferBytes.toLocaleString()} B · textures ${DEVICE_STATS.gpuTextureBytes.toLocaleString()} B (render-target color included) · render targets ${DEVICE_STATS.gpuRenderTargetBytes.toLocaleString()} B (overlap with textures; do not sum)`;
       showTradeoffTable(TRADEOFF, QUALITY);
     }
     STATE.last = {
       comparisonModes: comparisonModes(),
       frame: STATE.frameOrdinal,
-      assetId: asset.id,
-      sourceSha256: asset.sourceSha256,
+      assetId: compiled.metadata.id,
+      sourceSha256: compiled.sourceSha256,
       mode: MODE_INPUT.value,
       layout: STATE.layout,
       count: PLAYERS.length,
@@ -42342,7 +43244,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
       timer.poll();
       if (STATE.previousFrameMs !== null && STATE.playing) {
         STATE.timeMs += Math.max(0, Math.min(80, now2 - STATE.previousFrameMs)) * Number(PLAYBACK_RATE_INPUT.value);
-        const CLIP = asset.metadata.clips[CLIP_INPUT.value];
+        const CLIP = compiled.metadata.clips[CLIP_INPUT.value];
         if (CLIP.loop === "once" && STATE.timeMs >= CLIP.durationMs) {
           STATE.timeMs = CLIP.durationMs;
           STATE.playing = false;
@@ -42477,7 +43379,6 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
     clearSpriteSets();
     STATE.atlas?.dispose();
     STATE.atlas = null;
-    asset.dispose();
     CONTEXT.dispose();
     DEVICE.dispose();
     return true;
@@ -42565,7 +43466,7 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
   });
   PLAY_BUTTON.addEventListener("click", () => {
     resetTimer();
-    const CLIP = asset.metadata.clips[CLIP_INPUT.value];
+    const CLIP = compiled.metadata.clips[CLIP_INPUT.value];
     if (!STATE.playing && CLIP.loop === "once" && STATE.timeMs >= CLIP.durationMs) {
       STATE.timeMs = 0;
     }
