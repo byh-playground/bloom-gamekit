@@ -5168,7 +5168,7 @@ var MeshRenderer = class {
       viewProjection: VIEW_PROJECTION,
       worldMatrix: WORLD_MATRIX
     } = options;
-    this._drawMeshInstances(mesh, {
+    this.drawMeshInstances(mesh, {
       matrices,
       count,
       projection: PROJECTION,
@@ -5366,11 +5366,12 @@ var MeshRenderer = class {
     this.alphaQueueState = null;
   }
   /**
-   * Internal ordered instance append used when one retained pose has several transforms. A mesh with materials that
+   * Ordered instance append used when one retained pose has several transforms (silhouettes). `matrices` holds
+   * six floats per instance and the first `prefixCount` instances use `prefixColor`. A mesh with materials that
    * writes depth is drawn in runs so a yarn or sketch edge, whose pixels are only partly covered, never writes depth;
    * the runs keep the triangle order, so painter order is unchanged.
    */
-  _drawMeshInstances(mesh, options = {}) {
+  drawMeshInstances(mesh, options = {}) {
     if (mesh?.materials && options.depthWrite === true && (options.depthWriteAlphaThreshold ?? null) === null && (options.indexRange ?? null) === null && this.meshes.has(mesh)) {
       const RUNS = this._materialRuns(mesh, options.indexVariant ?? null);
       if (RUNS.length > 1) {
@@ -7807,6 +7808,40 @@ var VectorContext = class {
     if (!this.meshRenderer) {
       throw new TypeError("createMesh required");
     }
+    return this._silhouette(
+      { transform, color, width, radius, outlineScale },
+      (instances) => this.meshRenderer.drawMeshInstances(mesh, {
+        ...instances,
+        morph,
+        parts,
+        color: this.forceColor ?? WHITE2,
+        forceColor: this.forceColor !== null,
+        alpha: this._globalAlpha,
+        whiteFlash: this._filter === "brightness(0) invert(1)",
+        clips: this.vector.clips,
+        stencilRef: this.vector.stencilDepth || null
+      })
+    );
+  }
+  /**
+   * Draw a vector actor's silhouette and body in one ordered instance batch, like drawMeshSilhouette. `matrix` is
+   * the actor's local matrix; the other options are drawVectorActor's (no world mode).
+   */
+  drawVectorActorSilhouette(actor, { matrix = null, color = "black", width, radius = 128, outlineScale = null, ...options } = {}) {
+    this._frame();
+    if (typeof actor?.draw !== "function") {
+      throw new TypeError("A vector actor is required");
+    }
+    if (options.viewProjection !== void 0 || options.worldMatrix !== void 0) {
+      throw new TypeError("Actor silhouettes are 2D only");
+    }
+    return this._silhouette(
+      { transform: matrix, color, width, radius, outlineScale },
+      (instances) => actor.draw({ ...this._actorParams(options), projection: instances.projection, instances })
+    );
+  }
+  /** Silhouette instance transforms for the current context transform; `submit` appends them as one draw. */
+  _silhouette({ transform, color, width, radius, outlineScale }, submit) {
     finite(width, "silhouette width");
     finite(radius, "silhouette radius");
     if (width < 0 || radius < 0) {
@@ -7860,25 +7895,30 @@ var VectorContext = class {
           MATRICES[AT + 4] = A * te + C * tf + E_OFFSET;
           MATRICES[AT + 5] = B * te + D * tf + F_OFFSET;
         }
-        this.meshRenderer._drawMeshInstances(mesh, {
+        submit({
           matrices: MATRICES,
           count: COUNT,
           projection: this.vector.projection,
-          morph,
-          parts,
-          color: this.forceColor ?? WHITE2,
-          forceColor: this.forceColor !== null,
           prefixColor: outline,
           prefixCount: OUTLINE_INSTANCES,
-          forceColorPrefixCount: OUTLINE_INSTANCES,
-          alpha: this._globalAlpha,
-          whiteFlash: this._filter === "brightness(0) invert(1)",
-          clips: this.vector.clips,
-          stencilRef: this.vector.stencilDepth || null
+          forceColorPrefixCount: OUTLINE_INSTANCES
         });
       },
       BOUNDS
     );
+  }
+  /** Actor draw parameters from the context state: paint state applies and the caller's alpha multiplies. */
+  _actorParams(options) {
+    const FORCED = options.forceColor ?? this.forceColor !== null;
+    return {
+      clips: this.vector.clips,
+      stencilRef: this.vector.stencilDepth || null,
+      ...options,
+      alpha: (options.alpha ?? 1) * this._globalAlpha,
+      forceColor: FORCED,
+      color: options.color ?? (this.forceColor && FORCED ? this.forceColor : [1, 1, 1, 1]),
+      whiteFlash: options.whiteFlash ?? this._filter === "brightness(0) invert(1)"
+    };
   }
   /** Submit a vector actor after earlier paint, without flushing a compatible mesh run. */
   drawVectorActor(actor, options = {}) {
@@ -7887,17 +7927,7 @@ var VectorContext = class {
       throw new TypeError("A vector actor is required");
     }
     this.vector.flush();
-    const WORLD_MODE = options.viewProjection !== void 0 || options.worldMatrix !== void 0, FORCED = options.forceColor ?? this.forceColor !== null;
-    const PARAMS = {
-      clips: this.vector.clips,
-      stencilRef: this.vector.stencilDepth || null,
-      ...options,
-      // Like drawMesh: paint state of the context applies, and the caller's alpha multiplies the context's.
-      alpha: (options.alpha ?? 1) * this._globalAlpha,
-      forceColor: FORCED,
-      color: options.color ?? (this.forceColor && FORCED ? this.forceColor : [1, 1, 1, 1]),
-      whiteFlash: options.whiteFlash ?? this._filter === "brightness(0) invert(1)"
-    };
+    const WORLD_MODE = options.viewProjection !== void 0 || options.worldMatrix !== void 0, PARAMS = this._actorParams(options);
     if (!WORLD_MODE) {
       PARAMS.projection = this.vector.projection;
       if (options.matrix) {
