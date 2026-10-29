@@ -7941,6 +7941,10 @@ var VectorContext = class {
     }
     actor.draw(PARAMS);
   }
+  /** Evaluates every prepared actor pose now, before the actors are submitted. */
+  preparePoses() {
+    this.meshRenderer?.preparePoses();
+  }
   flush(reason = "explicit") {
     this._frame();
     this.meshRenderer?.flush(reason);
