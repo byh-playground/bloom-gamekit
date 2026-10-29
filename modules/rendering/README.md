@@ -321,6 +321,10 @@ The browser's network cache is origin/top-site partitioned and browser-managed. 
 
 이는 실제 GL 호출·GPU 실행을 포함하지 않는 제한된 비용 표본이며 FPS 개선 주장에 사용하지 않습니다. 실제 Chromium/WebGL E2E에는 batching/capacity/painter order, gradient stop 변경·context loss 시나리오를 반영했지만 이 환경의 Chromium socket 권한 제한으로 실행하지 못했습니다. 실기기/GPU 검증은 남아 있습니다. silhouette topology·인스턴스 구조 재작성과 frame 간 gradient 캐시는 현재 소비자에서 추가 이익이 확인되지 않아 포함하지 않았습니다.
 
+## 2D 프레임 비용 벤치마크
+
+`npm run benchmark:rendering -- <label> [high|low]`는 2D 그리기 경로별 프레임 비용을 같은 장면 크기(1280x720)에서 잽니다. 장면마다 그리기 호출 수, 정점 수, 업로드 바이트, 프레임 제출 CPU 시간, GPU 시간(`EXT_disjoint_timer_query_webgl2`)의 중앙값(60프레임)을 `project/docs/rendering-benchmark.json`에 label별로 기록합니다. GPU 열은 실제 GPU 브라우저에서만 의미가 있습니다: `CHROMIUM_EXECUTABLE_PATH`로 Chrome/Edge를 지정하세요. SwiftShader 값은 동작 확인용입니다. 모바일 기기는 측정하지 않습니다. 장면 목록과 기록은 JSON에 있고, 게임이 쓰는 그라디언트는 프레임당 64개로 제한되어 있어 그 한도 안(60개)에서 잽니다. 그리기 호출 수만 세는 `npm run benchmark:draw-batching`(`project/docs/draw-batching-benchmark.json`)와 역할이 다릅니다.
+
 ## Indexed retained geometry
 
 `WebGLDevice.createIndexBuffer()` and `uploadIndices(handle, Uint16Array)` own WebGL 2 element buffers. `MeshRenderer.createMesh()` accepts complete expanded triangles or a `Uint16Array` of triangle indices over its 11-float vertex records; indexed meshes submit with `drawElements` or the matching ANGLE instanced call. The retained byte budget, context restoration, and disposal include both buffers. `MeshBuilder.combine()` remaps and preserves indexed inputs while retaining painter order.

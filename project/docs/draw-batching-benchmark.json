@@ -443,6 +443,96 @@
             "submitMsP95": 7,
             "gpuTextureBytes": 8593408,
             "renderer": "WebKit WebGL"
+        },
+        {
+            "label": "v0.26.1-final",
+            "sourceHead": "a4d4a26a11ec296c8ec0d75c497148518a283a5b",
+            "sourceDirty": false,
+            "actors": 250,
+            "species": 5,
+            "shapes": 0,
+            "frames": 60,
+            "glError": 0,
+            "deviceDrawCalls": 1,
+            "vectorSubmissions": 1,
+            "meshDraws": 0,
+            "spriteRuns": 1350,
+            "uploadedBytes": 648000,
+            "vertices": 8100,
+            "rasterDraws": 250,
+            "vectorFallbacks": 0,
+            "atlasStats": [
+                {
+                    "name": "sprout.svg",
+                    "parts": 6,
+                    "rasterDraws": 3500,
+                    "atlasWidth": 109,
+                    "atlasHeight": 234,
+                    "reason": null,
+                    "fallbackReasons": {}
+                },
+                {
+                    "name": "chestnut.svg",
+                    "parts": 3,
+                    "rasterDraws": 3500,
+                    "atlasWidth": 150,
+                    "atlasHeight": 187,
+                    "reason": null,
+                    "fallbackReasons": {}
+                },
+                {
+                    "name": "corn-kernel.svg",
+                    "parts": 6,
+                    "rasterDraws": 3500,
+                    "atlasWidth": 158,
+                    "atlasHeight": 259,
+                    "reason": null,
+                    "fallbackReasons": {}
+                },
+                {
+                    "name": "kidney-bean.svg",
+                    "parts": 6,
+                    "rasterDraws": 3500,
+                    "atlasWidth": 128,
+                    "atlasHeight": 243,
+                    "reason": null,
+                    "fallbackReasons": {}
+                },
+                {
+                    "name": "pea.svg",
+                    "parts": 6,
+                    "rasterDraws": 3500,
+                    "atlasWidth": 177,
+                    "atlasHeight": 243,
+                    "reason": null,
+                    "fallbackReasons": {}
+                }
+            ],
+            "poseStats": {
+                "gpuDrawInstances": 250,
+                "cpuDrawInstances": 0,
+                "uniformDrawInstances": 0,
+                "cpuPoseUploadBytes": 0,
+                "stateUploadBytes": 8000,
+                "overrideUploadBytes": 0,
+                "fallbackReasons": {},
+                "flushCalls": 1,
+                "flushRecordVisits": 500,
+                "cleanFlushSkips": 0,
+                "totalDrawInstances": 250,
+                "cpuFallbackRatio": 0,
+                "liveInstances": 250,
+                "sources": 5,
+                "capacity": 256,
+                "gpuUnavailableReason": null,
+                "stateBytes": 139264,
+                "cpuPoseBytes": 0,
+                "programBytes": 65536
+            },
+            "submitMsP50": 2.400000035762787,
+            "submitMsP95": 3.5,
+            "gpuTextureBytes": 8593408,
+            "renderer": "WebKit WebGL"
         }
     ],
     "notes": [
