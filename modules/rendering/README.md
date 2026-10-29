@@ -68,7 +68,7 @@ if (ctx.beginFrame({ clearColor: [0.03, 0.05, 0.08, 1] })) {
 
 ### VectorContext and MeshRenderer on one canvas
 
-`VectorContext.createMesh`/`drawMesh`/`drawVectorActor` share the context's `MeshRenderer` (`acquireMeshRenderer()`); shader surfaces use its `YarnSurfaceRenderer` (`acquireSurfaceRenderer()`). Mesh draws first submit the vector stream queued before them, so vector paint, meshes and later vector paint keep submission order on the same default framebuffer. Meshes that stay on `MeshRenderer` (morph, opacity channel, shader surfaces, force-color fallbacks) are batch boundaries.
+`VectorContext.createMesh`/`drawMesh`/`drawVectorActor` share the context's `MeshRenderer` (`acquireMeshRenderer()`); yarn and sketch surfaces are materials of those meshes. Mesh draws first submit the vector stream queued before them, so vector paint, meshes and later vector paint keep submission order on the same default framebuffer. Meshes that stay on `MeshRenderer` (morph, opacity channel, shader surfaces, force-color fallbacks) are batch boundaries.
 
 ## Mesh depth
 
@@ -132,7 +132,7 @@ The bounds are computed from per-part ranges retained at mesh creation; the rend
 
 ## VectorContext와 재사용 primitive painter
 
-`VectorContext(device,{glyphAtlas,onError,initialVertices,maxVertices,safeAlphaRunBatching,mesh,surfaces})`는 게임의 2D draw adapter에서 반복되기 쉬운 paint/state/path 알고리즘을 공개합니다. canvas와 WebGL context, 프레임 자원은 caller가 만들고, context가 `VectorRenderer`, 첫 사용 때 만드는 `MeshRenderer`와 `YarnSurfaceRenderer`를 모두 소유하고 `dispose()`에서 해제합니다. 렌더러를 따로 만들어 주입하거나 `context.meshRenderer`에 대입하지 않습니다. 메시와 털실·스케치 표면의 한도는 `mesh:{maxMeshes,maxMeshBytes,maxInstances,poseBackend}`와 `surfaces:{maxSurfaces,maxSurfaceBytes}` 옵션으로 넘깁니다. WebGLDevice와 GlyphAtlas는 항상 caller 소유이며 import만으로 DOM·GPU·asset 작업을 하지 않습니다.
+`VectorContext(device,{glyphAtlas,onError,initialVertices,maxVertices,safeAlphaRunBatching,mesh})`는 게임의 2D draw adapter에서 반복되기 쉬운 paint/state/path 알고리즘을 공개합니다. canvas와 WebGL context, 프레임 자원은 caller가 만들고, context가 `VectorRenderer`, 첫 사용 때 만드는 `MeshRenderer`를 소유하고 `dispose()`에서 해제합니다. 렌더러를 따로 만들어 주입하거나 `context.meshRenderer`에 대입하지 않습니다. 메시 한도는 `mesh:{maxMeshes,maxMeshBytes,maxInstances,poseBackend}` 옵션으로 넘깁니다. WebGLDevice와 GlyphAtlas는 항상 caller 소유이며 import만으로 DOM·GPU·asset 작업을 하지 않습니다.
 
 ```js
 import { WebGLDevice, VectorContext, PrimitivePainter } from './rendering.js';
@@ -337,46 +337,26 @@ The browser's network cache is origin/top-site partitioned and browser-managed. 
 
 ## Shader yarn and sketch surfaces
 
-`YarnSurfaceRenderer` is an opt-in WebGL 2 material path for SVG-authored filled surfaces. Games that load SVG assets never create it: the `VectorContext` creates and owns one for the actors that need it (see vector-assets). Direct use below is for low-level callers. It keeps the triangulated fill in local vector coordinates and evaluates yarn stitches, edge loops, fibers, sketch hatching, and animated sketch echoes in fragment shaders. The only extra retained geometry is a fixed strip following the closed SVG contour; changing `stitchWidth`, `stitchHeight`, `fiberSpacing`, or `fiberMax` does not add vertices. It creates no per-stitch or per-fiber triangles and no artwork texture (the first yarn surface creates one shared 256x256 stitch distance field, identical for every asset, which `dispose()` releases and the device restores after a lost context).
+Yarn and sketch are **materials of `MeshRenderer` meshes**, not a separate renderer. An SVG path styled with `backend:"shader"` compiles to ordinary mesh triangles — the retained fill, then a fixed strip following the closed contour — and every vertex carries a four-float material record: the kind (fill or edge of a yarn or sketch surface), the surface it belongs to, and the distance along and across the contour. The constants of each surface (bounds and four effect vectors) sit in one small table of the mesh. The fragment shader evaluates yarn stitches, edge loops, fibers, sketch hatching and animated sketch echoes from that data; changing `stitchWidth`, `stitchHeight`, `fiberSpacing` or `fiberMax` adds no vertices, and no artwork texture is created (every yarn mesh shares one 256x256 stitch distance field, identical for every asset, which the renderer releases on `dispose()`).
 
-The source compiler supplies a complete triangle list with six floats per vertex (`x, y, r, g, b, a`), one closed contour as flat `x, y` pairs, the original SVG style object, and optional per-contour RGBA values for gradient fills. Edge colors default to the mean fill color. Style values remain authored in the SVG metadata and invalid or incomplete styles throw; this renderer does not silently fall back to tessellated effect triangles.
+Because a surface is just triangles of the mesh, it needs nothing special from the host: an actor with a yarn body is **one instanced draw** with the actors around it (a hundred yarn actors are one draw, not two hundred), it follows the GPU part pose, and it uses the same clip planes, stencil clip, depth and 3D world transforms as every other part. Only a mesh that has materials compiles the larger fragment shader; every other mesh keeps its one-line shader. A mesh with materials adds one instance float, the display time of that instance, so sketch echoes animate per actor without splitting the batch.
 
 ```js
-import { YarnSurfaceRenderer } from './rendering.js';
+import { WebGLDevice, VectorContext } from './rendering.js';
+import { createVectorActor } from './vector-assets.js';
 
-const surfaces = new YarnSurfaceRenderer(device);
-const surface = surfaces.createSurface({
-    fillVertices, // Float32Array, non-indexed triangles, x/y/rgba
-    outline, // Float32Array, closed local-space contour x/y pairs
-    edgeColors, // optional Float32Array, one RGBA per contour point
-    style: svgMetadata.styles.find((style) => style.kind === 'yarn'),
-});
-
-// Keep this call at the styled SVG path's painter-order position.
-// transform composes the actor matrix and the animated part pose.
-const clip = ctx.createClipPath(authoredConcaveContour);
-ctx.save();
-ctx.clipPath(clip); // retained stencil clip; requires an active stencil attachment
-surfaces.drawSurface(surface, {
-    projection,
-    transform: partMatrix,
-    clips,
-    alpha,
-    color,
-    stencilRef: ctx.stencilRef, // pass the active VectorContext stencil depth
-});
-ctx.restore();
-surfaces.deleteSurface(surface);
-surfaces.dispose();
+const context = new VectorContext(device);
+const actor = createVectorActor(context, compiledYarnSvg, { clip: 'idle' }); // yarn and sketch need no extra setup
+context.drawVectorActor(actor, { matrix, clips, alpha, color }); // stencilRef comes from the context
 ```
 
-Yarn metadata accepts the SVG `kind`, `seed`, stitch, edge, and fiber fields used by the vector-assets schema. Sketch metadata accepts the SVG `kind`, `seed`, `periodMs`, echo, and hatch fields. Yarn cells and edge fibers are deterministic from the authored seed. Sketch time is the caller's absolute `timeMs`; the renderer owns no clock. A fill and its contour strip are separate ordered draws. The host still decides where each surface appears between eyes, outlines, and other SVG paths; this API never sorts.
+Low-level callers that hold a surface outside a compiled SVG build the same mesh with `buildYarnSurfaceMesh({ fillVertices, outline, edgeColors, style })` and pass it to `MeshRenderer.createMesh()`. `fillVertices` is a complete triangle list with six floats per vertex (`x, y, r, g, b, a`), `outline` one closed contour as flat `x, y` pairs, `style` the SVG style object, and `edgeColors` an optional RGBA per contour point (default: the mean fill color). Invalid or incomplete styles throw; there is no fallback to tessellated effect triangles. `buildYarnSurfaceGeometry()` returns the bounded geometry itself for exact assertions.
 
-Coordinates, stitch dimensions, and fiber dimensions are in source-vector units and follow the supplied object/part transform, including rotation and non-uniform scale. CSS size affects pixel sampling and DPR affects backing resolution; neither changes the authored local-space material scale. Pass `clips` as convex polygons in transformed world coordinates; exceeding the device's fragment-uniform clip-plane limit throws. For a retained concave clip, use `VectorContext.createClipPath()` / `clipPath()` and pass its active `stencilRef` to every `drawSurface()` call in that painter-order scope. The renderer applies the same explicit `EQUAL` stencil test to both fill and edge draws, validates that the current framebuffer has a stencil attachment, and disables stencil on calls with `stencilRef: null`. No contour approximation is used. `VectorContext` rebuilds its retained clip stack after context restoration; resume the frame through that context before submitting Yarn. Depth and blending use explicit `WebGLDevice` state. The edge-strip join uses a bounded four-width miter. These are filled surface effects, not SVG stroke caps/joins, and SVG outline strokes remain on the existing vector-asset path.
+Yarn metadata accepts the SVG `kind`, `seed`, stitch, edge, and fiber fields used by the vector-assets schema. Sketch metadata accepts the SVG `kind`, `seed`, `periodMs`, echo, and hatch fields. Yarn cells and edge fibers are deterministic from the authored seed. Sketch time is the actor's absolute display time (`drawMesh({ timeMs })` for direct callers); the renderer owns no clock. Painter order is the triangle order, so the host still decides where each surface appears between eyes, outlines and other SVG paths; this API never sorts.
 
-`YarnSurfaceRenderer.drawSurface()` accepts `stencilRef: null` (default) or an integer in `[0,255]`; a non-null value requires the active default framebuffer or render target to have stencil. Convex `clips` and stencil clipping intersect. This option adds no mesh batching path and does not change `MeshRenderer` compatibility or painter ordering.
+Coordinates, stitch dimensions and fiber dimensions are in source-vector units and follow the mesh's part transform, including rotation and non-uniform scale. CSS size affects pixel sampling and DPR affects backing resolution; neither changes the authored local-space material scale. A mesh with materials cannot use `depthWriteAlphaThreshold`. With `depthWrite: true` the renderer draws the mesh in runs of fill and edge triangles in their original order and switches the depth write off for the edge runs, because the partly covered edge pixels must not hide what lies behind them.
 
-The API is additive: existing `MeshRenderer` meshes, old compiled assets, static yarn/sketch triangle assets, and ordinary SVG strokes keep their existing behavior until a consumer opts into the new material and passes its authored surface data. The focused validation is `npm run test:rendering:yarn-shader`; it checks density-invariant geometry and real Chromium/WebGL pixels at 47 and 74 CSS px, clipping, and context restoration. It is a correctness check, not an FPS or CPU benchmark.
+The focused validation is `npm run test:rendering:yarn-shader`; it checks density-invariant geometry and real Chromium/WebGL pixels at 47 and 74 CSS px, clipping, stencil, and context restoration. It is a correctness check, not an FPS or CPU benchmark.
 
 ## CPU geometry diagnostic counters (0.11.5)
 

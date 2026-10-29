@@ -187,12 +187,12 @@ try {
             indexVariants: Object.fromEntries(
                 Object.entries(WORLD_GEOMETRY.indexVariants ?? {}).map(([key, value]) => [key, Array.from(value)]),
             ),
-            shaderSurfaces: WORLD_GEOMETRY.shaderSurfaces?.map((surface) => ({
-                ...surface,
-                fillVertices: Array.from(surface.fillVertices),
-                outline: Array.from(surface.outline),
-                edgeColors: Array.from(surface.edgeColors),
-            })),
+            materials: WORLD_GEOMETRY.materials
+                ? {
+                      vertices: Array.from(WORLD_GEOMETRY.materials.vertices),
+                      table: Array.from(WORLD_GEOMETRY.materials.table),
+                  }
+                : undefined,
         },
     };
     REPORT.worldVector = await exerciseWorldVectorRendering(

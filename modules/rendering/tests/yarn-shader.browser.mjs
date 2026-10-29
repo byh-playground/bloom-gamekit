@@ -21,8 +21,49 @@ export async function exerciseYarnShader(browser, moduleURL, screenshotPath) {
                 const {
                     WebGLDevice: WEB_GL_DEVICE,
                     VectorContext: VECTOR_CONTEXT,
-                    YarnSurfaceRenderer: YARN_SURFACE_RENDERER,
+                    buildYarnSurfaceMesh: BUILD_YARN_SURFACE_MESH,
                 } = await import(moduleURL);
+                // A surface is one retained mesh whose vertices carry a material; this test keeps the shape of its old
+                // scenarios (create, draw, delete a surface) over the mesh renderer's API.
+                const MAKE_SURFACES = (device, context = null) => {
+                    const CONTEXT = context ?? new VECTOR_CONTEXT(device),
+                        MESHES = CONTEXT.acquireMeshRenderer(),
+                        LIVE = new Set();
+                    let disposed = false;
+                    return {
+                        createSurface(descriptor) {
+                            const MESH = MESHES.createMesh(BUILD_YARN_SURFACE_MESH(descriptor));
+                            LIVE.add(MESH);
+                            return MESH;
+                        },
+                        drawSurface(mesh, { transform, depth, z = 0, ...options }) {
+                            MESHES.drawMesh(mesh, {
+                                ...options,
+                                matrix: transform,
+                                depth: z,
+                                depthTest: Boolean(depth),
+                                depthWrite: Boolean(depth),
+                            });
+                            MESHES.flush();
+                        },
+                        deleteSurface(mesh) {
+                            return LIVE.delete(mesh) && MESHES.deleteMesh(mesh);
+                        },
+                        stats() {
+                            return { state: MESHES.stats().state, surfaceCount: LIVE.size };
+                        },
+                        dispose() {
+                            if (disposed) {
+                                return false;
+                            }
+                            disposed = true;
+                            if (context === null) {
+                                CONTEXT.dispose();
+                            }
+                            return true;
+                        },
+                    };
+                };
                 const MAKE_CANVAS = (id) => document.getElementById(id);
                 const OUTLINE = [];
                 for (let i = 0; i < 72; i++) {
@@ -105,7 +146,7 @@ export async function exerciseYarnShader(browser, moduleURL, screenshotPath) {
                         depth: true,
                         preserveDrawingBuffer: true,
                     });
-                    const SURFACES = new YARN_SURFACE_RENDERER(DEVICE);
+                    const SURFACES = MAKE_SURFACES(DEVICE);
                     const SURFACE = SURFACES.createSurface({
                         fillVertices: FILL_DATA,
                         outline: OUTLINE_DATA,
@@ -202,7 +243,7 @@ export async function exerciseYarnShader(browser, moduleURL, screenshotPath) {
                             outside: OUTSIDE,
                             drawCalls: DEVICE.stats.drawCalls,
                             vertexCount: DEVICE.stats.vertices,
-                            meshVertices: SURFACE.vertices.length / 9,
+                            meshVertices: SURFACE.vertices.length / 11,
                         };
                     };
                     SAMPLES[ID] = RENDER();
@@ -263,7 +304,7 @@ export async function exerciseYarnShader(browser, moduleURL, screenshotPath) {
                             initialVertices: 128,
                             maxVertices: 4096,
                         }),
-                        SURFACES = new YARN_SURFACE_RENDERER(DEVICE);
+                        SURFACES = MAKE_SURFACES(DEVICE, CTX);
                     const QUAD = Float32Array.from([
                         5, 5, 0.82, 0.48, 0.28, 1, 105, 5, 0.82, 0.48, 0.28, 1, 105, 105, 0.82, 0.48, 0.28, 1, 5, 5,
                         0.82, 0.48, 0.28, 1, 105, 105, 0.82, 0.48, 0.28, 1, 5, 105, 0.82, 0.48, 0.28, 1,
@@ -403,7 +444,7 @@ export async function exerciseYarnShader(browser, moduleURL, screenshotPath) {
                             stencil: false,
                             depth: false,
                         }),
-                        NO_STENCIL_SURFACES = new YARN_SURFACE_RENDERER(NO_STENCIL);
+                        NO_STENCIL_SURFACES = MAKE_SURFACES(NO_STENCIL);
                     const TINY_FILL = Float32Array.from([
                             0, 0, 0.5, 0.5, 0.5, 1, 10, 0, 0.5, 0.5, 0.5, 1, 10, 10, 0.5, 0.5, 0.5, 1,
                         ]),
@@ -465,7 +506,7 @@ export async function exerciseYarnShader(browser, moduleURL, screenshotPath) {
                         stencil: false,
                         preserveDrawingBuffer: true,
                     });
-                    const SURFACES = new YARN_SURFACE_RENDERER(DEVICE);
+                    const SURFACES = MAKE_SURFACES(DEVICE);
                     const COLOR = [0.82, 0.48, 0.28, 1];
                     const SURFACE = SURFACES.createSurface({
                         fillVertices: Float32Array.from([
@@ -559,8 +600,8 @@ export async function exerciseYarnShader(browser, moduleURL, screenshotPath) {
         );
         assert.equal(
             RESULT.stencil.drawCalls,
-            5,
-            'stencil mask, two Yarn passes, then two unclipped Yarn passes preserve draw ordering',
+            3,
+            'stencil mask, one clipped Yarn draw, then one unclipped Yarn draw preserve draw ordering',
         );
         assert.equal(RESULT.stencil.glError, 0);
         assert.equal(

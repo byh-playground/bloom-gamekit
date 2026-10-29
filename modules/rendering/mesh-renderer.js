@@ -2,6 +2,8 @@ import { clipPlanes } from './clip-planes.js';
 import { PoseRenderer } from './pose-renderer.js';
 import { POSE_PROGRAM_FUNCTIONS } from './pose-shader.js';
 import { MAX_PAINT_REGIONS, packPaintRegions, validatePaintRegionData } from './paint-regions.js';
+import { MATERIAL_KIND, MATERIAL_RECORD_FLOATS, MAX_MATERIAL_SURFACES } from './yarn-material-record.js';
+import { STITCH_FIELD_SIZE, materialFragment, stitchFieldPixels } from './yarn-material.js';
 const IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
 const ZERO_MORPH = Object.freeze([0, 0]);
 const WHITE = Object.freeze([1, 1, 1, 1]);
@@ -41,6 +43,13 @@ const WORLD_INSTANCE_ATTRIBUTES = ['i_row0', 'i_row1', 'i_row2', 'i_params'].map
 }));
 // Instance record: 16 floats (two matrix rows, color, params).
 const PLAIN_INSTANCE_FLOATS = 16;
+// A mesh with materials adds a fifth instance vec4 whose x is that instance's display time, so actors with different
+// times still share one draw.
+const MATERIAL_INSTANCE_FLOATS = 20;
+const MATERIAL_INSTANCE_ATTRIBUTE = { name: 'i_extra', size: 4, offset: 64, source: 'instance' };
+// A material vertex is four floats: kind, surface index, distance along the contour, distance across it.
+const MATERIAL_VERTEX_FLOATS = 4;
+const NO_TEXTURES = Object.freeze([]);
 function shader(
     instanced,
     partCount,
@@ -50,7 +59,13 @@ function shader(
     worldMode = false,
     poseTexture = false,
     paintRegionCount = 0,
+    materials = false,
 ) {
+    const MATERIAL_INPUT = materials
+            ? `attribute vec4 a_material; ${instanced ? 'attribute' : 'uniform'} vec4 i_extra;
+varying vec2 v_local; varying vec4 v_material; varying highp float v_time;`
+            : '',
+        MATERIAL_OUTPUT = materials ? 'v_local=local;v_material=a_material;v_time=i_extra.x;' : '';
     const PAINT_INPUT = paintRegionCount
             ? `attribute float a_paintRegion;uniform vec4 u_paintRegions[${paintRegionCount + 1}];`
             : '',
@@ -115,10 +130,10 @@ if(dot(a_stroke.xy,a_stroke.xy)>0.5){
 }`
             : '';
         return `attribute vec2 a_position; attribute vec4 a_color; ${morphCount ? 'attribute vec4 a_morph;' : ''} ${PART_INPUTS}
-${WORLD_INPUTS}${WORLD_STROKE_INPUTS}${PAINT_INPUT}
+${WORLD_INPUTS}${WORLD_STROKE_INPUTS}${PAINT_INPUT}${MATERIAL_INPUT}
 uniform mat4 u_viewProjection; uniform vec4 u_color; varying vec4 v_color; ${clipped ? 'varying vec2 v_position;' : ''}
 void main(){${PART_SETUP}
-vec2 local=${LOCAL};vec2 plane=${PART_POSE ? 'vec2(dot(row0.xyz,vec3(local,1.0)),dot(row1.xyz,vec3(local,1.0)))' : 'local'};
+vec2 local=${LOCAL};${MATERIAL_OUTPUT}vec2 plane=${PART_POSE ? 'vec2(dot(row0.xyz,vec3(local,1.0)),dot(row1.xyz,vec3(local,1.0)))' : 'local'};
 vec3 world=vec3(dot(i_row0.xyz,vec3(plane,1.0)),dot(i_row1.xyz,vec3(plane,1.0)),dot(i_row2.xyz,vec3(plane,1.0)));
 vec4 projected=u_viewProjection*vec4(world,1.0);${clipped ? 'v_position=world.xy;' : ''}${WORLD_STROKE}
 projected.z+=(i_params.w+${PART_POSE ? 'pose.w' : '0.0'})*projected.w;gl_Position=projected;
@@ -126,10 +141,10 @@ ${PAINT_COLOR}vec4 color=mix(${BASE_COLOR}*u_color,u_color,i_row1.w);color.a*=i_
 }`;
     }
     return `attribute vec2 a_position; attribute vec4 a_color; ${morphCount ? 'attribute vec4 a_morph;' : ''} ${PART_INPUTS}
-${INPUTS}${STROKE_INPUTS}${PAINT_INPUT}
+${INPUTS}${STROKE_INPUTS}${PAINT_INPUT}${MATERIAL_INPUT}
 uniform mat3 u_projection; varying vec4 v_color; ${clipped ? 'varying vec2 v_position;' : ''}${STROKE_VARYING}
 void main(){${PART_SETUP}
-vec2 local=${LOCAL};vec2 p=${PART_POSE ? 'vec2(dot(row0.xyz,vec3(local,1.0)),dot(row1.xyz,vec3(local,1.0)))' : 'local'};
+vec2 local=${LOCAL};${MATERIAL_OUTPUT}vec2 p=${PART_POSE ? 'vec2(dot(row0.xyz,vec3(local,1.0)),dot(row1.xyz,vec3(local,1.0)))' : 'local'};
 vec2 world=vec2(dot(i_row0.xyz,vec3(p,1.0)),dot(i_row1.xyz,vec3(p,1.0)));
 vec3 projected=u_projection*vec3(world,1.0);${clipped ? 'v_position=world;' : ''}${STROKE_POSITION}
 gl_Position=vec4(projected.xy,(i_params.w+${PART_POSE ? 'pose.w' : '0.0'})*projected.z,projected.z);
@@ -165,15 +180,25 @@ function poseProgramShader(source) {
         .replaceAll('(i_params.x+pose.x)', '(pose.x)')
         .replaceAll('(i_params.y+pose.y)', '(pose.y)');
 }
-// One startup/context-restore conversion, never a palette-specific geometry or per-frame upload.
-function paintVertexStream(vertices, regions) {
-    if (!regions) {
+// One startup/context-restore conversion, never a palette-specific geometry or per-frame upload. The optional
+// per-vertex streams follow the 11 authored floats: the paint region id, then the four material floats.
+function gpuVertexStream(vertices, regions, materials) {
+    if (!regions && !materials) {
         return vertices;
     }
-    const PACKED = new Float32Array((vertices.length / 11) * 12);
-    for (let index = 0; index < regions.length; index++) {
-        PACKED.set(vertices.subarray(index * 11, index * 11 + 11), index * 12);
-        PACKED[index * 12 + 11] = regions[index];
+    const COUNT = vertices.length / 11,
+        STRIDE = 11 + (regions ? 1 : 0) + (materials ? MATERIAL_VERTEX_FLOATS : 0);
+    const PACKED = new Float32Array(COUNT * STRIDE);
+    for (let index = 0; index < COUNT; index++) {
+        const AT = index * STRIDE;
+        PACKED.set(vertices.subarray(index * 11, index * 11 + 11), AT);
+        let next = AT + 11;
+        if (regions) {
+            PACKED[next++] = regions[index];
+        }
+        if (materials) {
+            PACKED.set(materials.subarray(index * MATERIAL_VERTEX_FLOATS, (index + 1) * MATERIAL_VERTEX_FLOATS), next);
+        }
     }
     return PACKED;
 }
@@ -393,6 +418,12 @@ export class MeshRenderer {
               })
             : null;
         this.pipelines = new Map();
+        // Meshes with materials: a wider instance staging array, the shared stitch distance field and the cached
+        // fill/edge runs used to keep an edge's depth write off in 3D.
+        this.materialInstances = null;
+        this.materialRunCache = new WeakMap();
+        this.stitchField = null;
+        this.materialTextureSets = new WeakMap();
         this.meshes = new Set();
         this.bytes = 0;
         this.count = 0;
@@ -530,7 +561,9 @@ export class MeshRenderer {
             ':' +
             poseMode +
             ':' +
-            (mesh.paintRegionNames?.length ?? 0);
+            (mesh.paintRegionNames?.length ?? 0) +
+            ':' +
+            (mesh.materials?.count ?? 0);
         let pipeline = this.pipelines.get(KEY);
         if (pipeline) {
             return pipeline;
@@ -568,11 +601,18 @@ export class MeshRenderer {
         if (mesh.paintRegionNames) {
             UNIFORMS['u_paintRegions[0]'] = '4fv';
         }
+        if (mesh.materials) {
+            UNIFORMS['u_materials[0]'] = '4fv';
+            UNIFORMS.u_stitchField = '1i';
+        }
         if (!this.instanced) {
             for (const NAME of worldMode
                 ? ['i_row0', 'i_row1', 'i_row2', 'i_params']
                 : ['i_row0', 'i_row1', 'i_color', 'i_params']) {
                 UNIFORMS[NAME] = '4f';
+            }
+            if (mesh.materials) {
+                UNIFORMS.i_extra = '4f';
             }
         }
         pipeline = this.device.createPipeline({
@@ -586,13 +626,19 @@ export class MeshRenderer {
                     worldMode,
                     poseMode,
                     mesh.paintRegionNames?.length ?? 0,
+                    Boolean(mesh.materials),
                 ),
             ),
-            fragment: fragment(this.maxPlanes, clipped),
+            fragment: mesh.materials
+                ? materialFragment(this.maxPlanes, clipped, mesh.materials.count)
+                : fragment(this.maxPlanes, clipped),
             stride: mesh.bufferStrideFloats * 4,
-            ...(this.instanced ? { instanceStride: PLAIN_INSTANCE_FLOATS * 4 } : {}),
+            ...(this.instanced ? { instanceStride: mesh.instanceFloats * 4 } : {}),
             attributes: [
                 ...(mesh.paintRegionNames ? [{ name: 'a_paintRegion', size: 1, offset: 44 }] : []),
+                ...(mesh.materials
+                    ? [{ name: 'a_material', size: 4, offset: 44 + (mesh.paintRegionNames ? 4 : 0) }]
+                    : []),
                 ...(mesh.hasNonScalingStroke
                     ? ATTRIBUTES.filter((attribute) => attribute.name !== 'a_morph')
                     : ATTRIBUTES),
@@ -606,6 +652,7 @@ export class MeshRenderer {
                       ]
                     : []),
                 ...(this.instanced ? (worldMode ? WORLD_INSTANCE_ATTRIBUTES : INSTANCE_ATTRIBUTES) : []),
+                ...(this.instanced && mesh.materials ? [MATERIAL_INSTANCE_ATTRIBUTE] : []),
             ],
             uniforms: UNIFORMS,
         });
@@ -698,16 +745,56 @@ export class MeshRenderer {
                 validatePaintRegionData(data.paintRegions, data.vertices.length / 11, VARIANT);
             }
         }
+        const MATERIALS = data.materials;
+        let ownedMaterials = null;
+        if (MATERIALS !== undefined) {
+            const SURFACES = MATERIALS?.table?.length / MATERIAL_RECORD_FLOATS;
+            if (
+                !(MATERIALS?.vertices instanceof Float32Array) ||
+                !(MATERIALS.table instanceof Float32Array) ||
+                MATERIALS.vertices.length !== (data.vertices.length / 11) * MATERIAL_VERTEX_FLOATS ||
+                !Number.isSafeInteger(SURFACES) ||
+                SURFACES < 1 ||
+                SURFACES > MAX_MATERIAL_SURFACES ||
+                MATERIALS.table.some((n) => !Number.isFinite(n))
+            ) {
+                throw new TypeError('Mesh materials need a per-vertex stream and a table of 1..16 surfaces');
+            }
+            for (let at = 0; at < MATERIALS.vertices.length; at += MATERIAL_VERTEX_FLOATS) {
+                const KIND = MATERIALS.vertices[at],
+                    SURFACE = MATERIALS.vertices[at + 1];
+                if (
+                    !Number.isInteger(KIND) ||
+                    KIND < MATERIAL_KIND.none ||
+                    KIND > MATERIAL_KIND.sketchEdge ||
+                    !Number.isInteger(SURFACE) ||
+                    SURFACE < 0 ||
+                    SURFACE >= SURFACES ||
+                    !Number.isFinite(MATERIALS.vertices[at + 2]) ||
+                    !Number.isFinite(MATERIALS.vertices[at + 3])
+                ) {
+                    throw new RangeError('Mesh material kind or surface index is invalid');
+                }
+            }
+            ownedMaterials = Object.freeze({
+                vertices: MATERIALS.vertices.slice(),
+                table: MATERIALS.table.slice(),
+                count: SURFACES,
+            });
+        }
         const PAINT_INDICES = data.paintRegions?.indices,
-            BUFFER_STRIDE = PAINT_INDICES ? 12 : 11;
+            BUFFER_STRIDE = 11 + (PAINT_INDICES ? 1 : 0) + (ownedMaterials ? MATERIAL_VERTEX_FLOATS : 0);
         const GPU_VERTEX_BYTES = (data.vertices.length / 11) * BUFFER_STRIDE * 4;
         const UPLOAD_BYTE_LENGTH = GPU_VERTEX_BYTES + (INDICES?.byteLength ?? 0) + VARIANT_BYTE_LENGTH;
-        const BYTE_LENGTH = UPLOAD_BYTE_LENGTH + (PAINT_INDICES ? data.vertices.byteLength : 0);
+        const BYTE_LENGTH =
+            UPLOAD_BYTE_LENGTH +
+            (PAINT_INDICES || ownedMaterials ? data.vertices.byteLength : 0) +
+            (ownedMaterials ? ownedMaterials.vertices.byteLength + ownedMaterials.table.byteLength : 0);
         if (this.meshes.size >= this.maxMeshes || this.bytes + BYTE_LENGTH > this.maxMeshBytes) {
             throw new RangeError('Retained mesh budget exceeded');
         }
         const VERTICES = data.vertices.slice(),
-            GPU_VERTICES = paintVertexStream(VERTICES, PAINT_INDICES),
+            GPU_VERTICES = gpuVertexStream(VERTICES, PAINT_INDICES, ownedMaterials?.vertices),
             OWNED_INDICES = INDICES?.slice(),
             BUFFER = this.device.createVertexBuffer({
                 capacityBytes: GPU_VERTICES.byteLength,
@@ -790,11 +877,16 @@ export class MeshRenderer {
             strideFloats: 11,
             bufferStrideFloats: BUFFER_STRIDE,
             paintRegionNames: data.paintRegions ? Object.freeze(data.paintRegions.names.slice()) : null,
+            materials: ownedMaterials,
+            instanceFloats: ownedMaterials ? MATERIAL_INSTANCE_FLOATS : PLAIN_INSTANCE_FLOATS,
             hasNonScalingStroke: NON_SCALING_STROKE,
             partBounds: meshPartBounds(VERTICES, data.partCount, data.morphCount),
         });
         this.meshes.add(MESH);
         this.bytes += BYTE_LENGTH;
+        if (ownedMaterials) {
+            this._materialTextures(null);
+        }
         this.device.stats.meshCreates++;
         this.metrics.geometryUploads++;
         this.metrics.geometryBytesUploaded += UPLOAD_BYTE_LENGTH;
@@ -851,6 +943,7 @@ export class MeshRenderer {
             indexRange: INDEX_RANGE = null,
             strokeViewport: STROKE_VIEWPORT = null,
             stencilRef: STENCIL_REF = null,
+            timeMs: TIME_MS = 0,
             viewProjection: VIEW_PROJECTION,
             worldMatrix: WORLD_MATRIX,
         } = options;
@@ -878,6 +971,7 @@ export class MeshRenderer {
             depthFunc: DEPTH_FUNC,
             strokeViewport: STROKE_VIEWPORT,
             stencilRef: STENCIL_REF,
+            timeMs: TIME_MS,
         });
     }
     _setPaintRegions(mesh, overrides) {
@@ -1103,8 +1197,66 @@ export class MeshRenderer {
         this.alphaQueueCount = 0;
         this.alphaQueueState = null;
     }
-    /** Internal ordered instance append used when one retained pose has several transforms. */
-    _drawMeshInstances(
+    /**
+     * Internal ordered instance append used when one retained pose has several transforms. A mesh with materials that
+     * writes depth is drawn in runs so a yarn or sketch edge, whose pixels are only partly covered, never writes depth;
+     * the runs keep the triangle order, so painter order is unchanged.
+     */
+    _drawMeshInstances(mesh, options = {}) {
+        if (
+            mesh?.materials &&
+            options.depthWrite === true &&
+            (options.depthWriteAlphaThreshold ?? null) === null &&
+            (options.indexRange ?? null) === null &&
+            this.meshes.has(mesh)
+        ) {
+            const RUNS = this._materialRuns(mesh, options.indexVariant ?? null);
+            if (RUNS.length > 1) {
+                for (const RUN of RUNS) {
+                    this._drawMeshRange(mesh, {
+                        ...options,
+                        indexRange: [RUN.first, RUN.count],
+                        depthWrite: !RUN.edge,
+                    });
+                }
+                return;
+            }
+        }
+        this._drawMeshRange(mesh, options);
+    }
+    /** Contiguous runs of fill and edge triangles of one index list, cached per mesh. */
+    _materialRuns(mesh, indexVariant) {
+        let cache = this.materialRunCache.get(mesh);
+        if (!cache) {
+            cache = new Map();
+            this.materialRunCache.set(mesh, cache);
+        }
+        const KEY = indexVariant ?? '';
+        let runs = cache.get(KEY);
+        if (!runs) {
+            const VARIANT =
+                indexVariant === null
+                    ? null
+                    : (mesh.indexVariants.get(indexVariant) ?? mesh.expressionIndices.get(indexVariant));
+            const INDICES = VARIANT ? VARIANT.indices : mesh.indices,
+                COUNT = VARIANT ? VARIANT.count : mesh.count;
+            runs = [];
+            for (let at = 0; at < COUNT; at += 3) {
+                const VERTEX = INDICES ? INDICES[at] : at,
+                    KIND = mesh.materials.vertices[VERTEX * MATERIAL_VERTEX_FLOATS],
+                    EDGE = KIND === MATERIAL_KIND.yarnEdge || KIND === MATERIAL_KIND.sketchEdge,
+                    LAST = runs.at(-1);
+                if (LAST && LAST.edge === EDGE) {
+                    LAST.count += 3;
+                } else {
+                    runs.push({ first: at, count: 3, edge: EDGE });
+                }
+            }
+            cache.set(KEY, runs);
+        }
+        return runs;
+    }
+    _drawMeshRange(
         mesh,
         {
             matrices,
@@ -1133,11 +1285,15 @@ export class MeshRenderer {
             indexRange = null,
             strokeViewport = null,
             stencilRef = null,
+            timeMs = 0,
         } = {},
     ) {
         this._ready();
         if (!this.meshes.has(mesh)) {
             throw new TypeError('Mesh owned by this renderer required');
+        }
+        if (!Number.isFinite(timeMs)) {
+            throw new TypeError('timeMs must be finite');
         }
         if (
             indexVariant !== null &&
@@ -1217,6 +1373,9 @@ export class MeshRenderer {
         if (WORLD_MODE && depthWriteAlphaThreshold !== null) {
             throw new TypeError('depthWriteAlphaThreshold is currently supported only for 2D mesh draws');
         }
+        if (mesh.materials && depthWriteAlphaThreshold !== null) {
+            throw new TypeError('Meshes with materials do not support depthWriteAlphaThreshold');
+        }
         if (!['never', 'less', 'equal', 'lequal', 'greater', 'notequal', 'gequal', 'always'].includes(depthFunc)) {
             throw new TypeError('Unsupported depthFunc');
         }
@@ -1244,8 +1403,7 @@ export class MeshRenderer {
         }
         if (
             indexRange !== null &&
-            (indexVariant !== null ||
-                !Array.isArray(indexRange) ||
+            (!Array.isArray(indexRange) ||
                 indexRange.length !== 2 ||
                 !Number.isSafeInteger(indexRange[0]) ||
                 !Number.isSafeInteger(indexRange[1]) ||
@@ -1254,9 +1412,7 @@ export class MeshRenderer {
                 indexRange[0] % 3 ||
                 indexRange[1] % 3)
         ) {
-            throw new TypeError(
-                'indexRange must be [firstIndex, triangleAlignedCount] and cannot be combined with indexVariant',
-            );
+            throw new TypeError('indexRange must be [firstIndex, triangleAlignedCount]');
         }
         if (indexRange !== null && depthWriteAlphaThreshold !== null) {
             throw new TypeError('indexRange is currently supported only for ordinary ordered mesh draws');
@@ -1292,8 +1448,8 @@ export class MeshRenderer {
         const ALPHA_DEPTH_WRITE = depthWrite && depthWriteAlphaThreshold !== null;
         if (!ALPHA_DEPTH_WRITE) {
             const INSTANCE_LIMIT = this.maxInstances;
-            const INSTANCE_FLOATS = PLAIN_INSTANCE_FLOATS;
-            const DATA = this.instances;
+            const INSTANCE_FLOATS = mesh.instanceFloats;
+            const DATA = this._instanceData(mesh);
             if (this.alphaQueueCount) {
                 this._flushAlphaQueue('alphaBoundary');
             }
@@ -1436,6 +1592,12 @@ export class MeshRenderer {
                     DATA[AT + 13] = weight1;
                     DATA[AT + 14] = whiteFlash ? 1 : 0;
                     DATA[AT + 15] = INSTANCE_DEPTH;
+                }
+                if (mesh.materials) {
+                    DATA[AT + 16] = timeMs;
+                    DATA[AT + 17] = 0;
+                    DATA[AT + 18] = 0;
+                    DATA[AT + 19] = 0;
                 }
             }
             return;
@@ -1922,12 +2084,17 @@ export class MeshRenderer {
         } else if (MESH.partCount > 1) {
             UNIFORMS['u_parts[0]'] = PARTS;
         }
-        const TEXTURES = POSE_TEXTURES ?? [];
-        const INSTANCE_UNIFORMS = WORLD_MODE
-            ? ['i_row0', 'i_row1', 'i_row2', 'i_params']
-            : ['i_row0', 'i_row1', 'i_color', 'i_params'];
-        const INSTANCE_FLOATS = PLAIN_INSTANCE_FLOATS;
-        const INSTANCE_DATA = this.instances;
+        const TEXTURES = MESH.materials ? this._materialTextures(POSE_TEXTURES) : (POSE_TEXTURES ?? NO_TEXTURES);
+        if (MESH.materials) {
+            UNIFORMS['u_materials[0]'] = MESH.materials.table;
+            UNIFORMS.u_stitchField = TEXTURES.length - 1;
+        }
+        const INSTANCE_UNIFORMS = [
+            ...(WORLD_MODE ? ['i_row0', 'i_row1', 'i_row2', 'i_params'] : ['i_row0', 'i_row1', 'i_color', 'i_params']),
+            ...(MESH.materials ? ['i_extra'] : []),
+        ];
+        const INSTANCE_FLOATS = MESH.instanceFloats;
+        const INSTANCE_DATA = this._instanceData(MESH);
         if (this.instanced) {
             this.device.uploadVertices(this.instanceBuffer, INSTANCE_DATA.subarray(0, this.count * INSTANCE_FLOATS));
             this.device.draw({
@@ -1960,7 +2127,7 @@ export class MeshRenderer {
             }
         } else {
             for (let i = 0; i < this.count; i++) {
-                for (let j = 0; j < 4; j++) {
+                for (let j = 0; j < INSTANCE_UNIFORMS.length; j++) {
                     UNIFORMS[INSTANCE_UNIFORMS[j]] = INSTANCE_DATA.subarray(
                         i * INSTANCE_FLOATS + j * 4,
                         i * INSTANCE_FLOATS + j * 4 + 4,
@@ -1996,6 +2163,28 @@ export class MeshRenderer {
         this.metrics.instances += this.count;
         this.metrics.flushReasons[reason] = (this.metrics.flushReasons[reason] ?? 0) + 1;
         this.discard();
+    }
+    /** The staging array holding this mesh's instance records. */
+    _instanceData(mesh) {
+        if (mesh.instanceFloats === PLAIN_INSTANCE_FLOATS) {
+            return this.instances;
+        }
+        this.materialInstances ??= new Float32Array(this.maxInstances * MATERIAL_INSTANCE_FLOATS);
+        return this.materialInstances;
+    }
+    /** Pose textures followed by the shared stitch distance field; the field's unit is the last one. */
+    _materialTextures(poseTextures) {
+        this.stitchField ??= this.device.createTexture(
+            { width: STITCH_FIELD_SIZE, height: STITCH_FIELD_SIZE, data: stitchFieldPixels() },
+            { premultiplied: true, filter: 'linear' },
+        );
+        const KEY = poseTextures ?? NO_TEXTURES;
+        let set = this.materialTextureSets.get(KEY);
+        if (!set) {
+            set = Object.freeze([...KEY, this.stitchField]);
+            this.materialTextureSets.set(KEY, set);
+        }
+        return set;
     }
     discard() {
         this.count = 0;
@@ -2035,7 +2224,11 @@ export class MeshRenderer {
             pipelineCount: this.pipelines.size,
             meshCount: this.meshes.size,
             retainedBytes: this.bytes,
-            stagingBytes: this.instances.byteLength + this.planes.byteLength + this.partScratch.byteLength,
+            stagingBytes:
+                this.instances.byteLength +
+                (this.materialInstances?.byteLength ?? 0) +
+                this.planes.byteLength +
+                this.partScratch.byteLength,
             instanced: this.instanced,
             maxClipPlanes: this.maxPlanes,
             poses: this.poseStats(),
@@ -2072,6 +2265,10 @@ export class MeshRenderer {
         this.alphaRunScratch.length = 0;
         if (this.instanceBuffer) {
             this.device.deleteVertexBuffer(this.instanceBuffer);
+        }
+        if (this.stitchField) {
+            this.device.deleteTexture(this.stitchField);
+            this.stitchField = null;
         }
         for (const PIPELINE of this.pipelines.values()) {
             this.device.deletePipeline(PIPELINE);

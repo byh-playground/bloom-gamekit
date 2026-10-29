@@ -38,77 +38,6 @@ function multiply(a, b) {
         a[1] * b[4] + a[3] * b[5] + a[5],
     ];
 }
-function composeWorldMatrix(world, local) {
-    if (
-        !world ||
-        world.length !== 16 ||
-        local.length !== 6 ||
-        Array.from(local).some((value) => !Number.isFinite(value))
-    ) {
-        throw new TypeError('Six finite root matrix values required');
-    }
-    const [A, B, C, D, E, F] = local,
-        OUT = Float32Array.from(world);
-    for (const VALUE of OUT) {
-        if (!Number.isFinite(VALUE)) {
-            throw new TypeError('worldMatrix must contain 16 finite values');
-        }
-    }
-    if (
-        Math.abs(OUT[3]) > 1e-7 ||
-        Math.abs(OUT[7]) > 1e-7 ||
-        Math.abs(OUT[11]) > 1e-7 ||
-        Math.abs(OUT[15] - 1) > 1e-7
-    ) {
-        throw new TypeError('worldMatrix must be an affine column-major 4x4 matrix');
-    }
-    OUT[0] = world[0] * A + world[4] * B;
-    OUT[1] = world[1] * A + world[5] * B;
-    OUT[2] = world[2] * A + world[6] * B;
-    OUT[3] = world[3] * A + world[7] * B;
-    OUT[4] = world[0] * C + world[4] * D;
-    OUT[5] = world[1] * C + world[5] * D;
-    OUT[6] = world[2] * C + world[6] * D;
-    OUT[7] = world[3] * C + world[7] * D;
-    OUT[12] = world[0] * E + world[4] * F + world[12];
-    OUT[13] = world[1] * E + world[5] * F + world[13];
-    OUT[14] = world[2] * E + world[6] * F + world[14];
-    OUT[15] = world[3] * E + world[7] * F + world[15];
-    return OUT;
-}
-function validateShaderSurfaceClipCapacity(clips, maxPlanes) {
-    if (!clips?.length) {
-        return;
-    }
-    if (!Array.isArray(clips)) {
-        throw new TypeError('clips must be an array of convex polygons');
-    }
-    let edgeCount = 0;
-    for (const POLYGON of clips) {
-        if (
-            !Array.isArray(POLYGON) ||
-            POLYGON.length < 3 ||
-            POLYGON.some((point) => !Number.isFinite(point?.x) || !Number.isFinite(point?.y))
-        ) {
-            throw new TypeError('Finite convex clip polygons required');
-        }
-        let area = 0;
-        for (let i = 0; i < POLYGON.length; i++) {
-            const A = POLYGON[i],
-                B = POLYGON[(i + 1) % POLYGON.length];
-            area += A.x * B.y - B.x * A.y;
-            if (Math.hypot(B.x - A.x, B.y - A.y) > 0) {
-                edgeCount++;
-            }
-        }
-        if (Math.abs(area) < 1e-8) {
-            throw new RangeError('A clip polygon must have nonzero area');
-        }
-        if (edgeCount > maxPlanes) {
-            throw new RangeError(`Vector asset clipping exceeds the shader surface limit of ${maxPlanes} edge planes`);
-        }
-    }
-}
 function transformPoint(matrix, point) {
     return {
         x: matrix[0] * point[0] + matrix[2] * point[1] + matrix[4],
@@ -208,7 +137,7 @@ function blendPoses(from, to, amount, partIds) {
 }
 
 /** Owns one retained GPU mesh; its actors own only independent pose/timeline state. */
-function retainVectorAsset(meshRenderer, compiledAsset, surfaceRenderer) {
+function retainVectorAsset(meshRenderer, compiledAsset) {
     if (!meshRenderer?.createMesh || !meshRenderer?.drawMesh || !meshRenderer?.deleteMesh) {
         throw new TypeError('A GameKit MeshRenderer is required');
     }
@@ -233,29 +162,14 @@ function retainVectorAsset(meshRenderer, compiledAsset, surfaceRenderer) {
         typeof meshRenderer.prepareCpuPose === 'function' &&
         typeof meshRenderer.deletePoseInstance === 'function' &&
         typeof meshRenderer.deletePoseSource === 'function';
-    const GEOMETRY = compiledAsset.geometry,
-        SHADER_GEOMETRY = GEOMETRY.shaderSurfaces ?? [];
-    if (
-        SHADER_GEOMETRY.length &&
-        (!surfaceRenderer?.createSurface || !surfaceRenderer?.drawSurface || !surfaceRenderer?.deleteSurface)
-    ) {
-        throw new TypeError('This SVG declares backend:"shader" and needs a GameKit YarnSurfaceRenderer');
-    }
-    const POSE_PROGRAM =
-        POSE_API && !GEOMETRY.drawOrder && !SHADER_GEOMETRY.length ? compilePoseChannels(METADATA) : null;
+    const GEOMETRY = compiledAsset.geometry;
+    const POSE_PROGRAM = POSE_API ? compilePoseChannels(METADATA) : null;
     let mesh = null;
     let poseSource = null;
-    const RETAINED_SURFACES = [];
     try {
         mesh = GEOMETRY.vertices.length ? meshRenderer.createMesh(GEOMETRY) : null;
         poseSource = POSE_PROGRAM ? meshRenderer.createPoseSource(POSE_PROGRAM) : null;
-        for (const DESCRIPTOR of SHADER_GEOMETRY) {
-            RETAINED_SURFACES.push(surfaceRenderer.createSurface(DESCRIPTOR));
-        }
     } catch (error) {
-        for (const SURFACE of RETAINED_SURFACES) {
-            surfaceRenderer.deleteSurface(SURFACE);
-        }
         if (mesh) {
             meshRenderer.deleteMesh(mesh);
         }
@@ -750,11 +664,7 @@ function retainVectorAsset(meshRenderer, compiledAsset, surfaceRenderer) {
             if (!mesh && paintRegions !== null) {
                 throw new TypeError('This asset has no named mesh fills');
             }
-            if (GEOMETRY.shaderSurfaces?.length) {
-                validateShaderSurfaceClipCapacity(clips, surfaceRenderer.maxClipPlanes);
-            }
-            const SPECIAL_GEOMETRY = Boolean(GEOMETRY.drawOrder || GEOMETRY.shaderSurfaces?.length);
-            if (!SPECIAL_GEOMETRY && POSE_INSTANCE) {
+            if (POSE_INSTANCE) {
                 const POSE = PREPARE_POSE({ excludeParts });
                 if (POSE) {
                     const INDEX_VARIANT =
@@ -779,13 +689,12 @@ function retainVectorAsset(meshRenderer, compiledAsset, surfaceRenderer) {
                         depthFunc,
                         indexVariant: INDEX_VARIANT,
                         strokeViewport,
+                        timeMs: displayTimeMs,
                     });
                     return;
                 }
             }
-            if (SPECIAL_GEOMETRY) {
-                meshRenderer.recordPoseFallback?.(GEOMETRY.drawOrder ? 'drawOrder' : 'shaderSurfaces');
-            } else if (!POSE_INSTANCE) {
+            if (!POSE_INSTANCE) {
                 meshRenderer.recordPoseFallback?.('uniformPose');
             }
             const RESOLVED = WORLD_MATRICES();
@@ -794,82 +703,6 @@ function retainVectorAsset(meshRenderer, compiledAsset, surfaceRenderer) {
                 opacity: pose.opacity,
                 visible: pose.visible && !excludeParts?.has(METADATA.parts[index].id),
             }));
-            if (GEOMETRY.drawOrder) {
-                const WORLD_MODE = viewProjection !== undefined || worldMatrix !== undefined;
-                for (const COMMAND of GEOMETRY.drawOrder) {
-                    if (COMMAND.kind === 'mesh') {
-                        if (!POSES[COMMAND.partIndex].visible || POSES[COMMAND.partIndex].opacity <= 0) {
-                            continue;
-                        }
-                        if (!mesh) {
-                            throw new Error('SVG draw order references mesh geometry that was not retained');
-                        }
-                        meshRenderer.drawMesh(mesh, {
-                            ...(WORLD_MODE
-                                ? {
-                                      viewProjection,
-                                      worldMatrix,
-                                  }
-                                : {
-                                      projection,
-                                  }),
-                            matrix,
-                            parts: POSES,
-                            morph: RESOLVED.morph.slice(),
-                            alpha,
-                            color,
-                            forceColor,
-                            paintRegions,
-                            whiteFlash,
-                            clips,
-                            stencilRef,
-                            depth,
-                            depthTest,
-                            depthWrite,
-                            depthFunc,
-                            strokeViewport,
-                            indexRange: [COMMAND.firstIndex, COMMAND.indexCount],
-                        });
-                        continue;
-                    }
-                    const SURFACE = RETAINED_SURFACES[COMMAND.surfaceIndex],
-                        POSE = POSES[GEOMETRY.shaderSurfaces[COMMAND.surfaceIndex].partIndex];
-                    if (!POSE.visible || POSE.opacity <= 0) {
-                        continue;
-                    }
-                    meshRenderer.flush('vectorShaderSurfaceBoundary');
-                    const MATERIAL_TRANSFORM = WORLD_MODE ? POSE.transform : multiply(matrix, POSE.transform);
-                    const SHADER_DEPTH =
-                        depthTest || depthWrite
-                            ? {
-                                  test: depthTest,
-                                  write: depthWrite,
-                                  func: depthFunc,
-                              }
-                            : false;
-                    surfaceRenderer.drawSurface(SURFACE, {
-                        ...(WORLD_MODE
-                            ? {
-                                  viewProjection,
-                                  worldMatrix: composeWorldMatrix(worldMatrix, matrix),
-                              }
-                            : {
-                                  projection,
-                              }),
-                        transform: MATERIAL_TRANSFORM,
-                        color,
-                        alpha: alpha * POSE.opacity,
-                        forceColor,
-                        whiteFlash: whiteFlash ? 1 : 0,
-                        timeMs: displayTimeMs,
-                        clips,
-                        stencilRef,
-                        z: depth,
-                        depth: SHADER_DEPTH,
-                    });
-                }
-                return;
-            }
             const INDEX_VARIANT =
                 !visibilityOverridden && compiledAsset.geometry.expressionIndices?.[expression] ? expression : null;
             const WORLD_MODE = viewProjection !== undefined || worldMatrix !== undefined;
@@ -898,6 +731,7 @@ function retainVectorAsset(meshRenderer, compiledAsset, surfaceRenderer) {
                 depthFunc,
                 indexVariant: INDEX_VARIANT,
                 strokeViewport,
+                timeMs: displayTimeMs,
             });
         };
         const GET_PART_POSE = (id) => {
@@ -987,9 +821,6 @@ function retainVectorAsset(meshRenderer, compiledAsset, surfaceRenderer) {
         if (mesh) {
             meshRenderer.deleteMesh(mesh);
         }
-        for (const SURFACE of RETAINED_SURFACES) {
-            surfaceRenderer.deleteSurface(SURFACE);
-        }
         if (poseSource) {
             meshRenderer.deletePoseSource(poseSource);
         }
@@ -1004,7 +835,6 @@ function retainVectorAsset(meshRenderer, compiledAsset, surfaceRenderer) {
         viewBox: Object.freeze([...compiledAsset.viewBox]),
         metadata: METADATA,
         mesh: mesh,
-        surfaces: Object.freeze(RETAINED_SURFACES),
         createActor: CREATE_ACTOR,
         ownsActor(actor) {
             return ACTORS.has(actor) && !actor.disposed;
@@ -1028,7 +858,7 @@ const SHARED_ASSETS = new WeakMap();
  * returns this reference; the last release frees the resources. `context.dispose()` frees whatever is left.
  */
 export function acquireVectorAsset(context, compiledAsset) {
-    if (!context?.acquireMeshRenderer || !context?.acquireSurfaceRenderer || !context?.onDispose) {
+    if (!context?.acquireMeshRenderer || !context?.onDispose) {
         throw new TypeError('A GameKit VectorContext is required');
     }
     let table = SHARED_ASSETS.get(context);
@@ -1046,9 +876,8 @@ export function acquireVectorAsset(context, compiledAsset) {
     }
     let entry = table.get(compiledAsset);
     if (!entry) {
-        const SURFACES = compiledAsset?.geometry?.shaderSurfaces?.length ? context.acquireSurfaceRenderer() : null;
         entry = {
-            asset: retainVectorAsset(context.acquireMeshRenderer(), compiledAsset, SURFACES),
+            asset: retainVectorAsset(context.acquireMeshRenderer(), compiledAsset),
             refs: 0,
         };
         table.set(compiledAsset, entry);

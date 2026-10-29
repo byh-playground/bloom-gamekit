@@ -329,7 +329,6 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
             };
             const CPU_CONTEXT = {
                 acquireMeshRenderer: () => CPU_REFERENCE,
-                acquireSurfaceRenderer: () => REFERENCE_CONTEXT.acquireSurfaceRenderer(),
                 onDispose: (callback) => REFERENCE_CONTEXT.onDispose(callback),
             };
             const LIVE_ACTORS = new Set();

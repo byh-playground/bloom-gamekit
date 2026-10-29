@@ -183,7 +183,7 @@ function bakeRasterAtlas(context, asset, release, compiledAsset, { pixelsPerUnit
     let unsupportedReason = null;
     if (GEOMETRY.morphCount) {
         unsupportedReason = 'morphTargets';
-    } else if (GEOMETRY.shaderSurfaces?.length || GEOMETRY.drawOrder?.length) {
+    } else if (GEOMETRY.materials) {
         unsupportedReason = 'shaderSurfaces';
     } else if (GEOMETRY.nonScalingStroke) {
         unsupportedReason = 'nonScalingStroke';
