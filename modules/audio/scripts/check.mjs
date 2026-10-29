@@ -455,7 +455,57 @@ try {
                 LEVELED.badRejected = (LEVELED.badRejected ?? 0) + (error instanceof RangeError ? 1 : 0);
             }
         }
-        return { pan: PAN, crossings: CENTS, bed: BED, texture: TEXTURE, buffered: BUFFERED, leveled: LEVELED };
+        // 로우컷: 작은 스피커가 못 내고 찌그러짐만 만드는 초저음을 걷어 낸다. 40Hz는 크게 줄고 400Hz는 그대로 지난다.
+        const CUT = {};
+        for (const [LABEL, HZ] of [
+            ['low', 40],
+            ['high', 400],
+        ]) {
+            const RUN_CUT = async (extra) => {
+                const CONTEXT = new OfflineAudioContext(1, 2 * 48000, 48000),
+                    MIX = CREATE_MIX(CONTEXT, CONTEXT.destination),
+                    TONE_BUFFER = CONTEXT.createBuffer(1, 2 * 48000, 48000),
+                    DATA = TONE_BUFFER.getChannelData(0);
+                for (let i = 0; i < DATA.length; i++) {
+                    DATA[i] = Math.sin((2 * Math.PI * HZ * i) / 48000) * 0.5;
+                }
+                RENDER_BED(
+                    CONTEXT,
+                    MIX.input,
+                    NOISE_BED([{ kind: 'buffer', bufferId: 'tone', gain: 0.5, ...extra }]),
+                    MAKE_NOISE(CONTEXT),
+                    {
+                        buffers: new Map([['tone', TONE_BUFFER]]),
+                        fadeMs: 1,
+                    },
+                );
+                return RMS((await CONTEXT.startRendering()).getChannelData(0), 0.5, 1.8);
+            };
+            CUT[LABEL + 'Kept'] = (await RUN_CUT({ lowCutHz: 100 })) / (await RUN_CUT({}));
+        }
+        for (const BAD of [5, 500, 'x']) {
+            try {
+                const CONTEXT = new OfflineAudioContext(1, 4800, 48000);
+                RENDER_BED(
+                    CONTEXT,
+                    CREATE_MIX(CONTEXT, CONTEXT.destination).input,
+                    NOISE_BED([{ kind: 'noise', hz: 500, gain: 0.1, lowCutHz: BAD }]),
+                    MAKE_NOISE(CONTEXT),
+                );
+                CUT.badAccepted = true;
+            } catch (error) {
+                CUT.badRejected = (CUT.badRejected ?? 0) + (error instanceof RangeError ? 1 : 0);
+            }
+        }
+        return {
+            pan: PAN,
+            crossings: CENTS,
+            bed: BED,
+            texture: TEXTURE,
+            buffered: BUFFERED,
+            leveled: LEVELED,
+            cut: CUT,
+        };
     });
     {
         const V = REPORT.offlineVariation;
@@ -480,6 +530,11 @@ try {
                 T['swingDb0.9'] > 10 &&
                 T.legacyLfoRejected,
             'Bed bandpass/offset decorrelation/lfos or legacy lfo rejection failed',
+        );
+        const CT = V.cut;
+        ASSERT(
+            CT.lowKept < 0.3 && CT.highKept > 0.9 && CT.badRejected === 3 && !CT.badAccepted,
+            'Layer low cut did not remove the low tone, kept the high tone, or accepted a bad value',
         );
         const LV = V.leveled;
         ASSERT(

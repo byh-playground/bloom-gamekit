@@ -102,6 +102,10 @@ function validateBed(recipe) {
             !Number.isFinite(LAYER.offsetMs ?? 0) ||
             (LAYER.offsetMs ?? 0) < 0 ||
             (LAYER.offsetMs ?? 0) > 60000 ||
+            !(
+                LAYER.lowCutHz === undefined ||
+                (Number.isFinite(LAYER.lowCutHz) && LAYER.lowCutHz >= 10 && LAYER.lowCutHz <= 400)
+            ) ||
             !(LAYER.compressor === undefined || validBedCompressor(LAYER.compressor)) ||
             !Array.isArray(LFOS) ||
             LFOS.length > 4 ||
@@ -117,7 +121,7 @@ function validateBed(recipe) {
             LFOS.reduce((sum, lfo) => sum + lfo.depth, 0) > 1
         ) {
             throw new RangeError(
-                'bed layers are noise {hz} or buffer {bufferId} (hz only with a type), gain 0..1, optional type lowpass|bandpass|highpass, q 0..30, compressor {threshold -100..0, ratio 1..20, knee?, attackMs?, releaseMs?}, pan -1..1, offsetMs 0..60000 and up to 4 lfos {hz 0.01..20, depth 0..1} whose depths sum to at most 1',
+                'bed layers are noise {hz} or buffer {bufferId} (hz only with a type), gain 0..1, optional type lowpass|bandpass|highpass, q 0..30, lowCutHz 10..400, compressor {threshold -100..0, ratio 1..20, knee?, attackMs?, releaseMs?}, pan -1..1, offsetMs 0..60000 and up to 4 lfos {hz 0.01..20, depth 0..1} whose depths sum to at most 1',
             );
         }
     }
@@ -316,9 +320,19 @@ export function renderBed(
         }
         // Gain swings between gain*(1-sum of depths) and gain: each LFO adds +-gain*depth/2 around gain*(1-sum/2).
         GAIN.gain.value = LAYER.gain * (1 - DEPTH / 2);
-        // source -> [filter] -> [compressor] -> gain. The compressor levels a layer whose loudness swings (music), so quiet
+        // source -> [low cut] -> [filter] -> [compressor] -> gain. The low cut (2nd-order highpass) removes rumble that small speakers
+        // cannot play and that only distorts them (and drives the master compressor).
+        // The filter is the layer's own type/hz/q. The compressor levels a layer whose loudness swings (music), so quiet
         // passages stay audible and loud ones stop jumping out; WebAudio compressors add automatic makeup gain, so re-check the level.
         let tail = SOURCE;
+        if (LAYER.lowCutHz !== undefined) {
+            const LOW_CUT = context.createBiquadFilter();
+            LOW_CUT.type = 'highpass';
+            LOW_CUT.frequency.value = LAYER.lowCutHz;
+            tail.connect(LOW_CUT);
+            tail = LOW_CUT;
+            NODES.push(LOW_CUT);
+        }
         if (FILTER) {
             tail.connect(FILTER);
             tail = FILTER;
