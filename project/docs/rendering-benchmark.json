@@ -198,6 +198,62 @@
                     "gpuMs": 0.19
                 }
             }
+        },
+        {
+            "label": "gpu-pose-flush-cost",
+            "gpu": "high",
+            "sourceHead": "d287ca4e",
+            "sourceDirty": true,
+            "renderer": "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 Ti (0x00002191) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+            "canvas": [1280, 720],
+            "note": "Actors of three sketch-town enemy meshes drawn alternately through drawVectorActor (one draw per actor), median of 60 frames x 3 runs. poseBackend auto vs uniform, before and after the flushUpdates fix (dirty sets, no per-call getError).",
+            "scenes": {
+                "poses: 40 interleaved actors, auto before": {
+                    "drawCalls": 40,
+                    "cpuMs": 9.8,
+                    "gpuMs": 9.763
+                },
+                "poses: 40 interleaved actors, auto after": {
+                    "drawCalls": 40,
+                    "cpuMs": 1.1,
+                    "gpuMs": 1.059
+                },
+                "poses: 40 interleaved actors, uniform": {
+                    "drawCalls": 40,
+                    "cpuMs": 1.3,
+                    "gpuMs": 1.398
+                },
+                "poses: 200 interleaved actors, auto before": {
+                    "drawCalls": 200,
+                    "cpuMs": 43.8,
+                    "gpuMs": 43.508
+                },
+                "poses: 200 interleaved actors, auto after": {
+                    "drawCalls": 200,
+                    "cpuMs": 6.1,
+                    "gpuMs": 5.757
+                },
+                "poses: 200 interleaved actors, uniform": {
+                    "drawCalls": 200,
+                    "cpuMs": 6.5,
+                    "gpuMs": 6.264
+                },
+                "poses: 1000 interleaved actors, auto before": {
+                    "drawCalls": 1000,
+                    "cpuMs": 252.8,
+                    "gpuMs": 251.439
+                },
+                "poses: 1000 interleaved actors, auto after": {
+                    "drawCalls": 1000,
+                    "cpuMs": 27.7,
+                    "gpuMs": 27.649
+                },
+                "poses: 1000 interleaved actors, uniform": {
+                    "drawCalls": 1000,
+                    "cpuMs": 26.8,
+                    "gpuMs": 26.836
+                }
+            }
         }
     ]
 }

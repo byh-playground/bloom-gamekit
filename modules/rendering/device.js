@@ -1267,9 +1267,11 @@ export class WebGLDevice {
         GL.pixelStorei(GL.UNPACK_SKIP_PIXELS, 0);
         GL.pixelStorei(GL.UNPACK_SKIP_ROWS, 0);
         GL.texSubImage2D(GL.TEXTURE_2D, 0, x, y, width, height, GL.RGBA, GL.FLOAT, data);
-        const ERROR = GL.getError();
-        if (ERROR !== GL.NO_ERROR) {
-            throw new Error(`Data texture update error ${ERROR}`);
+        if (this.checkGLErrors) {
+            const ERROR = GL.getError();
+            if (ERROR !== GL.NO_ERROR) {
+                throw new Error(`Data texture update error ${ERROR}`);
+            }
         }
         for (let row = 0; row < height; row++) {
             R.source.set(data.subarray(row * width * 4, (row + 1) * width * 4), ((y + row) * R.width + x) * 4);
