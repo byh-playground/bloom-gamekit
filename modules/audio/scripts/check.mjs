@@ -9,7 +9,8 @@ const ROOT = fileURLToPath(new URL('../../../', import.meta.url)),
     STARTED = Date.now(),
     REPORT = {
         startedAt: new Date().toISOString(),
-        scenario: 'unlock → live waveform → confirmed journal → dense budget → mute/save → reload/resume → disposal',
+        scenario:
+            'unlock → live waveform → pan/detune → ambience bed → confirmed journal → dense budget → mute/save → reload/resume → disposal',
         errors: [],
         checks: [],
     };
@@ -191,6 +192,132 @@ try {
         );
     }
     REPORT.checks.push('Offline real tone/noise/registered AudioBuffer, finite samples and dense peak');
+    REPORT.offlineVariation = await PAGE.evaluate(async () => {
+        const {
+            makeNoise: MAKE_NOISE,
+            createMix: CREATE_MIX,
+            renderSound: RENDER_SOUND,
+            renderBed: RENDER_BED,
+        } = await import('/dist/audio.js');
+        const RMS = (data, from, to, rate = 48000) => {
+            let sum = 0;
+            for (let i = Math.floor(from * rate); i < Math.floor(to * rate); i++) {
+                sum += data[i] * data[i];
+            }
+            return Math.sqrt(sum / Math.max(1, Math.floor((to - from) * rate)));
+        };
+        const CROSSINGS = (data, from, to, rate = 48000) => {
+            let n = 0;
+            for (let i = Math.floor(from * rate) + 1; i < Math.floor(to * rate); i++) {
+                n += data[i - 1] < 0 !== data[i] < 0 ? 1 : 0;
+            }
+            return n;
+        };
+        const TONE = {
+            category: 'sfx',
+            layers: [{ kind: 'tone', hz: 500, end: 500, ms: 300, gain: 0.3, type: 'sine' }],
+        };
+        const PAN = {};
+        for (const PAN_VALUE of [-1, 0, 1]) {
+            const CONTEXT = new OfflineAudioContext(2, 24000, 48000),
+                MIX = CREATE_MIX(CONTEXT, CONTEXT.destination);
+            let ended = false;
+            RENDER_SOUND(CONTEXT, MIX.input, TONE, MAKE_NOISE(CONTEXT), {
+                pan: PAN_VALUE,
+                onEnded: () => (ended = true),
+            });
+            const OUT = await CONTEXT.startRendering();
+            await new Promise((r) => setTimeout(r, 20));
+            PAN[PAN_VALUE] = {
+                left: RMS(OUT.getChannelData(0), 0.05, 0.25),
+                right: RMS(OUT.getChannelData(1), 0.05, 0.25),
+                ended,
+            };
+        }
+        const CENTS = {};
+        for (const DETUNE of [0, 1200, -1200]) {
+            const CONTEXT = new OfflineAudioContext(1, 24000, 48000),
+                MIX = CREATE_MIX(CONTEXT, CONTEXT.destination);
+            RENDER_SOUND(CONTEXT, MIX.input, TONE, MAKE_NOISE(CONTEXT), { detune: DETUNE });
+            const OUT = await CONTEXT.startRendering();
+            CENTS[DETUNE] = CROSSINGS(OUT.getChannelData(0), 0.05, 0.25);
+        }
+        const BED_RECIPE = {
+            category: 'ambience',
+            layers: [{ kind: 'noise', hz: 900, gain: 0.3, lfoHz: 2, lfoDepth: 0.5 }],
+        };
+        const BED = {};
+        {
+            const CONTEXT = new OfflineAudioContext(1, 96000, 48000),
+                MIX = CREATE_MIX(CONTEXT, CONTEXT.destination);
+            let ended = false;
+            const HANDLE = RENDER_BED(CONTEXT, MIX.input, BED_RECIPE, MAKE_NOISE(CONTEXT, 2000), {
+                fadeMs: 1,
+                onEnded: () => (ended = true),
+            });
+            CONTEXT.suspend(0.5).then(() => {
+                HANDLE.setLevel(0.25, 0);
+                CONTEXT.resume();
+            });
+            CONTEXT.suspend(1).then(() => {
+                HANDLE.stop(50);
+                HANDLE.stop(50);
+                HANDLE.setLevel(1, 0);
+                CONTEXT.resume();
+            });
+            const OUT = await CONTEXT.startRendering(),
+                DATA = OUT.getChannelData(0);
+            await new Promise((r) => setTimeout(r, 20));
+            BED.full = RMS(DATA, 0.1, 0.5);
+            BED.quarter = RMS(DATA, 0.6, 1);
+            BED.afterStop = RMS(DATA, 1.2, 2);
+            BED.ended = ended;
+        }
+        for (const SWELL of [false, true]) {
+            const CONTEXT = new OfflineAudioContext(1, 48000, 48000),
+                MIX = CREATE_MIX(CONTEXT, CONTEXT.destination),
+                HANDLE = RENDER_BED(
+                    CONTEXT,
+                    MIX.input,
+                    { category: 'ambience', layers: [{ kind: 'noise', hz: 900, gain: 0.2 }] },
+                    MAKE_NOISE(CONTEXT, 2000),
+                    { fadeMs: 1 },
+                );
+            if (SWELL) {
+                HANDLE.swell(1, 10, 2000);
+            }
+            const OUT = await CONTEXT.startRendering();
+            BED[SWELL ? 'swelled' : 'plain'] = RMS(OUT.getChannelData(0), 0.1, 0.5);
+        }
+        return { pan: PAN, crossings: CENTS, bed: BED };
+    });
+    {
+        const V = REPORT.offlineVariation;
+        ASSERT(
+            V.pan[-1].left > V.pan[-1].right * 20 &&
+                V.pan[1].right > V.pan[1].left * 20 &&
+                Math.abs(V.pan[0].left - V.pan[0].right) < V.pan[0].left * 0.05 &&
+                V.pan[-1].ended &&
+                V.pan[1].ended,
+            'Pan did not move energy to the requested side or leaked the panner',
+        );
+        const UP = V.crossings[1200] / V.crossings[0],
+            DOWN = V.crossings[-1200] / V.crossings[0];
+        ASSERT(UP > 1.8 && UP < 2.2 && DOWN > 0.45 && DOWN < 0.55, 'Detune did not shift pitch by the requested cents');
+        const B = V.bed;
+        ASSERT(
+            B.full > 1e-4 &&
+                B.quarter / B.full > 0.15 &&
+                B.quarter / B.full < 0.4 &&
+                B.afterStop < B.full * 0.01 &&
+                B.ended &&
+                B.swelled > B.plain * 1.5,
+            'Bed level/stop/swell or cleanup failed',
+        );
+    }
+    REPORT.checks.push(
+        'Offline pan moves energy to one channel; detune shifts pitch by octave; bed setLevel/stop/swell and node cleanup',
+    );
     await PAGE.locator('#tap').click();
     await PAGE.waitForTimeout(30);
     REPORT.live = await PAGE.evaluate(async () => {
@@ -215,6 +342,60 @@ try {
     await PAGE.waitForTimeout(300);
     ASSERT((await PAGE.evaluate(() => audioExample.player.snapshot())).voices === 0, 'Natural ended leaked voice');
     REPORT.checks.push('Actual gesture unlock and nonzero live analyser; natural ended cleanup');
+    REPORT.liveBed = await PAGE.evaluate(async () => {
+        const P = audioExample.player;
+        let rejected = false;
+        try {
+            P.start('hit', 1, () => {});
+        } catch (error) {
+            rejected = error instanceof TypeError;
+        }
+        await new Promise((r) => setTimeout(r, 450));
+        const BEFORE = P.meter().rms,
+            HANDLE = P.startBed('crowd', { level: 1, fadeMs: 100 }),
+            SAME = P.startBed('crowd') === HANDLE;
+        await new Promise((r) => setTimeout(r, 400));
+        let rms = 0;
+        for (let i = 0; i < 60; i++) {
+            rms = Math.max(rms, P.meter().rms);
+            await new Promise((r) => setTimeout(r, 5));
+        }
+        P.stopAll();
+        const KEPT = P.snapshot().beds.length;
+        P.setCategoryVolume('ambience', 0);
+        await new Promise((r) => setTimeout(r, 200));
+        const SILENT = P.meter().rms;
+        P.setCategoryVolume('ambience', 0.8);
+        HANDLE.stop(50);
+        await new Promise((r) => setTimeout(r, 300));
+        return {
+            rejected,
+            started: !!HANDLE,
+            same: SAME,
+            before: BEFORE,
+            rms,
+            keptAfterStopAll: KEPT,
+            silentWhenCategoryZero: SILENT,
+            afterStop: P.snapshot().beds.length,
+            panPlayed: !!P.start('hit', 1, { pan: -0.5, detune: 40 }),
+            voices: P.snapshot().voices,
+        };
+    });
+    ASSERT(
+        REPORT.liveBed.rejected &&
+            REPORT.liveBed.started &&
+            REPORT.liveBed.same &&
+            REPORT.liveBed.rms > REPORT.liveBed.before + 1e-4 &&
+            REPORT.liveBed.keptAfterStopAll === 1 &&
+            REPORT.liveBed.silentWhenCategoryZero < 1e-5 &&
+            REPORT.liveBed.afterStop === 0 &&
+            REPORT.liveBed.panPlayed,
+        'Live bed start/idempotence/stopAll survival/category volume/stop or start option guard failed',
+    );
+    await PAGE.waitForTimeout(450);
+    REPORT.checks.push(
+        'Live bed: nonzero loop, same handle on repeat, survives stopAll, category volume silences, stop removes; function third argument rejected; pan/detune play',
+    );
     const BEFORE = await PAGE.evaluate(() => audioExample.player.snapshot().played);
     await PAGE.locator('#confirmed').click();
     await PAGE.waitForTimeout(400);
@@ -302,13 +483,20 @@ try {
         'Actual AudioContext suspend clears voices; next gesture resumes same context without stale playback',
     );
     await PAGE.locator('#confirmed').click();
+    REPORT.bedAtDispose = await PAGE.evaluate(() => !!audioExample.player.startBed('crowd'));
     await PAGE.evaluate(async () => {
         audioExample.journal.dispose();
         await audioExample.player.dispose();
         await audioExample.player.dispose();
     });
     REPORT.disposed = await PAGE.evaluate(() => audioExample.player.snapshot());
-    ASSERT(REPORT.disposed.state === 'disposed' && REPORT.disposed.voices === 0, 'Dispose failed');
+    ASSERT(
+        REPORT.disposed.state === 'disposed' &&
+            REPORT.disposed.voices === 0 &&
+            REPORT.bedAtDispose &&
+            REPORT.disposed.beds.length === 0,
+        'Dispose failed or left a bed',
+    );
     ASSERT(!REPORT.errors.length, 'JS exceptions');
     REPORT.result = 'PASS';
     REPORT.limits = [
