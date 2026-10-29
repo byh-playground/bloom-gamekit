@@ -266,7 +266,7 @@
       throw new TypeError(`${name} needs ${count} finite numbers`);
     }
   }
-  function normalizeShader(source, fragment3) {
+  function normalizeShader(source, fragment2) {
     if (/^\s*#version\s+300\s+es\b/.test(source)) {
       return source.trimStart();
     }
@@ -275,8 +275,8 @@
     } else if (/^\s*#version\b/.test(source)) {
       throw new Error("Only GLSL ES 100 and 300 shaders are supported");
     }
-    let converted = source.replace(/^\s*#extension\s+GL_OES_standard_derivatives\s*:\s*enable\s*$/gm, "").replace(/\battribute\b/g, "in").replace(/\bvarying\b/g, fragment3 ? "in" : "out").replace(/\btexture2D\b/g, "texture").replace(/\btextureCube\b/g, "texture");
-    if (fragment3) {
+    let converted = source.replace(/^\s*#extension\s+GL_OES_standard_derivatives\s*:\s*enable\s*$/gm, "").replace(/\battribute\b/g, "in").replace(/\bvarying\b/g, fragment2 ? "in" : "out").replace(/\btexture2D\b/g, "texture").replace(/\btextureCube\b/g, "texture");
+    if (fragment2) {
       converted = converted.replace(/\bgl_FragColor\b/g, "_deviceFragColor");
       return `#version 300 es
 precision mediump float;
@@ -501,17 +501,17 @@ ${converted}`;
     _pipeline(record) {
       const GL = this.gl;
       let vertex;
-      let fragment3;
+      let fragment2;
       let program;
       try {
         vertex = compile(GL, GL.VERTEX_SHADER, record.vertex);
-        fragment3 = compile(GL, GL.FRAGMENT_SHADER, record.fragment);
+        fragment2 = compile(GL, GL.FRAGMENT_SHADER, record.fragment);
         program = GL.createProgram();
         if (!program) {
           throw new Error("Program allocation failed");
         }
         GL.attachShader(program, vertex);
-        GL.attachShader(program, fragment3);
+        GL.attachShader(program, fragment2);
         GL.linkProgram(program);
         if (!GL.getProgramParameter(program, GL.LINK_STATUS)) {
           throw new Error(`Program link failed: ${GL.getProgramInfoLog(program)}`);
@@ -534,15 +534,15 @@ ${converted}`;
         if (vertex) {
           GL.deleteShader(vertex);
         }
-        if (fragment3) {
-          GL.deleteShader(fragment3);
+        if (fragment2) {
+          GL.deleteShader(fragment2);
         }
       }
     }
     /** Attributes use interleaved FLOAT components and byte offsets in their vertex/instance source. */
-    createPipeline({ vertex, fragment: fragment3, stride, instanceStride = 0, attributes, uniforms = {} }) {
+    createPipeline({ vertex, fragment: fragment2, stride, instanceStride = 0, attributes, uniforms = {} }) {
       this._ready();
-      if (typeof vertex !== "string" || typeof fragment3 !== "string") {
+      if (typeof vertex !== "string" || typeof fragment2 !== "string") {
         throw new TypeError("Shader sources required");
       }
       integer(stride, "stride", 4, 255);
@@ -586,7 +586,7 @@ ${converted}`;
       }
       const RECORD = {
         vertex,
-        fragment: fragment3,
+        fragment: fragment2,
         stride,
         instanceStride,
         instanced: attributes.some((a) => a.source === "instance"),
@@ -3648,26 +3648,7 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
       this.state = "disposed";
     }
   };
-  var IDENTITY2 = Object.freeze([1, 0, 0, 1, 0, 0]);
-  var ZERO_MORPH = Object.freeze([0, 0]);
-  var WHITE = Object.freeze([1, 1, 1, 1]);
-  var INSTANCE_ATTRIBUTES = ["i_row0", "i_row1", "i_color", "i_params"].map((name, i) => ({
-    name,
-    size: 4,
-    offset: i * 16,
-    source: "instance"
-  }));
-  var WORLD_INSTANCE_ATTRIBUTES = ["i_row0", "i_row1", "i_row2", "i_params"].map((name, i) => ({
-    name,
-    size: 4,
-    offset: i * 16,
-    source: "instance"
-  }));
-  var STRIDE_FLOATS = 9;
-  var STRIDE_BYTES = STRIDE_FLOATS * 4;
-  var DEFAULT_LIMIT_BYTES = 32 * 1024 * 1024;
-  var IDENTITY3 = Object.freeze([1, 0, 0, 1, 0, 0]);
-  var WHITE2 = Object.freeze([1, 1, 1, 1]);
+  var MATERIAL_KIND = Object.freeze({ none: 0, yarnFill: 1, yarnEdge: 2, sketchFill: 3, sketchEdge: 4 });
   var STITCH_FIELD_EXTENT = 0.8;
   var STITCH_FIELD_MAX_DISTANCE = 0.25;
   var YARN_FRAGMENT_BODY = `
@@ -3677,7 +3658,7 @@ vec3 shadeYarnFill(vec3 base) {
   float cols = max(2.0, ceil(u_bounds.z / stitchWidth));
   float rows = max(2.0, ceil(u_bounds.w / stitchHeight));
   float sx = u_bounds.z / cols, sy = u_bounds.w / rows;
-  vec2 local = v_position;
+  vec2 local = v_local;
   if (u_effect3.z > 0.5) {
     float rx = max(u_bounds.z * 0.5, 0.0001), ry = max(u_bounds.w * 0.5, 0.0001);
     float nx = clamp((local.x - (u_bounds.x + rx)) / rx, -1.35, 1.35);
@@ -3719,8 +3700,8 @@ vec3 shadeYarnFill(vec3 base) {
   return color;
 }
 void shadeYarnEdge(inout vec3 rgb, float alpha) {
-  float radial = v_surface.z;
-  float along = v_surface.y * u_effect3.y;
+  float radial = v_material.w;
+  float along = v_material.z * u_effect3.y;
   float edgeWidth = u_effect1.w;
   float lobe = fract(along / max(u_effect1.z, 0.001));
   float relief = min(u_effect3.w, edgeWidth * 0.75);
@@ -3749,6 +3730,22 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
   float outAlpha=alpha*coverage;
   gl_FragColor=vec4(rgb*outAlpha,outAlpha);
 }`;
+  var IDENTITY2 = Object.freeze([1, 0, 0, 1, 0, 0]);
+  var ZERO_MORPH = Object.freeze([0, 0]);
+  var WHITE = Object.freeze([1, 1, 1, 1]);
+  var INSTANCE_ATTRIBUTES = ["i_row0", "i_row1", "i_color", "i_params"].map((name, i) => ({
+    name,
+    size: 4,
+    offset: i * 16,
+    source: "instance"
+  }));
+  var WORLD_INSTANCE_ATTRIBUTES = ["i_row0", "i_row1", "i_row2", "i_params"].map((name, i) => ({
+    name,
+    size: 4,
+    offset: i * 16,
+    source: "instance"
+  }));
+  var NO_TEXTURES = Object.freeze([]);
   var TAU = Math.PI * 2;
   var SILHOUETTE_OFFSETS = Object.freeze(
     Array.from(
@@ -3758,8 +3755,8 @@ void shadeYarnEdge(inout vec3 rgb, float alpha) {
       (_, i) => Object.freeze([Math.cos(i * TAU / 8), Math.sin(i * TAU / 8)])
     )
   );
-  var IDENTITY4 = Object.freeze([1, 0, 0, 1, 0, 0]);
-  var WHITE3 = Object.freeze([1, 1, 1, 1]);
+  var IDENTITY3 = Object.freeze([1, 0, 0, 1, 0, 0]);
+  var WHITE2 = Object.freeze([1, 1, 1, 1]);
   var NAMED = Object.freeze({
     black: "#000000",
     white: "#ffffff",
