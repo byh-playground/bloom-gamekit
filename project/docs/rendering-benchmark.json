@@ -66,6 +66,138 @@
                     "gpuMs": 0.67
                 }
             }
+        },
+        {
+            "label": "round-join-fix",
+            "gpu": "high",
+            "sourceHead": "b653131b1d09abc37c08dc5bac7910733603b18f",
+            "sourceDirty": true,
+            "renderer": "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 Ti (0x00002191) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+            "canvas": [1280, 720],
+            "scenes": {
+                "paths: 400 filled+stroked polygons": {
+                    "drawCalls": 1,
+                    "vertices": 35355,
+                    "uploadedKiB": 2762.1,
+                    "cpuMs": 4.4,
+                    "gpuMs": 0.25
+                },
+                "curves: 200 bezier strokes": {
+                    "drawCalls": 1,
+                    "vertices": 27600,
+                    "uploadedKiB": 2156.3,
+                    "cpuMs": 2.8,
+                    "gpuMs": 0.2
+                },
+                "text: 300 bitmap strings": {
+                    "drawCalls": 1,
+                    "vertices": 5400,
+                    "uploadedKiB": 421.9,
+                    "cpuMs": 1.5,
+                    "gpuMs": 0.06
+                },
+                "gradients: 60 linear fills": {
+                    "drawCalls": 1,
+                    "vertices": 360,
+                    "uploadedKiB": 28.1,
+                    "cpuMs": 14.9,
+                    "gpuMs": 0.15
+                },
+                "groups: 40 half-opacity groups": {
+                    "drawCalls": 80,
+                    "vertices": 720,
+                    "uploadedKiB": 56.3,
+                    "cpuMs": 1,
+                    "gpuMs": 1.01
+                },
+                "sprites: 2000 atlas sprites": {
+                    "drawCalls": 1,
+                    "vertices": 12000,
+                    "uploadedKiB": 937.5,
+                    "cpuMs": 2.8,
+                    "gpuMs": 0.66
+                },
+                "meshes: 2000 retained mesh instances": {
+                    "drawCalls": 1,
+                    "vertices": 60000,
+                    "uploadedKiB": 125,
+                    "cpuMs": 2,
+                    "gpuMs": 0.33
+                },
+                "materials: 256 yarn+sketch actors": {
+                    "drawCalls": 1,
+                    "vertices": 331776,
+                    "uploadedKiB": 20,
+                    "cpuMs": 0.5,
+                    "gpuMs": 0.59
+                }
+            }
+        },
+        {
+            "label": "gradient-ramp-cache",
+            "gpu": "high",
+            "sourceHead": "b653131b1d09abc37c08dc5bac7910733603b18f",
+            "sourceDirty": true,
+            "renderer": "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 Ti (0x00002191) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+            "canvas": [1280, 720],
+            "scenes": {
+                "paths: 400 filled+stroked polygons": {
+                    "drawCalls": 1,
+                    "vertices": 35355,
+                    "uploadedKiB": 2762.1,
+                    "cpuMs": 4.4,
+                    "gpuMs": 0.24
+                },
+                "curves: 200 bezier strokes": {
+                    "drawCalls": 1,
+                    "vertices": 27600,
+                    "uploadedKiB": 2156.3,
+                    "cpuMs": 2.6,
+                    "gpuMs": 0.19
+                },
+                "text: 300 bitmap strings": {
+                    "drawCalls": 1,
+                    "vertices": 5400,
+                    "uploadedKiB": 421.9,
+                    "cpuMs": 1.6,
+                    "gpuMs": 0.06
+                },
+                "gradients: 60 linear fills": {
+                    "drawCalls": 1,
+                    "vertices": 360,
+                    "uploadedKiB": 28.1,
+                    "cpuMs": 0.4,
+                    "gpuMs": 0.01
+                },
+                "groups: 40 half-opacity groups": {
+                    "drawCalls": 80,
+                    "vertices": 720,
+                    "uploadedKiB": 56.3,
+                    "cpuMs": 1.1,
+                    "gpuMs": 0.32
+                },
+                "sprites: 2000 atlas sprites": {
+                    "drawCalls": 1,
+                    "vertices": 12000,
+                    "uploadedKiB": 937.5,
+                    "cpuMs": 2.9,
+                    "gpuMs": 0.14
+                },
+                "meshes: 2000 retained mesh instances": {
+                    "drawCalls": 1,
+                    "vertices": 60000,
+                    "uploadedKiB": 125,
+                    "cpuMs": 1.8,
+                    "gpuMs": 0.07
+                },
+                "materials: 256 yarn+sketch actors": {
+                    "drawCalls": 1,
+                    "vertices": 331776,
+                    "uploadedKiB": 20,
+                    "cpuMs": 0.3,
+                    "gpuMs": 0.19
+                }
+            }
         }
     ]
 }
