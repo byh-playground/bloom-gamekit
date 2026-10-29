@@ -362,7 +362,54 @@ try {
         } catch (error) {
             TEXTURE.legacyLfoRejected = error instanceof TypeError;
         }
-        return { pan: PAN, crossings: CENTS, bed: BED, texture: TEXTURE };
+        const BUFFERED = {};
+        {
+            const SINE = (context, hz, seconds) => {
+                const BUFFER = context.createBuffer(1, Math.round(48000 * seconds), 48000),
+                    DATA = BUFFER.getChannelData(0);
+                for (let i = 0; i < DATA.length; i++) {
+                    DATA[i] = Math.sin((2 * Math.PI * hz * i) / 48000) * 0.5;
+                }
+                return BUFFER;
+            };
+            const RUN = async (layer, hz, seconds = 1) => {
+                const CONTEXT = new OfflineAudioContext(1, 3 * 48000, 48000),
+                    MIX = CREATE_MIX(CONTEXT, CONTEXT.destination);
+                RENDER_BED(
+                    CONTEXT,
+                    MIX.input,
+                    NOISE_BED([{ kind: 'buffer', bufferId: 'clip', gain: 0.5, ...layer }]),
+                    MAKE_NOISE(CONTEXT),
+                    {
+                        buffers: new Map([['clip', SINE(CONTEXT, hz, seconds)]]),
+                        fadeMs: 1,
+                    },
+                );
+                return (await CONTEXT.startRendering()).getChannelData(0);
+            };
+            const PLAIN = await RUN({}, 440);
+            // 1초 버퍼가 3초 동안 이어서 반복된다(루프 이음매 이후에도 같은 크기).
+            BUFFERED.firstSecond = RMS(PLAIN, 0.2, 0.9);
+            BUFFERED.thirdSecond = RMS(PLAIN, 2.1, 2.8);
+            const LOW = await RUN({ type: 'highpass', hz: 2000, q: 0.7 }, 200),
+                HIGH = await RUN({ type: 'highpass', hz: 2000, q: 0.7 }, 4000),
+                LOW_PLAIN = await RUN({}, 200),
+                HIGH_PLAIN = await RUN({}, 4000);
+            BUFFERED.lowKept = RMS(LOW, 0.2, 0.9) / RMS(LOW_PLAIN, 0.2, 0.9);
+            BUFFERED.highKept = RMS(HIGH, 0.2, 0.9) / RMS(HIGH_PLAIN, 0.2, 0.9);
+            try {
+                const CONTEXT = new OfflineAudioContext(1, 4800, 48000);
+                RENDER_BED(
+                    CONTEXT,
+                    CREATE_MIX(CONTEXT, CONTEXT.destination).input,
+                    NOISE_BED([{ kind: 'buffer', bufferId: 'missing', gain: 0.5 }]),
+                    MAKE_NOISE(CONTEXT),
+                );
+            } catch (error) {
+                BUFFERED.missingRejected = error.message.includes('not registered');
+            }
+        }
+        return { pan: PAN, crossings: CENTS, bed: BED, texture: TEXTURE, buffered: BUFFERED };
     });
     {
         const V = REPORT.offlineVariation;
@@ -387,6 +434,16 @@ try {
                 T['swingDb0.9'] > 10 &&
                 T.legacyLfoRejected,
             'Bed bandpass/offset decorrelation/lfos or legacy lfo rejection failed',
+        );
+        const U = V.buffered;
+        ASSERT(
+            U.firstSecond > 1e-4 &&
+                U.thirdSecond / U.firstSecond > 0.9 &&
+                U.thirdSecond / U.firstSecond < 1.1 &&
+                U.lowKept < 0.05 &&
+                U.highKept > 0.7 &&
+                U.missingRejected,
+            'Buffer bed loop/filter/missing-buffer guard failed',
         );
         const B = V.bed;
         ASSERT(
@@ -480,6 +537,34 @@ try {
     REPORT.checks.push(
         'Live bed: nonzero loop, same handle on repeat, survives stopAll, category volume silences, stop removes; function third argument rejected; pan/detune play',
     );
+    REPORT.liveLoop = await PAGE.evaluate(async () => {
+        const P = audioExample.player,
+            BUFFER = P.context.createBuffer(1, P.context.sampleRate, P.context.sampleRate),
+            DATA = BUFFER.getChannelData(0);
+        for (let i = 0; i < DATA.length; i++) {
+            DATA[i] = Math.sin((2 * Math.PI * 330 * i) / P.context.sampleRate) * 0.5;
+        }
+        P.setBuffer('demo-loop', BUFFER);
+        const HANDLE = P.startBed('loop', { level: 1, fadeMs: 50 });
+        await new Promise((r) => setTimeout(r, 400));
+        let rms = 0;
+        for (let i = 0; i < 40; i++) {
+            rms = Math.max(rms, P.meter().rms);
+            await new Promise((r) => setTimeout(r, 5));
+        }
+        const RUNNING = P.snapshot().beds.includes('loop');
+        HANDLE.stop(50);
+        await new Promise((r) => setTimeout(r, 250));
+        return { started: !!HANDLE, running: RUNNING, rms, afterStop: P.snapshot().beds.length };
+    });
+    ASSERT(
+        REPORT.liveLoop.started &&
+            REPORT.liveLoop.running &&
+            REPORT.liveLoop.rms > 1e-4 &&
+            REPORT.liveLoop.afterStop === 0,
+        'Live buffer bed (registered AudioBuffer loop) failed',
+    );
+    REPORT.checks.push('Live buffer bed: registered AudioBuffer loops audibly and stop removes it');
     const BEFORE = await PAGE.evaluate(() => audioExample.player.snapshot().played);
     await PAGE.locator('#confirmed').click();
     await PAGE.waitForTimeout(400);

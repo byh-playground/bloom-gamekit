@@ -1,3 +1,22 @@
+## v0.29.0 (2026-10-30)
+
+호환 추가. 환경음 베드 레이어에 `kind: 'buffer'`를 추가합니다. 게임이 읽어 디코드한 AudioBuffer(음악 루프, 긴 환경 소리)를 베드로 깔고 `setLevel`·`swell`·`stop`으로 다룰 수 있습니다. 발배구가 배경 음악을 깔려는 데서 나온 공통 필요입니다.
+
+- buffer 레이어: `{ kind: 'buffer', bufferId, gain, type?, hz?, q?, pan?, offsetMs?, lfos? }`. 필터는 `type`을 줄 때만 붙습니다(예: 음악의 낮은 대역을 덜어 효과음과 겹치지 않게).
+- `startBed`는 `setBuffer`로 등록한 버퍼를 씁니다. 등록하지 않은 `bufferId`는 오류입니다. 파일 fetch/decode와 곡 선택은 여전히 모듈 밖입니다.
+
+```js
+player.setBuffer('bgm', await context.decodeAudioData(await (await fetch(url)).arrayBuffer()));
+config.beds = {
+    bgm: { category: 'music', layers: [{ kind: 'buffer', bufferId: 'bgm', gain: 0.8, type: 'highpass', hz: 250 }] },
+};
+const bgm = player.startBed('bgm', { level: 1, fadeMs: 1500 });
+bgm.setLevel(0.5, 300); // 일시정지에서 낮춤
+```
+
+- 시험: `test:audio`가 1초 버퍼의 3초 루프(세 번째 초가 첫 초와 같은 크기), highpass가 낮은 소리는 거르고(5% 미만 남음) 높은 소리는 남기는지(70% 이상), 등록하지 않은 버퍼 거부, 실제 재생에서 루프 시작·정지를 확인합니다.
+- 이번에 하지 않은 것: 루프 지점(loopStart/loopEnd) 지정, 곡 이어 붙이기·크로스페이드, 파일 로딩. 실제 청취는 검증하지 못했습니다.
+
 ## v0.28.0 (2026-10-30)
 
 **Breaking.** `audio` 환경음 베드가 바람 소리처럼 들리던 문제에서 나온 공통 필요입니다. 군중 웅성거림은 필터 있는 여러 겹이 서로 닮지 않게 겹치고 음절 속도로 불규칙하게 떨려야 하는데, v0.27.0은 저역통과 노이즈 한 종류와 느린 흔들림 하나만 줄 수 있었습니다.

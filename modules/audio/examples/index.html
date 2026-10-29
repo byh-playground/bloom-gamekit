@@ -34,12 +34,45 @@
     ><button id="right">오른쪽 타격</button
     ><button id="bed">환경음 켜기</button
     ><button id="swell">환호</button
+    ><button id="loop">음원 루프 켜기</button
     ><button id="mute">음소거</button
     ><label>음량 <input id="volume" type="range" min="0" max="100" value="70" /></label>
     <pre id="status"></pre>
     <script type="module">
         import { AudioPlayer } from '../../../dist/audio.js';
         import { PresentationEventQueue } from '../../../dist/presentation-events.js';
+        const CROWD_BEDS = {
+            crowd: {
+                category: 'ambience',
+                layers: [
+                    {
+                        kind: 'noise',
+                        type: 'bandpass',
+                        hz: 480,
+                        q: 0.9,
+                        gain: 0.5,
+                        pan: -0.6,
+                        lfos: [
+                            { hz: 0.22, depth: 0.25 },
+                            { hz: 4.3, depth: 0.3 },
+                        ],
+                    },
+                    {
+                        kind: 'noise',
+                        type: 'bandpass',
+                        hz: 520,
+                        q: 0.9,
+                        gain: 0.5,
+                        pan: 0.6,
+                        offsetMs: 1700,
+                        lfos: [
+                            { hz: 0.31, depth: 0.25 },
+                            { hz: 5.1, depth: 0.3 },
+                        ],
+                    },
+                ],
+            },
+        };
         const CONFIG = {
             storageKey: 'gamekit-audio-example',
             maxVoices: 4,
@@ -66,36 +99,12 @@
             synthesis: {
                 noiseMs: 4000,
             },
+            // 음원(buffer) 베드: 게임이 읽어 디코드한 AudioBuffer를 setBuffer로 등록하고 켠다. 필터는 선택이다.
             beds: {
-                crowd: {
+                ...CROWD_BEDS,
+                loop: {
                     category: 'ambience',
-                    layers: [
-                        {
-                            kind: 'noise',
-                            type: 'bandpass',
-                            hz: 480,
-                            q: 0.9,
-                            gain: 0.5,
-                            pan: -0.6,
-                            lfos: [
-                                { hz: 0.22, depth: 0.25 },
-                                { hz: 4.3, depth: 0.3 },
-                            ],
-                        },
-                        {
-                            kind: 'noise',
-                            type: 'bandpass',
-                            hz: 520,
-                            q: 0.9,
-                            gain: 0.5,
-                            pan: 0.6,
-                            offsetMs: 1700,
-                            lfos: [
-                                { hz: 0.31, depth: 0.25 },
-                                { hz: 5.1, depth: 0.3 },
-                            ],
-                        },
-                    ],
+                    layers: [{ kind: 'buffer', bufferId: 'demo-loop', gain: 0.6, type: 'highpass', hz: 150 }],
                 },
             },
             sounds: {
@@ -203,6 +212,28 @@
                 bed = PLAYER.startBed('crowd', { level: 0.6, fadeMs: 600 });
             }
             document.querySelector('#bed').textContent = bed ? '환경음 끄기' : '환경음 켜기';
+            STATUS();
+        };
+        let loop = null;
+        document.querySelector('#loop').onclick = async () => {
+            if (loop) {
+                loop.stop(500);
+                loop = null;
+            } else {
+                await PLAYER.unlock();
+                // 2초짜리 도레미 아르페지오를 만들어 등록한다(실제 게임은 fetch한 파일을 decodeAudioData한다).
+                const RATE = PLAYER.context.sampleRate,
+                    BUFFER = PLAYER.context.createBuffer(1, RATE * 2, RATE),
+                    DATA = BUFFER.getChannelData(0);
+                for (let i = 0; i < DATA.length; i++) {
+                    const NOTE = Math.floor((i / RATE) * 4) % 3,
+                        T = (i / RATE) % 0.5;
+                    DATA[i] = Math.sin(2 * Math.PI * [261.6, 329.6, 392][NOTE] * (i / RATE)) * 0.4 * Math.exp(-T * 4);
+                }
+                PLAYER.setBuffer('demo-loop', BUFFER);
+                loop = PLAYER.startBed('loop', { level: 0.8, fadeMs: 400 });
+            }
+            document.querySelector('#loop').textContent = loop ? '음원 루프 끄기' : '음원 루프 켜기';
             STATUS();
         };
         document.querySelector('#swell').onclick = () => {
