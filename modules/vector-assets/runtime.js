@@ -640,7 +640,7 @@ function retainVectorAsset(meshRenderer, compiledAsset) {
             POSE_METRICS.cpuFallbacks++;
             return CACHE_PREPARED(meshRenderer.prepareCpuPose(POSE_INSTANCE, PARTS, MORPH, REASON));
         };
-        const DRAW = ({
+        const DRAW_ONE = ({
             projection,
             viewProjection,
             worldMatrix,
@@ -751,6 +751,48 @@ function retainVectorAsset(meshRenderer, compiledAsset) {
                 timeMs: displayTimeMs,
             });
         };
+        /**
+         * Draws the actor. With `instances` and `outlineExpression`, the leading `prefixCount` instances (the outline
+         * copies) show that expression and the remaining instance (the body) shows the actor's own, as two ordered
+         * instanced draws of one retained pose.
+         */
+        const DRAW = (options = {}) => {
+            const { outlineExpression: OUTLINE_EXPRESSION = null, instances: INSTANCES = null } = options;
+            if (OUTLINE_EXPRESSION === null) {
+                return DRAW_ONE(options);
+            }
+            if (!INSTANCES || INSTANCES.prefixCount < 1 || INSTANCES.prefixCount >= INSTANCES.count) {
+                throw new TypeError('outlineExpression requires silhouette instances');
+            }
+            if (visibilityOverridden) {
+                throw new TypeError('outlineExpression cannot be combined with setPartVisible overrides');
+            }
+            const BODY_EXPRESSION = expression,
+                OUTLINES = INSTANCES.prefixCount;
+            SET_EXPRESSION(OUTLINE_EXPRESSION);
+            try {
+                DRAW_ONE({
+                    ...options,
+                    instances: {
+                        ...INSTANCES,
+                        matrices: INSTANCES.matrices.subarray(0, OUTLINES * 6),
+                        count: OUTLINES,
+                    },
+                });
+            } finally {
+                SET_EXPRESSION(BODY_EXPRESSION);
+            }
+            DRAW_ONE({
+                ...options,
+                instances: {
+                    matrices: INSTANCES.matrices.subarray(OUTLINES * 6, INSTANCES.count * 6),
+                    count: INSTANCES.count - OUTLINES,
+                    prefixColor: null,
+                    prefixCount: 0,
+                    forceColorPrefixCount: 0,
+                },
+            });
+        };
         const GET_PART_POSE = (id) => {
             ASSERT_ACTOR();
             if (!PART_INDICES.has(id)) {
@@ -785,6 +827,9 @@ function retainVectorAsset(meshRenderer, compiledAsset) {
             return true;
         };
         const ACTOR = Object.freeze({
+            get expression() {
+                return expression;
+            },
             seek: SEEK,
             play: PLAY,
             transitionTo: TRANSITION_TO,
@@ -866,6 +911,14 @@ function retainVectorAsset(meshRenderer, compiledAsset) {
     });
 }
 
+/** Atlas bakers take a closed option set; an unknown name (a typo, or an option that no longer exists) is an error. */
+export function rejectUnknownOptions(unknownOptions) {
+    const NAMES = Object.keys(unknownOptions);
+    if (NAMES.length) {
+        throw new TypeError(`Unknown option${NAMES.length > 1 ? 's' : ''}: ${NAMES.join(', ')}`);
+    }
+}
+
 // Every actor of one compiled SVG on one context shares that context's GPU mesh, pose source and yarn/sketch
 // surfaces. The compiled object is the identity: the caller keeps the object it loaded and passes it again.
 const SHARED_ASSETS = new WeakMap();
@@ -917,6 +970,16 @@ export function acquireVectorAsset(context, compiledAsset) {
             return true;
         },
     };
+}
+
+/**
+ * Keeps the context's GPU mesh, pose source and surfaces of `compiledAsset` resident without an actor, so the last
+ * actor disposing and the next one being created does not free and upload them again. `release()` returns this
+ * reference; `context.dispose()` frees whatever is left.
+ */
+export function holdVectorAsset(context, compiledAsset) {
+    const { release: RELEASE } = acquireVectorAsset(context, compiledAsset);
+    return Object.freeze({ release: RELEASE });
 }
 
 /** Creates an independent actor (clip, expression and part-pose state) of a compiled SVG on the context. */

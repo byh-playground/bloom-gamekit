@@ -1,5 +1,5 @@
 import { validateCompiledAsset } from './schema.js';
-import { acquireVectorAsset } from './runtime.js';
+import { acquireVectorAsset, rejectUnknownOptions } from './runtime.js';
 import { packPaintRegions } from '../rendering/paint-regions.js';
 
 const CACHE = new WeakMap();
@@ -128,8 +128,10 @@ function bakeSpriteAtlas(
         padding = 2,
         paintRegions = null,
         supersample = 1,
+        ...unknownOptions
     } = {},
 ) {
+    rejectUnknownOptions(unknownOptions);
     validateCompiledAsset(compiledAsset);
     const DEVICE = context.device,
         MESHES = context.meshRenderer,

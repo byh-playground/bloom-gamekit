@@ -166,6 +166,10 @@ context.endFrame();
 
 // On owner shutdown:
 actor.dispose();
+
+// Keep a species resident while no actor of it exists, so the next actor does not upload its mesh again:
+const hold = holdVectorAsset(context, compiled);
+hold.release();
 context.dispose();
 device.dispose();
 ```

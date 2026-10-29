@@ -522,6 +522,51 @@ try {
                     }
                 }
                 CHECK(outlinePixels > 20, 'Actor silhouette adds outline pixels around the body');
+                // The outline copies may show another expression than the body, still in one ordered pair of draws.
+                const BODY_EXPRESSION = ACTUAL[0].expression;
+                const EXPRESSION_OUTLINED = READ_FRAME(() =>
+                    CONTEXT.drawVectorActorSilhouette(ACTUAL[0], {
+                        matrix: [1, 0, 0, 1, 40, 0],
+                        color: '#000',
+                        width: 3,
+                        radius: 100,
+                        outlineExpression: 'happy',
+                    }),
+                );
+                CHECK(ACTUAL[0].expression === BODY_EXPRESSION, 'outlineExpression restores the body expression');
+                for (let at = 0; at < PLAIN.length; at += 4) {
+                    if (PLAIN[at + 3] > 250) {
+                        CHECK(
+                            [0, 1, 2, 3].every((k) => Math.abs(EXPRESSION_OUTLINED[at + k] - PLAIN[at + k]) <= 1),
+                            'Outline expression keeps the body pixels',
+                        );
+                    }
+                }
+                const EXPRESSION_DRAWS = CONTEXT.frameStats.drawCalls;
+                READ_FRAME(() =>
+                    CONTEXT.drawVectorActorSilhouette(ACTUAL[0], {
+                        matrix: [1, 0, 0, 1, 40, 0],
+                        color: '#000',
+                        width: 3,
+                        radius: 100,
+                    }),
+                );
+                CHECK(
+                    EXPRESSION_DRAWS > CONTEXT.frameStats.drawCalls,
+                    'Outline copies of another expression are their own ordered draw',
+                );
+                // Pose preparation is on the context; held assets and closed atlas options.
+                CONTEXT.preparePoses();
+                CHECK(typeof V.holdVectorAsset === 'function', 'holdVectorAsset is exported');
+                const HELD = V.holdVectorAsset(CONTEXT, COMPILED[0]);
+                CHECK(HELD.release() === true && HELD.release() === false, 'A hold is released once');
+                let unknownOptionError = null;
+                try {
+                    V.createVectorSpriteAtlas(CTX, COMPILED[0], { ...ATLAS_OPTIONS, maxAtlasBytes: 1 });
+                } catch (error) {
+                    unknownOptionError = error;
+                }
+                CHECK(/Unknown option: maxAtlasBytes/.test(unknownOptionError?.message ?? ''), 'Unknown atlas option');
                 const CONTEXT_REFERENCE = frame(ACTUAL, palettes);
                 CHECK(
                     BLEND_PIXELS.every(
