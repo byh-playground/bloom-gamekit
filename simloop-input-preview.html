@@ -3087,6 +3087,7 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
   var VERTEX_FLOATS = 20;
   var VERTEX_BYTES = VERTEX_FLOATS * 4;
   var MODE_POSED = 4;
+  var ARC_TOLERANCE = 0.125;
   var MODE_PRIMITIVE = 5;
   var POSED_CORNERS = [
     [0, 0],
@@ -3975,8 +3976,23 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
     }
     _emitTriangle(a, b, c, color, uv = null) {
       rgba(color);
+      this._emit(a, b, c, color, uv);
+    }
+    /**
+     * Emits one triangle; the caller has validated `color`. Without a clip, uv or gradient (the common case of every
+     * fill and stroke) the three vertices are written directly, without temporary arrays.
+     */
+    _emit(a, b, c, color, uv = null) {
       if (!this._planesAllow()) {
         this._submit();
+      }
+      if (!uv && !this.clips.length && !this.activeGradient) {
+        this._reserve(3);
+        const U = this.flatUV[0], V = this.flatUV[1];
+        this._writeVertex(a.x, a.y, a.u ?? U, a.v ?? V, color);
+        this._writeVertex(b.x, b.y, b.u ?? U, b.v ?? V, color);
+        this._writeVertex(c.x, c.y, c.u ?? U, c.v ?? V, color);
+        return;
       }
       if (this.activeGradient && !uv) {
         uv = [this._gradientUV(a), this._gradientUV(b), this._gradientUV(c)];
@@ -3998,6 +4014,18 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
           this.vertices.set(this.paintTemplate, K + 8);
         }
       }
+    }
+    _writeVertex(x, y, u, v, color) {
+      const K = this.count++ * VERTEX_FLOATS, DATA = this.vertices;
+      DATA[K] = x;
+      DATA[K + 1] = y;
+      DATA[K + 2] = u;
+      DATA[K + 3] = v;
+      DATA[K + 4] = color[0];
+      DATA[K + 5] = color[1];
+      DATA[K + 6] = color[2];
+      DATA[K + 7] = color[3];
+      DATA.set(this.paintTemplate, K + 8);
     }
     _submit() {
       if (!this.count) {
@@ -4280,7 +4308,7 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
       this.device.stats.pathTessellations++;
       const COL = rgba(colorValue), VERTICES = tessellate(this.path, rule);
       for (let i = 0; i + 2 < VERTICES.length; i += 3) {
-        this._emitTriangle(VERTICES[i], VERTICES[i + 1], VERTICES[i + 2], COL);
+        this._emit(VERTICES[i], VERTICES[i + 1], VERTICES[i + 2], COL);
       }
     }
     fillRadialGradient(gradient) {
@@ -4336,9 +4364,9 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
       if (!["butt", "round", "square"].includes(lineCap) || !["miter", "round", "bevel"].includes(lineJoin) || !Number.isFinite(miterLimit) || miterLimit <= 0) {
         throw new TypeError("invalid stroke style");
       }
-      const HALF = width / 2, FAN = (center, points) => {
+      const HALF = width / 2, ARC_STEP = HALF > ARC_TOLERANCE ? Math.min(Math.PI / 2, 2 * Math.acos(1 - ARC_TOLERANCE / HALF)) : Math.PI / 2, FAN = (center, points) => {
         for (let i = 1; i < points.length; i++) {
-          this._emitTriangle(center, points[i - 1], points[i], colorValue);
+          this._emit(center, points[i - 1], points[i], colorValue);
         }
       };
       for (const SOURCE of this.path) {
@@ -4391,8 +4419,8 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
             x: AX - N.x,
             y: AY - N.y
           };
-          this._emitTriangle(P, Q, R, colorValue);
-          this._emitTriangle(P, R, S, colorValue);
+          this._emit(P, Q, R, colorValue);
+          this._emit(P, R, S, colorValue);
         }
         const JOIN_START = CLOSED ? 0 : 1, JOIN_END = CLOSED ? CONTOUR.length : CONTOUR.length - 1;
         for (let i = JOIN_START; i < JOIN_END; i++) {
@@ -4409,18 +4437,14 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
           };
           if (lineJoin === "round") {
             const START = Math.atan2(A.y - V.y, A.x - V.x);
-            const END = Math.atan2(B.y - V.y, B.x - V.x);
-            let sweep = END - START;
-            if (CROSS > 0) {
-              while (sweep > 0) {
-                sweep -= Math.PI * 2;
-              }
-            } else {
-              while (sweep < 0) {
-                sweep += Math.PI * 2;
-              }
+            let sweep = Math.atan2(B.y - V.y, B.x - V.x) - START;
+            while (sweep > Math.PI) {
+              sweep -= Math.PI * 2;
             }
-            const STEPS = Math.max(1, Math.ceil(Math.abs(sweep) / (Math.PI / 8))), ARC = [A];
+            while (sweep < -Math.PI) {
+              sweep += Math.PI * 2;
+            }
+            const STEPS = Math.max(1, Math.ceil(Math.abs(sweep) / ARC_STEP)), ARC = [A];
             for (let j = 1; j <= STEPS; j++) {
               const T = START + sweep * j / STEPS;
               ARC.push({
@@ -4436,12 +4460,12 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
                 x: V.x + MX / ML * MITER,
                 y: V.y + MY / ML * MITER
               };
-              this._emitTriangle(A, TIP, B, colorValue);
+              this._emit(A, TIP, B, colorValue);
             } else {
-              this._emitTriangle(V, A, B, colorValue);
+              this._emit(V, A, B, colorValue);
             }
           } else {
-            this._emitTriangle(V, A, B, colorValue);
+            this._emit(V, A, B, colorValue);
           }
         }
         if (!CLOSED && lineCap === "round") {
@@ -4450,8 +4474,9 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
             [COUNT - 1, Math.atan2(DIRS[COUNT - 1].y, DIRS[COUNT - 1].x)]
           ]) {
             const V = CONTOUR[INDEX === 0 ? 0 : CONTOUR.length - 1], START = ANGLE - Math.PI / 2, ARC = [];
-            for (let j = 0; j <= 8; j++) {
-              const T = START + Math.PI * j / 8;
+            const CAP_STEPS = Math.max(2, Math.ceil(Math.PI / ARC_STEP));
+            for (let j = 0; j <= CAP_STEPS; j++) {
+              const T = START + Math.PI * j / CAP_STEPS;
               ARC.push({
                 x: V.x + Math.cos(T) * HALF,
                 y: V.y + Math.sin(T) * HALF
@@ -7060,6 +7085,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       (matrix[1] * matrix[4] - matrix[0] * matrix[5]) / D
     ];
   }
+  var RAMP_KEY = (gradient) => (gradient instanceof LinearGradient ? "L" : "R") + gradient.stops.map((stop) => `${stop.offset}:${stop.color.join(",")}`).join(";");
   var RadialGradient = class {
     constructor(matrix, x0, y0, r0, x1, y1, r1) {
       for (const [N, V] of Object.entries({
@@ -7248,6 +7274,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       this.staticMeshes = /* @__PURE__ */ new Set();
       this.deferredMeshes = [];
       this.gradientTextures = /* @__PURE__ */ new Map();
+      this.rampCache = /* @__PURE__ */ new Map();
       this.lostGradientRegions = [];
       this._silhouetteMatrices = new Float32Array(60);
       this._scaledSilhouetteMatrices = new Float32Array(12);
@@ -7257,10 +7284,10 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
         this.active = false;
         this.state = "lost";
         this.meshRenderer?.discard();
-        for (const [GRADIENT, CACHED] of this.gradientTextures) {
-          this.lostGradientRegions.push(CACHED.region);
-          GRADIENT.pixels = null;
+        for (const RAMP of this.rampCache.values()) {
+          this.lostGradientRegions.push(RAMP.region);
         }
+        this.rampCache.clear();
         this.gradientTextures.clear();
       };
       this.onRestored = () => {
@@ -7446,43 +7473,14 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
     }
     _gradientPaint(gradient) {
       let cached = this.gradientTextures.get(gradient);
-      if (!cached) {
-        if (this.gradientTextures.size >= MAX_GRADIENT_TEXTURES) {
-          const EXPIRED = [...this.gradientTextures].find(([, entry]) => entry.lastFrame < this.frame);
-          if (!EXPIRED) {
-            throw new RangeError(
-              `VectorContext supports at most ${MAX_GRADIENT_TEXTURES} distinct gradients in one frame`
-            );
-          }
-          EXPIRED[1].region.atlas.release(EXPIRED[1].region);
-          this.gradientTextures.delete(EXPIRED[0]);
-        }
-        const LINEAR = gradient instanceof LinearGradient, WIDTH = LINEAR ? LINEAR_GRADIENT_SIZE : 256, HEIGHT = 1, DATA = gradient.raster();
-        const REGION = this.device.textureAtlas.allocate(WIDTH, HEIGHT);
-        this.device.textureAtlas.upload(
-          REGION,
-          { width: WIDTH, height: HEIGHT, data: DATA },
-          { premultiplied: true, extendEdges: true }
-        );
+      if (!cached || cached.revision !== gradient.revision) {
         cached = {
-          region: REGION,
-          revision: gradient.revision,
-          lastFrame: this.frame,
-          linear: LINEAR
+          ramp: this._ramp(gradient),
+          revision: gradient.revision
         };
         this.gradientTextures.set(gradient, cached);
-      } else if (cached.revision !== gradient.revision) {
-        this.vector.flush();
-        const LINEAR = gradient instanceof LinearGradient, WIDTH = LINEAR ? LINEAR_GRADIENT_SIZE : 256;
-        cached.region.atlas.upload(
-          cached.region,
-          { width: WIDTH, height: 1, data: gradient.raster() },
-          { premultiplied: true, extendEdges: true }
-        );
-        cached.revision = gradient.revision;
-        cached.linear = LINEAR;
       }
-      cached.lastFrame = this.frame;
+      cached.ramp.lastFrame = this.frame;
       const MATRIX_INVERSE = invert(gradient.matrix);
       if (!MATRIX_INVERSE) {
         throw new RangeError("Gradient transform is singular");
@@ -7491,7 +7489,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       COLOR[3] *= this._globalAlpha;
       if (gradient instanceof LinearGradient) {
         return {
-          region: cached.region,
+          region: cached.ramp.region,
           kind: "linear",
           gradient,
           x0: gradient.x0,
@@ -7505,7 +7503,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       }
       const DX = gradient.x1 - gradient.x0, DY = gradient.y1 - gradient.y0, DR = gradient.r1 - gradient.r0, SCALE = Math.max(1, Math.hypot(DX, DY), Math.abs(gradient.r0), Math.abs(gradient.r1));
       return {
-        region: cached.region,
+        region: cached.ramp.region,
         kind: "radial",
         gradient,
         x0: gradient.x0,
@@ -7518,8 +7516,36 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
         whiteFlash: this._filter === "brightness(0) invert(1)"
       };
     }
+    /** Returns the retained ramp texture for the gradient's stops, rasterizing and uploading it on first use. */
+    _ramp(gradient) {
+      const KEY = RAMP_KEY(gradient);
+      let ramp = this.rampCache.get(KEY);
+      if (ramp) {
+        return ramp;
+      }
+      if (this.rampCache.size >= MAX_GRADIENT_TEXTURES) {
+        const EXPIRED = [...this.rampCache].find(([, entry]) => entry.lastFrame < this.frame);
+        if (!EXPIRED) {
+          throw new RangeError(
+            `VectorContext supports at most ${MAX_GRADIENT_TEXTURES} distinct gradients in one frame`
+          );
+        }
+        EXPIRED[1].region.atlas.release(EXPIRED[1].region);
+        this.rampCache.delete(EXPIRED[0]);
+      }
+      const WIDTH = gradient instanceof LinearGradient ? LINEAR_GRADIENT_SIZE : 256, REGION = this.device.textureAtlas.allocate(WIDTH, 1);
+      this.device.textureAtlas.upload(
+        REGION,
+        { width: WIDTH, height: 1, data: gradient.raster() },
+        { premultiplied: true, extendEdges: true }
+      );
+      gradient.pixels = null;
+      ramp = { region: REGION, lastFrame: this.frame };
+      this.rampCache.set(KEY, ramp);
+      return ramp;
+    }
     _releaseGradientTextures() {
-      for (const [GRADIENT, CACHED] of this.gradientTextures) {
+      for (const CACHED of this.rampCache.values()) {
         try {
           CACHED.region.atlas.release(CACHED.region);
         } catch (error) {
@@ -7529,10 +7555,9 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
             });
           } catch {
           }
-        } finally {
-          GRADIENT.pixels = null;
         }
       }
+      this.rampCache.clear();
       this.gradientTextures.clear();
     }
     beginFrame({ width = this.canvas.width, height = this.canvas.height, clearColor = [0, 0, 0, 0] } = {}) {
@@ -7576,7 +7601,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
         this.flush("frameEnd");
         const STATS = this.device.endFrame();
         this.active = false;
-        this._releaseGradientTextures();
+        this.gradientTextures.clear();
         for (const MESH of this.deferredMeshes.splice(0)) {
           this.deleteStaticMesh(MESH);
         }
@@ -8560,6 +8585,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
         gpuRenderTargetBytes: this.device.stats.gpuRenderTargetBytes ?? 0,
         textureCount: this.device.stats.textureCount ?? 0,
         activeGradientTextureCount: this.gradientTextures.size,
+        retainedGradientRampCount: this.rampCache.size,
         renderTargetCount: this.device.stats.renderTargetCount ?? 0,
         bufferAllocations: this.device.stats.bufferAllocations ?? 0,
         totals: {
@@ -11526,7 +11552,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       return SIGNED(Number(BigInt(SIGNED(a)) * 1024n / BigInt(b)));
     }
   });
-  var VERSION = "0.26.1";
+  var VERSION = "0.26.2";
   var REPLAY_FORMAT_VERSION = "0.2.0-dev";
   var PROTOCOL_VERSION = 3;
   var CHUNK_SIZE = 16384;
