@@ -48,6 +48,7 @@
         "test:vector-assets:raster-comparison": "npm run build && npm run build:previews && node modules/vector-assets/tests/run-raster-comparison.browser.mjs",
         "test:rendering:texture-atlas": "npm run build && node modules/rendering/tests/run-texture-atlas.browser.mjs",
         "test:rendering:sprite-animation": "npm run build && node modules/rendering/tests/run-sprite-animation.browser.mjs",
+        "benchmark:rendering": "npm run build && node modules/rendering/scripts/benchmark-frame-cost.mjs",
         "benchmark:draw-batching": "npm run build && node modules/rendering/scripts/benchmark-draw-batching.mjs",
         "benchmark:vector-assets-raster": "npm run build && npm run build:previews && node modules/vector-assets/tests/benchmark-raster-comparison.mjs"
     },
