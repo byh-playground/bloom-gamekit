@@ -48,6 +48,10 @@ function validateRecipe(recipe) {
   }
 }
 var BED_FILTERS = ["lowpass", "bandpass", "highpass"];
+function validBedCompressor(compressor) {
+  const IN_RANGE = (value, low, high) => Number.isFinite(value) && value >= low && value <= high;
+  return compressor !== null && typeof compressor === "object" && IN_RANGE(compressor.threshold, -100, 0) && IN_RANGE(compressor.ratio, 1, 20) && (compressor.knee === void 0 || IN_RANGE(compressor.knee, 0, 40)) && (compressor.attackMs === void 0 || IN_RANGE(compressor.attackMs, 0, 1e3)) && (compressor.releaseMs === void 0 || IN_RANGE(compressor.releaseMs, 0, 1e3));
+}
 function validateBed(recipe) {
   if (!recipe || !Array.isArray(recipe.layers) || !recipe.layers.length) {
     throw new TypeError("bed.layers required");
@@ -57,11 +61,11 @@ function validateBed(recipe) {
       throw new TypeError("bed layer lfoHz/lfoDepth were replaced by lfos: [{ hz, depth }]");
     }
     const LFOS = LAYER.lfos ?? [];
-    if (LAYER.kind !== "noise" && LAYER.kind !== "buffer" || LAYER.kind === "buffer" && (typeof LAYER.bufferId !== "string" || !LAYER.bufferId) || (LAYER.kind === "noise" || LAYER.type !== void 0) && (!Number.isFinite(LAYER.hz) || LAYER.hz <= 0) || !Number.isFinite(LAYER.gain) || LAYER.gain < 0 || LAYER.gain > 1 || !BED_FILTERS.includes(LAYER.type ?? "lowpass") || !(LAYER.q === void 0 || Number.isFinite(LAYER.q) && LAYER.q > 0 && LAYER.q <= 30) || !Number.isFinite(LAYER.pan ?? 0) || Math.abs(LAYER.pan ?? 0) > 1 || !Number.isFinite(LAYER.offsetMs ?? 0) || (LAYER.offsetMs ?? 0) < 0 || (LAYER.offsetMs ?? 0) > 6e4 || !Array.isArray(LFOS) || LFOS.length > 4 || LFOS.some(
+    if (LAYER.kind !== "noise" && LAYER.kind !== "buffer" || LAYER.kind === "buffer" && (typeof LAYER.bufferId !== "string" || !LAYER.bufferId) || (LAYER.kind === "noise" || LAYER.type !== void 0) && (!Number.isFinite(LAYER.hz) || LAYER.hz <= 0) || !Number.isFinite(LAYER.gain) || LAYER.gain < 0 || LAYER.gain > 1 || !BED_FILTERS.includes(LAYER.type ?? "lowpass") || !(LAYER.q === void 0 || Number.isFinite(LAYER.q) && LAYER.q > 0 && LAYER.q <= 30) || !Number.isFinite(LAYER.pan ?? 0) || Math.abs(LAYER.pan ?? 0) > 1 || !Number.isFinite(LAYER.offsetMs ?? 0) || (LAYER.offsetMs ?? 0) < 0 || (LAYER.offsetMs ?? 0) > 6e4 || !(LAYER.compressor === void 0 || validBedCompressor(LAYER.compressor)) || !Array.isArray(LFOS) || LFOS.length > 4 || LFOS.some(
       (lfo) => !Number.isFinite(lfo?.hz) || lfo.hz < 0.01 || lfo.hz > 20 || !Number.isFinite(lfo.depth) || lfo.depth < 0 || lfo.depth > 1
     ) || LFOS.reduce((sum, lfo) => sum + lfo.depth, 0) > 1) {
       throw new RangeError(
-        "bed layers are noise {hz} or buffer {bufferId} (hz only with a type), gain 0..1, optional type lowpass|bandpass|highpass, q 0..30, pan -1..1, offsetMs 0..60000 and up to 4 lfos {hz 0.01..20, depth 0..1} whose depths sum to at most 1"
+        "bed layers are noise {hz} or buffer {bufferId} (hz only with a type), gain 0..1, optional type lowpass|bandpass|highpass, q 0..30, compressor {threshold -100..0, ratio 1..20, knee?, attackMs?, releaseMs?}, pan -1..1, offsetMs 0..60000 and up to 4 lfos {hz 0.01..20, depth 0..1} whose depths sum to at most 1"
       );
     }
   }
@@ -224,13 +228,24 @@ function renderBed(context, destination, recipe, buffer, { at = context.currentT
       }
     }
     GAIN.gain.value = LAYER.gain * (1 - DEPTH / 2);
+    let tail = SOURCE;
     if (FILTER) {
-      SOURCE.connect(FILTER);
-      FILTER.connect(GAIN);
+      tail.connect(FILTER);
+      tail = FILTER;
       NODES.push(FILTER);
-    } else {
-      SOURCE.connect(GAIN);
     }
+    if (LAYER.compressor) {
+      const COMPRESSOR = context.createDynamicsCompressor();
+      COMPRESSOR.threshold.value = LAYER.compressor.threshold;
+      COMPRESSOR.ratio.value = LAYER.compressor.ratio;
+      COMPRESSOR.knee.value = LAYER.compressor.knee ?? 10;
+      COMPRESSOR.attack.value = (LAYER.compressor.attackMs ?? 20) / 1e3;
+      COMPRESSOR.release.value = (LAYER.compressor.releaseMs ?? 250) / 1e3;
+      tail.connect(COMPRESSOR);
+      tail = COMPRESSOR;
+      NODES.push(COMPRESSOR);
+    }
+    tail.connect(GAIN);
     NODES.push(GAIN);
     if (PAN !== 0 && typeof context.createStereoPanner === "function") {
       const PANNER = context.createStereoPanner();
