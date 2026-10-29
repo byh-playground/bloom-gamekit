@@ -28,7 +28,8 @@ var AUDIO_DEFAULTS = {
       priority: 0
     }
   },
-  sounds: {}
+  sounds: {},
+  beds: {}
 };
 function validateRecipe(recipe) {
   if (!recipe || !Array.isArray(recipe.layers) || !recipe.layers.length) {
@@ -45,6 +46,34 @@ function validateRecipe(recipe) {
       throw new RangeError("noise cutoff required");
     }
   }
+}
+function validateBed(recipe) {
+  if (!recipe || !Array.isArray(recipe.layers) || !recipe.layers.length) {
+    throw new TypeError("bed.layers required");
+  }
+  for (const LAYER of recipe.layers) {
+    if (LAYER.kind !== "noise" || !Number.isFinite(LAYER.hz) || LAYER.hz <= 0 || !Number.isFinite(LAYER.gain) || LAYER.gain < 0 || LAYER.gain > 1 || !Number.isFinite(LAYER.lfoHz ?? 0.1) || (LAYER.lfoHz ?? 0.1) < 0.01 || (LAYER.lfoHz ?? 0.1) > 20 || !Number.isFinite(LAYER.lfoDepth ?? 0) || (LAYER.lfoDepth ?? 0) < 0 || (LAYER.lfoDepth ?? 0) > 1) {
+      throw new RangeError(
+        "bed layers need a noise cutoff, gain 0..1, optional lfoHz 0.01..20 and lfoDepth 0..1"
+      );
+    }
+  }
+}
+var MAX_DETUNE_CENTS = 2400;
+function clampPan(value) {
+  return Number.isFinite(value) ? Math.max(-1, Math.min(1, value)) : 0;
+}
+function clampDetune(value) {
+  return Number.isFinite(value) ? Math.max(-MAX_DETUNE_CENTS, Math.min(MAX_DETUNE_CENTS, value)) : 0;
+}
+function rampParam(param, target, rampMs, now) {
+  param.cancelScheduledValues(now);
+  if (!(rampMs > 0)) {
+    param.setValueAtTime(target, now);
+    return;
+  }
+  param.setValueAtTime(param.value, now);
+  param.linearRampToValueAtTime(target, now + rampMs / 1e3);
 }
 function makeNoise(context, noiseMs = AUDIO_DEFAULTS.synthesis.noiseMs) {
   const BUFFER = context.createBuffer(1, Math.round(context.sampleRate * noiseMs / 1e3), context.sampleRate), DATA = BUFFER.getChannelData(0);
@@ -77,7 +106,9 @@ function renderSound(context, destination, recipe, buffer, {
   onEnded = () => {
   },
   buffers = /* @__PURE__ */ new Map(),
-  synthesis = AUDIO_DEFAULTS.synthesis
+  synthesis = AUDIO_DEFAULTS.synthesis,
+  pan = 0,
+  detune = 0
 } = {}) {
   validateRecipe(recipe);
   for (const LAYER of recipe.layers) {
@@ -85,12 +116,20 @@ function renderSound(context, destination, recipe, buffer, {
       throw new Error("AudioBuffer not registered: " + LAYER.bufferId);
     }
   }
-  const VOICES = [];
+  const VOICES = [], PAN = clampPan(pan), CENTS = clampDetune(detune);
+  let panner = null;
+  if (PAN !== 0 && typeof context.createStereoPanner === "function") {
+    panner = context.createStereoPanner();
+    panner.pan.value = PAN;
+    panner.connect(destination);
+  }
+  const OUTPUT = panner ?? destination;
   let remaining = recipe.layers.length;
   let finished = false;
   const FINISH = () => {
     if (--remaining === 0 && !finished) {
       finished = true;
+      panner?.disconnect();
       onEnded();
     }
   };
@@ -101,6 +140,7 @@ function renderSound(context, destination, recipe, buffer, {
     if (LAYER.kind === "buffer") {
       source = context.createBufferSource();
       source.buffer = buffers.get(LAYER.bufferId);
+      source.detune.value = CENTS;
       source.connect(GAIN);
     } else if (LAYER.kind === "noise") {
       source = context.createBufferSource();
@@ -108,12 +148,13 @@ function renderSound(context, destination, recipe, buffer, {
       source.loop = DURATION > buffer.duration;
       filter = context.createBiquadFilter();
       filter.type = "lowpass";
-      filter.frequency.value = LAYER.hz;
+      filter.frequency.value = LAYER.hz * 2 ** (CENTS / 1200);
       source.connect(filter);
       filter.connect(GAIN);
     } else {
       source = context.createOscillator();
       source.type = LAYER.type;
+      source.detune.value = CENTS;
       source.frequency.setValueAtTime(LAYER.hz, START);
       source.frequency.exponentialRampToValueAtTime(Math.max(synthesis.minHz, LAYER.end), START + DURATION);
       source.connect(GAIN);
@@ -122,7 +163,7 @@ function renderSound(context, destination, recipe, buffer, {
     GAIN.gain.linearRampToValueAtTime(LAYER.gain * scale, START + synthesis.attackMs / 1e3);
     GAIN.gain.exponentialRampToValueAtTime(synthesis.minGain, START + DURATION);
     GAIN.gain.linearRampToValueAtTime(0, START + DURATION + synthesis.releaseTailMs / 1e3);
-    GAIN.connect(destination);
+    GAIN.connect(OUTPUT);
     source.onended = () => {
       source.disconnect();
       filter?.disconnect();
@@ -143,6 +184,96 @@ function renderSound(context, destination, recipe, buffer, {
           VOICE.gain.gain.cancelScheduledValues(context.currentTime);
           VOICE.gain.gain.setTargetAtTime(0, context.currentTime, 4e-3);
           VOICE.source.stop(context.currentTime);
+        } catch {
+        }
+      }
+    }
+  };
+}
+function renderBed(context, destination, recipe, buffer, { at = context.currentTime, scale = 1, level = 1, fadeMs = 0, onEnded = () => {
+} } = {}) {
+  validateBed(recipe);
+  const LEVEL = context.createGain(), SWELL = context.createGain(), NODES = [LEVEL, SWELL], SOURCES = [];
+  let amount = Math.max(0, Math.min(1, level)), factor = scale, stopped = false;
+  SWELL.gain.value = 1;
+  SWELL.connect(LEVEL);
+  LEVEL.connect(destination);
+  LEVEL.gain.setValueAtTime(0, at);
+  LEVEL.gain.linearRampToValueAtTime(amount * factor, at + Math.max(fadeMs, 1) / 1e3);
+  for (const LAYER of recipe.layers) {
+    const SOURCE = context.createBufferSource(), FILTER = context.createBiquadFilter(), GAIN = context.createGain(), DEPTH = LAYER.lfoDepth ?? 0;
+    SOURCE.buffer = buffer;
+    SOURCE.loop = true;
+    FILTER.type = "lowpass";
+    FILTER.frequency.value = LAYER.hz;
+    GAIN.gain.value = LAYER.gain * (1 - DEPTH / 2);
+    SOURCE.connect(FILTER);
+    FILTER.connect(GAIN);
+    GAIN.connect(SWELL);
+    SOURCE.start(at);
+    SOURCES.push(SOURCE);
+    NODES.push(FILTER, GAIN);
+    if (DEPTH > 0) {
+      const LFO = context.createOscillator(), LFO_GAIN = context.createGain();
+      LFO.type = "sine";
+      LFO.frequency.value = LAYER.lfoHz ?? 0.1;
+      LFO_GAIN.gain.value = LAYER.gain * DEPTH / 2;
+      LFO.connect(LFO_GAIN);
+      LFO_GAIN.connect(GAIN.gain);
+      LFO.start(at);
+      SOURCES.push(LFO);
+      NODES.push(LFO_GAIN);
+    }
+  }
+  let remaining = SOURCES.length;
+  for (const SOURCE of SOURCES) {
+    SOURCE.onended = () => {
+      SOURCE.disconnect();
+      if (--remaining === 0) {
+        for (const NODE of NODES) {
+          NODE.disconnect();
+        }
+        onEnded();
+      }
+    };
+  }
+  return {
+    /** Target level 0..1 (times the category volume), reached in rampMs. */
+    setLevel(value, rampMs = 0) {
+      if (stopped || !Number.isFinite(value)) {
+        return;
+      }
+      amount = Math.max(0, Math.min(1, value));
+      rampParam(LEVEL.gain, amount * factor, rampMs, context.currentTime);
+    },
+    /** Raises the bed by boost (1 = twice as loud) over attackMs and settles back over releaseMs. */
+    swell(boost = 1, attackMs = 100, releaseMs = 800) {
+      if (stopped || !Number.isFinite(boost) || boost <= 0 || !Number.isFinite(attackMs) || !Number.isFinite(releaseMs)) {
+        return;
+      }
+      const NOW = context.currentTime, ATTACK = Math.max(attackMs, 1) / 1e3, RELEASE = Math.max(releaseMs, 1) / 1e3;
+      SWELL.gain.cancelScheduledValues(NOW);
+      SWELL.gain.setValueAtTime(SWELL.gain.value, NOW);
+      SWELL.gain.linearRampToValueAtTime(1 + boost, NOW + ATTACK);
+      SWELL.gain.linearRampToValueAtTime(1, NOW + ATTACK + RELEASE);
+    },
+    /** The category volume changed: keep the requested level but rescale. */
+    setScale(value) {
+      factor = value;
+      if (!stopped) {
+        rampParam(LEVEL.gain, amount * factor, 30, context.currentTime);
+      }
+    },
+    stop(fadeMs2 = 0) {
+      if (stopped) {
+        return;
+      }
+      stopped = true;
+      const NOW = context.currentTime, FADE = Number.isFinite(fadeMs2) && fadeMs2 > 0 ? fadeMs2 / 1e3 : 0.01;
+      rampParam(LEVEL.gain, 0, FADE * 1e3, NOW);
+      for (const SOURCE of SOURCES) {
+        try {
+          SOURCE.stop(NOW + FADE + 0.02);
         } catch {
         }
       }
@@ -178,7 +309,14 @@ var AudioPlayer = class {
         throw new Error("unknown sound category");
       }
     }
+    for (const BED of Object.values(config.beds)) {
+      validateBed(BED);
+      if (!config.categories[BED.category]) {
+        throw new Error("unknown bed category");
+      }
+    }
     this.disposed = false;
+    this.beds = /* @__PURE__ */ new Map();
     this.buffers = /* @__PURE__ */ new Map();
     this.categoryVolumes = new Map(Object.entries(config.categories).map(([name, c]) => [name, c.volume]));
     this.context = null;
@@ -309,6 +447,11 @@ var AudioPlayer = class {
       return false;
     }
     this.categoryVolumes.set(name, Math.max(0, Math.min(1, value)));
+    for (const BED of this.beds.values()) {
+      if (BED.category === name) {
+        BED.handle.setScale(this.categoryVolumes.get(name));
+      }
+    }
     this.save();
     return true;
   }
@@ -338,9 +481,16 @@ var AudioPlayer = class {
   play(id, strength = 1) {
     return !!this.start(id, strength);
   }
-  /** Returns a stoppable voice or null; blocked/muted events are dropped, never queued. */
-  start(id, strength = 1, onEnded = () => {
-  }) {
+  /**
+   * Returns a stoppable voice or null; blocked/muted events are dropped, never queued.
+   * options: pan -1..1 (left..right), detune in cents (the caller owns any randomness), onEnded().
+   */
+  start(id, strength = 1, options = {}) {
+    if (typeof options !== "object" || options === null) {
+      throw new TypeError("start options must be an object: { pan?, detune?, onEnded? }");
+    }
+    const { pan: PAN = 0, detune: DETUNE = 0, onEnded: ON_ENDED = () => {
+    } } = options;
     if (this.disposed || !Number.isFinite(strength) || strength <= 0) {
       return null;
     }
@@ -392,9 +542,11 @@ var AudioPlayer = class {
       scale: this.categoryVolumes.get(RECIPE.category) * Math.max(0, Math.min(1, strength)),
       buffers: this.buffers,
       synthesis: this.config.synthesis,
+      pan: PAN,
+      detune: DETUNE,
       onEnded: () => {
         this.voices.delete(VOICE);
-        onEnded();
+        ON_ENDED();
       }
     });
     this.voices.add(VOICE);
@@ -403,6 +555,48 @@ var AudioPlayer = class {
     this.metrics.bySound[id] = (this.metrics.bySound[id] || 0) + 1;
     this.metrics.maxObserved = Math.max(this.metrics.maxObserved, this.voices.size);
     return VOICE.handle;
+  }
+  /**
+   * Starts a looping synthesized ambience (config.beds) and returns { setLevel, swell, stop }, or null when
+   * the context is locked/hidden, the id is unknown, or the category is silent. Calling it again for a running
+   * bed returns the same handle. A bed is not a one-shot voice: it ignores maxVoices, survives stopAll() and
+   * mute (the master gain silences it), pauses while the context is suspended and ends on stop()/dispose().
+   * Locked contexts drop the request like one-shots do, so start beds after `await unlock()`.
+   */
+  startBed(id, { level = 1, fadeMs = 400 } = {}) {
+    if (this.disposed) {
+      return null;
+    }
+    const RUNNING = this.beds.get(id);
+    if (RUNNING) {
+      return RUNNING.handle;
+    }
+    if (!this.context || this.context.state !== "running" || globalThis.document?.hidden) {
+      this.metrics.blocked++;
+      return null;
+    }
+    const RECIPE = this.config.beds[id];
+    if (!RECIPE || this.categoryVolumes.get(RECIPE.category) <= 0) {
+      return null;
+    }
+    const BED = { category: RECIPE.category, handle: null };
+    BED.handle = renderBed(this.context, this.mix.input, RECIPE, this.noise, {
+      scale: this.categoryVolumes.get(RECIPE.category),
+      level,
+      fadeMs,
+      onEnded: () => {
+        if (this.beds.get(id) === BED) {
+          this.beds.delete(id);
+        }
+      }
+    });
+    const STOP = BED.handle.stop;
+    BED.handle.stop = (stopFadeMs) => {
+      this.beds.delete(id);
+      STOP(stopFadeMs);
+    };
+    this.beds.set(id, BED);
+    return BED.handle;
   }
   /** Connect to PresentationEventQueue's confirmed SFX policy; no second journal. */
   createAdapter({ onEnded } = {}) {
@@ -416,9 +610,13 @@ var AudioPlayer = class {
           throw new Error("one-shot SFX requires confirmed policy");
         }
         let stopped = false;
-        const HANDLE = this.start(event.payload?.soundId, event.payload?.strength ?? 1, () => {
-          if (!stopped) {
-            onEnded(event);
+        const HANDLE = this.start(event.payload?.soundId, event.payload?.strength ?? 1, {
+          pan: event.payload?.pan,
+          detune: event.payload?.detune,
+          onEnded: () => {
+            if (!stopped) {
+              onEnded(event);
+            }
           }
         });
         if (!HANDLE) {
@@ -464,6 +662,7 @@ var AudioPlayer = class {
       volume: this.volume,
       muted: this.muted,
       voices: this.voices.size,
+      beds: [...this.beds.keys()],
       categoryVolumes: Object.fromEntries(this.categoryVolumes),
       lastError: this.lastError || null,
       ...this.metrics,
@@ -477,6 +676,9 @@ var AudioPlayer = class {
       return;
     }
     this.disposed = true;
+    for (const BED of [...this.beds.values()]) {
+      BED.handle.stop(0);
+    }
     globalThis.document?.removeEventListener("pointerdown", this.onGesture, true);
     globalThis.document?.removeEventListener("keydown", this.onGesture, true);
     globalThis.document?.removeEventListener("visibilitychange", this.onHidden);
@@ -495,5 +697,6 @@ export {
   AUDIO_DEFAULTS as audioDefaults,
   createMix,
   makeNoise,
+  renderBed,
   renderSound
 };
