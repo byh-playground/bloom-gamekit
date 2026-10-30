@@ -24,6 +24,9 @@ export const MODULES = Object.freeze([
     'scenario',
     'object-pool',
     'pixel-physics',
+    'bm',
+    'bm-mock',
+    'bm-google-ads',
 ]);
 export const BUNDLE_FILES = Object.freeze(MODULES.map((name) => `${name}.js`));
 export const FONT_ASSETS = Object.freeze([

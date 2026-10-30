@@ -26,14 +26,21 @@ const SHARED_SURFACE_SOURCE = new Set([
     'modules/rendering/yarn-geometry.js',
     'modules/rendering/yarn-material-record.js',
 ]);
+// bm 어댑터는 코어와 별도 번들이지만 소스는 modules/bm/adapters 아래에 둡니다. 어댑터는 코어를 import하지 않으며,
+// 코어 번들은 하위 폴더를 허용하지 않으므로 어댑터 소스를 가져올 수 없습니다.
+const SOURCE_DIRS = {
+    'bm-mock': 'bm/adapters/mock',
+    'bm-google-ads': 'bm/adapters/google-ads',
+};
 export async function buildDistribution(root) {
     const BUNDLES = new Map();
     for (const NAME of MODULES) {
+        const SOURCE_DIR = SOURCE_DIRS[NAME] ?? NAME;
         // PixelPhysics의 명시적 웹 의존성만 허용하며 나머지는 외부 import가 없습니다.
         const EXTERNAL_IMPORTS = NAME === 'pixel-physics' ? [MATTER_URL] : [];
         const RESULT = await build({
             absWorkingDir: root,
-            entryPoints: [`modules/${NAME}/index.js`],
+            entryPoints: [`modules/${SOURCE_DIR}/index.js`],
             outfile: `dist/${NAME}.js`,
             bundle: true,
             format: 'esm',
@@ -74,7 +81,7 @@ export async function buildDistribution(root) {
             throw new Error(`배포물은 선언한 웹 의존성만 가진 ${NAME}.js 하나여야 합니다.`);
         }
         for (const INPUT of Object.keys(RESULT.metafile.inputs)) {
-            const OWNED = [NAME, ...(SDK_DEPENDENCIES[NAME] ?? [])].some(
+            const OWNED = [SOURCE_DIR, ...(SDK_DEPENDENCIES[NAME] ?? [])].some(
                 (owner) =>
                     INPUT.startsWith(`modules/${owner}/`) && !INPUT.slice(`modules/${owner}/`.length).includes('/'),
             );
