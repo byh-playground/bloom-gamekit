@@ -8701,7 +8701,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
     if (!CLIPS.size) {
       throw new TypeError("At least one sprite clip is required");
     }
-    const PLAYERS2 = /* @__PURE__ */ new Set();
+    const ACTORS = /* @__PURE__ */ new Set();
     let disposed = false;
     const READY = () => {
       if (disposed) {
@@ -8721,7 +8721,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       }
     };
     return Object.freeze({
-      createPlayer({ clip = CLIPS.keys().next().value, startedAtMs = 0, rate = 1 } = {}) {
+      createActor({ clip = CLIPS.keys().next().value, startedAtMs = 0, rate = 1 } = {}) {
         READY();
         CLOCK(startedAtMs);
         if (!Number.isFinite(rate) || rate <= 0 || rate > 1e3) {
@@ -8732,15 +8732,15 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
         let offsetMs = 0;
         let playbackRate = rate;
         let paused = false;
-        let playerDisposed = false;
-        const PLAYER_READY = () => {
+        let actorDisposed = false;
+        const ACTOR_READY = () => {
           READY();
-          if (playerDisposed) {
-            throw new Error("Sprite player disposed");
+          if (actorDisposed) {
+            throw new Error("Sprite actor disposed");
           }
         };
         const ELAPSED = (timeMs) => {
-          PLAYER_READY();
+          ACTOR_READY();
           CLOCK(timeMs);
           const VALUE = Math.max(0, offsetMs + (paused ? 0 : (timeMs - anchorMs) * playbackRate));
           if (!Number.isFinite(VALUE)) {
@@ -8748,7 +8748,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
           }
           return VALUE;
         };
-        const PLAYER = Object.freeze({
+        const ACTOR = Object.freeze({
           sample(timeMs) {
             const ELAPSED_MS = ELAPSED(timeMs);
             const TIME = selectedClip.loop === "loop" ? ELAPSED_MS % selectedClip.durationMs : Math.min(ELAPSED_MS, selectedClip.durationMs);
@@ -8768,7 +8768,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
           /** options: matrix (composed with the context transform), color, alpha, whiteFlash, forceColor. */
           draw({ timeMs, ...options } = {}) {
             const SAMPLE = this.sample(timeMs);
-            PLAYER_READY();
+            ACTOR_READY();
             context.drawQuads({
               ...options,
               uvRects: FRAME_RECTS[SAMPLE.frameIndex].uvRect,
@@ -8779,7 +8779,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
             return SAMPLE;
           },
           seek(elapsedMs, timeMs) {
-            PLAYER_READY();
+            ACTOR_READY();
             CLOCK(elapsedMs);
             CLOCK(timeMs);
             if (elapsedMs < 0) {
@@ -8790,7 +8790,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
             return this;
           },
           setPaused(value, timeMs) {
-            PLAYER_READY();
+            ACTOR_READY();
             if (typeof value !== "boolean") {
               throw new TypeError("Sprite paused state must be boolean");
             }
@@ -8801,7 +8801,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
             return this;
           },
           setRate(value, timeMs) {
-            PLAYER_READY();
+            ACTOR_READY();
             if (!Number.isFinite(value) || value <= 0 || value > 1e3) {
               throw new RangeError("Sprite playback rate must be in (0,1000]");
             }
@@ -8812,7 +8812,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
             return this;
           },
           setClip(name, timeMs) {
-            PLAYER_READY();
+            ACTOR_READY();
             CLOCK(timeMs);
             selectedClip = GET_CLIP(name);
             offsetMs = 0;
@@ -8820,22 +8820,22 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
             return this;
           },
           dispose() {
-            if (playerDisposed) {
+            if (actorDisposed) {
               return false;
             }
-            playerDisposed = true;
-            PLAYERS2.delete(PLAYER);
+            actorDisposed = true;
+            ACTORS.delete(ACTOR);
             return true;
           }
         });
-        PLAYERS2.add(PLAYER);
-        return PLAYER;
+        ACTORS.add(ACTOR);
+        return ACTOR;
       },
       stats() {
         return Object.freeze({
           frameCount: FRAMES.length,
           clipCount: CLIPS.size,
-          playerCount: PLAYERS2.size,
+          actorCount: ACTORS.size,
           retainedBytes: 0,
           textureOwned: false
         });
@@ -8845,7 +8845,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
           return false;
         }
         disposed = true;
-        PLAYERS2.clear();
+        ACTORS.clear();
         return true;
       }
     });
@@ -42770,7 +42770,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       }
       let spritePlayer = ENTRY.players.get(i);
       if (!spritePlayer) {
-        spritePlayer = ENTRY.resource.createPlayer({
+        spritePlayer = ENTRY.resource.createActor({
           clip: VECTOR_PLAYER.currentClip,
           startedAtMs: -phaseFor(i, VECTOR_PLAYER.currentClip)
         });
