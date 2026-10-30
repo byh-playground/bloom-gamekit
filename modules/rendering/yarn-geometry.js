@@ -194,10 +194,7 @@ export function surfaceGeometry(fillVertices, outline, edgeColors, style) {
               }
               return Float32Array.from(POINTS.flatMap(() => COLOR));
           })();
-    const EDGE_WIDTH =
-        style.kind === 'yarn'
-            ? style.edgeWidth
-            : Math.max(style.echoWidth, Math.hypot(style.echoX, style.echoY) + style.amplitude + style.echoWidth);
+    const EDGE_WIDTH = style.kind === 'yarn' ? style.edgeWidth : style.amplitude + style.echoWidth;
     const FIBER_LENGTH = style.kind === 'yarn' && style.fiber !== false ? style.fiberLength : EDGE_WIDTH;
     const FILL_RECORDS = new Float32Array((fillVertices.length / 6) * STRIDE_FLOATS);
     let write = 0;
@@ -232,23 +229,19 @@ export function surfaceGeometry(fillVertices, outline, edgeColors, style) {
     // Reorder the edge rows into a triangle list. This duplicates only contour vertices,
     // independent of stitchWidth, fiberSpacing, and fiberMax.
     const EDGE_RECORDS = [];
-    const ECHO_SHIFT =
-        style.kind === 'sketch'
-            ? RING.map(([rx, ry]) => (style.echoX * rx + style.echoY * ry) / Math.hypot(rx, ry))
-            : null;
+    // A sketch echo is the contour translated by (echoX, echoY): its strip follows the translated contour, so the
+    // across distance the shader reads is the distance from the echo line and corners stay exact.
+    const ECHO_X = style.kind === 'sketch' ? style.echoX : 0,
+        ECHO_Y = style.kind === 'sketch' ? style.echoY : 0;
     const COLOR_AT = (index) => RGBA.subarray(index * 4, index * 4 + 4);
     for (let i = 0; i < POINTS.length; i++) {
         const J = (i + 1) % POINTS.length;
         const EMIT = (pointIndex, distance) => {
             const POINT = POINTS[pointIndex],
                 NORMAL = RING[pointIndex],
-                X = POINT[0] + NORMAL[0] * distance,
-                Y = POINT[1] + NORMAL[1] * distance;
-            // A sketch echo is the contour translated by (echoX, echoY). Across this strip that is a line at the
-            // distance dot(echo, outward direction) which varies along the contour, so the shift is baked into the
-            // across coordinate and the fragment shader only has to look for the line at zero.
-            const ACROSS = distance - (ECHO_SHIFT ? ECHO_SHIFT[pointIndex] : 0);
-            EDGE_RECORDS.push(X, Y, ...COLOR_AT(pointIndex), 1, CUMULATIVE[pointIndex] / total, ACROSS);
+                X = POINT[0] + ECHO_X + NORMAL[0] * distance,
+                Y = POINT[1] + ECHO_Y + NORMAL[1] * distance;
+            EDGE_RECORDS.push(X, Y, ...COLOR_AT(pointIndex), 1, CUMULATIVE[pointIndex] / total, distance);
         };
         EMIT(i, -EDGE_WIDTH);
         EMIT(i, FIBER_LENGTH);
