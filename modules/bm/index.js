@@ -43,6 +43,7 @@ function withTimeout(promise, ms) {
  * @param {number} [options.policy.interstitialCooldownMs=60000] 마지막 광고 종료 뒤 전면 광고를 막는 시간
  * @param {number} [options.policy.interstitialPerSession=Infinity] 세션당 전면 광고 상한
  * @param {number} [options.policy.rewardedPerSession=Infinity] 세션당 보상형 광고 상한
+ * @param {((type: 'rewarded' | 'interstitial') => boolean) | null} [options.suppress=null] true를 돌려주면 그 종류를 'suppressed'로 막습니다 (예: 광고 제거 구매자의 전면 광고)
  * @param {number} [options.showTimeoutMs=120000] 어댑터가 응답하지 않을 때 광고 잠금을 푸는 시간
  * @param {boolean} [options.requireUserActivation=true] 사용자 입력 직후가 아닌 호출을 막을지 여부
  * @param {() => boolean} [options.isUserActive] 테스트·특수 환경용 입력 직후 판정
@@ -51,6 +52,7 @@ function withTimeout(promise, ms) {
 export function createBm({
     adapter,
     policy = {},
+    suppress = null,
     showTimeoutMs = 120000,
     requireUserActivation = true,
     isUserActive = defaultIsUserActive,
@@ -74,6 +76,9 @@ export function createBm({
     }
     checkCount(INTERSTITIAL_CAP, 'interstitialPerSession');
     checkCount(REWARDED_CAP, 'rewardedPerSession');
+    if (suppress !== null && typeof suppress !== 'function') {
+        throw new TypeError('bm suppress must be a function or null.');
+    }
     if (!Number.isFinite(showTimeoutMs) || showTimeoutMs <= 0) {
         throw new RangeError('bm showTimeoutMs must be a positive finite number.');
     }
@@ -97,12 +102,30 @@ export function createBm({
         }
     }
 
+    function isSuppressed(type) {
+        if (!suppress) {
+            return false;
+        }
+        try {
+            return suppress(type) === true;
+        } catch (error) {
+            // 판정 오류가 광고 요청을 던지게 만들지 않도록 막지 않는 쪽으로 처리하고, 오류 자체는 전역으로 올립니다.
+            queueMicrotask(() => {
+                throw error;
+            });
+            return false;
+        }
+    }
+
     function check(type) {
         if (!(type in LIMITS)) {
             throw new TypeError(`bm ad type must be 'rewarded' or 'interstitial': ${type}`);
         }
         if (disposed) {
             return { ok: false, reason: 'disposed' };
+        }
+        if (isSuppressed(type)) {
+            return { ok: false, reason: 'suppressed' };
         }
         if (busy) {
             return { ok: false, reason: 'busy' };

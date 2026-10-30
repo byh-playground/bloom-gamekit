@@ -26,11 +26,12 @@ const SHARED_SURFACE_SOURCE = new Set([
     'modules/rendering/yarn-geometry.js',
     'modules/rendering/yarn-material-record.js',
 ]);
-// bm 어댑터는 코어와 별도 번들이지만 소스는 modules/bm/adapters 아래에 둡니다. 어댑터는 코어를 import하지 않으며,
+// bm·store 어댑터는 코어와 별도 번들이지만 소스는 각 모듈의 adapters 아래에 둡니다. 어댑터는 코어를 import하지 않으며,
 // 코어 번들은 하위 폴더를 허용하지 않으므로 어댑터 소스를 가져올 수 없습니다.
 const SOURCE_DIRS = {
     'bm-mock': 'bm/adapters/mock',
     'bm-google-ads': 'bm/adapters/google-ads',
+    'store-mock': 'store/adapters/mock',
 };
 export async function buildDistribution(root) {
     const BUNDLES = new Map();
