@@ -1,5 +1,7 @@
 # bm
 
+**HTML 실행 프리뷰:** [bm](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/bm.html) — 모의 광고로 보상형·전면 흐름, 쿨다운, 세션 상한을 직접 눌러 봅니다.
+
 광고 SDK를 하나의 인터페이스로 감싸고 빈도 정책을 적용하는 순수 ESM 모듈입니다. 광고사마다 어댑터를 붙이며, 게임은 어댑터가 무엇이든 같은 코드를 씁니다. 결제·상금·서버 정산은 이 모듈의 범위가 아닙니다.
 
 ## 구성

@@ -19,6 +19,7 @@ export const EXAMPLES = [
     ['interpolation-frame', 'modules/interpolation/examples/frame.html'],
     ['simloop-input-preview', 'modules/simloop/examples/input-preview/index.html'],
     ['work-scheduler', 'modules/work-scheduler/examples/index.html'],
+    ['bm', 'modules/bm/examples/index.html'],
     ['audio', 'modules/audio/examples/index.html'],
     ['navigation', 'modules/navigation/examples/index.html'],
     ['rendering', 'modules/rendering/examples/index.html'],
