@@ -85,6 +85,8 @@ export function createBm({
     const LIMITS = { rewarded: REWARDED_CAP, interstitial: INTERSTITIAL_CAP };
     const LISTENERS = { adstart: new Set(), adend: new Set() };
     const SHOWN_COUNT = { rewarded: 0, interstitial: 0 };
+    // 마지막 preload 결과입니다. null은 아직 준비를 시도하지 않은 상태입니다.
+    const LOADED = { rewarded: null, interstitial: null };
     let busy = false;
     let disposed = false;
     let lastAdEndedAt = -Infinity;
@@ -191,16 +193,23 @@ export function createBm({
          */
         async preload(placement, type = 'rewarded') {
             check(type);
+            let ready = false;
             try {
-                return (await adapter.load(placement, type)) === true;
+                ready = (await adapter.load(placement, type)) === true;
             } catch {
                 // 준비 실패는 광고를 못 보여 주는 것과 같으므로 호출자에게 false로만 알립니다.
-                return false;
             }
+            LOADED[type] = ready;
+            return ready;
         },
-        /** 정책만 검사합니다. 사용자 입력 직후 여부는 show 시점에 판정합니다. */
+        /**
+         * 정책과 마지막 preload 결과를 검사합니다. 사용자 입력 직후 여부는 show 시점에 판정합니다.
+         * preload가 false였던 종류는 `not-ready`입니다. 아직 preload하지 않았으면 준비 여부를 모르므로 막지 않으며,
+         * show는 준비 결과와 상관없이 시도해 `unavailable`로 끝납니다.
+         */
         canShow(type) {
-            return check(type);
+            const GATE = check(type);
+            return GATE.ok && LOADED[type] === false ? { ok: false, reason: 'not-ready' } : GATE;
         },
         /** 사용자가 직접 누른 입력 처리 안에서 호출합니다. 보상은 status가 'rewarded'일 때만 지급하세요. */
         showRewarded(placement) {
