@@ -347,15 +347,18 @@
         if ([...SCENARIO.options].some((option) => option.value === PARAMS.get('scenario'))) {
             SCENARIO.value = PARAMS.get('scenario');
         }
-        await setup();
-        if (PARAMS.get('tab') === 'store') {
-            selectTab('store');
+        async function start() {
+            await setup();
+            if (PARAMS.get('tab') === 'store') {
+                selectTab('store');
+            }
+            if (PARAMS.get('action') === 'buy') {
+                await buy();
+            } else if (PARAMS.get('action') === 'restore') {
+                await restore();
+            }
         }
-        if (PARAMS.get('action') === 'buy') {
-            await buy();
-        } else if (PARAMS.get('action') === 'restore') {
-            await restore();
-        }
+        start();
         window.storeExample = { buy, restore };
     </script>
 </html>
