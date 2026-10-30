@@ -2,7 +2,7 @@
 <html lang="ko">
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>광고 어댑터 실제 확인 · bloom-gamekit</title>
+    <title>광고·상품 확인 · bloom-gamekit</title>
     <style>
         * {
             box-sizing: border-box;
@@ -52,6 +52,23 @@
         button:disabled {
             opacity: 0.45;
         }
+        .tabs {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        .tabs button {
+            margin: 0;
+            background: #1b2c37;
+            border-color: #40535e;
+        }
+        .tabs button[aria-selected='true'] {
+            background: #2b6f86;
+            border-color: #3f8fa8;
+        }
+        [hidden] {
+            display: none !important;
+        }
         .notice {
             margin: 0.6rem 0 0;
             color: #f0c674;
@@ -66,30 +83,61 @@
             font-size: 0.85rem;
         }
     </style>
-    <h1>광고 어댑터 실제 확인</h1>
-    <p>광고 소스를 고르고 연결하면 실제 테스트 광고로 bm 어댑터를 확인합니다. 보상은 rewarded일 때만 올라갑니다.</p>
-    <ul>
-        <li>IMA 샘플 영상은 승인이 필요 없습니다. Google의 공개 샘플 태그로 테스트용 영상이 나옵니다.</li>
-        <li>Google H5는 게시자 ID와 승인된 AdSense 계정, H5 베타, 승인된 사이트의 도메인이 필요합니다.</li>
-        <li>광고가 없거나 광고 차단이 켜져 있으면 결과는 unavailable입니다.</li>
-    </ul>
-    <label for="source">광고 소스</label>
-    <select id="source">
-        <option value="ima-linear">IMA 샘플 영상 (승인 불필요)</option>
-        <option value="ima-skippable">IMA 샘플 영상 · 건너뛸 수 있음</option>
-        <option value="ima-error">IMA 샘플 · 광고 없음(오류 태그)</option>
-        <option value="google">Google H5 Games Ads (게시자 ID)</option>
-    </select>
-    <div id="publisher-field" hidden>
-        <label for="publisher">게시자 ID</label>
-        <input id="publisher" inputmode="text" autocomplete="off" placeholder="ca-pub-1234567890123456" />
+    <div class="tabs" role="tablist">
+        <button role="tab" id="tab-ads" aria-selected="true" aria-controls="panel-ads">광고</button>
+        <button role="tab" id="tab-store" aria-selected="false" aria-controls="panel-store">상품</button>
     </div>
-    <button id="connect">연결</button>
-    <p class="notice" id="notice"></p>
-    <button id="rewarded" disabled>광고 보고 보상 받기</button>
-    <button id="interstitial" disabled>전면 광고 (다음 단계로)</button>
-    <pre id="output"></pre>
-    <pre id="log"></pre>
+    <section id="panel-ads" role="tabpanel" aria-labelledby="tab-ads">
+        <h1>광고 어댑터 실제 확인</h1>
+        <p>광고 소스를 고르고 연결하면 실제 테스트 광고로 bm 어댑터를 확인합니다. 보상은 rewarded일 때만 올라갑니다.</p>
+        <ul>
+            <li>IMA 샘플 영상은 승인이 필요 없습니다. Google의 공개 샘플 태그로 테스트용 영상이 나옵니다.</li>
+            <li>Google H5는 게시자 ID와 승인된 AdSense 계정, H5 베타, 승인된 사이트의 도메인이 필요합니다.</li>
+            <li>광고가 없거나 광고 차단이 켜져 있으면 결과는 unavailable입니다.</li>
+        </ul>
+        <label for="source">광고 소스</label>
+        <select id="source">
+            <option value="ima-linear">IMA 샘플 영상 (승인 불필요)</option>
+            <option value="ima-skippable">IMA 샘플 영상 · 건너뛸 수 있음</option>
+            <option value="ima-error">IMA 샘플 · 광고 없음(오류 태그)</option>
+            <option value="google">Google H5 Games Ads (게시자 ID)</option>
+        </select>
+        <div id="publisher-field" hidden>
+            <label for="publisher">게시자 ID</label>
+            <input id="publisher" inputmode="text" autocomplete="off" placeholder="ca-pub-1234567890123456" />
+        </div>
+        <button id="connect">연결</button>
+        <p class="notice" id="notice"></p>
+        <button id="rewarded" disabled>광고 보고 보상 받기</button>
+        <button id="interstitial" disabled>전면 광고 (다음 단계로)</button>
+        <pre id="output"></pre>
+        <pre id="log"></pre>
+    </section>
+    <section id="panel-store" role="tabpanel" aria-labelledby="tab-store" hidden>
+        <h1>상품 보유 확인</h1>
+        <p>
+            구매 버튼을 눌러도 서버가 인정해야 보유로 바뀌고, 보유하면 전면 광고가 막힙니다. 실제 결제는 하지 않는 모의
+            결제입니다.
+        </p>
+        <ul>
+            <li>정상은 구매 직후 서버가 인정해 보유가 됩니다.</li>
+            <li>서버 미인정은 결제는 끝났지만 서버가 아직 모르는 상태라 보류(not-confirmed)입니다.</li>
+            <li>다른 기기 구매 뒤 복원은 서버에만 있는 보유 상품을 불러옵니다.</li>
+        </ul>
+        <label for="scenario">구매 결과</label>
+        <select id="scenario">
+            <option value="purchased">정상</option>
+            <option value="cancelled">사용자가 취소</option>
+            <option value="pending">결제 대기</option>
+            <option value="unconfirmed">서버 미인정</option>
+            <option value="error">결제사 오류</option>
+        </select>
+        <button id="buy">광고 제거 구매 (3,900원)</button>
+        <button id="restore">다른 기기 구매 뒤 복원</button>
+        <button id="reset">처음으로</button>
+        <pre id="store-output"></pre>
+        <pre id="store-log"></pre>
+    </section>
     <script type="module">
         import { createBm } from '../../../dist/bm.js';
         import { createGoogleAdsAdapter } from '../../../dist/bm-google-ads.js';
@@ -199,5 +247,115 @@
         if (PARAMS.get('connect') === '1') {
             connect();
         }
+    </script>
+    <script type="module">
+        import { createBm } from '../../../dist/bm.js';
+        import { createMockAdapter } from '../../../dist/bm-mock.js';
+        import { createStore } from '../../../dist/store.js';
+        import { createMockStoreAdapter } from '../../../dist/store-mock.js';
+
+        const PARAMS = new URLSearchParams(location.search.slice(1) + '&' + location.hash.slice(1)),
+            SCENARIO = document.querySelector('#scenario'),
+            STORE_LOG = [];
+        let store = null,
+            payments = null,
+            bm = null,
+            last = null,
+            interstitial = null;
+
+        function log(line) {
+            STORE_LOG.unshift(line);
+            STORE_LOG.length = Math.min(STORE_LOG.length, 10);
+            document.querySelector('#store-log').textContent = STORE_LOG.join('\n');
+        }
+
+        function render() {
+            document.querySelector('#store-output').textContent = JSON.stringify(
+                {
+                    owned: store.owned,
+                    serverKnows: [...payments.serverEntitlements],
+                    last,
+                    interstitial,
+                },
+                null,
+                2,
+            );
+        }
+
+        function checkInterstitial() {
+            const GATE = bm.canShow('interstitial');
+            interstitial = GATE.ok ? 'ok' : GATE.reason;
+        }
+
+        function setup() {
+            store?.dispose();
+            bm?.dispose();
+            const SELECTED = SCENARIO.value;
+            // 서버 미인정은 어댑터가 purchased를 돌려줘도 서버 보유에는 더하지 않는 경우입니다.
+            payments = createMockStoreAdapter({
+                outcomes: [SELECTED === 'unconfirmed' ? 'purchased' : SELECTED],
+                serverConfirms: SELECTED !== 'unconfirmed',
+            });
+            store = createStore({ adapter: payments });
+            bm = createBm({
+                adapter: createMockAdapter(),
+                policy: { interstitialCooldownMs: 0 },
+                suppress: (type) => type === 'interstitial' && store.owns('no_ads'),
+            });
+            store.on('change', ({ owned }) => log(`change owned=[${owned}]`));
+            last = null;
+            interstitial = null;
+            return store
+                .refresh()
+                .then(() => store.list())
+                .then(checkInterstitial)
+                .then(render);
+        }
+
+        async function buy() {
+            const RESULT = await store.purchase('no_ads');
+            last = { status: RESULT.status, reason: RESULT.reason ?? null };
+            log(`purchase ${RESULT.status}${RESULT.reason ? ' (' + RESULT.reason + ')' : ''}`);
+            checkInterstitial();
+            render();
+        }
+
+        async function restore() {
+            payments.serverEntitlements.add('no_ads');
+            const RESULT = await store.refresh();
+            last = { refresh: RESULT.status };
+            log(`refresh ${RESULT.status}`);
+            checkInterstitial();
+            render();
+        }
+
+        for (const TAB of ['ads', 'store']) {
+            document.querySelector('#tab-' + TAB).addEventListener('click', () => selectTab(TAB));
+        }
+        function selectTab(name) {
+            for (const TAB of ['ads', 'store']) {
+                document.querySelector('#tab-' + TAB).setAttribute('aria-selected', String(TAB === name));
+                document.querySelector('#panel-' + TAB).hidden = TAB !== name;
+            }
+        }
+        document.querySelector('#buy').addEventListener('click', buy);
+        document.querySelector('#restore').addEventListener('click', restore);
+        document.querySelector('#reset').addEventListener('click', setup);
+        SCENARIO.addEventListener('change', setup);
+        // 같은 상태로 다시 열 수 있게 주소로 정합니다. 예: #tab=store&scenario=unconfirmed&action=buy
+        // tab: ads | store, scenario: purchased | cancelled | pending | unconfirmed | error, action: buy | restore
+        if ([...SCENARIO.options].some((option) => option.value === PARAMS.get('scenario'))) {
+            SCENARIO.value = PARAMS.get('scenario');
+        }
+        await setup();
+        if (PARAMS.get('tab') === 'store') {
+            selectTab('store');
+        }
+        if (PARAMS.get('action') === 'buy') {
+            await buy();
+        } else if (PARAMS.get('action') === 'restore') {
+            await restore();
+        }
+        window.storeExample = { buy, restore };
     </script>
 </html>
