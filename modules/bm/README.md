@@ -54,7 +54,7 @@
 
 - 전면 광고는 마지막 광고가 끝난 뒤 `interstitialCooldownMs`(기본 60초) 동안 막습니다. 보상형은 쿨다운이 없습니다. 사용자가 직접 요청한 광고이기 때문입니다.
 - `interstitialPerSession`, `rewardedPerSession`(기본 Infinity)은 실제로 화면에 나온 광고(`rewarded`/`viewed`/`dismissed`)만 셉니다. `unavailable`, `error`는 세지 않습니다.
-- `canShow(type)`은 정책만 `{ ok, reason?, retryAfterMs? }`로 알려 줍니다. 버튼 표시·비활성화에 씁니다.
+- `canShow(type)`은 정책과 마지막 `preload` 결과를 `{ ok, reason?, retryAfterMs? }`로 알려 줍니다. 버튼 표시·비활성화에 씁니다. `preload`가 `false`였던 종류는 `not-ready`(SDK 로드 실패·광고 차단)이고, 아직 `preload`하지 않았으면 막지 않습니다. `show`는 `not-ready`여도 시도하며 광고가 없으면 `unavailable`입니다. `preload`는 `canShow`가 `not-ready`일 때 다시 불러 회복할 수 있습니다.
 - 광고마다 사용자의 입력이 필요합니다. 기본적으로 `navigator.userActivation.isActive`가 거짓이면 `blocked`/`no-user-activation`으로 막아 자동 재생을 코드로 차단합니다. 이 API가 없는 브라우저는 막지 않습니다. 버튼 문구가 광고임을 알리는 일은 게임이 합니다.
 - `suppress(type)`가 true를 돌려주면 그 종류는 `blocked`/`suppressed`입니다. 광고 제거 구매자에게 전면 광고를 막는 데 쓰며, 구매 판정은 [store](../store/README.md)가 하고 게임이 한 줄로 연결합니다. 보상형은 사용자가 직접 고른 광고라 같은 방식으로 막지 않는 편이 자연스럽습니다. 판정 함수가 던지면 막지 않고 오류만 전역으로 올립니다.
 - 어댑터가 `showTimeoutMs`(기본 120초) 안에 끝나지 않으면 `error`로 잠금을 풉니다. 늦게 도착한 결과는 무시합니다.
