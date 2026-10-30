@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="ko">
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>광고 어댑터 · bloom-gamekit</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            font:
+                16px system-ui,
+                sans-serif;
+            max-width: 720px;
+            margin: 1.5rem auto;
+            padding: 0 1rem;
+            background: #111c24;
+            color: #e6f1f3;
+            line-height: 1.55;
+        }
+        h1 {
+            font-size: 1.4rem;
+            margin: 0 0 0.5rem;
+        }
+        ul {
+            padding-left: 1.2rem;
+            color: #aebfc6;
+            font-size: 0.9rem;
+        }
+        label {
+            display: block;
+            margin: 1rem 0 0.4rem;
+        }
+        select,
+        button {
+            width: 100%;
+            min-height: 56px;
+            font: inherit;
+            border-radius: 10px;
+            border: 1px solid #40535e;
+            background: #1b2c37;
+            color: inherit;
+            padding: 0 0.8rem;
+        }
+        button {
+            margin-top: 0.6rem;
+            background: #2b6f86;
+            border-color: #3f8fa8;
+            font-weight: 600;
+        }
+        button:disabled {
+            opacity: 0.5;
+        }
+        .tickets {
+            margin: 1rem 0 0;
+            font-size: 1.2rem;
+        }
+        pre {
+            padding: 1rem;
+            background: #091117;
+            border: 1px solid #40535e;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            font-size: 0.85rem;
+        }
+        #overlay {
+            position: fixed;
+            inset: 0;
+            display: grid;
+            place-items: center;
+            background: rgba(4, 9, 12, 0.92);
+            text-align: center;
+        }
+        #overlay[hidden] {
+            display: none;
+        }
+        .bar {
+            width: min(70vw, 320px);
+            height: 8px;
+            margin: 1rem auto 0;
+            background: #2a3c47;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .bar i {
+            display: block;
+            height: 100%;
+            width: 100%;
+            background: #4ec2d8;
+            transform-origin: left;
+            animation: run 1.5s linear forwards;
+        }
+        @keyframes run {
+            from {
+                transform: scaleX(0);
+            }
+            to {
+                transform: scaleX(1);
+            }
+        }
+    </style>
+    <h1>광고 어댑터 bm</h1>
+    <p>
+        광고사가 달라도 게임의 버튼 코드는 같고, 보상은 결과가 <b>rewarded</b>일 때만 줍니다. 여기서는 모의 광고입니다.
+    </p>
+    <ul>
+        <li>보상형은 쿨다운이 없고 이 예제에서는 세션당 3번까지입니다.</li>
+        <li>전면은 광고가 끝난 뒤 8초 동안 막힙니다.</li>
+        <li>광고 중 정지·재개는 모듈이 아니라 게임이 이벤트에서 처리합니다.</li>
+    </ul>
+    <label for="outcome">다음 광고 결과</label>
+    <select id="outcome">
+        <option value="finished">끝까지 봄</option>
+        <option value="dismissed">중간에 닫음</option>
+        <option value="unavailable">광고 없음</option>
+        <option value="error">오류</option>
+    </select>
+    <button id="rewarded">광고 보고 도전권 받기</button>
+    <button id="interstitial">전면 광고 (다음 단계로)</button>
+    <p class="tickets">도전권 <b id="tickets">0</b></p>
+    <pre id="output"></pre>
+    <pre id="log"></pre>
+    <div id="overlay" hidden>
+        <div>
+            <div>광고 재생 중 (모의)</div>
+            <div class="bar"><i></i></div>
+        </div>
+    </div>
+    <script>
+(() => {
+  // dist/bm.js
+  var EVENTS = Object.freeze(["adstart", "adend"]);
+  var OUTCOMES = Object.freeze({
+    rewarded: Object.freeze(["rewarded", "dismissed", "unavailable", "error"]),
+    interstitial: Object.freeze(["viewed", "dismissed", "unavailable", "error"])
+  });
+  var SHOWN = Object.freeze(["rewarded", "viewed", "dismissed"]);
+  function defaultIsUserActive() {
+    const ACTIVATION = globalThis.navigator?.userActivation;
+    return ACTIVATION ? ACTIVATION.isActive : true;
+  }
+  function checkCount(value, name) {
+    if (value !== Infinity && (!Number.isSafeInteger(value) || value < 0)) {
+      throw new RangeError(`bm policy.${name} must be a non-negative safe integer or Infinity.`);
+    }
+  }
+  function withTimeout(promise, ms) {
+    return new Promise((resolve, reject) => {
+      const TIMER = setTimeout(() => reject(new Error("bm adapter show timed out.")), ms);
+      promise.then(
+        (value) => {
+          clearTimeout(TIMER);
+          resolve(value);
+        },
+        (error) => {
+          clearTimeout(TIMER);
+          reject(error);
+        }
+      );
+    });
+  }
+  function createBm({
+    adapter,
+    policy = {},
+    showTimeoutMs = 12e4,
+    requireUserActivation = true,
+    isUserActive = defaultIsUserActive,
+    now = () => Date.now()
+  } = {}) {
+    if (!adapter || typeof adapter.id !== "string" || typeof adapter.load !== "function" || typeof adapter.show !== "function") {
+      throw new TypeError("bm adapter must provide id, load() and show().");
+    }
+    const {
+      interstitialCooldownMs: COOLDOWN_MS = 6e4,
+      interstitialPerSession: INTERSTITIAL_CAP = Infinity,
+      rewardedPerSession: REWARDED_CAP = Infinity
+    } = policy;
+    if (!Number.isFinite(COOLDOWN_MS) || COOLDOWN_MS < 0) {
+      throw new RangeError("bm policy.interstitialCooldownMs must be a non-negative finite number.");
+    }
+    checkCount(INTERSTITIAL_CAP, "interstitialPerSession");
+    checkCount(REWARDED_CAP, "rewardedPerSession");
+    if (!Number.isFinite(showTimeoutMs) || showTimeoutMs <= 0) {
+      throw new RangeError("bm showTimeoutMs must be a positive finite number.");
+    }
+    const LIMITS = { rewarded: REWARDED_CAP, interstitial: INTERSTITIAL_CAP };
+    const LISTENERS = { adstart: /* @__PURE__ */ new Set(), adend: /* @__PURE__ */ new Set() };
+    const SHOWN_COUNT = { rewarded: 0, interstitial: 0 };
+    let busy = false;
+    let disposed = false;
+    let lastAdEndedAt = -Infinity;
+    function emit(event, payload) {
+      for (const LISTENER of [...LISTENERS[event]]) {
+        try {
+          LISTENER(payload);
+        } catch (error) {
+          queueMicrotask(() => {
+            throw error;
+          });
+        }
+      }
+    }
+    function check(type) {
+      if (!(type in LIMITS)) {
+        throw new TypeError(`bm ad type must be 'rewarded' or 'interstitial': ${type}`);
+      }
+      if (disposed) {
+        return { ok: false, reason: "disposed" };
+      }
+      if (busy) {
+        return { ok: false, reason: "busy" };
+      }
+      if (SHOWN_COUNT[type] >= LIMITS[type]) {
+        return { ok: false, reason: "session-cap" };
+      }
+      if (type === "interstitial") {
+        const WAIT = lastAdEndedAt + COOLDOWN_MS - now();
+        if (WAIT > 0) {
+          return { ok: false, reason: "cooldown", retryAfterMs: WAIT };
+        }
+      }
+      return { ok: true };
+    }
+    async function show(type, placement) {
+      const GATE = check(type);
+      if (!GATE.ok) {
+        return { status: "blocked", type, placement, reason: GATE.reason };
+      }
+      if (requireUserActivation && !isUserActive()) {
+        return { status: "blocked", type, placement, reason: "no-user-activation" };
+      }
+      busy = true;
+      emit("adstart", { type, placement });
+      const RESULT = { status: "error", type, placement };
+      try {
+        const OUTCOME = await withTimeout(Promise.resolve(adapter.show(placement, type)), showTimeoutMs);
+        if (OUTCOMES[type].includes(OUTCOME)) {
+          RESULT.status = OUTCOME;
+        } else {
+          RESULT.reason = "invalid-outcome";
+        }
+      } catch (error) {
+        RESULT.reason = "adapter-failed";
+        RESULT.error = error;
+      }
+      busy = false;
+      if (SHOWN.includes(RESULT.status)) {
+        SHOWN_COUNT[type]++;
+        lastAdEndedAt = now();
+      }
+      emit("adend", RESULT);
+      return RESULT;
+    }
+    return {
+      /** @returns {string} 연결된 어댑터 id */
+      get adapterId() {
+        return adapter.id;
+      },
+      /** 세션 동안 실제로 나온 광고 수와 마지막 광고 종료 시각입니다. 읽을 때만 새 객체를 만듭니다. */
+      get stats() {
+        return { shown: { ...SHOWN_COUNT }, lastAdEndedAt };
+      },
+      /**
+       * 어댑터가 광고를 미리 준비합니다. 실패는 false로 돌려주며 던지지 않습니다.
+       * @param {string} placement
+       * @param {'rewarded' | 'interstitial'} [type='rewarded']
+       * @returns {Promise<boolean>}
+       */
+      async preload(placement, type = "rewarded") {
+        check(type);
+        try {
+          return await adapter.load(placement, type) === true;
+        } catch {
+          return false;
+        }
+      },
+      /** 정책만 검사합니다. 사용자 입력 직후 여부는 show 시점에 판정합니다. */
+      canShow(type) {
+        return check(type);
+      },
+      /** 사용자가 직접 누른 입력 처리 안에서 호출합니다. 보상은 status가 'rewarded'일 때만 지급하세요. */
+      showRewarded(placement) {
+        return show("rewarded", placement);
+      },
+      showInterstitial(placement) {
+        return show("interstitial", placement);
+      },
+      /**
+       * @param {'adstart' | 'adend'} event
+       * @param {(payload: object) => void} listener
+       * @returns {() => void} 구독 해제
+       */
+      on(event, listener) {
+        if (!EVENTS.includes(event)) {
+          throw new TypeError(`bm event must be one of ${EVENTS.join(", ")}: ${event}`);
+        }
+        if (typeof listener !== "function") {
+          throw new TypeError("bm listener must be a function.");
+        }
+        LISTENERS[event].add(listener);
+        return () => LISTENERS[event].delete(listener);
+      },
+      /** 반복 호출할 수 있습니다. 이후 광고 요청은 'disposed'로 막힙니다. */
+      dispose() {
+        if (disposed) {
+          return;
+        }
+        disposed = true;
+        LISTENERS.adstart.clear();
+        LISTENERS.adend.clear();
+        adapter.dispose?.();
+      }
+    };
+  }
+
+  // dist/bm-mock.js
+  function createMockAdapter({ outcomes = [], loadable = true, latencyMs = 0 } = {}) {
+    const CALLS = [];
+    let next = 0;
+    return {
+      id: "mock",
+      /** 호출 기록입니다. 검증용으로 읽기만 하세요. */
+      calls: CALLS,
+      load(placement, type) {
+        CALLS.push({ op: "load", placement, type });
+        return Promise.resolve(loadable);
+      },
+      show(placement, type) {
+        CALLS.push({ op: "show", placement, type });
+        const OUTCOME = outcomes[next++] ?? (type === "rewarded" ? "rewarded" : "viewed");
+        return new Promise((resolve) => setTimeout(() => resolve(OUTCOME), latencyMs));
+      }
+    };
+  }
+
+  // modules/bm/examples/modules/bm/examples/index.html
+  var OUTCOMES2 = [];
+  var ADAPTER = createMockAdapter({ outcomes: OUTCOMES2, latencyMs: 1500 });
+  var BM = createBm({ adapter: ADAPTER, policy: { interstitialCooldownMs: 8e3, rewardedPerSession: 3 } });
+  var LOG = [];
+  var OUTCOME_SELECT = document.querySelector("#outcome");
+  var OVERLAY = document.querySelector("#overlay");
+  var tickets = 0;
+  var last = null;
+  function log(line) {
+    LOG.unshift(line);
+    LOG.length = Math.min(LOG.length, 8);
+    document.querySelector("#log").textContent = LOG.join("\n");
+  }
+  function render() {
+    const REWARDED = BM.canShow("rewarded"), INTERSTITIAL = BM.canShow("interstitial");
+    document.querySelector("#tickets").textContent = String(tickets);
+    document.querySelector("#output").textContent = JSON.stringify(
+      {
+        tickets,
+        stats: BM.stats.shown,
+        canShow: {
+          rewarded: REWARDED.ok ? "ok" : REWARDED.reason,
+          interstitial: INTERSTITIAL.ok ? "ok" : INTERSTITIAL.reason + (INTERSTITIAL.retryAfterMs ? ` (${Math.ceil(INTERSTITIAL.retryAfterMs / 1e3)}s)` : "")
+        },
+        last
+      },
+      null,
+      2
+    );
+  }
+  BM.on("adstart", ({ type, placement }) => {
+    OVERLAY.hidden = false;
+    log(`adstart ${type}/${placement}: 게임이 소리·시뮬레이션을 멈춥니다.`);
+  });
+  BM.on("adend", ({ status }) => {
+    OVERLAY.hidden = true;
+    log(`adend ${status}: 게임이 재개합니다.`);
+  });
+  async function run(type) {
+    const CHOICE = OUTCOME_SELECT.value;
+    OUTCOMES2.push(CHOICE === "finished" ? type === "rewarded" ? "rewarded" : "viewed" : CHOICE);
+    const RESULT = await (type === "rewarded" ? BM.showRewarded("entry") : BM.showInterstitial("next"));
+    if (RESULT.status === "blocked") {
+      OUTCOMES2.pop();
+    }
+    if (RESULT.status === "rewarded") {
+      tickets++;
+    }
+    last = { type: RESULT.type, status: RESULT.status, reason: RESULT.reason ?? null };
+    render();
+  }
+  document.querySelector("#rewarded").addEventListener("click", () => run("rewarded"));
+  document.querySelector("#interstitial").addEventListener("click", () => run("interstitial"));
+  setInterval(render, 250);
+  render();
+  window.bmExample = { bm: BM };
+})();
+
+</script>
+</html>
