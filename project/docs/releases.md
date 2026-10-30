@@ -1,3 +1,23 @@
+## v0.34.0 (2026-10-30)
+
+호환 추가. 상품 구매를 감싸는 `store` 모듈을 추가하고, `bm`에 `suppress` 옵션을 더합니다. 광고 제거 같은 구매를 광고 모듈과 서로 import하지 않고 한 줄로 연결하기 위해서입니다. 이번에는 한 번 사면 계속 갖는 상품만 다루며 실제 결제사 어댑터와 서버는 포함하지 않습니다.
+
+- 번들 2개가 늘어납니다: `store.js`(코어), `store-mock.js`(테스트용). 어댑터는 코어를 import하지 않는 별도 번들입니다.
+- `owns(id)`는 어댑터의 구매 성공 콜백이 아니라 서버가 인정한 보유 상품(`entitlements()`)만 true로 칩니다. 구매 직후 서버가 인정하지 않으면 `pending`/`not-confirmed`입니다. 시간 초과도 `refresh()`로 확인하게 합니다.
+- `bm`의 새 옵션 `suppress(type)`가 true를 돌려주면 그 광고 종류는 `blocked`/`suppressed`입니다. 기존 호출은 바뀌지 않습니다.
+
+```js
+// 이전: 구매자 판정을 게임이 광고 호출마다 직접 했다
+if (!STORE.owns('no_ads')) {
+    await BM.showInterstitial('next');
+}
+// 이후: 한 번 연결하면 canShow와 showInterstitial이 함께 막힌다
+const BM = createBm({ adapter, suppress: (type) => type === 'interstitial' && STORE.owns('no_ads') });
+```
+
+- 시험: 임시 Node 점검으로 서버 확인 후에만 보유 처리, 미확인 시 pending, 취소·계약 밖 결과·어댑터 예외, 시간 초과 후 잠금 해제와 refresh 복구, 중복 구매·동시 구매 차단, 다른 기기 구매 복원, 변경 이벤트, `suppress`의 막기·예외 처리를 확인하고 제거했습니다. 예제 페이지와 고정 E2E는 추가하지 않았습니다.
+- 하지 않은 것: 실제 결제사 연동, 소비성 상품, 구독, 환불 처리, 영수증 검증 서버.
+
 ## v0.33.1 (2026-10-30)
 
 호환 수정. `bm-google-ads`의 `show`가 SDK 준비를 기다리지 않고 바로 `adBreak`를 부릅니다. 이전에는 `onReady`가 오지 않으면 첫 광고 요청이 최대 5초 늦어졌고, 그동안 클릭의 user activation이 끝나 광고가 막힐 수 있었습니다. 준비 전 호출은 `adsbygoogle` 큐가 받아 둡니다.

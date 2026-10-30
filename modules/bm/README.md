@@ -47,7 +47,7 @@
 | `blocked`     | 정책이나 상태 때문에 요청하지 않음     | 아니오    |
 | `error`       | 어댑터 오류·시간 초과·계약에 없는 결과 | 아니오    |
 
-`blocked`의 `reason`은 `busy`, `session-cap`, `cooldown`, `no-user-activation`, `disposed`입니다. 같은 시간에 광고는 하나만 열립니다.
+`blocked`의 `reason`은 `suppressed`, `busy`, `session-cap`, `cooldown`, `no-user-activation`, `disposed`입니다. 같은 시간에 광고는 하나만 열립니다.
 
 ## 정책
 
@@ -55,6 +55,7 @@
 - `interstitialPerSession`, `rewardedPerSession`(기본 Infinity)은 실제로 화면에 나온 광고(`rewarded`/`viewed`/`dismissed`)만 셉니다. `unavailable`, `error`는 세지 않습니다.
 - `canShow(type)`은 정책만 `{ ok, reason?, retryAfterMs? }`로 알려 줍니다. 버튼 표시·비활성화에 씁니다.
 - 광고마다 사용자의 입력이 필요합니다. 기본적으로 `navigator.userActivation.isActive`가 거짓이면 `blocked`/`no-user-activation`으로 막아 자동 재생을 코드로 차단합니다. 이 API가 없는 브라우저는 막지 않습니다. 버튼 문구가 광고임을 알리는 일은 게임이 합니다.
+- `suppress(type)`가 true를 돌려주면 그 종류는 `blocked`/`suppressed`입니다. 광고 제거 구매자에게 전면 광고를 막는 데 쓰며, 구매 판정은 [store](../store/README.md)가 하고 게임이 한 줄로 연결합니다. 보상형은 사용자가 직접 고른 광고라 같은 방식으로 막지 않는 편이 자연스럽습니다. 판정 함수가 던지면 막지 않고 오류만 전역으로 올립니다.
 - 어댑터가 `showTimeoutMs`(기본 120초) 안에 끝나지 않으면 `error`로 잠금을 풉니다. 늦게 도착한 결과는 무시합니다.
 
 ## 어댑터 계약

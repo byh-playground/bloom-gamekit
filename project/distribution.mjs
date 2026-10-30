@@ -27,6 +27,8 @@ export const MODULES = Object.freeze([
     'bm',
     'bm-mock',
     'bm-google-ads',
+    'store',
+    'store-mock',
 ]);
 export const BUNDLE_FILES = Object.freeze(MODULES.map((name) => `${name}.js`));
 export const FONT_ASSETS = Object.freeze([
