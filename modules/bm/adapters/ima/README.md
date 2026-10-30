@@ -35,14 +35,26 @@ Google IMA SDK(HTML5)로 VAST 영상 광고를 전체 화면에 재생하는 어
 
 ## 실제 영상으로 확인한 것과 남은 것
 
-2026-10-30에 이 PC의 헤드리스 Chromium(Playwright, 데스크톱 폭)에서 [예제 하네스](../../examples/index.html)로 Google 공개 샘플 태그를 직접 호출했습니다.
+2026-10-30에 이 PC의 Chromium(Playwright)에서 [예제 하네스](../../examples/index.html)로 Google 공개 샘플 태그를 직접 호출하고 화면을 캡처해 확인했습니다. 자동재생 허용 플래그를 켠 경우와 기본 정책 모두에서 클릭으로 재생됩니다.
 
-- [x] `linear` 태그: 약 13초 재생되고 `rewarded`로 끝납니다. `adstart`/`adend`가 한 쌍으로 불리고 광고 뒤 다시 눌립니다.
-- [x] `redirectError` 태그: 약 2초 만에 `unavailable`로 끝나고 잠금이 풀려 다시 눌립니다.
+- [x] `linear` 태그: 약 13초 재생되고 `rewarded`로 끝납니다. 재생 중 전체 화면 오버레이가 1개 있고 끝나면 0개입니다. `adstart`/`adend`가 한 쌍으로 불리고 광고 뒤 다시 눌립니다.
+- [x] 전면 광고: 같은 태그로 `viewed`로 끝납니다.
 - [x] `skippable` 태그를 끝까지 재생: `rewarded`로 끝납니다.
-- [ ] `skippable` 태그를 건너뛰었을 때 `dismissed`: 자동으로 건너뛰기 버튼을 누르지 못해 실제 광고로는 확인하지 못했습니다(가짜 IMA로 계약만 확인).
-- [ ] 건너뛴 뒤 `ALL_ADS_COMPLETED`가 와도 `dismissed`로 유지됩니다(이벤트 순서를 문서로 확인하지 못했습니다).
-- [ ] 광고 차단이 켜진 상태: `preload`가 false이고 요청은 `unavailable`입니다.
-- [ ] 모바일 실기기에서 한 번 눌러 영상이 재생됩니다.
+- [x] `skippable` 태그에서 "Skip Ad"를 실제로 누르면 `dismissed`이고 보상은 오르지 않습니다. 4초 뒤에도 결과가 바뀌지 않아, 건너뛴 뒤 `ALL_ADS_COMPLETED`가 와도 유지됩니다.
+- [x] `redirectError` 태그: 약 2초 만에 `unavailable`로 끝나고 잠금이 풀려 다시 눌립니다.
+- [x] 광고 차단 시뮬레이션(`imasdk.googleapis.com`, `doubleclick.net`, `googlesyndication.com` 요청을 막음): `preload`가 false이고 안내 문구가 뜨며 요청은 `unavailable`, 오버레이는 남지 않습니다. 실제 차단 확장 프로그램이 아니라 네트워크 차단으로 흉내 낸 것입니다.
+- [x] 모바일 에뮬레이션(375x812, 터치, 탭): 영상이 재생되고 `rewarded`로 끝나며 가로 스크롤이 없습니다.
+- [ ] 모바일 실기기(iOS Safari 등)에서의 재생은 이 환경에서 확인할 수 없습니다. 인라인 재생 때문에 `AdDisplayContainer`에 video 요소를 넘기지만 실기기 결과는 미확인입니다.
+- [ ] `AdDisplayContainer.initialize()`에 사용자 입력이 꼭 필요한지는 문서에서 확인하지 못했습니다. 이 어댑터는 항상 클릭 안에서 부릅니다.
 
-참고: 재생 중 `securepubads.g.doubleclick.net`, `gen_204` 같은 추적 요청이 실패로 기록되었지만 광고 재생과 결과에는 영향이 없었습니다. 헤드리스 환경 특성일 수 있습니다.
+참고: 재생 중 `securepubads.g.doubleclick.net`, `gen_204` 같은 추적 요청이 실패로 기록되었지만 광고 재생과 결과에는 영향이 없었습니다.
+
+## 같은 상태로 다시 열기
+
+하네스는 주소로 상태를 정할 수 있어 항상 같은 화면을 다시 열어 캡처할 수 있습니다. htmlpreview는 `?` 뒤를 쓰므로 `#` 형식을 권장합니다.
+
+    bm.html#source=ima-linear&connect=1
+    bm.html#source=ima-error&connect=1
+    bm.html#source=google&client=ca-pub-1234567890&connect=1
+
+`source`는 `ima-linear`, `ima-skippable`, `ima-error`, `google`, `client`는 게시자 ID, `connect=1`은 열자마자 연결입니다. 광고 재생은 사용자 입력이 필요해서 버튼은 직접 누릅니다.
