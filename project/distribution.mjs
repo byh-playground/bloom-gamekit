@@ -27,6 +27,7 @@ export const MODULES = Object.freeze([
     'bm',
     'bm-mock',
     'bm-google-ads',
+    'bm-ima',
     'store',
     'store-mock',
 ]);

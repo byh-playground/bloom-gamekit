@@ -89,7 +89,7 @@ try {
             assert.equal(await PAGE.locator('#output').evaluate((output) => JSON.parse(output.textContent).tick), 1);
         }
         if (NAME === 'bm') {
-            // 실제 Google 호출 없이 계약만 확인합니다: 광고 스크립트는 막고 adBreak를 가짜로 둡니다.
+            // 실제 광고 호출 없이 계약만 확인합니다: 광고 스크립트는 막고 adBreak와 google.ima를 가짜로 둡니다.
             const READ = (page) => page.locator('#output').evaluate((output) => JSON.parse(output.textContent));
             const FAKE_ADS = () => {
                 globalThis.adConfig = (options) => options.onReady?.();
@@ -105,6 +105,62 @@ try {
                         options.adBreakDone({ breakStatus: 'viewed' });
                     }
                 };
+                const MANAGER = {
+                    listeners: {},
+                    addEventListener(type, listener) {
+                        (this.listeners[type] ??= []).push(listener);
+                    },
+                    emit(type) {
+                        (this.listeners[type] ?? []).forEach((listener) => listener({}));
+                    },
+                    init() {},
+                    resize() {},
+                    destroy() {},
+                    start() {
+                        if (globalThis.__imaMode === 'noad') {
+                            this.emit('all');
+                            return;
+                        }
+                        this.emit('started');
+                        this.emit(globalThis.__imaMode === 'skip' ? 'skipped' : 'complete');
+                    },
+                };
+                globalThis.__imaMode = 'complete';
+                globalThis.google = {
+                    ima: {
+                        AdDisplayContainer: class {
+                            initialize() {}
+                        },
+                        AdsLoader: class {
+                            constructor() {
+                                this.listeners = {};
+                            }
+                            addEventListener(type, listener) {
+                                (this.listeners[type] ??= []).push(listener);
+                            }
+                            requestAds(request) {
+                                globalThis.__imaTag = request.adTagUrl;
+                                queueMicrotask(() =>
+                                    (this.listeners.loaded ?? []).forEach((listener) =>
+                                        listener({ getAdsManager: () => MANAGER }),
+                                    ),
+                                );
+                            }
+                        },
+                        AdsRequest: class {},
+                        AdsManagerLoadedEvent: { Type: { ADS_MANAGER_LOADED: 'loaded' } },
+                        AdErrorEvent: { Type: { AD_ERROR: 'adError' } },
+                        AdEvent: {
+                            Type: {
+                                STARTED: 'started',
+                                COMPLETE: 'complete',
+                                SKIPPED: 'skipped',
+                                USER_CLOSE: 'close',
+                                ALL_ADS_COMPLETED: 'all',
+                            },
+                        },
+                    },
+                };
             };
             for (const TOUCH of [false, true]) {
                 const CONTEXT = await browser.newContext(
@@ -116,28 +172,47 @@ try {
                 await BM_PAGE.goto(URL_LOCAL, { waitUntil: 'domcontentloaded', timeout: 45000 });
                 await BM_PAGE.waitForFunction(() => !!window.bmExample);
                 const PRESS = (selector) => (TOUCH ? BM_PAGE.tap(selector) : BM_PAGE.click(selector));
+                const WAIT_OUTPUT = (check) =>
+                    BM_PAGE.waitForFunction(
+                        (source) =>
+                            new Function('output', `return ${source}`)(
+                                JSON.parse(document.querySelector('#output').textContent),
+                            ),
+                        check,
+                    );
                 assert.equal(await BM_PAGE.locator('#rewarded').isDisabled(), true);
+                // Google H5 경로
+                await BM_PAGE.selectOption('#source', 'google');
                 await BM_PAGE.fill('#publisher', 'not-an-id');
                 await PRESS('#connect');
                 assert.equal(await BM_PAGE.locator('#rewarded').isDisabled(), true);
                 await BM_PAGE.fill('#publisher', 'ca-pub-1234567890');
                 await PRESS('#connect');
-                await BM_PAGE.waitForFunction(
-                    () => JSON.parse(document.querySelector('#output').textContent).sdkReady === true,
-                );
+                await WAIT_OUTPUT('output.sdkReady === true');
                 assert.equal(
                     await BM_PAGE.evaluate(() => !!document.querySelector('script[data-adbreak-test="on"]')),
                     true,
                 );
                 await PRESS('#rewarded');
-                await BM_PAGE.waitForFunction(
-                    () => JSON.parse(document.querySelector('#output').textContent).rewards === 1,
-                );
+                await WAIT_OUTPUT('output.rewards === 1');
                 await PRESS('#interstitial');
-                await BM_PAGE.waitForFunction(
-                    () => JSON.parse(document.querySelector('#output').textContent).last?.type === 'interstitial',
-                );
+                await WAIT_OUTPUT("output.last?.type === 'interstitial'");
                 assert.equal((await READ(BM_PAGE)).shown.interstitial, 1);
+                // IMA 경로: 끝까지 보면 보상, 건너뛰면 보상 없음, 광고가 없으면 unavailable, 오버레이는 남지 않음
+                await BM_PAGE.selectOption('#source', 'ima-linear');
+                await PRESS('#connect');
+                await WAIT_OUTPUT('output.sdkReady === true');
+                await PRESS('#rewarded');
+                await WAIT_OUTPUT('output.rewards === 2');
+                assert.match(await BM_PAGE.evaluate(() => globalThis.__imaTag), /single_ad_samples.*correlator=\d+/);
+                await BM_PAGE.evaluate(() => (globalThis.__imaMode = 'skip'));
+                await PRESS('#rewarded');
+                await WAIT_OUTPUT("output.last?.status === 'dismissed'");
+                assert.equal((await READ(BM_PAGE)).rewards, 2);
+                await BM_PAGE.evaluate(() => (globalThis.__imaMode = 'noad'));
+                await PRESS('#rewarded');
+                await WAIT_OUTPUT("output.last?.status === 'unavailable'");
+                assert.equal(await BM_PAGE.locator('body > div[style*="fixed"]').count(), 0);
                 assert.equal(
                     await BM_PAGE.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
                     true,
