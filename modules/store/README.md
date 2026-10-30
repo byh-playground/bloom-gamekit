@@ -1,5 +1,7 @@
 # store
 
+**HTML 실행 프리뷰:** [bm 예제의 '상품' 탭](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/bm.html#tab=store) — 모의 결제의 구매 결과(정상·취소·대기·서버 미인정·오류)와 다른 기기 구매 복원, `suppress` 연결을 확인합니다.
+
 상품 구매를 하나의 인터페이스로 감싸고, **서버가 인정한 보유 상품만 소유로 취급**하는 순수 ESM 모듈입니다. 결제사마다 어댑터를 붙이며, 광고 모듈 [bm](../bm/README.md)과는 서로를 import하지 않습니다. 이번 범위는 한 번 사면 계속 갖는 상품(non-consumable, 예: 광고 제거)뿐입니다. 소비성 상품, 구독, 서버 구현은 포함하지 않습니다.
 
 ## 구성
