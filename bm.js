@@ -32,6 +32,7 @@ function withTimeout(promise, ms) {
 function createBm({
   adapter,
   policy = {},
+  suppress = null,
   showTimeoutMs = 12e4,
   requireUserActivation = true,
   isUserActive = defaultIsUserActive,
@@ -50,6 +51,9 @@ function createBm({
   }
   checkCount(INTERSTITIAL_CAP, "interstitialPerSession");
   checkCount(REWARDED_CAP, "rewardedPerSession");
+  if (suppress !== null && typeof suppress !== "function") {
+    throw new TypeError("bm suppress must be a function or null.");
+  }
   if (!Number.isFinite(showTimeoutMs) || showTimeoutMs <= 0) {
     throw new RangeError("bm showTimeoutMs must be a positive finite number.");
   }
@@ -70,12 +74,28 @@ function createBm({
       }
     }
   }
+  function isSuppressed(type) {
+    if (!suppress) {
+      return false;
+    }
+    try {
+      return suppress(type) === true;
+    } catch (error) {
+      queueMicrotask(() => {
+        throw error;
+      });
+      return false;
+    }
+  }
   function check(type) {
     if (!(type in LIMITS)) {
       throw new TypeError(`bm ad type must be 'rewarded' or 'interstitial': ${type}`);
     }
     if (disposed) {
       return { ok: false, reason: "disposed" };
+    }
+    if (isSuppressed(type)) {
+      return { ok: false, reason: "suppressed" };
     }
     if (busy) {
       return { ok: false, reason: "busy" };
