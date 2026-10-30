@@ -1,3 +1,22 @@
+## v0.33.0 (2026-10-30)
+
+호환 추가. 광고 SDK를 하나의 인터페이스로 감싸는 `bm` 모듈을 추가합니다. 광고사마다 코드가 달라 게임이 SDK에 묶이던 문제를 줄이려는 것입니다. 이번에는 광고만 다루며 결제·상품·서버 정산은 포함하지 않습니다.
+
+- 번들 3개가 늘어납니다: `bm.js`(코어), `bm-mock.js`(테스트용), `bm-google-ads.js`(Google H5 Games Ads). 어댑터는 코어를 import하지 않는 별도 번들이라 필요한 것만 가져옵니다. 소스는 `modules/bm/adapters/<광고사>/`에 두고 신청 절차는 각 폴더의 README에 적습니다.
+- 코어는 `showRewarded`·`showInterstitial`·`preload`·`canShow`·`on('adstart'|'adend')`을 제공합니다. 결과는 `rewarded`·`viewed`·`dismissed`·`unavailable`·`blocked`·`error` 중 하나이며 던지지 않습니다.
+- 정책: 전면 쿨다운(기본 60초), 세션당 상한, 동시 광고 하나, 응답 없는 어댑터의 시간 초과, 사용자 입력 직후가 아닌 호출 차단.
+
+```js
+const BM = createBm({ adapter: createGoogleAdsAdapter({ clientId: 'ca-pub-123456789', testMode: true }) });
+const RESULT = await BM.showRewarded('entry'); // 클릭 핸들러 안에서
+if (RESULT.status === 'rewarded') {
+    startRun();
+}
+```
+
+- 시험: 임시 Node 점검으로 이벤트 순서, busy, 쿨다운, 세션 상한, 계약 밖 결과, 입력 직후 판정, 시간 초과 후 잠금 해제, 어댑터 예외, dispose, Google 어댑터의 가짜 `adBreak` 매핑을 확인하고 완료 후 제거했습니다. 고정 E2E 시나리오는 추가하지 않았습니다.
+- 하지 않은 것: 실제 Google 테스트 광고 호출, 브라우저·모바일 실기기 검증, 결제·상품 어댑터. `adConfig`의 `preloadAdBreaks`·`onReady`는 문서 전문을 확인하지 못한 옵션입니다.
+
 ## v0.32.0 (2026-10-30)
 
 호환 추가. 베드 레이어에 이퀄라이저 `eq`를 추가합니다. 발배구 BGM에 컴프레서·로우패스를 얹을수록 거칠다는 피드백이 이어져 곡 원본을 존중하고 필요한 대역만 조금 다듬는 쪽으로 방향을 바꿨는데, 지금까지 레이어 필터는 로우패스·밴드패스·하이패스뿐이라 쉘프나 피킹으로 특정 대역만 덜어 낼 수 없었습니다.
