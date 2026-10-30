@@ -136,13 +136,13 @@ try {
                 'unknown clip frame rejected',
             );
             sprite = CREATE_SPRITE(CTX, REGION, DEFINITION);
-            first = sprite.createPlayer({ clip: 'loop', startedAtMs: 0 });
-            second = sprite.createPlayer({ clip: 'loop', startedAtMs: 50 });
+            first = sprite.createActor({ clip: 'loop', startedAtMs: 0 });
+            second = sprite.createActor({ clip: 'loop', startedAtMs: 50 });
             const STATS = sprite.stats();
             CHECK(
                 STATS.frameCount === 3 &&
                     STATS.clipCount === 3 &&
-                    STATS.playerCount === 2 &&
+                    STATS.actorCount === 2 &&
                     STATS.retainedBytes === 0 &&
                     STATS.textureOwned === false,
                 'sprite animation retains no GPU geometry and borrows its atlas region',
@@ -191,7 +191,7 @@ try {
             NEAR(BEFORE.trimOutside, [0, 0, 0, 255], 'trim and pivot place quad correctly');
             CHECK(BEFORE.gutterEdge[0] === 0 && BEFORE.gutterEdge[2] === 0, 'linear edge cannot bleed other frame');
             CHECK(COLD.drawCalls === 1, 'different atlas frames share one stream draw');
-            third = sprite.createPlayer({ clip: 'large' });
+            third = sprite.createActor({ clip: 'large' });
             const ROTATED_MATRIX = [0, 16, -16, 0, 100, 50];
             CHECK(CTX.beginFrame({ width: 128, height: 128, clearColor: [0, 0, 0, 1] }), 'mixed frame available');
             first.draw({ timeMs: 75, matrix: [16, 0, 0, 16, 64, 64] });
@@ -221,14 +221,14 @@ try {
                 frames: [{ x: 0, y: 0, width: 2, height: 2, durationMs: 100 }],
                 clips: { still: { frames: [0], loop: 'once' } },
             });
-            const DOM_PLAYER = DOM_SPRITE.createPlayer();
+            const DOM_ACTOR = DOM_SPRITE.createActor();
             CHECK(CTX.beginFrame({ width: 128, height: 128, clearColor: [0, 0, 0, 1] }), 'DOM frame available');
-            DOM_PLAYER.draw({ timeMs: 0, matrix: [16, 0, 0, 16, 88, 80] });
+            DOM_ACTOR.draw({ timeMs: 0, matrix: [16, 0, 0, 16, 88, 80] });
             CTX.endFrame();
             const DOM_SAMPLES = { topLeft: PIXEL(96, 88), bottomLeft: PIXEL(96, 104) };
             NEAR(DOM_SAMPLES.topLeft, [0, 0, 255, 255], 'default DOM sheet top-left origin');
             NEAR(DOM_SAMPLES.bottomLeft, [255, 0, 0, 255], 'default DOM sheet bottom row');
-            DOM_PLAYER.dispose();
+            DOM_ACTOR.dispose();
             DOM_SPRITE.dispose();
             DEVICE.textureAtlas.release(DOM_REGION);
             CANVAS.width = 160;
@@ -253,7 +253,7 @@ try {
             DRAW_SCENE(75);
             const AFTER = { first: PIXEL(24, 24), second: PIXEL(72, 24) };
             NEAR(AFTER.first, BEFORE.first, 'atlas region restored');
-            NEAR(AFTER.second, BEFORE.second, 'second player phase restored');
+            NEAR(AFTER.second, BEFORE.second, 'second actor phase restored');
             first.dispose();
             second.dispose();
             third.dispose();

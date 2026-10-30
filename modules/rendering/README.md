@@ -14,17 +14,17 @@ const SPRITES = createSpriteAnimation(CONTEXT, REGION, {
     ],
     clips: { walk: { frames: [0, 1], loop: 'loop' } },
 });
-const PLAYER = SPRITES.createPlayer({ clip: 'walk', startedAtMs: 0 });
-PLAYER.draw({ timeMs: displayTimeMs, matrix: MATRIX });
-PLAYER.setPaused(true, displayTimeMs);
-PLAYER.seek(150, displayTimeMs); // elapsed clip time, then absolute clock anchor
-PLAYER.setRate(2, displayTimeMs); // preserves the current phase
-SPRITES.dispose(); // invalidates players; REGION stays with its owner
+const ACTOR = SPRITES.createActor({ clip: 'walk', startedAtMs: 0 });
+ACTOR.draw({ timeMs: displayTimeMs, matrix: MATRIX });
+ACTOR.setPaused(true, displayTimeMs);
+ACTOR.seek(150, displayTimeMs); // elapsed clip time, then absolute clock anchor
+ACTOR.setRate(2, displayTimeMs); // preserves the current phase
+SPRITES.dispose(); // invalidates actors; REGION stays with its owner
 ```
 
 Frame rectangles use logical top-left atlas pixel coordinates. `sourceWidth/sourceHeight` describe the untrimmed viewport; `sourceX/sourceY` place the trimmed rectangle in it. `pivotX/pivotY` are viewport pixel coordinates, with top-left as the default. Transparent gutter is outside the content rectangle and must fit in the texture. Set definition.textureOrigin to top-left (default) for ordinary image uploads or bottom-left for a render target. Texture filtering must match the upload source; render-target producers declare the opposite vertical storage orientation to ordinary image uploads. UVs span the content rectangle without shrinking its pixel footprint.
 
-Players sample an absolute caller clock, select one frame and hold it for its duration. There is no geometric interpolation or crossfade. Before the start time the first frame is held; loop clips wrap at total duration and once clips hold the last frame, including large clock jumps. Pause and speed changes preserve phase at the supplied clock time. Clocks and durations must be finite. Region memory and its initialization cost remain the producer's responsibility; context restore re-uploads retained region sources but render-target producers must rebake their pixels.
+Actors sample an absolute caller clock, select one frame and hold it for its duration. There is no geometric interpolation or crossfade. Before the start time the first frame is held; loop clips wrap at total duration and once clips hold the last frame, including large clock jumps. Pause and speed changes preserve phase at the supplied clock time. Clocks and durations must be finite. Region memory and its initialization cost remain the producer's responsibility; context restore re-uploads retained region sources but render-target producers must rebake their pixels.
 
 ## Textures in the vector stream
 
@@ -388,7 +388,7 @@ Source 해제는 새 texture를 할당하지 않습니다. 남은 프로그램�
 - createDataTexture(width,height,{data=null})와 updateDataTexture(handle,Float32Array,{x,y,width,height}): nearest RGBA32F 숫자 데이터입니다. CPU 원본을 보존해 context restore 후 다시 만듭니다. 그림 asset API가 아닙니다. 반복 갱신이라 `gl.getError()` 동기 확인은 `checkGLErrors`일 때만 합니다.
 - createRenderTarget(width,height,{format:'rgba32f',filter:'nearest'}): float 렌더 타깃입니다. floatRenderTargetsSupported와 isRenderTargetAvailable(handle)로 지원·복구 가능 여부를 확인합니다. EXT_color_buffer_float가 필요하며, 해당 target의 복구 실패가 일반 WebGL 2 렌더링을 중단시키지는 않습니다. 애니메이션 pose 계산은 이 타깃을 쓰지 않습니다.
 - new MeshRenderer(device,{poseBackend:'auto'|'cpu'|'uniform'}): auto는 정점 셰이더 평가를 시도하고 명시적 CPU pose fallback을 유지합니다. cpu는 같은 instancing에 CPU pose를 올리는 진단 경로(raster/sprite atlas는 GPU 키프레임 포즈 전용이라 cpu 포즈 액터를 그리면 TypeError), uniform은 기존 CPU pose uniform 참조 경로입니다.
-- player.preparePose({excludeParts})로 표시 상태를 준비하고 meshes.preparePoses()로 모아 평가합니다. 보이지 않는 pose 준비만 source별로 묶으며 visible mesh/alpha/paint를 재정렬하지 않습니다. 준비하지 않은 player.draw도 동작하지만 뒤늦은 개별 준비는 같은 행을 이미 쓴 배치를 먼저 제출하게 만들 수 있습니다.
+- actor.preparePose({excludeParts})로 표시 상태를 준비하고 meshes.preparePoses()로 모아 평가합니다. 보이지 않는 pose 준비만 source별로 묶으며 visible mesh/alpha/paint를 재정렬하지 않습니다. 준비하지 않은 actor.draw도 동작하지만 뒤늦은 개별 준비는 같은 행을 이미 쓴 배치를 먼저 제출하게 만들 수 있습니다.
 - context.drawVectorActor(actor,options)는 앞선 analytic primitive와 vector paint를 먼저 제출하고 actor.draw를 호출합니다. drawMesh와 같이 context 상태를 따릅니다: `matrix`는 현재 context 변환(카메라)과 합성되고(월드 모드 `viewProjection`/`worldMatrix`에서는 합성하지 않음), `alpha`는 context `globalAlpha`와 곱해지며, `forceColor`/`whiteFlash`는 지정하지 않으면 context의 `forceColor`와 `filter`를 따릅니다. `depthWriteAlphaThreshold`를 주면 actor가 GPU 포즈 대신 CPU 포즈로 그립니다(재질이 있는 에셋은 지원하지 않아 오류). 같은 mesh run 자체를 actor마다 강제로 flush하지 않습니다. 몸체→얼굴 overlay→다음 actor 순서는 그대로입니다. 직접 actor.draw를 호출하는 소비자는 이전 renderer의 순서 경계를 책임집니다.
 - meshes.poseStats(): GPU/CPU/uniform draw instance 수, CPU fallback 비율/이유, state/base/CPU pose upload byte, atlas/프로그램 할당 byte를 보고합니다. prepare 호출 횟수와 실제 draw 사용량은 다릅니다.
 

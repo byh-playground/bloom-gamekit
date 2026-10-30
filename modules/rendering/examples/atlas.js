@@ -63,7 +63,7 @@ export function startAtlas(canvas, statsElement) {
         }),
     );
     const PLAYERS = Array.from({ length: PAGE_COUNT * 4 }, (_unused, index) =>
-        SPRITES[Math.floor(index / 4)].createPlayer({ clip: `c${index % 4}` }),
+        SPRITES[Math.floor(index / 4)].createActor({ clip: `c${index % 4}` }),
     );
     // Deterministic placement; sprite i uses page i % 4, so consecutive sprites never share a page.
     let seed = 12345;

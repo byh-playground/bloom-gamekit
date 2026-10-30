@@ -975,7 +975,7 @@ try {
             const SPRITE = R.createSpriteAnimation(CONTEXT, SPRITE_BAKER.region, SPRITE_BAKER.definition);
             CHECK_GL('after create seed sprite');
 
-            const SPRITE_PLAYER = SPRITE.createPlayer({ clip: 'bounce' }),
+            const SPRITE_PLAYER = SPRITE.createActor({ clip: 'bounce' }),
                 VECTOR_REFERENCE = V.createVectorActor(CONTEXT, COMPILED_ASSET, { clip: 'bounce' });
             VECTOR_REFERENCE.setExpression('happy');
             const SAMPLE_TIME = SPRITE_BAKER.stats.sampleTimesMs[1],

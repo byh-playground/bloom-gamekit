@@ -339,7 +339,7 @@ try {
                         `Named-fill sprite bake available: ${BAKED.reason} ${atlas.stats.lastError}`,
                     );
                     const ANIMATION = R.createSpriteAnimation(CTX, atlas.region, atlas.definition),
-                        PLAYER = ANIMATION.createPlayer({ clip: 'idle' });
+                        PLAYER = ANIMATION.createActor({ clip: 'idle' });
                     PLAYER.draw({ timeMs: 0 });
                     CTX.flush();
                     const PIXELS = new Uint8Array(480 * 100 * 4);

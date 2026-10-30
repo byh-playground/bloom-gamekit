@@ -110,7 +110,7 @@ try {
                 frames: [{ x: 0, y: 0, width: 64, height: 64, durationMs: 100 }],
                 clips: { still: { frames: [0] } },
             });
-            const SPRITE = SPRITES.createPlayer({ clip: 'still' });
+            const SPRITE = SPRITES.createActor({ clip: 'still' });
             const PLACES = (count, size) =>
                 Array.from({ length: count }, () => [RANDOM() * (WIDTH - size), RANDOM() * (HEIGHT - size)]);
             const POLYGONS = PLACES(400, 60).map(([x, y]) => ({
