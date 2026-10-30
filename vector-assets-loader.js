@@ -24543,14 +24543,14 @@ function materialRecord(style, bounds, contourLength) {
   const YARN = style.kind === "yarn";
   const STITCH_PATTERN = style.pattern !== false;
   const EFFECT0 = YARN ? [style.seed, style.stitchWidth, style.stitchHeight, (STITCH_PATTERN ? 1 : -1) * style.thickness] : [style.seed, style.periodMs, style.frequency, 0];
-  const EFFECT1 = YARN ? [style.irregularity, style.contrast, style.edgeSpacing, style.edgeWidth] : [style.amplitude, style.echoX, style.echoWidth, style.echoOpacity];
+  const EFFECT1 = YARN ? [style.irregularity, style.contrast, style.edgeSpacing, style.edgeWidth] : [style.amplitude, 0, style.echoWidth, style.echoOpacity];
   const EFFECT2 = YARN ? [style.fiberSpacing ?? 4, style.fiberLength, style.fiberWidth, style.fiberOpacity] : [style.hatchWidth, style.hatchOpacity, style.hatchAngle, style.hatchSpacing];
   const EFFECT3 = YARN ? [
     style.fiber === false ? 0 : style.fiberMax,
     contourLength,
     style.curved === false ? 0 : 1,
     style.edgeRelief * (style.detail ? 0.3 : 1)
-  ] : [0, style.echoY, 0, 0];
+  ] : [0, 0, 0, 0];
   return Float32Array.from([...bounds, ...EFFECT0, ...EFFECT1, ...EFFECT2, ...EFFECT3]);
 }
 
@@ -25036,12 +25036,14 @@ function surfaceGeometry(fillVertices, outline, edgeColors, style) {
     RING.push([mx * SCALE, my * SCALE]);
   }
   const EDGE_RECORDS = [];
+  const ECHO_SHIFT = style.kind === "sketch" ? RING.map(([rx, ry]) => (style.echoX * rx + style.echoY * ry) / Math.hypot(rx, ry)) : null;
   const COLOR_AT = (index) => RGBA.subarray(index * 4, index * 4 + 4);
   for (let i = 0; i < POINTS.length; i++) {
     const J = (i + 1) % POINTS.length;
     const EMIT = (pointIndex, distance) => {
       const POINT = POINTS[pointIndex], NORMAL = RING[pointIndex], X = POINT[0] + NORMAL[0] * distance, Y = POINT[1] + NORMAL[1] * distance;
-      EDGE_RECORDS.push(X, Y, ...COLOR_AT(pointIndex), 1, CUMULATIVE[pointIndex] / total, distance);
+      const ACROSS = distance - (ECHO_SHIFT ? ECHO_SHIFT[pointIndex] : 0);
+      EDGE_RECORDS.push(X, Y, ...COLOR_AT(pointIndex), 1, CUMULATIVE[pointIndex] / total, ACROSS);
     };
     EMIT(i, -EDGE_WIDTH);
     EMIT(i, FIBER_LENGTH);
