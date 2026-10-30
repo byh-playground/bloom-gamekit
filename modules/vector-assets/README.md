@@ -2,7 +2,7 @@
 
 ## Runtime part atlas comparison
 
-The same example also includes sampled sprite playback. `createVectorSpriteAtlas(context, compiledAsset, { clip, expression, sampleIntervalMs, pixelsPerUnit, padding, supersample, paintRegions })` samples an authored SVG clip at the midpoint of each interval and bakes complete poses into one region of the device's shared texture atlas (`device.textureAtlas`); `context` is the `VectorContext` whose mesh renderer owns `asset`. The atlas size bounds the sheet; a frame set that does not fit reports `atlasLimit`. Equivalent bake settings of one asset share one ref-counted region. For a once clip, the final interval uses the exact authored endpoint so the held final image keeps the terminal pose. The final interval keeps its shorter duration, so playback keeps the authored clip length. It returns a generic sprite definition and region rather than an SVG-dependent player:
+The same example also includes sampled sprite playback. `createVectorSpriteAtlas(context, compiledAsset, { clip, expression, sampleIntervalMs, pixelsPerUnit, padding, supersample, paintRegions })` samples an authored SVG clip at the midpoint of each interval and bakes complete poses into one region of the device's shared texture atlas (`device.textureAtlas`); `context` is the `VectorContext` whose mesh renderer owns `asset`. The atlas size bounds the sheet; a frame set that does not fit reports `atlasLimit`. Equivalent bake settings of one asset share one ref-counted region. For a once clip, the final interval uses the exact authored endpoint so the held final image keeps the terminal pose. The final interval keeps its shorter duration, so playback keeps the authored clip length. It returns a generic sprite definition and region rather than an SVG-dependent actor:
 
 ```js
 const BAKER = createVectorSpriteAtlas(CONTEXT, COMPILED, {
@@ -14,8 +14,8 @@ const BAKER = createVectorSpriteAtlas(CONTEXT, COMPILED, {
 });
 BAKER.bake(); // in an active device frame, before constructing SPRITES
 const SPRITES = createSpriteAnimation(CONTEXT, BAKER.region, BAKER.definition);
-const PLAYER = SPRITES.createPlayer({ clip: 'bounce', startedAtMs: 0 });
-PLAYER.draw({ timeMs: displayTimeMs, matrix: MATRIX });
+const ACTOR = SPRITES.createActor({ clip: 'bounce', startedAtMs: 0 });
+ACTOR.draw({ timeMs: displayTimeMs, matrix: MATRIX });
 // Reuse during playback; do not bake in the animation render loop.
 SPRITES.dispose();
 BAKER.dispose(); // releases the region with its last user

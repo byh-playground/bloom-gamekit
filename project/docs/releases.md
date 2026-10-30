@@ -1,3 +1,16 @@
+## v0.36.0 (2026-10-30)
+
+비호환 변경. 스프라이트 애니메이션의 재생 인스턴스 이름을 `createVectorActor`·`asset.createActor`와 맞춥니다. 같은 개념(하나의 그려지는 인스턴스)을 모듈마다 player와 actor로 다르게 부르던 것을 actor 하나로 통일하기 위해서입니다. 동작은 바뀌지 않습니다.
+
+- `sprite.createPlayer(options)` → `sprite.createActor(options)`, `sprite.stats().playerCount` → `actorCount`. 오류 메시지는 `Sprite actor disposed`입니다. 별칭은 두지 않습니다.
+
+```js
+// 이전
+const PLAYER = SPRITES.createPlayer({ clip: 'walk', startedAtMs: 0 });
+// 이후
+const ACTOR = SPRITES.createActor({ clip: 'walk', startedAtMs: 0 });
+```
+
 ## v0.35.0 (2026-10-30)
 
 호환 추가. `bm`에 Google IMA 영상 광고 어댑터(`bm-ima.js`)를 추가합니다. AdSense 승인 없이도 Google의 공개 샘플 광고 태그로 실제 영상 광고를 재생해 `bm`의 광고 흐름을 확인하기 위해서입니다. 번들 1개가 늘어 공개 번들은 26개입니다.

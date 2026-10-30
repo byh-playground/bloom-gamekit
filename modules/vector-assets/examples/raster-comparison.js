@@ -1202,7 +1202,7 @@ function drawSpriteActors(positions) {
         }
         let spritePlayer = ENTRY.players.get(i);
         if (!spritePlayer) {
-            spritePlayer = ENTRY.resource.createPlayer({
+            spritePlayer = ENTRY.resource.createActor({
                 clip: VECTOR_PLAYER.currentClip,
                 startedAtMs: -phaseFor(i, VECTOR_PLAYER.currentClip),
             });
