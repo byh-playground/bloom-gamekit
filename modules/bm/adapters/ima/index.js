@@ -28,6 +28,7 @@ function withCorrelator(url) {
  * @param {number} [options.loadTimeoutMs=10000] 광고가 시작되기까지 기다리는 시간. 넘으면 unavailable
  * @param {number} [options.playTimeoutMs=100000] 시작한 광고가 끝나기까지 기다리는 시간. 넘으면 error
  * @param {number} [options.zIndex=2147483647] 오버레이의 z-index
+ * @param {string} [options.resumeLabel='광고 계속 보기'] 광고가 멈췄을 때 보여 주는 재생 버튼의 글자
  */
 export function createImaAdapter({
     adTagUrl,
@@ -35,6 +36,7 @@ export function createImaAdapter({
     loadTimeoutMs = 10000,
     playTimeoutMs = 100000,
     zIndex = 2147483647,
+    resumeLabel = '광고 계속 보기',
 } = {}) {
     if (typeof adTagUrl !== 'function' && !(typeof adTagUrl === 'string' && adTagUrl.startsWith('https://'))) {
         throw new TypeError('ima adTagUrl must be an https URL string or a function returning one.');
@@ -82,15 +84,36 @@ export function createImaAdapter({
             const VIDEO = document.createElement('video');
             VIDEO.setAttribute('playsinline', '');
             VIDEO.style.cssText = 'position:absolute;width:1px;height:1px;opacity:0';
-            OVERLAY.append(SLOT, VIDEO);
+            // 광고를 눌러 랜딩 페이지가 열리거나 일시정지되면 IMA는 스스로 다시 재생하지 않으므로 재생 버튼을 둡니다.
+            const RESUME = document.createElement('button');
+            RESUME.type = 'button';
+            RESUME.textContent = resumeLabel;
+            RESUME.hidden = true;
+            RESUME.style.cssText =
+                'position:absolute;left:50%;bottom:24px;transform:translateX(-50%);min-width:200px;min-height:56px;padding:0 24px;font:600 18px system-ui,sans-serif;color:#fff;background:#1a73e8;border:0;border-radius:28px';
+            OVERLAY.append(SLOT, VIDEO, RESUME);
             document.body.append(OVERLAY);
             let manager = null;
             let started = false;
             let done = false;
             let timer = null;
+            let paused = false;
             function onResize() {
                 manager?.resize(globalThis.innerWidth, globalThis.innerHeight);
             }
+            function resume() {
+                try {
+                    manager?.resume();
+                } catch {
+                    // 재개 호출이 실패해도 버튼이 남아 있으므로 사용자가 다시 누를 수 있습니다.
+                }
+            }
+            function onReturn() {
+                if (paused && !document.hidden) {
+                    resume();
+                }
+            }
+            RESUME.addEventListener('click', resume);
 
             function finish(outcome) {
                 if (done) {
@@ -99,6 +122,8 @@ export function createImaAdapter({
                 done = true;
                 clearTimeout(timer);
                 globalThis.removeEventListener('resize', onResize);
+                globalThis.removeEventListener('focus', onReturn);
+                document.removeEventListener('visibilitychange', onReturn);
                 try {
                     manager?.destroy();
                 } catch {
@@ -132,6 +157,16 @@ export function createImaAdapter({
                             clearTimeout(timer);
                             timer = setTimeout(() => finish('error'), playTimeoutMs);
                         });
+                        manager.addEventListener(TYPES.PAUSED, () => {
+                            paused = true;
+                            RESUME.hidden = false;
+                        });
+                        for (const NAME of [TYPES.RESUMED, TYPES.STARTED]) {
+                            manager.addEventListener(NAME, () => {
+                                paused = false;
+                                RESUME.hidden = true;
+                            });
+                        }
                         manager.addEventListener(TYPES.COMPLETE, () => finish(completed()));
                         manager.addEventListener(TYPES.SKIPPED, () => finish('dismissed'));
                         manager.addEventListener(TYPES.USER_CLOSE, () => finish('dismissed'));
@@ -140,6 +175,8 @@ export function createImaAdapter({
                             finish(started ? completed() : 'unavailable'),
                         );
                         globalThis.addEventListener('resize', onResize);
+                        globalThis.addEventListener('focus', onReturn);
+                        document.addEventListener('visibilitychange', onReturn);
                         manager.init(WIDTH, HEIGHT);
                         manager.start();
                     } catch {
