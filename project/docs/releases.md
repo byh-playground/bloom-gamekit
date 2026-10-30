@@ -1,3 +1,19 @@
+## v0.35.0 (2026-10-30)
+
+호환 추가. `bm`에 Google IMA 영상 광고 어댑터(`bm-ima.js`)를 추가합니다. AdSense 승인 없이도 Google의 공개 샘플 광고 태그로 실제 영상 광고를 재생해 `bm`의 광고 흐름을 확인하기 위해서입니다. 번들 1개가 늘어 공개 번들은 26개입니다.
+
+- 광고마다 전체 화면 오버레이를 만들고 끝나면 지웁니다. 끝까지 재생하면 보상형은 `rewarded`, 전면은 `viewed`이고, 건너뛰거나 닫으면 `dismissed`, 시작 전 오류나 광고 없음은 `unavailable`, 재생 중 오류는 `error`입니다. 시작과 종료에 각각 시간 제한이 있어 오버레이가 남지 않습니다.
+- 공개 샘플 태그를 `IMA_SAMPLE_TAGS`로 내보냅니다(테스트 전용). 예제 하네스는 광고 소스를 고를 수 있게 되어, IMA 샘플은 승인 없이 바로 나옵니다.
+
+```js
+const BM = createBm({ adapter: createImaAdapter({ adTagUrl: IMA_SAMPLE_TAGS.linear }) });
+await BM.preload('entry');
+const RESULT = await BM.showRewarded('entry'); // 클릭 핸들러 안에서
+```
+
+- 시험: 고정 프리뷰 시나리오가 가짜 `google.ima`로 완료(rewarded)·건너뜀(dismissed)·광고 없음(unavailable)·오버레이 정리·correlator 채움을 데스크톱과 터치 에뮬레이션에서 확인합니다. 별도로 이 PC의 헤드리스 Chromium에서 실제 샘플 태그를 호출해 `linear`는 약 13초 재생 후 `rewarded`, 오류 태그는 약 2초 만에 `unavailable`로 끝나는 것을 확인했습니다.
+- 확인하지 못한 것: 건너뛰기 버튼을 눌렀을 때의 실제 결과, 광고 차단 상태, 모바일 실기기, 운영용 광고 수요처(샘플 태그는 테스트 전용). `AdDisplayContainer.initialize()`의 사용자 입력 요건은 문서에서 확인하지 못했습니다.
+
 ## v0.34.0 (2026-10-30)
 
 호환 추가. 상품 구매를 감싸는 `store` 모듈을 추가하고, `bm`에 `suppress` 옵션을 더합니다. 광고 제거 같은 구매를 광고 모듈과 서로 import하지 않고 한 줄로 연결하기 위해서입니다. 이번에는 한 번 사면 계속 갖는 상품만 다루며 실제 결제사 어댑터와 서버는 포함하지 않습니다.

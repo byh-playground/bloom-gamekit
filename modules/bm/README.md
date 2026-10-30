@@ -9,6 +9,7 @@
     modules/bm/index.js                  코어 (dist/bm.js)
     modules/bm/adapters/mock/            테스트·예제용 (dist/bm-mock.js)
     modules/bm/adapters/google-ads/      Google H5 Games Ads (dist/bm-google-ads.js)
+    modules/bm/adapters/ima/             Google IMA 영상 광고, 샘플 태그로 승인 없이 테스트 (dist/bm-ima.js)
 
 어댑터는 코어를 import하지 않고 아래 계약만 지키는 별도 번들입니다. 필요한 광고사 번들만 가져옵니다. 신청·승인 절차와 키는 각 어댑터 폴더의 README에 적습니다.
 

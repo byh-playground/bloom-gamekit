@@ -31,6 +31,7 @@ const SHARED_SURFACE_SOURCE = new Set([
 const SOURCE_DIRS = {
     'bm-mock': 'bm/adapters/mock',
     'bm-google-ads': 'bm/adapters/google-ads',
+    'bm-ima': 'bm/adapters/ima',
     'store-mock': 'store/adapters/mock',
 };
 export async function buildDistribution(root) {
