@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="ko">
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>광고 어댑터 · bloom-gamekit</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            font:
+                16px system-ui,
+                sans-serif;
+            max-width: 720px;
+            margin: 1.5rem auto;
+            padding: 0 1rem;
+            background: #111c24;
+            color: #e6f1f3;
+            line-height: 1.55;
+        }
+        h1 {
+            font-size: 1.4rem;
+            margin: 0 0 0.5rem;
+        }
+        ul {
+            padding-left: 1.2rem;
+            color: #aebfc6;
+            font-size: 0.9rem;
+        }
+        label {
+            display: block;
+            margin: 1rem 0 0.4rem;
+        }
+        select,
+        button {
+            width: 100%;
+            min-height: 56px;
+            font: inherit;
+            border-radius: 10px;
+            border: 1px solid #40535e;
+            background: #1b2c37;
+            color: inherit;
+            padding: 0 0.8rem;
+        }
+        button {
+            margin-top: 0.6rem;
+            background: #2b6f86;
+            border-color: #3f8fa8;
+            font-weight: 600;
+        }
+        button:disabled {
+            opacity: 0.5;
+        }
+        .tickets {
+            margin: 1rem 0 0;
+            font-size: 1.2rem;
+        }
+        pre {
+            padding: 1rem;
+            background: #091117;
+            border: 1px solid #40535e;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            font-size: 0.85rem;
+        }
+        #overlay {
+            position: fixed;
+            inset: 0;
+            display: grid;
+            place-items: center;
+            background: rgba(4, 9, 12, 0.92);
+            text-align: center;
+        }
+        #overlay[hidden] {
+            display: none;
+        }
+        .bar {
+            width: min(70vw, 320px);
+            height: 8px;
+            margin: 1rem auto 0;
+            background: #2a3c47;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .bar i {
+            display: block;
+            height: 100%;
+            width: 100%;
+            background: #4ec2d8;
+            transform-origin: left;
+            animation: run 1.5s linear forwards;
+        }
+        @keyframes run {
+            from {
+                transform: scaleX(0);
+            }
+            to {
+                transform: scaleX(1);
+            }
+        }
+    </style>
+    <h1>광고 어댑터 bm</h1>
+    <p>
+        광고사가 달라도 게임의 버튼 코드는 같고, 보상은 결과가 <b>rewarded</b>일 때만 줍니다. 여기서는 모의 광고입니다.
+    </p>
+    <ul>
+        <li>보상형은 쿨다운이 없고 이 예제에서는 세션당 3번까지입니다.</li>
+        <li>전면은 광고가 끝난 뒤 8초 동안 막힙니다.</li>
+        <li>광고 중 정지·재개는 모듈이 아니라 게임이 이벤트에서 처리합니다.</li>
+    </ul>
+    <label for="outcome">다음 광고 결과</label>
+    <select id="outcome">
+        <option value="finished">끝까지 봄</option>
+        <option value="dismissed">중간에 닫음</option>
+        <option value="unavailable">광고 없음</option>
+        <option value="error">오류</option>
+    </select>
+    <button id="rewarded">광고 보고 도전권 받기</button>
+    <button id="interstitial">전면 광고 (다음 단계로)</button>
+    <p class="tickets">도전권 <b id="tickets">0</b></p>
+    <pre id="output"></pre>
+    <pre id="log"></pre>
+    <div id="overlay" hidden>
+        <div>
+            <div>광고 재생 중 (모의)</div>
+            <div class="bar"><i></i></div>
+        </div>
+    </div>
+    <script type="module">
+        import { createBm } from '../../../dist/bm.js';
+        import { createMockAdapter } from '../../../dist/bm-mock.js';
+
+        const OUTCOMES = [],
+            ADAPTER = createMockAdapter({ outcomes: OUTCOMES, latencyMs: 1500 }),
+            BM = createBm({ adapter: ADAPTER, policy: { interstitialCooldownMs: 8000, rewardedPerSession: 3 } }),
+            LOG = [],
+            OUTCOME_SELECT = document.querySelector('#outcome'),
+            OVERLAY = document.querySelector('#overlay');
+        let tickets = 0,
+            last = null;
+
+        function log(line) {
+            LOG.unshift(line);
+            LOG.length = Math.min(LOG.length, 8);
+            document.querySelector('#log').textContent = LOG.join('\n');
+        }
+
+        function render() {
+            const REWARDED = BM.canShow('rewarded'),
+                INTERSTITIAL = BM.canShow('interstitial');
+            document.querySelector('#tickets').textContent = String(tickets);
+            document.querySelector('#output').textContent = JSON.stringify(
+                {
+                    tickets,
+                    stats: BM.stats.shown,
+                    canShow: {
+                        rewarded: REWARDED.ok ? 'ok' : REWARDED.reason,
+                        interstitial: INTERSTITIAL.ok
+                            ? 'ok'
+                            : INTERSTITIAL.reason +
+                              (INTERSTITIAL.retryAfterMs ? ` (${Math.ceil(INTERSTITIAL.retryAfterMs / 1000)}s)` : ''),
+                    },
+                    last,
+                },
+                null,
+                2,
+            );
+        }
+
+        BM.on('adstart', ({ type, placement }) => {
+            OVERLAY.hidden = false;
+            log(`adstart ${type}/${placement}: 게임이 소리·시뮬레이션을 멈춥니다.`);
+        });
+        BM.on('adend', ({ status }) => {
+            OVERLAY.hidden = true;
+            log(`adend ${status}: 게임이 재개합니다.`);
+        });
+
+        async function run(type) {
+            const CHOICE = OUTCOME_SELECT.value;
+            OUTCOMES.push(CHOICE === 'finished' ? (type === 'rewarded' ? 'rewarded' : 'viewed') : CHOICE);
+            const RESULT = await (type === 'rewarded' ? BM.showRewarded('entry') : BM.showInterstitial('next'));
+            if (RESULT.status === 'blocked') {
+                // 요청되지 않은 결과가 다음 광고에 섞이지 않게 되돌립니다.
+                OUTCOMES.pop();
+            }
+            if (RESULT.status === 'rewarded') {
+                tickets++;
+            }
+            last = { type: RESULT.type, status: RESULT.status, reason: RESULT.reason ?? null };
+            render();
+        }
+
+        document.querySelector('#rewarded').addEventListener('click', () => run('rewarded'));
+        document.querySelector('#interstitial').addEventListener('click', () => run('interstitial'));
+        setInterval(render, 250);
+        render();
+        window.bmExample = { bm: BM };
+    </script>
+</html>

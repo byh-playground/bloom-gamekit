@@ -62,6 +62,7 @@ try {
                     scenario: 'scenarioDemo',
                     'pixel-physics': 'pixelPhysicsExample',
                     'pixel-physics-open-world': 'openWorldExample',
+                    bm: 'bmExample',
                 };
                 if (name === 'work-scheduler') {
                     return !!document.querySelector('#output')?.textContent;
@@ -86,6 +87,60 @@ try {
         if (NAME === 'work-scheduler') {
             await PAGE.click('#tick');
             assert.equal(await PAGE.locator('#output').evaluate((output) => JSON.parse(output.textContent).tick), 1);
+        }
+        if (NAME === 'bm') {
+            const READ = () => PAGE.locator('#output').evaluate((output) => JSON.parse(output.textContent));
+            await PAGE.click('#rewarded');
+            await PAGE.waitForFunction(() => document.querySelector('#overlay').hidden === false);
+            await PAGE.waitForFunction(
+                () => JSON.parse(document.querySelector('#output').textContent).tickets === 1,
+                null,
+                {
+                    timeout: 8000,
+                },
+            );
+            // 중간에 닫으면 도전권이 늘지 않고, 전면은 보상형 직후 쿨다운에 막힙니다.
+            await PAGE.selectOption('#outcome', 'dismissed');
+            await PAGE.click('#rewarded');
+            await PAGE.waitForFunction(
+                () => JSON.parse(document.querySelector('#output').textContent).last?.status === 'dismissed',
+                null,
+                {
+                    timeout: 8000,
+                },
+            );
+            assert.equal((await READ()).tickets, 1);
+            await PAGE.click('#interstitial');
+            await PAGE.waitForFunction(
+                () => JSON.parse(document.querySelector('#output').textContent).last?.reason === 'cooldown',
+            );
+            assert.equal(await PAGE.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+            // 터치 에뮬레이션(실제 기기 검증 아님): 좁은 화면에서 탭으로 같은 흐름이 되고 버튼이 손가락 크기여야 합니다.
+            const TOUCH = await browser.newContext({
+                hasTouch: true,
+                isMobile: true,
+                viewport: { width: 375, height: 812 },
+            });
+            const TOUCH_PAGE = await TOUCH.newPage();
+            await TOUCH_PAGE.goto(URL_LOCAL, { waitUntil: 'domcontentloaded', timeout: 45000 });
+            await TOUCH_PAGE.waitForFunction(() => !!window.bmExample);
+            await TOUCH_PAGE.tap('#rewarded');
+            await TOUCH_PAGE.waitForFunction(
+                () => JSON.parse(document.querySelector('#output').textContent).tickets === 1,
+                null,
+                {
+                    timeout: 8000,
+                },
+            );
+            assert.equal(
+                await TOUCH_PAGE.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+                true,
+            );
+            assert.equal(
+                await TOUCH_PAGE.locator('#rewarded').evaluate((button) => button.getBoundingClientRect().height >= 56),
+                true,
+            );
+            await TOUCH.close();
         }
         if (NAME === 'interpolation-frame') {
             await PAGE.click('#spawn');
