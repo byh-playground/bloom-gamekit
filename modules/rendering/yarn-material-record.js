@@ -15,7 +15,7 @@ export function materialRecord(style, bounds, contourLength) {
         : [style.seed, style.periodMs, style.frequency, 0];
     const EFFECT1 = YARN
         ? [style.irregularity, style.contrast, style.edgeSpacing, style.edgeWidth]
-        : [style.amplitude, style.echoX, style.echoWidth, style.echoOpacity];
+        : [style.amplitude, 0, style.echoWidth, style.echoOpacity];
     const EFFECT2 = YARN
         ? [style.fiberSpacing ?? 4, style.fiberLength, style.fiberWidth, style.fiberOpacity]
         : [style.hatchWidth, style.hatchOpacity, style.hatchAngle, style.hatchSpacing];
@@ -26,6 +26,6 @@ export function materialRecord(style, bounds, contourLength) {
               style.curved === false ? 0 : 1,
               style.edgeRelief * (style.detail ? 0.3 : 1),
           ]
-        : [0, style.echoY, 0, 0];
+        : [0, 0, 0, 0];
     return Float32Array.from([...bounds, ...EFFECT0, ...EFFECT1, ...EFFECT2, ...EFFECT3]);
 }

@@ -568,6 +568,71 @@ export async function exerciseYarnShader(browser, moduleURL, screenshotPath) {
                     DEVICE.dispose();
                     SAMPLES.sketchHatch = { median: MEDIAN, hatchedFraction: HATCHED / REDS.length };
                 }
+                {
+                    const CANVAS = document.createElement('canvas');
+                    CANVAS.width = 140;
+                    CANVAS.height = 140;
+                    document.body.append(CANVAS);
+                    const DEVICE = new WEB_GL_DEVICE(CANVAS, {
+                        alpha: true,
+                        antialias: false,
+                        depth: false,
+                        stencil: false,
+                        preserveDrawingBuffer: true,
+                    });
+                    const SURFACES = MAKE_SURFACES(DEVICE);
+                    const COLOR = [0.82, 0.48, 0.28, 1];
+                    const SURFACE = SURFACES.createSurface({
+                        fillVertices: Float32Array.from([
+                            ...[40, 40, ...COLOR, 100, 40, ...COLOR, 100, 100, ...COLOR],
+                            ...[40, 40, ...COLOR, 100, 100, ...COLOR, 40, 100, ...COLOR],
+                        ]),
+                        outline: Float32Array.from([40, 40, 100, 40, 100, 100, 40, 100]),
+                        edgeColors: Float32Array.from([...COLOR, ...COLOR, ...COLOR, ...COLOR]),
+                        style: {
+                            kind: 'sketch',
+                            seed: 5,
+                            periodMs: 135,
+                            amplitude: 0.5,
+                            frequency: 4,
+                            echoX: 0,
+                            echoY: 8,
+                            echoWidth: 1.4,
+                            echoOpacity: 1,
+                            hatchAngle: 0.72,
+                            hatchSpacing: 7,
+                            hatchWidth: 0.8,
+                            hatchOpacity: 0,
+                        },
+                    });
+                    DEVICE.beginFrame({ width: 140, height: 140, clearColor: [0, 0, 0, 0] });
+                    SURFACES.drawSurface(SURFACE, {
+                        projection: [2 / 140, 0, 0, 0, -2 / 140, 0, -1, 1, 1],
+                        timeMs: 0,
+                    });
+                    DEVICE.endFrame();
+                    const PIXELS = new Uint8Array(140 * 140 * 4);
+                    DEVICE.gl.readPixels(0, 0, 140, 140, DEVICE.gl.RGBA, DEVICE.gl.UNSIGNED_BYTE, PIXELS);
+                    // readPixels rows start at the bottom of the framebuffer; y here is the drawn top-down y.
+                    const COVERED = (x0, x1, y0, y1) => {
+                        let count = 0;
+                        for (let y = y0; y < y1; y++) {
+                            for (let x = x0; x < x1; x++) {
+                                count += PIXELS[((139 - y) * 140 + x) * 4 + 3] > 0 ? 1 : 0;
+                            }
+                        }
+                        return count;
+                    };
+                    SAMPLES.sketchEcho = {
+                        below: COVERED(50, 90, 104, 120),
+                        above: COVERED(50, 90, 20, 36),
+                        left: COVERED(20, 32, 50, 90),
+                        right: COVERED(108, 120, 50, 90),
+                    };
+                    SURFACES.deleteSurface(SURFACE);
+                    SURFACES.dispose();
+                    DEVICE.dispose();
+                }
                 return SAMPLES;
             },
             {
@@ -588,6 +653,13 @@ export async function exerciseYarnShader(browser, moduleURL, screenshotPath) {
         assert.ok(
             RESULT.sketchHatch.hatchedFraction > 0.03 && RESULT.sketchHatch.hatchedFraction < 0.5,
             `sketch fill shows diagonal hatch lines, not one flat color: ${JSON.stringify(RESULT.sketchHatch)}`,
+        );
+        assert.ok(
+            RESULT.sketchEcho.below > 40 &&
+                RESULT.sketchEcho.above === 0 &&
+                RESULT.sketchEcho.left === 0 &&
+                RESULT.sketchEcho.right === 0,
+            `sketch echo (0, 8) is drawn only below the shape: ${JSON.stringify(RESULT.sketchEcho)}`,
         );
         assert.ok(
             RESULT.stencil.upperArm[3] > 0 && RESULT.stencil.leftArm[3] > 0,
