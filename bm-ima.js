@@ -14,7 +14,8 @@ function createImaAdapter({
   loadScript = true,
   loadTimeoutMs = 1e4,
   playTimeoutMs = 1e5,
-  zIndex = 2147483647
+  zIndex = 2147483647,
+  resumeLabel = "광고 계속 보기"
 } = {}) {
   if (typeof adTagUrl !== "function" && !(typeof adTagUrl === "string" && adTagUrl.startsWith("https://"))) {
     throw new TypeError("ima adTagUrl must be an https URL string or a function returning one.");
@@ -58,15 +59,33 @@ function createImaAdapter({
       const VIDEO = document.createElement("video");
       VIDEO.setAttribute("playsinline", "");
       VIDEO.style.cssText = "position:absolute;width:1px;height:1px;opacity:0";
-      OVERLAY.append(SLOT, VIDEO);
+      const RESUME = document.createElement("button");
+      RESUME.type = "button";
+      RESUME.textContent = resumeLabel;
+      RESUME.hidden = true;
+      RESUME.style.cssText = "position:absolute;left:50%;bottom:24px;transform:translateX(-50%);min-width:200px;min-height:56px;padding:0 24px;font:600 18px system-ui,sans-serif;color:#fff;background:#1a73e8;border:0;border-radius:28px";
+      OVERLAY.append(SLOT, VIDEO, RESUME);
       document.body.append(OVERLAY);
       let manager = null;
       let started = false;
       let done = false;
       let timer = null;
+      let paused = false;
       function onResize() {
         manager?.resize(globalThis.innerWidth, globalThis.innerHeight);
       }
+      function resume() {
+        try {
+          manager?.resume();
+        } catch {
+        }
+      }
+      function onReturn() {
+        if (paused && !document.hidden) {
+          resume();
+        }
+      }
+      RESUME.addEventListener("click", resume);
       function finish(outcome) {
         if (done) {
           return;
@@ -74,6 +93,8 @@ function createImaAdapter({
         done = true;
         clearTimeout(timer);
         globalThis.removeEventListener("resize", onResize);
+        globalThis.removeEventListener("focus", onReturn);
+        document.removeEventListener("visibilitychange", onReturn);
         try {
           manager?.destroy();
         } catch {
@@ -104,6 +125,16 @@ function createImaAdapter({
               clearTimeout(timer);
               timer = setTimeout(() => finish("error"), playTimeoutMs);
             });
+            manager.addEventListener(TYPES.PAUSED, () => {
+              paused = true;
+              RESUME.hidden = false;
+            });
+            for (const NAME of [TYPES.RESUMED, TYPES.STARTED]) {
+              manager.addEventListener(NAME, () => {
+                paused = false;
+                RESUME.hidden = true;
+              });
+            }
             manager.addEventListener(TYPES.COMPLETE, () => finish(completed()));
             manager.addEventListener(TYPES.SKIPPED, () => finish("dismissed"));
             manager.addEventListener(TYPES.USER_CLOSE, () => finish("dismissed"));
@@ -112,6 +143,8 @@ function createImaAdapter({
               () => finish(started ? completed() : "unavailable")
             );
             globalThis.addEventListener("resize", onResize);
+            globalThis.addEventListener("focus", onReturn);
+            document.addEventListener("visibilitychange", onReturn);
             manager.init(WIDTH, HEIGHT);
             manager.start();
           } catch {
