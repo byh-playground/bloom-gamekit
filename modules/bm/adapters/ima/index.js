@@ -29,6 +29,7 @@ function withCorrelator(url) {
  * @param {number} [options.playTimeoutMs=100000] 시작한 광고가 끝나기까지 기다리는 시간. 넘으면 error
  * @param {number} [options.zIndex=2147483647] 오버레이의 z-index
  * @param {string} [options.resumeLabel='광고 계속 보기'] 광고가 멈췄을 때 보여 주는 재생 버튼의 글자
+ * @param {string} [options.closeLabel='광고 닫기'] 광고를 중간에 그만볼 때 누르는 버튼의 글자. 누르면 `dismissed`(보상 없음)입니다.
  */
 export function createImaAdapter({
     adTagUrl,
@@ -37,6 +38,7 @@ export function createImaAdapter({
     playTimeoutMs = 100000,
     zIndex = 2147483647,
     resumeLabel = '광고 계속 보기',
+    closeLabel = '광고 닫기',
 } = {}) {
     if (typeof adTagUrl !== 'function' && !(typeof adTagUrl === 'string' && adTagUrl.startsWith('https://'))) {
         throw new TypeError('ima adTagUrl must be an https URL string or a function returning one.');
@@ -90,8 +92,15 @@ export function createImaAdapter({
             RESUME.textContent = resumeLabel;
             RESUME.hidden = true;
             RESUME.style.cssText =
-                'position:absolute;left:50%;bottom:24px;transform:translateX(-50%);min-width:200px;min-height:56px;padding:0 24px;font:600 18px system-ui,sans-serif;color:#fff;background:#1a73e8;border:0;border-radius:28px';
-            OVERLAY.append(SLOT, VIDEO, RESUME);
+                'position:absolute;left:50%;bottom:24px;transform:translateX(-50%);z-index:1;min-width:200px;min-height:56px;padding:0 24px;font:600 18px system-ui,sans-serif;color:#fff;background:#1a73e8;border:0;border-radius:28px';
+            // 스킵할 수 없는 광고나 로딩 중에도 사용자가 그만볼 수 있어야 하므로 닫기 버튼은 항상 둡니다.
+            const CLOSE = document.createElement('button');
+            CLOSE.type = 'button';
+            CLOSE.textContent = closeLabel;
+            CLOSE.style.cssText =
+                'position:absolute;top:12px;right:12px;z-index:1;min-width:96px;min-height:56px;padding:0 16px;font:600 16px system-ui,sans-serif;color:#fff;background:rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.6);border-radius:28px';
+            CLOSE.addEventListener('click', () => finish('dismissed'));
+            OVERLAY.append(SLOT, VIDEO, RESUME, CLOSE);
             document.body.append(OVERLAY);
             let manager = null;
             let started = false;
