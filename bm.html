@@ -2,7 +2,7 @@
 <html lang="ko">
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>광고 어댑터 실제 확인 · bloom-gamekit</title>
+    <title>광고·상품 확인 · bloom-gamekit</title>
     <style>
         * {
             box-sizing: border-box;
@@ -52,6 +52,23 @@
         button:disabled {
             opacity: 0.45;
         }
+        .tabs {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        .tabs button {
+            margin: 0;
+            background: #1b2c37;
+            border-color: #40535e;
+        }
+        .tabs button[aria-selected='true'] {
+            background: #2b6f86;
+            border-color: #3f8fa8;
+        }
+        [hidden] {
+            display: none !important;
+        }
         .notice {
             margin: 0.6rem 0 0;
             color: #f0c674;
@@ -66,30 +83,61 @@
             font-size: 0.85rem;
         }
     </style>
-    <h1>광고 어댑터 실제 확인</h1>
-    <p>광고 소스를 고르고 연결하면 실제 테스트 광고로 bm 어댑터를 확인합니다. 보상은 rewarded일 때만 올라갑니다.</p>
-    <ul>
-        <li>IMA 샘플 영상은 승인이 필요 없습니다. Google의 공개 샘플 태그로 테스트용 영상이 나옵니다.</li>
-        <li>Google H5는 게시자 ID와 승인된 AdSense 계정, H5 베타, 승인된 사이트의 도메인이 필요합니다.</li>
-        <li>광고가 없거나 광고 차단이 켜져 있으면 결과는 unavailable입니다.</li>
-    </ul>
-    <label for="source">광고 소스</label>
-    <select id="source">
-        <option value="ima-linear">IMA 샘플 영상 (승인 불필요)</option>
-        <option value="ima-skippable">IMA 샘플 영상 · 건너뛸 수 있음</option>
-        <option value="ima-error">IMA 샘플 · 광고 없음(오류 태그)</option>
-        <option value="google">Google H5 Games Ads (게시자 ID)</option>
-    </select>
-    <div id="publisher-field" hidden>
-        <label for="publisher">게시자 ID</label>
-        <input id="publisher" inputmode="text" autocomplete="off" placeholder="ca-pub-1234567890123456" />
+    <div class="tabs" role="tablist">
+        <button role="tab" id="tab-ads" aria-selected="true" aria-controls="panel-ads">광고</button>
+        <button role="tab" id="tab-store" aria-selected="false" aria-controls="panel-store">상품</button>
     </div>
-    <button id="connect">연결</button>
-    <p class="notice" id="notice"></p>
-    <button id="rewarded" disabled>광고 보고 보상 받기</button>
-    <button id="interstitial" disabled>전면 광고 (다음 단계로)</button>
-    <pre id="output"></pre>
-    <pre id="log"></pre>
+    <section id="panel-ads" role="tabpanel" aria-labelledby="tab-ads">
+        <h1>광고 어댑터 실제 확인</h1>
+        <p>광고 소스를 고르고 연결하면 실제 테스트 광고로 bm 어댑터를 확인합니다. 보상은 rewarded일 때만 올라갑니다.</p>
+        <ul>
+            <li>IMA 샘플 영상은 승인이 필요 없습니다. Google의 공개 샘플 태그로 테스트용 영상이 나옵니다.</li>
+            <li>Google H5는 게시자 ID와 승인된 AdSense 계정, H5 베타, 승인된 사이트의 도메인이 필요합니다.</li>
+            <li>광고가 없거나 광고 차단이 켜져 있으면 결과는 unavailable입니다.</li>
+        </ul>
+        <label for="source">광고 소스</label>
+        <select id="source">
+            <option value="ima-linear">IMA 샘플 영상 (승인 불필요)</option>
+            <option value="ima-skippable">IMA 샘플 영상 · 건너뛸 수 있음</option>
+            <option value="ima-error">IMA 샘플 · 광고 없음(오류 태그)</option>
+            <option value="google">Google H5 Games Ads (게시자 ID)</option>
+        </select>
+        <div id="publisher-field" hidden>
+            <label for="publisher">게시자 ID</label>
+            <input id="publisher" inputmode="text" autocomplete="off" placeholder="ca-pub-1234567890123456" />
+        </div>
+        <button id="connect">연결</button>
+        <p class="notice" id="notice"></p>
+        <button id="rewarded" disabled>광고 보고 보상 받기</button>
+        <button id="interstitial" disabled>전면 광고 (다음 단계로)</button>
+        <pre id="output"></pre>
+        <pre id="log"></pre>
+    </section>
+    <section id="panel-store" role="tabpanel" aria-labelledby="tab-store" hidden>
+        <h1>상품 보유 확인</h1>
+        <p>
+            구매 버튼을 눌러도 서버가 인정해야 보유로 바뀌고, 보유하면 전면 광고가 막힙니다. 실제 결제는 하지 않는 모의
+            결제입니다.
+        </p>
+        <ul>
+            <li>정상은 구매 직후 서버가 인정해 보유가 됩니다.</li>
+            <li>서버 미인정은 결제는 끝났지만 서버가 아직 모르는 상태라 보류(not-confirmed)입니다.</li>
+            <li>다른 기기 구매 뒤 복원은 서버에만 있는 보유 상품을 불러옵니다.</li>
+        </ul>
+        <label for="scenario">구매 결과</label>
+        <select id="scenario">
+            <option value="purchased">정상</option>
+            <option value="cancelled">사용자가 취소</option>
+            <option value="pending">결제 대기</option>
+            <option value="unconfirmed">서버 미인정</option>
+            <option value="error">결제사 오류</option>
+        </select>
+        <button id="buy">광고 제거 구매 (3,900원)</button>
+        <button id="restore">다른 기기 구매 뒤 복원</button>
+        <button id="reset">처음으로</button>
+        <pre id="store-output"></pre>
+        <pre id="store-log"></pre>
+    </section>
     <script>
 (() => {
   // dist/bm.js
@@ -637,6 +685,570 @@
   if (PARAMS.get("connect") === "1") {
     connect();
   }
+})();
+
+</script>
+    <script>
+(() => {
+  // dist/bm.js
+  var EVENTS = Object.freeze(["adstart", "adend"]);
+  var OUTCOMES = Object.freeze({
+    rewarded: Object.freeze(["rewarded", "dismissed", "unavailable", "error"]),
+    interstitial: Object.freeze(["viewed", "dismissed", "unavailable", "error"])
+  });
+  var SHOWN = Object.freeze(["rewarded", "viewed", "dismissed"]);
+  function defaultIsUserActive() {
+    const ACTIVATION = globalThis.navigator?.userActivation;
+    return ACTIVATION ? ACTIVATION.isActive : true;
+  }
+  function checkCount(value, name) {
+    if (value !== Infinity && (!Number.isSafeInteger(value) || value < 0)) {
+      throw new RangeError(`bm policy.${name} must be a non-negative safe integer or Infinity.`);
+    }
+  }
+  function withTimeout(promise, ms) {
+    return new Promise((resolve, reject) => {
+      const TIMER = setTimeout(() => reject(new Error("bm adapter show timed out.")), ms);
+      promise.then(
+        (value) => {
+          clearTimeout(TIMER);
+          resolve(value);
+        },
+        (error) => {
+          clearTimeout(TIMER);
+          reject(error);
+        }
+      );
+    });
+  }
+  function createBm({
+    adapter,
+    policy = {},
+    suppress = null,
+    showTimeoutMs = 12e4,
+    requireUserActivation = true,
+    isUserActive = defaultIsUserActive,
+    now = () => Date.now()
+  } = {}) {
+    if (!adapter || typeof adapter.id !== "string" || typeof adapter.load !== "function" || typeof adapter.show !== "function") {
+      throw new TypeError("bm adapter must provide id, load() and show().");
+    }
+    const {
+      interstitialCooldownMs: COOLDOWN_MS = 6e4,
+      interstitialPerSession: INTERSTITIAL_CAP = Infinity,
+      rewardedPerSession: REWARDED_CAP = Infinity
+    } = policy;
+    if (!Number.isFinite(COOLDOWN_MS) || COOLDOWN_MS < 0) {
+      throw new RangeError("bm policy.interstitialCooldownMs must be a non-negative finite number.");
+    }
+    checkCount(INTERSTITIAL_CAP, "interstitialPerSession");
+    checkCount(REWARDED_CAP, "rewardedPerSession");
+    if (suppress !== null && typeof suppress !== "function") {
+      throw new TypeError("bm suppress must be a function or null.");
+    }
+    if (!Number.isFinite(showTimeoutMs) || showTimeoutMs <= 0) {
+      throw new RangeError("bm showTimeoutMs must be a positive finite number.");
+    }
+    const LIMITS = { rewarded: REWARDED_CAP, interstitial: INTERSTITIAL_CAP };
+    const LISTENERS = { adstart: /* @__PURE__ */ new Set(), adend: /* @__PURE__ */ new Set() };
+    const SHOWN_COUNT = { rewarded: 0, interstitial: 0 };
+    let busy = false;
+    let disposed = false;
+    let lastAdEndedAt = -Infinity;
+    function emit(event, payload) {
+      for (const LISTENER of [...LISTENERS[event]]) {
+        try {
+          LISTENER(payload);
+        } catch (error) {
+          queueMicrotask(() => {
+            throw error;
+          });
+        }
+      }
+    }
+    function isSuppressed(type) {
+      if (!suppress) {
+        return false;
+      }
+      try {
+        return suppress(type) === true;
+      } catch (error) {
+        queueMicrotask(() => {
+          throw error;
+        });
+        return false;
+      }
+    }
+    function check(type) {
+      if (!(type in LIMITS)) {
+        throw new TypeError(`bm ad type must be 'rewarded' or 'interstitial': ${type}`);
+      }
+      if (disposed) {
+        return { ok: false, reason: "disposed" };
+      }
+      if (isSuppressed(type)) {
+        return { ok: false, reason: "suppressed" };
+      }
+      if (busy) {
+        return { ok: false, reason: "busy" };
+      }
+      if (SHOWN_COUNT[type] >= LIMITS[type]) {
+        return { ok: false, reason: "session-cap" };
+      }
+      if (type === "interstitial") {
+        const WAIT = lastAdEndedAt + COOLDOWN_MS - now();
+        if (WAIT > 0) {
+          return { ok: false, reason: "cooldown", retryAfterMs: WAIT };
+        }
+      }
+      return { ok: true };
+    }
+    async function show(type, placement) {
+      const GATE = check(type);
+      if (!GATE.ok) {
+        return { status: "blocked", type, placement, reason: GATE.reason };
+      }
+      if (requireUserActivation && !isUserActive()) {
+        return { status: "blocked", type, placement, reason: "no-user-activation" };
+      }
+      busy = true;
+      emit("adstart", { type, placement });
+      const RESULT = { status: "error", type, placement };
+      try {
+        const OUTCOME = await withTimeout(Promise.resolve(adapter.show(placement, type)), showTimeoutMs);
+        if (OUTCOMES[type].includes(OUTCOME)) {
+          RESULT.status = OUTCOME;
+        } else {
+          RESULT.reason = "invalid-outcome";
+        }
+      } catch (error) {
+        RESULT.reason = "adapter-failed";
+        RESULT.error = error;
+      }
+      busy = false;
+      if (SHOWN.includes(RESULT.status)) {
+        SHOWN_COUNT[type]++;
+        lastAdEndedAt = now();
+      }
+      emit("adend", RESULT);
+      return RESULT;
+    }
+    return {
+      /** @returns {string} 연결된 어댑터 id */
+      get adapterId() {
+        return adapter.id;
+      },
+      /** 세션 동안 실제로 나온 광고 수와 마지막 광고 종료 시각입니다. 읽을 때만 새 객체를 만듭니다. */
+      get stats() {
+        return { shown: { ...SHOWN_COUNT }, lastAdEndedAt };
+      },
+      /**
+       * 어댑터가 광고를 미리 준비합니다. 실패는 false로 돌려주며 던지지 않습니다.
+       * @param {string} placement
+       * @param {'rewarded' | 'interstitial'} [type='rewarded']
+       * @returns {Promise<boolean>}
+       */
+      async preload(placement, type = "rewarded") {
+        check(type);
+        try {
+          return await adapter.load(placement, type) === true;
+        } catch {
+          return false;
+        }
+      },
+      /** 정책만 검사합니다. 사용자 입력 직후 여부는 show 시점에 판정합니다. */
+      canShow(type) {
+        return check(type);
+      },
+      /** 사용자가 직접 누른 입력 처리 안에서 호출합니다. 보상은 status가 'rewarded'일 때만 지급하세요. */
+      showRewarded(placement) {
+        return show("rewarded", placement);
+      },
+      showInterstitial(placement) {
+        return show("interstitial", placement);
+      },
+      /**
+       * @param {'adstart' | 'adend'} event
+       * @param {(payload: object) => void} listener
+       * @returns {() => void} 구독 해제
+       */
+      on(event, listener) {
+        if (!EVENTS.includes(event)) {
+          throw new TypeError(`bm event must be one of ${EVENTS.join(", ")}: ${event}`);
+        }
+        if (typeof listener !== "function") {
+          throw new TypeError("bm listener must be a function.");
+        }
+        LISTENERS[event].add(listener);
+        return () => LISTENERS[event].delete(listener);
+      },
+      /** 반복 호출할 수 있습니다. 이후 광고 요청은 'disposed'로 막힙니다. */
+      dispose() {
+        if (disposed) {
+          return;
+        }
+        disposed = true;
+        LISTENERS.adstart.clear();
+        LISTENERS.adend.clear();
+        adapter.dispose?.();
+      }
+    };
+  }
+
+  // dist/bm-mock.js
+  function createMockAdapter({ outcomes = [], loadable = true, latencyMs = 0 } = {}) {
+    const CALLS = [];
+    let next = 0;
+    return {
+      id: "mock",
+      /** 호출 기록입니다. 검증용으로 읽기만 하세요. */
+      calls: CALLS,
+      load(placement, type) {
+        CALLS.push({ op: "load", placement, type });
+        return Promise.resolve(loadable);
+      },
+      show(placement, type) {
+        CALLS.push({ op: "show", placement, type });
+        const OUTCOME = outcomes[next++] ?? (type === "rewarded" ? "rewarded" : "viewed");
+        return new Promise((resolve) => setTimeout(() => resolve(OUTCOME), latencyMs));
+      }
+    };
+  }
+
+  // dist/store.js
+  var PURCHASE_OUTCOMES = Object.freeze(["purchased", "cancelled", "pending", "error"]);
+  var TIMED_OUT = new Error("store adapter purchase timed out.");
+  function withTimeout2(promise, ms) {
+    return new Promise((resolve, reject) => {
+      const TIMER = setTimeout(() => reject(TIMED_OUT), ms);
+      promise.then(
+        (value) => {
+          clearTimeout(TIMER);
+          resolve(value);
+        },
+        (error) => {
+          clearTimeout(TIMER);
+          reject(error);
+        }
+      );
+    });
+  }
+  function isProduct(product) {
+    return product !== null && typeof product === "object" && typeof product.id === "string" && product.id !== "" && typeof product.title === "string" && product.type === "non-consumable";
+  }
+  function createStore({ adapter, purchaseTimeoutMs = 3e5 } = {}) {
+    if (!adapter || typeof adapter.id !== "string" || typeof adapter.list !== "function" || typeof adapter.purchase !== "function" || typeof adapter.entitlements !== "function") {
+      throw new TypeError("store adapter must provide id, list(), purchase() and entitlements().");
+    }
+    if (!Number.isFinite(purchaseTimeoutMs) || purchaseTimeoutMs <= 0) {
+      throw new RangeError("store purchaseTimeoutMs must be a positive finite number.");
+    }
+    const OWNED = /* @__PURE__ */ new Set();
+    const PRODUCTS = /* @__PURE__ */ new Map();
+    const LISTENERS = /* @__PURE__ */ new Set();
+    let busy = false;
+    let disposed = false;
+    let refreshing = null;
+    function emitChange() {
+      const PAYLOAD = { owned: [...OWNED] };
+      for (const LISTENER of [...LISTENERS]) {
+        try {
+          LISTENER(PAYLOAD);
+        } catch (error) {
+          queueMicrotask(() => {
+            throw error;
+          });
+        }
+      }
+    }
+    function applyEntitlements(ids) {
+      const CHANGED = ids.length !== OWNED.size || ids.some((id) => !OWNED.has(id));
+      OWNED.clear();
+      for (const ID of ids) {
+        OWNED.add(ID);
+      }
+      if (CHANGED) {
+        emitChange();
+      }
+    }
+    async function readEntitlements() {
+      let ids;
+      try {
+        ids = await adapter.entitlements();
+      } catch (error) {
+        return { status: "error", reason: "adapter-failed", error };
+      }
+      if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string")) {
+        return { status: "error", reason: "invalid-entitlements" };
+      }
+      if (disposed) {
+        return { status: "blocked", reason: "disposed" };
+      }
+      applyEntitlements(ids);
+      return { status: "ok" };
+    }
+    function refresh() {
+      if (disposed) {
+        return Promise.resolve({ status: "blocked", reason: "disposed" });
+      }
+      refreshing ??= readEntitlements().finally(() => {
+        refreshing = null;
+      });
+      return refreshing;
+    }
+    async function refreshFresh() {
+      if (refreshing) {
+        await refreshing;
+      }
+      return refresh();
+    }
+    return {
+      /** @returns {string} 연결된 어댑터 id */
+      get adapterId() {
+        return adapter.id;
+      },
+      /** @returns {string[]} 서버가 인정한 보유 상품 id의 복사본 */
+      get owned() {
+        return [...OWNED];
+      },
+      /** 서버 확인을 마친 보유 상품만 true입니다. refresh 전에는 false입니다. */
+      owns(productId) {
+        return OWNED.has(productId);
+      },
+      /**
+       * 판매 상품 목록을 읽고 구매 검사에 씁니다. 실패는 던지지 않고 status로 알립니다.
+       * @returns {Promise<{ status: 'ok' | 'error' | 'blocked', products?: object[], reason?: string, error?: unknown }>}
+       */
+      async list() {
+        if (disposed) {
+          return { status: "blocked", reason: "disposed" };
+        }
+        let products;
+        try {
+          products = await adapter.list();
+        } catch (error) {
+          return { status: "error", reason: "adapter-failed", error };
+        }
+        if (!Array.isArray(products) || !products.every(isProduct)) {
+          return { status: "error", reason: "invalid-products" };
+        }
+        PRODUCTS.clear();
+        for (const PRODUCT of products) {
+          PRODUCTS.set(PRODUCT.id, PRODUCT);
+        }
+        return { status: "ok", products: products.map((product) => ({ ...product })) };
+      },
+      /**
+       * 서버 기준으로 보유 상품을 다시 읽습니다. 앱 시작, 재설치, 다른 기기에서의 복원, 구매 시간 초과 뒤에 부릅니다.
+       * @returns {Promise<{ status: 'ok' | 'error' | 'blocked', reason?: string, error?: unknown }>}
+       */
+      refresh,
+      /**
+       * 구매합니다. 어댑터가 purchased를 돌려줘도 서버가 보유로 인정해야 'purchased'입니다.
+       * 인정되지 않으면 'pending'(reason 'not-confirmed')이며 나중에 refresh로 다시 확인하세요.
+       * 시간 초과(reason 'timeout')도 결제가 실제로 끝났을 수 있으니 refresh로 확인하세요.
+       * @param {string} productId
+       * @returns {Promise<{ status: 'purchased' | 'cancelled' | 'pending' | 'error' | 'blocked', productId: string, reason?: string, error?: unknown }>}
+       */
+      async purchase(productId) {
+        const RESULT = { status: "error", productId };
+        if (disposed) {
+          return { ...RESULT, status: "blocked", reason: "disposed" };
+        }
+        if (busy) {
+          return { ...RESULT, status: "blocked", reason: "busy" };
+        }
+        if (PRODUCTS.size > 0 && !PRODUCTS.has(productId)) {
+          return { ...RESULT, status: "blocked", reason: "unknown-product" };
+        }
+        if (OWNED.has(productId)) {
+          return { ...RESULT, status: "blocked", reason: "already-owned" };
+        }
+        busy = true;
+        try {
+          const OUTCOME = await withTimeout2(Promise.resolve(adapter.purchase(productId)), purchaseTimeoutMs);
+          if (!PURCHASE_OUTCOMES.includes(OUTCOME)) {
+            RESULT.reason = "invalid-outcome";
+          } else if (OUTCOME === "purchased") {
+            const REFRESHED = await refreshFresh();
+            if (OWNED.has(productId)) {
+              RESULT.status = "purchased";
+            } else {
+              RESULT.status = "pending";
+              RESULT.reason = REFRESHED.status === "ok" ? "not-confirmed" : "refresh-failed";
+            }
+          } else {
+            RESULT.status = OUTCOME;
+            if (OUTCOME === "pending") {
+              RESULT.reason = "adapter-pending";
+            }
+          }
+        } catch (error) {
+          RESULT.reason = error === TIMED_OUT ? "timeout" : "adapter-failed";
+          RESULT.error = error;
+        } finally {
+          busy = false;
+        }
+        return RESULT;
+      },
+      /**
+       * 보유 상품이 바뀔 때마다 불립니다.
+       * @param {'change'} event
+       * @param {(payload: { owned: string[] }) => void} listener
+       * @returns {() => void} 구독 해제
+       */
+      on(event, listener) {
+        if (event !== "change") {
+          throw new TypeError(`store event must be 'change': ${event}`);
+        }
+        if (typeof listener !== "function") {
+          throw new TypeError("store listener must be a function.");
+        }
+        LISTENERS.add(listener);
+        return () => LISTENERS.delete(listener);
+      },
+      /** 반복 호출할 수 있습니다. 이후 요청은 'disposed'로 막힙니다. */
+      dispose() {
+        if (disposed) {
+          return;
+        }
+        disposed = true;
+        LISTENERS.clear();
+        adapter.dispose?.();
+      }
+    };
+  }
+
+  // dist/store-mock.js
+  function createMockStoreAdapter({
+    products = [{ id: "no_ads", title: "광고 제거", type: "non-consumable", price: { amount: 3900, currency: "KRW" } }],
+    initialEntitlements = [],
+    outcomes = [],
+    serverConfirms = true,
+    latencyMs = 0
+  } = {}) {
+    const SERVER = new Set(initialEntitlements);
+    const CALLS = [];
+    let next = 0;
+    const LATER = (value) => new Promise((resolve) => setTimeout(() => resolve(value), latencyMs));
+    return {
+      id: "mock",
+      /** 호출 기록입니다. 검증용으로 읽기만 하세요. */
+      calls: CALLS,
+      /** 서버가 인정하는 보유 상품입니다. 다른 기기에서 구매한 상황을 만들 때 직접 더합니다. */
+      serverEntitlements: SERVER,
+      list() {
+        CALLS.push({ op: "list" });
+        return LATER(products.map((product) => ({ ...product })));
+      },
+      purchase(productId) {
+        CALLS.push({ op: "purchase", productId });
+        const OUTCOME = outcomes[next++] ?? "purchased";
+        if (OUTCOME === "purchased" && serverConfirms) {
+          SERVER.add(productId);
+        }
+        return LATER(OUTCOME);
+      },
+      entitlements() {
+        CALLS.push({ op: "entitlements" });
+        return LATER([...SERVER]);
+      }
+    };
+  }
+
+  // modules/bm/examples/modules/bm/examples/index.html
+  var PARAMS = new URLSearchParams(location.search.slice(1) + "&" + location.hash.slice(1));
+  var SCENARIO = document.querySelector("#scenario");
+  var STORE_LOG = [];
+  var store = null;
+  var payments = null;
+  var bm = null;
+  var last = null;
+  var interstitial = null;
+  function log(line) {
+    STORE_LOG.unshift(line);
+    STORE_LOG.length = Math.min(STORE_LOG.length, 10);
+    document.querySelector("#store-log").textContent = STORE_LOG.join("\n");
+  }
+  function render() {
+    document.querySelector("#store-output").textContent = JSON.stringify(
+      {
+        owned: store.owned,
+        serverKnows: [...payments.serverEntitlements],
+        last,
+        interstitial
+      },
+      null,
+      2
+    );
+  }
+  function checkInterstitial() {
+    const GATE = bm.canShow("interstitial");
+    interstitial = GATE.ok ? "ok" : GATE.reason;
+  }
+  function setup() {
+    store?.dispose();
+    bm?.dispose();
+    const SELECTED = SCENARIO.value;
+    payments = createMockStoreAdapter({
+      outcomes: [SELECTED === "unconfirmed" ? "purchased" : SELECTED],
+      serverConfirms: SELECTED !== "unconfirmed"
+    });
+    store = createStore({ adapter: payments });
+    bm = createBm({
+      adapter: createMockAdapter(),
+      policy: { interstitialCooldownMs: 0 },
+      suppress: (type) => type === "interstitial" && store.owns("no_ads")
+    });
+    store.on("change", ({ owned }) => log(`change owned=[${owned}]`));
+    last = null;
+    interstitial = null;
+    return store.refresh().then(() => store.list()).then(checkInterstitial).then(render);
+  }
+  async function buy() {
+    const RESULT = await store.purchase("no_ads");
+    last = { status: RESULT.status, reason: RESULT.reason ?? null };
+    log(`purchase ${RESULT.status}${RESULT.reason ? " (" + RESULT.reason + ")" : ""}`);
+    checkInterstitial();
+    render();
+  }
+  async function restore() {
+    payments.serverEntitlements.add("no_ads");
+    const RESULT = await store.refresh();
+    last = { refresh: RESULT.status };
+    log(`refresh ${RESULT.status}`);
+    checkInterstitial();
+    render();
+  }
+  for (const TAB of ["ads", "store"]) {
+    document.querySelector("#tab-" + TAB).addEventListener("click", () => selectTab(TAB));
+  }
+  function selectTab(name) {
+    for (const TAB of ["ads", "store"]) {
+      document.querySelector("#tab-" + TAB).setAttribute("aria-selected", String(TAB === name));
+      document.querySelector("#panel-" + TAB).hidden = TAB !== name;
+    }
+  }
+  document.querySelector("#buy").addEventListener("click", buy);
+  document.querySelector("#restore").addEventListener("click", restore);
+  document.querySelector("#reset").addEventListener("click", setup);
+  SCENARIO.addEventListener("change", setup);
+  if ([...SCENARIO.options].some((option) => option.value === PARAMS.get("scenario"))) {
+    SCENARIO.value = PARAMS.get("scenario");
+  }
+  async function start() {
+    await setup();
+    if (PARAMS.get("tab") === "store") {
+      selectTab("store");
+    }
+    if (PARAMS.get("action") === "buy") {
+      await buy();
+    } else if (PARAMS.get("action") === "restore") {
+      await restore();
+    }
+  }
+  start();
+  window.storeExample = { buy, restore };
 })();
 
 </script>
