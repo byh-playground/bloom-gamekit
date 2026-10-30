@@ -8498,7 +8498,7 @@ function createSpriteAnimation(context, region, definition) {
   if (!CLIPS.size) {
     throw new TypeError("At least one sprite clip is required");
   }
-  const PLAYERS = /* @__PURE__ */ new Set();
+  const ACTORS = /* @__PURE__ */ new Set();
   let disposed = false;
   const READY = () => {
     if (disposed) {
@@ -8518,7 +8518,7 @@ function createSpriteAnimation(context, region, definition) {
     }
   };
   return Object.freeze({
-    createPlayer({ clip = CLIPS.keys().next().value, startedAtMs = 0, rate = 1 } = {}) {
+    createActor({ clip = CLIPS.keys().next().value, startedAtMs = 0, rate = 1 } = {}) {
       READY();
       CLOCK(startedAtMs);
       if (!Number.isFinite(rate) || rate <= 0 || rate > 1e3) {
@@ -8529,15 +8529,15 @@ function createSpriteAnimation(context, region, definition) {
       let offsetMs = 0;
       let playbackRate = rate;
       let paused = false;
-      let playerDisposed = false;
-      const PLAYER_READY = () => {
+      let actorDisposed = false;
+      const ACTOR_READY = () => {
         READY();
-        if (playerDisposed) {
-          throw new Error("Sprite player disposed");
+        if (actorDisposed) {
+          throw new Error("Sprite actor disposed");
         }
       };
       const ELAPSED = (timeMs) => {
-        PLAYER_READY();
+        ACTOR_READY();
         CLOCK(timeMs);
         const VALUE = Math.max(0, offsetMs + (paused ? 0 : (timeMs - anchorMs) * playbackRate));
         if (!Number.isFinite(VALUE)) {
@@ -8545,7 +8545,7 @@ function createSpriteAnimation(context, region, definition) {
         }
         return VALUE;
       };
-      const PLAYER = Object.freeze({
+      const ACTOR = Object.freeze({
         sample(timeMs) {
           const ELAPSED_MS = ELAPSED(timeMs);
           const TIME = selectedClip.loop === "loop" ? ELAPSED_MS % selectedClip.durationMs : Math.min(ELAPSED_MS, selectedClip.durationMs);
@@ -8565,7 +8565,7 @@ function createSpriteAnimation(context, region, definition) {
         /** options: matrix (composed with the context transform), color, alpha, whiteFlash, forceColor. */
         draw({ timeMs, ...options } = {}) {
           const SAMPLE = this.sample(timeMs);
-          PLAYER_READY();
+          ACTOR_READY();
           context.drawQuads({
             ...options,
             uvRects: FRAME_RECTS[SAMPLE.frameIndex].uvRect,
@@ -8576,7 +8576,7 @@ function createSpriteAnimation(context, region, definition) {
           return SAMPLE;
         },
         seek(elapsedMs, timeMs) {
-          PLAYER_READY();
+          ACTOR_READY();
           CLOCK(elapsedMs);
           CLOCK(timeMs);
           if (elapsedMs < 0) {
@@ -8587,7 +8587,7 @@ function createSpriteAnimation(context, region, definition) {
           return this;
         },
         setPaused(value, timeMs) {
-          PLAYER_READY();
+          ACTOR_READY();
           if (typeof value !== "boolean") {
             throw new TypeError("Sprite paused state must be boolean");
           }
@@ -8598,7 +8598,7 @@ function createSpriteAnimation(context, region, definition) {
           return this;
         },
         setRate(value, timeMs) {
-          PLAYER_READY();
+          ACTOR_READY();
           if (!Number.isFinite(value) || value <= 0 || value > 1e3) {
             throw new RangeError("Sprite playback rate must be in (0,1000]");
           }
@@ -8609,7 +8609,7 @@ function createSpriteAnimation(context, region, definition) {
           return this;
         },
         setClip(name, timeMs) {
-          PLAYER_READY();
+          ACTOR_READY();
           CLOCK(timeMs);
           selectedClip = GET_CLIP(name);
           offsetMs = 0;
@@ -8617,22 +8617,22 @@ function createSpriteAnimation(context, region, definition) {
           return this;
         },
         dispose() {
-          if (playerDisposed) {
+          if (actorDisposed) {
             return false;
           }
-          playerDisposed = true;
-          PLAYERS.delete(PLAYER);
+          actorDisposed = true;
+          ACTORS.delete(ACTOR);
           return true;
         }
       });
-      PLAYERS.add(PLAYER);
-      return PLAYER;
+      ACTORS.add(ACTOR);
+      return ACTOR;
     },
     stats() {
       return Object.freeze({
         frameCount: FRAMES.length,
         clipCount: CLIPS.size,
-        playerCount: PLAYERS.size,
+        actorCount: ACTORS.size,
         retainedBytes: 0,
         textureOwned: false
       });
@@ -8642,7 +8642,7 @@ function createSpriteAnimation(context, region, definition) {
         return false;
       }
       disposed = true;
-      PLAYERS.clear();
+      ACTORS.clear();
       return true;
     }
   });
