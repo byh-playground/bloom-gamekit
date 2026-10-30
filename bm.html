@@ -623,15 +623,20 @@
   document.querySelector("#connect").addEventListener("click", connect);
   BUTTONS[0].addEventListener("click", () => run("rewarded"));
   BUTTONS[1].addEventListener("click", () => run("interstitial"));
-  var FROM_HASH = location.hash.slice(1);
-  if (/^ca-pub-\d+$/.test(FROM_HASH)) {
-    INPUT.value = FROM_HASH;
-    SOURCE.value = "google";
-    document.querySelector("#publisher-field").hidden = false;
+  var PARAMS = new URLSearchParams(location.search.slice(1) + "&" + location.hash.slice(1));
+  if ([...SOURCE.options].some((option) => option.value === PARAMS.get("source"))) {
+    SOURCE.value = PARAMS.get("source");
   }
+  if (/^ca-pub-\d+$/.test(PARAMS.get("client") ?? "")) {
+    INPUT.value = PARAMS.get("client");
+  }
+  document.querySelector("#publisher-field").hidden = SOURCE.value !== "google";
   setInterval(render, 500);
   render();
   window.bmExample = { connect };
+  if (PARAMS.get("connect") === "1") {
+    connect();
+  }
 })();
 
 </script>
