@@ -89,58 +89,70 @@ try {
             assert.equal(await PAGE.locator('#output').evaluate((output) => JSON.parse(output.textContent).tick), 1);
         }
         if (NAME === 'bm') {
-            const READ = () => PAGE.locator('#output').evaluate((output) => JSON.parse(output.textContent));
-            await PAGE.click('#rewarded');
-            await PAGE.waitForFunction(() => document.querySelector('#overlay').hidden === false);
-            await PAGE.waitForFunction(
-                () => JSON.parse(document.querySelector('#output').textContent).tickets === 1,
-                null,
-                {
-                    timeout: 8000,
-                },
-            );
-            // 중간에 닫으면 도전권이 늘지 않고, 전면은 보상형 직후 쿨다운에 막힙니다.
-            await PAGE.selectOption('#outcome', 'dismissed');
-            await PAGE.click('#rewarded');
-            await PAGE.waitForFunction(
-                () => JSON.parse(document.querySelector('#output').textContent).last?.status === 'dismissed',
-                null,
-                {
-                    timeout: 8000,
-                },
-            );
-            assert.equal((await READ()).tickets, 1);
-            await PAGE.click('#interstitial');
-            await PAGE.waitForFunction(
-                () => JSON.parse(document.querySelector('#output').textContent).last?.reason === 'cooldown',
-            );
-            assert.equal(await PAGE.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
-            // 터치 에뮬레이션(실제 기기 검증 아님): 좁은 화면에서 탭으로 같은 흐름이 되고 버튼이 손가락 크기여야 합니다.
-            const TOUCH = await browser.newContext({
-                hasTouch: true,
-                isMobile: true,
-                viewport: { width: 375, height: 812 },
-            });
-            const TOUCH_PAGE = await TOUCH.newPage();
-            await TOUCH_PAGE.goto(URL_LOCAL, { waitUntil: 'domcontentloaded', timeout: 45000 });
-            await TOUCH_PAGE.waitForFunction(() => !!window.bmExample);
-            await TOUCH_PAGE.tap('#rewarded');
-            await TOUCH_PAGE.waitForFunction(
-                () => JSON.parse(document.querySelector('#output').textContent).tickets === 1,
-                null,
-                {
-                    timeout: 8000,
-                },
-            );
-            assert.equal(
-                await TOUCH_PAGE.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
-                true,
-            );
-            assert.equal(
-                await TOUCH_PAGE.locator('#rewarded').evaluate((button) => button.getBoundingClientRect().height >= 56),
-                true,
-            );
-            await TOUCH.close();
+            // 실제 Google 호출 없이 계약만 확인합니다: 광고 스크립트는 막고 adBreak를 가짜로 둡니다.
+            const READ = (page) => page.locator('#output').evaluate((output) => JSON.parse(output.textContent));
+            const FAKE_ADS = () => {
+                globalThis.adConfig = (options) => options.onReady?.();
+                globalThis.adBreak = (options) => {
+                    if (options.type === 'reward') {
+                        options.beforeReward(() => {
+                            options.beforeAd();
+                            options.adViewed();
+                            options.adBreakDone({ breakStatus: 'viewed' });
+                        });
+                    } else {
+                        options.beforeAd();
+                        options.adBreakDone({ breakStatus: 'viewed' });
+                    }
+                };
+            };
+            for (const TOUCH of [false, true]) {
+                const CONTEXT = await browser.newContext(
+                    TOUCH ? { hasTouch: true, isMobile: true, viewport: { width: 375, height: 812 } } : {},
+                );
+                await CONTEXT.route('https://pagead2.googlesyndication.com/**', (route) => route.fulfill({ body: '' }));
+                const BM_PAGE = await CONTEXT.newPage();
+                await BM_PAGE.addInitScript(FAKE_ADS);
+                await BM_PAGE.goto(URL_LOCAL, { waitUntil: 'domcontentloaded', timeout: 45000 });
+                await BM_PAGE.waitForFunction(() => !!window.bmExample);
+                const PRESS = (selector) => (TOUCH ? BM_PAGE.tap(selector) : BM_PAGE.click(selector));
+                assert.equal(await BM_PAGE.locator('#rewarded').isDisabled(), true);
+                await BM_PAGE.fill('#publisher', 'not-an-id');
+                await PRESS('#connect');
+                assert.equal(await BM_PAGE.locator('#rewarded').isDisabled(), true);
+                await BM_PAGE.fill('#publisher', 'ca-pub-1234567890');
+                await PRESS('#connect');
+                await BM_PAGE.waitForFunction(
+                    () => JSON.parse(document.querySelector('#output').textContent).sdkReady === true,
+                );
+                assert.equal(
+                    await BM_PAGE.evaluate(() => !!document.querySelector('script[data-adbreak-test="on"]')),
+                    true,
+                );
+                await PRESS('#rewarded');
+                await BM_PAGE.waitForFunction(
+                    () => JSON.parse(document.querySelector('#output').textContent).rewards === 1,
+                );
+                await PRESS('#interstitial');
+                await BM_PAGE.waitForFunction(
+                    () => JSON.parse(document.querySelector('#output').textContent).last?.type === 'interstitial',
+                );
+                assert.equal((await READ(BM_PAGE)).shown.interstitial, 1);
+                assert.equal(
+                    await BM_PAGE.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+                    true,
+                );
+                if (TOUCH) {
+                    // 터치 에뮬레이션은 실제 기기 검증이 아닙니다.
+                    assert.equal(
+                        await BM_PAGE.locator('#rewarded').evaluate(
+                            (button) => button.getBoundingClientRect().height >= 56,
+                        ),
+                        true,
+                    );
+                }
+                await CONTEXT.close();
+            }
         }
         if (NAME === 'interpolation-frame') {
             await PAGE.click('#spawn');

@@ -82,8 +82,10 @@ export function createGoogleAdsAdapter({
             await ensureReady();
             return ready;
         },
-        async show(placement, type) {
-            await ensureReady();
+        show(placement, type) {
+            // 준비를 기다리지 않습니다. 기다리는 동안 클릭의 user activation이 끝나 광고가 막힐 수 있고,
+            // SDK가 준비되기 전의 adBreak 호출은 adsbygoogle 큐가 받아 둡니다.
+            ensureReady();
             return new Promise((resolve) => {
                 let outcome = null;
                 const OPTIONS = {
