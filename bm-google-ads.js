@@ -66,8 +66,8 @@ function createGoogleAdsAdapter({
       await ensureReady();
       return ready;
     },
-    async show(placement, type) {
-      await ensureReady();
+    show(placement, type) {
+      ensureReady();
       return new Promise((resolve) => {
         let outcome = null;
         const OPTIONS = {
