@@ -473,7 +473,8 @@
     loadTimeoutMs = 1e4,
     playTimeoutMs = 1e5,
     zIndex = 2147483647,
-    resumeLabel = "광고 계속 보기"
+    resumeLabel = "광고 계속 보기",
+    closeLabel = "광고 닫기"
   } = {}) {
     if (typeof adTagUrl !== "function" && !(typeof adTagUrl === "string" && adTagUrl.startsWith("https://"))) {
       throw new TypeError("ima adTagUrl must be an https URL string or a function returning one.");
@@ -521,8 +522,13 @@
         RESUME.type = "button";
         RESUME.textContent = resumeLabel;
         RESUME.hidden = true;
-        RESUME.style.cssText = "position:absolute;left:50%;bottom:24px;transform:translateX(-50%);min-width:200px;min-height:56px;padding:0 24px;font:600 18px system-ui,sans-serif;color:#fff;background:#1a73e8;border:0;border-radius:28px";
-        OVERLAY.append(SLOT, VIDEO, RESUME);
+        RESUME.style.cssText = "position:absolute;left:50%;bottom:24px;transform:translateX(-50%);z-index:1;min-width:200px;min-height:56px;padding:0 24px;font:600 18px system-ui,sans-serif;color:#fff;background:#1a73e8;border:0;border-radius:28px";
+        const CLOSE = document.createElement("button");
+        CLOSE.type = "button";
+        CLOSE.textContent = closeLabel;
+        CLOSE.style.cssText = "position:absolute;top:12px;right:12px;z-index:1;min-width:96px;min-height:56px;padding:0 16px;font:600 16px system-ui,sans-serif;color:#fff;background:rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.6);border-radius:28px";
+        CLOSE.addEventListener("click", () => finish("dismissed"));
+        OVERLAY.append(SLOT, VIDEO, RESUME, CLOSE);
         document.body.append(OVERLAY);
         let manager = null;
         let started = false;
