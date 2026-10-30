@@ -5595,8 +5595,7 @@ vec3 shadeSketchFill(vec3 base) {
 void shadeSketchEdge(inout vec3 rgb, float alpha) {
   float phase=mod(v_time,max(u_effect0.y,16.0))/max(u_effect0.y,16.0)*6.2831853;
   float wobble=sin(v_material.z*u_effect0.z*6.2831853+phase+u_effect0.x)*u_effect1.x;
-  float offset=(u_effect1.y+wobble);
-  float echo=lineMask(abs(v_material.w-offset),u_effect1.z)*u_effect1.w;
+  float echo=lineMask(abs(v_material.w-wobble),u_effect1.z)*u_effect1.w;
   if(echo<0.012)discard;
   rgb=mix(rgb,tintTo(rgb,-0.52),echo);
   float outAlpha=alpha*echo;
