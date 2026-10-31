@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { MANIFEST_FILE, SHA256, readVerifiedDistribution } from './distribution.mjs';
+import { BUNDLE_FILE_NAME, MANIFEST_FILE, SHA256, readVerifiedDistribution } from './distribution.mjs';
 import { VERSION } from '../modules/_rollback-shared/version.js';
 import { inspectRelease } from './release.mjs';
 import { publishPreviews } from './publish-previews.mjs';
@@ -101,7 +101,7 @@ export async function publishDist({
             GIT(['read-tree', parent]);
             const PREVIOUS = JSON.parse(GIT(['show', `${parent}:${MANIFEST_FILE}`]));
             for (const { file: FILE } of PREVIOUS.modules ?? []) {
-                if (!/^[a-z][a-z-]*\.js$/.test(FILE)) {
+                if (!BUNDLE_FILE_NAME.test(FILE)) {
                     throw new Error('Invalid previous bundle path');
                 }
                 if (!BUNDLES.has(FILE)) {

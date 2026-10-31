@@ -1,3 +1,12 @@
+## v0.39.1 (2026-10-31)
+
+호환 추가. 새 `pwa` 모듈을 더합니다. 브라우저 runtime `dist/pwa.js`와, dist에서 처음으로 Node ESM 도구 `dist/pwa-build.mjs`를 함께 배포합니다. `buildPwa`는 SVG 원본과 설정 하나에서 `manifest.webmanifest`·아이콘(192·512·maskable·180 apple-touch)·공유 이미지(1200×630)·`sw.js`·`<head>` 태그를 만들고, 게임은 결과를 커밋합니다. `check: true`는 커밋된 결과가 원본과 다르면 던집니다. `registerPwa`는 sw.js 등록과 설치(`install`)·업데이트(`onUpdate` → `update()`) 알림을 맡습니다.
+
+- 배포 구조: `project/distribution.mjs`의 `NODE_TOOLS`가 Node 도구를 선언하고, `manifest.json`의 `modules`에 `pwa-build.mjs`가 `{file, sha256}`로 들어갑니다(schema 2 그대로). dist의 생성 파일 이름 규칙은 `.js`에서 `.js`/`.mjs`로 넓혔습니다. manifest의 모듈 목록을 고정 검사하는 게임(budmori `gamekit-provenance.cjs`)은 다음 pin 갱신 때 `pwa.js`·`pwa-build.mjs`를 목록에 더해야 합니다.
+- 실패를 숨기지 않습니다: 모르는 옵션·빠진 값·잘못된 색·viewBox 없는/비율이 틀린 SVG·빈 precache 패턴·마커 오류·마커 밖의 중복 태그는 모두 던집니다.
+- 이전 화면과 다른 점: 새 모듈이라 기존 게임은 그대로입니다.
+- 시험: `modules/pwa/tests/pwa.e2e.mjs`(core 목록). 헤드리스 Chromium에서 샘플 SVG로 생성, manifest 필드, PNG 크기, 두 번째 실행 무변경과 check 통과, 원본 변경 시 check 실패, 설치 후 `setOffline(true)` 새로고침으로 오프라인 시작(고정 gamekit 주소 포함, relay는 캐시하지 않음), precache 파일 변경 → 기다리는 worker → `onUpdate` → `update()`로 새 버전·이전 캐시 삭제를 확인했습니다. 실기기·iOS Safari·실제 설치 창은 확인하지 못했습니다.
+
 ## v0.39.0 (2026-10-31)
 
 Breaking. `transport`의 방 resume(재접속 identity·세션 metadata·공개 방 pointer)이 주입한 `Storage`에 직접 쓰지 않고 `save` 모듈을 거칩니다. `resume.storage`를 없애고 `resume.adapter`(save 어댑터)를 받습니다. 디버그·리플레이·소개 같은 격리 장면은 `memoryAdapter()`를 넘기면 실제 resume 저장을 덮어쓰지 않습니다. `createNostrDynamicRoom`·`createNostrPublicRoom` 둘 다 같습니다.

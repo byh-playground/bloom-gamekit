@@ -31,8 +31,16 @@ export const MODULES = Object.freeze([
     'store',
     'store-mock',
     'save',
+    'pwa',
 ]);
-export const BUNDLE_FILES = Object.freeze(MODULES.map((name) => `${name}.js`));
+// 게임이 로컬에서 실행하는 Node ESM 도구입니다. 브라우저 번들과 같은 manifest·dist commit으로 고정해 내려받습니다.
+export const NODE_TOOLS = Object.freeze([Object.freeze({ name: 'pwa-build', source: 'modules/pwa/build.js' })]);
+export const BUNDLE_FILES = Object.freeze([
+    ...MODULES.map((name) => `${name}.js`),
+    ...NODE_TOOLS.map(({ name }) => `${name}.mjs`),
+]);
+// build·publish가 dist에서 지울 수 있는 생성 파일 이름입니다.
+export const BUNDLE_FILE_NAME = /^[a-z][a-z-]*\.m?js$/;
 export const FONT_ASSETS = Object.freeze([
     Object.freeze({
         source: 'modules/rendering/assets/fonts/noto-sans-kr-700-v1.json',
