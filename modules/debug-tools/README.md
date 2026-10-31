@@ -34,3 +34,29 @@ slowFrames는 같은 프레임의 stage/count를 보존합니다. 0 stage는 측
 필수 카운터와 상세 계측의 활성 정책·진단 UI·저장은 게임이 소유합니다. clear()는 새 진단 세션을 시작합니다.
 
 RAF 간격은 다음 beginFrame에서 직전 샘플에 확정하므로 느린 구간과 그 구간을 시작한 콜백의 stage/count가 일치합니다. 최신 샘플은 intervalMs=0인 미완료 간격입니다. 콜백 밖의 stage/count는 직전 RAF 구간에 기록하되 cpuMs(콜백 내부)에는 합산하지 않습니다.
+
+## 주소로 장면 열기 (디버그 호스트)
+
+`installDebugHost({scenes})`는 주소에 `debug`가 있을 때만 `window.__bloomDebug`를 설치하고, 없으면 `null`을 반환해 아무것도 하지 않습니다. AI나 사람이 같은 주소로 같은 장면을 열어 캡처하려는 용도입니다.
+
+```js
+installDebugHost({
+    scenes: {
+        battle({ units, enemy }) {
+            // units, enemy는 주소에 적힌 문자열 그대로입니다.
+            const GAME = startMatch({ seed: 42, units: Number(units), enemy });
+            return { step: () => GAME.step(), render: () => draw(GAME), state: () => ({ score: GAME.score }) };
+        },
+    },
+});
+```
+
+```
+?debug=1&scene=battle&units=12&enemy=boss&tick=300
+```
+
+- 호스트가 읽는 파라미터는 `debug`, `scene`, `tick`뿐입니다. `tick`이 있으면 장면의 `step()`을 그 횟수만큼 부른 뒤 `render()`하고 `ready`를 올립니다. 나머지 파라미터는 `params`로 장면 함수에 문자열 그대로 갑니다. 시드·개수·적 종류처럼 무엇을 받을지는 장면이 정합니다.
+- 타입·범위 선언이나 기본값은 없습니다. 잘못된 값은 장면 안에서 그대로 실패하거나(예: 없는 값이 `undefined`로 터짐) 그대로 쓰입니다(`Number('abc')`는 `NaN`). 호스트가 대신 바로잡지 않습니다.
+- 호스트 자신의 실패(없는 장면, 장면 함수가 던짐, `tick`이 음이 아닌 정수가 아님)는 `ready`를 올리지 않고 `error`에 담고 콘솔에도 냅니다. 기다리는 쪽은 `ready || error`를 조건으로 삼으세요.
+- `state()`는 `scene`, `params`, `tick`에 장면의 `state()` 필드를 합쳐 돌려줍니다. 화면에 보이는 것과 일치하는 간결한 필드만 담으세요. `step(n)`은 장면을 n틱 더 진행하고, `dispose()`는 장면을 정리하고 전역을 지웁니다.
+- 장면이 쓰는 저장소·네트워크의 격리는 게임 책임입니다. 호스트는 저장소를 건드리지 않습니다.

@@ -235,3 +235,34 @@ export class FrameMetrics {
     clear(): void;
     snapshot(options?: { limit?: number; slowFrameMs?: number; slowLimit?: number }): NumericFrameSnapshot;
 }
+
+export interface DebugScene {
+    /** Advances the game by exactly one fixed tick. Required only when the URL carries `tick` or `step` is called. */
+    step?(): void;
+    /** Draws the current state without advancing the simulation. */
+    render?(): void;
+    /** Game fields that describe what the screen shows; merged into `state()` after scene, params and tick. */
+    state?(): Record<string, unknown>;
+    hash?(): unknown;
+    dispose?(): void;
+}
+export interface DebugHost {
+    /** True once the scene is open at the requested tick and rendered. Stays false when `error` is set. */
+    ready: boolean;
+    error: string | null;
+    scene: string | null;
+    /** URL parameters other than `debug`, `scene` and `tick`, as the raw strings the URL carried. */
+    params: Record<string, string>;
+    tick: number;
+    done: Promise<void>;
+    step(count?: number): void;
+    state(): { scene: string | null; params: Record<string, string>; tick: number } & Record<string, unknown>;
+    hash(): unknown;
+    dispose(): void;
+}
+/** Installs `window.__bloomDebug` when the URL has `debug`; returns null otherwise. */
+export function installDebugHost(options: {
+    scenes: Record<string, (params: Record<string, string>) => DebugScene | void | Promise<DebugScene | void>>;
+    search?: string;
+    target?: object;
+}): DebugHost | null;
