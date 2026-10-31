@@ -30,6 +30,7 @@ export const MODULES = Object.freeze([
     'bm-ima',
     'store',
     'store-mock',
+    'save',
 ]);
 export const BUNDLE_FILES = Object.freeze(MODULES.map((name) => `${name}.js`));
 export const FONT_ASSETS = Object.freeze([

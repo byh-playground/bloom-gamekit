@@ -1,5 +1,6 @@
 import { exerciseFrameMetrics } from '../../modules/debug-tools/tests/frame-metrics.browser.mjs';
 import { exerciseDebugHost } from '../../modules/debug-tools/tests/debug-host.browser.mjs';
+import { exerciseSave } from '../../modules/save/tests/save.browser.mjs';
 import { exerciseBudgetedScheduler } from '../../modules/work-scheduler/tests/work-scheduler.browser.mjs';
 import {
     exercisePseudoRandomDistribution,
@@ -1136,6 +1137,7 @@ try {
         ['vectorRenderer', exerciseVectorRenderer],
         ['frameMetrics', exerciseFrameMetrics],
         ['debugHost', exerciseDebugHost],
+        ['save', exerciseSave],
         ['workScheduler', exerciseBudgetedScheduler],
         ['reusableMeshes', (p) => exerciseReusableMeshes(p)],
         ['fontAssets', (p) => exerciseFontAssetLoader(p, `http://127.0.0.1:${SERVER.address().port}`)],

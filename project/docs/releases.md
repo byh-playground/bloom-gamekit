@@ -1,3 +1,11 @@
+## v0.37.6 (2026-10-31)
+
+호환 추가. 새 `save` 모듈(`dist/save.js`)을 더합니다. 게임마다 따로 짜던 저장 코드(IndexedDB·localStorage 직접 접근, 리비전, 탭 간 충돌, 이관)를 한 계약으로 모읍니다. `createSave({adapter, key, version, create, validate, migrate})`로 레코드 하나를 다루고, 저장소는 `indexedDbAdapter`·`localStorageAdapter`·`memoryAdapter`로 바꿔 끼웁니다. 메모리 어댑터로 디버그 장면·시험의 저장 상태를 격리할 수 있습니다.
+
+- 읽지 못한 저장(형식 없음·깨진 JSON·미래 schema·이관 단계 없음·검증 실패)은 기본값으로 바꾸지 않고 `SaveError('unreadable')`로 알리며 원본을 덮어쓰지 않도록 잠급니다.
+- 이전 화면과 다른 점: 새 모듈이라 기존 게임은 그대로입니다.
+- 시험: 헤드리스 Chromium의 실제 IndexedDB·localStorage·BroadcastChannel에서 생성, 쓰기 생략, 규칙 오류 전달, 두 save 사이 충돌과 알림, 다시 읽은 뒤 저장, 깨진 JSON 보존, 미래 schema, schema 1→2 이관을 확인했습니다. 실제 두 탭(별도 페이지)은 이 시험 밖입니다.
+
 ## v0.37.5 (2026-10-31)
 
 호환 추가. `debug-tools`에 `installDebugHost`를 더합니다. 주소의 `?debug=1&scene=이름&tick=N&…`로 게임이 등록한 장면을 그 틱에서 열어 멈추고, `window.__bloomDebug`로 `ready`·`state()`·`step(n)`을 노출합니다. AI가 같은 주소로 같은 장면을 열어 캡처할 수 있게 하는 것이 목적입니다.
