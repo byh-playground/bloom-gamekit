@@ -96,6 +96,10 @@ function registerPwa({ serviceWorker, onUpdate, onError, onInstallable } = {}) {
       if (disposed) {
         return;
       }
+      if (!value) {
+        REPORT(new Error("service worker registration was blocked by the browser"));
+        return;
+      }
       registration = value;
       registration.addEventListener("updatefound", ON_UPDATE_FOUND);
       WATCH(registration.installing);
