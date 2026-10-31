@@ -21,9 +21,9 @@ function bytes(value, name = "bytes") {
 }
 function hashBytes(value, seed = 2166136261) {
   let h = seed >>> 0;
-  const DATA = bytes(value);
-  for (let i = 0; i < DATA.length; i++) {
-    h = Math.imul(h ^ DATA[i], 16777619) >>> 0;
+  const DATA2 = bytes(value);
+  for (let i = 0; i < DATA2.length; i++) {
+    h = Math.imul(h ^ DATA2[i], 16777619) >>> 0;
   }
   return h;
 }
@@ -2595,100 +2595,376 @@ async function createNostrGroupRoom({
   });
 }
 
+// modules/save/index.js
+var SaveError = class extends Error {
+  constructor(kind, message, cause) {
+    super(message, cause === void 0 ? void 0 : { cause });
+    this.name = "SaveError";
+    this.kind = kind;
+  }
+};
+var RECORD = (data, schema, revision) => ({ ...data, schema, revision });
+var DATA = (record) => {
+  const COPY = { ...record };
+  delete COPY.schema;
+  delete COPY.revision;
+  return COPY;
+};
+var INTEGER = (value) => Number.isSafeInteger(value) && value >= 0;
+function createSave({ adapter, key, version, create, validate, migrate = {} } = {}) {
+  if (!adapter || typeof adapter.transact !== "function") {
+    throw new TypeError("save adapter must provide transact");
+  }
+  if (typeof key !== "string" || key === "") {
+    throw new TypeError("save key must be a non-empty string");
+  }
+  if (!Number.isSafeInteger(version) || version < 1) {
+    throw new RangeError("save version must be a positive integer");
+  }
+  if (typeof create !== "function" || typeof validate !== "function") {
+    throw new TypeError("save create and validate must be functions");
+  }
+  const LISTENERS = /* @__PURE__ */ new Set();
+  let channel = null, pending = Promise.resolve(), closed = false;
+  if (adapter.channelName && typeof BroadcastChannel !== "undefined") {
+    channel = new BroadcastChannel(`${adapter.channelName}:${key}`);
+    channel.onmessage = (event) => {
+      const REVISION = event.data?.revision;
+      if (INTEGER(REVISION) && SAVE.revision !== null && REVISION > SAVE.revision) {
+        for (const LISTENER of LISTENERS) {
+          LISTENER({ revision: REVISION });
+        }
+      }
+    };
+  }
+  const READ = (stored) => {
+    if (stored instanceof SaveError) {
+      throw stored;
+    }
+    if (stored === void 0) {
+      const CREATED = create();
+      validate(CREATED);
+      return { record: RECORD(CREATED, version, 0), write: true };
+    }
+    if (!stored || typeof stored !== "object" || !INTEGER(stored.schema) || !INTEGER(stored.revision)) {
+      throw new SaveError("unreadable", "saved record has no schema or revision");
+    }
+    if (stored.schema > version) {
+      throw new SaveError("unreadable", `saved schema ${stored.schema} is newer than ${version}`);
+    }
+    let data = DATA(stored);
+    for (let schema = stored.schema; schema < version; schema++) {
+      if (typeof migrate[schema] !== "function") {
+        throw new SaveError("unreadable", `no migration from schema ${schema}`);
+      }
+      data = migrate[schema](data);
+    }
+    try {
+      validate(data);
+    } catch (error) {
+      throw new SaveError("unreadable", "saved record failed validation", error);
+    }
+    const MIGRATED = stored.schema !== version;
+    return { record: RECORD(data, version, stored.revision + (MIGRATED ? 1 : 0)), write: MIGRATED };
+  };
+  const QUEUE = (operation) => {
+    const RUN = pending.then(() => {
+      if (closed) {
+        throw new SaveError("closed", "save is closed");
+      }
+      return operation();
+    });
+    pending = RUN.catch(() => {
+    });
+    return RUN;
+  };
+  const COMMIT = (record, written) => {
+    SAVE.data = DATA(record);
+    SAVE.revision = record.revision;
+    if (written) {
+      channel?.postMessage({ revision: record.revision });
+    }
+    return SAVE.data;
+  };
+  const SAVE = {
+    /** 마지막으로 읽거나 저장한 데이터. 직접 고치지 말고 update로 바꿉니다. */
+    data: null,
+    revision: null,
+    /** 읽지 못한 저장을 만나면 true. 원본을 덮어쓰지 않도록 update를 거부합니다. */
+    locked: false,
+    /** 저장소에서 다시 읽습니다. 없으면 create로 만들고, 낮은 schema는 이관해 저장합니다. */
+    load() {
+      return QUEUE(async () => {
+        let written = false, record;
+        try {
+          record = await adapter.transact(key, (stored) => {
+            const RESULT = READ(stored);
+            written = RESULT.write;
+            return { value: RESULT.record, write: RESULT.write };
+          });
+        } catch (error) {
+          if (error instanceof SaveError && error.kind === "unreadable") {
+            SAVE.locked = true;
+          }
+          throw error;
+        }
+        SAVE.locked = false;
+        return COMMIT(record, written);
+      });
+    },
+    /**
+     * 현재 데이터의 복사본을 고쳐 저장합니다. mutate가 false를 반환하면 저장하지 않습니다.
+     * 저장소의 revision이 마지막으로 읽은 것과 다르면 아무것도 쓰지 않고 conflict를 던집니다.
+     */
+    update(mutate) {
+      return QUEUE(async () => {
+        if (SAVE.locked) {
+          throw new SaveError("unreadable", "saved record is unreadable and preserved");
+        }
+        if (SAVE.revision === null) {
+          throw new Error("load before update");
+        }
+        let written = false;
+        const UPDATED = await adapter.transact(key, (stored) => {
+          if (stored instanceof SaveError) {
+            throw stored;
+          }
+          if (!stored || stored.revision !== SAVE.revision || stored.schema !== version) {
+            throw new SaveError("conflict", "saved record changed elsewhere");
+          }
+          const NEXT = structuredClone(DATA(stored));
+          if (mutate(NEXT) === false) {
+            return { value: stored, write: false };
+          }
+          validate(NEXT);
+          written = true;
+          return { value: RECORD(NEXT, version, stored.revision + 1), write: true };
+        });
+        return COMMIT(UPDATED, written);
+      });
+    },
+    /**
+     * 저장된 레코드를 버리고 `create()`로 새로 만들어 저장합니다. 읽지 못한 저장도 덮어쓰고 잠금을 풉니다.
+     * 되돌릴 수 없으므로 게임이 사용자 확인을 받은 뒤에만 부릅니다. 다른 탭이 알도록 revision은 이어서 올립니다.
+     */
+    reset() {
+      return QUEUE(async () => {
+        const CREATED = create();
+        validate(CREATED);
+        const RECORD_RESET = await adapter.transact(key, (stored) => ({
+          value: RECORD(CREATED, version, INTEGER(stored?.revision) ? stored.revision + 1 : 0),
+          write: true
+        }));
+        SAVE.locked = false;
+        return COMMIT(RECORD_RESET, true);
+      });
+    },
+    /** 다른 탭이 이 레코드를 저장하면 `{revision}`으로 부릅니다. 해제 함수를 반환합니다. */
+    onExternalChange(listener) {
+      LISTENERS.add(listener);
+      return () => LISTENERS.delete(listener);
+    },
+    dispose() {
+      closed = true;
+      LISTENERS.clear();
+      channel?.close();
+      channel = null;
+      adapter.close?.();
+    }
+  };
+  return SAVE;
+}
+function memoryAdapter(records = {}) {
+  const RECORDS = new Map(Object.entries(structuredClone(records)));
+  return {
+    channelName: null,
+    async transact(key, body) {
+      const { value: VALUE, write: WRITE } = body(structuredClone(RECORDS.get(key)));
+      if (WRITE) {
+        RECORDS.set(key, structuredClone(VALUE));
+      }
+      return structuredClone(VALUE);
+    }
+  };
+}
+
 // modules/transport/room-resume-identity.js
 var HEX32 = /^[0-9a-f]{64}$/;
-function createRoomResumeIdentity({ storage, key, lifetimeMs = 8 * 60 * 60 * 1e3, reset = false } = {}, { namespace, room }) {
-  if (!storage || ["getItem", "setItem", "removeItem"].some((name) => typeof storage[name] !== "function")) {
-    throw new TypeError("resume storage capability");
+var DAY_MS = 24 * 60 * 60 * 1e3;
+var INVALID = "invalid resume record; explicitly reset for a fresh room";
+var EXPIRED = "resume record expired; explicitly reset for a fresh room";
+var UNAVAILABLE = "resume storage unavailable";
+var UNREADABLE = (error) => error instanceof SaveError && error.kind === "unreadable";
+function createResumeRecord(options) {
+  let save = null, pending = Promise.resolve(), released = false;
+  const SETTLE = () => {
+    if (!released) {
+      return;
+    }
+    const LAST = pending;
+    LAST.then(() => {
+      if (pending === LAST && save) {
+        save.dispose();
+        save = null;
+      }
+    });
+  };
+  const RUN = (operation) => {
+    const RESULT = pending.then(operation);
+    pending = RESULT.then(
+      () => {
+      },
+      () => {
+      }
+    );
+    SETTLE();
+    return RESULT;
+  };
+  return {
+    /** Reads the record, or discards whatever is stored (readable or not) when `reset` is true. */
+    open: (reset) => RUN(() => {
+      save ??= createSave(options);
+      return reset ? save.reset() : save.load();
+    }),
+    /** Applies a synchronous `mutate` after every earlier write. */
+    write: (mutate) => RUN(async () => {
+      if (!save) {
+        save = createSave(options);
+        await save.load();
+      }
+      return save.update(mutate);
+    }),
+    release() {
+      released = true;
+      SETTLE();
+    }
+  };
+}
+var IDENTITY_SAVE = ({ adapter, key }, { namespace, room }) => ({
+  adapter,
+  key: key ?? `bloom-gamekit:dynamic-v2:${namespace}:${room}`,
+  version: 1,
+  create: () => ({ identity: null }),
+  validate(data) {
+    const VALUE = data?.identity;
+    if (VALUE === null) {
+      return;
+    }
+    if (!VALUE || typeof VALUE !== "object" || VALUE.namespace !== namespace || VALUE.room !== room || !HEX32.test(VALUE.id) || !HEX32.test(VALUE.secret) || !Number.isSafeInteger(VALUE.createdAt) || !Number.isSafeInteger(VALUE.expiresAt) || VALUE.expiresAt - VALUE.createdAt > DAY_MS || VALUE.sessionId !== null && (typeof VALUE.sessionId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(VALUE.sessionId)) || !Array.isArray(VALUE.players) || VALUE.players.length > 5 || VALUE.players.some((id) => !HEX32.test(id)) || new Set(VALUE.players).size !== VALUE.players.length || !Number.isSafeInteger(VALUE.epoch) || VALUE.epoch < 0 || VALUE.epoch > 65534 || VALUE.coordinatorId !== null && !VALUE.players.includes(VALUE.coordinatorId)) {
+      throw new TypeError("resume identity record");
+    }
   }
-  integer(lifetimeMs, "resume lifetimeMs", 1e3, 24 * 60 * 60 * 1e3);
-  key ??= `bloom-gamekit:dynamic-v1:${namespace}:${room}`;
-  if (typeof key !== "string" || !key.length || key.length > 512) {
+});
+function resumeOptions({ key, lifetimeMs = 8 * 60 * 60 * 1e3, reset = false } = {}) {
+  integer(lifetimeMs, "resume lifetimeMs", 1e3, DAY_MS);
+  if (key !== void 0 && (typeof key !== "string" || !key.length || key.length > 512)) {
     throw new TypeError("resume storage key");
   }
   if (typeof reset !== "boolean") {
     throw new TypeError("resume reset");
   }
-  if (reset) {
-    storage.removeItem(key);
+  return { lifetimeMs, reset };
+}
+async function resetRoomResume(resume, scope) {
+  resumeOptions(resume);
+  const RECORD2 = createResumeRecord(IDENTITY_SAVE(resume, scope));
+  try {
+    await RECORD2.open(true);
+  } finally {
+    RECORD2.release();
   }
+}
+async function createRoomResumeIdentity(resume, { namespace, room, onWriteFailure }) {
+  const { lifetimeMs: LIFETIME_MS, reset: RESET } = resumeOptions(resume);
+  if (typeof onWriteFailure !== "function") {
+    throw new TypeError("resume onWriteFailure");
+  }
+  const RECORD2 = createResumeRecord(IDENTITY_SAVE(resume, { namespace, room }));
   let saved;
   let secret;
   let forgotten = false;
   let closed = false;
-  const RAW = storage.getItem(key), NOW = Date.now();
-  if (RAW != null) {
-    let expired = false;
+  try {
     try {
-      if (typeof RAW !== "string" || RAW.length > 8192) {
-        throw new Error("invalid record");
-      }
-      saved = JSON.parse(RAW);
-      expired = Number.isSafeInteger(saved?.expiresAt) && saved.expiresAt <= NOW;
-      if (saved.version !== 1 || saved.namespace !== namespace || saved.room !== room || !HEX32.test(saved.secret) || !Number.isSafeInteger(saved.createdAt) || !Number.isSafeInteger(saved.expiresAt) || saved.createdAt > NOW || saved.expiresAt <= NOW || saved.expiresAt - saved.createdAt > 24 * 60 * 60 * 1e3 || saved.sessionId !== null && (typeof saved.sessionId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(saved.sessionId)) || !Array.isArray(saved.players) || saved.players.length > 5 || saved.players.some((id) => !HEX32.test(id)) || new Set(saved.players).size !== saved.players.length || !Number.isSafeInteger(saved.epoch) || saved.epoch < 0 || saved.epoch > 65534 || saved.coordinatorId !== null && !saved.players.includes(saved.coordinatorId)) {
-        throw new Error("invalid record");
+      ({ identity: saved } = await RECORD2.open(RESET));
+    } catch (error) {
+      throw UNREADABLE(error) ? new Error(INVALID, { cause: error }) : error;
+    }
+    const NOW = Date.now();
+    if (saved) {
+      if (saved.expiresAt <= NOW) {
+        throw new Error(EXPIRED);
       }
       secret = nostrFromHex(saved.secret);
       const SCALAR = nostrBytesToNumber(secret);
-      if (SCALAR <= 0n || SCALAR >= NOSTR_ORDER || nostrToHex(nostrPublicKey(secret)) !== saved.id) {
-        throw new Error("invalid key");
+      if (saved.createdAt > NOW || SCALAR <= 0n || SCALAR >= NOSTR_ORDER || nostrToHex(nostrPublicKey(secret)) !== saved.id) {
+        throw new Error(INVALID);
       }
-    } catch {
-      secret?.fill(0);
-      throw new Error(
-        expired ? "resume record expired; explicitly reset for a fresh room" : "invalid resume record; explicitly reset for a fresh room"
-      );
-    }
-  }
-  if (!secret) {
-    secret = new Uint8Array(32);
-    let valid = false;
-    for (let attempt = 0; attempt < 16; attempt++) {
-      globalThis.crypto.getRandomValues(secret);
-      const VALUE = nostrBytesToNumber(secret);
-      if (VALUE > 0n && VALUE < NOSTR_ORDER) {
-        valid = true;
-        break;
+    } else {
+      secret = new Uint8Array(32);
+      let valid = false;
+      for (let attempt = 0; attempt < 16; attempt++) {
+        globalThis.crypto.getRandomValues(secret);
+        const VALUE = nostrBytesToNumber(secret);
+        if (VALUE > 0n && VALUE < NOSTR_ORDER) {
+          valid = true;
+          break;
+        }
       }
+      if (!valid) {
+        throw new Error("resume identity generation failed");
+      }
+      const FRESH = {
+        namespace,
+        room,
+        id: nostrToHex(nostrPublicKey(secret)),
+        secret: nostrToHex(secret),
+        createdAt: NOW,
+        expiresAt: NOW + LIFETIME_MS,
+        sessionId: null,
+        coordinatorId: null,
+        epoch: 0,
+        players: []
+      };
+      try {
+        await RECORD2.write((draft) => {
+          draft.identity = FRESH;
+        });
+      } catch (error) {
+        throw new Error(UNAVAILABLE, { cause: error });
+      }
+      saved = FRESH;
     }
-    if (!valid) {
-      secret.fill(0);
-      throw new Error("resume identity generation failed");
-    }
+  } catch (error) {
+    secret?.fill(0);
+    RECORD2.release();
+    throw error;
   }
-  const ID = nostrToHex(nostrPublicKey(secret));
-  let record = saved ?? {
-    version: 1,
-    namespace,
-    room,
-    id: ID,
-    secret: nostrToHex(secret),
-    createdAt: NOW,
-    expiresAt: NOW + lifetimeMs,
-    sessionId: null,
-    coordinatorId: null,
-    epoch: 0,
-    players: []
-  };
-  const METADATA = saved ? {
+  const ID = saved.id;
+  let record = saved;
+  const METADATA = saved.sessionId === null ? null : {
     sessionId: saved.sessionId,
     coordinatorId: saved.coordinatorId,
     epoch: saved.epoch,
     players: [...saved.players]
-  } : null;
-  function write() {
-    if (forgotten || closed) {
+  };
+  function close() {
+    if (closed) {
       return;
     }
-    try {
-      storage.setItem(key, JSON.stringify(record));
-    } catch {
-      secret.fill(0);
-      closed = true;
-      throw new Error("resume storage unavailable");
-    }
+    closed = true;
+    secret.fill(0);
+    record = null;
+    RECORD2.release();
   }
-  write();
+  function persist(value) {
+    RECORD2.write((draft) => {
+      draft.identity = value;
+    }).catch((error) => {
+      close();
+      onWriteFailure(error);
+    });
+  }
   return {
     metadata: METADATA,
     identity: {
@@ -2699,14 +2975,7 @@ function createRoomResumeIdentity({ storage, key, lifetimeMs = 8 * 60 * 60 * 1e3
         }
         return nostrSign(hash, secret, auxiliary, cryptoImpl);
       },
-      close() {
-        if (closed) {
-          return;
-        }
-        closed = true;
-        secret.fill(0);
-        record = null;
-      }
+      close
     },
     update(value) {
       if (!forgotten && !closed) {
@@ -2715,12 +2984,12 @@ function createRoomResumeIdentity({ storage, key, lifetimeMs = 8 * 60 * 60 * 1e3
           ...value,
           players: [...value.players]
         };
-        write();
+        persist(record);
       }
     },
     forget() {
-      storage.removeItem(key);
       forgotten = true;
+      persist(null);
     }
   };
 }
@@ -2788,9 +3057,14 @@ async function createNostrDynamicRoom({
   if (!/^\d{4}$/.test(room ?? "")) {
     throw new TypeError("four-digit room");
   }
-  const RESUME_IDENTITY = resume ? createRoomResumeIdentity(resume, {
+  const RESUME_IDENTITY = resume ? await createRoomResumeIdentity(resume, {
     namespace,
-    room
+    room,
+    onWriteFailure: (error) => STATUS("resume-save-failed", {
+      record: "identity",
+      reason: error.message,
+      error
+    })
   }) : null;
   const STARTED_AT = NOW_MS(), SIGNAL_CONTROLLER = new AbortController();
   let initializationReject;
@@ -3927,12 +4201,7 @@ async function createNostrDynamicRoom({
     localPlayerId: SELF
   });
   if (!disposed) {
-    try {
-      saveResume();
-    } catch (error) {
-      close(error.message);
-      return READY;
-    }
+    saveResume();
     if (!ESTABLISHING) {
       advertise();
       finish();
@@ -3993,9 +4262,6 @@ async function createNostrPublicRoom({
     throw new TypeError("public room capability");
   }
   if (resume) {
-    if (!resume.storage || ["getItem", "setItem", "removeItem"].some((k) => typeof resume.storage[k] !== "function")) {
-      throw new TypeError("resume storage capability");
-    }
     integer(resume.lifetimeMs ?? 8 * 60 * 60 * 1e3, "resume lifetimeMs", 1e3, 864e5);
     if (resume.reset !== void 0 && typeof resume.reset !== "boolean") {
       throw new TypeError("resume reset");
@@ -4008,18 +4274,19 @@ async function createNostrPublicRoom({
     throw ERROR("PUBLIC_ABORTED", "public room aborted");
   }
   const STARTED = NOW_MS(), STARTED_WALL_AT = Date.now(), CONTROLLER = new AbortController(), DIRECTORY = /* @__PURE__ */ new Map(), RESERVATIONS = /* @__PURE__ */ new Map(), PUBLICATIONS = /* @__PURE__ */ new Map();
-  const EPHEMERAL_STORE = /* @__PURE__ */ new Map();
-  const EPHEMERAL = createRoomResumeIdentity(
+  const WRITE_FAILED = (record) => (error) => STATUS("resume-save-failed", {
+    record,
+    reason: error.message,
+    error
+  });
+  const EPHEMERAL = await createRoomResumeIdentity(
     {
-      storage: {
-        getItem: (k) => EPHEMERAL_STORE.get(k) ?? null,
-        setItem: (k, v) => EPHEMERAL_STORE.set(k, v),
-        removeItem: (k) => EPHEMERAL_STORE.delete(k)
-      }
+      adapter: memoryAdapter()
     },
     {
       namespace,
-      room: "0000"
+      room: "0000",
+      onWriteFailure: WRITE_FAILED("identity")
     }
   );
   const SHARED = (identity) => ({
@@ -4044,7 +4311,7 @@ async function createNostrPublicRoom({
   let generation = 0;
   let directoryId;
   let pointer;
-  let pointerKey;
+  let pointerRecord;
   let storedUntil;
   const TIMER_WAITERS = /* @__PURE__ */ new Map(), OBSERVERS = /* @__PURE__ */ new Set();
   const STATUS = (type, detail = {}) => {
@@ -4070,44 +4337,60 @@ async function createNostrPublicRoom({
       key: `${resume.key}:${code}`
     } : {}
   } : void 0;
-  const ROOM_STORAGE_KEY = (code) => SCOPED_RESUME(code)?.key ?? `bloom-gamekit:dynamic-v1:${namespace}:${code}`;
   if (resume) {
-    if (!resume.storage || ["getItem", "setItem", "removeItem"].some((k) => typeof resume.storage[k] !== "function")) {
-      throw new TypeError("resume storage capability");
-    }
-    pointerKey = `${resume.key ?? `bloom-gamekit:public-v1:${namespace}:${simulationVersion}`}:pointer`;
-    if (pointerKey.length > 512) {
+    const POINTER_KEY = `${resume.key ?? `bloom-gamekit:public-v2:${namespace}:${simulationVersion}`}:pointer`;
+    if (POINTER_KEY.length > 512) {
+      EPHEMERAL.identity.close();
       throw new TypeError("public resume key");
     }
-    const RAW = resume.storage.getItem(pointerKey);
-    if (resume.reset) {
-      if (RAW) {
+    pointerRecord = createResumeRecord({
+      adapter: resume.adapter,
+      key: POINTER_KEY,
+      version: 1,
+      create: () => ({ pointer: null }),
+      validate(data) {
+        const VALUE = data?.pointer;
+        if (VALUE !== null && (!VALUE || typeof VALUE !== "object" || VALUE.namespace !== namespace || VALUE.simulationVersion !== simulationVersion || !/^\d{4}$/.test(VALUE.room) || !ID_VALID(VALUE.sessionId) || !Number.isSafeInteger(VALUE.expiresAt))) {
+          throw new TypeError("public resume pointer");
+        }
+      }
+    });
+    try {
+      if (resume.reset) {
+        let old = null;
         try {
-          const OLD = JSON.parse(RAW);
-          if (/^\d{4}$/.test(OLD?.room)) {
-            resume.storage.removeItem(ROOM_STORAGE_KEY(OLD.room));
+          ({ pointer: old } = await pointerRecord.open(false));
+        } catch (error) {
+          if (!(error instanceof SaveError && error.kind === "unreadable")) {
+            throw error;
           }
-        } catch {
         }
+        if (old) {
+          await resetRoomResume(SCOPED_RESUME(old.room), { namespace, room: old.room });
+        }
+        await pointerRecord.open(true);
+      } else {
+        let unreadable = false;
+        try {
+          ({ pointer } = await pointerRecord.open(false));
+        } catch (error) {
+          unreadable = error instanceof SaveError && error.kind === "unreadable";
+          if (!unreadable) {
+            throw error;
+          }
+        }
+        if (unreadable || pointer && (pointer.expiresAt <= Date.now() || pointer.expiresAt > Date.now() + 864e5)) {
+          throw ERROR(
+            "PUBLIC_RESUME_INVALID",
+            "invalid or expired public resume pointer; explicitly reset for a fresh room"
+          );
+        }
+        storedUntil = pointer?.expiresAt;
       }
-      resume.storage.removeItem(pointerKey);
-    } else if (RAW != null) {
-      try {
-        if (typeof RAW !== "string" || RAW.length > 2048) {
-          throw Error();
-        }
-        pointer = JSON.parse(RAW);
-        if (pointer.version !== 1 || pointer.namespace !== namespace || pointer.simulationVersion !== simulationVersion || !/^\d{4}$/.test(pointer.room) || !ID_VALID(pointer.sessionId) || !Number.isSafeInteger(pointer.expiresAt) || pointer.expiresAt <= Date.now() || pointer.expiresAt > Date.now() + 864e5) {
-          throw Error();
-        }
-        storedUntil = pointer.expiresAt;
-      } catch {
-        EPHEMERAL.identity.close();
-        throw ERROR(
-          "PUBLIC_RESUME_INVALID",
-          "invalid or expired public resume pointer; explicitly reset for a fresh room"
-        );
-      }
+    } catch (error) {
+      EPHEMERAL.identity.close();
+      pointerRecord.release();
+      throw error;
     }
   }
   const FAIL = (message) => ERROR("PUBLIC_TIMEOUT", message ?? "public room total timeout");
@@ -4158,8 +4441,9 @@ async function createNostrPublicRoom({
     TIMER_WAITERS.clear();
     directorySignaler?.close();
     room?.close();
+    EPHEMERAL.forget();
     EPHEMERAL.identity.close();
-    EPHEMERAL_STORE.clear();
+    pointerRecord?.release();
     DIRECTORY.clear();
     RESERVATIONS.clear();
     PUBLICATIONS.clear();
@@ -4508,31 +4792,31 @@ async function createNostrPublicRoom({
   }
   function savePointer(committed = false) {
     if (!resume || !room || resumeForgotten) {
-      return;
+      return void 0;
     }
     if (room.players.includes(room.localPlayerId)) {
       everAdmitted = true;
     }
     if (committed && everAdmitted && !room.players.includes(room.localPlayerId)) {
       resumeForgotten = true;
-      resume.storage.removeItem(pointerKey);
-      return;
+      return writePointer(null);
     }
     if (room.joining) {
-      return;
+      return void 0;
     }
     storedUntil ??= STARTED_WALL_AT + (resume.lifetimeMs ?? 8 * 60 * 60 * 1e3);
-    resume.storage.setItem(
-      pointerKey,
-      JSON.stringify({
-        version: 1,
-        namespace,
-        simulationVersion,
-        room: room.room,
-        sessionId: room.sessionId,
-        expiresAt: storedUntil
-      })
-    );
+    return writePointer({
+      namespace,
+      simulationVersion,
+      room: room.room,
+      sessionId: room.sessionId,
+      expiresAt: storedUntil
+    });
+  }
+  function writePointer(value) {
+    return pointerRecord.write((draft) => {
+      draft.pointer = value;
+    });
   }
   async function connect(lease, restoring = false) {
     const CODE = lease?.room ?? RANDOM_ROOM();
@@ -4656,7 +4940,7 @@ async function createNostrPublicRoom({
         throw lastError ?? FAIL();
       }
     }
-    savePointer();
+    await savePointer();
     removeRoom = room.subscribe((event) => {
       if (event.type === "peer-failed" || event.type === "peer-disconnected") {
         if (RESERVATIONS.delete(event.peerId)) {
@@ -4703,7 +4987,7 @@ async function createNostrPublicRoom({
         value(value) {
           room.setRoster(value);
           prune();
-          savePointer(true);
+          savePointer(true)?.catch(WRITE_FAILED("pointer"));
           BACKGROUND(advertise());
         }
       },
@@ -4713,7 +4997,9 @@ async function createNostrPublicRoom({
         value() {
           resumeForgotten = true;
           room.forgetResume?.();
-          resume?.storage.removeItem(pointerKey);
+          if (resume) {
+            writePointer(null).catch(WRITE_FAILED("pointer"));
+          }
         }
       },
       publicMetrics: {
