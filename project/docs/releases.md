@@ -1,3 +1,12 @@
+## v0.38.0 (2026-10-31)
+
+Breaking. `audio`가 localStorage에 직접 쓰지 않고 `save` 모듈을 거칩니다. `storageKey` 옵션을 없애고 `settings`(불러온 save)와 `onSaveError`를 받습니다. `audioSettings(config)`가 `createSave`에 넘길 key·version·create·validate를 줍니다. 디버그·소개 같은 격리 장면은 `memoryAdapter`로 만든 settings를 넘기면 실제 소리 설정을 덮어쓰지 않습니다.
+
+- 이전: `new AudioPlayer({ ...config, storageKey: 'my-audio' })`
+- 이후: `const SETTINGS = createSave({ ...audioSettings(config), adapter: localStorageAdapter({ prefix: 'my-game:' }) }); await SETTINGS.load(); new AudioPlayer({ ...config, settings: SETTINGS, onSaveError })`
+- 예전 키의 설정은 읽지 않습니다(이전 저장 호환 없음). 깨진 설정은 기본값으로 바꾸지 않고 `load()`가 실패하며 원본을 그대로 둡니다. 저장 실패는 이제 조용히 무시되지 않고 `onSaveError`로 갑니다.
+- 시험: 헤드리스 Chromium에서 예제의 음소거·음량 0.33이 새로고침 뒤 복원되고 save 레코드에 남는 것, 깨진 설정 레코드가 상태 줄에 실패로 표시되고 원본이 그대로인 것을 확인했습니다. `npm run test:audio`는 이 PC의 헤드리스 실시간 출력 검사("Live graph stayed silent")에서 main과 같이 실패해 그 뒤 단계(mute/save/reload)는 이 시험으로 확인하지 못했고 위 임시 점검으로 대신했습니다.
+
 ## v0.37.6 (2026-10-31)
 
 호환 추가. 새 `save` 모듈(`dist/save.js`)을 더합니다. 게임마다 따로 짜던 저장 코드(IndexedDB·localStorage 직접 접근, 리비전, 탭 간 충돌, 이관)를 한 계약으로 모읍니다. `createSave({adapter, key, version, create, validate, migrate})`로 레코드 하나를 다루고, 저장소는 `indexedDbAdapter`·`localStorageAdapter`·`memoryAdapter`로 바꿔 끼웁니다. 메모리 어댑터로 디버그 장면·시험의 저장 상태를 격리할 수 있습니다.
