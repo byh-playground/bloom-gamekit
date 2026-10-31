@@ -4,7 +4,8 @@ const AUDIO_DEFAULTS = {
     headroom: 0.24,
     maxVoices: 12,
     rampMs: 8,
-    storageKey: null,
+    settings: null,
+    onSaveError: null,
     synthesis: {
         attackMs: 4,
         releaseTailMs: 6,
@@ -476,6 +477,37 @@ export function renderBed(
     };
 }
 /** Sound recipes/categories are caller-owned; this player owns only audio resources and budgets. */
+/**
+ * Options for `createSave` holding this player's volume, mute and category volumes:
+ * `createSave({ ...audioSettings(config), adapter })`. Defaults come from `config`.
+ */
+export function audioSettings(config = AUDIO_DEFAULTS) {
+    const CATEGORIES = config.categories ?? AUDIO_DEFAULTS.categories;
+    const UNIT = (value) => Number.isFinite(value) && value >= 0 && value <= 1;
+    return {
+        key: 'audio-settings',
+        version: 1,
+        create: () => ({
+            volume: config.volume ?? AUDIO_DEFAULTS.volume,
+            muted: false,
+            categories: Object.fromEntries(
+                Object.entries(CATEGORIES).map(([name, category]) => [name, category.volume]),
+            ),
+        }),
+        validate(data) {
+            if (
+                !UNIT(data.volume) ||
+                typeof data.muted !== 'boolean' ||
+                !data.categories ||
+                typeof data.categories !== 'object' ||
+                Object.keys(data.categories).some((name) => !(name in CATEGORIES)) ||
+                Object.keys(CATEGORIES).some((name) => !UNIT(data.categories[name]))
+            ) {
+                throw new TypeError('audio settings must hold volume, muted and every category volume in 0..1');
+            }
+        },
+    };
+}
 export class AudioPlayer {
     constructor(config = AUDIO_DEFAULTS) {
         config = {
@@ -539,21 +571,19 @@ export class AudioPlayer {
             maxObserved: 0,
             bySound: {},
         };
-        try {
-            const DATA = JSON.parse(config.storageKey ? globalThis.localStorage?.getItem(config.storageKey) : null);
-            if (DATA) {
-                if (Number.isFinite(DATA.volume)) {
-                    this.volume = Math.max(0, Math.min(1, DATA.volume));
-                }
-                this.muted = DATA.muted === true;
-                for (const [NAME, VALUE] of Object.entries(DATA.categories || {})) {
-                    if (this.categoryVolumes.has(NAME) && Number.isFinite(VALUE)) {
-                        this.categoryVolumes.set(NAME, Math.max(0, Math.min(1, VALUE)));
-                    }
-                }
+        if (config.settings !== null) {
+            if (!config.settings?.data || typeof config.settings.update !== 'function') {
+                throw new TypeError('settings must be a loaded save from createSave(audioSettings(config))');
             }
-        } catch {
-            // Unavailable or malformed optional stored settings leave the configured defaults intact.
+            if (typeof config.onSaveError !== 'function') {
+                throw new TypeError('onSaveError is required with settings');
+            }
+            const DATA = config.settings.data;
+            this.volume = DATA.volume;
+            this.muted = DATA.muted;
+            for (const [NAME, VALUE] of Object.entries(DATA.categories)) {
+                this.categoryVolumes.set(NAME, VALUE);
+            }
         }
         this.onGesture = () => {
             if (!globalThis.document?.hidden) {
@@ -624,22 +654,23 @@ export class AudioPlayer {
             this.config.rampMs / 1000,
         );
     }
+    /** Writes volume, mute and category volumes to `config.settings`. Failures go to `config.onSaveError`. */
     save() {
-        if (!this.config.storageKey) {
-            return;
+        const SETTINGS = this.config.settings;
+        if (SETTINGS === null) {
+            return Promise.resolve();
         }
-        try {
-            globalThis.localStorage?.setItem(
-                this.config.storageKey,
-                JSON.stringify({
-                    volume: this.volume,
-                    muted: this.muted,
-                    categories: Object.fromEntries(this.categoryVolumes),
-                }),
-            );
-        } catch {
-            // Audio settings are optional; unavailable storage must not interrupt playback.
-        }
+        const NEXT = { volume: this.volume, muted: this.muted, categories: Object.fromEntries(this.categoryVolumes) };
+        return SETTINGS.update((draft) => {
+            if (
+                draft.volume === NEXT.volume &&
+                draft.muted === NEXT.muted &&
+                Object.entries(NEXT.categories).every(([name, value]) => draft.categories[name] === value)
+            ) {
+                return false;
+            }
+            Object.assign(draft, NEXT);
+        }).catch((error) => this.config.onSaveError(error));
     }
     /** Registers caller-owned reusable decoded data; no fetch/decode or gameplay history. */
     setBuffer(id, buffer) {

@@ -39,7 +39,8 @@
     ><label>음량 <input id="volume" type="range" min="0" max="100" value="70" /></label>
     <pre id="status"></pre>
     <script type="module">
-        import { AudioPlayer } from '../../../dist/audio.js';
+        import { AudioPlayer, audioSettings } from '../../../dist/audio.js';
+        import { createSave, localStorageAdapter } from '../../../dist/save.js';
         import { PresentationEventQueue } from '../../../dist/presentation-events.js';
         const CROWD_BEDS = {
             crowd: {
@@ -74,7 +75,6 @@
             },
         };
         const CONFIG = {
-            storageKey: 'gamekit-audio-example',
             maxVoices: 4,
             categories: {
                 impact: {
@@ -152,120 +152,140 @@
                 },
             },
         };
-        const PLAYER = new AudioPlayer(CONFIG);
-        let tick = 0;
-        const JOURNAL = new PresentationEventQueue({
-            adapters: {
-                sfx: PLAYER.createAdapter({
-                    onEnded: (event) => JOURNAL.finish(event),
-                }),
+        // 음량·음소거는 save 모듈로 보관합니다. 저장 실패는 상태 줄에 그대로 보입니다.
+        const SETTINGS = createSave({
+            ...audioSettings(CONFIG),
+            adapter: localStorageAdapter({ prefix: 'gamekit-audio-example:' }),
+        });
+        SETTINGS.load().then(
+            () => start(SETTINGS),
+            (error) => {
+                document.querySelector('#status').textContent = `설정을 읽지 못했습니다: ${error.message}`;
             },
-        });
-        const STATUS = () => {
-            document.querySelector('#status').textContent = JSON.stringify(PLAYER.snapshot(), null, 2);
-            document.querySelector('#volume').value = Math.round(PLAYER.volume * 100);
-            document.querySelector('#mute').textContent = PLAYER.muted ? '음소거 해제' : '음소거';
-        };
-        document.querySelector('#tap').onclick = async () => {
-            await PLAYER.unlock();
-            PLAYER.play('hit');
-            STATUS();
-            setTimeout(STATUS, 400);
-        };
-        document.querySelector('#confirmed').onclick = async () => {
-            await PLAYER.unlock();
-            const EVENT = {
-                tick: tick++,
-                sequence: 0,
-                entityId: 'demo',
-                generation: 0,
-                kind: 'sfx',
-                payload: {
-                    soundId: 'hit',
+        );
+        function start(settings) {
+            const PLAYER = new AudioPlayer({
+                ...CONFIG,
+                settings,
+                onSaveError: (error) => {
+                    document.querySelector('#status').textContent = `설정을 저장하지 못했습니다: ${error.message}`;
                 },
-                policy: 'confirmed',
+            });
+            let tick = 0;
+            const JOURNAL = new PresentationEventQueue({
+                adapters: {
+                    sfx: PLAYER.createAdapter({
+                        onEnded: (event) => JOURNAL.finish(event),
+                    }),
+                },
+            });
+            const STATUS = () => {
+                document.querySelector('#status').textContent = JSON.stringify(PLAYER.snapshot(), null, 2);
+                document.querySelector('#volume').value = Math.round(PLAYER.volume * 100);
+                document.querySelector('#mute').textContent = PLAYER.muted ? '음소거 해제' : '음소거';
             };
-            JOURNAL.emit(EVENT);
-            JOURNAL.confirmThrough(EVENT.tick);
-            JOURNAL.emit(EVENT);
-            STATUS();
-            setTimeout(STATUS, 400);
-        };
-        document.querySelector('#dense').onclick = async () => {
-            await PLAYER.unlock();
-            for (let i = 0; i < 20; i++) {
+            document.querySelector('#tap').onclick = async () => {
+                await PLAYER.unlock();
                 PLAYER.play('hit');
-            }
-            for (let i = 0; i < 3; i++) {
-                PLAYER.play('warning');
-            }
-            STATUS();
-            setTimeout(STATUS, 450);
-        };
-        // pan/detune은 호출자가 정한다. 모듈은 난수를 만들지 않는다.
-        const HIT_AT = async (pan) => {
-            await PLAYER.unlock();
-            PLAYER.start('hit', 1, { pan, detune: (Math.random() - 0.5) * 120 });
-            STATUS();
-            setTimeout(STATUS, 400);
-        };
-        document.querySelector('#left').onclick = () => HIT_AT(-0.8);
-        document.querySelector('#right').onclick = () => HIT_AT(0.8);
-        let bed = null;
-        document.querySelector('#bed').onclick = async () => {
-            if (bed) {
-                bed.stop(500);
-                bed = null;
-            } else {
+                STATUS();
+                setTimeout(STATUS, 400);
+            };
+            document.querySelector('#confirmed').onclick = async () => {
                 await PLAYER.unlock();
-                bed = PLAYER.startBed('crowd', { level: 0.6, fadeMs: 600 });
-            }
-            document.querySelector('#bed').textContent = bed ? '환경음 끄기' : '환경음 켜기';
-            STATUS();
-        };
-        let loop = null;
-        document.querySelector('#loop').onclick = async () => {
-            if (loop) {
-                loop.stop(500);
-                loop = null;
-            } else {
+                const EVENT = {
+                    tick: tick++,
+                    sequence: 0,
+                    entityId: 'demo',
+                    generation: 0,
+                    kind: 'sfx',
+                    payload: {
+                        soundId: 'hit',
+                    },
+                    policy: 'confirmed',
+                };
+                JOURNAL.emit(EVENT);
+                JOURNAL.confirmThrough(EVENT.tick);
+                JOURNAL.emit(EVENT);
+                STATUS();
+                setTimeout(STATUS, 400);
+            };
+            document.querySelector('#dense').onclick = async () => {
                 await PLAYER.unlock();
-                // 2초짜리 도레미 아르페지오를 만들어 등록한다(실제 게임은 fetch한 파일을 decodeAudioData한다).
-                const RATE = PLAYER.context.sampleRate,
-                    BUFFER = PLAYER.context.createBuffer(1, RATE * 2, RATE),
-                    DATA = BUFFER.getChannelData(0);
-                for (let i = 0; i < DATA.length; i++) {
-                    const NOTE = Math.floor((i / RATE) * 4) % 3,
-                        T = (i / RATE) % 0.5;
-                    DATA[i] = Math.sin(2 * Math.PI * [261.6, 329.6, 392][NOTE] * (i / RATE)) * 0.4 * Math.exp(-T * 4);
+                for (let i = 0; i < 20; i++) {
+                    PLAYER.play('hit');
                 }
-                PLAYER.setBuffer('demo-loop', BUFFER);
-                loop = PLAYER.startBed('loop', { level: 0.8, fadeMs: 400 });
-            }
-            document.querySelector('#loop').textContent = loop ? '음원 루프 끄기' : '음원 루프 켜기';
+                for (let i = 0; i < 3; i++) {
+                    PLAYER.play('warning');
+                }
+                STATUS();
+                setTimeout(STATUS, 450);
+            };
+            // pan/detune은 호출자가 정한다. 모듈은 난수를 만들지 않는다.
+            const HIT_AT = async (pan) => {
+                await PLAYER.unlock();
+                PLAYER.start('hit', 1, { pan, detune: (Math.random() - 0.5) * 120 });
+                STATUS();
+                setTimeout(STATUS, 400);
+            };
+            document.querySelector('#left').onclick = () => HIT_AT(-0.8);
+            document.querySelector('#right').onclick = () => HIT_AT(0.8);
+            let bed = null;
+            document.querySelector('#bed').onclick = async () => {
+                if (bed) {
+                    bed.stop(500);
+                    bed = null;
+                } else {
+                    await PLAYER.unlock();
+                    bed = PLAYER.startBed('crowd', { level: 0.6, fadeMs: 600 });
+                }
+                document.querySelector('#bed').textContent = bed ? '환경음 끄기' : '환경음 켜기';
+                STATUS();
+            };
+            let loop = null;
+            document.querySelector('#loop').onclick = async () => {
+                if (loop) {
+                    loop.stop(500);
+                    loop = null;
+                } else {
+                    await PLAYER.unlock();
+                    // 2초짜리 도레미 아르페지오를 만들어 등록한다(실제 게임은 fetch한 파일을 decodeAudioData한다).
+                    const RATE = PLAYER.context.sampleRate,
+                        BUFFER = PLAYER.context.createBuffer(1, RATE * 2, RATE),
+                        DATA = BUFFER.getChannelData(0);
+                    for (let i = 0; i < DATA.length; i++) {
+                        const NOTE = Math.floor((i / RATE) * 4) % 3,
+                            T = (i / RATE) % 0.5;
+                        DATA[i] =
+                            Math.sin(2 * Math.PI * [261.6, 329.6, 392][NOTE] * (i / RATE)) * 0.4 * Math.exp(-T * 4);
+                    }
+                    PLAYER.setBuffer('demo-loop', BUFFER);
+                    loop = PLAYER.startBed('loop', { level: 0.8, fadeMs: 400 });
+                }
+                document.querySelector('#loop').textContent = loop ? '음원 루프 끄기' : '음원 루프 켜기';
+                STATUS();
+            };
+            document.querySelector('#swell').onclick = () => {
+                bed?.swell(1.2, 120, 1200);
+                STATUS();
+            };
+            document.querySelector('#mute').onclick = () => {
+                PLAYER.setMuted(!PLAYER.muted);
+                STATUS();
+            };
+            document.querySelector('#volume').oninput = (e) => {
+                PLAYER.setVolume(Number(e.target.value) / 100);
+                STATUS();
+            };
+            window.audioExample = {
+                player: PLAYER,
+                journal: JOURNAL,
+                config: CONFIG,
+            };
+            window.addEventListener('pagehide', () => {
+                JOURNAL.dispose();
+                void PLAYER.dispose();
+            });
             STATUS();
-        };
-        document.querySelector('#swell').onclick = () => {
-            bed?.swell(1.2, 120, 1200);
-            STATUS();
-        };
-        document.querySelector('#mute').onclick = () => {
-            PLAYER.setMuted(!PLAYER.muted);
-            STATUS();
-        };
-        document.querySelector('#volume').oninput = (e) => {
-            PLAYER.setVolume(Number(e.target.value) / 100);
-            STATUS();
-        };
-        window.audioExample = {
-            player: PLAYER,
-            journal: JOURNAL,
-            config: CONFIG,
-        };
-        window.addEventListener('pagehide', () => {
-            JOURNAL.dispose();
-            void PLAYER.dispose();
-        });
-        STATUS();
+        }
     </script>
 </html>
