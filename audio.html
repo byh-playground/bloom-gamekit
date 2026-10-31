@@ -46,7 +46,8 @@
     headroom: 0.24,
     maxVoices: 12,
     rampMs: 8,
-    storageKey: null,
+    settings: null,
+    onSaveError: null,
     synthesis: {
       attackMs: 4,
       releaseTailMs: 6,
@@ -136,11 +137,11 @@
     param.linearRampToValueAtTime(target, now + rampMs / 1e3);
   }
   function makeNoise(context, noiseMs = AUDIO_DEFAULTS.synthesis.noiseMs) {
-    const BUFFER = context.createBuffer(1, Math.round(context.sampleRate * noiseMs / 1e3), context.sampleRate), DATA = BUFFER.getChannelData(0);
+    const BUFFER = context.createBuffer(1, Math.round(context.sampleRate * noiseMs / 1e3), context.sampleRate), DATA2 = BUFFER.getChannelData(0);
     let seed = 213341;
-    for (let i = 0; i < DATA.length; i++) {
+    for (let i = 0; i < DATA2.length; i++) {
       seed = Math.imul(seed, 1664525) + 1013904223 >>> 0;
-      DATA[i] = seed / 2147483648 - 1;
+      DATA2[i] = seed / 2147483648 - 1;
     }
     return BUFFER;
   }
@@ -397,6 +398,26 @@
       }
     };
   }
+  function audioSettings(config = AUDIO_DEFAULTS) {
+    const CATEGORIES = config.categories ?? AUDIO_DEFAULTS.categories;
+    const UNIT = (value) => Number.isFinite(value) && value >= 0 && value <= 1;
+    return {
+      key: "audio-settings",
+      version: 1,
+      create: () => ({
+        volume: config.volume ?? AUDIO_DEFAULTS.volume,
+        muted: false,
+        categories: Object.fromEntries(
+          Object.entries(CATEGORIES).map(([name, category]) => [name, category.volume])
+        )
+      }),
+      validate(data) {
+        if (!UNIT(data.volume) || typeof data.muted !== "boolean" || !data.categories || typeof data.categories !== "object" || Object.keys(data.categories).some((name) => !(name in CATEGORIES)) || Object.keys(CATEGORIES).some((name) => !UNIT(data.categories[name]))) {
+          throw new TypeError("audio settings must hold volume, muted and every category volume in 0..1");
+        }
+      }
+    };
+  }
   var AudioPlayer = class {
     constructor(config = AUDIO_DEFAULTS) {
       config = {
@@ -451,20 +472,19 @@
         maxObserved: 0,
         bySound: {}
       };
-      try {
-        const DATA = JSON.parse(config.storageKey ? globalThis.localStorage?.getItem(config.storageKey) : null);
-        if (DATA) {
-          if (Number.isFinite(DATA.volume)) {
-            this.volume = Math.max(0, Math.min(1, DATA.volume));
-          }
-          this.muted = DATA.muted === true;
-          for (const [NAME, VALUE] of Object.entries(DATA.categories || {})) {
-            if (this.categoryVolumes.has(NAME) && Number.isFinite(VALUE)) {
-              this.categoryVolumes.set(NAME, Math.max(0, Math.min(1, VALUE)));
-            }
-          }
+      if (config.settings !== null) {
+        if (!config.settings?.data || typeof config.settings.update !== "function") {
+          throw new TypeError("settings must be a loaded save from createSave(audioSettings(config))");
         }
-      } catch {
+        if (typeof config.onSaveError !== "function") {
+          throw new TypeError("onSaveError is required with settings");
+        }
+        const DATA2 = config.settings.data;
+        this.volume = DATA2.volume;
+        this.muted = DATA2.muted;
+        for (const [NAME, VALUE] of Object.entries(DATA2.categories)) {
+          this.categoryVolumes.set(NAME, VALUE);
+        }
       }
       this.onGesture = () => {
         if (!globalThis.document?.hidden) {
@@ -536,21 +556,19 @@
         this.config.rampMs / 1e3
       );
     }
+    /** Writes volume, mute and category volumes to `config.settings`. Failures go to `config.onSaveError`. */
     save() {
-      if (!this.config.storageKey) {
-        return;
+      const SETTINGS2 = this.config.settings;
+      if (SETTINGS2 === null) {
+        return Promise.resolve();
       }
-      try {
-        globalThis.localStorage?.setItem(
-          this.config.storageKey,
-          JSON.stringify({
-            volume: this.volume,
-            muted: this.muted,
-            categories: Object.fromEntries(this.categoryVolumes)
-          })
-        );
-      } catch {
-      }
+      const NEXT = { volume: this.volume, muted: this.muted, categories: Object.fromEntries(this.categoryVolumes) };
+      return SETTINGS2.update((draft) => {
+        if (draft.volume === NEXT.volume && draft.muted === NEXT.muted && Object.entries(NEXT.categories).every(([name, value]) => draft.categories[name] === value)) {
+          return false;
+        }
+        Object.assign(draft, NEXT);
+      }).catch((error) => this.config.onSaveError(error));
     }
     /** Registers caller-owned reusable decoded data; no fetch/decode or gameplay history. */
     setBuffer(id, buffer) {
@@ -811,8 +829,200 @@
     }
   };
 
+  // dist/save.js
+  var SaveError = class extends Error {
+    constructor(kind, message, cause) {
+      super(message, cause === void 0 ? void 0 : { cause });
+      this.name = "SaveError";
+      this.kind = kind;
+    }
+  };
+  var RECORD = (data, schema, revision) => ({ ...data, schema, revision });
+  var DATA = (record) => {
+    const COPY = { ...record };
+    delete COPY.schema;
+    delete COPY.revision;
+    return COPY;
+  };
+  var INTEGER = (value) => Number.isSafeInteger(value) && value >= 0;
+  function createSave({ adapter, key, version, create, validate, migrate = {} } = {}) {
+    if (!adapter || typeof adapter.transact !== "function") {
+      throw new TypeError("save adapter must provide transact");
+    }
+    if (typeof key !== "string" || key === "") {
+      throw new TypeError("save key must be a non-empty string");
+    }
+    if (!Number.isSafeInteger(version) || version < 1) {
+      throw new RangeError("save version must be a positive integer");
+    }
+    if (typeof create !== "function" || typeof validate !== "function") {
+      throw new TypeError("save create and validate must be functions");
+    }
+    const LISTENERS = /* @__PURE__ */ new Set();
+    let channel = null, pending = Promise.resolve(), closed = false;
+    if (adapter.channelName && typeof BroadcastChannel !== "undefined") {
+      channel = new BroadcastChannel(`${adapter.channelName}:${key}`);
+      channel.onmessage = (event) => {
+        const REVISION = event.data?.revision;
+        if (INTEGER(REVISION) && SAVE.revision !== null && REVISION > SAVE.revision) {
+          for (const LISTENER of LISTENERS) {
+            LISTENER({ revision: REVISION });
+          }
+        }
+      };
+    }
+    const READ = (stored) => {
+      if (stored === void 0) {
+        const CREATED = create();
+        validate(CREATED);
+        return { record: RECORD(CREATED, version, 0), write: true };
+      }
+      if (!stored || typeof stored !== "object" || !INTEGER(stored.schema) || !INTEGER(stored.revision)) {
+        throw new SaveError("unreadable", "saved record has no schema or revision");
+      }
+      if (stored.schema > version) {
+        throw new SaveError("unreadable", `saved schema ${stored.schema} is newer than ${version}`);
+      }
+      let data = DATA(stored);
+      for (let schema = stored.schema; schema < version; schema++) {
+        if (typeof migrate[schema] !== "function") {
+          throw new SaveError("unreadable", `no migration from schema ${schema}`);
+        }
+        data = migrate[schema](data);
+      }
+      try {
+        validate(data);
+      } catch (error) {
+        throw new SaveError("unreadable", "saved record failed validation", error);
+      }
+      const MIGRATED = stored.schema !== version;
+      return { record: RECORD(data, version, stored.revision + (MIGRATED ? 1 : 0)), write: MIGRATED };
+    };
+    const QUEUE = (operation) => {
+      const RUN = pending.then(() => {
+        if (closed) {
+          throw new SaveError("closed", "save is closed");
+        }
+        return operation();
+      });
+      pending = RUN.catch(() => {
+      });
+      return RUN;
+    };
+    const COMMIT = (record, written) => {
+      SAVE.data = DATA(record);
+      SAVE.revision = record.revision;
+      if (written) {
+        channel?.postMessage({ revision: record.revision });
+      }
+      return SAVE.data;
+    };
+    const SAVE = {
+      /** 마지막으로 읽거나 저장한 데이터. 직접 고치지 말고 update로 바꿉니다. */
+      data: null,
+      revision: null,
+      /** 읽지 못한 저장을 만나면 true. 원본을 덮어쓰지 않도록 update를 거부합니다. */
+      locked: false,
+      /** 저장소에서 다시 읽습니다. 없으면 create로 만들고, 낮은 schema는 이관해 저장합니다. */
+      load() {
+        return QUEUE(async () => {
+          let written = false, record;
+          try {
+            record = await adapter.transact(key, (stored) => {
+              const RESULT = READ(stored);
+              written = RESULT.write;
+              return { value: RESULT.record, write: RESULT.write };
+            });
+          } catch (error) {
+            if (error instanceof SaveError && error.kind === "unreadable") {
+              SAVE.locked = true;
+            }
+            throw error;
+          }
+          SAVE.locked = false;
+          return COMMIT(record, written);
+        });
+      },
+      /**
+       * 현재 데이터의 복사본을 고쳐 저장합니다. mutate가 false를 반환하면 저장하지 않습니다.
+       * 저장소의 revision이 마지막으로 읽은 것과 다르면 아무것도 쓰지 않고 conflict를 던집니다.
+       */
+      update(mutate) {
+        return QUEUE(async () => {
+          if (SAVE.locked) {
+            throw new SaveError("unreadable", "saved record is unreadable and preserved");
+          }
+          if (SAVE.revision === null) {
+            throw new Error("load before update");
+          }
+          let written = false;
+          const UPDATED = await adapter.transact(key, (stored) => {
+            if (!stored || stored.revision !== SAVE.revision || stored.schema !== version) {
+              throw new SaveError("conflict", "saved record changed elsewhere");
+            }
+            const NEXT = structuredClone(DATA(stored));
+            if (mutate(NEXT) === false) {
+              return { value: stored, write: false };
+            }
+            validate(NEXT);
+            written = true;
+            return { value: RECORD(NEXT, version, stored.revision + 1), write: true };
+          });
+          return COMMIT(UPDATED, written);
+        });
+      },
+      /** 다른 탭이 이 레코드를 저장하면 `{revision}`으로 부릅니다. 해제 함수를 반환합니다. */
+      onExternalChange(listener) {
+        LISTENERS.add(listener);
+        return () => LISTENERS.delete(listener);
+      },
+      dispose() {
+        closed = true;
+        LISTENERS.clear();
+        channel?.close();
+        channel = null;
+        adapter.close?.();
+      }
+    };
+    return SAVE;
+  }
+  function localStorageAdapter({ prefix = "", storage = globalThis.localStorage } = {}) {
+    if (!storage) {
+      throw new SaveError("storage", "localStorage is not available");
+    }
+    return {
+      channelName: `local:${prefix}`,
+      async transact(key, body) {
+        let text, stored;
+        try {
+          text = storage.getItem(prefix + key);
+        } catch (error) {
+          throw new SaveError("storage", "localStorage read failed", error);
+        }
+        try {
+          stored = text === null ? void 0 : JSON.parse(text);
+        } catch (error) {
+          throw new SaveError("unreadable", "saved text is not JSON", error);
+        }
+        const { value: VALUE, write: WRITE } = body(stored);
+        if (WRITE) {
+          try {
+            storage.setItem(prefix + key, JSON.stringify(VALUE));
+          } catch (error) {
+            throw new SaveError(
+              "storage",
+              error?.name === "QuotaExceededError" ? "storage quota exceeded" : "localStorage write failed",
+              error
+            );
+          }
+        }
+        return VALUE;
+      }
+    };
+  }
+
   // dist/presentation-events.js
-  var INTEGER = (value, name) => {
+  var INTEGER2 = (value, name) => {
     if (!Number.isSafeInteger(value) || value < 0) {
       throw new RangeError(`${name} must be a nonnegative safe integer`);
     }
@@ -825,9 +1035,9 @@
     return value;
   };
   function presentationEventKey(event) {
-    INTEGER(event.tick, "tick");
-    INTEGER(event.sequence, "sequence");
-    INTEGER(event.generation, "generation");
+    INTEGER2(event.tick, "tick");
+    INTEGER2(event.sequence, "sequence");
+    INTEGER2(event.generation, "generation");
     if (typeof event.entityId !== "string" && typeof event.entityId !== "number" || typeof event.entityId === "number" && !Number.isSafeInteger(event.entityId)) {
       throw new TypeError("entityId must be string or safe integer");
     }
@@ -841,11 +1051,11 @@
       if (!adapters || typeof adapters !== "object") {
         throw new TypeError("adapters required");
       }
-      INTEGER(retentionTicks, "retentionTicks");
+      INTEGER2(retentionTicks, "retentionTicks");
       if (!retentionTicks) {
         throw new RangeError("retentionTicks must be positive");
       }
-      INTEGER(maxPending, "maxPending");
+      INTEGER2(maxPending, "maxPending");
       if (!maxPending) {
         throw new RangeError("maxPending must be positive");
       }
@@ -1040,7 +1250,7 @@
     }
     beginRollback(fromTick) {
       this._ready();
-      INTEGER(fromTick, "fromTick");
+      INTEGER2(fromTick, "fromTick");
       if (this.rollbackFrom !== null) {
         throw new Error("rollback already active");
       }
@@ -1048,9 +1258,9 @@
         throw new RangeError("cannot rollback confirmed presentation");
       }
       this.rollbackFrom = fromTick;
-      for (const RECORD of this.awaitingConfirmation) {
-        if (RECORD.event.tick >= fromTick && !RECORD.confirmed) {
-          RECORD.seen = false;
+      for (const RECORD2 of this.awaitingConfirmation) {
+        if (RECORD2.event.tick >= fromTick && !RECORD2.confirmed) {
+          RECORD2.seen = false;
         }
       }
     }
@@ -1061,10 +1271,10 @@
       }
       this.rollbackFrom = null;
       const ERRORS = [];
-      for (const RECORD of this.awaitingConfirmation) {
-        if (!RECORD.seen && !RECORD.confirmed && RECORD.state !== "cancelled") {
+      for (const RECORD2 of this.awaitingConfirmation) {
+        if (!RECORD2.seen && !RECORD2.confirmed && RECORD2.state !== "cancelled") {
           try {
-            this._stop(RECORD, "cancelled");
+            this._stop(RECORD2, "cancelled");
           } catch (error) {
             ERRORS.push(error);
           }
@@ -1075,32 +1285,32 @@
         throw new AggregateError(ERRORS, "rollback resource cleanup failed");
       }
     }
-    confirmThrough(tick2) {
+    confirmThrough(tick) {
       this._ready();
-      INTEGER(tick2, "tick");
+      INTEGER2(tick, "tick");
       if (this.rollbackFrom !== null) {
         throw new Error("finish rollback before confirmation");
       }
-      if (tick2 < this.confirmedTick) {
+      if (tick < this.confirmedTick) {
         throw new RangeError("confirmed tick cannot regress");
       }
-      if (tick2 === this.confirmedTick && !this.confirmationDirty) {
+      if (tick === this.confirmedTick && !this.confirmationDirty) {
         return;
       }
-      this.confirmedTick = tick2;
+      this.confirmedTick = tick;
       this.confirmationDirty = true;
-      for (const RECORD of this.awaitingConfirmation) {
-        if (RECORD.event.tick <= tick2) {
-          const WAS_CONFIRMED = RECORD.confirmed;
-          RECORD.confirmed = true;
-          if (RECORD.state === "pending") {
-            this._start(RECORD);
+      for (const RECORD2 of this.awaitingConfirmation) {
+        if (RECORD2.event.tick <= tick) {
+          const WAS_CONFIRMED = RECORD2.confirmed;
+          RECORD2.confirmed = true;
+          if (RECORD2.state === "pending") {
+            this._start(RECORD2);
           }
-          if (!WAS_CONFIRMED && RECORD.state === "active") {
-            RECORD.adapter.confirm?.(RECORD.handle, RECORD.event);
+          if (!WAS_CONFIRMED && RECORD2.state === "active") {
+            RECORD2.adapter.confirm?.(RECORD2.handle, RECORD2.event);
           }
-          this._release(RECORD);
-          this.awaitingConfirmation.delete(RECORD);
+          this._release(RECORD2);
+          this.awaitingConfirmation.delete(RECORD2);
         }
       }
       this.collect();
@@ -1113,24 +1323,24 @@
         throw new RangeError("presentation clock must be monotonic");
       }
       this.nowMs = nowMs;
-      for (const RECORD of this.active) {
-        const AGE_MS = nowMs - RECORD.startedMs;
-        if (AGE_MS >= RECORD.durationMs) {
-          this._stop(RECORD, "expired");
+      for (const RECORD2 of this.active) {
+        const AGE_MS = nowMs - RECORD2.startedMs;
+        if (AGE_MS >= RECORD2.durationMs) {
+          this._stop(RECORD2, "expired");
           this.stats.expired++;
         } else {
-          RECORD.adapter.update?.(RECORD.handle, AGE_MS, RECORD.event);
+          RECORD2.adapter.update?.(RECORD2.handle, AGE_MS, RECORD2.event);
         }
       }
     }
     /** Adapter reports a naturally completed audio/particle resource without discarding its dedup identity. */
     finish(event) {
       this._ready();
-      const RECORD = this.records.get(presentationEventKey(event));
-      if (!RECORD || RECORD.state !== "active") {
+      const RECORD2 = this.records.get(presentationEventKey(event));
+      if (!RECORD2 || RECORD2.state !== "active") {
         return false;
       }
-      this._stop(RECORD, "expired");
+      this._stop(RECORD2, "expired");
       this.stats.expired++;
       return true;
     }
@@ -1139,8 +1349,8 @@
       const CUTOFF = this.confirmedTick - this.retentionTicks;
       for (const [TICK, BUCKET] of this.collectibleTicks) {
         if (TICK <= CUTOFF) {
-          for (const RECORD of BUCKET) {
-            if (this.records.delete(RECORD.key)) {
+          for (const RECORD2 of BUCKET) {
+            if (this.records.delete(RECORD2.key)) {
               this.stats.collected++;
             }
           }
@@ -1157,9 +1367,9 @@
       }
       this.disposed = true;
       const ERRORS = [];
-      for (const RECORD of this.records.values()) {
+      for (const RECORD2 of this.records.values()) {
         try {
-          this._stop(RECORD, "disposed");
+          this._stop(RECORD2, "disposed");
         } catch (error) {
           ERRORS.push(error);
         }
@@ -1209,7 +1419,6 @@
     }
   };
   var CONFIG = {
-    storageKey: "gamekit-audio-example",
     maxVoices: 4,
     categories: {
       impact: {
@@ -1287,116 +1496,134 @@
       }
     }
   };
-  var PLAYER = new AudioPlayer(CONFIG);
-  var tick = 0;
-  var JOURNAL = new PresentationEventQueue({
-    adapters: {
-      sfx: PLAYER.createAdapter({
-        onEnded: (event) => JOURNAL.finish(event)
-      })
-    }
+  var SETTINGS = createSave({
+    ...audioSettings(CONFIG),
+    adapter: localStorageAdapter({ prefix: "gamekit-audio-example:" })
   });
-  var STATUS = () => {
-    document.querySelector("#status").textContent = JSON.stringify(PLAYER.snapshot(), null, 2);
-    document.querySelector("#volume").value = Math.round(PLAYER.volume * 100);
-    document.querySelector("#mute").textContent = PLAYER.muted ? "음소거 해제" : "음소거";
-  };
-  document.querySelector("#tap").onclick = async () => {
-    await PLAYER.unlock();
-    PLAYER.play("hit");
-    STATUS();
-    setTimeout(STATUS, 400);
-  };
-  document.querySelector("#confirmed").onclick = async () => {
-    await PLAYER.unlock();
-    const EVENT = {
-      tick: tick++,
-      sequence: 0,
-      entityId: "demo",
-      generation: 0,
-      kind: "sfx",
-      payload: {
-        soundId: "hit"
-      },
-      policy: "confirmed"
-    };
-    JOURNAL.emit(EVENT);
-    JOURNAL.confirmThrough(EVENT.tick);
-    JOURNAL.emit(EVENT);
-    STATUS();
-    setTimeout(STATUS, 400);
-  };
-  document.querySelector("#dense").onclick = async () => {
-    await PLAYER.unlock();
-    for (let i = 0; i < 20; i++) {
-      PLAYER.play("hit");
+  SETTINGS.load().then(
+    () => start(SETTINGS),
+    (error) => {
+      document.querySelector("#status").textContent = `설정을 읽지 못했습니다: ${error.message}`;
     }
-    for (let i = 0; i < 3; i++) {
-      PLAYER.play("warning");
-    }
-    STATUS();
-    setTimeout(STATUS, 450);
-  };
-  var HIT_AT = async (pan) => {
-    await PLAYER.unlock();
-    PLAYER.start("hit", 1, { pan, detune: (Math.random() - 0.5) * 120 });
-    STATUS();
-    setTimeout(STATUS, 400);
-  };
-  document.querySelector("#left").onclick = () => HIT_AT(-0.8);
-  document.querySelector("#right").onclick = () => HIT_AT(0.8);
-  var bed = null;
-  document.querySelector("#bed").onclick = async () => {
-    if (bed) {
-      bed.stop(500);
-      bed = null;
-    } else {
-      await PLAYER.unlock();
-      bed = PLAYER.startBed("crowd", { level: 0.6, fadeMs: 600 });
-    }
-    document.querySelector("#bed").textContent = bed ? "환경음 끄기" : "환경음 켜기";
-    STATUS();
-  };
-  var loop = null;
-  document.querySelector("#loop").onclick = async () => {
-    if (loop) {
-      loop.stop(500);
-      loop = null;
-    } else {
-      await PLAYER.unlock();
-      const RATE = PLAYER.context.sampleRate, BUFFER = PLAYER.context.createBuffer(1, RATE * 2, RATE), DATA = BUFFER.getChannelData(0);
-      for (let i = 0; i < DATA.length; i++) {
-        const NOTE = Math.floor(i / RATE * 4) % 3, T = i / RATE % 0.5;
-        DATA[i] = Math.sin(2 * Math.PI * [261.6, 329.6, 392][NOTE] * (i / RATE)) * 0.4 * Math.exp(-T * 4);
+  );
+  function start(settings) {
+    const PLAYER = new AudioPlayer({
+      ...CONFIG,
+      settings,
+      onSaveError: (error) => {
+        document.querySelector("#status").textContent = `설정을 저장하지 못했습니다: ${error.message}`;
       }
-      PLAYER.setBuffer("demo-loop", BUFFER);
-      loop = PLAYER.startBed("loop", { level: 0.8, fadeMs: 400 });
-    }
-    document.querySelector("#loop").textContent = loop ? "음원 루프 끄기" : "음원 루프 켜기";
+    });
+    let tick = 0;
+    const JOURNAL = new PresentationEventQueue({
+      adapters: {
+        sfx: PLAYER.createAdapter({
+          onEnded: (event) => JOURNAL.finish(event)
+        })
+      }
+    });
+    const STATUS = () => {
+      document.querySelector("#status").textContent = JSON.stringify(PLAYER.snapshot(), null, 2);
+      document.querySelector("#volume").value = Math.round(PLAYER.volume * 100);
+      document.querySelector("#mute").textContent = PLAYER.muted ? "음소거 해제" : "음소거";
+    };
+    document.querySelector("#tap").onclick = async () => {
+      await PLAYER.unlock();
+      PLAYER.play("hit");
+      STATUS();
+      setTimeout(STATUS, 400);
+    };
+    document.querySelector("#confirmed").onclick = async () => {
+      await PLAYER.unlock();
+      const EVENT = {
+        tick: tick++,
+        sequence: 0,
+        entityId: "demo",
+        generation: 0,
+        kind: "sfx",
+        payload: {
+          soundId: "hit"
+        },
+        policy: "confirmed"
+      };
+      JOURNAL.emit(EVENT);
+      JOURNAL.confirmThrough(EVENT.tick);
+      JOURNAL.emit(EVENT);
+      STATUS();
+      setTimeout(STATUS, 400);
+    };
+    document.querySelector("#dense").onclick = async () => {
+      await PLAYER.unlock();
+      for (let i = 0; i < 20; i++) {
+        PLAYER.play("hit");
+      }
+      for (let i = 0; i < 3; i++) {
+        PLAYER.play("warning");
+      }
+      STATUS();
+      setTimeout(STATUS, 450);
+    };
+    const HIT_AT = async (pan) => {
+      await PLAYER.unlock();
+      PLAYER.start("hit", 1, { pan, detune: (Math.random() - 0.5) * 120 });
+      STATUS();
+      setTimeout(STATUS, 400);
+    };
+    document.querySelector("#left").onclick = () => HIT_AT(-0.8);
+    document.querySelector("#right").onclick = () => HIT_AT(0.8);
+    let bed = null;
+    document.querySelector("#bed").onclick = async () => {
+      if (bed) {
+        bed.stop(500);
+        bed = null;
+      } else {
+        await PLAYER.unlock();
+        bed = PLAYER.startBed("crowd", { level: 0.6, fadeMs: 600 });
+      }
+      document.querySelector("#bed").textContent = bed ? "환경음 끄기" : "환경음 켜기";
+      STATUS();
+    };
+    let loop = null;
+    document.querySelector("#loop").onclick = async () => {
+      if (loop) {
+        loop.stop(500);
+        loop = null;
+      } else {
+        await PLAYER.unlock();
+        const RATE = PLAYER.context.sampleRate, BUFFER = PLAYER.context.createBuffer(1, RATE * 2, RATE), DATA2 = BUFFER.getChannelData(0);
+        for (let i = 0; i < DATA2.length; i++) {
+          const NOTE = Math.floor(i / RATE * 4) % 3, T = i / RATE % 0.5;
+          DATA2[i] = Math.sin(2 * Math.PI * [261.6, 329.6, 392][NOTE] * (i / RATE)) * 0.4 * Math.exp(-T * 4);
+        }
+        PLAYER.setBuffer("demo-loop", BUFFER);
+        loop = PLAYER.startBed("loop", { level: 0.8, fadeMs: 400 });
+      }
+      document.querySelector("#loop").textContent = loop ? "음원 루프 끄기" : "음원 루프 켜기";
+      STATUS();
+    };
+    document.querySelector("#swell").onclick = () => {
+      bed?.swell(1.2, 120, 1200);
+      STATUS();
+    };
+    document.querySelector("#mute").onclick = () => {
+      PLAYER.setMuted(!PLAYER.muted);
+      STATUS();
+    };
+    document.querySelector("#volume").oninput = (e) => {
+      PLAYER.setVolume(Number(e.target.value) / 100);
+      STATUS();
+    };
+    window.audioExample = {
+      player: PLAYER,
+      journal: JOURNAL,
+      config: CONFIG
+    };
+    window.addEventListener("pagehide", () => {
+      JOURNAL.dispose();
+      void PLAYER.dispose();
+    });
     STATUS();
-  };
-  document.querySelector("#swell").onclick = () => {
-    bed?.swell(1.2, 120, 1200);
-    STATUS();
-  };
-  document.querySelector("#mute").onclick = () => {
-    PLAYER.setMuted(!PLAYER.muted);
-    STATUS();
-  };
-  document.querySelector("#volume").oninput = (e) => {
-    PLAYER.setVolume(Number(e.target.value) / 100);
-    STATUS();
-  };
-  window.audioExample = {
-    player: PLAYER,
-    journal: JOURNAL,
-    config: CONFIG
-  };
-  window.addEventListener("pagehide", () => {
-    JOURNAL.dispose();
-    void PLAYER.dispose();
-  });
-  STATUS();
+  }
 })();
 
 </script>
