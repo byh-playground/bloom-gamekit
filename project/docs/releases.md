@@ -1,3 +1,10 @@
+## v0.39.2 (2026-10-31)
+
+수정. `pwa`의 `registerPwa`가 등록 결과가 비어 있을 때 던지지 않고 `onError`로 알립니다. Playwright처럼 자동화 브라우저가 service worker를 막으면(`serviceWorkers: 'block'`) `register()`가 오류 없이 빈 값으로 끝나는데, 이전에는 `addEventListener`를 부르다 페이지 오류가 났습니다.
+
+- 이전 화면과 다른 점: 없습니다. 실제 브라우저에서 등록이 성공하는 경로는 같습니다.
+- 시험: pwa 고정 시나리오에 service worker를 막은 컨텍스트를 더해 `onError` 한 번과 페이지 오류 0건을 확인했습니다. 수정 전 코드로는 이 단계가 시간 초과로 실패합니다.
+
 ## v0.39.1 (2026-10-31)
 
 호환 추가. 새 `pwa` 모듈을 더합니다. 브라우저 runtime `dist/pwa.js`와, dist에서 처음으로 Node ESM 도구 `dist/pwa-build.mjs`를 함께 배포합니다. `buildPwa`는 SVG 원본과 설정 하나에서 `manifest.webmanifest`·아이콘(192·512·maskable·180 apple-touch)·공유 이미지(1200×630)·`sw.js`·`<head>` 태그를 만들고, 게임은 결과를 커밋합니다. `check: true`는 커밋된 결과가 원본과 다르면 던집니다. `registerPwa`는 sw.js 등록과 설치(`install`)·업데이트(`onUpdate` → `update()`) 알림을 맡습니다.
