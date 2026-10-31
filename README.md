@@ -25,6 +25,7 @@
 - [광고 어댑터 추상화·빈도 정책](./modules/bm/README.md) · [mock 어댑터](./modules/bm/adapters/mock/README.md) · [Google H5 Games Ads 어댑터와 신청 절차](./modules/bm/adapters/google-ads/README.md) · [IMA 영상 광고 어댑터(샘플 태그로 승인 없이 테스트)](./modules/bm/adapters/ima/README.md)
 - [상품·구매와 서버 확인 기준 소유 판정](./modules/store/README.md) · [mock 어댑터](./modules/store/adapters/mock/README.md)
 - [게임 저장 레코드: 이관·검증·탭 간 충돌, 저장소 어댑터](./modules/save/README.md)
+- [PWA: SVG 하나에서 manifest·아이콘·공유 이미지·sw.js 생성, 오프라인 시작과 업데이트 알림](./modules/pwa/README.md) · `node modules/pwa/tests/pwa.e2e.mjs`
 - [동적 방·공개 입장·새로고침 복구](./modules/rollback/README.md) · [Nostr 디렉터리·전송](./modules/transport/README.md)
 - [SDK 전체/분리 API와 이전](./modules/rollback/docs/api-migration.md)
 - [비활성 참가자·가용성 정책·자동 coordinator 이관](./modules/rollback/README.md#비활성-참가자와-선택형-가용성) · [독립 deadline pump 예제](./modules/rollback/examples/availability/index.html)
@@ -50,7 +51,7 @@ project/{tests,docs,benchmarks}/  통합 검증·측정 기록
 
 ## GitHub 파일 배포
 
-PR에서는 소스 전용 checkout, 독립 모듈 build, 생성 manifest, bundle bytes와 고정 목록의 font assets를 확인합니다. main에 승인된 변경이 들어오면 GitHub Actions가 같은 build 결과를 확인한 후 `dist` 브랜치의 공개 26개 JavaScript 번들, `manifest.json`, 명시된 font assets를 자동 갱신합니다. `vector-assets-loader.js`는 게임 시작 시 원본 SVG를 검증하고 공유 컴파일러로 retained geometry를 생성하는 별도 번들이며, 샘플 SVG를 포함하지 않습니다. modules/assets의 정확한 목록과 자산 경계는 project/distribution.mjs와 생성 manifest가 소유합니다. 생성 JS와 asset 복사본은 소스 커밋에 넣지 않습니다. 실제 Node·Chromium E2E와 benchmark는 로컬 검증 명령으로 유지하며 자동 배포 경로에 포함하지 않습니다. 표준 `ubuntu-latest`만 사용하며 유료 runner·artifact 저장·Release·npm·Pages는 쓰지 않습니다. HTML Preview용 단일 HTML은 같은 CI 권한으로 별도 previews 브랜치에 배포합니다.
+PR에서는 소스 전용 checkout, 독립 모듈 build, 생성 manifest, bundle bytes와 고정 목록의 font assets를 확인합니다. main에 승인된 변경이 들어오면 GitHub Actions가 같은 build 결과를 확인한 후 `dist` 브랜치의 공개 브라우저 JavaScript 번들과 Node 도구(`pwa-build.mjs`), `manifest.json`, 명시된 font assets를 자동 갱신합니다. `vector-assets-loader.js`는 게임 시작 시 원본 SVG를 검증하고 공유 컴파일러로 retained geometry를 생성하는 별도 번들이며, 샘플 SVG를 포함하지 않습니다. modules/assets의 정확한 목록과 자산 경계는 project/distribution.mjs와 생성 manifest가 소유합니다. 생성 JS와 asset 복사본은 소스 커밋에 넣지 않습니다. 실제 Node·Chromium E2E와 benchmark는 로컬 검증 명령으로 유지하며 자동 배포 경로에 포함하지 않습니다. 표준 `ubuntu-latest`만 사용하며 유료 runner·artifact 저장·Release·npm·Pages는 쓰지 않습니다. HTML Preview용 단일 HTML은 같은 CI 권한으로 별도 previews 브랜치에 배포합니다.
 
 main 실행이 성공하면 [interpolation.js](https://github.com/byh-playground/bloom-gamekit/blob/dist/interpolation.js), [rendering.js](https://github.com/byh-playground/bloom-gamekit/blob/dist/rendering.js), [input.js](https://github.com/byh-playground/bloom-gamekit/blob/dist/input.js), [hash manifest](https://github.com/byh-playground/bloom-gamekit/blob/dist/manifest.json)에서 파일을 공유할 수 있습니다. GitHub Raw URL은 JS MIME/CORS를 보장하는 웹 호스팅 계약이 아니므로 브라우저의 직접 import 주소로 가정하지 마세요. **CORS-enabled font assets**는 `https://cdn.jsdelivr.net/gh/byh-playground/bloom-gamekit@<dist-commit>/assets/fonts/<file>`처럼 정확한 공개 dist commit을 고정해 가져오고 manifest의 byte length/SHA-256을 적용합니다. 정확한 불변 버전 태그 또는 dist commit SHA를 사용하고 branch-latest 주소는 사용하지 마세요. dist 커밋 메시지에 source commit과 manifest의 bundle/asset SHA-256 및 asset byte length가 기록됩니다. 검사 job의 manifest hash와 배포 직전 모든 재빌드 파일을 대조합니다. 기존 dist의 다른 파일은 보존하고, stale main 실행은 건너뛰며 경합 시 non-fast-forward로 중단합니다. 브랜치 게시의 실제 성공은 main 머지 후 별도로 확인해야 합니다.
 

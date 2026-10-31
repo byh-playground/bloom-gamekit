@@ -2,7 +2,15 @@ import { build } from 'esbuild';
 import { mkdir, readFile, writeFile, readdir, unlink } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { MODULES, FONT_ASSETS, MANIFEST_FILE, createManifest, serializeManifest } from './distribution.mjs';
+import {
+    MODULES,
+    NODE_TOOLS,
+    FONT_ASSETS,
+    MANIFEST_FILE,
+    BUNDLE_FILE_NAME,
+    createManifest,
+    serializeManifest,
+} from './distribution.mjs';
 import { MATTER_URL } from '../modules/pixel-physics/dependencies.js';
 const SDK_DEPENDENCIES = {
     scenario: ['simloop'],
@@ -34,19 +42,37 @@ const SOURCE_DIRS = {
     'bm-ima': 'bm/adapters/ima',
     'store-mock': 'store/adapters/mock',
 };
+// 브라우저 번들은 modules/<dir>/index.js 하나에서, Node 도구는 선언한 소스 파일 하나에서 만듭니다.
+const TARGETS = [
+    ...MODULES.map((name) => ({
+        name,
+        file: `${name}.js`,
+        entry: `modules/${SOURCE_DIRS[name] ?? name}/index.js`,
+        owners: [SOURCE_DIRS[name] ?? name, ...(SDK_DEPENDENCIES[name] ?? [])],
+        node: false,
+    })),
+    ...NODE_TOOLS.map(({ name, source }) => ({
+        name,
+        file: `${name}.mjs`,
+        entry: source,
+        owners: [dirname(source).slice('modules/'.length)],
+        node: true,
+    })),
+];
 export async function buildDistribution(root) {
     const BUNDLES = new Map();
-    for (const NAME of MODULES) {
-        const SOURCE_DIR = SOURCE_DIRS[NAME] ?? NAME;
+    for (const { name: NAME, file: FILE_NAME, entry: ENTRY, owners: OWNERS, node: NODE } of TARGETS) {
         // PixelPhysics의 명시적 웹 의존성만 허용하며 나머지는 외부 import가 없습니다.
+        // Node 도구는 node: 내장 모듈만 import합니다.
         const EXTERNAL_IMPORTS = NAME === 'pixel-physics' ? [MATTER_URL] : [];
+        const ALLOWED_IMPORT = (path) => EXTERNAL_IMPORTS.includes(path) || (NODE && path.startsWith('node:'));
         const RESULT = await build({
             absWorkingDir: root,
-            entryPoints: [`modules/${SOURCE_DIR}/index.js`],
-            outfile: `dist/${NAME}.js`,
+            entryPoints: [ENTRY],
+            outfile: `dist/${FILE_NAME}`,
             bundle: true,
             format: 'esm',
-            platform: 'browser',
+            platform: NODE ? 'node' : 'browser',
             target: 'es2022',
             charset: 'utf8',
             legalComments: 'inline',
@@ -75,15 +101,13 @@ export async function buildDistribution(root) {
         if (
             RESULT.outputFiles.length !== 1 ||
             OUTPUTS.length !== 1 ||
-            OUTPUTS[0].imports.length !== EXTERNAL_IMPORTS.length ||
-            OUTPUTS[0].imports.some(
-                (entry) => entry.kind !== 'import-statement' || !EXTERNAL_IMPORTS.includes(entry.path),
-            )
+            (!NODE && OUTPUTS[0].imports.length !== EXTERNAL_IMPORTS.length) ||
+            OUTPUTS[0].imports.some((entry) => entry.kind !== 'import-statement' || !ALLOWED_IMPORT(entry.path))
         ) {
-            throw new Error(`배포물은 선언한 웹 의존성만 가진 ${NAME}.js 하나여야 합니다.`);
+            throw new Error(`배포물은 선언한 의존성만 가진 ${FILE_NAME} 하나여야 합니다.`);
         }
         for (const INPUT of Object.keys(RESULT.metafile.inputs)) {
-            const OWNED = [SOURCE_DIR, ...(SDK_DEPENDENCIES[NAME] ?? [])].some(
+            const OWNED = OWNERS.some(
                 (owner) =>
                     INPUT.startsWith(`modules/${owner}/`) && !INPUT.slice(`modules/${owner}/`.length).includes('/'),
             );
@@ -111,14 +135,14 @@ export async function buildDistribution(root) {
                 throw new Error(`${NAME} 소스 밖의 런타임 의존성은 허용하지 않습니다: ${INPUT}`);
             }
         }
-        BUNDLES.set(`${NAME}.js`, Buffer.from(RESULT.outputFiles[0].contents));
+        BUNDLES.set(FILE_NAME, Buffer.from(RESULT.outputFiles[0].contents));
     }
     // 모든 모듈의 검사가 끝난 뒤에만 배포물을 갱신합니다.
     await mkdir(resolve(root, 'dist'), {
         recursive: true,
     });
     for (const FILE of await readdir(resolve(root, 'dist'))) {
-        if (/^[a-z][a-z-]*\.js$/.test(FILE) && !BUNDLES.has(FILE)) {
+        if (BUNDLE_FILE_NAME.test(FILE) && !BUNDLES.has(FILE)) {
             await unlink(resolve(root, 'dist', FILE));
         }
     }
