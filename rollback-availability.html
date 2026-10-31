@@ -83,9 +83,9 @@
   }
   function hashBytes(value, seed = 2166136261) {
     let h = seed >>> 0;
-    const DATA = bytes(value);
-    for (let i = 0; i < DATA.length; i++) {
-      h = Math.imul(h ^ DATA[i], 16777619) >>> 0;
+    const DATA2 = bytes(value);
+    for (let i = 0; i < DATA2.length; i++) {
+      h = Math.imul(h ^ DATA2[i], 16777619) >>> 0;
     }
     return h;
   }
@@ -112,7 +112,7 @@
       return SIGNED(Number(BigInt(SIGNED(a)) * 1024n / BigInt(b)));
     }
   });
-  var VERSION = "0.38.1";
+  var VERSION = "0.39.0";
   var REPLAY_FORMAT_VERSION = "0.2.0-dev";
   var PROTOCOL_VERSION = 3;
   var CHUNK_SIZE = 16384;
@@ -381,8 +381,8 @@
     put(state2) {
       const OLDEST = Math.max(0, state2.tick - this.size + 1);
       const BASE = this.atOrBefore(OLDEST);
-      const EXPIRED = [...this.records.values()].filter((s) => BASE && s.tick < BASE.tick);
-      const NEXT = this.byteLength - EXPIRED.reduce((n, s) => n + s.bytes.length, 0) - (this.records.get(state2.tick)?.bytes.length ?? 0) + state2.bytes.length;
+      const EXPIRED2 = [...this.records.values()].filter((s) => BASE && s.tick < BASE.tick);
+      const NEXT = this.byteLength - EXPIRED2.reduce((n, s) => n + s.bytes.length, 0) - (this.records.get(state2.tick)?.bytes.length ?? 0) + state2.bytes.length;
       if (NEXT > this.maxBytes) {
         throw Object.assign(new RangeError("checkpoint history byte budget"), {
           code: "history-capacity",
@@ -391,7 +391,7 @@
           snapshotBytes: state2.bytes.length
         });
       }
-      for (const S of EXPIRED) {
+      for (const S of EXPIRED2) {
         this.records.delete(S.tick);
       }
       this.records.set(state2.tick, state2);
@@ -1672,14 +1672,14 @@
     }
     _sendClock(peer, now, replyTo) {
       const ID = this._nextSequence();
-      const DATA = packet(TYPE.CLOCK, ID, (w) => {
+      const DATA2 = packet(TYPE.CLOCK, ID, (w) => {
         w.u32(this.tick);
         w.i32(this.confirmedTick);
         w.i32(this._through.get(peer.id));
         w.u32(replyTo ?? 0);
         w.u8(replyTo === void 0 ? 0 : 1);
       });
-      if (this._send(peer, DATA)) {
+      if (this._send(peer, DATA2)) {
         if (replyTo === void 0) {
           peer.pendingPings.set(ID, now);
           peer.lastSent = now;
@@ -1715,13 +1715,13 @@
         }
         let sent = 0;
         while (PEER.controls.length && sent < 65536) {
-          const DATA = PEER.controls[0];
-          if (!this._send(PEER, DATA)) {
+          const DATA2 = PEER.controls[0];
+          if (!this._send(PEER, DATA2)) {
             break;
           }
           PEER.controls.shift();
-          PEER.queuedBytes -= DATA.length;
-          sent += DATA.length;
+          PEER.queuedBytes -= DATA2.length;
+          sent += DATA2.length;
         }
       }
       if (this._incomingSnapshot && now - this._incomingSnapshot.started > this.profile.recoveryTimeoutMs) {
@@ -2982,11 +2982,11 @@
     }
     const CHECKPOINT = bootstrap.checkpoint;
     const START = integer(CHECKPOINT?.tick, "bootstrap checkpoint tick", 0, TICK);
-    const DATA = bytes(CHECKPOINT?.bytes, "bootstrap checkpoint");
-    if (!DATA.length || DATA.length > limits.maxSnapshotBytes) {
+    const DATA2 = bytes(CHECKPOINT?.bytes, "bootstrap checkpoint");
+    if (!DATA2.length || DATA2.length > limits.maxSnapshotBytes) {
       throw new RangeError("bootstrap snapshot size");
     }
-    const CHECKPOINT_BYTES = DATA.slice();
+    const CHECKPOINT_BYTES = DATA2.slice();
     const CHECKPOINT_HASH = integer(CHECKPOINT.hash, "bootstrap checkpoint hash");
     if (!deferCheckpointHash && hashBytes(CHECKPOINT_BYTES) !== CHECKPOINT_HASH) {
       throw new Error("bootstrap checkpoint hash mismatch");
@@ -2998,7 +2998,7 @@
     if (START === TICK && CHECKPOINT_HASH !== HASH) {
       throw new Error("bootstrap final hash mismatch");
     }
-    let totalBytes = DATA.length;
+    let totalBytes = DATA2.length;
     if (totalBytes > limits.maxReplayBytes) {
       throw new RangeError("bootstrap replay byte budget");
     }
@@ -3133,11 +3133,11 @@
       COOPERATIVE
     );
     const SAVE = () => {
-      const DATA = bytes(adapter.save(), "bootstrap adapter snapshot");
-      if (!DATA.length || DATA.length > maxSnapshotBytes) {
+      const DATA2 = bytes(adapter.save(), "bootstrap adapter snapshot");
+      if (!DATA2.length || DATA2.length > maxSnapshotBytes) {
         throw new RangeError("bootstrap adapter snapshot size");
       }
-      return DATA.slice();
+      return DATA2.slice();
     };
     const CONTEXT = (tick2) => ({
       tick: tick2,
@@ -3309,11 +3309,11 @@
     let hash = 2166136261;
     let hashOffset = 0;
     const OWN = (value) => {
-      const DATA = bytes(value, "bootstrap job snapshot");
-      if (!DATA.length || DATA.length > maxSnapshotBytes) {
+      const DATA2 = bytes(value, "bootstrap job snapshot");
+      if (!DATA2.length || DATA2.length > maxSnapshotBytes) {
         throw new RangeError("bootstrap adapter snapshot size");
       }
-      return DATA.slice();
+      return DATA2.slice();
     };
     const CHECK_JOB = (value) => {
       if (!value || typeof value.pulse !== "function" || typeof value.cancel !== "function") {
@@ -3407,13 +3407,13 @@
               budgetMs: maxCatchupMs
             });
             if (job.done) {
-              const DATA = OWN(job.result);
+              const DATA2 = OWN(job.result);
               job = null;
               if (phase === "original") {
-                original = DATA;
+                original = DATA2;
                 phase = "prepare";
               } else {
-                final = DATA;
+                final = DATA2;
                 phase = "hash";
               }
             }
@@ -4337,9 +4337,9 @@
         }, raw = function() {
           const N = length();
           need(N);
-          const DATA = BYTES.subarray(offset, offset + N);
+          const DATA2 = BYTES.subarray(offset, offset + N);
           offset += N;
-          return DATA;
+          return DATA2;
         }, read = function(depth = 0) {
           if (depth > maxDepth || ++entries > maxEntries) {
             throw new RangeError("Value codec budget exceeded");
@@ -5269,13 +5269,13 @@
       for (const LINK of this._links.values()) {
         let count = 0;
         while (LINK.queue.length && count++ < 16) {
-          const DATA = LINK.queue[0];
-          if (LINK.transport.send(DATA) === false) {
+          const DATA2 = LINK.queue[0];
+          if (LINK.transport.send(DATA2) === false) {
             break;
           }
           LINK.queue.shift();
-          LINK.queuedBytes -= DATA.length;
-          this._stats.sentControlBytes += DATA.length;
+          LINK.queuedBytes -= DATA2.length;
+          this._stats.sentControlBytes += DATA2.length;
         }
       }
     }
@@ -7628,99 +7628,351 @@
   }
   var STAR_HEADER = 24;
   var STAR_PAYLOAD = CHUNK_SIZE2 - STAR_HEADER;
-  var HEX32 = /^[0-9a-f]{64}$/;
-  function createRoomResumeIdentity({ storage, key, lifetimeMs = 8 * 60 * 60 * 1e3, reset = false } = {}, { namespace, room: room2 }) {
-    if (!storage || ["getItem", "setItem", "removeItem"].some((name) => typeof storage[name] !== "function")) {
-      throw new TypeError("resume storage capability");
+  var SaveError = class extends Error {
+    constructor(kind, message, cause) {
+      super(message, cause === void 0 ? void 0 : { cause });
+      this.name = "SaveError";
+      this.kind = kind;
     }
-    integer2(lifetimeMs, "resume lifetimeMs", 1e3, 24 * 60 * 60 * 1e3);
-    key ??= `bloom-gamekit:dynamic-v1:${namespace}:${room2}`;
-    if (typeof key !== "string" || !key.length || key.length > 512) {
+  };
+  var RECORD = (data, schema, revision) => ({ ...data, schema, revision });
+  var DATA = (record) => {
+    const COPY = { ...record };
+    delete COPY.schema;
+    delete COPY.revision;
+    return COPY;
+  };
+  var INTEGER = (value) => Number.isSafeInteger(value) && value >= 0;
+  function createSave({ adapter, key, version, create, validate, migrate = {} } = {}) {
+    if (!adapter || typeof adapter.transact !== "function") {
+      throw new TypeError("save adapter must provide transact");
+    }
+    if (typeof key !== "string" || key === "") {
+      throw new TypeError("save key must be a non-empty string");
+    }
+    if (!Number.isSafeInteger(version) || version < 1) {
+      throw new RangeError("save version must be a positive integer");
+    }
+    if (typeof create !== "function" || typeof validate !== "function") {
+      throw new TypeError("save create and validate must be functions");
+    }
+    const LISTENERS = /* @__PURE__ */ new Set();
+    let channel = null, pending = Promise.resolve(), closed = false;
+    if (adapter.channelName && typeof BroadcastChannel !== "undefined") {
+      channel = new BroadcastChannel(`${adapter.channelName}:${key}`);
+      channel.onmessage = (event) => {
+        const REVISION = event.data?.revision;
+        if (INTEGER(REVISION) && SAVE.revision !== null && REVISION > SAVE.revision) {
+          for (const LISTENER of LISTENERS) {
+            LISTENER({ revision: REVISION });
+          }
+        }
+      };
+    }
+    const READ = (stored) => {
+      if (stored instanceof SaveError) {
+        throw stored;
+      }
+      if (stored === void 0) {
+        const CREATED = create();
+        validate(CREATED);
+        return { record: RECORD(CREATED, version, 0), write: true };
+      }
+      if (!stored || typeof stored !== "object" || !INTEGER(stored.schema) || !INTEGER(stored.revision)) {
+        throw new SaveError("unreadable", "saved record has no schema or revision");
+      }
+      if (stored.schema > version) {
+        throw new SaveError("unreadable", `saved schema ${stored.schema} is newer than ${version}`);
+      }
+      let data = DATA(stored);
+      for (let schema = stored.schema; schema < version; schema++) {
+        if (typeof migrate[schema] !== "function") {
+          throw new SaveError("unreadable", `no migration from schema ${schema}`);
+        }
+        data = migrate[schema](data);
+      }
+      try {
+        validate(data);
+      } catch (error) {
+        throw new SaveError("unreadable", "saved record failed validation", error);
+      }
+      const MIGRATED = stored.schema !== version;
+      return { record: RECORD(data, version, stored.revision + (MIGRATED ? 1 : 0)), write: MIGRATED };
+    };
+    const QUEUE = (operation) => {
+      const RUN = pending.then(() => {
+        if (closed) {
+          throw new SaveError("closed", "save is closed");
+        }
+        return operation();
+      });
+      pending = RUN.catch(() => {
+      });
+      return RUN;
+    };
+    const COMMIT = (record, written) => {
+      SAVE.data = DATA(record);
+      SAVE.revision = record.revision;
+      if (written) {
+        channel?.postMessage({ revision: record.revision });
+      }
+      return SAVE.data;
+    };
+    const SAVE = {
+      /** 마지막으로 읽거나 저장한 데이터. 직접 고치지 말고 update로 바꿉니다. */
+      data: null,
+      revision: null,
+      /** 읽지 못한 저장을 만나면 true. 원본을 덮어쓰지 않도록 update를 거부합니다. */
+      locked: false,
+      /** 저장소에서 다시 읽습니다. 없으면 create로 만들고, 낮은 schema는 이관해 저장합니다. */
+      load() {
+        return QUEUE(async () => {
+          let written = false, record;
+          try {
+            record = await adapter.transact(key, (stored) => {
+              const RESULT = READ(stored);
+              written = RESULT.write;
+              return { value: RESULT.record, write: RESULT.write };
+            });
+          } catch (error) {
+            if (error instanceof SaveError && error.kind === "unreadable") {
+              SAVE.locked = true;
+            }
+            throw error;
+          }
+          SAVE.locked = false;
+          return COMMIT(record, written);
+        });
+      },
+      /**
+       * 현재 데이터의 복사본을 고쳐 저장합니다. mutate가 false를 반환하면 저장하지 않습니다.
+       * 저장소의 revision이 마지막으로 읽은 것과 다르면 아무것도 쓰지 않고 conflict를 던집니다.
+       */
+      update(mutate) {
+        return QUEUE(async () => {
+          if (SAVE.locked) {
+            throw new SaveError("unreadable", "saved record is unreadable and preserved");
+          }
+          if (SAVE.revision === null) {
+            throw new Error("load before update");
+          }
+          let written = false;
+          const UPDATED = await adapter.transact(key, (stored) => {
+            if (stored instanceof SaveError) {
+              throw stored;
+            }
+            if (!stored || stored.revision !== SAVE.revision || stored.schema !== version) {
+              throw new SaveError("conflict", "saved record changed elsewhere");
+            }
+            const NEXT = structuredClone(DATA(stored));
+            if (mutate(NEXT) === false) {
+              return { value: stored, write: false };
+            }
+            validate(NEXT);
+            written = true;
+            return { value: RECORD(NEXT, version, stored.revision + 1), write: true };
+          });
+          return COMMIT(UPDATED, written);
+        });
+      },
+      /**
+       * 저장된 레코드를 버리고 `create()`로 새로 만들어 저장합니다. 읽지 못한 저장도 덮어쓰고 잠금을 풉니다.
+       * 되돌릴 수 없으므로 게임이 사용자 확인을 받은 뒤에만 부릅니다. 다른 탭이 알도록 revision은 이어서 올립니다.
+       */
+      reset() {
+        return QUEUE(async () => {
+          const CREATED = create();
+          validate(CREATED);
+          const RECORD_RESET = await adapter.transact(key, (stored) => ({
+            value: RECORD(CREATED, version, INTEGER(stored?.revision) ? stored.revision + 1 : 0),
+            write: true
+          }));
+          SAVE.locked = false;
+          return COMMIT(RECORD_RESET, true);
+        });
+      },
+      /** 다른 탭이 이 레코드를 저장하면 `{revision}`으로 부릅니다. 해제 함수를 반환합니다. */
+      onExternalChange(listener) {
+        LISTENERS.add(listener);
+        return () => LISTENERS.delete(listener);
+      },
+      dispose() {
+        closed = true;
+        LISTENERS.clear();
+        channel?.close();
+        channel = null;
+        adapter.close?.();
+      }
+    };
+    return SAVE;
+  }
+  var HEX32 = /^[0-9a-f]{64}$/;
+  var DAY_MS = 24 * 60 * 60 * 1e3;
+  var INVALID = "invalid resume record; explicitly reset for a fresh room";
+  var EXPIRED = "resume record expired; explicitly reset for a fresh room";
+  var UNAVAILABLE = "resume storage unavailable";
+  var UNREADABLE = (error) => error instanceof SaveError && error.kind === "unreadable";
+  function createResumeRecord(options) {
+    let save = null, pending = Promise.resolve(), released = false;
+    const SETTLE = () => {
+      if (!released) {
+        return;
+      }
+      const LAST = pending;
+      LAST.then(() => {
+        if (pending === LAST && save) {
+          save.dispose();
+          save = null;
+        }
+      });
+    };
+    const RUN = (operation) => {
+      const RESULT = pending.then(operation);
+      pending = RESULT.then(
+        () => {
+        },
+        () => {
+        }
+      );
+      SETTLE();
+      return RESULT;
+    };
+    return {
+      /** Reads the record, or discards whatever is stored (readable or not) when `reset` is true. */
+      open: (reset) => RUN(() => {
+        save ??= createSave(options);
+        return reset ? save.reset() : save.load();
+      }),
+      /** Applies a synchronous `mutate` after every earlier write. */
+      write: (mutate) => RUN(async () => {
+        if (!save) {
+          save = createSave(options);
+          await save.load();
+        }
+        return save.update(mutate);
+      }),
+      release() {
+        released = true;
+        SETTLE();
+      }
+    };
+  }
+  var IDENTITY_SAVE = ({ adapter, key }, { namespace, room: room2 }) => ({
+    adapter,
+    key: key ?? `bloom-gamekit:dynamic-v2:${namespace}:${room2}`,
+    version: 1,
+    create: () => ({ identity: null }),
+    validate(data) {
+      const VALUE = data?.identity;
+      if (VALUE === null) {
+        return;
+      }
+      if (!VALUE || typeof VALUE !== "object" || VALUE.namespace !== namespace || VALUE.room !== room2 || !HEX32.test(VALUE.id) || !HEX32.test(VALUE.secret) || !Number.isSafeInteger(VALUE.createdAt) || !Number.isSafeInteger(VALUE.expiresAt) || VALUE.expiresAt - VALUE.createdAt > DAY_MS || VALUE.sessionId !== null && (typeof VALUE.sessionId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(VALUE.sessionId)) || !Array.isArray(VALUE.players) || VALUE.players.length > 5 || VALUE.players.some((id) => !HEX32.test(id)) || new Set(VALUE.players).size !== VALUE.players.length || !Number.isSafeInteger(VALUE.epoch) || VALUE.epoch < 0 || VALUE.epoch > 65534 || VALUE.coordinatorId !== null && !VALUE.players.includes(VALUE.coordinatorId)) {
+        throw new TypeError("resume identity record");
+      }
+    }
+  });
+  function resumeOptions({ key, lifetimeMs = 8 * 60 * 60 * 1e3, reset = false } = {}) {
+    integer2(lifetimeMs, "resume lifetimeMs", 1e3, DAY_MS);
+    if (key !== void 0 && (typeof key !== "string" || !key.length || key.length > 512)) {
       throw new TypeError("resume storage key");
     }
     if (typeof reset !== "boolean") {
       throw new TypeError("resume reset");
     }
-    if (reset) {
-      storage.removeItem(key);
+    return { lifetimeMs, reset };
+  }
+  async function createRoomResumeIdentity(resume, { namespace, room: room2, onWriteFailure }) {
+    const { lifetimeMs: LIFETIME_MS, reset: RESET } = resumeOptions(resume);
+    if (typeof onWriteFailure !== "function") {
+      throw new TypeError("resume onWriteFailure");
     }
+    const RECORD2 = createResumeRecord(IDENTITY_SAVE(resume, { namespace, room: room2 }));
     let saved;
     let secret;
     let forgotten = false;
     let closed = false;
-    const RAW = storage.getItem(key), NOW = Date.now();
-    if (RAW != null) {
-      let expired = false;
+    try {
       try {
-        if (typeof RAW !== "string" || RAW.length > 8192) {
-          throw new Error("invalid record");
-        }
-        saved = JSON.parse(RAW);
-        expired = Number.isSafeInteger(saved?.expiresAt) && saved.expiresAt <= NOW;
-        if (saved.version !== 1 || saved.namespace !== namespace || saved.room !== room2 || !HEX32.test(saved.secret) || !Number.isSafeInteger(saved.createdAt) || !Number.isSafeInteger(saved.expiresAt) || saved.createdAt > NOW || saved.expiresAt <= NOW || saved.expiresAt - saved.createdAt > 24 * 60 * 60 * 1e3 || saved.sessionId !== null && (typeof saved.sessionId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(saved.sessionId)) || !Array.isArray(saved.players) || saved.players.length > 5 || saved.players.some((id) => !HEX32.test(id)) || new Set(saved.players).size !== saved.players.length || !Number.isSafeInteger(saved.epoch) || saved.epoch < 0 || saved.epoch > 65534 || saved.coordinatorId !== null && !saved.players.includes(saved.coordinatorId)) {
-          throw new Error("invalid record");
+        ({ identity: saved } = await RECORD2.open(RESET));
+      } catch (error) {
+        throw UNREADABLE(error) ? new Error(INVALID, { cause: error }) : error;
+      }
+      const NOW = Date.now();
+      if (saved) {
+        if (saved.expiresAt <= NOW) {
+          throw new Error(EXPIRED);
         }
         secret = nostrFromHex(saved.secret);
         const SCALAR = nostrBytesToNumber(secret);
-        if (SCALAR <= 0n || SCALAR >= NOSTR_ORDER || nostrToHex(nostrPublicKey(secret)) !== saved.id) {
-          throw new Error("invalid key");
+        if (saved.createdAt > NOW || SCALAR <= 0n || SCALAR >= NOSTR_ORDER || nostrToHex(nostrPublicKey(secret)) !== saved.id) {
+          throw new Error(INVALID);
         }
-      } catch {
-        secret?.fill(0);
-        throw new Error(
-          expired ? "resume record expired; explicitly reset for a fresh room" : "invalid resume record; explicitly reset for a fresh room"
-        );
-      }
-    }
-    if (!secret) {
-      secret = new Uint8Array(32);
-      let valid = false;
-      for (let attempt = 0; attempt < 16; attempt++) {
-        globalThis.crypto.getRandomValues(secret);
-        const VALUE = nostrBytesToNumber(secret);
-        if (VALUE > 0n && VALUE < NOSTR_ORDER) {
-          valid = true;
-          break;
+      } else {
+        secret = new Uint8Array(32);
+        let valid = false;
+        for (let attempt = 0; attempt < 16; attempt++) {
+          globalThis.crypto.getRandomValues(secret);
+          const VALUE = nostrBytesToNumber(secret);
+          if (VALUE > 0n && VALUE < NOSTR_ORDER) {
+            valid = true;
+            break;
+          }
         }
+        if (!valid) {
+          throw new Error("resume identity generation failed");
+        }
+        const FRESH = {
+          namespace,
+          room: room2,
+          id: nostrToHex(nostrPublicKey(secret)),
+          secret: nostrToHex(secret),
+          createdAt: NOW,
+          expiresAt: NOW + LIFETIME_MS,
+          sessionId: null,
+          coordinatorId: null,
+          epoch: 0,
+          players: []
+        };
+        try {
+          await RECORD2.write((draft) => {
+            draft.identity = FRESH;
+          });
+        } catch (error) {
+          throw new Error(UNAVAILABLE, { cause: error });
+        }
+        saved = FRESH;
       }
-      if (!valid) {
-        secret.fill(0);
-        throw new Error("resume identity generation failed");
-      }
+    } catch (error) {
+      secret?.fill(0);
+      RECORD2.release();
+      throw error;
     }
-    const ID = nostrToHex(nostrPublicKey(secret));
-    let record = saved ?? {
-      version: 1,
-      namespace,
-      room: room2,
-      id: ID,
-      secret: nostrToHex(secret),
-      createdAt: NOW,
-      expiresAt: NOW + lifetimeMs,
-      sessionId: null,
-      coordinatorId: null,
-      epoch: 0,
-      players: []
-    };
-    const METADATA = saved ? {
+    const ID = saved.id;
+    let record = saved;
+    const METADATA = saved.sessionId === null ? null : {
       sessionId: saved.sessionId,
       coordinatorId: saved.coordinatorId,
       epoch: saved.epoch,
       players: [...saved.players]
-    } : null;
-    function write() {
-      if (forgotten || closed) {
+    };
+    function close() {
+      if (closed) {
         return;
       }
-      try {
-        storage.setItem(key, JSON.stringify(record));
-      } catch {
-        secret.fill(0);
-        closed = true;
-        throw new Error("resume storage unavailable");
-      }
+      closed = true;
+      secret.fill(0);
+      record = null;
+      RECORD2.release();
     }
-    write();
+    function persist(value) {
+      RECORD2.write((draft) => {
+        draft.identity = value;
+      }).catch((error) => {
+        close();
+        onWriteFailure(error);
+      });
+    }
     return {
       metadata: METADATA,
       identity: {
@@ -7731,14 +7983,7 @@
           }
           return nostrSign(hash, secret, auxiliary, cryptoImpl);
         },
-        close() {
-          if (closed) {
-            return;
-          }
-          closed = true;
-          secret.fill(0);
-          record = null;
-        }
+        close
       },
       update(value) {
         if (!forgotten && !closed) {
@@ -7747,12 +7992,12 @@
             ...value,
             players: [...value.players]
           };
-          write();
+          persist(record);
         }
       },
       forget() {
-        storage.removeItem(key);
         forgotten = true;
+        persist(null);
       }
     };
   }
@@ -7818,9 +8063,14 @@
     if (!/^\d{4}$/.test(room2 ?? "")) {
       throw new TypeError("four-digit room");
     }
-    const RESUME_IDENTITY = resume ? createRoomResumeIdentity(resume, {
+    const RESUME_IDENTITY = resume ? await createRoomResumeIdentity(resume, {
       namespace,
-      room: room2
+      room: room2,
+      onWriteFailure: (error) => STATUS2("resume-save-failed", {
+        record: "identity",
+        reason: error.message,
+        error
+      })
     }) : null;
     const STARTED_AT = NOW_MS2(), SIGNAL_CONTROLLER = new AbortController();
     let initializationReject;
@@ -8957,12 +9207,7 @@
       localPlayerId: SELF
     });
     if (!disposed) {
-      try {
-        saveResume();
-      } catch (error) {
-        close(error.message);
-        return READY;
-      }
+      saveResume();
       if (!ESTABLISHING) {
         advertise();
         finish();
@@ -9301,9 +9546,9 @@
         }, raw = function() {
           const N = length();
           need(N);
-          const DATA = BYTES.subarray(offset, offset + N);
+          const DATA2 = BYTES.subarray(offset, offset + N);
           offset += N;
-          return DATA;
+          return DATA2;
         }, read = function(depth = 0) {
           if (depth > maxDepth || ++entries > maxEntries) {
             throw new RangeError("Value codec budget exceeded");
