@@ -1,3 +1,11 @@
+## v0.38.1 (2026-10-31)
+
+호환 추가. `save`에 `reset()`을 더합니다. 읽지 못해 잠긴 저장에서 게임이 사용자 확인을 받은 뒤 "기록을 지우고 새로 시작"할 수 있게 합니다. 저장된 레코드를 버리고 `create()`로 새로 저장하며 잠금을 풉니다. 잠금 자체(모듈이 스스로 덮어쓰지 않음)는 그대로입니다.
+
+- 어댑터 계약: 저장된 값을 해석하지 못하면 던지는 대신 `SaveError('unreadable')`을 `body`에 넘깁니다. `load`·`update`는 이전처럼 unreadable로 실패하고, `reset`만 덮어씁니다. 직접 만든 어댑터가 던지는 경우 `reset`도 그 오류로 실패합니다.
+- 이전 화면과 다른 점: 없습니다. 게임이 `reset`을 부르는 버튼을 둘 때만 달라집니다.
+- 시험: 헤드리스 Chromium에서 깨진 JSON 레코드를 `reset`하면 새 데이터·잠금 해제·revision 0이 되고 이어서 `update`가 저장되는 것, 읽을 수 있는 레코드의 `reset`은 revision을 이어 올리는 것을 확인했습니다.
+
 ## v0.38.0 (2026-10-31)
 
 Breaking. `audio`가 localStorage에 직접 쓰지 않고 `save` 모듈을 거칩니다. `storageKey` 옵션을 없애고 `settings`(불러온 save)와 `onSaveError`를 받습니다. `audioSettings(config)`가 `createSave`에 넘길 key·version·create·validate를 줍니다. 디버그·소개 같은 격리 장면은 `memoryAdapter`로 만든 settings를 넘기면 실제 소리 설정을 덮어쓰지 않습니다.
