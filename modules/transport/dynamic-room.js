@@ -25,7 +25,7 @@ function roster(value, maxPlayers) {
 
 /** Ongoing 1..5-player mesh connectivity. RTC connection is not roster admission.
  * A RoomSession owns admission, snapshots, committed epochs and graceful succession.
- * Optional resume storage retains the room-scoped signing identity across reload.
+ * Optional resume keeps the room-scoped signing identity in a save record across reload.
  */
 export async function createNostrDynamicRoom({
     role,
@@ -76,10 +76,17 @@ export async function createNostrDynamicRoom({
     if (!/^\d{4}$/.test(room ?? '')) {
         throw new TypeError('four-digit room');
     }
+    // A queued resume write that fails closes the identity and is reported as a status event.
     const RESUME_IDENTITY = resume
-        ? createRoomResumeIdentity(resume, {
+        ? await createRoomResumeIdentity(resume, {
               namespace,
               room,
+              onWriteFailure: (error) =>
+                  STATUS('resume-save-failed', {
+                      record: 'identity',
+                      reason: error.message,
+                      error,
+                  }),
           })
         : null;
     const STARTED_AT = nowMs(),
@@ -1332,12 +1339,7 @@ export async function createNostrDynamicRoom({
         localPlayerId: SELF,
     });
     if (!disposed) {
-        try {
-            saveResume();
-        } catch (error) {
-            close(error.message);
-            return READY;
-        }
+        saveResume();
         if (!ESTABLISHING) {
             advertise();
             finish();

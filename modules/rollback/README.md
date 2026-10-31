@@ -238,7 +238,7 @@ RoomSession의 전체 여러 epoch replay 파일 export는 아직 제공하지 �
 
 아래 shared-checkpoint·global tick 유지·coordinator 유지 설명은 기본 strict 재접속 계약입니다. available은 위 가용성 정책의 분기 선택·복귀 checkpoint·coordinator 변경 계약을 따릅니다.
 
-transport에 opt-in `resume: { storage: sessionStorage, key, lifetimeMs }`를 주면 같은 탭의 room-scoped 서명 identity를 복원할 수 있습니다. storage 수명/증명/중복 탭 충돌 계약은 transport 문서를 따릅니다. RoomSession은 `room.resumed`를 보고 초기 actor 생성 대신 같은 roster의 `reason: 'reconnect'`, `joined: []`, `left: []` epoch를 준비합니다. coordinator 새로고침도 살아 있는 member가 discovery/상태 donor를 제공하며 coordinator를 임의로 바꾸지 않습니다.
+transport에 opt-in `resume: { adapter: localStorageAdapter({ storage: sessionStorage }), key, lifetimeMs }`를 주면 같은 탭의 room-scoped 서명 identity를 save 레코드에서 복원할 수 있습니다. 격리 장면은 `adapter: memoryAdapter()`를 줍니다. 저장 수명/증명/중복 탭 충돌·쓰기 실패 이벤트 계약은 transport 문서를 따릅니다. RoomSession은 `room.resumed`를 보고 초기 actor 생성 대신 같은 roster의 `reason: 'reconnect'`, `joined: []`, `left: []` epoch를 준비합니다. coordinator 새로고침도 살아 있는 member가 discovery/상태 donor를 제공하며 coordinator를 임의로 바꾸지 않습니다.
 
 이미 멈춘 peer들의 실행 경계가 다를 수 있으므로 가장 앞선 확정 tick의 살아 있는 peer를 donor로 선택하고, 전원에게 그 checkpoint+확정 입력 suffix를 검증·bounded replay합니다. 새 epoch의 global tick은 모두의 이전 경계 이상입니다. donor가 이미 실행한 local command는 다시 queue하지 않고, player별 실행 command sequence baseline도 복원합니다. 임시 로컬 UI 입력·아직 어디에도 확정되지 않은 브라우저 내 queue는 새로고침으로 복원되지 않습니다.
 

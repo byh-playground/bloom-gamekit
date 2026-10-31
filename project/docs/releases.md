@@ -1,3 +1,27 @@
+## v0.39.0 (2026-10-31)
+
+Breaking. `transport`의 방 resume(재접속 identity·세션 metadata·공개 방 pointer)이 주입한 `Storage`에 직접 쓰지 않고 `save` 모듈을 거칩니다. `resume.storage`를 없애고 `resume.adapter`(save 어댑터)를 받습니다. 디버그·리플레이·소개 같은 격리 장면은 `memoryAdapter()`를 넘기면 실제 resume 저장을 덮어쓰지 않습니다. `createNostrDynamicRoom`·`createNostrPublicRoom` 둘 다 같습니다.
+
+```js
+// 이전
+createNostrPublicRoom({ ...options, resume: { storage: sessionStorage, key, lifetimeMs } });
+// 이후
+import { localStorageAdapter, memoryAdapter } from './save.js';
+createNostrPublicRoom({
+    ...options,
+    resume: { adapter: localStorageAdapter({ storage: sessionStorage, prefix: 'my-game:' }), key, lifetimeMs },
+});
+// 격리 장면
+createNostrPublicRoom({ ...options, resume: { adapter: memoryAdapter() } });
+```
+
+- key 하나가 save 레코드 하나입니다: 방 identity(`{ identity }`)와 공개 방 pointer(`{ pointer }`). 없는 상태는 `null`로 둡니다. 기본 key는 `bloom-gamekit:dynamic-v2:…`, `bloom-gamekit:public-v2:…:pointer`이며 예전 `dynamic-v1`·`public-v1` 저장은 읽지도 바꾸지도 않습니다(이전 저장 호환 없음).
+- 읽지 못한 record는 이전과 같은 `invalid resume record; explicitly reset for a fresh room`(만료는 `…expired…`)으로 실패하고 원본을 보존합니다. `reset: true`는 save의 `reset()`으로 버리고 새로 시작합니다.
+- 방이 열린 뒤의 쓰기(roster 갱신·`forgetResume()`·pointer)는 호출 순서대로 대기열에 넣고, 실패는 `onStatus`/`subscribe`에 `{ type: 'resume-save-failed', record, reason, error }`로 알립니다. 이전에는 쓰던 handler에서 바로 던졌습니다. identity 쓰기 실패 뒤 identity를 닫는 것은 그대로입니다. 단, 호스트가 방을 연 직후의 첫 roster 쓰기 실패는 이전처럼 방을 닫지 않고 이벤트와 identity 종료로 끝납니다.
+- `dist/transport.js`가 save를 함께 묶으므로 이벤트의 `error`는 `dist/save.js`의 `SaveError`와 `instanceof`가 맞지 않습니다. `error.kind`로 판단합니다.
+- 이전 화면과 다른 점: 없습니다. 새 key라 이전 탭 저장으로는 복귀하지 않습니다.
+- 시험: `npm run test:network`의 동적 방 시나리오(헤드리스 Chromium, 실제 RTC)에서 새로고침 복귀가 `localStorageAdapter({ storage: sessionStorage })`로 그대로 통과하고, `memoryAdapter`로 연 방이 sessionStorage를 바꾸지 않는 것, 깨진 record가 위 오류로 실패하고 보존되는 것, `reset: true`가 새 identity를 저장하는 것, 실패하는 쓰기가 `resume-save-failed`로 오는 것을 확인했습니다. 공개 방 pointer의 깨진 record·쓰기 실패 경로는 시험하지 않았습니다.
+
 ## v0.38.1 (2026-10-31)
 
 호환 추가. `save`에 `reset()`을 더합니다. 읽지 못해 잠긴 저장에서 게임이 사용자 확인을 받은 뒤 "기록을 지우고 새로 시작"할 수 있게 합니다. 저장된 레코드를 버리고 `create()`로 새로 저장하며 잠금을 풉니다. 잠금 자체(모듈이 스스로 덮어쓰지 않음)는 그대로입니다.

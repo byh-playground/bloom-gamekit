@@ -2,7 +2,8 @@ import { PROTOCOL_VERSION, encoder } from '../_rollback-shared/protocol.js';
 import { integer, nowMs } from '../deterministic/utilities.js';
 import { createNostrSignaler } from './nostr.js';
 import { createNostrDynamicRoom } from './dynamic-room.js';
-import { createRoomResumeIdentity } from './room-resume-identity.js';
+import { createResumeRecord, createRoomResumeIdentity, resetRoomResume } from './room-resume-identity.js';
+import { memoryAdapter as MEMORY_ADAPTER, SaveError as SAVE_ERROR } from '../save/index.js';
 const ID_VALID = (value) => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 const RANDOM_ID = () =>
     [...globalThis.crypto.getRandomValues(new Uint8Array(16))].map((n) => n.toString(16).padStart(2, '0')).join('');
@@ -53,12 +54,6 @@ export async function createNostrPublicRoom({
         throw new TypeError('public room capability');
     }
     if (resume) {
-        if (
-            !resume.storage ||
-            ['getItem', 'setItem', 'removeItem'].some((k) => typeof resume.storage[k] !== 'function')
-        ) {
-            throw new TypeError('resume storage capability');
-        }
         integer(resume.lifetimeMs ?? 8 * 60 * 60 * 1000, 'resume lifetimeMs', 1000, 86400000);
         if (resume.reset !== undefined && typeof resume.reset !== 'boolean') {
             throw new TypeError('resume reset');
@@ -79,18 +74,21 @@ export async function createNostrPublicRoom({
         DIRECTORY = new Map(),
         RESERVATIONS = new Map(),
         PUBLICATIONS = new Map();
-    const EPHEMERAL_STORE = new Map();
-    const EPHEMERAL = createRoomResumeIdentity(
+    // Resume writes run from synchronous handlers; a failed one is reported as a status event.
+    const WRITE_FAILED = (record) => (error) =>
+        STATUS('resume-save-failed', {
+            record,
+            reason: error.message,
+            error,
+        });
+    const EPHEMERAL = await createRoomResumeIdentity(
         {
-            storage: {
-                getItem: (k) => EPHEMERAL_STORE.get(k) ?? null,
-                setItem: (k, v) => EPHEMERAL_STORE.set(k, v),
-                removeItem: (k) => EPHEMERAL_STORE.delete(k),
-            },
+            adapter: MEMORY_ADAPTER(),
         },
         {
             namespace,
             room: '0000',
+            onWriteFailure: WRITE_FAILED('identity'),
         },
     );
     // A private in-memory identity is shared only by this room attempt's signalers.
@@ -115,7 +113,7 @@ export async function createNostrPublicRoom({
     let generation = 0;
     let directoryId;
     let pointer;
-    let pointerKey;
+    let pointerRecord;
     let storedUntil;
     const TIMER_WAITERS = new Map(),
         OBSERVERS = new Set();
@@ -149,57 +147,73 @@ export async function createNostrPublicRoom({
                       : {}),
               }
             : undefined;
-    const ROOM_STORAGE_KEY = (code) => SCOPED_RESUME(code)?.key ?? `bloom-gamekit:dynamic-v1:${namespace}:${code}`;
     if (resume) {
-        if (
-            !resume.storage ||
-            ['getItem', 'setItem', 'removeItem'].some((k) => typeof resume.storage[k] !== 'function')
-        ) {
-            throw new TypeError('resume storage capability');
-        }
-        pointerKey = `${resume.key ?? `bloom-gamekit:public-v1:${namespace}:${simulationVersion}`}:pointer`;
-        if (pointerKey.length > 512) {
+        const POINTER_KEY = `${resume.key ?? `bloom-gamekit:public-v2:${namespace}:${simulationVersion}`}:pointer`;
+        if (POINTER_KEY.length > 512) {
+            EPHEMERAL.identity.close();
             throw new TypeError('public resume key');
         }
-        const RAW = resume.storage.getItem(pointerKey);
-        if (resume.reset) {
-            if (RAW) {
-                try {
-                    const OLD = JSON.parse(RAW);
-                    if (/^\d{4}$/.test(OLD?.room)) {
-                        resume.storage.removeItem(ROOM_STORAGE_KEY(OLD.room));
-                    }
-                } catch {
-                    // A malformed optional resume pointer does not block clearing the pointer itself.
-                }
-            }
-            resume.storage.removeItem(pointerKey);
-        } else if (RAW != null) {
-            try {
-                if (typeof RAW !== 'string' || RAW.length > 2048) {
-                    throw Error();
-                }
-                pointer = JSON.parse(RAW);
+        pointerRecord = createResumeRecord({
+            adapter: resume.adapter,
+            key: POINTER_KEY,
+            version: 1,
+            create: () => ({ pointer: null }),
+            validate(data) {
+                const VALUE = data?.pointer;
                 if (
-                    pointer.version !== 1 ||
-                    pointer.namespace !== namespace ||
-                    pointer.simulationVersion !== simulationVersion ||
-                    !/^\d{4}$/.test(pointer.room) ||
-                    !ID_VALID(pointer.sessionId) ||
-                    !Number.isSafeInteger(pointer.expiresAt) ||
-                    pointer.expiresAt <= Date.now() ||
-                    pointer.expiresAt > Date.now() + 86400000
+                    VALUE !== null &&
+                    (!VALUE ||
+                        typeof VALUE !== 'object' ||
+                        VALUE.namespace !== namespace ||
+                        VALUE.simulationVersion !== simulationVersion ||
+                        !/^\d{4}$/.test(VALUE.room) ||
+                        !ID_VALID(VALUE.sessionId) ||
+                        !Number.isSafeInteger(VALUE.expiresAt))
                 ) {
-                    throw Error();
+                    throw new TypeError('public resume pointer');
                 }
-                storedUntil = pointer.expiresAt;
-            } catch {
-                EPHEMERAL.identity.close();
-                throw ERROR(
-                    'PUBLIC_RESUME_INVALID',
-                    'invalid or expired public resume pointer; explicitly reset for a fresh room',
-                );
+            },
+        });
+        try {
+            if (resume.reset) {
+                let old = null;
+                try {
+                    ({ pointer: old } = await pointerRecord.open(false));
+                } catch (error) {
+                    // An unreadable pointer names no room record to clear; the pointer itself is still reset.
+                    if (!(error instanceof SAVE_ERROR && error.kind === 'unreadable')) {
+                        throw error;
+                    }
+                }
+                if (old) {
+                    await resetRoomResume(SCOPED_RESUME(old.room), { namespace, room: old.room });
+                }
+                await pointerRecord.open(true);
+            } else {
+                let unreadable = false;
+                try {
+                    ({ pointer } = await pointerRecord.open(false));
+                } catch (error) {
+                    unreadable = error instanceof SAVE_ERROR && error.kind === 'unreadable';
+                    if (!unreadable) {
+                        throw error;
+                    }
+                }
+                if (
+                    unreadable ||
+                    (pointer && (pointer.expiresAt <= Date.now() || pointer.expiresAt > Date.now() + 86400000))
+                ) {
+                    throw ERROR(
+                        'PUBLIC_RESUME_INVALID',
+                        'invalid or expired public resume pointer; explicitly reset for a fresh room',
+                    );
+                }
+                storedUntil = pointer?.expiresAt;
             }
+        } catch (error) {
+            EPHEMERAL.identity.close();
+            pointerRecord.release();
+            throw error;
         }
     }
     const FAIL = (message) => ERROR('PUBLIC_TIMEOUT', message ?? 'public room total timeout');
@@ -250,8 +264,9 @@ export async function createNostrPublicRoom({
         TIMER_WAITERS.clear();
         directorySignaler?.close();
         room?.close();
+        EPHEMERAL.forget();
         EPHEMERAL.identity.close();
-        EPHEMERAL_STORE.clear();
+        pointerRecord?.release();
         DIRECTORY.clear();
         RESERVATIONS.clear();
         PUBLICATIONS.clear();
@@ -691,33 +706,34 @@ export async function createNostrPublicRoom({
             // Releasing a reservation is best-effort within its bounded timeout.
         }
     }
+    /** Returns the queued pointer write, or undefined when nothing is written. */
     function savePointer(committed = false) {
         if (!resume || !room || resumeForgotten) {
-            return;
+            return undefined;
         }
         if (room.players.includes(room.localPlayerId)) {
             everAdmitted = true;
         }
         if (committed && everAdmitted && !room.players.includes(room.localPlayerId)) {
             resumeForgotten = true;
-            resume.storage.removeItem(pointerKey);
-            return;
+            return writePointer(null);
         }
         if (room.joining) {
-            return;
+            return undefined;
         }
         storedUntil ??= STARTED_WALL_AT + (resume.lifetimeMs ?? 8 * 60 * 60 * 1000);
-        resume.storage.setItem(
-            pointerKey,
-            JSON.stringify({
-                version: 1,
-                namespace,
-                simulationVersion,
-                room: room.room,
-                sessionId: room.sessionId,
-                expiresAt: storedUntil,
-            }),
-        );
+        return writePointer({
+            namespace,
+            simulationVersion,
+            room: room.room,
+            sessionId: room.sessionId,
+            expiresAt: storedUntil,
+        });
+    }
+    function writePointer(value) {
+        return pointerRecord.write((draft) => {
+            draft.pointer = value;
+        });
     }
     async function connect(lease, restoring = false) {
         const CODE = lease?.room ?? RANDOM_ROOM();
@@ -847,7 +863,7 @@ export async function createNostrPublicRoom({
                 throw lastError ?? FAIL();
             }
         }
-        savePointer();
+        await savePointer();
         removeRoom = room.subscribe((event) => {
             if (event.type === 'peer-failed' || event.type === 'peer-disconnected') {
                 if (RESERVATIONS.delete(event.peerId)) {
@@ -894,7 +910,7 @@ export async function createNostrPublicRoom({
                 value(value) {
                     room.setRoster(value);
                     prune();
-                    savePointer(true);
+                    savePointer(true)?.catch(WRITE_FAILED('pointer'));
                     BACKGROUND(advertise());
                 },
             },
@@ -904,7 +920,9 @@ export async function createNostrPublicRoom({
                 value() {
                     resumeForgotten = true;
                     room.forgetResume?.();
-                    resume?.storage.removeItem(pointerKey);
+                    if (resume) {
+                        writePointer(null).catch(WRITE_FAILED('pointer'));
+                    }
                 },
             },
             publicMetrics: {

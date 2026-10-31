@@ -10,7 +10,7 @@ const SDK_DEPENDENCIES = {
     deterministic: ['_rollback-shared'],
     simloop: [],
     'pixel-physics': ['deterministic'],
-    transport: ['_rollback-shared', 'deterministic'],
+    transport: ['_rollback-shared', 'deterministic', 'save'],
     replay: ['_rollback-shared', 'deterministic'],
     rollback: ['_rollback-shared', 'deterministic'],
 };
