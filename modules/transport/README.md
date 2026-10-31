@@ -45,17 +45,18 @@ console.log(room.room, room.localPlayerId, room.players);
 
 현재 장기 검증은 `npm test`의 실제 브라우저 시나리오와 `npm run test:network`의 RTC·방 수명주기 시나리오로 수행합니다. 이 절의 과거 단위 검증 코드는 개발 완료 시 제거했으며 결과·소스 해시는 Git 이력과 provenance 기록으로 확인합니다. 로컬 RTC 시나리오를 공용 relay/NAT·모바일 기기 검증으로 확대 해석하지 않습니다.
 
-### 명시적인 탭 저장소 resume
+### save 레코드로 두는 명시적 resume
 
-`resume: { storage: sessionStorage, key?, lifetimeMs?, reset? }`를 전달하면 같은 페이지를 새로고침한 뒤 살아 있는 같은 방에 복귀할 수 있습니다. 기본 저장은 없으며 cookie·서버·지갑·사용자 계정은 만들지 않습니다. 여기서 `sessionStorage`는 소비자 앱이 명시적으로 제공하는 표준 저장소 capability입니다. 기본 key에는 namespace와 방 코드가 들어가며 저장 내용에는 동일 sessionId, 확정 roster/epoch, coordinator와 임시 Nostr 개인 서명 키가 포함됩니다. 기본 수명은 8시간, 범위는 1000ms..24시간이고 갱신 때 수명을 무한 연장하지 않습니다.
+`resume: { adapter, key?, lifetimeMs?, reset? }`를 전달하면 같은 페이지를 새로고침한 뒤 살아 있는 같은 방에 복귀할 수 있습니다. 기본 저장은 없으며 cookie·서버·지갑·사용자 계정은 만들지 않습니다. record는 [save 모듈](../save/README.md)의 레코드 하나(key 하나)이고, 게임은 저장소 **어댑터**만 고릅니다. 탭 한정 복구는 `localStorageAdapter({ storage: sessionStorage, prefix: 'my-game:' })`, 디버그·리플레이·소개 같은 격리 장면은 `memoryAdapter()`를 넘겨 실제 저장을 덮어쓰지 않습니다. 기본 key는 `bloom-gamekit:dynamic-v2:<namespace>:<room>`이며(v0.38 이하의 `dynamic-v1` record는 읽지 않습니다) 저장 내용에는 동일 sessionId, 확정 roster/epoch, coordinator와 임시 Nostr 개인 서명 키가 포함됩니다. 기본 수명은 8시간, 범위는 1000ms..24시간이고 갱신 때 수명을 무한 연장하지 않습니다.
 
 - 새로고침에는 **같은 room 코드·namespace·storage key**를 다시 전달해야 합니다. host에서 방 코드를 생략해 새 코드를 생성하면 이전 방을 찾아내지 않습니다. 저장된 참가자 identity가 기존 승인 roster에 있으면 `resumed: true`이며, RTC 연결만 복원한 상태이므로 RoomSession의 새 snapshot/suffix 검증을 기다려야 합니다.
 - `resumePeerId`는 처음 복구한 상대입니다. coordinator 자신이 새로고침했을 때도 다른 살아 있는 승인 참가자가 동일 sessionId에 한정된 resume discovery를 답하고 그 참가자와 먼저 연결합니다. `coordinatorId`를 바꾸거나 새 세계를 만들지 않습니다. 혼자 남았거나 모든 참가자가 사라졌으면 초기 timeout으로 명시적으로 실패합니다.
 - 기존 동일 identity 연결이 있으면 암호학적으로 무작위 nonce를 넣은 신뢰 채널 probe로 생존을 확인합니다. 기존 탭이 응답하면 중복 탭을 거절하며 기존 연결을 퇴출하지 않습니다. 기본 `resumeProbeMs: 1500` 후 응답이 없으면 새로운 incarnation/generation을 승인합니다. 각 RTC 신호는 상대 incarnation까지 범위를 제한하므로 복제 탭의 오래된 신호가 새 연결로 들어오지 않습니다. 네트워크 partition의 절대적인 단일 실행 증명은 아니며 게임 세션은 여전히 unanimous epoch barrier와 fail-closed 정책을 사용합니다.
 - `close()`는 RTC/메모리 키를 정리하되 아직 유효한 저장 record를 남깁니다. `forgetResume()`는 미래 복구를 위한 저장 record를 삭제합니다. 확정 roster에서 자신이 빠지면 자동 삭제합니다. `resume.reset: true`는 이전 record를 버리고 명시적으로 새 identity를 시작합니다.
-- 만료·손상·잘못된 키·다른 namespace/room record는 초기화 오류로 반환합니다. 실패 후 재시도해도 자동으로 새 identity로 조용히 바뀌지 않습니다. 사용자가 새 방/초기화를 선택한 뒤 `reset: true`를 전달합니다. 저장소가 금지되거나 quota에 걸린 경우도 오류이며 무저장 resume로 가장하지 않습니다.
+- 만료(`resume record expired; …`)·손상·잘못된 키·다른 namespace/room record(`invalid resume record; explicitly reset for a fresh room`, 읽지 못한 save의 `SaveError('unreadable')`은 `cause`)는 초기화 오류로 반환하며 원본을 덮어쓰지 않습니다. 실패 후 재시도해도 자동으로 새 identity로 조용히 바뀌지 않습니다. 사용자가 새 방/초기화를 선택한 뒤 `reset: true`를 전달하면 save의 `reset()`으로 record를 버리고 새로 시작합니다. 첫 identity 쓰기가 실패하면 `resume storage unavailable`(`cause`에 save 오류)로 초기화가 실패하며 무저장 resume로 가장하지 않습니다.
+- 방이 열린 뒤의 쓰기(roster 갱신·`forgetResume()`·자동 삭제)는 동기 handler에서 호출 순서대로 대기열에 넣습니다. 실패는 버리지 않고 `onStatus`/`subscribe`에 `{ type: 'resume-save-failed', record: 'identity' | 'pointer', reason, error }`로 알립니다. `error.kind`는 save 오류 종류(`storage`·`conflict` 등)입니다. identity 쓰기가 실패하면 이전처럼 그 identity를 닫으므로 이후 서명은 `resume identity closed`로 실패합니다. transport 번들은 save를 포함하므로 `dist/save.js`의 `SaveError`와 `instanceof`가 맞지 않습니다. 종류는 `kind`로 판단합니다.
 
-이 저장 키는 짧게 쓰는 게임 세션 키이지만 **개인 서명 키**입니다. 앱은 record를 로그·URL·공유 payload에 넣지 않아야 합니다. sessionStorage는 같은 origin의 JavaScript에서 읽을 수 있으므로 XSS 방어가 필요하며 보안 vault나 HttpOnly cookie와 같지 않습니다. Room capability는 비밀 키를 반환하지 않습니다. 기본 Nostr signaler의 선택적 `identity: { id, sign(hash, auxiliary, cryptoImpl), close() }`는 내부 저장 helper가 쓰는 서명 capability이고 원시 키 인자가 아닙니다. 개인 wallet 키를 이 기능에 재사용하지 않습니다.
+이 저장 키는 짧게 쓰는 게임 세션 키이지만 **개인 서명 키**입니다. 앱은 record를 로그·URL·공유 payload에 넣지 않아야 합니다. sessionStorage·localStorage는 같은 origin의 JavaScript에서 읽을 수 있으므로 XSS 방어가 필요하며 보안 vault나 HttpOnly cookie와 같지 않습니다. Room capability는 비밀 키를 반환하지 않습니다. 기본 Nostr signaler의 선택적 `identity: { id, sign(hash, auxiliary, cryptoImpl), close() }`는 내부 저장 helper가 쓰는 서명 capability이고 원시 키 인자가 아닙니다. 개인 wallet 키를 이 기능에 재사용하지 않습니다.
 
 ## 공개 방 자동 선택
 
@@ -66,7 +67,7 @@ const room = await createNostrPublicRoom({
     namespace: 'my-game',
     simulationVersion: 'my-simulation-v1',
     maxPlayers: 5,
-    resume: { storage: sessionStorage }, // 선택 사항; 기본 저장 없음
+    resume: { adapter: localStorageAdapter({ storage: sessionStorage, prefix: 'my-game:' }) }, // 선택 사항; 기본 저장 없음
 });
 const session = createRoomSession({
     mode: 'online',
@@ -87,11 +88,11 @@ const session = createRoomSession({
 
 시간은 모두 ms이며 기본값은 `discoveryMs: 1500`, 전체 초기화 `totalTimeoutMs: 60000`, 광고 `leaseMs: 15000`, 예약 `reservationMs: 30000`, 최대 후보 시도 `maxAttempts: 3`입니다. 범위는 각각 10..30000, 10..120000, 100..60000, 100..120000, 1..8입니다. 광고는 lease의 약 1/3마다 갱신됩니다. directory는 최대 64개 lease, 동시 publication은 최대 16개, 예약은 최대 4개입니다. RTC 시도는 전체 deadline과 `peerTimeoutMs`로 제한하며 무기한 초기 접속이나 busy loop는 없습니다. `peerFactory`, `signalerFactory`, `dynamicRoomFactory` 주입은 로컬 검증용 capability이며 실제 기본 경로도 동일한 한도를 적용합니다.
 
-반환 capability는 기존 DynamicRoom API와 `publicMetrics: { directoryEntries, pendingReservations, pendingPublications }`를 제공합니다. `onStatus`/`subscribe`에는 기존 동적 방 이벤트와 `public-discovering`, `public-hosting`, `public-joining`, `public-resuming`, `public-attempt-failed`, `public-directory-error`, `public-room-ready`, `public-room-closed`가 추가됩니다. `close()`는 directory subscription/타이머, 방 연결, 메모리 키를 함께 닫습니다. shutdown 중 전달되지 않은 예약 release는 연결 종료나 짧은 예약 만료로 회수됩니다. 소유자는 graceful leave가 필요하면 session의 leave를 먼저 완료한 뒤 닫습니다.
+반환 capability는 기존 DynamicRoom API와 `publicMetrics: { directoryEntries, pendingReservations, pendingPublications }`를 제공합니다. `onStatus`/`subscribe`에는 기존 동적 방 이벤트와 `public-discovering`, `public-hosting`, `public-joining`, `public-resuming`, `public-attempt-failed`, `public-directory-error`, `public-room-ready`, `public-room-closed`와 pointer 쓰기 실패의 `resume-save-failed`(`record: 'pointer'`)가 추가됩니다. `close()`는 directory subscription/타이머, 방 연결, 메모리 키를 함께 닫습니다. shutdown 중 전달되지 않은 예약 release는 연결 종료나 짧은 예약 만료로 회수됩니다. 소유자는 graceful leave가 필요하면 session의 leave를 먼저 완료한 뒤 닫습니다.
 
 ### 공개 방의 명시적 resume
 
-같은 `resume: { storage, key?, lifetimeMs?, reset? }`를 매번 전달하면 방 코드를 앱이 따로 기억하지 않아도 확정된 방으로 복귀할 수 있습니다. 저장소에는 namespace·simulationVersion에 한정된 작은 공개 방 pointer와 **방 코드에 한정된** 기존 identity record만 둡니다. 사용자 공통 credential은 만들지 않습니다. `key`를 지정하면 방 identity key에 `:<room>`을 붙이고 pointer key에는 `:pointer`를 붙입니다. pointer는 admission이 확정된 뒤에만 보존합니다.
+같은 `resume: { adapter, key?, lifetimeMs?, reset? }`를 매번 전달하면 방 코드를 앱이 따로 기억하지 않아도 확정된 방으로 복귀할 수 있습니다. 저장소에는 namespace·simulationVersion에 한정된 작은 공개 방 pointer와 **방 코드에 한정된** 기존 identity record만 둡니다. 사용자 공통 credential은 만들지 않습니다. pointer도 save 레코드 하나이며 없는 상태는 `{ pointer: null }`입니다. 기본 pointer key는 `bloom-gamekit:public-v2:<namespace>:<simulationVersion>:pointer`입니다(`public-v1` pointer는 읽지 않습니다). `key`를 지정하면 방 identity key에 `:<room>`을 붙이고 pointer key에는 `:pointer`를 붙입니다. pointer는 admission이 확정된 뒤에만 보존합니다. 방 선택 중 쓰는 내부 임시 identity는 `memoryAdapter()`에만 둡니다.
 
 복원 시 저장된 정확한 room/sessionId와 기존 live-peer challenge를 사용합니다. 살아 있는 방을 찾지 못하거나 저장 record가 손상·만료되면 새 세계나 identity로 자동 대체하지 않습니다. `forgetResume()`는 pointer와 해당 방 record를 지우고, 명시적인 `reset: true`는 새 선택을 시작합니다. `close()`만으로는 유효한 resume record를 지우지 않습니다. 개인 서명 키와 sessionStorage의 보안 한계는 위의 동적 방 resume 계약과 같습니다.
 

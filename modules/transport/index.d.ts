@@ -1,5 +1,6 @@
 /** transport 공개 계약. 타입 전용 참조는 런타임 의존성을 만들지 않습니다. */
 import type { PlayerId, RoomSession } from '../rollback/index.js';
+import type { SaveAdapter } from '../save/index.js';
 export type TransportState = 'connecting' | 'open' | 'interrupted' | 'closed' | 'failed';
 export interface Transport {
     /** false는 backpressure 등으로 이번 송신을 받지 않았다는 뜻이다. */
@@ -183,6 +184,10 @@ export interface DynamicRoomStatus extends ConnectionStatus {
     generation?: number;
     reason?: string;
     event?: ConnectionStatus;
+    /** `type: 'resume-save-failed'`: 어느 레코드의 대기 쓰기가 실패했는지. identity 실패는 identity를 닫는다. */
+    record?: 'identity' | 'pointer';
+    /** `type: 'resume-save-failed'`: save 모듈의 오류(`kind`: 'storage' | 'conflict' | 'unreadable' | 'closed'). */
+    error?: Error & { kind?: string };
 }
 /** RoomSession이 사용하는 연결 capability. RTC 연결 자체는 roster 입장을 뜻하지 않는다. */
 export interface RoomTransport {
@@ -245,8 +250,12 @@ export interface DynamicRoomOptions {
     peerFactory?: typeof createWebRTCPeer;
 }
 export interface RoomResumeOptions {
-    /** 명시적으로 전달한 탭/브라우저 저장소에 재접속 identity를 저장한다. */
-    storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
+    /**
+     * 재접속 identity·공개 방 pointer를 save 레코드로 두는 저장소 어댑터.
+     * 탭 한정은 `localStorageAdapter({ storage: sessionStorage, prefix })`, 격리 장면은 `memoryAdapter()`.
+     */
+    adapter: SaveAdapter;
+    /** 레코드 key(공개 방에서는 `:<room>`·`:pointer`를 붙이는 접두). 기본은 `bloom-gamekit:dynamic-v2:<namespace>:<room>`(공개 방 pointer는 `bloom-gamekit:public-v2:…:pointer`). */
     key?: string;
     lifetimeMs?: number;
     reset?: boolean;

@@ -1,5 +1,11 @@
 import { PresentationEventQueue } from '../../../dist/presentation-events.js';
-import { createNostrPublicRoom, createNostrSignaler, createWebRTCPeer } from '../../../dist/transport.js';
+import {
+    createNostrDynamicRoom,
+    createNostrPublicRoom,
+    createNostrSignaler,
+    createWebRTCPeer,
+} from '../../../dist/transport.js';
+import { localStorageAdapter as LOCAL_STORAGE_ADAPTER, memoryAdapter as MEMORY_ADAPTER } from '../../../dist/save.js';
 import { createRoomSession, profiles } from '../../../dist/rollback.js';
 import { createValueCodec } from '../../../dist/deterministic.js';
 const SLEEP = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -268,6 +274,80 @@ function actor(prepared = false, available = false, assignments = new Map()) {
     }
     return ACTOR;
 }
+// Resume records go through the save module: an isolated adapter, a broken record, an explicit reset and a failed write.
+async function resumeRecordScenario(namespace) {
+    const SESSION = LOCAL_STORAGE_ADAPTER({ storage: sessionStorage }),
+        KEY = namespace + ':record',
+        EVENTS = [];
+    const HOST = (resume) =>
+        createNostrDynamicRoom({
+            role: 'host',
+            room: '0001',
+            namespace: namespace + ':records',
+            timeoutMs: 10000,
+            resume,
+            onStatus: (event) => EVENTS.push(event),
+            signalerFactory: (opts) =>
+                createNostrSignaler({
+                    ...opts,
+                    relays: ['wss://fixture.invalid'],
+                    WebSocketImpl: LocalRelay,
+                    publishIntervalMs: 0,
+                }),
+        });
+    const SNAPSHOT = () => JSON.stringify(Object.entries(sessionStorage).sort());
+    const BEFORE = SNAPSHOT();
+    const ISOLATED = await HOST({ adapter: MEMORY_ADAPTER(), key: KEY });
+    await SLEEP(50);
+    ISOLATED.close();
+    await SLEEP(50);
+    assert(SNAPSHOT() === BEFORE, 'memoryAdapter resume left sessionStorage unchanged');
+    sessionStorage.setItem(KEY, '{broken');
+    const BROKEN = await HOST({ adapter: SESSION, key: KEY }).then(
+        (room) => {
+            room.close();
+            return null;
+        },
+        (error) => error,
+    );
+    assert(
+        BROKEN?.message === 'invalid resume record; explicitly reset for a fresh room',
+        'broken resume record is an explicit error',
+    );
+    assert(sessionStorage.getItem(KEY) === '{broken', 'broken resume record is preserved');
+    const FRESH = await HOST({ adapter: SESSION, key: KEY, reset: true });
+    await SLEEP(50);
+    const STORED = JSON.parse(sessionStorage.getItem(KEY));
+    assert(
+        STORED.identity.id === FRESH.localPlayerId && STORED.identity.sessionId === FRESH.sessionId,
+        'reset starts a fresh stored identity',
+    );
+    let failing = false;
+    const FLAKY = {
+        channelName: null,
+        transact: (key, body) =>
+            failing ? Promise.reject(new Error('resume write fixture failure')) : SESSION.transact(key, body),
+    };
+    const FAILING = await HOST({ adapter: FLAKY, key: KEY + ':failing' });
+    await SLEEP(50);
+    failing = true;
+    FAILING.setRoster({
+        epoch: FAILING.epoch + 1,
+        players: [...FAILING.players],
+        coordinatorId: FAILING.coordinatorId,
+    });
+    await SLEEP(50);
+    const FAILURE = EVENTS.find((event) => event.type === 'resume-save-failed');
+    assert(
+        FAILURE?.record === 'identity' && FAILURE.reason === 'resume write fixture failure',
+        'failed resume write reaches onStatus',
+    );
+    FRESH.close();
+    FAILING.close();
+    sessionStorage.removeItem(KEY);
+    sessionStorage.removeItem(KEY + ':failing');
+    return { isolatedUnchanged: true, brokenRejected: true, resetFresh: true, writeFailure: FAILURE.type };
+}
 export async function runDynamicRoomScenario({
     prepared = false,
     paced = false,
@@ -287,7 +367,8 @@ export async function runDynamicRoomScenario({
     let maxPulseMs = 0;
     let maxCatchupPerPulse = 0;
     let handoffCommands = 0;
-    const NAMESPACE = 'dynamic-e2e-' + crypto.randomUUID(),
+    const RESUME_ADAPTER = LOCAL_STORAGE_ADAPTER({ storage: sessionStorage }),
+        NAMESPACE = 'dynamic-e2e-' + crypto.randomUUID(),
         ROOM_CODE = String(Math.floor(Math.random() * 10000)).padStart(4, '0');
     const OPTIONS = {
         room: ROOM_CODE,
@@ -333,7 +414,7 @@ export async function runDynamicRoomScenario({
             leaseMs: paced ? 15000 : 1500,
             reservationMs: 30000,
             resume: {
-                storage: sessionStorage,
+                adapter: RESUME_ADAPTER,
                 key: NAMESPACE + ':actor:' + slot,
                 lifetimeMs: 600000,
             },
@@ -449,6 +530,10 @@ export async function runDynamicRoomScenario({
         target = Infinity;
     }
     try {
+        const RESUME_RECORDS =
+            !available && !prepared && !paced && simulationMode === 'lockstep'
+                ? await resumeRecordScenario(NAMESPACE)
+                : null;
         let host = await add('host');
         timer = setInterval(pulse, 8);
         await until(() => host.tick >= 75, 'single start');
@@ -684,6 +769,7 @@ export async function runDynamicRoomScenario({
             snapshotSaves: ACTORS.map((a) => a.saves),
             confirmedPresentations: ACTORS.map((a) => a.presentations),
             gracefulGuestReentry,
+            resumeRecords: RESUME_RECORDS,
             events: EVENTS,
         };
     } finally {
