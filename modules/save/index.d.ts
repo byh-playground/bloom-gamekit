@@ -5,7 +5,10 @@ export class SaveError extends Error {
 export interface SaveAdapter {
     /** BroadcastChannel name for cross-tab notices, or null to stay silent. */
     readonly channelName: string | null;
-    /** Reads the stored value, lets `body` decide, and writes `value` when `write` is true, as one step. */
+    /**
+     * Reads the stored value, lets `body` decide, and writes `value` when `write` is true, as one step.
+     * A value that cannot be decoded reaches `body` as a `SaveError('unreadable')` instead of being thrown.
+     */
     transact(key: string, body: (stored: unknown) => { value: object; write: boolean }): Promise<object>;
     close?(): void;
 }
@@ -18,6 +21,8 @@ export interface Save<T extends object> {
     load(): Promise<T>;
     /** Saves a mutated copy. Returning false skips the write. Throws a conflict when another tab saved first. */
     update(mutate: (draft: T) => void | boolean): Promise<T>;
+    /** Discards the stored record, unreadable or not, and saves `create()`. Call only after the player confirms. */
+    reset(): Promise<T>;
     onExternalChange(listener: (event: { revision: number }) => void): () => void;
     dispose(): void;
 }

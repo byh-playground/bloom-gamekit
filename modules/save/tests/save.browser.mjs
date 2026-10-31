@@ -90,6 +90,12 @@ export async function exerciseSave(page) {
             ),
             preserved: localStorage.getItem(`${PREFIX}team`),
         };
+        RESULT.reset = { data: await BROKEN.reset(), locked: BROKEN.locked, revision: BROKEN.revision };
+        await BROKEN.update((draft) => {
+            draft.credits = 2;
+        });
+        RESULT.reset.stored = JSON.parse(localStorage.getItem(`${PREFIX}team`));
+        RESULT.resetReadable = { data: await MEMORY.reset(), revision: MEMORY.revision };
         localStorage.setItem(`${PREFIX}team`, JSON.stringify({ schema: 9, revision: 0, name: 'x', credits: 1 }));
         RESULT.future = await CATCH(CREATE_SAVE(OPTIONS(LOCAL_STORAGE({ prefix: PREFIX }))).load());
         localStorage.setItem(`${PREFIX}team`, JSON.stringify({ schema: 1, revision: 3, name: 'red', gold: 5 }));
@@ -124,6 +130,21 @@ export async function exerciseSave(page) {
     assert.deepEqual(R.afterReload, { b: { name: 'blue', credits: 8 }, a: { name: 'blue', credits: 8 }, revision: 2 });
     assert.equal(R.closed, 'closed');
     assert.deepEqual(R.unreadable, { load: 'unreadable', locked: true, update: 'unreadable', preserved: '{broken' });
+    assert.deepEqual(
+        R.reset,
+        {
+            data: { name: 'blue', credits: 10 },
+            locked: false,
+            revision: 0,
+            stored: { name: 'blue', credits: 2, schema: 1, revision: 1 },
+        },
+        'reset overwrites an unreadable record and unlocks the save',
+    );
+    assert.deepEqual(
+        R.resetReadable,
+        { data: { name: 'blue', credits: 10 }, revision: 2 },
+        'reset continues the revision of a readable record',
+    );
     assert.equal(R.future, 'unreadable');
     assert.deepEqual(R.migrated, {
         data: { name: 'red', credits: 5 },

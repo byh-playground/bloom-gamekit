@@ -57,6 +57,9 @@ export function createSave({ adapter, key, version, create, validate, migrate = 
         };
     }
     const READ = (stored) => {
+        if (stored instanceof SaveError) {
+            throw stored;
+        }
         if (stored === undefined) {
             const CREATED = create();
             validate(CREATED);
@@ -142,6 +145,9 @@ export function createSave({ adapter, key, version, create, validate, migrate = 
                 }
                 let written = false;
                 const UPDATED = await adapter.transact(key, (stored) => {
+                    if (stored instanceof SaveError) {
+                        throw stored;
+                    }
                     if (!stored || stored.revision !== SAVE.revision || stored.schema !== version) {
                         throw new SaveError('conflict', 'saved record changed elsewhere');
                     }
@@ -154,6 +160,22 @@ export function createSave({ adapter, key, version, create, validate, migrate = 
                     return { value: RECORD(NEXT, version, stored.revision + 1), write: true };
                 });
                 return COMMIT(UPDATED, written);
+            });
+        },
+        /**
+         * 저장된 레코드를 버리고 `create()`로 새로 만들어 저장합니다. 읽지 못한 저장도 덮어쓰고 잠금을 풉니다.
+         * 되돌릴 수 없으므로 게임이 사용자 확인을 받은 뒤에만 부릅니다. 다른 탭이 알도록 revision은 이어서 올립니다.
+         */
+        reset() {
+            return QUEUE(async () => {
+                const CREATED = create();
+                validate(CREATED);
+                const RECORD_RESET = await adapter.transact(key, (stored) => ({
+                    value: RECORD(CREATED, version, INTEGER(stored?.revision) ? stored.revision + 1 : 0),
+                    write: true,
+                }));
+                SAVE.locked = false;
+                return COMMIT(RECORD_RESET, true);
             });
         },
         /** 다른 탭이 이 레코드를 저장하면 `{revision}`으로 부릅니다. 해제 함수를 반환합니다. */
@@ -264,7 +286,8 @@ export function localStorageAdapter({ prefix = '', storage = globalThis.localSto
             try {
                 stored = text === null ? undefined : JSON.parse(text);
             } catch (error) {
-                throw new SaveError('unreadable', 'saved text is not JSON', error);
+                // 읽기는 이 오류를 던지고, reset은 무시하고 덮어씁니다.
+                stored = new SaveError('unreadable', 'saved text is not JSON', error);
             }
             const { value: VALUE, write: WRITE } = body(stored);
             if (WRITE) {
