@@ -113,6 +113,11 @@ export function registerPwa({ serviceWorker, onUpdate, onError, onInstallable } 
             if (disposed) {
                 return;
             }
+            if (!value) {
+                // 자동화 브라우저가 service worker를 막으면 register가 오류 없이 빈 값으로 끝납니다.
+                REPORT(new Error('service worker registration was blocked by the browser'));
+                return;
+            }
             registration = value;
             registration.addEventListener('updatefound', ON_UPDATE_FOUND);
             WATCH(registration.installing);

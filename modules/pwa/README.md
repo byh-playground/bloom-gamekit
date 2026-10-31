@@ -79,7 +79,7 @@ const PWA = registerPwa({
 
 ## runtime 계약
 
-- `registerPwa`는 `serviceWorker`·`onUpdate`·`onError`를 반드시 받습니다. 등록·설치 실패와 service worker를 쓸 수 없는 페이지(http 주소, 일부 사생활 보호 모드)는 `onError`로 알립니다. 게임이 알릴지 정합니다.
+- `registerPwa`는 `serviceWorker`·`onUpdate`·`onError`를 반드시 받습니다. 등록·설치 실패와 service worker를 쓸 수 없는 페이지(http 주소, 일부 사생활 보호 모드, service worker를 막은 자동화 브라우저)는 `onError`로 알립니다. 게임이 알릴지 정합니다.
 - `onUpdate`는 이미 페이지를 제어하는 worker가 있을 때 새 worker가 설치되어 기다리면 한 번 부릅니다. 첫 설치에는 부르지 않습니다.
 - `update()`는 기다리는 worker에 활성화 메시지를 보내고, 그 worker가 페이지를 넘겨받으면 `location.reload()`합니다. 기다리는 worker가 없으면 던집니다.
 - `installable`은 `beforeinstallprompt`를 받은 뒤에만 true입니다. 브라우저 기본 배너는 막고, 게임이 `install()`로 설치 창을 띄웁니다. 결과는 `'accepted'` 또는 `'dismissed'`이고 설치 창은 한 번만 쓸 수 있습니다.

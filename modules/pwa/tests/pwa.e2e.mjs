@@ -270,6 +270,25 @@ try {
     await PAGE.waitForFunction(() => document.querySelector('#version').textContent === 'two:gamekit');
     REPORT.remoteRequests = remoteRequests;
     await CONTEXT.close();
+
+    // 6. 자동화 브라우저가 service worker를 막으면 register는 빈 값으로 끝난다. 던지지 않고 onError로 알린다.
+    const BLOCKED = await browser.newContext({ serviceWorkers: 'block' });
+    await BLOCKED.route(GAMEKIT, (route) =>
+        route.fulfill({
+            status: 200,
+            headers: { 'content-type': 'text/javascript', 'access-control-allow-origin': '*' },
+            body: "export const PROBE = 'gamekit';\n",
+        }),
+    );
+    const BLOCKED_PAGE = await BLOCKED.newPage(),
+        PAGE_ERRORS = [];
+    BLOCKED_PAGE.on('pageerror', (error) => PAGE_ERRORS.push(error.message));
+    await BLOCKED_PAGE.goto(ORIGIN + '/');
+    await BLOCKED_PAGE.waitForFunction(() => window.__events?.length > 0);
+    REPORT.blocked = await BLOCKED_PAGE.evaluate(() => [...window.__events]);
+    assert.deepEqual(REPORT.blocked, ['error:service worker registration was blocked by the browser']);
+    assert.deepEqual(PAGE_ERRORS, []);
+    await BLOCKED.close();
     console.log(JSON.stringify({ status: 'PASS', scenario: 'pwa', ...REPORT }));
 } finally {
     await browser?.close();
