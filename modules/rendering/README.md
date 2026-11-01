@@ -385,7 +385,7 @@ WebGL 2가 기본이며 ANGLE 확장 유무와 관계없이 core instancing을 �
 
 Source 해제는 새 texture를 할당하지 않습니다. 남은 프로그램의 offset은 유지하고 여유 공간은 다음 source 등록 때 압축하며, 마지막 source 해제 시 전체 프로그램 texture를 반환합니다. 압축·atlas 증설은 새 데이터 할당에 성공한 뒤 교체합니다. 업로드 실패 시 row의 dirty 상태를 유지하고 context 복구 때 필요한 state/base/CPU pose 데이터를 다시 올립니다.
 
-- createDataTexture(width,height,{data=null})와 updateDataTexture(handle,Float32Array,{x,y,width,height}): nearest RGBA32F 숫자 데이터입니다. CPU 원본을 보존해 context restore 후 다시 만듭니다. 그림 asset API가 아닙니다. 반복 갱신이라 `gl.getError()` 동기 확인은 `checkGLErrors`일 때만 합니다.
+- createDataTexture(width,height,{data=null})와 updateDataTexture(handle,Float32Array,{x,y,width,height}): nearest RGBA32F 숫자 데이터입니다. CPU 원본을 보존해 context restore 후 다시 만듭니다. 그림 asset API가 아닙니다. DOM 이미지·바이트 atlas 업로드와 번갈아 호출해도 숫자 채널을 premultiply하거나 뒤집지 않습니다. 각 숫자 갱신은 pixel-unpack 상태를 명시적으로 초기화합니다. 반복 갱신이라 `gl.getError()` 동기 확인은 `checkGLErrors`일 때만 합니다.
 - createRenderTarget(width,height,{format:'rgba32f',filter:'nearest'}): float 렌더 타깃입니다. floatRenderTargetsSupported와 isRenderTargetAvailable(handle)로 지원·복구 가능 여부를 확인합니다. EXT_color_buffer_float가 필요하며, 해당 target의 복구 실패가 일반 WebGL 2 렌더링을 중단시키지는 않습니다. 애니메이션 pose 계산은 이 타깃을 쓰지 않습니다.
 - new MeshRenderer(device,{poseBackend:'auto'|'cpu'|'uniform'}): auto는 정점 셰이더 평가를 시도하고 명시적 CPU pose fallback을 유지합니다. cpu는 같은 instancing에 CPU pose를 올리는 진단 경로(raster/sprite atlas는 GPU 키프레임 포즈 전용이라 cpu 포즈 액터를 그리면 TypeError), uniform은 기존 CPU pose uniform 참조 경로입니다.
 - actor.preparePose({excludeParts})로 표시 상태를 준비하고 meshes.preparePoses()로 모아 평가합니다. 보이지 않는 pose 준비만 source별로 묶으며 visible mesh/alpha/paint를 재정렬하지 않습니다. 준비하지 않은 actor.draw도 동작하지만 뒤늦은 개별 준비는 같은 행을 이미 쓴 배치를 먼저 제출하게 만들 수 있습니다.

@@ -1,3 +1,11 @@
+## v0.39.3 (2026-11-01)
+
+수정. `rendering`의 `WebGLDevice.updateDataTexture`가 RGBA32F 숫자 데이터를 올리기 전에 pixel-unpack 상태와 `UNPACK_PREMULTIPLY_ALPHA_WEBGL=false`를 명시합니다. DOM 이미지를 atlas에 올린 직후 GPU 애니메이션 pose를 갱신하면, 이전 이미지 업로드의 premultiply 설정이 숫자 채널에 적용되어 몸통·팔·잎이 사라질 수 있었습니다.
+
+- 이전 화면과 다른 점: 원본 GPU vector actor를 prewarm한 뒤 얼굴·아이콘 이미지를 올려도 몸통이 유지됩니다. CPU pose나 sprite로 전환하지 않습니다.
+- 계약: DOM 이미지의 premultiplied alpha 처리, Float32Array 원본 보존·부분 갱신·context 복구, 표시 순서와 게임 시계는 그대로입니다.
+- 고정 검증: device 브라우저 시나리오에 DOM/바이트 이미지와 숫자 RGBA(네 번째 채널 0·0.5)의 교차 업로드 픽셀 검사를 추가하고, 기존 native GPU pose 시나리오에서 prewarm 이후 DOM 아이콘 업로드를 이어 검사합니다. 실제 기기 GPU·모바일 검증은 별도 범위입니다.
+
 ## v0.39.2 (2026-10-31)
 
 수정. `pwa`의 `registerPwa`가 등록 결과가 비어 있을 때 던지지 않고 `onError`로 알립니다. Playwright처럼 자동화 브라우저가 service worker를 막으면(`serviceWorkers: 'block'`) `register()`가 오류 없이 빈 값으로 끝나는데, 이전에는 `addEventListener`를 부르다 페이지 오류가 났습니다.
