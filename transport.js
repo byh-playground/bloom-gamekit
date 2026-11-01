@@ -2657,7 +2657,11 @@ function createSave({ adapter, key, version, create, validate, migrate = {} } = 
       if (typeof migrate[schema] !== "function") {
         throw new SaveError("unreadable", `no migration from schema ${schema}`);
       }
-      data = migrate[schema](data);
+      try {
+        data = migrate[schema](data);
+      } catch (error) {
+        throw new SaveError("unreadable", `saved record failed migration from schema ${schema}`, error);
+      }
     }
     try {
       validate(data);
