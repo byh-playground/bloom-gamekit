@@ -1914,6 +1914,93 @@ var WebGLDevice = class {
   }
 };
 
+// modules/rendering/vector-shader.js
+var VECTOR_VERTEX_FLOATS = 21;
+var VECTOR_FRAGMENT_VARYINGS = "varying highp vec2 v_uv; varying vec4 v_color; varying highp vec4 v_paint; varying highp vec4 v_radial; varying highp vec4 v_rect;";
+var VECTOR_FRAGMENT_FINISH = "float a=texel.a*v_color.a;if(u_depthWrite>0.5&&a<=0.0)discard;vec3 rgb=v_paint.y>1.5?v_color.rgb*a:mix(texel.rgb*v_color.rgb*v_color.a,vec3(a),v_paint.y);gl_FragColor=vec4(rgb,a);";
+var PRIMITIVE_OUTSIDE = `bool primitiveOutside(vec2 l,vec4 p,vec4 m){
+  float kind=p.x,stroke=p.y,width=p.z,option=p.w;
+  if(kind<0.5){
+    if(stroke<0.5)return length(l)>1.0;
+    float ql=length(l);vec2 n=ql>0.000001?l/ql:vec2(1.0,0.0);float det=m.x*m.w-m.y*m.z;
+    vec2 g=vec2(m.w*n.x-m.z*n.y,-m.y*n.x+m.x*n.y)/max(abs(det),0.000001);
+    return abs((ql-1.0)/max(length(g),0.000001))>width*0.5;
+  }
+  if(kind<1.5){
+    if(stroke<0.5)return max(abs(l.x),abs(l.y))>1.0;
+    float sx=length(vec2(m.x,m.z));float sy=length(vec2(m.y,m.w));
+    if(option>0.5){
+      float ox=1.0+width/(2.0*max(sx,0.000001));float oy=1.0+width/(2.0*max(sy,0.000001));
+      float ix=max(0.0,1.0-width/(2.0*max(sx,0.000001)));float iy=max(0.0,1.0-width/(2.0*max(sy,0.000001)));
+      return max(abs(l.x)/ox,abs(l.y)/oy)>1.0||max(abs(l.x)/max(ix,0.000001),abs(l.y)/max(iy,0.000001))<1.0;
+    }
+    vec2 q=(abs(l)-vec2(1.0))*vec2(sx,sy);float sd=length(max(q,vec2(0.0)))+min(max(q.x,q.y),0.0);
+    return abs(sd)>width*0.5;
+  }
+  float halfLength=length(vec2(m.x,m.z));float halfWidth=length(vec2(m.y,m.w));
+  float x=l.x*halfLength;float y=l.y*halfWidth;float center=halfLength-(option>0.5?halfWidth:0.0);float d;
+  if(option<0.5)d=max(abs(x)-center,abs(y)-halfWidth);
+  else if(option<1.5)d=max(abs(x)-center-halfWidth,abs(y)-halfWidth);
+  else d=length(vec2(max(abs(x)-center,0.0),y))-halfWidth;
+  return d>0.0;
+}`;
+function vectorFragmentShader(planes, meshes = false) {
+  const PLANES = planes ? `varying highp vec2 v_position; uniform vec3 u_planes[${planes}]; uniform int u_planeCount;` : "";
+  const CLIP = planes ? `for(int i=0;i<${planes};i++){if(i>=u_planeCount)break;if(dot(u_planes[i],vec3(v_position,1.0))<0.0)discard;}` : "";
+  const MESH = meshes ? "if(v_paint.z< -0.5){if(u_depthWrite>0.5&&v_color.a<=0.0)discard;gl_FragColor=v_color;return;}" : "";
+  return `precision mediump float; precision mediump sampler2DArray; uniform sampler2DArray u_texture;uniform float u_depthWrite;
+${VECTOR_FRAGMENT_VARYINGS}${PLANES}
+float radialParameter(vec2 q){
+  vec2 d=v_radial.xy;float r0=v_radial.z,dr=v_radial.w;
+  float a=dot(d,d)-dr*dr,b=-2.0*(dot(q,d)+r0*dr),c=dot(q,q)-r0*r0;
+  if(abs(a)<0.000001){if(abs(b)<0.000001)return -10000.0;float t=-c/b;return r0+dr*t>0.0?t:-10000.0;}
+  float discriminant=b*b-4.0*a*c;if(discriminant<0.0)return -10000.0;
+  float root=sqrt(max(discriminant,0.0)),t0=(-b-root)/(2.0*a),t1=(-b+root)/(2.0*a),chosen=-10000.0;
+  if(r0+dr*t0>0.0)chosen=t0;if(r0+dr*t1>0.0)chosen=max(chosen,t1);return chosen;
+}
+${PRIMITIVE_OUTSIDE}
+void main(){${CLIP}${MESH}if(v_paint.z>4.5){if(primitiveOutside(v_uv,v_radial,v_rect)||(u_depthWrite>0.5&&v_color.a<=0.0))discard;gl_FragColor=vec4(v_color.rgb*v_color.a,v_color.a);return;}
+if(v_paint.z>1.5&&v_paint.z<2.5)discard;vec2 uv=v_uv;
+if(v_paint.z>2.5){uv=v_rect.xy+vec2(clamp(v_uv.x,0.0,1.0),0.5)*v_rect.zw;}
+else if(v_paint.z>0.5){float t=radialParameter(v_uv);if(t< -1000.0)discard;uv=v_rect.xy+vec2(clamp(t,0.0,1.0),0.5)*v_rect.zw;}
+if(v_paint.w>0.5){vec2 size=vec2(textureSize(u_texture,0).xy);uv=(floor(uv*size)+0.5)/size;}
+vec4 texel=texture2D(u_texture,vec3(uv,floor(v_paint.x+0.5)));${VECTOR_FRAGMENT_FINISH}}`;
+}
+
+// modules/rendering/quad-data.js
+function validateQuads({
+  layer,
+  uvRects,
+  localRects,
+  matrix = [1, 0, 0, 1, 0, 0],
+  color = [1, 1, 1, 1],
+  alpha = 1,
+  filter = "linear",
+  parts = null,
+  pose = null
+} = {}) {
+  const COUNT = uvRects?.length / 4;
+  if (!Number.isSafeInteger(layer) || layer < 0 || !Number.isInteger(COUNT) || COUNT < 1 || localRects?.length !== COUNT * 4 || matrix.length !== 6 || filter !== "linear" && filter !== "nearest") {
+    throw new TypeError("drawQuads requires a layer and matching uvRects and localRects");
+  }
+  for (const LIST of [uvRects, localRects, matrix]) {
+    for (let i = 0; i < LIST.length; i++) {
+      if (!Number.isFinite(LIST[i])) {
+        throw new TypeError("drawQuads value must be finite");
+      }
+    }
+  }
+  if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1) {
+    throw new RangeError("alpha must be in [0,1]");
+  }
+  if (!color || color.length !== 4 || Array.from(color).some((n) => !Number.isFinite(n) || n < 0 || n > 1)) {
+    throw new TypeError("RGBA channels must be in [0,1]");
+  }
+  if (parts !== null && pose === null) {
+    throw new TypeError("parts require a pose");
+  }
+}
+
 // modules/rendering/clip-planes.js
 var EMPTY_CLIP = Object.freeze({
   key: "",
@@ -1962,6 +2049,235 @@ function clipPlanes(clips, maxPlanes) {
   };
 }
 
+// modules/rendering/pose-shader.js
+var POSE_PROGRAM_FUNCTIONS = `uniform sampler2D u_program;uniform sampler2D u_state;uniform sampler2D u_overrides;uniform int u_programWidth;
+vec4 poseData(int base,int at){int i=at+base;return texelFetch(u_program,ivec2(i%u_programWidth,i/u_programWidth),0);}
+float poseChannel(int base,int header,float time){vec4 h=poseData(base,header);float value=h.z;
+ for(int i=0;i<64;i++){if(i>=int(h.y))break;vec4 s=poseData(base,int(h.x)+i*2);if(time<s.z)break;
+ if(time>=s.w){value=s.y;continue;}float t=clamp((time-s.z)/(s.w-s.z),0.0,1.0);float ease=poseData(base,int(h.x)+i*2+1).x;
+ if(ease>1.5)t=1.0-(1.0-t)*(1.0-t);else if(ease>0.5)t=0.5-0.5*cos(3.141592653589793*t);
+ value=mix(s.x,s.y,t);break;}return value;}
+mat3 poseLocal(int base,int part,int header,float time,int row,out float opacity){
+ vec4 b0=texelFetch(u_overrides,ivec2(part*2,row),0);vec4 b1=texelFetch(u_overrides,ivec2(part*2+1,row),0);
+ int at=header+part*6;vec2 translation=b0.xy+vec2(poseChannel(base,at,time),poseChannel(base,at+1,time));
+ float rotation=b0.z+poseChannel(base,at+2,time);float sx=b0.w*poseChannel(base,at+3,time);float sy=b1.x*poseChannel(base,at+4,time);
+ float c=cos(rotation);float s=sin(rotation);vec2 x=vec2(c,s)*sx;vec2 y=vec2(-s,c)*sy;vec2 pivot=poseData(base,part).xy;
+ opacity=b1.y*b1.z*poseChannel(base,at+5,time);return mat3(vec3(x,0.0),vec3(y,0.0),vec3(pivot+translation-x*pivot.x-y*pivot.y,1.0));}
+void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
+ vec4 playback=texelFetch(u_state,ivec2(0,row),0);vec4 morph=texelFetch(u_state,ivec2(1,row),0);
+ int base=int(morph.w);float time;
+ if(playback.z<0.5)time=clamp(playback.y,0.0,playback.w);
+ else if(playback.z<1.5)time=mod(playback.y,playback.w);
+ else{float point=mod(playback.y,playback.w*2.0);time=point<=playback.w?point:playback.w*2.0-point;}
+ mat3 matrix=mat3(1.0);float alpha=1.0;int current=part;
+ for(int depth=0;depth<16;depth++){if(current<0)break;float opacity;mat3 m=poseLocal(base,current,int(playback.x),time,row,opacity);matrix=m*matrix;alpha*=opacity;current=int(poseData(base,current).z);}
+ if((int(morph.z)&(1<<part))!=0)alpha=0.0;
+ row0=vec4(matrix[0][0],matrix[1][0],matrix[2][0],0.0);row1=vec4(matrix[0][1],matrix[1][1],matrix[2][1],0.0);pose=vec4(morph.xy,alpha,0.0);}
+`;
+
+// modules/rendering/pose-matrix-cache.js
+var CORNERS = Float32Array.of(0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1);
+var VERTEX = `attribute vec2 a_corner;attribute vec2 i_row;uniform vec2 u_size;
+void main(){vec2 pixel=vec2(a_corner.x*i_row.y*3.0,i_row.x+a_corner.y);
+gl_Position=vec4(pixel/u_size*2.0-1.0,0.0,1.0);}`;
+var FRAGMENT = `precision highp float;precision highp int;precision highp sampler2D;
+${POSE_PROGRAM_FUNCTIONS}
+void main(){int column=int(gl_FragCoord.x);int row=int(gl_FragCoord.y);
+vec4 row0;vec4 row1;vec4 pose;poseEval(column/3,row,row0,row1,pose);
+int channel=column%3;gl_FragColor=channel==0?row0:channel==1?row1:pose;}`;
+var PoseMatrixCache = class {
+  constructor(device, width) {
+    this.device = device;
+    this.width = width;
+    this.target = null;
+    this.pipeline = null;
+    this.cornerBuffer = null;
+    this.instanceBuffer = null;
+    this.cornerGeneration = -1;
+    this.instances = new Float32Array(0);
+    this.dirty = /* @__PURE__ */ new Map();
+    this.disposed = false;
+    this.onRestored = () => {
+      this.cornerGeneration = -1;
+      this.dirty.clear();
+    };
+    device.canvas.addEventListener("webglcontextrestored", this.onRestored);
+    this.beginFrame();
+  }
+  get available() {
+    return !this.disposed && this.device.state === "ready" && this.device.floatRenderTargetsSupported && (!this.target || this.device.isRenderTargetAvailable(this.target));
+  }
+  get pending() {
+    return this.dirty.size > 0;
+  }
+  beginFrame() {
+    this.metrics = { rows: 0, parts: 0, passes: 0 };
+  }
+  markDirty(row, partCount) {
+    if (this.available) {
+      this.dirty.set(row, partCount);
+    }
+  }
+  forget(row) {
+    this.dirty.delete(row);
+  }
+  _ensureResources() {
+    let pipeline = this.pipeline;
+    let corners = this.cornerBuffer;
+    let instances = this.instanceBuffer;
+    try {
+      pipeline ??= this.device.createPipeline({
+        vertex: VERTEX,
+        fragment: FRAGMENT,
+        stride: 8,
+        instanceStride: 8,
+        attributes: [
+          { name: "a_corner", size: 2, offset: 0 },
+          { name: "i_row", size: 2, offset: 0, source: "instance" }
+        ],
+        uniforms: {
+          u_size: "2f",
+          u_program: "1i",
+          u_state: "1i",
+          u_overrides: "1i",
+          u_programWidth: "1i"
+        }
+      });
+      corners ??= this.device.createVertexBuffer({ capacityBytes: CORNERS.byteLength });
+      instances ??= this.device.createVertexBuffer({ capacityBytes: 0 });
+      if (this.cornerGeneration !== (this.device.stats.restores ?? 0)) {
+        this.device.uploadVertices(corners, CORNERS);
+      }
+    } catch (error) {
+      if (pipeline && pipeline !== this.pipeline) {
+        this.device.deletePipeline(pipeline);
+      }
+      if (corners && corners !== this.cornerBuffer) {
+        this.device.deleteVertexBuffer(corners);
+      }
+      if (instances && instances !== this.instanceBuffer) {
+        this.device.deleteVertexBuffer(instances);
+      }
+      throw error;
+    }
+    this.pipeline = pipeline;
+    this.cornerBuffer = corners;
+    this.instanceBuffer = instances;
+    this.cornerGeneration = this.device.stats.restores ?? 0;
+  }
+  ensure(capacity) {
+    if (!this.available || !capacity) {
+      return null;
+    }
+    this._ensureResources();
+    if (!this.target || this.target.height < capacity) {
+      const TARGET = this.device.createRenderTarget(this.width, capacity, {
+        format: "rgba32f",
+        filter: "nearest"
+      });
+      const PREVIOUS = this.target;
+      this.target = TARGET;
+      if (PREVIOUS) {
+        this.device.deleteRenderTarget(PREVIOUS);
+      }
+      const ROWS = Math.min(capacity, Math.floor(this.device.maxBufferBytes / 8));
+      this.instances = new Float32Array(ROWS * 2);
+    }
+    return this.target;
+  }
+  flush(textures, programWidth, capacity) {
+    if (!this.device.active || !this.pending) {
+      return;
+    }
+    const TARGET = this.ensure(capacity);
+    if (!TARGET) {
+      return;
+    }
+    const DEVICE = this.device;
+    let count = 0;
+    let parts = 0;
+    const SUBMIT = () => {
+      DEVICE.uploadVertices(this.instanceBuffer, this.instances.subarray(0, count * 2));
+      DEVICE.draw({
+        pipeline: this.pipeline,
+        buffer: this.cornerBuffer,
+        instanceBuffer: this.instanceBuffer,
+        count: 6,
+        instances: count,
+        uniforms: {
+          u_size: [TARGET.width, TARGET.height],
+          u_program: 0,
+          u_state: 1,
+          u_overrides: 2,
+          u_programWidth: programWidth
+        },
+        textures,
+        blend: false,
+        depth: false
+      });
+      this.metrics.rows += count;
+      this.metrics.parts += parts;
+      this.metrics.passes++;
+      for (let index = 0; index < count; index++) {
+        this.dirty.delete(this.instances[index * 2]);
+      }
+      count = 0;
+      parts = 0;
+    };
+    DEVICE.bindRenderTarget(TARGET);
+    try {
+      for (const [ROW, PART_COUNT] of this.dirty) {
+        this.instances[count * 2] = ROW;
+        this.instances[count * 2 + 1] = PART_COUNT;
+        count++;
+        parts += PART_COUNT;
+        if (count * 2 === this.instances.length) {
+          SUBMIT();
+        }
+      }
+      if (count) {
+        SUBMIT();
+      }
+    } finally {
+      DEVICE.unbindRenderTarget(TARGET);
+    }
+  }
+  clear() {
+    if (this.target) {
+      this.device.deleteRenderTarget(this.target);
+    }
+    if (this.pipeline) {
+      this.device.deletePipeline(this.pipeline);
+    }
+    if (this.cornerBuffer) {
+      this.device.deleteVertexBuffer(this.cornerBuffer);
+    }
+    if (this.instanceBuffer) {
+      this.device.deleteVertexBuffer(this.instanceBuffer);
+    }
+    this.target = this.pipeline = this.cornerBuffer = this.instanceBuffer = null;
+    this.cornerGeneration = -1;
+    this.instances = new Float32Array(0);
+    this.dirty.clear();
+  }
+  stats() {
+    return {
+      ...this.metrics,
+      targetBytes: this.target ? this.target.width * this.target.height * 16 : 0,
+      dirtyRows: this.dirty.size,
+      available: this.available
+    };
+  }
+  dispose() {
+    if (this.disposed) {
+      return;
+    }
+    this.clear();
+    this.device.canvas.removeEventListener("webglcontextrestored", this.onRestored);
+    this.disposed = true;
+  }
+};
+
 // modules/rendering/pose-renderer.js
 var MAX_PARTS = 16;
 var POSE_WIDTH = MAX_PARTS * 3;
@@ -1973,12 +2289,16 @@ function poseRendererOf(handle) {
 }
 var PoseRenderer = class {
   constructor(device, { backend = "auto", onBoundary = () => {
-  } } = {}) {
+  }, cacheMatrices = false } = {}) {
     if (!["auto", "cpu", "uniform"].includes(backend)) {
       throw new TypeError("poseBackend must be auto, cpu or uniform");
     }
+    if (typeof cacheMatrices !== "boolean") {
+      throw new TypeError("cacheMatrices must be a boolean");
+    }
     this.device = device;
     this.backend = backend;
+    this.matrixCache = cacheMatrices ? new PoseMatrixCache(device, POSE_WIDTH) : null;
     this.onBoundary = onBoundary;
     this.sources = /* @__PURE__ */ new Map();
     this.instances = /* @__PURE__ */ new Map();
@@ -2010,6 +2330,7 @@ var PoseRenderer = class {
     }
   }
   beginFrame() {
+    this.matrixCache?.beginFrame();
     this.frameMetrics = {
       gpuDrawInstances: 0,
       cpuDrawInstances: 0,
@@ -2109,6 +2430,7 @@ var PoseRenderer = class {
     return true;
   }
   _releaseAtlas() {
+    this.matrixCache?.clear();
     for (const KEY of ["stateTexture", "overrideTexture", "cpuTexture"]) {
       if (this[KEY]) {
         this.device.deleteTexture(this[KEY]);
@@ -2195,6 +2517,7 @@ var PoseRenderer = class {
     }
     this._boundary();
     this.instances.delete(handle);
+    this.matrixCache?.forget(RECORD.row);
     for (const SET of Object.values(this.dirty)) {
       SET.delete(RECORD);
     }
@@ -2269,6 +2592,9 @@ var PoseRenderer = class {
       this.dirty.override.add(RECORD);
     }
     this.pendingUpdates ||= STATE_CHANGED || BASE_CHANGED;
+    if (RECORD.mode !== "gpu") {
+      this.matrixCache?.markDirty(RECORD.row, SOURCE.program.partCount);
+    }
     RECORD.mode = "gpu";
     RECORD.reason = null;
     return handle;
@@ -2304,13 +2630,17 @@ var PoseRenderer = class {
         OFFSET + i * 12
       );
     }
+    this.matrixCache?.forget(RECORD.row);
     RECORD.mode = "cpu";
     RECORD.reason = reason;
     this.dirty.cpu.add(RECORD);
     this.pendingUpdates = true;
     return handle;
   }
-  resolve(handle) {
+  resolve(handle, { program = false } = {}) {
+    if (typeof program !== "boolean") {
+      throw new TypeError("program must be a boolean");
+    }
     const RECORD = this._instance(handle);
     if (!RECORD.mode) {
       throw new Error("Prepare a player pose before drawing");
@@ -2321,6 +2651,18 @@ var PoseRenderer = class {
     }
     const PART_COUNT = this.sources.get(RECORD.source).program.partCount;
     if (RECORD.mode === "gpu") {
+      const CACHED = !program && this.matrixCache?.ensure(this.capacity);
+      if (CACHED) {
+        return {
+          row: RECORD.row,
+          kind: "matrix",
+          gpu: true,
+          texture: CACHED,
+          textures: [CACHED],
+          programWidth: 0,
+          partCount: PART_COUNT
+        };
+      }
       return {
         row: RECORD.row,
         kind: "program",
@@ -2380,8 +2722,20 @@ var PoseRenderer = class {
       return;
     }
     if (!this.pendingUpdates) {
-      this.frameMetrics.cleanFlushSkips++;
+      if (!this.matrixCache?.pending) {
+        this.frameMetrics.cleanFlushSkips++;
+      }
+      this._flushMatrixCache();
       return;
+    }
+    if (this.matrixCache) {
+      for (const DIRTY of [this.dirty.state, this.dirty.override]) {
+        for (const RECORD of DIRTY) {
+          if (RECORD.mode === "gpu") {
+            this.matrixCache.markDirty(RECORD.row, this.sources.get(RECORD.source).program.partCount);
+          }
+        }
+      }
     }
     if (this.cpuTexture) {
       this._uploadRows("cpuData", this.dirty.cpu, this.cpuTexture, POSE_WIDTH, "cpuPoseUploadBytes");
@@ -2395,6 +2749,16 @@ var PoseRenderer = class {
       "overrideUploadBytes"
     );
     this.pendingUpdates = false;
+    this._flushMatrixCache();
+  }
+  _flushMatrixCache() {
+    if (this.matrixCache && this.programTexture) {
+      this.matrixCache.flush(
+        [this.programTexture, this.stateTexture, this.overrideTexture],
+        this.programTexture.width,
+        this.capacity
+      );
+    }
   }
   stats() {
     const TOTAL = this.frameMetrics.gpuDrawInstances + this.frameMetrics.cpuDrawInstances + this.frameMetrics.uniformDrawInstances;
@@ -2407,6 +2771,7 @@ var PoseRenderer = class {
       sources: this.sources.size,
       capacity: this.capacity,
       gpuUnavailableReason: this.gpuUnavailableReason,
+      matrixCache: this.matrixCache?.stats() ?? null,
       stateBytes: this.capacity * (8 + OVERRIDE_WIDTH * 4) * 4,
       cpuPoseBytes: this.cpuTexture ? POSE_WIDTH * this.capacity * 16 : 0,
       programBytes: this.programTexture ? this.programTexture.width * this.programTexture.height * 16 : 0
@@ -2418,6 +2783,7 @@ var PoseRenderer = class {
     }
     this._boundary();
     this._releaseAtlas();
+    this.matrixCache?.dispose();
     if (this.programTexture) {
       this.device.deleteTexture(this.programTexture);
     }
@@ -2428,37 +2794,10 @@ var PoseRenderer = class {
   }
 };
 
-// modules/rendering/pose-shader.js
-var POSE_PROGRAM_FUNCTIONS = `uniform sampler2D u_program;uniform sampler2D u_state;uniform sampler2D u_overrides;uniform int u_programWidth;
-vec4 poseData(int base,int at){int i=at+base;return texelFetch(u_program,ivec2(i%u_programWidth,i/u_programWidth),0);}
-float poseChannel(int base,int header,float time){vec4 h=poseData(base,header);float value=h.z;
- for(int i=0;i<64;i++){if(i>=int(h.y))break;vec4 s=poseData(base,int(h.x)+i*2);if(time<s.z)break;
- if(time>=s.w){value=s.y;continue;}float t=clamp((time-s.z)/(s.w-s.z),0.0,1.0);float ease=poseData(base,int(h.x)+i*2+1).x;
- if(ease>1.5)t=1.0-(1.0-t)*(1.0-t);else if(ease>0.5)t=0.5-0.5*cos(3.141592653589793*t);
- value=mix(s.x,s.y,t);break;}return value;}
-mat3 poseLocal(int base,int part,int header,float time,int row,out float opacity){
- vec4 b0=texelFetch(u_overrides,ivec2(part*2,row),0);vec4 b1=texelFetch(u_overrides,ivec2(part*2+1,row),0);
- int at=header+part*6;vec2 translation=b0.xy+vec2(poseChannel(base,at,time),poseChannel(base,at+1,time));
- float rotation=b0.z+poseChannel(base,at+2,time);float sx=b0.w*poseChannel(base,at+3,time);float sy=b1.x*poseChannel(base,at+4,time);
- float c=cos(rotation);float s=sin(rotation);vec2 x=vec2(c,s)*sx;vec2 y=vec2(-s,c)*sy;vec2 pivot=poseData(base,part).xy;
- opacity=b1.y*b1.z*poseChannel(base,at+5,time);return mat3(vec3(x,0.0),vec3(y,0.0),vec3(pivot+translation-x*pivot.x-y*pivot.y,1.0));}
-void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
- vec4 playback=texelFetch(u_state,ivec2(0,row),0);vec4 morph=texelFetch(u_state,ivec2(1,row),0);
- int base=int(morph.w);float time;
- if(playback.z<0.5)time=clamp(playback.y,0.0,playback.w);
- else if(playback.z<1.5)time=mod(playback.y,playback.w);
- else{float point=mod(playback.y,playback.w*2.0);time=point<=playback.w?point:playback.w*2.0-point;}
- mat3 matrix=mat3(1.0);float alpha=1.0;int current=part;
- for(int depth=0;depth<16;depth++){if(current<0)break;float opacity;mat3 m=poseLocal(base,current,int(playback.x),time,row,opacity);matrix=m*matrix;alpha*=opacity;current=int(poseData(base,current).z);}
- if((int(morph.z)&(1<<part))!=0)alpha=0.0;
- row0=vec4(matrix[0][0],matrix[1][0],matrix[2][0],0.0);row1=vec4(matrix[0][1],matrix[1][1],matrix[2][1],0.0);pose=vec4(morph.xy,alpha,0.0);}
-`;
-
 // modules/rendering/vector-renderer.js
 var IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
-var VERTEX_FLOATS = 21;
 var DEPTH_FUNCTIONS = /* @__PURE__ */ new Set(["never", "less", "equal", "lequal", "greater", "notequal", "gequal", "always"]);
-var VERTEX_BYTES = VERTEX_FLOATS * 4;
+var VERTEX_BYTES = VECTOR_VERTEX_FLOATS * 4;
 var MODE_POSED = 4;
 var ARC_TOLERANCE = 0.125;
 var MODE_PRIMITIVE = 5;
@@ -2479,7 +2818,6 @@ var VERTEX_ATTRIBUTES = [
   { name: "a_rect", size: 4, offset: 64 },
   { name: "a_depth", size: 1, offset: 80 }
 ];
-var FRAGMENT_VARYINGS = "varying highp vec2 v_uv; varying vec4 v_color; varying highp vec4 v_paint; varying highp vec4 v_radial; varying highp vec4 v_rect;";
 var POSED_CORNER = `if(a_paint.z>3.5&&a_paint.z<4.5){vec4 row0;vec4 row1;vec4 pose;
 poseEval(int(a_rect.w+0.5),int(a_rect.z+0.5),row0,row1,pose);
 vec2 q=vec2(dot(row0.xy,a_position)+row0.z,dot(row1.xy,a_position)+row1.z);
@@ -2487,67 +2825,19 @@ position=vec2(a_radial.x*q.x+a_radial.z*q.y+a_rect.x,a_radial.y*q.x+a_radial.w*q
 color.a*=pose.z;paint.z=0.0;radial=vec4(0.0);rect=vec4(0.0);}`;
 function vertexShader(posed) {
   return `attribute vec2 a_position; attribute vec2 a_uv; attribute vec4 a_color; attribute vec4 a_paint; attribute vec4 a_radial; attribute vec4 a_rect; attribute float a_depth;
-uniform mat3 u_projection; ${FRAGMENT_VARYINGS}${posed ? " varying highp vec2 v_position;" : ""}
+uniform mat3 u_projection; ${VECTOR_FRAGMENT_VARYINGS}${posed ? " varying highp vec2 v_position;" : ""}
 ${posed ? POSE_PROGRAM_FUNCTIONS : ""}
 void main(){vec2 position=a_position;vec4 color=a_color;vec4 paint=a_paint;vec4 radial=a_radial;vec4 rect=a_rect;
 ${posed ? POSED_CORNER : ""}
 vec3 p=u_projection*vec3(position,1.0);gl_Position=vec4(p.xy,a_depth,1.0);${posed ? "v_position=position;" : ""}v_uv=a_uv;v_color=color;v_paint=paint;v_radial=radial;v_rect=rect;}`;
 }
-var VERTEX = vertexShader(false);
+var VERTEX2 = vertexShader(false);
 var CLIP_VERTEX = `attribute vec2 a_position;uniform mat3 u_projection;uniform mat3 u_transform;void main(){vec3 p=u_projection*u_transform*vec3(a_position,1.0);gl_Position=vec4(p.xy,0.0,1.0);}`;
 var CLIP_FRAGMENT = "precision mediump float;void main(){gl_FragColor=vec4(1.0);}";
-var FINISH = "float a=texel.a*v_color.a;if(u_depthWrite>0.5&&a<=0.0)discard;vec3 rgb=v_paint.y>1.5?v_color.rgb*a:mix(texel.rgb*v_color.rgb*v_color.a,vec3(a),v_paint.y);gl_FragColor=vec4(rgb,a);";
-var PRIMITIVE_OUTSIDE = `bool primitiveOutside(vec2 l,vec4 p,vec4 m){
-  float kind=p.x,stroke=p.y,width=p.z,option=p.w;
-  if(kind<0.5){
-    if(stroke<0.5)return length(l)>1.0;
-    float ql=length(l);vec2 n=ql>0.000001?l/ql:vec2(1.0,0.0);float det=m.x*m.w-m.y*m.z;
-    vec2 g=vec2(m.w*n.x-m.z*n.y,-m.y*n.x+m.x*n.y)/max(abs(det),0.000001);
-    return abs((ql-1.0)/max(length(g),0.000001))>width*0.5;
-  }
-  if(kind<1.5){
-    if(stroke<0.5)return max(abs(l.x),abs(l.y))>1.0;
-    float sx=length(vec2(m.x,m.z));float sy=length(vec2(m.y,m.w));
-    if(option>0.5){
-      float ox=1.0+width/(2.0*max(sx,0.000001));float oy=1.0+width/(2.0*max(sy,0.000001));
-      float ix=max(0.0,1.0-width/(2.0*max(sx,0.000001)));float iy=max(0.0,1.0-width/(2.0*max(sy,0.000001)));
-      return max(abs(l.x)/ox,abs(l.y)/oy)>1.0||max(abs(l.x)/max(ix,0.000001),abs(l.y)/max(iy,0.000001))<1.0;
-    }
-    vec2 q=(abs(l)-vec2(1.0))*vec2(sx,sy);float sd=length(max(q,vec2(0.0)))+min(max(q.x,q.y),0.0);
-    return abs(sd)>width*0.5;
-  }
-  float halfLength=length(vec2(m.x,m.z));float halfWidth=length(vec2(m.y,m.w));
-  float x=l.x*halfLength;float y=l.y*halfWidth;float center=halfLength-(option>0.5?halfWidth:0.0);float d;
-  if(option<0.5)d=max(abs(x)-center,abs(y)-halfWidth);
-  else if(option<1.5)d=max(abs(x)-center-halfWidth,abs(y)-halfWidth);
-  else d=length(vec2(max(abs(x)-center,0.0),y))-halfWidth;
-  return d>0.0;
-}`;
-function fragmentShader(planes) {
-  const PLANES = planes ? `varying highp vec2 v_position; uniform vec3 u_planes[${planes}]; uniform int u_planeCount;` : "";
-  const CLIP = planes ? `for(int i=0;i<${planes};i++){if(i>=u_planeCount)break;if(dot(u_planes[i],vec3(v_position,1.0))<0.0)discard;}` : "";
-  return `precision mediump float; precision mediump sampler2DArray; uniform sampler2DArray u_texture;uniform float u_depthWrite;
-${FRAGMENT_VARYINGS}${PLANES}
-float radialParameter(vec2 q){
-  vec2 d=v_radial.xy;float r0=v_radial.z,dr=v_radial.w;
-  float a=dot(d,d)-dr*dr,b=-2.0*(dot(q,d)+r0*dr),c=dot(q,q)-r0*r0;
-  if(abs(a)<0.000001){if(abs(b)<0.000001)return -10000.0;float t=-c/b;return r0+dr*t>0.0?t:-10000.0;}
-  float discriminant=b*b-4.0*a*c;if(discriminant<0.0)return -10000.0;
-  float root=sqrt(max(discriminant,0.0)),t0=(-b-root)/(2.0*a),t1=(-b+root)/(2.0*a),chosen=-10000.0;
-  if(r0+dr*t0>0.0)chosen=t0;if(r0+dr*t1>0.0)chosen=max(chosen,t1);return chosen;
-}
-${PRIMITIVE_OUTSIDE}
-void main(){${CLIP}if(v_paint.z>4.5){if(primitiveOutside(v_uv,v_radial,v_rect)||(u_depthWrite>0.5&&v_color.a<=0.0))discard;gl_FragColor=vec4(v_color.rgb*v_color.a,v_color.a);return;}
-if(v_paint.z>1.5&&v_paint.z<2.5)discard;vec2 uv=v_uv;
-if(v_paint.z>2.5){uv=v_rect.xy+vec2(clamp(v_uv.x,0.0,1.0),0.5)*v_rect.zw;}
-else if(v_paint.z>0.5){float t=radialParameter(v_uv);if(t< -1000.0)discard;uv=v_rect.xy+vec2(clamp(t,0.0,1.0),0.5)*v_rect.zw;}
-if(v_paint.w>0.5){vec2 size=vec2(textureSize(u_texture,0).xy);uv=(floor(uv*size)+0.5)/size;}
-vec4 texel=texture2D(u_texture,vec3(uv,floor(v_paint.x+0.5)));${FINISH}}`;
-}
-var FRAGMENT = fragmentShader(0);
+var FRAGMENT2 = vectorFragmentShader(0);
 var GROUP_FRAGMENT = `precision mediump float; uniform sampler2D u_texture;uniform float u_depthWrite;
-${FRAGMENT_VARYINGS}
-void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
+${VECTOR_FRAGMENT_VARYINGS}
+void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
 var FINITE = (n, label) => {
   if (!Number.isFinite(n)) {
     throw new TypeError(`${label} must be finite`);
@@ -2773,8 +3063,8 @@ var VectorRenderer = class {
       Math.min(32, device.gl.getParameter(device.gl.MAX_FRAGMENT_UNIFORM_VECTORS) - 2)
     );
     this.pipeline = device.createPipeline({
-      vertex: VERTEX,
-      fragment: FRAGMENT,
+      vertex: VERTEX2,
+      fragment: FRAGMENT2,
       stride: VERTEX_BYTES,
       attributes: VERTEX_ATTRIBUTES,
       uniforms: {
@@ -2817,7 +3107,7 @@ var VectorRenderer = class {
       { width: 1, height: 1, data: new Uint8Array([255, 255, 255, 255]) },
       { premultiplied: true, extendEdges: true }
     );
-    this.vertices = new Float32Array(initialVertices * VERTEX_FLOATS);
+    this.vertices = new Float32Array(initialVertices * VECTOR_VERTEX_FLOATS);
     this.count = 0;
     this.matrix = IDENTITY.slice();
     this.stack = [];
@@ -2871,7 +3161,7 @@ var VectorRenderer = class {
     this.groupPipeline = null;
     try {
       this.groupPipeline = device.createPipeline({
-        vertex: VERTEX,
+        vertex: VERTEX2,
         fragment: GROUP_FRAGMENT,
         stride: VERTEX_BYTES,
         attributes: VERTEX_ATTRIBUTES,
@@ -3318,6 +3608,7 @@ var VectorRenderer = class {
     });
   }
   _rebuildStencil() {
+    this.beforeStencilChange?.();
     if (!this.stencilClips.length) {
       this.stencilDepth = 0;
       this.stencilNeedsRebuild = false;
@@ -3389,10 +3680,10 @@ var VectorRenderer = class {
     if (!this.count) {
       this.batchSerial = this.clipSerial;
     }
-    if ((this.count + vertexCount) * VERTEX_FLOATS > this.vertices.length) {
+    if ((this.count + vertexCount) * VECTOR_VERTEX_FLOATS > this.vertices.length) {
       const SIZE = Math.min(this.maxVertices, Math.max(this.count + vertexCount, this.count * 2));
-      const NEXT = new Float32Array(SIZE * VERTEX_FLOATS);
-      NEXT.set(this.vertices.subarray(0, this.count * VERTEX_FLOATS));
+      const NEXT = new Float32Array(SIZE * VECTOR_VERTEX_FLOATS);
+      NEXT.set(this.vertices.subarray(0, this.count * VECTOR_VERTEX_FLOATS));
       this.vertices = NEXT;
     }
   }
@@ -3435,7 +3726,7 @@ var VectorRenderer = class {
     for (let i = 1; i + 1 < POLY.length; i++) {
       this._reserve(3);
       for (const POINT of [POLY[0], POLY[i], POLY[i + 1]]) {
-        const K = this.count++ * VERTEX_FLOATS;
+        const K = this.count++ * VECTOR_VERTEX_FLOATS;
         this.vertices[K] = POINT.x;
         this.vertices[K + 1] = POINT.y;
         this.vertices[K + 2] = POINT.u ?? this.flatUV[0];
@@ -3447,7 +3738,7 @@ var VectorRenderer = class {
     }
   }
   _writeVertex(x, y, u, v, color) {
-    const K = this.count++ * VERTEX_FLOATS, DATA = this.vertices;
+    const K = this.count++ * VECTOR_VERTEX_FLOATS, DATA = this.vertices;
     DATA[K] = x;
     DATA[K + 1] = y;
     DATA[K + 2] = u;
@@ -3464,6 +3755,19 @@ var VectorRenderer = class {
       return;
     }
     this._assertDepthTarget();
+    if (!this.poseBatch && !this.activeTarget && !this.device.activeRenderTarget && this.submitTriangles?.(this.vertices.subarray(0, this.count * VECTOR_VERTEX_FLOATS), this.count, {
+      projection: this.projection,
+      clips: [],
+      stencilRef: this.stencilDepth || null,
+      depthTest: this.depthTest,
+      depthWrite: this.depthWrite,
+      depthFunc: this.depthFunc,
+      blend: this.blend
+    })) {
+      this.count = 0;
+      return;
+    }
+    this.beforeSubmit?.();
     this.device.stats.vectorSubmissions++;
     const POSED = this.poseBatch;
     this.poseBatch = null;
@@ -3475,7 +3779,7 @@ var VectorRenderer = class {
         this.planeScratch.set(POSED.planes);
       }
     }
-    this.device.uploadVertices(this.buffer, this.vertices.subarray(0, this.count * VERTEX_FLOATS));
+    this.device.uploadVertices(this.buffer, this.vertices.subarray(0, this.count * VECTOR_VERTEX_FLOATS));
     this.device.draw({
       pipeline: POSED ? this.posePipeline : this.activeTarget ? this.groupPipeline : this.pipeline,
       buffer: this.buffer,
@@ -3511,7 +3815,7 @@ var VectorRenderer = class {
   _createPosePipeline() {
     return this.device.createPipeline({
       vertex: vertexShader(true),
-      fragment: fragmentShader(this.maxClipPlanes),
+      fragment: vectorFragmentShader(this.maxClipPlanes),
       stride: VERTEX_BYTES,
       attributes: VERTEX_ATTRIBUTES,
       uniforms: {
@@ -3591,15 +3895,15 @@ var VectorRenderer = class {
     }
     const M = matrix;
     this._useVertexPaint([0, 0, MODE_PRIMITIVE, 0, ...params, M[0], M[2], M[1], M[3]]);
-    const CORNERS = [
+    const CORNERS2 = [
       [-1, -1],
       [1, -1],
       [1, 1],
       [-1, 1]
     ];
-    const WORLD = CORNERS.map((corner) => point(M, corner[0], corner[1]));
-    this._emitTriangle(WORLD[0], WORLD[1], WORLD[2], color, [CORNERS[0], CORNERS[1], CORNERS[2]]);
-    this._emitTriangle(WORLD[0], WORLD[2], WORLD[3], color, [CORNERS[0], CORNERS[2], CORNERS[3]]);
+    const WORLD = CORNERS2.map((corner) => point(M, corner[0], corner[1]));
+    this._emitTriangle(WORLD[0], WORLD[1], WORLD[2], color, [CORNERS2[0], CORNERS2[1], CORNERS2[2]]);
+    this._emitTriangle(WORLD[0], WORLD[2], WORLD[3], color, [CORNERS2[0], CORNERS2[2], CORNERS2[3]]);
   }
   /**
    * Draws atlas rectangles in painter order. Run i places `localRects[i]` (x, y, width, height) on the current
@@ -3623,18 +3927,7 @@ var VectorRenderer = class {
   } = {}) {
     this._frame();
     const COUNT = uvRects?.length / 4;
-    if (!Number.isSafeInteger(layer) || layer < 0 || !Number.isInteger(COUNT) || COUNT < 1 || localRects?.length !== COUNT * 4 || matrix.length !== 6 || filter !== "linear" && filter !== "nearest") {
-      throw new TypeError("drawQuads requires a layer and matching uvRects and localRects");
-    }
-    for (const LIST of [uvRects, localRects, matrix]) {
-      for (let i = 0; i < LIST.length; i++) {
-        FINITE(LIST[i], "drawQuads value");
-      }
-    }
-    if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1) {
-      throw new RangeError("alpha must be in [0,1]");
-    }
-    rgba(color);
+    validateQuads({ layer, uvRects, localRects, matrix, color, alpha, filter, parts, pose });
     const TINT = [color[0], color[1], color[2], color[3] * alpha], M = compose(this.matrix, matrix);
     this._useVertexPaint(
       [layer, whiteFlash ? 1 : forceColor ? 2 : 0, 0, filter === "nearest" ? 1 : 0, 0, 0, 0, 0, 0, 0, 1, 1],
@@ -3662,21 +3955,21 @@ var VectorRenderer = class {
           this._writeVertex(X3, Y3, U, V + VH, TINT);
           continue;
         }
-        const CORNERS = [
+        const CORNERS2 = [
           [point(M, LX, LY), [U, V]],
           [point(M, LX + LW, LY), [U + UW, V]],
           [point(M, LX + LW, LY + LH), [U + UW, V + VH]],
           [point(M, LX, LY + LH), [U, V + VH]]
         ];
-        this._emitTriangle(CORNERS[0][0], CORNERS[1][0], CORNERS[2][0], TINT, [
-          CORNERS[0][1],
-          CORNERS[1][1],
-          CORNERS[2][1]
+        this._emitTriangle(CORNERS2[0][0], CORNERS2[1][0], CORNERS2[2][0], TINT, [
+          CORNERS2[0][1],
+          CORNERS2[1][1],
+          CORNERS2[2][1]
         ]);
-        this._emitTriangle(CORNERS[0][0], CORNERS[2][0], CORNERS[3][0], TINT, [
-          CORNERS[0][1],
-          CORNERS[2][1],
-          CORNERS[3][1]
+        this._emitTriangle(CORNERS2[0][0], CORNERS2[2][0], CORNERS2[3][0], TINT, [
+          CORNERS2[0][1],
+          CORNERS2[2][1],
+          CORNERS2[3][1]
         ]);
       }
       return;
@@ -3685,7 +3978,7 @@ var VectorRenderer = class {
     if (!OWNER || parts?.length !== COUNT) {
       throw new TypeError("A live pose handle and one part per run are required");
     }
-    const DRAW = OWNER.resolve(pose);
+    const DRAW = OWNER.resolve(pose, { program: true });
     if (DRAW.kind !== "program") {
       throw new TypeError("Posed sprites require a keyframe program pose");
     }
@@ -3701,7 +3994,7 @@ var VectorRenderer = class {
       const [LX, LY, LW, LH] = localRects.subarray(i * 4, i * 4 + 4), [U, V, UW, VH] = uvRects.subarray(i * 4, i * 4 + 4);
       this._reserve(6);
       for (const [CX, CY] of POSED_CORNERS) {
-        const K = this.count++ * VERTEX_FLOATS;
+        const K = this.count++ * VECTOR_VERTEX_FLOATS;
         this.vertices[K] = LX + CX * LW;
         this.vertices[K + 1] = LY + CY * LH;
         this.vertices[K + 2] = U + CX * UW;
@@ -4236,6 +4529,650 @@ function packPaintRegions(names, overrides, output) {
   }
   return output;
 }
+
+// modules/rendering/ordered-triangles.js
+var COMMAND_WIDTH = 32;
+var COMMAND_FLOATS = COMMAND_WIDTH * 4;
+var GEOMETRY_WIDTH = 256;
+var VERTEX3 = `attribute vec2 a_reference;
+uniform sampler2D u_geometry;uniform sampler2D u_commands;uniform sampler2D u_vectors;uniform int u_geometryWidth;uniform int u_vectorWidth;
+uniform mat3 u_projection;
+${VECTOR_FRAGMENT_VARYINGS}varying highp vec2 v_position;
+${POSE_PROGRAM_FUNCTIONS}
+vec4 geometry(int at){return texelFetch(u_geometry,ivec2(at%u_geometryWidth,at/u_geometryWidth),0);}
+vec4 vectorData(int at){return texelFetch(u_vectors,ivec2(at%u_vectorWidth,at/u_vectorWidth),0);}
+vec4 command(int at){int i=int(a_reference.y)+at;return texelFetch(u_commands,ivec2(i%${COMMAND_WIDTH},i/${COMMAND_WIDTH}),0);}
+void main(){vec4 m0=command(0);vec4 m1=command(1);vec4 tint=command(2);vec4 params=command(3);vec4 meta=command(4);
+vec2 p;vec4 color;float partDepth=0.0;v_uv=vec2(0.0);v_paint=vec4(0.0,0.0,-1.0,0.0);v_radial=vec4(0.0);v_rect=vec4(0.0);
+if(meta.x>1.5){int index=int(a_reference.x);vec4 g0=vectorData(index);
+v_radial=command(6);v_rect=command(7);v_paint=command(5);v_color=tint;
+v_uv=g0.zw;v_position=g0.xy;vec3 projected=u_projection*vec3(g0.xy,1.0);gl_Position=vec4(projected.xy,params.w,1.0);return;}
+if(meta.x<0.5){
+ int index=int(a_reference.x);
+ vec4 g0=geometry(index);vec4 g1=geometry(index+1);vec4 g2=geometry(index+2);
+ vec4 authored=vec4(g0.zw,g1.xy);vec4 paint=command(8+int(g2.w));authored.rgb=mix(authored.rgb,paint.rgb,paint.a);
+ vec4 row0=vec4(1.0,0.0,0.0,0.0);vec4 row1=vec4(0.0,1.0,0.0,0.0);vec4 pose=vec4(0.0,0.0,1.0,0.0);
+ if(meta.z>1.5){int part=int(g2.z)*3;int row=int(meta.y);
+ row0=texelFetch(u_program,ivec2(part,row),0);row1=texelFetch(u_program,ivec2(part+1,row),0);pose=texelFetch(u_program,ivec2(part+2,row),0);}
+ else if(meta.z>0.5)poseEval(int(g2.z),int(meta.y),row0,row1,pose);
+ vec2 weights=meta.z>0.5?pose.xy:params.xy;
+ vec2 local=g0.xy;if(meta.w>0.5)local+=g1.zw*weights.x;if(meta.w>1.5)local+=g2.xy*weights.y;
+ p=vec2(dot(row0.xyz,vec3(local,1.0)),dot(row1.xyz,vec3(local,1.0)));partDepth=pose.w;
+ color=mix(authored*tint,tint,m1.w);color.a*=m0.w*pose.z;color.rgb=mix(color.rgb,vec3(1.0),params.z);
+ // Mesh colour is premultiplied at each vertex, before interpolation, exactly as MeshRenderer.
+ color.rgb*=color.a;
+}else{
+ float corner=-a_reference.x-1.0;
+ vec2 c=corner<0.5?vec2(0.0):corner<1.5?vec2(1.0,0.0):corner<2.5?vec2(1.0):vec2(0.0,1.0);
+ vec4 rect=command(5);vec4 uv=command(6);vec4 paint=command(7);p=rect.xy+c*rect.zw;
+ v_uv=uv.xy+c*uv.zw;v_paint=vec4(paint.x,params.z>0.5?1.0:m1.w>0.5?2.0:0.0,0.0,paint.y);
+ color=tint;color.a*=m0.w;
+}
+vec2 world=vec2(dot(m0.xyz,vec3(p,1.0)),dot(m1.xyz,vec3(p,1.0)));vec3 projected=u_projection*vec3(world,1.0);
+v_position=world;v_color=color;
+// Ordinary atlas quads use the vector stream's affine projection contract; meshes retain homogeneous w.
+float w=meta.x<0.5?projected.z:1.0;gl_Position=vec4(projected.xy,(params.w+partDepth)*w,w);
+}`;
+var OrderedTriangleBatch = class {
+  constructor(device, { maxInstances, maxMeshBytes, maxPlanes }) {
+    if (device.maxTextures < 6) {
+      throw new Error("Ordered mesh/quads require six texture units");
+    }
+    this.device = device;
+    this.maxPlanes = maxPlanes;
+    this.commandCapacity = Math.min(device.maxTextureSize, maxInstances * 4);
+    this.triangleCapacity = Math.min(maxInstances * 128, Math.floor(device.maxBufferBytes / 8));
+    this.geometryWidth = Math.min(GEOMETRY_WIDTH, device.maxTextureSize, Math.floor(maxMeshBytes * 2 / 16));
+    this.maxGeometryTexels = Math.min(maxMeshBytes * 2 / 16, this.geometryWidth * device.maxTextureSize, 2 ** 24);
+    this.commands = new Float32Array(this.commandCapacity * COMMAND_FLOATS);
+    this.vertexCapacity = Math.min(65535, Math.floor(device.maxBufferBytes / 8));
+    if (this.vertexCapacity < 4 || this.triangleCapacity < 2) {
+      throw new RangeError("Ordered mesh/quads require room for four references and two triangles");
+    }
+    this.vectorTexels = 1;
+    this.vectorWidth = Math.min(GEOMETRY_WIDTH, device.maxTextureSize);
+    this.vectorCapacity = Math.min(
+      this.vertexCapacity,
+      Math.floor(this.vectorWidth * device.maxTextureSize / this.vectorTexels)
+    );
+    this.vectorVertices = null;
+    this.references = new Float32Array(this.vertexCapacity * 2);
+    this.indices = new Uint16Array(this.triangleCapacity * 3);
+    this.dummyTexture = device.createDataTexture(1, 1);
+    this.slots = /* @__PURE__ */ new Map();
+    this.slotBytes = 0;
+    this.maxSlotBytes = maxMeshBytes * 2;
+    this.pipeline = device.createPipeline({
+      vertex: VERTEX3,
+      fragment: vectorFragmentShader(maxPlanes, true),
+      stride: 8,
+      attributes: [{ name: "a_reference", size: 2, offset: 0 }],
+      uniforms: {
+        u_projection: "matrix3fv",
+        u_geometry: "1i",
+        u_commands: "1i",
+        u_vectors: "1i",
+        u_vectorWidth: "1i",
+        u_geometryWidth: "1i",
+        u_program: "1i",
+        u_state: "1i",
+        u_overrides: "1i",
+        u_programWidth: "1i",
+        u_texture: "1i",
+        u_depthWrite: "1f",
+        "u_planes[0]": "3fv",
+        u_planeCount: "1i"
+      }
+    });
+    this.meshes = /* @__PURE__ */ new Map();
+    this.freeGeometry = [];
+    this.geometryEnd = 0;
+    this.geometryData = new Float32Array(0);
+    this.geometryTexture = null;
+    this.planes = new Float32Array(maxPlanes * 3);
+    this.onRestored = () => {
+      this.discard();
+      for (const SLOT of this.slots.values()) {
+        SLOT.valid = false;
+      }
+    };
+    device.canvas.addEventListener("webglcontextrestored", this.onRestored);
+    this.beginFrame();
+  }
+  beginFrame() {
+    this.discard();
+    this.slotIndex = 0;
+    this.metrics = {
+      draws: 0,
+      commands: 0,
+      triangles: 0,
+      vectorBytes: 0,
+      vectorTriangles: 0,
+      referenceBytes: 0,
+      indexBytes: 0,
+      reusedTopologies: 0,
+      commandBytes: 0,
+      geometryUploadBytes: 0,
+      flushReasons: /* @__PURE__ */ Object.create(null)
+    };
+  }
+  retain(mesh) {
+    const EXISTING = this.meshes.get(mesh);
+    if (EXISTING) {
+      return EXISTING;
+    }
+    this.flush("geometryAllocation");
+    const VERTICES = mesh.vertices.length / 11;
+    const SETS = new Map([
+      [null, { indices: mesh.indices, count: mesh.count }],
+      ...mesh.expressionIndices,
+      ...mesh.indexVariants
+    ]);
+    const SIZE = VERTICES * 3;
+    const BLOCK = this.freeGeometry.find((block) => block.size >= SIZE);
+    const START = BLOCK?.start ?? this.geometryEnd;
+    if (START + SIZE > this.maxGeometryTexels) {
+      throw new RangeError("Ordered retained geometry exceeds its byte/texture budget");
+    }
+    const NEXT_END = Math.max(this.geometryEnd, START + SIZE);
+    const REQUIRED_HEIGHT = Math.ceil(NEXT_END / this.geometryWidth);
+    const HEIGHT = Math.min(
+      Math.floor(this.maxGeometryTexels / this.geometryWidth),
+      Math.max(1, 2 ** Math.ceil(Math.log2(REQUIRED_HEIGHT)))
+    );
+    if (HEIGHT < REQUIRED_HEIGHT) {
+      throw new RangeError("Ordered geometry texture padding exceeds its byte budget");
+    }
+    const GROW = this.geometryData.length < HEIGHT * this.geometryWidth * 4;
+    const DATA = GROW ? new Float32Array(HEIGHT * this.geometryWidth * 4) : this.geometryData;
+    if (GROW) {
+      DATA.set(this.geometryData);
+    }
+    for (let i = 0; i < VERTICES; i++) {
+      const AT = (START + i * 3) * 4;
+      DATA.set(mesh.vertices.subarray(i * 11, i * 11 + 11), AT);
+      DATA[AT + 11] = mesh.paintRegionNames ? mesh.gpuVertices[i * mesh.bufferStrideFloats + 11] : 0;
+    }
+    const OFFSETS = /* @__PURE__ */ new Map();
+    for (const [NAME, SET] of SETS) {
+      const SEGMENTS = [];
+      let mapping = /* @__PURE__ */ new Map(), indices = [], first = 0;
+      const COMMIT = () => {
+        if (!indices.length) {
+          return;
+        }
+        SEGMENTS.push({
+          first,
+          count: indices.length,
+          vertices: Float32Array.from(mapping.keys(), (index) => START + index * 3),
+          indices: Uint16Array.from(indices)
+        });
+        first += indices.length;
+        mapping = /* @__PURE__ */ new Map();
+        indices = [];
+      };
+      for (let i = 0; i < SET.count; i += 3) {
+        const TRIANGLE = [SET.indices?.[i] ?? i, SET.indices?.[i + 1] ?? i + 1, SET.indices?.[i + 2] ?? i + 2];
+        const ADDED = new Set(TRIANGLE.filter((index) => !mapping.has(index))).size;
+        if (mapping.size + ADDED > this.vertexCapacity || indices.length + 3 > this.indices.length) {
+          COMMIT();
+        }
+        for (const INDEX of TRIANGLE) {
+          if (!mapping.has(INDEX)) {
+            mapping.set(INDEX, mapping.size);
+          }
+          indices.push(mapping.get(INDEX));
+        }
+      }
+      COMMIT();
+      OFFSETS.set(NAME, SEGMENTS);
+    }
+    if (GROW || !this.geometryTexture) {
+      const PREVIOUS = this.geometryTexture;
+      this.geometryTexture = this.device.createDataTexture(this.geometryWidth, HEIGHT, { data: DATA });
+      if (PREVIOUS) {
+        this.device.deleteTexture(PREVIOUS);
+      }
+      this.metrics.geometryUploadBytes += DATA.byteLength;
+    } else {
+      const Y = Math.floor(START / this.geometryWidth), END = Math.ceil((START + SIZE) / this.geometryWidth);
+      const REGION = DATA.subarray(Y * this.geometryWidth * 4, END * this.geometryWidth * 4);
+      this.device.updateDataTexture(this.geometryTexture, REGION, {
+        y: Y,
+        width: this.geometryWidth,
+        height: END - Y
+      });
+      this.metrics.geometryUploadBytes += REGION.byteLength;
+    }
+    this.geometryData = DATA;
+    if (BLOCK) {
+      BLOCK.start += SIZE;
+      BLOCK.size -= SIZE;
+    }
+    this.geometryEnd = NEXT_END;
+    const RECORD = { start: START, size: SIZE, variants: OFFSETS };
+    this.meshes.set(mesh, RECORD);
+    return RECORD;
+  }
+  release(mesh) {
+    const RECORD = this.meshes.get(mesh);
+    if (!RECORD) {
+      return;
+    }
+    this.flush("deleteGeometry");
+    this.meshes.delete(mesh);
+    this.freeGeometry.push({ start: RECORD.start, size: RECORD.size });
+    this.freeGeometry.sort((a, b) => a.start - b.start);
+    for (let i = this.freeGeometry.length - 1; i > 0; i--) {
+      const A = this.freeGeometry[i - 1], B = this.freeGeometry[i];
+      if (A.start + A.size === B.start) {
+        A.size += B.size;
+        this.freeGeometry.splice(i, 1);
+      }
+    }
+    const TAIL = this.freeGeometry.at(-1);
+    if (TAIL && TAIL.start + TAIL.size === this.geometryEnd) {
+      this.geometryEnd = TAIL.start;
+      this.freeGeometry.pop();
+    }
+  }
+  _state(options, owner = null, pose = null) {
+    const CLIP = clipPlanes(options.clips ?? [], this.maxPlanes);
+    const KEY = CLIP.key + ":" + options.stencilRef + ":" + Number(options.depthTest) + ":" + Number(options.depthWrite) + ":" + options.depthFunc + ":" + (options.blend ?? "source-over");
+    if (this.pending && (this.pending.key !== KEY || options.projection.some((n, i) => Math.fround(n) !== this.pending.projection[i]) || owner && this.pending.owner && (owner !== this.pending.owner || pose.textures.some((texture, i) => texture !== this.pending.pose.textures[i])))) {
+      this.flush("state");
+    }
+    if (!this.pending) {
+      this.pending = {
+        key: KEY,
+        projection: Float32Array.from(options.projection),
+        clip: CLIP,
+        stencilRef: options.stencilRef ?? null,
+        depth: {
+          test: options.depthTest ?? false,
+          write: options.depthWrite ?? false,
+          func: options.depthFunc ?? "lequal"
+        },
+        blend: options.blend ?? "source-over",
+        owner,
+        pose
+      };
+    } else if (owner && !this.pending.owner) {
+      this.pending.owner = owner;
+      this.pending.pose = pose;
+    }
+  }
+  _reserve(vertices, indices, commandFloats) {
+    if (this.commandCount === this.commandCapacity || this.vertexCount + vertices > this.vertexCapacity || this.indexCount + indices > this.indices.length || this.commandFloats + commandFloats > this.commands.length) {
+      this.flush("capacity");
+    }
+  }
+  _command(options, matrix, color, morph, alpha, pose, floats = 68) {
+    const AT = this.commandFloats, DATA = this.commands;
+    this.commandCount++;
+    this.commandFloats += floats;
+    DATA.fill(0, AT, AT + floats);
+    DATA.set(
+      [
+        matrix[0],
+        matrix[2],
+        matrix[4],
+        alpha,
+        matrix[1],
+        matrix[3],
+        matrix[5],
+        Number(Boolean(options.forceColor)),
+        ...color,
+        ...morph,
+        Number(Boolean(options.whiteFlash)),
+        options.depth ?? 0,
+        0,
+        pose?.row ?? 0,
+        pose ? pose.kind === "matrix" ? 2 : 1 : 0,
+        0
+      ],
+      AT
+    );
+    return AT;
+  }
+  drawMesh(mesh, options, owner, pose) {
+    const RECORD = this.retain(mesh), SEGMENTS = RECORD.variants.get(options.indexVariant);
+    const END = options.firstIndex + options.indexCount;
+    for (let entity = 0; entity < options.count; entity++) {
+      for (const SEGMENT of SEGMENTS) {
+        const FIRST = Math.max(options.firstIndex, SEGMENT.first), LAST = Math.min(END, SEGMENT.first + SEGMENT.count);
+        if (FIRST >= LAST) {
+          continue;
+        }
+        this._reserve(SEGMENT.vertices.length, LAST - FIRST, 68);
+        this._state(options, owner, pose);
+        let matrix = options.matrices.subarray ? options.matrices.subarray(entity * 6, entity * 6 + 6) : options.matrices.slice(entity * 6, entity * 6 + 6);
+        let morph = options.morph, alpha = options.alpha, depth = options.depth;
+        if (!pose) {
+          const P = options.part, M = matrix;
+          matrix = [
+            M[0] * P[0] + M[2] * P[4],
+            M[1] * P[0] + M[3] * P[4],
+            M[0] * P[1] + M[2] * P[5],
+            M[1] * P[1] + M[3] * P[5],
+            M[0] * P[2] + M[2] * P[6] + M[4],
+            M[1] * P[2] + M[3] * P[6] + M[5]
+          ];
+          morph = [morph[0] + P[8], morph[1] + P[9]];
+          alpha *= P[10];
+          depth += P[11];
+        }
+        const AT = this._command({ ...options, depth }, matrix, options.color, morph, alpha, pose);
+        this.commands[AT + 19] = mesh.morphCount;
+        if (mesh.paintRegionNames || options.paintRegions !== null) {
+          packPaintRegions(
+            mesh.paintRegionNames ?? [],
+            options.paintRegions,
+            this.commands.subarray(AT + 32, AT + 68)
+          );
+        }
+        if (pose) {
+          owner.noteDraw(options.pose);
+        }
+        const BASE = this.vertexCount;
+        for (let i = 0; i < SEGMENT.vertices.length; i++) {
+          const OFFSET = this.vertexCount++ * 2;
+          this.references[OFFSET] = SEGMENT.vertices[i];
+          this.references[OFFSET + 1] = AT / 4;
+        }
+        for (let i = FIRST - SEGMENT.first; i < LAST - SEGMENT.first; i++) {
+          this.indices[this.indexCount++] = BASE + SEGMENT.indices[i];
+        }
+      }
+    }
+  }
+  drawQuads(options, state, matrix) {
+    validateQuads(options);
+    const COUNT = options.uvRects.length / 4;
+    for (let i = 0; i < COUNT; i++) {
+      this._reserve(4, 6, 32);
+      this._state(state);
+      const AT = this._command(
+        options,
+        matrix,
+        options.color ?? [1, 1, 1, 1],
+        [0, 0],
+        options.alpha ?? 1,
+        null,
+        32
+      );
+      this.commands[AT + 16] = 1;
+      for (let j = 0; j < 4; j++) {
+        this.commands[AT + 20 + j] = options.localRects[i * 4 + j];
+        this.commands[AT + 24 + j] = options.uvRects[i * 4 + j];
+      }
+      this.commands[AT + 28] = options.layer;
+      this.commands[AT + 29] = Number(options.filter === "nearest");
+      const BASE = this.vertexCount;
+      for (let corner = 0; corner < 4; corner++) {
+        const OFFSET = this.vertexCount++ * 2;
+        this.references[OFFSET] = -1 - corner;
+        this.references[OFFSET + 1] = AT / 4;
+      }
+      this.indices.set([BASE, BASE + 1, BASE + 2, BASE, BASE + 2, BASE + 3], this.indexCount);
+      this.indexCount += 6;
+    }
+    this.device.stats.spriteRuns += COUNT;
+  }
+  /** Flat per-triangle paint is captured once per run; vertices stream only position and UV. */
+  drawVectorTriangles(vertices, count, state) {
+    this.vectorVertices ??= new Float32Array(
+      this.vectorWidth * Math.ceil(this.vectorCapacity / this.vectorWidth) * 4
+    );
+    let offset = 0;
+    while (offset < count) {
+      const SOURCE = offset * VECTOR_VERTEX_FLOATS;
+      let end = offset + 3;
+      while (end < count) {
+        let same = true;
+        for (let field = 4; same && field < VECTOR_VERTEX_FLOATS; field++) {
+          same = vertices[SOURCE + field] === vertices[end * VECTOR_VERTEX_FLOATS + field];
+        }
+        if (!same) {
+          break;
+        }
+        end += 3;
+      }
+      while (offset < end) {
+        const TAKE = Math.floor(
+          Math.min(
+            end - offset,
+            this.vertexCapacity - this.vertexCount,
+            this.indices.length - this.indexCount,
+            this.vectorCapacity - this.vectorCount
+          ) / 3
+        ) * 3;
+        if (!TAKE) {
+          this.flush("capacity");
+          continue;
+        }
+        this._reserve(TAKE, TAKE, 32);
+        this._state(state);
+        const AT = this._command(
+          { depth: vertices[SOURCE + 20] },
+          [1, 0, 0, 1, 0, 0],
+          vertices.subarray(SOURCE + 4, SOURCE + 8),
+          [0, 0],
+          1,
+          null,
+          32
+        );
+        this.commands[AT + 16] = 2;
+        this.commands.set(vertices.subarray(SOURCE + 8, SOURCE + 20), AT + 20);
+        for (let i = 0; i < TAKE; i++) {
+          const REF = this.vertexCount++;
+          const TEXEL = this.vectorCount++;
+          this.references[REF * 2] = TEXEL;
+          this.references[REF * 2 + 1] = AT / 4;
+          this.indices[this.indexCount++] = REF;
+          const FROM = (offset + i) * VECTOR_VERTEX_FLOATS;
+          this.vectorVertices[TEXEL * 4] = vertices[FROM];
+          this.vectorVertices[TEXEL * 4 + 1] = vertices[FROM + 1];
+          this.vectorVertices[TEXEL * 4 + 2] = vertices[FROM + 2];
+          this.vectorVertices[TEXEL * 4 + 3] = vertices[FROM + 3];
+        }
+        offset += TAKE;
+        this.metrics.vectorTriangles += TAKE / 3;
+      }
+    }
+  }
+  _deleteSlot(key) {
+    const SLOT = this.slots.get(key);
+    if (!SLOT) {
+      return;
+    }
+    this.device.deleteVertexBuffer(SLOT.referenceBuffer);
+    this.device.deleteIndexBuffer(SLOT.indexBuffer);
+    this.device.deleteTexture(SLOT.commandTexture);
+    if (SLOT.vectorTexture) {
+      this.device.deleteTexture(SLOT.vectorTexture);
+    }
+    this.slotBytes -= SLOT.bytes;
+    this.slots.delete(key);
+  }
+  _slot(references, indices, rows, vectorRows) {
+    const KEY = this.slotIndex++, PREVIOUS = this.slots.get(KEY);
+    if (PREVIOUS && (PREVIOUS.references.length < references.length || PREVIOUS.indices.length < indices.length || PREVIOUS.commandTexture.height < rows || vectorRows && (!PREVIOUS.vectorTexture || PREVIOUS.vectorTexture.height < vectorRows))) {
+      this._deleteSlot(KEY);
+    }
+    let slot = this.slots.get(KEY);
+    if (slot) {
+      this.slots.delete(KEY);
+      this.slots.set(KEY, slot);
+      return slot;
+    }
+    const REFERENCE_BYTES = Math.min(
+      this.device.maxBufferBytes - this.device.maxBufferBytes % 4,
+      2 ** Math.ceil(Math.log2(references.byteLength))
+    );
+    const INDEX_BYTES = Math.min(
+      this.device.maxBufferBytes - this.device.maxBufferBytes % 2,
+      2 ** Math.ceil(Math.log2(indices.byteLength))
+    );
+    const COMMAND_ROWS = Math.min(this.device.maxTextureSize, 2 ** Math.ceil(Math.log2(rows)));
+    const VECTOR_ROWS = vectorRows ? Math.min(this.device.maxTextureSize, 2 ** Math.ceil(Math.log2(vectorRows))) : 0;
+    const BYTES = (REFERENCE_BYTES + INDEX_BYTES + COMMAND_WIDTH * COMMAND_ROWS * 16 + this.vectorWidth * VECTOR_ROWS * 16) * 2;
+    if (BYTES > this.maxSlotBytes) {
+      throw new RangeError("Ordered batch topology exceeds its retained byte budget");
+    }
+    while (this.slotBytes + BYTES > this.maxSlotBytes && this.slots.size) {
+      this._deleteSlot(this.slots.keys().next().value);
+    }
+    const ALLOCATED = [];
+    try {
+      const REFERENCE_BUFFER = this.device.createVertexBuffer({ capacityBytes: REFERENCE_BYTES });
+      ALLOCATED.push(() => this.device.deleteVertexBuffer(REFERENCE_BUFFER));
+      const INDEX_BUFFER = this.device.createIndexBuffer({ capacityBytes: INDEX_BYTES });
+      ALLOCATED.push(() => this.device.deleteIndexBuffer(INDEX_BUFFER));
+      const COMMAND_TEXTURE = this.device.createDataTexture(COMMAND_WIDTH, COMMAND_ROWS);
+      ALLOCATED.push(() => this.device.deleteTexture(COMMAND_TEXTURE));
+      const VECTOR_TEXTURE = VECTOR_ROWS ? this.device.createDataTexture(this.vectorWidth, VECTOR_ROWS) : null;
+      if (VECTOR_TEXTURE) {
+        ALLOCATED.push(() => this.device.deleteTexture(VECTOR_TEXTURE));
+      }
+      slot = {
+        vectorTexture: VECTOR_TEXTURE,
+        referenceBuffer: REFERENCE_BUFFER,
+        indexBuffer: INDEX_BUFFER,
+        commandTexture: COMMAND_TEXTURE,
+        references: new Float32Array(REFERENCE_BYTES / 4),
+        referenceCount: 0,
+        indices: new Uint16Array(INDEX_BYTES / 2),
+        indexCount: 0,
+        bytes: BYTES,
+        valid: false
+      };
+      this.slots.set(KEY, slot);
+      this.slotBytes += BYTES;
+      return slot;
+    } catch (error) {
+      for (const CLEANUP of ALLOCATED.reverse()) {
+        CLEANUP();
+      }
+      throw error;
+    }
+  }
+  flush(reason = "explicit") {
+    if (!this.indexCount) {
+      return;
+    }
+    const PENDING = this.pending, DEVICE = this.device;
+    PENDING.owner?.flushUpdates();
+    this.planes.fill(0);
+    if (PENDING.clip.values) {
+      this.planes.set(PENDING.clip.values);
+    }
+    const ROWS = Math.ceil(this.commandFloats / COMMAND_FLOATS);
+    const COMMANDS = this.commands.subarray(0, ROWS * COMMAND_FLOATS), REFERENCES = this.references.subarray(0, this.vertexCount * 2), INDICES = this.indices.subarray(0, this.indexCount);
+    const VECTOR_ROWS = Math.ceil(this.vectorCount * this.vectorTexels / this.vectorWidth);
+    const SLOT = this._slot(REFERENCES, INDICES, ROWS, VECTOR_ROWS);
+    if (VECTOR_ROWS) {
+      const DATA = this.vectorVertices.subarray(0, VECTOR_ROWS * this.vectorWidth * 4);
+      DEVICE.updateDataTexture(SLOT.vectorTexture, DATA, { width: this.vectorWidth, height: VECTOR_ROWS });
+      this.metrics.vectorBytes += DATA.byteLength;
+    }
+    DEVICE.updateDataTexture(SLOT.commandTexture, COMMANDS, { width: COMMAND_WIDTH, height: ROWS });
+    let same = SLOT.valid && SLOT.referenceCount === REFERENCES.length && SLOT.indexCount === INDICES.length;
+    for (let i = 0; same && i < REFERENCES.length; i++) {
+      same = REFERENCES[i] === SLOT.references[i];
+    }
+    for (let i = 0; same && i < INDICES.length; i++) {
+      same = INDICES[i] === SLOT.indices[i];
+    }
+    if (!same) {
+      DEVICE.uploadVertices(SLOT.referenceBuffer, REFERENCES);
+      DEVICE.uploadIndices(SLOT.indexBuffer, INDICES);
+      SLOT.references.set(REFERENCES);
+      SLOT.indices.set(INDICES);
+      SLOT.valid = true;
+      SLOT.referenceCount = REFERENCES.length;
+      SLOT.indexCount = INDICES.length;
+      this.metrics.referenceBytes += REFERENCES.byteLength;
+      this.metrics.indexBytes += INDICES.byteLength;
+    } else {
+      this.metrics.reusedTopologies++;
+    }
+    const POSE = PENDING.pose;
+    const VECTOR_TEXTURE = VECTOR_ROWS ? SLOT.vectorTexture : null;
+    DEVICE.draw({
+      pipeline: this.pipeline,
+      buffer: SLOT.referenceBuffer,
+      indexBuffer: SLOT.indexBuffer,
+      count: this.indexCount,
+      uniforms: {
+        u_projection: PENDING.projection,
+        u_geometry: 0,
+        u_commands: 1,
+        u_vectors: VECTOR_TEXTURE ? 6 : 0,
+        u_vectorWidth: this.vectorWidth,
+        u_geometryWidth: this.geometryWidth,
+        u_program: 2,
+        u_state: 3,
+        u_overrides: 4,
+        u_programWidth: POSE?.programWidth ?? 1,
+        u_texture: 5,
+        u_depthWrite: Number(PENDING.depth.write),
+        "u_planes[0]": this.planes,
+        u_planeCount: PENDING.clip.count
+      },
+      textures: [
+        this.geometryTexture ?? this.dummyTexture,
+        SLOT.commandTexture,
+        ...[0, 1, 2].map((index) => POSE?.textures[index] ?? this.dummyTexture),
+        DEVICE.textureAtlas.texture,
+        ...VECTOR_TEXTURE ? [VECTOR_TEXTURE] : []
+      ],
+      depth: PENDING.depth,
+      blend: PENDING.blend,
+      stencil: PENDING.stencilRef === null ? false : { func: "equal", ref: PENDING.stencilRef, mask: 255, writeMask: 0, pass: "keep" }
+    });
+    this.metrics.draws++;
+    this.metrics.commands += this.commandCount;
+    this.metrics.triangles += this.indexCount / 3;
+    this.metrics.commandBytes += COMMANDS.byteLength;
+    this.metrics.flushReasons[reason] = (this.metrics.flushReasons[reason] ?? 0) + 1;
+    this.discard();
+  }
+  discard() {
+    this.commandCount = 0;
+    this.commandFloats = 0;
+    this.vertexCount = 0;
+    this.indexCount = 0;
+    this.vectorCount = 0;
+    this.pending = null;
+  }
+  stats() {
+    return {
+      ...this.metrics,
+      flushReasons: { ...this.metrics.flushReasons },
+      geometryBytes: this.geometryData.byteLength,
+      topologyBytes: this.slotBytes,
+      maxTopologyBytes: this.maxSlotBytes,
+      vertexCapacity: this.vertexCapacity,
+      commandCapacity: this.commandCapacity,
+      triangleCapacity: this.triangleCapacity
+    };
+  }
+  dispose() {
+    this.discard();
+    this.device.canvas.removeEventListener("webglcontextrestored", this.onRestored);
+    for (const KEY of this.slots.keys()) {
+      this._deleteSlot(KEY);
+    }
+    this.device.deletePipeline(this.pipeline);
+    this.device.deleteTexture(this.dummyTexture);
+    if (this.geometryTexture) {
+      this.device.deleteTexture(this.geometryTexture);
+    }
+    this.meshes.clear();
+    this.freeGeometry.length = 0;
+  }
+};
 
 // modules/rendering/yarn-material-record.js
 var MATERIAL_KIND = Object.freeze({ none: 0, yarnFill: 1, yarnEdge: 2, sketchFill: 3, sketchEdge: 4 });
@@ -4799,7 +5736,8 @@ var MeshRenderer = class {
     maxMeshBytes = 32 * 1024 * 1024,
     maxInstances = 2048,
     safeAlphaRunBatching = true,
-    poseBackend = "auto"
+    poseBackend = "auto",
+    orderedMeshQuads = false
   } = {}) {
     for (const [KEY, VALUE] of Object.entries({
       maxMeshes,
@@ -4809,6 +5747,9 @@ var MeshRenderer = class {
       if (!Number.isSafeInteger(VALUE) || VALUE < 1) {
         throw new RangeError(`${KEY} must be positive`);
       }
+    }
+    if (typeof orderedMeshQuads !== "boolean") {
+      throw new TypeError("orderedMeshQuads must be a boolean");
     }
     if (typeof safeAlphaRunBatching !== "boolean") {
       throw new TypeError("safeAlphaRunBatching must be a boolean");
@@ -4828,6 +5769,7 @@ var MeshRenderer = class {
     }
     this.maxPlanes = Math.max(1, Math.min(32, device.gl.getParameter(device.gl.MAX_FRAGMENT_UNIFORM_VECTORS) - 2));
     this.instanced = device.instancingSupported === true;
+    this.ordered = orderedMeshQuads ? new OrderedTriangleBatch(device, { maxInstances, maxMeshBytes, maxPlanes: this.maxPlanes }) : null;
     this.instances = new Float32Array(maxInstances * 16);
     this.instanceBuffer = this.instanced ? device.createVertexBuffer({
       capacityBytes: this.instances.byteLength
@@ -4927,6 +5869,7 @@ var MeshRenderer = class {
     if (!this.poseRenderer) {
       this.poseRenderer = new PoseRenderer(this.device, {
         backend: this.poseBackend,
+        cacheMatrices: this.ordered !== null,
         onBoundary: () => this.device.flushBatchers("poseResourceBoundary")
       });
     }
@@ -5202,6 +6145,14 @@ var MeshRenderer = class {
     });
     this.meshes.add(MESH);
     this.bytes += BYTE_LENGTH;
+    try {
+      if (this.ordered && !MESH.hasNonScalingStroke && !MESH.materials) {
+        this.ordered.retain(MESH);
+      }
+    } catch (error) {
+      this.deleteMesh(MESH);
+      throw error;
+    }
     if (ownedMaterials) {
       this._materialTextures(null);
     }
@@ -5217,6 +6168,7 @@ var MeshRenderer = class {
     if (this.pending?.mesh === mesh || this.alphaQueueCount && this.alphaQueueState.mesh === mesh) {
       this.flush("deleteMesh");
     }
+    this.ordered?.release(mesh);
     this.alphaRunCache.delete(mesh);
     this.device.deleteVertexBuffer(mesh.buffer);
     if (mesh.indexBuffer) {
@@ -5499,7 +6451,7 @@ var MeshRenderer = class {
       const INDICES = VARIANT ? VARIANT.indices : mesh.indices, COUNT = VARIANT ? VARIANT.count : mesh.count;
       runs = [];
       for (let at = 0; at < COUNT; at += 3) {
-        const VERTEX2 = INDICES ? INDICES[at] : at, KIND = mesh.materials.vertices[VERTEX2 * MATERIAL_VERTEX_FLOATS], EDGE = KIND === MATERIAL_KIND.yarnEdge || KIND === MATERIAL_KIND.sketchEdge, LAST = runs.at(-1);
+        const VERTEX4 = INDICES ? INDICES[at] : at, KIND = mesh.materials.vertices[VERTEX4 * MATERIAL_VERTEX_FLOATS], EDGE = KIND === MATERIAL_KIND.yarnEdge || KIND === MATERIAL_KIND.sketchEdge, LAST = runs.at(-1);
         if (LAST && LAST.edge === EDGE) {
           LAST.count += 3;
         } else {
@@ -5663,6 +6615,38 @@ var MeshRenderer = class {
         throw new RangeError("combined mesh and part depth must be in [-1,1]");
       }
     }
+    if (this.ordered && !WORLD_MODE && !mesh.hasNonScalingStroke && !mesh.materials && depthWriteAlphaThreshold === null && !depthWrite && !prefixCount && !forceColorPrefixCount && (POSE_DRAW?.kind === "program" || POSE_DRAW?.gpu === true || !POSE_DRAW && mesh.partCount === 1)) {
+      this._flushNative("orderedBoundary");
+      this.ordered.drawMesh(
+        mesh,
+        {
+          matrices,
+          count,
+          projection,
+          morph,
+          color,
+          paintRegions,
+          forceColor,
+          alpha,
+          whiteFlash,
+          clips,
+          depth,
+          depthTest,
+          depthWrite,
+          depthFunc,
+          stencilRef,
+          indexVariant,
+          firstIndex: FIRST_INDEX,
+          indexCount: INDEX_COUNT,
+          pose,
+          part: this.partScratch
+        },
+        POSE_DRAW ? this.poseRenderer : null,
+        POSE_DRAW
+      );
+      return;
+    }
+    this.ordered?.flush("nativeMeshBoundary");
     if (mesh.paintRegionNames || paintRegions !== null || this.paintState) {
       this._setPaintRegions(mesh, paintRegions);
     }
@@ -6129,7 +7113,39 @@ var MeshRenderer = class {
     }
     this.metrics.instances++;
   }
+  /** Paint state is stored by value; only the separate native mesh pipeline must submit before it. */
+  paintBoundary(reason) {
+    if (this.ordered) {
+      this._flushNative(reason);
+    } else {
+      this.flush(reason);
+    }
+  }
+  drawOrderedTriangles(vertices, count, state) {
+    if (!this.ordered?.indexCount || this.device.maxTextures < 7) {
+      return false;
+    }
+    for (let at = 0; at < count * VECTOR_VERTEX_FLOATS; at += VECTOR_VERTEX_FLOATS * 3) {
+      for (let field = 4; field < VECTOR_VERTEX_FLOATS; field++) {
+        if (vertices[at + field] !== vertices[at + VECTOR_VERTEX_FLOATS + field] || vertices[at + field] !== vertices[at + VECTOR_VERTEX_FLOATS * 2 + field]) {
+          return false;
+        }
+      }
+    }
+    this._flushNative("vectorBoundary");
+    this.ordered.drawVectorTriangles(vertices, count, state);
+    return true;
+  }
+  /** Appends validated, unclipped ordinary atlas quads after earlier native meshes. */
+  drawOrderedQuads(options, state, matrix) {
+    this._flushNative("quadBoundary");
+    this.ordered.drawQuads(options, state, matrix);
+  }
   flush(reason = "explicit") {
+    this.ordered?.flush(reason);
+    this._flushNative(reason);
+  }
+  _flushNative(reason) {
     if (this.alphaQueueCount) {
       this._flushAlphaQueue(reason);
     }
@@ -6300,6 +7316,7 @@ var MeshRenderer = class {
     return set;
   }
   discard() {
+    this.ordered?.discard();
     this.count = 0;
     this.pending = null;
     this.alphaQueueCount = 0;
@@ -6313,6 +7330,7 @@ var MeshRenderer = class {
   beginFrame() {
     this.discard();
     this.poseRenderer?.beginFrame();
+    this.ordered?.beginFrame();
     for (const KEY of Object.keys(this.metrics)) {
       if (KEY !== "flushReasons" && KEY !== "drawDispatchReasons") {
         this.metrics[KEY] = 0;
@@ -6340,7 +7358,8 @@ var MeshRenderer = class {
       stagingBytes: this.instances.byteLength + (this.materialInstances?.byteLength ?? 0) + this.planes.byteLength + this.partScratch.byteLength,
       instanced: this.instanced,
       maxClipPlanes: this.maxPlanes,
-      poses: this.poseStats()
+      poses: this.poseStats(),
+      ordered: this.ordered?.stats() ?? null
     };
   }
   dispose() {
@@ -6348,6 +7367,7 @@ var MeshRenderer = class {
       return;
     }
     this.discard();
+    this.ordered?.dispose();
     this.poseRenderer?.dispose();
     this.unregisterBatcher();
     this.device.canvas.removeEventListener("webglcontextlost", this.onLost);
@@ -7188,7 +8208,9 @@ var VectorContext = class {
     if (!S) {
       return;
     }
-    this.meshRenderer?.flush("stateRestore");
+    if (!this.meshRenderer?.ordered) {
+      this.meshRenderer?.flush("stateRestore");
+    }
     this.vector.restore();
     Object.assign(this, {
       _fillStyle: S.fillStyle,
@@ -7446,7 +8468,7 @@ var VectorContext = class {
     return composeTransform(path.matrix, local);
   }
   _submitPrimitive(matrix, color, params) {
-    this.meshRenderer?.flush("primitiveBoundary");
+    this.meshRenderer?.paintBoundary("primitiveBoundary");
     this.vector.drawPrimitive({ matrix, color, params });
     return true;
   }
@@ -7538,7 +8560,7 @@ var VectorContext = class {
       return;
     }
     this._materializePrimitivePath();
-    this.meshRenderer?.flush("vectorBoundary");
+    this.meshRenderer?.paintBoundary("vectorBoundary");
     if (this._fillStyle instanceof RadialGradient) {
       this.vector.fillRadialGradient({
         ...this._gradientPaint(this._fillStyle),
@@ -7575,7 +8597,7 @@ var VectorContext = class {
       return;
     }
     this._materializePrimitivePath();
-    this.meshRenderer?.flush("vectorBoundary");
+    this.meshRenderer?.paintBoundary("vectorBoundary");
     if (!DASH.length || !PERIOD) {
       this.vector.stroke(PAINT, WIDTH, STYLE, GRADIENT);
       return;
@@ -7668,7 +8690,7 @@ var VectorContext = class {
   }
   fillTriangleFan(points, paint = this._fillStyle) {
     this._frame();
-    this.meshRenderer?.flush("vectorBoundary");
+    this.meshRenderer?.paintBoundary("vectorBoundary");
     if (points.length < 3) {
       return;
     }
@@ -7767,7 +8789,7 @@ var VectorContext = class {
   }
   fillText(text, x, y, maxWidth) {
     this._frame();
-    this.meshRenderer?.flush("vectorBoundary");
+    this.meshRenderer?.paintBoundary("vectorBoundary");
     if (!this.glyphAtlas) {
       throw new Error("GlyphAtlas is not configured");
     }
@@ -7795,7 +8817,7 @@ var VectorContext = class {
   }
   strokeText(text, x, y, maxWidth) {
     this._frame();
-    this.meshRenderer?.flush("vectorBoundary");
+    this.meshRenderer?.paintBoundary("vectorBoundary");
     if (!this.glyphAtlas) {
       throw new Error("GlyphAtlas is not configured");
     }
@@ -7842,6 +8864,9 @@ var VectorContext = class {
       ...this.meshOptions,
       safeAlphaRunBatching: this.safeAlphaRunBatching
     });
+    this.vector.beforeSubmit = () => this.meshRenderer.ordered?.flush("vectorBoundary");
+    this.vector.submitTriangles = (vertices, count, state) => this.meshRenderer.drawOrderedTriangles(vertices, count, state);
+    this.vector.beforeStencilChange = () => this.meshRenderer.flush("stencilChange");
     return this.meshRenderer;
   }
   /** Registers cleanup that `dispose()` runs, newest first, before it disposes the renderers it owns. */
@@ -7857,8 +8882,29 @@ var VectorContext = class {
    */
   drawQuads(options) {
     this._frame();
-    this.meshRenderer?.flush("quadBoundary");
-    this.vector.drawQuads(options);
+    if (this.meshRenderer?.ordered?.indexCount > 0 && options?.pose == null && !this.vector.clips.length && !this.vector.activeTarget) {
+      if (this.vector.count) {
+        this.vector.flush();
+      }
+      const MATRIX = COMPOSE_AFFINE(this.vector.matrix, options.matrix ?? IDENTITY3);
+      this.meshRenderer.drawOrderedQuads(
+        { ...options, depth: this.depth },
+        {
+          projection: this.vector.projection,
+          clips: this.vector.clips,
+          stencilRef: this.vector.stencilDepth || null,
+          depth: this.depth,
+          depthTest: this.depthTest,
+          depthWrite: this.depthWrite,
+          depthFunc: this.depthFunc,
+          blend: this.vector.blend
+        },
+        MATRIX
+      );
+    } else {
+      this.meshRenderer?.flush("quadBoundary");
+      this.vector.drawQuads(options);
+    }
   }
   /**
    * Draws a texture atlas region like Canvas `drawImage(image, x, y, width, height)`: top-left anchored on the
@@ -8088,8 +9134,13 @@ var VectorContext = class {
   }
   flush(reason = "explicit") {
     this._frame();
-    this.meshRenderer?.flush(reason);
-    this.vector.flush();
+    if (this.meshRenderer?.ordered) {
+      this.vector.flush();
+      this.meshRenderer.flush(reason);
+    } else {
+      this.meshRenderer?.flush(reason);
+      this.vector.flush();
+    }
   }
   createStaticMesh(vertices, { strideFloats = 6 } = {}) {
     if (this.state !== "ready" || this.device.state !== "ready") {
