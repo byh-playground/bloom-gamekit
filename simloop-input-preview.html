@@ -2020,12 +2020,9 @@ ${converted}`;
       }
       const GL = this.gl;
       this._bindTexture(0, R);
-      GL.bindBuffer(GL.PIXEL_UNPACK_BUFFER, null);
       this.boundTextureCount = Math.max(1, this.boundTextureCount);
-      GL.pixelStorei(GL.UNPACK_ALIGNMENT, 1);
-      GL.pixelStorei(GL.UNPACK_ROW_LENGTH, 0);
-      GL.pixelStorei(GL.UNPACK_SKIP_PIXELS, 0);
-      GL.pixelStorei(GL.UNPACK_SKIP_ROWS, 0);
+      this._resetUnpackState();
+      GL.pixelStorei(GL.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
       GL.texSubImage2D(GL.TEXTURE_2D, 0, x, y, width, height, GL.RGBA, GL.FLOAT, data);
       if (this.checkGLErrors) {
         const ERROR = GL.getError();
@@ -11612,7 +11609,7 @@ void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_pl
       return SIGNED(Number(BigInt(SIGNED(a)) * 1024n / BigInt(b)));
     }
   });
-  var VERSION = "0.39.2";
+  var VERSION = "0.39.3";
   var REPLAY_FORMAT_VERSION = "0.2.0-dev";
   var PROTOCOL_VERSION = 3;
   var CHUNK_SIZE = 16384;
