@@ -110,6 +110,41 @@ export async function exerciseSave(page) {
             revision: MIGRATED.revision,
             stored: JSON.parse(localStorage.getItem(`${PREFIX}team`)),
         };
+        const MALFORMED_OLD = JSON.stringify({ schema: 1, revision: 7, name: 'red', gold: 'broken' });
+        localStorage.setItem(`${PREFIX}team`, MALFORMED_OLD);
+        const MIGRATION_ERROR = new TypeError('old gold must be an integer'),
+            FAILED_MIGRATION = CREATE_SAVE(
+                OPTIONS(LOCAL_STORAGE({ prefix: PREFIX }), {
+                    version: 2,
+                    migrate: {
+                        1(data) {
+                            if (!Number.isSafeInteger(data.gold)) {
+                                throw MIGRATION_ERROR;
+                            }
+                            return { name: data.name, credits: data.gold };
+                        },
+                    },
+                }),
+            );
+        let causePreserved = false;
+        try {
+            await FAILED_MIGRATION.load();
+        } catch (error) {
+            RESULT.migrationFailed = error instanceof SAVE_ERROR ? error.kind : error.message;
+            causePreserved = error.cause === MIGRATION_ERROR;
+        }
+        RESULT.migrationLocked = {
+            locked: FAILED_MIGRATION.locked,
+            revision: FAILED_MIGRATION.revision,
+            causePreserved,
+            update: await CATCH(
+                FAILED_MIGRATION.update((draft) => {
+                    draft.credits = 1;
+                }),
+            ),
+            preserved: localStorage.getItem(`${PREFIX}team`) === MALFORMED_OLD,
+        };
+        FAILED_MIGRATION.dispose();
         localStorage.removeItem(`${PREFIX}team`);
         indexedDB.deleteDatabase(DATABASE);
         return RESULT;
@@ -150,6 +185,14 @@ export async function exerciseSave(page) {
         data: { name: 'red', credits: 5 },
         revision: 4,
         stored: { name: 'red', credits: 5, schema: 2, revision: 4 },
+    });
+    assert.equal(R.migrationFailed, 'unreadable');
+    assert.deepEqual(R.migrationLocked, {
+        locked: true,
+        revision: null,
+        causePreserved: true,
+        update: 'unreadable',
+        preserved: true,
     });
     return R;
 }

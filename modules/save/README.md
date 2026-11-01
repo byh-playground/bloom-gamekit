@@ -28,10 +28,10 @@ const FIXED = createSave({ ...CLUB_OPTIONS, adapter: memoryAdapter() });
 - 저장되는 모양은 게임 데이터에 `schema`(버전)와 `revision`(쓰기 횟수)을 더한 평평한 객체입니다. `data`에는 둘이 빠진 게임 데이터만 있습니다.
 - API는 어댑터와 무관하게 항상 비동기입니다. 같은 save의 `load`·`update`는 호출 순서대로 하나씩 실행합니다.
 - `load()`: 레코드가 없으면 `create()`로 만들어 revision 0으로 저장합니다. 저장된 `schema`가 `version`보다 낮으면 `migrate[n]`을 차례로 적용해 저장하고 revision을 1 올립니다.
-- **읽지 못한 저장은 덮어쓰지 않습니다.** schema·revision이 없거나, JSON이 아니거나, 미래 schema이거나, 이관 단계가 없거나, `validate`가 던지면 `SaveError('unreadable')`을 던지고 `locked`가 됩니다. 잠긴 save의 `update`는 거부합니다. 기본값이나 새 레코드로 바꾸지 않습니다.
+- **읽지 못한 저장은 덮어쓰지 않습니다.** schema·revision이 없거나, JSON이 아니거나, 미래 schema이거나, 이관 단계가 없거나, `migrate` 또는 `validate`가 던지면 `SaveError('unreadable')`을 던지고 `locked`가 됩니다. 잠긴 save의 `update`는 거부합니다. 기본값이나 새 레코드로 바꾸지 않습니다.
 - `reset()`: 저장된 레코드를 읽지 못했든 아니든 버리고 `create()`로 새로 저장한 뒤 잠금을 풉니다. 되돌릴 수 없으므로 게임이 "기록을 지우고 새로 시작" 같은 확인을 받은 뒤에만 부릅니다. 모듈이 스스로 부르는 일은 없습니다. revision은 저장소의 값에서 이어 올려 다른 탭이 알게 하고, 읽지 못한 레코드였다면 0부터 시작합니다.
 - `update(mutate)`: 저장소의 레코드 복사본을 `mutate`에 주고, `validate`를 통과하면 revision을 1 올려 저장합니다. `mutate`가 `false`를 반환하면 저장하지 않습니다. `mutate`는 동기 함수여야 합니다(IndexedDB 트랜잭션 안에서 실행). 마지막으로 읽은 revision과 저장소가 다르면 아무것도 쓰지 않고 `SaveError('conflict')`를 던집니다. 다시 `load()`한 뒤 고치세요.
-- `mutate`·`validate`·`create`·`migrate`가 던진 게임 오류는 바꾸지 않고 그대로 전달합니다(단, `load` 중 `validate` 실패는 unreadable로 감쌉니다). 저장소 자체의 실패는 `SaveError('storage')`, `dispose()` 뒤 호출은 `SaveError('closed')`입니다.
+- `mutate`·`validate`·`create`가 던진 게임 오류는 바꾸지 않고 그대로 전달합니다. 단, `load` 중 `migrate`·`validate` 실패는 `SaveError('unreadable')`로 감싸고 원래 오류는 `cause`에 보존합니다. 이관 도중 게임 데이터가 잘못되어 실패한 저장도 원본을 보존하고 쓰기를 잠급니다. 저장소 자체의 실패는 `SaveError('storage')`, `dispose()` 뒤 호출은 `SaveError('closed')`입니다.
 - 다른 탭이 같은 레코드를 저장하면 BroadcastChannel로 `onExternalChange({revision})`을 부릅니다. 메모리 어댑터는 알리지 않습니다.
 
 ## 어댑터
