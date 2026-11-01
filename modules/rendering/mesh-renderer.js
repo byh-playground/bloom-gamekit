@@ -1,3 +1,5 @@
+import { VECTOR_VERTEX_FLOATS } from './vector-shader.js';
+import { OrderedTriangleBatch } from './ordered-triangles.js';
 import { clipPlanes } from './clip-planes.js';
 import { PoseRenderer } from './pose-renderer.js';
 import { POSE_PROGRAM_FUNCTIONS } from './pose-shader.js';
@@ -389,6 +391,7 @@ export class MeshRenderer {
             maxInstances = 2048,
             safeAlphaRunBatching = true,
             poseBackend = 'auto',
+            orderedMeshQuads = false,
         } = {},
     ) {
         for (const [KEY, VALUE] of Object.entries({
@@ -399,6 +402,9 @@ export class MeshRenderer {
             if (!Number.isSafeInteger(VALUE) || VALUE < 1) {
                 throw new RangeError(`${KEY} must be positive`);
             }
+        }
+        if (typeof orderedMeshQuads !== 'boolean') {
+            throw new TypeError('orderedMeshQuads must be a boolean');
         }
         if (typeof safeAlphaRunBatching !== 'boolean') {
             throw new TypeError('safeAlphaRunBatching must be a boolean');
@@ -418,6 +424,9 @@ export class MeshRenderer {
         }
         this.maxPlanes = Math.max(1, Math.min(32, device.gl.getParameter(device.gl.MAX_FRAGMENT_UNIFORM_VECTORS) - 2));
         this.instanced = device.instancingSupported === true;
+        this.ordered = orderedMeshQuads
+            ? new OrderedTriangleBatch(device, { maxInstances, maxMeshBytes, maxPlanes: this.maxPlanes })
+            : null;
         this.instances = new Float32Array(maxInstances * 16);
         this.instanceBuffer = this.instanced
             ? device.createVertexBuffer({
@@ -521,6 +530,7 @@ export class MeshRenderer {
         if (!this.poseRenderer) {
             this.poseRenderer = new PoseRenderer(this.device, {
                 backend: this.poseBackend,
+                cacheMatrices: this.ordered !== null,
                 onBoundary: () => this.device.flushBatchers('poseResourceBoundary'),
             });
         }
@@ -894,6 +904,14 @@ export class MeshRenderer {
         });
         this.meshes.add(MESH);
         this.bytes += BYTE_LENGTH;
+        try {
+            if (this.ordered && !MESH.hasNonScalingStroke && !MESH.materials) {
+                this.ordered.retain(MESH);
+            }
+        } catch (error) {
+            this.deleteMesh(MESH);
+            throw error;
+        }
         if (ownedMaterials) {
             this._materialTextures(null);
         }
@@ -909,6 +927,7 @@ export class MeshRenderer {
         if (this.pending?.mesh === mesh || (this.alphaQueueCount && this.alphaQueueState.mesh === mesh)) {
             this.flush('deleteMesh');
         }
+        this.ordered?.release(mesh);
         this.alphaRunCache.delete(mesh);
         this.device.deleteVertexBuffer(mesh.buffer);
         if (mesh.indexBuffer) {
@@ -1452,6 +1471,48 @@ export class MeshRenderer {
                 throw new RangeError('combined mesh and part depth must be in [-1,1]');
             }
         }
+        if (
+            this.ordered &&
+            !WORLD_MODE &&
+            !mesh.hasNonScalingStroke &&
+            !mesh.materials &&
+            depthWriteAlphaThreshold === null &&
+            !depthWrite &&
+            !prefixCount &&
+            !forceColorPrefixCount &&
+            (POSE_DRAW?.kind === 'program' || POSE_DRAW?.gpu === true || (!POSE_DRAW && mesh.partCount === 1))
+        ) {
+            this._flushNative('orderedBoundary');
+            this.ordered.drawMesh(
+                mesh,
+                {
+                    matrices,
+                    count,
+                    projection,
+                    morph,
+                    color,
+                    paintRegions,
+                    forceColor,
+                    alpha,
+                    whiteFlash,
+                    clips,
+                    depth,
+                    depthTest,
+                    depthWrite,
+                    depthFunc,
+                    stencilRef,
+                    indexVariant,
+                    firstIndex: FIRST_INDEX,
+                    indexCount: INDEX_COUNT,
+                    pose,
+                    part: this.partScratch,
+                },
+                POSE_DRAW ? this.poseRenderer : null,
+                POSE_DRAW,
+            );
+            return;
+        }
+        this.ordered?.flush('nativeMeshBoundary');
         if (mesh.paintRegionNames || paintRegions !== null || this.paintState) {
             this._setPaintRegions(mesh, paintRegions);
         }
@@ -2014,7 +2075,43 @@ export class MeshRenderer {
         }
         this.metrics.instances++;
     }
+    /** Paint state is stored by value; only the separate native mesh pipeline must submit before it. */
+    paintBoundary(reason) {
+        if (this.ordered) {
+            this._flushNative(reason);
+        } else {
+            this.flush(reason);
+        }
+    }
+    drawOrderedTriangles(vertices, count, state) {
+        if (!this.ordered?.indexCount || this.device.maxTextures < 7) {
+            return false;
+        }
+        // Public vector paint has one style per triangle. Future per-vertex styles keep their native interpolation.
+        for (let at = 0; at < count * VECTOR_VERTEX_FLOATS; at += VECTOR_VERTEX_FLOATS * 3) {
+            for (let field = 4; field < VECTOR_VERTEX_FLOATS; field++) {
+                if (
+                    vertices[at + field] !== vertices[at + VECTOR_VERTEX_FLOATS + field] ||
+                    vertices[at + field] !== vertices[at + VECTOR_VERTEX_FLOATS * 2 + field]
+                ) {
+                    return false;
+                }
+            }
+        }
+        this._flushNative('vectorBoundary');
+        this.ordered.drawVectorTriangles(vertices, count, state);
+        return true;
+    }
+    /** Appends validated, unclipped ordinary atlas quads after earlier native meshes. */
+    drawOrderedQuads(options, state, matrix) {
+        this._flushNative('quadBoundary');
+        this.ordered.drawQuads(options, state, matrix);
+    }
     flush(reason = 'explicit') {
+        this.ordered?.flush(reason);
+        this._flushNative(reason);
+    }
+    _flushNative(reason) {
         if (this.alphaQueueCount) {
             this._flushAlphaQueue(reason);
         }
@@ -2201,6 +2298,7 @@ export class MeshRenderer {
         return set;
     }
     discard() {
+        this.ordered?.discard();
         this.count = 0;
         this.pending = null;
         this.alphaQueueCount = 0;
@@ -2214,6 +2312,7 @@ export class MeshRenderer {
     beginFrame() {
         this.discard();
         this.poseRenderer?.beginFrame();
+        this.ordered?.beginFrame();
         for (const KEY of Object.keys(this.metrics)) {
             if (KEY !== 'flushReasons' && KEY !== 'drawDispatchReasons') {
                 this.metrics[KEY] = 0;
@@ -2246,6 +2345,7 @@ export class MeshRenderer {
             instanced: this.instanced,
             maxClipPlanes: this.maxPlanes,
             poses: this.poseStats(),
+            ordered: this.ordered?.stats() ?? null,
         };
     }
     dispose() {
@@ -2253,6 +2353,7 @@ export class MeshRenderer {
             return;
         }
         this.discard();
+        this.ordered?.dispose();
         this.poseRenderer?.dispose();
         this.unregisterBatcher();
         this.device.canvas.removeEventListener('webglcontextlost', this.onLost);

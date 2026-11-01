@@ -32,13 +32,17 @@ const BROWSER = await chromium.launch({
     ...(process.env.CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.CHROMIUM_EXECUTABLE_PATH } : {}),
     ignoreDefaultArgs: ['--enable-unsafe-swiftshader'],
 });
+const CACHE_COMPARISON = process.argv.includes('--compare-cache');
+const BACKENDS = CACHE_COMPARISON
+    ? ['auto', 'cached', 'no-float-cache', 'restored-no-float-cache']
+    : ['uniform', 'auto', 'cpu', 'cached', 'no-float-cache'];
 const RESULTS = [];
 const ERRORS = [];
 const SOURCE_HEAD = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
 const SOURCE_DIRTY =
     execFileSync('git', ['status', '--porcelain', '--untracked-files=no'], { encoding: 'utf8' }).trim().length > 0;
 try {
-    for (const BACKEND of ['uniform', 'auto', 'cpu']) {
+    for (const BACKEND of BACKENDS) {
         const PAGE = await BROWSER.newPage({ viewport: { width: 800, height: 600 }, deviceScaleFactor: 1 });
         PAGE.on('pageerror', (error) => ERRORS.push(error.stack));
         await PAGE.setContent('<canvas width="800" height="600"></canvas>');
@@ -54,7 +58,14 @@ try {
                     preserveDrawingBuffer: true,
                     checkGLErrors: true,
                 });
-                const CONTEXT = new R.VectorContext(DEVICE, { mesh: { poseBackend: backend } });
+                const CONTEXT = new R.VectorContext(DEVICE, {
+                    mesh: {
+                        poseBackend: ['cached', 'no-float-cache', 'restored-no-float-cache'].includes(backend)
+                            ? 'auto'
+                            : backend,
+                        orderedMeshQuads: ['cached', 'no-float-cache', 'restored-no-float-cache'].includes(backend),
+                    },
+                });
                 const MESHES = CONTEXT.acquireMeshRenderer();
                 const PLAYERS = [];
                 const INFO = DEVICE.gl.getExtension('WEBGL_debug_renderer_info');
@@ -94,6 +105,10 @@ try {
                 const TIMES = [0, 37.25, 131, 249, 500.125, 801.3, 1100, 1100, 37.25];
                 for (let frame = 0; frame < TIMES.length; frame++) {
                     const TIME = TIMES[frame];
+                    if (backend === 'no-float-cache') {
+                        // Capability mask, not a claim of physical hardware without the extension.
+                        DEVICE.floatRenderTargetsSupported = false;
+                    }
                     if (frame === 6) {
                         CANVAS.width = 720;
                         CANVAS.height = 520;
@@ -236,6 +251,12 @@ try {
                     });
                     if (frame === 6) {
                         const EXTENSION = GL.getExtension('WEBGL_lose_context');
+                        if (backend === 'restored-no-float-cache') {
+                            // Emulate extension loss only for the restored device capability probe.
+                            const GET_EXTENSION = GL.getExtension.bind(GL);
+                            GL.getExtension = (name) =>
+                                name === 'EXT_color_buffer_float' ? null : GET_EXTENSION(name);
+                        }
                         if (!EXTENSION) {
                             throw new Error('Context loss scenario requires WEBGL_lose_context');
                         }
@@ -388,6 +409,50 @@ try {
                 programRebuildRollback: true,
                 sourceReleaseNoAllocation: true,
             });
+        }
+        if (RESULT.backend === 'cached') {
+            assert.ok(RESULT.frames[0].stats.gpuDrawInstances > 0, 'cached backend still executes GPU poses');
+            assert.ok(RESULT.frames[0].stats.matrixCache?.passes > 0, 'cached backend actually computes GPU matrices');
+            assert.ok(RESULT.frames[7].stats.matrixCache?.passes > 0, 'restored cache rebuilds GPU matrices');
+            for (const FRAME of [2, 3]) {
+                assert.ok(
+                    RESULT.frames[FRAME].stats.cpuDrawInstances > 0,
+                    'cached backend preserves transition CPU path',
+                );
+            }
+        }
+        if (RESULT.backend === 'restored-no-float-cache') {
+            assert.ok(RESULT.frames[0].stats.matrixCache?.passes > 0, 'float cache is used before capability loss');
+            assert.equal(
+                RESULT.frames[7].stats.matrixCache?.available,
+                false,
+                'restored unavailable float target is explicit',
+            );
+            assert.equal(RESULT.frames[7].stats.matrixCache?.passes, 0, 'unavailable restored target is never bound');
+            assert.ok(
+                RESULT.frames[7].stats.gpuDrawInstances > 0,
+                'restored capability loss retains direct GPU evaluation',
+            );
+        }
+        if (RESULT.backend === 'no-float-cache') {
+            for (const FRAME of RESULT.frames) {
+                assert.equal(
+                    FRAME.stats.matrixCache?.passes,
+                    0,
+                    'missing float capability never allocates a cache pass',
+                );
+                assert.equal(
+                    FRAME.stats.matrixCache?.targetBytes,
+                    0,
+                    'missing float capability never allocates a target',
+                );
+                assert.equal(
+                    FRAME.stats.matrixCache?.available,
+                    false,
+                    'capability mask remains explicit after restore',
+                );
+            }
+            assert.ok(RESULT.frames[0].stats.gpuDrawInstances > 0, 'missing float target keeps direct GPU evaluation');
         }
         assert.deepEqual(RESULT.afterDispose, { buffers: 0, textures: 0, targets: 0, pipelines: 0 });
         for (let frame = 0; frame < RESULT.frames.length; frame++) {

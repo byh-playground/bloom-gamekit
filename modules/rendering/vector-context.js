@@ -845,7 +845,9 @@ export class VectorContext {
         if (!S) {
             return;
         }
-        this.meshRenderer?.flush('stateRestore');
+        if (!this.meshRenderer?.ordered) {
+            this.meshRenderer?.flush('stateRestore');
+        }
         this.vector.restore();
         Object.assign(this, {
             _fillStyle: S.fillStyle,
@@ -1122,7 +1124,7 @@ export class VectorContext {
         return composeTransform(path.matrix, local);
     }
     _submitPrimitive(matrix, color, params) {
-        this.meshRenderer?.flush('primitiveBoundary');
+        this.meshRenderer?.paintBoundary('primitiveBoundary');
         this.vector.drawPrimitive({ matrix, color, params });
         return true;
     }
@@ -1214,7 +1216,7 @@ export class VectorContext {
             return;
         }
         this._materializePrimitivePath();
-        this.meshRenderer?.flush('vectorBoundary');
+        this.meshRenderer?.paintBoundary('vectorBoundary');
         if (this._fillStyle instanceof RadialGradient) {
             this.vector.fillRadialGradient({
                 ...this._gradientPaint(this._fillStyle),
@@ -1260,7 +1262,7 @@ export class VectorContext {
             return;
         }
         this._materializePrimitivePath();
-        this.meshRenderer?.flush('vectorBoundary');
+        this.meshRenderer?.paintBoundary('vectorBoundary');
         if (!DASH.length || !PERIOD) {
             this.vector.stroke(PAINT, WIDTH, STYLE, GRADIENT);
             return;
@@ -1357,7 +1359,7 @@ export class VectorContext {
     }
     fillTriangleFan(points, paint = this._fillStyle) {
         this._frame();
-        this.meshRenderer?.flush('vectorBoundary');
+        this.meshRenderer?.paintBoundary('vectorBoundary');
         if (points.length < 3) {
             return;
         }
@@ -1463,7 +1465,7 @@ export class VectorContext {
     }
     fillText(text, x, y, maxWidth) {
         this._frame();
-        this.meshRenderer?.flush('vectorBoundary');
+        this.meshRenderer?.paintBoundary('vectorBoundary');
         if (!this.glyphAtlas) {
             throw new Error('GlyphAtlas is not configured');
         }
@@ -1496,7 +1498,7 @@ export class VectorContext {
     }
     strokeText(text, x, y, maxWidth) {
         this._frame();
-        this.meshRenderer?.flush('vectorBoundary');
+        this.meshRenderer?.paintBoundary('vectorBoundary');
         if (!this.glyphAtlas) {
             throw new Error('GlyphAtlas is not configured');
         }
@@ -1547,6 +1549,10 @@ export class VectorContext {
             ...this.meshOptions,
             safeAlphaRunBatching: this.safeAlphaRunBatching,
         });
+        this.vector.beforeSubmit = () => this.meshRenderer.ordered?.flush('vectorBoundary');
+        this.vector.submitTriangles = (vertices, count, state) =>
+            this.meshRenderer.drawOrderedTriangles(vertices, count, state);
+        this.vector.beforeStencilChange = () => this.meshRenderer.flush('stencilChange');
         return this.meshRenderer;
     }
     /** Registers cleanup that `dispose()` runs, newest first, before it disposes the renderers it owns. */
@@ -1562,8 +1568,34 @@ export class VectorContext {
      */
     drawQuads(options) {
         this._frame();
-        this.meshRenderer?.flush('quadBoundary');
-        this.vector.drawQuads(options);
+        if (
+            this.meshRenderer?.ordered?.indexCount > 0 &&
+            options?.pose == null &&
+            !this.vector.clips.length &&
+            !this.vector.activeTarget
+        ) {
+            if (this.vector.count) {
+                this.vector.flush();
+            }
+            const MATRIX = COMPOSE_AFFINE(this.vector.matrix, options.matrix ?? IDENTITY);
+            this.meshRenderer.drawOrderedQuads(
+                { ...options, depth: this.depth },
+                {
+                    projection: this.vector.projection,
+                    clips: this.vector.clips,
+                    stencilRef: this.vector.stencilDepth || null,
+                    depth: this.depth,
+                    depthTest: this.depthTest,
+                    depthWrite: this.depthWrite,
+                    depthFunc: this.depthFunc,
+                    blend: this.vector.blend,
+                },
+                MATRIX,
+            );
+        } else {
+            this.meshRenderer?.flush('quadBoundary');
+            this.vector.drawQuads(options);
+        }
     }
     /**
      * Draws a texture atlas region like Canvas `drawImage(image, x, y, width, height)`: top-left anchored on the
@@ -1814,8 +1846,13 @@ export class VectorContext {
     }
     flush(reason = 'explicit') {
         this._frame();
-        this.meshRenderer?.flush(reason);
-        this.vector.flush();
+        if (this.meshRenderer?.ordered) {
+            this.vector.flush();
+            this.meshRenderer.flush(reason);
+        } else {
+            this.meshRenderer?.flush(reason);
+            this.vector.flush();
+        }
     }
     createStaticMesh(vertices, { strideFloats = 6 } = {}) {
         if (this.state !== 'ready' || this.device.state !== 'ready') {

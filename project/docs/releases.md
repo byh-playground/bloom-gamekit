@@ -1,3 +1,14 @@
+## v0.40.2 (2026-11-01)
+
+호환 성능 개선. `VectorContext`의 opt-in `mesh.orderedMeshQuads`가 반투명 retained body mesh와 뒤따르는 atlas quad·호환되는 일반 벡터 paint를 요청 순서대로 같은 indexed batch에 담습니다. 다른 병종·표정·색 때문에 게임의 painter 순서를 바꾸지 않고, 불투명 depth-write 몸통은 기존 instancing을 유지합니다.
+
+- 원본 정점은 숫자 texture에 한 번 보관하고 작은 정점 참조·index와 command만 제출합니다. indexed vertex reuse를 유지하며 GPU keyframe pose 계산도 계속 사용합니다. 정점마다 pose를 다시 계산하던 초기 triangle-instancing 설계는 측정된 GPU 회귀로 채택하지 않았습니다.
+- 같은 opt-in에서 float target이 지원되면 GPU keyframe을 부위별 숫자 행렬로 한 번 계산해 정점들이 공유합니다. 기본 경로는 유지하고, target 미지원·복구 불가 시 기존 GPU program을 사용합니다. CPU 평가나 몸통 raster 이미지를 추가하지 않습니다.
+- 일반 paint는 같은 스타일의 삼각형들을 좌표·UV(정점당16byte)와 공유 스타일 명령으로 나누며, SDF·gradient·atlas fragment 구현을 native stream과 공유합니다. posed/offscreen paint·정점별 스타일은 원래 경로에 남습니다.
+- chunk별 topology·command 자원을 bounded LRU로 보관해 불변 참조/index 재업로드와 chunk 간 덮어쓰기를 피합니다. 버퍼와 숫자 texture는 실제 사용 길이보다 넓은 용량을 재사용하고 실제 할당 용량으로 예산을 계산합니다. 추가 캐시 메모리와 변경된 topology 업로드는 진단 수치에 노출합니다.
+- 기존 mesh/quad의 premultiply 순서, palette, transform, depth, index variant/range, clip/stencil/blend 및 context 복구를 보존합니다. transform-only restore는 batch를 유지하고 stencil 재구축·atlas·pose 변경은 먼저 제출합니다. 미지원 기능은 자신의 native 경로에서 순서대로 그립니다.
+- 검증: 기존 WebGL interop 사용자 시나리오에 전체 픽셀 비교, A/B/A 순서·palette·RGBA gradient·atlas 변경·작은 capacity·중첩 stencil·context 복구를 포함합니다. 버드모리의 동일 고정 장면과 대규모 CPU·draw·업로드 측정은 소비 게임의 검증 기록에서 구분합니다. 실제 PC/모바일 GPU 성능은 별도 범위입니다.
+
 ## v0.40.1 (2026-11-01)
 
 호환 API 추가. PWA `checkForUpdate(): Promise<void>`가 등록 완료를 기다린 뒤 브라우저에 업데이트 재확인을 요청합니다. 등록은 `updateViaCache: 'none'`을 사용하며, 온라인·가시성 복귀도 같은 재확인을 요청합니다. 동시 확인은 한 요청을 공유하고 dispose는 페이지·worker 상태 구독을 정리합니다. 확인 중 발견한 worker의 설치 성공·실패까지 기다리고, 업데이트 유무나 최신 버전 여부를 반환하지 않습니다. 설치되어 기다리는 새 버전은 기존 `onUpdate`로만 알립니다.
