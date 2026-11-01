@@ -28,7 +28,7 @@ Actors sample an absolute caller clock, select one frame and hold it for its dur
 
 ## Textures in the vector stream
 
-`MeshRenderer` meshes are untextured. Every textured draw (sprites, baked vector runs, posed parts, glyphs, gradient ramps) is a rectangle in the `VectorRenderer` vertex stream, sampled from the device's one `TEXTURE_2D_ARRAY` (`device.textureAtlas`, see below). `VectorContext.drawQuads({ layer, uvRects, localRects, matrix, color, alpha, whiteFlash, forceColor, filter })` appends rectangles on the current transform and clip; with `pose` (a prepared GPU pose handle) and `parts` the runs also follow that pose part, evaluated in the same vertex shader. `uvRects`/`localRects` hold four floats per run `[offsetX, offsetY, extentX, extentY]`; a negative UV height flips a bottom-up render target. Stream vertices are 80 bytes, six per rectangle.
+`MeshRenderer` meshes are untextured. Every textured draw (sprites, baked vector runs, posed parts, glyphs, gradient ramps) is a rectangle in the `VectorRenderer` vertex stream, sampled from the device's one `TEXTURE_2D_ARRAY` (`device.textureAtlas`, see below). `VectorContext.drawQuads({ layer, uvRects, localRects, matrix, color, alpha, whiteFlash, forceColor, filter })` appends rectangles on the current transform and clip; with `pose` (a prepared GPU pose handle) and `parts` the runs also follow that pose part, evaluated in the same vertex shader. `uvRects`/`localRects` hold four floats per run `[offsetX, offsetY, extentX, extentY]`; a negative UV height flips a bottom-up render target. Stream vertices are 84 bytes, six per rectangle.
 
 `WebGLDevice.createTextureArray(width, height, layers, { filter })`, `updateTextureLayer` and `isTextureArray` remain the device primitives under the atlas. Retained layer and region sources are re-uploaded after context restore.
 
@@ -68,6 +68,28 @@ if (ctx.beginFrame({ clearColor: [0.03, 0.05, 0.08, 1] })) {
 
 `VectorContext.createMesh`/`drawMesh`/`drawVectorActor` share the context's `MeshRenderer` (`acquireMeshRenderer()`); yarn and sketch surfaces are materials of those meshes. Mesh draws first submit the vector stream queued before them, so vector paint, meshes and later vector paint keep submission order on the same default framebuffer. Meshes that stay on `MeshRenderer` (morph, opacity channel, shader surfaces, force-color fallbacks) are batch boundaries.
 
+## 벡터·이미지 깊이와 배치
+
+`VectorContext.depth`는 `[-1, 1]` clip-space 깊이이며 기본값은 `0`입니다. `depthTest`·`depthWrite`는 기본 `false`, `depthFunc`는 기본 `lequal`이고 MeshRenderer와 같은 8개 비교 함수를 받습니다. `save()/restore()`가 네 상태를 보존하며 `beginFrame()`은 기본값으로 초기화합니다. `VectorRenderer`를 직접 쓰는 경우에도 같은 상태를 사용할 수 있지만 프레임 초기화는 호출자가 소유합니다.
+
+```js
+ctx.beginFrame();
+ctx.depthTest = true;
+ctx.depthWrite = true;
+ctx.depth = -0.5;
+ctx.fillRect(20, 20, 40, 40); // 가까운 물체를 먼저 제출
+ctx.depth = 0.5;
+ctx.fillRect(30, 30, 40, 40); // 겹친 부분은 깊이 검사에서 제외, 같은 stream draw
+ctx.depthWrite = false;
+ctx.depth = -0.5;
+ctx.drawRegion(faceRegion, 25, 25, 20, 20); // 투명 얼굴 사각형은 깊이를 덮지 않음
+ctx.endFrame();
+```
+
+깊이는 각 정점에 담으므로 깊이만 바뀌는 path·analytic primitive·gradient·glyph·일반/posed quad는 같은 배치에 남습니다. 깊이 검사·기록·비교 함수가 달라지면 이전 배치를 제출합니다. `drawMesh()`와 `drawVectorActor()`도 context 깊이 상태를 따르며, actor options의 명시값이 우선합니다. 렌더러는 물체를 정렬하지 않습니다. 병종·메시별 제출 순서와 투명 물체의 painter order는 호출자가 소유합니다.
+
+깊이 검사나 기록을 켜면 활성 framebuffer에 깊이 attachment가 필요합니다. 기본 canvas는 `new WebGLDevice(canvas, { depth: true })`로 만듭니다. 현재 render target은 깊이 attachment가 없으므로 깊이를 요청한 stream draw는 오류입니다. `beginGroup(opacity < 1)`도 깊이 검사·기록을 먼저 꺼야 하며, 불투명 direct group은 기존 깊이 상태를 유지합니다. depth-write stream은 최종 alpha가 0인 fragment를 버려 투명한 이미지 여백이 뒤 물체를 가리지 않게 합니다. 부분 투명도는 여전히 색 합성 순서가 필요하므로 보통 깊이 기록을 끄고 뒤에서 앞으로 제출합니다.
+
 ## Mesh depth
 
 ### SVG non-scaling strokes
@@ -80,7 +102,7 @@ The vector-asset compiler retains `vector-effect="non-scaling-stroke"` as a mesh
 
 Each `drawMesh()` call can carry a different depth while adjacent calls using the same mesh and depth policy still share the instanced draw. `parts` entries may also supply `depth` in `[-1, 1]`; it is added to that instance's depth. Their sum must remain in `[-1, 1]`. Depth-policy changes split a pending batch so one draw never mixes depth-test/write settings. The renderer does not sort transparent geometry; submit it in the required painter order and normally set `depthWrite: false` for translucent overlays.
 
-The mesh pass writes a clip-space Z value and reasserts depth test/write state for each draw. A following vector stream flush disables depth testing and depth writes before drawing its next ordered pass. A Canvas2D context and a WebGL context cannot both be acquired on one canvas: callers currently drawing a field entirely with Canvas2D need a separate canvas/composition layer or a field-wide move to GameKit WebGL before they can insert meshes into that field's painter order.
+The mesh pass writes a clip-space Z value and reasserts depth test/write state for each draw. A following vector stream flush reasserts its captured context depth policy, whose default disables depth testing and depth writes. A Canvas2D context and a WebGL context cannot both be acquired on one canvas: callers currently drawing a field entirely with Canvas2D need a separate canvas/composition layer or a field-wide move to GameKit WebGL before they can insert meshes into that field's painter order.
 
 When drawMesh() uses depthWrite: true with `depthWriteAlphaThreshold`, it enables depth writes only for contiguous triangles whose three effective vertex alpha values are positive and meet the threshold. Effective alpha includes vertex alpha (unless forceColor replaces it), draw alpha, color alpha, and the opacity of each referenced part. Indexed expression variants are classified in their selected index order. The renderer submits each contiguous run in its original vertex/index order; it never moves opaque triangles ahead of translucent triangles. A mesh that needs several runs is emitted per instance to preserve painter order; one-run meshes retain adjacent instancing. Repeated classifications are reused in a bounded per-mesh cache. Omitting the threshold keeps the existing mesh-wide depthWrite boolean behavior.
 
@@ -126,7 +148,7 @@ The bounds are computed from per-part ranges retained at mesh creation; the rend
 
 `device.textureAtlas`(`TextureAtlasArray`, 옵션 `new WebGLDevice(canvas,{ textureAtlas:{width=2048,height=1024,layers=2,gutter=1} })`)는 작은 이미지를 한 `TEXTURE_2D_ARRAY`의 영역(region)으로 나눠 담는 장치 단위 단일 원본입니다. `allocate(w,h,{filter})`는 `{layer,x,y,width,height,uvRect,filter}`를 돌려주고 `upload(region,source,{premultiplied,extendEdges})`가 픽셀을 씁니다(`extendEdges`는 바이트 소스의 가장자리를 gutter로 복제해 CLAMP_TO_EDGE처럼 보이게 함). `release(region)`은 픽셀을 지우고 같은 크기 요청에 재사용하며, 마지막 region을 풀면 배열도 삭제됩니다. 영역 업로드는 `Device.updateTextureRegion`이 원본을 보관해 컨텍스트 복구 때 다시 올립니다. `filter:'nearest'` region은 배열의 하드웨어 필터가 하나뿐이므로 셰이더가 texel 중심으로 맞춥니다.
 
-`VectorRenderer`의 흰 texel, `VectorContext`의 gradient ramp, `GlyphAtlas` 페이지가 모두 이 배열의 region입니다. 정점은 layer·gradient 종류(없음/선형/radial/radial 빈 영역)·white flash·nearest 여부·radial 파라미터·ramp 사각형을 담아(정점당 80바이트), 같은 blend·clip 상태의 fill, 선형·radial gradient, 글리프가 한 draw로 제출됩니다. 배치를 끊는 것은 blend 전환, stencil clip 변경, 반투명 group(render target을 다른 sampler로 합성)뿐입니다. `drawGlyphQuad(region, x, y, w, h, uv, color)`의 `uv`는 배열 좌표이고 `GlyphAtlas`가 callback에 주는 `texture`는 `region`으로 바뀌었습니다. gradient 객체의 `texture`도 `region`입니다.
+`VectorRenderer`의 흰 texel, `VectorContext`의 gradient ramp, `GlyphAtlas` 페이지가 모두 이 배열의 region입니다. 정점은 layer·gradient 종류(없음/선형/radial/radial 빈 영역)·white flash·nearest 여부·radial 파라미터·ramp 사각형·깊이를 담아(정점당 84바이트), 같은 blend·clip 상태의 fill, 선형·radial gradient, 글리프가 한 draw로 제출됩니다. 배치를 끊는 것은 blend 전환, stencil clip 변경, 반투명 group(render target을 다른 sampler로 합성)뿐입니다. `drawGlyphQuad(region, x, y, w, h, uv, color)`의 `uv`는 배열 좌표이고 `GlyphAtlas`가 callback에 주는 `texture`는 `region`으로 바뀌었습니다. gradient 객체의 `texture`도 `region`입니다.
 
 ## VectorContext와 재사용 primitive painter
 
@@ -208,7 +230,7 @@ ctx.deleteMesh(mesh);
 
 ### VectorRenderer와 prebaked GlyphAtlas
 
-`VectorRenderer`는 같은 canvas를 소유한 `WebGLDevice` 위에서 path tessellation·transform·clip·painter-order stream·textured glyph 제출을 제공합니다. 프레임·projection·정렬과 그림 내용은 caller가 소유합니다. 인접한 fill·stroke·fan·glyph는 texture/radial/white-flash 상태가 같으면 재사용 geometry buffer에 순서대로 누적합니다. transform·clip·색은 각 vertex를 만들 때 반영되므로 과거 geometry를 변경하거나 재정렬하지 않습니다. texture 상태 변경, group 경계, capacity, 명시적 flush에서 제출합니다. CPU/GPU vertex storage는 기본 4096 vertices(각 128 KiB)에서 시작해 필요할 때 2배로 자라며 기본 상한은 262144 vertices(각 최대 8 MiB)이며 device.maxBufferBytes가 더 작으면 그 안으로 제한합니다. 상한은 한 batch의 저장 한도이고, 초과 geometry는 삼각형 경계에서 제출한 뒤 계속 처리합니다. 긴 인접 stream은 과거의 경로별 즉시 제출보다 staging high-water가 커질 수 있으므로 작은 상한으로 메모리/호출 수를 조절하세요. `beginGroup(opacity,bounds)`는 불투명 기본값 `1`이면 target 없이 직접 경로를 유지하고, 반투명 그룹은 canvas-screen bounds의 RGBA target에 그린 뒤 한 번 합성합니다. 생략한 bounds는 viewport 전체입니다. target은 중첩 깊이별로 보관되고 필요한 크기의 다음 power-of-two 버킷으로 할당되어 작아지는 bounds와 인접한 크기에서는 재사용됩니다. bounds보다 바깥의 입력은 잘립니다. `stats.gpuRenderTargetBytes`로 실제 target byte 수를 확인하세요.
+`VectorRenderer`는 같은 canvas를 소유한 `WebGLDevice` 위에서 path tessellation·transform·clip·painter-order stream·textured glyph 제출을 제공합니다. 프레임·projection·정렬과 그림 내용은 caller가 소유합니다. 인접한 fill·stroke·fan·glyph는 texture/radial/white-flash 상태가 같으면 재사용 geometry buffer에 순서대로 누적합니다. transform·clip·색은 각 vertex를 만들 때 반영되므로 과거 geometry를 변경하거나 재정렬하지 않습니다. texture 상태 변경, group 경계, capacity, 명시적 flush에서 제출합니다. CPU/GPU vertex storage는 기본 4096 vertices(각 336 KiB)에서 시작해 필요할 때 2배로 자라며 기본 상한은 262144 vertices(각 최대 21 MiB)이며 device.maxBufferBytes가 더 작으면 그 안으로 제한합니다. 상한은 한 batch의 저장 한도이고, 초과 geometry는 삼각형 경계에서 제출한 뒤 계속 처리합니다. 긴 인접 stream은 과거의 경로별 즉시 제출보다 staging high-water가 커질 수 있으므로 작은 상한으로 메모리/호출 수를 조절하세요. `beginGroup(opacity,bounds)`는 불투명 기본값 `1`이면 target 없이 직접 경로를 유지하고, 반투명 그룹은 canvas-screen bounds의 RGBA target에 그린 뒤 한 번 합성합니다. 생략한 bounds는 viewport 전체입니다. target은 중첩 깊이별로 보관되고 필요한 크기의 다음 power-of-two 버킷으로 할당되어 작아지는 bounds와 인접한 크기에서는 재사용됩니다. bounds보다 바깥의 입력은 잘립니다. `stats.gpuRenderTargetBytes`로 실제 target byte 수를 확인하세요.
 
 ```js
 import { WebGLDevice, VectorRenderer, FontAssetLoader } from './rendering.js';
@@ -334,6 +356,14 @@ The browser's network cache is origin/top-site partitioned and browser-managed. 
 `MeshRenderer.createMesh()` accepts two separate name-to-`Uint16Array` maps over the same vertex records: `expressionIndices` for semantic expression variants and `indexVariants` for generic host-selected triangle ranges. Keys must be stable names and cannot appear in both maps. `drawMesh(mesh,{indexVariant:name})` selects a list from either map; without a name it draws the base `indices` list (or expanded triangles). Each selected list replaces that draw's base list; the host submits multiple ranges in painter order and flushes at boundaries such as shader-surface draws. The renderer does not sort or transform the lists. Both maps' buffers are retained, included in the byte budget, restored after context loss, and released with the mesh. The legacy `expressionIndices` field remains supported by `MeshRenderer.createMesh()`; vector assets validate it against `metadata.expressions` and auto-select only authored expression names.
 
 `MeshBuilder.combine()` remaps and preserves semantic `expressionIndices`, contributing each source's base triangles when that source has no matching expression key. It rejects non-empty `indexVariants`: flattening painter-order ranges from multiple assets would require their host-level paint schedules and could reorder interleaved draws. Submit those assets as separate ordered draws instead of silently dropping or regrouping their ranges.
+
+## Opaque-composite coverage proof
+
+`hasOpaqueCoverage(geometry,{indexVariant = null})` accepts the authored 11-float `Float32Array` mesh geometry before GPU upload. It proves that every nonzero-alpha triangle is covered by alpha-1 triangles of **the same part**. Different parts may move or disappear independently. Pass the actual named expression/index variant; omitted selects the base indices. Zero-alpha and degenerate triangles do not occlude.
+
+Run this once during asset preparation and cache immutable geometry/variant results. It performs bounded, exact rational polygon subtraction using the authored Float32 coordinates; small real holes are not erased by a pixel/area tolerance. Morphs, shader materials, non-scaling strokes, extreme coordinate exponent ranges or exhausted work budgets return `false` (coverage not proved). False is not proof of transparency. The caller must independently keep root/part opacity fully opaque and preserve the painter order of actual translucent actors. No geometry, texture, pose, game ordering or authority state is changed by this query.
+
+This enables the common pattern of grouping proven opaque-composite bodies by mesh with depth writes, then drawing faces and other overlays in their original painter order with depth tests and no writes. Standalone translucent body regions require ordered submission. Hidden posed parts are safe because depth-writing mesh shaders discard their alpha-0 fragments; ordinary no-depth-write colour blending is unchanged.
 
 ## Ordered submission and batching
 

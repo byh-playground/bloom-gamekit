@@ -5,10 +5,11 @@ import { POSE_PROGRAM_FUNCTIONS } from './pose-shader.js';
 const IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
 // One vertex layout for every textured draw: texture identity, gradient kind and flash are vertex data,
 // so fills, gradients, glyphs and sprites of one blend/clip state batch together. Floats per vertex: position 2,
-// uv 2, color 4, paint (atlas layer, white flash, mode, nearest) 4, radial parameters 4, ramp rectangle 4.
+// uv 2, color 4, paint (atlas layer, white flash, mode, nearest) 4, radial parameters 4, ramp rectangle 4, clip-space depth 1.
 // Mode 4 is a posed sprite corner: position is the part-local corner, radial holds the entity matrix a,b,c,d and
 // the ramp rectangle holds its e,f plus the pose row and part, so the vertex shader evaluates the keyframes.
-const VERTEX_FLOATS = 20;
+const VERTEX_FLOATS = 21;
+const DEPTH_FUNCTIONS = new Set(['never', 'less', 'equal', 'lequal', 'greater', 'notequal', 'gequal', 'always']);
 const VERTEX_BYTES = VERTEX_FLOATS * 4;
 const MODE_POSED = 4;
 // Round joins and caps are arcs whose chord may deviate from the true circle by at most this many pixels, so thin
@@ -32,6 +33,7 @@ const VERTEX_ATTRIBUTES = [
     { name: 'a_paint', size: 4, offset: 32 },
     { name: 'a_radial', size: 4, offset: 48 },
     { name: 'a_rect', size: 4, offset: 64 },
+    { name: 'a_depth', size: 1, offset: 80 },
 ];
 const FRAGMENT_VARYINGS =
     'varying highp vec2 v_uv; varying vec4 v_color; varying highp vec4 v_paint; varying highp vec4 v_radial; varying highp vec4 v_rect;';
@@ -41,19 +43,19 @@ vec2 q=vec2(dot(row0.xy,a_position)+row0.z,dot(row1.xy,a_position)+row1.z);
 position=vec2(a_radial.x*q.x+a_radial.z*q.y+a_rect.x,a_radial.y*q.x+a_radial.w*q.y+a_rect.y);
 color.a*=pose.z;paint.z=0.0;radial=vec4(0.0);rect=vec4(0.0);}`;
 function vertexShader(posed) {
-    return `attribute vec2 a_position; attribute vec2 a_uv; attribute vec4 a_color; attribute vec4 a_paint; attribute vec4 a_radial; attribute vec4 a_rect;
+    return `attribute vec2 a_position; attribute vec2 a_uv; attribute vec4 a_color; attribute vec4 a_paint; attribute vec4 a_radial; attribute vec4 a_rect; attribute float a_depth;
 uniform mat3 u_projection; ${FRAGMENT_VARYINGS}${posed ? ' varying highp vec2 v_position;' : ''}
 ${posed ? POSE_PROGRAM_FUNCTIONS : ''}
 void main(){vec2 position=a_position;vec4 color=a_color;vec4 paint=a_paint;vec4 radial=a_radial;vec4 rect=a_rect;
 ${posed ? POSED_CORNER : ''}
-vec3 p=u_projection*vec3(position,1.0);gl_Position=vec4(p.xy,0.0,1.0);${posed ? 'v_position=position;' : ''}v_uv=a_uv;v_color=color;v_paint=paint;v_radial=radial;v_rect=rect;}`;
+vec3 p=u_projection*vec3(position,1.0);gl_Position=vec4(p.xy,a_depth,1.0);${posed ? 'v_position=position;' : ''}v_uv=a_uv;v_color=color;v_paint=paint;v_radial=radial;v_rect=rect;}`;
 }
 const VERTEX = vertexShader(false);
 const CLIP_VERTEX = `attribute vec2 a_position;uniform mat3 u_projection;uniform mat3 u_transform;void main(){vec3 p=u_projection*u_transform*vec3(a_position,1.0);gl_Position=vec4(p.xy,0.0,1.0);}`;
 const CLIP_FRAGMENT = 'precision mediump float;void main(){gl_FragColor=vec4(1.0);}';
 // paint.y: 0 normal, 1 white flash, 2 forced color (the texel only contributes its coverage).
 const FINISH =
-    'float a=texel.a*v_color.a;vec3 rgb=v_paint.y>1.5?v_color.rgb*a:mix(texel.rgb*v_color.rgb*v_color.a,vec3(a),v_paint.y);gl_FragColor=vec4(rgb,a);';
+    'float a=texel.a*v_color.a;if(u_depthWrite>0.5&&a<=0.0)discard;vec3 rgb=v_paint.y>1.5?v_color.rgb*a:mix(texel.rgb*v_color.rgb*v_color.a,vec3(a),v_paint.y);gl_FragColor=vec4(rgb,a);';
 const PRIMITIVE_OUTSIDE = `bool primitiveOutside(vec2 l,vec4 p,vec4 m){
   float kind=p.x,stroke=p.y,width=p.z,option=p.w;
   if(kind<0.5){
@@ -89,7 +91,7 @@ function fragmentShader(planes) {
     const CLIP = planes
         ? `for(int i=0;i<${planes};i++){if(i>=u_planeCount)break;if(dot(u_planes[i],vec3(v_position,1.0))<0.0)discard;}`
         : '';
-    return `precision mediump float; precision mediump sampler2DArray; uniform sampler2DArray u_texture;
+    return `precision mediump float; precision mediump sampler2DArray; uniform sampler2DArray u_texture;uniform float u_depthWrite;
 ${FRAGMENT_VARYINGS}${PLANES}
 float radialParameter(vec2 q){
   vec2 d=v_radial.xy;float r0=v_radial.z,dr=v_radial.w;
@@ -100,7 +102,7 @@ float radialParameter(vec2 q){
   if(r0+dr*t0>0.0)chosen=t0;if(r0+dr*t1>0.0)chosen=max(chosen,t1);return chosen;
 }
 ${PRIMITIVE_OUTSIDE}
-void main(){${CLIP}if(v_paint.z>4.5){if(primitiveOutside(v_uv,v_radial,v_rect))discard;gl_FragColor=vec4(v_color.rgb*v_color.a,v_color.a);return;}
+void main(){${CLIP}if(v_paint.z>4.5){if(primitiveOutside(v_uv,v_radial,v_rect)||(u_depthWrite>0.5&&v_color.a<=0.0))discard;gl_FragColor=vec4(v_color.rgb*v_color.a,v_color.a);return;}
 if(v_paint.z>1.5&&v_paint.z<2.5)discard;vec2 uv=v_uv;
 if(v_paint.z>2.5){uv=v_rect.xy+vec2(clamp(v_uv.x,0.0,1.0),0.5)*v_rect.zw;}
 else if(v_paint.z>0.5){float t=radialParameter(v_uv);if(t< -1000.0)discard;uv=v_rect.xy+vec2(clamp(t,0.0,1.0),0.5)*v_rect.zw;}
@@ -109,7 +111,7 @@ vec4 texel=texture2D(u_texture,vec3(uv,floor(v_paint.x+0.5)));${FINISH}}`;
 }
 const FRAGMENT = fragmentShader(0);
 // Offscreen groups are the one render-target (not atlas) sample, so they keep a plain 2D sampler.
-const GROUP_FRAGMENT = `precision mediump float; uniform sampler2D u_texture;
+const GROUP_FRAGMENT = `precision mediump float; uniform sampler2D u_texture;uniform float u_depthWrite;
 ${FRAGMENT_VARYINGS}
 void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
 const FINITE = (n, label) => {
@@ -380,6 +382,7 @@ export class VectorRenderer {
             uniforms: {
                 u_projection: 'matrix3fv',
                 u_texture: '1i',
+                u_depthWrite: '1f',
             },
         });
         // Created with the first posed sprite: it adds the keyframe evaluator and the edge-plane clip.
@@ -435,6 +438,8 @@ export class VectorRenderer {
         this.paintTemplate = new Float32Array(12);
         this._setPaint(this.whiteRegion);
         this.blend = 'source-over';
+        this.depth = 0;
+        this._depthPolicy = { test: false, write: false, func: 'lequal' };
         this.stencilClips = [];
         this.clipPaths = new Map();
         this.clipPathBytes = 0;
@@ -476,6 +481,7 @@ export class VectorRenderer {
                 uniforms: {
                     u_projection: 'matrix3fv',
                     u_texture: '1i',
+                    u_depthWrite: '1f',
                 },
             });
         } catch (error) {
@@ -495,6 +501,60 @@ export class VectorRenderer {
         this._clips = value;
         this.clipSerial++;
     }
+    get depth() {
+        return this._depth;
+    }
+    set depth(value) {
+        if (!Number.isFinite(value) || value < -1 || value > 1) {
+            throw new RangeError('depth must be in [-1,1]');
+        }
+        this._depth = value;
+    }
+    get depthTest() {
+        return this._depthPolicy.test;
+    }
+    set depthTest(value) {
+        if (typeof value !== 'boolean') {
+            throw new TypeError('depthTest must be a boolean');
+        }
+        this._setDepthPolicy({ ...this._depthPolicy, test: value });
+    }
+    get depthWrite() {
+        return this._depthPolicy.write;
+    }
+    set depthWrite(value) {
+        if (typeof value !== 'boolean') {
+            throw new TypeError('depthWrite must be a boolean');
+        }
+        this._setDepthPolicy({ ...this._depthPolicy, write: value });
+    }
+    get depthFunc() {
+        return this._depthPolicy.func;
+    }
+    set depthFunc(value) {
+        if (!DEPTH_FUNCTIONS.has(value)) {
+            throw new TypeError('Unsupported depth function');
+        }
+        this._setDepthPolicy({ ...this._depthPolicy, func: value });
+    }
+    _setDepthPolicy(policy) {
+        if (
+            policy.test !== this._depthPolicy.test ||
+            policy.write !== this._depthPolicy.write ||
+            policy.func !== this._depthPolicy.func
+        ) {
+            this._submit();
+            this._depthPolicy = policy;
+        }
+    }
+    _assertDepthTarget() {
+        if (
+            (this._depthPolicy.test || this._depthPolicy.write) &&
+            (!this.device.depthAvailable || this.device.activeRenderTarget)
+        ) {
+            throw new Error('The active framebuffer has no depth attachment');
+        }
+    }
     _pushClip(contour) {
         this._clips.push(contour);
         this.clipSerial++;
@@ -506,6 +566,7 @@ export class VectorRenderer {
         if (!this.device.active) {
             throw new Error('WebGLDevice.beginFrame is required');
         }
+        this._assertDepthTarget();
         const G = [...this.groups].reverse().find((group) => !group.direct);
         if (G) {
             this._setProjection(G.bounds, G.target);
@@ -606,6 +667,8 @@ export class VectorRenderer {
         this._frame();
         this.stack.push({
             matrix: this.matrix.slice(),
+            depth: this.depth,
+            depthPolicy: this._depthPolicy,
             clips: this.clips.map((polygon) =>
                 polygon.map((p) => ({
                     ...p,
@@ -620,7 +683,9 @@ export class VectorRenderer {
         if (!S) {
             throw new Error('restore without save');
         }
-        // Queued vertices already hold final positions, so only a stencil change needs the batch submitted first.
+        // Queued vertices hold final positions and depth; only policy or stencil changes submit the batch.
+        this.depth = S.depth;
+        this._setDepthPolicy(S.depthPolicy);
         this.matrix = S.matrix;
         this.clips = S.clips;
         if (
@@ -1015,6 +1080,7 @@ export class VectorRenderer {
                 this.vertices[K + 3] = POINT.v ?? this.flatUV[1];
                 this.vertices.set(color, K + 4);
                 this.vertices.set(this.paintTemplate, K + 8);
+                this.vertices[K + 20] = this.depth;
             }
         }
     }
@@ -1030,11 +1096,13 @@ export class VectorRenderer {
         DATA[K + 6] = color[2];
         DATA[K + 7] = color[3];
         DATA.set(this.paintTemplate, K + 8);
+        DATA[K + 20] = this.depth;
     }
     _submit() {
         if (!this.count) {
             return;
         }
+        this._assertDepthTarget();
         this.device.stats.vectorSubmissions++;
         const POSED = this.poseBatch;
         this.poseBatch = null;
@@ -1054,6 +1122,7 @@ export class VectorRenderer {
             uniforms: POSED
                 ? {
                       u_projection: this.projection,
+                      u_depthWrite: Number(this.depthWrite),
                       u_program: 0,
                       u_state: 1,
                       u_overrides: 2,
@@ -1064,10 +1133,12 @@ export class VectorRenderer {
                   }
                 : {
                       u_projection: this.projection,
+                      u_depthWrite: Number(this.depthWrite),
                       u_texture: 0,
                   },
             textures: POSED ? [...POSED.textures, this.atlas.texture] : [this.activeTarget ?? this.atlas.texture],
             blend: this.blend,
+            depth: this._depthPolicy,
             stencil: this.stencilDepth
                 ? {
                       func: 'equal',
@@ -1092,6 +1163,7 @@ export class VectorRenderer {
                 u_state: '1i',
                 u_overrides: '1i',
                 u_texture: '1i',
+                u_depthWrite: '1f',
                 u_programWidth: '1i',
                 'u_planes[0]': '3fv',
                 u_planeCount: '1i',
@@ -1286,6 +1358,7 @@ export class VectorRenderer {
                 this.vertices[K + 17] = M[5];
                 this.vertices[K + 18] = DRAW.row;
                 this.vertices[K + 19] = parts[i];
+                this.vertices[K + 20] = this.depth;
             }
         }
     }
@@ -1667,6 +1740,9 @@ export class VectorRenderer {
                 direct: true,
             });
             return;
+        }
+        if (this.depthTest || this.depthWrite) {
+            throw new Error('Opacity groups require depth testing and writes to be disabled');
         }
         const REQUESTED = bounds ?? {
             x: 0,

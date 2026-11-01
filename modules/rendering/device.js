@@ -1595,8 +1595,8 @@ export class WebGLDevice {
         if (DEPTH_STATE && (typeof DEPTH_STATE.test !== 'boolean' || typeof DEPTH_STATE.write !== 'boolean')) {
             throw new TypeError('depth.test and depth.write must be booleans');
         }
-        if ((DEPTH_STATE?.test || DEPTH_STATE?.write) && !this.depthAvailable) {
-            throw new Error('Context has no depth buffer');
+        if ((DEPTH_STATE?.test || DEPTH_STATE?.write) && (this.activeRenderTarget || !this.depthAvailable)) {
+            throw new Error('The active framebuffer has no depth attachment');
         }
         if (stencil && !this.activeStencilAvailable) {
             throw new Error('The active framebuffer has no stencil attachment');
