@@ -411,6 +411,26 @@ export async function exerciseWebGLDevice(page) {
         D.unbindRenderTarget(TARGET);
         IMAGE_DELTA(BEFORE_GPU_ONLY, 0, 0, 'numeric data, empty render target and GPU copy excluded');
         D.deleteRenderTarget(TARGET);
+        // A real DOM image upload precedes the next numeric pose-plane update on the same device.
+        // RGB must remain numeric data even when the fourth component is zero or fractional.
+        const BEFORE_INTERLEAVE = IMAGE_STATS();
+        for (const ALPHA of [0, 0.5]) {
+            if (ALPHA > 0) {
+                D.updateTexture(TEXTURE, BYTES, { x: 0, y: 0, width: 1, height: 1 });
+            }
+            D.updateTexture(DOM_TEXTURE, DOM, { x: 0, y: 0, width: 1, height: 1 });
+            D.updateDataTexture(NUMERIC, new Float32Array([0.5, 0.25, 0.75, ALPHA]), {
+                x: 1,
+                y: 0,
+                width: 1,
+                height: 1,
+            });
+            D.uploadVertices(ARENA, quad(0, 1, 0, 0.75));
+            D.draw({ ...COMMAND, textures: [NUMERIC, SECOND], blend: false });
+            NEAR(PIXEL(), [128, 64, 191, 255], 'DOM/byte image upload cannot premultiply numeric RGBA');
+        }
+        IMAGE_DELTA(BEFORE_INTERLEAVE, 3, 12, 'interleaved DOM/byte image uploads exclude numeric updates');
+        D.draw({ ...COMMAND, textures: [COPIED, SECOND], blend: false });
         D.deleteTexture(NUMERIC);
         NEAR(PIXEL(), [128, 0, 0, 255], 'framebuffer remains after GPU copy');
         D.clear({

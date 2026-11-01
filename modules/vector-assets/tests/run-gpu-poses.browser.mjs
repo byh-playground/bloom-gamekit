@@ -83,6 +83,7 @@ try {
                     addPlayer(i);
                 }
                 const FRAMES = [];
+                let iconRegion = null;
                 const FAULTS = {
                     uploadDirtyRetained: null,
                     restoredStateRefresh: null,
@@ -110,6 +111,16 @@ try {
                         for (let i = 20; i < 80; i++) {
                             addPlayer(i);
                         }
+                    }
+                    if (frame === 4) {
+                        // Upload a face/icon after numeric pose textures already exist, then continue native bodies.
+                        const IMAGE = document.createElement('canvas');
+                        IMAGE.width = IMAGE.height = 2;
+                        const PAINT = IMAGE.getContext('2d');
+                        PAINT.fillStyle = '#c34b61';
+                        PAINT.fillRect(0, 0, 2, 2);
+                        iconRegion = DEVICE.textureAtlas.allocate(2, 2);
+                        DEVICE.textureAtlas.upload(iconRegion, IMAGE);
                     }
                     if (frame === 5) {
                         // Same application indices, new opaque player identities and recycled rows.
@@ -334,6 +345,7 @@ try {
                 for (const ENTRY of PLAYERS) {
                     ENTRY?.player.dispose();
                 }
+                DEVICE.textureAtlas.release(iconRegion);
                 CONTEXT.dispose();
                 SNAPSHOT.afterDispose = {
                     buffers: DEVICE.buffers.size,
