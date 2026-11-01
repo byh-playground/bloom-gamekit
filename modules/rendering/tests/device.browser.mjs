@@ -1326,6 +1326,7 @@ export async function exerciseVectorRenderer(page) {
     assert.equal(RESULT.disposed.atlasRetained, true);
     assert.equal(RESULT.disposed.emptyBeforeDeviceDispose, true);
     RESULT.depthStream = await exerciseDepthStream(page);
+    RESULT.quadStream = await exerciseQuadStream(page);
     return RESULT;
 }
 
@@ -1524,6 +1525,174 @@ async function exerciseDepthStream(page) {
     }
     assert.equal(RESULT.groupRejected, true);
     assert.equal(RESULT.targetRejected, true);
+    assert.equal(RESULT.error, 0);
+    return RESULT;
+}
+
+/** Prepared images keep their pixels and triangle stream across fast, clipped and tiny-capacity submissions. */
+async function exerciseQuadStream(page) {
+    const RESULT = await page.evaluate(async () => {
+        const { WebGLDevice: WEB_GL_DEVICE, VectorContext: VECTOR_CONTEXT } = await import('/dist/rendering.js');
+        const CANVAS = document.createElement('canvas');
+        CANVAS.width = CANVAS.height = 64;
+        document.body.append(CANVAS);
+        const DEVICE = new WEB_GL_DEVICE(CANVAS, {
+                antialias: false,
+                preserveDrawingBuffer: true,
+                checkGLErrors: true,
+            }),
+            CTX = new VECTOR_CONTEXT(DEVICE),
+            TINY = new VECTOR_CONTEXT(DEVICE, { initialVertices: 3, maxVertices: 3 }),
+            ATLAS = DEVICE.textureAtlas,
+            REGION = ATLAS.allocate(2, 2, { filter: 'nearest' }),
+            WHITE = ATLAS.allocate(1, 1, { filter: 'nearest' }),
+            WHITE_UV = Float32Array.from(WHITE.uvRect);
+        ATLAS.upload(
+            REGION,
+            {
+                width: 2,
+                height: 2,
+                data: new Uint8Array([255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255]),
+            },
+            { premultiplied: true },
+        );
+        ATLAS.upload(
+            WHITE,
+            { width: 1, height: 1, data: new Uint8Array([255, 255, 255, 255]) },
+            { premultiplied: true },
+        );
+        const MESHES = CTX.acquireMeshRenderer(),
+            PROGRAM = {
+                partCount: 1,
+                // One identity part, followed by six constant channel headers: x, y, rotation, sx, sy, alpha.
+                data: new Float32Array([
+                    0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0,
+                ]),
+                clips: { still: { supported: true, headerBase: 1, durationMs: 1000, loop: 'repeat' } },
+            },
+            SOURCE = MESHES.createPoseSource(PROGRAM),
+            INSTANCE = MESHES.createPoseInstance(SOURCE),
+            POSE = MESHES.preparePose(INSTANCE, {
+                clipName: 'still',
+                elapsedMs: 37.25,
+                basePoses: [{ x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, opacity: 1 }],
+                visible: [true],
+                morph: [0, 0],
+            }),
+            UPLOAD = DEVICE.uploadVertices,
+            STRIDE = DEVICE.pipelines.get(CTX.vector.pipeline).stride,
+            GL = DEVICE.gl;
+        const FRAME = (context, clipped, mixed = false) => {
+            const VERTICES = [];
+            DEVICE.uploadVertices = function (buffer, data) {
+                if (buffer === context.vector.buffer) {
+                    VERTICES.push(...data);
+                }
+                return UPLOAD.call(this, buffer, data);
+            };
+            try {
+                context.beginFrame({ clearColor: [0, 0, 0, 1] });
+                if (mixed) {
+                    context.save();
+                    context.clipRect(0, 0, 16, 64);
+                    context.drawQuads({
+                        layer: WHITE.layer,
+                        filter: 'nearest',
+                        uvRects: WHITE_UV,
+                        localRects: Float32Array.of(0, 0, 32, 32),
+                        pose: POSE,
+                        parts: [0],
+                        color: [1, 0, 0, 1],
+                    });
+                    context.restore();
+                    if (clipped) {
+                        context.clipRect(-1000, -1000, 2000, 2000);
+                    }
+                    context.drawQuads({
+                        layer: WHITE.layer,
+                        filter: 'nearest',
+                        uvRects: WHITE_UV,
+                        localRects: Float32Array.of(32, 0, 32, 32),
+                        color: [0, 1, 0, 1],
+                    });
+                } else {
+                    context.setTransform(1, 0.12, -0.18, 0.9, 8, 3);
+                    if (clipped) {
+                        context.clipRect(-1000, -1000, 2000, 2000);
+                    }
+                    context.depth = 0.25;
+                    const [U, V, UW, VH] = REGION.uvRect;
+                    context.drawQuads({
+                        layer: REGION.layer,
+                        filter: 'nearest',
+                        matrix: [0.9, 0.1, 0.12, 1, 1, 1],
+                        color: [0.8, 0.7, 0.6, 1],
+                        alpha: 0.75,
+                        uvRects: Float32Array.of(U, V, UW, VH, U, V, UW, VH, U + UW, V, -UW, VH, U, V + VH, UW, -VH),
+                        localRects: Float32Array.of(4, 4, 14, 14, 36, 4, -14, 14, 4, 36, 14, -14, 36, 36, -14, -14),
+                    });
+                }
+                const STATS = context.endFrame(),
+                    PIXELS = new Uint8Array(64 * 64 * 4);
+                GL.readPixels(0, 0, 64, 64, GL.RGBA, GL.UNSIGNED_BYTE, PIXELS);
+                return {
+                    pixels: Array.from(PIXELS),
+                    vertices: VERTICES,
+                    draws: STATS.drawCalls,
+                    submittedVertices: STATS.vertices,
+                };
+            } finally {
+                DEVICE.uploadVertices = UPLOAD;
+            }
+        };
+        const FAST = FRAME(CTX, false),
+            CLIPPED = FRAME(CTX, true),
+            SMALL = FRAME(TINY, false),
+            MIXED = FRAME(CTX, false, true),
+            MIXED_CLIPPED = FRAME(CTX, true, true),
+            SAME = (a, b) => a.length === b.length && a.every((value, index) => value === b[index]),
+            PIXEL = (frame, x, y) => frame.pixels.slice(((63 - y) * 64 + x) * 4, ((63 - y) * 64 + x) * 4 + 4),
+            REPORT = {
+                fastMatchesClipPixels: SAME(FAST.pixels, CLIPPED.pixels),
+                fastMatchesClipVertices: SAME(FAST.vertices, CLIPPED.vertices),
+                tinyMatchesPixels: SAME(FAST.pixels, SMALL.pixels),
+                tinyMatchesVertices: SAME(FAST.vertices, SMALL.vertices),
+                tinyDraws: SMALL.draws,
+                tinySubmittedVertices: SMALL.submittedVertices,
+                fastDraws: FAST.draws,
+                vertexStride: STRIDE,
+                mixedMatchesClipPixels: SAME(MIXED.pixels, MIXED_CLIPPED.pixels),
+                mixedMatchesClipVertices: SAME(MIXED.vertices, MIXED_CLIPPED.vertices),
+                posedInside: PIXEL(MIXED, 8, 8),
+                posedOutside: PIXEL(MIXED, 24, 8),
+                unposedOutsideOldClip: PIXEL(MIXED, 40, 8),
+                mixedDraws: MIXED.draws,
+                gpuPoseDrawInstances: MESHES.poseStats().gpuDrawInstances,
+                error: GL.getError(),
+            };
+        MESHES.deletePoseInstance(INSTANCE);
+        MESHES.deletePoseSource(SOURCE);
+        CTX.dispose();
+        TINY.dispose();
+        DEVICE.dispose();
+        CANVAS.remove();
+        return REPORT;
+    });
+    assert.equal(RESULT.fastMatchesClipPixels, true, 'Transformed negative local/UV extents keep original pixels');
+    assert.equal(RESULT.fastMatchesClipVertices, true, 'Unclipped fast path emits the same original vertex data');
+    assert.equal(RESULT.tinyMatchesPixels, true, 'A three-vertex capacity preserves the complete quad');
+    assert.equal(RESULT.tinyMatchesVertices, true, 'Triangle capacity boundaries never reorder quad vertices');
+    assert.equal(RESULT.tinyDraws, 8);
+    assert.equal(RESULT.tinySubmittedVertices, 24);
+    assert.equal(RESULT.fastDraws, 1);
+    assert.equal(RESULT.vertexStride, 84);
+    assert.equal(RESULT.mixedMatchesClipPixels, true, 'A following unclipped quad leaves the earlier pose clip');
+    assert.equal(RESULT.mixedMatchesClipVertices, true);
+    assert.deepEqual(RESULT.posedInside, [255, 0, 0, 255]);
+    assert.deepEqual(RESULT.posedOutside, [0, 0, 0, 255]);
+    assert.deepEqual(RESULT.unposedOutsideOldClip, [0, 255, 0, 255]);
+    assert.equal(RESULT.mixedDraws, 2);
+    assert.equal(RESULT.gpuPoseDrawInstances, 1);
     assert.equal(RESULT.error, 0);
     return RESULT;
 }

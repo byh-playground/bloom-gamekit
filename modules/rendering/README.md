@@ -357,6 +357,8 @@ The browser's network cache is origin/top-site partitioned and browser-managed. 
 
 `MeshBuilder.combine()` remaps and preserves semantic `expressionIndices`, contributing each source's base triangles when that source has no matching expression key. It rejects non-empty `indexVariants`: flattening painter-order ranges from multiple assets would require their host-level paint schedules and could reorder interleaved draws. Submit those assets as separate ordered draws instead of silently dropping or regrouping their ranges.
 
+Clip 없는 일반 `drawQuads`는 변환된 corner와 UV를 임시 point/배열 없이 정점 버퍼에 바로 기록합니다. clip이 있으면 원래의 삼각형 clip을 적용하고, posed sprite는 GPU pose를 사용합니다. 세 경로의 색·UV·깊이·삼각형 순서는 같으며, 작은 batch capacity에서도 삼각형 경계를 유지합니다.
+
 ## Opaque-composite coverage proof
 
 `hasOpaqueCoverage(geometry,{indexVariant = null})` accepts the authored 11-float `Float32Array` mesh geometry before GPU upload. It proves that every nonzero-alpha triangle is covered by alpha-1 triangles of **the same part**. Different parts may move or disappear independently. Pass the actual named expression/index variant; omitted selects the base indices. Zero-alpha and degenerate triangles do not occlude.
