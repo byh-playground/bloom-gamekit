@@ -1379,12 +1379,9 @@ var WebGLDevice = class {
     }
     const GL = this.gl;
     this._bindTexture(0, R);
-    GL.bindBuffer(GL.PIXEL_UNPACK_BUFFER, null);
     this.boundTextureCount = Math.max(1, this.boundTextureCount);
-    GL.pixelStorei(GL.UNPACK_ALIGNMENT, 1);
-    GL.pixelStorei(GL.UNPACK_ROW_LENGTH, 0);
-    GL.pixelStorei(GL.UNPACK_SKIP_PIXELS, 0);
-    GL.pixelStorei(GL.UNPACK_SKIP_ROWS, 0);
+    this._resetUnpackState();
+    GL.pixelStorei(GL.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
     GL.texSubImage2D(GL.TEXTURE_2D, 0, x, y, width, height, GL.RGBA, GL.FLOAT, data);
     if (this.checkGLErrors) {
       const ERROR = GL.getError();
