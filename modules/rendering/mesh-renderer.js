@@ -1,3 +1,4 @@
+import { VECTOR_VERTEX_FLOATS } from './vector-shader.js';
 import { OrderedTriangleBatch } from './ordered-triangles.js';
 import { clipPlanes } from './clip-planes.js';
 import { PoseRenderer } from './pose-renderer.js';
@@ -2073,6 +2074,33 @@ export class MeshRenderer {
             }
         }
         this.metrics.instances++;
+    }
+    /** Paint state is stored by value; only the separate native mesh pipeline must submit before it. */
+    paintBoundary(reason) {
+        if (this.ordered) {
+            this._flushNative(reason);
+        } else {
+            this.flush(reason);
+        }
+    }
+    drawOrderedTriangles(vertices, count, state) {
+        if (!this.ordered?.indexCount || this.device.maxTextures < 7) {
+            return false;
+        }
+        // Public vector paint has one style per triangle. Future per-vertex styles keep their native interpolation.
+        for (let at = 0; at < count * VECTOR_VERTEX_FLOATS; at += VECTOR_VERTEX_FLOATS * 3) {
+            for (let field = 4; field < VECTOR_VERTEX_FLOATS; field++) {
+                if (
+                    vertices[at + field] !== vertices[at + VECTOR_VERTEX_FLOATS + field] ||
+                    vertices[at + field] !== vertices[at + VECTOR_VERTEX_FLOATS * 2 + field]
+                ) {
+                    return false;
+                }
+            }
+        }
+        this._flushNative('vectorBoundary');
+        this.ordered.drawVectorTriangles(vertices, count, state);
+        return true;
     }
     /** Appends validated, unclipped ordinary atlas quads after earlier native meshes. */
     drawOrderedQuads(options, state, matrix) {

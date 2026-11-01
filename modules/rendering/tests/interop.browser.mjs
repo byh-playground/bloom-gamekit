@@ -218,12 +218,54 @@ async function exerciseOrderedMeshQuads(page, moduleURL) {
                 const GRADIENT = CTX.createLinearGradient(0, 0, 64, 64);
                 GRADIENT.addColorStop(0, '#204080');
                 GRADIENT.addColorStop(1, '#602040');
+                const RADIAL = CTX.createRadialGradient(40, 24, 2, 40, 24, 20);
+                RADIAL.addColorStop(0, '#80c060');
+                RADIAL.addColorStop(1, 'rgba(64, 32, 96, 0.5)');
+                // Prepare both ramps before a body is pending; their initial uploads are real resource boundaries.
                 CTX.fillStyle = GRADIENT;
                 CTX.fillRect(0, 0, 64, 64);
+                CTX.fillStyle = RADIAL;
+                CTX.fillRect(-32, -32, 8, 8);
                 const COLORS = { body: [0.125, 0.75, 0.25] };
                 DRAW(PALETTE, 2, 2, { paintRegions: COLORS, alpha: 0.5 });
+                CTX.fillTriangleFan(
+                    [
+                        [4, 34],
+                        [18, 42],
+                        [26, 32],
+                    ],
+                    '#e06060',
+                );
+                CTX.drawRegion(REGION, 4, 4, 16, 16);
+                CTX.fillStyle = 'rgba(250, 210, 80, 0.5)';
+                CTX.beginPath();
+                CTX.ellipse(16, 18, 10, 6);
+                CTX.fill();
+                CTX.strokeStyle = '#50d0f0';
+                CTX.lineWidth = 3;
+                CTX.lineCap = 'round';
+                CTX.beginPath();
+                CTX.moveTo(4, 30);
+                CTX.lineTo(28, 10);
+                CTX.stroke();
+                CTX.fillTriangleFan(
+                    [
+                        [4, 34],
+                        [18, 42],
+                        [26, 32],
+                    ],
+                    '#e06060',
+                );
+                CTX.drawRegion(REGION, 4, 4, 16, 16);
                 COLORS.body = [0.75, 0.125, 0.5];
                 DRAW(PALETTE, 8, 8, { paintRegions: COLORS, alpha: 0.75 });
+                CTX.fillStyle = GRADIENT;
+                CTX.fillRect(18, 2, 24, 16);
+                CTX.fillStyle = RADIAL;
+                CTX.beginPath();
+                CTX.ellipse(40, 24, 14, 10);
+                CTX.fill();
+                CTX.drawRegion(REGION, 40, 2, 16, 16);
                 DRAW(PALETTE, 16, 16, { whiteFlash: true, alpha: 0.5 });
                 DRAW(PALETTE, 24, 24, { color: [0.25, 0.5, 0.75, 0.5], forceColor: true });
                 CTX.drawQuads({
@@ -379,6 +421,10 @@ async function exerciseOrderedMeshQuads(page, moduleURL) {
                     RESULT.name + ': ' + NAME + ' must equal the existing renderer pixel for pixel',
                 );
             }
+            CHECK(
+                RESULT.frames.paint.ordered.vectorTriangles > 0,
+                RESULT.name + ': body/shape/image interleaving uses the ordered vector-triangle path',
+            );
             CHECK(
                 RESULT.frames.batch.draws < REFERENCE.frames.batch.draws,
                 RESULT.name + ': ordered mesh/quads reduce actual draw calls',

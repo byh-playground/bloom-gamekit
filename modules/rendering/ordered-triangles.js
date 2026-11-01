@@ -1,3 +1,4 @@
+import { VECTOR_FRAGMENT_VARYINGS, VECTOR_VERTEX_FLOATS, vectorFragmentShader } from './vector-shader.js';
 import { POSE_PROGRAM_FUNCTIONS } from './pose-shader.js';
 import { clipPlanes } from './clip-planes.js';
 import { packPaintRegions } from './paint-regions.js';
@@ -10,14 +11,18 @@ const COMMAND_WIDTH = 32;
 const COMMAND_FLOATS = COMMAND_WIDTH * 4;
 const GEOMETRY_WIDTH = 256;
 const VERTEX = `attribute vec2 a_reference;
-uniform sampler2D u_geometry;uniform sampler2D u_commands;uniform int u_geometryWidth;
+uniform sampler2D u_geometry;uniform sampler2D u_commands;uniform sampler2D u_vectors;uniform int u_geometryWidth;uniform int u_vectorWidth;
 uniform mat3 u_projection;
-varying vec4 v_color;varying highp vec2 v_position;varying highp vec3 v_uv;varying highp vec2 v_paint;
+${VECTOR_FRAGMENT_VARYINGS}varying highp vec2 v_position;
 ${POSE_PROGRAM_FUNCTIONS}
 vec4 geometry(int at){return texelFetch(u_geometry,ivec2(at%u_geometryWidth,at/u_geometryWidth),0);}
+vec4 vectorData(int at){return texelFetch(u_vectors,ivec2(at%u_vectorWidth,at/u_vectorWidth),0);}
 vec4 command(int at){int i=int(a_reference.y)+at;return texelFetch(u_commands,ivec2(i%${COMMAND_WIDTH},i/${COMMAND_WIDTH}),0);}
 void main(){vec4 m0=command(0);vec4 m1=command(1);vec4 tint=command(2);vec4 params=command(3);vec4 meta=command(4);
-vec2 p;vec4 color;float partDepth=0.0;v_uv=vec3(0.0);v_paint=vec2(0.0);
+vec2 p;vec4 color;float partDepth=0.0;v_uv=vec2(0.0);v_paint=vec4(0.0,0.0,-1.0,0.0);v_radial=vec4(0.0);v_rect=vec4(0.0);
+if(meta.x>1.5){int index=int(a_reference.x);vec4 g0=vectorData(index);
+v_radial=command(6);v_rect=command(7);v_paint=command(5);v_color=tint;
+v_uv=g0.zw;v_position=g0.xy;vec3 projected=u_projection*vec3(g0.xy,1.0);gl_Position=vec4(projected.xy,params.w,1.0);return;}
 if(meta.x<0.5){
  int index=int(a_reference.x);
  vec4 g0=geometry(index);vec4 g1=geometry(index+1);vec4 g2=geometry(index+2);
@@ -36,29 +41,14 @@ if(meta.x<0.5){
  float corner=-a_reference.x-1.0;
  vec2 c=corner<0.5?vec2(0.0):corner<1.5?vec2(1.0,0.0):corner<2.5?vec2(1.0):vec2(0.0,1.0);
  vec4 rect=command(5);vec4 uv=command(6);vec4 paint=command(7);p=rect.xy+c*rect.zw;
- v_uv=vec3(uv.xy+c*uv.zw,paint.x);v_paint=vec2(params.z>0.5?1.0:m1.w>0.5?2.0:0.0,paint.y);
+ v_uv=uv.xy+c*uv.zw;v_paint=vec4(paint.x,params.z>0.5?1.0:m1.w>0.5?2.0:0.0,0.0,paint.y);
  color=tint;color.a*=m0.w;
 }
 vec2 world=vec2(dot(m0.xyz,vec3(p,1.0)),dot(m1.xyz,vec3(p,1.0)));vec3 projected=u_projection*vec3(world,1.0);
 v_position=world;v_color=color;
 // Ordinary atlas quads use the vector stream's affine projection contract; meshes retain homogeneous w.
 float w=meta.x<0.5?projected.z:1.0;gl_Position=vec4(projected.xy,(params.w+partDepth)*w,w);
-v_paint.x+=meta.x<0.5?4.0:0.0;
 }`;
-function fragment(maxPlanes) {
-    return `precision mediump float;precision mediump sampler2DArray;
-uniform sampler2DArray u_texture;uniform float u_depthWrite;
-uniform vec3 u_planes[${maxPlanes}];uniform int u_planeCount;
-varying vec4 v_color;varying highp vec2 v_position;varying highp vec3 v_uv;varying highp vec2 v_paint;
-void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_planes[i],vec3(v_position,1.0))<0.0)discard;}
-if(v_paint.x>3.5){if(u_depthWrite>0.5&&v_color.a<=0.0)discard;gl_FragColor=v_color;return;}
-vec2 uv=v_uv.xy;if(v_paint.y>0.5){vec2 size=vec2(textureSize(u_texture,0).xy);uv=(floor(uv*size)+0.5)/size;}
-vec4 texel=texture2D(u_texture,vec3(uv,floor(v_uv.z+0.5)));float a=texel.a*v_color.a;
-if(u_depthWrite>0.5&&a<=0.0)discard;
-vec3 rgb=v_paint.x>1.5?v_color.rgb*a:mix(texel.rgb*v_color.rgb*v_color.a,vec3(a),v_paint.x);
-gl_FragColor=vec4(rgb,a);}`;
-}
-
 /** Internal ordered native-mesh/atlas-quad batch owned by one MeshRenderer. */
 export class OrderedTriangleBatch {
     constructor(device, { maxInstances, maxMeshBytes, maxPlanes }) {
@@ -76,6 +66,13 @@ export class OrderedTriangleBatch {
         if (this.vertexCapacity < 4 || this.triangleCapacity < 2) {
             throw new RangeError('Ordered mesh/quads require room for four references and two triangles');
         }
+        this.vectorTexels = 1;
+        this.vectorWidth = Math.min(GEOMETRY_WIDTH, device.maxTextureSize);
+        this.vectorCapacity = Math.min(
+            this.vertexCapacity,
+            Math.floor((this.vectorWidth * device.maxTextureSize) / this.vectorTexels),
+        );
+        this.vectorVertices = null;
         this.references = new Float32Array(this.vertexCapacity * 2);
         this.indices = new Uint16Array(this.triangleCapacity * 3);
         this.dummyTexture = device.createDataTexture(1, 1);
@@ -84,13 +81,15 @@ export class OrderedTriangleBatch {
         this.maxSlotBytes = maxMeshBytes * 2;
         this.pipeline = device.createPipeline({
             vertex: VERTEX,
-            fragment: fragment(maxPlanes),
+            fragment: vectorFragmentShader(maxPlanes, true),
             stride: 8,
             attributes: [{ name: 'a_reference', size: 2, offset: 0 }],
             uniforms: {
                 u_projection: 'matrix3fv',
                 u_geometry: '1i',
                 u_commands: '1i',
+                u_vectors: '1i',
+                u_vectorWidth: '1i',
                 u_geometryWidth: '1i',
                 u_program: '1i',
                 u_state: '1i',
@@ -124,6 +123,8 @@ export class OrderedTriangleBatch {
             draws: 0,
             commands: 0,
             triangles: 0,
+            vectorBytes: 0,
+            vectorTriangles: 0,
             referenceBytes: 0,
             indexBytes: 0,
             reusedTopologies: 0,
@@ -432,6 +433,69 @@ export class OrderedTriangleBatch {
         }
         this.device.stats.spriteRuns += COUNT;
     }
+    /** Flat per-triangle paint is captured once per run; vertices stream only position and UV. */
+    drawVectorTriangles(vertices, count, state) {
+        this.vectorVertices ??= new Float32Array(
+            this.vectorWidth * Math.ceil(this.vectorCapacity / this.vectorWidth) * 4,
+        );
+        let offset = 0;
+        while (offset < count) {
+            const SOURCE = offset * VECTOR_VERTEX_FLOATS;
+            let end = offset + 3;
+            while (end < count) {
+                let same = true;
+                for (let field = 4; same && field < VECTOR_VERTEX_FLOATS; field++) {
+                    same = vertices[SOURCE + field] === vertices[end * VECTOR_VERTEX_FLOATS + field];
+                }
+                if (!same) {
+                    break;
+                }
+                end += 3;
+            }
+            while (offset < end) {
+                const TAKE =
+                    Math.floor(
+                        Math.min(
+                            end - offset,
+                            this.vertexCapacity - this.vertexCount,
+                            this.indices.length - this.indexCount,
+                            this.vectorCapacity - this.vectorCount,
+                        ) / 3,
+                    ) * 3;
+                if (!TAKE) {
+                    this.flush('capacity');
+                    continue;
+                }
+                this._reserve(TAKE, TAKE, 32);
+                this._state(state);
+                const AT = this._command(
+                    { depth: vertices[SOURCE + 20] },
+                    [1, 0, 0, 1, 0, 0],
+                    vertices.subarray(SOURCE + 4, SOURCE + 8),
+                    [0, 0],
+                    1,
+                    null,
+                    32,
+                );
+                this.commands[AT + 16] = 2;
+                this.commands.set(vertices.subarray(SOURCE + 8, SOURCE + 20), AT + 20);
+                for (let i = 0; i < TAKE; i++) {
+                    const REF = this.vertexCount++;
+                    const TEXEL = this.vectorCount++;
+                    this.references[REF * 2] = TEXEL;
+                    this.references[REF * 2 + 1] = AT / 4;
+                    this.indices[this.indexCount++] = REF;
+                    const FROM = (offset + i) * VECTOR_VERTEX_FLOATS;
+                    this.vectorVertices[TEXEL * 4] = vertices[FROM];
+                    this.vectorVertices[TEXEL * 4 + 1] = vertices[FROM + 1];
+                    this.vectorVertices[TEXEL * 4 + 2] = vertices[FROM + 2];
+                    this.vectorVertices[TEXEL * 4 + 3] = vertices[FROM + 3];
+                }
+                offset += TAKE;
+                this.metrics.vectorTriangles += TAKE / 3;
+            }
+        }
+    }
     _deleteSlot(key) {
         const SLOT = this.slots.get(key);
         if (!SLOT) {
@@ -440,17 +504,21 @@ export class OrderedTriangleBatch {
         this.device.deleteVertexBuffer(SLOT.referenceBuffer);
         this.device.deleteIndexBuffer(SLOT.indexBuffer);
         this.device.deleteTexture(SLOT.commandTexture);
+        if (SLOT.vectorTexture) {
+            this.device.deleteTexture(SLOT.vectorTexture);
+        }
         this.slotBytes -= SLOT.bytes;
         this.slots.delete(key);
     }
-    _slot(references, indices, rows) {
+    _slot(references, indices, rows, vectorRows) {
         const KEY = this.slotIndex++,
             PREVIOUS = this.slots.get(KEY);
         if (
             PREVIOUS &&
-            (PREVIOUS.references.length !== references.length ||
-                PREVIOUS.indices.length !== indices.length ||
-                PREVIOUS.commandTexture.height < rows)
+            (PREVIOUS.references.length < references.length ||
+                PREVIOUS.indices.length < indices.length ||
+                PREVIOUS.commandTexture.height < rows ||
+                (vectorRows && (!PREVIOUS.vectorTexture || PREVIOUS.vectorTexture.height < vectorRows)))
         ) {
             this._deleteSlot(KEY);
         }
@@ -460,7 +528,21 @@ export class OrderedTriangleBatch {
             this.slots.set(KEY, slot);
             return slot;
         }
-        const BYTES = (references.byteLength + indices.byteLength + COMMAND_WIDTH * rows * 16) * 2;
+        const REFERENCE_BYTES = Math.min(
+            this.device.maxBufferBytes - (this.device.maxBufferBytes % 4),
+            2 ** Math.ceil(Math.log2(references.byteLength)),
+        );
+        const INDEX_BYTES = Math.min(
+            this.device.maxBufferBytes - (this.device.maxBufferBytes % 2),
+            2 ** Math.ceil(Math.log2(indices.byteLength)),
+        );
+        const COMMAND_ROWS = Math.min(this.device.maxTextureSize, 2 ** Math.ceil(Math.log2(rows)));
+        const VECTOR_ROWS = vectorRows
+            ? Math.min(this.device.maxTextureSize, 2 ** Math.ceil(Math.log2(vectorRows)))
+            : 0;
+        const BYTES =
+            (REFERENCE_BYTES + INDEX_BYTES + COMMAND_WIDTH * COMMAND_ROWS * 16 + this.vectorWidth * VECTOR_ROWS * 16) *
+            2;
         if (BYTES > this.maxSlotBytes) {
             throw new RangeError('Ordered batch topology exceeds its retained byte budget');
         }
@@ -469,18 +551,25 @@ export class OrderedTriangleBatch {
         }
         const ALLOCATED = [];
         try {
-            const REFERENCE_BUFFER = this.device.createVertexBuffer({ capacityBytes: references.byteLength });
+            const REFERENCE_BUFFER = this.device.createVertexBuffer({ capacityBytes: REFERENCE_BYTES });
             ALLOCATED.push(() => this.device.deleteVertexBuffer(REFERENCE_BUFFER));
-            const INDEX_BUFFER = this.device.createIndexBuffer({ capacityBytes: indices.byteLength });
+            const INDEX_BUFFER = this.device.createIndexBuffer({ capacityBytes: INDEX_BYTES });
             ALLOCATED.push(() => this.device.deleteIndexBuffer(INDEX_BUFFER));
-            const COMMAND_TEXTURE = this.device.createDataTexture(COMMAND_WIDTH, rows);
+            const COMMAND_TEXTURE = this.device.createDataTexture(COMMAND_WIDTH, COMMAND_ROWS);
             ALLOCATED.push(() => this.device.deleteTexture(COMMAND_TEXTURE));
+            const VECTOR_TEXTURE = VECTOR_ROWS ? this.device.createDataTexture(this.vectorWidth, VECTOR_ROWS) : null;
+            if (VECTOR_TEXTURE) {
+                ALLOCATED.push(() => this.device.deleteTexture(VECTOR_TEXTURE));
+            }
             slot = {
+                vectorTexture: VECTOR_TEXTURE,
                 referenceBuffer: REFERENCE_BUFFER,
                 indexBuffer: INDEX_BUFFER,
                 commandTexture: COMMAND_TEXTURE,
-                references: new Float32Array(references.length),
-                indices: new Uint16Array(indices.length),
+                references: new Float32Array(REFERENCE_BYTES / 4),
+                referenceCount: 0,
+                indices: new Uint16Array(INDEX_BYTES / 2),
+                indexCount: 0,
                 bytes: BYTES,
                 valid: false,
             };
@@ -509,10 +598,16 @@ export class OrderedTriangleBatch {
         const COMMANDS = this.commands.subarray(0, ROWS * COMMAND_FLOATS),
             REFERENCES = this.references.subarray(0, this.vertexCount * 2),
             INDICES = this.indices.subarray(0, this.indexCount);
-        const SLOT = this._slot(REFERENCES, INDICES, ROWS);
+        const VECTOR_ROWS = Math.ceil((this.vectorCount * this.vectorTexels) / this.vectorWidth);
+        const SLOT = this._slot(REFERENCES, INDICES, ROWS, VECTOR_ROWS);
+        if (VECTOR_ROWS) {
+            const DATA = this.vectorVertices.subarray(0, VECTOR_ROWS * this.vectorWidth * 4);
+            DEVICE.updateDataTexture(SLOT.vectorTexture, DATA, { width: this.vectorWidth, height: VECTOR_ROWS });
+            this.metrics.vectorBytes += DATA.byteLength;
+        }
         // A frame keeps each ordered chunk's own resources: later chunks never overwrite data still in use.
         DEVICE.updateDataTexture(SLOT.commandTexture, COMMANDS, { width: COMMAND_WIDTH, height: ROWS });
-        let same = SLOT.valid;
+        let same = SLOT.valid && SLOT.referenceCount === REFERENCES.length && SLOT.indexCount === INDICES.length;
         for (let i = 0; same && i < REFERENCES.length; i++) {
             same = REFERENCES[i] === SLOT.references[i];
         }
@@ -525,12 +620,15 @@ export class OrderedTriangleBatch {
             SLOT.references.set(REFERENCES);
             SLOT.indices.set(INDICES);
             SLOT.valid = true;
+            SLOT.referenceCount = REFERENCES.length;
+            SLOT.indexCount = INDICES.length;
             this.metrics.referenceBytes += REFERENCES.byteLength;
             this.metrics.indexBytes += INDICES.byteLength;
         } else {
             this.metrics.reusedTopologies++;
         }
         const POSE = PENDING.pose;
+        const VECTOR_TEXTURE = VECTOR_ROWS ? SLOT.vectorTexture : null;
         DEVICE.draw({
             pipeline: this.pipeline,
             buffer: SLOT.referenceBuffer,
@@ -540,6 +638,8 @@ export class OrderedTriangleBatch {
                 u_projection: PENDING.projection,
                 u_geometry: 0,
                 u_commands: 1,
+                u_vectors: VECTOR_TEXTURE ? 6 : 0,
+                u_vectorWidth: this.vectorWidth,
                 u_geometryWidth: this.geometryWidth,
                 u_program: 2,
                 u_state: 3,
@@ -555,6 +655,7 @@ export class OrderedTriangleBatch {
                 SLOT.commandTexture,
                 ...[0, 1, 2].map((index) => POSE?.textures[index] ?? this.dummyTexture),
                 DEVICE.textureAtlas.texture,
+                ...(VECTOR_TEXTURE ? [VECTOR_TEXTURE] : []),
             ],
             depth: PENDING.depth,
             blend: PENDING.blend,
@@ -575,6 +676,7 @@ export class OrderedTriangleBatch {
         this.commandFloats = 0;
         this.vertexCount = 0;
         this.indexCount = 0;
+        this.vectorCount = 0;
         this.pending = null;
     }
     stats() {
