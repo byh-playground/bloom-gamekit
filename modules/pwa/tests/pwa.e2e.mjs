@@ -40,9 +40,13 @@ const { PROBE } = await import(${JSON.stringify(GAMEKIT)});
 window.__events = [];
 window.__pwa = registerPwa({
     serviceWorker: './sw.js',
-    onUpdate: () => window.__events.push('update'),
+    onUpdate: () => {
+        window.__events.push('update');
+        if (window.__autoActivate) window.__pwa.update().catch(error => window.__events.push('activation-error:' + error.message));
+    },
     onError: (error) => window.__events.push('error:' + error.message),
 });
+window.__initialCheck = window.__pwa.checkForUpdate().then(() => 'requested', error => 'error:' + error.message);
 document.querySelector('#version').textContent = VERSION + ':' + PROBE;
 `;
 const OPTIONS = (check) => ({
@@ -85,8 +89,23 @@ const TYPES = {
     '.png': 'image/png',
     '.svg': 'image/svg+xml',
 };
+let workerRequests = 0,
+    failPrecachePath = '',
+    gatedPath = '',
+    responseGate = null,
+    releaseResponse = null;
 const SERVER = createServer(async (request, response) => {
     const PATH = decodeURIComponent(new URL(request.url, 'http://local').pathname);
+    if (PATH === '/sw.js') {
+        workerRequests++;
+    }
+    if (PATH === failPrecachePath) {
+        response.writeHead(503).end();
+        return;
+    }
+    if (PATH === gatedPath) {
+        await responseGate;
+    }
     try {
         const BYTES = await readFile(resolve(SITE, '.' + (PATH.endsWith('/') ? PATH + 'index.html' : PATH)));
         response.writeHead(200, { 'content-type': TYPES[extname(PATH)] ?? 'text/html', 'cache-control': 'no-cache' });
@@ -227,6 +246,30 @@ try {
     assert.equal(REPORT.installed.caches.length, 1);
     assert.match(REPORT.installed.caches[0], /^bloom-pwa:\/:[0-9a-f]{16}$/);
     assert.deepEqual(REPORT.installed.events, []);
+    assert.equal(await PAGE.evaluate(() => window.__initialCheck), 'requested', 'checking can await registration');
+    assert.equal(
+        await PAGE.evaluate(async () => (await navigator.serviceWorker.getRegistration()).updateViaCache),
+        'none',
+    );
+    const SAVE_TEXT = JSON.stringify({ schema: 2, revision: 7, rewards: [{ encounter: 40, placed: 3, queued: 21 }] });
+    await PAGE.evaluate(async (text) => {
+        localStorage.setItem('player-earned-rewards', text);
+        await new Promise((resolve, reject) => {
+            const OPEN = indexedDB.open('player-earned-rewards', 1);
+            OPEN.onupgradeneeded = () => OPEN.result.createObjectStore('ledger');
+            OPEN.onerror = () => reject(OPEN.error);
+            OPEN.onsuccess = () => {
+                const DB = OPEN.result,
+                    TRANSACTION = DB.transaction('ledger', 'readwrite');
+                TRANSACTION.objectStore('ledger').put(text, 'settled');
+                TRANSACTION.oncomplete = () => {
+                    DB.close();
+                    resolve();
+                };
+                TRANSACTION.onerror = () => reject(TRANSACTION.error);
+            };
+        });
+    }, SAVE_TEXT);
     const CACHED_URLS = await PAGE.evaluate(async (name) => {
         const STORE = await caches.open(name);
         return (await STORE.keys()).map((request) => request.url);
@@ -249,17 +292,68 @@ try {
         ),
     );
     assert.equal(REPORT.offlineRelay, 'failed');
+    REPORT.offlineCheck = await PAGE.evaluate(() =>
+        window.__pwa.checkForUpdate().then(
+            () => 'unexpected success',
+            (error) => error.message,
+        ),
+    );
+    assert.match(REPORT.offlineCheck, /offline/);
 
     // 5. 배포가 precache 파일 하나를 바꾸면 새 worker가 기다리고, onUpdate → update()가 새 버전으로 다시 읽는다.
-    await CONTEXT.setOffline(false);
-    await ROUTE_REMOTE();
     await writeFile(resolve(SITE, 'src/version.js'), "export const VERSION = 'two';\n");
     const SECOND = await BUILD_PWA(OPTIONS(false));
     assert.deepEqual(SECOND.changed, ['sw.js']);
-    await PAGE.reload();
+    gatedPath = '/src/version.js';
+    responseGate = new Promise((resolve) => {
+        releaseResponse = resolve;
+    });
+    await ROUTE_REMOTE();
+    await CONTEXT.setOffline(false);
+    await PAGE.evaluate(() => {
+        window.__checkFinished = false;
+        window.__heldCheck = window.__pwa.checkForUpdate().then(() => {
+            window.__checkFinished = true;
+        });
+    });
+    await PAGE.waitForFunction(
+        async () => (await navigator.serviceWorker.getRegistration()).installing?.state === 'installing',
+    );
+    assert.equal(
+        await PAGE.evaluate(() => window.__checkFinished),
+        false,
+        'startup check waits for the precache installer',
+    );
+    gatedPath = '';
+    releaseResponse();
     await PAGE.waitForFunction(() => window.__events?.includes('update'), null, { timeout: 15000 });
+    await PAGE.evaluate(() => window.__heldCheck);
+    REPORT.installationBarrier = await PAGE.evaluate(() => window.__checkFinished);
+    assert.equal(REPORT.installationBarrier, true);
     assert.equal(await PAGE.textContent('#version'), 'one:gamekit', 'waiting worker does not take over by itself');
-    await Promise.all([PAGE.waitForEvent('load'), PAGE.evaluate(() => window.__pwa.update())]);
+    REPORT.concurrentCheck = await PAGE.evaluate(async () => {
+        const FIRST_CHECK = window.__pwa.checkForUpdate(),
+            SECOND_CHECK = window.__pwa.checkForUpdate();
+        const REQUEST_ONLY = (await FIRST_CHECK) === undefined;
+        await SECOND_CHECK;
+        return {
+            shared: FIRST_CHECK === SECOND_CHECK,
+            requestOnly: REQUEST_ONLY,
+            updates: window.__events.filter((event) => event === 'update').length,
+        };
+    });
+    assert.deepEqual(REPORT.concurrentCheck, { shared: true, requestOnly: true, updates: 1 });
+    await PAGE.reload();
+    await PAGE.waitForFunction(() => window.__events?.includes('update'));
+    assert.equal(
+        await PAGE.textContent('#version'),
+        'one:gamekit',
+        'ordinary refresh still waits for explicit activation',
+    );
+    await Promise.all([
+        PAGE.waitForEvent('load'),
+        PAGE.evaluate(() => Promise.all([window.__pwa.update(), window.__pwa.update()])),
+    ]);
     await PAGE.waitForFunction(() => document.querySelector('#version').textContent === 'two:gamekit');
     REPORT.updated = await PAGE.evaluate(async () => ({ caches: await caches.keys(), events: [...window.__events] }));
     assert.equal(REPORT.updated.caches.length, 1);
@@ -268,6 +362,102 @@ try {
     await CONTEXT.setOffline(true);
     await PAGE.reload();
     await PAGE.waitForFunction(() => document.querySelector('#version').textContent === 'two:gamekit');
+    REPORT.storage = await PAGE.evaluate(async () => ({
+        local: localStorage.getItem('player-earned-rewards'),
+        indexed: await new Promise((resolve, reject) => {
+            const OPEN = indexedDB.open('player-earned-rewards', 1);
+            OPEN.onerror = () => reject(OPEN.error);
+            OPEN.onsuccess = () => {
+                const DB = OPEN.result,
+                    GET = DB.transaction('ledger').objectStore('ledger').get('settled');
+                GET.onsuccess = () => {
+                    DB.close();
+                    resolve(GET.result);
+                };
+                GET.onerror = () => reject(GET.error);
+            };
+        }),
+    }));
+    assert.deepEqual(REPORT.storage, { local: SAVE_TEXT, indexed: SAVE_TEXT });
+
+    // Reject a real precache installation failure and preserve the active game,
+    // then retry when the view returns.
+    await writeFile(resolve(SITE, 'src/version.js'), "export const VERSION = 'three';\n");
+    await BUILD_PWA(OPTIONS(false));
+    failPrecachePath = '/src/version.js';
+    await CONTEXT.setOffline(false);
+    REPORT.failedInstall = await PAGE.evaluate(() =>
+        window.__pwa.checkForUpdate().then(
+            () => 'unexpected success',
+            (error) => error.message,
+        ),
+    );
+    assert.match(REPORT.failedInstall, /failed to install/);
+    await PAGE.waitForFunction(() => window.__events.some((event) => event.includes('failed to install')));
+    assert.equal(await PAGE.textContent('#version'), 'two:gamekit');
+    assert.equal(await PAGE.evaluate(() => window.__events.includes('update')), false);
+    failPrecachePath = '';
+    // A consumer may explicitly activate immediately in onUpdate after its own
+    // save guard. The installed event must already expose a waiting worker.
+    await Promise.all([
+        PAGE.waitForEvent('load'),
+        PAGE.evaluate(() => {
+            window.__autoActivate = true;
+            document.dispatchEvent(new Event('visibilitychange'));
+        }),
+    ]);
+    await PAGE.waitForFunction(() => document.querySelector('#version').textContent === 'three:gamekit');
+    assert.equal(await PAGE.evaluate(() => localStorage.getItem('player-earned-rewards')), SAVE_TEXT);
+    await PAGE.evaluate(() => window.__pwa.checkForUpdate());
+    gatedPath = '/sw.js';
+    responseGate = new Promise((resolve) => {
+        releaseResponse = resolve;
+    });
+    const REQUESTS_BEFORE_CHECK = workerRequests;
+    await PAGE.evaluate(() => {
+        window.__disposedCheck = window.__pwa.checkForUpdate().then(
+            () => 'unexpected success',
+            (error) => error.message,
+        );
+    });
+    for (let attempt = 0; attempt < 100 && workerRequests === REQUESTS_BEFORE_CHECK; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(workerRequests, REQUESTS_BEFORE_CHECK + 1, 'native update request is pending before disposal');
+    const REQUESTS_BEFORE_DISPOSE = workerRequests;
+    REPORT.disposed = await PAGE.evaluate(async () => {
+        window.__pwa.dispose();
+        const ERRORS = await Promise.all(
+            ['checkForUpdate', 'update', 'install'].map((method) =>
+                window.__pwa[method]().then(
+                    () => 'unexpected success',
+                    (error) => error.message,
+                ),
+            ),
+        );
+        const EVENTS_BEFORE = [...window.__events];
+        window.dispatchEvent(new Event('online'));
+        document.dispatchEvent(new Event('visibilitychange'));
+        return {
+            errors: ERRORS,
+            pending: await window.__disposedCheck,
+            before: EVENTS_BEFORE,
+            after: [...window.__events],
+            registered: !!(await navigator.serviceWorker.getRegistration()),
+        };
+    });
+    gatedPath = '';
+    releaseResponse();
+    await PAGE.waitForTimeout(100);
+    assert.equal(workerRequests, REQUESTS_BEFORE_DISPOSE, 'disposed events make no browser update request');
+    assert.deepEqual(REPORT.disposed.errors, ['PWA is disposed', 'PWA is disposed', 'PWA is disposed']);
+    assert.equal(
+        REPORT.disposed.pending,
+        'PWA is disposed',
+        'disposal rejects a pending network check before its response',
+    );
+    assert.deepEqual(REPORT.disposed.after, REPORT.disposed.before);
+    assert.equal(REPORT.disposed.registered, true);
     REPORT.remoteRequests = remoteRequests;
     await CONTEXT.close();
 
@@ -288,9 +478,17 @@ try {
     REPORT.blocked = await BLOCKED_PAGE.evaluate(() => [...window.__events]);
     assert.deepEqual(REPORT.blocked, ['error:service worker registration was blocked by the browser']);
     assert.deepEqual(PAGE_ERRORS, []);
+    REPORT.blockedCheck = await BLOCKED_PAGE.evaluate(() =>
+        window.__pwa.checkForUpdate().then(
+            () => 'unexpected success',
+            (error) => error.message,
+        ),
+    );
+    assert.equal(REPORT.blockedCheck, 'service worker registration was blocked by the browser');
     await BLOCKED.close();
     console.log(JSON.stringify({ status: 'PASS', scenario: 'pwa', ...REPORT }));
 } finally {
+    releaseResponse?.();
     await browser?.close();
     SERVER.close();
     process.chdir(ROOT);
