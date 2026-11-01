@@ -1,3 +1,5 @@
+import { PoseMatrixCache } from './pose-matrix-cache.js';
+
 const MAX_PARTS = 16;
 const POSE_WIDTH = MAX_PARTS * 3;
 const OVERRIDE_WIDTH = MAX_PARTS * 2;
@@ -9,12 +11,16 @@ export function poseRendererOf(handle) {
 }
 /** Numeric animation data and stable player rows. Visible draws keep caller order. */
 export class PoseRenderer {
-    constructor(device, { backend = 'auto', onBoundary = () => {} } = {}) {
+    constructor(device, { backend = 'auto', onBoundary = () => {}, cacheMatrices = false } = {}) {
         if (!['auto', 'cpu', 'uniform'].includes(backend)) {
             throw new TypeError('poseBackend must be auto, cpu or uniform');
         }
+        if (typeof cacheMatrices !== 'boolean') {
+            throw new TypeError('cacheMatrices must be a boolean');
+        }
         this.device = device;
         this.backend = backend;
+        this.matrixCache = cacheMatrices ? new PoseMatrixCache(device, POSE_WIDTH) : null;
         this.onBoundary = onBoundary;
         this.sources = new Map();
         this.instances = new Map();
@@ -30,7 +36,7 @@ export class PoseRenderer {
         this.frameMetrics = {};
         this.pendingUpdates = false;
         this.disposed = false;
-        // Keyframes are evaluated inside the mesh vertex shader, so no float render target is required.
+        // The default evaluates keyframes per vertex; the optional GPU cache needs a supported float target.
         this.gpuUnavailableReason = backend !== 'auto' ? 'cpuRequested' : null;
         this.onRestored = () => {
             for (const RECORD of this.instances.values()) {
@@ -48,6 +54,7 @@ export class PoseRenderer {
         }
     }
     beginFrame() {
+        this.matrixCache?.beginFrame();
         this.frameMetrics = {
             gpuDrawInstances: 0,
             cpuDrawInstances: 0,
@@ -158,6 +165,7 @@ export class PoseRenderer {
         return true;
     }
     _releaseAtlas() {
+        this.matrixCache?.clear();
         for (const KEY of ['stateTexture', 'overrideTexture', 'cpuTexture']) {
             if (this[KEY]) {
                 this.device.deleteTexture(this[KEY]);
@@ -244,6 +252,7 @@ export class PoseRenderer {
         }
         this._boundary();
         this.instances.delete(handle);
+        this.matrixCache?.forget(RECORD.row);
         for (const SET of Object.values(this.dirty)) {
             SET.delete(RECORD);
         }
@@ -330,6 +339,9 @@ export class PoseRenderer {
             this.dirty.override.add(RECORD);
         }
         this.pendingUpdates ||= STATE_CHANGED || BASE_CHANGED;
+        if (RECORD.mode !== 'gpu') {
+            this.matrixCache?.markDirty(RECORD.row, SOURCE.program.partCount);
+        }
         RECORD.mode = 'gpu';
         RECORD.reason = null;
         return handle;
@@ -365,13 +377,17 @@ export class PoseRenderer {
                 OFFSET + i * 12,
             );
         }
+        this.matrixCache?.forget(RECORD.row);
         RECORD.mode = 'cpu';
         RECORD.reason = reason;
         this.dirty.cpu.add(RECORD);
         this.pendingUpdates = true;
         return handle;
     }
-    resolve(handle) {
+    resolve(handle, { program = false } = {}) {
+        if (typeof program !== 'boolean') {
+            throw new TypeError('program must be a boolean');
+        }
         const RECORD = this._instance(handle);
         if (!RECORD.mode) {
             throw new Error('Prepare a player pose before drawing');
@@ -382,6 +398,18 @@ export class PoseRenderer {
         }
         const PART_COUNT = this.sources.get(RECORD.source).program.partCount;
         if (RECORD.mode === 'gpu') {
+            const CACHED = !program && this.matrixCache?.ensure(this.capacity);
+            if (CACHED) {
+                return {
+                    row: RECORD.row,
+                    kind: 'matrix',
+                    gpu: true,
+                    texture: CACHED,
+                    textures: [CACHED],
+                    programWidth: 0,
+                    partCount: PART_COUNT,
+                };
+            }
             // The vertex shader reads keyframes (program), playback state and per-part overrides directly.
             return {
                 row: RECORD.row,
@@ -442,8 +470,20 @@ export class PoseRenderer {
             return;
         }
         if (!this.pendingUpdates) {
-            this.frameMetrics.cleanFlushSkips++;
+            if (!this.matrixCache?.pending) {
+                this.frameMetrics.cleanFlushSkips++;
+            }
+            this._flushMatrixCache();
             return;
+        }
+        if (this.matrixCache) {
+            for (const DIRTY of [this.dirty.state, this.dirty.override]) {
+                for (const RECORD of DIRTY) {
+                    if (RECORD.mode === 'gpu') {
+                        this.matrixCache.markDirty(RECORD.row, this.sources.get(RECORD.source).program.partCount);
+                    }
+                }
+            }
         }
         if (this.cpuTexture) {
             this._uploadRows('cpuData', this.dirty.cpu, this.cpuTexture, POSE_WIDTH, 'cpuPoseUploadBytes');
@@ -457,6 +497,16 @@ export class PoseRenderer {
             'overrideUploadBytes',
         );
         this.pendingUpdates = false;
+        this._flushMatrixCache();
+    }
+    _flushMatrixCache() {
+        if (this.matrixCache && this.programTexture) {
+            this.matrixCache.flush(
+                [this.programTexture, this.stateTexture, this.overrideTexture],
+                this.programTexture.width,
+                this.capacity,
+            );
+        }
     }
     stats() {
         const TOTAL =
@@ -474,6 +524,7 @@ export class PoseRenderer {
             sources: this.sources.size,
             capacity: this.capacity,
             gpuUnavailableReason: this.gpuUnavailableReason,
+            matrixCache: this.matrixCache?.stats() ?? null,
             stateBytes: this.capacity * (8 + OVERRIDE_WIDTH * 4) * 4,
             cpuPoseBytes: this.cpuTexture ? POSE_WIDTH * this.capacity * 16 : 0,
             programBytes: this.programTexture ? this.programTexture.width * this.programTexture.height * 16 : 0,
@@ -485,6 +536,7 @@ export class PoseRenderer {
         }
         this._boundary();
         this._releaseAtlas();
+        this.matrixCache?.dispose();
         if (this.programTexture) {
             this.device.deleteTexture(this.programTexture);
         }

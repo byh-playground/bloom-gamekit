@@ -1,3 +1,4 @@
+import { validateQuads } from './quad-data.js';
 import { clipPlanes } from './clip-planes.js';
 import { poseRendererOf } from './pose-renderer.js';
 import { POSE_PROGRAM_FUNCTIONS } from './pose-shader.js';
@@ -945,6 +946,7 @@ export class VectorRenderer {
         });
     }
     _rebuildStencil() {
+        this.beforeStencilChange?.();
         if (!this.stencilClips.length) {
             this.stencilDepth = 0;
             this.stencilNeedsRebuild = false;
@@ -1102,6 +1104,7 @@ export class VectorRenderer {
         if (!this.count) {
             return;
         }
+        this.beforeSubmit?.();
         this._assertDepthTarget();
         this.device.stats.vectorSubmissions++;
         const POSED = this.poseBatch;
@@ -1268,26 +1271,7 @@ export class VectorRenderer {
     } = {}) {
         this._frame();
         const COUNT = uvRects?.length / 4;
-        if (
-            !Number.isSafeInteger(layer) ||
-            layer < 0 ||
-            !Number.isInteger(COUNT) ||
-            COUNT < 1 ||
-            localRects?.length !== COUNT * 4 ||
-            matrix.length !== 6 ||
-            (filter !== 'linear' && filter !== 'nearest')
-        ) {
-            throw new TypeError('drawQuads requires a layer and matching uvRects and localRects');
-        }
-        for (const LIST of [uvRects, localRects, matrix]) {
-            for (let i = 0; i < LIST.length; i++) {
-                FINITE(LIST[i], 'drawQuads value');
-            }
-        }
-        if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1) {
-            throw new RangeError('alpha must be in [0,1]');
-        }
-        rgba(color);
+        validateQuads({ layer, uvRects, localRects, matrix, color, alpha, filter, parts, pose });
         const TINT = [color[0], color[1], color[2], color[3] * alpha],
             M = compose(this.matrix, matrix);
         this._useVertexPaint(
@@ -1358,7 +1342,7 @@ export class VectorRenderer {
         if (!OWNER || parts?.length !== COUNT) {
             throw new TypeError('A live pose handle and one part per run are required');
         }
-        const DRAW = OWNER.resolve(pose);
+        const DRAW = OWNER.resolve(pose, { program: true });
         if (DRAW.kind !== 'program') {
             throw new TypeError('Posed sprites require a keyframe program pose');
         }

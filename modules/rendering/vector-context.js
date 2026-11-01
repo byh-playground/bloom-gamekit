@@ -845,7 +845,9 @@ export class VectorContext {
         if (!S) {
             return;
         }
-        this.meshRenderer?.flush('stateRestore');
+        if (!this.meshRenderer?.ordered) {
+            this.meshRenderer?.flush('stateRestore');
+        }
         this.vector.restore();
         Object.assign(this, {
             _fillStyle: S.fillStyle,
@@ -1547,6 +1549,8 @@ export class VectorContext {
             ...this.meshOptions,
             safeAlphaRunBatching: this.safeAlphaRunBatching,
         });
+        this.vector.beforeSubmit = () => this.meshRenderer.ordered?.flush('vectorBoundary');
+        this.vector.beforeStencilChange = () => this.meshRenderer.flush('stencilChange');
         return this.meshRenderer;
     }
     /** Registers cleanup that `dispose()` runs, newest first, before it disposes the renderers it owns. */
@@ -1562,8 +1566,34 @@ export class VectorContext {
      */
     drawQuads(options) {
         this._frame();
-        this.meshRenderer?.flush('quadBoundary');
-        this.vector.drawQuads(options);
+        if (
+            this.meshRenderer?.ordered?.indexCount > 0 &&
+            options?.pose == null &&
+            !this.vector.clips.length &&
+            !this.vector.activeTarget
+        ) {
+            if (this.vector.count) {
+                this.vector.flush();
+            }
+            const MATRIX = COMPOSE_AFFINE(this.vector.matrix, options.matrix ?? IDENTITY);
+            this.meshRenderer.drawOrderedQuads(
+                { ...options, depth: this.depth },
+                {
+                    projection: this.vector.projection,
+                    clips: this.vector.clips,
+                    stencilRef: this.vector.stencilDepth || null,
+                    depth: this.depth,
+                    depthTest: this.depthTest,
+                    depthWrite: this.depthWrite,
+                    depthFunc: this.depthFunc,
+                    blend: this.vector.blend,
+                },
+                MATRIX,
+            );
+        } else {
+            this.meshRenderer?.flush('quadBoundary');
+            this.vector.drawQuads(options);
+        }
     }
     /**
      * Draws a texture atlas region like Canvas `drawImage(image, x, y, width, height)`: top-left anchored on the
