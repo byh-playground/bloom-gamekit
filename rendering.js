@@ -3646,7 +3646,23 @@ var VectorRenderer = class {
       }
       this.device.stats.spriteRuns += COUNT;
       for (let i = 0; i < COUNT; i++) {
-        const [LX, LY, LW, LH] = localRects.subarray(i * 4, i * 4 + 4), [U, V, UW, VH] = uvRects.subarray(i * 4, i * 4 + 4), CORNERS = [
+        const AT = i * 4, LX = localRects[AT], LY = localRects[AT + 1], LW = localRects[AT + 2], LH = localRects[AT + 3], U = uvRects[AT], V = uvRects[AT + 1], UW = uvRects[AT + 2], VH = uvRects[AT + 3];
+        if (!this.clips.length) {
+          if (!this._planesAllow()) {
+            this._submit();
+          }
+          const RX = LX + LW, BY = LY + LH, X0 = M[0] * LX + M[2] * LY + M[4], Y0 = M[1] * LX + M[3] * LY + M[5], X1 = M[0] * RX + M[2] * LY + M[4], Y1 = M[1] * RX + M[3] * LY + M[5], X2 = M[0] * RX + M[2] * BY + M[4], Y2 = M[1] * RX + M[3] * BY + M[5], X3 = M[0] * LX + M[2] * BY + M[4], Y3 = M[1] * LX + M[3] * BY + M[5];
+          this._reserve(3);
+          this._writeVertex(X0, Y0, U, V, TINT);
+          this._writeVertex(X1, Y1, U + UW, V, TINT);
+          this._writeVertex(X2, Y2, U + UW, V + VH, TINT);
+          this._reserve(3);
+          this._writeVertex(X0, Y0, U, V, TINT);
+          this._writeVertex(X2, Y2, U + UW, V + VH, TINT);
+          this._writeVertex(X3, Y3, U, V + VH, TINT);
+          continue;
+        }
+        const CORNERS = [
           [point(M, LX, LY), [U, V]],
           [point(M, LX + LW, LY), [U + UW, V]],
           [point(M, LX + LW, LY + LH), [U + UW, V + VH]],
