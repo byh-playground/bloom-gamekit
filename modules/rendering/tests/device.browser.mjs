@@ -703,14 +703,14 @@ export async function exerciseVectorRenderer(page) {
         });
         const ATLAS_RECORD = DEVICE.pipelines.get(RENDERER.pipeline),
             GROUP_RECORD = DEVICE.pipelines.get(RENDERER.groupPipeline),
-            EXPECTED_UNIFORMS = ['u_projection', 'u_texture'];
+            EXPECTED_UNIFORMS = ['u_depthWrite', 'u_projection', 'u_texture'];
         // Paint (layer, gradient mode, flash, filter) is vertex data: one atlas pipeline plus the group-target sampler.
         const PIPELINE_DESCRIPTORS = {
             count: DEVICE.stats.pipelineCount - RESOURCE_BASELINE.pipelineCount,
             atlasUniforms: Object.keys(ATLAS_RECORD.uniforms).sort(),
             groupUniforms: Object.keys(GROUP_RECORD.uniforms).sort(),
             sameVertex: ATLAS_RECORD.vertex === GROUP_RECORD.vertex,
-            sameStride: ATLAS_RECORD.stride === GROUP_RECORD.stride && GROUP_RECORD.stride === 80,
+            sameStride: ATLAS_RECORD.stride === GROUP_RECORD.stride && GROUP_RECORD.stride === 84,
             sameAttributes: JSON.stringify(ATLAS_RECORD.attributes) === JSON.stringify(GROUP_RECORD.attributes),
         };
         if (
@@ -888,7 +888,7 @@ export async function exerciseVectorRenderer(page) {
             };
             DEVICE.uploadVertices = function (buffer, data) {
                 if (buffer === RENDERER.buffer) {
-                    UPLOADS.push(data.length / 20);
+                    UPLOADS.push(data.byteLength / DEVICE.pipelines.get(RENDERER.pipeline).stride);
                 }
                 return ORIGINAL_UPLOAD.call(this, buffer, data);
             };
@@ -1000,7 +1000,7 @@ export async function exerciseVectorRenderer(page) {
         };
         DEVICE.uploadVertices = function (buffer, data) {
             if (buffer === SMALL.buffer) {
-                SMALL_UPLOADS.push(data.length / 20);
+                SMALL_UPLOADS.push(data.byteLength / DEVICE.pipelines.get(SMALL.pipeline).stride);
             }
             return ORIGINAL_UPLOAD.call(this, buffer, data);
         };
@@ -1167,7 +1167,7 @@ export async function exerciseVectorRenderer(page) {
     assert.equal(RESULT.stats.gpuRenderTargetBytes, (64 * 32 + 8 * 8) * 5);
     assert.ok(RESULT.stats.drawCalls >= 5);
     const TRACE = RESULT.pipelineTrace,
-        ATLAS_UNIFORMS = ['u_projection', 'u_texture'];
+        ATLAS_UNIFORMS = ['u_depthWrite', 'u_projection', 'u_texture'];
     assert.equal(TRACE.fixtureMatch, true, 'batched and per-primitive frames are pixel-identical');
     assert.deepEqual(TRACE.radialEmptyPixel, [0, 0, 255, 255]);
     // Fills, linear/radial gradients, white flash and text only change vertex data, so they share one draw.
@@ -1325,6 +1325,206 @@ export async function exerciseVectorRenderer(page) {
     assert.equal(RESULT.disposed.rendererBaselineRestored, true);
     assert.equal(RESULT.disposed.atlasRetained, true);
     assert.equal(RESULT.disposed.emptyBeforeDeviceDispose, true);
+    RESULT.depthStream = await exerciseDepthStream(page);
+    return RESULT;
+}
+
+/** The same paint/image/mesh scenario, grouped across objects and occluded by their explicit depth. */
+async function exerciseDepthStream(page) {
+    const RESULT = await page.evaluate(async () => {
+        const {
+            WebGLDevice: WEB_GL_DEVICE,
+            VectorContext: VECTOR_CONTEXT,
+            MeshBuilder: MESH_BUILDER,
+        } = await import('/dist/rendering.js');
+        const CANVAS = document.createElement('canvas');
+        CANVAS.width = CANVAS.height = 64;
+        document.body.append(CANVAS);
+        const DEVICE = new WEB_GL_DEVICE(CANVAS, {
+            depth: true,
+            antialias: false,
+            preserveDrawingBuffer: true,
+            checkGLErrors: true,
+        });
+        const CTX = new VECTOR_CONTEXT(DEVICE),
+            GL = DEVICE.gl,
+            PIXEL = (x, y) => {
+                const P = new Uint8Array(4);
+                GL.readPixels(x, 63 - y, 1, 1, GL.RGBA, GL.UNSIGNED_BYTE, P);
+                return [...P];
+            };
+        CTX.beginFrame({ clearColor: [0, 0, 0, 1] });
+        CTX.depthTest = CTX.depthWrite = true;
+        CTX.depth = -0.5;
+        CTX.fillStyle = '#ff0000';
+        CTX.fillRect(0, 0, 32, 48);
+        CTX.depth = 0.5;
+        CTX.fillStyle = '#0000ff';
+        CTX.fillRect(16, 0, 32, 48);
+        const OPAQUE = { ...CTX.endFrame(), near: PIXEL(24, 24), far: PIXEL(40, 24) };
+        const REGION = DEVICE.textureAtlas.allocate(2, 1, { filter: 'nearest' });
+        DEVICE.textureAtlas.upload(
+            REGION,
+            {
+                width: 2,
+                height: 1,
+                data: new Uint8Array([255, 0, 0, 255, 0, 0, 0, 0]),
+            },
+            { premultiplied: true },
+        );
+        const DRAW_IMAGE = () => {
+            CTX.beginFrame({ clearColor: [0, 0, 0, 1] });
+            CTX.depthTest = CTX.depthWrite = true;
+            CTX.depth = -0.5;
+            CTX.drawRegion(REGION, 0, 0, 64, 32);
+            CTX.depth = 0.5;
+            CTX.fillStyle = '#0000ff';
+            CTX.fillRect(0, 0, 64, 32);
+            return { ...CTX.endFrame(), opaque: PIXEL(8, 16), clear: PIXEL(56, 16) };
+        };
+        const IMAGE = DRAW_IMAGE();
+        CTX.beginFrame();
+        CTX.depth = 0.25;
+        CTX.depthTest = CTX.depthWrite = true;
+        CTX.depthFunc = 'less';
+        CTX.save();
+        CTX.depth = -0.25;
+        CTX.depthTest = CTX.depthWrite = false;
+        CTX.depthFunc = 'always';
+        CTX.restore();
+        const SAVED = [CTX.depth, CTX.depthTest, CTX.depthWrite, CTX.depthFunc];
+        CTX.endFrame();
+        CTX.beginFrame();
+        const RESET = [CTX.depth, CTX.depthTest, CTX.depthWrite, CTX.depthFunc];
+        CTX.endFrame();
+        const BUILDER = new MESH_BUILDER();
+        BUILDER.fillTriangleFan(
+            [
+                [0, 0],
+                [32, 0],
+                [32, 48],
+                [0, 48],
+            ],
+            [0, 1, 0, 1],
+        );
+        const MESH = CTX.createMesh(BUILDER.build());
+        CTX.beginFrame({ clearColor: [0, 0, 0, 1] });
+        CTX.depthTest = CTX.depthWrite = true;
+        CTX.depth = -0.5;
+        CTX.drawMesh(MESH);
+        CTX.depth = 0.5;
+        CTX.depthWrite = false;
+        CTX.fillStyle = '#ff0000';
+        CTX.fillRect(0, 0, 64, 48);
+        CTX.endFrame();
+        const MIXED = { covered: PIXEL(24, 24), uncovered: PIXEL(48, 24) };
+        const CLEAR_BUILDER = new MESH_BUILDER();
+        CLEAR_BUILDER.fillTriangleFan(
+            [
+                [0, 0],
+                [32, 0],
+                [32, 48],
+                [0, 48],
+            ],
+            [0, 1, 0, 0],
+        );
+        const CLEAR_MESH = CTX.createMesh(CLEAR_BUILDER.build()),
+            HIDDEN_MESHES = [];
+        for (const MODE of ['drawAlpha', 'partOpacity', 'vertexAlpha']) {
+            CTX.beginFrame({ clearColor: [0, 0, 0, 1] });
+            CTX.depthTest = CTX.depthWrite = true;
+            CTX.depth = -0.5;
+            CTX.globalAlpha = MODE === 'drawAlpha' ? 0 : 1;
+            CTX.drawMesh(
+                MODE === 'vertexAlpha' ? CLEAR_MESH : MESH,
+                MODE === 'partOpacity' ? { parts: [{ opacity: 0 }] } : {},
+            );
+            CTX.globalAlpha = 1;
+            CTX.depth = 0.5;
+            CTX.fillStyle = '#0000ff';
+            CTX.fillRect(0, 0, 64, 48);
+            CTX.endFrame();
+            HIDDEN_MESHES.push({ mode: MODE, pixel: PIXEL(24, 24) });
+        }
+        CTX.beginFrame();
+        CTX.depthTest = true;
+        let groupRejected = false;
+        try {
+            CTX.beginGroup(0.5);
+        } catch (error) {
+            groupRejected = /depth/.test(error.message);
+        }
+        CTX.depthTest = false;
+        CTX.endFrame();
+        const TARGET = DEVICE.createRenderTarget(32, 32);
+        CTX.beginFrame();
+        DEVICE.bindRenderTarget(TARGET);
+        CTX.depthTest = true;
+        let targetRejected = false;
+        try {
+            CTX.fillRect(0, 0, 16, 16);
+        } catch (error) {
+            targetRejected = /depth/.test(error.message);
+        }
+        CTX.depthTest = false;
+        DEVICE.unbindRenderTarget(TARGET);
+        CTX.endFrame();
+        DEVICE.deleteRenderTarget(TARGET);
+        const LOSS = GL.getExtension('WEBGL_lose_context'),
+            WAIT = (type) =>
+                new Promise((resolve) =>
+                    CANVAS.addEventListener(
+                        type,
+                        (event) => {
+                            event.preventDefault();
+                            resolve();
+                        },
+                        { once: true },
+                    ),
+                );
+        const LOST = WAIT('webglcontextlost');
+        LOSS.loseContext();
+        await LOST;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        const RESTORED = WAIT('webglcontextrestored');
+        LOSS.restoreContext();
+        await RESTORED;
+        const AFTER_RESTORE = DRAW_IMAGE(),
+            ERROR = GL.getError();
+        CTX.dispose();
+        DEVICE.dispose();
+        CANVAS.remove();
+        return {
+            opaque: OPAQUE,
+            image: IMAGE,
+            saved: SAVED,
+            reset: RESET,
+            mixed: MIXED,
+            hiddenMeshes: HIDDEN_MESHES,
+            groupRejected,
+            targetRejected,
+            restored: AFTER_RESTORE,
+            error: ERROR,
+        };
+    });
+    assert.equal(RESULT.opaque.drawCalls, 1, 'Different depths remain in one opaque stream draw');
+    assert.deepEqual(RESULT.opaque.near, [255, 0, 0, 255]);
+    assert.deepEqual(RESULT.opaque.far, [0, 0, 255, 255]);
+    for (const IMAGE of [RESULT.image, RESULT.restored]) {
+        assert.equal(IMAGE.drawCalls, 1, 'Image and primitive depths remain in the same stream draw');
+        assert.deepEqual(IMAGE.opaque, [255, 0, 0, 255]);
+        assert.deepEqual(IMAGE.clear, [0, 0, 255, 255], 'Transparent image pixels never record depth');
+    }
+    assert.deepEqual(RESULT.saved, [0.25, true, true, 'less']);
+    assert.deepEqual(RESULT.reset, [0, false, false, 'lequal']);
+    assert.deepEqual(RESULT.mixed.covered, [0, 255, 0, 255]);
+    assert.deepEqual(RESULT.mixed.uncovered, [255, 0, 0, 255]);
+    for (const HIDDEN of RESULT.hiddenMeshes) {
+        assert.deepEqual(HIDDEN.pixel, [0, 0, 255, 255], HIDDEN.mode + ' mesh never records depth');
+    }
+    assert.equal(RESULT.groupRejected, true);
+    assert.equal(RESULT.targetRejected, true);
+    assert.equal(RESULT.error, 0);
     return RESULT;
 }
 

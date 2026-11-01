@@ -341,7 +341,7 @@ export async function exerciseVectorGradientClip(browser, moduleURL, screenshotP
                 };
                 DEVICE.uploadVertices = function (buffer, data) {
                     if (buffer === VECTOR.buffer) {
-                        VECTOR_UPLOADS.push(data.length / 20);
+                        VECTOR_UPLOADS.push(data.byteLength / DEVICE.pipelines.get(VECTOR.pipeline).stride);
                     }
                     return ORIGINAL_UPLOAD.call(this, buffer, data);
                 };
@@ -667,7 +667,7 @@ export async function exerciseVectorGradientClip(browser, moduleURL, screenshotP
             'each ordered vector submission uploads its matching vertex count',
         );
         assert.equal(CLIP_TRACE.submissions, CLIP_TRACE.draws.length);
-        assert.deepEqual(CLIP_TRACE.draws[0].uniformKeys, ['u_projection', 'u_texture']);
+        assert.deepEqual(CLIP_TRACE.draws[0].uniformKeys, ['u_depthWrite', 'u_projection', 'u_texture']);
         assert.equal(CLIP_TRACE.draws[0].stencil?.func, 'equal', 'the batch keeps the active stencil test');
         assert.equal(RESULT.selfIntersectionRejected, true);
         assert.equal(RESULT.dynamicConcaveRejected, true);

@@ -490,6 +490,31 @@ export class VectorContext {
             uploadedBytes: 0,
         };
     }
+    /** Clip-space depth captured by each paint/image vertex; changing it does not split a batch. */
+    get depth() {
+        return this.vector.depth;
+    }
+    set depth(value) {
+        this.vector.depth = value;
+    }
+    get depthTest() {
+        return this.vector.depthTest;
+    }
+    set depthTest(value) {
+        this.vector.depthTest = value;
+    }
+    get depthWrite() {
+        return this.vector.depthWrite;
+    }
+    set depthWrite(value) {
+        this.vector.depthWrite = value;
+    }
+    get depthFunc() {
+        return this.vector.depthFunc;
+    }
+    set depthFunc(value) {
+        this.vector.depthFunc = value;
+    }
     get globalAlpha() {
         return this._globalAlpha;
     }
@@ -740,6 +765,10 @@ export class VectorContext {
                 return false;
             }
             this.active = true;
+            this.depth = 0;
+            this.depthTest = false;
+            this.depthWrite = false;
+            this.depthFunc = 'lequal';
             this.meshRenderer?.beginFrame();
             this.frame++;
             this.pathCount = 0;
@@ -1597,6 +1626,10 @@ export class VectorContext {
             alpha: this._globalAlpha,
             whiteFlash: this._filter === 'brightness(0) invert(1)',
             stencilRef: this.vector.stencilDepth || null,
+            depth: this.depth,
+            depthTest: this.depthTest,
+            depthWrite: this.depthWrite,
+            depthFunc: this.depthFunc,
         });
     }
     /** Draw a retained mesh silhouette and body in one ordered instance batch. */
@@ -1627,6 +1660,10 @@ export class VectorContext {
                 whiteFlash: this._filter === 'brightness(0) invert(1)',
                 clips: this.vector.clips,
                 stencilRef: this.vector.stencilDepth || null,
+                depth: this.depth,
+                depthTest: this.depthTest,
+                depthWrite: this.depthWrite,
+                depthFunc: this.depthFunc,
             }),
         );
     }
@@ -1737,6 +1774,10 @@ export class VectorContext {
         return {
             clips: this.vector.clips,
             stencilRef: this.vector.stencilDepth || null,
+            depth: this.depth,
+            depthTest: this.depthTest,
+            depthWrite: this.depthWrite,
+            depthFunc: this.depthFunc,
             ...options,
             alpha: (options.alpha ?? 1) * this._globalAlpha,
             forceColor: FORCED,

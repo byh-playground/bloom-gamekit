@@ -1,3 +1,13 @@
+## v0.39.4 (2026-11-01)
+
+호환 추가. `rendering`의 `VectorContext`에 `depth`·`depthTest`·`depthWrite`·`depthFunc`를 더합니다. 메시와 이미지/도형 스트림이 같은 깊이 버퍼를 사용하므로, 소비자는 불투명 몸통을 메시별로 모으고 얼굴·장면 도형은 원래 순서의 스트림으로 제출할 수 있습니다. 정렬·레이어 정책은 게임이 소유합니다.
+
+- 기본값은 깊이 0·검사/기록 꺼짐·`lequal`로 기존 동작을 유지합니다. 깊이는 정점별 값이므로 깊이값만 바뀌면 배치를 끊지 않습니다. 검사·기록·비교 함수가 바뀌면 제출합니다. `save/restore`와 프레임 초기화, 일반/posed 이미지·글자·경로·도형 및 actor 기본값에 적용합니다.
+- 깊이를 기록하는 메시/이미지는 alpha 0 fragment를 버려 숨긴 부위와 투명 이미지 여백이 다른 물체를 가리지 않게 합니다. 실제 반투명 색 합성은 여전히 painter order를 지켜야 합니다. 깊이 attachment가 없는 framebuffer·반투명 group에서 깊이 사용은 명시 오류입니다.
+- `hasOpaqueCoverage(geometry,{indexVariant})`는 초기 준비 때 같은 part의 불투명 삼각형이 반투명 삼각형을 모두 덮는지 판정합니다. 보장할 수 없는 메시·외곽 반투명 조각은 false여서 소비자가 순서를 유지할 수 있습니다. SVG·메시 원본이나 캐시를 다시 굽지 않습니다.
+- 비용: 벡터 스트림 정점은 80→84 bytes입니다. 정점별 깊이가 추가되며, 이 변경 자체를 FPS 개선으로 환산하지 않습니다.
+- 고정 브라우저 검증: 서로 다른 깊이의 도형/아틀라스 이미지가 한 draw에 묶이고 앞뒤를 올바르게 가림, alpha 0 여백·메시 숨김, 상태 복원·새 프레임·그래픽 복구, 기존 gradient/clip·texture atlas·sprite animation을 확인합니다. 실제 기기 GPU·모바일 성능은 별도 범위입니다.
+
 ## v0.39.3 (2026-11-01)
 
 수정. `rendering`의 `WebGLDevice.updateDataTexture`가 RGBA32F 숫자 데이터를 올리기 전에 pixel-unpack 상태와 `UNPACK_PREMULTIPLY_ALPHA_WEBGL=false`를 명시합니다. DOM 이미지를 atlas에 올린 직후 GPU 애니메이션 pose를 갱신하면, 이전 이미지 업로드의 premultiply 설정이 숫자 채널에 적용되어 몸통·팔·잎이 사라질 수 있었습니다.

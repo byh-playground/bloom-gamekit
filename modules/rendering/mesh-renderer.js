@@ -159,6 +159,13 @@ function fragment(maxPlanes, clipped) {
 uniform vec3 u_planes[${maxPlanes}]; uniform int u_planeCount;
 void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_planes[i],vec3(v_position,1.0))<0.0)discard;}gl_FragColor=v_color;}`;
 }
+// Hidden pose parts and transparent material texels must not occlude other objects. Keep the ordinary colour
+// contract unchanged when depth writes are disabled, including copy/source-in blends and shader surfaces.
+function depthFragment(source) {
+    return `uniform float u_depthWrite;
+${source.replace(/void main\(\)\s*\{/, 'void shade(){')}
+void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
+}
 function poseTextureShader(source) {
     return source
         .replace(/uniform vec4 u_parts\[\d+\];/, 'uniform sampler2D u_poseTexture;')
@@ -576,6 +583,7 @@ export class MeshRenderer {
             : {
                   u_projection: 'matrix3fv',
               };
+        UNIFORMS.u_depthWrite = '1f';
         if (clipped) {
             Object.assign(UNIFORMS, {
                 'u_planes[0]': '3fv',
@@ -629,9 +637,11 @@ export class MeshRenderer {
                     Boolean(mesh.materials),
                 ),
             ),
-            fragment: mesh.materials
-                ? materialFragment(this.maxPlanes, clipped, mesh.materials.count)
-                : fragment(this.maxPlanes, clipped),
+            fragment: depthFragment(
+                mesh.materials
+                    ? materialFragment(this.maxPlanes, clipped, mesh.materials.count)
+                    : fragment(this.maxPlanes, clipped),
+            ),
             stride: mesh.bufferStrideFloats * 4,
             ...(this.instanced ? { instanceStride: mesh.instanceFloats * 4 } : {}),
             attributes: [
@@ -1155,6 +1165,7 @@ export class MeshRenderer {
         this.device.uploadVertices(this.instanceBuffer, this.instances.subarray(0, INSTANCES * 16));
         this.metrics.instanceBytesUploaded += INSTANCES * 64;
         for (let run = 0; run < STATE.runs.length; run += 3) {
+            UNIFORMS.u_depthWrite = Number(STATE.runs[run + 2]);
             this.device.draw({
                 pipeline: PIPELINE,
                 buffer: MESH.buffer,
@@ -1968,6 +1979,7 @@ export class MeshRenderer {
         }
         const INDEX_BUFFER = variant?.indexBuffer ?? mesh.indexBuffer;
         for (let run = 0; run < runs.length; run += 3) {
+            UNIFORMS.u_depthWrite = Number(runs[run + 2]);
             this.device.draw({
                 pipeline: PIPELINE,
                 buffer: mesh.buffer,
@@ -2085,6 +2097,7 @@ export class MeshRenderer {
         } else if (MESH.partCount > 1) {
             UNIFORMS['u_parts[0]'] = PARTS;
         }
+        UNIFORMS.u_depthWrite = Number(DEPTH_STATE.write);
         const TEXTURES = MESH.materials ? this._materialTextures(POSE_TEXTURES) : (POSE_TEXTURES ?? NO_TEXTURES);
         if (MESH.materials) {
             UNIFORMS['u_materials[0]'] = MESH.materials.table;

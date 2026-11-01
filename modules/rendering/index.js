@@ -2,6 +2,7 @@ export { WebGLDevice } from './device.js';
 export { VectorRenderer } from './vector-renderer.js';
 export { VectorContext, PrimitivePainter } from './vector-context.js';
 export { MeshBuilder } from './mesh-builder.js';
+export { hasOpaqueCoverage } from './mesh-coverage.js';
 export { MeshRenderer } from './mesh-renderer.js';
 export { createSpriteAnimation } from './sprite-animation.js';
 export { buildYarnSurfaceGeometry, buildYarnSurfaceMesh } from './yarn-geometry.js';
