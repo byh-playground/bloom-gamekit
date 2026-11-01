@@ -1,3 +1,10 @@
+## v0.39.5 (2026-11-01)
+
+호환 성능 개선. `VectorRenderer.drawQuads`의 clip 없는 일반 이미지 사각형을 정점 버퍼에 직접 기록합니다. 사각형마다 만들던 임시 corner·UV 배열, point 객체와 삼각형별 객체 복사를 없앱니다. 정점 좌표의 연산 순서·색·UV·깊이·그리는 순서·clip·배치 용량·posed sprite 계약은 그대로입니다. clip이 있으면 기존의 실제 삼각형 clip 연산을 사용합니다.
+
+- 버드노리 얼굴 부품의 CPU 프로파일에서 반복 할당 비용을 확인해 적용합니다. 이미지·조합을 새로 굽거나 GPU 자산 수를 늘리지 않습니다.
+- 검증은 기존 texture atlas·sprite animation·gradient/clip·device/vector 사용자 시나리오와 버드노리의 같은 장면 픽셀 비교로 수행합니다. GPU 호출 최적화와 실제 CPU 시간은 별도로 측정합니다.
+
 ## v0.39.4 (2026-11-01)
 
 호환 추가. `rendering`의 `VectorContext`에 `depth`·`depthTest`·`depthWrite`·`depthFunc`를 더합니다. 메시와 이미지/도형 스트림이 같은 깊이 버퍼를 사용하므로, 소비자는 불투명 몸통을 메시별로 모으고 얼굴·장면 도형은 원래 순서의 스트림으로 제출할 수 있습니다. 정렬·레이어 정책은 게임이 소유합니다.
