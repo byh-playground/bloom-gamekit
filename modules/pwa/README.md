@@ -81,9 +81,13 @@ const PWA = registerPwa({
 
 - `registerPwa`는 `serviceWorker`·`onUpdate`·`onError`를 반드시 받습니다. 등록·설치 실패와 service worker를 쓸 수 없는 페이지(http 주소, 일부 사생활 보호 모드, service worker를 막은 자동화 브라우저)는 `onError`로 알립니다. 게임이 알릴지 정합니다.
 - `onUpdate`는 이미 페이지를 제어하는 worker가 있을 때 새 worker가 설치되어 기다리면 한 번 부릅니다. 첫 설치에는 부르지 않습니다.
-- `update()`는 기다리는 worker에 활성화 메시지를 보내고, 그 worker가 페이지를 넘겨받으면 `location.reload()`합니다. 기다리는 worker가 없으면 던집니다.
+- 등록은 `updateViaCache: 'none'`으로 브라우저 HTTP 캐시를 거치지 않고 worker 스크립트의 새 bytes를 확인합니다.
+- `checkForUpdate(): Promise<void>`는 등록 완료를 기다린 뒤 브라우저의 `registration.update()`를 호출합니다. 동시에 요청하면 진행 중인 한 번의 확인을 공유합니다. 브라우저 확인 뒤 설치 중인 worker가 있으면 설치 성공(`installed` 이후) 또는 실패(`redundant`)까지 기다립니다. 설치가 빠르게 실패해 등록의 `installing`이 비어도 해당 시도의 실패를 거부합니다. Promise는 업데이트 유무나 최신 버전 여부를 반환하지 않습니다. 새 버전이 설치되어 기다린다는 신호는 `onUpdate`입니다. 오프라인·등록 실패·확인 실패·폐기 후 호출은 거부하며 `false`나 빈 결과로 숨기지 않습니다.
+- 온라인 복귀 및 화면이 다시 보이는 `visibilitychange` 때 같은 재확인을 요청합니다. 숨긴 화면·오프라인·이미 진행 중인 확인은 추가 요청하지 않습니다. 백그라운드 확인 실패는 `onError`로 알리고, 수동 `checkForUpdate()` 실패는 호출자가 처리합니다. 자동 활성화·재로드는 하지 않습니다.
+- `update()`는 등록 완료를 기다리고 기다리는 worker에 활성화 메시지를 보내고, 그 worker가 페이지를 넘겨받으면 `location.reload()`합니다. 기다리는 worker가 없으면 던집니다.
 - `installable`은 `beforeinstallprompt`를 받은 뒤에만 true입니다. 브라우저 기본 배너는 막고, 게임이 `install()`로 설치 창을 띄웁니다. 결과는 `'accepted'` 또는 `'dismissed'`이고 설치 창은 한 번만 쓸 수 있습니다.
-- `dispose()`는 구독만 끊고 등록된 worker는 그대로 둡니다.
+- `dispose()`는 페이지·worker 상태·온라인 복귀 구독을 모두 끊고 등록된 worker는 그대로 둡니다. 이후 API 호출은 거부하며 진행 중인 확인이 끝나도 알림·재로드하지 않습니다.
+- 업데이트 전 저장 성공 여부를 확인하는 책임은 게임에 있습니다. 모듈은 localStorage·IndexedDB를 읽거나 지우지 않습니다. 저장이 실패했다면 `update()`를 호출하지 않아야 합니다.
 
 ## 격리 장면
 

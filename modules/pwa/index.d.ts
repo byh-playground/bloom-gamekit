@@ -3,6 +3,8 @@ export interface Pwa {
     readonly installable: boolean;
     /** Shows the browser install prompt. Throws when not installable. */
     install(): Promise<'accepted' | 'dismissed'>;
+    /** Waits for registration, a browser update check and any installer it discovers. Does not return whether a newer version exists; onUpdate signals an installed waiting worker. Concurrent checks share one request. Rejects offline, after disposal, or on registration/check failure. */
+    checkForUpdate(): Promise<void>;
     /** Activates the waiting service worker, then reloads the page once it takes over. Throws when none is waiting. */
     update(): Promise<void>;
     /** Removes listeners. The registered service worker stays. */
