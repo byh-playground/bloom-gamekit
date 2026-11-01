@@ -1695,8 +1695,8 @@ var WebGLDevice = class {
     if (DEPTH_STATE && (typeof DEPTH_STATE.test !== "boolean" || typeof DEPTH_STATE.write !== "boolean")) {
       throw new TypeError("depth.test and depth.write must be booleans");
     }
-    if ((DEPTH_STATE?.test || DEPTH_STATE?.write) && !this.depthAvailable) {
-      throw new Error("Context has no depth buffer");
+    if ((DEPTH_STATE?.test || DEPTH_STATE?.write) && (this.activeRenderTarget || !this.depthAvailable)) {
+      throw new Error("The active framebuffer has no depth attachment");
     }
     if (stencil && !this.activeStencilAvailable) {
       throw new Error("The active framebuffer has no stencil attachment");
@@ -2456,7 +2456,8 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
 
 // modules/rendering/vector-renderer.js
 var IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
-var VERTEX_FLOATS = 20;
+var VERTEX_FLOATS = 21;
+var DEPTH_FUNCTIONS = /* @__PURE__ */ new Set(["never", "less", "equal", "lequal", "greater", "notequal", "gequal", "always"]);
 var VERTEX_BYTES = VERTEX_FLOATS * 4;
 var MODE_POSED = 4;
 var ARC_TOLERANCE = 0.125;
@@ -2475,7 +2476,8 @@ var VERTEX_ATTRIBUTES = [
   { name: "a_color", size: 4, offset: 16 },
   { name: "a_paint", size: 4, offset: 32 },
   { name: "a_radial", size: 4, offset: 48 },
-  { name: "a_rect", size: 4, offset: 64 }
+  { name: "a_rect", size: 4, offset: 64 },
+  { name: "a_depth", size: 1, offset: 80 }
 ];
 var FRAGMENT_VARYINGS = "varying highp vec2 v_uv; varying vec4 v_color; varying highp vec4 v_paint; varying highp vec4 v_radial; varying highp vec4 v_rect;";
 var POSED_CORNER = `if(a_paint.z>3.5&&a_paint.z<4.5){vec4 row0;vec4 row1;vec4 pose;
@@ -2484,17 +2486,17 @@ vec2 q=vec2(dot(row0.xy,a_position)+row0.z,dot(row1.xy,a_position)+row1.z);
 position=vec2(a_radial.x*q.x+a_radial.z*q.y+a_rect.x,a_radial.y*q.x+a_radial.w*q.y+a_rect.y);
 color.a*=pose.z;paint.z=0.0;radial=vec4(0.0);rect=vec4(0.0);}`;
 function vertexShader(posed) {
-  return `attribute vec2 a_position; attribute vec2 a_uv; attribute vec4 a_color; attribute vec4 a_paint; attribute vec4 a_radial; attribute vec4 a_rect;
+  return `attribute vec2 a_position; attribute vec2 a_uv; attribute vec4 a_color; attribute vec4 a_paint; attribute vec4 a_radial; attribute vec4 a_rect; attribute float a_depth;
 uniform mat3 u_projection; ${FRAGMENT_VARYINGS}${posed ? " varying highp vec2 v_position;" : ""}
 ${posed ? POSE_PROGRAM_FUNCTIONS : ""}
 void main(){vec2 position=a_position;vec4 color=a_color;vec4 paint=a_paint;vec4 radial=a_radial;vec4 rect=a_rect;
 ${posed ? POSED_CORNER : ""}
-vec3 p=u_projection*vec3(position,1.0);gl_Position=vec4(p.xy,0.0,1.0);${posed ? "v_position=position;" : ""}v_uv=a_uv;v_color=color;v_paint=paint;v_radial=radial;v_rect=rect;}`;
+vec3 p=u_projection*vec3(position,1.0);gl_Position=vec4(p.xy,a_depth,1.0);${posed ? "v_position=position;" : ""}v_uv=a_uv;v_color=color;v_paint=paint;v_radial=radial;v_rect=rect;}`;
 }
 var VERTEX = vertexShader(false);
 var CLIP_VERTEX = `attribute vec2 a_position;uniform mat3 u_projection;uniform mat3 u_transform;void main(){vec3 p=u_projection*u_transform*vec3(a_position,1.0);gl_Position=vec4(p.xy,0.0,1.0);}`;
 var CLIP_FRAGMENT = "precision mediump float;void main(){gl_FragColor=vec4(1.0);}";
-var FINISH = "float a=texel.a*v_color.a;vec3 rgb=v_paint.y>1.5?v_color.rgb*a:mix(texel.rgb*v_color.rgb*v_color.a,vec3(a),v_paint.y);gl_FragColor=vec4(rgb,a);";
+var FINISH = "float a=texel.a*v_color.a;if(u_depthWrite>0.5&&a<=0.0)discard;vec3 rgb=v_paint.y>1.5?v_color.rgb*a:mix(texel.rgb*v_color.rgb*v_color.a,vec3(a),v_paint.y);gl_FragColor=vec4(rgb,a);";
 var PRIMITIVE_OUTSIDE = `bool primitiveOutside(vec2 l,vec4 p,vec4 m){
   float kind=p.x,stroke=p.y,width=p.z,option=p.w;
   if(kind<0.5){
@@ -2524,7 +2526,7 @@ var PRIMITIVE_OUTSIDE = `bool primitiveOutside(vec2 l,vec4 p,vec4 m){
 function fragmentShader(planes) {
   const PLANES = planes ? `varying highp vec2 v_position; uniform vec3 u_planes[${planes}]; uniform int u_planeCount;` : "";
   const CLIP = planes ? `for(int i=0;i<${planes};i++){if(i>=u_planeCount)break;if(dot(u_planes[i],vec3(v_position,1.0))<0.0)discard;}` : "";
-  return `precision mediump float; precision mediump sampler2DArray; uniform sampler2DArray u_texture;
+  return `precision mediump float; precision mediump sampler2DArray; uniform sampler2DArray u_texture;uniform float u_depthWrite;
 ${FRAGMENT_VARYINGS}${PLANES}
 float radialParameter(vec2 q){
   vec2 d=v_radial.xy;float r0=v_radial.z,dr=v_radial.w;
@@ -2535,7 +2537,7 @@ float radialParameter(vec2 q){
   if(r0+dr*t0>0.0)chosen=t0;if(r0+dr*t1>0.0)chosen=max(chosen,t1);return chosen;
 }
 ${PRIMITIVE_OUTSIDE}
-void main(){${CLIP}if(v_paint.z>4.5){if(primitiveOutside(v_uv,v_radial,v_rect))discard;gl_FragColor=vec4(v_color.rgb*v_color.a,v_color.a);return;}
+void main(){${CLIP}if(v_paint.z>4.5){if(primitiveOutside(v_uv,v_radial,v_rect)||(u_depthWrite>0.5&&v_color.a<=0.0))discard;gl_FragColor=vec4(v_color.rgb*v_color.a,v_color.a);return;}
 if(v_paint.z>1.5&&v_paint.z<2.5)discard;vec2 uv=v_uv;
 if(v_paint.z>2.5){uv=v_rect.xy+vec2(clamp(v_uv.x,0.0,1.0),0.5)*v_rect.zw;}
 else if(v_paint.z>0.5){float t=radialParameter(v_uv);if(t< -1000.0)discard;uv=v_rect.xy+vec2(clamp(t,0.0,1.0),0.5)*v_rect.zw;}
@@ -2543,7 +2545,7 @@ if(v_paint.w>0.5){vec2 size=vec2(textureSize(u_texture,0).xy);uv=(floor(uv*size)
 vec4 texel=texture2D(u_texture,vec3(uv,floor(v_paint.x+0.5)));${FINISH}}`;
 }
 var FRAGMENT = fragmentShader(0);
-var GROUP_FRAGMENT = `precision mediump float; uniform sampler2D u_texture;
+var GROUP_FRAGMENT = `precision mediump float; uniform sampler2D u_texture;uniform float u_depthWrite;
 ${FRAGMENT_VARYINGS}
 void main(){vec4 texel=texture2D(u_texture,v_uv);${FINISH}}`;
 var FINITE = (n, label) => {
@@ -2777,7 +2779,8 @@ var VectorRenderer = class {
       attributes: VERTEX_ATTRIBUTES,
       uniforms: {
         u_projection: "matrix3fv",
-        u_texture: "1i"
+        u_texture: "1i",
+        u_depthWrite: "1f"
       }
     });
     this.posePipeline = null;
@@ -2832,6 +2835,8 @@ var VectorRenderer = class {
     this.paintTemplate = new Float32Array(12);
     this._setPaint(this.whiteRegion);
     this.blend = "source-over";
+    this.depth = 0;
+    this._depthPolicy = { test: false, write: false, func: "lequal" };
     this.stencilClips = [];
     this.clipPaths = /* @__PURE__ */ new Map();
     this.clipPathBytes = 0;
@@ -2872,7 +2877,8 @@ var VectorRenderer = class {
         attributes: VERTEX_ATTRIBUTES,
         uniforms: {
           u_projection: "matrix3fv",
-          u_texture: "1i"
+          u_texture: "1i",
+          u_depthWrite: "1f"
         }
       });
     } catch (error) {
@@ -2891,6 +2897,53 @@ var VectorRenderer = class {
     this._clips = value;
     this.clipSerial++;
   }
+  get depth() {
+    return this._depth;
+  }
+  set depth(value) {
+    if (!Number.isFinite(value) || value < -1 || value > 1) {
+      throw new RangeError("depth must be in [-1,1]");
+    }
+    this._depth = value;
+  }
+  get depthTest() {
+    return this._depthPolicy.test;
+  }
+  set depthTest(value) {
+    if (typeof value !== "boolean") {
+      throw new TypeError("depthTest must be a boolean");
+    }
+    this._setDepthPolicy({ ...this._depthPolicy, test: value });
+  }
+  get depthWrite() {
+    return this._depthPolicy.write;
+  }
+  set depthWrite(value) {
+    if (typeof value !== "boolean") {
+      throw new TypeError("depthWrite must be a boolean");
+    }
+    this._setDepthPolicy({ ...this._depthPolicy, write: value });
+  }
+  get depthFunc() {
+    return this._depthPolicy.func;
+  }
+  set depthFunc(value) {
+    if (!DEPTH_FUNCTIONS.has(value)) {
+      throw new TypeError("Unsupported depth function");
+    }
+    this._setDepthPolicy({ ...this._depthPolicy, func: value });
+  }
+  _setDepthPolicy(policy) {
+    if (policy.test !== this._depthPolicy.test || policy.write !== this._depthPolicy.write || policy.func !== this._depthPolicy.func) {
+      this._submit();
+      this._depthPolicy = policy;
+    }
+  }
+  _assertDepthTarget() {
+    if ((this._depthPolicy.test || this._depthPolicy.write) && (!this.device.depthAvailable || this.device.activeRenderTarget)) {
+      throw new Error("The active framebuffer has no depth attachment");
+    }
+  }
   _pushClip(contour) {
     this._clips.push(contour);
     this.clipSerial++;
@@ -2902,6 +2955,7 @@ var VectorRenderer = class {
     if (!this.device.active) {
       throw new Error("WebGLDevice.beginFrame is required");
     }
+    this._assertDepthTarget();
     const G = [...this.groups].reverse().find((group) => !group.direct);
     if (G) {
       this._setProjection(G.bounds, G.target);
@@ -2913,8 +2967,8 @@ var VectorRenderer = class {
       this.stencilNeedsRebuild = false;
     }
   }
-  _setProjection(bounds, target = null) {
-    const W = target?.width ?? this.canvas.width, H = target?.height ?? this.canvas.height, X = bounds?.x ?? 0, Y = bounds?.y ?? 0;
+  _setProjection(bounds2, target = null) {
+    const W = target?.width ?? this.canvas.width, H = target?.height ?? this.canvas.height, X = bounds2?.x ?? 0, Y = bounds2?.y ?? 0;
     this.projection[0] = 2 / W;
     this.projection[1] = 0;
     this.projection[2] = 0;
@@ -2995,6 +3049,8 @@ var VectorRenderer = class {
     this._frame();
     this.stack.push({
       matrix: this.matrix.slice(),
+      depth: this.depth,
+      depthPolicy: this._depthPolicy,
       clips: this.clips.map(
         (polygon) => polygon.map((p) => ({
           ...p
@@ -3009,6 +3065,8 @@ var VectorRenderer = class {
     if (!S) {
       throw new Error("restore without save");
     }
+    this.depth = S.depth;
+    this._setDepthPolicy(S.depthPolicy);
     this.matrix = S.matrix;
     this.clips = S.clips;
     if (S.stencilClips.length !== this.stencilClips.length || S.stencilClips.some((clip, i) => clip !== this.stencilClips[i])) {
@@ -3384,6 +3442,7 @@ var VectorRenderer = class {
         this.vertices[K + 3] = POINT.v ?? this.flatUV[1];
         this.vertices.set(color, K + 4);
         this.vertices.set(this.paintTemplate, K + 8);
+        this.vertices[K + 20] = this.depth;
       }
     }
   }
@@ -3398,11 +3457,13 @@ var VectorRenderer = class {
     DATA[K + 6] = color[2];
     DATA[K + 7] = color[3];
     DATA.set(this.paintTemplate, K + 8);
+    DATA[K + 20] = this.depth;
   }
   _submit() {
     if (!this.count) {
       return;
     }
+    this._assertDepthTarget();
     this.device.stats.vectorSubmissions++;
     const POSED = this.poseBatch;
     this.poseBatch = null;
@@ -3421,6 +3482,7 @@ var VectorRenderer = class {
       count: this.count,
       uniforms: POSED ? {
         u_projection: this.projection,
+        u_depthWrite: Number(this.depthWrite),
         u_program: 0,
         u_state: 1,
         u_overrides: 2,
@@ -3430,10 +3492,12 @@ var VectorRenderer = class {
         u_planeCount: POSED.planeCount
       } : {
         u_projection: this.projection,
+        u_depthWrite: Number(this.depthWrite),
         u_texture: 0
       },
       textures: POSED ? [...POSED.textures, this.atlas.texture] : [this.activeTarget ?? this.atlas.texture],
       blend: this.blend,
+      depth: this._depthPolicy,
       stencil: this.stencilDepth ? {
         func: "equal",
         ref: this.stencilDepth,
@@ -3456,6 +3520,7 @@ var VectorRenderer = class {
         u_state: "1i",
         u_overrides: "1i",
         u_texture: "1i",
+        u_depthWrite: "1f",
         u_programWidth: "1i",
         "u_planes[0]": "3fv",
         u_planeCount: "1i"
@@ -3636,6 +3701,7 @@ var VectorRenderer = class {
         this.vertices[K + 17] = M[5];
         this.vertices[K + 18] = DRAW.row;
         this.vertices[K + 19] = parts[i];
+        this.vertices[K + 20] = this.depth;
       }
     }
   }
@@ -3929,7 +3995,7 @@ var VectorRenderer = class {
     this.device.stats.vectorFlushCalls++;
     this._submit();
   }
-  beginGroup(opacity = 1, bounds = null) {
+  beginGroup(opacity = 1, bounds2 = null) {
     this._frame();
     if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) {
       throw new RangeError("group opacity must be in [0,1]");
@@ -3941,7 +4007,10 @@ var VectorRenderer = class {
       });
       return;
     }
-    const REQUESTED = bounds ?? {
+    if (this.depthTest || this.depthWrite) {
+      throw new Error("Opacity groups require depth testing and writes to be disabled");
+    }
+    const REQUESTED = bounds2 ?? {
       x: 0,
       y: 0,
       width: this.canvas.width,
@@ -4156,7 +4225,7 @@ function packPaintRegions(names, overrides, output) {
 var MATERIAL_KIND = Object.freeze({ none: 0, yarnFill: 1, yarnEdge: 2, sketchFill: 3, sketchEdge: 4 });
 var MATERIAL_RECORD_FLOATS = 20;
 var MAX_MATERIAL_SURFACES = 16;
-function materialRecord(style, bounds, contourLength) {
+function materialRecord(style, bounds2, contourLength) {
   const YARN = style.kind === "yarn";
   const STITCH_PATTERN = style.pattern !== false;
   const EFFECT0 = YARN ? [style.seed, style.stitchWidth, style.stitchHeight, (STITCH_PATTERN ? 1 : -1) * style.thickness] : [style.seed, style.periodMs, style.frequency, 0];
@@ -4168,7 +4237,7 @@ function materialRecord(style, bounds, contourLength) {
     style.curved === false ? 0 : 1,
     style.edgeRelief * (style.detail ? 0.3 : 1)
   ] : [0, 0, 0, 0];
-  return Float32Array.from([...bounds, ...EFFECT0, ...EFFECT1, ...EFFECT2, ...EFFECT3]);
+  return Float32Array.from([...bounds2, ...EFFECT0, ...EFFECT1, ...EFFECT2, ...EFFECT3]);
 }
 
 // modules/rendering/yarn-material.js
@@ -4521,6 +4590,11 @@ function fragment(maxPlanes, clipped) {
   return `precision mediump float; varying vec4 v_color; varying vec2 v_position;
 uniform vec3 u_planes[${maxPlanes}]; uniform int u_planeCount;
 void main(){for(int i=0;i<${maxPlanes};i++){if(i>=u_planeCount)break;if(dot(u_planes[i],vec3(v_position,1.0))<0.0)discard;}gl_FragColor=v_color;}`;
+}
+function depthFragment(source) {
+  return `uniform float u_depthWrite;
+${source.replace(/void main\(\)\s*\{/, "void shade(){")}
+void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
 }
 function poseTextureShader(source) {
   return source.replace(/uniform vec4 u_parts\[\d+\];/, "uniform sampler2D u_poseTexture;").replace(
@@ -4882,6 +4956,7 @@ var MeshRenderer = class {
     } : {
       u_projection: "matrix3fv"
     };
+    UNIFORMS2.u_depthWrite = "1f";
     if (clipped) {
       Object.assign(UNIFORMS2, {
         "u_planes[0]": "3fv",
@@ -4933,7 +5008,9 @@ var MeshRenderer = class {
           Boolean(mesh.materials)
         )
       ),
-      fragment: mesh.materials ? materialFragment(this.maxPlanes, clipped, mesh.materials.count) : fragment(this.maxPlanes, clipped),
+      fragment: depthFragment(
+        mesh.materials ? materialFragment(this.maxPlanes, clipped, mesh.materials.count) : fragment(this.maxPlanes, clipped)
+      ),
       stride: mesh.bufferStrideFloats * 4,
       ...this.instanced ? { instanceStride: mesh.instanceFloats * 4 } : {},
       attributes: [
@@ -5261,15 +5338,15 @@ var MeshRenderer = class {
   _boundsOverlap(a, b) {
     return !(a.maxX < b.minX || b.maxX < a.minX || a.maxY < b.minY || b.maxY < a.minY);
   }
-  _extendAlphaQueueBounds(bounds) {
+  _extendAlphaQueueBounds(bounds2) {
     const GROUP = this.alphaQueueBounds;
     if (!this.alphaQueueCount) {
-      Object.assign(GROUP, bounds);
+      Object.assign(GROUP, bounds2);
     } else {
-      GROUP.minX = Math.min(GROUP.minX, bounds.minX);
-      GROUP.minY = Math.min(GROUP.minY, bounds.minY);
-      GROUP.maxX = Math.max(GROUP.maxX, bounds.maxX);
-      GROUP.maxY = Math.max(GROUP.maxY, bounds.maxY);
+      GROUP.minX = Math.min(GROUP.minX, bounds2.minX);
+      GROUP.minY = Math.min(GROUP.minY, bounds2.minY);
+      GROUP.maxX = Math.max(GROUP.maxX, bounds2.maxX);
+      GROUP.maxY = Math.max(GROUP.maxY, bounds2.maxY);
     }
   }
   _alphaQueueMatches(mesh, projection, clip, stencilRef, depthTest, depthFunc, indexVariant, runs) {
@@ -5330,6 +5407,7 @@ var MeshRenderer = class {
     this.device.uploadVertices(this.instanceBuffer, this.instances.subarray(0, INSTANCES * 16));
     this.metrics.instanceBytesUploaded += INSTANCES * 64;
     for (let run = 0; run < STATE.runs.length; run += 3) {
+      UNIFORMS2.u_depthWrite = Number(STATE.runs[run + 2]);
       this.device.draw({
         pipeline: PIPELINE,
         buffer: MESH.buffer,
@@ -6004,6 +6082,7 @@ var MeshRenderer = class {
     }
     const INDEX_BUFFER = variant?.indexBuffer ?? mesh.indexBuffer;
     for (let run = 0; run < runs.length; run += 3) {
+      UNIFORMS2.u_depthWrite = Number(runs[run + 2]);
       this.device.draw({
         pipeline: PIPELINE,
         buffer: mesh.buffer,
@@ -6107,6 +6186,7 @@ var MeshRenderer = class {
     } else if (MESH.partCount > 1) {
       UNIFORMS2["u_parts[0]"] = PARTS;
     }
+    UNIFORMS2.u_depthWrite = Number(DEPTH_STATE.write);
     const TEXTURES = MESH.materials ? this._materialTextures(POSE_TEXTURES) : POSE_TEXTURES ?? NO_TEXTURES;
     if (MESH.materials) {
       UNIFORMS2["u_materials[0]"] = MESH.materials.table;
@@ -6743,6 +6823,31 @@ var VectorContext = class {
       uploadedBytes: 0
     };
   }
+  /** Clip-space depth captured by each paint/image vertex; changing it does not split a batch. */
+  get depth() {
+    return this.vector.depth;
+  }
+  set depth(value) {
+    this.vector.depth = value;
+  }
+  get depthTest() {
+    return this.vector.depthTest;
+  }
+  set depthTest(value) {
+    this.vector.depthTest = value;
+  }
+  get depthWrite() {
+    return this.vector.depthWrite;
+  }
+  set depthWrite(value) {
+    this.vector.depthWrite = value;
+  }
+  get depthFunc() {
+    return this.vector.depthFunc;
+  }
+  set depthFunc(value) {
+    this.vector.depthFunc = value;
+  }
   get globalAlpha() {
     return this._globalAlpha;
   }
@@ -6987,6 +7092,10 @@ var VectorContext = class {
         return false;
       }
       this.active = true;
+      this.depth = 0;
+      this.depthTest = false;
+      this.depthWrite = false;
+      this.depthFunc = "lequal";
       this.meshRenderer?.beginFrame();
       this.frame++;
       this.pathCount = 0;
@@ -7549,12 +7658,12 @@ var VectorContext = class {
     }
     this.vector.triangleFan(points, this._paint(paint));
   }
-  beginGroup(opacity = 1, bounds = null) {
+  beginGroup(opacity = 1, bounds2 = null) {
     this._frame();
     if (opacity !== 1) {
       this.meshRenderer?.flush("groupBoundary");
     }
-    this.vector.beginGroup(opacity, bounds);
+    this.vector.beginGroup(opacity, bounds2);
   }
   endGroup() {
     if (!this.vector.groups.at(-1)?.direct) {
@@ -7562,10 +7671,10 @@ var VectorContext = class {
     }
     this.vector.endGroup();
   }
-  withGroupOpacity(opacity, callback, bounds = null) {
+  withGroupOpacity(opacity, callback, bounds2 = null) {
     this._frame();
     const PREVIOUS = this._globalAlpha;
-    this.beginGroup(opacity, bounds);
+    this.beginGroup(opacity, bounds2);
     this._globalAlpha = 1;
     try {
       return callback();
@@ -7795,7 +7904,11 @@ var VectorContext = class {
       forceColor: this.forceColor !== null,
       alpha: this._globalAlpha,
       whiteFlash: this._filter === "brightness(0) invert(1)",
-      stencilRef: this.vector.stencilDepth || null
+      stencilRef: this.vector.stencilDepth || null,
+      depth: this.depth,
+      depthTest: this.depthTest,
+      depthWrite: this.depthWrite,
+      depthFunc: this.depthFunc
     });
   }
   /** Draw a retained mesh silhouette and body in one ordered instance batch. */
@@ -7823,7 +7936,11 @@ var VectorContext = class {
         alpha: this._globalAlpha,
         whiteFlash: this._filter === "brightness(0) invert(1)",
         clips: this.vector.clips,
-        stencilRef: this.vector.stencilDepth || null
+        stencilRef: this.vector.stencilDepth || null,
+        depth: this.depth,
+        depthTest: this.depthTest,
+        depthWrite: this.depthWrite,
+        depthFunc: this.depthFunc
       })
     );
   }
@@ -7917,6 +8034,10 @@ var VectorContext = class {
     return {
       clips: this.vector.clips,
       stencilRef: this.vector.stencilDepth || null,
+      depth: this.depth,
+      depthTest: this.depthTest,
+      depthWrite: this.depthWrite,
+      depthFunc: this.depthFunc,
       ...options,
       alpha: (options.alpha ?? 1) * this._globalAlpha,
       forceColor: FORCED,
@@ -8357,6 +8478,215 @@ var MeshBuilder = class _MeshBuilder {
     });
   }
 };
+
+// modules/rendering/mesh-coverage.js
+var MAX_EDGE_TESTS = 2e6;
+var MAX_PIECES = 8192;
+function hasOpaqueCoverage(geometry, { indexVariant = null } = {}) {
+  if (!(geometry?.vertices instanceof Float32Array) || geometry.vertices.length % 11 || geometry.strideFloats !== 11) {
+    throw new TypeError("Authored 11-float mesh geometry is required");
+  }
+  let indices = geometry.indices;
+  if (indexVariant !== null) {
+    indices = geometry.expressionIndices?.[indexVariant] ?? geometry.indexVariants?.[indexVariant];
+    if (!(indices instanceof Uint16Array)) {
+      throw new TypeError("A known mesh expression or index variant is required");
+    }
+  }
+  if (geometry.morphCount || geometry.nonScalingStroke || geometry.materials) {
+    return false;
+  }
+  const VERTICES = geometry.vertices, COUNT = indices?.length ?? VERTICES.length / 11, POINTS = exactPoints(VERTICES), PARTS = /* @__PURE__ */ new Map();
+  if (!POINTS) {
+    return false;
+  }
+  let opaqueCount = 0;
+  let edgeTests = 0;
+  for (let offset = 0; offset < COUNT; offset += 3) {
+    const TRIANGLE = [];
+    let part = null;
+    let opaque = true;
+    let visible = false;
+    for (let corner = 0; corner < 3; corner++) {
+      const AT = (indices?.[offset + corner] ?? offset + corner) * 11, ALPHA = VERTICES[AT + 5], PART = VERTICES[AT + 10];
+      if (part !== null && part !== PART) {
+        return false;
+      }
+      part = PART;
+      opaque &&= ALPHA === 1;
+      visible ||= ALPHA > 0;
+      TRIANGLE.push(POINTS[AT / 11]);
+    }
+    const AREA = turn(...TRIANGLE);
+    if (!visible || AREA === 0n) {
+      continue;
+    }
+    if (AREA < 0n) {
+      TRIANGLE.reverse();
+    }
+    let group = PARTS.get(part);
+    if (!group) {
+      group = { opaque: [], partial: [] };
+      PARTS.set(part, group);
+    }
+    const ENTRY = { polygon: TRIANGLE, bounds: bounds(TRIANGLE), area: Math.abs(Number(AREA)) };
+    if (opaque) {
+      group.opaque.push(ENTRY);
+      opaqueCount++;
+    } else {
+      group.partial.push(ENTRY);
+    }
+  }
+  if (!opaqueCount) {
+    return false;
+  }
+  for (const GROUP of PARTS.values()) {
+    GROUP.opaque.sort((a, b) => b.area - a.area);
+    for (const PARTIAL of GROUP.partial) {
+      let pieces = [PARTIAL];
+      for (const OPAQUE of GROUP.opaque) {
+        if (++edgeTests > MAX_EDGE_TESTS) {
+          return false;
+        }
+        if (!overlaps2(PARTIAL.bounds, OPAQUE.bounds)) {
+          continue;
+        }
+        const NEXT = [];
+        for (const PIECE of pieces) {
+          if (!overlaps2(PIECE.bounds, OPAQUE.bounds)) {
+            NEXT.push(PIECE);
+            continue;
+          }
+          let inside = PIECE.polygon;
+          for (let edge = 0; edge < 3 && inside.length; edge++) {
+            edgeTests += inside.length;
+            if (edgeTests > MAX_EDGE_TESTS) {
+              return false;
+            }
+            const [REMAINDER, OUTSIDE] = split(
+              inside,
+              OPAQUE.polygon[edge],
+              OPAQUE.polygon[(edge + 1) % 3]
+            );
+            if (hasArea(OUTSIDE)) {
+              NEXT.push({ polygon: OUTSIDE, bounds: bounds(OUTSIDE) });
+            }
+            inside = REMAINDER;
+          }
+          if (NEXT.length > MAX_PIECES) {
+            return false;
+          }
+        }
+        pieces = NEXT;
+        if (!pieces.length) {
+          break;
+        }
+      }
+      if (pieces.length) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+function bounds(polygon) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const [NX, NY, DENOMINATOR] of polygon) {
+    const X = Number(NX) / Number(DENOMINATOR), Y = Number(NY) / Number(DENOMINATOR);
+    minX = Math.min(minX, X);
+    minY = Math.min(minY, Y);
+    maxX = Math.max(maxX, X);
+    maxY = Math.max(maxY, Y);
+  }
+  return [minX, minY, maxX, maxY];
+}
+function overlaps2(a, b) {
+  return a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
+}
+function exactPoints(vertices) {
+  const WORDS = new Uint32Array(vertices.buffer, vertices.byteOffset, vertices.length);
+  let minExponent = Infinity;
+  let maxExponent = -Infinity;
+  for (let index = 0; index < WORDS.length; index += 11) {
+    for (let axis = 0; axis < 2; axis++) {
+      const WORD = WORDS[index + axis], BIASED = WORD >>> 23 & 255;
+      if (BIASED === 255) {
+        throw new TypeError("Mesh coordinates must be finite");
+      }
+      if (!(WORD & 2147483647)) {
+        continue;
+      }
+      const EXPONENT = BIASED ? BIASED - 150 : -149;
+      minExponent = Math.min(minExponent, EXPONENT);
+      maxExponent = Math.max(maxExponent, EXPONENT);
+    }
+  }
+  if (maxExponent - minExponent > 80) {
+    return null;
+  }
+  const INTEGER = (word) => {
+    if (!(word & 2147483647)) {
+      return 0n;
+    }
+    const BIASED = word >>> 23 & 255, EXPONENT = BIASED ? BIASED - 150 : -149, MANTISSA = word & 8388607 | (BIASED ? 8388608 : 0), VALUE = BigInt(MANTISSA) << BigInt(EXPONENT - minExponent);
+    return word >>> 31 ? -VALUE : VALUE;
+  };
+  const POINTS = [];
+  for (let index = 0; index < WORDS.length; index += 11) {
+    POINTS.push([INTEGER(WORDS[index]), INTEGER(WORDS[index + 1]), 1n]);
+  }
+  return POINTS;
+}
+function turn(a, b, c) {
+  return (b[0] * a[2] - a[0] * b[2]) * (c[1] * a[2] - a[1] * c[2]) - (b[1] * a[2] - a[1] * b[2]) * (c[0] * a[2] - a[0] * c[2]);
+}
+function hasArea(polygon) {
+  for (let index = 1; index + 1 < polygon.length; index++) {
+    if (turn(polygon[0], polygon[index], polygon[index + 1]) !== 0n) {
+      return true;
+    }
+  }
+  return false;
+}
+function gcd(a, b) {
+  let x = a < 0n ? -a : a;
+  let y = b < 0n ? -b : b;
+  while (y) {
+    const REMAINDER = x % y;
+    x = y;
+    y = REMAINDER;
+  }
+  return x;
+}
+function intersection(a, b, da, db) {
+  const X = da * b[0] - db * a[0], Y = da * b[1] - db * a[1], W = da * b[2] - db * a[2], DIVISOR = gcd(gcd(X, Y), W) * (W < 0n ? -1n : 1n);
+  return [X / DIVISOR, Y / DIVISOR, W / DIVISOR];
+}
+function split(polygon, a, b) {
+  const INSIDE = [], OUTSIDE = [], DX = b[0] - a[0], DY = b[1] - a[1], DISTANCE = (point2) => DX * (point2[1] - a[1] * point2[2]) - DY * (point2[0] - a[0] * point2[2]);
+  let previous = polygon[polygon.length - 1];
+  let previousDistance = DISTANCE(previous);
+  for (const CURRENT of polygon) {
+    const DISTANCE_NOW = DISTANCE(CURRENT);
+    if (previousDistance < 0n && DISTANCE_NOW > 0n || previousDistance > 0n && DISTANCE_NOW < 0n) {
+      const INTERSECTION = intersection(previous, CURRENT, previousDistance, DISTANCE_NOW);
+      INSIDE.push(INTERSECTION);
+      OUTSIDE.push(INTERSECTION);
+    }
+    if (DISTANCE_NOW >= 0n) {
+      INSIDE.push(CURRENT);
+    }
+    if (DISTANCE_NOW <= 0n) {
+      OUTSIDE.push(CURRENT);
+    }
+    previous = CURRENT;
+    previousDistance = DISTANCE_NOW;
+  }
+  return [INSIDE, OUTSIDE];
+}
 
 // modules/rendering/sprite-animation.js
 function createSpriteAnimation(context, region, definition) {
@@ -9724,5 +10054,6 @@ export {
   WebGLDevice,
   buildYarnSurfaceGeometry,
   buildYarnSurfaceMesh,
-  createSpriteAnimation
+  createSpriteAnimation,
+  hasOpaqueCoverage
 };
