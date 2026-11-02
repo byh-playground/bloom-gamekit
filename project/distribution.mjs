@@ -32,9 +32,13 @@ export const MODULES = Object.freeze([
     'store-mock',
     'save',
     'pwa',
+    'boot',
 ]);
 // 게임이 로컬에서 실행하는 Node ESM 도구입니다. 브라우저 번들과 같은 manifest·dist commit으로 고정해 내려받습니다.
-export const NODE_TOOLS = Object.freeze([Object.freeze({ name: 'pwa-build', source: 'modules/pwa/build.js' })]);
+export const NODE_TOOLS = Object.freeze([
+    Object.freeze({ name: 'pwa-build', source: 'modules/pwa/build.js' }),
+    Object.freeze({ name: 'boot-build', source: 'modules/boot/build.js' }),
+]);
 export const BUNDLE_FILES = Object.freeze([
     ...MODULES.map((name) => `${name}.js`),
     ...NODE_TOOLS.map(({ name }) => `${name}.mjs`),
