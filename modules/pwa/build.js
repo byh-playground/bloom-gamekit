@@ -45,11 +45,35 @@ const OPTION_KEYS = new Set([
 
 const POSIX = (path) => path.split(sep).join('/');
 const IS_TEXT = (path) => TEXT_FILE.test(path);
+// 마커 사이 태그는 따옴표 밖 공백과 void 태그의 `/>`를 무시하고 비교합니다.
+// 게임의 Prettier가 `/>`를 붙이거나 printWidth에 맞춰 속성을 줄바꿈해도 바뀐 것으로 보지 않습니다.
+const HEAD_LAYOUT = (text) => {
+    const START = text.indexOf(MARKER_START);
+    const END = text.indexOf(MARKER_END, START);
+    if (START < 0 || END < 0) {
+        return text;
+    }
+    const BLOCK = text
+        .slice(START, END)
+        .replace(/"[^"]*"|'[^']*'|\s+/g, (token) => (/^\s/.test(token) ? ' ' : token))
+        .replace(/ ?\/>/g, '>');
+    return text.slice(0, START) + BLOCK + text.slice(END);
+};
 // 저장소의 줄바꿈 설정(autocrlf)과 무관하게 같은 내용을 같은 것으로 봅니다.
-const CANONICAL = (path, bytes) =>
-    IS_TEXT(path) ? Buffer.from(bytes.toString('utf8').replace(/\r\n/g, '\n'), 'utf8') : bytes;
-const ESCAPE = (value) =>
-    String(value).replace(/[&"<>]/g, (char) => ({ '&': '&amp;', '"': '&quot;', '<': '&lt;', '>': '&gt;' })[char]);
+const CANONICAL = (path, bytes) => {
+    if (!IS_TEXT(path)) {
+        return bytes;
+    }
+    const TEXT = bytes.toString('utf8').replace(/\r\n/g, '\n');
+    return Buffer.from(/\.html?$/i.test(path) ? HEAD_LAYOUT(TEXT) : TEXT, 'utf8');
+};
+// 따옴표가 덜 필요한 쪽으로 감쌉니다. Prettier(html)와 같은 규칙이라 게임의 format이 따옴표를 바꾸지 않습니다.
+const ATTRIBUTE = (value) => {
+    const TEXT = String(value).replace(/[&<>]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[char]);
+    const DOUBLE = (TEXT.match(/"/g) ?? []).length;
+    const SINGLE = (TEXT.match(/'/g) ?? []).length;
+    return DOUBLE > SINGLE ? `'${TEXT.replace(/'/g, '&apos;')}'` : `"${TEXT.replace(/"/g, '&quot;')}"`;
+};
 
 function fail(message) {
     throw new Error(`buildPwa: ${message}`);
@@ -409,20 +433,20 @@ export async function buildPwa(options) {
     const HREF = (file) => POSIX(relative(dirname(HTML_PATH), resolve(OUT_DIR, file)));
     const PAGE_URL = new URL(HTML_FILE.replace(/(^|\/)index\.html$/, '$1'), SITE_URL).href;
     const TAGS = [
-        `<link rel="manifest" href="${ESCAPE(HREF(MANIFEST_FILE))}">`,
-        `<meta name="theme-color" content="${ESCAPE(THEME_COLOR)}">`,
-        `<meta name="description" content="${ESCAPE(DESCRIPTION)}">`,
-        `<link rel="icon" type="image/png" sizes="192x192" href="${ESCAPE(HREF(IMAGES.icon192))}">`,
-        `<link rel="apple-touch-icon" href="${ESCAPE(HREF(IMAGES.apple))}">`,
-        `<meta name="apple-mobile-web-app-title" content="${ESCAPE(SHORT_NAME)}">`,
-        '<meta property="og:type" content="website">',
-        `<meta property="og:url" content="${ESCAPE(PAGE_URL)}">`,
-        `<meta property="og:title" content="${ESCAPE(NAME)}">`,
-        `<meta property="og:description" content="${ESCAPE(DESCRIPTION)}">`,
-        `<meta property="og:image" content="${ESCAPE(new URL(IMAGES.share, SITE_URL).href)}">`,
-        `<meta property="og:image:width" content="${SHARE_SIZE.width}">`,
-        `<meta property="og:image:height" content="${SHARE_SIZE.height}">`,
-        '<meta name="twitter:card" content="summary_large_image">',
+        `<link rel="manifest" href=${ATTRIBUTE(HREF(MANIFEST_FILE))} />`,
+        `<meta name="theme-color" content=${ATTRIBUTE(THEME_COLOR)} />`,
+        `<meta name="description" content=${ATTRIBUTE(DESCRIPTION)} />`,
+        `<link rel="icon" type="image/png" sizes="192x192" href=${ATTRIBUTE(HREF(IMAGES.icon192))} />`,
+        `<link rel="apple-touch-icon" href=${ATTRIBUTE(HREF(IMAGES.apple))} />`,
+        `<meta name="apple-mobile-web-app-title" content=${ATTRIBUTE(SHORT_NAME)} />`,
+        '<meta property="og:type" content="website" />',
+        `<meta property="og:url" content=${ATTRIBUTE(PAGE_URL)} />`,
+        `<meta property="og:title" content=${ATTRIBUTE(NAME)} />`,
+        `<meta property="og:description" content=${ATTRIBUTE(DESCRIPTION)} />`,
+        `<meta property="og:image" content=${ATTRIBUTE(new URL(IMAGES.share, SITE_URL).href)} />`,
+        `<meta property="og:image:width" content="${SHARE_SIZE.width}" />`,
+        `<meta property="og:image:height" content="${SHARE_SIZE.height}" />`,
+        '<meta name="twitter:card" content="summary_large_image" />',
     ];
     OUTPUTS.set(HTML_FILE, Buffer.from(headBlock(await readSource(CWD, HTML, 'html'), TAGS), 'utf8'));
 

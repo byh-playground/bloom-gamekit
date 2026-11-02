@@ -66,6 +66,7 @@ async function checkForUpdate() {
 - **실패를 숨기지 않습니다.** 모르는 옵션(예전 `precache` 포함), 빠진 필수값, `#rrggbb`가 아닌 색, viewBox가 없거나 비율이 틀린 SVG(icon·maskableIcon은 정사각형, share는 1200:630), 외부 파일을 참조하는 SVG, out 밖의 html, 마커가 없거나 둘 이상인 html은 모두 던집니다. 기본값으로 바꿔 진행하지 않습니다.
 - 경로는 모두 현재 작업 폴더(게임 루트) 기준입니다. `out`은 서비스되는 루트이며 sw.js·manifest·`pwa/*.png`가 여기에 생깁니다. html은 out 안에 있어야 합니다.
 - `<head>` 태그는 `<!-- bloom-pwa:start -->`와 `<!-- bloom-pwa:end -->` 사이에만 씁니다. 마커 줄의 들여쓰기와 파일의 줄바꿈을 따릅니다. 마커 밖에 manifest·icon·apple-touch-icon 링크나 theme-color·description·og:\*·twitter:\* 메타가 있으면 어느 쪽이 쓰일지 모르므로 지우라고 던집니다(기존 `theme-color`는 옮겨야 합니다).
+- 태그는 Prettier(html) 출력과 같은 모양으로 씁니다: void 태그는 ` />`, 값에 `"`가 더 많으면 작은따옴표. 게임이 `index.html`을 format 대상에서 뺄 필요가 없습니다. Prettier가 printWidth에 맞춰 속성을 줄바꿈해도 생성기는 마커 사이를 따옴표 밖 공백과 `/>` 차이 없이 비교하므로 `check`가 통과하고 다시 쓰지 않습니다. 태그·값이 실제로 다르면 바뀐 것으로 봅니다.
 - 쓰는 태그: manifest, theme-color, description, 192 PNG 아이콘, apple-touch-icon, apple-mobile-web-app-title, og:type·url·title·description·image(+크기), twitter:card. og:image·og:url은 공유 서비스가 상대 주소를 읽지 않으므로 `siteUrl` 기준 절대 주소입니다.
 - manifest의 `display`는 `standalone`, `id`는 `startUrl`입니다.
 - **결정론:** 같은 입력과 같은 Playwright Chromium(게임의 `playwright` 1.63.0)이면 같은 bytes를 씁니다. 바뀐 파일만 쓰므로 다시 실행해도 diff가 없습니다. 텍스트 파일은 줄바꿈(CRLF/LF) 차이를 같은 내용으로 봅니다. PNG는 Chromium 빌드·OS의 그리기 차이에 따라 다를 수 있습니다.
