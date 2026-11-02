@@ -636,7 +636,7 @@ function seedFieldValues(policies, values) {
 var UNSAFE = /* @__PURE__ */ new Set(["__proto__", "prototype", "constructor"]);
 var CACHE = /* @__PURE__ */ new WeakMap();
 var ARRAY_KEY = /^(0|[1-9][0-9]*)$/;
-function copyRenderData(value, seen = /* @__PURE__ */ new Set()) {
+function copyRenderData(value, seen) {
   if (value === null || value === void 0 || typeof value === "string" || typeof value === "boolean") {
     return value;
   }
@@ -645,6 +645,9 @@ function copyRenderData(value, seen = /* @__PURE__ */ new Set()) {
   }
   if (typeof value !== "object" || !Array.isArray(value) && Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) {
     throw new TypeError("Render STEP requires finite scalar or plain data");
+  }
+  if (seen === void 0) {
+    seen = /* @__PURE__ */ new Set();
   }
   if (seen.has(value)) {
     throw new TypeError("Render STEP cannot contain cycles; use an entity ID");
@@ -756,6 +759,11 @@ function compileRenderSchema(type) {
   if (!FIELDS.length) {
     throw new TypeError("renderSchema must declare at least one field");
   }
+  for (const NODE of NODES) {
+    if (NODE.children.size && [...NODE.children.values()].every((child) => child.field !== void 0)) {
+      NODE.scalarCache = /* @__PURE__ */ new WeakMap();
+    }
+  }
   const POLICIES = compileFieldPolicies(ROOT, FIELDS);
   const PATH = pathPlan(type.renderPath, INDICES);
   const PLAN = {
@@ -805,12 +813,26 @@ function captureRenderData(plan, source) {
     if (typeof value !== "object") {
       throw new TypeError("Render parent must be an object: " + node.key);
     }
-    SHAPES[node.index] = Array.isArray(value) ? value.length : -1;
+    const ARRAY = Array.isArray(value), SCALAR_CACHE = node.scalarCache && !ARRAY && Object.isFrozen(value) ? node.scalarCache : null, CACHED = SCALAR_CACHE?.get(value);
+    SHAPES[node.index] = ARRAY ? value.length : -1;
+    if (CACHED) {
+      let index = 0;
+      for (const CHILD of node.children.values()) {
+        VALUES[CHILD.field] = CACHED[index++];
+      }
+      return;
+    }
     for (const CHILD of node.children.values()) {
       if (Array.isArray(value) && CHILD.key === "length") {
         throw new TypeError("Array length belongs to render structure, not a field");
       }
       visit(CHILD, dataAt(value, CHILD.key));
+    }
+    if (SCALAR_CACHE) {
+      const SCALARS = [...node.children.values()].map((child) => VALUES[child.field]);
+      if (SCALARS.every((item) => item === null || typeof item !== "object")) {
+        SCALAR_CACHE.set(value, SCALARS);
+      }
     }
   }
   for (const NODE of plan.root.children.values()) {
