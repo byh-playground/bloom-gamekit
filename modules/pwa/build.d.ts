@@ -26,9 +26,7 @@ export function buildPwa(options: {
     siteUrl: string;
     /** HTML file inside out whose `<!-- bloom-pwa:start -->` … `<!-- bloom-pwa:end -->` block is rewritten. */
     html: string;
-    /** Files to precache: relative POSIX paths with `*` and `**`. Each pattern must match at least one file. */
-    precache: string[];
-    /** Served root folder. sw.js and manifest.webmanifest are written here. */
+    /** Served root folder. sw.js and manifest.webmanifest are written here. sw.js does not depend on the game's files, so a deploy needs no regeneration. */
     out: string;
     /** true: write nothing and throw if any output would change. */
     check: boolean;
