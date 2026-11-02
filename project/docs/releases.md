@@ -1,3 +1,13 @@
+## v0.41.0 (2026-11-02)
+
+비호환 API 변경. `pwa`는 "페이지를 읽으면(새로고침 포함) 항상 최신 버전" 하나만 보장합니다. 백그라운드 다운로드·대기 worker·업데이트 알림을 없앱니다. 게임의 "업데이트 확인"은 저장 후 `location.reload()`입니다.
+
+- 생성 sw.js: 설치 때 아무것도 받지 않고 바로 이어받습니다(`skipWaiting`·`clients.claim`). 같은 origin GET은 매번 `cache: 'no-cache'`로 서버에 재확인하고(GitHub Pages `max-age=600` 동안 이전 파일이 섞이지 않게), 200 응답을 scope별 runtime 캐시 하나에 오프라인 사본으로 둡니다. 네트워크 오류일 때만 사본을 씁니다. activate가 같은 scope의 이전 precache 캐시를 지웁니다. 커밋 고정 gamekit 주소의 cache-first는 그대로입니다.
+- `buildPwa`: `precache` 옵션을 제거합니다(넘기면 unknown option으로 던짐). sw.js는 게임 파일과 무관한 고정 코드라 게임 파일만 바뀐 배포는 재생성이 필요 없습니다.
+- `registerPwa`: `onUpdate` 옵션과 `checkForUpdate()`·`update()`를 제거합니다. 모르는 옵션은 TypeError입니다. `serviceWorker`·`onError`·`onInstallable`, `installable`·`install()`·`dispose()`는 그대로입니다.
+- 오프라인 시작은 worker가 제어한 상태로 한 번 읽은 뒤(두 번째 방문)부터입니다. 첫 방문에 전체를 받아 두던 precache 동작은 없습니다.
+- 시험: `modules/pwa/tests/pwa.e2e.mjs`를 새 계약으로 바꿨습니다. 실제 Chromium에서 첫 방문 worker 제어·설치 때 받은 파일 없음·이전 precache 캐시 삭제, `max-age=600`+ETag 서버에서 파일 배포 후 새로고침 한 번에 새 버전, 오프라인 새로고침에 마지막 버전과 고정 gamekit 주소를 확인합니다. `no-cache`를 뺀 sw.js로는 배포 단계가 실패함을 확인했습니다. 실기기·iOS Safari·실제 설치 창은 미검증입니다.
+
 ## v0.40.4 (2026-11-02)
 
 호환 성능 개선. 보간 표본의 scalar STEP 복사는 순환 그래프 검사 Set을 만들지 않고, 배열/객체를 처음 복사할 때만 검사 그래프를 만듭니다. 중첩 복사에는 같은 그래프를 전달합니다. 동결된 plain 부모의 직계 schema 필드가 모두 scalar일 때만 검증된 표본을 약한 캐시로 재사용합니다. 가변 부모·배열·객체 STEP 잎은 매번 복사합니다. 원본과 표본 분리, finite 숫자·plain data·accessor·순환 거부, 필드별 시계/전환/preview 계약은 유지합니다.

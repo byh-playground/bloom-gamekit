@@ -1,8 +1,8 @@
 // 게임 저장소에서 로컬로 실행하는 PWA 생성기입니다(Node ESM, `dist/pwa-build.mjs`).
 // SVG 원본과 설정 하나에서 manifest·아이콘·공유 이미지·sw.js·<head> 태그를 만들고, 게임은 결과를 커밋합니다.
+// sw.js는 게임 파일 목록·내용과 무관한 고정 코드이므로 배포마다 다시 생성할 필요가 없습니다.
 // 같은 입력·같은 Playwright Chromium이면 같은 bytes를 씁니다. check 모드는 아무것도 쓰지 않고 차이가 있으면 던집니다.
-import { createHash } from 'node:crypto';
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 
 const MARKER_START = '<!-- bloom-pwa:start -->';
@@ -13,7 +13,7 @@ const SHARE_SIZE = Object.freeze({ width: 1200, height: 630 });
 const MASKABLE_SAFE_ZONE = 0.8;
 const MANIFEST_FILE = 'manifest.webmanifest';
 const WORKER_FILE = 'sw.js';
-// 생성 이미지 경로(out 기준). share는 공유 미리보기용이라 precache하지 않습니다.
+// 생성 이미지 경로(out 기준).
 const IMAGES = Object.freeze({
     icon192: 'pwa/icon-192.png',
     icon512: 'pwa/icon-512.png',
@@ -21,8 +21,8 @@ const IMAGES = Object.freeze({
     apple: 'pwa/apple-touch-icon.png',
     share: 'pwa/share.png',
 });
-// 커밋에 고정된 gamekit 배포물은 바뀌지 않으므로 precache·cache-first가 안전합니다.
-const GAMEKIT_URL = /https:\/\/cdn\.jsdelivr\.net\/gh\/byh-playground\/bloom-gamekit@[0-9a-f]{40}\/[A-Za-z0-9._/-]+/g;
+// 커밋에 고정된 gamekit 배포물은 바뀌지 않으므로 cache-first가 안전합니다.
+const GAMEKIT_URL = /https:\/\/cdn\.jsdelivr\.net\/gh\/byh-playground\/bloom-gamekit@[0-9a-f]{40}\/[A-Za-z0-9._/-]+/;
 const TEXT_FILE = /\.(?:html?|m?js|css|json|webmanifest|svg|txt)$/i;
 const OPTION_KEYS = new Set([
     'chromium',
@@ -39,12 +39,10 @@ const OPTION_KEYS = new Set([
     'scope',
     'siteUrl',
     'html',
-    'precache',
     'out',
     'check',
 ]);
 
-const SHA256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const POSIX = (path) => path.split(sep).join('/');
 const IS_TEXT = (path) => TEXT_FILE.test(path);
 // 저장소의 줄바꿈 설정(autocrlf)과 무관하게 같은 내용을 같은 것으로 봅니다.
@@ -97,9 +95,6 @@ function readOptions(options) {
     if (typeof options.check !== 'boolean') {
         fail('check must be true or false');
     }
-    if (!Array.isArray(options.precache) || options.precache.length === 0) {
-        fail('precache must be a non-empty array of path patterns');
-    }
     let site;
     try {
         site = new URL(options.siteUrl);
@@ -119,82 +114,6 @@ function inside(root, path, label) {
         fail(`${label} must be inside out: ${path}`);
     }
     return POSIX(RELATIVE);
-}
-
-function patternRegExp(pattern) {
-    let source = '';
-    for (let index = 0; index < pattern.length; index++) {
-        const CHAR = pattern[index];
-        if (CHAR === '*' && pattern[index + 1] === '*') {
-            const SLASH = pattern[index + 2] === '/';
-            source += SLASH ? '(?:.*/)?' : '.*';
-            index += SLASH ? 2 : 1;
-        } else if (CHAR === '*') {
-            source += '[^/]*';
-        } else {
-            source += CHAR.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
-        }
-    }
-    return new RegExp(`^${source}$`);
-}
-
-// `**`와 `*`만 지원합니다. node_modules와 점(.)으로 시작하는 폴더는 걷지 않습니다.
-async function walk(directory) {
-    let entries;
-    try {
-        entries = await readdir(directory, { withFileTypes: true });
-    } catch (error) {
-        if (error.code === 'ENOENT') {
-            return [];
-        }
-        throw error;
-    }
-    const FILES = [];
-    for (const ENTRY of entries) {
-        const PATH = resolve(directory, ENTRY.name);
-        if (ENTRY.isDirectory()) {
-            if (ENTRY.name !== 'node_modules' && !ENTRY.name.startsWith('.')) {
-                FILES.push(...(await walk(PATH)));
-            }
-        } else if (ENTRY.isFile()) {
-            FILES.push(PATH);
-        }
-    }
-    return FILES;
-}
-
-async function expandPrecache(cwd, patterns) {
-    const FILES = new Set();
-    for (const PATTERN of patterns) {
-        if (typeof PATTERN !== 'string' || PATTERN === '' || PATTERN.startsWith('/') || PATTERN.includes('\\')) {
-            fail(`precache patterns must be relative POSIX paths: ${PATTERN}`);
-        }
-        if (PATTERN.split('/').includes('..')) {
-            fail(`precache patterns must not contain "..": ${PATTERN}`);
-        }
-        const SEGMENTS = PATTERN.split('/');
-        const STATIC = [];
-        for (const SEGMENT of SEGMENTS) {
-            if (SEGMENT.includes('*')) {
-                break;
-            }
-            STATIC.push(SEGMENT);
-        }
-        const REGEXP = patternRegExp(PATTERN.replace(/^\.\//, ''));
-        const MATCHED =
-            STATIC.length === SEGMENTS.length
-                ? (await walk(resolve(cwd, ...STATIC.slice(0, -1)))).filter(
-                      (file) => POSIX(relative(cwd, file)) === PATTERN.replace(/^\.\//, ''),
-                  )
-                : (await walk(resolve(cwd, ...STATIC))).filter((file) => REGEXP.test(POSIX(relative(cwd, file))));
-        if (MATCHED.length === 0) {
-            fail(`precache pattern matched no file: ${PATTERN}`);
-        }
-        for (const FILE of MATCHED) {
-            FILES.add(FILE);
-        }
-    }
-    return [...FILES];
 }
 
 async function readSource(cwd, path, label) {
@@ -319,66 +238,70 @@ function headBlock(html, tags) {
 }
 
 // sw.js 본문입니다. 함수 소스를 그대로 sw.js에 써서 설정(config)과 함께 실행합니다.
+// 페이지를 읽을 때마다 서버에 다시 확인하고, 캐시는 오프라인일 때만 씁니다. 설치 때 아무것도 받지 않습니다.
 // localStorage·IndexedDB는 다루지 않습니다. 저장은 게임과 save 모듈이 소유합니다.
 function serviceWorker(config) {
-    const SCOPE = self.registration.scope;
-    const PREFIX = `bloom-pwa:${new URL(SCOPE).pathname}:`;
-    const CACHE = PREFIX + config.version;
-    const RUNTIME = PREFIX + 'gamekit';
+    const PREFIX = `bloom-pwa:${new URL(self.registration.scope).pathname}:`;
+    const RUNTIME = PREFIX + 'runtime';
+    const GAMEKIT_CACHE = PREFIX + 'gamekit';
     const GAMEKIT = new RegExp(config.gamekit);
-    self.addEventListener('install', (event) => {
-        event.waitUntil(
-            caches
-                .open(CACHE)
-                .then((cache) =>
-                    cache.addAll(
-                        config.precache.map((url) =>
-                            GAMEKIT.test(url)
-                                ? new Request(url, { mode: 'cors' })
-                                : new Request(url, { cache: 'reload' }),
-                        ),
-                    ),
-                ),
-        );
-        // 새 worker는 게임이 PWA.update()로 activate 메시지를 보낼 때까지 기다립니다.
+    self.addEventListener('install', () => {
+        // 새 sw.js는 기다리지 않고 바로 이어받습니다. 받을 파일 목록(precache)은 없습니다.
+        self.skipWaiting();
     });
     self.addEventListener('activate', (event) => {
         event.waitUntil(
-            caches
-                .keys()
-                .then((keys) =>
-                    Promise.all(
-                        keys
-                            .filter((key) => key.startsWith(PREFIX) && key !== CACHE && key !== RUNTIME)
-                            .map((key) => caches.delete(key)),
+            Promise.all([
+                self.clients.claim(),
+                caches
+                    .keys()
+                    .then((keys) =>
+                        Promise.all(
+                            keys
+                                .filter((key) => key.startsWith(PREFIX) && key !== RUNTIME && key !== GAMEKIT_CACHE)
+                                .map((key) => caches.delete(key)),
+                        ),
                     ),
-                )
-                .then(() => self.clients.claim()),
+            ]),
         );
     });
-    self.addEventListener('message', (event) => {
-        if (event.data?.type === config.activateMessage) {
-            self.skipWaiting();
-        }
-    });
-    async function sameOrigin(request) {
-        const STORE = await caches.open(CACHE);
+    async function offline(request, error) {
+        const STORE = await caches.open(RUNTIME);
         const NAVIGATE = request.mode === 'navigate';
         let response = await STORE.match(request, { ignoreSearch: NAVIGATE });
         const ADDRESS = new URL(request.url);
         if (!response && NAVIGATE && ADDRESS.pathname.endsWith('/')) {
             response = await STORE.match(new URL('index.html', ADDRESS).href);
         }
-        return response ?? fetch(request);
+        if (!response) {
+            throw error;
+        }
+        return response;
+    }
+    async function sameOrigin(event) {
+        const REQUEST = event.request;
+        let response;
+        try {
+            // GitHub Pages의 max-age=600 동안 HTTP cache의 이전 파일이 섞이지 않도록 매번 서버에 확인합니다.
+            response = await fetch(REQUEST, { cache: 'no-cache' });
+        } catch (error) {
+            return offline(REQUEST, error);
+        }
+        // 206(Range)·redirect·오류 응답은 오프라인 사본으로 두지 않습니다.
+        if (response.status === 200) {
+            const COPY = response.clone();
+            event.waitUntil(caches.open(RUNTIME).then((store) => store.put(REQUEST, COPY)));
+        }
+        return response;
     }
     async function gamekit(request) {
-        const CACHED = await caches.match(request);
+        const STORE = await caches.open(GAMEKIT_CACHE);
+        const CACHED = await STORE.match(request);
         if (CACHED) {
             return CACHED;
         }
         const RESPONSE = await fetch(request);
         if (RESPONSE.ok) {
-            const STORE = await caches.open(RUNTIME);
             await STORE.put(request, RESPONSE.clone());
         }
         return RESPONSE;
@@ -389,7 +312,7 @@ function serviceWorker(config) {
             return;
         }
         if (new URL(REQUEST.url).origin === self.location.origin) {
-            event.respondWith(sameOrigin(REQUEST));
+            event.respondWith(sameOrigin(event));
         } else if (GAMEKIT.test(REQUEST.url)) {
             event.respondWith(gamekit(REQUEST));
         }
@@ -417,7 +340,6 @@ export async function buildPwa(options) {
         scope: SCOPE,
         siteUrl: SITE_URL,
         html: HTML,
-        precache: PRECACHE,
         out: OUT,
         check: CHECK,
     } = readOptions(options);
@@ -436,7 +358,6 @@ export async function buildPwa(options) {
     if (!SCOPE_URL.pathname.endsWith('/') || !START.pathname.startsWith(SCOPE_URL.pathname)) {
         fail('scope must be a folder ("./") that contains startUrl');
     }
-    const START_FILE = (START.pathname.endsWith('/') ? START.pathname + 'index.html' : START.pathname).slice(1);
 
     const SOURCES = {
         icon: { svg: await readSource(CWD, ICON, 'icon'), aspect: 1 },
@@ -505,44 +426,7 @@ export async function buildPwa(options) {
     ];
     OUTPUTS.set(HTML_FILE, Buffer.from(headBlock(await readSource(CWD, HTML, 'html'), TAGS), 'utf8'));
 
-    // precache: 게임이 고른 파일 + 생성한 manifest·아이콘 + 그 파일들이 참조하는 고정 gamekit URL.
-    const LOCAL = new Map();
-    for (const FILE of await expandPrecache(CWD, PRECACHE)) {
-        const PATH = inside(OUT_DIR, FILE, 'precache file');
-        if (PATH === WORKER_FILE) {
-            fail(`${WORKER_FILE} must not be precached; the browser checks it on every visit`);
-        }
-        LOCAL.set(PATH, OUTPUTS.get(PATH) ?? (await readFile(FILE)));
-    }
-    for (const FILE of [MANIFEST_FILE, IMAGES.icon192, IMAGES.icon512, IMAGES.maskable, IMAGES.apple]) {
-        LOCAL.set(FILE, OUTPUTS.get(FILE));
-    }
-    if (!LOCAL.has(HTML_FILE)) {
-        fail(`precache must include ${HTML_FILE} so the game starts offline`);
-    }
-    if (!LOCAL.has(START_FILE)) {
-        fail(`precache must include ${START_FILE} (startUrl ${START_URL})`);
-    }
-    const LOCAL_FILES = [...LOCAL.keys()].sort();
-    const REMOTE = new Set();
-    for (const FILE of LOCAL_FILES.filter(IS_TEXT)) {
-        for (const ADDRESS of LOCAL.get(FILE).toString('utf8').match(GAMEKIT_URL) ?? []) {
-            REMOTE.add(ADDRESS);
-        }
-    }
-    const REMOTE_URLS = [...REMOTE].sort();
-    // 캐시 이름은 precache 내용의 hash입니다. 파일 하나만 바뀌어도 새 worker가 생깁니다.
-    const VERSION = SHA256(
-        [...LOCAL_FILES.map((file) => `${file}\n${SHA256(CANONICAL(file, LOCAL.get(file)))}`), ...REMOTE_URLS].join(
-            '\n',
-        ),
-    ).slice(0, 16);
-    const CONFIG = {
-        version: VERSION,
-        activateMessage: 'bloom-pwa:activate',
-        gamekit: `^${GAMEKIT_URL.source}$`,
-        precache: [...LOCAL_FILES, ...REMOTE_URLS],
-    };
+    const CONFIG = { gamekit: `^${GAMEKIT_URL.source}$` };
     OUTPUTS.set(
         WORKER_FILE,
         Buffer.from(
