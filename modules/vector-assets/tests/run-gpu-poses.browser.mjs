@@ -161,8 +161,8 @@ try {
                         PLAYER.setBasePose(META.parts[0].id, {
                             x: Math.sin(TIME * 0.003 + i) * 1.5,
                             rotation: Math.sin(TIME * 0.002 + i) * 0.025,
-                            scaleX: 1 + (i % 3) * 0.01,
-                            scaleY: 1 - (i % 2) * 0.01,
+                            scaleX: frame === 6 && i % 7 === 0 ? 0 : 1 + (i % 3) * 0.01,
+                            scaleY: (frame === 6 || frame === 7) && i % 7 === 0 ? 0 : 1 - (i % 2) * 0.01,
                             opacity: i % 6 === 0 ? 0.8 : 1,
                         });
                         if (META.parts.length > 2 && i % 9 === 0) {

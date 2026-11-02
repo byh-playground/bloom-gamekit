@@ -484,6 +484,47 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
                     gpuPixelDifferences === 0,
                 `default GPU pose must match CPU reference pixels without full timeline sampling (${gpuPixelDifferences} changed channels; ${JSON.stringify(GPU_POSE_STATS)})`,
             );
+            for (const SCALE of [
+                [0, 0],
+                [0, 1],
+                [1, 0],
+                [1, 1],
+            ]) {
+                const POSE = { scaleX: SCALE[0], scaleY: SCALE[1] };
+                PLAYER.setBasePose('body', POSE);
+                GPU_PLAYER.setBasePose('body', POSE);
+                PAINT([PLAYER], 0);
+                GPU_DEVICE.beginFrame({ width: 200, height: 220, clearColor: [0.875, 0.91, 0.8, 1] });
+                GPU_MESHES.beginFrame();
+                GPU_PLAYER.seek(0).draw({ projection: PROJECTION });
+                GPU_MESHES.flush();
+                GPU_DEVICE.endFrame();
+                const GPU_PIXEL = new Uint8Array(4);
+                GPU_DEVICE.gl.readPixels(
+                    100,
+                    219 - 112,
+                    1,
+                    1,
+                    GPU_DEVICE.gl.RGBA,
+                    GPU_DEVICE.gl.UNSIGNED_BYTE,
+                    GPU_PIXEL,
+                );
+                const CPU_PIXEL = PIXEL(100, 112);
+                const COLLAPSED = SCALE.includes(0);
+                ASSERT_THAT(
+                    CPU_PIXEL.every((value, index) => value === GPU_PIXEL[index]) &&
+                        (COLLAPSED
+                            ? CPU_PIXEL.every((value, index) => value === BACKGROUND[index])
+                            : CPU_PIXEL[0] < BACKGROUND[0]),
+                    `zero-scale part collapses and restores CPU/GPU pixels: ${SCALE}/${CPU_PIXEL}/${GPU_PIXEL}`,
+                );
+                const SOCKET = GPU_PLAYER.getSocket('mouth');
+                ASSERT_THAT(Number.isFinite(SOCKET.x) && Number.isFinite(SOCKET.y), 'collapsed sockets remain finite');
+                ASSERT_THAT(
+                    GPU_DEVICE.gl.getError() === 0 && DEVICE.gl.getError() === 0,
+                    'zero-scale draws leave clean GL state',
+                );
+            }
             GPU_PLAYER.dispose();
             GPU_CONTEXT.dispose();
             GPU_DEVICE.dispose();

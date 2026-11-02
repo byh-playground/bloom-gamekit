@@ -399,9 +399,6 @@ function retainVectorAsset(meshRenderer, compiledAsset) {
                 if (FIELD === 'opacity' && (VALUE < 0 || VALUE > 1)) {
                     throw new RangeError('Part opacity must be in [0,1]');
                 }
-                if ((FIELD === 'scaleX' || FIELD === 'scaleY') && VALUE === 0) {
-                    throw new RangeError('Part scale cannot be zero');
-                }
             }
             let changed = false;
             for (const [FIELD, VALUE] of Object.entries(pose)) {
