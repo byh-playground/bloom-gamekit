@@ -20,6 +20,7 @@ const SUITES = {
         'project/tests/browser.e2e.mjs',
         'modules/pwa/tests/pwa.e2e.mjs',
         'modules/boot/tests/boot.e2e.mjs',
+        'modules/i18n/tests/i18n.e2e.mjs',
         'modules/vector-assets/tests/run-gpu-poses.browser.mjs',
         'modules/vector-assets/tests/run-paint-regions.browser.mjs',
         'modules/rendering/tests/run-texture-atlas.browser.mjs',

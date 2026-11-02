@@ -1,3 +1,13 @@
+## v0.41.2 (2026-11-02)
+
+호환 추가. 새 `i18n` 모듈(`dist/i18n.js`)을 더합니다. budmori의 게임 안 다국어 층(TextPair)을 공용으로 옮긴 것이며, 발 배구가 첫 소비자입니다.
+
+- `createLocale({ locales, fallback, storageKey, param, isolated })`: `?lang=` → 저장한 선택(동기 localStorage) → 브라우저 언어 → fallback으로 페이지를 읽을 때 한 번 정합니다. `isolated`이면 저장을 읽지도 쓰지도 않습니다. `choose(code)`는 저장하고 `?lang=`으로 새로고침합니다(실행 중 재번역 없음).
+- `messages(table)`는 정의할 때 모든 TextPair 짝을 검사하고, 없는 키를 읽으면 던집니다. `text(pair, values)`는 모델 데이터의 TextPair를 풉니다. `applyPage(root, table)`는 `data-i18n`·`data-i18n-<속성>`과 `<html lang>`을 채웁니다. `number`·`plural`은 `Intl`을 씁니다.
+- i18next 대신 직접 둔 이유(README): 키 오타·번역 누락이 조용히 대체되지 않고 오류가 됩니다. 문장 전체를 언어별 함수가 가져 조사·어순에 포매터가 필요 없습니다. 외부 의존성이 없습니다.
+- 배포 구조: `MODULES`에 `i18n`을 더해 manifest 모듈 목록이 `i18n.js`만큼 늘어납니다. manifest 목록을 고정 검사하는 게임(budmori `gamekit-provenance.cjs`)은 다음 pin 갱신 때 목록에 더해야 합니다.
+- 시험: `modules/i18n/tests/i18n.e2e.mjs`(core 목록). 헤드리스 Chromium에서 브라우저 언어·`?lang=`·저장 순서, `choose`의 저장과 새로고침, 격리 장면의 저장 미사용, 짝 누락·남는 언어·키 오타·정적 키 오타 오류, 숫자·복수형을 확인합니다. 실기기·Safari·Firefox는 미검증입니다.
+
 ## v0.41.1 (2026-11-02)
 
 호환 추가. 새 `boot` 모듈을 더합니다. 브라우저 runtime `dist/boot.js`와 Node ESM 도구 `dist/boot-build.mjs`입니다. 게임은 시작 단계와 가중치만 정하고 실제 개수를 보고하며, 전체 진행률·모듈 preload·`<progress>` 표시는 모듈이 맡습니다.
