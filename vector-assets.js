@@ -3443,9 +3443,6 @@ function compilePoseChannels(metadata) {
           if (FIELD === "opacity" && (VALUE < 0 || VALUE > 1)) {
             throw new RangeError(`Clip part opacity must be in [0,1]: ${NAME}/${PART_ID}`);
           }
-          if ((FIELD === "scaleX" || FIELD === "scaleY") && VALUE === 0) {
-            throw new RangeError(`Clip part scale cannot be zero: ${NAME}/${PART_ID}`);
-          }
         }
       }
       previousTime = TIME;
@@ -3957,9 +3954,6 @@ function retainVectorAsset(meshRenderer, compiledAsset) {
         }
         if (FIELD === "opacity" && (VALUE < 0 || VALUE > 1)) {
           throw new RangeError("Part opacity must be in [0,1]");
-        }
-        if ((FIELD === "scaleX" || FIELD === "scaleY") && VALUE === 0) {
-          throw new RangeError("Part scale cannot be zero");
         }
       }
       let changed = false;
