@@ -13066,9 +13066,6 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
             if (FIELD === "opacity" && (VALUE < 0 || VALUE > 1)) {
               throw new RangeError(`Clip part opacity must be in [0,1]: ${NAME}/${PART_ID}`);
             }
-            if ((FIELD === "scaleX" || FIELD === "scaleY") && VALUE === 0) {
-              throw new RangeError(`Clip part scale cannot be zero: ${NAME}/${PART_ID}`);
-            }
           }
         }
         previousTime = TIME;
@@ -13578,9 +13575,6 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
           }
           if (FIELD === "opacity" && (VALUE < 0 || VALUE > 1)) {
             throw new RangeError("Part opacity must be in [0,1]");
-          }
-          if ((FIELD === "scaleX" || FIELD === "scaleY") && VALUE === 0) {
-            throw new RangeError("Part scale cannot be zero");
           }
         }
         let changed = false;
@@ -38875,9 +38869,6 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
             if (FIELD === "opacity" && (VALUE < 0 || VALUE > 1)) {
               throw new RangeError("part opacity must be in [0,1]");
             }
-            if ((FIELD === "scaleX" || FIELD === "scaleY") && VALUE === 0) {
-              throw new RangeError("part scale cannot be zero");
-            }
           }
         }
         previousTime = FRAME.timeMs;
@@ -44669,9 +44660,6 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
             if (FIELD === "opacity" && (VALUE < 0 || VALUE > 1)) {
               throw new RangeError(`Clip part opacity must be in [0,1]: ${NAME}/${PART_ID}`);
             }
-            if ((FIELD === "scaleX" || FIELD === "scaleY") && VALUE === 0) {
-              throw new RangeError(`Clip part scale cannot be zero: ${NAME}/${PART_ID}`);
-            }
           }
         }
         previousTime = TIME;
@@ -45183,9 +45171,6 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
           }
           if (FIELD === "opacity" && (VALUE < 0 || VALUE > 1)) {
             throw new RangeError("Part opacity must be in [0,1]");
-          }
-          if ((FIELD === "scaleX" || FIELD === "scaleY") && VALUE === 0) {
-            throw new RangeError("Part scale cannot be zero");
           }
         }
         let changed = false;
