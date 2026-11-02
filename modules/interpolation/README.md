@@ -82,7 +82,7 @@ static renderSchema = {
 
 ### 비용
 
-표본 수집과 새로운 시각의 sample은 선언 필드 수와 경로 구조에 비례합니다. authority와 preview 모두 같은 identity·nowMs의 반복 sample/modelFor는 이미 계산한 모델을 재사용합니다. 몸체·그림자·HUD는 한 프레임 시각을 공유하며 모델을 수정하지 마세요. 같은 시각의 새 capture/capturePreview나 preview 해제는 해당 캐시를 무효화합니다. 모델과 중첩 객체·STEP 출력은 재사용하지만 capture는 원자적 검증을 위해 Map/배열/STEP 표본을 할당합니다. 전체 원본 세계를 복사하지 않으나 큰 subtree를 STEP으로 선언하면 그 비용은 발생합니다. 함수/상수 선언 방식 자체의 속도 우위나 zero-allocation을 주장하지 않습니다. 개발 중 임시 단위 검증 후 코드는 제거하고, 실제 Chromium 입력→중첩 모델→WebGL 픽셀의 고정 시나리오를 로컬에서 실행합니다.
+표본 수집과 새로운 시각의 sample은 선언 필드 수와 경로 구조에 비례합니다. authority와 preview 모두 같은 identity·nowMs의 반복 sample/modelFor는 이미 계산한 모델을 재사용합니다. 몸체·그림자·HUD는 한 프레임 시각을 공유하며 모델을 수정하지 마세요. 같은 시각의 새 capture/capturePreview나 preview 해제는 해당 캐시를 무효화합니다. 모델과 중첩 객체·STEP 출력은 재사용하지만 capture는 원자적 검증을 위해 Map/배열/STEP 표본을 할당합니다. 스칼라 STEP 표본은 순환 그래프 검사용 Set을 만들지 않고, 배열/객체 STEP을 처음 만날 때만 검사 Set을 만듭니다. 중첩 값은 같은 검사 그래프를 공유하며 원본과 분리하고 순환·accessor 거부를 유지합니다. 전체 원본 세계를 복사하지 않으나 큰 subtree를 STEP으로 선언하면 그 비용은 발생합니다. 함수/상수 선언 방식 자체의 속도 우위나 zero-allocation을 주장하지 않습니다. 개발 중 임시 단위 검증 후 코드는 제거하고, 실제 Chromium 입력→중첩 모델→WebGL 픽셀의 고정 시나리오를 로컬에서 실행합니다.
 
 렌더러·DOM·Worker·넷코드와 독립적인 presentation timeline입니다. 시뮬레이션이나 자체 타이머를 실행하지 않습니다.
 
@@ -266,3 +266,5 @@ preview의 수신 시각/필드를 authority의 시뮬레이션 이력에 덮어
 새 preview는 이 연결에서 이어집니다. teleport/reset/rollback·generation 변경·삭제는
 이 연결도 폐기합니다. 강제 `clearPreview()`는 즉시 제거이며 정상 입력 해제에 쓰지 않습니다.
 지연 없는 모드의 preview→authority 보정은 유지합니다.
+
+동결된 plain 부모의 직계 schema 필드가 모두 scalar이면 검증된 표본을 객체·schema별 약한 캐시로 재사용합니다. 변경 가능한 부모, 배열, 객체/배열 STEP 잎은 캐시하지 않습니다. 얕게 동결된 부모 아래의 가변 값은 매 capture에서 다시 복사하며, accessor·finite·필드별 검증은 최초 표본에도 그대로 적용합니다. 캐시는 원본 객체 수명을 늘리지 않습니다.

@@ -6,7 +6,7 @@ const CACHE = new WeakMap();
 const ARRAY_KEY = /^(0|[1-9][0-9]*)$/;
 
 /** STEP는 원본 참조가 아닌 분리된 plain-data 표본입니다. getter와 순환 그래프는 거부합니다. */
-export function copyRenderData(value, seen = new Set()) {
+export function copyRenderData(value, seen) {
     if (value === null || value === undefined || typeof value === 'string' || typeof value === 'boolean') {
         return value;
     }
@@ -20,6 +20,10 @@ export function copyRenderData(value, seen = new Set()) {
             Object.getPrototypeOf(value) !== null)
     ) {
         throw new TypeError('Render STEP requires finite scalar or plain data');
+    }
+    // Scalars need no cycle graph. Allocate it only for the first compound value.
+    if (seen === undefined) {
+        seen = new Set();
     }
     if (seen.has(value)) {
         throw new TypeError('Render STEP cannot contain cycles; use an entity ID');
@@ -136,6 +140,11 @@ export function compileRenderSchema(type) {
     if (!FIELDS.length) {
         throw new TypeError('renderSchema must declare at least one field');
     }
+    for (const NODE of NODES) {
+        if (NODE.children.size && [...NODE.children.values()].every((child) => child.field !== undefined)) {
+            NODE.scalarCache = new WeakMap();
+        }
+    }
     const POLICIES = compileFieldPolicies(ROOT, FIELDS);
     const PATH = pathPlan(type.renderPath, INDICES);
     const PLAN = {
@@ -191,12 +200,30 @@ export function captureRenderData(plan, source) {
         if (typeof value !== 'object') {
             throw new TypeError('Render parent must be an object: ' + node.key);
         }
-        SHAPES[node.index] = Array.isArray(value) ? value.length : -1;
+        const ARRAY = Array.isArray(value),
+            SCALAR_CACHE = node.scalarCache && !ARRAY && Object.isFrozen(value) ? node.scalarCache : null,
+            CACHED = SCALAR_CACHE?.get(value);
+        SHAPES[node.index] = ARRAY ? value.length : -1;
+        if (CACHED) {
+            let index = 0;
+            for (const CHILD of node.children.values()) {
+                VALUES[CHILD.field] = CACHED[index++];
+            }
+            return;
+        }
         for (const CHILD of node.children.values()) {
             if (Array.isArray(value) && CHILD.key === 'length') {
                 throw new TypeError('Array length belongs to render structure, not a field');
             }
             visit(CHILD, dataAt(value, CHILD.key));
+        }
+        if (SCALAR_CACHE) {
+            const SCALARS = [...node.children.values()].map((child) => VALUES[child.field]);
+            // A shallow freeze cannot protect a nested STEP object or array.
+            // Only detached scalar leaves are immutable and safe to retain.
+            if (SCALARS.every((item) => item === null || typeof item !== 'object')) {
+                SCALAR_CACHE.set(value, SCALARS);
+            }
         }
     }
     for (const NODE of plan.root.children.values()) {
