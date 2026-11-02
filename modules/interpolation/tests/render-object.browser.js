@@ -25,21 +25,21 @@ export async function runRenderObjectChecks(page) {
                 progress: 0,
             };
             color = [0, 1, 0, 1];
-            node = {
+            node = Object.freeze({
                 state: 'ready',
                 clock: 100,
                 anchor: 12,
-            };
+            });
             #renders = 0;
             update(input) {
                 if (input.held) {
                     this.x += 32;
                     this.roll.progress = 1;
-                    this.node = {
+                    this.node = Object.freeze({
                         state: 'active',
                         clock: 200,
                         anchor: 60,
-                    };
+                    });
                 }
             }
             render(renderer, model) {
