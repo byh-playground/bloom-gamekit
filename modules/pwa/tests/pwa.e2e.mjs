@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { extname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { format as PRETTIER } from 'prettier';
 
 // 샘플 게임 폴더를 만들어 배포물(dist/pwa-build.mjs·dist/pwa.js)로 PWA를 생성하고, 실제 Chromium에서
 // 첫 방문(설치 때 받는 파일 없음) → 파일 배포 후 새로고침 한 번에 새 버전 → 오프라인 새로고침에 마지막 버전을 확인한다.
@@ -157,11 +158,11 @@ try {
     }
     const PAGE_HTML = await readFile(resolve(SITE, 'index.html'), 'utf8');
     for (const TAG of [
-        '        <link rel="manifest" href="manifest.webmanifest">',
-        '        <link rel="apple-touch-icon" href="pwa/apple-touch-icon.png">',
-        '        <meta property="og:image" content="https://example.test/sample/pwa/share.png">',
-        '        <meta property="og:url" content="https://example.test/sample/">',
-        '        <meta name="description" content="오프라인으로 시작하는 샘플 게임 &amp; &quot;따옴표&quot;">',
+        '        <link rel="manifest" href="manifest.webmanifest" />',
+        '        <link rel="apple-touch-icon" href="pwa/apple-touch-icon.png" />',
+        '        <meta property="og:image" content="https://example.test/sample/pwa/share.png" />',
+        '        <meta property="og:url" content="https://example.test/sample/" />',
+        `        <meta name="description" content='오프라인으로 시작하는 샘플 게임 &amp; "따옴표"' />`,
     ]) {
         assert.ok(PAGE_HTML.includes(TAG + '\n'), TAG);
     }
@@ -178,6 +179,24 @@ try {
         assert.ok(SNAPSHOT.get(FILE).equals(await readFile(resolve(SITE, FILE))), FILE);
     }
     assert.deepEqual((await BUILD_PWA(OPTIONS(true))).changed, []);
+
+    // 2-1. 게임의 Prettier가 head를 다시 써도(`/>`·printWidth 줄바꿈) check가 통과하고 생성기가 덮어쓰지 않는다.
+    const BLOCK = (html) =>
+        html.slice(html.indexOf('<!-- bloom-pwa:start -->'), html.indexOf('<!-- bloom-pwa:end -->'));
+    assert.equal(
+        BLOCK(await PRETTIER(PAGE_HTML, { parser: 'html', printWidth: 200, tabWidth: 4 })),
+        BLOCK(PAGE_HTML),
+        'prettier leaves short generated tags unchanged',
+    );
+    const FORMATTED = await PRETTIER(PAGE_HTML, { parser: 'html', printWidth: 60, tabWidth: 4 });
+    assert.ok(FORMATTED.includes('\n            content="'), 'prettier wraps long tags');
+    await writeFile(resolve(SITE, 'index.html'), FORMATTED);
+    assert.deepEqual((await BUILD_PWA(OPTIONS(true))).changed, []);
+    assert.deepEqual((await BUILD_PWA(OPTIONS(false))).changed, []);
+    assert.equal(await readFile(resolve(SITE, 'index.html'), 'utf8'), FORMATTED);
+    await writeFile(resolve(SITE, 'index.html'), FORMATTED.replace('og:title', 'og:titl'));
+    await REJECTS(BUILD_PWA(OPTIONS(true)), /out of date.*index\.html/);
+    await writeFile(resolve(SITE, 'index.html'), PAGE_HTML);
 
     // 3. 원본이 바뀌면 check는 쓰지 않고 던진다. 잘못된 설정도 기본값 없이 던진다.
     await writeFile(resolve(SITE, 'assets/icon.svg'), ICON('#ef476f'));
