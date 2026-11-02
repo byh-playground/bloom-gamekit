@@ -307,9 +307,6 @@ export function validateAssetMetadata(metadata, idNodes) {
                     if (FIELD === 'opacity' && (VALUE < 0 || VALUE > 1)) {
                         throw new RangeError('part opacity must be in [0,1]');
                     }
-                    if ((FIELD === 'scaleX' || FIELD === 'scaleY') && VALUE === 0) {
-                        throw new RangeError('part scale cannot be zero');
-                    }
                 }
             }
             previousTime = FRAME.timeMs;

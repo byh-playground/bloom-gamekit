@@ -1,3 +1,9 @@
+## v0.40.3 (2026-11-02)
+
+호환 추가. SVG keyframe·pose channel·actor base pose에서 유한한 `scaleX: 0` / `scaleY: 0`을 허용합니다. 일반 retained mesh의 부위와 자식은 면적0으로 접혀 그려지지 않고, 크기를 복구하면 같은 geometry가 다시 보입니다. 불투명 병력의 부품을 alpha 대신 크기로 접고 펼칠 수 있습니다. 기존 양수·음수 scale, opacity 범위, 재생 시계와 GPU/CPU 계산은 바꾸지 않습니다.
+
+공통 입력 검사가 막던0만 허용하며 별도 visibility API·게임 판정·종별 분기를 추가하지 않습니다. 기존 실제 WebGL 사용자 시나리오에서 두 축·한 축 접힘/복구, socket 유한성, GPU/CPU 및 GPU 행렬 캐시를 검증합니다. 실기기는 미검증 범위입니다.
+
 ## v0.40.2 (2026-11-01)
 
 호환 성능 개선. `VectorContext`의 opt-in `mesh.orderedMeshQuads`가 반투명 retained body mesh와 뒤따르는 atlas quad·호환되는 일반 벡터 paint를 요청 순서대로 같은 indexed batch에 담습니다. 다른 병종·표정·색 때문에 게임의 painter 순서를 바꾸지 않고, 불투명 depth-write 몸통은 기존 instancing을 유지합니다.

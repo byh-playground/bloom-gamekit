@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { compileVectorAsset, compileVectorAssetFile, VECTOR_ASSET_QUALITY_PRESETS } from '../compiler.js';
 import { createVectorAssetLoader } from '../browser-loader.js';
 import { validateCompiledAsset } from '../schema.js';
+import { compilePoseChannels, samplePartTransform } from '../pose-channels.js';
 import { MeshBuilder } from '../../rendering/mesh-builder.js';
 const SOURCE_PATH = 'modules/vector-assets/assets/seed-scout.svg';
 const SOURCE = await readFile(SOURCE_PATH);
@@ -29,6 +30,24 @@ const LEGACY_ASSET = await compileVectorAssetFile(SOURCE_PATH, SOURCE_PATH, {
 });
 validateCompiledAsset(ASSET);
 validateCompiledAsset(LEGACY_ASSET);
+const COLLAPSE_METADATA = structuredClone(ASSET.metadata),
+    COLLAPSE_PART = COLLAPSE_METADATA.parts[0].id,
+    COLLAPSE_CLIP = COLLAPSE_METADATA.clips.idle;
+COLLAPSE_CLIP.loop = 'once';
+COLLAPSE_CLIP.keyframes[0].parts[COLLAPSE_PART].scaleX = 0;
+COLLAPSE_CLIP.keyframes[0].parts[COLLAPSE_PART].scaleY = 0;
+const COLLAPSE_SOURCE = SOURCE.toString().replace(
+    /(<metadata id="vector-asset">)[\s\S]*?(<\/metadata>)/,
+    (_match, start, end) => start + JSON.stringify(COLLAPSE_METADATA) + end,
+);
+const COLLAPSE_ASSET = compileVectorAsset(Buffer.from(COLLAPSE_SOURCE), SOURCE_PATH);
+const COLLAPSE_PROGRAM = compilePoseChannels(COLLAPSE_ASSET.metadata);
+assert.deepEqual(
+    samplePartTransform(COLLAPSE_PROGRAM, 'idle', 0, 0).transform.slice(0, 4),
+    [0, 0, 0, 0],
+    'authored zero scale compiles into a collapsed part transform without changing retained geometry',
+);
+assert.deepEqual(COLLAPSE_ASSET.geometry, ASSET.geometry);
 let loaderFetches = 0;
 const LOADER = createVectorAssetLoader({
     fetch: async () => {
