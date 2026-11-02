@@ -93,6 +93,7 @@ export default [
             'modules/**/tests/*.mjs',
             'modules/vector-assets/compiler.js',
             'modules/pwa/build.js',
+            'modules/boot/build.js',
             '*.config.js',
         ],
         languageOptions: { globals: GLOBALS.node },

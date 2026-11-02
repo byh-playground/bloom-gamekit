@@ -1,3 +1,15 @@
+## v0.40.5 (2026-11-02)
+
+호환 추가. 새 `boot` 모듈을 더합니다. 브라우저 runtime `dist/boot.js`와 Node ESM 도구 `dist/boot-build.mjs`입니다. 게임은 시작 단계와 가중치만 정하고 실제 개수를 보고하며, 전체 진행률·모듈 preload·`<progress>` 표시는 모듈이 맡습니다.
+
+- `listModuleGraph({ root, entry })`: 진입 모듈의 정적 import·`export … from`·문자열 리터럴 `import()`를 따라 로컬 모듈 전체를 root 기준 경로로 반환합니다(진입점 첫 항목, 너비 우선). 없는 파일·root 밖·`./`/`../`가 아닌 지정자는 던지고 `https:` 절대 URL은 뺍니다. 게임은 결과를 runtime manifest에 커밋합니다.
+- `createBoot({ stages, onChange })`: `begin(id, total)`·`advance(id, n)`·`finish(id)`·`complete()`·`fail(error)`·`subscribe`. overall = Σ weight × completed/total ÷ Σ weight이며 개수를 모르는 단계는 끝날 때까지 0입니다. ETA·시간 추정은 없습니다. 끝난 뒤의 늦은 보고는 무시하고 재시도는 전체 페이지 다시 읽기입니다.
+- `preloadModules(urls, { stage })`: 모든 URL을 한 번에 `<link rel=modulepreload>`로 요청하고 파일마다 1씩 셉니다. 나중 `import()`가 같은 URL이면 module map을 재사용하므로 그래프 깊이만큼의 요청 waterfall이 없어집니다. modulepreload 미지원 브라우저는 `fetch`로 HTTP 캐시만 데웁니다.
+- `bindBootProgress(boot, { progress, label, text })`·`yieldFrame()`: 게임이 표시 코드를 따로 쓰지 않게 합니다.
+- 배포 구조: `NODE_TOOLS`에 `boot-build`를, `MODULES`에 `boot`를 더해 manifest 모듈 목록이 `boot.js`·`boot-build.mjs`만큼 늘어납니다. manifest 목록을 고정 검사하는 게임(budmori `gamekit-provenance.cjs`)은 다음 pin 갱신 때 두 파일을 목록에 더해야 합니다.
+- 이전 화면과 다른 점: 새 모듈이라 기존 게임은 그대로입니다.
+- 시험: `modules/boot/tests/boot.e2e.mjs`(core 목록). 약 20개 fixture 그래프의 목록 순서·함정 문법 제외·없는 파일/bare 지정자 오류, 요청마다 40ms 지연 서버의 헤드리스 Chromium에서 n/N 1씩 N/N까지·overall 단조 증가 후 1·preload 뒤 `import()`의 추가 모듈 요청 0·실패 경로를 확인했습니다. budmori `src/farm-app.js` 그래프(284개)에서 목록이 espree 기준 목록과 같은 것을 임시로 대조했습니다. 실기기·Safari·Firefox와 로딩 시간 개선 폭은 측정하지 않았습니다.
+
 ## v0.40.4 (2026-11-02)
 
 호환 성능 개선. 보간 표본의 scalar STEP 복사는 순환 그래프 검사 Set을 만들지 않고, 배열/객체를 처음 복사할 때만 검사 그래프를 만듭니다. 중첩 복사에는 같은 그래프를 전달합니다. 동결된 plain 부모의 직계 schema 필드가 모두 scalar일 때만 검증된 표본을 약한 캐시로 재사용합니다. 가변 부모·배열·객체 STEP 잎은 매번 복사합니다. 원본과 표본 분리, finite 숫자·plain data·accessor·순환 거부, 필드별 시계/전환/preview 계약은 유지합니다.

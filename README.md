@@ -26,6 +26,7 @@
 - [상품·구매와 서버 확인 기준 소유 판정](./modules/store/README.md) · [mock 어댑터](./modules/store/adapters/mock/README.md)
 - [게임 저장 레코드: 이관·검증·탭 간 충돌, 저장소 어댑터](./modules/save/README.md)
 - [PWA: SVG 하나에서 manifest·아이콘·공유 이미지·sw.js 생성, 오프라인 시작과 업데이트 알림](./modules/pwa/README.md) · `node modules/pwa/tests/pwa.e2e.mjs`
+- [시작 로딩: 모듈 그래프 목록·병렬 modulepreload·단계 가중 전체 진행률](./modules/boot/README.md) · `node modules/boot/tests/boot.e2e.mjs`
 - [동적 방·공개 입장·새로고침 복구](./modules/rollback/README.md) · [Nostr 디렉터리·전송](./modules/transport/README.md)
 - [SDK 전체/분리 API와 이전](./modules/rollback/docs/api-migration.md)
 - [비활성 참가자·가용성 정책·자동 coordinator 이관](./modules/rollback/README.md#비활성-참가자와-선택형-가용성) · [독립 deadline pump 예제](./modules/rollback/examples/availability/index.html)
