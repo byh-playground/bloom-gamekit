@@ -45,7 +45,7 @@ export const BUNDLE_FILES = Object.freeze([
     ...NODE_TOOLS.map(({ name }) => `${name}.mjs`),
 ]);
 // build·publish가 dist에서 지울 수 있는 생성 파일 이름입니다.
-export const BUNDLE_FILE_NAME = /^[a-z][a-z-]*\.m?js$/;
+export const BUNDLE_FILE_NAME = /^[a-z][a-z0-9-]*\.m?js$/;
 export const FONT_ASSETS = Object.freeze([
     Object.freeze({
         source: 'modules/rendering/assets/fonts/noto-sans-kr-700-v1.json',
