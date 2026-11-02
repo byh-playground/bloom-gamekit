@@ -37,8 +37,28 @@ var OPTION_KEYS = /* @__PURE__ */ new Set([
 ]);
 var POSIX = (path) => path.split(sep).join("/");
 var IS_TEXT = (path) => TEXT_FILE.test(path);
-var CANONICAL = (path, bytes) => IS_TEXT(path) ? Buffer.from(bytes.toString("utf8").replace(/\r\n/g, "\n"), "utf8") : bytes;
-var ESCAPE = (value) => String(value).replace(/[&"<>]/g, (char) => ({ "&": "&amp;", '"': "&quot;", "<": "&lt;", ">": "&gt;" })[char]);
+var HEAD_LAYOUT = (text) => {
+  const START = text.indexOf(MARKER_START);
+  const END = text.indexOf(MARKER_END, START);
+  if (START < 0 || END < 0) {
+    return text;
+  }
+  const BLOCK = text.slice(START, END).replace(/"[^"]*"|'[^']*'|\s+/g, (token) => /^\s/.test(token) ? " " : token).replace(/ ?\/>/g, ">");
+  return text.slice(0, START) + BLOCK + text.slice(END);
+};
+var CANONICAL = (path, bytes) => {
+  if (!IS_TEXT(path)) {
+    return bytes;
+  }
+  const TEXT = bytes.toString("utf8").replace(/\r\n/g, "\n");
+  return Buffer.from(/\.html?$/i.test(path) ? HEAD_LAYOUT(TEXT) : TEXT, "utf8");
+};
+var ATTRIBUTE = (value) => {
+  const TEXT = String(value).replace(/[&<>]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[char]);
+  const DOUBLE = (TEXT.match(/"/g) ?? []).length;
+  const SINGLE = (TEXT.match(/'/g) ?? []).length;
+  return DOUBLE > SINGLE ? `'${TEXT.replace(/'/g, "&apos;")}'` : `"${TEXT.replace(/"/g, "&quot;")}"`;
+};
 function fail(message) {
   throw new Error(`buildPwa: ${message}`);
 }
@@ -127,9 +147,9 @@ async function rasterize(chromium, sources, jobs) {
             return `viewBox must have aspect ${aspect.toFixed(4)} (got ${BOX.width}x${BOX.height})`;
           }
           for (const ELEMENT of DOCUMENT.querySelectorAll("*")) {
-            for (const ATTRIBUTE of ELEMENT.attributes) {
-              if (ATTRIBUTE.localName === "href" && !ATTRIBUTE.value.startsWith("#") && !ATTRIBUTE.value.startsWith("data:")) {
-                return `must not reference external files (${ATTRIBUTE.value})`;
+            for (const ATTRIBUTE2 of ELEMENT.attributes) {
+              if (ATTRIBUTE2.localName === "href" && !ATTRIBUTE2.value.startsWith("#") && !ATTRIBUTE2.value.startsWith("data:")) {
+                return `must not reference external files (${ATTRIBUTE2.value})`;
               }
             }
           }
@@ -351,20 +371,20 @@ async function buildPwa(options) {
   const HREF = (file) => POSIX(relative(dirname(HTML_PATH), resolve(OUT_DIR, file)));
   const PAGE_URL = new URL(HTML_FILE.replace(/(^|\/)index\.html$/, "$1"), SITE_URL).href;
   const TAGS = [
-    `<link rel="manifest" href="${ESCAPE(HREF(MANIFEST_FILE))}">`,
-    `<meta name="theme-color" content="${ESCAPE(THEME_COLOR)}">`,
-    `<meta name="description" content="${ESCAPE(DESCRIPTION)}">`,
-    `<link rel="icon" type="image/png" sizes="192x192" href="${ESCAPE(HREF(IMAGES.icon192))}">`,
-    `<link rel="apple-touch-icon" href="${ESCAPE(HREF(IMAGES.apple))}">`,
-    `<meta name="apple-mobile-web-app-title" content="${ESCAPE(SHORT_NAME)}">`,
-    '<meta property="og:type" content="website">',
-    `<meta property="og:url" content="${ESCAPE(PAGE_URL)}">`,
-    `<meta property="og:title" content="${ESCAPE(NAME)}">`,
-    `<meta property="og:description" content="${ESCAPE(DESCRIPTION)}">`,
-    `<meta property="og:image" content="${ESCAPE(new URL(IMAGES.share, SITE_URL).href)}">`,
-    `<meta property="og:image:width" content="${SHARE_SIZE.width}">`,
-    `<meta property="og:image:height" content="${SHARE_SIZE.height}">`,
-    '<meta name="twitter:card" content="summary_large_image">'
+    `<link rel="manifest" href=${ATTRIBUTE(HREF(MANIFEST_FILE))} />`,
+    `<meta name="theme-color" content=${ATTRIBUTE(THEME_COLOR)} />`,
+    `<meta name="description" content=${ATTRIBUTE(DESCRIPTION)} />`,
+    `<link rel="icon" type="image/png" sizes="192x192" href=${ATTRIBUTE(HREF(IMAGES.icon192))} />`,
+    `<link rel="apple-touch-icon" href=${ATTRIBUTE(HREF(IMAGES.apple))} />`,
+    `<meta name="apple-mobile-web-app-title" content=${ATTRIBUTE(SHORT_NAME)} />`,
+    '<meta property="og:type" content="website" />',
+    `<meta property="og:url" content=${ATTRIBUTE(PAGE_URL)} />`,
+    `<meta property="og:title" content=${ATTRIBUTE(NAME)} />`,
+    `<meta property="og:description" content=${ATTRIBUTE(DESCRIPTION)} />`,
+    `<meta property="og:image" content=${ATTRIBUTE(new URL(IMAGES.share, SITE_URL).href)} />`,
+    `<meta property="og:image:width" content="${SHARE_SIZE.width}" />`,
+    `<meta property="og:image:height" content="${SHARE_SIZE.height}" />`,
+    '<meta name="twitter:card" content="summary_large_image" />'
   ];
   OUTPUTS.set(HTML_FILE, Buffer.from(headBlock(await readSource(CWD, HTML, "html"), TAGS), "utf8"));
   const CONFIG = { gamekit: `^${GAMEKIT_URL.source}$` };
