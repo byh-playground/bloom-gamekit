@@ -409,22 +409,34 @@ export class PresentationRuntime {
                 PREVIEW?.generation === GENERATION &&
                 this.#previewSelection.get(ENTITY.id) === GENERATION;
             const REUSE_FROM = SAME && !SNAP && !this.#delayMs && !PREVIEW_SELECTED;
-            const FROM = PREVIEW_SELECTED
-                ? PLAN.fields.map((_, i) => this.#value(PREVIEW, i, nowMs))
-                : REUSE_FROM
-                  ? OLD.from
-                  : !SAME && !SNAP
-                    ? INITIAL
-                        ? INITIAL.values.slice()
-                        : seedFieldValues(PLAN.policies, TARGET.values)
-                    : TARGET.values.slice();
-            if (this.#delayMs && SAME && !SNAP) {
-                for (let i = 0; i < FROM.length; i++) {
-                    FROM[i] = OLD.target.values[i];
+            // A buffered continuation starts from the previous target (a preview or reuse never applies there).
+            const FROM =
+                this.#delayMs && SAME && !SNAP
+                    ? OLD.target.values.slice()
+                    : PREVIEW_SELECTED
+                      ? PLAN.fields.map((_, i) => this.#value(PREVIEW, i, nowMs))
+                      : REUSE_FROM
+                        ? OLD.from
+                        : !SAME && !SNAP
+                          ? INITIAL
+                              ? INITIAL.values.slice()
+                              : seedFieldValues(PLAN.policies, TARGET.values)
+                          : TARGET.values.slice();
+            const VELOCITY = this.#extrapolation ? new Array(PLAN.fields.length).fill(0) : null;
+            if (this.#delayMs) {
+                // Delayed authority never reuses or extrapolates (constructor), so of the per-field rules below only a
+                // rising DECAY restarts from its new value; every other buffered field already holds the prior target.
+                if (SAME && !SNAP) {
+                    for (const I of PLAN.policies.decays) {
+                        const VALUE = TARGET.values[I],
+                            PRIOR = OLD.target.values[I];
+                        if (!RESET.has(I) && typeof VALUE === 'number' && typeof PRIOR === 'number' && VALUE > PRIOR) {
+                            FROM[I] = VALUE;
+                        }
+                    }
                 }
             }
-            const VELOCITY = this.#extrapolation ? new Array(PLAN.fields.length).fill(0) : null;
-            for (let i = 0; i < PLAN.fields.length; i++) {
+            for (let i = 0; !this.#delayMs && i < PLAN.fields.length; i++) {
                 const FIELD = PLAN.fields[i],
                     VALUE = TARGET.values[i],
                     USE_PREVIOUS_VALUE =
@@ -585,6 +597,38 @@ export class PresentationRuntime {
         this.#now = nowMs;
         return true;
     }
+    // #value for every field, with the per-track parts (clock fraction, buffered hold) read once.
+    #valuesInto(track, now, out) {
+        if (this.#extrapolation) {
+            for (let i = 0; i < out.length; i++) {
+                out[i] = this.#value(track, i, now);
+            }
+            return;
+        }
+        const FIELDS = track.plan.fields,
+            FROM_VALUES = track.from,
+            TO_VALUES = track.target.values,
+            HELD = track.heldFields,
+            HOLD = track.buffered && now < track.at + track.durationMs,
+            ALPHA = fraction(track, now, track.durationMs ?? this.#stepMs);
+        for (let i = 0; i < out.length; i++) {
+            const FIELD = FIELDS[i],
+                FROM = FROM_VALUES[i],
+                TO = TO_VALUES[i];
+            if (FROM == null || TO == null || FIELD.kind === 'discrete' || HELD?.has(i)) {
+                out[i] = HOLD ? FROM : TO;
+            } else if (FIELD.code === RenderObject.CYCLE) {
+                if (ALPHA === 1) {
+                    out[i] = TO;
+                } else {
+                    const VALUE = evaluate('number', FROM, TO < FROM ? TO + 1 : TO, ALPHA);
+                    out[i] = VALUE > 1 ? VALUE - 1 : VALUE;
+                }
+            } else {
+                out[i] = evaluate(FIELD.kind, FROM, TO, ALPHA);
+            }
+        }
+    }
     #value(track, index, now) {
         const FIELD = track.plan.fields[index],
             FROM = track.from[index],
@@ -642,9 +686,7 @@ export class PresentationRuntime {
         }
         if (TRACK.sampledAt !== nowMs) {
             const VALUES = (TRACK.sampleValues ??= new Array(TRACK.plan.fields.length));
-            for (let i = 0; i < VALUES.length; i++) {
-                VALUES[i] = this.#value(INTERVAL, i, AT);
-            }
+            this.#valuesInto(INTERVAL, AT, VALUES);
             if (TRACK.plan.path) {
                 const POINT = TRACK.pathHead ?? (TRACK.pathHead = {});
                 pointAt(TRACK.path, AT - this.#origin, POINT);

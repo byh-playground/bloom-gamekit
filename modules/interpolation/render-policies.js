@@ -37,9 +37,13 @@ export function compileFieldPolicies(root, fields) {
         CLOCKS = [],
         POSITIONS = new Array(3),
         ORIGINS = new Array(3),
-        BIRTHS = [];
+        BIRTHS = [],
+        DECAYS = [];
     for (let index = 0; index < fields.length; index++) {
         const FIELD = fields[index];
+        if (FIELD.code === R.DECAY) {
+            DECAYS.push(index);
+        }
         if (FIELD.code === R.STATE_KEY) {
             KEYS.push({
                 index,
@@ -77,6 +81,7 @@ export function compileFieldPolicies(root, fields) {
         positions: POSITIONS,
         origins: ORIGINS,
         births: BIRTHS,
+        decays: DECAYS,
     };
 }
 
