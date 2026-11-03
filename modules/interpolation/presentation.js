@@ -598,7 +598,8 @@ export class PresentationRuntime {
         return true;
     }
     // The fields #valuesInto interpolates for this interval (both ends numeric, not discrete, not held), and those
-    // plus the path axes for writing. Fixed for the interval's from/target, so computed once per interval.
+    // plus the path axes for writing. Fixed for the interval's from/target, so computed once per interval, and only
+    // when an interval is sampled a second time (a display slower than the tick rate never reuses one).
     #prepareMoving(track) {
         if (track.movingFor === track.from) {
             return;
@@ -616,7 +617,14 @@ export class PresentationRuntime {
             }
         }
         const PATH = track.plan.path,
-            WRITES = PATH ? [...new Set([...MOVING, PATH.x, PATH.y])] : MOVING;
+            WRITES = MOVING.slice();
+        if (PATH) {
+            for (const AXIS of [PATH.x, PATH.y]) {
+                if (!WRITES.includes(AXIS)) {
+                    WRITES.push(AXIS);
+                }
+            }
+        }
         track.movingFields = MOVING;
         track.movingWrites = WRITES;
         track.movingFor = track.from;
@@ -722,6 +730,7 @@ export class PresentationRuntime {
                 TRACK.sampledFrom === INTERVAL.from &&
                 TRACK.sampledHold === HOLD;
             if (MOVING_ONLY) {
+                this.#prepareMoving(INTERVAL);
                 this.#valuesInto(INTERVAL, AT, VALUES, INTERVAL.movingFields);
             } else {
                 this.#valuesInto(INTERVAL, AT, VALUES);
@@ -739,9 +748,6 @@ export class PresentationRuntime {
                     VALUES,
                     HOLD ? INTERVAL.initialShapes : INTERVAL.target.shapes,
                 );
-                if (!this.#extrapolation) {
-                    this.#prepareMoving(INTERVAL);
-                }
                 TRACK.sampledInterval = INTERVAL;
                 TRACK.sampledFrom = INTERVAL.from;
                 TRACK.sampledHold = HOLD;
