@@ -63,7 +63,7 @@ var FIXED_POINT = Object.freeze({
 });
 
 // modules/_rollback-shared/version.js
-var VERSION = "0.42.0";
+var VERSION = "0.42.1";
 
 // modules/_rollback-shared/protocol.js
 var REPLAY_FORMAT_VERSION = "0.2.0-dev";
@@ -1018,7 +1018,8 @@ var RollbackSession = class {
       this._peerTransition(peer, "disconnected", "peer-timeout", {
         silenceMs: SILENCE
       });
-    } else if (SILENCE >= this.profile.peerInterruptMs && peer.connectionState !== "disconnected") {
+    } else if (SILENCE >= this.profile.peerInterruptMs && peer.connectionState !== "disconnected" && // A peer that has not sent a valid packet yet is still joining, not interrupted.
+    peer.connectionState !== "connecting") {
       this._peerTransition(peer, "interrupted", "peer-interrupted", {
         reason: "silence",
         silenceMs: SILENCE
