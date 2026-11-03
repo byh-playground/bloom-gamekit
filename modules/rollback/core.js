@@ -737,7 +737,12 @@ export class RollbackSession {
             this._peerTransition(peer, 'disconnected', 'peer-timeout', {
                 silenceMs: SILENCE,
             });
-        } else if (SILENCE >= this.profile.peerInterruptMs && peer.connectionState !== 'disconnected') {
+        } else if (
+            SILENCE >= this.profile.peerInterruptMs &&
+            peer.connectionState !== 'disconnected' &&
+            // A peer that has not sent a valid packet yet is still joining, not interrupted.
+            peer.connectionState !== 'connecting'
+        ) {
             this._peerTransition(peer, 'interrupted', 'peer-interrupted', {
                 reason: 'silence',
                 silenceMs: SILENCE,
