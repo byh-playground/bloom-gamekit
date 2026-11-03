@@ -30,6 +30,7 @@
         "test:rollback-demo": "node project/test-scenarios.mjs demo",
         "test:rollback-live": "node project/test-scenarios.mjs live",
         "benchmark:interpolation": "npm run build && node modules/interpolation/scripts/benchmark.mjs",
+        "benchmark:interpolation-runtime": "npm run build && node modules/interpolation/scripts/runtime-benchmark.mjs",
         "benchmark:presentation": "npm run build && node modules/presentation-events/scripts/benchmark.mjs",
         "benchmark:rollback": "node modules/rollback/scripts/benchmark.mjs",
         "benchmark:rollback-primitives": "node modules/deterministic/scripts/primitives-benchmark.mjs",

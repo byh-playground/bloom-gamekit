@@ -3,6 +3,9 @@ import { RenderObject } from './render-object.js';
 import { fieldKind, compileFieldPolicies } from './render-policies.js';
 const UNSAFE = new Set(['__proto__', 'prototype', 'constructor']);
 const CACHE = new WeakMap();
+// What writeRenderModel last wrote into each reused model: {plan, values, shapes}. Callers never edit models (README),
+// so a model still holds exactly these values and a later write only needs the fields that changed.
+const WRITTEN = new WeakMap();
 const ARRAY_KEY = /^(0|[1-9][0-9]*)$/;
 
 /** STEP는 원본 참조가 아닌 분리된 plain-data 표본입니다. getter와 순환 그래프는 거부합니다. */
@@ -140,8 +143,12 @@ export function compileRenderSchema(type) {
     if (!FIELDS.length) {
         throw new TypeError('renderSchema must declare at least one field');
     }
-    for (const NODE of NODES) {
-        if (NODE.children.size && [...NODE.children.values()].every((child) => child.field !== undefined)) {
+    // Per-capture walks read these plain arrays and precomputed flags instead of iterating Maps and testing keys.
+    for (const NODE of [ROOT, ...NODES]) {
+        NODE.list = [...NODE.children.values()];
+        NODE.arrayIndex = ARRAY_KEY.test(NODE.key ?? '') ? Number(NODE.key) : -1;
+        NODE.discrete = NODE.field !== undefined && FIELDS[NODE.field].kind === 'discrete';
+        if (NODE !== ROOT && NODE.children.size && NODE.list.every((child) => child.field !== undefined)) {
             NODE.scalarCache = new WeakMap();
         }
     }
@@ -171,8 +178,13 @@ export function captureRenderData(plan, source) {
             const FIELD = plan.fields[node.field];
             if (value == null) {
                 VALUES[node.field] = value;
-            } else if (FIELD.kind === 'discrete') {
-                if (FIELD.code === RenderObject.STATE_KEY && !['number', 'boolean', 'string'].includes(typeof value)) {
+            } else if (node.discrete) {
+                if (
+                    FIELD.code === RenderObject.STATE_KEY &&
+                    typeof value !== 'number' &&
+                    typeof value !== 'boolean' &&
+                    typeof value !== 'string'
+                ) {
                     throw new TypeError('STATE_KEY requires a scalar: ' + FIELD.name);
                 }
                 VALUES[node.field] = copyRenderData(value);
@@ -204,21 +216,22 @@ export function captureRenderData(plan, source) {
             SCALAR_CACHE = node.scalarCache && !ARRAY && Object.isFrozen(value) ? node.scalarCache : null,
             CACHED = SCALAR_CACHE?.get(value);
         SHAPES[node.index] = ARRAY ? value.length : -1;
+        const LIST = node.list;
         if (CACHED) {
-            let index = 0;
-            for (const CHILD of node.children.values()) {
-                VALUES[CHILD.field] = CACHED[index++];
+            for (let index = 0; index < LIST.length; index++) {
+                VALUES[LIST[index].field] = CACHED[index];
             }
             return;
         }
-        for (const CHILD of node.children.values()) {
-            if (Array.isArray(value) && CHILD.key === 'length') {
+        for (let index = 0; index < LIST.length; index++) {
+            const CHILD = LIST[index];
+            if (ARRAY && CHILD.key === 'length') {
                 throw new TypeError('Array length belongs to render structure, not a field');
             }
             visit(CHILD, dataAt(value, CHILD.key));
         }
         if (SCALAR_CACHE) {
-            const SCALARS = [...node.children.values()].map((child) => VALUES[child.field]);
+            const SCALARS = LIST.map((child) => VALUES[child.field]);
             // A shallow freeze cannot protect a nested STEP object or array.
             // Only detached scalar leaves are immutable and safe to retain.
             if (SCALARS.every((item) => item === null || typeof item !== 'object')) {
@@ -226,7 +239,7 @@ export function captureRenderData(plan, source) {
             }
         }
     }
-    for (const NODE of plan.root.children.values()) {
+    for (const NODE of plan.root.list) {
         visit(NODE, dataAt(source, NODE.key));
     }
     return {
@@ -244,6 +257,47 @@ export function snapshotRenderModel(type, source) {
 
 /** 모델에만 씁니다. 원본 prototype/메서드/숨은 필드를 렌더에 전달하지 않습니다. */
 export function writeRenderModel(plan, model, values, shapes) {
+    const LAST = WRITTEN.get(model);
+    if (LAST?.plan === plan && sameShapes(LAST.shapes, shapes)) {
+        // Same structure as the last write: every parent object exists as written, so only changed leaves are set.
+        const PRIOR = LAST.values;
+        for (let index = 0; index < values.length; index++) {
+            const VALUE = values[index];
+            if (Object.is(VALUE, PRIOR[index])) {
+                continue;
+            }
+            PRIOR[index] = VALUE;
+            const FIELD = plan.fields[index],
+                PATH = FIELD.path;
+            let parent = model;
+            for (let depth = 0; depth < PATH.length - 1; depth++) {
+                parent = parent[PATH[depth]];
+            }
+            const KEY = PATH[PATH.length - 1];
+            if (VALUE === undefined) {
+                delete parent[KEY];
+            } else {
+                parent[KEY] = FIELD.kind === 'discrete' ? reuseData(parent[KEY], VALUE) : VALUE;
+            }
+        }
+        return model;
+    }
+    writeWholeModel(plan, model, values, shapes);
+    WRITTEN.set(model, { plan, values: values.slice(), shapes: shapes.slice() });
+    return model;
+}
+function sameShapes(a, b) {
+    if (a.length !== b.length) {
+        return false;
+    }
+    for (let index = 0; index < a.length; index++) {
+        if (!Object.is(a[index], b[index])) {
+            return false;
+        }
+    }
+    return true;
+}
+function writeWholeModel(plan, model, values, shapes) {
     function visit(parent, node) {
         const { key: KEY } = node;
         if (node.field !== undefined) {
@@ -251,7 +305,7 @@ export function writeRenderModel(plan, model, values, shapes) {
             if (VALUE === undefined) {
                 delete parent[KEY];
             } else {
-                parent[KEY] = plan.fields[node.field].kind === 'discrete' ? reuseData(parent[KEY], VALUE) : VALUE;
+                parent[KEY] = node.discrete ? reuseData(parent[KEY], VALUE) : VALUE;
             }
             return;
         }
@@ -272,16 +326,18 @@ export function writeRenderModel(plan, model, values, shapes) {
         if (ARRAY) {
             target.length = SHAPE;
         }
-        for (const CHILD of node.children.values()) {
-            if (!ARRAY || !ARRAY_KEY.test(CHILD.key) || Number(CHILD.key) < SHAPE) {
-                visit(target, CHILD);
+        const LIST = node.list;
+        for (let index = 0; index < LIST.length; index++) {
+            // A non-index key (arrayIndex -1) is always below the shape; an index key only inside the length.
+            if (!ARRAY || LIST[index].arrayIndex < SHAPE) {
+                visit(target, LIST[index]);
             }
         }
     }
-    for (const NODE of plan.root.children.values()) {
-        visit(model, NODE);
+    const ROOT_LIST = plan.root.list;
+    for (let index = 0; index < ROOT_LIST.length; index++) {
+        visit(model, ROOT_LIST[index]);
     }
-    return model;
 }
 function reuseData(out, value) {
     if (value === null || typeof value !== 'object') {

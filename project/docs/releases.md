@@ -1,3 +1,14 @@
+## v0.42.2 (2026-11-03)
+
+호환 성능 개선. 군중 규모(1,000개체 × 선언 필드 약 90개)에서 `PresentationRuntime`의 capture와 sample 비용을 줄입니다. 공개 API·시간·세대·reset 계약은 같습니다.
+
+- 스키마 컴파일 때 자식 배열·배열 인덱스·discrete 여부를 미리 계산해 capture·모델 쓰기가 Map 순회와 정규식 검사를 하지 않습니다.
+- 지연(`delayMs`) 권위 capture의 필드별 규칙은 증가한 DECAY만 새 값에서 시작하는 것뿐이므로 DECAY 필드만 봅니다(나머지는 이전 목표값).
+- sample은 트랙마다 시계 비율·보류 여부를 한 번 계산합니다.
+- 재사용 모델에 마지막으로 쓴 값을 기억해, 구조(shape)가 같으면 바뀐 필드만 씁니다. 모델을 수정하지 않는 기존 계약(README)에 기댑니다.
+- 측정: `node modules/interpolation/scripts/runtime-benchmark.mjs`(1,000개체·87필드·delay 50ms, 교대 5회, 부하 있는 PC): capture 20.7~24.4 → 16.8~18.9ms/틱(약 -25%), sample 10.9~12.6 → 8.7~9.9ms/프레임(약 -22%).
+- 시험: `project/tests/browser.e2e.mjs`의 보간 시나리오(birth·tickBoundary·strictPath·pathCorner·lifetime·rollback·teleport·preview·frameGuard·atomicAttackState) 통과.
+
 ## v0.42.1 (2026-11-03)
 
 호환 수정. rollback 코어가 아직 한 번도 유효한 패킷을 보내지 않은 상대(`connecting`)의 침묵을 `peer-interrupted`로 알리지 않습니다. 게임 시작 때 상대가 시뮬레이션을 만드는 데 `peerInterruptMs`(기본 1초)보다 오래 걸리면 "통신 중단 → 재개"가 뜨던 문제를 고칩니다(RALLY FRONTIER 싱글 시작에서 확인).
