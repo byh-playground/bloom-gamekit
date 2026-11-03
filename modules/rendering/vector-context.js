@@ -1606,25 +1606,40 @@ export class VectorContext {
         if (!region?.atlas?.regions?.has(region) || region.atlas !== this.device.textureAtlas) {
             throw new TypeError('A live region of the device texture atlas is required');
         }
-        const [SX, SY, SW, SH] = source ?? [0, 0, region.width, region.height];
-        for (const VALUE of [x, y, width, height, SX, SY, SW, SH]) {
-            finite(VALUE, 'drawRegion value');
-        }
+        const SX = source ? source[0] : 0,
+            SY = source ? source[1] : 0,
+            SW = source ? source[2] : region.width,
+            SH = source ? source[3] : region.height;
+        finite(x, 'drawRegion value');
+        finite(y, 'drawRegion value');
+        finite(width, 'drawRegion value');
+        finite(height, 'drawRegion value');
+        finite(SX, 'drawRegion value');
+        finite(SY, 'drawRegion value');
+        finite(SW, 'drawRegion value');
+        finite(SH, 'drawRegion value');
         if (SX < 0 || SY < 0 || SW <= 0 || SH <= 0 || SX + SW > region.width || SY + SH > region.height) {
             throw new RangeError('source must lie inside the region');
         }
-        const ATLAS = region.atlas;
+        // Both quad paths copy the rectangles into their own buffers before returning, so one scratch pair serves
+        // every region drawn (a crowd draws thousands per frame).
+        const ATLAS = region.atlas,
+            UV = (this._regionUv ??= new Float32Array(4)),
+            LOCAL = (this._regionLocal ??= new Float32Array(4));
+        UV[0] = (region.x + SX) / ATLAS.width;
+        UV[1] = (region.y + SY) / ATLAS.height;
+        UV[2] = SW / ATLAS.width;
+        UV[3] = SH / ATLAS.height;
+        LOCAL[0] = x;
+        LOCAL[1] = y;
+        LOCAL[2] = width;
+        LOCAL[3] = height;
         this.drawQuads({
             layer: region.layer,
             filter: region.filter,
-            uvRects: Float32Array.of(
-                (region.x + SX) / ATLAS.width,
-                (region.y + SY) / ATLAS.height,
-                SW / ATLAS.width,
-                SH / ATLAS.height,
-            ),
-            localRects: Float32Array.of(x, y, width, height),
-            color: normalizeColor(this.forceColor ?? [1, 1, 1, 1]),
+            uvRects: UV,
+            localRects: LOCAL,
+            color: this.forceColor === null ? WHITE : normalizeColor(this.forceColor),
             forceColor: this.forceColor !== null,
             alpha: this._globalAlpha,
             whiteFlash: this._filter === 'brightness(0) invert(1)',
