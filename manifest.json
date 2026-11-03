@@ -3,7 +3,7 @@
   "modules": [
     {
       "file": "interpolation.js",
-      "sha256": "a805b98739901f6dc408e3cc87d1d2a90635418a7fc0fe2d25d7b27673a29c47"
+      "sha256": "41d855b42d5c70472f75daa37b87cec96b31f17eb143b3668446d33a346462c7"
     },
     {
       "file": "rendering.js",
@@ -43,7 +43,7 @@
     },
     {
       "file": "rollback.js",
-      "sha256": "d81b0a5eafe10f7349b1c10d196acc56819ffee3f45c4ac4b81e489b43882dfd"
+      "sha256": "d0ce40f3786008b1cce583221d608b9d6922b574544933f5522996d5a1391cc5"
     },
     {
       "file": "camera.js",
