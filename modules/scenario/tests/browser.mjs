@@ -63,6 +63,7 @@ try {
         const { installShowcase: INSTALL_SHOWCASE } = await import('/modules/scenario/index.js');
         window.showcaseLayoutTest = INSTALL_SHOWCASE({
             title: '시연 게임',
+            locale: 'en',
             launcher: '#play',
             playSelector: '#play',
             durationMs: 1500,
@@ -97,6 +98,23 @@ try {
             assert.ok(BOUNDS[1] >= 0 && BOUNDS[3] <= VIEW.height + 1);
         }
     }
+    // The host's own controls follow the locale option, and the isolated demo is told the same language.
+    const COPY = await PAGE.evaluate(() => ({
+        close: document.querySelector('#bloom-showcase [data-action=close]').textContent,
+        play: document.querySelector('#bloom-showcase [data-action=play]').textContent,
+        lang: new URL(document.querySelector('#bloom-showcase iframe').src).searchParams.get('lang'),
+    }));
+    assert.deepEqual(COPY, { close: 'Close', play: 'Play now', lang: 'en' });
+    const REJECTED = await PAGE.evaluate(async () => {
+        const { installShowcase: INSTALL_SHOWCASE } = await import('/modules/scenario/index.js');
+        try {
+            INSTALL_SHOWCASE({ title: '시연 게임', locale: 'fr', launcher: '#play', timeline: [] });
+            return false;
+        } catch (error) {
+            return error instanceof TypeError;
+        }
+    });
+    assert.equal(REJECTED, true);
     await PAGE.click('#bloom-showcase [data-action=close]');
     assert.equal(await PAGE.locator('#bloom-showcase').isHidden(), true);
     assert.equal(new URL(PAGE.url()).hash, '');
