@@ -12811,7 +12811,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       return SIGNED(Number(BigInt(SIGNED(a)) * 1024n / BigInt(b)));
     }
   });
-  var VERSION = "0.42.0";
+  var VERSION = "0.42.1";
   var REPLAY_FORMAT_VERSION = "0.2.0-dev";
   var PROTOCOL_VERSION = 3;
   var CHUNK_SIZE = 16384;
@@ -13745,7 +13745,8 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         this._peerTransition(peer, "disconnected", "peer-timeout", {
           silenceMs: SILENCE
         });
-      } else if (SILENCE >= this.profile.peerInterruptMs && peer.connectionState !== "disconnected") {
+      } else if (SILENCE >= this.profile.peerInterruptMs && peer.connectionState !== "disconnected" && // A peer that has not sent a valid packet yet is still joining, not interrupted.
+      peer.connectionState !== "connecting") {
         this._peerTransition(peer, "interrupted", "peer-interrupted", {
           reason: "silence",
           silenceMs: SILENCE
