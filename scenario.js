@@ -738,6 +738,48 @@ function createScenario({ definition, createRun, requestFrame, cancelFrame, onEn
 // modules/scenario/showcase-host.js
 var DEMO_PARAMETER = "showcaseDemo";
 var ROUTE = "#/showcase";
+var TEXT = Object.freeze({
+  ko: Object.freeze({
+    dialog: (title) => title + " 소개",
+    name: (title) => title + " · 플레이 소개",
+    frame: (title) => title + " 격리된 실제 플레이",
+    launch: "▶ 소개 보기",
+    launchLabel: (title) => title + " 플레이 소개 보기",
+    controls: "소개 재생 제어",
+    pause: "일시정지",
+    resume: "이어 보기",
+    close: "닫기",
+    play: "직접 플레이",
+    replay: "다시 보기",
+    heading: "실제 플레이 소개",
+    preparing: "게임을 준비하는 중입니다.",
+    time: (elapsed, total) => elapsed + " / " + total + "초",
+    ended: "소개가 끝났습니다. 바로 플레이하거나 다시 볼 수 있습니다.",
+    failed: "소개를 실행하지 못했습니다",
+    loadFailed: "소개 게임을 불러오지 못했습니다",
+    readyTimeout: "실제 게임 준비 시간이 초과되었습니다"
+  }),
+  en: Object.freeze({
+    dialog: (title) => title + " introduction",
+    name: (title) => title + " · Gameplay intro",
+    frame: (title) => title + " isolated live gameplay",
+    launch: "▶ Watch intro",
+    launchLabel: (title) => "Watch the " + title + " gameplay intro",
+    controls: "Intro playback controls",
+    pause: "Pause",
+    resume: "Resume",
+    close: "Close",
+    play: "Play now",
+    replay: "Watch again",
+    heading: "Live gameplay intro",
+    preparing: "Getting the game ready.",
+    time: (elapsed, total) => elapsed + " / " + total + "s",
+    ended: "The intro has ended. Play now or watch it again.",
+    failed: "The intro could not run",
+    loadFailed: "The intro game could not be loaded",
+    readyTimeout: "The live game took too long to get ready"
+  })
+});
 function element(name, className = "", label = "") {
   const NODE = document.createElement(name);
   if (className) {
@@ -875,6 +917,7 @@ function style() {
 }
 function installShowcase({
   title,
+  locale,
   launcher,
   timeline,
   durationMs = 27e3,
@@ -886,33 +929,34 @@ function installShowcase({
   if (new URLSearchParams(location.search).get(DEMO_PARAMETER) === "1") {
     return null;
   }
-  if (!title || !launcher || !Array.isArray(timeline) || durationMs < 1e3) {
+  if (!title || !launcher || !Array.isArray(timeline) || durationMs < 1e3 || !Object.hasOwn(TEXT, locale)) {
     throw new TypeError("showcase configuration");
   }
+  const T = TEXT[locale];
   const CSS = style();
   const ROOT = element("section");
   ROOT.id = "bloom-showcase";
   ROOT.hidden = true;
   ROOT.setAttribute("role", "dialog");
   ROOT.setAttribute("aria-modal", "true");
-  ROOT.setAttribute("aria-label", title + " 소개");
+  ROOT.setAttribute("aria-label", T.dialog(title));
   ROOT.innerHTML = `
        <div class="bloom-showcase-shell">
          <div class="bloom-showcase-stage" data-viewport></div>
          <header class="bloom-showcase-head"><strong class="bloom-showcase-name"></strong>
-           <nav class="bloom-showcase-controls" aria-label="소개 재생 제어">
-             <button type="button" data-action="pause">일시정지</button>
-             <button type="button" data-action="close">닫기</button>
+           <nav class="bloom-showcase-controls" aria-label="${T.controls}">
+             <button type="button" data-action="pause">${T.pause}</button>
+             <button type="button" data-action="close">${T.close}</button>
            </nav>
          </header>
          <footer class="bloom-showcase-foot">
-           <div class="bloom-showcase-caption"><h2 data-copy>실제 플레이 소개</h2><p data-sub role="status" aria-live="polite">게임을 준비하는 중입니다.</p></div>
+           <div class="bloom-showcase-caption"><h2 data-copy>${T.heading}</h2><p data-sub role="status" aria-live="polite">${T.preparing}</p></div>
            <div class="bloom-showcase-actions">
-             <button class="bloom-showcase-play" type="button" data-action="play">직접 플레이</button>
-             <button type="button" data-action="replay">다시 보기</button>
+             <button class="bloom-showcase-play" type="button" data-action="play">${T.play}</button>
+             <button type="button" data-action="replay">${T.replay}</button>
            </div>
            <div class="bloom-showcase-track" aria-hidden="true"><span data-progress></span></div>
-           <small class="bloom-showcase-time" data-time>0초</small>
+           <small class="bloom-showcase-time" data-time></small>
          </footer>
        </div>`;
   document.body.append(ROOT);
@@ -924,10 +968,10 @@ function installShowcase({
   const PROGRESS = PICK("[data-progress]");
   const TIME = PICK("[data-time]");
   const PAUSE_BUTTON = PICK("[data-action=pause]");
-  NAME.textContent = title + " · 플레이 소개";
-  const LAUNCH_BUTTON = element("button", "bloom-showcase-link", "▶ 소개 보기");
+  NAME.textContent = T.name(title);
+  const LAUNCH_BUTTON = element("button", "bloom-showcase-link", T.launch);
   LAUNCH_BUTTON.type = "button";
-  LAUNCH_BUTTON.setAttribute("aria-label", title + " 플레이 소개 보기");
+  LAUNCH_BUTTON.setAttribute("aria-label", T.launchLabel(title));
   let frame = null, runner = null, focus = null, previousUrl = null;
   let held = /* @__PURE__ */ new Set(), restored = [];
   const IS_OPEN = () => !ROOT.hidden;
@@ -969,16 +1013,17 @@ function installShowcase({
   async function mount() {
     destroy();
     ROOT.dataset.chapter = "opening";
-    HEADING.textContent = "실제 플레이 소개";
-    SUBTITLE.textContent = "게임을 준비하는 중입니다.";
-    TIME.textContent = "0 / " + Math.ceil(durationMs / 1e3) + "초";
+    HEADING.textContent = T.heading;
+    SUBTITLE.textContent = T.preparing;
+    TIME.textContent = T.time(0, Math.ceil(durationMs / 1e3));
     PROGRESS.style.width = "0%";
-    PAUSE_BUTTON.textContent = "일시정지";
+    PAUSE_BUTTON.textContent = T.pause;
     const INTRO_URL = new URL(location.href);
     INTRO_URL.searchParams.set(DEMO_PARAMETER, "1");
+    INTRO_URL.searchParams.set("lang", locale);
     INTRO_URL.hash = "";
     const NEXT = document.createElement("iframe");
-    NEXT.title = title + " 격리된 실제 플레이";
+    NEXT.title = T.frame(title);
     NEXT.tabIndex = -1;
     NEXT.allow = "autoplay";
     NEXT.src = INTRO_URL.href;
@@ -986,7 +1031,7 @@ function installShowcase({
     VIEWPORT.replaceChildren(frame);
     await new Promise((resolve, reject) => {
       NEXT.addEventListener("load", resolve, { once: true });
-      NEXT.addEventListener("error", () => reject(new Error("소개 게임을 불러오지 못했습니다")), { once: true });
+      NEXT.addEventListener("error", () => reject(new Error(T.loadFailed)), { once: true });
     });
     if (!IS_OPEN() || NEXT !== frame) {
       return;
@@ -1007,7 +1052,7 @@ function installShowcase({
         } catch {
         }
         if (performance.now() - LOADED_AT > readyTimeoutMs) {
-          reject(new Error("실제 게임 준비 시간이 초과되었습니다"));
+          reject(new Error(T.readyTimeout));
           return;
         }
         requestAnimationFrame(CHECK);
@@ -1061,11 +1106,11 @@ function installShowcase({
           },
           render({ timeMs }) {
             const ELAPSED = Math.min(durationMs, timeMs);
-            TIME.textContent = Math.floor(ELAPSED / 1e3) + " / " + Math.ceil(durationMs / 1e3) + "초";
+            TIME.textContent = T.time(Math.floor(ELAPSED / 1e3), Math.ceil(durationMs / 1e3));
             PROGRESS.style.width = Math.min(100, ELAPSED / durationMs * 100) + "%";
           },
           pause() {
-            PAUSE_BUTTON.textContent = "이어 보기";
+            PAUSE_BUTTON.textContent = T.resume;
           },
           dispose() {
             QUEUE.length = 0;
@@ -1078,7 +1123,7 @@ function installShowcase({
         }
         ROOT.dataset.chapter = "final";
         HEADING.textContent = title;
-        SUBTITLE.textContent = "소개가 끝났습니다. 바로 플레이하거나 다시 볼 수 있습니다.";
+        SUBTITLE.textContent = T.ended;
         PAUSE_BUTTON.disabled = true;
       }
     });
@@ -1106,7 +1151,7 @@ function installShowcase({
         return;
       }
       ROOT.dataset.chapter = "error";
-      HEADING.textContent = "소개를 실행하지 못했습니다";
+      HEADING.textContent = T.failed;
       SUBTITLE.textContent = String(error.message || error);
       console.warn("[BLOOM showcase]", error);
     });
@@ -1138,7 +1183,7 @@ function installShowcase({
     } else if (runner.state === "paused") {
       runner.play();
     }
-    PAUSE_BUTTON.textContent = runner.state === "playing" ? "일시정지" : "이어 보기";
+    PAUSE_BUTTON.textContent = runner.state === "playing" ? T.pause : T.resume;
   };
   PICK("[data-action=play]").onclick = () => {
     stop();
