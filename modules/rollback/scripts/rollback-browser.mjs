@@ -240,7 +240,83 @@ try {
                 maxFrames: 2,
             }).frames[0].inputs[0].input[0] === 1;
         CORE.close();
+        // Liveness: a peer that has not joined yet is connecting, not interrupted;
+        // once it has sent traffic, the same silence is an interruption.
+        let now = 0;
+        const EVENTS = [];
+        const QUEUES = { a: [], b: [] };
+        const LISTENERS = { a: new Set(), b: new Set() };
+        let bOnline = false;
+        const LIVE = (id) => {
+            let state = 0;
+            const PEER = CREATE_SESSION({
+                adapter: {
+                    save: () => new Uint8Array([state]),
+                    load: (bytes) => {
+                        state = bytes[0];
+                    },
+                    validateSnapshot: (bytes) => bytes.length === 1,
+                    step: (ctx) => {
+                        state = (state + ctx.inputs.length) % 256;
+                    },
+                },
+                players: ['a', 'b'],
+                localPlayerId: id,
+                sessionId: 'liveness-browser',
+                simulationVersion: '1',
+                inputSize: 1,
+                clock: () => now,
+                onEvent: (event) => EVENTS.push(`${id}:${event.type}`),
+            });
+            const OTHER = id === 'a' ? 'b' : 'a';
+            PEER.attachTransport(OTHER, {
+                send: (bytes) => {
+                    if (id === 'a' || bOnline) {
+                        QUEUES[OTHER].push(bytes.slice());
+                    }
+                    return true;
+                },
+                subscribe: (listener) => {
+                    LISTENERS[id].add(listener);
+                    return () => LISTENERS[id].delete(listener);
+                },
+            });
+            return PEER;
+        };
+        const FLUSH = () => {
+            for (const ID of ['a', 'b']) {
+                for (const BYTES of QUEUES[ID].splice(0)) {
+                    for (const LISTENER of LISTENERS[ID]) {
+                        LISTENER(BYTES);
+                    }
+                }
+            }
+        };
+        const A = LIVE('a');
+        for (now = 0; now <= A.profile.peerInterruptMs * 2; now += 100) {
+            A.poll(now);
+        }
+        const JOINING_QUIET = !EVENTS.includes('a:peer-interrupted');
+        QUEUES.b.length = 0;
+        bOnline = true;
+        const B = LIVE('b');
+        for (let i = 0; i < 20; i++, now += 50) {
+            A.poll(now);
+            B.poll(now);
+            FLUSH();
+        }
+        bOnline = false;
+        QUEUES.a.length = 0;
+        const SILENT_FROM = now;
+        for (; now <= SILENT_FROM + A.profile.peerInterruptMs * 2; now += 100) {
+            A.poll(now);
+        }
+        const LIVENESS_PASSED = JOINING_QUIET && EVENTS.includes('a:peer-interrupted');
+        A.close();
+        B.close();
         return {
+            livenessPassed: LIVENESS_PASSED,
+            livenessEvents: EVENTS,
             loopPassed: LOOP_PASSED,
             boundedPassed: BOUNDED_PASSED,
             asyncPassed: heartbeats > 0 && asyncResult.hash === RESULT.hash && DIAGNOSTICS_RESTORED,
@@ -254,7 +330,11 @@ try {
         };
     });
     assert.ok(
-        CAPABILITIES.loopPassed && CAPABILITIES.metricsPassed && CAPABILITIES.asyncPassed && CAPABILITIES.boundedPassed,
+        CAPABILITIES.loopPassed &&
+            CAPABILITIES.metricsPassed &&
+            CAPABILITIES.asyncPassed &&
+            CAPABILITIES.boundedPassed &&
+            CAPABILITIES.livenessPassed,
         `browser capability verification: ${JSON.stringify(CAPABILITIES)}`,
     );
     const MODES = [];

@@ -57,7 +57,7 @@ Synctest는 실제 Adapter, 공통 frame 실행 경계와 StateHistory를 재사
 
 ## Runtime 상태와 실패
 
-상대의 마지막 검증된 새 패킷과 Transport 상태를 근거로 interruption/timeout/disconnection을 알린다. 잘못된 패킷과 이미 받은 sequence는 liveness를 연장하지 않는다. send(false)는 이번 송신의 backpressure이며 연결 종료의 증거로 취급하지 않는다. 연결 문제 동안 새 simulation tick은 진행하지 않고 poll/렌더를 지속할 수 있다. 같은 이력을 보존한 연결에서 유효한 traffic이 돌아오면 재개할 수 있다.
+상대의 마지막 검증된 새 패킷과 Transport 상태를 근거로 interruption/timeout/disconnection을 알린다. 잘못된 패킷과 이미 받은 sequence는 liveness를 연장하지 않는다. 아직 유효한 패킷을 한 번도 받지 않은 상대(`connecting`)의 침묵은 interruption이 아니며 `peerTimeoutMs`가 지나면 timeout으로만 알린다. send(false)는 이번 송신의 backpressure이며 연결 종료의 증거로 취급하지 않는다. 연결 문제 동안 새 simulation tick은 진행하지 않고 poll/렌더를 지속할 수 있다. 같은 이력을 보존한 연결에서 유효한 traffic이 돌아오면 재개할 수 있다.
 
 복구 시도를 소진하면 desync-unrecoverable을 한 번 알리고 failed 상태에 들어간다. 재시작·퇴장·승패는 애플리케이션 책임이며 wall-clock timeout이 게임 승자를 만들지 않는다. HELLO의 library/protocol/simulationVersion 차이는 version-mismatch로, 다른 초기 계약 차이는 handshake-mismatch로 구분한다.
 

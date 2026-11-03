@@ -1,3 +1,10 @@
+## v0.42.1 (2026-11-03)
+
+호환 수정. rollback 코어가 아직 한 번도 유효한 패킷을 보내지 않은 상대(`connecting`)의 침묵을 `peer-interrupted`로 알리지 않습니다. 게임 시작 때 상대가 시뮬레이션을 만드는 데 `peerInterruptMs`(기본 1초)보다 오래 걸리면 "통신 중단 → 재개"가 뜨던 문제를 고칩니다(RALLY FRONTIER 싱글 시작에서 확인).
+
+- 연결된 적이 있는 상대의 침묵은 그대로 interruption이고, 연결 전 상대도 `peerTimeoutMs`가 지나면 `peer-timeout`으로 알립니다.
+- 시험: `modules/rollback/scripts/rollback-browser.mjs`(network 목록)에 연결 전 2초 침묵에서는 interruption이 없고, 연결 뒤 같은 침묵에서는 있는 것을 더했습니다. 이전 코어로는 이 시험이 실패함을 확인했습니다.
+
 ## v0.42.0 (2026-11-03)
 
 비호환 API 변경. `installShowcase`가 필수 `locale`(`'ko'`|`'en'`)을 받습니다. 소개영상 호스트의 조작 문구가 한국어로 고정되어 영어 화면의 게임에서도 "일시정지·닫기·직접 플레이"가 보이던 문제를 고칩니다.
