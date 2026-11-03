@@ -435,6 +435,25 @@
     seen.delete(value);
     return RESULT;
   }
+  var CHECKED = /* @__PURE__ */ new WeakMap();
+  function checkedFields(object, node) {
+    let entry = CHECKED.get(object);
+    if (entry?.node !== node) {
+      entry = { node, checked: new Uint8Array(node.list.length) };
+      CHECKED.set(object, entry);
+    }
+    return entry.checked;
+  }
+  function fieldAt(object, key, checked, index) {
+    if (!Object.hasOwn(object, key)) {
+      return void 0;
+    }
+    if (!checked[index]) {
+      dataAt(object, key);
+      checked[index] = 1;
+    }
+    return object[key];
+  }
   function dataAt(source, key) {
     const DESCRIPTOR = Object.getOwnPropertyDescriptor(source, key);
     if (!DESCRIPTOR) {
@@ -593,12 +612,13 @@
         }
         return;
       }
+      const CHECKED_FIELDS = checkedFields(value, node);
       for (let index = 0; index < LIST.length; index++) {
         const CHILD = LIST[index];
         if (ARRAY && CHILD.key === "length") {
           throw new TypeError("Array length belongs to render structure, not a field");
         }
-        visit(CHILD, dataAt(value, CHILD.key));
+        visit(CHILD, fieldAt(value, CHILD.key, CHECKED_FIELDS, index));
       }
       if (SCALAR_CACHE) {
         const SCALARS = LIST.map((child) => VALUES[child.field]);
@@ -607,8 +627,9 @@
         }
       }
     }
-    for (const NODE of plan.root.list) {
-      visit(NODE, dataAt(source, NODE.key));
+    const ROOT_LIST = plan.root.list, ROOT_CHECKED = checkedFields(source, plan.root);
+    for (let index = 0; index < ROOT_LIST.length; index++) {
+      visit(ROOT_LIST[index], fieldAt(source, ROOT_LIST[index].key, ROOT_CHECKED, index));
     }
     return {
       values: VALUES,
@@ -642,6 +663,27 @@
     writeWholeModel(plan, model, values, shapes);
     WRITTEN.set(model, { plan, values: values.slice(), shapes: shapes.slice() });
     return model;
+  }
+  function writeRenderFields(plan, model, values, indices) {
+    const LAST = WRITTEN.get(model);
+    if (LAST?.plan !== plan) {
+      return false;
+    }
+    const PRIOR = LAST.values;
+    for (let at = 0; at < indices.length; at++) {
+      const INDEX = indices[at], VALUE = values[INDEX];
+      if (Object.is(VALUE, PRIOR[INDEX])) {
+        continue;
+      }
+      PRIOR[INDEX] = VALUE;
+      const PATH = plan.fields[INDEX].path;
+      let parent = model;
+      for (let depth = 0; depth < PATH.length - 1; depth++) {
+        parent = parent[PATH[depth]];
+      }
+      parent[PATH[PATH.length - 1]] = VALUE;
+    }
+    return true;
   }
   function sameShapes(a, b) {
     if (a.length !== b.length) {
@@ -1180,28 +1222,45 @@
       this.#now = nowMs;
       return true;
     }
-    // #value for every field, with the per-track parts (clock fraction, buffered hold) read once.
-    #valuesInto(track, now, out) {
+    // The fields #valuesInto interpolates for this interval (both ends numeric, not discrete, not held), and those
+    // plus the path axes for writing. Fixed for the interval's from/target, so computed once per interval.
+    #prepareMoving(track) {
+      if (track.movingFor === track.from) {
+        return;
+      }
+      const FIELDS = track.plan.fields, MOVING = [];
+      for (let i = 0; i < FIELDS.length; i++) {
+        if (track.from[i] != null && track.target.values[i] != null && FIELDS[i].kind !== "discrete" && !track.heldFields?.has(i)) {
+          MOVING.push(i);
+        }
+      }
+      const PATH = track.plan.path, WRITES = PATH ? [.../* @__PURE__ */ new Set([...MOVING, PATH.x, PATH.y])] : MOVING;
+      track.movingFields = MOVING;
+      track.movingWrites = WRITES;
+      track.movingFor = track.from;
+    }
+    // #value for every field (or only `indices`), with the per-track parts (clock fraction, buffered hold) read once.
+    #valuesInto(track, now, out, indices = null) {
       if (this.#extrapolation) {
         for (let i = 0; i < out.length; i++) {
           out[i] = this.#value(track, i, now);
         }
         return;
       }
-      const FIELDS = track.plan.fields, FROM_VALUES = track.from, TO_VALUES = track.target.values, HELD = track.heldFields, HOLD = track.buffered && now < track.at + track.durationMs, ALPHA = fraction2(track, now, track.durationMs ?? this.#stepMs);
-      for (let i = 0; i < out.length; i++) {
-        const FIELD = FIELDS[i], FROM = FROM_VALUES[i], TO = TO_VALUES[i];
-        if (FROM == null || TO == null || FIELD.kind === "discrete" || HELD?.has(i)) {
-          out[i] = HOLD ? FROM : TO;
+      const FIELDS = track.plan.fields, FROM_VALUES = track.from, TO_VALUES = track.target.values, HELD = track.heldFields, HOLD = track.buffered && now < track.at + track.durationMs, ALPHA = fraction2(track, now, track.durationMs ?? this.#stepMs), COUNT = indices ? indices.length : out.length;
+      for (let at = 0; at < COUNT; at++) {
+        const INDEX = indices ? indices[at] : at, FIELD = FIELDS[INDEX], FROM = FROM_VALUES[INDEX], TO = TO_VALUES[INDEX];
+        if (FROM == null || TO == null || FIELD.kind === "discrete" || HELD?.has(INDEX)) {
+          out[INDEX] = HOLD ? FROM : TO;
         } else if (FIELD.code === RenderObject.CYCLE) {
           if (ALPHA === 1) {
-            out[i] = TO;
+            out[INDEX] = TO;
           } else {
             const VALUE = evaluate("number", FROM, TO < FROM ? TO + 1 : TO, ALPHA);
-            out[i] = VALUE > 1 ? VALUE - 1 : VALUE;
+            out[INDEX] = VALUE > 1 ? VALUE - 1 : VALUE;
           }
         } else {
-          out[i] = evaluate(FIELD.kind, FROM, TO, ALPHA);
+          out[INDEX] = evaluate(FIELD.kind, FROM, TO, ALPHA);
         }
       }
     }
@@ -1257,20 +1316,33 @@
         return null;
       }
       if (TRACK.sampledAt !== nowMs) {
-        const VALUES = TRACK.sampleValues ??= new Array(TRACK.plan.fields.length);
-        this.#valuesInto(INTERVAL, AT, VALUES);
-        if (TRACK.plan.path) {
+        const VALUES = TRACK.sampleValues ??= new Array(TRACK.plan.fields.length), HOLD = INTERVAL.buffered && AT < INTERVAL.at + INTERVAL.durationMs, PATH = TRACK.plan.path;
+        const MOVING_ONLY = !this.#extrapolation && TRACK.sampledInterval === INTERVAL && TRACK.sampledFrom === INTERVAL.from && TRACK.sampledHold === HOLD;
+        if (MOVING_ONLY) {
+          this.#valuesInto(INTERVAL, AT, VALUES, INTERVAL.movingFields);
+        } else {
+          this.#valuesInto(INTERVAL, AT, VALUES);
+        }
+        if (PATH) {
           const POINT = TRACK.pathHead ?? (TRACK.pathHead = {});
           pointAt(TRACK.path, AT - this.#origin, POINT);
-          VALUES[TRACK.plan.path.x] = POINT.x;
-          VALUES[TRACK.plan.path.y] = POINT.y;
+          VALUES[PATH.x] = POINT.x;
+          VALUES[PATH.y] = POINT.y;
         }
-        writeRenderModel(
-          TRACK.plan,
-          TRACK.model,
-          VALUES,
-          INTERVAL.buffered && AT < INTERVAL.at + INTERVAL.durationMs ? INTERVAL.initialShapes : INTERVAL.target.shapes
-        );
+        if (!MOVING_ONLY || !writeRenderFields(TRACK.plan, TRACK.model, VALUES, INTERVAL.movingWrites)) {
+          writeRenderModel(
+            TRACK.plan,
+            TRACK.model,
+            VALUES,
+            HOLD ? INTERVAL.initialShapes : INTERVAL.target.shapes
+          );
+          if (!this.#extrapolation) {
+            this.#prepareMoving(INTERVAL);
+          }
+          TRACK.sampledInterval = INTERVAL;
+          TRACK.sampledFrom = INTERVAL.from;
+          TRACK.sampledHold = HOLD;
+        }
         TRACK.sampledAt = nowMs;
         this.#models.set(TRACK.model, TRACK);
       }
