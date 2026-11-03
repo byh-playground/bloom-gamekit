@@ -1,3 +1,13 @@
+## v0.42.5 (2026-11-04)
+
+호환 성능 개선. 군중 규모에서 `drawRegion`·정렬(depth) quad 제출의 호출당 할당을 없앱니다. 그리는 결과와 공개 API는 같습니다.
+
+- `drawRegion`: 원본 영역 배열·검사용 배열·`Float32Array` 두 개·흰색 배열을 만들지 않습니다. 두 quad 경로 모두 사각형을 자기 버퍼로 복사한 뒤 돌아오므로 컨텍스트당 scratch 한 쌍을 씁니다.
+- `validateQuads`: 목록·색 검사를 배열 생성 없이 반복문으로 합니다.
+- 정렬 경로 명령 기록: 명령마다 만들던 20칸 배열 리터럴 대신 칸별로 쓰고, quad 색·morph 기본값과 index 6개도 할당 없이 씁니다.
+- 측정: budmori 1,000마리 frame 벤치(교대 5회, 실제 GPU): render 50.3 → 48.9ms(-3%).
+- 시험: `paint-regions`, `run-texture-atlas`, `run-vector-gradient-clip`, `run-sprite-animation`, `project/tests/browser.e2e.mjs` 통과.
+
 ## v0.42.4 (2026-11-03)
 
 호환 성능 수정. v0.42.3의 "같은 구간은 움직이는 필드만" sample이 구간마다 필드 목록을 미리 만들어, 화면 갱신이 틱보다 느린 경우(구간을 한 번만 sample) 비용만 늘던 회귀를 고칩니다. 목록은 같은 구간을 두 번째로 sample할 때 만듭니다.
