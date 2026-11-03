@@ -1,7 +1,8 @@
 // Informational microbenchmark for PresentationRuntime at crowd scale (not FPS): one delayed capture per 50 ms tick and
 // three display frames sampling every entity, the shape a 1,000-troop farm sends (about 100 declared fields per body,
 // a nested attack object, state keys). node modules/interpolation/scripts/runtime-benchmark.mjs [entities] [ticks]
-// Optional: --dist <dir> to time another build (default ../../../dist).
+// Optional: --dist <dir> to time another build (default ../../../dist); --frames <n> display frames per tick (default 3,
+// 1 is a display slower than the tick rate, where every frame starts a new interval).
 import { performance } from 'node:perf_hooks';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -9,6 +10,8 @@ import { pathToFileURL } from 'node:url';
 const ARGS = process.argv.slice(2),
     DIST_AT = ARGS.indexOf('--dist'),
     DIST = DIST_AT >= 0 ? path.resolve(ARGS.splice(DIST_AT, 2)[1]) : null,
+    FRAMES_AT = ARGS.indexOf('--frames'),
+    FRAMES = FRAMES_AT >= 0 ? Number(ARGS.splice(FRAMES_AT, 2)[1]) : 3,
     [COUNT = 1000, TICKS = 120] = ARGS.map(Number);
 const { PresentationRuntime: PRESENTATION_RUNTIME, RenderObject: R } = await import(
     DIST ? pathToFileURL(path.join(DIST, 'interpolation.js')).href : '../../../dist/interpolation.js'
@@ -88,8 +91,8 @@ for (let tick = 0; tick < TICKS + 20; tick++) {
     if (MEASURE) {
         captureMs += performance.now() - CAPTURE_START;
     }
-    for (let frame = 0; frame < 3; frame++) {
-        const FRAME = RUNTIME.frame(tick * 50 + frame * 16),
+    for (let frame = 0; frame < FRAMES; frame++) {
+        const FRAME = RUNTIME.frame(tick * 50 + frame * Math.floor(50 / FRAMES)),
             SAMPLE_START = performance.now();
         for (const ENTITY of ENTITIES) {
             FRAME.sample(ENTITY.id, 0);
@@ -105,7 +108,8 @@ console.log(
         entities: COUNT,
         fields: Object.keys(SCHEMA).length,
         captureMsPerTick: +(captureMs / TICKS).toFixed(3),
-        sampleMsPerFrame: +(sampleMs / TICKS / 3).toFixed(3),
+        framesPerTick: FRAMES,
+        sampleMsPerFrame: +(sampleMs / TICKS / FRAMES).toFixed(3),
         scope: 'Node CPU only; not browser FPS, GPU, mobile, or renderer performance.',
     }),
 );
