@@ -740,6 +740,48 @@
       }
     };
   }
+  var TEXT = Object.freeze({
+    ko: Object.freeze({
+      dialog: (title) => title + " 소개",
+      name: (title) => title + " · 플레이 소개",
+      frame: (title) => title + " 격리된 실제 플레이",
+      launch: "▶ 소개 보기",
+      launchLabel: (title) => title + " 플레이 소개 보기",
+      controls: "소개 재생 제어",
+      pause: "일시정지",
+      resume: "이어 보기",
+      close: "닫기",
+      play: "직접 플레이",
+      replay: "다시 보기",
+      heading: "실제 플레이 소개",
+      preparing: "게임을 준비하는 중입니다.",
+      time: (elapsed, total) => elapsed + " / " + total + "초",
+      ended: "소개가 끝났습니다. 바로 플레이하거나 다시 볼 수 있습니다.",
+      failed: "소개를 실행하지 못했습니다",
+      loadFailed: "소개 게임을 불러오지 못했습니다",
+      readyTimeout: "실제 게임 준비 시간이 초과되었습니다"
+    }),
+    en: Object.freeze({
+      dialog: (title) => title + " introduction",
+      name: (title) => title + " · Gameplay intro",
+      frame: (title) => title + " isolated live gameplay",
+      launch: "▶ Watch intro",
+      launchLabel: (title) => "Watch the " + title + " gameplay intro",
+      controls: "Intro playback controls",
+      pause: "Pause",
+      resume: "Resume",
+      close: "Close",
+      play: "Play now",
+      replay: "Watch again",
+      heading: "Live gameplay intro",
+      preparing: "Getting the game ready.",
+      time: (elapsed, total) => elapsed + " / " + total + "s",
+      ended: "The intro has ended. Play now or watch it again.",
+      failed: "The intro could not run",
+      loadFailed: "The intro game could not be loaded",
+      readyTimeout: "The live game took too long to get ready"
+    })
+  });
 
   // modules/scenario/examples/modules/scenario/examples/index.html
   var CANVAS = document.querySelector("canvas");
