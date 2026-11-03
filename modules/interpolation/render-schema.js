@@ -46,6 +46,29 @@ export function copyRenderData(value, seen) {
     seen.delete(value);
     return RESULT;
 }
+// Which declared children of each source parent have been seen as own data properties: {node, checked: Uint8Array}.
+// A descriptor allocation per field per capture dominated crowd captures, so each field of each source object is
+// checked once, when it first exists; later reads are an own-property test and a plain read.
+const CHECKED = new WeakMap();
+function checkedFields(object, node) {
+    let entry = CHECKED.get(object);
+    if (entry?.node !== node) {
+        entry = { node, checked: new Uint8Array(node.list.length) };
+        CHECKED.set(object, entry);
+    }
+    return entry.checked;
+}
+// Same result as dataAt: undefined when not an own property, an accessor rejected the first time the field exists.
+function fieldAt(object, key, checked, index) {
+    if (!Object.hasOwn(object, key)) {
+        return undefined;
+    }
+    if (!checked[index]) {
+        dataAt(object, key);
+        checked[index] = 1;
+    }
+    return object[key];
+}
 function dataAt(source, key) {
     const DESCRIPTOR = Object.getOwnPropertyDescriptor(source, key);
     if (!DESCRIPTOR) {
@@ -223,12 +246,13 @@ export function captureRenderData(plan, source) {
             }
             return;
         }
+        const CHECKED_FIELDS = checkedFields(value, node);
         for (let index = 0; index < LIST.length; index++) {
             const CHILD = LIST[index];
             if (ARRAY && CHILD.key === 'length') {
                 throw new TypeError('Array length belongs to render structure, not a field');
             }
-            visit(CHILD, dataAt(value, CHILD.key));
+            visit(CHILD, fieldAt(value, CHILD.key, CHECKED_FIELDS, index));
         }
         if (SCALAR_CACHE) {
             const SCALARS = LIST.map((child) => VALUES[child.field]);
@@ -239,8 +263,10 @@ export function captureRenderData(plan, source) {
             }
         }
     }
-    for (const NODE of plan.root.list) {
-        visit(NODE, dataAt(source, NODE.key));
+    const ROOT_LIST = plan.root.list,
+        ROOT_CHECKED = checkedFields(source, plan.root);
+    for (let index = 0; index < ROOT_LIST.length; index++) {
+        visit(ROOT_LIST[index], fieldAt(source, ROOT_LIST[index].key, ROOT_CHECKED, index));
     }
     return {
         values: VALUES,
@@ -285,6 +311,29 @@ export function writeRenderModel(plan, model, values, shapes) {
     writeWholeModel(plan, model, values, shapes);
     WRITTEN.set(model, { plan, values: values.slice(), shapes: shapes.slice() });
     return model;
+}
+/** Rewrites only the listed numeric fields of a model whose last write had the same plan and shapes; false otherwise. */
+export function writeRenderFields(plan, model, values, indices) {
+    const LAST = WRITTEN.get(model);
+    if (LAST?.plan !== plan) {
+        return false;
+    }
+    const PRIOR = LAST.values;
+    for (let at = 0; at < indices.length; at++) {
+        const INDEX = indices[at],
+            VALUE = values[INDEX];
+        if (Object.is(VALUE, PRIOR[INDEX])) {
+            continue;
+        }
+        PRIOR[INDEX] = VALUE;
+        const PATH = plan.fields[INDEX].path;
+        let parent = model;
+        for (let depth = 0; depth < PATH.length - 1; depth++) {
+            parent = parent[PATH[depth]];
+        }
+        parent[PATH[PATH.length - 1]] = VALUE;
+    }
+    return true;
 }
 function sameShapes(a, b) {
     if (a.length !== b.length) {

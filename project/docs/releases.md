@@ -1,3 +1,11 @@
+## v0.42.3 (2026-11-03)
+
+호환 성능 개선. 군중 규모 `PresentationRuntime`의 capture·sample 비용을 더 줄입니다. 공개 API·시간·세대·reset 계약은 같습니다.
+
+- capture가 필드마다 `Object.getOwnPropertyDescriptor`로 객체를 만들던 것을 없앴습니다. 원본 객체·스키마별로 필드가 처음 생길 때 한 번만 accessor를 검사하고, 이후에는 own 속성 확인과 일반 읽기만 합니다(같은 객체의 필드를 나중에 getter로 바꾸는 것은 지원 계약 밖, README).
+- 같은 구간·같은 보류 상태 안의 다음 sample은 양 끝이 수치인 보간 필드와 경로 머리만 계산해 씁니다. discrete·보류·빈 필드는 이미 쓴 값 그대로입니다.
+- 측정: `node modules/interpolation/scripts/runtime-benchmark.mjs`(1,000개체·87필드, v0.42.2 빌드와 교대 3회, 부하 있는 PC): capture 10.0~10.1 → 8.3~8.9ms/틱(약 -15%), sample 5.34~5.41 → 4.85~5.13ms/프레임(약 -7%).
+
 ## v0.42.2 (2026-11-03)
 
 호환 성능 개선. 군중 규모(1,000개체 × 선언 필드 약 90개)에서 `PresentationRuntime`의 capture와 sample 비용을 줄입니다. 공개 API·시간·세대·reset 계약은 같습니다.

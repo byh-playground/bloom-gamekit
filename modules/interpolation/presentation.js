@@ -1,7 +1,7 @@
 import { bufferInterval, intervalAt, retainRemoved } from './intervals.js';
 import { capturePath, pointAt, samplePath } from './path.js';
 import { RenderObject } from './render-object.js';
-import { compileRenderSchema, captureRenderData, writeRenderModel } from './render-schema.js';
+import { compileRenderSchema, captureRenderData, writeRenderFields, writeRenderModel } from './render-schema.js';
 import { finite, ordinal } from './schema.js';
 import { evaluate } from './tracks.js';
 import {
@@ -597,8 +597,32 @@ export class PresentationRuntime {
         this.#now = nowMs;
         return true;
     }
-    // #value for every field, with the per-track parts (clock fraction, buffered hold) read once.
-    #valuesInto(track, now, out) {
+    // The fields #valuesInto interpolates for this interval (both ends numeric, not discrete, not held), and those
+    // plus the path axes for writing. Fixed for the interval's from/target, so computed once per interval.
+    #prepareMoving(track) {
+        if (track.movingFor === track.from) {
+            return;
+        }
+        const FIELDS = track.plan.fields,
+            MOVING = [];
+        for (let i = 0; i < FIELDS.length; i++) {
+            if (
+                track.from[i] != null &&
+                track.target.values[i] != null &&
+                FIELDS[i].kind !== 'discrete' &&
+                !track.heldFields?.has(i)
+            ) {
+                MOVING.push(i);
+            }
+        }
+        const PATH = track.plan.path,
+            WRITES = PATH ? [...new Set([...MOVING, PATH.x, PATH.y])] : MOVING;
+        track.movingFields = MOVING;
+        track.movingWrites = WRITES;
+        track.movingFor = track.from;
+    }
+    // #value for every field (or only `indices`), with the per-track parts (clock fraction, buffered hold) read once.
+    #valuesInto(track, now, out, indices = null) {
         if (this.#extrapolation) {
             for (let i = 0; i < out.length; i++) {
                 out[i] = this.#value(track, i, now);
@@ -610,22 +634,24 @@ export class PresentationRuntime {
             TO_VALUES = track.target.values,
             HELD = track.heldFields,
             HOLD = track.buffered && now < track.at + track.durationMs,
-            ALPHA = fraction(track, now, track.durationMs ?? this.#stepMs);
-        for (let i = 0; i < out.length; i++) {
-            const FIELD = FIELDS[i],
-                FROM = FROM_VALUES[i],
-                TO = TO_VALUES[i];
-            if (FROM == null || TO == null || FIELD.kind === 'discrete' || HELD?.has(i)) {
-                out[i] = HOLD ? FROM : TO;
+            ALPHA = fraction(track, now, track.durationMs ?? this.#stepMs),
+            COUNT = indices ? indices.length : out.length;
+        for (let at = 0; at < COUNT; at++) {
+            const INDEX = indices ? indices[at] : at,
+                FIELD = FIELDS[INDEX],
+                FROM = FROM_VALUES[INDEX],
+                TO = TO_VALUES[INDEX];
+            if (FROM == null || TO == null || FIELD.kind === 'discrete' || HELD?.has(INDEX)) {
+                out[INDEX] = HOLD ? FROM : TO;
             } else if (FIELD.code === RenderObject.CYCLE) {
                 if (ALPHA === 1) {
-                    out[i] = TO;
+                    out[INDEX] = TO;
                 } else {
                     const VALUE = evaluate('number', FROM, TO < FROM ? TO + 1 : TO, ALPHA);
-                    out[i] = VALUE > 1 ? VALUE - 1 : VALUE;
+                    out[INDEX] = VALUE > 1 ? VALUE - 1 : VALUE;
                 }
             } else {
-                out[i] = evaluate(FIELD.kind, FROM, TO, ALPHA);
+                out[INDEX] = evaluate(FIELD.kind, FROM, TO, ALPHA);
             }
         }
     }
@@ -685,22 +711,41 @@ export class PresentationRuntime {
             return null;
         }
         if (TRACK.sampledAt !== nowMs) {
-            const VALUES = (TRACK.sampleValues ??= new Array(TRACK.plan.fields.length));
-            this.#valuesInto(INTERVAL, AT, VALUES);
-            if (TRACK.plan.path) {
+            const VALUES = (TRACK.sampleValues ??= new Array(TRACK.plan.fields.length)),
+                HOLD = INTERVAL.buffered && AT < INTERVAL.at + INTERVAL.durationMs,
+                PATH = TRACK.plan.path;
+            // Inside one interval and hold state, held, discrete and missing fields keep the values already written:
+            // only the moving fields (and the path head) change from frame to frame.
+            const MOVING_ONLY =
+                !this.#extrapolation &&
+                TRACK.sampledInterval === INTERVAL &&
+                TRACK.sampledFrom === INTERVAL.from &&
+                TRACK.sampledHold === HOLD;
+            if (MOVING_ONLY) {
+                this.#valuesInto(INTERVAL, AT, VALUES, INTERVAL.movingFields);
+            } else {
+                this.#valuesInto(INTERVAL, AT, VALUES);
+            }
+            if (PATH) {
                 const POINT = TRACK.pathHead ?? (TRACK.pathHead = {});
                 pointAt(TRACK.path, AT - this.#origin, POINT);
-                VALUES[TRACK.plan.path.x] = POINT.x;
-                VALUES[TRACK.plan.path.y] = POINT.y;
+                VALUES[PATH.x] = POINT.x;
+                VALUES[PATH.y] = POINT.y;
             }
-            writeRenderModel(
-                TRACK.plan,
-                TRACK.model,
-                VALUES,
-                INTERVAL.buffered && AT < INTERVAL.at + INTERVAL.durationMs
-                    ? INTERVAL.initialShapes
-                    : INTERVAL.target.shapes,
-            );
+            if (!MOVING_ONLY || !writeRenderFields(TRACK.plan, TRACK.model, VALUES, INTERVAL.movingWrites)) {
+                writeRenderModel(
+                    TRACK.plan,
+                    TRACK.model,
+                    VALUES,
+                    HOLD ? INTERVAL.initialShapes : INTERVAL.target.shapes,
+                );
+                if (!this.#extrapolation) {
+                    this.#prepareMoving(INTERVAL);
+                }
+                TRACK.sampledInterval = INTERVAL;
+                TRACK.sampledFrom = INTERVAL.from;
+                TRACK.sampledHold = HOLD;
+            }
             TRACK.sampledAt = nowMs;
             this.#models.set(TRACK.model, TRACK);
         }
