@@ -518,9 +518,12 @@ function compileFieldPolicies(root, fields) {
     return node.fields;
   }
   descendants(root);
-  const KEYS = [], CLOCKS = [], POSITIONS = new Array(3), ORIGINS = new Array(3), BIRTHS = [];
+  const KEYS = [], CLOCKS = [], POSITIONS = new Array(3), ORIGINS = new Array(3), BIRTHS = [], DECAYS = [];
   for (let index = 0; index < fields.length; index++) {
     const FIELD = fields[index];
+    if (FIELD.code === RenderObject.DECAY) {
+      DECAYS.push(index);
+    }
     if (FIELD.code === RenderObject.STATE_KEY) {
       KEYS.push({
         index,
@@ -557,7 +560,8 @@ function compileFieldPolicies(root, fields) {
     clocks: CLOCKS,
     positions: POSITIONS,
     origins: ORIGINS,
-    births: BIRTHS
+    births: BIRTHS,
+    decays: DECAYS
   };
 }
 function inferStateResets(policies, previous, target, reset) {
@@ -635,6 +639,7 @@ function seedFieldValues(policies, values) {
 // modules/interpolation/render-schema.js
 var UNSAFE = /* @__PURE__ */ new Set(["__proto__", "prototype", "constructor"]);
 var CACHE = /* @__PURE__ */ new WeakMap();
+var WRITTEN = /* @__PURE__ */ new WeakMap();
 var ARRAY_KEY = /^(0|[1-9][0-9]*)$/;
 function copyRenderData(value, seen) {
   if (value === null || value === void 0 || typeof value === "string" || typeof value === "boolean") {
@@ -759,8 +764,11 @@ function compileRenderSchema(type) {
   if (!FIELDS.length) {
     throw new TypeError("renderSchema must declare at least one field");
   }
-  for (const NODE of NODES) {
-    if (NODE.children.size && [...NODE.children.values()].every((child) => child.field !== void 0)) {
+  for (const NODE of [ROOT, ...NODES]) {
+    NODE.list = [...NODE.children.values()];
+    NODE.arrayIndex = ARRAY_KEY.test(NODE.key ?? "") ? Number(NODE.key) : -1;
+    NODE.discrete = NODE.field !== void 0 && FIELDS[NODE.field].kind === "discrete";
+    if (NODE !== ROOT && NODE.children.size && NODE.list.every((child) => child.field !== void 0)) {
       NODE.scalarCache = /* @__PURE__ */ new WeakMap();
     }
   }
@@ -787,8 +795,8 @@ function captureRenderData(plan, source) {
       const FIELD = plan.fields[node.field];
       if (value == null) {
         VALUES[node.field] = value;
-      } else if (FIELD.kind === "discrete") {
-        if (FIELD.code === RenderObject.STATE_KEY && !["number", "boolean", "string"].includes(typeof value)) {
+      } else if (node.discrete) {
+        if (FIELD.code === RenderObject.STATE_KEY && typeof value !== "number" && typeof value !== "boolean" && typeof value !== "string") {
           throw new TypeError("STATE_KEY requires a scalar: " + FIELD.name);
         }
         VALUES[node.field] = copyRenderData(value);
@@ -815,27 +823,28 @@ function captureRenderData(plan, source) {
     }
     const ARRAY = Array.isArray(value), SCALAR_CACHE = node.scalarCache && !ARRAY && Object.isFrozen(value) ? node.scalarCache : null, CACHED = SCALAR_CACHE?.get(value);
     SHAPES[node.index] = ARRAY ? value.length : -1;
+    const LIST = node.list;
     if (CACHED) {
-      let index = 0;
-      for (const CHILD of node.children.values()) {
-        VALUES[CHILD.field] = CACHED[index++];
+      for (let index = 0; index < LIST.length; index++) {
+        VALUES[LIST[index].field] = CACHED[index];
       }
       return;
     }
-    for (const CHILD of node.children.values()) {
-      if (Array.isArray(value) && CHILD.key === "length") {
+    for (let index = 0; index < LIST.length; index++) {
+      const CHILD = LIST[index];
+      if (ARRAY && CHILD.key === "length") {
         throw new TypeError("Array length belongs to render structure, not a field");
       }
       visit(CHILD, dataAt(value, CHILD.key));
     }
     if (SCALAR_CACHE) {
-      const SCALARS = [...node.children.values()].map((child) => VALUES[child.field]);
+      const SCALARS = LIST.map((child) => VALUES[child.field]);
       if (SCALARS.every((item) => item === null || typeof item !== "object")) {
         SCALAR_CACHE.set(value, SCALARS);
       }
     }
   }
-  for (const NODE of plan.root.children.values()) {
+  for (const NODE of plan.root.list) {
     visit(NODE, dataAt(source, NODE.key));
   }
   return {
@@ -848,6 +857,45 @@ function snapshotRenderModel(type, source) {
   return writeRenderModel(PLAN, {}, DATA.values, DATA.shapes);
 }
 function writeRenderModel(plan, model, values, shapes) {
+  const LAST = WRITTEN.get(model);
+  if (LAST?.plan === plan && sameShapes(LAST.shapes, shapes)) {
+    const PRIOR = LAST.values;
+    for (let index = 0; index < values.length; index++) {
+      const VALUE = values[index];
+      if (Object.is(VALUE, PRIOR[index])) {
+        continue;
+      }
+      PRIOR[index] = VALUE;
+      const FIELD = plan.fields[index], PATH = FIELD.path;
+      let parent = model;
+      for (let depth = 0; depth < PATH.length - 1; depth++) {
+        parent = parent[PATH[depth]];
+      }
+      const KEY = PATH[PATH.length - 1];
+      if (VALUE === void 0) {
+        delete parent[KEY];
+      } else {
+        parent[KEY] = FIELD.kind === "discrete" ? reuseData(parent[KEY], VALUE) : VALUE;
+      }
+    }
+    return model;
+  }
+  writeWholeModel(plan, model, values, shapes);
+  WRITTEN.set(model, { plan, values: values.slice(), shapes: shapes.slice() });
+  return model;
+}
+function sameShapes(a, b) {
+  if (a.length !== b.length) {
+    return false;
+  }
+  for (let index = 0; index < a.length; index++) {
+    if (!Object.is(a[index], b[index])) {
+      return false;
+    }
+  }
+  return true;
+}
+function writeWholeModel(plan, model, values, shapes) {
   function visit(parent, node) {
     const { key: KEY } = node;
     if (node.field !== void 0) {
@@ -855,7 +903,7 @@ function writeRenderModel(plan, model, values, shapes) {
       if (VALUE === void 0) {
         delete parent[KEY];
       } else {
-        parent[KEY] = plan.fields[node.field].kind === "discrete" ? reuseData(parent[KEY], VALUE) : VALUE;
+        parent[KEY] = node.discrete ? reuseData(parent[KEY], VALUE) : VALUE;
       }
       return;
     }
@@ -876,16 +924,17 @@ function writeRenderModel(plan, model, values, shapes) {
     if (ARRAY) {
       target.length = SHAPE;
     }
-    for (const CHILD of node.children.values()) {
-      if (!ARRAY || !ARRAY_KEY.test(CHILD.key) || Number(CHILD.key) < SHAPE) {
-        visit(target, CHILD);
+    const LIST = node.list;
+    for (let index = 0; index < LIST.length; index++) {
+      if (!ARRAY || LIST[index].arrayIndex < SHAPE) {
+        visit(target, LIST[index]);
       }
     }
   }
-  for (const NODE of plan.root.children.values()) {
-    visit(model, NODE);
+  const ROOT_LIST = plan.root.list;
+  for (let index = 0; index < ROOT_LIST.length; index++) {
+    visit(model, ROOT_LIST[index]);
   }
-  return model;
 }
 function reuseData(out, value) {
   if (value === null || typeof value !== "object") {
@@ -1243,14 +1292,19 @@ var PresentationRuntime = class {
       }
       const PREVIEW_SELECTED = SAME && !SNAP && PREVIEW?.generation === GENERATION && this.#previewSelection.get(ENTITY.id) === GENERATION;
       const REUSE_FROM = SAME && !SNAP && !this.#delayMs && !PREVIEW_SELECTED;
-      const FROM = PREVIEW_SELECTED ? PLAN.fields.map((_, i) => this.#value(PREVIEW, i, nowMs)) : REUSE_FROM ? OLD.from : !SAME && !SNAP ? INITIAL ? INITIAL.values.slice() : seedFieldValues(PLAN.policies, TARGET.values) : TARGET.values.slice();
-      if (this.#delayMs && SAME && !SNAP) {
-        for (let i = 0; i < FROM.length; i++) {
-          FROM[i] = OLD.target.values[i];
+      const FROM = this.#delayMs && SAME && !SNAP ? OLD.target.values.slice() : PREVIEW_SELECTED ? PLAN.fields.map((_, i) => this.#value(PREVIEW, i, nowMs)) : REUSE_FROM ? OLD.from : !SAME && !SNAP ? INITIAL ? INITIAL.values.slice() : seedFieldValues(PLAN.policies, TARGET.values) : TARGET.values.slice();
+      const VELOCITY = this.#extrapolation ? new Array(PLAN.fields.length).fill(0) : null;
+      if (this.#delayMs) {
+        if (SAME && !SNAP) {
+          for (const I of PLAN.policies.decays) {
+            const VALUE = TARGET.values[I], PRIOR = OLD.target.values[I];
+            if (!RESET.has(I) && typeof VALUE === "number" && typeof PRIOR === "number" && VALUE > PRIOR) {
+              FROM[I] = VALUE;
+            }
+          }
         }
       }
-      const VELOCITY = this.#extrapolation ? new Array(PLAN.fields.length).fill(0) : null;
-      for (let i = 0; i < PLAN.fields.length; i++) {
+      for (let i = 0; !this.#delayMs && i < PLAN.fields.length; i++) {
         const FIELD = PLAN.fields[i], VALUE = TARGET.values[i], USE_PREVIOUS_VALUE = REUSE_FROM && !RESET.has(i) && typeof VALUE === "number" && typeof OLD.target.values[i] === "number" && (!PREVIEW || PREVIEW.generation !== GENERATION), PREVIOUS_VALUE = USE_PREVIOUS_VALUE ? this.#value(OLD, i, nowMs) : void 0;
         if (REUSE_FROM && !USE_PREVIOUS_VALUE) {
           FROM[i] = VALUE;
@@ -1369,6 +1423,31 @@ var PresentationRuntime = class {
     this.#now = nowMs;
     return true;
   }
+  // #value for every field, with the per-track parts (clock fraction, buffered hold) read once.
+  #valuesInto(track, now, out) {
+    if (this.#extrapolation) {
+      for (let i = 0; i < out.length; i++) {
+        out[i] = this.#value(track, i, now);
+      }
+      return;
+    }
+    const FIELDS = track.plan.fields, FROM_VALUES = track.from, TO_VALUES = track.target.values, HELD = track.heldFields, HOLD = track.buffered && now < track.at + track.durationMs, ALPHA = fraction2(track, now, track.durationMs ?? this.#stepMs);
+    for (let i = 0; i < out.length; i++) {
+      const FIELD = FIELDS[i], FROM = FROM_VALUES[i], TO = TO_VALUES[i];
+      if (FROM == null || TO == null || FIELD.kind === "discrete" || HELD?.has(i)) {
+        out[i] = HOLD ? FROM : TO;
+      } else if (FIELD.code === RenderObject.CYCLE) {
+        if (ALPHA === 1) {
+          out[i] = TO;
+        } else {
+          const VALUE = evaluate("number", FROM, TO < FROM ? TO + 1 : TO, ALPHA);
+          out[i] = VALUE > 1 ? VALUE - 1 : VALUE;
+        }
+      } else {
+        out[i] = evaluate(FIELD.kind, FROM, TO, ALPHA);
+      }
+    }
+  }
   #value(track, index, now) {
     const FIELD = track.plan.fields[index], FROM = track.from[index], TO = track.target.values[index];
     if (FROM == null || TO == null || FIELD.kind === "discrete" || track.heldFields?.has(index)) {
@@ -1422,9 +1501,7 @@ var PresentationRuntime = class {
     }
     if (TRACK.sampledAt !== nowMs) {
       const VALUES = TRACK.sampleValues ??= new Array(TRACK.plan.fields.length);
-      for (let i = 0; i < VALUES.length; i++) {
-        VALUES[i] = this.#value(INTERVAL, i, AT);
-      }
+      this.#valuesInto(INTERVAL, AT, VALUES);
       if (TRACK.plan.path) {
         const POINT = TRACK.pathHead ?? (TRACK.pathHead = {});
         pointAt(TRACK.path, AT - this.#origin, POINT);
