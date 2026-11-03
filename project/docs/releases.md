@@ -1,3 +1,12 @@
+## v0.42.0 (2026-11-03)
+
+비호환 API 변경. `installShowcase`가 필수 `locale`(`'ko'`|`'en'`)을 받습니다. 소개영상 호스트의 조작 문구가 한국어로 고정되어 영어 화면의 게임에서도 "일시정지·닫기·직접 플레이"가 보이던 문제를 고칩니다.
+
+- 모듈이 일시정지·이어 보기·닫기·직접 플레이·다시 보기·시간·준비/끝/실패 문구·오류 문구를 ko·en 두 벌로 가집니다. `title`과 `timeline`의 장 제목은 게임이 이미 푼 문자열을 넘깁니다.
+- 격리 iframe 주소에 `?lang=<locale>`을 붙입니다. 격리 장면은 저장한 언어 선택을 읽지 않으므로(i18n `isolated`) 호스트 언어를 주소로 알려 줍니다.
+- `locale`이 없거나 두 언어가 아니면 `TypeError('showcase configuration')`입니다. 이 모듈을 쓰는 게임은 pin을 올릴 때 `locale: LOCALE.locale`을 넘겨야 합니다.
+- 시험: `modules/scenario/tests/browser.mjs`에서 `locale: 'en'`일 때 닫기·직접 플레이 문구와 iframe의 `lang`, 지원하지 않는 언어의 거부를 확인합니다.
+
 ## v0.41.3 (2026-11-03)
 
 호환 수정. `buildPwa`가 쓰는 `<head>` 태그가 게임의 Prettier와 부딪히지 않습니다. 게임은 `index.html`을 `.prettierignore`에 넣지 않아도 됩니다.
@@ -568,7 +577,7 @@ context.dispose();
 - 거리장은 에셋·시드와 무관한 256x256 RGBA8 텍스처 하나입니다(R = 두 가닥 중 가까운 거리, G = 밑줄, B = 꼬임). 첫 털실 표면을 만들 때 `YarnSurfaceRenderer`가 만들고 `dispose`가 해제하며, 컨텍스트 손실 뒤에는 장치가 다른 텍스처처럼 복원합니다. `device.stats.textureCount`가 털실을 쓰는 동안 1 늘어납니다. 스케치는 이 텍스처를 쓰지 않습니다.
 - API와 uniform 배치는 그대로입니다. 샘플러는 기본 유닛 0을 쓰므로 호출마다 uniform을 설정하지 않고, 텍스처 목록은 렌더러가 한 번만 만들어 재사용합니다(그렇지 않으면 호출 수가 많은 장면에서 NVIDIA CPU가 늘었습니다).
 - GPU 시간(털실 표면 `drawSurface`, GTX 1660 Ti / UHD 630): 256개 2배 확대 -54% / -60%, 1024개 1배 -4% / -58%, 256개 1배 -34% / -56%. 호출 오버헤드가 지배하는 구간(NVIDIA 1배)은 CPU 시간이 그대로입니다(수정 전 3.4ms, 후 3.4ms).
-- 화질: 수정 전과의 평균 차이가 스티치 무늬 신호의 5~8%이고 최대 차이는 34/255, 차이가 8을 넘는 픽셀은 활성 픽셀의 0.02% 이하입니다(선 두께 0.41~3, 1~2.5배 확대). 셀 가로세로 비가 1이 아니면(출하 에셋은 약 0.92) 거리를 근사하고, 선 마스크 반경이 0.25 셀을 넘는 아주 굵은 선은 잘립니다.
+- 화질: 수정 전과의 평균 차이가 스티치 무늬 신호의 5~~8%이고 최대 차이는 34/255, 차이가 8을 넘는 픽셀은 활성 픽셀의 0.02% 이하입니다(선 두께 0.41~~3, 1~2.5배 확대). 셀 가로세로 비가 1이 아니면(출하 에셋은 약 0.92) 거리를 근사하고, 선 마스크 반경이 0.25 셀을 넘는 아주 굵은 선은 잘립니다.
 
 ## v0.24.2 (2026-10-29)
 
@@ -713,7 +722,7 @@ Prepared vector poses are reused within the same frame and pose revision, includ
 
 ## v0.14.2 (2026-10-18)
 
-`deterministic`의 값 codec에 바이너리 형식 전용 typed array 태그(`Int8Array`·`Int16Array`·`Uint16Array`·`Int32Array`·`Uint32Array`·`Float32Array`·`Float64Array`, 요소는 little-endian, 실수는 유한 값만, `-0`은 `0`)와 `omitUndefined` 옵션을 추가합니다. 이전 SDK의 디코더는 새 태그가 든 payload를 읽지 못하므로 SDK 버전이 섞인 방에서는 쓰지 마세요. 기존 payload는 바이트 그대로 읽히고 같은 값의 인코딩 결과도 바이트가 같습니다. encode는 작업 버퍼를 재사용해 반복 호출에서 확장 복사를 없앱니다(격자 상태 인코딩 0.51~1.0ms → 0.15~0.27ms). `pixel-physics`의 `savePixelWorld`는 래퍼의 복사를 없애고(`snapshot(false)`) 새 태그를 직접 쓰며, 격자 배열을 같은 값 구간으로 줄여 저장합니다. 정지한 1280×720 월드의 스냅샷이 2.77MB에서 약 24KB로 줄어 히스토리 예산과 합류·복구 전송량이 크게 줄고, 구간이 줄지 않으면 원본으로 저장합니다. 이전 `savePixelWorld` 바이트는 새 `loadPixelWorld`로 읽을 수 없으므로 두 버전의 피어를 섞지 마세요. 수치는 Node 22 한 대에서 잰 값입니다.
+`deterministic`의 값 codec에 바이너리 형식 전용 typed array 태그(`Int8Array`·`Int16Array`·`Uint16Array`·`Int32Array`·`Uint32Array`·`Float32Array`·`Float64Array`, 요소는 little-endian, 실수는 유한 값만, `-0`은 `0`)와 `omitUndefined` 옵션을 추가합니다. 이전 SDK의 디코더는 새 태그가 든 payload를 읽지 못하므로 SDK 버전이 섞인 방에서는 쓰지 마세요. 기존 payload는 바이트 그대로 읽히고 같은 값의 인코딩 결과도 바이트가 같습니다. encode는 작업 버퍼를 재사용해 반복 호출에서 확장 복사를 없앱니다(격자 상태 인코딩 0.51~~1.0ms → 0.15~~0.27ms). `pixel-physics`의 `savePixelWorld`는 래퍼의 복사를 없애고(`snapshot(false)`) 새 태그를 직접 쓰며, 격자 배열을 같은 값 구간으로 줄여 저장합니다. 정지한 1280×720 월드의 스냅샷이 2.77MB에서 약 24KB로 줄어 히스토리 예산과 합류·복구 전송량이 크게 줄고, 구간이 줄지 않으면 원본으로 저장합니다. 이전 `savePixelWorld` 바이트는 새 `loadPixelWorld`로 읽을 수 없으므로 두 버전의 피어를 섞지 마세요. 수치는 Node 22 한 대에서 잰 값입니다.
 
 ## v0.14.1 (2026-10-18)
 
