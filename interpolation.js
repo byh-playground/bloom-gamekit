@@ -1466,7 +1466,8 @@ var PresentationRuntime = class {
     return true;
   }
   // The fields #valuesInto interpolates for this interval (both ends numeric, not discrete, not held), and those
-  // plus the path axes for writing. Fixed for the interval's from/target, so computed once per interval.
+  // plus the path axes for writing. Fixed for the interval's from/target, so computed once per interval, and only
+  // when an interval is sampled a second time (a display slower than the tick rate never reuses one).
   #prepareMoving(track) {
     if (track.movingFor === track.from) {
       return;
@@ -1477,7 +1478,14 @@ var PresentationRuntime = class {
         MOVING.push(i);
       }
     }
-    const PATH = track.plan.path, WRITES = PATH ? [.../* @__PURE__ */ new Set([...MOVING, PATH.x, PATH.y])] : MOVING;
+    const PATH = track.plan.path, WRITES = MOVING.slice();
+    if (PATH) {
+      for (const AXIS of [PATH.x, PATH.y]) {
+        if (!WRITES.includes(AXIS)) {
+          WRITES.push(AXIS);
+        }
+      }
+    }
     track.movingFields = MOVING;
     track.movingWrites = WRITES;
     track.movingFor = track.from;
@@ -1562,6 +1570,7 @@ var PresentationRuntime = class {
       const VALUES = TRACK.sampleValues ??= new Array(TRACK.plan.fields.length), HOLD = INTERVAL.buffered && AT < INTERVAL.at + INTERVAL.durationMs, PATH = TRACK.plan.path;
       const MOVING_ONLY = !this.#extrapolation && TRACK.sampledInterval === INTERVAL && TRACK.sampledFrom === INTERVAL.from && TRACK.sampledHold === HOLD;
       if (MOVING_ONLY) {
+        this.#prepareMoving(INTERVAL);
         this.#valuesInto(INTERVAL, AT, VALUES, INTERVAL.movingFields);
       } else {
         this.#valuesInto(INTERVAL, AT, VALUES);
@@ -1579,9 +1588,6 @@ var PresentationRuntime = class {
           VALUES,
           HOLD ? INTERVAL.initialShapes : INTERVAL.target.shapes
         );
-        if (!this.#extrapolation) {
-          this.#prepareMoving(INTERVAL);
-        }
         TRACK.sampledInterval = INTERVAL;
         TRACK.sampledFrom = INTERVAL.from;
         TRACK.sampledHold = HOLD;
