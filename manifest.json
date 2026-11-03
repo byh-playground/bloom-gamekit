@@ -7,7 +7,7 @@
     },
     {
       "file": "rendering.js",
-      "sha256": "08a110906c3a249c892685940ff79b3ebe7bc34afe36f4c5d6b7b056572ccf8b"
+      "sha256": "f8a7869b78dc8a9dffbb695d9084e11fe022de64e9cfb73ae21d3937de80de30"
     },
     {
       "file": "vector-assets.js",
@@ -43,7 +43,7 @@
     },
     {
       "file": "rollback.js",
-      "sha256": "2bcea443c29f6a037d0fd733eb091dff2345463c6532e00a2cac1052ab29c29f"
+      "sha256": "0e5a326b0fe1d786b9f232c8f3eac60653face995f2f23ef99a8a0750e08a9a5"
     },
     {
       "file": "camera.js",

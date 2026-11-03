@@ -1983,21 +1983,29 @@ function validateQuads({
   if (!Number.isSafeInteger(layer) || layer < 0 || !Number.isInteger(COUNT) || COUNT < 1 || localRects?.length !== COUNT * 4 || matrix.length !== 6 || filter !== "linear" && filter !== "nearest") {
     throw new TypeError("drawQuads requires a layer and matching uvRects and localRects");
   }
-  for (const LIST of [uvRects, localRects, matrix]) {
-    for (let i = 0; i < LIST.length; i++) {
-      if (!Number.isFinite(LIST[i])) {
-        throw new TypeError("drawQuads value must be finite");
-      }
-    }
-  }
+  allFinite(uvRects);
+  allFinite(localRects);
+  allFinite(matrix);
   if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1) {
     throw new RangeError("alpha must be in [0,1]");
   }
-  if (!color || color.length !== 4 || Array.from(color).some((n) => !Number.isFinite(n) || n < 0 || n > 1)) {
+  if (!color || color.length !== 4) {
     throw new TypeError("RGBA channels must be in [0,1]");
+  }
+  for (let i = 0; i < 4; i++) {
+    if (!Number.isFinite(color[i]) || color[i] < 0 || color[i] > 1) {
+      throw new TypeError("RGBA channels must be in [0,1]");
+    }
   }
   if (parts !== null && pose === null) {
     throw new TypeError("parts require a pose");
+  }
+}
+function allFinite(list) {
+  for (let i = 0; i < list.length; i++) {
+    if (!Number.isFinite(list[i])) {
+      throw new TypeError("drawQuads value must be finite");
+    }
   }
 }
 
@@ -4531,6 +4539,8 @@ function packPaintRegions(names, overrides, output) {
 }
 
 // modules/rendering/ordered-triangles.js
+var WHITE = Object.freeze([1, 1, 1, 1]);
+var NO_MORPH = Object.freeze([0, 0]);
 var COMMAND_WIDTH = 32;
 var COMMAND_FLOATS = COMMAND_WIDTH * 4;
 var GEOMETRY_WIDTH = 256;
@@ -4812,27 +4822,24 @@ var OrderedTriangleBatch = class {
     this.commandCount++;
     this.commandFloats += floats;
     DATA.fill(0, AT, AT + floats);
-    DATA.set(
-      [
-        matrix[0],
-        matrix[2],
-        matrix[4],
-        alpha,
-        matrix[1],
-        matrix[3],
-        matrix[5],
-        Number(Boolean(options.forceColor)),
-        ...color,
-        ...morph,
-        Number(Boolean(options.whiteFlash)),
-        options.depth ?? 0,
-        0,
-        pose?.row ?? 0,
-        pose ? pose.kind === "matrix" ? 2 : 1 : 0,
-        0
-      ],
-      AT
-    );
+    DATA[AT] = matrix[0];
+    DATA[AT + 1] = matrix[2];
+    DATA[AT + 2] = matrix[4];
+    DATA[AT + 3] = alpha;
+    DATA[AT + 4] = matrix[1];
+    DATA[AT + 5] = matrix[3];
+    DATA[AT + 6] = matrix[5];
+    DATA[AT + 7] = Number(Boolean(options.forceColor));
+    DATA[AT + 8] = color[0];
+    DATA[AT + 9] = color[1];
+    DATA[AT + 10] = color[2];
+    DATA[AT + 11] = color[3];
+    DATA[AT + 12] = morph[0];
+    DATA[AT + 13] = morph[1];
+    DATA[AT + 14] = Number(Boolean(options.whiteFlash));
+    DATA[AT + 15] = options.depth ?? 0;
+    DATA[AT + 17] = pose?.row ?? 0;
+    DATA[AT + 18] = pose ? pose.kind === "matrix" ? 2 : 1 : 0;
     return AT;
   }
   drawMesh(mesh, options, owner, pose) {
@@ -4892,15 +4899,7 @@ var OrderedTriangleBatch = class {
     for (let i = 0; i < COUNT; i++) {
       this._reserve(4, 6, 32);
       this._state(state);
-      const AT = this._command(
-        options,
-        matrix,
-        options.color ?? [1, 1, 1, 1],
-        [0, 0],
-        options.alpha ?? 1,
-        null,
-        32
-      );
+      const AT = this._command(options, matrix, options.color ?? WHITE, NO_MORPH, options.alpha ?? 1, null, 32);
       this.commands[AT + 16] = 1;
       for (let j = 0; j < 4; j++) {
         this.commands[AT + 20 + j] = options.localRects[i * 4 + j];
@@ -4914,7 +4913,13 @@ var OrderedTriangleBatch = class {
         this.references[OFFSET] = -1 - corner;
         this.references[OFFSET + 1] = AT / 4;
       }
-      this.indices.set([BASE, BASE + 1, BASE + 2, BASE, BASE + 2, BASE + 3], this.indexCount);
+      const INDICES = this.indices, AT_INDEX = this.indexCount;
+      INDICES[AT_INDEX] = BASE;
+      INDICES[AT_INDEX + 1] = BASE + 1;
+      INDICES[AT_INDEX + 2] = BASE + 2;
+      INDICES[AT_INDEX + 3] = BASE;
+      INDICES[AT_INDEX + 4] = BASE + 2;
+      INDICES[AT_INDEX + 5] = BASE + 3;
       this.indexCount += 6;
     }
     this.device.stats.spriteRuns += COUNT;
@@ -5434,7 +5439,7 @@ void main() {
 // modules/rendering/mesh-renderer.js
 var IDENTITY2 = Object.freeze([1, 0, 0, 1, 0, 0]);
 var ZERO_MORPH = Object.freeze([0, 0]);
-var WHITE = Object.freeze([1, 1, 1, 1]);
+var WHITE2 = Object.freeze([1, 1, 1, 1]);
 var ATTRIBUTES = [
   {
     name: "a_position",
@@ -6198,7 +6203,7 @@ var MeshRenderer = class {
       morph: MORPH = [0, 0],
       parts: PARTS = null,
       pose: POSE = null,
-      color: COLOR = WHITE,
+      color: COLOR = WHITE2,
       paintRegions: PAINT_REGIONS = null,
       forceColor: FORCE_COLOR = false,
       alpha: ALPHA = 1,
@@ -6471,7 +6476,7 @@ var MeshRenderer = class {
     morph = [0, 0],
     parts = null,
     pose = null,
-    color = WHITE,
+    color = WHITE2,
     paintRegions = null,
     forceColor = false,
     alpha = 1,
@@ -7422,7 +7427,7 @@ var SILHOUETTE_OFFSETS = Object.freeze(
   )
 );
 var IDENTITY3 = Object.freeze([1, 0, 0, 1, 0, 0]);
-var WHITE2 = Object.freeze([1, 1, 1, 1]);
+var WHITE3 = Object.freeze([1, 1, 1, 1]);
 function composeTransform(a, b) {
   return [
     a[0] * b[0] + a[2] * b[1],
@@ -8915,25 +8920,33 @@ var VectorContext = class {
     if (!region?.atlas?.regions?.has(region) || region.atlas !== this.device.textureAtlas) {
       throw new TypeError("A live region of the device texture atlas is required");
     }
-    const [SX, SY, SW, SH] = source ?? [0, 0, region.width, region.height];
-    for (const VALUE of [x, y, width, height, SX, SY, SW, SH]) {
-      finite(VALUE, "drawRegion value");
-    }
+    const SX = source ? source[0] : 0, SY = source ? source[1] : 0, SW = source ? source[2] : region.width, SH = source ? source[3] : region.height;
+    finite(x, "drawRegion value");
+    finite(y, "drawRegion value");
+    finite(width, "drawRegion value");
+    finite(height, "drawRegion value");
+    finite(SX, "drawRegion value");
+    finite(SY, "drawRegion value");
+    finite(SW, "drawRegion value");
+    finite(SH, "drawRegion value");
     if (SX < 0 || SY < 0 || SW <= 0 || SH <= 0 || SX + SW > region.width || SY + SH > region.height) {
       throw new RangeError("source must lie inside the region");
     }
-    const ATLAS = region.atlas;
+    const ATLAS = region.atlas, UV = this._regionUv ??= new Float32Array(4), LOCAL = this._regionLocal ??= new Float32Array(4);
+    UV[0] = (region.x + SX) / ATLAS.width;
+    UV[1] = (region.y + SY) / ATLAS.height;
+    UV[2] = SW / ATLAS.width;
+    UV[3] = SH / ATLAS.height;
+    LOCAL[0] = x;
+    LOCAL[1] = y;
+    LOCAL[2] = width;
+    LOCAL[3] = height;
     this.drawQuads({
       layer: region.layer,
       filter: region.filter,
-      uvRects: Float32Array.of(
-        (region.x + SX) / ATLAS.width,
-        (region.y + SY) / ATLAS.height,
-        SW / ATLAS.width,
-        SH / ATLAS.height
-      ),
-      localRects: Float32Array.of(x, y, width, height),
-      color: normalizeColor(this.forceColor ?? [1, 1, 1, 1]),
+      uvRects: UV,
+      localRects: LOCAL,
+      color: this.forceColor === null ? WHITE3 : normalizeColor(this.forceColor),
       forceColor: this.forceColor !== null,
       alpha: this._globalAlpha,
       whiteFlash: this._filter === "brightness(0) invert(1)"
@@ -8993,7 +9006,7 @@ var VectorContext = class {
         ...instances,
         morph,
         parts,
-        color: this.forceColor ?? WHITE2,
+        color: this.forceColor ?? WHITE3,
         forceColor: this.forceColor !== null,
         alpha: this._globalAlpha,
         whiteFlash: this._filter === "brightness(0) invert(1)",
