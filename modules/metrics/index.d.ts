@@ -1,5 +1,5 @@
 /** metrics 공개 계약. 수집 서버와 공유하는 전송 계약은 protocol.js가 소유합니다. */
-export const SCHEMA_VERSION: 1;
+export const SCHEMA_VERSION: 2;
 export function reviveBytes(key: string, value: unknown): unknown;
 
 export class MetricsAdapter {
@@ -59,12 +59,13 @@ export interface MetricsMatch {
     replay: unknown;
 }
 export interface MetricsBatch {
-    schemaVersion: 1;
+    schemaVersion: 2;
     game: string;
     build: string;
     sessionId: string;
     seq: number;
     playMs: number;
+    tester: string | null;
     events: MetricsEvent[];
     matches: MetricsMatch[];
 }
@@ -82,6 +83,8 @@ export interface Metrics {
     readonly sessionId: string;
     readonly playMs: number;
     readonly droppedBatches: number;
+    readonly tester: string | null;
+    setTester(name: string | null): void;
     track(category: string, target: string, action: string, props?: Record<string, unknown>): void;
     recordMatch(recorder: MatchRecorder, summary?: Record<string, unknown>): Promise<void>;
     flush(): Promise<void>;

@@ -1,3 +1,11 @@
+## v0.43.0 (2026-11-04)
+
+비호환 변경(metrics 전송 계약). 집계에서 개발자 본인 플레이를 가릅니다. 배치가 `schemaVersion: 2`와 `tester`를 담고, 수집 서버는 schema 1 배치를 400으로 거절합니다. 운영 서버는 이 버전과 함께 다시 배포했습니다. 다른 모듈의 동작은 같습니다.
+
+- `metrics`: 주소의 `?metrics-tester=<기기 이름>`을 이 기기에 기억하고(`off`로 해제), `setTester(name | null)`·`tester`를 추가했습니다. iframe embed 게임은 설정 화면에서 `setTester`를 부릅니다.
+- 서버: 세션·경기에 `tester`와 요청 Origin을 저장하고, `GET /stats`를 `users`·`tester`(+`devices`)·`dev`(localhost 등) 세 칸으로 돌려줍니다. 원본 IP는 저장하지 않습니다.
+- 시험: `modules/metrics/tests/metrics.e2e.mjs`에 이름표 기억·해제 뒤 유지·세 칸 집계를 추가했습니다.
+
 ## v0.42.6 (2026-11-04)
 
 호환 기능 추가. 게임 지표를 자체 수집하는 `metrics` 모듈(`dist/metrics.js`)과 Cloudflare Workers + D1 수집 서버(`modules/metrics/server/`)를 추가합니다. 기존 번들의 동작은 같습니다.

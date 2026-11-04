@@ -128,7 +128,7 @@ try {
     // 계약 밖 요청은 저장하지 않고 이유와 함께 거절합니다.
     const POST = (body) => fetch(API + '/batch', { method: 'POST', body });
     assert.deepEqual(
-        [(await POST('{"schemaVersion":2}')).status, (await POST('not json')).status],
+        [(await POST('{"schemaVersion":1}')).status, (await POST('not json')).status],
         [400, 400],
         'schema and JSON errors are rejected',
     );
@@ -153,20 +153,28 @@ try {
         }
     });
     await new Promise((done) => site.listen(0, '127.0.0.1', done));
-    const PAGE_URL = `http://127.0.0.1:${site.address().port}/modules/bm/examples/index.html#tab=metrics&server=${API}&seed=7`;
+    const PAGE_PATH = `http://127.0.0.1:${site.address().port}/modules/bm/examples/index.html`;
+    const PAGE_HASH = `#tab=metrics&server=${API}&seed=7`;
+    const PAGE_URL = PAGE_PATH + PAGE_HASH;
     browser = await chromium.launch({ headless: true });
 
+    // 데스크톱은 로컬 페이지라 '개발', 터치 기기는 ?metrics-tester=phone으로 개발자 기기('나')가 됩니다.
     const DEVICES = [
-        ['desktop', { viewport: { width: 1280, height: 800 } }],
-        ['touch', { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 }],
+        ['desktop', { viewport: { width: 1280, height: 800 } }, '', 'dev'],
+        [
+            'touch',
+            { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 },
+            '?metrics-tester=phone',
+            'tester',
+        ],
     ];
     const SESSIONS = [];
-    for (const [INDEX, [NAME, OPTIONS]] of DEVICES.entries()) {
+    for (const [NAME, OPTIONS, QUERY, AUDIENCE] of DEVICES) {
         const CONTEXT = await browser.newContext(OPTIONS);
         const PAGE = await CONTEXT.newPage();
         const ERRORS = [];
         PAGE.on('pageerror', (error) => ERRORS.push(error.message));
-        await PAGE.goto(PAGE_URL);
+        await PAGE.goto(PAGE_PATH + QUERY + PAGE_HASH);
         await PAGE.waitForSelector('#panel-metrics:not([hidden])');
         // 세션 시작 전부터 페이지 시계를 고정합니다. 플레이 시간·heartbeat·플러시 간격을 실제 시간 없이 진행합니다.
         await PAGE.clock.install({ time: new Date('2026-11-04T00:00:00Z') });
@@ -193,9 +201,14 @@ try {
         await PRESS('#metrics-end');
         const AFTER_MATCH = await until(async () => {
             const STATE = await OUTPUT();
-            return STATE.server?.matches === INDEX + 1 && STATE;
-        }, `${NAME} match reaches the server`);
-        assert.equal(AFTER_MATCH.server.sessions, INDEX + 1, `${NAME}: the server counts this session`);
+            return STATE.server?.[AUDIENCE].matches === 1 && STATE;
+        }, `${NAME} match reaches the server as ${AUDIENCE}`);
+        assert.equal(
+            AFTER_MATCH.server[AUDIENCE].sessions,
+            1,
+            `${NAME}: the server counts this session as ${AUDIENCE}`,
+        );
+        assert.equal(AFTER_MATCH.server.users.sessions, 0, `${NAME}: local and tester sessions are not users`);
         assert.equal(AFTER_MATCH.hits, 0, `${NAME}: a new match starts after the record`);
 
         // 에뮬레이션: headless Chromium은 탭 숨김을 바꾸지 못하므로 visibilityState만 바꿔 같은 이벤트를 보냅니다.
@@ -224,6 +237,26 @@ try {
         // 실제 페이지 이동: pagehide에서 session_end를 sendBeacon으로 보냅니다.
         await PAGE.goto('about:blank');
         SESSIONS.push({ name: NAME, id: SESSION_ID, playMs: PLAYED + 1000 });
+        if (AUDIENCE === 'tester') {
+            // 이름표는 이 기기에 기억됩니다. 주소 옵션 없이 다시 열어도 '나'이고, 세션 중간에 해제해도 그 세션은 '나'로 남습니다.
+            await PAGE.clock.resume();
+            await PAGE.goto(PAGE_URL);
+            await PAGE.waitForSelector('#panel-metrics:not([hidden])');
+            await PRESS('#metrics-connect');
+            assert.equal((await OUTPUT()).tester, 'phone', 'the tester label is remembered on this device');
+            await PRESS('#metrics-tester');
+            assert.equal((await OUTPUT()).tester, null, 'the tester switch clears the label');
+            await PRESS('#metrics-stats');
+            const AFTER_CLEAR = await until(async () => {
+                const STATE = await OUTPUT();
+                return STATE.server?.tester.sessions === 2 && STATE;
+            }, 'second tester session');
+            assert.deepEqual(
+                [AFTER_CLEAR.server.users.sessions, AFTER_CLEAR.server.tester.devices],
+                [0, { phone: 2 }],
+                'a session marked once stays the developer',
+            );
+        }
         assert.deepEqual(ERRORS, [], `${NAME}: no page errors`);
         await CONTEXT.close();
     }
@@ -239,6 +272,31 @@ try {
         }, `${SESSION.name} session_end beacon in D1`);
         assert.equal(ROW.play_ms, SESSION.playMs, `${SESSION.name}: D1 keeps the visible play time`);
     }
+    // 게임 페이지(itch.io 등 원격 출처)에서 온 배치만 유저로 셉니다. 브라우저가 붙이는 Origin을 그대로 흉내 냅니다.
+    const USER_BATCH = {
+        schemaVersion: 2,
+        game: GAME,
+        build: 'example',
+        sessionId: 'remote-user',
+        seq: 0,
+        playMs: 2500,
+        tester: null,
+        events: [{ type: 'session_start', t: 0 }],
+        matches: [],
+    };
+    const USER_POST = await fetch(API + '/batch', {
+        method: 'POST',
+        headers: { Origin: 'https://html-classic.itch.zone' },
+        body: JSON.stringify(USER_BATCH),
+    });
+    assert.equal(USER_POST.status, 200);
+    const BY_AUDIENCE = await (await fetch(`${API}/stats?game=${GAME}`)).json();
+    assert.deepEqual(
+        ['users', 'tester', 'dev'].map((name) => BY_AUDIENCE[name].sessions),
+        [1, 2, 1],
+        'stats split users, the developer and local builds',
+    );
+    assert.equal(BY_AUDIENCE.users.avgPlayMs, 2500, 'user play time excludes the developer');
     const SOLO = DATABASE.prepare('SELECT mode, seed, summary, replay FROM matches WHERE game = ?').all(GAME);
     assert.equal(SOLO.length, 2, 'one D1 row per finished match');
     for (const MATCH of SOLO) {
@@ -300,7 +358,7 @@ try {
     );
     await MULTI_CONTEXT.close();
     const STATS = await (await fetch(`${API}/stats?game=gamekit-e2e`)).json();
-    assert.deepEqual([STATS.sessions, STATS.matches], [2, 1], 'two peers, one stored match');
+    assert.deepEqual([STATS.dev.sessions, STATS.dev.matches], [2, 1], 'two peers, one stored match');
     const ONLINE_ROW = DATABASE.prepare('SELECT mode, seed, players, replay FROM matches WHERE match_id = ?').get(
         'online-1',
     );
