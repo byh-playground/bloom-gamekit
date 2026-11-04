@@ -2,13 +2,147 @@
 
 WebRTC 바이너리 전송과 Nostr 방·시그널링을 제공합니다. 게임 상태와 세션을 만들지 않습니다.
 
-공개 API: `WebRTCTransport, createWebRTCPeer, createNostrRoom, createNostrGroupRoom, createNostrDynamicRoom, createNostrSignaler, nostrCrypto`. 외부 import가 없는 `dist/transport.js` 하나로 사용할 수 있습니다. 도구 설치나 다른 모듈 초기화는 필요하지 않습니다.
+공개 API: `WebRTCTransport, createWebRTCPeer, createNostrRoom, createLocalSignaler, createNostrGroupRoom, createNostrDynamicRoom, createNostrPublicRoom, createNostrSignaler, nostrCrypto`. 외부 import가 없는 `dist/transport.js` 하나로 사용할 수 있습니다. 도구 설치나 다른 모듈 초기화는 필요하지 않습니다.
 
 기존 rollback-netcode의 동일 함수를 책임별로 이동했습니다. [공개 타입](./index.d.ts), [개발 계약](../rollback/CONTRACT.md), [상세 사용법과 이전](../rollback/docs/api-migration.md)을 따릅니다. 이 모듈은 게임 규칙·권위 상태를 정의하지 않습니다.
 
 ## 소유권과 비용
 
 방 close와 session close는 각 소유자의 자원을 정리합니다. Nostr 시그널링은 공개 서명 메시지이며 민감한 게임 상태를 넣지 않습니다. 실제 통신은 명시적으로 생성할 때만 시작합니다. 단순 import에는 접속 부수 효과가 없습니다.
+
+## 1:1 방 연결과 재연결 (`createNostrRoom`)
+
+4자리 코드로 만나는 **정확히 두 참가자**의 연결입니다. 신호(찾기·SDP·ICE)는 Nostr로, 게임 데이터는 WebRTC로 보내며, 연결을 잃으면 같은 방에서 스스로 다시 잇습니다. 연결 수명주기만 소유합니다. 게임 메시지의 내용·권위 상태·snapshot 동기화는 정의하지 않고, 앱이 앱 채널 위에 자기 프로토콜을 얹습니다. 참가자가 셋 이상이거나 입퇴장이 있으면 아래 동적 방을 씁니다.
+
+```js
+import { createNostrRoom } from './transport.js';
+import { createSession } from './rollback.js';
+
+const room = await createNostrRoom({ role: 'host', namespace: 'my-game', version: String(SIM_VERSION) });
+showCode(room.room); // host가 코드를 생략하면 무작위로 정해 줍니다. join은 room: '1234'를 넘깁니다.
+await room.opened; // 처음 열릴 때까지. 실패하면 `code`가 이유인 오류(timeout·version-mismatch …)로 거절합니다.
+
+room.app.subscribe((bytes) => handleLobbyMessage(decode(bytes))); // 앱 채널: 직렬화는 게임이 정합니다.
+room.app.send(encode({ type: 'GAME_START', seed }));
+const core = createSession({
+    players: ['a', 'b'],
+    localPlayerId: room.localPlayerId,
+    sessionId: room.sessionId /* … */,
+});
+core.attachTransport(room.remotePlayerId, room.transport); // netcode 채널: 재연결해도 같은 객체, 구독 유지.
+room.subscribe((event) => event.type === 'state' && showConnection(event.state, event.reason));
+// 끝낼 때: core.close()는 방을 닫지 않습니다. 방 소유자가 room.close()를 부릅니다.
+```
+
+`createNostrRoom`은 신호 전달자가 준비되면(host는 방 코드 충돌 확인까지) 돌아옵니다. 상대와의 연결은 `opened`·`state`로 지켜봅니다. 방 코드는 비밀이나 인증이 아닙니다. 신호 네임스페이스는 `namespace + ':room-v2'`로 다른 방 종류와 격리합니다.
+
+### 채널
+
+| 채널      | 방식                           | 노출                                                                                                   |
+| --------- | ------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `inputs`  | unordered, `maxRetransmits: 0` | `room.transport`(rollback `Transport`)가 패킷 종류에 따라 나눠 씁니다                                  |
+| `control` | ordered                        | `room.transport`                                                                                       |
+| `app`     | ordered                        | `room.app`: `send(bytes)`·`subscribe`·`bufferedAmount`. 한 프레임 약 255 KiB 이하(넘기면 `RangeError`) |
+
+host가 세 채널을 만들고 guest가 받습니다. `room.transport`와 `room.app`은 재연결해도 **같은 객체**이고 구독이 유지됩니다. 닫는 일은 방이 하므로 `room.transport`에는 `close`가 없습니다(코어를 닫아도 방은 남습니다). 연결이 열려 있지 않을 때의 `send`는 큐에 쌓지 않고 `false`를 돌려줍니다. 재연결 뒤 필요한 상태 재동기화는 앱이 합니다.
+
+앱 채널은 채널 버퍼가 512 KiB 이상이면 송신 큐에 쌓고 128 KiB 아래로 내려오면 이어 보냅니다(`bufferedamountlow`). 큐는 최대 8 MiB이고 넘기면 그 프레임을 버리며 `false`와 `error`(`send-queue-overflow`)로 알립니다. 연결이 바뀌면 큐는 버립니다. 보내다 던진 오류는 `send-failed`로 알리고 그 연결을 새로 맺습니다.
+
+### 상태
+
+`room.state`·`room.subscribeStatus`·`room.transport.state`는 같은 값입니다. rollback 코어는 `interrupted`를 `peer-interrupted`로, `failed`·`closed`를 `peer-disconnected`로 받습니다.
+
+| 상태          | 뜻                                                                                                       | 들어가는 때                                                                      | 나가는 때                                                        |
+| ------------- | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `connecting`  | 한 번도 열리지 않음. 상대를 찾거나 협상 중                                                               | 생성, 열린 적 없는 방의 `reconnect()`                                            | 세 채널이 열림 → `open`, 시간 초과·버전 불일치 → `failed`        |
+| `open`        | 세 채널이 열려 있음                                                                                      | 처음 열림, 재연결 성공, `disconnected`에서 저절로 돌아옴                         | 연결 손실 → `interrupted`                                        |
+| `interrupted` | 열린 적 있는데 지금은 아님. 스스로 다시 잇는 중                                                          | 채널 닫힘, 연결 `failed`, `disconnected` 유예 시작, 상대의 재시작, `reconnect()` | 다시 열림 → `open`, `reconnectTimeoutMs` 초과 → `failed`         |
+| `failed`      | 포기함(`failure.reason`: `timeout`·`reconnect-timeout`·`version-mismatch`). 연결과 신호 전달자를 풀어 둠 | 위 이유                                                                          | `reconnect()`로 다시 시작(`connecting`/`interrupted`), `close()` |
+| `closed`      | `close()`·`signal` abort. 되돌릴 수 없음                                                                 | 소유자의 종료                                                                    | 없음                                                             |
+
+`subscribe(listener)`·`onStatus`는 같은 이벤트를 받습니다(`onStatus`는 만드는 중의 신호 전달자 상태 `{ type: 'signaler' }`까지). 이전 이벤트는 재생하지 않으며 관찰자의 예외는 연결을 바꾸지 않습니다.
+
+| 이벤트 `type`      | 내용                                                                                                                                                                                                                                                                             |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `room`             | 신호 전달자가 열림. `room`·`role`                                                                                                                                                                                                                                                |
+| `signaling-ready`  | 상대를 찾거나 기다리기 시작함(전달자를 다시 만든 뒤에는 `rebuilt: true`)                                                                                                                                                                                                         |
+| `state`            | 상태 전이. `state`·`previous`·`generation`, `interrupted`로 갈 때 `reason`(`datachannel-close`·`rtc-failed`·`rtc-disconnected`·`peer-restarted`·`send-failed`·`reconnect()`에 준 이유 …)·`forced`, `open`일 때 `reconnect`(처음이 아님)·`healed`(연결을 새로 만들지 않고 돌아옴) |
+| `attempt-failed`   | 협상 한 번이 실패해 버림(`connect-timeout`·`negotiation-error`·`signal-error` …). 방은 계속 시도                                                                                                                                                                                 |
+| `version-mismatch` | 상대와 `version`(또는 rollback 프로토콜)이 다름. `peerId`·`kind`·`local`·`remote`                                                                                                                                                                                                |
+| `error`            | 치명적이지 않은 오류. `code`: `signal-error`·`signaling-unavailable`·`signal`·`negotiation`·`ice-candidate`·`channel-error`·`send-failed`·`send-queue-overflow`·`app-frame`·`listener`                                                                                           |
+
+치명적인 결말은 `error`가 아니라 `failed` 상태와 `room.failure`로 알립니다. `room.generation`은 지금까지 열린 횟수입니다(0이면 한 번도 열리지 않음).
+
+### 재연결 정책
+
+- **감지**: 채널 `close`, 연결 `failed`/`closed`, 시도 시간 초과(`peerTimeoutMs`), 송신 오류, 상대의 재시작. 열려 있는 동안 1초마다 채널·연결 상태를 점검해 놓친 이벤트를 보충합니다. 연결이 `disconnected`가 되면 `interrupted`로 알리고 `disconnectGraceMs` 동안 저절로 돌아오기를 기다립니다(돌아오면 `healed`). 조용히 사라진 상대는 브라우저가 연결 실패로 판정하기 전에는 알 수 없습니다(수 초~수십 초). 더 빠른 판단이 필요하면 앱이 앱 채널로 핑을 보내고 `reconnect()`를 부릅니다.
+- **시도**: 재연결은 항상 새 `RTCPeerConnection`과 새 채널입니다. guest가 `discover`를 `retryMs`마다 보내고 host가 응답으로 offer를 보냅니다. host는 대기 중에 `presence`를 보냅니다. offer는 항상 host가 만들어 서로 offer를 보내는 충돌이 없습니다.
+- **신호 번호(serial)**: host가 협상마다 올리는 번호를 offer·answer·ICE가 모두 가집니다. 현재 협상과 다른 번호의 answer·ICE, 이미 받은 번호 이하의 offer, 이미 소비한 offer를 가리키는 오래된 `discover`는 조용히 버립니다. offer보다 먼저 온 ICE 후보는 그 협상이 시작될 때까지 보관합니다(최대 8협상, 협상당 128개). 후보는 100ms씩 묶어 보냅니다. guest의 `discover`는 마지막으로 받은 offer 번호(`accepted`)를 싣습니다. host는 현재 협상 번호 이상이 오면 그 협상이 guest 쪽에서 끝났다고 보고 새 offer를 만듭니다(host만 연결이 열린 채로 남은 경우).
+- **시간 예산**: 처음 열리기까지 `timeoutMs`, 잃은 뒤 다시 열리기까지 `reconnectTimeoutMs`. 시도 실패는 예산을 늘리지 않습니다. 다 쓰면 `failed`가 되어 타이머와 Nostr 접속을 풀고, `reconnect()`가 새 예산으로 다시 시작합니다.
+- **짝 고정**: 처음 맺은 상대의 신호 id를 기억해 같은 상대만 다시 받습니다(같은 방 코드의 다른 사람이 끼어들 수 없음). 상대가 페이지를 새로고침하면 id가 바뀌므로 `reconnect({ reason, newPeer: true })`로 고정을 풀고 새 상대를 받습니다(Rally의 `prepareRecoveryHost`/`rebuildRecoveryGuest`). 이 호출은 열린 연결도 닫으므로 상대에게는 연결 손실로 보입니다.
+- **신호 복구**: 신호 보내기가 연달아 3번 실패하면 같은 서명 키(방 수명 동안 메모리에만 있음)로 신호 전달자를 다시 만듭니다. id가 같으므로 짝이 유지됩니다. 모든 릴레이가 끊긴 뒤(네트워크 전환 등)에도 돌아올 수 있습니다.
+- **종료**: `close()`(와 `signal` abort)는 의도적 종료입니다. 재연결을 시도하지 않고 신호도 보내지 않으며, 상대는 연결 손실로 알아채고 `reconnectTimeoutMs` 동안 기다립니다. 나갔다는 사실은 앱 채널 메시지로 전하세요.
+
+### 버전 불일치
+
+`version`(필수 문자열)과 rollback 프로토콜 번호를 `discover`·`presence`·`offer`에 싣고 비교합니다. 다르면 **연결을 만들지 않고** 알립니다. host는 `version-mismatch` 이벤트를 내고 맞는 상대를 계속 기다리며(같은 방 코드의 낯선 상대가 방을 막지 못하게), 불일치한 guest에는 host의 `presence`로 알려 `failed`('version-mismatch')가 됩니다. 값의 의미(SIM 버전·빌드)는 게임이 정하며 모듈은 문자열이 같은지만 봅니다.
+
+### 크기와 한도
+
+| 항목                               | 값                                                                                                                                     |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `timeoutMs` / `reconnectTimeoutMs` | 기본 60000 / 60000, 1..3600000                                                                                                         |
+| `peerTimeoutMs`                    | 기본 8000, 100..120000                                                                                                                 |
+| `retryMs`                          | 기본 1000, 10..10000                                                                                                                   |
+| `disconnectGraceMs`                | 기본 2500, 0..60000                                                                                                                    |
+| host 방 코드 충돌 확인             | 1200ms. 먼저 열린 같은 코드의 host가 보내는 `presence`를 들으면 `room-in-use`로 실패합니다. 동시에 시작한 두 host는 서로 보지 못합니다 |
+| 앱 채널                            | 프레임 255 KiB, 송신 큐 8 MiB                                                                                                          |
+| 신호                               | SDP 100 KiB, ICE 한 번에 64개                                                                                                          |
+
+기본 ICE는 `createWebRTCPeer`와 같은 STUN이며 TURN을 자동으로 추가하지 않습니다. 공개 relay는 서명을 검증하지만 속도를 제한합니다(`relay.damus.io`가 `banned: too many rate-limit violations`로 거절하는 것을 확인했습니다). 한 relay가 막혀도 나머지로 연결됩니다.
+
+### 같은 페이지의 시험·개발용 신호 (`createLocalSignaler`)
+
+`createLocalSignaler(options)`는 `signalerFactory`에 그대로 넣는 Signaler입니다. 같은 `namespace`·`room`의 같은 페이지 안 다른 전달자에게만 마이크로태스크로 배달하고 메시지는 JSON으로 복사합니다. 릴레이·서명·네트워크가 없습니다. 같은 기기의 host 후보만 쓰도록 `iceServers: []`와 함께 씁니다. 싱글 플레이 AI 상대를 실제 WebRTC로 이어 보는 경우처럼 한 페이지에 두 방을 둘 때도 같은 구성입니다.
+
+```js
+const make = (role) =>
+    createNostrRoom({
+        role,
+        room: '1234',
+        namespace: 'my-game',
+        version: 'v1',
+        signalerFactory: createLocalSignaler,
+        rtcConfig: { iceServers: [] },
+    });
+const [host, guest] = await Promise.all([make('host'), make('join')]);
+```
+
+### 이전 `createNostrRoom`과 Rally `NostrRtcTransport`
+
+이전의 `createNostrRoom`은 한 번 이어지면 끝나는 `{ transport, peerConnection, close, … }`를 돌려주던 단발 연결이었고 이 저장소 안팎에 소비자가 없었습니다(게임은 고정된 dist를 씁니다). 같은 책임을 두 API로 나누지 않고 재연결하는 연결로 **교체**했습니다. 호환 래퍼는 없습니다. 바뀐 계약: 반환 시점(연결 완료 → 신호 준비), `version` 필수, `peerFactory` 제거(협상은 방 안에서 하며 `signalerFactory`로 주입), `transport`가 재연결 간 유지되는 닫을 수 없는 객체, 신호 네임스페이스가 `:room-v2`로 변경.
+
+Rally `NostrRtcTransport`(`src/net/rtc-transport.js`)와의 대응:
+
+| Rally                                                                                            | 새 API                                                                                                                                        |
+| ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `new NostrRtcTransport(role, code)` + `open()`                                                   | `await createNostrRoom({ role: role === 'guest' ? 'join' : 'host', room: code, namespace, version: String(SIM_VERSION), relays })`            |
+| `signalMode: 'local'`, `LocalRtcSignalBus`                                                       | `signalerFactory: createLocalSignaler` + `rtcConfig: { iceServers: [] }`                                                                      |
+| `MinimalNostrSignalBus`, 신호 봉투(`signalType`·`protocol`·`roomCode`), 신호 종류 목록           | 모듈 내부(네임스페이스 `:room-v2`, 메시지 종류 검증)                                                                                          |
+| `onPeerReady()`                                                                                  | `signaling-ready` 이벤트(`createNostrRoom`이 돌아온 시점이 곧 준비 완료)                                                                      |
+| `onOpen({ reconnect })`                                                                          | `state` 이벤트 `state: 'open'`의 `reconnect`                                                                                                  |
+| `onClose({ recovering, reason })`                                                                | `state` 이벤트 `state: 'interrupted'`의 `reason`                                                                                              |
+| `onError(e)`(`nonFatal`)                                                                         | `error` 이벤트(`code`), `version-mismatch` 이벤트, 치명적이면 `failed`와 `room.failure`                                                       |
+| `send(m)`·`onMessage`·`LobbyControlCodec`                                                        | `room.app.send(bytes)`·`room.app.subscribe`. 프레임 인코딩(`LobbyControlCodec`)은 게임에 남깁니다                                             |
+| `sendNetcode`·`subscribeNetcode`·`subscribeNetcodeStatus`·`netcodeState`·`netcodeBufferedAmount` | `room.transport`의 `send`·`subscribe`·`subscribeStatus`·`state`·`bufferedAmount`. `attachTransport(remote, room.transport)`에 그대로 넘깁니다 |
+| `isOpen()` / `isNetcodeOpen()`                                                                   | `room.state === 'open'` / `room.transport.state === 'open'`                                                                                   |
+| `forceReconnect(reason)`                                                                         | `room.reconnect({ reason })`                                                                                                                  |
+| `prepareRecoveryHost(reason)` / `rebuildRecoveryGuest(reason)`                                   | `room.reconnect({ reason, newPeer: true })`                                                                                                   |
+| `everOpened`                                                                                     | `room.generation > 0`                                                                                                                         |
+| `close()`                                                                                        | `room.close()`                                                                                                                                |
+| 4.5초 시도 제한·2.5초 `disconnected` 유예·800ms hello                                            | `peerTimeoutMs`·`disconnectGraceMs`·`retryMs`. Rally 값을 그대로 쓰려면 이 옵션으로 넘깁니다                                                  |
+
+게임에 남기는 것: 로비 메시지(`HELLO`·`GAME_START`·`DRAFT_SYNC` …)와 `LobbyControlCodec`, 앱 계층의 `LOBBY_PING` RTT·하트비트, 60초 접속 유예(`DISCONNECT_GRACE_MS`)와 snapshot 복구(`startSimpleRecovery`), `RecoveryTelemetry`(`onStatus`·`subscribe` 이벤트로 대체), `WorkerRelayTransport`/`WorkerSessionProxy`의 중계. Rally는 신호 네임스페이스에 `sim-${SIM_VERSION}`을 넣어 버전이 다르면 방을 아예 못 찾았지만, 새 API는 `version`을 비교해 불일치를 알립니다.
 
 ## 동적 방 연결 capability
 

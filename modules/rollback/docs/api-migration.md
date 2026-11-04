@@ -11,7 +11,7 @@
 - `rollback.js`: createSession, RollbackSession, createRoomSession, RoomSession, createBootstrapReplay, profiles, VERSION, PROTOCOL_VERSION, CHUNK_SIZE, MAX_TICK
 - `deterministic.js`: hashBytes, statelessRandom, SeededPRNG, fixedPoint, createValueCodec, binaryCodec, jsonCodec, createSyncTestSession, SyncTestSession, runSyncTest, runSyncTestAsync, DeterminismError
 - `simloop.js`: createLoop, LocalInputPreview, createDeadlineScheduler, clockRates
-- `transport.js`: WebRTCTransport, createWebRTCPeer, createNostrRoom, createNostrGroupRoom, createNostrDynamicRoom, createNostrPublicRoom, createNostrSignaler, nostrCrypto
+- `transport.js`: WebRTCTransport, createWebRTCPeer, createNostrRoom, createLocalSignaler, createNostrGroupRoom, createNostrDynamicRoom, createNostrPublicRoom, createNostrSignaler, nostrCrypto
 - `replay.js`: playReplay
 
 같은 소유 모듈은 동일한 URL에서 한 번만 로드합니다. 분리 번들마다 필요한 순수 도우미가 포함되며 네트워크·세션을 자동 초기화하지 않습니다. 소비자는 npm·Node·bundler가 필요하지 않습니다.
