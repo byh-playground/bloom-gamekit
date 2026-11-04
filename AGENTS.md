@@ -3,7 +3,7 @@
 - 공통 경계·설계·리뷰 기준은 [README](./README.md)를 먼저 읽습니다. [코드 규칙](./project/docs/code-conventions.md)에 따라 `npm run format`, `npm run check`를 사용합니다. 빌드 전 검사는 소스를 자동 수정하지 않습니다.
 - 보간 변경은 [모듈 계약](./modules/interpolation/README.md), 공개 JSDoc, [고정 브라우저 시나리오](./project/tests/browser.e2e.mjs)를 함께 확인합니다. 시간·세대·순서·reset 계약을 임의로 바꾸지 않습니다.
 - rendering/input 변경은 해당 modules/*/README.md와 project/tests/browser.e2e.mjs의 실제 WebGL·DOM 검증을 함께 확인합니다. 입력 edge는 명시적 tick 소비 전까지 유지하며 rendering에 게임 정렬·시간선·권위 상태를 넣지 않습니다.
-- metrics 변경은 [모듈 계약·게임 적용 순서·운영](./modules/metrics/README.md), 클라이언트와 서버가 함께 쓰는 `modules/metrics/protocol.js`, [고정 시나리오](./modules/metrics/tests/metrics.e2e.mjs)를 함께 확인합니다. 배치 모양을 바꾸면 `SCHEMA_VERSION`을 올리고 서버를 같은 PR에서 재배포합니다. 새 경우는 `MetricsAdapter`·`MatchRecorder` 구현체 클래스로 추가하고 코어에 분기를 넣지 않습니다. 시험에서 배포된 서버로 보내지 않습니다.
+- metrics 변경은 [모듈 계약·게임 적용 순서·운영](./modules/metrics/README.md), 클라이언트와 서버가 함께 쓰는 `modules/metrics/protocol.js`, [고정 시나리오](./modules/metrics/tests/metrics.e2e.mjs)를 함께 확인합니다. 배치 모양을 바꾸면 `SCHEMA_VERSION`을 올리고 서버를 같은 PR에서 재배포합니다. 새 경우는 `MetricsAdapter`·`MatchRecorder` 구현체 클래스로 추가하고 코어에 분기를 넣지 않습니다. 시험에서 배포된 서버로 보내지 않습니다. 개발자 본인 플레이는 서버의 접속 키 + `owners` 후 필터로 가르며, 운영 비밀값 `IP_KEY_SECRET`은 바꾸지 않습니다(키가 모두 바뀜).
 - 모든 예제는 모바일(터치)과 데스크톱(키보드·마우스)을 기본으로 함께 지원합니다. `viewport` 메타, 손가락 크기(약 56px 이상) 터치 버튼, 가로 스크롤 없음, 첫 화면 안의 캔버스를 지키고, 터치 조작은 고정 브라우저 시나리오에서 터치 에뮬레이션으로 확인합니다. 에뮬레이션은 실제 기기 검증이 아닙니다.
 - 새 기능은 실제 필요가 생긴 모듈에만 구현합니다. rendering/input placeholder나 범용 게임 엔진을 만들지 않습니다.
 - 작업 브랜치(`claude/` 또는 `codex/`)에서 main 대상 PR을 만듭니다. 다른 작업과 미커밋 변경을 보존하며 독립 병렬 수정은 별도 worktree를 사용합니다. 커밋·문서는 한국어를 기본으로 합니다.
