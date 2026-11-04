@@ -143,13 +143,18 @@
         <h1>지표 수집 확인</h1>
         <p>버튼을 누를 때마다 실제 수집 서버로 이벤트가 가고, 서버가 센 집계를 다시 읽어 보여 줍니다.</p>
         <ul>
-            <li>서버 주소는 로컬 <code>npx wrangler dev</code>나 배포한 workers.dev 주소입니다.</li>
+            <li>기본 주소는 운영 수집 서버입니다. 로컬 <code>npx wrangler dev</code> 주소로 바꿔도 됩니다.</li>
             <li>플레이 시간은 이 탭이 화면에 보이는 동안만 셉니다.</li>
             <li>탭을 숨기거나 페이지를 닫으면 남은 이벤트를 sendBeacon으로 보냅니다.</li>
             <li>경기를 끝내면 시드와 랠리 입력 기록이 경기 한 행으로 저장됩니다.</li>
         </ul>
         <label for="metrics-server">수집 서버 주소</label>
-        <input id="metrics-server" inputmode="url" autocomplete="off" value="http://127.0.0.1:8787" />
+        <input
+            id="metrics-server"
+            inputmode="url"
+            autocomplete="off"
+            value="https://bloom-metrics.byh-playground.workers.dev"
+        />
         <button id="metrics-connect">세션 시작</button>
         <p class="notice" id="metrics-notice"></p>
         <button id="metrics-hit" disabled>랠리 치기</button>
