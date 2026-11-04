@@ -30,6 +30,7 @@ const STYLE = `
 .bloom-tech *{box-sizing:border-box}
 .bloom-tech[data-layout=wide]{flex-direction:column}
 .tt-tabs{display:flex;gap:6px;flex:none}
+.tt-tabs[hidden]{display:none}
 .tt-tab{flex:1;min-height:44px;border:2px solid var(--tt-line,#4a5a86);border-radius:12px;background:transparent;color:inherit;font:inherit;cursor:pointer}
 .tt-tab[aria-selected=true]{background:var(--tt-accent,#ffd166);color:var(--tt-on-accent,#1b2238);border-color:var(--tt-accent,#ffd166)}
 .tt-main{display:flex;flex:1;gap:8px;min-height:0}
@@ -188,7 +189,15 @@ function layoutBranch(nodes, orientation) {
         orientation === 'down'
             ? { width: CROSS + PAD * 2, height: MAIN + PAD * 2 }
             : { width: MAIN + PAD * 2, height: CROSS + PAD * 2 };
-    return { positions: POSITIONS, ...SIZE };
+    // 건너뛰는 선이 지나갈 빈 길: 층마다 노드 사이(양 끝 바깥 포함)의 가운데 좌표입니다.
+    const GAPS = LAYERS.map((layer) => {
+        const START = PAD + (CROSS - EXTENT(layer.length)) / 2;
+        return [
+            START - GAP_CROSS / 2,
+            ...layer.map((_node, index) => START + index * (NODE + GAP_CROSS) + NODE + GAP_CROSS / 2),
+        ];
+    });
+    return { positions: POSITIONS, depth: DEPTH, gaps: GAPS, ...SIZE };
 }
 
 /**
@@ -236,6 +245,7 @@ export function createTechTree(options) {
     const BUY = EL('button', 'tt-buy', DETAIL);
     BUY.type = 'button';
 
+    TABS.hidden = BRANCHES.length === 1; // 분류가 하나뿐이면 탭을 두지 않습니다.
     const TAB_BUTTONS = new Map();
     for (const BRANCH of BRANCHES) {
         const BUTTON = EL('button', 'tt-tab', TABS);
@@ -283,6 +293,7 @@ export function createTechTree(options) {
     let minScale = 1;
     let movingTimer = 0;
     let suppressClick = false;
+    let sizeKey = '';
     let disposed = false;
     let builtDetail = null;
 
@@ -347,11 +358,12 @@ export function createTechTree(options) {
         ty = 0;
         applyView(animate);
         if (overflow && selected && BY_ID.get(selected).branch === branch) {
-            reveal(selected, animate);
+            reveal(selected, animate, true);
         }
     }
     // 선택한 노드가 보이게 합니다. 손가락 영역보다 작게 줄어 있으면 눌러 볼 만한 크기까지 키워 가운데에 놓습니다.
-    function reveal(id, animate = true) {
+    // anchor: 처음 보기에서는 보이더라도 선택한 노드를 가로(세로 배치)·세로(가로 배치) 가운데에 놓고, 읽기 시작하는 쪽 끝에 붙여 트리가 한쪽으로 치우쳐 시작하지 않게 합니다.
+    function reveal(id, animate = true, anchor = false) {
         const POSITION = layout.positions.get(id);
         if (!overflow || !POSITION) {
             return;
@@ -362,15 +374,48 @@ export function createTechTree(options) {
         const LEFT = tx + POSITION.x * scale;
         const TOP = ty + POSITION.y * scale;
         const SIZE = NODE * scale;
-        if (!SMALL && LEFT >= 0 && TOP >= 0 && LEFT + SIZE <= VW && TOP + SIZE <= VH) {
+        if (!anchor && !SMALL && LEFT >= 0 && TOP >= 0 && LEFT + SIZE <= VW && TOP + SIZE <= VH) {
             return;
         }
         if (SMALL) {
             scale = Math.min(MAX_SCALE, TOUCH_MIN / NODE);
         }
-        tx = VW / 2 - (POSITION.x + NODE / 2) * scale;
-        ty = VH / 2 - (POSITION.y + NODE / 2) * scale;
+        const DOWN = orientation === 'down';
+        tx = anchor && !DOWN ? PAD - POSITION.x * scale : VW / 2 - (POSITION.x + NODE / 2) * scale;
+        ty = anchor && DOWN ? PAD - POSITION.y * scale : VH / 2 - (POSITION.y + NODE / 2) * scale;
         applyView(animate);
+    }
+
+    // 연결선: 바로 아래 층이면 S자 곡선 하나, 층을 건너뛰면 중간 층마다 노드 사이의 빈 길로 곧게 지나갑니다(노드를 관통하지 않음).
+    function routeEdge(from, to) {
+        const DOWN = orientation === 'down';
+        const AT = (cross, main) => (DOWN ? `${cross} ${main}` : `${main} ${cross}`);
+        const MAIN_START = (depth) => PAD + depth * (NODE + GAP_MAIN);
+        const CROSS_OF = (id) => (DOWN ? layout.positions.get(id).x : layout.positions.get(id).y) + NODE / 2;
+        const FROM_DEPTH = layout.depth.get(from);
+        const TO_DEPTH = layout.depth.get(to);
+        const FROM_CROSS = CROSS_OF(from);
+        const TO_CROSS = CROSS_OF(to);
+        let currentCross = FROM_CROSS;
+        let currentMain = MAIN_START(FROM_DEPTH) + NODE;
+        let path = `M${AT(currentCross, currentMain)}`;
+        const CURVE = (cross, main) => {
+            const HALF = (main - currentMain) / 2;
+            path += ` C${AT(currentCross, currentMain + HALF)} ${AT(cross, main - HALF)} ${AT(cross, main)}`;
+            currentCross = cross;
+            currentMain = main;
+        };
+        for (let depth = FROM_DEPTH + 1; depth < TO_DEPTH; depth++) {
+            const WANT = FROM_CROSS + ((TO_CROSS - FROM_CROSS) * (depth - FROM_DEPTH)) / (TO_DEPTH - FROM_DEPTH);
+            const LANE = layout.gaps[depth].reduce((best, gap) =>
+                Math.abs(gap - WANT) < Math.abs(best - WANT) ? gap : best,
+            );
+            CURVE(LANE, MAIN_START(depth));
+            currentMain = MAIN_START(depth) + NODE;
+            path += ` L${AT(LANE, currentMain)}`;
+        }
+        CURVE(TO_CROSS, MAIN_START(TO_DEPTH));
+        return path;
     }
 
     function buildBranch(next) {
@@ -394,20 +439,11 @@ export function createTechTree(options) {
                 if (!FROM) {
                     continue; // 다른 분류의 선행 조건은 선 없이 상세의 조건 칩으로 읽습니다.
                 }
-                const DOWN = orientation === 'down';
-                const AX = FROM.x + (DOWN ? NODE / 2 : NODE);
-                const AY = FROM.y + (DOWN ? NODE : NODE / 2);
-                const BX = POSITION.x + (DOWN ? NODE / 2 : 0);
-                const BY = POSITION.y + (DOWN ? 0 : NODE / 2);
                 const PATH = DOC.createElementNS(SVG_NS, 'path');
                 PATH.setAttribute('class', 'tt-edge');
                 PATH.dataset.from = PARENT;
-                PATH.setAttribute(
-                    'd',
-                    DOWN
-                        ? `M${AX} ${AY} C${AX} ${AY + GAP_MAIN / 2} ${BX} ${BY - GAP_MAIN / 2} ${BX} ${BY}`
-                        : `M${AX} ${AY} C${AX + GAP_MAIN / 2} ${AY} ${BX - GAP_MAIN / 2} ${BY} ${BX} ${BY}`,
-                );
+                PATH.dataset.to = NODE_DEF.id;
+                PATH.setAttribute('d', routeEdge(PARENT, NODE_DEF.id));
                 EDGES.append(PATH);
             }
         }
@@ -567,7 +603,7 @@ export function createTechTree(options) {
     VIEW.addEventListener(
         'click',
         (event) => {
-            if (suppressClick) {
+            if (suppressClick && event.target.closest('.tt-world')) {
                 event.stopPropagation();
                 event.preventDefault();
                 suppressClick = false;
@@ -595,14 +631,32 @@ export function createTechTree(options) {
         }
     });
 
+    // 크기가 실제로 바뀔 때만 다시 맞춥니다(ResizeObserver의 첫 알림이 끌어 둔 보기를 되돌리지 않게).
+    // 방향이 같고 계속 넘치는 크기 변화(모바일 주소창 등)는 이동·배율을 지키고 범위만 다시 잡습니다.
     function sizeLayout() {
         const WIDTH = ROOT.clientWidth;
         ROOT.dataset.layout = WIDTH >= 720 ? 'wide' : 'narrow';
+        const KEY = `${WIDTH}x${VIEW.clientWidth}x${VIEW.clientHeight}`;
+        if (KEY === sizeKey) {
+            return;
+        }
+        sizeKey = KEY;
         const WANT = VIEW.clientWidth > VIEW.clientHeight * 1.2 ? 'right' : 'down';
+        const VW = VIEW.clientWidth;
+        const VH = VIEW.clientHeight;
         if (WANT !== orientation) {
             orientation = WANT;
             buildBranch(branch);
-        } else if (layout) {
+        } else if (overflow && (layout.width > VW || layout.height > VH)) {
+            minScale = Math.min(
+                1,
+                Math.max(VW / layout.width, TOUCH_MIN / NODE),
+                VW / layout.width,
+                VH / layout.height,
+            );
+            scale = Math.min(MAX_SCALE, Math.max(minScale, scale));
+            applyView();
+        } else {
             fitView(false);
         }
     }
@@ -629,6 +683,7 @@ export function createTechTree(options) {
     ROOT.dataset.layout = ROOT.clientWidth >= 720 ? 'wide' : 'narrow';
     orientation = VIEW.clientWidth > VIEW.clientHeight * 1.2 ? 'right' : 'down';
     buildBranch(BY_ID.get(selected).branch);
+    sizeKey = `${ROOT.clientWidth}x${VIEW.clientWidth}x${VIEW.clientHeight}`;
     if (START_ID === null && START.screen === SCREEN) {
         NAVIGATION.replace({ ...START, item: selected });
     }

@@ -55,6 +55,7 @@ try {
                     'simloop-input-preview': 'inputPreviewDemo',
                     audio: 'audioExample',
                     navigation: 'navigationDemo',
+                    'tech-tree': 'techTreeDemo',
                     rendering: 'renderingExamples',
                     'vector-assets': 'vectorAssetDemo',
                     'vector-raster-comparison': '__rasterComparison',
