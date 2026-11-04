@@ -101,7 +101,7 @@ binary는 RV version 1 헤더, 타입 태그, little-endian 길이/유한 float6
 
 이 고정 `createNostrGroupRoom` API는 진행 중 합류와 방장 승계를 지원하지 않는다. 형성 중 실패 또는 확정 명단의 물리 연결 종료는 부분 명단의 게임을 계속하지 않고 자원을 정리한다. 연결의 일시적인 interruption은 시작 후 기존 Transport/Core 상태를 통해 처리한다. `close()`는 멱등이며 RTC·큐·구독을 정리한다. 종료 통지는 최대 1.5초의 시그널링 정리 유예 안에서 시도하며 전달을 보장하지 않는다.
 
-N인 방은 기존 2인 `createNostrRoom`과 별도 `:group-v1` 시그널링 네임스페이스를 사용해 기존 소비자의 방 흐름을 보존한다. N인 연결의 초기 서명 메시지에 맞춰 검증 예산은 초당 `max(16, playerCount*4)`, burst는 `playerCount*4`로 한정한다. 참가자 수가 늘면 연결·서명·입력 복사·스타 중계 비용도 증가하므로 같은 어댑터와 조건에서 토폴로지별로 측정한다.
+N인 방은 2인 `createNostrRoom`(`:room-v2`)과 별도 `:group-v1` 시그널링 네임스페이스를 사용해 서로의 방 흐름이 섞이지 않게 한다. N인 연결의 초기 서명 메시지에 맞춰 검증 예산은 초당 `max(16, playerCount*4)`, burst는 `playerCount*4`로 한정한다. 참가자 수가 늘면 연결·서명·입력 복사·스타 중계 비용도 증가하므로 같은 어댑터와 조건에서 토폴로지별로 측정한다.
 
 ## 실행과 진단 capability의 소비
 

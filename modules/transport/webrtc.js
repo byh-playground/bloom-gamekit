@@ -149,7 +149,7 @@ export class WebRTCTransport {
         this.statusListeners.clear();
     }
 }
-const DEFAULT_ICE = Object.freeze([
+export const DEFAULT_ICE = Object.freeze([
     {
         urls: 'stun:stun.l.google.com:19302',
     },

@@ -33,7 +33,11 @@ const SUITES = {
     consumer: ['modules/scenario/tests/bounko.mjs'],
     execution: ['modules/scenario/tests/browser.mjs'],
     audio: ['modules/audio/scripts/check.mjs'],
-    network: ['modules/rollback/scripts/rollback-browser.mjs', 'modules/transport/scripts/dynamic-room-browser.mjs'],
+    network: [
+        'modules/rollback/scripts/rollback-browser.mjs',
+        'modules/transport/scripts/dynamic-room-browser.mjs',
+        'modules/transport/scripts/room-browser.mjs',
+    ],
     room: ['modules/rollback/scripts/room-modes-browser.mjs', 'modules/rollback/scripts/availability-browser.mjs'],
     availability: ['modules/rollback/scripts/availability-browser.mjs'],
     demo: ['modules/rollback/scripts/demo-check.mjs'],
