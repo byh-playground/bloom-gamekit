@@ -34,7 +34,7 @@ room.subscribe((event) => event.type === 'state' && showConnection(event.state, 
 // 끝낼 때: core.close()는 방을 닫지 않습니다. 방 소유자가 room.close()를 부릅니다.
 ```
 
-`createNostrRoom`은 신호 전달자가 준비되면(host는 방 코드 충돌 확인까지) 돌아옵니다. 상대와의 연결은 `opened`·`state`로 지켜봅니다. 방 코드는 비밀이나 인증이 아닙니다. 신호 네임스페이스는 `namespace + ':room-v2'`로 다른 방 종류와 격리합니다.
+`createNostrRoom`은 신호 전달자가 준비되면(host는 방 코드 충돌 확인 `collisionCheckMs`까지) 돌아옵니다. 상대와의 연결은 `opened`·`state`로 지켜봅니다. 방 코드는 비밀이나 인증이 아닙니다. 신호 네임스페이스는 `namespace + ':room-v2'`로 다른 방 종류와 격리합니다.
 
 ### 채널
 
@@ -89,21 +89,21 @@ host가 세 채널을 만들고 guest가 받습니다. `room.transport`와 `room
 
 ### 크기와 한도
 
-| 항목                               | 값                                                                                                                                     |
-| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `timeoutMs` / `reconnectTimeoutMs` | 기본 60000 / 60000, 1..3600000                                                                                                         |
-| `peerTimeoutMs`                    | 기본 8000, 100..120000                                                                                                                 |
-| `retryMs`                          | 기본 1000, 10..10000                                                                                                                   |
-| `disconnectGraceMs`                | 기본 2500, 0..60000                                                                                                                    |
-| host 방 코드 충돌 확인             | 1200ms. 먼저 열린 같은 코드의 host가 보내는 `presence`를 들으면 `room-in-use`로 실패합니다. 동시에 시작한 두 host는 서로 보지 못합니다 |
-| 앱 채널                            | 프레임 255 KiB, 송신 큐 8 MiB                                                                                                          |
-| 신호                               | SDP 100 KiB, ICE 한 번에 64개                                                                                                          |
+| 항목                                      | 값                                                                                                                                                                                                                                        |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `timeoutMs` / `reconnectTimeoutMs`        | 기본 60000 / 60000, 1..3600000                                                                                                                                                                                                            |
+| `peerTimeoutMs`                           | 기본 8000, 100..120000                                                                                                                                                                                                                    |
+| `retryMs`                                 | 기본 1000, 10..10000                                                                                                                                                                                                                      |
+| `disconnectGraceMs`                       | 기본 2500, 0..60000                                                                                                                                                                                                                       |
+| host 방 코드 충돌 확인 `collisionCheckMs` | 기본 1200, 0..10000(join은 무시). 먼저 열린 같은 코드의 host가 보내는 `presence`를 들으면 `room-in-use`로 실패합니다. 동시에 시작한 두 host는 서로 보지 못합니다. **0이면 확인 없이 바로 돌아오며 같은 코드의 두 host를 거르지 못합니다** |
+| 앱 채널                                   | 프레임 255 KiB, 송신 큐 8 MiB                                                                                                                                                                                                             |
+| 신호                                      | SDP 100 KiB, ICE 한 번에 64개                                                                                                                                                                                                             |
 
 기본 ICE는 `createWebRTCPeer`와 같은 STUN이며 TURN을 자동으로 추가하지 않습니다. 공개 relay는 서명을 검증하지만 속도를 제한합니다(`relay.damus.io`가 `banned: too many rate-limit violations`로 거절하는 것을 확인했습니다). 한 relay가 막혀도 나머지로 연결됩니다.
 
 ### 같은 페이지의 시험·개발용 신호 (`createLocalSignaler`)
 
-`createLocalSignaler(options)`는 `signalerFactory`에 그대로 넣는 Signaler입니다. 같은 `namespace`·`room`의 같은 페이지 안 다른 전달자에게만 마이크로태스크로 배달하고 메시지는 JSON으로 복사합니다. 릴레이·서명·네트워크가 없습니다. 같은 기기의 host 후보만 쓰도록 `iceServers: []`와 함께 씁니다. 싱글 플레이 AI 상대를 실제 WebRTC로 이어 보는 경우처럼 한 페이지에 두 방을 둘 때도 같은 구성입니다.
+`createLocalSignaler(options)`는 `signalerFactory`에 그대로 넣는 Signaler입니다. 같은 `namespace`·`room`의 같은 페이지 안 다른 전달자에게만 마이크로태스크로 배달하고 메시지는 JSON으로 복사합니다. 릴레이·서명·네트워크가 없습니다. 같은 기기의 host 후보만 쓰도록 `iceServers: []`와 함께 씁니다. 한 페이지에서 코드를 직접 정한 쌍은 같은 코드의 다른 host가 있을 수 없으므로 `collisionCheckMs: 0`으로 host의 대기 1.2초를 없앨 수 있습니다(대신 코드 충돌 감지가 꺼집니다). 싱글 플레이 AI 상대를 실제 WebRTC로 이어 보는 경우처럼 한 페이지에 두 방을 둘 때도 같은 구성입니다.
 
 ```js
 const make = (role) =>
@@ -114,6 +114,7 @@ const make = (role) =>
         version: 'v1',
         signalerFactory: createLocalSignaler,
         rtcConfig: { iceServers: [] },
+        collisionCheckMs: 0,
     });
 const [host, guest] = await Promise.all([make('host'), make('join')]);
 ```
