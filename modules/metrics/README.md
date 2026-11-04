@@ -1,6 +1,6 @@
 # metrics
 
-**HTML 실행 프리뷰:** [bm 예제의 '지표' 탭](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/bm.html#tab=metrics) — 수집 서버 주소를 넣고 랠리·경기 끝을 누르면 실제 서버에 저장되고 서버 집계(세션 수·평균 플레이 시간·경기 수)를 다시 읽어 보여 줍니다. 로컬 `wrangler dev` 주소(`http://127.0.0.1:8787`)나 배포한 workers.dev 주소를 씁니다.
+**HTML 실행 프리뷰:** [bm 예제의 '지표' 탭](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/bm.html#tab=metrics) — 랠리·경기 끝을 누르면 운영 수집 서버(`gamekit-example` 게임 이름)에 저장되고 서버 집계(세션 수·평균 플레이 시간·경기 수)를 다시 읽어 보여 줍니다. 주소 칸을 로컬 `wrangler dev`(`http://127.0.0.1:8787`)로 바꾸면 로컬 D1에 씁니다.
 
 게임 지표를 자체 수집하는 순수 ESM 모듈과 Cloudflare Workers + D1 수집 서버입니다. 이벤트 이름·요약 값의 의미는 게임이 소유합니다. 고빈도 값은 보내지 않고, 경기마다 결정론 기록(시드 + 입력)을 남겨 나중에 어떤 지표든 다시 계산합니다.
 
@@ -81,13 +81,21 @@ METRICS.recordMatch(ONLINE, { winner: 'a' });
 - 무료 플랜 한도(요청 10만/일, D1 쓰기 10만 행/일, 저장 5GB)를 넘으면 요청이 실패합니다(하드 캡, 과금 없음). 클라이언트는 실패한 배치를 보관 상한까지 들고 있다가 다시 보냅니다.
 - `playMs`와 이벤트 시각은 클라이언트 값을 그대로 믿습니다. 세션 시작·마지막 수신 시각만 서버 시각입니다.
 
-### 배포 (사용자 절차)
+### 운영
 
-1. [dash.cloudflare.com](https://dash.cloudflare.com)에 무료 가입합니다(카드 불필요).
-2. 저장소 루트에서 `npx wrangler login`.
-3. `npx wrangler d1 create bloom-metrics` → 출력된 `database_id`를 `modules/metrics/server/wrangler.toml`에 넣습니다.
-4. `npx wrangler d1 execute bloom-metrics --remote --file modules/metrics/server/schema.sql -c modules/metrics/server/wrangler.toml`
-5. `npx wrangler deploy -c modules/metrics/server/wrangler.toml` → 출력된 `https://bloom-metrics.<계정>.workers.dev`를 `HttpAdapter`에 씁니다.
+| 항목            | 값                                                                          |
+| --------------- | --------------------------------------------------------------------------- |
+| 배포 주소       | `https://bloom-metrics.byh-playground.workers.dev`                          |
+| Cloudflare 계정 | byh020907@naver.com (account `deaa8cb49d25379de875c00c445503fd`, 무료 플랜) |
+| D1              | `bloom-metrics` (`0f0db294-6c6e-44f0-b39a-d6e297f48e0d`, APAC)              |
+| workers.dev     | 하위 도메인 `byh-playground`                                                |
+
+계정 가입·이메일 인증·`wrangler login` 승인은 사용자가 합니다. 로그인이 된 PC에서는 아래 명령을 에이전트가 실행합니다. 모든 명령은 `modules/metrics/server`에서 `-c wrangler.toml`로 실행합니다.
+
+- 서버 코드·protocol.js를 바꾼 PR: 머지 뒤 `npx wrangler deploy -c wrangler.toml`. 배치 모양을 바꿔 `SCHEMA_VERSION`을 올렸다면 클라이언트를 쓰는 게임보다 서버를 먼저 배포합니다(서버는 다른 버전을 거절합니다).
+- 스키마를 바꾼 PR: 기존 행을 지우지 않는 SQL(`ALTER TABLE … ADD COLUMN` 등)만 `npx wrangler d1 execute bloom-metrics --remote --file <파일> -c wrangler.toml`로 적용합니다. `DROP`·`DELETE`는 사용자 확인 뒤에만 합니다.
+- 원본 확인: `npx wrangler d1 execute bloom-metrics --remote -c wrangler.toml --json --command "SELECT game, COUNT(*) AS sessions, AVG(play_ms) FROM sessions GROUP BY game"`. 사용량은 Cloudflare 대시보드의 Workers·D1 화면에서 봅니다.
+- 배포 확인은 `gamekit-deploy-check` 같은 검사 전용 game 이름으로 보내고 확인한 뒤 그 행을 지웁니다. 게임 이름으로 시험 데이터를 보내지 않습니다.
 
 ### 로컬 실행
 
