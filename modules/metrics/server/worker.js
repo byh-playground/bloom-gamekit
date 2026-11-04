@@ -16,15 +16,15 @@ const CORS = Object.freeze({
     'Access-Control-Max-Age': '86400',
 });
 const ENCODER = new TextEncoder();
-const MAX_ORIGIN_LENGTH = 200;
-// 집계 대상 구분: 개발자가 이름표를 붙인 기기 → 'tester', 로컬·파일에서 띄운 개발 빌드 → 'dev', 나머지 → 'users'.
-// 이름표가 한 번이라도 붙은 세션은 끝까지 tester입니다.
+const MAX_TEXT_LENGTH = 200;
+// 집계 대상 구분: 소유자 목록(owners)에 있는 접속 키 → 'owner', 로컬·파일에서 띄운 개발 빌드 → 'dev', 나머지 → 'users'.
+// 소유자는 저장된 접속 키로 조회 때 가르므로, 키를 나중에 owners에 넣어도 지난 세션까지 함께 빠집니다.
 const AUDIENCE_SQL = `CASE
-    WHEN tester IS NOT NULL THEN 'tester'
-    WHEN origin IS NULL OR origin = 'null' OR origin LIKE 'http://localhost%' OR origin LIKE 'http://127.0.0.1%'
-        OR origin LIKE 'http://[::1]%' THEN 'dev'
+    WHEN o.ip_key IS NOT NULL THEN 'owner'
+    WHEN s.origin IS NULL OR s.origin = 'null' OR s.origin LIKE 'http://localhost%' OR s.origin LIKE 'http://127.0.0.1%'
+        OR s.origin LIKE 'http://[::1]%' THEN 'dev'
     ELSE 'users' END`;
-const AUDIENCES = Object.freeze(['users', 'tester', 'dev']);
+const AUDIENCES = Object.freeze(['users', 'owner', 'dev']);
 
 function reply(status, body) {
     return new Response(JSON.stringify(body), {
@@ -47,9 +47,6 @@ function findBatchError(batch) {
     }
     if (!isCount(batch.seq) || !isCount(batch.playMs)) {
         return 'counter';
-    }
-    if (batch.tester !== null && !isName(batch.tester)) {
-        return 'tester';
     }
     const { events: EVENTS, matches: MATCHES } = batch;
     if (!Array.isArray(EVENTS) || !Array.isArray(MATCHES)) {
@@ -86,6 +83,57 @@ function findBatchError(batch) {
     return null;
 }
 
+function clip(value) {
+    return typeof value === 'string' ? value.slice(0, MAX_TEXT_LENGTH) : null;
+}
+
+/** IPv6는 기기마다 뒤 64비트가 바뀌므로 앞 64비트(회선)로 묶습니다. IPv4는 주소 그대로입니다. */
+function networkOf(ip) {
+    if (!ip.includes(':')) {
+        return ip;
+    }
+    const [HEAD, TAIL] = ip.split('::');
+    const LEFT = HEAD ? HEAD.split(':') : [];
+    const RIGHT = TAIL ? TAIL.split(':') : [];
+    const GROUPS = TAIL === undefined ? LEFT : [...LEFT, ...Array(8 - LEFT.length - RIGHT.length).fill('0'), ...RIGHT];
+    return (
+        GROUPS.slice(0, 4)
+            .map((group) => parseInt(group || '0', 16).toString(16))
+            .join(':') + '::/64'
+    );
+}
+
+/**
+ * 요청 회선의 접속 키와 접속 정보. 원본 IP는 저장하지 않고 서버 비밀값(IP_KEY_SECRET)으로 만든 HMAC 앞 16바이트만 씁니다.
+ * 같은 회선은 늘 같은 키라 소유자 목록으로 나중에 가를 수 있고, 비밀값 없이는 키에서 IP를 되돌릴 수 없습니다.
+ */
+async function readConnection(request, env) {
+    const IP = request.headers.get('CF-Connecting-IP');
+    let ipKey = null;
+    if (IP) {
+        const KEY = await crypto.subtle.importKey(
+            'raw',
+            ENCODER.encode(env.IP_KEY_SECRET),
+            { name: 'HMAC', hash: 'SHA-256' },
+            false,
+            ['sign'],
+        );
+        const SIGNATURE = new Uint8Array(await crypto.subtle.sign('HMAC', KEY, ENCODER.encode(networkOf(IP))));
+        ipKey = Array.from(SIGNATURE.subarray(0, 16), (byte) => byte.toString(16).padStart(2, '0')).join('');
+    }
+    const CF = request.cf ?? {};
+    return {
+        ipKey,
+        country: clip(CF.country),
+        city: clip(CF.city),
+        asn: Number.isSafeInteger(CF.asn) ? CF.asn : null,
+        asOrg: clip(CF.asOrganization),
+        userAgent: clip(request.headers.get('User-Agent')),
+        // 브라우저가 붙이는 요청 출처. 페이지가 바꿀 수 없어 개발 빌드(localhost)를 가르는 데 씁니다.
+        origin: clip(request.headers.get('Origin')),
+    };
+}
+
 async function receiveBatch(request, env) {
     const DECLARED = Number(request.headers.get('Content-Length'));
     if (DECLARED > MAX_BATCH_BYTES) {
@@ -106,19 +154,34 @@ async function receiveBatch(request, env) {
         return reply(400, { error: ERROR });
     }
     const RECEIVED_AT = Date.now();
-    const { game: GAME, build: BUILD, sessionId: SESSION_ID, tester: TESTER } = batch;
-    // 브라우저가 붙이는 요청 출처. 페이지가 바꿀 수 없어 개발 빌드(localhost)를 가르는 데 씁니다.
-    const ORIGIN = request.headers.get('Origin')?.slice(0, MAX_ORIGIN_LENGTH) ?? null;
+    const { game: GAME, build: BUILD, sessionId: SESSION_ID } = batch;
+    const CONNECTION = await readConnection(request, env);
     // 배치 하나 = 세션 요약 1행 + (이벤트가 있으면) 원본 1행 + 경기마다 1행. 같은 배치를 다시 받아도 결과가 같습니다.
+    // 접속 정보는 세션의 첫 배치 것을 남깁니다.
     const STATEMENTS = [
         env.DB.prepare(
-            `INSERT INTO sessions (session_id, game, build, schema_version, started_at, last_seen_at, play_ms, tester, origin)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6, ?7, ?8)
+            `INSERT INTO sessions
+                 (session_id, game, build, schema_version, started_at, last_seen_at, play_ms,
+                  ip_key, country, city, asn, as_org, user_agent, origin)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT (session_id) DO UPDATE SET
                  last_seen_at = MAX(last_seen_at, excluded.last_seen_at),
-                 play_ms = MAX(play_ms, excluded.play_ms),
-                 tester = COALESCE(excluded.tester, tester)`,
-        ).bind(SESSION_ID, GAME, BUILD, SCHEMA_VERSION, RECEIVED_AT, batch.playMs, TESTER, ORIGIN),
+                 play_ms = MAX(play_ms, excluded.play_ms)`,
+        ).bind(
+            SESSION_ID,
+            GAME,
+            BUILD,
+            SCHEMA_VERSION,
+            RECEIVED_AT,
+            batch.playMs,
+            CONNECTION.ipKey,
+            CONNECTION.country,
+            CONNECTION.city,
+            CONNECTION.asn,
+            CONNECTION.asOrg,
+            CONNECTION.userAgent,
+            CONNECTION.origin,
+        ),
     ];
     if (batch.events.length) {
         STATEMENTS.push(
@@ -133,9 +196,8 @@ async function receiveBatch(request, env) {
         STATEMENTS.push(
             env.DB.prepare(
                 `INSERT OR IGNORE INTO matches
-                     (match_id, session_id, game, build, schema_version, mode, seed, players, summary, replay, recorded_at,
-                      tester, origin)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)`,
+                     (match_id, session_id, game, build, schema_version, mode, seed, players, summary, replay, recorded_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`,
             ).bind(
                 MATCH.matchId,
                 SESSION_ID,
@@ -148,8 +210,6 @@ async function receiveBatch(request, env) {
                 JSON.stringify(MATCH.summary),
                 JSON.stringify(MATCH.replay ?? null),
                 RECEIVED_AT,
-                TESTER,
-                ORIGIN,
             ),
         );
     }
@@ -163,19 +223,22 @@ async function readStats(url, env) {
     if (!isName(GAME) || (BUILD !== null && !isName(BUILD))) {
         return reply(400, { error: 'identity' });
     }
-    const [SESSIONS, MATCHES, TESTERS] = await env.DB.batch([
+    // 경기는 그 경기를 처음 보낸 세션의 구분을 따릅니다.
+    const [SESSIONS, MATCHES, OWNERS] = await env.DB.batch([
         env.DB.prepare(
-            `SELECT ${AUDIENCE_SQL} AS audience, COUNT(*) AS sessions, AVG(play_ms) AS avgPlayMs,
-                    AVG(last_seen_at - started_at) AS avgWallMs
-             FROM sessions WHERE game = ?1 AND (?2 IS NULL OR build = ?2) GROUP BY audience`,
+            `SELECT ${AUDIENCE_SQL} AS audience, COUNT(*) AS sessions, AVG(s.play_ms) AS avgPlayMs,
+                    AVG(s.last_seen_at - s.started_at) AS avgWallMs
+             FROM sessions s LEFT JOIN owners o ON o.ip_key = s.ip_key
+             WHERE s.game = ?1 AND (?2 IS NULL OR s.build = ?2) GROUP BY audience`,
         ).bind(GAME, BUILD),
         env.DB.prepare(
             `SELECT ${AUDIENCE_SQL} AS audience, COUNT(*) AS matches
-             FROM matches WHERE game = ?1 AND (?2 IS NULL OR build = ?2) GROUP BY audience`,
+             FROM matches m JOIN sessions s ON s.session_id = m.session_id LEFT JOIN owners o ON o.ip_key = s.ip_key
+             WHERE m.game = ?1 AND (?2 IS NULL OR m.build = ?2) GROUP BY audience`,
         ).bind(GAME, BUILD),
         env.DB.prepare(
-            `SELECT tester, COUNT(*) AS sessions FROM sessions
-             WHERE game = ?1 AND (?2 IS NULL OR build = ?2) AND tester IS NOT NULL GROUP BY tester`,
+            `SELECT o.label AS label, COUNT(*) AS sessions FROM sessions s JOIN owners o ON o.ip_key = s.ip_key
+             WHERE s.game = ?1 AND (?2 IS NULL OR s.build = ?2) GROUP BY o.label`,
         ).bind(GAME, BUILD),
     ]);
     const BODY = { game: GAME, build: BUILD };
@@ -188,9 +251,25 @@ async function readStats(url, env) {
             matches: MATCHES.results.find((row) => row.audience === AUDIENCE)?.matches ?? 0,
         };
     }
-    // 개발자 기기별 세션 수: 어느 기기의 플레이가 빠졌는지 확인합니다.
-    BODY.tester.devices = Object.fromEntries(TESTERS.results.map((row) => [row.tester, row.sessions]));
+    // 소유자 회선 이름(owners.label)별 세션 수: 어느 회선의 플레이가 빠졌는지 확인합니다.
+    BODY.owner.keys = Object.fromEntries(OWNERS.results.map((row) => [row.label, row.sessions]));
     return reply(200, BODY);
+}
+
+/** 지금 요청한 회선의 접속 키와 접속 정보. 소유자는 이 키를 owners에 넣어 자기 플레이를 집계에서 뺍니다. */
+async function readWhoami(request, env) {
+    const CONNECTION = await readConnection(request, env);
+    const OWNER = CONNECTION.ipKey
+        ? await env.DB.prepare('SELECT label FROM owners WHERE ip_key = ?1').bind(CONNECTION.ipKey).first()
+        : null;
+    return reply(200, {
+        ipKey: CONNECTION.ipKey,
+        country: CONNECTION.country,
+        city: CONNECTION.city,
+        asn: CONNECTION.asn,
+        asOrg: CONNECTION.asOrg,
+        owner: OWNER?.label ?? null,
+    });
 }
 
 export default {
@@ -199,11 +278,18 @@ export default {
         if (request.method === 'OPTIONS') {
             return new Response(null, { status: 204, headers: CORS });
         }
+        if (!env.IP_KEY_SECRET) {
+            // 배포 설정 누락: 접속 키 없이 받으면 소유자 플레이를 가를 수 없으므로 받지 않습니다.
+            return reply(500, { error: 'ip-key-secret' });
+        }
         if (URL_VALUE.pathname === '/batch' && request.method === 'POST') {
             return receiveBatch(request, env);
         }
         if (URL_VALUE.pathname === '/stats' && request.method === 'GET') {
             return readStats(URL_VALUE, env);
+        }
+        if (URL_VALUE.pathname === '/whoami' && request.method === 'GET') {
+            return readWhoami(request, env);
         }
         return reply(404, { error: 'not-found' });
     },

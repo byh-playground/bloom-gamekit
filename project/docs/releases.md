@@ -1,3 +1,12 @@
+## v0.44.0 (2026-11-04)
+
+비호환 변경(metrics 전송 계약). 개발자 본인 플레이를 보낼 때 표시하지 않고 서버에서 나중에 거릅니다. 배치가 `schemaVersion: 3`이 되고 `tester`가 빠지며, 수집 서버는 schema 2 배치를 400으로 거절합니다. 운영 서버는 이 버전과 함께 다시 배포했습니다. 다른 모듈의 동작은 같습니다.
+
+- `metrics`: `?metrics-tester` 주소 옵션, `setTester`·`tester`, localStorage 기억을 제거했습니다. 게임 쪽에 할 일이 없습니다.
+- 서버: 세션마다 접속 키(회선 HMAC, 원본 IP 아님)·국가·도시·ASN·통신사·User-Agent·Origin을 저장하고, `owners` 표에 넣은 회선의 세션·경기를 `GET /stats`에서 소급해 `owner`(+`keys`)로 뺍니다. `GET /whoami`로 지금 회선의 키를 봅니다. 비밀값 `IP_KEY_SECRET`이 필요합니다.
+- 예제: '지표' 탭의 개발자 표시 스위치를 "내 접속 키 보기"로 바꿨습니다.
+- 시험: `modules/metrics/tests/metrics.e2e.mjs`가 접속 키·IPv6 /64 묶음·다른 회선 유저·소급 owner 분리를 확인합니다.
+
 ## v0.43.0 (2026-11-04)
 
 비호환 변경(metrics 전송 계약). 집계에서 개발자 본인 플레이를 가릅니다. 배치가 `schemaVersion: 2`와 `tester`를 담고, 수집 서버는 schema 1 배치를 400으로 거절합니다. 운영 서버는 이 버전과 함께 다시 배포했습니다. 다른 모듈의 동작은 같습니다.
