@@ -24,6 +24,7 @@
 - [고정 실행과 선택적 detached local input preview](./modules/simloop/README.md) · [카메라·표현 이벤트](./modules/presentation-events/README.md) · [HUD](./modules/hud/README.md) · [진단](./modules/debug-tools/README.md) · [카메라](./modules/camera/README.md)
 - [비긴급 작업의 고정 tick 예산·재개 API](./modules/work-scheduler/README.md)
 - [행동 결정(행동트리)과 실행 단계(상태 기계)](./modules/behavior/README.md) · [행동 탭 바로 보기](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/work-scheduler.html#tab=behavior)
+- [결정론 균일 격자: 점 항목 후보·최근접 고리 탐색, 사각형 항목 겹침 쌍, 질의 순서 계약](./modules/spatial/README.md) · `node modules/spatial/tests/spatial.e2e.mjs`
 - [광고 어댑터 추상화·빈도 정책](./modules/bm/README.md) · [mock 어댑터](./modules/bm/adapters/mock/README.md) · [Google H5 Games Ads 어댑터와 신청 절차](./modules/bm/adapters/google-ads/README.md) · [IMA 영상 광고 어댑터(샘플 태그로 승인 없이 테스트)](./modules/bm/adapters/ima/README.md)
 - [상품·구매와 서버 확인 기준 소유 판정](./modules/store/README.md) · [mock 어댑터](./modules/store/adapters/mock/README.md)
 - [게임 저장 레코드: 이관·검증·탭 간 충돌, 저장소 어댑터](./modules/save/README.md)
