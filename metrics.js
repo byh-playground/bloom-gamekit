@@ -261,14 +261,11 @@ function createMetrics({
   }
   function flushOnHide() {
     packEvents();
-    for (let i = 0; i < OUTBOX.length; ) {
-      if (OUTBOX[i].bytes <= MAX_UNLOAD_BYTES && adapter.sendOnHide(OUTBOX[i].body)) {
-        OUTBOX.splice(i, 1);
-      } else {
-        i++;
-      }
+    let unsent = false;
+    for (const BATCH of OUTBOX) {
+      unsent ||= !(BATCH.bytes <= MAX_UNLOAD_BYTES && adapter.sendOnHide(BATCH.body));
     }
-    if (OUTBOX.length) {
+    if (unsent) {
       flush();
     }
   }
@@ -282,6 +279,7 @@ function createMetrics({
       flushOnHide();
     } else if (visibleSince == null) {
       visibleSince = now();
+      flush();
     }
   }
   function onPageHide() {
@@ -291,6 +289,7 @@ function createMetrics({
   function onPageShow(event) {
     if (event.persisted) {
       startSession();
+      flush();
     }
   }
   const HEARTBEAT = setInterval(() => {
@@ -299,7 +298,7 @@ function createMetrics({
     }
   }, heartbeatMs);
   const FLUSH = setInterval(() => {
-    if (EVENTS.length || OUTBOX.length) {
+    if (document.visibilityState === "visible" && (EVENTS.length || OUTBOX.length)) {
       flush();
     }
   }, flushMs);

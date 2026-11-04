@@ -51,7 +51,7 @@
     },
     {
       "file": "rollback.js",
-      "sha256": "f0d3684ea2c418a028abf9b597f557bc9b79e85212c06be2e33a65d3bc93c86b"
+      "sha256": "9042a4dc2107431d636d1d31bc115742bf52f5f4e142ceedcd237991a8f62ecb"
     },
     {
       "file": "camera.js",
@@ -123,7 +123,7 @@
     },
     {
       "file": "metrics.js",
-      "sha256": "0fb2fefbe15b284bc90684f97b92f30a9a322877aa76330c6e133aa24c11fa9a"
+      "sha256": "645eaae91b16c3a141bc6d7f98562baa6c64eaabedcaea50ad288b8a78394838"
     },
     {
       "file": "pwa.js",
