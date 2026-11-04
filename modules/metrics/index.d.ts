@@ -38,6 +38,7 @@ export class InputLogRecorder extends MatchRecorder {
     input(tick: number, input: unknown): void;
 }
 export class SessionReplayRecorder extends MatchRecorder {
+    /** rollback `Session` 또는 `recordReplay: true`인 `RoomSession`. */
     constructor(options: MatchRecorderOptions & { session: { exportReplay(): { seed: unknown; players: unknown[] } } });
 }
 

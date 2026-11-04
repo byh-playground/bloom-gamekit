@@ -1,3 +1,12 @@
+## v0.45.0 (2026-11-04)
+
+비호환 변경(replay 형식 `0.3.0-dev`). 확정 입력을 매 tick 객체 대신 바뀐 tick만 담은 바이트로 내보내고, 방 세션도 경기 기록을 남깁니다. 0.2.0 기록은 읽지 않습니다(저장된 기록 없음).
+
+- `replay`: `frames` 대신 `inputChanges`(tick 차이·참가자 순번·입력 바이트)와 `commands`를 읽습니다. `baseTick`·`membershipEpoch`가 있으면 adapter에 전역 tick·세대를 넘깁니다.
+- `rollback`: `createRoomSession({ recordReplay: true })`와 `RoomSession.exportReplay()`를 추가했습니다. roster 세대마다 구간 하나입니다. `localFastPath`도 이 옵션으로 기록합니다. 기본값은 기록 없음으로 그대로입니다.
+- `metrics`: `SessionReplayRecorder`가 `RoomSession`도 받습니다.
+- 시험: `local-fastpath-browser.mjs`가 기록 재생 hash·입력 바이트 수를, `dynamic-browser.mjs`가 입퇴장 4가지 모드에서 살아 있는 참가자의 구간별 재생 hash를 확인합니다.
+
 ## v0.44.0 (2026-11-04)
 
 비호환 변경(metrics 전송 계약). 개발자 본인 플레이를 보낼 때 표시하지 않고 서버에서 나중에 거릅니다. 배치가 `schemaVersion: 3`이 되고 `tester`가 빠지며, 수집 서버는 schema 2 배치를 400으로 거절합니다. 운영 서버는 이 버전과 함께 다시 배포했습니다. 다른 모듈의 동작은 같습니다.

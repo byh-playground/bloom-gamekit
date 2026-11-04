@@ -18,6 +18,7 @@ import {
     frameEqual,
     copyFrame,
     runSimulationFrame,
+    encodeReplayFrames,
 } from '../_rollback-shared/protocol.js';
 import { nowMs, compareIds, integer, bytes, equalBytes, hashBytes } from '../deterministic/utilities.js';
 function copyLocalCommandState(state, inputSize, profile, executedSequence = 0) {
@@ -281,11 +282,8 @@ export class RollbackSession {
         this.adapter = adapter;
         this.onEvent = onEvent;
         this.localFastPath = localFastPath;
-        if (
-            localFastPath &&
-            (this.players.length !== 1 || this.profile.mode !== 'lockstep' || recordReplay || boundaryToken)
-        ) {
-            throw new TypeError('local fast path requires one-player lockstep without replay or a recovery boundary');
+        if (localFastPath && (this.players.length !== 1 || this.profile.mode !== 'lockstep' || boundaryToken)) {
+            throw new TypeError('local fast path requires one-player lockstep without a recovery boundary');
         }
         this.authorityPlayerId = authorityPlayerId ?? this.players[0];
         if (!this.players.includes(this.authorityPlayerId)) {
@@ -404,10 +402,10 @@ export class RollbackSession {
             throw new Error('initial boundary adapter');
         }
         if (this.localFastPath) {
-            // A local single-player session has no handshake, checksum, replay, or
-            // automatic recovery consumer. The game's adapter remains available to
-            // its owner for explicit saves and restores.
-            this._initialState = null;
+            // A local single-player session has no handshake, checksum, or automatic
+            // recovery consumer. The game's adapter remains available to its owner for
+            // explicit saves and restores. An opted-in replay keeps one initial save.
+            this._initialState = recordReplay ? this._save() : null;
             this._currentState = null;
             this._hello = null;
         } else {
@@ -1890,7 +1888,7 @@ export class RollbackSession {
             this._recordReplay &&
             this._replayBytes + this._replayFrameBytes(inputs) > this.profile.maxReplayBytes
         ) {
-            this._replayFinalHash = this._stateHash(this._stateAt(TICK));
+            this._replayFinalHash = this.localFastPath ? hashBytes(this._save()) : this._stateHash(this._stateAt(TICK));
             this._recordReplay = false;
             this._event('replay-capacity');
         }
@@ -1923,6 +1921,14 @@ export class RollbackSession {
                         predicted: f.predicted,
                     })),
                 );
+            }
+            if (this.localFastPath && this._recordReplay) {
+                // Fast-path frames are final when executed; no confirmation pass follows.
+                this._replayFrames.push({
+                    tick: TICK,
+                    inputs: inputs.map((f) => ({ playerId: f.playerId, ...copyFrame(f), predicted: false })),
+                });
+                this._replayBytes += this._replayFrameBytes(inputs);
             }
             this._tick++;
             this._inputHash = INPUT_HASH;
@@ -2676,7 +2682,7 @@ export class RollbackSession {
         }
     }
     _recordConfirmed() {
-        if (!this._recordReplay || this.resimulating || this._failure) {
+        if (this.localFastPath || !this._recordReplay || this.resimulating || this._failure) {
             return;
         }
         this._replayFinalState = this._history.get(this._replayFrames.length) ?? this._replayFinalState;
@@ -2729,16 +2735,21 @@ export class RollbackSession {
         };
     }
     exportReplay() {
-        if (this.localFastPath) {
-            throw new Error('replay unavailable in local fast path');
+        if (this.localFastPath && !this._initialState) {
+            throw new Error('replay unavailable in local fast path without recordReplay');
         }
         if (this.resimulating) {
             throw new Error('finish rollback before exporting replay');
         }
         this._recordConfirmed();
         const TICK = this._replayFrames.length;
-        const HASH_LOCAL =
-            this._stateHash(this._stateAt(TICK)) ?? this._stateHash(this._replayFinalState) ?? this._replayFinalHash;
+        const HASH_LOCAL = this.localFastPath
+            ? this._recordReplay
+                ? hashBytes(this._save())
+                : this._replayFinalHash
+            : (this._stateHash(this._stateAt(TICK)) ??
+              this._stateHash(this._replayFinalState) ??
+              this._replayFinalHash);
         if (TICK > 0 && HASH_LOCAL === undefined) {
             throw new Error('replay final boundary is unavailable after fatal restoration failure');
         }
@@ -2750,14 +2761,7 @@ export class RollbackSession {
             inputSize: this.inputSize,
             tickRate: this.profile.tickRate,
             initialState: this._initialState.slice(),
-            frames: this._replayFrames.map((f) => ({
-                tick: f.tick,
-                inputs: f.inputs.map((x) => ({
-                    ...copyFrame(x),
-                    playerId: x.playerId,
-                    predicted: false,
-                })),
-            })),
+            ...encodeReplayFrames(this._replayFrames, this.players),
             tick: TICK,
             hash: HASH_LOCAL ?? hashBytes(this._initialState),
             truncated: !this._recordReplay,

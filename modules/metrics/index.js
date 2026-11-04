@@ -155,7 +155,7 @@ export class InputLogRecorder extends MatchRecorder {
     }
 }
 
-/** rollback `Session`: SDK가 소유한 `exportReplay()`를 그대로 남깁니다. 입력을 따로 모으지 않습니다. */
+/** rollback `Session`·`RoomSession`(`recordReplay: true`): SDK가 소유한 `exportReplay()`를 그대로 남깁니다. 입력을 따로 모으지 않습니다. */
 export class SessionReplayRecorder extends MatchRecorder {
     /** @param {{ session: { exportReplay(): { seed: unknown, players: unknown[] } } } & object} options */
     constructor({ session, ...options }) {

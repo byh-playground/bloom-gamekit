@@ -46,6 +46,7 @@ try {
     await PAGE.goto(`http://127.0.0.1:${SERVER.address().port}/modules/rollback/tests/browser.html`);
     const RESULT = await PAGE.evaluate(async () => {
         const { createRoomSession: CREATE_ROOM_SESSION, profiles: PROFILES } = await import('/dist/rollback.js');
+        const { playReplay: PLAY_REPLAY } = await import('/dist/replay.js');
         const CREATE_WORLD = () => ({
             position: 0,
             tick: 0,
@@ -101,10 +102,11 @@ try {
             REGULAR_WORLD = CREATE_WORLD();
         const FAST_ADAPTER = MAKE_ADAPTER(FAST_WORLD),
             REGULAR_ADAPTER = MAKE_ADAPTER(REGULAR_WORLD);
-        const CREATE = (adapter, localFastPath = false) =>
+        const CREATE = (adapter, localFastPath = false, recordReplay = false) =>
             CREATE_ROOM_SESSION({
                 mode: 'local',
                 localFastPath,
+                recordReplay,
                 simulationVersion: 'fastpath-test-v1',
                 inputSize: 1,
                 profile: PROFILE,
@@ -132,6 +134,27 @@ try {
             fastCommandSequence: FAST.localInputState.executedCommandSequence,
             regularCommandSequence: REGULAR.localInputState.executedCommandSequence,
         };
+        // Opted-in replay: one initial save, inputs kept only where they change.
+        const RECORDED_WORLD = CREATE_WORLD(),
+            RECORDED_ADAPTER = MAKE_ADAPTER(RECORDED_WORLD),
+            RECORDED = CREATE(RECORDED_ADAPTER, true, true);
+        for (let tick = 0; tick < 12; tick++) {
+            if (tick === 2 || tick === 7) {
+                RECORDED.queueCommand(Uint8Array.of(tick));
+            }
+            RECORDED.advance(Uint8Array.of(Math.floor(tick / 3) + 1));
+        }
+        const RECORDED_SAVES_BEFORE_EXPORT = RECORDED_ADAPTER.saveCalls;
+        const ROOM_REPLAY = RECORDED.exportReplay();
+        const PLAYED_WORLD = CREATE_WORLD();
+        const PLAYED = PLAY_REPLAY({ adapter: MAKE_ADAPTER(PLAYED_WORLD), replay: ROOM_REPLAY.segments[0] });
+        RECORDED.close();
+        let replayWithoutOptInRejected = false;
+        try {
+            FAST.exportReplay();
+        } catch {
+            replayWithoutOptInRejected = true;
+        }
         const FAST_SAVE = FAST_ADAPTER.save(),
             REGULAR_SAVE = REGULAR_ADAPTER.save();
         FAST_WORLD.position = 0;
@@ -212,6 +235,18 @@ try {
             rollbackRejected,
             onlineRejected,
             failedWithoutRestore: FAILED_WITHOUT_RESTORE,
+            replay: {
+                savesBeforeExport: RECORDED_SAVES_BEFORE_EXPORT,
+                segments: ROOM_REPLAY.segments.length,
+                tick: ROOM_REPLAY.segments[0].tick,
+                truncated: ROOM_REPLAY.segments[0].truncated,
+                inputChangeBytes: ROOM_REPLAY.segments[0].inputChanges.length,
+                commands: ROOM_REPLAY.segments[0].commands.map((c) => [c.tick, c.payload[0]]),
+                played: PLAYED,
+                hash: ROOM_REPLAY.segments[0].hash,
+                sameWorld: JSON.stringify(PLAYED_WORLD) === JSON.stringify(RECORDED_WORLD),
+                withoutOptInRejected: replayWithoutOptInRejected,
+            },
         };
     });
     assert.deepEqual(ERRORS, [], 'browser runtime errors');
@@ -262,9 +297,26 @@ try {
         true,
         'a failed fast-path step becomes fatal without hidden save/load calls',
     );
+    assert.equal(RESULT.replay.savesBeforeExport, 1, 'recorded fast path saves only the initial state');
+    assert.equal(RESULT.replay.segments, 1, 'local room has one replay segment');
+    assert.equal(RESULT.replay.tick, 12, 'recorded fast path keeps every executed tick');
+    assert.equal(RESULT.replay.truncated, false, 'recorded fast path replay is complete');
+    assert.equal(RESULT.replay.inputChangeBytes, 12, 'four input changes of one byte each are stored');
+    assert.deepEqual(
+        RESULT.replay.commands,
+        [
+            [2, 2],
+            [7, 7],
+        ],
+        'commands keep their execute tick',
+    );
+    assert.deepEqual(RESULT.replay.played, { tick: 12, hash: RESULT.replay.hash }, 'replay reproduces the hash');
+    assert.equal(RESULT.replay.sameWorld, true, 'replay reproduces the world');
+    assert.equal(RESULT.replay.withoutOptInRejected, true, 'fast path without recordReplay has no replay');
     console.log(
         JSON.stringify({
             status: 'PASS',
+            replayInputBytes: RESULT.replay.inputChangeBytes,
             ticks: RESULT.statuses.length,
             internalSaveCalls: RESULT.beforeExplicitSave.fastSaveCalls,
             defaultSaveCalls: RESULT.beforeExplicitSave.regularSaveCalls,

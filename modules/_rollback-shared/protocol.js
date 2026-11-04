@@ -1,7 +1,7 @@
 import { bytes, equalBytes } from '../deterministic/utilities.js';
 export { VERSION } from './version.js';
 // 기존 기록의 형식 식별자입니다. SDK 표시 버전 변경으로 저장 기록을 무효화하지 않습니다.
-export const REPLAY_FORMAT_VERSION = '0.2.0-dev';
+export const REPLAY_FORMAT_VERSION = '0.3.0-dev';
 export const PROTOCOL_VERSION = 3;
 export const CHUNK_SIZE = 16384;
 export const MAX_TICK = 0x7ffffffe; // Signed ACK fields reserve -1 for no confirmed input.
@@ -214,4 +214,85 @@ export function runSimulationFrame(adapter, context) {
             predicted: !!frame.predicted,
         })),
     });
+}
+// Replay input log: only ticks where a player's input bytes change. Each entry is
+// [unsigned LEB128 tick delta][player index][inputSize bytes]; every player has an
+// entry at tick 0. Commands are rare and stay as a list with their local tick.
+export function encodeReplayFrames(frames, players) {
+    const OUT = [],
+        LAST = players.map(() => null),
+        COMMANDS = [];
+    let previous = 0;
+    for (const F of frames) {
+        for (const X of F.inputs) {
+            const P = players.indexOf(X.playerId);
+            for (const C of X.commands) {
+                COMMANDS.push({ ...C, payload: C.payload.slice(), tick: F.tick, playerId: X.playerId });
+            }
+            if (LAST[P] && equalBytes(LAST[P], X.input)) {
+                continue;
+            }
+            for (let d = F.tick - previous; ; d >>>= 7) {
+                if (d < 0x80) {
+                    OUT.push(d);
+                    break;
+                }
+                OUT.push((d & 0x7f) | 0x80);
+            }
+            OUT.push(P, ...X.input);
+            LAST[P] = X.input;
+            previous = F.tick;
+        }
+    }
+    return { inputChanges: Uint8Array.from(OUT), commands: COMMANDS };
+}
+export function decodeReplayFrames({ inputChanges, commands, players, inputSize, tick }) {
+    const DATA = bytes(inputChanges),
+        CURRENT = players.map(() => null),
+        FRAMES = [];
+    let at = 0,
+        next = 0;
+    const READ = () => {
+        if (at >= DATA.length) {
+            return null;
+        }
+        let delta = 0;
+        for (let shift = 0; ; shift += 7) {
+            const B = DATA[at++];
+            delta += (B & 0x7f) * 2 ** shift;
+            if (B < 0x80) {
+                break;
+            }
+        }
+        const P = DATA[at++];
+        if (P >= players.length || at + inputSize > DATA.length) {
+            throw new Error('replay input changes');
+        }
+        next += delta;
+        at += inputSize;
+        return { tick: next, player: P, input: DATA.slice(at - inputSize, at) };
+    };
+    let pending = READ();
+    let c = 0;
+    for (let t = 0; t < tick; t++) {
+        while (pending && pending.tick === t) {
+            CURRENT[pending.player] = pending.input;
+            pending = READ();
+        }
+        if (CURRENT.some((x) => !x)) {
+            throw new Error('replay input changes');
+        }
+        const INPUTS = players.map((playerId, i) => ({ playerId, input: CURRENT[i], commands: [], predicted: false }));
+        for (; c < commands.length && commands[c].tick === t; c++) {
+            const COMMAND = { ...commands[c], payload: bytes(commands[c].payload) };
+            delete COMMAND.tick;
+            delete COMMAND.playerId;
+            INPUTS[players.indexOf(commands[c].playerId)].commands.push(COMMAND);
+        }
+        FRAMES.push({ tick: t, inputs: INPUTS });
+    }
+    if (pending || c !== commands.length) {
+        throw new Error('replay input changes');
+    }
+    return FRAMES;
 }

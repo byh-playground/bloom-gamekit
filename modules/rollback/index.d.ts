@@ -430,6 +430,8 @@ export interface RoomSessionOptions {
     availability?: Partial<AvailabilityOptions> & { autoTransfer?: Partial<CoordinatorTransferOptions> };
     /** strict local lockstep에서 SDK 내부 snapshot/checkpoint/hash/replay 생성을 생략한다. 앱의 adapter 저장 기능은 그대로 쓴다. */
     localFastPath?: boolean;
+    /** 확정 입력을 기록해 exportReplay()로 내보낸다(기본 false). localFastPath와 함께 쓰면 초기 save 한 번이 늘고, available 가용성과는 쓸 수 없다. */
+    recordReplay?: boolean;
     /** 게임 방 소유자 식별. coordinator 이관으로 변경되지 않는다. */
     roomOwnerId?: PlayerId;
     mode?: 'local' | 'online';
@@ -525,6 +527,7 @@ export class RoomSession {
     constructor(options: RoomSessionOptions);
     readonly mode: 'local' | 'online';
     readonly localFastPath: boolean;
+    readonly recordReplay: boolean;
     readonly room?: RoomTransport;
     readonly localPlayerId: PlayerId;
     readonly sessionId: string;
@@ -557,11 +560,20 @@ export class RoomSession {
     releaseInput(): void;
     getPeerState(peerId: PlayerId): Readonly<PeerState> | undefined;
     getStateHash(tick?: number): number | undefined;
+    /** recordReplay 방의 확정 입력. roster 세대(epoch)마다 playReplay로 따로 재생되는 구간 하나. */
+    exportReplay(): RoomReplay;
     /** 확정 roster 변경과 송신 완료까지 기다린다. 즉시 종료는 close()를 사용한다. */
     leave(): Promise<void>;
     close(): void;
 }
 export function createRoomSession(options: RoomSessionOptions): RoomSession;
+export interface RoomReplay {
+    seed: number;
+    /** 내보낸 순간의 방 roster. */
+    players: PlayerId[];
+    /** 세대 순서. 다음 구간의 initialState는 roster 변경을 적용한 경계 상태라 구간 사이 tick이 빌 수 있다. */
+    segments: Replay[];
+}
 export interface LocalInputState {
     epoch: number;
     baseTick: number;

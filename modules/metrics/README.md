@@ -29,7 +29,7 @@ const SOLO = new InputLogRecorder({ mode: 'solo', seed });
 SOLO.input(tick, input); // 확정 tick마다
 METRICS.recordMatch(SOLO, { score: 15, rallies: 42 });
 
-// rollback Session(로컬·온라인): SDK의 exportReplay()를 그대로 남깁니다. 참가자 모두 같은 matchId를 넘깁니다.
+// rollback Session·RoomSession(recordReplay: true): SDK의 exportReplay()를 그대로 남깁니다. 참가자 모두 같은 matchId를 넘깁니다.
 const ONLINE = new SessionReplayRecorder({ session: SESSION, mode: 'online', matchId: `${roomId}:${epoch}` });
 METRICS.recordMatch(ONLINE, { winner: 'a' });
 ```
@@ -40,7 +40,7 @@ METRICS.recordMatch(ONLINE, { winner: 'a' });
 
 새 세션에서 게임에 지표를 붙일 때 이 순서를 따릅니다. 배경 결정은 D-203(자체 수집 + 결정론 경기 기록, 백엔드는 어댑터), D-204(Cloudflare Workers + D1), D-205(범용 코어 + 경우별 구현체 클래스)입니다.
 
-1. **세션 종류를 확인합니다.** 게임이 쓰는 실행 경로에 맞는 기록 클래스를 고릅니다(아래 "경기 기록" 표). `createRoomSession`을 쓰는 게임(bloom-takraw 등)은 `RoomSession`에 replay가 없어 `SessionReplayRecorder`를 쓸 수 없습니다. 게임에서 입력을 모으는 우회 대신 먼저 rollback 모듈에 replay를 추가하고 그에 맞는 구현체를 이 모듈에 둡니다(작업 흐름 "모듈 개선 → 게임 반영"). 그 전까지는 확정 입력만 `InputLogRecorder`에 넣습니다.
+1. **세션 종류를 확인합니다.** 게임이 쓰는 실행 경로에 맞는 기록 클래스를 고릅니다(아래 "경기 기록" 표). `createRoomSession`을 쓰는 게임(bloom-takraw 등)은 `recordReplay: true`로 만들고 `SessionReplayRecorder`를 씁니다(혼자 하기 `localFastPath`도 같음). 게임에서 입력을 따로 모으지 않습니다. 기록이 없는 실행 경로가 생기면 게임 우회 대신 rollback 모듈부터 고칩니다(작업 흐름 "모듈 개선 → 게임 반영").
 2. **import map에 고정 주소를 넣습니다.** `@bloom-gamekit/metrics` → `https://cdn.jsdelivr.net/gh/byh-playground/bloom-gamekit@<dist-commit>/metrics.js`. 게임의 `gamekit.lock.json`에 URL·SHA-256을 다른 모듈과 같은 dist commit으로 적습니다. branch 주소는 쓰지 않습니다.
 3. **부팅 때 한 번 만듭니다.** 내 플레이는 서버가 접속 키로 나중에 거르므로 게임 쪽 표시는 없습니다("개발자 본인 플레이 분리"). `game`은 저장소 이름, `version`은 게임 빌드 버전입니다. 서버 주소는 아래 "운영"의 배포 주소입니다. 시험·격리 장면(주소 옵션의 디버그 장면 등)은 `MemoryAdapter`로 바꿔 실제 집계에 섞이지 않게 합니다.
 4. **이벤트는 사람이 한 행동과 화면 전환만 보냅니다.** category는 화면·기능(`menu`, `match`, `shop`, `ad`), target은 대상(`start`, `rally`, `no_ads`), action은 동사(`click`, `start`, `end`, `buy`)입니다. 매 tick·매 프레임 값은 보내지 않습니다. 경기 중 수치는 경기 끝 summary에 넣고, 나머지는 결정론 기록에서 다시 계산합니다.
@@ -107,16 +107,17 @@ METRICS.recordMatch(ONLINE, { winner: 'a' });
 
 ## 경기 기록
 
-| 구현체                  | 쓰는 경우                    | `capture()`의 replay                  |
-| ----------------------- | ---------------------------- | ------------------------------------- |
-| `MatchRecorder`         | 결정론 기록이 없는 게임      | `null` (시드·참가자·summary만)        |
-| `InputLogRecorder`      | rollback 없는 고정 tick 게임 | `{ seed, frames: [{ tick, input }] }` |
-| `SessionReplayRecorder` | rollback `Session`           | `session.exportReplay()` 그대로       |
+| 구현체                  | 쓰는 경우                        | `capture()`의 replay                  |
+| ----------------------- | -------------------------------- | ------------------------------------- |
+| `MatchRecorder`         | 결정론 기록이 없는 게임          | `null` (시드·참가자·summary만)        |
+| `InputLogRecorder`      | rollback 없는 고정 tick 게임     | `{ seed, frames: [{ tick, input }] }` |
+| `SessionReplayRecorder` | rollback `Session`·`RoomSession` | `session.exportReplay()` 그대로       |
 
 - 다른 기록이 필요하면 `MatchRecorder`를 상속해 `capture()`만 오버라이드합니다. `{ seed, players, replay }`를 돌려줍니다.
 - `matchId`를 생략하면 새 UUID입니다. 멀티플레이는 참가자 모두 같은 값을 넘기고, 서버는 먼저 도착한 하나만 남깁니다.
 - `Uint8Array`는 JSON에서 `{"$bytes": base64}`입니다. 다시 계산할 때 `JSON.parse(text, reviveBytes)`로 되돌려 `playReplay`에 넘깁니다.
-- `RoomSession`에는 아직 `exportReplay()`가 없습니다. 방 세션 게임은 `InputLogRecorder`에 확정 입력을 넣거나, rollback에 replay가 생긴 뒤 같은 방식의 구현체를 추가합니다.
+- rollback replay는 입력이 바뀐 tick만 바이트로 담습니다(`inputChanges`). 60Hz 2인 경기도 키보드 입력이면 대부분 수 KB이고, 매 tick 바뀌는 최악도 tick당 참가자마다 약 8바이트(base64 전)입니다. 배치 한도는 1MB입니다.
+- `RoomSession` replay는 `{ seed, players, segments }`입니다. 방이 시작된 뒤 roster 세대(epoch)마다 구간 하나이고, 구간마다 `playReplay`로 따로 재생해 그 `hash`와 비교합니다.
 
 ## 수집 서버
 
