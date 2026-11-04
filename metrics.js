@@ -3,6 +3,7 @@ var SCHEMA_VERSION = 3;
 var EVENT_TYPES = Object.freeze(["session_start", "heartbeat", "event", "session_end"]);
 var MAX_BATCH_BYTES = 1e6;
 var MAX_NAME_LENGTH = 64;
+var VIEWPORT_STEPS = Object.freeze([0, 360, 480, 600, 768, 1024, 1280, 1600, 1920]);
 var MAX_UNLOAD_BYTES = 6e4;
 function isName(value) {
   return typeof value === "string" && value.length > 0 && value.length <= MAX_NAME_LENGTH;
@@ -156,6 +157,7 @@ function createMetrics({
   game,
   version,
   adapter,
+  locale,
   heartbeatMs = 3e4,
   flushMs = 1e4,
   maxBatchEvents = 50,
@@ -165,6 +167,9 @@ function createMetrics({
   checkName(version, "version");
   if (!(adapter instanceof MetricsAdapter)) {
     throw new TypeError("metrics adapter must extend MetricsAdapter.");
+  }
+  if (locale !== void 0) {
+    checkName(locale, "locale");
   }
   checkInterval(heartbeatMs, "heartbeatMs");
   checkInterval(flushMs, "flushMs");
@@ -180,6 +185,16 @@ function createMetrics({
   let sending = null;
   let droppedBatches = 0;
   let disposed = false;
+  function startSession() {
+    const BUCKET = (size) => VIEWPORT_STEPS.findLast((step) => step <= size);
+    push("session_start", {
+      props: {
+        ...locale === void 0 ? {} : { locale },
+        viewport: `${BUCKET(innerWidth)}x${BUCKET(innerHeight)}`,
+        touch: matchMedia("(pointer: coarse)").matches
+      }
+    });
+  }
   function playMs() {
     return playedMs + (visibleSince == null ? 0 : now() - visibleSince);
   }
@@ -275,7 +290,7 @@ function createMetrics({
   }
   function onPageShow(event) {
     if (event.persisted) {
-      push("session_start", {});
+      startSession();
     }
   }
   const HEARTBEAT = setInterval(() => {
@@ -291,7 +306,7 @@ function createMetrics({
   document.addEventListener("visibilitychange", onVisibilityChange);
   window.addEventListener("pagehide", onPageHide);
   window.addEventListener("pageshow", onPageShow);
-  push("session_start", {});
+  startSession();
   flush();
   return {
     sessionId: SESSION_ID,
