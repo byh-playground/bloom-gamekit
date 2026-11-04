@@ -77,6 +77,7 @@
             <button id="tab-atlas" type="button" role="tab" aria-controls="panel-atlas">아틀라스</button>
             <button id="tab-materials" type="button" role="tab" aria-controls="panel-materials">재질</button>
             <button id="tab-paint" type="button" role="tab" aria-controls="panel-paint">그라디언트</button>
+            <button id="tab-face" type="button" role="tab" aria-controls="panel-face">표정</button>
         </div>
 
         <section id="panel-vector" role="tabpanel" aria-labelledby="tab-vector" hidden>
@@ -142,6 +143,22 @@
             <ul>
                 <li>클립 경로는 장면 밖에서 한 번 만들어 두고 매 프레임 스텐실로 적용합니다.</li>
                 <li>스텐실 버퍼가 없는 장치에서는 클립 경로를 적용하지 못하고 오류를 냅니다.</li>
+            </ul>
+        </section>
+
+        <section id="panel-face" role="tabpanel" aria-labelledby="tab-face" hidden>
+            <p>몸에는 얼굴 자리 점 세 개만 있고, 표정 부품은 모든 몸이 같은 것을 나눠 씁니다.</p>
+            <div class="controls">
+                <button id="face-play" type="button" aria-pressed="true">움직임</button>
+                <button id="face-next" type="button">다음 표정</button>
+                <button id="face-cheek" type="button" aria-pressed="false">볼 색 바꾸기</button>
+            </div>
+            <canvas id="canvas-face" width="720" height="400"></canvas>
+            <p id="stats-face" aria-live="polite"></p>
+            <ul>
+                <li>왼쪽 얼굴 13개를 눌러 오른쪽에서 크게 봅니다.</li>
+                <li>작은 얼굴은 한 번 구워 둔 이미지로, 이미지가 늘어나는 큰 얼굴은 경로로 그립니다.</li>
+                <li>몸이 눌리거나 기울면 점 세 개를 따라 얼굴이 같이 움직입니다.</li>
             </ul>
         </section>
     </main>
@@ -3399,14 +3416,14 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
       }
     }
     _setProjection(bounds2, target = null) {
-      const W = target?.width ?? this.canvas.width, H = target?.height ?? this.canvas.height, X = bounds2?.x ?? 0, Y = bounds2?.y ?? 0;
-      this.projection[0] = 2 / W;
+      const W2 = target?.width ?? this.canvas.width, H = target?.height ?? this.canvas.height, X = bounds2?.x ?? 0, Y = bounds2?.y ?? 0;
+      this.projection[0] = 2 / W2;
       this.projection[1] = 0;
       this.projection[2] = 0;
       this.projection[3] = 0;
       this.projection[4] = -2 / H;
       this.projection[5] = 0;
-      this.projection[6] = -1 - 2 * X / W;
+      this.projection[6] = -1 - 2 * X / W2;
       this.projection[7] = 1 + 2 * Y / H;
       this.projection[8] = 1;
     }
@@ -3850,10 +3867,10 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
       }
       if (!uv && !this.clips.length && !this.activeGradient) {
         this._reserve(3);
-        const U = this.flatUV[0], V = this.flatUV[1];
-        this._writeVertex(a.x, a.y, a.u ?? U, a.v ?? V, color);
-        this._writeVertex(b.x, b.y, b.u ?? U, b.v ?? V, color);
-        this._writeVertex(c.x, c.y, c.u ?? U, c.v ?? V, color);
+        const U2 = this.flatUV[0], V = this.flatUV[1];
+        this._writeVertex(a.x, a.y, a.u ?? U2, a.v ?? V, color);
+        this._writeVertex(b.x, b.y, b.u ?? U2, b.v ?? V, color);
+        this._writeVertex(c.x, c.y, c.u ?? U2, c.v ?? V, color);
         return;
       }
       if (this.activeGradient && !uv) {
@@ -3991,21 +4008,21 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
         this._submit();
         this.activeTarget = null;
       }
-      const [U, V, W, H] = region.uvRect, MODE = radial ? gradient?.radialEmpty ? 2 : 1 : gradient ? 3 : 0, PARAMS = radial ? gradient?.radialParams ?? [0, 0, 0, 0] : [0, 0, 0, 0];
+      const [U2, V, W2, H] = region.uvRect, MODE = radial ? gradient?.radialEmpty ? 2 : 1 : gradient ? 3 : 0, PARAMS = radial ? gradient?.radialParams ?? [0, 0, 0, 0] : [0, 0, 0, 0];
       this.activeRadial = radial;
       this.activeWhiteFlash = whiteFlash;
       this.activeGradient = gradient;
       this.activeRegion = region;
-      this.flatUV = [U + W / 2, V + H / 2];
+      this.flatUV = [U2 + W2 / 2, V + H / 2];
       this.paintTemplate.set([
         region.layer,
         whiteFlash ? 1 : 0,
         MODE,
         region.filter === "nearest" ? 1 : 0,
         ...PARAMS,
-        U,
+        U2,
         V,
-        W,
+        W2,
         H
       ]);
     }
@@ -4080,27 +4097,27 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
         }
         this.device.stats.spriteRuns += COUNT;
         for (let i = 0; i < COUNT; i++) {
-          const AT = i * 4, LX = localRects[AT], LY = localRects[AT + 1], LW = localRects[AT + 2], LH = localRects[AT + 3], U = uvRects[AT], V = uvRects[AT + 1], UW = uvRects[AT + 2], VH = uvRects[AT + 3];
+          const AT = i * 4, LX = localRects[AT], LY = localRects[AT + 1], LW = localRects[AT + 2], LH = localRects[AT + 3], U2 = uvRects[AT], V = uvRects[AT + 1], UW = uvRects[AT + 2], VH = uvRects[AT + 3];
           if (!this.clips.length) {
             if (!this._planesAllow()) {
               this._submit();
             }
             const RX = LX + LW, BY = LY + LH, X0 = M[0] * LX + M[2] * LY + M[4], Y0 = M[1] * LX + M[3] * LY + M[5], X1 = M[0] * RX + M[2] * LY + M[4], Y1 = M[1] * RX + M[3] * LY + M[5], X2 = M[0] * RX + M[2] * BY + M[4], Y2 = M[1] * RX + M[3] * BY + M[5], X3 = M[0] * LX + M[2] * BY + M[4], Y3 = M[1] * LX + M[3] * BY + M[5];
             this._reserve(3);
-            this._writeVertex(X0, Y0, U, V, TINT);
-            this._writeVertex(X1, Y1, U + UW, V, TINT);
-            this._writeVertex(X2, Y2, U + UW, V + VH, TINT);
+            this._writeVertex(X0, Y0, U2, V, TINT);
+            this._writeVertex(X1, Y1, U2 + UW, V, TINT);
+            this._writeVertex(X2, Y2, U2 + UW, V + VH, TINT);
             this._reserve(3);
-            this._writeVertex(X0, Y0, U, V, TINT);
-            this._writeVertex(X2, Y2, U + UW, V + VH, TINT);
-            this._writeVertex(X3, Y3, U, V + VH, TINT);
+            this._writeVertex(X0, Y0, U2, V, TINT);
+            this._writeVertex(X2, Y2, U2 + UW, V + VH, TINT);
+            this._writeVertex(X3, Y3, U2, V + VH, TINT);
             continue;
           }
           const CORNERS2 = [
-            [point(M, LX, LY), [U, V]],
-            [point(M, LX + LW, LY), [U + UW, V]],
-            [point(M, LX + LW, LY + LH), [U + UW, V + VH]],
-            [point(M, LX, LY + LH), [U, V + VH]]
+            [point(M, LX, LY), [U2, V]],
+            [point(M, LX + LW, LY), [U2 + UW, V]],
+            [point(M, LX + LW, LY + LH), [U2 + UW, V + VH]],
+            [point(M, LX, LY + LH), [U2, V + VH]]
           ];
           this._emitTriangle(CORNERS2[0][0], CORNERS2[1][0], CORNERS2[2][0], TINT, [
             CORNERS2[0][1],
@@ -4132,13 +4149,13 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
       OWNER.noteDraw(pose);
       this.device.stats.spriteRuns += COUNT;
       for (let i = 0; i < COUNT; i++) {
-        const [LX, LY, LW, LH] = localRects.subarray(i * 4, i * 4 + 4), [U, V, UW, VH] = uvRects.subarray(i * 4, i * 4 + 4);
+        const [LX, LY, LW, LH] = localRects.subarray(i * 4, i * 4 + 4), [U2, V, UW, VH] = uvRects.subarray(i * 4, i * 4 + 4);
         this._reserve(6);
         for (const [CX, CY] of POSED_CORNERS) {
           const K = this.count++ * VECTOR_VERTEX_FLOATS;
           this.vertices[K] = LX + CX * LW;
           this.vertices[K + 1] = LY + CY * LH;
-          this.vertices[K + 2] = U + CX * UW;
+          this.vertices[K + 2] = U2 + CX * UW;
           this.vertices[K + 3] = V + CY * VH;
           this.vertices.set(TINT, K + 4);
           this.vertices.set(this.paintTemplate, K + 8);
@@ -4560,7 +4577,7 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
       this.stencilDepth = this.stencilClips.length;
       this.projection.set(GROUP.projection);
       this._useTarget(GROUP.target);
-      const { x: X, y: Y, width: WIDTH, height: HEIGHT } = GROUP.bounds, U = WIDTH / GROUP.target.width, V = HEIGHT / GROUP.target.height, A = {
+      const { x: X, y: Y, width: WIDTH, height: HEIGHT } = GROUP.bounds, U2 = WIDTH / GROUP.target.width, V = HEIGHT / GROUP.target.height, A = {
         x: X,
         y: Y
       }, B = {
@@ -4575,12 +4592,12 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
       }, ALPHA = [1, 1, 1, GROUP.opacity];
       this._emitTriangle(A, B, C, ALPHA, [
         [0, 1],
-        [U, 1],
-        [U, 1 - V]
+        [U2, 1],
+        [U2, 1 - V]
       ]);
       this._emitTriangle(A, C, D, ALPHA, [
         [0, 1],
-        [U, 1 - V],
+        [U2, 1 - V],
         [0, 1 - V]
       ]);
       this._submit();
@@ -10429,6 +10446,774 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
     return EXAMPLE;
   }
 
+  // dist/face.js
+  var EYE_COLOR = "#4a2420";
+  var INK_COLOR = "#2c1c18";
+  var GLINT_COLOR = "#fff5d8";
+  var TONGUE_COLOR = "#e9776b";
+  var ELLIPSE_KAPPA = 0.5522847498;
+  var CHEEK_ASPECT = 0.62;
+  var STROKE_WIDTH = 0.055;
+  var U = 0.165;
+  var W = 0.19;
+  var DEFAULT_CHEEK_COLOR = "#ec8070";
+  function ellipsePath(cx, cy, rx, ry) {
+    const KX = rx * ELLIPSE_KAPPA, KY = ry * ELLIPSE_KAPPA;
+    return [
+      ["M", cx + rx, cy],
+      ["C", cx + rx, cy + KY, cx + KX, cy + ry, cx, cy + ry],
+      ["C", cx - KX, cy + ry, cx - rx, cy + KY, cx - rx, cy],
+      ["C", cx - rx, cy - KY, cx - KX, cy - ry, cx, cy - ry],
+      ["C", cx + KX, cy - ry, cx + rx, cy - KY, cx + rx, cy],
+      ["Z"]
+    ];
+  }
+  function operationBox(operation) {
+    const PAD = operation.width ? operation.width / 2 : 0, BOX = [Infinity, Infinity, -Infinity, -Infinity];
+    for (const [, ...NUMBERS] of operation.path) {
+      for (let index = 0; index < NUMBERS.length; index += 2) {
+        BOX[0] = Math.min(BOX[0], NUMBERS[index] - PAD);
+        BOX[1] = Math.min(BOX[1], NUMBERS[index + 1] - PAD);
+        BOX[2] = Math.max(BOX[2], NUMBERS[index] + PAD);
+        BOX[3] = Math.max(BOX[3], NUMBERS[index + 1] + PAD);
+      }
+    }
+    return BOX;
+  }
+  var STYLE_OF = (operation) => operation.fill ? "f" + operation.fill + "/" + operation.opacity : "s" + operation.stroke + "/" + operation.width;
+  var OVERLAPS = (a, b) => a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3];
+  function mergeByStyle(operations) {
+    const MERGED = [];
+    for (const OPERATION of operations) {
+      const ENTRY = { operation: { ...OPERATION, path: [...OPERATION.path] }, box: operationBox(OPERATION) }, STYLE = STYLE_OF(OPERATION);
+      let target = null;
+      for (let index = MERGED.length - 1; index >= 0; index--) {
+        if (STYLE_OF(MERGED[index].operation) === STYLE) {
+          target = MERGED[index];
+          break;
+        }
+        if (OVERLAPS(MERGED[index].box, ENTRY.box)) {
+          break;
+        }
+      }
+      if (target) {
+        target.operation.path.push(...OPERATION.path);
+        target.box = [
+          Math.min(target.box[0], ENTRY.box[0]),
+          Math.min(target.box[1], ENTRY.box[1]),
+          Math.max(target.box[2], ENTRY.box[2]),
+          Math.max(target.box[3], ENTRY.box[3])
+        ];
+      } else {
+        MERGED.push(ENTRY);
+      }
+    }
+    return MERGED.map((entry) => entry.operation);
+  }
+  var FacePen = class {
+    constructor() {
+      this.eyes = [[], []];
+      this.mouth = [];
+      this.cheekLook = { scale: 1, opacity: 1 };
+    }
+    cheeks(scale = 1, opacity = 1) {
+      this.cheekLook = { scale, opacity };
+    }
+    fill(part, path, color, opacity = 1) {
+      part.push({ fill: color, path, opacity });
+    }
+    stroke(part, path, scale = 1, color = INK_COLOR) {
+      part.push({ stroke: color, path, width: STROKE_WIDTH * scale });
+    }
+    line(part, x1, y1, x2, y2, scale) {
+      this.stroke(
+        part,
+        [
+          ["M", x1, y1],
+          ["L", x2, y2]
+        ],
+        scale
+      );
+    }
+    curve(part, x1, y1, cx, cy, x2, y2, scale) {
+      this.stroke(
+        part,
+        [
+          ["M", x1, y1],
+          ["Q", cx, cy, x2, y2]
+        ],
+        scale
+      );
+    }
+    roundEyes(rx = 1, ry = 1, dy = 0) {
+      for (const EYE of this.eyes) {
+        this.fill(EYE, ellipsePath(0, dy * U, U * rx, U * ry * 1.05), EYE_COLOR);
+      }
+    }
+    glints(rx = 1, big = 0.3, small = 0.14, dy = 0) {
+      for (const EYE of this.eyes) {
+        this.fill(EYE, ellipsePath(-0.3 * U * rx, dy * U - 0.35 * U, U * big, U * big), GLINT_COLOR);
+        if (small) {
+          this.fill(EYE, ellipsePath(0.35 * U * rx, dy * U + 0.3 * U, U * small, U * small), GLINT_COLOR, 0.8);
+        }
+      }
+    }
+    smile(half, depth, scale) {
+      this.curve(this.mouth, -half, 0, 0, depth, half, 0, scale);
+    }
+    // A closed mouth outline that holds the open-mouth fill; optional tongue.
+    openMouth(half, depth, tongue) {
+      this.fill(
+        this.mouth,
+        [
+          ["M", -half, -U * 0.1],
+          ["Q", 0, -U * 0.1, half, -U * 0.1],
+          ["Q", half * 0.8, depth, 0, depth + U * 0.05],
+          ["Q", -half * 0.8, depth, -half, -U * 0.1],
+          ["Z"]
+        ],
+        INK_COLOR
+      );
+      if (tongue) {
+        this.fill(this.mouth, ellipsePath(0, depth * 0.78, half * 0.5, U * 0.38), TONGUE_COLOR);
+      }
+    }
+    // side < 0 is the left eye, otherwise the right one; coordinates are in eye sizes.
+    brow(side, x1, y1, x2, y2, scale = 1) {
+      this.line(this.eyes[side < 0 ? 0 : 1], x1 * U, y1 * U, x2 * U, y2 * U, scale);
+    }
+    arcUp(index, scale = 1.25) {
+      this.curve(this.eyes[index], -U, U * 0.35, 0, -U, U, U * 0.35, scale);
+    }
+  };
+  var STATE_DEFINITIONS = {
+    neutral(pen) {
+      pen.cheeks();
+      pen.roundEyes();
+      pen.glints(1, 0.3, 0);
+      pen.smile(W, W * 0.525, 1.15);
+    },
+    happy(pen) {
+      pen.cheeks(1.2);
+      pen.arcUp(0);
+      pen.arcUp(1);
+      pen.openMouth(W, U * 1.5, true);
+    },
+    focused(pen) {
+      pen.cheeks(1, 0.55);
+      for (const EYE of pen.eyes) {
+        pen.fill(
+          EYE,
+          [
+            ["M", -U * 1.05, -U * 0.1],
+            ["Q", -U * 1.05, U * 0.85, 0, U * 0.85],
+            ["Q", U * 1.05, U * 0.85, U * 1.05, -U * 0.1],
+            ["Z"]
+          ],
+          EYE_COLOR
+        );
+      }
+      pen.brow(-1, -1.15, -1.15, 0.95, -0.8, 1.2);
+      pen.brow(1, 1.15, -1.15, -0.95, -0.8, 1.2);
+      pen.line(pen.mouth, -W * 0.45, U * 0.1, W * 0.45, U * 0.1, 1.2);
+    },
+    attack(pen) {
+      pen.cheeks(1, 0.8);
+      for (const EYE of pen.eyes) {
+        pen.fill(EYE, ellipsePath(0, U * 0.1, U * 0.95, U * 0.84), EYE_COLOR);
+      }
+      pen.brow(-1, -1.3, -1.55, 1.1, -0.7, 1.5);
+      pen.brow(1, 1.3, -1.55, -1.1, -0.7, 1.5);
+      pen.openMouth(W * 0.85, U * 1.5, false);
+      pen.fill(
+        pen.mouth,
+        [
+          ["M", -W * 0.62, -U * 0.05],
+          ["L", W * 0.62, -U * 0.05],
+          ["L", W * 0.62, U * 0.4],
+          ["L", -W * 0.62, U * 0.4],
+          ["Z"]
+        ],
+        "#ffffff"
+      );
+    },
+    surprised(pen) {
+      pen.cheeks(1, 0.9);
+      for (const EYE of pen.eyes) {
+        pen.fill(EYE, ellipsePath(0, 0, U * 1.12, U * 1.28), EYE_COLOR);
+        pen.fill(EYE, ellipsePath(-0.35 * U, -0.5 * U, U * 0.38, U * 0.38), GLINT_COLOR);
+        pen.fill(EYE, ellipsePath(0.4 * U, 0.4 * U, U * 0.17, U * 0.17), GLINT_COLOR, 0.85);
+        pen.curve(EYE, -U, -U * 1.85, 0, -U * 2.4, U, -U * 1.85, 0.8);
+      }
+      pen.fill(pen.mouth, ellipsePath(0, U * 0.55, U * 0.5, U * 0.72), INK_COLOR);
+    },
+    hurt(pen) {
+      pen.cheeks(1, 0.8);
+      pen.stroke(
+        pen.eyes[0],
+        [
+          ["M", -U * 0.9, -U * 0.8],
+          ["L", U * 0.8, 0],
+          ["L", -U * 0.9, U * 0.8]
+        ],
+        1.3
+      );
+      pen.stroke(
+        pen.eyes[1],
+        [
+          ["M", U * 0.9, -U * 0.8],
+          ["L", -U * 0.8, 0],
+          ["L", U * 0.9, U * 0.8]
+        ],
+        1.3
+      );
+      pen.stroke(
+        pen.mouth,
+        [
+          ["M", -W * 0.8, U * 0.3],
+          ["Q", -W * 0.4, -U * 0.35, 0, U * 0.3],
+          ["Q", W * 0.4, U * 0.95, W * 0.8, U * 0.3]
+        ],
+        1.1
+      );
+    },
+    hungry(pen) {
+      pen.cheeks(1, 0.6);
+      for (const EYE of pen.eyes) {
+        pen.fill(EYE, ellipsePath(0, U * 0.15, U * 0.95, U * 0.84), EYE_COLOR);
+        pen.fill(EYE, ellipsePath(-0.25 * U, -0.05 * U, U * 0.3, U * 0.3), GLINT_COLOR);
+      }
+      pen.brow(-1, -1.1, -1, 1, -1.5, 0.9);
+      pen.brow(1, 1.1, -1, -1, -1.5, 0.9);
+      pen.curve(pen.mouth, -W * 0.5, U * 0.5, 0, -U * 0.2, W * 0.5, U * 0.5, 1.1);
+    },
+    dead(pen) {
+      pen.cheeks(1, 0.5);
+      for (const EYE of pen.eyes) {
+        pen.line(EYE, -U * 0.8, -U * 0.8, U * 0.8, U * 0.8, 1.2);
+        pen.line(EYE, U * 0.8, -U * 0.8, -U * 0.8, U * 0.8, 1.2);
+      }
+      pen.line(pen.mouth, -W * 0.45, U * 0.2, W * 0.45, U * 0.2, 1.1);
+    }
+  };
+  var TEMPERAMENT_DEFINITIONS = [
+    // 느긋: small round eyes gazing up, relaxed shallow smile
+    (pen) => {
+      pen.cheeks(1.1, 0.9);
+      for (const EYE of pen.eyes) {
+        pen.fill(EYE, ellipsePath(0, 0, U * 0.72, U * 0.84), EYE_COLOR);
+        pen.fill(EYE, ellipsePath(U * 0.1, -U * 0.3, U * 0.3, U * 0.3), GLINT_COLOR);
+      }
+      pen.curve(pen.mouth, -W * 0.55, U * 0.1, 0, W * 0.55 + U * 0.1, W * 0.55, U * 0.1, 1.1);
+    },
+    // 소심: wet eyes, worried brows, trembling mouth
+    (pen) => {
+      pen.cheeks(1, 0.9);
+      for (const EYE of pen.eyes) {
+        pen.fill(EYE, ellipsePath(0, U * 0.05, U, U * 1.15), EYE_COLOR);
+        pen.fill(EYE, ellipsePath(-U * 0.3, -U * 0.35, U * 0.4, U * 0.4), GLINT_COLOR);
+        pen.fill(EYE, ellipsePath(U * 0.35, U * 0.4, U * 0.2, U * 0.2), GLINT_COLOR, 0.9);
+      }
+      pen.brow(-1, -1.1, -1, 0.9, -1.7, 0.95);
+      pen.brow(1, 1.1, -1, -0.9, -1.7, 0.95);
+      pen.stroke(
+        pen.mouth,
+        [
+          ["M", -W * 0.55, U * 0.3],
+          ["Q", -W * 0.28, -U * 0.15, 0, U * 0.3],
+          ["Q", W * 0.28, U * 0.75, W * 0.55, U * 0.3]
+        ],
+        1
+      );
+    },
+    // 발끈: slanted brows, round dark eyes, pout
+    (pen) => {
+      pen.cheeks(1.15);
+      for (const EYE of pen.eyes) {
+        pen.fill(EYE, ellipsePath(0, U * 0.1, U * 0.9, U * 0.9), EYE_COLOR);
+      }
+      pen.brow(-1, -1.3, -1.5, 1, -0.8, 1.2);
+      pen.brow(1, 1.3, -1.5, -1, -0.8, 1.2);
+      pen.curve(pen.mouth, -W * 0.5, U * 0.45, 0, -U * 0.25, W * 0.5, U * 0.45, 1.1);
+    },
+    // 까불: one big eye, one wink, open grin with tongue
+    (pen) => {
+      pen.cheeks(1.15);
+      pen.fill(pen.eyes[0], ellipsePath(0, 0, U * 1.1, U * 1.26), EYE_COLOR);
+      pen.fill(pen.eyes[0], ellipsePath(-U * 0.3, -U * 0.4, U * 0.4, U * 0.4), GLINT_COLOR);
+      pen.fill(pen.eyes[0], ellipsePath(U * 0.35, U * 0.4, U * 0.17, U * 0.17), GLINT_COLOR, 0.85);
+      pen.arcUp(1, 1.2);
+      pen.openMouth(W * 0.75, U * 1.4, true);
+    },
+    // 다정: closed upward-arched eyes, big blush, small smile
+    (pen) => {
+      pen.cheeks(1.4);
+      pen.arcUp(0);
+      pen.arcUp(1);
+      pen.smile(W * 0.6, W * 0.95, 1.15);
+    }
+  ];
+  var TEMPERAMENT_ID = (index) => "temperament-" + index;
+  var DEFINITIONS = new Map([
+    ...Object.entries(STATE_DEFINITIONS),
+    ...TEMPERAMENT_DEFINITIONS.map((define, index) => [TEMPERAMENT_ID(index), define])
+  ]);
+  var STATE_FACES = Object.freeze(Object.keys(STATE_DEFINITIONS));
+  var TEMPERAMENT_FACES = Object.freeze(TEMPERAMENT_DEFINITIONS.map((_define, index) => TEMPERAMENT_ID(index)));
+  var FACE_IDS = Object.freeze([...STATE_FACES, ...TEMPERAMENT_FACES]);
+  function buildFaceParts(faceId) {
+    const DEFINE = DEFINITIONS.get(faceId);
+    if (!DEFINE) {
+      throw new RangeError("Unknown face: " + faceId);
+    }
+    const PEN = new FacePen();
+    DEFINE(PEN);
+    return {
+      eyes: PEN.eyes.map((operations) => Object.freeze(mergeByStyle(operations))),
+      mouth: Object.freeze(mergeByStyle(PEN.mouth)),
+      cheeks: Object.freeze(PEN.cheekLook)
+    };
+  }
+  var PARTS_CACHE = /* @__PURE__ */ new Map();
+  function faceParts(faceId) {
+    let parts = PARTS_CACHE.get(faceId);
+    if (!parts) {
+      parts = Object.freeze(buildFaceParts(faceId));
+      PARTS_CACHE.set(faceId, parts);
+    }
+    return parts;
+  }
+  function facePartPlacement(anchor) {
+    const GAP = anchor.eyeRight[0] - anchor.eyeLeft[0];
+    return { gap: GAP, origins: [anchor.eyeLeft, anchor.eyeRight, anchor.mouth] };
+  }
+  function cheekEllipses(anchor, cheeks) {
+    const GAP = anchor.eyeRight[0] - anchor.eyeLeft[0], RX = GAP * 0.2 * cheeks.scale, Y = anchor.mouth[1] + GAP * 0.05;
+    return [
+      [anchor.eyeLeft[0] - GAP * 0.2, Y, RX, RX * CHEEK_ASPECT],
+      [anchor.eyeRight[0] + GAP * 0.2, Y, RX, RX * CHEEK_ASPECT]
+    ];
+  }
+  function buildFace(faceId, anchor, cheekColor = null) {
+    const PARTS = faceParts(faceId), { gap: GAP, origins: ORIGINS } = facePartPlacement(anchor), OPS = cheekEllipses(anchor, PARTS.cheeks).map(([cx, cy, rx, ry]) => ({
+      fill: cheekColor ?? DEFAULT_CHEEK_COLOR,
+      path: ellipsePath(cx, cy, rx, ry),
+      opacity: PARTS.cheeks.opacity
+    }));
+    for (const [INDEX, PART] of [...PARTS.eyes, PARTS.mouth].entries()) {
+      const [OX, OY] = ORIGINS[INDEX];
+      for (const OP of PART) {
+        OPS.push({
+          ...OP,
+          path: OP.path.map(([command, ...numbers]) => [
+            command,
+            ...numbers.map((value, index) => (index % 2 ? OY : OX) + value * GAP)
+          ]),
+          ...OP.width ? { width: OP.width * GAP } : {}
+        });
+      }
+    }
+    return mergeByStyle(OPS);
+  }
+  var FACE_SOCKETS = Object.freeze(["face-eye-left", "face-eye-right", "face-mouth"]);
+  var ANCHORS = /* @__PURE__ */ new WeakMap();
+  function faceAnchor(compiled) {
+    let anchor = ANCHORS.get(compiled);
+    if (!anchor) {
+      const SOCKETS2 = compiled.metadata.sockets, POINT = (id) => {
+        const SOCKET = SOCKETS2[id];
+        if (!SOCKET) {
+          throw new Error("Body is missing face socket " + id + " (" + compiled.sourcePath + ")");
+        }
+        return SOCKET.point;
+      };
+      anchor = Object.freeze({
+        eyeLeft: POINT(FACE_SOCKETS[0]),
+        eyeRight: POINT(FACE_SOCKETS[1]),
+        mouth: POINT(FACE_SOCKETS[2])
+      });
+      ANCHORS.set(compiled, anchor);
+    }
+    return anchor;
+  }
+  function posedFace(actor, rest, out) {
+    const EL = actor.getSocket(FACE_SOCKETS[0]), ER = actor.getSocket(FACE_SOCKETS[1]), MO = actor.getSocket(FACE_SOCKETS[2]);
+    const U1X = rest.eyeRight[0] - rest.eyeLeft[0], U1Y = rest.eyeRight[1] - rest.eyeLeft[1], U2X = rest.mouth[0] - rest.eyeLeft[0], U2Y = rest.mouth[1] - rest.eyeLeft[1], V1X = ER.x - EL.x, V1Y = ER.y - EL.y, V2X = MO.x - EL.x, V2Y = MO.y - EL.y, DET = U1X * U2Y - U1Y * U2X;
+    out[0] = (V1X * U2Y - V2X * U1Y) / DET;
+    out[1] = (V1Y * U2Y - V2Y * U1Y) / DET;
+    out[2] = (V2X * U1X - V1X * U2X) / DET;
+    out[3] = (V2Y * U1X - V1Y * U2X) / DET;
+    out[4] = EL.x - (out[0] * rest.eyeLeft[0] + out[2] * rest.eyeLeft[1]);
+    out[5] = EL.y - (out[1] * rest.eyeLeft[0] + out[3] * rest.eyeLeft[1]);
+    return out;
+  }
+  var FACE_PART_PIXELS = 128;
+  var CHEEK_PIXELS = 64;
+  var MAX_DISPLAY_TO_IMAGE_SCALE = 0.5;
+  var CHEEK_OPERATIONS = Object.freeze([{ fill: "#ffffff", opacity: 1, path: ellipsePath(0, 0, 1, 1) }]);
+  function tracePath(target, path) {
+    for (const [COMMAND, ...N] of path) {
+      if (COMMAND === "M") {
+        target.moveTo(N[0], N[1]);
+      } else if (COMMAND === "L") {
+        target.lineTo(N[0], N[1]);
+      } else if (COMMAND === "Q") {
+        target.quadraticCurveTo(N[0], N[1], N[2], N[3]);
+      } else if (COMMAND === "C") {
+        target.bezierCurveTo(N[0], N[1], N[2], N[3], N[4], N[5]);
+      } else {
+        target.closePath();
+      }
+    }
+  }
+  function drawOperations(ctx, operations, alpha = 1) {
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    for (const OP of operations) {
+      ctx.beginPath();
+      tracePath(ctx, OP.path);
+      if (OP.fill) {
+        ctx.globalAlpha = (OP.opacity ?? 1) * alpha;
+        ctx.fillStyle = OP.fill;
+        ctx.fill();
+      } else {
+        ctx.globalAlpha = alpha;
+        ctx.strokeStyle = OP.stroke;
+        ctx.lineWidth = OP.width;
+        ctx.stroke();
+      }
+    }
+  }
+  var PATH_OPERATIONS = /* @__PURE__ */ new WeakMap();
+  function faceOperations(compiled, faceId, cheekColor) {
+    const ANCHOR = faceAnchor(compiled);
+    let byKey = PATH_OPERATIONS.get(ANCHOR);
+    if (!byKey) {
+      byKey = /* @__PURE__ */ new Map();
+      PATH_OPERATIONS.set(ANCHOR, byKey);
+    }
+    const KEY = faceId + ":" + cheekColor;
+    let operations = byKey.get(KEY);
+    if (!operations) {
+      operations = Object.freeze(buildFace(faceId, ANCHOR, cheekColor));
+      byKey.set(KEY, operations);
+    }
+    return operations;
+  }
+  function drawFacePaths(ctx, compiled, faceId, cheekColor = null, alpha = 1) {
+    drawOperations(ctx, faceOperations(compiled, faceId, cheekColor), alpha);
+  }
+  function rasterise(operations, pixelsPerUnit) {
+    const BOX = [Infinity, Infinity, -Infinity, -Infinity];
+    for (const OPERATION of operations) {
+      const OPERATION_BOX = operationBox(OPERATION);
+      BOX[0] = Math.min(BOX[0], OPERATION_BOX[0]);
+      BOX[1] = Math.min(BOX[1], OPERATION_BOX[1]);
+      BOX[2] = Math.max(BOX[2], OPERATION_BOX[2]);
+      BOX[3] = Math.max(BOX[3], OPERATION_BOX[3]);
+    }
+    if (!Number.isFinite(BOX[0])) {
+      throw new RangeError("A picture needs at least one draw operation");
+    }
+    const MARGIN = 1 / pixelsPerUnit, X = BOX[0] - MARGIN, Y = BOX[1] - MARGIN, WIDTH = Math.ceil((BOX[2] - BOX[0]) * pixelsPerUnit) + 2, HEIGHT = Math.ceil((BOX[3] - BOX[1]) * pixelsPerUnit) + 2, CANVAS = new OffscreenCanvas(WIDTH, HEIGHT), C = CANVAS.getContext("2d");
+    C.setTransform(pixelsPerUnit, 0, 0, pixelsPerUnit, -X * pixelsPerUnit, -Y * pixelsPerUnit);
+    C.lineCap = "round";
+    C.lineJoin = "round";
+    for (const OPERATION of operations) {
+      const PATH = new Path2D();
+      tracePath(PATH, OPERATION.path);
+      if (OPERATION.fill) {
+        C.globalAlpha = OPERATION.opacity ?? 1;
+        C.fillStyle = OPERATION.fill;
+        C.fill(PATH);
+      } else {
+        C.globalAlpha = 1;
+        C.strokeStyle = OPERATION.stroke;
+        C.lineWidth = OPERATION.width;
+        C.stroke(PATH);
+      }
+    }
+    return { canvas: CANVAS, x: X, y: Y, width: WIDTH / pixelsPerUnit, height: HEIGHT / pixelsPerUnit };
+  }
+  var OperationImages = class {
+    constructor(ctx, pictures) {
+      this.ctx = ctx;
+      this.pictures = new Map(pictures);
+      this.images = /* @__PURE__ */ new Map();
+      this.disposed = false;
+    }
+    get ready() {
+      return !this.disposed && this.images.size > 0 && this.ctx.device?.state === "ready";
+    }
+    has(key) {
+      return this.images.has(key);
+    }
+    // Rasterises and uploads every picture once. Does nothing while the device is not ready, so call it again after the
+    // device is up. A failure (such as a full atlas) releases what was uploaded and rethrows, leaving it unprepared.
+    prepare() {
+      const DEVICE = this.ctx.device;
+      if (this.disposed || DEVICE?.state !== "ready" || this.images.size) {
+        return;
+      }
+      const ATLAS = DEVICE.textureAtlas, IMAGES = /* @__PURE__ */ new Map();
+      try {
+        for (const [KEY, PICTURE] of this.pictures) {
+          const RASTER = rasterise(PICTURE.operations, PICTURE.pixelsPerUnit), REGION = ATLAS.allocate(RASTER.canvas.width, RASTER.canvas.height);
+          IMAGES.set(KEY, { ...RASTER, region: REGION });
+          ATLAS.upload(REGION, RASTER.canvas);
+        }
+      } catch (error) {
+        for (const IMAGE of IMAGES.values()) {
+          ATLAS.release(IMAGE.region);
+        }
+        throw error;
+      }
+      this.images = IMAGES;
+    }
+    // Places a picture whose local origin goes to (x, y) and whose local unit is (scaleX, scaleY) on the current
+    // transform. Call only while `ready`.
+    draw(key, x, y, scaleX, scaleY) {
+      const IMAGE = this.images.get(key);
+      if (!IMAGE) {
+        throw new RangeError("No such picture is prepared: " + String(key));
+      }
+      this.ctx.drawRegion(
+        IMAGE.region,
+        x + IMAGE.x * scaleX,
+        y + IMAGE.y * scaleY,
+        IMAGE.width * scaleX,
+        IMAGE.height * scaleY
+      );
+    }
+    dispose() {
+      if (this.disposed) {
+        return;
+      }
+      this.disposed = true;
+      if (this.ctx.device?.state === "ready") {
+        for (const IMAGE of this.images.values()) {
+          IMAGE.region.atlas.release(IMAGE.region);
+        }
+      }
+      this.images.clear();
+    }
+  };
+  var FaceOverlay = class {
+    constructor(ctx, { faces = FACE_IDS } = {}) {
+      this.ctx = ctx;
+      this.posed = [0, 0, 0, 0, 0, 0];
+      const PICTURES = /* @__PURE__ */ new Map();
+      for (const FACE of faces) {
+        const PARTS = faceParts(FACE);
+        for (const OPERATIONS2 of [...PARTS.eyes, PARTS.mouth]) {
+          PICTURES.set(OPERATIONS2, { operations: OPERATIONS2, pixelsPerUnit: FACE_PART_PIXELS });
+        }
+      }
+      PICTURES.set(CHEEK_OPERATIONS, { operations: CHEEK_OPERATIONS, pixelsPerUnit: CHEEK_PIXELS / 2 });
+      this.images = new OperationImages(ctx, PICTURES);
+    }
+    // True while baked images can be drawn: prepared, the context ready, not disposed.
+    get ready() {
+      return this.images.ready;
+    }
+    // Uploads the baked faces once, outside game frames (see OperationImages.prepare).
+    prepare() {
+      this.images.prepare();
+    }
+    // Draws a face over a body already submitted with `matrix`, the screen transform it was drawn with. `actor` supplies
+    // the posed sockets. Returns true when it drew baked images, false when it drew paths (the face is not baked, not
+    // prepared, the context is lost, or the face would be magnified).
+    draw(compiled, actor, faceId, matrix, alpha = 1, cheekColor = null) {
+      const C = this.ctx, ANCHOR = faceAnchor(compiled), P = posedFace(actor, ANCHOR, this.posed);
+      C.save();
+      C.transform(matrix[0], matrix[1], matrix[2], matrix[3], matrix[4], matrix[5]);
+      C.transform(P[0], P[1], P[2], P[3], P[4], P[5]);
+      const PIXELS_PER_UNIT = Math.hypot(matrix[0], matrix[1]) * Math.hypot(P[0], P[1]), BAKED = this.drawImages(ANCHOR, faceId, alpha, cheekColor, PIXELS_PER_UNIT);
+      if (!BAKED) {
+        drawFacePaths(C, compiled, faceId, cheekColor, alpha);
+      }
+      C.restore();
+      return BAKED;
+    }
+    drawImages(anchor, faceId, alpha, cheekColor, pixelsPerUnit) {
+      const { gap: GAP, origins: ORIGINS } = facePartPlacement(anchor);
+      if (GAP * pixelsPerUnit > FACE_PART_PIXELS * MAX_DISPLAY_TO_IMAGE_SCALE || !this.images.ready) {
+        return false;
+      }
+      const PARTS = faceParts(faceId), IMAGES = this.images, C = this.ctx;
+      if (!IMAGES.has(PARTS.mouth)) {
+        return false;
+      }
+      C.globalAlpha = alpha * PARTS.cheeks.opacity;
+      C.withColor(cheekColor ?? DEFAULT_CHEEK_COLOR, () => {
+        for (const [CX, CY, RX, RY] of cheekEllipses(anchor, PARTS.cheeks)) {
+          IMAGES.draw(CHEEK_OPERATIONS, CX, CY, RX, RY);
+        }
+      });
+      C.globalAlpha = alpha;
+      IMAGES.draw(PARTS.eyes[0], ORIGINS[0][0], ORIGINS[0][1], GAP, GAP);
+      IMAGES.draw(PARTS.eyes[1], ORIGINS[1][0], ORIGINS[1][1], GAP, GAP);
+      IMAGES.draw(PARTS.mouth, ORIGINS[2][0], ORIGINS[2][1], GAP, GAP);
+      return true;
+    }
+    dispose() {
+      this.images.dispose();
+    }
+  };
+
+  // modules/rendering/examples/face.js
+  var SOCKETS = {
+    "face-eye-left": [-22, -8],
+    "face-eye-right": [22, -8],
+    "face-mouth": [0, 22]
+  };
+  var BODY = {
+    sourcePath: "example blob",
+    metadata: {
+      sockets: Object.fromEntries(Object.entries(SOCKETS).map(([id, point2]) => [id, { part: "body", point: point2 }]))
+    }
+  };
+  var BODY_RADIUS = 56;
+  var BODY_COLOR = [0.96, 0.84, 0.55, 1];
+  var RING_COLOR = [0.56, 0.82, 0.92, 1];
+  var CHEEK_COLORS = [null, "#4f8fe8"];
+  var COLUMNS = 4;
+  var CELL_WIDTH = 120;
+  var CELL_HEIGHT = 100;
+  var GRID_SCALE = 0.7;
+  var PREVIEW = { x: 600, y: 200, scale: 1.7 };
+  function createActor() {
+    const POSE = [1, 0, 0, 1, 0, 0];
+    return {
+      pose: POSE,
+      getSocket(id) {
+        const [X, Y] = SOCKETS[id];
+        return { x: POSE[0] * X + POSE[2] * Y + POSE[4], y: POSE[1] * X + POSE[3] * Y + POSE[5] };
+      },
+      set(timeMs, phase) {
+        const T = timeMs / 420 + phase;
+        POSE[0] = 1 + 0.07 * Math.sin(T);
+        POSE[2] = 0.1 * Math.sin(T * 0.7);
+        POSE[3] = 1 - 0.07 * Math.sin(T);
+        POSE[5] = -5 * Math.abs(Math.sin(T * 0.5));
+      }
+    };
+  }
+  function startFace(canvas, statsElement) {
+    const WIDTH = canvas.width, HEIGHT = canvas.height;
+    const DEVICE = new WebGLDevice(canvas, {
+      alpha: false,
+      antialias: true,
+      depth: false,
+      stencil: false,
+      preserveDrawingBuffer: true
+    });
+    const CONTEXT = new VectorContext(DEVICE);
+    const OVERLAY = new FaceOverlay(CONTEXT);
+    OVERLAY.prepare();
+    const ACTOR = createActor();
+    const PLAY = document.querySelector("#face-play"), NEXT = document.querySelector("#face-next"), CHEEK = document.querySelector("#face-cheek");
+    const REDUCED_MOTION = matchMedia("(prefers-reduced-motion: reduce)");
+    let selected = 0, cheek = 0, playing = !REDUCED_MOTION.matches, timeMs = 0, frame = 0;
+    const DRAW_BLOB = (faceId, matrix, phase) => {
+      ACTOR.set(timeMs, phase);
+      CONTEXT.save();
+      CONTEXT.transform(matrix[0], matrix[1], matrix[2], matrix[3], matrix[4], matrix[5]);
+      CONTEXT.transform(...ACTOR.pose);
+      CONTEXT.fillStyle = BODY_COLOR;
+      CONTEXT.beginPath();
+      CONTEXT.arc(0, 0, BODY_RADIUS, 0, Math.PI * 2);
+      CONTEXT.fill();
+      CONTEXT.restore();
+      return OVERLAY.draw(BODY, ACTOR, faceId, matrix, 1, CHEEK_COLORS[cheek]);
+    };
+    const EXAMPLE = {
+      device: DEVICE,
+      context: CONTEXT,
+      overlay: OVERLAY,
+      selected: FACE_IDS[selected],
+      drawn: { images: 0, paths: 0 },
+      drawFrame(atMs = timeMs) {
+        timeMs = atMs;
+        if (!CONTEXT.beginFrame({ width: WIDTH, height: HEIGHT, clearColor: [0.06, 0.1, 0.14, 1] })) {
+          return false;
+        }
+        let images = 0, paths = 0;
+        const COUNT = (baked) => baked ? images++ : paths++;
+        for (const [INDEX, FACE] of FACE_IDS.entries()) {
+          const X = (INDEX % COLUMNS + 0.5) * CELL_WIDTH, Y = (Math.floor(INDEX / COLUMNS) + 0.5) * CELL_HEIGHT;
+          if (INDEX === selected) {
+            CONTEXT.strokeStyle = RING_COLOR;
+            CONTEXT.lineWidth = 3;
+            CONTEXT.beginPath();
+            CONTEXT.arc(X, Y, BODY_RADIUS * GRID_SCALE + 8, 0, Math.PI * 2);
+            CONTEXT.stroke();
+          }
+          COUNT(DRAW_BLOB(FACE, [GRID_SCALE, 0, 0, GRID_SCALE, X, Y], INDEX));
+        }
+        COUNT(DRAW_BLOB(FACE_IDS[selected], [PREVIEW.scale, 0, 0, PREVIEW.scale, PREVIEW.x, PREVIEW.y], selected));
+        CONTEXT.endFrame();
+        EXAMPLE.drawn = { images, paths };
+        statsElement.textContent = `표정 ${FACE_IDS[selected]} · 이미지로 ${images}개 · 경로로 ${paths}개 · 그리기 호출 ${DEVICE.stats.drawCalls}회`;
+        return true;
+      },
+      select(faceId) {
+        const INDEX = FACE_IDS.indexOf(faceId);
+        if (INDEX < 0) {
+          throw new RangeError("unknown face: " + faceId);
+        }
+        selected = INDEX;
+        EXAMPLE.selected = faceId;
+        return EXAMPLE.drawFrame();
+      },
+      setPlaying(on) {
+        playing = on;
+        PLAY.setAttribute("aria-pressed", String(on));
+        EXAMPLE.resume();
+      },
+      pause() {
+        cancelAnimationFrame(frame);
+      },
+      resume() {
+        cancelAnimationFrame(frame);
+        if (playing) {
+          const TICK = (now) => {
+            EXAMPLE.drawFrame(now);
+            frame = requestAnimationFrame(TICK);
+          };
+          frame = requestAnimationFrame(TICK);
+        }
+      },
+      readPixels() {
+        const PIXELS = new Uint8Array(WIDTH * HEIGHT * 4);
+        DEVICE.gl.readPixels(0, 0, WIDTH, HEIGHT, DEVICE.gl.RGBA, DEVICE.gl.UNSIGNED_BYTE, PIXELS);
+        return PIXELS;
+      },
+      dispose() {
+        cancelAnimationFrame(frame);
+        OVERLAY.dispose();
+        CONTEXT.dispose();
+        DEVICE.dispose();
+      }
+    };
+    PLAY.setAttribute("aria-pressed", String(playing));
+    PLAY.addEventListener("click", () => EXAMPLE.setPlaying(!playing));
+    NEXT.addEventListener("click", () => EXAMPLE.select(FACE_IDS[(selected + 1) % FACE_IDS.length]));
+    CHEEK.addEventListener("click", () => {
+      cheek = (cheek + 1) % CHEEK_COLORS.length;
+      CHEEK.setAttribute("aria-pressed", String(cheek > 0));
+      EXAMPLE.drawFrame();
+    });
+    canvas.addEventListener("pointerdown", (event) => {
+      const BOX = canvas.getBoundingClientRect(), X = (event.clientX - BOX.left) / BOX.width * WIDTH, Y = (event.clientY - BOX.top) / BOX.height * HEIGHT, INDEX = Math.floor(Y / CELL_HEIGHT) * COLUMNS + Math.floor(X / CELL_WIDTH);
+      if (X < COLUMNS * CELL_WIDTH && INDEX >= 0 && INDEX < FACE_IDS.length) {
+        EXAMPLE.select(FACE_IDS[INDEX]);
+      }
+    });
+    EXAMPLE.drawFrame(0);
+    return EXAMPLE;
+  }
+
   // modules/rendering/examples/materials.js
   var YARN_STYLE = {
     kind: "yarn",
@@ -10521,10 +11306,10 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       // Draws every actor of the grid with its own display time and returns the draw calls the mesh renderer used.
       drawFrame(atMs = timeMs) {
         timeMs = atMs;
-        const COLUMNS = Math.ceil(Math.sqrt(count * WIDTH / HEIGHT)), ROWS = Math.ceil(count / COLUMNS), SCALE = Math.min(WIDTH / COLUMNS / PAIR_WIDTH, HEIGHT / ROWS / PAIR_HEIGHT) * 0.94;
+        const COLUMNS2 = Math.ceil(Math.sqrt(count * WIDTH / HEIGHT)), ROWS = Math.ceil(count / COLUMNS2), SCALE = Math.min(WIDTH / COLUMNS2 / PAIR_WIDTH, HEIGHT / ROWS / PAIR_HEIGHT) * 0.94;
         CONTEXT.beginFrame({ width: WIDTH, height: HEIGHT, clearColor: [0.06, 0.1, 0.14, 1] });
         for (let i = 0; i < count; i++) {
-          const X = (i % COLUMNS + 0.5) * (WIDTH / COLUMNS) - PAIR_WIDTH / 2 * SCALE, Y = (Math.floor(i / COLUMNS) + 0.5) * (HEIGHT / ROWS) - PAIR_HEIGHT / 2 * SCALE;
+          const X = (i % COLUMNS2 + 0.5) * (WIDTH / COLUMNS2) - PAIR_WIDTH / 2 * SCALE, Y = (Math.floor(i / COLUMNS2) + 0.5) * (HEIGHT / ROWS) - PAIR_HEIGHT / 2 * SCALE;
           MESHES.drawMesh(MESH, {
             projection: PROJECTION,
             matrix: [SCALE, 0, 0, SCALE, X, Y],
@@ -10664,31 +11449,31 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
     F: [31, 16, 16, 30, 16, 16, 16],
     X: [17, 17, 10, 4, 10, 17, 17]
   };
-  var CELL_WIDTH = 6;
-  var CELL_HEIGHT = 7;
+  var CELL_WIDTH2 = 6;
+  var CELL_HEIGHT2 = 7;
   var RED = [0.98, 0.14, 0.12, 1];
   function bitmapAtlas(device) {
-    const CHARS = Object.keys(BITMAP), WIDTH = CHARS.length * CELL_WIDTH, DATA = new Uint8Array(WIDTH * CELL_HEIGHT * 4), GLYPHS = {};
+    const CHARS = Object.keys(BITMAP), WIDTH = CHARS.length * CELL_WIDTH2, DATA = new Uint8Array(WIDTH * CELL_HEIGHT2 * 4), GLYPHS = {};
     CHARS.forEach((char, index) => {
-      for (let y = 0; y < CELL_HEIGHT; y++) {
+      for (let y = 0; y < CELL_HEIGHT2; y++) {
         for (let x = 0; x < 5; x++) {
           if (BITMAP[char][y] & 1 << 4 - x) {
-            DATA.set([255, 255, 255, 255], (y * WIDTH + index * CELL_WIDTH + x) * 4);
+            DATA.set([255, 255, 255, 255], (y * WIDTH + index * CELL_WIDTH2 + x) * 4);
           }
         }
       }
       GLYPHS[`U+${char.codePointAt(0).toString(16)}`] = {
-        x: index * CELL_WIDTH,
+        x: index * CELL_WIDTH2,
         y: 0,
         width: 5,
-        height: CELL_HEIGHT,
+        height: CELL_HEIGHT2,
         advance: 6,
         bearingY: 7
       };
     });
     return new GlyphAtlas(device, {
       width: WIDTH,
-      height: CELL_HEIGHT,
+      height: CELL_HEIGHT2,
       data: DATA,
       glyphs: GLYPHS,
       unitsPerEm: 7,
@@ -10782,7 +11567,8 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
     vector: startVector,
     atlas: startAtlas,
     materials: startMaterials,
-    paint: startPaint
+    paint: startPaint,
+    face: startFace
   };
   var NAMES = Object.keys(TABS);
   var EXAMPLES = {};
