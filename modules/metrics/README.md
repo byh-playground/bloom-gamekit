@@ -20,6 +20,7 @@ import { createMetrics, HttpAdapter, InputLogRecorder, SessionReplayRecorder } f
 const METRICS = createMetrics({
     game: 'bloom-takraw',
     version: '0.3.0',
+    locale: LOCALE.locale, // 게임이 고른 화면 언어
     adapter: new HttpAdapter('https://bloom-metrics.<계정>.workers.dev'),
 });
 METRICS.track('menu', 'start', 'click');
@@ -42,7 +43,7 @@ METRICS.recordMatch(ONLINE, { winner: 'a' });
 
 1. **세션 종류를 확인합니다.** 게임이 쓰는 실행 경로에 맞는 기록 클래스를 고릅니다(아래 "경기 기록" 표). `createRoomSession`을 쓰는 게임(bloom-takraw 등)은 `recordReplay: true`로 만들고 `SessionReplayRecorder`를 씁니다(혼자 하기 `localFastPath`도 같음). 게임에서 입력을 따로 모으지 않습니다. 기록이 없는 실행 경로가 생기면 게임 우회 대신 rollback 모듈부터 고칩니다(작업 흐름 "모듈 개선 → 게임 반영").
 2. **import map에 고정 주소를 넣습니다.** `@bloom-gamekit/metrics` → `https://cdn.jsdelivr.net/gh/byh-playground/bloom-gamekit@<dist-commit>/metrics.js`. 게임의 `gamekit.lock.json`에 URL·SHA-256을 다른 모듈과 같은 dist commit으로 적습니다. branch 주소는 쓰지 않습니다.
-3. **부팅 때 한 번 만듭니다.** 내 플레이는 서버가 접속 키로 나중에 거르므로 게임 쪽 표시는 없습니다("개발자 본인 플레이 분리"). `game`은 저장소 이름, `version`은 게임 빌드 버전입니다. 서버 주소는 아래 "운영"의 배포 주소입니다. 시험·격리 장면(주소 옵션의 디버그 장면 등)은 `MemoryAdapter`로 바꿔 실제 집계에 섞이지 않게 합니다.
+3. **부팅 때 한 번 만듭니다.** 내 플레이는 서버가 접속 키로 나중에 거르므로 게임 쪽 표시는 없습니다("개발자 본인 플레이 분리"). `game`은 저장소 이름, `version`은 게임 빌드 버전입니다. 서버 주소는 아래 "운영"의 배포 주소입니다. 시험·격리 장면(주소 옵션의 디버그 장면 등)은 `MemoryAdapter`로 바꿔 실제 집계에 섞이지 않게 합니다. `locale`에는 게임이 고른 화면 언어 코드를 넘깁니다(브라우저 언어 목록이 아님).
 4. **이벤트는 사람이 한 행동과 화면 전환만 보냅니다.** 경기를 시작할 때 `track('match', <mode>, 'start')`를 보냅니다(`/daily`의 완주율 분모, mode는 `recordMatch` 기록의 mode와 같은 값). category는 화면·기능(`menu`, `match`, `shop`, `ad`), target은 대상(`start`, `rally`, `no_ads`), action은 동사(`click`, `start`, `end`, `buy`)입니다. 매 tick·매 프레임 값은 보내지 않습니다. 경기 중 수치는 경기 끝 summary에 넣고, 나머지는 결정론 기록에서 다시 계산합니다.
 5. **경기마다 기록합니다.** 경기 시작에 recorder를 만들고, 확정 tick마다 `input`을 넣습니다(예측·재시뮬레이션 입력 제외). 경기 끝에 `recordMatch(recorder, summary)`를 부릅니다. 멀티플레이는 모든 참가자가 계산할 수 있는 같은 `matchId`(예: 방 sessionId + epoch)를 넘깁니다.
 6. **검증합니다.** 로컬 `wrangler dev`에 게임을 연결하고, 게임의 고정 E2E에서 실제 입력으로 한 경기를 끝낸 뒤 `GET /stats`·`GET /daily`나 D1 행으로 확인합니다. 실제 서버로 보내는 시험을 영구 시험에 넣지 않습니다(집계가 오염됩니다).
@@ -52,6 +53,8 @@ METRICS.recordMatch(ONLINE, { winner: 'a' });
 - 배치 하나가 요청 하나입니다. 배치에는 `schemaVersion`(3), `game`, `build`(= `version`), `sessionId`, `seq`, `playMs`, `events`, `matches`가 들어가고 서버의 모든 행에 sessionId·build·schemaVersion이 저장됩니다.
 - `track(category, target, action, props?)`: 이름은 1~64자 문자열, props는 JSON 객체입니다. 형식이 틀리면 던집니다.
 - 세션: 생성 때 `session_start`, `pagehide` 때 `session_end`를 남깁니다. bfcache에서 돌아오면 같은 세션에 `session_start`를 다시 남깁니다. `dispose()`는 `session_end`를 보내고 타이머·리스너를 해제합니다.
+- `session_start`의 `props`: `{ locale?, viewport, touch }`. `viewport`는 `innerWidth`·`innerHeight`를 각각 `VIEWPORT_STEPS`(0·360·480·600·768·1024·1280·1600·1920) 중 아래쪽 경계로 내린 `'WxH'`이고, `touch`는 주 입력이 손가락인지(`pointer: coarse`)입니다. 정확한 크기·브라우저 저장소 ID는 보내지 않습니다. 봉투(schema 3)는 그대로이고 옛 서버도 이 필드를 원본 그대로 저장합니다.
+- 놀이를 멈추는 실패는 `track('error', <kind>, 'fail', { mode })`로 보냅니다. kind는 게임이 정한 실패 종류(예: `simulation`, `desync`, `handshake-timeout`)이고 오류 메시지·스택은 보내지 않습니다. `/daily`의 `events`에 `error:<kind>:fail`로 셉니다.
 - **플레이 시간은 페이지가 보이는 동안만 셉니다.** `playMs`는 누적값이고 서버는 배치마다 받은 값을 그대로 남기며, 집계는 세션의 최댓값입니다. 숨긴 시간을 포함한 체류 시간(`avgWallMs`)은 세션의 첫 이벤트와 마지막 이벤트의 시각 차(클라이언트 시계)입니다.
 - heartbeat(기본 30000ms)는 보이는 동안만 남기며, 페이지가 비정상 종료돼 `pagehide`가 오지 않을 때 잃는 플레이 시간의 상한입니다.
 - 이벤트는 50개가 쌓이거나 10000ms마다 보냅니다. 경기 기록은 `recordMatch` 즉시 보냅니다.
@@ -132,7 +135,7 @@ METRICS.recordMatch(ONLINE, { winner: 'a' });
 
 `POST /batch`는 검증 뒤 D1에 쓰고, `GET /stats?game=<game>[&build=<build>]`는 `{ users, owner, dev }` 칸마다 `{ sessions, lines, returningLines, avgPlayMs, avgWallMs, matches }`를 돌려줍니다(`owner.keys`는 회선 이름별 세션 수, 경기는 처음 보낸 세션의 칸). `lines`는 접속 키(회선) 수, `returningLines`는 서로 다른 날 2일 이상 온 회선 수이고, 응답의 `note`대로 사람 수가 아닙니다(휴대폰 데이터는 한 사람이 여러 회선, 집·학교 NAT은 여러 사람이 한 회선).
 
-`GET /daily?game=<game>[&build=<build>][&days=30]`(1~90일, 오늘 포함)은 날짜(KST, 세션의 첫 배치를 받은 날)·칸마다 `{ day, audience, sessions, lines, newLines, avgPlayMs, medianPlayMs, avgWallMs, matches }`를, 기간 합계로 칸마다 `countries`(국가별 세션 수), `events`(`category:target:action`별 횟수), `completion`(mode별 `{ starts, matches, rate }`, 시작 이벤트가 없으면 `rate`는 `null`)을 돌려줍니다. `newLines`는 그 회선을 이 게임에서 처음 본 날로 셉니다. `GET /whoami`는 요청 회선의 `{ ipKey, country, city, asn, asOrg, owner }`입니다. 실제 유저 지표는 `users`만 봅니다. 응답은 `Access-Control-Allow-Origin: *`이며 클라이언트는 preflight가 없는 `text/plain` 요청을 씁니다.
+`GET /daily?game=<game>[&build=<build>][&days=30]`(1~90일, 오늘 포함)은 날짜(KST, 세션의 첫 배치를 받은 날)·칸마다 `{ day, audience, sessions, lines, newLines, avgPlayMs, medianPlayMs, avgWallMs, matches }`를, 기간 합계로 칸마다 `countries`(국가별 세션 수), `contexts`(`locale`·`viewport`·`touch`별 세션 수, 세션 첫 배치의 `session_start`에서 읽고 없으면 `unknown`), `events`(`category:target:action`별 횟수), `completion`(mode별 `{ starts, matches, rate }`, 시작 이벤트가 없으면 `rate`는 `null`)을 돌려줍니다. `newLines`는 그 회선을 이 게임에서 처음 본 날로 셉니다. `GET /whoami`는 요청 회선의 `{ ipKey, country, city, asn, asOrg, owner }`입니다. 실제 유저 지표는 `users`만 봅니다. 응답은 `Access-Control-Allow-Origin: *`이며 클라이언트는 preflight가 없는 `text/plain` 요청을 씁니다.
 
 - 계약 밖 배치는 저장하지 않고 400(`schema-version`·`identity`·`counter`·`shape`·`empty`·`too-many`·`event`·`match`)이나 413(`too-large`)으로 거절합니다.
 - 쓰기 행: 세션의 첫 배치에 세션 1행, 배치마다 1행, 경기마다 1행. 무료 한도(쓰기 10만 행/일)를 아끼려고 인덱스는 두지 않습니다.
