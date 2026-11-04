@@ -133,6 +133,11 @@ export interface RoomOptions {
     retryMs?: number;
     /** 연결이 `disconnected`가 된 뒤 저절로 돌아오기를 기다리는 시간(ms). 기본 2500. 넘기면 연결을 버리고 다시 만듭니다. */
     disconnectGraceMs?: number;
+    /**
+     * host가 돌아오기 전에 같은 방 코드의 다른 host를 기다려 듣는 시간(ms). 기본 1200, 0..10000. join은 무시합니다.
+     * 0이면 확인 없이 바로 돌아오며 같은 코드의 두 host를 `room-in-use`로 거르지 못합니다.
+     */
+    collisionCheckMs?: number;
     onStatus?: (event: RoomEvent) => void;
     signal?: AbortSignal;
     /** 신호 전달자 생성 함수. 받은 `identity`로 만들어야 하며, 기본은 Nostr, 같은 페이지 시험은 `createLocalSignaler`입니다. */

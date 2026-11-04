@@ -1,3 +1,10 @@
+## v0.46.3 (2026-11-04)
+
+호환 기능 추가. `createNostrRoom`에 host의 방 코드 충돌 확인 시간을 정하는 `collisionCheckMs`(기본 1200, 0..10000)를 더합니다. 넘기지 않으면 동작이 같습니다.
+
+- `transport`: `collisionCheckMs: 0`이면 host가 같은 코드의 다른 host를 기다려 듣지 않고 신호가 준비되자마자 돌아옵니다. 같은 페이지에서 `createLocalSignaler`로 host·guest 쌍을 직접 만드는 경우(Rally 싱글 AI 상대)에는 충돌할 상대가 없는데 1.2초를 기다리던 것을 없앱니다. 한계: 끄면 `room-in-use` 감지가 사라져 같은 코드의 두 host를 거르지 못합니다. join은 이 옵션을 무시합니다.
+- 시험: `modules/transport/tests/room-browser.mjs`가 `collisionCheckMs: 0`인 host가 확인 대기 없이 돌아와 guest와 바로 연결되는 것을 확인합니다.
+
 ## v0.46.2 (2026-11-04)
 
 호환 기능 추가(metrics). 세션 시작에 언어·화면 크기 구간·터치 여부를 남기고, 수집 서버 `/daily`가 조회 때 이를 셉니다. 배치 봉투(schema 3)는 그대로이고 운영 서버는 머지 전에 다시 배포합니다.

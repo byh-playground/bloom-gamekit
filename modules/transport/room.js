@@ -6,7 +6,6 @@ import { createRoomChannels } from './room-channels.js';
 import { DEFAULT_ICE } from './webrtc.js';
 // 같은 방 코드를 쓰는 다른 프로토콜(고정·동적·공개 방)과 신호가 섞이지 않게 하는 신호 네임스페이스 접미사.
 const WIRE_SUFFIX = ':room-v2';
-const COLLISION_MS = 1200;
 const WATCH_MS = 1000;
 const ICE_BATCH_MS = 100;
 const ICE_BATCH_LIMIT = 64;
@@ -88,6 +87,7 @@ export async function createNostrRoom({
     peerTimeoutMs = 8000,
     retryMs = 1000,
     disconnectGraceMs = 2500,
+    collisionCheckMs = 1200,
     onStatus = () => {},
     signal,
     signalerFactory = createNostrSignaler,
@@ -103,6 +103,7 @@ export async function createNostrRoom({
     integer(peerTimeoutMs, 'peerTimeoutMs', 100, 120000);
     integer(retryMs, 'retryMs', 10, 10000);
     integer(disconnectGraceMs, 'disconnectGraceMs', 0, 60000);
+    integer(collisionCheckMs, 'collisionCheckMs', 0, 10000);
     if (
         typeof namespace !== 'string' ||
         !namespace.trim() ||
@@ -810,11 +811,11 @@ export async function createNostrRoom({
     try {
         await openSignaling();
         emit('room', { namespace });
-        if (HOST) {
-            // 먼저 열린 같은 코드의 host가 있으면 그쪽 presence를 듣고 실패합니다.
+        if (HOST && collisionCheckMs > 0) {
+            // 먼저 열린 같은 코드의 host가 있으면 그쪽 presence를 듣고 실패합니다. 0이면 확인 없이 바로 돌아옵니다.
             await new Promise((resolve) => {
                 claim = { resolve };
-                claim.timer = setTimeout(resolve, COLLISION_MS);
+                claim.timer = setTimeout(resolve, collisionCheckMs);
             });
             clearTimeout(claim.timer);
             claim = null;

@@ -374,6 +374,15 @@ export async function runRoomScenario() {
         assert(bothOpen(LONELY, WAITING, 1), 'reopened guest connects');
         STEP('timeout-and-revive');
 
+        // 9-2. collisionCheckMs: 0이면 host가 같은 코드의 다른 host를 기다리지 않고 바로 돌아와 guest와 연결된다.
+        const FAST_STARTED = performance.now();
+        const FAST_HOST = await open('host', { room: '4824', collisionCheckMs: 0 });
+        assert(performance.now() - FAST_STARTED < 1000, 'a host without the collision check returns at once');
+        const FAST_GUEST = await open('join', { room: '4824' });
+        await Promise.all([FAST_HOST.room.opened, FAST_GUEST.room.opened]);
+        assert(bothOpen(FAST_HOST, FAST_GUEST, 1), 'the pair connects without waiting for the check');
+        STEP('no-collision-check');
+
         // 10. close()는 재연결을 일으키지 않는다. 상대는 interrupted로 알아채고, 닫은 쪽은 신호도 연결도 만들지 않는다.
         const GUEST_SENT = GUEST.signaling.sent.length;
         const PEERS_AT_CLOSE = negotiations();
