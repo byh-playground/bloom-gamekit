@@ -50,7 +50,7 @@ var FIXED_POINT = Object.freeze({
 });
 
 // modules/_rollback-shared/protocol.js
-var REPLAY_FORMAT_VERSION = "0.2.0-dev";
+var REPLAY_FORMAT_VERSION = "0.3.0-dev";
 var CHUNK_SIZE = 16384;
 var DEFAULTS = {
   mode: "rollback",
@@ -145,32 +145,77 @@ function runSimulationFrame(adapter, context) {
     }))
   });
 }
+function decodeReplayFrames({ inputChanges, commands, players, inputSize, tick }) {
+  const DATA = bytes(inputChanges), CURRENT = players.map(() => null), FRAMES = [];
+  let at = 0, next = 0;
+  const READ = () => {
+    if (at >= DATA.length) {
+      return null;
+    }
+    let delta = 0;
+    for (let shift = 0; ; shift += 7) {
+      const B = DATA[at++];
+      delta += (B & 127) * 2 ** shift;
+      if (B < 128) {
+        break;
+      }
+    }
+    const P = DATA[at++];
+    if (P >= players.length || at + inputSize > DATA.length) {
+      throw new Error("replay input changes");
+    }
+    next += delta;
+    at += inputSize;
+    return { tick: next, player: P, input: DATA.slice(at - inputSize, at) };
+  };
+  let pending = READ();
+  let c = 0;
+  for (let t = 0; t < tick; t++) {
+    while (pending && pending.tick === t) {
+      CURRENT[pending.player] = pending.input;
+      pending = READ();
+    }
+    if (CURRENT.some((x) => !x)) {
+      throw new Error("replay input changes");
+    }
+    const INPUTS = players.map((playerId, i) => ({ playerId, input: CURRENT[i], commands: [], predicted: false }));
+    for (; c < commands.length && commands[c].tick === t; c++) {
+      const COMMAND = { ...commands[c], payload: bytes(commands[c].payload) };
+      delete COMMAND.tick;
+      delete COMMAND.playerId;
+      INPUTS[players.indexOf(commands[c].playerId)].commands.push(COMMAND);
+    }
+    FRAMES.push({ tick: t, inputs: INPUTS });
+  }
+  if (pending || c !== commands.length) {
+    throw new Error("replay input changes");
+  }
+  return FRAMES;
+}
 
 // modules/replay/index.js
 function playReplay({ adapter, replay, simulationVersion = replay?.simulationVersion } = {}) {
-  if (replay?.version !== REPLAY_FORMAT_VERSION || replay.simulationVersion !== simulationVersion || !Array.isArray(replay.frames)) {
+  if (replay?.version !== REPLAY_FORMAT_VERSION || replay.simulationVersion !== simulationVersion || !Array.isArray(replay.players) || !Array.isArray(replay.commands)) {
     throw new Error("replay compatibility");
   }
+  const FRAMES = decodeReplayFrames(replay);
+  const BASE_TICK = replay.baseTick ?? 0;
   adapter.load(bytes(replay.initialState).slice());
-  let tick = 0;
-  for (const F of replay.frames) {
-    if (F.tick !== tick) {
-      throw new Error("non-contiguous replay");
-    }
+  for (const F of FRAMES) {
     runSimulationFrame(adapter, {
-      tick,
+      tick: BASE_TICK + F.tick,
       tickRate: replay.tickRate,
       inputs: F.inputs.map((x) => ({
         ...x,
-        predicted: false
+        commands: x.commands.map((c) => ({ ...c, executeTick: c.executeTick + BASE_TICK }))
       })),
       resimulating: true,
-      replaying: true
+      replaying: true,
+      ...replay.membershipEpoch === void 0 ? {} : { membershipEpoch: replay.membershipEpoch }
     });
-    tick++;
   }
   return {
-    tick,
+    tick: FRAMES.length,
     hash: hashBytes(bytes(adapter.save()))
   };
 }

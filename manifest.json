@@ -39,11 +39,11 @@
     },
     {
       "file": "replay.js",
-      "sha256": "c91ec3fb12e22f2fe29ce1555bd90f95dff81ae4959cde4c5a8b2d6f7a985122"
+      "sha256": "a9d59d5d1eca54a44102523082fae2e98fe186210510586cc04e4e13f675b817"
     },
     {
       "file": "rollback.js",
-      "sha256": "b09d3c50e7f08ff4c4787f9812bd3ea956b5eae8c5032a87e6ff80b01cb6552d"
+      "sha256": "d5f478cb22d841122fcfaf5372c3e8466bc53836660a2e227bf83f36d1c36980"
     },
     {
       "file": "camera.js",

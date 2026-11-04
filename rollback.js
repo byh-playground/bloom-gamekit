@@ -63,10 +63,10 @@ var FIXED_POINT = Object.freeze({
 });
 
 // modules/_rollback-shared/version.js
-var VERSION = "0.44.0";
+var VERSION = "0.45.0";
 
 // modules/_rollback-shared/protocol.js
-var REPLAY_FORMAT_VERSION = "0.2.0-dev";
+var REPLAY_FORMAT_VERSION = "0.3.0-dev";
 var PROTOCOL_VERSION = 3;
 var CHUNK_SIZE = 16384;
 var MAX_TICK = 2147483646;
@@ -272,6 +272,32 @@ function runSimulationFrame(adapter, context) {
       predicted: !!frame.predicted
     }))
   });
+}
+function encodeReplayFrames(frames, players) {
+  const OUT = [], LAST = players.map(() => null), COMMANDS = [];
+  let previous = 0;
+  for (const F of frames) {
+    for (const X of F.inputs) {
+      const P = players.indexOf(X.playerId);
+      for (const C of X.commands) {
+        COMMANDS.push({ ...C, payload: C.payload.slice(), tick: F.tick, playerId: X.playerId });
+      }
+      if (LAST[P] && equalBytes(LAST[P], X.input)) {
+        continue;
+      }
+      for (let d = F.tick - previous; ; d >>>= 7) {
+        if (d < 128) {
+          OUT.push(d);
+          break;
+        }
+        OUT.push(d & 127 | 128);
+      }
+      OUT.push(P, ...X.input);
+      LAST[P] = X.input;
+      previous = F.tick;
+    }
+  }
+  return { inputChanges: Uint8Array.from(OUT), commands: COMMANDS };
 }
 
 // modules/_rollback-shared/history.js
@@ -589,8 +615,8 @@ var RollbackSession = class {
     this.adapter = adapter;
     this.onEvent = onEvent;
     this.localFastPath = localFastPath;
-    if (localFastPath && (this.players.length !== 1 || this.profile.mode !== "lockstep" || recordReplay || boundaryToken)) {
-      throw new TypeError("local fast path requires one-player lockstep without replay or a recovery boundary");
+    if (localFastPath && (this.players.length !== 1 || this.profile.mode !== "lockstep" || boundaryToken)) {
+      throw new TypeError("local fast path requires one-player lockstep without a recovery boundary");
     }
     this.authorityPlayerId = authorityPlayerId ?? this.players[0];
     if (!this.players.includes(this.authorityPlayerId)) {
@@ -706,7 +732,7 @@ var RollbackSession = class {
       throw new Error("initial boundary adapter");
     }
     if (this.localFastPath) {
-      this._initialState = null;
+      this._initialState = recordReplay ? this._save() : null;
       this._currentState = null;
       this._hello = null;
     } else {
@@ -2057,7 +2083,7 @@ var RollbackSession = class {
     const TICK = this.tick, LOCKSTEP = this.profile.mode === "lockstep";
     integer(TICK, "session tick limit", 0, MAX_TICK);
     if (LOCKSTEP && this._recordReplay && this._replayBytes + this._replayFrameBytes(inputs) > this.profile.maxReplayBytes) {
-      this._replayFinalHash = this._stateHash(this._stateAt(TICK));
+      this._replayFinalHash = this.localFastPath ? hashBytes(this._save()) : this._stateHash(this._stateAt(TICK));
       this._recordReplay = false;
       this._event("replay-capacity");
     }
@@ -2088,6 +2114,13 @@ var RollbackSession = class {
             predicted: f.predicted
           }))
         );
+      }
+      if (this.localFastPath && this._recordReplay) {
+        this._replayFrames.push({
+          tick: TICK,
+          inputs: inputs.map((f) => ({ playerId: f.playerId, ...copyFrame(f), predicted: false }))
+        });
+        this._replayBytes += this._replayFrameBytes(inputs);
       }
       this._tick++;
       this._inputHash = INPUT_HASH;
@@ -2756,7 +2789,7 @@ var RollbackSession = class {
     }
   }
   _recordConfirmed() {
-    if (!this._recordReplay || this.resimulating || this._failure) {
+    if (this.localFastPath || !this._recordReplay || this.resimulating || this._failure) {
       return;
     }
     this._replayFinalState = this._history.get(this._replayFrames.length) ?? this._replayFinalState;
@@ -2809,15 +2842,15 @@ var RollbackSession = class {
     };
   }
   exportReplay() {
-    if (this.localFastPath) {
-      throw new Error("replay unavailable in local fast path");
+    if (this.localFastPath && !this._initialState) {
+      throw new Error("replay unavailable in local fast path without recordReplay");
     }
     if (this.resimulating) {
       throw new Error("finish rollback before exporting replay");
     }
     this._recordConfirmed();
     const TICK = this._replayFrames.length;
-    const HASH_LOCAL = this._stateHash(this._stateAt(TICK)) ?? this._stateHash(this._replayFinalState) ?? this._replayFinalHash;
+    const HASH_LOCAL = this.localFastPath ? this._recordReplay ? hashBytes(this._save()) : this._replayFinalHash : this._stateHash(this._stateAt(TICK)) ?? this._stateHash(this._replayFinalState) ?? this._replayFinalHash;
     if (TICK > 0 && HASH_LOCAL === void 0) {
       throw new Error("replay final boundary is unavailable after fatal restoration failure");
     }
@@ -2829,14 +2862,7 @@ var RollbackSession = class {
       inputSize: this.inputSize,
       tickRate: this.profile.tickRate,
       initialState: this._initialState.slice(),
-      frames: this._replayFrames.map((f) => ({
-        tick: f.tick,
-        inputs: f.inputs.map((x) => ({
-          ...copyFrame(x),
-          playerId: x.playerId,
-          predicted: false
-        }))
-      })),
+      ...encodeReplayFrames(this._replayFrames, this.players),
       tick: TICK,
       hash: HASH_LOCAL ?? hashBytes(this._initialState),
       truncated: !this._recordReplay
@@ -4479,13 +4505,14 @@ var RoomSession = class {
     },
     availability = {},
     roomOwnerId = room?.coordinatorId ?? localPlayerId,
-    localFastPath = false
+    localFastPath = false,
+    recordReplay = false
   } = {}) {
     if (!["local", "online"].includes(mode) || !ID_VALID(localPlayerId) || !ID_VALID(sessionId)) {
       throw new TypeError("room session identity/mode");
     }
-    if (typeof localFastPath !== "boolean") {
-      throw new TypeError("localFastPath");
+    if (typeof localFastPath !== "boolean" || typeof recordReplay !== "boolean") {
+      throw new TypeError("localFastPath/recordReplay");
     }
     integer(inputSize, "inputSize", 1, 1024);
     if (!ID_VALID(simulationVersion) || sessionId.length > 116) {
@@ -4550,6 +4577,11 @@ var RoomSession = class {
     if (localFastPath && this.availability.mode !== "strict") {
       throw new TypeError("localFastPath requires strict availability");
     }
+    if (recordReplay && this.availability.mode !== "strict") {
+      throw new TypeError("recordReplay requires strict availability");
+    }
+    this.recordReplay = recordReplay;
+    this._replaySegments = [];
     if (!ID_VALID(roomOwnerId)) {
       throw new TypeError("roomOwnerId");
     }
@@ -4761,6 +4793,26 @@ var RoomSession = class {
   getPeerState(id) {
     return this._core?.getPeerState(id);
   }
+  _replaySegment() {
+    return {
+      ...this._core.exportReplay(),
+      baseTick: this.baseTick,
+      membershipEpoch: this.epoch
+    };
+  }
+  exportReplay() {
+    if (!this.recordReplay) {
+      throw new Error("replay requires recordReplay");
+    }
+    if (this.resimulating) {
+      throw new Error("finish rollback before exporting replay");
+    }
+    return {
+      seed: this.seed,
+      players: [...this.players],
+      segments: [...this._replaySegments, ...this._core ? [this._replaySegment()] : []]
+    };
+  }
   getStateHash(tick = this.tick) {
     return this.resimulating ? void 0 : this._core?.getStateHash(tick - this.baseTick);
   }
@@ -4923,7 +4975,7 @@ var RoomSession = class {
       localCommandState: commandState,
       initialCommandSequences: commandSequences ? Object.fromEntries(this.activePlayers.map((id) => [id, commandSequences[id] ?? 0])) : void 0,
       clock: this.clock,
-      recordReplay: false,
+      recordReplay: this.recordReplay,
       onEvent: (event) => {
         if (event.type !== "closed") {
           this._event(event.type, {
@@ -5817,6 +5869,9 @@ var RoomSession = class {
         sequence: Math.max(commandState.sequence, BASELINE),
         commands: commandState.commands.filter((command) => command.sequence > BASELINE)
       };
+    }
+    if (this.recordReplay && this._core) {
+      this._replaySegments.push(this._replaySegment());
     }
     if (tr.preparedState) {
       const PREPARED = tr.preparedState;
