@@ -13,6 +13,7 @@ import { chromium } from 'playwright';
 // 세션 시작 → 랠리 입력 → 경기 끝 → 서버 집계 → 탭 숨김(에뮬레이션) → 페이지 닫힘(sendBeacon)을 거쳐 D1 행을 직접 읽는다.
 // 이어서 rollback Session 두 참가자가 같은 matchId로 보낸 경기가 한 행만 남고, 저장된 replay로 같은 hash를 다시 계산하는지 본다.
 // 끝으로 페이지가 보여 준 접속 키를 owners에 넣어 지난 세션이 소급해 '나'로 빠지는지 본다.
+// D1에는 원본만 있으므로 플레이 시간·체류 시간·회선·일별 값·완주율은 모두 /stats·/daily가 조회 때 계산한 값을 본다.
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const SERVER_DIR = resolve(ROOT, 'modules/metrics/server');
 const WRANGLER = resolve(ROOT, 'node_modules/wrangler/bin/wrangler.js');
@@ -136,6 +137,7 @@ try {
     );
     assert.equal((await POST('x'.repeat(1000001))).status, 413, 'a batch over 1MB is rejected');
     assert.equal((await fetch(API + '/stats')).status, 400, 'stats needs a game name');
+    assert.equal((await fetch(`${API}/daily?game=${GAME}&days=91`)).status, 400, 'daily covers at most 90 days');
     const PREFLIGHT = await fetch(API + '/batch', { method: 'OPTIONS' });
     assert.equal(PREFLIGHT.headers.get('access-control-allow-origin'), '*', 'CORS preflight answers any game page');
     // 운영에서는 Cloudflare가 CF-Connecting-IP를 붙입니다. 로컬 wrangler dev는 요청 헤더를 그대로 넘깁니다.
@@ -248,8 +250,9 @@ try {
         await PAGE.clock.runFor(1000);
         const SESSION_ID = await PAGE.evaluate(() => window.metricsExample.metrics.sessionId);
         // 실제 페이지 이동: pagehide에서 session_end를 sendBeacon으로 보냅니다.
+        // 체류 시간은 첫 이벤트(연결)부터 session_end까지의 페이지 시계이고 숨긴 60초를 포함합니다.
         await PAGE.goto('about:blank');
-        SESSIONS.push({ name: NAME, id: SESSION_ID, playMs: PLAYED + 1000 });
+        SESSIONS.push({ name: NAME, id: SESSION_ID, playMs: PLAYED + 1000, wallMs: 5000 + 60000 + 1000 });
         assert.deepEqual(ERRORS, [], `${NAME}: no page errors`);
         await CONTEXT.close();
     }
@@ -266,14 +269,15 @@ try {
     for (const SESSION of SESSIONS) {
         const ROW = await until(() => {
             const FOUND = DATABASE.prepare(
-                'SELECT play_ms, ip_key, user_agent, origin FROM sessions WHERE session_id = ?',
+                `SELECT MAX(b.play_ms) AS play_ms, s.ip_key, s.user_agent, s.origin
+                 FROM sessions s JOIN batches b ON b.session_id = s.session_id WHERE s.session_id = ? GROUP BY s.session_id`,
             ).get(SESSION.id);
             const ENDED = DATABASE.prepare(
                 "SELECT COUNT(*) AS n FROM batches WHERE session_id = ? AND events LIKE '%session_end%'",
             ).get(SESSION.id);
             return ENDED.n === 1 && FOUND;
         }, `${SESSION.name} session_end beacon in D1`);
-        assert.equal(ROW.play_ms, SESSION.playMs, `${SESSION.name}: D1 keeps the visible play time`);
+        assert.equal(ROW.play_ms, SESSION.playMs, `${SESSION.name}: batches keep the visible play time`);
         assert.equal(ROW.ip_key, ownerKey, `${SESSION.name}: D1 keeps the connection key, not the IP`);
         assert.match(ROW.user_agent, /Chrome/, `${SESSION.name}: D1 keeps the user agent`);
         assert.match(ROW.origin, /^http:\/\/127\.0\.0\.1:/, `${SESSION.name}: D1 keeps the page origin`);
@@ -302,7 +306,23 @@ try {
         'stats split users and local builds',
     );
     assert.equal(BY_AUDIENCE.users.avgPlayMs, 2500, 'user play time excludes local builds');
-    const SOLO = DATABASE.prepare('SELECT mode, seed, summary, replay FROM matches WHERE game = ?').all(GAME);
+    assert.deepEqual(
+        [BY_AUDIENCE.dev.avgPlayMs, BY_AUDIENCE.dev.avgWallMs],
+        [SESSIONS[0].playMs, SESSIONS[0].wallMs],
+        'play and wall time are computed from the stored batches',
+    );
+    assert.deepEqual(
+        ['users', 'dev'].map((name) => [BY_AUDIENCE[name].lines, BY_AUDIENCE[name].returningLines]),
+        [
+            [1, 0],
+            [1, 0],
+        ],
+        'both local sessions are one line seen on one day',
+    );
+    assert.equal(BY_AUDIENCE.note, 'lines are IP networks, not people');
+    const SOLO = DATABASE.prepare(
+        'SELECT mode, seed, summary, replay FROM matches m JOIN sessions s USING (session_id) WHERE s.game = ?',
+    ).all(GAME);
     assert.equal(SOLO.length, 2, 'one D1 row per finished match');
     for (const MATCH of SOLO) {
         const REPLAY = JSON.parse(MATCH.replay);
@@ -395,6 +415,38 @@ try {
     );
     assert.deepEqual(FINAL.owner.keys, { 'e2e-pc': 2 }, 'owner sessions are counted per owner line');
     assert.equal(FINAL.users.avgPlayMs, 2500, 'the other line stays a user');
+    // 일별 값은 첫 배치를 받은 날(KST)로 묶습니다. 이 실행의 세션은 모두 오늘입니다.
+    const DAILY = await (await fetch(`${API}/daily?game=${GAME}&days=1`)).json();
+    const TODAY = new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);
+    assert.deepEqual(
+        DAILY.daily.map(({ day, audience, sessions, lines, newLines, medianPlayMs, avgWallMs, matches }) => [
+            day,
+            audience,
+            sessions,
+            lines,
+            newLines,
+            medianPlayMs,
+            avgWallMs,
+            matches,
+        ]),
+        [
+            [TODAY, 'owner', 2, 1, 1, SESSIONS[0].playMs, SESSIONS[0].wallMs, 2],
+            [TODAY, 'users', 1, 1, 1, 2500, 0, 0],
+        ],
+        'daily rows per KST day and audience',
+    );
+    // 기기마다 연결 때와 경기 기록 뒤 새 경기에서 시작 이벤트를 보내고 경기는 하나씩 끝냈습니다.
+    assert.deepEqual(
+        DAILY.events.owner,
+        { 'match:solo:start': 4, 'match:rally:hit': 6, 'match:rally:end': 2 },
+        'event counts come from the stored event arrays',
+    );
+    assert.deepEqual(DAILY.completion.owner, { solo: { starts: 4, matches: 2, rate: 0.5 } }, 'completion per mode');
+    assert.deepEqual(
+        ['users', 'owner'].map((name) => Object.values(DAILY.countries[name]).reduce((sum, count) => sum + count, 0)),
+        [1, 2],
+        'every session is counted under one country',
+    );
     const OWNER_WHOAMI = await (await fetch(API + '/whoami', { headers: { 'CF-Connecting-IP': '127.0.0.1' } })).json();
     assert.equal(OWNER_WHOAMI.owner, 'e2e-pc', 'whoami names the owner line');
     DATABASE.close();
@@ -402,6 +454,7 @@ try {
     console.log(
         JSON.stringify({
             stats: FINAL,
+            daily: DAILY,
             sessions: SESSIONS,
             online: { stats: STATS, replayed: REPLAYED },
             elapsedMs: Math.round(performance.now() - STARTED),

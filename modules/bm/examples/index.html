@@ -449,6 +449,8 @@
         function newMatch() {
             match = new InputLogRecorder({ mode: 'solo', seed: SEED });
             hits = 0;
+            // 서버 /daily의 경기 완주율은 이 시작 이벤트 수 대비 저장된 경기 수입니다.
+            metrics.track('match', 'solo', 'start');
         }
 
         function connect() {
