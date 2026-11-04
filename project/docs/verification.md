@@ -5,7 +5,7 @@
 | 명령                    | 실제 범위                                                                            |
 | ----------------------- | ------------------------------------------------------------------------------------ |
 | npm test / test:browser | DOM 입력·보간·표시 frame·WebGL·HUD·context 복구·local preview 통합                   |
-| test:network            | 실제 RTC·동적 방                                                                     |
+| test:network            | 실제 RTC·동적 방·1:1 방 재연결                                                       |
 | test:availability       | 비활성·복귀·분할·coordinator 이관                                                    |
 | test:room               | 방 실행 모드 + availability                                                          |
 | test:execution          | navigation·scenario 브라우저                                                         |
