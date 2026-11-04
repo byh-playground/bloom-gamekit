@@ -252,7 +252,18 @@ try {
         // 실제 페이지 이동: pagehide에서 session_end를 sendBeacon으로 보냅니다.
         // 체류 시간은 첫 이벤트(연결)부터 session_end까지의 페이지 시계이고 숨긴 60초를 포함합니다.
         await PAGE.goto('about:blank');
-        SESSIONS.push({ name: NAME, id: SESSION_ID, playMs: PLAYED + 1000, wallMs: 5000 + 60000 + 1000 });
+        // 화면 크기는 구간 경계로 내립니다: 1280x800 → 1280x768, 390x844 → 360x768.
+        const CONTEXT_PROPS =
+            NAME === 'touch'
+                ? { locale: 'ko', viewport: '360x768', touch: true }
+                : { locale: 'ko', viewport: '1280x768', touch: false };
+        SESSIONS.push({
+            name: NAME,
+            id: SESSION_ID,
+            playMs: PLAYED + 1000,
+            wallMs: 5000 + 60000 + 1000,
+            context: CONTEXT_PROPS,
+        });
         assert.deepEqual(ERRORS, [], `${NAME}: no page errors`);
         await CONTEXT.close();
     }
@@ -278,6 +289,14 @@ try {
             return ENDED.n === 1 && FOUND;
         }, `${SESSION.name} session_end beacon in D1`);
         assert.equal(ROW.play_ms, SESSION.playMs, `${SESSION.name}: batches keep the visible play time`);
+        const [FIRST] = JSON.parse(
+            DATABASE.prepare('SELECT events FROM batches WHERE session_id = ? AND seq = 0').get(SESSION.id).events,
+        );
+        assert.deepEqual(
+            [FIRST.type, FIRST.props],
+            ['session_start', SESSION.context],
+            `${SESSION.name}: session_start carries the game locale, a viewport bucket and the main pointer`,
+        );
         assert.equal(ROW.ip_key, ownerKey, `${SESSION.name}: D1 keeps the connection key, not the IP`);
         assert.match(ROW.user_agent, /Chrome/, `${SESSION.name}: D1 keeps the user agent`);
         assert.match(ROW.origin, /^http:\/\/127\.0\.0\.1:/, `${SESSION.name}: D1 keeps the page origin`);
@@ -442,6 +461,15 @@ try {
         'event counts come from the stored event arrays',
     );
     assert.deepEqual(DAILY.completion.owner, { solo: { starts: 4, matches: 2, rate: 0.5 } }, 'completion per mode');
+    assert.deepEqual(
+        DAILY.contexts,
+        {
+            users: { locale: { unknown: 1 }, viewport: { unknown: 1 }, touch: { unknown: 1 } },
+            owner: { locale: { ko: 2 }, viewport: { '1280x768': 1, '360x768': 1 }, touch: { false: 1, true: 1 } },
+            dev: { locale: {}, viewport: {}, touch: {} },
+        },
+        'language, screen and touch come from each session_start; a batch without them is unknown',
+    );
     assert.deepEqual(
         ['users', 'owner'].map((name) => Object.values(DAILY.countries[name]).reduce((sum, count) => sum + count, 0)),
         [1, 2],
