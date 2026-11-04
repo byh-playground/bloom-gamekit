@@ -19,6 +19,7 @@
 - [SVG 원본의 브라우저 시작 시점 검증·컴파일·캐시](./modules/vector-assets/README.md#build-and-runtime)
 - [Web Audio 재생·음량·confirmed SFX adapter](./modules/audio/README.md) · [실제 합성·출력 예제](./modules/audio/examples/index.html) · `npm run test:audio`
 - [객체 풀 API·단일 소유권·반납 계약](./modules/object-pool/README.md)
+- [2D 기하 수학과 원형 이동체의 접촉 해소(지형·길찾기 정책 없음)](./modules/geometry/README.md) · [기하 탭 바로 보기](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/work-scheduler.html#tab=geometry) · `node modules/geometry/tests/geometry.e2e.mjs`
 - [입력 action·DOM·tick 소비 계약](./modules/input/README.md)
 - [고정 실행과 선택적 detached local input preview](./modules/simloop/README.md) · [카메라·표현 이벤트](./modules/presentation-events/README.md) · [HUD](./modules/hud/README.md) · [진단](./modules/debug-tools/README.md) · [카메라](./modules/camera/README.md)
 - [비긴급 작업의 고정 tick 예산·재개 API](./modules/work-scheduler/README.md)
@@ -104,7 +105,7 @@ main 실행이 성공하면 [interpolation.js](https://github.com/byh-playground
 
 예제의 게임이 100ms 시뮬레이션 규칙·명령 소비·y-sort·UI 내용을 소유합니다. simloop의 createLoop가 누적/프레임 실행을 맡고 camera·presentation-events·hud·debug-tools를 조합합니다. input의 sample은 edge를 지우지 않으며 게임/SDK가 명령을 수집한 뒤 consume합니다. rendering에는 interpolation import가 없고, 완성된 pose를 받은 게임이 body/shadow/health를 제출합니다. context 복구 시 texture handle은 유지되며 현재 프레임은 버립니다.
 
-이 범위는 최소 core를 완성한 것입니다. terrain/fog·게임 아트·전투·sprite animation·scenegraph·게임별 투영/geometry·asset loading은 공통 게임 규칙으로 구현하지 않았습니다. WebGLDevice는 기존 게임이 제공하는 shader·geometry를 받아 자원·buffer·draw 호출을 관리합니다. 기존 Budmori/Rally 게임에는 아직 적용하지 않았습니다. 로컬 브라우저 E2E는 실제 WebGL 2 shader와 픽셀을 SwiftShader로 검사하므로 Canvas2D 모의 검증이 아니지만, 모바일·기기 GPU FPS 검증도 아닙니다. 화면 metrics는 실제 draw/vertex/upload count와 관찰 interval/CPU 제출 시간이며 GPU 완료 시간으로 해석하지 않습니다.
+이 범위는 최소 core를 완성한 것입니다. terrain/fog·게임 아트·전투·sprite animation·scenegraph·게임별 투영/geometry·asset loading은 공통 게임 규칙으로 구현하지 않았습니다(지형 의미가 없는 순수 2D 기하 수학과 원형 이동체의 접촉 해소만 [geometry](./modules/geometry/README.md)가 맡습니다). WebGLDevice는 기존 게임이 제공하는 shader·geometry를 받아 자원·buffer·draw 호출을 관리합니다. 기존 Budmori/Rally 게임에는 아직 적용하지 않았습니다. 로컬 브라우저 E2E는 실제 WebGL 2 shader와 픽셀을 SwiftShader로 검사하므로 Canvas2D 모의 검증이 아니지만, 모바일·기기 GPU FPS 검증도 아닙니다. 화면 metrics는 실제 draw/vertex/upload count와 관찰 interval/CPU 제출 시간이며 GPU 완료 시간으로 해석하지 않습니다.
 
 ## 작업과 리뷰
 
