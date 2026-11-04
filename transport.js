@@ -1563,7 +1563,6 @@ function createRoomChannels({ onError, onSendFailure }) {
 
 // modules/transport/room.js
 var WIRE_SUFFIX = ":room-v2";
-var COLLISION_MS = 1200;
 var WATCH_MS = 1e3;
 var ICE_BATCH_MS = 100;
 var ICE_BATCH_LIMIT = 64;
@@ -1633,6 +1632,7 @@ async function createNostrRoom({
   peerTimeoutMs = 8e3,
   retryMs = 1e3,
   disconnectGraceMs = 2500,
+  collisionCheckMs = 1200,
   onStatus = () => {
   },
   signal,
@@ -1649,6 +1649,7 @@ async function createNostrRoom({
   integer(peerTimeoutMs, "peerTimeoutMs", 100, 12e4);
   integer(retryMs, "retryMs", 10, 1e4);
   integer(disconnectGraceMs, "disconnectGraceMs", 0, 6e4);
+  integer(collisionCheckMs, "collisionCheckMs", 0, 1e4);
   if (typeof namespace !== "string" || !namespace.trim() || NOSTR_ENCODER.encode(namespace + WIRE_SUFFIX).length > 128) {
     throw new TypeError("room namespace");
   }
@@ -2316,10 +2317,10 @@ async function createNostrRoom({
   try {
     await openSignaling();
     emit("room", { namespace });
-    if (HOST) {
+    if (HOST && collisionCheckMs > 0) {
       await new Promise((resolve) => {
         claim = { resolve };
-        claim.timer = setTimeout(resolve, COLLISION_MS);
+        claim.timer = setTimeout(resolve, collisionCheckMs);
       });
       clearTimeout(claim.timer);
       claim = null;
