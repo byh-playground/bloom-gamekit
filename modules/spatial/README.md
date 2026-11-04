@@ -1,6 +1,6 @@
 # spatial
 
-결정론 시뮬레이션이 "가까운 것만 보려고" 쓰는 균일 격자(고정 칸 격자) 두 가지입니다. 시간·난수·DOM을 읽지 않고, 칸은 숫자 인덱스 배열이며(Map·문자열 키·정렬 없음), 질의는 호출자가 준 `out` 배열을 채워서 할당하지 않습니다.
+결정론 시뮬레이션이 "가까운 것만 보려고" 쓰는 균일 격자(고정 칸 격자) 두 가지입니다. 시간·난수·DOM을 읽지 않고, 칸 색인은 숫자 인덱스 배열이며(질의 경로에 Map·문자열 키·정렬 없음), 질의는 호출자가 준 `out` 배열을 채워서 할당하지 않습니다.
 
 - `UniformGrid`: 점 항목(유닛 중심 등)을 중심 칸 하나에 넣고, 사각형·원 후보와 최근접 고리 탐색을 돌려줍니다.
 - `BoundsGrid`: 사각형 항목(한 틱 움직임을 감싼 상자 등)을 겹치는 모든 칸에 넣고, 겹치는 항목을 삽입 순서로 중복 없이 돌려줍니다.
@@ -9,7 +9,7 @@
 
 - 질의는 칸 단위 **후보**입니다. 정확한 거리·겹침 판정은 호출자가 합니다(`BoundsGrid`의 경계 상자 겹침만 정확합니다).
 - 결과의 **순서가 계약**입니다(아래 "순서 계약"). 시뮬레이션이 순서에 기대면 그대로 믿어도 되고, 모듈은 정렬하지 않습니다.
-- 항목은 정수 번호(배열 인덱스) 또는 객체이고, 좌표는 `insert`가 받습니다. 항목에 `x`·`y`가 있어야 하지 않습니다.
+- 항목은 정수 번호(배열 인덱스) 또는 객체이고, 좌표는 `insert`가 받습니다. 항목에 `x`·`y` 속성이 있을 필요는 없습니다.
 
 ## UniformGrid
 
@@ -164,6 +164,8 @@
 | `unitSpatial.sync(u)`                                           | `if (u.alive) move(index, u.x, u.y); else if (keyOf(index) !== keyAt(u.x, u.y)) remove(index);` (`index = unitIndexById.get(u.id)`)                                                                                                                                        |
 | `unitSpatial.query(x, y, r, out, side)`                         | `queryCircle(x, y, r, out, side == null ? -1 : group)`                                                                                                                                                                                                                     |
 | `new DeterministicBuildingSpatialGrid(SIM_SPATIAL_CELL, world)` | `new UniformGrid({ cellSize: SIM_SPATIAL_CELL, width: world.width, height: world.height, outside: 'clamp' })`; `reset(buildings)`는 `clear()` 뒤 `b && b.alive !== false`인 것만 `insert(i, b.x, b.y)`; `query`는 `queryCircle`                                            |
+
+원본 `sync`는 이미 색인에서 뺀 죽은 유닛을 칸이 바뀌게 한 번 더 sync하면 낡은 슬롯으로 다른 유닛을 색인에서 뺐습니다. 모듈의 `remove`·`keyOf`는 이를 재현하지 않으므로 이 경우에만 결과가 다릅니다(확인한 호출은 살아 있는 유닛만 sync합니다).
 
 `strategy-sim.js`의 호출은 구조를 바꾸지 않고 격자 호출만 바뀝니다: `nearbyUnits`·`withNearbyUnits`·`forEachNearbyHostileUnit`은 `unitSpatial.queryCircle`, `nearbyBuildingIndices`는 `buildingSpatial.queryCircle`, `rebuildRuntimeIndexes`·`ensureBuildingSpatial`은 `clear` + `insert`, `syncUnitSpatial`·`addRuntimeUnit`은 위 `sync`·`add`, `resolveAlliedSoftSeparation`과 `resolveNonAlliedSurfaceMotion`은 충돌·스윕 격자입니다. 호출 쪽 버퍼 회전(`spatialQueryBuffers`, 범위 스택)과 `isAlliedCollisionUnit`·표적 규칙은 게임에 남습니다.
 
