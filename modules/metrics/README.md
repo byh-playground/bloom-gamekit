@@ -8,7 +8,7 @@
 
     modules/metrics/index.js          클라이언트 (dist/metrics.js)
     modules/metrics/protocol.js       클라이언트·서버가 함께 쓰는 배치 계약 (schemaVersion, 상한, 바이트 인코딩)
-    modules/metrics/server/           Worker(worker.js)·D1 스키마(schema.sql)·wrangler.toml
+    modules/metrics/server/           Worker(worker.js)·D1 표 변경(migrations/0001_*.sql …)·wrangler.toml
 
 ## 사용
 
@@ -58,6 +58,33 @@ METRICS.recordMatch(ONLINE, { winner: 'a' });
 - 탭 숨김·닫힘: `sendOnHide`(HttpAdapter는 `navigator.sendBeacon`)로 남은 배치를 올립니다. 60000바이트를 넘는 배치(긴 경기 기록)는 beacon 상한 때문에 정상 경로로 남겨 둡니다.
 - 실패: 보내지 못한 배치는 같은 `seq` 그대로 다시 보냅니다. 서버는 같은 배치를 두 번 받아도 결과가 같습니다. 20개를 넘게 쌓이면 오래된 것부터 버리고 `droppedBatches`에 셉니다.
 - 배치 하나는 1,000,000바이트까지입니다(D1 한 행 2MB의 절반). 넘는 경기 기록은 `recordMatch`가 `RangeError`로 던집니다.
+
+## 버전 관리
+
+출시된 게임 빌드는 플레이어 브라우저·itch.io 캐시에 남아 고칠 수 없으므로, 그 빌드가 보내는 배치가 계속 받아지도록 관리합니다(D-217). 별도 버전은 런타임 판정에 필요한 `SCHEMA_VERSION` 하나만 둡니다(PM-002).
+
+| 대상                      | 버전                                    | 바꾸는 방법                                                                                               |
+| ------------------------- | --------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| 배치 봉투(protocol.js)    | `SCHEMA_VERSION` = 3 고정               | 필드 **추가만**. 새 필드는 없어도 되는 값이고 서버를 먼저 배포합니다. 버전을 올리지 않습니다.             |
+| D1 표                     | `server/migrations/NNNN_*.sql` 순번     | 새 번호 파일 추가 → `wrangler d1 migrations apply`. 적용된 파일은 고치지 않습니다.                        |
+| 게임 props·summary·replay | 따로 없음, 행의 `build`(게임 메인 버전) | 게임이 PM-001대로 버전을 올리며 바꿉니다. 집계·재계산은 `build`로 나눕니다. 게임 README에 키 표를 둡니다. |
+
+봉투를 깨야만 하는 변경(필드 뜻·모양 변경, 제거)은 PM-004의 명시적 예외로만 합니다.
+
+1. `SCHEMA_VERSION`을 4로 올리고 클라이언트·서버 검증을 4 모양으로 바꿉니다.
+2. protocol.js에 3 → 4 변환 하나를 둡니다. 서버는 받은 배치를 변환한 뒤 4로 검증·저장합니다. 3보다 오래된 버전과 4보다 새 버전은 그대로 400입니다.
+
+       /**
+        * 호환 예외(PM-004): 대상 schema 3 배치 / Consumer: v0.44.x metrics를 쓰는 출시 게임 빌드 /
+        * 사유: 배포된 빌드는 고칠 수 없음 / 제거 조건: 운영 D1에서 schema_version = 3 세션이 30일 동안 0
+        */
+       export const UPGRADES = Object.freeze({ 3: (batch) => ({ ...batch, schemaVersion: 4 /* 바뀐 필드 */ }) });
+
+3. 저장된 옛 행이 새 모양이어야 하면 같은 PR에 D1 migration(`UPDATE …`)을 넣습니다. 행마다 `schema_version`이 남아 있어 대상만 고칩니다.
+4. 같은 PR에서 서버를 배포하고, 고정 시나리오에 schema 3 배치가 변환돼 저장되는 확인을 넣습니다.
+5. 제거 조건 확인 쿼리: `SELECT MAX(last_seen_at) FROM sessions WHERE schema_version = 3`. 조건을 채우면 변환과 그 확인을 지웁니다.
+
+지금은 변환이 없습니다. 출시 뒤 처음 깨는 변경이 생길 때 위 순서로 추가합니다(사용처 없는 변환 표를 미리 두지 않습니다, PM-013).
 
 ## 개발자 본인 플레이 분리
 
@@ -113,15 +140,15 @@ METRICS.recordMatch(ONLINE, { winner: 'a' });
 
 계정 가입·이메일 인증·`wrangler login` 승인은 사용자가 합니다. 로그인이 된 PC에서는 아래 명령을 에이전트가 실행합니다. 모든 명령은 `modules/metrics/server`에서 `-c wrangler.toml`로 실행합니다.
 
-- 서버 코드·protocol.js를 바꾼 PR: 머지 뒤 `npx wrangler deploy -c wrangler.toml`. 배치 모양을 바꿔 `SCHEMA_VERSION`을 올렸다면 클라이언트를 쓰는 게임보다 서버를 먼저 배포합니다(서버는 다른 버전을 거절합니다).
-- 스키마를 바꾼 PR: 기존 행을 지우지 않는 SQL(`ALTER TABLE … ADD COLUMN` 등)만 `npx wrangler d1 execute bloom-metrics --remote --file <파일> -c wrangler.toml`로 적용합니다. `DROP`·`DELETE`는 사용자 확인 뒤에만 합니다.
+- 서버 코드·protocol.js를 바꾼 PR: 머지 전에 `npx wrangler deploy -c wrangler.toml`. 새 필드를 쓰는 게임 빌드보다 서버가 먼저 나갑니다("버전 관리").
+- D1 표를 바꾼 PR: `npx wrangler d1 migrations create bloom-metrics <이름> -c wrangler.toml`로 다음 번호 파일을 만들고, 로컬 고정 시나리오를 통과한 뒤 `npx wrangler d1 migrations apply bloom-metrics --remote -c wrangler.toml`. 남은 파일은 `npx wrangler d1 migrations list bloom-metrics --remote -c wrangler.toml`로 봅니다. `DROP`·`DELETE`가 든 파일은 사용자 확인 뒤에만 적용합니다.
 - 비밀값은 처음 한 번만 `npx wrangler secret put IP_KEY_SECRET -c wrangler.toml`(표준 입력으로 임의 값)로 넣었습니다. 다시 넣으면 접속 키가 모두 바뀝니다.
 - 원본 확인: `npx wrangler d1 execute bloom-metrics --remote -c wrangler.toml --json --command "SELECT game, COUNT(*) AS sessions, AVG(play_ms) FROM sessions GROUP BY game"`. 사용량은 Cloudflare 대시보드의 Workers·D1 화면에서 봅니다.
 - 배포 확인은 `gamekit-deploy-check` 같은 검사 전용 game 이름으로 보내고 확인한 뒤 그 행을 지웁니다. 게임 이름으로 시험 데이터를 보내지 않습니다.
 
 ### 로컬 실행
 
-    npx wrangler d1 execute bloom-metrics --local --file modules/metrics/server/schema.sql -c modules/metrics/server/wrangler.toml
+    npx wrangler d1 migrations apply bloom-metrics --local -c modules/metrics/server/wrangler.toml
     npx wrangler dev -c modules/metrics/server/wrangler.toml --var IP_KEY_SECRET:local
 
 `http://127.0.0.1:8787`에서 실제 Workers 런타임(workerd)과 로컬 D1(SQLite)로 돕니다. 로컬에서는 요청의 `CF-Connecting-IP` 헤더가 그대로 들어가 다른 회선을 흉내 낼 수 있습니다(운영은 Cloudflare가 덮어씀). Windows에서 `--persist-to`를 쓸 때는 짧은 경로를 줍니다(D1 파일 경로가 길면 내부 오류가 납니다).
@@ -130,4 +157,4 @@ METRICS.recordMatch(ONLINE, { winner: 'a' });
 
 대시보드·퍼널·리텐션 화면, 경기 기록 재계산 도구, 오프라인 보관(localStorage), 서버 인증·속도 제한은 아직 없습니다. 실제로 필요한 게임을 붙일 때 추가합니다.
 
-[고정 시나리오](./tests/metrics.e2e.mjs)(`npm test` core 목록)는 `wrangler dev`(로컬 D1)를 띄우고 bm 예제 '지표' 탭을 데스크톱(마우스)과 터치 에뮬레이션에서 누릅니다: 잘못된 배치 400·413과 CORS → 세션 시작·랠리 3번·경기 끝 → 서버 집계 → 탭 숨김(에뮬레이션: headless Chromium은 숨김을 바꾸지 못해 `visibilityState`만 바꿈) 중 플레이 시간 정지와 beacon → 실제 페이지 이동의 `session_end` beacon → "내 접속 키 보기" → D1 행을 직접 읽어 플레이 시간·경기 기록·접속 키 확인 → 다른 회선의 itch.io 배치만 `users` → rollback `Session` 두 참가자의 같은 matchId가 한 행 → 저장된 replay로 같은 hash 재계산 → 접속 키를 `owners`에 넣으면 지난 세션·경기가 `owner`로 소급. IPv6 같은 /64 한 키도 봅니다. 실기기·실제 탭 전환·배포된 Cloudflare는 확인하지 않습니다.
+[고정 시나리오](./tests/metrics.e2e.mjs)(`npm test` core 목록)는 운영과 같은 migrations를 로컬 D1에 적용해 기록을 확인하고 `wrangler dev`를 띄운 뒤 bm 예제 '지표' 탭을 데스크톱(마우스)과 터치 에뮬레이션에서 누릅니다: 잘못된 배치 400·413과 CORS → 세션 시작·랠리 3번·경기 끝 → 서버 집계 → 탭 숨김(에뮬레이션: headless Chromium은 숨김을 바꾸지 못해 `visibilityState`만 바꿈) 중 플레이 시간 정지와 beacon → 실제 페이지 이동의 `session_end` beacon → "내 접속 키 보기" → D1 행을 직접 읽어 플레이 시간·경기 기록·접속 키 확인 → 다른 회선의 itch.io 배치만 `users` → rollback `Session` 두 참가자의 같은 matchId가 한 행 → 저장된 replay로 같은 hash 재계산 → 접속 키를 `owners`에 넣으면 지난 세션·경기가 `owner`로 소급. IPv6 같은 /64 한 키도 봅니다. 실기기·실제 탭 전환·배포된 Cloudflare는 확인하지 않습니다.

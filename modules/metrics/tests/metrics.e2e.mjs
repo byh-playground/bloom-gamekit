@@ -119,8 +119,8 @@ function createCounterAdapter() {
 
 try {
     const WORKER_PORT = await freePort();
-    // 스키마를 먼저 적용합니다. 동시에 띄우면 두 workerd가 같은 D1 파일을 열다 SQLITE_IOERR로 가끔 실패합니다.
-    await runWrangler(['d1', 'execute', 'bloom-metrics', '--local', '--file', 'schema.sql']);
+    // 운영과 같은 migrations를 먼저 적용합니다. 동시에 띄우면 두 workerd가 같은 D1 파일을 열다 SQLITE_IOERR로 가끔 실패합니다.
+    await runWrangler(['d1', 'migrations', 'apply', 'bloom-metrics', '--local']);
     await runWrangler(
         ['dev', '--port', String(WORKER_PORT), '--ip', '127.0.0.1', '--var', 'IP_KEY_SECRET:' + SECRET],
         'Ready on',
@@ -255,6 +255,14 @@ try {
     }
 
     const DATABASE = await openDatabase();
+    const MIGRATIONS = (await readdir(resolve(SERVER_DIR, 'migrations'))).filter((name) => name.endsWith('.sql'));
+    assert.deepEqual(
+        DATABASE.prepare('SELECT name FROM d1_migrations ORDER BY id')
+            .all()
+            .map((row) => row.name),
+        MIGRATIONS.sort(),
+        'every migration file is applied in order and recorded',
+    );
     for (const SESSION of SESSIONS) {
         const ROW = await until(() => {
             const FOUND = DATABASE.prepare(
