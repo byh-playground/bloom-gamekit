@@ -1,3 +1,13 @@
+## v0.46.2 (2026-11-04)
+
+호환 기능 추가(metrics). 세션 시작에 언어·화면 크기 구간·터치 여부를 남기고, 수집 서버 `/daily`가 조회 때 이를 셉니다. 배치 봉투(schema 3)는 그대로이고 운영 서버는 머지 전에 다시 배포합니다.
+
+- `metrics`: `createMetrics({ locale })` 옵션이 생겼습니다. `session_start`(bfcache 복귀 포함)의 `props`에 `locale`·`viewport`(`VIEWPORT_STEPS` 구간으로 내린 `'WxH'`)·`touch`(`pointer: coarse`)가 들어갑니다. 정확한 크기·저장소 ID는 보내지 않습니다.
+- 서버: `GET /daily`에 칸별 `contexts`(`locale`·`viewport`·`touch`별 세션 수, 없으면 `unknown`)를 더했습니다. 새 열·표는 없습니다.
+- 문서: 놀이를 멈추는 실패를 `track('error', <kind>, 'fail', { mode })`로 보내는 관례(메시지·스택 미전송)를 README에 적었습니다.
+- 예제: '지표' 탭이 `locale: 'ko'`를 넘깁니다.
+- 시험: `modules/metrics/tests/metrics.e2e.mjs`가 데스크톱·터치 에뮬레이션의 `session_start` props와 `/daily` `contexts`를 확인합니다.
+
 ## v0.46.1 (2026-11-04)
 
 호환 기능 추가. 두 게임(RALLY FRONTIER·Budmori)이 따로 짜던 균일 격자를 하나로 합친 `spatial` 모듈(`dist/spatial.js`)을 추가합니다. 기존 번들의 동작은 같고, 게임은 아직 옮기지 않았습니다(게임 쪽 이관은 별도 작업).

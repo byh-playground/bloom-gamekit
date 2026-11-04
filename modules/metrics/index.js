@@ -2,6 +2,7 @@ import {
     SCHEMA_VERSION,
     MAX_BATCH_BYTES,
     MAX_UNLOAD_BYTES,
+    VIEWPORT_STEPS,
     encodeBytes,
     reviveBytes,
     isName,
@@ -175,6 +176,7 @@ export class SessionReplayRecorder extends MatchRecorder {
  * @param {string} options.game 게임 식별자. 예: 'bloom-takraw'
  * @param {string} options.version 게임 빌드 버전. 모든 배치에 build로 들어갑니다.
  * @param {MetricsAdapter} options.adapter
+ * @param {string} [options.locale] 게임이 고른 화면 언어 코드(예: 'ko'). session_start props에 들어갑니다.
  * @param {number} [options.heartbeatMs=30000] 보이는 동안 플레이 시간을 남기는 간격. 비정상 종료 때 잃는 양의 상한입니다.
  * @param {number} [options.flushMs=10000] 쌓인 이벤트를 보내는 간격
  * @param {number} [options.maxBatchEvents=50] 이만큼 쌓이면 간격을 기다리지 않고 보냅니다(서버 상한 100).
@@ -184,6 +186,7 @@ export function createMetrics({
     game,
     version,
     adapter,
+    locale,
     heartbeatMs = 30000,
     flushMs = 10000,
     maxBatchEvents = 50,
@@ -193,6 +196,9 @@ export function createMetrics({
     checkName(version, 'version');
     if (!(adapter instanceof MetricsAdapter)) {
         throw new TypeError('metrics adapter must extend MetricsAdapter.');
+    }
+    if (locale !== undefined) {
+        checkName(locale, 'locale');
     }
     checkInterval(heartbeatMs, 'heartbeatMs');
     checkInterval(flushMs, 'flushMs');
@@ -209,6 +215,18 @@ export function createMetrics({
     let sending = null;
     let droppedBatches = 0;
     let disposed = false;
+
+    // 세션을 시작할 때마다 그 순간의 언어·화면 구간·주 입력을 원본으로 남깁니다. 브라우저 저장소 ID는 쓰지 않습니다.
+    function startSession() {
+        const BUCKET = (size) => VIEWPORT_STEPS.findLast((step) => step <= size);
+        push('session_start', {
+            props: {
+                ...(locale === undefined ? {} : { locale }),
+                viewport: `${BUCKET(innerWidth)}x${BUCKET(innerHeight)}`,
+                touch: matchMedia('(pointer: coarse)').matches,
+            },
+        });
+    }
 
     function playMs() {
         return playedMs + (visibleSince == null ? 0 : now() - visibleSince);
@@ -318,7 +336,7 @@ export function createMetrics({
 
     function onPageShow(event) {
         if (event.persisted) {
-            push('session_start', {});
+            startSession();
         }
     }
 
@@ -335,7 +353,7 @@ export function createMetrics({
     document.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('pagehide', onPageHide);
     window.addEventListener('pageshow', onPageShow);
-    push('session_start', {});
+    startSession();
     flush();
 
     return {

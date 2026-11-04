@@ -243,6 +243,16 @@ function countBy(rows, key, value) {
     return Object.fromEntries(rows.map((row) => [row[key] ?? 'unknown', row[value]]));
 }
 
+/** 같은 key 값끼리 세션 수를 더합니다. 값이 없으면 'unknown'입니다. */
+function sumBy(rows, key) {
+    const SUMS = {};
+    for (const ROW of rows) {
+        const NAME = ROW[key] ?? 'unknown';
+        SUMS[NAME] = (SUMS[NAME] ?? 0) + ROW.sessions;
+    }
+    return SUMS;
+}
+
 /** in_range·per_session을 앞에 둔 조회들을 한 번에 실행합니다. 원본만 저장하므로 값은 모두 조회 때 계산합니다. */
 function queryInRange(env, identity, since, sqls) {
     return env.DB.batch(
@@ -325,7 +335,7 @@ async function readDaily(url, env) {
     }
     const TODAY = Math.floor((Date.now() + KST_OFFSET_MS) / DAY_MS);
     const SINCE = (TODAY - DAYS + 1) * DAY_MS - KST_OFFSET_MS;
-    const [DAILY, COUNTRIES, EVENTS, MODES] = await queryInRange(env, IDENTITY, SINCE, [
+    const [DAILY, COUNTRIES, EVENTS, MODES, CONTEXTS] = await queryInRange(env, IDENTITY, SINCE, [
         `, first_seen AS (
              SELECT ${AUDIENCE_SQL} AS audience, s.ip_key, MIN(${DAY_SQL}) AS day
              FROM sessions s LEFT JOIN owners o ON o.ip_key = s.ip_key
@@ -352,6 +362,15 @@ async function readDaily(url, env) {
          WHERE json_extract(e.value, '$.type') = 'event' GROUP BY p.audience, name`,
         ` SELECT p.audience, m.mode, COUNT(*) AS matches FROM matches m JOIN in_range p ON p.session_id = m.session_id
          GROUP BY p.audience, m.mode`,
+        // 세션의 첫 배치(seq 0) 첫 이벤트가 session_start입니다. 기본키로 세션마다 한 행만 읽습니다.
+        // 그 배치가 없거나 props가 없는 옛 빌드 세션은 값이 null이라 'unknown'으로 셉니다.
+        ` SELECT p.audience, json_extract(b.events, '$[0].props.locale') AS locale,
+                json_extract(b.events, '$[0].props.viewport') AS viewport,
+                CASE json_type(b.events, '$[0].props.touch') WHEN 'true' THEN 'true' WHEN 'false' THEN 'false' END AS touch,
+                COUNT(*) AS sessions
+         FROM in_range p LEFT JOIN batches b ON b.session_id = p.session_id AND b.seq = 0
+              AND json_extract(b.events, '$[0].type') = 'session_start'
+         GROUP BY p.audience, locale, viewport, touch`,
     ]);
     const EVENT_COUNTS = byAudience(EVENTS.results, (rows) => countBy(rows, 'name', 'count'));
     const MATCH_COUNTS = byAudience(MODES.results, (rows) => countBy(rows, 'mode', 'matches'));
@@ -374,6 +393,9 @@ async function readDaily(url, env) {
             matches: row.matches,
         })),
         countries: byAudience(COUNTRIES.results, (rows) => countBy(rows, 'country', 'sessions')),
+        contexts: byAudience(CONTEXTS.results, (rows) =>
+            Object.fromEntries(['locale', 'viewport', 'touch'].map((key) => [key, sumBy(rows, key)])),
+        ),
         events: EVENT_COUNTS,
         completion: Object.fromEntries(
             AUDIENCES.map((audience) => [audience, readCompletion(EVENT_COUNTS[audience], MATCH_COUNTS[audience])]),

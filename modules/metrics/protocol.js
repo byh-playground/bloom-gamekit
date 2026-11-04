@@ -16,6 +16,12 @@ export const MAX_BATCH_MATCHES = 4;
 /** game·build·sessionId·matchId·category·target·action·mode 문자열 길이 상한 */
 export const MAX_NAME_LENGTH = 64;
 
+/**
+ * session_start props의 화면 크기 구간(CSS px). 가로·세로를 각각 이 경계 중 아래쪽으로 내려 'WxH'로 보냅니다.
+ * 정확한 크기는 보내지 않습니다(식별성을 줄이려고 원본을 거칠게 받습니다).
+ */
+export const VIEWPORT_STEPS = Object.freeze([0, 360, 480, 600, 768, 1024, 1280, 1600, 1920]);
+
 /** 페이지가 닫힐 때 sendBeacon·keepalive가 보낼 수 있는 크기. 브라우저 공통 상한 64KiB보다 작게 둡니다. */
 export const MAX_UNLOAD_BYTES = 60000;
 
