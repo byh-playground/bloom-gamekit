@@ -6,5 +6,5 @@ compatibility_date = "2026-10-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "bloom-metrics"
-# `npx wrangler d1 create bloom-metrics`가 출력한 database_id로 바꿉니다. 로컬 `wrangler dev`는 이 값 없이도 동작합니다.
-database_id = "00000000-0000-0000-0000-000000000000"
+# 운영 D1(byh020907@naver.com 계정, APAC). 로컬 `wrangler dev`·시험은 --local/--persist-to로 이 DB를 건드리지 않습니다.
+database_id = "0f0db294-6c6e-44f0-b39a-d6e297f48e0d"
