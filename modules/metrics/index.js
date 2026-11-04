@@ -12,12 +12,46 @@ export { SCHEMA_VERSION, reviveBytes };
 
 const ENCODER = new TextEncoder();
 const BODY_TYPE = 'text/plain;charset=UTF-8';
+// 개발자 본인 기기 표시. 주소의 ?metrics-tester=<이름>이나 setTester로 정하고 이 기기(origin)에 기억합니다.
+const TESTER_PARAM = 'metrics-tester';
+const TESTER_KEY = 'bloom-metrics-tester';
 // 서버가 내려가 있을 때 보내지 못한 배치를 붙잡아 두는 상한. 넘치면 오래된 것부터 버리고 droppedBatches에 셉니다.
 const MAX_QUEUED_BATCHES = 20;
 
 function checkName(value, name) {
     if (!isName(value)) {
         throw new TypeError(`metrics ${name} must be a non-empty string of at most 64 characters.`);
+    }
+}
+
+// 저장소를 못 쓰는 환경(사생활 보호 모드 등)은 이번 페이지에만 적용합니다.
+function storeTester(name) {
+    try {
+        if (name == null) {
+            localStorage.removeItem(TESTER_KEY);
+        } else {
+            localStorage.setItem(TESTER_KEY, name);
+        }
+    } catch {
+        // 기억하지 못해도 이번 세션의 배치에는 표시가 들어갑니다.
+    }
+}
+
+function readTester() {
+    const PARAM = new URLSearchParams(location.search).get(TESTER_PARAM);
+    if (PARAM === 'off') {
+        storeTester(null);
+        return null;
+    }
+    if (isName(PARAM)) {
+        storeTester(PARAM);
+        return PARAM;
+    }
+    try {
+        const STORED = localStorage.getItem(TESTER_KEY);
+        return isName(STORED) ? STORED : null;
+    } catch {
+        return null;
     }
 }
 
@@ -200,6 +234,7 @@ export function createMetrics({
         throw new RangeError('metrics maxBatchEvents must be an integer from 1 to 100.');
     }
     const SESSION_ID = crypto.randomUUID();
+    let tester = readTester();
     const EVENTS = [];
     // 직렬화를 마친 배치 { body, bytes }. 보낸 순서대로 하나씩 보내고, 실패하면 같은 seq 그대로 다시 보냅니다.
     const OUTBOX = [];
@@ -223,6 +258,7 @@ export function createMetrics({
                 sessionId: SESSION_ID,
                 seq: seq++,
                 playMs: playMs(),
+                tester,
                 events,
                 matches,
             },
@@ -343,6 +379,23 @@ export function createMetrics({
         /** 지금까지 페이지가 보였던 시간(ms) */
         get playMs() {
             return playMs();
+        },
+        /** 이 기기에 붙인 개발자 이름표. null이면 일반 유저로 집계됩니다. */
+        get tester() {
+            return tester;
+        },
+        /**
+         * 이 기기를 개발자 본인으로 표시(이름) 또는 해제(null)하고 기억합니다. 다음 배치부터 적용되며, 한 번 표시된 세션은
+         * 서버에서 계속 개발자 세션입니다. itch.io처럼 iframe에 들어간 게임은 브라우저가 저장소를 상위 사이트별로 나누므로,
+         * 그 페이지 안에서 게임 설정 화면 등으로 부릅니다.
+         * @param {string | null} name 예: 'pc', 'phone'
+         */
+        setTester(name) {
+            if (name !== null) {
+                checkName(name, 'tester');
+            }
+            tester = name;
+            storeTester(name);
         },
         /** 서버가 계속 실패해 보관 상한을 넘겨 버린 배치 수 */
         get droppedBatches() {

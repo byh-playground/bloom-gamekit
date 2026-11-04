@@ -1,7 +1,7 @@
 // 클라이언트(createMetrics)와 수집 서버(server/worker.js)가 함께 쓰는 전송 계약입니다. 값을 바꾸면 둘이 같이 바뀝니다.
 
 /** 배치 모양의 버전. 서버는 다른 값을 거부합니다. */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 /** 이벤트 종류. 'event'만 게임이 `track`으로 보내고 나머지는 세션 수명주기가 만듭니다. */
 export const EVENT_TYPES = Object.freeze(['session_start', 'heartbeat', 'event', 'session_end']);
@@ -10,13 +10,13 @@ export const EVENT_TYPES = Object.freeze(['session_start', 'heartbeat', 'event',
 export const MAX_BATCH_BYTES = 1000000;
 export const MAX_BATCH_EVENTS = 100;
 export const MAX_BATCH_MATCHES = 4;
-/** game·build·sessionId·matchId·category·target·action·mode 문자열 길이 상한 */
+/** game·build·sessionId·matchId·category·target·action·mode·tester 문자열 길이 상한 */
 export const MAX_NAME_LENGTH = 64;
 
 /** 페이지가 닫힐 때 sendBeacon·keepalive가 보낼 수 있는 크기. 브라우저 공통 상한 64KiB보다 작게 둡니다. */
 export const MAX_UNLOAD_BYTES = 60000;
 
-/** game·build·sessionId·matchId·category·target·action·mode에 쓰는 이름: 1~MAX_NAME_LENGTH자 문자열 */
+/** game·build·sessionId·matchId·category·target·action·mode·tester에 쓰는 이름: 1~MAX_NAME_LENGTH자 문자열 */
 export function isName(value) {
     return typeof value === 'string' && value.length > 0 && value.length <= MAX_NAME_LENGTH;
 }

@@ -16,6 +16,15 @@ const CORS = Object.freeze({
     'Access-Control-Max-Age': '86400',
 });
 const ENCODER = new TextEncoder();
+const MAX_ORIGIN_LENGTH = 200;
+// 집계 대상 구분: 개발자가 이름표를 붙인 기기 → 'tester', 로컬·파일에서 띄운 개발 빌드 → 'dev', 나머지 → 'users'.
+// 이름표가 한 번이라도 붙은 세션은 끝까지 tester입니다.
+const AUDIENCE_SQL = `CASE
+    WHEN tester IS NOT NULL THEN 'tester'
+    WHEN origin IS NULL OR origin = 'null' OR origin LIKE 'http://localhost%' OR origin LIKE 'http://127.0.0.1%'
+        OR origin LIKE 'http://[::1]%' THEN 'dev'
+    ELSE 'users' END`;
+const AUDIENCES = Object.freeze(['users', 'tester', 'dev']);
 
 function reply(status, body) {
     return new Response(JSON.stringify(body), {
@@ -38,6 +47,9 @@ function findBatchError(batch) {
     }
     if (!isCount(batch.seq) || !isCount(batch.playMs)) {
         return 'counter';
+    }
+    if (batch.tester !== null && !isName(batch.tester)) {
+        return 'tester';
     }
     const { events: EVENTS, matches: MATCHES } = batch;
     if (!Array.isArray(EVENTS) || !Array.isArray(MATCHES)) {
@@ -94,16 +106,19 @@ async function receiveBatch(request, env) {
         return reply(400, { error: ERROR });
     }
     const RECEIVED_AT = Date.now();
-    const { game: GAME, build: BUILD, sessionId: SESSION_ID } = batch;
+    const { game: GAME, build: BUILD, sessionId: SESSION_ID, tester: TESTER } = batch;
+    // 브라우저가 붙이는 요청 출처. 페이지가 바꿀 수 없어 개발 빌드(localhost)를 가르는 데 씁니다.
+    const ORIGIN = request.headers.get('Origin')?.slice(0, MAX_ORIGIN_LENGTH) ?? null;
     // 배치 하나 = 세션 요약 1행 + (이벤트가 있으면) 원본 1행 + 경기마다 1행. 같은 배치를 다시 받아도 결과가 같습니다.
     const STATEMENTS = [
         env.DB.prepare(
-            `INSERT INTO sessions (session_id, game, build, schema_version, started_at, last_seen_at, play_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6)
+            `INSERT INTO sessions (session_id, game, build, schema_version, started_at, last_seen_at, play_ms, tester, origin)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6, ?7, ?8)
              ON CONFLICT (session_id) DO UPDATE SET
                  last_seen_at = MAX(last_seen_at, excluded.last_seen_at),
-                 play_ms = MAX(play_ms, excluded.play_ms)`,
-        ).bind(SESSION_ID, GAME, BUILD, SCHEMA_VERSION, RECEIVED_AT, batch.playMs),
+                 play_ms = MAX(play_ms, excluded.play_ms),
+                 tester = COALESCE(excluded.tester, tester)`,
+        ).bind(SESSION_ID, GAME, BUILD, SCHEMA_VERSION, RECEIVED_AT, batch.playMs, TESTER, ORIGIN),
     ];
     if (batch.events.length) {
         STATEMENTS.push(
@@ -118,8 +133,9 @@ async function receiveBatch(request, env) {
         STATEMENTS.push(
             env.DB.prepare(
                 `INSERT OR IGNORE INTO matches
-                     (match_id, session_id, game, build, schema_version, mode, seed, players, summary, replay, recorded_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`,
+                     (match_id, session_id, game, build, schema_version, mode, seed, players, summary, replay, recorded_at,
+                      tester, origin)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)`,
             ).bind(
                 MATCH.matchId,
                 SESSION_ID,
@@ -132,6 +148,8 @@ async function receiveBatch(request, env) {
                 JSON.stringify(MATCH.summary),
                 JSON.stringify(MATCH.replay ?? null),
                 RECEIVED_AT,
+                TESTER,
+                ORIGIN,
             ),
         );
     }
@@ -145,26 +163,34 @@ async function readStats(url, env) {
     if (!isName(GAME) || (BUILD !== null && !isName(BUILD))) {
         return reply(400, { error: 'identity' });
     }
-    const [SESSIONS, MATCHES] = await env.DB.batch([
+    const [SESSIONS, MATCHES, TESTERS] = await env.DB.batch([
         env.DB.prepare(
-            `SELECT COUNT(*) AS sessions, COALESCE(AVG(play_ms), 0) AS avgPlayMs,
-                    COALESCE(AVG(last_seen_at - started_at), 0) AS avgWallMs
-             FROM sessions WHERE game = ?1 AND (?2 IS NULL OR build = ?2)`,
+            `SELECT ${AUDIENCE_SQL} AS audience, COUNT(*) AS sessions, AVG(play_ms) AS avgPlayMs,
+                    AVG(last_seen_at - started_at) AS avgWallMs
+             FROM sessions WHERE game = ?1 AND (?2 IS NULL OR build = ?2) GROUP BY audience`,
         ).bind(GAME, BUILD),
-        env.DB.prepare(`SELECT COUNT(*) AS matches FROM matches WHERE game = ?1 AND (?2 IS NULL OR build = ?2)`).bind(
-            GAME,
-            BUILD,
-        ),
+        env.DB.prepare(
+            `SELECT ${AUDIENCE_SQL} AS audience, COUNT(*) AS matches
+             FROM matches WHERE game = ?1 AND (?2 IS NULL OR build = ?2) GROUP BY audience`,
+        ).bind(GAME, BUILD),
+        env.DB.prepare(
+            `SELECT tester, COUNT(*) AS sessions FROM sessions
+             WHERE game = ?1 AND (?2 IS NULL OR build = ?2) AND tester IS NOT NULL GROUP BY tester`,
+        ).bind(GAME, BUILD),
     ]);
-    const ROW = SESSIONS.results[0];
-    return reply(200, {
-        game: GAME,
-        build: BUILD,
-        sessions: ROW.sessions,
-        avgPlayMs: Math.round(ROW.avgPlayMs),
-        avgWallMs: Math.round(ROW.avgWallMs),
-        matches: MATCHES.results[0].matches,
-    });
+    const BODY = { game: GAME, build: BUILD };
+    for (const AUDIENCE of AUDIENCES) {
+        const ROW = SESSIONS.results.find((row) => row.audience === AUDIENCE);
+        BODY[AUDIENCE] = {
+            sessions: ROW?.sessions ?? 0,
+            avgPlayMs: Math.round(ROW?.avgPlayMs ?? 0),
+            avgWallMs: Math.round(ROW?.avgWallMs ?? 0),
+            matches: MATCHES.results.find((row) => row.audience === AUDIENCE)?.matches ?? 0,
+        };
+    }
+    // 개발자 기기별 세션 수: 어느 기기의 플레이가 빠졌는지 확인합니다.
+    BODY.tester.devices = Object.fromEntries(TESTERS.results.map((row) => [row.tester, row.sessions]));
+    return reply(200, BODY);
 }
 
 export default {
