@@ -30,6 +30,7 @@ export default [
         name: 'gamekit/generated-and-vendor',
         ignores: [
             '**/node_modules/**',
+            '**/.wrangler/**',
             '**/vendor/**',
             'test-results/**',
             'playwright-report/**',

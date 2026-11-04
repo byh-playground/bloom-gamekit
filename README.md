@@ -25,6 +25,7 @@
 - [광고 어댑터 추상화·빈도 정책](./modules/bm/README.md) · [mock 어댑터](./modules/bm/adapters/mock/README.md) · [Google H5 Games Ads 어댑터와 신청 절차](./modules/bm/adapters/google-ads/README.md) · [IMA 영상 광고 어댑터(샘플 태그로 승인 없이 테스트)](./modules/bm/adapters/ima/README.md)
 - [상품·구매와 서버 확인 기준 소유 판정](./modules/store/README.md) · [mock 어댑터](./modules/store/adapters/mock/README.md)
 - [게임 저장 레코드: 이관·검증·탭 간 충돌, 저장소 어댑터](./modules/save/README.md)
+- [게임 지표 수집: 세션·플레이 시간·이벤트·경기 결정론 기록, Cloudflare Workers + D1 수집 서버](./modules/metrics/README.md) · [지표 탭 바로 보기](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/bm.html#tab=metrics) · `node modules/metrics/tests/metrics.e2e.mjs`
 - [PWA: SVG 하나에서 manifest·아이콘·공유 이미지·sw.js 생성, 새로고침마다 최신 버전과 오프라인 시작](./modules/pwa/README.md) · `node modules/pwa/tests/pwa.e2e.mjs`
 - [시작 로딩: 모듈 그래프 목록·병렬 modulepreload·단계 가중 전체 진행률](./modules/boot/README.md) · `node modules/boot/tests/boot.e2e.mjs`
 - [다국어: 페이지 언어 결정·TextPair 문구·정적 문구 적용](./modules/i18n/README.md) · `node modules/i18n/tests/i18n.e2e.mjs`

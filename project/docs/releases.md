@@ -1,3 +1,13 @@
+## v0.42.6 (2026-11-04)
+
+호환 기능 추가. 게임 지표를 자체 수집하는 `metrics` 모듈(`dist/metrics.js`)과 Cloudflare Workers + D1 수집 서버(`modules/metrics/server/`)를 추가합니다. 기존 번들의 동작은 같습니다.
+
+- `createMetrics({ game, version, adapter })`: `track(category, target, action, props)`, 세션 시작·끝, 보이는 동안만 세는 플레이 시간과 heartbeat, 배치 전송, 숨김·닫힘 때 `sendBeacon`.
+- 범용 클래스와 구현체: `MetricsAdapter` → `HttpAdapter`·`MemoryAdapter`, `MatchRecorder` → `InputLogRecorder`(싱글)·`SessionReplayRecorder`(rollback Session). 멀티플레이는 같은 `matchId`로 한 행만 남깁니다.
+- 서버: `POST /batch`(크기·스키마 검증, 배치당 2행 안팎), `GET /stats`(세션 수·평균 플레이 시간·경기 수), CORS.
+- 개발 도구에 `wrangler` 4.152.0을 추가합니다(로컬 `wrangler dev`와 고정 시나리오용). 배포 경로와 CI 단계는 바뀌지 않습니다.
+- 시험: `modules/metrics/tests/metrics.e2e.mjs`(core 목록).
+
 ## v0.42.5 (2026-11-04)
 
 호환 성능 개선. 군중 규모에서 `drawRegion`·정렬(depth) quad 제출의 호출당 할당을 없앱니다. 그리는 결과와 공개 API는 같습니다.

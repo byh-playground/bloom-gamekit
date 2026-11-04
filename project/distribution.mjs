@@ -31,6 +31,7 @@ export const MODULES = Object.freeze([
     'store',
     'store-mock',
     'save',
+    'metrics',
     'pwa',
     'boot',
     'i18n',
