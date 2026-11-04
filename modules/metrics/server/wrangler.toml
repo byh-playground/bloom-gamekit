@@ -1,0 +1,10 @@
+# bloom-gamekit metrics 수집 서버 (Cloudflare Workers + D1 무료 플랜)
+name = "bloom-metrics"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "bloom-metrics"
+# `npx wrangler d1 create bloom-metrics`가 출력한 database_id로 바꿉니다. 로컬 `wrangler dev`는 이 값 없이도 동작합니다.
+database_id = "00000000-0000-0000-0000-000000000000"
