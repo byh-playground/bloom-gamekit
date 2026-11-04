@@ -34,6 +34,10 @@
       "sha256": "d3d3ba0deb261a2a17da2ef6950450d45b28bc4870208037d0833b01ad010a25"
     },
     {
+      "file": "behavior.js",
+      "sha256": "94c8e1f7e1e0985d073b06ca342fcb8e4a4638a609a691b578814c801a8cfebb"
+    },
+    {
       "file": "transport.js",
       "sha256": "8f7f9d68a2be3b1c7839ab0f975178b0bed4f454496ad4e91a5c28e6e3f0a6d3"
     },
@@ -43,7 +47,7 @@
     },
     {
       "file": "rollback.js",
-      "sha256": "d5f478cb22d841122fcfaf5372c3e8466bc53836660a2e227bf83f36d1c36980"
+      "sha256": "5d37db62a70697b358506b39fd5802b890e1175777f1760cb8d241ed62bdae0b"
     },
     {
       "file": "camera.js",
