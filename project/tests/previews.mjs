@@ -280,6 +280,14 @@ try {
             await PAGE.click('#tab-paint');
             await PAGE.waitForFunction(() => Boolean(renderingExamples.paint));
             assert.equal(await PAGE.evaluate(() => renderingExamples.paint.device.gl.getError()), 0);
+            // 표정 탭: 작은 얼굴 13개는 구운 이미지로, 확대된 선택 얼굴은 경로로 그리고, 표정을 바꿔도 그 구성이 같습니다.
+            await PAGE.click('#tab-face');
+            await PAGE.waitForFunction(() => Boolean(renderingExamples.face));
+            assert.deepEqual(await PAGE.evaluate(() => renderingExamples.face.drawn), { images: 13, paths: 1 });
+            await PAGE.click('#face-next');
+            assert.equal(await PAGE.evaluate(() => renderingExamples.face.selected), 'happy');
+            assert.deepEqual(await PAGE.evaluate(() => renderingExamples.face.drawn), { images: 13, paths: 1 });
+            assert.equal(await PAGE.evaluate(() => renderingExamples.face.device.gl.getError()), 0);
         }
         if (NAME === 'rollback-reference') {
             await PAGE.click('#start');

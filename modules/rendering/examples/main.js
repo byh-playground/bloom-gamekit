@@ -1,4 +1,5 @@
 import { startAtlas } from './atlas.js';
+import { startFace } from './face.js';
 import { startMaterials } from './materials.js';
 import { startPaint } from './paint.js';
 import { startVector } from './vector.js';
@@ -9,6 +10,7 @@ const TABS = {
     atlas: startAtlas,
     materials: startMaterials,
     paint: startPaint,
+    face: startFace,
 };
 const NAMES = Object.keys(TABS);
 const EXAMPLES = {};
