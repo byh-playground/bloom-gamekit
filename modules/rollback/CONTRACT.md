@@ -43,7 +43,7 @@
 
 게임 데이터 패킷은 바이너리입니다. 스냅샷 전송은 청크당 최대 16,384바이트를 사용하고 DataChannel의 backpressure를 따릅니다. 제어 채널이 혼잡하면 주기적인 해시를 가장 최근에 보관된 확정 체크섬 경계로 합칩니다. 이 때문에 예외를 던지거나 큐를 무제한으로 늘리지 않습니다. 이력, 대기 패킷, 청크 조립, sequence 윈도우에는 명시적인 한도가 있어야 합니다. 입력 손실·중복·순서 변경, 패킷 파싱 실패, 제어 채널 혼잡을 실패 경로로 검증합니다.
 
-`exportReplay()`는 초기 상태, 참가자 목록, 시드, 틱 속도, 시뮬레이션 식별 정보와 함께 정규 형태의 확정 입력을 저장합니다. `playReplay()`는 같은 어댑터를 사용해 `{ tick, hash }`를 반환합니다. 예제처럼 그 해시를 `replay.hash`와 비교해야 합니다. 기록 용량은 기본 64 MiB인 `maxReplayBytes`로 제한합니다. 한도에 도달해 기록이 멈추면 내보낸 데이터에 `truncated: true`를 표시합니다. 연속된 확정 입력의 앞부분과 그 부분의 최종 해시를 보존하며, 해당 상태가 실제 스냅샷 링에서 사라진 뒤에도 해시를 유지합니다. 잘린 리플레이에는 이후 세션 내용이 포함되지 않습니다. 리플레이는 결정론적 디버깅 자료이며, 게임 콘텐츠의 버전 관리를 대신하지 않습니다.
+`exportReplay()`는 초기 상태, 참가자 목록, 시드, 틱 속도, 시뮬레이션 식별 정보와 함께 확정 입력을 저장합니다. 입력은 바뀐 tick만 담는 `inputChanges` 바이트, 명령은 `commands` 목록입니다(형식 `0.3.0-dev`). `playReplay()`는 같은 어댑터를 사용해 `{ tick, hash }`를 반환합니다. 예제처럼 그 해시를 `replay.hash`와 비교해야 합니다. 기록 용량은 기본 64 MiB인 `maxReplayBytes`로 제한합니다. 한도에 도달해 기록이 멈추면 내보낸 데이터에 `truncated: true`를 표시합니다. 연속된 확정 입력의 앞부분과 그 부분의 최종 해시를 보존하며, 해당 상태가 실제 스냅샷 링에서 사라진 뒤에도 해시를 유지합니다. 잘린 리플레이에는 이후 세션 내용이 포함되지 않습니다. 리플레이는 결정론적 디버깅 자료이며, 게임 콘텐츠의 버전 관리를 대신하지 않습니다.
 
 ## 소스와 배포
 
@@ -67,7 +67,7 @@ Synctest는 실제 Adapter, 공통 frame 실행 경계와 StateHistory를 재사
 
 save()의 반환 버퍼는 Adapter가 재사용할 수 있으므로 Core는 독립 복사본을 보관한다. 상태 hash는 필요한 경계/요청에서 계산하고 그 snapshot에 캐시한다. 매 틱 누적 입력 hash는 peer 비교를 위해 별도 계약이며 일반 lockstep/rollback에서 유지한다. hash 전용 Writer는 재사용하되 전송/보관 payload에는 가변 scratch view를 노출하지 않는다.
 
-`createRoomSession({ mode: 'local', localFastPath: true, profile: { mode: 'lockstep', ... } })`는 단일 플레이 싱글 세션을 위한 opt-in 경로다. `mode`가 local이고 lockstep이어야 하며, 한 플레이어만 실행할 때만 허용한다. 가용성 모드는 `strict`여야 한다. 일반 Core와 온라인 RoomSession의 동작은 바꾸지 않는다. 이 경로는 내부 초기 snapshot/byte copy, checkpoint/history 보관, 상태 hash와 매틱 입력 hash, replay/bootstrap/resync 생성을 생략한다. SDK는 `adapter.save()`/`load()`를 자동 호출하지 않지만 앱은 자신의 adapter를 통해 수동 저장/복원을 계속 수행한다. 동일 `runSimulationFrame`·입력/명령 예약 경로를 유지한다. `getStateHash()`는 `undefined`이며 replay, bootstrap, resync 기능은 지원하지 않는다. step 실패를 복구할 내부 checkpoint도 없으므로 fatal로 중단한다. 입력 버퍼는 명령 예약·실행과 제한 용량을 위해 계속 유지된다.
+`createRoomSession({ mode: 'local', localFastPath: true, profile: { mode: 'lockstep', ... } })`는 단일 플레이 싱글 세션을 위한 opt-in 경로다. `mode`가 local이고 lockstep이어야 하며, 한 플레이어만 실행할 때만 허용한다. 가용성 모드는 `strict`여야 한다. 일반 Core와 온라인 RoomSession의 동작은 바꾸지 않는다. 이 경로는 내부 초기 snapshot/byte copy, checkpoint/history 보관, 상태 hash와 매틱 입력 hash, replay/bootstrap/resync 생성을 생략한다. SDK는 `adapter.save()`/`load()`를 자동 호출하지 않지만 앱은 자신의 adapter를 통해 수동 저장/복원을 계속 수행한다. 동일 `runSimulationFrame`·입력/명령 예약 경로를 유지한다. `getStateHash()`는 `undefined`이며 bootstrap, resync 기능은 지원하지 않는다. replay는 `recordReplay: true`일 때만 초기 save 한 번과 실행한 입력을 남긴다. step 실패를 복구할 내부 checkpoint도 없으므로 fatal로 중단한다. 입력 버퍼는 명령 예약·실행과 제한 용량을 위해 계속 유지된다.
 
 초기 snapshot 크기로 전체 ring 예산을 검사하고 실제 state 성장도 매번 검사한다. 예산 초과는 조용한 history 삭제가 아니라 명확한 오류다. sparse checkpoint 간격은 이력·복구 설계와 실측 근거 없이 도입하지 않는다. 최적화는 정확한 결과·hash 동일성과 측정 이득을 함께 요구한다. fixedPoint.mul의 안전한 정수 곱 범위만 빠른 경로를 사용하고 범위 밖과 div는 BigInt 기준을 유지한다.
 
@@ -135,7 +135,7 @@ Synctest.metrics는 라이브러리가 소유하는 검사 틱·재실행 틱·�
 
 `createLoop.pulse(timestamp, {render:false})`는 timer의 poll/advance를 수행하고 `loop.render()`는 rAF 표현만 수행한다. `createDeadlineScheduler`는 단일 timer/deadline을 소유한다. 기본 `drop`은 큰 clock gap을 폐기한다. 선택 `defer`는 `maxBacklogTicks`로 wall-clock debt를 제한하고 pulse당 `maxCatchupSteps`를 유지하면서 허용·회복되는 만큼 실제 고정 tick을 순서대로 실행한다. 제한 초과 wall-clock debt는 `onBacklogDrop`에 진단하며 tick ID를 건너뛰지 않는다. 한 pulse가 전체 backlog 한도보다 큰 gap이면 stale debt를 폐기하고 현재 시각에서 다시 시작한다. 숨김은 held input을 해제하고 timing을 reset하며, pause/resume도 게임이 명시적으로 `resetTiming()`을 호출해 그 구간을 따라잡지 않게 한다. 가용성 RoomSession은 `resumeGapMs`를 넘은 pump 복귀 또는 첫 수신부터 낡은 Core 실행을 동결하고 새 checkpoint를 요청한다. 브라우저 throttling·freeze·OS suspend 중 실행을 보장하지 않는다. 장기 CPU 정지/완전 분할에서 전역 진행을 보장하지 않으며 단조 clock, 신뢰할 수 있는 adapter와 결국 전달되는 제어 메시지를 전제로 재결합한다.
 
-상세 API·용량·재시도·검증 범위는 [rollback](./README.md), [transport](../transport/README.md), [비용 측정](./docs/room-session-benchmarks.md)을 따른다. 동적 여러 epoch 전체 replay export는 별도 미지원이며 fixed Core replay 계약을 변경하지 않는다.
+상세 API·용량·재시도·검증 범위는 [rollback](./README.md), [transport](../transport/README.md), [비용 측정](./docs/room-session-benchmarks.md)을 따른다. `recordReplay: true`인 RoomSession의 `exportReplay()`는 roster 세대마다 Core replay 구간 하나(`baseTick`·`membershipEpoch` 포함)를 돌려준다. 다음 구간은 roster 변경을 적용한 경계 상태에서 시작하므로 구간 사이 tick이 빌 수 있다. available 가용성과는 함께 쓰지 않는다.
 
 ## 즉시 예약과 protocol 3
 

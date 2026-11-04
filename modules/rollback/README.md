@@ -116,7 +116,7 @@ const session = createSession({
 - `getStateHash()`는 현재 완료된 경계를 필요할 때 직렬화합니다. 같은 tick의 반복 호출은 cache를 쓰지만, 매 tick 호출하면 다시 매 tick 비용이 생깁니다. 과거 `getStateHash(t)`는 보관 checkpoint에만 값이 있고 나머지는 `undefined`입니다. 과거 상태를 현재 save로 대체하지 않습니다.
 - `requestResync(t)`는 t 이하의 가장 가까운 보관 checkpoint로 요청을 내립니다. 없으면 false입니다. 기존 authority 검증·chunk 전송·원자적 candidate commit을 유지하고 그 뒤 실제 입력을 현재 tick까지 재실행합니다. 이 **복구 재실행**은 정상 플레이 rollback과 별개이며 `resimulating/recovering` 표시를 지킵니다.
 - 실패한 step은 직전 checkpoint부터 확정 입력을 재실행해 원래 경계를 복원하고 fatal로 정지합니다. adapter가 복원 자체에도 실패하면 fatal에 restoreError를 포함합니다. 평상시 실패 대비 snapshot을 매번 만들지는 않습니다.
-- replay schema와 codec은 그대로입니다. 최종 hash는 export 때 현재 경계에서 계산하고 replay 용량에 도달할 때는 마지막 기록 경계를 미리 hash하여 보존합니다. 완료된 입력만 기록하며 초기 상태 이후 replay로 재현합니다.
+- replay는 입력이 바뀐 tick만 `inputChanges` 바이트로 내보냅니다. 최종 hash는 export 때 현재 경계에서 계산하고 replay 용량에 도달할 때는 마지막 기록 경계를 미리 hash하여 보존합니다. 완료된 입력만 기록하며 초기 상태 이후 replay로 재현합니다.
 - `metrics.snapshotSaves`, `serializedSnapshotBytes`는 SDK 직렬화 횟수/바이트를 제공합니다. 기존 `retainedSnapshotBytes`, `stateHashComputations`, `hashedStateBytes`도 유지합니다. 이는 adapter 내부 할당/게임의 별도 저장 비용까지 측정하지 않습니다.
 
 단일 플레이 로컬 RoomSession은 필요하면 `localFastPath: true`를 명시할 수 있습니다. 이 옵션은 `mode: 'local'`, `profile.mode: 'lockstep'`, strict availability 조합에서만 허용하며, 세션 생성·매틱 입력 해시·주기 checkpoint·상태 해시·리플레이 보관을 생략합니다. 입력/명령 예약과 같은 `runSimulationFrame` 경로, 논리 틱, `applyMembership`, 렌더 보간, 그리고 앱 소유의 수동 저장·복원은 유지됩니다. SDK의 `adapter.save()`는 이 모드에서 자동 호출되지 않으므로 `metrics.snapshotSaves`, `serializedSnapshotBytes`, `retainedSnapshotBytes`, `stateHashComputations`, `hashedStateBytes`는 0이고 `getStateHash()`는 `undefined`를 반환합니다. 리플레이·bootstrap/resync 기능은 제공하지 않습니다. step이 예외를 던지면 복원할 내부 checkpoint가 없으므로 `failure.restoreUnavailable`로 알려주고 세션은 fatal로 멈춥니다. 온라인 세션 또는 rollback 모드에서는 이 옵션을 거부합니다. 기본값은 `false`라 기존 동작은 바뀌지 않습니다.
@@ -232,7 +232,7 @@ const session = createRoomSession({
 
 현재 장기 검증은 `npm test`의 실제 브라우저 시나리오와 `npm run test:network`의 RTC·방 수명주기 시나리오로 수행합니다. 이 절의 과거 단위 검증 코드는 개발 완료 시 제거했으며 결과·소스 해시는 Git 이력과 provenance 기록으로 확인합니다. 로컬 RTC 시나리오를 공용 relay/NAT·모바일 기기 검증으로 확대 해석하지 않습니다.
 
-RoomSession의 전체 여러 epoch replay 파일 export는 아직 제공하지 않습니다. 기존 고정 Core의 replay API는 유지하고, 동적 입장/복구에는 명시적인 checkpoint+suffix만 사용합니다.
+`createRoomSession({ recordReplay: true })`은 epoch마다 Core replay를 기록하고 `exportReplay()`가 `{ seed, players, segments }`로 돌려줍니다. 구간마다 `playReplay`로 따로 재생하며, 다음 구간은 membership 경계 상태에서 시작합니다. 혼자 하기 `localFastPath`에서도 같은 옵션으로 기록합니다(초기 save 한 번 추가). 동적 입장/복구에는 계속 명시적인 checkpoint+suffix만 사용합니다.
 
 ### 새로고침 재접속
 

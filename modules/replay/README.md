@@ -8,7 +8,7 @@
 
 ## 소유권과 비용
 
-replay.frames는 연속 확정 입력의 기록이며 truncated:true는 기록 예산의 한도로 뒤쪽이 빠졌음을 뜻합니다. replay.hash와 반환 hash를 비교하세요. playReplay는 주어진 adapter를 초기 snapshot으로 load한 뒤 실행하므로 별도 진단 adapter를 쓰거나 호출자가 기존 상태를 보존해야 합니다.
+replay는 연속 확정 입력의 기록입니다. 입력은 바뀐 tick만 `inputChanges` 바이트에, 실행된 명령은 `commands`에 담고 `tick`이 기록된 tick 수입니다. RoomSession 구간은 `baseTick`·`membershipEpoch`를 더 갖고, playReplay는 adapter에 그 전역 tick·세대를 그대로 넘깁니다. truncated:true는 기록 예산의 한도로 뒤쪽이 빠졌음을 뜻합니다. replay.hash와 반환 hash를 비교하세요. playReplay는 주어진 adapter를 초기 snapshot으로 load한 뒤 실행하므로 별도 진단 adapter를 쓰거나 호출자가 기존 상태를 보존해야 합니다.
 
 ## SDK 버전과 기록 형식
 

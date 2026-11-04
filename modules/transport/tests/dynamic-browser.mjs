@@ -8,6 +8,7 @@ import {
 import { localStorageAdapter as LOCAL_STORAGE_ADAPTER, memoryAdapter as MEMORY_ADAPTER } from '../../../dist/save.js';
 import { createRoomSession, profiles } from '../../../dist/rollback.js';
 import { createValueCodec } from '../../../dist/deterministic.js';
+import { playReplay } from '../../../dist/replay.js';
 const SLEEP = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 class LocalRelay extends EventTarget {
     static sockets = new Set();
@@ -429,6 +430,7 @@ export async function runDynamicRoomScenario({
             inputSize: 1,
             simulationVersion: 'dynamic-browser-v1',
             profile: PROFILE,
+            recordReplay: !available,
             ...(available
                 ? {
                       availability: {
@@ -753,7 +755,26 @@ export async function runDynamicRoomScenario({
             ),
             'membership exactly-once',
         );
+        // Every surviving player's per-epoch replay segments reproduce their own hashes.
+        const REPLAY_SEGMENTS = available
+            ? null
+            : SESSIONS.filter((s) => !s.closed).map((s) => {
+                  const { segments: SEGMENTS } = s.exportReplay();
+                  let end = 0;
+                  for (const SEGMENT of SEGMENTS) {
+                      assert(SEGMENT.baseTick >= end, 'replay segments overlap');
+                      end = SEGMENT.baseTick + SEGMENT.tick;
+                      const PLAYED = playReplay({ adapter: actor().adapter, replay: SEGMENT });
+                      assert(
+                          PLAYED.tick === SEGMENT.tick && PLAYED.hash === SEGMENT.hash && !SEGMENT.truncated,
+                          'replay segment epoch ' + SEGMENT.membershipEpoch,
+                      );
+                  }
+                  assert(end === s.confirmedTick + 1, 'last replay segment reaches the confirmed tick');
+                  return SEGMENTS.map((x) => [x.membershipEpoch, x.baseTick, x.tick, x.inputChanges.length]);
+              });
         return {
+            replaySegments: REPLAY_SEGMENTS,
             passed: true,
             reservedCommands: [...ASSIGNMENTS],
             publishIntervalMs: paced ? 500 : 0,

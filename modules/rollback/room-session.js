@@ -33,12 +33,13 @@ export class RoomSession {
         availability = {},
         roomOwnerId = room?.coordinatorId ?? localPlayerId,
         localFastPath = false,
+        recordReplay = false,
     } = {}) {
         if (!['local', 'online'].includes(mode) || !ID_VALID(localPlayerId) || !ID_VALID(sessionId)) {
             throw new TypeError('room session identity/mode');
         }
-        if (typeof localFastPath !== 'boolean') {
-            throw new TypeError('localFastPath');
+        if (typeof localFastPath !== 'boolean' || typeof recordReplay !== 'boolean') {
+            throw new TypeError('localFastPath/recordReplay');
         }
         integer(inputSize, 'inputSize', 1, 1024);
         if (!ID_VALID(simulationVersion) || sessionId.length > 116) {
@@ -112,6 +113,12 @@ export class RoomSession {
         if (localFastPath && this.availability.mode !== 'strict') {
             throw new TypeError('localFastPath requires strict availability');
         }
+        // available mode feeds the adapter a live roster that a replay segment does not carry.
+        if (recordReplay && this.availability.mode !== 'strict') {
+            throw new TypeError('recordReplay requires strict availability');
+        }
+        this.recordReplay = recordReplay;
+        this._replaySegments = [];
         if (!ID_VALID(roomOwnerId)) {
             throw new TypeError('roomOwnerId');
         }
@@ -347,6 +354,26 @@ export class RoomSession {
     getPeerState(id) {
         return this._core?.getPeerState(id);
     }
+    _replaySegment() {
+        return {
+            ...this._core.exportReplay(),
+            baseTick: this.baseTick,
+            membershipEpoch: this.epoch,
+        };
+    }
+    exportReplay() {
+        if (!this.recordReplay) {
+            throw new Error('replay requires recordReplay');
+        }
+        if (this.resimulating) {
+            throw new Error('finish rollback before exporting replay');
+        }
+        return {
+            seed: this.seed,
+            players: [...this.players],
+            segments: [...this._replaySegments, ...(this._core ? [this._replaySegment()] : [])],
+        };
+    }
     getStateHash(tick = this.tick) {
         return this.resimulating ? undefined : this._core?.getStateHash(tick - this.baseTick);
     }
@@ -531,7 +558,7 @@ export class RoomSession {
                 ? Object.fromEntries(this.activePlayers.map((id) => [id, commandSequences[id] ?? 0]))
                 : undefined,
             clock: this.clock,
-            recordReplay: false,
+            recordReplay: this.recordReplay,
             onEvent: (event) => {
                 if (event.type !== 'closed') {
                     this._event(event.type, {
@@ -1613,6 +1640,10 @@ export class RoomSession {
                 sequence: Math.max(commandState.sequence, BASELINE),
                 commands: commandState.commands.filter((command) => command.sequence > BASELINE),
             };
+        }
+        if (this.recordReplay && this._core) {
+            // Seal this epoch before the post-membership state replaces the adapter state.
+            this._replaySegments.push(this._replaySegment());
         }
         if (tr.preparedState) {
             const PREPARED = tr.preparedState;
