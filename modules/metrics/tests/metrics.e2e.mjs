@@ -238,6 +238,10 @@ try {
             }, hidden);
         const PLAYED = await PAGE.evaluate(() => window.metricsExample.metrics.playMs);
         assert.equal(PLAYED, 5000, `${NAME}: play time is the visible time on the page clock`);
+        // 모바일 망 유실 흉내: 숨길 때의 beacon 요청만 망에서 끊습니다. sendBeacon은 보냈다고 답하지만 서버에 닿지 않습니다.
+        const DROP_BEACON = (route) =>
+            route.request().resourceType() === 'ping' ? route.abort('internetdisconnected') : route.continue();
+        await PAGE.route(API + '/batch', DROP_BEACON);
         await SET_HIDDEN(true);
         await PAGE.clock.runFor(60000);
         assert.equal(
@@ -245,8 +249,26 @@ try {
             PLAYED,
             `${NAME}: hidden time is not play time`,
         );
-        assert.match(await PAGE.textContent('#metrics-log'), /beacon heartbeat/, `${NAME}: hiding sends a beacon`);
+        const HIDDEN_SEQ = Number(
+            (await PAGE.textContent('#metrics-log')).match(/#(\d+) beacon heartbeat/)?.[1] ?? NaN,
+        );
+        assert.ok(Number.isSafeInteger(HIDDEN_SEQ), `${NAME}: hiding sends a beacon`);
+        const STORED_ROWS = async () => {
+            const READER = await openDatabase();
+            try {
+                return READER.prepare('SELECT COUNT(*) AS n FROM batches WHERE session_id = ? AND seq = ?').get(
+                    await PAGE.evaluate(() => window.metricsExample.metrics.sessionId),
+                    HIDDEN_SEQ,
+                ).n;
+            } finally {
+                READER.close();
+            }
+        };
+        assert.equal(await STORED_ROWS(), 0, `${NAME}: the dropped beacon did not reach the server`);
+        await PAGE.unroute(API + '/batch', DROP_BEACON);
+        // 다시 보이면 메모리에 남은 같은 seq를 fetch로 보냅니다. 서버에는 한 행만 남습니다.
         await SET_HIDDEN(false);
+        await until(async () => (await STORED_ROWS()) === 1, `${NAME} dropped beacon batch resent on visible`);
         await PAGE.clock.runFor(1000);
         const SESSION_ID = await PAGE.evaluate(() => window.metricsExample.metrics.sessionId);
         // 실제 페이지 이동: pagehide에서 session_end를 sendBeacon으로 보냅니다.
