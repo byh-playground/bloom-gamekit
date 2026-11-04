@@ -36,6 +36,17 @@ METRICS.recordMatch(ONLINE, { winner: 'a' });
 
 개발·디버그 장면은 `adapter: new MemoryAdapter()`로 바꿉니다. `batches`에 보낸 배치가 남습니다.
 
+## 게임에 붙이는 순서
+
+새 세션에서 게임에 지표를 붙일 때 이 순서를 따릅니다. 배경 결정은 D-203(자체 수집 + 결정론 경기 기록, 백엔드는 어댑터), D-204(Cloudflare Workers + D1), D-205(범용 코어 + 경우별 구현체 클래스)입니다.
+
+1. **세션 종류를 확인합니다.** 게임이 쓰는 실행 경로에 맞는 기록 클래스를 고릅니다(아래 "경기 기록" 표). `createRoomSession`을 쓰는 게임(bloom-takraw 등)은 `RoomSession`에 replay가 없어 `SessionReplayRecorder`를 쓸 수 없습니다. 게임에서 입력을 모으는 우회 대신 먼저 rollback 모듈에 replay를 추가하고 그에 맞는 구현체를 이 모듈에 둡니다(작업 흐름 "모듈 개선 → 게임 반영"). 그 전까지는 확정 입력만 `InputLogRecorder`에 넣습니다.
+2. **import map에 고정 주소를 넣습니다.** `@bloom-gamekit/metrics` → `https://cdn.jsdelivr.net/gh/byh-playground/bloom-gamekit@<dist-commit>/metrics.js`. 게임의 `gamekit.lock.json`에 URL·SHA-256을 다른 모듈과 같은 dist commit으로 적습니다. branch 주소는 쓰지 않습니다.
+3. **부팅 때 한 번 만듭니다.** `game`은 저장소 이름, `version`은 게임 빌드 버전입니다. 서버 주소는 아래 "운영"의 배포 주소입니다. 시험·격리 장면(주소 옵션의 디버그 장면 등)은 `MemoryAdapter`로 바꿔 실제 집계에 섞이지 않게 합니다.
+4. **이벤트는 사람이 한 행동과 화면 전환만 보냅니다.** category는 화면·기능(`menu`, `match`, `shop`, `ad`), target은 대상(`start`, `rally`, `no_ads`), action은 동사(`click`, `start`, `end`, `buy`)입니다. 매 tick·매 프레임 값은 보내지 않습니다. 경기 중 수치는 경기 끝 summary에 넣고, 나머지는 결정론 기록에서 다시 계산합니다.
+5. **경기마다 기록합니다.** 경기 시작에 recorder를 만들고, 확정 tick마다 `input`을 넣습니다(예측·재시뮬레이션 입력 제외). 경기 끝에 `recordMatch(recorder, summary)`를 부릅니다. 멀티플레이는 모든 참가자가 계산할 수 있는 같은 `matchId`(예: 방 sessionId + epoch)를 넘깁니다.
+6. **검증합니다.** 로컬 `wrangler dev`에 게임을 연결하고, 게임의 고정 E2E에서 실제 입력으로 한 경기를 끝낸 뒤 `GET /stats`나 D1 행으로 확인합니다. 실제 서버로 보내는 시험을 영구 시험에 넣지 않습니다(집계가 오염됩니다).
+
 ## 계약
 
 - 배치 하나가 요청 하나입니다. 배치에는 `schemaVersion`, `game`, `build`(= `version`), `sessionId`, `seq`, `playMs`, `events`, `matches`가 들어가고 서버의 모든 행에 sessionId·build·schemaVersion이 저장됩니다.
