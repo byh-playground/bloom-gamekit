@@ -1,5 +1,5 @@
 // modules/metrics/protocol.js
-var SCHEMA_VERSION = 2;
+var SCHEMA_VERSION = 3;
 var EVENT_TYPES = Object.freeze(["session_start", "heartbeat", "event", "session_end"]);
 var MAX_BATCH_BYTES = 1e6;
 var MAX_NAME_LENGTH = 64;
@@ -31,39 +31,10 @@ function reviveBytes(_key, value) {
 // modules/metrics/index.js
 var ENCODER = new TextEncoder();
 var BODY_TYPE = "text/plain;charset=UTF-8";
-var TESTER_PARAM = "metrics-tester";
-var TESTER_KEY = "bloom-metrics-tester";
 var MAX_QUEUED_BATCHES = 20;
 function checkName(value, name) {
   if (!isName(value)) {
     throw new TypeError(`metrics ${name} must be a non-empty string of at most 64 characters.`);
-  }
-}
-function storeTester(name) {
-  try {
-    if (name == null) {
-      localStorage.removeItem(TESTER_KEY);
-    } else {
-      localStorage.setItem(TESTER_KEY, name);
-    }
-  } catch {
-  }
-}
-function readTester() {
-  const PARAM = new URLSearchParams(location.search).get(TESTER_PARAM);
-  if (PARAM === "off") {
-    storeTester(null);
-    return null;
-  }
-  if (isName(PARAM)) {
-    storeTester(PARAM);
-    return PARAM;
-  }
-  try {
-    const STORED = localStorage.getItem(TESTER_KEY);
-    return isName(STORED) ? STORED : null;
-  } catch {
-    return null;
   }
 }
 function checkInterval(value, name) {
@@ -201,7 +172,6 @@ function createMetrics({
     throw new RangeError("metrics maxBatchEvents must be an integer from 1 to 100.");
   }
   const SESSION_ID = crypto.randomUUID();
-  let tester = readTester();
   const EVENTS = [];
   const OUTBOX = [];
   let seq = 0;
@@ -222,7 +192,6 @@ function createMetrics({
         sessionId: SESSION_ID,
         seq: seq++,
         playMs: playMs(),
-        tester,
         events,
         matches
       },
@@ -329,23 +298,6 @@ function createMetrics({
     /** 지금까지 페이지가 보였던 시간(ms) */
     get playMs() {
       return playMs();
-    },
-    /** 이 기기에 붙인 개발자 이름표. null이면 일반 유저로 집계됩니다. */
-    get tester() {
-      return tester;
-    },
-    /**
-     * 이 기기를 개발자 본인으로 표시(이름) 또는 해제(null)하고 기억합니다. 다음 배치부터 적용되며, 한 번 표시된 세션은
-     * 서버에서 계속 개발자 세션입니다. itch.io처럼 iframe에 들어간 게임은 브라우저가 저장소를 상위 사이트별로 나누므로,
-     * 그 페이지 안에서 게임 설정 화면 등으로 부릅니다.
-     * @param {string | null} name 예: 'pc', 'phone'
-     */
-    setTester(name) {
-      if (name !== null) {
-        checkName(name, "tester");
-      }
-      tester = name;
-      storeTester(name);
     },
     /** 서버가 계속 실패해 보관 상한을 넘겨 버린 배치 수 */
     get droppedBatches() {
