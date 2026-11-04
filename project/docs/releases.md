@@ -1,3 +1,13 @@
+## v0.45.2 (2026-11-04)
+
+호환 기능 추가(metrics 수집 서버). D1에 받은 원본만 저장하고 지표는 조회 때 계산합니다. 배치 봉투(schema 3)와 클라이언트 번들은 그대로이고, 운영 서버는 D1 migration 0002 적용과 함께 다시 배포합니다.
+
+- 서버: `sessions`는 첫 배치의 사실만 한 번 쓰고(누적 열 `last_seen_at`·`play_ms` 제거), 모든 배치를 `play_ms`와 함께 한 행씩 저장합니다(이벤트가 없어도). `batches`·`matches`의 중복 열 `game`·`build`·`schema_version`을 없앴습니다. migration 0002가 기존 세션의 `play_ms`를 마지막 배치로 옮깁니다.
+- 서버: `GET /stats`에 `lines`·`returningLines`·`note`를 더했고, `avgWallMs`는 이벤트의 클라이언트 시각 차입니다. `GET /daily`(KST, 1~90일)가 날짜별 세션·회선·새 회선·평균/중앙 플레이 시간·체류 시간·경기 수와 기간의 국가·이벤트 횟수·경기 완주율을 돌려줍니다.
+- 예제: '지표' 탭이 경기마다 `match:solo:start`를 보냅니다.
+- 문서: README "수집 서버"와 AGENTS.md에 "D1에는 원본 사실만, 계산값은 조회 때" 규칙을 적었습니다.
+- 시험: `modules/metrics/tests/metrics.e2e.mjs`가 배치의 `play_ms`, 조회 계산 체류 시간·회선, `/daily`의 날짜 행·이벤트 횟수·완주율·국가를 확인합니다.
+
 ## v0.45.1 (2026-11-04)
 
 호환 기능 추가. 행위자의 행동을 행동트리(결정)와 상태 기계(실행 단계)로 나눠 짜는 `behavior` 모듈(`dist/behavior.js`)을 추가합니다. 기존 번들의 동작은 같습니다.
