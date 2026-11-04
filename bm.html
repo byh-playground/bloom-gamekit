@@ -1725,6 +1725,7 @@
   function newMatch() {
     match = new InputLogRecorder({ mode: "solo", seed: SEED });
     hits = 0;
+    metrics.track("match", "solo", "start");
   }
   function connect() {
     metrics?.dispose();
