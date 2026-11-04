@@ -20,6 +20,7 @@ const NODE = (id, branch, requires, max = 1) => ({ id, branch, requires, max, co
 const BIG = [NODE('b0', 'big', [])];
 for (let i = 1; i <= 3; i++) BIG.push(NODE('b' + i, 'big', ['b0']));
 for (let i = 4; i <= 12; i++) BIG.push(NODE('b' + i, 'big', ['b' + (1 + ((i - 4) % 3))]));
+BIG.push(NODE('skip', 'big', ['b0', 'b6']));
 for (let i = 13; i <= 15; i++) BIG.push(NODE('b' + i, 'big', ['b' + (i - 9), 'b' + (i - 8)]));
 const NODES = [
     NODE('needlePower', 'needle', []),
@@ -91,6 +92,24 @@ window.__view = () => {
 window.__rect = (id) => {
     const BOX = document.querySelector('.tt-node[data-id="' + id + '"]').getBoundingClientRect();
     return { x: BOX.x, y: BOX.y, w: BOX.width, h: BOX.height };
+};
+window.__edgeHits = () => {
+    const WORLD = document.querySelector('.tt-world');
+    const BOXES = [...WORLD.querySelectorAll('.tt-node')].map((el) => ({ id: el.dataset.id, x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight }));
+    let hits = 0;
+    let edges = 0;
+    for (const PATH of WORLD.querySelectorAll('.tt-edge')) {
+        edges += 1;
+        const LENGTH = PATH.getTotalLength();
+        for (let step = 0; step <= 120; step++) {
+            const POINT = PATH.getPointAtLength((LENGTH * step) / 120);
+            for (const BOX of BOXES) {
+                if (BOX.id === PATH.dataset.from || BOX.id === PATH.dataset.to) continue;
+                if (POINT.x > BOX.x + 1 && POINT.x < BOX.x + BOX.w - 1 && POINT.y > BOX.y + 1 && POINT.y < BOX.y + BOX.h - 1) hits += 1;
+            }
+        }
+    }
+    return { hits, edges };
 };
 window.__viewRect = () => {
     const BOX = document.querySelector('.tt-view').getBoundingClientRect();
@@ -239,6 +258,20 @@ try {
         [0, 0, 'clip', 0],
         'overflow is software pan, not native scroll',
     );
+    const ROOT_AT = await page.evaluate(() => ({ box: window.__rect('b0'), view: window.__viewRect() }));
+    assert.ok(
+        Math.abs(ROOT_AT.box.x + ROOT_AT.box.w / 2 - (ROOT_AT.view.x + ROOT_AT.view.w / 2)) <= 8,
+        'portrait first view centers the root across the width',
+    );
+    assert.ok(
+        ROOT_AT.box.x >= ROOT_AT.view.x && ROOT_AT.box.x + ROOT_AT.box.w <= ROOT_AT.view.x + ROOT_AT.view.w,
+        'root is visible',
+    );
+    const PHONE_EDGES = await page.evaluate(() => window.__edgeHits());
+    assert.ok(
+        PHONE_EDGES.edges >= 18 && PHONE_EDGES.hits === 0,
+        `no edge crosses a node in portrait (${JSON.stringify(PHONE_EDGES)})`,
+    );
     const START_BOX = await page.evaluate(() => window.__rect('b0'));
     assert.ok(START_BOX.w >= 56, `initial node is touchable (${START_BOX.w})`);
     const VIEW_BOX = await page.evaluate(() => window.__viewRect());
@@ -253,6 +286,12 @@ try {
     await TOUCH('touchEnd', []);
     const AFTER_DRAG = await page.evaluate(() => ({ view: window.__view(), selected: window.__tree().selected }));
     assert.ok(AFTER_DRAG.view.tx < BEFORE_DRAG.view.tx - 60, 'one-finger drag pans');
+    await SETTLE(250);
+    assert.equal(
+        await page.evaluate(() => window.__view().tx),
+        AFTER_DRAG.view.tx,
+        'late resize notices do not reset the view',
+    );
     assert.equal(AFTER_DRAG.selected, BEFORE_DRAG.selected, 'drag does not select');
     // 두 손가락 벌리기 = 확대.
     const SCALE_BEFORE = AFTER_DRAG.view.scale;
@@ -313,6 +352,18 @@ try {
     await SETTLE(80);
     const W_IN = await page.evaluate(() => window.__view().scale);
     assert.ok(W_IN > W_OUT && W_IN <= 1.6, 'wheel up zooms in, capped at 1.6');
+    const DESKTOP_EDGES = await page.evaluate(() => window.__edgeHits());
+    assert.ok(
+        DESKTOP_EDGES.edges >= 18 && DESKTOP_EDGES.hits === 0,
+        `no edge crosses a node in landscape (${JSON.stringify(DESKTOP_EDGES)})`,
+    );
+    const D_ROOT = await page.evaluate(() => ({ box: window.__rect('b0'), view: window.__viewRect() }));
+    assert.ok(
+        D_ROOT.box.x >= D_ROOT.view.x &&
+            D_ROOT.box.y >= D_ROOT.view.y &&
+            D_ROOT.box.y + D_ROOT.box.h <= D_ROOT.view.y + D_ROOT.view.h,
+        'landscape first view shows the root',
+    );
     const M_BEFORE = await page.evaluate(() => window.__view());
     await page.mouse.move(MID.x + MID.w / 2, MID.y + MID.h / 2);
     await page.mouse.down();
@@ -355,6 +406,16 @@ try {
             noScreen: CATCH(BASE({ screen: '' })),
         };
     });
+    const ONE_BRANCH = await page.evaluate(() => {
+        window.__tree().dispose();
+        const SINGLE = window.__make({ nodes: [{ id: 'a', branch: 'x', requires: [], max: 1 }] });
+        const HIDDEN =
+            document.querySelector('.tt-tabs').hidden &&
+            getComputedStyle(document.querySelector('.tt-tabs')).display === 'none';
+        SINGLE.dispose();
+        return HIDDEN;
+    });
+    assert.equal(ONE_BRANCH, true, 'a single branch shows no tab');
     assert.match(THROWN.cycle, /requires form a cycle/);
     assert.match(THROWN.unknown, /requires unknown node zzz/);
     assert.match(THROWN.duplicate, /unique/);

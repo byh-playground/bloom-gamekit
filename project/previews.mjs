@@ -22,6 +22,7 @@ export const EXAMPLES = [
     ['bm', 'modules/bm/examples/index.html'],
     ['audio', 'modules/audio/examples/index.html'],
     ['navigation', 'modules/navigation/examples/index.html'],
+    ['tech-tree', 'modules/tech-tree/examples/index.html'],
     ['rendering', 'modules/rendering/examples/index.html'],
     ['vector-assets', 'modules/vector-assets/examples/index.html'],
     ['vector-raster-comparison', 'modules/vector-assets/examples/raster-comparison.html'],

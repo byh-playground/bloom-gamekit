@@ -1,0 +1,206 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Tech tree example</title>
+<style>
+    html,
+    body {
+        margin: 0;
+        height: 100%;
+        background: #151a2c;
+        color: #e8eefc;
+        font:
+            14px/1.4 system-ui,
+            sans-serif;
+    }
+    main {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        box-sizing: border-box;
+        height: 100%;
+        padding: 10px;
+    }
+    h1 {
+        margin: 0;
+        font-size: 18px;
+    }
+    p {
+        margin: 0;
+        opacity: 0.8;
+    }
+    .bar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+    }
+    .bar button {
+        min-height: 56px;
+        padding: 0 16px;
+        border: 2px solid #4a5a86;
+        border-radius: 12px;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        cursor: pointer;
+    }
+    .bar button[aria-pressed='true'] {
+        border-color: #ffd166;
+        background: #ffd166;
+        color: #1b2238;
+    }
+    #points {
+        margin-left: auto;
+        font-weight: 700;
+    }
+    #tech {
+        flex: 1;
+        min-height: 360px;
+    }
+</style>
+<main>
+    <h1>성장 트리</h1>
+    <p>선행 조건만 적으면 배치·상태·상세가 만들어집니다. 큰 트리는 끌고 확대해서 봅니다.</p>
+    <div class="bar">
+        <button id="tab-stats" type="button" aria-pressed="true">스탯 트리</button>
+        <button id="tab-big" type="button" aria-pressed="false">큰 트리</button>
+        <button id="more" type="button">+3 포인트</button>
+        <button id="reset" type="button">처음부터</button>
+        <span id="points" aria-live="polite"></span>
+    </div>
+    <div id="tech"></div>
+</main>
+<script type="module">
+    import { createNavigation } from '../../../dist/navigation.js';
+    import { createTechTree } from '../../../dist/tech-tree.js';
+
+    const NODE = (id, branch, symbol, name, requires, max, desc) => ({
+        id,
+        branch,
+        symbol,
+        name,
+        requires,
+        max,
+        cost: 1,
+        desc,
+    });
+    const STATS = [
+        NODE('needlePower', '공격', '➤', '굵은 바늘', [], 3, '모든 바늘 피해 +30%'),
+        NODE('needleTempo', '공격', '◷', '가벼운 실감개', ['needlePower'], 1, '발사 간격 −15%'),
+        NODE('needleEcho', '공격', '✧', '풀림 메아리', ['needleTempo'], 1, '처치 때 조각 두 개가 추가 피해'),
+        NODE('needleSplit', '공격', '↯', '튕겨꿰기', ['needlePower'], 1, '바늘이 근처 적 3체로 튕김'),
+        NODE('needleJoin', '공격', '⋙', '회수절단', ['needleTempo', 'needleSplit'], 1, '두 선행을 모두 갖춰야 열림'),
+        NODE('hp', '방어', '♥', '튼튼한 실', [], 6, '최대 체력 +25'),
+        NODE('armor', '방어', '◆', '촘촘한 올', ['hp'], 3, '받는 피해 −8%'),
+        NODE('regen', '방어', '✚', '꿰매기', ['hp'], 2, '5초마다 체력 +4'),
+        NODE('shield', '방어', '⬢', '방패 매듭', ['armor', 'regen'], 1, '피해를 한 번 막음'),
+        NODE('dash', '기동', '▰', '발걸음 예비', [], 3, '최대 대시 +1'),
+        NODE('recharge', '기동', '◉', '빠른 숨고르기', [], 5, '대시 충전 −12%'),
+        NODE('speed', '기동', '↗', '민첩한 발걸음', ['recharge'], 4, '걷기 속도 +10%'),
+        NODE(
+            'blink',
+            '기동',
+            '✦',
+            '순간 이동',
+            ['dash', 'speed', 'needlePower'],
+            1,
+            '다른 분류(공격)의 선행도 필요해 칩으로 읽습니다',
+        ),
+    ];
+    const BIG = [NODE('r0', '큰 트리', '★', '뿌리', [], 1, '시작 노드')];
+    for (let i = 1; i <= 4; i++) {
+        BIG.push(NODE('a' + i, '큰 트리', '●', '줄기 ' + i, ['r0'], 1, '뿌리에서 갈라진 줄기'));
+    }
+    for (let i = 1; i <= 16; i++) {
+        BIG.push(NODE('b' + i, '큰 트리', '◇', '가지 ' + i, ['a' + (1 + ((i - 1) % 4))], 2, '줄기 하나에 매달린 가지'));
+    }
+    for (let i = 1; i <= 8; i++) {
+        BIG.push(NODE('c' + i, '큰 트리', '◈', '열매 ' + i, ['b' + i, 'b' + (i + 8)], 1, '두 가지를 모두 갖춰야 열림'));
+    }
+    BIG.push(NODE('top', '큰 트리', '✺', '끝', ['c1', 'c4', 'c8', 'a1'], 1, '모든 길의 끝'));
+    const TREES = { stats: STATS, big: BIG };
+
+    const NAVIGATION = createNavigation();
+    const LEVELS = {};
+    const STATE = { points: 3, tab: 'stats' };
+    let tree = null;
+    const BY_ID = (id) => [...STATS, ...BIG].find((node) => node.id === id);
+    const POINTS = document.querySelector('#points');
+    const SHOW_POINTS = () => (POINTS.textContent = '포인트 ' + STATE.points);
+    const WORDS = {
+        state: { owned: '✓ 완료', locked: '잠김', available: '＋ 가능', waiting: '포인트 부족' },
+        reason: {
+            owned: '최대 단계입니다.',
+            locked: '위 선행 기술을 먼저 습득하세요.',
+            waiting: '포인트를 더 모으세요.',
+            available: '선행 조건 충족 · 투자할 수 있습니다.',
+        },
+    };
+
+    function build(tab) {
+        tree?.dispose();
+        STATE.tab = tab;
+        for (const NAME of Object.keys(TREES)) {
+            document.querySelector('#tab-' + NAME).setAttribute('aria-pressed', String(NAME === tab));
+        }
+        tree = createTechTree({
+            root: document.querySelector('#tech'),
+            navigation: NAVIGATION,
+            screen: 'tech',
+            nodes: TREES[tab],
+            level: (id) => LEVELS[id] ?? 0,
+            canBuy: (node) => ({ ok: STATE.points >= node.cost }),
+            onBuy(id) {
+                LEVELS[id] = (LEVELS[id] ?? 0) + 1;
+                STATE.points -= BY_ID(id).cost;
+                SHOW_POINTS();
+                tree.refresh();
+            },
+            renderNode(node, element) {
+                const SYMBOL = document.createElement('span');
+                SYMBOL.textContent = node.symbol;
+                SYMBOL.setAttribute('aria-hidden', 'true');
+                const NAME = document.createElement('strong');
+                NAME.textContent = node.name;
+                NAME.style.fontSize = '12px';
+                element.append(SYMBOL, NAME);
+            },
+            renderDetail(node, element) {
+                element.textContent = node.desc;
+            },
+            text: {
+                branch: (branch) => branch,
+                name: (node) => node.symbol + ' ' + node.name,
+                state: (state, node, level) => WORDS.state[state] + ' ' + level + '/' + node.max,
+                buy: (state, node) => (state === 'available' ? '투자하기 · ' + node.cost + '점' : WORDS.state[state]),
+                reason: (state) => WORDS.reason[state],
+                prerequisite: (required, met) => (met ? '✓ 습득: ' : '선행 필요: ') + required.name,
+                level: (node, level) => level + '/' + node.max,
+                zoomIn: () => '확대',
+                zoomOut: () => '축소',
+                fit: () => '처음 보기',
+                map: () => '성장 트리',
+            },
+        });
+        SHOW_POINTS();
+    }
+    document.querySelector('#tab-stats').onclick = () => build('stats');
+    document.querySelector('#tab-big').onclick = () => build('big');
+    document.querySelector('#more').onclick = () => {
+        STATE.points += 3;
+        SHOW_POINTS();
+        tree.refresh();
+    };
+    document.querySelector('#reset').onclick = () => {
+        for (const ID of Object.keys(LEVELS)) {
+            delete LEVELS[ID];
+        }
+        STATE.points = 3;
+        SHOW_POINTS();
+        tree.refresh();
+    };
+    build('stats');
+    window.techTreeDemo = { tree: () => tree, navigation: NAVIGATION, levels: LEVELS, state: STATE };
+    addEventListener('pagehide', () => NAVIGATION.dispose(), { once: true });
+</script>
