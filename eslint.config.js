@@ -18,6 +18,7 @@ const CORE_FILES = [
     'modules/camera/*.js',
     'modules/presentation-events/*.js',
     'modules/object-pool/*.js',
+    'modules/spatial/*.js',
     'modules/rollback/core.js',
     'modules/rollback/availability.js',
 ];

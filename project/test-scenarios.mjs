@@ -21,6 +21,7 @@ const SUITES = {
         'modules/pwa/tests/pwa.e2e.mjs',
         'modules/boot/tests/boot.e2e.mjs',
         'modules/i18n/tests/i18n.e2e.mjs',
+        'modules/spatial/tests/spatial.e2e.mjs',
         'modules/metrics/tests/metrics.e2e.mjs',
         'modules/geometry/tests/geometry.e2e.mjs',
         'modules/face/tests/face.e2e.mjs',
