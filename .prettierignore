@@ -9,3 +9,4 @@ modules/rollback/docs/provenance/
 package-lock.json
 modules/pixel-physics/docs/provenance/**
 .wrangler/
+.claude/

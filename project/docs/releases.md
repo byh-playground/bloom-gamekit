@@ -1,3 +1,13 @@
+## v0.45.1 (2026-11-04)
+
+호환 기능 추가. 행위자의 행동을 행동트리(결정)와 상태 기계(실행 단계)로 나눠 짜는 `behavior` 모듈(`dist/behavior.js`)을 추가합니다. 기존 번들의 동작은 같습니다.
+
+- `BehaviorTree`와 `action`·`guard`·`selector`: 결정 전용이라 진행 중(RUNNING) 노드가 없고 트리에 행위자 상태를 두지 않습니다. `decide(context)`는 차례를 가져간 행동 이름을 돌려줍니다.
+- `StateMachine`: 현재 상태는 행위자 레코드의 문자열 필드 하나이고, 상태마다 적은 `to` 밖의 전이는 오류입니다.
+- 예제: work-scheduler 예제를 탭 페이지로 바꾸고 "행동" 탭을 추가했습니다(`#tab=behavior`).
+- 시험: `project/tests/previews.mjs`가 행동 탭의 결정·단계 진행을 확인하고, 빠져 있던 pixel-physics-side-battle 예제의 준비 확인(`sideBattle`)을 넣었습니다.
+- `.prettierignore`에 `.claude/`(저장소 안 worktree)를 넣어 빌드 전 포맷 검사가 다른 작업 사본을 읽지 않습니다.
+
 ## v0.45.0 (2026-11-04)
 
 비호환 변경(replay 형식 `0.3.0-dev`). 확정 입력을 매 tick 객체 대신 바뀐 tick만 담은 바이트로 내보내고, 방 세션도 경기 기록을 남깁니다. 0.2.0 기록은 읽지 않습니다(저장된 기록 없음).

@@ -2,40 +2,116 @@
 <html lang="ko">
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>비긴급 작업 예산 · bloom-gamekit</title>
+    <title>작업 예산·행동 · bloom-gamekit</title>
     <style>
+        * {
+            box-sizing: border-box;
+        }
         body {
             font:
                 16px system-ui,
                 sans-serif;
             max-width: 860px;
-            margin: 2rem auto;
+            margin: 1.5rem auto;
             padding: 0 1rem;
             background: #111c24;
             color: #e6f1f3;
             line-height: 1.55;
         }
+        h1 {
+            font-size: 1.4rem;
+            margin: 0 0 0.5rem;
+        }
+        ul {
+            padding-left: 1.2rem;
+            color: #aebfc6;
+            font-size: 0.9rem;
+        }
         button {
-            padding: 0.5rem 0.8rem;
-            margin-right: 0.5rem;
+            min-height: 56px;
+            min-width: 56px;
+            font: inherit;
+            border-radius: 10px;
+            border: 1px solid #3f8fa8;
+            background: #2b6f86;
+            color: inherit;
+            padding: 0 0.9rem;
+            margin: 0.3rem 0.3rem 0 0;
+            font-weight: 600;
+        }
+        .tabs {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        .tabs button {
+            flex: 1;
+            margin: 0;
+            background: #1b2c37;
+            border-color: #40535e;
+        }
+        .tabs button[aria-selected='true'] {
+            background: #2b6f86;
+            border-color: #3f8fa8;
+        }
+        [hidden] {
+            display: none !important;
         }
         pre {
             padding: 1rem;
             background: #091117;
             border: 1px solid #40535e;
             white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            font-size: 0.85rem;
+        }
+        svg {
+            width: 100%;
+            height: auto;
+            background: #091117;
+            border: 1px solid #40535e;
+            border-radius: 10px;
+            margin-top: 0.6rem;
         }
     </style>
-    <h1>비긴급 탐색 작업 분산</h1>
-    <p>
-        아래 버튼 한 번이 기존 논리 tick 한 번을 뜻합니다. 각 tick은 후보 7개까지만 검사하고, urgent/standard/low 작업은
-        4:2:1 quantum 비율로 순환합니다.
-    </p>
-    <p>
+    <div class="tabs" role="tablist">
+        <button role="tab" id="tab-budget" aria-selected="true" aria-controls="panel-budget">작업 예산</button>
+        <button role="tab" id="tab-behavior" aria-selected="false" aria-controls="panel-behavior">행동</button>
+    </div>
+    <section id="panel-budget" role="tabpanel" aria-labelledby="tab-budget">
+        <h1>비긴급 탐색 작업 분산</h1>
+        <p>
+            버튼 한 번이 논리 tick 한 번입니다. 각 tick은 정해진 수의 후보만 검사하고, 급한 작업일수록 자주 차례가
+            옵니다.
+        </p>
+        <ul>
+            <li>tick 하나의 예산은 후보 7개, urgent·standard·low는 4:2:1 비율로 순환합니다.</li>
+            <li>개체를 지우면 그 개체의 남은 작업이 취소됩니다.</li>
+        </ul>
         <button id="tick">논리 tick 실행</button>
         <button id="delete">low 개체 삭제</button>
-    </p>
-    <pre id="output"></pre>
+        <pre id="output"></pre>
+    </section>
+    <section id="panel-behavior" role="tabpanel" aria-labelledby="tab-behavior" hidden>
+        <h1>행동트리는 결정, 상태 기계는 실행</h1>
+        <p>
+            보스가 비어 있을 때 행동트리가 할 일을 하나 고르고, 고른 공격은 상태 기계가 예열 → 발동 → 회복으로
+            진행합니다.
+        </p>
+        <ul>
+            <li>적이 내려찍기 거리 안이면 내려찍기, 돌진 거리 안이고 돌진이 준비됐으면 돌진, 아니면 걸어갑니다.</li>
+            <li>돌진은 쓰고 나면 재사용 대기가 돕니다. 버튼 한 번이 논리 tick 한 번입니다.</li>
+        </ul>
+        <button id="behavior-tick">논리 tick 실행</button>
+        <button id="behavior-near">적을 가까이</button>
+        <button id="behavior-far">적을 멀리</button>
+        <svg viewBox="0 0 400 60" role="img" aria-label="보스와 적의 위치">
+            <line x1="10" y1="40" x2="390" y2="40" stroke="#40535e" />
+            <circle id="boss-dot" cx="10" cy="30" r="12" fill="#c98a5a" />
+            <circle id="enemy-dot" cx="190" cy="34" r="6" fill="#7fc97f" />
+        </svg>
+        <pre id="behavior-output"></pre>
+    </section>
     <script type="module">
         import { createBudgetedScheduler } from '../../../dist/work-scheduler.js';
         import { FrameMetrics } from '../../../dist/debug-tools.js';
@@ -138,5 +214,137 @@
             { once: true },
         );
         render();
+    </script>
+    <script type="module">
+        import { BehaviorTree, StateMachine, action, guard, selector } from '../../../dist/behavior.js';
+
+        // 수치는 이 예제의 것입니다. 거리 단위는 화면 칸, 시간 단위는 논리 tick입니다.
+        const ATTACKS = {
+                slam: { reach: 40, windup: 2, cooldown: 0, move: 0 },
+                charge: { reach: 200, windup: 2, cooldown: 8, move: 60 },
+            },
+            WALK = 15,
+            // 공격 하나의 단계. 현재 단계는 공격 레코드의 phase 필드입니다.
+            PHASES = new StateMachine({
+                field: 'phase',
+                initial: 'windup',
+                states: {
+                    windup: {
+                        to: ['active'],
+                        update: (attack) => (attack.elapsed >= ATTACKS[attack.id].windup ? 'active' : null),
+                    },
+                    active: {
+                        to: ['recover'],
+                        enter(attack, boss) {
+                            attack.elapsed = 0;
+                            boss.cooldowns[attack.id] = ATTACKS[attack.id].cooldown;
+                        },
+                        update(attack, boss) {
+                            const LEFT = boss.enemyX - boss.x - ATTACKS.slam.reach / 2;
+                            boss.x += Math.max(0, Math.min(ATTACKS[attack.id].move, LEFT));
+                            return 'recover';
+                        },
+                    },
+                    recover: {
+                        to: [],
+                        enter: (attack) => (attack.elapsed = 0),
+                        update(attack, boss) {
+                            if (attack.elapsed >= 1) {
+                                boss.attack = null;
+                            }
+                        },
+                    },
+                },
+            }),
+            BOSS = { x: 10, enemyX: 190, cooldowns: { slam: 0, charge: 0 }, attack: null },
+            DISTANCE = (boss) => boss.enemyX - boss.x,
+            CAN = (boss, id) => boss.cooldowns[id] <= 0 && DISTANCE(boss) <= ATTACKS[id].reach,
+            START = (boss, id) => {
+                boss.attack = { id, phase: PHASES.initial, elapsed: 0 };
+                return true;
+            },
+            // 보스가 비었을 때 할 일. 위에서부터 처음으로 차례를 가져간 행동 하나가 이번 tick의 결정입니다.
+            BOSS_TURN = new BehaviorTree(
+                selector('boss', [
+                    guard(
+                        'attacking',
+                        (boss) => !!boss.attack,
+                        action('continue attack', () => true),
+                    ),
+                    guard(
+                        'slam in reach',
+                        (boss) => CAN(boss, 'slam'),
+                        action('slam', (boss) => START(boss, 'slam')),
+                    ),
+                    guard(
+                        'charge ready and in reach',
+                        (boss) => CAN(boss, 'charge'),
+                        action('charge', (boss) => START(boss, 'charge')),
+                    ),
+                    action('walk', (boss) => {
+                        boss.x += Math.min(WALK, Math.max(0, DISTANCE(boss) - ATTACKS.slam.reach / 2));
+                        return true;
+                    }),
+                ]),
+            );
+        let tick = 0,
+            decided = null;
+
+        function step() {
+            tick++;
+            for (const ID of Object.keys(BOSS.cooldowns)) {
+                BOSS.cooldowns[ID] = Math.max(0, BOSS.cooldowns[ID] - 1);
+            }
+            decided = BOSS_TURN.decide(BOSS);
+            if (BOSS.attack) {
+                BOSS.attack.elapsed++;
+                PHASES.update(BOSS.attack, BOSS);
+            }
+            render();
+        }
+
+        function render() {
+            document.querySelector('#boss-dot').setAttribute('cx', String(BOSS.x));
+            document.querySelector('#enemy-dot').setAttribute('cx', String(BOSS.enemyX));
+            document.querySelector('#behavior-output').textContent = JSON.stringify(
+                {
+                    tick,
+                    decided,
+                    distance: DISTANCE(BOSS),
+                    attack: BOSS.attack && { id: BOSS.attack.id, phase: BOSS.attack.phase },
+                    cooldowns: BOSS.cooldowns,
+                    tree: BOSS_TURN.describe(),
+                },
+                null,
+                2,
+            );
+        }
+
+        function place(x) {
+            BOSS.x = 10;
+            BOSS.enemyX = x;
+            render();
+        }
+
+        document.querySelector('#behavior-tick').addEventListener('click', step);
+        document.querySelector('#behavior-near').addEventListener('click', () => place(40));
+        document.querySelector('#behavior-far').addEventListener('click', () => place(190));
+        window.behaviorExample = { step, place, boss: BOSS };
+        render();
+
+        // 탭. 주소로 같은 탭을 다시 엽니다. 예: #tab=behavior
+        function selectTab(name) {
+            for (const TAB of ['budget', 'behavior']) {
+                document.querySelector('#tab-' + TAB).setAttribute('aria-selected', String(TAB === name));
+                document.querySelector('#panel-' + TAB).hidden = TAB !== name;
+            }
+        }
+        for (const TAB of ['budget', 'behavior']) {
+            document.querySelector('#tab-' + TAB).addEventListener('click', () => selectTab(TAB));
+        }
+        const PARAMS = new URLSearchParams(location.search.slice(1) + '&' + location.hash.slice(1));
+        if (['budget', 'behavior'].includes(PARAMS.get('tab'))) {
+            selectTab(PARAMS.get('tab'));
+        }
     </script>
 </html>

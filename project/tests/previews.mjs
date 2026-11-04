@@ -62,6 +62,7 @@ try {
                     scenario: 'scenarioDemo',
                     'pixel-physics': 'pixelPhysicsExample',
                     'pixel-physics-open-world': 'openWorldExample',
+                    'pixel-physics-side-battle': 'sideBattle',
                     bm: 'bmExample',
                 };
                 if (name === 'work-scheduler') {
@@ -87,6 +88,18 @@ try {
         if (NAME === 'work-scheduler') {
             await PAGE.click('#tick');
             assert.equal(await PAGE.locator('#output').evaluate((output) => JSON.parse(output.textContent).tick), 1);
+            // 행동 탭: 멀리 있는 적에게는 돌진을 고르고, 그 공격이 예열 → 발동 → 회복으로 진행합니다.
+            await PAGE.click('#tab-behavior');
+            await PAGE.click('#behavior-far');
+            const BEHAVIOR = () =>
+                PAGE.locator('#behavior-output').evaluate((output) => JSON.parse(output.textContent));
+            await PAGE.click('#behavior-tick');
+            assert.deepEqual((await BEHAVIOR()).attack, { id: 'charge', phase: 'windup' });
+            await PAGE.click('#behavior-tick');
+            await PAGE.click('#behavior-tick');
+            assert.equal((await BEHAVIOR()).attack.phase, 'recover');
+            await PAGE.click('#behavior-near');
+            assert.equal((await BEHAVIOR()).decided, 'continue attack');
         }
         if (NAME === 'bm') {
             // 실제 광고 호출 없이 계약만 확인합니다: 광고 스크립트는 막고 adBreak와 google.ima를 가짜로 둡니다.
