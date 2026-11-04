@@ -301,16 +301,15 @@ export function createMetrics({
     }
 
     // 숨김·닫힘: 응답을 기다리지 않는 경로로 남은 배치를 모두 올립니다. 너무 큰 경기 배치는 정상 경로에 맡깁니다.
+    // beacon은 도착을 알려 주지 않으므로 보낸 배치도 메모리에 남겨 두고, 다시 보일 때 fetch로 같은 seq를 보내
+    // 200을 받은 뒤 지웁니다(서버는 같은 seq를 한 번만 저장). 숨긴 채 페이지가 사라지면 남은 배치는 잃습니다.
     function flushOnHide() {
         packEvents();
-        for (let i = 0; i < OUTBOX.length;) {
-            if (OUTBOX[i].bytes <= MAX_UNLOAD_BYTES && adapter.sendOnHide(OUTBOX[i].body)) {
-                OUTBOX.splice(i, 1);
-            } else {
-                i++;
-            }
+        let unsent = false;
+        for (const BATCH of OUTBOX) {
+            unsent ||= !(BATCH.bytes <= MAX_UNLOAD_BYTES && adapter.sendOnHide(BATCH.body));
         }
-        if (OUTBOX.length) {
+        if (unsent) {
             flush();
         }
     }
@@ -325,6 +324,7 @@ export function createMetrics({
             flushOnHide();
         } else if (visibleSince == null) {
             visibleSince = now();
+            flush();
         }
     }
 
@@ -337,6 +337,7 @@ export function createMetrics({
     function onPageShow(event) {
         if (event.persisted) {
             startSession();
+            flush();
         }
     }
 
@@ -345,8 +346,9 @@ export function createMetrics({
             push('heartbeat', {});
         }
     }, heartbeatMs);
+    // 숨긴 동안은 주기 전송을 쉽니다. 남은 배치는 숨길 때 beacon으로 올렸고 다시 보일 때 fetch로 확인합니다.
     const FLUSH = setInterval(() => {
-        if (EVENTS.length || OUTBOX.length) {
+        if (document.visibilityState === 'visible' && (EVENTS.length || OUTBOX.length)) {
             flush();
         }
     }, flushMs);

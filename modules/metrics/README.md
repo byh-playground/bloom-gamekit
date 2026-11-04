@@ -59,7 +59,8 @@ METRICS.recordMatch(ONLINE, { winner: 'a' });
 - heartbeat(기본 30000ms)는 보이는 동안만 남기며, 페이지가 비정상 종료돼 `pagehide`가 오지 않을 때 잃는 플레이 시간의 상한입니다.
 - 이벤트는 50개가 쌓이거나 10000ms마다 보냅니다. 경기 기록은 `recordMatch` 즉시 보냅니다.
 - 탭 숨김·닫힘: `sendOnHide`(HttpAdapter는 `navigator.sendBeacon`)로 남은 배치를 올립니다. 60000바이트를 넘는 배치(긴 경기 기록)는 beacon 상한 때문에 정상 경로로 남겨 둡니다.
-- 실패: 보내지 못한 배치는 같은 `seq` 그대로 다시 보냅니다. 서버는 같은 배치를 두 번 받아도 결과가 같습니다. 20개를 넘게 쌓이면 오래된 것부터 버리고 `droppedBatches`에 셉니다.
+- 실패: 보내지 못한 배치는 같은 `seq` 그대로 다시 보냅니다. 서버는 같은 배치를 두 번 받아도 결과가 같습니다(`INSERT OR IGNORE`). 20개를 넘게 쌓이면 오래된 것부터 버리고 `droppedBatches`에 셉니다.
+- beacon으로 보낸 배치도 fetch 200을 받을 때까지 메모리에 남습니다. 페이지가 다시 보이거나(visibilitychange) bfcache에서 돌아오면(pageshow) 같은 `seq`로 다시 보내고, 숨긴 동안은 주기 전송을 쉽니다. 브라우저 저장소에는 두지 않으므로(D-237) 숨긴 채 탭이 닫히거나 회수되면 도착하지 못한 beacon 배치는 잃습니다. 정상 망에서도 숨김→복귀마다 beacon으로 보낸 배치를 한 번 더 보냅니다(쓰기 행은 늘지 않음).
 - 배치 하나는 1,000,000바이트까지입니다(D1 한 행 2MB의 절반). 넘는 경기 기록은 `recordMatch`가 `RangeError`로 던집니다.
 
 ## 버전 관리
