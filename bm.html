@@ -148,8 +148,8 @@
             <li>탭을 숨기거나 페이지를 닫으면 남은 이벤트를 sendBeacon으로 보냅니다.</li>
             <li>경기를 끝내면 시드와 랠리 입력 기록이 경기 한 행으로 저장됩니다.</li>
             <li>
-                개발자 기기로 표시하면 서버 집계에서 유저가 아니라 '나'로 따로 셉니다. 로컬에서 띄운 페이지는
-                '개발'입니다.
+                내 접속 키를 서버의 소유자 목록에 넣으면 그 회선의 지난 세션까지 집계에서 유저가 아니라 '나'로 빠집니다.
+                로컬에서 띄운 페이지는 '개발'입니다.
             </li>
         </ul>
         <label for="metrics-server">수집 서버 주소</label>
@@ -164,7 +164,7 @@
         <button id="metrics-hit" disabled>랠리 치기</button>
         <button id="metrics-end" disabled>경기 끝내기</button>
         <button id="metrics-stats" disabled>서버 집계 보기</button>
-        <button id="metrics-tester" disabled>이 기기를 개발자로 표시</button>
+        <button id="metrics-whoami">내 접속 키 보기</button>
         <pre id="metrics-output"></pre>
         <pre id="metrics-log"></pre>
     </section>
@@ -1340,7 +1340,7 @@
     <script>
 (() => {
   // dist/metrics.js
-  var SCHEMA_VERSION = 2;
+  var SCHEMA_VERSION = 3;
   var EVENT_TYPES = Object.freeze(["session_start", "heartbeat", "event", "session_end"]);
   var MAX_BATCH_BYTES = 1e6;
   var MAX_NAME_LENGTH = 64;
@@ -1364,39 +1364,10 @@
   }
   var ENCODER = new TextEncoder();
   var BODY_TYPE = "text/plain;charset=UTF-8";
-  var TESTER_PARAM = "metrics-tester";
-  var TESTER_KEY = "bloom-metrics-tester";
   var MAX_QUEUED_BATCHES = 20;
   function checkName(value, name) {
     if (!isName(value)) {
       throw new TypeError(`metrics ${name} must be a non-empty string of at most 64 characters.`);
-    }
-  }
-  function storeTester(name) {
-    try {
-      if (name == null) {
-        localStorage.removeItem(TESTER_KEY);
-      } else {
-        localStorage.setItem(TESTER_KEY, name);
-      }
-    } catch {
-    }
-  }
-  function readTester() {
-    const PARAM = new URLSearchParams(location.search).get(TESTER_PARAM);
-    if (PARAM === "off") {
-      storeTester(null);
-      return null;
-    }
-    if (isName(PARAM)) {
-      storeTester(PARAM);
-      return PARAM;
-    }
-    try {
-      const STORED = localStorage.getItem(TESTER_KEY);
-      return isName(STORED) ? STORED : null;
-    } catch {
-      return null;
     }
   }
   function checkInterval(value, name) {
@@ -1510,7 +1481,6 @@
       throw new RangeError("metrics maxBatchEvents must be an integer from 1 to 100.");
     }
     const SESSION_ID = crypto.randomUUID();
-    let tester = readTester();
     const EVENTS = [];
     const OUTBOX = [];
     let seq = 0;
@@ -1531,7 +1501,6 @@
           sessionId: SESSION_ID,
           seq: seq++,
           playMs: playMs(),
-          tester,
           events,
           matches: matches2
         },
@@ -1639,23 +1608,6 @@
       get playMs() {
         return playMs();
       },
-      /** 이 기기에 붙인 개발자 이름표. null이면 일반 유저로 집계됩니다. */
-      get tester() {
-        return tester;
-      },
-      /**
-       * 이 기기를 개발자 본인으로 표시(이름) 또는 해제(null)하고 기억합니다. 다음 배치부터 적용되며, 한 번 표시된 세션은
-       * 서버에서 계속 개발자 세션입니다. itch.io처럼 iframe에 들어간 게임은 브라우저가 저장소를 상위 사이트별로 나누므로,
-       * 그 페이지 안에서 게임 설정 화면 등으로 부릅니다.
-       * @param {string | null} name 예: 'pc', 'phone'
-       */
-      setTester(name) {
-        if (name !== null) {
-          checkName(name, "tester");
-        }
-        tester = name;
-        storeTester(name);
-      },
       /** 서버가 계속 실패해 보관 상한을 넘겨 버린 배치 수 */
       get droppedBatches() {
         return droppedBatches;
@@ -1734,6 +1686,7 @@
   var hits = 0;
   var matches = 0;
   var stats = null;
+  var whoami = null;
   if (PARAMS.get("server")) {
     SERVER.value = PARAMS.get("server");
   }
@@ -1762,8 +1715,8 @@
         matchId: match?.matchId ?? null,
         hits,
         matches,
-        tester: metrics?.tester ?? null,
-        server: stats
+        server: stats,
+        whoami
       },
       null,
       2
@@ -1783,20 +1736,11 @@
     newMatch();
     matches = 0;
     stats = null;
-    for (const ID of ["#metrics-hit", "#metrics-end", "#metrics-stats", "#metrics-tester"]) {
+    for (const ID of ["#metrics-hit", "#metrics-end", "#metrics-stats"]) {
       document.querySelector(ID).disabled = false;
     }
     document.querySelector("#metrics-notice").textContent = "";
-    renderTester();
     render();
-  }
-  function toggleTester() {
-    metrics.setTester(metrics.tester ? null : "example");
-    renderTester();
-    render();
-  }
-  function renderTester() {
-    document.querySelector("#metrics-tester").textContent = metrics?.tester ? "개발자 표시 해제" : "이 기기를 개발자로 표시";
   }
   function hit() {
     match.input(hits, { kick: 1 });
@@ -1811,23 +1755,30 @@
     newMatch();
     await showStats();
   }
+  async function readServer(path) {
+    try {
+      const RESPONSE = await fetch(new URL(path, SERVER.value.replace(/\/?$/, "/")));
+      document.querySelector("#metrics-notice").textContent = "";
+      return await RESPONSE.json();
+    } catch (error) {
+      document.querySelector("#metrics-notice").textContent = `서버에 닿지 않습니다: ${error.message}`;
+      return null;
+    }
+  }
   async function showStats() {
     await metrics.flush();
-    try {
-      const RESPONSE = await fetch(new URL("stats?game=gamekit-example", SERVER.value.replace(/\/?$/, "/")));
-      stats = await RESPONSE.json();
-      document.querySelector("#metrics-notice").textContent = "";
-    } catch (error) {
-      stats = null;
-      document.querySelector("#metrics-notice").textContent = `서버에 닿지 않습니다: ${error.message}`;
-    }
+    stats = await readServer("stats?game=gamekit-example");
+    render();
+  }
+  async function showWhoami() {
+    whoami = await readServer("whoami");
     render();
   }
   document.querySelector("#metrics-connect").addEventListener("click", connect);
   document.querySelector("#metrics-hit").addEventListener("click", hit);
   document.querySelector("#metrics-end").addEventListener("click", end);
   document.querySelector("#metrics-stats").addEventListener("click", showStats);
-  document.querySelector("#metrics-tester").addEventListener("click", toggleTester);
+  document.querySelector("#metrics-whoami").addEventListener("click", showWhoami);
   render();
   window.metricsExample = {
     get metrics() {
