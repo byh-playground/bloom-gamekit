@@ -1,3 +1,15 @@
+## v0.46.0 (2026-11-04)
+
+비호환 변경(`createNostrRoom` 계약). 한 번 이어지면 끝나던 `createNostrRoom`을, 끊기면 같은 방에서 스스로 다시 잇는 1:1 방 연결로 교체합니다. 다른 번들의 동작은 같습니다. 이 저장소와 소비 게임 모두 이전 `createNostrRoom`을 쓰지 않았으므로(게임은 고정된 dist를 씁니다) 호환 래퍼는 남기지 않았습니다.
+
+- `transport`: `createNostrRoom({ role, room, namespace, version, … })`가 신호가 준비되면(host는 방 코드 충돌 확인까지) `Room`을 돌려줍니다. 이전에는 연결 완료 뒤 `{ transport, peerConnection, close, … }`였습니다. `opened`(처음 열릴 때까지)·`state`(`connecting`/`open`/`interrupted`/`failed`/`closed`)·`subscribe`·`subscribeStatus`·`reconnect({ reason, newPeer })`·`close()`.
+- 채널 셋: `room.transport`(netcode 입력 unordered·제어 ordered, rollback `Transport`)는 재연결해도 같은 객체로 구독이 유지되고 방이 소유합니다. `room.app`은 앱이 자기 프로토콜을 얹는 ordered 채널이며 512/128 KiB 수위의 송신 큐 흐름 제어를 모듈이 맡습니다.
+- 재연결: 채널 닫힘·연결 실패·`disconnected` 유예·시도 시간 초과를 감지해 새 연결을 맺습니다. 협상마다 host가 올리는 serial로 늦게 온 옛 offer·answer·ICE·`discover`를 버리고, 처음 맺은 상대의 신호 id를 고정하며(`newPeer`로 해제), 시간 예산(`timeoutMs`·`reconnectTimeoutMs`)을 넘기면 `failed`로 멈춥니다(`reconnect()`로 다시 시작). 신호 전송이 연달아 실패하면 같은 서명 키로 전달자를 다시 만듭니다. `close()`는 재연결을 일으키지 않습니다.
+- 버전 불일치: 필수 `version` 문자열과 rollback 프로토콜 번호를 연결 전에 비교해 `version-mismatch` 이벤트로 알리고 연결을 만들지 않습니다(guest는 `failed`, host는 맞는 상대를 계속 기다림).
+- 바뀐 계약: 반환 시점, `version` 필수, `peerFactory` 제거(`signalerFactory`로 주입), 신호 네임스페이스 `:room-v2`, `WebRTCTransport`가 방 안에서 연결마다 만들어지고 밖으로는 `room.transport`만 보입니다. Rally `NostrRtcTransport` 대응표는 transport README에 있습니다.
+- `createLocalSignaler`: 같은 페이지의 방 연결끼리만 신호를 주고받는 `signalerFactory`용 전달자(시험·싱글 AI 상대용). `iceServers: []`와 함께 씁니다.
+- 시험: `modules/transport/tests/room-browser.mjs`(network 목록)가 같은 페이지의 두 방으로 연결, 앱·netcode 채널 양방향, 송신 큐, 양쪽에서 PeerConnection 끊기와 `reconnect()`, 옛 신호 재전송, offer보다 먼저 도착한 ICE 후보의 보관, 신호 장애 중 연결 손실과 복구, 버전 불일치, 시간 초과와 되살리기, 방 코드 충돌, `close()` 뒤 무동작을 한 흐름으로 확인합니다. 실제 relay(`nos.lol`·`relay.snort.social`)로 같은 PC의 두 브라우저 컨텍스트가 연결·재연결되는 것을 임시 스크립트로 3회 확인했습니다(저장소에는 넣지 않음). 공용망의 서로 다른 NAT·모바일 기기는 미검증입니다.
+
 ## v0.45.3 (2026-11-04)
 
 호환 기능 추가. 2D 기하 수학과 원형 이동체의 접촉 해소를 모은 `geometry` 모듈(`dist/geometry.js`)을 추가합니다. 기존 번들의 동작은 같습니다.
