@@ -39,7 +39,7 @@
     },
     {
       "file": "transport.js",
-      "sha256": "8f7f9d68a2be3b1c7839ab0f975178b0bed4f454496ad4e91a5c28e6e3f0a6d3"
+      "sha256": "594fb74fa2e4336687267c217fe506e7ca7684414c2b11880d02bb61690f8b5c"
     },
     {
       "file": "replay.js",
@@ -47,7 +47,7 @@
     },
     {
       "file": "rollback.js",
-      "sha256": "a655ff233ed47c23ae719a24f056fc081f46bc62f544414126af50352b586fdb"
+      "sha256": "2fccb11e44b106ef7ecfd68863ac708fb0350bf307fcb644ce2478da618895d0"
     },
     {
       "file": "camera.js",
