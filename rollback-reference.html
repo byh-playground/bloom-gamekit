@@ -239,7 +239,7 @@
       return SIGNED(Number(BigInt(SIGNED(a)) * 1024n / BigInt(b)));
     }
   });
-  var VERSION = "0.45.3";
+  var VERSION = "0.46.0";
   var REPLAY_FORMAT_VERSION = "0.3.0-dev";
   var PROTOCOL_VERSION = 3;
   var CHUNK_SIZE = 16384;
@@ -7806,6 +7806,11 @@
       close: nostrClose
     };
   }
+  var APP_MESSAGE_LIMIT = 256 * 1024 - 1024;
+  var APP_HIGH_WATER = 512 * 1024;
+  var APP_LOW_WATER = 128 * 1024;
+  var APP_QUEUE_LIMIT = 8 * 1024 * 1024;
+  var SDP_LIMIT = 100 * 1024;
   var STAR_HEADER = 24;
   var STAR_PAYLOAD = CHUNK_SIZE2 - STAR_HEADER;
   var SaveError = class extends Error {
@@ -7990,7 +7995,7 @@
     };
     return SAVE;
   }
-  var HEX32 = /^[0-9a-f]{64}$/;
+  var HEX322 = /^[0-9a-f]{64}$/;
   var DAY_MS = 24 * 60 * 60 * 1e3;
   var INVALID = "invalid resume record; explicitly reset for a fresh room";
   var EXPIRED = "resume record expired; explicitly reset for a fresh room";
@@ -8051,7 +8056,7 @@
       if (VALUE === null) {
         return;
       }
-      if (!VALUE || typeof VALUE !== "object" || VALUE.namespace !== namespace || VALUE.room !== room || !HEX32.test(VALUE.id) || !HEX32.test(VALUE.secret) || !Number.isSafeInteger(VALUE.createdAt) || !Number.isSafeInteger(VALUE.expiresAt) || VALUE.expiresAt - VALUE.createdAt > DAY_MS || VALUE.sessionId !== null && (typeof VALUE.sessionId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(VALUE.sessionId)) || !Array.isArray(VALUE.players) || VALUE.players.length > 5 || VALUE.players.some((id) => !HEX32.test(id)) || new Set(VALUE.players).size !== VALUE.players.length || !Number.isSafeInteger(VALUE.epoch) || VALUE.epoch < 0 || VALUE.epoch > 65534 || VALUE.coordinatorId !== null && !VALUE.players.includes(VALUE.coordinatorId)) {
+      if (!VALUE || typeof VALUE !== "object" || VALUE.namespace !== namespace || VALUE.room !== room || !HEX322.test(VALUE.id) || !HEX322.test(VALUE.secret) || !Number.isSafeInteger(VALUE.createdAt) || !Number.isSafeInteger(VALUE.expiresAt) || VALUE.expiresAt - VALUE.createdAt > DAY_MS || VALUE.sessionId !== null && (typeof VALUE.sessionId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(VALUE.sessionId)) || !Array.isArray(VALUE.players) || VALUE.players.length > 5 || VALUE.players.some((id) => !HEX322.test(id)) || new Set(VALUE.players).size !== VALUE.players.length || !Number.isSafeInteger(VALUE.epoch) || VALUE.epoch < 0 || VALUE.epoch > 65534 || VALUE.coordinatorId !== null && !VALUE.players.includes(VALUE.coordinatorId)) {
         throw new TypeError("resume identity record");
       }
     }
