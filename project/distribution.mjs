@@ -24,6 +24,7 @@ export const MODULES = Object.freeze([
     'navigation',
     'scenario',
     'object-pool',
+    'geometry',
     'pixel-physics',
     'bm',
     'bm-mock',

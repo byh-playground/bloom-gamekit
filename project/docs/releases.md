@@ -1,4 +1,4 @@
-## v0.45.3 (2026-11-04)
+## v0.45.4 (2026-11-04)
 
 호환 기능 추가. 두 게임(budmori-io, rally-frontier)에 같은 파일로 복제돼 있던 얼굴 표정 코드를 `face` 모듈(`dist/face.js`)로 올립니다. 기존 번들의 동작은 같습니다.
 
@@ -7,6 +7,18 @@
 - 그리기: `FaceOverlay`(표정 부품을 아틀라스에 한 번 굽고 자세에 맞춰 얹음, 확대되면 경로), `OperationImages`(그리기 명령을 굽는 일반형), `drawFacePaths`·`drawOperations`.
 - 예제: 렌더링 예제에 "표정" 탭을 추가했습니다(`#face`).
 - 시험: `modules/face/tests/face.e2e.mjs`(core 목록)가 진짜 SVG 몸과 vector actor 위에서 굽기·그리기·확대·컨텍스트 소실 복구·정리를 확인하고, `project/tests/previews.mjs`가 표정 탭을 확인합니다.
+
+## v0.45.3 (2026-11-04)
+
+호환 기능 추가. 2D 기하 수학과 원형 이동체의 접촉 해소를 모은 `geometry` 모듈(`dist/geometry.js`)을 추가합니다. 기존 번들의 동작은 같습니다.
+
+- 수학 함수: 점-다각형 포함, 점-선분·선분-선분 거리, 선분 교차, 다각형 겹침, 직사각형 접촉, 폴리라인 점·접선·진행 비율, Catmull-Rom, 띠 다각형, 점 거리. `BoundsIndex`(AABB 버킷 색인)와 `triangulatePolygon`(귀 자르기)을 포함합니다.
+- 접촉: `SweptCircleContact`(원 대 원 이동 접촉), `SurfaceContactGeometry`(원-다각형 접촉 생성, 원·모서리 cast, 슬라이드). 동률은 `tieRank` 주입 함수가 가르며 기본값은 `tieKey|contactKey|sign`의 FNV-1a입니다.
+- `ObstacleField`(다각형 + 원 장애물 + 월드 경계의 통과 검사)와 `SurfaceMotion`(`solve`·`cast`·`contacts`·`recover`·`advance`·`constrain`). 좌표 반올림과 접촉 허용치는 `fixedPoint` 옵션(Rally는 100)으로 받습니다.
+- 게임 규칙·길찾기·지형 의미는 담지 않습니다(README의 경계 참고). Rally `e679806`의 `map-geometry.js`·`terrain.js`·`navigation.js`에서 범용 부분만 올렸고, Rally 대응표는 모듈 README에 있습니다.
+- 예제: work-scheduler 예제의 "기하" 탭(`#tab=geometry`)에서 터치·마우스로 목표를 정하면 멈춤·사영·조정의 끝 자리를 그려 봅니다. 탭 전환 코드는 탭 버튼에서 이름을 읽도록 바꿨습니다.
+- 시험: `modules/geometry/tests/geometry.e2e.mjs`(core 목록), `project/tests/previews.mjs`의 기하 탭(마우스·화살표 키·터치 에뮬레이션).
+- 비트 동일 확인(임시 검증, 저장소에 남기지 않음): Rally 원본 클래스 소스를 그대로 잘라 무작위 입력과 비교했습니다. 4,800개 월드(다각형·원·월드 크기·반지름·좌표 격자를 무작위로, 모서리 정확 충돌과 허용치 경계 포함)에서 약 4,870만 번의 출력 비교가 `Object.is`·키 순서까지 모두 같았습니다.
 
 ## v0.45.2 (2026-11-04)
 

@@ -100,6 +100,68 @@ try {
             assert.equal((await BEHAVIOR()).attack.phase, 'recover');
             await PAGE.click('#behavior-near');
             assert.equal((await BEHAVIOR()).decided, 'continue attack');
+            // 기하 탭: 벽 앞에서 멈춤·사영·조정이 서로 다른 끝 자리를 냅니다(마우스 누르기, 화살표 키, 방식 선택, 이동 적용).
+            await PAGE.click('#tab-geometry');
+            const GEOMETRY = () =>
+                PAGE.locator('#geometry-output').evaluate((output) => JSON.parse(output.textContent));
+            const CANVAS_BOX = await PAGE.locator('#geometry-canvas').boundingBox();
+            const AT = (box, x, y) => [box.x + (x / 480) * box.width, box.y + (y / 320) * box.height];
+            await PAGE.mouse.click(...AT(CANVAS_BOX, 440, 200));
+            const CLICKED = (await GEOMETRY()).target;
+            assert.ok(
+                Math.abs(CLICKED.x - 440) <= 2 && Math.abs(CLICKED.y - 200) <= 2,
+                'pointer target ' + JSON.stringify(CLICKED),
+            );
+            await PAGE.evaluate(() => globalThis.geometryExample.setTarget(440, 200));
+            const WALL_EDGE = 'wall:3:edge';
+            assert.deepEqual((await GEOMETRY()).results, {
+                stop: { x: 188, y: 174.8, hit: WALL_EDGE },
+                project: { x: 188, y: 200, hit: WALL_EDGE },
+                steer: { x: 308.06, y: 308, hit: WALL_EDGE },
+            });
+            await PAGE.keyboard.press('ArrowLeft');
+            assert.deepEqual((await GEOMETRY()).target, { x: 430, y: 200 });
+            await PAGE.evaluate(() => globalThis.geometryExample.setTarget(440, 200));
+            await PAGE.click('#geometry-mode-stop');
+            await PAGE.click('#geometry-apply');
+            assert.deepEqual((await GEOMETRY()).mover, { x: 188, y: 174.8 });
+            await PAGE.click('#geometry-reset');
+            assert.deepEqual((await GEOMETRY()).mover, { x: 40, y: 160 });
+            // 터치 에뮬레이션(실제 기기 검증이 아님): 좁은 화면에서 가로 스크롤 없이 첫 화면 안에서 캔버스를 눌러 목표를 정합니다.
+            const TOUCH_CONTEXT = await browser.newContext({
+                hasTouch: true,
+                isMobile: true,
+                viewport: { width: 390, height: 844 },
+            });
+            try {
+                const TOUCH_PAGE = await TOUCH_CONTEXT.newPage();
+                await TOUCH_PAGE.goto(URL_LOCAL + '#tab=geometry', { waitUntil: 'domcontentloaded', timeout: 45000 });
+                await TOUCH_PAGE.waitForFunction(() => !!globalThis.geometryExample);
+                const TOUCH_BOX = await TOUCH_PAGE.locator('#geometry-canvas').boundingBox();
+                assert.ok(TOUCH_BOX.x >= 0 && TOUCH_BOX.x + TOUCH_BOX.width <= 390, 'canvas fits the width');
+                assert.ok(TOUCH_BOX.y + TOUCH_BOX.height <= 844, 'canvas is inside the first screen');
+                assert.ok(
+                    await TOUCH_PAGE.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+                    'no horizontal scroll',
+                );
+                assert.ok(
+                    await TOUCH_PAGE.locator('#panel-geometry button').evaluateAll((buttons) =>
+                        buttons.every((button) => button.getBoundingClientRect().height >= 56),
+                    ),
+                    'touch buttons are at least 56px tall',
+                );
+                await TOUCH_PAGE.touchscreen.tap(...AT(TOUCH_BOX, 440, 200));
+                const TAPPED = await TOUCH_PAGE.locator('#geometry-output').evaluate((output) =>
+                    JSON.parse(output.textContent),
+                );
+                assert.ok(
+                    Math.abs(TAPPED.target.x - 440) <= 2 && Math.abs(TAPPED.target.y - 200) <= 2,
+                    'tap target ' + JSON.stringify(TAPPED.target),
+                );
+                assert.equal(TAPPED.results.stop.hit, WALL_EDGE);
+            } finally {
+                await TOUCH_CONTEXT.close();
+            }
         }
         if (NAME === 'bm') {
             // 실제 광고 호출 없이 계약만 확인합니다: 광고 스크립트는 막고 adBreak와 google.ima를 가짜로 둡니다.

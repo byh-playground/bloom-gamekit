@@ -65,6 +65,21 @@
             overflow-wrap: anywhere;
             font-size: 0.85rem;
         }
+        canvas {
+            display: block;
+            width: 100%;
+            height: auto;
+            background: #091117;
+            border: 1px solid #40535e;
+            border-radius: 10px;
+            margin-top: 0.6rem;
+            touch-action: none;
+        }
+        button[aria-pressed='true'] {
+            background: #c9863f;
+            border-color: #e0a458;
+            color: #111c24;
+        }
         svg {
             width: 100%;
             height: auto;
@@ -77,6 +92,7 @@
     <div class="tabs" role="tablist">
         <button role="tab" id="tab-budget" aria-selected="true" aria-controls="panel-budget">작업 예산</button>
         <button role="tab" id="tab-behavior" aria-selected="false" aria-controls="panel-behavior">행동</button>
+        <button role="tab" id="tab-geometry" aria-selected="false" aria-controls="panel-geometry">기하</button>
     </div>
     <section id="panel-budget" role="tabpanel" aria-labelledby="tab-budget">
         <h1>비긴급 탐색 작업 분산</h1>
@@ -111,6 +127,39 @@
             <circle id="enemy-dot" cx="190" cy="34" r="6" fill="#7fc97f" />
         </svg>
         <pre id="behavior-output"></pre>
+    </section>
+    <section id="panel-geometry" role="tabpanel" aria-labelledby="tab-geometry" hidden>
+        <h1>원은 벽에 닿으면 면을 따라 미끄러집니다</h1>
+        <p>
+            캔버스를 누르거나 끌어 목표를 정하세요. 파란 원이 목표로 가다 벽·건물·경계에 닿으면 어디까지 가는지 세 가지
+            방식으로 보여 줍니다.
+        </p>
+        <ul>
+            <li>
+                멈춤은 닿는 자리에서 서고, 사영은 접촉면 방향만큼만, 조정은 남은 거리를 속도 그대로 면을 따라 갑니다.
+            </li>
+            <li>
+                선택한 방식의 끝 자리를 "이동 적용"으로 새 시작 자리로 삼습니다. 화살표 키로 목표를 조금씩 옮길 수
+                있습니다.
+            </li>
+            <li>실선은 닿을 때까지의 길이고, 점선은 닿은 자리와 끝 자리를 잇는 길잡이입니다.</li>
+        </ul>
+        <canvas
+            id="geometry-canvas"
+            width="480"
+            height="320"
+            tabindex="0"
+            role="img"
+            aria-label="벽과 건물 사이에서 원이 목표로 이동하는 장면"
+        ></canvas>
+        <div>
+            <button id="geometry-mode-stop" data-mode="stop" aria-pressed="false">멈춤</button>
+            <button id="geometry-mode-project" data-mode="project" aria-pressed="false">사영</button>
+            <button id="geometry-mode-steer" data-mode="steer" aria-pressed="true">조정</button>
+            <button id="geometry-apply">이동 적용</button>
+            <button id="geometry-reset">처음으로</button>
+        </div>
+        <pre id="geometry-output"></pre>
     </section>
     <script type="module">
         import { createBudgetedScheduler } from '../../../dist/work-scheduler.js';
@@ -333,18 +382,208 @@
         render();
 
         // 탭. 주소로 같은 탭을 다시 엽니다. 예: #tab=behavior
+        const TABS = [...document.querySelectorAll('[role="tab"]')].map((tab) => tab.id.slice('tab-'.length));
         function selectTab(name) {
-            for (const TAB of ['budget', 'behavior']) {
+            for (const TAB of TABS) {
                 document.querySelector('#tab-' + TAB).setAttribute('aria-selected', String(TAB === name));
                 document.querySelector('#panel-' + TAB).hidden = TAB !== name;
             }
         }
-        for (const TAB of ['budget', 'behavior']) {
+        for (const TAB of TABS) {
             document.querySelector('#tab-' + TAB).addEventListener('click', () => selectTab(TAB));
         }
         const PARAMS = new URLSearchParams(location.search.slice(1) + '&' + location.hash.slice(1));
-        if (['budget', 'behavior'].includes(PARAMS.get('tab'))) {
+        if (TABS.includes(PARAMS.get('tab'))) {
             selectTab(PARAMS.get('tab'));
         }
+    </script>
+    <script type="module">
+        import { ObstacleField, SurfaceMotion } from '../../../dist/geometry.js';
+
+        // 장면은 이 예제의 것입니다. 단위는 화면 칸, 좌표는 캔버스(480×320) 그대로입니다.
+        const WORLD = { width: 480, height: 320 },
+            RADIUS = 12,
+            START = { x: 40, y: 160 },
+            FIELD = new ObstacleField({
+                ...WORLD,
+                fixedPoint: 100,
+                polygons: [
+                    // 위에서 늘어진 벽(아래쪽이 열려 있음)과 바위
+                    {
+                        id: 'wall',
+                        points: [
+                            { x: 200, y: 0 },
+                            { x: 230, y: 0 },
+                            { x: 230, y: 220 },
+                            { x: 200, y: 220 },
+                        ],
+                    },
+                    {
+                        id: 'rock',
+                        points: [
+                            { x: 90, y: 236 },
+                            { x: 150, y: 296 },
+                            { x: 70, y: 300 },
+                        ],
+                    },
+                ],
+                circles: [{ id: 'hut', x: 340, y: 250, r: 26 }],
+            }),
+            MOTION = new SurfaceMotion(FIELD),
+            MODES = { stop: '#e0a458', project: '#7fc97f', steer: '#6cb2e8' },
+            CANVAS = document.querySelector('#geometry-canvas'),
+            CONTEXT = CANVAS.getContext('2d'),
+            STATE = { mover: { ...START }, target: { x: 440, y: 200 }, mode: 'steer', results: {} };
+
+        function solveAll() {
+            for (const MODE of Object.keys(MODES)) {
+                STATE.results[MODE] = MOTION.solve(
+                    STATE.mover.x,
+                    STATE.mover.y,
+                    STATE.target.x,
+                    STATE.target.y,
+                    RADIUS,
+                    null,
+                    MODE,
+                    'mover',
+                );
+            }
+        }
+
+        function circle(x, y, r, fill, stroke, width = 2) {
+            CONTEXT.beginPath();
+            CONTEXT.arc(x, y, r, 0, Math.PI * 2);
+            if (fill) {
+                CONTEXT.fillStyle = fill;
+                CONTEXT.fill();
+            }
+            CONTEXT.strokeStyle = stroke;
+            CONTEXT.lineWidth = width;
+            CONTEXT.stroke();
+        }
+
+        function draw() {
+            CONTEXT.clearRect(0, 0, WORLD.width, WORLD.height);
+            for (const POLYGON of FIELD.polygons.items) {
+                CONTEXT.beginPath();
+                POLYGON.points.forEach((p, i) => (i ? CONTEXT.lineTo(p.x, p.y) : CONTEXT.moveTo(p.x, p.y)));
+                CONTEXT.closePath();
+                CONTEXT.fillStyle = '#2a3d49';
+                CONTEXT.fill();
+                CONTEXT.strokeStyle = '#6b8594';
+                CONTEXT.lineWidth = 2;
+                CONTEXT.stroke();
+            }
+            for (const CIRCLE of FIELD.circles) {
+                circle(CIRCLE.x, CIRCLE.y, CIRCLE.r, '#3d3a2a', '#a39a5c');
+            }
+            // 목표까지의 직선과 목표
+            CONTEXT.setLineDash([6, 6]);
+            CONTEXT.strokeStyle = '#aebfc6';
+            CONTEXT.lineWidth = 1;
+            CONTEXT.beginPath();
+            CONTEXT.moveTo(STATE.mover.x, STATE.mover.y);
+            CONTEXT.lineTo(STATE.target.x, STATE.target.y);
+            CONTEXT.stroke();
+            CONTEXT.setLineDash([]);
+            circle(STATE.target.x, STATE.target.y, 5, null, '#aebfc6');
+            // 방식마다 닿은 자리까지의 길과 끝 자리. 선택한 방식은 채워서 그립니다.
+            for (const [MODE, COLOR] of Object.entries(MODES)) {
+                const RESULT = STATE.results[MODE],
+                    HIT = RESULT.hit,
+                    SELECTED = MODE === STATE.mode;
+                // 닿을 때까지는 실선, 닿은 자리에서 끝 자리까지는 단순한 점선 길잡이입니다(실제 경로가 아님).
+                const CONTACT = HIT
+                    ? {
+                          x: STATE.mover.x + (STATE.target.x - STATE.mover.x) * HIT.t,
+                          y: STATE.mover.y + (STATE.target.y - STATE.mover.y) * HIT.t,
+                      }
+                    : RESULT;
+                CONTEXT.strokeStyle = COLOR;
+                CONTEXT.lineWidth = SELECTED ? 3 : 1.5;
+                CONTEXT.beginPath();
+                CONTEXT.moveTo(STATE.mover.x, STATE.mover.y);
+                CONTEXT.lineTo(CONTACT.x, CONTACT.y);
+                CONTEXT.stroke();
+                CONTEXT.setLineDash([3, 5]);
+                CONTEXT.beginPath();
+                CONTEXT.moveTo(CONTACT.x, CONTACT.y);
+                CONTEXT.lineTo(RESULT.x, RESULT.y);
+                CONTEXT.stroke();
+                CONTEXT.setLineDash([]);
+                circle(RESULT.x, RESULT.y, RADIUS, SELECTED ? COLOR + '66' : null, COLOR, SELECTED ? 3 : 1.5);
+            }
+            circle(STATE.mover.x, STATE.mover.y, RADIUS, '#2b6f86', '#6cb2e8');
+        }
+
+        function render() {
+            solveAll();
+            draw();
+            const SUMMARY = (result) => ({ x: result.x, y: result.y, hit: result.hit?.key ?? null });
+            document.querySelector('#geometry-output').textContent = JSON.stringify(
+                {
+                    mode: STATE.mode,
+                    mover: STATE.mover,
+                    target: STATE.target,
+                    results: Object.fromEntries(Object.keys(MODES).map((mode) => [mode, SUMMARY(STATE.results[mode])])),
+                },
+                null,
+                2,
+            );
+            for (const BUTTON of document.querySelectorAll('[data-mode]')) {
+                BUTTON.setAttribute('aria-pressed', String(BUTTON.dataset.mode === STATE.mode));
+            }
+        }
+
+        function setTarget(x, y) {
+            STATE.target = {
+                x: Math.round(Math.min(WORLD.width, Math.max(0, x))),
+                y: Math.round(Math.min(WORLD.height, Math.max(0, y))),
+            };
+            render();
+        }
+
+        // 포인터 이벤트 하나로 마우스와 터치를 함께 받습니다. 누르는 동안 끌면 목표가 따라옵니다.
+        function fromPointer(event) {
+            const BOX = CANVAS.getBoundingClientRect();
+            setTarget(
+                ((event.clientX - BOX.left) * WORLD.width) / BOX.width,
+                ((event.clientY - BOX.top) * WORLD.height) / BOX.height,
+            );
+        }
+        CANVAS.addEventListener('pointerdown', (event) => {
+            CANVAS.setPointerCapture(event.pointerId);
+            CANVAS.focus({ preventScroll: true });
+            fromPointer(event);
+        });
+        CANVAS.addEventListener('pointermove', (event) => {
+            if (CANVAS.hasPointerCapture(event.pointerId)) {
+                fromPointer(event);
+            }
+        });
+        CANVAS.addEventListener('keydown', (event) => {
+            const STEP = { ArrowLeft: [-10, 0], ArrowRight: [10, 0], ArrowUp: [0, -10], ArrowDown: [0, 10] }[event.key];
+            if (STEP) {
+                event.preventDefault();
+                setTarget(STATE.target.x + STEP[0], STATE.target.y + STEP[1]);
+            }
+        });
+        for (const BUTTON of document.querySelectorAll('[data-mode]')) {
+            BUTTON.addEventListener('click', () => {
+                STATE.mode = BUTTON.dataset.mode;
+                render();
+            });
+        }
+        document.querySelector('#geometry-apply').addEventListener('click', () => {
+            const RESULT = STATE.results[STATE.mode];
+            STATE.mover = { x: RESULT.x, y: RESULT.y };
+            render();
+        });
+        document.querySelector('#geometry-reset').addEventListener('click', () => {
+            STATE.mover = { ...START };
+            render();
+        });
+        window.geometryExample = { setTarget, state: STATE };
+        render();
     </script>
 </html>
