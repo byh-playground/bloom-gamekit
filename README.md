@@ -33,6 +33,7 @@
 - [PWA: SVG 하나에서 manifest·아이콘·공유 이미지·sw.js 생성, 새로고침마다 최신 버전과 오프라인 시작](./modules/pwa/README.md) · `node modules/pwa/tests/pwa.e2e.mjs`
 - [시작 로딩: 모듈 그래프 목록·병렬 modulepreload·단계 가중 전체 진행률](./modules/boot/README.md) · `node modules/boot/tests/boot.e2e.mjs`
 - [다국어: 페이지 언어 결정·TextPair 문구·정적 문구 적용](./modules/i18n/README.md) · `node modules/i18n/tests/i18n.e2e.mjs`
+- [성장 트리: requires만 적으면 자동 배치·상태 4종·상세·조건 칩·`#/tech/:id`·넘치면 줌/팬 패널](./modules/tech-tree/README.md) · `node modules/tech-tree/tests/tech-tree.e2e.mjs`
 - [동적 방·공개 입장·새로고침 복구](./modules/rollback/README.md) · [Nostr 디렉터리·전송](./modules/transport/README.md) · [1:1 방 연결과 재연결](./modules/transport/README.md#11-방-연결과-재연결-createnostrroom)
 - [SDK 전체/분리 API와 이전](./modules/rollback/docs/api-migration.md)
 - [비활성 참가자·가용성 정책·자동 coordinator 이관](./modules/rollback/README.md#비활성-참가자와-선택형-가용성) · [독립 deadline pump 예제](./modules/rollback/examples/availability/index.html)
