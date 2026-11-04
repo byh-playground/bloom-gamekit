@@ -2,40 +2,116 @@
 <html lang="ko">
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>비긴급 작업 예산 · bloom-gamekit</title>
+    <title>작업 예산·행동 · bloom-gamekit</title>
     <style>
+        * {
+            box-sizing: border-box;
+        }
         body {
             font:
                 16px system-ui,
                 sans-serif;
             max-width: 860px;
-            margin: 2rem auto;
+            margin: 1.5rem auto;
             padding: 0 1rem;
             background: #111c24;
             color: #e6f1f3;
             line-height: 1.55;
         }
+        h1 {
+            font-size: 1.4rem;
+            margin: 0 0 0.5rem;
+        }
+        ul {
+            padding-left: 1.2rem;
+            color: #aebfc6;
+            font-size: 0.9rem;
+        }
         button {
-            padding: 0.5rem 0.8rem;
-            margin-right: 0.5rem;
+            min-height: 56px;
+            min-width: 56px;
+            font: inherit;
+            border-radius: 10px;
+            border: 1px solid #3f8fa8;
+            background: #2b6f86;
+            color: inherit;
+            padding: 0 0.9rem;
+            margin: 0.3rem 0.3rem 0 0;
+            font-weight: 600;
+        }
+        .tabs {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        .tabs button {
+            flex: 1;
+            margin: 0;
+            background: #1b2c37;
+            border-color: #40535e;
+        }
+        .tabs button[aria-selected='true'] {
+            background: #2b6f86;
+            border-color: #3f8fa8;
+        }
+        [hidden] {
+            display: none !important;
         }
         pre {
             padding: 1rem;
             background: #091117;
             border: 1px solid #40535e;
             white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            font-size: 0.85rem;
+        }
+        svg {
+            width: 100%;
+            height: auto;
+            background: #091117;
+            border: 1px solid #40535e;
+            border-radius: 10px;
+            margin-top: 0.6rem;
         }
     </style>
-    <h1>비긴급 탐색 작업 분산</h1>
-    <p>
-        아래 버튼 한 번이 기존 논리 tick 한 번을 뜻합니다. 각 tick은 후보 7개까지만 검사하고, urgent/standard/low 작업은
-        4:2:1 quantum 비율로 순환합니다.
-    </p>
-    <p>
+    <div class="tabs" role="tablist">
+        <button role="tab" id="tab-budget" aria-selected="true" aria-controls="panel-budget">작업 예산</button>
+        <button role="tab" id="tab-behavior" aria-selected="false" aria-controls="panel-behavior">행동</button>
+    </div>
+    <section id="panel-budget" role="tabpanel" aria-labelledby="tab-budget">
+        <h1>비긴급 탐색 작업 분산</h1>
+        <p>
+            버튼 한 번이 논리 tick 한 번입니다. 각 tick은 정해진 수의 후보만 검사하고, 급한 작업일수록 자주 차례가
+            옵니다.
+        </p>
+        <ul>
+            <li>tick 하나의 예산은 후보 7개, urgent·standard·low는 4:2:1 비율로 순환합니다.</li>
+            <li>개체를 지우면 그 개체의 남은 작업이 취소됩니다.</li>
+        </ul>
         <button id="tick">논리 tick 실행</button>
         <button id="delete">low 개체 삭제</button>
-    </p>
-    <pre id="output"></pre>
+        <pre id="output"></pre>
+    </section>
+    <section id="panel-behavior" role="tabpanel" aria-labelledby="tab-behavior" hidden>
+        <h1>행동트리는 결정, 상태 기계는 실행</h1>
+        <p>
+            보스가 비어 있을 때 행동트리가 할 일을 하나 고르고, 고른 공격은 상태 기계가 예열 → 발동 → 회복으로
+            진행합니다.
+        </p>
+        <ul>
+            <li>적이 내려찍기 거리 안이면 내려찍기, 돌진 거리 안이고 돌진이 준비됐으면 돌진, 아니면 걸어갑니다.</li>
+            <li>돌진은 쓰고 나면 재사용 대기가 돕니다. 버튼 한 번이 논리 tick 한 번입니다.</li>
+        </ul>
+        <button id="behavior-tick">논리 tick 실행</button>
+        <button id="behavior-near">적을 가까이</button>
+        <button id="behavior-far">적을 멀리</button>
+        <svg viewBox="0 0 400 60" role="img" aria-label="보스와 적의 위치">
+            <line x1="10" y1="40" x2="390" y2="40" stroke="#40535e" />
+            <circle id="boss-dot" cx="10" cy="30" r="12" fill="#c98a5a" />
+            <circle id="enemy-dot" cx="190" cy="34" r="6" fill="#7fc97f" />
+        </svg>
+        <pre id="behavior-output"></pre>
+    </section>
     <script>
 (() => {
   // dist/work-scheduler.js
@@ -782,6 +858,317 @@
     { once: true }
   );
   render();
+})();
+
+</script>
+    <script>
+(() => {
+  // dist/behavior.js
+  var ACTION = 0;
+  var GUARD = 1;
+  var SELECTOR = 2;
+  var BehaviorNode = class {
+    constructor(kind, name, test, run, children) {
+      if (typeof name !== "string" || !name) {
+        throw new TypeError("Behavior node name must be a non-empty string.");
+      }
+      this.kind = kind;
+      this.name = name;
+      this.test = test;
+      this.run = run;
+      this.children = children;
+      Object.freeze(this);
+    }
+  };
+  function assertNode(node, where) {
+    if (!(node instanceof BehaviorNode)) {
+      throw new TypeError(`${where} must be a behavior node.`);
+    }
+  }
+  function action(name, run) {
+    if (typeof run !== "function") {
+      throw new TypeError("Behavior action run must be a function.");
+    }
+    return new BehaviorNode(ACTION, name, null, run, null);
+  }
+  function guard(name, test, child) {
+    if (typeof test !== "function") {
+      throw new TypeError("Behavior guard test must be a function.");
+    }
+    assertNode(child, "Behavior guard child");
+    return new BehaviorNode(GUARD, name, test, null, child);
+  }
+  function selector(name, children) {
+    if (!Array.isArray(children) || !children.length) {
+      throw new TypeError("Behavior selector needs at least one child.");
+    }
+    children.forEach((child, index) => assertNode(child, `Behavior selector child ${index}`));
+    return new BehaviorNode(SELECTOR, name, null, null, Object.freeze([...children]));
+  }
+  function evaluate(node, context) {
+    switch (node.kind) {
+      case ACTION:
+        return node.run(context) ? node : null;
+      case GUARD:
+        return node.test(context) ? evaluate(node.children, context) : null;
+      default:
+        for (const CHILD of node.children) {
+          const TAKEN = evaluate(CHILD, context);
+          if (TAKEN) {
+            return TAKEN;
+          }
+        }
+        return null;
+    }
+  }
+  function describe(node) {
+    switch (node.kind) {
+      case ACTION:
+        return node.name;
+      case GUARD:
+        return { [node.name]: describe(node.children) };
+      default:
+        return { [node.name]: node.children.map(describe) };
+    }
+  }
+  var BehaviorTree = class {
+    #root;
+    /** @param {BehaviorNode} root */
+    constructor(root) {
+      assertNode(root, "BehaviorTree root");
+      this.#root = root;
+      Object.freeze(this);
+    }
+    /**
+     * 트리를 한 번 평가합니다. 차례를 가져간 행동의 이름, 아무 행동도 가져가지 않았으면 null입니다.
+     * @param {any} context 호출자가 소유·재사용하는 행위자 문맥
+     * @returns {string | null}
+     */
+    decide(context) {
+      return evaluate(this.#root, context)?.name ?? null;
+    }
+    /** 디버그·문서용 트리 모양(이름만). 읽을 때만 새 객체를 만듭니다. */
+    describe() {
+      return describe(this.#root);
+    }
+  };
+  var StateMachine = class {
+    #states;
+    /**
+     * @param {{
+     *   field?: string,
+     *   initial: string,
+     *   states: Record<string, {
+     *     to?: string[],
+     *     enter?: (host: any, context: any) => void,
+     *     exit?: (host: any, context: any) => void,
+     *     update?: (host: any, context: any) => string | null | void,
+     *   }>,
+     * }} definition
+     */
+    constructor({ field = "state", initial, states } = {}) {
+      if (typeof field !== "string" || !field) {
+        throw new TypeError("StateMachine field must be a non-empty string.");
+      }
+      if (!states || typeof states !== "object") {
+        throw new TypeError("StateMachine states must be an object.");
+      }
+      const COMPILED = /* @__PURE__ */ new Map();
+      for (const [NAME, STATE] of Object.entries(states)) {
+        for (const HOOK of ["enter", "exit", "update"]) {
+          if (STATE[HOOK] !== void 0 && typeof STATE[HOOK] !== "function") {
+            throw new TypeError(`StateMachine ${NAME}.${HOOK} must be a function.`);
+          }
+        }
+        COMPILED.set(
+          NAME,
+          Object.freeze({
+            to: new Set(STATE.to ?? []),
+            enter: STATE.enter ?? null,
+            exit: STATE.exit ?? null,
+            update: STATE.update ?? null
+          })
+        );
+      }
+      if (!COMPILED.has(initial)) {
+        throw new RangeError(`StateMachine initial state ${initial} is not defined.`);
+      }
+      for (const [NAME, STATE] of COMPILED) {
+        for (const TARGET of STATE.to) {
+          if (!COMPILED.has(TARGET)) {
+            throw new RangeError(`StateMachine ${NAME} leads to undefined state ${TARGET}.`);
+          }
+        }
+      }
+      this.field = field;
+      this.initial = initial;
+      this.#states = COMPILED;
+      Object.freeze(this);
+    }
+    /** host의 현재 상태 이름. */
+    state(host) {
+      return host[this.field];
+    }
+    /** host를 initial 상태로 두고 그 enter를 실행합니다. */
+    start(host, context) {
+      host[this.field] = this.initial;
+      this.#states.get(this.initial).enter?.(host, context);
+    }
+    /**
+     * 현재 상태의 to에 있는 상태로만 옮깁니다: exit → 필드 변경 → enter. enter 안에서 다시 전이할 수 있습니다.
+     * @returns {string} 옮긴 뒤 상태
+     */
+    transition(host, to, context) {
+      const FROM = host[this.field], CURRENT = this.#states.get(FROM);
+      if (!CURRENT) {
+        throw new RangeError(`StateMachine host is in undefined state ${FROM}.`);
+      }
+      if (!CURRENT.to.has(to)) {
+        throw new RangeError(`StateMachine cannot go from ${FROM} to ${to}.`);
+      }
+      CURRENT.exit?.(host, context);
+      host[this.field] = to;
+      this.#states.get(to).enter?.(host, context);
+      return host[this.field];
+    }
+    /**
+     * 현재 상태의 update를 한 번 실행합니다. update가 상태 이름을 돌려주면 그 상태로 전이합니다.
+     * 같은 tick에 새 상태의 update는 실행하지 않습니다.
+     * @returns {string} 실행 뒤 상태
+     */
+    update(host, context) {
+      const STATE = this.#states.get(host[this.field]);
+      if (!STATE) {
+        throw new RangeError(`StateMachine host is in undefined state ${host[this.field]}.`);
+      }
+      const NEXT = STATE.update?.(host, context);
+      if (typeof NEXT === "string") {
+        this.transition(host, NEXT, context);
+      }
+      return host[this.field];
+    }
+  };
+
+  // modules/work-scheduler/examples/modules/work-scheduler/examples/index.html
+  var ATTACKS = {
+    slam: { reach: 40, windup: 2, cooldown: 0, move: 0 },
+    charge: { reach: 200, windup: 2, cooldown: 8, move: 60 }
+  };
+  var WALK = 15;
+  var PHASES = new StateMachine({
+    field: "phase",
+    initial: "windup",
+    states: {
+      windup: {
+        to: ["active"],
+        update: (attack) => attack.elapsed >= ATTACKS[attack.id].windup ? "active" : null
+      },
+      active: {
+        to: ["recover"],
+        enter(attack, boss) {
+          attack.elapsed = 0;
+          boss.cooldowns[attack.id] = ATTACKS[attack.id].cooldown;
+        },
+        update(attack, boss) {
+          const LEFT = boss.enemyX - boss.x - ATTACKS.slam.reach / 2;
+          boss.x += Math.max(0, Math.min(ATTACKS[attack.id].move, LEFT));
+          return "recover";
+        }
+      },
+      recover: {
+        to: [],
+        enter: (attack) => attack.elapsed = 0,
+        update(attack, boss) {
+          if (attack.elapsed >= 1) {
+            boss.attack = null;
+          }
+        }
+      }
+    }
+  });
+  var BOSS = { x: 10, enemyX: 190, cooldowns: { slam: 0, charge: 0 }, attack: null };
+  var DISTANCE = (boss) => boss.enemyX - boss.x;
+  var CAN = (boss, id) => boss.cooldowns[id] <= 0 && DISTANCE(boss) <= ATTACKS[id].reach;
+  var START = (boss, id) => {
+    boss.attack = { id, phase: PHASES.initial, elapsed: 0 };
+    return true;
+  };
+  var BOSS_TURN = new BehaviorTree(
+    selector("boss", [
+      guard(
+        "attacking",
+        (boss) => !!boss.attack,
+        action("continue attack", () => true)
+      ),
+      guard(
+        "slam in reach",
+        (boss) => CAN(boss, "slam"),
+        action("slam", (boss) => START(boss, "slam"))
+      ),
+      guard(
+        "charge ready and in reach",
+        (boss) => CAN(boss, "charge"),
+        action("charge", (boss) => START(boss, "charge"))
+      ),
+      action("walk", (boss) => {
+        boss.x += Math.min(WALK, Math.max(0, DISTANCE(boss) - ATTACKS.slam.reach / 2));
+        return true;
+      })
+    ])
+  );
+  var tick = 0;
+  var decided = null;
+  function step() {
+    tick++;
+    for (const ID of Object.keys(BOSS.cooldowns)) {
+      BOSS.cooldowns[ID] = Math.max(0, BOSS.cooldowns[ID] - 1);
+    }
+    decided = BOSS_TURN.decide(BOSS);
+    if (BOSS.attack) {
+      BOSS.attack.elapsed++;
+      PHASES.update(BOSS.attack, BOSS);
+    }
+    render();
+  }
+  function render() {
+    document.querySelector("#boss-dot").setAttribute("cx", String(BOSS.x));
+    document.querySelector("#enemy-dot").setAttribute("cx", String(BOSS.enemyX));
+    document.querySelector("#behavior-output").textContent = JSON.stringify(
+      {
+        tick,
+        decided,
+        distance: DISTANCE(BOSS),
+        attack: BOSS.attack && { id: BOSS.attack.id, phase: BOSS.attack.phase },
+        cooldowns: BOSS.cooldowns,
+        tree: BOSS_TURN.describe()
+      },
+      null,
+      2
+    );
+  }
+  function place(x) {
+    BOSS.x = 10;
+    BOSS.enemyX = x;
+    render();
+  }
+  document.querySelector("#behavior-tick").addEventListener("click", step);
+  document.querySelector("#behavior-near").addEventListener("click", () => place(40));
+  document.querySelector("#behavior-far").addEventListener("click", () => place(190));
+  window.behaviorExample = { step, place, boss: BOSS };
+  render();
+  function selectTab(name) {
+    for (const TAB of ["budget", "behavior"]) {
+      document.querySelector("#tab-" + TAB).setAttribute("aria-selected", String(TAB === name));
+      document.querySelector("#panel-" + TAB).hidden = TAB !== name;
+    }
+  }
+  for (const TAB of ["budget", "behavior"]) {
+    document.querySelector("#tab-" + TAB).addEventListener("click", () => selectTab(TAB));
+  }
+  var PARAMS = new URLSearchParams(location.search.slice(1) + "&" + location.hash.slice(1));
+  if (["budget", "behavior"].includes(PARAMS.get("tab"))) {
+    selectTab(PARAMS.get("tab"));
+  }
 })();
 
 </script>
