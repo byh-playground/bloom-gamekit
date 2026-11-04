@@ -1,3 +1,16 @@
+## v0.46.8 (2026-11-05)
+
+호환 기능 추가. rally-frontier가 격자 거리장으로 이동 목표를 정하던 코드(`NavigationGrid`·`DistanceField`·`CellHeap`)에서 정책을 걷어내고 격자·거리장·내려가기만 올린 `pathfield` 모듈(`dist/pathfield.js`)을 추가합니다. 기존 번들의 동작은 같고, 게임은 아직 옮기지 않았습니다(Rally 이관은 별도 작업).
+
+- `PathGrid`: 정수 비용 격자. 호출자가 준 `passable(x, y, cell)`을 칸마다 한 번만 부르고 기억하며(`invalidate()`·`sync(version)`으로 비움), 8방향 이동(직선 10·대각 14, 대각은 두 직교 이웃이 열려 있어야 함)·`nearestOpen`(정사각 고리, 훑는 순서가 동률 규칙)·`openCellsWithin`(거리 고리 안의 열린 칸, `accept` 판정 선택)·`reachableFrom`(이어짐 표시)을 줍니다.
+- `DistanceField`: 여러 출발 칸에서 퍼지는 정수 비용 거리장. 필요한 칸까지만 확정하는 게으른 `settle(target)`·`distance(cell)`, 내려가기 `lowestNeighbor(cell)`·`descend(start, maxSteps, out)`(동률은 방향 순서). 힙 키는 `비용 * 2^k + 칸 번호`라 칸 수 상한은 2^22입니다.
+- `FieldCache`(선택): 키로 거리장 보관. 용량을 넘으면 먼저 넣은 것부터 버리고(FIFO), 격자가 비워지면 낡은 거리장을 버리고, `sync(epoch)`로 세대(틱)마다 비웁니다.
+- 정책은 모듈에 없습니다: 목표 해석, 가까우면 직선·멀면 거리장, 캐시 수명, 내려가는 칸 중 무엇으로 향할지는 게임이 정합니다. 통과 판정은 호출자 함수이고, geometry의 `ObstacleField.pointClear`를 연결하는 모양을 README에 적었습니다.
+- 원본과의 동등성(임시 검증, 저장소에 남기지 않음): Rally 원본 `NavigationGrid`를 그대로 떼어 무작위 장애물 지도(4200×4800, 칸 24)에서 같은 질의 흐름과 비교했습니다. 고정·추격 목표, 목표가 닫힌 방 안인 경우(닿지 못함), 장애물 배치 변경 뒤 재계산, 고정 캐시 24개 초과 제거를 섞은 질의 2,500건씩 4개 시드(1만 건)의 반환 좌표가 `Object.is`까지 모두 같았고, 연결 검사(`reachableFrom`)의 칸 표시도 같았습니다.
+- 예제: work-scheduler 예제에 "거리장" 탭(`#tab=pathfield`)을 추가했습니다. 장애물은 geometry의 `ObstacleField`입니다.
+- 시험: `modules/pathfield/tests/pathfield.e2e.mjs`(core 목록)가 작은 격자의 비용·모서리 규칙·게으른 확정·내려가기·동률·캐시·검증 오류를 값으로 못 박고, `ObstacleField` 연결을 벽의 틈으로 도는 길로 확인하고, 원본 `NavigationGrid`로 돌린 같은 질의 흐름(700건)의 해시와 일치하는지 확인합니다(순수 Node, 약 1초). `project/tests/previews.mjs`가 거리장 탭(마우스·화살표 키·걸음·터치 에뮬레이션)을 확인합니다.
+- 배포 구조: `MODULES`에 `pathfield`를 더해 manifest 모듈 목록이 `pathfield.js`만큼 늘어납니다. manifest 목록을 고정 검사하는 게임은 다음 pin 갱신 때 목록에 더해야 합니다.
+
 ## v0.46.7 (2026-11-05)
 
 호환 수정·예제 추가(`tech-tree`). 예제 페이지를 더하고, v0.46.6의 약점 세 가지를 고칩니다.
