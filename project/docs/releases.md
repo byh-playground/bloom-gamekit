@@ -1,3 +1,13 @@
+## v0.46.4 (2026-11-04)
+
+호환 기능 추가. 두 게임(budmori-io, rally-frontier)에 같은 파일로 복제돼 있던 얼굴 표정 코드를 `face` 모듈(`dist/face.js`)로 올립니다. 기존 번들의 동작은 같습니다.
+
+- 표정 정의: `FACE_IDS` 13가지(상태 8 + 성격 5)와 `faceParts`·`buildFace`·`faceSvg`·`cheekEllipses`·`ellipsePath`. 원본 `face-layer.js`와 모든 표정·여러 앵커·볼 색에서 출력이 같습니다(깊은 비교).
+- 몸 연결: `FACE_SOCKETS`(`face-eye-left`·`face-eye-right`·`face-mouth`), `faceAnchor(compiled)`, `posedFace(actor, rest, out)`.
+- 그리기: `FaceOverlay`(표정 부품을 아틀라스에 한 번 굽고 자세에 맞춰 얹음, 확대되면 경로), `OperationImages`(그리기 명령을 굽는 일반형), `drawFacePaths`·`drawOperations`.
+- 예제: 렌더링 예제에 "표정" 탭을 추가했습니다(`#face`).
+- 시험: `modules/face/tests/face.e2e.mjs`(core 목록)가 진짜 SVG 몸과 vector actor 위에서 굽기·그리기·확대·컨텍스트 소실 복구·정리를 확인하고, `project/tests/previews.mjs`가 표정 탭을 확인합니다.
+
 ## v0.46.3 (2026-11-04)
 
 호환 기능 추가. `createNostrRoom`에 host의 방 코드 충돌 확인 시간을 정하는 `collisionCheckMs`(기본 1200, 0..10000)를 더합니다. 넘기지 않으면 동작이 같습니다.

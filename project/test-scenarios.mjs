@@ -24,6 +24,7 @@ const SUITES = {
         'modules/spatial/tests/spatial.e2e.mjs',
         'modules/metrics/tests/metrics.e2e.mjs',
         'modules/geometry/tests/geometry.e2e.mjs',
+        'modules/face/tests/face.e2e.mjs',
         'modules/vector-assets/tests/run-gpu-poses.browser.mjs',
         'modules/vector-assets/tests/run-paint-regions.browser.mjs',
         'modules/rendering/tests/run-texture-atlas.browser.mjs',

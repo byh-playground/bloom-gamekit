@@ -77,6 +77,7 @@
             <button id="tab-atlas" type="button" role="tab" aria-controls="panel-atlas">아틀라스</button>
             <button id="tab-materials" type="button" role="tab" aria-controls="panel-materials">재질</button>
             <button id="tab-paint" type="button" role="tab" aria-controls="panel-paint">그라디언트</button>
+            <button id="tab-face" type="button" role="tab" aria-controls="panel-face">표정</button>
         </div>
 
         <section id="panel-vector" role="tabpanel" aria-labelledby="tab-vector" hidden>
@@ -142,6 +143,22 @@
             <ul>
                 <li>클립 경로는 장면 밖에서 한 번 만들어 두고 매 프레임 스텐실로 적용합니다.</li>
                 <li>스텐실 버퍼가 없는 장치에서는 클립 경로를 적용하지 못하고 오류를 냅니다.</li>
+            </ul>
+        </section>
+
+        <section id="panel-face" role="tabpanel" aria-labelledby="tab-face" hidden>
+            <p>몸에는 얼굴 자리 점 세 개만 있고, 표정 부품은 모든 몸이 같은 것을 나눠 씁니다.</p>
+            <div class="controls">
+                <button id="face-play" type="button" aria-pressed="true">움직임</button>
+                <button id="face-next" type="button">다음 표정</button>
+                <button id="face-cheek" type="button" aria-pressed="false">볼 색 바꾸기</button>
+            </div>
+            <canvas id="canvas-face" width="720" height="400"></canvas>
+            <p id="stats-face" aria-live="polite"></p>
+            <ul>
+                <li>왼쪽 얼굴 13개를 눌러 오른쪽에서 크게 봅니다.</li>
+                <li>작은 얼굴은 한 번 구워 둔 이미지로, 이미지가 늘어나는 큰 얼굴은 경로로 그립니다.</li>
+                <li>몸이 눌리거나 기울면 점 세 개를 따라 얼굴이 같이 움직입니다.</li>
             </ul>
         </section>
     </main>

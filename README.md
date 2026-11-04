@@ -25,6 +25,7 @@
 - [비긴급 작업의 고정 tick 예산·재개 API](./modules/work-scheduler/README.md)
 - [행동 결정(행동트리)과 실행 단계(상태 기계)](./modules/behavior/README.md) · [행동 탭 바로 보기](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/work-scheduler.html#tab=behavior)
 - [결정론 균일 격자: 점 항목 후보·최근접 고리 탐색, 사각형 항목 겹침 쌍, 질의 순서 계약](./modules/spatial/README.md) · `node modules/spatial/tests/spatial.e2e.mjs`
+- [얼굴 표정: 몸 SVG의 소켓 점 세 개에 같은 표정 부품을 얹고, 작게는 구운 이미지로 크게는 경로로 그리기](./modules/face/README.md) · [표정 탭 바로 보기](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rendering.html#face) · `node modules/face/tests/face.e2e.mjs`
 - [광고 어댑터 추상화·빈도 정책](./modules/bm/README.md) · [mock 어댑터](./modules/bm/adapters/mock/README.md) · [Google H5 Games Ads 어댑터와 신청 절차](./modules/bm/adapters/google-ads/README.md) · [IMA 영상 광고 어댑터(샘플 태그로 승인 없이 테스트)](./modules/bm/adapters/ima/README.md)
 - [상품·구매와 서버 확인 기준 소유 판정](./modules/store/README.md) · [mock 어댑터](./modules/store/adapters/mock/README.md)
 - [게임 저장 레코드: 이관·검증·탭 간 충돌, 저장소 어댑터](./modules/save/README.md)
@@ -35,7 +36,7 @@
 - [동적 방·공개 입장·새로고침 복구](./modules/rollback/README.md) · [Nostr 디렉터리·전송](./modules/transport/README.md) · [1:1 방 연결과 재연결](./modules/transport/README.md#11-방-연결과-재연결-createnostrroom)
 - [SDK 전체/분리 API와 이전](./modules/rollback/docs/api-migration.md)
 - [비활성 참가자·가용성 정책·자동 coordinator 이관](./modules/rollback/README.md#비활성-참가자와-선택형-가용성) · [독립 deadline pump 예제](./modules/rollback/examples/availability/index.html)
-- [실제 독립 번들을 연결하는 보간 예제](./modules/interpolation/examples/index.html) · [detached 입력 preview 예제](./modules/simloop/examples/input-preview/index.html) · [렌더링 예제: 벡터·아틀라스·재질·그라디언트 탭](./modules/rendering/examples/index.html)
+- [실제 독립 번들을 연결하는 보간 예제](./modules/interpolation/examples/index.html) · [detached 입력 preview 예제](./modules/simloop/examples/input-preview/index.html) · [렌더링 예제: 벡터·아틀라스·재질·그라디언트·표정 탭](./modules/rendering/examples/index.html)
 - [고정 브라우저 E2E](./project/tests/browser.e2e.mjs) · [별도 보간 벤치마크](./modules/interpolation/scripts/benchmark.mjs)
 
 ```text
