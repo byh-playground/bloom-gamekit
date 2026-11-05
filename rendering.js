@@ -1917,7 +1917,7 @@ var WebGLDevice = class {
 // modules/rendering/vector-shader.js
 var VECTOR_VERTEX_FLOATS = 21;
 var VECTOR_FRAGMENT_VARYINGS = "varying highp vec2 v_uv; varying vec4 v_color; varying highp vec4 v_paint; varying highp vec4 v_radial; varying highp vec4 v_rect;";
-var VECTOR_FRAGMENT_FINISH = "float a=texel.a*v_color.a;if(u_depthWrite>0.5&&a<=0.0)discard;vec3 rgb=v_paint.y>1.5?v_color.rgb*a:mix(texel.rgb*v_color.rgb*v_color.a,vec3(a),v_paint.y);gl_FragColor=vec4(rgb,a);";
+var VECTOR_FRAGMENT_FINISH = "float a=texel.a*v_color.a;float cutoff=fract(v_paint.x)/0.49;if(u_depthWrite>0.5&&a<=cutoff)discard;vec3 rgb=v_paint.y>1.5?v_color.rgb*a:mix(texel.rgb*v_color.rgb*v_color.a,vec3(a),v_paint.y);gl_FragColor=vec4(rgb,a);";
 var PRIMITIVE_OUTSIDE = `bool primitiveOutside(vec2 l,vec4 p,vec4 m){
   float kind=p.x,stroke=p.y,width=p.z,option=p.w;
   if(kind<0.5){
@@ -1976,6 +1976,7 @@ function validateQuads({
   color = [1, 1, 1, 1],
   alpha = 1,
   filter = "linear",
+  depthWriteAlphaThreshold = 0,
   parts = null,
   pose = null
 } = {}) {
@@ -1988,6 +1989,9 @@ function validateQuads({
   allFinite(matrix);
   if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1) {
     throw new RangeError("alpha must be in [0,1]");
+  }
+  if (!Number.isFinite(depthWriteAlphaThreshold) || depthWriteAlphaThreshold < 0 || depthWriteAlphaThreshold > 1) {
+    throw new RangeError("depthWriteAlphaThreshold must be in [0,1]");
   }
   if (!color || color.length !== 4) {
     throw new TypeError("RGBA channels must be in [0,1]");
@@ -3941,14 +3945,39 @@ var VectorRenderer = class {
     alpha = 1,
     whiteFlash = false,
     forceColor = false,
-    filter = "linear"
+    filter = "linear",
+    depthWriteAlphaThreshold = 0
   } = {}) {
     this._frame();
     const COUNT = uvRects?.length / 4;
-    validateQuads({ layer, uvRects, localRects, matrix, color, alpha, filter, parts, pose });
+    validateQuads({
+      layer,
+      uvRects,
+      localRects,
+      matrix,
+      color,
+      alpha,
+      filter,
+      parts,
+      pose,
+      depthWriteAlphaThreshold
+    });
     const TINT = [color[0], color[1], color[2], color[3] * alpha], M = compose(this.matrix, matrix);
     this._useVertexPaint(
-      [layer, whiteFlash ? 1 : forceColor ? 2 : 0, 0, filter === "nearest" ? 1 : 0, 0, 0, 0, 0, 0, 0, 1, 1],
+      [
+        layer + depthWriteAlphaThreshold * 0.49,
+        whiteFlash ? 1 : forceColor ? 2 : 0,
+        0,
+        filter === "nearest" ? 1 : 0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1
+      ],
       whiteFlash
     );
     if (pose === null) {
@@ -4915,7 +4944,7 @@ var OrderedTriangleBatch = class {
         this.commands[AT + 20 + j] = options.localRects[i * 4 + j];
         this.commands[AT + 24 + j] = options.uvRects[i * 4 + j];
       }
-      this.commands[AT + 28] = options.layer;
+      this.commands[AT + 28] = options.layer + (options.depthWriteAlphaThreshold ?? 0) * 0.49;
       this.commands[AT + 29] = Number(options.filter === "nearest");
       const BASE = this.vertexCount;
       for (let corner = 0; corner < 4; corner++) {
@@ -7552,13 +7581,13 @@ function normalizeColor(value) {
   }
   const RGB = text.match(/^rgba?\((.*)\)$/);
   if (RGB) {
-    const FIELDS = RGB[1].trim().replace(/\s*\/\s*/, " ").split(/[\s,]+/).filter(Boolean);
-    if (FIELDS.length < 3 || FIELDS.length > 4) {
+    const FIELDS2 = RGB[1].trim().replace(/\s*\/\s*/, " ").split(/[\s,]+/).filter(Boolean);
+    if (FIELDS2.length < 3 || FIELDS2.length > 4) {
       throw new TypeError(`Invalid CSS color: ${value}`);
     }
     const CHANNEL = (s) => clamp(s.endsWith("%") ? parseFloat(s) / 100 : parseFloat(s) / 255);
-    const ALPHA = FIELDS[3] === void 0 ? 1 : clamp(FIELDS[3].endsWith("%") ? parseFloat(FIELDS[3]) / 100 : parseFloat(FIELDS[3]));
-    const OUT = [...FIELDS.slice(0, 3).map(CHANNEL), ALPHA];
+    const ALPHA = FIELDS2[3] === void 0 ? 1 : clamp(FIELDS2[3].endsWith("%") ? parseFloat(FIELDS2[3]) / 100 : parseFloat(FIELDS2[3]));
+    const OUT = [...FIELDS2.slice(0, 3).map(CHANNEL), ALPHA];
     if (OUT.some(Number.isNaN)) {
       throw new TypeError(`Invalid CSS color: ${value}`);
     }
@@ -7566,11 +7595,11 @@ function normalizeColor(value) {
   }
   const HSL = text.match(/^hsla?\((.*)\)$/);
   if (HSL) {
-    const FIELDS = HSL[1].trim().replace(/\s*\/\s*/, " ").split(/[\s,]+/).filter(Boolean);
-    if (FIELDS.length < 3 || FIELDS.length > 4) {
+    const FIELDS2 = HSL[1].trim().replace(/\s*\/\s*/, " ").split(/[\s,]+/).filter(Boolean);
+    if (FIELDS2.length < 3 || FIELDS2.length > 4) {
       throw new TypeError(`Invalid CSS color: ${value}`);
     }
-    const H = (parseFloat(FIELDS[0]) % 360 + 360) % 360 / 360, S = clamp(parseFloat(FIELDS[1]) / 100), L = clamp(parseFloat(FIELDS[2]) / 100), A = FIELDS[3] === void 0 ? 1 : clamp(FIELDS[3].endsWith("%") ? parseFloat(FIELDS[3]) / 100 : parseFloat(FIELDS[3]));
+    const H = (parseFloat(FIELDS2[0]) % 360 + 360) % 360 / 360, S = clamp(parseFloat(FIELDS2[1]) / 100), L = clamp(parseFloat(FIELDS2[2]) / 100), A = FIELDS2[3] === void 0 ? 1 : clamp(FIELDS2[3].endsWith("%") ? parseFloat(FIELDS2[3]) / 100 : parseFloat(FIELDS2[3]));
     const F = (n) => {
       const K = (n + H * 12) % 12;
       return L - S * Math.min(L, 1 - L) * Math.max(-1, Math.min(K - 3, 9 - K, 1));
@@ -10064,6 +10093,173 @@ function createSpriteAnimation(context, region, definition) {
   });
 }
 
+// modules/rendering/pose-channels.js
+var FIELDS = Object.freeze(["x", "y", "rotation", "scaleX", "scaleY", "opacity"]);
+var DEFAULTS = Object.freeze([0, 0, 0, 1, 1, 1]);
+var EASE_CODES = Object.freeze({ linear: 0, inOutSine: 1, outQuad: 2 });
+var MAX_SEGMENTS = 64;
+function requireFinite(value, label) {
+  if (!Number.isFinite(value)) {
+    throw new TypeError(`${label} must be finite`);
+  }
+  return value;
+}
+function fitsFloat32(value) {
+  return Number.isFinite(Math.fround(value));
+}
+function compilePoseChannels(metadata) {
+  if (!metadata || !Array.isArray(metadata.parts) || !metadata.parts.length || metadata.parts.length > 16 || !metadata.clips || typeof metadata.clips !== "object" || Array.isArray(metadata.clips) || !Object.keys(metadata.clips).length) {
+    throw new TypeError("Vector pose metadata requires parts and clips");
+  }
+  const PARTS = metadata.parts;
+  const PART_COUNT = PARTS.length;
+  const INDICES = /* @__PURE__ */ new Map();
+  for (let index = 0; index < PART_COUNT; index++) {
+    const PART = PARTS[index];
+    if (typeof PART?.id !== "string" || INDICES.has(PART.id) || !Array.isArray(PART.pivot) || PART.pivot.length !== 2) {
+      throw new TypeError(`Invalid vector part at index ${index}`);
+    }
+    requireFinite(PART.pivot[0], `part ${PART.id} pivot x`);
+    requireFinite(PART.pivot[1], `part ${PART.id} pivot y`);
+    if (!fitsFloat32(PART.pivot[0]) || !fitsFloat32(PART.pivot[1])) {
+      throw new RangeError(`Part ${PART.id} pivot exceeds Float32 range`);
+    }
+    INDICES.set(PART.id, index);
+  }
+  const DATA = [];
+  for (const PART of PARTS) {
+    if (PART.parent !== null && !INDICES.has(PART.parent)) {
+      throw new TypeError(`Unknown vector part parent: ${PART.parent}`);
+    }
+    DATA.push(PART.pivot[0], PART.pivot[1], PART.parent === null ? -1 : INDICES.get(PART.parent), 0);
+  }
+  for (let index = 0; index < PART_COUNT; index++) {
+    const SEEN = /* @__PURE__ */ new Set([index]);
+    let parent = DATA[index * 4 + 2];
+    while (parent !== -1) {
+      if (SEEN.has(parent)) {
+        throw new TypeError(`Vector part hierarchy contains a cycle: ${PARTS[index].id}`);
+      }
+      SEEN.add(parent);
+      parent = DATA[parent * 4 + 2];
+    }
+  }
+  const CLIPS = /* @__PURE__ */ Object.create(null);
+  let maxSegments = 0;
+  for (const [NAME, CLIP] of Object.entries(metadata.clips)) {
+    if (!CLIP || !Array.isArray(CLIP.keyframes) || CLIP.keyframes.length < 2) {
+      throw new TypeError(`Clip ${NAME} requires at least two keyframes`);
+    }
+    const DURATION = requireFinite(CLIP.durationMs, `clip ${NAME} durationMs`);
+    if (DURATION <= 0 || !["once", "repeat", "alternate"].includes(CLIP.loop)) {
+      throw new TypeError(`Invalid clip duration or loop: ${NAME}`);
+    }
+    const FRAMES = CLIP.keyframes;
+    let previousTime = -Infinity;
+    for (const FRAME of FRAMES) {
+      const TIME = requireFinite(FRAME?.timeMs, `clip ${NAME} keyframe timeMs`);
+      if (TIME <= previousTime || !FRAME.parts || typeof FRAME.parts !== "object" || Array.isArray(FRAME.parts)) {
+        throw new TypeError(`Invalid clip keyframe: ${NAME}`);
+      }
+      for (const [PART_ID, POSE] of Object.entries(FRAME.parts)) {
+        if (!INDICES.has(PART_ID) || !POSE || typeof POSE !== "object" || Array.isArray(POSE)) {
+          throw new TypeError(`Invalid clip part pose: ${NAME}/${PART_ID}`);
+        }
+        if (!Object.keys(POSE).length) {
+          throw new TypeError(`Empty clip part pose: ${NAME}/${PART_ID}`);
+        }
+        for (const [FIELD, VALUE] of Object.entries(POSE)) {
+          if (!FIELDS.includes(FIELD)) {
+            throw new TypeError(`Unknown clip pose field: ${NAME}/${PART_ID}/${FIELD}`);
+          }
+          requireFinite(VALUE, `clip ${NAME}/${PART_ID}/${FIELD}`);
+          if (FIELD === "opacity" && (VALUE < 0 || VALUE > 1)) {
+            throw new RangeError(`Clip part opacity must be in [0,1]: ${NAME}/${PART_ID}`);
+          }
+        }
+      }
+      previousTime = TIME;
+    }
+    if (FRAMES[0].timeMs !== 0 || previousTime !== DURATION) {
+      throw new RangeError(`Clip ${NAME} keyframes must span 0..durationMs`);
+    }
+    const CHANNELS = Array.from({ length: PART_COUNT * FIELDS.length }, (_, channelIndex) => ({
+      initial: FRAMES[0].parts[PARTS[Math.floor(channelIndex / FIELDS.length)].id]?.[FIELDS[channelIndex % FIELDS.length]] ?? DEFAULTS[channelIndex % FIELDS.length],
+      segments: []
+    }));
+    let reason = null;
+    if (!fitsFloat32(DURATION)) {
+      reason = "durationMs exceeds Float32 range";
+    }
+    for (let frameIndex = 1; frameIndex < FRAMES.length; frameIndex++) {
+      const FRAME = FRAMES[frameIndex];
+      const START = FRAMES[frameIndex - 1].timeMs;
+      const CODE = EASE_CODES[FRAME.easing ?? CLIP.easing ?? "linear"];
+      for (const [PART_ID, POSE] of Object.entries(FRAME.parts)) {
+        const PART_INDEX = INDICES.get(PART_ID);
+        for (const [FIELD, TARGET] of Object.entries(POSE)) {
+          const CHANNEL = CHANNELS[PART_INDEX * FIELDS.length + FIELDS.indexOf(FIELD)];
+          if (CODE === void 0 && reason === null) {
+            reason = `unsupported easing ${String(FRAME.easing)} at keyframe ${frameIndex}`;
+          }
+          if (CHANNEL.segments.length >= MAX_SEGMENTS && reason === null) {
+            reason = `channel ${PART_ID}.${FIELD} exceeds ${MAX_SEGMENTS} segments`;
+          }
+          const FROM = CHANNEL.segments.length ? CHANNEL.segments.at(-1)[1] : CHANNEL.initial;
+          CHANNEL.segments.push([FROM, TARGET, START, FRAME.timeMs, CODE]);
+        }
+      }
+    }
+    if (reason === null) {
+      for (const CHANNEL of CHANNELS) {
+        if (!fitsFloat32(CHANNEL.initial)) {
+          reason = "initial pose value exceeds Float32 range";
+          break;
+        }
+        for (const [FROM, TARGET, START, END] of CHANNEL.segments) {
+          if (![FROM, TARGET, START, END].every(fitsFloat32)) {
+            reason = "pose value or keyframe time exceeds Float32 range";
+            break;
+          }
+          if (Math.fround(END) <= Math.fround(START)) {
+            reason = "keyframe interval collapses at Float32 precision";
+            break;
+          }
+        }
+        if (reason !== null) {
+          break;
+        }
+      }
+    }
+    if (reason !== null) {
+      CLIPS[NAME] = { supported: false, reason, durationMs: DURATION, loop: CLIP.loop, headerBase: -1 };
+      continue;
+    }
+    const HEADER_BASE = DATA.length / 4;
+    const SEGMENT_BASE = HEADER_BASE + PART_COUNT * FIELDS.length;
+    let nextSegment = SEGMENT_BASE;
+    for (const CHANNEL of CHANNELS) {
+      DATA.push(nextSegment, CHANNEL.segments.length, CHANNEL.initial, 0);
+      nextSegment += CHANNEL.segments.length * 2;
+      maxSegments = Math.max(maxSegments, CHANNEL.segments.length);
+    }
+    for (const CHANNEL of CHANNELS) {
+      for (const [FROM, TARGET, START, END, CODE] of CHANNEL.segments) {
+        DATA.push(FROM, TARGET, START, END, CODE, 0, 0, 0);
+      }
+    }
+    CLIPS[NAME] = { supported: true, reason: null, durationMs: DURATION, loop: CLIP.loop, headerBase: HEADER_BASE };
+  }
+  return {
+    partCount: PART_COUNT,
+    partIds: PARTS.map((part) => part.id),
+    data: Float32Array.from(DATA),
+    cpuData: Float64Array.from(DATA),
+    clips: CLIPS,
+    maxSegments
+  };
+}
+
 // modules/rendering/yarn-geometry.js
 var STRIDE_FLOATS = 9;
 function validateStyle(style) {
@@ -10099,8 +10295,8 @@ function validateStyle(style) {
     "hatchWidth",
     "hatchOpacity"
   ];
-  const FIELDS = style.kind === "yarn" ? YARN_REQUIRED : style.kind === "sketch" ? SKETCH_REQUIRED : null;
-  if (!FIELDS || FIELDS.some((key) => !Number.isFinite(style[key]))) {
+  const FIELDS2 = style.kind === "yarn" ? YARN_REQUIRED : style.kind === "sketch" ? SKETCH_REQUIRED : null;
+  if (!FIELDS2 || FIELDS2.some((key) => !Number.isFinite(style[key]))) {
     throw new TypeError("Unsupported or incomplete SVG surface style");
   }
   if (style.seed < 0 || style.seed > 2147483647 || !Number.isSafeInteger(style.seed)) {
@@ -11144,6 +11340,7 @@ export {
   WebGLDevice,
   buildYarnSurfaceGeometry,
   buildYarnSurfaceMesh,
+  compilePoseChannels,
   createSpriteAnimation,
   hasOpaqueCoverage
 };

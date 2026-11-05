@@ -3304,7 +3304,7 @@ function validateCompiledAsset(asset) {
   return asset;
 }
 
-// modules/vector-assets/pose-channels.js
+// modules/rendering/pose-channels.js
 var FIELDS = Object.freeze(["x", "y", "rotation", "scaleX", "scaleY", "opacity"]);
 var DEFAULTS = Object.freeze([0, 0, 0, 1, 1, 1]);
 var EASE_CODES = Object.freeze({ linear: 0, inOutSine: 1, outQuad: 2 });
@@ -3461,7 +3461,7 @@ function compilePoseChannels(metadata) {
     for (let frameIndex = 1; frameIndex < FRAMES.length; frameIndex++) {
       const FRAME = FRAMES[frameIndex];
       const START = FRAMES[frameIndex - 1].timeMs;
-      const CODE = EASE_CODES[FRAME.easing];
+      const CODE = EASE_CODES[FRAME.easing ?? CLIP.easing ?? "linear"];
       for (const [PART_ID, POSE] of Object.entries(FRAME.parts)) {
         const PART_INDEX = INDICES.get(PART_ID);
         for (const [FIELD, TARGET] of Object.entries(POSE)) {
