@@ -33,12 +33,12 @@ export interface TechText {
     prerequisite(required: TechNode, met: boolean): string;
     /** 상세 머리의 단계 문구(예: "1/3"). */
     level(node: TechNode, level: number): string;
-    zoomIn(): string;
-    zoomOut(): string;
-    fit(): string;
     /** 트리 패널의 접근성 이름. */
     map(): string;
 }
+
+export type TechRootPosition =
+    'auto' | 'center' | 'top' | 'bottom' | 'left' | 'right' | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
 
 export interface TechTreeOptions {
     root: HTMLElement;
@@ -46,6 +46,8 @@ export interface TechTreeOptions {
     /** `#/<screen>/<id>`의 화면 이름. */
     screen: string;
     nodes: TechNode[];
+    /** 처음 보기에 루트 그룹을 맞출 위치. 기본 auto(세로는 위, 가로는 왼쪽). */
+    rootPosition?: TechRootPosition;
     /** 노드의 현재 단계(0 이상). */
     level(id: string): number;
     /** 선행 조건을 갖춘 노드를 지금 살 수 있는지. 포인트·재화 규칙은 게임 소유. */
