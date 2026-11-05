@@ -2582,17 +2582,27 @@ vec4 texel=texture2D(u_texture,vec3(uv,floor(v_paint.x+0.5)));${VECTOR_FRAGMENT_
     };
   }
   var POSE_PROGRAM_FUNCTIONS = `uniform sampler2D u_program;uniform sampler2D u_state;uniform sampler2D u_overrides;uniform int u_programWidth;
+// GLSL ES permits low-accuracy native trigonometry. Large SVG pivots amplify that error.
+// Reduce to [-pi/2,pi/2] and evaluate sine/cosine through degree 11/12 polynomials.
+vec2 poseSinCos(float angle){
+ float x=angle-floor(angle/6.283185307179586+0.5)*6.283185307179586;float signCos=1.0;
+ if(x>1.5707963267948966){x=3.141592653589793-x;signCos=-1.0;}
+ else if(x< -1.5707963267948966){x=-3.141592653589793-x;signCos=-1.0;}
+ float z=x*x;
+ float s=x+x*z*(-1.0/6.0+z*(1.0/120.0+z*(-1.0/5040.0+z*(1.0/362880.0-z/39916800.0))));
+ float c=1.0+z*(-1.0/2.0+z*(1.0/24.0+z*(-1.0/720.0+z*(1.0/40320.0+z*(-1.0/3628800.0+z/479001600.0)))));
+ return vec2(c*signCos,s);}
 vec4 poseData(int base,int at){int i=at+base;return texelFetch(u_program,ivec2(i%u_programWidth,i/u_programWidth),0);}
 float poseChannel(int base,int header,float time){vec4 h=poseData(base,header);float value=h.z;
  for(int i=0;i<64;i++){if(i>=int(h.y))break;vec4 s=poseData(base,int(h.x)+i*2);if(time<s.z)break;
  if(time>=s.w){value=s.y;continue;}float t=clamp((time-s.z)/(s.w-s.z),0.0,1.0);float ease=poseData(base,int(h.x)+i*2+1).x;
- if(ease>1.5)t=1.0-(1.0-t)*(1.0-t);else if(ease>0.5)t=0.5-0.5*cos(3.141592653589793*t);
+ if(ease>1.5)t=1.0-(1.0-t)*(1.0-t);else if(ease>0.5)t=0.5-0.5*poseSinCos(3.141592653589793*t).x;
  value=mix(s.x,s.y,t);break;}return value;}
 mat3 poseLocal(int base,int part,int header,float time,int row,out float opacity){
  vec4 b0=texelFetch(u_overrides,ivec2(part*2,row),0);vec4 b1=texelFetch(u_overrides,ivec2(part*2+1,row),0);
  int at=header+part*6;vec2 translation=b0.xy+vec2(poseChannel(base,at,time),poseChannel(base,at+1,time));
  float rotation=b0.z+poseChannel(base,at+2,time);float sx=b0.w*poseChannel(base,at+3,time);float sy=b1.x*poseChannel(base,at+4,time);
- float c=cos(rotation);float s=sin(rotation);vec2 x=vec2(c,s)*sx;vec2 y=vec2(-s,c)*sy;vec2 pivot=poseData(base,part).xy;
+ vec2 cs=poseSinCos(rotation);float c=cs.x;float s=cs.y;vec2 x=vec2(c,s)*sx;vec2 y=vec2(-s,c)*sy;vec2 pivot=poseData(base,part).xy;
  opacity=b1.y*b1.z*poseChannel(base,at+5,time);return mat3(vec3(x,0.0),vec3(y,0.0),vec3(pivot+translation-x*pivot.x-y*pivot.y,1.0));}
 void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
  vec4 playback=texelFetch(u_state,ivec2(0,row),0);vec4 morph=texelFetch(u_state,ivec2(1,row),0);
@@ -14478,7 +14488,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
     rejectUnknownOptions(unknownOptions);
     const DEVICE2 = context.device;
     const MESHES2 = context.meshRenderer;
-    if (!context.drawQuads || !context.drawVectorActor || !DEVICE2?.createTextureLayerTarget || !DEVICE2?.bindRenderTarget || !DEVICE2?.unbindRenderTarget) {
+    if (!context.drawQuads || !context.drawVectorActor || !DEVICE2?.createTextureLayerTarget || !DEVICE2?.blitRenderTarget || !DEVICE2?.bindRenderTarget || !DEVICE2?.unbindRenderTarget) {
       throw new TypeError("A VectorContext is required");
     }
     if (!Number.isFinite(pixelsPerUnit) || pixelsPerUnit <= 0 || !Number.isSafeInteger(padding) || padding < 1) {
@@ -14510,7 +14520,12 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         }
       }
     }
-    const PACKED = unsupportedReason ? null : packRuns(RUNS, ATLAS.width - ATLAS.gutter * 2, ATLAS.height - ATLAS.gutter * 2);
+    const BAKE_SCALE = 2;
+    const PACKED = unsupportedReason ? null : packRuns(
+      RUNS,
+      Math.min(ATLAS.width - ATLAS.gutter * 2, Math.floor(DEVICE2.maxTextureSize / BAKE_SCALE)),
+      Math.min(ATLAS.height - ATLAS.gutter * 2, Math.floor(DEVICE2.maxTextureSize / BAKE_SCALE))
+    );
     if (!unsupportedReason && !PACKED) {
       unsupportedReason = "atlasLimit";
     }
@@ -14569,6 +14584,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       }
       const START = NOW2();
       let bound = false;
+      let bakeTarget = null;
       try {
         DEVICE2.flushBatchers("rasterAtlasBakeBoundary");
         if (target && !DEVICE2.isRenderTargetAvailable(target)) {
@@ -14583,29 +14599,39 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
           region.width + ATLAS.gutter * 2,
           region.height + ATLAS.gutter * 2
         );
-        DEVICE2.bindRenderTarget(target);
+        bakeTarget = DEVICE2.createRenderTarget(PACKED.width * BAKE_SCALE, PACKED.height * BAKE_SCALE, {
+          format: "rgba",
+          filter: "linear"
+        });
+        DEVICE2.bindRenderTarget(bakeTarget);
         bound = true;
-        const TOP = ATLAS.height - (region.y + region.height);
+        DEVICE2.clear({ color: [0, 0, 0, 0] });
         for (let index = 0; index < RUNS.length; index++) {
-          const RUN = RUNS[index], [TILE_X, TILE_Y] = PACKED.positions[index], TX = region.x + TILE_X + padding - pixelsPerUnit * RUN.minX, TY = TOP + TILE_Y + padding - pixelsPerUnit * RUN.minY;
+          const RUN = RUNS[index], [TILE_X, TILE_Y] = PACKED.positions[index], TX = TILE_X + padding - pixelsPerUnit * RUN.minX, TY = TILE_Y + padding - pixelsPerUnit * RUN.minY;
           MESHES2.drawMesh(asset.mesh, {
             projection: [
-              2 * pixelsPerUnit / ATLAS.width,
+              2 * pixelsPerUnit / PACKED.width,
               0,
               0,
               0,
-              -2 * pixelsPerUnit / ATLAS.height,
+              -2 * pixelsPerUnit / PACKED.height,
               0,
-              2 * TX / ATLAS.width - 1,
-              1 - 2 * TY / ATLAS.height,
+              2 * TX / PACKED.width - 1,
+              1 - 2 * TY / PACKED.height,
               1
             ],
             indexRange: [RUN.firstIndex, RUN.indexCount]
           });
         }
         MESHES2.flush("rasterAtlasBake");
-        DEVICE2.unbindRenderTarget(target);
+        DEVICE2.unbindRenderTarget(bakeTarget);
         bound = false;
+        DEVICE2.blitRenderTarget(bakeTarget, target, {
+          x: region.x,
+          y: region.y,
+          width: PACKED.width,
+          height: PACKED.height
+        });
         bakedRestores = RESTORES;
         bakeCount++;
         if (START !== null) {
@@ -14617,7 +14643,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         if (bound) {
           MESHES2.discard();
           try {
-            DEVICE2.unbindRenderTarget(target);
+            DEVICE2.unbindRenderTarget(bakeTarget);
           } catch {
           }
         }
@@ -14630,6 +14656,10 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         failedRestores = DEVICE2.stats.restores ?? 0;
         lastFailure = error2.message;
         return { backend: "vector", reason: "bakeFailed" };
+      } finally {
+        if (bakeTarget) {
+          DEVICE2.deleteRenderTarget(bakeTarget);
+        }
       }
     };
     const DRAW = (actor, options = {}) => {
