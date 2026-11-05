@@ -412,7 +412,7 @@ export class OrderedTriangleBatch {
                 this.commands[AT + 20 + j] = options.localRects[i * 4 + j];
                 this.commands[AT + 24 + j] = options.uvRects[i * 4 + j];
             }
-            this.commands[AT + 28] = options.layer;
+            this.commands[AT + 28] = options.layer + (options.depthWriteAlphaThreshold ?? 0) * 0.49;
             this.commands[AT + 29] = Number(options.filter === 'nearest');
             const BASE = this.vertexCount;
             for (let corner = 0; corner < 4; corner++) {

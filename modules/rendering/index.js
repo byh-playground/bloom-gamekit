@@ -5,6 +5,7 @@ export { MeshBuilder } from './mesh-builder.js';
 export { hasOpaqueCoverage } from './mesh-coverage.js';
 export { MeshRenderer } from './mesh-renderer.js';
 export { createSpriteAnimation } from './sprite-animation.js';
+export { compilePoseChannels } from './pose-channels.js';
 export { buildYarnSurfaceGeometry, buildYarnSurfaceMesh } from './yarn-geometry.js';
 export { GlyphAtlas } from './glyph-atlas.js';
 export { TextureAtlasArray } from './texture-atlas.js';

@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { compileVectorAsset, compileVectorAssetFile, VECTOR_ASSET_QUALITY_PRESETS } from '../compiler.js';
 import { createVectorAssetLoader } from '../browser-loader.js';
 import { validateCompiledAsset } from '../schema.js';
-import { compilePoseChannels, samplePartTransform } from '../pose-channels.js';
+import { compilePoseChannels, samplePartTransform } from '../../rendering/pose-channels.js';
 import { MeshBuilder } from '../../rendering/mesh-builder.js';
 const SOURCE_PATH = 'modules/vector-assets/assets/seed-scout.svg';
 const SOURCE = await readFile(SOURCE_PATH);

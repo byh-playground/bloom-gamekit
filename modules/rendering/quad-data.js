@@ -7,6 +7,7 @@ export function validateQuads({
     color = [1, 1, 1, 1],
     alpha = 1,
     filter = 'linear',
+    depthWriteAlphaThreshold = 0,
     parts = null,
     pose = null,
 } = {}) {
@@ -27,6 +28,9 @@ export function validateQuads({
     allFinite(matrix);
     if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1) {
         throw new RangeError('alpha must be in [0,1]');
+    }
+    if (!Number.isFinite(depthWriteAlphaThreshold) || depthWriteAlphaThreshold < 0 || depthWriteAlphaThreshold > 1) {
+        throw new RangeError('depthWriteAlphaThreshold must be in [0,1]');
     }
     if (!color || color.length !== 4) {
         throw new TypeError('RGBA channels must be in [0,1]');

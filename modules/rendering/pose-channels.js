@@ -80,7 +80,7 @@ function channelValue(data, headerTexel, timeMs) {
     return value;
 }
 
-/** Compile SVG metadata into RGBA pose texels. Unsupported easings/long channels mark only their clip for fallback. */
+/** Compile authored part and clip metadata into RGBA pose texels, independently of any artwork format. */
 export function compilePoseChannels(metadata) {
     if (
         !metadata ||
@@ -187,7 +187,7 @@ export function compilePoseChannels(metadata) {
         for (let frameIndex = 1; frameIndex < FRAMES.length; frameIndex++) {
             const FRAME = FRAMES[frameIndex];
             const START = FRAMES[frameIndex - 1].timeMs;
-            const CODE = EASE_CODES[FRAME.easing];
+            const CODE = EASE_CODES[FRAME.easing ?? CLIP.easing ?? 'linear'];
             for (const [PART_ID, POSE] of Object.entries(FRAME.parts)) {
                 const PART_INDEX = INDICES.get(PART_ID);
                 for (const [FIELD, TARGET] of Object.entries(POSE)) {

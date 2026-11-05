@@ -124,13 +124,16 @@ export async function buildDistribution(root) {
             // Reuse the retained textured quad for offline atlas reduction;
             // never bundle Device/renderer initialization into vector-assets.
             const SPRITE_PREPARATION = NAME === 'vector-assets' && INPUT === 'modules/rendering/sprite-animation.js';
+            // Both artwork-independent sprite rigs and vector actors share this numeric pose format.
+            const POSE_CONTRACT = NAME === 'vector-assets' && INPUT === 'modules/rendering/pose-channels.js';
             if (
                 !OWNED &&
                 !PACKAGE_OWNED &&
                 !GENERATED_ASSET &&
                 !PAINT_CONTRACT &&
                 !SURFACE_CONTRACT &&
-                !SPRITE_PREPARATION
+                !SPRITE_PREPARATION &&
+                !POSE_CONTRACT
             ) {
                 throw new Error(`${NAME} 소스 밖의 런타임 의존성은 허용하지 않습니다: ${INPUT}`);
             }
