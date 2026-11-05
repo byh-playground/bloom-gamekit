@@ -93,6 +93,7 @@
         <button role="tab" id="tab-budget" aria-selected="true" aria-controls="panel-budget">작업 예산</button>
         <button role="tab" id="tab-behavior" aria-selected="false" aria-controls="panel-behavior">행동</button>
         <button role="tab" id="tab-geometry" aria-selected="false" aria-controls="panel-geometry">기하</button>
+        <button role="tab" id="tab-pathfield" aria-selected="false" aria-controls="panel-pathfield">거리장</button>
     </div>
     <section id="panel-budget" role="tabpanel" aria-labelledby="tab-budget">
         <h1>비긴급 탐색 작업 분산</h1>
@@ -160,6 +161,40 @@
             <button id="geometry-reset">처음으로</button>
         </div>
         <pre id="geometry-output"></pre>
+    </section>
+    <section id="panel-pathfield" role="tabpanel" aria-labelledby="tab-pathfield" hidden>
+        <h1>거리장은 벽을 돌아 목표까지 내려가는 길을 줍니다</h1>
+        <p>
+            캔버스를 누르거나 끌어 목표를 정하세요. 파란 유닛이 막힌 벽을 돌아 목표로 가려면 어느 칸으로 향해야 하는지
+            보여 줍니다.
+        </p>
+        <ul>
+            <li>
+                밝은 칸일수록 목표에 가깝습니다. 어두운 칸은 아직 계산하지 않은 칸이며, 유닛이 선 칸까지만 퍼뜨립니다.
+            </li>
+            <li>
+                주황 선은 비용이 줄어드는 쪽으로 걸은 칸들이고, 초록 점은 그중 유닛에서 막힘 없이 보이는 가장 먼
+                칸입니다. 흰 점선은 목표까지 곧장 가는 선입니다.
+            </li>
+            <li>
+                "한 걸음"은 유닛을 초록 점으로 옮깁니다. 몇 칸을 내려갈지, 어느 칸을 고를지는 이 예제가 정한 것이고
+                모듈은 내려가는 칸 목록만 줍니다. 화살표 키로 목표를 한 칸씩 옮길 수 있습니다.
+            </li>
+        </ul>
+        <canvas
+            id="pathfield-canvas"
+            width="480"
+            height="320"
+            tabindex="0"
+            role="img"
+            aria-label="벽 사이를 돌아 목표까지 이어지는 거리장과 내려가는 길"
+        ></canvas>
+        <div>
+            <button id="pathfield-step">한 걸음</button>
+            <button id="pathfield-full" aria-pressed="false">전부 계산</button>
+            <button id="pathfield-reset">처음으로</button>
+        </div>
+        <pre id="pathfield-output"></pre>
     </section>
     <script>
 (() => {
@@ -2307,6 +2342,946 @@
     render();
   });
   window.geometryExample = { setTarget, state: STATE };
+  render();
+})();
+
+</script>
+    <script>
+(() => {
+  // dist/geometry.js
+  function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+  function pointInSimplePolygon(x, y, points) {
+    if (!Array.isArray(points) || points.length < 3) {
+      return false;
+    }
+    let inside = false;
+    for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+      const A = points[i], B = points[j];
+      const HIT = A.y > y !== B.y > y && x < (B.x - A.x) * (y - A.y) / (B.y - A.y || 1e-9) + A.x;
+      if (HIT) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  }
+  function pointSegmentDistance(px, py, ax, ay, bx, by) {
+    const ABX = bx - ax, ABY = by - ay;
+    const DENOM = ABX * ABX + ABY * ABY || 1;
+    let t = ((px - ax) * ABX + (py - ay) * ABY) / DENOM;
+    t = Math.max(0, Math.min(1, t));
+    const CX = ax + ABX * t, CY = ay + ABY * t;
+    return Math.hypot(px - CX, py - CY);
+  }
+  function segmentsIntersect(ax, ay, bx, by, cx, cy, dx, dy) {
+    const UX = bx - ax, UY = by - ay, VX = dx - cx, VY = dy - cy, DEN = UX * VY - UY * VX;
+    if (Math.abs(DEN) < 1e-10) {
+      return false;
+    }
+    const QX = cx - ax, QY = cy - ay, T = (QX * VY - QY * VX) / DEN, S = (QX * UY - QY * UX) / DEN;
+    return T >= 0 && T <= 1 && S >= 0 && S <= 1;
+  }
+  function segmentDistance(ax, ay, bx, by, cx, cy, dx, dy) {
+    if (segmentsIntersect(ax, ay, bx, by, cx, cy, dx, dy)) {
+      return 0;
+    }
+    return Math.min(
+      pointSegmentDistance(ax, ay, cx, cy, dx, dy),
+      pointSegmentDistance(bx, by, cx, cy, dx, dy),
+      pointSegmentDistance(cx, cy, ax, ay, bx, by),
+      pointSegmentDistance(dx, dy, ax, ay, bx, by)
+    );
+  }
+  function assignBounds(item) {
+    const POINTS = item.points;
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (let i = 0; i < POINTS.length; i++) {
+      minX = Math.min(minX, POINTS[i].x);
+      maxX = Math.max(maxX, POINTS[i].x);
+      minY = Math.min(minY, POINTS[i].y);
+      maxY = Math.max(maxY, POINTS[i].y);
+    }
+    return Object.assign(item, { minX, maxX, minY, maxY });
+  }
+  var BoundsIndex = class {
+    /**
+     * @param {Array<{minX: number, maxX: number, minY: number, maxY: number}>} items 경계를 가진 항목(보관만 하고 복사하지 않습니다)
+     * @param {number} cell 칸 한 변의 길이
+     */
+    constructor(items, cell = 256) {
+      this.items = items;
+      this.cell = cell;
+      this.bins = /* @__PURE__ */ new Map();
+      this.marks = new Uint32Array(items.length);
+      this.epoch = 0;
+      this.out = [];
+      for (let i = 0; i < items.length; i++) {
+        const B = items[i];
+        for (let y = Math.floor(B.minY / cell); y <= Math.floor(B.maxY / cell); y++) {
+          for (let x = Math.floor(B.minX / cell); x <= Math.floor(B.maxX / cell); x++) {
+            let row = this.bins.get(y);
+            if (!row) {
+              this.bins.set(y, row = /* @__PURE__ */ new Map());
+            }
+            let bin = row.get(x);
+            if (!bin) {
+              row.set(x, bin = []);
+            }
+            bin.push(i);
+          }
+        }
+      }
+    }
+    /**
+     * (x0, y0)-(x1, y1) 상자를 `pad`만큼 넓힌 범위와 경계가 겹치는 항목을 돌려줍니다.
+     * 돌려주는 배열은 색인이 재사용하는 것이라 다음 `query` 호출 때 덮어씁니다. 보관하려면 복사하세요.
+     */
+    query(x0, y0, x1 = x0, y1 = y0, pad = 0) {
+      this.out.length = 0;
+      if (!this.items.length) {
+        return this.out;
+      }
+      const MIN_X = Math.min(x0, x1) - pad, MAX_X = Math.max(x0, x1) + pad, MIN_Y = Math.min(y0, y1) - pad, MAX_Y = Math.max(y0, y1) + pad;
+      const BX0 = Math.floor(MIN_X / this.cell), BX1 = Math.floor(MAX_X / this.cell), BY0 = Math.floor(MIN_Y / this.cell), BY1 = Math.floor(MAX_Y / this.cell);
+      if (BX0 === BX1 && BY0 === BY1) {
+        const BIN = this.bins.get(BY0)?.get(BX0);
+        if (BIN) {
+          for (const I of BIN) {
+            const B = this.items[I];
+            if (B.maxX >= MIN_X && B.minX <= MAX_X && B.maxY >= MIN_Y && B.minY <= MAX_Y) {
+              this.out.push(B);
+            }
+          }
+        }
+        return this.out;
+      }
+      if (++this.epoch === 4294967295) {
+        this.marks.fill(0);
+        this.epoch = 1;
+      }
+      for (let y = BY0; y <= BY1; y++) {
+        const ROW = this.bins.get(y);
+        if (!ROW) {
+          continue;
+        }
+        for (let x = BX0; x <= BX1; x++) {
+          const BIN = ROW.get(x);
+          if (!BIN) {
+            continue;
+          }
+          for (const I of BIN) {
+            if (this.marks[I] === this.epoch) {
+              continue;
+            }
+            this.marks[I] = this.epoch;
+            const B = this.items[I];
+            if (B.maxX >= MIN_X && B.minX <= MAX_X && B.maxY >= MIN_Y && B.minY <= MAX_Y) {
+              this.out.push(B);
+            }
+          }
+        }
+      }
+      return this.out;
+    }
+  };
+  var POLICIES = Object.freeze({
+    // 정적 표면(다각형·원 장애물·월드 경계)에 대한 이동. 표면에 이미 닿아 있으면 안쪽으로 들어갈 때만 접촉입니다.
+    surface: Object.freeze({
+      minSpeed2: 1e-16,
+      contactDistanceEpsilon: 1e-8,
+      normalEpsilon: 1e-10,
+      inwardEpsilon: 1e-8,
+      discriminantEpsilon: 1e-12,
+      includeTangent: false,
+      retreat: 0
+    }),
+    // 움직이는 두 원의 상대 이동. 닿는 순간보다 `retreat`만큼 일찍 멈추고 접선도 접촉으로 칩니다.
+    relative: Object.freeze({
+      minSpeed2: 1e-9,
+      contactSquaredEpsilon: 1e-7,
+      normalEpsilon: 1e-6,
+      inwardEpsilon: 0,
+      discriminantEpsilon: 0,
+      includeTangent: true,
+      retreat: 5e-4
+    })
+  });
+  function contactThreshold(r, quantum) {
+    return r > 0 ? Math.max(0, r - quantum) : 1e-3;
+  }
+  function segmentBlockedBy(index, x0, y0, x1, y1, r = 0, quantum = 0) {
+    for (const B of index.query(x0, y0, x1, y1, r)) {
+      if (pointInSimplePolygon(x0, y0, B.points) || pointInSimplePolygon(x1, y1, B.points)) {
+        return true;
+      }
+      for (let i = 0; i < B.points.length; i++) {
+        const A = B.points[i], C = B.points[(i + 1) % B.points.length];
+        if (segmentDistance(x0, y0, x1, y1, A.x, A.y, C.x, C.y) < contactThreshold(r, quantum)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+  function circleWithBounds(circle2) {
+    if (typeof circle2.minX !== "number") {
+      circle2.minX = circle2.x - circle2.r;
+      circle2.maxX = circle2.x + circle2.r;
+      circle2.minY = circle2.y - circle2.r;
+      circle2.maxY = circle2.y + circle2.r;
+    }
+    return circle2;
+  }
+  var ObstacleField = class {
+    /**
+     * @param {object} options
+     * @param {number} options.width 월드 경계 [0, width] × [0, height]. 원은 중심이 경계에서 반지름 이상 안쪽이어야 합니다.
+     * @param {number} options.height
+     * @param {number} options.fixedPoint 게임이 좌표를 1/fixedPoint 격자에 반올림해 저장하는 배율(예: 100). 접촉 허용 거리의 단위입니다.
+     * @param {Array<{id: unknown, points: Array<{x: number, y: number}>}> | BoundsIndex} [options.polygons]
+     *   막는 다각형. 경계(`minX` 등)가 없으면 만들어 붙입니다. 이미 만든 {@link BoundsIndex}도 받습니다.
+     * @param {Array<{id: unknown, x: number, y: number, r: number}>} [options.circles] 막는 원. 경계가 없으면 만들어 붙입니다.
+     * @param {number} [options.cell] 색인 칸 한 변의 길이(기본 256)
+     * @param {{id: unknown, keep: (circle: object) => boolean}} [options.ignoreAll]
+     *   "모두 무시" 와일드카드. 이동체가 `ignoreId`로 `id`를 내면 `keep(circle)`이 참인 원(항상 막는 방벽 등)만 장애물로 보고
+     *   나머지 원은 모두 무시합니다. 없으면 와일드카드가 없습니다.
+     * @param {number} [options.exteriorSearchDistance] {@link ObstacleField#nearestExterior}가 찾는 최대 거리(기본 256)
+     */
+    constructor({
+      width,
+      height,
+      fixedPoint,
+      polygons = [],
+      circles = [],
+      cell = 256,
+      ignoreAll = null,
+      exteriorSearchDistance = 256
+    }) {
+      if (!(width > 0) || !(height > 0) || !Number.isFinite(width) || !Number.isFinite(height)) {
+        throw new RangeError("ObstacleField width and height must be positive finite numbers.");
+      }
+      if (!(fixedPoint > 0) || !Number.isFinite(fixedPoint)) {
+        throw new RangeError("ObstacleField fixedPoint must be a positive finite number.");
+      }
+      if (ignoreAll !== null && typeof ignoreAll?.keep !== "function") {
+        throw new TypeError("ObstacleField ignoreAll must be {id, keep(circle)}.");
+      }
+      this.width = width;
+      this.height = height;
+      this.fixedPoint = fixedPoint;
+      this.quantum = 1 / fixedPoint;
+      this.cell = cell;
+      this.ignoreAll = ignoreAll;
+      this.exteriorSearchDistance = exteriorSearchDistance;
+      if (polygons instanceof BoundsIndex) {
+        this.polygons = polygons;
+      } else {
+        for (const P of polygons) {
+          if (typeof P.minX !== "number") {
+            assignBounds(P);
+          }
+        }
+        this.polygons = new BoundsIndex(polygons, cell);
+      }
+      this.active = this.polygons.items.length > 0;
+      this.version = -1;
+      this.setCircles(circles);
+    }
+    /**
+     * 원 장애물 목록을 통째로 바꾸고 {@link ObstacleField#version}을 올립니다. 목록은 복사하지 않고 보관합니다.
+     * 장애물이 바뀐 틱에만 부르세요(색인을 다시 만듭니다).
+     */
+    setCircles(circles) {
+      for (const C of circles) {
+        circleWithBounds(C);
+      }
+      this.circles = circles;
+      this.circleIndex = new BoundsIndex(circles, this.cell);
+      this.version++;
+    }
+    /**
+     * (x0, y0)-(x1, y1) 상자를 `pad`만큼 넓힌 범위의 원 장애물 후보. `ignoreId`가 와일드카드면 `keep`을 통과한 원만 남깁니다.
+     * 돌려주는 배열은 색인이 재사용하는 것이라 다음 조회 때 덮어씁니다.
+     */
+    obstacles(x0, y0, x1, y1, pad, ignoreId) {
+      const FOUND = this.circleIndex.query(x0, y0, x1, y1, pad);
+      return this.ignoreAll && ignoreId === this.ignoreAll.id ? FOUND.filter(this.ignoreAll.keep) : FOUND;
+    }
+    /** 다각형과 월드 경계만 본 원의 자리 검사. 다각형이 없으면 항상 true입니다. */
+    polygonCircleClear(x, y, r = 0) {
+      if (!this.active) {
+        return true;
+      }
+      if (x < r || y < r || x > this.width - r || y > this.height - r) {
+        return false;
+      }
+      for (const B of this.polygons.query(x, y, x, y, r)) {
+        if (pointInSimplePolygon(x, y, B.points)) {
+          return false;
+        }
+        for (let i = 0; i < B.points.length; i++) {
+          const A = B.points[i], C = B.points[(i + 1) % B.points.length];
+          if (pointSegmentDistance(x, y, A.x, A.y, C.x, C.y) < contactThreshold(r, this.quantum)) {
+            return false;
+          }
+        }
+      }
+      return true;
+    }
+    /** 다각형과 월드 경계만 본 선분 이동 검사. 다각형이 없으면 항상 true입니다. */
+    polygonSegmentClear(x0, y0, x1, y1, r = 0) {
+      if (!this.active) {
+        return true;
+      }
+      if (Math.min(x0, x1) < r || Math.min(y0, y1) < r || Math.max(x0, x1) > this.width - r || Math.max(y0, y1) > this.height - r) {
+        return false;
+      }
+      return !segmentBlockedBy(this.polygons, x0, y0, x1, y1, r, this.quantum);
+    }
+    /**
+     * (x, y) 가까이에서 `polygonCircleClear`(와 `accept`)를 통과하는 가장 가까운 자리. 16 간격 고리 32방향을 `maxDistance`까지 봅니다.
+     * 못 찾으면 null입니다.
+     */
+    nearestOpen(x, y, r, maxDistance = 768, accept = null) {
+      if (this.polygonCircleClear(x, y, r) && (!accept || accept(x, y))) {
+        return { x, y };
+      }
+      let best = null, bestD = Infinity;
+      const STEP = 16;
+      for (let range = STEP; range <= maxDistance; range += STEP) {
+        for (let i = 0; i < 32; i++) {
+          const A = i * Math.PI / 16, QX = clamp(x + Math.cos(A) * range, r + 1, this.width - r - 1), QY = clamp(y + Math.sin(A) * range, r + 1, this.height - r - 1);
+          const D = (QX - x) ** 2 + (QY - y) ** 2;
+          if (D < bestD && this.polygonCircleClear(QX, QY, r) && (!accept || accept(QX, QY))) {
+            best = { x: QX, y: QY };
+            bestD = D;
+          }
+        }
+        if (best) {
+          return best;
+        }
+      }
+      return null;
+    }
+    /**
+     * 반지름 r인 원이 (x, y)에서 (tx, ty)까지 직선으로 갈 수 있는지(월드 경계·다각형·원 장애물).
+     * `ignoreId`와 같은 id의 원은 건너뜁니다. `departure`가 true면 이미 겹친 원에서 멀어지는 이동은 허용합니다.
+     * `margin`은 원 장애물에 더 비워 두는 간격입니다(기본 0.25).
+     */
+    segmentClear(x, y, tx, ty, r, ignoreId = null, departure = false, margin = 0.25) {
+      if (Math.min(x, tx) < r || Math.min(y, ty) < r || Math.max(x, tx) > this.width - r || Math.max(y, ty) > this.height - r || !this.polygonSegmentClear(x, y, tx, ty, r)) {
+        return false;
+      }
+      for (const B of this.obstacles(x, y, tx, ty, r + margin, ignoreId)) {
+        if (B.id === ignoreId) {
+          continue;
+        }
+        const NEEDED = r + B.r + margin, START2 = Math.hypot(x - B.x, y - B.y);
+        if (departure && START2 < NEEDED && (x - B.x) * (tx - x) + (y - B.y) * (ty - y) >= 0 && Math.hypot(tx - B.x, ty - B.y) >= START2) {
+          continue;
+        }
+        if (pointSegmentDistance(B.x, B.y, x, y, tx, ty) < NEEDED - 1e-3) {
+          return false;
+        }
+      }
+      return true;
+    }
+    /** 반지름 r인 원이 (x, y)에 둘 수 있는지. */
+    pointClear(x, y, r, ignoreId = null) {
+      return this.segmentClear(x, y, x, y, r, ignoreId);
+    }
+    /** {@link ObstacleField#segmentClear}를 `departure`로 부릅니다. */
+    departureClear(x, y, tx, ty, r, ignoreId = null) {
+      return this.segmentClear(x, y, tx, ty, r, ignoreId, true);
+    }
+    /**
+     * (x, y)에서 가장 가까운, 다각형과 원 장애물 모두 비어 있는 자리. 없으면 null.
+     * 특정 id는 무시하지 않고 `ignoreAll` 와일드카드일 때만 원 장애물을 무시합니다(Rally 원본의 동작을 그대로 보존).
+     */
+    nearestExterior(x, y, r, ignoreId = null) {
+      const IGNORED = this.ignoreAll && ignoreId === this.ignoreAll.id ? ignoreId : null;
+      return this.nearestOpen(x, y, r, this.exteriorSearchDistance, (px, py) => this.pointClear(px, py, r, IGNORED));
+    }
+  };
+
+  // dist/pathfield.js
+  var STRAIGHT_COST = 10;
+  var DIAGONAL_COST = 14;
+  var DIRECTION_COUNT = 8;
+  var DIRECTION_DX = Int8Array.of(1, 0, -1, 0, 1, -1, -1, 1);
+  var DIRECTION_DY = Int8Array.of(0, 1, 0, -1, 1, 1, -1, -1);
+  var DIRECTION_COST = Uint8Array.of(
+    STRAIGHT_COST,
+    STRAIGHT_COST,
+    STRAIGHT_COST,
+    STRAIGHT_COST,
+    DIAGONAL_COST,
+    DIAGONAL_COST,
+    DIAGONAL_COST,
+    DIAGONAL_COST
+  );
+  var MAX_CELLS = 1 << 22;
+  var UNKNOWN = -1;
+  var BLOCKED = 0;
+  var OPEN = 1;
+  var OPTIONS = ["width", "height", "cellSize", "passable", "originX", "originY"];
+  function positiveNumber(value, name) {
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+      throw new RangeError(`PathGrid ${name} must be a positive finite number.`);
+    }
+    return value;
+  }
+  function finiteNumber(value, name) {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      throw new RangeError(`PathGrid ${name} must be a finite number.`);
+    }
+    return value;
+  }
+  var PathGrid = class {
+    /** 칸 한 변의 크기(좌표와 같은 단위). */
+    cellSize;
+    /** 칸 (0, 0)의 좌표 원점. */
+    originX;
+    originY;
+    /** 열·행·총 칸 수. 칸 수는 `ceil(크기 / cellSize)`입니다. */
+    cols;
+    rows;
+    size;
+    /** 통과 판정을 비운 횟수. 이 격자에서 만든 거리장과 캐시가 낡았는지 알아보는 표식입니다. */
+    revision = 0;
+    #passable;
+    #open;
+    #version;
+    constructor(options) {
+      if (options === null || typeof options !== "object") {
+        throw new TypeError("PathGrid options must be an object.");
+      }
+      for (const KEY of Object.keys(options)) {
+        if (!OPTIONS.includes(KEY)) {
+          throw new TypeError(`PathGrid has an unknown option: ${KEY}`);
+        }
+      }
+      if (typeof options.passable !== "function") {
+        throw new TypeError("PathGrid passable must be a function.");
+      }
+      this.cellSize = positiveNumber(options.cellSize, "cellSize");
+      this.originX = finiteNumber(options.originX ?? 0, "originX");
+      this.originY = finiteNumber(options.originY ?? 0, "originY");
+      this.cols = Math.ceil(positiveNumber(options.width, "width") / this.cellSize);
+      this.rows = Math.ceil(positiveNumber(options.height, "height") / this.cellSize);
+      this.size = this.cols * this.rows;
+      if (this.size > MAX_CELLS) {
+        throw new RangeError(`PathGrid would need more than ${MAX_CELLS} cells; use a larger cellSize.`);
+      }
+      this.#passable = options.passable;
+      this.#open = new Int8Array(this.size).fill(UNKNOWN);
+    }
+    /** 좌표가 든 칸의 번호. 격자 밖은 가장자리 칸으로 자릅니다. 좌표는 NaN이 아니어야 합니다. */
+    cellAt(x, y) {
+      const COL = Math.min(this.cols - 1, Math.max(0, Math.floor((x - this.originX) / this.cellSize))), ROW = Math.min(this.rows - 1, Math.max(0, Math.floor((y - this.originY) / this.cellSize)));
+      return ROW * this.cols + COL;
+    }
+    colOf(cell) {
+      return cell % this.cols;
+    }
+    rowOf(cell) {
+      return Math.floor(cell / this.cols);
+    }
+    /** 칸 중심의 좌표. */
+    centerX(cell) {
+      return this.originX + (cell % this.cols + 0.5) * this.cellSize;
+    }
+    centerY(cell) {
+      return this.originY + (Math.floor(cell / this.cols) + 0.5) * this.cellSize;
+    }
+    /** 칸이 통과 가능한지. 처음 물으면 `passable(centerX, centerY, cell)`을 한 번 부르고 기억합니다. 격자 밖 번호는 false. */
+    isOpen(cell) {
+      let open = this.#open[cell];
+      if (open === UNKNOWN) {
+        open = this.#passable(this.centerX(cell), this.centerY(cell), cell) ? OPEN : BLOCKED;
+        this.#open[cell] = open;
+      }
+      return open === OPEN;
+    }
+    /**
+     * (col, row)에서 방향 `direction`(0..7)으로 한 걸음 갈 수 있으면 이웃 칸 번호, 아니면 -1. 이웃이 격자 밖이거나
+     * 막혔거나, 대각이면서 두 직교 이웃 중 하나가 막힌 경우(모서리 가로지르기 금지)입니다.
+     */
+    stepCell(col, row, direction) {
+      const DX = DIRECTION_DX[direction], DY = DIRECTION_DY[direction], NX = col + DX, NY = row + DY;
+      if (NX < 0 || NY < 0 || NX >= this.cols || NY >= this.rows) {
+        return -1;
+      }
+      const NEXT = NY * this.cols + NX;
+      if (!this.isOpen(NEXT)) {
+        return -1;
+      }
+      if (DX !== 0 && DY !== 0 && (!this.isOpen(row * this.cols + NX) || !this.isOpen(NY * this.cols + col))) {
+        return -1;
+      }
+      return NEXT;
+    }
+    /** 통과 판정의 기억을 비우고 `revision`을 올립니다. 장애물이 바뀐 뒤에 부릅니다. */
+    invalidate() {
+      this.#open.fill(UNKNOWN);
+      this.revision++;
+    }
+    /** 게임이 가진 장애물 배치의 세대 번호를 알립니다. 지난번과 다르면 `invalidate()`하고 true를 돌려줍니다. */
+    sync(version) {
+      if (version === this.#version) {
+        return false;
+      }
+      this.#version = version;
+      this.invalidate();
+      return true;
+    }
+    /**
+     * 가장 가까운 통과 가능한 칸. `cell` 자신이 열려 있으면 그 칸이고, 아니면 정사각 고리를 `maxRing`까지 넓히며 찾습니다.
+     * 같은 고리 안의 동률은 훑는 순서(행 오름차순, 행 안에서 열 오름차순)에서 먼저인 칸입니다. 없으면 -1.
+     */
+    nearestOpen(cell, maxRing = 12) {
+      if (!(cell >= 0 && cell < this.size)) {
+        return -1;
+      }
+      if (this.isOpen(cell)) {
+        return cell;
+      }
+      const COL = cell % this.cols, ROW = (cell - COL) / this.cols;
+      for (let ring = 1; ring <= maxRing; ring++) {
+        let best = -1, bestD = Infinity;
+        for (let dy = -ring; dy <= ring; dy++) {
+          const NY = ROW + dy;
+          if (NY < 0 || NY >= this.rows) {
+            continue;
+          }
+          const STRIDE = dy === -ring || dy === ring ? 1 : 2 * ring;
+          for (let dx = -ring; dx <= ring; dx += STRIDE) {
+            const NX = COL + dx;
+            if (NX < 0 || NX >= this.cols) {
+              continue;
+            }
+            const NEXT = NY * this.cols + NX, D = dx * dx + dy * dy;
+            if (D < bestD && this.isOpen(NEXT)) {
+              best = NEXT;
+              bestD = D;
+            }
+          }
+        }
+        if (best >= 0) {
+          return best;
+        }
+      }
+      return -1;
+    }
+    /**
+     * (x, y)에서 중심까지의 거리가 `innerRadius` 이상 `outerRadius` 이하이고 통과 가능한 칸을 `out`(먼저 비움)에 행 우선으로
+     * 채웁니다. `accept(centerX, centerY, cell)`을 주면 그것도 통과한 칸만 남깁니다(예: 목표가 보이는 칸). 목표 영역의
+     * 여유(칸 대각선의 절반 등)를 더하는 것은 호출자의 몫입니다.
+     */
+    openCellsWithin(x, y, outerRadius, innerRadius = 0, accept = null, out = []) {
+      out.length = 0;
+      const COL0 = Math.max(0, Math.floor((x - outerRadius - this.originX) / this.cellSize)), COL1 = Math.min(this.cols - 1, Math.floor((x + outerRadius - this.originX) / this.cellSize)), ROW0 = Math.max(0, Math.floor((y - outerRadius - this.originY) / this.cellSize)), ROW1 = Math.min(this.rows - 1, Math.floor((y + outerRadius - this.originY) / this.cellSize));
+      for (let row = ROW0; row <= ROW1; row++) {
+        for (let col = COL0; col <= COL1; col++) {
+          const CELL2 = row * this.cols + col, CX = this.centerX(CELL2), CY = this.centerY(CELL2), D = Math.hypot(CX - x, CY - y);
+          if (D > outerRadius || D < innerRadius || !this.isOpen(CELL2)) {
+            continue;
+          }
+          if (accept !== null && !accept(CX, CY, CELL2)) {
+            continue;
+          }
+          out.push(CELL2);
+        }
+      }
+      return out;
+    }
+    /**
+     * `start`(열린 칸)에서 8방향으로 걸어 닿는 칸을 1로 표시한 `Uint8Array(size)`. `start`가 열려 있지 않으면(-1 포함) 모두 0입니다.
+     * 거리장보다 가볍게 "이어져 있는가"만 알고 싶을 때 씁니다. `out`을 주면 그것을 비우고 채웁니다.
+     */
+    reachableFrom(start, out = new Uint8Array(this.size)) {
+      out.fill(0);
+      if (!this.isOpen(start)) {
+        return out;
+      }
+      const STACK = [start];
+      out[start] = 1;
+      while (STACK.length) {
+        const CELL2 = STACK.pop(), COL = CELL2 % this.cols, ROW = (CELL2 - COL) / this.cols;
+        for (let direction = 0; direction < DIRECTION_COUNT; direction++) {
+          const NEXT = this.stepCell(COL, ROW, direction);
+          if (NEXT >= 0 && out[NEXT] === 0) {
+            out[NEXT] = 1;
+            STACK.push(NEXT);
+          }
+        }
+      }
+      return out;
+    }
+  };
+  var UNREACHED = 2147483647;
+  var CellHeap = class {
+    scale;
+    keys = [];
+    constructor(scale) {
+      this.scale = scale;
+    }
+    get size() {
+      return this.keys.length;
+    }
+    push(cost, cell) {
+      const KEYS = this.keys, KEY = cost * this.scale + cell;
+      let i = KEYS.length;
+      KEYS.push(KEY);
+      while (i > 0) {
+        const PARENT = i - 1 >> 1;
+        if (KEYS[PARENT] <= KEY) {
+          break;
+        }
+        KEYS[i] = KEYS[PARENT];
+        i = PARENT;
+      }
+      KEYS[i] = KEY;
+    }
+    pop() {
+      const KEYS = this.keys, TOP = KEYS[0], LAST = KEYS.pop();
+      if (KEYS.length) {
+        let i = 0;
+        for (; ; ) {
+          let child = 2 * i + 1;
+          if (child >= KEYS.length) {
+            break;
+          }
+          if (child + 1 < KEYS.length && KEYS[child + 1] < KEYS[child]) {
+            child++;
+          }
+          if (KEYS[child] >= LAST) {
+            break;
+          }
+          KEYS[i] = KEYS[child];
+          i = child;
+        }
+        KEYS[i] = LAST;
+      }
+      return TOP;
+    }
+  };
+  var DistanceField = class {
+    grid;
+    /** 칸마다 비용. `settle`(또는 `distance`)로 확정한 칸만 최종값입니다. */
+    dist;
+    /** 모든 칸이 확정됐는지(힙이 비었는지). */
+    done;
+    #heap;
+    /**
+     * @param {PathGrid} grid 걸어갈 격자.
+     * @param {ArrayLike<number>} sources 출발 칸 번호. 열린 칸을 넘기세요(닫힌 칸을 넘기면 거기서 퍼집니다). 같은 칸이 겹쳐도 됩니다.
+     */
+    constructor(grid, sources) {
+      if (!(grid instanceof PathGrid)) {
+        throw new TypeError("DistanceField needs a PathGrid.");
+      }
+      this.grid = grid;
+      this.dist = new Int32Array(grid.size).fill(UNREACHED);
+      let scale = 1;
+      while (scale < grid.size) {
+        scale *= 2;
+      }
+      this.#heap = new CellHeap(scale);
+      for (let i = 0; i < sources.length; i++) {
+        const CELL2 = sources[i];
+        if (!Number.isInteger(CELL2) || CELL2 < 0 || CELL2 >= grid.size) {
+          throw new RangeError(`DistanceField source ${CELL2} is not a cell of the grid.`);
+        }
+        if (this.dist[CELL2] !== 0) {
+          this.dist[CELL2] = 0;
+          this.#heap.push(0, CELL2);
+        }
+      }
+      this.done = this.#heap.size === 0;
+    }
+    /**
+     * 비용 순서로 칸을 확정해 갑니다. `target`을 주면 그 칸이 확정되는 즉시(자기보다 싼 칸이 힙에 없을 때) 멈추고, 주지 않으면
+     * 닿을 수 있는 모든 칸을 확정합니다. `target`이 확정되면 그보다 싸거나 같은 비용의 칸도 모두 확정입니다.
+     */
+    settle(target = -1) {
+      const GRID2 = this.grid, COLS = GRID2.cols, DIST = this.dist, HEAP = this.#heap, SCALE = HEAP.scale;
+      while (HEAP.size) {
+        if (target >= 0 && DIST[target] < Math.floor(HEAP.keys[0] / SCALE)) {
+          return;
+        }
+        const KEY = HEAP.pop(), CELL2 = KEY % SCALE, COST = (KEY - CELL2) / SCALE;
+        if (COST > DIST[CELL2]) {
+          continue;
+        }
+        const COL = CELL2 % COLS, ROW = (CELL2 - COL) / COLS;
+        for (let direction = 0; direction < DIRECTION_COUNT; direction++) {
+          const NEXT = GRID2.stepCell(COL, ROW, direction);
+          if (NEXT < 0) {
+            continue;
+          }
+          const TOTAL = COST + DIRECTION_COST[direction];
+          if (TOTAL < DIST[NEXT]) {
+            DIST[NEXT] = TOTAL;
+            HEAP.push(TOTAL, NEXT);
+          }
+        }
+      }
+      this.done = true;
+    }
+    /** `cell`의 비용을 확정해 돌려줍니다(닿지 못하면 `UNREACHED`). 지도 전체가 아니라 그 칸까지만 퍼뜨립니다. */
+    distance(cell) {
+      this.settle(cell);
+      return this.dist[cell];
+    }
+    /**
+     * `cell`에서 가장 싼 이웃 칸(`cell`보다 싼 이웃 중 최저, 같으면 방향 순서가 앞선 쪽)의 번호, 없으면 -1.
+     * `cell`의 비용이 확정되어 있어야 합니다(`descend`는 알아서 확정합니다).
+     */
+    lowestNeighbor(cell) {
+      const GRID2 = this.grid, DIST = this.dist, COL = cell % GRID2.cols, ROW = (cell - COL) / GRID2.cols;
+      let best = -1, bestCost = DIST[cell];
+      for (let direction = 0; direction < DIRECTION_COUNT; direction++) {
+        const NEXT = GRID2.stepCell(COL, ROW, direction);
+        if (NEXT >= 0 && DIST[NEXT] < bestCost) {
+          best = NEXT;
+          bestCost = DIST[NEXT];
+        }
+      }
+      return best;
+    }
+    /**
+     * `start`에서 비용이 줄어드는 쪽으로 최대 `maxSteps`칸을 걸은 칸 번호를 `out`(먼저 비움)에 채웁니다. `start` 자신은 넣지 않고,
+     * 출발 칸이나 더 싼 이웃이 없는 칸에서 멈춥니다. `start`가 닿지 못하는 칸이면 빈 결과입니다. `start`까지 확정합니다.
+     * 어느 칸을 목표로 삼을지(가장 먼 보이는 칸, 첫 칸 등)는 호출자가 이 목록에서 고릅니다.
+     */
+    descend(start, maxSteps, out = []) {
+      out.length = 0;
+      if (this.distance(start) === UNREACHED) {
+        return out;
+      }
+      let cell = start;
+      for (let i = 0; i < maxSteps; i++) {
+        const NEXT = this.lowestNeighbor(cell);
+        if (NEXT < 0) {
+          break;
+        }
+        out.push(NEXT);
+        cell = NEXT;
+      }
+      return out;
+    }
+  };
+
+  // modules/work-scheduler/examples/modules/work-scheduler/examples/index.html
+  var WORLD = { width: 480, height: 320 };
+  var CELL = 16;
+  var RADIUS = 6;
+  var LOOKAHEAD = 8;
+  var START = { x: 40, y: 160 };
+  var OBSTACLES = new ObstacleField({
+    ...WORLD,
+    fixedPoint: 100,
+    polygons: [
+      // 위에서 늘어진 벽(아래가 열림)과 아래에서 솟은 벽(위가 열림): 지그재그로 돌아야 합니다.
+      {
+        id: "wall-a",
+        points: [
+          { x: 150, y: 0 },
+          { x: 170, y: 0 },
+          { x: 170, y: 220 },
+          { x: 150, y: 220 }
+        ]
+      },
+      {
+        id: "wall-b",
+        points: [
+          { x: 300, y: 100 },
+          { x: 320, y: 100 },
+          { x: 320, y: 320 },
+          { x: 300, y: 320 }
+        ]
+      }
+    ],
+    circles: [{ id: "hut", x: 230, y: 262, r: 26 }]
+  });
+  var GRID = new PathGrid({
+    ...WORLD,
+    cellSize: CELL,
+    passable: (x, y) => OBSTACLES.pointClear(x, y, RADIUS)
+  });
+  var CANVAS = document.querySelector("#pathfield-canvas");
+  var CONTEXT = CANVAS.getContext("2d");
+  var STATE = { unit: { ...START }, goal: { x: 440, y: 200 }, full: false, view: null };
+  function compute() {
+    const GOAL_CELL = GRID.nearestOpen(GRID.cellAt(STATE.goal.x, STATE.goal.y)), START_CELL = GRID.nearestOpen(GRID.cellAt(STATE.unit.x, STATE.unit.y)), FIELD = new DistanceField(GRID, [GOAL_CELL]), COST = FIELD.distance(START_CELL);
+    if (STATE.full) {
+      FIELD.settle();
+    }
+    const PATH = FIELD.descend(START_CELL, LOOKAHEAD);
+    let waypoint = { x: GRID.centerX(START_CELL), y: GRID.centerY(START_CELL) };
+    for (let i = PATH.length - 1; i >= 0; i--) {
+      const X = GRID.centerX(PATH[i]), Y = GRID.centerY(PATH[i]);
+      if (i === 0 || OBSTACLES.segmentClear(STATE.unit.x, STATE.unit.y, X, Y, RADIUS, null, true, 0)) {
+        waypoint = { x: X, y: Y };
+        break;
+      }
+    }
+    STATE.view = {
+      field: FIELD,
+      cost: COST,
+      path: PATH,
+      waypoint,
+      straight: OBSTACLES.segmentClear(
+        STATE.unit.x,
+        STATE.unit.y,
+        STATE.goal.x,
+        STATE.goal.y,
+        RADIUS,
+        null,
+        true,
+        0
+      )
+    };
+  }
+  function circle(x, y, r, fill, stroke) {
+    CONTEXT.beginPath();
+    CONTEXT.arc(x, y, r, 0, Math.PI * 2);
+    CONTEXT.fillStyle = fill;
+    CONTEXT.fill();
+    CONTEXT.strokeStyle = stroke;
+    CONTEXT.lineWidth = 2;
+    CONTEXT.stroke();
+  }
+  function settledLimit() {
+    return STATE.full || STATE.view.cost === UNREACHED ? UNREACHED - 1 : STATE.view.cost;
+  }
+  function draw() {
+    const VIEW = STATE.view, DIST = VIEW.field.dist, LIMIT = settledLimit();
+    let maxCost = 1;
+    for (let cell = 0; cell < GRID.size; cell++) {
+      if (DIST[cell] <= LIMIT && DIST[cell] > maxCost) {
+        maxCost = DIST[cell];
+      }
+    }
+    CONTEXT.clearRect(0, 0, WORLD.width, WORLD.height);
+    for (let cell = 0; cell < GRID.size; cell++) {
+      const X = GRID.colOf(cell) * CELL, Y = GRID.rowOf(cell) * CELL;
+      if (!GRID.isOpen(cell)) {
+        CONTEXT.fillStyle = "#1b2a33";
+      } else if (DIST[cell] <= LIMIT) {
+        CONTEXT.fillStyle = `hsl(195 55% ${18 + 40 * (1 - DIST[cell] / maxCost)}%)`;
+      } else {
+        CONTEXT.fillStyle = "#0f1b22";
+      }
+      CONTEXT.fillRect(X, Y, CELL - 1, CELL - 1);
+    }
+    for (const POLYGON of OBSTACLES.polygons.items) {
+      CONTEXT.beginPath();
+      POLYGON.points.forEach((p, i) => i ? CONTEXT.lineTo(p.x, p.y) : CONTEXT.moveTo(p.x, p.y));
+      CONTEXT.closePath();
+      CONTEXT.strokeStyle = "#8fa6b3";
+      CONTEXT.lineWidth = 2;
+      CONTEXT.stroke();
+    }
+    for (const OBSTACLE of OBSTACLES.circles) {
+      CONTEXT.beginPath();
+      CONTEXT.arc(OBSTACLE.x, OBSTACLE.y, OBSTACLE.r, 0, Math.PI * 2);
+      CONTEXT.strokeStyle = "#a39a5c";
+      CONTEXT.lineWidth = 2;
+      CONTEXT.stroke();
+    }
+    CONTEXT.setLineDash([6, 6]);
+    CONTEXT.strokeStyle = VIEW.straight ? "#7fc97f" : "#e6f1f3";
+    CONTEXT.lineWidth = 1;
+    CONTEXT.beginPath();
+    CONTEXT.moveTo(STATE.unit.x, STATE.unit.y);
+    CONTEXT.lineTo(STATE.goal.x, STATE.goal.y);
+    CONTEXT.stroke();
+    CONTEXT.setLineDash([]);
+    CONTEXT.strokeStyle = "#e0a458";
+    CONTEXT.lineWidth = 3;
+    CONTEXT.beginPath();
+    CONTEXT.moveTo(STATE.unit.x, STATE.unit.y);
+    for (const CELL_NUMBER of VIEW.path) {
+      CONTEXT.lineTo(GRID.centerX(CELL_NUMBER), GRID.centerY(CELL_NUMBER));
+    }
+    CONTEXT.stroke();
+    circle(VIEW.waypoint.x, VIEW.waypoint.y, 5, "#7fc97f", "#111c24");
+    circle(STATE.goal.x, STATE.goal.y, 7, "#c9863f", "#e0a458");
+    circle(STATE.unit.x, STATE.unit.y, RADIUS, "#2b6f86", "#6cb2e8");
+  }
+  function render() {
+    compute();
+    draw();
+    const VIEW = STATE.view, DIST = VIEW.field.dist, LIMIT = settledLimit();
+    let settled = 0, open = 0;
+    for (let cell = 0; cell < GRID.size; cell++) {
+      settled += DIST[cell] <= LIMIT ? 1 : 0;
+      open += GRID.isOpen(cell) ? 1 : 0;
+    }
+    document.querySelector("#pathfield-output").textContent = JSON.stringify(
+      {
+        unit: STATE.unit,
+        goal: STATE.goal,
+        cost: VIEW.cost === UNREACHED ? null : VIEW.cost,
+        settledCells: settled,
+        openCells: open,
+        path: VIEW.path.map((cell) => `${GRID.colOf(cell)},${GRID.rowOf(cell)}`),
+        waypoint: VIEW.waypoint,
+        straightRayClear: VIEW.straight,
+        full: STATE.full
+      },
+      null,
+      2
+    );
+    document.querySelector("#pathfield-full").setAttribute("aria-pressed", String(STATE.full));
+  }
+  function setGoal(x, y) {
+    STATE.goal = {
+      x: Math.round(Math.min(WORLD.width, Math.max(0, x))),
+      y: Math.round(Math.min(WORLD.height, Math.max(0, y)))
+    };
+    render();
+  }
+  function fromPointer(event) {
+    const BOX = CANVAS.getBoundingClientRect();
+    setGoal(
+      (event.clientX - BOX.left) * WORLD.width / BOX.width,
+      (event.clientY - BOX.top) * WORLD.height / BOX.height
+    );
+  }
+  CANVAS.addEventListener("pointerdown", (event) => {
+    CANVAS.setPointerCapture(event.pointerId);
+    CANVAS.focus({ preventScroll: true });
+    fromPointer(event);
+  });
+  CANVAS.addEventListener("pointermove", (event) => {
+    if (CANVAS.hasPointerCapture(event.pointerId)) {
+      fromPointer(event);
+    }
+  });
+  CANVAS.addEventListener("keydown", (event) => {
+    const STEP = { ArrowLeft: [-CELL, 0], ArrowRight: [CELL, 0], ArrowUp: [0, -CELL], ArrowDown: [0, CELL] }[event.key];
+    if (STEP) {
+      event.preventDefault();
+      setGoal(STATE.goal.x + STEP[0], STATE.goal.y + STEP[1]);
+    }
+  });
+  document.querySelector("#pathfield-step").addEventListener("click", () => {
+    STATE.unit = { ...STATE.view.waypoint };
+    render();
+  });
+  document.querySelector("#pathfield-full").addEventListener("click", () => {
+    STATE.full = !STATE.full;
+    render();
+  });
+  document.querySelector("#pathfield-reset").addEventListener("click", () => {
+    STATE.unit = { ...START };
+    render();
+  });
+  window.pathfieldExample = { setGoal, state: STATE };
   render();
 })();
 
