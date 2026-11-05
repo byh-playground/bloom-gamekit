@@ -7,30 +7,27 @@ var TOUCH_MIN = 56;
 var MAX_SCALE = 1.6;
 var DRAG_START = 6;
 var STATES = Object.freeze(["owned", "locked", "available", "waiting"]);
-var TEXT_KEYS = Object.freeze([
-  "branch",
-  "name",
-  "state",
-  "buy",
-  "reason",
-  "prerequisite",
-  "level",
-  "zoomIn",
-  "zoomOut",
-  "fit",
-  "map"
-]);
+var TEXT_KEYS = Object.freeze(["branch", "name", "state", "buy", "reason", "prerequisite", "level", "map"]);
+var ROOT_POSITIONS = Object.freeze({
+  center: [0.5, 0.5],
+  top: [0.5, 0],
+  bottom: [0.5, 1],
+  left: [0, 0.5],
+  right: [1, 0.5],
+  "top-left": [0, 0],
+  "top-right": [1, 0],
+  "bottom-left": [0, 1],
+  "bottom-right": [1, 1]
+});
 var STYLE_ID = "bloom-tech-tree-style";
 var STYLE = `
 .bloom-tech{display:flex;flex-direction:column;gap:8px;width:100%;height:100%;min-height:0;box-sizing:border-box;color:var(--tt-fg,#e8eefc)}
 .bloom-tech *{box-sizing:border-box}
-.bloom-tech[data-layout=wide]{flex-direction:column}
 .tt-tabs{display:flex;gap:6px;flex:none}
 .tt-tabs[hidden]{display:none}
-.tt-tab{flex:1;min-height:44px;border:2px solid var(--tt-line,#4a5a86);border-radius:12px;background:transparent;color:inherit;font:inherit;cursor:pointer}
+.tt-tab{flex:1;min-height:56px;border:2px solid var(--tt-line,#4a5a86);border-radius:12px;background:transparent;color:inherit;font:inherit;cursor:pointer}
 .tt-tab[aria-selected=true]{background:var(--tt-accent,#ffd166);color:var(--tt-on-accent,#1b2238);border-color:var(--tt-accent,#ffd166)}
-.tt-main{display:flex;flex:1;gap:8px;min-height:0}
-.bloom-tech[data-layout=narrow] .tt-main{flex-direction:column}
+.tt-main{display:flex;flex-direction:column;flex:1;gap:8px;min-height:0}
 .tt-view{position:relative;flex:1;min-height:0;min-width:0;overflow:clip;touch-action:none;border-radius:12px;background:var(--tt-bg,rgba(255,255,255,.04));user-select:none;-webkit-user-select:none}
 .tt-view[data-pan=on]{cursor:grab}
 .tt-world{position:absolute;left:0;top:0;transform-origin:0 0}
@@ -44,13 +41,9 @@ var STYLE = `
 .tt-node[data-state=available]{border-color:var(--tt-accent,#ffd166);box-shadow:0 0 0 3px color-mix(in srgb,var(--tt-accent,#ffd166) 35%,transparent)}
 .tt-node[data-state=owned]{border-style:double;border-width:6px;border-color:var(--tt-accent,#ffd166)}
 .tt-node[aria-pressed=true]{outline:3px solid var(--tt-fg,#e8eefc);outline-offset:3px}
-.tt-node:focus-visible,.tt-tab:focus-visible,.tt-tool:focus-visible,.tt-buy:focus-visible,.tt-req:focus-visible{outline:3px solid var(--tt-fg,#e8eefc);outline-offset:2px}
+.tt-view:focus-visible,.tt-node:focus-visible,.tt-tab:focus-visible,.tt-buy:focus-visible,.tt-req:focus-visible{outline:3px solid var(--tt-fg,#e8eefc);outline-offset:2px}
 .tt-badge{font-size:11px;white-space:nowrap}
-.tt-tools{position:absolute;right:8px;bottom:8px;display:flex;flex-direction:column;gap:6px}
-.tt-tools[hidden]{display:none}
-.tt-tool{width:44px;height:44px;border:2px solid var(--tt-line,#4a5a86);border-radius:12px;background:var(--tt-node,#222b46);color:inherit;font:700 20px/1 inherit;cursor:pointer}
-.tt-detail{flex:none;display:flex;flex-direction:column;gap:6px;padding:10px 12px;border-radius:12px;background:var(--tt-bg,rgba(255,255,255,.04));overflow:hidden}
-.bloom-tech[data-layout=wide] .tt-detail{width:min(320px,34%)}
+.tt-detail{flex:none;display:flex;flex-direction:column;gap:6px;padding:10px 12px;border-radius:12px;background:var(--tt-bg,rgba(255,255,255,.04));max-height:45%;overflow:auto}
 .tt-head{display:flex;justify-content:space-between;gap:8px;font-weight:700}
 .tt-reqs{display:flex;flex-wrap:wrap;gap:6px}
 .tt-req{min-height:44px;padding:0 12px;border:2px solid var(--tt-line,#4a5a86);border-radius:999px;background:transparent;color:inherit;font:inherit;cursor:pointer}
@@ -72,6 +65,9 @@ function readOptions(options) {
   }
   if (typeof options.screen !== "string" || options.screen === "") {
     fail("screen must be a non-empty string");
+  }
+  if (options.rootPosition !== void 0 && options.rootPosition !== "auto" && !Object.hasOwn(ROOT_POSITIONS, options.rootPosition)) {
+    fail("rootPosition must be auto, center, top, bottom, left, right or a corner");
   }
   const NAV = options.navigation;
   if (!NAV || ["snapshot", "replace", "subscribe"].some((name) => typeof NAV[name] !== "function")) {
@@ -200,18 +196,19 @@ function createTechTree(options) {
   };
   ROOT.replaceChildren();
   ROOT.classList.add("bloom-tech");
-  const TABS = EL("div", "tt-tabs", ROOT);
-  TABS.setAttribute("role", "tablist");
   const MAIN = EL("div", "tt-main", ROOT);
   const VIEW = EL("div", "tt-view", MAIN);
   VIEW.setAttribute("role", "group");
+  VIEW.tabIndex = 0;
+  VIEW.dataset.pan = "on";
   const WORLD = EL("div", "tt-world", VIEW);
   const SVG_NS = "http://www.w3.org/2000/svg";
   const EDGES = DOC.createElementNS(SVG_NS, "svg");
   EDGES.setAttribute("class", "tt-edges");
   EDGES.setAttribute("aria-hidden", "true");
   WORLD.append(EDGES);
-  const TOOLS = EL("div", "tt-tools", VIEW);
+  const TABS = EL("div", "tt-tabs", MAIN);
+  TABS.setAttribute("role", "tablist");
   const DETAIL = EL("section", "tt-detail", MAIN);
   const HEAD = EL("div", "tt-head", DETAIL);
   const TITLE = EL("span", "tt-title", HEAD);
@@ -231,19 +228,6 @@ function createTechTree(options) {
     BUTTON.onclick = () => select(NODES.find((node) => node.branch === BRANCH).id);
     TAB_BUTTONS.set(BRANCH, BUTTON);
   }
-  [
-    ["zoomIn", "+", () => zoomAt(1.3, VIEW.clientWidth / 2, VIEW.clientHeight / 2, true)],
-    ["zoomOut", "−", () => zoomAt(1 / 1.3, VIEW.clientWidth / 2, VIEW.clientHeight / 2, true)],
-    ["fit", "⤢", () => fitView(true)]
-  ].map(([key, glyph, action]) => {
-    const BUTTON = EL("button", "tt-tool", TOOLS);
-    BUTTON.type = "button";
-    BUTTON.textContent = glyph;
-    BUTTON.setAttribute("aria-label", TEXT[key]());
-    BUTTON.title = TEXT[key]();
-    BUTTON.onclick = action;
-    return BUTTON;
-  });
   VIEW.setAttribute("aria-label", TEXT.map());
   const NODE_BUTTONS = /* @__PURE__ */ new Map();
   for (const NODE_DEF of NODES) {
@@ -259,7 +243,6 @@ function createTechTree(options) {
   let branch = BRANCHES[0];
   let layout = null;
   let orientation = "down";
-  let overflow = false;
   let scale = 1;
   let tx = 0;
   let ty = 0;
@@ -267,6 +250,7 @@ function createTechTree(options) {
   let movingTimer = 0;
   let suppressClick = false;
   let sizeKey = "";
+  let viewChanged = false;
   let disposed = false;
   let builtDetail = null;
   const LEVEL_OF = (id) => options.level(id);
@@ -286,7 +270,7 @@ function createTechTree(options) {
     const VH = VIEW.clientHeight;
     const FIT = (size, content, at) => {
       const SHOWN = content * scale;
-      return SHOWN <= size ? (size - SHOWN) / 2 : Math.min(40, Math.max(size - SHOWN - 40, at));
+      return Math.min(size - PAD - PAD * scale, Math.max(PAD - SHOWN + PAD * scale, at));
     };
     tx = FIT(VW, layout.width, tx);
     ty = FIT(VH, layout.height, ty);
@@ -303,38 +287,36 @@ function createTechTree(options) {
     WORLD.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
   }
   function zoomAt(factor, cx, cy, animate = false) {
-    if (!overflow) {
-      return;
-    }
+    viewChanged = true;
     const NEXT = Math.min(MAX_SCALE, Math.max(minScale, scale * factor));
     tx = cx - (cx - tx) * NEXT / scale;
     ty = cy - (cy - ty) * NEXT / scale;
     scale = NEXT;
     applyView(animate);
   }
-  function fitView(animate = false) {
+  function resetView(animate = false, revealSelection = false) {
+    viewChanged = false;
     const VW = VIEW.clientWidth;
     const VH = VIEW.clientHeight;
-    overflow = layout.width > VW || layout.height > VH;
-    VIEW.dataset.pan = overflow ? "on" : "off";
-    TOOLS.hidden = !overflow;
-    if (overflow) {
-      scale = Math.min(1, Math.max(VW / layout.width, TOUCH_MIN / NODE));
-      minScale = Math.min(scale, VW / layout.width, VH / layout.height);
-    } else {
-      scale = 1;
-      minScale = 1;
-    }
-    tx = 0;
-    ty = 0;
+    scale = Math.min(1, Math.max(VW / layout.width, TOUCH_MIN / NODE));
+    minScale = Math.min(scale, VW / layout.width, VH / layout.height);
+    const ROOTS = [...layout.positions].filter(([id]) => layout.depth.get(id) === 0).map(([, position]) => position);
+    const MIN_X = Math.min(...ROOTS.map((position) => position.x));
+    const MIN_Y = Math.min(...ROOTS.map((position) => position.y));
+    const WIDTH = Math.max(...ROOTS.map((position) => position.x)) + NODE - MIN_X;
+    const HEIGHT = Math.max(...ROOTS.map((position) => position.y)) + NODE - MIN_Y;
+    const POSITION = options.rootPosition ?? "auto";
+    const [AX, AY] = ROOT_POSITIONS[POSITION === "auto" ? orientation === "down" ? "top" : "left" : POSITION];
+    tx = (VW - WIDTH * scale) * AX + PAD * (1 - 2 * AX) - MIN_X * scale;
+    ty = (VH - HEIGHT * scale) * AY + PAD * (1 - 2 * AY) - MIN_Y * scale;
     applyView(animate);
-    if (overflow && selected && BY_ID.get(selected).branch === branch) {
-      reveal(selected, animate, true);
+    if (revealSelection && selected && BY_ID.get(selected).branch === branch) {
+      reveal(selected, animate);
     }
   }
-  function reveal(id, animate = true, anchor = false) {
+  function reveal(id, animate = true) {
     const POSITION = layout.positions.get(id);
-    if (!overflow || !POSITION) {
+    if (!POSITION) {
       return;
     }
     const VW = VIEW.clientWidth;
@@ -343,15 +325,14 @@ function createTechTree(options) {
     const LEFT = tx + POSITION.x * scale;
     const TOP = ty + POSITION.y * scale;
     const SIZE = NODE * scale;
-    if (!anchor && !SMALL && LEFT >= 0 && TOP >= 0 && LEFT + SIZE <= VW && TOP + SIZE <= VH) {
+    if (!SMALL && LEFT >= 0 && TOP >= 0 && LEFT + SIZE <= VW && TOP + SIZE <= VH) {
       return;
     }
     if (SMALL) {
       scale = Math.min(MAX_SCALE, TOUCH_MIN / NODE);
     }
-    const DOWN = orientation === "down";
-    tx = anchor && !DOWN ? PAD - POSITION.x * scale : VW / 2 - (POSITION.x + NODE / 2) * scale;
-    ty = anchor && DOWN ? PAD - POSITION.y * scale : VH / 2 - (POSITION.y + NODE / 2) * scale;
+    tx = VW / 2 - (POSITION.x + NODE / 2) * scale;
+    ty = VH / 2 - (POSITION.y + NODE / 2) * scale;
     applyView(animate);
   }
   function routeEdge(from, to) {
@@ -416,8 +397,8 @@ function createTechTree(options) {
     for (const [NAME, BUTTON] of TAB_BUTTONS) {
       BUTTON.setAttribute("aria-selected", String(NAME === branch));
     }
-    fitView(false);
     refresh();
+    resetView(false, true);
   }
   function renderDetail() {
     const NODE_DEF = BY_ID.get(selected);
@@ -472,6 +453,7 @@ function createTechTree(options) {
       fail(`unknown node ${id}`);
     }
     selected = id;
+    viewChanged = true;
     if (NODE_DEF.branch !== branch) {
       buildBranch(NODE_DEF.branch);
     } else {
@@ -500,9 +482,10 @@ function createTechTree(options) {
     return { x: event.clientX - BOX.left, y: event.clientY - BOX.top };
   };
   VIEW.addEventListener("pointerdown", (event) => {
-    if (!overflow || event.target.closest(".tt-tools") || event.pointerType === "mouse" && event.button !== 0) {
+    if (event.pointerType === "mouse" && event.button !== 0) {
       return;
     }
+    viewChanged = true;
     POINTERS.set(event.pointerId, LOCAL(event));
     origin = { ...LOCAL(event), tx, ty };
     if (POINTERS.size === 2) {
@@ -574,15 +557,32 @@ function createTechTree(options) {
   VIEW.addEventListener(
     "wheel",
     (event) => {
-      if (!overflow) {
-        return;
-      }
       event.preventDefault();
       const POINT = LOCAL(event);
       zoomAt(Math.exp(-event.deltaY * 15e-4), POINT.x, POINT.y);
     },
     { passive: false }
   );
+  VIEW.addEventListener("keydown", (event) => {
+    if (event.target !== VIEW) {
+      return;
+    }
+    if (event.key === "+" || event.key === "=") {
+      zoomAt(1.3, VIEW.clientWidth / 2, VIEW.clientHeight / 2);
+    } else if (event.key === "-") {
+      zoomAt(1 / 1.3, VIEW.clientWidth / 2, VIEW.clientHeight / 2);
+    } else if (event.key === "Home") {
+      resetView();
+    } else if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
+      viewChanged = true;
+      tx += event.key === "ArrowLeft" ? NODE / 2 : event.key === "ArrowRight" ? -NODE / 2 : 0;
+      ty += event.key === "ArrowUp" ? NODE / 2 : event.key === "ArrowDown" ? -NODE / 2 : 0;
+      applyView();
+    } else {
+      return;
+    }
+    event.preventDefault();
+  });
   VIEW.addEventListener("focusin", (event) => {
     const BUTTON = event.target.closest?.(".tt-node");
     if (BUTTON) {
@@ -603,17 +603,12 @@ function createTechTree(options) {
     if (WANT !== orientation) {
       orientation = WANT;
       buildBranch(branch);
-    } else if (overflow && (layout.width > VW || layout.height > VH)) {
-      minScale = Math.min(
-        1,
-        Math.max(VW / layout.width, TOUCH_MIN / NODE),
-        VW / layout.width,
-        VH / layout.height
-      );
+    } else if (!viewChanged) {
+      resetView(false, true);
+    } else {
+      minScale = Math.min(1, VW / layout.width, VH / layout.height);
       scale = Math.min(MAX_SCALE, Math.max(minScale, scale));
       applyView();
-    } else {
-      fitView(false);
     }
   }
   const OBSERVER = new WIN.ResizeObserver(() => !disposed && layout && sizeLayout());
