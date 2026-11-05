@@ -2556,7 +2556,7 @@ ${converted}`;
   };
   var VECTOR_VERTEX_FLOATS = 21;
   var VECTOR_FRAGMENT_VARYINGS = "varying highp vec2 v_uv; varying vec4 v_color; varying highp vec4 v_paint; varying highp vec4 v_radial; varying highp vec4 v_rect;";
-  var VECTOR_FRAGMENT_FINISH = "float a=texel.a*v_color.a;if(u_depthWrite>0.5&&a<=0.0)discard;vec3 rgb=v_paint.y>1.5?v_color.rgb*a:mix(texel.rgb*v_color.rgb*v_color.a,vec3(a),v_paint.y);gl_FragColor=vec4(rgb,a);";
+  var VECTOR_FRAGMENT_FINISH = "float a=texel.a*v_color.a;float cutoff=fract(v_paint.x)/0.49;if(u_depthWrite>0.5&&a<=cutoff)discard;vec3 rgb=v_paint.y>1.5?v_color.rgb*a:mix(texel.rgb*v_color.rgb*v_color.a,vec3(a),v_paint.y);gl_FragColor=vec4(rgb,a);";
   var PRIMITIVE_OUTSIDE = `bool primitiveOutside(vec2 l,vec4 p,vec4 m){
   float kind=p.x,stroke=p.y,width=p.z,option=p.w;
   if(kind<0.5){
@@ -2613,6 +2613,7 @@ vec4 texel=texture2D(u_texture,vec3(uv,floor(v_paint.x+0.5)));${VECTOR_FRAGMENT_
     color = [1, 1, 1, 1],
     alpha = 1,
     filter = "linear",
+    depthWriteAlphaThreshold = 0,
     parts = null,
     pose = null
   } = {}) {
@@ -2625,6 +2626,9 @@ vec4 texel=texture2D(u_texture,vec3(uv,floor(v_paint.x+0.5)));${VECTOR_FRAGMENT_
     allFinite(matrix);
     if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1) {
       throw new RangeError("alpha must be in [0,1]");
+    }
+    if (!Number.isFinite(depthWriteAlphaThreshold) || depthWriteAlphaThreshold < 0 || depthWriteAlphaThreshold > 1) {
+      throw new RangeError("depthWriteAlphaThreshold must be in [0,1]");
     }
     if (!color || color.length !== 4) {
       throw new TypeError("RGBA channels must be in [0,1]");
@@ -4568,14 +4572,39 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
       alpha = 1,
       whiteFlash = false,
       forceColor = false,
-      filter = "linear"
+      filter = "linear",
+      depthWriteAlphaThreshold = 0
     } = {}) {
       this._frame();
       const COUNT = uvRects?.length / 4;
-      validateQuads({ layer, uvRects, localRects, matrix, color, alpha, filter, parts, pose });
+      validateQuads({
+        layer,
+        uvRects,
+        localRects,
+        matrix,
+        color,
+        alpha,
+        filter,
+        parts,
+        pose,
+        depthWriteAlphaThreshold
+      });
       const TINT = [color[0], color[1], color[2], color[3] * alpha], M = compose(this.matrix, matrix);
       this._useVertexPaint(
-        [layer, whiteFlash ? 1 : forceColor ? 2 : 0, 0, filter === "nearest" ? 1 : 0, 0, 0, 0, 0, 0, 0, 1, 1],
+        [
+          layer + depthWriteAlphaThreshold * 0.49,
+          whiteFlash ? 1 : forceColor ? 2 : 0,
+          0,
+          filter === "nearest" ? 1 : 0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          1,
+          1
+        ],
         whiteFlash
       );
       if (pose === null) {
@@ -5538,7 +5567,7 @@ float w=meta.x<0.5?projected.z:1.0;gl_Position=vec4(projected.xy,(params.w+partD
           this.commands[AT + 20 + j] = options.localRects[i * 4 + j];
           this.commands[AT + 24 + j] = options.uvRects[i * 4 + j];
         }
-        this.commands[AT + 28] = options.layer;
+        this.commands[AT + 28] = options.layer + (options.depthWriteAlphaThreshold ?? 0) * 0.49;
         this.commands[AT + 29] = Number(options.filter === "nearest");
         const BASE = this.vertexCount;
         for (let corner = 0; corner < 4; corner++) {
@@ -8153,13 +8182,13 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
     }
     const RGB = text.match(/^rgba?\((.*)\)$/);
     if (RGB) {
-      const FIELDS = RGB[1].trim().replace(/\s*\/\s*/, " ").split(/[\s,]+/).filter(Boolean);
-      if (FIELDS.length < 3 || FIELDS.length > 4) {
+      const FIELDS2 = RGB[1].trim().replace(/\s*\/\s*/, " ").split(/[\s,]+/).filter(Boolean);
+      if (FIELDS2.length < 3 || FIELDS2.length > 4) {
         throw new TypeError(`Invalid CSS color: ${value}`);
       }
       const CHANNEL = (s) => clamp(s.endsWith("%") ? parseFloat(s) / 100 : parseFloat(s) / 255);
-      const ALPHA = FIELDS[3] === void 0 ? 1 : clamp(FIELDS[3].endsWith("%") ? parseFloat(FIELDS[3]) / 100 : parseFloat(FIELDS[3]));
-      const OUT = [...FIELDS.slice(0, 3).map(CHANNEL), ALPHA];
+      const ALPHA = FIELDS2[3] === void 0 ? 1 : clamp(FIELDS2[3].endsWith("%") ? parseFloat(FIELDS2[3]) / 100 : parseFloat(FIELDS2[3]));
+      const OUT = [...FIELDS2.slice(0, 3).map(CHANNEL), ALPHA];
       if (OUT.some(Number.isNaN)) {
         throw new TypeError(`Invalid CSS color: ${value}`);
       }
@@ -8167,11 +8196,11 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
     }
     const HSL = text.match(/^hsla?\((.*)\)$/);
     if (HSL) {
-      const FIELDS = HSL[1].trim().replace(/\s*\/\s*/, " ").split(/[\s,]+/).filter(Boolean);
-      if (FIELDS.length < 3 || FIELDS.length > 4) {
+      const FIELDS2 = HSL[1].trim().replace(/\s*\/\s*/, " ").split(/[\s,]+/).filter(Boolean);
+      if (FIELDS2.length < 3 || FIELDS2.length > 4) {
         throw new TypeError(`Invalid CSS color: ${value}`);
       }
-      const H = (parseFloat(FIELDS[0]) % 360 + 360) % 360 / 360, S = clamp(parseFloat(FIELDS[1]) / 100), L = clamp(parseFloat(FIELDS[2]) / 100), A = FIELDS[3] === void 0 ? 1 : clamp(FIELDS[3].endsWith("%") ? parseFloat(FIELDS[3]) / 100 : parseFloat(FIELDS[3]));
+      const H = (parseFloat(FIELDS2[0]) % 360 + 360) % 360 / 360, S = clamp(parseFloat(FIELDS2[1]) / 100), L = clamp(parseFloat(FIELDS2[2]) / 100), A = FIELDS2[3] === void 0 ? 1 : clamp(FIELDS2[3].endsWith("%") ? parseFloat(FIELDS2[3]) / 100 : parseFloat(FIELDS2[3]));
       const F = (n) => {
         const K = (n + H * 12) % 12;
         return L - S * Math.min(L, 1 - L) * Math.max(-1, Math.min(K - 3, 9 - K, 1));
@@ -9875,6 +9904,9 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       this.state = "disposed";
     }
   };
+  var FIELDS = Object.freeze(["x", "y", "rotation", "scaleX", "scaleY", "opacity"]);
+  var DEFAULTS = Object.freeze([0, 0, 0, 1, 1, 1]);
+  var EASE_CODES = Object.freeze({ linear: 0, inOutSine: 1, outQuad: 2 });
 
   // dist/camera.js
   var FINITE2 = (n, name) => {
@@ -10590,7 +10622,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         });
       }
     }
-    const FIELDS = [], NODES = [], INDICES = /* @__PURE__ */ new Map(), ROOT = {
+    const FIELDS2 = [], NODES = [], INDICES = /* @__PURE__ */ new Map(), ROOT = {
       children: /* @__PURE__ */ new Map()
     };
     for (const [NAME, CODE] of Object.entries(MERGED)) {
@@ -10621,9 +10653,9 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       if (node.children.size) {
         throw new TypeError("Overlapping render paths: " + NAME);
       }
-      node.field = FIELDS.length;
-      INDICES.set(NAME, FIELDS.length);
-      FIELDS.push(
+      node.field = FIELDS2.length;
+      INDICES.set(NAME, FIELDS2.length);
+      FIELDS2.push(
         Object.freeze({
           name: NAME,
           code: CODE,
@@ -10633,22 +10665,22 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         })
       );
     }
-    if (!FIELDS.length) {
+    if (!FIELDS2.length) {
       throw new TypeError("renderSchema must declare at least one field");
     }
     for (const NODE of [ROOT, ...NODES]) {
       NODE.list = [...NODE.children.values()];
       NODE.arrayIndex = ARRAY_KEY.test(NODE.key ?? "") ? Number(NODE.key) : -1;
-      NODE.discrete = NODE.field !== void 0 && FIELDS[NODE.field].kind === "discrete";
+      NODE.discrete = NODE.field !== void 0 && FIELDS2[NODE.field].kind === "discrete";
       if (NODE !== ROOT && NODE.children.size && NODE.list.every((child) => child.field !== void 0)) {
         NODE.scalarCache = /* @__PURE__ */ new WeakMap();
       }
     }
-    const POLICIES = compileFieldPolicies(ROOT, FIELDS);
+    const POLICIES = compileFieldPolicies(ROOT, FIELDS2);
     const PATH = pathPlan(type.renderPath, INDICES);
     const PLAN = {
       path: PATH,
-      fields: Object.freeze(FIELDS),
+      fields: Object.freeze(FIELDS2),
       indices: INDICES,
       root: ROOT,
       nodes: NODES,
@@ -11319,9 +11351,9 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       if (track.movingFor === track.from) {
         return;
       }
-      const FIELDS = track.plan.fields, MOVING = [];
-      for (let i = 0; i < FIELDS.length; i++) {
-        if (track.from[i] != null && track.target.values[i] != null && FIELDS[i].kind !== "discrete" && !track.heldFields?.has(i)) {
+      const FIELDS2 = track.plan.fields, MOVING = [];
+      for (let i = 0; i < FIELDS2.length; i++) {
+        if (track.from[i] != null && track.target.values[i] != null && FIELDS2[i].kind !== "discrete" && !track.heldFields?.has(i)) {
           MOVING.push(i);
         }
       }
@@ -11345,9 +11377,9 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         }
         return;
       }
-      const FIELDS = track.plan.fields, FROM_VALUES = track.from, TO_VALUES = track.target.values, HELD = track.heldFields, HOLD = track.buffered && now < track.at + track.durationMs, ALPHA = fraction2(track, now, track.durationMs ?? this.#stepMs), COUNT = indices ? indices.length : out.length;
+      const FIELDS2 = track.plan.fields, FROM_VALUES = track.from, TO_VALUES = track.target.values, HELD = track.heldFields, HOLD = track.buffered && now < track.at + track.durationMs, ALPHA = fraction2(track, now, track.durationMs ?? this.#stepMs), COUNT = indices ? indices.length : out.length;
       for (let at = 0; at < COUNT; at++) {
-        const INDEX = indices ? indices[at] : at, FIELD = FIELDS[INDEX], FROM = FROM_VALUES[INDEX], TO = TO_VALUES[INDEX];
+        const INDEX = indices ? indices[at] : at, FIELD = FIELDS2[INDEX], FROM = FROM_VALUES[INDEX], TO = TO_VALUES[INDEX];
         if (FROM == null || TO == null || FIELD.kind === "discrete" || HELD?.has(INDEX)) {
           out[INDEX] = HOLD ? FROM : TO;
         } else if (FIELD.code === RenderObject.CYCLE) {
@@ -12989,12 +13021,12 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       return SIGNED(Number(BigInt(SIGNED(a)) * 1024n / BigInt(b)));
     }
   });
-  var VERSION = "0.47.0";
+  var VERSION = "0.47.1";
   var REPLAY_FORMAT_VERSION = "0.3.0-dev";
   var PROTOCOL_VERSION = 3;
   var CHUNK_SIZE = 16384;
   var MAX_TICK = 2147483646;
-  var DEFAULTS = {
+  var DEFAULTS2 = {
     mode: "rollback",
     inputScheduling: "configured",
     inputSafetyMarginMs: 8,
@@ -13027,10 +13059,10 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
   };
   var PROFILES = Object.freeze({
     action: Object.freeze({
-      ...DEFAULTS
+      ...DEFAULTS2
     }),
     rts: Object.freeze({
-      ...DEFAULTS,
+      ...DEFAULTS2,
       tickRate: 20,
       baseInputDelayTicks: 4,
       maxInputDelayTicks: 12,
@@ -13040,7 +13072,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       checksumInterval: 20
     }),
     lockstep: Object.freeze({
-      ...DEFAULTS,
+      ...DEFAULTS2,
       mode: "lockstep",
       tickRate: 20,
       baseInputDelayTicks: 4,
@@ -13397,7 +13429,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
   }
   function profileOf(profile) {
     const P = {
-      ...DEFAULTS,
+      ...DEFAULTS2,
       ...profile
     };
     for (const [KEY, MAX] of [
@@ -14673,20 +14705,20 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
           R.end();
           if (!equalBytes(HELLO_LOCAL, this._hello)) {
             const EXPECTED = JSON.parse(DECODER.decode(this._hello)), RECEIVED = JSON.parse(DECODER.decode(HELLO_LOCAL));
-            const FIELDS = Object.keys(EXPECTED).filter(
+            const FIELDS2 = Object.keys(EXPECTED).filter(
               (field) => JSON.stringify(EXPECTED[field]) !== JSON.stringify(RECEIVED?.[field])
             );
-            if (!FIELDS.length) {
+            if (!FIELDS2.length) {
               throw new Error("noncanonical HELLO");
             }
-            const TYPE_LOCAL2 = FIELDS.some(
+            const TYPE_LOCAL2 = FIELDS2.some(
               (field) => ["protocol", "library", "simulationVersion"].includes(field)
             ) ? "version-mismatch" : "handshake-mismatch";
             this._fail(TYPE_LOCAL2, {
               peerId,
-              fields: Object.freeze(FIELDS),
+              fields: Object.freeze(FIELDS2),
               mismatches: Object.freeze(
-                FIELDS.map(
+                FIELDS2.map(
                   (field) => Object.freeze({
                     field,
                     expected: EXPECTED[field],
@@ -16759,7 +16791,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
     format: "json"
   });
   var CHUNK_SIZE2 = 16384;
-  var DEFAULTS2 = {
+  var DEFAULTS3 = {
     mode: "rollback",
     inputScheduling: "configured",
     inputSafetyMarginMs: 8,
@@ -16792,10 +16824,10 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
   };
   var PROFILES2 = Object.freeze({
     action: Object.freeze({
-      ...DEFAULTS2
+      ...DEFAULTS3
     }),
     rts: Object.freeze({
-      ...DEFAULTS2,
+      ...DEFAULTS3,
       tickRate: 20,
       baseInputDelayTicks: 4,
       maxInputDelayTicks: 12,
@@ -16805,7 +16837,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       checksumInterval: 20
     }),
     lockstep: Object.freeze({
-      ...DEFAULTS2,
+      ...DEFAULTS3,
       mode: "lockstep",
       tickRate: 20,
       baseInputDelayTicks: 4,

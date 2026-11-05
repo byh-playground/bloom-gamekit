@@ -2446,7 +2446,7 @@ ${converted}`;
   };
   var VECTOR_VERTEX_FLOATS = 21;
   var VECTOR_FRAGMENT_VARYINGS = "varying highp vec2 v_uv; varying vec4 v_color; varying highp vec4 v_paint; varying highp vec4 v_radial; varying highp vec4 v_rect;";
-  var VECTOR_FRAGMENT_FINISH = "float a=texel.a*v_color.a;if(u_depthWrite>0.5&&a<=0.0)discard;vec3 rgb=v_paint.y>1.5?v_color.rgb*a:mix(texel.rgb*v_color.rgb*v_color.a,vec3(a),v_paint.y);gl_FragColor=vec4(rgb,a);";
+  var VECTOR_FRAGMENT_FINISH = "float a=texel.a*v_color.a;float cutoff=fract(v_paint.x)/0.49;if(u_depthWrite>0.5&&a<=cutoff)discard;vec3 rgb=v_paint.y>1.5?v_color.rgb*a:mix(texel.rgb*v_color.rgb*v_color.a,vec3(a),v_paint.y);gl_FragColor=vec4(rgb,a);";
   var PRIMITIVE_OUTSIDE = `bool primitiveOutside(vec2 l,vec4 p,vec4 m){
   float kind=p.x,stroke=p.y,width=p.z,option=p.w;
   if(kind<0.5){
@@ -2503,6 +2503,7 @@ vec4 texel=texture2D(u_texture,vec3(uv,floor(v_paint.x+0.5)));${VECTOR_FRAGMENT_
     color = [1, 1, 1, 1],
     alpha = 1,
     filter = "linear",
+    depthWriteAlphaThreshold = 0,
     parts = null,
     pose = null
   } = {}) {
@@ -2515,6 +2516,9 @@ vec4 texel=texture2D(u_texture,vec3(uv,floor(v_paint.x+0.5)));${VECTOR_FRAGMENT_
     allFinite(matrix);
     if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1) {
       throw new RangeError("alpha must be in [0,1]");
+    }
+    if (!Number.isFinite(depthWriteAlphaThreshold) || depthWriteAlphaThreshold < 0 || depthWriteAlphaThreshold > 1) {
+      throw new RangeError("depthWriteAlphaThreshold must be in [0,1]");
     }
     if (!color || color.length !== 4) {
       throw new TypeError("RGBA channels must be in [0,1]");
@@ -4458,14 +4462,39 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
       alpha = 1,
       whiteFlash = false,
       forceColor = false,
-      filter = "linear"
+      filter = "linear",
+      depthWriteAlphaThreshold = 0
     } = {}) {
       this._frame();
       const COUNT = uvRects?.length / 4;
-      validateQuads({ layer, uvRects, localRects, matrix, color, alpha, filter, parts, pose });
+      validateQuads({
+        layer,
+        uvRects,
+        localRects,
+        matrix,
+        color,
+        alpha,
+        filter,
+        parts,
+        pose,
+        depthWriteAlphaThreshold
+      });
       const TINT = [color[0], color[1], color[2], color[3] * alpha], M = compose(this.matrix, matrix);
       this._useVertexPaint(
-        [layer, whiteFlash ? 1 : forceColor ? 2 : 0, 0, filter === "nearest" ? 1 : 0, 0, 0, 0, 0, 0, 0, 1, 1],
+        [
+          layer + depthWriteAlphaThreshold * 0.49,
+          whiteFlash ? 1 : forceColor ? 2 : 0,
+          0,
+          filter === "nearest" ? 1 : 0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          1,
+          1
+        ],
         whiteFlash
       );
       if (pose === null) {
@@ -5428,7 +5457,7 @@ float w=meta.x<0.5?projected.z:1.0;gl_Position=vec4(projected.xy,(params.w+partD
           this.commands[AT + 20 + j] = options.localRects[i * 4 + j];
           this.commands[AT + 24 + j] = options.uvRects[i * 4 + j];
         }
-        this.commands[AT + 28] = options.layer;
+        this.commands[AT + 28] = options.layer + (options.depthWriteAlphaThreshold ?? 0) * 0.49;
         this.commands[AT + 29] = Number(options.filter === "nearest");
         const BASE = this.vertexCount;
         for (let corner = 0; corner < 4; corner++) {
@@ -8043,13 +8072,13 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
     }
     const RGB = text.match(/^rgba?\((.*)\)$/);
     if (RGB) {
-      const FIELDS2 = RGB[1].trim().replace(/\s*\/\s*/, " ").split(/[\s,]+/).filter(Boolean);
-      if (FIELDS2.length < 3 || FIELDS2.length > 4) {
+      const FIELDS22 = RGB[1].trim().replace(/\s*\/\s*/, " ").split(/[\s,]+/).filter(Boolean);
+      if (FIELDS22.length < 3 || FIELDS22.length > 4) {
         throw new TypeError(`Invalid CSS color: ${value}`);
       }
       const CHANNEL = (s) => clamp(s.endsWith("%") ? parseFloat(s) / 100 : parseFloat(s) / 255);
-      const ALPHA = FIELDS2[3] === void 0 ? 1 : clamp(FIELDS2[3].endsWith("%") ? parseFloat(FIELDS2[3]) / 100 : parseFloat(FIELDS2[3]));
-      const OUT = [...FIELDS2.slice(0, 3).map(CHANNEL), ALPHA];
+      const ALPHA = FIELDS22[3] === void 0 ? 1 : clamp(FIELDS22[3].endsWith("%") ? parseFloat(FIELDS22[3]) / 100 : parseFloat(FIELDS22[3]));
+      const OUT = [...FIELDS22.slice(0, 3).map(CHANNEL), ALPHA];
       if (OUT.some(Number.isNaN)) {
         throw new TypeError(`Invalid CSS color: ${value}`);
       }
@@ -8057,11 +8086,11 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
     }
     const HSL = text.match(/^hsla?\((.*)\)$/);
     if (HSL) {
-      const FIELDS2 = HSL[1].trim().replace(/\s*\/\s*/, " ").split(/[\s,]+/).filter(Boolean);
-      if (FIELDS2.length < 3 || FIELDS2.length > 4) {
+      const FIELDS22 = HSL[1].trim().replace(/\s*\/\s*/, " ").split(/[\s,]+/).filter(Boolean);
+      if (FIELDS22.length < 3 || FIELDS22.length > 4) {
         throw new TypeError(`Invalid CSS color: ${value}`);
       }
-      const H = (parseFloat(FIELDS2[0]) % 360 + 360) % 360 / 360, S = clamp(parseFloat(FIELDS2[1]) / 100), L = clamp(parseFloat(FIELDS2[2]) / 100), A = FIELDS2[3] === void 0 ? 1 : clamp(FIELDS2[3].endsWith("%") ? parseFloat(FIELDS2[3]) / 100 : parseFloat(FIELDS2[3]));
+      const H = (parseFloat(FIELDS22[0]) % 360 + 360) % 360 / 360, S = clamp(parseFloat(FIELDS22[1]) / 100), L = clamp(parseFloat(FIELDS22[2]) / 100), A = FIELDS22[3] === void 0 ? 1 : clamp(FIELDS22[3].endsWith("%") ? parseFloat(FIELDS22[3]) / 100 : parseFloat(FIELDS22[3]));
       const F = (n) => {
         const K2 = (n + H * 12) % 12;
         return L - S * Math.min(L, 1 - L) * Math.max(-1, Math.min(K2 - 3, 9 - K2, 1));
@@ -10049,6 +10078,9 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       }
     });
   }
+  var FIELDS = Object.freeze(["x", "y", "rotation", "scaleX", "scaleY", "opacity"]);
+  var DEFAULTS = Object.freeze([0, 0, 0, 1, 1, 1]);
+  var EASE_CODES = Object.freeze({ linear: 0, inOutSine: 1, outQuad: 2 });
 
   // dist/vector-assets.js
   var isBrowser = typeof window !== "undefined";
@@ -13175,9 +13207,9 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
     }
     return asset;
   }
-  var FIELDS = Object.freeze(["x", "y", "rotation", "scaleX", "scaleY", "opacity"]);
-  var DEFAULTS = Object.freeze([0, 0, 0, 1, 1, 1]);
-  var EASE_CODES = Object.freeze({ linear: 0, inOutSine: 1, outQuad: 2 });
+  var FIELDS2 = Object.freeze(["x", "y", "rotation", "scaleX", "scaleY", "opacity"]);
+  var DEFAULTS2 = Object.freeze([0, 0, 0, 1, 1, 1]);
+  var EASE_CODES2 = Object.freeze({ linear: 0, inOutSine: 1, outQuad: 2 });
   var MAX_SEGMENTS = 64;
   function requireFinite(value, label) {
     if (!Number.isFinite(value)) {
@@ -13306,7 +13338,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
             throw new TypeError(`Empty clip part pose: ${NAME}/${PART_ID}`);
           }
           for (const [FIELD, VALUE] of Object.entries(POSE)) {
-            if (!FIELDS.includes(FIELD)) {
+            if (!FIELDS2.includes(FIELD)) {
               throw new TypeError(`Unknown clip pose field: ${NAME}/${PART_ID}/${FIELD}`);
             }
             requireFinite(VALUE, `clip ${NAME}/${PART_ID}/${FIELD}`);
@@ -13320,8 +13352,8 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       if (FRAMES[0].timeMs !== 0 || previousTime !== DURATION) {
         throw new RangeError(`Clip ${NAME} keyframes must span 0..durationMs`);
       }
-      const CHANNELS = Array.from({ length: PART_COUNT * FIELDS.length }, (_, channelIndex) => ({
-        initial: FRAMES[0].parts[PARTS[Math.floor(channelIndex / FIELDS.length)].id]?.[FIELDS[channelIndex % FIELDS.length]] ?? DEFAULTS[channelIndex % FIELDS.length],
+      const CHANNELS = Array.from({ length: PART_COUNT * FIELDS2.length }, (_, channelIndex) => ({
+        initial: FRAMES[0].parts[PARTS[Math.floor(channelIndex / FIELDS2.length)].id]?.[FIELDS2[channelIndex % FIELDS2.length]] ?? DEFAULTS2[channelIndex % FIELDS2.length],
         segments: []
       }));
       let reason = null;
@@ -13331,11 +13363,11 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       for (let frameIndex = 1; frameIndex < FRAMES.length; frameIndex++) {
         const FRAME = FRAMES[frameIndex];
         const START = FRAMES[frameIndex - 1].timeMs;
-        const CODE = EASE_CODES[FRAME.easing];
+        const CODE = EASE_CODES2[FRAME.easing ?? CLIP.easing ?? "linear"];
         for (const [PART_ID, POSE] of Object.entries(FRAME.parts)) {
           const PART_INDEX = INDICES.get(PART_ID);
           for (const [FIELD, TARGET] of Object.entries(POSE)) {
-            const CHANNEL = CHANNELS[PART_INDEX * FIELDS.length + FIELDS.indexOf(FIELD)];
+            const CHANNEL = CHANNELS[PART_INDEX * FIELDS2.length + FIELDS2.indexOf(FIELD)];
             if (CODE === void 0 && reason === null) {
               reason = `unsupported easing ${String(FRAME.easing)} at keyframe ${frameIndex}`;
             }
@@ -13373,7 +13405,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         continue;
       }
       const HEADER_BASE = DATA2.length / 4;
-      const SEGMENT_BASE = HEADER_BASE + PART_COUNT * FIELDS.length;
+      const SEGMENT_BASE = HEADER_BASE + PART_COUNT * FIELDS2.length;
       let nextSegment = SEGMENT_BASE;
       for (const CHANNEL of CHANNELS) {
         DATA2.push(nextSegment, CHANNEL.segments.length, CHANNEL.initial, 0);
@@ -13400,9 +13432,9 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
     requirePartIndex(program, partIndex);
     const CLIP = requireClip(program, clipName);
     const TIME = localTime(CLIP, elapsedMs);
-    const HEADER = CLIP.headerBase + partIndex * FIELDS.length;
+    const HEADER = CLIP.headerBase + partIndex * FIELDS2.length;
     return Object.fromEntries(
-      FIELDS.map((field, index) => [field, channelValue(program.cpuData, HEADER + index, TIME)])
+      FIELDS2.map((field, index) => [field, channelValue(program.cpuData, HEADER + index, TIME)])
     );
   }
   function samplePartTransform(program, clipName, elapsedMs, partIndex, basePoses) {
@@ -40007,8 +40039,8 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       "hatchWidth",
       "hatchOpacity"
     ];
-    const FIELDS2 = style.kind === "yarn" ? YARN_REQUIRED : style.kind === "sketch" ? SKETCH_REQUIRED : null;
-    if (!FIELDS2 || FIELDS2.some((key2) => !Number.isFinite(style[key2]))) {
+    const FIELDS3 = style.kind === "yarn" ? YARN_REQUIRED : style.kind === "sketch" ? SKETCH_REQUIRED : null;
+    if (!FIELDS3 || FIELDS3.some((key2) => !Number.isFinite(style[key2]))) {
       throw new TypeError("Unsupported or incomplete SVG surface style");
     }
     if (style.seed < 0 || style.seed > 2147483647 || !Number.isSafeInteger(style.seed)) {
