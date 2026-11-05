@@ -46,6 +46,10 @@
       "sha256": "191b022768b986776e321d909886a68650ecbf37a4745b3a5b1870ee8eb32e42"
     },
     {
+      "file": "vision.js",
+      "sha256": "b630ae1678f99f6936422751b6f0bbeaa20a29e2867a1d938333d3d3f0f3e911"
+    },
+    {
       "file": "transport.js",
       "sha256": "37e3e42647709bd0551020cf810266e97440b1a219fa6dd8c6ca6f5acfe838af"
     },
@@ -55,7 +59,7 @@
     },
     {
       "file": "rollback.js",
-      "sha256": "16e92bdd4afaf81754a93a12b23e5771eca61053c1d8b71eec033cf1b9bc3e04"
+      "sha256": "1dc46569347e9291c70c97493148e06f5a4690ad3e6e0d1ec7e6e6fe22a6e60f"
     },
     {
       "file": "camera.js",
