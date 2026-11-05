@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { chromium } from 'playwright';
 
 // 배포물(dist/tech-tree.js·dist/navigation.js)을 실제 Chromium에서 불러와, 게임이 쓰는 그대로 트리를 만들고
@@ -69,14 +69,11 @@ const MAKE = (overrides = {}) =>
             reason: (state) => 'why ' + state,
             prerequisite: (required, met) => (met ? 'ok ' : 'need ') + NAME(required),
             level: (node, level) => level + '/' + node.max,
-            zoomIn: () => 'zoom in',
-            zoomOut: () => 'zoom out',
-            fit: () => 'fit',
             map: () => 'tree map',
         },
         ...overrides,
     });
-window.__start = () => (TREE = MAKE());
+window.__start = (overrides = {}) => (TREE = MAKE(overrides));
 window.__tree = () => TREE;
 window.__nav = NAVIGATION;
 window.__buys = BUYS;
@@ -148,7 +145,7 @@ try {
     const STATES = (page, ids) =>
         page.evaluate((list) => Object.fromEntries(list.map((id) => [id, window.__tree().stateOf(id)])), ids);
 
-    // 1. 폰(390x844 터치): 분류 하나가 한 화면에 들어가면 줌·팬 없이 그대로, 노드는 손가락 크기, 스크롤 없음.
+    // 1. 폰(390x844 터치): 작은 트리도 제스처로 움직이며, 노드는 손가락 크기이고 스크롤·지도 위 도구 버튼이 없다.
     let run = await open({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
     let { page } = run;
     assert.deepEqual(await STATES(page, ['needlePower', 'needleTempo', 'needleJoin', 'speed']), {
@@ -158,14 +155,14 @@ try {
         speed: 'locked',
     });
     let view = await page.evaluate(() => window.__view());
-    assert.equal(view.pan, 'off', 'needle branch fits without pan/zoom');
+    assert.equal(view.pan, 'on', 'gestures are available even when the branch fits');
     assert.equal(view.scale, 1);
     assert.deepEqual(
         [view.scrollLeft, view.scrollTop, view.overflow, view.bar],
         [0, 0, 'clip', 0],
         'no native scroll in the view',
     );
-    assert.equal(await page.locator('.tt-tools').isHidden(), true);
+    assert.equal(await page.locator('.tt-tools, .tt-tool').count(), 0);
     for (const ID of ['needlePower', 'needleTempo', 'needleEcho', 'needleSplit', 'needleJoin']) {
         const BOX = await page.evaluate((id) => window.__rect(id), ID);
         assert.ok(BOX.w >= 56 && BOX.h >= 56, `${ID} is at least 56px (${BOX.w}x${BOX.h})`);
@@ -252,7 +249,7 @@ try {
     ({ page } = run);
     view = await page.evaluate(() => window.__view());
     assert.equal(view.pan, 'on', 'big branch overflows into zoom/pan');
-    assert.equal(await page.locator('.tt-tools').isVisible(), true);
+    assert.equal(await page.locator('.tt-tools, .tt-tool').count(), 0);
     assert.deepEqual(
         [view.scrollLeft, view.scrollTop, view.overflow, view.bar],
         [0, 0, 'clip', 0],
@@ -305,22 +302,37 @@ try {
     ]);
     await TOUCH('touchEnd', []);
     assert.ok((await page.evaluate(() => window.__view().scale)) > SCALE_BEFORE * 1.3, 'pinch zooms in');
-    // 맞춤 버튼은 처음 보기로 되돌린다. 축소 버튼은 최소 배율까지만 줄인다.
-    await page.getByRole('button', { name: 'fit' }).tap();
+    // 지도에 포커스한 Home은 루트 시작 위치를 복원하고, 두 손가락 오므리기로 최소 배율까지 줄인다.
+    await page.locator('.tt-view').focus();
+    await page.keyboard.press('Home');
     const FITTED = await page.evaluate(() => window.__view());
     assert.equal(FITTED.scale, view.scale);
-    for (let i = 0; i < 8; i++) {
-        await page.getByRole('button', { name: 'zoom out' }).tap();
-    }
+    await TOUCH('touchStart', [
+        { x: CENTER.x - 160, y: CENTER.y, id: 1 },
+        { x: CENTER.x + 160, y: CENTER.y, id: 2 },
+    ]);
+    await TOUCH('touchMove', [
+        { x: CENTER.x - 10, y: CENTER.y, id: 1 },
+        { x: CENTER.x + 10, y: CENTER.y, id: 2 },
+    ]);
+    await TOUCH('touchEnd', []);
     await SETTLE();
     const SMALLEST = await page.evaluate(() => window.__view());
     assert.ok(SMALLEST.scale < FITTED.scale && SMALLEST.scale > 0.2, 'zoom out stops at the overview scale');
-    const SMALL_NODE = await page.evaluate(() => window.__rect('b9'));
+    const SMALL_ID = await page.evaluate(() => {
+        const VIEW = window.__viewRect();
+        return [...document.querySelectorAll('.tt-node')].find((node) => {
+            const BOX = node.getBoundingClientRect();
+            return BOX.x >= VIEW.x && BOX.y >= VIEW.y && BOX.right <= VIEW.x + VIEW.w && BOX.bottom <= VIEW.y + VIEW.h;
+        })?.dataset.id;
+    });
+    assert.ok(SMALL_ID, 'the zoomed-out view contains a tappable node');
+    const SMALL_NODE = await page.evaluate((id) => window.__rect(id), SMALL_ID);
     assert.ok(SMALL_NODE.w < 56, 'overview nodes are smaller than a finger');
-    await page.locator('.tt-node[data-id="b9"]').tap();
+    await page.locator(`.tt-node[data-id="${SMALL_ID}"]`).tap();
     await SETTLE();
-    assert.equal(await page.evaluate(() => window.__tree().selected), 'b9');
-    const GROWN = await page.evaluate(() => ({ box: window.__rect('b9'), view: window.__viewRect() }));
+    assert.equal(await page.evaluate(() => window.__tree().selected), SMALL_ID);
+    const GROWN = await page.evaluate((id) => ({ box: window.__rect(id), view: window.__viewRect() }), SMALL_ID);
     assert.ok(GROWN.box.w >= 55.5, `selecting a tiny node grows it to touch size (${GROWN.box.w})`);
     assert.ok(
         GROWN.box.x >= GROWN.view.x && GROWN.box.x + GROWN.box.w <= GROWN.view.x + GROWN.view.w,
@@ -329,7 +341,7 @@ try {
     assert.deepEqual(run.errors, []);
     await run.context.close();
 
-    // 6. 데스크톱(1280x800): 가로가 길면 깊이가 왼쪽에서 오른쪽으로 가고, 휠 확대·마우스 끌기·상세는 옆에 놓인다.
+    // 6. 데스크톱(1280x800): 가로가 길면 깊이가 왼쪽에서 오른쪽으로 가고, 휠 확대·마우스 끌기가 되고 상세는 아래에 놓인다.
     run = await open({ viewport: { width: 1280, height: 800 } });
     ({ page } = run);
     const D_POWER = await page.evaluate(() => window.__rect('needlePower'));
@@ -338,9 +350,16 @@ try {
     assert.equal(await page.locator('.bloom-tech').getAttribute('data-layout'), 'wide');
     const DETAIL_BOX = await page.locator('.tt-detail').boundingBox();
     const D_VIEW = await page.evaluate(() => window.__viewRect());
-    assert.ok(DETAIL_BOX.x >= D_VIEW.x + D_VIEW.w - 1, 'detail sits beside the view');
+    assert.ok(DETAIL_BOX.y >= D_VIEW.y + D_VIEW.h - 1, 'detail stays below the view on desktop too');
     await page.locator('.tt-tab').nth(2).click();
     assert.equal(await page.evaluate(() => window.__view().pan), 'on');
+    const D_ROOT = await page.evaluate(() => ({ box: window.__rect('b0'), view: window.__viewRect() }));
+    assert.ok(
+        D_ROOT.box.x >= D_ROOT.view.x &&
+            D_ROOT.box.y >= D_ROOT.view.y &&
+            D_ROOT.box.y + D_ROOT.box.h <= D_ROOT.view.y + D_ROOT.view.h,
+        'landscape first view shows the root',
+    );
     const MID = await page.evaluate(() => window.__viewRect());
     const W_BEFORE = await page.evaluate(() => window.__view().scale);
     await page.mouse.move(MID.x + MID.w / 2, MID.y + MID.h / 2);
@@ -356,13 +375,6 @@ try {
     assert.ok(
         DESKTOP_EDGES.edges >= 18 && DESKTOP_EDGES.hits === 0,
         `no edge crosses a node in landscape (${JSON.stringify(DESKTOP_EDGES)})`,
-    );
-    const D_ROOT = await page.evaluate(() => ({ box: window.__rect('b0'), view: window.__viewRect() }));
-    assert.ok(
-        D_ROOT.box.x >= D_ROOT.view.x &&
-            D_ROOT.box.y >= D_ROOT.view.y &&
-            D_ROOT.box.y + D_ROOT.box.h <= D_ROOT.view.y + D_ROOT.view.h,
-        'landscape first view shows the root',
     );
     const M_BEFORE = await page.evaluate(() => window.__view());
     await page.mouse.move(MID.x + MID.w / 2, MID.y + MID.h / 2);
@@ -381,6 +393,82 @@ try {
         'focused node is revealed',
     );
     assert.deepEqual(run.errors, []);
+
+    await page.evaluate(() => window.__tree().select('b15'));
+    await page.locator('.tt-view').focus();
+    await page.keyboard.press('Home');
+    const HOME_ROOT = await page.evaluate(() => ({ box: window.__rect('b0'), view: window.__viewRect() }));
+    assert.ok(
+        Math.abs(HOME_ROOT.box.x - HOME_ROOT.view.x - 16) < 1,
+        'Home restores the root even when a deep node is selected',
+    );
+    assert.equal(
+        await page.evaluate(() => window.__tree().selected),
+        'b15',
+        'resetting the camera does not change the detail selection',
+    );
+
+    // 작은 트리도 휠·키보드로 조작하고, 루트 9개 시작 위치는 폰과 PC에서 실제 좌표로 확인한다.
+    for (const SIZE of [
+        { width: 390, height: 844 },
+        { width: 1280, height: 800 },
+    ]) {
+        await page.setViewportSize(SIZE);
+        for (const [POSITION, X, Y] of [
+            ['center', 0.5, 0.5],
+            ['top', 0.5, 0],
+            ['left', 0, 0.5],
+            ['right', 1, 0.5],
+            ['bottom', 0.5, 1],
+            ['top-left', 0, 0],
+            ['top-right', 1, 0],
+            ['bottom-left', 0, 1],
+            ['bottom-right', 1, 1],
+        ]) {
+            await page.evaluate((position) => {
+                window.__tree().dispose();
+                window.__nav.replace({ screen: 'tech', item: 'b0' });
+                window.__start({ rootPosition: position });
+            }, POSITION);
+            await SETTLE(40);
+            const AT = await page.evaluate(() => ({ root: window.__rect('b0'), view: window.__viewRect() }));
+            const EXPECT_X = AT.view.x + (AT.view.w - AT.root.w) * X + 16 * (1 - 2 * X);
+            const EXPECT_Y = AT.view.y + (AT.view.h - AT.root.h) * Y + 16 * (1 - 2 * Y);
+            assert.ok(Math.abs(AT.root.x - EXPECT_X) < 1, `${SIZE.width}px ${POSITION} root x: ${JSON.stringify(AT)}`);
+            assert.ok(Math.abs(AT.root.y - EXPECT_Y) < 1, `${SIZE.width}px ${POSITION} root y: ${JSON.stringify(AT)}`);
+        }
+        const DETAIL = await page.locator('.tt-detail').boundingBox();
+        const VIEW = await page.locator('.tt-view').boundingBox();
+        const TABS = await page.locator('.tt-tabs').boundingBox();
+        assert.ok(
+            TABS.y >= VIEW.y + VIEW.height && DETAIL.y >= TABS.y + TABS.height,
+            'map, branches and detail never overlap',
+        );
+    }
+    await page.evaluate(() => {
+        window.__tree().dispose();
+        window.__nav.replace({ screen: 'tech', item: 'needlePower' });
+        window.__start({ rootPosition: 'center' });
+    });
+    const SMALL_VIEW = await page.evaluate(() => window.__viewRect());
+    const BEFORE_WHEEL = await page.evaluate(() => window.__view().scale);
+    await page.mouse.move(SMALL_VIEW.x + SMALL_VIEW.w / 2, SMALL_VIEW.y + SMALL_VIEW.h / 2);
+    await page.mouse.wheel(0, -200);
+    await SETTLE(80);
+    assert.ok(await page.evaluate((before) => window.__view().scale > before, BEFORE_WHEEL), 'small trees can zoom in');
+    await page.locator('.tt-view').focus();
+    await page.keyboard.press('Home');
+    const BEFORE_KEY = await page.evaluate(() => window.__view());
+    await page.keyboard.press('ArrowRight');
+    assert.ok(
+        await page.evaluate((before) => window.__view().tx < before, BEFORE_KEY.tx),
+        'keyboard pans without overlay controls',
+    );
+    await page.keyboard.press('+');
+    assert.ok(
+        await page.evaluate((before) => window.__view().scale > before, BEFORE_KEY.scale),
+        'keyboard zoom remains available',
+    );
 
     // 7. 잘못된 입력은 기본값으로 대체하지 않고 바로 던진다.
     const THROWN = await page.evaluate(() => {
@@ -404,6 +492,7 @@ try {
             noText: CATCH(BASE({ text: {} })),
             noNavigation: CATCH(BASE({ navigation: null })),
             noScreen: CATCH(BASE({ screen: '' })),
+            noRootPosition: CATCH(BASE({ rootPosition: 'north' })),
         };
     });
     const ONE_BRANCH = await page.evaluate(() => {
@@ -424,7 +513,56 @@ try {
     assert.match(THROWN.noText, /text\.branch must be a function/);
     assert.match(THROWN.noNavigation, /navigation must provide/);
     assert.match(THROWN.noScreen, /screen must be a non-empty string/);
+    assert.match(THROWN.noRootPosition, /rootPosition must be/);
     await run.context.close();
+
+    // 배포할 실제 예제: 상단 도구줄 없음, 하단 설정으로 큰 트리·루트 위치를 바꾸고 닫아도 루트가 맞는다.
+    for (const SIZE of [
+        { width: 390, height: 568 },
+        { width: 1280, height: 800 },
+    ]) {
+        const CONTEXT = await browser.newContext({ viewport: SIZE, hasTouch: SIZE.width < 720 });
+        const EXAMPLE = await CONTEXT.newPage();
+        const ERRORS = [];
+        EXAMPLE.on('pageerror', (error) => ERRORS.push(error.message));
+        await EXAMPLE.goto(pathToFileURL(resolve(ROOT, 'dist/previews/tech-tree.html')).href);
+        await EXAMPLE.waitForFunction(() => window.techTreeDemo);
+        await SETTLE(40);
+        const INITIAL = await EXAMPLE.evaluate(() => {
+            const VIEW = document.querySelector('.tt-view').getBoundingClientRect();
+            const DETAIL = document.querySelector('.tt-detail').getBoundingClientRect();
+            return {
+                buttonsAbove: [...document.querySelectorAll('button')].filter(
+                    (button) => button.getBoundingClientRect().bottom <= VIEW.top,
+                ).length,
+                tools: document.querySelectorAll('.tt-tool, .tt-tools').length,
+                detailBelow: DETAIL.top >= VIEW.bottom,
+                overflow:
+                    document.documentElement.scrollHeight > innerHeight ||
+                    document.documentElement.scrollWidth > innerWidth,
+            };
+        });
+        assert.deepEqual(INITIAL, { buttonsAbove: 0, tools: 0, detailBelow: true, overflow: false });
+        await EXAMPLE.locator('#example-settings summary').click();
+        await EXAMPLE.locator('#tree-kind').selectOption('big');
+        await EXAMPLE.locator('#root-position').selectOption('center');
+        await EXAMPLE.locator('#example-settings summary').click();
+        await SETTLE(40);
+        const CENTERED = await EXAMPLE.evaluate(() => {
+            const VIEW = document.querySelector('.tt-view').getBoundingClientRect();
+            const ROOT = document.querySelector('.tt-node[data-id="r0"]').getBoundingClientRect();
+            return {
+                dx: ROOT.x + ROOT.width / 2 - VIEW.x - VIEW.width / 2,
+                dy: ROOT.y + ROOT.height / 2 - VIEW.y - VIEW.height / 2,
+            };
+        });
+        assert.ok(
+            Math.abs(CENTERED.dx) < 1 && Math.abs(CENTERED.dy) < 1,
+            `example root centered after settings close: ${JSON.stringify(CENTERED)}`,
+        );
+        assert.deepEqual(ERRORS, []);
+        await CONTEXT.close();
+    }
 
     console.log(`tech-tree e2e ok (${Math.round(performance.now() - STARTED)}ms)`);
 } finally {

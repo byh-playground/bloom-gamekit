@@ -35,7 +35,8 @@
         align-items: center;
         gap: 8px;
     }
-    .bar button {
+    .bar button,
+    .bar select {
         min-height: 56px;
         padding: 0 16px;
         border: 2px solid #4a5a86;
@@ -45,10 +46,17 @@
         font: inherit;
         cursor: pointer;
     }
-    .bar button[aria-pressed='true'] {
-        border-color: #ffd166;
-        background: #ffd166;
-        color: #1b2238;
+    .bar label {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+    summary {
+        cursor: pointer;
+        min-height: 32px;
+    }
+    select option {
+        background: #151a2c;
     }
     #points {
         margin-left: auto;
@@ -56,20 +64,42 @@
     }
     #tech {
         flex: 1;
-        min-height: 360px;
+        min-height: 0;
     }
 </style>
 <main>
     <h1>성장 트리</h1>
-    <p>선행 조건만 적으면 배치·상태·상세가 만들어집니다. 큰 트리는 끌고 확대해서 봅니다.</p>
-    <div class="bar">
-        <button id="tab-stats" type="button" aria-pressed="true">스탯 트리</button>
-        <button id="tab-big" type="button" aria-pressed="false">큰 트리</button>
-        <button id="more" type="button">+3 포인트</button>
-        <button id="reset" type="button">처음부터</button>
-        <span id="points" aria-live="polite"></span>
-    </div>
+    <p>휠·핀치로 확대·축소하고 끌어서 이동합니다. 노드를 누르면 아래에서 설명과 투자 조건을 봅니다.</p>
     <div id="tech"></div>
+    <details id="example-settings">
+        <summary>예제 설정 · <span id="points" aria-live="polite"></span></summary>
+        <div class="bar">
+            <label
+                >트리
+                <select id="tree-kind">
+                    <option value="stats">스탯 트리</option>
+                    <option value="big">큰 트리</option>
+                </select>
+            </label>
+            <label
+                >루트 시작 위치
+                <select id="root-position">
+                    <option value="auto">자동 (세로는 상단 · 가로는 왼쪽)</option>
+                    <option value="center">중앙</option>
+                    <option value="top">상단</option>
+                    <option value="left">왼쪽</option>
+                    <option value="right">오른쪽</option>
+                    <option value="bottom">하단</option>
+                    <option value="top-left">왼쪽 위</option>
+                    <option value="top-right">오른쪽 위</option>
+                    <option value="bottom-left">왼쪽 아래</option>
+                    <option value="bottom-right">오른쪽 아래</option>
+                </select>
+            </label>
+            <button id="more" type="button">포인트 3점 추가</button>
+            <button id="reset" type="button">처음부터</button>
+        </div>
+    </details>
 </main>
 <script type="module">
     import { createNavigation } from '../../../dist/navigation.js';
@@ -141,14 +171,13 @@
     function build(tab) {
         tree?.dispose();
         STATE.tab = tab;
-        for (const NAME of Object.keys(TREES)) {
-            document.querySelector('#tab-' + NAME).setAttribute('aria-pressed', String(NAME === tab));
-        }
+        document.querySelector('#tree-kind').value = tab;
         tree = createTechTree({
             root: document.querySelector('#tech'),
             navigation: NAVIGATION,
             screen: 'tech',
             nodes: TREES[tab],
+            rootPosition: document.querySelector('#root-position').value,
             level: (id) => LEVELS[id] ?? 0,
             canBuy: (node) => ({ ok: STATE.points >= node.cost }),
             onBuy(id) {
@@ -177,16 +206,13 @@
                 reason: (state) => WORDS.reason[state],
                 prerequisite: (required, met) => (met ? '✓ 습득: ' : '선행 필요: ') + required.name,
                 level: (node, level) => level + '/' + node.max,
-                zoomIn: () => '확대',
-                zoomOut: () => '축소',
-                fit: () => '처음 보기',
-                map: () => '성장 트리',
+                map: () => '성장 트리 · 휠·핀치로 확대·축소, 끌어서 이동. 키보드는 방향키·더하기·빼기·Home',
             },
         });
         SHOW_POINTS();
     }
-    document.querySelector('#tab-stats').onclick = () => build('stats');
-    document.querySelector('#tab-big').onclick = () => build('big');
+    document.querySelector('#tree-kind').onchange = (event) => build(event.target.value);
+    document.querySelector('#root-position').onchange = () => build(STATE.tab);
     document.querySelector('#more').onclick = () => {
         STATE.points += 3;
         SHOW_POINTS();
