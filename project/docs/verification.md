@@ -2,6 +2,10 @@
 
 모든 suite는 build를 먼저 실행하고 전체 180초 상한을 적용합니다. 브라우저는 실제 Chromium/Edge와 WebGL을 사용합니다. headless SwiftShader 결과는 모바일·하드웨어 GPU 성능 보증이 아닙니다.
 
+브라우저는 `npx playwright install chromium`으로 설치합니다. Windows 전용 경로를 찾던 standalone 렌더링 runner 6개도 기본적으로 Playwright가 설치한 Chromium을 사용합니다. 시스템 Chromium/Edge를 지정하려면 `CHROMIUM_EXECUTABLE_PATH`를 설정합니다.
+
+metrics 시나리오는 POSIX에서 Wrangler를 독립 프로세스 그룹으로 띄우고 종료할 때 CLI와 Workers를 함께 정리합니다(Windows는 기존 `taskkill /T`). `PASS` 출력만으로는 통과가 아니며 자식 프로세스가 종료되어 suite가 다음 시나리오로 진행해야 합니다. GPU 포즈 시나리오는 기존 픽셀 허용치에 더해 가용한 GPU 행렬 캐시를 CPU 부품 행렬과 0.001 SVG 단위 이내로 비교합니다.
+
 | 명령                    | 실제 범위                                                                            |
 | ----------------------- | ------------------------------------------------------------------------------------ |
 | npm test / test:browser | DOM 입력·보간·표시 frame·WebGL·HUD·context 복구·local preview 통합                   |

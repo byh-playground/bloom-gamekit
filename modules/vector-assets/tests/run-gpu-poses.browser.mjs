@@ -194,6 +194,42 @@ try {
                         }
                     }
                     MESHES.preparePoses();
+                    // Read the optional GPU matrix target against the same actors' CPU poses.
+                    // Pixels alone can hide transform errors around a large SVG pivot.
+                    let matrixMaxError = null;
+                    const CACHE = MESHES.poseRenderer?.matrixCache;
+                    if (CACHE?.target && CACHE.available) {
+                        const TARGET = CACHE.target;
+                        const DATA = new Float32Array(TARGET.width * TARGET.height * 4);
+                        DEVICE.bindRenderTarget(TARGET);
+                        DEVICE.gl.readPixels(0, 0, TARGET.width, TARGET.height, DEVICE.gl.RGBA, DEVICE.gl.FLOAT, DATA);
+                        DEVICE.unbindRenderTarget(TARGET);
+                        matrixMaxError = 0;
+                        for (let i = 0; i < PLAYERS.length; i++) {
+                            const HANDLE = PREPARED[i].handle;
+                            const RECORD = MESHES.poseRenderer.instances.get(HANDLE);
+                            if (RECORD?.mode !== 'gpu') {
+                                continue;
+                            }
+                            for (const [PART, POSE] of PLAYERS[i].player.partPoses().entries()) {
+                                const OFFSET = (RECORD.row * TARGET.width + PART * 3) * 4;
+                                const GPU = [
+                                    DATA[OFFSET],
+                                    DATA[OFFSET + 4],
+                                    DATA[OFFSET + 1],
+                                    DATA[OFFSET + 5],
+                                    DATA[OFFSET + 2],
+                                    DATA[OFFSET + 6],
+                                ];
+                                for (let component = 0; component < GPU.length; component++) {
+                                    matrixMaxError = Math.max(
+                                        matrixMaxError,
+                                        Math.abs(GPU[component] - POSE.transform[component]),
+                                    );
+                                }
+                            }
+                        }
+                    }
                     const PREPARED_STATS = MESHES.poseStats();
                     for (let i = 0; i < PLAYERS.length; i++) {
                         if (PREPARED[i].culled) {
@@ -246,6 +282,7 @@ try {
                         pixels: btoa(binary),
                         clocks: CLOCKS,
                         stats: POSE_STATS,
+                        matrixMaxError,
                         glError: GL.getError(),
                         fullSamples: PLAYERS.reduce((total, entry) => total + entry.player.poseMetrics.fullSamples, 0),
                     });
@@ -459,6 +496,12 @@ try {
             const ACTUAL = RESULT.frames[frame];
             const REFERENCE = RESULTS[0].frames[frame];
             assert.equal(ACTUAL.glError, 0);
+            if (ACTUAL.matrixMaxError !== null) {
+                assert.ok(
+                    ACTUAL.matrixMaxError <= 0.001,
+                    JSON.stringify({ backend: RESULT.backend, frame, matrixMaxError: ACTUAL.matrixMaxError }),
+                );
+            }
             assert.deepEqual(ACTUAL.clocks, REFERENCE.clocks, 'Backend changes cannot reset player clocks');
             const A = Buffer.from(ACTUAL.pixels, 'base64');
             const B = REFERENCE_PIXELS[frame];

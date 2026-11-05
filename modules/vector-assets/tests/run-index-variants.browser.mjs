@@ -1,19 +1,10 @@
 import { chromium } from 'playwright';
-import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { compiledAsset } from './fixtures/squish-pr15-enemy-boss.js';
 import { exercisePr15IndexVariants } from './index-variants.browser.mjs';
 const ROOT = resolve('.');
-const EXECUTABLE_PATH =
-    process.env.CHROMIUM_EXECUTABLE_PATH ??
-    [
-        'C:/Program Files/Google/Chrome/Application/chrome.exe',
-        'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
-    ].find(existsSync);
-if (!EXECUTABLE_PATH) {
-    throw new Error('Set CHROMIUM_EXECUTABLE_PATH to Chromium or Edge.');
-}
+const EXECUTABLE_PATH = process.env.CHROMIUM_EXECUTABLE_PATH ?? chromium.executablePath();
 const RENDERING_BUNDLE = await readFile(resolve(ROOT, 'dist/rendering.js'));
 const MODULE_URL = 'data:text/javascript;base64,' + RENDERING_BUNDLE.toString('base64');
 const { vertices: VERTICES, indices: INDICES, partCount: PART_COUNT } = compiledAsset.geometry;

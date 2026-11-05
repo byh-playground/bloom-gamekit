@@ -1,5 +1,11 @@
 # rendering
 
+## GPU 포즈 수치 정밀도
+
+키프레임의 sine easing과 부품 회전은 같은 `poseSinCos`를 사용합니다. GLSL ES 3.00 §4.5.1은 내장 삼각함수의 정밀도를 보장하지 않습니다([원문](https://registry.khronos.org/OpenGL/specs/es/3.0/GLSL_ES_Specification_3.00.pdf)). Chromium SwiftShader에서는 그 오차가 SVG pivot을 거쳐 CPU 기준 부품 행렬과 약 0.037 단위 차이로 커졌습니다. 각도를 `[-π/2, π/2]`로 줄이고 sine 11차·cosine 12차 다항식으로 계산해 직접 GPU 평가와 GPU 행렬 캐시에 같은 계산을 적용합니다. CPU의 Float64 조회·시계·키프레임 계약은 그대로입니다.
+
+`run-gpu-poses.browser.mjs`는 같은 고정 장면의 CPU/GPU 픽셀과 함께 GPU 행렬 캐시를 직접 읽어 CPU 부품 행렬과 0.001 SVG 단위 이내인지 확인합니다. Float32 GPU 계산이므로 모든 크기·각도에서 CPU와 비트 단위로 같다는 보장은 아닙니다. 다항식 계산 비용이 추가되며 기기별 GPU 성능은 별도 측정 대상입니다.
+
 ## Sprite animation
 
 `createSpriteAnimation(context, region, definition)` is independent of SVG. It takes a `VectorContext` and a live region of the device's shared texture atlas (`device.textureAtlas.allocate`), frames with pixel rectangles inside that region and positive `durationMs`, and named clips with ordered frame indices and `loop: 'loop' | 'once'`. An external sprite sheet and an SVG-generated atlas use the same playback API. Every draw goes through `VectorContext.drawQuads`, so sprites of any region, clip and frame share the draw of the surrounding shapes, glyphs and gradients while blend and clip state are unchanged; no mesh or per-texture state exists to split a batch. The per-run UV and local rectangles select the image and preserve trim/pivot, and the caller's matrix composes with the context transform. Playback does not generate pixels or reorder actors by frame.

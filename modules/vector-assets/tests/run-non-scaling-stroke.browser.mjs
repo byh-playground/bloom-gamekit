@@ -1,19 +1,10 @@
 import { chromium } from 'playwright';
-import { existsSync } from 'node:fs';
 import { mkdir, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { compileVectorAssetFile } from '../compiler.js';
 import { exerciseNonScalingStroke } from './non-scaling-stroke.browser.mjs';
 const ROOT = resolve('.');
-const EXECUTABLE_PATH =
-    process.env.CHROMIUM_EXECUTABLE_PATH ??
-    [
-        'C:/Program Files/Google/Chrome/Application/chrome.exe',
-        'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
-    ].find((path) => existsSync(path));
-if (!EXECUTABLE_PATH) {
-    throw new Error('Set CHROMIUM_EXECUTABLE_PATH to Chromium or Edge.');
-}
+const EXECUTABLE_PATH = process.env.CHROMIUM_EXECUTABLE_PATH ?? chromium.executablePath();
 const ASSET = await compileVectorAssetFile(resolve(ROOT, 'modules/vector-assets/tests/non-scaling-stroke.svg'));
 const GEOMETRY = {
     ...ASSET.geometry,
