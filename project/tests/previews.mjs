@@ -226,6 +226,73 @@ try {
             } finally {
                 await TOUCH_CONTEXT.close();
             }
+            // 시야 탭: 벽 뒤 땅은 정찰(xray)로만 보이고, 벽의 틈에서는 보이며, 언덕에 오르면 언덕과 땅이 모두 보입니다.
+            await PAGE.click('#tab-vision');
+            const VISION = () => PAGE.locator('#vision-output').evaluate((output) => JSON.parse(output.textContent));
+            const VISION_BOX = await PAGE.locator('#vision-canvas').boundingBox();
+            await PAGE.mouse.click(...AT(VISION_BOX, 50, 170));
+            let view = await VISION();
+            assert.deepEqual(
+                [view.observer.cell, view.observer.level, view.seen],
+                [[2, 8], 0, { ground: false, hill: false }],
+            );
+            await PAGE.keyboard.press('ArrowDown');
+            assert.deepEqual((await VISION()).observer.cell, [2, 9]);
+            await PAGE.click('#vision-reset');
+            await PAGE.click('#vision-xray');
+            view = await VISION();
+            assert.deepEqual([view.observer.level, view.seen], ['xray', { ground: true, hill: false }]);
+            await PAGE.click('#vision-xray');
+            await PAGE.evaluate(() => globalThis.visionExample.moveTo(190, 50));
+            assert.deepEqual((await VISION()).seen, { ground: true, hill: false }, '벽의 틈에서는 벽 뒤 땅이 보인다');
+            await PAGE.evaluate(() => globalThis.visionExample.moveTo(310, 130));
+            view = await VISION();
+            assert.deepEqual(
+                [view.observer.level, view.seen],
+                [1, { ground: true, hill: true }],
+                '언덕에 올라서면 모두 보인다',
+            );
+            await PAGE.evaluate(() => globalThis.visionExample.moveTo(410, 130));
+            view = await VISION();
+            assert.deepEqual(
+                [view.observer.level, view.seen.hill],
+                [0, false],
+                '땅에서는 언덕 위 대상이 보이지 않는다',
+            );
+            const REVISION = view.revision;
+            await PAGE.click('#vision-radius-short');
+            assert.ok((await VISION()).revision > REVISION, '반경이 바뀌면 다시 칠한다');
+            // 터치 에뮬레이션(실제 기기 검증이 아님): 좁은 화면에서 가로 스크롤 없이 첫 화면 안에서 캔버스를 눌러 관찰자를 옮깁니다.
+            const VISION_TOUCH = await browser.newContext({
+                hasTouch: true,
+                isMobile: true,
+                viewport: { width: 390, height: 844 },
+            });
+            try {
+                const TOUCH_PAGE = await VISION_TOUCH.newPage();
+                await TOUCH_PAGE.goto(URL_LOCAL + '#tab=vision', { waitUntil: 'domcontentloaded', timeout: 45000 });
+                await TOUCH_PAGE.waitForFunction(() => !!globalThis.visionExample);
+                const TOUCH_BOX = await TOUCH_PAGE.locator('#vision-canvas').boundingBox();
+                assert.ok(TOUCH_BOX.x >= 0 && TOUCH_BOX.x + TOUCH_BOX.width <= 390, 'canvas fits the width');
+                assert.ok(TOUCH_BOX.y + TOUCH_BOX.height <= 844, 'canvas is inside the first screen');
+                assert.ok(
+                    await TOUCH_PAGE.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+                    'no horizontal scroll',
+                );
+                assert.ok(
+                    await TOUCH_PAGE.locator('#panel-vision button').evaluateAll((buttons) =>
+                        buttons.every((button) => button.getBoundingClientRect().height >= 56),
+                    ),
+                    'touch buttons are at least 56px tall',
+                );
+                await TOUCH_PAGE.touchscreen.tap(...AT(TOUCH_BOX, 190, 50));
+                const TAPPED = await TOUCH_PAGE.locator('#vision-output').evaluate((output) =>
+                    JSON.parse(output.textContent),
+                );
+                assert.deepEqual([TAPPED.observer.cell, TAPPED.seen.ground], [[9, 2], true]);
+            } finally {
+                await VISION_TOUCH.close();
+            }
         }
         if (NAME === 'bm') {
             // 실제 광고 호출 없이 계약만 확인합니다: 광고 스크립트는 막고 adBreak와 google.ima를 가짜로 둡니다.

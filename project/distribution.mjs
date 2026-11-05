@@ -15,6 +15,7 @@ export const MODULES = Object.freeze([
     'behavior',
     'spatial',
     'pathfield',
+    'vision',
     'transport',
     'replay',
     'rollback',

@@ -1,3 +1,16 @@
+## v0.46.9 (2026-11-05)
+
+호환 기능 추가. rally-frontier가 만든 진영별 시야 칸 격자(`VisionField`)를 `vision` 모듈(`dist/vision.js`)로 올립니다. 기존 번들의 동작은 같고, 게임은 아직 옮기지 않았습니다(rally-frontier 이관은 이 모듈 머지 뒤 별도 PR).
+
+- `VisionMap`: 지형을 칸마다 높이 층(`level`)과 막힌 칸(`blocked`)으로 담은 불변 래스터. `VisionMap.sample({ levelAt, blockedAt })`가 칸 중심을 표집하고, `new VisionMap({ level, blocked })`는 이미 가진 래스터를 복사 없이 받습니다. 같은 지형을 보는 모든 팀이 하나를 공유합니다.
+- `VisionField`: 한 팀의 시야 격자. `update(observers)`가 `{ id, x, y, radius, level, xray }` 목록을 받아 칸·반경·높이 층이 바뀐 관찰자만 다시 칠하고 사라진 관찰자는 지웁니다. 칸마다 비추는 관찰자 수를 높이 상한별로 세므로 `visibleAt(x, y, targetLevel)`·`ceilingAt(x, y)`는 칸 하나를 읽고, `revision`은 칸이 바뀐 갱신마다 늘어납니다.
+- 규칙: 관찰자는 출발 칸에서 안쪽 부모 칸 하나만 보며 바깥으로 걸어 비춥니다(선분 검사 없음). 막힌 칸과 자기보다 높은 칸은 그 칸도 그 너머도 안 보이고, 대상은 비추는 관찰자의 높이 상한이 대상의 높이 층 이상일 때 보입니다. `xray` 관찰자는 막힘·높이를 무시합니다. 진영·정찰 효과 같은 게임 뜻은 담지 않고 팀 합산도 게임이 합니다.
+- 원본(rally-frontier `VisionField`)과 다른 점: 건물 가림막(`syncBlockers`)은 올리지 않았습니다(Rally에 `blocksVision` 건물이 없어 쓰이지 않음). 가림막에서만 쓰던 `Math.hypot`이 모듈에 없어 거리 비교가 정수 제곱거리입니다. 관찰자마다 `String` 키 문자열을 만들던 변경 판정을 숫자 비교로 바꿨고, xray는 높이 층만 바뀌어서는 다시 칠하지 않습니다(칠하는 결과가 같음). 잘못된 입력(유한하지 않은 좌표, 범위 밖 반경, 높이 층 없음)은 조용히 넘기지 않고 던지며, `visibleAt`은 대상 높이 층을 항상 받습니다.
+- 원본과의 동등성(임시 검증, 저장소에 남기지 않음): 원본 `VisionField`를 그대로 떼어 와 같은 지형·관찰자 이동·생성·소멸·xray·같은 id를 섞은 무작위 판 8개(판마다 60틱, 칸 중심과 무작위 점 4,768곳 × 높이 6가지 질의로 판마다 약 172만 건)에서 `visibleAt`·`ceilingAt`이 모두 같았고, 마스크가 바뀐 틱마다 `revision`도 바뀌었습니다.
+- 시험: `modules/vision/tests/vision.e2e.mjs`(core 목록). 작은 지형 그림으로 반경·막힌 칸·높이 층·xray 규칙을 못 박고, 다시 칠하는 조건과 `revision`, 같은 id, 오류를 확인한 뒤, 무작위 지형 위에서 관찰자 24명이 40틱 동안 움직이고 사라지고 생기는 판의 마스크 해시가 원본 구현으로 같은 판을 돌린 해시와 같은지 확인합니다.
+- 예제: work-scheduler 예제에 "시야" 탭(`#tab=vision`)을 추가했습니다. 관찰자를 누르거나 끌어 언덕·벽·정찰 효과를 보고, `project/tests/previews.mjs`가 마우스·키보드·터치 에뮬레이션(실제 기기 검증이 아님)으로 확인합니다.
+- 배포 구조: `MODULES`에 `vision`을 더해 manifest 모듈 목록이 `vision.js`만큼 늘어납니다. manifest 목록을 고정 검사하는 게임은 다음 pin 갱신 때 목록에 더해야 합니다.
+
 ## v0.46.8 (2026-11-05)
 
 호환 기능 추가. rally-frontier가 격자 거리장으로 이동 목표를 정하던 코드(`NavigationGrid`·`DistanceField`·`CellHeap`)에서 정책을 걷어내고 격자·거리장·내려가기만 올린 `pathfield` 모듈(`dist/pathfield.js`)을 추가합니다. 기존 번들의 동작은 같고, 게임은 아직 옮기지 않았습니다(Rally 이관은 별도 작업).

@@ -20,6 +20,7 @@ const CORE_FILES = [
     'modules/object-pool/*.js',
     'modules/spatial/*.js',
     'modules/pathfield/*.js',
+    'modules/vision/*.js',
     'modules/rollback/core.js',
     'modules/rollback/availability.js',
 ];
