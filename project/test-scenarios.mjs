@@ -23,6 +23,7 @@ const SUITES = {
         'modules/i18n/tests/i18n.e2e.mjs',
         'modules/tech-tree/tests/tech-tree.e2e.mjs',
         'modules/spatial/tests/spatial.e2e.mjs',
+        'modules/pathfield/tests/pathfield.e2e.mjs',
         'modules/metrics/tests/metrics.e2e.mjs',
         'modules/geometry/tests/geometry.e2e.mjs',
         'modules/face/tests/face.e2e.mjs',

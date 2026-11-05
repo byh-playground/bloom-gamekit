@@ -19,6 +19,7 @@ const CORE_FILES = [
     'modules/presentation-events/*.js',
     'modules/object-pool/*.js',
     'modules/spatial/*.js',
+    'modules/pathfield/*.js',
     'modules/rollback/core.js',
     'modules/rollback/availability.js',
 ];

@@ -25,6 +25,7 @@
 - [비긴급 작업의 고정 tick 예산·재개 API](./modules/work-scheduler/README.md)
 - [행동 결정(행동트리)과 실행 단계(상태 기계)](./modules/behavior/README.md) · [행동 탭 바로 보기](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/work-scheduler.html#tab=behavior)
 - [결정론 균일 격자: 점 항목 후보·최근접 고리 탐색, 사각형 항목 겹침 쌍, 질의 순서 계약](./modules/spatial/README.md) · `node modules/spatial/tests/spatial.e2e.mjs`
+- [정수 비용 격자 거리장: 여러 출발 칸·게으른 확정·내려가기·거리장 캐시, 통과 판정은 호출자가 줌](./modules/pathfield/README.md) · [거리장 탭 바로 보기](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/work-scheduler.html#tab=pathfield) · `node modules/pathfield/tests/pathfield.e2e.mjs`
 - [얼굴 표정: 몸 SVG의 소켓 점 세 개에 같은 표정 부품을 얹고, 작게는 구운 이미지로 크게는 경로로 그리기](./modules/face/README.md) · [표정 탭 바로 보기](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rendering.html#face) · `node modules/face/tests/face.e2e.mjs`
 - [광고 어댑터 추상화·빈도 정책](./modules/bm/README.md) · [mock 어댑터](./modules/bm/adapters/mock/README.md) · [Google H5 Games Ads 어댑터와 신청 절차](./modules/bm/adapters/google-ads/README.md) · [IMA 영상 광고 어댑터(샘플 태그로 승인 없이 테스트)](./modules/bm/adapters/ima/README.md)
 - [상품·구매와 서버 확인 기준 소유 판정](./modules/store/README.md) · [mock 어댑터](./modules/store/adapters/mock/README.md)

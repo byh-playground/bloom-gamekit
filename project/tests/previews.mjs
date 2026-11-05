@@ -128,6 +128,41 @@ try {
             assert.deepEqual((await GEOMETRY()).mover, { x: 188, y: 174.8 });
             await PAGE.click('#geometry-reset');
             assert.deepEqual((await GEOMETRY()).mover, { x: 40, y: 160 });
+            // 거리장 탭: 목표까지 곧장 가는 선이 막혀도 벽을 돌아 내려가는 칸이 나오고, 걸음마다 비용이 줄어 도착합니다.
+            await PAGE.click('#tab-pathfield');
+            const PATHFIELD = () =>
+                PAGE.locator('#pathfield-output').evaluate((output) => JSON.parse(output.textContent));
+            const PATHFIELD_BOX = await PAGE.locator('#pathfield-canvas').boundingBox();
+            await PAGE.mouse.click(...AT(PATHFIELD_BOX, 440, 200));
+            const AIMED = await PATHFIELD();
+            assert.ok(Math.abs(AIMED.goal.x - 440) <= 2 && Math.abs(AIMED.goal.y - 200) <= 2, 'pointer goal');
+            await PAGE.evaluate(() => globalThis.pathfieldExample.setGoal(440, 200));
+            const LAZY = await PATHFIELD();
+            assert.equal(LAZY.straightRayClear, false, '곧장 가는 선은 벽에 막힘');
+            assert.equal(LAZY.cost, 348);
+            assert.deepEqual(LAZY.path, ['3,11', '4,12', '5,13', '6,14', '7,14', '8,14', '9,14', '10,14']);
+            assert.ok(LAZY.settledCells < LAZY.openCells, '유닛 칸까지만 퍼뜨림');
+            await PAGE.click('#pathfield-full');
+            const FULL = await PATHFIELD();
+            assert.equal(FULL.settledCells, FULL.openCells, '전부 계산하면 열린 칸 모두 닿음');
+            assert.equal(FULL.cost, LAZY.cost, '게으르게 구한 비용과 같음');
+            await PAGE.click('#pathfield-full');
+            await PAGE.locator('#pathfield-canvas').focus();
+            await PAGE.keyboard.press('ArrowLeft');
+            assert.deepEqual((await PATHFIELD()).goal, { x: 424, y: 200 });
+            await PAGE.evaluate(() => globalThis.pathfieldExample.setGoal(440, 200));
+            let previousCost = LAZY.cost,
+                walked = 0;
+            for (; previousCost > 0 && walked < 12; walked++) {
+                await PAGE.click('#pathfield-step');
+                const AFTER = (await PATHFIELD()).cost;
+                assert.ok(AFTER < previousCost, '걸음마다 목표에 가까워짐');
+                previousCost = AFTER;
+            }
+            assert.equal(previousCost, 0, '걸어서 목표에 도착');
+            assert.equal(walked, 6);
+            await PAGE.click('#pathfield-reset');
+            assert.deepEqual((await PATHFIELD()).unit, { x: 40, y: 160 });
             // 터치 에뮬레이션(실제 기기 검증이 아님): 좁은 화면에서 가로 스크롤 없이 첫 화면 안에서 캔버스를 눌러 목표를 정합니다.
             const TOUCH_CONTEXT = await browser.newContext({
                 hasTouch: true,
@@ -160,6 +195,34 @@ try {
                     'tap target ' + JSON.stringify(TAPPED.target),
                 );
                 assert.equal(TAPPED.results.stop.hit, WALL_EDGE);
+                const TOUCH_PATHFIELD = await TOUCH_CONTEXT.newPage();
+                await TOUCH_PATHFIELD.goto(URL_LOCAL + '#tab=pathfield', {
+                    waitUntil: 'domcontentloaded',
+                    timeout: 45000,
+                });
+                await TOUCH_PATHFIELD.waitForFunction(() => !!globalThis.pathfieldExample);
+                const PATH_TOUCH_BOX = await TOUCH_PATHFIELD.locator('#pathfield-canvas').boundingBox();
+                assert.ok(
+                    PATH_TOUCH_BOX.y + PATH_TOUCH_BOX.height <= 844,
+                    'pathfield canvas is inside the first screen',
+                );
+                assert.ok(
+                    await TOUCH_PATHFIELD.locator('#panel-pathfield button').evaluateAll((buttons) =>
+                        buttons.every((button) => button.getBoundingClientRect().height >= 56),
+                    ),
+                    'pathfield buttons are at least 56px tall',
+                );
+                assert.ok(
+                    await TOUCH_PATHFIELD.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+                    'no horizontal scroll',
+                );
+                await TOUCH_PATHFIELD.touchscreen.tap(...AT(PATH_TOUCH_BOX, 100, 60));
+                const TAPPED_GOAL = (
+                    await TOUCH_PATHFIELD.locator('#pathfield-output').evaluate((output) =>
+                        JSON.parse(output.textContent),
+                    )
+                ).goal;
+                assert.ok(Math.abs(TAPPED_GOAL.x - 100) <= 2 && Math.abs(TAPPED_GOAL.y - 60) <= 2, 'tap goal');
             } finally {
                 await TOUCH_CONTEXT.close();
             }

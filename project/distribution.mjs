@@ -14,6 +14,7 @@ export const MODULES = Object.freeze([
     'work-scheduler',
     'behavior',
     'spatial',
+    'pathfield',
     'transport',
     'replay',
     'rollback',
