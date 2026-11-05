@@ -4626,7 +4626,7 @@ function bakeRasterAtlas(context, asset, release, compiledAsset, { pixelsPerUnit
   rejectUnknownOptions(unknownOptions);
   const DEVICE = context.device;
   const MESHES = context.meshRenderer;
-  if (!context.drawQuads || !context.drawVectorActor || !DEVICE?.createTextureLayerTarget || !DEVICE?.bindRenderTarget || !DEVICE?.unbindRenderTarget) {
+  if (!context.drawQuads || !context.drawVectorActor || !DEVICE?.createTextureLayerTarget || !DEVICE?.blitRenderTarget || !DEVICE?.bindRenderTarget || !DEVICE?.unbindRenderTarget) {
     throw new TypeError("A VectorContext is required");
   }
   if (!Number.isFinite(pixelsPerUnit) || pixelsPerUnit <= 0 || !Number.isSafeInteger(padding) || padding < 1) {
@@ -4658,7 +4658,12 @@ function bakeRasterAtlas(context, asset, release, compiledAsset, { pixelsPerUnit
       }
     }
   }
-  const PACKED = unsupportedReason ? null : packRuns(RUNS, ATLAS.width - ATLAS.gutter * 2, ATLAS.height - ATLAS.gutter * 2);
+  const BAKE_SCALE = 2;
+  const PACKED = unsupportedReason ? null : packRuns(
+    RUNS,
+    Math.min(ATLAS.width - ATLAS.gutter * 2, Math.floor(DEVICE.maxTextureSize / BAKE_SCALE)),
+    Math.min(ATLAS.height - ATLAS.gutter * 2, Math.floor(DEVICE.maxTextureSize / BAKE_SCALE))
+  );
   if (!unsupportedReason && !PACKED) {
     unsupportedReason = "atlasLimit";
   }
@@ -4717,6 +4722,7 @@ function bakeRasterAtlas(context, asset, release, compiledAsset, { pixelsPerUnit
     }
     const START = NOW2();
     let bound = false;
+    let bakeTarget = null;
     try {
       DEVICE.flushBatchers("rasterAtlasBakeBoundary");
       if (target && !DEVICE.isRenderTargetAvailable(target)) {
@@ -4731,29 +4737,39 @@ function bakeRasterAtlas(context, asset, release, compiledAsset, { pixelsPerUnit
         region.width + ATLAS.gutter * 2,
         region.height + ATLAS.gutter * 2
       );
-      DEVICE.bindRenderTarget(target);
+      bakeTarget = DEVICE.createRenderTarget(PACKED.width * BAKE_SCALE, PACKED.height * BAKE_SCALE, {
+        format: "rgba",
+        filter: "linear"
+      });
+      DEVICE.bindRenderTarget(bakeTarget);
       bound = true;
-      const TOP = ATLAS.height - (region.y + region.height);
+      DEVICE.clear({ color: [0, 0, 0, 0] });
       for (let index = 0; index < RUNS.length; index++) {
-        const RUN = RUNS[index], [TILE_X, TILE_Y] = PACKED.positions[index], TX = region.x + TILE_X + padding - pixelsPerUnit * RUN.minX, TY = TOP + TILE_Y + padding - pixelsPerUnit * RUN.minY;
+        const RUN = RUNS[index], [TILE_X, TILE_Y] = PACKED.positions[index], TX = TILE_X + padding - pixelsPerUnit * RUN.minX, TY = TILE_Y + padding - pixelsPerUnit * RUN.minY;
         MESHES.drawMesh(asset.mesh, {
           projection: [
-            2 * pixelsPerUnit / ATLAS.width,
+            2 * pixelsPerUnit / PACKED.width,
             0,
             0,
             0,
-            -2 * pixelsPerUnit / ATLAS.height,
+            -2 * pixelsPerUnit / PACKED.height,
             0,
-            2 * TX / ATLAS.width - 1,
-            1 - 2 * TY / ATLAS.height,
+            2 * TX / PACKED.width - 1,
+            1 - 2 * TY / PACKED.height,
             1
           ],
           indexRange: [RUN.firstIndex, RUN.indexCount]
         });
       }
       MESHES.flush("rasterAtlasBake");
-      DEVICE.unbindRenderTarget(target);
+      DEVICE.unbindRenderTarget(bakeTarget);
       bound = false;
+      DEVICE.blitRenderTarget(bakeTarget, target, {
+        x: region.x,
+        y: region.y,
+        width: PACKED.width,
+        height: PACKED.height
+      });
       bakedRestores = RESTORES;
       bakeCount++;
       if (START !== null) {
@@ -4765,7 +4781,7 @@ function bakeRasterAtlas(context, asset, release, compiledAsset, { pixelsPerUnit
       if (bound) {
         MESHES.discard();
         try {
-          DEVICE.unbindRenderTarget(target);
+          DEVICE.unbindRenderTarget(bakeTarget);
         } catch {
         }
       }
@@ -4778,6 +4794,10 @@ function bakeRasterAtlas(context, asset, release, compiledAsset, { pixelsPerUnit
       failedRestores = DEVICE.stats.restores ?? 0;
       lastFailure = error.message;
       return { backend: "vector", reason: "bakeFailed" };
+    } finally {
+      if (bakeTarget) {
+        DEVICE.deleteRenderTarget(bakeTarget);
+      }
     }
   };
   const DRAW = (actor, options = {}) => {

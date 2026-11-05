@@ -2059,17 +2059,27 @@ function clipPlanes(clips, maxPlanes) {
 
 // modules/rendering/pose-shader.js
 var POSE_PROGRAM_FUNCTIONS = `uniform sampler2D u_program;uniform sampler2D u_state;uniform sampler2D u_overrides;uniform int u_programWidth;
+// GLSL ES permits low-accuracy native trigonometry. Large SVG pivots amplify that error.
+// Reduce to [-pi/2,pi/2] and evaluate sine/cosine through degree 11/12 polynomials.
+vec2 poseSinCos(float angle){
+ float x=angle-floor(angle/6.283185307179586+0.5)*6.283185307179586;float signCos=1.0;
+ if(x>1.5707963267948966){x=3.141592653589793-x;signCos=-1.0;}
+ else if(x< -1.5707963267948966){x=-3.141592653589793-x;signCos=-1.0;}
+ float z=x*x;
+ float s=x+x*z*(-1.0/6.0+z*(1.0/120.0+z*(-1.0/5040.0+z*(1.0/362880.0-z/39916800.0))));
+ float c=1.0+z*(-1.0/2.0+z*(1.0/24.0+z*(-1.0/720.0+z*(1.0/40320.0+z*(-1.0/3628800.0+z/479001600.0)))));
+ return vec2(c*signCos,s);}
 vec4 poseData(int base,int at){int i=at+base;return texelFetch(u_program,ivec2(i%u_programWidth,i/u_programWidth),0);}
 float poseChannel(int base,int header,float time){vec4 h=poseData(base,header);float value=h.z;
  for(int i=0;i<64;i++){if(i>=int(h.y))break;vec4 s=poseData(base,int(h.x)+i*2);if(time<s.z)break;
  if(time>=s.w){value=s.y;continue;}float t=clamp((time-s.z)/(s.w-s.z),0.0,1.0);float ease=poseData(base,int(h.x)+i*2+1).x;
- if(ease>1.5)t=1.0-(1.0-t)*(1.0-t);else if(ease>0.5)t=0.5-0.5*cos(3.141592653589793*t);
+ if(ease>1.5)t=1.0-(1.0-t)*(1.0-t);else if(ease>0.5)t=0.5-0.5*poseSinCos(3.141592653589793*t).x;
  value=mix(s.x,s.y,t);break;}return value;}
 mat3 poseLocal(int base,int part,int header,float time,int row,out float opacity){
  vec4 b0=texelFetch(u_overrides,ivec2(part*2,row),0);vec4 b1=texelFetch(u_overrides,ivec2(part*2+1,row),0);
  int at=header+part*6;vec2 translation=b0.xy+vec2(poseChannel(base,at,time),poseChannel(base,at+1,time));
  float rotation=b0.z+poseChannel(base,at+2,time);float sx=b0.w*poseChannel(base,at+3,time);float sy=b1.x*poseChannel(base,at+4,time);
- float c=cos(rotation);float s=sin(rotation);vec2 x=vec2(c,s)*sx;vec2 y=vec2(-s,c)*sy;vec2 pivot=poseData(base,part).xy;
+ vec2 cs=poseSinCos(rotation);float c=cs.x;float s=cs.y;vec2 x=vec2(c,s)*sx;vec2 y=vec2(-s,c)*sy;vec2 pivot=poseData(base,part).xy;
  opacity=b1.y*b1.z*poseChannel(base,at+5,time);return mat3(vec3(x,0.0),vec3(y,0.0),vec3(pivot+translation-x*pivot.x-y*pivot.y,1.0));}
 void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
  vec4 playback=texelFetch(u_state,ivec2(0,row),0);vec4 morph=texelFetch(u_state,ivec2(1,row),0);
