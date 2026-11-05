@@ -1232,14 +1232,39 @@ export class VectorRenderer {
         whiteFlash = false,
         forceColor = false,
         filter = 'linear',
+        depthWriteAlphaThreshold = 0,
     } = {}) {
         this._frame();
         const COUNT = uvRects?.length / 4;
-        validateQuads({ layer, uvRects, localRects, matrix, color, alpha, filter, parts, pose });
+        validateQuads({
+            layer,
+            uvRects,
+            localRects,
+            matrix,
+            color,
+            alpha,
+            filter,
+            parts,
+            pose,
+            depthWriteAlphaThreshold,
+        });
         const TINT = [color[0], color[1], color[2], color[3] * alpha],
             M = compose(this.matrix, matrix);
         this._useVertexPaint(
-            [layer, whiteFlash ? 1 : forceColor ? 2 : 0, 0, filter === 'nearest' ? 1 : 0, 0, 0, 0, 0, 0, 0, 1, 1],
+            [
+                layer + depthWriteAlphaThreshold * 0.49,
+                whiteFlash ? 1 : forceColor ? 2 : 0,
+                0,
+                filter === 'nearest' ? 1 : 0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+            ],
             whiteFlash,
         );
         if (pose === null) {

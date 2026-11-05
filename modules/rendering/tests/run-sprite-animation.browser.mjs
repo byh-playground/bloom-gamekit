@@ -30,6 +30,8 @@ try {
             WebGLDevice: WEB_GL_DEVICE,
             VectorContext: VECTOR_CONTEXT,
             createSpriteAnimation: CREATE_SPRITE,
+            compilePoseChannels: COMPILE_POSE_CHANNELS,
+            MeshBuilder: MESH_BUILDER,
         } = await import(url);
         const CHECK = (condition, message) => {
             if (!condition) {
@@ -46,6 +48,7 @@ try {
         const DEVICE = new WEB_GL_DEVICE(CANVAS, {
             alpha: false,
             antialias: false,
+            depth: true,
             preserveDrawingBuffer: true,
             checkGLErrors: true,
         });
@@ -168,6 +171,208 @@ try {
                 GL.readPixels(x, CANVAS.height - 1 - y, 1, 1, GL.RGBA, GL.UNSIGNED_BYTE, BYTES);
                 return [...BYTES];
             };
+            // Raster artwork uses the same GPU pose program without an SVG asset or a hidden mesh.
+            const PROGRAM = COMPILE_POSE_CHANNELS({
+                parts: [
+                    { id: 'body', parent: null, pivot: [0, 0] },
+                    { id: 'arm', parent: 'body', pivot: [0, 0] },
+                ],
+                clips: {
+                    move: {
+                        durationMs: 100,
+                        loop: 'once',
+                        keyframes: [
+                            { timeMs: 0, parts: { arm: { x: 0 } } },
+                            { timeMs: 100, parts: { arm: { x: 1 } } },
+                        ],
+                    },
+                },
+            });
+            const MESHES = CTX.acquireMeshRenderer();
+            const SOURCE = MESHES.createPoseSource(PROGRAM);
+            const POSE_A = MESHES.createPoseInstance(SOURCE);
+            const POSE_B = MESHES.createPoseInstance(SOURCE);
+            const BASE = Array.from({ length: 2 }, () => ({
+                x: 0,
+                y: 0,
+                rotation: 0,
+                scaleX: 1,
+                scaleY: 1,
+                opacity: 1,
+            }));
+            const UVS = Float32Array.of(
+                (REGION.x + 1) / REGION.atlas.width,
+                (REGION.y + 5) / REGION.atlas.height,
+                2 / REGION.atlas.width,
+                -2 / REGION.atlas.height,
+                (REGION.x + 10) / REGION.atlas.width,
+                (REGION.y + 5) / REGION.atlas.height,
+                3 / REGION.atlas.width,
+                -3 / REGION.atlas.height,
+            );
+            const LOCALS = Float32Array.of(-1, -1, 2, 2, 1, 0, 1, 1);
+            const PARTS = Float32Array.of(0, 1);
+            CHECK(CTX.beginFrame({ width: 128, height: 128, clearColor: [0, 0, 0, 1] }), 'posed sprite frame');
+            const POSE_OPTIONS = { clipName: 'move', basePoses: BASE, visible: [true, true], morph: [0, 0] };
+            CHECK(MESHES.preparePose(POSE_A, { ...POSE_OPTIONS, elapsedMs: 100 }), 'first GPU pose available');
+            CHECK(MESHES.preparePose(POSE_B, { ...POSE_OPTIONS, elapsedMs: 0 }), 'second GPU pose available');
+            CTX.preparePoses();
+            for (const [POSE, Y] of [
+                [POSE_A, 24],
+                [POSE_B, 72],
+            ]) {
+                CTX.drawQuads({
+                    layer: REGION.layer,
+                    filter: REGION.filter,
+                    uvRects: UVS,
+                    localRects: LOCALS,
+                    parts: PARTS,
+                    pose: POSE,
+                    matrix: [16, 0, 0, 16, 24, Y],
+                });
+            }
+            const POSED_FRAME = CTX.endFrame();
+            NEAR(PIXEL(24, 24), [255, 0, 0, 255], 'raster body uses root pose');
+            NEAR(PIXEL(64, 32), [0, 0, 255, 255], 'animated raster arm reaches second keyframe');
+            NEAR(PIXEL(48, 80), [0, 0, 255, 255], 'other actor keeps independent first keyframe');
+            CHECK(POSED_FRAME.drawCalls === 1, 'posed raster parts and actors share one draw');
+            const ALPHA_REGION = DEVICE.textureAtlas.allocate(2, 1, { filter: 'nearest' });
+            DEVICE.textureAtlas.upload(
+                ALPHA_REGION,
+                { width: 2, height: 1, data: new Uint8Array([255, 0, 0, 255, 8, 0, 0, 8]) },
+                { premultiplied: true },
+            );
+            const AU = ALPHA_REGION.uvRect;
+            const ALPHA_UVS = Float32Array.of(AU[0], AU[1], AU[2], AU[3]);
+            const ALPHA_RECT = Float32Array.of(0, 0, 64, 32);
+            CHECK(CTX.beginFrame({ width: 128, height: 128, clearColor: [0, 0, 0, 1] }), 'alpha depth frame');
+            CTX.depthTest = true;
+            CTX.depthWrite = true;
+            CTX.depth = -0.4;
+            EXPECT_THROW(
+                () =>
+                    CTX.drawQuads({
+                        layer: ALPHA_REGION.layer,
+                        uvRects: ALPHA_UVS,
+                        localRects: ALPHA_RECT,
+                        depthWriteAlphaThreshold: 1.01,
+                    }),
+                'out-of-range threshold rejected',
+            );
+            CTX.drawQuads({
+                layer: ALPHA_REGION.layer,
+                filter: ALPHA_REGION.filter,
+                uvRects: ALPHA_UVS,
+                localRects: ALPHA_RECT,
+                depthWriteAlphaThreshold: 0.05,
+            });
+            CTX.drawQuads({
+                layer: ALPHA_REGION.layer,
+                filter: ALPHA_REGION.filter,
+                uvRects: ALPHA_UVS,
+                localRects: ALPHA_RECT,
+                matrix: [1, 0, 0, 1, 64, 0],
+            });
+            CTX.depth = 0.4;
+            CTX.fillStyle = '#0000ff';
+            CTX.fillRect(0, 0, 128, 32);
+            const ALPHA_FRAME = CTX.endFrame();
+            NEAR(PIXEL(16, 16), [255, 0, 0, 255], 'opaque foreground keeps depth');
+            NEAR(PIXEL(48, 16), [0, 0, 255, 255], 'threshold lets background show through a low-alpha halo');
+            NEAR(PIXEL(112, 16), [8, 0, 0, 255], 'default threshold preserves existing depth behavior');
+            CHECK(ALPHA_FRAME.drawCalls === 1, 'different thresholds and vector shapes remain in one batch');
+            CHECK(CTX.beginFrame({ width: 128, height: 128, clearColor: [0, 0, 1, 1] }), 'alpha color frame');
+            CTX.depthWrite = false;
+            CTX.drawQuads({
+                layer: ALPHA_REGION.layer,
+                filter: ALPHA_REGION.filter,
+                uvRects: ALPHA_UVS,
+                localRects: ALPHA_RECT,
+                depthWriteAlphaThreshold: 0.05,
+            });
+            CTX.endFrame();
+            NEAR(PIXEL(48, 16), [8, 0, 247, 255], 'transparent color survives when depth writes are disabled');
+            const ALPHA_SOURCE = MESHES.createPoseSource(PROGRAM);
+            const ALPHA_POSE = MESHES.createPoseInstance(ALPHA_SOURCE);
+            CHECK(CTX.beginFrame({ width: 128, height: 128, clearColor: [0, 0, 0, 1] }), 'posed alpha frame');
+            CTX.depthTest = true;
+            CTX.depthWrite = true;
+            CTX.depth = -0.4;
+            CHECK(MESHES.preparePose(ALPHA_POSE, { ...POSE_OPTIONS, elapsedMs: 0 }), 'alpha GPU pose available');
+            CTX.preparePoses();
+            CTX.drawQuads({
+                layer: ALPHA_REGION.layer,
+                filter: ALPHA_REGION.filter,
+                uvRects: ALPHA_UVS,
+                localRects: ALPHA_RECT,
+                parts: Float32Array.of(0),
+                pose: ALPHA_POSE,
+                depthWriteAlphaThreshold: 0.05,
+            });
+            CTX.depth = 0.4;
+            CTX.fillStyle = '#0000ff';
+            CTX.fillRect(0, 0, 128, 32);
+            const POSED_ALPHA_FRAME = CTX.endFrame();
+            NEAR(PIXEL(16, 16), [255, 0, 0, 255], 'posed opaque foreground keeps depth');
+            NEAR(PIXEL(48, 16), [0, 0, 255, 255], 'posed low-alpha halo cannot occlude background');
+            CHECK(POSED_ALPHA_FRAME.drawCalls === 1, 'posed sprite and vector shape stay in one batch');
+            MESHES.deletePoseInstance(ALPHA_POSE);
+            MESHES.deletePoseSource(ALPHA_SOURCE);
+            CTX.depthTest = false;
+            const ORDERED = new VECTOR_CONTEXT(DEVICE, { mesh: { orderedMeshQuads: true } });
+            const ORDERED_MESHES = ORDERED.acquireMeshRenderer();
+            const BUILDER = new MESH_BUILDER();
+            BUILDER.fillTriangleFan(
+                [
+                    [0, 48],
+                    [16, 48],
+                    [16, 64],
+                    [0, 64],
+                ],
+                [1, 1, 1, 1],
+            );
+            const WHITE_MESH = ORDERED_MESHES.createMesh(BUILDER.build());
+            CHECK(ORDERED.beginFrame({ width: 128, height: 128, clearColor: [0, 0, 0, 1] }), 'ordered alpha frame');
+            ORDERED.depthTest = true;
+            ORDERED.depthWrite = true;
+            ORDERED.depth = -0.4;
+            ORDERED.drawMesh(WHITE_MESH);
+            ORDERED.drawQuads({
+                layer: ALPHA_REGION.layer,
+                filter: ALPHA_REGION.filter,
+                uvRects: ALPHA_UVS,
+                localRects: ALPHA_RECT,
+                depthWriteAlphaThreshold: 0.05,
+            });
+            ORDERED.depth = 0.4;
+            ORDERED.fillStyle = '#0000ff';
+            ORDERED.fillRect(0, 0, 128, 32);
+            const ORDERED_FRAME = ORDERED.endFrame();
+            NEAR(PIXEL(16, 16), [255, 0, 0, 255], 'ordered opaque foreground keeps depth');
+            NEAR(PIXEL(48, 16), [0, 0, 255, 255], 'ordered low-alpha halo cannot occlude background');
+            const ORDERED_THRESHOLD_DRAWS = ORDERED_FRAME.drawCalls;
+            CHECK(ORDERED.beginFrame({ width: 128, height: 128, clearColor: [0, 0, 0, 1] }), 'ordered baseline frame');
+            ORDERED.depthTest = true;
+            ORDERED.depthWrite = true;
+            ORDERED.depth = -0.4;
+            ORDERED.drawMesh(WHITE_MESH);
+            ORDERED.drawQuads({
+                layer: ALPHA_REGION.layer,
+                filter: ALPHA_REGION.filter,
+                uvRects: ALPHA_UVS,
+                localRects: ALPHA_RECT,
+            });
+            ORDERED.depth = 0.4;
+            ORDERED.fillStyle = '#0000ff';
+            ORDERED.fillRect(0, 0, 128, 32);
+            const ORDERED_BASELINE_DRAWS = ORDERED.endFrame().drawCalls;
+            CHECK(
+                ORDERED_THRESHOLD_DRAWS === ORDERED_BASELINE_DRAWS,
+                `threshold must not add an ordered draw: ${ORDERED_THRESHOLD_DRAWS}/${ORDERED_BASELINE_DRAWS}`,
+            );
+            ORDERED_MESHES.deleteMesh(WHITE_MESH);
+            ORDERED.dispose();
+            DEVICE.textureAtlas.release(ALPHA_REGION);
             const DRAW_SCENE = (timeMs) => {
                 CHECK(
                     CTX.beginFrame({ width: CANVAS.width, height: CANVAS.height, clearColor: [0, 0, 0, 1] }),
@@ -254,6 +459,23 @@ try {
             const AFTER = { first: PIXEL(24, 24), second: PIXEL(72, 24) };
             NEAR(AFTER.first, BEFORE.first, 'atlas region restored');
             NEAR(AFTER.second, BEFORE.second, 'second actor phase restored');
+            CHECK(CTX.beginFrame({ width: 128, height: 128, clearColor: [0, 0, 0, 1] }), 'restored posed frame');
+            CHECK(MESHES.preparePose(POSE_A, { ...POSE_OPTIONS, elapsedMs: 100 }), 'GPU pose restored');
+            CTX.preparePoses();
+            CTX.drawQuads({
+                layer: REGION.layer,
+                filter: REGION.filter,
+                uvRects: UVS,
+                localRects: LOCALS,
+                parts: PARTS,
+                pose: POSE_A,
+                matrix: [16, 0, 0, 16, 24, 24],
+            });
+            CTX.endFrame();
+            NEAR(PIXEL(64, 32), [0, 0, 255, 255], 'restored sprite pose still reaches its keyframe');
+            MESHES.deletePoseInstance(POSE_A);
+            MESHES.deletePoseInstance(POSE_B);
+            MESHES.deletePoseSource(SOURCE);
             first.dispose();
             second.dispose();
             third.dispose();

@@ -6,7 +6,7 @@ export const VECTOR_FRAGMENT_VARYINGS =
 
 // paint.y: 0 normal, 1 white flash, 2 forced color (the texel only contributes its coverage).
 export const VECTOR_FRAGMENT_FINISH =
-    'float a=texel.a*v_color.a;if(u_depthWrite>0.5&&a<=0.0)discard;vec3 rgb=v_paint.y>1.5?v_color.rgb*a:mix(texel.rgb*v_color.rgb*v_color.a,vec3(a),v_paint.y);gl_FragColor=vec4(rgb,a);';
+    'float a=texel.a*v_color.a;float cutoff=fract(v_paint.x)/0.49;if(u_depthWrite>0.5&&a<=cutoff)discard;vec3 rgb=v_paint.y>1.5?v_color.rgb*a:mix(texel.rgb*v_color.rgb*v_color.a,vec3(a),v_paint.y);gl_FragColor=vec4(rgb,a);';
 const PRIMITIVE_OUTSIDE = `bool primitiveOutside(vec2 l,vec4 p,vec4 m){
   float kind=p.x,stroke=p.y,width=p.z,option=p.w;
   if(kind<0.5){

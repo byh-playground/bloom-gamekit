@@ -32,6 +32,48 @@ Frame rectangles use logical top-left atlas pixel coordinates. `sourceWidth/sour
 
 Actors sample an absolute caller clock, select one frame and hold it for its duration. There is no geometric interpolation or crossfade. Before the start time the first frame is held; loop clips wrap at total duration and once clips hold the last frame, including large clock jumps. Pause and speed changes preserve phase at the supplied clock time. Clocks and durations must be finite. Region memory and its initialization cost remain the producer's responsibility; context restore re-uploads retained region sources but render-target producers must rebake their pixels.
 
+## GPU poses for independent sprite parts
+
+`compilePoseChannels({parts, clips})` compiles artwork-independent 2D part keyframes to the numeric program consumed by `MeshRenderer.createPoseSource`. It does not load SVG or image data. `parts` has 1–16 `{id, parent, pivot:[x,y]}` entries; `parent` is another part id or `null`. Each named clip has a positive `durationMs`, `loop` (`once`, `repeat`, `alternate`) and ordered keyframes spanning 0..durationMs, with `parts` mapping part ids to any of `x`, `y`, `rotation`, `scaleX`, `scaleY`, `opacity`. Easing is `linear`, `inOutSine`, or `outQuad`. Unsupported easing/precision/segment limits mark that clip `supported:false` with a reason; `preparePose` returns `null` for it or an unavailable GPU pose backend. Consumers that require GPU sprites must check the result and surface the failure. Compile once per rig, retain the returned program without mutating it, and dispose all instances before their source.
+
+```js
+const program = compilePoseChannels({
+    parts: [
+        { id: 'body', parent: null, pivot: [0, 0] },
+        { id: 'arm', parent: 'body', pivot: [12, 8] },
+    ],
+    clips: {
+        wave: {
+            durationMs: 500,
+            loop: 'repeat',
+            keyframes: [
+                { timeMs: 0, parts: { arm: { rotation: -0.3 } } },
+                { timeMs: 500, parts: { arm: { rotation: 0.3 } } },
+            ],
+        },
+    },
+});
+const meshes = context.acquireMeshRenderer();
+const source = meshes.createPoseSource(program);
+const actor = meshes.createPoseInstance(source);
+const defaults = program.partIds.map(() => ({ x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, opacity: 1 }));
+const pose = meshes.preparePose(actor, {
+    clipName: 'wave',
+    elapsedMs: displayTimeMs,
+    basePoses: defaults,
+    visible: defaults.map(() => true),
+    morph: [0, 0],
+});
+if (!pose) throw new Error('GPU sprite pose unavailable');
+context.preparePoses(); // prepare every actor first, then flush pose updates once
+context.drawQuads({ layer: region.layer, filter: region.filter, uvRects, localRects, parts, pose, matrix });
+// On shutdown: meshes.deletePoseInstance(actor); meshes.deletePoseSource(source).
+```
+
+`uvRects` and `localRects` are Float32Array quads and `parts` supplies a numeric program part index for each quad. UV rectangles use the actual shared atlas dimensions and the uploaded region's origin; they are not raw source-image pixels. The caller owns atlas allocation, draw order, depth and actor lifecycle. `context.preparePoses()` after all actor updates avoids per-actor pose boundaries; changing a pose after submitting it can flush pending work. Supported GPU poses evaluate the authored channels on GPU, but each quad still stages six 84-byte vertices per frame, so a crowd's CPU submission and upload cost must be measured.
+
+`drawQuads({depthWriteAlphaThreshold})` optionally discards final alpha at or below the supplied 0..1 threshold **only when depth writing is enabled**; its default 0 preserves existing transparent-pixel behavior. The threshold is per quad and does not by itself split a batch. It removes both color and depth for discarded fragments, so higher values cut antialiased edges; choose it only after checking overlapping sprites, terrain and image quality. With depth writing disabled the threshold has no effect and translucent pixels blend normally.
+
 ## Ordered native meshes and atlas quads
 
 `new VectorContext(device, { mesh: { orderedMeshQuads: true } })` opts into an ordered batch for ordinary 2D retained meshes without depth writes and the unclipped, unposed atlas quads that follow them. Different geometries and image regions share a draw while projection, clip, stencil, depth policy and blend agree. Submission order, including each translucent body followed by its face, is retained; the renderer never sorts game actors. The option defaults to `false` and requires six texture units for meshes/quads, seven when ordinary vector paint joins the batch. Opaque depth-writing bodies keep their native instanced path; a sequence containing only image quads keeps its existing vector stream.

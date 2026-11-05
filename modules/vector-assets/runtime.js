@@ -1,6 +1,6 @@
 import { createTimeline } from 'animejs/timeline';
 import { validateCompiledAsset } from './schema.js';
-import { compilePoseChannels, samplePartTransform, samplePoseChannels } from './pose-channels.js';
+import { compilePoseChannels, samplePartTransform, samplePoseChannels } from '../rendering/pose-channels.js';
 const IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
 const DEFAULT_POSE = Object.freeze({
     x: 0,
