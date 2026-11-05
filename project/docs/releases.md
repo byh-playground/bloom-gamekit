@@ -1,3 +1,13 @@
+## v0.46.10 (2026-11-05)
+
+호환 수정. 최근 pathfield·vision PR에서 남긴 core 검증 실패 세 가지를 처리합니다. 픽셀 허용치와 180초 상한은 바꾸지 않습니다.
+
+- metrics 고정 시나리오가 POSIX에서 Wrangler의 CLI wrapper만 종료해 Workers와 출력 파이프가 남던 문제를 프로세스 그룹 종료로 고칩니다. 수집 클라이언트·서버·D1은 변경하지 않습니다.
+- standalone 렌더링 runner 6개가 Windows 설치 경로만 찾던 문제를 고칩니다. 기본값은 Playwright가 설치한 Chromium이고 `CHROMIUM_EXECUTABLE_PATH` 명시 지정은 유지합니다.
+- GPU 포즈의 내장 삼각함수 오차가 SVG pivot에서 커지던 문제를 범위 축소와 sine/cosine 다항식으로 고칩니다. 직접 평가와 행렬 캐시가 같은 함수를 쓰며 CPU Float64 조회·시계는 그대로입니다. 기존 고정 장면에 GPU 행렬 캐시와 CPU 부품 행렬의 0.001 단위 비교를 연결합니다.
+- 부품 raster atlas를 2배 해상도에서 굽고 2:1 blit으로 축소해 삼각형 경계의 coverage를 보존합니다. 최종 이미지 크기·재생 경로는 같고, 굽는 동안만 최종 아틀라스 바이트의 4배인 작업 텍스처를 추가로 사용합니다. 작업 버퍼는 성공·실패 시 해제하고 장치 한도 안에 배치할 수 없으면 기존 `atlasLimit`을 보고합니다.
+- 성능 개선을 주장하지 않습니다. 다항식의 GPU 연산과 첫 굽기 비용이 추가되며 실제 기기 성능은 별도 검증입니다.
+
 ## v0.46.9 (2026-11-05)
 
 호환 기능 추가. rally-frontier가 만든 진영별 시야 칸 격자(`VisionField`)를 `vision` 모듈(`dist/vision.js`)로 올립니다. 기존 번들의 동작은 같고, 게임은 아직 옮기지 않았습니다(rally-frontier 이관은 이 모듈 머지 뒤 별도 PR).

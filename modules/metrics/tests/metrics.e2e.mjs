@@ -47,6 +47,7 @@ function runWrangler(args, readyText) {
             cwd: SERVER_DIR,
             env: { ...process.env, WRANGLER_SEND_METRICS: 'false', NO_COLOR: '1' },
             windowsHide: true,
+            detached: process.platform !== 'win32',
         });
         CHILDREN.add(CHILD);
         let output = '';
@@ -76,7 +77,8 @@ function stopChild(child) {
     if (process.platform === 'win32') {
         spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
     } else {
-        child.kill('SIGKILL');
+        // wrangler의 CLI wrapper뿐 아니라 stdout/stderr를 물려받은 Workers도 함께 닫습니다.
+        process.kill(-child.pid, 'SIGKILL');
     }
 }
 

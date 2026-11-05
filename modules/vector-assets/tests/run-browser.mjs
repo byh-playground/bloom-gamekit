@@ -1,5 +1,4 @@
 import { chromium } from 'playwright';
-import { existsSync } from 'node:fs';
 import { mkdir, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -19,15 +18,7 @@ const RENDERING_BUNDLE = await readFile(resolve(ROOT, 'dist/rendering.js'));
 const RENDERING_MODULE_URL = 'data:text/javascript;base64,' + RENDERING_BUNDLE.toString('base64');
 const VECTOR_ASSETS_BUNDLE = await readFile(resolve(ROOT, 'dist/vector-assets.js'));
 const VECTOR_ASSETS_MODULE_URL = 'data:text/javascript;base64,' + VECTOR_ASSETS_BUNDLE.toString('base64');
-const EXECUTABLE_PATH =
-    process.env.CHROMIUM_EXECUTABLE_PATH ??
-    [
-        'C:/Program Files/Google/Chrome/Application/chrome.exe',
-        'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
-    ].find((path) => existsSync(path));
-if (!EXECUTABLE_PATH) {
-    throw new Error('Set CHROMIUM_EXECUTABLE_PATH to Chromium or Edge.');
-}
+const EXECUTABLE_PATH = process.env.CHROMIUM_EXECUTABLE_PATH ?? chromium.executablePath();
 const BROWSER = await chromium.launch({
     headless: true,
     executablePath: EXECUTABLE_PATH,

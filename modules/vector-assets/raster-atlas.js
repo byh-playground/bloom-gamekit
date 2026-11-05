@@ -177,6 +177,7 @@ function bakeRasterAtlas(
         !context.drawQuads ||
         !context.drawVectorActor ||
         !DEVICE?.createTextureLayerTarget ||
+        !DEVICE?.blitRenderTarget ||
         !DEVICE?.bindRenderTarget ||
         !DEVICE?.unbindRenderTarget
     ) {
@@ -211,9 +212,16 @@ function bakeRasterAtlas(
             }
         }
     }
+    // The offscreen target has no canvas MSAA. Bake at twice the final resolution,
+    // then average each 2x2 footprint so triangle edges retain coverage.
+    const BAKE_SCALE = 2;
     const PACKED = unsupportedReason
         ? null
-        : packRuns(RUNS, ATLAS.width - ATLAS.gutter * 2, ATLAS.height - ATLAS.gutter * 2);
+        : packRuns(
+              RUNS,
+              Math.min(ATLAS.width - ATLAS.gutter * 2, Math.floor(DEVICE.maxTextureSize / BAKE_SCALE)),
+              Math.min(ATLAS.height - ATLAS.gutter * 2, Math.floor(DEVICE.maxTextureSize / BAKE_SCALE)),
+          );
     if (!unsupportedReason && !PACKED) {
         unsupportedReason = 'atlasLimit';
     }
@@ -272,6 +280,7 @@ function bakeRasterAtlas(
         }
         const START = NOW();
         let bound = false;
+        let bakeTarget = null;
         try {
             DEVICE.flushBatchers('rasterAtlasBakeBoundary');
             if (target && !DEVICE.isRenderTargetAvailable(target)) {
@@ -287,33 +296,42 @@ function bakeRasterAtlas(
                 region.width + ATLAS.gutter * 2,
                 region.height + ATLAS.gutter * 2,
             );
-            DEVICE.bindRenderTarget(target);
+            bakeTarget = DEVICE.createRenderTarget(PACKED.width * BAKE_SCALE, PACKED.height * BAKE_SCALE, {
+                format: 'rgba',
+                filter: 'linear',
+            });
+            DEVICE.bindRenderTarget(bakeTarget);
             bound = true;
-            // Rendered rows run bottom-up: the region's top edge sits `top` pixels below the layer's top edge.
-            const TOP = ATLAS.height - (region.y + region.height);
+            DEVICE.clear({ color: [0, 0, 0, 0] });
             for (let index = 0; index < RUNS.length; index++) {
                 const RUN = RUNS[index],
                     [TILE_X, TILE_Y] = PACKED.positions[index],
-                    TX = region.x + TILE_X + padding - pixelsPerUnit * RUN.minX,
-                    TY = TOP + TILE_Y + padding - pixelsPerUnit * RUN.minY;
+                    TX = TILE_X + padding - pixelsPerUnit * RUN.minX,
+                    TY = TILE_Y + padding - pixelsPerUnit * RUN.minY;
                 MESHES.drawMesh(asset.mesh, {
                     projection: [
-                        (2 * pixelsPerUnit) / ATLAS.width,
+                        (2 * pixelsPerUnit) / PACKED.width,
                         0,
                         0,
                         0,
-                        (-2 * pixelsPerUnit) / ATLAS.height,
+                        (-2 * pixelsPerUnit) / PACKED.height,
                         0,
-                        (2 * TX) / ATLAS.width - 1,
-                        1 - (2 * TY) / ATLAS.height,
+                        (2 * TX) / PACKED.width - 1,
+                        1 - (2 * TY) / PACKED.height,
                         1,
                     ],
                     indexRange: [RUN.firstIndex, RUN.indexCount],
                 });
             }
             MESHES.flush('rasterAtlasBake');
-            DEVICE.unbindRenderTarget(target);
+            DEVICE.unbindRenderTarget(bakeTarget);
             bound = false;
+            DEVICE.blitRenderTarget(bakeTarget, target, {
+                x: region.x,
+                y: region.y,
+                width: PACKED.width,
+                height: PACKED.height,
+            });
             bakedRestores = RESTORES;
             bakeCount++;
             if (START !== null) {
@@ -325,7 +343,7 @@ function bakeRasterAtlas(
             if (bound) {
                 MESHES.discard();
                 try {
-                    DEVICE.unbindRenderTarget(target);
+                    DEVICE.unbindRenderTarget(bakeTarget);
                 } catch {
                     // Context loss may prevent restoring a framebuffer binding.
                 }
@@ -340,6 +358,10 @@ function bakeRasterAtlas(
             failedRestores = DEVICE.stats.restores ?? 0;
             lastFailure = error.message;
             return { backend: 'vector', reason: 'bakeFailed' };
+        } finally {
+            if (bakeTarget) {
+                DEVICE.deleteRenderTarget(bakeTarget);
+            }
         }
     };
     const DRAW = (actor, options = {}) => {
