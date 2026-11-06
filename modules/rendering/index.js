@@ -1,5 +1,5 @@
 export { WebGLDevice } from './device.js';
-export { VectorRenderer } from './vector-renderer.js';
+export { VectorRenderer, VECTOR_RENDERER_ATLAS_REGIONS } from './vector-renderer.js';
 export { VectorContext, PrimitivePainter } from './vector-context.js';
 export { MeshBuilder } from './mesh-builder.js';
 export { hasOpaqueCoverage } from './mesh-coverage.js';
