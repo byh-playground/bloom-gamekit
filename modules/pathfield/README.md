@@ -6,6 +6,7 @@
 
 - 어디로 갈지, 언제 거리장을 쓰고 언제 직선으로 갈지(가까우면 광선 등), 거리장을 얼마나 오래 둘지(고정 목표는 오래, 추격 목표는 틱마다 등), 내려가는 칸 중 무엇을 목표점으로 고를지는 게임이 정합니다. [저장소 README](../../README.md)의 "게임별로 서로 다른 공간 탐색 정책을 하나로 강제하지 않는다"는 경계를 그대로 지킵니다.
 - 칸이 지나갈 수 있는지(지형·건물·이동체 반지름)는 호출자가 준 `passable(x, y, cell)` 함수가 답합니다. 모듈은 장애물이 무엇인지 모릅니다. 번들이 독립이라 다른 모듈을 import하지 않으며, [geometry](../geometry/README.md)의 `ObstacleField`를 그 함수에 연결하는 방법은 아래에 있습니다.
+- 필요한 경우 `passableEdge(x, y, nextX, nextY, cell, nextCell)`로 열린 두 칸 중심 사이의 실제 연결도 검사합니다. 양방향 결과가 같고 순수해야 하며 같은 엣지는 두 방향을 합쳐 한 번만 검사합니다. 장애물이 바뀌면 `sync`/`invalidate`가 칸과 엣지 캐시를 함께 비웁니다. 이 옵션을 생략하면 기존 격자 동작을 유지합니다.
 - 지형 이동 배율(칸마다 다른 비용)은 없습니다. 비용은 직선 10, 대각 14로 고정입니다.
 
 ## 쓰는 모양
@@ -18,6 +19,7 @@ const GRID = new PathGrid({
     height: 4800,
     cellSize: 24,
     passable: (x, y) => OBSTACLES.pointClear(x, y, UNIT_RADIUS), // 칸 중심에 반지름 원이 설 수 있는가
+    passableEdge: (x, y, nextX, nextY) => OBSTACLES.segmentClear(x, y, nextX, nextY, UNIT_RADIUS, null, true, 0),
 });
 const FIXED = new FieldCache(GRID, { capacity: 24 }); // 기지·깃발 같은 고정 목표: 오래 둠
 const CHASE = new FieldCache(GRID); // 추격 목표: 틱마다 비움

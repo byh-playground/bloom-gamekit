@@ -277,6 +277,8 @@ export class ObstacleField<P extends PolygonObstacle = PolygonObstacle, C extend
         margin?: number,
     ): boolean;
     pointClear(x: number, y: number, r: number, ignoreId?: unknown): boolean;
+    /** 두 반경의 pointClear를 한번에 확인: 둘 다 불가 0, 작은 반경만 가능 1, 둘 다 가능 2. */
+    pointClearanceBand(x: number, y: number, innerRadius: number, outerRadius: number, ignoreId?: unknown): 0 | 1 | 2;
     departureClear(x: number, y: number, tx: number, ty: number, r: number, ignoreId?: unknown): boolean;
     nearestExterior(x: number, y: number, r: number, ignoreId?: unknown): Point | null;
 }

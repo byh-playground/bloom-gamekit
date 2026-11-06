@@ -130,6 +130,24 @@ const FIELD = new ObstacleField({
     ignoreAll: { id: '*', keep: (circle) => circle.barrier },
 });
 const MOTION = new SurfaceMotion(FIELD);
+// 같은 자리의 두 크기 판정은 각각 pointClear를 호출한 결과와 같습니다.
+for (const X of [1, 25, 80, 100, 125, 180, 190, 195, 200, 245, 300, 330, 380, 399]) {
+    for (const Y of [1, 50, 100, 195, 205, 245, 250, 280, 299]) {
+        for (const [INNER, OUTER] of [
+            [0, 0],
+            [0, 10],
+            [1, 8],
+            [5, 22],
+            [13.5, 30.54],
+        ]) {
+            for (const IGNORE of [null, '*', 'hut']) {
+                const SMALL = FIELD.pointClear(X, Y, INNER, IGNORE),
+                    LARGE = FIELD.pointClear(X, Y, OUTER, IGNORE);
+                assert.equal(FIELD.pointClearanceBand(X, Y, INNER, OUTER, IGNORE), SMALL ? (LARGE ? 2 : 1) : 0);
+            }
+        }
+    }
+}
 // 법선 성분이 -0이어도 같은 값으로 비교합니다.
 const PLAIN = (value) => JSON.parse(JSON.stringify(value));
 const WALL_EDGE = { t: 0.36363636363636365, nx: -1, ny: 0, key: 'wall:3:edge' };

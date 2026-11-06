@@ -30,6 +30,70 @@ function gridFrom(rows, counter = null) {
 }
 const CELL_OF = (grid, col, row) => row * grid.cols + col;
 
+// 셀 중심은 모두 열려 있어도 그 사이의 얇은 벽은 가로지를 수 없습니다.
+// 왕복 엣지 검사는 재사용하며, 지형 변경 시 새 경로를 계산합니다.
+{
+    const TERRAIN = new ObstacleField({
+        width: 80,
+        height: 80,
+        fixedPoint: 100,
+        polygons: [
+            {
+                id: 'thin-wall',
+                points: [
+                    { x: 19, y: 0 },
+                    { x: 21, y: 0 },
+                    { x: 21, y: 59 },
+                    { x: 19, y: 59 },
+                ],
+            },
+        ],
+    });
+    let calls = 0,
+        enabled = true;
+    const GRID = new PathGrid({
+        width: 80,
+        height: 80,
+        cellSize: 10,
+        passable: (x, y) => TERRAIN.pointClear(x, y, 1),
+        passableEdge: (x, y, tx, ty) => {
+            calls++;
+            return !enabled || TERRAIN.segmentClear(x, y, tx, ty, 1, null, true, 0);
+        },
+    });
+    const LEFT = CELL_OF(GRID, 1, 2),
+        RIGHT = CELL_OF(GRID, 2, 2);
+    assert.equal(GRID.isOpen(LEFT), true);
+    assert.equal(GRID.isOpen(RIGHT), true);
+    assert.equal(GRID.stepCell(1, 2, 0), -1, '양 끝은 열렸지만 벽을 통과할 수 없습니다');
+    const BEFORE = calls;
+    assert.equal(GRID.stepCell(2, 2, 2), -1, '반대 방향도 같은 결과입니다');
+    assert.equal(calls, BEFORE, '양방향 검사는 한번만 계산합니다');
+    const ROUTE = new DistanceField(GRID, [RIGHT]).descend(LEFT, 40);
+    assert.ok(ROUTE.length > 1, '막힌 직선 대신 벽 끝을 돌아갑니다');
+    let previous = LEFT;
+    for (const CELL of ROUTE) {
+        assert.equal(
+            TERRAIN.segmentClear(
+                GRID.centerX(previous),
+                GRID.centerY(previous),
+                GRID.centerX(CELL),
+                GRID.centerY(CELL),
+                1,
+                null,
+                true,
+                0,
+            ),
+            true,
+        );
+        previous = CELL;
+    }
+    assert.equal(previous, RIGHT);
+    enabled = false;
+    GRID.invalidate();
+    assert.equal(GRID.stepCell(1, 2, 0), RIGHT, '갱신 뒤 막힌 엣지도 다시 판단합니다');
+}
+
 // ---------- 1. 비용: 직선 10·대각 14, 모서리 가로지르기 금지 ----------
 {
     assert.deepEqual([STRAIGHT_COST, DIAGONAL_COST, UNREACHED], [10, 14, 0x7fffffff]);

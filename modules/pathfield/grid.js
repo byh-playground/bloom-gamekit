@@ -26,7 +26,8 @@ const MAX_CELLS = 1 << 22;
 const UNKNOWN = -1;
 const BLOCKED = 0;
 const OPEN = 1;
-const OPTIONS = ['width', 'height', 'cellSize', 'passable', 'originX', 'originY'];
+const OPTIONS = ['width', 'height', 'cellSize', 'passable', 'passableEdge', 'originX', 'originY'];
+const REVERSE_DIRECTION = Uint8Array.of(2, 3, 0, 1, 6, 7, 4, 5);
 
 function positiveNumber(value, name) {
     if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
@@ -62,6 +63,9 @@ export class PathGrid {
     #passable;
     #open;
     #version;
+    #passableEdge;
+    #edgeKnown;
+    #edgeOpen;
 
     constructor(options) {
         if (options === null || typeof options !== 'object') {
@@ -75,6 +79,9 @@ export class PathGrid {
         if (typeof options.passable !== 'function') {
             throw new TypeError('PathGrid passable must be a function.');
         }
+        if (options.passableEdge != null && typeof options.passableEdge !== 'function') {
+            throw new TypeError('PathGrid passableEdge must be a function.');
+        }
         this.cellSize = positiveNumber(options.cellSize, 'cellSize');
         this.originX = finiteNumber(options.originX ?? 0, 'originX');
         this.originY = finiteNumber(options.originY ?? 0, 'originY');
@@ -86,6 +93,9 @@ export class PathGrid {
         }
         this.#passable = options.passable;
         this.#open = new Int8Array(this.size).fill(UNKNOWN);
+        this.#passableEdge = options.passableEdge ?? null;
+        this.#edgeKnown = this.#passableEdge ? new Uint8Array(this.size) : null;
+        this.#edgeOpen = this.#passableEdge ? new Uint8Array(this.size) : null;
     }
 
     /** 좌표가 든 칸의 번호. 격자 밖은 가장자리 칸으로 자릅니다. 좌표는 NaN이 아니어야 합니다. */
@@ -141,12 +151,38 @@ export class PathGrid {
         if (DX !== 0 && DY !== 0 && (!this.isOpen(row * this.cols + NX) || !this.isOpen(NY * this.cols + col))) {
             return -1;
         }
+        if (this.#passableEdge) {
+            const CURRENT = row * this.cols + col,
+                BIT = 1 << direction;
+            if (!(this.#edgeKnown[CURRENT] & BIT)) {
+                const REVERSE = 1 << REVERSE_DIRECTION[direction];
+                const OPEN = this.#passableEdge(
+                    this.centerX(CURRENT),
+                    this.centerY(CURRENT),
+                    this.centerX(NEXT),
+                    this.centerY(NEXT),
+                    CURRENT,
+                    NEXT,
+                );
+                this.#edgeKnown[CURRENT] |= BIT;
+                this.#edgeKnown[NEXT] |= REVERSE;
+                if (OPEN) {
+                    this.#edgeOpen[CURRENT] |= BIT;
+                    this.#edgeOpen[NEXT] |= REVERSE;
+                }
+            }
+            if (!(this.#edgeOpen[CURRENT] & BIT)) {
+                return -1;
+            }
+        }
         return NEXT;
     }
 
     /** 통과 판정의 기억을 비우고 `revision`을 올립니다. 장애물이 바뀐 뒤에 부릅니다. */
     invalidate() {
         this.#open.fill(UNKNOWN);
+        this.#edgeKnown?.fill(0);
+        this.#edgeOpen?.fill(0);
         this.revision++;
     }
 
