@@ -43,7 +43,7 @@
     },
     {
       "file": "pathfield.js",
-      "sha256": "191b022768b986776e321d909886a68650ecbf37a4745b3a5b1870ee8eb32e42"
+      "sha256": "16315160ede3dc788506538c3e33f011f8b02b99a2bd7e086db4781a0c945412"
     },
     {
       "file": "vision.js",
@@ -59,7 +59,7 @@
     },
     {
       "file": "rollback.js",
-      "sha256": "779dce20dce1466016017ec9c41dd0037bbcf0ace3d2b6696f494fd721874350"
+      "sha256": "5c07127c343d2bb3ac7886eafaf50155ee3cbbc7398e0b470678230aab19bc28"
     },
     {
       "file": "camera.js",
@@ -95,7 +95,7 @@
     },
     {
       "file": "geometry.js",
-      "sha256": "59f7523a6a5ccdf721e0946f234b62d771a13493c25598208795299304c6e76d"
+      "sha256": "cf471d5a627429d28fc91d69b8f94bc93df0cf36c1b2e6236fbc727b6dadb796"
     },
     {
       "file": "pixel-physics.js",
