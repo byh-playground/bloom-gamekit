@@ -272,11 +272,11 @@ export class ObstacleField {
             if (C.id === ignoreId) {
                 continue;
             }
-            const DISTANCE = Math.hypot(x - C.x, y - C.y) - C.r;
-            if (DISTANCE < innerRadius + 0.25 - 0.001) {
+            const DISTANCE = Math.hypot(x - C.x, y - C.y);
+            if (DISTANCE < innerRadius + C.r + 0.25 - 0.001) {
                 return 0;
             }
-            if (DISTANCE < outerRadius + 0.25 - 0.001) {
+            if (DISTANCE < outerRadius + C.r + 0.25 - 0.001) {
                 outerClear = false;
             }
         }
