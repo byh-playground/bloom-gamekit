@@ -130,6 +130,18 @@ const FIELD = new ObstacleField({
     ignoreAll: { id: '*', keep: (circle) => circle.barrier },
 });
 const MOTION = new SurfaceMotion(FIELD);
+// 한 번의 두 반경 검사는 각각의 기존 점유 검사와 같은 결과를 냅니다.
+for (const [X, Y, INNER, OUTER, IGNORE] of [
+    [180, 100, 5, 22, null],
+    [100, 250, 1, 8, null],
+    [100, 250, 1, 8, 'hut'],
+    [50, 50, 5, 22, null],
+    [5, 5, 1, 8, null],
+]) {
+    const SMALL = FIELD.pointClear(X, Y, INNER, IGNORE),
+        LARGE = FIELD.pointClear(X, Y, OUTER, IGNORE);
+    assert.equal(FIELD.pointClearanceBand(X, Y, INNER, OUTER, IGNORE), SMALL ? (LARGE ? 2 : 1) : 0);
+}
 // 법선 성분이 -0이어도 같은 값으로 비교합니다.
 const PLAIN = (value) => JSON.parse(JSON.stringify(value));
 const WALL_EDGE = { t: 0.36363636363636365, nx: -1, ny: 0, key: 'wall:3:edge' };

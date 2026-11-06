@@ -227,6 +227,62 @@ export class ObstacleField {
         return this.segmentClear(x, y, x, y, r, ignoreId);
     }
 
+    /**
+     * Test two concentric radii in one traversal. Returns 0 if the inner radius
+     * is blocked, 1 if only the inner radius is clear, and 2 if both are clear.
+     * Each result has exactly the same boundary and circle margin as pointClear.
+     */
+    pointClearanceBand(x, y, innerRadius, outerRadius, ignoreId = null) {
+        if (
+            !Number.isFinite(innerRadius) ||
+            !Number.isFinite(outerRadius) ||
+            innerRadius < 0 ||
+            outerRadius < innerRadius
+        ) {
+            throw new RangeError('ObstacleField radii must be finite, non-negative and ordered.');
+        }
+        if (x < innerRadius || y < innerRadius || x > this.width - innerRadius || y > this.height - innerRadius) {
+            return 0;
+        }
+        let outerClear = !(
+            x < outerRadius ||
+            y < outerRadius ||
+            x > this.width - outerRadius ||
+            y > this.height - outerRadius
+        );
+        const INNER = contactThreshold(innerRadius, this.quantum),
+            OUTER = contactThreshold(outerRadius, this.quantum);
+        for (const P of this.polygons.query(x, y, x, y, outerRadius)) {
+            if (pointInSimplePolygon(x, y, P.points)) {
+                return 0;
+            }
+            for (let i = 0; i < P.points.length; i++) {
+                const A = P.points[i],
+                    B = P.points[(i + 1) % P.points.length];
+                const DISTANCE = pointSegmentDistance(x, y, A.x, A.y, B.x, B.y);
+                if (DISTANCE < INNER) {
+                    return 0;
+                }
+                if (DISTANCE < OUTER) {
+                    outerClear = false;
+                }
+            }
+        }
+        for (const C of this.obstacles(x, y, x, y, outerRadius + 0.25, ignoreId)) {
+            if (C.id === ignoreId) {
+                continue;
+            }
+            const DISTANCE = Math.hypot(x - C.x, y - C.y);
+            if (DISTANCE < innerRadius + C.r + 0.25 - 0.001) {
+                return 0;
+            }
+            if (DISTANCE < outerRadius + C.r + 0.25 - 0.001) {
+                outerClear = false;
+            }
+        }
+        return outerClear ? 2 : 1;
+    }
+
     /** {@link ObstacleField#segmentClear}를 `departure`로 부릅니다. */
     departureClear(x, y, tx, ty, r, ignoreId = null) {
         return this.segmentClear(x, y, tx, ty, r, ignoreId, true);

@@ -17,6 +17,8 @@ export interface PathGridOptions {
      * `cell`은 칸 번호이므로 미리 만든 차단 배열을 읽을 수도 있습니다.
      */
     passable: (x: number, y: number, cell: number) => boolean;
+    /** 양방향 결과가 같은 인접 셀 중심 사이의 이동 검사. 결과는 invalidate까지 캐시합니다. */
+    passableEdge?: (x: number, y: number, nextX: number, nextY: number, cell: number, nextCell: number) => boolean;
     /** 칸 (0, 0)의 좌표(기본 0). */
     originX?: number;
     originY?: number;

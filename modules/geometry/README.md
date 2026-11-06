@@ -78,6 +78,8 @@ const RESULT = MOTION.solve(150, 100, 260, 120, 10, null, 'steer', 'unit-7');
 
 **ObstacleField**는 정적 장애물의 "여기 들어가도 되는가"를 답합니다.
 
+`pointClearanceBand(x, y, innerRadius, outerRadius, ignoreId?)`는 같은 위치의 작은 원과 큰 원을 한 번에 검사합니다. 반환값은 작은 원도 막힘 `0`, 작은 원만 가능 `1`, 둘 다 가능 `2`이며 각각 `pointClear`와 동일한 월드 경계·오차·원 여유를 사용합니다. 거리장 경로 검사는 여유가 넉넉한 셀만 빠른 경로로 처리하고 나머지는 정확한 선분 검사를 할 수 있습니다.
+
 - 월드 경계 `[0, width] × [0, height]`, 다각형(`polygons`: 배열 또는 만들어 둔 `BoundsIndex`), 원(`circles`)을 가집니다. 원이 바뀐 틱에만 `setCircles(circles)`를 부릅니다(색인을 다시 만들고 `version`을 올림). 다각형은 만든 뒤 바뀌지 않는다고 봅니다.
 - `fixedPoint`는 게임이 좌표를 `1 / fixedPoint` 격자에 반올림해 저장하는 배율입니다(Rally는 100). 접촉 허용 거리의 단위(`quantum = 1 / fixedPoint`)와 이동 결과의 반올림이 이 값에서 나옵니다. 모든 좌표 반올림은 `Math.round(v * fixedPoint) / fixedPoint`입니다.
 - 질의: `polygonCircleClear(x, y, r)`, `polygonSegmentClear(x0, y0, x1, y1, r)`(다각형·월드 경계만), `segmentClear(x, y, tx, ty, r, ignoreId, departure, margin = 0.25)`, `pointClear`, `departureClear`(원 장애물까지), `nearestOpen(x, y, r, maxDistance, accept)`(16 간격 32방향 고리), `nearestExterior(x, y, r, ignoreId)`(다각형·원 모두 비어 있는 가장 가까운 자리, 최대 `exteriorSearchDistance` 256).
