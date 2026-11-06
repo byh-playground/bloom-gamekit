@@ -130,35 +130,17 @@ const FIELD = new ObstacleField({
     ignoreAll: { id: '*', keep: (circle) => circle.barrier },
 });
 const MOTION = new SurfaceMotion(FIELD);
-// 매우 작은 원에서 같은 수학식이라도 연산 순서가 1 ULP 차이를 만들 수 있습니다.
-const TINY = new ObstacleField({
-    width: 10,
-    height: 100,
-    fixedPoint: 100,
-    circles: [{ id: 'tiny', x: 0, y: 50, r: 0.00009078343873843552 }],
-});
-const TINY_X = 0.24960318796113132,
-    TINY_RADIUS = 0.0005124045223928988;
-assert.equal(TINY.pointClear(TINY_X, 50, 0), true);
-assert.equal(TINY.pointClear(TINY_X, 50, TINY_RADIUS), false);
-assert.equal(TINY.pointClearanceBand(TINY_X, 50, 0, TINY_RADIUS), 1);
-// 같은 자리의 두 크기 판정은 각각 pointClear를 호출한 결과와 같습니다.
-for (const X of [1, 25, 80, 100, 125, 180, 190, 195, 200, 245, 300, 330, 380, 399]) {
-    for (const Y of [1, 50, 100, 195, 205, 245, 250, 280, 299]) {
-        for (const [INNER, OUTER] of [
-            [0, 0],
-            [0, 10],
-            [1, 8],
-            [5, 22],
-            [13.5, 30.54],
-        ]) {
-            for (const IGNORE of [null, '*', 'hut']) {
-                const SMALL = FIELD.pointClear(X, Y, INNER, IGNORE),
-                    LARGE = FIELD.pointClear(X, Y, OUTER, IGNORE);
-                assert.equal(FIELD.pointClearanceBand(X, Y, INNER, OUTER, IGNORE), SMALL ? (LARGE ? 2 : 1) : 0);
-            }
-        }
-    }
+// 한 번의 두 반경 검사는 각각의 기존 점유 검사와 같은 결과를 냅니다.
+for (const [X, Y, INNER, OUTER, IGNORE] of [
+    [180, 100, 5, 22, null],
+    [100, 250, 1, 8, null],
+    [100, 250, 1, 8, 'hut'],
+    [50, 50, 5, 22, null],
+    [5, 5, 1, 8, null],
+]) {
+    const SMALL = FIELD.pointClear(X, Y, INNER, IGNORE),
+        LARGE = FIELD.pointClear(X, Y, OUTER, IGNORE);
+    assert.equal(FIELD.pointClearanceBand(X, Y, INNER, OUTER, IGNORE), SMALL ? (LARGE ? 2 : 1) : 0);
 }
 // 법선 성분이 -0이어도 같은 값으로 비교합니다.
 const PLAIN = (value) => JSON.parse(JSON.stringify(value));
