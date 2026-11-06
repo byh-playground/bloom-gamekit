@@ -9,6 +9,9 @@ import { clipPlanes } from './clip-planes.js';
 import { poseRendererOf } from './pose-renderer.js';
 import { POSE_PROGRAM_FUNCTIONS } from './pose-shader.js';
 
+/** Initial atlas regions reserved by each VectorRenderer, in allocation order. */
+export const VECTOR_RENDERER_ATLAS_REGIONS = Object.freeze([Object.freeze({ width: 1, height: 1 })]);
+
 const IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
 // One vertex layout for every textured draw: texture identity, gradient kind and flash are vertex data,
 // so fills, gradients, glyphs and sprites of one blend/clip state batch together. Floats per vertex: position 2,
@@ -362,10 +365,13 @@ export class VectorRenderer {
             capacityBytes: 0,
         });
         this.atlas = device.textureAtlas;
-        this.whiteRegion = this.atlas.allocate(1, 1);
+        this.whiteRegion = this.atlas.allocate(
+            VECTOR_RENDERER_ATLAS_REGIONS[0].width,
+            VECTOR_RENDERER_ATLAS_REGIONS[0].height,
+        );
         this.atlas.upload(
             this.whiteRegion,
-            { width: 1, height: 1, data: new Uint8Array([255, 255, 255, 255]) },
+            { ...VECTOR_RENDERER_ATLAS_REGIONS[0], data: new Uint8Array([255, 255, 255, 255]) },
             { premultiplied: true, extendEdges: true },
         );
         this.vertices = new Float32Array(initialVertices * VERTEX_FLOATS);
