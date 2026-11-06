@@ -532,6 +532,25 @@
         <script>
 (() => {
   // dist/rendering.js
+  function placeOnShelves(layers, width, height, paddedWidth, paddedHeight) {
+    for (let layer = 0; layer < layers.length; layer++) {
+      const STATE2 = layers[layer];
+      for (const SHELF of STATE2.shelves) {
+        if (SHELF.height >= paddedHeight && SHELF.x + paddedWidth <= width) {
+          const X = SHELF.x;
+          SHELF.x += paddedWidth;
+          return { layer, x: X, y: SHELF.y };
+        }
+      }
+      if (paddedWidth <= width && STATE2.usedHeight + paddedHeight <= height) {
+        const SHELF = { y: STATE2.usedHeight, height: paddedHeight, x: paddedWidth };
+        STATE2.shelves.push(SHELF);
+        STATE2.usedHeight += paddedHeight;
+        return { layer, x: 0, y: SHELF.y };
+      }
+    }
+    return null;
+  }
   var TextureAtlasArray = class {
     constructor(device, { width = 2048, height = 1024, layers = 2, gutter = 1, filter = "linear" } = {}) {
       if (!device?.createTextureArray || !device.updateTextureRegion) {
@@ -565,21 +584,9 @@
       if (REUSED) {
         return this._region(REUSED.layer, REUSED.x, REUSED.y, width, height, filter);
       }
-      for (let layer = 0; layer < this.layerShelves.length; layer++) {
-        const STATE2 = this.layerShelves[layer];
-        for (const SHELF of STATE2.shelves) {
-          if (SHELF.height >= PH && SHELF.x + PW <= this.width) {
-            const X = SHELF.x;
-            SHELF.x += PW;
-            return this._region(layer, X, SHELF.y, width, height, filter);
-          }
-        }
-        if (PW <= this.width && STATE2.usedHeight + PH <= this.height) {
-          const SHELF = { y: STATE2.usedHeight, height: PH, x: PW };
-          STATE2.shelves.push(SHELF);
-          STATE2.usedHeight += PH;
-          return this._region(layer, 0, SHELF.y, width, height, filter);
-        }
+      const PLACEMENT = placeOnShelves(this.layerShelves, this.width, this.height, PW, PH);
+      if (PLACEMENT) {
+        return this._region(PLACEMENT.layer, PLACEMENT.x, PLACEMENT.y, width, height, filter);
       }
       throw new RangeError("Texture atlas array is full");
     }
