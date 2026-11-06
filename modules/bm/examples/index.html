@@ -159,6 +159,8 @@
             autocomplete="off"
             value="https://bloom-metrics.byh-playground.workers.dev"
         />
+        <label for="metrics-read-secret">관리자 조회 키 (신뢰하는 서버에만 입력)</label>
+        <input id="metrics-read-secret" type="password" autocomplete="off" />
         <button id="metrics-connect">세션 시작</button>
         <p class="notice" id="metrics-notice"></p>
         <button id="metrics-hit" disabled>랠리 치기</button>
@@ -397,6 +399,7 @@
         // 지표 탭. 주소로 같은 장면을 다시 엽니다. 예: #tab=metrics&server=http://127.0.0.1:8787&seed=7 (기본은 운영 서버)
         const PARAMS = new URLSearchParams(location.search.slice(1) + '&' + location.hash.slice(1)),
             SERVER = document.querySelector('#metrics-server'),
+            READ_SECRET = document.querySelector('#metrics-read-secret'),
             SEED = Number(PARAMS.get('seed') ?? 7),
             SENT = [];
         let metrics = null,
@@ -488,7 +491,26 @@
 
         async function readServer(path) {
             try {
-                const RESPONSE = await fetch(new URL(path, SERVER.value.replace(/\/?$/, '/')));
+                const URL_VALUE = new URL(path, SERVER.value.replace(/\/?$/, '/'));
+                if (
+                    URL_VALUE.origin !== 'https://bloom-metrics.byh-playground.workers.dev' &&
+                    !(
+                        URL_VALUE.protocol === 'http:' &&
+                        ['localhost', '127.0.0.1', '[::1]'].includes(URL_VALUE.hostname)
+                    )
+                ) {
+                    throw new Error('조회 키는 운영 서버 또는 로컬 서버에만 보낼 수 있습니다');
+                }
+                if (!READ_SECRET.value) {
+                    throw new Error('관리자 조회 키를 입력하세요');
+                }
+                const RESPONSE = await fetch(URL_VALUE, {
+                    headers: { Authorization: `Bearer ${READ_SECRET.value}` },
+                    redirect: 'error',
+                });
+                if (!RESPONSE.ok) {
+                    throw new Error(`조회 실패 (${RESPONSE.status})`);
+                }
                 document.querySelector('#metrics-notice').textContent = '';
                 return await RESPONSE.json();
             } catch (error) {
@@ -509,6 +531,13 @@
             render();
         }
 
+        // 서버가 바뀌면 기존 조회 키를 지워 다른 서버로 무심코 전송하지 않습니다.
+        SERVER.addEventListener('input', () => {
+            READ_SECRET.value = '';
+            stats = null;
+            whoami = null;
+            render();
+        });
         document.querySelector('#metrics-connect').addEventListener('click', connect);
         document.querySelector('#metrics-hit').addEventListener('click', hit);
         document.querySelector('#metrics-end').addEventListener('click', end);

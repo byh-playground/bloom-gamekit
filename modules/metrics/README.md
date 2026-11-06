@@ -1,6 +1,6 @@
 # metrics
 
-**HTML 실행 프리뷰:** [bm 예제의 '지표' 탭](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/bm.html#tab=metrics) — 랠리·경기 끝을 누르면 운영 수집 서버(`gamekit-example` 게임 이름)에 저장되고 서버 집계(세션 수·평균 플레이 시간·경기 수)를 다시 읽어 보여 줍니다. 주소 칸을 로컬 `wrangler dev`(`http://127.0.0.1:8787`)로 바꾸면 로컬 D1에 씁니다.
+**HTML 실행 프리뷰:** [bm 예제의 '지표' 탭](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/bm.html#tab=metrics) — 랠리·경기 끝을 누르면 운영 수집 서버(`gamekit-example` 게임 이름)에 저장되고 서버 집계(세션 수·평균 플레이 시간·경기 수)는 관리자 조회 키를 입력했을 때 다시 읽어 보여 줍니다. 주소 칸을 로컬 `wrangler dev`(`http://127.0.0.1:8787`)로 바꾸면 로컬 D1에 씁니다.
 
 게임 지표를 자체 수집하는 순수 ESM 모듈과 Cloudflare Workers + D1 수집 서버입니다. 이벤트 이름·요약 값의 의미는 게임이 소유합니다. 고빈도 값은 보내지 않고, 경기마다 결정론 기록(시드 + 입력)을 남겨 나중에 어떤 지표든 다시 계산합니다.
 
@@ -102,7 +102,7 @@ METRICS.recordMatch(ONLINE, { winner: 'a' });
 
 - 접속 키(`ip_key`): 회선(IPv4 주소, IPv6는 앞 64비트)을 서버 비밀값 `IP_KEY_SECRET`으로 HMAC-SHA256한 앞 16바이트(hex 32자)입니다. 원본 IP는 저장하지 않고, 비밀값 없이는 키에서 IP를 되돌릴 수 없습니다. 비밀값을 바꾸면 모든 키가 바뀌어 `owners`를 다시 등록해야 하므로 바꾸지 않습니다.
 - 함께 저장하는 것: Cloudflare가 붙인 `country`·`city`·`asn`·`as_org`, 요청의 `user_agent`·`origin`. 세션의 첫 배치 것을 남깁니다.
-- 내 회선 등록: 내 기기에서 `GET <배포 주소>/whoami`를 열어(bm 예제 '지표' 탭의 "내 접속 키 보기"도 같음) `ipKey`를 확인하고, 아래를 실행합니다. `label`은 회선 이름(`home-wifi`, `phone-lte` 등)입니다.
+- 내 회선 등록: bm 예제 지표 탭에서 신뢰하는 서버 주소와 관리자 조회 키를 입력하고 "내 접속 키 보기"로 `ipKey`를 확인하거나, `Authorization: Bearer <관리자 조회 키>` 헤더와 함께 `GET /whoami`를 호출한 뒤 아래를 실행합니다. 조회 키는 URL·공유 링크·로그에 넣지 않습니다. `label`은 회선 이름(`home-wifi`, `phone-lte` 등)입니다.
 
       npx wrangler d1 execute bloom-metrics --remote -c wrangler.toml --command "INSERT OR IGNORE INTO owners (ip_key, label, added_at) VALUES ('<ipKey>', 'home-wifi', unixepoch() * 1000)"
 
@@ -136,7 +136,7 @@ METRICS.recordMatch(ONLINE, { winner: 'a' });
 
 `POST /batch`는 검증 뒤 D1에 쓰고, `GET /stats?game=<game>[&build=<build>]`는 `{ users, owner, dev }` 칸마다 `{ sessions, lines, returningLines, avgPlayMs, avgWallMs, matches }`를 돌려줍니다(`owner.keys`는 회선 이름별 세션 수, 경기는 처음 보낸 세션의 칸). `lines`는 접속 키(회선) 수, `returningLines`는 서로 다른 날 2일 이상 온 회선 수이고, 응답의 `note`대로 사람 수가 아닙니다(휴대폰 데이터는 한 사람이 여러 회선, 집·학교 NAT은 여러 사람이 한 회선).
 
-`GET /daily?game=<game>[&build=<build>][&days=30]`(1~90일, 오늘 포함)은 날짜(KST, 세션의 첫 배치를 받은 날)·칸마다 `{ day, audience, sessions, lines, newLines, avgPlayMs, medianPlayMs, avgWallMs, matches }`를, 기간 합계로 칸마다 `countries`(국가별 세션 수), `contexts`(`locale`·`viewport`·`touch`별 세션 수, 세션 첫 배치의 `session_start`에서 읽고 없으면 `unknown`), `events`(`category:target:action`별 횟수), `completion`(mode별 `{ starts, matches, rate }`, 시작 이벤트가 없으면 `rate`는 `null`)을 돌려줍니다. `newLines`는 그 회선을 이 게임에서 처음 본 날로 셉니다. `GET /whoami`는 요청 회선의 `{ ipKey, country, city, asn, asOrg, owner }`입니다. 실제 유저 지표는 `users`만 봅니다. 응답은 `Access-Control-Allow-Origin: *`이며 클라이언트는 preflight가 없는 `text/plain` 요청을 씁니다.
+`GET /daily?game=<game>[&build=<build>][&days=30]`(1~90일, 오늘 포함)은 날짜(KST, 세션의 첫 배치를 받은 날)·칸마다 `{ day, audience, sessions, lines, newLines, avgPlayMs, medianPlayMs, avgWallMs, matches }`를, 기간 합계로 칸마다 `countries`(국가별 세션 수), `contexts`(`locale`·`viewport`·`touch`별 세션 수, 세션 첫 배치의 `session_start`에서 읽고 없으면 `unknown`), `events`(`category:target:action`별 횟수), `completion`(mode별 `{ starts, matches, rate }`, 시작 이벤트가 없으면 `rate`는 `null`)을 돌려줍니다. `newLines`는 그 회선을 이 게임에서 처음 본 날로 셉니다. `GET /whoami`는 요청 회선의 `{ ipKey, country, city, asn, asOrg, owner }`입니다. 실제 유저 지표는 `users`만 봅니다. 수집은 공개 `text/plain` 요청이며 누구나 위조할 수 있습니다. `/stats`·`/daily`·`/whoami`는 서버 비밀값 `METRICS_READ_SECRET`에 일치하는 `Authorization: Bearer <키>` 헤더가 필요합니다. 설정이 없으면 조회는 503, 잘못되거나 누락된 키는 401로 거부합니다. CORS는 인증이 아니며 조회의 preflight에서 Authorization을 허용합니다.
 
 - 계약 밖 배치는 저장하지 않고 400(`schema-version`·`identity`·`counter`·`shape`·`empty`·`too-many`·`event`·`match`)이나 413(`too-large`)으로 거절합니다.
 - 쓰기 행: 세션의 첫 배치에 세션 1행, 배치마다 1행, 경기마다 1행. 무료 한도(쓰기 10만 행/일)를 아끼려고 인덱스는 두지 않습니다.
@@ -147,18 +147,19 @@ METRICS.recordMatch(ONLINE, { winner: 'a' });
 
 ### 운영
 
-| 항목            | 값                                                                          |
-| --------------- | --------------------------------------------------------------------------- |
-| 배포 주소       | `https://bloom-metrics.byh-playground.workers.dev`                          |
-| Cloudflare 계정 | byh020907@naver.com (account `deaa8cb49d25379de875c00c445503fd`, 무료 플랜) |
-| D1              | `bloom-metrics` (`0f0db294-6c6e-44f0-b39a-d6e297f48e0d`, APAC)              |
-| workers.dev     | 하위 도메인 `byh-playground`                                                |
-| 비밀값          | `IP_KEY_SECRET` (Worker secret, 값은 어디에도 적지 않음. 바꾸지 않음)       |
+| 항목            | 값                                                                                     |
+| --------------- | -------------------------------------------------------------------------------------- |
+| 배포 주소       | `https://bloom-metrics.byh-playground.workers.dev`                                     |
+| Cloudflare 계정 | byh020907@naver.com (account `deaa8cb49d25379de875c00c445503fd`, 무료 플랜)            |
+| D1              | `bloom-metrics` (`0f0db294-6c6e-44f0-b39a-d6e297f48e0d`, APAC)                         |
+| workers.dev     | 하위 도메인 `byh-playground`                                                           |
+| 비밀값          | `IP_KEY_SECRET` (회선 식별), `METRICS_READ_SECRET` (관리 조회). Worker secret으로 보관 |
 
 계정 가입·이메일 인증·`wrangler login` 승인은 사용자가 합니다. 로그인이 된 PC에서는 아래 명령을 에이전트가 실행합니다. 모든 명령은 `modules/metrics/server`에서 `-c wrangler.toml`로 실행합니다.
 
 - 서버 코드·protocol.js를 바꾼 PR: 머지 전에 `npx wrangler deploy -c wrangler.toml`. 새 필드를 쓰는 게임 빌드보다 서버가 먼저 나갑니다("버전 관리").
 - D1 표를 바꾼 PR: `npx wrangler d1 migrations create bloom-metrics <이름> -c wrangler.toml`로 다음 번호 파일을 만들고, 로컬 고정 시나리오를 통과한 뒤 `npx wrangler d1 migrations apply bloom-metrics --remote -c wrangler.toml`. 남은 파일은 `npx wrangler d1 migrations list bloom-metrics --remote -c wrangler.toml`로 봅니다. `DROP`·`DELETE`가 든 파일은 사용자 확인 뒤에만 적용합니다.
+- 조회 인증 배포 전 `npx wrangler secret put METRICS_READ_SECRET -c wrangler.toml`로 별도의 충분히 긴 무작위 값을 안전하게 설정합니다. 사용자에게 전달하지 않는다면 브라우저에서 조회할 수 없습니다. 조회 키는 공유 주소, 게임 코드, 로그에 넣지 않으며 키 유출 시 교체합니다. 예제 조회 키는 운영 서버 또는 HTTP 로컬 서버에만 전송하며 서버 주소를 바꾸면 입력한 키를 지웁니다.
 - 비밀값은 처음 한 번만 `npx wrangler secret put IP_KEY_SECRET -c wrangler.toml`(표준 입력으로 임의 값)로 넣었습니다. 다시 넣으면 접속 키가 모두 바뀝니다.
 - 원본 확인: `npx wrangler d1 execute bloom-metrics --remote -c wrangler.toml --json --command "SELECT game, COUNT(*) AS sessions FROM sessions GROUP BY game"`. 사용량은 Cloudflare 대시보드의 Workers·D1 화면에서 봅니다.
 - 배포 확인은 `gamekit-deploy-check` 같은 검사 전용 game 이름으로 보내고 확인한 뒤 그 행을 지웁니다. 게임 이름으로 시험 데이터를 보내지 않습니다.
@@ -166,12 +167,14 @@ METRICS.recordMatch(ONLINE, { winner: 'a' });
 ### 로컬 실행
 
     npx wrangler d1 migrations apply bloom-metrics --local -c modules/metrics/server/wrangler.toml
-    npx wrangler dev -c modules/metrics/server/wrangler.toml --var IP_KEY_SECRET:local
+    npx wrangler dev -c modules/metrics/server/wrangler.toml --var IP_KEY_SECRET:local --var METRICS_READ_SECRET:local-read-secret
 
 `http://127.0.0.1:8787`에서 실제 Workers 런타임(workerd)과 로컬 D1(SQLite)로 돕니다. 로컬에서는 요청의 `CF-Connecting-IP` 헤더가 그대로 들어가 다른 회선을 흉내 낼 수 있습니다(운영은 Cloudflare가 덮어씀). Windows에서 `--persist-to`를 쓸 때는 짧은 경로를 줍니다(D1 파일 경로가 길면 내부 오류가 납니다).
 
 ## 범위
 
-대시보드·퍼널 화면, 날짜별 재방문(코호트) 표, 경기 기록 재계산 도구, 오프라인 보관(localStorage), 서버 인증·속도 제한은 아직 없습니다. 실제로 필요한 게임을 붙일 때 추가합니다.
+대시보드·퍼널 화면, 날짜별 재방문(코호트) 표, 경기 기록 재계산 도구, 오프라인 보관(localStorage)은 아직 없습니다. 실제로 필요한 게임을 붙일 때 추가합니다.
 
 [고정 시나리오](./tests/metrics.e2e.mjs)(`npm test` core 목록)는 운영과 같은 migrations를 로컬 D1에 적용해 기록을 확인하고 `wrangler dev`를 띄운 뒤 bm 예제 '지표' 탭을 데스크톱(마우스)과 터치 에뮬레이션에서 누릅니다: 잘못된 배치 400·413과 CORS → 세션 시작·랠리 3번·경기 끝 → 서버 집계 → 탭 숨김(에뮬레이션: headless Chromium은 숨김을 바꾸지 못해 `visibilityState`만 바꿈) 중 플레이 시간 정지와 beacon → 실제 페이지 이동의 `session_end` beacon → "내 접속 키 보기" → D1 행을 직접 읽어 플레이 시간·경기 기록·접속 키 확인 → 다른 회선의 itch.io 배치만 `users` → rollback `Session` 두 참가자의 같은 matchId가 한 행 → 저장된 replay로 같은 hash 재계산 → 접속 키를 `owners`에 넣으면 지난 세션·경기가 `owner`로 소급. IPv6 같은 /64 한 키도 봅니다. 실기기·실제 탭 전환·배포된 Cloudflare는 확인하지 않습니다.
+
+공개 `/batch`는 Cloudflare 연결 IP 기준 위치별 약 1,000회/60초로 제한합니다. 제한 시 429이며 클라이언트는 배치를 재시도합니다. 동일 NAT의 사용자가 한 한도를 공유하고, 여러 Cloudflare 위치의 횟수는 합산되지 않으며 근사치이므로 전역 한도·위조 방지가 아닙니다. 제한 바인딩이 없으면 503, 접속 IP가 없으면 400으로 수집을 중단합니다. 운영 배포 전 namespace 충돌과 실제 공유망 영향을 확인합니다.
