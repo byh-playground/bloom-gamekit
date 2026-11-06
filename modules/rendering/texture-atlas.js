@@ -1,3 +1,58 @@
+// Shared by live allocation and the CPU-only startup planner so their packing order cannot drift.
+function placeOnShelves(layers, width, height, paddedWidth, paddedHeight) {
+    for (let layer = 0; layer < layers.length; layer++) {
+        const STATE = layers[layer];
+        for (const SHELF of STATE.shelves) {
+            if (SHELF.height >= paddedHeight && SHELF.x + paddedWidth <= width) {
+                const X = SHELF.x;
+                SHELF.x += paddedWidth;
+                return { layer, x: X, y: SHELF.y };
+            }
+        }
+        if (paddedWidth <= width && STATE.usedHeight + paddedHeight <= height) {
+            const SHELF = { y: STATE.usedHeight, height: paddedHeight, x: paddedWidth };
+            STATE.shelves.push(SHELF);
+            STATE.usedHeight += paddedHeight;
+            return { layer, x: 0, y: SHELF.y };
+        }
+    }
+    return null;
+}
+
+/** Plans the minimum initial layers for regions allocated in the given order, without creating a GPU texture. */
+export function estimateTextureAtlasLayers(regions, { width = 2048, height = 1024, gutter = 1 } = {}) {
+    if (!Array.isArray(regions)) {
+        throw new TypeError('regions must be an array');
+    }
+    if (!Number.isSafeInteger(width) || width < 1 || !Number.isSafeInteger(height) || height < 1) {
+        throw new RangeError('Atlas dimensions must be positive integers');
+    }
+    if (!Number.isSafeInteger(gutter) || gutter < 0) {
+        throw new RangeError('gutter must be a non-negative integer');
+    }
+    const LAYERS = [{ shelves: [], usedHeight: 0 }];
+    for (const REGION of regions) {
+        if (
+            !Number.isSafeInteger(REGION?.width) ||
+            REGION.width < 1 ||
+            !Number.isSafeInteger(REGION?.height) ||
+            REGION.height < 1
+        ) {
+            throw new RangeError('Region size must be positive integers');
+        }
+        const PW = REGION.width + gutter * 2,
+            PH = REGION.height + gutter * 2;
+        if (PW > width || PH > height) {
+            throw new RangeError('Region does not fit in a texture atlas layer');
+        }
+        if (!placeOnShelves(LAYERS, width, height, PW, PH)) {
+            LAYERS.push({ shelves: [], usedHeight: 0 });
+            placeOnShelves(LAYERS, width, height, PW, PH);
+        }
+    }
+    return LAYERS.length;
+}
+
 /**
  * Packs many small images into the layers of one TEXTURE_2D_ARRAY, so every textured draw samples the same
  * sampler and never breaks a batch on texture identity. Each allocation reserves a `gutter` ring around its
@@ -42,21 +97,9 @@ export class TextureAtlasArray {
         if (REUSED) {
             return this._region(REUSED.layer, REUSED.x, REUSED.y, width, height, filter);
         }
-        for (let layer = 0; layer < this.layerShelves.length; layer++) {
-            const STATE = this.layerShelves[layer];
-            for (const SHELF of STATE.shelves) {
-                if (SHELF.height >= PH && SHELF.x + PW <= this.width) {
-                    const X = SHELF.x;
-                    SHELF.x += PW;
-                    return this._region(layer, X, SHELF.y, width, height, filter);
-                }
-            }
-            if (PW <= this.width && STATE.usedHeight + PH <= this.height) {
-                const SHELF = { y: STATE.usedHeight, height: PH, x: PW };
-                STATE.shelves.push(SHELF);
-                STATE.usedHeight += PH;
-                return this._region(layer, 0, SHELF.y, width, height, filter);
-            }
+        const PLACEMENT = placeOnShelves(this.layerShelves, this.width, this.height, PW, PH);
+        if (PLACEMENT) {
+            return this._region(PLACEMENT.layer, PLACEMENT.x, PLACEMENT.y, width, height, filter);
         }
         throw new RangeError('Texture atlas array is full');
     }

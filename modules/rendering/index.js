@@ -8,5 +8,5 @@ export { createSpriteAnimation } from './sprite-animation.js';
 export { compilePoseChannels } from './pose-channels.js';
 export { buildYarnSurfaceGeometry, buildYarnSurfaceMesh } from './yarn-geometry.js';
 export { GlyphAtlas } from './glyph-atlas.js';
-export { TextureAtlasArray } from './texture-atlas.js';
+export { TextureAtlasArray, estimateTextureAtlasLayers } from './texture-atlas.js';
 export { FontAssetLoader } from './font-assets.js';
