@@ -2850,6 +2850,7 @@ var PoseRenderer = class {
 };
 
 // modules/rendering/vector-renderer.js
+var VECTOR_RENDERER_ATLAS_REGIONS = Object.freeze([Object.freeze({ width: 1, height: 1 })]);
 var IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
 var DEPTH_FUNCTIONS = /* @__PURE__ */ new Set(["never", "less", "equal", "lequal", "greater", "notequal", "gequal", "always"]);
 var VERTEX_BYTES = VECTOR_VERTEX_FLOATS * 4;
@@ -3156,10 +3157,13 @@ var VectorRenderer = class {
       capacityBytes: 0
     });
     this.atlas = device.textureAtlas;
-    this.whiteRegion = this.atlas.allocate(1, 1);
+    this.whiteRegion = this.atlas.allocate(
+      VECTOR_RENDERER_ATLAS_REGIONS[0].width,
+      VECTOR_RENDERER_ATLAS_REGIONS[0].height
+    );
     this.atlas.upload(
       this.whiteRegion,
-      { width: 1, height: 1, data: new Uint8Array([255, 255, 255, 255]) },
+      { ...VECTOR_RENDERER_ATLAS_REGIONS[0], data: new Uint8Array([255, 255, 255, 255]) },
       { premultiplied: true, extendEdges: true }
     );
     this.vertices = new Float32Array(initialVertices * VECTOR_VERTEX_FLOATS);
@@ -11368,6 +11372,7 @@ export {
   MeshRenderer,
   PrimitivePainter,
   TextureAtlasArray,
+  VECTOR_RENDERER_ATLAS_REGIONS,
   VectorContext,
   VectorRenderer,
   WebGLDevice,
