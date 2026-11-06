@@ -1890,6 +1890,49 @@
     pointClear(x, y, r, ignoreId = null) {
       return this.segmentClear(x, y, x, y, r, ignoreId);
     }
+    /**
+     * Test two concentric radii in one traversal. Returns 0 if the inner radius
+     * is blocked, 1 if only the inner radius is clear, and 2 if both are clear.
+     * Each result has exactly the same boundary and circle margin as pointClear.
+     */
+    pointClearanceBand(x, y, innerRadius, outerRadius, ignoreId = null) {
+      if (!Number.isFinite(innerRadius) || !Number.isFinite(outerRadius) || innerRadius < 0 || outerRadius < innerRadius) {
+        throw new RangeError("ObstacleField radii must be finite, non-negative and ordered.");
+      }
+      if (x < innerRadius || y < innerRadius || x > this.width - innerRadius || y > this.height - innerRadius) {
+        return 0;
+      }
+      let outerClear = !(x < outerRadius || y < outerRadius || x > this.width - outerRadius || y > this.height - outerRadius);
+      const INNER = contactThreshold(innerRadius, this.quantum), OUTER = contactThreshold(outerRadius, this.quantum);
+      for (const P of this.polygons.query(x, y, x, y, outerRadius)) {
+        if (pointInSimplePolygon(x, y, P.points)) {
+          return 0;
+        }
+        for (let i = 0; i < P.points.length; i++) {
+          const A = P.points[i], B = P.points[(i + 1) % P.points.length];
+          const DISTANCE = pointSegmentDistance(x, y, A.x, A.y, B.x, B.y);
+          if (DISTANCE < INNER) {
+            return 0;
+          }
+          if (DISTANCE < OUTER) {
+            outerClear = false;
+          }
+        }
+      }
+      for (const C of this.obstacles(x, y, x, y, outerRadius + 0.25, ignoreId)) {
+        if (C.id === ignoreId) {
+          continue;
+        }
+        const DISTANCE = Math.hypot(x - C.x, y - C.y);
+        if (DISTANCE < innerRadius + C.r + 0.25 - 1e-3) {
+          return 0;
+        }
+        if (DISTANCE < outerRadius + C.r + 0.25 - 1e-3) {
+          outerClear = false;
+        }
+      }
+      return outerClear ? 2 : 1;
+    }
     /** {@link ObstacleField#segmentClear}를 `departure`로 부릅니다. */
     departureClear(x, y, tx, ty, r, ignoreId = null) {
       return this.segmentClear(x, y, tx, ty, r, ignoreId, true);
@@ -2719,6 +2762,49 @@
     pointClear(x, y, r, ignoreId = null) {
       return this.segmentClear(x, y, x, y, r, ignoreId);
     }
+    /**
+     * Test two concentric radii in one traversal. Returns 0 if the inner radius
+     * is blocked, 1 if only the inner radius is clear, and 2 if both are clear.
+     * Each result has exactly the same boundary and circle margin as pointClear.
+     */
+    pointClearanceBand(x, y, innerRadius, outerRadius, ignoreId = null) {
+      if (!Number.isFinite(innerRadius) || !Number.isFinite(outerRadius) || innerRadius < 0 || outerRadius < innerRadius) {
+        throw new RangeError("ObstacleField radii must be finite, non-negative and ordered.");
+      }
+      if (x < innerRadius || y < innerRadius || x > this.width - innerRadius || y > this.height - innerRadius) {
+        return 0;
+      }
+      let outerClear = !(x < outerRadius || y < outerRadius || x > this.width - outerRadius || y > this.height - outerRadius);
+      const INNER = contactThreshold(innerRadius, this.quantum), OUTER = contactThreshold(outerRadius, this.quantum);
+      for (const P of this.polygons.query(x, y, x, y, outerRadius)) {
+        if (pointInSimplePolygon(x, y, P.points)) {
+          return 0;
+        }
+        for (let i = 0; i < P.points.length; i++) {
+          const A = P.points[i], B = P.points[(i + 1) % P.points.length];
+          const DISTANCE = pointSegmentDistance(x, y, A.x, A.y, B.x, B.y);
+          if (DISTANCE < INNER) {
+            return 0;
+          }
+          if (DISTANCE < OUTER) {
+            outerClear = false;
+          }
+        }
+      }
+      for (const C of this.obstacles(x, y, x, y, outerRadius + 0.25, ignoreId)) {
+        if (C.id === ignoreId) {
+          continue;
+        }
+        const DISTANCE = Math.hypot(x - C.x, y - C.y);
+        if (DISTANCE < innerRadius + C.r + 0.25 - 1e-3) {
+          return 0;
+        }
+        if (DISTANCE < outerRadius + C.r + 0.25 - 1e-3) {
+          outerClear = false;
+        }
+      }
+      return outerClear ? 2 : 1;
+    }
     /** {@link ObstacleField#segmentClear}를 `departure`로 부릅니다. */
     departureClear(x, y, tx, ty, r, ignoreId = null) {
       return this.segmentClear(x, y, tx, ty, r, ignoreId, true);
@@ -2753,7 +2839,8 @@
   var UNKNOWN = -1;
   var BLOCKED = 0;
   var OPEN = 1;
-  var OPTIONS = ["width", "height", "cellSize", "passable", "originX", "originY"];
+  var OPTIONS = ["width", "height", "cellSize", "passable", "passableEdge", "originX", "originY"];
+  var REVERSE_DIRECTION = Uint8Array.of(2, 3, 0, 1, 6, 7, 4, 5);
   function positiveNumber(value, name) {
     if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
       throw new RangeError(`PathGrid ${name} must be a positive finite number.`);
@@ -2781,6 +2868,9 @@
     #passable;
     #open;
     #version;
+    #passableEdge;
+    #edgeKnown;
+    #edgeOpen;
     constructor(options) {
       if (options === null || typeof options !== "object") {
         throw new TypeError("PathGrid options must be an object.");
@@ -2793,6 +2883,9 @@
       if (typeof options.passable !== "function") {
         throw new TypeError("PathGrid passable must be a function.");
       }
+      if (options.passableEdge != null && typeof options.passableEdge !== "function") {
+        throw new TypeError("PathGrid passableEdge must be a function.");
+      }
       this.cellSize = positiveNumber(options.cellSize, "cellSize");
       this.originX = finiteNumber(options.originX ?? 0, "originX");
       this.originY = finiteNumber(options.originY ?? 0, "originY");
@@ -2804,6 +2897,9 @@
       }
       this.#passable = options.passable;
       this.#open = new Int8Array(this.size).fill(UNKNOWN);
+      this.#passableEdge = options.passableEdge ?? null;
+      this.#edgeKnown = this.#passableEdge ? new Uint8Array(this.size) : null;
+      this.#edgeOpen = this.#passableEdge ? new Uint8Array(this.size) : null;
     }
     /** 좌표가 든 칸의 번호. 격자 밖은 가장자리 칸으로 자릅니다. 좌표는 NaN이 아니어야 합니다. */
     cellAt(x, y) {
@@ -2848,11 +2944,36 @@
       if (DX !== 0 && DY !== 0 && (!this.isOpen(row * this.cols + NX) || !this.isOpen(NY * this.cols + col))) {
         return -1;
       }
+      if (this.#passableEdge) {
+        const CURRENT = row * this.cols + col, BIT = 1 << direction;
+        if (!(this.#edgeKnown[CURRENT] & BIT)) {
+          const REVERSE = 1 << REVERSE_DIRECTION[direction];
+          const OPEN2 = this.#passableEdge(
+            this.centerX(CURRENT),
+            this.centerY(CURRENT),
+            this.centerX(NEXT),
+            this.centerY(NEXT),
+            CURRENT,
+            NEXT
+          );
+          this.#edgeKnown[CURRENT] |= BIT;
+          this.#edgeKnown[NEXT] |= REVERSE;
+          if (OPEN2) {
+            this.#edgeOpen[CURRENT] |= BIT;
+            this.#edgeOpen[NEXT] |= REVERSE;
+          }
+        }
+        if (!(this.#edgeOpen[CURRENT] & BIT)) {
+          return -1;
+        }
+      }
       return NEXT;
     }
     /** 통과 판정의 기억을 비우고 `revision`을 올립니다. 장애물이 바뀐 뒤에 부릅니다. */
     invalidate() {
       this.#open.fill(UNKNOWN);
+      this.#edgeKnown?.fill(0);
+      this.#edgeOpen?.fill(0);
       this.revision++;
     }
     /** 게임이 가진 장애물 배치의 세대 번호를 알립니다. 지난번과 다르면 `invalidate()`하고 true를 돌려줍니다. */
