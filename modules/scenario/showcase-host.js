@@ -1,4 +1,5 @@
 import { createScenario } from './scenario.js';
+import { mountScenarioFrame } from './frame-lifecycle.js';
 
 // Presentation host only. The consumer owns its real gameplay simulation, commands and scene data.
 // An isolated same-origin frame prevents showcase commands from entering the playable session.
@@ -253,6 +254,7 @@ export function installShowcase({
     LAUNCH_BUTTON.type = 'button';
     LAUNCH_BUTTON.setAttribute('aria-label', T.launchLabel(title));
     let frame = null,
+        frameScope = null,
         runner = null,
         focus = null,
         previousUrl = null;
@@ -277,7 +279,8 @@ export function installShowcase({
             }
         }
         held = new Set();
-        frame?.remove();
+        frameScope?.dispose();
+        frameScope = null;
         frame = null;
         VIEWPORT.replaceChildren();
     }
@@ -309,47 +312,46 @@ export function installShowcase({
         // (the GameKit i18n request parameter).
         INTRO_URL.searchParams.set('lang', locale);
         INTRO_URL.hash = '';
-        const NEXT = document.createElement('iframe');
-        NEXT.title = T.frame(title);
-        NEXT.tabIndex = -1;
-        NEXT.allow = 'autoplay';
-        NEXT.src = INTRO_URL.href;
-        frame = NEXT;
-        VIEWPORT.replaceChildren(frame);
-        await new Promise((resolve, reject) => {
-            NEXT.addEventListener('load', resolve, { once: true });
-            NEXT.addEventListener('error', () => reject(new Error(T.loadFailed)), { once: true });
+        const NEXT_SCOPE = mountScenarioFrame({
+            container: VIEWPORT,
+            src: INTRO_URL.href,
+            timeoutMs: readyTimeoutMs,
+            timeoutAfterLoad: true,
+            loadMessage: T.loadFailed,
+            timeoutMessage: T.readyTimeout,
+            configure(next) {
+                next.title = T.frame(title);
+                next.tabIndex = -1;
+                next.allow = 'autoplay';
+            },
+            async prepare({ frame: next, loaded, signal }) {
+                await loaded;
+                while (!signal.aborted) {
+                    try {
+                        if (ready(next.contentWindow)) {
+                            return;
+                        }
+                    } catch {
+                        /* Optional readiness probes may throw before the game loads. */
+                    }
+                    await new Promise((resolve) => {
+                        const FINISH = () => {
+                            cancelAnimationFrame(ID);
+                            signal.removeEventListener('abort', FINISH);
+                            resolve();
+                        };
+                        const ID = requestAnimationFrame(FINISH);
+                        signal.addEventListener('abort', FINISH, { once: true });
+                    });
+                }
+            },
         });
-        if (!IS_OPEN() || NEXT !== frame) {
+        frameScope = NEXT_SCOPE;
+        frame = NEXT_SCOPE.frame;
+        if (!(await NEXT_SCOPE.ready) || !IS_OPEN() || NEXT_SCOPE !== frameScope) {
             return;
         }
         const WIN = CONTENT_WINDOW();
-        const LOADED_AT = performance.now();
-        await new Promise((resolve, reject) => {
-            const CHECK = () => {
-                if (!IS_OPEN() || NEXT !== frame) {
-                    resolve();
-                    return;
-                }
-                try {
-                    if (ready(WIN)) {
-                        resolve();
-                        return;
-                    }
-                } catch {
-                    /* Optional readiness probes may throw before the game loads. */
-                }
-                if (performance.now() - LOADED_AT > readyTimeoutMs) {
-                    reject(new Error(T.readyTimeout));
-                    return;
-                }
-                requestAnimationFrame(CHECK);
-            };
-            CHECK();
-        });
-        if (!IS_OPEN() || NEXT !== frame) {
-            return;
-        }
         const QUEUE = [];
         runner = createScenario({
             definition: {
