@@ -7,12 +7,13 @@ import {
     isName,
     isRecord,
 } from '../protocol.js';
+import { checkBatchRate } from './rate-limit.js';
 
-// 응답에 쿠키·인증이 없으므로 어느 게임 페이지(itch.io 등)에서든 받습니다.
+// 수집은 공개이며 조회는 별도 인증을 요구합니다.
 const CORS = Object.freeze({
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Access-Control-Max-Age': '86400',
 });
 const ENCODER = new TextEncoder();
@@ -52,8 +53,20 @@ const EVENT_NAME_SQL = `json_extract(e.value, '$.category') || ':' || json_extra
 function reply(status, body) {
     return new Response(JSON.stringify(body), {
         status,
-        headers: { ...CORS, 'Content-Type': 'application/json;charset=UTF-8' },
+        headers: { ...CORS, 'Content-Type': 'application/json;charset=UTF-8', 'Cache-Control': 'no-store' },
     });
+}
+
+// 비밀값은 서버에서만 보관합니다. 고정 길이 해시를 비교해 입력 길이에 따른 비교 분기를 피합니다.
+async function canRead(request, secret) {
+    const AUTH = request.headers.get('Authorization') ?? '';
+    if (!secret || !AUTH.startsWith('Bearer ')) {
+        return false;
+    }
+    const [EXPECTED, ACTUAL] = await Promise.all(
+        [secret, AUTH.slice(7)].map((value) => crypto.subtle.digest('SHA-256', ENCODER.encode(value))),
+    );
+    return crypto.subtle.timingSafeEqual(EXPECTED, ACTUAL);
 }
 
 function isCount(value) {
@@ -430,7 +443,25 @@ export default {
             return reply(500, { error: 'ip-key-secret' });
         }
         if (URL_VALUE.pathname === '/batch' && request.method === 'POST') {
+            const RATE = await checkBatchRate(request, env);
+            if (RATE === 'limited') {
+                return new Response(JSON.stringify({ error: RATE }), {
+                    status: 429,
+                    headers: { ...CORS, 'Content-Type': 'application/json;charset=UTF-8', 'Retry-After': '60' },
+                });
+            }
+            if (RATE) {
+                return reply(RATE === 'missing-ip' ? 400 : 503, { error: RATE });
+            }
             return receiveBatch(request, env);
+        }
+        if (request.method === 'GET' && ['/stats', '/daily', '/whoami'].includes(URL_VALUE.pathname)) {
+            if (!env.METRICS_READ_SECRET) {
+                return reply(503, { error: 'read-secret' });
+            }
+            if (!(await canRead(request, env.METRICS_READ_SECRET))) {
+                return reply(401, { error: 'unauthorized' });
+            }
         }
         if (URL_VALUE.pathname === '/stats' && request.method === 'GET') {
             return readStats(URL_VALUE, env);
