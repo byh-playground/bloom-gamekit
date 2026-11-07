@@ -7,6 +7,17 @@ import assert from 'node:assert/strict';
 import { navigationFlow } from '../../navigation/tests/browser.mjs';
 const SERVER = createServer(async (req, res) => {
     try {
+        const PATH = new URL(req.url, 'http://localhost').pathname;
+        if (PATH === '/scenario-frame-slow') {
+            res.setHeader('Content-Type', 'text/html');
+            setTimeout(() => res.end('<p>ready</p>'), 300);
+            return;
+        }
+        if (PATH === '/scenario-frame-ready') {
+            res.setHeader('Content-Type', 'text/html');
+            res.end('<script>parent.postMessage("scenario-frame-ready",location.origin)</script>');
+            return;
+        }
         const P = resolve('.', '.' + new URL(req.url, 'http://localhost').pathname);
         res.setHeader('Content-Type', extname(P) === '.html' ? 'text/html' : 'text/javascript');
         res.end(await readFile(P));
@@ -58,6 +69,146 @@ try {
     assert.equal(STOPPED.created, STOPPED.disposed);
     assert.equal(STOPPED.state, 'stopped');
     assert.match(STOPPED.backend, /WebGL/);
+    // An embedded game reports readiness by message, and a closed player cancels preparation.
+    const EMBEDDED = await PAGE.evaluate(async () => {
+        const { mountScenarioFrame: MOUNT, createScenario: CREATE } = await import('/modules/scenario/index.js');
+        const HOST = document.createElement('div');
+        document.body.append(HOST);
+        const FRAME = MOUNT({
+            container: HOST,
+            src: '/scenario-frame-ready',
+            prepare({ frame, signal }) {
+                return new Promise((resolve) => {
+                    window.addEventListener(
+                        'message',
+                        (event) => {
+                            if (
+                                event.origin === location.origin &&
+                                event.source === frame.contentWindow &&
+                                event.data === 'scenario-frame-ready'
+                            ) {
+                                resolve();
+                            }
+                        },
+                        { signal },
+                    );
+                });
+            },
+        });
+        const READY = await FRAME.ready;
+        FRAME.dispose();
+        let loadedAfterReady;
+        const EARLY = MOUNT({
+            container: HOST,
+            src: '/scenario-frame-slow',
+            prepare({ loaded }) {
+                loadedAfterReady = loaded;
+            },
+        });
+        const EARLY_READY = await EARLY.ready;
+        const LATE_LOAD = await loadedAfterReady;
+        EARLY.dispose();
+        let cancelledLoad;
+        const EARLY_CANCEL = MOUNT({
+            container: HOST,
+            src: '/scenario-frame-slow',
+            prepare({ loaded }) {
+                cancelledLoad = loaded;
+            },
+        });
+        await EARLY_CANCEL.ready;
+        EARLY_CANCEL.dispose();
+        const LOAD_CANCELLED = await cancelledLoad;
+        const POST_LOAD = MOUNT({
+            container: HOST,
+            src: '/scenario-frame-slow',
+            timeoutMs: 200,
+            timeoutAfterLoad: true,
+            async prepare({ loaded }) {
+                await loaded;
+                await new Promise((resolve) => setTimeout(resolve, 30));
+            },
+        });
+        const POST_LOAD_READY = await POST_LOAD.ready;
+        POST_LOAD.dispose();
+        const CANCEL = MOUNT({ container: HOST, src: '/scenario-frame-ready', prepare: () => new Promise(() => {}) });
+        CANCEL.dispose();
+        const CANCELLED = await CANCEL.ready;
+        let timeout = false;
+        const STUCK = MOUNT({
+            container: HOST,
+            src: '/scenario-frame-ready',
+            timeoutMs: 50,
+            prepare: () => new Promise(() => {}),
+        });
+        try {
+            await STUCK.ready;
+        } catch (error) {
+            timeout = error.message === 'scenario frame readiness timed out';
+        }
+        let allow = false,
+            steps = 0,
+            renders = 0;
+        const SCENARIO = CREATE({
+            definition: { tickRate: 100, endTick: 100 },
+            canAdvance: () => allow,
+            createRun: () => ({
+                step() {
+                    steps++;
+                },
+                render() {
+                    renders++;
+                },
+                dispose() {},
+            }),
+        });
+        SCENARIO.play({ automatic: false });
+        const HELD = SCENARIO.step();
+        allow = true;
+        const ADVANCED = SCENARIO.step();
+        allow = false;
+        SCENARIO.pulse(0);
+        SCENARIO.pulse(100);
+        const TICK_WHILE_HELD = SCENARIO.snapshot().tick;
+        allow = true;
+        SCENARIO.pulse(110);
+        const TICK_AFTER_RESUME = SCENARIO.snapshot().tick;
+        SCENARIO.dispose();
+        const LEFT = HOST.querySelectorAll('iframe').length;
+        HOST.remove();
+        return {
+            ready: READY,
+            earlyReady: EARLY_READY,
+            lateLoad: LATE_LOAD,
+            loadCancelled: LOAD_CANCELLED,
+            postLoadReady: POST_LOAD_READY,
+            cancelled: CANCELLED,
+            timeout,
+            held: HELD.status,
+            advanced: ADVANCED.status,
+            tickWhileHeld: TICK_WHILE_HELD,
+            tickAfterResume: TICK_AFTER_RESUME,
+            steps,
+            renders,
+            left: LEFT,
+        };
+    });
+    assert.deepEqual(EMBEDDED, {
+        ready: true,
+        earlyReady: true,
+        lateLoad: true,
+        loadCancelled: false,
+        postLoadReady: true,
+        cancelled: false,
+        timeout: true,
+        held: 'held',
+        advanced: 'advanced',
+        tickWhileHeld: 1,
+        tickAfterResume: 2,
+        steps: 2,
+        renders: 3,
+        left: 0,
+    });
     // Live introductions must fill the viewport, not a centered preview card.
     await PAGE.evaluate(async () => {
         const { installShowcase: INSTALL_SHOWCASE } = await import('/modules/scenario/index.js');

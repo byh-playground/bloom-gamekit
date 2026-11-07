@@ -1,8 +1,20 @@
 import { createLoop } from '../simloop/loop.js';
 
 /** Deterministic timeline/lifetime; the factory owns isolated simulation and rendering. */
-export function createScenario({ definition, createRun, requestFrame, cancelFrame, onEnd = () => {} } = {}) {
-    if (!definition || typeof createRun !== 'function' || typeof onEnd !== 'function') {
+export function createScenario({
+    definition,
+    createRun,
+    requestFrame,
+    cancelFrame,
+    canAdvance = () => true,
+    onEnd = () => {},
+} = {}) {
+    if (
+        !definition ||
+        typeof createRun !== 'function' ||
+        typeof onEnd !== 'function' ||
+        typeof canAdvance !== 'function'
+    ) {
         throw new TypeError('scenario definition/factory');
     }
     definition = structuredClone(definition);
@@ -144,6 +156,7 @@ export function createScenario({ definition, createRun, requestFrame, cancelFram
             advance,
         },
         getInput: () => EMPTY,
+        canAdvance,
         canObserveInput: () => false,
         render({ alpha }) {
             if (scope && state !== 'disposed') {
@@ -225,6 +238,9 @@ export function createScenario({ definition, createRun, requestFrame, cancelFram
                 throw new Error('pause automatic scheduling before manual stepping');
             }
             try {
+                if (state === 'playing' && !canAdvance()) {
+                    return { status: 'held', tick };
+                }
                 return advance();
             } catch (error) {
                 state = 'stopped';
