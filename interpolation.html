@@ -723,6 +723,7 @@
       this.time = 0;
       this.wall = 0;
       this.rate = 1;
+      this.terminalEnd = null;
     }
     sample(nowMs) {
       if (!Number.isFinite(this.latest)) {
@@ -731,9 +732,12 @@
       if (this.rate === 0) {
         return this.time;
       }
-      return Math.min(this.latest, this.time + (nowMs - this.wall) * this.rate);
+      return Math.min(this.terminalEnd ?? this.latest, this.time + (nowMs - this.wall) * this.rate);
     }
     prepare(timeMs, nowMs, newEpoch, snap) {
+      if (this.terminalEnd !== null && !newEpoch) {
+        throw new Error("terminal presentation requires a new revision before capture");
+      }
       let time = newEpoch ? snap ? timeMs : timeMs - this.delayMs : this.sample(nowMs);
       if (!newEpoch && this.rate > 0) {
         time = Math.max(time, timeMs - this.delayMs - this.stepMs);
@@ -744,6 +748,23 @@
       this.latest = plan.latest;
       this.time = plan.time;
       this.wall = plan.wall;
+      this.terminalEnd = null;
+    }
+    finish(tailMs, nowMs) {
+      if (!Number.isFinite(this.latest)) {
+        throw new Error("terminal presentation requires an authoritative snapshot");
+      }
+      if (this.terminalEnd !== null) {
+        return false;
+      }
+      const END = this.latest + tailMs, DISPLAYED = this.sample(nowMs);
+      if (!Number.isFinite(END)) {
+        throw new RangeError("terminal presentation clock overflow");
+      }
+      this.time = DISPLAYED;
+      this.wall = nowMs;
+      this.terminalEnd = END;
+      return true;
     }
     setRate(rate, nowMs) {
       const DISPLAYED = this.sample(nowMs);
@@ -799,6 +820,21 @@
     #displayTime(nowMs) {
       return this.#playhead ? this.#playhead.sample(nowMs) : nowMs - this.#delayMs - this.#origin;
     }
+    /** Finish authority and advance the same display clock through a finite effects tail. */
+    finish({ tailMs } = {}, nowMs) {
+      this.#checkClock(nowMs);
+      if (!this.#playhead) {
+        throw new Error("terminal presentation requires a bounded clock");
+      }
+      if (finite(tailMs, "tailMs") < 0) {
+        throw new RangeError("tailMs must be nonnegative");
+      }
+      const FINISHED = this.#playhead.finish(tailMs, nowMs);
+      if (FINISHED) {
+        this.#now = nowMs;
+      }
+      return FINISHED;
+    }
     #freezeView(nowMs) {
       const VIEW = /* @__PURE__ */ new Map();
       for (const [ID, TRACK] of this.#tracks) {
@@ -831,6 +867,15 @@
       }
       this.#now = nowMs;
       return this.#displayTime(nowMs);
+    }
+    /** True only when an explicitly requested finite terminal tail has elapsed. */
+    isTerminalComplete(nowMs) {
+      this.#checkClock(nowMs);
+      if (!this.#playhead) {
+        throw new Error("terminal presentation requires a bounded clock");
+      }
+      this.#now = nowMs;
+      return this.#playhead.terminalEnd !== null && this.#playhead.sample(nowMs) >= this.#playhead.terminalEnd;
     }
     /**
      * Accept one complete authoritative snapshot. Returns false for obsolete packets.
