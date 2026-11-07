@@ -182,6 +182,7 @@ var BoundedPlayhead = class {
     this.time = 0;
     this.wall = 0;
     this.rate = 1;
+    this.terminalEnd = null;
   }
   sample(nowMs) {
     if (!Number.isFinite(this.latest)) {
@@ -190,9 +191,12 @@ var BoundedPlayhead = class {
     if (this.rate === 0) {
       return this.time;
     }
-    return Math.min(this.latest, this.time + (nowMs - this.wall) * this.rate);
+    return Math.min(this.terminalEnd ?? this.latest, this.time + (nowMs - this.wall) * this.rate);
   }
   prepare(timeMs, nowMs, newEpoch, snap) {
+    if (this.terminalEnd !== null && !newEpoch) {
+      throw new Error("terminal presentation requires a new revision before capture");
+    }
     let time = newEpoch ? snap ? timeMs : timeMs - this.delayMs : this.sample(nowMs);
     if (!newEpoch && this.rate > 0) {
       time = Math.max(time, timeMs - this.delayMs - this.stepMs);
@@ -203,6 +207,23 @@ var BoundedPlayhead = class {
     this.latest = plan.latest;
     this.time = plan.time;
     this.wall = plan.wall;
+    this.terminalEnd = null;
+  }
+  finish(tailMs, nowMs) {
+    if (!Number.isFinite(this.latest)) {
+      throw new Error("terminal presentation requires an authoritative snapshot");
+    }
+    if (this.terminalEnd !== null) {
+      return false;
+    }
+    const END = this.latest + tailMs, DISPLAYED = this.sample(nowMs);
+    if (!Number.isFinite(END)) {
+      throw new RangeError("terminal presentation clock overflow");
+    }
+    this.time = DISPLAYED;
+    this.wall = nowMs;
+    this.terminalEnd = END;
+    return true;
   }
   setRate(rate, nowMs) {
     const DISPLAYED = this.sample(nowMs);
@@ -260,6 +281,21 @@ var InterpolationTimeline = class {
   #displayTime(nowMs) {
     return this.#playhead ? this.#playhead.sample(nowMs) : nowMs - this.#delayMs - this.#origin;
   }
+  /** Finish authority and advance the same display clock through a finite effects tail. */
+  finish({ tailMs } = {}, nowMs) {
+    this.#checkClock(nowMs);
+    if (!this.#playhead) {
+      throw new Error("terminal presentation requires a bounded clock");
+    }
+    if (finite(tailMs, "tailMs") < 0) {
+      throw new RangeError("tailMs must be nonnegative");
+    }
+    const FINISHED = this.#playhead.finish(tailMs, nowMs);
+    if (FINISHED) {
+      this.#now = nowMs;
+    }
+    return FINISHED;
+  }
   #freezeView(nowMs) {
     const VIEW = /* @__PURE__ */ new Map();
     for (const [ID, TRACK] of this.#tracks) {
@@ -292,6 +328,15 @@ var InterpolationTimeline = class {
     }
     this.#now = nowMs;
     return this.#displayTime(nowMs);
+  }
+  /** True only when an explicitly requested finite terminal tail has elapsed. */
+  isTerminalComplete(nowMs) {
+    this.#checkClock(nowMs);
+    if (!this.#playhead) {
+      throw new Error("terminal presentation requires a bounded clock");
+    }
+    this.#now = nowMs;
+    return this.#playhead.terminalEnd !== null && this.#playhead.sample(nowMs) >= this.#playhead.terminalEnd;
   }
   /**
    * Accept one complete authoritative snapshot. Returns false for obsolete packets.
@@ -1140,6 +1185,7 @@ var PresentationRuntime = class {
   #playhead;
   #playheadRevision = 0;
   #pausedView = null;
+  #pausedAuthorityView = null;
   #pausedAt = null;
   /** @param {{stepMs:number, delayMs?:number, clock?:'fixed'|'bounded', snapDistance?:number, extrapolation?:{fields:string[],maxMs:number}}} options */
   constructor({ stepMs, snapDistance, extrapolation, delayMs = 0, clock = "fixed" } = {}) {
@@ -1187,6 +1233,28 @@ var PresentationRuntime = class {
   #displayTime(nowMs) {
     return this.#playhead ? this.#playhead.sample(nowMs) : nowMs - this.#delayMs - this.#origin;
   }
+  /** Finish authority and advance the same display clock through a finite effects tail. */
+  finish({ tailMs } = {}, nowMs) {
+    this.#checkClock(nowMs);
+    if (!this.#playhead) {
+      throw new Error("terminal presentation requires a bounded clock");
+    }
+    if (finite(tailMs, "tailMs") < 0) {
+      throw new RangeError("tailMs must be nonnegative");
+    }
+    const FINISHED = this.#playhead.finish(tailMs, nowMs);
+    if (FINISHED) {
+      this.clearPreview();
+      if (this.#pausedAuthorityView) {
+        this.#pausedView = this.#pausedAuthorityView;
+      }
+      this.#pausedAuthorityView = null;
+      this.#playheadRevision++;
+      this.#frameSerial++;
+      this.#now = nowMs;
+    }
+    return FINISHED;
+  }
   /** Change the bounded display rate after accounting for the previous rate through nowMs. */
   setRate(rate, nowMs) {
     this.#checkClock(nowMs);
@@ -1194,7 +1262,9 @@ var PresentationRuntime = class {
       throw new RangeError("setRate requires a bounded clock and nonnegative rate");
     }
     if (rate === 0 && this.#playhead.rate !== 0) {
-      this.#pausedView = this.#freezeView(nowMs);
+      const AUTHORITY_VIEW = this.#freezeAuthorityView(nowMs), DISPLAY_VIEW = this.#freezeView(nowMs);
+      this.#pausedAuthorityView = AUTHORITY_VIEW;
+      this.#pausedView = DISPLAY_VIEW;
       this.#pausedAt = nowMs;
     } else if (rate > 0) {
       if (this.#pausedView && this.#pausedAt !== null) {
@@ -1206,12 +1276,29 @@ var PresentationRuntime = class {
         }
       }
       this.#pausedView = null;
+      this.#pausedAuthorityView = null;
       this.#pausedAt = null;
     }
     this.#playhead.setRate(rate, nowMs);
     this.#playheadRevision++;
     this.#frameSerial++;
     this.#now = nowMs;
+  }
+  #freezeAuthorityView(nowMs) {
+    if (!this.#preview.size || !this.#previewSelection.size) {
+      return null;
+    }
+    const PREVIEW = this.#preview, SELECTION = this.#previewSelection, SOURCES = this.#previewSources;
+    this.#preview = /* @__PURE__ */ new Map();
+    this.#previewSelection = /* @__PURE__ */ new Map();
+    this.#previewSources = /* @__PURE__ */ new WeakMap();
+    try {
+      return this.#freezeView(nowMs);
+    } finally {
+      this.#preview = PREVIEW;
+      this.#previewSelection = SELECTION;
+      this.#previewSources = SOURCES;
+    }
   }
   #freezeView(nowMs) {
     const FRAME = this.frame(nowMs), ITEMS = /* @__PURE__ */ new Map(), MODELS = /* @__PURE__ */ new WeakMap();
@@ -1233,6 +1320,9 @@ var PresentationRuntime = class {
   }
   /** Select game-owned local identities only; remote authoritative tracks remain unchanged. */
   selectPreview(identities) {
+    if (this.#playhead && this.#playhead.terminalEnd !== null) {
+      throw new Error("terminal presentation cannot start a local preview");
+    }
     if (!Array.isArray(identities)) {
       throw new TypeError("preview identities must be an array");
     }
@@ -1318,6 +1408,9 @@ var PresentationRuntime = class {
     const STARTED = performance.now();
     let bytes = 0;
     this.#checkClock(nowMs);
+    if (this.#playhead && this.#playhead.terminalEnd !== null) {
+      throw new Error("terminal presentation cannot capture a local preview");
+    }
     if (!packet || !Array.isArray(packet.entities)) {
       throw new TypeError("preview packet entities");
     }
@@ -1637,6 +1730,7 @@ var PresentationRuntime = class {
     this.#now = nowMs;
     if (this.#pausedView && CHANGED) {
       this.#pausedView = null;
+      this.#pausedAuthorityView = this.#freezeAuthorityView(nowMs);
       this.#pausedView = this.#freezeView(nowMs);
     }
     return true;
@@ -1820,7 +1914,7 @@ var PresentationRuntime = class {
   frame(nowMs) {
     this.#checkClock(nowMs);
     this.#now = nowMs;
-    const SERIAL = ++this.#frameSerial, CHECK = () => {
+    const SERIAL = ++this.#frameSerial, DISPLAY_TIME = this.#displayTime(nowMs), CHECK = () => {
       if (SERIAL !== this.#frameSerial) {
         throw new Error("Presentation frame expired");
       }
@@ -1828,7 +1922,8 @@ var PresentationRuntime = class {
     return Object.freeze({
       nowMs,
       revision: this.#revision,
-      timeMs: this.#displayTime(nowMs),
+      timeMs: DISPLAY_TIME,
+      terminalComplete: !!(this.#playhead && this.#playhead.terminalEnd !== null && DISPLAY_TIME >= this.#playhead.terminalEnd),
       sample: (id, generation) => {
         CHECK();
         return this.sample(id, generation, nowMs);
