@@ -173,6 +173,47 @@ function retarget(fields, old, target, generation, now, stepMs, snap, initial, r
   };
 }
 
+// modules/interpolation/playhead.js
+var BoundedPlayhead = class {
+  constructor(stepMs, delayMs) {
+    this.stepMs = stepMs;
+    this.delayMs = delayMs;
+    this.latest = -Infinity;
+    this.time = 0;
+    this.wall = 0;
+    this.rate = 1;
+  }
+  sample(nowMs) {
+    if (!Number.isFinite(this.latest)) {
+      return null;
+    }
+    if (this.rate === 0) {
+      return this.time;
+    }
+    return Math.min(this.latest, this.time + (nowMs - this.wall) * this.rate);
+  }
+  prepare(timeMs, nowMs, newEpoch, snap) {
+    let time = newEpoch ? snap ? timeMs : timeMs - this.delayMs : this.sample(nowMs);
+    if (!newEpoch && this.rate > 0) {
+      time = Math.max(time, timeMs - this.delayMs - this.stepMs);
+    }
+    return { latest: timeMs, time: Math.min(timeMs, time), wall: nowMs };
+  }
+  commit(plan) {
+    this.latest = plan.latest;
+    this.time = plan.time;
+    this.wall = plan.wall;
+  }
+  setRate(rate, nowMs) {
+    const DISPLAYED = this.sample(nowMs);
+    if (DISPLAYED !== null) {
+      this.time = rate > 0 ? Math.max(DISPLAYED, this.latest - this.delayMs - this.stepMs) : DISPLAYED;
+      this.wall = nowMs;
+    }
+    this.rate = rate;
+  }
+};
+
 // modules/interpolation/timeline.js
 var InterpolationTimeline = class {
   #fields;
@@ -185,8 +226,10 @@ var InterpolationTimeline = class {
   #revision = -1;
   #sequence = -1;
   #timeMs = -Infinity;
-  /** @param {{schema:import('./schema.js').Schema, stepMs:number,delayMs?:number}} options */
-  constructor({ schema, stepMs, delayMs = 0 }) {
+  #playhead;
+  #pausedView = null;
+  /** @param {{schema:import('./schema.js').Schema, stepMs:number,delayMs?:number,clock?:'fixed'|'bounded'}} options */
+  constructor({ schema, stepMs, delayMs = 0, clock = "fixed" }) {
     this.#fields = compileSchema(schema);
     this.#fieldIndices = new Map(this.#fields.map((field, index) => [field[0], index]));
     this.#stepMs = finite(stepMs, "stepMs");
@@ -197,6 +240,13 @@ var InterpolationTimeline = class {
     if (delayMs < 0 || delayMs > stepMs * 16) {
       throw new RangeError("delayMs must be between 0 and 16 steps");
     }
+    if (!["fixed", "bounded"].includes(clock)) {
+      throw new TypeError("unknown presentation clock policy");
+    }
+    if (clock === "bounded" && !delayMs) {
+      throw new TypeError("bounded clock requires a positive delayMs");
+    }
+    this.#playhead = clock === "bounded" ? new BoundedPlayhead(stepMs, delayMs) : null;
   }
   get size() {
     return this.#tracks.size;
@@ -206,6 +256,42 @@ var InterpolationTimeline = class {
     if (nowMs < this.#now) {
       throw new RangeError("presentation clock must not go backwards");
     }
+  }
+  #displayTime(nowMs) {
+    return this.#playhead ? this.#playhead.sample(nowMs) : nowMs - this.#delayMs - this.#origin;
+  }
+  #freezeView(nowMs) {
+    const VIEW = /* @__PURE__ */ new Map();
+    for (const [ID, TRACK] of this.#tracks) {
+      const VALUES = {};
+      if (this.sampleInto(ID, TRACK.generation, nowMs, VALUES)) {
+        VIEW.set(ID, { generation: TRACK.generation, values: VALUES });
+      }
+    }
+    return VIEW;
+  }
+  /** Change the bounded display rate after accounting for the previous rate through nowMs. */
+  setRate(rate, nowMs) {
+    this.#checkClock(nowMs);
+    if (!this.#playhead || finite(rate, "rate") < 0) {
+      throw new RangeError("setRate requires a bounded clock and nonnegative rate");
+    }
+    if (rate === 0 && this.#playhead.rate !== 0) {
+      this.#pausedView = this.#freezeView(nowMs);
+    } else if (rate > 0) {
+      this.#pausedView = null;
+    }
+    this.#playhead.setRate(rate, nowMs);
+    this.#now = nowMs;
+  }
+  /** Simulation time used by every sample at the supplied monotonic clock time. */
+  displayTime(nowMs) {
+    this.#checkClock(nowMs);
+    if (!this.#delayMs) {
+      throw new Error("displayTime requires delayed presentation");
+    }
+    this.#now = nowMs;
+    return this.#displayTime(nowMs);
   }
   /**
    * Accept one complete authoritative snapshot. Returns false for obsolete packets.
@@ -245,6 +331,10 @@ var InterpolationTimeline = class {
     }
     const NEXT = /* @__PURE__ */ new Map();
     const ORIGIN = CHANGED_REVISION ? nowMs - TIME_MS : this.#origin;
+    const PLAYHEAD_PLAN = this.#playhead?.prepare(TIME_MS, nowMs, CHANGED_REVISION, MODE !== "continuous");
+    if (PLAYHEAD_PLAN && (!Number.isFinite(ORIGIN) || !Number.isFinite(PLAYHEAD_PLAN.time))) {
+      throw new RangeError("bounded presentation clock overflow");
+    }
     for (const ENTITY of packet.entities) {
       if (!ENTITY || typeof ENTITY.id !== "string" || !ENTITY.id.length) {
         throw new TypeError("id must be a nonempty string");
@@ -300,16 +390,23 @@ var InterpolationTimeline = class {
       retainRemoved(NEXT, this.#tracks, {
         origin: ORIGIN,
         timeMs: TIME_MS,
-        nowMs,
+        nowMs: PLAYHEAD_PLAN ? ORIGIN + (this.#playhead.rate === 0 ? TIME_MS - this.#delayMs - this.#stepMs : PLAYHEAD_PLAN.time) + this.#delayMs : nowMs,
         delayMs: this.#delayMs
       });
     }
     this.#tracks = NEXT;
     this.#origin = ORIGIN;
+    if (PLAYHEAD_PLAN) {
+      this.#playhead.commit(PLAYHEAD_PLAN);
+    }
     this.#revision = REVISION;
     this.#sequence = SEQUENCE;
     this.#timeMs = TIME_MS;
     this.#now = nowMs;
+    if (this.#pausedView && CHANGED_REVISION) {
+      this.#pausedView = null;
+      this.#pausedView = this.#freezeView(nowMs);
+    }
     return true;
   }
   /**
@@ -324,12 +421,21 @@ var InterpolationTimeline = class {
     if (!out || typeof out !== "object") {
       throw new TypeError("out must be a writable object");
     }
+    if (this.#pausedView) {
+      const ITEM = this.#pausedView.get(id);
+      this.#now = nowMs;
+      if (!ITEM || ITEM.generation !== generation) {
+        return false;
+      }
+      Object.assign(out, ITEM.values);
+      return true;
+    }
     let track = this.#tracks.get(id);
     this.#now = nowMs;
     if (!track || track.generation !== generation) {
       return false;
     }
-    const SAMPLE_AT = nowMs - this.#delayMs;
+    const SAMPLE_AT = this.#playhead ? this.#origin + this.#displayTime(nowMs) : nowMs - this.#delayMs;
     if (this.#delayMs > 0) {
       track = intervalAt(track, SAMPLE_AT);
       if (!track) {
@@ -1031,10 +1137,21 @@ var PresentationRuntime = class {
   #delayMs;
   #origin = 0;
   #frameSerial = 0;
-  /** @param {{stepMs:number, delayMs?:number, snapDistance?:number, extrapolation?:{fields:string[],maxMs:number}}} options */
-  constructor({ stepMs, snapDistance, extrapolation, delayMs = 0 } = {}) {
+  #playhead;
+  #playheadRevision = 0;
+  #pausedView = null;
+  #pausedAt = null;
+  /** @param {{stepMs:number, delayMs?:number, clock?:'fixed'|'bounded', snapDistance?:number, extrapolation?:{fields:string[],maxMs:number}}} options */
+  constructor({ stepMs, snapDistance, extrapolation, delayMs = 0, clock = "fixed" } = {}) {
     this.#stepMs = finite(stepMs, "stepMs");
     this.#delayMs = finite(delayMs, "delayMs");
+    if (!["fixed", "bounded"].includes(clock)) {
+      throw new TypeError("unknown presentation clock policy");
+    }
+    if (clock === "bounded" && !delayMs) {
+      throw new TypeError("bounded clock requires a positive delayMs");
+    }
+    this.#playhead = clock === "bounded" ? new BoundedPlayhead(stepMs, delayMs) : null;
     if (delayMs < 0 || delayMs > stepMs * 16) {
       throw new RangeError("delayMs must be between 0 and 16 steps");
     }
@@ -1066,6 +1183,48 @@ var PresentationRuntime = class {
   }
   get size() {
     return this.#tracks.size;
+  }
+  #displayTime(nowMs) {
+    return this.#playhead ? this.#playhead.sample(nowMs) : nowMs - this.#delayMs - this.#origin;
+  }
+  /** Change the bounded display rate after accounting for the previous rate through nowMs. */
+  setRate(rate, nowMs) {
+    this.#checkClock(nowMs);
+    if (!this.#playhead || finite(rate, "rate") < 0) {
+      throw new RangeError("setRate requires a bounded clock and nonnegative rate");
+    }
+    if (rate === 0 && this.#playhead.rate !== 0) {
+      this.#pausedView = this.#freezeView(nowMs);
+      this.#pausedAt = nowMs;
+    } else if (rate > 0) {
+      if (this.#pausedView && this.#pausedAt !== null) {
+        for (const PREVIEW of this.#preview.values()) {
+          if (PREVIEW.releaseTimeMs === void 0) {
+            PREVIEW.at += Math.max(0, nowMs - Math.max(this.#pausedAt, PREVIEW.at));
+            PREVIEW.sampledAt = -Infinity;
+          }
+        }
+      }
+      this.#pausedView = null;
+      this.#pausedAt = null;
+    }
+    this.#playhead.setRate(rate, nowMs);
+    this.#playheadRevision++;
+    this.#frameSerial++;
+    this.#now = nowMs;
+  }
+  #freezeView(nowMs) {
+    const FRAME = this.frame(nowMs), ITEMS = /* @__PURE__ */ new Map(), MODELS = /* @__PURE__ */ new WeakMap();
+    FRAME.forEach((model, id, generation) => {
+      const TRACK = this.#tracks.get(id), PREVIEW = this.#preview.get(id), SELECTED = PREVIEW && PREVIEW.generation === generation && this.#previewSelection.get(id) === generation, MODEL = structuredClone(model), PATH = [];
+      if (TRACK.plan.path && !SELECTED) {
+        FRAME.pathInto(id, generation, PATH);
+      }
+      const ITEM = { generation, model: MODEL, path: PATH, hasPath: !!TRACK.plan.path, selected: !!SELECTED };
+      ITEMS.set(id, ITEM);
+      MODELS.set(MODEL, ITEM);
+    });
+    return { items: ITEMS, models: MODELS };
   }
   get previewMetrics() {
     return {
@@ -1109,19 +1268,20 @@ var PresentationRuntime = class {
         if (!TRACK || TRACK.generation !== PREVIEW.generation) {
           continue;
         }
-        const FROM = PREVIEW.plan.fields.map((_, i) => this.#value(PREVIEW, i, nowMs)), RESET = /* @__PURE__ */ new Set();
-        inferStateResets(PREVIEW.plan.policies, PREVIEW.target, TRACK.target, RESET);
+        const PAUSED = this.#pausedView?.items.get(ID), FROZEN = PAUSED?.generation === PREVIEW.generation ? captureRenderData(PREVIEW.plan, PAUSED.model) : null, FROM = FROZEN ? FROZEN.values.slice() : PREVIEW.plan.fields.map((_, i) => this.#value(PREVIEW, i, nowMs)), RESET = /* @__PURE__ */ new Set();
+        inferStateResets(PREVIEW.plan.policies, FROZEN ?? PREVIEW.target, TRACK.target, RESET);
         for (const I of RESET) {
           FROM[I] = TRACK.target.values[I];
         }
-        const RELEASE_AT = Math.max(nowMs, this.#origin + TRACK.timeMs + this.#delayMs);
+        const DISPLAY_TIME = this.#playhead ? this.#displayTime(nowMs) : null, RELEASE_AT = this.#playhead ? Infinity : Math.max(nowMs, this.#origin + TRACK.timeMs + this.#delayMs), START = this.#playhead ? DISPLAY_TIME : nowMs, END = this.#playhead ? Math.max(DISPLAY_TIME, TRACK.timeMs) : RELEASE_AT;
         this.#preview.set(ID, {
           ...PREVIEW,
           from: FROM,
           target: TRACK.target,
-          at: nowMs,
-          durationMs: RELEASE_AT - nowMs,
+          at: START,
+          durationMs: END - START,
           releaseAt: RELEASE_AT,
+          releaseTimeMs: this.#playhead ? TRACK.timeMs : void 0,
           sampledAt: -Infinity
         });
       }
@@ -1186,17 +1346,15 @@ var PresentationRuntime = class {
       const DATA = captureRenderData(PLAN, ENTITY.source), OLD = this.#preview.get(ENTITY.id);
       const INITIAL = ENTITY.initialSource ? captureRenderData(PLAN, ENTITY.initialSource) : AUTHORITY.target;
       const SAME = OLD && OLD.generation === ENTITY.generation && OLD.plan === PLAN;
-      const FROM = SAME ? PLAN.fields.map((_, i) => this.#value(OLD, i, nowMs)) : PLAN.fields.map((_, i) => this.#value(AUTHORITY, i, nowMs));
+      const PAUSED = this.#pausedView?.items.get(ENTITY.id), FROZEN = PAUSED?.generation === ENTITY.generation ? captureRenderData(PLAN, PAUSED.model) : null, FROM = FROZEN ? FROZEN.values.slice() : SAME ? PLAN.fields.map(
+        (_, i) => this.#value(OLD, i, OLD.releaseTimeMs === void 0 ? nowMs : this.#displayTime(nowMs))
+      ) : PLAN.fields.map((_, i) => this.#value(AUTHORITY, i, nowMs));
       const RESET = /* @__PURE__ */ new Set();
-      inferStateResets(PLAN.policies, SAME ? OLD.target : INITIAL, DATA, RESET);
+      inferStateResets(PLAN.policies, FROZEN ?? (SAME ? OLD.target : INITIAL), DATA, RESET);
       for (const INDEX of RESET) {
         FROM[INDEX] = DATA.values[INDEX];
       }
-      const AT = SAME ? nowMs : Math.min(nowMs, finite(packet.phaseStartMs ?? nowMs, "phaseStartMs"));
-      const END = Math.max(
-        nowMs + 1,
-        finite(packet.phaseStartMs ?? nowMs, "phaseStartMs") + (packet.stepMs ?? this.#stepMs)
-      );
+      const PHASE_START = finite(packet.phaseStartMs ?? nowMs, "phaseStartMs"), AT = this.#pausedView ? nowMs : SAME ? nowMs : Math.min(nowMs, PHASE_START), END = this.#pausedView ? nowMs + Math.max(1, packet.stepMs ?? this.#stepMs) : Math.max(nowMs + 1, PHASE_START + (packet.stepMs ?? this.#stepMs));
       const MODEL = SAME ? OLD.model : {};
       bytes += DATA.values.length * 8 + DATA.shapes.length * 4;
       writeRenderModel(PLAN, MODEL, DATA.values, DATA.shapes);
@@ -1232,6 +1390,10 @@ var PresentationRuntime = class {
     return true;
   }
   isModel(value) {
+    if (this.#pausedView) {
+      const ITEM = value && typeof value === "object" ? this.#pausedView.models.get(value) : null;
+      return !!ITEM && ITEM.model === value;
+    }
     const OWNER = value && this.#models.get(value);
     const PREVIEW = OWNER && this.#preview.get(OWNER.id);
     if (PREVIEW?.model === value && this.#previewSelection.get(OWNER.id) === OWNER.generation) {
@@ -1284,6 +1446,10 @@ var PresentationRuntime = class {
       throw new TypeError("entities must be an array");
     }
     const ORIGIN = CHANGED ? nowMs - TIME_MS : this.#origin;
+    const PLAYHEAD_PLAN = this.#playhead?.prepare(TIME_MS, nowMs, CHANGED, MODE !== "continuous");
+    if (PLAYHEAD_PLAN && (!Number.isFinite(ORIGIN) || !Number.isFinite(PLAYHEAD_PLAN.time))) {
+      throw new RangeError("bounded presentation clock overflow");
+    }
     const NEXT = this.#trackBuffer, SOURCES = /* @__PURE__ */ new WeakMap(), PREVIEWS = this.#previewBuffer, PREVIEW_SOURCES = /* @__PURE__ */ new WeakMap(), RESET_FIELDS = /* @__PURE__ */ new Set();
     NEXT.clear();
     PREVIEWS.clear();
@@ -1447,11 +1613,17 @@ var PresentationRuntime = class {
       retainRemoved(NEXT, this.#tracks, {
         origin: ORIGIN,
         timeMs: TIME_MS,
-        nowMs,
+        // Paused frames are held separately; prune live history against the
+        // latest bounded window instead of retaining an unbounded pause backlog.
+        nowMs: PLAYHEAD_PLAN ? ORIGIN + (this.#playhead.rate === 0 ? TIME_MS - this.#delayMs - this.#stepMs : PLAYHEAD_PLAN.time) + this.#delayMs : nowMs,
         delayMs: this.#delayMs
       });
     }
     this.#origin = ORIGIN;
+    if (PLAYHEAD_PLAN) {
+      this.#playhead.commit(PLAYHEAD_PLAN);
+      this.#playheadRevision++;
+    }
     this.#frameSerial++;
     this.#trackBuffer = this.#tracks;
     this.#tracks = NEXT;
@@ -1463,6 +1635,10 @@ var PresentationRuntime = class {
     this.#sequence = SEQUENCE;
     this.#timeMs = TIME_MS;
     this.#now = nowMs;
+    if (this.#pausedView && CHANGED) {
+      this.#pausedView = null;
+      this.#pausedView = this.#freezeView(nowMs);
+    }
     return true;
   }
   // The fields #valuesInto interpolates for this interval (both ends numeric, not discrete, not held), and those
@@ -1541,32 +1717,43 @@ var PresentationRuntime = class {
   /** 유효 identity가 아니면 null. 원본 fallback은 없습니다. 모델은 프레임 간 재사용됩니다. */
   sample(id, generation, nowMs) {
     this.#checkClock(nowMs);
+    if (this.#pausedView) {
+      const ITEM = this.#pausedView.items.get(id);
+      this.#now = nowMs;
+      return ITEM?.generation === generation ? ITEM.model : null;
+    }
     let preview = this.#preview.get(id);
-    if (preview?.releaseAt !== void 0 && nowMs >= preview.releaseAt) {
+    if (preview?.releaseAt !== void 0 && (preview.releaseTimeMs === void 0 ? nowMs >= preview.releaseAt : this.#displayTime(nowMs) >= preview.releaseTimeMs)) {
       this.#preview.delete(id);
+      this.#previewSources.delete(preview.source);
       preview = null;
     }
     if (preview && preview.generation === generation && this.#previewSelection.get(id) === generation) {
-      if (preview.sampledAt !== nowMs) {
+      if (preview.sampledAt !== nowMs || preview.releaseTimeMs !== void 0 && preview.sampledPlayheadRevision !== this.#playheadRevision) {
         const VALUES = preview.sampleValues ??= new Array(preview.plan.fields.length);
         for (let i = 0; i < VALUES.length; i++) {
-          VALUES[i] = this.#value(preview, i, nowMs);
+          VALUES[i] = this.#value(
+            preview,
+            i,
+            preview.releaseTimeMs === void 0 ? nowMs : this.#displayTime(nowMs)
+          );
         }
         writeRenderModel(preview.plan, preview.model, VALUES, preview.target.shapes);
         preview.sampledAt = nowMs;
+        preview.sampledPlayheadRevision = this.#playheadRevision;
         this.#models.set(preview.model, preview);
       }
       this.#now = nowMs;
       return preview.model;
     }
     const TRACK = this.#tracks.get(id);
-    const AT = nowMs - this.#delayMs;
+    const AT = this.#playhead ? this.#origin + this.#displayTime(nowMs) : nowMs - this.#delayMs;
     const INTERVAL = this.#delayMs ? intervalAt(TRACK, AT) : TRACK;
     if (!INTERVAL || !TRACK || TRACK.generation !== generation) {
       this.#now = nowMs;
       return null;
     }
-    if (TRACK.sampledAt !== nowMs) {
+    if (TRACK.sampledAt !== nowMs || this.#playhead && TRACK.sampledPlayheadRevision !== this.#playheadRevision) {
       const VALUES = TRACK.sampleValues ??= new Array(TRACK.plan.fields.length), HOLD = INTERVAL.buffered && AT < INTERVAL.at + INTERVAL.durationMs, PATH = TRACK.plan.path;
       const MOVING_ONLY = !this.#extrapolation && TRACK.sampledInterval === INTERVAL && TRACK.sampledFrom === INTERVAL.from && TRACK.sampledHold === HOLD;
       if (MOVING_ONLY) {
@@ -1593,6 +1780,7 @@ var PresentationRuntime = class {
         TRACK.sampledHold = HOLD;
       }
       TRACK.sampledAt = nowMs;
+      TRACK.sampledPlayheadRevision = this.#playheadRevision;
       this.#models.set(TRACK.model, TRACK);
     }
     this.#now = nowMs;
@@ -1601,6 +1789,13 @@ var PresentationRuntime = class {
   /** 등록된 원본 객체나 유효한 모델만 받습니다. 삭제·세대 변경된 모델은 다시 그리지 않습니다. */
   modelFor(source, nowMs) {
     this.#checkClock(nowMs);
+    if (this.#pausedView) {
+      const MODEL = source && typeof source === "object" ? this.#pausedView.models.get(source) : null;
+      const PREVIEW2 = source && typeof source === "object" ? this.#previewSources.get(source) : null, OWNER = PREVIEW2 && this.#previewSelection.get(PREVIEW2.id) === PREVIEW2.generation ? PREVIEW2 : source && typeof source === "object" ? this.#sources.get(source) : null;
+      const ITEM = MODEL || OWNER && this.#pausedView.items.get(OWNER.id);
+      this.#now = nowMs;
+      return ITEM && (!OWNER || ITEM.generation === OWNER.generation) ? ITEM.model : null;
+    }
     if (this.isModel(source)) {
       const OWNER = this.#models.get(source);
       return this.sample(OWNER.id, OWNER.generation, nowMs);
@@ -1632,7 +1827,8 @@ var PresentationRuntime = class {
     };
     return Object.freeze({
       nowMs,
-      timeMs: nowMs - this.#delayMs - this.#origin,
+      revision: this.#revision,
+      timeMs: this.#displayTime(nowMs),
       sample: (id, generation) => {
         CHECK();
         return this.sample(id, generation, nowMs);
@@ -1643,6 +1839,12 @@ var PresentationRuntime = class {
       },
       forEach: (visit) => {
         CHECK();
+        if (this.#pausedView) {
+          for (const [ID, ITEM] of this.#pausedView.items) {
+            visit(ITEM.model, ID, ITEM.generation);
+          }
+          return;
+        }
         for (const [ID, TRACK] of this.#tracks) {
           const MODEL = this.sample(ID, TRACK.generation, nowMs);
           if (MODEL) {
@@ -1655,6 +1857,24 @@ var PresentationRuntime = class {
         if (!Array.isArray(out)) {
           throw new TypeError("path output must be an array");
         }
+        if (this.#pausedView) {
+          const ITEM = this.#pausedView.items.get(id);
+          if (!ITEM || ITEM.generation !== generation) {
+            out.length = 0;
+            return out;
+          }
+          if (!ITEM.hasPath) {
+            throw new Error("Declare renderPath before reading a path");
+          }
+          if (ITEM.selected) {
+            throw new Error("Preview path is not supported; attach visuals to the selected model");
+          }
+          for (let i = 0; i < ITEM.path.length; i++) {
+            Object.assign(out[i] ?? (out[i] = {}), ITEM.path[i]);
+          }
+          out.length = ITEM.path.length;
+          return out;
+        }
         const TRACK = this.#tracks.get(id);
         if (!TRACK || TRACK.generation !== generation || !this.sample(id, generation, nowMs)) {
           out.length = 0;
@@ -1666,7 +1886,7 @@ var PresentationRuntime = class {
         if (this.#preview.has(id) && this.#previewSelection.get(id) === generation) {
           throw new Error("Preview path is not supported; attach visuals to the selected model");
         }
-        return samplePath(TRACK.path, nowMs - this.#delayMs - this.#origin, TRACK.plan.path.durationMs, out);
+        return samplePath(TRACK.path, this.#displayTime(nowMs), TRACK.plan.path.durationMs, out);
       }
     });
   }

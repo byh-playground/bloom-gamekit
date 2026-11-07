@@ -63,7 +63,7 @@ var FIXED_POINT = Object.freeze({
 });
 
 // modules/_rollback-shared/version.js
-var VERSION = "0.47.5";
+var VERSION = "0.47.6";
 
 // modules/_rollback-shared/protocol.js
 var REPLAY_FORMAT_VERSION = "0.3.0-dev";
