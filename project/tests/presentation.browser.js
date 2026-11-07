@@ -6,6 +6,7 @@ export async function runPresentationChecks(page) {
             CollisionBoom: COLLISION_BOOM,
         } = await import('/dist/camera.js');
         const { PresentationEventQueue: PRESENTATION_EVENT_QUEUE } = await import('/dist/presentation-events.js');
+        const { PresentationRuntime: RUNTIME, RenderObject: RENDER_OBJECT } = await import('/dist/interpolation.js');
         const { DOMHud: DOM_HUD } = await import('/dist/hud.js');
         const {
             DiagnosticRing: DIAGNOSTIC_RING,
@@ -18,6 +19,77 @@ export async function runPresentationChecks(page) {
                 throw Error(message);
             }
         };
+        // One clock drives actual interpolated models and the existing confirmation journal.
+        class ClockActor extends RENDER_OBJECT {
+            static renderSchema = { x: RENDER_OBJECT.POSITION_X };
+        }
+        const VIEW = new RUNTIME({ stepMs: 100, delayMs: 200, clock: 'bounded' }),
+            STARTED = [],
+            CLOCK_QUEUE = new PRESENTATION_EVENT_QUEUE({
+                display: { stepMs: 100, maxLatenessMs: 200 },
+                adapters: { flash: { start: (event, time) => STARTED.push([event.tick, event.sequence, time]) } },
+            }),
+            CAPTURE_CLOCK = (tick, now, mode = 'continuous') =>
+                VIEW.capture(
+                    {
+                        revision: 0,
+                        sequence: tick,
+                        timeMs: tick * 100,
+                        mode,
+                        entities: [{ id: 'u', generation: 0, type: ClockActor, source: { x: tick * 100 } }],
+                    },
+                    now,
+                ),
+            EMIT_CLOCK = (tick, sequence) =>
+                CLOCK_QUEUE.emit({
+                    tick,
+                    sequence,
+                    entityId: 'u',
+                    generation: 0,
+                    kind: 'flash',
+                    durationMs: 0,
+                });
+        CAPTURE_CLOCK(0, 0, 'reset');
+        EMIT_CLOCK(1, 0);
+        CLOCK_QUEUE.confirmThrough(1);
+        CLOCK_QUEUE.present(VIEW.frame(0));
+        CAPTURE_CLOCK(1, 100);
+        CLOCK_QUEUE.present(VIEW.frame(100));
+        CHECK(STARTED.length === 0, 'confirmed effect waits for the same display clock as the actor');
+        let clockFrame = VIEW.frame(200);
+        CLOCK_QUEUE.present(clockFrame);
+        CHECK(
+            clockFrame.timeMs === 100 && clockFrame.sample('u', 0).x === 100 && STARTED.length === 1,
+            'body and effect reach the same tick in the same frame',
+        );
+        EMIT_CLOCK(1, 1);
+        CLOCK_QUEUE.present(VIEW.frame(200));
+        CHECK(STARTED.length === 2, 'a later confirmed event at the same tick is not discarded');
+        VIEW.setRate(0, 200);
+        CLOCK_QUEUE.setPresentationActive(false);
+        CAPTURE_CLOCK(2, 300);
+        EMIT_CLOCK(2, 0);
+        CLOCK_QUEUE.confirmThrough(2);
+        VIEW.setRate(0.5, 400);
+        CLOCK_QUEUE.setPresentationActive(true);
+        CLOCK_QUEUE.present(VIEW.frame(400));
+        CAPTURE_CLOCK(3, 500);
+        EMIT_CLOCK(3, 0);
+        CLOCK_QUEUE.confirmThrough(3);
+        clockFrame = VIEW.frame(500);
+        CLOCK_QUEUE.present(clockFrame);
+        CHECK(clockFrame.timeMs === 150 && STARTED.length === 2, 'hidden event stays silent and half rate is shared');
+        VIEW.setRate(2, 500);
+        clockFrame = VIEW.frame(575);
+        CLOCK_QUEUE.present(clockFrame);
+        CHECK(
+            clockFrame.timeMs === 300 &&
+                clockFrame.sample('u', 0).x === 300 &&
+                STARTED.length === 3 &&
+                STARTED[2][0] === 3,
+            'resume at double speed aligns the new effect and actor',
+        );
+        CLOCK_QUEUE.dispose();
         const HOST = document.createElement('div');
         HOST.style.cssText = 'position:relative;width:100px;height:100px';
         document.body.append(HOST);
@@ -237,6 +309,542 @@ export async function runPresentationChecks(page) {
             failedLateStart && starts === 2 && HUD.stats.nodes === 1,
             'late confirmed start retries at same watermark and expires once',
         );
+        // A confirmed hit/one-shot must wait for the same simulation-time frame as the body.
+        // Delayed delivery, a pause, rollback and an epoch reset exercise the public contract.
+        const DISPLAY_LOG = [],
+            DISPLAY_ADAPTER = {
+                reversible: true,
+                start(event, timeMs, ageMs) {
+                    DISPLAY_LOG.push(['start', event.sequence, timeMs, ageMs]);
+                    return { sequence: event.sequence };
+                },
+                update(handle, ageMs, event) {
+                    DISPLAY_LOG.push(['update', handle.sequence, ageMs]);
+                    if (event.sequence === 1 && ageMs >= 80) {
+                        DISPLAY_QUEUE.finish(event);
+                    }
+                },
+                stop(handle, reason) {
+                    DISPLAY_LOG.push(['stop', handle.sequence, reason]);
+                },
+            },
+            DISPLAY_QUEUE = new PRESENTATION_EVENT_QUEUE({
+                display: { stepMs: 100, maxLatenessMs: 150 },
+                adapters: { hit: DISPLAY_ADAPTER },
+            }),
+            DISPLAY_EVENT = {
+                tick: 2,
+                sequence: 1,
+                entityId: 'visible-actor',
+                generation: 0,
+                kind: 'hit',
+                durationMs: 300,
+            };
+        DISPLAY_QUEUE.present({ revision: 0, timeMs: -20 });
+        DISPLAY_QUEUE.emit(DISPLAY_EVENT);
+        DISPLAY_QUEUE.emit({ ...DISPLAY_EVENT, sequence: 2, durationMs: 0 });
+        DISPLAY_QUEUE.confirmThrough(2);
+        DISPLAY_QUEUE.present({ revision: 0, timeMs: 195 });
+        CHECK(DISPLAY_LOG.length === 0, 'confirmed effects wait for their displayed tick');
+        DISPLAY_QUEUE.present({ revision: 0, timeMs: 216.7 });
+        CHECK(
+            DISPLAY_LOG.filter((entry) => entry[0] === 'start')
+                .map((entry) => entry[1])
+                .join(',') === '1,2' &&
+                Math.abs(DISPLAY_LOG[0][3] - 16.7) < 0.001 &&
+                DISPLAY_LOG.some((entry) => entry[0] === 'stop' && entry[1] === 2),
+            'same-tick effects start in sequence at their original age; one-shot survives fractional frames',
+        );
+        DISPLAY_QUEUE.emit({ ...DISPLAY_EVENT, sequence: 9, durationMs: 0 });
+        DISPLAY_QUEUE.present({ revision: 0, timeMs: 216.7 });
+        CHECK(
+            DISPLAY_LOG.filter((entry) => entry[0] === 'start' && entry[1] === 9).length === 1,
+            'a newly confirmed event from the same tick is not mistaken for an already delivered batch',
+        );
+        DISPLAY_QUEUE.emit({ ...DISPLAY_EVENT, sequence: 2, durationMs: 0 });
+        DISPLAY_QUEUE.present({ revision: 0, timeMs: 280 });
+        CHECK(
+            DISPLAY_LOG.filter((entry) => entry[0] === 'start' && entry[1] === 2).length === 1 &&
+                DISPLAY_LOG.filter((entry) => entry[0] === 'stop' && entry[1] === 1).length === 1,
+            'duplicate one-shot remains deduplicated and composite resource can finish inside update',
+        );
+        DISPLAY_QUEUE.emit({ ...DISPLAY_EVENT, tick: 1, sequence: 3, durationMs: 0 });
+        DISPLAY_QUEUE.present({ revision: 0, timeMs: 280 });
+        CHECK(
+            !DISPLAY_LOG.some((entry) => entry[0] === 'start' && entry[1] === 3),
+            'stale one-shot does not replay after a long display gap',
+        );
+        const REWOUND = { ...DISPLAY_EVENT, tick: 4, sequence: 4 };
+        DISPLAY_QUEUE.emit(REWOUND);
+        DISPLAY_QUEUE.confirmThrough(4);
+        DISPLAY_QUEUE.present({ revision: 0, timeMs: 420 });
+        DISPLAY_QUEUE.present({ revision: 1, timeMs: 200 });
+        DISPLAY_QUEUE.present({ revision: 1, timeMs: 420 });
+        DISPLAY_QUEUE.emit(REWOUND);
+        CHECK(
+            DISPLAY_LOG.filter((entry) => entry[0] === 'start' && entry[1] === 4).length === 1 &&
+                DISPLAY_LOG.some((entry) => entry[0] === 'stop' && entry[1] === 4 && entry[2] === 'timeline-reset'),
+            'rollback display epoch releases active visuals without replaying confirmed identity',
+        );
+        const SPECULATIVE = { ...DISPLAY_EVENT, tick: 5, sequence: 5, policy: 'speculative' };
+        DISPLAY_QUEUE.emit(SPECULATIVE);
+        DISPLAY_QUEUE.present({ revision: 1, timeMs: 500 });
+        DISPLAY_QUEUE.beginRollback(5);
+        DISPLAY_QUEUE.endRollback();
+        DISPLAY_QUEUE.emit(SPECULATIVE);
+        DISPLAY_QUEUE.present({ revision: 1, timeMs: 500 });
+        CHECK(
+            DISPLAY_LOG.filter((entry) => entry[0] === 'start' && entry[1] === 5).length === 2 &&
+                DISPLAY_LOG.some((entry) => entry[0] === 'stop' && entry[1] === 5 && entry[2] === 'cancelled'),
+            'rollback cancels and later valid speculative event restarts',
+        );
+        DISPLAY_QUEUE.dispose();
+        // A screen may attach after a network handshake and be hidden while authority continues.
+        // Rejected-input feedback remains immediate, while transient visuals never accumulate unseen.
+        const HIDDEN_LOG = [],
+            CLASSIFICATION_ERROR = new TypeError('presentation policy failed'),
+            HIDDEN_QUEUE = new PRESENTATION_EVENT_QUEUE({
+                retentionTicks: 3,
+                adapters: {
+                    frame: {
+                        start(event, timeMs, ageMs) {
+                            HIDDEN_LOG.push([event.payload, timeMs, ageMs]);
+                            return { payload: event.payload };
+                        },
+                    },
+                },
+            }),
+            HIDDEN_EVENT = {
+                tick: 1,
+                sequence: 1,
+                entityId: 'peer',
+                generation: 0,
+                kind: 'frame',
+                durationMs: 0,
+                payload: 'visual',
+            };
+        HIDDEN_QUEUE.configureDisplay({
+            stepMs: 100,
+            maxLatenessMs: 250,
+            classify(event) {
+                if (event.payload === 'bad-classifier') {
+                    throw CLASSIFICATION_ERROR;
+                }
+                return event.payload === 'rejected'
+                    ? { delivery: 'confirmation', durationMs: 0 }
+                    : { delivery: 'presentation', durationMs: Infinity };
+            },
+        });
+        HIDDEN_QUEUE.update(100000);
+        HIDDEN_QUEUE.present({ revision: -1, timeMs: null });
+        HIDDEN_QUEUE.present({ revision: 0, timeMs: 0 });
+        let classificationThrow = null;
+        try {
+            HIDDEN_QUEUE.emit({ ...HIDDEN_EVENT, payload: 'bad-classifier' });
+        } catch (error) {
+            classificationThrow = error;
+        }
+        CHECK(classificationThrow === CLASSIFICATION_ERROR && HIDDEN_QUEUE.size === 0, 'classifier error is atomic');
+        HIDDEN_QUEUE.emit(HIDDEN_EVENT);
+        let identityPolicyRejected = false;
+        try {
+            HIDDEN_QUEUE.emit({ ...HIDDEN_EVENT, payload: 'rejected' });
+        } catch {
+            identityPolicyRejected = true;
+        }
+        CHECK(identityPolicyRejected && HIDDEN_QUEUE.size === 1, 'stable event identity cannot change delivery policy');
+        HIDDEN_QUEUE.confirmThrough(1);
+        HIDDEN_QUEUE.setPresentationActive(false);
+        for (let tick = 2; tick <= 200; tick++) {
+            HIDDEN_QUEUE.emit({ ...HIDDEN_EVENT, tick });
+            HIDDEN_QUEUE.confirmThrough(tick);
+        }
+        HIDDEN_QUEUE.emit({ ...HIDDEN_EVENT, tick: 201, payload: 'rejected' });
+        HIDDEN_QUEUE.confirmThrough(201);
+        CHECK(
+            HIDDEN_LOG.length === 1 &&
+                HIDDEN_LOG[0][0] === 'rejected' &&
+                HIDDEN_LOG[0][1] === 100000 &&
+                HIDDEN_QUEUE.size <= 4,
+            'hidden authority keeps actionable confirmation and retires transient effects with bounded memory',
+        );
+        HIDDEN_QUEUE.setPresentationActive(true);
+        HIDDEN_QUEUE.present({ revision: 1, timeMs: 20100 });
+        HIDDEN_QUEUE.emit({ ...HIDDEN_EVENT, tick: 202 });
+        HIDDEN_QUEUE.confirmThrough(202);
+        HIDDEN_QUEUE.present({ revision: 1, timeMs: 20200 });
+        CHECK(
+            HIDDEN_LOG.length === 2 &&
+                HIDDEN_LOG[1][0] === 'visual' &&
+                HIDDEN_LOG[1][1] === 20200 &&
+                HIDDEN_LOG[1][2] === 0,
+            'resume starts new effects on simulation clock without replaying hidden events or mixing wall time',
+        );
+        let lateConfigRejected = false;
+        try {
+            HIDDEN_QUEUE.configureDisplay({ stepMs: 100, maxLatenessMs: 250 });
+        } catch {
+            lateConfigRejected = true;
+        }
+        CHECK(lateConfigRejected, 'display policy cannot change after events or confirmation');
+        HIDDEN_QUEUE.dispose();
+        const HANDSHAKE_QUEUE = new PRESENTATION_EVENT_QUEUE({ adapters: { frame: { start() {} } } });
+        HANDSHAKE_QUEUE.emit(HIDDEN_EVENT);
+        let handshakeRaceRejected = false;
+        try {
+            HANDSHAKE_QUEUE.configureDisplay({ stepMs: 100, maxLatenessMs: 250 });
+        } catch {
+            handshakeRaceRejected = true;
+        }
+        CHECK(
+            handshakeRaceRejected && HANDSHAKE_QUEUE.size === 1,
+            'late handshake cannot reinterpret an existing event',
+        );
+        HANDSHAKE_QUEUE.dispose();
+        let failConfirmation = true;
+        const ORIGINAL_FAILURE = new TypeError('confirmation adapter failure'),
+            RETRIES = [],
+            RETRY_QUEUE = new PRESENTATION_EVENT_QUEUE({
+                display: {
+                    stepMs: 100,
+                    maxLatenessMs: 200,
+                    classify: () => ({ delivery: 'confirmation', durationMs: 0 }),
+                },
+                adapters: {
+                    frame: {
+                        start(_event, nowMs) {
+                            if (failConfirmation) {
+                                failConfirmation = false;
+                                throw ORIGINAL_FAILURE;
+                            }
+                            RETRIES.push(nowMs);
+                        },
+                    },
+                },
+            });
+        RETRY_QUEUE.update(50000);
+        RETRY_QUEUE.present({ revision: 0, timeMs: 100 });
+        RETRY_QUEUE.emit(HIDDEN_EVENT);
+        let confirmationFailure = null;
+        try {
+            RETRY_QUEUE.confirmThrough(1);
+        } catch (error) {
+            confirmationFailure = error;
+        }
+        RETRY_QUEUE.confirmThrough(1);
+        RETRY_QUEUE.confirmThrough(1);
+        CHECK(
+            confirmationFailure === ORIGINAL_FAILURE && RETRIES.join(',') === '50000',
+            'confirmation failure preserves its original exception and retries once on the wall clock',
+        );
+        RETRY_QUEUE.dispose();
+        let failSpeculativeConfirm = true;
+        const SPEC_CONFIRM_ERROR = new TypeError('speculative confirmation failed'),
+            SPEC_CONFIRM_LOG = [],
+            SPEC_QUEUE = new PRESENTATION_EVENT_QUEUE({
+                display: { stepMs: 100, maxLatenessMs: 200 },
+                adapters: {
+                    frame: {
+                        reversible: true,
+                        start: () => {
+                            SPEC_CONFIRM_LOG.push('start');
+                            return {};
+                        },
+                        confirm: () => {
+                            SPEC_CONFIRM_LOG.push('confirm');
+                            if (failSpeculativeConfirm) {
+                                failSpeculativeConfirm = false;
+                                throw SPEC_CONFIRM_ERROR;
+                            }
+                        },
+                        stop: () => {},
+                    },
+                },
+            }),
+            SPEC_EVENT = { ...HIDDEN_EVENT, policy: 'speculative', durationMs: 1000 };
+        SPEC_QUEUE.emit(SPEC_EVENT);
+        SPEC_QUEUE.present({ revision: 0, timeMs: 100 });
+        let specConfirmFailure = null;
+        try {
+            SPEC_QUEUE.confirmThrough(1);
+        } catch (error) {
+            specConfirmFailure = error;
+        }
+        SPEC_QUEUE.confirmThrough(1);
+        SPEC_QUEUE.confirmThrough(1);
+        CHECK(
+            specConfirmFailure === SPEC_CONFIRM_ERROR && SPEC_CONFIRM_LOG.join(',') === 'start,confirm,confirm',
+            'failed confirmation retries the same speculative resource without restarting it',
+        );
+        SPEC_QUEUE.dispose();
+        const HIDDEN_SPEC_LOG = [],
+            HIDDEN_SPEC_QUEUE = new PRESENTATION_EVENT_QUEUE({
+                display: { stepMs: 100, maxLatenessMs: 200 },
+                adapters: {
+                    frame: {
+                        reversible: true,
+                        start: () => HIDDEN_SPEC_LOG.push('start'),
+                        stop: (_handle, reason) => HIDDEN_SPEC_LOG.push(reason),
+                    },
+                },
+            }),
+            HIDDEN_SPEC_EVENT = { ...HIDDEN_EVENT, tick: 10, policy: 'speculative', durationMs: 1000 };
+        HIDDEN_SPEC_QUEUE.emit(HIDDEN_SPEC_EVENT);
+        HIDDEN_SPEC_QUEUE.present({ revision: 0, timeMs: 1000 });
+        HIDDEN_SPEC_QUEUE.setPresentationActive(false);
+        HIDDEN_SPEC_QUEUE.beginRollback(10);
+        HIDDEN_SPEC_QUEUE.emit(HIDDEN_SPEC_EVENT);
+        HIDDEN_SPEC_QUEUE.endRollback();
+        HIDDEN_SPEC_QUEUE.confirmThrough(10);
+        HIDDEN_SPEC_QUEUE.setPresentationActive(true);
+        HIDDEN_SPEC_QUEUE.present({ revision: 1, timeMs: 1000 });
+        HIDDEN_SPEC_QUEUE.emit(HIDDEN_SPEC_EVENT);
+        CHECK(
+            HIDDEN_SPEC_LOG.join(',') === 'start,hidden',
+            'hidden speculative effects release once and confirmation does not replay their identity',
+        );
+        HIDDEN_SPEC_QUEUE.dispose();
+        const RESET_LOG = [],
+            RESET_QUEUE = new PRESENTATION_EVENT_QUEUE({
+                display: { stepMs: 100, maxLatenessMs: 200 },
+                adapters: {
+                    frame: {
+                        start(event, timeMs, ageMs) {
+                            RESET_LOG.push([event.tick, timeMs, ageMs]);
+                        },
+                    },
+                },
+            });
+        RESET_QUEUE.emit({ ...HIDDEN_EVENT, tick: 5 });
+        RESET_QUEUE.confirmThrough(5);
+        RESET_QUEUE.present({ revision: 0, timeMs: 500 });
+        CHECK(
+            RESET_LOG.length === 1 && RESET_LOG[0][1] === 500 && RESET_LOG[0][2] === 0,
+            'an initial snapped model and its same-tick event start on the same display frame',
+        );
+        RESET_QUEUE.dispose();
+        const BOUNDARY_STEP = 1000 / 30,
+            BOUNDARY_TIME = 29 * BOUNDARY_STEP,
+            BOUNDARY_AGES = [],
+            BOUNDARY_QUEUE = new PRESENTATION_EVENT_QUEUE({
+                display: { stepMs: BOUNDARY_STEP, maxLatenessMs: BOUNDARY_STEP },
+                adapters: { frame: { start: (_event, _timeMs, ageMs) => BOUNDARY_AGES.push(ageMs) } },
+            });
+        BOUNDARY_QUEUE.emit({ ...HIDDEN_EVENT, tick: 29 });
+        BOUNDARY_QUEUE.confirmThrough(29);
+        BOUNDARY_QUEUE.present({ revision: 0, timeMs: BOUNDARY_TIME - BOUNDARY_STEP / 1000 });
+        CHECK(BOUNDARY_AGES.length === 0, 'an event is not delivered genuinely before its tick');
+        BOUNDARY_QUEUE.present({
+            revision: 0,
+            timeMs: BOUNDARY_TIME - Number.EPSILON * BOUNDARY_TIME,
+        });
+        CHECK(
+            BOUNDARY_AGES.length === 1 && BOUNDARY_AGES[0] === 0,
+            'fractional 30 TPS rounding at the tick boundary does not delay the event or produce negative age',
+        );
+        BOUNDARY_QUEUE.dispose();
+        const PHASE_LOG = [],
+            PHASE_QUEUE = new PRESENTATION_EVENT_QUEUE({
+                display: {
+                    stepMs: 100,
+                    maxLatenessMs: 200,
+                    classify: (event) => ({ phase: event.payload.phase }),
+                },
+                adapters: {
+                    frame: {
+                        start: (event, _timeMs, ageMs) => PHASE_LOG.push([event.sequence, ageMs]),
+                    },
+                },
+            });
+        PHASE_QUEUE.emit({ ...HIDDEN_EVENT, tick: 3, sequence: 1, payload: { phase: 0.8 } });
+        PHASE_QUEUE.emit({ ...HIDDEN_EVENT, tick: 3, sequence: 2, payload: { phase: 0.2 } });
+        PHASE_QUEUE.confirmThrough(3);
+        PHASE_QUEUE.present({ revision: 0, timeMs: 219 });
+        CHECK(PHASE_LOG.length === 0, 'subtick contact cannot play before its actual contact');
+        PHASE_QUEUE.present({ revision: 0, timeMs: 281 });
+        CHECK(
+            PHASE_LOG.length === 2 &&
+                PHASE_LOG[0][0] === 2 &&
+                PHASE_LOG[1][0] === 1 &&
+                Math.abs(PHASE_LOG[0][1] - 61) < 0.001 &&
+                Math.abs(PHASE_LOG[1][1] - 1) < 0.001,
+            'contacts in the same authority tick play in subtick order and use the original age',
+        );
+        let phaseRejected = false;
+        try {
+            PHASE_QUEUE.emit({ ...HIDDEN_EVENT, tick: 4, payload: { phase: 1.1 } });
+        } catch {
+            phaseRejected = true;
+        }
+        CHECK(phaseRejected, 'invalid subtick time is rejected before journal mutation');
+        PHASE_QUEUE.dispose();
+        const CORRECTION_AGES = [],
+            CORRECTION_QUEUE = new PRESENTATION_EVENT_QUEUE({
+                display: { stepMs: 100, maxLatenessMs: 200, classify: (event) => ({ phase: event.payload.phase }) },
+                adapters: {
+                    frame: {
+                        reversible: true,
+                        start: () => ({}),
+                        reconcile: () => {},
+                        update: (_handle, ageMs) => CORRECTION_AGES.push(ageMs),
+                        stop: () => {},
+                    },
+                },
+            }),
+            CORRECTION_EVENT = {
+                ...HIDDEN_EVENT,
+                tick: 2,
+                policy: 'speculative',
+                durationMs: 1000,
+                payload: { phase: 0.2 },
+            };
+        CORRECTION_QUEUE.emit(CORRECTION_EVENT);
+        CORRECTION_QUEUE.present({ revision: 0, timeMs: 140 });
+        CORRECTION_QUEUE.emit({ ...CORRECTION_EVENT, payload: { phase: 0.8 } });
+        CORRECTION_QUEUE.present({ revision: 0, timeMs: 150 });
+        CHECK(
+            CORRECTION_AGES.length === 2 &&
+                Math.abs(CORRECTION_AGES[0] - 20) < 0.001 &&
+                Math.abs(CORRECTION_AGES[1] - 20) < 0.001,
+            'corrected subtick keeps a running effect age monotonic while its new clock catches up',
+        );
+        CORRECTION_QUEUE.dispose();
+        let failDuringStart = true;
+        const START_FAILURE = new Error('start failed after synchronous completion'),
+            START_LOG = [],
+            START_QUEUE = new PRESENTATION_EVENT_QUEUE({
+                display: { stepMs: 100, maxLatenessMs: 200 },
+                adapters: {
+                    frame: {
+                        start(event) {
+                            CHECK(START_QUEUE.finish(event), 'finish during start must be accepted once');
+                            CHECK(!START_QUEUE.finish(event), 'repeated finish during start is ignored');
+                            if (failDuringStart) {
+                                failDuringStart = false;
+                                throw START_FAILURE;
+                            }
+                            return { id: event.sequence };
+                        },
+                        stop(handle, reason) {
+                            START_LOG.push([handle.id, reason]);
+                        },
+                    },
+                },
+            }),
+            START_EVENT = { ...HIDDEN_EVENT, tick: 1, durationMs: 1000 };
+        START_QUEUE.emit(START_EVENT);
+        START_QUEUE.confirmThrough(1);
+        let startFailure = null;
+        try {
+            START_QUEUE.present({ revision: 0, timeMs: 100 });
+        } catch (error) {
+            startFailure = error;
+        }
+        START_QUEUE.present({ revision: 0, timeMs: 100 });
+        START_QUEUE.emit(START_EVENT);
+        CHECK(
+            startFailure === START_FAILURE &&
+                START_LOG.length === 1 &&
+                START_LOG[0][1] === 'expired' &&
+                START_QUEUE.active.size === 0,
+            'finish during start retries after the original error, then releases one resource without replay',
+        );
+        START_QUEUE.dispose();
+        const HIDE_DURING_START = [],
+            REENTRANT_QUEUE = new PRESENTATION_EVENT_QUEUE({
+                display: { stepMs: 100, maxLatenessMs: 200 },
+                adapters: {
+                    frame: {
+                        start(event) {
+                            HIDE_DURING_START.push(['start', event.sequence]);
+                            REENTRANT_QUEUE.setPresentationActive(false);
+                            return { id: event.sequence };
+                        },
+                        stop(handle, reason) {
+                            HIDE_DURING_START.push(['stop', handle.id, reason]);
+                        },
+                    },
+                },
+            });
+        REENTRANT_QUEUE.emit({ ...HIDDEN_EVENT, tick: 1, sequence: 1, durationMs: 1000 });
+        REENTRANT_QUEUE.emit({ ...HIDDEN_EVENT, tick: 1, sequence: 2, durationMs: 1000 });
+        REENTRANT_QUEUE.confirmThrough(1);
+        REENTRANT_QUEUE.present({ revision: 0, timeMs: 100 });
+        CHECK(
+            JSON.stringify(HIDE_DURING_START) ===
+                JSON.stringify([
+                    ['start', 1],
+                    ['stop', 1, 'hidden'],
+                ]) && REENTRANT_QUEUE.active.size === 0,
+            'hiding inside start releases its newly returned resource and does not start the rest of the batch',
+        );
+        REENTRANT_QUEUE.dispose();
+        const REENTRANT_CONFIRM_LOG = [],
+            REENTRANT_CONFIRM_QUEUE = new PRESENTATION_EVENT_QUEUE({
+                retentionTicks: 2,
+                display: { stepMs: 100, maxLatenessMs: 200 },
+                adapters: {
+                    frame: {
+                        reversible: true,
+                        start() {
+                            REENTRANT_CONFIRM_QUEUE.confirmThrough(1);
+                            return {};
+                        },
+                        confirm: () => REENTRANT_CONFIRM_LOG.push('confirm'),
+                        stop: (_handle, reason) => REENTRANT_CONFIRM_LOG.push(reason),
+                    },
+                },
+            }),
+            REENTRANT_CONFIRM_EVENT = {
+                ...HIDDEN_EVENT,
+                tick: 1,
+                policy: 'speculative',
+                durationMs: 100000,
+            };
+        REENTRANT_CONFIRM_QUEUE.emit(REENTRANT_CONFIRM_EVENT);
+        REENTRANT_CONFIRM_QUEUE.present({ revision: 0, timeMs: 100 });
+        REENTRANT_CONFIRM_QUEUE.confirmThrough(4);
+        CHECK(
+            REENTRANT_CONFIRM_QUEUE.size === 1 &&
+                REENTRANT_CONFIRM_QUEUE.active.size === 1 &&
+                REENTRANT_CONFIRM_LOG.join(',') === 'confirm' &&
+                REENTRANT_CONFIRM_QUEUE.finish(REENTRANT_CONFIRM_EVENT) &&
+                REENTRANT_CONFIRM_QUEUE.size === 0,
+            'confirmation during start retains the live resource beyond retention and confirms it once',
+        );
+        REENTRANT_CONFIRM_QUEUE.dispose();
+        let reentrantAttempts = 0;
+        const REENTRANT_FRAME = { revision: 0, timeMs: 100 },
+            REENTRANT_FRAME_QUEUE = new PRESENTATION_EVENT_QUEUE({
+                display: { stepMs: 100, maxLatenessMs: 200 },
+                adapters: {
+                    frame: {
+                        start() {
+                            reentrantAttempts++;
+                            if (reentrantAttempts === 1) {
+                                REENTRANT_FRAME_QUEUE.present(REENTRANT_FRAME);
+                            }
+                            return {};
+                        },
+                        stop() {},
+                    },
+                },
+            }),
+            REENTRANT_FRAME_EVENT = { ...HIDDEN_EVENT, tick: 1, durationMs: 1000 };
+        REENTRANT_FRAME_QUEUE.emit(REENTRANT_FRAME_EVENT);
+        REENTRANT_FRAME_QUEUE.confirmThrough(1);
+        let reentrantFrameRejected = false;
+        try {
+            REENTRANT_FRAME_QUEUE.present(REENTRANT_FRAME);
+        } catch (error) {
+            reentrantFrameRejected = error.message === 'presentation frame is already being processed';
+        }
+        REENTRANT_FRAME_QUEUE.present(REENTRANT_FRAME);
+        CHECK(
+            reentrantFrameRejected && reentrantAttempts === 2 && REENTRANT_FRAME_QUEUE.active.size === 1,
+            'reentrant frame processing fails fast, then retries the pending effect without leaking a handle',
+        );
+        REENTRANT_FRAME_QUEUE.dispose();
         const LONG_HIT = {
             ...EVENT,
             tick: 6,

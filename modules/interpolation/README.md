@@ -154,6 +154,18 @@ E2E는 실제 Worker 이동에서 추출한 표본, 10/20/30 TPS·60Hz 위상, �
 
 `InterpolationTimeline({schema,stepMs,delayMs:stepMs*2})`는 revision 시작에서 로컬 표시 clock과 simulation time을 대응시키고, 고정 지연을 둔 시뮬레이션 시각의 두 snapshot 사이를 표시합니다. 수신 때마다 1틱 보간을 재시작하지 않으며 같은 callback에 여러 tick이 도착해도 중간 구간을 보존합니다. 지연은 0~16틱이며 0은 기존 즉시 retarget 방식입니다. 순간이동·revision reset은 이전 history를 끊습니다. 없는 미래는 추정하지 않고 마지막 snapshot에서 멈춥니다. 입력 송신이나 권위 시뮬레이션에는 지연을 추가하지 않습니다.
 
+### 선택적 최신 기준 표시 시계
+
+`PresentationRuntime`과 `InterpolationTimeline`은 `clock: 'bounded'`와 양의 `delayMs`를 선택할 수 있습니다. 기본값 `clock: 'fixed'`와 기존 시간 계약은 바뀌지 않습니다. 이 모드는 수신·sample에 같은 단조 wall clock을 전달하면서, 시뮬레이션 `timeMs`는 언제나 원래 틱 단위(`tick * stepMs`)로 유지합니다. replay 배속은 `setRate(rate, nowMs)`로만 바꾸고 packet의 틱 시각에 배속을 다시 곱하거나 나누지 않습니다.
+
+- 명시적인 reset/load/rollback은 목표를 snap하며 그 순간 `frame.timeMs`도 해당 목표의 시뮬레이션 시각에 맞춥니다. 이후 새 표본은 이전에 표시하던 위치에서 다음 목표로 부드럽게 따르므로 정상적으로 표본이 도착할 때 약 한 표본 구간 뒤에서 움직일 수 있습니다. 이는 reset 직후 이미 본 화면을 다시 되감아 `delayMs`를 채우지 않는 최신 기준 정책입니다. 최초 packet이 continuous라면 기존 생성·seed·지연 수명 규칙을 따릅니다. 표본이 늦어지면 마지막 표본에서 화면과 표시 시계가 함께 멈추고 다음 표본이 오면 그 위치에서 목표까지 이어집니다.
+- 일괄 catch-up으로 최신 표본이 표시 시각보다 `delayMs + stepMs`보다 더 앞서면 오래된 **표시** 구간만 생략하고 그 하한으로 한 번 이동합니다. 권위 시뮬레이션 틱·입력·상태는 변경하지 않습니다. 따라서 긴 중단의 과거 경로를 모두 재생하는 정책이 필요한 곳은 기본 fixed clock을 쓰세요.
+- `setRate(rate, nowMs)`는 이전 rate로 `nowMs`까지 진행한 뒤 새 rate를 적용합니다. rate는 유한한 0 이상의 값이며 0은 표시 일시정지입니다. 일시정지 중에도 capture를 받을 수 있지만 표시 모델·경로는 정지 시점에 고정합니다. 이력은 최신 제한 구간으로 정리하고, 재개 시 오래된 표시 부채는 위의 하한에 맞춥니다. 명시적 새 revision은 일시정지 중에도 새 장면을 표시합니다.
+- `PresentationRuntime.frame(nowMs)`의 `revision`과 `timeMs`는 이 표시 epoch와 실제 표시 시뮬레이션 시각입니다. 첫 표본 전의 bounded `timeMs`는 `null`이므로 아직 효과를 진행하지 마세요. 몸체·발사체·경로·효과가 같은 프레임과 이 시각을 사용해야 합니다. `InterpolationTimeline.displayTime(nowMs)`도 같은 시각을 제공합니다. 틱 이벤트의 시각은 `eventTick * stepMs`이며 replay 배속으로 별도 변환하지 않습니다.
+- 선택된 로컬 입력 preview는 원래의 즉시 입력 wall clock을 유지합니다. preview 해제는 bounded 표시 시계가 해당 권위 표본에 도달할 때까지 이어집니다. 표시 pause 중에는 선택된 preview도 현재 표시 모습으로 고정합니다.
+
+일시정지 순간에는 표시 중인 모델·경로를 한 번 분리하므로 그때 표시 객체와 선언 필드 수에 비례하는 일시 비용과 메모리가 듭니다. 이후 캡처 횟수에 따라 고정 화면 이력을 무한히 쌓지는 않습니다. `modelFor`는 최신 등록 source의 같은 id/generation만 고정 모델로 연결하고, 삭제되거나 세대가 바뀐 source는 연결하지 않습니다. 모델과 프레임은 기존대로 외부에서 수정하거나 영구 보관하지 마세요.
+
 ## 권장 진입점: 한 표시 프레임
 
 [실행 예제](./examples/frame.html) · [예제 코드](./examples/frame-demo.js)
