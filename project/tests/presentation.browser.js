@@ -6,7 +6,11 @@ export async function runPresentationChecks(page) {
             CollisionBoom: COLLISION_BOOM,
         } = await import('/dist/camera.js');
         const { PresentationEventQueue: PRESENTATION_EVENT_QUEUE } = await import('/dist/presentation-events.js');
-        const { PresentationRuntime: RUNTIME, RenderObject: RENDER_OBJECT } = await import('/dist/interpolation.js');
+        const {
+            PresentationRuntime: RUNTIME,
+            RenderObject: RENDER_OBJECT,
+            InterpolationTimeline: TIMELINE,
+        } = await import('/dist/interpolation.js');
         const { DOMHud: DOM_HUD } = await import('/dist/hud.js');
         const {
             DiagnosticRing: DIAGNOSTIC_RING,
@@ -90,6 +94,230 @@ export async function runPresentationChecks(page) {
             'resume at double speed aligns the new effect and actor',
         );
         CLOCK_QUEUE.dispose();
+        // A replay's last confirmed event still needs time to finish when no more ticks arrive.
+        const TERMINAL_VIEW = new RUNTIME({ stepMs: 100, delayMs: 200, clock: 'bounded' }),
+            TERMINAL_LOG = [],
+            TERMINAL_QUEUE = new PRESENTATION_EVENT_QUEUE({
+                display: {
+                    stepMs: 100,
+                    maxLatenessMs: 200,
+                    classify: (event) => (event.kind === 'notice' ? { delivery: 'confirmation', durationMs: 0 } : {}),
+                },
+                adapters: {
+                    flash: {
+                        reversible: true,
+                        start: (_event, _time, age) => {
+                            TERMINAL_LOG.push(['start', age]);
+                            return {};
+                        },
+                        update: (_handle, age) => TERMINAL_LOG.push(['age', age]),
+                        stop: (_handle, reason) => TERMINAL_LOG.push(['stop', reason]),
+                    },
+                    notice: { start: () => TERMINAL_LOG.push(['notice']) },
+                },
+            });
+        TERMINAL_VIEW.capture(
+            {
+                revision: 0,
+                sequence: 0,
+                timeMs: 900,
+                mode: 'reset',
+                entities: [{ id: 'last', generation: 0, type: ClockActor, source: { x: 42 } }],
+            },
+            0,
+        );
+        TERMINAL_QUEUE.emit({ tick: 9, sequence: 0, entityId: 'last', generation: 0, kind: 'flash', durationMs: 300 });
+        TERMINAL_QUEUE.emit({ tick: 9, sequence: 1, entityId: 'last', generation: 0, kind: 'flash', durationMs: 1000 });
+        TERMINAL_QUEUE.emit({
+            tick: 20,
+            sequence: 2,
+            entityId: 'last',
+            generation: 0,
+            kind: 'flash',
+            policy: 'speculative',
+            durationMs: 1000,
+        });
+        TERMINAL_QUEUE.confirmThrough(9);
+        TERMINAL_QUEUE.present(TERMINAL_VIEW.frame(0));
+        let unboundedTailRejected = false;
+        try {
+            TERMINAL_VIEW.finish({ tailMs: Infinity }, 0);
+        } catch {
+            unboundedTailRejected = true;
+        }
+        CHECK(unboundedTailRejected, 'terminal effect playback must have a finite bound');
+        CHECK(TERMINAL_VIEW.finish({ tailMs: 400 }, 0), 'a bounded replay may begin a finite terminal tail');
+        CHECK(!TERMINAL_VIEW.finish({ tailMs: 400 }, 0), 'repeating terminal finish cannot extend its deadline');
+        let terminalFrame = TERMINAL_VIEW.frame(100);
+        TERMINAL_QUEUE.present(terminalFrame);
+        CHECK(
+            terminalFrame.timeMs === 1000 &&
+                terminalFrame.sample('last', 0).x === 42 &&
+                TERMINAL_LOG.some((entry) => entry[0] === 'age' && entry[1] === 100),
+            'last pose stays fixed while the terminal effect advances on the same display clock',
+        );
+        TERMINAL_VIEW.setRate(0, 100);
+        terminalFrame = TERMINAL_VIEW.frame(500);
+        TERMINAL_QUEUE.present(terminalFrame);
+        CHECK(
+            terminalFrame.timeMs === 1000 && terminalFrame.sample('last', 0).x === 42,
+            'paused terminal tail stays paused',
+        );
+        TERMINAL_VIEW.setRate(2, 500);
+        terminalFrame = TERMINAL_VIEW.frame(650);
+        if (terminalFrame.terminalComplete) {
+            TERMINAL_QUEUE.setPresentationActive(false);
+        }
+        TERMINAL_QUEUE.present(terminalFrame);
+        CHECK(
+            terminalFrame.timeMs === 1300 &&
+                terminalFrame.sample('last', 0).x === 42 &&
+                terminalFrame.terminalComplete &&
+                TERMINAL_LOG.filter((entry) => entry[0] === 'start').length === 2 &&
+                TERMINAL_LOG.filter((entry) => entry[0] === 'stop' && entry[1] === 'hidden').length === 2 &&
+                TERMINAL_QUEUE.active.size === 0,
+            'tail releases active effects and discards future visuals at the finite horizon',
+        );
+        TERMINAL_QUEUE.present(terminalFrame);
+        TERMINAL_QUEUE.emit({ tick: 10, sequence: 3, entityId: 'last', generation: 0, kind: 'flash', durationMs: 0 });
+        TERMINAL_QUEUE.emit({ tick: 10, sequence: 4, entityId: 'last', generation: 0, kind: 'notice', durationMs: 0 });
+        TERMINAL_QUEUE.confirmThrough(10);
+        CHECK(
+            TERMINAL_LOG.filter((entry) => entry[0] === 'start').length === 2 &&
+                TERMINAL_LOG.filter((entry) => entry[0] === 'notice').length === 1,
+            'after terminal, delayed visual does not restart but confirmed control feedback is preserved',
+        );
+        let terminalCaptureRejected = false;
+        try {
+            TERMINAL_VIEW.capture({ revision: 0, sequence: 1, timeMs: 1000, entities: [] }, 650);
+        } catch {
+            terminalCaptureRejected = true;
+        }
+        CHECK(terminalCaptureRejected, 'terminal authority cannot advance in the same revision');
+        TERMINAL_VIEW.capture(
+            {
+                revision: 1,
+                sequence: 0,
+                timeMs: 200,
+                mode: 'rollback',
+                entities: [{ id: 'last', generation: 0, type: ClockActor, source: { x: 11 } }],
+            },
+            650,
+        );
+        terminalFrame = TERMINAL_VIEW.frame(1500);
+        CHECK(
+            terminalFrame.timeMs === 200 && !terminalFrame.terminalComplete && terminalFrame.sample('last', 0).x === 11,
+            'a new replay epoch clears the old terminal tail',
+        );
+        TERMINAL_QUEUE.setPresentationActive(true);
+        TERMINAL_QUEUE.present(terminalFrame);
+        CHECK(
+            TERMINAL_LOG.filter((entry) => entry[0] === 'start').length === 2,
+            'a new epoch does not replay discarded visuals',
+        );
+        TERMINAL_QUEUE.dispose();
+        class PreviewTailActor extends RENDER_OBJECT {
+            static renderSchema = { x: RENDER_OBJECT.POSITION_X, y: RENDER_OBJECT.POSITION_Y };
+        }
+        const PREVIEW_TAIL = new RUNTIME({ stepMs: 100, delayMs: 100, clock: 'bounded' }),
+            PREVIEW_SOURCE = { x: 0, y: 0 };
+        PREVIEW_TAIL.capture(
+            {
+                revision: 0,
+                sequence: 0,
+                timeMs: 0,
+                entities: [{ id: 'a', generation: 0, type: PreviewTailActor, source: PREVIEW_SOURCE }],
+            },
+            0,
+        );
+        PREVIEW_SOURCE.x = 10;
+        PREVIEW_TAIL.capture(
+            {
+                revision: 0,
+                sequence: 1,
+                timeMs: 100,
+                entities: [{ id: 'a', generation: 0, type: PreviewTailActor, source: PREVIEW_SOURCE }],
+            },
+            100,
+        );
+        PREVIEW_TAIL.selectPreview([{ id: 'a', generation: 0 }]);
+        PREVIEW_TAIL.capturePreview(
+            {
+                revision: 0,
+                sequence: 0,
+                timeMs: 110,
+                phaseStartMs: 100,
+                stepMs: 100,
+                entities: [{ id: 'a', generation: 0, type: PreviewTailActor, source: { x: 20, y: 0 } }],
+            },
+            110,
+        );
+        CHECK(
+            Math.abs(PREVIEW_TAIL.frame(120).sample('a', 0).x - 12) < 1e-9,
+            'local preview is visible before terminal pause',
+        );
+        PREVIEW_TAIL.setRate(0, 120);
+        PREVIEW_TAIL.finish({ tailMs: 400 }, 120);
+        const PAUSED_TERMINAL = PREVIEW_TAIL.frame(200);
+        CHECK(
+            PAUSED_TERMINAL.timeMs === 20 && Math.abs(PAUSED_TERMINAL.sample('a', 0).x - 2) < 1e-9,
+            'terminal pause removes preview at the same authority time',
+        );
+        PREVIEW_TAIL.setRate(1, 200);
+        const RESUMED_TERMINAL = PREVIEW_TAIL.frame(200);
+        CHECK(
+            RESUMED_TERMINAL.timeMs === 20 && Math.abs(RESUMED_TERMINAL.sample('a', 0).x - 2) < 1e-9,
+            'terminal resume does not jump from stale preview',
+        );
+        const PAUSED_REMOVAL = new RUNTIME({ stepMs: 100, delayMs: 100, clock: 'bounded' });
+        PAUSED_REMOVAL.capture(
+            {
+                revision: 0,
+                sequence: 0,
+                timeMs: 0,
+                entities: [{ id: 'a', generation: 0, type: PreviewTailActor, source: { x: 0, y: 0 } }],
+            },
+            0,
+        );
+        PAUSED_REMOVAL.capture(
+            {
+                revision: 0,
+                sequence: 1,
+                timeMs: 100,
+                entities: [{ id: 'a', generation: 0, type: PreviewTailActor, source: { x: 10, y: 0 } }],
+            },
+            100,
+        );
+        PAUSED_REMOVAL.setRate(0, 120);
+        for (let tick = 2; tick <= 10; tick++) {
+            PAUSED_REMOVAL.capture({ revision: 0, sequence: tick, timeMs: tick * 100, entities: [] }, tick * 100);
+        }
+        PAUSED_REMOVAL.finish({ tailMs: 400 }, 1000);
+        const REMOVED_FRAME = PAUSED_REMOVAL.frame(1000);
+        CHECK(
+            REMOVED_FRAME.timeMs === 20 && Math.abs(REMOVED_FRAME.sample('a', 0).x - 2) < 1e-9,
+            'terminal finish retains the paused actor even if later authority removed it',
+        );
+        const SCALAR = new TIMELINE({ schema: { x: 'number' }, stepMs: 100, delayMs: 200, clock: 'bounded' }),
+            SCALAR_POSE = {};
+        SCALAR.accept(
+            {
+                revision: 0,
+                sequence: 0,
+                timeMs: 900,
+                mode: 'reset',
+                entities: [{ id: 'last', generation: 0, values: { x: 42 } }],
+            },
+            0,
+        );
+        SCALAR.finish({ tailMs: 400 }, 0);
+        CHECK(
+            SCALAR.displayTime(500) === 1300 &&
+                SCALAR.isTerminalComplete(500) &&
+                SCALAR.sampleInto('last', 0, 500, SCALAR_POSE) &&
+                SCALAR_POSE.x === 42,
+            'scalar timeline has the same bounded tail and final pose',
+        );
         const HOST = document.createElement('div');
         HOST.style.cssText = 'position:relative;width:100px;height:100px';
         document.body.append(HOST);

@@ -164,6 +164,14 @@ E2E는 실제 Worker 이동에서 추출한 표본, 10/20/30 TPS·60Hz 위상, �
 - `PresentationRuntime.frame(nowMs)`의 `revision`과 `timeMs`는 이 표시 epoch와 실제 표시 시뮬레이션 시각입니다. 첫 표본 전의 bounded `timeMs`는 `null`이므로 아직 효과를 진행하지 마세요. 몸체·발사체·경로·효과가 같은 프레임과 이 시각을 사용해야 합니다. `InterpolationTimeline.displayTime(nowMs)`도 같은 시각을 제공합니다. 틱 이벤트의 시각은 `eventTick * stepMs`이며 replay 배속으로 별도 변환하지 않습니다.
 - 선택된 로컬 입력 preview는 원래의 즉시 입력 wall clock을 유지합니다. preview 해제는 bounded 표시 시계가 해당 권위 표본에 도달할 때까지 이어집니다. 표시 pause 중에는 선택된 preview도 현재 표시 모습으로 고정합니다.
 
+#### 마지막 틱 이후의 유한한 효과 재생
+
+경기·리플레이가 끝나 더 이상 권위 표본이 오지 않더라도 마지막 틱에서 시작한 효과가 끝날 시간이 필요할 수 있습니다. 마지막 표본을 캡처한 뒤 `view.finish({ tailMs }, nowMs)`를 한 번 호출하면, bounded 표시 시계는 마지막 시뮬레이션 시각부터 유한한 `tailMs`까지 같은 속도로 진행한 다음 멈춥니다. `frame.timeMs`와 그 프레임을 소비하는 이벤트 큐는 함께 진행하며, 유닛·경로는 마지막 권위 표본을 넘어 외삽하지 않습니다. 새로운 시뮬레이션 틱이나 게임 상태는 생성하지 않습니다. `tailMs`는 효과 소유자가 결정한 유한한 0 이상의 시간이며, 무한 재생은 허용하지 않습니다.
+
+이미 표시가 마지막 틱에 도달하기 전이라면 그 구간을 먼저 정상 진행합니다. `setRate(0, nowMs)`는 tail도 멈추고 재개·배속은 같은 시계에 반영됩니다. 중복 `finish`는 기한을 늘리지 않고 `false`를 반환합니다. 완료 후 같은 revision의 새 표본은 거절하며, 명시적 새 revision의 reset/load/rollback이 terminal 상태를 해제합니다. 실제 입력 예측은 경기가 끝날 때 정리해야 하므로 `finish`는 로컬 preview를 제거하고, terminal 중에는 새 preview를 선택하거나 캡처하지 않습니다. 기존 fixed 시계에는 이 기능을 적용하지 않습니다. `InterpolationTimeline`에도 같은 `finish({ tailMs }, nowMs)` 계약이 있습니다.
+
+`frame.terminalComplete`가 참이면 표시 효과 소유자는 그 프레임의 이벤트를 전달하기 전에 기존 `queue.setPresentationActive(false)`를 호출해 활성 및 대기 중인 일시 효과를 정리할 수 있습니다. 확정 즉시 전달되는 제어·HUD 이벤트와 권위 기록은 유지됩니다. 새 재생에는 기존 계약대로 새 큐를 사용합니다. 스칼라 `InterpolationTimeline`에서는 `isTerminalComplete(nowMs)`로 같은 완료 여부를 확인합니다. 일시정지 중 `finish`는 그 시각의 권위 화면을 보존하며 preview만 제거합니다.
+
 일시정지 순간에는 표시 중인 모델·경로를 한 번 분리하므로 그때 표시 객체와 선언 필드 수에 비례하는 일시 비용과 메모리가 듭니다. 이후 캡처 횟수에 따라 고정 화면 이력을 무한히 쌓지는 않습니다. `modelFor`는 최신 등록 source의 같은 id/generation만 고정 모델로 연결하고, 삭제되거나 세대가 바뀐 source는 연결하지 않습니다. 모델과 프레임은 기존대로 외부에서 수정하거나 영구 보관하지 마세요.
 
 ## 권장 진입점: 한 표시 프레임

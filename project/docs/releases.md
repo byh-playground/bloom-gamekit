@@ -1,3 +1,7 @@
+## v0.47.7 (2026-11-08)
+
+호환 기능 추가. bounded 표시 시계에 마지막 권위 표본 이후 유한한 효과 재생 시간을 제공하여 시뮬레이션 틱을 추가하지 않고 마지막 화면과 효과를 같은 시계로 표시합니다. 일시정지와 재생 속도를 유지하며 완료 시 기존 이벤트 큐의 표시 자원을 정리할 수 있습니다. 상세 계약은 [interpolation](../../modules/interpolation/README.md)에 있습니다.
+
 ## v0.47.6 (2026-11-07)
 
 호환 기능 추가. 보간 표시 시계에 최신 표본 기준의 선택적 bounded 모드와 재생 속도·일시정지를 제공하며, 표시 이벤트 journal은 같은 프레임의 시뮬레이션 시각에 맞춰 확정 효과를 전달할 수 있습니다. 기존 fixed 시계와 즉시 이벤트 전달은 기본값 그대로입니다. 상세 계약과 지연·복귀 정책은 [interpolation](../../modules/interpolation/README.md)과 [presentation-events](../../modules/presentation-events/README.md)에 있습니다.

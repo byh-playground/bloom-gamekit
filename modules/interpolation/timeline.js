@@ -54,6 +54,21 @@ export class InterpolationTimeline {
     #displayTime(nowMs) {
         return this.#playhead ? this.#playhead.sample(nowMs) : nowMs - this.#delayMs - this.#origin;
     }
+    /** Finish authority and advance the same display clock through a finite effects tail. */
+    finish({ tailMs } = {}, nowMs) {
+        this.#checkClock(nowMs);
+        if (!this.#playhead) {
+            throw new Error('terminal presentation requires a bounded clock');
+        }
+        if (finite(tailMs, 'tailMs') < 0) {
+            throw new RangeError('tailMs must be nonnegative');
+        }
+        const FINISHED = this.#playhead.finish(tailMs, nowMs);
+        if (FINISHED) {
+            this.#now = nowMs;
+        }
+        return FINISHED;
+    }
     #freezeView(nowMs) {
         const VIEW = new Map();
         for (const [ID, TRACK] of this.#tracks) {
@@ -86,6 +101,15 @@ export class InterpolationTimeline {
         }
         this.#now = nowMs;
         return this.#displayTime(nowMs);
+    }
+    /** True only when an explicitly requested finite terminal tail has elapsed. */
+    isTerminalComplete(nowMs) {
+        this.#checkClock(nowMs);
+        if (!this.#playhead) {
+            throw new Error('terminal presentation requires a bounded clock');
+        }
+        this.#now = nowMs;
+        return this.#playhead.terminalEnd !== null && this.#playhead.sample(nowMs) >= this.#playhead.terminalEnd;
     }
     /**
      * Accept one complete authoritative snapshot. Returns false for obsolete packets.
