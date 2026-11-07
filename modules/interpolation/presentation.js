@@ -50,6 +50,7 @@ export class PresentationRuntime {
     #playhead;
     #playheadRevision = 0;
     #pausedView = null;
+    #pausedAuthorityView = null;
     #pausedAt = null;
 
     /** @param {{stepMs:number, delayMs?:number, clock?:'fixed'|'bounded', snapDistance?:number, extrapolation?:{fields:string[],maxMs:number}}} options */
@@ -102,6 +103,28 @@ export class PresentationRuntime {
     #displayTime(nowMs) {
         return this.#playhead ? this.#playhead.sample(nowMs) : nowMs - this.#delayMs - this.#origin;
     }
+    /** Finish authority and advance the same display clock through a finite effects tail. */
+    finish({ tailMs } = {}, nowMs) {
+        this.#checkClock(nowMs);
+        if (!this.#playhead) {
+            throw new Error('terminal presentation requires a bounded clock');
+        }
+        if (finite(tailMs, 'tailMs') < 0) {
+            throw new RangeError('tailMs must be nonnegative');
+        }
+        const FINISHED = this.#playhead.finish(tailMs, nowMs);
+        if (FINISHED) {
+            this.clearPreview();
+            if (this.#pausedAuthorityView) {
+                this.#pausedView = this.#pausedAuthorityView;
+            }
+            this.#pausedAuthorityView = null;
+            this.#playheadRevision++;
+            this.#frameSerial++;
+            this.#now = nowMs;
+        }
+        return FINISHED;
+    }
     /** Change the bounded display rate after accounting for the previous rate through nowMs. */
     setRate(rate, nowMs) {
         this.#checkClock(nowMs);
@@ -109,7 +132,10 @@ export class PresentationRuntime {
             throw new RangeError('setRate requires a bounded clock and nonnegative rate');
         }
         if (rate === 0 && this.#playhead.rate !== 0) {
-            this.#pausedView = this.#freezeView(nowMs);
+            const AUTHORITY_VIEW = this.#freezeAuthorityView(nowMs),
+                DISPLAY_VIEW = this.#freezeView(nowMs);
+            this.#pausedAuthorityView = AUTHORITY_VIEW;
+            this.#pausedView = DISPLAY_VIEW;
             this.#pausedAt = nowMs;
         } else if (rate > 0) {
             if (this.#pausedView && this.#pausedAt !== null) {
@@ -121,12 +147,31 @@ export class PresentationRuntime {
                 }
             }
             this.#pausedView = null;
+            this.#pausedAuthorityView = null;
             this.#pausedAt = null;
         }
         this.#playhead.setRate(rate, nowMs);
         this.#playheadRevision++;
         this.#frameSerial++;
         this.#now = nowMs;
+    }
+    #freezeAuthorityView(nowMs) {
+        if (!this.#preview.size || !this.#previewSelection.size) {
+            return null;
+        }
+        const PREVIEW = this.#preview,
+            SELECTION = this.#previewSelection,
+            SOURCES = this.#previewSources;
+        this.#preview = new Map();
+        this.#previewSelection = new Map();
+        this.#previewSources = new WeakMap();
+        try {
+            return this.#freezeView(nowMs);
+        } finally {
+            this.#preview = PREVIEW;
+            this.#previewSelection = SELECTION;
+            this.#previewSources = SOURCES;
+        }
     }
     #freezeView(nowMs) {
         const FRAME = this.frame(nowMs),
@@ -155,6 +200,9 @@ export class PresentationRuntime {
     }
     /** Select game-owned local identities only; remote authoritative tracks remain unchanged. */
     selectPreview(identities) {
+        if (this.#playhead && this.#playhead.terminalEnd !== null) {
+            throw new Error('terminal presentation cannot start a local preview');
+        }
         if (!Array.isArray(identities)) {
             throw new TypeError('preview identities must be an array');
         }
@@ -265,6 +313,9 @@ export class PresentationRuntime {
         const STARTED = performance.now();
         let bytes = 0;
         this.#checkClock(nowMs);
+        if (this.#playhead && this.#playhead.terminalEnd !== null) {
+            throw new Error('terminal presentation cannot capture a local preview');
+        }
         if (!packet || !Array.isArray(packet.entities)) {
             throw new TypeError('preview packet entities');
         }
@@ -696,6 +747,7 @@ export class PresentationRuntime {
         if (this.#pausedView && CHANGED) {
             // Explicit seek/reset while paused is a new scene, not hidden live progress.
             this.#pausedView = null;
+            this.#pausedAuthorityView = this.#freezeAuthorityView(nowMs);
             this.#pausedView = this.#freezeView(nowMs);
         }
         return true;
@@ -924,6 +976,7 @@ export class PresentationRuntime {
         this.#checkClock(nowMs);
         this.#now = nowMs;
         const SERIAL = ++this.#frameSerial,
+            DISPLAY_TIME = this.#displayTime(nowMs),
             CHECK = () => {
                 if (SERIAL !== this.#frameSerial) {
                     throw new Error('Presentation frame expired');
@@ -932,7 +985,12 @@ export class PresentationRuntime {
         return Object.freeze({
             nowMs,
             revision: this.#revision,
-            timeMs: this.#displayTime(nowMs),
+            timeMs: DISPLAY_TIME,
+            terminalComplete: !!(
+                this.#playhead &&
+                this.#playhead.terminalEnd !== null &&
+                DISPLAY_TIME >= this.#playhead.terminalEnd
+            ),
             sample: (id, generation) => {
                 CHECK();
                 return this.sample(id, generation, nowMs);

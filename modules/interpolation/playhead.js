@@ -9,6 +9,7 @@ export class BoundedPlayhead {
         this.time = 0;
         this.wall = 0;
         this.rate = 1;
+        this.terminalEnd = null;
     }
     sample(nowMs) {
         if (!Number.isFinite(this.latest)) {
@@ -17,9 +18,12 @@ export class BoundedPlayhead {
         if (this.rate === 0) {
             return this.time;
         }
-        return Math.min(this.latest, this.time + (nowMs - this.wall) * this.rate);
+        return Math.min(this.terminalEnd ?? this.latest, this.time + (nowMs - this.wall) * this.rate);
     }
     prepare(timeMs, nowMs, newEpoch, snap) {
+        if (this.terminalEnd !== null && !newEpoch) {
+            throw new Error('terminal presentation requires a new revision before capture');
+        }
         let time = newEpoch ? (snap ? timeMs : timeMs - this.delayMs) : this.sample(nowMs);
         if (!newEpoch && this.rate > 0) {
             // Drop only display debt beyond the existing interpolation buffer and one tick.
@@ -31,6 +35,24 @@ export class BoundedPlayhead {
         this.latest = plan.latest;
         this.time = plan.time;
         this.wall = plan.wall;
+        this.terminalEnd = null;
+    }
+    finish(tailMs, nowMs) {
+        if (!Number.isFinite(this.latest)) {
+            throw new Error('terminal presentation requires an authoritative snapshot');
+        }
+        if (this.terminalEnd !== null) {
+            return false;
+        }
+        const END = this.latest + tailMs,
+            DISPLAYED = this.sample(nowMs);
+        if (!Number.isFinite(END)) {
+            throw new RangeError('terminal presentation clock overflow');
+        }
+        this.time = DISPLAYED;
+        this.wall = nowMs;
+        this.terminalEnd = END;
+        return true;
     }
     setRate(rate, nowMs) {
         const DISPLAYED = this.sample(nowMs);
