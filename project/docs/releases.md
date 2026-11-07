@@ -1,3 +1,7 @@
+## v0.47.6 (2026-11-07)
+
+호환 기능 추가. 보간 표시 시계에 최신 표본 기준의 선택적 bounded 모드와 재생 속도·일시정지를 제공하며, 표시 이벤트 journal은 같은 프레임의 시뮬레이션 시각에 맞춰 확정 효과를 전달할 수 있습니다. 기존 fixed 시계와 즉시 이벤트 전달은 기본값 그대로입니다. 상세 계약과 지연·복귀 정책은 [interpolation](../../modules/interpolation/README.md)과 [presentation-events](../../modules/presentation-events/README.md)에 있습니다.
+
 ## v0.47.5 (2026-11-07)
 
 호환 기능 추가. `scenario`에서 소개와 임베드 화면이 같은 iframe 준비·취소·정리 경계를 사용하고, 비동기 작업이 준비되지 않았을 때 고정 틱을 보류할 수 있습니다. 기존 소개 화면과 기본 틱 동작은 유지합니다. 상세 계약은 [scenario](../../modules/scenario/README.md)에 있습니다.

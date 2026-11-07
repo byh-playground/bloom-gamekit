@@ -6,6 +6,7 @@ export async function runPresentationChecks(page) {
             CollisionBoom: COLLISION_BOOM,
         } = await import('/dist/camera.js');
         const { PresentationEventQueue: PRESENTATION_EVENT_QUEUE } = await import('/dist/presentation-events.js');
+        const { PresentationRuntime: RUNTIME, RenderObject: RENDER_OBJECT } = await import('/dist/interpolation.js');
         const { DOMHud: DOM_HUD } = await import('/dist/hud.js');
         const {
             DiagnosticRing: DIAGNOSTIC_RING,
@@ -18,6 +19,77 @@ export async function runPresentationChecks(page) {
                 throw Error(message);
             }
         };
+        // One clock drives actual interpolated models and the existing confirmation journal.
+        class ClockActor extends RENDER_OBJECT {
+            static renderSchema = { x: RENDER_OBJECT.POSITION_X };
+        }
+        const VIEW = new RUNTIME({ stepMs: 100, delayMs: 200, clock: 'bounded' }),
+            STARTED = [],
+            CLOCK_QUEUE = new PRESENTATION_EVENT_QUEUE({
+                display: { stepMs: 100, maxLatenessMs: 200 },
+                adapters: { flash: { start: (event, time) => STARTED.push([event.tick, event.sequence, time]) } },
+            }),
+            CAPTURE_CLOCK = (tick, now, mode = 'continuous') =>
+                VIEW.capture(
+                    {
+                        revision: 0,
+                        sequence: tick,
+                        timeMs: tick * 100,
+                        mode,
+                        entities: [{ id: 'u', generation: 0, type: ClockActor, source: { x: tick * 100 } }],
+                    },
+                    now,
+                ),
+            EMIT_CLOCK = (tick, sequence) =>
+                CLOCK_QUEUE.emit({
+                    tick,
+                    sequence,
+                    entityId: 'u',
+                    generation: 0,
+                    kind: 'flash',
+                    durationMs: 0,
+                });
+        CAPTURE_CLOCK(0, 0, 'reset');
+        EMIT_CLOCK(1, 0);
+        CLOCK_QUEUE.confirmThrough(1);
+        CLOCK_QUEUE.present(VIEW.frame(0));
+        CAPTURE_CLOCK(1, 100);
+        CLOCK_QUEUE.present(VIEW.frame(100));
+        CHECK(STARTED.length === 0, 'confirmed effect waits for the same display clock as the actor');
+        let clockFrame = VIEW.frame(200);
+        CLOCK_QUEUE.present(clockFrame);
+        CHECK(
+            clockFrame.timeMs === 100 && clockFrame.sample('u', 0).x === 100 && STARTED.length === 1,
+            'body and effect reach the same tick in the same frame',
+        );
+        EMIT_CLOCK(1, 1);
+        CLOCK_QUEUE.present(VIEW.frame(200));
+        CHECK(STARTED.length === 2, 'a later confirmed event at the same tick is not discarded');
+        VIEW.setRate(0, 200);
+        CLOCK_QUEUE.setPresentationActive(false);
+        CAPTURE_CLOCK(2, 300);
+        EMIT_CLOCK(2, 0);
+        CLOCK_QUEUE.confirmThrough(2);
+        VIEW.setRate(0.5, 400);
+        CLOCK_QUEUE.setPresentationActive(true);
+        CLOCK_QUEUE.present(VIEW.frame(400));
+        CAPTURE_CLOCK(3, 500);
+        EMIT_CLOCK(3, 0);
+        CLOCK_QUEUE.confirmThrough(3);
+        clockFrame = VIEW.frame(500);
+        CLOCK_QUEUE.present(clockFrame);
+        CHECK(clockFrame.timeMs === 150 && STARTED.length === 2, 'hidden event stays silent and half rate is shared');
+        VIEW.setRate(2, 500);
+        clockFrame = VIEW.frame(575);
+        CLOCK_QUEUE.present(clockFrame);
+        CHECK(
+            clockFrame.timeMs === 300 &&
+                clockFrame.sample('u', 0).x === 300 &&
+                STARTED.length === 3 &&
+                STARTED[2][0] === 3,
+            'resume at double speed aligns the new effect and actor',
+        );
+        CLOCK_QUEUE.dispose();
         const HOST = document.createElement('div');
         HOST.style.cssText = 'position:relative;width:100px;height:100px';
         document.body.append(HOST);
