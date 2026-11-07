@@ -484,9 +484,16 @@ function createLoop({
 }
 
 // modules/scenario/scenario.js
-function createScenario({ definition, createRun, requestFrame, cancelFrame, onEnd = () => {
-} } = {}) {
-  if (!definition || typeof createRun !== "function" || typeof onEnd !== "function") {
+function createScenario({
+  definition,
+  createRun,
+  requestFrame,
+  cancelFrame,
+  canAdvance = () => true,
+  onEnd = () => {
+  }
+} = {}) {
+  if (!definition || typeof createRun !== "function" || typeof onEnd !== "function" || typeof canAdvance !== "function") {
     throw new TypeError("scenario definition/factory");
   }
   definition = structuredClone(definition);
@@ -623,6 +630,7 @@ function createScenario({ definition, createRun, requestFrame, cancelFrame, onEn
       advance
     },
     getInput: () => EMPTY,
+    canAdvance,
     canObserveInput: () => false,
     render({ alpha }) {
       if (scope && state !== "disposed") {
@@ -704,6 +712,9 @@ function createScenario({ definition, createRun, requestFrame, cancelFrame, onEn
         throw new Error("pause automatic scheduling before manual stepping");
       }
       try {
+        if (state === "playing" && !canAdvance()) {
+          return { status: "held", tick };
+        }
         return advance();
       } catch (error) {
         state = "stopped";
@@ -733,6 +744,97 @@ function createScenario({ definition, createRun, requestFrame, cancelFrame, onEn
       release();
     }
   };
+}
+
+// modules/scenario/frame-lifecycle.js
+function mountScenarioFrame({
+  container,
+  src,
+  configure = () => {
+  },
+  prepare,
+  timeoutMs = 15e3,
+  timeoutAfterLoad = false,
+  loadMessage = "scenario frame load failed",
+  timeoutMessage = "scenario frame readiness timed out"
+} = {}) {
+  if (!container || typeof container.append !== "function" || !src || typeof configure !== "function") {
+    throw new TypeError("scenario frame container/src");
+  }
+  if (prepare !== void 0 && typeof prepare !== "function") {
+    throw new TypeError("scenario frame prepare");
+  }
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || typeof timeoutAfterLoad !== "boolean") {
+    throw new RangeError("scenario frame timeout");
+  }
+  const FRAME = document.createElement("iframe");
+  const CONTROLLER = new AbortController();
+  const SIGNAL = CONTROLLER.signal;
+  let timer;
+  let onLoad;
+  let onError;
+  let onAbort;
+  const LOADED = new Promise((resolve, reject) => {
+    onLoad = () => resolve(true);
+    onError = () => reject(new Error(loadMessage));
+    onAbort = () => resolve(false);
+    FRAME.addEventListener("load", onLoad, { once: true });
+    FRAME.addEventListener("error", onError, { once: true });
+    SIGNAL.addEventListener("abort", onAbort, { once: true });
+  });
+  const CLEAN_LOAD_LISTENERS = () => {
+    FRAME.removeEventListener("load", onLoad);
+    FRAME.removeEventListener("error", onError);
+    SIGNAL.removeEventListener("abort", onAbort);
+  };
+  LOADED.then(CLEAN_LOAD_LISTENERS, CLEAN_LOAD_LISTENERS);
+  const CANCELLED = new Promise((resolve) => SIGNAL.addEventListener("abort", () => resolve(false), { once: true }));
+  let finished = false;
+  const TIMEOUT = new Promise((_, reject) => {
+    const START = () => {
+      if (!finished && !SIGNAL.aborted) {
+        timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+      }
+    };
+    if (timeoutAfterLoad) {
+      LOADED.then(
+        (loaded) => {
+          if (loaded) {
+            START();
+          }
+        },
+        () => {
+        }
+      );
+    } else {
+      START();
+    }
+  });
+  let ready;
+  function dispose() {
+    CONTROLLER.abort();
+    FRAME.remove();
+  }
+  try {
+    configure(FRAME);
+    const PREPARED = prepare ? Promise.resolve(prepare({ frame: FRAME, loaded: LOADED, signal: SIGNAL })) : LOADED;
+    FRAME.src = src;
+    container.append(FRAME);
+    const LOAD_FAILURE = LOADED.then(() => new Promise(() => {
+    }));
+    ready = Promise.race([PREPARED.then(() => !SIGNAL.aborted), LOAD_FAILURE, CANCELLED, TIMEOUT]).catch((error) => {
+      dispose();
+      throw error;
+    }).finally(() => {
+      finished = true;
+      clearTimeout(timer);
+    });
+  } catch (error) {
+    clearTimeout(timer);
+    dispose();
+    throw error;
+  }
+  return { frame: FRAME, ready, dispose };
 }
 
 // modules/scenario/showcase-host.js
@@ -972,7 +1074,7 @@ function installShowcase({
   const LAUNCH_BUTTON = element("button", "bloom-showcase-link", T.launch);
   LAUNCH_BUTTON.type = "button";
   LAUNCH_BUTTON.setAttribute("aria-label", T.launchLabel(title));
-  let frame = null, runner = null, focus = null, previousUrl = null;
+  let frame = null, frameScope = null, runner = null, focus = null, previousUrl = null;
   let held = /* @__PURE__ */ new Set(), restored = [];
   const IS_OPEN = () => !ROOT.hidden;
   const CONTENT_WINDOW = () => frame?.contentWindow || null;
@@ -992,7 +1094,8 @@ function installShowcase({
       }
     }
     held = /* @__PURE__ */ new Set();
-    frame?.remove();
+    frameScope?.dispose();
+    frameScope = null;
     frame = null;
     VIEWPORT.replaceChildren();
   }
@@ -1022,46 +1125,45 @@ function installShowcase({
     INTRO_URL.searchParams.set(DEMO_PARAMETER, "1");
     INTRO_URL.searchParams.set("lang", locale);
     INTRO_URL.hash = "";
-    const NEXT = document.createElement("iframe");
-    NEXT.title = T.frame(title);
-    NEXT.tabIndex = -1;
-    NEXT.allow = "autoplay";
-    NEXT.src = INTRO_URL.href;
-    frame = NEXT;
-    VIEWPORT.replaceChildren(frame);
-    await new Promise((resolve, reject) => {
-      NEXT.addEventListener("load", resolve, { once: true });
-      NEXT.addEventListener("error", () => reject(new Error(T.loadFailed)), { once: true });
+    const NEXT_SCOPE = mountScenarioFrame({
+      container: VIEWPORT,
+      src: INTRO_URL.href,
+      timeoutMs: readyTimeoutMs,
+      timeoutAfterLoad: true,
+      loadMessage: T.loadFailed,
+      timeoutMessage: T.readyTimeout,
+      configure(next) {
+        next.title = T.frame(title);
+        next.tabIndex = -1;
+        next.allow = "autoplay";
+      },
+      async prepare({ frame: next, loaded, signal }) {
+        await loaded;
+        while (!signal.aborted) {
+          try {
+            if (ready(next.contentWindow)) {
+              return;
+            }
+          } catch {
+          }
+          await new Promise((resolve) => {
+            const FINISH = () => {
+              cancelAnimationFrame(ID);
+              signal.removeEventListener("abort", FINISH);
+              resolve();
+            };
+            const ID = requestAnimationFrame(FINISH);
+            signal.addEventListener("abort", FINISH, { once: true });
+          });
+        }
+      }
     });
-    if (!IS_OPEN() || NEXT !== frame) {
+    frameScope = NEXT_SCOPE;
+    frame = NEXT_SCOPE.frame;
+    if (!await NEXT_SCOPE.ready || !IS_OPEN() || NEXT_SCOPE !== frameScope) {
       return;
     }
     const WIN = CONTENT_WINDOW();
-    const LOADED_AT = performance.now();
-    await new Promise((resolve, reject) => {
-      const CHECK = () => {
-        if (!IS_OPEN() || NEXT !== frame) {
-          resolve();
-          return;
-        }
-        try {
-          if (ready(WIN)) {
-            resolve();
-            return;
-          }
-        } catch {
-        }
-        if (performance.now() - LOADED_AT > readyTimeoutMs) {
-          reject(new Error(T.readyTimeout));
-          return;
-        }
-        requestAnimationFrame(CHECK);
-      };
-      CHECK();
-    });
-    if (!IS_OPEN() || NEXT !== frame) {
-      return;
-    }
     const QUEUE = [];
     runner = createScenario({
       definition: {
@@ -1253,5 +1355,6 @@ function installShowcase({
 }
 export {
   createScenario,
-  installShowcase
+  installShowcase,
+  mountScenarioFrame
 };
