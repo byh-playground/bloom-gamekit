@@ -40,11 +40,12 @@ createRun({seed,initialState,scene,signal,iteration})은 **격리된** 게임 �
 
 ### 같은 문서에서 준비된 표면 재사용
 
-`createScenarioSurface({ createSurface, prepare })`는 이미 준비한 표시 자원을 같은 문서의 여러 소개 장면에서 이어서 사용하는 선택적 호스트입니다.
+`createScenarioSurface({ createSurface, prepare, waitForFirstFrame: false })`는 이미 준비한 표시 자원을 같은 문서의 여러 소개 장면에서 이어서 사용하는 선택적 호스트입니다.
 
 - `createSurface()`는 첫 장면이 열릴 때 한 번 호출되며, 렌더링 DOM `element`와 소비자가 제공하는 자원, 선택적 `dispose()`를 동기 반환합니다.
-- `host.mount({ container, scene, active: false })`는 이전 실행을 닫고 같은 `element`를 새 컨테이너에 붙입니다. 반환값은 `{ ready, setActive(active), dispose() }`입니다.
-- `prepare({ surface, scene, signal })`는 표면을 붙인 뒤 호출되며 초기 일시정지 상태인 `{ play(), pause(), dispose() }`를 동기 또는 비동기로 반환합니다. `ready`는 준비가 완료되면 `true`, 교체 또는 닫기로 취소되면 `false`입니다. 준비 오류는 원본 예외로 거부됩니다.
+- `host.mount({ container, scene, active: false })`는 이전 실행을 닫고 같은 `element`를 새 컨테이너에 붙입니다. 반환값은 `{ ready, presented, setActive(active), dispose() }`입니다.
+- `prepare({ surface, scene, signal, present })`는 표면을 붙인 뒤 호출되며 초기 일시정지 상태인 `{ play(), pause(), dispose() }`를 동기 또는 비동기로 반환합니다. `ready`는 준비가 완료되면 `true`, 교체 또는 닫기로 취소되면 `false`입니다. 준비 오류는 원본 예외로 거부됩니다.
+- `waitForFirstFrame: true`에서는 표면의 레이아웃을 유지한 채 숨깁니다. 게임은 첫 유효 장면의 그리기를 완료했을 때 해당 장면의 `present()`를 호출합니다. 준비와 첫 프레임 제출을 둘 다 마치면 호스트가 원래 visibility를 복원하고 `presented`가 `true`로 끝납니다. 먼저 닫히거나 교체되면 `false`로 끝나며 이전 장면의 신호와 중복 호출은 무시합니다. 표시한 장면을 일시정지하면 마지막 프레임을 유지합니다. 기본 설정에서는 붙이는 즉시 `presented`가 `true`로 끝나고 가시성은 호출자가 관리합니다.
 - `setActive()`는 준비 중에도 원하는 재생 상태를 지정합니다. 같은 상태를 반복 지정해도 재생과 정지를 중복 호출하지 않습니다. 닫힌 장면의 준비가 늦게 끝나면 재생하지 않고 그 실행을 정리합니다.
 - 장면의 `dispose()`는 실행을 멈추고 표면을 뗍니다. 닫힌 핸들은 실행이나 표면을 보관하지 않으며, 준비된 표시 자원은 호스트가 다음 장면을 위해 유지합니다. 취소 처리 중 새 장면을 요청하면 가장 최근 요청만 실행됩니다. `host.dispose()`는 실행과 표면을 정리하고 주입된 함수에 대한 참조도 해제합니다.
 - 소개의 권위 시뮬레이션과 저장은 본게임과 분리합니다. 자원 주입은 게임이 소유하고, 비동기 준비는 공유 표면에 쓰기 전에 `signal.aborted`를 확인해야 합니다. 장면별 정리는 다음 장면이 쓰는 공용 표면을 해제하거나 덮어쓰지 않습니다. 호스트는 저장소나 렌더러의 전역 상태를 격리하지 않습니다.

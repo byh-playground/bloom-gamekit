@@ -330,6 +330,7 @@ try {
             preparedAfterAttach,
             calls: CALLS,
             firstReady: FIRST_READY,
+            firstPresented: await FIRST.presented,
             slowReady: SLOW_READY,
             slowAborted: slowSignal.aborted,
             nextReady: NEXT_READY,
@@ -360,6 +361,7 @@ try {
             'dispose:final',
         ],
         firstReady: true,
+        firstPresented: true,
         slowReady: false,
         slowAborted: true,
         nextReady: true,
@@ -371,6 +373,113 @@ try {
         detachedAfterError: true,
         finalReady: true,
         detachedAfterClose: true,
+    });
+    const FIRST_FRAME = await PAGE.evaluate(async () => {
+        const { createScenarioSurface: CREATE_SURFACE } = await import('/modules/scenario/index.js');
+        const CONTAINER = document.createElement('div');
+        document.body.append(CONTAINER);
+        const CANVAS = document.createElement('canvas');
+        CANVAS.style.setProperty('visibility', 'visible', 'important');
+        const GL = CANVAS.getContext('webgl2');
+        if (!GL) {
+            throw new Error('WebGL2 unavailable');
+        }
+        const SIGNALS = new Map();
+        const ERROR = new Error('scene play failed');
+        let finish;
+        const HOST = CREATE_SURFACE({
+            createSurface: () => ({ element: CANVAS }),
+            waitForFirstFrame: true,
+            prepare({ scene, present }) {
+                SIGNALS.set(scene, present);
+                const RUN = {
+                    play() {
+                        if (scene === 'failed') {
+                            present();
+                            throw ERROR;
+                        }
+                    },
+                    pause() {},
+                    dispose() {},
+                };
+                if (scene === 'canceled') {
+                    present();
+                    return new Promise((resolve) => {
+                        finish = () => resolve(RUN);
+                    });
+                }
+                return RUN;
+            },
+        });
+        const HIDDEN = () => getComputedStyle(CANVAS).visibility === 'hidden';
+        const CANCELED = HOST.mount({ container: CONTAINER, scene: 'canceled', active: true });
+        await Promise.resolve();
+        const HIDDEN_DURING_PREPARE = HIDDEN() && CANVAS.getBoundingClientRect().width > 0;
+        const LIVE = HOST.mount({ container: CONTAINER, scene: 'live', active: true });
+        const CANCELED_PRESENTED = await CANCELED.presented;
+        const LIVE_READY = await LIVE.ready;
+        finish();
+        SIGNALS.get('canceled')();
+        const HIDDEN_WHEN_READY = HIDDEN();
+        const PIXEL = new Uint8Array(4);
+        await new Promise((resolve) => {
+            requestAnimationFrame(() => {
+                GL.clearColor(0, 1, 0, 1);
+                GL.clear(GL.COLOR_BUFFER_BIT);
+                GL.readPixels(0, 0, 1, 1, GL.RGBA, GL.UNSIGNED_BYTE, PIXEL);
+                SIGNALS.get('live')();
+                resolve();
+            });
+        });
+        const LIVE_PRESENTED = await LIVE.presented;
+        LIVE.setActive(false);
+        const VISIBLE_WHILE_PAUSED = !HIDDEN() && CANVAS.style.getPropertyPriority('visibility') === 'important';
+        const CLOSED = HOST.mount({ container: CONTAINER, scene: 'closed', active: true });
+        await CLOSED.ready;
+        SIGNALS.get('live')();
+        const HIDDEN_AFTER_SWITCH = HIDDEN();
+        CLOSED.dispose();
+        SIGNALS.get('closed')();
+        const CLOSED_PRESENTED = await CLOSED.presented;
+        const RESTORED_AFTER_CLOSE = !CANVAS.isConnected && CANVAS.style.visibility === 'visible';
+        const FAILED = HOST.mount({ container: CONTAINER, scene: 'failed', active: true });
+        let playError = false;
+        try {
+            await FAILED.ready;
+        } catch (error) {
+            playError = error === ERROR;
+        }
+        const FAILED_PRESENTED = await FAILED.presented;
+        HOST.dispose();
+        CONTAINER.remove();
+        return {
+            hiddenDuringPrepare: HIDDEN_DURING_PREPARE,
+            canceledPresented: CANCELED_PRESENTED,
+            liveReady: LIVE_READY,
+            hiddenWhenReady: HIDDEN_WHEN_READY,
+            pixel: [...PIXEL],
+            livePresented: LIVE_PRESENTED,
+            visibleWhilePaused: VISIBLE_WHILE_PAUSED,
+            hiddenAfterSwitch: HIDDEN_AFTER_SWITCH,
+            closedPresented: CLOSED_PRESENTED,
+            restoredAfterClose: RESTORED_AFTER_CLOSE,
+            playError,
+            failedPresented: FAILED_PRESENTED,
+        };
+    });
+    assert.deepEqual(FIRST_FRAME, {
+        hiddenDuringPrepare: true,
+        canceledPresented: false,
+        liveReady: true,
+        hiddenWhenReady: true,
+        pixel: [0, 255, 0, 255],
+        livePresented: true,
+        visibleWhilePaused: true,
+        hiddenAfterSwitch: true,
+        closedPresented: false,
+        restoredAfterClose: true,
+        playError: true,
+        failedPresented: false,
     });
     // Live introductions must fill the viewport, not a centered preview card.
     await PAGE.evaluate(async () => {
