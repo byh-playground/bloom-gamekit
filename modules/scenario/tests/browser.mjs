@@ -220,6 +220,7 @@ try {
         let element;
         let finishSlow;
         let slowSignal;
+        let openOnAbort;
         let preparedAfterAttach = true;
         const CALLS = [];
         const ERROR = new Error('scene preparation failed');
@@ -247,6 +248,9 @@ try {
                 preparedAfterAttach &&= surface.element.parentElement === scene.container;
                 if (scene.name === 'failed') {
                     throw ERROR;
+                }
+                if (scene.name === 'next') {
+                    signal.addEventListener('abort', () => openOnAbort?.(), { once: true });
                 }
                 const RUN = {
                     play() {
@@ -295,6 +299,15 @@ try {
         const REUSED_ELEMENT = ORIGINAL === SECOND_HOST.querySelector('canvas');
         SLOW.dispose();
 
+        let newest;
+        openOnAbort = () => {
+            newest = MOUNT(SECOND_HOST, 'newest', true);
+        };
+        const REPLACED = MOUNT(FIRST_HOST, 'replaced', true);
+        const REPLACED_READY = await REPLACED.ready;
+        const NEWEST_READY = await newest.ready;
+        const ATTACHED_TO_NEWEST = ORIGINAL === SECOND_HOST.querySelector('canvas');
+
         const FAILED = MOUNT(FIRST_HOST, 'failed', true);
         let sameError = false;
         try {
@@ -321,6 +334,9 @@ try {
             slowAborted: slowSignal.aborted,
             nextReady: NEXT_READY,
             reusedElement: REUSED_ELEMENT,
+            replacedReady: REPLACED_READY,
+            newestReady: NEWEST_READY,
+            attachedToNewest: ATTACHED_TO_NEWEST,
             sameError,
             detachedAfterError: DETACHED_AFTER_ERROR,
             finalReady: FINAL_READY,
@@ -338,6 +354,8 @@ try {
             'play:next',
             'dispose:slow',
             'dispose:next',
+            'play:newest',
+            'dispose:newest',
             'play:final',
             'dispose:final',
         ],
@@ -346,6 +364,9 @@ try {
         slowAborted: true,
         nextReady: true,
         reusedElement: true,
+        replacedReady: false,
+        newestReady: true,
+        attachedToNewest: true,
         sameError: true,
         detachedAfterError: true,
         finalReady: true,
