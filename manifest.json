@@ -59,7 +59,7 @@
     },
     {
       "file": "rollback.js",
-      "sha256": "ec9119013f185e4887aab7d785c17a0d05acae4e80534a56a541fec6b16b71b9"
+      "sha256": "3ae0a9d77eba0741d5af5e91e2150393cca142cfa2e9fa8040875da8b1861ab7"
     },
     {
       "file": "camera.js",
@@ -87,7 +87,7 @@
     },
     {
       "file": "scenario.js",
-      "sha256": "74fe05c0cdc9cfdb9062210c78ea50a263e5d23f464f04678e2af958243bdc23"
+      "sha256": "9c5bbecfcfa3633a494390e87ecdc658e6cbf685c7a7c9ad43b6c374787e88bf"
     },
     {
       "file": "object-pool.js",

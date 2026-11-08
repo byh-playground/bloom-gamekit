@@ -1355,6 +1355,22 @@ function installShowcase({
 }
 
 // modules/scenario/surface-lifecycle.js
+function createMountHandle(setActive, dispose) {
+  return {
+    ready: null,
+    setActive(active) {
+      if (typeof active !== "boolean") {
+        throw new TypeError("scenario surface active");
+      }
+      setActive?.(active);
+    },
+    dispose() {
+      const CLEANUP = dispose;
+      setActive = dispose = null;
+      CLEANUP?.();
+    }
+  };
+}
 function createScenarioSurface({ createSurface, prepare } = {}) {
   if (typeof createSurface !== "function" || typeof prepare !== "function") {
     throw new TypeError("scenario surface createSurface/prepare");
@@ -1369,7 +1385,6 @@ function createScenarioSurface({ createSurface, prepare } = {}) {
     if (!container || typeof container.append !== "function" || typeof active !== "boolean") {
       throw new TypeError("scenario surface container/active");
     }
-    current?.dispose();
     if (!surface) {
       const CREATED = createSurface();
       if (typeof CREATED?.element?.remove !== "function") {
@@ -1394,31 +1409,26 @@ function createScenarioSurface({ createSurface, prepare } = {}) {
       playing = active;
     }
     function setActive(nextActive) {
-      if (typeof nextActive !== "boolean") {
-        throw new TypeError("scenario surface active");
-      }
       active = nextActive;
       sync();
     }
     function disposeMount() {
-      if (SIGNAL.aborted) {
-        return;
+      const RUN = run;
+      run = null;
+      const WAS_CURRENT = current === HANDLE;
+      if (WAS_CURRENT) {
+        current = null;
       }
-      current = null;
       CONTROLLER.abort();
-      if (!current) {
-        SURFACE.element.remove();
+      try {
+        if (WAS_CURRENT && !current) {
+          SURFACE.element.remove();
+        }
+      } finally {
+        RUN?.dispose?.();
       }
-      run?.dispose();
     }
-    const HANDLE = { ready: null, setActive, dispose: disposeMount };
-    current = HANDLE;
-    try {
-      container.append(SURFACE.element);
-    } catch (error) {
-      disposeMount();
-      throw error;
-    }
+    const HANDLE = createMountHandle(setActive, disposeMount);
     const CANCELLED = new Promise((resolve) => {
       SIGNAL.addEventListener("abort", () => resolve(false), { once: true });
     });
@@ -1440,11 +1450,25 @@ function createScenarioSurface({ createSurface, prepare } = {}) {
     });
     HANDLE.ready = Promise.race([PREPARED, CANCELLED]).catch((error) => {
       try {
-        disposeMount();
+        HANDLE.dispose();
       } catch {
       }
       throw error;
     });
+    const PREVIOUS = current;
+    current = HANDLE;
+    try {
+      PREVIOUS?.dispose();
+      if (!SIGNAL.aborted) {
+        container.append(SURFACE.element);
+      }
+    } catch (error) {
+      try {
+        HANDLE.dispose();
+      } catch {
+      }
+      throw error;
+    }
     return HANDLE;
   }
   function dispose() {
@@ -1452,11 +1476,12 @@ function createScenarioSurface({ createSurface, prepare } = {}) {
       return;
     }
     disposed = true;
+    const SURFACE = surface;
+    surface = createSurface = prepare = null;
     try {
       current?.dispose();
     } finally {
-      surface?.dispose?.();
-      surface = null;
+      SURFACE?.dispose?.();
     }
   }
   return { mount, dispose };
