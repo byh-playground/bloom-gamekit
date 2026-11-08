@@ -209,6 +209,148 @@ try {
         renders: 3,
         left: 0,
     });
+    // A card switch reuses the same prepared WebGL surface and cancels the prior scene.
+    const REUSED = await PAGE.evaluate(async () => {
+        const { createScenarioSurface: CREATE_SURFACE } = await import('/modules/scenario/index.js');
+        const FIRST_HOST = document.createElement('div');
+        const SECOND_HOST = document.createElement('div');
+        document.body.append(FIRST_HOST, SECOND_HOST);
+        let created = 0;
+        let surfaceDisposals = 0;
+        let element;
+        let finishSlow;
+        let slowSignal;
+        let preparedAfterAttach = true;
+        const CALLS = [];
+        const ERROR = new Error('scene preparation failed');
+        const HOST = CREATE_SURFACE({
+            createSurface() {
+                created++;
+                element = document.createElement('canvas');
+                const GL = element.getContext('webgl2');
+                if (!GL) {
+                    throw new Error('WebGL2 unavailable');
+                }
+                const TEXTURE = GL.createTexture();
+                GL.bindTexture(GL.TEXTURE_2D, TEXTURE);
+                return {
+                    element,
+                    gl: GL,
+                    texture: TEXTURE,
+                    dispose() {
+                        surfaceDisposals++;
+                        GL.deleteTexture(TEXTURE);
+                    },
+                };
+            },
+            prepare({ surface, scene, signal }) {
+                preparedAfterAttach &&= surface.element.parentElement === scene.container;
+                if (scene.name === 'failed') {
+                    throw ERROR;
+                }
+                const RUN = {
+                    play() {
+                        CALLS.push(`play:${scene.name}`);
+                        if (!surface.gl.isTexture(surface.texture)) {
+                            throw new Error('prepared texture was released during switch');
+                        }
+                    },
+                    pause() {
+                        CALLS.push(`pause:${scene.name}`);
+                    },
+                    dispose() {
+                        CALLS.push(`dispose:${scene.name}`);
+                    },
+                };
+                if (scene.name === 'slow') {
+                    slowSignal = signal;
+                    return new Promise((resolve) => {
+                        finishSlow = () => resolve(RUN);
+                    });
+                }
+                return RUN;
+            },
+        });
+        const MOUNT = (container, name, active = false) =>
+            HOST.mount({
+                container,
+                scene: { container, name },
+                active,
+            });
+
+        const FIRST = MOUNT(FIRST_HOST, 'first');
+        FIRST.setActive(true);
+        const FIRST_READY = await FIRST.ready;
+        FIRST.setActive(true);
+        FIRST.setActive(false);
+        FIRST.setActive(false);
+        const ORIGINAL = FIRST_HOST.querySelector('canvas');
+        const SLOW = MOUNT(FIRST_HOST, 'slow', true);
+        await Promise.resolve();
+        const NEXT = MOUNT(SECOND_HOST, 'next', true);
+        const SLOW_READY = await SLOW.ready;
+        const NEXT_READY = await NEXT.ready;
+        finishSlow();
+        await Promise.resolve();
+        const REUSED_ELEMENT = ORIGINAL === SECOND_HOST.querySelector('canvas');
+        SLOW.dispose();
+
+        const FAILED = MOUNT(FIRST_HOST, 'failed', true);
+        let sameError = false;
+        try {
+            await FAILED.ready;
+        } catch (error) {
+            sameError = error === ERROR;
+        }
+        const DETACHED_AFTER_ERROR = !element.isConnected;
+        const FINAL = MOUNT(SECOND_HOST, 'final', true);
+        const FINAL_READY = await FINAL.ready;
+        HOST.dispose();
+        HOST.dispose();
+        const DETACHED_AFTER_CLOSE = !element.isConnected;
+        FIRST_HOST.remove();
+        SECOND_HOST.remove();
+
+        return {
+            created,
+            surfaceDisposals,
+            preparedAfterAttach,
+            calls: CALLS,
+            firstReady: FIRST_READY,
+            slowReady: SLOW_READY,
+            slowAborted: slowSignal.aborted,
+            nextReady: NEXT_READY,
+            reusedElement: REUSED_ELEMENT,
+            sameError,
+            detachedAfterError: DETACHED_AFTER_ERROR,
+            finalReady: FINAL_READY,
+            detachedAfterClose: DETACHED_AFTER_CLOSE,
+        };
+    });
+    assert.deepEqual(REUSED, {
+        created: 1,
+        surfaceDisposals: 1,
+        preparedAfterAttach: true,
+        calls: [
+            'play:first',
+            'pause:first',
+            'dispose:first',
+            'play:next',
+            'dispose:slow',
+            'dispose:next',
+            'play:final',
+            'dispose:final',
+        ],
+        firstReady: true,
+        slowReady: false,
+        slowAborted: true,
+        nextReady: true,
+        reusedElement: true,
+        sameError: true,
+        detachedAfterError: true,
+        finalReady: true,
+        detachedAfterClose: true,
+    });
     // Live introductions must fill the viewport, not a centered preview card.
     await PAGE.evaluate(async () => {
         const { installShowcase: INSTALL_SHOWCASE } = await import('/modules/scenario/index.js');
