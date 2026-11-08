@@ -1,6 +1,7 @@
-function createMountHandle(setActive, dispose) {
+function createMountHandle(setActive, dispose, presented) {
     return {
         ready: null,
+        presented,
         setActive(active) {
             if (typeof active !== 'boolean') {
                 throw new TypeError('scenario surface active');
@@ -16,10 +17,28 @@ function createMountHandle(setActive, dispose) {
     };
 }
 
+function createPresentationSignal(onPresent) {
+    let resolve;
+    const PRESENTED = new Promise((resolvePresentation) => {
+        resolve = resolvePresentation;
+    });
+    return {
+        presented: PRESENTED,
+        present: () => onPresent?.(),
+        finish(value) {
+            onPresent = null;
+            resolve(value);
+        },
+    };
+}
+
 /** Hosts one prepared display surface and a succession of isolated scenario runs. */
-export function createScenarioSurface({ createSurface, prepare } = {}) {
+export function createScenarioSurface({ createSurface, prepare, waitForFirstFrame = false } = {}) {
     if (typeof createSurface !== 'function' || typeof prepare !== 'function') {
         throw new TypeError('scenario surface createSurface/prepare');
+    }
+    if (typeof waitForFirstFrame !== 'boolean') {
+        throw new TypeError('scenario surface waitForFirstFrame');
     }
 
     let surface;
@@ -38,6 +57,9 @@ export function createScenarioSurface({ createSurface, prepare } = {}) {
             if (typeof CREATED?.element?.remove !== 'function') {
                 throw new TypeError('scenario surface element');
             }
+            if (waitForFirstFrame && !CREATED.element.style) {
+                throw new TypeError('scenario surface element style');
+            }
             surface = CREATED;
         }
 
@@ -46,6 +68,28 @@ export function createScenarioSurface({ createSurface, prepare } = {}) {
         const SIGNAL = CONTROLLER.signal;
         let run;
         let playing = false;
+        let prepared = false;
+        let firstFrame = false;
+        let visibility;
+        const PRESENTATION = createPresentationSignal(() => {
+            firstFrame = true;
+            reveal();
+        });
+
+        function restoreVisibility() {
+            if (visibility) {
+                SURFACE.element.style.setProperty('visibility', visibility.value, visibility.priority);
+                visibility = null;
+            }
+        }
+
+        function reveal() {
+            if (!visibility || !firstFrame || !prepared || SIGNAL.aborted || current !== HANDLE) {
+                return;
+            }
+            restoreVisibility();
+            PRESENTATION.finish(true);
+        }
 
         function sync() {
             if (!run || SIGNAL.aborted || playing === active) {
@@ -71,6 +115,8 @@ export function createScenarioSurface({ createSurface, prepare } = {}) {
             if (WAS_CURRENT) {
                 current = null;
             }
+            restoreVisibility();
+            PRESENTATION.finish(false);
             CONTROLLER.abort();
             try {
                 if (WAS_CURRENT && !current) {
@@ -81,7 +127,7 @@ export function createScenarioSurface({ createSurface, prepare } = {}) {
             }
         }
 
-        const HANDLE = createMountHandle(setActive, disposeMount);
+        const HANDLE = createMountHandle(setActive, disposeMount, PRESENTATION.presented);
         const CANCELLED = new Promise((resolve) => {
             SIGNAL.addEventListener('abort', () => resolve(false), { once: true });
         });
@@ -89,7 +135,12 @@ export function createScenarioSurface({ createSurface, prepare } = {}) {
             if (SIGNAL.aborted) {
                 return false;
             }
-            const PREPARED_RUN = await prepare({ surface: SURFACE, scene, signal: SIGNAL });
+            const PREPARED_RUN = await prepare({
+                surface: SURFACE,
+                scene,
+                signal: SIGNAL,
+                present: PRESENTATION.present,
+            });
             if (SIGNAL.aborted) {
                 PREPARED_RUN?.dispose?.();
                 return false;
@@ -103,6 +154,8 @@ export function createScenarioSurface({ createSurface, prepare } = {}) {
                 throw new TypeError('scenario surface run play/pause/dispose');
             }
             sync();
+            prepared = true;
+            reveal();
             return !SIGNAL.aborted;
         });
         HANDLE.ready = Promise.race([PREPARED, CANCELLED]).catch((error) => {
@@ -119,7 +172,18 @@ export function createScenarioSurface({ createSurface, prepare } = {}) {
         try {
             PREVIOUS?.dispose();
             if (!SIGNAL.aborted) {
+                if (waitForFirstFrame) {
+                    const STYLE = SURFACE.element.style;
+                    visibility = {
+                        value: STYLE.getPropertyValue('visibility'),
+                        priority: STYLE.getPropertyPriority('visibility'),
+                    };
+                    STYLE.setProperty('visibility', 'hidden', 'important');
+                }
                 container.append(SURFACE.element);
+                if (!waitForFirstFrame && !SIGNAL.aborted) {
+                    PRESENTATION.finish(true);
+                }
             }
         } catch (error) {
             try {
