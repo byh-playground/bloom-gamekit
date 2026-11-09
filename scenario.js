@@ -1386,12 +1386,9 @@ function createPresentationSignal(onPresent) {
     }
   };
 }
-function createScenarioSurface({ createSurface, prepare, waitForFirstFrame = false } = {}) {
+function createScenarioSurface({ createSurface, prepare } = {}) {
   if (typeof createSurface !== "function" || typeof prepare !== "function") {
     throw new TypeError("scenario surface createSurface/prepare");
-  }
-  if (typeof waitForFirstFrame !== "boolean") {
-    throw new TypeError("scenario surface waitForFirstFrame");
   }
   let surface;
   let current;
@@ -1408,7 +1405,7 @@ function createScenarioSurface({ createSurface, prepare, waitForFirstFrame = fal
       if (typeof CREATED?.element?.remove !== "function") {
         throw new TypeError("scenario surface element");
       }
-      if (waitForFirstFrame && !CREATED.element.style) {
+      if (!CREATED.element.style) {
         throw new TypeError("scenario surface element style");
       }
       surface = CREATED;
@@ -1510,18 +1507,13 @@ function createScenarioSurface({ createSurface, prepare, waitForFirstFrame = fal
     try {
       PREVIOUS?.dispose();
       if (!SIGNAL.aborted) {
-        if (waitForFirstFrame) {
-          const STYLE = SURFACE.element.style;
-          visibility = {
-            value: STYLE.getPropertyValue("visibility"),
-            priority: STYLE.getPropertyPriority("visibility")
-          };
-          STYLE.setProperty("visibility", "hidden", "important");
-        }
+        const STYLE = SURFACE.element.style;
+        visibility = {
+          value: STYLE.getPropertyValue("visibility"),
+          priority: STYLE.getPropertyPriority("visibility")
+        };
+        STYLE.setProperty("visibility", "hidden", "important");
         container.append(SURFACE.element);
-        if (!waitForFirstFrame && !SIGNAL.aborted) {
-          PRESENTATION.finish(true);
-        }
       }
     } catch (error) {
       try {
