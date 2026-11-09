@@ -244,7 +244,7 @@ try {
                     },
                 };
             },
-            prepare({ surface, scene, signal }) {
+            prepare({ surface, scene, signal, present }) {
                 preparedAfterAttach &&= surface.element.parentElement === scene.container;
                 if (scene.name === 'failed') {
                     throw ERROR;
@@ -258,6 +258,9 @@ try {
                         if (!surface.gl.isTexture(surface.texture)) {
                             throw new Error('prepared texture was released during switch');
                         }
+                        surface.gl.clearColor(0, 1, 0, 1);
+                        surface.gl.clear(surface.gl.COLOR_BUFFER_BIT);
+                        present();
                     },
                     pause() {
                         CALLS.push(`pause:${scene.name}`);
@@ -389,7 +392,6 @@ try {
         let finish;
         const HOST = CREATE_SURFACE({
             createSurface: () => ({ element: CANVAS }),
-            waitForFirstFrame: true,
             prepare({ scene, present }) {
                 SIGNALS.set(scene, present);
                 const RUN = {
