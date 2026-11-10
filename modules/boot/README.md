@@ -21,6 +21,7 @@ const BOOT = createBoot({
     onChange(state) {}, // { stage, completed, total, overall /*0..1*/, failed? }
 });
 await BOOT.preloadModules(urls, { stage: 'modules' }); // begin(stage, N) + 파일마다 advance, 실패가 있으면 모두 끝난 뒤 던짐
+const SDK = await BOOT.importPinnedModules({ base, modules: { rendering: { file, sha256 } } }, { stage: 'sdk' }); // 받기 → SHA-256 검증 → import, 파일마다 advance → { rendering: namespace }
 BOOT.begin('atlas', total); // total = 실제 개수, 모르면 null
 BOOT.advance('atlas'); // 완료 1개 더하기(advance(id, n)은 n개)
 BOOT.finish('game'); // 개수를 모르는 단계 끝내기(아는 단계는 total 도달 시 자동)
@@ -31,17 +32,18 @@ bindBootProgress(BOOT, { progress, label, text }); // → unbind
 await yieldFrame(); // 다음 화면 갱신 기회(rAF가 멈춘 탭은 80ms)
 ```
 
-| 규칙                            | 내용                                                                                                                                                            |
-| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| overall                         | Σ weight × completed/total ÷ Σ weight. 개수를 모르는 단계는 끝날 때까지 0, total 0은 begin 즉시 끝. 개수는 줄지 않으므로 단조 증가합니다.                       |
-| 시간 추정 없음                  | ETA·남은 시간·가짜 진행을 만들지 않습니다.                                                                                                                      |
-| 명시 실패                       | 모르는 단계, 두 번 begin, begin 전 advance, total 초과, 덜 된 finish, 모르는 옵션은 던집니다.                                                                   |
-| 끝난 뒤                         | `complete`·`fail` 뒤 호출은 무시합니다. 실패 뒤 늦게 도착한 작업이 화면을 바꾸지 않습니다. 같은 BOOT로 재시도하지 않습니다.                                     |
-| 같은 URL                        | `preloadModules`는 `document.baseURI` 기준 절대 URL로 바꾸어 중복을 뺍니다. 나중 `import()`·정적 import가 같은 URL이어야 module map을 재사용합니다(query 포함). |
-| 파일 하나의 완료                | modulepreload `load` = 그 파일의 수신·파싱 완료입니다. 실행은 `import()` 때 합니다. 실행 중 오류는 import가 던집니다.                                           |
-| modulepreload 미지원            | `fetch`로 받아 HTTP 캐시만 데웁니다. 이 경우 `import()`가 다시 요청할 수 있습니다.                                                                              |
-| `listModuleGraph`가 따라가는 것 | 정적 `import`·`export … from`, 문자열 리터럴 `import('./x.js')`. 계산된 `import(expr)`은 목록에 없습니다(그 파일은 import 시점에 요청됨).                       |
-| `listModuleGraph`가 던지는 것   | 없는 파일, root 밖 경로, `./`·`../`가 아닌 지정자(bare·`/` 시작). `https:` 같은 절대 URL은 목록에서 빼고 따라가지 않습니다.                                     |
+| 규칙                            | 내용                                                                                                                                                                                                                                                                                                                    |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| overall                         | Σ weight × completed/total ÷ Σ weight. 개수를 모르는 단계는 끝날 때까지 0, total 0은 begin 즉시 끝. 개수는 줄지 않으므로 단조 증가합니다.                                                                                                                                                                               |
+| 시간 추정 없음                  | ETA·남은 시간·가짜 진행을 만들지 않습니다.                                                                                                                                                                                                                                                                              |
+| 명시 실패                       | 모르는 단계, 두 번 begin, begin 전 advance, total 초과, 덜 된 finish, 모르는 옵션은 던집니다.                                                                                                                                                                                                                           |
+| 끝난 뒤                         | `complete`·`fail` 뒤 호출은 무시합니다. 실패 뒤 늦게 도착한 작업이 화면을 바꾸지 않습니다. 같은 BOOT로 재시도하지 않습니다.                                                                                                                                                                                             |
+| 같은 URL                        | `preloadModules`는 `document.baseURI` 기준 절대 URL로 바꾸어 중복을 뺍니다. 나중 `import()`·정적 import가 같은 URL이어야 module map을 재사용합니다(query 포함).                                                                                                                                                         |
+| 파일 하나의 완료                | modulepreload `load` = 그 파일의 수신·파싱 완료입니다. 실행은 `import()` 때 합니다. 실행 중 오류는 import가 던집니다.                                                                                                                                                                                                   |
+| `importPinnedModules`           | `base + file`을 받아 SHA-256이 고정값과 같을 때만 그 bytes를 blob URL로 import합니다. 파일은 상대 import가 없는 단일 파일이어야 합니다(GameKit dist 파일). DOM을 쓰지 않아 Worker에서도 됩니다. HTTP 오류·해시 불일치·실행 오류는 모두 끝난 뒤 한 번에 던집니다. `base`·`modules` 밖의 필드, 해시 없는 항목은 던집니다. |
+| modulepreload 미지원            | `fetch`로 받아 HTTP 캐시만 데웁니다. 이 경우 `import()`가 다시 요청할 수 있습니다.                                                                                                                                                                                                                                      |
+| `listModuleGraph`가 따라가는 것 | 정적 `import`·`export … from`, 문자열 리터럴 `import('./x.js')`. 계산된 `import(expr)`은 목록에 없습니다(그 파일은 import 시점에 요청됨).                                                                                                                                                                               |
+| `listModuleGraph`가 던지는 것   | 없는 파일, root 밖 경로, `./`·`../`가 아닌 지정자(bare·`/` 시작). `https:` 같은 절대 URL은 목록에서 빼고 따라가지 않습니다.                                                                                                                                                                                             |
 
 ## 게임 코드
 
@@ -92,6 +94,25 @@ try {
     BOOT.fail(error);
     document.getElementById('loading-retry').hidden = false; // href=""는 전체 페이지 다시 읽기
 }
+```
+
+### 커밋에 고정한 GameKit을 CDN에서 검증해 받기
+
+`boot.js` 자신은 먼저 받아야 하므로 게임이 한 파일만 직접 검증해 import하고, 나머지는 `importPinnedModules`에 맡깁니다.
+
+```js
+// lock = { distCommit, modules: { rendering: { file: 'rendering.js', sha256 }, ... } } — 게임이 커밋한 고정 목록
+const BASE = `https://cdn.jsdelivr.net/gh/byh-playground/bloom-gamekit@${lock.distCommit}/`;
+const { boot: BOOT_ENTRY, ...REST } = lock.modules;
+const { createBoot, bindBootProgress } = await importOneVerified(BASE + BOOT_ENTRY.file, BOOT_ENTRY.sha256); // 게임 코드
+const BOOT = createBoot({
+    stages: [
+        { id: 'sdk', weight: 3 },
+        { id: 'art', weight: 5 },
+    ],
+});
+bindBootProgress(BOOT, { progress, label, text: (state) => `게임 모듈 ${state.completed}/${state.total}` });
+const SDK = await BOOT.importPinnedModules({ base: BASE, modules: REST }, { stage: 'sdk' }); // SDK.rendering.WebGLDevice …
 ```
 
 동기 작업 묶음(예: atlas bake) 사이에는 `await yieldFrame()`을 넣어야 막대가 실제로 그려집니다.

@@ -29,6 +29,16 @@ export interface Boot {
      * Rejects after all settle when any failed.
      */
     preloadModules(urls: string[], options: { stage: string }): Promise<void>;
+    /**
+     * Begins `stage` with the entry count, then for every entry in parallel: fetches `base + file`, checks its
+     * SHA-256 against the pinned value, imports those exact bytes (blob URL) and advances once. Files must be
+     * single-file modules without relative imports. Works in a Worker. Rejects after all settle when any failed
+     * (HTTP error, hash mismatch, evaluation error). Resolves to a frozen `{ name: namespace }`.
+     */
+    importPinnedModules<T extends Record<string, { file: string; sha256: string }>>(
+        pin: { base: string; modules: T },
+        options: { stage: string },
+    ): Promise<{ readonly [K in keyof T]: any }>;
 }
 export function createBoot(options: {
     /** Weight is the stage's share of the overall bar. */
