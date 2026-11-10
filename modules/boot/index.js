@@ -262,32 +262,62 @@ async function preloadFetch(href, done) {
 }
 
 /**
- * 진행 상태를 `<progress>`와 글자 요소에 그립니다. `text`가 없으면 `단계 n/N`을 씁니다.
+ * 진행 상태를 `<progress>`와 글자 요소에 그립니다. `text`를 주면 글자는 게임이 전부 정합니다.
+ * `text`가 없으면 기본 문구 `이름 n/N · P%`를 씁니다. 이름은 `labels[단계]`(없으면 단계 id), 개수를 모르는 단계는
+ * `이름 · P%`, 끝나면 `done`(있을 때), 실패하면 오류 문장입니다. 첫 단계가 시작되기 전에는 글자 요소를 건드리지 않습니다.
  * 반환한 함수를 부르면 이후 갱신을 멈춥니다. 요소는 지우거나 숨기지 않습니다.
  */
-export function bindBootProgress(boot, { progress, label = null, text = defaultText, ...rest }) {
+export function bindBootProgress(boot, { progress, label = null, text = null, labels = null, done = null, ...rest }) {
     if (Object.keys(rest).length > 0) {
         fail(`unknown bindBootProgress option ${Object.keys(rest)[0]}`);
     }
     if (!(progress instanceof HTMLProgressElement)) {
         fail('progress must be a <progress> element');
     }
+    if (text !== null && typeof text !== 'function') {
+        fail('text must be a function');
+    }
+    if (text !== null && (labels !== null || done !== null)) {
+        fail('labels and done belong to the default text; do not combine them with text');
+    }
+    if (
+        labels !== null &&
+        (typeof labels !== 'object' || Object.values(labels).some((name) => typeof name !== 'string'))
+    ) {
+        fail('labels must map stage ids to strings');
+    }
+    if (done !== null && typeof done !== 'string') {
+        fail('done must be a string');
+    }
     progress.max = 1;
+    const TEXT = text ?? ((state) => defaultText(state, labels, done));
     const RENDER = (state) => {
         progress.value = state.overall;
         if (label) {
-            label.textContent = text(state);
+            const VALUE = TEXT(state);
+            if (VALUE !== null) {
+                label.textContent = VALUE;
+            }
         }
     };
     RENDER(boot.state);
     return boot.subscribe(RENDER);
 }
 
-function defaultText(state) {
-    if (!state.stage) {
-        return '';
+// null은 "글자 요소를 그대로 둔다"입니다. 첫 단계 전에는 게임이 HTML에 써 둔 문구가 남습니다.
+function defaultText(state, labels, done) {
+    if (state.failed) {
+        return String(state.failed.message || state.failed);
     }
-    return state.total === null ? state.stage : `${state.stage} ${state.completed}/${state.total}`;
+    if (!state.stage) {
+        return null;
+    }
+    if (state.overall === 1 && done !== null) {
+        return done;
+    }
+    const NAME = labels?.[state.stage] ?? state.stage;
+    const COUNT = state.total === null ? '' : ` ${state.completed}/${state.total}`;
+    return `${NAME}${COUNT} · ${Math.round(state.overall * 100)}%`;
 }
 
 /** 다음 화면 갱신 기회까지 기다립니다. 숨긴 탭처럼 rAF가 멈춰도 80ms 뒤에는 이어갑니다. */

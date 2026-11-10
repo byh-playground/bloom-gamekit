@@ -28,7 +28,8 @@ BOOT.finish('game'); // 개수를 모르는 단계 끝내기(아는 단계는 to
 BOOT.complete(); // overall = 1
 BOOT.fail(error); // state.failed, 재시도는 게임 UI의 location.reload()
 BOOT.subscribe(listener); // → unsubscribe
-bindBootProgress(BOOT, { progress, label, text }); // → unbind
+bindBootProgress(BOOT, { progress, label, labels, done }); // 기본 문구 `이름 n/N · P%` → unbind
+bindBootProgress(BOOT, { progress, label, text }); // 글자를 게임이 전부 정할 때(labels·done과 함께 못 씀)
 await yieldFrame(); // 다음 화면 갱신 기회(rAF가 멈춘 탭은 80ms)
 ```
 
@@ -41,6 +42,7 @@ await yieldFrame(); // 다음 화면 갱신 기회(rAF가 멈춘 탭은 80ms)
 | 같은 URL                        | `preloadModules`는 `document.baseURI` 기준 절대 URL로 바꾸어 중복을 뺍니다. 나중 `import()`·정적 import가 같은 URL이어야 module map을 재사용합니다(query 포함).                                                                                                                                                         |
 | 파일 하나의 완료                | modulepreload `load` = 그 파일의 수신·파싱 완료입니다. 실행은 `import()` 때 합니다. 실행 중 오류는 import가 던집니다.                                                                                                                                                                                                   |
 | `importPinnedModules`           | `base + file`을 받아 SHA-256이 고정값과 같을 때만 그 bytes를 blob URL로 import합니다. 파일은 상대 import가 없는 단일 파일이어야 합니다(GameKit dist 파일). DOM을 쓰지 않아 Worker에서도 됩니다. HTTP 오류·해시 불일치·실행 오류는 모두 끝난 뒤 한 번에 던집니다. `base`·`modules` 밖의 필드, 해시 없는 항목은 던집니다. |
+| 기본 문구                       | `text`가 없으면 `이름 n/N · P%`입니다. 이름은 `labels[단계]`, 없으면 단계 id입니다. 개수를 모르는 단계는 `이름 · P%`, 100%에서는 `done`(준 경우), 실패하면 오류 문장입니다. 첫 단계가 시작되기 전에는 글자 요소를 건드리지 않아 HTML에 써 둔 문구가 남습니다. 화면 모양(HTML·CSS)은 게임이 가집니다.                    |
 | modulepreload 미지원            | `fetch`로 받아 HTTP 캐시만 데웁니다. 이 경우 `import()`가 다시 요청할 수 있습니다.                                                                                                                                                                                                                                      |
 | `listModuleGraph`가 따라가는 것 | 정적 `import`·`export … from`, 문자열 리터럴 `import('./x.js')`. 계산된 `import(expr)`은 목록에 없습니다(그 파일은 import 시점에 요청됨).                                                                                                                                                                               |
 | `listModuleGraph`가 던지는 것   | 없는 파일, root 밖 경로, `./`·`../`가 아닌 지정자(bare·`/` 시작). `https:` 같은 절대 URL은 목록에서 빼고 따라가지 않습니다.                                                                                                                                                                                             |
