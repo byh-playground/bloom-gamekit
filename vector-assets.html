@@ -841,6 +841,13 @@
   ]);
   var BLENDS = /* @__PURE__ */ new Set(["source-over", "straight-alpha", "copy", "lighter", "source-in", "destination-in"]);
   var ALL_COLOR = Object.freeze([true, true, true, true]);
+  var UNIFORM_MATRIX = 0;
+  var UNIFORM_DIRECT = 1;
+  var UNIFORM_SPREAD = 2;
+  var NO_UNIFORMS = Object.freeze({});
+  var NO_TEXTURES = Object.freeze([]);
+  var STENCIL_OPERATION_KEYS = Object.freeze(["fail", "zfail", "pass"]);
+  var STENCIL_INTEGER_KEYS = Object.freeze(["ref", "mask", "writeMask"]);
   function integer(n, name, min = 0, max = Number.MAX_SAFE_INTEGER) {
     if (!Number.isSafeInteger(n) || n < min || n > max) {
       throw new RangeError(`${name}: ${min}..${max}`);
@@ -1105,9 +1112,13 @@ ${converted}`;
           ...attribute,
           location: GL.getAttribLocation(program, attribute.name)
         }));
-        record.uniformLocations = /* @__PURE__ */ new Map();
+        record.uniformSetters = /* @__PURE__ */ new Map();
         for (const NAME of Object.keys(record.uniforms)) {
-          record.uniformLocations.set(NAME, GL.getUniformLocation(program, NAME));
+          const TYPE = record.uniforms[NAME], LOCATION = GL.getUniformLocation(program, NAME);
+          record.uniformSetters.set(
+            NAME,
+            TYPE.startsWith("matrix") ? { location: LOCATION, shape: UNIFORM_MATRIX, method: `uniformMatrix${TYPE[6]}fv`, size: 0 } : TYPE.endsWith("v") || TYPE[0] === "1" ? { location: LOCATION, shape: UNIFORM_DIRECT, method: `uniform${TYPE}`, size: 0 } : { location: LOCATION, shape: UNIFORM_SPREAD, method: `uniform${TYPE}`, size: +TYPE[0] }
+          );
         }
         record.gpu = program;
       } catch (error2) {
@@ -2263,8 +2274,8 @@ ${converted}`;
       instances = 1,
       first = 0,
       count,
-      uniforms = {},
-      textures = [],
+      uniforms = NO_UNIFORMS,
+      textures = NO_TEXTURES,
       blend = "source-over",
       depth = false,
       stencil = false,
@@ -2305,21 +2316,15 @@ ${converted}`;
       if (!Number.isSafeInteger(count * instances)) {
         throw new RangeError("draw vertex count exceeds safe integer range");
       }
-      const DEPTH_STATE = depth === false || depth == null ? null : depth === true ? {
-        test: true,
-        write: true,
-        func: "lequal"
-      } : typeof depth === "object" && !Array.isArray(depth) ? {
-        test: depth.test ?? true,
-        write: depth.write ?? true,
-        func: depth.func ?? "lequal"
-      } : (() => {
+      const HAS_DEPTH = !(depth === false || depth == null);
+      if (HAS_DEPTH && depth !== true && (typeof depth !== "object" || Array.isArray(depth))) {
         throw new TypeError("depth must be false or a depth policy object");
-      })();
-      if (DEPTH_STATE && (typeof DEPTH_STATE.test !== "boolean" || typeof DEPTH_STATE.write !== "boolean")) {
+      }
+      const DEPTH_TEST = HAS_DEPTH ? depth === true ? true : depth.test ?? true : false, DEPTH_WRITE = HAS_DEPTH ? depth === true ? true : depth.write ?? true : false, DEPTH_FUNC = HAS_DEPTH && depth !== true ? depth.func ?? "lequal" : "lequal";
+      if (HAS_DEPTH && (typeof DEPTH_TEST !== "boolean" || typeof DEPTH_WRITE !== "boolean")) {
         throw new TypeError("depth.test and depth.write must be booleans");
       }
-      if ((DEPTH_STATE?.test || DEPTH_STATE?.write) && (this.activeRenderTarget || !this.depthAvailable)) {
+      if ((DEPTH_TEST || DEPTH_WRITE) && (this.activeRenderTarget || !this.depthAvailable)) {
         throw new Error("The active framebuffer has no depth attachment");
       }
       if (stencil && !this.activeStencilAvailable) {
@@ -2328,29 +2333,31 @@ ${converted}`;
       if (blend !== false && !BLENDS.has(blend)) {
         throw new TypeError("Unsupported blend");
       }
-      if (DEPTH_STATE && !FUNCTIONS[DEPTH_STATE.func]) {
+      if (HAS_DEPTH && !Object.hasOwn(FUNCTIONS, DEPTH_FUNC)) {
         throw new TypeError("Unsupported depth function");
       }
       if (stencil) {
         if (!FUNCTIONS[stencil.func ?? "always"]) {
           throw new TypeError("Unsupported stencil function");
         }
-        for (const KEY of ["fail", "zfail", "pass"]) {
-          if (!OPERATIONS[stencil[KEY] ?? "keep"]) {
+        for (let i = 0; i < STENCIL_OPERATION_KEYS.length; i++) {
+          if (!OPERATIONS[stencil[STENCIL_OPERATION_KEYS[i]] ?? "keep"]) {
             throw new TypeError("Unsupported stencil operation");
           }
         }
-        for (const KEY of ["ref", "mask", "writeMask"]) {
+        for (let i = 0; i < STENCIL_INTEGER_KEYS.length; i++) {
+          const KEY = STENCIL_INTEGER_KEYS[i];
           integer(stencil[KEY] ?? (KEY === "ref" ? 0 : 255), KEY, 0, 255);
         }
       }
-      if (!colorMask || colorMask.length !== 4 || !Array.from(colorMask).every((v) => typeof v === "boolean")) {
+      if (!colorMask || colorMask.length !== 4 || typeof colorMask[0] !== "boolean" || typeof colorMask[1] !== "boolean" || typeof colorMask[2] !== "boolean" || typeof colorMask[3] !== "boolean") {
         throw new TypeError("colorMask must contain booleans");
       }
       if (!Array.isArray(textures) || textures.length > this.maxTextures) {
         throw new RangeError("Too many textures");
       }
-      for (const HANDLE of textures) {
+      for (let i = 0; i < textures.length; i++) {
+        const HANDLE = textures[i];
         this._handle(this.textures, HANDLE, "texture");
         if (HANDLE === this.activeRenderTarget) {
           throw new Error("Cannot sample the active render target");
@@ -2368,7 +2375,8 @@ ${converted}`;
           GL.disableVertexAttribArray(index);
         }
         let boundBuffer = null;
-        for (const A of P.locations) {
+        for (let i = 0; i < P.locations.length; i++) {
+          const A = P.locations[i];
           if (A.location >= 0) {
             const IS_INSTANCE = A.source === "instance", SOURCE_BUFFER = IS_INSTANCE ? instanceRecord : B;
             if (boundBuffer !== SOURCE_BUFFER.gpu) {
@@ -2387,23 +2395,30 @@ ${converted}`;
             GL.vertexAttribDivisor(A.location, IS_INSTANCE ? 1 : 0);
           }
         }
-        for (const [NAME, VALUE] of Object.entries(uniforms)) {
-          const TYPE = P.uniforms[NAME];
-          if (!TYPE) {
+        const SETTERS = P.uniformSetters;
+        for (const NAME in uniforms) {
+          if (!Object.hasOwn(uniforms, NAME)) {
+            continue;
+          }
+          const SETTER = SETTERS.get(NAME);
+          if (!SETTER) {
             throw new TypeError(`Undeclared uniform ${NAME}`);
           }
-          const LOCATION = P.uniformLocations.get(NAME);
+          const LOCATION = SETTER.location;
           if (LOCATION === null) {
             continue;
           }
-          if (TYPE.startsWith("matrix")) {
-            GL[`uniformMatrix${TYPE[6]}fv`](LOCATION, false, VALUE);
-          } else if (TYPE.endsWith("v")) {
-            GL[`uniform${TYPE}`](LOCATION, VALUE);
-          } else if (TYPE[0] === "1") {
-            GL[`uniform${TYPE}`](LOCATION, VALUE);
+          const VALUE = uniforms[NAME];
+          if (SETTER.shape === UNIFORM_MATRIX) {
+            GL[SETTER.method](LOCATION, false, VALUE);
+          } else if (SETTER.shape === UNIFORM_DIRECT) {
+            GL[SETTER.method](LOCATION, VALUE);
+          } else if (SETTER.size === 2) {
+            GL[SETTER.method](LOCATION, VALUE[0], VALUE[1]);
+          } else if (SETTER.size === 3) {
+            GL[SETTER.method](LOCATION, VALUE[0], VALUE[1], VALUE[2]);
           } else {
-            GL[`uniform${TYPE}`](LOCATION, ...VALUE);
+            GL[SETTER.method](LOCATION, VALUE[0], VALUE[1], VALUE[2], VALUE[3]);
           }
         }
         const TEXTURE_UNITS = Math.max(this.boundTextureCount, textures.length);
@@ -2425,16 +2440,27 @@ ${converted}`;
         } else {
           GL.enable(GL.BLEND);
           GL.blendEquation(GL.FUNC_ADD);
-          const FACTORS = blend === "source-over" ? [GL.ONE, GL.ONE_MINUS_SRC_ALPHA] : blend === "straight-alpha" ? [GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA] : blend === "copy" ? [GL.ONE, GL.ZERO] : blend === "lighter" ? [GL.ONE, GL.ONE] : blend === "source-in" ? [GL.DST_ALPHA, GL.ZERO] : [GL.ZERO, GL.SRC_ALPHA];
-          GL.blendFunc(...FACTORS);
+          if (blend === "source-over") {
+            GL.blendFunc(GL.ONE, GL.ONE_MINUS_SRC_ALPHA);
+          } else if (blend === "straight-alpha") {
+            GL.blendFunc(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA);
+          } else if (blend === "copy") {
+            GL.blendFunc(GL.ONE, GL.ZERO);
+          } else if (blend === "lighter") {
+            GL.blendFunc(GL.ONE, GL.ONE);
+          } else if (blend === "source-in") {
+            GL.blendFunc(GL.DST_ALPHA, GL.ZERO);
+          } else {
+            GL.blendFunc(GL.ZERO, GL.SRC_ALPHA);
+          }
         }
-        if (DEPTH_STATE?.test) {
+        if (DEPTH_TEST) {
           GL.enable(GL.DEPTH_TEST);
-          GL.depthFunc(GL[FUNCTIONS[DEPTH_STATE.func]]);
+          GL.depthFunc(GL[FUNCTIONS[DEPTH_FUNC]]);
         } else {
           GL.disable(GL.DEPTH_TEST);
         }
-        GL.depthMask(DEPTH_STATE?.write ?? false);
+        GL.depthMask(DEPTH_WRITE);
         if (stencil) {
           GL.enable(GL.STENCIL_TEST);
           GL.stencilFunc(GL[FUNCTIONS[stencil.func ?? "always"]], stencil.ref ?? 0, stencil.mask ?? 255);
@@ -2447,7 +2473,7 @@ ${converted}`;
         } else {
           GL.disable(GL.STENCIL_TEST);
         }
-        GL.colorMask(...colorMask);
+        GL.colorMask(colorMask[0], colorMask[1], colorMask[2], colorMask[3]);
         GL.disable(GL.CULL_FACE);
         GL.disable(GL.DITHER);
         GL.disable(GL.SCISSOR_TEST);
@@ -2588,12 +2614,14 @@ else if(v_paint.z>0.5){float t=radialParameter(v_uv);if(t< -1000.0)discard;uv=v_
 if(v_paint.w>0.5){vec2 size=vec2(textureSize(u_texture,0).xy);uv=(floor(uv*size)+0.5)/size;}
 vec4 texel=texture2D(u_texture,vec3(uv,floor(v_paint.x+0.5)));${VECTOR_FRAGMENT_FINISH}}`;
   }
+  var IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
+  var WHITE = Object.freeze([1, 1, 1, 1]);
   function validateQuads({
     layer,
     uvRects,
     localRects,
-    matrix = [1, 0, 0, 1, 0, 0],
-    color = [1, 1, 1, 1],
+    matrix = IDENTITY,
+    color = WHITE,
     alpha = 1,
     filter = "linear",
     depthWriteAlphaThreshold = 0,
@@ -2632,19 +2660,126 @@ vec4 texel=texture2D(u_texture,vec3(uv,floor(v_paint.x+0.5)));${VECTOR_FRAGMENT_
       }
     }
   }
+  var DEPTH_FUNCTION_NAMES = Object.freeze([
+    "never",
+    "less",
+    "equal",
+    "lequal",
+    "greater",
+    "notequal",
+    "gequal",
+    "always"
+  ]);
+  var DEPTH_FUNCTION_CODES = new Map(DEPTH_FUNCTION_NAMES.map((name, code) => [name, code]));
+  var BLEND_NAMES = Object.freeze(["source-over", "lighter", "straight-alpha", "copy", "source-in", "destination-in"]);
+  var BLEND_CODES = new Map(BLEND_NAMES.map((name, code) => [name, code]));
+  function depthStateCode(test, write, func) {
+    return (test ? 1 : 0) + (write ? 2 : 0) + DEPTH_FUNCTION_CODES.get(func) * 4;
+  }
+  function blendDepthStateCode(test, write, func, blend) {
+    return depthStateCode(test, write, func) + BLEND_CODES.get(blend) * 32;
+  }
+  var DEPTH_POLICIES = Object.freeze(
+    Array.from(
+      { length: 32 },
+      (_, code) => Object.freeze({ test: (code & 1) === 1, write: (code & 2) === 2, func: DEPTH_FUNCTION_NAMES[code >> 2] })
+    )
+  );
+  var STENCIL_EQUAL = new Array(256).fill(null);
+  function stencilEqual(ref) {
+    return STENCIL_EQUAL[ref] ??= Object.freeze({ func: "equal", ref, mask: 255, writeMask: 0, pass: "keep" });
+  }
+  function sameValues(values, other) {
+    for (let i = 0; i < values.length; i++) {
+      if (values[i] !== other[i]) {
+        return false;
+      }
+    }
+    return true;
+  }
+  function sameFloat32(values, stored) {
+    for (let i = 0; i < values.length; i++) {
+      if (Math.fround(values[i]) !== stored[i]) {
+        return false;
+      }
+    }
+    return true;
+  }
   var EMPTY_CLIP = Object.freeze({
-    key: "",
+    key: 0,
     values: null,
     count: 0
   });
+  var ZERO_AREA_CLIP = Object.freeze({
+    key: 1,
+    values: Object.freeze([0, 0, -1]),
+    count: 1
+  });
+  var INTERNED = /* @__PURE__ */ new Map();
+  var MAX_INTERNED = 4096;
+  var internedCount = 0;
+  var HASH_VIEW = new Float64Array(1);
+  var HASH_WORDS = new Uint32Array(HASH_VIEW.buffer);
+  var nextKey = 2;
+  var scratch = new Float64Array(96);
+  function hashValues(values, length) {
+    let hash = 2166136261;
+    for (let i = 0; i < length; i++) {
+      HASH_VIEW[0] = values[i] + 0;
+      hash = Math.imul(hash ^ HASH_WORDS[0], 16777619);
+      hash = Math.imul(hash ^ HASH_WORDS[1], 16777619);
+    }
+    return hash >>> 0;
+  }
+  function intern(values, length) {
+    const HASH = hashValues(values, length);
+    let bucket = INTERNED.get(HASH);
+    if (bucket) {
+      for (let b = 0; b < bucket.length; b++) {
+        const ENTRY2 = bucket[b], SAVED = ENTRY2.values;
+        if (SAVED.length !== length) {
+          continue;
+        }
+        let same = true;
+        for (let i = 0; same && i < length; i++) {
+          same = SAVED[i] === values[i];
+        }
+        if (same) {
+          return ENTRY2;
+        }
+      }
+    } else {
+      if (internedCount >= MAX_INTERNED) {
+        INTERNED.clear();
+        internedCount = 0;
+      }
+      bucket = [];
+      INTERNED.set(HASH, bucket);
+    }
+    const ENTRY = Object.freeze({
+      key: nextKey++,
+      values: Object.freeze(Array.from(values.subarray(0, length))),
+      count: length / 3
+    });
+    bucket.push(ENTRY);
+    internedCount++;
+    return ENTRY;
+  }
   function clipPlanes(clips, maxPlanes) {
     if (!clips?.length) {
       return EMPTY_CLIP;
     }
-    const VALUES = [], KEY = [];
-    for (const POLYGON of clips) {
-      if (!Array.isArray(POLYGON) || POLYGON.length < 3 || POLYGON.some((p) => !Number.isFinite(p?.x) || !Number.isFinite(p?.y))) {
+    let length = 0;
+    for (let c = 0; c < clips.length; c++) {
+      const POLYGON = clips[c];
+      if (!Array.isArray(POLYGON) || POLYGON.length < 3) {
         throw new TypeError("Finite convex clip polygons required");
+      }
+      for (let i = 0; i < POLYGON.length; i++) {
+        const P = POLYGON[i];
+        if (!Number.isFinite(P?.x) || !Number.isFinite(P?.y)) {
+          throw new TypeError("Finite convex clip polygons required");
+        }
       }
       let area2 = 0;
       for (let i = 0; i < POLYGON.length; i++) {
@@ -2652,31 +2787,29 @@ vec4 texel=texture2D(u_texture,vec3(uv,floor(v_paint.x+0.5)));${VECTOR_FRAGMENT_
         area2 += P.x * Q.y - Q.x * P.y;
       }
       if (Math.abs(area2) < 1e-12) {
-        return {
-          key: "empty",
-          values: [0, 0, -1],
-          count: 1
-        };
+        return ZERO_AREA_CLIP;
       }
       const SIGN = area2 >= 0 ? 1 : -1;
+      if (scratch.length < length + POLYGON.length * 3) {
+        const NEXT = new Float64Array(Math.max(scratch.length * 2, length + POLYGON.length * 3));
+        NEXT.set(scratch.subarray(0, length));
+        scratch = NEXT;
+      }
       for (let i = 0; i < POLYGON.length; i++) {
         const P = POLYGON[i], Q = POLYGON[(i + 1) % POLYGON.length], DX = Q.x - P.x, DY = Q.y - P.y, LENGTH = Math.hypot(DX, DY);
         if (!LENGTH) {
           continue;
         }
         const A_LOCAL = -DY / LENGTH * SIGN, B_LOCAL = DX / LENGTH * SIGN, C_LOCAL = -(A_LOCAL * P.x + B_LOCAL * P.y);
-        VALUES.push(A_LOCAL, B_LOCAL, C_LOCAL);
-        KEY.push(A_LOCAL, B_LOCAL, C_LOCAL);
+        scratch[length++] = A_LOCAL;
+        scratch[length++] = B_LOCAL;
+        scratch[length++] = C_LOCAL;
       }
     }
-    if (VALUES.length / 3 > maxPlanes) {
+    if (length / 3 > maxPlanes) {
       throw new RangeError(`Clipping exceeds ${maxPlanes} edge planes`);
     }
-    return {
-      key: KEY.join(","),
-      values: VALUES,
-      count: VALUES.length / 3
-    };
+    return intern(scratch, length);
   }
   var POSE_PROGRAM_FUNCTIONS = `uniform sampler2D u_program;uniform sampler2D u_state;uniform sampler2D u_overrides;uniform int u_programWidth;
 // GLSL ES permits low-accuracy native trigonometry. Large SVG pivots amplify that error.
@@ -2712,6 +2845,63 @@ void poseEval(int part,int row,out vec4 row0,out vec4 row1,out vec4 pose){
  if((int(morph.z)&(1<<part))!=0)alpha=0.0;
  row0=vec4(matrix[0][0],matrix[1][0],matrix[2][0],0.0);row1=vec4(matrix[0][1],matrix[1][1],matrix[2][1],0.0);pose=vec4(morph.xy,alpha,0.0);}
 `;
+  var DirtyRows = class {
+    constructor() {
+      this.positions = new Int32Array(0);
+      this.rows = new Int32Array(16);
+      this.values = new Int32Array(16);
+      this.size = 0;
+    }
+    _growPositions(row) {
+      const NEXT = new Int32Array(Math.max(32, row + 1, this.positions.length * 2));
+      NEXT.set(this.positions);
+      this.positions = NEXT;
+    }
+    has(row) {
+      return row < this.positions.length && this.positions[row] !== 0;
+    }
+    add(row, value = 0) {
+      if (row >= this.positions.length) {
+        this._growPositions(row);
+      }
+      const AT = this.positions[row];
+      if (AT) {
+        this.values[AT - 1] = value;
+        return;
+      }
+      if (this.size === this.rows.length) {
+        const ROWS = new Int32Array(this.size * 2), VALUES = new Int32Array(this.size * 2);
+        ROWS.set(this.rows);
+        VALUES.set(this.values);
+        this.rows = ROWS;
+        this.values = VALUES;
+      }
+      this.rows[this.size] = row;
+      this.values[this.size] = value;
+      this.positions[row] = ++this.size;
+    }
+    delete(row) {
+      const AT = row < this.positions.length ? this.positions[row] : 0;
+      if (!AT) {
+        return false;
+      }
+      const LAST = --this.size;
+      if (AT - 1 !== LAST) {
+        const MOVED = this.rows[LAST];
+        this.rows[AT - 1] = MOVED;
+        this.values[AT - 1] = this.values[LAST];
+        this.positions[MOVED] = AT;
+      }
+      this.positions[row] = 0;
+      return true;
+    }
+    clear() {
+      for (let i = 0; i < this.size; i++) {
+        this.positions[this.rows[i]] = 0;
+      }
+      this.size = 0;
+    }
+  };
   var CORNERS = Float32Array.of(0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1);
   var VERTEX = `attribute vec2 a_corner;attribute vec2 i_row;uniform vec2 u_size;
 void main(){vec2 pixel=vec2(a_corner.x*i_row.y*3.0,i_row.x+a_corner.y);
@@ -2731,7 +2921,7 @@ int channel=column%3;gl_FragColor=channel==0?row0:channel==1?row1:pose;}`;
       this.instanceBuffer = null;
       this.cornerGeneration = -1;
       this.instances = new Float32Array(0);
-      this.dirty = /* @__PURE__ */ new Map();
+      this.dirty = new DirtyRows();
       this.disposed = false;
       this.onRestored = () => {
         this.cornerGeneration = -1;
@@ -2751,7 +2941,7 @@ int channel=column%3;gl_FragColor=channel==0?row0:channel==1?row1:pose;}`;
     }
     markDirty(row, partCount) {
       if (this.available) {
-        this.dirty.set(row, partCount);
+        this.dirty.add(row, partCount);
       }
     }
     forget(row) {
@@ -2832,6 +3022,16 @@ int channel=column%3;gl_FragColor=channel==0?row0:channel==1?row1:pose;}`;
       const DEVICE = this.device;
       let count = 0;
       let parts = 0;
+      const UNIFORMS2 = this.uniforms ??= {
+        u_size: new Float32Array(2),
+        u_program: 0,
+        u_state: 1,
+        u_overrides: 2,
+        u_programWidth: 0
+      };
+      UNIFORMS2.u_size[0] = TARGET.width;
+      UNIFORMS2.u_size[1] = TARGET.height;
+      UNIFORMS2.u_programWidth = programWidth;
       const SUBMIT = () => {
         DEVICE.uploadVertices(this.instanceBuffer, this.instances.subarray(0, count * 2));
         DEVICE.draw({
@@ -2840,13 +3040,7 @@ int channel=column%3;gl_FragColor=channel==0?row0:channel==1?row1:pose;}`;
           instanceBuffer: this.instanceBuffer,
           count: 6,
           instances: count,
-          uniforms: {
-            u_size: [TARGET.width, TARGET.height],
-            u_program: 0,
-            u_state: 1,
-            u_overrides: 2,
-            u_programWidth: programWidth
-          },
+          uniforms: UNIFORMS2,
           textures,
           blend: false,
           depth: false
@@ -2854,16 +3048,15 @@ int channel=column%3;gl_FragColor=channel==0?row0:channel==1?row1:pose;}`;
         this.metrics.rows += count;
         this.metrics.parts += parts;
         this.metrics.passes++;
-        for (let index = 0; index < count; index++) {
-          this.dirty.delete(this.instances[index * 2]);
-        }
         count = 0;
         parts = 0;
       };
       DEVICE.bindRenderTarget(TARGET);
       try {
-        for (const [ROW, PART_COUNT] of this.dirty) {
-          this.instances[count * 2] = ROW;
+        const DIRTY = this.dirty;
+        for (let i = 0; i < DIRTY.size; i++) {
+          const PART_COUNT = DIRTY.values[i];
+          this.instances[count * 2] = DIRTY.rows[i];
           this.instances[count * 2 + 1] = PART_COUNT;
           count++;
           parts += PART_COUNT;
@@ -2874,6 +3067,7 @@ int channel=column%3;gl_FragColor=channel==0?row0:channel==1?row1:pose;}`;
         if (count) {
           SUBMIT();
         }
+        DIRTY.clear();
       } finally {
         DEVICE.unbindRenderTarget(TARGET);
       }
@@ -2943,7 +3137,7 @@ int channel=column%3;gl_FragColor=channel==0?row0:channel==1?row1:pose;}`;
       this.stateTexture = null;
       this.overrideTexture = null;
       this.cpuTexture = null;
-      this.dirty = { state: /* @__PURE__ */ new Set(), override: /* @__PURE__ */ new Set(), cpu: /* @__PURE__ */ new Set() };
+      this.dirty = { state: new DirtyRows(), override: new DirtyRows(), cpu: new DirtyRows() };
       this.frameMetrics = {};
       this.pendingUpdates = false;
       this.disposed = false;
@@ -2979,10 +3173,10 @@ int channel=column%3;gl_FragColor=channel==0?row0:channel==1?row1:pose;}`;
       };
     }
     _markAll(record) {
-      this.dirty.state.add(record);
-      this.dirty.override.add(record);
+      this.dirty.state.add(record.row);
+      this.dirty.override.add(record.row);
       if (record.mode === "cpu") {
-        this.dirty.cpu.add(record);
+        this.dirty.cpu.add(record.row);
       }
     }
     _boundary() {
@@ -3044,7 +3238,7 @@ int channel=column%3;gl_FragColor=channel==0?row0:channel==1?row1:pose;}`;
         if (this.stateData) {
           this.stateData[RECORD.row * 8 + 7] = this.sources.get(RECORD.source).offset;
         }
-        this.dirty.state.add(RECORD);
+        this.dirty.state.add(RECORD.row);
       }
       this.pendingUpdates = true;
     }
@@ -3074,9 +3268,9 @@ int channel=column%3;gl_FragColor=channel==0?row0:channel==1?row1:pose;}`;
       this.stateData = null;
       this.overrideData = null;
       this.cpuData = null;
-      for (const SET of Object.values(this.dirty)) {
-        SET.clear();
-      }
+      this.dirty.state.clear();
+      this.dirty.override.clear();
+      this.dirty.cpu.clear();
     }
     _ensureCapacity(required) {
       if (required <= this.capacity) {
@@ -3135,7 +3329,10 @@ int channel=column%3;gl_FragColor=channel==0?row0:channel==1?row1:pose;}`;
         mode: null,
         usedFrame: -1,
         reason: null,
-        baseScratch: new Float32Array(OVERRIDE_WIDTH * 4)
+        baseScratch: new Float32Array(OVERRIDE_WIDTH * 4),
+        stateScratch: new Float32Array(8),
+        // resolve() hands out one of these per mode instead of a new object per draw; fields are rewritten.
+        resolved: null
       };
       this.instances.set(HANDLE, RECORD);
       OWNERS.set(HANDLE, this);
@@ -3152,9 +3349,9 @@ int channel=column%3;gl_FragColor=channel==0?row0:channel==1?row1:pose;}`;
       this._boundary();
       this.instances.delete(handle);
       this.matrixCache?.forget(RECORD.row);
-      for (const SET of Object.values(this.dirty)) {
-        SET.delete(RECORD);
-      }
+      this.dirty.state.delete(RECORD.row);
+      this.dirty.override.delete(RECORD.row);
+      this.dirty.cpu.delete(RECORD.row);
       this.rows[RECORD.row] = null;
       this.freeRows.push(RECORD.row);
       if (!this.instances.size) {
@@ -3173,30 +3370,29 @@ int channel=column%3;gl_FragColor=channel==0?row0:channel==1?row1:pose;}`;
       }
       return RECORD;
     }
-    prepare(handle, { clipName, elapsedMs, basePoses, visible, excluded = [], morph }) {
+    prepare(handle, { clipName, elapsedMs, basePoses, visible, excludedMask = 0, morph }) {
       const RECORD = this._instance(handle);
       const SOURCE = this.sources.get(RECORD.source);
       const CLIP = SOURCE.program.clips[clipName];
       if (this.gpuUnavailableReason || !CLIP?.supported) {
         return null;
       }
-      if (!Number.isFinite(elapsedMs) || basePoses.length !== SOURCE.program.partCount || visible.length !== basePoses.length || !morph || morph.length !== 2 || !morph.every(Number.isFinite)) {
-        throw new TypeError("Finite pose time, matching part overrides and two morph values required");
+      if (!Number.isFinite(elapsedMs) || basePoses.length !== SOURCE.program.partCount || visible.length !== basePoses.length || !morph || morph.length !== 2 || !Number.isFinite(morph[0]) || !Number.isFinite(morph[1]) || !Number.isSafeInteger(excludedMask) || excludedMask < 0 || excludedMask >= 1 << MAX_PARTS) {
+        throw new TypeError(
+          "Finite pose time, matching part overrides, a part bit mask and two morph values required"
+        );
       }
       const CYCLE = CLIP.durationMs * (CLIP.loop === "alternate" ? 2 : 1);
       const LOCAL_TIME = CLIP.loop === "once" ? Math.min(CLIP.durationMs, Math.max(0, elapsedMs)) : (elapsedMs % CYCLE + CYCLE) % CYCLE;
-      const EXCLUDED = excluded.reduce((mask, value, index) => value ? mask | 1 << index : mask, 0);
-      const STATE = [
-        CLIP.headerBase,
-        LOCAL_TIME,
-        CLIP.loop === "once" ? 0 : CLIP.loop === "repeat" ? 1 : 2,
-        CLIP.durationMs,
-        morph[0],
-        morph[1],
-        EXCLUDED,
-        // Slot 7: where this source's keyframes start in the shared program texture.
-        SOURCE.offset
-      ];
+      const STATE = RECORD.stateScratch;
+      STATE[0] = CLIP.headerBase;
+      STATE[1] = LOCAL_TIME;
+      STATE[2] = CLIP.loop === "once" ? 0 : CLIP.loop === "repeat" ? 1 : 2;
+      STATE[3] = CLIP.durationMs;
+      STATE[4] = morph[0];
+      STATE[5] = morph[1];
+      STATE[6] = excludedMask;
+      STATE[7] = SOURCE.offset;
       const BASE = RECORD.baseScratch;
       for (let i = 0; i < basePoses.length; i++) {
         const POSE = basePoses[i];
@@ -3212,18 +3408,26 @@ int channel=column%3;gl_FragColor=channel==0?row0:channel==1?row1:pose;}`;
       }
       const OFFSET = RECORD.row * 8;
       const BASE_OFFSET = RECORD.row * OVERRIDE_WIDTH * 4;
-      const STATE_CHANGED = STATE.some((value, index) => Math.fround(value) !== this.stateData[OFFSET + index]);
-      const BASE_CHANGED = BASE.some((value, index) => value !== this.overrideData[BASE_OFFSET + index]);
+      const STATE_DATA = this.stateData, OVERRIDE_DATA = this.overrideData;
+      let stateChanged = false;
+      for (let i = 0; !stateChanged && i < 8; i++) {
+        stateChanged = STATE[i] !== STATE_DATA[OFFSET + i];
+      }
+      let baseChanged = false;
+      for (let i = 0; !baseChanged && i < BASE.length; i++) {
+        baseChanged = BASE[i] !== OVERRIDE_DATA[BASE_OFFSET + i];
+      }
+      const STATE_CHANGED = stateChanged, BASE_CHANGED = baseChanged;
       if ((STATE_CHANGED || BASE_CHANGED || RECORD.mode !== "gpu") && RECORD.usedFrame === this.device.stats.frame) {
         this._boundary();
       }
       if (STATE_CHANGED) {
         this.stateData.set(STATE, OFFSET);
-        this.dirty.state.add(RECORD);
+        this.dirty.state.add(RECORD.row);
       }
       if (BASE_CHANGED) {
         this.overrideData.set(BASE, BASE_OFFSET);
-        this.dirty.override.add(RECORD);
+        this.dirty.override.add(RECORD.row);
       }
       this.pendingUpdates ||= STATE_CHANGED || BASE_CHANGED;
       if (RECORD.mode !== "gpu") {
@@ -3242,32 +3446,27 @@ int channel=column%3;gl_FragColor=channel==0?row0:channel==1?row1:pose;}`;
       if (RECORD.usedFrame === this.device.stats.frame) {
         this._boundary();
       }
-      const OFFSET = RECORD.row * POSE_WIDTH * 4;
+      const OFFSET = RECORD.row * POSE_WIDTH * 4, DATA2 = this.cpuData;
       for (let i = 0; i < PART_COUNT; i++) {
         const POSE = parts[i];
-        const MATRIX = POSE.transform;
-        this.cpuData.set(
-          [
-            MATRIX[0],
-            MATRIX[2],
-            MATRIX[4],
-            0,
-            MATRIX[1],
-            MATRIX[3],
-            MATRIX[5],
-            0,
-            morph[0] + (POSE.morph?.[0] ?? 0),
-            morph[1] + (POSE.morph?.[1] ?? 0),
-            POSE.visible === false ? 0 : POSE.opacity ?? 1,
-            POSE.depth ?? 0
-          ],
-          OFFSET + i * 12
-        );
+        const MATRIX = POSE.transform, AT = OFFSET + i * 12;
+        DATA2[AT] = MATRIX[0];
+        DATA2[AT + 1] = MATRIX[2];
+        DATA2[AT + 2] = MATRIX[4];
+        DATA2[AT + 3] = 0;
+        DATA2[AT + 4] = MATRIX[1];
+        DATA2[AT + 5] = MATRIX[3];
+        DATA2[AT + 6] = MATRIX[5];
+        DATA2[AT + 7] = 0;
+        DATA2[AT + 8] = morph[0] + (POSE.morph?.[0] ?? 0);
+        DATA2[AT + 9] = morph[1] + (POSE.morph?.[1] ?? 0);
+        DATA2[AT + 10] = POSE.visible === false ? 0 : POSE.opacity ?? 1;
+        DATA2[AT + 11] = POSE.depth ?? 0;
       }
       this.matrixCache?.forget(RECORD.row);
       RECORD.mode = "cpu";
       RECORD.reason = reason;
-      this.dirty.cpu.add(RECORD);
+      this.dirty.cpu.add(RECORD.row);
       this.pendingUpdates = true;
       return handle;
     }
@@ -3284,36 +3483,56 @@ int channel=column%3;gl_FragColor=channel==0?row0:channel==1?row1:pose;}`;
         this.dirty.cpu.clear();
       }
       const PART_COUNT = this.sources.get(RECORD.source).program.partCount;
+      const OUT = RECORD.resolved ??= {
+        row: 0,
+        kind: "matrix",
+        gpu: false,
+        texture: null,
+        textures: null,
+        programWidth: 0,
+        partCount: 0
+      };
+      OUT.row = RECORD.row;
+      OUT.partCount = PART_COUNT;
       if (RECORD.mode === "gpu") {
         const CACHED = !program && this.matrixCache?.ensure(this.capacity);
         if (CACHED) {
-          return {
-            row: RECORD.row,
-            kind: "matrix",
-            gpu: true,
-            texture: CACHED,
-            textures: [CACHED],
-            programWidth: 0,
-            partCount: PART_COUNT
-          };
+          OUT.kind = "matrix";
+          OUT.gpu = true;
+          OUT.texture = CACHED;
+          OUT.textures = this._textureList(CACHED, null, null);
+          OUT.programWidth = 0;
+          return OUT;
         }
-        return {
-          row: RECORD.row,
-          kind: "program",
-          texture: this.programTexture,
-          textures: [this.programTexture, this.stateTexture, this.overrideTexture],
-          programWidth: this.programTexture.width,
-          partCount: PART_COUNT
-        };
+        OUT.kind = "program";
+        OUT.gpu = false;
+        OUT.texture = this.programTexture;
+        OUT.textures = this._textureList(this.programTexture, this.stateTexture, this.overrideTexture);
+        OUT.programWidth = this.programTexture.width;
+        return OUT;
       }
-      return {
-        row: RECORD.row,
-        kind: "matrix",
-        texture: this.cpuTexture,
-        textures: [this.cpuTexture],
-        programWidth: 0,
-        partCount: PART_COUNT
-      };
+      OUT.kind = "matrix";
+      OUT.gpu = false;
+      OUT.texture = this.cpuTexture;
+      OUT.textures = this._textureList(this.cpuTexture, null, null);
+      OUT.programWidth = 0;
+      return OUT;
+    }
+    /** A frozen texture list reused while its textures are unchanged, so draws compare lists without allocating. */
+    _textureList(a, b, c) {
+      const LISTS = this.textureLists ??= [];
+      for (let i = 0; i < LISTS.length; i++) {
+        const LIST2 = LISTS[i];
+        if (LIST2[0] === a && LIST2.length === (b ? 3 : 1) && (!b || LIST2[1] === b && LIST2[2] === c)) {
+          return LIST2;
+        }
+      }
+      const LIST = Object.freeze(b ? [a, b, c] : [a]);
+      if (LISTS.length === 8) {
+        LISTS.shift();
+      }
+      LISTS.push(LIST);
+      return LIST;
     }
     noteDraw(handle) {
       const RECORD = this._instance(handle);
@@ -3338,15 +3557,24 @@ int channel=column%3;gl_FragColor=channel==0?row0:channel==1?row1:pose;}`;
       }
       let first = Infinity;
       let last = -1;
-      for (const RECORD of dirty) {
+      for (let i = 0; i < dirty.size; i++) {
         this.frameMetrics.flushRecordVisits++;
-        first = Math.min(first, RECORD.row);
-        last = Math.max(last, RECORD.row);
+        first = Math.min(first, dirty.rows[i]);
+        last = Math.max(last, dirty.rows[i]);
       }
       const DATA2 = this[key3].subarray(first * width * 4, (last + 1) * width * 4);
       this.device.updateDataTexture(texture, DATA2, { y: first, width, height: last - first + 1 });
       dirty.clear();
       this.frameMetrics[metric] += DATA2.byteLength;
+    }
+    /** Marks the GPU-mode rows of one dirty list in the matrix cache. */
+    _markMatrixRows(dirty) {
+      for (let i = 0; i < dirty.size; i++) {
+        const RECORD = this.rows[dirty.rows[i]];
+        if (RECORD.mode === "gpu") {
+          this.matrixCache.markDirty(RECORD.row, this.sources.get(RECORD.source).program.partCount);
+        }
+      }
     }
     flushUpdates() {
       this._ready();
@@ -3363,13 +3591,8 @@ int channel=column%3;gl_FragColor=channel==0?row0:channel==1?row1:pose;}`;
         return;
       }
       if (this.matrixCache) {
-        for (const DIRTY of [this.dirty.state, this.dirty.override]) {
-          for (const RECORD of DIRTY) {
-            if (RECORD.mode === "gpu") {
-              this.matrixCache.markDirty(RECORD.row, this.sources.get(RECORD.source).program.partCount);
-            }
-          }
-        }
+        this._markMatrixRows(this.dirty.state);
+        this._markMatrixRows(this.dirty.override);
       }
       if (this.cpuTexture) {
         this._uploadRows("cpuData", this.dirty.cpu, this.cpuTexture, POSE_WIDTH, "cpuPoseUploadBytes");
@@ -3388,7 +3611,7 @@ int channel=column%3;gl_FragColor=channel==0?row0:channel==1?row1:pose;}`;
     _flushMatrixCache() {
       if (this.matrixCache && this.programTexture) {
         this.matrixCache.flush(
-          [this.programTexture, this.stateTexture, this.overrideTexture],
+          this._textureList(this.programTexture, this.stateTexture, this.overrideTexture),
           this.programTexture.width,
           this.capacity
         );
@@ -3428,7 +3651,11 @@ int channel=column%3;gl_FragColor=channel==0?row0:channel==1?row1:pose;}`;
     }
   };
   var VECTOR_RENDERER_ATLAS_REGIONS = Object.freeze([Object.freeze({ width: 1, height: 1 })]);
-  var IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
+  var IDENTITY2 = Object.freeze([1, 0, 0, 1, 0, 0]);
+  var EMPTY_OPTIONS = Object.freeze({});
+  var BLACK = Object.freeze([0, 0, 0, 1]);
+  var NO_RADIAL = Object.freeze([0, 0, 0, 0]);
+  var PRIMITIVE_CORNERS = Object.freeze([-1, -1, 1, -1, 1, 1, -1, 1]);
   var DEPTH_FUNCTIONS = /* @__PURE__ */ new Set(["never", "less", "equal", "lequal", "greater", "notequal", "gequal", "always"]);
   var VERTEX_BYTES = VECTOR_VERTEX_FLOATS * 4;
   var MODE_POSED = 4;
@@ -3494,6 +3721,17 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
       y: m[1] * x + m[3] * y + m[5]
     };
   }
+  function composeInto(a, b, out) {
+    const A0 = a[0], A1 = a[1], A2 = a[2], A3 = a[3], A4 = a[4], A5 = a[5];
+    out[0] = A0 * b[0] + A2 * b[1];
+    out[1] = A1 * b[0] + A3 * b[1];
+    out[2] = A0 * b[2] + A2 * b[3];
+    out[3] = A1 * b[2] + A3 * b[3];
+    out[4] = A0 * b[4] + A2 * b[5] + A4;
+    out[5] = A1 * b[4] + A3 * b[5] + A5;
+    return out;
+  }
+  var PROGRAM_RESOLVE = Object.freeze({ program: true });
   function compose(a, b) {
     return [
       a[0] * b[0] + a[2] * b[1],
@@ -3504,9 +3742,87 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
       a[1] * b[4] + a[3] * b[5] + a[5]
     ];
   }
+  var EDGE_FLOATS = 7;
+  var TESSELLATION = {
+    edges: new Float64Array(EDGE_FLOATS * 64),
+    ys: new Float64Array(128),
+    ySortScratch: new Float64Array(128),
+    starts: new Int32Array(64),
+    sortScratch: new Int32Array(64),
+    active: [],
+    keys: new Float64Array(64),
+    out: new Float64Array(12 * 64)
+  };
+  function growFloat64(array, required) {
+    const NEXT = new Float64Array(Math.max(required, array.length * 2));
+    NEXT.set(array);
+    return NEXT;
+  }
+  function edgeXAt(edges2, edge, y) {
+    const AT = edge * EDGE_FLOATS, AX = edges2[AT], AY = edges2[AT + 1];
+    return AX + (edges2[AT + 2] - AX) * (y - AY) / (edges2[AT + 3] - AY);
+  }
+  function sortEdgesByMinY(order, scratch2, count, edges2) {
+    let source = order, target = scratch2;
+    for (let width = 1; width < count; width *= 2) {
+      for (let start = 0; start < count; start += width * 2) {
+        const MIDDLE = Math.min(start + width, count), END = Math.min(start + width * 2, count);
+        let left = start, right = MIDDLE, at = start;
+        while (left < MIDDLE && right < END) {
+          if (edges2[source[right] * EDGE_FLOATS + 5] < edges2[source[left] * EDGE_FLOATS + 5]) {
+            target[at++] = source[right++];
+          } else {
+            target[at++] = source[left++];
+          }
+        }
+        while (left < MIDDLE) {
+          target[at++] = source[left++];
+        }
+        while (right < END) {
+          target[at++] = source[right++];
+        }
+      }
+      const SWAP = source;
+      source = target;
+      target = SWAP;
+    }
+    if (source !== order) {
+      for (let i = 0; i < count; i++) {
+        order[i] = source[i];
+      }
+    }
+  }
+  function sortValues(values, scratch2, count) {
+    let source = values, target = scratch2;
+    for (let width = 1; width < count; width *= 2) {
+      for (let start = 0; start < count; start += width * 2) {
+        const MIDDLE = Math.min(start + width, count), END = Math.min(start + width * 2, count);
+        let left = start, right = MIDDLE, at = start;
+        while (left < MIDDLE && right < END) {
+          target[at++] = source[right] < source[left] ? source[right++] : source[left++];
+        }
+        while (left < MIDDLE) {
+          target[at++] = source[left++];
+        }
+        while (right < END) {
+          target[at++] = source[right++];
+        }
+      }
+      const SWAP = source;
+      source = target;
+      target = SWAP;
+    }
+    if (source !== values) {
+      for (let i = 0; i < count; i++) {
+        values[i] = source[i];
+      }
+    }
+  }
   function tessellate(contours, rule) {
-    const EDGES = [], YS = [];
-    for (const CONTOUR of contours) {
+    const T = TESSELLATION;
+    let edges2 = T.edges, ys = T.ys, edgeCount = 0, yCount = 0;
+    for (let c = 0; c < contours.length; c++) {
+      const CONTOUR = contours[c];
       if (CONTOUR.length < 3) {
         continue;
       }
@@ -3515,78 +3831,110 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
         if (Math.abs(A.y - B.y) < 1e-9) {
           continue;
         }
-        const MIN_Y = Math.min(A.y, B.y), MAX_Y = Math.max(A.y, B.y);
-        EDGES.push({
-          a: A,
-          b: B,
-          sign: B.y > A.y ? 1 : -1,
-          minY: MIN_Y,
-          maxY: MAX_Y
-        });
-        YS.push(A.y, B.y);
+        if ((edgeCount + 1) * EDGE_FLOATS > edges2.length) {
+          edges2 = T.edges = growFloat64(edges2, (edgeCount + 1) * EDGE_FLOATS);
+        }
+        if (yCount + 2 > ys.length) {
+          ys = T.ys = growFloat64(ys, yCount + 2);
+          T.ySortScratch = new Float64Array(ys.length);
+        }
+        const AT = edgeCount++ * EDGE_FLOATS;
+        edges2[AT] = A.x;
+        edges2[AT + 1] = A.y;
+        edges2[AT + 2] = B.x;
+        edges2[AT + 3] = B.y;
+        edges2[AT + 4] = B.y > A.y ? 1 : -1;
+        edges2[AT + 5] = Math.min(A.y, B.y);
+        edges2[AT + 6] = Math.max(A.y, B.y);
+        ys[yCount++] = A.y;
+        ys[yCount++] = B.y;
       }
     }
-    YS.sort((a, b) => a - b);
-    const LEVELS = [];
-    for (const Y of YS) {
-      if (!LEVELS.length || Y - LEVELS.at(-1) > 1e-8) {
-        LEVELS.push(Y);
+    sortValues(ys, T.ySortScratch, yCount);
+    let levelCount = 0;
+    for (let i = 0; i < yCount; i++) {
+      const Y = ys[i];
+      if (!levelCount || Y - ys[levelCount - 1] > 1e-8) {
+        ys[levelCount++] = Y;
       }
     }
-    const STARTS = EDGES.slice().sort((a, b) => a.minY - b.minY), ACTIVE = [], TRIANGLES = [];
-    let nextStart = 0;
-    for (let band = 0; band + 1 < LEVELS.length; band++) {
-      const Y0 = LEVELS[band], Y1 = LEVELS[band + 1], YM = (Y0 + Y1) / 2;
+    if (edgeCount > T.starts.length) {
+      T.starts = new Int32Array(Math.max(edgeCount, T.starts.length * 2));
+      T.sortScratch = new Int32Array(T.starts.length);
+      T.keys = new Float64Array(T.starts.length);
+    }
+    const STARTS = T.starts, ACTIVE = T.active, KEYS = T.keys;
+    for (let i = 0; i < edgeCount; i++) {
+      STARTS[i] = i;
+    }
+    sortEdgesByMinY(STARTS, T.sortScratch, edgeCount, edges2);
+    ACTIVE.length = 0;
+    let out = T.out, outFloats = 0, nextStart = 0;
+    const EVEN_ODD = rule === "evenodd";
+    for (let band = 0; band + 1 < levelCount; band++) {
+      const Y0 = ys[band], Y1 = ys[band + 1], YM = (Y0 + Y1) / 2;
       if (Y1 - Y0 < 1e-8) {
         continue;
       }
-      while (nextStart < STARTS.length && STARTS[nextStart].minY < YM) {
+      while (nextStart < edgeCount && edges2[STARTS[nextStart] * EDGE_FLOATS + 5] < YM) {
         ACTIVE.push(STARTS[nextStart++]);
       }
       for (let i = ACTIVE.length - 1; i >= 0; i--) {
-        if (ACTIVE[i].maxY <= YM) {
+        if (edges2[ACTIVE[i] * EDGE_FLOATS + 6] <= YM) {
           ACTIVE[i] = ACTIVE[ACTIVE.length - 1];
           ACTIVE.pop();
         }
       }
-      ACTIVE.sort((a, b) => xAt(a, YM) - xAt(b, YM));
+      for (let i = 0; i < ACTIVE.length; i++) {
+        KEYS[ACTIVE[i]] = edgeXAt(edges2, ACTIVE[i], YM);
+      }
+      for (let i = 1; i < ACTIVE.length; i++) {
+        const EDGE = ACTIVE[i], KEY = KEYS[EDGE];
+        let j = i - 1;
+        while (j >= 0 && KEYS[ACTIVE[j]] - KEY > 0) {
+          ACTIVE[j + 1] = ACTIVE[j];
+          j--;
+        }
+        ACTIVE[j + 1] = EDGE;
+      }
       let winding = 0;
       let inside = false;
-      let left = null;
-      for (const EDGE of ACTIVE) {
-        const BEFORE = rule === "evenodd" ? inside : winding !== 0;
-        if (rule === "evenodd") {
+      let left = -1;
+      for (let i = 0; i < ACTIVE.length; i++) {
+        const EDGE = ACTIVE[i];
+        const BEFORE = EVEN_ODD ? inside : winding !== 0;
+        if (EVEN_ODD) {
           inside = !inside;
         } else {
-          winding += EDGE.sign;
+          winding += edges2[EDGE * EDGE_FLOATS + 4];
         }
-        const AFTER = rule === "evenodd" ? inside : winding !== 0;
+        const AFTER = EVEN_ODD ? inside : winding !== 0;
         if (!BEFORE && AFTER) {
           left = EDGE;
-        } else if (BEFORE && !AFTER && left) {
-          const A = {
-            x: xAt(left, Y0),
-            y: Y0
-          }, B = {
-            x: xAt(EDGE, Y0),
-            y: Y0
-          }, C = {
-            x: xAt(EDGE, Y1),
-            y: Y1
-          }, D = {
-            x: xAt(left, Y1),
-            y: Y1
-          };
-          TRIANGLES.push(A, B, C, A, C, D);
-          left = null;
+        } else if (BEFORE && !AFTER && left >= 0) {
+          if (outFloats + 12 > out.length) {
+            out = T.out = growFloat64(out, outFloats + 12);
+          }
+          const AX = edgeXAt(edges2, left, Y0), BX = edgeXAt(edges2, EDGE, Y0), CX = edgeXAt(edges2, EDGE, Y1), DX = edgeXAt(edges2, left, Y1);
+          out[outFloats] = AX;
+          out[outFloats + 1] = Y0;
+          out[outFloats + 2] = BX;
+          out[outFloats + 3] = Y0;
+          out[outFloats + 4] = CX;
+          out[outFloats + 5] = Y1;
+          out[outFloats + 6] = AX;
+          out[outFloats + 7] = Y0;
+          out[outFloats + 8] = CX;
+          out[outFloats + 9] = Y1;
+          out[outFloats + 10] = DX;
+          out[outFloats + 11] = Y1;
+          outFloats += 12;
+          left = -1;
         }
       }
     }
-    return TRIANGLES;
-  }
-  function xAt(edge, y) {
-    const { a: A, b: B } = edge;
-    return A.x + (B.x - A.x) * (y - A.y) / (B.y - A.y);
+    ACTIVE.length = 0;
+    return outFloats / 2;
   }
   function clipContour(points, rule) {
     if (rule !== "nonzero" && rule !== "evenodd") {
@@ -3648,16 +3996,16 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
     if (Math.abs(area2) < 1e-9) {
       throw new RangeError("Clip contour area must be nonzero");
     }
-    const TRIANGLES = tessellate([CONTOUR], rule);
-    if (!TRIANGLES.length) {
+    const VERTEX_COUNT = tessellate([CONTOUR], rule);
+    if (!VERTEX_COUNT) {
       throw new RangeError("Clip contour could not be tessellated");
     }
-    if (TRIANGLES.length / 3 > 16384) {
+    if (VERTEX_COUNT / 3 > 16384) {
       throw new RangeError("Retained clip tessellation exceeds 16384 triangles");
     }
     return {
       flat: FLAT,
-      triangles: Float32Array.from(TRIANGLES.flatMap((p) => [p.x, p.y]))
+      triangles: new Float32Array(TESSELLATION.out.subarray(0, VERTEX_COUNT * 2))
     };
   }
   function convexContour(contour) {
@@ -3745,8 +4093,9 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
       );
       this.vertices = new Float32Array(initialVertices * VECTOR_VERTEX_FLOATS);
       this.count = 0;
-      this.matrix = IDENTITY.slice();
+      this.matrix = IDENTITY2.slice();
       this.stack = [];
+      this.statePool = [];
       this.path = [];
       this.cursor = null;
       this.subpath = null;
@@ -3759,6 +4108,46 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
       this.activeWhiteFlash = false;
       this.activeGradient = null;
       this.paintTemplate = new Float32Array(12);
+      this.flatUV = [0, 0];
+      this.triangle = new Float64Array(6);
+      this.quadCheck = {};
+      this.poseBatchRecord = {
+        owner: null,
+        textures: null,
+        programWidth: 1,
+        planeKey: 0,
+        planeCount: 0,
+        planes: null,
+        serial: 0
+      };
+      this.submitCall = {
+        pipeline: null,
+        buffer: null,
+        count: 0,
+        uniforms: null,
+        textures: null,
+        blend: "source-over",
+        depth: null,
+        stencil: false
+      };
+      this.submitTextures = [];
+      this.posedUniforms = {
+        u_projection: null,
+        u_depthWrite: 0,
+        u_program: 0,
+        u_state: 1,
+        u_overrides: 2,
+        u_texture: 3,
+        u_programWidth: 1,
+        "u_planes[0]": null,
+        u_planeCount: 0
+      };
+      this.flatUniforms = { u_projection: null, u_depthWrite: 0, u_texture: 0 };
+      this.quadTint = [1, 1, 1, 1];
+      this.quadMatrix = [1, 0, 0, 1, 0, 0];
+      this.strokePoints = new Float64Array(64);
+      this.strokeDirections = new Float64Array(64);
+      this.strokeNormals = new Float64Array(64);
       this._setPaint(this.whiteRegion);
       this.blend = "source-over";
       this.depth = 0;
@@ -3882,9 +4271,15 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
         throw new Error("WebGLDevice.beginFrame is required");
       }
       this._assertDepthTarget();
-      const G = [...this.groups].reverse().find((group) => !group.direct);
-      if (G) {
-        this._setProjection(G.bounds, G.target);
+      let group = null;
+      for (let i = this.groups.length - 1; i >= 0; i--) {
+        if (!this.groups[i].direct) {
+          group = this.groups[i];
+          break;
+        }
+      }
+      if (group) {
+        this._setProjection(group.bounds, group.target);
       } else {
         this._setProjection(null);
       }
@@ -3926,41 +4321,42 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
         return this.moveTo(x, y);
       }
       const P = point(this.matrix, x, y);
-      this.path.at(-1).push(P);
+      this.path[this.path.length - 1].push(P);
       this.cursor = P;
     }
     quadraticCurveTo(cx, cy, x, y, segments = 12) {
-      this._curve([cx, cy, x, y], segments, false);
+      this._curve(cx, cy, x, y, 0, 0, segments, false);
     }
     bezierCurveTo(a, b, c, d, x, y, segments = 16) {
-      this._curve([a, b, c, d, x, y], segments, true);
+      this._curve(a, b, c, d, x, y, segments, true);
     }
-    _curve(v, n, cubic) {
+    /** Flattens a quadratic (control x1, y1; end x2, y2) or cubic (controls 1 and 2; end x3, y3) curve. */
+    _curve(x1, y1, x2, y2, x3, y3, n, cubic) {
       this._frame();
       if (!Number.isSafeInteger(n) || n < 2 || n > 256) {
         throw new RangeError("curve segments must be 2..256");
       }
       if (!this.cursor) {
-        return this.moveTo(v[0], v[1]);
+        return this.moveTo(x1, y1);
       }
-      const START = this.cursor, P = cubic ? [point(this.matrix, v[0], v[1]), point(this.matrix, v[2], v[3]), point(this.matrix, v[4], v[5])] : [point(this.matrix, v[0], v[1]), point(this.matrix, v[2], v[3])];
+      const M = this.matrix, START = this.cursor, P0X = M[0] * x1 + M[2] * y1 + M[4], P0Y = M[1] * x1 + M[3] * y1 + M[5], P1X = M[0] * x2 + M[2] * y2 + M[4], P1Y = M[1] * x2 + M[3] * y2 + M[5], P2X = cubic ? M[0] * x3 + M[2] * y3 + M[4] : 0, P2Y = cubic ? M[1] * x3 + M[3] * y3 + M[5] : 0, CONTOUR = this.path[this.path.length - 1];
       for (let i = 1; i <= n; i++) {
         const T = i / n, Q = 1 - T;
         let x;
         let y;
         if (cubic) {
-          x = Q * Q * Q * START.x + 3 * Q * Q * T * P[0].x + 3 * Q * T * T * P[1].x + T * T * T * P[2].x;
-          y = Q * Q * Q * START.y + 3 * Q * Q * T * P[0].y + 3 * Q * T * T * P[1].y + T * T * T * P[2].y;
+          x = Q * Q * Q * START.x + 3 * Q * Q * T * P0X + 3 * Q * T * T * P1X + T * T * T * P2X;
+          y = Q * Q * Q * START.y + 3 * Q * Q * T * P0Y + 3 * Q * T * T * P1Y + T * T * T * P2Y;
         } else {
-          x = Q * Q * START.x + 2 * Q * T * P[0].x + T * T * P[1].x;
-          y = Q * Q * START.y + 2 * Q * T * P[0].y + T * T * P[1].y;
+          x = Q * Q * START.x + 2 * Q * T * P0X + T * T * P1X;
+          y = Q * Q * START.y + 2 * Q * T * P0Y + T * T * P1Y;
         }
-        this.path.at(-1).push({
+        CONTOUR.push({
           x,
           y
         });
       }
-      this.cursor = this.path.at(-1).at(-1);
+      this.cursor = CONTOUR[CONTOUR.length - 1];
     }
     closePath() {
       if (this.cursor && this.subpath) {
@@ -3973,17 +4369,24 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
     }
     save() {
       this._frame();
-      this.stack.push({
-        matrix: this.matrix.slice(),
-        depth: this.depth,
-        depthPolicy: this._depthPolicy,
-        clips: this.clips.map(
-          (polygon) => polygon.map((p) => ({
-            ...p
-          }))
-        ),
-        stencilClips: this.stencilClips.slice()
-      });
+      const STATE = this.statePool[this.stack.length] ??= {
+        matrix: [1, 0, 0, 1, 0, 0],
+        depth: 0,
+        depthPolicy: null,
+        clips: [],
+        stencilClips: null
+      };
+      for (let i = 0; i < 6; i++) {
+        STATE.matrix[i] = this.matrix[i];
+      }
+      STATE.depth = this.depth;
+      STATE.depthPolicy = this._depthPolicy;
+      STATE.clips.length = 0;
+      for (let i = 0; i < this.clips.length; i++) {
+        STATE.clips.push(this.clips[i]);
+      }
+      STATE.stencilClips = this.stencilClips;
+      this.stack.push(STATE);
     }
     restore() {
       this._frame();
@@ -3993,9 +4396,17 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
       }
       this.depth = S.depth;
       this._setDepthPolicy(S.depthPolicy);
-      this.matrix = S.matrix;
+      for (let i = 0; i < 6; i++) {
+        this.matrix[i] = S.matrix[i];
+      }
+      const LIVE_CLIPS = this.clips;
       this.clips = S.clips;
-      if (S.stencilClips.length !== this.stencilClips.length || S.stencilClips.some((clip, i) => clip !== this.stencilClips[i])) {
+      S.clips = LIVE_CLIPS;
+      let sameStencil = S.stencilClips.length === this.stencilClips.length;
+      for (let i = 0; sameStencil && i < S.stencilClips.length; i++) {
+        sameStencil = S.stencilClips[i] === this.stencilClips[i];
+      }
+      if (!sameStencil) {
         this._submit();
         this.stencilClips = S.stencilClips;
         this._rebuildStencil();
@@ -4003,8 +4414,17 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
     }
     setTransform(a, b, c, d, e, f) {
       this._frame();
-      [a, b, c, d, e, f].forEach((n, i) => FINITE(n, `transform[${i}]`));
-      this.matrix = [a, b, c, d, e, f];
+      if (!Number.isFinite(a) || !Number.isFinite(b) || !Number.isFinite(c) || !Number.isFinite(d) || !Number.isFinite(e) || !Number.isFinite(f)) {
+        const INDEX = [a, b, c, d, e, f].findIndex((n) => !Number.isFinite(n));
+        throw new TypeError(`transform[${INDEX}] must be finite`);
+      }
+      const M = this.matrix;
+      M[0] = a;
+      M[1] = b;
+      M[2] = c;
+      M[3] = d;
+      M[4] = e;
+      M[5] = f;
     }
     transform(a, b, c, d, e, f) {
       const M = this.matrix;
@@ -4183,7 +4603,7 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
       if (this.stencilClips.length >= 255) {
         throw new RangeError("At most 255 nested stencil ClipPaths are supported");
       }
-      const LOCAL = transform ?? IDENTITY;
+      const LOCAL = transform ?? IDENTITY2;
       if (LOCAL.length !== 6 || Array.from(LOCAL).some((value) => !Number.isFinite(value))) {
         throw new TypeError("ClipPath transform needs six finite values");
       }
@@ -4373,6 +4793,25 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
         }
       }
     }
+    /**
+     * _emit for the triangle in `this.triangle` (ax, ay, bx, by, cx, cy; no uv): the common unclipped, ungradiented case
+     * writes the vertices directly; otherwise three point objects go through _emit exactly as before.
+     */
+    _emitBufferedTriangle(color) {
+      const T = this.triangle;
+      if (!this.clips.length && !this.activeGradient) {
+        if (!this._planesAllow()) {
+          this._submit();
+        }
+        this._reserve(3);
+        const U = this.flatUV[0], V = this.flatUV[1];
+        this._writeVertex(T[0], T[1], U, V, color);
+        this._writeVertex(T[2], T[3], U, V, color);
+        this._writeVertex(T[4], T[5], U, V, color);
+        return;
+      }
+      this._emit({ x: T[0], y: T[1] }, { x: T[2], y: T[3] }, { x: T[4], y: T[5] }, color);
+    }
     _writeVertex(x, y, u, v, color) {
       const K3 = this.count++ * VECTOR_VERTEX_FLOATS, DATA2 = this.vertices;
       DATA2[K3] = x;
@@ -4416,36 +4855,43 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
         }
       }
       this.device.uploadVertices(this.buffer, this.vertices.subarray(0, this.count * VECTOR_VERTEX_FLOATS));
-      this.device.draw({
-        pipeline: POSED ? this.posePipeline : this.activeTarget ? this.groupPipeline : this.pipeline,
-        buffer: this.buffer,
-        count: this.count,
-        uniforms: POSED ? {
-          u_projection: this.projection,
-          u_depthWrite: Number(this.depthWrite),
-          u_program: 0,
-          u_state: 1,
-          u_overrides: 2,
-          u_texture: 3,
-          u_programWidth: POSED.programWidth,
-          "u_planes[0]": this.planeScratch,
-          u_planeCount: POSED.planeCount
-        } : {
-          u_projection: this.projection,
-          u_depthWrite: Number(this.depthWrite),
-          u_texture: 0
-        },
-        textures: POSED ? [...POSED.textures, this.atlas.texture] : [this.activeTarget ?? this.atlas.texture],
-        blend: this.blend,
-        depth: this._depthPolicy,
-        stencil: this.stencilDepth ? {
-          func: "equal",
-          ref: this.stencilDepth,
-          mask: 255,
-          writeMask: 0,
-          pass: "keep"
-        } : false
-      });
+      const CALL = this.submitCall, TEXTURES = this.submitTextures;
+      TEXTURES.length = 0;
+      if (POSED) {
+        const UNIFORMS2 = this.posedUniforms;
+        UNIFORMS2.u_projection = this.projection;
+        UNIFORMS2.u_depthWrite = Number(this.depthWrite);
+        UNIFORMS2.u_programWidth = POSED.programWidth;
+        UNIFORMS2["u_planes[0]"] = this.planeScratch;
+        UNIFORMS2.u_planeCount = POSED.planeCount;
+        CALL.uniforms = UNIFORMS2;
+        for (let i = 0; i < POSED.textures.length; i++) {
+          TEXTURES.push(POSED.textures[i]);
+        }
+        TEXTURES.push(this.atlas.texture);
+      } else {
+        const UNIFORMS2 = this.flatUniforms;
+        UNIFORMS2.u_projection = this.projection;
+        UNIFORMS2.u_depthWrite = Number(this.depthWrite);
+        CALL.uniforms = UNIFORMS2;
+        TEXTURES.push(this.activeTarget ?? this.atlas.texture);
+      }
+      CALL.pipeline = POSED ? this.posePipeline : this.activeTarget ? this.groupPipeline : this.pipeline;
+      CALL.buffer = this.buffer;
+      CALL.count = this.count;
+      CALL.textures = TEXTURES;
+      CALL.blend = this.blend;
+      CALL.depth = this._depthPolicy;
+      CALL.stencil = this.stencilDepth ? stencilEqual(this.stencilDepth) : false;
+      try {
+        this.device.draw(CALL);
+      } finally {
+        TEXTURES.length = 0;
+        CALL.uniforms = CALL.textures = null;
+        if (POSED) {
+          POSED.owner = POSED.textures = POSED.planes = null;
+        }
+      }
       this.count = 0;
     }
     _createPosePipeline() {
@@ -4481,31 +4927,39 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
      * Selects the atlas region later vertices sample. Paint is vertex data, so changing it never submits: only the
      * switch between the atlas and an offscreen group target (a different sampler) does.
      */
-    _setPaint(region, { radial = false, whiteFlash = false, gradient = null } = {}) {
+    _setPaint(region, { radial = false, whiteFlash = false, gradient = null } = EMPTY_OPTIONS) {
       if (this.activeTarget) {
         this._submit();
         this.activeTarget = null;
       }
-      const [U, V, W, H] = region.uvRect, MODE = radial ? gradient?.radialEmpty ? 2 : 1 : gradient ? 3 : 0, PARAMS = radial ? gradient?.radialParams ?? [0, 0, 0, 0] : [0, 0, 0, 0];
+      const RECT = region.uvRect, U = RECT[0], V = RECT[1], W = RECT[2], H = RECT[3], MODE = radial ? gradient?.radialEmpty ? 2 : 1 : gradient ? 3 : 0, PARAMS = radial ? gradient?.radialParams ?? NO_RADIAL : NO_RADIAL;
       this.activeRadial = radial;
       this.activeWhiteFlash = whiteFlash;
       this.activeGradient = gradient;
       this.activeRegion = region;
-      this.flatUV = [U + W / 2, V + H / 2];
-      this.paintTemplate.set([
-        region.layer,
-        whiteFlash ? 1 : 0,
-        MODE,
-        region.filter === "nearest" ? 1 : 0,
-        ...PARAMS,
-        U,
-        V,
-        W,
-        H
-      ]);
+      this.flatUV[0] = U + W / 2;
+      this.flatUV[1] = V + H / 2;
+      const TEMPLATE = this.paintTemplate;
+      TEMPLATE[0] = region.layer;
+      TEMPLATE[1] = whiteFlash ? 1 : 0;
+      TEMPLATE[2] = MODE;
+      TEMPLATE[3] = region.filter === "nearest" ? 1 : 0;
+      TEMPLATE[4] = PARAMS[0];
+      TEMPLATE[5] = PARAMS[1];
+      TEMPLATE[6] = PARAMS[2];
+      TEMPLATE[7] = PARAMS[3];
+      TEMPLATE[8] = U;
+      TEMPLATE[9] = V;
+      TEMPLATE[10] = W;
+      TEMPLATE[11] = H;
     }
     /** Switches later vertices to plain per-vertex paint (no atlas region, gradient or group target). */
     _useVertexPaint(template, whiteFlash = false) {
+      this._beginVertexPaint(whiteFlash);
+      this.paintTemplate.set(template);
+    }
+    /** _useVertexPaint without the template copy: the caller writes `paintTemplate` itself. */
+    _beginVertexPaint(whiteFlash) {
       if (this.activeTarget) {
         this._submit();
         this.activeTarget = null;
@@ -4514,7 +4968,6 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
       this.activeRadial = false;
       this.activeWhiteFlash = whiteFlash;
       this.activeGradient = null;
-      this.paintTemplate.set(template);
     }
     /**
      * Fills or strokes one analytic primitive: `matrix` maps the local square [-1,1]^2 to screen space (the caller
@@ -4526,11 +4979,39 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
       if (matrix?.length !== 6 || params?.length !== 4) {
         throw new TypeError("drawPrimitive requires a 6-value matrix and 4 parameters");
       }
-      for (const VALUE of [...matrix, ...params]) {
-        FINITE(VALUE, "drawPrimitive value");
+      for (let i = 0; i < 6; i++) {
+        FINITE(matrix[i], "drawPrimitive value");
       }
-      const M = matrix;
-      this._useVertexPaint([0, 0, MODE_PRIMITIVE, 0, ...params, M[0], M[2], M[1], M[3]]);
+      for (let i = 0; i < 4; i++) {
+        FINITE(params[i], "drawPrimitive value");
+      }
+      const M = matrix, TEMPLATE = this.paintTemplate;
+      this._beginVertexPaint(false);
+      TEMPLATE[0] = 0;
+      TEMPLATE[1] = 0;
+      TEMPLATE[2] = MODE_PRIMITIVE;
+      TEMPLATE[3] = 0;
+      TEMPLATE[4] = params[0];
+      TEMPLATE[5] = params[1];
+      TEMPLATE[6] = params[2];
+      TEMPLATE[7] = params[3];
+      TEMPLATE[8] = M[0];
+      TEMPLATE[9] = M[2];
+      TEMPLATE[10] = M[1];
+      TEMPLATE[11] = M[3];
+      if (!this.clips.length) {
+        for (let triangle = 0; triangle < 2; triangle++) {
+          if (!this._planesAllow()) {
+            this._submit();
+          }
+          this._reserve(3);
+          for (let corner = 0; corner < 3; corner++) {
+            const AT = (corner === 0 ? 0 : corner + triangle) * 2, X = PRIMITIVE_CORNERS[AT], Y = PRIMITIVE_CORNERS[AT + 1];
+            this._writeVertex(M[0] * X + M[2] * Y + M[4], M[1] * X + M[3] * Y + M[5], X, Y, color);
+          }
+        }
+        return;
+      }
       const CORNERS2 = [
         [-1, -1],
         [1, -1],
@@ -4554,7 +5035,7 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
       localRects,
       parts = null,
       pose = null,
-      matrix = IDENTITY,
+      matrix = IDENTITY2,
       color = [1, 1, 1, 1],
       alpha = 1,
       whiteFlash = false,
@@ -4564,36 +5045,34 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
     } = {}) {
       this._frame();
       const COUNT = uvRects?.length / 4;
-      validateQuads({
-        layer,
-        uvRects,
-        localRects,
-        matrix,
-        color,
-        alpha,
-        filter,
-        parts,
-        pose,
-        depthWriteAlphaThreshold
-      });
-      const TINT = [color[0], color[1], color[2], color[3] * alpha], M = compose(this.matrix, matrix);
-      this._useVertexPaint(
-        [
-          layer + depthWriteAlphaThreshold * 0.49,
-          whiteFlash ? 1 : forceColor ? 2 : 0,
-          0,
-          filter === "nearest" ? 1 : 0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          1,
-          1
-        ],
-        whiteFlash
-      );
+      const CHECK = this.quadCheck;
+      CHECK.layer = layer;
+      CHECK.uvRects = uvRects;
+      CHECK.localRects = localRects;
+      CHECK.matrix = matrix;
+      CHECK.color = color;
+      CHECK.alpha = alpha;
+      CHECK.filter = filter;
+      CHECK.parts = parts;
+      CHECK.pose = pose;
+      CHECK.depthWriteAlphaThreshold = depthWriteAlphaThreshold;
+      try {
+        validateQuads(CHECK);
+      } finally {
+        CHECK.uvRects = CHECK.localRects = CHECK.matrix = CHECK.color = CHECK.parts = CHECK.pose = null;
+      }
+      const TINT = this.quadTint, M = composeInto(this.matrix, matrix, this.quadMatrix), TEMPLATE = this.paintTemplate;
+      TINT[0] = color[0];
+      TINT[1] = color[1];
+      TINT[2] = color[2];
+      TINT[3] = color[3] * alpha;
+      this._beginVertexPaint(whiteFlash);
+      TEMPLATE.fill(0);
+      TEMPLATE[0] = layer + depthWriteAlphaThreshold * 0.49;
+      TEMPLATE[1] = whiteFlash ? 1 : forceColor ? 2 : 0;
+      TEMPLATE[3] = filter === "nearest" ? 1 : 0;
+      TEMPLATE[10] = 1;
+      TEMPLATE[11] = 1;
       if (pose === null) {
         if (parts !== null) {
           throw new TypeError("parts require a pose");
@@ -4639,7 +5118,7 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
       if (!OWNER || parts?.length !== COUNT) {
         throw new TypeError("A live pose handle and one part per run are required");
       }
-      const DRAW = OWNER.resolve(pose, { program: true });
+      const DRAW = OWNER.resolve(pose, PROGRAM_RESOLVE);
       if (DRAW.kind !== "program") {
         throw new TypeError("Posed sprites require a keyframe program pose");
       }
@@ -4652,9 +5131,10 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
       OWNER.noteDraw(pose);
       this.device.stats.spriteRuns += COUNT;
       for (let i = 0; i < COUNT; i++) {
-        const [LX, LY, LW, LH] = localRects.subarray(i * 4, i * 4 + 4), [U, V, UW, VH] = uvRects.subarray(i * 4, i * 4 + 4);
+        const AT = i * 4, LX = localRects[AT], LY = localRects[AT + 1], LW = localRects[AT + 2], LH = localRects[AT + 3], U = uvRects[AT], V = uvRects[AT + 1], UW = uvRects[AT + 2], VH = uvRects[AT + 3];
         this._reserve(6);
-        for (const [CX, CY] of POSED_CORNERS) {
+        for (let corner = 0; corner < POSED_CORNERS.length; corner++) {
+          const CX = POSED_CORNERS[corner][0], CY = POSED_CORNERS[corner][1];
           const K3 = this.count++ * VECTOR_VERTEX_FLOATS;
           this.vertices[K3] = LX + CX * LW;
           this.vertices[K3 + 1] = LY + CY * LH;
@@ -4678,21 +5158,27 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
     /** Joins or opens the batch's posed section: one pose texture set and one clip plane set per draw. */
     _beginPosed(owner, draw) {
       const PLANES = clipPlanes(this.clips, this.maxClipPlanes), BATCH = this.poseBatch;
-      if (BATCH && (BATCH.owner !== owner || BATCH.textures.some((texture, i) => texture !== draw.textures[i]) || BATCH.planeKey !== PLANES.key && BATCH.planeCount + PLANES.count > 0)) {
+      let otherTextures = false;
+      if (BATCH) {
+        for (let i = 0; i < BATCH.textures.length; i++) {
+          otherTextures ||= BATCH.textures[i] !== draw.textures[i];
+        }
+      }
+      if (BATCH && (BATCH.owner !== owner || otherTextures || BATCH.planeKey !== PLANES.key && BATCH.planeCount + PLANES.count > 0)) {
         this._submit();
       } else if (!BATCH && this.count && PLANES.count > 0 && this.batchSerial !== this.clipSerial) {
         this._submit();
       }
       if (!this.poseBatch) {
-        this.poseBatch = {
-          owner,
-          textures: draw.textures,
-          programWidth: draw.programWidth,
-          planeKey: PLANES.key,
-          planeCount: PLANES.count,
-          planes: PLANES.values,
-          serial: this.clipSerial
-        };
+        const NEXT = this.poseBatchRecord;
+        NEXT.owner = owner;
+        NEXT.textures = draw.textures;
+        NEXT.programWidth = draw.programWidth;
+        NEXT.planeKey = PLANES.key;
+        NEXT.planeCount = PLANES.count;
+        NEXT.planes = PLANES.values;
+        NEXT.serial = this.clipSerial;
+        this.poseBatch = NEXT;
       }
     }
     _useTarget(target) {
@@ -4704,20 +5190,21 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
       this.activeRadial = false;
       this.activeWhiteFlash = false;
       this.activeGradient = null;
-      this.flatUV = [0, 0];
-      this.paintTemplate.set([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]);
+      this.flatUV[0] = 0;
+      this.flatUV[1] = 0;
+      this.paintTemplate.fill(0);
+      this.paintTemplate[10] = 1;
+      this.paintTemplate[11] = 1;
     }
-    fill(colorValue = [0, 0, 0, 1], rule = "nonzero") {
+    fill(colorValue = BLACK, rule = "nonzero") {
       this._frame();
       if (rule !== "nonzero" && rule !== "evenodd") {
         throw new TypeError("rule must be nonzero or evenodd");
       }
       this._setPaint(this.whiteRegion);
       this.device.stats.pathTessellations++;
-      const COL = rgba(colorValue), VERTICES = tessellate(this.path, rule);
-      for (let i = 0; i + 2 < VERTICES.length; i += 3) {
-        this._emit(VERTICES[i], VERTICES[i + 1], VERTICES[i + 2], COL);
-      }
+      const COL = rgba(colorValue);
+      this._emitTessellation(tessellate(this.path, rule), COL);
     }
     fillRadialGradient(gradient) {
       this._frame();
@@ -4730,10 +5217,11 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
         gradient
       });
       this.device.stats.pathTessellations++;
-      const VERTICES = tessellate(this.path, gradient.rule ?? "nonzero");
-      for (let i = 0; i + 2 < VERTICES.length; i += 3) {
-        this._emitTriangle(VERTICES[i], VERTICES[i + 1], VERTICES[i + 2], gradient.color);
+      const VERTEX_COUNT = tessellate(this.path, gradient.rule ?? "nonzero");
+      if (VERTEX_COUNT) {
+        rgba(gradient.color);
       }
+      this._emitTessellation(VERTEX_COUNT, gradient.color);
     }
     fillLinearGradient(gradient) {
       this._frame();
@@ -4744,9 +5232,25 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
         whiteFlash: gradient.whiteFlash,
         gradient
       });
-      const VERTICES = tessellate(this.path, gradient.rule ?? "nonzero");
-      for (let i = 0; i + 2 < VERTICES.length; i += 3) {
-        this._emitTriangle(VERTICES[i], VERTICES[i + 1], VERTICES[i + 2], gradient.color);
+      const VERTEX_COUNT = tessellate(this.path, gradient.rule ?? "nonzero");
+      if (VERTEX_COUNT) {
+        rgba(gradient.color);
+      }
+      this._emitTessellation(VERTEX_COUNT, gradient.color);
+    }
+    /** Emits the triangles the last tessellate() call left in its output buffer. */
+    _emitTessellation(vertexCount, color) {
+      const OUT = TESSELLATION.out;
+      for (let i = 0; i + 2 < vertexCount; i += 3) {
+        const AT = i * 2;
+        const TRIANGLE = this.triangle;
+        TRIANGLE[0] = OUT[AT];
+        TRIANGLE[1] = OUT[AT + 1];
+        TRIANGLE[2] = OUT[AT + 2];
+        TRIANGLE[3] = OUT[AT + 3];
+        TRIANGLE[4] = OUT[AT + 4];
+        TRIANGLE[5] = OUT[AT + 5];
+        this._emitBufferedTriangle(color);
       }
     }
     _gradientUV(p) {
@@ -4757,7 +5261,7 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
       const DX = G.x1 - G.x0, DY = G.y1 - G.y0, DENOM = DX * DX + DY * DY;
       return [DENOM ? ((X - G.x0) * DX + (Y - G.y0) * DY) / DENOM : 1, 0.5];
     }
-    stroke(colorValue = [0, 0, 0, 1], width = 1, { lineCap = "butt", lineJoin = "miter", miterLimit = 10 } = {}, gradient = null) {
+    stroke(colorValue = BLACK, width = 1, { lineCap = "butt", lineJoin = "miter", miterLimit = 10 } = EMPTY_OPTIONS, gradient = null) {
       this._frame();
       this._setPaint(gradient?.region ?? this.whiteRegion, {
         radial: gradient?.kind === "radial",
@@ -4765,132 +5269,151 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
         gradient
       });
       this.device.stats.pathStrokeBuilds++;
+      const TRIANGLE = this.triangle;
       rgba(colorValue);
       if (!Number.isFinite(width) || width <= 0) {
         throw new RangeError("line width must be positive");
       }
-      if (!["butt", "round", "square"].includes(lineCap) || !["miter", "round", "bevel"].includes(lineJoin) || !Number.isFinite(miterLimit) || miterLimit <= 0) {
+      if (lineCap !== "butt" && lineCap !== "round" && lineCap !== "square" || lineJoin !== "miter" && lineJoin !== "round" && lineJoin !== "bevel" || !Number.isFinite(miterLimit) || miterLimit <= 0) {
         throw new TypeError("invalid stroke style");
       }
-      const HALF = width / 2, ARC_STEP = HALF > ARC_TOLERANCE ? Math.min(Math.PI / 2, 2 * Math.acos(1 - ARC_TOLERANCE / HALF)) : Math.PI / 2, FAN = (center, points) => {
-        for (let i = 1; i < points.length; i++) {
-          this._emit(center, points[i - 1], points[i], colorValue);
+      const HALF = width / 2, ARC_STEP = HALF > ARC_TOLERANCE ? Math.min(Math.PI / 2, 2 * Math.acos(1 - ARC_TOLERANCE / HALF)) : Math.PI / 2;
+      for (let s = 0; s < this.path.length; s++) {
+        const SOURCE = this.path[s];
+        if (SOURCE.length * 2 > this.strokePoints.length) {
+          const SIZE = Math.max(SOURCE.length * 2, this.strokePoints.length * 2);
+          this.strokePoints = new Float64Array(SIZE);
+          this.strokeDirections = new Float64Array(SIZE);
+          this.strokeNormals = new Float64Array(SIZE);
         }
-      };
-      for (const SOURCE of this.path) {
-        const CONTOUR = SOURCE.filter((p, i) => !i || p.x !== SOURCE[i - 1].x || p.y !== SOURCE[i - 1].y);
-        if (CONTOUR.length < 2) {
+        const POINTS = this.strokePoints, DIRS = this.strokeDirections, NORMALS = this.strokeNormals;
+        let length = 0;
+        for (let i = 0; i < SOURCE.length; i++) {
+          const P = SOURCE[i];
+          if (!i || P.x !== SOURCE[i - 1].x || P.y !== SOURCE[i - 1].y) {
+            POINTS[length * 2] = P.x;
+            POINTS[length * 2 + 1] = P.y;
+            length++;
+          }
+        }
+        if (length < 2) {
           continue;
         }
-        const CLOSED = CONTOUR.length > 2 && CONTOUR[0].x === CONTOUR.at(-1).x && CONTOUR[0].y === CONTOUR.at(-1).y;
+        const CLOSED = length > 2 && POINTS[0] === POINTS[(length - 1) * 2] && POINTS[1] === POINTS[(length - 1) * 2 + 1];
         if (CLOSED) {
-          CONTOUR.pop();
+          length--;
         }
-        const COUNT = CLOSED ? CONTOUR.length : CONTOUR.length - 1, DIRS = [], NORMALS = [];
+        const COUNT = CLOSED ? length : length - 1;
         for (let i = 0; i < COUNT; i++) {
-          const A = CONTOUR[i], B = CONTOUR[(i + 1) % CONTOUR.length], DX = B.x - A.x, DY = B.y - A.y, L = Math.hypot(DX, DY);
+          const A = i * 2, B = (i + 1) % length * 2, DX = POINTS[B] - POINTS[A], DY = POINTS[B + 1] - POINTS[A + 1], L = Math.hypot(DX, DY);
           if (!L) {
-            DIRS.push({
-              x: 0,
-              y: 0
-            });
-            NORMALS.push({
-              x: 0,
-              y: 0
-            });
+            DIRS[i * 2] = DIRS[i * 2 + 1] = NORMALS[i * 2] = NORMALS[i * 2 + 1] = 0;
             continue;
           }
-          DIRS.push({
-            x: DX / L,
-            y: DY / L
-          });
-          NORMALS.push({
-            x: -DY / L * HALF,
-            y: DX / L * HALF
-          });
+          DIRS[i * 2] = DX / L;
+          DIRS[i * 2 + 1] = DY / L;
+          NORMALS[i * 2] = -DY / L * HALF;
+          NORMALS[i * 2 + 1] = DX / L * HALF;
         }
         for (let i = 0; i < COUNT; i++) {
-          const A = CONTOUR[i], B = CONTOUR[(i + 1) % CONTOUR.length], D = DIRS[i], N = NORMALS[i];
-          if (!D.x && !D.y) {
+          const A = i * 2, B = (i + 1) % length * 2, DIR_X = DIRS[i * 2], DIR_Y = DIRS[i * 2 + 1], NX = NORMALS[i * 2], NY = NORMALS[i * 2 + 1];
+          if (!DIR_X && !DIR_Y) {
             continue;
           }
-          const EXTEND = !CLOSED && lineCap === "square" && (i === 0 || i === COUNT - 1) ? HALF : 0, AX = A.x - D.x * EXTEND, AY = A.y - D.y * EXTEND, BX = B.x + D.x * EXTEND, BY = B.y + D.y * EXTEND, P = {
-            x: AX + N.x,
-            y: AY + N.y
-          }, Q = {
-            x: BX + N.x,
-            y: BY + N.y
-          }, R = {
-            x: BX - N.x,
-            y: BY - N.y
-          }, S = {
-            x: AX - N.x,
-            y: AY - N.y
-          };
-          this._emit(P, Q, R, colorValue);
-          this._emit(P, R, S, colorValue);
+          const EXTEND = !CLOSED && lineCap === "square" && (i === 0 || i === COUNT - 1) ? HALF : 0, AX = POINTS[A] - DIR_X * EXTEND, AY = POINTS[A + 1] - DIR_Y * EXTEND, BX = POINTS[B] + DIR_X * EXTEND, BY = POINTS[B + 1] + DIR_Y * EXTEND;
+          TRIANGLE[0] = AX + NX;
+          TRIANGLE[1] = AY + NY;
+          TRIANGLE[2] = BX + NX;
+          TRIANGLE[3] = BY + NY;
+          TRIANGLE[4] = BX - NX;
+          TRIANGLE[5] = BY - NY;
+          this._emitBufferedTriangle(colorValue);
+          TRIANGLE[0] = AX + NX;
+          TRIANGLE[1] = AY + NY;
+          TRIANGLE[2] = BX - NX;
+          TRIANGLE[3] = BY - NY;
+          TRIANGLE[4] = AX - NX;
+          TRIANGLE[5] = AY - NY;
+          this._emitBufferedTriangle(colorValue);
         }
-        const JOIN_START = CLOSED ? 0 : 1, JOIN_END = CLOSED ? CONTOUR.length : CONTOUR.length - 1;
+        const JOIN_START = CLOSED ? 0 : 1, JOIN_END = CLOSED ? length : length - 1;
         for (let i = JOIN_START; i < JOIN_END; i++) {
-          const PREV = (i - 1 + COUNT) % COUNT, NEXT = i % COUNT, V = CONTOUR[i % CONTOUR.length], D0 = DIRS[PREV], D1 = DIRS[NEXT], N0 = NORMALS[PREV], N1 = NORMALS[NEXT], CROSS = D0.x * D1.y - D0.y * D1.x;
+          const PREV = (i - 1 + COUNT) % COUNT * 2, NEXT = i % COUNT * 2, V = i % length * 2, VX = POINTS[V], VY = POINTS[V + 1], D0X = DIRS[PREV], D0Y = DIRS[PREV + 1], D1X = DIRS[NEXT], D1Y = DIRS[NEXT + 1], N0X = NORMALS[PREV], N0Y = NORMALS[PREV + 1], N1X = NORMALS[NEXT], N1Y = NORMALS[NEXT + 1], CROSS = D0X * D1Y - D0Y * D1X;
           if (Math.abs(CROSS) < 1e-8) {
             continue;
           }
-          const SIGN = CROSS > 0 ? -1 : 1, A = {
-            x: V.x + N0.x * SIGN,
-            y: V.y + N0.y * SIGN
-          }, B = {
-            x: V.x + N1.x * SIGN,
-            y: V.y + N1.y * SIGN
-          };
+          const SIGN = CROSS > 0 ? -1 : 1, AX = VX + N0X * SIGN, AY = VY + N0Y * SIGN, BX = VX + N1X * SIGN, BY = VY + N1Y * SIGN;
           if (lineJoin === "round") {
-            const START = Math.atan2(A.y - V.y, A.x - V.x);
-            let sweep = Math.atan2(B.y - V.y, B.x - V.x) - START;
+            const START = Math.atan2(AY - VY, AX - VX);
+            let sweep = Math.atan2(BY - VY, BX - VX) - START;
             while (sweep > Math.PI) {
               sweep -= Math.PI * 2;
             }
             while (sweep < -Math.PI) {
               sweep += Math.PI * 2;
             }
-            const STEPS = Math.max(1, Math.ceil(Math.abs(sweep) / ARC_STEP)), ARC = [A];
+            const STEPS = Math.max(1, Math.ceil(Math.abs(sweep) / ARC_STEP));
+            let previousX = AX, previousY = AY;
             for (let j = 1; j <= STEPS; j++) {
-              const T = START + sweep * j / STEPS;
-              ARC.push({
-                x: V.x + Math.cos(T) * HALF,
-                y: V.y + Math.sin(T) * HALF
-              });
+              const T = START + sweep * j / STEPS, X = VX + Math.cos(T) * HALF, Y = VY + Math.sin(T) * HALF;
+              TRIANGLE[0] = VX;
+              TRIANGLE[1] = VY;
+              TRIANGLE[2] = previousX;
+              TRIANGLE[3] = previousY;
+              TRIANGLE[4] = X;
+              TRIANGLE[5] = Y;
+              this._emitBufferedTriangle(colorValue);
+              previousX = X;
+              previousY = Y;
             }
-            FAN(V, ARC);
           } else if (lineJoin === "miter") {
-            const MX = N0.x * SIGN + N1.x * SIGN, MY = N0.y * SIGN + N1.y * SIGN, ML = Math.hypot(MX, MY), DENOM = ML ? MX / ML * (N1.x * SIGN) + MY / ML * (N1.y * SIGN) : 0, MITER = DENOM ? HALF / DENOM : Infinity;
+            const MX = N0X * SIGN + N1X * SIGN, MY = N0Y * SIGN + N1Y * SIGN, ML = Math.hypot(MX, MY), DENOM = ML ? MX / ML * (N1X * SIGN) + MY / ML * (N1Y * SIGN) : 0, MITER = DENOM ? HALF / DENOM : Infinity;
             if (Number.isFinite(MITER) && Math.abs(MITER) <= HALF * miterLimit) {
-              const TIP = {
-                x: V.x + MX / ML * MITER,
-                y: V.y + MY / ML * MITER
-              };
-              this._emit(A, TIP, B, colorValue);
+              TRIANGLE[0] = AX;
+              TRIANGLE[1] = AY;
+              TRIANGLE[2] = VX + MX / ML * MITER;
+              TRIANGLE[3] = VY + MY / ML * MITER;
+              TRIANGLE[4] = BX;
+              TRIANGLE[5] = BY;
+              this._emitBufferedTriangle(colorValue);
             } else {
-              this._emit(V, A, B, colorValue);
+              TRIANGLE[0] = VX;
+              TRIANGLE[1] = VY;
+              TRIANGLE[2] = AX;
+              TRIANGLE[3] = AY;
+              TRIANGLE[4] = BX;
+              TRIANGLE[5] = BY;
+              this._emitBufferedTriangle(colorValue);
             }
           } else {
-            this._emit(V, A, B, colorValue);
+            TRIANGLE[0] = VX;
+            TRIANGLE[1] = VY;
+            TRIANGLE[2] = AX;
+            TRIANGLE[3] = AY;
+            TRIANGLE[4] = BX;
+            TRIANGLE[5] = BY;
+            this._emitBufferedTriangle(colorValue);
           }
         }
         if (!CLOSED && lineCap === "round") {
-          for (const [INDEX, ANGLE] of [
-            [0, Math.atan2(DIRS[0].y, DIRS[0].x) + Math.PI],
-            [COUNT - 1, Math.atan2(DIRS[COUNT - 1].y, DIRS[COUNT - 1].x)]
-          ]) {
-            const V = CONTOUR[INDEX === 0 ? 0 : CONTOUR.length - 1], START = ANGLE - Math.PI / 2, ARC = [];
-            const CAP_STEPS = Math.max(2, Math.ceil(Math.PI / ARC_STEP));
+          const CAP_STEPS = Math.max(2, Math.ceil(Math.PI / ARC_STEP));
+          for (let cap = 0; cap < 2; cap++) {
+            const SEGMENT = cap === 0 ? 0 : (COUNT - 1) * 2, ANGLE = Math.atan2(DIRS[SEGMENT + 1], DIRS[SEGMENT]) + (cap === 0 ? Math.PI : 0), V = SEGMENT === 0 ? 0 : (length - 1) * 2, VX = POINTS[V], VY = POINTS[V + 1], START = ANGLE - Math.PI / 2;
+            let previousX = 0, previousY = 0;
             for (let j = 0; j <= CAP_STEPS; j++) {
-              const T = START + Math.PI * j / CAP_STEPS;
-              ARC.push({
-                x: V.x + Math.cos(T) * HALF,
-                y: V.y + Math.sin(T) * HALF
-              });
+              const T = START + Math.PI * j / CAP_STEPS, X = VX + Math.cos(T) * HALF, Y = VY + Math.sin(T) * HALF;
+              if (j) {
+                TRIANGLE[0] = VX;
+                TRIANGLE[1] = VY;
+                TRIANGLE[2] = previousX;
+                TRIANGLE[3] = previousY;
+                TRIANGLE[4] = X;
+                TRIANGLE[5] = Y;
+                this._emitBufferedTriangle(colorValue);
+              }
+              previousX = X;
+              previousY = Y;
             }
-            FAN(V, ARC);
           }
         }
       }
@@ -5188,8 +5711,24 @@ void main(){vec4 texel=texture2D(u_texture,v_uv);${VECTOR_FRAGMENT_FINISH}}`;
     }
     return output;
   }
-  var WHITE = Object.freeze([1, 1, 1, 1]);
+  var WHITE2 = Object.freeze([1, 1, 1, 1]);
   var NO_MORPH = Object.freeze([0, 0]);
+  var NO_CLIPS = Object.freeze([]);
+  var IDENTITY_AFFINE = Object.freeze([1, 0, 0, 1, 0, 0]);
+  function sameTextures(textures, other) {
+    if (textures === other) {
+      return true;
+    }
+    if (!other) {
+      return false;
+    }
+    for (let i = 0; i < textures.length; i++) {
+      if (textures[i] !== other[i]) {
+        return false;
+      }
+    }
+    return true;
+  }
   var COMMAND_WIDTH = 32;
   var COMMAND_FLOATS = COMMAND_WIDTH * 4;
   var GEOMETRY_WIDTH = 256;
@@ -5289,6 +5828,49 @@ float w=meta.x<0.5?projected.z:1.0;gl_Position=vec4(projected.xy,(params.w+partD
       this.geometryData = new Float32Array(0);
       this.geometryTexture = null;
       this.planes = new Float32Array(maxPlanes * 3);
+      this.pendingRecord = {
+        clipKey: 0,
+        stateCode: 0,
+        projection3: new Float32Array(9),
+        projection: null,
+        clip: null,
+        stencilRef: null,
+        depth: null,
+        blend: "source-over",
+        owner: null,
+        poseTextures: null,
+        poseProgramWidth: 1
+      };
+      this.matrixScratch = new Float64Array(6);
+      this.morphScratch = new Float64Array(2);
+      this.drawTextures = [];
+      this.drawUniforms = {
+        u_projection: null,
+        u_geometry: 0,
+        u_commands: 1,
+        u_vectors: 0,
+        u_vectorWidth: 0,
+        u_geometryWidth: 0,
+        u_program: 2,
+        u_state: 3,
+        u_overrides: 4,
+        u_programWidth: 1,
+        u_texture: 5,
+        u_depthWrite: 0,
+        "u_planes[0]": this.planes,
+        u_planeCount: 0
+      };
+      this.drawCall = {
+        pipeline: this.pipeline,
+        buffer: null,
+        indexBuffer: null,
+        count: 0,
+        uniforms: this.drawUniforms,
+        textures: this.drawTextures,
+        depth: null,
+        blend: "source-over",
+        stencil: false
+      };
       this.onRestored = () => {
         this.discard();
         for (const SLOT of this.slots.values()) {
@@ -5436,29 +6018,31 @@ float w=meta.x<0.5?projected.z:1.0;gl_Position=vec4(projected.xy,(params.w+partD
       }
     }
     _state(options, owner = null, pose = null) {
-      const CLIP = clipPlanes(options.clips ?? [], this.maxPlanes);
-      const KEY = CLIP.key + ":" + options.stencilRef + ":" + Number(options.depthTest) + ":" + Number(options.depthWrite) + ":" + options.depthFunc + ":" + (options.blend ?? "source-over");
-      if (this.pending && (this.pending.key !== KEY || options.projection.some((n, i) => Math.fround(n) !== this.pending.projection[i]) || owner && this.pending.owner && (owner !== this.pending.owner || pose.textures.some((texture, i) => texture !== this.pending.pose.textures[i])))) {
+      const CLIP = options.clip ?? clipPlanes(options.clips ?? NO_CLIPS, this.maxPlanes);
+      const STENCIL_REF = options.stencilRef ?? null, DEPTH_TEST = options.depthTest ?? false, DEPTH_WRITE = options.depthWrite ?? false, DEPTH_FUNC = options.depthFunc ?? "lequal", BLEND = options.blend ?? "source-over";
+      const CLIP_KEY = CLIP.key, STATE = blendDepthStateCode(DEPTH_TEST, DEPTH_WRITE, DEPTH_FUNC, BLEND);
+      const PENDING = this.pending;
+      if (PENDING && (PENDING.clipKey !== CLIP_KEY || PENDING.stencilRef !== STENCIL_REF || PENDING.stateCode !== STATE || !sameFloat32(options.projection, PENDING.projection) || owner && PENDING.owner && (owner !== PENDING.owner || !sameTextures(pose.textures, PENDING.poseTextures)))) {
         this.flush("state");
       }
       if (!this.pending) {
-        this.pending = {
-          key: KEY,
-          projection: Float32Array.from(options.projection),
-          clip: CLIP,
-          stencilRef: options.stencilRef ?? null,
-          depth: {
-            test: options.depthTest ?? false,
-            write: options.depthWrite ?? false,
-            func: options.depthFunc ?? "lequal"
-          },
-          blend: options.blend ?? "source-over",
-          owner,
-          pose
-        };
+        const NEXT = this.pendingRecord;
+        NEXT.clipKey = CLIP_KEY;
+        NEXT.stateCode = STATE;
+        NEXT.projection = options.projection.length === 9 ? NEXT.projection3 : new Float32Array(options.projection.length);
+        NEXT.projection.set(options.projection);
+        NEXT.clip = CLIP;
+        NEXT.stencilRef = STENCIL_REF;
+        NEXT.depth = DEPTH_POLICIES[STATE & 31];
+        NEXT.blend = BLEND;
+        NEXT.owner = owner;
+        NEXT.poseTextures = pose?.textures ?? null;
+        NEXT.poseProgramWidth = pose?.programWidth ?? 1;
+        this.pending = NEXT;
       } else if (owner && !this.pending.owner) {
         this.pending.owner = owner;
-        this.pending.pose = pose;
+        this.pending.poseTextures = pose.textures;
+        this.pending.poseProgramWidth = pose.programWidth;
       }
     }
     _reserve(vertices, indices, commandFloats) {
@@ -5466,27 +6050,27 @@ float w=meta.x<0.5?projected.z:1.0;gl_Position=vec4(projected.xy,(params.w+partD
         this.flush("capacity");
       }
     }
-    _command(options, matrix, color, morph, alpha, pose, floats = 68) {
+    _command(matrix, at, color, morph, alpha, pose, forceColor, whiteFlash, depth, floats) {
       const AT = this.commandFloats, DATA2 = this.commands;
       this.commandCount++;
       this.commandFloats += floats;
       DATA2.fill(0, AT, AT + floats);
-      DATA2[AT] = matrix[0];
-      DATA2[AT + 1] = matrix[2];
-      DATA2[AT + 2] = matrix[4];
+      DATA2[AT] = matrix[at];
+      DATA2[AT + 1] = matrix[at + 2];
+      DATA2[AT + 2] = matrix[at + 4];
       DATA2[AT + 3] = alpha;
-      DATA2[AT + 4] = matrix[1];
-      DATA2[AT + 5] = matrix[3];
-      DATA2[AT + 6] = matrix[5];
-      DATA2[AT + 7] = Number(Boolean(options.forceColor));
+      DATA2[AT + 4] = matrix[at + 1];
+      DATA2[AT + 5] = matrix[at + 3];
+      DATA2[AT + 6] = matrix[at + 5];
+      DATA2[AT + 7] = forceColor ? 1 : 0;
       DATA2[AT + 8] = color[0];
       DATA2[AT + 9] = color[1];
       DATA2[AT + 10] = color[2];
       DATA2[AT + 11] = color[3];
       DATA2[AT + 12] = morph[0];
       DATA2[AT + 13] = morph[1];
-      DATA2[AT + 14] = Number(Boolean(options.whiteFlash));
-      DATA2[AT + 15] = options.depth ?? 0;
+      DATA2[AT + 14] = whiteFlash ? 1 : 0;
+      DATA2[AT + 15] = depth;
       DATA2[AT + 17] = pose?.row ?? 0;
       DATA2[AT + 18] = pose ? pose.kind === "matrix" ? 2 : 1 : 0;
       return AT;
@@ -5502,23 +6086,35 @@ float w=meta.x<0.5?projected.z:1.0;gl_Position=vec4(projected.xy,(params.w+partD
           }
           this._reserve(SEGMENT.vertices.length, LAST - FIRST, 68);
           this._state(options, owner, pose);
-          let matrix = options.matrices.subarray ? options.matrices.subarray(entity * 6, entity * 6 + 6) : options.matrices.slice(entity * 6, entity * 6 + 6);
-          let morph = options.morph, alpha = options.alpha, depth = options.depth;
+          let matrix = options.matrices, matrixAt = entity * 6, morph = options.morph, alpha = options.alpha, depth = options.depth;
           if (!pose) {
-            const P = options.part, M = matrix;
-            matrix = [
-              M[0] * P[0] + M[2] * P[4],
-              M[1] * P[0] + M[3] * P[4],
-              M[0] * P[1] + M[2] * P[5],
-              M[1] * P[1] + M[3] * P[5],
-              M[0] * P[2] + M[2] * P[6] + M[4],
-              M[1] * P[2] + M[3] * P[6] + M[5]
-            ];
-            morph = [morph[0] + P[8], morph[1] + P[9]];
+            const P = options.part, M = options.matrices, I = matrixAt, COMPOSED = this.matrixScratch;
+            COMPOSED[0] = M[I] * P[0] + M[I + 2] * P[4];
+            COMPOSED[1] = M[I + 1] * P[0] + M[I + 3] * P[4];
+            COMPOSED[2] = M[I] * P[1] + M[I + 2] * P[5];
+            COMPOSED[3] = M[I + 1] * P[1] + M[I + 3] * P[5];
+            COMPOSED[4] = M[I] * P[2] + M[I + 2] * P[6] + M[I + 4];
+            COMPOSED[5] = M[I + 1] * P[2] + M[I + 3] * P[6] + M[I + 5];
+            this.morphScratch[0] = morph[0] + P[8];
+            this.morphScratch[1] = morph[1] + P[9];
+            matrix = COMPOSED;
+            matrixAt = 0;
+            morph = this.morphScratch;
             alpha *= P[10];
             depth += P[11];
           }
-          const AT = this._command({ ...options, depth }, matrix, options.color, morph, alpha, pose);
+          const AT = this._command(
+            matrix,
+            matrixAt,
+            options.color,
+            morph,
+            alpha,
+            pose,
+            options.forceColor,
+            options.whiteFlash,
+            depth ?? 0,
+            68
+          );
           this.commands[AT + 19] = mesh.morphCount;
           if (mesh.paintRegionNames || options.paintRegions !== null) {
             packPaintRegions(
@@ -5548,7 +6144,18 @@ float w=meta.x<0.5?projected.z:1.0;gl_Position=vec4(projected.xy,(params.w+partD
       for (let i = 0; i < COUNT; i++) {
         this._reserve(4, 6, 32);
         this._state(state);
-        const AT = this._command(options, matrix, options.color ?? WHITE, NO_MORPH, options.alpha ?? 1, null, 32);
+        const AT = this._command(
+          matrix,
+          0,
+          options.color ?? WHITE2,
+          NO_MORPH,
+          options.alpha ?? 1,
+          null,
+          options.forceColor,
+          options.whiteFlash,
+          options.depth ?? 0,
+          32
+        );
         this.commands[AT + 16] = 1;
         for (let j = 0; j < 4; j++) {
           this.commands[AT + 20 + j] = options.localRects[i * 4 + j];
@@ -5608,16 +6215,24 @@ float w=meta.x<0.5?projected.z:1.0;gl_Position=vec4(projected.xy,(params.w+partD
           this._reserve(TAKE, TAKE, 32);
           this._state(state);
           const AT = this._command(
-            { depth: vertices[SOURCE + 20] },
-            [1, 0, 0, 1, 0, 0],
-            vertices.subarray(SOURCE + 4, SOURCE + 8),
-            [0, 0],
+            IDENTITY_AFFINE,
+            0,
+            NO_MORPH,
+            NO_MORPH,
             1,
             null,
+            false,
+            false,
+            vertices[SOURCE + 20],
             32
           );
+          for (let field = 0; field < 4; field++) {
+            this.commands[AT + 8 + field] = vertices[SOURCE + 4 + field];
+          }
           this.commands[AT + 16] = 2;
-          this.commands.set(vertices.subarray(SOURCE + 8, SOURCE + 20), AT + 20);
+          for (let field = 0; field < 12; field++) {
+            this.commands[AT + 20 + field] = vertices[SOURCE + 8 + field];
+          }
           for (let i = 0; i < TAKE; i++) {
             const REF = this.vertexCount++;
             const TEXEL = this.vectorCount++;
@@ -5751,40 +6366,34 @@ float w=meta.x<0.5?projected.z:1.0;gl_Position=vec4(projected.xy,(params.w+partD
       } else {
         this.metrics.reusedTopologies++;
       }
-      const POSE = PENDING.pose;
       const VECTOR_TEXTURE = VECTOR_ROWS ? SLOT.vectorTexture : null;
-      DEVICE.draw({
-        pipeline: this.pipeline,
-        buffer: SLOT.referenceBuffer,
-        indexBuffer: SLOT.indexBuffer,
-        count: this.indexCount,
-        uniforms: {
-          u_projection: PENDING.projection,
-          u_geometry: 0,
-          u_commands: 1,
-          u_vectors: VECTOR_TEXTURE ? 6 : 0,
-          u_vectorWidth: this.vectorWidth,
-          u_geometryWidth: this.geometryWidth,
-          u_program: 2,
-          u_state: 3,
-          u_overrides: 4,
-          u_programWidth: POSE?.programWidth ?? 1,
-          u_texture: 5,
-          u_depthWrite: Number(PENDING.depth.write),
-          "u_planes[0]": this.planes,
-          u_planeCount: PENDING.clip.count
-        },
-        textures: [
-          this.geometryTexture ?? this.dummyTexture,
-          SLOT.commandTexture,
-          ...[0, 1, 2].map((index) => POSE?.textures[index] ?? this.dummyTexture),
-          DEVICE.textureAtlas.texture,
-          ...VECTOR_TEXTURE ? [VECTOR_TEXTURE] : []
-        ],
-        depth: PENDING.depth,
-        blend: PENDING.blend,
-        stencil: PENDING.stencilRef === null ? false : { func: "equal", ref: PENDING.stencilRef, mask: 255, writeMask: 0, pass: "keep" }
-      });
+      const UNIFORMS2 = this.drawUniforms, TEXTURES = this.drawTextures, POSE_TEXTURES = PENDING.poseTextures, CALL = this.drawCall;
+      UNIFORMS2.u_projection = PENDING.projection;
+      UNIFORMS2.u_vectors = VECTOR_TEXTURE ? 6 : 0;
+      UNIFORMS2.u_vectorWidth = this.vectorWidth;
+      UNIFORMS2.u_geometryWidth = this.geometryWidth;
+      UNIFORMS2.u_programWidth = PENDING.poseProgramWidth;
+      UNIFORMS2.u_depthWrite = PENDING.depth.write ? 1 : 0;
+      UNIFORMS2.u_planeCount = PENDING.clip.count;
+      TEXTURES.length = 0;
+      TEXTURES.push(
+        this.geometryTexture ?? this.dummyTexture,
+        SLOT.commandTexture,
+        POSE_TEXTURES?.[0] ?? this.dummyTexture,
+        POSE_TEXTURES?.[1] ?? this.dummyTexture,
+        POSE_TEXTURES?.[2] ?? this.dummyTexture,
+        DEVICE.textureAtlas.texture
+      );
+      if (VECTOR_TEXTURE) {
+        TEXTURES.push(VECTOR_TEXTURE);
+      }
+      CALL.buffer = SLOT.referenceBuffer;
+      CALL.indexBuffer = SLOT.indexBuffer;
+      CALL.count = this.indexCount;
+      CALL.depth = PENDING.depth;
+      CALL.blend = PENDING.blend;
+      CALL.stencil = PENDING.stencilRef === null ? false : stencilEqual(PENDING.stencilRef);
+      DEVICE.draw(CALL);
       this.metrics.draws++;
       this.metrics.commands += this.commandCount;
       this.metrics.triangles += this.indexCount / 3;
@@ -6066,9 +6675,9 @@ void main() {
   }
 }`;
   }
-  var IDENTITY2 = Object.freeze([1, 0, 0, 1, 0, 0]);
+  var IDENTITY3 = Object.freeze([1, 0, 0, 1, 0, 0]);
   var ZERO_MORPH = Object.freeze([0, 0]);
-  var WHITE2 = Object.freeze([1, 1, 1, 1]);
+  var WHITE3 = Object.freeze([1, 1, 1, 1]);
   var ATTRIBUTES = [
     {
       name: "a_position",
@@ -6107,7 +6716,21 @@ void main() {
   var MATERIAL_INSTANCE_FLOATS = 20;
   var MATERIAL_INSTANCE_ATTRIBUTE = { name: "i_extra", size: 4, offset: 64, source: "instance" };
   var MATERIAL_VERTEX_FLOATS = 4;
-  var NO_TEXTURES = Object.freeze([]);
+  var NO_TEXTURES2 = Object.freeze([]);
+  var NO_CLIPS2 = Object.freeze([]);
+  var EMPTY_OPTIONS2 = Object.freeze({});
+  var PLAIN_INSTANCE_UNIFORMS = Object.freeze(["i_row0", "i_row1", "i_color", "i_params"]);
+  var WORLD_INSTANCE_UNIFORMS = Object.freeze(["i_row0", "i_row1", "i_row2", "i_params"]);
+  var PLAIN_MATERIAL_INSTANCE_UNIFORMS = Object.freeze([...PLAIN_INSTANCE_UNIFORMS, "i_extra"]);
+  var WORLD_MATERIAL_INSTANCE_UNIFORMS = Object.freeze([...WORLD_INSTANCE_UNIFORMS, "i_extra"]);
+  function unitChannels(rgba2) {
+    for (let i = 0; i < rgba2.length; i++) {
+      if (rgba2[i] < 0 || rgba2[i] > 1) {
+        return false;
+      }
+    }
+    return true;
+  }
   function shader(instanced, partCount, morphCount, clipped, nonScalingStroke, worldMode = false, poseTexture = false, paintRegionCount = 0, materials = false) {
     const MATERIAL_INPUT = materials ? `attribute vec4 a_material; ${instanced ? "attribute" : "uniform"} vec4 i_extra;
 varying vec2 v_local; varying vec4 v_material; varying highp float v_time;` : "", MATERIAL_OUTPUT = materials ? "v_local=local;v_material=a_material;v_time=i_extra.x;" : "";
@@ -6289,7 +6912,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       throw new TypeError("One pose per authored mesh part required");
     }
     for (let i = 0; i < count; i++) {
-      const PART = parts?.[i], M = PART?.transform ?? IDENTITY2, MORPH = PART?.morph ?? ZERO_MORPH;
+      const PART = parts?.[i], M = PART?.transform ?? IDENTITY3, MORPH = PART?.morph ?? ZERO_MORPH;
       finiteArray2(M, 6, "part transform");
       finiteArray2(MORPH, 2, "part morph");
       const OPACITY = PART?.opacity ?? 1;
@@ -6409,6 +7032,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         capacityBytes: this.instances.byteLength
       }) : null;
       this.pipelines = /* @__PURE__ */ new Map();
+      this.pipelineUniforms = /* @__PURE__ */ new Map();
       this.materialInstances = null;
       this.materialRunCache = /* @__PURE__ */ new WeakMap();
       this.stitchField = null;
@@ -6538,7 +7162,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       return this.poseRenderer?.stats() ?? null;
     }
     _pipeline(mesh, clipped, worldMode = false, poseMode = 0) {
-      const KEY = mesh.partCount + ":" + mesh.morphCount + ":" + Number(clipped) + ":" + Number(mesh.hasNonScalingStroke) + ":" + Number(worldMode) + ":" + poseMode + ":" + (mesh.paintRegionNames?.length ?? 0) + ":" + (mesh.materials?.count ?? 0);
+      const KEY = (((((mesh.partCount * 3 + mesh.morphCount) * 2 + (clipped ? 1 : 0)) * 2 + (mesh.hasNonScalingStroke ? 1 : 0)) * 2 + (worldMode ? 1 : 0)) * 3 + poseMode) * 9 + (mesh.paintRegionNames?.length ?? 0) + (mesh.materials?.count ?? 0) * 65536;
       let pipeline = this.pipelines.get(KEY);
       if (pipeline) {
         return pipeline;
@@ -6823,60 +7447,8 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       return true;
     }
     /** Captures state by value; subsequent transform/paint changes do not alter queued instances. */
-    drawMesh(mesh, options = {}) {
-      this._drawPublic(mesh, options, options.matrix ?? IDENTITY2, 1);
-    }
-    _drawPublic(mesh, options, matrices, count) {
-      const {
-        projection: PROJECTION,
-        morph: MORPH = [0, 0],
-        parts: PARTS = null,
-        pose: POSE = null,
-        color: COLOR = WHITE2,
-        paintRegions: PAINT_REGIONS = null,
-        forceColor: FORCE_COLOR = false,
-        alpha: ALPHA = 1,
-        whiteFlash: WHITE_FLASH = false,
-        clips: CLIPS = [],
-        depth: DEPTH = 0,
-        depthTest: DEPTH_TEST = false,
-        depthWrite: DEPTH_WRITE = false,
-        depthWriteAlphaThreshold: DEPTH_WRITE_ALPHA_THRESHOLD = null,
-        depthFunc: DEPTH_FUNC = "lequal",
-        indexVariant: INDEX_VARIANT = null,
-        indexRange: INDEX_RANGE = null,
-        strokeViewport: STROKE_VIEWPORT = null,
-        stencilRef: STENCIL_REF = null,
-        timeMs: TIME_MS = 0,
-        viewProjection: VIEW_PROJECTION,
-        worldMatrix: WORLD_MATRIX
-      } = options;
-      this.drawMeshInstances(mesh, {
-        matrices,
-        count,
-        projection: PROJECTION,
-        viewProjection: VIEW_PROJECTION,
-        worldMatrix: WORLD_MATRIX,
-        morph: MORPH,
-        parts: PARTS,
-        pose: POSE,
-        color: COLOR,
-        paintRegions: PAINT_REGIONS,
-        forceColor: FORCE_COLOR,
-        alpha: ALPHA,
-        whiteFlash: WHITE_FLASH,
-        clips: CLIPS,
-        indexVariant: INDEX_VARIANT,
-        indexRange: INDEX_RANGE,
-        depth: DEPTH,
-        depthTest: DEPTH_TEST,
-        depthWrite: DEPTH_WRITE,
-        depthWriteAlphaThreshold: DEPTH_WRITE_ALPHA_THRESHOLD,
-        depthFunc: DEPTH_FUNC,
-        strokeViewport: STROKE_VIEWPORT,
-        stencilRef: STENCIL_REF,
-        timeMs: TIME_MS
-      });
+    drawMesh(mesh, options = EMPTY_OPTIONS2) {
+      this._drawInstances(mesh, options, options.matrix ?? IDENTITY3, 1, false);
     }
     _setPaintRegions(mesh, overrides) {
       const NAMES = mesh.paintRegionNames ?? [], SIZE = NAMES.length ? (NAMES.length + 1) * 4 : 0;
@@ -6956,7 +7528,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       if (!STATE) {
         return true;
       }
-      if (STATE.mesh !== mesh || STATE.indexVariant !== indexVariant || STATE.clip.key !== clip.key || STATE.stencilRef !== stencilRef || STATE.depthTest !== depthTest || STATE.depthFunc !== depthFunc || STATE.runKey !== runs.join(",") || projection.some((n, i) => Math.fround(n) !== STATE.projection[i])) {
+      if (STATE.mesh !== mesh || STATE.indexVariant !== indexVariant || STATE.clip.key !== clip.key || STATE.stencilRef !== stencilRef || STATE.depthTest !== depthTest || STATE.depthFunc !== depthFunc || STATE.runs.length !== runs.length || !sameValues(runs, STATE.runs) || !sameFloat32(projection, STATE.projection)) {
         return false;
       }
       for (let i = 0; i < mesh.partCount * 12; i++) {
@@ -6968,17 +7540,22 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
     }
     _startAlphaQueue(mesh, projection, clip, stencilRef, depthTest, depthFunc, indexVariant, runs) {
       this.alphaQueueParts.set(this.partScratch.subarray(0, mesh.partCount * 12));
-      this.alphaQueueState = {
-        mesh,
-        projection: Float32Array.from(projection),
-        clip,
-        stencilRef,
-        depthTest,
-        depthFunc,
-        indexVariant,
-        runs: runs.slice(),
-        runKey: runs.join(",")
-      };
+      const STATE = this.alphaQueueRecord ??= { projection: new Float32Array(9), runs: [] };
+      STATE.mesh = mesh;
+      if (STATE.projection.length !== projection.length) {
+        STATE.projection = new Float32Array(projection.length);
+      }
+      STATE.projection.set(projection);
+      STATE.clip = clip;
+      STATE.stencilRef = stencilRef;
+      STATE.depthTest = depthTest;
+      STATE.depthFunc = depthFunc;
+      STATE.indexVariant = indexVariant;
+      STATE.runs.length = 0;
+      for (let i = 0; i < runs.length; i++) {
+        STATE.runs.push(runs[i]);
+      }
+      this.alphaQueueState = STATE;
     }
     _flushAlphaQueue(reason) {
       if (!this.alphaQueueCount) {
@@ -7024,13 +7601,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
             write: STATE.runs[run + 2],
             func: STATE.depthFunc
           },
-          stencil: STATE.stencilRef === null ? false : {
-            func: "equal",
-            ref: STATE.stencilRef,
-            mask: 255,
-            writeMask: 0,
-            pass: "keep"
-          }
+          stencil: STATE.stencilRef === null ? false : stencilEqual(STATE.stencilRef)
         });
         this.metrics.draws++;
         this.metrics.drawDispatchReasons[reason] = (this.metrics.drawDispatchReasons[reason] ?? 0) + 1;
@@ -7055,21 +7626,66 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
      * writes depth is drawn in runs so a yarn or sketch edge, whose pixels are only partly covered, never writes depth;
      * the runs keep the triangle order, so painter order is unchanged.
      */
-    drawMeshInstances(mesh, options = {}) {
+    drawMeshInstances(mesh, options = EMPTY_OPTIONS2) {
+      this._drawInstances(mesh, options, options.matrices, options.count, true);
+    }
+    _drawInstances(mesh, options, matrices, count, prefixes) {
       if (mesh?.materials && options.depthWrite === true && (options.depthWriteAlphaThreshold ?? null) === null && (options.indexRange ?? null) === null && this.meshes.has(mesh)) {
         const RUNS = this._materialRuns(mesh, options.indexVariant ?? null);
         if (RUNS.length > 1) {
           for (const RUN of RUNS) {
-            this._drawMeshRange(mesh, {
-              ...options,
-              indexRange: [RUN.first, RUN.count],
-              depthWrite: !RUN.edge
-            });
+            this._drawMeshRange(mesh, options, matrices, count, prefixes, RUN.first, RUN.count, !RUN.edge);
           }
           return;
         }
       }
-      this._drawMeshRange(mesh, options);
+      this._drawMeshRange(mesh, options, matrices, count, prefixes, -1, 0, null);
+    }
+    /**
+     * Writes one alpha-depth instance into queue slot `slot`. A method rather than a closure inside _drawMeshRange: the
+     * closure captured the draw's parameters, which gave every draw call (alpha-depth or not) a heap context.
+     */
+    _writeAlphaInstance(slot, matrices, i, morph, alpha, color, forceColor, whiteFlash, depth, singlePart) {
+      const PART = this.partScratch;
+      const OFFSET = i * 6;
+      let m0 = matrices[OFFSET];
+      let m1 = matrices[OFFSET + 1];
+      let m2 = matrices[OFFSET + 2];
+      let m3 = matrices[OFFSET + 3];
+      let m4 = matrices[OFFSET + 4];
+      let m5 = matrices[OFFSET + 5];
+      let weight0 = morph[0];
+      let weight1 = morph[1];
+      let instanceAlpha = alpha;
+      if (singlePart) {
+        const A_LOCAL = m0, B_LOCAL = m1, C_LOCAL = m2, D_LOCAL = m3;
+        m0 = A_LOCAL * PART[0] + C_LOCAL * PART[4];
+        m1 = B_LOCAL * PART[0] + D_LOCAL * PART[4];
+        m2 = A_LOCAL * PART[1] + C_LOCAL * PART[5];
+        m3 = B_LOCAL * PART[1] + D_LOCAL * PART[5];
+        m4 = A_LOCAL * PART[2] + C_LOCAL * PART[6] + m4;
+        m5 = B_LOCAL * PART[2] + D_LOCAL * PART[6] + m5;
+        instanceAlpha *= PART[10];
+        weight0 += PART[8];
+        weight1 += PART[9];
+      }
+      const AT = slot * 16, DATA2 = this.instances;
+      DATA2[AT] = m0;
+      DATA2[AT + 1] = m2;
+      DATA2[AT + 2] = m4;
+      DATA2[AT + 3] = instanceAlpha;
+      DATA2[AT + 4] = m1;
+      DATA2[AT + 5] = m3;
+      DATA2[AT + 6] = m5;
+      DATA2[AT + 7] = forceColor ? 1 : 0;
+      DATA2[AT + 8] = color[0];
+      DATA2[AT + 9] = color[1];
+      DATA2[AT + 10] = color[2];
+      DATA2[AT + 11] = color[3];
+      DATA2[AT + 12] = weight0;
+      DATA2[AT + 13] = weight1;
+      DATA2[AT + 14] = whiteFlash ? 1 : 0;
+      DATA2[AT + 15] = depth + (singlePart ? PART[11] : 0);
     }
     /** Contiguous runs of fill and edge triangles of one index list, cached per mesh. */
     _materialRuns(mesh, indexVariant) {
@@ -7078,7 +7694,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         cache = /* @__PURE__ */ new Map();
         this.materialRunCache.set(mesh, cache);
       }
-      const KEY = indexVariant ?? "";
+      const KEY = indexVariant;
       let runs = cache.get(KEY);
       if (!runs) {
         const VARIANT = indexVariant === null ? null : mesh.indexVariants.get(indexVariant) ?? mesh.expressionIndices.get(indexVariant);
@@ -7096,35 +7712,38 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       }
       return runs;
     }
+    /**
+     * The caller's draw options are destructured in place (no copy). `rangeFirst >= 0` replaces `indexRange` and a
+     * boolean `depthWriteOverride` replaces `depthWrite` (material fill/edge runs); `prefixes` admits the instance
+     * color prefix. The trailing parameters are the resolved values and are never passed by callers.
+     */
     _drawMeshRange(mesh, {
-      matrices,
-      count,
       projection,
       viewProjection,
       worldMatrix,
-      morph = [0, 0],
+      morph = ZERO_MORPH,
       parts = null,
       pose = null,
-      color = WHITE2,
+      color = WHITE3,
       paintRegions = null,
       forceColor = false,
       alpha = 1,
       whiteFlash = false,
-      clips = [],
-      prefixColor = null,
-      prefixCount = 0,
-      forceColorPrefixCount = 0,
+      clips = NO_CLIPS2,
+      prefixColor: requestedPrefixColor = null,
+      prefixCount: requestedPrefixCount = 0,
+      forceColorPrefixCount: requestedForceColorPrefixCount = 0,
       depth = 0,
       depthTest = false,
-      depthWrite = false,
+      depthWrite: requestedDepthWrite = false,
       depthWriteAlphaThreshold = null,
       depthFunc = "lequal",
       indexVariant = null,
-      indexRange = null,
+      indexRange: requestedIndexRange = null,
       strokeViewport = null,
       stencilRef = null,
       timeMs = 0
-    } = {}) {
+    }, matrices, count, prefixes, rangeFirst, rangeCount, depthWriteOverride, prefixColor = prefixes ? requestedPrefixColor : null, prefixCount = prefixes ? requestedPrefixCount : 0, forceColorPrefixCount = prefixes ? requestedForceColorPrefixCount : 0, depthWrite = depthWriteOverride ?? requestedDepthWrite, indexRange = rangeFirst >= 0 ? null : requestedIndexRange) {
       this._ready();
       if (!this.meshes.has(mesh)) {
         throw new TypeError("Mesh owned by this renderer required");
@@ -7179,7 +7798,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
           finiteArray2(strokeViewport, 2, "strokeViewport");
           strokeSize = [strokeViewport[0], strokeViewport[1]];
         }
-        if (strokeSize.some((value) => !Number.isFinite(value) || value <= 0)) {
+        if (!(Number.isFinite(strokeSize[0]) && strokeSize[0] > 0 && Number.isFinite(strokeSize[1]) && strokeSize[1] > 0)) {
           throw new RangeError("Non-scaling strokes require a positive CSS-pixel viewport size");
         }
         if (!WORLD_MODE) {
@@ -7188,7 +7807,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
           inverseViewProjection = invertMatrix4(viewProjection);
         }
       }
-      if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1 || color.some((n) => n < 0 || n > 1)) {
+      if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1 || !unitChannels(color)) {
         throw new RangeError("RGBA/alpha in [0,1] required");
       }
       if (!Number.isFinite(depth) || depth < -1 || depth > 1) {
@@ -7206,7 +7825,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       if (mesh.materials && depthWriteAlphaThreshold !== null) {
         throw new TypeError("Meshes with materials do not support depthWriteAlphaThreshold");
       }
-      if (!["never", "less", "equal", "lequal", "greater", "notequal", "gequal", "always"].includes(depthFunc)) {
+      if (!DEPTH_FUNCTION_CODES.has(depthFunc)) {
         throw new TypeError("Unsupported depthFunc");
       }
       if (!Number.isSafeInteger(prefixCount) || prefixCount < 0 || prefixCount > count || !Number.isSafeInteger(forceColorPrefixCount) || forceColorPrefixCount < 0 || forceColorPrefixCount > count) {
@@ -7217,7 +7836,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       }
       if (prefixColor !== null) {
         finiteArray2(prefixColor, 4, "prefix color");
-        if (prefixColor.some((n) => n < 0 || n > 1)) {
+        if (!unitChannels(prefixColor)) {
           throw new RangeError("RGBA channels must be in [0,1]");
         }
       }
@@ -7232,7 +7851,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       }
       const CLIP = clipPlanes(clips, this.maxPlanes);
       const VARIANT = indexVariant === null ? null : mesh.indexVariants.get(indexVariant) ?? mesh.expressionIndices.get(indexVariant);
-      const FIRST_INDEX = indexRange?.[0] ?? 0, INDEX_COUNT = indexRange?.[1] ?? VARIANT?.count ?? mesh.count;
+      const FIRST_INDEX = rangeFirst >= 0 ? rangeFirst : indexRange?.[0] ?? 0, INDEX_COUNT = rangeFirst >= 0 ? rangeCount : indexRange?.[1] ?? VARIANT?.count ?? mesh.count;
       if (FIRST_INDEX + INDEX_COUNT > (VARIANT?.count ?? mesh.count)) {
         throw new RangeError("indexRange exceeds the selected mesh index data");
       }
@@ -7251,33 +7870,30 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       }
       if (this.ordered && !WORLD_MODE && !mesh.hasNonScalingStroke && !mesh.materials && depthWriteAlphaThreshold === null && !depthWrite && !prefixCount && !forceColorPrefixCount && (POSE_DRAW?.kind === "program" || POSE_DRAW?.gpu === true || !POSE_DRAW && mesh.partCount === 1)) {
         this._flushNative("orderedBoundary");
-        this.ordered.drawMesh(
-          mesh,
-          {
-            matrices,
-            count,
-            projection,
-            morph,
-            color,
-            paintRegions,
-            forceColor,
-            alpha,
-            whiteFlash,
-            clips,
-            depth,
-            depthTest,
-            depthWrite,
-            depthFunc,
-            stencilRef,
-            indexVariant,
-            firstIndex: FIRST_INDEX,
-            indexCount: INDEX_COUNT,
-            pose,
-            part: this.partScratch
-          },
-          POSE_DRAW ? this.poseRenderer : null,
-          POSE_DRAW
-        );
+        const ORDERED = this.orderedDraw ??= {};
+        ORDERED.matrices = matrices;
+        ORDERED.count = count;
+        ORDERED.projection = projection;
+        ORDERED.morph = morph;
+        ORDERED.color = color;
+        ORDERED.paintRegions = paintRegions;
+        ORDERED.forceColor = forceColor;
+        ORDERED.alpha = alpha;
+        ORDERED.whiteFlash = whiteFlash;
+        ORDERED.clip = CLIP;
+        ORDERED.depth = depth;
+        ORDERED.depthTest = depthTest;
+        ORDERED.depthWrite = depthWrite;
+        ORDERED.depthFunc = depthFunc;
+        ORDERED.stencilRef = stencilRef;
+        ORDERED.indexVariant = indexVariant;
+        ORDERED.firstIndex = FIRST_INDEX;
+        ORDERED.indexCount = INDEX_COUNT;
+        ORDERED.pose = pose;
+        ORDERED.part = this.partScratch;
+        this.ordered.drawMesh(mesh, ORDERED, POSE_DRAW ? this.poseRenderer : null, POSE_DRAW);
+        ORDERED.matrices = ORDERED.projection = ORDERED.morph = ORDERED.color = null;
+        ORDERED.paintRegions = ORDERED.pose = ORDERED.clip = null;
         return;
       }
       this.ordered?.flush("nativeMeshBoundary");
@@ -7285,7 +7901,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         this._setPaintRegions(mesh, paintRegions);
       }
       const PENDING = this.pending;
-      const DEPTH_STATE_KEY = Number(depthTest) + ":" + Number(depthWrite) + ":" + depthFunc;
+      const DEPTH_STATE_KEY = depthStateCode(depthTest, depthWrite, depthFunc);
       const ALPHA_DEPTH_WRITE = depthWrite && depthWriteAlphaThreshold !== null;
       if (!ALPHA_DEPTH_WRITE) {
         const INSTANCE_LIMIT = this.maxInstances;
@@ -7297,7 +7913,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         if (PENDING) {
           const MATRIX = WORLD_MODE ? viewProjection : projection;
           const PREVIOUS_COLOR = PENDING.color;
-          const REASON = (PENDING.poseTexture ?? null) !== (POSE_DRAW?.texture ?? null) ? "poseBackend" : PENDING.mesh !== mesh ? "mesh" : PENDING.worldMode !== WORLD_MODE ? "transformMode" : PENDING.indexVariant !== indexVariant ? "indexVariant" : PENDING.firstIndex !== FIRST_INDEX || PENDING.indexCount !== INDEX_COUNT ? "indexRange" : PENDING.clip.key !== CLIP.key ? "clip" : PENDING.stencilRef !== stencilRef ? "stencil" : PENDING.depthStateKey !== DEPTH_STATE_KEY ? "depthState" : MATRIX.some((n, i) => Math.fround(n) !== PENDING.projection[i]) ? "projection" : strokeSize && strokeSize.some((n, i) => n !== PENDING.strokeSize?.[i]) ? "strokeViewport" : WORLD_MODE && color.some((n, i) => n !== PREVIOUS_COLOR[i]) ? "color" : !POSE_DRAW && mesh.partCount > 1 && PENDING.parts.some((n, i) => n !== this.partScratch[i]) ? "parts" : this.count === INSTANCE_LIMIT ? "capacity" : null;
+          const REASON = (PENDING.poseTexture ?? null) !== (POSE_DRAW?.texture ?? null) ? "poseBackend" : PENDING.mesh !== mesh ? "mesh" : PENDING.worldMode !== WORLD_MODE ? "transformMode" : PENDING.indexVariant !== indexVariant ? "indexVariant" : PENDING.firstIndex !== FIRST_INDEX || PENDING.indexCount !== INDEX_COUNT ? "indexRange" : PENDING.clip.key !== CLIP.key ? "clip" : PENDING.stencilRef !== stencilRef ? "stencil" : PENDING.depthStateKey !== DEPTH_STATE_KEY ? "depthState" : !sameFloat32(MATRIX, PENDING.projection) ? "projection" : strokeSize && (strokeSize[0] !== PENDING.strokeSize?.[0] || strokeSize[1] !== PENDING.strokeSize?.[1]) ? "strokeViewport" : WORLD_MODE && !sameValues(color, PREVIOUS_COLOR) ? "color" : !POSE_DRAW && mesh.partCount > 1 && !sameValues(PENDING.parts, this.partScratch) ? "parts" : this.count === INSTANCE_LIMIT ? "capacity" : null;
           if (REASON) {
             this.flush(REASON);
           }
@@ -7311,31 +7927,27 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
             this.flush("capacity");
           }
           if (!this.pending) {
-            this.pending = {
+            const NEXT = this._openPending(
               mesh,
-              poseTexture: POSE_DRAW?.texture ?? null,
-              poseTextures: POSE_DRAW?.textures ?? null,
-              poseKind: POSE_DRAW?.kind ?? null,
-              poseProgramWidth: POSE_DRAW?.programWidth ?? 0,
-              projection: Float32Array.from(WORLD_MODE ? viewProjection : projection),
-              worldMode: WORLD_MODE,
-              color: Float32Array.from(color),
-              clip: CLIP,
+              WORLD_MODE ? viewProjection : projection,
+              WORLD_MODE,
+              CLIP,
               stencilRef,
-              depthStateKey: DEPTH_STATE_KEY,
+              DEPTH_STATE_KEY,
               indexVariant,
-              firstIndex: FIRST_INDEX,
-              indexCount: INDEX_COUNT,
+              FIRST_INDEX,
+              INDEX_COUNT,
               strokeSize,
               inverseStrokeProjection,
               inverseViewProjection,
-              depthState: {
-                test: depthTest,
-                write: depthWrite,
-                func: depthFunc
-              },
-              parts: this.partScratch.slice(0, mesh.partCount > 1 ? mesh.partCount * 12 : 0)
-            };
+              mesh.partCount > 1 ? mesh.partCount * 12 : 0
+            );
+            NEXT.poseTexture = POSE_DRAW?.texture ?? null;
+            NEXT.poseTextures = POSE_DRAW?.textures ?? null;
+            NEXT.poseKind = POSE_DRAW?.kind ?? null;
+            NEXT.poseProgramWidth = POSE_DRAW?.programWidth ?? 0;
+            NEXT.color = NEXT.colorStorage;
+            NEXT.color.set(color);
           }
           const OFFSET = i * 6;
           let m0 = matrices[OFFSET];
@@ -7415,48 +8027,6 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       const INDICES = VARIANT?.indices ?? mesh.indices;
       const TRIANGLE_COUNT = (VARIANT?.count ?? mesh.count) / 3;
       const PART = this.partScratch, SINGLE_PART = mesh.partCount === 1;
-      const WRITE_ALPHA_INSTANCE = (i, slot) => {
-        const OFFSET = i * 6;
-        let m0 = matrices[OFFSET];
-        let m1 = matrices[OFFSET + 1];
-        let m2 = matrices[OFFSET + 2];
-        let m3 = matrices[OFFSET + 3];
-        let m4 = matrices[OFFSET + 4];
-        let m5 = matrices[OFFSET + 5];
-        let weight0 = morph[0];
-        let weight1 = morph[1];
-        let instanceAlpha = alpha;
-        if (SINGLE_PART) {
-          const A_LOCAL = m0, B_LOCAL = m1, C_LOCAL = m2, D_LOCAL = m3;
-          m0 = A_LOCAL * PART[0] + C_LOCAL * PART[4];
-          m1 = B_LOCAL * PART[0] + D_LOCAL * PART[4];
-          m2 = A_LOCAL * PART[1] + C_LOCAL * PART[5];
-          m3 = B_LOCAL * PART[1] + D_LOCAL * PART[5];
-          m4 = A_LOCAL * PART[2] + C_LOCAL * PART[6] + m4;
-          m5 = B_LOCAL * PART[2] + D_LOCAL * PART[6] + m5;
-          instanceAlpha *= PART[10];
-          weight0 += PART[8];
-          weight1 += PART[9];
-        }
-        const INSTANCE_COLOR = i < prefixCount ? prefixColor : color;
-        const INSTANCE_FORCE_COLOR = i < forceColorPrefixCount ? true : forceColor, AT = slot * 16, DATA2 = this.instances;
-        DATA2[AT] = m0;
-        DATA2[AT + 1] = m2;
-        DATA2[AT + 2] = m4;
-        DATA2[AT + 3] = instanceAlpha;
-        DATA2[AT + 4] = m1;
-        DATA2[AT + 5] = m3;
-        DATA2[AT + 6] = m5;
-        DATA2[AT + 7] = INSTANCE_FORCE_COLOR ? 1 : 0;
-        DATA2[AT + 8] = INSTANCE_COLOR[0];
-        DATA2[AT + 9] = INSTANCE_COLOR[1];
-        DATA2[AT + 10] = INSTANCE_COLOR[2];
-        DATA2[AT + 11] = INSTANCE_COLOR[3];
-        DATA2[AT + 12] = weight0;
-        DATA2[AT + 13] = weight1;
-        DATA2[AT + 14] = whiteFlash ? 1 : 0;
-        DATA2[AT + 15] = depth + (SINGLE_PART ? PART[11] : 0);
-      };
       for (let i = 0; i < count; i++) {
         const INSTANCE_COLOR = i < prefixCount ? prefixColor : color;
         const INSTANCE_FORCE_COLOR = i < forceColorPrefixCount ? true : forceColor;
@@ -7511,7 +8081,18 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
             }
             this._extendAlphaQueueBounds(BOUNDS);
             const SLOT = this.alphaQueueCount;
-            WRITE_ALPHA_INSTANCE(i, SLOT);
+            this._writeAlphaInstance(
+              SLOT,
+              matrices,
+              i,
+              morph,
+              alpha,
+              INSTANCE_COLOR,
+              INSTANCE_FORCE_COLOR,
+              whiteFlash,
+              depth,
+              SINGLE_PART
+            );
             this.alphaQueueCount++;
             continue;
           }
@@ -7524,7 +8105,18 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
           if (this.count) {
             this.flush("alphaImmediateBoundary");
           }
-          WRITE_ALPHA_INSTANCE(i, 0);
+          this._writeAlphaInstance(
+            0,
+            matrices,
+            i,
+            morph,
+            alpha,
+            INSTANCE_COLOR,
+            INSTANCE_FORCE_COLOR,
+            whiteFlash,
+            depth,
+            SINGLE_PART
+          );
           this._drawAlphaDepthRuns(
             mesh,
             VARIANT,
@@ -7545,34 +8137,29 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         if (this.alphaQueueCount) {
           this._flushAlphaQueue("singleRunBoundary");
         }
-        const WRITE = RUNS[2], STATE_KEY = Number(depthTest) + ":" + Number(WRITE) + ":" + depthFunc;
+        const WRITE = RUNS[2], STATE_KEY = depthStateCode(depthTest, WRITE, depthFunc);
         if (this.pending) {
-          const CURRENT = this.pending, REASON = CURRENT.mesh !== mesh ? "mesh" : CURRENT.worldMode ? "transformMode" : CURRENT.indexVariant !== indexVariant ? "indexVariant" : CURRENT.firstIndex !== FIRST_INDEX || CURRENT.indexCount !== INDEX_COUNT ? "indexRange" : CURRENT.clip.key !== CLIP.key ? "clip" : CURRENT.stencilRef !== stencilRef ? "stencil" : CURRENT.depthStateKey !== STATE_KEY ? "depthState" : projection.some((n, j) => Math.fround(n) !== CURRENT.projection[j]) ? "projection" : strokeSize && strokeSize.some((n, j) => n !== CURRENT.strokeSize?.[j]) ? "strokeViewport" : mesh.partCount > 1 && CURRENT.parts.some((n, j) => n !== this.partScratch[j]) ? "parts" : this.count === this.maxInstances ? "capacity" : null;
+          const CURRENT = this.pending, REASON = CURRENT.mesh !== mesh ? "mesh" : CURRENT.worldMode ? "transformMode" : CURRENT.indexVariant !== indexVariant ? "indexVariant" : CURRENT.firstIndex !== FIRST_INDEX || CURRENT.indexCount !== INDEX_COUNT ? "indexRange" : CURRENT.clip.key !== CLIP.key ? "clip" : CURRENT.stencilRef !== stencilRef ? "stencil" : CURRENT.depthStateKey !== STATE_KEY ? "depthState" : !sameFloat32(projection, CURRENT.projection) ? "projection" : strokeSize && (strokeSize[0] !== CURRENT.strokeSize?.[0] || strokeSize[1] !== CURRENT.strokeSize?.[1]) ? "strokeViewport" : mesh.partCount > 1 && !sameValues(CURRENT.parts, this.partScratch) ? "parts" : this.count === this.maxInstances ? "capacity" : null;
           if (REASON) {
             this.flush(REASON);
           }
         }
         if (!this.pending) {
-          this.pending = {
+          this._openPending(
             mesh,
-            projection: Float32Array.from(projection),
-            worldMode: false,
-            clip: CLIP,
+            projection,
+            false,
+            CLIP,
             stencilRef,
-            depthStateKey: STATE_KEY,
+            STATE_KEY,
             indexVariant,
-            firstIndex: FIRST_INDEX,
-            indexCount: INDEX_COUNT,
+            FIRST_INDEX,
+            INDEX_COUNT,
             strokeSize,
             inverseStrokeProjection,
             inverseViewProjection,
-            depthState: {
-              test: depthTest,
-              write: WRITE,
-              func: depthFunc
-            },
-            parts: this.partScratch.slice(0, mesh.partCount > 1 ? mesh.partCount * 12 : 0)
-          };
+            mesh.partCount > 1 ? mesh.partCount * 12 : 0
+          );
         }
         const OFFSET = i * 6;
         let m0 = matrices[OFFSET];
@@ -7731,13 +8318,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
             write: runs[run + 2],
             func: depthFunc
           },
-          stencil: stencilRef === null ? false : {
-            func: "equal",
-            ref: stencilRef,
-            mask: 255,
-            writeMask: 0,
-            pass: "keep"
-          }
+          stencil: stencilRef === null ? false : stencilEqual(stencilRef)
         });
         this.metrics.draws++;
         this.metrics.drawDispatchReasons.alphaImmediateRun = (this.metrics.drawDispatchReasons.alphaImmediateRun ?? 0) + 1;
@@ -7820,48 +8401,53 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         CLIP.count > 0,
         WORLD_MODE,
         POSE_KIND === "program" ? 2 : POSE_KIND === "matrix" ? 1 : 0
-      ), UNIFORMS2 = WORLD_MODE ? {
-        u_viewProjection: PROJECTION,
-        u_color: COLOR
-      } : {
-        u_projection: PROJECTION
-      };
+      );
+      let uniforms = this.pipelineUniforms.get(PIPELINE);
+      if (!uniforms) {
+        uniforms = {};
+        this.pipelineUniforms.set(PIPELINE, uniforms);
+      }
+      const UNIFORMS2 = uniforms;
+      if (WORLD_MODE) {
+        UNIFORMS2.u_viewProjection = PROJECTION;
+        UNIFORMS2.u_color = COLOR;
+      } else {
+        UNIFORMS2.u_projection = PROJECTION;
+      }
       if (CLIP.count) {
-        Object.assign(UNIFORMS2, {
-          "u_planes[0]": this.planes,
-          u_planeCount: CLIP.count
-        });
+        UNIFORMS2["u_planes[0]"] = this.planes;
+        UNIFORMS2.u_planeCount = CLIP.count;
       }
       if (MESH.hasNonScalingStroke) {
-        Object.assign(UNIFORMS2, {
-          u_strokeViewportSize: STROKE_SIZE,
-          ...CLIP.count ? WORLD_MODE ? {
-            u_inverseViewProjection: INVERSE_VIEW_PROJECTION
-          } : {
-            u_inverseProjection: INVERSE_STROKE_PROJECTION
-          } : {}
-        });
+        UNIFORMS2.u_strokeViewportSize = STROKE_SIZE;
+        if (CLIP.count) {
+          if (WORLD_MODE) {
+            UNIFORMS2.u_inverseViewProjection = INVERSE_VIEW_PROJECTION;
+          } else {
+            UNIFORMS2.u_inverseProjection = INVERSE_STROKE_PROJECTION;
+          }
+        }
       }
       if (MESH.paintRegionNames) {
         UNIFORMS2["u_paintRegions[0]"] = this.paintState;
       }
       if (POSE_KIND === "program") {
-        Object.assign(UNIFORMS2, { u_program: 0, u_state: 1, u_overrides: 2, u_programWidth: POSE_PROGRAM_WIDTH });
+        UNIFORMS2.u_program = 0;
+        UNIFORMS2.u_state = 1;
+        UNIFORMS2.u_overrides = 2;
+        UNIFORMS2.u_programWidth = POSE_PROGRAM_WIDTH;
       } else if (POSE_KIND === "matrix") {
         UNIFORMS2.u_poseTexture = 0;
       } else if (MESH.partCount > 1) {
         UNIFORMS2["u_parts[0]"] = PARTS;
       }
       UNIFORMS2.u_depthWrite = Number(DEPTH_STATE.write);
-      const TEXTURES = MESH.materials ? this._materialTextures(POSE_TEXTURES) : POSE_TEXTURES ?? NO_TEXTURES;
+      const TEXTURES = MESH.materials ? this._materialTextures(POSE_TEXTURES) : POSE_TEXTURES ?? NO_TEXTURES2;
       if (MESH.materials) {
         UNIFORMS2["u_materials[0]"] = MESH.materials.table;
         UNIFORMS2.u_stitchField = TEXTURES.length - 1;
       }
-      const INSTANCE_UNIFORMS = [
-        ...WORLD_MODE ? ["i_row0", "i_row1", "i_row2", "i_params"] : ["i_row0", "i_row1", "i_color", "i_params"],
-        ...MESH.materials ? ["i_extra"] : []
-      ];
+      const INSTANCE_UNIFORMS = WORLD_MODE ? MESH.materials ? WORLD_MATERIAL_INSTANCE_UNIFORMS : WORLD_INSTANCE_UNIFORMS : MESH.materials ? PLAIN_MATERIAL_INSTANCE_UNIFORMS : PLAIN_INSTANCE_UNIFORMS;
       const INSTANCE_FLOATS = MESH.instanceFloats;
       const INSTANCE_DATA = this._instanceData(MESH);
       if (this.instanced) {
@@ -7877,13 +8463,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
           uniforms: UNIFORMS2,
           textures: TEXTURES,
           depth: DEPTH_STATE,
-          stencil: STENCIL_REF === null ? false : {
-            func: "equal",
-            ref: STENCIL_REF,
-            mask: 255,
-            writeMask: 0,
-            pass: "keep"
-          }
+          stencil: STENCIL_REF === null ? false : stencilEqual(STENCIL_REF)
         });
         this.metrics.instanceBytesUploaded += this.count * INSTANCE_FLOATS * 4;
         this.metrics.draws++;
@@ -7908,13 +8488,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
             uniforms: UNIFORMS2,
             textures: TEXTURES,
             depth: DEPTH_STATE,
-            stencil: STENCIL_REF === null ? false : {
-              func: "equal",
-              ref: STENCIL_REF,
-              mask: 255,
-              writeMask: 0,
-              pass: "keep"
-            }
+            stencil: STENCIL_REF === null ? false : stencilEqual(STENCIL_REF)
           });
           this.metrics.draws++;
           this.metrics.drawDispatchReasons[reason] = (this.metrics.drawDispatchReasons[reason] ?? 0) + 1;
@@ -7926,6 +8500,63 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       this.metrics.instances += this.count;
       this.metrics.flushReasons[reason] = (this.metrics.flushReasons[reason] ?? 0) + 1;
       this.discard();
+    }
+    /**
+     * Starts the native batch in the one reusable pending record: its typed copies are overwritten, the part copy is a
+     * cached view of the needed length, and the depth policy is the shared object of the depth state code.
+     */
+    _openPending(mesh, projection, worldMode, clip, stencilRef, depthStateKey, indexVariant, firstIndex, indexCount, strokeSize, inverseStrokeProjection, inverseViewProjection, partFloats) {
+      const NEXT = this.pendingRecord ??= {
+        mesh: null,
+        poseTexture: null,
+        poseTextures: null,
+        poseKind: null,
+        poseProgramWidth: 0,
+        projection: null,
+        projection3: new Float32Array(9),
+        projection4: new Float32Array(16),
+        worldMode: false,
+        color: null,
+        colorStorage: new Float32Array(4),
+        clip: null,
+        stencilRef: null,
+        depthStateKey: 0,
+        indexVariant: null,
+        firstIndex: 0,
+        indexCount: 0,
+        strokeSize: null,
+        inverseStrokeProjection: null,
+        inverseViewProjection: null,
+        depthState: null,
+        parts: null,
+        partStorage: new Float32Array(16 * 12),
+        partViews: []
+      };
+      NEXT.mesh = mesh;
+      NEXT.poseTexture = null;
+      NEXT.poseTextures = null;
+      NEXT.poseKind = null;
+      NEXT.poseProgramWidth = 0;
+      NEXT.projection = projection.length === 16 ? NEXT.projection4 : NEXT.projection3;
+      NEXT.projection.set(projection);
+      NEXT.worldMode = worldMode;
+      NEXT.color = null;
+      NEXT.clip = clip;
+      NEXT.stencilRef = stencilRef;
+      NEXT.depthStateKey = depthStateKey;
+      NEXT.indexVariant = indexVariant;
+      NEXT.firstIndex = firstIndex;
+      NEXT.indexCount = indexCount;
+      NEXT.strokeSize = strokeSize;
+      NEXT.inverseStrokeProjection = inverseStrokeProjection;
+      NEXT.inverseViewProjection = inverseViewProjection;
+      NEXT.depthState = DEPTH_POLICIES[depthStateKey];
+      NEXT.parts = NEXT.partViews[partFloats] ??= NEXT.partStorage.subarray(0, partFloats);
+      for (let i = 0; i < partFloats; i++) {
+        NEXT.parts[i] = this.partScratch[i];
+      }
+      this.pending = NEXT;
+      return NEXT;
     }
     /** The staging array holding this mesh's instance records. */
     _instanceData(mesh) {
@@ -7941,7 +8572,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         { width: STITCH_FIELD_SIZE, height: STITCH_FIELD_SIZE, data: stitchFieldPixels() },
         { premultiplied: true, filter: "linear" }
       );
-      const KEY = poseTextures ?? NO_TEXTURES;
+      const KEY = poseTextures ?? NO_TEXTURES2;
       let set = this.materialTextureSets.get(KEY);
       if (!set) {
         set = Object.freeze([...KEY, this.stitchField]);
@@ -8037,6 +8668,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         this.device.deletePipeline(PIPELINE);
       }
       this.pipelines.clear();
+      this.pipelineUniforms.clear();
       this.disposed = true;
       this.state = "disposed";
     }
@@ -8053,8 +8685,10 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       (_, i) => Object.freeze([Math.cos(i * TAU / 8), Math.sin(i * TAU / 8)])
     )
   );
-  var IDENTITY3 = Object.freeze([1, 0, 0, 1, 0, 0]);
-  var WHITE3 = Object.freeze([1, 1, 1, 1]);
+  var IDENTITY4 = Object.freeze([1, 0, 0, 1, 0, 0]);
+  var WHITE4 = Object.freeze([1, 1, 1, 1]);
+  var EMPTY_OPTIONS3 = Object.freeze({});
+  var EMPTY_PRIMITIVE = Object.freeze({ type: "empty" });
   function composeTransform(a, b) {
     return [
       a[0] * b[0] + a[2] * b[1],
@@ -8129,6 +8763,11 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       COLOR_CACHE.set(key3, rgbaValue);
     }
     return rgbaValue.slice();
+  }
+  function validateColor(value) {
+    if (typeof value !== "string" || !COLOR_CACHE.has(value)) {
+      normalizeColor(value);
+    }
   }
   function normalizeColor(value) {
     if (typeof value === "string") {
@@ -8230,17 +8869,27 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
     ];
   }
   var RAMP_KEY = (gradient) => (gradient instanceof LinearGradient ? "L" : "R") + gradient.stops.map((stop) => `${stop.offset}:${stop.color.join(",")}`).join(";");
-  var COMPOSE_AFFINE = (outer, inner) => {
-    const [A, B, C, D, E, F] = inner;
-    return [
-      outer[0] * A + outer[2] * B,
-      outer[1] * A + outer[3] * B,
-      outer[0] * C + outer[2] * D,
-      outer[1] * C + outer[3] * D,
-      outer[0] * E + outer[2] * F + outer[4],
-      outer[1] * E + outer[3] * F + outer[5]
-    ];
-  };
+  var COMPOSE_AFFINE = (outer, inner) => composeAffineInto(outer, inner, new Array(6));
+  function composeAffineInto(outer, inner, out) {
+    const A = inner[0], B = inner[1], C = inner[2], D = inner[3], E = inner[4], F = inner[5];
+    out[0] = outer[0] * A + outer[2] * B;
+    out[1] = outer[1] * A + outer[3] * B;
+    out[2] = outer[0] * C + outer[2] * D;
+    out[3] = outer[1] * C + outer[3] * D;
+    out[4] = outer[0] * E + outer[2] * F + outer[4];
+    out[5] = outer[1] * E + outer[3] * F + outer[5];
+    return out;
+  }
+  function finiteValues(values, length, message) {
+    if (values.length !== length) {
+      throw new TypeError(message);
+    }
+    for (let i = 0; i < length; i++) {
+      if (!Number.isFinite(values[i])) {
+        throw new TypeError(message);
+      }
+    }
+  }
   var RadialGradient = class {
     constructor(matrix, x0, y0, r0, x1, y1, r1) {
       for (const [N, V] of Object.entries({
@@ -8419,9 +9068,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       }
       this.safeAlphaRunBatching = safeAlphaRunBatching;
       this.meshRenderer = null;
-      this.primitivePath = {
-        type: "empty"
-      };
+      this.primitivePath = EMPTY_PRIMITIVE;
       this.active = false;
       this.state = "ready";
       this.frame = 0;
@@ -8483,6 +9130,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       this._composite = "source-over";
       this.forceColor = null;
       this.stack = [];
+      this.statePool = [];
       this.frameStats = {};
       this.total = {
         frames: 0,
@@ -8528,7 +9176,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
     }
     set fillStyle(v) {
       if (!(v instanceof RadialGradient) && !(v instanceof LinearGradient)) {
-        normalizeColor(v);
+        validateColor(v);
       }
       this._fillStyle = v;
     }
@@ -8537,7 +9185,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
     }
     set strokeStyle(v) {
       if (!(v instanceof RadialGradient) && !(v instanceof LinearGradient)) {
-        normalizeColor(v);
+        validateColor(v);
       }
       this._strokeStyle = v;
     }
@@ -8641,15 +9289,31 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       }
     }
     _paint(style) {
+      return this._applyPaintState(normalizeColor(this._solidPaint(style)));
+    }
+    /**
+     * _paint into one reused array, for fills, strokes and primitives that copy the colour into vertex data before
+     * returning. A cached CSS colour string is copied without the cache's defensive slice.
+     */
+    _paintScratch(style) {
+      const SOURCE = this._solidPaint(style), OUT = this._paintScratchColor ??= [0, 0, 0, 1], HIT = typeof SOURCE === "string" ? COLOR_CACHE.get(SOURCE) : void 0, COLOR = HIT ?? normalizeColor(SOURCE);
+      for (let i = 0; i < 4; i++) {
+        OUT[i] = COLOR[i];
+      }
+      return this._applyPaintState(OUT);
+    }
+    _solidPaint(style) {
       if (style instanceof RadialGradient || style instanceof LinearGradient) {
         throw new TypeError("Gradient paint must be submitted through a vector fill or stroke");
       }
-      const COLOR = normalizeColor(this.forceColor ?? style);
-      COLOR[3] *= this._globalAlpha;
+      return this.forceColor ?? style;
+    }
+    _applyPaintState(color) {
+      color[3] *= this._globalAlpha;
       if (this._filter === "brightness(0) invert(1)") {
-        COLOR[0] = COLOR[1] = COLOR[2] = 1;
+        color[0] = color[1] = color[2] = 1;
       }
-      return COLOR;
+      return color;
     }
     _gradientPaint(gradient) {
       let cached = this.gradientTextures.get(gradient);
@@ -8768,9 +9432,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         this.frame++;
         this.pathCount = 0;
         this.vector.beginPath();
-        this.primitivePath = {
-          type: "empty"
-        };
+        this.primitivePath = EMPTY_PRIMITIVE;
         return true;
       } catch (error2) {
         this.onError?.(error2, {
@@ -8814,24 +9476,24 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
     }
     save() {
       this._frame();
-      this.stack.push({
-        fillStyle: this._fillStyle,
-        strokeStyle: this._strokeStyle,
-        globalAlpha: this._globalAlpha,
-        lineWidth: this._lineWidth,
-        lineCap: this._lineCap,
-        lineJoin: this._lineJoin,
-        miterLimit: this._miterLimit,
-        lineDash: this._lineDash.slice(),
-        lineDashOffset: this._lineDashOffset,
-        font: this._font,
-        textAlign: this._textAlign,
-        textBaseline: this._textBaseline,
-        direction: this._direction,
-        filter: this._filter,
-        composite: this._composite,
-        forceColor: this.forceColor
-      });
+      const STATE = this.statePool[this.stack.length] ??= {};
+      STATE.fillStyle = this._fillStyle;
+      STATE.strokeStyle = this._strokeStyle;
+      STATE.globalAlpha = this._globalAlpha;
+      STATE.lineWidth = this._lineWidth;
+      STATE.lineCap = this._lineCap;
+      STATE.lineJoin = this._lineJoin;
+      STATE.miterLimit = this._miterLimit;
+      STATE.lineDash = this._lineDash;
+      STATE.lineDashOffset = this._lineDashOffset;
+      STATE.font = this._font;
+      STATE.textAlign = this._textAlign;
+      STATE.textBaseline = this._textBaseline;
+      STATE.direction = this._direction;
+      STATE.filter = this._filter;
+      STATE.composite = this._composite;
+      STATE.forceColor = this.forceColor;
+      this.stack.push(STATE);
       this.vector.save();
     }
     restore() {
@@ -8844,31 +9506,29 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         this.meshRenderer?.flush("stateRestore");
       }
       this.vector.restore();
-      Object.assign(this, {
-        _fillStyle: S.fillStyle,
-        _strokeStyle: S.strokeStyle,
-        _globalAlpha: S.globalAlpha,
-        _lineWidth: S.lineWidth,
-        _lineCap: S.lineCap,
-        _lineJoin: S.lineJoin,
-        _miterLimit: S.miterLimit,
-        _lineDash: S.lineDash,
-        _lineDashOffset: S.lineDashOffset,
-        _font: S.font,
-        _textAlign: S.textAlign,
-        _textBaseline: S.textBaseline,
-        _direction: S.direction,
-        _filter: S.filter,
-        _composite: S.composite,
-        forceColor: S.forceColor
-      });
+      this._fillStyle = S.fillStyle;
+      this._strokeStyle = S.strokeStyle;
+      this._globalAlpha = S.globalAlpha;
+      this._lineWidth = S.lineWidth;
+      this._lineCap = S.lineCap;
+      this._lineJoin = S.lineJoin;
+      this._miterLimit = S.miterLimit;
+      this._lineDash = S.lineDash;
+      this._lineDashOffset = S.lineDashOffset;
+      this._font = S.font;
+      this._textAlign = S.textAlign;
+      this._textBaseline = S.textBaseline;
+      this._direction = S.direction;
+      this._filter = S.filter;
+      this._composite = S.composite;
+      this.forceColor = S.forceColor;
       this.vector.setBlend(S.composite);
     }
     setTransform(a, b, c, d, e, f) {
       this.vector.setTransform(a, b, c, d, e, f);
     }
     resetTransform() {
-      this.vector.setTransform(...IDENTITY3);
+      this.vector.setTransform(...IDENTITY4);
     }
     getTransform() {
       const M = this.vector.matrix;
@@ -8897,9 +9557,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       this._frame();
       this.pathCount++;
       this.vector.beginPath();
-      this.primitivePath = {
-        type: "empty"
-      };
+      this.primitivePath = EMPTY_PRIMITIVE;
     }
     _materializePrimitivePath() {
       const PATH = this.primitivePath;
@@ -9070,22 +9728,15 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       this.closePath();
     }
     _temporaryPath(callback) {
-      const V = this.vector, SAVED = {
-        path: V.path,
-        cursor: V.cursor,
-        subpath: V.subpath,
-        primitivePath: this.primitivePath
-      };
+      const V = this.vector, PATH = V.path, CURSOR = V.cursor, SUBPATH = V.subpath, PRIMITIVE_PATH = this.primitivePath;
       try {
-        this.primitivePath = {
-          type: "empty"
-        };
+        this.primitivePath = EMPTY_PRIMITIVE;
         callback();
       } finally {
-        V.path = SAVED.path;
-        V.cursor = SAVED.cursor;
-        V.subpath = SAVED.subpath;
-        this.primitivePath = SAVED.primitivePath;
+        V.path = PATH;
+        V.cursor = CURSOR;
+        V.subpath = SUBPATH;
+        this.primitivePath = PRIMITIVE_PATH;
       }
     }
     _primitiveTransform(path) {
@@ -9119,7 +9770,12 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         return true;
       }
       const TYPE = PATH.type === "ellipse" ? 0 : 1;
-      return this._submitPrimitive(this._primitiveTransform(PATH), this._paint(this._fillStyle), [TYPE, 0, 0, 0]);
+      return this._submitPrimitive(this._primitiveTransform(PATH), this._paintScratch(this._fillStyle), [
+        TYPE,
+        0,
+        0,
+        0
+      ]);
     }
     _tryPrimitiveStroke(width) {
       const PATH = this.primitivePath;
@@ -9130,7 +9786,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         if (!PATH.rx || !PATH.ry) {
           return false;
         }
-        return this._submitPrimitive(this._primitiveTransform(PATH), this._paint(this._strokeStyle), [
+        return this._submitPrimitive(this._primitiveTransform(PATH), this._paintScratch(this._strokeStyle), [
           0,
           1,
           width,
@@ -9155,7 +9811,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         } else if (this._lineJoin !== "round") {
           return false;
         }
-        return this._submitPrimitive(MATRIX, this._paint(this._strokeStyle), [
+        return this._submitPrimitive(MATRIX, this._paintScratch(this._strokeStyle), [
           1,
           1,
           width,
@@ -9182,7 +9838,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
           (PATH.start[0] + PATH.end[0]) / 2,
           (PATH.start[1] + PATH.end[1]) / 2
         ];
-        return this._submitPrimitive(MATRIX, this._paint(this._strokeStyle), [2, 1, width, CAP]);
+        return this._submitPrimitive(MATRIX, this._paintScratch(this._strokeStyle), [2, 1, width, CAP]);
       }
       return false;
     }
@@ -9204,7 +9860,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
           rule
         });
       } else {
-        this.vector.fill(this._paint(this._fillStyle), rule);
+        this.vector.fill(this._paintScratch(this._fillStyle), rule);
       }
     }
     fillRect(x, y, w, h) {
@@ -9220,11 +9876,15 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       if (!(this._lineWidth > 0)) {
         return;
       }
-      const M = this.vector.matrix, WIDTH = this._lineWidth * Math.max(Math.hypot(M[0], M[1]), Math.hypot(M[2], M[3])), GRADIENT = this._strokeStyle instanceof RadialGradient || this._strokeStyle instanceof LinearGradient ? this._gradientPaint(this._strokeStyle) : null, PAINT = GRADIENT ? GRADIENT.color : this._paint(this._strokeStyle), STYLE = {
-        lineCap: this._lineCap,
-        lineJoin: this._lineJoin,
-        miterLimit: this._miterLimit
-      }, DASH = this._lineDash, PERIOD = DASH.reduce((a, b) => a + b, 0);
+      const M = this.vector.matrix, WIDTH = this._lineWidth * Math.max(Math.hypot(M[0], M[1]), Math.hypot(M[2], M[3])), GRADIENT = this._strokeStyle instanceof RadialGradient || this._strokeStyle instanceof LinearGradient ? this._gradientPaint(this._strokeStyle) : null, PAINT = GRADIENT ? GRADIENT.color : this._paintScratch(this._strokeStyle), STYLE = this._strokeStyleRecord ??= { lineCap: "butt", lineJoin: "miter", miterLimit: 10 }, DASH = this._lineDash;
+      STYLE.lineCap = this._lineCap;
+      STYLE.lineJoin = this._lineJoin;
+      STYLE.miterLimit = this._miterLimit;
+      let period = 0;
+      for (let i = 0; i < DASH.length; i++) {
+        period += DASH[i];
+      }
+      const PERIOD = period;
       if ((!DASH.length || !PERIOD) && !GRADIENT && this._tryPrimitiveStroke(WIDTH)) {
         return;
       }
@@ -9236,7 +9896,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       }
       const V = this.vector, ORIGINAL = V.path, MATRIX = V.matrix.slice();
       V.beginPath();
-      V.setTransform(...IDENTITY3);
+      V.setTransform(...IDENTITY4);
       let phase = (this._lineDashOffset % PERIOD + PERIOD) % PERIOD;
       let index = 0;
       while (phase >= DASH[index] && DASH[index] > 0) {
@@ -9518,21 +10178,34 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         if (this.vector.count) {
           this.vector.flush();
         }
-        const MATRIX = COMPOSE_AFFINE(this.vector.matrix, options.matrix ?? IDENTITY3);
-        this.meshRenderer.drawOrderedQuads(
-          { ...options, depth: this.depth },
-          {
-            projection: this.vector.projection,
-            clips: this.vector.clips,
-            stencilRef: this.vector.stencilDepth || null,
-            depth: this.depth,
-            depthTest: this.depthTest,
-            depthWrite: this.depthWrite,
-            depthFunc: this.depthFunc,
-            blend: this.vector.blend
-          },
-          MATRIX
-        );
+        const MATRIX = composeAffineInto(this.vector.matrix, options.matrix ?? IDENTITY4, this._quadMatrix ??= []), QUADS = this._orderedQuads ??= {}, STATE = this._orderedQuadState ??= {};
+        QUADS.layer = options.layer;
+        QUADS.uvRects = options.uvRects;
+        QUADS.localRects = options.localRects;
+        QUADS.matrix = options.matrix;
+        QUADS.color = options.color;
+        QUADS.alpha = options.alpha;
+        QUADS.filter = options.filter;
+        QUADS.parts = options.parts;
+        QUADS.pose = options.pose;
+        QUADS.depthWriteAlphaThreshold = options.depthWriteAlphaThreshold;
+        QUADS.forceColor = options.forceColor;
+        QUADS.whiteFlash = options.whiteFlash;
+        QUADS.depth = this.depth;
+        STATE.projection = this.vector.projection;
+        STATE.clips = this.vector.clips;
+        STATE.stencilRef = this.vector.stencilDepth || null;
+        STATE.depth = this.depth;
+        STATE.depthTest = this.depthTest;
+        STATE.depthWrite = this.depthWrite;
+        STATE.depthFunc = this.depthFunc;
+        STATE.blend = this.vector.blend;
+        try {
+          this.meshRenderer.drawOrderedQuads(QUADS, STATE, MATRIX);
+        } finally {
+          QUADS.uvRects = QUADS.localRects = QUADS.matrix = QUADS.color = QUADS.parts = QUADS.pose = null;
+          STATE.clips = null;
+        }
       } else {
         this.meshRenderer?.flush("quadBoundary");
         this.vector.drawQuads(options);
@@ -9573,7 +10246,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         filter: region.filter,
         uvRects: UV,
         localRects: LOCAL,
-        color: this.forceColor === null ? WHITE3 : normalizeColor(this.forceColor),
+        color: this.forceColor === null ? WHITE4 : normalizeColor(this.forceColor),
         forceColor: this.forceColor !== null,
         alpha: this._globalAlpha,
         whiteFlash: this._filter === "brightness(0) invert(1)"
@@ -9633,7 +10306,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
           ...instances,
           morph,
           parts,
-          color: this.forceColor ?? WHITE3,
+          color: this.forceColor ?? WHITE4,
           forceColor: this.forceColor !== null,
           alpha: this._globalAlpha,
           whiteFlash: this._filter === "brightness(0) invert(1)",
@@ -9658,10 +10331,16 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       if (options.viewProjection !== void 0 || options.worldMatrix !== void 0) {
         throw new TypeError("Actor silhouettes are 2D only");
       }
-      return this._silhouette(
-        { transform: matrix, color, width, radius, outlineScale },
-        (instances) => actor2.draw({ ...this._actorParams(options), projection: instances.projection, instances })
-      );
+      return this._silhouette({ transform: matrix, color, width, radius, outlineScale }, (instances) => {
+        const PARAMS = this._actorParams(options);
+        PARAMS.projection = instances.projection;
+        PARAMS.instances = instances;
+        try {
+          actor2.draw(PARAMS);
+        } finally {
+          this._releaseActorParams(PARAMS);
+        }
+      });
     }
     /** Silhouette instance transforms for the current context transform; `submit` appends them as one draw. */
     _silhouette({ transform, color, width, radius, outlineScale }, submit) {
@@ -9730,25 +10409,41 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         BOUNDS
       );
     }
-    /** Actor draw parameters from the context state: paint state applies and the caller's alpha multiplies. */
+    /**
+     * Actor draw parameters from the context state: paint state applies and the caller's alpha multiplies. Fills and
+     * returns one reused record (the actor reads it before returning); `_releaseActorParams` drops its references.
+     */
     _actorParams(options) {
       const FORCED = options.forceColor ?? this.forceColor !== null;
-      return {
-        clips: this.vector.clips,
-        stencilRef: this.vector.stencilDepth || null,
-        depth: this.depth,
-        depthTest: this.depthTest,
-        depthWrite: this.depthWrite,
-        depthFunc: this.depthFunc,
-        ...options,
-        alpha: (options.alpha ?? 1) * this._globalAlpha,
-        forceColor: FORCED,
-        color: options.color ?? (this.forceColor && FORCED ? this.forceColor : [1, 1, 1, 1]),
-        whiteFlash: options.whiteFlash ?? this._filter === "brightness(0) invert(1)"
-      };
+      const PARAMS = this._actorParamsRecord ??= {};
+      PARAMS.clips = Object.hasOwn(options, "clips") ? options.clips : this.vector.clips;
+      PARAMS.stencilRef = Object.hasOwn(options, "stencilRef") ? options.stencilRef : this.vector.stencilDepth || null;
+      PARAMS.depth = Object.hasOwn(options, "depth") ? options.depth : this.depth;
+      PARAMS.depthTest = Object.hasOwn(options, "depthTest") ? options.depthTest : this.depthTest;
+      PARAMS.depthWrite = Object.hasOwn(options, "depthWrite") ? options.depthWrite : this.depthWrite;
+      PARAMS.depthFunc = Object.hasOwn(options, "depthFunc") ? options.depthFunc : this.depthFunc;
+      PARAMS.projection = options.projection;
+      PARAMS.viewProjection = options.viewProjection;
+      PARAMS.worldMatrix = options.worldMatrix;
+      PARAMS.matrix = options.matrix;
+      PARAMS.paintRegions = options.paintRegions;
+      PARAMS.depthWriteAlphaThreshold = options.depthWriteAlphaThreshold;
+      PARAMS.strokeViewport = options.strokeViewport;
+      PARAMS.excludeParts = options.excludeParts;
+      PARAMS.instances = options.instances;
+      PARAMS.outlineExpression = options.outlineExpression;
+      PARAMS.alpha = (options.alpha ?? 1) * this._globalAlpha;
+      PARAMS.forceColor = FORCED;
+      PARAMS.color = options.color ?? (this.forceColor && FORCED ? this.forceColor : WHITE4);
+      PARAMS.whiteFlash = options.whiteFlash ?? this._filter === "brightness(0) invert(1)";
+      return PARAMS;
+    }
+    _releaseActorParams(params) {
+      params.clips = params.projection = params.viewProjection = params.worldMatrix = params.matrix = void 0;
+      params.paintRegions = params.excludeParts = params.instances = params.color = params.strokeViewport = void 0;
     }
     /** Submit a vector actor after earlier paint, without flushing a compatible mesh run. */
-    drawVectorActor(actor2, options = {}) {
+    drawVectorActor(actor2, options = EMPTY_OPTIONS3) {
       this._frame();
       if (typeof actor2?.draw !== "function") {
         throw new TypeError("A vector actor is required");
@@ -9756,17 +10451,23 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       this.vector.flush();
       const WORLD_MODE = options.viewProjection !== void 0 || options.worldMatrix !== void 0, PARAMS = this._actorParams(options);
       if (!WORLD_MODE) {
+        const MATRIX = this._actorMatrix ??= [1, 0, 0, 1, 0, 0];
         PARAMS.projection = this.vector.projection;
         if (options.matrix) {
-          if (options.matrix.length !== 6 || Array.from(options.matrix).some((n) => !Number.isFinite(n))) {
-            throw new TypeError("Six finite matrix values required");
-          }
-          PARAMS.matrix = COMPOSE_AFFINE(this.vector.matrix, options.matrix);
+          finiteValues(options.matrix, 6, "Six finite matrix values required");
+          composeAffineInto(this.vector.matrix, options.matrix, MATRIX);
         } else {
-          PARAMS.matrix = this.vector.matrix.slice();
+          for (let i = 0; i < 6; i++) {
+            MATRIX[i] = this.vector.matrix[i];
+          }
         }
+        PARAMS.matrix = MATRIX;
       }
-      actor2.draw(PARAMS);
+      try {
+        actor2.draw(PARAMS);
+      } finally {
+        this._releaseActorParams(PARAMS);
+      }
     }
     /** Evaluates every prepared actor pose now, before the actors are submitted. */
     preparePoses() {
@@ -9891,6 +10592,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       this.state = "disposed";
     }
   };
+  var EMPTY_OPTIONS4 = Object.freeze({});
   var FIELDS = Object.freeze(["x", "y", "rotation", "scaleX", "scaleY", "opacity"]);
   var DEFAULTS = Object.freeze([0, 0, 0, 1, 1, 1]);
   var EASE_CODES = Object.freeze({ linear: 0, inOutSine: 1, outQuad: 2 });
@@ -13266,7 +13968,10 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
     }
     return { transform: matrix, opacity };
   }
-  var IDENTITY4 = Object.freeze([1, 0, 0, 1, 0, 0]);
+  var IDENTITY5 = Object.freeze([1, 0, 0, 1, 0, 0]);
+  var WHITE5 = Object.freeze([1, 1, 1, 1]);
+  var NO_CLIPS3 = Object.freeze([]);
+  var EMPTY_OPTIONS5 = Object.freeze({});
   var DEFAULT_POSE = Object.freeze({
     x: 0,
     y: 0,
@@ -13367,18 +14072,27 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
     return Object.fromEntries(POSE_FIELDS.map((field) => [field, pose[field]]));
   }
   function authoredMorph(sketch, displayTimeMs2) {
+    return authoredMorphInto(sketch, displayTimeMs2, [0, 0]);
+  }
+  function authoredMorphInto(sketch, displayTimeMs2, out) {
     if (!sketch) {
-      return [0, 0];
+      out[0] = 0;
+      out[1] = 0;
+      return out;
     }
     const PHASE = (displayTimeMs2 % sketch.periodMs + sketch.periodMs) % sketch.periodMs / sketch.periodMs * 3;
     const SEGMENT = Math.floor(PHASE), AMOUNT = PHASE - SEGMENT;
     if (SEGMENT === 0) {
-      return [AMOUNT, 0];
+      out[0] = AMOUNT;
+      out[1] = 0;
+    } else if (SEGMENT === 1) {
+      out[0] = 1 - AMOUNT;
+      out[1] = AMOUNT;
+    } else {
+      out[0] = 0;
+      out[1] = 1 - AMOUNT;
     }
-    if (SEGMENT === 1) {
-      return [1 - AMOUNT, AMOUNT];
-    }
-    return [0, 1 - AMOUNT];
+    return out;
   }
   function blendPoses(from, to, amount, partIds) {
     const OUTPUT = /* @__PURE__ */ new Map();
@@ -13484,6 +14198,54 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       let resolvedRevision = -1;
       let resolvedPose = null;
       let preparedPose = null;
+      const PREPARED_RECORD = {
+        revision: 0,
+        frame: 0,
+        restores: 0,
+        gpuUnavailable: null,
+        excludedMask: 0,
+        handle: null
+      };
+      const PREPARE_BASES = new Array(METADATA.parts.length).fill(null);
+      const PREPARE_VISIBLE = new Array(METADATA.parts.length).fill(true);
+      const PREPARE_MORPH = [0, 0];
+      const PREPARE_OPTIONS = {
+        clipName: "",
+        elapsedMs: 0,
+        basePoses: PREPARE_BASES,
+        visible: PREPARE_VISIBLE,
+        excludedMask: 0,
+        morph: PREPARE_MORPH
+      };
+      const SUBMIT_OPTIONS = {
+        projection: void 0,
+        viewProjection: void 0,
+        worldMatrix: void 0,
+        matrix: IDENTITY5,
+        matrices: void 0,
+        count: void 0,
+        prefixColor: void 0,
+        prefixCount: void 0,
+        forceColorPrefixCount: void 0,
+        pose: void 0,
+        parts: void 0,
+        morph: void 0,
+        alpha: 1,
+        color: WHITE5,
+        forceColor: false,
+        paintRegions: null,
+        whiteFlash: false,
+        clips: NO_CLIPS3,
+        stencilRef: null,
+        depth: 0,
+        depthTest: false,
+        depthWrite: false,
+        depthFunc: "lequal",
+        depthWriteAlphaThreshold: void 0,
+        indexVariant: null,
+        strokeViewport: null,
+        timeMs: 0
+      };
       const RESOLVED_MATRICES = /* @__PURE__ */ new Map();
       let actorDisposed = false;
       const POSE_INSTANCE = poseSource ? meshRenderer.createPoseInstance(poseSource) : null;
@@ -13808,7 +14570,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         }
         return excludedMask;
       };
-      const PREPARE_POSE = ({ excludeParts = null } = {}) => {
+      const PREPARE_POSE = (excludeParts) => {
         ASSERT_ACTOR();
         const EXCLUDED_MASK = VALIDATE_EXCLUSIONS(excludeParts);
         if (!POSE_INSTANCE) {
@@ -13824,27 +14586,35 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
           return preparedPose.handle;
         }
         const CACHE_PREPARED = (handle) => {
-          preparedPose = CACHEABLE && handle ? {
-            revision: poseRevision,
-            frame: FRAME,
-            restores: RESTORES,
-            gpuUnavailable: meshRenderer.poseRenderer?.gpuUnavailableReason ?? null,
-            excludedMask: EXCLUDED_MASK,
-            handle
-          } : null;
+          if (CACHEABLE && handle) {
+            preparedPose = PREPARED_RECORD;
+            PREPARED_RECORD.revision = poseRevision;
+            PREPARED_RECORD.frame = FRAME;
+            PREPARED_RECORD.restores = RESTORES;
+            PREPARED_RECORD.gpuUnavailable = meshRenderer.poseRenderer?.gpuUnavailableReason ?? null;
+            PREPARED_RECORD.excludedMask = EXCLUDED_MASK;
+            PREPARED_RECORD.handle = handle;
+          } else {
+            preparedPose = null;
+          }
           return handle;
         };
-        const MORPH = authoredMorph(SKETCH_MORPH_STYLE, displayTimeMs2);
+        const MORPH = authoredMorphInto(SKETCH_MORPH_STYLE, displayTimeMs2, PREPARE_MORPH);
         const ACTIVE = GPU_CLIP();
         if (ACTIVE) {
-          const HANDLE = meshRenderer.preparePose(POSE_INSTANCE, {
-            clipName: ACTIVE.name,
-            elapsedMs: displayTimeMs2 - ACTIVE.startedAtMs,
-            basePoses: METADATA.parts.map((part) => BASE_POSE.get(part.id)),
-            visible: METADATA.parts.map((part) => VISIBLE.get(part.id) !== false),
-            excluded: METADATA.parts.map((part) => excludeParts?.has(part.id) ?? false),
-            morph: MORPH
-          });
+          const PARTS2 = METADATA.parts;
+          for (let i = 0; i < PARTS2.length; i++) {
+            PREPARE_BASES[i] = BASE_POSE.get(PARTS2[i].id);
+            PREPARE_VISIBLE[i] = VISIBLE.get(PARTS2[i].id) !== false;
+          }
+          const PREPARE = PREPARE_OPTIONS;
+          PREPARE.clipName = ACTIVE.name;
+          PREPARE.elapsedMs = displayTimeMs2 - ACTIVE.startedAtMs;
+          PREPARE.basePoses = PREPARE_BASES;
+          PREPARE.visible = PREPARE_VISIBLE;
+          PREPARE.excludedMask = EXCLUDED_MASK;
+          PREPARE.morph = MORPH;
+          const HANDLE = meshRenderer.preparePose(POSE_INSTANCE, PREPARE);
           if (HANDLE) {
             POSE_METRICS.gpuPrepares++;
             return CACHE_PREPARED(HANDLE);
@@ -13865,13 +14635,13 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         projection,
         viewProjection,
         worldMatrix,
-        matrix = IDENTITY4,
+        matrix = IDENTITY5,
         alpha = 1,
-        color = [1, 1, 1, 1],
+        color = WHITE5,
         paintRegions = null,
         forceColor = false,
         whiteFlash = false,
-        clips = [],
+        clips = NO_CLIPS3,
         stencilRef = null,
         depth = 0,
         depthTest = false,
@@ -13881,85 +14651,73 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         strokeViewport = null,
         excludeParts = null,
         instances = null
-      } = {}) => {
+      } = EMPTY_OPTIONS5) => {
         ASSERT_ACTOR();
-        const SUBMIT = (options) => instances ? meshRenderer.drawMeshInstances(mesh, {
-          ...options,
-          matrices: instances.matrices,
-          count: instances.count,
-          prefixColor: instances.prefixColor,
-          prefixCount: instances.prefixCount,
-          forceColorPrefixCount: instances.forceColorPrefixCount
-        }) : meshRenderer.drawMesh(mesh, options);
         VALIDATE_EXCLUSIONS(excludeParts);
         if (!mesh && paintRegions !== null) {
           throw new TypeError("This asset has no named mesh fills");
         }
         const ALPHA_DEPTH = depthWriteAlphaThreshold !== null;
-        if (POSE_INSTANCE && !ALPHA_DEPTH) {
-          const POSE = PREPARE_POSE({ excludeParts });
-          if (POSE) {
-            const INDEX_VARIANT2 = !visibilityOverridden && compiledAsset2.geometry.expressionIndices?.[expression] ? expression : null;
-            const WORLD_MODE2 = viewProjection !== void 0 || worldMatrix !== void 0;
-            SUBMIT({
-              ...WORLD_MODE2 ? { viewProjection, worldMatrix } : { projection },
-              matrix,
-              pose: POSE,
-              alpha,
-              color,
-              forceColor,
-              paintRegions,
-              whiteFlash,
-              clips,
-              stencilRef,
-              depth,
-              depthTest,
-              depthWrite,
-              depthFunc,
-              indexVariant: INDEX_VARIANT2,
-              strokeViewport,
-              timeMs: displayTimeMs2
-            });
-            return;
-          }
-        }
-        if (!POSE_INSTANCE || ALPHA_DEPTH) {
-          meshRenderer.recordPoseFallback?.(ALPHA_DEPTH ? "alphaDepthClassification" : "uniformPose");
-        }
-        const RESOLVED = WORLD_MATRICES();
-        const POSES = RESOLVED.parts.map((pose, index) => ({
-          transform: pose.transform.slice(),
-          opacity: pose.opacity,
-          visible: pose.visible && !excludeParts?.has(METADATA.parts[index].id)
-        }));
-        const INDEX_VARIANT = !visibilityOverridden && compiledAsset2.geometry.expressionIndices?.[expression] ? expression : null;
+        const POSE = POSE_INSTANCE && !ALPHA_DEPTH ? PREPARE_POSE(excludeParts) : null;
         const WORLD_MODE = viewProjection !== void 0 || worldMatrix !== void 0;
-        SUBMIT({
-          ...WORLD_MODE ? {
-            viewProjection,
-            worldMatrix
-          } : {
-            projection
-          },
-          matrix,
-          parts: POSES,
-          morph: RESOLVED.morph.slice(),
-          alpha,
-          color,
-          forceColor,
-          paintRegions,
-          whiteFlash,
-          clips,
-          stencilRef,
-          depth,
-          depthTest,
-          depthWrite,
-          depthFunc,
-          depthWriteAlphaThreshold,
-          indexVariant: INDEX_VARIANT,
-          strokeViewport,
-          timeMs: displayTimeMs2
-        });
+        const OPTIONS = SUBMIT_OPTIONS;
+        OPTIONS.projection = WORLD_MODE ? void 0 : projection;
+        OPTIONS.viewProjection = WORLD_MODE ? viewProjection : void 0;
+        OPTIONS.worldMatrix = WORLD_MODE ? worldMatrix : void 0;
+        OPTIONS.matrix = matrix;
+        OPTIONS.alpha = alpha;
+        OPTIONS.color = color;
+        OPTIONS.forceColor = forceColor;
+        OPTIONS.paintRegions = paintRegions;
+        OPTIONS.whiteFlash = whiteFlash;
+        OPTIONS.clips = clips;
+        OPTIONS.stencilRef = stencilRef;
+        OPTIONS.depth = depth;
+        OPTIONS.depthTest = depthTest;
+        OPTIONS.depthWrite = depthWrite;
+        OPTIONS.depthFunc = depthFunc;
+        OPTIONS.strokeViewport = strokeViewport;
+        OPTIONS.timeMs = displayTimeMs2;
+        OPTIONS.indexVariant = !visibilityOverridden && compiledAsset2.geometry.expressionIndices?.[expression] ? expression : null;
+        if (POSE) {
+          OPTIONS.pose = POSE;
+          OPTIONS.parts = void 0;
+          OPTIONS.morph = void 0;
+          OPTIONS.depthWriteAlphaThreshold = void 0;
+        } else {
+          if (!POSE_INSTANCE || ALPHA_DEPTH) {
+            meshRenderer.recordPoseFallback?.(ALPHA_DEPTH ? "alphaDepthClassification" : "uniformPose");
+          }
+          const RESOLVED = WORLD_MATRICES();
+          OPTIONS.pose = void 0;
+          OPTIONS.parts = RESOLVED.parts.map((pose, index) => ({
+            transform: pose.transform.slice(),
+            opacity: pose.opacity,
+            visible: pose.visible && !excludeParts?.has(METADATA.parts[index].id)
+          }));
+          OPTIONS.morph = RESOLVED.morph.slice();
+          OPTIONS.depthWriteAlphaThreshold = depthWriteAlphaThreshold;
+        }
+        try {
+          if (instances) {
+            OPTIONS.matrices = instances.matrices;
+            OPTIONS.count = instances.count;
+            OPTIONS.prefixColor = instances.prefixColor;
+            OPTIONS.prefixCount = instances.prefixCount;
+            OPTIONS.forceColorPrefixCount = instances.forceColorPrefixCount;
+            meshRenderer.drawMeshInstances(mesh, OPTIONS);
+          } else {
+            meshRenderer.drawMesh(mesh, OPTIONS);
+          }
+        } finally {
+          OPTIONS.projection = OPTIONS.viewProjection = OPTIONS.worldMatrix = void 0;
+          OPTIONS.matrices = OPTIONS.count = OPTIONS.prefixColor = void 0;
+          OPTIONS.prefixCount = OPTIONS.forceColorPrefixCount = void 0;
+          OPTIONS.pose = OPTIONS.parts = OPTIONS.morph = OPTIONS.paintRegions = void 0;
+          OPTIONS.matrix = IDENTITY5;
+          OPTIONS.color = WHITE5;
+          OPTIONS.clips = NO_CLIPS3;
+        }
       };
       const DRAW = (options = {}) => {
         const { outlineExpression: OUTLINE_EXPRESSION = null, instances: INSTANCES = null } = options;
@@ -14041,7 +14799,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         getPartPose: GET_PART_POSE,
         getSocket: GET_SOCKET,
         partPoses: PART_POSES,
-        preparePose: PREPARE_POSE,
+        preparePose: (options = EMPTY_OPTIONS5) => PREPARE_POSE(options.excludeParts ?? null),
         draw: DRAW,
         dispose: DISPOSE_ACTOR,
         get currentClip() {
@@ -44862,7 +45620,10 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
   }
 
   // modules/vector-assets/runtime.js
-  var IDENTITY5 = Object.freeze([1, 0, 0, 1, 0, 0]);
+  var IDENTITY6 = Object.freeze([1, 0, 0, 1, 0, 0]);
+  var WHITE6 = Object.freeze([1, 1, 1, 1]);
+  var NO_CLIPS4 = Object.freeze([]);
+  var EMPTY_OPTIONS6 = Object.freeze({});
   var DEFAULT_POSE2 = Object.freeze({
     x: 0,
     y: 0,
@@ -44963,18 +45724,27 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
     return Object.fromEntries(POSE_FIELDS2.map((field) => [field, pose[field]]));
   }
   function authoredMorph2(sketch, displayTimeMs2) {
+    return authoredMorphInto2(sketch, displayTimeMs2, [0, 0]);
+  }
+  function authoredMorphInto2(sketch, displayTimeMs2, out) {
     if (!sketch) {
-      return [0, 0];
+      out[0] = 0;
+      out[1] = 0;
+      return out;
     }
     const PHASE = (displayTimeMs2 % sketch.periodMs + sketch.periodMs) % sketch.periodMs / sketch.periodMs * 3;
     const SEGMENT = Math.floor(PHASE), AMOUNT = PHASE - SEGMENT;
     if (SEGMENT === 0) {
-      return [AMOUNT, 0];
+      out[0] = AMOUNT;
+      out[1] = 0;
+    } else if (SEGMENT === 1) {
+      out[0] = 1 - AMOUNT;
+      out[1] = AMOUNT;
+    } else {
+      out[0] = 0;
+      out[1] = 1 - AMOUNT;
     }
-    if (SEGMENT === 1) {
-      return [1 - AMOUNT, AMOUNT];
-    }
-    return [0, 1 - AMOUNT];
+    return out;
   }
   function blendPoses2(from, to, amount, partIds) {
     const OUTPUT = /* @__PURE__ */ new Map();
@@ -45080,6 +45850,54 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       let resolvedRevision = -1;
       let resolvedPose = null;
       let preparedPose = null;
+      const PREPARED_RECORD = {
+        revision: 0,
+        frame: 0,
+        restores: 0,
+        gpuUnavailable: null,
+        excludedMask: 0,
+        handle: null
+      };
+      const PREPARE_BASES = new Array(METADATA.parts.length).fill(null);
+      const PREPARE_VISIBLE = new Array(METADATA.parts.length).fill(true);
+      const PREPARE_MORPH = [0, 0];
+      const PREPARE_OPTIONS = {
+        clipName: "",
+        elapsedMs: 0,
+        basePoses: PREPARE_BASES,
+        visible: PREPARE_VISIBLE,
+        excludedMask: 0,
+        morph: PREPARE_MORPH
+      };
+      const SUBMIT_OPTIONS = {
+        projection: void 0,
+        viewProjection: void 0,
+        worldMatrix: void 0,
+        matrix: IDENTITY6,
+        matrices: void 0,
+        count: void 0,
+        prefixColor: void 0,
+        prefixCount: void 0,
+        forceColorPrefixCount: void 0,
+        pose: void 0,
+        parts: void 0,
+        morph: void 0,
+        alpha: 1,
+        color: WHITE6,
+        forceColor: false,
+        paintRegions: null,
+        whiteFlash: false,
+        clips: NO_CLIPS4,
+        stencilRef: null,
+        depth: 0,
+        depthTest: false,
+        depthWrite: false,
+        depthFunc: "lequal",
+        depthWriteAlphaThreshold: void 0,
+        indexVariant: null,
+        strokeViewport: null,
+        timeMs: 0
+      };
       const RESOLVED_MATRICES = /* @__PURE__ */ new Map();
       let actorDisposed = false;
       const POSE_INSTANCE = poseSource ? meshRenderer.createPoseInstance(poseSource) : null;
@@ -45404,7 +46222,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         }
         return excludedMask;
       };
-      const PREPARE_POSE = ({ excludeParts = null } = {}) => {
+      const PREPARE_POSE = (excludeParts) => {
         ASSERT_ACTOR();
         const EXCLUDED_MASK = VALIDATE_EXCLUSIONS(excludeParts);
         if (!POSE_INSTANCE) {
@@ -45420,27 +46238,35 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
           return preparedPose.handle;
         }
         const CACHE_PREPARED = (handle) => {
-          preparedPose = CACHEABLE && handle ? {
-            revision: poseRevision,
-            frame: FRAME,
-            restores: RESTORES,
-            gpuUnavailable: meshRenderer.poseRenderer?.gpuUnavailableReason ?? null,
-            excludedMask: EXCLUDED_MASK,
-            handle
-          } : null;
+          if (CACHEABLE && handle) {
+            preparedPose = PREPARED_RECORD;
+            PREPARED_RECORD.revision = poseRevision;
+            PREPARED_RECORD.frame = FRAME;
+            PREPARED_RECORD.restores = RESTORES;
+            PREPARED_RECORD.gpuUnavailable = meshRenderer.poseRenderer?.gpuUnavailableReason ?? null;
+            PREPARED_RECORD.excludedMask = EXCLUDED_MASK;
+            PREPARED_RECORD.handle = handle;
+          } else {
+            preparedPose = null;
+          }
           return handle;
         };
-        const MORPH = authoredMorph2(SKETCH_MORPH_STYLE, displayTimeMs2);
+        const MORPH = authoredMorphInto2(SKETCH_MORPH_STYLE, displayTimeMs2, PREPARE_MORPH);
         const ACTIVE = GPU_CLIP();
         if (ACTIVE) {
-          const HANDLE = meshRenderer.preparePose(POSE_INSTANCE, {
-            clipName: ACTIVE.name,
-            elapsedMs: displayTimeMs2 - ACTIVE.startedAtMs,
-            basePoses: METADATA.parts.map((part) => BASE_POSE.get(part.id)),
-            visible: METADATA.parts.map((part) => VISIBLE.get(part.id) !== false),
-            excluded: METADATA.parts.map((part) => excludeParts?.has(part.id) ?? false),
-            morph: MORPH
-          });
+          const PARTS2 = METADATA.parts;
+          for (let i = 0; i < PARTS2.length; i++) {
+            PREPARE_BASES[i] = BASE_POSE.get(PARTS2[i].id);
+            PREPARE_VISIBLE[i] = VISIBLE.get(PARTS2[i].id) !== false;
+          }
+          const PREPARE = PREPARE_OPTIONS;
+          PREPARE.clipName = ACTIVE.name;
+          PREPARE.elapsedMs = displayTimeMs2 - ACTIVE.startedAtMs;
+          PREPARE.basePoses = PREPARE_BASES;
+          PREPARE.visible = PREPARE_VISIBLE;
+          PREPARE.excludedMask = EXCLUDED_MASK;
+          PREPARE.morph = MORPH;
+          const HANDLE = meshRenderer.preparePose(POSE_INSTANCE, PREPARE);
           if (HANDLE) {
             POSE_METRICS.gpuPrepares++;
             return CACHE_PREPARED(HANDLE);
@@ -45461,13 +46287,13 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         projection,
         viewProjection,
         worldMatrix,
-        matrix = IDENTITY5,
+        matrix = IDENTITY6,
         alpha = 1,
-        color = [1, 1, 1, 1],
+        color = WHITE6,
         paintRegions = null,
         forceColor = false,
         whiteFlash = false,
-        clips = [],
+        clips = NO_CLIPS4,
         stencilRef = null,
         depth = 0,
         depthTest = false,
@@ -45477,85 +46303,73 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         strokeViewport = null,
         excludeParts = null,
         instances = null
-      } = {}) => {
+      } = EMPTY_OPTIONS6) => {
         ASSERT_ACTOR();
-        const SUBMIT = (options) => instances ? meshRenderer.drawMeshInstances(mesh, {
-          ...options,
-          matrices: instances.matrices,
-          count: instances.count,
-          prefixColor: instances.prefixColor,
-          prefixCount: instances.prefixCount,
-          forceColorPrefixCount: instances.forceColorPrefixCount
-        }) : meshRenderer.drawMesh(mesh, options);
         VALIDATE_EXCLUSIONS(excludeParts);
         if (!mesh && paintRegions !== null) {
           throw new TypeError("This asset has no named mesh fills");
         }
         const ALPHA_DEPTH = depthWriteAlphaThreshold !== null;
-        if (POSE_INSTANCE && !ALPHA_DEPTH) {
-          const POSE = PREPARE_POSE({ excludeParts });
-          if (POSE) {
-            const INDEX_VARIANT2 = !visibilityOverridden && compiledAsset2.geometry.expressionIndices?.[expression] ? expression : null;
-            const WORLD_MODE2 = viewProjection !== void 0 || worldMatrix !== void 0;
-            SUBMIT({
-              ...WORLD_MODE2 ? { viewProjection, worldMatrix } : { projection },
-              matrix,
-              pose: POSE,
-              alpha,
-              color,
-              forceColor,
-              paintRegions,
-              whiteFlash,
-              clips,
-              stencilRef,
-              depth,
-              depthTest,
-              depthWrite,
-              depthFunc,
-              indexVariant: INDEX_VARIANT2,
-              strokeViewport,
-              timeMs: displayTimeMs2
-            });
-            return;
-          }
-        }
-        if (!POSE_INSTANCE || ALPHA_DEPTH) {
-          meshRenderer.recordPoseFallback?.(ALPHA_DEPTH ? "alphaDepthClassification" : "uniformPose");
-        }
-        const RESOLVED = WORLD_MATRICES();
-        const POSES = RESOLVED.parts.map((pose, index) => ({
-          transform: pose.transform.slice(),
-          opacity: pose.opacity,
-          visible: pose.visible && !excludeParts?.has(METADATA.parts[index].id)
-        }));
-        const INDEX_VARIANT = !visibilityOverridden && compiledAsset2.geometry.expressionIndices?.[expression] ? expression : null;
+        const POSE = POSE_INSTANCE && !ALPHA_DEPTH ? PREPARE_POSE(excludeParts) : null;
         const WORLD_MODE = viewProjection !== void 0 || worldMatrix !== void 0;
-        SUBMIT({
-          ...WORLD_MODE ? {
-            viewProjection,
-            worldMatrix
-          } : {
-            projection
-          },
-          matrix,
-          parts: POSES,
-          morph: RESOLVED.morph.slice(),
-          alpha,
-          color,
-          forceColor,
-          paintRegions,
-          whiteFlash,
-          clips,
-          stencilRef,
-          depth,
-          depthTest,
-          depthWrite,
-          depthFunc,
-          depthWriteAlphaThreshold,
-          indexVariant: INDEX_VARIANT,
-          strokeViewport,
-          timeMs: displayTimeMs2
-        });
+        const OPTIONS = SUBMIT_OPTIONS;
+        OPTIONS.projection = WORLD_MODE ? void 0 : projection;
+        OPTIONS.viewProjection = WORLD_MODE ? viewProjection : void 0;
+        OPTIONS.worldMatrix = WORLD_MODE ? worldMatrix : void 0;
+        OPTIONS.matrix = matrix;
+        OPTIONS.alpha = alpha;
+        OPTIONS.color = color;
+        OPTIONS.forceColor = forceColor;
+        OPTIONS.paintRegions = paintRegions;
+        OPTIONS.whiteFlash = whiteFlash;
+        OPTIONS.clips = clips;
+        OPTIONS.stencilRef = stencilRef;
+        OPTIONS.depth = depth;
+        OPTIONS.depthTest = depthTest;
+        OPTIONS.depthWrite = depthWrite;
+        OPTIONS.depthFunc = depthFunc;
+        OPTIONS.strokeViewport = strokeViewport;
+        OPTIONS.timeMs = displayTimeMs2;
+        OPTIONS.indexVariant = !visibilityOverridden && compiledAsset2.geometry.expressionIndices?.[expression] ? expression : null;
+        if (POSE) {
+          OPTIONS.pose = POSE;
+          OPTIONS.parts = void 0;
+          OPTIONS.morph = void 0;
+          OPTIONS.depthWriteAlphaThreshold = void 0;
+        } else {
+          if (!POSE_INSTANCE || ALPHA_DEPTH) {
+            meshRenderer.recordPoseFallback?.(ALPHA_DEPTH ? "alphaDepthClassification" : "uniformPose");
+          }
+          const RESOLVED = WORLD_MATRICES();
+          OPTIONS.pose = void 0;
+          OPTIONS.parts = RESOLVED.parts.map((pose, index) => ({
+            transform: pose.transform.slice(),
+            opacity: pose.opacity,
+            visible: pose.visible && !excludeParts?.has(METADATA.parts[index].id)
+          }));
+          OPTIONS.morph = RESOLVED.morph.slice();
+          OPTIONS.depthWriteAlphaThreshold = depthWriteAlphaThreshold;
+        }
+        try {
+          if (instances) {
+            OPTIONS.matrices = instances.matrices;
+            OPTIONS.count = instances.count;
+            OPTIONS.prefixColor = instances.prefixColor;
+            OPTIONS.prefixCount = instances.prefixCount;
+            OPTIONS.forceColorPrefixCount = instances.forceColorPrefixCount;
+            meshRenderer.drawMeshInstances(mesh, OPTIONS);
+          } else {
+            meshRenderer.drawMesh(mesh, OPTIONS);
+          }
+        } finally {
+          OPTIONS.projection = OPTIONS.viewProjection = OPTIONS.worldMatrix = void 0;
+          OPTIONS.matrices = OPTIONS.count = OPTIONS.prefixColor = void 0;
+          OPTIONS.prefixCount = OPTIONS.forceColorPrefixCount = void 0;
+          OPTIONS.pose = OPTIONS.parts = OPTIONS.morph = OPTIONS.paintRegions = void 0;
+          OPTIONS.matrix = IDENTITY6;
+          OPTIONS.color = WHITE6;
+          OPTIONS.clips = NO_CLIPS4;
+        }
       };
       const DRAW = (options = {}) => {
         const { outlineExpression: OUTLINE_EXPRESSION = null, instances: INSTANCES = null } = options;
@@ -45637,7 +46451,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         getPartPose: GET_PART_POSE,
         getSocket: GET_SOCKET,
         partPoses: PART_POSES,
-        preparePose: PREPARE_POSE,
+        preparePose: (options = EMPTY_OPTIONS6) => PREPARE_POSE(options.excludeParts ?? null),
         draw: DRAW,
         dispose: DISPOSE_ACTOR,
         get currentClip() {
