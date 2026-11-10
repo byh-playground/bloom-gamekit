@@ -9,6 +9,7 @@ import {
     DistanceField,
     FieldCache,
     PathGrid,
+    RouteFinder,
     STRAIGHT_COST,
     UNREACHED,
 } from '../../../dist/pathfield.js';
@@ -338,7 +339,125 @@ const MAZE = ['.......', '.#####.', '.....#.', '####.#.', '.......'];
     );
 }
 
-// ---------- 9. 원본 격자 거리장과 같은 질의 흐름 ----------
+// ---------- 9. A* 경로(RouteFinder): 거리장과 같은 비용·막힌 목표·모서리·여러 목표·한도·웨이포인트·재검증·결정론 ----------
+{
+    const GRID = gridFrom(MAZE),
+        FINDER = new RouteFinder(GRID),
+        TO_CELLS = (list) => list.map((cell) => [GRID.colOf(cell), GRID.rowOf(cell)].join(','));
+    // 같은 격자에서 모든 출발 칸의 A* 비용이 거리장 비용과 같습니다(닿지 못하는 칸은 둘 다 실패).
+    const FIELD = new DistanceField(GRID, [0]);
+    for (let start = 0; start < GRID.size; start++) {
+        const PATH = FINDER.find(start, [0]);
+        assert.equal(PATH === null ? UNREACHED : FINDER.cost, FIELD.distance(start), `칸 ${start}의 비용`);
+    }
+    const PATH = FINDER.find(CELL_OF(GRID, 0, 4), [0]);
+    assert.deepEqual(
+        TO_CELLS(PATH),
+        ['0,4', '1,4', '2,4', '3,4', '4,4', '4,3', '4,2', '3,2', '2,2', '1,2', '0,2', '0,1', '0,0'],
+        '틈을 돌아 위로, 시작·목표 칸 포함',
+    );
+    assert.deepEqual([FINDER.cost, FINDER.status], [120, 'found']);
+    assert.deepEqual(FINDER.find(0, [0]), [0], '시작 칸이 목표면 그 칸 하나');
+
+    // 막힌 목표·닫힌 방·막힌 시작은 null이고, 한도를 넘으면 status가 다릅니다.
+    assert.equal(FINDER.find(0, [CELL_OF(GRID, 1, 1)]), null, '막힌 목표 칸');
+    assert.equal(FINDER.status, 'unreachable');
+    const ROOM = gridFrom(['.....', '.###.', '.#.#.', '.###.', '.....']);
+    assert.equal(new RouteFinder(ROOM).find(0, [CELL_OF(ROOM, 2, 2)]), null, '사방이 막힌 칸');
+    assert.equal(FINDER.find(CELL_OF(GRID, 1, 1), [0]), null, '막힌 시작 칸');
+    assert.equal(FINDER.find(CELL_OF(GRID, 0, 4), [0], { maxExpanded: 3 }), null);
+    assert.deepEqual([FINDER.status, FINDER.expanded, FINDER.cost], ['limit', 3, -1], '확장 한도');
+    assert.throws(() => FINDER.find(35, [0]), RangeError);
+    assert.throws(() => FINDER.find(0, [-1]), RangeError);
+    assert.throws(() => new RouteFinder({}), TypeError);
+
+    // 모서리 가로지르기 금지: (1,0)이 막혀 (0,0)→(1,1) 대각을 못 가고 (0,1)을 지나 20입니다.
+    const CORNER = gridFrom(['.#.', '...', '...']),
+        CORNER_FINDER = new RouteFinder(CORNER);
+    assert.deepEqual(CORNER_FINDER.find(0, [4]), [0, 3, 4]);
+    assert.equal(CORNER_FINDER.cost, 20);
+
+    // 여러 목표 칸: 가장 싼 칸에 닿습니다. (2,2)에서 (0,0)은 40, (6,4)는 그보다 멉니다.
+    assert.deepEqual(TO_CELLS(FINDER.find(CELL_OF(GRID, 2, 2), [CELL_OF(GRID, 6, 4), 0])), [
+        '2,2',
+        '1,2',
+        '0,2',
+        '0,1',
+        '0,0',
+    ]);
+    assert.equal(FINDER.cost, 40);
+
+    // 웨이포인트: 꺾이는 칸만 남기고, 직선 판정을 주면 보이는 가장 먼 칸으로 건너뜁니다.
+    const LINE_CLEAR = (x0, y0, x1, y1) => {
+        const STEPS = Math.ceil(Math.hypot(x1 - x0, y1 - y0));
+        for (let i = 0; i <= STEPS; i++) {
+            const X = x0 + ((x1 - x0) * i) / STEPS,
+                Y = y0 + ((y1 - y0) * i) / STEPS;
+            if (MAZE[Math.floor(Y / 10)]?.[Math.floor(X / 10)] !== '.') {
+                return false;
+            }
+        }
+        return true;
+    };
+    const WAYPOINTS = FINDER.waypoints(PATH);
+    assert.deepEqual(TO_CELLS(WAYPOINTS), ['0,4', '4,4', '4,2', '0,2', '0,0']);
+    assert.deepEqual(TO_CELLS(FINDER.waypoints(PATH, LINE_CLEAR)), ['0,4', '4,4', '4,2', '0,2', '0,0'], '벽이 다 막음');
+    const OPEN = gridFrom(['......', '......', '......', '......']),
+        OPEN_FINDER = new RouteFinder(OPEN),
+        OPEN_PATH = OPEN_FINDER.find(0, [23]);
+    assert.deepEqual(OPEN_PATH, [0, 7, 14, 21, 22, 23], '빈 격자: 대각 먼저(동률은 f → h → 칸 번호)');
+    assert.deepEqual(OPEN_FINDER.waypoints(OPEN_PATH), [0, 21, 23]);
+    assert.deepEqual(
+        OPEN_FINDER.waypoints(OPEN_PATH, () => true),
+        [0, 23],
+        '보이면 끝까지 건너뜀',
+    );
+    assert.deepEqual(OPEN_FINDER.waypoints([]), []);
+
+    // 따라가기: 인덱스 하나만 저장합니다. 다가오면(reach) 또는 다음 웨이포인트가 보이면 넘어가고, 줄지 않습니다.
+    assert.equal(FINDER.advance(WAYPOINTS, 0, 5, 45, 1), 1, '첫 웨이포인트 위');
+    assert.equal(FINDER.advance(WAYPOINTS, 0, 20, 45, 1), 0, '아직 멀다');
+    assert.equal(FINDER.advance(WAYPOINTS, 1, 44, 45, 2), 2);
+    assert.equal(FINDER.advance(WAYPOINTS, 0, 20, 45, 0, LINE_CLEAR), 1, '(4,4)는 보이고 (4,2)는 벽 너머');
+    assert.equal(FINDER.advance(WAYPOINTS, 3, 5, 45, 1), 3, '되돌아가지 않음');
+    assert.equal(FINDER.advance(WAYPOINTS, 99, 5, 45), 4, '마지막에서 멈춤');
+
+    // 재검증: 남은 경로 위에 벽을 놓으면 false, 경로 밖이나 지나간 구간이면 true.
+    const WALLS = new Set();
+    const SEGMENT_CLEAR = (x0, y0, x1, y1) => {
+        const STEPS = Math.ceil(Math.hypot(x1 - x0, y1 - y0));
+        for (let i = 0; i <= STEPS; i++) {
+            const CELL = OPEN.cellAt(x0 + ((x1 - x0) * i) / STEPS, y0 + ((y1 - y0) * i) / STEPS);
+            if (WALLS.has(CELL)) {
+                return false;
+            }
+        }
+        return true;
+    };
+    const ROUTE = OPEN_FINDER.waypoints(OPEN_PATH);
+    assert.equal(OPEN_FINDER.remainingClear(ROUTE, 0, 5, 5, SEGMENT_CLEAR), true);
+    WALLS.add(5);
+    assert.equal(OPEN_FINDER.remainingClear(ROUTE, 0, 5, 5, SEGMENT_CLEAR), true, '경로 밖의 벽');
+    WALLS.add(22);
+    assert.equal(OPEN_FINDER.remainingClear(ROUTE, 0, 5, 5, SEGMENT_CLEAR), false, '남은 경로 위의 벽');
+    WALLS.clear();
+    WALLS.add(7);
+    assert.equal(OPEN_FINDER.remainingClear(ROUTE, 0, 5, 5, SEGMENT_CLEAR), false);
+    assert.equal(OPEN_FINDER.remainingClear(ROUTE, 2, 50, 35, SEGMENT_CLEAR), true, '지나간 구간의 벽은 보지 않음');
+    assert.equal(OPEN_FINDER.remainingClear([], 0, 5, 5, SEGMENT_CLEAR), false, '빈 경로');
+    assert.throws(() => OPEN_FINDER.remainingClear(ROUTE, 0, 5, 5), TypeError);
+
+    // 결정론: 같은 입력은 몇 번을 돌려도, 다른 탐색기로 돌려도 같은 경로입니다(버퍼 재사용·탐색 순서와 무관).
+    const FIRST = FINDER.find(CELL_OF(GRID, 6, 4), [0, CELL_OF(GRID, 0, 4)]).slice();
+    FINDER.find(CELL_OF(GRID, 2, 2), [0]);
+    assert.deepEqual(FINDER.find(CELL_OF(GRID, 6, 4), [0, CELL_OF(GRID, 0, 4)]), FIRST);
+    assert.deepEqual(new RouteFinder(gridFrom(MAZE)).find(CELL_OF(GRID, 6, 4), [0, CELL_OF(GRID, 0, 4)]), FIRST);
+    const OUT = [99];
+    assert.equal(FINDER.find(0, [0], {}, OUT), OUT, '호출자의 out을 비우고 채움');
+    assert.deepEqual(OUT, [0]);
+}
+
+// ---------- 10. 원본 격자 거리장과 같은 질의 흐름 ----------
 // scenario begin
 // 이 구간의 코드는 rally-frontier의 NavigationGrid로 돌려도 같은 결과를 내는 어댑터입니다(`createPlanner`만 다름).
 const WORLD_SIZE = 1800;
