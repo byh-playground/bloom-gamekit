@@ -2,6 +2,8 @@
 export const STRAIGHT_COST: 10;
 /** 대각 한 칸의 비용(14). */
 export const DIAGONAL_COST: 14;
+/** `PathGrid`가 기록하는 바뀐 사각형의 최대 개수. 넘치면 하나의 바운딩 사각형으로 합칩니다. */
+export const MAX_CHANGED_RECTS: 16;
 /** 닿지 못한 칸의 `DistanceField#dist` 값. */
 export const UNREACHED: 0x7fffffff;
 
@@ -53,6 +55,19 @@ export class PathGrid {
     stepCell(col: number, row: number, direction: number): number;
     /** 통과 판정의 기억을 비우고 `revision`을 올립니다. 장애물이 바뀐 뒤에 부릅니다. */
     invalidate(): void;
+    /**
+     * 월드 좌표 사각형에 걸친 칸의 통과 판정 기억(과 맞닿은 한 겹의 변 기억)만 비우고 `revision`을 올리며, 비운 칸 범위를
+     * 기록합니다. 격자 밖은 자르고 전혀 안 겹치면 아무것도 안 합니다. 유한하지 않거나 min > max면 RangeError.
+     */
+    invalidateRect(minX: number, minY: number, maxX: number, maxY: number): void;
+    /** 마지막으로 가져간 뒤 기록된 바뀐 사각형 개수(0..`MAX_CHANGED_RECTS`). */
+    readonly changedRectCount: number;
+    /**
+     * 바뀐 칸 사각형을 `out`(Int32Array, 길이 `4 * MAX_CHANGED_RECTS` 이상)에 `[minCol, minRow, maxCol, maxRow]`(양끝 포함)
+     * 네 정수씩 기록 순서대로 쓰고 개수를 돌려준 뒤 기록을 비웁니다. `invalidate()`·`sync`는 격자 전체 한 개로 기록됩니다.
+     * 소비자는 하나라고 가정합니다. `out`이 맞지 않으면 TypeError.
+     */
+    takeChangedRects(out: Int32Array): number;
     /** 게임의 장애물 배치 세대 번호를 알립니다. 지난번과 다르면 `invalidate()`하고 true. */
     sync(version: unknown): boolean;
     /**

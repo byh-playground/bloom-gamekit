@@ -1,3 +1,11 @@
+## v0.52.1 (2026-11-11)
+
+호환되는 추가(PATCH). pathfield `PathGrid`에 사각형 단위 무효화와 바뀐 사각형 기록을 더합니다. 기존 `invalidate()`·`sync`·`reachableFrom`·`DistanceField`·`FieldCache`의 결과는 같습니다. 청크 + 포털 계층 길찾기 1단계입니다.
+
+- `invalidateRect(minX, minY, maxX, maxY)`: 월드 좌표 사각형에 걸친 칸의 통과 판정 기억과 맞닿은 한 겹의 변(`passableEdge`) 기억만 비우고 `revision`을 올립니다. 격자 밖은 자르고 전혀 안 겹치면 아무 일도 없습니다.
+- `takeChangedRects(out)`·`changedRectCount`·`MAX_CHANGED_RECTS`(16): 마지막으로 가져간 뒤 바뀐 칸 사각형을 `Int32Array`에 네 정수씩 기록 순서대로 넘겨주고 비웁니다. 포함되는 사각형은 버리고, 가득 차면 바운딩 사각형 하나로 합칩니다. 기록은 호출 순서에만 의존하고 객체·배열을 만들지 않습니다. `invalidate()`·`sync`는 격자 전체 한 개로 기록합니다.
+- 시험: 고정 시나리오에 사각형 무효화·기록·가져가기·오류 입력을 더했습니다.
+
 ## v0.52.0 (2026-11-11)
 
 공개 API 변경(MINOR, 소비자 수정 필요). geometry·vision·spatial·pathfield의 틱 경로 가비지와 맞지 않는 자료구조를 걷어내고, 문자열 키를 숫자 조합 정수 키로 바꿉니다. 별칭·래퍼 없이 시그니처를 바로 바꿨습니다. **쌀콩팡 체크섬이 달라짐**: 동률 순위(정수 FNV-1a + fmix32), 접촉 목록의 키 순서, 원 장애물·관찰자 id의 정수화 때문입니다(아래 "결과가 바뀌는 것").

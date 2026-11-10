@@ -8,6 +8,7 @@ import {
     DIAGONAL_COST,
     DistanceField,
     FieldCache,
+    MAX_CHANGED_RECTS,
     PathGrid,
     RouteFinder,
     STRAIGHT_COST,
@@ -148,8 +149,28 @@ const MAZE = ['.......', '.#####.', '.....#.', '####.#.', '.......'];
     assert.equal(SWITCHED.sync(2), true);
     assert.equal(SWITCHED.isOpen(1), true);
     assert.equal(SWITCHED.revision, REVISION + 1);
-    SWITCHED.invalidate();
+    // 사각형 무효화: 그 칸만 다시 묻고, 바뀐 칸 범위를 기록 순서대로 한 번 넘겨준다.
+    const CHANGED = new Int32Array(4 * MAX_CHANGED_RECTS);
+    assert.deepEqual(
+        [SWITCHED.takeChangedRects(CHANGED), ...CHANGED.slice(0, 4)],
+        [1, 0, 0, 1, 0],
+        'sync는 전체 한 개',
+    );
+    wall = true;
+    assert.equal(SWITCHED.isOpen(1), true, '기억이 남아 있어 열림');
+    SWITCHED.invalidateRect(11, 2, 14, 8);
+    assert.equal(SWITCHED.isOpen(1), false, '사각형이 걸친 칸만 다시 물음');
+    assert.equal(SWITCHED.isOpen(0), true);
     assert.equal(SWITCHED.revision, REVISION + 2);
+    SWITCHED.invalidateRect(500, 500, 600, 600);
+    assert.equal(SWITCHED.revision, REVISION + 2, '격자 밖 사각형은 아무 일도 없음');
+    assert.deepEqual([SWITCHED.takeChangedRects(CHANGED), ...CHANGED.slice(0, 4)], [1, 1, 0, 1, 0]);
+    assert.equal(SWITCHED.takeChangedRects(CHANGED), 0, '가져가면 비워짐');
+    assert.throws(() => SWITCHED.invalidateRect(5, 0, 1, 0), RangeError);
+    assert.throws(() => SWITCHED.invalidateRect(0, 0, NaN, 0), RangeError);
+    assert.throws(() => SWITCHED.takeChangedRects(new Int32Array(4)), TypeError);
+    SWITCHED.invalidate();
+    assert.equal(SWITCHED.revision, REVISION + 3);
 }
 
 // ---------- 3. 게으른 확정·여러 출발 칸·내려가기 ----------
