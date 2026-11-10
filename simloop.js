@@ -25,6 +25,7 @@ function clockRates({ baseHz, tickRate, inputHz, renderHz } = {}) {
 }
 
 // modules/simloop/loop.js
+var NO_CAPTURES = Object.freeze([]);
 function createLoop({
   session,
   getInput = () => new Uint8Array(session.inputSize),
@@ -109,7 +110,8 @@ function createLoop({
   let commandObservation = 0;
   let observedAt = -Infinity;
   let cached = null;
-  let captureEpoch = "";
+  let captureEpoch = -1;
+  let captureBaseTick = -1;
   let captureSequence = -1;
   const OBSERVED_COMMANDS = [];
   const OBSERVE_INPUT = (timestamp) => {
@@ -359,38 +361,44 @@ function createLoop({
         work++;
         let submission;
         if (inputPreview || HAS_SUBMISSION) {
-          const METADATA = session.localInputState;
-          const EPOCH = METADATA ? METADATA.epoch + ":" + METADATA.baseTick : "";
-          if (EPOCH !== captureEpoch) {
+          const LATEST = session.localCaptureSequence;
+          const EPOCH = LATEST === null ? -1 : session.epoch ?? 0, BASE_TICK = LATEST === null ? -1 : session.baseTick ?? 0;
+          if (EPOCH !== captureEpoch || BASE_TICK !== captureBaseTick) {
             captureEpoch = EPOCH;
+            captureBaseTick = BASE_TICK;
             captureSequence = -1;
           }
-          for (const CAPTURE of METADATA?.captures ?? (METADATA?.capture ? [METADATA.capture] : [])) {
-            if (CAPTURE.sequence <= captureSequence) {
-              continue;
-            }
+          const CAPTURES = LATEST !== null && LATEST > captureSequence ? session.readLocalCaptures(captureSequence, []) : NO_CAPTURES;
+          for (let k = 0; k < CAPTURES.length; k++) {
+            const CAPTURE = CAPTURES[k];
             captureSequence = CAPTURE.sequence;
             submission = {
               ...CAPTURE,
               predict: cached?.predict !== false,
-              boundaryTick: METADATA.tick,
-              epoch: METADATA.epoch,
+              boundaryTick: session.tick,
+              epoch: EPOCH,
               timeMs: Math.max(timestamp, performance.now())
             };
-            submission.commands = CAPTURE.commands.map((command) => ({
-              ...command,
-              observationId: cached?.commands.find((c) => c.sequence === command.sequence)?.observationId
-            }));
+            const COMMANDS = CAPTURE.commands;
+            for (let c = 0; c < COMMANDS.length; c++) {
+              COMMANDS[c].observationId = cached?.commands.find(
+                (o) => o.sequence === COMMANDS[c].sequence
+              )?.observationId;
+            }
             try {
               inputPreview?.commit(submission, submission.timeMs);
             } catch (error) {
               inputPreview.clear?.();
               onPreviewError(error);
             }
-            const ASSIGNED = new Set(CAPTURE.commands.map((c) => c.sequence));
-            for (let i = OBSERVED_COMMANDS.length - 1; i >= 0; i--) {
-              if (ASSIGNED.has(OBSERVED_COMMANDS[i].sequence)) {
-                OBSERVED_COMMANDS.splice(i, 1);
+            if (COMMANDS.length) {
+              for (let i = OBSERVED_COMMANDS.length - 1; i >= 0; i--) {
+                for (let c = 0; c < COMMANDS.length; c++) {
+                  if (COMMANDS[c].sequence === OBSERVED_COMMANDS[i].sequence) {
+                    OBSERVED_COMMANDS.splice(i, 1);
+                    break;
+                  }
+                }
               }
             }
           }

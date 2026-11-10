@@ -30,6 +30,70 @@ function equalBytes(a, b) {
   }
   return true;
 }
+function equalIds(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) {
+    return false;
+  }
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+var ByteBuffer = class {
+  constructor(capacity = 1024) {
+    this.bytes = new Uint8Array(integer(capacity, "capacity", 1, 2147483647));
+    this.length = 0;
+  }
+  reset() {
+    this.length = 0;
+    return this;
+  }
+  /** 뒤에 `size` bytes를 쓸 자리를 확보하고 쓰기 시작 위치를 돌려줍니다. 길이는 쓰는 쪽이 늘립니다. */
+  reserve(size) {
+    const END = this.length + size;
+    if (END > this.bytes.length) {
+      const NEXT = new Uint8Array(Math.max(END, this.bytes.length * 2));
+      NEXT.set(this.bytes.subarray(0, this.length));
+      this.bytes = NEXT;
+    }
+    return this.length;
+  }
+  write(data) {
+    const DATA = bytes(data);
+    const AT = this.reserve(DATA.length);
+    this.bytes.set(DATA, AT);
+    this.length += DATA.length;
+    return this;
+  }
+  /** 쓴 범위의 보기. 다음 reset·write 전까지만 유효합니다. */
+  view() {
+    return this.bytes.subarray(0, this.length);
+  }
+  /** 쓴 범위의 독립 복사본. */
+  copy() {
+    return this.bytes.slice(0, this.length);
+  }
+  /**
+   * 쓴 범위를 소유권째 넘기고 버퍼는 같은 크기의 새 공간으로 바꿉니다(복사 없음).
+   * 남는 공간이 쓴 길이의 1/8보다 크면 보관 메모리를 아끼려고 copy()와 같이 복사합니다.
+   */
+  take() {
+    const LENGTH = this.length;
+    this.length = 0;
+    if (this.bytes.length - LENGTH > LENGTH >> 3) {
+      return this.bytes.slice(0, LENGTH);
+    }
+    const TAKEN = this.bytes.subarray(0, LENGTH);
+    this.bytes = new Uint8Array(this.bytes.length);
+    return TAKEN;
+  }
+};
+function saveSnapshot(adapter, buffer) {
+  adapter.saveInto(buffer.reset());
+  return buffer.view();
+}
 function hashBytes(value, seed = 2166136261) {
   let h = seed >>> 0;
   const DATA = bytes(value);
@@ -58,12 +122,12 @@ var FIXED_POINT = Object.freeze({
     if (SIGNED(b) === 0) {
       throw new RangeError("fixed-point division by zero");
     }
-    return SIGNED(Number(BigInt(SIGNED(a)) * 1024n / BigInt(b)));
+    return SIGNED(Math.trunc(SIGNED(a) * 1024 / b) || 0);
   }
 });
 
 // modules/_rollback-shared/version.js
-var VERSION = "0.49.0";
+var VERSION = "0.50.0";
 
 // modules/_rollback-shared/protocol.js
 var REPLAY_FORMAT_VERSION = "0.3.0-dev";
@@ -230,29 +294,39 @@ var Reader = class {
     this.offset += n;
     return B;
   }
+  /** 복사 없는 보기. 패킷 buffer를 가리키므로 보관하기 전에 복사합니다. */
+  rawView(n) {
+    this.room(n);
+    const B = this.data.subarray(this.offset, this.offset + n);
+    this.offset += n;
+    return B;
+  }
   end() {
     if (this.offset !== this.data.length) {
       throw new RangeError("trailing packet bytes");
     }
   }
 };
-function packet(type, sequence, write) {
-  const W = new Writer();
+var PACKET_WRITER = new Writer();
+function beginPacket(type, sequence, tag = 0) {
+  const W = PACKET_WRITER.reset();
   W.u32(MAGIC);
   W.u8(PROTOCOL_VERSION);
   W.u8(type);
-  W.u16(0);
+  W.u16(tag);
   W.u32(sequence);
-  write(W);
-  return W.finish();
+  return W;
 }
 function frameEqual(a, b) {
   if (!equalBytes(a.input, b.input) || a.commands.length !== b.commands.length) {
     return false;
   }
-  return a.commands.every(
-    (c, i) => c.sequence === b.commands[i].sequence && equalBytes(c.payload, b.commands[i].payload)
-  );
+  for (let i = 0; i < a.commands.length; i++) {
+    if (a.commands[i].sequence !== b.commands[i].sequence || !equalBytes(a.commands[i].payload, b.commands[i].payload)) {
+      return false;
+    }
+  }
+  return true;
 }
 function copyFrame(frame) {
   return {
@@ -264,41 +338,105 @@ function copyFrame(frame) {
   };
 }
 function runSimulationFrame(adapter, context) {
-  return adapter.step({
-    ...context,
-    inputs: context.inputs.map((frame) => ({
-      ...copyFrame(frame),
-      playerId: frame.playerId,
-      predicted: !!frame.predicted
-    }))
-  });
+  const SOURCE = context.inputs, INPUTS = new Array(SOURCE.length);
+  for (let i = 0; i < SOURCE.length; i++) {
+    const FRAME = SOURCE[i];
+    INPUTS[i] = {
+      input: FRAME.input.slice(),
+      commands: copyCommands(FRAME.commands),
+      playerId: FRAME.playerId,
+      predicted: !!FRAME.predicted
+    };
+  }
+  context.inputs = INPUTS;
+  return adapter.step(context);
 }
-function encodeReplayFrames(frames, players) {
-  const OUT = [], LAST = players.map(() => null), COMMANDS = [];
-  let previous = 0;
-  for (const F of frames) {
-    for (const X of F.inputs) {
-      const P = players.indexOf(X.playerId);
-      for (const C of X.commands) {
-        COMMANDS.push({ ...C, payload: C.payload.slice(), tick: F.tick, playerId: X.playerId });
-      }
-      if (LAST[P] && equalBytes(LAST[P], X.input)) {
-        continue;
-      }
-      for (let d = F.tick - previous; ; d >>>= 7) {
-        if (d < 128) {
-          OUT.push(d);
-          break;
-        }
-        OUT.push(d & 127 | 128);
-      }
-      OUT.push(P, ...X.input);
-      LAST[P] = X.input;
-      previous = F.tick;
+function copyCommands(commands) {
+  const OUT = new Array(commands.length);
+  for (let i = 0; i < commands.length; i++) {
+    OUT[i] = {
+      ...commands[i],
+      payload: commands[i].payload.slice()
+    };
+  }
+  return OUT;
+}
+var ReplayLog = class {
+  /** `boundaryWindow`: 지난 몇 틱까지 그 틱 경계로 잘라 내보낼 수 있는지(링 버퍼 크기). */
+  constructor(players, keepFrames = 0, boundaryWindow = 1) {
+    this.players = players;
+    this.ticks = 0;
+    this.keepFrames = keepFrames;
+    this.frames = [];
+    this._last = players.map(() => null);
+    this._previous = 0;
+    this._bytes = new Uint8Array(1024);
+    this._length = 0;
+    this._commands = [];
+    this._window = boundaryWindow;
+    this._startLength = new Int32Array(boundaryWindow);
+    this._startCommands = new Int32Array(boundaryWindow);
+  }
+  _reserve(n) {
+    if (this._length + n > this._bytes.length) {
+      const NEXT = new Uint8Array(Math.max(this._length + n, this._bytes.length * 2));
+      NEXT.set(this._bytes.subarray(0, this._length));
+      this._bytes = NEXT;
     }
   }
-  return { inputChanges: Uint8Array.from(OUT), commands: COMMANDS };
-}
+  /** inputs는 players 순서의 { input, commands }이며 바뀌지 않는 원본으로 다룹니다. 배열은 보관하지 않습니다. */
+  push(tick, inputs) {
+    if (tick !== this.ticks) {
+      throw new RangeError("replay tick order");
+    }
+    this._startLength[tick % this._window] = this._length;
+    this._startCommands[tick % this._window] = this._commands.length;
+    for (let p = 0; p < inputs.length; p++) {
+      const X = inputs[p];
+      for (let c = 0; c < X.commands.length; c++) {
+        this._commands.push({ ...X.commands[c], tick, playerId: this.players[p] });
+      }
+      const LAST = this._last[p];
+      if (LAST && equalBytes(LAST, X.input)) {
+        continue;
+      }
+      this._reserve(6 + X.input.length);
+      for (let d = tick - this._previous; ; d >>>= 7) {
+        if (d < 128) {
+          this._bytes[this._length++] = d;
+          break;
+        }
+        this._bytes[this._length++] = d & 127 | 128;
+      }
+      this._bytes[this._length++] = p;
+      this._bytes.set(X.input, this._length);
+      this._length += X.input.length;
+      this._last[p] = X.input;
+      this._previous = tick;
+    }
+    if (this.frames.length < this.keepFrames) {
+      this.frames.push({ tick, inputs: inputs.slice() });
+    }
+    this.ticks++;
+  }
+  /** 기록한 틱 수와 `ticks` 중 작은 쪽까지 내보냅니다. 내보내는 값은 매번 새 복사본입니다. */
+  export(ticks = this.ticks) {
+    let length = this._length, commands = this._commands.length;
+    if (ticks < this.ticks) {
+      if (ticks < 0 || this.ticks - ticks > this._window) {
+        throw new RangeError("replay boundary outside window");
+      }
+      length = this._startLength[ticks % this._window];
+      commands = this._startCommands[ticks % this._window];
+    }
+    const COMMANDS = new Array(commands);
+    for (let i = 0; i < commands; i++) {
+      const C = this._commands[i];
+      COMMANDS[i] = { ...C, payload: C.payload.slice() };
+    }
+    return { inputChanges: this._bytes.slice(0, length), commands: COMMANDS };
+  }
+};
 
 // modules/_rollback-shared/history.js
 var StateHistory = class {
@@ -356,14 +494,28 @@ var CheckpointHistory = class {
     }
     return result;
   }
+  /** 보관 중인 가장 이른 tick, 비었으면 Infinity(Math.min()과 같음). */
   get oldestTick() {
-    return Math.min(...this.records.keys());
+    let min = Infinity;
+    for (const TICK of this.records.keys()) {
+      if (TICK < min) {
+        min = TICK;
+      }
+    }
+    return min;
   }
   put(state) {
     const OLDEST = Math.max(0, state.tick - this.size + 1);
     const BASE = this.atOrBefore(OLDEST);
-    const EXPIRED = [...this.records.values()].filter((s) => BASE && s.tick < BASE.tick);
-    const NEXT = this.byteLength - EXPIRED.reduce((n, s) => n + s.bytes.length, 0) - (this.records.get(state.tick)?.bytes.length ?? 0) + state.bytes.length;
+    let expiredBytes = 0;
+    if (BASE) {
+      for (const S of this.records.values()) {
+        if (S.tick < BASE.tick) {
+          expiredBytes += S.bytes.length;
+        }
+      }
+    }
+    const NEXT = this.byteLength - expiredBytes - (this.records.get(state.tick)?.bytes.length ?? 0) + state.bytes.length;
     if (NEXT > this.maxBytes) {
       throw Object.assign(new RangeError("checkpoint history byte budget"), {
         code: "history-capacity",
@@ -372,8 +524,12 @@ var CheckpointHistory = class {
         snapshotBytes: state.bytes.length
       });
     }
-    for (const S of EXPIRED) {
-      this.records.delete(S.tick);
+    if (BASE) {
+      for (const TICK of this.records.keys()) {
+        if (TICK < BASE.tick) {
+          this.records.delete(TICK);
+        }
+      }
     }
     this.records.set(state.tick, state);
     this.byteLength = NEXT;
@@ -465,16 +621,19 @@ function commandSequenceMap(players, initial) {
 }
 function executedSequences(previous, inputs) {
   let next = previous;
-  for (const FRAME of inputs) {
-    for (const COMMAND of FRAME.commands) {
+  for (let i = 0; i < inputs.length; i++) {
+    const FRAME = inputs[i];
+    for (let c = 0; c < FRAME.commands.length; c++) {
       if (next === previous) {
         next = new Map(previous);
       }
-      next.set(FRAME.playerId, Math.max(next.get(FRAME.playerId), COMMAND.sequence));
+      next.set(FRAME.playerId, Math.max(next.get(FRAME.playerId), FRAME.commands[c].sequence));
     }
   }
   return next;
 }
+var NO_COMMANDS = Object.freeze([]);
+var NO_PAYLOADS = Object.freeze([]);
 function profileOf(profile) {
   const P = {
     ...DEFAULTS,
@@ -561,6 +720,12 @@ function createLocalFastPathSession(options) {
 function delegateRoomRecovery(session, selectBoundary) {
   session._roomRecovery = selectBoundary;
 }
+function exportReplayThrough(session, ticks) {
+  return session._exportReplay(ticks);
+}
+function setWireTag(session, tag) {
+  session._wireTag = integer(tag, "wire tag", 0, 65535);
+}
 var BOUNDARIES = /* @__PURE__ */ new WeakMap();
 function createSessionFromBoundary(options, state, hash) {
   const TOKEN = {};
@@ -596,10 +761,13 @@ var RollbackSession = class {
     if (!this.players.includes(localPlayerId)) {
       throw new TypeError("localPlayerId");
     }
+    this._playerIndex = new Map(this.players.map((id, index) => [id, index]));
+    this._local = this._playerIndex.get(localPlayerId);
+    this._wireTag = 0;
     if (typeof sessionId !== "string" || !sessionId.length || sessionId.length > 128 || typeof simulationVersion !== "string" || !simulationVersion.length || simulationVersion.length > 128) {
       throw new TypeError("sessionId/simulationVersion");
     }
-    if (!adapter || ["save", "load", "step", "validateSnapshot"].some((n) => typeof adapter[n] !== "function")) {
+    if (!adapter || ["saveInto", "load", "step", "validateSnapshot"].some((n) => typeof adapter[n] !== "function")) {
       throw new TypeError("Simulation Adapter must save, load, step, validateSnapshot");
     }
     this.localPlayerId = localPlayerId;
@@ -629,8 +797,11 @@ var RollbackSession = class {
     this._failure = null;
     this._history = this.localFastPath ? null : this._newHistory();
     this._inputWriter = this.localFastPath ? null : new Writer(CHUNK_SIZE * this.players.length);
-    this._inputs = new Map(this.players.map((p) => [p, /* @__PURE__ */ new Map()]));
-    this._through = new Map(this.players.map((p) => [p, -1]));
+    this._snapshotBuffer = new ByteBuffer();
+    this._inputs = this.players.map(() => /* @__PURE__ */ new Map());
+    this._through = this.players.map(() => -1);
+    this._usedPruned = 0;
+    this._inputsPruned = this.players.map(() => 0);
     this._used = /* @__PURE__ */ new Map();
     this._peers = /* @__PURE__ */ new Map();
     this._pendingCommands = [];
@@ -721,7 +892,7 @@ var RollbackSession = class {
       inputReservationReceivedBytes: 0
     };
     this._recordReplay = recordReplay;
-    this._replayFrames = [];
+    this._replay = new ReplayLog(this.players, 256, this.profile.stateHistorySize + 1);
     this._replayBytes = 0;
     this._replayFinalHash = void 0;
     const BOUNDARY = BOUNDARIES.get(boundaryToken);
@@ -780,7 +951,8 @@ var RollbackSession = class {
         })
       );
     }
-    const NEUTRAL = new Uint8Array(this.inputSize);
+    this._neutral = new Uint8Array(this.inputSize);
+    const NEUTRAL = this._neutral;
     if (localCommandState) {
       for (const ENTRY of carriedInputs) {
         this._localReservations.set(ENTRY.tick, {
@@ -815,7 +987,13 @@ var RollbackSession = class {
     return this._inputDelay;
   }
   get confirmedTick() {
-    return Math.min(...this._through.values());
+    let min = this._through[0];
+    for (let i = 1; i < this._through.length; i++) {
+      if (this._through[i] < min) {
+        min = this._through[i];
+      }
+    }
+    return min;
   }
   get confirmedBoundary() {
     return Math.min(this.tick, this.confirmedTick + 1);
@@ -831,7 +1009,7 @@ var RollbackSession = class {
       inputDelay: this.inputDelay,
       commandSequence: this._commandSequence,
       executedInput: this._localExecutedInput?.slice() ?? null,
-      replayInput: (this._inputs.get(this.localPlayerId).get(this.tick)?.input ?? this._localExecutedInput)?.slice() ?? null,
+      replayInput: (this._inputs[this._local].get(this.tick)?.input ?? this._localExecutedInput)?.slice() ?? null,
       executedCommandSequence: this.profile.mode === "lockstep" ? this._commandSequences.get(this.localPlayerId) : null,
       captures: this._localCaptures.map((c) => ({
         ...c,
@@ -851,6 +1029,30 @@ var RollbackSession = class {
       } : null
     };
   }
+  /** 마지막으로 봉인한 로컬 capture의 sequence. 새 capture가 있는지 객체를 만들지 않고 확인합니다. */
+  get localCaptureSequence() {
+    return this._localCaptureSequence;
+  }
+  /**
+   * sequence가 `afterSequence`보다 큰 보관 capture를 `out`에 채워 돌려줍니다(`out`은 먼저 비움).
+   * 항목은 localInputState.captures와 같은 모양의 소유 복사본입니다.
+   */
+  readLocalCaptures(afterSequence, out) {
+    out.length = 0;
+    const CAPTURES = this._localCaptures;
+    for (let i = 0; i < CAPTURES.length; i++) {
+      const C = CAPTURES[i];
+      if (C.sequence <= afterSequence) {
+        continue;
+      }
+      const COMMANDS = new Array(C.commands.length);
+      for (let c = 0; c < C.commands.length; c++) {
+        COMMANDS[c] = { ...C.commands[c], payload: C.commands[c].payload.slice() };
+      }
+      out.push({ ...C, input: C.input.slice(), commands: COMMANDS });
+    }
+    return out;
+  }
   get resimulating() {
     return this._replaying || this._rollbackFrom !== Infinity;
   }
@@ -861,9 +1063,19 @@ var RollbackSession = class {
     return this._requestedInputDelay;
   }
   get ready() {
-    return !this.closed && !this._failure && this.players.every(
-      (p) => p === this.localPlayerId || this._peers.get(p)?.ready && this._peers.get(p).connectionState === "connected"
-    );
+    if (this.closed || this._failure) {
+      return false;
+    }
+    for (let i = 0; i < this.players.length; i++) {
+      if (i === this._local) {
+        continue;
+      }
+      const PEER = this._peers.get(this.players[i]);
+      if (!PEER?.ready || PEER.connectionState !== "connected") {
+        return false;
+      }
+    }
+    return true;
   }
   get status() {
     if (this.closed) {
@@ -872,12 +1084,9 @@ var RollbackSession = class {
     if (this._failure) {
       return "failed";
     }
-    const PEERS = [...this._peers.values()];
-    if (PEERS.some((p) => p.connectionState === "disconnected")) {
-      return "disconnected";
-    }
-    if (PEERS.some((p) => p.connectionState === "interrupted")) {
-      return "interrupted";
+    const CONNECTION = this._worstConnection();
+    if (CONNECTION) {
+      return CONNECTION;
     }
     if (!this.ready) {
       return "synchronizing";
@@ -886,6 +1095,19 @@ var RollbackSession = class {
       return "recovering";
     }
     return this.resimulating ? "resimulating" : "running";
+  }
+  /** 'disconnected', 'interrupted' 순으로 가장 나쁜 peer 연결 상태, 없으면 null. */
+  _worstConnection() {
+    let interrupted = false;
+    for (const PEER of this._peers.values()) {
+      if (PEER.connectionState === "disconnected") {
+        return "disconnected";
+      }
+      if (PEER.connectionState === "interrupted") {
+        interrupted = true;
+      }
+    }
+    return interrupted ? "interrupted" : null;
   }
   getPeerState(peerId) {
     const PEER = this._peers.get(peerId);
@@ -964,16 +1186,23 @@ var RollbackSession = class {
   _hashInputFrame(tick, inputs, previousHash) {
     const W = this._inputWriter.reset();
     W.u32(tick);
-    for (const F of inputs) {
+    for (let i = 0; i < inputs.length; i++) {
+      const F = inputs[i];
       W.raw(F.input);
       W.u16(F.commands.length);
-      for (const C of F.commands) {
+      for (let c = 0; c < F.commands.length; c++) {
+        const C = F.commands[c];
         W.u32(C.sequence);
         W.u16(C.payload.length);
         W.raw(C.payload);
       }
     }
-    return hashBytes(W.usedBytes(), previousHash);
+    const DATA = W.data, END = W.offset;
+    let h = previousHash >>> 0;
+    for (let i = 0; i < END; i++) {
+      h = Math.imul(h ^ DATA[i], 16777619) >>> 0;
+    }
+    return h;
   }
   _event(type, detail = {}) {
     try {
@@ -1024,7 +1253,7 @@ var RollbackSession = class {
     }
   }
   _peerAlive(peer, sequence, now) {
-    if (["closed", "failed"].includes(peer.transportState)) {
+    if (peer.transportState === "closed" || peer.transportState === "failed") {
       return;
     }
     const DELTA = peer.lastReceivedSequence === null ? 1 : sequence - peer.lastReceivedSequence >>> 0;
@@ -1036,7 +1265,7 @@ var RollbackSession = class {
     this._peerTransition(peer, "connected", peer.connectionState === "connecting" ? null : "peer-resumed");
   }
   _peerLiveness(peer, now) {
-    if (["closed", "failed"].includes(peer.transportState)) {
+    if (peer.transportState === "closed" || peer.transportState === "failed") {
       return;
     }
     const SILENCE = Math.max(0, now - peer.lastReceivedAt);
@@ -1052,8 +1281,16 @@ var RollbackSession = class {
       });
     }
   }
+  /** 보관할 snapshot 복사본. */
   _save() {
-    const STATE = bytes(this.adapter.save(), "snapshot").slice();
+    this._saveView();
+    return this._snapshotBuffer.take();
+  }
+  /** hash·비교에만 쓰는 snapshot 보기. 다음 저장 전까지만 유효합니다. */
+  _saveView() {
+    const BUFFER = this._snapshotBuffer.reset();
+    this.adapter.saveInto(BUFFER);
+    const STATE = BUFFER.view();
     if (!STATE.length || STATE.length > this.profile.maxSnapshotBytes) {
       throw new RangeError("snapshot size");
     }
@@ -1083,6 +1320,7 @@ var RollbackSession = class {
     }
     const PEER = {
       id: peerId,
+      index: this._playerIndex.get(peerId),
       transport,
       ready: false,
       ack: -1,
@@ -1158,10 +1396,9 @@ var RollbackSession = class {
     }
   }
   _sendHello(peer, now) {
-    if (this._send(
-      peer,
-      packet(TYPE.HELLO, this._nextSequence(), (w) => w.raw(this._hello))
-    )) {
+    const W = beginPacket(TYPE.HELLO, this._nextSequence(), this._wireTag);
+    W.raw(this._hello);
+    if (this._send(peer, W.finish())) {
       peer.lastHello = now;
     }
   }
@@ -1176,14 +1413,15 @@ var RollbackSession = class {
   _commitLocal(tick, input, commands) {
     integer(tick, "session tick limit", 0, MAX_TICK);
     const FRAME = {
-      input: input.slice(),
+      input,
       commands
     };
-    if (this._inputs.get(this.localPlayerId).has(tick)) {
+    const MAP = this._inputs[this._local];
+    if (MAP.has(tick)) {
       throw new Error("committed input is immutable");
     }
-    this._inputs.get(this.localPlayerId).set(tick, FRAME);
-    this._through.set(this.localPlayerId, tick);
+    MAP.set(tick, FRAME);
+    this._through[this._local] = tick;
   }
   queueCommand(payload) {
     return this.submitInput(this._lastLocalInput, {
@@ -1224,6 +1462,20 @@ var RollbackSession = class {
   }
   /** Reserve execution ticks at the event boundary; frame sealing cannot move them. */
   submitInput(input, { commands = [] } = {}) {
+    return this._submit(input, commands, true);
+  }
+  /** 가장 늦은 로컬 예약 틱, 없으면 fallback. */
+  _lastReservedTick(fallback) {
+    let max = fallback;
+    for (const TICK of this._localReservations.keys()) {
+      if (TICK > max) {
+        max = TICK;
+      }
+    }
+    return max;
+  }
+  // receipt가 false면 바뀌지 않은 입력에 영수증 객체를 만들지 않습니다(틱마다 부르는 _capture 경로).
+  _submit(input, commands, receipt) {
     if (this.closed || this._failure) {
       throw new Error("session unavailable");
     }
@@ -1234,7 +1486,7 @@ var RollbackSession = class {
     if (!Array.isArray(commands) || commands.length > 0 && this._pendingCommands.length + commands.length > this.profile.maxPendingCommands) {
       throw new RangeError("command capacity");
     }
-    const PAYLOADS = commands.map((payload) => {
+    const PAYLOADS = !commands.length ? NO_PAYLOADS : commands.map((payload) => {
       const VALUE = bytes(payload);
       if (!VALUE.length || VALUE.length > Math.min(this.profile.maxCommandBytes, CHUNK_SIZE - 1024 - this.inputSize - 6)) {
         throw new RangeError("command capacity");
@@ -1246,8 +1498,8 @@ var RollbackSession = class {
     const SCHEDULE = CHANGED ? {
       policy: this.profile.inputScheduling,
       localTick: this.tick,
-      nextOpenTick: this._through.get(this.localPlayerId) + 1,
-      lastReservedTick: Math.max(-1, ...this._localReservations.keys()),
+      nextOpenTick: this._through[this._local] + 1,
+      lastReservedTick: this._lastReservedTick(-1),
       peers: []
     } : void 0;
     const DELAY = this._schedulingDelay(this._clock(), SCHEDULE?.peers);
@@ -1261,12 +1513,15 @@ var RollbackSession = class {
       }
     }
     const TICK = integer(
-      Math.max(this.tick + DELAY, this._through.get(this.localPlayerId) + 1, ...this._localReservations.keys()),
+      Math.max(this.tick + DELAY, this._through[this._local] + 1, this._lastReservedTick(-Infinity)),
       "input reservation tick",
       0,
       MAX_TICK
     );
-    if (!PAYLOADS.length && equalBytes(HELD, this._lastLocalInput)) {
+    if (!CHANGED) {
+      if (!receipt) {
+        return void 0;
+      }
       return {
         status: "unchanged",
         tick: this.tick,
@@ -1354,18 +1609,21 @@ var RollbackSession = class {
     if ((peer.reservationAcks?.get(frame.tick) ?? 0) >= frame.revision) {
       return;
     }
-    frame.packet ??= packet(TYPE.INPUT_RESERVATION, this._nextSequence(), (w) => {
-      w.u32(frame.tick);
-      w.u32(frame.revision);
-      w.u16(this.inputSize);
-      w.raw(frame.input);
-      w.u16(frame.commands.length);
-      for (const COMMAND of frame.commands) {
-        w.u32(COMMAND.sequence);
-        w.u16(COMMAND.payload.length);
-        w.raw(COMMAND.payload);
+    if (!frame.packet) {
+      const W = beginPacket(TYPE.INPUT_RESERVATION, this._nextSequence(), this._wireTag);
+      W.u32(frame.tick);
+      W.u32(frame.revision);
+      W.u16(this.inputSize);
+      W.raw(frame.input);
+      W.u16(frame.commands.length);
+      for (let i = 0; i < frame.commands.length; i++) {
+        const COMMAND = frame.commands[i];
+        W.u32(COMMAND.sequence);
+        W.u16(COMMAND.payload.length);
+        W.raw(COMMAND.payload);
       }
-    });
+      frame.packet = W.finish();
+    }
     if (this._send(peer, frame.packet)) {
       peer.lastReservationSent = now;
       this._metrics.inputReservationSentBytes += frame.packet.length;
@@ -1394,14 +1652,11 @@ var RollbackSession = class {
       });
     }
     r.end();
-    this._send(
-      peer,
-      packet(TYPE.INPUT_RESERVATION_ACK, this._nextSequence(), (w) => {
-        w.u32(TICK);
-        w.u32(REVISION);
-      })
-    );
-    const ACTUAL = this._inputs.get(peer.id).get(TICK);
+    const W = beginPacket(TYPE.INPUT_RESERVATION_ACK, this._nextSequence(), this._wireTag);
+    W.u32(TICK);
+    W.u32(REVISION);
+    this._send(peer, W.finish());
+    const ACTUAL = this._inputs[peer.index].get(TICK);
     if (ACTUAL || TICK < Math.max(0, this.tick - this.profile.stateHistorySize + 1)) {
       return;
     }
@@ -1432,7 +1687,7 @@ var RollbackSession = class {
     for (const COMMAND of COMMANDS) {
       peer.reservedCommands.set(COMMAND.sequence, COMMAND);
     }
-    const USED = this._used.get(TICK)?.find((frame) => frame.playerId === peer.id);
+    const USED = this._used.get(TICK)?.[peer.index];
     if (USED && !frameEqual(USED, FRAME)) {
       if (!this._history.get(TICK)) {
         this.requestResync(this.confirmedBoundary);
@@ -1463,7 +1718,7 @@ var RollbackSession = class {
         COMMANDS.set(command.sequence, command);
       }
     };
-    for (const [TICK, FRAME] of this._inputs.get(this.localPlayerId)) {
+    for (const [TICK, FRAME] of this._inputs[this._local]) {
       if (TICK >= fromTick) {
         for (const COMMAND of FRAME.commands) {
           INCLUDE(COMMAND);
@@ -1474,7 +1729,7 @@ var RollbackSession = class {
       INCLUDE(COMMAND);
     }
     const INPUTS = new Map(
-      [...this._inputs.get(this.localPlayerId)].filter(([tick]) => tick >= fromTick).map(([tick, frame]) => [
+      [...this._inputs[this._local]].filter(([tick]) => tick >= fromTick).map(([tick, frame]) => [
         tick,
         {
           tick,
@@ -1494,7 +1749,7 @@ var RollbackSession = class {
       {
         sequence: this._commandSequence,
         lastInput: this._lastLocalInput,
-        sealedThrough: this._through.get(this.localPlayerId),
+        sealedThrough: this._through[this._local],
         inputs: [...INPUTS.values()].sort((a, b) => a.tick - b.tick),
         commands: [...COMMANDS.values()].sort((a, b) => a.sequence - b.sequence)
       },
@@ -1515,8 +1770,8 @@ var RollbackSession = class {
       if (BASE) {
         sequences = BASE.commandSequences;
         for (let t = BASE.tick; t < tick; t++) {
-          const INPUTS = this.players.map((id) => {
-            const FRAME = this._inputs.get(id).get(t);
+          const INPUTS = this.players.map((id, index) => {
+            const FRAME = this._inputs[index].get(t);
             return FRAME ? {
               ...FRAME,
               playerId: id
@@ -1552,35 +1807,59 @@ var RollbackSession = class {
   _sealLocal(tick, fallback) {
     const RESERVED = this._localReservations.get(tick);
     const INPUT_LOCAL = RESERVED?.input ?? fallback;
-    const COMMANDS = this._pendingCommands.filter((c) => c.executeTick === tick);
-    if (this._pendingCommands.some((c) => c.executeTick < tick)) {
-      throw new Error("reserved command missed its execution tick");
+    let commands = NO_COMMANDS;
+    const PENDING = this._pendingCommands;
+    if (PENDING.length) {
+      let due = 0;
+      for (let i = 0; i < PENDING.length; i++) {
+        if (PENDING[i].executeTick < tick) {
+          throw new Error("reserved command missed its execution tick");
+        }
+        if (PENDING[i].executeTick === tick) {
+          due++;
+        }
+      }
+      if (due) {
+        commands = [];
+        let kept2 = 0;
+        for (let i = 0; i < PENDING.length; i++) {
+          if (PENDING[i].executeTick === tick) {
+            commands.push(PENDING[i]);
+          } else {
+            PENDING[kept2++] = PENDING[i];
+          }
+        }
+        PENDING.length = kept2;
+      }
     }
-    this._pendingCommands = this._pendingCommands.filter((c) => c.executeTick !== tick);
-    this._commitLocal(tick, INPUT_LOCAL, COMMANDS);
+    this._commitLocal(tick, INPUT_LOCAL, commands);
     this._localReservations.delete(tick);
     this._localCapture = {
       sequence: ++this._localCaptureSequence,
       captureTick: this.tick,
       executeTick: tick,
-      input: INPUT_LOCAL.slice(),
-      commands: COMMANDS.map((c) => ({
-        ...c,
-        payload: c.payload.slice()
-      }))
+      input: INPUT_LOCAL,
+      commands
     };
-    this._localCaptures.push(this._localCapture);
-    this._localCaptures = this._localCaptures.filter((c) => c.executeTick >= Math.max(0, this.tick - 1));
+    const CAPTURES = this._localCaptures, MIN_TICK = Math.max(0, this.tick - 1);
+    CAPTURES.push(this._localCapture);
+    let kept = 0;
+    for (let i = 0; i < CAPTURES.length; i++) {
+      if (CAPTURES[i].executeTick >= MIN_TICK) {
+        CAPTURES[kept++] = CAPTURES[i];
+      }
+    }
+    CAPTURES.length = kept;
     return INPUT_LOCAL;
   }
   _capture(input) {
-    this.submitInput(input);
+    this._submit(input, NO_PAYLOADS, false);
     if (this._captureTick === this.tick) {
       return;
     }
     this._captureTick = this.tick;
-    const THROUGH = this._through.get(this.localPlayerId);
-    let held = this._inputs.get(this.localPlayerId).get(THROUGH)?.input ?? this._lastLocalInput;
+    const THROUGH = this._through[this._local];
+    let held = this._inputs[this._local].get(THROUGH)?.input ?? this._lastLocalInput;
     if (this.profile.inputScheduling === "configured" && this._requestedInputDelay < this.inputDelay && equalBytes(this._lastLocalInput, held) && !this._pendingCommands.length) {
       this._applyInputDelay(this.inputDelay - 1);
     }
@@ -1594,8 +1873,8 @@ var RollbackSession = class {
       return;
     }
     const RECEIPT = this.submitInput(new Uint8Array(this.inputSize));
-    let held = this._inputs.get(this.localPlayerId).get(this._through.get(this.localPlayerId))?.input ?? this._lastLocalInput;
-    for (let t = this._through.get(this.localPlayerId) + 1; t <= RECEIPT.executeTick; t++) {
+    let held = this._inputs[this._local].get(this._through[this._local])?.input ?? this._lastLocalInput;
+    for (let t = this._through[this._local] + 1; t <= RECEIPT.executeTick; t++) {
       held = this._sealLocal(t, held);
     }
     for (const PEER of this._peers.values()) {
@@ -1608,61 +1887,68 @@ var RollbackSession = class {
     });
   }
   _sendInputs(peer) {
-    const MAP = this._inputs.get(this.localPlayerId);
+    const MAP = this._inputs[this._local];
     const FIRST = peer.ack + 1;
     if (!MAP.has(FIRST)) {
       return;
     }
-    const FRAMES = [];
+    let count = 0;
     let cost = HEADER + 16;
-    for (let t = FIRST; FRAMES.length < 128 && MAP.has(t); t++) {
-      const F = MAP.get(t);
-      const N = 7 + this.inputSize + F.commands.reduce((s, c) => s + 6 + c.payload.length, 0);
-      if (cost + N > CHUNK_SIZE) {
+    for (; count < 128; count++) {
+      const F = MAP.get(FIRST + count);
+      if (!F) {
         break;
       }
-      FRAMES.push(F);
-      cost += N;
+      let n = 7 + this.inputSize;
+      for (let c = 0; c < F.commands.length; c++) {
+        n += 6 + F.commands[c].payload.length;
+      }
+      if (cost + n > CHUNK_SIZE) {
+        break;
+      }
+      cost += n;
     }
-    if (!FRAMES.length) {
+    if (!count) {
       return;
     }
-    this._send(
-      peer,
-      packet(TYPE.INPUT, this._nextSequence(), (w) => {
-        w.u32(FIRST);
-        w.u16(FRAMES.length);
-        w.u16(this.inputSize);
-        w.i32(this._through.get(peer.id));
-        w.u32(this.tick);
-        for (let i = 0; i < FRAMES.length; ) {
-          const F = FRAMES[i];
-          let run = 1;
-          while (i + run < FRAMES.length && !FRAMES[i + run].commands.length && equalBytes(F.input, FRAMES[i + run].input)) {
-            run++;
-          }
-          w.u16(run);
-          w.raw(F.input);
-          w.u16(F.commands.length);
-          for (const C of F.commands) {
-            w.u32(C.sequence);
-            w.u16(C.payload.length);
-            w.raw(C.payload);
-          }
-          i += run;
+    const W = beginPacket(TYPE.INPUT, this._nextSequence(), this._wireTag);
+    W.u32(FIRST);
+    W.u16(count);
+    W.u16(this.inputSize);
+    W.i32(this._through[peer.index]);
+    W.u32(this.tick);
+    for (let i = 0; i < count; ) {
+      const F = MAP.get(FIRST + i);
+      let run = 1;
+      while (i + run < count) {
+        const NEXT = MAP.get(FIRST + i + run);
+        if (NEXT.commands.length || !equalBytes(F.input, NEXT.input)) {
+          break;
         }
-      })
-    );
+        run++;
+      }
+      W.u16(run);
+      W.raw(F.input);
+      W.u16(F.commands.length);
+      for (let c = 0; c < F.commands.length; c++) {
+        const C = F.commands[c];
+        W.u32(C.sequence);
+        W.u16(C.payload.length);
+        W.raw(C.payload);
+      }
+      i += run;
+    }
+    this._send(peer, W.finish());
   }
   _sendClock(peer, now, replyTo) {
     const ID = this._nextSequence();
-    const DATA = packet(TYPE.CLOCK, ID, (w) => {
-      w.u32(this.tick);
-      w.i32(this.confirmedTick);
-      w.i32(this._through.get(peer.id));
-      w.u32(replyTo ?? 0);
-      w.u8(replyTo === void 0 ? 0 : 1);
-    });
+    const W = beginPacket(TYPE.CLOCK, ID, this._wireTag);
+    W.u32(this.tick);
+    W.i32(this.confirmedTick);
+    W.i32(this._through[peer.index]);
+    W.u32(replyTo ?? 0);
+    W.u8(replyTo === void 0 ? 0 : 1);
+    const DATA = W.finish();
     if (this._send(peer, DATA)) {
       if (replyTo === void 0) {
         peer.pendingPings.set(ID, now);
@@ -1735,7 +2021,7 @@ var RollbackSession = class {
       return false;
     }
     const PEER = this._peers.get(peerId);
-    if (!PEER || ["closed", "failed"].includes(PEER.transportState)) {
+    if (!PEER || PEER.transportState === "closed" || PEER.transportState === "failed") {
       return false;
     }
     try {
@@ -1758,7 +2044,7 @@ var RollbackSession = class {
         throw new Error("protocol version");
       }
       const TYPE_LOCAL = R.u8();
-      if (R.u16() !== 0) {
+      if (R.u16() !== this._wireTag) {
         throw new Error("reserved header");
       }
       const SEQUENCE = R.u32();
@@ -1860,7 +2146,7 @@ var RollbackSession = class {
     if (!COUNT || COUNT > 128 || SIZE !== this.inputSize || FIRST + COUNT - 1 > MAX_TICK || FIRST + COUNT > this.tick + this.profile.stateHistorySize * 4 + this.profile.maxInputDelayTicks + 1) {
       throw new RangeError("input timeline");
     }
-    if (ACK < -1 || ACK > this._through.get(this.localPlayerId)) {
+    if (ACK < -1 || ACK > this._through[this._local]) {
       throw new RangeError("ack");
     }
     const INCOMING = [];
@@ -1869,7 +2155,7 @@ var RollbackSession = class {
       if (!RUN || INCOMING.length + RUN > COUNT) {
         throw new RangeError("input run");
       }
-      const INPUT_LOCAL = r.raw(SIZE), N = r.u16(), COMMANDS = [];
+      const INPUT_LOCAL = r.rawView(SIZE), N = r.u16(), COMMANDS = N ? [] : NO_COMMANDS;
       if (N > this.profile.maxPendingCommands) {
         throw new RangeError("command count");
       }
@@ -1892,15 +2178,17 @@ var RollbackSession = class {
       });
       for (let j = 1; j < RUN; j++) {
         INCOMING.push({
-          input: INPUT_LOCAL.slice(),
-          commands: []
+          input: INPUT_LOCAL,
+          commands: NO_COMMANDS
         });
       }
     }
     r.end();
-    const MAP = this._inputs.get(peer.id);
+    const MAP = this._inputs[peer.index];
     for (let i = 0; i < COUNT; i++) {
-      for (const COMMAND of INCOMING[i].commands) {
+      const INCOMING_COMMANDS = INCOMING[i].commands;
+      for (let c = 0; c < INCOMING_COMMANDS.length; c++) {
+        const COMMAND = INCOMING_COMMANDS[c];
         const RESERVED = peer.reservedCommands?.get(COMMAND.sequence);
         if (RESERVED && (RESERVED.executeTick !== FIRST + i || !equalBytes(RESERVED.payload, COMMAND.payload))) {
           throw new Error("canonical command moved its reserved tick");
@@ -1933,22 +2221,29 @@ var RollbackSession = class {
       peer.clockAt = now;
     }
     const OLDEST = Math.max(0, this.tick - this.profile.stateHistorySize + 1);
+    let viewed = null, owned = null;
     for (let i = 0; i < COUNT; i++) {
       const T = FIRST + i;
       if (MAP.has(T) || T < OLDEST) {
         continue;
       }
       peer.reservedCommands ??= /* @__PURE__ */ new Map();
-      for (const COMMAND of INCOMING[i].commands) {
-        peer.reservedCommands.set(COMMAND.sequence, COMMAND);
+      const FRAME = INCOMING[i];
+      for (let c = 0; c < FRAME.commands.length; c++) {
+        peer.reservedCommands.set(FRAME.commands[c].sequence, FRAME.commands[c]);
       }
-      MAP.set(T, INCOMING[i]);
+      if (FRAME.input !== viewed) {
+        viewed = FRAME.input;
+        owned = viewed.slice();
+      }
+      FRAME.input = owned;
+      MAP.set(T, FRAME);
       peer.reservations?.delete(T);
       this._window.received++;
       if (T < this.tick) {
         this._window.late++;
       }
-      const USED = this._used.get(T)?.find((x) => x.playerId === peer.id);
+      const USED = this._used.get(T)?.[peer.index];
       if (USED && T < this.tick && !frameEqual(USED, INCOMING[i])) {
         if (this.profile.mode === "lockstep") {
           this._fail("desync-unrecoverable", {
@@ -1968,11 +2263,11 @@ var RollbackSession = class {
         }
       }
     }
-    let through = this._through.get(peer.id);
+    let through = this._through[peer.index];
     while (MAP.has(through + 1)) {
       through++;
     }
-    this._through.set(peer.id, through);
+    this._through[peer.index] = through;
   }
   _receiveClock(peer, r, sequence, now) {
     const TICK = r.u32(), CONFIRMED = r.i32(), ACK = r.i32(), ECHO = r.u32(), REPLY = r.u8();
@@ -1980,7 +2275,7 @@ var RollbackSession = class {
     if (REPLY > 1) {
       throw new RangeError("clock reply flag");
     }
-    if (TICK > MAX_TICK + 1 || CONFIRMED < -1 || CONFIRMED > ACK || ACK < -1 || ACK > this._through.get(this.localPlayerId)) {
+    if (TICK > MAX_TICK + 1 || CONFIRMED < -1 || CONFIRMED > ACK || ACK < -1 || ACK > this._through[this._local]) {
       throw new RangeError("clock/ack");
     }
     const FRESH = peer.clockSequence === null || sequence - peer.clockSequence >>> 0 < 2147483648 && sequence !== peer.clockSequence;
@@ -2006,55 +2301,68 @@ var RollbackSession = class {
       const DIFFERENCE = Math.abs(SAMPLE - peer.rtt);
       peer.rtt = peer.rtt ? peer.rtt * 0.875 + SAMPLE * 0.125 : SAMPLE;
       peer.jitter = peer.jitter * 0.75 + (peer.rtt === SAMPLE ? 0 : DIFFERENCE * 0.25);
-      this._metrics.smoothedRTT = Math.max(...[...this._peers.values()].map((p) => p.rtt));
-      this._metrics.jitter = Math.max(...[...this._peers.values()].map((p) => p.jitter));
+      let rtt = -Infinity, jitter = -Infinity;
+      for (const PEER of this._peers.values()) {
+        rtt = Math.max(rtt, PEER.rtt);
+        jitter = Math.max(jitter, PEER.jitter);
+      }
+      this._metrics.smoothedRTT = rtt;
+      this._metrics.jitter = jitter;
     }
   }
+  // 돌려주는 frame은 내부 원본 bytes를 참조합니다. 어댑터에는 runSimulationFrame이 복사본을 넘기고,
+  // 기록(_used·리플레이)은 이 원본을 고치지 않고 보관합니다. 순서는 this.players와 같습니다.
   _resolve(tick) {
-    return this.players.map((playerId) => {
-      const MAP = this._inputs.get(playerId), ACTUAL = MAP.get(tick);
+    const OUT = new Array(this.players.length);
+    for (let i = 0; i < this.players.length; i++) {
+      const PLAYER_ID = this.players[i], ACTUAL = this._inputs[i].get(tick);
       if (ACTUAL) {
-        return {
-          playerId,
-          ...copyFrame(ACTUAL),
+        OUT[i] = {
+          playerId: PLAYER_ID,
+          input: ACTUAL.input,
+          commands: ACTUAL.commands,
           predicted: false
         };
+        continue;
       }
       if (this.profile.mode === "lockstep") {
         throw new Error("lockstep input is not confirmed");
       }
-      const RESERVED = this._peers.get(playerId)?.reservations?.get(tick);
+      const RESERVED = this._peers.get(PLAYER_ID)?.reservations?.get(tick);
       if (RESERVED) {
-        return {
-          playerId,
-          ...copyFrame(RESERVED),
+        OUT[i] = {
+          playerId: PLAYER_ID,
+          input: RESERVED.input,
+          commands: RESERVED.commands,
           predicted: true
         };
+        continue;
       }
-      let prior = this._used.get(tick - 1)?.find((f) => f.playerId === playerId)?.input ?? new Uint8Array(this.inputSize);
+      let prior = this._used.get(tick - 1)?.[i]?.input ?? this._neutral;
       const POLICY = this.profile.predictionPolicy;
       if (typeof POLICY === "function") {
         prior = bytes(
           POLICY({
-            playerId,
+            playerId: PLAYER_ID,
             tick,
             previousInput: prior.slice(),
-            lastConfirmedTick: this._through.get(playerId)
+            lastConfirmedTick: this._through[i]
           })
-        );
+        ).slice();
       } else if (POLICY === "neutral") {
-        prior = new Uint8Array(this.inputSize);
+        prior = this._neutral;
       }
       if (prior.length !== this.inputSize) {
         throw new RangeError("predictor inputSize");
       }
-      return {
-        playerId,
-        input: prior.slice(),
-        commands: [],
+      OUT[i] = {
+        playerId: PLAYER_ID,
+        input: prior,
+        commands: NO_COMMANDS,
         predicted: true
       };
-    });
+    }
+    return OUT;
   }
   _restoreConfirmedBoundary(tick) {
     const BASE = this._history.atOrBefore(tick);
@@ -2073,17 +2381,22 @@ var RollbackSession = class {
     }
   }
   _replayFrameBytes(inputs) {
-    return inputs.reduce(
-      (s, f) => s + f.input.length + f.commands.reduce((k, c) => k + c.payload.length + 12, 0),
-      16
-    );
+    let n = 16;
+    for (let i = 0; i < inputs.length; i++) {
+      const F = inputs[i];
+      n += F.input.length;
+      for (let c = 0; c < F.commands.length; c++) {
+        n += F.commands[c].payload.length + 12;
+      }
+    }
+    return n;
   }
   _step(inputs, resimulating) {
     const BEFORE = this._history?.get(this.tick);
     const TICK = this.tick, LOCKSTEP = this.profile.mode === "lockstep";
     integer(TICK, "session tick limit", 0, MAX_TICK);
     if (LOCKSTEP && this._recordReplay && this._replayBytes + this._replayFrameBytes(inputs) > this.profile.maxReplayBytes) {
-      this._replayFinalHash = this.localFastPath ? hashBytes(this._save()) : this._stateHash(this._stateAt(TICK));
+      this._replayFinalHash = this.localFastPath ? hashBytes(this._saveView()) : this._stateHash(this._stateAt(TICK));
       this._recordReplay = false;
       this._event("replay-capacity");
     }
@@ -2106,28 +2419,18 @@ var RollbackSession = class {
         });
       }
       if (!LOCKSTEP) {
-        this._used.set(
-          TICK,
-          inputs.map((f) => ({
-            ...copyFrame(f),
-            playerId: f.playerId,
-            predicted: f.predicted
-          }))
-        );
+        this._used.set(TICK, inputs);
       }
       if (this.localFastPath && this._recordReplay) {
-        this._replayFrames.push({
-          tick: TICK,
-          inputs: inputs.map((f) => ({ playerId: f.playerId, ...copyFrame(f), predicted: false }))
-        });
+        this._replay.push(TICK, inputs);
         this._replayBytes += this._replayFrameBytes(inputs);
       }
       this._tick++;
       this._inputHash = INPUT_HASH;
       this._currentState = null;
-      const LOCAL_FRAME = inputs.find((frame) => frame.playerId === this.localPlayerId);
+      const LOCAL_FRAME = inputs[this._local];
       if (LOCAL_FRAME) {
-        this._localExecutedInput = LOCAL_FRAME.input.slice();
+        this._localExecutedInput = LOCAL_FRAME.input;
       }
       this._commandSequences = COMMAND_SEQUENCES;
     } catch (error) {
@@ -2235,9 +2538,10 @@ var RollbackSession = class {
         failure: this.failure
       };
     }
-    if (["interrupted", "disconnected"].includes(this.status)) {
+    const CONNECTION = this._worstConnection();
+    if (CONNECTION) {
       return {
-        status: this.status,
+        status: CONNECTION,
         tick: this.tick
       };
     }
@@ -2275,7 +2579,7 @@ var RollbackSession = class {
         tick: this.tick
       };
     }
-    if (this.profile.mode === "lockstep" && this.players.some((id) => !this._inputs.get(id).has(this.tick))) {
+    if (this.profile.mode === "lockstep" && !this._allInputsAt(this.tick)) {
       this._metrics.stalls++;
       this._window.stall++;
       return {
@@ -2283,9 +2587,14 @@ var RollbackSession = class {
         tick: this.tick
       };
     }
-    const INPUTS = this._resolve(this.tick), PREDICTED = INPUTS.some((f) => f.predicted);
-    const MIN_ACK = this._peers.size ? Math.min(...[...this._peers.values()].map((p) => p.ack)) : this.tick;
-    if (PREDICTED && this.tick - (this.confirmedTick + 1) >= this.profile.rollbackWindowTicks || this._through.get(this.localPlayerId) - MIN_ACK >= this.profile.stateHistorySize * 4) {
+    const INPUTS = this._resolve(this.tick);
+    let predicted = false;
+    for (let i = 0; i < INPUTS.length; i++) {
+      predicted ||= INPUTS[i].predicted;
+    }
+    const PREDICTED = predicted;
+    const MIN_ACK = this._minAck();
+    if (PREDICTED && this.tick - (this.confirmedTick + 1) >= this.profile.rollbackWindowTicks || this._through[this._local] - MIN_ACK >= this.profile.stateHistorySize * 4) {
       this._metrics.stalls++;
       this._window.stall++;
       return {
@@ -2306,6 +2615,27 @@ var RollbackSession = class {
       status: "advanced",
       tick: this.tick
     };
+  }
+  _allInputsAt(tick) {
+    for (let i = 0; i < this._inputs.length; i++) {
+      if (!this._inputs[i].has(tick)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  /** 연결된 peer가 받았다고 알린 로컬 입력 틱의 최솟값, peer가 없으면 현재 tick. */
+  _minAck() {
+    if (!this._peers.size) {
+      return this.tick;
+    }
+    let min = Infinity;
+    for (const PEER of this._peers.values()) {
+      if (PEER.ack < min) {
+        min = PEER.ack;
+      }
+    }
+    return min;
   }
   _adapt(now) {
     if (this._lastAdaptation === null) {
@@ -2373,14 +2703,11 @@ var RollbackSession = class {
     }
     for (const PEER of this._peers.values()) {
       if (PEER.ready && PEER.lastHashQueued < T) {
-        if (this._queue(
-          PEER,
-          packet(TYPE.HASH, this._nextSequence(), (w) => {
-            w.u32(T);
-            w.u32(this._stateHash(S));
-            w.u32(S.inputHash);
-          })
-        )) {
+        const W = beginPacket(TYPE.HASH, this._nextSequence(), this._wireTag);
+        W.u32(T);
+        W.u32(this._stateHash(S));
+        W.u32(S.inputHash);
+        if (this._queue(PEER, W.finish())) {
           PEER.lastHashQueued = T;
         }
       }
@@ -2455,8 +2782,8 @@ var RollbackSession = class {
     }
     const FRAMES = [];
     for (let frameTick = CHECKPOINT.tick; frameTick < tick; frameTick++) {
-      const INPUTS = this.players.map((playerId) => {
-        const FRAME = this._inputs.get(playerId).get(frameTick);
+      const INPUTS = this.players.map((playerId, index) => {
+        const FRAME = this._inputs[index].get(frameTick);
         if (!FRAME) {
           throw new Error("confirmed bootstrap input is unavailable");
         }
@@ -2494,7 +2821,7 @@ var RollbackSession = class {
     if (this.localFastPath) {
       throw new Error("confirmed bootstrap unavailable in local fast path");
     }
-    if (this.closed || this._failure || this.resimulating || !bootstrap || bootstrap.tick < this.confirmedBoundary || bootstrap.tick - bootstrap.checkpoint?.tick > this.profile.stateHistorySize || !Array.isArray(bootstrap.frames) || bootstrap.frames.length !== bootstrap.tick - bootstrap.checkpoint.tick || JSON.stringify(bootstrap.players) !== JSON.stringify(this.players)) {
+    if (this.closed || this._failure || this.resimulating || !bootstrap || bootstrap.tick < this.confirmedBoundary || bootstrap.tick - bootstrap.checkpoint?.tick > this.profile.stateHistorySize || !Array.isArray(bootstrap.frames) || bootstrap.frames.length !== bootstrap.tick - bootstrap.checkpoint.tick || !equalIds(bootstrap.players, this.players)) {
       throw new Error("resume bootstrap boundary");
     }
     const BASE = this._history.get(bootstrap.checkpoint.tick);
@@ -2508,7 +2835,7 @@ var RollbackSession = class {
         throw new Error("resume input suffix shape");
       }
       for (let p = 0; p < this.players.length; p++) {
-        const ID = this.players[p], INCOMING = FRAME.inputs[p], KNOWN = this._inputs.get(ID).get(TICK);
+        const ID = this.players[p], INCOMING = FRAME.inputs[p], KNOWN = this._inputs[p].get(TICK);
         if (INCOMING?.playerId !== ID || INCOMING.predicted || !Array.isArray(INCOMING.commands) || !KNOWN && (TICK < this.confirmedBoundary || ID === this.localPlayerId) || KNOWN && !frameEqual(KNOWN, INCOMING)) {
           throw new Error("resume input conflicts with retained agreement");
         }
@@ -2550,10 +2877,9 @@ var RollbackSession = class {
       return false;
     }
     tick = STATE.tick;
-    if (!this._queue(
-      PEER,
-      packet(TYPE.REQUEST, this._nextSequence(), (w) => w.u32(tick))
-    )) {
+    const W = beginPacket(TYPE.REQUEST, this._nextSequence(), this._wireTag);
+    W.u32(tick);
+    if (!this._queue(PEER, W.finish())) {
       return false;
     }
     this._requestedRecovery = {
@@ -2573,26 +2899,24 @@ var RollbackSession = class {
       return;
     }
     const TRANSFER = ++this._nextTransfer >>> 0, COUNT = Math.ceil(STATE.bytes.length / SNAP_CHUNK_BYTES);
-    const PACKETS = [
-      packet(TYPE.BEGIN, this._nextSequence(), (w) => {
-        w.u32(TRANSFER);
-        w.u32(tick);
-        w.u32(STATE.bytes.length);
-        w.u32(this._stateHash(STATE));
-        w.u32(STATE.inputHash);
-        w.u16(COUNT);
-      })
-    ];
+    const BEGIN = beginPacket(TYPE.BEGIN, this._nextSequence(), this._wireTag);
+    BEGIN.u32(TRANSFER);
+    BEGIN.u32(tick);
+    BEGIN.u32(STATE.bytes.length);
+    BEGIN.u32(this._stateHash(STATE));
+    BEGIN.u32(STATE.inputHash);
+    BEGIN.u16(COUNT);
+    const PACKETS = [BEGIN.finish()];
+    let total = PACKETS[0].length;
     for (let i = 0; i < COUNT; i++) {
-      PACKETS.push(
-        packet(TYPE.CHUNK, this._nextSequence(), (w) => {
-          w.u32(TRANSFER);
-          w.u32(i);
-          w.raw(STATE.bytes.subarray(i * SNAP_CHUNK_BYTES, (i + 1) * SNAP_CHUNK_BYTES));
-        })
-      );
+      const W = beginPacket(TYPE.CHUNK, this._nextSequence(), this._wireTag);
+      W.u32(TRANSFER);
+      W.u32(i);
+      W.raw(STATE.bytes.subarray(i * SNAP_CHUNK_BYTES, (i + 1) * SNAP_CHUNK_BYTES));
+      PACKETS.push(W.finish());
+      total += PACKETS[i + 1].length;
     }
-    if (peer.queuedBytes + PACKETS.reduce((s, b) => s + b.length, 0) > this.profile.maxQueuedBytes) {
+    if (peer.queuedBytes + total > this.profile.maxQueuedBytes) {
       this._event("recovery-backpressure", {
         peerId: peer.id
       });
@@ -2687,7 +3011,7 @@ var RollbackSession = class {
         throw new Error("adapter rejected candidate");
       }
       this.adapter.load(candidate.bytes.slice());
-      if (!equalBytes(this._save(), candidate.bytes)) {
+      if (!equalBytes(this._saveView(), candidate.bytes)) {
         throw new Error("snapshot round-trip changed candidate");
       }
       const JOB = {
@@ -2728,8 +3052,8 @@ var RollbackSession = class {
         if (!LOCKSTEP) {
           JOB.stagedInputs.push([T, INPUTS]);
         }
-        if (LOCKSTEP && !this._recordReplay && T + 1 === this._replayFrames.length) {
-          JOB.replayFinalHash = hashBytes(this._save());
+        if (LOCKSTEP && !this._recordReplay && T + 1 === this._replay.ticks) {
+          JOB.replayFinalHash = hashBytes(this._saveView());
         }
         JOB.next++;
         this._metrics.resimulatedTicks++;
@@ -2764,7 +3088,7 @@ var RollbackSession = class {
       this._currentState = null;
       if (this.profile.mode === "lockstep") {
         this._replayFinalState = null;
-        if (!this._recordReplay && JOB.candidate.tick === this._replayFrames.length) {
+        if (!this._recordReplay && JOB.candidate.tick === this._replay.ticks) {
           this._replayFinalHash = JOB.candidate.hash;
         }
         if (JOB.replayFinalHash !== void 0) {
@@ -2792,15 +3116,14 @@ var RollbackSession = class {
     if (this.localFastPath || !this._recordReplay || this.resimulating || this._failure) {
       return;
     }
-    this._replayFinalState = this._history.get(this._replayFrames.length) ?? this._replayFinalState;
+    this._replayFinalState = this._history.get(this._replay.ticks) ?? this._replayFinalState;
     const THROUGH = Math.min(this.confirmedTick, this.tick - 1);
-    for (let t = this._replayFrames.length; t <= THROUGH; t++) {
-      const INPUTS = this.players.map((playerId) => ({
-        playerId,
-        ...copyFrame(this._inputs.get(playerId).get(t)),
-        predicted: false
-      }));
-      const N = this._replayFrameBytes(INPUTS);
+    const FRAMES = this._replayScratch ??= new Array(this.players.length);
+    for (let t = this._replay.ticks; t <= THROUGH; t++) {
+      for (let i = 0; i < FRAMES.length; i++) {
+        FRAMES[i] = this._inputs[i].get(t);
+      }
+      const N = this._replayFrameBytes(FRAMES);
       if (this._replayBytes + N > this.profile.maxReplayBytes) {
         this._replayFinalHash = this._stateHash(this._replayFinalState);
         this._replayFinalState = null;
@@ -2808,10 +3131,7 @@ var RollbackSession = class {
         this._event("replay-capacity");
         return;
       }
-      this._replayFrames.push({
-        tick: t,
-        inputs: INPUTS
-      });
+      this._replay.push(t, FRAMES);
       this._replayBytes += N;
       this._replayFinalState = this._history.get(t + 1);
     }
@@ -2831,17 +3151,21 @@ var RollbackSession = class {
       inputSize: this.inputSize,
       tickRate: this.profile.tickRate,
       initialTick: 0,
-      frames: this._replayFrames.slice(0, maxFrames).map((f) => ({
+      frames: this._replay.frames.slice(0, maxFrames).map((f) => ({
         tick: f.tick,
-        inputs: f.inputs.map((x) => ({
+        inputs: f.inputs.map((x, index) => ({
           ...copyFrame(x),
-          playerId: x.playerId,
+          playerId: this.players[index],
           predicted: false
         }))
       }))
     };
   }
   exportReplay() {
+    return this._exportReplay(Infinity);
+  }
+  /** `ticks`보다 뒤에 기록된 확정 틱은 빼고 내보냅니다(RoomSession 세대 경계). */
+  _exportReplay(ticks) {
     if (this.localFastPath && !this._initialState) {
       throw new Error("replay unavailable in local fast path without recordReplay");
     }
@@ -2849,8 +3173,8 @@ var RollbackSession = class {
       throw new Error("finish rollback before exporting replay");
     }
     this._recordConfirmed();
-    const TICK = this._replayFrames.length;
-    const HASH_LOCAL = this.localFastPath ? this._recordReplay ? hashBytes(this._save()) : this._replayFinalHash : this._stateHash(this._stateAt(TICK)) ?? this._stateHash(this._replayFinalState) ?? this._replayFinalHash;
+    const TICK = Math.min(this._replay.ticks, ticks);
+    const HASH_LOCAL = TICK < this._replay.ticks ? this._stateHash(this._stateAt(TICK)) : this.localFastPath ? this._recordReplay ? hashBytes(this._saveView()) : this._replayFinalHash : this._stateHash(this._stateAt(TICK)) ?? this._stateHash(this._replayFinalState) ?? this._replayFinalHash;
     if (TICK > 0 && HASH_LOCAL === void 0) {
       throw new Error("replay final boundary is unavailable after fatal restoration failure");
     }
@@ -2862,7 +3186,7 @@ var RollbackSession = class {
       inputSize: this.inputSize,
       tickRate: this.profile.tickRate,
       initialState: this._initialState.slice(),
-      ...encodeReplayFrames(this._replayFrames, this.players),
+      ...this._replay.export(TICK),
       tick: TICK,
       hash: HASH_LOCAL ?? hashBytes(this._initialState),
       truncated: !this._recordReplay
@@ -2871,35 +3195,42 @@ var RollbackSession = class {
   _prune() {
     const WINDOW_OLDEST = Math.max(0, this.tick - this.profile.stateHistorySize + 1);
     const OLDEST = this.profile.mode === "lockstep" ? Math.min(WINDOW_OLDEST, this._history?.oldestTick ?? WINDOW_OLDEST) : WINDOW_OLDEST;
-    for (const T of this._used.keys()) {
-      if (T < OLDEST - 1) {
-        this._used.delete(T);
-      }
+    const USED_LIMIT = OLDEST - 1;
+    for (let t = this._usedPruned; t < USED_LIMIT; t++) {
+      this._used.delete(t);
     }
+    this._usedPruned = Math.max(this._usedPruned, USED_LIMIT);
     for (const PEER of this._peers.values()) {
-      for (const T of PEER.reservations?.keys() ?? []) {
-        if (T < OLDEST) {
-          PEER.reservations.delete(T);
+      if (PEER.reservations) {
+        for (const T of PEER.reservations.keys()) {
+          if (T < OLDEST) {
+            PEER.reservations.delete(T);
+          }
         }
       }
-      for (const [SEQ, C] of PEER.reservedCommands ?? []) {
-        if (C.executeTick < OLDEST) {
-          PEER.reservedCommands.delete(SEQ);
+      if (PEER.reservedCommands) {
+        for (const [SEQ, C] of PEER.reservedCommands) {
+          if (C.executeTick < OLDEST) {
+            PEER.reservedCommands.delete(SEQ);
+          }
         }
       }
-      for (const T of PEER.reservationAcks?.keys() ?? []) {
-        if (T < OLDEST) {
-          PEER.reservationAcks.delete(T);
+      if (PEER.reservationAcks) {
+        for (const T of PEER.reservationAcks.keys()) {
+          if (T < OLDEST) {
+            PEER.reservationAcks.delete(T);
+          }
         }
       }
     }
-    const MIN_ACK = this._peers.size ? Math.min(...[...this._peers.values()].map((p) => p.ack)) : this.tick;
-    for (const [PLAYER_ID, MAP] of this._inputs) {
-      for (const T of MAP.keys()) {
-        if (T < OLDEST && (PLAYER_ID !== this.localPlayerId || T <= MIN_ACK)) {
-          MAP.delete(T);
-        }
+    const MIN_ACK = this._minAck();
+    for (let i = 0; i < this._inputs.length; i++) {
+      const LIMIT = i === this._local ? Math.min(OLDEST, MIN_ACK + 1) : OLDEST;
+      const MAP = this._inputs[i];
+      for (let t = this._inputsPruned[i]; t < LIMIT; t++) {
+        MAP.delete(t);
       }
+      this._inputsPruned[i] = Math.max(this._inputsPruned[i], LIMIT);
     }
   }
   close() {
@@ -3087,8 +3418,8 @@ function createBootstrapReplay({
   players,
   seed
 } = {}) {
-  if (!adapter || ["save", "load", "step", "validateSnapshot"].some((name) => typeof adapter[name] !== "function")) {
-    throw new TypeError("Simulation Adapter must save, load, step, validateSnapshot");
+  if (!adapter || ["saveInto", "load", "step", "validateSnapshot"].some((name) => typeof adapter[name] !== "function")) {
+    throw new TypeError("Simulation Adapter must saveInto, load, step, validateSnapshot");
   }
   integer(maxCatchupSteps, "maxCatchupSteps", 1, MAX_SUFFIX_TICKS);
   if (!Number.isFinite(maxCatchupMs) || maxCatchupMs <= 0 || typeof clock !== "function") {
@@ -3118,8 +3449,9 @@ function createBootstrapReplay({
     },
     COOPERATIVE
   );
+  const SNAPSHOT_BUFFER = new ByteBuffer();
   const SAVE = () => {
-    const DATA = bytes(adapter.save(), "bootstrap adapter snapshot");
+    const DATA = saveSnapshot(adapter, SNAPSHOT_BUFFER);
     if (!DATA.length || DATA.length > maxSnapshotBytes) {
       throw new RangeError("bootstrap adapter snapshot size");
     }
@@ -3724,7 +4056,7 @@ var Availability = class {
     }
     let reason = ALL_RESUMED ? "all-resume" : this.requested;
     reason ??= PARTICIPANTS.map((id) => SUMMARIES.get(id)?.requested).find(Boolean);
-    if (!EQUAL(ELIGIBLE, S.activePlayers) || PARTICIPANTS.some((id) => SUMMARIES.get(id)?.branch !== this.branch)) {
+    if (!equalIds(ELIGIBLE, S.activePlayers) || PARTICIPANTS.some((id) => SUMMARIES.get(id)?.branch !== this.branch)) {
       reason ??= "liveness";
     }
     let transferTo = null;
@@ -3765,13 +4097,27 @@ var Availability = class {
     }
     const GROUPS = /* @__PURE__ */ new Map();
     for (const [ID, V2] of votes) {
-      const KEY = V2.tick + ":" + V2.hash;
-      if (!GROUPS.has(KEY)) {
-        GROUPS.set(KEY, []);
+      let byHash = GROUPS.get(V2.tick);
+      if (!byHash) {
+        byHash = /* @__PURE__ */ new Map();
+        GROUPS.set(V2.tick, byHash);
       }
-      GROUPS.get(KEY).push(ID);
+      let ids = byHash.get(V2.hash);
+      if (!ids) {
+        ids = [];
+        byHash.set(V2.hash, ids);
+      }
+      ids.push(ID);
     }
-    const MAJORITY = [...GROUPS.values()].filter((ids) => ids.length > S.players.length / 2).sort((a, b) => b.length - a.length)[0];
+    let majority;
+    for (const BY_HASH of GROUPS.values()) {
+      for (const IDS of BY_HASH.values()) {
+        if (IDS.length > S.players.length / 2 && (!majority || IDS.length > majority.length)) {
+          majority = IDS;
+        }
+      }
+    }
+    const MAJORITY = majority;
     let donor = MAJORITY?.sort(COMPARE_IDS)[0];
     const LATEST_TICK = Math.max(...votes.map(([, v]) => v.tick));
     const ANCHOR = votes.find(([id, v]) => id === this.anchorId && (!ALL_RESUMED || v.tick === LATEST_TICK))?.[0];
@@ -3810,7 +4156,7 @@ var Availability = class {
       return;
     }
     if (OP === "probe") {
-      if (!BRANCH_VALID(m.round) || m.leader !== from || !Array.isArray(m.participants) || !EQUAL(SORTED([...new Set(m.participants)]), m.participants) || !m.participants.includes(S.localPlayerId) || m.participants.some((id) => !S.players.includes(id))) {
+      if (!BRANCH_VALID(m.round) || m.leader !== from || !Array.isArray(m.participants) || !equalIds(SORTED([...new Set(m.participants)]), m.participants) || !m.participants.includes(S.localPlayerId) || m.participants.some((id) => !S.players.includes(id))) {
         return;
       }
       if (S._transition && !S._transition.availability) {
@@ -3842,7 +4188,7 @@ var Availability = class {
       ROUND2.bootstrap = S._core ? S._exportBootstrap() : S._suspendedBootstrap;
       ROUND2.sourceBaseTick = S.baseTick;
       ROUND2.sourceEpoch = S.epoch;
-      ROUND2.original = bytes(S.adapter.save()).slice();
+      ROUND2.original = saveSnapshot(S.adapter, new ByteBuffer()).slice();
       if (ROUND2.reason === "all-resume" && VOTE.retainedBoundary && VOTE.tick === S.tick) {
         if (!ROUND2.bootstrap || hashBytes(ROUND2.original) !== VOTE.hash) {
           throw new Error("availability retained boundary changed");
@@ -3913,7 +4259,7 @@ var Availability = class {
     }
     if (OP === "checkpoint" && from === ROUND.decision?.donor && !S._transition) {
       const D = ROUND.decision;
-      if (m.bootstrap?.hash !== D.hash || m.baseTick + m.bootstrap?.tick !== D.tick || m.sourceEpoch !== ROUND.votes.get(from).epoch || !EQUAL(m.bootstrap.players, ROUND.votes.get(from).activePlayers)) {
+      if (m.bootstrap?.hash !== D.hash || m.baseTick + m.bootstrap?.tick !== D.tick || m.sourceEpoch !== ROUND.votes.get(from).epoch || !equalIds(m.bootstrap.players, ROUND.votes.get(from).activePlayers)) {
         throw new Error("availability checkpoint certificate");
       }
       S._transition = {
@@ -4047,13 +4393,29 @@ var TYPED_KINDS = [
 ];
 var FLOAT_KIND_START = 5;
 var SCRATCH_LIMIT = 8 * 1024 * 1024;
+var LITTLE_ENDIAN = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
 function typedKindOf(value) {
+  if (!ArrayBuffer.isView(value)) {
+    return -1;
+  }
   for (let i = 0; i < TYPED_KINDS.length; i++) {
     if (value instanceof TYPED_KINDS[i][0]) {
       return i;
     }
   }
   return -1;
+}
+function bulkTyped(value, kind) {
+  if (kind < FLOAT_KIND_START) {
+    return true;
+  }
+  for (let i = 0; i < value.length; i++) {
+    const ELEMENT = value[i];
+    if (!Number.isFinite(ELEMENT) || ELEMENT === 0 && 1 / ELEMENT < 0) {
+      return false;
+    }
+  }
+  return true;
 }
 function createValueCodec({
   format = "binary",
@@ -4068,7 +4430,24 @@ function createValueCodec({
   if (typeof omitUndefined !== "boolean") {
     throw new TypeError("omitUndefined must be boolean");
   }
-  const KEYS_OF = (value) => Object.keys(value).filter((key) => !omitUndefined || value[key] !== void 0).sort();
+  function keysOf(value) {
+    const KEYS = Object.keys(value);
+    if (omitUndefined) {
+      let kept = 0;
+      for (let i = 0; i < KEYS.length; i++) {
+        if (value[KEYS[i]] !== void 0) {
+          KEYS[kept++] = KEYS[i];
+        }
+      }
+      KEYS.length = kept;
+    }
+    for (let i = 1; i < KEYS.length; i++) {
+      if (!(KEYS[i - 1] < KEYS[i])) {
+        return KEYS.sort();
+      }
+    }
+    return KEYS;
+  }
   for (const LIMIT of [maxBytes, maxDepth, maxEntries]) {
     if (!Number.isSafeInteger(LIMIT) || LIMIT < 1) {
       throw new RangeError("Invalid codec limit");
@@ -4116,7 +4495,7 @@ function createValueCodec({
         throw new TypeError("Plain records required");
       }
       result = {};
-      for (const KEY of KEYS_OF(value)) {
+      for (const KEY of keysOf(value)) {
         normalize(KEY, depth + 1, seen, budget);
         Object.defineProperty(result, KEY, {
           value: normalize(value[KEY], depth + 1, seen, budget),
@@ -4156,6 +4535,19 @@ function createValueCodec({
     return data;
   }
   function encode(value) {
+    return encodeTo(value, null);
+  }
+  function encodeInto(value, out) {
+    if (!out || typeof out.reserve !== "function") {
+      throw new TypeError("encodeInto requires a ByteBuffer");
+    }
+    if (format === "json") {
+      return out.write(encodeTo(value, null));
+    }
+    return encodeTo(value, out);
+  }
+  function encodeTo(value, out) {
+    const OUT = out;
     if (format === "json") {
       const BYTES = ENCODER2.encode(JSON.stringify(normalize(value)));
       if (BYTES.length > maxBytes) {
@@ -4163,19 +4555,23 @@ function createValueCodec({
       }
       return BYTES;
     }
-    const NESTED = encoding;
-    encoding = true;
-    let bytes2 = !NESTED && scratch ? scratch : new Uint8Array(Math.min(1024, maxBytes));
-    let offset = 0;
+    const NESTED = OUT ? true : encoding;
+    if (!OUT) {
+      encoding = true;
+    }
+    let bytes2 = OUT ? OUT.bytes : !NESTED && scratch ? scratch : new Uint8Array(Math.min(1024, maxBytes));
+    const START = OUT ? OUT.length : 0;
+    let offset = START;
     let view = new DataView(bytes2.buffer);
     let entries = 0;
     const SEEN = /* @__PURE__ */ new Set(), STRINGS = /* @__PURE__ */ new Map();
     function reserve(size) {
-      if (offset + size > maxBytes) {
+      if (offset - START + size > maxBytes) {
         throw new RangeError("Codec byte budget exceeded");
       }
       if (offset + size > bytes2.length) {
-        const NEXT = new Uint8Array(Math.min(maxBytes, Math.max(offset + size, bytes2.length * 2)));
+        const GROWN = Math.max(offset + size, bytes2.length * 2);
+        const NEXT = new Uint8Array(OUT ? GROWN : Math.min(maxBytes, GROWN));
         NEXT.set(bytes2);
         bytes2 = NEXT;
         view = new DataView(bytes2.buffer);
@@ -4252,6 +4648,11 @@ function createValueCodec({
           byte(KIND);
           length(v.length);
           reserve(v.length * SIZE);
+          if (LITTLE_ENDIAN && bulkTyped(v, KIND)) {
+            bytes2.set(new Uint8Array(v.buffer, v.byteOffset, v.byteLength), offset);
+            offset += v.byteLength;
+            return;
+          }
           for (let i = 0; i < v.length; i++) {
             let element = v[i];
             if (KIND >= FLOAT_KIND_START) {
@@ -4280,7 +4681,7 @@ function createValueCodec({
             throw new TypeError("Plain records required");
           }
           byte(6);
-          const KEYS = KEYS_OF(v);
+          const KEYS = keysOf(v);
           length(KEYS.length);
           for (const KEY of KEYS) {
             write(KEY, depth + 1);
@@ -4295,9 +4696,14 @@ function createValueCodec({
       byte(86);
       byte(1);
       write(value);
+      if (OUT) {
+        OUT.bytes = bytes2;
+        OUT.length = offset;
+        return OUT;
+      }
       return bytes2.slice(0, offset);
     } finally {
-      if (!NESTED) {
+      if (!OUT && !NESTED) {
         scratch = bytes2.length <= SCRATCH_LIMIT ? bytes2 : null;
         encoding = false;
       }
@@ -4399,6 +4805,20 @@ function createValueCodec({
           const [TYPE2, GET, , SIZE] = TYPED_KINDS[KIND];
           const COUNT = length();
           need(COUNT * SIZE);
+          if (LITTLE_ENDIAN) {
+            const START = BYTES.byteOffset + offset;
+            const ARRAY2 = new TYPE2(BYTES.buffer.slice(START, START + COUNT * SIZE));
+            if (KIND >= FLOAT_KIND_START) {
+              for (let i = 0; i < COUNT; i++) {
+                const ELEMENT = ARRAY2[i];
+                if (!Number.isFinite(ELEMENT) || ELEMENT === 0 && 1 / ELEMENT < 0) {
+                  throw new TypeError("Noncanonical typed array number");
+                }
+              }
+            }
+            offset += COUNT * SIZE;
+            return ARRAY2;
+          }
           const ARRAY = new TYPE2(COUNT);
           for (let i = 0; i < COUNT; i++) {
             const ELEMENT = VIEW[GET](offset, true);
@@ -4468,6 +4888,7 @@ function createValueCodec({
   return Object.freeze({
     format,
     encode,
+    encodeInto,
     decode
   });
 }
@@ -4483,7 +4904,6 @@ var MAX_EPOCH = 65534;
 var BRANCH_MAGIC = 843205956;
 var BRANCH_HEADER = 36;
 var ORDERED = (ids) => [...ids].sort(COMPARE_IDS);
-var SAME = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 var ID_VALID = (id) => typeof id === "string" && id.length > 0 && id.length <= 128;
 function createRoomSession(options) {
   return new RoomSession(options);
@@ -4524,7 +4944,7 @@ var RoomSession = class {
     if (profile.mode && !["lockstep", "rollback"].includes(profile.mode)) {
       throw new TypeError("session mode");
     }
-    if (!adapter || ["step", "save", "load", "validateSnapshot", "applyMembership"].some(
+    if (!adapter || ["step", "saveInto", "load", "validateSnapshot", "applyMembership"].some(
       (k) => typeof adapter[k] !== "function"
     )) {
       throw new TypeError("room simulation adapter");
@@ -4740,6 +5160,27 @@ var RoomSession = class {
       } : null
     };
   }
+  /** core가 없으면 null. 있으면 마지막 로컬 capture sequence(core마다 새로 셈). */
+  get localCaptureSequence() {
+    return this._core ? this._core.localCaptureSequence : null;
+  }
+  /** core의 readLocalCaptures 결과를 전역 tick으로 제자리에서 바꿉니다(항목은 호출마다 새 복사본). */
+  readLocalCaptures(afterSequence, out) {
+    out.length = 0;
+    if (!this._core) {
+      return out;
+    }
+    this._core.readLocalCaptures(afterSequence, out);
+    for (let i = 0; i < out.length; i++) {
+      const C = out[i];
+      C.captureTick += this.baseTick;
+      C.executeTick += this.baseTick;
+      for (let c = 0; c < C.commands.length; c++) {
+        C.commands[c].executeTick += this.baseTick;
+      }
+    }
+    return out;
+  }
   get failure() {
     return this._failure ?? this._core?.failure;
   }
@@ -4793,9 +5234,10 @@ var RoomSession = class {
   getPeerState(id) {
     return this._core?.getPeerState(id);
   }
-  _replaySegment() {
+  /** `throughTick`(전역 tick)이 있으면 그 경계 뒤에 확정된 틱은 이 세대 구간에 넣지 않습니다. */
+  _replaySegment(throughTick = null) {
     return {
-      ...this._core.exportReplay(),
+      ...throughTick === null ? this._core.exportReplay() : exportReplayThrough(this._core, throughTick - this.baseTick),
       baseTick: this.baseTick,
       membershipEpoch: this.epoch
     };
@@ -4881,7 +5323,7 @@ var RoomSession = class {
       } : {}
     });
     return {
-      save: () => A.save(),
+      saveInto: (out) => A.saveInto(out),
       load: (data) => A.load(data),
       ...typeof A.saveJob === "function" ? {
         saveJob: () => A.saveJob()
@@ -5008,6 +5450,7 @@ var RoomSession = class {
       throw new Error("local fast path cannot install a recovery boundary");
     }
     this._core = boundary ? createSessionFromBoundary(OPTIONS, boundary.bytes, boundary.hash) : this.localFastPath ? createLocalFastPathSession(OPTIONS) : createSession(OPTIONS);
+    setWireTag(this._core, this.epoch + 1);
     if (this._availability) {
       delegateRoomRecovery(this._core, () => {
         this._availability.requested = "state-mismatch";
@@ -5036,8 +5479,7 @@ var RoomSession = class {
         if (SESSION.closed || EPOCH !== SESSION.epoch) {
           return false;
         }
-        const OUT = data.slice();
-        new DataView(OUT.buffer).setUint16(6, EPOCH + 1, true);
+        const OUT = data;
         if (!SESSION._availability) {
           return link.transport.send(OUT);
         }
@@ -5047,7 +5489,7 @@ var RoomSession = class {
           VIEW.setUint32(0, BRANCH_MAGIC, true);
           ENVELOPE[4] = 1;
           ENVELOPE[5] = FRAGMENTED ? 1 : OUT[5];
-          VIEW.setUint32(8, new DataView(OUT.buffer).getUint32(8, true), true);
+          VIEW.setUint32(8, new DataView(OUT.buffer, OUT.byteOffset).getUint32(8, true), true);
           VIEW.setUint32(12, offset, true);
           VIEW.setUint32(16, OUT.length, true);
           ENVELOPE.set(SESSION._availability.wireBranch, 20);
@@ -5162,9 +5604,7 @@ var RoomSession = class {
         }
         const EPOCH = VIEW.getUint16(6, true) - 1;
         if (EPOCH === this.epoch && link.coreReceive && !this._boundaryFrozen()) {
-          const COPY = data.slice();
-          new DataView(COPY.buffer).setUint16(6, 0, true);
-          link.coreReceive(COPY);
+          link.coreReceive(data);
         } else if (EPOCH === this.epoch + 1 && this._transition && link.future.length < 64) {
           link.future.push(data.slice());
         }
@@ -5368,7 +5808,7 @@ var RoomSession = class {
     if (!["join", "leave", "reconnect"].includes(proposal.reason) || proposal.reason === "reconnect" && (!proposal.oldPlayers.includes(proposal.resumingId) || proposal.joined.length || proposal.left.length)) {
       throw new Error("membership reason");
     }
-    if (!SAME(proposal.oldPlayers, this.players) || !SAME(ORDERED(proposal.players), proposal.players) || !proposal.players.length || proposal.players.length > this.membership.maxPlayers || new Set(proposal.players).size !== proposal.players.length || proposal.players.some((id) => !ID_VALID(id)) || !proposal.players.includes(proposal.coordinatorId) || !SAME(
+    if (!equalIds(proposal.oldPlayers, this.players) || !equalIds(ORDERED(proposal.players), proposal.players) || !proposal.players.length || proposal.players.length > this.membership.maxPlayers || new Set(proposal.players).size !== proposal.players.length || proposal.players.some((id) => !ID_VALID(id)) || !proposal.players.includes(proposal.coordinatorId) || !equalIds(
       ORDERED([...proposal.oldPlayers.filter((id) => !proposal.left.includes(id)), ...proposal.joined]),
       proposal.players
     ) || proposal.joined.some((id) => proposal.oldPlayers.includes(id)) || proposal.left.some((id) => !proposal.oldPlayers.includes(id))) {
@@ -5460,7 +5900,7 @@ var RoomSession = class {
       return;
     }
     if (m.op === "welcome" && from === this.coordinatorId && !this._core && !this.room?.resumed && !this._transition) {
-      if (!Number.isInteger(m.epoch) || m.epoch < this.epoch || m.epoch > MAX_EPOCH || !Array.isArray(m.players) || m.players.length < 1 || m.players.length >= this.membership.maxPlayers || m.players.includes(this.localPlayerId) || !m.players.includes(from) || m.players.some((id) => !ID_VALID(id)) || new Set(m.players).size !== m.players.length || !SAME(ORDERED(m.players), m.players)) {
+      if (!Number.isInteger(m.epoch) || m.epoch < this.epoch || m.epoch > MAX_EPOCH || !Array.isArray(m.players) || m.players.length < 1 || m.players.length >= this.membership.maxPlayers || m.players.includes(this.localPlayerId) || !m.players.includes(from) || m.players.some((id) => !ID_VALID(id)) || new Set(m.players).size !== m.players.length || !equalIds(ORDERED(m.players), m.players)) {
         return;
       }
       this.epoch = m.epoch;
@@ -5761,13 +6201,14 @@ var RoomSession = class {
       this._acceptPreparedMembership(tr, STAGED);
       return;
     }
-    const ROLLBACK = bytes(this.adapter.save()).slice();
+    this._snapshotBuffer ??= new ByteBuffer();
+    const ROLLBACK = saveSnapshot(this.adapter, this._snapshotBuffer).slice();
     try {
       this.adapter.applyMembership({
         ...tr.proposal,
         tick: tr.target
       });
-      const STATE = bytes(this.adapter.save());
+      const STATE = saveSnapshot(this.adapter, this._snapshotBuffer);
       if (STATE.length > this.profile.maxSnapshotBytes || !this.adapter.validateSnapshot(STATE, {
         tick: tr.target,
         membershipEpoch: tr.proposal.epoch
@@ -5871,7 +6312,7 @@ var RoomSession = class {
       };
     }
     if (this.recordReplay && this._core) {
-      this._replaySegments.push(this._replaySegment());
+      this._replaySegments.push(this._replaySegment(tr.target));
     }
     if (tr.preparedState) {
       const PREPARED = tr.preparedState;
@@ -5987,7 +6428,7 @@ var RoomSession = class {
         this._fail("departure-timeout");
         return;
       }
-      if (this._retireApproved && [...this._links.values()].every((link) => !link.queue.length)) {
+      if (this._retireApproved && this._linksDrained()) {
         this._leaveResolve?.();
         this._leaveResolve = this._leaveReject = null;
         this.close();
@@ -6077,7 +6518,8 @@ var RoomSession = class {
         this._core?.poll(now);
       }
       if (this._core && !TR && !this._availability) {
-        if (["interrupted", "disconnected"].includes(this._core.status)) {
+        const CORE_STATUS = this._core.status;
+        if (CORE_STATUS === "interrupted" || CORE_STATUS === "disconnected") {
           this._interruptedAt ??= now;
           if (now - this._interruptedAt >= this.membership.reconnectGraceMs) {
             this._fail("partition-failed", {
@@ -6092,7 +6534,7 @@ var RoomSession = class {
       this._flush();
       for (const [ID, DEADLINE] of this._retirePeers) {
         const LINK = this._links.get(ID);
-        if (LINK && !["closed", "failed"].includes(LINK.transport.state) && now < DEADLINE) {
+        if (LINK && LINK.transport.state !== "closed" && LINK.transport.state !== "failed" && now < DEADLINE) {
           continue;
         }
         LINK?.unsubscribe?.();
@@ -6101,7 +6543,7 @@ var RoomSession = class {
         this.room?.disconnect?.(ID);
         this._retirePeers.delete(ID);
       }
-      if (TR && !TR.availability && TR.commitSent && TR.applied && TR.committed.size === TR.participants.length - 1 && [...this._links.values()].every((link) => !link.queue.length)) {
+      if (TR && !TR.availability && TR.commitSent && TR.applied && TR.committed.size === TR.participants.length - 1 && this._linksDrained()) {
         for (const ID of TR.proposal.left) {
           if (ID !== this.localPlayerId) {
             this._send(ID, "retire", {
@@ -6116,6 +6558,14 @@ var RoomSession = class {
         reason: error.message
       });
     }
+  }
+  _linksDrained() {
+    for (const LINK of this._links.values()) {
+      if (LINK.queue.length) {
+        return false;
+      }
+    }
+    return true;
   }
   advance(input = this._lastInput) {
     if (this.closed) {
@@ -6149,10 +6599,8 @@ var RoomSession = class {
       };
     }
     const RESULT = this._core.advance(SAMPLE);
-    return {
-      ...RESULT,
-      tick: this.tick
-    };
+    RESULT.tick = this.tick;
+    return RESULT;
   }
   submitInput(input, options) {
     if (this.closed || this.failure) {
@@ -6175,15 +6623,12 @@ var RoomSession = class {
       };
     }
     const RESULT = this._core.submitInput(SAMPLE, options);
-    return {
-      ...RESULT,
-      tick: this.tick,
-      executeTick: RESULT.executeTick + this.baseTick,
-      commands: RESULT.commands.map((c) => ({
-        ...c,
-        executeTick: c.executeTick + this.baseTick
-      }))
-    };
+    RESULT.tick = this.tick;
+    RESULT.executeTick += this.baseTick;
+    for (let i = 0; i < RESULT.commands.length; i++) {
+      RESULT.commands[i].executeTick += this.baseTick;
+    }
+    return RESULT;
   }
   queueCommand(payload) {
     if (this.closed || this.failure) {

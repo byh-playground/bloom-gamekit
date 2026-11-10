@@ -23,11 +23,11 @@
     },
     {
       "file": "deterministic.js",
-      "sha256": "1917d9766f1a1a2bbd4eab3bf214205979e7881c8cfb34cd1183f462a47ba62f"
+      "sha256": "1ee3c5d0766bf9e8fbed64516b6f0eb87b8fe33fff49bfdc283e58224f07cdf6"
     },
     {
       "file": "simloop.js",
-      "sha256": "c25a8f7f4999e4fe8beb6b08167fa4d0934c34098db2bf912335e81db53c4ef8"
+      "sha256": "c9bd2330e00f1ec964d317cbc075b42099a220cc3ed05d5bc8ca352ca5f93f76"
     },
     {
       "file": "work-scheduler.js",
@@ -51,15 +51,15 @@
     },
     {
       "file": "transport.js",
-      "sha256": "37e3e42647709bd0551020cf810266e97440b1a219fa6dd8c6ca6f5acfe838af"
+      "sha256": "883db0ae044214a9cee89adefb454d83afde004a29a3360557950856252c3868"
     },
     {
       "file": "replay.js",
-      "sha256": "a9d59d5d1eca54a44102523082fae2e98fe186210510586cc04e4e13f675b817"
+      "sha256": "c54ba031902516fc7c67aa6a140caea815c8535010ac9e289241db5e5bee9b7d"
     },
     {
       "file": "rollback.js",
-      "sha256": "b03a9aac766b47eedf5761a638dfd99f4b50b64c47f7bfd94b4042f15dec3732"
+      "sha256": "e297debe4a57608e4e4eac88becaf0d22ad20dc3e01007b3481021453826b4cf"
     },
     {
       "file": "camera.js",
@@ -87,7 +87,7 @@
     },
     {
       "file": "scenario.js",
-      "sha256": "b817a8d20cb87a150c50004b67daefd4e9b2402e9389cb19d3771057e16b4a99"
+      "sha256": "68459591fe6f7a58eb4470430683413e1546f2c5816e1d529f9c72560305eb77"
     },
     {
       "file": "object-pool.js",
@@ -99,7 +99,7 @@
     },
     {
       "file": "pixel-physics.js",
-      "sha256": "ba864a187f95fe7a6df4edbac7ce9d4b8b9a553e35973479672de874cc194834"
+      "sha256": "8df724777ae1c492a0b78f1f7bfbb8bd25d8238de605960c13446bd842425fd9"
     },
     {
       "file": "bm.js",

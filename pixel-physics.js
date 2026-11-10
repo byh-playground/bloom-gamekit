@@ -3095,13 +3095,29 @@ var TYPED_KINDS = [
 ];
 var FLOAT_KIND_START = 5;
 var SCRATCH_LIMIT = 8 * 1024 * 1024;
+var LITTLE_ENDIAN = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
 function typedKindOf(value) {
+  if (!ArrayBuffer.isView(value)) {
+    return -1;
+  }
   for (let i = 0; i < TYPED_KINDS.length; i++) {
     if (value instanceof TYPED_KINDS[i][0]) {
       return i;
     }
   }
   return -1;
+}
+function bulkTyped(value, kind) {
+  if (kind < FLOAT_KIND_START) {
+    return true;
+  }
+  for (let i = 0; i < value.length; i++) {
+    const ELEMENT = value[i];
+    if (!Number.isFinite(ELEMENT) || ELEMENT === 0 && 1 / ELEMENT < 0) {
+      return false;
+    }
+  }
+  return true;
 }
 function createValueCodec({
   format = "binary",
@@ -3116,7 +3132,24 @@ function createValueCodec({
   if (typeof omitUndefined !== "boolean") {
     throw new TypeError("omitUndefined must be boolean");
   }
-  const KEYS_OF = (value) => Object.keys(value).filter((key) => !omitUndefined || value[key] !== void 0).sort();
+  function keysOf(value) {
+    const KEYS = Object.keys(value);
+    if (omitUndefined) {
+      let kept = 0;
+      for (let i = 0; i < KEYS.length; i++) {
+        if (value[KEYS[i]] !== void 0) {
+          KEYS[kept++] = KEYS[i];
+        }
+      }
+      KEYS.length = kept;
+    }
+    for (let i = 1; i < KEYS.length; i++) {
+      if (!(KEYS[i - 1] < KEYS[i])) {
+        return KEYS.sort();
+      }
+    }
+    return KEYS;
+  }
   for (const LIMIT of [maxBytes, maxDepth, maxEntries]) {
     if (!Number.isSafeInteger(LIMIT) || LIMIT < 1) {
       throw new RangeError("Invalid codec limit");
@@ -3164,7 +3197,7 @@ function createValueCodec({
         throw new TypeError("Plain records required");
       }
       result = {};
-      for (const KEY of KEYS_OF(value)) {
+      for (const KEY of keysOf(value)) {
         normalize(KEY, depth + 1, seen, budget);
         Object.defineProperty(result, KEY, {
           value: normalize(value[KEY], depth + 1, seen, budget),
@@ -3204,6 +3237,19 @@ function createValueCodec({
     return data;
   }
   function encode(value) {
+    return encodeTo(value, null);
+  }
+  function encodeInto(value, out) {
+    if (!out || typeof out.reserve !== "function") {
+      throw new TypeError("encodeInto requires a ByteBuffer");
+    }
+    if (format === "json") {
+      return out.write(encodeTo(value, null));
+    }
+    return encodeTo(value, out);
+  }
+  function encodeTo(value, out) {
+    const OUT = out;
     if (format === "json") {
       const BYTES = ENCODER.encode(JSON.stringify(normalize(value)));
       if (BYTES.length > maxBytes) {
@@ -3211,19 +3257,23 @@ function createValueCodec({
       }
       return BYTES;
     }
-    const NESTED = encoding;
-    encoding = true;
-    let bytes = !NESTED && scratch ? scratch : new Uint8Array(Math.min(1024, maxBytes));
-    let offset = 0;
+    const NESTED = OUT ? true : encoding;
+    if (!OUT) {
+      encoding = true;
+    }
+    let bytes = OUT ? OUT.bytes : !NESTED && scratch ? scratch : new Uint8Array(Math.min(1024, maxBytes));
+    const START = OUT ? OUT.length : 0;
+    let offset = START;
     let view = new DataView(bytes.buffer);
     let entries = 0;
     const SEEN = /* @__PURE__ */ new Set(), STRINGS = /* @__PURE__ */ new Map();
     function reserve(size) {
-      if (offset + size > maxBytes) {
+      if (offset - START + size > maxBytes) {
         throw new RangeError("Codec byte budget exceeded");
       }
       if (offset + size > bytes.length) {
-        const NEXT = new Uint8Array(Math.min(maxBytes, Math.max(offset + size, bytes.length * 2)));
+        const GROWN = Math.max(offset + size, bytes.length * 2);
+        const NEXT = new Uint8Array(OUT ? GROWN : Math.min(maxBytes, GROWN));
         NEXT.set(bytes);
         bytes = NEXT;
         view = new DataView(bytes.buffer);
@@ -3300,6 +3350,11 @@ function createValueCodec({
           byte(KIND);
           length(v.length);
           reserve(v.length * SIZE);
+          if (LITTLE_ENDIAN && bulkTyped(v, KIND)) {
+            bytes.set(new Uint8Array(v.buffer, v.byteOffset, v.byteLength), offset);
+            offset += v.byteLength;
+            return;
+          }
           for (let i = 0; i < v.length; i++) {
             let element = v[i];
             if (KIND >= FLOAT_KIND_START) {
@@ -3328,7 +3383,7 @@ function createValueCodec({
             throw new TypeError("Plain records required");
           }
           byte(6);
-          const KEYS = KEYS_OF(v);
+          const KEYS = keysOf(v);
           length(KEYS.length);
           for (const KEY of KEYS) {
             write(KEY, depth + 1);
@@ -3343,9 +3398,14 @@ function createValueCodec({
       byte(86);
       byte(1);
       write(value);
+      if (OUT) {
+        OUT.bytes = bytes;
+        OUT.length = offset;
+        return OUT;
+      }
       return bytes.slice(0, offset);
     } finally {
-      if (!NESTED) {
+      if (!OUT && !NESTED) {
         scratch = bytes.length <= SCRATCH_LIMIT ? bytes : null;
         encoding = false;
       }
@@ -3447,6 +3507,20 @@ function createValueCodec({
           const [TYPE, GET, , SIZE] = TYPED_KINDS[KIND];
           const COUNT = length();
           need(COUNT * SIZE);
+          if (LITTLE_ENDIAN) {
+            const START = BYTES.byteOffset + offset;
+            const ARRAY2 = new TYPE(BYTES.buffer.slice(START, START + COUNT * SIZE));
+            if (KIND >= FLOAT_KIND_START) {
+              for (let i = 0; i < COUNT; i++) {
+                const ELEMENT = ARRAY2[i];
+                if (!Number.isFinite(ELEMENT) || ELEMENT === 0 && 1 / ELEMENT < 0) {
+                  throw new TypeError("Noncanonical typed array number");
+                }
+              }
+            }
+            offset += COUNT * SIZE;
+            return ARRAY2;
+          }
           const ARRAY = new TYPE(COUNT);
           for (let i = 0; i < COUNT; i++) {
             const ELEMENT = VIEW[GET](offset, true);
@@ -3516,6 +3590,7 @@ function createValueCodec({
   return Object.freeze({
     format,
     encode,
+    encodeInto,
     decode: decode2
   });
 }
@@ -3647,6 +3722,12 @@ function unpackCells(flat) {
   return OUT;
 }
 function savePixelWorld(world) {
+  return CODEC.encode(snapshotValue(world));
+}
+function savePixelWorldInto(world, out) {
+  return CODEC.encodeInto(snapshotValue(world), out);
+}
+function snapshotValue(world) {
   const S = world.snapshot(false);
   const OUT = { ...S, entRefs: S.entRefs.map(ref), proj: S.proj.map((p) => ({ ...p, src: ref(p.src) })) };
   for (const KEY of GRID_KEYS) {
@@ -3660,7 +3741,7 @@ function savePixelWorld(world) {
       js: S.bridge.js.map((r) => ({ ...r, j: ref(r.j), a: ref(r.a), b: ref(r.b) }))
     };
   }
-  return CODEC.encode(OUT);
+  return OUT;
 }
 function decode(world, bytes) {
   const V = CODEC.decode(bytes);
@@ -3777,6 +3858,7 @@ export {
   loadPixelWorld,
   NOW as now,
   savePixelWorld,
+  savePixelWorldInto,
   validatePixelWorld,
   writeGridPixels
 };

@@ -47,7 +47,7 @@ var FIXED_POINT = Object.freeze({
     if (SIGNED(b) === 0) {
       throw new RangeError("fixed-point division by zero");
     }
-    return SIGNED(Number(BigInt(SIGNED(a)) * 1024n / BigInt(b)));
+    return SIGNED(Math.trunc(SIGNED(a) * 1024 / b) || 0);
   }
 });
 
@@ -128,6 +128,53 @@ var TYPE = Object.freeze({
 });
 var HEADER = 12;
 var SNAP_CHUNK_BYTES = CHUNK_SIZE - HEADER - 8;
+var Writer = class {
+  constructor(size = CHUNK_SIZE) {
+    this.data = new Uint8Array(size);
+    this.view = new DataView(this.data.buffer);
+    this.offset = 0;
+  }
+  room(n) {
+    if (this.offset + n > this.data.length) {
+      throw new RangeError("packet capacity");
+    }
+  }
+  u8(n) {
+    this.room(1);
+    this.view.setUint8(this.offset++, n);
+  }
+  u16(n) {
+    this.room(2);
+    this.view.setUint16(this.offset, n, true);
+    this.offset += 2;
+  }
+  u32(n) {
+    this.room(4);
+    this.view.setUint32(this.offset, n, true);
+    this.offset += 4;
+  }
+  i32(n) {
+    this.room(4);
+    this.view.setInt32(this.offset, n, true);
+    this.offset += 4;
+  }
+  raw(b) {
+    this.room(b.length);
+    this.data.set(b, this.offset);
+    this.offset += b.length;
+  }
+  finish() {
+    return this.data.slice(0, this.offset);
+  }
+  reset() {
+    this.offset = 0;
+    return this;
+  }
+  usedBytes() {
+    return this.data.subarray(0, this.offset);
+  }
+};
+var PACKET_WRITER = new Writer();
 
 // modules/transport/webrtc.js
 var WebRTCTransport = class {

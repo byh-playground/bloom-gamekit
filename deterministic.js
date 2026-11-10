@@ -29,6 +29,59 @@ function equalBytes(a, b) {
   }
   return true;
 }
+var ByteBuffer = class {
+  constructor(capacity = 1024) {
+    this.bytes = new Uint8Array(integer(capacity, "capacity", 1, 2147483647));
+    this.length = 0;
+  }
+  reset() {
+    this.length = 0;
+    return this;
+  }
+  /** 뒤에 `size` bytes를 쓸 자리를 확보하고 쓰기 시작 위치를 돌려줍니다. 길이는 쓰는 쪽이 늘립니다. */
+  reserve(size) {
+    const END = this.length + size;
+    if (END > this.bytes.length) {
+      const NEXT = new Uint8Array(Math.max(END, this.bytes.length * 2));
+      NEXT.set(this.bytes.subarray(0, this.length));
+      this.bytes = NEXT;
+    }
+    return this.length;
+  }
+  write(data) {
+    const DATA = bytes(data);
+    const AT = this.reserve(DATA.length);
+    this.bytes.set(DATA, AT);
+    this.length += DATA.length;
+    return this;
+  }
+  /** 쓴 범위의 보기. 다음 reset·write 전까지만 유효합니다. */
+  view() {
+    return this.bytes.subarray(0, this.length);
+  }
+  /** 쓴 범위의 독립 복사본. */
+  copy() {
+    return this.bytes.slice(0, this.length);
+  }
+  /**
+   * 쓴 범위를 소유권째 넘기고 버퍼는 같은 크기의 새 공간으로 바꿉니다(복사 없음).
+   * 남는 공간이 쓴 길이의 1/8보다 크면 보관 메모리를 아끼려고 copy()와 같이 복사합니다.
+   */
+  take() {
+    const LENGTH = this.length;
+    this.length = 0;
+    if (this.bytes.length - LENGTH > LENGTH >> 3) {
+      return this.bytes.slice(0, LENGTH);
+    }
+    const TAKEN = this.bytes.subarray(0, LENGTH);
+    this.bytes = new Uint8Array(this.bytes.length);
+    return TAKEN;
+  }
+};
+function saveSnapshot(adapter, buffer) {
+  adapter.saveInto(buffer.reset());
+  return buffer.view();
+}
 function hashBytes(value, seed = 2166136261) {
   let h = seed >>> 0;
   const DATA = bytes(value);
@@ -84,7 +137,7 @@ var FIXED_POINT = Object.freeze({
     if (SIGNED(b) === 0) {
       throw new RangeError("fixed-point division by zero");
     }
-    return SIGNED(Number(BigInt(SIGNED(a)) * 1024n / BigInt(b)));
+    return SIGNED(Math.trunc(SIGNED(a) * 1024 / b) || 0);
   }
 });
 
@@ -572,13 +625,29 @@ var TYPED_KINDS = [
 ];
 var FLOAT_KIND_START = 5;
 var SCRATCH_LIMIT = 8 * 1024 * 1024;
+var LITTLE_ENDIAN = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
 function typedKindOf(value) {
+  if (!ArrayBuffer.isView(value)) {
+    return -1;
+  }
   for (let i = 0; i < TYPED_KINDS.length; i++) {
     if (value instanceof TYPED_KINDS[i][0]) {
       return i;
     }
   }
   return -1;
+}
+function bulkTyped(value, kind) {
+  if (kind < FLOAT_KIND_START) {
+    return true;
+  }
+  for (let i = 0; i < value.length; i++) {
+    const ELEMENT = value[i];
+    if (!Number.isFinite(ELEMENT) || ELEMENT === 0 && 1 / ELEMENT < 0) {
+      return false;
+    }
+  }
+  return true;
 }
 function createValueCodec({
   format = "binary",
@@ -593,7 +662,24 @@ function createValueCodec({
   if (typeof omitUndefined !== "boolean") {
     throw new TypeError("omitUndefined must be boolean");
   }
-  const KEYS_OF = (value) => Object.keys(value).filter((key) => !omitUndefined || value[key] !== void 0).sort();
+  function keysOf(value) {
+    const KEYS = Object.keys(value);
+    if (omitUndefined) {
+      let kept = 0;
+      for (let i = 0; i < KEYS.length; i++) {
+        if (value[KEYS[i]] !== void 0) {
+          KEYS[kept++] = KEYS[i];
+        }
+      }
+      KEYS.length = kept;
+    }
+    for (let i = 1; i < KEYS.length; i++) {
+      if (!(KEYS[i - 1] < KEYS[i])) {
+        return KEYS.sort();
+      }
+    }
+    return KEYS;
+  }
   for (const LIMIT of [maxBytes, maxDepth, maxEntries]) {
     if (!Number.isSafeInteger(LIMIT) || LIMIT < 1) {
       throw new RangeError("Invalid codec limit");
@@ -641,7 +727,7 @@ function createValueCodec({
         throw new TypeError("Plain records required");
       }
       result = {};
-      for (const KEY of KEYS_OF(value)) {
+      for (const KEY of keysOf(value)) {
         normalize(KEY, depth + 1, seen, budget);
         Object.defineProperty(result, KEY, {
           value: normalize(value[KEY], depth + 1, seen, budget),
@@ -681,6 +767,19 @@ function createValueCodec({
     return data;
   }
   function encode(value) {
+    return encodeTo(value, null);
+  }
+  function encodeInto(value, out) {
+    if (!out || typeof out.reserve !== "function") {
+      throw new TypeError("encodeInto requires a ByteBuffer");
+    }
+    if (format === "json") {
+      return out.write(encodeTo(value, null));
+    }
+    return encodeTo(value, out);
+  }
+  function encodeTo(value, out) {
+    const OUT = out;
     if (format === "json") {
       const BYTES = ENCODER2.encode(JSON.stringify(normalize(value)));
       if (BYTES.length > maxBytes) {
@@ -688,19 +787,23 @@ function createValueCodec({
       }
       return BYTES;
     }
-    const NESTED = encoding;
-    encoding = true;
-    let bytes2 = !NESTED && scratch ? scratch : new Uint8Array(Math.min(1024, maxBytes));
-    let offset = 0;
+    const NESTED = OUT ? true : encoding;
+    if (!OUT) {
+      encoding = true;
+    }
+    let bytes2 = OUT ? OUT.bytes : !NESTED && scratch ? scratch : new Uint8Array(Math.min(1024, maxBytes));
+    const START = OUT ? OUT.length : 0;
+    let offset = START;
     let view = new DataView(bytes2.buffer);
     let entries = 0;
     const SEEN = /* @__PURE__ */ new Set(), STRINGS = /* @__PURE__ */ new Map();
     function reserve(size) {
-      if (offset + size > maxBytes) {
+      if (offset - START + size > maxBytes) {
         throw new RangeError("Codec byte budget exceeded");
       }
       if (offset + size > bytes2.length) {
-        const NEXT = new Uint8Array(Math.min(maxBytes, Math.max(offset + size, bytes2.length * 2)));
+        const GROWN = Math.max(offset + size, bytes2.length * 2);
+        const NEXT = new Uint8Array(OUT ? GROWN : Math.min(maxBytes, GROWN));
         NEXT.set(bytes2);
         bytes2 = NEXT;
         view = new DataView(bytes2.buffer);
@@ -777,6 +880,11 @@ function createValueCodec({
           byte(KIND);
           length(v.length);
           reserve(v.length * SIZE);
+          if (LITTLE_ENDIAN && bulkTyped(v, KIND)) {
+            bytes2.set(new Uint8Array(v.buffer, v.byteOffset, v.byteLength), offset);
+            offset += v.byteLength;
+            return;
+          }
           for (let i = 0; i < v.length; i++) {
             let element = v[i];
             if (KIND >= FLOAT_KIND_START) {
@@ -805,7 +913,7 @@ function createValueCodec({
             throw new TypeError("Plain records required");
           }
           byte(6);
-          const KEYS = KEYS_OF(v);
+          const KEYS = keysOf(v);
           length(KEYS.length);
           for (const KEY of KEYS) {
             write(KEY, depth + 1);
@@ -820,9 +928,14 @@ function createValueCodec({
       byte(86);
       byte(1);
       write(value);
+      if (OUT) {
+        OUT.bytes = bytes2;
+        OUT.length = offset;
+        return OUT;
+      }
       return bytes2.slice(0, offset);
     } finally {
-      if (!NESTED) {
+      if (!OUT && !NESTED) {
         scratch = bytes2.length <= SCRATCH_LIMIT ? bytes2 : null;
         encoding = false;
       }
@@ -924,6 +1037,20 @@ function createValueCodec({
           const [TYPE2, GET, , SIZE] = TYPED_KINDS[KIND];
           const COUNT = length();
           need(COUNT * SIZE);
+          if (LITTLE_ENDIAN) {
+            const START = BYTES.byteOffset + offset;
+            const ARRAY2 = new TYPE2(BYTES.buffer.slice(START, START + COUNT * SIZE));
+            if (KIND >= FLOAT_KIND_START) {
+              for (let i = 0; i < COUNT; i++) {
+                const ELEMENT = ARRAY2[i];
+                if (!Number.isFinite(ELEMENT) || ELEMENT === 0 && 1 / ELEMENT < 0) {
+                  throw new TypeError("Noncanonical typed array number");
+                }
+              }
+            }
+            offset += COUNT * SIZE;
+            return ARRAY2;
+          }
           const ARRAY = new TYPE2(COUNT);
           for (let i = 0; i < COUNT; i++) {
             const ELEMENT = VIEW[GET](offset, true);
@@ -993,6 +1120,7 @@ function createValueCodec({
   return Object.freeze({
     format,
     encode,
+    encodeInto,
     decode
   });
 }
@@ -1078,6 +1206,53 @@ var TYPE = Object.freeze({
 });
 var HEADER = 12;
 var SNAP_CHUNK_BYTES = CHUNK_SIZE - HEADER - 8;
+var Writer = class {
+  constructor(size = CHUNK_SIZE) {
+    this.data = new Uint8Array(size);
+    this.view = new DataView(this.data.buffer);
+    this.offset = 0;
+  }
+  room(n) {
+    if (this.offset + n > this.data.length) {
+      throw new RangeError("packet capacity");
+    }
+  }
+  u8(n) {
+    this.room(1);
+    this.view.setUint8(this.offset++, n);
+  }
+  u16(n) {
+    this.room(2);
+    this.view.setUint16(this.offset, n, true);
+    this.offset += 2;
+  }
+  u32(n) {
+    this.room(4);
+    this.view.setUint32(this.offset, n, true);
+    this.offset += 4;
+  }
+  i32(n) {
+    this.room(4);
+    this.view.setInt32(this.offset, n, true);
+    this.offset += 4;
+  }
+  raw(b) {
+    this.room(b.length);
+    this.data.set(b, this.offset);
+    this.offset += b.length;
+  }
+  finish() {
+    return this.data.slice(0, this.offset);
+  }
+  reset() {
+    this.offset = 0;
+    return this;
+  }
+  usedBytes() {
+    return this.data.subarray(0, this.offset);
+  }
+};
+var PACKET_WRITER = new Writer();
 function copyFrame(frame) {
   return {
     input: frame.input.slice(),
@@ -1088,14 +1263,28 @@ function copyFrame(frame) {
   };
 }
 function runSimulationFrame(adapter, context) {
-  return adapter.step({
-    ...context,
-    inputs: context.inputs.map((frame) => ({
-      ...copyFrame(frame),
-      playerId: frame.playerId,
-      predicted: !!frame.predicted
-    }))
-  });
+  const SOURCE = context.inputs, INPUTS = new Array(SOURCE.length);
+  for (let i = 0; i < SOURCE.length; i++) {
+    const FRAME = SOURCE[i];
+    INPUTS[i] = {
+      input: FRAME.input.slice(),
+      commands: copyCommands(FRAME.commands),
+      playerId: FRAME.playerId,
+      predicted: !!FRAME.predicted
+    };
+  }
+  context.inputs = INPUTS;
+  return adapter.step(context);
+}
+function copyCommands(commands) {
+  const OUT = new Array(commands.length);
+  for (let i = 0; i < commands.length; i++) {
+    OUT[i] = {
+      ...commands[i],
+      payload: commands[i].payload.slice()
+    };
+  }
+  return OUT;
 }
 
 // modules/_rollback-shared/history.js
@@ -1172,7 +1361,7 @@ var SyncTestSession = class {
     maxHistoryBytes = 64 * 1024 * 1024,
     now = () => globalThis.performance?.now() ?? Date.now()
   } = {}) {
-    if (!adapter || ["save", "load", "step", "validateSnapshot"].some((key) => typeof adapter[key] !== "function")) {
+    if (!adapter || ["saveInto", "load", "step", "validateSnapshot"].some((key) => typeof adapter[key] !== "function")) {
       throw new TypeError("Simulation Adapter capabilities");
     }
     if (!Array.isArray(players) || !players.length || players.length > 8 || players.some((id) => typeof id !== "string" || !id.length) || new Set(players).size !== players.length) {
@@ -1247,7 +1436,8 @@ var SyncTestSession = class {
     });
   }
   _save() {
-    const VALUE = bytes(this.adapter.save()).slice();
+    this._snapshotBuffer ??= new ByteBuffer();
+    const VALUE = saveSnapshot(this.adapter, this._snapshotBuffer).slice();
     if (!VALUE.length || VALUE.length > this.maxSnapshotBytes) {
       throw new RangeError("snapshot size");
     }
@@ -1399,7 +1589,7 @@ function beginSyncTestBatch(frames, options) {
     throw new TypeError("frames");
   }
   return {
-    initial: bytes(options.adapter.save()).slice(),
+    initial: saveSnapshot(options.adapter, new ByteBuffer()).slice(),
     session: createSyncTestSession(options)
   };
 }
@@ -1476,6 +1666,7 @@ async function runSyncTestAsync({
   }
 }
 export {
+  ByteBuffer,
   DeterminismError,
   PseudoRandomDistribution,
   SeededPRNG,
