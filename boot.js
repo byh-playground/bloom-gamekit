@@ -242,28 +242,52 @@ async function preloadFetch(href, done) {
   }
   done(href, ok);
 }
-function bindBootProgress(boot, { progress, label = null, text = defaultText, ...rest }) {
+function bindBootProgress(boot, { progress, label = null, text = null, labels = null, done = null, ...rest }) {
   if (Object.keys(rest).length > 0) {
     fail(`unknown bindBootProgress option ${Object.keys(rest)[0]}`);
   }
   if (!(progress instanceof HTMLProgressElement)) {
     fail("progress must be a <progress> element");
   }
+  if (text !== null && typeof text !== "function") {
+    fail("text must be a function");
+  }
+  if (text !== null && (labels !== null || done !== null)) {
+    fail("labels and done belong to the default text; do not combine them with text");
+  }
+  if (labels !== null && (typeof labels !== "object" || Object.values(labels).some((name) => typeof name !== "string"))) {
+    fail("labels must map stage ids to strings");
+  }
+  if (done !== null && typeof done !== "string") {
+    fail("done must be a string");
+  }
   progress.max = 1;
+  const TEXT = text ?? ((state) => defaultText(state, labels, done));
   const RENDER = (state) => {
     progress.value = state.overall;
     if (label) {
-      label.textContent = text(state);
+      const VALUE = TEXT(state);
+      if (VALUE !== null) {
+        label.textContent = VALUE;
+      }
     }
   };
   RENDER(boot.state);
   return boot.subscribe(RENDER);
 }
-function defaultText(state) {
-  if (!state.stage) {
-    return "";
+function defaultText(state, labels, done) {
+  if (state.failed) {
+    return String(state.failed.message || state.failed);
   }
-  return state.total === null ? state.stage : `${state.stage} ${state.completed}/${state.total}`;
+  if (!state.stage) {
+    return null;
+  }
+  if (state.overall === 1 && done !== null) {
+    return done;
+  }
+  const NAME = labels?.[state.stage] ?? state.stage;
+  const COUNT2 = state.total === null ? "" : ` ${state.completed}/${state.total}`;
+  return `${NAME}${COUNT2} · ${Math.round(state.overall * 100)}%`;
 }
 function yieldFrame() {
   return new Promise((resolve) => {
