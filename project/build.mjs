@@ -93,7 +93,8 @@ export async function buildDistribution(root) {
                       ]
                     : [],
             logOverride: {
-                'unsupported-dynamic-import': 'error',
+                // boot.importPinnedModules는 검증한 bytes의 blob URL을 실행 시점에 import합니다. 그 한 모듈만 허용합니다.
+                'unsupported-dynamic-import': NAME === 'boot' ? 'debug' : 'error',
                 'unsupported-require-call': 'error',
             },
         });

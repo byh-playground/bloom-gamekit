@@ -168,8 +168,66 @@ export function createBoot({ stages, onChange = null, ...rest }) {
                 fail(`module preload failed (${FAILURES.length}/${HREFS.length}): ${FAILURES[0]}`);
             }
         },
+        async importPinnedModules(pin, { stage, ...extra } = {}) {
+            if (Object.keys(extra).length > 0) {
+                fail(`unknown importPinnedModules option ${Object.keys(extra)[0]}`);
+            }
+            const { base: BASE, modules: MODULES, ...REST } = pin ?? {};
+            if (Object.keys(REST).length > 0) {
+                fail(`unknown importPinnedModules pin field ${Object.keys(REST)[0]}`);
+            }
+            if (typeof BASE !== 'string' || !BASE.endsWith('/')) {
+                fail('importPinnedModules base must be a URL string ending with /');
+            }
+            const ENTRIES = Object.entries(MODULES ?? {});
+            for (const [NAME, ENTRY] of ENTRIES) {
+                if (typeof ENTRY?.file !== 'string' || !ENTRY.file || !/^[a-f0-9]{64}$/.test(ENTRY.sha256 ?? '')) {
+                    fail(`importPinnedModules entry ${NAME} needs file and a lowercase hex sha256`);
+                }
+            }
+            BOOT.begin(stage, ENTRIES.length);
+            const FAILURES = [];
+            const LOADED = await Promise.all(
+                ENTRIES.map(async ([name, entry]) => {
+                    try {
+                        const NAMESPACE = await importVerified(new URL(entry.file, BASE).href, entry.sha256);
+                        BOOT.advance(stage);
+                        return [name, NAMESPACE];
+                    } catch (error) {
+                        FAILURES.push(`${name}: ${error?.message ?? error}`);
+                        return null;
+                    }
+                }),
+            );
+            if (FAILURES.length > 0) {
+                fail(`pinned module import failed (${FAILURES.length}/${ENTRIES.length}): ${FAILURES[0]}`);
+            }
+            return Object.freeze(Object.fromEntries(LOADED));
+        },
     };
     return Object.freeze(BOOT);
+}
+
+// 받은 bytes의 SHA-256이 고정값과 같을 때만 그 bytes를 실행합니다. blob URL로 import하므로 파일은 상대 import가 없는
+// 단일 파일이어야 하고, 같은 파일을 다른 주소로 import하면 별개의 모듈 인스턴스가 됩니다. DOM을 쓰지 않아 Worker에서도 됩니다.
+async function importVerified(href, sha256) {
+    const RESPONSE = await fetch(href);
+    if (!RESPONSE.ok) {
+        throw new Error(`HTTP ${RESPONSE.status} ${href}`);
+    }
+    const BYTES = await RESPONSE.arrayBuffer();
+    const DIGEST = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', BYTES)), (byte) =>
+        byte.toString(16).padStart(2, '0'),
+    ).join('');
+    if (DIGEST !== sha256) {
+        throw new Error(`SHA-256 mismatch ${href}`);
+    }
+    const OBJECT_URL = URL.createObjectURL(new Blob([BYTES], { type: 'text/javascript' }));
+    try {
+        return await import(OBJECT_URL);
+    } finally {
+        URL.revokeObjectURL(OBJECT_URL);
+    }
 }
 
 let modulepreload = null;
