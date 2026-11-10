@@ -50,6 +50,7 @@ var PathGrid = class {
   #passableEdge;
   #edgeKnown;
   #edgeOpen;
+  #stack = null;
   constructor(options) {
     if (options === null || typeof options !== "object") {
       throw new TypeError("PathGrid options must be an object.");
@@ -225,23 +226,31 @@ var PathGrid = class {
     return out;
   }
   /**
-   * `start`(열린 칸)에서 8방향으로 걸어 닿는 칸을 1로 표시한 `Uint8Array(size)`. `start`가 열려 있지 않으면(-1 포함) 모두 0입니다.
-   * 거리장보다 가볍게 "이어져 있는가"만 알고 싶을 때 씁니다. `out`을 주면 그것을 비우고 채웁니다.
+   * `start`(열린 칸)에서 8방향으로 걸어 닿는 칸을 1로 표시해 `out`(길이 `size` 이상의 Uint8Array, 먼저 비움)에 채웁니다.
+   * `start`가 열려 있지 않으면(-1 포함) 모두 0입니다. 거리장보다 가볍게 "이어져 있는가"만 알고 싶을 때 씁니다.
+   * 탐색 스택은 격자가 가진 Int32Array(칸마다 한 번만 들어감)를 재사용합니다.
+   * @param {number} start
+   * @param {Uint8Array} out
    */
-  reachableFrom(start, out = new Uint8Array(this.size)) {
-    out.fill(0);
+  reachableFrom(start, out) {
+    if (!(out instanceof Uint8Array) || out.length < this.size) {
+      throw new TypeError(`PathGrid.reachableFrom needs a Uint8Array of at least ${this.size} cells.`);
+    }
+    out.fill(0, 0, this.size);
     if (!this.isOpen(start)) {
       return out;
     }
-    const STACK = [start];
+    const STACK = this.#stack ??= new Int32Array(this.size);
+    let top = 0;
+    STACK[top++] = start;
     out[start] = 1;
-    while (STACK.length) {
-      const CELL = STACK.pop(), COL = CELL % this.cols, ROW = (CELL - COL) / this.cols;
+    while (top) {
+      const CELL = STACK[--top], COL = CELL % this.cols, ROW = (CELL - COL) / this.cols;
       for (let direction = 0; direction < DIRECTION_COUNT; direction++) {
         const NEXT = this.stepCell(COL, ROW, direction);
         if (NEXT >= 0 && out[NEXT] === 0) {
           out[NEXT] = 1;
-          STACK.push(NEXT);
+          STACK[top++] = NEXT;
         }
       }
     }
