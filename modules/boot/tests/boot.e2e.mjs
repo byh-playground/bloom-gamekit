@@ -176,7 +176,7 @@ try {
     assert.equal(MODULE_STATES.at(-1).overall, 0.75);
     assert.equal(OVERALL.at(-1), 1);
     assert.equal(RESULT.bar, 1);
-    assert.equal(RESULT.label, 'work 4/4');
+    assert.equal(RESULT.label, 'work 4/4 · 100%');
     assert.deepEqual(RESULT.after, Object.fromEntries(PRELOAD.map((file) => ['/' + file, 1])));
     assert.deepEqual(Object.fromEntries(REQUESTS), RESULT.after, 'import() after preload must not request modules');
     await PAGE.close();

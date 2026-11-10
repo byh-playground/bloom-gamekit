@@ -45,10 +45,22 @@ export function createBoot(options: {
     stages: { id: string; weight: number }[];
     onChange?: (state: BootState) => void;
 }): Boot;
-/** Draws `overall` into a `<progress>` and `text(state)` into `label`. Returns an unbind function. */
+/**
+ * Draws `overall` into a `<progress>` and a text into `label`. With `text`, the game owns the whole string
+ * (return null to leave the label untouched). Without it the default is `name n/N · P%`: name is
+ * `labels[stage]` or the stage id, an unknown-total stage reads `name · P%`, `done` replaces it at 100%,
+ * a failure shows its message, and the label is left untouched until the first stage begins.
+ * `labels`/`done` cannot be combined with `text`. Returns an unbind function.
+ */
 export function bindBootProgress(
     boot: Boot,
-    options: { progress: HTMLProgressElement; label?: Element | null; text?: (state: BootState) => string },
+    options: {
+        progress: HTMLProgressElement;
+        label?: Element | null;
+        text?: (state: BootState) => string | null;
+        labels?: Record<string, string>;
+        done?: string;
+    },
 ): () => void;
 /** Resolves after the next paint opportunity, or after 80ms when rAF is paused (hidden tab). */
 export function yieldFrame(): Promise<void>;

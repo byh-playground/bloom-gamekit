@@ -1,3 +1,7 @@
+## v0.48.2 (2026-11-10)
+
+호환 기능 추가. `boot.bindBootProgress`의 기본 문구가 `이름 n/N · P%`가 되고, 단계 이름 표 `labels`와 완료 문구 `done`을 받습니다. 첫 단계 전에는 글자 요소를 건드리지 않습니다. `text`를 주는 소비자는 그대로이며, `text`가 null을 반환하면 글자를 그대로 둡니다. 상세 계약은 [boot](../../modules/boot/README.md)에 있습니다.
+
 ## v0.48.1 (2026-11-10)
 
 호환 기능 추가. `boot.importPinnedModules`가 고정 목록(`base`·파일·SHA-256)의 모듈을 받아 검증한 bytes만 import하고 파일마다 진행을 보고합니다. 게임이 직접 갖고 있던 CDN 검증 로딩을 대체할 수 있으며 Worker에서도 동작합니다. 기존 `boot` API는 그대로입니다. 상세 계약은 [boot](../../modules/boot/README.md)에 있습니다.
