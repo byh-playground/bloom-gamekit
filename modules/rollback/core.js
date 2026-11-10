@@ -223,6 +223,10 @@ export function createLocalFastPathSession(options) {
 export function delegateRoomRecovery(session, selectBoundary) {
     session._roomRecovery = selectBoundary;
 }
+// RoomSession이 세대를 닫을 때 경계 뒤 확정 틱을 빼고 리플레이를 내보냅니다. 공개 옵션이 아닙니다.
+export function exportReplayThrough(session, ticks) {
+    return session._exportReplay(ticks);
+}
 // RoomSession이 패킷 헤더의 예약 u16에 방 세대를 직접 쓰고 받게 합니다(전송마다 복사하지 않도록). 공개 옵션이 아닙니다.
 export function setWireTag(session, tag) {
     session._wireTag = integer(tag, 'wire tag', 0, 0xffff);
@@ -420,7 +424,9 @@ export class RollbackSession {
             inputReservationReceivedBytes: 0,
         };
         this._recordReplay = recordReplay;
-        this._replay = new ReplayLog(this.players, 256);
+        // 방 세대 경계가 이미 기록한 틱보다 앞이면(경계 뒤까지 확정된 peer) 그 경계로 잘라 내보냅니다.
+        // 경계는 현재 tick에서 stateHistorySize 안이므로 그만큼의 틱 시작 위치를 링 버퍼에 둡니다.
+        this._replay = new ReplayLog(this.players, 256, this.profile.stateHistorySize + 1);
         this._replayBytes = 0;
         this._replayFinalHash = undefined;
         const BOUNDARY = BOUNDARIES.get(boundaryToken);
@@ -831,7 +837,8 @@ export class RollbackSession {
     }
     /** 보관할 snapshot 복사본. */
     _save() {
-        return this._saveView().slice();
+        this._saveView();
+        return this._snapshotBuffer.take();
     }
     /** hash·비교에만 쓰는 snapshot 보기. 다음 저장 전까지만 유효합니다. */
     _saveView() {
@@ -2901,6 +2908,10 @@ export class RollbackSession {
         };
     }
     exportReplay() {
+        return this._exportReplay(Infinity);
+    }
+    /** `ticks`보다 뒤에 기록된 확정 틱은 빼고 내보냅니다(RoomSession 세대 경계). */
+    _exportReplay(ticks) {
         if (this.localFastPath && !this._initialState) {
             throw new Error('replay unavailable in local fast path without recordReplay');
         }
@@ -2908,14 +2919,18 @@ export class RollbackSession {
             throw new Error('finish rollback before exporting replay');
         }
         this._recordConfirmed();
-        const TICK = this._replay.ticks;
-        const HASH_LOCAL = this.localFastPath
-            ? this._recordReplay
-                ? hashBytes(this._saveView())
-                : this._replayFinalHash
-            : (this._stateHash(this._stateAt(TICK)) ??
-              this._stateHash(this._replayFinalState) ??
-              this._replayFinalHash);
+        const TICK = Math.min(this._replay.ticks, ticks);
+        // 경계로 자를 때는 그 경계의 보관 상태만 씁니다(현재 상태·마지막 기록 상태는 경계 뒤).
+        const HASH_LOCAL =
+            TICK < this._replay.ticks
+                ? this._stateHash(this._stateAt(TICK))
+                : this.localFastPath
+                  ? this._recordReplay
+                      ? hashBytes(this._saveView())
+                      : this._replayFinalHash
+                  : (this._stateHash(this._stateAt(TICK)) ??
+                    this._stateHash(this._replayFinalState) ??
+                    this._replayFinalHash);
         if (TICK > 0 && HASH_LOCAL === undefined) {
             throw new Error('replay final boundary is unavailable after fatal restoration failure');
         }
@@ -2927,7 +2942,7 @@ export class RollbackSession {
             inputSize: this.inputSize,
             tickRate: this.profile.tickRate,
             initialState: this._initialState.slice(),
-            ...this._replay.export(),
+            ...this._replay.export(TICK),
             tick: TICK,
             hash: HASH_LOCAL ?? hashBytes(this._initialState),
             truncated: !this._recordReplay,

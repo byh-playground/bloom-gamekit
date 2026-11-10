@@ -158,6 +158,8 @@ export class ByteBuffer {
     view(): Uint8Array;
     /** 쓴 범위의 독립 복사본. */
     copy(): Uint8Array;
+    /** 쓴 범위를 넘기고 새 공간으로 바꾼다(남는 공간이 1/8보다 크면 복사). 길이는 0이 된다. */
+    take(): Uint8Array;
 }
 export const fixedPoint: Readonly<{
     scale: number;

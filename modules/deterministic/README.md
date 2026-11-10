@@ -10,7 +10,7 @@
 
 `createValueCodec({format, maxBytes, maxDepth, maxEntries, omitUndefined=false})`은 `null`·불리언·유한 숫자·문자열·`Uint8Array`·배열·일반 레코드를 정규(canonical) 바이트로 만듭니다. 바이너리 형식은 여기에 `Int8Array`·`Int16Array`·`Uint16Array`·`Int32Array`·`Uint32Array`·`Float32Array`·`Float64Array`를 받으며 요소는 항상 little-endian으로 씁니다. 격자·수치 배열을 요소별 값으로 풀지 않아 `maxEntries`를 쓰지 않고 `Uint8Array`처럼 한 번의 복사에 가깝게 처리합니다. 실수 요소는 유한해야 하며 `-0`은 `0`으로 정규화됩니다. 디코더는 `-0`·`NaN`·`Infinity` 비트 패턴을 비정규로 거부합니다. `Uint8ClampedArray`와 BigInt 배열은 지원하지 않고, JSON 형식은 어떤 typed array도 받지 않습니다. `omitUndefined:true`이면 값이 `undefined`인 레코드 키를 건너뜁니다(기본은 거부, 배열 항목의 `undefined`는 항상 거부). typed array 태그는 추가 형식이라 이전 SDK의 디코더는 이 태그가 든 payload를 읽지 못합니다. 같은 방에서 SDK 버전이 섞이면 해당 payload를 쓰지 마세요. 기존 payload는 그대로 읽힙니다.
 
-`codec.encode(value)`는 보관할 새 bytes를 돌려주고, `codec.encodeInto(value, out)`는 같은 bytes를 재사용 `ByteBuffer` `out` 끝에 이어 써서 새 배열을 만들지 않습니다(`maxBytes`는 이번 값의 길이에 적용). rollback 어댑터의 `saveInto: (out) => codec.encodeInto(state, out)`에 씁니다. `ByteBuffer`는 `reset()`·`write(bytes)`·`reserve(n)`·`view()`(복사 없는 보기, 다음 쓰기 전까지 유효)·`copy()`(보관용)를 제공합니다. `bytes` 배열은 자랄 때 바뀌므로 보관하지 않습니다.
+`codec.encode(value)`는 보관할 새 bytes를 돌려주고, `codec.encodeInto(value, out)`는 같은 bytes를 재사용 `ByteBuffer` `out` 끝에 이어 써서 새 배열을 만들지 않습니다(`maxBytes`는 이번 값의 길이에 적용). rollback 어댑터의 `saveInto: (out) => codec.encodeInto(state, out)`에 씁니다. `ByteBuffer`는 `reset()`·`write(bytes)`·`reserve(n)`·`view()`(복사 없는 보기, 다음 쓰기 전까지 유효)·`copy()`(보관용 복사)·`take()`(쓴 범위를 넘기고 새 공간으로 교체, 남는 공간이 1/8보다 크면 복사)를 제공합니다. `bytes` 배열은 자랄 때 바뀌므로 보관하지 않습니다.
 
 ## 소유권과 비용
 

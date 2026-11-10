@@ -253,7 +253,8 @@ function copyCommands(commands) {
 // entry at tick 0. Commands are rare and stay as a list with their local tick.
 // 확정되는 틱마다 바로 이 형식으로 덧붙여, 틱마다 프레임 객체를 쌓아 두지 않습니다.
 export class ReplayLog {
-    constructor(players, keepFrames = 0) {
+    /** `boundaryWindow`: 지난 몇 틱까지 그 틱 경계로 잘라 내보낼 수 있는지(링 버퍼 크기). */
+    constructor(players, keepFrames = 0, boundaryWindow = 1) {
         this.players = players;
         this.ticks = 0;
         this.keepFrames = keepFrames;
@@ -264,6 +265,10 @@ export class ReplayLog {
         this._bytes = new Uint8Array(1024);
         this._length = 0;
         this._commands = [];
+        // 틱 t를 덧붙이기 직전의 bytes 길이·명령 수(t % 창 위치). 경계 t로 자를 때 씁니다.
+        this._window = boundaryWindow;
+        this._startLength = new Int32Array(boundaryWindow);
+        this._startCommands = new Int32Array(boundaryWindow);
     }
     _reserve(n) {
         if (this._length + n > this._bytes.length) {
@@ -277,6 +282,8 @@ export class ReplayLog {
         if (tick !== this.ticks) {
             throw new RangeError('replay tick order');
         }
+        this._startLength[tick % this._window] = this._length;
+        this._startCommands[tick % this._window] = this._commands.length;
         for (let p = 0; p < inputs.length; p++) {
             const X = inputs[p];
             for (let c = 0; c < X.commands.length; c++) {
@@ -306,14 +313,23 @@ export class ReplayLog {
         }
         this.ticks++;
     }
-    /** 내보내는 값은 매번 새 복사본입니다. */
-    export() {
-        const COMMANDS = new Array(this._commands.length);
-        for (let i = 0; i < COMMANDS.length; i++) {
+    /** 기록한 틱 수와 `ticks` 중 작은 쪽까지 내보냅니다. 내보내는 값은 매번 새 복사본입니다. */
+    export(ticks = this.ticks) {
+        let length = this._length,
+            commands = this._commands.length;
+        if (ticks < this.ticks) {
+            if (ticks < 0 || this.ticks - ticks > this._window) {
+                throw new RangeError('replay boundary outside window');
+            }
+            length = this._startLength[ticks % this._window];
+            commands = this._startCommands[ticks % this._window];
+        }
+        const COMMANDS = new Array(commands);
+        for (let i = 0; i < commands; i++) {
             const C = this._commands[i];
             COMMANDS[i] = { ...C, payload: C.payload.slice() };
         }
-        return { inputChanges: this._bytes.slice(0, this._length), commands: COMMANDS };
+        return { inputChanges: this._bytes.slice(0, length), commands: COMMANDS };
     }
 }
 export function decodeReplayFrames({ inputChanges, commands, players, inputSize, tick }) {

@@ -82,6 +82,20 @@ export class ByteBuffer {
     copy() {
         return this.bytes.slice(0, this.length);
     }
+    /**
+     * 쓴 범위를 소유권째 넘기고 버퍼는 같은 크기의 새 공간으로 바꿉니다(복사 없음).
+     * 남는 공간이 쓴 길이의 1/8보다 크면 보관 메모리를 아끼려고 copy()와 같이 복사합니다.
+     */
+    take() {
+        const LENGTH = this.length;
+        this.length = 0;
+        if (this.bytes.length - LENGTH > LENGTH >> 3) {
+            return this.bytes.slice(0, LENGTH);
+        }
+        const TAKEN = this.bytes.subarray(0, LENGTH);
+        this.bytes = new Uint8Array(this.bytes.length);
+        return TAKEN;
+    }
 }
 /** adapter.saveInto로 `buffer`를 다시 채우고 쓴 범위의 보기를 돌려줍니다(보관하려면 slice). */
 export function saveSnapshot(adapter, buffer) {

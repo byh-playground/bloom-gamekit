@@ -4,6 +4,7 @@ import {
     createLocalFastPathSession,
     delegateRoomRecovery,
     setWireTag,
+    exportReplayThrough,
 } from './core.js';
 import { Availability, availabilityConfig } from './availability.js';
 import { createBootstrapReplay } from './bootstrap.js';
@@ -390,9 +391,12 @@ export class RoomSession {
     getPeerState(id) {
         return this._core?.getPeerState(id);
     }
-    _replaySegment() {
+    /** `throughTick`(전역 tick)이 있으면 그 경계 뒤에 확정된 틱은 이 세대 구간에 넣지 않습니다. */
+    _replaySegment(throughTick = null) {
         return {
-            ...this._core.exportReplay(),
+            ...(throughTick === null
+                ? this._core.exportReplay()
+                : exportReplayThrough(this._core, throughTick - this.baseTick)),
             baseTick: this.baseTick,
             membershipEpoch: this.epoch,
         };
@@ -1681,7 +1685,8 @@ export class RoomSession {
         }
         if (this.recordReplay && this._core) {
             // Seal this epoch before the post-membership state replaces the adapter state.
-            this._replaySegments.push(this._replaySegment());
+            // 경계를 지나 확정까지 간 peer도 구간은 경계(target)에서 끝나야 다음 구간과 겹치지 않습니다.
+            this._replaySegments.push(this._replaySegment(tr.target));
         }
         if (tr.preparedState) {
             const PREPARED = tr.preparedState;

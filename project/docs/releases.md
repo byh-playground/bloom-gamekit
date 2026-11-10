@@ -7,7 +7,8 @@
 - rollback 세션: `localCaptureSequence`(정수)와 `readLocalCaptures(afterSequence, out)`를 추가합니다. `createLoop`는 매 틱 `localInputState` 전체 복사 대신 이 둘을 씁니다. `localInputState`는 진단용으로 남습니다.
 - pixel-physics: `savePixelWorldInto(world, out)`를 추가합니다. 어댑터는 `saveInto: (out) => savePixelWorldInto(world, out)`로 연결합니다.
 - 내부: 패킷은 공유 Writer 하나로 만들고, 방 세대 태그를 core가 헤더에 직접 써서 전송·수신마다의 복사를 없앴습니다. 플레이어 ID는 roster 번호로 바꿔 입력 표를 배열로 찾고, 확정 입력 리플레이는 확정 시점에 바로 변화분 bytes로 기록합니다(링 버퍼·델타 기록). `Math.min(...)` 펼침·JSON 문자열 비교·`tick:hash` 문자열 키를 루프·원소 비교·2단 Map으로 바꿨습니다.
-- 측정(Node, 2 peer, 256바이트 상태, 20000틱 중앙값): 틱당 할당·시간이 크게 줄었습니다. 수치는 PR 본문을 봅니다.
+- 버그 수정: RoomSession이 세대를 닫을 때, 경계(target)를 지나 확정까지 간 peer의 리플레이 구간이 경계 뒤 틱을 포함해 다음 구간과 1틱 겹칠 수 있었습니다. 이제 구간은 경계에서 잘립니다(`room-modes-browser`의 구간 겹침 검사가 타이밍에 따라 실패하던 원인).
+- 측정(Node, 2 peer, 256바이트 상태, 20000틱, 전후 교대 5회 중앙값): 틱당 할당 lockstep 27.8→7.9KB, rollback 29.3→8.7KB, createLoop 포함 37.8→10.9KB·39.3→11.6KB. 틱당 시간은 rollback 104→24µs, createLoop 포함 110→39µs·115→29µs. 값 codec 500개체×20필드 encode 중앙값 3.2→2.8ms. 큰 raw 상태(1~4MiB)의 `benchmark:rollback`은 이전과 비슷합니다.
 
 ## v0.49.0 (2026-11-10)
 
