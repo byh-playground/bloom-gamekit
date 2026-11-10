@@ -1007,12 +1007,13 @@ export class PresentationRuntime {
                     }
                     return;
                 }
-                for (const [ID, TRACK] of this.#tracks) {
-                    const MODEL = this.sample(ID, TRACK.generation, nowMs);
+                // Map.forEach visits in insertion order like the former entries loop, without an entry array per item.
+                this.#tracks.forEach((track, id) => {
+                    const MODEL = this.sample(id, track.generation, nowMs);
                     if (MODEL) {
-                        visit(MODEL, ID, TRACK.generation);
+                        visit(MODEL, id, track.generation);
                     }
-                }
+                });
             },
             pathInto: (id, generation, out) => {
                 CHECK();

@@ -32,7 +32,14 @@ export function intervalAt(track, at) {
     if (at >= track.startedAt) {
         return track;
     }
-    return track.history.find((item) => at <= item.startedAt + item.durationMs) ?? track.history.at(-1) ?? track;
+    // The first interval still running at `at`, as the former find(); no callback per sample.
+    const HISTORY = track.history;
+    for (let i = 0; i < HISTORY.length; i++) {
+        if (at <= HISTORY[i].startedAt + HISTORY[i].durationMs) {
+            return HISTORY[i];
+        }
+    }
+    return HISTORY[HISTORY.length - 1] ?? track;
 }
 export function retainRemoved(next, previous, { origin, timeMs, nowMs, delayMs }) {
     if (!delayMs) {

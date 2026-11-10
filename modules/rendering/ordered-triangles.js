@@ -1,6 +1,7 @@
 import { VECTOR_FRAGMENT_VARYINGS, VECTOR_VERTEX_FLOATS, vectorFragmentShader } from './vector-shader.js';
 import { POSE_PROGRAM_FUNCTIONS } from './pose-shader.js';
 import { clipPlanes } from './clip-planes.js';
+import { blendDepthStateCode as stateCode, DEPTH_POLICIES, sameFloat32, stencilEqual } from './draw-state.js';
 import { packPaintRegions } from './paint-regions.js';
 import { validateQuads } from './quad-data.js';
 
@@ -9,6 +10,23 @@ import { validateQuads } from './quad-data.js';
 // then the nine optional paint-region colours. The remaining texels pad to a power-of-two row.
 const WHITE = Object.freeze([1, 1, 1, 1]);
 const NO_MORPH = Object.freeze([0, 0]);
+const NO_CLIPS = Object.freeze([]);
+const IDENTITY_AFFINE = Object.freeze([1, 0, 0, 1, 0, 0]);
+/** Whether two pose texture lists hold the same textures in the same slots. */
+function sameTextures(textures, other) {
+    if (textures === other) {
+        return true;
+    }
+    if (!other) {
+        return false;
+    }
+    for (let i = 0; i < textures.length; i++) {
+        if (textures[i] !== other[i]) {
+            return false;
+        }
+    }
+    return true;
+}
 const COMMAND_WIDTH = 32;
 const COMMAND_FLOATS = COMMAND_WIDTH * 4;
 const GEOMETRY_WIDTH = 256;
@@ -109,6 +127,50 @@ export class OrderedTriangleBatch {
         this.geometryData = new Float32Array(0);
         this.geometryTexture = null;
         this.planes = new Float32Array(maxPlanes * 3);
+        // One pending state record per batch, refilled when a run opens; flush reads it before the next run starts.
+        this.pendingRecord = {
+            clipKey: 0,
+            stateCode: 0,
+            projection3: new Float32Array(9),
+            projection: null,
+            clip: null,
+            stencilRef: null,
+            depth: null,
+            blend: 'source-over',
+            owner: null,
+            poseTextures: null,
+            poseProgramWidth: 1,
+        };
+        this.matrixScratch = new Float64Array(6);
+        this.morphScratch = new Float64Array(2);
+        this.drawTextures = [];
+        this.drawUniforms = {
+            u_projection: null,
+            u_geometry: 0,
+            u_commands: 1,
+            u_vectors: 0,
+            u_vectorWidth: 0,
+            u_geometryWidth: 0,
+            u_program: 2,
+            u_state: 3,
+            u_overrides: 4,
+            u_programWidth: 1,
+            u_texture: 5,
+            u_depthWrite: 0,
+            'u_planes[0]': this.planes,
+            u_planeCount: 0,
+        };
+        this.drawCall = {
+            pipeline: this.pipeline,
+            buffer: null,
+            indexBuffer: null,
+            count: 0,
+            uniforms: this.drawUniforms,
+            textures: this.drawTextures,
+            depth: null,
+            blend: 'source-over',
+            stencil: false,
+        };
         this.onRestored = () => {
             this.discard();
             for (const SLOT of this.slots.values()) {
@@ -261,48 +323,49 @@ export class OrderedTriangleBatch {
         }
     }
     _state(options, owner = null, pose = null) {
-        const CLIP = clipPlanes(options.clips ?? [], this.maxPlanes);
-        const KEY =
-            CLIP.key +
-            ':' +
-            options.stencilRef +
-            ':' +
-            Number(options.depthTest) +
-            ':' +
-            Number(options.depthWrite) +
-            ':' +
-            options.depthFunc +
-            ':' +
-            (options.blend ?? 'source-over');
+        // `clip` is a caller's already computed plane set; vector and quad states carry `clips` instead.
+        const CLIP = options.clip ?? clipPlanes(options.clips ?? NO_CLIPS, this.maxPlanes);
+        const STENCIL_REF = options.stencilRef ?? null,
+            DEPTH_TEST = options.depthTest ?? false,
+            DEPTH_WRITE = options.depthWrite ?? false,
+            DEPTH_FUNC = options.depthFunc ?? 'lequal',
+            BLEND = options.blend ?? 'source-over';
+        // State key as numbers: the clip plane-set id, stencil reference, then depth bits, depth function and blend
+        // codes packed below 2^8 (see STATE_CODE).
+        const CLIP_KEY = CLIP.key,
+            STATE = stateCode(DEPTH_TEST, DEPTH_WRITE, DEPTH_FUNC, BLEND);
+        const PENDING = this.pending;
         if (
-            this.pending &&
-            (this.pending.key !== KEY ||
-                options.projection.some((n, i) => Math.fround(n) !== this.pending.projection[i]) ||
+            PENDING &&
+            (PENDING.clipKey !== CLIP_KEY ||
+                PENDING.stencilRef !== STENCIL_REF ||
+                PENDING.stateCode !== STATE ||
+                !sameFloat32(options.projection, PENDING.projection) ||
                 (owner &&
-                    this.pending.owner &&
-                    (owner !== this.pending.owner ||
-                        pose.textures.some((texture, i) => texture !== this.pending.pose.textures[i]))))
+                    PENDING.owner &&
+                    (owner !== PENDING.owner || !sameTextures(pose.textures, PENDING.poseTextures))))
         ) {
             this.flush('state');
         }
         if (!this.pending) {
-            this.pending = {
-                key: KEY,
-                projection: Float32Array.from(options.projection),
-                clip: CLIP,
-                stencilRef: options.stencilRef ?? null,
-                depth: {
-                    test: options.depthTest ?? false,
-                    write: options.depthWrite ?? false,
-                    func: options.depthFunc ?? 'lequal',
-                },
-                blend: options.blend ?? 'source-over',
-                owner,
-                pose,
-            };
+            const NEXT = this.pendingRecord;
+            NEXT.clipKey = CLIP_KEY;
+            NEXT.stateCode = STATE;
+            NEXT.projection =
+                options.projection.length === 9 ? NEXT.projection3 : new Float32Array(options.projection.length);
+            NEXT.projection.set(options.projection);
+            NEXT.clip = CLIP;
+            NEXT.stencilRef = STENCIL_REF;
+            NEXT.depth = DEPTH_POLICIES[STATE & 31];
+            NEXT.blend = BLEND;
+            NEXT.owner = owner;
+            NEXT.poseTextures = pose?.textures ?? null;
+            NEXT.poseProgramWidth = pose?.programWidth ?? 1;
+            this.pending = NEXT;
         } else if (owner && !this.pending.owner) {
             this.pending.owner = owner;
-            this.pending.pose = pose;
+            this.pending.poseTextures = pose.textures;
+            this.pending.poseProgramWidth = pose.programWidth;
         }
     }
     _reserve(vertices, indices, commandFloats) {
@@ -315,29 +378,29 @@ export class OrderedTriangleBatch {
             this.flush('capacity');
         }
     }
-    _command(options, matrix, color, morph, alpha, pose, floats = 68) {
+    _command(matrix, at, color, morph, alpha, pose, forceColor, whiteFlash, depth, floats) {
         const AT = this.commandFloats,
             DATA = this.commands;
         this.commandCount++;
         this.commandFloats += floats;
         DATA.fill(0, AT, AT + floats);
         // Written field by field: one array literal per command was the main allocation of crowd submissions.
-        DATA[AT] = matrix[0];
-        DATA[AT + 1] = matrix[2];
-        DATA[AT + 2] = matrix[4];
+        DATA[AT] = matrix[at];
+        DATA[AT + 1] = matrix[at + 2];
+        DATA[AT + 2] = matrix[at + 4];
         DATA[AT + 3] = alpha;
-        DATA[AT + 4] = matrix[1];
-        DATA[AT + 5] = matrix[3];
-        DATA[AT + 6] = matrix[5];
-        DATA[AT + 7] = Number(Boolean(options.forceColor));
+        DATA[AT + 4] = matrix[at + 1];
+        DATA[AT + 5] = matrix[at + 3];
+        DATA[AT + 6] = matrix[at + 5];
+        DATA[AT + 7] = forceColor ? 1 : 0;
         DATA[AT + 8] = color[0];
         DATA[AT + 9] = color[1];
         DATA[AT + 10] = color[2];
         DATA[AT + 11] = color[3];
         DATA[AT + 12] = morph[0];
         DATA[AT + 13] = morph[1];
-        DATA[AT + 14] = Number(Boolean(options.whiteFlash));
-        DATA[AT + 15] = options.depth ?? 0;
+        DATA[AT + 14] = whiteFlash ? 1 : 0;
+        DATA[AT + 15] = depth;
         DATA[AT + 17] = pose?.row ?? 0;
         DATA[AT + 18] = pose ? (pose.kind === 'matrix' ? 2 : 1) : 0;
         return AT;
@@ -355,28 +418,42 @@ export class OrderedTriangleBatch {
                 }
                 this._reserve(SEGMENT.vertices.length, LAST - FIRST, 68);
                 this._state(options, owner, pose);
-                let matrix = options.matrices.subarray
-                    ? options.matrices.subarray(entity * 6, entity * 6 + 6)
-                    : options.matrices.slice(entity * 6, entity * 6 + 6);
-                let morph = options.morph,
+                let matrix = options.matrices,
+                    matrixAt = entity * 6,
+                    morph = options.morph,
                     alpha = options.alpha,
                     depth = options.depth;
                 if (!pose) {
                     const P = options.part,
-                        M = matrix;
-                    matrix = [
-                        M[0] * P[0] + M[2] * P[4],
-                        M[1] * P[0] + M[3] * P[4],
-                        M[0] * P[1] + M[2] * P[5],
-                        M[1] * P[1] + M[3] * P[5],
-                        M[0] * P[2] + M[2] * P[6] + M[4],
-                        M[1] * P[2] + M[3] * P[6] + M[5],
-                    ];
-                    morph = [morph[0] + P[8], morph[1] + P[9]];
+                        M = options.matrices,
+                        I = matrixAt,
+                        COMPOSED = this.matrixScratch;
+                    COMPOSED[0] = M[I] * P[0] + M[I + 2] * P[4];
+                    COMPOSED[1] = M[I + 1] * P[0] + M[I + 3] * P[4];
+                    COMPOSED[2] = M[I] * P[1] + M[I + 2] * P[5];
+                    COMPOSED[3] = M[I + 1] * P[1] + M[I + 3] * P[5];
+                    COMPOSED[4] = M[I] * P[2] + M[I + 2] * P[6] + M[I + 4];
+                    COMPOSED[5] = M[I + 1] * P[2] + M[I + 3] * P[6] + M[I + 5];
+                    this.morphScratch[0] = morph[0] + P[8];
+                    this.morphScratch[1] = morph[1] + P[9];
+                    matrix = COMPOSED;
+                    matrixAt = 0;
+                    morph = this.morphScratch;
                     alpha *= P[10];
                     depth += P[11];
                 }
-                const AT = this._command({ ...options, depth }, matrix, options.color, morph, alpha, pose);
+                const AT = this._command(
+                    matrix,
+                    matrixAt,
+                    options.color,
+                    morph,
+                    alpha,
+                    pose,
+                    options.forceColor,
+                    options.whiteFlash,
+                    depth ?? 0,
+                    68,
+                );
                 this.commands[AT + 19] = mesh.morphCount;
                 if (mesh.paintRegionNames || options.paintRegions !== null) {
                     packPaintRegions(
@@ -406,7 +483,18 @@ export class OrderedTriangleBatch {
         for (let i = 0; i < COUNT; i++) {
             this._reserve(4, 6, 32);
             this._state(state);
-            const AT = this._command(options, matrix, options.color ?? WHITE, NO_MORPH, options.alpha ?? 1, null, 32);
+            const AT = this._command(
+                matrix,
+                0,
+                options.color ?? WHITE,
+                NO_MORPH,
+                options.alpha ?? 1,
+                null,
+                options.forceColor,
+                options.whiteFlash,
+                options.depth ?? 0,
+                32,
+            );
             this.commands[AT + 16] = 1;
             for (let j = 0; j < 4; j++) {
                 this.commands[AT + 20 + j] = options.localRects[i * 4 + j];
@@ -468,16 +556,25 @@ export class OrderedTriangleBatch {
                 this._reserve(TAKE, TAKE, 32);
                 this._state(state);
                 const AT = this._command(
-                    { depth: vertices[SOURCE + 20] },
-                    [1, 0, 0, 1, 0, 0],
-                    vertices.subarray(SOURCE + 4, SOURCE + 8),
-                    [0, 0],
+                    IDENTITY_AFFINE,
+                    0,
+                    NO_MORPH,
+                    NO_MORPH,
                     1,
                     null,
+                    false,
+                    false,
+                    vertices[SOURCE + 20],
                     32,
                 );
+                // Colour and paint fields are copied in place, without subarray views.
+                for (let field = 0; field < 4; field++) {
+                    this.commands[AT + 8 + field] = vertices[SOURCE + 4 + field];
+                }
                 this.commands[AT + 16] = 2;
-                this.commands.set(vertices.subarray(SOURCE + 8, SOURCE + 20), AT + 20);
+                for (let field = 0; field < 12; field++) {
+                    this.commands[AT + 20 + field] = vertices[SOURCE + 8 + field];
+                }
                 for (let i = 0; i < TAKE; i++) {
                     const REF = this.vertexCount++;
                     const TEXEL = this.vectorCount++;
@@ -626,43 +723,37 @@ export class OrderedTriangleBatch {
         } else {
             this.metrics.reusedTopologies++;
         }
-        const POSE = PENDING.pose;
         const VECTOR_TEXTURE = VECTOR_ROWS ? SLOT.vectorTexture : null;
-        DEVICE.draw({
-            pipeline: this.pipeline,
-            buffer: SLOT.referenceBuffer,
-            indexBuffer: SLOT.indexBuffer,
-            count: this.indexCount,
-            uniforms: {
-                u_projection: PENDING.projection,
-                u_geometry: 0,
-                u_commands: 1,
-                u_vectors: VECTOR_TEXTURE ? 6 : 0,
-                u_vectorWidth: this.vectorWidth,
-                u_geometryWidth: this.geometryWidth,
-                u_program: 2,
-                u_state: 3,
-                u_overrides: 4,
-                u_programWidth: POSE?.programWidth ?? 1,
-                u_texture: 5,
-                u_depthWrite: Number(PENDING.depth.write),
-                'u_planes[0]': this.planes,
-                u_planeCount: PENDING.clip.count,
-            },
-            textures: [
-                this.geometryTexture ?? this.dummyTexture,
-                SLOT.commandTexture,
-                ...[0, 1, 2].map((index) => POSE?.textures[index] ?? this.dummyTexture),
-                DEVICE.textureAtlas.texture,
-                ...(VECTOR_TEXTURE ? [VECTOR_TEXTURE] : []),
-            ],
-            depth: PENDING.depth,
-            blend: PENDING.blend,
-            stencil:
-                PENDING.stencilRef === null
-                    ? false
-                    : { func: 'equal', ref: PENDING.stencilRef, mask: 255, writeMask: 0, pass: 'keep' },
-        });
+        const UNIFORMS = this.drawUniforms,
+            TEXTURES = this.drawTextures,
+            POSE_TEXTURES = PENDING.poseTextures,
+            CALL = this.drawCall;
+        UNIFORMS.u_projection = PENDING.projection;
+        UNIFORMS.u_vectors = VECTOR_TEXTURE ? 6 : 0;
+        UNIFORMS.u_vectorWidth = this.vectorWidth;
+        UNIFORMS.u_geometryWidth = this.geometryWidth;
+        UNIFORMS.u_programWidth = PENDING.poseProgramWidth;
+        UNIFORMS.u_depthWrite = PENDING.depth.write ? 1 : 0;
+        UNIFORMS.u_planeCount = PENDING.clip.count;
+        TEXTURES.length = 0;
+        TEXTURES.push(
+            this.geometryTexture ?? this.dummyTexture,
+            SLOT.commandTexture,
+            POSE_TEXTURES?.[0] ?? this.dummyTexture,
+            POSE_TEXTURES?.[1] ?? this.dummyTexture,
+            POSE_TEXTURES?.[2] ?? this.dummyTexture,
+            DEVICE.textureAtlas.texture,
+        );
+        if (VECTOR_TEXTURE) {
+            TEXTURES.push(VECTOR_TEXTURE);
+        }
+        CALL.buffer = SLOT.referenceBuffer;
+        CALL.indexBuffer = SLOT.indexBuffer;
+        CALL.count = this.indexCount;
+        CALL.depth = PENDING.depth;
+        CALL.blend = PENDING.blend;
+        CALL.stencil = PENDING.stencilRef === null ? false : stencilEqual(PENDING.stencilRef);
+        DEVICE.draw(CALL);
         this.metrics.draws++;
         this.metrics.commands += this.commandCount;
         this.metrics.triangles += this.indexCount / 3;

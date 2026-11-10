@@ -39,6 +39,14 @@ const UNIFORMS = new Set([
 ]);
 const BLENDS = new Set(['source-over', 'straight-alpha', 'copy', 'lighter', 'source-in', 'destination-in']);
 const ALL_COLOR = Object.freeze([true, true, true, true]);
+// How a declared uniform's value reaches GL: a matrix, one array or scalar argument, or 2..4 scalar components.
+const UNIFORM_MATRIX = 0;
+const UNIFORM_DIRECT = 1;
+const UNIFORM_SPREAD = 2;
+const NO_UNIFORMS = Object.freeze({});
+const NO_TEXTURES = Object.freeze([]);
+const STENCIL_OPERATION_KEYS = Object.freeze(['fail', 'zfail', 'pass']);
+const STENCIL_INTEGER_KEYS = Object.freeze(['ref', 'mask', 'writeMask']);
 function integer(n, name, min = 0, max = Number.MAX_SAFE_INTEGER) {
     if (!Number.isSafeInteger(n) || n < min || n > max) {
         throw new RangeError(`${name}: ${min}..${max}`);
@@ -314,9 +322,19 @@ export class WebGLDevice {
                 ...attribute,
                 location: GL.getAttribLocation(program, attribute.name),
             }));
-            record.uniformLocations = new Map();
+            // Each declared uniform's GL entry point and argument shape, resolved once instead of per draw.
+            record.uniformSetters = new Map();
             for (const NAME of Object.keys(record.uniforms)) {
-                record.uniformLocations.set(NAME, GL.getUniformLocation(program, NAME));
+                const TYPE = record.uniforms[NAME],
+                    LOCATION = GL.getUniformLocation(program, NAME);
+                record.uniformSetters.set(
+                    NAME,
+                    TYPE.startsWith('matrix')
+                        ? { location: LOCATION, shape: UNIFORM_MATRIX, method: `uniformMatrix${TYPE[6]}fv`, size: 0 }
+                        : TYPE.endsWith('v') || TYPE[0] === '1'
+                          ? { location: LOCATION, shape: UNIFORM_DIRECT, method: `uniform${TYPE}`, size: 0 }
+                          : { location: LOCATION, shape: UNIFORM_SPREAD, method: `uniform${TYPE}`, size: +TYPE[0] },
+                );
             }
             record.gpu = program;
         } catch (error) {
@@ -1524,8 +1542,8 @@ export class WebGLDevice {
         instances = 1,
         first = 0,
         count,
-        uniforms = {},
-        textures = [],
+        uniforms = NO_UNIFORMS,
+        textures = NO_TEXTURES,
         blend = 'source-over',
         depth = false,
         stencil = false,
@@ -1574,28 +1592,18 @@ export class WebGLDevice {
         if (!Number.isSafeInteger(count * instances)) {
             throw new RangeError('draw vertex count exceeds safe integer range');
         }
-        const DEPTH_STATE =
-            depth === false || depth == null
-                ? null
-                : depth === true
-                  ? {
-                        test: true,
-                        write: true,
-                        func: 'lequal',
-                    }
-                  : typeof depth === 'object' && !Array.isArray(depth)
-                    ? {
-                          test: depth.test ?? true,
-                          write: depth.write ?? true,
-                          func: depth.func ?? 'lequal',
-                      }
-                    : (() => {
-                          throw new TypeError('depth must be false or a depth policy object');
-                      })();
-        if (DEPTH_STATE && (typeof DEPTH_STATE.test !== 'boolean' || typeof DEPTH_STATE.write !== 'boolean')) {
+        // The depth policy is read into scalars: no per-draw policy object.
+        const HAS_DEPTH = !(depth === false || depth == null);
+        if (HAS_DEPTH && depth !== true && (typeof depth !== 'object' || Array.isArray(depth))) {
+            throw new TypeError('depth must be false or a depth policy object');
+        }
+        const DEPTH_TEST = HAS_DEPTH ? (depth === true ? true : (depth.test ?? true)) : false,
+            DEPTH_WRITE = HAS_DEPTH ? (depth === true ? true : (depth.write ?? true)) : false,
+            DEPTH_FUNC = HAS_DEPTH && depth !== true ? (depth.func ?? 'lequal') : 'lequal';
+        if (HAS_DEPTH && (typeof DEPTH_TEST !== 'boolean' || typeof DEPTH_WRITE !== 'boolean')) {
             throw new TypeError('depth.test and depth.write must be booleans');
         }
-        if ((DEPTH_STATE?.test || DEPTH_STATE?.write) && (this.activeRenderTarget || !this.depthAvailable)) {
+        if ((DEPTH_TEST || DEPTH_WRITE) && (this.activeRenderTarget || !this.depthAvailable)) {
             throw new Error('The active framebuffer has no depth attachment');
         }
         if (stencil && !this.activeStencilAvailable) {
@@ -1604,29 +1612,38 @@ export class WebGLDevice {
         if (blend !== false && !BLENDS.has(blend)) {
             throw new TypeError('Unsupported blend');
         }
-        if (DEPTH_STATE && !FUNCTIONS[DEPTH_STATE.func]) {
+        if (HAS_DEPTH && !Object.hasOwn(FUNCTIONS, DEPTH_FUNC)) {
             throw new TypeError('Unsupported depth function');
         }
         if (stencil) {
             if (!FUNCTIONS[stencil.func ?? 'always']) {
                 throw new TypeError('Unsupported stencil function');
             }
-            for (const KEY of ['fail', 'zfail', 'pass']) {
-                if (!OPERATIONS[stencil[KEY] ?? 'keep']) {
+            for (let i = 0; i < STENCIL_OPERATION_KEYS.length; i++) {
+                if (!OPERATIONS[stencil[STENCIL_OPERATION_KEYS[i]] ?? 'keep']) {
                     throw new TypeError('Unsupported stencil operation');
                 }
             }
-            for (const KEY of ['ref', 'mask', 'writeMask']) {
+            for (let i = 0; i < STENCIL_INTEGER_KEYS.length; i++) {
+                const KEY = STENCIL_INTEGER_KEYS[i];
                 integer(stencil[KEY] ?? (KEY === 'ref' ? 0 : 255), KEY, 0, 255);
             }
         }
-        if (!colorMask || colorMask.length !== 4 || !Array.from(colorMask).every((v) => typeof v === 'boolean')) {
+        if (
+            !colorMask ||
+            colorMask.length !== 4 ||
+            typeof colorMask[0] !== 'boolean' ||
+            typeof colorMask[1] !== 'boolean' ||
+            typeof colorMask[2] !== 'boolean' ||
+            typeof colorMask[3] !== 'boolean'
+        ) {
             throw new TypeError('colorMask must contain booleans');
         }
         if (!Array.isArray(textures) || textures.length > this.maxTextures) {
             throw new RangeError('Too many textures');
         }
-        for (const HANDLE of textures) {
+        for (let i = 0; i < textures.length; i++) {
+            const HANDLE = textures[i];
             this._handle(this.textures, HANDLE, 'texture');
             if (HANDLE === this.activeRenderTarget) {
                 throw new Error('Cannot sample the active render target');
@@ -1644,7 +1661,8 @@ export class WebGLDevice {
                 GL.disableVertexAttribArray(index);
             }
             let boundBuffer = null;
-            for (const A of P.locations) {
+            for (let i = 0; i < P.locations.length; i++) {
+                const A = P.locations[i];
                 if (A.location >= 0) {
                     const IS_INSTANCE = A.source === 'instance',
                         SOURCE_BUFFER = IS_INSTANCE ? instanceRecord : B;
@@ -1664,23 +1682,30 @@ export class WebGLDevice {
                     GL.vertexAttribDivisor(A.location, IS_INSTANCE ? 1 : 0);
                 }
             }
-            for (const [NAME, VALUE] of Object.entries(uniforms)) {
-                const TYPE = P.uniforms[NAME];
-                if (!TYPE) {
+            const SETTERS = P.uniformSetters;
+            for (const NAME in uniforms) {
+                if (!Object.hasOwn(uniforms, NAME)) {
+                    continue;
+                }
+                const SETTER = SETTERS.get(NAME);
+                if (!SETTER) {
                     throw new TypeError(`Undeclared uniform ${NAME}`);
                 }
-                const LOCATION = P.uniformLocations.get(NAME);
+                const LOCATION = SETTER.location;
                 if (LOCATION === null) {
                     continue;
                 }
-                if (TYPE.startsWith('matrix')) {
-                    GL[`uniformMatrix${TYPE[6]}fv`](LOCATION, false, VALUE);
-                } else if (TYPE.endsWith('v')) {
-                    GL[`uniform${TYPE}`](LOCATION, VALUE);
-                } else if (TYPE[0] === '1') {
-                    GL[`uniform${TYPE}`](LOCATION, VALUE);
+                const VALUE = uniforms[NAME];
+                if (SETTER.shape === UNIFORM_MATRIX) {
+                    GL[SETTER.method](LOCATION, false, VALUE);
+                } else if (SETTER.shape === UNIFORM_DIRECT) {
+                    GL[SETTER.method](LOCATION, VALUE);
+                } else if (SETTER.size === 2) {
+                    GL[SETTER.method](LOCATION, VALUE[0], VALUE[1]);
+                } else if (SETTER.size === 3) {
+                    GL[SETTER.method](LOCATION, VALUE[0], VALUE[1], VALUE[2]);
                 } else {
-                    GL[`uniform${TYPE}`](LOCATION, ...VALUE);
+                    GL[SETTER.method](LOCATION, VALUE[0], VALUE[1], VALUE[2], VALUE[3]);
                 }
             }
             const TEXTURE_UNITS = Math.max(this.boundTextureCount, textures.length);
@@ -1702,27 +1727,27 @@ export class WebGLDevice {
             } else {
                 GL.enable(GL.BLEND);
                 GL.blendEquation(GL.FUNC_ADD);
-                const FACTORS =
-                    blend === 'source-over'
-                        ? [GL.ONE, GL.ONE_MINUS_SRC_ALPHA]
-                        : blend === 'straight-alpha'
-                          ? [GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA]
-                          : blend === 'copy'
-                            ? [GL.ONE, GL.ZERO]
-                            : blend === 'lighter'
-                              ? [GL.ONE, GL.ONE]
-                              : blend === 'source-in'
-                                ? [GL.DST_ALPHA, GL.ZERO]
-                                : [GL.ZERO, GL.SRC_ALPHA];
-                GL.blendFunc(...FACTORS);
+                if (blend === 'source-over') {
+                    GL.blendFunc(GL.ONE, GL.ONE_MINUS_SRC_ALPHA);
+                } else if (blend === 'straight-alpha') {
+                    GL.blendFunc(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA);
+                } else if (blend === 'copy') {
+                    GL.blendFunc(GL.ONE, GL.ZERO);
+                } else if (blend === 'lighter') {
+                    GL.blendFunc(GL.ONE, GL.ONE);
+                } else if (blend === 'source-in') {
+                    GL.blendFunc(GL.DST_ALPHA, GL.ZERO);
+                } else {
+                    GL.blendFunc(GL.ZERO, GL.SRC_ALPHA);
+                }
             }
-            if (DEPTH_STATE?.test) {
+            if (DEPTH_TEST) {
                 GL.enable(GL.DEPTH_TEST);
-                GL.depthFunc(GL[FUNCTIONS[DEPTH_STATE.func]]);
+                GL.depthFunc(GL[FUNCTIONS[DEPTH_FUNC]]);
             } else {
                 GL.disable(GL.DEPTH_TEST);
             }
-            GL.depthMask(DEPTH_STATE?.write ?? false);
+            GL.depthMask(DEPTH_WRITE);
             if (stencil) {
                 GL.enable(GL.STENCIL_TEST);
                 GL.stencilFunc(GL[FUNCTIONS[stencil.func ?? 'always']], stencil.ref ?? 0, stencil.mask ?? 255);
@@ -1735,7 +1760,7 @@ export class WebGLDevice {
             } else {
                 GL.disable(GL.STENCIL_TEST);
             }
-            GL.colorMask(...colorMask);
+            GL.colorMask(colorMask[0], colorMask[1], colorMask[2], colorMask[3]);
             GL.disable(GL.CULL_FACE);
             GL.disable(GL.DITHER);
             GL.disable(GL.SCISSOR_TEST);

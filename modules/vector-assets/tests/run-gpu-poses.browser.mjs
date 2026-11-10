@@ -188,7 +188,7 @@ try {
                             }
                             FAULTS.uploadDirtyRetained = [...MESHES.poseRenderer.instances.values()]
                                 .filter((record) => record.mode === 'gpu')
-                                .every((record) => MESHES.poseRenderer.dirty.state.has(record));
+                                .every((record) => MESHES.poseRenderer.dirty.state.has(record.row));
                         } finally {
                             DEVICE.updateDataTexture = UPDATE;
                         }
@@ -326,8 +326,8 @@ try {
                                 .filter((record) => record.mode === 'gpu')
                                 .every(
                                     (record) =>
-                                        MESHES.poseRenderer.dirty.state.has(record) &&
-                                        MESHES.poseRenderer.dirty.override.has(record),
+                                        MESHES.poseRenderer.dirty.state.has(record.row) &&
+                                        MESHES.poseRenderer.dirty.override.has(record.row),
                                 );
                         }
                     }

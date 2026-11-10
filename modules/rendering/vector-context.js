@@ -14,6 +14,9 @@ const SILHOUETTE_OFFSETS = Object.freeze(
 );
 const IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
 const WHITE = Object.freeze([1, 1, 1, 1]);
+const EMPTY_OPTIONS = Object.freeze({});
+// The empty primitive path is never changed (only a 'line' path gains its end point), so one frozen record serves all.
+const EMPTY_PRIMITIVE = Object.freeze({ type: 'empty' });
 function composeTransform(a, b) {
     return [
         a[0] * b[0] + a[2] * b[1],
@@ -90,6 +93,12 @@ function cacheColor(key, rgbaValue) {
         COLOR_CACHE.set(key, rgbaValue);
     }
     return rgbaValue.slice();
+}
+/** Throws as normalizeColor does for an invalid paint; a cached CSS colour string is accepted without a copy. */
+function validateColor(value) {
+    if (typeof value !== 'string' || !COLOR_CACHE.has(value)) {
+        normalizeColor(value);
+    }
 }
 export function normalizeColor(value) {
     if (typeof value === 'string') {
@@ -215,17 +224,34 @@ const RAMP_KEY = (gradient) =>
     (gradient instanceof LinearGradient ? 'L' : 'R') +
     gradient.stops.map((stop) => `${stop.offset}:${stop.color.join(',')}`).join(';');
 /** Canvas-style product `outer · inner` of two six-value affine matrices. */
-const COMPOSE_AFFINE = (outer, inner) => {
-    const [A, B, C, D, E, F] = inner;
-    return [
-        outer[0] * A + outer[2] * B,
-        outer[1] * A + outer[3] * B,
-        outer[0] * C + outer[2] * D,
-        outer[1] * C + outer[3] * D,
-        outer[0] * E + outer[2] * F + outer[4],
-        outer[1] * E + outer[3] * F + outer[5],
-    ];
-};
+const COMPOSE_AFFINE = (outer, inner) => composeAffineInto(outer, inner, new Array(6));
+/** Writes `outer · inner` into `out` (six values) and returns it; `out` may not alias either input. */
+function composeAffineInto(outer, inner, out) {
+    const A = inner[0],
+        B = inner[1],
+        C = inner[2],
+        D = inner[3],
+        E = inner[4],
+        F = inner[5];
+    out[0] = outer[0] * A + outer[2] * B;
+    out[1] = outer[1] * A + outer[3] * B;
+    out[2] = outer[0] * C + outer[2] * D;
+    out[3] = outer[1] * C + outer[3] * D;
+    out[4] = outer[0] * E + outer[2] * F + outer[4];
+    out[5] = outer[1] * E + outer[3] * F + outer[5];
+    return out;
+}
+/** Throws `message` unless `values` has `length` finite numbers. */
+function finiteValues(values, length, message) {
+    if (values.length !== length) {
+        throw new TypeError(message);
+    }
+    for (let i = 0; i < length; i++) {
+        if (!Number.isFinite(values[i])) {
+            throw new TypeError(message);
+        }
+    }
+}
 class RadialGradient {
     constructor(matrix, x0, y0, r0, x1, y1, r1) {
         for (const [N, V] of Object.entries({
@@ -417,9 +443,7 @@ export class VectorContext {
         }
         this.safeAlphaRunBatching = safeAlphaRunBatching;
         this.meshRenderer = null;
-        this.primitivePath = {
-            type: 'empty',
-        };
+        this.primitivePath = EMPTY_PRIMITIVE;
         this.active = false;
         this.state = 'ready';
         this.frame = 0;
@@ -482,6 +506,7 @@ export class VectorContext {
         this._composite = 'source-over';
         this.forceColor = null;
         this.stack = [];
+        this.statePool = [];
         this.frameStats = {};
         this.total = {
             frames: 0,
@@ -527,7 +552,7 @@ export class VectorContext {
     }
     set fillStyle(v) {
         if (!(v instanceof RadialGradient) && !(v instanceof LinearGradient)) {
-            normalizeColor(v);
+            validateColor(v);
         }
         this._fillStyle = v;
     }
@@ -536,7 +561,7 @@ export class VectorContext {
     }
     set strokeStyle(v) {
         if (!(v instanceof RadialGradient) && !(v instanceof LinearGradient)) {
-            normalizeColor(v);
+            validateColor(v);
         }
         this._strokeStyle = v;
     }
@@ -640,15 +665,34 @@ export class VectorContext {
         }
     }
     _paint(style) {
+        return this._applyPaintState(normalizeColor(this._solidPaint(style)));
+    }
+    /**
+     * _paint into one reused array, for fills, strokes and primitives that copy the colour into vertex data before
+     * returning. A cached CSS colour string is copied without the cache's defensive slice.
+     */
+    _paintScratch(style) {
+        const SOURCE = this._solidPaint(style),
+            OUT = (this._paintScratchColor ??= [0, 0, 0, 1]),
+            HIT = typeof SOURCE === 'string' ? COLOR_CACHE.get(SOURCE) : undefined,
+            COLOR = HIT ?? normalizeColor(SOURCE);
+        for (let i = 0; i < 4; i++) {
+            OUT[i] = COLOR[i];
+        }
+        return this._applyPaintState(OUT);
+    }
+    _solidPaint(style) {
         if (style instanceof RadialGradient || style instanceof LinearGradient) {
             throw new TypeError('Gradient paint must be submitted through a vector fill or stroke');
         }
-        const COLOR = normalizeColor(this.forceColor ?? style);
-        COLOR[3] *= this._globalAlpha;
+        return this.forceColor ?? style;
+    }
+    _applyPaintState(color) {
+        color[3] *= this._globalAlpha;
         if (this._filter === 'brightness(0) invert(1)') {
-            COLOR[0] = COLOR[1] = COLOR[2] = 1;
+            color[0] = color[1] = color[2] = 1;
         }
-        return COLOR;
+        return color;
     }
     _gradientPaint(gradient) {
         let cached = this.gradientTextures.get(gradient);
@@ -773,9 +817,7 @@ export class VectorContext {
             this.frame++;
             this.pathCount = 0;
             this.vector.beginPath();
-            this.primitivePath = {
-                type: 'empty',
-            };
+            this.primitivePath = EMPTY_PRIMITIVE;
             return true;
         } catch (error) {
             this.onError?.(error, {
@@ -819,24 +861,26 @@ export class VectorContext {
     }
     save() {
         this._frame();
-        this.stack.push({
-            fillStyle: this._fillStyle,
-            strokeStyle: this._strokeStyle,
-            globalAlpha: this._globalAlpha,
-            lineWidth: this._lineWidth,
-            lineCap: this._lineCap,
-            lineJoin: this._lineJoin,
-            miterLimit: this._miterLimit,
-            lineDash: this._lineDash.slice(),
-            lineDashOffset: this._lineDashOffset,
-            font: this._font,
-            textAlign: this._textAlign,
-            textBaseline: this._textBaseline,
-            direction: this._direction,
-            filter: this._filter,
-            composite: this._composite,
-            forceColor: this.forceColor,
-        });
+        // One pooled record per stack depth. The dash list and force colour are replaced, never changed in place, so
+        // the saved state keeps references.
+        const STATE = (this.statePool[this.stack.length] ??= {});
+        STATE.fillStyle = this._fillStyle;
+        STATE.strokeStyle = this._strokeStyle;
+        STATE.globalAlpha = this._globalAlpha;
+        STATE.lineWidth = this._lineWidth;
+        STATE.lineCap = this._lineCap;
+        STATE.lineJoin = this._lineJoin;
+        STATE.miterLimit = this._miterLimit;
+        STATE.lineDash = this._lineDash;
+        STATE.lineDashOffset = this._lineDashOffset;
+        STATE.font = this._font;
+        STATE.textAlign = this._textAlign;
+        STATE.textBaseline = this._textBaseline;
+        STATE.direction = this._direction;
+        STATE.filter = this._filter;
+        STATE.composite = this._composite;
+        STATE.forceColor = this.forceColor;
+        this.stack.push(STATE);
         this.vector.save();
     }
     restore() {
@@ -849,24 +893,22 @@ export class VectorContext {
             this.meshRenderer?.flush('stateRestore');
         }
         this.vector.restore();
-        Object.assign(this, {
-            _fillStyle: S.fillStyle,
-            _strokeStyle: S.strokeStyle,
-            _globalAlpha: S.globalAlpha,
-            _lineWidth: S.lineWidth,
-            _lineCap: S.lineCap,
-            _lineJoin: S.lineJoin,
-            _miterLimit: S.miterLimit,
-            _lineDash: S.lineDash,
-            _lineDashOffset: S.lineDashOffset,
-            _font: S.font,
-            _textAlign: S.textAlign,
-            _textBaseline: S.textBaseline,
-            _direction: S.direction,
-            _filter: S.filter,
-            _composite: S.composite,
-            forceColor: S.forceColor,
-        });
+        this._fillStyle = S.fillStyle;
+        this._strokeStyle = S.strokeStyle;
+        this._globalAlpha = S.globalAlpha;
+        this._lineWidth = S.lineWidth;
+        this._lineCap = S.lineCap;
+        this._lineJoin = S.lineJoin;
+        this._miterLimit = S.miterLimit;
+        this._lineDash = S.lineDash;
+        this._lineDashOffset = S.lineDashOffset;
+        this._font = S.font;
+        this._textAlign = S.textAlign;
+        this._textBaseline = S.textBaseline;
+        this._direction = S.direction;
+        this._filter = S.filter;
+        this._composite = S.composite;
+        this.forceColor = S.forceColor;
         this.vector.setBlend(S.composite);
     }
     setTransform(a, b, c, d, e, f) {
@@ -902,9 +944,7 @@ export class VectorContext {
         this._frame();
         this.pathCount++;
         this.vector.beginPath();
-        this.primitivePath = {
-            type: 'empty',
-        };
+        this.primitivePath = EMPTY_PRIMITIVE;
     }
     _materializePrimitivePath() {
         const PATH = this.primitivePath;
@@ -1094,22 +1134,18 @@ export class VectorContext {
     }
     _temporaryPath(callback) {
         const V = this.vector,
-            SAVED = {
-                path: V.path,
-                cursor: V.cursor,
-                subpath: V.subpath,
-                primitivePath: this.primitivePath,
-            };
+            PATH = V.path,
+            CURSOR = V.cursor,
+            SUBPATH = V.subpath,
+            PRIMITIVE_PATH = this.primitivePath;
         try {
-            this.primitivePath = {
-                type: 'empty',
-            };
+            this.primitivePath = EMPTY_PRIMITIVE;
             callback();
         } finally {
-            V.path = SAVED.path;
-            V.cursor = SAVED.cursor;
-            V.subpath = SAVED.subpath;
-            this.primitivePath = SAVED.primitivePath;
+            V.path = PATH;
+            V.cursor = CURSOR;
+            V.subpath = SUBPATH;
+            this.primitivePath = PRIMITIVE_PATH;
         }
     }
     _primitiveTransform(path) {
@@ -1143,7 +1179,12 @@ export class VectorContext {
             return true;
         }
         const TYPE = PATH.type === 'ellipse' ? 0 : 1;
-        return this._submitPrimitive(this._primitiveTransform(PATH), this._paint(this._fillStyle), [TYPE, 0, 0, 0]);
+        return this._submitPrimitive(this._primitiveTransform(PATH), this._paintScratch(this._fillStyle), [
+            TYPE,
+            0,
+            0,
+            0,
+        ]);
     }
     _tryPrimitiveStroke(width) {
         const PATH = this.primitivePath;
@@ -1154,7 +1195,7 @@ export class VectorContext {
             if (!PATH.rx || !PATH.ry) {
                 return false;
             }
-            return this._submitPrimitive(this._primitiveTransform(PATH), this._paint(this._strokeStyle), [
+            return this._submitPrimitive(this._primitiveTransform(PATH), this._paintScratch(this._strokeStyle), [
                 0,
                 1,
                 width,
@@ -1179,7 +1220,7 @@ export class VectorContext {
             } else if (this._lineJoin !== 'round') {
                 return false;
             }
-            return this._submitPrimitive(MATRIX, this._paint(this._strokeStyle), [
+            return this._submitPrimitive(MATRIX, this._paintScratch(this._strokeStyle), [
                 1,
                 1,
                 width,
@@ -1206,7 +1247,7 @@ export class VectorContext {
                 (PATH.start[0] + PATH.end[0]) / 2,
                 (PATH.start[1] + PATH.end[1]) / 2,
             ];
-            return this._submitPrimitive(MATRIX, this._paint(this._strokeStyle), [2, 1, width, CAP]);
+            return this._submitPrimitive(MATRIX, this._paintScratch(this._strokeStyle), [2, 1, width, CAP]);
         }
         return false;
     }
@@ -1228,7 +1269,7 @@ export class VectorContext {
                 rule,
             });
         } else {
-            this.vector.fill(this._paint(this._fillStyle), rule);
+            this.vector.fill(this._paintScratch(this._fillStyle), rule);
         }
     }
     fillRect(x, y, w, h) {
@@ -1250,14 +1291,18 @@ export class VectorContext {
                 this._strokeStyle instanceof RadialGradient || this._strokeStyle instanceof LinearGradient
                     ? this._gradientPaint(this._strokeStyle)
                     : null,
-            PAINT = GRADIENT ? GRADIENT.color : this._paint(this._strokeStyle),
-            STYLE = {
-                lineCap: this._lineCap,
-                lineJoin: this._lineJoin,
-                miterLimit: this._miterLimit,
-            },
-            DASH = this._lineDash,
-            PERIOD = DASH.reduce((a, b) => a + b, 0);
+            PAINT = GRADIENT ? GRADIENT.color : this._paintScratch(this._strokeStyle),
+            // One reused style record: the renderer reads it before stroke() returns.
+            STYLE = (this._strokeStyleRecord ??= { lineCap: 'butt', lineJoin: 'miter', miterLimit: 10 }),
+            DASH = this._lineDash;
+        STYLE.lineCap = this._lineCap;
+        STYLE.lineJoin = this._lineJoin;
+        STYLE.miterLimit = this._miterLimit;
+        let period = 0;
+        for (let i = 0; i < DASH.length; i++) {
+            period += DASH[i];
+        }
+        const PERIOD = period;
         if ((!DASH.length || !PERIOD) && !GRADIENT && this._tryPrimitiveStroke(WIDTH)) {
             return;
         }
@@ -1577,21 +1622,37 @@ export class VectorContext {
             if (this.vector.count) {
                 this.vector.flush();
             }
-            const MATRIX = COMPOSE_AFFINE(this.vector.matrix, options.matrix ?? IDENTITY);
-            this.meshRenderer.drawOrderedQuads(
-                { ...options, depth: this.depth },
-                {
-                    projection: this.vector.projection,
-                    clips: this.vector.clips,
-                    stencilRef: this.vector.stencilDepth || null,
-                    depth: this.depth,
-                    depthTest: this.depthTest,
-                    depthWrite: this.depthWrite,
-                    depthFunc: this.depthFunc,
-                    blend: this.vector.blend,
-                },
-                MATRIX,
-            );
+            // Reused quad, state and matrix records: the ordered batch copies every value before returning.
+            const MATRIX = composeAffineInto(this.vector.matrix, options.matrix ?? IDENTITY, (this._quadMatrix ??= [])),
+                QUADS = (this._orderedQuads ??= {}),
+                STATE = (this._orderedQuadState ??= {});
+            QUADS.layer = options.layer;
+            QUADS.uvRects = options.uvRects;
+            QUADS.localRects = options.localRects;
+            QUADS.matrix = options.matrix;
+            QUADS.color = options.color;
+            QUADS.alpha = options.alpha;
+            QUADS.filter = options.filter;
+            QUADS.parts = options.parts;
+            QUADS.pose = options.pose;
+            QUADS.depthWriteAlphaThreshold = options.depthWriteAlphaThreshold;
+            QUADS.forceColor = options.forceColor;
+            QUADS.whiteFlash = options.whiteFlash;
+            QUADS.depth = this.depth;
+            STATE.projection = this.vector.projection;
+            STATE.clips = this.vector.clips;
+            STATE.stencilRef = this.vector.stencilDepth || null;
+            STATE.depth = this.depth;
+            STATE.depthTest = this.depthTest;
+            STATE.depthWrite = this.depthWrite;
+            STATE.depthFunc = this.depthFunc;
+            STATE.blend = this.vector.blend;
+            try {
+                this.meshRenderer.drawOrderedQuads(QUADS, STATE, MATRIX);
+            } finally {
+                QUADS.uvRects = QUADS.localRects = QUADS.matrix = QUADS.color = QUADS.parts = QUADS.pose = null;
+                STATE.clips = null;
+            }
         } else {
             this.meshRenderer?.flush('quadBoundary');
             this.vector.drawQuads(options);
@@ -1729,9 +1790,16 @@ export class VectorContext {
         if (options.viewProjection !== undefined || options.worldMatrix !== undefined) {
             throw new TypeError('Actor silhouettes are 2D only');
         }
-        return this._silhouette({ transform: matrix, color, width, radius, outlineScale }, (instances) =>
-            actor.draw({ ...this._actorParams(options), projection: instances.projection, instances }),
-        );
+        return this._silhouette({ transform: matrix, color, width, radius, outlineScale }, (instances) => {
+            const PARAMS = this._actorParams(options);
+            PARAMS.projection = instances.projection;
+            PARAMS.instances = instances;
+            try {
+                actor.draw(PARAMS);
+            } finally {
+                this._releaseActorParams(PARAMS);
+            }
+        });
     }
     /** Silhouette instance transforms for the current context transform; `submit` appends them as one draw. */
     _silhouette({ transform, color, width, radius, outlineScale }, submit) {
@@ -1815,25 +1883,44 @@ export class VectorContext {
             BOUNDS,
         );
     }
-    /** Actor draw parameters from the context state: paint state applies and the caller's alpha multiplies. */
+    /**
+     * Actor draw parameters from the context state: paint state applies and the caller's alpha multiplies. Fills and
+     * returns one reused record (the actor reads it before returning); `_releaseActorParams` drops its references.
+     */
     _actorParams(options) {
         const FORCED = options.forceColor ?? this.forceColor !== null;
-        return {
-            clips: this.vector.clips,
-            stencilRef: this.vector.stencilDepth || null,
-            depth: this.depth,
-            depthTest: this.depthTest,
-            depthWrite: this.depthWrite,
-            depthFunc: this.depthFunc,
-            ...options,
-            alpha: (options.alpha ?? 1) * this._globalAlpha,
-            forceColor: FORCED,
-            color: options.color ?? (this.forceColor && FORCED ? this.forceColor : [1, 1, 1, 1]),
-            whiteFlash: options.whiteFlash ?? this._filter === 'brightness(0) invert(1)',
-        };
+        const PARAMS = (this._actorParamsRecord ??= {});
+        // A key the caller set, even to undefined, replaces the context value, as the former object spread did.
+        PARAMS.clips = Object.hasOwn(options, 'clips') ? options.clips : this.vector.clips;
+        PARAMS.stencilRef = Object.hasOwn(options, 'stencilRef')
+            ? options.stencilRef
+            : this.vector.stencilDepth || null;
+        PARAMS.depth = Object.hasOwn(options, 'depth') ? options.depth : this.depth;
+        PARAMS.depthTest = Object.hasOwn(options, 'depthTest') ? options.depthTest : this.depthTest;
+        PARAMS.depthWrite = Object.hasOwn(options, 'depthWrite') ? options.depthWrite : this.depthWrite;
+        PARAMS.depthFunc = Object.hasOwn(options, 'depthFunc') ? options.depthFunc : this.depthFunc;
+        PARAMS.projection = options.projection;
+        PARAMS.viewProjection = options.viewProjection;
+        PARAMS.worldMatrix = options.worldMatrix;
+        PARAMS.matrix = options.matrix;
+        PARAMS.paintRegions = options.paintRegions;
+        PARAMS.depthWriteAlphaThreshold = options.depthWriteAlphaThreshold;
+        PARAMS.strokeViewport = options.strokeViewport;
+        PARAMS.excludeParts = options.excludeParts;
+        PARAMS.instances = options.instances;
+        PARAMS.outlineExpression = options.outlineExpression;
+        PARAMS.alpha = (options.alpha ?? 1) * this._globalAlpha;
+        PARAMS.forceColor = FORCED;
+        PARAMS.color = options.color ?? (this.forceColor && FORCED ? this.forceColor : WHITE);
+        PARAMS.whiteFlash = options.whiteFlash ?? this._filter === 'brightness(0) invert(1)';
+        return PARAMS;
+    }
+    _releaseActorParams(params) {
+        params.clips = params.projection = params.viewProjection = params.worldMatrix = params.matrix = undefined;
+        params.paintRegions = params.excludeParts = params.instances = params.color = params.strokeViewport = undefined;
     }
     /** Submit a vector actor after earlier paint, without flushing a compatible mesh run. */
-    drawVectorActor(actor, options = {}) {
+    drawVectorActor(actor, options = EMPTY_OPTIONS) {
         this._frame();
         if (typeof actor?.draw !== 'function') {
             throw new TypeError('A vector actor is required');
@@ -1843,17 +1930,24 @@ export class VectorContext {
             PARAMS = this._actorParams(options);
         if (!WORLD_MODE) {
             // The actor's matrix composes with the context transform (the camera), as drawMesh's transform does.
+            // The composed matrix is one reused array: the actor copies it into its draw before returning.
+            const MATRIX = (this._actorMatrix ??= [1, 0, 0, 1, 0, 0]);
             PARAMS.projection = this.vector.projection;
             if (options.matrix) {
-                if (options.matrix.length !== 6 || Array.from(options.matrix).some((n) => !Number.isFinite(n))) {
-                    throw new TypeError('Six finite matrix values required');
-                }
-                PARAMS.matrix = COMPOSE_AFFINE(this.vector.matrix, options.matrix);
+                finiteValues(options.matrix, 6, 'Six finite matrix values required');
+                composeAffineInto(this.vector.matrix, options.matrix, MATRIX);
             } else {
-                PARAMS.matrix = this.vector.matrix.slice();
+                for (let i = 0; i < 6; i++) {
+                    MATRIX[i] = this.vector.matrix[i];
+                }
             }
+            PARAMS.matrix = MATRIX;
         }
-        actor.draw(PARAMS);
+        try {
+            actor.draw(PARAMS);
+        } finally {
+            this._releaseActorParams(PARAMS);
+        }
     }
     /** Evaluates every prepared actor pose now, before the actors are submitted. */
     preparePoses() {

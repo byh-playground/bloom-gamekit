@@ -43,6 +43,14 @@ export function presentationEventKey(event) {
     }
     return JSON.stringify([event.tick, event.sequence, event.entityId, event.generation, event.kind]);
 }
+/** Presentation order of due records: display time, then tick, then sequence. */
+function compareDue(a, b) {
+    return (
+        a.presentationTimeMs - b.presentationTimeMs ||
+        a.event.tick - b.event.tick ||
+        a.event.sequence - b.event.sequence
+    );
+}
 /** Resource journal, not simulation history. Clock is explicit and independent of tick rate. */
 export class PresentationEventQueue {
     constructor({ adapters, retentionTicks = 120, maxPending = 100000, nowMs = 0, display = null } = {}) {
@@ -82,6 +90,8 @@ export class PresentationEventQueue {
         this.active = new Set();
         this.awaitingConfirmation = new Set();
         this.awaitingPresentation = this.display ? new Set() : null;
+        this.dueLists = [];
+        this.dueDepth = 0;
         this.collectibleTicks = new Map();
         this.rollbackFrom = null;
         this.disposed = false;
@@ -609,45 +619,56 @@ export class PresentationEventQueue {
         if (this.awaitingPresentation.size === 0) {
             return;
         }
-        const DUE = [...this.awaitingPresentation]
-            .filter((record) => {
-                const EVENT_MS = record.presentationTimeMs;
+        // Due records in presentation order, in a reused list per nesting depth (an adapter callback may run another
+        // update). Stable insertion by (time, tick, sequence) gives the order of the former filter and stable sort.
+        const DEPTH = this.dueDepth++,
+            DUE = (this.dueLists[DEPTH] ??= []);
+        try {
+            DUE.length = 0;
+            for (const RECORD of this.awaitingPresentation) {
+                const EVENT_MS = RECORD.presentationTimeMs;
                 // Both tick→time and presentation clock arithmetic can round at fractional TPS.
                 const ROUNDING =
                     Math.max(Math.abs(EVENT_MS), Math.abs(frame.timeMs), DISPLAY.stepMs) * Number.EPSILON * 4;
-                return EVENT_MS <= frame.timeMs + ROUNDING;
-            })
-            .sort(
-                (a, b) =>
-                    a.presentationTimeMs - b.presentationTimeMs ||
-                    a.event.tick - b.event.tick ||
-                    a.event.sequence - b.event.sequence,
-            );
-        for (const RECORD of DUE) {
-            if (this.disposed || !this.display.active) {
-                return;
+                if (EVENT_MS <= frame.timeMs + ROUNDING) {
+                    let at = DUE.length;
+                    DUE.push(RECORD);
+                    while (at > 0 && compareDue(DUE[at - 1], RECORD) > 0) {
+                        DUE[at] = DUE[at - 1];
+                        at--;
+                    }
+                    DUE[at] = RECORD;
+                }
             }
-            if (!this.awaitingPresentation.has(RECORD)) {
-                continue;
+            for (const RECORD of DUE) {
+                if (this.disposed || !this.display.active) {
+                    return;
+                }
+                if (!this.awaitingPresentation.has(RECORD)) {
+                    continue;
+                }
+                const EVENT_MS = RECORD.presentationTimeMs,
+                    AGE_MS = Math.max(0, frame.timeMs - EVENT_MS);
+                if (AGE_MS > DISPLAY.maxLatenessMs || (RECORD.durationMs > 0 && AGE_MS >= RECORD.durationMs)) {
+                    this._stop(RECORD, 'expired');
+                    this.stats.expired++;
+                    continue;
+                }
+                this._start(RECORD, EVENT_MS);
+                if (this.disposed || !this.display.active) {
+                    return;
+                }
+                if (RECORD.state === 'active' && RECORD.confirmOnStart) {
+                    RECORD.adapter.confirm?.(RECORD.handle, RECORD.event);
+                    RECORD.confirmOnStart = false;
+                }
+                if (RECORD.state === 'active' && AGE_MS > 0) {
+                    RECORD.adapter.update?.(RECORD.handle, AGE_MS, RECORD.event);
+                }
             }
-            const EVENT_MS = RECORD.presentationTimeMs,
-                AGE_MS = Math.max(0, frame.timeMs - EVENT_MS);
-            if (AGE_MS > DISPLAY.maxLatenessMs || (RECORD.durationMs > 0 && AGE_MS >= RECORD.durationMs)) {
-                this._stop(RECORD, 'expired');
-                this.stats.expired++;
-                continue;
-            }
-            this._start(RECORD, EVENT_MS);
-            if (this.disposed || !this.display.active) {
-                return;
-            }
-            if (RECORD.state === 'active' && RECORD.confirmOnStart) {
-                RECORD.adapter.confirm?.(RECORD.handle, RECORD.event);
-                RECORD.confirmOnStart = false;
-            }
-            if (RECORD.state === 'active' && AGE_MS > 0) {
-                RECORD.adapter.update?.(RECORD.handle, AGE_MS, RECORD.event);
-            }
+        } finally {
+            DUE.length = 0;
+            this.dueDepth--;
         }
     }
     /** Adapter reports a naturally completed audio/particle resource without discarding its dedup identity. */

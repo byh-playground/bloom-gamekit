@@ -5,6 +5,7 @@ import {
     vectorFragmentShader as fragmentShader,
 } from './vector-shader.js';
 import { validateQuads } from './quad-data.js';
+import { stencilEqual } from './draw-state.js';
 import { clipPlanes } from './clip-planes.js';
 import { poseRendererOf } from './pose-renderer.js';
 import { POSE_PROGRAM_FUNCTIONS } from './pose-shader.js';
@@ -13,6 +14,11 @@ import { POSE_PROGRAM_FUNCTIONS } from './pose-shader.js';
 export const VECTOR_RENDERER_ATLAS_REGIONS = Object.freeze([Object.freeze({ width: 1, height: 1 })]);
 
 const IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
+const EMPTY_OPTIONS = Object.freeze({});
+const BLACK = Object.freeze([0, 0, 0, 1]);
+const NO_RADIAL = Object.freeze([0, 0, 0, 0]);
+// Corner uv of the analytic primitive square, in the triangle order 0,1,2 and 0,2,3.
+const PRIMITIVE_CORNERS = Object.freeze([-1, -1, 1, -1, 1, 1, -1, 1]);
 // One vertex layout for every textured draw: texture identity, gradient kind and flash are vertex data,
 // so fills, gradients, glyphs and sprites of one blend/clip state batch together. Floats per vertex: position 2,
 // uv 2, color 4, paint (atlas layer, white flash, mode, nearest) 4, radial parameters 4, ramp rectangle 4, clip-space depth 1.
@@ -88,6 +94,24 @@ function point(m, x, y) {
         y: m[1] * x + m[3] * y + m[5],
     };
 }
+/** compose() into `out` (six values, not aliasing `a` or `b`). */
+function composeInto(a, b, out) {
+    const A0 = a[0],
+        A1 = a[1],
+        A2 = a[2],
+        A3 = a[3],
+        A4 = a[4],
+        A5 = a[5];
+    out[0] = A0 * b[0] + A2 * b[1];
+    out[1] = A1 * b[0] + A3 * b[1];
+    out[2] = A0 * b[2] + A2 * b[3];
+    out[3] = A1 * b[2] + A3 * b[3];
+    out[4] = A0 * b[4] + A2 * b[5] + A4;
+    out[5] = A1 * b[4] + A3 * b[5] + A5;
+    return out;
+}
+// Options of the program-form pose resolve; frozen because resolve only reads them.
+const PROGRAM_RESOLVE = Object.freeze({ program: true });
 function compose(a, b) {
     return [
         a[0] * b[0] + a[2] * b[1],
@@ -98,10 +122,116 @@ function compose(a, b) {
         a[1] * b[4] + a[3] * b[5] + a[5],
     ];
 }
+// Edge fields, one row of seven doubles per edge: a.x, a.y, b.x, b.y, winding sign, min y, max y.
+const EDGE_FLOATS = 7;
+// Tessellation scratch shared by every renderer: tessellate runs to completion (no callbacks) and is not reentrant.
+const TESSELLATION = {
+    edges: new Float64Array(EDGE_FLOATS * 64),
+    ys: new Float64Array(128),
+    ySortScratch: new Float64Array(128),
+    starts: new Int32Array(64),
+    sortScratch: new Int32Array(64),
+    active: [],
+    keys: new Float64Array(64),
+    out: new Float64Array(12 * 64),
+};
+function growFloat64(array, required) {
+    const NEXT = new Float64Array(Math.max(required, array.length * 2));
+    NEXT.set(array);
+    return NEXT;
+}
+/** x of edge `edge` (an edge row index) at height `y`; the same expression as the former object form. */
+function edgeXAt(edges, edge, y) {
+    const AT = edge * EDGE_FLOATS,
+        AX = edges[AT],
+        AY = edges[AT + 1];
+    return AX + ((edges[AT + 2] - AX) * (y - AY)) / (edges[AT + 3] - AY);
+}
+/**
+ * Stable merge sort of `count` edge indices in `order` by their min y, using `scratch` of the same length. A stable sort
+ * gives the same order as the former stable Array.prototype.sort with the comparator `a.minY - b.minY`.
+ */
+function sortEdgesByMinY(order, scratch, count, edges) {
+    let source = order,
+        target = scratch;
+    for (let width = 1; width < count; width *= 2) {
+        for (let start = 0; start < count; start += width * 2) {
+            const MIDDLE = Math.min(start + width, count),
+                END = Math.min(start + width * 2, count);
+            let left = start,
+                right = MIDDLE,
+                at = start;
+            while (left < MIDDLE && right < END) {
+                // Take the right run only when strictly smaller, which keeps equal keys in their original order.
+                if (edges[source[right] * EDGE_FLOATS + 5] < edges[source[left] * EDGE_FLOATS + 5]) {
+                    target[at++] = source[right++];
+                } else {
+                    target[at++] = source[left++];
+                }
+            }
+            while (left < MIDDLE) {
+                target[at++] = source[left++];
+            }
+            while (right < END) {
+                target[at++] = source[right++];
+            }
+        }
+        const SWAP = source;
+        source = target;
+        target = SWAP;
+    }
+    if (source !== order) {
+        for (let i = 0; i < count; i++) {
+            order[i] = source[i];
+        }
+    }
+}
+/**
+ * Stable ascending merge sort of the first `count` values of `values` using `scratch` of the same length. Being
+ * stable it keeps +0 and -0 in their original order, exactly as the former Array.prototype.sort with `a - b`.
+ */
+function sortValues(values, scratch, count) {
+    let source = values,
+        target = scratch;
+    for (let width = 1; width < count; width *= 2) {
+        for (let start = 0; start < count; start += width * 2) {
+            const MIDDLE = Math.min(start + width, count),
+                END = Math.min(start + width * 2, count);
+            let left = start,
+                right = MIDDLE,
+                at = start;
+            while (left < MIDDLE && right < END) {
+                target[at++] = source[right] < source[left] ? source[right++] : source[left++];
+            }
+            while (left < MIDDLE) {
+                target[at++] = source[left++];
+            }
+            while (right < END) {
+                target[at++] = source[right++];
+            }
+        }
+        const SWAP = source;
+        source = target;
+        target = SWAP;
+    }
+    if (source !== values) {
+        for (let i = 0; i < count; i++) {
+            values[i] = source[i];
+        }
+    }
+}
+/**
+ * Scanline tessellation of `contours` (arrays of {x, y}) into triangles written to `TESSELLATION.out` as x, y pairs;
+ * returns the vertex count. The output buffer is reused by the next call, so callers consume it first.
+ */
 function tessellate(contours, rule) {
-    const EDGES = [],
-        YS = [];
-    for (const CONTOUR of contours) {
+    const T = TESSELLATION;
+    let edges = T.edges,
+        ys = T.ys,
+        edgeCount = 0,
+        yCount = 0;
+    for (let c = 0; c < contours.length; c++) {
+        const CONTOUR = contours[c];
         if (CONTOUR.length < 3) {
             continue;
         }
@@ -111,86 +241,123 @@ function tessellate(contours, rule) {
             if (Math.abs(A.y - B.y) < 1e-9) {
                 continue;
             }
-            const MIN_Y = Math.min(A.y, B.y),
-                MAX_Y = Math.max(A.y, B.y);
-            EDGES.push({
-                a: A,
-                b: B,
-                sign: B.y > A.y ? 1 : -1,
-                minY: MIN_Y,
-                maxY: MAX_Y,
-            });
-            YS.push(A.y, B.y);
+            if ((edgeCount + 1) * EDGE_FLOATS > edges.length) {
+                edges = T.edges = growFloat64(edges, (edgeCount + 1) * EDGE_FLOATS);
+            }
+            if (yCount + 2 > ys.length) {
+                ys = T.ys = growFloat64(ys, yCount + 2);
+                T.ySortScratch = new Float64Array(ys.length);
+            }
+            const AT = edgeCount++ * EDGE_FLOATS;
+            edges[AT] = A.x;
+            edges[AT + 1] = A.y;
+            edges[AT + 2] = B.x;
+            edges[AT + 3] = B.y;
+            edges[AT + 4] = B.y > A.y ? 1 : -1;
+            edges[AT + 5] = Math.min(A.y, B.y);
+            edges[AT + 6] = Math.max(A.y, B.y);
+            ys[yCount++] = A.y;
+            ys[yCount++] = B.y;
         }
     }
-    YS.sort((a, b) => a - b);
-    const LEVELS = [];
-    for (const Y of YS) {
-        if (!LEVELS.length || Y - LEVELS.at(-1) > 1e-8) {
-            LEVELS.push(Y);
+    sortValues(ys, T.ySortScratch, yCount);
+    // Levels are compacted in place at the front of the sorted y list.
+    let levelCount = 0;
+    for (let i = 0; i < yCount; i++) {
+        const Y = ys[i];
+        if (!levelCount || Y - ys[levelCount - 1] > 1e-8) {
+            ys[levelCount++] = Y;
         }
     }
-    const STARTS = EDGES.slice().sort((a, b) => a.minY - b.minY),
-        ACTIVE = [],
-        TRIANGLES = [];
-    let nextStart = 0;
-    for (let band = 0; band + 1 < LEVELS.length; band++) {
-        const Y0 = LEVELS[band],
-            Y1 = LEVELS[band + 1],
+    if (edgeCount > T.starts.length) {
+        T.starts = new Int32Array(Math.max(edgeCount, T.starts.length * 2));
+        T.sortScratch = new Int32Array(T.starts.length);
+        T.keys = new Float64Array(T.starts.length);
+    }
+    const STARTS = T.starts,
+        ACTIVE = T.active,
+        KEYS = T.keys;
+    for (let i = 0; i < edgeCount; i++) {
+        STARTS[i] = i;
+    }
+    sortEdgesByMinY(STARTS, T.sortScratch, edgeCount, edges);
+    ACTIVE.length = 0;
+    let out = T.out,
+        outFloats = 0,
+        nextStart = 0;
+    const EVEN_ODD = rule === 'evenodd';
+    for (let band = 0; band + 1 < levelCount; band++) {
+        const Y0 = ys[band],
+            Y1 = ys[band + 1],
             YM = (Y0 + Y1) / 2;
         if (Y1 - Y0 < 1e-8) {
             continue;
         }
-        while (nextStart < STARTS.length && STARTS[nextStart].minY < YM) {
+        while (nextStart < edgeCount && edges[STARTS[nextStart] * EDGE_FLOATS + 5] < YM) {
             ACTIVE.push(STARTS[nextStart++]);
         }
         for (let i = ACTIVE.length - 1; i >= 0; i--) {
-            if (ACTIVE[i].maxY <= YM) {
+            if (edges[ACTIVE[i] * EDGE_FLOATS + 6] <= YM) {
                 ACTIVE[i] = ACTIVE[ACTIVE.length - 1];
                 ACTIVE.pop();
             }
         }
-        ACTIVE.sort((a, b) => xAt(a, YM) - xAt(b, YM));
+        // Stable insertion sort by x at the band middle: the same order as the former stable comparator sort.
+        for (let i = 0; i < ACTIVE.length; i++) {
+            KEYS[ACTIVE[i]] = edgeXAt(edges, ACTIVE[i], YM);
+        }
+        for (let i = 1; i < ACTIVE.length; i++) {
+            const EDGE = ACTIVE[i],
+                KEY = KEYS[EDGE];
+            let j = i - 1;
+            while (j >= 0 && KEYS[ACTIVE[j]] - KEY > 0) {
+                ACTIVE[j + 1] = ACTIVE[j];
+                j--;
+            }
+            ACTIVE[j + 1] = EDGE;
+        }
         let winding = 0;
         let inside = false;
-        let left = null;
-        for (const EDGE of ACTIVE) {
-            const BEFORE = rule === 'evenodd' ? inside : winding !== 0;
-            if (rule === 'evenodd') {
+        let left = -1;
+        for (let i = 0; i < ACTIVE.length; i++) {
+            const EDGE = ACTIVE[i];
+            const BEFORE = EVEN_ODD ? inside : winding !== 0;
+            if (EVEN_ODD) {
                 inside = !inside;
             } else {
-                winding += EDGE.sign;
+                winding += edges[EDGE * EDGE_FLOATS + 4];
             }
-            const AFTER = rule === 'evenodd' ? inside : winding !== 0;
+            const AFTER = EVEN_ODD ? inside : winding !== 0;
             if (!BEFORE && AFTER) {
                 left = EDGE;
-            } else if (BEFORE && !AFTER && left) {
-                const A = {
-                        x: xAt(left, Y0),
-                        y: Y0,
-                    },
-                    B = {
-                        x: xAt(EDGE, Y0),
-                        y: Y0,
-                    },
-                    C = {
-                        x: xAt(EDGE, Y1),
-                        y: Y1,
-                    },
-                    D = {
-                        x: xAt(left, Y1),
-                        y: Y1,
-                    };
-                TRIANGLES.push(A, B, C, A, C, D);
-                left = null;
+            } else if (BEFORE && !AFTER && left >= 0) {
+                if (outFloats + 12 > out.length) {
+                    out = T.out = growFloat64(out, outFloats + 12);
+                }
+                const AX = edgeXAt(edges, left, Y0),
+                    BX = edgeXAt(edges, EDGE, Y0),
+                    CX = edgeXAt(edges, EDGE, Y1),
+                    DX = edgeXAt(edges, left, Y1);
+                // Triangles A, B, C and A, C, D of the band trapezoid.
+                out[outFloats] = AX;
+                out[outFloats + 1] = Y0;
+                out[outFloats + 2] = BX;
+                out[outFloats + 3] = Y0;
+                out[outFloats + 4] = CX;
+                out[outFloats + 5] = Y1;
+                out[outFloats + 6] = AX;
+                out[outFloats + 7] = Y0;
+                out[outFloats + 8] = CX;
+                out[outFloats + 9] = Y1;
+                out[outFloats + 10] = DX;
+                out[outFloats + 11] = Y1;
+                outFloats += 12;
+                left = -1;
             }
         }
     }
-    return TRIANGLES;
-}
-function xAt(edge, y) {
-    const { a: A, b: B } = edge;
-    return A.x + ((B.x - A.x) * (y - A.y)) / (B.y - A.y);
+    ACTIVE.length = 0;
+    return outFloats / 2;
 }
 function clipContour(points, rule) {
     if (rule !== 'nonzero' && rule !== 'evenodd') {
@@ -267,16 +434,16 @@ function clipContour(points, rule) {
     if (Math.abs(area) < 1e-9) {
         throw new RangeError('Clip contour area must be nonzero');
     }
-    const TRIANGLES = tessellate([CONTOUR], rule);
-    if (!TRIANGLES.length) {
+    const VERTEX_COUNT = tessellate([CONTOUR], rule);
+    if (!VERTEX_COUNT) {
         throw new RangeError('Clip contour could not be tessellated');
     }
-    if (TRIANGLES.length / 3 > 16384) {
+    if (VERTEX_COUNT / 3 > 16384) {
         throw new RangeError('Retained clip tessellation exceeds 16384 triangles');
     }
     return {
         flat: FLAT,
-        triangles: Float32Array.from(TRIANGLES.flatMap((p) => [p.x, p.y])),
+        triangles: new Float32Array(TESSELLATION.out.subarray(0, VERTEX_COUNT * 2)),
     };
 }
 function convexContour(contour) {
@@ -378,6 +545,7 @@ export class VectorRenderer {
         this.count = 0;
         this.matrix = IDENTITY.slice();
         this.stack = [];
+        this.statePool = [];
         this.path = [];
         this.cursor = null;
         this.subpath = null;
@@ -390,6 +558,47 @@ export class VectorRenderer {
         this.activeWhiteFlash = false;
         this.activeGradient = null;
         this.paintTemplate = new Float32Array(12);
+        this.flatUV = [0, 0];
+        this.triangle = new Float64Array(6);
+        this.quadCheck = {};
+        this.poseBatchRecord = {
+            owner: null,
+            textures: null,
+            programWidth: 1,
+            planeKey: 0,
+            planeCount: 0,
+            planes: null,
+            serial: 0,
+        };
+        this.submitCall = {
+            pipeline: null,
+            buffer: null,
+            count: 0,
+            uniforms: null,
+            textures: null,
+            blend: 'source-over',
+            depth: null,
+            stencil: false,
+        };
+        this.submitTextures = [];
+        this.posedUniforms = {
+            u_projection: null,
+            u_depthWrite: 0,
+            u_program: 0,
+            u_state: 1,
+            u_overrides: 2,
+            u_texture: 3,
+            u_programWidth: 1,
+            'u_planes[0]': null,
+            u_planeCount: 0,
+        };
+        this.flatUniforms = { u_projection: null, u_depthWrite: 0, u_texture: 0 };
+        this.quadTint = [1, 1, 1, 1];
+        this.quadMatrix = [1, 0, 0, 1, 0, 0];
+        // Stroke scratch: contour x, y pairs and per-segment direction and normal pairs, grown as paths need.
+        this.strokePoints = new Float64Array(64);
+        this.strokeDirections = new Float64Array(64);
+        this.strokeNormals = new Float64Array(64);
         this._setPaint(this.whiteRegion);
         this.blend = 'source-over';
         this.depth = 0;
@@ -521,9 +730,15 @@ export class VectorRenderer {
             throw new Error('WebGLDevice.beginFrame is required');
         }
         this._assertDepthTarget();
-        const G = [...this.groups].reverse().find((group) => !group.direct);
-        if (G) {
-            this._setProjection(G.bounds, G.target);
+        let group = null;
+        for (let i = this.groups.length - 1; i >= 0; i--) {
+            if (!this.groups[i].direct) {
+                group = this.groups[i];
+                break;
+            }
+        }
+        if (group) {
+            this._setProjection(group.bounds, group.target);
         } else {
             this._setProjection(null);
         }
@@ -568,45 +783,51 @@ export class VectorRenderer {
             return this.moveTo(x, y);
         }
         const P = point(this.matrix, x, y);
-        this.path.at(-1).push(P);
+        this.path[this.path.length - 1].push(P);
         this.cursor = P;
     }
     quadraticCurveTo(cx, cy, x, y, segments = 12) {
-        this._curve([cx, cy, x, y], segments, false);
+        this._curve(cx, cy, x, y, 0, 0, segments, false);
     }
     bezierCurveTo(a, b, c, d, x, y, segments = 16) {
-        this._curve([a, b, c, d, x, y], segments, true);
+        this._curve(a, b, c, d, x, y, segments, true);
     }
-    _curve(v, n, cubic) {
+    /** Flattens a quadratic (control x1, y1; end x2, y2) or cubic (controls 1 and 2; end x3, y3) curve. */
+    _curve(x1, y1, x2, y2, x3, y3, n, cubic) {
         this._frame();
         if (!Number.isSafeInteger(n) || n < 2 || n > 256) {
             throw new RangeError('curve segments must be 2..256');
         }
         if (!this.cursor) {
-            return this.moveTo(v[0], v[1]);
+            return this.moveTo(x1, y1);
         }
-        const START = this.cursor,
-            P = cubic
-                ? [point(this.matrix, v[0], v[1]), point(this.matrix, v[2], v[3]), point(this.matrix, v[4], v[5])]
-                : [point(this.matrix, v[0], v[1]), point(this.matrix, v[2], v[3])];
+        const M = this.matrix,
+            START = this.cursor,
+            P0X = M[0] * x1 + M[2] * y1 + M[4],
+            P0Y = M[1] * x1 + M[3] * y1 + M[5],
+            P1X = M[0] * x2 + M[2] * y2 + M[4],
+            P1Y = M[1] * x2 + M[3] * y2 + M[5],
+            P2X = cubic ? M[0] * x3 + M[2] * y3 + M[4] : 0,
+            P2Y = cubic ? M[1] * x3 + M[3] * y3 + M[5] : 0,
+            CONTOUR = this.path[this.path.length - 1];
         for (let i = 1; i <= n; i++) {
             const T = i / n,
                 Q = 1 - T;
             let x;
             let y;
             if (cubic) {
-                x = Q * Q * Q * START.x + 3 * Q * Q * T * P[0].x + 3 * Q * T * T * P[1].x + T * T * T * P[2].x;
-                y = Q * Q * Q * START.y + 3 * Q * Q * T * P[0].y + 3 * Q * T * T * P[1].y + T * T * T * P[2].y;
+                x = Q * Q * Q * START.x + 3 * Q * Q * T * P0X + 3 * Q * T * T * P1X + T * T * T * P2X;
+                y = Q * Q * Q * START.y + 3 * Q * Q * T * P0Y + 3 * Q * T * T * P1Y + T * T * T * P2Y;
             } else {
-                x = Q * Q * START.x + 2 * Q * T * P[0].x + T * T * P[1].x;
-                y = Q * Q * START.y + 2 * Q * T * P[0].y + T * T * P[1].y;
+                x = Q * Q * START.x + 2 * Q * T * P0X + T * T * P1X;
+                y = Q * Q * START.y + 2 * Q * T * P0Y + T * T * P1Y;
             }
-            this.path.at(-1).push({
+            CONTOUR.push({
                 x,
                 y,
             });
         }
-        this.cursor = this.path.at(-1).at(-1);
+        this.cursor = CONTOUR[CONTOUR.length - 1];
     }
     closePath() {
         if (this.cursor && this.subpath) {
@@ -619,17 +840,26 @@ export class VectorRenderer {
     }
     save() {
         this._frame();
-        this.stack.push({
-            matrix: this.matrix.slice(),
-            depth: this.depth,
-            depthPolicy: this._depthPolicy,
-            clips: this.clips.map((polygon) =>
-                polygon.map((p) => ({
-                    ...p,
-                })),
-            ),
-            stencilClips: this.stencilClips.slice(),
+        // One pooled record per stack depth. Clip polygons and their points are never changed after they are pushed
+        // and stencil clip lists are replaced rather than changed, so the saved state holds references, not copies.
+        const STATE = (this.statePool[this.stack.length] ??= {
+            matrix: [1, 0, 0, 1, 0, 0],
+            depth: 0,
+            depthPolicy: null,
+            clips: [],
+            stencilClips: null,
         });
+        for (let i = 0; i < 6; i++) {
+            STATE.matrix[i] = this.matrix[i];
+        }
+        STATE.depth = this.depth;
+        STATE.depthPolicy = this._depthPolicy;
+        STATE.clips.length = 0;
+        for (let i = 0; i < this.clips.length; i++) {
+            STATE.clips.push(this.clips[i]);
+        }
+        STATE.stencilClips = this.stencilClips;
+        this.stack.push(STATE);
     }
     restore() {
         this._frame();
@@ -640,12 +870,18 @@ export class VectorRenderer {
         // Queued vertices hold final positions and depth; only policy or stencil changes submit the batch.
         this.depth = S.depth;
         this._setDepthPolicy(S.depthPolicy);
-        this.matrix = S.matrix;
+        for (let i = 0; i < 6; i++) {
+            this.matrix[i] = S.matrix[i];
+        }
+        // The saved clip list becomes the live one; the former live list returns to the pool for the next save.
+        const LIVE_CLIPS = this.clips;
         this.clips = S.clips;
-        if (
-            S.stencilClips.length !== this.stencilClips.length ||
-            S.stencilClips.some((clip, i) => clip !== this.stencilClips[i])
-        ) {
+        S.clips = LIVE_CLIPS;
+        let sameStencil = S.stencilClips.length === this.stencilClips.length;
+        for (let i = 0; sameStencil && i < S.stencilClips.length; i++) {
+            sameStencil = S.stencilClips[i] === this.stencilClips[i];
+        }
+        if (!sameStencil) {
             this._submit();
             this.stencilClips = S.stencilClips;
             this._rebuildStencil();
@@ -653,8 +889,25 @@ export class VectorRenderer {
     }
     setTransform(a, b, c, d, e, f) {
         this._frame();
-        [a, b, c, d, e, f].forEach((n, i) => FINITE(n, `transform[${i}]`));
-        this.matrix = [a, b, c, d, e, f];
+        if (
+            !Number.isFinite(a) ||
+            !Number.isFinite(b) ||
+            !Number.isFinite(c) ||
+            !Number.isFinite(d) ||
+            !Number.isFinite(e) ||
+            !Number.isFinite(f)
+        ) {
+            const INDEX = [a, b, c, d, e, f].findIndex((n) => !Number.isFinite(n));
+            throw new TypeError(`transform[${INDEX}] must be finite`);
+        }
+        // Written in place: holders of the matrix (saved states, groups, gradients) keep their own copies.
+        const M = this.matrix;
+        M[0] = a;
+        M[1] = b;
+        M[2] = c;
+        M[3] = d;
+        M[4] = e;
+        M[5] = f;
     }
     transform(a, b, c, d, e, f) {
         const M = this.matrix;
@@ -1039,6 +1292,26 @@ export class VectorRenderer {
             }
         }
     }
+    /**
+     * _emit for the triangle in `this.triangle` (ax, ay, bx, by, cx, cy; no uv): the common unclipped, ungradiented case
+     * writes the vertices directly; otherwise three point objects go through _emit exactly as before.
+     */
+    _emitBufferedTriangle(color) {
+        const T = this.triangle;
+        if (!this.clips.length && !this.activeGradient) {
+            if (!this._planesAllow()) {
+                this._submit();
+            }
+            this._reserve(3);
+            const U = this.flatUV[0],
+                V = this.flatUV[1];
+            this._writeVertex(T[0], T[1], U, V, color);
+            this._writeVertex(T[2], T[3], U, V, color);
+            this._writeVertex(T[4], T[5], U, V, color);
+            return;
+        }
+        this._emit({ x: T[0], y: T[1] }, { x: T[2], y: T[3] }, { x: T[4], y: T[5] }, color);
+    }
     _writeVertex(x, y, u, v, color) {
         const K = this.count++ * VERTEX_FLOATS,
             DATA = this.vertices;
@@ -1088,40 +1361,45 @@ export class VectorRenderer {
             }
         }
         this.device.uploadVertices(this.buffer, this.vertices.subarray(0, this.count * VERTEX_FLOATS));
-        this.device.draw({
-            pipeline: POSED ? this.posePipeline : this.activeTarget ? this.groupPipeline : this.pipeline,
-            buffer: this.buffer,
-            count: this.count,
-            uniforms: POSED
-                ? {
-                      u_projection: this.projection,
-                      u_depthWrite: Number(this.depthWrite),
-                      u_program: 0,
-                      u_state: 1,
-                      u_overrides: 2,
-                      u_texture: 3,
-                      u_programWidth: POSED.programWidth,
-                      'u_planes[0]': this.planeScratch,
-                      u_planeCount: POSED.planeCount,
-                  }
-                : {
-                      u_projection: this.projection,
-                      u_depthWrite: Number(this.depthWrite),
-                      u_texture: 0,
-                  },
-            textures: POSED ? [...POSED.textures, this.atlas.texture] : [this.activeTarget ?? this.atlas.texture],
-            blend: this.blend,
-            depth: this._depthPolicy,
-            stencil: this.stencilDepth
-                ? {
-                      func: 'equal',
-                      ref: this.stencilDepth,
-                      mask: 255,
-                      writeMask: 0,
-                      pass: 'keep',
-                  }
-                : false,
-        });
+        // Reused call, uniform and texture records: device.draw reads them before returning.
+        const CALL = this.submitCall,
+            TEXTURES = this.submitTextures;
+        TEXTURES.length = 0;
+        if (POSED) {
+            const UNIFORMS = this.posedUniforms;
+            UNIFORMS.u_projection = this.projection;
+            UNIFORMS.u_depthWrite = Number(this.depthWrite);
+            UNIFORMS.u_programWidth = POSED.programWidth;
+            UNIFORMS['u_planes[0]'] = this.planeScratch;
+            UNIFORMS.u_planeCount = POSED.planeCount;
+            CALL.uniforms = UNIFORMS;
+            for (let i = 0; i < POSED.textures.length; i++) {
+                TEXTURES.push(POSED.textures[i]);
+            }
+            TEXTURES.push(this.atlas.texture);
+        } else {
+            const UNIFORMS = this.flatUniforms;
+            UNIFORMS.u_projection = this.projection;
+            UNIFORMS.u_depthWrite = Number(this.depthWrite);
+            CALL.uniforms = UNIFORMS;
+            TEXTURES.push(this.activeTarget ?? this.atlas.texture);
+        }
+        CALL.pipeline = POSED ? this.posePipeline : this.activeTarget ? this.groupPipeline : this.pipeline;
+        CALL.buffer = this.buffer;
+        CALL.count = this.count;
+        CALL.textures = TEXTURES;
+        CALL.blend = this.blend;
+        CALL.depth = this._depthPolicy;
+        CALL.stencil = this.stencilDepth ? stencilEqual(this.stencilDepth) : false;
+        try {
+            this.device.draw(CALL);
+        } finally {
+            TEXTURES.length = 0;
+            CALL.uniforms = CALL.textures = null;
+            if (POSED) {
+                POSED.owner = POSED.textures = POSED.planes = null;
+            }
+        }
         this.count = 0;
     }
     _createPosePipeline() {
@@ -1157,33 +1435,45 @@ export class VectorRenderer {
      * Selects the atlas region later vertices sample. Paint is vertex data, so changing it never submits: only the
      * switch between the atlas and an offscreen group target (a different sampler) does.
      */
-    _setPaint(region, { radial = false, whiteFlash = false, gradient = null } = {}) {
+    _setPaint(region, { radial = false, whiteFlash = false, gradient = null } = EMPTY_OPTIONS) {
         if (this.activeTarget) {
             this._submit();
             this.activeTarget = null;
         }
-        const [U, V, W, H] = region.uvRect,
+        const RECT = region.uvRect,
+            U = RECT[0],
+            V = RECT[1],
+            W = RECT[2],
+            H = RECT[3],
             MODE = radial ? (gradient?.radialEmpty ? 2 : 1) : gradient ? 3 : 0,
-            PARAMS = radial ? (gradient?.radialParams ?? [0, 0, 0, 0]) : [0, 0, 0, 0];
+            PARAMS = radial ? (gradient?.radialParams ?? NO_RADIAL) : NO_RADIAL;
         this.activeRadial = radial;
         this.activeWhiteFlash = whiteFlash;
         this.activeGradient = gradient;
         this.activeRegion = region;
-        this.flatUV = [U + W / 2, V + H / 2];
-        this.paintTemplate.set([
-            region.layer,
-            whiteFlash ? 1 : 0,
-            MODE,
-            region.filter === 'nearest' ? 1 : 0,
-            ...PARAMS,
-            U,
-            V,
-            W,
-            H,
-        ]);
+        this.flatUV[0] = U + W / 2;
+        this.flatUV[1] = V + H / 2;
+        const TEMPLATE = this.paintTemplate;
+        TEMPLATE[0] = region.layer;
+        TEMPLATE[1] = whiteFlash ? 1 : 0;
+        TEMPLATE[2] = MODE;
+        TEMPLATE[3] = region.filter === 'nearest' ? 1 : 0;
+        TEMPLATE[4] = PARAMS[0];
+        TEMPLATE[5] = PARAMS[1];
+        TEMPLATE[6] = PARAMS[2];
+        TEMPLATE[7] = PARAMS[3];
+        TEMPLATE[8] = U;
+        TEMPLATE[9] = V;
+        TEMPLATE[10] = W;
+        TEMPLATE[11] = H;
     }
     /** Switches later vertices to plain per-vertex paint (no atlas region, gradient or group target). */
     _useVertexPaint(template, whiteFlash = false) {
+        this._beginVertexPaint(whiteFlash);
+        this.paintTemplate.set(template);
+    }
+    /** _useVertexPaint without the template copy: the caller writes `paintTemplate` itself. */
+    _beginVertexPaint(whiteFlash) {
         if (this.activeTarget) {
             this._submit();
             this.activeTarget = null;
@@ -1192,7 +1482,6 @@ export class VectorRenderer {
         this.activeRadial = false;
         this.activeWhiteFlash = whiteFlash;
         this.activeGradient = null;
-        this.paintTemplate.set(template);
     }
     /**
      * Fills or strokes one analytic primitive: `matrix` maps the local square [-1,1]^2 to screen space (the caller
@@ -1204,11 +1493,43 @@ export class VectorRenderer {
         if (matrix?.length !== 6 || params?.length !== 4) {
             throw new TypeError('drawPrimitive requires a 6-value matrix and 4 parameters');
         }
-        for (const VALUE of [...matrix, ...params]) {
-            FINITE(VALUE, 'drawPrimitive value');
+        for (let i = 0; i < 6; i++) {
+            FINITE(matrix[i], 'drawPrimitive value');
         }
-        const M = matrix;
-        this._useVertexPaint([0, 0, MODE_PRIMITIVE, 0, ...params, M[0], M[2], M[1], M[3]]);
+        for (let i = 0; i < 4; i++) {
+            FINITE(params[i], 'drawPrimitive value');
+        }
+        const M = matrix,
+            TEMPLATE = this.paintTemplate;
+        this._beginVertexPaint(false);
+        TEMPLATE[0] = 0;
+        TEMPLATE[1] = 0;
+        TEMPLATE[2] = MODE_PRIMITIVE;
+        TEMPLATE[3] = 0;
+        TEMPLATE[4] = params[0];
+        TEMPLATE[5] = params[1];
+        TEMPLATE[6] = params[2];
+        TEMPLATE[7] = params[3];
+        TEMPLATE[8] = M[0];
+        TEMPLATE[9] = M[2];
+        TEMPLATE[10] = M[1];
+        TEMPLATE[11] = M[3];
+        if (!this.clips.length) {
+            // Unclipped (the common case): the two triangles 0,1,2 and 0,2,3 are written directly.
+            for (let triangle = 0; triangle < 2; triangle++) {
+                if (!this._planesAllow()) {
+                    this._submit();
+                }
+                this._reserve(3);
+                for (let corner = 0; corner < 3; corner++) {
+                    const AT = (corner === 0 ? 0 : corner + triangle) * 2,
+                        X = PRIMITIVE_CORNERS[AT],
+                        Y = PRIMITIVE_CORNERS[AT + 1];
+                    this._writeVertex(M[0] * X + M[2] * Y + M[4], M[1] * X + M[3] * Y + M[5], X, Y, color);
+                }
+            }
+            return;
+        }
         const CORNERS = [
             [-1, -1],
             [1, -1],
@@ -1242,37 +1563,37 @@ export class VectorRenderer {
     } = {}) {
         this._frame();
         const COUNT = uvRects?.length / 4;
-        validateQuads({
-            layer,
-            uvRects,
-            localRects,
-            matrix,
-            color,
-            alpha,
-            filter,
-            parts,
-            pose,
-            depthWriteAlphaThreshold,
-        });
-        const TINT = [color[0], color[1], color[2], color[3] * alpha],
-            M = compose(this.matrix, matrix);
-        this._useVertexPaint(
-            [
-                layer + depthWriteAlphaThreshold * 0.49,
-                whiteFlash ? 1 : forceColor ? 2 : 0,
-                0,
-                filter === 'nearest' ? 1 : 0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                1,
-                1,
-            ],
-            whiteFlash,
-        );
+        // Validation, tint and composed matrix use reused records: every value is copied into vertices below.
+        const CHECK = this.quadCheck;
+        CHECK.layer = layer;
+        CHECK.uvRects = uvRects;
+        CHECK.localRects = localRects;
+        CHECK.matrix = matrix;
+        CHECK.color = color;
+        CHECK.alpha = alpha;
+        CHECK.filter = filter;
+        CHECK.parts = parts;
+        CHECK.pose = pose;
+        CHECK.depthWriteAlphaThreshold = depthWriteAlphaThreshold;
+        try {
+            validateQuads(CHECK);
+        } finally {
+            CHECK.uvRects = CHECK.localRects = CHECK.matrix = CHECK.color = CHECK.parts = CHECK.pose = null;
+        }
+        const TINT = this.quadTint,
+            M = composeInto(this.matrix, matrix, this.quadMatrix),
+            TEMPLATE = this.paintTemplate;
+        TINT[0] = color[0];
+        TINT[1] = color[1];
+        TINT[2] = color[2];
+        TINT[3] = color[3] * alpha;
+        this._beginVertexPaint(whiteFlash);
+        TEMPLATE.fill(0);
+        TEMPLATE[0] = layer + depthWriteAlphaThreshold * 0.49;
+        TEMPLATE[1] = whiteFlash ? 1 : forceColor ? 2 : 0;
+        TEMPLATE[3] = filter === 'nearest' ? 1 : 0;
+        TEMPLATE[10] = 1;
+        TEMPLATE[11] = 1;
         if (pose === null) {
             if (parts !== null) {
                 throw new TypeError('parts require a pose');
@@ -1320,6 +1641,7 @@ export class VectorRenderer {
                     [point(M, LX + LW, LY + LH), [U + UW, V + VH]],
                     [point(M, LX, LY + LH), [U, V + VH]],
                 ];
+                // The clipped path keeps per-triangle corner arrays; the tint is copied into vertices at once.
                 this._emitTriangle(CORNERS[0][0], CORNERS[1][0], CORNERS[2][0], TINT, [
                     CORNERS[0][1],
                     CORNERS[1][1],
@@ -1337,7 +1659,7 @@ export class VectorRenderer {
         if (!OWNER || parts?.length !== COUNT) {
             throw new TypeError('A live pose handle and one part per run are required');
         }
-        const DRAW = OWNER.resolve(pose, { program: true });
+        const DRAW = OWNER.resolve(pose, PROGRAM_RESOLVE);
         if (DRAW.kind !== 'program') {
             throw new TypeError('Posed sprites require a keyframe program pose');
         }
@@ -1350,10 +1672,19 @@ export class VectorRenderer {
         OWNER.noteDraw(pose);
         this.device.stats.spriteRuns += COUNT;
         for (let i = 0; i < COUNT; i++) {
-            const [LX, LY, LW, LH] = localRects.subarray(i * 4, i * 4 + 4),
-                [U, V, UW, VH] = uvRects.subarray(i * 4, i * 4 + 4);
+            const AT = i * 4,
+                LX = localRects[AT],
+                LY = localRects[AT + 1],
+                LW = localRects[AT + 2],
+                LH = localRects[AT + 3],
+                U = uvRects[AT],
+                V = uvRects[AT + 1],
+                UW = uvRects[AT + 2],
+                VH = uvRects[AT + 3];
             this._reserve(6);
-            for (const [CX, CY] of POSED_CORNERS) {
+            for (let corner = 0; corner < POSED_CORNERS.length; corner++) {
+                const CX = POSED_CORNERS[corner][0],
+                    CY = POSED_CORNERS[corner][1];
                 const K = this.count++ * VERTEX_FLOATS;
                 this.vertices[K] = LX + CX * LW;
                 this.vertices[K + 1] = LY + CY * LH;
@@ -1378,10 +1709,16 @@ export class VectorRenderer {
     _beginPosed(owner, draw) {
         const PLANES = clipPlanes(this.clips, this.maxClipPlanes),
             BATCH = this.poseBatch;
+        let otherTextures = false;
+        if (BATCH) {
+            for (let i = 0; i < BATCH.textures.length; i++) {
+                otherTextures ||= BATCH.textures[i] !== draw.textures[i];
+            }
+        }
         if (
             BATCH &&
             (BATCH.owner !== owner ||
-                BATCH.textures.some((texture, i) => texture !== draw.textures[i]) ||
+                otherTextures ||
                 (BATCH.planeKey !== PLANES.key && BATCH.planeCount + PLANES.count > 0))
         ) {
             this._submit();
@@ -1390,15 +1727,16 @@ export class VectorRenderer {
             this._submit();
         }
         if (!this.poseBatch) {
-            this.poseBatch = {
-                owner,
-                textures: draw.textures,
-                programWidth: draw.programWidth,
-                planeKey: PLANES.key,
-                planeCount: PLANES.count,
-                planes: PLANES.values,
-                serial: this.clipSerial,
-            };
+            // One reused batch record: _submit reads it and clears `poseBatch` before the next one opens.
+            const NEXT = this.poseBatchRecord;
+            NEXT.owner = owner;
+            NEXT.textures = draw.textures;
+            NEXT.programWidth = draw.programWidth;
+            NEXT.planeKey = PLANES.key;
+            NEXT.planeCount = PLANES.count;
+            NEXT.planes = PLANES.values;
+            NEXT.serial = this.clipSerial;
+            this.poseBatch = NEXT;
         }
     }
     _useTarget(target) {
@@ -1410,21 +1748,21 @@ export class VectorRenderer {
         this.activeRadial = false;
         this.activeWhiteFlash = false;
         this.activeGradient = null;
-        this.flatUV = [0, 0];
-        this.paintTemplate.set([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]);
+        this.flatUV[0] = 0;
+        this.flatUV[1] = 0;
+        this.paintTemplate.fill(0);
+        this.paintTemplate[10] = 1;
+        this.paintTemplate[11] = 1;
     }
-    fill(colorValue = [0, 0, 0, 1], rule = 'nonzero') {
+    fill(colorValue = BLACK, rule = 'nonzero') {
         this._frame();
         if (rule !== 'nonzero' && rule !== 'evenodd') {
             throw new TypeError('rule must be nonzero or evenodd');
         }
         this._setPaint(this.whiteRegion);
         this.device.stats.pathTessellations++;
-        const COL = rgba(colorValue),
-            VERTICES = tessellate(this.path, rule);
-        for (let i = 0; i + 2 < VERTICES.length; i += 3) {
-            this._emit(VERTICES[i], VERTICES[i + 1], VERTICES[i + 2], COL);
-        }
+        const COL = rgba(colorValue);
+        this._emitTessellation(tessellate(this.path, rule), COL);
     }
     fillRadialGradient(gradient) {
         this._frame();
@@ -1445,10 +1783,11 @@ export class VectorRenderer {
             gradient,
         });
         this.device.stats.pathTessellations++;
-        const VERTICES = tessellate(this.path, gradient.rule ?? 'nonzero');
-        for (let i = 0; i + 2 < VERTICES.length; i += 3) {
-            this._emitTriangle(VERTICES[i], VERTICES[i + 1], VERTICES[i + 2], gradient.color);
+        const VERTEX_COUNT = tessellate(this.path, gradient.rule ?? 'nonzero');
+        if (VERTEX_COUNT) {
+            rgba(gradient.color);
         }
+        this._emitTessellation(VERTEX_COUNT, gradient.color);
     }
     fillLinearGradient(gradient) {
         this._frame();
@@ -1463,9 +1802,25 @@ export class VectorRenderer {
             whiteFlash: gradient.whiteFlash,
             gradient,
         });
-        const VERTICES = tessellate(this.path, gradient.rule ?? 'nonzero');
-        for (let i = 0; i + 2 < VERTICES.length; i += 3) {
-            this._emitTriangle(VERTICES[i], VERTICES[i + 1], VERTICES[i + 2], gradient.color);
+        const VERTEX_COUNT = tessellate(this.path, gradient.rule ?? 'nonzero');
+        if (VERTEX_COUNT) {
+            rgba(gradient.color);
+        }
+        this._emitTessellation(VERTEX_COUNT, gradient.color);
+    }
+    /** Emits the triangles the last tessellate() call left in its output buffer. */
+    _emitTessellation(vertexCount, color) {
+        const OUT = TESSELLATION.out;
+        for (let i = 0; i + 2 < vertexCount; i += 3) {
+            const AT = i * 2;
+            const TRIANGLE = this.triangle;
+            TRIANGLE[0] = OUT[AT];
+            TRIANGLE[1] = OUT[AT + 1];
+            TRIANGLE[2] = OUT[AT + 2];
+            TRIANGLE[3] = OUT[AT + 3];
+            TRIANGLE[4] = OUT[AT + 4];
+            TRIANGLE[5] = OUT[AT + 5];
+            this._emitBufferedTriangle(color);
         }
     }
     _gradientUV(p) {
@@ -1482,9 +1837,9 @@ export class VectorRenderer {
         return [DENOM ? ((X - G.x0) * DX + (Y - G.y0) * DY) / DENOM : 1, 0.5];
     }
     stroke(
-        colorValue = [0, 0, 0, 1],
+        colorValue = BLACK,
         width = 1,
-        { lineCap = 'butt', lineJoin = 'miter', miterLimit = 10 } = {},
+        { lineCap = 'butt', lineJoin = 'miter', miterLimit = 10 } = EMPTY_OPTIONS,
         gradient = null,
     ) {
         this._frame();
@@ -1494,13 +1849,14 @@ export class VectorRenderer {
             gradient,
         });
         this.device.stats.pathStrokeBuilds++;
+        const TRIANGLE = this.triangle;
         rgba(colorValue);
         if (!Number.isFinite(width) || width <= 0) {
             throw new RangeError('line width must be positive');
         }
         if (
-            !['butt', 'round', 'square'].includes(lineCap) ||
-            !['miter', 'round', 'bevel'].includes(lineJoin) ||
+            (lineCap !== 'butt' && lineCap !== 'round' && lineCap !== 'square') ||
+            (lineJoin !== 'miter' && lineJoin !== 'round' && lineJoin !== 'bevel') ||
             !Number.isFinite(miterLimit) ||
             miterLimit <= 0
         ) {
@@ -1508,161 +1864,197 @@ export class VectorRenderer {
         }
         const HALF = width / 2,
             ARC_STEP =
-                HALF > ARC_TOLERANCE ? Math.min(Math.PI / 2, 2 * Math.acos(1 - ARC_TOLERANCE / HALF)) : Math.PI / 2,
-            FAN = (center, points) => {
-                for (let i = 1; i < points.length; i++) {
-                    this._emit(center, points[i - 1], points[i], colorValue);
+                HALF > ARC_TOLERANCE ? Math.min(Math.PI / 2, 2 * Math.acos(1 - ARC_TOLERANCE / HALF)) : Math.PI / 2;
+        for (let s = 0; s < this.path.length; s++) {
+            const SOURCE = this.path[s];
+            // Contour x, y pairs without consecutive repeats; then per segment its unit direction and half-width normal.
+            if (SOURCE.length * 2 > this.strokePoints.length) {
+                const SIZE = Math.max(SOURCE.length * 2, this.strokePoints.length * 2);
+                this.strokePoints = new Float64Array(SIZE);
+                this.strokeDirections = new Float64Array(SIZE);
+                this.strokeNormals = new Float64Array(SIZE);
+            }
+            const POINTS = this.strokePoints,
+                DIRS = this.strokeDirections,
+                NORMALS = this.strokeNormals;
+            let length = 0;
+            for (let i = 0; i < SOURCE.length; i++) {
+                const P = SOURCE[i];
+                if (!i || P.x !== SOURCE[i - 1].x || P.y !== SOURCE[i - 1].y) {
+                    POINTS[length * 2] = P.x;
+                    POINTS[length * 2 + 1] = P.y;
+                    length++;
                 }
-            };
-        for (const SOURCE of this.path) {
-            const CONTOUR = SOURCE.filter((p, i) => !i || p.x !== SOURCE[i - 1].x || p.y !== SOURCE[i - 1].y);
-            if (CONTOUR.length < 2) {
+            }
+            if (length < 2) {
                 continue;
             }
-            const CLOSED = CONTOUR.length > 2 && CONTOUR[0].x === CONTOUR.at(-1).x && CONTOUR[0].y === CONTOUR.at(-1).y;
+            const CLOSED =
+                length > 2 && POINTS[0] === POINTS[(length - 1) * 2] && POINTS[1] === POINTS[(length - 1) * 2 + 1];
             if (CLOSED) {
-                CONTOUR.pop();
+                length--;
             }
-            const COUNT = CLOSED ? CONTOUR.length : CONTOUR.length - 1,
-                DIRS = [],
-                NORMALS = [];
+            const COUNT = CLOSED ? length : length - 1;
             for (let i = 0; i < COUNT; i++) {
-                const A = CONTOUR[i],
-                    B = CONTOUR[(i + 1) % CONTOUR.length],
-                    DX = B.x - A.x,
-                    DY = B.y - A.y,
+                const A = i * 2,
+                    B = ((i + 1) % length) * 2,
+                    DX = POINTS[B] - POINTS[A],
+                    DY = POINTS[B + 1] - POINTS[A + 1],
                     L = Math.hypot(DX, DY);
                 if (!L) {
-                    DIRS.push({
-                        x: 0,
-                        y: 0,
-                    });
-                    NORMALS.push({
-                        x: 0,
-                        y: 0,
-                    });
+                    DIRS[i * 2] = DIRS[i * 2 + 1] = NORMALS[i * 2] = NORMALS[i * 2 + 1] = 0;
                     continue;
                 }
-                DIRS.push({
-                    x: DX / L,
-                    y: DY / L,
-                });
-                NORMALS.push({
-                    x: (-DY / L) * HALF,
-                    y: (DX / L) * HALF,
-                });
+                DIRS[i * 2] = DX / L;
+                DIRS[i * 2 + 1] = DY / L;
+                NORMALS[i * 2] = (-DY / L) * HALF;
+                NORMALS[i * 2 + 1] = (DX / L) * HALF;
             }
             for (let i = 0; i < COUNT; i++) {
-                const A = CONTOUR[i],
-                    B = CONTOUR[(i + 1) % CONTOUR.length],
-                    D = DIRS[i],
-                    N = NORMALS[i];
-                if (!D.x && !D.y) {
+                const A = i * 2,
+                    B = ((i + 1) % length) * 2,
+                    DIR_X = DIRS[i * 2],
+                    DIR_Y = DIRS[i * 2 + 1],
+                    NX = NORMALS[i * 2],
+                    NY = NORMALS[i * 2 + 1];
+                if (!DIR_X && !DIR_Y) {
                     continue;
                 }
                 const EXTEND = !CLOSED && lineCap === 'square' && (i === 0 || i === COUNT - 1) ? HALF : 0,
-                    AX = A.x - D.x * EXTEND,
-                    AY = A.y - D.y * EXTEND,
-                    BX = B.x + D.x * EXTEND,
-                    BY = B.y + D.y * EXTEND,
-                    P = {
-                        x: AX + N.x,
-                        y: AY + N.y,
-                    },
-                    Q = {
-                        x: BX + N.x,
-                        y: BY + N.y,
-                    },
-                    R = {
-                        x: BX - N.x,
-                        y: BY - N.y,
-                    },
-                    S = {
-                        x: AX - N.x,
-                        y: AY - N.y,
-                    };
-                this._emit(P, Q, R, colorValue);
-                this._emit(P, R, S, colorValue);
+                    AX = POINTS[A] - DIR_X * EXTEND,
+                    AY = POINTS[A + 1] - DIR_Y * EXTEND,
+                    BX = POINTS[B] + DIR_X * EXTEND,
+                    BY = POINTS[B + 1] + DIR_Y * EXTEND;
+                // Quad P, Q, R, S as triangles P, Q, R and P, R, S.
+                TRIANGLE[0] = AX + NX;
+                TRIANGLE[1] = AY + NY;
+                TRIANGLE[2] = BX + NX;
+                TRIANGLE[3] = BY + NY;
+                TRIANGLE[4] = BX - NX;
+                TRIANGLE[5] = BY - NY;
+                this._emitBufferedTriangle(colorValue);
+                TRIANGLE[0] = AX + NX;
+                TRIANGLE[1] = AY + NY;
+                TRIANGLE[2] = BX - NX;
+                TRIANGLE[3] = BY - NY;
+                TRIANGLE[4] = AX - NX;
+                TRIANGLE[5] = AY - NY;
+                this._emitBufferedTriangle(colorValue);
             }
             const JOIN_START = CLOSED ? 0 : 1,
-                JOIN_END = CLOSED ? CONTOUR.length : CONTOUR.length - 1;
+                JOIN_END = CLOSED ? length : length - 1;
             for (let i = JOIN_START; i < JOIN_END; i++) {
-                const PREV = (i - 1 + COUNT) % COUNT,
-                    NEXT = i % COUNT,
-                    V = CONTOUR[i % CONTOUR.length],
-                    D0 = DIRS[PREV],
-                    D1 = DIRS[NEXT],
-                    N0 = NORMALS[PREV],
-                    N1 = NORMALS[NEXT],
-                    CROSS = D0.x * D1.y - D0.y * D1.x;
+                const PREV = ((i - 1 + COUNT) % COUNT) * 2,
+                    NEXT = (i % COUNT) * 2,
+                    V = (i % length) * 2,
+                    VX = POINTS[V],
+                    VY = POINTS[V + 1],
+                    D0X = DIRS[PREV],
+                    D0Y = DIRS[PREV + 1],
+                    D1X = DIRS[NEXT],
+                    D1Y = DIRS[NEXT + 1],
+                    N0X = NORMALS[PREV],
+                    N0Y = NORMALS[PREV + 1],
+                    N1X = NORMALS[NEXT],
+                    N1Y = NORMALS[NEXT + 1],
+                    CROSS = D0X * D1Y - D0Y * D1X;
                 if (Math.abs(CROSS) < 1e-8) {
                     continue;
                 }
                 const SIGN = CROSS > 0 ? -1 : 1,
-                    A = {
-                        x: V.x + N0.x * SIGN,
-                        y: V.y + N0.y * SIGN,
-                    },
-                    B = {
-                        x: V.x + N1.x * SIGN,
-                        y: V.y + N1.y * SIGN,
-                    };
+                    AX = VX + N0X * SIGN,
+                    AY = VY + N0Y * SIGN,
+                    BX = VX + N1X * SIGN,
+                    BY = VY + N1Y * SIGN;
                 if (lineJoin === 'round') {
-                    const START = Math.atan2(A.y - V.y, A.x - V.x);
-                    // The join is the short arc between the two outer offset points.
-                    let sweep = Math.atan2(B.y - V.y, B.x - V.x) - START;
+                    const START = Math.atan2(AY - VY, AX - VX);
+                    // The join is the short arc between the two outer offset points, fanned from the vertex.
+                    let sweep = Math.atan2(BY - VY, BX - VX) - START;
                     while (sweep > Math.PI) {
                         sweep -= Math.PI * 2;
                     }
                     while (sweep < -Math.PI) {
                         sweep += Math.PI * 2;
                     }
-                    const STEPS = Math.max(1, Math.ceil(Math.abs(sweep) / ARC_STEP)),
-                        ARC = [A];
+                    const STEPS = Math.max(1, Math.ceil(Math.abs(sweep) / ARC_STEP));
+                    let previousX = AX,
+                        previousY = AY;
                     for (let j = 1; j <= STEPS; j++) {
-                        const T = START + (sweep * j) / STEPS;
-                        ARC.push({
-                            x: V.x + Math.cos(T) * HALF,
-                            y: V.y + Math.sin(T) * HALF,
-                        });
+                        const T = START + (sweep * j) / STEPS,
+                            X = VX + Math.cos(T) * HALF,
+                            Y = VY + Math.sin(T) * HALF;
+                        TRIANGLE[0] = VX;
+                        TRIANGLE[1] = VY;
+                        TRIANGLE[2] = previousX;
+                        TRIANGLE[3] = previousY;
+                        TRIANGLE[4] = X;
+                        TRIANGLE[5] = Y;
+                        this._emitBufferedTriangle(colorValue);
+                        previousX = X;
+                        previousY = Y;
                     }
-                    FAN(V, ARC);
                 } else if (lineJoin === 'miter') {
-                    const MX = N0.x * SIGN + N1.x * SIGN,
-                        MY = N0.y * SIGN + N1.y * SIGN,
+                    const MX = N0X * SIGN + N1X * SIGN,
+                        MY = N0Y * SIGN + N1Y * SIGN,
                         ML = Math.hypot(MX, MY),
-                        DENOM = ML ? (MX / ML) * (N1.x * SIGN) + (MY / ML) * (N1.y * SIGN) : 0,
+                        DENOM = ML ? (MX / ML) * (N1X * SIGN) + (MY / ML) * (N1Y * SIGN) : 0,
                         MITER = DENOM ? HALF / DENOM : Infinity;
                     if (Number.isFinite(MITER) && Math.abs(MITER) <= HALF * miterLimit) {
-                        const TIP = {
-                            x: V.x + (MX / ML) * MITER,
-                            y: V.y + (MY / ML) * MITER,
-                        };
-                        this._emit(A, TIP, B, colorValue);
+                        TRIANGLE[0] = AX;
+                        TRIANGLE[1] = AY;
+                        TRIANGLE[2] = VX + (MX / ML) * MITER;
+                        TRIANGLE[3] = VY + (MY / ML) * MITER;
+                        TRIANGLE[4] = BX;
+                        TRIANGLE[5] = BY;
+                        this._emitBufferedTriangle(colorValue);
                     } else {
-                        this._emit(V, A, B, colorValue);
+                        TRIANGLE[0] = VX;
+                        TRIANGLE[1] = VY;
+                        TRIANGLE[2] = AX;
+                        TRIANGLE[3] = AY;
+                        TRIANGLE[4] = BX;
+                        TRIANGLE[5] = BY;
+                        this._emitBufferedTriangle(colorValue);
                     }
                 } else {
-                    this._emit(V, A, B, colorValue);
+                    TRIANGLE[0] = VX;
+                    TRIANGLE[1] = VY;
+                    TRIANGLE[2] = AX;
+                    TRIANGLE[3] = AY;
+                    TRIANGLE[4] = BX;
+                    TRIANGLE[5] = BY;
+                    this._emitBufferedTriangle(colorValue);
                 }
             }
             if (!CLOSED && lineCap === 'round') {
-                for (const [INDEX, ANGLE] of [
-                    [0, Math.atan2(DIRS[0].y, DIRS[0].x) + Math.PI],
-                    [COUNT - 1, Math.atan2(DIRS[COUNT - 1].y, DIRS[COUNT - 1].x)],
-                ]) {
-                    const V = CONTOUR[INDEX === 0 ? 0 : CONTOUR.length - 1],
-                        START = ANGLE - Math.PI / 2,
-                        ARC = [];
-                    const CAP_STEPS = Math.max(2, Math.ceil(Math.PI / ARC_STEP));
+                const CAP_STEPS = Math.max(2, Math.ceil(Math.PI / ARC_STEP));
+                for (let cap = 0; cap < 2; cap++) {
+                    const SEGMENT = cap === 0 ? 0 : (COUNT - 1) * 2,
+                        ANGLE = Math.atan2(DIRS[SEGMENT + 1], DIRS[SEGMENT]) + (cap === 0 ? Math.PI : 0),
+                        // As before, the end cap of a one-segment line (segment index 0) is centred on the first
+                        // point; kept unchanged so the drawn output stays the same.
+                        V = SEGMENT === 0 ? 0 : (length - 1) * 2,
+                        VX = POINTS[V],
+                        VY = POINTS[V + 1],
+                        START = ANGLE - Math.PI / 2;
+                    let previousX = 0,
+                        previousY = 0;
                     for (let j = 0; j <= CAP_STEPS; j++) {
-                        const T = START + (Math.PI * j) / CAP_STEPS;
-                        ARC.push({
-                            x: V.x + Math.cos(T) * HALF,
-                            y: V.y + Math.sin(T) * HALF,
-                        });
+                        const T = START + (Math.PI * j) / CAP_STEPS,
+                            X = VX + Math.cos(T) * HALF,
+                            Y = VY + Math.sin(T) * HALF;
+                        if (j) {
+                            TRIANGLE[0] = VX;
+                            TRIANGLE[1] = VY;
+                            TRIANGLE[2] = previousX;
+                            TRIANGLE[3] = previousY;
+                            TRIANGLE[4] = X;
+                            TRIANGLE[5] = Y;
+                            this._emitBufferedTriangle(colorValue);
+                        }
+                        previousX = X;
+                        previousY = Y;
                     }
-                    FAN(V, ARC);
                 }
             }
         }

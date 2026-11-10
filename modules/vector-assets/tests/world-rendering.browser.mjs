@@ -175,9 +175,10 @@ export async function exerciseWorldVectorRendering(browser, renderingURL, vector
                     POSES_BEFORE_EXCLUSION = JSON.stringify(PLAYER.partPoses()),
                     EXPRESSION_BEFORE_EXCLUSION = PLAYER.currentExpression;
                 MESHES.drawMesh = function (mesh, options) {
+                    // The actor reuses one submission record per draw, so keep the values this draw submitted.
                     ORDERED_DRAW_EVENTS.push({
                         kind: 'mesh',
-                        options,
+                        options: { alpha: options.alpha, clips: options.clips, timeMs: options.timeMs },
                     });
                     return ORIGINAL_EXCLUSION_DRAW_MESH.call(this, mesh, options);
                 };
