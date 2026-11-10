@@ -306,7 +306,8 @@ function installPeer(room, tps) {
             }
         },
     });
-    const SNAPSHOT = () => PEER.game.save();
+    // 표시 예측의 확인 snapshot은 보관되므로 새 bytes로 만듭니다(어댑터 saveInto는 core 전용 재사용 경로).
+    const SNAPSHOT = () => codec.encode(PEER.game.world);
     PEER.preview = new LocalInputPreview({
         presentation: PEER.presentation,
         stepMs: STEP_MS,

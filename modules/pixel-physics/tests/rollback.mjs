@@ -8,9 +8,10 @@ import {
     installDeterministicTrig,
     loadPixelWorld,
     savePixelWorld,
+    savePixelWorldInto,
     validatePixelWorld,
 } from '../index.js';
-import { createValueCodec, runSyncTest } from '../../deterministic/index.js';
+import { ByteBuffer, createValueCodec, runSyncTest } from '../../deterministic/index.js';
 
 installDeterministicTrig();
 const TICKS = 400,
@@ -44,7 +45,7 @@ function createScene() {
 
 function createAdapter(world) {
     return {
-        save: () => savePixelWorld(world),
+        saveInto: (out) => savePixelWorldInto(world, out),
         load: (bytes) => loadPixelWorld(world, bytes, { createBody: createPlayer }),
         validateSnapshot: (bytes) => validatePixelWorld(world, bytes),
         step(context) {
@@ -78,7 +79,7 @@ const FRAMES = Array.from({ length: TICKS }, (_, tick) => ({
     inputs: [{ playerId: 'p1', input: Uint8Array.of(tick % 90 < 40 ? 2 : tick % 90 < 50 ? 6 : 1) }],
 }));
 
-const SNAPSHOT = ADAPTER.save();
+const SNAPSHOT = ADAPTER.saveInto(new ByteBuffer()).copy();
 assert.ok(SNAPSHOT.length < 4 << 20, 'snapshot이 rollback 한도 4MiB 안이어야 합니다.');
 assert.ok(ADAPTER.validateSnapshot(SNAPSHOT));
 assert.ok(!ADAPTER.validateSnapshot(SNAPSHOT.subarray(0, 100)));
@@ -123,15 +124,16 @@ console.log(
     }
     // 복원 시점에 조인트와 마스크 강체(셀 집합)가 있어야 새 핸들 생성 경로를 지납니다.
     assert.ok(SOURCE.bridge.joints.length > 0 && SOURCE.bridge.bodies.some((h) => h.cells));
-    TARGET_ADAPTER.load(SOURCE_ADAPTER.save());
-    assert.deepEqual(TARGET_ADAPTER.save(), SOURCE_ADAPTER.save(), '복원 직후 바이트가 같아야 합니다.');
+    const SAVED = (adapter) => adapter.saveInto(new ByteBuffer()).copy();
+    TARGET_ADAPTER.load(SAVED(SOURCE_ADAPTER));
+    assert.deepEqual(SAVED(TARGET_ADAPTER), SAVED(SOURCE_ADAPTER), '복원 직후 바이트가 같아야 합니다.');
     for (let tick = 28; tick < 300; tick++) {
         const CONTEXT = { tick, inputs: [{ input: FRAMES[tick].inputs[0].input }] };
         SOURCE_ADAPTER.step(CONTEXT);
         TARGET_ADAPTER.step(CONTEXT);
         assert.deepEqual(
-            TARGET_ADAPTER.save(),
-            SOURCE_ADAPTER.save(),
+            SAVED(TARGET_ADAPTER),
+            SAVED(SOURCE_ADAPTER),
             'tick ' + tick + '에서 두 인스턴스가 갈라졌습니다.',
         );
     }

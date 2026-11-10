@@ -47,7 +47,9 @@ for (const PROFILE_NAME of ['rts', 'action']) {
                     maxHistoryBytes: Math.max(PROFILE.maxHistoryBytes, HISTORY_BYTES),
                 },
                 adapter: {
+                    // BENCH_BASELINE_MODULE(이전 SDK, save)과 현재 SDK(saveInto)를 같은 어댑터로 잽니다.
                     save: () => STATE,
+                    saveInto: (out) => out.write(STATE),
                     load: (data) => STATE.set(data),
                     validateSnapshot: (data) => data.length === SIZE,
                     step: ({ tick }) => VIEW.setUint32(0, tick + 1, true),

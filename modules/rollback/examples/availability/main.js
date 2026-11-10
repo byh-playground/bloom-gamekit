@@ -47,7 +47,7 @@ async function connect(role) {
             positions: {},
         };
         const ADAPTER = {
-            save: () => CODEC.encode(state),
+            saveInto: (out) => CODEC.encodeInto(state, out),
             load: (data) => {
                 state = CODEC.decode(data);
             },

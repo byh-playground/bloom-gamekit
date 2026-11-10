@@ -27,7 +27,7 @@ pulse(timestampMs)는 자동 rAF와 같은 누적·pacing·maxCatchupSteps 경�
 
 ## 선택적 로컬 입력 미리보기
 
-`loop.observeInput(timestamp)`가 권위 틱 전에 같은 `getInput()`을 관찰합니다. 자동 RAF loop는 프레임마다 이 경로를 사용하고, 외부 RAF와 deadline timer를 조합할 때는 RAF에서 observeInput, timer에서 pulse를 호출합니다. pulse는 관찰된 held bytes를 사용하며 명령을 canonical queue에 한 번만 제출합니다. 틱 사이의 held 변경은 하나의 미래 표본을 교체하고 edge 명령은 순서대로 축적합니다. `observationId`는 preview 관측 식별자입니다. submitInput 지원 session은 관측 즉시 SDK command sequence를 할당하고 `session.localInputState.capture`의 정확한 executeTick에서만 확인합니다. RoomSession의 metadata tick은 baseTick을 포함한 global tick입니다.
+`loop.observeInput(timestamp)`가 권위 틱 전에 같은 `getInput()`을 관찰합니다. 자동 RAF loop는 프레임마다 이 경로를 사용하고, 외부 RAF와 deadline timer를 조합할 때는 RAF에서 observeInput, timer에서 pulse를 호출합니다. pulse는 관찰된 held bytes를 사용하며 명령을 canonical queue에 한 번만 제출합니다. 틱 사이의 held 변경은 하나의 미래 표본을 교체하고 edge 명령은 순서대로 축적합니다. `observationId`는 preview 관측 식별자입니다. submitInput 지원 session은 관측 즉시 SDK command sequence를 할당하고 매 틱 `session.localCaptureSequence`(정수)로 새 capture가 있는지 보고, 있을 때만 `session.readLocalCaptures(afterSequence, out)`로 받은 capture의 정확한 executeTick에서 확인합니다. `localInputState`는 매번 전체를 복사하는 진단용 값이라 loop는 읽지 않습니다. RoomSession의 metadata tick은 baseTick을 포함한 global tick입니다.
 
 RAF가 deadline보다 느리거나 정지해도 pulse는 관찰 cache의 나이가 한 simulation quantum(`1000/tickRate` ms) 이상이면 canonical advance 전에 같은 observeInput/getInput 경로로 갱신합니다. quantum 안의 최근 관찰과 동일 timestamp는 재사용합니다. device edge의 수집·소비도 getInput 안의 이 단일 경로에서 수행해야 하며 별도 RAF collector를 중복 호출하지 않습니다. deadline fallback은 관찰만 추가하고 authority/command를 두 번 실행하지 않습니다.
 

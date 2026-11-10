@@ -1,5 +1,5 @@
 import { REPLAY_FORMAT_VERSION, decodeReplayFrames, runSimulationFrame } from '../_rollback-shared/protocol.js';
-import { bytes, hashBytes } from '../deterministic/utilities.js';
+import { bytes, hashBytes, ByteBuffer, saveSnapshot } from '../deterministic/utilities.js';
 export function playReplay({ adapter, replay, simulationVersion = replay?.simulationVersion } = {}) {
     if (
         replay?.version !== REPLAY_FORMAT_VERSION ||
@@ -28,6 +28,6 @@ export function playReplay({ adapter, replay, simulationVersion = replay?.simula
     }
     return {
         tick: FRAMES.length,
-        hash: hashBytes(bytes(adapter.save())),
+        hash: hashBytes(saveSnapshot(adapter, new ByteBuffer())),
     };
 }

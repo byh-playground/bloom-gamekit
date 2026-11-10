@@ -235,7 +235,9 @@ function pacing(oldLoop, newLoop) {
             simulationVersion: '1',
             inputSize: 1,
             adapter: {
+                // 비교 대상 두 버전(save·saveInto)을 함께 돌리므로 둘 다 둡니다.
                 save: () => STATE,
+                saveInto: (out) => out.write(STATE),
                 load() {},
                 step() {},
                 validateSnapshot: () => true,

@@ -1,6 +1,6 @@
 import { MAX_TICK, runSimulationFrame, copyFrame } from '../_rollback-shared/protocol.js';
 import { StateHistory } from '../_rollback-shared/history.js';
-import { integer, bytes, equalBytes, hashBytes, compareIds } from './utilities.js';
+import { integer, bytes, equalBytes, hashBytes, compareIds, ByteBuffer, saveSnapshot } from './utilities.js';
 
 /** A mismatch between the forward execution and a real load/resimulation. */
 export class DeterminismError extends Error {
@@ -45,7 +45,7 @@ export class SyncTestSession {
     } = {}) {
         if (
             !adapter ||
-            ['save', 'load', 'step', 'validateSnapshot'].some((key) => typeof adapter[key] !== 'function')
+            ['saveInto', 'load', 'step', 'validateSnapshot'].some((key) => typeof adapter[key] !== 'function')
         ) {
             throw new TypeError('Simulation Adapter capabilities');
         }
@@ -131,7 +131,8 @@ export class SyncTestSession {
         });
     }
     _save() {
-        const VALUE = bytes(this.adapter.save()).slice();
+        this._snapshotBuffer ??= new ByteBuffer();
+        const VALUE = saveSnapshot(this.adapter, this._snapshotBuffer).slice();
         if (!VALUE.length || VALUE.length > this.maxSnapshotBytes) {
             throw new RangeError('snapshot size');
         }
@@ -288,7 +289,7 @@ function beginSyncTestBatch(frames, options) {
         throw new TypeError('frames');
     }
     return {
-        initial: bytes(options.adapter.save()).slice(),
+        initial: saveSnapshot(options.adapter, new ByteBuffer()).slice(),
         session: createSyncTestSession(options),
     };
 }

@@ -43,11 +43,11 @@ RENDERER.draw();
 
 ## rollback·deterministic 연동
 
-`savePixelWorld(world)` / `loadPixelWorld(world, bytes, {createBody})` / `validatePixelWorld(world, bytes)`는 `snapshot()`을 [deterministic](../deterministic/README.md)의 `createValueCodec` 바이트로 바꿉니다. rollback의 `SimulationAdapter`가 요구하는 `save()`·`load()`·`validateSnapshot()`에 그대로 연결합니다. 이 모듈은 어댑터를 대신 소유하지 않습니다. 입력 해석과 `step`은 게임이 작성합니다. 어댑터 전체는 [tests/rollback.mjs](./tests/rollback.mjs)에 있습니다.
+`savePixelWorld(world)` / `savePixelWorldInto(world, out)` / `loadPixelWorld(world, bytes, {createBody})` / `validatePixelWorld(world, bytes)`는 `snapshot()`을 [deterministic](../deterministic/README.md)의 `createValueCodec` 바이트로 바꿉니다. `savePixelWorldInto`는 같은 바이트를 `ByteBuffer`에 이어 써서 새 배열을 만들지 않으며, rollback의 `SimulationAdapter`가 요구하는 `saveInto(out)`·`load()`·`validateSnapshot()`에 그대로 연결합니다. `savePixelWorld`는 수동 저장처럼 보관할 새 바이트가 필요할 때 씁니다. 이 모듈은 어댑터를 대신 소유하지 않습니다. 입력 해석과 `step`은 게임이 작성합니다. 어댑터 전체는 [tests/rollback.mjs](./tests/rollback.mjs)에 있습니다.
 
 ```js
 const ADAPTER = {
-    save: () => savePixelWorld(WORLD),
+    saveInto: (out) => savePixelWorldInto(WORLD, out),
     load: (bytes) => loadPixelWorld(WORLD, bytes, { createBody: (eid, state) => makeBody(state) }),
     validateSnapshot: (bytes) => validatePixelWorld(WORLD, bytes),
     step(context) {

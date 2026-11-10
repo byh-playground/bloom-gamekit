@@ -1678,8 +1678,9 @@ try {
         let confirmedReplaySteps = 0;
         const CONFIRMED_ADVANCE_RESULTS = [];
         const CONFIRMED_ADVANCE_RESTORE_DELTAS = [];
+        const SNAPSHOT = () => Uint8Array.of(STATE.x, STATE.tick, STATE.edges);
         const ADAPTER = {
-            save: () => Uint8Array.of(STATE.x, STATE.tick, STATE.edges),
+            saveInto: (out) => out.write(SNAPSHOT()),
             load: (bytes) => {
                 STATE.x = bytes[0];
                 STATE.tick = bytes[1];
@@ -1746,7 +1747,7 @@ try {
         const NOW = Math.ceil(performance.now()),
             CONTINUATION_KEY = 'manual-blur';
         PREVIEW.reconcile({
-            snapshot: ADAPTER.save(),
+            snapshot: SNAPSHOT(),
             input: Uint8Array.of(0),
             revision: 0,
             tick: 0,
@@ -1804,7 +1805,7 @@ try {
                     }
                     PREVIEW.reconcile({
                         ...CHECKPOINT,
-                        snapshot: ADAPTER.save(),
+                        snapshot: SNAPSHOT(),
                         mode: 'reset',
                     });
                     LIFECYCLE_REBASES.push(lifecycleBoundary);

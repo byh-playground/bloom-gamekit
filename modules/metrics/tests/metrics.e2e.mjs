@@ -106,7 +106,7 @@ async function openDatabase(readOnly = true) {
 function createCounterAdapter() {
     let state = { tick: 0, sum: 0 };
     return {
-        save: () => new TextEncoder().encode(JSON.stringify(state)),
+        saveInto: (out) => out.write(new TextEncoder().encode(JSON.stringify(state))),
         load(bytes) {
             state = JSON.parse(new TextDecoder().decode(bytes));
         },

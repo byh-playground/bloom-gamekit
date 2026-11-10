@@ -63,9 +63,9 @@ try {
                 get loadCalls() {
                     return loadCalls;
                 },
-                save() {
+                saveInto(out) {
                     saveCalls++;
-                    return Uint8Array.of(world.position, world.tick, world.commands, world.memberships);
+                    out.write(Uint8Array.of(world.position, world.tick, world.commands, world.memberships));
                 },
                 load(bytes) {
                     loadCalls++;
@@ -155,11 +155,23 @@ try {
         } catch {
             replayWithoutOptInRejected = true;
         }
-        const FAST_SAVE = FAST_ADAPTER.save(),
-            REGULAR_SAVE = REGULAR_ADAPTER.save();
+        // 앱이 직접 저장할 때도 같은 saveInto를 씁니다. 받은 bytes를 복사해 두는 최소 버퍼입니다.
+        const SAVED = (adapter) => {
+            const OUT = {
+                bytes: null,
+                write(data) {
+                    this.bytes = data.slice();
+                    return this;
+                },
+            };
+            adapter.saveInto(OUT);
+            return OUT.bytes;
+        };
+        const FAST_SAVE = SAVED(FAST_ADAPTER),
+            REGULAR_SAVE = SAVED(REGULAR_ADAPTER);
         FAST_WORLD.position = 0;
         FAST_ADAPTER.load(FAST_SAVE);
-        const EXPLICIT_LOAD_STILL_WORKS = FAST_ADAPTER.save().every((byte, index) => byte === FAST_SAVE[index]);
+        const EXPLICIT_LOAD_STILL_WORKS = SAVED(FAST_ADAPTER).every((byte, index) => byte === FAST_SAVE[index]);
         let rollbackRejected = false;
         let onlineRejected = false;
         try {
@@ -261,7 +273,7 @@ try {
     );
     assert.equal(RESULT.explicitSaveEqual, true, 'explicit save bytes agree');
     assert.equal(RESULT.explicitLoadStillWorks, true, 'app-owned explicit save/load remains available');
-    assert.equal(RESULT.beforeExplicitSave.fastSaveCalls, 0, 'fast path never calls adapter.save internally');
+    assert.equal(RESULT.beforeExplicitSave.fastSaveCalls, 0, 'fast path never calls adapter.saveInto internally');
     assert.equal(RESULT.beforeExplicitSave.fastLoadCalls, 0, 'fast path never calls adapter.load internally');
     assert.equal(RESULT.beforeExplicitSave.fastHash, undefined, 'fast path exposes no state hash');
     for (const KEY of [

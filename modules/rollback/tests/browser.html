@@ -128,11 +128,11 @@
         }
         function adapterFor(targetState, capture = false) {
             return {
-                save() {
+                saveInto(out) {
                     if (capture) {
                         SIMULATION_COST.saves++;
                     }
-                    return new Uint8Array(targetState.buffer.slice(0));
+                    out.write(new Uint8Array(targetState.buffer, targetState.byteOffset, targetState.byteLength));
                 },
                 load(bytes) {
                     if (bytes.byteLength !== targetState.byteLength) {

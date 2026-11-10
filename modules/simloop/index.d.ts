@@ -1,6 +1,6 @@
 /** simloop 공개 계약. 타입 전용 참조는 런타임 의존성을 만들지 않습니다. */
 import type { Bytes } from '../deterministic/index.js';
-import type { Profile, LocalInputState } from '../rollback/index.js';
+import type { Profile, LocalInputState, LocalCapture } from '../rollback/index.js';
 export interface LoopSession {
     readonly inputSize: number;
     readonly profile: Pick<Profile, 'tickRate' | 'maxCatchupSteps'>;
@@ -10,6 +10,11 @@ export interface LoopSession {
     poll(): void;
     advance(input?: Bytes): { status: string; tick: number };
     releaseInput(): void;
+    /** submitInput 또는 inputPreview를 쓸 때 필요. RoomSession은 core가 없으면 null. */
+    readonly localCaptureSequence?: number | null;
+    readLocalCaptures?(afterSequence: number, out: LocalCapture[]): LocalCapture[];
+    readonly epoch?: number;
+    readonly baseTick?: number;
 }
 export interface PreviewEntity {
     id: string;

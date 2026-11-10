@@ -154,7 +154,7 @@ try {
         const LOOP_PASSED = tick === 1 && polls === 3 && renders === 3 && !SESSION.resimulating;
         let value = 0;
         const ADAPTER = {
-            save: () => new Uint8Array([value]),
+            saveInto: (out) => out.write(Uint8Array.of(value)),
             load: (b) => {
                 value = b[0];
             },
@@ -251,7 +251,7 @@ try {
             let state = 0;
             const PEER = CREATE_SESSION({
                 adapter: {
-                    save: () => new Uint8Array([state]),
+                    saveInto: (out) => out.write(Uint8Array.of(state)),
                     load: (bytes) => {
                         state = bytes[0];
                     },

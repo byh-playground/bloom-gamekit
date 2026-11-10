@@ -127,7 +127,7 @@ export function startInputPreviewDemo(canvas, status) {
             snapDistance: 180,
         });
         const ADAPTER = {
-            save: SNAPSHOT,
+            saveInto: (out) => out.write(SNAPSHOT()),
             validateSnapshot(bytes) {
                 try {
                     const DATA = JSON.parse(DECODER.decode(bytes)),

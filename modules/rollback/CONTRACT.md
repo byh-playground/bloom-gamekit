@@ -11,7 +11,7 @@
 | 전송과 시그널링         | 바이너리 게임 데이터 전달, SDP/ICE 탐색과 협상                                              | 게임의 권위 있는 상태, 시뮬레이션 판단                       |
 | 표현 계층(Presentation) | 렌더링, 보간, 카메라, 사운드, UI, 확정된 이벤트에 맞춘 효과 조정                            | 권위 있는 상태 변경, 논리적 틱 간격 변경                     |
 
-추상화의 의미를 구체적으로 유지합니다. **Is-a(무엇인가)**: `Session`은 결정론적 입력 동기화 세션입니다. **Has-a(무엇을 갖는가)**: 어댑터, 크기가 제한된 이력, 상대와 연결된 전송 객체, 설정 가능한 정책을 갖습니다. **Can-be(설정에 따라 어떻게 동작하는가)**: 같은 세션이 설정에 따라 롤백 또는 락스텝으로 동작할 수 있습니다. 모든 프로필은 하나의 코어를 사용합니다. 장르별 하위 클래스, 별도 동기화 엔진, 특정 게임의 런타임 메커니즘은 범위 밖입니다. 게임 엔티티의 구조를 가정하기보다 `save`, `load`, `step`, 전송 구독처럼 동작을 제공하는 capability 인터페이스를 사용합니다.
+추상화의 의미를 구체적으로 유지합니다. **Is-a(무엇인가)**: `Session`은 결정론적 입력 동기화 세션입니다. **Has-a(무엇을 갖는가)**: 어댑터, 크기가 제한된 이력, 상대와 연결된 전송 객체, 설정 가능한 정책을 갖습니다. **Can-be(설정에 따라 어떻게 동작하는가)**: 같은 세션이 설정에 따라 롤백 또는 락스텝으로 동작할 수 있습니다. 모든 프로필은 하나의 코어를 사용합니다. 장르별 하위 클래스, 별도 동기화 엔진, 특정 게임의 런타임 메커니즘은 범위 밖입니다. 게임 엔티티의 구조를 가정하기보다 `saveInto`, `load`, `step`, 전송 구독처럼 동작을 제공하는 capability 인터페이스를 사용합니다.
 
 ### 결정성(Determinism)
 
@@ -19,7 +19,7 @@
 
 `tick`은 다음에 실행할 단계입니다. 저장된 상태 `S[t]`는 입력 프레임 `t`를 실행하기 직전 상태를 뜻합니다. 롤백은 보관 중인 과거 `S[t]`를 복원한 뒤, 영향을 받은 프레임을 이전의 현재 시점까지 같은 호출에서 모두 다시 실행합니다. 어댑터는 부수 효과 없이 스냅샷을 불러와야 하며, 초기 상태·시드·순서가 정해진 입력이 같으면 같은 상태 바이트를 만들어야 합니다. `resimulating` 중에는 `step`에서 되돌릴 수 없는 효과를 실행하지 않습니다. 표현 계층에서 효과를 별도로 맞출 수 있습니다. 시뮬레이션과 재실행은 렌더링·DOM 작업을 수행하지 않습니다. 재계산 중 소리·알림 등 외부 효과를 중복 실행하지 않습니다. 원격 입력 없이 진행할 수 있는 예측 범위는 제한하며, 한계에서는 추가 미래 틱을 대기합니다. 이는 이미 필요한 과거 재계산을 분할하거나 중단하는 제한이 아닙니다.
 
-어댑터는 `save`, `load`, `step`, `validateSnapshot`의 네 가지 동작을 모두 구현해야 합니다. 함수가 하나라도 없으면 세션 생성을 거부합니다. `validateSnapshot(bytes, { tick })`은 예상 틱의 완전하고 유효한 스냅샷에만 `true`를 반환하고, 게임을 변경하지 않아야 합니다. 정규 형태의 `save(load(bytes))`는 해당 바이트를 정확히 재현해야 합니다.
+어댑터는 `saveInto`, `load`, `step`, `validateSnapshot`의 네 가지 동작을 모두 구현해야 합니다. 함수가 하나라도 없으면 세션 생성을 거부합니다. `validateSnapshot(bytes, { tick })`은 예상 틱의 완전하고 유효한 스냅샷에만 `true`를 반환하고, 게임을 변경하지 않아야 합니다. 정규 형태에서 `load(bytes)` 뒤 `saveInto`가 쓴 바이트는 해당 바이트를 정확히 재현해야 합니다.
 
 공개 헬퍼 `fixedPoint`, `SeededPRNG`, `statelessRandom`, `hashBytes`는 결정론적 어댑터 구현을 돕습니다. `fixedPoint`는 배율 1,024를 사용하고 결과가 부호 있는 32비트 범위인지 검사합니다. `SeededPRNG`는 `nextUint32()`, `nextInt(bound)`, `state`를 제공하므로 그 상태를 게임 스냅샷에 직렬화해야 합니다. `statelessRandom(seed, eventId)`은 변경 가능한 PRNG 상태 없이 안정적인 이벤트 ID에서 난수를 계산합니다. 이 헬퍼만으로 임의의 부동소수점 물리나 게임 코드가 결정론적으로 바뀌지는 않습니다.
 
@@ -65,7 +65,7 @@ Synctest는 실제 Adapter, 공통 frame 실행 경계와 StateHistory를 재사
 
 입력 지연 증가는 EMA 기반 측정 목표까지 빠르게 적용하고 범위를 제한한다. 감소는 현재 sample이 마지막 commit과 같고 대기 command가 없을 때 한 번에 한 틱만 적용한다. requestedInputDelay는 목표, inputDelay는 실제 적용값이다. 이미 commit한 frame/command는 이동하지 않는다.
 
-save()의 반환 버퍼는 Adapter가 재사용할 수 있으므로 Core는 독립 복사본을 보관한다. 상태 hash는 필요한 경계/요청에서 계산하고 그 snapshot에 캐시한다. 매 틱 누적 입력 hash는 peer 비교를 위해 별도 계약이며 일반 lockstep/rollback에서 유지한다. hash 전용 Writer는 재사용하되 전송/보관 payload에는 가변 scratch view를 노출하지 않는다.
+saveInto는 Core가 재사용하는 ByteBuffer에 쓴다. Core는 보관할 때만 정확한 크기의 독립 복사본을 만들고, hash·비교에는 버퍼 보기를 그대로 쓴다. 상태 hash는 필요한 경계/요청에서 계산하고 그 snapshot에 캐시한다. 매 틱 누적 입력 hash는 peer 비교를 위해 별도 계약이며 일반 lockstep/rollback에서 유지한다. hash 전용 Writer는 재사용하되 전송/보관 payload에는 가변 scratch view를 노출하지 않는다.
 
 `createRoomSession({ mode: 'local', localFastPath: true, profile: { mode: 'lockstep', ... } })`는 단일 플레이 싱글 세션을 위한 opt-in 경로다. `mode`가 local이고 lockstep이어야 하며, 한 플레이어만 실행할 때만 허용한다. 가용성 모드는 `strict`여야 한다. 일반 Core와 온라인 RoomSession의 동작은 바꾸지 않는다. 이 경로는 내부 초기 snapshot/byte copy, checkpoint/history 보관, 상태 hash와 매틱 입력 hash, replay/bootstrap/resync 생성을 생략한다. SDK는 `adapter.save()`/`load()`를 자동 호출하지 않지만 앱은 자신의 adapter를 통해 수동 저장/복원을 계속 수행한다. 동일 `runSimulationFrame`·입력/명령 예약 경로를 유지한다. `getStateHash()`는 `undefined`이며 bootstrap, resync 기능은 지원하지 않는다. replay는 `recordReplay: true`일 때만 초기 save 한 번과 실행한 입력을 남긴다. step 실패를 복구할 내부 checkpoint도 없으므로 fatal로 중단한다. 입력 버퍼는 명령 예약·실행과 제한 용량을 위해 계속 유지된다.
 

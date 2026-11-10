@@ -1,5 +1,14 @@
 import { CHUNK_SIZE, MAX_TICK, defaults, runSimulationFrame } from '../_rollback-shared/protocol.js';
-import { bytes, compareIds, equalBytes, hashBytes, integer, nowMs } from '../deterministic/utilities.js';
+import {
+    bytes,
+    compareIds,
+    equalBytes,
+    hashBytes,
+    integer,
+    nowMs,
+    ByteBuffer,
+    saveSnapshot,
+} from '../deterministic/utilities.js';
 const MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024;
 const MAX_SUFFIX_TICKS = 8192;
 function roster(value, name) {
@@ -191,8 +200,11 @@ export function createBootstrapReplay({
     players,
     seed,
 } = {}) {
-    if (!adapter || ['save', 'load', 'step', 'validateSnapshot'].some((name) => typeof adapter[name] !== 'function')) {
-        throw new TypeError('Simulation Adapter must save, load, step, validateSnapshot');
+    if (
+        !adapter ||
+        ['saveInto', 'load', 'step', 'validateSnapshot'].some((name) => typeof adapter[name] !== 'function')
+    ) {
+        throw new TypeError('Simulation Adapter must saveInto, load, step, validateSnapshot');
     }
     integer(maxCatchupSteps, 'maxCatchupSteps', 1, MAX_SUFFIX_TICKS);
     if (!Number.isFinite(maxCatchupMs) || maxCatchupMs <= 0 || typeof clock !== 'function') {
@@ -225,8 +237,9 @@ export function createBootstrapReplay({
         },
         COOPERATIVE,
     );
+    const SNAPSHOT_BUFFER = new ByteBuffer();
     const SAVE = () => {
-        const DATA = bytes(adapter.save(), 'bootstrap adapter snapshot');
+        const DATA = saveSnapshot(adapter, SNAPSHOT_BUFFER);
         if (!DATA.length || DATA.length > maxSnapshotBytes) {
             throw new RangeError('bootstrap adapter snapshot size');
         }

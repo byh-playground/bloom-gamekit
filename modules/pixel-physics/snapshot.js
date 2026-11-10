@@ -142,8 +142,15 @@ function unpackCells(flat) {
     return OUT;
 }
 
-/** 월드 전체 상태를 바이트로 만듭니다. 엔티티는 world.addEntity로 등록돼 있어야 합니다. */
+/** 월드 전체 상태를 새 바이트로 만듭니다(수동 저장 등 보관용). 엔티티는 world.addEntity로 등록돼 있어야 합니다. */
 export function savePixelWorld(world) {
+    return CODEC.encode(snapshotValue(world));
+}
+/** savePixelWorld와 같은 바이트를 ByteBuffer `out` 끝에 씁니다. rollback 어댑터의 `saveInto`에 연결합니다. */
+export function savePixelWorldInto(world, out) {
+    return CODEC.encodeInto(snapshotValue(world), out);
+}
+function snapshotValue(world) {
     const S = world.snapshot(false); // 인코더가 바로 복사하므로 격자 배열을 한 번 덜 복사합니다.
     const OUT = { ...S, entRefs: S.entRefs.map(ref), proj: S.proj.map((p) => ({ ...p, src: ref(p.src) })) };
     for (const KEY of GRID_KEYS) {
@@ -157,7 +164,7 @@ export function savePixelWorld(world) {
             js: S.bridge.js.map((r) => ({ ...r, j: ref(r.j), a: ref(r.a), b: ref(r.b) })),
         };
     }
-    return CODEC.encode(OUT);
+    return OUT;
 }
 
 function decode(world, bytes) {

@@ -145,6 +145,22 @@ export class PseudoRandomDistribution {
 }
 export function statelessRandom(seed: number, eventId: number): number;
 export function hashBytes(value: Bytes, seed?: number): number;
+/** 호출마다 새 배열을 만들지 않고 이어 쓰는 재사용 버퍼. `bytes`는 자랄 때 바뀌므로 보관하지 않는다. */
+export class ByteBuffer {
+    constructor(capacity?: number);
+    readonly bytes: Uint8Array;
+    readonly length: number;
+    reset(): this;
+    /** 뒤에 size bytes 자리를 확보하고 쓰기 시작 위치를 돌려준다. 길이는 쓰는 쪽이 늘린다. */
+    reserve(size: number): number;
+    write(data: Bytes): this;
+    /** 쓴 범위의 보기. 다음 reset·write 전까지만 유효하다. */
+    view(): Uint8Array;
+    /** 쓴 범위의 독립 복사본. */
+    copy(): Uint8Array;
+    /** 쓴 범위를 넘기고 새 공간으로 바꾼다(남는 공간이 1/8보다 크면 복사). 길이는 0이 된다. */
+    take(): Uint8Array;
+}
 export const fixedPoint: Readonly<{
     scale: number;
     fromNumber(x: number): number;
@@ -161,7 +177,10 @@ export type CodecValue =
     null | boolean | number | string | Uint8Array | CodecTypedArray | CodecValue[] | { [key: string]: CodecValue };
 export interface ValueCodec {
     readonly format: 'binary' | 'json';
+    /** 새 bytes 복사본. */
     encode(value: CodecValue): Uint8Array;
+    /** encode와 같은 bytes를 `out` 끝에 이어 쓴다(새 배열 없음). maxBytes는 이번 값의 길이에 적용한다. */
+    encodeInto(value: CodecValue, out: ByteBuffer): ByteBuffer;
     decode(bytes: Bytes): CodecValue;
 }
 export function createValueCodec(options?: {

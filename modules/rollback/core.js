@@ -14,13 +14,22 @@ import {
     SNAP_CHUNK_BYTES,
     Writer,
     Reader,
-    packet,
+    beginPacket,
     frameEqual,
     copyFrame,
     runSimulationFrame,
-    encodeReplayFrames,
+    ReplayLog,
 } from '../_rollback-shared/protocol.js';
-import { nowMs, compareIds, integer, bytes, equalBytes, hashBytes } from '../deterministic/utilities.js';
+import {
+    nowMs,
+    compareIds,
+    integer,
+    bytes,
+    equalBytes,
+    equalIds,
+    hashBytes,
+    ByteBuffer,
+} from '../deterministic/utilities.js';
 function copyLocalCommandState(state, inputSize, profile, executedSequence = 0) {
     if (!state || typeof state !== 'object') {
         throw new TypeError('localCommandState');
@@ -109,16 +118,20 @@ function commandSequenceMap(players, initial) {
 // Snapshot records share a command map until a command executes.
 function executedSequences(previous, inputs) {
     let next = previous;
-    for (const FRAME of inputs) {
-        for (const COMMAND of FRAME.commands) {
+    for (let i = 0; i < inputs.length; i++) {
+        const FRAME = inputs[i];
+        for (let c = 0; c < FRAME.commands.length; c++) {
             if (next === previous) {
                 next = new Map(previous);
             }
-            next.set(FRAME.playerId, Math.max(next.get(FRAME.playerId), COMMAND.sequence));
+            next.set(FRAME.playerId, Math.max(next.get(FRAME.playerId), FRAME.commands[c].sequence));
         }
     }
     return next;
 }
+// 비어 있는 명령·payload 목록은 고치지 않는 공유 값입니다.
+const NO_COMMANDS = Object.freeze([]);
+const NO_PAYLOADS = Object.freeze([]);
 function profileOf(profile) {
     const P = {
         ...defaults,
@@ -210,6 +223,14 @@ export function createLocalFastPathSession(options) {
 export function delegateRoomRecovery(session, selectBoundary) {
     session._roomRecovery = selectBoundary;
 }
+// RoomSession이 세대를 닫을 때 경계 뒤 확정 틱을 빼고 리플레이를 내보냅니다. 공개 옵션이 아닙니다.
+export function exportReplayThrough(session, ticks) {
+    return session._exportReplay(ticks);
+}
+// RoomSession이 패킷 헤더의 예약 u16에 방 세대를 직접 쓰고 받게 합니다(전송마다 복사하지 않도록). 공개 옵션이 아닙니다.
+export function setWireTag(session, tag) {
+    session._wireTag = integer(tag, 'wire tag', 0, 0xffff);
+}
 // Module-private, consume-once handoff. Public options cannot supply a trusted
 // checkpoint or bypass the normal initial save/hash path.
 const BOUNDARIES = new WeakMap();
@@ -256,6 +277,10 @@ export class RollbackSession {
         if (!this.players.includes(localPlayerId)) {
             throw new TypeError('localPlayerId');
         }
+        // 외부 문자열 ID는 등록 때 한 번 정렬된 roster 번호로 바꿔, 틱 경로의 입력 표는 번호로 찾습니다.
+        this._playerIndex = new Map(this.players.map((id, index) => [id, index]));
+        this._local = this._playerIndex.get(localPlayerId);
+        this._wireTag = 0;
         if (
             typeof sessionId !== 'string' ||
             !sessionId.length ||
@@ -266,7 +291,10 @@ export class RollbackSession {
         ) {
             throw new TypeError('sessionId/simulationVersion');
         }
-        if (!adapter || ['save', 'load', 'step', 'validateSnapshot'].some((n) => typeof adapter[n] !== 'function')) {
+        if (
+            !adapter ||
+            ['saveInto', 'load', 'step', 'validateSnapshot'].some((n) => typeof adapter[n] !== 'function')
+        ) {
             throw new TypeError('Simulation Adapter must save, load, step, validateSnapshot');
         }
         this.localPlayerId = localPlayerId;
@@ -299,8 +327,13 @@ export class RollbackSession {
         this._failure = null;
         this._history = this.localFastPath ? null : this._newHistory();
         this._inputWriter = this.localFastPath ? null : new Writer(CHUNK_SIZE * this.players.length);
-        this._inputs = new Map(this.players.map((p) => [p, new Map()]));
-        this._through = new Map(this.players.map((p) => [p, -1]));
+        // adapter.saveInto가 매번 쓰는 버퍼. 보관할 때만 정확한 크기로 복사합니다.
+        this._snapshotBuffer = new ByteBuffer();
+        this._inputs = this.players.map(() => new Map());
+        this._through = this.players.map(() => -1);
+        // _used·_inputs는 tick 오름차순으로만 지우므로, 이미 지운 아래 경계를 기억해 전체 순회를 피합니다.
+        this._usedPruned = 0;
+        this._inputsPruned = this.players.map(() => 0);
         this._used = new Map();
         this._peers = new Map();
         this._pendingCommands = [];
@@ -391,7 +424,9 @@ export class RollbackSession {
             inputReservationReceivedBytes: 0,
         };
         this._recordReplay = recordReplay;
-        this._replayFrames = [];
+        // 방 세대 경계가 이미 기록한 틱보다 앞이면(경계 뒤까지 확정된 peer) 그 경계로 잘라 내보냅니다.
+        // 경계는 현재 tick에서 stateHistorySize 안이므로 그만큼의 틱 시작 위치를 링 버퍼에 둡니다.
+        this._replay = new ReplayLog(this.players, 256, this.profile.stateHistorySize + 1);
         this._replayBytes = 0;
         this._replayFinalHash = undefined;
         const BOUNDARY = BOUNDARIES.get(boundaryToken);
@@ -458,7 +493,9 @@ export class RollbackSession {
                 }),
             );
         }
-        const NEUTRAL = new Uint8Array(this.inputSize);
+        // 내부에서 고치지 않는 중립 입력. 어댑터·외부에는 항상 복사본이 나갑니다.
+        this._neutral = new Uint8Array(this.inputSize);
+        const NEUTRAL = this._neutral;
         if (localCommandState) {
             for (const ENTRY of carriedInputs) {
                 this._localReservations.set(ENTRY.tick, {
@@ -493,7 +530,13 @@ export class RollbackSession {
         return this._inputDelay;
     }
     get confirmedTick() {
-        return Math.min(...this._through.values());
+        let min = this._through[0];
+        for (let i = 1; i < this._through.length; i++) {
+            if (this._through[i] < min) {
+                min = this._through[i];
+            }
+        }
+        return min;
     }
     get confirmedBoundary() {
         return Math.min(this.tick, this.confirmedTick + 1);
@@ -509,9 +552,7 @@ export class RollbackSession {
             inputDelay: this.inputDelay,
             commandSequence: this._commandSequence,
             executedInput: this._localExecutedInput?.slice() ?? null,
-            replayInput:
-                (this._inputs.get(this.localPlayerId).get(this.tick)?.input ?? this._localExecutedInput)?.slice() ??
-                null,
+            replayInput: (this._inputs[this._local].get(this.tick)?.input ?? this._localExecutedInput)?.slice() ?? null,
             executedCommandSequence:
                 this.profile.mode === 'lockstep' ? this._commandSequences.get(this.localPlayerId) : null,
             captures: this._localCaptures.map((c) => ({
@@ -534,6 +575,30 @@ export class RollbackSession {
                 : null,
         };
     }
+    /** 마지막으로 봉인한 로컬 capture의 sequence. 새 capture가 있는지 객체를 만들지 않고 확인합니다. */
+    get localCaptureSequence() {
+        return this._localCaptureSequence;
+    }
+    /**
+     * sequence가 `afterSequence`보다 큰 보관 capture를 `out`에 채워 돌려줍니다(`out`은 먼저 비움).
+     * 항목은 localInputState.captures와 같은 모양의 소유 복사본입니다.
+     */
+    readLocalCaptures(afterSequence, out) {
+        out.length = 0;
+        const CAPTURES = this._localCaptures;
+        for (let i = 0; i < CAPTURES.length; i++) {
+            const C = CAPTURES[i];
+            if (C.sequence <= afterSequence) {
+                continue;
+            }
+            const COMMANDS = new Array(C.commands.length);
+            for (let c = 0; c < C.commands.length; c++) {
+                COMMANDS[c] = { ...C.commands[c], payload: C.commands[c].payload.slice() };
+            }
+            out.push({ ...C, input: C.input.slice(), commands: COMMANDS });
+        }
+        return out;
+    }
     get resimulating() {
         return this._replaying || this._rollbackFrom !== Infinity;
     }
@@ -544,15 +609,19 @@ export class RollbackSession {
         return this._requestedInputDelay;
     }
     get ready() {
-        return (
-            !this.closed &&
-            !this._failure &&
-            this.players.every(
-                (p) =>
-                    p === this.localPlayerId ||
-                    (this._peers.get(p)?.ready && this._peers.get(p).connectionState === 'connected'),
-            )
-        );
+        if (this.closed || this._failure) {
+            return false;
+        }
+        for (let i = 0; i < this.players.length; i++) {
+            if (i === this._local) {
+                continue;
+            }
+            const PEER = this._peers.get(this.players[i]);
+            if (!PEER?.ready || PEER.connectionState !== 'connected') {
+                return false;
+            }
+        }
+        return true;
     }
     get status() {
         if (this.closed) {
@@ -561,12 +630,9 @@ export class RollbackSession {
         if (this._failure) {
             return 'failed';
         }
-        const PEERS = [...this._peers.values()];
-        if (PEERS.some((p) => p.connectionState === 'disconnected')) {
-            return 'disconnected';
-        }
-        if (PEERS.some((p) => p.connectionState === 'interrupted')) {
-            return 'interrupted';
+        const CONNECTION = this._worstConnection();
+        if (CONNECTION) {
+            return CONNECTION;
         }
         if (!this.ready) {
             return 'synchronizing';
@@ -575,6 +641,19 @@ export class RollbackSession {
             return 'recovering';
         }
         return this.resimulating ? 'resimulating' : 'running';
+    }
+    /** 'disconnected', 'interrupted' 순으로 가장 나쁜 peer 연결 상태, 없으면 null. */
+    _worstConnection() {
+        let interrupted = false;
+        for (const PEER of this._peers.values()) {
+            if (PEER.connectionState === 'disconnected') {
+                return 'disconnected';
+            }
+            if (PEER.connectionState === 'interrupted') {
+                interrupted = true;
+            }
+        }
+        return interrupted ? 'interrupted' : null;
     }
     getPeerState(peerId) {
         const PEER = this._peers.get(peerId);
@@ -653,16 +732,25 @@ export class RollbackSession {
     _hashInputFrame(tick, inputs, previousHash) {
         const W = this._inputWriter.reset();
         W.u32(tick);
-        for (const F of inputs) {
+        for (let i = 0; i < inputs.length; i++) {
+            const F = inputs[i];
             W.raw(F.input);
             W.u16(F.commands.length);
-            for (const C of F.commands) {
+            for (let c = 0; c < F.commands.length; c++) {
+                const C = F.commands[c];
                 W.u32(C.sequence);
                 W.u16(C.payload.length);
                 W.raw(C.payload);
             }
         }
-        return hashBytes(W.usedBytes(), previousHash);
+        // hashBytes(W.usedBytes(), previousHash)와 같은 FNV-1a를 보기 객체 없이 계산합니다.
+        const DATA = W.data,
+            END = W.offset;
+        let h = previousHash >>> 0;
+        for (let i = 0; i < END; i++) {
+            h = Math.imul(h ^ DATA[i], 16777619) >>> 0;
+        }
+        return h;
     }
     _event(type, detail = {}) {
         try {
@@ -715,7 +803,7 @@ export class RollbackSession {
         // An open channel still needs a fresh, valid protocol packet to resume.
     }
     _peerAlive(peer, sequence, now) {
-        if (['closed', 'failed'].includes(peer.transportState)) {
+        if (peer.transportState === 'closed' || peer.transportState === 'failed') {
             return;
         }
         const DELTA = peer.lastReceivedSequence === null ? 1 : (sequence - peer.lastReceivedSequence) >>> 0;
@@ -727,7 +815,7 @@ export class RollbackSession {
         this._peerTransition(peer, 'connected', peer.connectionState === 'connecting' ? null : 'peer-resumed');
     }
     _peerLiveness(peer, now) {
-        if (['closed', 'failed'].includes(peer.transportState)) {
+        if (peer.transportState === 'closed' || peer.transportState === 'failed') {
             return;
         }
         const SILENCE = Math.max(0, now - peer.lastReceivedAt);
@@ -747,8 +835,16 @@ export class RollbackSession {
             });
         }
     }
+    /** 보관할 snapshot 복사본. */
     _save() {
-        const STATE = bytes(this.adapter.save(), 'snapshot').slice();
+        this._saveView();
+        return this._snapshotBuffer.take();
+    }
+    /** hash·비교에만 쓰는 snapshot 보기. 다음 저장 전까지만 유효합니다. */
+    _saveView() {
+        const BUFFER = this._snapshotBuffer.reset();
+        this.adapter.saveInto(BUFFER);
+        const STATE = BUFFER.view();
         if (!STATE.length || STATE.length > this.profile.maxSnapshotBytes) {
             throw new RangeError('snapshot size');
         }
@@ -778,6 +874,7 @@ export class RollbackSession {
         }
         const PEER = {
             id: peerId,
+            index: this._playerIndex.get(peerId),
             transport,
             ready: false,
             ack: -1,
@@ -855,12 +952,9 @@ export class RollbackSession {
         }
     }
     _sendHello(peer, now) {
-        if (
-            this._send(
-                peer,
-                packet(TYPE.HELLO, this._nextSequence(), (w) => w.raw(this._hello)),
-            )
-        ) {
+        const W = beginPacket(TYPE.HELLO, this._nextSequence(), this._wireTag);
+        W.raw(this._hello);
+        if (this._send(peer, W.finish())) {
             peer.lastHello = now;
         }
     }
@@ -875,14 +969,15 @@ export class RollbackSession {
     _commitLocal(tick, input, commands) {
         integer(tick, 'session tick limit', 0, MAX_TICK);
         const FRAME = {
-            input: input.slice(),
+            input,
             commands,
         };
-        if (this._inputs.get(this.localPlayerId).has(tick)) {
+        const MAP = this._inputs[this._local];
+        if (MAP.has(tick)) {
             throw new Error('committed input is immutable');
         }
-        this._inputs.get(this.localPlayerId).set(tick, FRAME);
-        this._through.set(this.localPlayerId, tick);
+        MAP.set(tick, FRAME);
+        this._through[this._local] = tick;
     }
     queueCommand(payload) {
         return this.submitInput(this._lastLocalInput, {
@@ -927,6 +1022,20 @@ export class RollbackSession {
     }
     /** Reserve execution ticks at the event boundary; frame sealing cannot move them. */
     submitInput(input, { commands = [] } = {}) {
+        return this._submit(input, commands, true);
+    }
+    /** 가장 늦은 로컬 예약 틱, 없으면 fallback. */
+    _lastReservedTick(fallback) {
+        let max = fallback;
+        for (const TICK of this._localReservations.keys()) {
+            if (TICK > max) {
+                max = TICK;
+            }
+        }
+        return max;
+    }
+    // receipt가 false면 바뀌지 않은 입력에 영수증 객체를 만들지 않습니다(틱마다 부르는 _capture 경로).
+    _submit(input, commands, receipt) {
         if (this.closed || this._failure) {
             throw new Error('session unavailable');
         }
@@ -940,24 +1049,26 @@ export class RollbackSession {
         ) {
             throw new RangeError('command capacity');
         }
-        const PAYLOADS = commands.map((payload) => {
-            const VALUE = bytes(payload);
-            if (
-                !VALUE.length ||
-                VALUE.length > Math.min(this.profile.maxCommandBytes, CHUNK_SIZE - 1024 - this.inputSize - 6)
-            ) {
-                throw new RangeError('command capacity');
-            }
-            return VALUE.slice();
-        });
+        const PAYLOADS = !commands.length
+            ? NO_PAYLOADS
+            : commands.map((payload) => {
+                  const VALUE = bytes(payload);
+                  if (
+                      !VALUE.length ||
+                      VALUE.length > Math.min(this.profile.maxCommandBytes, CHUNK_SIZE - 1024 - this.inputSize - 6)
+                  ) {
+                      throw new RangeError('command capacity');
+                  }
+                  return VALUE.slice();
+              });
         integer(this._commandSequence + PAYLOADS.length, 'command sequence');
         const CHANGED = PAYLOADS.length > 0 || !equalBytes(HELD, this._lastLocalInput);
         const SCHEDULE = CHANGED
             ? {
                   policy: this.profile.inputScheduling,
                   localTick: this.tick,
-                  nextOpenTick: this._through.get(this.localPlayerId) + 1,
-                  lastReservedTick: Math.max(-1, ...this._localReservations.keys()),
+                  nextOpenTick: this._through[this._local] + 1,
+                  lastReservedTick: this._lastReservedTick(-1),
                   peers: [],
               }
             : undefined;
@@ -972,12 +1083,15 @@ export class RollbackSession {
             }
         }
         const TICK = integer(
-            Math.max(this.tick + DELAY, this._through.get(this.localPlayerId) + 1, ...this._localReservations.keys()),
+            Math.max(this.tick + DELAY, this._through[this._local] + 1, this._lastReservedTick(-Infinity)),
             'input reservation tick',
             0,
             MAX_TICK,
         );
-        if (!PAYLOADS.length && equalBytes(HELD, this._lastLocalInput)) {
+        if (!CHANGED) {
+            if (!receipt) {
+                return undefined;
+            }
             return {
                 status: 'unchanged',
                 tick: this.tick,
@@ -1071,18 +1185,21 @@ export class RollbackSession {
         if ((peer.reservationAcks?.get(frame.tick) ?? 0) >= frame.revision) {
             return;
         }
-        frame.packet ??= packet(TYPE.INPUT_RESERVATION, this._nextSequence(), (w) => {
-            w.u32(frame.tick);
-            w.u32(frame.revision);
-            w.u16(this.inputSize);
-            w.raw(frame.input);
-            w.u16(frame.commands.length);
-            for (const COMMAND of frame.commands) {
-                w.u32(COMMAND.sequence);
-                w.u16(COMMAND.payload.length);
-                w.raw(COMMAND.payload);
+        if (!frame.packet) {
+            const W = beginPacket(TYPE.INPUT_RESERVATION, this._nextSequence(), this._wireTag);
+            W.u32(frame.tick);
+            W.u32(frame.revision);
+            W.u16(this.inputSize);
+            W.raw(frame.input);
+            W.u16(frame.commands.length);
+            for (let i = 0; i < frame.commands.length; i++) {
+                const COMMAND = frame.commands[i];
+                W.u32(COMMAND.sequence);
+                W.u16(COMMAND.payload.length);
+                W.raw(COMMAND.payload);
             }
-        });
+            frame.packet = W.finish();
+        }
         if (this._send(peer, frame.packet)) {
             peer.lastReservationSent = now;
             this._metrics.inputReservationSentBytes += frame.packet.length;
@@ -1122,14 +1239,11 @@ export class RollbackSession {
             });
         }
         r.end();
-        this._send(
-            peer,
-            packet(TYPE.INPUT_RESERVATION_ACK, this._nextSequence(), (w) => {
-                w.u32(TICK);
-                w.u32(REVISION);
-            }),
-        );
-        const ACTUAL = this._inputs.get(peer.id).get(TICK);
+        const W = beginPacket(TYPE.INPUT_RESERVATION_ACK, this._nextSequence(), this._wireTag);
+        W.u32(TICK);
+        W.u32(REVISION);
+        this._send(peer, W.finish());
+        const ACTUAL = this._inputs[peer.index].get(TICK);
         if (ACTUAL || TICK < Math.max(0, this.tick - this.profile.stateHistorySize + 1)) {
             return;
         }
@@ -1163,7 +1277,7 @@ export class RollbackSession {
         for (const COMMAND of COMMANDS) {
             peer.reservedCommands.set(COMMAND.sequence, COMMAND);
         }
-        const USED = this._used.get(TICK)?.find((frame) => frame.playerId === peer.id);
+        const USED = this._used.get(TICK)?.[peer.index];
         if (USED && !frameEqual(USED, FRAME)) {
             if (!this._history.get(TICK)) {
                 this.requestResync(this.confirmedBoundary);
@@ -1194,7 +1308,7 @@ export class RollbackSession {
                 COMMANDS.set(command.sequence, command);
             }
         };
-        for (const [TICK, FRAME] of this._inputs.get(this.localPlayerId)) {
+        for (const [TICK, FRAME] of this._inputs[this._local]) {
             if (TICK >= fromTick) {
                 for (const COMMAND of FRAME.commands) {
                     INCLUDE(COMMAND);
@@ -1205,7 +1319,7 @@ export class RollbackSession {
             INCLUDE(COMMAND);
         }
         const INPUTS = new Map(
-            [...this._inputs.get(this.localPlayerId)]
+            [...this._inputs[this._local]]
                 .filter(([tick]) => tick >= fromTick)
                 .map(([tick, frame]) => [
                     tick,
@@ -1227,7 +1341,7 @@ export class RollbackSession {
             {
                 sequence: this._commandSequence,
                 lastInput: this._lastLocalInput,
-                sealedThrough: this._through.get(this.localPlayerId),
+                sealedThrough: this._through[this._local],
                 inputs: [...INPUTS.values()].sort((a, b) => a.tick - b.tick),
                 commands: [...COMMANDS.values()].sort((a, b) => a.sequence - b.sequence),
             },
@@ -1248,8 +1362,8 @@ export class RollbackSession {
             if (BASE) {
                 sequences = BASE.commandSequences;
                 for (let t = BASE.tick; t < tick; t++) {
-                    const INPUTS = this.players.map((id) => {
-                        const FRAME = this._inputs.get(id).get(t);
+                    const INPUTS = this.players.map((id, index) => {
+                        const FRAME = this._inputs[index].get(t);
                         return FRAME
                             ? {
                                   ...FRAME,
@@ -1286,36 +1400,62 @@ export class RollbackSession {
     }
     _sealLocal(tick, fallback) {
         const RESERVED = this._localReservations.get(tick);
+        // 입력·명령 bytes는 확정 뒤 고치지 않는 원본입니다. 외부로 나갈 때(localInputState·어댑터) 복사합니다.
         const INPUT_LOCAL = RESERVED?.input ?? fallback;
-        const COMMANDS = this._pendingCommands.filter((c) => c.executeTick === tick);
-        if (this._pendingCommands.some((c) => c.executeTick < tick)) {
-            throw new Error('reserved command missed its execution tick');
+        let commands = NO_COMMANDS;
+        const PENDING = this._pendingCommands;
+        if (PENDING.length) {
+            let due = 0;
+            for (let i = 0; i < PENDING.length; i++) {
+                if (PENDING[i].executeTick < tick) {
+                    throw new Error('reserved command missed its execution tick');
+                }
+                if (PENDING[i].executeTick === tick) {
+                    due++;
+                }
+            }
+            if (due) {
+                commands = [];
+                let kept = 0;
+                for (let i = 0; i < PENDING.length; i++) {
+                    if (PENDING[i].executeTick === tick) {
+                        commands.push(PENDING[i]);
+                    } else {
+                        PENDING[kept++] = PENDING[i];
+                    }
+                }
+                PENDING.length = kept;
+            }
         }
-        this._pendingCommands = this._pendingCommands.filter((c) => c.executeTick !== tick);
-        this._commitLocal(tick, INPUT_LOCAL, COMMANDS);
+        this._commitLocal(tick, INPUT_LOCAL, commands);
         this._localReservations.delete(tick);
         this._localCapture = {
             sequence: ++this._localCaptureSequence,
             captureTick: this.tick,
             executeTick: tick,
-            input: INPUT_LOCAL.slice(),
-            commands: COMMANDS.map((c) => ({
-                ...c,
-                payload: c.payload.slice(),
-            })),
+            input: INPUT_LOCAL,
+            commands,
         };
-        this._localCaptures.push(this._localCapture);
-        this._localCaptures = this._localCaptures.filter((c) => c.executeTick >= Math.max(0, this.tick - 1));
+        const CAPTURES = this._localCaptures,
+            MIN_TICK = Math.max(0, this.tick - 1);
+        CAPTURES.push(this._localCapture);
+        let kept = 0;
+        for (let i = 0; i < CAPTURES.length; i++) {
+            if (CAPTURES[i].executeTick >= MIN_TICK) {
+                CAPTURES[kept++] = CAPTURES[i];
+            }
+        }
+        CAPTURES.length = kept;
         return INPUT_LOCAL;
     }
     _capture(input) {
-        this.submitInput(input);
+        this._submit(input, NO_PAYLOADS, false);
         if (this._captureTick === this.tick) {
             return;
         }
         this._captureTick = this.tick;
-        const THROUGH = this._through.get(this.localPlayerId);
-        let held = this._inputs.get(this.localPlayerId).get(THROUGH)?.input ?? this._lastLocalInput;
+        const THROUGH = this._through[this._local];
+        let held = this._inputs[this._local].get(THROUGH)?.input ?? this._lastLocalInput;
         if (
             this.profile.inputScheduling === 'configured' &&
             this._requestedInputDelay < this.inputDelay &&
@@ -1334,10 +1474,8 @@ export class RollbackSession {
             return;
         }
         const RECEIPT = this.submitInput(new Uint8Array(this.inputSize));
-        let held =
-            this._inputs.get(this.localPlayerId).get(this._through.get(this.localPlayerId))?.input ??
-            this._lastLocalInput;
-        for (let t = this._through.get(this.localPlayerId) + 1; t <= RECEIPT.executeTick; t++) {
+        let held = this._inputs[this._local].get(this._through[this._local])?.input ?? this._lastLocalInput;
+        for (let t = this._through[this._local] + 1; t <= RECEIPT.executeTick; t++) {
             held = this._sealLocal(t, held);
         }
         for (const PEER of this._peers.values()) {
@@ -1350,65 +1488,68 @@ export class RollbackSession {
         });
     }
     _sendInputs(peer) {
-        const MAP = this._inputs.get(this.localPlayerId);
+        const MAP = this._inputs[this._local];
         const FIRST = peer.ack + 1;
         if (!MAP.has(FIRST)) {
             return;
         }
-        const FRAMES = [];
+        let count = 0;
         let cost = HEADER + 16;
-        for (let t = FIRST; FRAMES.length < 128 && MAP.has(t); t++) {
-            const F = MAP.get(t);
-            const N = 7 + this.inputSize + F.commands.reduce((s, c) => s + 6 + c.payload.length, 0);
-            if (cost + N > CHUNK_SIZE) {
+        for (; count < 128; count++) {
+            const F = MAP.get(FIRST + count);
+            if (!F) {
                 break;
             }
-            FRAMES.push(F);
-            cost += N;
+            let n = 7 + this.inputSize;
+            for (let c = 0; c < F.commands.length; c++) {
+                n += 6 + F.commands[c].payload.length;
+            }
+            if (cost + n > CHUNK_SIZE) {
+                break;
+            }
+            cost += n;
         }
-        if (!FRAMES.length) {
+        if (!count) {
             return;
         }
-        this._send(
-            peer,
-            packet(TYPE.INPUT, this._nextSequence(), (w) => {
-                w.u32(FIRST);
-                w.u16(FRAMES.length);
-                w.u16(this.inputSize);
-                w.i32(this._through.get(peer.id));
-                w.u32(this.tick);
-                for (let i = 0; i < FRAMES.length;) {
-                    const F = FRAMES[i];
-                    let run = 1;
-                    while (
-                        i + run < FRAMES.length &&
-                        !FRAMES[i + run].commands.length &&
-                        equalBytes(F.input, FRAMES[i + run].input)
-                    ) {
-                        run++;
-                    }
-                    w.u16(run);
-                    w.raw(F.input);
-                    w.u16(F.commands.length);
-                    for (const C of F.commands) {
-                        w.u32(C.sequence);
-                        w.u16(C.payload.length);
-                        w.raw(C.payload);
-                    }
-                    i += run;
+        const W = beginPacket(TYPE.INPUT, this._nextSequence(), this._wireTag);
+        W.u32(FIRST);
+        W.u16(count);
+        W.u16(this.inputSize);
+        W.i32(this._through[peer.index]);
+        W.u32(this.tick);
+        for (let i = 0; i < count;) {
+            const F = MAP.get(FIRST + i);
+            let run = 1;
+            while (i + run < count) {
+                const NEXT = MAP.get(FIRST + i + run);
+                if (NEXT.commands.length || !equalBytes(F.input, NEXT.input)) {
+                    break;
                 }
-            }),
-        );
+                run++;
+            }
+            W.u16(run);
+            W.raw(F.input);
+            W.u16(F.commands.length);
+            for (let c = 0; c < F.commands.length; c++) {
+                const C = F.commands[c];
+                W.u32(C.sequence);
+                W.u16(C.payload.length);
+                W.raw(C.payload);
+            }
+            i += run;
+        }
+        this._send(peer, W.finish());
     }
     _sendClock(peer, now, replyTo) {
         const ID = this._nextSequence();
-        const DATA = packet(TYPE.CLOCK, ID, (w) => {
-            w.u32(this.tick);
-            w.i32(this.confirmedTick);
-            w.i32(this._through.get(peer.id));
-            w.u32(replyTo ?? 0);
-            w.u8(replyTo === undefined ? 0 : 1);
-        });
+        const W = beginPacket(TYPE.CLOCK, ID, this._wireTag);
+        W.u32(this.tick);
+        W.i32(this.confirmedTick);
+        W.i32(this._through[peer.index]);
+        W.u32(replyTo ?? 0);
+        W.u8(replyTo === undefined ? 0 : 1);
+        const DATA = W.finish();
         if (this._send(peer, DATA)) {
             if (replyTo === undefined) {
                 peer.pendingPings.set(ID, now);
@@ -1483,7 +1624,7 @@ export class RollbackSession {
             return false;
         }
         const PEER = this._peers.get(peerId);
-        if (!PEER || ['closed', 'failed'].includes(PEER.transportState)) {
+        if (!PEER || PEER.transportState === 'closed' || PEER.transportState === 'failed') {
             return false;
         }
         try {
@@ -1506,7 +1647,7 @@ export class RollbackSession {
                 throw new Error('protocol version');
             }
             const TYPE_LOCAL = R.u8();
-            if (R.u16() !== 0) {
+            if (R.u16() !== this._wireTag) {
                 throw new Error('reserved header');
             }
             const SEQUENCE = R.u32();
@@ -1627,7 +1768,7 @@ export class RollbackSession {
         ) {
             throw new RangeError('input timeline');
         }
-        if (ACK < -1 || ACK > this._through.get(this.localPlayerId)) {
+        if (ACK < -1 || ACK > this._through[this._local]) {
             throw new RangeError('ack');
         }
         const INCOMING = [];
@@ -1636,9 +1777,10 @@ export class RollbackSession {
             if (!RUN || INCOMING.length + RUN > COUNT) {
                 throw new RangeError('input run');
             }
-            const INPUT_LOCAL = r.raw(SIZE),
+            // 입력은 먼저 패킷 보기로 비교하고, 새로 보관하는 frame만 복사합니다(재전송된 frame은 복사하지 않음).
+            const INPUT_LOCAL = r.rawView(SIZE),
                 N = r.u16(),
-                COMMANDS = [];
+                COMMANDS = N ? [] : NO_COMMANDS;
             if (N > this.profile.maxPendingCommands) {
                 throw new RangeError('command count');
             }
@@ -1661,17 +1803,20 @@ export class RollbackSession {
                 commands: COMMANDS,
             });
             for (let j = 1; j < RUN; j++) {
+                // 같은 run의 입력은 고치지 않는 원본을 함께 씁니다.
                 INCOMING.push({
-                    input: INPUT_LOCAL.slice(),
-                    commands: [],
+                    input: INPUT_LOCAL,
+                    commands: NO_COMMANDS,
                 });
             }
         }
         r.end();
-        const MAP = this._inputs.get(peer.id);
+        const MAP = this._inputs[peer.index];
         // Validate the complete packet before publishing any portion of it.
         for (let i = 0; i < COUNT; i++) {
-            for (const COMMAND of INCOMING[i].commands) {
+            const INCOMING_COMMANDS = INCOMING[i].commands;
+            for (let c = 0; c < INCOMING_COMMANDS.length; c++) {
+                const COMMAND = INCOMING_COMMANDS[c];
                 const RESERVED = peer.reservedCommands?.get(COMMAND.sequence);
                 if (
                     RESERVED &&
@@ -1713,22 +1858,31 @@ export class RollbackSession {
             peer.clockAt = now;
         }
         const OLDEST = Math.max(0, this.tick - this.profile.stateHistorySize + 1);
+        let viewed = null,
+            owned = null;
         for (let i = 0; i < COUNT; i++) {
             const T = FIRST + i;
             if (MAP.has(T) || T < OLDEST) {
                 continue;
             }
             peer.reservedCommands ??= new Map();
-            for (const COMMAND of INCOMING[i].commands) {
-                peer.reservedCommands.set(COMMAND.sequence, COMMAND);
+            const FRAME = INCOMING[i];
+            for (let c = 0; c < FRAME.commands.length; c++) {
+                peer.reservedCommands.set(FRAME.commands[c].sequence, FRAME.commands[c]);
             }
-            MAP.set(T, INCOMING[i]);
+            // 같은 run의 frame은 같은 보기를 가리키므로 복사본 하나를 함께 씁니다.
+            if (FRAME.input !== viewed) {
+                viewed = FRAME.input;
+                owned = viewed.slice();
+            }
+            FRAME.input = owned;
+            MAP.set(T, FRAME);
             peer.reservations?.delete(T);
             this._window.received++;
             if (T < this.tick) {
                 this._window.late++;
             }
-            const USED = this._used.get(T)?.find((x) => x.playerId === peer.id);
+            const USED = this._used.get(T)?.[peer.index];
             if (USED && T < this.tick && !frameEqual(USED, INCOMING[i])) {
                 if (this.profile.mode === 'lockstep') {
                     this._fail('desync-unrecoverable', {
@@ -1748,11 +1902,11 @@ export class RollbackSession {
                 }
             }
         }
-        let through = this._through.get(peer.id);
+        let through = this._through[peer.index];
         while (MAP.has(through + 1)) {
             through++;
         }
-        this._through.set(peer.id, through);
+        this._through[peer.index] = through;
     }
     _receiveClock(peer, r, sequence, now) {
         const TICK = r.u32(),
@@ -1764,13 +1918,7 @@ export class RollbackSession {
         if (REPLY > 1) {
             throw new RangeError('clock reply flag');
         }
-        if (
-            TICK > MAX_TICK + 1 ||
-            CONFIRMED < -1 ||
-            CONFIRMED > ACK ||
-            ACK < -1 ||
-            ACK > this._through.get(this.localPlayerId)
-        ) {
+        if (TICK > MAX_TICK + 1 || CONFIRMED < -1 || CONFIRMED > ACK || ACK < -1 || ACK > this._through[this._local]) {
             throw new RangeError('clock/ack');
         }
         const FRESH =
@@ -1801,58 +1949,72 @@ export class RollbackSession {
             const DIFFERENCE = Math.abs(SAMPLE - peer.rtt);
             peer.rtt = peer.rtt ? peer.rtt * 0.875 + SAMPLE * 0.125 : SAMPLE;
             peer.jitter = peer.jitter * 0.75 + (peer.rtt === SAMPLE ? 0 : DIFFERENCE * 0.25);
-            this._metrics.smoothedRTT = Math.max(...[...this._peers.values()].map((p) => p.rtt));
-            this._metrics.jitter = Math.max(...[...this._peers.values()].map((p) => p.jitter));
+            let rtt = -Infinity,
+                jitter = -Infinity;
+            for (const PEER of this._peers.values()) {
+                rtt = Math.max(rtt, PEER.rtt);
+                jitter = Math.max(jitter, PEER.jitter);
+            }
+            this._metrics.smoothedRTT = rtt;
+            this._metrics.jitter = jitter;
         }
     }
+    // 돌려주는 frame은 내부 원본 bytes를 참조합니다. 어댑터에는 runSimulationFrame이 복사본을 넘기고,
+    // 기록(_used·리플레이)은 이 원본을 고치지 않고 보관합니다. 순서는 this.players와 같습니다.
     _resolve(tick) {
-        return this.players.map((playerId) => {
-            const MAP = this._inputs.get(playerId),
-                ACTUAL = MAP.get(tick);
+        const OUT = new Array(this.players.length);
+        for (let i = 0; i < this.players.length; i++) {
+            const PLAYER_ID = this.players[i],
+                ACTUAL = this._inputs[i].get(tick);
             if (ACTUAL) {
-                return {
-                    playerId,
-                    ...copyFrame(ACTUAL),
+                OUT[i] = {
+                    playerId: PLAYER_ID,
+                    input: ACTUAL.input,
+                    commands: ACTUAL.commands,
                     predicted: false,
                 };
+                continue;
             }
             if (this.profile.mode === 'lockstep') {
                 throw new Error('lockstep input is not confirmed');
             }
-            const RESERVED = this._peers.get(playerId)?.reservations?.get(tick);
+            const RESERVED = this._peers.get(PLAYER_ID)?.reservations?.get(tick);
             if (RESERVED) {
-                return {
-                    playerId,
-                    ...copyFrame(RESERVED),
+                OUT[i] = {
+                    playerId: PLAYER_ID,
+                    input: RESERVED.input,
+                    commands: RESERVED.commands,
                     predicted: true,
                 };
+                continue;
             }
-            let prior =
-                this._used.get(tick - 1)?.find((f) => f.playerId === playerId)?.input ?? new Uint8Array(this.inputSize);
+            let prior = this._used.get(tick - 1)?.[i]?.input ?? this._neutral;
             const POLICY = this.profile.predictionPolicy;
             if (typeof POLICY === 'function') {
+                // 예측기가 돌려준 bytes는 호출자 소유라 복사해 둡니다.
                 prior = bytes(
                     POLICY({
-                        playerId,
+                        playerId: PLAYER_ID,
                         tick,
                         previousInput: prior.slice(),
-                        lastConfirmedTick: this._through.get(playerId),
+                        lastConfirmedTick: this._through[i],
                     }),
-                );
+                ).slice();
             } else if (POLICY === 'neutral') {
-                prior = new Uint8Array(this.inputSize);
+                prior = this._neutral;
             }
             if (prior.length !== this.inputSize) {
                 throw new RangeError('predictor inputSize');
             }
             // Only continuous state is predicted; a missing one-shot command is never repeated.
-            return {
-                playerId,
-                input: prior.slice(),
-                commands: [],
+            OUT[i] = {
+                playerId: PLAYER_ID,
+                input: prior,
+                commands: NO_COMMANDS,
                 predicted: true,
             };
-        });
+        }
+        return OUT;
     }
     _restoreConfirmedBoundary(tick) {
         const BASE = this._history.atOrBefore(tick);
@@ -1871,10 +2033,15 @@ export class RollbackSession {
         }
     }
     _replayFrameBytes(inputs) {
-        return inputs.reduce(
-            (s, f) => s + f.input.length + f.commands.reduce((k, c) => k + c.payload.length + 12, 0),
-            16,
-        );
+        let n = 16;
+        for (let i = 0; i < inputs.length; i++) {
+            const F = inputs[i];
+            n += F.input.length;
+            for (let c = 0; c < F.commands.length; c++) {
+                n += F.commands[c].payload.length + 12;
+            }
+        }
+        return n;
     }
     _step(inputs, resimulating) {
         const BEFORE = this._history?.get(this.tick);
@@ -1888,7 +2055,9 @@ export class RollbackSession {
             this._recordReplay &&
             this._replayBytes + this._replayFrameBytes(inputs) > this.profile.maxReplayBytes
         ) {
-            this._replayFinalHash = this.localFastPath ? hashBytes(this._save()) : this._stateHash(this._stateAt(TICK));
+            this._replayFinalHash = this.localFastPath
+                ? hashBytes(this._saveView())
+                : this._stateHash(this._stateAt(TICK));
             this._recordReplay = false;
             this._event('replay-capacity');
         }
@@ -1913,29 +2082,20 @@ export class RollbackSession {
                 });
             }
             if (!LOCKSTEP) {
-                this._used.set(
-                    TICK,
-                    inputs.map((f) => ({
-                        ...copyFrame(f),
-                        playerId: f.playerId,
-                        predicted: f.predicted,
-                    })),
-                );
+                // _resolve가 만든 frame 배열을 그대로 보관합니다(원본 bytes 참조, players 순서).
+                this._used.set(TICK, inputs);
             }
             if (this.localFastPath && this._recordReplay) {
                 // Fast-path frames are final when executed; no confirmation pass follows.
-                this._replayFrames.push({
-                    tick: TICK,
-                    inputs: inputs.map((f) => ({ playerId: f.playerId, ...copyFrame(f), predicted: false })),
-                });
+                this._replay.push(TICK, inputs);
                 this._replayBytes += this._replayFrameBytes(inputs);
             }
             this._tick++;
             this._inputHash = INPUT_HASH;
             this._currentState = null;
-            const LOCAL_FRAME = inputs.find((frame) => frame.playerId === this.localPlayerId);
+            const LOCAL_FRAME = inputs[this._local];
             if (LOCAL_FRAME) {
-                this._localExecutedInput = LOCAL_FRAME.input.slice();
+                this._localExecutedInput = LOCAL_FRAME.input;
             }
             this._commandSequences = COMMAND_SEQUENCES;
         } catch (error) {
@@ -2047,9 +2207,10 @@ export class RollbackSession {
                 failure: this.failure,
             };
         }
-        if (['interrupted', 'disconnected'].includes(this.status)) {
+        const CONNECTION = this._worstConnection();
+        if (CONNECTION) {
             return {
-                status: this.status,
+                status: CONNECTION,
                 tick: this.tick,
             };
         }
@@ -2089,7 +2250,7 @@ export class RollbackSession {
                 tick: this.tick,
             };
         }
-        if (this.profile.mode === 'lockstep' && this.players.some((id) => !this._inputs.get(id).has(this.tick))) {
+        if (this.profile.mode === 'lockstep' && !this._allInputsAt(this.tick)) {
             this._metrics.stalls++;
             this._window.stall++;
             return {
@@ -2097,12 +2258,16 @@ export class RollbackSession {
                 tick: this.tick,
             };
         }
-        const INPUTS = this._resolve(this.tick),
-            PREDICTED = INPUTS.some((f) => f.predicted);
-        const MIN_ACK = this._peers.size ? Math.min(...[...this._peers.values()].map((p) => p.ack)) : this.tick;
+        const INPUTS = this._resolve(this.tick);
+        let predicted = false;
+        for (let i = 0; i < INPUTS.length; i++) {
+            predicted ||= INPUTS[i].predicted;
+        }
+        const PREDICTED = predicted;
+        const MIN_ACK = this._minAck();
         if (
             (PREDICTED && this.tick - (this.confirmedTick + 1) >= this.profile.rollbackWindowTicks) ||
-            this._through.get(this.localPlayerId) - MIN_ACK >= this.profile.stateHistorySize * 4
+            this._through[this._local] - MIN_ACK >= this.profile.stateHistorySize * 4
         ) {
             this._metrics.stalls++;
             this._window.stall++;
@@ -2124,6 +2289,27 @@ export class RollbackSession {
             status: 'advanced',
             tick: this.tick,
         };
+    }
+    _allInputsAt(tick) {
+        for (let i = 0; i < this._inputs.length; i++) {
+            if (!this._inputs[i].has(tick)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    /** 연결된 peer가 받았다고 알린 로컬 입력 틱의 최솟값, peer가 없으면 현재 tick. */
+    _minAck() {
+        if (!this._peers.size) {
+            return this.tick;
+        }
+        let min = Infinity;
+        for (const PEER of this._peers.values()) {
+            if (PEER.ack < min) {
+                min = PEER.ack;
+            }
+        }
+        return min;
     }
     _adapt(now) {
         if (this._lastAdaptation === null) {
@@ -2198,16 +2384,11 @@ export class RollbackSession {
             if (PEER.ready && PEER.lastHashQueued < T) {
                 // Coalesce congestion into the newest retained confirmed boundary.
                 // Unsent hashes remain derivable from the ring instead of an unbounded queue.
-                if (
-                    this._queue(
-                        PEER,
-                        packet(TYPE.HASH, this._nextSequence(), (w) => {
-                            w.u32(T);
-                            w.u32(this._stateHash(S));
-                            w.u32(S.inputHash);
-                        }),
-                    )
-                ) {
+                const W = beginPacket(TYPE.HASH, this._nextSequence(), this._wireTag);
+                W.u32(T);
+                W.u32(this._stateHash(S));
+                W.u32(S.inputHash);
+                if (this._queue(PEER, W.finish())) {
                     PEER.lastHashQueued = T;
                 }
             }
@@ -2285,8 +2466,8 @@ export class RollbackSession {
         }
         const FRAMES = [];
         for (let frameTick = CHECKPOINT.tick; frameTick < tick; frameTick++) {
-            const INPUTS = this.players.map((playerId) => {
-                const FRAME = this._inputs.get(playerId).get(frameTick);
+            const INPUTS = this.players.map((playerId, index) => {
+                const FRAME = this._inputs[index].get(frameTick);
                 if (!FRAME) {
                     throw new Error('confirmed bootstrap input is unavailable');
                 }
@@ -2333,7 +2514,7 @@ export class RollbackSession {
             bootstrap.tick - bootstrap.checkpoint?.tick > this.profile.stateHistorySize ||
             !Array.isArray(bootstrap.frames) ||
             bootstrap.frames.length !== bootstrap.tick - bootstrap.checkpoint.tick ||
-            JSON.stringify(bootstrap.players) !== JSON.stringify(this.players)
+            !equalIds(bootstrap.players, this.players)
         ) {
             throw new Error('resume bootstrap boundary');
         }
@@ -2356,7 +2537,7 @@ export class RollbackSession {
             for (let p = 0; p < this.players.length; p++) {
                 const ID = this.players[p],
                     INCOMING = FRAME.inputs[p],
-                    KNOWN = this._inputs.get(ID).get(TICK);
+                    KNOWN = this._inputs[p].get(TICK);
                 if (
                     INCOMING?.playerId !== ID ||
                     INCOMING.predicted ||
@@ -2404,12 +2585,9 @@ export class RollbackSession {
             return false;
         }
         tick = STATE.tick;
-        if (
-            !this._queue(
-                PEER,
-                packet(TYPE.REQUEST, this._nextSequence(), (w) => w.u32(tick)),
-            )
-        ) {
+        const W = beginPacket(TYPE.REQUEST, this._nextSequence(), this._wireTag);
+        W.u32(tick);
+        if (!this._queue(PEER, W.finish())) {
             return false;
         }
         this._requestedRecovery = {
@@ -2430,26 +2608,24 @@ export class RollbackSession {
         }
         const TRANSFER = ++this._nextTransfer >>> 0,
             COUNT = Math.ceil(STATE.bytes.length / SNAP_CHUNK_BYTES);
-        const PACKETS = [
-            packet(TYPE.BEGIN, this._nextSequence(), (w) => {
-                w.u32(TRANSFER);
-                w.u32(tick);
-                w.u32(STATE.bytes.length);
-                w.u32(this._stateHash(STATE));
-                w.u32(STATE.inputHash);
-                w.u16(COUNT);
-            }),
-        ];
+        const BEGIN = beginPacket(TYPE.BEGIN, this._nextSequence(), this._wireTag);
+        BEGIN.u32(TRANSFER);
+        BEGIN.u32(tick);
+        BEGIN.u32(STATE.bytes.length);
+        BEGIN.u32(this._stateHash(STATE));
+        BEGIN.u32(STATE.inputHash);
+        BEGIN.u16(COUNT);
+        const PACKETS = [BEGIN.finish()];
+        let total = PACKETS[0].length;
         for (let i = 0; i < COUNT; i++) {
-            PACKETS.push(
-                packet(TYPE.CHUNK, this._nextSequence(), (w) => {
-                    w.u32(TRANSFER);
-                    w.u32(i);
-                    w.raw(STATE.bytes.subarray(i * SNAP_CHUNK_BYTES, (i + 1) * SNAP_CHUNK_BYTES));
-                }),
-            );
+            const W = beginPacket(TYPE.CHUNK, this._nextSequence(), this._wireTag);
+            W.u32(TRANSFER);
+            W.u32(i);
+            W.raw(STATE.bytes.subarray(i * SNAP_CHUNK_BYTES, (i + 1) * SNAP_CHUNK_BYTES));
+            PACKETS.push(W.finish());
+            total += PACKETS[i + 1].length;
         }
-        if (peer.queuedBytes + PACKETS.reduce((s, b) => s + b.length, 0) > this.profile.maxQueuedBytes) {
+        if (peer.queuedBytes + total > this.profile.maxQueuedBytes) {
             this._event('recovery-backpressure', {
                 peerId: peer.id,
             });
@@ -2578,7 +2754,7 @@ export class RollbackSession {
                 throw new Error('adapter rejected candidate');
             }
             this.adapter.load(candidate.bytes.slice());
-            if (!equalBytes(this._save(), candidate.bytes)) {
+            if (!equalBytes(this._saveView(), candidate.bytes)) {
                 throw new Error('snapshot round-trip changed candidate');
             }
             const JOB = {
@@ -2620,8 +2796,8 @@ export class RollbackSession {
                 if (!LOCKSTEP) {
                     JOB.stagedInputs.push([T, INPUTS]);
                 }
-                if (LOCKSTEP && !this._recordReplay && T + 1 === this._replayFrames.length) {
-                    JOB.replayFinalHash = hashBytes(this._save());
+                if (LOCKSTEP && !this._recordReplay && T + 1 === this._replay.ticks) {
+                    JOB.replayFinalHash = hashBytes(this._saveView());
                 }
                 JOB.next++;
                 this._metrics.resimulatedTicks++;
@@ -2657,7 +2833,7 @@ export class RollbackSession {
             this._currentState = null;
             if (this.profile.mode === 'lockstep') {
                 this._replayFinalState = null;
-                if (!this._recordReplay && JOB.candidate.tick === this._replayFrames.length) {
+                if (!this._recordReplay && JOB.candidate.tick === this._replay.ticks) {
                     this._replayFinalHash = JOB.candidate.hash;
                 }
                 if (JOB.replayFinalHash !== undefined) {
@@ -2685,15 +2861,14 @@ export class RollbackSession {
         if (this.localFastPath || !this._recordReplay || this.resimulating || this._failure) {
             return;
         }
-        this._replayFinalState = this._history.get(this._replayFrames.length) ?? this._replayFinalState;
+        this._replayFinalState = this._history.get(this._replay.ticks) ?? this._replayFinalState;
         const THROUGH = Math.min(this.confirmedTick, this.tick - 1);
-        for (let t = this._replayFrames.length; t <= THROUGH; t++) {
-            const INPUTS = this.players.map((playerId) => ({
-                playerId,
-                ...copyFrame(this._inputs.get(playerId).get(t)),
-                predicted: false,
-            }));
-            const N = this._replayFrameBytes(INPUTS);
+        const FRAMES = (this._replayScratch ??= new Array(this.players.length));
+        for (let t = this._replay.ticks; t <= THROUGH; t++) {
+            for (let i = 0; i < FRAMES.length; i++) {
+                FRAMES[i] = this._inputs[i].get(t);
+            }
+            const N = this._replayFrameBytes(FRAMES);
             if (this._replayBytes + N > this.profile.maxReplayBytes) {
                 this._replayFinalHash = this._stateHash(this._replayFinalState);
                 this._replayFinalState = null;
@@ -2701,10 +2876,8 @@ export class RollbackSession {
                 this._event('replay-capacity');
                 return;
             }
-            this._replayFrames.push({
-                tick: t,
-                inputs: INPUTS,
-            });
+            // 확정 frame은 바로 리플레이 바이트로 덧붙이고 frame 객체는 쌓지 않습니다(앞 256틱만 synctest용 참조).
+            this._replay.push(t, FRAMES);
             this._replayBytes += N;
             this._replayFinalState = this._history.get(t + 1);
         }
@@ -2724,17 +2897,21 @@ export class RollbackSession {
             inputSize: this.inputSize,
             tickRate: this.profile.tickRate,
             initialTick: 0,
-            frames: this._replayFrames.slice(0, maxFrames).map((f) => ({
+            frames: this._replay.frames.slice(0, maxFrames).map((f) => ({
                 tick: f.tick,
-                inputs: f.inputs.map((x) => ({
+                inputs: f.inputs.map((x, index) => ({
                     ...copyFrame(x),
-                    playerId: x.playerId,
+                    playerId: this.players[index],
                     predicted: false,
                 })),
             })),
         };
     }
     exportReplay() {
+        return this._exportReplay(Infinity);
+    }
+    /** `ticks`보다 뒤에 기록된 확정 틱은 빼고 내보냅니다(RoomSession 세대 경계). */
+    _exportReplay(ticks) {
         if (this.localFastPath && !this._initialState) {
             throw new Error('replay unavailable in local fast path without recordReplay');
         }
@@ -2742,14 +2919,18 @@ export class RollbackSession {
             throw new Error('finish rollback before exporting replay');
         }
         this._recordConfirmed();
-        const TICK = this._replayFrames.length;
-        const HASH_LOCAL = this.localFastPath
-            ? this._recordReplay
-                ? hashBytes(this._save())
-                : this._replayFinalHash
-            : (this._stateHash(this._stateAt(TICK)) ??
-              this._stateHash(this._replayFinalState) ??
-              this._replayFinalHash);
+        const TICK = Math.min(this._replay.ticks, ticks);
+        // 경계로 자를 때는 그 경계의 보관 상태만 씁니다(현재 상태·마지막 기록 상태는 경계 뒤).
+        const HASH_LOCAL =
+            TICK < this._replay.ticks
+                ? this._stateHash(this._stateAt(TICK))
+                : this.localFastPath
+                  ? this._recordReplay
+                      ? hashBytes(this._saveView())
+                      : this._replayFinalHash
+                  : (this._stateHash(this._stateAt(TICK)) ??
+                    this._stateHash(this._replayFinalState) ??
+                    this._replayFinalHash);
         if (TICK > 0 && HASH_LOCAL === undefined) {
             throw new Error('replay final boundary is unavailable after fatal restoration failure');
         }
@@ -2761,7 +2942,7 @@ export class RollbackSession {
             inputSize: this.inputSize,
             tickRate: this.profile.tickRate,
             initialState: this._initialState.slice(),
-            ...encodeReplayFrames(this._replayFrames, this.players),
+            ...this._replay.export(TICK),
             tick: TICK,
             hash: HASH_LOCAL ?? hashBytes(this._initialState),
             truncated: !this._recordReplay,
@@ -2773,35 +2954,45 @@ export class RollbackSession {
             this.profile.mode === 'lockstep'
                 ? Math.min(WINDOW_OLDEST, this._history?.oldestTick ?? WINDOW_OLDEST)
                 : WINDOW_OLDEST;
-        for (const T of this._used.keys()) {
-            if (T < OLDEST - 1) {
-                this._used.delete(T);
-            }
+        // _used·입력 표에는 지운 경계보다 낮은 tick이 다시 들어오지 않습니다(새 기록은 보관 중인 상태 이후 tick).
+        // 그래서 경계부터 올라가며 지우면 전체 순회와 같은 결과입니다.
+        const USED_LIMIT = OLDEST - 1;
+        for (let t = this._usedPruned; t < USED_LIMIT; t++) {
+            this._used.delete(t);
         }
+        this._usedPruned = Math.max(this._usedPruned, USED_LIMIT);
         for (const PEER of this._peers.values()) {
-            for (const T of PEER.reservations?.keys() ?? []) {
-                if (T < OLDEST) {
-                    PEER.reservations.delete(T);
+            if (PEER.reservations) {
+                for (const T of PEER.reservations.keys()) {
+                    if (T < OLDEST) {
+                        PEER.reservations.delete(T);
+                    }
                 }
             }
-            for (const [SEQ, C] of PEER.reservedCommands ?? []) {
-                if (C.executeTick < OLDEST) {
-                    PEER.reservedCommands.delete(SEQ);
+            if (PEER.reservedCommands) {
+                for (const [SEQ, C] of PEER.reservedCommands) {
+                    if (C.executeTick < OLDEST) {
+                        PEER.reservedCommands.delete(SEQ);
+                    }
                 }
             }
-            for (const T of PEER.reservationAcks?.keys() ?? []) {
-                if (T < OLDEST) {
-                    PEER.reservationAcks.delete(T);
+            if (PEER.reservationAcks) {
+                for (const T of PEER.reservationAcks.keys()) {
+                    if (T < OLDEST) {
+                        PEER.reservationAcks.delete(T);
+                    }
                 }
             }
         }
-        const MIN_ACK = this._peers.size ? Math.min(...[...this._peers.values()].map((p) => p.ack)) : this.tick;
-        for (const [PLAYER_ID, MAP] of this._inputs) {
-            for (const T of MAP.keys()) {
-                if (T < OLDEST && (PLAYER_ID !== this.localPlayerId || T <= MIN_ACK)) {
-                    MAP.delete(T);
-                }
+        const MIN_ACK = this._minAck();
+        for (let i = 0; i < this._inputs.length; i++) {
+            // 로컬 입력은 모든 peer가 받았다고 알린 tick까지만 지웁니다.
+            const LIMIT = i === this._local ? Math.min(OLDEST, MIN_ACK + 1) : OLDEST;
+            const MAP = this._inputs[i];
+            for (let t = this._inputsPruned[i]; t < LIMIT; t++) {
+                MAP.delete(t);
             }
+            this._inputsPruned[i] = Math.max(this._inputsPruned[i], LIMIT);
         }
     }
     close() {
