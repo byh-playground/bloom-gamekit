@@ -322,7 +322,7 @@
             }
         },
         {
-            "label": "v0.50.0-hotpath-garbage",
+            "label": "v0.51.0-hotpath-garbage",
             "gpu": "high",
             "sourceHead": "40cb72bdf374f53b9ca8e72826c308217a58a0c5",
             "sourceDirty": true,
