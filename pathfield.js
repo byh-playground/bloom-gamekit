@@ -20,6 +20,7 @@ var BLOCKED = 0;
 var OPEN = 1;
 var OPTIONS = ["width", "height", "cellSize", "passable", "passableEdge", "originX", "originY"];
 var REVERSE_DIRECTION = Uint8Array.of(2, 3, 0, 1, 6, 7, 4, 5);
+var MAX_CHANGED_RECTS = 16;
 function positiveNumber(value, name) {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     throw new RangeError(`PathGrid ${name} must be a positive finite number.`);
@@ -51,6 +52,9 @@ var PathGrid = class {
   #edgeKnown;
   #edgeOpen;
   #stack = null;
+  // 마지막 takeChangedRects 이후 바뀐 사각형: 칸 좌표 [minCol, minRow, maxCol, maxRow] 네 정수씩, 기록 순서대로.
+  #changed = new Int32Array(MAX_CHANGED_RECTS * 4);
+  #changedCount = 0;
   constructor(options) {
     if (options === null || typeof options !== "object") {
       throw new TypeError("PathGrid options must be an object.");
@@ -155,6 +159,89 @@ var PathGrid = class {
     this.#edgeKnown?.fill(0);
     this.#edgeOpen?.fill(0);
     this.revision++;
+    this.#changedCount = 0;
+    this.#recordChange(0, 0, this.cols - 1, this.rows - 1);
+  }
+  /**
+   * 월드 좌표 사각형 [minX, maxX] × [minY, maxY]에 걸친 칸(경계가 칸 경계에 정확히 닿으면 그 너머 칸도 포함)의 통과 판정
+   * 기억만 비우고 `revision`을 올립니다. 이 칸들과 맞닿은 한 겹 칸의 변 판정(`passableEdge`)도 함께 비웁니다. 격자 밖으로
+   * 나간 부분은 자르고, 격자와 전혀 겹치지 않으면 아무것도 하지 않습니다(`revision`도 그대로). 비운 칸 범위는
+   * `takeChangedRects`로 가져갈 수 있게 기록합니다. 좌표가 유한한 수가 아니거나 min이 max보다 크면 `RangeError`.
+   */
+  invalidateRect(minX, minY, maxX, maxY) {
+    for (const VALUE of [minX, minY, maxX, maxY]) {
+      if (typeof VALUE !== "number" || !Number.isFinite(VALUE)) {
+        throw new RangeError("PathGrid.invalidateRect needs finite numbers.");
+      }
+    }
+    if (minX > maxX || minY > maxY) {
+      throw new RangeError("PathGrid.invalidateRect needs min <= max.");
+    }
+    const COL0 = Math.max(0, Math.floor((minX - this.originX) / this.cellSize)), COL1 = Math.min(this.cols - 1, Math.floor((maxX - this.originX) / this.cellSize)), ROW0 = Math.max(0, Math.floor((minY - this.originY) / this.cellSize)), ROW1 = Math.min(this.rows - 1, Math.floor((maxY - this.originY) / this.cellSize));
+    if (COL0 > COL1 || ROW0 > ROW1) {
+      return;
+    }
+    for (let row = ROW0; row <= ROW1; row++) {
+      this.#open.fill(UNKNOWN, row * this.cols + COL0, row * this.cols + COL1 + 1);
+    }
+    if (this.#passableEdge) {
+      const EDGE_COL0 = Math.max(0, COL0 - 1), EDGE_COL1 = Math.min(this.cols - 1, COL1 + 1);
+      for (let row = Math.max(0, ROW0 - 1); row <= Math.min(this.rows - 1, ROW1 + 1); row++) {
+        this.#edgeKnown.fill(0, row * this.cols + EDGE_COL0, row * this.cols + EDGE_COL1 + 1);
+        this.#edgeOpen.fill(0, row * this.cols + EDGE_COL0, row * this.cols + EDGE_COL1 + 1);
+      }
+    }
+    this.revision++;
+    this.#recordChange(COL0, ROW0, COL1, ROW1);
+  }
+  /** 마지막으로 가져간 뒤 기록된 바뀐 사각형의 개수(0..`MAX_CHANGED_RECTS`). */
+  get changedRectCount() {
+    return this.#changedCount;
+  }
+  /**
+   * 마지막으로 가져간 뒤 바뀐 칸 사각형을 `out`(길이 `4 * MAX_CHANGED_RECTS` 이상의 Int32Array)에
+   * `[minCol, minRow, maxCol, maxRow]`(양끝 포함) 네 정수씩 기록 순서대로 쓰고 개수를 돌려준 뒤 기록을 비웁니다.
+   * 소비자는 하나라고 가정합니다(두 곳이 가져가면 나중 쪽은 놓칩니다). `invalidate()`·`sync`가 비운 경우는 격자 전체 한 개입니다.
+   * @param {Int32Array} out
+   */
+  takeChangedRects(out) {
+    if (!(out instanceof Int32Array) || out.length < MAX_CHANGED_RECTS * 4) {
+      throw new TypeError(`PathGrid.takeChangedRects needs an Int32Array of at least ${MAX_CHANGED_RECTS * 4}.`);
+    }
+    const COUNT = this.#changedCount;
+    out.set(this.#changed.subarray(0, COUNT * 4));
+    this.#changedCount = 0;
+    return COUNT;
+  }
+  // 기록 규칙(호출 순서에만 의존): 이미 기록된 사각형에 완전히 들어가면 버리고, 아니면 뒤에 붙입니다.
+  // 가득 차면 기록 전체와 새 사각형을 하나의 바운딩 사각형으로 합칩니다.
+  #recordChange(minCol, minRow, maxCol, maxRow) {
+    const LIST = this.#changed;
+    for (let i = 0; i < this.#changedCount * 4; i += 4) {
+      if (LIST[i] <= minCol && LIST[i + 1] <= minRow && LIST[i + 2] >= maxCol && LIST[i + 3] >= maxRow) {
+        return;
+      }
+    }
+    if (this.#changedCount < MAX_CHANGED_RECTS) {
+      const AT = this.#changedCount++ * 4;
+      LIST[AT] = minCol;
+      LIST[AT + 1] = minRow;
+      LIST[AT + 2] = maxCol;
+      LIST[AT + 3] = maxRow;
+      return;
+    }
+    let x0 = minCol, y0 = minRow, x1 = maxCol, y1 = maxRow;
+    for (let i = 0; i < LIST.length; i += 4) {
+      x0 = Math.min(x0, LIST[i]);
+      y0 = Math.min(y0, LIST[i + 1]);
+      x1 = Math.max(x1, LIST[i + 2]);
+      y1 = Math.max(y1, LIST[i + 3]);
+    }
+    LIST[0] = x0;
+    LIST[1] = y0;
+    LIST[2] = x1;
+    LIST[3] = y1;
+    this.#changedCount = 1;
   }
   /** 게임이 가진 장애물 배치의 세대 번호를 알립니다. 지난번과 다르면 `invalidate()`하고 true를 돌려줍니다. */
   sync(version) {
@@ -785,6 +872,7 @@ export {
   DIAGONAL_COST,
   DistanceField,
   FieldCache,
+  MAX_CHANGED_RECTS,
   PathGrid,
   RouteFinder,
   STRAIGHT_COST,
