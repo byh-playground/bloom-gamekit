@@ -1,4 +1,5 @@
 import { PoseMatrixCache } from './pose-matrix-cache.js';
+import { DirtyRows } from './dirty-rows.js';
 
 const MAX_PARTS = 16;
 const POSE_WIDTH = MAX_PARTS * 3;
@@ -32,7 +33,7 @@ export class PoseRenderer {
         this.overrideTexture = null;
         this.cpuTexture = null;
         // Rows whose bytes are newer than their texture, so a flush costs the changed rows, not every live instance.
-        this.dirty = { state: new Set(), override: new Set(), cpu: new Set() };
+        this.dirty = { state: new DirtyRows(), override: new DirtyRows(), cpu: new DirtyRows() };
         this.frameMetrics = {};
         this.pendingUpdates = false;
         this.disposed = false;
@@ -69,10 +70,10 @@ export class PoseRenderer {
         };
     }
     _markAll(record) {
-        this.dirty.state.add(record);
-        this.dirty.override.add(record);
+        this.dirty.state.add(record.row);
+        this.dirty.override.add(record.row);
         if (record.mode === 'cpu') {
-            this.dirty.cpu.add(record);
+            this.dirty.cpu.add(record.row);
         }
     }
     _boundary() {
@@ -143,7 +144,7 @@ export class PoseRenderer {
             if (this.stateData) {
                 this.stateData[RECORD.row * 8 + 7] = this.sources.get(RECORD.source).offset;
             }
-            this.dirty.state.add(RECORD);
+            this.dirty.state.add(RECORD.row);
         }
         this.pendingUpdates = true;
     }
@@ -175,9 +176,9 @@ export class PoseRenderer {
         this.stateData = null;
         this.overrideData = null;
         this.cpuData = null;
-        for (const SET of Object.values(this.dirty)) {
-            SET.clear();
-        }
+        this.dirty.state.clear();
+        this.dirty.override.clear();
+        this.dirty.cpu.clear();
     }
     _ensureCapacity(required) {
         if (required <= this.capacity) {
@@ -237,6 +238,9 @@ export class PoseRenderer {
             usedFrame: -1,
             reason: null,
             baseScratch: new Float32Array(OVERRIDE_WIDTH * 4),
+            stateScratch: new Float32Array(8),
+            // resolve() hands out one of these per mode instead of a new object per draw; fields are rewritten.
+            resolved: null,
         };
         this.instances.set(HANDLE, RECORD);
         OWNERS.set(HANDLE, this);
@@ -253,9 +257,9 @@ export class PoseRenderer {
         this._boundary();
         this.instances.delete(handle);
         this.matrixCache?.forget(RECORD.row);
-        for (const SET of Object.values(this.dirty)) {
-            SET.delete(RECORD);
-        }
+        this.dirty.state.delete(RECORD.row);
+        this.dirty.override.delete(RECORD.row);
+        this.dirty.cpu.delete(RECORD.row);
         this.rows[RECORD.row] = null;
         this.freeRows.push(RECORD.row);
         if (!this.instances.size) {
@@ -274,7 +278,7 @@ export class PoseRenderer {
         }
         return RECORD;
     }
-    prepare(handle, { clipName, elapsedMs, basePoses, visible, excluded = [], morph }) {
+    prepare(handle, { clipName, elapsedMs, basePoses, visible, excludedMask = 0, morph }) {
         const RECORD = this._instance(handle);
         const SOURCE = this.sources.get(RECORD.source);
         const CLIP = SOURCE.program.clips[clipName];
@@ -287,9 +291,15 @@ export class PoseRenderer {
             visible.length !== basePoses.length ||
             !morph ||
             morph.length !== 2 ||
-            !morph.every(Number.isFinite)
+            !Number.isFinite(morph[0]) ||
+            !Number.isFinite(morph[1]) ||
+            !Number.isSafeInteger(excludedMask) ||
+            excludedMask < 0 ||
+            excludedMask >= 1 << MAX_PARTS
         ) {
-            throw new TypeError('Finite pose time, matching part overrides and two morph values required');
+            throw new TypeError(
+                'Finite pose time, matching part overrides, a part bit mask and two morph values required',
+            );
         }
         // Reduce only the display clock before Float32 storage, never CPU-evaluate a pose.
         // This keeps long-running sessions from losing sub-frame time precision.
@@ -298,18 +308,16 @@ export class PoseRenderer {
             CLIP.loop === 'once'
                 ? Math.min(CLIP.durationMs, Math.max(0, elapsedMs))
                 : ((elapsedMs % CYCLE) + CYCLE) % CYCLE;
-        const EXCLUDED = excluded.reduce((mask, value, index) => (value ? mask | (1 << index) : mask), 0);
-        const STATE = [
-            CLIP.headerBase,
-            LOCAL_TIME,
-            CLIP.loop === 'once' ? 0 : CLIP.loop === 'repeat' ? 1 : 2,
-            CLIP.durationMs,
-            morph[0],
-            morph[1],
-            EXCLUDED,
-            // Slot 7: where this source's keyframes start in the shared program texture.
-            SOURCE.offset,
-        ];
+        // Slot 7 is where this source's keyframes start in the shared program texture.
+        const STATE = RECORD.stateScratch;
+        STATE[0] = CLIP.headerBase;
+        STATE[1] = LOCAL_TIME;
+        STATE[2] = CLIP.loop === 'once' ? 0 : CLIP.loop === 'repeat' ? 1 : 2;
+        STATE[3] = CLIP.durationMs;
+        STATE[4] = morph[0];
+        STATE[5] = morph[1];
+        STATE[6] = excludedMask;
+        STATE[7] = SOURCE.offset;
         const BASE = RECORD.baseScratch;
         for (let i = 0; i < basePoses.length; i++) {
             const POSE = basePoses[i];
@@ -325,18 +333,28 @@ export class PoseRenderer {
         }
         const OFFSET = RECORD.row * 8;
         const BASE_OFFSET = RECORD.row * OVERRIDE_WIDTH * 4;
-        const STATE_CHANGED = STATE.some((value, index) => Math.fround(value) !== this.stateData[OFFSET + index]);
-        const BASE_CHANGED = BASE.some((value, index) => value !== this.overrideData[BASE_OFFSET + index]);
+        const STATE_DATA = this.stateData,
+            OVERRIDE_DATA = this.overrideData;
+        let stateChanged = false;
+        for (let i = 0; !stateChanged && i < 8; i++) {
+            stateChanged = STATE[i] !== STATE_DATA[OFFSET + i];
+        }
+        let baseChanged = false;
+        for (let i = 0; !baseChanged && i < BASE.length; i++) {
+            baseChanged = BASE[i] !== OVERRIDE_DATA[BASE_OFFSET + i];
+        }
+        const STATE_CHANGED = stateChanged,
+            BASE_CHANGED = baseChanged;
         if ((STATE_CHANGED || BASE_CHANGED || RECORD.mode !== 'gpu') && RECORD.usedFrame === this.device.stats.frame) {
             this._boundary();
         }
         if (STATE_CHANGED) {
             this.stateData.set(STATE, OFFSET);
-            this.dirty.state.add(RECORD);
+            this.dirty.state.add(RECORD.row);
         }
         if (BASE_CHANGED) {
             this.overrideData.set(BASE, BASE_OFFSET);
-            this.dirty.override.add(RECORD);
+            this.dirty.override.add(RECORD.row);
         }
         this.pendingUpdates ||= STATE_CHANGED || BASE_CHANGED;
         if (RECORD.mode !== 'gpu') {
@@ -355,32 +373,29 @@ export class PoseRenderer {
         if (RECORD.usedFrame === this.device.stats.frame) {
             this._boundary();
         }
-        const OFFSET = RECORD.row * POSE_WIDTH * 4;
+        const OFFSET = RECORD.row * POSE_WIDTH * 4,
+            DATA = this.cpuData;
         for (let i = 0; i < PART_COUNT; i++) {
             const POSE = parts[i];
-            const MATRIX = POSE.transform;
-            this.cpuData.set(
-                [
-                    MATRIX[0],
-                    MATRIX[2],
-                    MATRIX[4],
-                    0,
-                    MATRIX[1],
-                    MATRIX[3],
-                    MATRIX[5],
-                    0,
-                    morph[0] + (POSE.morph?.[0] ?? 0),
-                    morph[1] + (POSE.morph?.[1] ?? 0),
-                    POSE.visible === false ? 0 : (POSE.opacity ?? 1),
-                    POSE.depth ?? 0,
-                ],
-                OFFSET + i * 12,
-            );
+            const MATRIX = POSE.transform,
+                AT = OFFSET + i * 12;
+            DATA[AT] = MATRIX[0];
+            DATA[AT + 1] = MATRIX[2];
+            DATA[AT + 2] = MATRIX[4];
+            DATA[AT + 3] = 0;
+            DATA[AT + 4] = MATRIX[1];
+            DATA[AT + 5] = MATRIX[3];
+            DATA[AT + 6] = MATRIX[5];
+            DATA[AT + 7] = 0;
+            DATA[AT + 8] = morph[0] + (POSE.morph?.[0] ?? 0);
+            DATA[AT + 9] = morph[1] + (POSE.morph?.[1] ?? 0);
+            DATA[AT + 10] = POSE.visible === false ? 0 : (POSE.opacity ?? 1);
+            DATA[AT + 11] = POSE.depth ?? 0;
         }
         this.matrixCache?.forget(RECORD.row);
         RECORD.mode = 'cpu';
         RECORD.reason = reason;
-        this.dirty.cpu.add(RECORD);
+        this.dirty.cpu.add(RECORD.row);
         this.pendingUpdates = true;
         return handle;
     }
@@ -397,37 +412,60 @@ export class PoseRenderer {
             this.dirty.cpu.clear();
         }
         const PART_COUNT = this.sources.get(RECORD.source).program.partCount;
+        // One result object per instance, rewritten on each call: callers read it before the next resolve of the
+        // same instance and keep only the texture list, which is shared and never mutated.
+        const OUT = (RECORD.resolved ??= {
+            row: 0,
+            kind: 'matrix',
+            gpu: false,
+            texture: null,
+            textures: null,
+            programWidth: 0,
+            partCount: 0,
+        });
+        OUT.row = RECORD.row;
+        OUT.partCount = PART_COUNT;
         if (RECORD.mode === 'gpu') {
             const CACHED = !program && this.matrixCache?.ensure(this.capacity);
             if (CACHED) {
-                return {
-                    row: RECORD.row,
-                    kind: 'matrix',
-                    gpu: true,
-                    texture: CACHED,
-                    textures: [CACHED],
-                    programWidth: 0,
-                    partCount: PART_COUNT,
-                };
+                OUT.kind = 'matrix';
+                OUT.gpu = true;
+                OUT.texture = CACHED;
+                OUT.textures = this._textureList(CACHED, null, null);
+                OUT.programWidth = 0;
+                return OUT;
             }
             // The vertex shader reads keyframes (program), playback state and per-part overrides directly.
-            return {
-                row: RECORD.row,
-                kind: 'program',
-                texture: this.programTexture,
-                textures: [this.programTexture, this.stateTexture, this.overrideTexture],
-                programWidth: this.programTexture.width,
-                partCount: PART_COUNT,
-            };
+            OUT.kind = 'program';
+            OUT.gpu = false;
+            OUT.texture = this.programTexture;
+            OUT.textures = this._textureList(this.programTexture, this.stateTexture, this.overrideTexture);
+            OUT.programWidth = this.programTexture.width;
+            return OUT;
         }
-        return {
-            row: RECORD.row,
-            kind: 'matrix',
-            texture: this.cpuTexture,
-            textures: [this.cpuTexture],
-            programWidth: 0,
-            partCount: PART_COUNT,
-        };
+        OUT.kind = 'matrix';
+        OUT.gpu = false;
+        OUT.texture = this.cpuTexture;
+        OUT.textures = this._textureList(this.cpuTexture, null, null);
+        OUT.programWidth = 0;
+        return OUT;
+    }
+    /** A frozen texture list reused while its textures are unchanged, so draws compare lists without allocating. */
+    _textureList(a, b, c) {
+        const LISTS = (this.textureLists ??= []);
+        for (let i = 0; i < LISTS.length; i++) {
+            const LIST = LISTS[i];
+            if (LIST[0] === a && LIST.length === (b ? 3 : 1) && (!b || (LIST[1] === b && LIST[2] === c))) {
+                return LIST;
+            }
+        }
+        const LIST = Object.freeze(b ? [a, b, c] : [a]);
+        // Textures are replaced rarely (capacity growth, restore); keep the few most recent lists.
+        if (LISTS.length === 8) {
+            LISTS.shift();
+        }
+        LISTS.push(LIST);
+        return LIST;
     }
     noteDraw(handle) {
         const RECORD = this._instance(handle);
@@ -452,15 +490,24 @@ export class PoseRenderer {
         }
         let first = Infinity;
         let last = -1;
-        for (const RECORD of dirty) {
+        for (let i = 0; i < dirty.size; i++) {
             this.frameMetrics.flushRecordVisits++;
-            first = Math.min(first, RECORD.row);
-            last = Math.max(last, RECORD.row);
+            first = Math.min(first, dirty.rows[i]);
+            last = Math.max(last, dirty.rows[i]);
         }
         const DATA = this[key].subarray(first * width * 4, (last + 1) * width * 4);
         this.device.updateDataTexture(texture, DATA, { y: first, width, height: last - first + 1 });
         dirty.clear();
         this.frameMetrics[metric] += DATA.byteLength;
+    }
+    /** Marks the GPU-mode rows of one dirty list in the matrix cache. */
+    _markMatrixRows(dirty) {
+        for (let i = 0; i < dirty.size; i++) {
+            const RECORD = this.rows[dirty.rows[i]];
+            if (RECORD.mode === 'gpu') {
+                this.matrixCache.markDirty(RECORD.row, this.sources.get(RECORD.source).program.partCount);
+            }
+        }
     }
     flushUpdates() {
         this._ready();
@@ -477,13 +524,8 @@ export class PoseRenderer {
             return;
         }
         if (this.matrixCache) {
-            for (const DIRTY of [this.dirty.state, this.dirty.override]) {
-                for (const RECORD of DIRTY) {
-                    if (RECORD.mode === 'gpu') {
-                        this.matrixCache.markDirty(RECORD.row, this.sources.get(RECORD.source).program.partCount);
-                    }
-                }
-            }
+            this._markMatrixRows(this.dirty.state);
+            this._markMatrixRows(this.dirty.override);
         }
         if (this.cpuTexture) {
             this._uploadRows('cpuData', this.dirty.cpu, this.cpuTexture, POSE_WIDTH, 'cpuPoseUploadBytes');
@@ -502,7 +544,7 @@ export class PoseRenderer {
     _flushMatrixCache() {
         if (this.matrixCache && this.programTexture) {
             this.matrixCache.flush(
-                [this.programTexture, this.stateTexture, this.overrideTexture],
+                this._textureList(this.programTexture, this.stateTexture, this.overrideTexture),
                 this.programTexture.width,
                 this.capacity,
             );

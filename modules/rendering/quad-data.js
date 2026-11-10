@@ -1,10 +1,13 @@
+// Frozen defaults: validation only reads them.
+const IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]),
+    WHITE = Object.freeze([1, 1, 1, 1]);
 /** Shared validation for the two native atlas-quad submission layouts. */
 export function validateQuads({
     layer,
     uvRects,
     localRects,
-    matrix = [1, 0, 0, 1, 0, 0],
-    color = [1, 1, 1, 1],
+    matrix = IDENTITY,
+    color = WHITE,
     alpha = 1,
     filter = 'linear',
     depthWriteAlphaThreshold = 0,

@@ -1,4 +1,5 @@
 import { POSE_PROGRAM_FUNCTIONS } from './pose-shader.js';
+import { DirtyRows } from './dirty-rows.js';
 
 const CORNERS = Float32Array.of(0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1);
 const VERTEX = `attribute vec2 a_corner;attribute vec2 i_row;uniform vec2 u_size;
@@ -21,7 +22,8 @@ export class PoseMatrixCache {
         this.instanceBuffer = null;
         this.cornerGeneration = -1;
         this.instances = new Float32Array(0);
-        this.dirty = new Map();
+        // Marked rows carry their part count as the row value.
+        this.dirty = new DirtyRows();
         this.disposed = false;
         this.onRestored = () => {
             this.cornerGeneration = -1;
@@ -47,7 +49,7 @@ export class PoseMatrixCache {
     }
     markDirty(row, partCount) {
         if (this.available) {
-            this.dirty.set(row, partCount);
+            this.dirty.add(row, partCount);
         }
     }
     forget(row) {
@@ -128,6 +130,16 @@ export class PoseMatrixCache {
         const DEVICE = this.device;
         let count = 0;
         let parts = 0;
+        const UNIFORMS = (this.uniforms ??= {
+            u_size: new Float32Array(2),
+            u_program: 0,
+            u_state: 1,
+            u_overrides: 2,
+            u_programWidth: 0,
+        });
+        UNIFORMS.u_size[0] = TARGET.width;
+        UNIFORMS.u_size[1] = TARGET.height;
+        UNIFORMS.u_programWidth = programWidth;
         const SUBMIT = () => {
             DEVICE.uploadVertices(this.instanceBuffer, this.instances.subarray(0, count * 2));
             DEVICE.draw({
@@ -136,13 +148,7 @@ export class PoseMatrixCache {
                 instanceBuffer: this.instanceBuffer,
                 count: 6,
                 instances: count,
-                uniforms: {
-                    u_size: [TARGET.width, TARGET.height],
-                    u_program: 0,
-                    u_state: 1,
-                    u_overrides: 2,
-                    u_programWidth: programWidth,
-                },
+                uniforms: UNIFORMS,
                 textures,
                 blend: false,
                 depth: false,
@@ -150,16 +156,15 @@ export class PoseMatrixCache {
             this.metrics.rows += count;
             this.metrics.parts += parts;
             this.metrics.passes++;
-            for (let index = 0; index < count; index++) {
-                this.dirty.delete(this.instances[index * 2]);
-            }
             count = 0;
             parts = 0;
         };
         DEVICE.bindRenderTarget(TARGET);
         try {
-            for (const [ROW, PART_COUNT] of this.dirty) {
-                this.instances[count * 2] = ROW;
+            const DIRTY = this.dirty;
+            for (let i = 0; i < DIRTY.size; i++) {
+                const PART_COUNT = DIRTY.values[i];
+                this.instances[count * 2] = DIRTY.rows[i];
                 this.instances[count * 2 + 1] = PART_COUNT;
                 count++;
                 parts += PART_COUNT;
@@ -170,6 +175,8 @@ export class PoseMatrixCache {
             if (count) {
                 SUBMIT();
             }
+            // Every marked row was evaluated; a failed pass above keeps them all marked for the next flush.
+            DIRTY.clear();
         } finally {
             DEVICE.unbindRenderTarget(TARGET);
         }

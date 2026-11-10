@@ -21,7 +21,9 @@ const SPRITES = createSpriteAnimation(CONTEXT, REGION, {
     clips: { walk: { frames: [0, 1], loop: 'loop' } },
 });
 const ACTOR = SPRITES.createActor({ clip: 'walk', startedAtMs: 0 });
-ACTOR.draw({ timeMs: displayTimeMs, matrix: MATRIX });
+ACTOR.draw({ timeMs: displayTimeMs, matrix: MATRIX }); // returns the actor's draw sample record, rewritten by the next draw
+const SAMPLE = {};
+ACTOR.sampleInto(displayTimeMs, SAMPLE); // writes clip, frameIndex, frame, elapsedMs, finished into SAMPLE
 ACTOR.setPaused(true, displayTimeMs);
 ACTOR.seek(150, displayTimeMs); // elapsed clip time, then absolute clock anchor
 ACTOR.setRate(2, displayTimeMs); // preserves the current phase
@@ -30,7 +32,7 @@ SPRITES.dispose(); // invalidates actors; REGION stays with its owner
 
 Frame rectangles use logical top-left atlas pixel coordinates. `sourceWidth/sourceHeight` describe the untrimmed viewport; `sourceX/sourceY` place the trimmed rectangle in it. `pivotX/pivotY` are viewport pixel coordinates, with top-left as the default. Transparent gutter is outside the content rectangle and must fit in the texture. Set definition.textureOrigin to top-left (default) for ordinary image uploads or bottom-left for a render target. Texture filtering must match the upload source; render-target producers declare the opposite vertical storage orientation to ordinary image uploads. UVs span the content rectangle without shrinking its pixel footprint.
 
-Actors sample an absolute caller clock, select one frame and hold it for its duration. There is no geometric interpolation or crossfade. Before the start time the first frame is held; loop clips wrap at total duration and once clips hold the last frame, including large clock jumps. Pause and speed changes preserve phase at the supplied clock time. Clocks and durations must be finite. Region memory and its initialization cost remain the producer's responsibility; context restore re-uploads retained region sources but render-target producers must rebake their pixels.
+Actors sample an absolute caller clock, select one frame and hold it for its duration. `sampleInto(timeMs, out)` writes the selected frame into a caller-owned record and returns it, so per-frame sampling allocates nothing; `draw()` reuses one record per actor and one quad submission record. There is no geometric interpolation or crossfade. Before the start time the first frame is held; loop clips wrap at total duration and once clips hold the last frame, including large clock jumps. Pause and speed changes preserve phase at the supplied clock time. Clocks and durations must be finite. Region memory and its initialization cost remain the producer's responsibility; context restore re-uploads retained region sources but render-target producers must rebake their pixels.
 
 ## GPU poses for independent sprite parts
 

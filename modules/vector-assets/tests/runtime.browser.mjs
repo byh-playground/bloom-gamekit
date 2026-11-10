@@ -577,7 +577,14 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
                 return FRAME;
             };
             MESHES.drawMesh = function (mesh, options) {
-                SUBMITTED_EXCLUSION_OPTIONS.push(options);
+                // The actor reuses one submission record per draw, so keep the values this draw submitted.
+                SUBMITTED_EXCLUSION_OPTIONS.push({
+                    parts: options.parts,
+                    alpha: options.alpha,
+                    clips: options.clips,
+                    indexVariant: options.indexVariant,
+                    indexRange: options.indexRange,
+                });
                 return ORIGINAL_EXCLUSION_DRAW_MESH.call(this, mesh, options);
             };
             const FULL_FACE_DRAW = CAPTURE_PLAYER_DRAW(FULL_DRAW_OPTIONS),
@@ -698,7 +705,7 @@ export async function exerciseVectorAssets(page, { includePopulationTimingDiagno
                             options.alpha === 0.65 &&
                             options.clips === OUTLINE_CLIPS &&
                             options.indexVariant === 'happy' &&
-                            !Object.hasOwn(options, 'indexRange'),
+                            options.indexRange === undefined,
                     ),
                 'excludeParts hides only listed faces per call and preserves pose, alpha, clipping, and variant selection',
             );

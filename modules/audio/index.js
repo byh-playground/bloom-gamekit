@@ -508,6 +508,22 @@ export function audioSettings(config = AUDIO_DEFAULTS) {
         },
     };
 }
+/**
+ * The voice a new one replaces: lowest priority, then the oldest start, then the first in voice order, which is the first
+ * element the former stable sort gave. `category` null considers every voice.
+ */
+function lowestVoice(voices, category) {
+    let low = null;
+    for (const VOICE of voices) {
+        if (category !== null && VOICE.category !== category) {
+            continue;
+        }
+        if (!low || VOICE.priority - low.priority < 0 || (VOICE.priority === low.priority && VOICE.at - low.at < 0)) {
+            low = VOICE;
+        }
+    }
+    return low;
+}
 export class AudioPlayer {
     constructor(config = AUDIO_DEFAULTS) {
         config = {
@@ -751,9 +767,14 @@ export class AudioPlayer {
         if (this.categoryVolumes.get(RECIPE.category) <= 0) {
             return null;
         }
-        const GROUP = [...this.voices].filter((v) => v.category === RECIPE.category);
-        if (GROUP.length >= CATEGORY.max) {
-            const LOW = GROUP.sort((a, b) => a.priority - b.priority || a.at - b.at)[0];
+        let groupSize = 0;
+        for (const VOICE of this.voices) {
+            if (VOICE.category === RECIPE.category) {
+                groupSize++;
+            }
+        }
+        if (groupSize >= CATEGORY.max) {
+            const LOW = lowestVoice(this.voices, RECIPE.category);
             if (LOW.priority >= PRIORITY) {
                 this.metrics.dropped++;
                 return null;
@@ -762,7 +783,7 @@ export class AudioPlayer {
             this.voices.delete(LOW);
         }
         if (this.voices.size >= this.config.maxVoices) {
-            const LOW = [...this.voices].sort((a, b) => a.priority - b.priority || a.at - b.at)[0];
+            const LOW = lowestVoice(this.voices, null);
             if (LOW.priority >= PRIORITY) {
                 this.metrics.dropped++;
                 return null;
@@ -882,11 +903,16 @@ export class AudioPlayer {
                 rms: 0,
             };
         }
-        const VALUES = new Float32Array(this.analyser.fftSize);
+        // One reused sample buffer, replaced only when the analyser's size changes.
+        if (this.meterValues?.length !== this.analyser.fftSize) {
+            this.meterValues = new Float32Array(this.analyser.fftSize);
+        }
+        const VALUES = this.meterValues;
         this.analyser.getFloatTimeDomainData(VALUES);
         let peak = 0;
         let sum = 0;
-        for (const VALUE of VALUES) {
+        for (let i = 0; i < VALUES.length; i++) {
+            const VALUE = VALUES[i];
             peak = Math.max(peak, Math.abs(VALUE));
             sum += VALUE * VALUE;
         }

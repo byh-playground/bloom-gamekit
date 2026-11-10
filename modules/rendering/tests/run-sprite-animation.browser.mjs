@@ -150,20 +150,30 @@ try {
                     STATS.textureOwned === false,
                 'sprite animation retains no GPU geometry and borrows its atlas region',
             );
-            CHECK(first.sample(-100).frameIndex === 0, 'negative time clamps to first frame');
-            CHECK(first.sample(50).frameIndex === 1, 'exact frame boundary selects next frame');
-            CHECK(first.sample(150).frameIndex === 0, 'loop wraps on total duration');
-            CHECK(first.sample(1_500_000_075).frameIndex === 1, 'large delta uses modulo without tick stepping');
+            const SAMPLE = {};
+            CHECK(first.sampleInto(-100, SAMPLE).frameIndex === 0, 'negative time clamps to first frame');
+            CHECK(first.sampleInto(50, SAMPLE).frameIndex === 1, 'exact frame boundary selects next frame');
+            CHECK(first.sampleInto(150, SAMPLE).frameIndex === 0, 'loop wraps on total duration');
+            CHECK(
+                first.sampleInto(1_500_000_075, SAMPLE).frameIndex === 1,
+                'large delta uses modulo without tick stepping',
+            );
             second.setClip('once', 0);
-            CHECK(second.sample(500).frameIndex === 1 && second.sample(500).finished, 'once holds last frame');
+            CHECK(
+                second.sampleInto(500, SAMPLE).frameIndex === 1 && second.sampleInto(500, SAMPLE).finished,
+                'once holds last frame',
+            );
             second.setClip('loop', 50);
-            CHECK(first.sample(75).frameIndex === 1 && second.sample(75).frameIndex === 0, 'independent phase');
+            CHECK(
+                first.sampleInto(75, SAMPLE).frameIndex === 1 && second.sampleInto(75, SAMPLE).frameIndex === 0,
+                'independent phase',
+            );
             first.setPaused(true, 75);
-            CHECK(first.sample(1000).frameIndex === 1, 'pause holds phase');
+            CHECK(first.sampleInto(1000, SAMPLE).frameIndex === 1, 'pause holds phase');
             first.setRate(2, 1000).setPaused(false, 1000);
-            CHECK(first.sample(1020).frameIndex === 1, 'rate change preserves phase');
+            CHECK(first.sampleInto(1020, SAMPLE).frameIndex === 1, 'rate change preserves phase');
             first.seek(0, 1050);
-            CHECK(first.sample(1050).frameIndex === 0, 'absolute-time seek scrubs to first frame');
+            CHECK(first.sampleInto(1050, SAMPLE).frameIndex === 0, 'absolute-time seek scrubs to first frame');
             first.seek(75, 75);
             first.setRate(1, 75);
             const PIXEL = (x, y) => {

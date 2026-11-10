@@ -1,6 +1,14 @@
 import { VECTOR_VERTEX_FLOATS } from './vector-shader.js';
 import { OrderedTriangleBatch } from './ordered-triangles.js';
 import { clipPlanes } from './clip-planes.js';
+import {
+    DEPTH_FUNCTION_CODES,
+    DEPTH_POLICIES,
+    depthStateCode as DEPTH_STATE_CODE,
+    sameFloat32,
+    sameValues,
+    stencilEqual,
+} from './draw-state.js';
 import { PoseRenderer } from './pose-renderer.js';
 import { POSE_PROGRAM_FUNCTIONS } from './pose-shader.js';
 import { MAX_PAINT_REGIONS, packPaintRegions, validatePaintRegionData } from './paint-regions.js';
@@ -52,6 +60,20 @@ const MATERIAL_INSTANCE_ATTRIBUTE = { name: 'i_extra', size: 4, offset: 64, sour
 // A material vertex is four floats: kind, surface index, distance along the contour, distance across it.
 const MATERIAL_VERTEX_FLOATS = 4;
 const NO_TEXTURES = Object.freeze([]);
+const NO_CLIPS = Object.freeze([]);
+const EMPTY_OPTIONS = Object.freeze({});
+const PLAIN_INSTANCE_UNIFORMS = Object.freeze(['i_row0', 'i_row1', 'i_color', 'i_params']);
+const WORLD_INSTANCE_UNIFORMS = Object.freeze(['i_row0', 'i_row1', 'i_row2', 'i_params']);
+const PLAIN_MATERIAL_INSTANCE_UNIFORMS = Object.freeze([...PLAIN_INSTANCE_UNIFORMS, 'i_extra']);
+const WORLD_MATERIAL_INSTANCE_UNIFORMS = Object.freeze([...WORLD_INSTANCE_UNIFORMS, 'i_extra']);
+function unitChannels(rgba) {
+    for (let i = 0; i < rgba.length; i++) {
+        if (rgba[i] < 0 || rgba[i] > 1) {
+            return false;
+        }
+    }
+    return true;
+}
 function shader(
     instanced,
     partCount,
@@ -434,6 +456,7 @@ export class MeshRenderer {
               })
             : null;
         this.pipelines = new Map();
+        this.pipelineUniforms = new Map();
         // Meshes with materials: a wider instance staging array, the shared stitch distance field and the cached
         // fill/edge runs used to keep an edge's depth write off in 3D.
         this.materialInstances = null;
@@ -565,22 +588,19 @@ export class MeshRenderer {
         return this.poseRenderer?.stats() ?? null;
     }
     _pipeline(mesh, clipped, worldMode = false, poseMode = 0) {
+        // Mixed-radix shader key: parts 1..16 (x17), morphs 0..2 (x3), clip, non-scaling stroke and world bits (x2 each),
+        // pose mode 0..2 (x3) and paint regions 0..8 (x9) stay below 2^16; the material surface count multiplies 2^16
+        // and is a small mesh-validated integer, so the key is a safe integer.
         const KEY =
-            mesh.partCount +
-            ':' +
-            mesh.morphCount +
-            ':' +
-            Number(clipped) +
-            ':' +
-            Number(mesh.hasNonScalingStroke) +
-            ':' +
-            Number(worldMode) +
-            ':' +
-            poseMode +
-            ':' +
+            (((((mesh.partCount * 3 + mesh.morphCount) * 2 + (clipped ? 1 : 0)) * 2 +
+                (mesh.hasNonScalingStroke ? 1 : 0)) *
+                2 +
+                (worldMode ? 1 : 0)) *
+                3 +
+                poseMode) *
+                9 +
             (mesh.paintRegionNames?.length ?? 0) +
-            ':' +
-            (mesh.materials?.count ?? 0);
+            (mesh.materials?.count ?? 0) * 65536;
         let pipeline = this.pipelines.get(KEY);
         if (pipeline) {
             return pipeline;
@@ -948,60 +968,9 @@ export class MeshRenderer {
         return true;
     }
     /** Captures state by value; subsequent transform/paint changes do not alter queued instances. */
-    drawMesh(mesh, options = {}) {
-        this._drawPublic(mesh, options, options.matrix ?? IDENTITY, 1);
-    }
-    _drawPublic(mesh, options, matrices, count) {
-        const {
-            projection: PROJECTION,
-            morph: MORPH = [0, 0],
-            parts: PARTS = null,
-            pose: POSE = null,
-            color: COLOR = WHITE,
-            paintRegions: PAINT_REGIONS = null,
-            forceColor: FORCE_COLOR = false,
-            alpha: ALPHA = 1,
-            whiteFlash: WHITE_FLASH = false,
-            clips: CLIPS = [],
-            depth: DEPTH = 0,
-            depthTest: DEPTH_TEST = false,
-            depthWrite: DEPTH_WRITE = false,
-            depthWriteAlphaThreshold: DEPTH_WRITE_ALPHA_THRESHOLD = null,
-            depthFunc: DEPTH_FUNC = 'lequal',
-            indexVariant: INDEX_VARIANT = null,
-            indexRange: INDEX_RANGE = null,
-            strokeViewport: STROKE_VIEWPORT = null,
-            stencilRef: STENCIL_REF = null,
-            timeMs: TIME_MS = 0,
-            viewProjection: VIEW_PROJECTION,
-            worldMatrix: WORLD_MATRIX,
-        } = options;
-        this.drawMeshInstances(mesh, {
-            matrices,
-            count,
-            projection: PROJECTION,
-            viewProjection: VIEW_PROJECTION,
-            worldMatrix: WORLD_MATRIX,
-            morph: MORPH,
-            parts: PARTS,
-            pose: POSE,
-            color: COLOR,
-            paintRegions: PAINT_REGIONS,
-            forceColor: FORCE_COLOR,
-            alpha: ALPHA,
-            whiteFlash: WHITE_FLASH,
-            clips: CLIPS,
-            indexVariant: INDEX_VARIANT,
-            indexRange: INDEX_RANGE,
-            depth: DEPTH,
-            depthTest: DEPTH_TEST,
-            depthWrite: DEPTH_WRITE,
-            depthWriteAlphaThreshold: DEPTH_WRITE_ALPHA_THRESHOLD,
-            depthFunc: DEPTH_FUNC,
-            strokeViewport: STROKE_VIEWPORT,
-            stencilRef: STENCIL_REF,
-            timeMs: TIME_MS,
-        });
+    drawMesh(mesh, options = EMPTY_OPTIONS) {
+        // The options object is read in place (no per-draw copy); instance prefixes belong to drawMeshInstances only.
+        this._drawInstances(mesh, options, options.matrix ?? IDENTITY, 1, false);
     }
     _setPaintRegions(mesh, overrides) {
         const NAMES = mesh.paintRegionNames ?? [],
@@ -1121,8 +1090,9 @@ export class MeshRenderer {
             STATE.stencilRef !== stencilRef ||
             STATE.depthTest !== depthTest ||
             STATE.depthFunc !== depthFunc ||
-            STATE.runKey !== runs.join(',') ||
-            projection.some((n, i) => Math.fround(n) !== STATE.projection[i])
+            STATE.runs.length !== runs.length ||
+            !sameValues(runs, STATE.runs) ||
+            !sameFloat32(projection, STATE.projection)
         ) {
             return false;
         }
@@ -1135,17 +1105,23 @@ export class MeshRenderer {
     }
     _startAlphaQueue(mesh, projection, clip, stencilRef, depthTest, depthFunc, indexVariant, runs) {
         this.alphaQueueParts.set(this.partScratch.subarray(0, mesh.partCount * 12));
-        this.alphaQueueState = {
-            mesh,
-            projection: Float32Array.from(projection),
-            clip,
-            stencilRef,
-            depthTest,
-            depthFunc,
-            indexVariant,
-            runs: runs.slice(),
-            runKey: runs.join(','),
-        };
+        // One reused queue state record; its run list and projection are copies, compared by value.
+        const STATE = (this.alphaQueueRecord ??= { projection: new Float32Array(9), runs: [] });
+        STATE.mesh = mesh;
+        if (STATE.projection.length !== projection.length) {
+            STATE.projection = new Float32Array(projection.length);
+        }
+        STATE.projection.set(projection);
+        STATE.clip = clip;
+        STATE.stencilRef = stencilRef;
+        STATE.depthTest = depthTest;
+        STATE.depthFunc = depthFunc;
+        STATE.indexVariant = indexVariant;
+        STATE.runs.length = 0;
+        for (let i = 0; i < runs.length; i++) {
+            STATE.runs.push(runs[i]);
+        }
+        this.alphaQueueState = STATE;
     }
     _flushAlphaQueue(reason) {
         if (!this.alphaQueueCount) {
@@ -1199,16 +1175,7 @@ export class MeshRenderer {
                     write: STATE.runs[run + 2],
                     func: STATE.depthFunc,
                 },
-                stencil:
-                    STATE.stencilRef === null
-                        ? false
-                        : {
-                              func: 'equal',
-                              ref: STATE.stencilRef,
-                              mask: 255,
-                              writeMask: 0,
-                              pass: 'keep',
-                          },
+                stencil: STATE.stencilRef === null ? false : stencilEqual(STATE.stencilRef),
             });
             this.metrics.draws++;
             this.metrics.drawDispatchReasons[reason] = (this.metrics.drawDispatchReasons[reason] ?? 0) + 1;
@@ -1233,7 +1200,10 @@ export class MeshRenderer {
      * writes depth is drawn in runs so a yarn or sketch edge, whose pixels are only partly covered, never writes depth;
      * the runs keep the triangle order, so painter order is unchanged.
      */
-    drawMeshInstances(mesh, options = {}) {
+    drawMeshInstances(mesh, options = EMPTY_OPTIONS) {
+        this._drawInstances(mesh, options, options.matrices, options.count, true);
+    }
+    _drawInstances(mesh, options, matrices, count, prefixes) {
         if (
             mesh?.materials &&
             options.depthWrite === true &&
@@ -1244,16 +1214,62 @@ export class MeshRenderer {
             const RUNS = this._materialRuns(mesh, options.indexVariant ?? null);
             if (RUNS.length > 1) {
                 for (const RUN of RUNS) {
-                    this._drawMeshRange(mesh, {
-                        ...options,
-                        indexRange: [RUN.first, RUN.count],
-                        depthWrite: !RUN.edge,
-                    });
+                    this._drawMeshRange(mesh, options, matrices, count, prefixes, RUN.first, RUN.count, !RUN.edge);
                 }
                 return;
             }
         }
-        this._drawMeshRange(mesh, options);
+        this._drawMeshRange(mesh, options, matrices, count, prefixes, -1, 0, null);
+    }
+    /**
+     * Writes one alpha-depth instance into queue slot `slot`. A method rather than a closure inside _drawMeshRange: the
+     * closure captured the draw's parameters, which gave every draw call (alpha-depth or not) a heap context.
+     */
+    _writeAlphaInstance(slot, matrices, i, morph, alpha, color, forceColor, whiteFlash, depth, singlePart) {
+        const PART = this.partScratch;
+        const OFFSET = i * 6;
+        let m0 = matrices[OFFSET];
+        let m1 = matrices[OFFSET + 1];
+        let m2 = matrices[OFFSET + 2];
+        let m3 = matrices[OFFSET + 3];
+        let m4 = matrices[OFFSET + 4];
+        let m5 = matrices[OFFSET + 5];
+        let weight0 = morph[0];
+        let weight1 = morph[1];
+        let instanceAlpha = alpha;
+        if (singlePart) {
+            const A_LOCAL = m0,
+                B_LOCAL = m1,
+                C_LOCAL = m2,
+                D_LOCAL = m3;
+            m0 = A_LOCAL * PART[0] + C_LOCAL * PART[4];
+            m1 = B_LOCAL * PART[0] + D_LOCAL * PART[4];
+            m2 = A_LOCAL * PART[1] + C_LOCAL * PART[5];
+            m3 = B_LOCAL * PART[1] + D_LOCAL * PART[5];
+            m4 = A_LOCAL * PART[2] + C_LOCAL * PART[6] + m4;
+            m5 = B_LOCAL * PART[2] + D_LOCAL * PART[6] + m5;
+            instanceAlpha *= PART[10];
+            weight0 += PART[8];
+            weight1 += PART[9];
+        }
+        const AT = slot * 16,
+            DATA = this.instances;
+        DATA[AT] = m0;
+        DATA[AT + 1] = m2;
+        DATA[AT + 2] = m4;
+        DATA[AT + 3] = instanceAlpha;
+        DATA[AT + 4] = m1;
+        DATA[AT + 5] = m3;
+        DATA[AT + 6] = m5;
+        DATA[AT + 7] = forceColor ? 1 : 0;
+        DATA[AT + 8] = color[0];
+        DATA[AT + 9] = color[1];
+        DATA[AT + 10] = color[2];
+        DATA[AT + 11] = color[3];
+        DATA[AT + 12] = weight0;
+        DATA[AT + 13] = weight1;
+        DATA[AT + 14] = whiteFlash ? 1 : 0;
+        DATA[AT + 15] = depth + (singlePart ? PART[11] : 0);
     }
     /** Contiguous runs of fill and edge triangles of one index list, cached per mesh. */
     _materialRuns(mesh, indexVariant) {
@@ -1262,7 +1278,7 @@ export class MeshRenderer {
             cache = new Map();
             this.materialRunCache.set(mesh, cache);
         }
-        const KEY = indexVariant ?? '';
+        const KEY = indexVariant;
         let runs = cache.get(KEY);
         if (!runs) {
             const VARIANT =
@@ -1287,15 +1303,18 @@ export class MeshRenderer {
         }
         return runs;
     }
+    /**
+     * The caller's draw options are destructured in place (no copy). `rangeFirst >= 0` replaces `indexRange` and a
+     * boolean `depthWriteOverride` replaces `depthWrite` (material fill/edge runs); `prefixes` admits the instance
+     * color prefix. The trailing parameters are the resolved values and are never passed by callers.
+     */
     _drawMeshRange(
         mesh,
         {
-            matrices,
-            count,
             projection,
             viewProjection,
             worldMatrix,
-            morph = [0, 0],
+            morph = ZERO_MORPH,
             parts = null,
             pose = null,
             color = WHITE,
@@ -1303,21 +1322,32 @@ export class MeshRenderer {
             forceColor = false,
             alpha = 1,
             whiteFlash = false,
-            clips = [],
-            prefixColor = null,
-            prefixCount = 0,
-            forceColorPrefixCount = 0,
+            clips = NO_CLIPS,
+            prefixColor: requestedPrefixColor = null,
+            prefixCount: requestedPrefixCount = 0,
+            forceColorPrefixCount: requestedForceColorPrefixCount = 0,
             depth = 0,
             depthTest = false,
-            depthWrite = false,
+            depthWrite: requestedDepthWrite = false,
             depthWriteAlphaThreshold = null,
             depthFunc = 'lequal',
             indexVariant = null,
-            indexRange = null,
+            indexRange: requestedIndexRange = null,
             strokeViewport = null,
             stencilRef = null,
             timeMs = 0,
-        } = {},
+        },
+        matrices,
+        count,
+        prefixes,
+        rangeFirst,
+        rangeCount,
+        depthWriteOverride,
+        prefixColor = prefixes ? requestedPrefixColor : null,
+        prefixCount = prefixes ? requestedPrefixCount : 0,
+        forceColorPrefixCount = prefixes ? requestedForceColorPrefixCount : 0,
+        depthWrite = depthWriteOverride ?? requestedDepthWrite,
+        indexRange = rangeFirst >= 0 ? null : requestedIndexRange,
     ) {
         this._ready();
         if (!this.meshes.has(mesh)) {
@@ -1377,7 +1407,12 @@ export class MeshRenderer {
                 finiteArray(strokeViewport, 2, 'strokeViewport');
                 strokeSize = [strokeViewport[0], strokeViewport[1]];
             }
-            if (strokeSize.some((value) => !Number.isFinite(value) || value <= 0)) {
+            if (!(
+                Number.isFinite(strokeSize[0]) &&
+                strokeSize[0] > 0 &&
+                Number.isFinite(strokeSize[1]) &&
+                strokeSize[1] > 0
+            )) {
                 throw new RangeError('Non-scaling strokes require a positive CSS-pixel viewport size');
             }
             if (!WORLD_MODE) {
@@ -1386,7 +1421,7 @@ export class MeshRenderer {
                 inverseViewProjection = invertMatrix4(viewProjection);
             }
         }
-        if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1 || color.some((n) => n < 0 || n > 1)) {
+        if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1 || !unitChannels(color)) {
             throw new RangeError('RGBA/alpha in [0,1] required');
         }
         if (!Number.isFinite(depth) || depth < -1 || depth > 1) {
@@ -1407,7 +1442,7 @@ export class MeshRenderer {
         if (mesh.materials && depthWriteAlphaThreshold !== null) {
             throw new TypeError('Meshes with materials do not support depthWriteAlphaThreshold');
         }
-        if (!['never', 'less', 'equal', 'lequal', 'greater', 'notequal', 'gequal', 'always'].includes(depthFunc)) {
+        if (!DEPTH_FUNCTION_CODES.has(depthFunc)) {
             throw new TypeError('Unsupported depthFunc');
         }
         if (
@@ -1425,7 +1460,7 @@ export class MeshRenderer {
         }
         if (prefixColor !== null) {
             finiteArray(prefixColor, 4, 'prefix color');
-            if (prefixColor.some((n) => n < 0 || n > 1)) {
+            if (!unitChannels(prefixColor)) {
                 throw new RangeError('RGBA channels must be in [0,1]');
             }
         }
@@ -1453,8 +1488,8 @@ export class MeshRenderer {
             indexVariant === null
                 ? null
                 : (mesh.indexVariants.get(indexVariant) ?? mesh.expressionIndices.get(indexVariant));
-        const FIRST_INDEX = indexRange?.[0] ?? 0,
-            INDEX_COUNT = indexRange?.[1] ?? VARIANT?.count ?? mesh.count;
+        const FIRST_INDEX = rangeFirst >= 0 ? rangeFirst : (indexRange?.[0] ?? 0),
+            INDEX_COUNT = rangeFirst >= 0 ? rangeCount : (indexRange?.[1] ?? VARIANT?.count ?? mesh.count);
         if (FIRST_INDEX + INDEX_COUNT > (VARIANT?.count ?? mesh.count)) {
             throw new RangeError('indexRange exceeds the selected mesh index data');
         }
@@ -1483,33 +1518,31 @@ export class MeshRenderer {
             (POSE_DRAW?.kind === 'program' || POSE_DRAW?.gpu === true || (!POSE_DRAW && mesh.partCount === 1))
         ) {
             this._flushNative('orderedBoundary');
-            this.ordered.drawMesh(
-                mesh,
-                {
-                    matrices,
-                    count,
-                    projection,
-                    morph,
-                    color,
-                    paintRegions,
-                    forceColor,
-                    alpha,
-                    whiteFlash,
-                    clips,
-                    depth,
-                    depthTest,
-                    depthWrite,
-                    depthFunc,
-                    stencilRef,
-                    indexVariant,
-                    firstIndex: FIRST_INDEX,
-                    indexCount: INDEX_COUNT,
-                    pose,
-                    part: this.partScratch,
-                },
-                POSE_DRAW ? this.poseRenderer : null,
-                POSE_DRAW,
-            );
+            // One reusable record carries the draw to the ordered batch, which reads it before returning.
+            const ORDERED = (this.orderedDraw ??= {});
+            ORDERED.matrices = matrices;
+            ORDERED.count = count;
+            ORDERED.projection = projection;
+            ORDERED.morph = morph;
+            ORDERED.color = color;
+            ORDERED.paintRegions = paintRegions;
+            ORDERED.forceColor = forceColor;
+            ORDERED.alpha = alpha;
+            ORDERED.whiteFlash = whiteFlash;
+            ORDERED.clip = CLIP;
+            ORDERED.depth = depth;
+            ORDERED.depthTest = depthTest;
+            ORDERED.depthWrite = depthWrite;
+            ORDERED.depthFunc = depthFunc;
+            ORDERED.stencilRef = stencilRef;
+            ORDERED.indexVariant = indexVariant;
+            ORDERED.firstIndex = FIRST_INDEX;
+            ORDERED.indexCount = INDEX_COUNT;
+            ORDERED.pose = pose;
+            ORDERED.part = this.partScratch;
+            this.ordered.drawMesh(mesh, ORDERED, POSE_DRAW ? this.poseRenderer : null, POSE_DRAW);
+            ORDERED.matrices = ORDERED.projection = ORDERED.morph = ORDERED.color = null;
+            ORDERED.paintRegions = ORDERED.pose = ORDERED.clip = null;
             return;
         }
         this.ordered?.flush('nativeMeshBoundary');
@@ -1517,7 +1550,7 @@ export class MeshRenderer {
             this._setPaintRegions(mesh, paintRegions);
         }
         const PENDING = this.pending;
-        const DEPTH_STATE_KEY = Number(depthTest) + ':' + Number(depthWrite) + ':' + depthFunc;
+        const DEPTH_STATE_KEY = DEPTH_STATE_CODE(depthTest, depthWrite, depthFunc);
         const ALPHA_DEPTH_WRITE = depthWrite && depthWriteAlphaThreshold !== null;
         if (!ALPHA_DEPTH_WRITE) {
             const INSTANCE_LIMIT = this.maxInstances;
@@ -1546,15 +1579,17 @@ export class MeshRenderer {
                                     ? 'stencil'
                                     : PENDING.depthStateKey !== DEPTH_STATE_KEY
                                       ? 'depthState'
-                                      : MATRIX.some((n, i) => Math.fround(n) !== PENDING.projection[i])
+                                      : !sameFloat32(MATRIX, PENDING.projection)
                                         ? 'projection'
-                                        : strokeSize && strokeSize.some((n, i) => n !== PENDING.strokeSize?.[i])
+                                        : strokeSize &&
+                                            (strokeSize[0] !== PENDING.strokeSize?.[0] ||
+                                                strokeSize[1] !== PENDING.strokeSize?.[1])
                                           ? 'strokeViewport'
-                                          : WORLD_MODE && color.some((n, i) => n !== PREVIOUS_COLOR[i])
+                                          : WORLD_MODE && !sameValues(color, PREVIOUS_COLOR)
                                             ? 'color'
                                             : !POSE_DRAW &&
                                                 mesh.partCount > 1 &&
-                                                PENDING.parts.some((n, i) => n !== this.partScratch[i])
+                                                !sameValues(PENDING.parts, this.partScratch)
                                               ? 'parts'
                                               : this.count === INSTANCE_LIMIT
                                                 ? 'capacity'
@@ -1573,31 +1608,27 @@ export class MeshRenderer {
                     this.flush('capacity');
                 }
                 if (!this.pending) {
-                    this.pending = {
+                    const NEXT = this._openPending(
                         mesh,
-                        poseTexture: POSE_DRAW?.texture ?? null,
-                        poseTextures: POSE_DRAW?.textures ?? null,
-                        poseKind: POSE_DRAW?.kind ?? null,
-                        poseProgramWidth: POSE_DRAW?.programWidth ?? 0,
-                        projection: Float32Array.from(WORLD_MODE ? viewProjection : projection),
-                        worldMode: WORLD_MODE,
-                        color: Float32Array.from(color),
-                        clip: CLIP,
+                        WORLD_MODE ? viewProjection : projection,
+                        WORLD_MODE,
+                        CLIP,
                         stencilRef,
-                        depthStateKey: DEPTH_STATE_KEY,
+                        DEPTH_STATE_KEY,
                         indexVariant,
-                        firstIndex: FIRST_INDEX,
-                        indexCount: INDEX_COUNT,
+                        FIRST_INDEX,
+                        INDEX_COUNT,
                         strokeSize,
                         inverseStrokeProjection,
                         inverseViewProjection,
-                        depthState: {
-                            test: depthTest,
-                            write: depthWrite,
-                            func: depthFunc,
-                        },
-                        parts: this.partScratch.slice(0, mesh.partCount > 1 ? mesh.partCount * 12 : 0),
-                    };
+                        mesh.partCount > 1 ? mesh.partCount * 12 : 0,
+                    );
+                    NEXT.poseTexture = POSE_DRAW?.texture ?? null;
+                    NEXT.poseTextures = POSE_DRAW?.textures ?? null;
+                    NEXT.poseKind = POSE_DRAW?.kind ?? null;
+                    NEXT.poseProgramWidth = POSE_DRAW?.programWidth ?? 0;
+                    NEXT.color = NEXT.colorStorage;
+                    NEXT.color.set(color);
                 }
                 const OFFSET = i * 6;
                 let m0 = matrices[OFFSET];
@@ -1682,53 +1713,6 @@ export class MeshRenderer {
         const TRIANGLE_COUNT = (VARIANT?.count ?? mesh.count) / 3;
         const PART = this.partScratch,
             SINGLE_PART = mesh.partCount === 1;
-        const WRITE_ALPHA_INSTANCE = (i, slot) => {
-            const OFFSET = i * 6;
-            let m0 = matrices[OFFSET];
-            let m1 = matrices[OFFSET + 1];
-            let m2 = matrices[OFFSET + 2];
-            let m3 = matrices[OFFSET + 3];
-            let m4 = matrices[OFFSET + 4];
-            let m5 = matrices[OFFSET + 5];
-            let weight0 = morph[0];
-            let weight1 = morph[1];
-            let instanceAlpha = alpha;
-            if (SINGLE_PART) {
-                const A_LOCAL = m0,
-                    B_LOCAL = m1,
-                    C_LOCAL = m2,
-                    D_LOCAL = m3;
-                m0 = A_LOCAL * PART[0] + C_LOCAL * PART[4];
-                m1 = B_LOCAL * PART[0] + D_LOCAL * PART[4];
-                m2 = A_LOCAL * PART[1] + C_LOCAL * PART[5];
-                m3 = B_LOCAL * PART[1] + D_LOCAL * PART[5];
-                m4 = A_LOCAL * PART[2] + C_LOCAL * PART[6] + m4;
-                m5 = B_LOCAL * PART[2] + D_LOCAL * PART[6] + m5;
-                instanceAlpha *= PART[10];
-                weight0 += PART[8];
-                weight1 += PART[9];
-            }
-            const INSTANCE_COLOR = i < prefixCount ? prefixColor : color;
-            const INSTANCE_FORCE_COLOR = i < forceColorPrefixCount ? true : forceColor,
-                AT = slot * 16,
-                DATA = this.instances;
-            DATA[AT] = m0;
-            DATA[AT + 1] = m2;
-            DATA[AT + 2] = m4;
-            DATA[AT + 3] = instanceAlpha;
-            DATA[AT + 4] = m1;
-            DATA[AT + 5] = m3;
-            DATA[AT + 6] = m5;
-            DATA[AT + 7] = INSTANCE_FORCE_COLOR ? 1 : 0;
-            DATA[AT + 8] = INSTANCE_COLOR[0];
-            DATA[AT + 9] = INSTANCE_COLOR[1];
-            DATA[AT + 10] = INSTANCE_COLOR[2];
-            DATA[AT + 11] = INSTANCE_COLOR[3];
-            DATA[AT + 12] = weight0;
-            DATA[AT + 13] = weight1;
-            DATA[AT + 14] = whiteFlash ? 1 : 0;
-            DATA[AT + 15] = depth + (SINGLE_PART ? PART[11] : 0);
-        };
         for (let i = 0; i < count; i++) {
             const INSTANCE_COLOR = i < prefixCount ? prefixColor : color;
             const INSTANCE_FORCE_COLOR = i < forceColorPrefixCount ? true : forceColor;
@@ -1789,7 +1773,18 @@ export class MeshRenderer {
                     }
                     this._extendAlphaQueueBounds(BOUNDS);
                     const SLOT = this.alphaQueueCount;
-                    WRITE_ALPHA_INSTANCE(i, SLOT);
+                    this._writeAlphaInstance(
+                        SLOT,
+                        matrices,
+                        i,
+                        morph,
+                        alpha,
+                        INSTANCE_COLOR,
+                        INSTANCE_FORCE_COLOR,
+                        whiteFlash,
+                        depth,
+                        SINGLE_PART,
+                    );
                     this.alphaQueueCount++;
                     continue;
                 }
@@ -1802,7 +1797,18 @@ export class MeshRenderer {
                 if (this.count) {
                     this.flush('alphaImmediateBoundary');
                 }
-                WRITE_ALPHA_INSTANCE(i, 0);
+                this._writeAlphaInstance(
+                    0,
+                    matrices,
+                    i,
+                    morph,
+                    alpha,
+                    INSTANCE_COLOR,
+                    INSTANCE_FORCE_COLOR,
+                    whiteFlash,
+                    depth,
+                    SINGLE_PART,
+                );
                 this._drawAlphaDepthRuns(
                     mesh,
                     VARIANT,
@@ -1824,7 +1830,7 @@ export class MeshRenderer {
                 this._flushAlphaQueue('singleRunBoundary');
             }
             const WRITE = RUNS[2],
-                STATE_KEY = Number(depthTest) + ':' + Number(WRITE) + ':' + depthFunc;
+                STATE_KEY = DEPTH_STATE_CODE(depthTest, WRITE, depthFunc);
             if (this.pending) {
                 const CURRENT = this.pending,
                     REASON =
@@ -1842,12 +1848,13 @@ export class MeshRenderer {
                                       ? 'stencil'
                                       : CURRENT.depthStateKey !== STATE_KEY
                                         ? 'depthState'
-                                        : projection.some((n, j) => Math.fround(n) !== CURRENT.projection[j])
+                                        : !sameFloat32(projection, CURRENT.projection)
                                           ? 'projection'
-                                          : strokeSize && strokeSize.some((n, j) => n !== CURRENT.strokeSize?.[j])
+                                          : strokeSize &&
+                                              (strokeSize[0] !== CURRENT.strokeSize?.[0] ||
+                                                  strokeSize[1] !== CURRENT.strokeSize?.[1])
                                             ? 'strokeViewport'
-                                            : mesh.partCount > 1 &&
-                                                CURRENT.parts.some((n, j) => n !== this.partScratch[j])
+                                            : mesh.partCount > 1 && !sameValues(CURRENT.parts, this.partScratch)
                                               ? 'parts'
                                               : this.count === this.maxInstances
                                                 ? 'capacity'
@@ -1857,26 +1864,21 @@ export class MeshRenderer {
                 }
             }
             if (!this.pending) {
-                this.pending = {
+                this._openPending(
                     mesh,
-                    projection: Float32Array.from(projection),
-                    worldMode: false,
-                    clip: CLIP,
+                    projection,
+                    false,
+                    CLIP,
                     stencilRef,
-                    depthStateKey: STATE_KEY,
+                    STATE_KEY,
                     indexVariant,
-                    firstIndex: FIRST_INDEX,
-                    indexCount: INDEX_COUNT,
+                    FIRST_INDEX,
+                    INDEX_COUNT,
                     strokeSize,
                     inverseStrokeProjection,
                     inverseViewProjection,
-                    depthState: {
-                        test: depthTest,
-                        write: WRITE,
-                        func: depthFunc,
-                    },
-                    parts: this.partScratch.slice(0, mesh.partCount > 1 ? mesh.partCount * 12 : 0),
-                };
+                    mesh.partCount > 1 ? mesh.partCount * 12 : 0,
+                );
             }
             const OFFSET = i * 6;
             let m0 = matrices[OFFSET];
@@ -2055,16 +2057,7 @@ export class MeshRenderer {
                     write: runs[run + 2],
                     func: depthFunc,
                 },
-                stencil:
-                    stencilRef === null
-                        ? false
-                        : {
-                              func: 'equal',
-                              ref: stencilRef,
-                              mask: 255,
-                              writeMask: 0,
-                              pass: 'keep',
-                          },
+                stencil: stencilRef === null ? false : stencilEqual(stencilRef),
             });
             this.metrics.draws++;
             this.metrics.drawDispatchReasons.alphaImmediateRun =
@@ -2151,44 +2144,47 @@ export class MeshRenderer {
             this.poseRenderer.flushUpdates();
         }
         const PIPELINE = this._pipeline(
-                MESH,
-                CLIP.count > 0,
-                WORLD_MODE,
-                POSE_KIND === 'program' ? 2 : POSE_KIND === 'matrix' ? 1 : 0,
-            ),
-            UNIFORMS = WORLD_MODE
-                ? {
-                      u_viewProjection: PROJECTION,
-                      u_color: COLOR,
-                  }
-                : {
-                      u_projection: PROJECTION,
-                  };
+            MESH,
+            CLIP.count > 0,
+            WORLD_MODE,
+            POSE_KIND === 'program' ? 2 : POSE_KIND === 'matrix' ? 1 : 0,
+        );
+        // A pipeline's uniform names follow from its key, so each pipeline keeps one uniform object whose values are
+        // overwritten here instead of building a new object per flush.
+        let uniforms = this.pipelineUniforms.get(PIPELINE);
+        if (!uniforms) {
+            uniforms = {};
+            this.pipelineUniforms.set(PIPELINE, uniforms);
+        }
+        const UNIFORMS = uniforms;
+        if (WORLD_MODE) {
+            UNIFORMS.u_viewProjection = PROJECTION;
+            UNIFORMS.u_color = COLOR;
+        } else {
+            UNIFORMS.u_projection = PROJECTION;
+        }
         if (CLIP.count) {
-            Object.assign(UNIFORMS, {
-                'u_planes[0]': this.planes,
-                u_planeCount: CLIP.count,
-            });
+            UNIFORMS['u_planes[0]'] = this.planes;
+            UNIFORMS.u_planeCount = CLIP.count;
         }
         if (MESH.hasNonScalingStroke) {
-            Object.assign(UNIFORMS, {
-                u_strokeViewportSize: STROKE_SIZE,
-                ...(CLIP.count
-                    ? WORLD_MODE
-                        ? {
-                              u_inverseViewProjection: INVERSE_VIEW_PROJECTION,
-                          }
-                        : {
-                              u_inverseProjection: INVERSE_STROKE_PROJECTION,
-                          }
-                    : {}),
-            });
+            UNIFORMS.u_strokeViewportSize = STROKE_SIZE;
+            if (CLIP.count) {
+                if (WORLD_MODE) {
+                    UNIFORMS.u_inverseViewProjection = INVERSE_VIEW_PROJECTION;
+                } else {
+                    UNIFORMS.u_inverseProjection = INVERSE_STROKE_PROJECTION;
+                }
+            }
         }
         if (MESH.paintRegionNames) {
             UNIFORMS['u_paintRegions[0]'] = this.paintState;
         }
         if (POSE_KIND === 'program') {
-            Object.assign(UNIFORMS, { u_program: 0, u_state: 1, u_overrides: 2, u_programWidth: POSE_PROGRAM_WIDTH });
+            UNIFORMS.u_program = 0;
+            UNIFORMS.u_state = 1;
+            UNIFORMS.u_overrides = 2;
+            UNIFORMS.u_programWidth = POSE_PROGRAM_WIDTH;
         } else if (POSE_KIND === 'matrix') {
             UNIFORMS.u_poseTexture = 0;
         } else if (MESH.partCount > 1) {
@@ -2200,10 +2196,13 @@ export class MeshRenderer {
             UNIFORMS['u_materials[0]'] = MESH.materials.table;
             UNIFORMS.u_stitchField = TEXTURES.length - 1;
         }
-        const INSTANCE_UNIFORMS = [
-            ...(WORLD_MODE ? ['i_row0', 'i_row1', 'i_row2', 'i_params'] : ['i_row0', 'i_row1', 'i_color', 'i_params']),
-            ...(MESH.materials ? ['i_extra'] : []),
-        ];
+        const INSTANCE_UNIFORMS = WORLD_MODE
+            ? MESH.materials
+                ? WORLD_MATERIAL_INSTANCE_UNIFORMS
+                : WORLD_INSTANCE_UNIFORMS
+            : MESH.materials
+              ? PLAIN_MATERIAL_INSTANCE_UNIFORMS
+              : PLAIN_INSTANCE_UNIFORMS;
         const INSTANCE_FLOATS = MESH.instanceFloats;
         const INSTANCE_DATA = this._instanceData(MESH);
         if (this.instanced) {
@@ -2219,16 +2218,7 @@ export class MeshRenderer {
                 uniforms: UNIFORMS,
                 textures: TEXTURES,
                 depth: DEPTH_STATE,
-                stencil:
-                    STENCIL_REF === null
-                        ? false
-                        : {
-                              func: 'equal',
-                              ref: STENCIL_REF,
-                              mask: 255,
-                              writeMask: 0,
-                              pass: 'keep',
-                          },
+                stencil: STENCIL_REF === null ? false : stencilEqual(STENCIL_REF),
             });
             this.metrics.instanceBytesUploaded += this.count * INSTANCE_FLOATS * 4;
             this.metrics.draws++;
@@ -2253,16 +2243,7 @@ export class MeshRenderer {
                     uniforms: UNIFORMS,
                     textures: TEXTURES,
                     depth: DEPTH_STATE,
-                    stencil:
-                        STENCIL_REF === null
-                            ? false
-                            : {
-                                  func: 'equal',
-                                  ref: STENCIL_REF,
-                                  mask: 255,
-                                  writeMask: 0,
-                                  pass: 'keep',
-                              },
+                    stencil: STENCIL_REF === null ? false : stencilEqual(STENCIL_REF),
                 });
                 this.metrics.draws++;
                 this.metrics.drawDispatchReasons[reason] = (this.metrics.drawDispatchReasons[reason] ?? 0) + 1;
@@ -2274,6 +2255,77 @@ export class MeshRenderer {
         this.metrics.instances += this.count;
         this.metrics.flushReasons[reason] = (this.metrics.flushReasons[reason] ?? 0) + 1;
         this.discard();
+    }
+    /**
+     * Starts the native batch in the one reusable pending record: its typed copies are overwritten, the part copy is a
+     * cached view of the needed length, and the depth policy is the shared object of the depth state code.
+     */
+    _openPending(
+        mesh,
+        projection,
+        worldMode,
+        clip,
+        stencilRef,
+        depthStateKey,
+        indexVariant,
+        firstIndex,
+        indexCount,
+        strokeSize,
+        inverseStrokeProjection,
+        inverseViewProjection,
+        partFloats,
+    ) {
+        const NEXT = (this.pendingRecord ??= {
+            mesh: null,
+            poseTexture: null,
+            poseTextures: null,
+            poseKind: null,
+            poseProgramWidth: 0,
+            projection: null,
+            projection3: new Float32Array(9),
+            projection4: new Float32Array(16),
+            worldMode: false,
+            color: null,
+            colorStorage: new Float32Array(4),
+            clip: null,
+            stencilRef: null,
+            depthStateKey: 0,
+            indexVariant: null,
+            firstIndex: 0,
+            indexCount: 0,
+            strokeSize: null,
+            inverseStrokeProjection: null,
+            inverseViewProjection: null,
+            depthState: null,
+            parts: null,
+            partStorage: new Float32Array(16 * 12),
+            partViews: [],
+        });
+        NEXT.mesh = mesh;
+        NEXT.poseTexture = null;
+        NEXT.poseTextures = null;
+        NEXT.poseKind = null;
+        NEXT.poseProgramWidth = 0;
+        NEXT.projection = projection.length === 16 ? NEXT.projection4 : NEXT.projection3;
+        NEXT.projection.set(projection);
+        NEXT.worldMode = worldMode;
+        NEXT.color = null;
+        NEXT.clip = clip;
+        NEXT.stencilRef = stencilRef;
+        NEXT.depthStateKey = depthStateKey;
+        NEXT.indexVariant = indexVariant;
+        NEXT.firstIndex = firstIndex;
+        NEXT.indexCount = indexCount;
+        NEXT.strokeSize = strokeSize;
+        NEXT.inverseStrokeProjection = inverseStrokeProjection;
+        NEXT.inverseViewProjection = inverseViewProjection;
+        NEXT.depthState = DEPTH_POLICIES[depthStateKey];
+        NEXT.parts = NEXT.partViews[partFloats] ??= NEXT.partStorage.subarray(0, partFloats);
+        for (let i = 0; i < partFloats; i++) {
+            NEXT.parts[i] = this.partScratch[i];
+        }
+        this.pending = NEXT;
+        return NEXT;
     }
     /** The staging array holding this mesh's instance records. */
     _instanceData(mesh) {
@@ -2389,6 +2441,7 @@ export class MeshRenderer {
             this.device.deletePipeline(PIPELINE);
         }
         this.pipelines.clear();
+        this.pipelineUniforms.clear();
         this.disposed = true;
         this.state = 'disposed';
     }

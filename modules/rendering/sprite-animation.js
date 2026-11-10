@@ -15,6 +15,7 @@
  * final frame. seek(elapsedMs,timeMs) scrubs the clip at an absolute clock point;
  * pausing and rate changes anchor to that same clock without a phase jump.
  */
+const EMPTY_OPTIONS = Object.freeze({});
 export function createSpriteAnimation(context, region, definition) {
     if (!context?.drawQuads || !context?.device?.textureAtlas) {
         throw new TypeError('A VectorContext is required');
@@ -205,8 +206,31 @@ export function createSpriteAnimation(context, region, definition) {
                 }
                 return VALUE;
             };
+            // draw() fills these two records each call: one sample result and one quad submission.
+            const DRAW_SAMPLE = { clip: '', frameIndex: 0, frame: null, elapsedMs: 0, finished: false };
+            const DRAW_QUADS = {
+                uvRects: null,
+                localRects: null,
+                layer: region.layer,
+                filter: region.filter,
+                matrix: undefined,
+                color: undefined,
+                alpha: undefined,
+                whiteFlash: undefined,
+                forceColor: undefined,
+                depthWriteAlphaThreshold: undefined,
+                parts: undefined,
+                pose: undefined,
+            };
             const ACTOR = Object.freeze({
-                sample(timeMs) {
+                /**
+                 * Writes the frame shown at absolute `timeMs` into `out` (clip, frameIndex, frame, elapsedMs,
+                 * finished) and returns `out`.
+                 */
+                sampleInto(timeMs, out) {
+                    if (!out || typeof out !== 'object') {
+                        throw new TypeError('A sample record to write is required');
+                    }
                     const ELAPSED_MS = ELAPSED(timeMs);
                     const TIME =
                         selectedClip.loop === 'loop'
@@ -217,25 +241,36 @@ export function createSpriteAnimation(context, region, definition) {
                         slot++;
                     }
                     const FRAME_INDEX = selectedClip.frames[slot];
-                    return Object.freeze({
-                        clip: selectedClip.name,
-                        frameIndex: FRAME_INDEX,
-                        frame: FRAMES[FRAME_INDEX],
-                        elapsedMs: ELAPSED_MS,
-                        finished: selectedClip.loop === 'once' && ELAPSED_MS >= selectedClip.durationMs,
-                    });
+                    out.clip = selectedClip.name;
+                    out.frameIndex = FRAME_INDEX;
+                    out.frame = FRAMES[FRAME_INDEX];
+                    out.elapsedMs = ELAPSED_MS;
+                    out.finished = selectedClip.loop === 'once' && ELAPSED_MS >= selectedClip.durationMs;
+                    return out;
                 },
-                /** options: matrix (composed with the context transform), color, alpha, whiteFlash, forceColor. */
-                draw({ timeMs, ...options } = {}) {
-                    const SAMPLE = this.sample(timeMs);
+                /**
+                 * options: timeMs, matrix (composed with the context transform), color, alpha, whiteFlash, forceColor,
+                 * depthWriteAlphaThreshold, parts, pose. Returns this actor's draw sample record, rewritten by the next draw().
+                 */
+                draw(options = EMPTY_OPTIONS) {
+                    const SAMPLE = this.sampleInto(options.timeMs, DRAW_SAMPLE);
                     ACTOR_READY();
-                    context.drawQuads({
-                        ...options,
-                        uvRects: FRAME_RECTS[SAMPLE.frameIndex].uvRect,
-                        localRects: FRAME_RECTS[SAMPLE.frameIndex].localRect,
-                        layer: region.layer,
-                        filter: region.filter,
-                    });
+                    const RECTS = FRAME_RECTS[SAMPLE.frameIndex];
+                    DRAW_QUADS.uvRects = RECTS.uvRect;
+                    DRAW_QUADS.localRects = RECTS.localRect;
+                    DRAW_QUADS.matrix = options.matrix;
+                    DRAW_QUADS.color = options.color;
+                    DRAW_QUADS.alpha = options.alpha;
+                    DRAW_QUADS.whiteFlash = options.whiteFlash;
+                    DRAW_QUADS.forceColor = options.forceColor;
+                    DRAW_QUADS.depthWriteAlphaThreshold = options.depthWriteAlphaThreshold;
+                    DRAW_QUADS.parts = options.parts;
+                    DRAW_QUADS.pose = options.pose;
+                    try {
+                        context.drawQuads(DRAW_QUADS);
+                    } finally {
+                        DRAW_QUADS.matrix = DRAW_QUADS.color = DRAW_QUADS.parts = DRAW_QUADS.pose = undefined;
+                    }
                     return SAMPLE;
                 },
                 seek(elapsedMs, timeMs) {
