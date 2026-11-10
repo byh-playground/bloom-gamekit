@@ -1,3 +1,32 @@
+## v0.52.0 (2026-11-11)
+
+공개 API 변경(MINOR, 소비자 수정 필요). geometry·vision·spatial·pathfield의 틱 경로 가비지와 맞지 않는 자료구조를 걷어내고, 문자열 키를 숫자 조합 정수 키로 바꿉니다. 별칭·래퍼 없이 시그니처를 바로 바꿨습니다. **쌀콩팡 체크섬이 달라짐**: 동률 순위(정수 FNV-1a + fmix32), 접촉 목록의 키 순서, 원 장애물·관찰자 id의 정수화 때문입니다(아래 "결과가 바뀌는 것").
+
+- geometry 접촉 키: `'wall:3:edge'` 같은 문자열 대신 `contactKey(kind, obstacle, edge, part) = kind·2^50 + obstacle·2^22 + edge·4 + part`(< 2^52)입니다. 종류는 `CONTACT_POLYGON`(다각형, 장애물 번호 = 색인 항목 번호)·`CONTACT_CIRCLE`(원 id)·`CONTACT_WALL`(월드 경계 변 0~3)·`CONTACT_USER`(게임이 만드는 접촉), 부위는 `CONTACT_EDGE`·`CONTACT_START`·`CONTACT_END`입니다. 원 장애물 `id`는 0..2^28-1 정수, `ignoreAll.id`는 정수(보통 -1)여야 합니다.
+- geometry 동률 순위: `tieKey`는 0 이상 안전 정수이고, 기본 `defaultTieRank`는 (tieKey 하위·상위 32비트, contactKey 하위·상위 32비트, sign > 0 ? 1 : 0)의 FNV-1a를 murmur3 fmix32로 마무리합니다. 문자열을 만들지 않습니다.
+- geometry 함수 모양: 결과를 호출자의 `out`에 씁니다. `SweptCircleContact.cast(…, policy, out)`은 boolean을 돌려주고 법선을 정할 수 없으면 `out.degenerate`를 켭니다(대체 법선 콜백 제거, 필요할 때만 호출자가 계산). `SurfaceContactGeometry.closest/circleCast/edgeCast(스칼라 좌표, 정수 key, slack, out)/polygonContacts(…, points, polygon, epsilon, list)/feasible(x, y, list)/project(…, out)/slide(vx, vy, list, budget, steer, goalX, goalY, tieKey, tieRank, out)`. `SurfaceMotion.contacts(…, list)`, `cast(…, out)`, `recover(…, out)`, `advance(…, whole, out)`, `solve(…, tieKey, out: MotionResult)`, `constrain(…, tieKey, out)`(다시 풀었으면 true). 새 `ContactHit`·`ContactList`(객체 재사용)·`MotionResult`를 내보냅니다. `circleObstacleCast`는 내부로 들어갔습니다.
+- geometry 내부: `remember`가 몸체마다 기록 객체 하나를 재사용하고 `forgetAll`은 세대 번호만 올립니다(WeakMap 재생성 없음). 다각형 꼭짓점은 이웃 변이 공유하므로 한 번만 검사합니다. `BoundsIndex`는 칸별 배열 대신 CSR(칸별 시작 + 항목 번호 `Int32Array`)이고 `found`(결과의 항목 번호)와 `rebuild(items)`를 둡니다. `ObstacleField.setCircles`는 색인 버퍼를 재사용하고, `nearestOpen(…, accept, out)`·`nearestExterior(…, out)`는 boolean을 돌려주며 클로저를 만들지 않습니다. 고리 탐색의 `cos`·`sin`은 표로 한 번 계산합니다(같은 식이라 값이 같음).
+- vision: `update(observers)`를 `begin()` / `observe(id, x, y, radius, level, xray)` / `end()`로 바꿨습니다. `id`는 안전 정수이고 한 갱신 안에서 겹치면 RangeError입니다(종류가 다르면 `번호 · 8 + 종류`처럼 조합). 관찰자 기록·칸 버퍼를 재사용합니다. 잘못된 관찰자에서 던지면 그 앞의 관찰자는 이미 반영돼 있습니다(이전의 "목록 전체를 먼저 검사" 원자성은 없어짐).
+- spatial: plain 격자(`'clamp'`, track·groups 없음)는 CSR(칸 순서 배열)로 담습니다. 순서 계약은 같습니다. `itemsInCellOrder(out)`(모든 칸을 칸 순서로 한 번에)과 `cellRange(minX, minY, maxX, maxY, out)`를 추가합니다. plain 격자의 `cellItems`는 공유 배열에 복사해 돌려주므로 다음 `cellItems` 전까지만 유효합니다.
+- pathfield: `PathGrid.reachableFrom(start, out)`의 `out`(길이 `size` 이상의 `Uint8Array`)이 필수가 되고 탐색 스택을 격자가 재사용합니다. `DistanceField`·`FieldCache`·`RouteFinder`는 바꾸지 않았습니다(길찾기 기본 구조를 청크 + 포털 그래프 유동장으로 다시 설계하므로 그때 정함).
+- 예제: work-scheduler 예제의 기하 탭(`MotionResult` 재사용, 정수 tieKey·원 id)과 시야 탭(`begin/observe/end`)을 새 API로 옮겼습니다. 화면 결과는 같습니다.
+- 시험: geometry·vision·spatial·pathfield의 고정 시나리오를 새 API로 바꾸고 정수 키 식·`found`·`degenerate`·중복 id 오류·`itemsInCellOrder`·`cellRange`·`reachableFrom`의 `out` 필수를 더했습니다. 동률 기대값은 새 기본 순위로 다시 정했습니다(tieKey 1 → 아래로, 2 → 위로). vision·spatial의 원본 대비 해시는 그대로 같습니다.
+
+결과가 바뀌는 것(옛 코드 사본과 같은 fixture로 비교, 임시 검증):
+
+| 항목                                                                      | 비교 수 | 같음  | 동률 선택만 다름                             | 순서만 다름                 | 다름 |
+| ------------------------------------------------------------------------- | ------- | ----- | -------------------------------------------- | --------------------------- | ---- |
+| `SurfaceMotion.solve`(steer·stop·project, 옛 순위를 흉내 낸 tieRank 주입) | 12000   | 12000 | 0                                            | 0                           | 0    |
+| `SurfaceMotion.cast`                                                      | 12000   | 12000 | 0                                            | 0                           | 0    |
+| `SurfaceMotion.contacts`                                                  | 12000   | 11978 | 0                                            | 22(같은 집합, 정수 키 순서) | 0    |
+| `SweptCircleContact.cast`                                                 | 24000   | 24000 | 0                                            | 0                           | 0    |
+| `SurfaceContactGeometry.slide`(기본 순위)                                 | 12000   | 11535 | 465(옛 FNV 문자열 순위를 주입하면 모두 같음) | 0                           | 0    |
+| `reachableFrom`                                                           | 60      | 60    | 0                                            | 0                           | 0    |
+| vision 전체 칸 ceiling·revision(60회 갱신)                                | 60      | 60    | 0                                            | 0                           | 0    |
+| spatial plain 격자 질의 전체                                              | 24060   | 24060 | 0                                            | 0                           | 0    |
+
+측정(Node, 쌀콩팡 규모 4200×4800, 다각형 40·원 30, 전후 교대 14회 중앙값, ms/틱 300 → 600유닛): (a) 유닛마다 solve + contacts 2.41→1.66 / 4.43→3.30, (b) 쌍 cast + slide 0.79→0.32 / 1.77→0.87, (d) 시야 갱신 0.41→0.25 / 0.48→0.29, (e) 충돌 격자 비우기·넣기·질의 4패스 0.54→0.41 / 1.31→0.92. 할당(GC 없이 잰 틱당 증가, 300유닛): solve 5.1→2.6KB, contacts 4.8→0.2KB, 모든 칸 훑기를 포함한 충돌 격자 18.5→4~11KB.
+
 ## v0.51.0 (2026-11-11)
 
 비호환 MINOR. 렌더·표시 프레임 경로에서 프레임마다 생기던 임시 객체·배열·문자열 키를 없앴습니다. 화면 출력은 바뀌지 않습니다(SwiftShader에서 기준 v0.49.0과 픽셀 차이 0: 벡터 액터 1000개 기본·ordered, 벡터 경로 1000개, 아틀라스 스프라이트 1000개 기본·ordered, 각 3프레임). 컴파일 자산 형식은 바뀌지 않아 게임이 커밋한 컴파일 산출물은 다시 만들 필요가 없습니다.

@@ -39,31 +39,27 @@ export class VisionMap {
     cellAt(x: number, y: number): number;
 }
 
-export interface VisionObserver {
-    /** Identity across updates. An observer with the same id, cell, radius, level and xray is not repainted. */
-    id: string | number;
-    x: number;
-    y: number;
-    /** How far the observer lights cells (coordinate units, 0 to 256 cells). 0 lights nothing, not even its own cell. */
-    radius: number;
-    /** The observer's own level. Cells and targets higher than this are not seen. Ignored when `xray` is true. */
-    level: number;
-    /** Sees every cell within the radius at every target level, through blocked cells and higher ground. */
-    xray?: boolean;
-}
-
 /** One team's vision grid: how many observers light each cell, by sight ceiling. */
 export class VisionField {
     constructor(map: VisionMap);
     readonly map: VisionMap;
-    /** Increases by one whenever an `update` lit or cleared any cell. Use it as a cache key for derived results. */
+    /** Increases by one whenever an update lit or cleared any cell. Use it as a cache key for derived results. */
     readonly revision: number;
+    /** Starts an observer-list update. Call `observe` for every observer of this update, then `end`. */
+    begin(): this;
     /**
-     * Replaces the whole observer list. Only observers whose id is new, or whose cell, radius, level or xray changed,
-     * are repainted; ids missing from the list are cleared. The list is checked first: a non-finite position, an
-     * out-of-range radius or a missing level throws and leaves the field unchanged.
+     * Adds one observer to the current update. An observer whose id was in the previous update with the same cell,
+     * radius, level and xray is not repainted. Throws on a non-safe-integer id, an id already observed in this update
+     * (RangeError), a non-finite position, an out-of-range radius (0 to 256 cells) or a missing level; observers added
+     * before the throw stay applied, and the next `begin` starts over.
+     * @param id Safe integer, unique within one update (combine kind and number, e.g. `number * 8 + kind`).
+     * @param radius How far the observer lights cells (coordinate units). 0 lights nothing, not even its own cell.
+     * @param level The observer's own level. Cells and targets higher than this are not seen. Ignored when `xray`.
+     * @param xray Sees every cell within the radius at every target level, through blocked cells and higher ground.
      */
-    update(observers: readonly VisionObserver[]): this;
+    observe(id: number, x: number, y: number, radius: number, level: number, xray?: boolean): this;
+    /** Ends the update: clears observers not observed since `begin`, and bumps `revision` if anything changed. */
+    end(): this;
     /**
      * Whether a target on level `targetLevel` at (x, y) is seen: some observer lighting that cell has a sight
      * ceiling (its own level; Infinity for xray) of at least `targetLevel`.

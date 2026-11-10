@@ -124,6 +124,15 @@ export class UniformGrid {
     #itemCells = null;
     #overflowX = [];
     #overflowY = [];
+    // plain 격자(clamp·추적 없음·구분 없음)의 CSR 버킷: 넣은 순서의 (칸, 항목)을 모아 두고, 처음 읽을 때 칸별 개수 → 누적 →
+    // 배치로 칸 순서 배열을 만듭니다(같은 칸 안은 넣은 순서 그대로).
+    #plainKeys = null;
+    #plainRaw = [];
+    #plainItems = [];
+    #plainStart = null;
+    #plainCount = 0;
+    #plainDirty = false;
+    #cellScratch = [];
 
     /**
      * @param {object} options
@@ -175,6 +184,10 @@ export class UniformGrid {
         // 보관 칸은 사용한 칸 목록(usedCells)에 넣지 않고 clear가 따로 비웁니다.
         this.#touched[this.cellTotal] = 1;
         this.#groupCells = Array.from({ length: GROUPS }, () => new Array(this.cellTotal + 1));
+        if (this.#plain) {
+            this.#plainKeys = new Int32Array(64);
+            this.#plainStart = new Int32Array(this.cellTotal + 1);
+        }
         if (this.#mode === MODE_INDEX) {
             this.#growIndex(64);
         } else if (this.#mode === MODE_IDENTITY) {
@@ -189,6 +202,16 @@ export class UniformGrid {
 
     /** 담긴 항목을 모두 비웁니다. 사용한 칸만 비우고 버킷 배열은 재사용합니다. */
     clear() {
+        if (this.#plain) {
+            const USED = this.#used;
+            for (let i = 0; i < USED.length; i++) {
+                this.#touched[USED[i]] = 0;
+            }
+            USED.length = 0;
+            this.#plainCount = 0;
+            this.#plainDirty = true;
+            return;
+        }
         const CELLS = this.#cells,
             USED = this.#used,
             GROUP_CELLS = this.#groupCells;
@@ -259,15 +282,46 @@ export class UniformGrid {
         const KEY =
             (CY <= 0 ? 0 : CY > this.#maxRow ? this.#maxRow : CY) * this.cols +
             (CX <= 0 ? 0 : CX > this.#maxCol ? this.#maxCol : CX);
-        let bucket = this.#cells[KEY];
-        if (bucket === undefined) {
-            bucket = this.#cells[KEY] = [];
-        }
         if (this.#touched[KEY] === 0) {
             this.#touched[KEY] = 1;
             this.#used.push(KEY);
         }
-        bucket.push(item);
+        const COUNT = this.#plainCount;
+        if (COUNT === this.#plainKeys.length) {
+            const GROWN = new Int32Array(COUNT * 2);
+            GROWN.set(this.#plainKeys);
+            this.#plainKeys = GROWN;
+        }
+        this.#plainKeys[COUNT] = KEY;
+        this.#plainRaw[COUNT] = item;
+        this.#plainCount = COUNT + 1;
+        this.#plainDirty = true;
+    }
+
+    // plain 격자의 칸 순서 배열을 다시 만듭니다(넣거나 비운 뒤 처음 읽을 때 한 번).
+    #buildPlain() {
+        this.#plainDirty = false;
+        const START = this.#plainStart,
+            KEYS = this.#plainKeys,
+            RAW = this.#plainRaw,
+            ITEMS = this.#plainItems,
+            COUNT = this.#plainCount,
+            TOTAL = this.cellTotal;
+        START.fill(0);
+        for (let i = 0; i < COUNT; i++) {
+            START[KEYS[i] + 1]++;
+        }
+        for (let k = 1; k <= TOTAL; k++) {
+            START[k] += START[k - 1];
+        }
+        for (let i = 0; i < COUNT; i++) {
+            ITEMS[START[KEYS[i]]++] = RAW[i];
+        }
+        for (let k = TOTAL; k > 0; k--) {
+            START[k] = START[k - 1];
+        }
+        START[0] = 0;
+        ITEMS.length = COUNT;
     }
 
     // track 'index' + 'clamp'(구분 있거나 없거나)의 매 틱 재구축·추가 경로입니다.
@@ -406,6 +460,10 @@ export class UniformGrid {
      */
     queryRect(minX, minY, maxX, maxY, out, group = NONE) {
         out.length = 0;
+        if (this.#plain && group < 0) {
+            this.#collectPlain(this.cellX(minX), this.cellY(minY), this.cellX(maxX), this.cellY(maxY), out);
+            return out;
+        }
         const BUCKETS = this.#bucketsFor(group);
         if (this.#clamp) {
             this.#collectCells(BUCKETS, this.cellX(minX), this.cellY(minY), this.cellX(maxX), this.cellY(maxY), out);
@@ -433,10 +491,68 @@ export class UniformGrid {
         return this.queryRect(x - radius, y - radius, x + radius, y + radius, out, group);
     }
 
-    /** 칸 번호의 버킷을 읽기 전용으로 돌려줍니다(없으면 빈 배열). 다음 변경 전까지만 유효합니다. */
+    /**
+     * 칸 번호의 버킷을 읽기 전용으로 돌려줍니다(없으면 빈 배열). 다음 변경 전까지만 유효합니다.
+     * plain 격자(clamp·track 없음·groups 0)는 칸 순서 배열에서 공유 배열로 복사해 돌려주므로 다음 `cellItems` 호출 전까지만
+     * 유효합니다. 모든 칸을 칸 순서로 훑으려면 {@link UniformGrid#itemsInCellOrder}가 더 쌉니다.
+     */
     cellItems(key, group = NONE) {
+        if (this.#plain && group < 0) {
+            const OUT = this.#cellScratch;
+            OUT.length = 0;
+            this.#appendPlainCell(key, OUT);
+            return OUT;
+        }
         const BUCKET = this.#bucketsFor(group)[key];
         return BUCKET === undefined ? EMPTY : BUCKET;
+    }
+
+    /**
+     * 세계 안 칸(0..cellTotal-1)의 항목을 칸 번호 순서(같은 칸은 버킷 순서)로 `out`에 채웁니다(먼저 비움). 세계 밖 보관 칸의
+     * 항목은 넣지 않습니다. 칸마다 `cellItems`를 부르는 것과 같은 순서입니다.
+     */
+    itemsInCellOrder(out) {
+        out.length = 0;
+        if (this.#plain) {
+            if (this.#plainDirty) {
+                this.#buildPlain();
+            }
+            const ITEMS = this.#plainItems;
+            for (let i = 0; i < ITEMS.length; i++) {
+                out.push(ITEMS[i]);
+            }
+            return out;
+        }
+        const CELLS = this.#cells;
+        for (let key = 0; key < this.cellTotal; key++) {
+            const BUCKET = CELLS[key];
+            if (BUCKET !== undefined) {
+                for (let i = 0; i < BUCKET.length; i++) {
+                    out.push(BUCKET[i]);
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
+     * 사각형이 덮는 칸 범위를 `out`(길이 4 이상의 정수 배열)에 [x0, y0, x1, y1]로 씁니다. 'clamp' 격자는 가장자리로 자르고,
+     * 'overflow' 격자는 세계 안으로 자릅니다. 덮는 칸이 없으면(세계 밖 사각형·NaN) false입니다. 결과를 복사하지 않고 칸마다
+     * `cellItems(y * cols + x)`를 직접 훑을 때 씁니다(세계 밖 보관 칸은 따로).
+     */
+    cellRange(minX, minY, maxX, maxY, out) {
+        if (
+            !this.#clamp &&
+            (!(Number.isFinite(minX) && Number.isFinite(minY) && Number.isFinite(maxX) && Number.isFinite(maxY)) ||
+                !(maxX >= this.originX && maxY >= this.originY && minX < this.#worldMaxX && minY < this.#worldMaxY))
+        ) {
+            return false;
+        }
+        out[0] = Math.max(0, this.cellX(minX));
+        out[1] = Math.max(0, this.cellY(minY));
+        out[2] = Math.min(this.#maxCol, this.cellX(maxX));
+        out[3] = Math.min(this.#maxRow, this.cellY(maxY));
+        return out[0] <= out[2] && out[1] <= out[3];
     }
 
     /** ring 칸 떨어진 고리의 칸 수입니다. ring 0은 중심 칸 하나이고 ring ≥ 1은 8 * ring칸입니다. */
@@ -532,8 +648,14 @@ export class UniformGrid {
             return;
         }
         let best = Infinity;
+        const PLAIN = this.#plain;
+        if (PLAIN && this.#plainDirty) {
+            this.#buildPlain();
+        }
         const CELLS = this.#cells,
-            COLS = this.cols;
+            COLS = this.cols,
+            START = this.#plainStart,
+            ITEMS = this.#plainItems;
         if (
             this.#clamp ||
             (maxX >= this.originX && maxY >= this.originY && minX < this.#worldMaxX && minY < this.#worldMaxY)
@@ -561,6 +683,13 @@ export class UniformGrid {
                         STEP = EDGE || ring === 0 ? 1 : 2 * ring;
                     for (let cellX = EDGE ? RING_X0 : CX - ring; cellX <= RING_X1; cellX += STEP) {
                         if (cellX < X0) {
+                            continue;
+                        }
+                        if (PLAIN) {
+                            const END = START[ROW + cellX + 1];
+                            for (let k = START[ROW + cellX]; k < END; k++) {
+                                best = visit(ITEMS[k]);
+                            }
                             continue;
                         }
                         const BUCKET = CELLS[ROW + cellX];
@@ -756,6 +885,38 @@ export class UniformGrid {
         }
     }
 
+    #appendPlainCell(key, out) {
+        if (this.#plainDirty) {
+            this.#buildPlain();
+        }
+        if (!(key >= 0 && key < this.cellTotal)) {
+            return;
+        }
+        const START = this.#plainStart,
+            ITEMS = this.#plainItems,
+            END = START[key + 1];
+        for (let k = START[key]; k < END; k++) {
+            out.push(ITEMS[k]);
+        }
+    }
+
+    #collectPlain(x0, y0, x1, y1, out) {
+        if (this.#plainDirty) {
+            this.#buildPlain();
+        }
+        const COLS = this.cols,
+            START = this.#plainStart,
+            ITEMS = this.#plainItems;
+        for (let cy = y0; cy <= y1; cy++) {
+            const ROW = cy * COLS,
+                END = START[ROW + x1 + 1];
+            // 한 행의 칸들은 칸 순서 배열에서 이어져 있으므로 한 구간으로 복사합니다.
+            for (let k = START[ROW + x0]; k < END; k++) {
+                out.push(ITEMS[k]);
+            }
+        }
+    }
+
     #collectOverflow(minX, minY, maxX, maxY, out) {
         const OVERFLOW = this.#cells[this.cellTotal];
         if (OVERFLOW === undefined) {
@@ -772,6 +933,10 @@ export class UniformGrid {
 
     #appendCell(x, y, out) {
         if (x < 0 || y < 0 || x >= this.cols || y >= this.rows) {
+            return;
+        }
+        if (this.#plain) {
+            this.#appendPlainCell(y * this.cols + x, out);
             return;
         }
         const BUCKET = this.#cells[y * this.cols + x];

@@ -1,8 +1,18 @@
 // vision 고정 시나리오: 작은 지형 그림으로 시야 규칙(반경·막힌 칸·높이 층·xray)을 못 박고, 갱신 계약(다시 칠하는 조건,
 // revision, 같은 id)과 오류를 확인한 뒤, 무작위 지형 위에서 관찰자가 움직이고 사라지고 생기는 한 판을 돌려 시야 마스크의
-// 해시가 원본 구현(rally-frontier의 VisionField)으로 같은 판을 돌린 해시와 같은지 확인합니다.
+// 해시가 원본 구현(rally-frontier의 VisionField)으로 같은 판을 돌린 해시와 같은지 확인합니다(갱신을 begin/observe/end로
+// 바꾼 뒤에도 같은 해시).
 import assert from 'node:assert/strict';
 import { VisionField, VisionMap } from '../../../dist/vision.js';
+
+// 한 번의 갱신: begin → 관찰자마다 observe → end.
+function update(field, observers) {
+    field.begin();
+    for (const O of observers) {
+        field.observe(O.id, O.x, O.y, O.radius, O.level, O.xray);
+    }
+    return field.end();
+}
 
 // 그림 한 줄이 칸 한 행입니다: '.' 높이 0, '1'..'9' 그 높이 층, '#' 막힌 칸. 칸 크기 10이라 칸 (c, r)의 중심은 (c*10+5, r*10+5)입니다.
 function mapFrom(rows) {
@@ -39,7 +49,7 @@ function picture(map, field, targetLevel) {
 // ---------- 1. 규칙: 반경은 칸 중심 사이의 거리, 막힌 칸과 높은 칸은 그 너머까지 가립니다 ----------
 {
     const OPEN = mapFrom(Array.from({ length: 9 }, () => '.........'));
-    const FIELD = new VisionField(OPEN).update([{ id: 'a', x: 45, y: 45, radius: 25, level: 0 }]);
+    const FIELD = update(new VisionField(OPEN), [{ id: 1, x: 45, y: 45, radius: 25, level: 0 }]);
     assert.deepEqual(
         picture(OPEN, FIELD, 0),
         [
@@ -56,7 +66,7 @@ function picture(map, field, targetLevel) {
         '반경 2.5칸: 중심 사이 거리 2.5 이하인 21칸',
     );
     assert.equal(FIELD.visibleAt(-500, -500, 0), false, '월드 밖은 가장자리 칸을 읽는다');
-    FIELD.update([{ id: 'a', x: 45, y: 45, radius: 0, level: 0 }]);
+    update(FIELD, [{ id: 1, x: 45, y: 45, radius: 0, level: 0 }]);
     assert.deepEqual(picture(OPEN, FIELD, 0).join(''), '.'.repeat(81), '반경 0은 자기 칸도 비추지 않는다');
 }
 {
@@ -69,7 +79,7 @@ function picture(map, field, targetLevel) {
         '............',
         '............',
     ]);
-    const FIELD = new VisionField(WALL).update([{ id: 'a', x: 25, y: 35, radius: 100, level: 0 }]);
+    const FIELD = update(new VisionField(WALL), [{ id: 1, x: 25, y: 35, radius: 100, level: 0 }]);
     assert.deepEqual(picture(WALL, FIELD, 0), [
         'oooooooooooo',
         'oooooooooooo',
@@ -91,7 +101,7 @@ function picture(map, field, targetLevel) {
         '.............',
     ]);
     // 땅의 관찰자는 언덕 칸도 그 너머도 보지 못하지만, 언덕 위의 관찰자는 땅을 내려다봅니다.
-    const GROUND = new VisionField(HILL).update([{ id: 'g', x: 25, y: 35, radius: 110, level: 0 }]);
+    const GROUND = update(new VisionField(HILL), [{ id: 3, x: 25, y: 35, radius: 110, level: 0 }]);
     assert.deepEqual(picture(HILL, GROUND, 0), [
         'ooooooooooooo',
         'ooooooooooooo',
@@ -101,7 +111,7 @@ function picture(map, field, targetLevel) {
         'ooooooooooooo',
         'ooooooooooooo',
     ]);
-    const TOP = new VisionField(HILL).update([{ id: 'p', x: 65, y: 35, radius: 60, level: 1 }]);
+    const TOP = update(new VisionField(HILL), [{ id: 4, x: 65, y: 35, radius: 60, level: 1 }]);
     assert.deepEqual(picture(HILL, TOP, 0), [
         '.ooooooooooo.',
         '.ooooooooooo.',
@@ -120,13 +130,13 @@ function picture(map, field, targetLevel) {
     assert.equal(GROUND.ceilingAt(125, 35), -Infinity, '언덕 뒤의 가려진 칸은 비추는 관찰자가 없다');
     // 막힌 칸에 선 관찰자는 아무것도 비추지 않습니다(xray는 예외).
     const WALLED = mapFrom(['.....', '..#..', '.....']);
-    const IN_WALL = new VisionField(WALLED).update([{ id: 'w', x: 25, y: 15, radius: 100, level: 0 }]);
+    const IN_WALL = update(new VisionField(WALLED), [{ id: 5, x: 25, y: 15, radius: 100, level: 0 }]);
     assert.deepEqual(picture(WALLED, IN_WALL, 0).join(''), '.....' + '..#..' + '.....');
 }
 {
     // xray는 막힌 칸과 높이를 무시하고 반경 안의 모든 칸을 모든 높이에서 봅니다.
     const HILL = mapFrom(['.....111.....', '.....111.....', '..#..111.....']);
-    const FIELD = new VisionField(HILL).update([{ id: 'x', x: 25, y: 15, radius: 60, level: 9, xray: true }]);
+    const FIELD = update(new VisionField(HILL), [{ id: 6, x: 25, y: 15, radius: 60, level: 9, xray: true }]);
     assert.deepEqual(picture(HILL, FIELD, 100), ['oooooooo.....', 'ooooooooo....', 'oo@ooooo.....']);
     assert.equal(FIELD.ceilingAt(75, 15), Infinity);
     assert.equal(FIELD.visibleAt(75, 15, 1000), true);
@@ -137,56 +147,57 @@ function picture(map, field, targetLevel) {
 {
     const MAP = mapFrom(Array.from({ length: 9 }, () => '.........'));
     const FIELD = new VisionField(MAP);
-    const A = { id: 'a', x: 25, y: 25, radius: 25, level: 0 },
-        B = { id: 'b', x: 65, y: 65, radius: 25, level: 0 };
-    FIELD.update([A, B]);
+    const A = { id: 1, x: 25, y: 25, radius: 25, level: 0 },
+        B = { id: 2, x: 65, y: 65, radius: 25, level: 0 };
+    update(FIELD, [A, B]);
     const REVISION = FIELD.revision;
     assert.ok(REVISION > 0);
-    FIELD.update([{ ...A }, { ...B }]);
+    update(FIELD, [{ ...A }, { ...B }]);
     assert.equal(FIELD.revision, REVISION, '같은 관찰자는 다시 칠하지 않는다');
-    FIELD.update([{ ...A, x: 28, y: 22 }, B]);
+    update(FIELD, [{ ...A, x: 28, y: 22 }, B]);
     assert.equal(FIELD.revision, REVISION, '같은 칸 안에서 움직이면 다시 칠하지 않는다');
-    FIELD.update([{ ...A, x: 35 }, B]);
+    update(FIELD, [{ ...A, x: 35 }, B]);
     assert.equal(FIELD.revision, REVISION + 1, '칸을 넘으면 다시 칠한다');
-    FIELD.update([{ ...A, x: 35, radius: 35 }, B]);
+    update(FIELD, [{ ...A, x: 35, radius: 35 }, B]);
     assert.equal(FIELD.revision, REVISION + 2, '반경이 바뀌면 다시 칠한다');
-    FIELD.update([{ ...A, x: 35, radius: 35, level: 1 }, B]);
+    update(FIELD, [{ ...A, x: 35, radius: 35, level: 1 }, B]);
     assert.equal(FIELD.revision, REVISION + 3, '높이 층이 바뀌면 다시 칠한다');
-    FIELD.update([{ ...A, x: 35, radius: 35, level: 1 }]);
+    update(FIELD, [{ ...A, x: 35, radius: 35, level: 1 }]);
     assert.equal(FIELD.revision, REVISION + 4, '사라진 관찰자의 칸을 지운다');
     assert.equal(FIELD.visibleAt(65, 65, 0), false);
-    FIELD.update([]);
+    update(FIELD, []);
     assert.equal(FIELD.ceilingAt(35, 25), -Infinity);
     assert.equal(FIELD.revision, REVISION + 5);
-    FIELD.update([]);
+    update(FIELD, []);
     assert.equal(FIELD.revision, REVISION + 5, '빈 목록을 또 넘겨도 그대로');
     // xray는 높이 층이 결과에 쓰이지 않으므로 층만 바뀌어서는 다시 칠하지 않는다.
-    FIELD.update([{ id: 'x', x: 45, y: 45, radius: 30, level: 0, xray: true }]);
+    update(FIELD, [{ id: 6, x: 45, y: 45, radius: 30, level: 0, xray: true }]);
     const XRAY_REVISION = FIELD.revision;
-    FIELD.update([{ id: 'x', x: 45, y: 45, radius: 30, level: 3, xray: true }]);
+    update(FIELD, [{ id: 6, x: 45, y: 45, radius: 30, level: 3, xray: true }]);
     assert.equal(FIELD.revision, XRAY_REVISION);
     // 칸을 지우고 다시 세는 관찰자 수: 두 관찰자가 겹친 칸은 하나가 사라져도 남는다.
-    FIELD.update([
-        { id: 'p', x: 45, y: 45, radius: 20, level: 0 },
-        { id: 'q', x: 45, y: 45, radius: 20, level: 0 },
+    update(FIELD, [
+        { id: 4, x: 45, y: 45, radius: 20, level: 0 },
+        { id: 7, x: 45, y: 45, radius: 20, level: 0 },
     ]);
-    FIELD.update([{ id: 'q', x: 45, y: 45, radius: 20, level: 0 }]);
+    update(FIELD, [{ id: 7, x: 45, y: 45, radius: 20, level: 0 }]);
     assert.equal(FIELD.visibleAt(45, 45, 0), true);
-    // 같은 id를 한 목록에 두 번 넘겨도 각각 센다.
-    FIELD.update([
-        { id: 'd', x: 15, y: 15, radius: 5, level: 0 },
-        { id: 'd', x: 75, y: 75, radius: 5, level: 0 },
-    ]);
+    // 한 갱신 안에서 같은 id는 오류입니다(진영·종류가 다르면 숫자 조합 코드로 겹치지 않게 만듭니다).
+    FIELD.begin().observe(8, 15, 15, 5, 0);
+    assert.throws(() => FIELD.observe(8, 75, 75, 5, 0), RangeError);
+    FIELD.end();
     assert.deepEqual(
         [FIELD.visibleAt(15, 15, 0), FIELD.visibleAt(75, 75, 0), FIELD.visibleAt(45, 45, 0)],
-        [true, true, false],
+        [true, false, false],
     );
-    const DUPLICATE_REVISION = FIELD.revision;
-    FIELD.update([
-        { id: 'd', x: 15, y: 15, radius: 5, level: 0 },
-        { id: 'd', x: 75, y: 75, radius: 5, level: 0 },
-    ]);
-    assert.equal(FIELD.revision, DUPLICATE_REVISION, '같은 순서면 다음 갱신에도 같은 짝');
+    // 갱신마다 관찰자 기록을 재사용해도 지운 관찰자의 칸이 남지 않습니다.
+    for (let round = 0; round < 3; round++) {
+        update(FIELD, [{ id: 10 + round, x: 15 + round * 30, y: 15, radius: 5, level: 0 }]);
+        assert.deepEqual(
+            [FIELD.visibleAt(15, 15, 0), FIELD.visibleAt(45, 15, 0), FIELD.visibleAt(75, 15, 0)],
+            [round === 0, round === 1, round === 2],
+        );
+    }
     // 팀마다 격자가 따로입니다: 같은 지형을 공유해도 한 팀의 관찰자는 다른 팀 격자에 영향이 없다.
     const OTHER = new VisionField(MAP);
     assert.equal(OTHER.visibleAt(15, 15, 0), false);
@@ -243,29 +254,26 @@ function picture(map, field, targetLevel) {
     );
     assert.throws(() => VisionMap.sample({ width: 30, height: 20, cellSize: 10, levelAt: () => 1.5 }), RangeError);
     assert.throws(() => VisionMap.sample({ width: 30, height: 20, cellSize: 10, levelAt: () => 200 }), RangeError);
-    assert.throws(() => FIELD.update([{ id: 'a', x: NaN, y: 0, radius: 5, level: 0 }]), RangeError);
-    assert.throws(() => FIELD.update([{ id: 'a', x: 0, y: 0, radius: -1, level: 0 }]), RangeError);
-    assert.throws(() => FIELD.update([{ id: 'a', x: 0, y: 0, radius: Infinity, level: 0 }]), RangeError);
-    assert.throws(() => FIELD.update([{ id: 'a', x: 0, y: 0, radius: 5 }]), TypeError, '높이 층 없음');
-    assert.throws(() => FIELD.update([{ x: 0, y: 0, radius: 5, level: 0 }]), TypeError, 'id 없음');
+    assert.throws(() => update(FIELD, [{ id: 1, x: NaN, y: 0, radius: 5, level: 0 }]), RangeError);
+    assert.throws(() => update(FIELD, [{ id: 1, x: 0, y: 0, radius: -1, level: 0 }]), RangeError);
+    assert.throws(() => update(FIELD, [{ id: 1, x: 0, y: 0, radius: Infinity, level: 0 }]), RangeError);
+    assert.throws(() => update(FIELD, [{ id: 1, x: 0, y: 0, radius: 5 }]), TypeError, '높이 층 없음');
+    assert.throws(() => update(FIELD, [{ id: 'a', x: 0, y: 0, radius: 5, level: 0 }]), TypeError, 'id는 정수');
     assert.throws(() => FIELD.visibleAt(0, 0), TypeError, '대상 높이 층을 생략할 수 없다');
     assert.doesNotThrow(
-        () => FIELD.update([{ id: 'x', x: 0, y: 0, radius: 5, xray: true }]),
+        () => update(FIELD, [{ id: 6, x: 0, y: 0, radius: 5, xray: true }]),
         'xray는 level이 필요 없다',
     );
-    assert.throws(() => FIELD.update(new Set()), TypeError, '관찰자 목록은 배열');
-    // 잘못된 관찰자가 하나라도 있으면 격자는 그대로입니다(앞의 관찰자도 반영하지 않는다).
-    FIELD.update([{ id: 'a', x: 5, y: 5, radius: 15, level: 0 }]);
-    const BEFORE = [FIELD.revision, FIELD.visibleAt(5, 5, 0), FIELD.visibleAt(25, 15, 0)];
-    assert.throws(
-        () =>
-            FIELD.update([
-                { id: 'a', x: 25, y: 15, radius: 15, level: 0 },
-                { id: 'b', x: NaN, y: 0, radius: 5, level: 0 },
-            ]),
-        RangeError,
-    );
-    assert.deepEqual([FIELD.revision, FIELD.visibleAt(5, 5, 0), FIELD.visibleAt(25, 15, 0)], BEFORE);
+    assert.throws(() => new VisionField(MAP).observe(1, 0, 0, 5, 0), TypeError, 'begin 없이 observe');
+    assert.throws(() => new VisionField(MAP).end(), TypeError, 'begin 없이 end');
+    // 잘못된 관찰자에서 던지면 그 앞의 관찰자는 이미 반영돼 있고, 다음 begin부터 다시 하면 됩니다.
+    update(FIELD, [{ id: 1, x: 5, y: 5, radius: 15, level: 0 }]);
+    const BEFORE = FIELD.revision;
+    FIELD.begin().observe(1, 25, 15, 15, 0);
+    assert.throws(() => FIELD.observe(2, NaN, 0, 5, 0), RangeError);
+    update(FIELD, [{ id: 1, x: 5, y: 5, radius: 15, level: 0 }]);
+    assert.deepEqual([FIELD.visibleAt(5, 5, 0), FIELD.visibleAt(25, 15, 0)], [true, false]);
+    assert.ok(FIELD.revision >= BEFORE + 2, '끝나지 못한 갱신의 변화도 revision에 남는다');
 }
 
 // ---------- 5. 원본 구현과 같은 판 ----------
@@ -352,16 +360,11 @@ function runScene(createField) {
         if (rand() < 0.5) {
             spawn();
         }
-        FIELD.update(
-            OBSERVERS.map((o) => ({
-                id: o.id,
-                x: o.x,
-                y: o.y,
-                radius: o.radius,
-                level: levelOf(o.x, o.y),
-                xray: o.xray,
-            })),
-        );
+        FIELD.begin();
+        for (const O of OBSERVERS) {
+            FIELD.observe(O.id, O.x, O.y, O.radius, levelOf(O.x, O.y), O.xray);
+        }
+        FIELD.end();
         for (let y = 0; y < ROWS; y++) {
             for (let x = 0; x < COLS; x++) {
                 const PX = (x + 0.5) * CELL,

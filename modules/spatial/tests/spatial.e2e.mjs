@@ -23,6 +23,22 @@ import { BoundsGrid, UniformGrid } from '../../../dist/spatial.js';
     assert.deepEqual(GRID.queryCircle(35, 25, 1, OUT), [2, 5], '원은 외접 사각형이 덮는 칸의 후보');
     assert.deepEqual([GRID.cellX(-1e9), GRID.cellX(1e9), GRID.cellY(15)], [0, 3, 1], 'clamp는 가장자리 칸');
     assert.deepEqual([...GRID.usedCells], [1, 4, 11, 0], '사용한 칸은 첫 사용 순');
+    assert.deepEqual(GRID.itemsInCellOrder(OUT), [4, 0, 3, 1, 2, 5], '모든 칸을 칸 번호 순서로 한 번에');
+    assert.deepEqual(GRID.cellItems(1), [0, 3]);
+    assert.deepEqual(GRID.cellItems(11), [2, 5]);
+    assert.deepEqual(GRID.cellItems(7), []);
+    const RANGE = [0, 0, 0, 0];
+    assert.equal(GRID.cellRange(5, 5, 25, 15, RANGE), true);
+    assert.deepEqual(RANGE, [0, 0, 2, 1], '덮는 칸 범위 [x0, y0, x1, y1]');
+    assert.equal(GRID.cellRange(-100, -100, 1e9, 1e9, RANGE), true);
+    assert.deepEqual(RANGE, [0, 0, 3, 2], 'clamp는 가장자리로 자름');
+    // 넣은 뒤 지우고 다시 넣어도 칸 순서 배열은 새로 만들어집니다.
+    GRID.insert(6, 15, 5);
+    assert.deepEqual(GRID.cellItems(1), [0, 3, 6]);
+    GRID.clear();
+    assert.deepEqual(GRID.itemsInCellOrder(OUT), []);
+    GRID.insert(7, 35, 25);
+    assert.deepEqual([GRID.itemsInCellOrder(OUT), GRID.cellItems(1)], [[7], []]);
     GRID.clear();
     assert.deepEqual(GRID.queryRect(0, 0, 40, 30, OUT), []);
     assert.throws(() => GRID.move(0, 1, 1), TypeError, 'track 없는 격자는 move를 거부');
@@ -206,6 +222,7 @@ function createRallyGrids() {
     });
     let maxRadius = 0;
     const END_CELL = new Int32Array(4096);
+    const CELL_ORDER = [];
     return {
         collisionReset(units, maxIndexedRadius) {
             maxRadius = maxIndexedRadius;
@@ -227,22 +244,23 @@ function createRallyGrids() {
                 }
             }
             SWEPT.clear();
-            for (let key = 0; key < COARSE.cellTotal; key++) {
-                for (const I of COARSE.cellItems(key)) {
-                    const U = units[I];
-                    if (!U.alive || radii[I] <= 0) {
-                        continue;
-                    }
-                    END_CELL[I] = key;
-                    SWEPT.insert(
-                        I,
-                        Math.min(segX[I], U.fx) - radii[I] - 1,
-                        Math.min(segY[I], U.fy) - radii[I] - 1,
-                        Math.max(segX[I], U.fx) + radii[I] + 1,
-                        Math.max(segY[I], U.fy) + radii[I] + 1,
-                        (U.side !== 0 ? 1 : 0) | (U.side !== 1 ? 2 : 0),
-                    );
+            // 모든 칸을 칸 순서로 훑을 때는 칸마다 cellItems 대신 itemsInCellOrder 한 번(같은 순서).
+            const ORDERED = COARSE.itemsInCellOrder(CELL_ORDER);
+            for (let k = 0; k < ORDERED.length; k++) {
+                const I = ORDERED[k],
+                    U = units[I];
+                if (!U.alive || radii[I] <= 0) {
+                    continue;
                 }
+                END_CELL[I] = COARSE.cellY(U.fy) * COARSE.cols + COARSE.cellX(U.fx);
+                SWEPT.insert(
+                    I,
+                    Math.min(segX[I], U.fx) - radii[I] - 1,
+                    Math.min(segY[I], U.fy) - radii[I] - 1,
+                    Math.max(segX[I], U.fx) + radii[I] + 1,
+                    Math.max(segY[I], U.fy) + radii[I] + 1,
+                    (U.side !== 0 ? 1 : 0) | (U.side !== 1 ? 2 : 0),
+                );
             }
         },
         sweptQuery(i, units, segX, segY, reach, attackerSide, out) {

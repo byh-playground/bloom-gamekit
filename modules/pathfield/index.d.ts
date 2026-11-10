@@ -72,8 +72,11 @@ export class PathGrid {
         accept?: ((centerX: number, centerY: number, cell: number) => boolean) | null,
         out?: Out,
     ): Out;
-    /** `start`(열린 칸)에서 8방향으로 걸어 닿는 칸을 1로 표시한 배열. `start`가 열려 있지 않으면 모두 0. */
-    reachableFrom(start: number, out?: Uint8Array): Uint8Array;
+    /**
+     * `start`(열린 칸)에서 8방향으로 걸어 닿는 칸을 1로 표시해 `out`(길이 `size` 이상, 먼저 비움)에 채웁니다.
+     * `start`가 열려 있지 않으면 모두 0. `out`이 Uint8Array가 아니거나 짧으면 TypeError.
+     */
+    reachableFrom(start: number, out: Uint8Array): Uint8Array;
 }
 
 /**
