@@ -163,6 +163,25 @@ try {
             assert.equal(walked, 6);
             await PAGE.click('#pathfield-reset');
             assert.deepEqual((await PATHFIELD()).unit, { x: 40, y: 160 });
+            // A* 경로: 목표가 바뀔 때만 한 번 찾아 웨이포인트로 저장하고(비용은 거리장과 같음), 한 걸음마다 저장된 웨이포인트를 따라 도착합니다.
+            await PAGE.click('#pathfield-astar');
+            const ROUTED = await PATHFIELD();
+            assert.equal(ROUTED.route.cost, LAZY.cost, 'A* 비용은 거리장 비용과 같음');
+            assert.deepEqual(ROUTED.route.waypoints, ['2,10', '8,14', '11,14', '17,5', '20,5', '27,12']);
+            let routeSteps = 0,
+                routed = ROUTED;
+            for (; routeSteps < 8 && routed.cost > 0; routeSteps++) {
+                await PAGE.click('#pathfield-step');
+                routed = await PATHFIELD();
+            }
+            assert.deepEqual(
+                [routed.unit, routed.route.index, routeSteps],
+                [{ x: 440, y: 200 }, 5, 5],
+                '웨이포인트를 따라 도착',
+            );
+            await PAGE.click('#pathfield-astar');
+            assert.equal((await PATHFIELD()).route, null);
+            await PAGE.click('#pathfield-reset');
             // 터치 에뮬레이션(실제 기기 검증이 아님): 좁은 화면에서 가로 스크롤 없이 첫 화면 안에서 캔버스를 눌러 목표를 정합니다.
             const TOUCH_CONTEXT = await browser.newContext({
                 hasTouch: true,

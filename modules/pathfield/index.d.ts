@@ -121,3 +121,65 @@ export class FieldCache<Key = unknown> {
     /** 세대 번호(틱 등)가 지난번과 다르면 비우고 true. */
     sync(epoch: unknown): boolean;
 }
+
+export interface RouteFindOptions {
+    /** 확장(확정)할 수 있는 칸 수의 상한(기본 격자 칸 수). 넘으면 `find`가 null이고 `status`는 `'limit'`입니다. */
+    maxExpanded?: number;
+}
+
+/** 두 점 사이를 막힘 없이 갈 수 있는지. 같은 입력에 같은 값을 돌려주는 순수 함수여야 합니다. */
+export type SegmentClear = (x0: number, y0: number, x1: number, y1: number) => boolean;
+
+/**
+ * 유닛 하나가 한 번 가는 길을 찾는 A* 탐색기. 격자·비용·통과 규칙이 `DistanceField`와 같아 최단 비용이 같습니다.
+ * 탐색 버퍼를 들고 있으므로 격자마다 하나 만들어 재사용합니다. 같은 입력이면 항상 같은 경로입니다.
+ */
+export class RouteFinder {
+    constructor(grid: PathGrid);
+    readonly grid: PathGrid;
+    /** 마지막 `find`의 결과. */
+    readonly status: 'found' | 'unreachable' | 'limit';
+    /** 마지막 `find`가 찾은 경로의 걸음 비용, 못 찾았으면 -1. */
+    readonly cost: number;
+    /** 마지막 `find`가 확장한 칸 수. */
+    readonly expanded: number;
+    /**
+     * `start`에서 `goals` 중 가장 싼 칸까지의 최단 경로(시작·목표 칸 포함 칸 번호)를 `out`(먼저 비움)에 채웁니다.
+     * 닿을 수 없거나 한도를 넘으면 null(`status`로 구분). `start`가 막혔으면 null, 목표 칸이면 `[start]`. 격자 밖 번호는 `RangeError`.
+     */
+    find<Out extends number[] = number[]>(
+        start: number,
+        goals: ArrayLike<number>,
+        options?: RouteFindOptions,
+        out?: Out,
+    ): Out | null;
+    /**
+     * 칸 경로에서 꺾이는 칸만 남긴 웨이포인트(칸 번호, 첫·마지막 칸 포함)를 `out`(먼저 비움)에 채웁니다.
+     * `lineClear`를 주면 보이는 가장 먼 웨이포인트로 건너뛰어 더 줄입니다.
+     */
+    waypoints<Out extends number[] = number[]>(
+        cells: ArrayLike<number>,
+        lineClear?: SegmentClear | null,
+        out?: Out,
+    ): Out;
+    /**
+     * 지금 향할 웨이포인트의 인덱스. `index`에서 시작해 `reach` 이내로 다가왔거나 `lineClear`가 다음 웨이포인트를 보면 넘어갑니다.
+     * 줄지 않고 마지막 인덱스에서 멈춥니다.
+     */
+    advance(
+        waypoints: ArrayLike<number>,
+        index: number,
+        x: number,
+        y: number,
+        reach?: number,
+        lineClear?: SegmentClear | null,
+    ): number;
+    /** (x, y) → `waypoints[index]` → … → 마지막 웨이포인트의 남은 구간이 모두 `segmentClear`를 통과하는지. 빈 경로는 false. */
+    remainingClear(
+        waypoints: ArrayLike<number>,
+        index: number,
+        x: number,
+        y: number,
+        segmentClear: SegmentClear,
+    ): boolean;
+}

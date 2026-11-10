@@ -1,3 +1,14 @@
+## v0.49.0 (2026-11-10)
+
+호환 기능 추가(공개 API 추가). `pathfield`에 유닛 하나가 한 번 가는 길을 찾는 A\* `RouteFinder`를 추가합니다. 기존 `PathGrid`·`DistanceField`·`FieldCache`의 동작은 그대로입니다. 상세 계약은 [pathfield](../../modules/pathfield/README.md#routefinder-a)에 있습니다.
+
+- `find(start, goals, { maxExpanded }, out)`: 시작 칸에서 목표 칸들(고리 같은 목표 영역) 중 가장 싼 칸까지의 경로(칸 번호). 거리장과 같은 `stepCell` 규칙(직선 10·대각 14, 칸·변 통과 판정, 모서리 가로지르기 금지)이라 같은 격자에서 최단 비용이 `DistanceField`와 같습니다. 닿을 수 없거나 확장 한도를 넘으면 null이고 `status`(`'unreachable'`·`'limit'`)로 구분합니다.
+- `waypoints(cells, lineClear, out)`: 꺾이는 칸만 남기고, 직선 판정 콜백을 주면 보이는 웨이포인트로 건너뛰어 줄입니다.
+- `advance(waypoints, index, x, y, reach, lineClear)`·`remainingClear(waypoints, index, x, y, segmentClear)`: 저장된 웨이포인트와 인덱스 하나로 따라가기와 "배치가 바뀌었을 때 남은 길이 막혔는가" 재검증.
+- 결정론: 정수 비용, 힙 순서는 f → h → 칸 번호. 탐색 버퍼는 격자 칸 수의 타입드 배열을 세대 번호로 재사용합니다.
+- 예제: work-scheduler 예제 "거리장" 탭에 "A\* 경로" 버튼(저장된 웨이포인트를 "한 걸음"으로 따라감)을 추가했습니다.
+- 시험: `modules/pathfield/tests/pathfield.e2e.mjs`에 고정 시나리오(거리장 비용과 A\* 비용 일치, 막힌 목표·닫힌 방·막힌 시작, 모서리 대각 금지, 여러 목표 중 가장 가까운 칸, 확장 한도, 웨이포인트, 따라가기, 재검증, 결정론)를 더했고, `project/tests/previews.mjs`가 A\* 버튼으로 거리장과 같은 비용·웨이포인트를 따라 도착하는지 확인합니다.
+
 ## v0.48.2 (2026-11-10)
 
 호환 기능 추가. `boot.bindBootProgress`의 기본 문구가 `이름 n/N · P%`가 되고, 단계 이름 표 `labels`와 완료 문구 `done`을 받습니다. 첫 단계 전에는 글자 요소를 건드리지 않습니다. `text`를 주는 소비자는 그대로이며, `text`가 null을 반환하면 글자를 그대로 둡니다. 상세 계약은 [boot](../../modules/boot/README.md)에 있습니다.

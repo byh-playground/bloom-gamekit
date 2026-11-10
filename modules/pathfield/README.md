@@ -2,6 +2,8 @@
 
 정수 비용 격자 위의 **거리장**입니다. 목표(여러 칸일 수 있음)에서 각 칸까지의 걸음 비용을 구해 두고, 유닛은 자기 칸에서 비용이 줄어드는 쪽으로 걸어 내려갑니다. 유닛마다 경로를 만들거나 들고 있지 않으므로, 같은 목표로 가는 유닛이 많을수록 거리장 하나를 나눠 쓰는 쪽이 싸집니다. 시간·난수·DOM을 읽지 않고 같은 호출 순서는 같은 결과를 냅니다. 외부 import가 없는 단일 번들(`dist/pathfield.js`)입니다.
 
+유닛 **하나가 한 번** 가는 길(영웅 복귀처럼 목표를 혼자 쓰는 이동)은 같은 격자 위의 A\* `RouteFinder`로 한 번 찾아 웨이포인트(칸 번호 배열)로 유닛 상태에 저장하고, 따라가기는 인덱스 하나로 합니다. 거리장과 비용·통과 규칙이 같아 같은 격자에서 최단 비용이 같습니다.
+
 이 모듈은 **격자 위의 메커니즘만** 줍니다. 다음은 담지 않습니다.
 
 - 어디로 갈지, 언제 거리장을 쓰고 언제 직선으로 갈지(가까우면 광선 등), 거리장을 얼마나 오래 둘지(고정 목표는 오래, 추격 목표는 틱마다 등), 내려가는 칸 중 무엇을 목표점으로 고를지는 게임이 정합니다. [저장소 README](../../README.md)의 "게임별로 서로 다른 공간 탐색 정책을 하나로 강제하지 않는다"는 경계를 그대로 지킵니다.
@@ -71,6 +73,60 @@ const PATH = FIELD.descend(START, 8, SCRATCH);
 
 게으르게 확정하므로 가까운 질의 하나는 지도 전체를 계산하지 않습니다. 같은 거리장에 다른 칸을 물으면 이어서 퍼뜨립니다. 이미 확정된 칸은 다시 계산하지 않고, 확정되는 순서와 상관없이 값은 같습니다(최단 비용은 하나입니다).
 
+## 거리장과 A\* 중 무엇을 쓰나
+
+| 경우                                                            | 쓰는 것                                                            |
+| --------------------------------------------------------------- | ------------------------------------------------------------------ |
+| 같은 목표(기지·깃발·추격 대상)로 여러 유닛이 가거나 자주 묻는다 | `DistanceField` + `FieldCache`: 한 번 퍼뜨리고 모두가 나눠 읽음    |
+| 유닛 하나가 자기만의 목표로 한 번 간다(영웅 복귀 등)            | `RouteFinder`: 한 번 찾아 저장하고, 목표가 바뀌거나 막힐 때만 다시 |
+| 목표가 직선으로 보인다                                          | 둘 다 쓰지 않음(직선 판정은 게임의 정책)                           |
+
+어느 쪽으로 갈지 고르는 기준(마릿수·거리·직선 판정)은 게임이 정합니다. 모듈은 두 방법이 같은 격자에서 같은 최단 비용을 낸다는 것만 약속합니다.
+
+## RouteFinder (A\*)
+
+`new RouteFinder(grid)`: 격자 하나에 묶인 탐색기입니다. 칸 수만큼의 타입드 배열(비용·부모·힙·세대 표식)을 한 번 만들고, 탐색마다 세대 번호를 올려 재사용하므로 탐색 중 할당이 없습니다. 격자마다 하나 만들어 두세요.
+
+| 멤버                                                           | 뜻                                                                                                                                                                                                                                                                                                                                                            |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `find(start, goals, { maxExpanded } = {}, out = [])`           | `start` 칸에서 `goals` 칸들(고리 같은 목표 영역을 그대로) 중 가장 싼 칸까지의 최단 경로를 칸 번호(시작·목표 포함)로 `out`(먼저 비움)에 채웁니다. 닿을 수 없으면 null(`status` `'unreachable'`), 확장한 칸이 `maxExpanded`(기본 격자 칸 수)를 넘으면 null(`status` `'limit'`). `start`가 막혔으면 null, 목표 칸이면 `[start]`. 막힌 목표 칸에는 닿지 않습니다. |
+| `cost`·`expanded`·`status`                                     | 마지막 `find`의 걸음 비용(못 찾으면 -1)·확장한 칸 수·결과(`'found'`·`'unreachable'`·`'limit'`).                                                                                                                                                                                                                                                               |
+| `waypoints(cells, lineClear = null, out = [])`                 | 칸 경로에서 걸음 방향이 바뀌는 칸만 남깁니다(첫·마지막 칸은 항상). `lineClear(x0, y0, x1, y1)`(두 칸 중심 사이를 막힘 없이 갈 수 있는가)를 주면 앞에서부터 한 번 훑으며 보이는 웨이포인트로 건너뛰어 더 줄입니다. 이웃한 두 웨이포인트는 격자 직선이거나 콜백이 통과시킨 구간입니다.                                                                          |
+| `advance(waypoints, index, x, y, reach = 0, lineClear = null)` | 지금 향할 웨이포인트의 인덱스. `index`(지난번 값)에서 시작해 웨이포인트에 `reach` 이내로 다가왔거나 `lineClear`가 (x, y)에서 다음 웨이포인트를 보면 넘어갑니다. 줄지 않고 마지막에서 멈춥니다. 도착 판정은 호출자의 몫입니다.                                                                                                                                 |
+| `remainingClear(waypoints, index, x, y, segmentClear)`         | (x, y) → `waypoints[index]` → … → 마지막 웨이포인트의 남은 구간이 모두 `segmentClear`를 통과하는지. 건물 배치가 바뀐 뒤 "남은 길이 막혔을 때만 다시 찾기"에 씁니다. 지나간 구간은 보지 않고, 빈 경로는 false.                                                                                                                                                 |
+
+- **비용·통과 규칙은 거리장과 같습니다**: 8방향 `stepCell`(직선 10·대각 14, 칸 통과 `passable`, 변 통과 `passableEdge`, 모서리 가로지르기 금지)을 그대로 씁니다. 휴리스틱은 목표 칸들을 감싸는 사각형까지의 옥타일 거리(`10·큰 차 + 4·작은 차`)라 어느 목표까지의 실제 비용보다 크지 않고 일관되므로, 찾은 경로의 비용은 `new DistanceField(grid, goals).distance(start)`와 같습니다. 경로 자체는 동률 처리 때문에 `descend`와 다를 수 있습니다.
+- **결정론**: 정수 비용만 쓰고, 힙의 순서는 f(= g + h)가 작은 칸 → h가 작은 칸 → 칸 번호가 작은 칸입니다. 이웃은 방향 순서로 보고 비용이 더 작을 때만 바꿉니다. 시간·난수·`Map` 순회가 없어 같은 격자·통과 판정·입력이면 탐색기를 새로 만들든 재사용하든 같은 경로입니다.
+- 경로를 들고 있는 것은 호출자입니다. 칸 번호 배열과 인덱스 하나라 스냅샷에 그대로 넣을 수 있습니다. 칸 번호는 그 격자(칸 크기·원점)에서만 뜻이 있습니다.
+
+```js
+const FINDER = new RouteFinder(GRID);
+const LINE_CLEAR = (x0, y0, x1, y1) => OBSTACLES.segmentClear(x0, y0, x1, y1, UNIT_RADIUS, null, true, 0);
+
+// 목표가 바뀌었을 때만 찾아 저장합니다.
+const START = GRID.nearestOpen(GRID.cellAt(unit.x, unit.y));
+const CELLS = START < 0 ? null : FINDER.find(START, GRID.openCellsWithin(goal.x, goal.y, goal.radius), {}, SCRATCH);
+unit.route = CELLS && {
+    goal: goal.key,
+    revision: GRID.revision,
+    waypoints: FINDER.waypoints(CELLS, LINE_CLEAR),
+    index: 0,
+};
+
+// 건물 배치가 바뀌었으면 남은 길이 막혔을 때만 버립니다.
+if (unit.route && unit.route.revision !== GRID.revision) {
+    const R = unit.route;
+    unit.route = FINDER.remainingClear(R.waypoints, R.index, unit.x, unit.y, LINE_CLEAR)
+        ? { ...R, revision: GRID.revision }
+        : null;
+}
+
+// 매 틱: 지난 웨이포인트는 건너뛰고 지금 향할 칸 중심으로 걷습니다.
+unit.route.index = FINDER.advance(unit.route.waypoints, unit.route.index, unit.x, unit.y, STEP, LINE_CLEAR);
+const CELL = unit.route.waypoints[unit.route.index];
+moveToward(unit, GRID.centerX(CELL), GRID.centerY(CELL));
+```
+
 ## FieldCache
 
 `new FieldCache(grid, { capacity = Infinity })`: 키로 거리장을 보관합니다. 무엇을 키로 삼을지, 언제 새로 만들지는 호출자가 정하고 이 클래스는 세 가지만 맡습니다.
@@ -102,7 +158,7 @@ const GRID = new PathGrid({ width, height, cellSize: 16, passable: (x, y) => OBS
 
 ## 결정론
 
-시간·난수·DOM·`Map` 순회가 없습니다. 비용은 정수이고, 힙은 `(비용, 칸 번호)`를 한 수로 묶어 비용이 같으면 칸 번호가 작은 쪽을 먼저 꺼냅니다. 내려가기의 동률은 방향 순서, `nearestOpen`의 동률은 훑는 순서가 정합니다. 같은 격자·통과 판정·출발 칸이면 같은 거리장이고, 어느 칸을 먼저 물었는지와 상관없이 확정된 칸의 값은 같습니다.
+`RouteFinder`의 동률 규칙은 위 [RouteFinder](#routefinder-a) 절에 있습니다. 시간·난수·DOM·`Map` 순회가 없습니다. 비용은 정수이고, 힙은 `(비용, 칸 번호)`를 한 수로 묶어 비용이 같으면 칸 번호가 작은 쪽을 먼저 꺼냅니다. 내려가기의 동률은 방향 순서, `nearestOpen`의 동률은 훑는 순서가 정합니다. 같은 격자·통과 판정·출발 칸이면 같은 거리장이고, 어느 칸을 먼저 물었는지와 상관없이 확정된 칸의 값은 같습니다.
 
 ## 라이브러리 대신 쓰는 이유
 
@@ -113,6 +169,8 @@ const GRID = new PathGrid({ width, height, cellSize: 16, passable: (x, y) => OBS
 | 모서리                     | `dontCrossCorners` 옵션                                    | `enableCornerCutting`                                                                   | 항상 금지(고정)                                                               |
 | 동점·순서                  | README에 계약이 없음                                       | README에 계약이 없음                                                                    | 방향 순서·칸 번호 순서가 계약, 정수 비용이라 시뮬레이션 체크섬에 넣을 수 있음 |
 | 할당                       | 경로 배열을 새로 만듦                                      | 경로 배열을 새로 만듦                                                                   | 호출자의 `out` 배열을 채움                                                    |
+
+A\*(`RouteFinder`)도 이 라이브러리들로 대신하지 않습니다. 기존 `PathGrid`와 같은 통과 규칙(칸·변 통과 판정 캐시, 모서리 금지)·비용·동률 결정론을 공유해야 같은 격자에서 거리장과 같은 최단 비용이 나오고, 라이브러리 격자에는 `passableEdge` 같은 변 통과 판정과 동률 계약이 없어 모듈 안에 둡니다.
 
 결정론 시뮬레이션에서 수백 마리가 같은 목표로 매 틱 걸어야 하고(경로를 만들면 탐색이 마릿수에 비례합니다), 길 위의 동점이 모든 피어에서 같게 풀려야 해서 직접 둡니다. 한 쌍의 경로가 필요한 게임은 이 라이브러리들이 맞습니다.
 
@@ -135,5 +193,7 @@ const GRID = new PathGrid({ width, height, cellSize: 16, passable: (x, y) => OBS
 달라지는 점: 힙 키의 곱수가 65536 고정에서 칸 수 이상의 2의 거듭제곱으로 바뀌어 칸이 65,536개를 넘어도 됩니다(키 순서는 같습니다). 원본의 `settled(cell)`은 쓰는 곳이 없어 옮기지 않았습니다. `descend`는 이웃 8칸의 열림을 모두 확인하지만(원본은 더 싼 이웃만), 통과 판정은 순수하므로 결과는 같습니다.
 
 ## 실행 예제
+
+"A\* 경로" 버튼을 켜면 같은 탭에서 목표가 바뀔 때만 A\*로 길을 찾아 보라색 웨이포인트로 저장하고 "한 걸음"이 `advance`로 그것을 따라갑니다(출력의 `route.cost`가 거리장 `cost`와 같습니다).
 
 work-scheduler 예제의 "거리장" 탭([바로 보기](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/work-scheduler.html#tab=pathfield))에서 캔버스를 누르거나 끌어 목표를 정하면, 곧장 가는 선이 벽에 막힌 유닛이 어느 칸으로 내려가는지(밝기 = 비용)와 "유닛 칸까지만 퍼뜨림 / 전부 계산"의 차이를 봅니다. 장애물은 geometry의 `ObstacleField`입니다. 고정 시나리오: `node modules/pathfield/tests/pathfield.e2e.mjs`(core 목록), `project/tests/previews.mjs`의 거리장 탭(마우스·화살표 키·걸음·터치 에뮬레이션).

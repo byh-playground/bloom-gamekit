@@ -181,6 +181,7 @@
                 "한 걸음"은 유닛을 초록 점으로 옮깁니다. 몇 칸을 내려갈지, 어느 칸을 고를지는 이 예제가 정한 것이고
                 모듈은 내려가는 칸 목록만 줍니다. 화살표 키로 목표를 한 칸씩 옮길 수 있습니다.
             </li>
+            <li>"A* 경로"를 켜면 길을 한 번 찾아 저장한 보라색 웨이포인트를 "한 걸음"이 따라갑니다.</li>
         </ul>
         <canvas
             id="pathfield-canvas"
@@ -193,6 +194,7 @@
         <div>
             <button id="pathfield-step">한 걸음</button>
             <button id="pathfield-full" aria-pressed="false">전부 계산</button>
+            <button id="pathfield-astar" aria-pressed="false">A* 경로</button>
             <button id="pathfield-reset">처음으로</button>
         </div>
         <pre id="pathfield-output"></pre>
@@ -651,7 +653,7 @@
     </script>
     <script type="module">
         import { ObstacleField } from '../../../dist/geometry.js';
-        import { DistanceField, PathGrid, UNREACHED } from '../../../dist/pathfield.js';
+        import { DistanceField, PathGrid, RouteFinder, UNREACHED } from '../../../dist/pathfield.js';
 
         // 장면은 이 예제의 것입니다. 좌표는 캔버스(480×320) 그대로이고, 격자 칸은 16입니다.
         const WORLD = { width: 480, height: 320 },
@@ -691,11 +693,38 @@
                 cellSize: CELL,
                 passable: (x, y) => OBSTACLES.pointClear(x, y, RADIUS),
             }),
+            // A*는 격자마다 하나 만들어 재사용합니다. 직선 판정은 웨이포인트 줄이기와 따라가기에 함께 씁니다.
+            FINDER = new RouteFinder(GRID),
+            LINE_CLEAR = (x0, y0, x1, y1) => OBSTACLES.segmentClear(x0, y0, x1, y1, RADIUS, null, true, 0),
             CANVAS = document.querySelector('#pathfield-canvas'),
             CONTEXT = CANVAS.getContext('2d'),
-            STATE = { unit: { ...START }, goal: { x: 440, y: 200 }, full: false, view: null };
+            STATE = {
+                unit: { ...START },
+                goal: { x: 440, y: 200 },
+                full: false,
+                astar: false,
+                route: null,
+                view: null,
+            };
+
+        // 유닛 상태에 저장하는 값: 웨이포인트(칸 번호)와 인덱스 하나. 목표가 바뀔 때만 다시 찾습니다.
+        function planRoute() {
+            const START_CELL = GRID.nearestOpen(GRID.cellAt(STATE.unit.x, STATE.unit.y)),
+                GOAL_CELL = GRID.nearestOpen(GRID.cellAt(STATE.goal.x, STATE.goal.y)),
+                CELLS = START_CELL < 0 || GOAL_CELL < 0 ? null : FINDER.find(START_CELL, [GOAL_CELL]);
+            STATE.route = CELLS && {
+                cells: CELLS.slice(),
+                waypoints: FINDER.waypoints(CELLS, LINE_CLEAR),
+                index: 0,
+                cost: FINDER.cost,
+                expanded: FINDER.expanded,
+            };
+        }
 
         function compute() {
+            if (STATE.astar && STATE.route === null) {
+                planRoute();
+            }
             const GOAL_CELL = GRID.nearestOpen(GRID.cellAt(STATE.goal.x, STATE.goal.y)),
                 START_CELL = GRID.nearestOpen(GRID.cellAt(STATE.unit.x, STATE.unit.y)),
                 FIELD = new DistanceField(GRID, [GOAL_CELL]),
@@ -803,6 +832,30 @@
                 CONTEXT.lineTo(GRID.centerX(CELL_NUMBER), GRID.centerY(CELL_NUMBER));
             }
             CONTEXT.stroke();
+            if (STATE.astar && STATE.route) {
+                // A*가 걸은 칸(가는 선)과 저장한 웨이포인트(굵은 보라 선). 이미 지난 웨이포인트는 그리지 않습니다.
+                const ROUTE = STATE.route;
+                CONTEXT.strokeStyle = '#7d6bb3';
+                CONTEXT.lineWidth = 1;
+                CONTEXT.beginPath();
+                ROUTE.cells.forEach((cell, i) =>
+                    i
+                        ? CONTEXT.lineTo(GRID.centerX(cell), GRID.centerY(cell))
+                        : CONTEXT.moveTo(GRID.centerX(cell), GRID.centerY(cell)),
+                );
+                CONTEXT.stroke();
+                CONTEXT.strokeStyle = '#b9a6ff';
+                CONTEXT.lineWidth = 3;
+                CONTEXT.beginPath();
+                CONTEXT.moveTo(STATE.unit.x, STATE.unit.y);
+                for (let i = ROUTE.index; i < ROUTE.waypoints.length; i++) {
+                    CONTEXT.lineTo(GRID.centerX(ROUTE.waypoints[i]), GRID.centerY(ROUTE.waypoints[i]));
+                }
+                CONTEXT.stroke();
+                for (let i = ROUTE.index; i < ROUTE.waypoints.length; i++) {
+                    circle(GRID.centerX(ROUTE.waypoints[i]), GRID.centerY(ROUTE.waypoints[i]), 3, '#b9a6ff', '#111c24');
+                }
+            }
             circle(VIEW.waypoint.x, VIEW.waypoint.y, 5, '#7fc97f', '#111c24');
             circle(STATE.goal.x, STATE.goal.y, 7, '#c9863f', '#e0a458');
             circle(STATE.unit.x, STATE.unit.y, RADIUS, '#2b6f86', '#6cb2e8');
@@ -831,11 +884,24 @@
                     waypoint: VIEW.waypoint,
                     straightRayClear: VIEW.straight,
                     full: STATE.full,
+                    astar: STATE.astar,
+                    route:
+                        STATE.astar && STATE.route
+                            ? {
+                                  cost: STATE.route.cost,
+                                  expanded: STATE.route.expanded,
+                                  waypoints: STATE.route.waypoints.map(
+                                      (cell) => `${GRID.colOf(cell)},${GRID.rowOf(cell)}`,
+                                  ),
+                                  index: STATE.route.index,
+                              }
+                            : null,
                 },
                 null,
                 2,
             );
             document.querySelector('#pathfield-full').setAttribute('aria-pressed', String(STATE.full));
+            document.querySelector('#pathfield-astar').setAttribute('aria-pressed', String(STATE.astar));
         }
 
         function setGoal(x, y) {
@@ -843,6 +909,7 @@
                 x: Math.round(Math.min(WORLD.width, Math.max(0, x))),
                 y: Math.round(Math.min(WORLD.height, Math.max(0, y))),
             };
+            STATE.route = null;
             render();
         }
 
@@ -874,15 +941,29 @@
             }
         });
         document.querySelector('#pathfield-step').addEventListener('click', () => {
-            STATE.unit = { ...STATE.view.waypoint };
+            const ROUTE = STATE.astar ? STATE.route : null;
+            if (ROUTE) {
+                // 저장된 웨이포인트에서 지금 향할 것을 고르고(지난 것은 건너뜀) 그 칸 중심으로 옮깁니다.
+                ROUTE.index = FINDER.advance(ROUTE.waypoints, ROUTE.index, STATE.unit.x, STATE.unit.y, 1, LINE_CLEAR);
+                const CELL = ROUTE.waypoints[ROUTE.index];
+                STATE.unit = { x: GRID.centerX(CELL), y: GRID.centerY(CELL) };
+            } else if (!STATE.astar) {
+                STATE.unit = { ...STATE.view.waypoint };
+            }
             render();
         });
         document.querySelector('#pathfield-full').addEventListener('click', () => {
             STATE.full = !STATE.full;
             render();
         });
+        document.querySelector('#pathfield-astar').addEventListener('click', () => {
+            STATE.astar = !STATE.astar;
+            STATE.route = null;
+            render();
+        });
         document.querySelector('#pathfield-reset').addEventListener('click', () => {
             STATE.unit = { ...START };
+            STATE.route = null;
             render();
         });
         window.pathfieldExample = { setGoal, state: STATE };
