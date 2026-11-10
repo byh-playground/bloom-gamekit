@@ -181,6 +181,7 @@
                 "한 걸음"은 유닛을 초록 점으로 옮깁니다. 몇 칸을 내려갈지, 어느 칸을 고를지는 이 예제가 정한 것이고
                 모듈은 내려가는 칸 목록만 줍니다. 화살표 키로 목표를 한 칸씩 옮길 수 있습니다.
             </li>
+            <li>"A* 경로"를 켜면 길을 한 번 찾아 저장한 보라색 웨이포인트를 "한 걸음"이 따라갑니다.</li>
         </ul>
         <canvas
             id="pathfield-canvas"
@@ -193,6 +194,7 @@
         <div>
             <button id="pathfield-step">한 걸음</button>
             <button id="pathfield-full" aria-pressed="false">전부 계산</button>
+            <button id="pathfield-astar" aria-pressed="false">A* 경로</button>
             <button id="pathfield-reset">처음으로</button>
         </div>
         <pre id="pathfield-output"></pre>
@@ -3222,6 +3224,305 @@
       return out;
     }
   };
+  var NO_PARENT = -1;
+  var MAX_STAMP = 4294967295;
+  var H_SCALE = 2 ** 26;
+  function octile(dx, dy) {
+    return dx > dy ? 10 * dx + 4 * dy : 10 * dy + 4 * dx;
+  }
+  var RouteFinder = class {
+    grid;
+    /** 마지막 `find`의 결과: `'found'`, `'unreachable'`(닿을 수 없음), `'limit'`(확장 한도 초과). */
+    status = "unreachable";
+    /** 마지막 `find`가 찾은 경로의 걸음 비용. 찾지 못했으면 -1. */
+    cost = -1;
+    /** 마지막 `find`가 확정(확장)한 칸 수. */
+    expanded = 0;
+    #stamp = 0;
+    #seen;
+    #closed;
+    #goal;
+    #g;
+    #h;
+    #key;
+    #parent;
+    #heap;
+    #heapIndex;
+    #heapSize = 0;
+    /** @param {PathGrid} grid */
+    constructor(grid) {
+      if (!(grid instanceof PathGrid)) {
+        throw new TypeError("RouteFinder needs a PathGrid.");
+      }
+      this.grid = grid;
+      const SIZE = grid.size;
+      this.#seen = new Uint32Array(SIZE);
+      this.#closed = new Uint32Array(SIZE);
+      this.#goal = new Uint32Array(SIZE);
+      this.#g = new Int32Array(SIZE);
+      this.#h = new Int32Array(SIZE);
+      this.#key = new Float64Array(SIZE);
+      this.#parent = new Int32Array(SIZE);
+      this.#heap = new Int32Array(SIZE);
+      this.#heapIndex = new Int32Array(SIZE);
+    }
+    /**
+     * `start` 칸에서 `goals` 칸 중 가장 싼 칸까지의 최단 경로를 `out`(먼저 비움)에 칸 번호로 채워 돌려줍니다(시작·목표 칸 포함).
+     * 닿을 수 없거나 확장한 칸이 `maxExpanded`를 넘으면 null이고 `status`가 이유를 알려 줍니다. `start`가 막힌 칸이면 null,
+     * `start`가 목표 칸이면 `[start]`입니다. 막힌 목표 칸에는 닿지 않습니다.
+     * @param {number} start
+     * @param {ArrayLike<number>} goals
+     * @param {{ maxExpanded?: number }} [options]
+     * @param {number[]} [out]
+     */
+    find(start, goals, options = {}, out = []) {
+      out.length = 0;
+      const GRID2 = this.grid, COLS = GRID2.cols, MAX_EXPANDED = options.maxExpanded ?? GRID2.size;
+      if (!Number.isInteger(start) || start < 0 || start >= GRID2.size) {
+        throw new RangeError(`RouteFinder start ${start} is not a cell of the grid.`);
+      }
+      if (!(MAX_EXPANDED >= 0)) {
+        throw new RangeError("RouteFinder maxExpanded must be a non-negative number.");
+      }
+      const STAMP = this.#nextStamp(), GOAL = this.#goal;
+      let minCol = Infinity, maxCol = -Infinity, minRow = Infinity, maxRow = -Infinity;
+      for (let i = 0; i < goals.length; i++) {
+        const CELL2 = goals[i];
+        if (!Number.isInteger(CELL2) || CELL2 < 0 || CELL2 >= GRID2.size) {
+          throw new RangeError(`RouteFinder goal ${CELL2} is not a cell of the grid.`);
+        }
+        GOAL[CELL2] = STAMP;
+        const COL = CELL2 % COLS, ROW = (CELL2 - COL) / COLS;
+        minCol = Math.min(minCol, COL);
+        maxCol = Math.max(maxCol, COL);
+        minRow = Math.min(minRow, ROW);
+        maxRow = Math.max(maxRow, ROW);
+      }
+      this.cost = -1;
+      this.expanded = 0;
+      this.#heapSize = 0;
+      if (!goals.length || !GRID2.isOpen(start)) {
+        this.status = "unreachable";
+        return null;
+      }
+      const SEEN = this.#seen, CLOSED = this.#closed, G = this.#g, H = this.#h, KEY = this.#key, PARENT = this.#parent;
+      const HEURISTIC = (col, row) => octile(
+        col < minCol ? minCol - col : col > maxCol ? col - maxCol : 0,
+        row < minRow ? minRow - row : row > maxRow ? row - maxRow : 0
+      );
+      {
+        const COL = start % COLS;
+        SEEN[start] = STAMP;
+        G[start] = 0;
+        H[start] = HEURISTIC(COL, (start - COL) / COLS);
+        KEY[start] = H[start] * H_SCALE + H[start];
+        PARENT[start] = NO_PARENT;
+        this.#push(start);
+      }
+      while (this.#heapSize) {
+        const CELL2 = this.#pop();
+        if (GOAL[CELL2] === STAMP) {
+          this.status = "found";
+          this.cost = G[CELL2];
+          for (let cell = CELL2; cell !== NO_PARENT; cell = PARENT[cell]) {
+            out.push(cell);
+          }
+          out.reverse();
+          return out;
+        }
+        if (this.expanded >= MAX_EXPANDED) {
+          this.status = "limit";
+          return null;
+        }
+        CLOSED[CELL2] = STAMP;
+        this.expanded++;
+        const COL = CELL2 % COLS, ROW = (CELL2 - COL) / COLS, COST = G[CELL2];
+        for (let direction = 0; direction < DIRECTION_COUNT; direction++) {
+          const NEXT = GRID2.stepCell(COL, ROW, direction);
+          if (NEXT < 0 || CLOSED[NEXT] === STAMP) {
+            continue;
+          }
+          const TOTAL = COST + DIRECTION_COST[direction];
+          if (SEEN[NEXT] !== STAMP) {
+            const NEXT_COL = NEXT % COLS;
+            SEEN[NEXT] = STAMP;
+            H[NEXT] = HEURISTIC(NEXT_COL, (NEXT - NEXT_COL) / COLS);
+            G[NEXT] = TOTAL;
+            KEY[NEXT] = (TOTAL + H[NEXT]) * H_SCALE + H[NEXT];
+            PARENT[NEXT] = CELL2;
+            this.#push(NEXT);
+          } else if (TOTAL < G[NEXT]) {
+            G[NEXT] = TOTAL;
+            KEY[NEXT] = (TOTAL + H[NEXT]) * H_SCALE + H[NEXT];
+            PARENT[NEXT] = CELL2;
+            this.#siftUp(this.#heapIndex[NEXT]);
+          }
+        }
+      }
+      this.status = "unreachable";
+      return null;
+    }
+    /**
+     * 칸 경로를 꺾이는 칸만 남긴 웨이포인트(칸 번호)로 줄여 `out`(먼저 비움)에 채웁니다. 첫 칸과 마지막 칸은 항상 남습니다.
+     * `lineClear(x0, y0, x1, y1)`(두 칸 중심 사이를 막힘 없이 갈 수 있는가)를 주면, 남은 웨이포인트 중 보이는 가장 먼 것으로
+     * 건너뛰어 더 줄입니다. 콜백은 순수해야 하고, 결과의 이웃한 두 웨이포인트는 격자 직선이거나 콜백이 통과시킨 구간입니다.
+     * @param {ArrayLike<number>} cells `find`의 결과.
+     * @param {((x0: number, y0: number, x1: number, y1: number) => boolean) | null} [lineClear]
+     * @param {number[]} [out]
+     */
+    waypoints(cells, lineClear = null, out = []) {
+      out.length = 0;
+      const GRID2 = this.grid, COLS = GRID2.cols, LENGTH = cells.length;
+      if (!LENGTH) {
+        return out;
+      }
+      out.push(cells[0]);
+      for (let i = 1; i < LENGTH - 1; i++) {
+        const PREVIOUS = cells[i - 1], CELL2 = cells[i], NEXT = cells[i + 1];
+        if (CELL2 % COLS - PREVIOUS % COLS !== NEXT % COLS - CELL2 % COLS || Math.floor(CELL2 / COLS) - Math.floor(PREVIOUS / COLS) !== Math.floor(NEXT / COLS) - Math.floor(CELL2 / COLS)) {
+          out.push(CELL2);
+        }
+      }
+      if (LENGTH > 1) {
+        out.push(cells[LENGTH - 1]);
+      }
+      if (lineClear === null || out.length < 3) {
+        return out;
+      }
+      let kept = 1, anchor = out[0];
+      for (let i = 1; i < out.length - 1; i++) {
+        const NEXT = out[i + 1];
+        if (!lineClear(GRID2.centerX(anchor), GRID2.centerY(anchor), GRID2.centerX(NEXT), GRID2.centerY(NEXT))) {
+          anchor = out[i];
+          out[kept++] = anchor;
+        }
+      }
+      out[kept++] = out[out.length - 1];
+      out.length = kept;
+      return out;
+    }
+    /**
+     * 저장된 웨이포인트를 따라갈 때 지금 향할 웨이포인트의 인덱스입니다. `index`(지난번 값)에서 시작해, 웨이포인트에
+     * `reach` 이내로 다가왔거나 `lineClear`가 (x, y)에서 다음 웨이포인트를 막힘 없이 본다면 다음으로 넘어갑니다. 인덱스는
+     * 줄지 않고 마지막 웨이포인트에서 멈춥니다. 도착 판정(마지막 웨이포인트나 목표에 닿았는가)은 호출자의 몫입니다.
+     * @param {ArrayLike<number>} waypoints
+     * @param {number} index
+     * @param {number} x
+     * @param {number} y
+     * @param {number} [reach]
+     * @param {((x0: number, y0: number, x1: number, y1: number) => boolean) | null} [lineClear]
+     */
+    advance(waypoints, index, x, y, reach = 0, lineClear = null) {
+      const GRID2 = this.grid, LAST = waypoints.length - 1, REACH_SQUARED = reach * reach;
+      let current = Math.max(0, Math.min(index, LAST));
+      while (current < LAST) {
+        const CELL2 = waypoints[current], DX = GRID2.centerX(CELL2) - x, DY = GRID2.centerY(CELL2) - y;
+        if (DX * DX + DY * DY <= REACH_SQUARED) {
+          current++;
+          continue;
+        }
+        const NEXT = waypoints[current + 1];
+        if (lineClear !== null && lineClear(x, y, GRID2.centerX(NEXT), GRID2.centerY(NEXT))) {
+          current++;
+          continue;
+        }
+        break;
+      }
+      return current;
+    }
+    /**
+     * (x, y)에서 `waypoints[index]`로, 거기서 마지막 웨이포인트까지 이어지는 남은 구간이 모두 `segmentClear`를 통과하는지.
+     * 건물 배치가 바뀐 뒤 저장된 경로를 버릴지(다시 찾을지) 정할 때 씁니다. 지나간 구간은 보지 않습니다.
+     * @param {ArrayLike<number>} waypoints
+     * @param {number} index
+     * @param {number} x
+     * @param {number} y
+     * @param {(x0: number, y0: number, x1: number, y1: number) => boolean} segmentClear
+     */
+    remainingClear(waypoints, index, x, y, segmentClear) {
+      if (typeof segmentClear !== "function") {
+        throw new TypeError("RouteFinder remainingClear needs a segmentClear function.");
+      }
+      const GRID2 = this.grid, LAST = waypoints.length - 1;
+      if (LAST < 0) {
+        return false;
+      }
+      let fromX = x, fromY = y;
+      for (let i = Math.max(0, Math.min(index, LAST)); i <= LAST; i++) {
+        const TO_X = GRID2.centerX(waypoints[i]), TO_Y = GRID2.centerY(waypoints[i]);
+        if (!segmentClear(fromX, fromY, TO_X, TO_Y)) {
+          return false;
+        }
+        fromX = TO_X;
+        fromY = TO_Y;
+      }
+      return true;
+    }
+    #nextStamp() {
+      if (this.#stamp === MAX_STAMP) {
+        this.#stamp = 0;
+        this.#seen.fill(0);
+        this.#closed.fill(0);
+        this.#goal.fill(0);
+      }
+      return ++this.#stamp;
+    }
+    #push(cell) {
+      const INDEX = this.#heapSize++;
+      this.#heap[INDEX] = cell;
+      this.#heapIndex[cell] = INDEX;
+      this.#siftUp(INDEX);
+    }
+    #pop() {
+      const HEAP = this.#heap, TOP = HEAP[0], LAST = HEAP[--this.#heapSize];
+      if (this.#heapSize) {
+        HEAP[0] = LAST;
+        this.#heapIndex[LAST] = 0;
+        this.#siftDown(0);
+      }
+      return TOP;
+    }
+    #siftUp(index) {
+      const HEAP = this.#heap, HEAP_INDEX = this.#heapIndex, KEY = this.#key, CELL2 = HEAP[index], CELL_KEY = KEY[CELL2];
+      let i = index;
+      while (i > 0) {
+        const PARENT = i - 1 >> 1, PARENT_CELL = HEAP[PARENT], PARENT_KEY = KEY[PARENT_CELL];
+        if (PARENT_KEY < CELL_KEY || PARENT_KEY === CELL_KEY && PARENT_CELL < CELL2) {
+          break;
+        }
+        HEAP[i] = PARENT_CELL;
+        HEAP_INDEX[PARENT_CELL] = i;
+        i = PARENT;
+      }
+      HEAP[i] = CELL2;
+      HEAP_INDEX[CELL2] = i;
+    }
+    #siftDown(index) {
+      const HEAP = this.#heap, HEAP_INDEX = this.#heapIndex, KEY = this.#key, SIZE = this.#heapSize, CELL2 = HEAP[index], CELL_KEY = KEY[CELL2];
+      let i = index;
+      for (; ; ) {
+        let child = 2 * i + 1;
+        if (child >= SIZE) {
+          break;
+        }
+        if (child + 1 < SIZE) {
+          const LEFT_KEY = KEY[HEAP[child]], RIGHT_KEY = KEY[HEAP[child + 1]];
+          if (RIGHT_KEY < LEFT_KEY || RIGHT_KEY === LEFT_KEY && HEAP[child + 1] < HEAP[child]) {
+            child++;
+          }
+        }
+        const CHILD_KEY = KEY[HEAP[child]];
+        if (CELL_KEY < CHILD_KEY || CELL_KEY === CHILD_KEY && CELL2 < HEAP[child]) {
+          break;
+        }
+        HEAP[i] = HEAP[child];
+        HEAP_INDEX[HEAP[child]] = i;
+        i = child;
+      }
+      HEAP[i] = CELL2;
+      HEAP_INDEX[CELL2] = i;
+    }
+  };
 
   // modules/work-scheduler/examples/modules/work-scheduler/examples/index.html
   var WORLD = { width: 480, height: 320 };
@@ -3260,10 +3561,32 @@
     cellSize: CELL,
     passable: (x, y) => OBSTACLES.pointClear(x, y, RADIUS)
   });
+  var FINDER = new RouteFinder(GRID);
+  var LINE_CLEAR = (x0, y0, x1, y1) => OBSTACLES.segmentClear(x0, y0, x1, y1, RADIUS, null, true, 0);
   var CANVAS = document.querySelector("#pathfield-canvas");
   var CONTEXT = CANVAS.getContext("2d");
-  var STATE = { unit: { ...START }, goal: { x: 440, y: 200 }, full: false, view: null };
+  var STATE = {
+    unit: { ...START },
+    goal: { x: 440, y: 200 },
+    full: false,
+    astar: false,
+    route: null,
+    view: null
+  };
+  function planRoute() {
+    const START_CELL = GRID.nearestOpen(GRID.cellAt(STATE.unit.x, STATE.unit.y)), GOAL_CELL = GRID.nearestOpen(GRID.cellAt(STATE.goal.x, STATE.goal.y)), CELLS = START_CELL < 0 || GOAL_CELL < 0 ? null : FINDER.find(START_CELL, [GOAL_CELL]);
+    STATE.route = CELLS && {
+      cells: CELLS.slice(),
+      waypoints: FINDER.waypoints(CELLS, LINE_CLEAR),
+      index: 0,
+      cost: FINDER.cost,
+      expanded: FINDER.expanded
+    };
+  }
   function compute() {
+    if (STATE.astar && STATE.route === null) {
+      planRoute();
+    }
     const GOAL_CELL = GRID.nearestOpen(GRID.cellAt(STATE.goal.x, STATE.goal.y)), START_CELL = GRID.nearestOpen(GRID.cellAt(STATE.unit.x, STATE.unit.y)), FIELD = new DistanceField(GRID, [GOAL_CELL]), COST = FIELD.distance(START_CELL);
     if (STATE.full) {
       FIELD.settle();
@@ -3357,6 +3680,27 @@
       CONTEXT.lineTo(GRID.centerX(CELL_NUMBER), GRID.centerY(CELL_NUMBER));
     }
     CONTEXT.stroke();
+    if (STATE.astar && STATE.route) {
+      const ROUTE = STATE.route;
+      CONTEXT.strokeStyle = "#7d6bb3";
+      CONTEXT.lineWidth = 1;
+      CONTEXT.beginPath();
+      ROUTE.cells.forEach(
+        (cell, i) => i ? CONTEXT.lineTo(GRID.centerX(cell), GRID.centerY(cell)) : CONTEXT.moveTo(GRID.centerX(cell), GRID.centerY(cell))
+      );
+      CONTEXT.stroke();
+      CONTEXT.strokeStyle = "#b9a6ff";
+      CONTEXT.lineWidth = 3;
+      CONTEXT.beginPath();
+      CONTEXT.moveTo(STATE.unit.x, STATE.unit.y);
+      for (let i = ROUTE.index; i < ROUTE.waypoints.length; i++) {
+        CONTEXT.lineTo(GRID.centerX(ROUTE.waypoints[i]), GRID.centerY(ROUTE.waypoints[i]));
+      }
+      CONTEXT.stroke();
+      for (let i = ROUTE.index; i < ROUTE.waypoints.length; i++) {
+        circle(GRID.centerX(ROUTE.waypoints[i]), GRID.centerY(ROUTE.waypoints[i]), 3, "#b9a6ff", "#111c24");
+      }
+    }
     circle(VIEW.waypoint.x, VIEW.waypoint.y, 5, "#7fc97f", "#111c24");
     circle(STATE.goal.x, STATE.goal.y, 7, "#c9863f", "#e0a458");
     circle(STATE.unit.x, STATE.unit.y, RADIUS, "#2b6f86", "#6cb2e8");
@@ -3380,18 +3724,29 @@
         path: VIEW.path.map((cell) => `${GRID.colOf(cell)},${GRID.rowOf(cell)}`),
         waypoint: VIEW.waypoint,
         straightRayClear: VIEW.straight,
-        full: STATE.full
+        full: STATE.full,
+        astar: STATE.astar,
+        route: STATE.astar && STATE.route ? {
+          cost: STATE.route.cost,
+          expanded: STATE.route.expanded,
+          waypoints: STATE.route.waypoints.map(
+            (cell) => `${GRID.colOf(cell)},${GRID.rowOf(cell)}`
+          ),
+          index: STATE.route.index
+        } : null
       },
       null,
       2
     );
     document.querySelector("#pathfield-full").setAttribute("aria-pressed", String(STATE.full));
+    document.querySelector("#pathfield-astar").setAttribute("aria-pressed", String(STATE.astar));
   }
   function setGoal(x, y) {
     STATE.goal = {
       x: Math.round(Math.min(WORLD.width, Math.max(0, x))),
       y: Math.round(Math.min(WORLD.height, Math.max(0, y)))
     };
+    STATE.route = null;
     render();
   }
   function fromPointer(event) {
@@ -3419,15 +3774,28 @@
     }
   });
   document.querySelector("#pathfield-step").addEventListener("click", () => {
-    STATE.unit = { ...STATE.view.waypoint };
+    const ROUTE = STATE.astar ? STATE.route : null;
+    if (ROUTE) {
+      ROUTE.index = FINDER.advance(ROUTE.waypoints, ROUTE.index, STATE.unit.x, STATE.unit.y, 1, LINE_CLEAR);
+      const CELL2 = ROUTE.waypoints[ROUTE.index];
+      STATE.unit = { x: GRID.centerX(CELL2), y: GRID.centerY(CELL2) };
+    } else if (!STATE.astar) {
+      STATE.unit = { ...STATE.view.waypoint };
+    }
     render();
   });
   document.querySelector("#pathfield-full").addEventListener("click", () => {
     STATE.full = !STATE.full;
     render();
   });
+  document.querySelector("#pathfield-astar").addEventListener("click", () => {
+    STATE.astar = !STATE.astar;
+    STATE.route = null;
+    render();
+  });
   document.querySelector("#pathfield-reset").addEventListener("click", () => {
     STATE.unit = { ...START };
+    STATE.route = null;
     render();
   });
   window.pathfieldExample = { setGoal, state: STATE };
