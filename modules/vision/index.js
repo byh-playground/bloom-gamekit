@@ -1,9 +1,9 @@
 // 칸 격자 위 시야 판정입니다.
 // - VisionMap: 지형을 칸마다 높이 층(level)과 막힌 칸으로 담은 불변 래스터입니다. 모든 팀이 하나를 공유합니다.
-// - VisionField: 한 팀의 시야 칸 격자입니다. 관찰자 목록을 받아 보이는 칸을 세고, 바뀐 관찰자만 다시 칠합니다.
+// - VisionField: 한 팀의 시야 칸 격자입니다. 관찰자를 begin/observe/end로 받아 보이는 칸을 세고, 바뀐 관찰자만 다시 칠합니다.
 // 규칙은 한 가지입니다: 관찰자는 자기 칸에서 바깥으로 한 칸씩 걸어 나가며 칸을 비춥니다. 막힌 칸이나 자기보다 높은 칸을
 // 만나면 그 칸과 그 너머는 보이지 않습니다(칸 하나를 밝히는 길이 부모 칸 하나라서 선분 검사가 없습니다). 진영·유닛 종류·
-// 전투 같은 게임 의미는 담지 않으며, 관찰자 목록은 게임이 만들어 넘깁니다.
+// 전투 같은 게임 의미는 담지 않으며, 관찰자는 게임이 숫자 id로 하나씩 넘깁니다(관찰자 객체 배열을 만들 필요가 없습니다).
 // 시간·난수·DOM을 읽지 않고 Math.hypot 같은 구현 의존 함수를 쓰지 않습니다. 칸 번호는 좌표 ÷ 칸 크기의 floor, 거리 비교는
 // 칸 중심 사이의 정수 제곱거리라서 같은 입력은 어느 엔진에서도 같은 칸을 비춥니다.
 
@@ -102,27 +102,6 @@ function offsetsFor(radius) {
     }
     offsetTable = { radius: RADIUS, dx: DX, dy: DY, d2: D2S, parent: PARENT };
     return offsetTable;
-}
-
-function assertObserver(observer, maxRadius) {
-    if (observer === null || typeof observer !== 'object') {
-        throw new TypeError('VisionField observer must be an object.');
-    }
-    const { x: X, y: Y, radius: RADIUS } = observer;
-    if (typeof X !== 'number' || typeof Y !== 'number' || !Number.isFinite(X) || !Number.isFinite(Y)) {
-        throw new RangeError('VisionField observer x and y must be finite numbers.');
-    }
-    if (typeof RADIUS !== 'number' || !(RADIUS >= 0) || !(RADIUS <= maxRadius)) {
-        throw new RangeError(
-            `VisionField observer radius must be a number from 0 to ${maxRadius} (${MAX_RADIUS_CELLS} cells).`,
-        );
-    }
-    if (observer.xray !== true && (typeof observer.level !== 'number' || Number.isNaN(observer.level))) {
-        throw new TypeError('VisionField observer level must be a number (or set xray).');
-    }
-    if (observer.id === undefined) {
-        throw new TypeError('VisionField observer needs an id.');
-    }
 }
 
 /**
@@ -237,10 +216,25 @@ export class VisionMap {
     }
 }
 
+// 관찰자 한 명의 칠한 결과. 같은 id의 다음 갱신에서 비교하고, 지울 때 같은 칸을 뺍니다. 객체와 칸 버퍼는 재사용합니다.
+class ObserverRecord {
+    id = 0;
+    cell = 0;
+    radius = 0;
+    level = 0;
+    xray = false;
+    counts = null;
+    cells = new Int32Array(0);
+    count = 0;
+    epoch = 0;
+    // #active 안의 위치(지울 때 맞바꾸기용).
+    slot = 0;
+}
+
 /**
- * 한 팀의 시야 칸 격자입니다. `update(observers)`마다 관찰자 목록 전체를 받아, 칸·반경·높이 층이 바뀐 관찰자만
- * 다시 칠하고 사라진 관찰자의 칸을 지웁니다. 칸마다 "그 칸을 비추는 관찰자 수"를 높이 상한(ceiling)별로 세므로
- * 질의는 칸 하나를 읽는 일입니다.
+ * 한 팀의 시야 칸 격자입니다. `begin()` 뒤 관찰자마다 `observe(...)`, 마지막에 `end()`를 부르면, 칸·반경·높이 층이
+ * 바뀐 관찰자만 다시 칠하고 이번에 보이지 않은 관찰자의 칸을 지웁니다. 칸마다 "그 칸을 비추는 관찰자 수"를 높이
+ * 상한(ceiling)별로 세므로 질의는 칸 하나를 읽는 일입니다. 갱신은 새 객체를 만들지 않습니다(관찰자 기록과 칸 버퍼 재사용).
  */
 export class VisionField {
     /** 이 격자가 보는 지형. */
@@ -250,7 +244,11 @@ export class VisionField {
     #any;
     #layers = [];
     #records = new Map();
+    #active = [];
+    #spare = [];
     #epoch = 0;
+    #open = false;
+    #changed = false;
     #pass = new Uint8Array(0);
     #scratch = new Int32Array(0);
 
@@ -269,67 +267,116 @@ export class VisionField {
     }
 
     /**
-     * 관찰자 전체를 새 목록으로 바꿉니다. 이전 목록에 있던 `id`가 같고 칸·반경·높이 층·`xray`가 그대로면
-     * 다시 칠하지 않습니다. 같은 `id`가 한 목록에 여러 번 있어도 각각 따로 셉니다. 목록을 먼저 모두 검사하므로
-     * 잘못된 관찰자가 하나라도 있으면 던지고 격자는 그대로입니다.
-     * @param {readonly {id: string | number, x: number, y: number, radius: number, level: number, xray?: boolean}[]} observers
-     *   `radius`는 비추는 거리(좌표 단위, 0이면 아무것도 비추지 않음). `level`은 관찰자의 높이 층.
-     *   `xray`가 true면 막힌 칸과 높이를 모두 무시하고 반경 안의 모든 칸을 모든 높이에서 봅니다(`level`은 무시).
+     * 관찰자 목록 갱신을 시작합니다. 이어서 이번 목록의 관찰자마다 {@link VisionField#observe}를, 마지막에
+     * {@link VisionField#end}를 부릅니다.
      * @returns {VisionField} this
      */
-    update(observers) {
+    begin() {
+        // 지난 갱신이 observe 오류로 끝나지 못했으면 이미 반영된 변화를 revision에 남깁니다.
+        if (this.#open && this.#changed) {
+            this.#revision++;
+        }
+        this.#epoch++;
+        this.#open = true;
+        this.#changed = false;
+        return this;
+    }
+
+    /**
+     * 이번 목록에 관찰자 하나를 넣습니다. 지난 목록에 같은 `id`가 있었고 칸·반경·높이 층·`xray`가 그대로면 다시 칠하지 않습니다.
+     * 잘못된 값이면 던집니다. 그 전까지 넣은 관찰자는 이미 반영돼 있고, 다음 `begin()`부터 다시 하면 됩니다.
+     * @param {number} id 관찰자 번호(안전 정수). 한 갱신 안에서 겹치면 RangeError입니다. 진영·종류가 다른 개체는
+     *   숫자 조합 코드(예: 개체 번호 · 8 + 종류)로 겹치지 않게 만듭니다.
+     * @param {number} x
+     * @param {number} y
+     * @param {number} radius 비추는 거리(좌표 단위, 0이면 아무것도 비추지 않음, 최대 256칸)
+     * @param {number} level 관찰자의 높이 층
+     * @param {boolean} [xray] true면 막힌 칸과 높이를 모두 무시하고 반경 안의 모든 칸을 모든 높이에서 봅니다(`level`은 무시).
+     */
+    observe(id, x, y, radius, level, xray = false) {
+        if (!this.#open) {
+            throw new TypeError('VisionField.observe needs begin() first.');
+        }
         const MAP = this.map,
             MAX_RADIUS = MAX_RADIUS_CELLS * MAP.cellSize;
-        if (!Array.isArray(observers)) {
-            throw new TypeError('VisionField.update needs an array of observers.');
+        if (!Number.isSafeInteger(id)) {
+            throw new TypeError(`VisionField observer id must be a safe integer (got ${id}).`);
         }
-        for (const OBSERVER of observers) {
-            assertObserver(OBSERVER, MAX_RADIUS);
+        if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)) {
+            throw new RangeError('VisionField observer x and y must be finite numbers.');
         }
-        const EPOCH = ++this.#epoch;
-        let changed = false;
-        for (const OBSERVER of observers) {
-            const X = OBSERVER.x,
-                Y = OBSERVER.y,
-                RADIUS = OBSERVER.radius,
-                XRAY = OBSERVER.xray === true;
-            // 높이 층은 xray에서 칠하는 결과에 쓰이지 않으므로 0으로 맞춰 층 변화만으로 다시 칠하지 않게 합니다.
-            const LEVEL = XRAY ? 0 : OBSERVER.level,
-                CELL = MAP.cellAt(X, Y);
-            let id = OBSERVER.id,
-                record = this.#records.get(id);
-            // 이번 갱신에서 이미 쓴 id면 id#1, id#2…로 따로 셉니다(순서가 같으면 다음 갱신에도 같은 짝).
-            for (let n = 1; record !== undefined && record.epoch === EPOCH; n++) {
-                id = `${OBSERVER.id}#${n}`;
-                record = this.#records.get(id);
-            }
-            if (
-                record !== undefined &&
-                record.cell === CELL &&
-                record.radius === RADIUS &&
-                record.xray === XRAY &&
-                record.level === LEVEL
-            ) {
-                record.epoch = EPOCH;
+        if (typeof radius !== 'number' || !(radius >= 0) || !(radius <= MAX_RADIUS)) {
+            throw new RangeError(
+                `VisionField observer radius must be a number from 0 to ${MAX_RADIUS} (${MAX_RADIUS_CELLS} cells).`,
+            );
+        }
+        const XRAY = xray === true;
+        if (!XRAY && (typeof level !== 'number' || Number.isNaN(level))) {
+            throw new TypeError('VisionField observer level must be a number (or set xray).');
+        }
+        const EPOCH = this.#epoch;
+        // 높이 층은 xray에서 칠하는 결과에 쓰이지 않으므로 0으로 맞춰 층 변화만으로 다시 칠하지 않게 합니다.
+        const LEVEL = XRAY ? 0 : level,
+            CELL = MAP.cellAt(x, y);
+        let record = this.#records.get(id);
+        if (record !== undefined && record.epoch === EPOCH) {
+            throw new RangeError(`VisionField observer id ${id} appears twice in one update.`);
+        }
+        if (
+            record !== undefined &&
+            record.cell === CELL &&
+            record.radius === radius &&
+            record.xray === XRAY &&
+            record.level === LEVEL
+        ) {
+            record.epoch = EPOCH;
+            return this;
+        }
+        if (record !== undefined) {
+            this.#apply(record, -1);
+        } else {
+            record = this.#spare.pop() ?? new ObserverRecord();
+            record.id = id;
+            record.slot = this.#active.length;
+            this.#active.push(record);
+            this.#records.set(id, record);
+        }
+        this.#paint(record, CELL, radius, LEVEL, XRAY);
+        record.epoch = EPOCH;
+        this.#apply(record, 1);
+        this.#changed = true;
+        return this;
+    }
+
+    /**
+     * 갱신을 마칩니다. 이번에 `observe`되지 않은 관찰자의 칸을 지우고, 바뀐 것이 있으면 `revision`을 올립니다.
+     * @returns {VisionField} this
+     */
+    end() {
+        if (!this.#open) {
+            throw new TypeError('VisionField.end needs begin() first.');
+        }
+        this.#open = false;
+        const ACTIVE = this.#active,
+            EPOCH = this.#epoch;
+        // 칸 수는 더하고 빼는 순서와 무관하므로 맞바꿔 지워도 결과가 같습니다.
+        for (let i = ACTIVE.length - 1; i >= 0; i--) {
+            const RECORD = ACTIVE[i];
+            if (RECORD.epoch === EPOCH) {
                 continue;
             }
-            if (record !== undefined) {
-                this.#apply(record, -1);
+            this.#apply(RECORD, -1);
+            this.#records.delete(RECORD.id);
+            const LAST = ACTIVE.pop();
+            if (LAST !== RECORD) {
+                ACTIVE[RECORD.slot] = LAST;
+                LAST.slot = RECORD.slot;
             }
-            const NEXT = this.#paint(CELL, RADIUS, LEVEL, XRAY);
-            NEXT.epoch = EPOCH;
-            this.#records.set(id, NEXT);
-            this.#apply(NEXT, 1);
-            changed = true;
+            RECORD.counts = null;
+            this.#spare.push(RECORD);
+            this.#changed = true;
         }
-        for (const [ID, RECORD] of this.#records) {
-            if (RECORD.epoch !== EPOCH) {
-                this.#apply(RECORD, -1);
-                this.#records.delete(ID);
-                changed = true;
-            }
-        }
-        if (changed) {
+        if (this.#changed) {
             this.#revision++;
         }
         return this;
@@ -347,8 +394,9 @@ export class VisionField {
         if (!this.#any[CELL]) {
             return false;
         }
-        for (const LAYER of this.#layers) {
-            if (LAYER.ceiling >= targetLevel && LAYER.counts[CELL]) {
+        const LAYERS = this.#layers;
+        for (let i = 0; i < LAYERS.length; i++) {
+            if (LAYERS[i].ceiling >= targetLevel && LAYERS[i].counts[CELL]) {
                 return true;
             }
         }
@@ -364,10 +412,11 @@ export class VisionField {
         if (!this.#any[CELL]) {
             return -Infinity;
         }
+        const LAYERS = this.#layers;
         let best = -Infinity;
-        for (const LAYER of this.#layers) {
-            if (LAYER.counts[CELL] && LAYER.ceiling > best) {
-                best = LAYER.ceiling;
+        for (let i = 0; i < LAYERS.length; i++) {
+            if (LAYERS[i].counts[CELL] && LAYERS[i].ceiling > best) {
+                best = LAYERS[i].ceiling;
             }
         }
         return best;
@@ -375,8 +424,8 @@ export class VisionField {
 
     // 원점 칸에서 반경 안 칸을 가까운 순으로 걸으며, 부모 칸이 통과한 칸만 봅니다.
     //  보임 = 막히지 않았고(원점 칸 자체도) 원점이 아니면 관찰자보다 높지 않은 칸. xray는 모두 보임.
-    //  통과 = 보임. 보이지 않는 칸에서 길이 끊깁니다.
-    #paint(origin, radius, level, xray) {
+    //  통과 = 보임. 보이지 않는 칸에서 길이 끊깁니다. 결과는 record의 칸 버퍼(모자랄 때만 키움)에 씁니다.
+    #paint(record, origin, radius, level, xray) {
         const { cols: COLS, rows: ROWS, level: LEVELS, blocked: BLOCKED, cellSize: CELL_SIZE } = this.map,
             REACH = radius / CELL_SIZE,
             REACH2 = REACH * REACH,
@@ -411,32 +460,39 @@ export class VisionField {
         }
         // 반경 0은 자기 칸도 비추지 않습니다.
         const COUNT = radius > 0 ? count : 0;
-        return {
-            cell: origin,
-            radius,
-            level,
-            xray,
-            counts: this.#layerFor(xray ? Infinity : level).counts,
-            cells: CELLS.slice(0, COUNT),
-            epoch: 0,
-        };
+        if (record.cells.length < COUNT) {
+            record.cells = new Int32Array(Math.max(COUNT, record.cells.length * 2));
+        }
+        const TARGET = record.cells;
+        for (let i = 0; i < COUNT; i++) {
+            TARGET[i] = CELLS[i];
+        }
+        record.count = COUNT;
+        record.cell = origin;
+        record.radius = radius;
+        record.level = level;
+        record.xray = xray;
+        record.counts = this.#layerFor(xray ? Infinity : level).counts;
     }
 
     #layerFor(ceiling) {
-        for (const LAYER of this.#layers) {
-            if (LAYER.ceiling === ceiling) {
-                return LAYER;
+        const LAYERS = this.#layers;
+        for (let i = 0; i < LAYERS.length; i++) {
+            if (LAYERS[i].ceiling === ceiling) {
+                return LAYERS[i];
             }
         }
         const LAYER = { ceiling, counts: new Uint16Array(this.#any.length) };
-        this.#layers.push(LAYER);
+        LAYERS.push(LAYER);
         return LAYER;
     }
 
     #apply(record, delta) {
-        const { cells: CELLS, counts: COUNTS } = record,
+        const CELLS = record.cells,
+            COUNTS = record.counts,
+            COUNT = record.count,
             ANY = this.#any;
-        for (let i = 0; i < CELLS.length; i++) {
+        for (let i = 0; i < COUNT; i++) {
             COUNTS[CELLS[i]] += delta;
             ANY[CELLS[i]] += delta;
         }

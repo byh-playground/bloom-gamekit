@@ -83,8 +83,22 @@ export class UniformGrid<Item = number> {
     ): Out;
     /** Same as `queryRect(x - radius, y - radius, x + radius, y + radius, ...)`: candidates, not an exact distance test. */
     queryCircle<Out extends Item[]>(x: number, y: number, radius: number, out: Out, group?: number): Out;
-    /** The live bucket of a cell (an empty array when unused). Valid until the next change; do not modify. */
+    /**
+     * The items of a cell (an empty array when unused). Valid until the next change; do not modify. On a plain grid
+     * ('clamp', no `track`, no `groups`) this is a shared array copied from the cell-ordered store, valid only until the
+     * next `cellItems` call. To walk every cell in order, `itemsInCellOrder` is cheaper.
+     */
     cellItems(key: number, group?: number): readonly Item[];
+    /**
+     * Fills `out` (cleared first) with the items of every in-world cell in cell-number order (bucket order inside a
+     * cell): the same order as calling `cellItems` for each key from 0 to `cellTotal - 1`. Overflow items are left out.
+     */
+    itemsInCellOrder<Out extends Item[]>(out: Out): Out;
+    /**
+     * Writes the cell range a rectangle covers to `out` as [x0, y0, x1, y1], cut to the world ('clamp' clamps to the
+     * edge cells). False when it covers no cell (outside the world, NaN on an 'overflow' grid).
+     */
+    cellRange(minX: number, minY: number, maxX: number, maxY: number, out: Int32Array | number[]): boolean;
 
     /** Number of cells in a ring: 1 for ring 0, `8 * ring` otherwise. */
     ringCellCount(ring: number): number;

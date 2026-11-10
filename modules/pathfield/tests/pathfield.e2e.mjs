@@ -213,10 +213,18 @@ const MAZE = ['.......', '.#####.', '.....#.', '####.#.', '.......'];
     assert.deepEqual(OUT, [17]);
 
     const REACH = gridFrom(['..#..', '..#..', '..#..']);
-    const LEFT = REACH.reachableFrom(0);
-    assert.deepEqual([...LEFT], [1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0]);
-    assert.deepEqual([...REACH.reachableFrom(2)], new Array(15).fill(0), '막힌 칸에서는 아무 데도 못 감');
-    assert.deepEqual([...REACH.reachableFrom(-1)], new Array(15).fill(0));
+    const MARKS = new Uint8Array(REACH.size);
+    assert.equal(REACH.reachableFrom(0, MARKS), MARKS, '호출자의 out을 비우고 채움');
+    assert.deepEqual([...MARKS], [1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0]);
+    assert.deepEqual([...REACH.reachableFrom(2, MARKS)], new Array(15).fill(0), '막힌 칸에서는 아무 데도 못 감');
+    assert.deepEqual([...REACH.reachableFrom(-1, MARKS)], new Array(15).fill(0));
+    assert.deepEqual(
+        [...REACH.reachableFrom(3, MARKS)],
+        [0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1],
+        '스택을 재사용해도 같음',
+    );
+    assert.throws(() => REACH.reachableFrom(0), TypeError, 'out은 필수');
+    assert.throws(() => REACH.reachableFrom(0, new Uint8Array(4)), TypeError, '칸 수보다 짧은 out');
 }
 
 // ---------- 5. 캐시: 용량·낡음·세대 ----------
@@ -323,7 +331,7 @@ const MAZE = ['.......', '.#####.', '.....#.', '####.#.', '.......'];
     const GOAL = GRID.cellAt(180, 20),
         START = GRID.cellAt(20, 20),
         FIELD = new DistanceField(GRID, [GOAL]);
-    assert.equal(GRID.reachableFrom(START)[GOAL], 1, '틈이 이어 줌');
+    assert.equal(GRID.reachableFrom(START, new Uint8Array(GRID.size))[GOAL], 1, '틈이 이어 줌');
     const PATH = FIELD.descend(START, 100);
     assert.equal(PATH.at(-1), GOAL);
     const THROUGH_GAP = PATH.some((cell) => GRID.centerX(cell) > 85 && GRID.centerX(cell) < 115);
@@ -584,7 +592,10 @@ function createPlanner(terrain, radius) {
             GRID.sync(version);
         },
         connected(from, points) {
-            const REACHED = GRID.reachableFrom(GRID.nearestOpen(GRID.cellAt(from.x, from.y), 4));
+            const REACHED = GRID.reachableFrom(
+                GRID.nearestOpen(GRID.cellAt(from.x, from.y), 4),
+                new Uint8Array(GRID.size),
+            );
             return points.map((p) => {
                 const CELL_OF = GRID.nearestOpen(GRID.cellAt(p.x, p.y), 4);
                 return CELL_OF >= 0 && REACHED[CELL_OF] === 1 ? 1 : 0;

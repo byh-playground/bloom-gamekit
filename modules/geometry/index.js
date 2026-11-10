@@ -23,6 +23,24 @@ export {
 } from './math.js';
 export { BoundsIndex } from './bounds-index.js';
 export { triangulatePolygon } from './triangulation.js';
-export { SurfaceContactGeometry, SweptCircleContact } from './contact.js';
+export {
+    CONTACT_CIRCLE,
+    CONTACT_EDGE,
+    CONTACT_END,
+    CONTACT_MAX_EDGE,
+    CONTACT_MAX_OBSTACLE,
+    CONTACT_POLYGON,
+    CONTACT_START,
+    CONTACT_USER,
+    CONTACT_WALL,
+    ContactHit,
+    ContactList,
+    SurfaceContact,
+    SurfaceContactGeometry,
+    SweptCircleContact,
+    contactKey,
+    defaultTieRank,
+    earlierContact,
+} from './contact.js';
 export { ObstacleField, segmentBlockedBy } from './obstacle-field.js';
-export { SurfaceMotion } from './surface-motion.js';
+export { MotionResult, SurfaceMotion } from './surface-motion.js';

@@ -114,7 +114,8 @@ try {
                 'pointer target ' + JSON.stringify(CLICKED),
             );
             await PAGE.evaluate(() => globalThis.geometryExample.setTarget(440, 200));
-            const WALL_EDGE = 'wall:3:edge';
+            // 벽 다각형(0번) 왼쪽 면(변 3)의 접촉 키: contactKey(CONTACT_POLYGON, 0, 3) = 0·2^50 + 0·2^22 + 3·4 + 0.
+            const WALL_EDGE = 12;
             assert.deepEqual((await GEOMETRY()).results, {
                 stop: { x: 188, y: 174.8, hit: WALL_EDGE },
                 project: { x: 188, y: 200, hit: WALL_EDGE },

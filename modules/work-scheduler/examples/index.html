@@ -463,7 +463,7 @@
         }
     </script>
     <script type="module">
-        import { ObstacleField, SurfaceMotion } from '../../../dist/geometry.js';
+        import { MotionResult, ObstacleField, SurfaceMotion } from '../../../dist/geometry.js';
 
         // 장면은 이 예제의 것입니다. 단위는 화면 칸, 좌표는 캔버스(480×320) 그대로입니다.
         const WORLD = { width: 480, height: 320 },
@@ -492,17 +492,25 @@
                         ],
                     },
                 ],
-                circles: [{ id: 'hut', x: 340, y: 250, r: 26 }],
+                // 원 장애물 id는 정수(접촉 키의 장애물 번호)입니다.
+                circles: [{ id: 1, x: 340, y: 250, r: 26 }],
             }),
             MOTION = new SurfaceMotion(FIELD),
+            // 결과는 방식마다 하나씩 만들어 재사용합니다. 동률 순위의 입력(tieKey)은 정수입니다.
+            MOVER_TIE_KEY = 1,
             MODES = { stop: '#e0a458', project: '#7fc97f', steer: '#6cb2e8' },
             CANVAS = document.querySelector('#geometry-canvas'),
             CONTEXT = CANVAS.getContext('2d'),
-            STATE = { mover: { ...START }, target: { x: 440, y: 200 }, mode: 'steer', results: {} };
+            STATE = {
+                mover: { ...START },
+                target: { x: 440, y: 200 },
+                mode: 'steer',
+                results: { stop: new MotionResult(), project: new MotionResult(), steer: new MotionResult() },
+            };
 
         function solveAll() {
             for (const MODE of Object.keys(MODES)) {
-                STATE.results[MODE] = MOTION.solve(
+                MOTION.solve(
                     STATE.mover.x,
                     STATE.mover.y,
                     STATE.target.x,
@@ -510,7 +518,8 @@
                     RADIUS,
                     null,
                     MODE,
-                    'mover',
+                    MOVER_TIE_KEY,
+                    STATE.results[MODE],
                 );
             }
         }
@@ -555,7 +564,7 @@
             // 방식마다 닿은 자리까지의 길과 끝 자리. 선택한 방식은 채워서 그립니다.
             for (const [MODE, COLOR] of Object.entries(MODES)) {
                 const RESULT = STATE.results[MODE],
-                    HIT = RESULT.hit,
+                    HIT = RESULT.hit ? RESULT.contact : null,
                     SELECTED = MODE === STATE.mode;
                 // 닿을 때까지는 실선, 닿은 자리에서 끝 자리까지는 단순한 점선 길잡이입니다(실제 경로가 아님).
                 const CONTACT = HIT
@@ -584,7 +593,7 @@
         function render() {
             solveAll();
             draw();
-            const SUMMARY = (result) => ({ x: result.x, y: result.y, hit: result.hit?.key ?? null });
+            const SUMMARY = (result) => ({ x: result.x, y: result.y, hit: result.hit ? result.contact.key : null });
             document.querySelector('#geometry-output').textContent = JSON.stringify(
                 {
                     mode: STATE.mode,
@@ -685,7 +694,7 @@
                         ],
                     },
                 ],
-                circles: [{ id: 'hut', x: 230, y: 262, r: 26 }],
+                circles: [{ id: 1, x: 230, y: 262, r: 26 }],
             }),
             // 통과 판정은 geometry의 ObstacleField에 반지름 RADIUS 원이 설 수 있는지 묻는 것입니다.
             GRID = new PathGrid({
@@ -1032,7 +1041,8 @@
         // 관찰자의 높이 층은 게임처럼 지형에서 읽습니다.
         const CELL_HERE = MAP.cellAt(STATE.x, STATE.y),
             LEVEL_HERE = MAP.level[CELL_HERE];
-        FIELD.update([{ id: 'me', x: STATE.x, y: STATE.y, radius: STATE.radius, level: LEVEL_HERE, xray: STATE.xray }]);
+        // 갱신은 begin → 관찰자마다 observe(정수 id, …) → end입니다.
+        FIELD.begin().observe(0, STATE.x, STATE.y, STATE.radius, LEVEL_HERE, STATE.xray).end();
         let lit = 0;
         CONTEXT.clearRect(0, 0, CANVAS.width, CANVAS.height);
         for (let r = 0; r < MAP.rows; r++) {
