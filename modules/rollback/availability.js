@@ -1,6 +1,7 @@
-import { bytes, compareIds, hashBytes, integer } from '../deterministic/utilities.js';
+import { compareIds, equalIds, hashBytes, integer, ByteBuffer, saveSnapshot } from '../deterministic/utilities.js';
 import { createBootstrapReplay } from './bootstrap.js';
 const SORTED = (ids) => [...ids].sort(compareIds);
+// 결정 인증서처럼 JSON 값 의미(undefined 생략 등)로 비교해야 하는 드문 경로에만 씁니다. ID 배열은 equalIds.
 const EQUAL = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const NONCE = () =>
     [...crypto.getRandomValues(new Uint8Array(16))].map((n) => n.toString(16).padStart(2, '0')).join('');
@@ -270,7 +271,10 @@ export class Availability {
         }
         let reason = ALL_RESUMED ? 'all-resume' : this.requested;
         reason ??= PARTICIPANTS.map((id) => SUMMARIES.get(id)?.requested).find(Boolean);
-        if (!EQUAL(ELIGIBLE, S.activePlayers) || PARTICIPANTS.some((id) => SUMMARIES.get(id)?.branch !== this.branch)) {
+        if (
+            !equalIds(ELIGIBLE, S.activePlayers) ||
+            PARTICIPANTS.some((id) => SUMMARIES.get(id)?.branch !== this.branch)
+        ) {
             reason ??= 'liveness';
         }
         let transferTo = null;
@@ -327,17 +331,31 @@ export class Availability {
             }
             votes = [...round.votes];
         }
+        // tick → (hash → IDs). 전역 tick(상한 없음)과 u32 hash를 한 숫자로 합치면 2^53을 넘을 수 있어 두 단계로 둡니다.
         const GROUPS = new Map();
         for (const [ID, V] of votes) {
-            const KEY = V.tick + ':' + V.hash;
-            if (!GROUPS.has(KEY)) {
-                GROUPS.set(KEY, []);
+            let byHash = GROUPS.get(V.tick);
+            if (!byHash) {
+                byHash = new Map();
+                GROUPS.set(V.tick, byHash);
             }
-            GROUPS.get(KEY).push(ID);
+            let ids = byHash.get(V.hash);
+            if (!ids) {
+                ids = [];
+                byHash.set(V.hash, ids);
+            }
+            ids.push(ID);
         }
-        const MAJORITY = [...GROUPS.values()]
-            .filter((ids) => ids.length > S.players.length / 2)
-            .sort((a, b) => b.length - a.length)[0];
+        // 과반 묶음은 많아야 하나입니다.
+        let majority;
+        for (const BY_HASH of GROUPS.values()) {
+            for (const IDS of BY_HASH.values()) {
+                if (IDS.length > S.players.length / 2 && (!majority || IDS.length > majority.length)) {
+                    majority = IDS;
+                }
+            }
+        }
+        const MAJORITY = majority;
         let donor = MAJORITY?.sort(compareIds)[0];
         const LATEST_TICK = Math.max(...votes.map(([, v]) => v.tick));
         // After *all* pumps paused, prefer the furthest retained progress. The
@@ -402,7 +420,7 @@ export class Availability {
                 !BRANCH_VALID(m.round) ||
                 m.leader !== from ||
                 !Array.isArray(m.participants) ||
-                !EQUAL(SORTED([...new Set(m.participants)]), m.participants) ||
+                !equalIds(SORTED([...new Set(m.participants)]), m.participants) ||
                 !m.participants.includes(S.localPlayerId) ||
                 m.participants.some((id) => !S.players.includes(id))
             ) {
@@ -438,7 +456,7 @@ export class Availability {
             ROUND.bootstrap = S._core ? S._exportBootstrap() : S._suspendedBootstrap;
             ROUND.sourceBaseTick = S.baseTick;
             ROUND.sourceEpoch = S.epoch;
-            ROUND.original = bytes(S.adapter.save()).slice();
+            ROUND.original = saveSnapshot(S.adapter, new ByteBuffer()).slice();
             // Slow resumed voters can confirm a retained state without supplying new
             // input. Capture its confirmed current checkpoint once, so suffix replay
             // does not require a simulation-rate pump just to install that state.
@@ -540,7 +558,7 @@ export class Availability {
                 m.bootstrap?.hash !== D.hash ||
                 m.baseTick + m.bootstrap?.tick !== D.tick ||
                 m.sourceEpoch !== ROUND.votes.get(from).epoch ||
-                !EQUAL(m.bootstrap.players, ROUND.votes.get(from).activePlayers)
+                !equalIds(m.bootstrap.players, ROUND.votes.get(from).activePlayers)
             ) {
                 throw new Error('availability checkpoint certificate');
             }

@@ -111,7 +111,7 @@ const session = createSession({
 
 `stateHistorySize`는 입력/ACK window로 유지합니다. snapshot은 초기 상태와 주기적인 확정 checkpoint만 저장합니다. window 이전/동일의 마지막 checkpoint 하나와 그 뒤 실제 입력도 보관하므로 복구 시 시작 상태 없이 입력만 남는 구멍이 없습니다. 상태 바이트 예산은 sparse checkpoint 수에 맞게 검사하며, `maxHistoryBytes`, `maxSnapshotBytes`, command/replay/송신 큐 예산은 계속 적용합니다. 단위는 snapshot 크기에 따라 달라지며 입력·replay 메모리가 없어지는 것은 아닙니다.
 
-`adapter.save()`는 호출 순간의 완전한 canonical 상태를 반환해야 합니다. 매 tick 미리 만든 cache가 호출 전제여서는 안 됩니다. 생성, checkpoint, 명시적 `getStateHash()`/`exportReplay()`, 복구/예외 경로에서 호출될 수 있습니다. 게임의 수동 저장도 자신의 canonical 상태를 완료된 tick 경계에서 저장하며, 미확정 pending command를 임의로 실행한 뒤 저장하면 안 됩니다.
+`adapter.saveInto(out)`은 호출 순간의 완전한 canonical 상태를 비워진 `ByteBuffer`(`deterministic`) `out`에 써야 합니다. value codec 상태는 `codec.encodeInto(state, out)`, 이미 bytes로 가진 상태는 `out.write(bytes)`로 씁니다. SDK가 버퍼를 재사용하며 보관할 때만 정확한 크기로 한 번 복사하고, hash·비교만 할 때는 복사하지 않습니다. 매 tick 미리 만든 cache가 호출 전제여서는 안 됩니다. 생성, checkpoint, 명시적 `getStateHash()`/`exportReplay()`, 복구/예외 경로에서 호출될 수 있습니다. 게임의 수동 저장도 자신의 canonical 상태를 완료된 tick 경계에서 저장하며, 미확정 pending command를 임의로 실행한 뒤 저장하면 안 됩니다.
 
 - `getStateHash()`는 현재 완료된 경계를 필요할 때 직렬화합니다. 같은 tick의 반복 호출은 cache를 쓰지만, 매 tick 호출하면 다시 매 tick 비용이 생깁니다. 과거 `getStateHash(t)`는 보관 checkpoint에만 값이 있고 나머지는 `undefined`입니다. 과거 상태를 현재 save로 대체하지 않습니다.
 - `requestResync(t)`는 t 이하의 가장 가까운 보관 checkpoint로 요청을 내립니다. 없으면 false입니다. 기존 authority 검증·chunk 전송·원자적 candidate commit을 유지하고 그 뒤 실제 입력을 현재 tick까지 재실행합니다. 이 **복구 재실행**은 정상 플레이 rollback과 별개이며 `resimulating/recovering` 표시를 지킵니다.
@@ -119,7 +119,7 @@ const session = createSession({
 - replay는 입력이 바뀐 tick만 `inputChanges` 바이트로 내보냅니다. 최종 hash는 export 때 현재 경계에서 계산하고 replay 용량에 도달할 때는 마지막 기록 경계를 미리 hash하여 보존합니다. 완료된 입력만 기록하며 초기 상태 이후 replay로 재현합니다.
 - `metrics.snapshotSaves`, `serializedSnapshotBytes`는 SDK 직렬화 횟수/바이트를 제공합니다. 기존 `retainedSnapshotBytes`, `stateHashComputations`, `hashedStateBytes`도 유지합니다. 이는 adapter 내부 할당/게임의 별도 저장 비용까지 측정하지 않습니다.
 
-단일 플레이 로컬 RoomSession은 필요하면 `localFastPath: true`를 명시할 수 있습니다. 이 옵션은 `mode: 'local'`, `profile.mode: 'lockstep'`, strict availability 조합에서만 허용하며, 세션 생성·매틱 입력 해시·주기 checkpoint·상태 해시·리플레이 보관을 생략합니다. 입력/명령 예약과 같은 `runSimulationFrame` 경로, 논리 틱, `applyMembership`, 렌더 보간, 그리고 앱 소유의 수동 저장·복원은 유지됩니다. SDK의 `adapter.save()`는 이 모드에서 자동 호출되지 않으므로 `metrics.snapshotSaves`, `serializedSnapshotBytes`, `retainedSnapshotBytes`, `stateHashComputations`, `hashedStateBytes`는 0이고 `getStateHash()`는 `undefined`를 반환합니다. 리플레이·bootstrap/resync 기능은 제공하지 않습니다. step이 예외를 던지면 복원할 내부 checkpoint가 없으므로 `failure.restoreUnavailable`로 알려주고 세션은 fatal로 멈춥니다. 온라인 세션 또는 rollback 모드에서는 이 옵션을 거부합니다. 기본값은 `false`라 기존 동작은 바뀌지 않습니다.
+단일 플레이 로컬 RoomSession은 필요하면 `localFastPath: true`를 명시할 수 있습니다. 이 옵션은 `mode: 'local'`, `profile.mode: 'lockstep'`, strict availability 조합에서만 허용하며, 세션 생성·매틱 입력 해시·주기 checkpoint·상태 해시·리플레이 보관을 생략합니다. 입력/명령 예약과 같은 `runSimulationFrame` 경로, 논리 틱, `applyMembership`, 렌더 보간, 그리고 앱 소유의 수동 저장·복원은 유지됩니다. SDK의 `adapter.saveInto()`는 이 모드에서 자동 호출되지 않으므로 `metrics.snapshotSaves`, `serializedSnapshotBytes`, `retainedSnapshotBytes`, `stateHashComputations`, `hashedStateBytes`는 0이고 `getStateHash()`는 `undefined`를 반환합니다. 리플레이·bootstrap/resync 기능은 제공하지 않습니다. step이 예외를 던지면 복원할 내부 checkpoint가 없으므로 `failure.restoreUnavailable`로 알려주고 세션은 fatal로 멈춥니다. 온라인 세션 또는 rollback 모드에서는 이 옵션을 거부합니다. 기본값은 `false`라 기존 동작은 바뀌지 않습니다.
 
 ```js
 const session = createRoomSession({
@@ -130,8 +130,8 @@ const session = createRoomSession({
     profile: { ...profiles.lockstep, baseInputDelayTicks: 0 },
     adapter: gameAdapter,
 });
-// 게임 소유의 명시 저장은 계속 가능하다.
-const save = gameAdapter.save();
+// 게임 소유의 명시 저장은 계속 가능하다(보관용 새 bytes).
+const save = codec.encode(gameState);
 ```
 
 HELLO는 양쪽 mode를 명시하며 lockstep에서는 초기 `baseInputDelayTicks`, `checksumInterval`도 일치해야 합니다. rollback의 peer별 delay 설정 및 런타임 delay 적응은 유지합니다. replay version은 유지하며 protocol 3을 사용합니다. 이 handshake 필드가 없는 이전 bundle과 새 bundle을 섞으면 시작을 거절합니다. 함께 플레이할 소비자는 같은 검증된 dist pin으로 업데이트하세요.
@@ -194,7 +194,7 @@ const session = createRoomSession({
     profile: { ...profiles.lockstep, baseInputDelayTicks: room ? 2 : 0 },
     membership: { maxPlayers: 5, transitionTimeoutMs: 15000, reconnectGraceMs: 10000, maxCatchupSteps: 4 },
     adapter: {
-        save,
+        saveInto,
         load,
         validateSnapshot,
         step,
@@ -249,7 +249,7 @@ transport에 opt-in `resume: { adapter: localStorageAdapter({ storage: sessionSt
 기존 `save/load/validateSnapshot/applyMembership` 어댑터는 그대로 동작합니다. 큰 게임은 다음 선택적 capability를 쌍으로 제공할 수 있습니다.
 
 - `prepareSnapshot(bytes, context)`는 비신뢰 bytes의 크기·형식·정규성·게임 schema·tick·epoch·roster를 모두 확인하고, 외부에서 수정할 수 없는 owned decoded state의 일회용 token을 반환합니다. 실패하면 throw하며 live simulation은 변경하지 않습니다. token은 정확한 canonical bytes, schema와 context에 귀속합니다.
-- `loadPreparedSnapshot(token, context)`는 같은 어댑터가 만든 token과 정확히 일치하는 context만 허용합니다. 성공 시 token을 소비하여 이미 준비한 객체·Map·공간 참조를 원자적으로 설치합니다. 재사용·다른 epoch·다른 schema의 token은 거부해야 합니다. 설치된 상태의 `save()` 결과가 준비한 bytes와 같아야 합니다.
+- `loadPreparedSnapshot(token, context)`는 같은 어댑터가 만든 token과 정확히 일치하는 context만 허용합니다. 성공 시 token을 소비하여 이미 준비한 객체·Map·공간 참조를 원자적으로 설치합니다. 재사용·다른 epoch·다른 schema의 token은 거부해야 합니다. 설치된 상태의 `saveInto()` 결과가 준비한 bytes와 같아야 합니다.
 - `prepareMembership(change, context)`는 합의된 tick에서 detached owned state에만 roster 변경을 적용합니다. 완전한 게임 검증 후 `{ bytes, prepared }`를 반환합니다. 완료·실패 모두 기존 live state와 참조를 유지해야 합니다. 게임은 공유 mutable 객체를 숨겨서 재사용하지 않습니다. `context`에는 전역 tick, `membershipEpoch`, `simulationVersion`, tickRate, seed, 새 players가 들어갑니다.
 
 SDK는 준비 bytes를 자체 소유하고 hash를 계산합니다. 모든 참가자의 installed/hash가 일치하기 전에는 token을 설치하지 않습니다. commit에서 token을 한 번 소비한 뒤 같은 bytes/hash를 새 Core의 초기 sparse checkpoint에 내부 전달하므로 경계 직후 다시 전체 save/hash하지 않습니다. 이 내부 경로는 공개 SessionOptions에 검증 우회 옵션을 추가하지 않습니다. prepared token은 wire·replay·공개 bootstrap 결과에 포함하지 않습니다.
@@ -290,7 +290,7 @@ INPUT_RESERVATION/ACK는 tick별 revision을 사용합니다. 열린 slot의 hel
 
 `rollback({from,target})`는 재실행 직전, `reconciled({from,target})`는 동기 재실행 완료 후 발생합니다. 수신 callback에서도 발생하므로 poll 반환을 기다려 표현을 갱신하지 마세요. 게임은 완료 이벤트에서 기존 PresentationRuntime의 rollback publish와 PresentationEventQueue.endRollback을 연결합니다. 렌더링과 GPU 작업은 게임 소유입니다. 재실행은 동기 작업이므로 큰 게임 상태의 CPU 비용을 숨기지 않습니다.
 
-ACK가 없는 예약은 기존 heartbeat로 재전송합니다. unchanged 입력은 새 패킷을 만들지 않습니다. `metrics.inputReservations/inputReservationSentBytes/inputReservationReceivedBytes`가 예약 트래픽을 표시합니다. close는 예약을 비웁니다. `localInputState.captures`는 한 capture 구간에서 봉인된 모든 프레임을 전달하며 simloop는 각 sequence를 한 번 소비합니다. `capture`는 그중 최신 프레임입니다.
+ACK가 없는 예약은 기존 heartbeat로 재전송합니다. unchanged 입력은 새 패킷을 만들지 않습니다. `metrics.inputReservations/inputReservationSentBytes/inputReservationReceivedBytes`가 예약 트래픽을 표시합니다. close는 예약을 비웁니다. `localInputState.captures`는 한 capture 구간에서 봉인된 모든 프레임을 전달합니다. 매 틱 경로는 `localCaptureSequence`(정수)와 `readLocalCaptures(afterSequence, out)`(그 sequence 뒤 capture만 복사)를 쓰며 simloop는 각 sequence를 한 번 소비합니다. `capture`는 그중 최신 프레임입니다.
 
 재연결 handoff는 미래 held 입력·봉인 경계·명령의 원래 T를 보존합니다. RoomSession은 epoch의 baseTick만 변환합니다. 승인된 새 경계보다 앞선 미실행 명령은 다른 T로 옮기지 않고 실패 처리하여 재동기화를 요구합니다. bootstrap의 recovering/replaying step에서는 외부 효과를 실행하지 않습니다.
 

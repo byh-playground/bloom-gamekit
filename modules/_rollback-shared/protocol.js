@@ -171,29 +171,45 @@ export class Reader {
         this.offset += n;
         return B;
     }
+    /** 복사 없는 보기. 패킷 buffer를 가리키므로 보관하기 전에 복사합니다. */
+    rawView(n) {
+        this.room(n);
+        const B = this.data.subarray(this.offset, this.offset + n);
+        this.offset += n;
+        return B;
+    }
     end() {
         if (this.offset !== this.data.length) {
             throw new RangeError('trailing packet bytes');
         }
     }
 }
-export function packet(type, sequence, write) {
-    const W = new Writer();
+// 패킷 작성은 동기적으로 끝나므로(작성 중 송신·재진입 없음) 모듈 하나의 작업 버퍼를 재사용합니다.
+// finish()는 쓴 길이만큼의 새 bytes를 돌려주므로 보관·큐잉해도 다음 패킷과 겹치지 않습니다.
+const PACKET_WRITER = new Writer();
+/** 헤더를 쓴 공유 Writer를 돌려줍니다. 본문을 쓴 뒤 바로 finish()로 꺼냅니다. tag는 헤더의 예약 u16입니다. */
+export function beginPacket(type, sequence, tag = 0) {
+    const W = PACKET_WRITER.reset();
     W.u32(MAGIC);
     W.u8(PROTOCOL_VERSION);
     W.u8(type);
-    W.u16(0);
+    W.u16(tag);
     W.u32(sequence);
-    write(W);
-    return W.finish();
+    return W;
 }
 export function frameEqual(a, b) {
     if (!equalBytes(a.input, b.input) || a.commands.length !== b.commands.length) {
         return false;
     }
-    return a.commands.every(
-        (c, i) => c.sequence === b.commands[i].sequence && equalBytes(c.payload, b.commands[i].payload),
-    );
+    for (let i = 0; i < a.commands.length; i++) {
+        if (
+            a.commands[i].sequence !== b.commands[i].sequence ||
+            !equalBytes(a.commands[i].payload, b.commands[i].payload)
+        ) {
+            return false;
+        }
+    }
+    return true;
 }
 export function copyFrame(frame) {
     return {
@@ -205,46 +221,100 @@ export function copyFrame(frame) {
     };
 }
 // Every live, recovery, replay and diagnostic execution crosses this same boundary.
+// 호출자는 매번 새 context 리터럴을 넘기므로 inputs 자리에 소유 복사본을 넣어 그대로 넘깁니다.
+// 어댑터가 받는 frame·command는 항상 새 복사본입니다(키 순서: input, commands, playerId, predicted).
 export function runSimulationFrame(adapter, context) {
-    return adapter.step({
-        ...context,
-        inputs: context.inputs.map((frame) => ({
-            ...copyFrame(frame),
-            playerId: frame.playerId,
-            predicted: !!frame.predicted,
-        })),
-    });
+    const SOURCE = context.inputs,
+        INPUTS = new Array(SOURCE.length);
+    for (let i = 0; i < SOURCE.length; i++) {
+        const FRAME = SOURCE[i];
+        INPUTS[i] = {
+            input: FRAME.input.slice(),
+            commands: copyCommands(FRAME.commands),
+            playerId: FRAME.playerId,
+            predicted: !!FRAME.predicted,
+        };
+    }
+    context.inputs = INPUTS;
+    return adapter.step(context);
+}
+function copyCommands(commands) {
+    const OUT = new Array(commands.length);
+    for (let i = 0; i < commands.length; i++) {
+        OUT[i] = {
+            ...commands[i],
+            payload: commands[i].payload.slice(),
+        };
+    }
+    return OUT;
 }
 // Replay input log: only ticks where a player's input bytes change. Each entry is
 // [unsigned LEB128 tick delta][player index][inputSize bytes]; every player has an
 // entry at tick 0. Commands are rare and stay as a list with their local tick.
-export function encodeReplayFrames(frames, players) {
-    const OUT = [],
-        LAST = players.map(() => null),
-        COMMANDS = [];
-    let previous = 0;
-    for (const F of frames) {
-        for (const X of F.inputs) {
-            const P = players.indexOf(X.playerId);
-            for (const C of X.commands) {
-                COMMANDS.push({ ...C, payload: C.payload.slice(), tick: F.tick, playerId: X.playerId });
-            }
-            if (LAST[P] && equalBytes(LAST[P], X.input)) {
-                continue;
-            }
-            for (let d = F.tick - previous; ; d >>>= 7) {
-                if (d < 0x80) {
-                    OUT.push(d);
-                    break;
-                }
-                OUT.push((d & 0x7f) | 0x80);
-            }
-            OUT.push(P, ...X.input);
-            LAST[P] = X.input;
-            previous = F.tick;
+// 확정되는 틱마다 바로 이 형식으로 덧붙여, 틱마다 프레임 객체를 쌓아 두지 않습니다.
+export class ReplayLog {
+    constructor(players, keepFrames = 0) {
+        this.players = players;
+        this.ticks = 0;
+        this.keepFrames = keepFrames;
+        // 앞쪽 keepFrames개 프레임만 원본 참조로 둡니다(synctest 내보내기용, 최대 256).
+        this.frames = [];
+        this._last = players.map(() => null);
+        this._previous = 0;
+        this._bytes = new Uint8Array(1024);
+        this._length = 0;
+        this._commands = [];
+    }
+    _reserve(n) {
+        if (this._length + n > this._bytes.length) {
+            const NEXT = new Uint8Array(Math.max(this._length + n, this._bytes.length * 2));
+            NEXT.set(this._bytes.subarray(0, this._length));
+            this._bytes = NEXT;
         }
     }
-    return { inputChanges: Uint8Array.from(OUT), commands: COMMANDS };
+    /** inputs는 players 순서의 { input, commands }이며 바뀌지 않는 원본으로 다룹니다. 배열은 보관하지 않습니다. */
+    push(tick, inputs) {
+        if (tick !== this.ticks) {
+            throw new RangeError('replay tick order');
+        }
+        for (let p = 0; p < inputs.length; p++) {
+            const X = inputs[p];
+            for (let c = 0; c < X.commands.length; c++) {
+                this._commands.push({ ...X.commands[c], tick, playerId: this.players[p] });
+            }
+            const LAST = this._last[p];
+            if (LAST && equalBytes(LAST, X.input)) {
+                continue;
+            }
+            // LEB128 틱 차이는 MAX_TICK(2^31) 안이라 최대 5바이트, 선수 번호 1바이트.
+            this._reserve(6 + X.input.length);
+            for (let d = tick - this._previous; ; d >>>= 7) {
+                if (d < 0x80) {
+                    this._bytes[this._length++] = d;
+                    break;
+                }
+                this._bytes[this._length++] = (d & 0x7f) | 0x80;
+            }
+            this._bytes[this._length++] = p;
+            this._bytes.set(X.input, this._length);
+            this._length += X.input.length;
+            this._last[p] = X.input;
+            this._previous = tick;
+        }
+        if (this.frames.length < this.keepFrames) {
+            this.frames.push({ tick, inputs: inputs.slice() });
+        }
+        this.ticks++;
+    }
+    /** 내보내는 값은 매번 새 복사본입니다. */
+    export() {
+        const COMMANDS = new Array(this._commands.length);
+        for (let i = 0; i < COMMANDS.length; i++) {
+            const C = this._commands[i];
+            COMMANDS[i] = { ...C, payload: C.payload.slice() };
+        }
+        return { inputChanges: this._bytes.slice(0, this._length), commands: COMMANDS };
+    }
 }
 export function decodeReplayFrames({ inputChanges, commands, players, inputSize, tick }) {
     const DATA = bytes(inputChanges),
@@ -284,10 +354,9 @@ export function decodeReplayFrames({ inputChanges, commands, players, inputSize,
         }
         const INPUTS = players.map((playerId, i) => ({ playerId, input: CURRENT[i], commands: [], predicted: false }));
         for (; c < commands.length && commands[c].tick === t; c++) {
-            const COMMAND = { ...commands[c], payload: bytes(commands[c].payload) };
-            delete COMMAND.tick;
-            delete COMMAND.playerId;
-            INPUTS[players.indexOf(commands[c].playerId)].commands.push(COMMAND);
+            const { tick: OMITTED_TICK, playerId: PLAYER_ID, ...COMMAND } = commands[c];
+            COMMAND.payload = bytes(COMMAND.payload);
+            INPUTS[players.indexOf(PLAYER_ID)].commands.push(COMMAND);
         }
         FRAMES.push({ tick: t, inputs: INPUTS });
     }

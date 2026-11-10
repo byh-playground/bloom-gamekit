@@ -1,16 +1,31 @@
-import { createSession, createSessionFromBoundary, createLocalFastPathSession, delegateRoomRecovery } from './core.js';
+import {
+    createSession,
+    createSessionFromBoundary,
+    createLocalFastPathSession,
+    delegateRoomRecovery,
+    setWireTag,
+} from './core.js';
 import { Availability, availabilityConfig } from './availability.js';
 import { createBootstrapReplay } from './bootstrap.js';
 import { profiles, PROTOCOL_VERSION, CHUNK_SIZE, MAGIC } from '../_rollback-shared/protocol.js';
 import { createValueCodec } from '../deterministic/value-codec.js';
-import { bytes, compareIds, hashBytes, integer, nowMs } from '../deterministic/utilities.js';
+import {
+    bytes,
+    compareIds,
+    equalIds,
+    hashBytes,
+    integer,
+    nowMs,
+    ByteBuffer,
+    saveSnapshot,
+} from '../deterministic/utilities.js';
 const ROOM_MAGIC = 0x31524d44,
     WIRE_HEADER = 24,
     MAX_EPOCH = 65534;
 const BRANCH_MAGIC = 0x32424d44,
     BRANCH_HEADER = 36;
 const ORDERED = (ids) => [...ids].sort(compareIds);
-const SAME = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
 const ID_VALID = (id) => typeof id === 'string' && id.length > 0 && id.length <= 128;
 /** A membership boundary composes fixed-roster sessions, never game worlds. */
 export function createRoomSession(options) {
@@ -53,7 +68,7 @@ export class RoomSession {
         }
         if (
             !adapter ||
-            ['step', 'save', 'load', 'validateSnapshot', 'applyMembership'].some(
+            ['step', 'saveInto', 'load', 'validateSnapshot', 'applyMembership'].some(
                 (k) => typeof adapter[k] !== 'function',
             )
         ) {
@@ -284,6 +299,27 @@ export class RoomSession {
                 : null,
         };
     }
+    /** core가 없으면 null. 있으면 마지막 로컬 capture sequence(core마다 새로 셈). */
+    get localCaptureSequence() {
+        return this._core ? this._core.localCaptureSequence : null;
+    }
+    /** core의 readLocalCaptures 결과를 전역 tick으로 제자리에서 바꿉니다(항목은 호출마다 새 복사본). */
+    readLocalCaptures(afterSequence, out) {
+        out.length = 0;
+        if (!this._core) {
+            return out;
+        }
+        this._core.readLocalCaptures(afterSequence, out);
+        for (let i = 0; i < out.length; i++) {
+            const C = out[i];
+            C.captureTick += this.baseTick;
+            C.executeTick += this.baseTick;
+            for (let c = 0; c < C.commands.length; c++) {
+                C.commands[c].executeTick += this.baseTick;
+            }
+        }
+        return out;
+    }
     get failure() {
         return this._failure ?? this._core?.failure;
     }
@@ -447,7 +483,7 @@ export class RoomSession {
                 : {}),
         });
         return {
-            save: () => A.save(),
+            saveInto: (out) => A.saveInto(out),
             load: (data) => A.load(data),
             ...(typeof A.saveJob === 'function'
                 ? {
@@ -603,6 +639,8 @@ export class RoomSession {
             : this.localFastPath
               ? createLocalFastPathSession(OPTIONS)
               : createSession(OPTIONS);
+        // 방 세대(epoch + 1, MAX_EPOCH 65534라 u16 안)를 core가 헤더에 직접 씁니다. 송수신 때 패킷을 복사하지 않습니다.
+        setWireTag(this._core, this.epoch + 1);
         if (this._availability) {
             delegateRoomRecovery(this._core, () => {
                 this._availability.requested = 'state-mismatch';
@@ -632,8 +670,8 @@ export class RoomSession {
                 if (SESSION.closed || EPOCH !== SESSION.epoch) {
                     return false;
                 }
-                const OUT = data.slice();
-                new DataView(OUT.buffer).setUint16(6, EPOCH + 1, true);
+                // core 패킷의 헤더에는 이미 EPOCH + 1이 들어 있습니다(setWireTag). 받는 쪽이 보관하지 않으므로 그대로 보냅니다.
+                const OUT = data;
                 if (!SESSION._availability) {
                     return link.transport.send(OUT);
                 }
@@ -646,7 +684,7 @@ export class RoomSession {
                     VIEW.setUint32(0, BRANCH_MAGIC, true);
                     ENVELOPE[4] = 1;
                     ENVELOPE[5] = FRAGMENTED ? 1 : OUT[5];
-                    VIEW.setUint32(8, new DataView(OUT.buffer).getUint32(8, true), true);
+                    VIEW.setUint32(8, new DataView(OUT.buffer, OUT.byteOffset).getUint32(8, true), true);
                     VIEW.setUint32(12, offset, true);
                     VIEW.setUint32(16, OUT.length, true);
                     ENVELOPE.set(SESSION._availability.wireBranch, 20);
@@ -792,9 +830,8 @@ export class RoomSession {
                 }
                 const EPOCH = VIEW.getUint16(6, true) - 1;
                 if (EPOCH === this.epoch && link.coreReceive && !this._boundaryFrozen()) {
-                    const COPY = data.slice();
-                    new DataView(COPY.buffer).setUint16(6, 0, true);
-                    link.coreReceive(COPY);
+                    // core는 같은 세대 tag를 헤더에서 확인하고 필요한 필드만 복사해 읽습니다.
+                    link.coreReceive(data);
                 } else if (EPOCH === this.epoch + 1 && this._transition && link.future.length < 64) {
                     link.future.push(data.slice());
                 }
@@ -1034,14 +1071,14 @@ export class RoomSession {
             throw new Error('membership reason');
         }
         if (
-            !SAME(proposal.oldPlayers, this.players) ||
-            !SAME(ORDERED(proposal.players), proposal.players) ||
+            !equalIds(proposal.oldPlayers, this.players) ||
+            !equalIds(ORDERED(proposal.players), proposal.players) ||
             !proposal.players.length ||
             proposal.players.length > this.membership.maxPlayers ||
             new Set(proposal.players).size !== proposal.players.length ||
             proposal.players.some((id) => !ID_VALID(id)) ||
             !proposal.players.includes(proposal.coordinatorId) ||
-            !SAME(
+            !equalIds(
                 ORDERED([...proposal.oldPlayers.filter((id) => !proposal.left.includes(id)), ...proposal.joined]),
                 proposal.players,
             ) ||
@@ -1163,7 +1200,7 @@ export class RoomSession {
                 !m.players.includes(from) ||
                 m.players.some((id) => !ID_VALID(id)) ||
                 new Set(m.players).size !== m.players.length ||
-                !SAME(ORDERED(m.players), m.players)
+                !equalIds(ORDERED(m.players), m.players)
             ) {
                 return;
             }
@@ -1522,13 +1559,14 @@ export class RoomSession {
             this._acceptPreparedMembership(tr, STAGED);
             return;
         }
-        const ROLLBACK = bytes(this.adapter.save()).slice();
+        this._snapshotBuffer ??= new ByteBuffer();
+        const ROLLBACK = saveSnapshot(this.adapter, this._snapshotBuffer).slice();
         try {
             this.adapter.applyMembership({
                 ...tr.proposal,
                 tick: tr.target,
             });
-            const STATE = bytes(this.adapter.save());
+            const STATE = saveSnapshot(this.adapter, this._snapshotBuffer);
             if (
                 STATE.length > this.profile.maxSnapshotBytes ||
                 !this.adapter.validateSnapshot(STATE, {
@@ -1761,7 +1799,7 @@ export class RoomSession {
                 this._fail('departure-timeout');
                 return;
             }
-            if (this._retireApproved && [...this._links.values()].every((link) => !link.queue.length)) {
+            if (this._retireApproved && this._linksDrained()) {
                 this._leaveResolve?.();
                 this._leaveResolve = this._leaveReject = null;
                 this.close();
@@ -1880,7 +1918,8 @@ export class RoomSession {
                 this._core?.poll(now);
             }
             if (this._core && !TR && !this._availability) {
-                if (['interrupted', 'disconnected'].includes(this._core.status)) {
+                const CORE_STATUS = this._core.status;
+                if (CORE_STATUS === 'interrupted' || CORE_STATUS === 'disconnected') {
                     this._interruptedAt ??= now;
                     if (now - this._interruptedAt >= this.membership.reconnectGraceMs) {
                         this._fail('partition-failed', {
@@ -1895,7 +1934,7 @@ export class RoomSession {
             this._flush();
             for (const [ID, DEADLINE] of this._retirePeers) {
                 const LINK = this._links.get(ID);
-                if (LINK && !['closed', 'failed'].includes(LINK.transport.state) && now < DEADLINE) {
+                if (LINK && LINK.transport.state !== 'closed' && LINK.transport.state !== 'failed' && now < DEADLINE) {
                     continue;
                 }
                 LINK?.unsubscribe?.();
@@ -1910,7 +1949,7 @@ export class RoomSession {
                 TR.commitSent &&
                 TR.applied &&
                 TR.committed.size === TR.participants.length - 1 &&
-                [...this._links.values()].every((link) => !link.queue.length)
+                this._linksDrained()
             ) {
                 for (const ID of TR.proposal.left) {
                     if (ID !== this.localPlayerId) {
@@ -1926,6 +1965,14 @@ export class RoomSession {
                 reason: error.message,
             });
         }
+    }
+    _linksDrained() {
+        for (const LINK of this._links.values()) {
+            if (LINK.queue.length) {
+                return false;
+            }
+        }
+        return true;
     }
     advance(input = this._lastInput) {
         if (this.closed) {
@@ -1964,11 +2011,10 @@ export class RoomSession {
                 tick: this.tick,
             };
         }
+        // core 결과는 호출마다 새 객체이므로 전역 tick만 고쳐 그대로 돌려줍니다.
         const RESULT = this._core.advance(SAMPLE);
-        return {
-            ...RESULT,
-            tick: this.tick,
-        };
+        RESULT.tick = this.tick;
+        return RESULT;
     }
     submitInput(input, options) {
         if (this.closed || this.failure) {
@@ -1990,16 +2036,14 @@ export class RoomSession {
                 commands: [],
             };
         }
+        // core 영수증(명령 목록 포함)은 호출마다 새 객체이므로 전역 tick으로 제자리에서 바꿉니다.
         const RESULT = this._core.submitInput(SAMPLE, options);
-        return {
-            ...RESULT,
-            tick: this.tick,
-            executeTick: RESULT.executeTick + this.baseTick,
-            commands: RESULT.commands.map((c) => ({
-                ...c,
-                executeTick: c.executeTick + this.baseTick,
-            })),
-        };
+        RESULT.tick = this.tick;
+        RESULT.executeTick += this.baseTick;
+        for (let i = 0; i < RESULT.commands.length; i++) {
+            RESULT.commands[i].executeTick += this.baseTick;
+        }
+        return RESULT;
     }
     queueCommand(payload) {
         if (this.closed || this.failure) {

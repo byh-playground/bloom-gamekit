@@ -114,7 +114,7 @@ async function prepare(html, name, assetRoot = GAME_ROOT) {
     if (name === 'current') {
         await PAGE.evaluate(async (hasBaseline) => {
             window.__newSDK = await import('/candidate.mjs');
-            window.__hashBytes = (await import('/deterministic.mjs')).hashBytes;
+            ({ hashBytes: window.__hashBytes, ByteBuffer: window.__ByteBuffer } = await import('/deterministic.mjs'));
             window.__baselineSDK = hasBaseline ? await import('/baseline.mjs') : null;
             const Q = window.__rallyPerf;
             if (typeof Q.RallySimulationAdapter !== 'function' || typeof Q.RallyCommandCodec?.encode !== 'function') {
@@ -198,15 +198,25 @@ async function measure({ mode, count, steps, warmup, round }) {
             sim: SIM,
             onNetcodeFrameApplied() {},
         });
-        const SAVE = adapter.save.bind(adapter),
+        // 현재 SDK는 saveInto, 비교용 이전 SDK는 save를 부릅니다. 게임 어댑터가 어느 쪽이든 같은 bytes를 잽니다.
+        const GAME_SAVE = adapter.save?.bind(adapter),
+            SAVE_INTO =
+                typeof adapter.saveInto === 'function'
+                    ? adapter.saveInto.bind(adapter)
+                    : (out) => out.write(GAME_SAVE()),
             LOAD = adapter.load.bind(adapter);
-        adapter.save = () => {
+        adapter.saveInto = (out) => {
             const T = performance.now();
             try {
-                return SAVE();
+                return SAVE_INTO(out);
             } finally {
                 SAVE_COSTS.push(performance.now() - T);
             }
+        };
+        adapter.save = () => {
+            const OUT = new window.__ByteBuffer();
+            adapter.saveInto(OUT);
+            return OUT.copy();
         };
         adapter.load = (b) => {
             const T = performance.now();

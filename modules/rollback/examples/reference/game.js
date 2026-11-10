@@ -239,7 +239,7 @@ export function createGame(stepMs, emit = () => {}) {
         get world() {
             return world;
         },
-        save: () => CODEC.encode(world),
+        saveInto: (out) => CODEC.encodeInto(world, out),
         load: (bytes) => {
             world = CODEC.decode(bytes);
         },

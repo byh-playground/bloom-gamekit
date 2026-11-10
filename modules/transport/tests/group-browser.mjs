@@ -63,7 +63,7 @@ function adapter(n) {
     let faultTick = -1;
     return {
         adapter: {
-            save: () => new Uint8Array(state.buffer.slice(0)),
+            saveInto: (out) => out.write(state),
             load: (b) => {
                 state = new Int32Array(b.slice().buffer);
             },

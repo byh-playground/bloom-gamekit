@@ -31,6 +31,63 @@ export function equalBytes(a, b) {
     }
     return true;
 }
+/** 문자열 ID 배열을 원소끼리 비교합니다(JSON 문자열을 만들지 않음). */
+export function equalIds(a, b) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) {
+        return false;
+    }
+    for (let i = 0; i < a.length; i++) {
+        if (a[i] !== b[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+/**
+ * 호출마다 새 배열을 만들지 않고 bytes를 이어 쓰는 재사용 버퍼입니다.
+ * `bytes`는 자랄 때 바뀌므로 보관하지 말고, 쓴 범위는 `view()`(복사 없음)나 `copy()`(보관용)로 읽습니다.
+ */
+export class ByteBuffer {
+    constructor(capacity = 1024) {
+        this.bytes = new Uint8Array(integer(capacity, 'capacity', 1, 0x7fffffff));
+        this.length = 0;
+    }
+    reset() {
+        this.length = 0;
+        return this;
+    }
+    /** 뒤에 `size` bytes를 쓸 자리를 확보하고 쓰기 시작 위치를 돌려줍니다. 길이는 쓰는 쪽이 늘립니다. */
+    reserve(size) {
+        const END = this.length + size;
+        if (END > this.bytes.length) {
+            const NEXT = new Uint8Array(Math.max(END, this.bytes.length * 2));
+            NEXT.set(this.bytes.subarray(0, this.length));
+            this.bytes = NEXT;
+        }
+        return this.length;
+    }
+    write(data) {
+        const DATA = bytes(data);
+        // reserve가 this.bytes를 바꿀 수 있으므로 먼저 부릅니다.
+        const AT = this.reserve(DATA.length);
+        this.bytes.set(DATA, AT);
+        this.length += DATA.length;
+        return this;
+    }
+    /** 쓴 범위의 보기. 다음 reset·write 전까지만 유효합니다. */
+    view() {
+        return this.bytes.subarray(0, this.length);
+    }
+    /** 쓴 범위의 독립 복사본. */
+    copy() {
+        return this.bytes.slice(0, this.length);
+    }
+}
+/** adapter.saveInto로 `buffer`를 다시 채우고 쓴 범위의 보기를 돌려줍니다(보관하려면 slice). */
+export function saveSnapshot(adapter, buffer) {
+    adapter.saveInto(buffer.reset());
+    return buffer.view();
+}
 export function hashBytes(value, seed = 2166136261) {
     let h = seed >>> 0;
     const DATA = bytes(value);
@@ -88,7 +145,9 @@ const FIXED_POINT = Object.freeze({
         if (SIGNED(b) === 0) {
             throw new RangeError('fixed-point division by zero');
         }
-        return SIGNED(Number((BigInt(SIGNED(a)) * 1024n) / BigInt(b)));
+        // |a·1024| ≤ 2^41 < 2^53: 부동소수 나눗셈의 반올림 오차(≤ |q|·2^-53)가 다음 정수까지 거리(≥ 1/|b|)보다 작아
+        // Math.trunc가 BigInt 정수 나눗셈(0 쪽 버림)과 같습니다. || 0은 -0을 0으로 맞춥니다(BigInt 결과는 -0이 없음).
+        return SIGNED(Math.trunc((SIGNED(a) * 1024) / b) || 0);
     },
 });
 export { FIXED_POINT as fixedPoint };

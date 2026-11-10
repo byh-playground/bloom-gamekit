@@ -1,3 +1,14 @@
+## v0.50.0 (2026-11-10)
+
+공개 API 변경(MINOR, 소비자 수정 필요). 틱·네트워크 경로의 가비지와 맞지 않는 자료구조를 걷어냅니다. 패킷·리플레이·저장 형식과 상태 hash, peer 판정은 바뀌지 않았습니다(이전 코드와 바이트 동일 확인). 형식 버전 상수도 그대로입니다.
+
+- rollback 어댑터: `save(): Bytes`를 `saveInto(out: ByteBuffer)`로 바꿉니다. SDK가 버퍼를 재사용하고 보관할 때만 정확한 크기로 한 번 복사하며, hash·비교에는 복사하지 않습니다. value codec 상태는 `saveInto: (out) => codec.encodeInto(state, out)`, bytes 상태는 `out.write(bytes)`로 옮깁니다. `createSession`·`createRoomSession`·`createSyncTestSession`·`runSyncTest`·`playReplay`·bootstrap이 모두 `saveInto`를 요구합니다.
+- deterministic: `ByteBuffer`(재사용 버퍼)와 `codec.encodeInto(value, out)`를 추가합니다. `encode`는 보관용 새 bytes로 남습니다. 숫자 typed array는 little-endian 호스트에서 메모리 그대로 복사하고, 키 정렬은 이미 정렬된 경우 생략합니다. `fixedPoint.div`는 BigInt 대신 부동소수 나눗셈(|a·1024| ≤ 2^41이라 정확)으로 같은 값을 냅니다.
+- rollback 세션: `localCaptureSequence`(정수)와 `readLocalCaptures(afterSequence, out)`를 추가합니다. `createLoop`는 매 틱 `localInputState` 전체 복사 대신 이 둘을 씁니다. `localInputState`는 진단용으로 남습니다.
+- pixel-physics: `savePixelWorldInto(world, out)`를 추가합니다. 어댑터는 `saveInto: (out) => savePixelWorldInto(world, out)`로 연결합니다.
+- 내부: 패킷은 공유 Writer 하나로 만들고, 방 세대 태그를 core가 헤더에 직접 써서 전송·수신마다의 복사를 없앴습니다. 플레이어 ID는 roster 번호로 바꿔 입력 표를 배열로 찾고, 확정 입력 리플레이는 확정 시점에 바로 변화분 bytes로 기록합니다(링 버퍼·델타 기록). `Math.min(...)` 펼침·JSON 문자열 비교·`tick:hash` 문자열 키를 루프·원소 비교·2단 Map으로 바꿨습니다.
+- 측정(Node, 2 peer, 256바이트 상태, 20000틱 중앙값): 틱당 할당·시간이 크게 줄었습니다. 수치는 PR 본문을 봅니다.
+
 ## v0.49.0 (2026-11-10)
 
 호환 기능 추가(공개 API 추가). `pathfield`에 유닛 하나가 한 번 가는 길을 찾는 A\* `RouteFinder`를 추가합니다. 기존 `PathGrid`·`DistanceField`·`FieldCache`의 동작은 그대로입니다. 상세 계약은 [pathfield](../../modules/pathfield/README.md#routefinder-a)에 있습니다.

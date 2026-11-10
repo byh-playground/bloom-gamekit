@@ -1,5 +1,5 @@
 /** rollback 공개 계약. 타입 전용 참조는 런타임 의존성을 만들지 않습니다. */
-import type { Bytes } from '../deterministic/index.js';
+import type { Bytes, ByteBuffer } from '../deterministic/index.js';
 import type { Transport, RoomTransport } from '../transport/index.js';
 import type { Replay } from '../replay/index.js';
 export type PlayerId = string;
@@ -42,8 +42,9 @@ export interface SnapshotJob<T> {
     cancel(): unknown;
 }
 export interface SimulationAdapter {
-    /** 반환 버퍼를 재사용해도 된다. Core는 보관 전에 복사한다. */
-    save(): Bytes;
+    /** 현재 canonical 상태를 `out` 끝에 쓴다(`out`은 비워진 채 전달됨). Core가 버퍼를 재사용하고 보관할 때만 복사한다.
+     * value codec 상태는 `codec.encodeInto(state, out)`, 이미 bytes인 상태는 `out.write(bytes)`. */
+    saveInto(out: ByteBuffer): unknown;
     load(snapshot: Uint8Array): void;
     step(context: StepContext): unknown;
     /** 현재 simulation을 변경하지 않는 후보 검증. */
@@ -317,7 +318,12 @@ export interface AdvanceResult {
     failure?: Readonly<SessionFailure> | null;
 }
 export class RollbackSession {
+    /** 진단용 전체 복사본. 매 틱 읽는 경로는 localCaptureSequence·readLocalCaptures를 쓴다. */
     readonly localInputState: LocalInputState;
+    /** 마지막 로컬 capture의 sequence(객체를 만들지 않음). */
+    readonly localCaptureSequence: number;
+    /** sequence가 afterSequence보다 큰 capture의 소유 복사본으로 `out`을 채워 돌려준다(먼저 비움). */
+    readLocalCaptures(afterSequence: number, out: LocalCapture[]): LocalCapture[];
     constructor(options: SessionOptions);
     readonly tick: number;
     readonly inputDelay: number;
@@ -524,6 +530,9 @@ export interface RoomSessionMetrics extends Partial<SessionMetrics> {
 }
 export class RoomSession {
     readonly localInputState: LocalInputState | null;
+    /** core가 없으면 null. tick 값은 baseTick을 더한 전역 tick이다. */
+    readonly localCaptureSequence: number | null;
+    readLocalCaptures(afterSequence: number, out: LocalCapture[]): LocalCapture[];
     constructor(options: RoomSessionOptions);
     readonly mode: 'local' | 'online';
     readonly localFastPath: boolean;
@@ -584,12 +593,13 @@ export interface LocalInputState {
     executedInput: Bytes | null;
     replayInput: Bytes | null;
     executedCommandSequence: number | null;
-    captures: Array<NonNullable<LocalInputState['capture']>>;
-    capture: null | {
-        sequence: number;
-        captureTick: number;
-        executeTick: number;
-        input: Bytes;
-        commands: Array<{ sequence: number; executeTick: number; payload: Bytes }>;
-    };
+    captures: LocalCapture[];
+    capture: LocalCapture | null;
+}
+export interface LocalCapture {
+    sequence: number;
+    captureTick: number;
+    executeTick: number;
+    input: Bytes;
+    commands: Array<{ sequence: number; executeTick: number; payload: Bytes }>;
 }

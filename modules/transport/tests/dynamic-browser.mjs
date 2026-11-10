@@ -151,9 +151,9 @@ function actor(prepared = false, available = false, assignments = new Map()) {
             return saves;
         },
         adapter: {
-            save() {
+            saveInto(out) {
                 saves++;
-                return CODEC.encode(state);
+                return CODEC.encodeInto(state, out);
             },
             load: (b) => {
                 state = CODEC.decode(b);
@@ -249,7 +249,11 @@ function actor(prepared = false, available = false, assignments = new Map()) {
                 },
             };
         };
-        ACTOR.adapter.saveJob = () => JOB(() => ACTOR.adapter.save());
+        ACTOR.adapter.saveJob = () =>
+            JOB(() => {
+                saves++;
+                return CODEC.encode(state);
+            });
         ACTOR.adapter.prepareSnapshotJob = (data, context) => JOB(() => TOKEN(CODEC.decode(data), context));
         ACTOR.adapter.loadPreparedSnapshot = (key, context) => {
             const OWNED = TOKENS.get(key);

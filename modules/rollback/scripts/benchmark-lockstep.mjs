@@ -35,11 +35,10 @@ function run(mode, count) {
     const ENCODER = new TextEncoder(),
         DECODER = new TextDecoder();
     const ADAPTER = {
-        save() {
+        saveInto(out) {
             const START = performance.now();
-            const BYTES = ENCODER.encode(JSON.stringify(state));
+            out.write(ENCODER.encode(JSON.stringify(state)));
             saveMs += performance.now() - START;
-            return BYTES;
         },
         load(bytes) {
             state = JSON.parse(DECODER.decode(bytes));

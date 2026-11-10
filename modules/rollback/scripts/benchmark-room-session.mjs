@@ -14,7 +14,7 @@ function adapter() {
     let state = new Uint8Array(BYTES);
     let view = new DataView(state.buffer);
     return {
-        save: () => state.slice(),
+        saveInto: (out) => out.write(state),
         load: (b) => {
             state = b.slice();
             view = new DataView(state.buffer);

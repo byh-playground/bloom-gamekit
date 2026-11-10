@@ -58,18 +58,29 @@ export class CheckpointHistory {
         }
         return result;
     }
+    /** 보관 중인 가장 이른 tick, 비었으면 Infinity(Math.min()과 같음). */
     get oldestTick() {
-        return Math.min(...this.records.keys());
+        let min = Infinity;
+        for (const TICK of this.records.keys()) {
+            if (TICK < min) {
+                min = TICK;
+            }
+        }
+        return min;
     }
     put(state) {
         const OLDEST = Math.max(0, state.tick - this.size + 1);
         const BASE = this.atOrBefore(OLDEST);
-        const EXPIRED = [...this.records.values()].filter((s) => BASE && s.tick < BASE.tick);
+        let expiredBytes = 0;
+        if (BASE) {
+            for (const S of this.records.values()) {
+                if (S.tick < BASE.tick) {
+                    expiredBytes += S.bytes.length;
+                }
+            }
+        }
         const NEXT =
-            this.byteLength -
-            EXPIRED.reduce((n, s) => n + s.bytes.length, 0) -
-            (this.records.get(state.tick)?.bytes.length ?? 0) +
-            state.bytes.length;
+            this.byteLength - expiredBytes - (this.records.get(state.tick)?.bytes.length ?? 0) + state.bytes.length;
         if (NEXT > this.maxBytes) {
             throw Object.assign(new RangeError('checkpoint history byte budget'), {
                 code: 'history-capacity',
@@ -78,8 +89,12 @@ export class CheckpointHistory {
                 snapshotBytes: state.bytes.length,
             });
         }
-        for (const S of EXPIRED) {
-            this.records.delete(S.tick);
+        if (BASE) {
+            for (const TICK of this.records.keys()) {
+                if (TICK < BASE.tick) {
+                    this.records.delete(TICK);
+                }
+            }
         }
         this.records.set(state.tick, state);
         this.byteLength = NEXT;

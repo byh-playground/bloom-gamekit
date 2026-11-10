@@ -52,11 +52,10 @@ const ROOM = {
 };
 function adapter(cooperative = false) {
     const IMPLEMENTATION = {
-        save: () => {
-            const T = performance.now(),
-                DATA = CODEC.encode(state);
+        saveInto: (out) => {
+            const T = performance.now();
+            CODEC.encodeInto(state, out);
             latency?.cost('save', performance.now() - T);
-            return DATA;
         },
         load: (data) => {
             const T = performance.now();
