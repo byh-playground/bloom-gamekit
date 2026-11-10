@@ -40,6 +40,9 @@ function presentationEventKey(event) {
   }
   return JSON.stringify([event.tick, event.sequence, event.entityId, event.generation, event.kind]);
 }
+function compareDue(a, b) {
+  return a.presentationTimeMs - b.presentationTimeMs || a.event.tick - b.event.tick || a.event.sequence - b.event.sequence;
+}
 var PresentationEventQueue = class {
   constructor({ adapters, retentionTicks = 120, maxPending = 1e5, nowMs = 0, display = null } = {}) {
     if (!adapters || typeof adapters !== "object") {
@@ -77,6 +80,8 @@ var PresentationEventQueue = class {
     this.active = /* @__PURE__ */ new Set();
     this.awaitingConfirmation = /* @__PURE__ */ new Set();
     this.awaitingPresentation = this.display ? /* @__PURE__ */ new Set() : null;
+    this.dueLists = [];
+    this.dueDepth = 0;
     this.collectibleTicks = /* @__PURE__ */ new Map();
     this.rollbackFrom = null;
     this.disposed = false;
@@ -576,37 +581,50 @@ var PresentationEventQueue = class {
     if (this.awaitingPresentation.size === 0) {
       return;
     }
-    const DUE = [...this.awaitingPresentation].filter((record) => {
-      const EVENT_MS = record.presentationTimeMs;
-      const ROUNDING = Math.max(Math.abs(EVENT_MS), Math.abs(frame.timeMs), DISPLAY.stepMs) * Number.EPSILON * 4;
-      return EVENT_MS <= frame.timeMs + ROUNDING;
-    }).sort(
-      (a, b) => a.presentationTimeMs - b.presentationTimeMs || a.event.tick - b.event.tick || a.event.sequence - b.event.sequence
-    );
-    for (const RECORD of DUE) {
-      if (this.disposed || !this.display.active) {
-        return;
+    const DEPTH = this.dueDepth++, DUE = this.dueLists[DEPTH] ??= [];
+    try {
+      DUE.length = 0;
+      for (const RECORD of this.awaitingPresentation) {
+        const EVENT_MS = RECORD.presentationTimeMs;
+        const ROUNDING = Math.max(Math.abs(EVENT_MS), Math.abs(frame.timeMs), DISPLAY.stepMs) * Number.EPSILON * 4;
+        if (EVENT_MS <= frame.timeMs + ROUNDING) {
+          let at = DUE.length;
+          DUE.push(RECORD);
+          while (at > 0 && compareDue(DUE[at - 1], RECORD) > 0) {
+            DUE[at] = DUE[at - 1];
+            at--;
+          }
+          DUE[at] = RECORD;
+        }
       }
-      if (!this.awaitingPresentation.has(RECORD)) {
-        continue;
+      for (const RECORD of DUE) {
+        if (this.disposed || !this.display.active) {
+          return;
+        }
+        if (!this.awaitingPresentation.has(RECORD)) {
+          continue;
+        }
+        const EVENT_MS = RECORD.presentationTimeMs, AGE_MS = Math.max(0, frame.timeMs - EVENT_MS);
+        if (AGE_MS > DISPLAY.maxLatenessMs || RECORD.durationMs > 0 && AGE_MS >= RECORD.durationMs) {
+          this._stop(RECORD, "expired");
+          this.stats.expired++;
+          continue;
+        }
+        this._start(RECORD, EVENT_MS);
+        if (this.disposed || !this.display.active) {
+          return;
+        }
+        if (RECORD.state === "active" && RECORD.confirmOnStart) {
+          RECORD.adapter.confirm?.(RECORD.handle, RECORD.event);
+          RECORD.confirmOnStart = false;
+        }
+        if (RECORD.state === "active" && AGE_MS > 0) {
+          RECORD.adapter.update?.(RECORD.handle, AGE_MS, RECORD.event);
+        }
       }
-      const EVENT_MS = RECORD.presentationTimeMs, AGE_MS = Math.max(0, frame.timeMs - EVENT_MS);
-      if (AGE_MS > DISPLAY.maxLatenessMs || RECORD.durationMs > 0 && AGE_MS >= RECORD.durationMs) {
-        this._stop(RECORD, "expired");
-        this.stats.expired++;
-        continue;
-      }
-      this._start(RECORD, EVENT_MS);
-      if (this.disposed || !this.display.active) {
-        return;
-      }
-      if (RECORD.state === "active" && RECORD.confirmOnStart) {
-        RECORD.adapter.confirm?.(RECORD.handle, RECORD.event);
-        RECORD.confirmOnStart = false;
-      }
-      if (RECORD.state === "active" && AGE_MS > 0) {
-        RECORD.adapter.update?.(RECORD.handle, AGE_MS, RECORD.event);
-      }
+    } finally {
+      DUE.length = 0;
+      this.dueDepth--;
     }
   }
   /** Adapter reports a naturally completed audio/particle resource without discarding its dedup identity. */

@@ -376,6 +376,18 @@ function audioSettings(config = AUDIO_DEFAULTS) {
     }
   };
 }
+function lowestVoice(voices, category) {
+  let low = null;
+  for (const VOICE of voices) {
+    if (category !== null && VOICE.category !== category) {
+      continue;
+    }
+    if (!low || VOICE.priority - low.priority < 0 || VOICE.priority === low.priority && VOICE.at - low.at < 0) {
+      low = VOICE;
+    }
+  }
+  return low;
+}
 var AudioPlayer = class {
   constructor(config = AUDIO_DEFAULTS) {
     config = {
@@ -606,9 +618,14 @@ var AudioPlayer = class {
     if (this.categoryVolumes.get(RECIPE.category) <= 0) {
       return null;
     }
-    const GROUP = [...this.voices].filter((v) => v.category === RECIPE.category);
-    if (GROUP.length >= CATEGORY.max) {
-      const LOW = GROUP.sort((a, b) => a.priority - b.priority || a.at - b.at)[0];
+    let groupSize = 0;
+    for (const VOICE2 of this.voices) {
+      if (VOICE2.category === RECIPE.category) {
+        groupSize++;
+      }
+    }
+    if (groupSize >= CATEGORY.max) {
+      const LOW = lowestVoice(this.voices, RECIPE.category);
       if (LOW.priority >= PRIORITY) {
         this.metrics.dropped++;
         return null;
@@ -617,7 +634,7 @@ var AudioPlayer = class {
       this.voices.delete(LOW);
     }
     if (this.voices.size >= this.config.maxVoices) {
-      const LOW = [...this.voices].sort((a, b) => a.priority - b.priority || a.at - b.at)[0];
+      const LOW = lowestVoice(this.voices, null);
       if (LOW.priority >= PRIORITY) {
         this.metrics.dropped++;
         return null;
@@ -737,11 +754,15 @@ var AudioPlayer = class {
         rms: 0
       };
     }
-    const VALUES = new Float32Array(this.analyser.fftSize);
+    if (this.meterValues?.length !== this.analyser.fftSize) {
+      this.meterValues = new Float32Array(this.analyser.fftSize);
+    }
+    const VALUES = this.meterValues;
     this.analyser.getFloatTimeDomainData(VALUES);
     let peak = 0;
     let sum = 0;
-    for (const VALUE of VALUES) {
+    for (let i = 0; i < VALUES.length; i++) {
+      const VALUE = VALUES[i];
       peak = Math.max(peak, Math.abs(VALUE));
       sum += VALUE * VALUE;
     }

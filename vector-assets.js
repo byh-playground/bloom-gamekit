@@ -3580,6 +3580,9 @@ function samplePartTransform(program, clipName, elapsedMs, partIndex, basePoses)
 
 // modules/vector-assets/runtime.js
 var IDENTITY = Object.freeze([1, 0, 0, 1, 0, 0]);
+var WHITE = Object.freeze([1, 1, 1, 1]);
+var NO_CLIPS = Object.freeze([]);
+var EMPTY_OPTIONS = Object.freeze({});
 var DEFAULT_POSE = Object.freeze({
   x: 0,
   y: 0,
@@ -3680,18 +3683,27 @@ function copyPose(pose) {
   return Object.fromEntries(POSE_FIELDS.map((field) => [field, pose[field]]));
 }
 function authoredMorph(sketch, displayTimeMs) {
+  return authoredMorphInto(sketch, displayTimeMs, [0, 0]);
+}
+function authoredMorphInto(sketch, displayTimeMs, out) {
   if (!sketch) {
-    return [0, 0];
+    out[0] = 0;
+    out[1] = 0;
+    return out;
   }
   const PHASE = (displayTimeMs % sketch.periodMs + sketch.periodMs) % sketch.periodMs / sketch.periodMs * 3;
   const SEGMENT = Math.floor(PHASE), AMOUNT = PHASE - SEGMENT;
   if (SEGMENT === 0) {
-    return [AMOUNT, 0];
+    out[0] = AMOUNT;
+    out[1] = 0;
+  } else if (SEGMENT === 1) {
+    out[0] = 1 - AMOUNT;
+    out[1] = AMOUNT;
+  } else {
+    out[0] = 0;
+    out[1] = 1 - AMOUNT;
   }
-  if (SEGMENT === 1) {
-    return [1 - AMOUNT, AMOUNT];
-  }
-  return [0, 1 - AMOUNT];
+  return out;
 }
 function blendPoses(from, to, amount, partIds) {
   const OUTPUT = /* @__PURE__ */ new Map();
@@ -3797,6 +3809,54 @@ function retainVectorAsset(meshRenderer, compiledAsset) {
     let resolvedRevision = -1;
     let resolvedPose = null;
     let preparedPose = null;
+    const PREPARED_RECORD = {
+      revision: 0,
+      frame: 0,
+      restores: 0,
+      gpuUnavailable: null,
+      excludedMask: 0,
+      handle: null
+    };
+    const PREPARE_BASES = new Array(METADATA.parts.length).fill(null);
+    const PREPARE_VISIBLE = new Array(METADATA.parts.length).fill(true);
+    const PREPARE_MORPH = [0, 0];
+    const PREPARE_OPTIONS = {
+      clipName: "",
+      elapsedMs: 0,
+      basePoses: PREPARE_BASES,
+      visible: PREPARE_VISIBLE,
+      excludedMask: 0,
+      morph: PREPARE_MORPH
+    };
+    const SUBMIT_OPTIONS = {
+      projection: void 0,
+      viewProjection: void 0,
+      worldMatrix: void 0,
+      matrix: IDENTITY,
+      matrices: void 0,
+      count: void 0,
+      prefixColor: void 0,
+      prefixCount: void 0,
+      forceColorPrefixCount: void 0,
+      pose: void 0,
+      parts: void 0,
+      morph: void 0,
+      alpha: 1,
+      color: WHITE,
+      forceColor: false,
+      paintRegions: null,
+      whiteFlash: false,
+      clips: NO_CLIPS,
+      stencilRef: null,
+      depth: 0,
+      depthTest: false,
+      depthWrite: false,
+      depthFunc: "lequal",
+      depthWriteAlphaThreshold: void 0,
+      indexVariant: null,
+      strokeViewport: null,
+      timeMs: 0
+    };
     const RESOLVED_MATRICES = /* @__PURE__ */ new Map();
     let actorDisposed = false;
     const POSE_INSTANCE = poseSource ? meshRenderer.createPoseInstance(poseSource) : null;
@@ -4121,7 +4181,7 @@ function retainVectorAsset(meshRenderer, compiledAsset) {
       }
       return excludedMask;
     };
-    const PREPARE_POSE = ({ excludeParts = null } = {}) => {
+    const PREPARE_POSE = (excludeParts) => {
       ASSERT_ACTOR();
       const EXCLUDED_MASK = VALIDATE_EXCLUSIONS(excludeParts);
       if (!POSE_INSTANCE) {
@@ -4137,27 +4197,35 @@ function retainVectorAsset(meshRenderer, compiledAsset) {
         return preparedPose.handle;
       }
       const CACHE_PREPARED = (handle) => {
-        preparedPose = CACHEABLE && handle ? {
-          revision: poseRevision,
-          frame: FRAME,
-          restores: RESTORES,
-          gpuUnavailable: meshRenderer.poseRenderer?.gpuUnavailableReason ?? null,
-          excludedMask: EXCLUDED_MASK,
-          handle
-        } : null;
+        if (CACHEABLE && handle) {
+          preparedPose = PREPARED_RECORD;
+          PREPARED_RECORD.revision = poseRevision;
+          PREPARED_RECORD.frame = FRAME;
+          PREPARED_RECORD.restores = RESTORES;
+          PREPARED_RECORD.gpuUnavailable = meshRenderer.poseRenderer?.gpuUnavailableReason ?? null;
+          PREPARED_RECORD.excludedMask = EXCLUDED_MASK;
+          PREPARED_RECORD.handle = handle;
+        } else {
+          preparedPose = null;
+        }
         return handle;
       };
-      const MORPH = authoredMorph(SKETCH_MORPH_STYLE, displayTimeMs);
+      const MORPH = authoredMorphInto(SKETCH_MORPH_STYLE, displayTimeMs, PREPARE_MORPH);
       const ACTIVE = GPU_CLIP();
       if (ACTIVE) {
-        const HANDLE = meshRenderer.preparePose(POSE_INSTANCE, {
-          clipName: ACTIVE.name,
-          elapsedMs: displayTimeMs - ACTIVE.startedAtMs,
-          basePoses: METADATA.parts.map((part) => BASE_POSE.get(part.id)),
-          visible: METADATA.parts.map((part) => VISIBLE.get(part.id) !== false),
-          excluded: METADATA.parts.map((part) => excludeParts?.has(part.id) ?? false),
-          morph: MORPH
-        });
+        const PARTS2 = METADATA.parts;
+        for (let i = 0; i < PARTS2.length; i++) {
+          PREPARE_BASES[i] = BASE_POSE.get(PARTS2[i].id);
+          PREPARE_VISIBLE[i] = VISIBLE.get(PARTS2[i].id) !== false;
+        }
+        const PREPARE = PREPARE_OPTIONS;
+        PREPARE.clipName = ACTIVE.name;
+        PREPARE.elapsedMs = displayTimeMs - ACTIVE.startedAtMs;
+        PREPARE.basePoses = PREPARE_BASES;
+        PREPARE.visible = PREPARE_VISIBLE;
+        PREPARE.excludedMask = EXCLUDED_MASK;
+        PREPARE.morph = MORPH;
+        const HANDLE = meshRenderer.preparePose(POSE_INSTANCE, PREPARE);
         if (HANDLE) {
           POSE_METRICS.gpuPrepares++;
           return CACHE_PREPARED(HANDLE);
@@ -4180,11 +4248,11 @@ function retainVectorAsset(meshRenderer, compiledAsset) {
       worldMatrix,
       matrix = IDENTITY,
       alpha = 1,
-      color = [1, 1, 1, 1],
+      color = WHITE,
       paintRegions = null,
       forceColor = false,
       whiteFlash = false,
-      clips = [],
+      clips = NO_CLIPS,
       stencilRef = null,
       depth = 0,
       depthTest = false,
@@ -4194,85 +4262,73 @@ function retainVectorAsset(meshRenderer, compiledAsset) {
       strokeViewport = null,
       excludeParts = null,
       instances = null
-    } = {}) => {
+    } = EMPTY_OPTIONS) => {
       ASSERT_ACTOR();
-      const SUBMIT = (options) => instances ? meshRenderer.drawMeshInstances(mesh, {
-        ...options,
-        matrices: instances.matrices,
-        count: instances.count,
-        prefixColor: instances.prefixColor,
-        prefixCount: instances.prefixCount,
-        forceColorPrefixCount: instances.forceColorPrefixCount
-      }) : meshRenderer.drawMesh(mesh, options);
       VALIDATE_EXCLUSIONS(excludeParts);
       if (!mesh && paintRegions !== null) {
         throw new TypeError("This asset has no named mesh fills");
       }
       const ALPHA_DEPTH = depthWriteAlphaThreshold !== null;
-      if (POSE_INSTANCE && !ALPHA_DEPTH) {
-        const POSE = PREPARE_POSE({ excludeParts });
-        if (POSE) {
-          const INDEX_VARIANT2 = !visibilityOverridden && compiledAsset.geometry.expressionIndices?.[expression] ? expression : null;
-          const WORLD_MODE2 = viewProjection !== void 0 || worldMatrix !== void 0;
-          SUBMIT({
-            ...WORLD_MODE2 ? { viewProjection, worldMatrix } : { projection },
-            matrix,
-            pose: POSE,
-            alpha,
-            color,
-            forceColor,
-            paintRegions,
-            whiteFlash,
-            clips,
-            stencilRef,
-            depth,
-            depthTest,
-            depthWrite,
-            depthFunc,
-            indexVariant: INDEX_VARIANT2,
-            strokeViewport,
-            timeMs: displayTimeMs
-          });
-          return;
-        }
-      }
-      if (!POSE_INSTANCE || ALPHA_DEPTH) {
-        meshRenderer.recordPoseFallback?.(ALPHA_DEPTH ? "alphaDepthClassification" : "uniformPose");
-      }
-      const RESOLVED = WORLD_MATRICES();
-      const POSES = RESOLVED.parts.map((pose, index) => ({
-        transform: pose.transform.slice(),
-        opacity: pose.opacity,
-        visible: pose.visible && !excludeParts?.has(METADATA.parts[index].id)
-      }));
-      const INDEX_VARIANT = !visibilityOverridden && compiledAsset.geometry.expressionIndices?.[expression] ? expression : null;
+      const POSE = POSE_INSTANCE && !ALPHA_DEPTH ? PREPARE_POSE(excludeParts) : null;
       const WORLD_MODE = viewProjection !== void 0 || worldMatrix !== void 0;
-      SUBMIT({
-        ...WORLD_MODE ? {
-          viewProjection,
-          worldMatrix
-        } : {
-          projection
-        },
-        matrix,
-        parts: POSES,
-        morph: RESOLVED.morph.slice(),
-        alpha,
-        color,
-        forceColor,
-        paintRegions,
-        whiteFlash,
-        clips,
-        stencilRef,
-        depth,
-        depthTest,
-        depthWrite,
-        depthFunc,
-        depthWriteAlphaThreshold,
-        indexVariant: INDEX_VARIANT,
-        strokeViewport,
-        timeMs: displayTimeMs
-      });
+      const OPTIONS = SUBMIT_OPTIONS;
+      OPTIONS.projection = WORLD_MODE ? void 0 : projection;
+      OPTIONS.viewProjection = WORLD_MODE ? viewProjection : void 0;
+      OPTIONS.worldMatrix = WORLD_MODE ? worldMatrix : void 0;
+      OPTIONS.matrix = matrix;
+      OPTIONS.alpha = alpha;
+      OPTIONS.color = color;
+      OPTIONS.forceColor = forceColor;
+      OPTIONS.paintRegions = paintRegions;
+      OPTIONS.whiteFlash = whiteFlash;
+      OPTIONS.clips = clips;
+      OPTIONS.stencilRef = stencilRef;
+      OPTIONS.depth = depth;
+      OPTIONS.depthTest = depthTest;
+      OPTIONS.depthWrite = depthWrite;
+      OPTIONS.depthFunc = depthFunc;
+      OPTIONS.strokeViewport = strokeViewport;
+      OPTIONS.timeMs = displayTimeMs;
+      OPTIONS.indexVariant = !visibilityOverridden && compiledAsset.geometry.expressionIndices?.[expression] ? expression : null;
+      if (POSE) {
+        OPTIONS.pose = POSE;
+        OPTIONS.parts = void 0;
+        OPTIONS.morph = void 0;
+        OPTIONS.depthWriteAlphaThreshold = void 0;
+      } else {
+        if (!POSE_INSTANCE || ALPHA_DEPTH) {
+          meshRenderer.recordPoseFallback?.(ALPHA_DEPTH ? "alphaDepthClassification" : "uniformPose");
+        }
+        const RESOLVED = WORLD_MATRICES();
+        OPTIONS.pose = void 0;
+        OPTIONS.parts = RESOLVED.parts.map((pose, index) => ({
+          transform: pose.transform.slice(),
+          opacity: pose.opacity,
+          visible: pose.visible && !excludeParts?.has(METADATA.parts[index].id)
+        }));
+        OPTIONS.morph = RESOLVED.morph.slice();
+        OPTIONS.depthWriteAlphaThreshold = depthWriteAlphaThreshold;
+      }
+      try {
+        if (instances) {
+          OPTIONS.matrices = instances.matrices;
+          OPTIONS.count = instances.count;
+          OPTIONS.prefixColor = instances.prefixColor;
+          OPTIONS.prefixCount = instances.prefixCount;
+          OPTIONS.forceColorPrefixCount = instances.forceColorPrefixCount;
+          meshRenderer.drawMeshInstances(mesh, OPTIONS);
+        } else {
+          meshRenderer.drawMesh(mesh, OPTIONS);
+        }
+      } finally {
+        OPTIONS.projection = OPTIONS.viewProjection = OPTIONS.worldMatrix = void 0;
+        OPTIONS.matrices = OPTIONS.count = OPTIONS.prefixColor = void 0;
+        OPTIONS.prefixCount = OPTIONS.forceColorPrefixCount = void 0;
+        OPTIONS.pose = OPTIONS.parts = OPTIONS.morph = OPTIONS.paintRegions = void 0;
+        OPTIONS.matrix = IDENTITY;
+        OPTIONS.color = WHITE;
+        OPTIONS.clips = NO_CLIPS;
+      }
     };
     const DRAW = (options = {}) => {
       const { outlineExpression: OUTLINE_EXPRESSION = null, instances: INSTANCES = null } = options;
@@ -4354,7 +4410,7 @@ function retainVectorAsset(meshRenderer, compiledAsset) {
       getPartPose: GET_PART_POSE,
       getSocket: GET_SOCKET,
       partPoses: PART_POSES,
-      preparePose: PREPARE_POSE,
+      preparePose: (options = EMPTY_OPTIONS) => PREPARE_POSE(options.excludeParts ?? null),
       draw: DRAW,
       dispose: DISPOSE_ACTOR,
       get currentClip() {

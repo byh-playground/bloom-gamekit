@@ -25,7 +25,13 @@ function intervalAt(track, at) {
   if (at >= track.startedAt) {
     return track;
   }
-  return track.history.find((item) => at <= item.startedAt + item.durationMs) ?? track.history.at(-1) ?? track;
+  const HISTORY = track.history;
+  for (let i = 0; i < HISTORY.length; i++) {
+    if (at <= HISTORY[i].startedAt + HISTORY[i].durationMs) {
+      return HISTORY[i];
+    }
+  }
+  return HISTORY[HISTORY.length - 1] ?? track;
 }
 function retainRemoved(next, previous, { origin, timeMs, nowMs, delayMs }) {
   if (!delayMs) {
@@ -1940,12 +1946,12 @@ var PresentationRuntime = class {
           }
           return;
         }
-        for (const [ID, TRACK] of this.#tracks) {
-          const MODEL = this.sample(ID, TRACK.generation, nowMs);
+        this.#tracks.forEach((track, id) => {
+          const MODEL = this.sample(id, track.generation, nowMs);
           if (MODEL) {
-            visit(MODEL, ID, TRACK.generation);
+            visit(MODEL, id, track.generation);
           }
-        }
+        });
       },
       pathInto: (id, generation, out) => {
         CHECK();

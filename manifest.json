@@ -3,15 +3,15 @@
   "modules": [
     {
       "file": "interpolation.js",
-      "sha256": "3fe9294016ba6c5e41487c0bddea89879020bc9efee4bae3f75ef5a340dd8c70"
+      "sha256": "9fd27192be7ab212cda052fb79076512ebc1d4a74485072e9ab02fe8794f1df0"
     },
     {
       "file": "rendering.js",
-      "sha256": "663ae824eb1179c57e0c9d852a047134f3de7b748478433c47088c6ad0cb58d5"
+      "sha256": "3eb2893b8f149fad89a68b5b9c5df9daa594eaff0b6968b16c5a6e7936662350"
     },
     {
       "file": "vector-assets.js",
-      "sha256": "56e39b7428a29f838b8fc5b432f75075e6cc69be4f28b5ed8553c0c94184bb52"
+      "sha256": "fe9dd1ad1774d30778a10cb16f4c0a00d7c2a04c328e237e0fb8c1e82e36407e"
     },
     {
       "file": "vector-assets-loader.js",
@@ -59,7 +59,7 @@
     },
     {
       "file": "rollback.js",
-      "sha256": "e297debe4a57608e4e4eac88becaf0d22ad20dc3e01007b3481021453826b4cf"
+      "sha256": "be4c381b23b4b1124f4f06a533a63b4580d262669d01eccf5e430fcb828cc01d"
     },
     {
       "file": "camera.js",
@@ -67,7 +67,7 @@
     },
     {
       "file": "presentation-events.js",
-      "sha256": "4442cc8bfc787abce9a37bbda87a12d994dfc4b4266d3b97f36e26aa501418f5"
+      "sha256": "ec7b4b9f92d72ada76e98e4c64179ac868c36b51012ff49c2ce608dbab4d04eb"
     },
     {
       "file": "hud.js",
@@ -79,7 +79,7 @@
     },
     {
       "file": "audio.js",
-      "sha256": "baf50e63457ccc7e66859ee9018049b0f53ef49e5b7c90b1395d2995bdcf6df1"
+      "sha256": "26fc20f2e7536efadb11f43fb03edd68d638781668576eab28da84403f2b12e6"
     },
     {
       "file": "navigation.js",
