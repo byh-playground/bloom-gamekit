@@ -86,7 +86,9 @@ var UniformGrid = class {
   #mode;
   #cells;
   #groupCells;
+  // 사용한 칸 번호와 개수. 비울 때 배열 길이를 0으로 만들면 V8이 저장 공간을 놓아 다음 채우기가 다시 할당하므로 개수만 되돌립니다.
   #used = [];
+  #usedCount = 0;
   #touched;
   #cellOf = null;
   #slotOf = null;
@@ -164,22 +166,25 @@ var UniformGrid = class {
   }
   /** 항목이 들어갔던 칸의 번호(첫 사용 순, 세계 밖 보관 칸 제외)입니다. 읽기 전용이며 clear 때 비워집니다. */
   get usedCells() {
+    if (this.#used.length !== this.#usedCount) {
+      this.#used.length = this.#usedCount;
+    }
     return this.#used;
   }
   /** 담긴 항목을 모두 비웁니다. 사용한 칸만 비우고 버킷 배열은 재사용합니다. */
   clear() {
     if (this.#plain) {
       const USED2 = this.#used;
-      for (let i = 0; i < USED2.length; i++) {
+      for (let i = 0; i < this.#usedCount; i++) {
         this.#touched[USED2[i]] = 0;
       }
-      USED2.length = 0;
+      this.#usedCount = 0;
       this.#plainCount = 0;
       this.#plainDirty = true;
       return;
     }
     const CELLS = this.#cells, USED = this.#used, GROUP_CELLS = this.#groupCells;
-    for (let i = 0; i < USED.length; i++) {
+    for (let i = 0; i < this.#usedCount; i++) {
       const KEY = USED[i];
       CELLS[KEY].length = 0;
       this.#touched[KEY] = 0;
@@ -190,7 +195,7 @@ var UniformGrid = class {
         }
       }
     }
-    USED.length = 0;
+    this.#usedCount = 0;
     const OVERFLOW = CELLS[this.cellTotal];
     if (OVERFLOW !== void 0) {
       OVERFLOW.length = 0;
@@ -241,7 +246,7 @@ var UniformGrid = class {
     const KEY = (CY <= 0 ? 0 : CY > this.#maxRow ? this.#maxRow : CY) * this.cols + (CX <= 0 ? 0 : CX > this.#maxCol ? this.#maxCol : CX);
     if (this.#touched[KEY] === 0) {
       this.#touched[KEY] = 1;
-      this.#used.push(KEY);
+      this.#used[this.#usedCount++] = KEY;
     }
     const COUNT = this.#plainCount;
     if (COUNT === this.#plainKeys.length) {
@@ -294,7 +299,7 @@ var UniformGrid = class {
     }
     if (this.#touched[KEY] === 0) {
       this.#touched[KEY] = 1;
-      this.#used.push(KEY);
+      this.#used[this.#usedCount++] = KEY;
     }
     this.#cellOf[item] = KEY;
     this.#slotOf[item] = bucket.length;
@@ -425,6 +430,61 @@ var UniformGrid = class {
   /** 중심 (x, y) 반지름 radius 원의 외접 사각형 후보입니다. queryRect(x - r, y - r, x + r, y + r)와 같습니다. */
   queryCircle(x, y, radius, out, group = NONE) {
     return this.queryRect(x - radius, y - radius, x + radius, y + radius, out, group);
+  }
+  /**
+   * `queryRect`와 같은 후보를 같은 순서로 정수 배열(`Int32Array` 등) `out`의 앞에서부터 쓰고 개수를 돌려줍니다. 항목이 정수
+   * 번호일 때(track `false`·`'index'`) 쓰며, 결과 길이가 들쭉날쭉해도 배열을 다시 만들지 않습니다. `out`이 모자라면
+   * `RangeError`입니다(항목 수 이상으로 잡아 두면 모자라지 않습니다).
+   */
+  queryRectInto(minX, minY, maxX, maxY, out, group = NONE) {
+    if (this.#mode === MODE_IDENTITY) {
+      throw new TypeError("UniformGrid queryRectInto needs integer items (track false or 'index').");
+    }
+    if (this.#plain && group < 0) {
+      return this.#collectPlainInto(this.cellX(minX), this.cellY(minY), this.cellX(maxX), this.cellY(maxY), out);
+    }
+    const BUCKETS = this.#bucketsFor(group);
+    if (this.#clamp) {
+      return this.#collectCellsInto(
+        BUCKETS,
+        this.cellX(minX),
+        this.cellY(minY),
+        this.cellX(maxX),
+        this.cellY(maxY),
+        out
+      );
+    }
+    if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+      return 0;
+    }
+    let count = 0;
+    if (maxX >= this.originX && maxY >= this.originY && minX < this.#worldMaxX && minY < this.#worldMaxY) {
+      count = this.#collectCellsInto(
+        BUCKETS,
+        Math.max(0, this.cellX(minX)),
+        Math.max(0, this.cellY(minY)),
+        Math.min(this.#maxCol, this.cellX(maxX)),
+        Math.min(this.#maxRow, this.cellY(maxY)),
+        out
+      );
+    }
+    const OVERFLOW = this.#cells[this.cellTotal];
+    if (OVERFLOW !== void 0) {
+      for (let i = 0; i < OVERFLOW.length; i++) {
+        const X = this.#overflowX[i], Y = this.#overflowY[i];
+        if (X >= minX && X <= maxX && Y >= minY && Y <= maxY) {
+          if (count >= out.length) {
+            throw new RangeError("UniformGrid queryRectInto out is too short.");
+          }
+          out[count++] = OVERFLOW[i];
+        }
+      }
+    }
+    return count;
+  }
+  /** `queryCircle`의 정수 배열판입니다. `queryRectInto(x - r, y - r, x + r, y + r, out, group)`와 같습니다. */
+  queryCircleInto(x, y, radius, out, group = NONE) {
+    return this.queryRectInto(x - radius, y - radius, x + radius, y + radius, out, group);
   }
   /**
    * 칸 번호의 버킷을 읽기 전용으로 돌려줍니다(없으면 빈 배열). 다음 변경 전까지만 유효합니다.
@@ -685,7 +745,7 @@ var UniformGrid = class {
     }
     if (this.#touched[key] === 0) {
       this.#touched[key] = 1;
-      this.#used.push(key);
+      this.#used[this.#usedCount++] = key;
     }
     if (this.#mode === MODE_INDEX) {
       this.#cellOf[item] = key;
@@ -778,6 +838,43 @@ var UniformGrid = class {
         out.push(ITEMS[k]);
       }
     }
+  }
+  #collectCellsInto(buckets, x0, y0, x1, y1, out) {
+    const COLS = this.cols;
+    let count = 0;
+    for (let cy = y0; cy <= y1; cy++) {
+      const ROW = cy * COLS;
+      for (let cx = x0; cx <= x1; cx++) {
+        const BUCKET = buckets[ROW + cx];
+        if (BUCKET === void 0) {
+          continue;
+        }
+        if (count + BUCKET.length > out.length) {
+          throw new RangeError("UniformGrid queryRectInto out is too short.");
+        }
+        for (let i = 0; i < BUCKET.length; i++) {
+          out[count++] = BUCKET[i];
+        }
+      }
+    }
+    return count;
+  }
+  #collectPlainInto(x0, y0, x1, y1, out) {
+    if (this.#plainDirty) {
+      this.#buildPlain();
+    }
+    const COLS = this.cols, START = this.#plainStart, ITEMS = this.#plainItems;
+    let count = 0;
+    for (let cy = y0; cy <= y1; cy++) {
+      const ROW = cy * COLS, FROM = START[ROW + x0], END = START[ROW + x1 + 1];
+      if (count + END - FROM > out.length) {
+        throw new RangeError("UniformGrid queryRectInto out is too short.");
+      }
+      for (let k = FROM; k < END; k++) {
+        out[count++] = ITEMS[k];
+      }
+    }
+    return count;
   }
   #collectOverflow(minX, minY, maxX, maxY, out) {
     const OVERFLOW = this.#cells[this.cellTotal];
