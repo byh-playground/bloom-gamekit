@@ -144,6 +144,7 @@ var FrameMetrics = class {
 
 // modules/debug-tools/debug-host.js
 var RESERVED = /* @__PURE__ */ new Set(["debug", "scene", "tick"]);
+var EPOCH_MS = 1e7;
 var TICK = (text) => {
   const VALUE = Number(text);
   if (text === "" || !Number.isSafeInteger(VALUE) || VALUE < 0) {
@@ -151,6 +152,59 @@ var TICK = (text) => {
   }
   return VALUE;
 };
+var clockFrozen = false;
+function freezePerformanceNow() {
+  if (clockFrozen) {
+    throw new Error("another debug scene holds the frozen clock; dispose it first");
+  }
+  const PERFORMANCE = globalThis.performance;
+  const OWN = Object.getOwnPropertyDescriptor(PERFORMANCE, "now");
+  const REAL = PERFORMANCE.now.bind(PERFORMANCE);
+  if (REAL() >= EPOCH_MS) {
+    throw new Error(`the debug clock must be frozen within ${EPOCH_MS} ms of page start`);
+  }
+  let virtual = EPOCH_MS;
+  const VIRTUAL_NOW = () => virtual;
+  const SET = (now) => Object.defineProperty(PERFORMANCE, "now", { configurable: true, writable: true, value: now });
+  SET(VIRTUAL_NOW);
+  clockFrozen = true;
+  let restored = false;
+  const LIVE = () => {
+    if (restored) {
+      throw new Error("the debug clock was restored with its scene");
+    }
+  };
+  return {
+    clock: {
+      now: VIRTUAL_NOW,
+      advance(ms) {
+        LIVE();
+        if (!Number.isFinite(ms) || ms < 0) {
+          throw new RangeError(`clock advance must be a finite non-negative number: ${ms}`);
+        }
+        virtual += ms;
+      },
+      realTime(operation) {
+        LIVE();
+        SET(REAL);
+        try {
+          return operation();
+        } finally {
+          SET(VIRTUAL_NOW);
+        }
+      }
+    },
+    restore() {
+      if (OWN) {
+        Object.defineProperty(PERFORMANCE, "now", OWN);
+      } else {
+        delete PERFORMANCE.now;
+      }
+      clockFrozen = false;
+      restored = true;
+    }
+  };
+}
 function installDebugHost({ scenes, search = globalThis.location?.search ?? "", target = globalThis } = {}) {
   const QUERY = new URLSearchParams(search);
   if (!QUERY.has("debug")) {
@@ -163,7 +217,17 @@ function installDebugHost({ scenes, search = globalThis.location?.search ?? "", 
     }
   }
   const NAME = QUERY.get("scene");
-  let handle = null;
+  let handle = null, frozen = null;
+  const RESTORE_CLOCK = () => {
+    frozen?.restore();
+    frozen = null;
+  };
+  const CONTEXT = {
+    freezeClock() {
+      frozen ??= freezePerformanceNow();
+      return frozen.clock;
+    }
+  };
   const DEBUG = {
     ready: false,
     error: null,
@@ -186,19 +250,23 @@ function installDebugHost({ scenes, search = globalThis.location?.search ?? "", 
       }
       handle.render?.();
     },
-    /** Compact text-able view of what the screen shows. The scene supplies the game fields. */
-    state() {
-      return { scene: NAME, params: PARAMS, tick: DEBUG.tick, ...handle.state?.() };
+    /** Compact text-able view of what the screen shows. `options` reaches the scene's `state` as given. */
+    state(options) {
+      return { scene: NAME, params: PARAMS, tick: DEBUG.tick, ...handle.state?.(options) };
     },
     hash() {
       return handle.hash?.();
     },
     dispose() {
-      handle?.dispose?.();
-      handle = null;
-      DEBUG.ready = false;
-      if (target.__bloomDebug === DEBUG) {
-        delete target.__bloomDebug;
+      try {
+        handle?.dispose?.();
+      } finally {
+        handle = null;
+        DEBUG.ready = false;
+        RESTORE_CLOCK();
+        if (target.__bloomDebug === DEBUG) {
+          delete target.__bloomDebug;
+        }
       }
     }
   };
@@ -207,7 +275,7 @@ function installDebugHost({ scenes, search = globalThis.location?.search ?? "", 
     if (typeof scenes?.[NAME] !== "function") {
       throw new Error(`unknown scene: ${NAME}`);
     }
-    handle = await scenes[NAME](PARAMS) ?? {};
+    handle = await scenes[NAME](PARAMS, CONTEXT) ?? {};
     if (QUERY.has("tick")) {
       DEBUG.step(TICK(QUERY.get("tick")));
     } else {
@@ -215,6 +283,7 @@ function installDebugHost({ scenes, search = globalThis.location?.search ?? "", 
     }
     DEBUG.ready = true;
   })().catch((error) => {
+    RESTORE_CLOCK();
     DEBUG.error = String(error?.stack || error);
     console.error(error);
   });

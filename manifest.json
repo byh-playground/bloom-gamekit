@@ -59,7 +59,7 @@
     },
     {
       "file": "rollback.js",
-      "sha256": "49af6e239c9fddcb8953685586da1d39e3889e6229086f0154ae15e781b1d9b8"
+      "sha256": "460e5a5eb5f00312e86eb406b1b7a5927d1632c2981416116ebfea6792923e54"
     },
     {
       "file": "camera.js",
@@ -75,7 +75,7 @@
     },
     {
       "file": "debug-tools.js",
-      "sha256": "bd077de55035f4e258d341318108b32613de5153d09aa5f6edca6ad31eedb4a4"
+      "sha256": "eb27443696f03d53bff91e8bcca0a8c450654aaf1ac28eefea2651775f1d195e"
     },
     {
       "file": "audio.js",
@@ -164,6 +164,10 @@
     {
       "file": "boot-build.mjs",
       "sha256": "3ac2f98697719c5b0e310b3032df72b8db2b5d2d4462e2382f842bf48bdf4c16"
+    },
+    {
+      "file": "debug-scene.mjs",
+      "sha256": "639d8b5f8fef382ce26d0c92485c731baf5b8212a93b4374df8f2b7ef982b90c"
     }
   ],
   "assets": [
