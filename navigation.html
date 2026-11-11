@@ -3,6 +3,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Navigation example</title>
 <h1>화면 이동</h1>
+<p>버튼과 뒤로 가기로 화면을 옮깁니다. 주소창에 모르는 화면(<code>#/nope</code>)을 넣으면 메인 주소로 고쳐집니다.</p>
 <button id="wiki">위키</button><button id="skill">기술</button><button id="main">메인</button
 ><button id="back">뒤로</button><output id="screen"></output>
 <script>
@@ -51,7 +52,15 @@
         query: SEPARATOR < 0 ? "" : RAW.slice(SEPARATOR + 1)
       });
     };
+    function write(route, replace) {
+      const URL_LOCAL = new URL(host.location.href);
+      URL_LOCAL.hash = HASH(route);
+      if (URL_LOCAL.href !== host.location.href) {
+        host.history[replace ? "replaceState" : "pushState"](host.history.state, "", URL_LOCAL);
+      }
+    }
     let current = READ();
+    write(current, true);
     function publish(next, source, force = false) {
       if (disposed || !force && HASH(next) === HASH(current)) {
         return;
@@ -74,14 +83,18 @@
       if (disposed) {
         return;
       }
-      const NEXT = CANONICAL(route), URL_LOCAL = new URL(host.location.href);
-      URL_LOCAL.hash = HASH(NEXT);
-      if (URL_LOCAL.href !== host.location.href) {
-        host.history[replace ? "replaceState" : "pushState"](host.history.state, "", URL_LOCAL);
-      }
+      const NEXT = CANONICAL(route);
+      write(NEXT, replace);
       publish(NEXT, replace ? "replace" : "navigate", force);
     }
-    const RESTORE = () => publish(READ(), "history");
+    const RESTORE = () => {
+      if (disposed) {
+        return;
+      }
+      const NEXT = READ();
+      write(NEXT, true);
+      publish(NEXT, "history");
+    };
     host.addEventListener("popstate", RESTORE);
     host.addEventListener("hashchange", RESTORE);
     return {
@@ -123,7 +136,9 @@
   }
 
   // modules/navigation/examples/modules/navigation/examples/index.html
-  var NAV = createNavigation();
+  var NAV = createNavigation({
+    normalize: (route) => ["wiki", "tech"].includes(route.screen) ? route : { screen: "main" }
+  });
   window.navigationDemo = NAV;
   NAV.subscribe(
     (route) => {
