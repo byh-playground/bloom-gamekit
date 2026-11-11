@@ -4,4 +4,4 @@ export { PathGrid, MAX_CHANGED_RECTS, STRAIGHT_COST, DIAGONAL_COST } from './gri
 export { DistanceField, UNREACHED } from './field.js';
 export { FieldCache } from './cache.js';
 export { RouteFinder } from './route.js';
-export { PortalGraph } from './portal.js';
+export { FlowField, PortalGraph } from './portal.js';

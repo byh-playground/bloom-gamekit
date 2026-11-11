@@ -8,6 +8,7 @@ import {
     DIAGONAL_COST,
     DistanceField,
     FieldCache,
+    FlowField,
     MAX_CHANGED_RECTS,
     PathGrid,
     PortalGraph,
@@ -809,4 +810,167 @@ console.log('pathfield scenario ok', RESULT.hash.toString(16), RESULT.length, RE
     assert.throws(() => new PortalGraph(LIVE.grid, { size: 16 }), TypeError);
     assert.throws(() => new PortalGraph({}), TypeError);
     console.log('pathfield portal graph ok', LIVE.graph.chunkCount, LIVE.graph.componentCount);
+}
+
+// FlowField(목표 보관소 + 청크 장): (1) 값이 유한 ⇔ 목표와 같은 성분, (2) lowestNeighbor를 따라가면 값이 엄격히 줄며 목표 칸에 닿음,
+// (3) 값 ≥ RouteFinder 정확 비용이고 비율 ≤ 1.15, (4) 질의 순서를 뒤집어도·goalCapacity 1로 밀어내도·새 그래프로 물어도 같은 답,
+// (5) 원 추가·제거를 국소 무효화로 따라간 그래프의 답 = 같은 배치로 처음부터 만든 그래프의 답.
+{
+    const SIDE = 1800,
+        RADIUS = 13.62,
+        PAD = RADIUS + CELL,
+        RATIO_CAP = 1.15,
+        WALLS = [
+            { x0: 880, y0: 160, x1: 920, y1: SIDE },
+            { x0: 200, y0: 600, x1: 700, y1: 640 },
+            { x0: 1100, y0: 900, x1: 1500, y1: 940 },
+        ].map((box, i) => ({
+            id: 'wall-' + i,
+            points: [
+                { x: box.x0, y: box.y0 },
+                { x: box.x1, y: box.y0 },
+                { x: box.x1, y: box.y1 },
+                { x: box.x0, y: box.y1 },
+            ],
+        }));
+    const GAP = { id: 1, x: 900, y: 80, r: 90 },
+        BASE_CIRCLES = [
+            { id: 2, x: 400, y: 1200, r: 70 },
+            { id: 3, x: 1300, y: 400, r: 60 },
+        ];
+    const MAKE = (circles, options = {}) => {
+        const FIELD = new ObstacleField({ width: SIDE, height: SIDE, fixedPoint: 100, polygons: WALLS, circles });
+        const GRID = new PathGrid({
+            width: SIDE,
+            height: SIDE,
+            cellSize: CELL,
+            passable: (x, y) => FIELD.pointClear(x, y, RADIUS),
+            passableEdge: (x, y, tx, ty) => FIELD.segmentClear(x, y, tx, ty, RADIUS, null, true, 0),
+        });
+        return { field: FIELD, grid: GRID, graph: new PortalGraph(GRID, options) };
+    };
+    // 목표 정의(게임의 몫): 점 둘레의 열린 칸. 키는 (목표 번호, 0).
+    const GOALS = [
+        [300, 300, 60],
+        [1500, 1500, 30],
+        [1600, 200, 40],
+        [200, 1700, 90],
+        [1300, 1100, 0],
+    ];
+    const CELLS_OF_GOAL = (grid, [x, y, r]) => {
+        const CELLS = grid.openCellsWithin(x, y, r + CELL * 0.71);
+        return CELLS.length ? CELLS : [grid.nearestOpen(grid.cellAt(x, y), 8)];
+    };
+    const PROBES = [];
+    for (let i = 0; i < 160; i++) {
+        PROBES.push((i * 7919 + 13) % (75 * 75));
+    }
+    // 목표마다 탐침 칸의 [값, 가장 싼 이웃]을 이어 붙인 지문.
+    const ANSWERS = (world, order) => {
+        const OUT = [];
+        for (const G of order) {
+            const FIELD = world.graph.goal(G, 0) ?? world.graph.setGoal(G, 0, CELLS_OF_GOAL(world.grid, GOALS[G]));
+            OUT[G] = PROBES.map((p) => FIELD.distance(p) + ':' + FIELD.lowestNeighbor(p)).join(',');
+        }
+        return OUT;
+    };
+
+    const SPLIT = MAKE([...BASE_CIRCLES, GAP]);
+    const FINDER = new RouteFinder(SPLIT.grid);
+    let reachable = 0,
+        unreachable = 0,
+        worstRatio = 1;
+    for (let g = 0; g < GOALS.length; g++) {
+        const CELLS = CELLS_OF_GOAL(SPLIT.grid, GOALS[g]),
+            FIELD = SPLIT.graph.setGoal(g, 0, CELLS),
+            GOAL_COMPONENTS = new Set(CELLS.map((c) => SPLIT.graph.component(c)));
+        assert.ok(FIELD instanceof FlowField);
+        assert.equal(SPLIT.graph.goal(g, 0), FIELD, '보관한 목표를 키로 다시 꺼냄');
+        for (const START of PROBES) {
+            const COST = FIELD.distance(START);
+            // (1) 값이 유한 ⇔ 목표 칸과 같은 성분
+            assert.equal(COST !== UNREACHED, GOAL_COMPONENTS.has(SPLIT.graph.component(START)), '유한 ⇔ 같은 성분');
+            if (COST === UNREACHED) {
+                unreachable++;
+                assert.deepEqual(FIELD.descend(START, 8, []), [], '닿지 않으면 빈 내려가기');
+                continue;
+            }
+            reachable++;
+            // (2) 엄격히 줄어드는 내려가기가 목표 칸에서 끝남
+            let cell = START,
+                value = COST;
+            const WALK = [];
+            while (value > 0) {
+                const NEXT = FIELD.lowestNeighbor(cell);
+                assert.ok(NEXT >= 0, '목표가 아니면 더 싼 이웃이 있음');
+                const NEXT_VALUE = FIELD.distance(NEXT);
+                assert.ok(NEXT_VALUE < value, '값이 엄격히 줄어듦');
+                WALK.push(NEXT);
+                cell = NEXT;
+                value = NEXT_VALUE;
+            }
+            assert.equal(FIELD.lowestNeighbor(cell), -1, '목표 칸에서 멈춤');
+            assert.ok(CELLS.includes(cell), '목표 칸에 닿음');
+            assert.deepEqual(FIELD.descend(START, WALK.length + 5, []), WALK, 'descend = lowestNeighbor 따라가기');
+            // (3) 상한이고 비율이 못박은 값 이하
+            assert.ok(FINDER.find(START, CELLS), 'A*도 닿음');
+            assert.ok(COST >= FINDER.cost, '값 ≥ 정확한 최단 비용');
+            if (FINDER.cost > 0) {
+                worstRatio = Math.max(worstRatio, COST / FINDER.cost);
+            }
+        }
+    }
+    assert.ok(worstRatio <= RATIO_CAP, `값 ÷ 정확 비용 ${worstRatio} ≤ ${RATIO_CAP}`);
+    assert.ok(reachable > 300 && unreachable > 100, '닿는 칸과 닿지 않는 칸을 모두 봄');
+
+    // (4) 순서·밀어내기·새 그래프와 무관
+    const ORDER = GOALS.map((_, g) => g);
+    const EXPECTED_ANSWERS = ANSWERS(MAKE([...BASE_CIRCLES, GAP]), ORDER);
+    assert.deepEqual(ANSWERS(SPLIT, ORDER), EXPECTED_ANSWERS, '이미 물어 둔 그래프 = 새 그래프');
+    const REVERSED = MAKE([...BASE_CIRCLES, GAP]);
+    const BACKWARD = [];
+    for (const G of [...ORDER].reverse()) {
+        const FIELD = REVERSED.graph.setGoal(G, 0, CELLS_OF_GOAL(REVERSED.grid, GOALS[G]));
+        BACKWARD[G] = [...PROBES]
+            .reverse()
+            .map((p) => FIELD.distance(p) + ':' + FIELD.lowestNeighbor(p))
+            .reverse()
+            .join(',');
+    }
+    assert.deepEqual(BACKWARD, EXPECTED_ANSWERS, '목표·탐침 순서를 뒤집어도 같음');
+    const ONE = MAKE([...BASE_CIRCLES, GAP], { goalCapacity: 1 });
+    assert.deepEqual(ANSWERS(ONE, [4, 0, 3, 1, 2]), EXPECTED_ANSWERS, '용량 1로 계속 밀어내도 같음');
+    assert.equal(ONE.graph.goalCount, 1);
+    assert.equal(ONE.graph.goal(4, 0), null, '밀려난 목표는 없음');
+
+    // (5) 원을 놓고 지우며 국소 무효화로 따라간 그래프 = 처음부터
+    const LIVE = MAKE(BASE_CIRCLES);
+    let previous = BASE_CIRCLES;
+    for (const CIRCLES of [
+        [...BASE_CIRCLES, GAP],
+        [BASE_CIRCLES[1], GAP],
+        [BASE_CIRCLES[1], GAP, { id: 4, x: 1500, y: 1350, r: 50 }],
+        [BASE_CIRCLES[1], { id: 4, x: 1500, y: 1350, r: 50 }],
+    ]) {
+        ANSWERS(LIVE, ORDER);
+        const HELD = LIVE.graph.goal(0, 0);
+        LIVE.field.setCircles(CIRCLES);
+        for (const C of [
+            ...CIRCLES.filter((c) => !previous.includes(c)),
+            ...previous.filter((c) => !CIRCLES.includes(c)),
+        ]) {
+            LIVE.grid.invalidateRect(C.x - C.r - PAD, C.y - C.r - PAD, C.x + C.r + PAD, C.y + C.r + PAD);
+        }
+        assert.throws(() => HELD.distance(PROBES[0]), Error, '구조가 바뀌면 들고 있던 유동장은 버려짐');
+        assert.equal(LIVE.graph.goalCount, 0, '구조가 바뀌면 보관소를 비움');
+        assert.deepEqual(ANSWERS(LIVE, ORDER), ANSWERS(MAKE(CIRCLES), ORDER), '국소 무효화 = 처음부터');
+        previous = CIRCLES;
+    }
+
+    assert.throws(() => LIVE.graph.goal('a', 0), RangeError);
+    assert.throws(() => LIVE.graph.setGoal(0, 0.5, []), RangeError);
+    assert.throws(() => LIVE.graph.setGoal(0, 0, [-1]), RangeError);
+    assert.throws(() => LIVE.graph.setGoal(0, 0, 5), TypeError);
+    assert.throws(() => new FlowField(null, LIVE.graph, null), TypeError);
+    console.log('pathfield flow field ok', reachable, unreachable, worstRatio.toFixed(4));
 }

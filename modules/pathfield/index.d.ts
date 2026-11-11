@@ -207,7 +207,7 @@ export interface PortalGraphOptions {
     chunkSize?: number;
     /** 포털 구간을 쪼개는 칸 수. 1..`chunkSize` 정수, 기본 4. 조각마다 중앙 칸 하나가 노드입니다. */
     portalSpan?: number;
-    /** 목표 보관소의 용량. 1..65535 정수, 기본 64. 목표 보관은 다음 단계에서 이 값을 씁니다. */
+    /** 목표 보관소의 용량. 1..65535 정수, 기본 64. 넘으면 가장 오래 안 쓴 목표를 버립니다. */
     goalCapacity?: number;
 }
 
@@ -232,11 +232,33 @@ export class PortalGraph {
     readonly revision: number;
     /** 전역 연결 성분의 수. */
     readonly componentCount: number;
-    /** 누적 횟수: 성분·포털을 다시 만든 청크, 노드만 다시 모은 청크, 만든 청크 비용 행렬. */
-    readonly stats: { chunksRebuilt: number; nodeChunksRebuilt: number; matricesBuilt: number };
+    /**
+     * 누적 횟수: 성분·포털을 다시 만든 청크, 노드만 다시 모은 청크, 만든 청크 비용 행렬, `setGoal`로 넣은 목표,
+     * 만든 청크 장(F0·F1 각각 하나), 목표별 추상 거리를 확정한 노드.
+     */
+    readonly stats: {
+        chunksRebuilt: number;
+        nodeChunksRebuilt: number;
+        matricesBuilt: number;
+        goalsBuilt: number;
+        fieldsBuilt: number;
+        nodesSettled: number;
+    };
+    /** 보관 중인 목표의 수. */
+    readonly goalCount: number;
 
-    /** 구조를 최신으로 만듭니다(처음이면 전부, 아니면 바뀐 청크만). 무언가 다시 만들었으면 true. 로딩 중에 부르면 첫 질의가 가벼워집니다. */
+    /**
+     * 구조를 최신으로 만듭니다(처음이면 전부, 아니면 바뀐 청크만). 무언가 다시 만들었으면 true이고 목표 보관소를 모두 비웁니다.
+     * 로딩 중에 부르면 첫 질의가 가벼워집니다.
+     */
     prepare(): boolean;
+    /** 키 (keyA, keyB)로 보관한 목표의 유동장, 없으면 null. 꺼내면 "최근에 씀"이 됩니다. 키가 안전 정수가 아니면 RangeError. */
+    goal(keyA: number, keyB: number): FlowField | null;
+    /**
+     * 목표 칸(격자 칸 번호, 겹쳐도 됨, 막힌 칸은 빠짐)을 키로 보관하고 그 유동장을 돌려줍니다. 같은 키가 있으면 칸을 바꾸고 계산을
+     * 비웁니다. 가득 찼으면 가장 오래 안 쓴 목표를 버립니다. 계산은 첫 질의 때 합니다. 칸이 격자 밖이면 RangeError.
+     */
+    setGoal(keyA: number, keyB: number, cells: ArrayLike<number>): FlowField;
     /** 칸의 전역 연결 성분 번호. 막힌 칸·격자 밖은 -1. 같으면 걸어서 닿고 다르면 닿지 않습니다. */
     component(cell: number): number;
     /** 칸이 든 청크. */
@@ -257,4 +279,27 @@ export class PortalGraph {
     edgeCost(chunk: number, from: number, to: number): number;
     /** 구조를 마지막으로 바꾼 동기화에서 청크의 처리: 0 그대로, 1 노드만 다시 모음, 2 성분·포털을 다시 만듦. */
     chunkChange(chunk: number): 0 | 1 | 2;
+}
+
+/**
+ * 목표 하나로 내려가는 유동장. `PortalGraph.setGoal`·`goal`이 돌려주며 보관소의 슬롯이라, 목표가 밀려나면 다른 목표에 다시 쓰입니다
+ * (틱마다 `goal()`로 다시 꺼내세요). 구조가 바뀌어 버려진 뒤 물으면 Error. 값은 실제로 걸을 수 있는 길의 정수 비용이라 실제 최단 이상이고,
+ * (목표 칸 집합, 격자 상태)만의 함수라 묻는 순서·캐시 폐기와 무관합니다. 질의한 칸의 청크만 계산합니다.
+ */
+export class FlowField {
+    private constructor();
+    readonly keyA: number;
+    readonly keyB: number;
+    /** 칸에서 목표까지 비용(목표 칸 0). 닿지 않는 칸·막힌 칸·격자 밖은 `UNREACHED`. */
+    distance(cell: number): number;
+    /** `cell`보다 싼 이웃 중 가장 싼 칸(동률은 방향 순서), 없으면 -1. 목표 칸이 아니고 닿는 칸이면 반드시 있습니다. */
+    lowestNeighbor(cell: number): number;
+    /** `start`에서 `lowestNeighbor`를 최대 `maxSteps`번 따라간 칸을 `out`(먼저 비움)에 채웁니다. `start`는 넣지 않습니다. */
+    descend<Out extends number[] = number[]>(start: number, maxSteps: number, out?: Out): Out;
+    /** 청크 장을 만든 단계(관찰용): 비트 1 = F0, 비트 2 = F1. */
+    chunkStage(chunk: number): number;
+    /** 포털 노드의 추상 탐색 상태(관찰용): 0 안 닿음, 1 임시 값, 2 확정. */
+    nodeState(node: number): 0 | 1 | 2;
+    /** 확정한 포털 노드의 추상 거리(관찰용). 확정 전이거나 닿지 않으면 `UNREACHED`. */
+    nodeDistance(node: number): number;
 }
