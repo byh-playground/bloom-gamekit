@@ -41,11 +41,15 @@
         }
         .tabs {
             display: flex;
-            gap: 0.5rem;
+            gap: 0.25rem;
             margin-bottom: 1rem;
         }
+        /* 탭 여섯 개가 좁은 화면에서도 한 줄에 들어가도록 너비 하한과 옆 여백을 줄입니다(높이는 56px 유지). */
         .tabs button {
             flex: 1;
+            min-width: 0;
+            padding: 0 0.2rem;
+            font-size: 0.9rem;
             margin: 0;
             background: #1b2c37;
             border-color: #40535e;
@@ -94,6 +98,7 @@
         <button role="tab" id="tab-behavior" aria-selected="false" aria-controls="panel-behavior">행동</button>
         <button role="tab" id="tab-geometry" aria-selected="false" aria-controls="panel-geometry">기하</button>
         <button role="tab" id="tab-pathfield" aria-selected="false" aria-controls="panel-pathfield">거리장</button>
+        <button role="tab" id="tab-portal" aria-selected="false" aria-controls="panel-portal">포털</button>
         <button role="tab" id="tab-vision" aria-selected="false" aria-controls="panel-vision">시야</button>
     </div>
     <section id="panel-budget" role="tabpanel" aria-labelledby="tab-budget">
@@ -198,6 +203,40 @@
             <button id="pathfield-reset">처음으로</button>
         </div>
         <pre id="pathfield-output"></pre>
+    </section>
+    <section id="panel-portal" role="tabpanel" aria-labelledby="tab-portal" hidden>
+        <h1>건물을 놓으면 그 둘레의 청크만 다시 만듭니다</h1>
+        <p>
+            캔버스를 눌러 원 건물을 놓거나, 놓은 건물을 눌러 지우세요. 격자를 청크로 나누고 청크 경계의 포털로 잇는
+            길찾기 구조가 바뀐 곳만 다시 만들어지는 것을 보여 줍니다.
+        </p>
+        <ul>
+            <li>
+                칸 색은 연결 성분입니다. 색이 다르면 걸어서 닿지 않습니다. 굵은 선은 청크 경계, 흰 점은 포털 노드입니다.
+            </li>
+            <li>
+                주황으로 칠한 청크는 성분·포털을 다시 만든 청크, 노란 점선 청크는 이웃이 바뀌어 노드만 다시 모은
+                청크입니다.
+            </li>
+            <li>
+                "간선 보기"는 같은 청크 안 노드끼리 걸어서 닿는 간선(가는 선)과 경계를 건너는 짝(짧은 굵은 선)을
+                그립니다. 화살표 키로 십자 표시를 옮기고 Enter로 놓거나 지웁니다.
+            </li>
+        </ul>
+        <canvas
+            id="portal-canvas"
+            width="480"
+            height="320"
+            tabindex="0"
+            role="img"
+            aria-label="청크 경계와 포털 노드, 다시 만든 청크가 칠해진 격자"
+        ></canvas>
+        <div>
+            <button id="portal-edges" aria-pressed="true">간선 보기</button>
+            <button id="portal-gap">틈 막기</button>
+            <button id="portal-reset">처음으로</button>
+        </div>
+        <pre id="portal-output"></pre>
     </section>
     <section id="panel-vision" role="tabpanel" aria-labelledby="tab-vision" hidden>
         <h1>관찰자는 자기보다 높은 땅과 벽 너머를 보지 못합니다</h1>
@@ -4208,6 +4247,8 @@
       HEAP_INDEX[CELL2] = i;
     }
   };
+  var LOCAL_BITS = 12;
+  var LOCAL_MASK = (1 << LOCAL_BITS) - 1;
 
   // modules/work-scheduler/examples/modules/work-scheduler/examples/index.html
   var WORLD = { width: 480, height: 320 };
@@ -4484,6 +4525,1751 @@
     render();
   });
   window.pathfieldExample = { setGoal, state: STATE };
+  render();
+})();
+
+</script>
+    <script>
+(() => {
+  // dist/geometry.js
+  function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+  function pointInSimplePolygon(x, y, points) {
+    if (!Array.isArray(points) || points.length < 3) {
+      return false;
+    }
+    let inside = false;
+    for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+      const A = points[i], B = points[j];
+      const HIT = A.y > y !== B.y > y && x < (B.x - A.x) * (y - A.y) / (B.y - A.y || 1e-9) + A.x;
+      if (HIT) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  }
+  function pointSegmentDistance(px, py, ax, ay, bx, by) {
+    const ABX = bx - ax, ABY = by - ay;
+    const DENOM = ABX * ABX + ABY * ABY || 1;
+    let t = ((px - ax) * ABX + (py - ay) * ABY) / DENOM;
+    t = Math.max(0, Math.min(1, t));
+    const CX = ax + ABX * t, CY = ay + ABY * t;
+    return Math.hypot(px - CX, py - CY);
+  }
+  function segmentsIntersect(ax, ay, bx, by, cx, cy, dx, dy) {
+    const UX = bx - ax, UY = by - ay, VX = dx - cx, VY = dy - cy, DEN = UX * VY - UY * VX;
+    if (Math.abs(DEN) < 1e-10) {
+      return false;
+    }
+    const QX = cx - ax, QY = cy - ay, T = (QX * VY - QY * VX) / DEN, S = (QX * UY - QY * UX) / DEN;
+    return T >= 0 && T <= 1 && S >= 0 && S <= 1;
+  }
+  function segmentDistance(ax, ay, bx, by, cx, cy, dx, dy) {
+    if (segmentsIntersect(ax, ay, bx, by, cx, cy, dx, dy)) {
+      return 0;
+    }
+    return Math.min(
+      pointSegmentDistance(ax, ay, cx, cy, dx, dy),
+      pointSegmentDistance(bx, by, cx, cy, dx, dy),
+      pointSegmentDistance(cx, cy, ax, ay, bx, by),
+      pointSegmentDistance(dx, dy, ax, ay, bx, by)
+    );
+  }
+  function assignBounds(item) {
+    const POINTS = item.points;
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (let i = 0; i < POINTS.length; i++) {
+      minX = Math.min(minX, POINTS[i].x);
+      maxX = Math.max(maxX, POINTS[i].x);
+      minY = Math.min(minY, POINTS[i].y);
+      maxY = Math.max(maxY, POINTS[i].y);
+    }
+    return Object.assign(item, { minX, maxX, minY, maxY });
+  }
+  var MAX_CELLS = 1 << 22;
+  var BoundsIndex = class {
+    /** 마지막 `query`가 돌려준 항목들의 항목 번호(`items`의 위치). `out`과 같은 순서이고 `out.length`까지만 유효합니다. */
+    found = new Int32Array(0);
+    #cols = 0;
+    #rows = 0;
+    #col0 = 0;
+    #row0 = 0;
+    #start = new Int32Array(1);
+    #entries = new Int32Array(0);
+    /**
+     * @param {Array<{minX: number, maxX: number, minY: number, maxY: number}>} items 경계를 가진 항목(보관만 하고 복사하지 않습니다)
+     * @param {number} cell 칸 한 변의 길이
+     */
+    constructor(items, cell = 256) {
+      this.cell = cell;
+      this.marks = new Uint32Array(0);
+      this.epoch = 0;
+      this.out = [];
+      this.rebuild(items);
+    }
+    /**
+     * 항목 목록을 바꿔 색인을 다시 채웁니다. 버퍼는 용량이 모자랄 때만 새로 만듭니다(목록은 복사하지 않고 보관합니다).
+     * 칸 범위는 항목들이 덮는 칸 사각형이고, 그 칸 수가 2^22를 넘으면 RangeError입니다(칸 크기를 키우세요).
+     */
+    rebuild(items) {
+      const CELL2 = this.cell, COUNT = items.length;
+      this.items = items;
+      let col0 = Infinity, col1 = -Infinity, row0 = Infinity, row1 = -Infinity;
+      for (let i = 0; i < COUNT; i++) {
+        const B = items[i];
+        col0 = Math.min(col0, Math.floor(B.minX / CELL2));
+        col1 = Math.max(col1, Math.floor(B.maxX / CELL2));
+        row0 = Math.min(row0, Math.floor(B.minY / CELL2));
+        row1 = Math.max(row1, Math.floor(B.maxY / CELL2));
+      }
+      if (!COUNT) {
+        col0 = col1 = row0 = row1 = 0;
+      }
+      const COLS = col1 - col0 + 1, ROWS = row1 - row0 + 1;
+      if (!(COLS * ROWS <= MAX_CELLS)) {
+        throw new RangeError(`BoundsIndex would need ${COLS} × ${ROWS} cells; use a larger cell.`);
+      }
+      this.#cols = COLS;
+      this.#rows = ROWS;
+      this.#col0 = col0;
+      this.#row0 = row0;
+      if (this.#start.length < COLS * ROWS + 1) {
+        this.#start = new Int32Array(COLS * ROWS + 1);
+      } else {
+        this.#start.fill(0, 0, COLS * ROWS + 1);
+      }
+      if (this.marks.length < COUNT) {
+        this.marks = new Uint32Array(COUNT);
+        this.found = new Int32Array(COUNT);
+        this.epoch = 0;
+      }
+      const START = this.#start;
+      let total = 0;
+      for (let i = 0; i < COUNT; i++) {
+        const B = items[i], X0 = Math.floor(B.minX / CELL2) - col0, X1 = Math.floor(B.maxX / CELL2) - col0;
+        for (let y = Math.floor(B.minY / CELL2) - row0; y <= Math.floor(B.maxY / CELL2) - row0; y++) {
+          for (let x = X0; x <= X1; x++) {
+            START[y * COLS + x + 1]++;
+            total++;
+          }
+        }
+      }
+      for (let k = 1; k <= COLS * ROWS; k++) {
+        START[k] += START[k - 1];
+      }
+      if (this.#entries.length < total) {
+        this.#entries = new Int32Array(total);
+      }
+      const ENTRIES = this.#entries;
+      for (let i = 0; i < COUNT; i++) {
+        const B = items[i], X0 = Math.floor(B.minX / CELL2) - col0, X1 = Math.floor(B.maxX / CELL2) - col0;
+        for (let y = Math.floor(B.minY / CELL2) - row0; y <= Math.floor(B.maxY / CELL2) - row0; y++) {
+          for (let x = X0; x <= X1; x++) {
+            ENTRIES[START[y * COLS + x]++] = i;
+          }
+        }
+      }
+      for (let k = COLS * ROWS; k > 0; k--) {
+        START[k] = START[k - 1];
+      }
+      START[0] = 0;
+      return this;
+    }
+    /**
+     * (x0, y0)-(x1, y1) 상자를 `pad`만큼 넓힌 범위와 경계가 겹치는 항목을 돌려줍니다. 항목 번호는 `found`에 같은 순서로 담깁니다.
+     * 돌려주는 배열은 색인이 재사용하는 것이라 다음 `query` 호출 때 덮어씁니다. 보관하려면 복사하세요.
+     */
+    query(x0, y0, x1 = x0, y1 = y0, pad = 0) {
+      const OUT = this.out, ITEMS = this.items;
+      OUT.length = 0;
+      if (!ITEMS.length) {
+        return OUT;
+      }
+      const MIN_X = Math.min(x0, x1) - pad, MAX_X = Math.max(x0, x1) + pad, MIN_Y = Math.min(y0, y1) - pad, MAX_Y = Math.max(y0, y1) + pad;
+      const BX0 = Math.max(0, Math.floor(MIN_X / this.cell) - this.#col0), BX1 = Math.min(this.#cols - 1, Math.floor(MAX_X / this.cell) - this.#col0), BY0 = Math.max(0, Math.floor(MIN_Y / this.cell) - this.#row0), BY1 = Math.min(this.#rows - 1, Math.floor(MAX_Y / this.cell) - this.#row0);
+      if (!(BX0 <= BX1 && BY0 <= BY1)) {
+        return OUT;
+      }
+      const START = this.#start, ENTRIES = this.#entries, FOUND = this.found, COLS = this.#cols;
+      if (BX0 === BX1 && BY0 === BY1) {
+        const END = START[BY0 * COLS + BX0 + 1];
+        for (let k = START[BY0 * COLS + BX0]; k < END; k++) {
+          const I = ENTRIES[k], B = ITEMS[I];
+          if (B.maxX >= MIN_X && B.minX <= MAX_X && B.maxY >= MIN_Y && B.minY <= MAX_Y) {
+            FOUND[OUT.length] = I;
+            OUT.push(B);
+          }
+        }
+        return OUT;
+      }
+      if (++this.epoch === 4294967295) {
+        this.marks.fill(0);
+        this.epoch = 1;
+      }
+      const MARKS = this.marks, EPOCH = this.epoch;
+      for (let y = BY0; y <= BY1; y++) {
+        const ROW = y * COLS;
+        for (let x = BX0; x <= BX1; x++) {
+          const END = START[ROW + x + 1];
+          for (let k = START[ROW + x]; k < END; k++) {
+            const I = ENTRIES[k];
+            if (MARKS[I] === EPOCH) {
+              continue;
+            }
+            MARKS[I] = EPOCH;
+            const B = ITEMS[I];
+            if (B.maxX >= MIN_X && B.minX <= MAX_X && B.maxY >= MIN_Y && B.minY <= MAX_Y) {
+              FOUND[OUT.length] = I;
+              OUT.push(B);
+            }
+          }
+        }
+      }
+      return OUT;
+    }
+  };
+  var KIND_SCALE = 2 ** 50;
+  var OBSTACLE_SCALE = 2 ** 22;
+  var WORD = 2 ** 32;
+  var CONTACT_MAX_OBSTACLE = 2 ** 28 - 1;
+  var CONTACT_MAX_EDGE = 2 ** 20 - 1;
+  var CONTACT_WALL = 2;
+  function contactKey(kind, obstacle, edge = 0, part = 0) {
+    return kind * KIND_SCALE + obstacle * OBSTACLE_SCALE + edge * 4 + part;
+  }
+  var ContactHit = class {
+    /** 닿는 시각(0..1). 닿지 않았으면 Infinity로 둡니다. */
+    t = Infinity;
+    nx = 0;
+    ny = 0;
+    /** 접촉 키(정수, {@link contactKey}). */
+    key = 0;
+    /** 원 장애물에 닿았으면 그 원, 아니면 null. */
+    obstacle = null;
+    /** 법선이 0에 가까워 기본 법선 (1, 0)을 쓴 경우 true. 호출자가 대체 법선을 채웁니다. */
+    degenerate = false;
+  };
+  var POLICIES = Object.freeze({
+    // 정적 표면(다각형·원 장애물·월드 경계)에 대한 이동. 표면에 이미 닿아 있으면 안쪽으로 들어갈 때만 접촉입니다.
+    surface: Object.freeze({
+      minSpeed2: 1e-16,
+      contactDistanceEpsilon: 1e-8,
+      normalEpsilon: 1e-10,
+      inwardEpsilon: 1e-8,
+      discriminantEpsilon: 1e-12,
+      includeTangent: false,
+      retreat: 0
+    }),
+    // 움직이는 두 원의 상대 이동. 닿는 순간보다 `retreat`만큼 일찍 멈추고 접선도 접촉으로 칩니다.
+    relative: Object.freeze({
+      minSpeed2: 1e-9,
+      contactSquaredEpsilon: 1e-7,
+      normalEpsilon: 1e-6,
+      inwardEpsilon: 0,
+      discriminantEpsilon: 0,
+      includeTangent: true,
+      retreat: 5e-4
+    })
+  });
+  var SCRATCH = new ContactHit();
+  var RING_COS = new Float64Array(32);
+  var RING_SIN = new Float64Array(32);
+  for (let i = 0; i < 32; i++) {
+    RING_COS[i] = Math.cos(i * Math.PI / 16);
+    RING_SIN[i] = Math.sin(i * Math.PI / 16);
+  }
+  function contactThreshold(r, quantum) {
+    return r > 0 ? Math.max(0, r - quantum) : 1e-3;
+  }
+  function segmentBlockedBy(index, x0, y0, x1, y1, r = 0, quantum = 0) {
+    const FOUND = index.query(x0, y0, x1, y1, r), THRESHOLD = contactThreshold(r, quantum);
+    for (let k = 0; k < FOUND.length; k++) {
+      const B = FOUND[k];
+      if (pointInSimplePolygon(x0, y0, B.points) || pointInSimplePolygon(x1, y1, B.points)) {
+        return true;
+      }
+      for (let i = 0; i < B.points.length; i++) {
+        const A = B.points[i], C = B.points[(i + 1) % B.points.length];
+        if (segmentDistance(x0, y0, x1, y1, A.x, A.y, C.x, C.y) < THRESHOLD) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+  function circleWithBounds(circle) {
+    const ID = circle.id;
+    if (!Number.isSafeInteger(ID) || ID < 0 || ID > CONTACT_MAX_OBSTACLE) {
+      throw new RangeError(
+        `ObstacleField circle id must be an integer from 0 to ${CONTACT_MAX_OBSTACLE} (got ${ID}).`
+      );
+    }
+    if (typeof circle.minX !== "number") {
+      circle.minX = circle.x - circle.r;
+      circle.maxX = circle.x + circle.r;
+      circle.minY = circle.y - circle.r;
+      circle.maxY = circle.y + circle.r;
+    }
+    return circle;
+  }
+  var ObstacleField = class {
+    /**
+     * @param {object} options
+     * @param {number} options.width 월드 경계 [0, width] × [0, height]. 원은 중심이 경계에서 반지름 이상 안쪽이어야 합니다.
+     * @param {number} options.height
+     * @param {number} options.fixedPoint 게임이 좌표를 1/fixedPoint 격자에 반올림해 저장하는 배율(예: 100). 접촉 허용 거리의 단위입니다.
+     * @param {Array<{points: Array<{x: number, y: number}>}> | BoundsIndex} [options.polygons]
+     *   막는 다각형. 경계(`minX` 등)가 없으면 만들어 붙입니다. 이미 만든 {@link BoundsIndex}도 받습니다. 접촉 키의 장애물 번호는
+     *   색인 안의 항목 번호(배열 위치)이고, 다각형은 2^28개 이하·다각형마다 꼭짓점은 2^20개 이하여야 합니다.
+     * @param {Array<{id: number, x: number, y: number, r: number}>} [options.circles] 막는 원. `id`는 0..2^28-1 정수이고 접촉 키의
+     *   장애물 번호입니다. 경계가 없으면 만들어 붙입니다.
+     * @param {number} [options.cell] 색인 칸 한 변의 길이(기본 256)
+     * @param {{id: number, keep: (circle: object) => boolean}} [options.ignoreAll]
+     *   "모두 무시" 와일드카드. 이동체가 `ignoreId`로 `id`(정수, 원 id와 겹치지 않게 보통 -1)를 내면 `keep(circle)`이 참인
+     *   원(항상 막는 방벽 등)만 장애물로 보고 나머지 원은 모두 무시합니다. 없으면 와일드카드가 없습니다.
+     * @param {number} [options.exteriorSearchDistance] {@link ObstacleField#nearestExterior}가 찾는 최대 거리(기본 256)
+     */
+    constructor({
+      width,
+      height,
+      fixedPoint,
+      polygons = [],
+      circles = [],
+      cell = 256,
+      ignoreAll = null,
+      exteriorSearchDistance = 256
+    }) {
+      if (!(width > 0) || !(height > 0) || !Number.isFinite(width) || !Number.isFinite(height)) {
+        throw new RangeError("ObstacleField width and height must be positive finite numbers.");
+      }
+      if (!(fixedPoint > 0) || !Number.isFinite(fixedPoint)) {
+        throw new RangeError("ObstacleField fixedPoint must be a positive finite number.");
+      }
+      if (ignoreAll !== null && (typeof ignoreAll?.keep !== "function" || !Number.isSafeInteger(ignoreAll.id))) {
+        throw new TypeError("ObstacleField ignoreAll must be {id: integer, keep(circle)}.");
+      }
+      this.width = width;
+      this.height = height;
+      this.fixedPoint = fixedPoint;
+      this.quantum = 1 / fixedPoint;
+      this.cell = cell;
+      this.ignoreAll = ignoreAll;
+      this.exteriorSearchDistance = exteriorSearchDistance;
+      if (polygons instanceof BoundsIndex) {
+        this.polygons = polygons;
+      } else {
+        for (const P of polygons) {
+          if (typeof P.minX !== "number") {
+            assignBounds(P);
+          }
+        }
+        this.polygons = new BoundsIndex(polygons, cell);
+      }
+      const ITEMS = this.polygons.items;
+      if (ITEMS.length > CONTACT_MAX_OBSTACLE + 1) {
+        throw new RangeError(`ObstacleField supports at most ${CONTACT_MAX_OBSTACLE + 1} polygons.`);
+      }
+      for (let i = 0; i < ITEMS.length; i++) {
+        if (ITEMS[i].points.length > CONTACT_MAX_EDGE + 1) {
+          throw new RangeError(`ObstacleField polygon ${i} has more than ${CONTACT_MAX_EDGE + 1} points.`);
+        }
+      }
+      this.active = ITEMS.length > 0;
+      this.version = -1;
+      this.circleIndex = null;
+      this.kept = [];
+      this.setCircles(circles);
+    }
+    /**
+     * 원 장애물 목록을 통째로 바꾸고 {@link ObstacleField#version}을 올립니다. 목록은 복사하지 않고 보관합니다.
+     * 장애물이 바뀐 틱에만 부르세요(색인을 다시 채웁니다. 버퍼는 용량이 모자랄 때만 새로 만듭니다).
+     */
+    setCircles(circles) {
+      for (let i = 0; i < circles.length; i++) {
+        circleWithBounds(circles[i]);
+      }
+      this.circles = circles;
+      if (this.circleIndex === null) {
+        this.circleIndex = new BoundsIndex(circles, this.cell);
+      } else {
+        this.circleIndex.rebuild(circles);
+      }
+      this.version++;
+    }
+    /**
+     * (x0, y0)-(x1, y1) 상자를 `pad`만큼 넓힌 범위의 원 장애물 후보. `ignoreId`가 와일드카드면 `keep`을 통과한 원만 남깁니다.
+     * 돌려주는 배열은 재사용하는 것이라 다음 조회 때 덮어씁니다.
+     */
+    obstacles(x0, y0, x1, y1, pad, ignoreId) {
+      const FOUND = this.circleIndex.query(x0, y0, x1, y1, pad);
+      if (!this.ignoreAll || ignoreId !== this.ignoreAll.id) {
+        return FOUND;
+      }
+      const KEPT = this.kept, KEEP = this.ignoreAll.keep;
+      KEPT.length = 0;
+      for (let i = 0; i < FOUND.length; i++) {
+        if (KEEP(FOUND[i])) {
+          KEPT.push(FOUND[i]);
+        }
+      }
+      return KEPT;
+    }
+    /** 다각형과 월드 경계만 본 원의 자리 검사. 다각형이 없으면 항상 true입니다. */
+    polygonCircleClear(x, y, r = 0) {
+      if (!this.active) {
+        return true;
+      }
+      if (x < r || y < r || x > this.width - r || y > this.height - r) {
+        return false;
+      }
+      const FOUND = this.polygons.query(x, y, x, y, r), THRESHOLD = contactThreshold(r, this.quantum);
+      for (let k = 0; k < FOUND.length; k++) {
+        const B = FOUND[k];
+        if (pointInSimplePolygon(x, y, B.points)) {
+          return false;
+        }
+        for (let i = 0; i < B.points.length; i++) {
+          const A = B.points[i], C = B.points[(i + 1) % B.points.length];
+          if (pointSegmentDistance(x, y, A.x, A.y, C.x, C.y) < THRESHOLD) {
+            return false;
+          }
+        }
+      }
+      return true;
+    }
+    /** 다각형과 월드 경계만 본 선분 이동 검사. 다각형이 없으면 항상 true입니다. */
+    polygonSegmentClear(x0, y0, x1, y1, r = 0) {
+      if (!this.active) {
+        return true;
+      }
+      if (Math.min(x0, x1) < r || Math.min(y0, y1) < r || Math.max(x0, x1) > this.width - r || Math.max(y0, y1) > this.height - r) {
+        return false;
+      }
+      return !segmentBlockedBy(this.polygons, x0, y0, x1, y1, r, this.quantum);
+    }
+    /**
+     * (x, y) 가까이에서 `polygonCircleClear`(와 `accept`)를 통과하는 가장 가까운 자리를 `out`에 쓰고 true를 돌려줍니다.
+     * 16 간격 고리 32방향을 `maxDistance`까지 봅니다. 못 찾으면 false이고 `out`을 건드리지 않습니다.
+     * @param {number} x
+     * @param {number} y
+     * @param {number} r
+     * @param {number} maxDistance
+     * @param {((x: number, y: number) => boolean) | null} accept
+     * @param {{x: number, y: number}} out
+     */
+    nearestOpen(x, y, r, maxDistance, accept, out) {
+      return this.#nearestOpen(x, y, r, maxDistance, accept, false, null, out);
+    }
+    // exterior가 true면 accept 대신 pointClear(·, r, exteriorIgnore)로 거릅니다(nearestExterior의 클로저를 없앤 경로).
+    #nearestOpen(x, y, r, maxDistance, accept, exterior, exteriorIgnore, out) {
+      if (this.polygonCircleClear(x, y, r) && (exterior ? this.pointClear(x, y, r, exteriorIgnore) : !accept || accept(x, y))) {
+        out.x = x;
+        out.y = y;
+        return true;
+      }
+      let found = false, bestD = Infinity;
+      const STEP = 16;
+      for (let range = STEP; range <= maxDistance; range += STEP) {
+        for (let i = 0; i < 32; i++) {
+          const QX = clamp(x + RING_COS[i] * range, r + 1, this.width - r - 1), QY = clamp(y + RING_SIN[i] * range, r + 1, this.height - r - 1);
+          const D = (QX - x) ** 2 + (QY - y) ** 2;
+          if (D < bestD && this.polygonCircleClear(QX, QY, r) && (exterior ? this.pointClear(QX, QY, r, exteriorIgnore) : !accept || accept(QX, QY))) {
+            out.x = QX;
+            out.y = QY;
+            found = true;
+            bestD = D;
+          }
+        }
+        if (found) {
+          return true;
+        }
+      }
+      return false;
+    }
+    /**
+     * 반지름 r인 원이 (x, y)에서 (tx, ty)까지 직선으로 갈 수 있는지(월드 경계·다각형·원 장애물).
+     * `ignoreId`와 같은 id의 원은 건너뜁니다. `departure`가 true면 이미 겹친 원에서 멀어지는 이동은 허용합니다.
+     * `margin`은 원 장애물에 더 비워 두는 간격입니다(기본 0.25).
+     */
+    segmentClear(x, y, tx, ty, r, ignoreId = null, departure = false, margin = 0.25) {
+      if (Math.min(x, tx) < r || Math.min(y, ty) < r || Math.max(x, tx) > this.width - r || Math.max(y, ty) > this.height - r || !this.polygonSegmentClear(x, y, tx, ty, r)) {
+        return false;
+      }
+      const FOUND = this.obstacles(x, y, tx, ty, r + margin, ignoreId);
+      for (let k = 0; k < FOUND.length; k++) {
+        const B = FOUND[k];
+        if (B.id === ignoreId) {
+          continue;
+        }
+        const NEEDED = r + B.r + margin, START = Math.hypot(x - B.x, y - B.y);
+        if (departure && START < NEEDED && (x - B.x) * (tx - x) + (y - B.y) * (ty - y) >= 0 && Math.hypot(tx - B.x, ty - B.y) >= START) {
+          continue;
+        }
+        if (pointSegmentDistance(B.x, B.y, x, y, tx, ty) < NEEDED - 1e-3) {
+          return false;
+        }
+      }
+      return true;
+    }
+    /** 반지름 r인 원이 (x, y)에 둘 수 있는지. */
+    pointClear(x, y, r, ignoreId = null) {
+      return this.segmentClear(x, y, x, y, r, ignoreId);
+    }
+    /**
+     * Test two concentric radii in one traversal. Returns 0 if the inner radius
+     * is blocked, 1 if only the inner radius is clear, and 2 if both are clear.
+     * Each result has exactly the same boundary and circle margin as pointClear.
+     */
+    pointClearanceBand(x, y, innerRadius, outerRadius, ignoreId = null) {
+      if (!Number.isFinite(innerRadius) || !Number.isFinite(outerRadius) || innerRadius < 0 || outerRadius < innerRadius) {
+        throw new RangeError("ObstacleField radii must be finite, non-negative and ordered.");
+      }
+      if (x < innerRadius || y < innerRadius || x > this.width - innerRadius || y > this.height - innerRadius) {
+        return 0;
+      }
+      let outerClear = !(x < outerRadius || y < outerRadius || x > this.width - outerRadius || y > this.height - outerRadius);
+      const INNER = contactThreshold(innerRadius, this.quantum), OUTER = contactThreshold(outerRadius, this.quantum);
+      const POLYGONS = this.polygons.query(x, y, x, y, outerRadius);
+      for (let k = 0; k < POLYGONS.length; k++) {
+        const P = POLYGONS[k];
+        if (pointInSimplePolygon(x, y, P.points)) {
+          return 0;
+        }
+        for (let i = 0; i < P.points.length; i++) {
+          const A = P.points[i], B = P.points[(i + 1) % P.points.length];
+          const DISTANCE = pointSegmentDistance(x, y, A.x, A.y, B.x, B.y);
+          if (DISTANCE < INNER) {
+            return 0;
+          }
+          if (DISTANCE < OUTER) {
+            outerClear = false;
+          }
+        }
+      }
+      const CIRCLES = this.obstacles(x, y, x, y, outerRadius + 0.25, ignoreId);
+      for (let k = 0; k < CIRCLES.length; k++) {
+        const C = CIRCLES[k];
+        if (C.id === ignoreId) {
+          continue;
+        }
+        const DISTANCE = Math.hypot(x - C.x, y - C.y);
+        if (DISTANCE < innerRadius + C.r + 0.25 - 1e-3) {
+          return 0;
+        }
+        if (DISTANCE < outerRadius + C.r + 0.25 - 1e-3) {
+          outerClear = false;
+        }
+      }
+      return outerClear ? 2 : 1;
+    }
+    /** {@link ObstacleField#segmentClear}를 `departure`로 부릅니다. */
+    departureClear(x, y, tx, ty, r, ignoreId = null) {
+      return this.segmentClear(x, y, tx, ty, r, ignoreId, true);
+    }
+    /**
+     * (x, y)에서 가장 가까운, 다각형과 원 장애물 모두 비어 있는 자리를 `out`에 쓰고 true. 없으면 false.
+     * 특정 id는 무시하지 않고 `ignoreAll` 와일드카드일 때만 원 장애물을 무시합니다(Rally 원본의 동작을 그대로 보존).
+     * @param {{x: number, y: number}} out
+     */
+    nearestExterior(x, y, r, ignoreId, out) {
+      const IGNORED = this.ignoreAll && ignoreId === this.ignoreAll.id ? ignoreId : null;
+      return this.#nearestOpen(x, y, r, this.exteriorSearchDistance, null, true, IGNORED, out);
+    }
+  };
+  var WALL_LEFT = contactKey(CONTACT_WALL, 0, 0);
+  var WALL_RIGHT = contactKey(CONTACT_WALL, 0, 1);
+  var WALL_TOP = contactKey(CONTACT_WALL, 0, 2);
+  var WALL_BOTTOM = contactKey(CONTACT_WALL, 0, 3);
+
+  // dist/pathfield.js
+  var STRAIGHT_COST = 10;
+  var DIAGONAL_COST = 14;
+  var DIRECTION_COUNT = 8;
+  var DIRECTION_DX = Int8Array.of(1, 0, -1, 0, 1, -1, -1, 1);
+  var DIRECTION_DY = Int8Array.of(0, 1, 0, -1, 1, 1, -1, -1);
+  var DIRECTION_COST = Uint8Array.of(
+    STRAIGHT_COST,
+    STRAIGHT_COST,
+    STRAIGHT_COST,
+    STRAIGHT_COST,
+    DIAGONAL_COST,
+    DIAGONAL_COST,
+    DIAGONAL_COST,
+    DIAGONAL_COST
+  );
+  var MAX_CELLS2 = 1 << 22;
+  var UNKNOWN = -1;
+  var BLOCKED = 0;
+  var OPEN = 1;
+  var OPTIONS = ["width", "height", "cellSize", "passable", "passableEdge", "originX", "originY"];
+  var REVERSE_DIRECTION = Uint8Array.of(2, 3, 0, 1, 6, 7, 4, 5);
+  var MAX_CHANGED_RECTS = 16;
+  function positiveNumber(value, name) {
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+      throw new RangeError(`PathGrid ${name} must be a positive finite number.`);
+    }
+    return value;
+  }
+  function finiteNumber(value, name) {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      throw new RangeError(`PathGrid ${name} must be a finite number.`);
+    }
+    return value;
+  }
+  var PathGrid = class {
+    /** 칸 한 변의 크기(좌표와 같은 단위). */
+    cellSize;
+    /** 칸 (0, 0)의 좌표 원점. */
+    originX;
+    originY;
+    /** 열·행·총 칸 수. 칸 수는 `ceil(크기 / cellSize)`입니다. */
+    cols;
+    rows;
+    size;
+    /** 통과 판정을 비운 횟수. 이 격자에서 만든 거리장과 캐시가 낡았는지 알아보는 표식입니다. */
+    revision = 0;
+    #passable;
+    #open;
+    #version;
+    #passableEdge;
+    #edgeKnown;
+    #edgeOpen;
+    #stack = null;
+    // 마지막 takeChangedRects 이후 바뀐 사각형: 칸 좌표 [minCol, minRow, maxCol, maxRow] 네 정수씩, 기록 순서대로.
+    #changed = new Int32Array(MAX_CHANGED_RECTS * 4);
+    #changedCount = 0;
+    constructor(options) {
+      if (options === null || typeof options !== "object") {
+        throw new TypeError("PathGrid options must be an object.");
+      }
+      for (const KEY of Object.keys(options)) {
+        if (!OPTIONS.includes(KEY)) {
+          throw new TypeError(`PathGrid has an unknown option: ${KEY}`);
+        }
+      }
+      if (typeof options.passable !== "function") {
+        throw new TypeError("PathGrid passable must be a function.");
+      }
+      if (options.passableEdge != null && typeof options.passableEdge !== "function") {
+        throw new TypeError("PathGrid passableEdge must be a function.");
+      }
+      this.cellSize = positiveNumber(options.cellSize, "cellSize");
+      this.originX = finiteNumber(options.originX ?? 0, "originX");
+      this.originY = finiteNumber(options.originY ?? 0, "originY");
+      this.cols = Math.ceil(positiveNumber(options.width, "width") / this.cellSize);
+      this.rows = Math.ceil(positiveNumber(options.height, "height") / this.cellSize);
+      this.size = this.cols * this.rows;
+      if (this.size > MAX_CELLS2) {
+        throw new RangeError(`PathGrid would need more than ${MAX_CELLS2} cells; use a larger cellSize.`);
+      }
+      this.#passable = options.passable;
+      this.#open = new Int8Array(this.size).fill(UNKNOWN);
+      this.#passableEdge = options.passableEdge ?? null;
+      this.#edgeKnown = this.#passableEdge ? new Uint8Array(this.size) : null;
+      this.#edgeOpen = this.#passableEdge ? new Uint8Array(this.size) : null;
+    }
+    /** 좌표가 든 칸의 번호. 격자 밖은 가장자리 칸으로 자릅니다. 좌표는 NaN이 아니어야 합니다. */
+    cellAt(x, y) {
+      const COL = Math.min(this.cols - 1, Math.max(0, Math.floor((x - this.originX) / this.cellSize))), ROW = Math.min(this.rows - 1, Math.max(0, Math.floor((y - this.originY) / this.cellSize)));
+      return ROW * this.cols + COL;
+    }
+    colOf(cell) {
+      return cell % this.cols;
+    }
+    rowOf(cell) {
+      return Math.floor(cell / this.cols);
+    }
+    /** 칸 중심의 좌표. */
+    centerX(cell) {
+      return this.originX + (cell % this.cols + 0.5) * this.cellSize;
+    }
+    centerY(cell) {
+      return this.originY + (Math.floor(cell / this.cols) + 0.5) * this.cellSize;
+    }
+    /** 칸이 통과 가능한지. 처음 물으면 `passable(centerX, centerY, cell)`을 한 번 부르고 기억합니다. 격자 밖 번호는 false. */
+    isOpen(cell) {
+      let open = this.#open[cell];
+      if (open === UNKNOWN) {
+        open = this.#passable(this.centerX(cell), this.centerY(cell), cell) ? OPEN : BLOCKED;
+        this.#open[cell] = open;
+      }
+      return open === OPEN;
+    }
+    /**
+     * (col, row)에서 방향 `direction`(0..7)으로 한 걸음 갈 수 있으면 이웃 칸 번호, 아니면 -1. 이웃이 격자 밖이거나
+     * 막혔거나, 대각이면서 두 직교 이웃 중 하나가 막힌 경우(모서리 가로지르기 금지)입니다.
+     */
+    stepCell(col, row, direction) {
+      const DX = DIRECTION_DX[direction], DY = DIRECTION_DY[direction], NX = col + DX, NY = row + DY;
+      if (NX < 0 || NY < 0 || NX >= this.cols || NY >= this.rows) {
+        return -1;
+      }
+      const NEXT = NY * this.cols + NX;
+      if (!this.isOpen(NEXT)) {
+        return -1;
+      }
+      if (DX !== 0 && DY !== 0 && (!this.isOpen(row * this.cols + NX) || !this.isOpen(NY * this.cols + col))) {
+        return -1;
+      }
+      if (this.#passableEdge) {
+        const CURRENT = row * this.cols + col, BIT = 1 << direction;
+        if (!(this.#edgeKnown[CURRENT] & BIT)) {
+          const REVERSE = 1 << REVERSE_DIRECTION[direction];
+          const OPEN2 = this.#passableEdge(
+            this.centerX(CURRENT),
+            this.centerY(CURRENT),
+            this.centerX(NEXT),
+            this.centerY(NEXT),
+            CURRENT,
+            NEXT
+          );
+          this.#edgeKnown[CURRENT] |= BIT;
+          this.#edgeKnown[NEXT] |= REVERSE;
+          if (OPEN2) {
+            this.#edgeOpen[CURRENT] |= BIT;
+            this.#edgeOpen[NEXT] |= REVERSE;
+          }
+        }
+        if (!(this.#edgeOpen[CURRENT] & BIT)) {
+          return -1;
+        }
+      }
+      return NEXT;
+    }
+    /** 통과 판정의 기억을 비우고 `revision`을 올립니다. 장애물이 바뀐 뒤에 부릅니다. */
+    invalidate() {
+      this.#open.fill(UNKNOWN);
+      this.#edgeKnown?.fill(0);
+      this.#edgeOpen?.fill(0);
+      this.revision++;
+      this.#changedCount = 0;
+      this.#recordChange(0, 0, this.cols - 1, this.rows - 1);
+    }
+    /**
+     * 월드 좌표 사각형 [minX, maxX] × [minY, maxY]에 걸친 칸(경계가 칸 경계에 정확히 닿으면 그 너머 칸도 포함)의 통과 판정
+     * 기억만 비우고 `revision`을 올립니다. 이 칸들과 맞닿은 한 겹 칸의 변 판정(`passableEdge`)도 함께 비웁니다. 격자 밖으로
+     * 나간 부분은 자르고, 격자와 전혀 겹치지 않으면 아무것도 하지 않습니다(`revision`도 그대로). 비운 칸 범위는
+     * `takeChangedRects`로 가져갈 수 있게 기록합니다. 좌표가 유한한 수가 아니거나 min이 max보다 크면 `RangeError`.
+     */
+    invalidateRect(minX, minY, maxX, maxY) {
+      for (const VALUE of [minX, minY, maxX, maxY]) {
+        if (typeof VALUE !== "number" || !Number.isFinite(VALUE)) {
+          throw new RangeError("PathGrid.invalidateRect needs finite numbers.");
+        }
+      }
+      if (minX > maxX || minY > maxY) {
+        throw new RangeError("PathGrid.invalidateRect needs min <= max.");
+      }
+      const COL0 = Math.max(0, Math.floor((minX - this.originX) / this.cellSize)), COL1 = Math.min(this.cols - 1, Math.floor((maxX - this.originX) / this.cellSize)), ROW0 = Math.max(0, Math.floor((minY - this.originY) / this.cellSize)), ROW1 = Math.min(this.rows - 1, Math.floor((maxY - this.originY) / this.cellSize));
+      if (COL0 > COL1 || ROW0 > ROW1) {
+        return;
+      }
+      for (let row = ROW0; row <= ROW1; row++) {
+        this.#open.fill(UNKNOWN, row * this.cols + COL0, row * this.cols + COL1 + 1);
+      }
+      if (this.#passableEdge) {
+        const EDGE_COL0 = Math.max(0, COL0 - 1), EDGE_COL1 = Math.min(this.cols - 1, COL1 + 1);
+        for (let row = Math.max(0, ROW0 - 1); row <= Math.min(this.rows - 1, ROW1 + 1); row++) {
+          this.#edgeKnown.fill(0, row * this.cols + EDGE_COL0, row * this.cols + EDGE_COL1 + 1);
+          this.#edgeOpen.fill(0, row * this.cols + EDGE_COL0, row * this.cols + EDGE_COL1 + 1);
+        }
+      }
+      this.revision++;
+      this.#recordChange(COL0, ROW0, COL1, ROW1);
+    }
+    /** 마지막으로 가져간 뒤 기록된 바뀐 사각형의 개수(0..`MAX_CHANGED_RECTS`). */
+    get changedRectCount() {
+      return this.#changedCount;
+    }
+    /**
+     * 마지막으로 가져간 뒤 바뀐 칸 사각형을 `out`(길이 `4 * MAX_CHANGED_RECTS` 이상의 Int32Array)에
+     * `[minCol, minRow, maxCol, maxRow]`(양끝 포함) 네 정수씩 기록 순서대로 쓰고 개수를 돌려준 뒤 기록을 비웁니다.
+     * 소비자는 하나라고 가정합니다(두 곳이 가져가면 나중 쪽은 놓칩니다). `invalidate()`·`sync`가 비운 경우는 격자 전체 한 개입니다.
+     * @param {Int32Array} out
+     */
+    takeChangedRects(out) {
+      if (!(out instanceof Int32Array) || out.length < MAX_CHANGED_RECTS * 4) {
+        throw new TypeError(`PathGrid.takeChangedRects needs an Int32Array of at least ${MAX_CHANGED_RECTS * 4}.`);
+      }
+      const COUNT = this.#changedCount;
+      out.set(this.#changed.subarray(0, COUNT * 4));
+      this.#changedCount = 0;
+      return COUNT;
+    }
+    // 기록 규칙(호출 순서에만 의존): 이미 기록된 사각형에 완전히 들어가면 버리고, 아니면 뒤에 붙입니다.
+    // 가득 차면 기록 전체와 새 사각형을 하나의 바운딩 사각형으로 합칩니다.
+    #recordChange(minCol, minRow, maxCol, maxRow) {
+      const LIST = this.#changed;
+      for (let i = 0; i < this.#changedCount * 4; i += 4) {
+        if (LIST[i] <= minCol && LIST[i + 1] <= minRow && LIST[i + 2] >= maxCol && LIST[i + 3] >= maxRow) {
+          return;
+        }
+      }
+      if (this.#changedCount < MAX_CHANGED_RECTS) {
+        const AT = this.#changedCount++ * 4;
+        LIST[AT] = minCol;
+        LIST[AT + 1] = minRow;
+        LIST[AT + 2] = maxCol;
+        LIST[AT + 3] = maxRow;
+        return;
+      }
+      let x0 = minCol, y0 = minRow, x1 = maxCol, y1 = maxRow;
+      for (let i = 0; i < LIST.length; i += 4) {
+        x0 = Math.min(x0, LIST[i]);
+        y0 = Math.min(y0, LIST[i + 1]);
+        x1 = Math.max(x1, LIST[i + 2]);
+        y1 = Math.max(y1, LIST[i + 3]);
+      }
+      LIST[0] = x0;
+      LIST[1] = y0;
+      LIST[2] = x1;
+      LIST[3] = y1;
+      this.#changedCount = 1;
+    }
+    /** 게임이 가진 장애물 배치의 세대 번호를 알립니다. 지난번과 다르면 `invalidate()`하고 true를 돌려줍니다. */
+    sync(version) {
+      if (version === this.#version) {
+        return false;
+      }
+      this.#version = version;
+      this.invalidate();
+      return true;
+    }
+    /**
+     * 가장 가까운 통과 가능한 칸. `cell` 자신이 열려 있으면 그 칸이고, 아니면 정사각 고리를 `maxRing`까지 넓히며 찾습니다.
+     * 같은 고리 안의 동률은 훑는 순서(행 오름차순, 행 안에서 열 오름차순)에서 먼저인 칸입니다. 없으면 -1.
+     */
+    nearestOpen(cell, maxRing = 12) {
+      if (!(cell >= 0 && cell < this.size)) {
+        return -1;
+      }
+      if (this.isOpen(cell)) {
+        return cell;
+      }
+      const COL = cell % this.cols, ROW = (cell - COL) / this.cols;
+      for (let ring = 1; ring <= maxRing; ring++) {
+        let best = -1, bestD = Infinity;
+        for (let dy = -ring; dy <= ring; dy++) {
+          const NY = ROW + dy;
+          if (NY < 0 || NY >= this.rows) {
+            continue;
+          }
+          const STRIDE = dy === -ring || dy === ring ? 1 : 2 * ring;
+          for (let dx = -ring; dx <= ring; dx += STRIDE) {
+            const NX = COL + dx;
+            if (NX < 0 || NX >= this.cols) {
+              continue;
+            }
+            const NEXT = NY * this.cols + NX, D = dx * dx + dy * dy;
+            if (D < bestD && this.isOpen(NEXT)) {
+              best = NEXT;
+              bestD = D;
+            }
+          }
+        }
+        if (best >= 0) {
+          return best;
+        }
+      }
+      return -1;
+    }
+    /**
+     * (x, y)에서 중심까지의 거리가 `innerRadius` 이상 `outerRadius` 이하이고 통과 가능한 칸을 `out`(먼저 비움)에 행 우선으로
+     * 채웁니다. `accept(centerX, centerY, cell)`을 주면 그것도 통과한 칸만 남깁니다(예: 목표가 보이는 칸). 목표 영역의
+     * 여유(칸 대각선의 절반 등)를 더하는 것은 호출자의 몫입니다.
+     */
+    openCellsWithin(x, y, outerRadius, innerRadius = 0, accept = null, out = []) {
+      out.length = 0;
+      const COL0 = Math.max(0, Math.floor((x - outerRadius - this.originX) / this.cellSize)), COL1 = Math.min(this.cols - 1, Math.floor((x + outerRadius - this.originX) / this.cellSize)), ROW0 = Math.max(0, Math.floor((y - outerRadius - this.originY) / this.cellSize)), ROW1 = Math.min(this.rows - 1, Math.floor((y + outerRadius - this.originY) / this.cellSize));
+      for (let row = ROW0; row <= ROW1; row++) {
+        for (let col = COL0; col <= COL1; col++) {
+          const CELL2 = row * this.cols + col, CX = this.centerX(CELL2), CY = this.centerY(CELL2), D = Math.hypot(CX - x, CY - y);
+          if (D > outerRadius || D < innerRadius || !this.isOpen(CELL2)) {
+            continue;
+          }
+          if (accept !== null && !accept(CX, CY, CELL2)) {
+            continue;
+          }
+          out.push(CELL2);
+        }
+      }
+      return out;
+    }
+    /**
+     * `start`(열린 칸)에서 8방향으로 걸어 닿는 칸을 1로 표시해 `out`(길이 `size` 이상의 Uint8Array, 먼저 비움)에 채웁니다.
+     * `start`가 열려 있지 않으면(-1 포함) 모두 0입니다. 거리장보다 가볍게 "이어져 있는가"만 알고 싶을 때 씁니다.
+     * 탐색 스택은 격자가 가진 Int32Array(칸마다 한 번만 들어감)를 재사용합니다.
+     * @param {number} start
+     * @param {Uint8Array} out
+     */
+    reachableFrom(start, out) {
+      if (!(out instanceof Uint8Array) || out.length < this.size) {
+        throw new TypeError(`PathGrid.reachableFrom needs a Uint8Array of at least ${this.size} cells.`);
+      }
+      out.fill(0, 0, this.size);
+      if (!this.isOpen(start)) {
+        return out;
+      }
+      const STACK = this.#stack ??= new Int32Array(this.size);
+      let top = 0;
+      STACK[top++] = start;
+      out[start] = 1;
+      while (top) {
+        const CELL2 = STACK[--top], COL = CELL2 % this.cols, ROW = (CELL2 - COL) / this.cols;
+        for (let direction = 0; direction < DIRECTION_COUNT; direction++) {
+          const NEXT = this.stepCell(COL, ROW, direction);
+          if (NEXT >= 0 && out[NEXT] === 0) {
+            out[NEXT] = 1;
+            STACK[top++] = NEXT;
+          }
+        }
+      }
+      return out;
+    }
+  };
+  var H_SCALE = 2 ** 26;
+  var OPTIONS2 = ["chunkSize", "portalSpan", "goalCapacity"];
+  var MAX_CHUNK_SIZE = 64;
+  var NO_COMP = 65535;
+  var NO_EDGE = 65535;
+  var OPEN_BIT = 256;
+  var LOCAL_BITS = 12;
+  var LOCAL_MASK = (1 << LOCAL_BITS) - 1;
+  var EAST = 0;
+  var SOUTH = 1;
+  var SOUTH_EAST = 4;
+  var SOUTH_WEST = 5;
+  var NORTH_EAST = 7;
+  var STRAIGHT = 10;
+  var DIAGONAL = 14;
+  var BORDER_EAST = 0;
+  var BORDER_SOUTH = 1;
+  var BORDER_SOUTH_EAST = 2;
+  var BORDER_SOUTH_WEST = 3;
+  var BORDER_KINDS = 4;
+  function integerOption(value, name, min, max) {
+    if (!Number.isInteger(value) || value < min || value > max) {
+      throw new RangeError(`PortalGraph ${name} must be an integer in [${min}, ${max}].`);
+    }
+    return value;
+  }
+  var PortalGraph = class {
+    /** @type {PathGrid} */
+    grid;
+    /** 청크 한 변의 칸 수(기본 16). */
+    chunkSize;
+    /** 포털 구간을 쪼개는 칸 수(기본 4). 조각마다 중앙 칸 하나가 노드입니다. */
+    portalSpan;
+    /** 목표 보관소의 용량(기본 64). 목표 보관은 다음 단계에서 이 값을 씁니다. */
+    goalCapacity;
+    /** 청크의 열·행·총 수. 청크 번호는 행 우선 `chunkRow * chunkCols + chunkCol`입니다. */
+    chunkCols;
+    chunkRows;
+    chunkCount;
+    /** 노드 번호의 상한(노드 번호는 0 이상 이 값 미만). 대부분은 비어 있는 자리입니다. */
+    nodeCapacity;
+    /** 구조를 다시 만든 횟수. 처음 만들 때와, 바뀐 사각형을 소비해 청크를 다시 만들 때마다 오릅니다. */
+    revision = 0;
+    /** 누적 횟수: 성분·포털을 다시 만든 청크, 노드만 다시 모은 청크, 만든 노드 간 비용 행렬. */
+    stats = { chunksRebuilt: 0, nodeChunksRebuilt: 0, matricesBuilt: 0 };
+    #built = false;
+    #componentCount = 0;
+    #cellsPerChunk;
+    // 칸마다 청크 안 성분 번호(0..), 막힌 칸은 NO_COMP.
+    #cellComp;
+    // 칸마다 청크 안 걸음 방향 비트 + OPEN_BIT(막힌 칸은 0).
+    #stepMask;
+    #compCount;
+    // 성분 열쇠 = 청크 · chunkSize² + 청크 안 성분(< 청크 수 · S² ≤ (cols + S − 1)(rows + S − 1) < 2^31, Int32). 합치기용 부모와 전역 번호.
+    #compParent;
+    #compLabel;
+    #borderCap;
+    #portalStride;
+    #borderPortals;
+    // 노드 n의 칸(n = 포털 · 2 + 쪽, 쪽 0은 경계를 소유한 청크), 포털의 건너는 비용(10|14).
+    #nodeCell;
+    #portalCost;
+    // 노드가 속한 청크와 그 청크 노드 목록에서의 순번.
+    #nodeChunk;
+    #nodeIndex;
+    #chunkNodeCap;
+    #chunkNodes;
+    #chunkNodeCount;
+    // 청크 노드 목록의 칸(행렬을 다시 만들어야 하는지 비교용)과 수집 중 달라졌는지.
+    #chunkNodeCells;
+    #listChanged = false;
+    // 청크마다 노드 × 노드 걸음 비용(Uint16, NO_EDGE는 다른 성분). 크기가 맞으면 재사용하고 처음 물을 때 만듭니다.
+    #matrix;
+    #matrixReady;
+    // 마지막으로 구조를 바꾼 동기화에서 청크의 처리: 0 그대로, 1 노드만, 2 성분·포털을 다시 만듦.
+    #change;
+    #rects = new Int32Array(MAX_CHANGED_RECTS * 4);
+    #stack;
+    #localDist;
+    #localCells;
+    #targets;
+    #heap;
+    #pairs;
+    /**
+     * @param {PathGrid} grid
+     * @param {{ chunkSize?: number, portalSpan?: number, goalCapacity?: number }} [options]
+     */
+    constructor(grid, options = {}) {
+      if (!(grid instanceof PathGrid)) {
+        throw new TypeError("PortalGraph needs a PathGrid.");
+      }
+      if (options === null || typeof options !== "object") {
+        throw new TypeError("PortalGraph options must be an object.");
+      }
+      for (const KEY of Object.keys(options)) {
+        if (!OPTIONS2.includes(KEY)) {
+          throw new TypeError(`PortalGraph has an unknown option: ${KEY}`);
+        }
+      }
+      this.grid = grid;
+      this.chunkSize = integerOption(options.chunkSize ?? 16, "chunkSize", 2, MAX_CHUNK_SIZE);
+      this.portalSpan = integerOption(options.portalSpan ?? 4, "portalSpan", 1, this.chunkSize);
+      this.goalCapacity = integerOption(options.goalCapacity ?? 64, "goalCapacity", 1, 65535);
+      const SIZE = this.chunkSize;
+      this.chunkCols = Math.ceil(grid.cols / SIZE);
+      this.chunkRows = Math.ceil(grid.rows / SIZE);
+      this.chunkCount = this.chunkCols * this.chunkRows;
+      this.#cellsPerChunk = SIZE * SIZE;
+      this.#borderCap = 3 * SIZE - 2;
+      this.#portalStride = 2 * this.#borderCap + 2;
+      this.nodeCapacity = this.chunkCount * this.#portalStride * 2;
+      this.#chunkNodeCap = 4 * this.#borderCap + 4;
+      this.#cellComp = new Uint16Array(grid.size).fill(NO_COMP);
+      this.#stepMask = new Uint16Array(grid.size);
+      this.#compCount = new Uint16Array(this.chunkCount);
+      this.#compParent = new Int32Array(this.chunkCount * this.#cellsPerChunk);
+      this.#compLabel = new Int32Array(this.chunkCount * this.#cellsPerChunk);
+      this.#borderPortals = new Uint16Array(this.chunkCount * BORDER_KINDS);
+      this.#nodeCell = new Int32Array(this.nodeCapacity).fill(-1);
+      this.#portalCost = new Uint8Array(this.nodeCapacity / 2);
+      this.#nodeChunk = new Int32Array(this.nodeCapacity).fill(-1);
+      this.#nodeIndex = new Uint16Array(this.nodeCapacity);
+      this.#chunkNodes = new Int32Array(this.chunkCount * this.#chunkNodeCap);
+      this.#chunkNodeCount = new Uint16Array(this.chunkCount);
+      this.#chunkNodeCells = new Int32Array(this.chunkCount * this.#chunkNodeCap).fill(-1);
+      this.#matrix = new Array(this.chunkCount).fill(null);
+      this.#matrixReady = new Uint8Array(this.chunkCount);
+      this.#change = new Uint8Array(this.chunkCount);
+      this.#stack = new Int32Array(this.#cellsPerChunk);
+      this.#localDist = new Int32Array(this.#cellsPerChunk);
+      this.#localCells = new Int32Array(this.#cellsPerChunk);
+      this.#targets = new Uint16Array(this.#cellsPerChunk);
+      this.#heap = new Int32Array(this.#cellsPerChunk * DIRECTION_COUNT + 1);
+      this.#pairs = new Int32Array(this.#borderCap);
+    }
+    /**
+     * 구조를 최신으로 만듭니다. 처음이면 모든 청크를 만들고, 아니면 격자의 `takeChangedRects`를 소비해 바뀐 사각형(변 기억이
+     * 비워진 바깥 한 겹 포함)과 겹치는 청크만 다시 만듭니다. 무언가 다시 만들었으면 true. 질의도 필요하면 스스로 부릅니다.
+     * 격자의 바뀐 사각형 기록을 가져가는 소비자는 이 그래프 하나여야 합니다.
+     */
+    prepare() {
+      if (!this.#built) {
+        this.grid.takeChangedRects(this.#rects);
+        this.#buildAll();
+        this.#built = true;
+        return true;
+      }
+      if (this.grid.changedRectCount === 0) {
+        return false;
+      }
+      this.#rebuildChanged(this.grid.takeChangedRects(this.#rects));
+      return true;
+    }
+    /** 전역 연결 성분의 수. 성분 번호는 0 이상 이 값 미만입니다. */
+    get componentCount() {
+      this.prepare();
+      return this.#componentCount;
+    }
+    /** 칸의 전역 연결 성분 번호. 막힌 칸·격자 밖 번호는 -1. 두 칸의 번호가 같으면 걸어서 닿고, 다르면 닿지 않습니다. */
+    component(cell) {
+      this.prepare();
+      if (!(cell >= 0 && cell < this.grid.size)) {
+        return -1;
+      }
+      const COMP = this.#cellComp[cell];
+      return COMP === NO_COMP ? -1 : this.#compLabel[this.chunkOf(cell) * this.#cellsPerChunk + COMP];
+    }
+    /** 칸이 든 청크 번호. */
+    chunkOf(cell) {
+      const COLS = this.grid.cols, COL = cell % COLS, ROW = (cell - COL) / COLS;
+      return Math.floor(ROW / this.chunkSize) * this.chunkCols + Math.floor(COL / this.chunkSize);
+    }
+    /** 청크의 노드 수. 노드 목록 순서는 동·남·서·북 변, 남동·남서·북서·북동 모서리, 각 경계 안에서는 놓인 순서입니다. */
+    chunkNodeCount(chunk) {
+      this.prepare();
+      return this.#chunkNodeCount[chunk];
+    }
+    /** 청크 노드 목록의 `index`번째 노드 번호. */
+    chunkNode(chunk, index) {
+      this.prepare();
+      if (!(index >= 0 && index < this.#chunkNodeCount[chunk])) {
+        throw new RangeError("PortalGraph.chunkNode index is out of range.");
+      }
+      return this.#chunkNodes[chunk * this.#chunkNodeCap + index];
+    }
+    /** 노드가 선 칸. 비어 있는 자리는 -1. */
+    nodeCell(node) {
+      this.prepare();
+      return this.#nodeChunk[node] < 0 ? -1 : this.#nodeCell[node];
+    }
+    /** 노드가 속한 청크. 비어 있는 자리는 -1. */
+    nodeChunk(node) {
+      this.prepare();
+      return this.#nodeChunk[node];
+    }
+    /** 경계 건너편의 짝 노드(`node ^ 1`). */
+    nodePeer(node) {
+      return node ^ 1;
+    }
+    /** 노드에서 짝 노드로 건너는 비용(직선 10, 대각 14). */
+    nodeCrossCost(node) {
+      this.prepare();
+      return this.#portalCost[node >> 1];
+    }
+    /**
+     * 청크 안에서만 걸어 노드 목록의 `from`번째 노드 칸에서 `to`번째 노드 칸까지 가는 최단 비용. 청크 안에서 이어지지 않으면 -1.
+     * 그 청크의 비용 행렬을 처음 물을 때 만듭니다(청크의 노드 수 n이면 청크 안 Dijkstra n-1번).
+     */
+    edgeCost(chunk, from, to) {
+      this.prepare();
+      const COUNT = this.#chunkNodeCount[chunk];
+      if (!(from >= 0 && from < COUNT && to >= 0 && to < COUNT)) {
+        throw new RangeError("PortalGraph.edgeCost index is out of range.");
+      }
+      if (!this.#matrixReady[chunk]) {
+        this.#buildMatrix(chunk);
+      }
+      const COST = this.#matrix[chunk][from * COUNT + to];
+      return COST === NO_EDGE ? -1 : COST;
+    }
+    /** 구조를 마지막으로 바꾼 동기화에서 청크를 어떻게 했는지: 0 그대로, 1 노드만 다시 모음, 2 성분·포털을 다시 만듦. */
+    chunkChange(chunk) {
+      return this.#change[chunk];
+    }
+    #buildAll() {
+      this.#change.fill(2);
+      for (let chunk = 0; chunk < this.chunkCount; chunk++) {
+        this.#buildComponents(chunk);
+      }
+      for (let chunk = 0; chunk < this.chunkCount; chunk++) {
+        for (let kind = 0; kind < BORDER_KINDS; kind++) {
+          this.#scanBorder(chunk, kind);
+        }
+      }
+      for (let chunk = 0; chunk < this.chunkCount; chunk++) {
+        this.#collectNodes(chunk);
+      }
+      this.stats.chunksRebuilt += this.chunkCount;
+      this.#relabel();
+      this.revision++;
+    }
+    #rebuildChanged(count) {
+      const SIZE = this.chunkSize, GRID2 = this.grid, CHANGE = this.#change, RECTS = this.#rects;
+      CHANGE.fill(0);
+      for (let i = 0; i < count * 4; i += 4) {
+        const COL0 = Math.max(0, RECTS[i] - 1), ROW0 = Math.max(0, RECTS[i + 1] - 1), COL1 = Math.min(GRID2.cols - 1, RECTS[i + 2] + 1), ROW1 = Math.min(GRID2.rows - 1, RECTS[i + 3] + 1);
+        for (let chunkRow = Math.floor(ROW0 / SIZE); chunkRow <= Math.floor(ROW1 / SIZE); chunkRow++) {
+          for (let chunkCol = Math.floor(COL0 / SIZE); chunkCol <= Math.floor(COL1 / SIZE); chunkCol++) {
+            CHANGE[chunkRow * this.chunkCols + chunkCol] = 2;
+          }
+        }
+      }
+      let rebuilt = 0;
+      for (let chunk = 0; chunk < this.chunkCount; chunk++) {
+        if (CHANGE[chunk] === 2) {
+          this.#buildComponents(chunk);
+          rebuilt++;
+        }
+      }
+      for (let chunk = 0; chunk < this.chunkCount; chunk++) {
+        for (let kind = 0; kind < BORDER_KINDS; kind++) {
+          if (this.#borderTouchesRebuilt(chunk, kind)) {
+            this.#scanBorder(chunk, kind);
+            CHANGE[chunk] ||= 1;
+            CHANGE[this.#borderNeighbor(chunk, kind)] ||= 1;
+          }
+        }
+      }
+      let collected = 0;
+      for (let chunk = 0; chunk < this.chunkCount; chunk++) {
+        if (CHANGE[chunk] !== 0) {
+          this.#collectNodes(chunk);
+          collected++;
+        }
+      }
+      this.stats.chunksRebuilt += rebuilt;
+      this.stats.nodeChunksRebuilt += collected - rebuilt;
+      this.#relabel();
+      this.revision++;
+    }
+    // 경계 건너편 청크. 경계가 없는 자리(격자 가장자리)는 -1.
+    #borderNeighbor(chunk, kind) {
+      const COL = chunk % this.chunkCols, ROW = (chunk - COL) / this.chunkCols, LAST_COL = COL === this.chunkCols - 1, LAST_ROW = ROW === this.chunkRows - 1;
+      if (kind === BORDER_EAST) {
+        return LAST_COL ? -1 : chunk + 1;
+      }
+      if (kind === BORDER_SOUTH) {
+        return LAST_ROW ? -1 : chunk + this.chunkCols;
+      }
+      if (kind === BORDER_SOUTH_EAST) {
+        return LAST_COL || LAST_ROW ? -1 : chunk + this.chunkCols + 1;
+      }
+      return COL === 0 || LAST_ROW ? -1 : chunk + this.chunkCols - 1;
+    }
+    #borderTouchesRebuilt(chunk, kind) {
+      const NEXT = this.#borderNeighbor(chunk, kind), CHANGE = this.#change;
+      if (NEXT < 0) {
+        return false;
+      }
+      if (CHANGE[chunk] === 2 || CHANGE[NEXT] === 2) {
+        return true;
+      }
+      if (kind === BORDER_SOUTH_EAST) {
+        return CHANGE[chunk + 1] === 2 || CHANGE[chunk + this.chunkCols] === 2;
+      }
+      if (kind === BORDER_SOUTH_WEST) {
+        return CHANGE[chunk - 1] === 2 || CHANGE[chunk + this.chunkCols] === 2;
+      }
+      return false;
+    }
+    // 청크 안 연결 성분: 행 우선으로 훑어 처음 만난 열린 칸부터 청크 안으로만 퍼뜨리며 0부터 번호를 붙입니다.
+    #buildComponents(chunk) {
+      const GRID2 = this.grid, COLS = GRID2.cols, SIZE = this.chunkSize, COMP = this.#cellComp, MASK = this.#stepMask, STACK = this.#stack, CHUNK_COL = chunk % this.chunkCols, COL0 = CHUNK_COL * SIZE, ROW0 = (chunk - CHUNK_COL) / this.chunkCols * SIZE, COL1 = Math.min(COLS, COL0 + SIZE) - 1, ROW1 = Math.min(GRID2.rows, ROW0 + SIZE) - 1;
+      for (let row = ROW0; row <= ROW1; row++) {
+        COMP.fill(NO_COMP, row * COLS + COL0, row * COLS + COL1 + 1);
+      }
+      for (let row = ROW0; row <= ROW1; row++) {
+        for (let col = COL0; col <= COL1; col++) {
+          const CELL2 = row * COLS + col;
+          let mask = 0;
+          if (GRID2.isOpen(CELL2)) {
+            for (let direction = 0; direction < DIRECTION_COUNT; direction++) {
+              const NEXT_COL = col + DIRECTION_DX[direction], NEXT_ROW = row + DIRECTION_DY[direction];
+              if (NEXT_COL >= COL0 && NEXT_COL <= COL1 && NEXT_ROW >= ROW0 && NEXT_ROW <= ROW1 && GRID2.stepCell(col, row, direction) >= 0) {
+                mask |= 1 << direction;
+              }
+            }
+            MASK[CELL2] = mask | OPEN_BIT;
+          } else {
+            MASK[CELL2] = 0;
+          }
+        }
+      }
+      let count = 0;
+      for (let row = ROW0; row <= ROW1; row++) {
+        for (let col = COL0; col <= COL1; col++) {
+          const START = row * COLS + col;
+          if (COMP[START] !== NO_COMP || MASK[START] === 0) {
+            continue;
+          }
+          const ID = count++;
+          COMP[START] = ID;
+          let top = 0;
+          STACK[top++] = START;
+          while (top) {
+            const CELL2 = STACK[--top], BITS = MASK[CELL2];
+            for (let direction = 0; direction < DIRECTION_COUNT; direction++) {
+              if (!(BITS & 1 << direction)) {
+                continue;
+              }
+              const NEXT = CELL2 + DIRECTION_DX[direction] + DIRECTION_DY[direction] * COLS;
+              if (COMP[NEXT] === NO_COMP) {
+                COMP[NEXT] = ID;
+                STACK[top++] = NEXT;
+              }
+            }
+          }
+        }
+      }
+      this.#compCount[chunk] = count;
+    }
+    #compKey(cell) {
+      return this.chunkOf(cell) * this.#cellsPerChunk + this.#cellComp[cell];
+    }
+    #addPortal(chunk, kind, cellA, cellB, cost) {
+      const PORTAL = this.#portalBase(chunk, kind) + this.#borderPortals[chunk * BORDER_KINDS + kind]++;
+      this.#nodeCell[PORTAL * 2] = cellA;
+      this.#nodeCell[PORTAL * 2 + 1] = cellB;
+      this.#portalCost[PORTAL] = cost;
+    }
+    #portalBase(chunk, kind) {
+      const OFFSET = kind === BORDER_EAST ? 0 : kind === BORDER_SOUTH ? this.#borderCap : this.#borderCap * 2 + kind - 2;
+      return chunk * this.#portalStride + OFFSET;
+    }
+    /**
+     * 청크가 소유한 경계 하나의 포털을 다시 놓습니다. 변: 직선 걸음이 통과되고 양쪽 성분이 같은 연속 구간을 `portalSpan`칸씩
+     * 쪼개 조각마다 중앙 칸(짝수 길이는 앞쪽)을 노드로 둡니다. 그 뒤 변을 따라 대각 걸음을 보며, 직선 포털로 아직 이어지지 않은
+     * (성분, 성분) 쌍만 첫 대각 걸음 하나를 단칸 포털(비용 14)로 둡니다. 모서리: 대각 걸음 하나가 통과되면 포털 하나.
+     */
+    #scanBorder(chunk, kind) {
+      const GRID2 = this.grid, COLS = GRID2.cols, SIZE = this.chunkSize, COMP = this.#cellComp, CHUNK_COL = chunk % this.chunkCols, COL0 = CHUNK_COL * SIZE, ROW0 = (chunk - CHUNK_COL) / this.chunkCols * SIZE, COL1 = Math.min(COLS, COL0 + SIZE) - 1, ROW1 = Math.min(GRID2.rows, ROW0 + SIZE) - 1;
+      this.#borderPortals[chunk * BORDER_KINDS + kind] = 0;
+      if (this.#borderNeighbor(chunk, kind) < 0) {
+        return;
+      }
+      if (kind === BORDER_SOUTH_EAST || kind === BORDER_SOUTH_WEST) {
+        const COL = kind === BORDER_SOUTH_EAST ? COL1 : COL0;
+        if (COMP[ROW1 * COLS + COL] === NO_COMP) {
+          return;
+        }
+        const NEXT = GRID2.stepCell(COL, ROW1, kind === BORDER_SOUTH_EAST ? SOUTH_EAST : SOUTH_WEST);
+        if (NEXT >= 0) {
+          this.#addPortal(chunk, kind, ROW1 * COLS + COL, NEXT, DIAGONAL);
+        }
+        return;
+      }
+      const EAST_SIDE = kind === BORDER_EAST, FIRST = EAST_SIDE ? ROW0 : COL0, LAST = EAST_SIDE ? ROW1 : COL1, SPAN = this.portalSpan, STEP = EAST_SIDE ? 1 : COLS, PAIRS = this.#pairs;
+      let pairCount = 0, runStart = -1, runA = -1, runB = -1;
+      for (let t = FIRST; t <= LAST + 1; t++) {
+        let compA = -1, compB = -1;
+        const CELL2 = EAST_SIDE ? t * COLS + COL1 : ROW1 * COLS + t;
+        if (t <= LAST && COMP[CELL2] !== NO_COMP) {
+          const NEXT = EAST_SIDE ? GRID2.stepCell(COL1, t, EAST) : GRID2.stepCell(t, ROW1, SOUTH);
+          if (NEXT >= 0) {
+            compA = COMP[CELL2];
+            compB = COMP[NEXT];
+          }
+        }
+        if (runStart >= 0 && (compA !== runA || compB !== runB)) {
+          for (let piece = runStart; piece < t; piece += SPAN) {
+            const MIDDLE = piece + (Math.min(SPAN, t - piece) - 1 >> 1), CENTER = EAST_SIDE ? MIDDLE * COLS + COL1 : ROW1 * COLS + MIDDLE;
+            this.#addPortal(chunk, kind, CENTER, CENTER + STEP, STRAIGHT);
+          }
+          PAIRS[pairCount++] = runA * this.#cellsPerChunk + runB;
+          runStart = -1;
+        }
+        if (compA >= 0 && runStart < 0) {
+          runStart = t;
+          runA = compA;
+          runB = compB;
+        }
+      }
+      for (let t = FIRST; t <= LAST; t++) {
+        const CELL2 = EAST_SIDE ? t * COLS + COL1 : ROW1 * COLS + t, CELL_COL = CELL2 % COLS, CELL_ROW = (CELL2 - CELL_COL) / COLS;
+        if (COMP[CELL2] === NO_COMP) {
+          continue;
+        }
+        for (let side = 0; side < 2; side++) {
+          if (side === 0 && t === LAST || side === 1 && t === FIRST) {
+            continue;
+          }
+          const DIRECTION = side === 0 ? SOUTH_EAST : EAST_SIDE ? NORTH_EAST : SOUTH_WEST, NEXT = GRID2.stepCell(CELL_COL, CELL_ROW, DIRECTION);
+          if (NEXT < 0) {
+            continue;
+          }
+          const PAIR = COMP[CELL2] * this.#cellsPerChunk + COMP[NEXT];
+          let linked = false;
+          for (let i = 0; i < pairCount; i++) {
+            if (PAIRS[i] === PAIR) {
+              linked = true;
+              break;
+            }
+          }
+          if (!linked) {
+            PAIRS[pairCount++] = PAIR;
+            this.#addPortal(chunk, kind, CELL2, NEXT, DIAGONAL);
+          }
+        }
+      }
+    }
+    // 청크의 노드 목록을 동·남·서·북 변, 남동·남서·북서·북동 모서리 순서로 모읍니다.
+    #collectNodes(chunk) {
+      const COL = chunk % this.chunkCols, ROW = (chunk - COL) / this.chunkCols, CC = this.chunkCols;
+      this.#listChanged = false;
+      let count = 0;
+      count = this.#take(chunk, count, chunk, BORDER_EAST, 0);
+      count = this.#take(chunk, count, chunk, BORDER_SOUTH, 0);
+      if (COL > 0) {
+        count = this.#take(chunk, count, chunk - 1, BORDER_EAST, 1);
+      }
+      if (ROW > 0) {
+        count = this.#take(chunk, count, chunk - CC, BORDER_SOUTH, 1);
+      }
+      count = this.#take(chunk, count, chunk, BORDER_SOUTH_EAST, 0);
+      count = this.#take(chunk, count, chunk, BORDER_SOUTH_WEST, 0);
+      if (COL > 0 && ROW > 0) {
+        count = this.#take(chunk, count, chunk - CC - 1, BORDER_SOUTH_EAST, 1);
+      }
+      if (COL < CC - 1 && ROW > 0) {
+        count = this.#take(chunk, count, chunk - CC + 1, BORDER_SOUTH_WEST, 1);
+      }
+      for (let kind = 0; kind < BORDER_KINDS; kind++) {
+        const BASE = this.#portalBase(chunk, kind), END = BASE + (kind < BORDER_SOUTH_EAST ? this.#borderCap : 1);
+        for (let portal = BASE + this.#borderPortals[chunk * BORDER_KINDS + kind]; portal < END; portal++) {
+          this.#nodeChunk[portal * 2] = -1;
+          this.#nodeChunk[portal * 2 + 1] = -1;
+        }
+      }
+      if (this.#listChanged || count !== this.#chunkNodeCount[chunk] || this.#change[chunk] === 2) {
+        this.#matrixReady[chunk] = 0;
+      }
+      this.#chunkNodeCount[chunk] = count;
+    }
+    // 경계 하나의 한쪽 노드들을 청크 노드 목록 뒤에 붙이고 새 개수를 돌려줍니다.
+    #take(chunk, count, owner, kind, side) {
+      const BASE = this.#portalBase(owner, kind), PORTALS = this.#borderPortals[owner * BORDER_KINDS + kind];
+      for (let i = 0; i < PORTALS; i++) {
+        const NODE = (BASE + i) * 2 + side, AT = chunk * this.#chunkNodeCap + count;
+        if (this.#chunkNodeCells[AT] !== this.#nodeCell[NODE]) {
+          this.#chunkNodeCells[AT] = this.#nodeCell[NODE];
+          this.#listChanged = true;
+        }
+        this.#chunkNodes[AT] = NODE;
+        this.#nodeChunk[NODE] = chunk;
+        this.#nodeIndex[NODE] = count++;
+      }
+      return count;
+    }
+    #find(key) {
+      const PARENT = this.#compParent;
+      while (PARENT[key] !== key) {
+        PARENT[key] = PARENT[PARENT[key]];
+        key = PARENT[key];
+      }
+      return key;
+    }
+    // 전역 성분: 포털로 이어진 청크 성분을 합치고(뿌리는 작은 열쇠), 열쇠 오름차순으로 처음 만난 뿌리부터 0, 1, 2…를 줍니다.
+    #relabel() {
+      const PARENT = this.#compParent, LABEL = this.#compLabel, PER = this.#cellsPerChunk;
+      for (let chunk = 0; chunk < this.chunkCount; chunk++) {
+        for (let comp = 0; comp < this.#compCount[chunk]; comp++) {
+          PARENT[chunk * PER + comp] = chunk * PER + comp;
+        }
+      }
+      for (let chunk = 0; chunk < this.chunkCount; chunk++) {
+        for (let kind = 0; kind < BORDER_KINDS; kind++) {
+          const BASE = this.#portalBase(chunk, kind), PORTALS = this.#borderPortals[chunk * BORDER_KINDS + kind];
+          for (let portal = BASE; portal < BASE + PORTALS; portal++) {
+            const ROOT_A = this.#find(this.#compKey(this.#nodeCell[portal * 2])), ROOT_B = this.#find(this.#compKey(this.#nodeCell[portal * 2 + 1]));
+            if (ROOT_A < ROOT_B) {
+              PARENT[ROOT_B] = ROOT_A;
+            } else if (ROOT_B < ROOT_A) {
+              PARENT[ROOT_A] = ROOT_B;
+            }
+          }
+        }
+      }
+      let next = 0;
+      for (let chunk = 0; chunk < this.chunkCount; chunk++) {
+        for (let comp = 0; comp < this.#compCount[chunk]; comp++) {
+          const KEY = chunk * PER + comp, ROOT = this.#find(KEY);
+          LABEL[KEY] = ROOT === KEY ? next++ : LABEL[ROOT];
+        }
+      }
+      this.#componentCount = next;
+    }
+    #localCell(cell, col0, row0) {
+      const COL = cell % this.grid.cols;
+      return ((cell - COL) / this.grid.cols - row0) * this.chunkSize + (COL - col0);
+    }
+    // 청크 안 노드 × 노드 비용: 노드마다 그 칸에서 청크 안으로만 Dijkstra(키 = 비용 · S² + 청크 안 칸)를 돌려 뒤 노드들의 칸 값을 읽습니다.
+    #buildMatrix(chunk) {
+      const GRID2 = this.grid, COLS = GRID2.cols, SIZE = this.chunkSize, COUNT = this.#chunkNodeCount[chunk], NODES = this.#chunkNodes, NODE_CELL = this.#nodeCell, NODE_BASE = chunk * this.#chunkNodeCap, COMP = this.#cellComp, MASK = this.#stepMask, DIST = this.#localDist, CELL_OF = this.#localCells, TARGET = this.#targets, HEAP = this.#heap, CHUNK_COL = chunk % this.chunkCols, COL0 = CHUNK_COL * SIZE, ROW0 = (chunk - CHUNK_COL) / this.chunkCols * SIZE, WIDTH = Math.min(COLS, COL0 + SIZE) - COL0, HEIGHT = Math.min(GRID2.rows, ROW0 + SIZE) - ROW0;
+      let matrix = this.#matrix[chunk];
+      if (matrix === null || matrix.length < COUNT * COUNT) {
+        matrix = this.#matrix[chunk] = new Uint16Array(Math.max(COUNT * COUNT, 1));
+      }
+      for (let row = 0; row < HEIGHT; row++) {
+        for (let col = 0; col < WIDTH; col++) {
+          CELL_OF[row * SIZE + col] = (ROW0 + row) * COLS + COL0 + col;
+        }
+      }
+      for (let from = 0; from < COUNT; from++) {
+        matrix[from * COUNT + from] = 0;
+        const FROM_CELL = NODE_CELL[NODES[NODE_BASE + from]], FROM_COMP = COMP[FROM_CELL];
+        let remaining = 0;
+        for (let to = from + 1; to < COUNT; to++) {
+          const CELL2 = NODE_CELL[NODES[NODE_BASE + to]];
+          if (COMP[CELL2] === FROM_COMP) {
+            TARGET[this.#localCell(CELL2, COL0, ROW0)]++;
+            remaining++;
+          }
+        }
+        DIST.fill(-1);
+        const START = this.#localCell(FROM_CELL, COL0, ROW0);
+        let size = 0;
+        DIST[START] = 0;
+        HEAP[size++] = START;
+        while (size && remaining) {
+          const TOP = HEAP[0], LAST = HEAP[--size];
+          if (size) {
+            let at = 0;
+            for (; ; ) {
+              const LEFT = at * 2 + 1;
+              if (LEFT >= size) {
+                break;
+              }
+              const CHILD = LEFT + 1 < size && HEAP[LEFT + 1] < HEAP[LEFT] ? LEFT + 1 : LEFT;
+              if (HEAP[CHILD] >= LAST) {
+                break;
+              }
+              HEAP[at] = HEAP[CHILD];
+              at = CHILD;
+            }
+            HEAP[at] = LAST;
+          }
+          const AT = TOP & LOCAL_MASK, COST = TOP >>> LOCAL_BITS;
+          if (COST !== DIST[AT]) {
+            continue;
+          }
+          if (TARGET[AT]) {
+            remaining -= TARGET[AT];
+            TARGET[AT] = 0;
+          }
+          const BITS = MASK[CELL_OF[AT]];
+          for (let direction = 0; direction < DIRECTION_COUNT; direction++) {
+            if (!(BITS & 1 << direction)) {
+              continue;
+            }
+            const NEXT_AT = AT + DIRECTION_DX[direction] + DIRECTION_DY[direction] * SIZE, NEXT_COST = COST + (direction < 4 ? STRAIGHT : DIAGONAL);
+            if (DIST[NEXT_AT] >= 0 && DIST[NEXT_AT] <= NEXT_COST) {
+              continue;
+            }
+            DIST[NEXT_AT] = NEXT_COST;
+            let at = size++;
+            const KEY = NEXT_COST << LOCAL_BITS | NEXT_AT;
+            while (at > 0) {
+              const PARENT = at - 1 >> 1;
+              if (HEAP[PARENT] <= KEY) {
+                break;
+              }
+              HEAP[at] = HEAP[PARENT];
+              at = PARENT;
+            }
+            HEAP[at] = KEY;
+          }
+        }
+        for (let to = from + 1; to < COUNT; to++) {
+          const CELL2 = NODE_CELL[NODES[NODE_BASE + to]], D = COMP[CELL2] === FROM_COMP ? DIST[this.#localCell(CELL2, COL0, ROW0)] : -1, VALUE = D < 0 ? NO_EDGE : D;
+          matrix[from * COUNT + to] = VALUE;
+          matrix[to * COUNT + from] = VALUE;
+        }
+      }
+      this.#matrixReady[chunk] = 1;
+      this.stats.matricesBuilt++;
+    }
+  };
+
+  // modules/work-scheduler/examples/modules/work-scheduler/examples/index.html
+  var WORLD = { width: 480, height: 320 };
+  var CELL = 8;
+  var RADIUS = 3;
+  var BUILDING = 18;
+  var PAD = RADIUS + CELL;
+  var GAP = { x: 240, y: 296 };
+  var OBSTACLES = new ObstacleField({
+    ...WORLD,
+    fixedPoint: 100,
+    polygons: [
+      // 가운데 벽은 아래쪽 틈으로만 건너갑니다. "틈 막기"가 그 틈에 건물을 놓습니다.
+      {
+        id: "wall-a",
+        points: [
+          { x: 236, y: 0 },
+          { x: 244, y: 0 },
+          { x: 244, y: 272 },
+          { x: 236, y: 272 }
+        ]
+      },
+      {
+        id: "wall-b",
+        points: [
+          { x: 40, y: 180 },
+          { x: 180, y: 180 },
+          { x: 180, y: 188 },
+          { x: 40, y: 188 }
+        ]
+      }
+    ],
+    circles: []
+  });
+  var GRID = new PathGrid({ ...WORLD, cellSize: CELL, passable: (x, y) => OBSTACLES.pointClear(x, y, RADIUS) });
+  var GRAPH = new PortalGraph(GRID);
+  var CANVAS = document.querySelector("#portal-canvas");
+  var CONTEXT = CANVAS.getContext("2d");
+  var STATE = { circles: [], nextId: 1, edges: true, cursor: { x: 360, y: 96 }, prepareMs: 0, edited: false };
+  GRAPH.prepare();
+  function changeOf(chunk) {
+    return STATE.edited ? GRAPH.chunkChange(chunk) : 0;
+  }
+  function invalidateAround(circle) {
+    GRID.invalidateRect(
+      circle.x - circle.r - PAD,
+      circle.y - circle.r - PAD,
+      circle.x + circle.r + PAD,
+      circle.y + circle.r + PAD
+    );
+  }
+  function rebuild() {
+    const START = performance.now();
+    GRAPH.prepare();
+    STATE.prepareMs = Math.round((performance.now() - START) * 1e3) / 1e3;
+    STATE.edited = true;
+    render();
+  }
+  function toggleAt(x, y) {
+    const X = Math.round(Math.min(WORLD.width, Math.max(0, x))), Y = Math.round(Math.min(WORLD.height, Math.max(0, y))), HIT = STATE.circles.find((c) => Math.hypot(c.x - X, c.y - Y) <= c.r), CIRCLE = HIT ?? { id: STATE.nextId++, x: X, y: Y, r: BUILDING };
+    STATE.circles = HIT ? STATE.circles.filter((c) => c !== HIT) : [...STATE.circles, CIRCLE];
+    OBSTACLES.setCircles(STATE.circles);
+    invalidateAround(CIRCLE);
+    rebuild();
+  }
+  function centerOf(cell) {
+    return [GRID.centerX(cell), GRID.centerY(cell)];
+  }
+  function draw() {
+    CONTEXT.clearRect(0, 0, WORLD.width, WORLD.height);
+    for (let cell = 0; cell < GRID.size; cell++) {
+      const COMPONENT = GRAPH.component(cell);
+      CONTEXT.fillStyle = COMPONENT < 0 ? "#0b151b" : `hsl(${(195 + COMPONENT * 137.5) % 360} 35% 24%)`;
+      CONTEXT.fillRect(GRID.colOf(cell) * CELL, GRID.rowOf(cell) * CELL, CELL - 1, CELL - 1);
+    }
+    const SPAN = GRAPH.chunkSize * CELL;
+    for (let chunk = 0; chunk < GRAPH.chunkCount; chunk++) {
+      const X = chunk % GRAPH.chunkCols * SPAN, Y = Math.floor(chunk / GRAPH.chunkCols) * SPAN, W = Math.min(SPAN, WORLD.width - X), H = Math.min(SPAN, WORLD.height - Y), CHANGE = changeOf(chunk);
+      if (CHANGE === 2) {
+        CONTEXT.fillStyle = "rgba(224, 164, 88, 0.3)";
+        CONTEXT.fillRect(X, Y, W, H);
+      }
+      CONTEXT.setLineDash(CHANGE === 1 ? [6, 4] : []);
+      CONTEXT.strokeStyle = CHANGE === 2 ? "#e0a458" : CHANGE === 1 ? "#e6d36a" : "#5d7480";
+      CONTEXT.lineWidth = CHANGE ? 3 : 1.5;
+      CONTEXT.strokeRect(X + 1.5, Y + 1.5, W - 3, H - 3);
+      CONTEXT.setLineDash([]);
+    }
+    for (const POLYGON of OBSTACLES.polygons.items) {
+      CONTEXT.beginPath();
+      POLYGON.points.forEach((p, i) => i ? CONTEXT.lineTo(p.x, p.y) : CONTEXT.moveTo(p.x, p.y));
+      CONTEXT.closePath();
+      CONTEXT.strokeStyle = "#8fa6b3";
+      CONTEXT.lineWidth = 2;
+      CONTEXT.stroke();
+    }
+    for (const CIRCLE of STATE.circles) {
+      CONTEXT.beginPath();
+      CONTEXT.arc(CIRCLE.x, CIRCLE.y, CIRCLE.r, 0, Math.PI * 2);
+      CONTEXT.strokeStyle = "#c9b35c";
+      CONTEXT.lineWidth = 2;
+      CONTEXT.stroke();
+    }
+    for (let chunk = 0; chunk < GRAPH.chunkCount; chunk++) {
+      const COUNT = GRAPH.chunkNodeCount(chunk);
+      if (STATE.edges) {
+        CONTEXT.strokeStyle = "rgba(230, 241, 243, 0.18)";
+        CONTEXT.lineWidth = 1;
+        CONTEXT.beginPath();
+        for (let i = 0; i < COUNT; i++) {
+          for (let j = i + 1; j < COUNT; j++) {
+            if (GRAPH.edgeCost(chunk, i, j) > 0) {
+              CONTEXT.moveTo(...centerOf(GRAPH.nodeCell(GRAPH.chunkNode(chunk, i))));
+              CONTEXT.lineTo(...centerOf(GRAPH.nodeCell(GRAPH.chunkNode(chunk, j))));
+            }
+          }
+        }
+        CONTEXT.stroke();
+        CONTEXT.strokeStyle = "#e6f1f3";
+        CONTEXT.lineWidth = 2;
+        CONTEXT.beginPath();
+        for (let i = 0; i < COUNT; i++) {
+          const NODE = GRAPH.chunkNode(chunk, i);
+          CONTEXT.moveTo(...centerOf(GRAPH.nodeCell(NODE)));
+          CONTEXT.lineTo(...centerOf(GRAPH.nodeCell(GRAPH.nodePeer(NODE))));
+        }
+        CONTEXT.stroke();
+      }
+      for (let i = 0; i < COUNT; i++) {
+        const NODE = GRAPH.chunkNode(chunk, i), [X, Y] = centerOf(GRAPH.nodeCell(NODE));
+        CONTEXT.beginPath();
+        CONTEXT.arc(X, Y, 2.5, 0, Math.PI * 2);
+        CONTEXT.fillStyle = GRAPH.nodeCrossCost(NODE) === 14 ? "#7fc97f" : "#e6f1f3";
+        CONTEXT.fill();
+      }
+    }
+    CONTEXT.strokeStyle = "#6cb2e8";
+    CONTEXT.lineWidth = 2;
+    CONTEXT.beginPath();
+    CONTEXT.moveTo(STATE.cursor.x - 7, STATE.cursor.y);
+    CONTEXT.lineTo(STATE.cursor.x + 7, STATE.cursor.y);
+    CONTEXT.moveTo(STATE.cursor.x, STATE.cursor.y - 7);
+    CONTEXT.lineTo(STATE.cursor.x, STATE.cursor.y + 7);
+    CONTEXT.stroke();
+  }
+  function render() {
+    draw();
+    const REBUILT = [], NODES_ONLY = [];
+    let nodes = 0, edges = 0;
+    for (let chunk = 0; chunk < GRAPH.chunkCount; chunk++) {
+      const PLACE = [chunk % GRAPH.chunkCols, Math.floor(chunk / GRAPH.chunkCols)], COUNT = GRAPH.chunkNodeCount(chunk);
+      if (changeOf(chunk) === 2) {
+        REBUILT.push(PLACE);
+      } else if (changeOf(chunk) === 1) {
+        NODES_ONLY.push(PLACE);
+      }
+      nodes += COUNT;
+      for (let i = 0; i < COUNT; i++) {
+        for (let j = i + 1; j < COUNT; j++) {
+          edges += GRAPH.edgeCost(chunk, i, j) > 0 ? 1 : 0;
+        }
+      }
+    }
+    document.querySelector("#portal-output").textContent = JSON.stringify(
+      {
+        circles: STATE.circles.map((c) => [c.x, c.y]),
+        rebuiltChunks: REBUILT,
+        nodeOnlyChunks: NODES_ONLY,
+        chunks: [GRAPH.chunkCols, GRAPH.chunkRows],
+        nodes,
+        edges,
+        components: GRAPH.componentCount,
+        // 왼쪽 위 칸과 오른쪽 위 칸이 같은 성분인가(가운데 벽의 틈을 막으면 false).
+        leftRightConnected: GRAPH.component(GRID.cellAt(12, 12)) === GRAPH.component(GRID.cellAt(468, 12)),
+        prepareMs: STATE.prepareMs,
+        stats: GRAPH.stats
+      },
+      null,
+      2
+    );
+    document.querySelector("#portal-edges").setAttribute("aria-pressed", String(STATE.edges));
+  }
+  CANVAS.addEventListener("pointerdown", (event) => {
+    CANVAS.focus({ preventScroll: true });
+    const BOX = CANVAS.getBoundingClientRect(), X = (event.clientX - BOX.left) * WORLD.width / BOX.width, Y = (event.clientY - BOX.top) * WORLD.height / BOX.height;
+    STATE.cursor = { x: Math.round(X), y: Math.round(Y) };
+    toggleAt(X, Y);
+  });
+  CANVAS.addEventListener("keydown", (event) => {
+    const STEP = { ArrowLeft: [-CELL, 0], ArrowRight: [CELL, 0], ArrowUp: [0, -CELL], ArrowDown: [0, CELL] }[event.key];
+    if (STEP) {
+      event.preventDefault();
+      STATE.cursor = {
+        x: Math.min(WORLD.width, Math.max(0, STATE.cursor.x + STEP[0])),
+        y: Math.min(WORLD.height, Math.max(0, STATE.cursor.y + STEP[1]))
+      };
+      render();
+    } else if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      toggleAt(STATE.cursor.x, STATE.cursor.y);
+    }
+  });
+  document.querySelector("#portal-edges").addEventListener("click", () => {
+    STATE.edges = !STATE.edges;
+    render();
+  });
+  document.querySelector("#portal-gap").addEventListener("click", () => toggleAt(GAP.x, GAP.y));
+  document.querySelector("#portal-reset").addEventListener("click", () => {
+    const REMOVED = STATE.circles;
+    STATE.circles = [];
+    OBSTACLES.setCircles([]);
+    REMOVED.forEach(invalidateAround);
+    rebuild();
+  });
+  window.portalExample = { toggleAt, state: STATE, graph: GRAPH, grid: GRID };
   render();
 })();
 
