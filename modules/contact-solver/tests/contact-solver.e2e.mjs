@@ -293,4 +293,21 @@ const OPEN = new ObstacleField({ width: 1000, height: 600, fixedPoint: FP, polyg
     );
 }
 
+// ---------- 5. 막히지 않은 걷는 몸은 조향 끝점에 섭니다 ----------
+{
+    // 조향 변위 (29, -35)는 속도로 바꿨다가 다시 적분하면 28.999…처럼 정수 바로 아래가 되는 값입니다.
+    const SOLVER = solverFor(OPEN),
+        B = SOLVER.begin(1, DT),
+        EV = new ContactEvent();
+    put(B, 0, { x: 300, y: 300, dynamic: false });
+    B.steerX[0] = B.x[0] + 29;
+    B.steerY[0] = B.y[0] - 35;
+    while (SOLVER.next(EV)) {
+        SOLVER.resolve(EV);
+    }
+    SOLVER.end();
+    SOLVER.separate();
+    assert.deepEqual([B.x[0], B.y[0]], [B.steerX[0], B.steerY[0]], '조향 끝점에 정확히 섬');
+}
+
 console.log('contact-solver 고정 시나리오 통과');

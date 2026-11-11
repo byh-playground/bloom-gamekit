@@ -195,7 +195,10 @@ export class ContactSolver {
     #state = IDLE;
     #dt = 0;
     #grid = null;
-    #candidates = [];
+    // 격자가 지금 위치의 SEPARATE 몸을 담고 있는지. 위치가 바뀐 pass 뒤에만 다시 만듭니다.
+    #separationGridFresh = false;
+    // 격자 후보(몸 번호)와 개수. 몸 용량만큼 잡아 두므로 모자라지 않습니다.
+    #candidates = new Int32Array(0);
     #hit = new ContactHit();
     #pairHit = new ContactHit();
     #slideList = new ContactList();
@@ -304,10 +307,11 @@ export class ContactSolver {
         }
         this.#softPasses = integerOption(options.softPasses ?? 4, 'softPasses', 0);
         this.#hardPasses = integerOption(options.hardPasses ?? 4, 'hardPasses', 0);
+        // 후보 격자는 위치 열과 같은 정수 격자 단위입니다(넣기·질의 좌표가 정수라 부동소수 인자를 만들지 않습니다).
         this.#grid = new UniformGrid({
-            cellSize: this.#cellSize,
-            width: this.#width,
-            height: this.#height,
+            cellSize: this.#cellSize * this.#fp,
+            width: this.#width * this.#fp,
+            height: this.#height * this.#fp,
             outside: 'clamp',
         });
         this.#growPool(256);
@@ -576,8 +580,8 @@ export class ContactSolver {
     }
 
     /**
-     * 남은 접촉을 기본 응답으로 마저 풀고(응답하지 않은 접촉 포함) 모든 몸을 dt까지 옮긴 뒤, 움직인 몸을 지형 밖으로
-     * 복구합니다. 결과: `x`·`y`(격자 정수), `vx`·`vy`, 동적 몸의 `ivx`·`ivy`·`rx`·`ry`, 새로 동적이 된 몸의 `flags`.
+     * 남은 접촉을 기본 응답으로 마저 풀고(응답하지 않은 접촉 포함) 모든 몸을 dt까지 옮기고(조향 몸은 소수 잔여를 반올림으로
+     * 정산해 막히지 않았으면 조향 끝점에 섬), 움직인 몸을 지형 밖으로 복구합니다. 결과: `x`·`y`(격자 정수), `vx`·`vy`, 동적 몸의 `ivx`·`ivy`·`rx`·`ry`, 새로 동적이 된 몸의 `flags`.
      */
     end() {
         if (this.#state === FILLING) {
@@ -596,8 +600,17 @@ export class ContactSolver {
             N = B.count,
             FP = this.#fp,
             RESULT = this.#motion;
+        this.#now = this.#dt;
         for (let i = 0; i < N; i++) {
-            this.#advance(i, this.#dt);
+            this.#advance(i);
+            // 조향 몸은 잔여 변위를 다음 틱에 넘기지 않으므로 틱 끝에 반올림으로 정산합니다. 그래서 막히지 않은 조향 몸은
+            // 부동소수 오차(예: 32.9999…)와 무관하게 조향 끝점에 정확히 서고, 접촉한 몸도 내림 손실이 틱마다 쌓이지 않습니다.
+            if (!(B.flags[i] & DYNAMIC)) {
+                B.x[i] += Math.round(this.#fracX[i]);
+                B.y[i] += Math.round(this.#fracY[i]);
+                this.#fracX[i] = 0;
+                this.#fracY[i] = 0;
+            }
         }
         // 마지막 안전망: 궤적이 지형 cast를 피해 간 몸(반올림 등)도 제자리에서 복구합니다(원본 UnitMotion.constrain과 같은 식).
         for (let i = 0; i < N; i++) {
@@ -632,6 +645,7 @@ export class ContactSolver {
                 maxRadius = this.#radiusFP[i];
             }
         }
+        this.#separationGridFresh = false;
         this.#copyPositions();
         let soft = 0;
         for (let pass = 0; pass < this.#softPasses; pass++) {
@@ -688,6 +702,7 @@ export class ContactSolver {
         this.#sumX = new Int32Array(CAPACITY);
         this.#sumY = new Int32Array(CAPACITY);
         this.#counts = new Int32Array(CAPACITY);
+        this.#candidates = new Int32Array(CAPACITY);
         this.#head = new Int32Array(CAPACITY);
         this.#earliest = new Float64Array(CAPACITY);
         this.#capacity = CAPACITY;
@@ -797,12 +812,15 @@ export class ContactSolver {
         this.#head[b] = -1;
         this.#earliest[b] = Infinity;
     }
-    // 몸 b의 가장 이른 접촉(1e-9 창)이면 기록하고, 더 이르면 그전 기록을 버립니다.
-    #keep(b, t, i, j, nx, ny, key, obstacle) {
-        if (t < this.#earliest[b] - SAME_TIME) {
+    // 몸 b의 가장 이른 접촉(1e-9 창)이면 기록하고, 더 이르면 그전 기록을 버립니다. 시각은 cast 시작 시각(`#castNow`) +
+    // clamp(hit.t) · 남은 길이(`#castSpan`), 쌍(j ≥ 0)은 접촉 키 0·장애물 null입니다. 부동소수 값을 인자로 넘기지 않습니다(상자 할당).
+    #keep(b, i, j, hit) {
+        const TIME = this.#castNow + Math.max(0, Math.min(1, hit.t)) * this.#castSpan,
+            PAIR = j >= 0;
+        if (TIME < this.#earliest[b] - SAME_TIME) {
             this.#release(b);
-            this.#earliest[b] = t;
-        } else if (Math.abs(t - this.#earliest[b]) > SAME_TIME) {
+            this.#earliest[b] = TIME;
+        } else if (Math.abs(TIME - this.#earliest[b]) > SAME_TIME) {
             return;
         }
         if (this.#free < 0) {
@@ -810,15 +828,15 @@ export class ContactSolver {
         }
         const C = this.#free;
         this.#free = this.#cNext[C];
-        this.#cT[C] = t;
+        this.#cT[C] = TIME;
         this.#cI[C] = i;
         this.#cJ[C] = j;
-        this.#cNx[C] = nx;
-        this.#cNy[C] = ny;
-        this.#cKey[C] = key;
-        this.#cObstacle[C] = obstacle;
-        this.#cSortA[C] = j < 0 ? i : Math.min(i, j);
-        this.#cSortB[C] = j < 0 ? key : Math.max(i, j);
+        this.#cNx[C] = hit.nx;
+        this.#cNy[C] = hit.ny;
+        this.#cKey[C] = PAIR ? 0 : hit.key;
+        this.#cObstacle[C] = PAIR ? null : hit.obstacle;
+        this.#cSortA[C] = PAIR ? Math.min(i, j) : i;
+        this.#cSortB[C] = PAIR ? Math.max(i, j) : hit.key;
         this.#cNext[C] = this.#head[b];
         this.#head[b] = C;
     }
@@ -870,6 +888,7 @@ export class ContactSolver {
             DT = this.#dt,
             GRID = this.#grid;
         GRID.clear();
+        this.#separationGridFresh = false;
         this.#maxRadius = 0;
         this.#speedBound = 0;
         for (let i = 0; i < N; i++) {
@@ -890,11 +909,11 @@ export class ContactSolver {
             this.#head[i] = -1;
             this.#earliest[i] = Infinity;
             if (FLAGS & ACTIVE) {
-                GRID.insert(i, B.x[i] / FP, B.y[i] / FP);
+                GRID.insert(i, B.x[i], B.y[i]);
                 if (B.radius[i] > this.#maxRadius) {
                     this.#maxRadius = B.radius[i];
                 }
-                this.#speedBound = Math.max(this.#speedBound, Math.hypot(B.vx[i], B.vy[i]));
+                this.#speedBound = Math.max(this.#speedBound, Math.sqrt(B.vx[i] * B.vx[i] + B.vy[i] * B.vy[i]));
             }
         }
         // 기록 풀 전체를 빈 목록으로.
@@ -912,7 +931,7 @@ export class ContactSolver {
         this.#cursor = 0;
         this.#state = RUNNING;
         for (let i = 0; i < N; i++) {
-            this.#castBody(i, 0);
+            this.#castBody(i);
         }
     }
 
@@ -952,10 +971,10 @@ export class ContactSolver {
                 I = this.#cI[C],
                 J = this.#cJ[C];
             this.#involved[I] = STAMP;
-            this.#advance(I, first);
+            this.#advance(I);
             if (J >= 0) {
                 this.#involved[J] = STAMP;
-                this.#advance(J, first);
+                this.#advance(J);
             }
         }
         this.#lastI = -1;
@@ -978,19 +997,21 @@ export class ContactSolver {
         }
         for (let b = 0; b < N; b++) {
             if (RECAST[b] === STAMP) {
-                this.#advance(b, this.#now);
-                this.#castBody(b, this.#now);
+                this.#advance(b);
+                this.#castBody(b);
             }
         }
         this.#orderLength = 0;
         this.#cursor = 0;
     }
 
-    // 몸 i를 자기 시간 기준점에서 `time`까지 직선으로 옮깁니다. 격자 정수 위치 + 잔여 변위(동적 몸은 정수, 조향 몸은 소수).
-    #advance(i, time) {
+    // 몸 i를 자기 시간 기준점에서 지금 시각(`#now`)까지 직선으로 옮깁니다. 격자 정수 위치 + 잔여 변위(동적 몸은 정수, 조향
+    // 몸은 소수). 시각을 인자로 넘기지 않는 것은 인라인되지 않은 호출의 부동소수 인자가 틱마다 상자(HeapNumber)를 만들기 때문입니다.
+    #advance(i) {
         const B = this.#bodies,
-            ELAPSED = time - this.#base[i];
-        this.#base[i] = time;
+            TIME = this.#now,
+            ELAPSED = TIME - this.#base[i];
+        this.#base[i] = TIME;
         if (!(ELAPSED > 0) || !(B.flags[i] & ACTIVE)) {
             return;
         }
@@ -1037,23 +1058,30 @@ export class ContactSolver {
     }
     #normalX = 0;
     #normalY = 0;
+    // 지금 cast의 시작 시각과 남은 길이(초). #keep이 접촉 시각을 계산합니다.
+    #castNow = 0;
+    #castSpan = 0;
 
-    // 자기 시간 기준점 `now`에 있는 몸 i를 남은 틱 동안 cast해 가장 이른 접촉을 기록합니다: 표면, 그다음 SOLID 관계의 몸.
+    // 지금 시각(`#now`, 자기 시간 기준점)에 있는 몸 i를 남은 틱 동안 cast해 가장 이른 접촉을 기록합니다: 표면, 그다음 SOLID 관계의 몸.
     // 쌍은 (동적 몸, 상대)로 cast하고 둘 다 같은 종류면 작은 번호가 먼저입니다(어느 쪽이 cast하든 같은 식).
-    #castBody(i, now) {
-        const B = this.#bodies,
+    #castBody(i) {
+        const NOW = this.#now,
+            B = this.#bodies,
             FP = this.#fp,
             END = this.#dt;
         this.#release(i);
-        const SPAN = END - now,
+        const SPAN = END - NOW,
             FLAGS = B.flags[i];
         if (!(FLAGS & ACTIVE) || SPAN <= SAME_TIME) {
             return;
         }
         this.stats.casts++;
+        this.#castNow = NOW;
+        this.#castSpan = SPAN;
         const VX = B.vx,
             VY = B.vy,
-            SPEED = Math.hypot(VX[i], VY[i]);
+            // 속력은 후보 도달 거리의 상한에만 씁니다(Math.hypot은 인자·결과 상자를 만들어 sqrt로 둡니다. 결과 무관).
+            SPEED = Math.sqrt(VX[i] * VX[i] + VY[i] * VY[i]);
         if (SPEED > this.#speedBound) {
             this.#speedBound = SPEED;
         }
@@ -1067,16 +1095,24 @@ export class ContactSolver {
             this.#surface.cast(X, Y, DX, DY, B.radius[i], null, HIT) &&
             VX[i] * HIT.nx + VY[i] * HIT.ny < INWARD
         ) {
-            this.#keep(i, now + Math.max(0, Math.min(1, HIT.t)) * SPAN, i, -1, HIT.nx, HIT.ny, HIT.key, HIT.obstacle);
+            this.#keep(i, i, -1, HIT);
         }
         if (!(this.#pairsLeft > 0) || !(FLAGS & PAIRS)) {
             return;
         }
         // 다른 몸은 격자에 틱 시작 자리로 있고 그 뒤 최대 speedBound · END만큼 움직였습니다(격자 한 칸 반올림 여유 2/FP).
-        const REACH = SPEED * SPAN + this.#speedBound * END + B.radius[i] + this.#maxRadius + 2 / FP,
-            CANDIDATES = this.#grid.queryCircle(X, Y, REACH, this.#candidates);
+        // 도달 거리를 정수 격자로 올림해 질의합니다(후보가 늘 수만 있고 결과는 후보 순서·여분과 무관).
+        const REACH = Math.ceil((SPEED * SPAN + this.#speedBound * END + B.radius[i] + this.#maxRadius) * FP + 2),
+            CANDIDATES = this.#candidates,
+            COUNT = this.#grid.queryRectInto(
+                B.x[i] - REACH,
+                B.y[i] - REACH,
+                B.x[i] + REACH,
+                B.y[i] + REACH,
+                CANDIDATES,
+            );
         // 후보를 번호 순으로: 결과가 격자 칸 크기·칸 순서와 무관합니다.
-        for (let k = 1; k < CANDIDATES.length; k++) {
+        for (let k = 1; k < COUNT; k++) {
             const VALUE = CANDIDATES[k];
             let m = k - 1;
             while (m >= 0 && CANDIDATES[m] > VALUE) {
@@ -1091,7 +1127,7 @@ export class ContactSolver {
             BASE = this.#base,
             PAIR_HIT = this.#pairHit,
             DYNAMIC_I = FLAGS & DYNAMIC;
-        for (let k = 0; k < CANDIDATES.length; k++) {
+        for (let k = 0; k < COUNT; k++) {
             const J = CANDIDATES[k];
             if (J === i || !(B.flags[J] & PAIRS) || RELATIONS[ROW + B.group[J]] !== SOLID || this.#separated(i, J)) {
                 continue;
@@ -1099,10 +1135,10 @@ export class ContactSolver {
             const DYNAMIC_J = B.flags[J] & DYNAMIC,
                 A = (DYNAMIC_I ? 1 : 0) === (DYNAMIC_J ? 1 : 0) ? Math.min(i, J) : DYNAMIC_I ? i : J,
                 O = A === i ? J : i,
-                AX = B.x[A] / FP + VX[A] * (now - BASE[A]),
-                AY = B.y[A] / FP + VY[A] * (now - BASE[A]),
-                OX = B.x[O] / FP + VX[O] * (now - BASE[O]),
-                OY = B.y[O] / FP + VY[O] * (now - BASE[O]);
+                AX = B.x[A] / FP + VX[A] * (NOW - BASE[A]),
+                AY = B.y[A] / FP + VY[A] * (NOW - BASE[A]),
+                OX = B.x[O] / FP + VX[O] * (NOW - BASE[O]),
+                OY = B.y[O] / FP + VY[O] * (NOW - BASE[O]);
             if (
                 !SweptCircleContact.cast(
                     AX - OX,
@@ -1122,16 +1158,7 @@ export class ContactSolver {
                 PAIR_HIT.ny = this.#normalY / NORMAL_SCALE;
             }
             if ((VX[A] - VX[O]) * PAIR_HIT.nx + (VY[A] - VY[O]) * PAIR_HIT.ny < INWARD) {
-                this.#keep(
-                    i,
-                    now + Math.max(0, Math.min(1, PAIR_HIT.t)) * SPAN,
-                    A,
-                    O,
-                    PAIR_HIT.nx,
-                    PAIR_HIT.ny,
-                    0,
-                    null,
-                );
+                this.#keep(i, A, O, PAIR_HIT);
             }
         }
     }
@@ -1266,6 +1293,7 @@ export class ContactSolver {
         const B = this.#bodies,
             FP = this.#fp,
             RESULT = this.#motion;
+        this.#separationGridFresh = false;
         for (let i = 0; i < B.count; i++) {
             if (!(B.flags[i] & SEPARATE) || (B.x[i] === this.#stageX[i] && B.y[i] === this.#stageY[i])) {
                 continue;
@@ -1287,13 +1315,16 @@ export class ContactSolver {
     }
 
     #rebuildSeparationGrid() {
+        if (this.#separationGridFresh) {
+            return;
+        }
+        this.#separationGridFresh = true;
         const B = this.#bodies,
-            FP = this.#fp,
             GRID = this.#grid;
         GRID.clear();
         for (let i = 0; i < B.count; i++) {
             if (B.flags[i] & SEPARATE) {
-                GRID.insert(i, B.x[i] / FP, B.y[i] / FP);
+                GRID.insert(i, B.x[i], B.y[i]);
             }
         }
     }
@@ -1309,7 +1340,8 @@ export class ContactSolver {
             COUNTS = this.#counts,
             RELATIONS = this.#relations,
             GROUPS = this.#groups,
-            FRACTION = this.#softFraction;
+            FRACTION = this.#softFraction,
+            CANDIDATES = this.#candidates;
         this.#rebuildSeparationGrid();
         SUM_X.fill(0, 0, N);
         SUM_Y.fill(0, 0, N);
@@ -1318,14 +1350,16 @@ export class ContactSolver {
             if (!(B.flags[i] & SEPARATE)) {
                 continue;
             }
-            const CANDIDATES = this.#grid.queryCircle(
-                    B.x[i] / FP,
-                    B.y[i] / FP,
-                    (R[i] + maxRadius) / FP,
-                    this.#candidates,
+            const REACH = R[i] + maxRadius,
+                COUNT = this.#grid.queryRectInto(
+                    B.x[i] - REACH,
+                    B.y[i] - REACH,
+                    B.x[i] + REACH,
+                    B.y[i] + REACH,
+                    CANDIDATES,
                 ),
                 ROW = B.group[i] * GROUPS;
-            for (let k = 0; k < CANDIDATES.length; k++) {
+            for (let k = 0; k < COUNT; k++) {
                 const J = CANDIDATES[k];
                 if (J <= i || RELATIONS[ROW + B.group[J]] !== SOFT) {
                     continue;
@@ -1393,6 +1427,9 @@ export class ContactSolver {
                 moved++;
             }
         }
+        if (moved) {
+            this.#separationGridFresh = false;
+        }
         return moved;
     }
 
@@ -1443,7 +1480,8 @@ export class ContactSolver {
             RELATIONS = this.#relations,
             GROUPS = this.#groups,
             SEG_X = this.#segX,
-            SEG_Y = this.#segY;
+            SEG_Y = this.#segY,
+            CANDIDATES = this.#candidates;
         for (let i = 0; i < N; i++) {
             SEG_X[i] = B.x[i];
             SEG_Y[i] = B.y[i];
@@ -1456,16 +1494,16 @@ export class ContactSolver {
             if (!(B.flags[i] & SEPARATE)) {
                 continue;
             }
-            const REACH = (R[i] + maxRadius) / FP,
-                CANDIDATES = this.#grid.queryRect(
-                    B.x[i] / FP - REACH,
-                    B.y[i] / FP - REACH,
-                    B.x[i] / FP + REACH,
-                    B.y[i] / FP + REACH,
-                    this.#candidates,
+            const REACH = R[i] + maxRadius,
+                COUNT = this.#grid.queryRectInto(
+                    B.x[i] - REACH,
+                    B.y[i] - REACH,
+                    B.x[i] + REACH,
+                    B.y[i] + REACH,
+                    CANDIDATES,
                 ),
                 ROW = B.group[i] * GROUPS;
-            for (let k = 0; k < CANDIDATES.length; k++) {
+            for (let k = 0; k < COUNT; k++) {
                 const J = CANDIDATES[k];
                 if (J <= i || RELATIONS[ROW + B.group[J]] !== SOLID) {
                     continue;
@@ -1511,6 +1549,9 @@ export class ContactSolver {
             B.x[I] = Math.min(Math.max(B.x[I] + Math.trunc((nx * PEN) / NORMAL_SCALE), R[I]), WIDTH - R[I]);
             B.y[I] = Math.min(Math.max(B.y[I] + Math.trunc((ny * PEN) / NORMAL_SCALE), R[I]), HEIGHT - R[I]);
             changed++;
+        }
+        if (changed) {
+            this.#separationGridFresh = false;
         }
         return changed;
     }
