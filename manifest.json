@@ -59,7 +59,7 @@
     },
     {
       "file": "rollback.js",
-      "sha256": "af0bb6c422f1e81c304d161b56a896a7a7d1aeb52395bc38d171c7d89623ee4c"
+      "sha256": "0e01dd2a4541a199facfd31fb0db397fae0883a3b077840f4b8a1446ada513dd"
     },
     {
       "file": "camera.js",
@@ -96,6 +96,10 @@
     {
       "file": "geometry.js",
       "sha256": "27312d0997f521340ae2a49daee7dc22e4a8c3e5d6563df0b20fb9d6af1484fa"
+    },
+    {
+      "file": "contact-solver.js",
+      "sha256": "4b0e8f131d4136daf29546ee7e5c7123e9edc195ab2bd77df30857c31d272384"
     },
     {
       "file": "pixel-physics.js",
