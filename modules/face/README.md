@@ -1,5 +1,35 @@
 # face
 
+## 언제 쓰나
+
+- 몸마다 얼굴을 따로 그리지 않고, **몸 SVG의 소켓 점 세 개에 같은 표정 부품(눈·입·볼)을 얹고** 싶을 때. 표정 13가지(`FACE_IDS`)를 모듈이 정의합니다.
+- 작게 그릴 때는 구운 이미지, 크게 그릴 때는 경로로 같은 얼굴을 그리고 싶을 때(`FaceOverlay`·`drawFacePaths`).
+
+## 쓰는 모양
+
+```js
+// rally-frontier/src/main.js (줄임)
+this.grainFaces = new RallyGamekit.FaceOverlay(this.vectorContext, { faces: GRAIN_FACE_IDS });
+this.grainFaces.prepare(); // 자원 준비 때 한 번
+// 프레임마다: 몸을 그린 뒤 그 몸의 포즈된 소켓에 표정을 얹음
+C.drawVectorActor(grain.actor, { matrix: grain.matrix });
+this.grainFaces.draw(grain.compiled, grain.actor, grain.face, grain.matrix, 1);
+// 정리
+this.grainFaces.dispose();
+```
+
+경로 그리기 예: `rally-frontier/src/ui/grain-portrait.js`(`drawFacePaths(C, compiled, 'neutral')`).
+
+## 쓰지 말아야 할 때
+
+| 이런 일                                  | 대신                                                                            |
+| ---------------------------------------- | ------------------------------------------------------------------------------- |
+| 상태 → 표정 선택, 캐릭터별 표정, 진영 색 | 게임이 정합니다                                                                 |
+| 게임 고유 표정 등록                      | API가 없습니다. 필요하면 모듈의 정의 표에 추가합니다                            |
+| 몸 그림 자체                             | [vector-assets](../vector-assets/README.md)·[rendering](../rendering/README.md) |
+
+## 상세
+
 몸마다 얼굴을 따로 그리지 않고, **몸 SVG의 소켓 점 세 개에 모든 몸이 같은 표정 부품을 얹는** 모듈입니다. 표정 정의(눈·입·볼의 모양)는 이 모듈의 데이터이고, 어떤 몸이 언제 어떤 표정을 지을지는 게임이 정합니다.
 
 - 표정 13가지(`FACE_IDS`)는 눈 사이 거리를 1로 둔 단위로 한 번 정의하고, 몸은 점 세 개로 부품을 옮기고 키울 뿐입니다.

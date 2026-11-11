@@ -1,5 +1,41 @@
 # deterministic
 
+## 언제 쓰나
+
+- 시드 난수(`SeededPRNG`·`statelessRandom`)·고정소수점·바이트 hash(`hashBytes`)를 결정론으로 쓰고 싶을 때.
+- 게임 상태를 정규 바이트로 저장·비교하고 싶을 때(`createValueCodec`).
+- **저장→불러오기→재실행**으로 결정론이 깨지는 틱을 찾고 싶을 때(`runSyncTestAsync`·`createSyncTestSession`).
+
+## 쓰는 모양
+
+```js
+// bloom-takraw/src/presentation/impact.js (줄임): 틱·sequence로 시드를 만들어 양쪽이 같은 효과 난수
+import { SeededPRNG, statelessRandom } from '@bloom-gamekit/deterministic';
+const rng = new SeededPRNG(statelessRandom(this.seed, (payload.tick * 16 + payload.sequence) >>> 0));
+const unit = () => rng.nextUint32() / 4294967296;
+
+// rally-frontier/src/session/game-session.js (줄임): 기록한 입력으로 synctest
+const result = await RallyNetcode.runSyncTestAsync({
+    adapter,
+    players: replay.players,
+    inputSize: replay.inputSize,
+    tickRate: replay.tickRate,
+    initialTick: 0,
+    checkDistance: Math.max(1, Math.min(6, core.profile.rollbackWindowTicks)),
+    frames,
+});
+```
+
+## 쓰지 말아야 할 때
+
+| 이런 일                                  | 대신                                                         |
+| ---------------------------------------- | ------------------------------------------------------------ |
+| 기록한 경기를 처음부터 다시 재생         | [replay](../replay/README.md) `playReplay`                   |
+| 온라인 입력 확정·예측·롤백               | [rollback](../rollback/README.md)                            |
+| 두 상태에서 고른 필드만 사람이 읽게 비교 | [debug-tools](../debug-tools/README.md) `compareStateFields` |
+
+## 상세
+
 순수 난수·고정소수점·값 codec 및 실제 save/load 재실행 진단을 제공합니다. 네트워크나 렌더러를 초기화하지 않습니다.
 
 공개 API: `hashBytes, statelessRandom, SeededPRNG, PseudoRandomDistribution, fixedPoint, ByteBuffer, createValueCodec, binaryCodec, jsonCodec, createSyncTestSession, SyncTestSession, runSyncTest, runSyncTestAsync, DeterminismError`. 외부 import가 없는 `dist/deterministic.js` 하나로 사용할 수 있습니다. 도구 설치나 다른 모듈 초기화는 필요하지 않습니다.

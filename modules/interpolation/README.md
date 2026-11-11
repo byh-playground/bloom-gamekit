@@ -2,6 +2,37 @@
 
 **HTML 실행 프리뷰:** [interpolation](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/interpolation.html) · [interpolation-frame](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/interpolation-frame.html)
 
+## 언제 쓰나
+
+- 고정 tick 시뮬레이션의 결과를 **렌더 프레임 사이에서 부드럽게** 그리고 싶을 때. 새 snapshot이 와도 지금 그리던 곡선에서 이어 갑니다(continuous retarget).
+- 그려지는 객체의 필드별 보간 방식(위치·선형·각도 등)을 스키마 하나로 정하고 싶을 때(`RenderObject.renderSchema`).
+
+## 쓰는 모양
+
+```js
+// bloom-takraw/src/runtime.js (줄임)
+import { PresentationRuntime, RenderObject } from '@bloom-gamekit/interpolation';
+class BodyPose extends RenderObject {
+    static renderSchema = { x: this.POSITION_X, y: this.POSITION_Y, z: this.POSITION_Z, halfHeight: this.LINEAR };
+}
+presentation = new PresentationRuntime({ stepMs, delayMs: stepMs });
+// 틱마다
+presentation.capture(
+    { revision, sequence: ++presentationSequence, timeMs: tick * stepMs, mode: 'continuous', entities: poseEntities },
+    now,
+);
+// 렌더 프레임마다
+view.render(presentation.frame(now), latestView, now);
+```
+
+## 쓰지 말아야 할 때
+
+| 이런 일                                 | 대신                                                                     |
+| --------------------------------------- | ------------------------------------------------------------------------ |
+| 프레임 지연을 보정하려고 시뮬 dt 바꾸기 | 하지 않습니다. 고정 tick은 [simloop](../simloop/README.md)               |
+| 보간 결과로 권위 상태 덮어쓰기          | 하지 않습니다. 표현 전용입니다                                           |
+| 효과·소리를 같은 표시 시각에 맞추기     | [presentation-events](../presentation-events/README.md) `present(frame)` |
+
 ## RenderObject와 점 경로 표시 모델
 
 `RenderObject`는 그려지는 객체의 좁은 슈퍼클래스입니다. 타이머·입력·게임 규칙을 소유하지 않습니다. 하위 타입은 `static renderSchema`와 `render(context, model)`만 작성합니다. 스키마는 중첩 트리가 아니라 **필드 경로 → 상속된 보간 상수**의 1:1 맵입니다.

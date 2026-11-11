@@ -1,5 +1,35 @@
 # rendering
 
+## 언제 쓰나
+
+- WebGL 2로 많은 도형·스프라이트·벡터 메시를 **적은 draw로** 그리고 싶을 때(`WebGLDevice` + `VectorContext` + `PrimitivePainter`).
+- 공유 텍스처 아틀라스·스프라이트 애니메이션(`createSpriteAnimation`)·재질·그라디언트를 쓰고, context loss 뒤 자원을 복구하고 싶을 때.
+
+## 쓰는 모양
+
+```js
+// yarn-mayhem/src/main.js (줄임)
+const device = new WebGLDevice(canvas, { alpha: true, antialias: true, depth: false, stencil: false });
+const context = new VectorContext(device, {
+    mesh: { maxMeshes: 8, maxMeshBytes: 16 * 1024 * 1024, maxInstances: 2048 },
+});
+const shapes = new PrimitivePainter(context);
+// 프레임마다
+if (!context.beginFrame({ clearColor: [0, 0, 0, 0] })) return;
+camera.applyToContext(context);
+// shapes·drawVectorActor로 제출
+const renderingStats = context.endFrame();
+```
+
+## 쓰지 말아야 할 때
+
+| 이런 일                     | 대신                                            |
+| --------------------------- | ----------------------------------------------- |
+| 3D 장면                     | three.js 등 3D 엔진                             |
+| 게임 정렬·시간선·권위 상태  | 넣지 않습니다. 완성된 pose를 받아 제출만 합니다 |
+| SVG를 캐릭터·애니메이션으로 | [vector-assets](../vector-assets/README.md)     |
+| 투영·카메라                 | [camera](../camera/README.md)                   |
+
 ## GPU 포즈 수치 정밀도
 
 키프레임의 sine easing과 부품 회전은 같은 `poseSinCos`를 사용합니다. GLSL ES 3.00 §4.5.1은 내장 삼각함수의 정밀도를 보장하지 않습니다([원문](https://registry.khronos.org/OpenGL/specs/es/3.0/GLSL_ES_Specification_3.00.pdf)). Chromium SwiftShader에서는 그 오차가 SVG pivot을 거쳐 CPU 기준 부품 행렬과 약 0.037 단위 차이로 커졌습니다. 각도를 `[-π/2, π/2]`로 줄이고 sine 11차·cosine 12차 다항식으로 계산해 직접 GPU 평가와 GPU 행렬 캐시에 같은 계산을 적용합니다. CPU의 Float64 조회·시계·키프레임 계약은 그대로입니다.

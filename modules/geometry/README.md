@@ -1,5 +1,42 @@
 # geometry
 
+## 언제 쓰나
+
+- **원 하나를 벽·건물에 미끄러지며** 목표 쪽으로 움직이고 싶을 때(`ObstacleField` + `SurfaceMotion.solve`).
+- 점-다각형 포함, 점-선분 거리, 다각형 경계 상자 색인 같은 2D 기하 계산을 결정론으로 하고 싶을 때(`pointInSimplePolygon`·`pointPolylineDistance`·`BoundsIndex`).
+
+## 쓰는 모양
+
+```js
+// rally-frontier/src/sim/navigation.js (줄임)
+this.field = new ObstacleField({
+    width: this.geometry.width,
+    height: this.geometry.height,
+    fixedPoint: FP,
+    polygons: this.geometry.index,
+    circles: [],
+});
+this.surface = new SurfaceMotion(this.field, { sync: () => navigation.sync() });
+this.result = new MotionResult(); // 재사용 출력
+// 이동
+this.surface.solve(u.x, u.y, tx, ty, radius, null, mode, EntityKey.number(u.id), this.result);
+
+// rally-frontier/src/sim/terrain.js (줄임): 점이 시야 가림막 안인가
+const index = new BoundsIndex(this.visionBlocks);
+for (const b of index.query(x, y, x, y, 0)) if (pointInSimplePolygon(x, y, b.points)) return true;
+```
+
+## 쓰지 말아야 할 때
+
+| 이런 일                                 | 대신                                          |
+| --------------------------------------- | --------------------------------------------- |
+| 어디로 갈지(길찾기·거리장·목표 선택)    | [pathfield](../pathfield/README.md)           |
+| 유닛끼리의 충돌까지 한 틱에 풀기        | [contact-solver](../contact-solver/README.md) |
+| 많은 점 중 가까운 것만 찾기             | [spatial](../spatial/README.md)               |
+| 지형 높이·fog·투영 같은 게임별 geometry | 게임이 갖습니다                               |
+
+## 상세
+
 2D 기하 수학과 **원형 이동체가 정적 장애물에 닿았을 때의 접촉 해소**를 모은 순수 ESM 모듈입니다. 시간·난수·DOM을 읽지 않고 같은 입력이면 같은 부동소수 연산 순서로 같은 값을 돌려주므로 결정론 시뮬레이션 안에서 그대로 씁니다. 외부 import가 없는 단일 번들(`dist/geometry.js`)입니다.
 
 이 모듈은 **기하만** 계산합니다. 다음은 담지 않습니다.

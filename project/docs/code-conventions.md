@@ -7,7 +7,7 @@
 - `npm run format`: 작성한 소스·문서의 형식을 수정합니다.
 - `npm run format:check`: 형식 차이를 검사하고 파일을 수정하지 않습니다.
 - `npm run lint`: JavaScript와 HTML의 inline script를 검사하고 파일을 수정하지 않습니다.
-- `npm run check`: 형식과 lint를 함께 검사합니다.
+- `npm run check`: 형식과 lint를 함께 검사하고, `project/check-module-index.mjs`로 루트 README의 "하려는 일 → 모듈" 표가 `modules/` 아래 모든 공개 모듈(`_` 내부 폴더 제외)을 링크하는지와 상대 링크 대상이 있는지 확인합니다.
 - `npm run build`: `prebuild`에서 같은 검사를 통과한 뒤 독립 모듈을 빌드합니다. 기존 CI의 검사·재빌드 모두 이 경로를 사용합니다.
 
 검사 실패를 CI에서 자동 수정하거나 규칙 전체를 끄지 않습니다. Node 22.13 이상 또는 24 이상을 사용합니다. 도구 버전은 lockfile로 고정합니다. `dist`, 의존 패키지, 생성 코드, 검사 결과, 폰트 산출물과 보존 provenance 자료는 작성 코드 검사의 대상이 아닙니다.

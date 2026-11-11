@@ -1,5 +1,36 @@
 # object-pool
 
+## 언제 쓰나
+
+- 이펙트·임시 객체를 **프레임마다 새로 만들지 않고** 미리 만든 것을 빌려 쓰고 돌려주고 싶을 때. 한 객체는 한 번에 한 소유자만 갖습니다.
+
+## 쓰는 모양
+
+```js
+// bloom-takraw/src/presentation/impact.js (줄임)
+import { ObjectPool } from '@bloom-gamekit/object-pool';
+this.pool = new ObjectPool(
+    () => this.createNode(),
+    (node) => this.resetNode(node),
+    16,
+);
+// 효과 시작
+const node = this.pool.acquire();
+// 효과 끝
+this.pool.release(node);
+```
+
+다른 예: `rally-frontier/src/main.js`(`new RallyGamekit.ObjectPool(makeCombatFx, resetCombatFx, 256)`), `budmori-io/src/render/combat-feel.js`.
+
+## 쓰지 말아야 할 때
+
+| 이런 일                                | 대신                                                                                    |
+| -------------------------------------- | --------------------------------------------------------------------------------------- |
+| 롤백에도 한 번만 나야 하는 효과의 수명 | [presentation-events](../presentation-events/README.md) (풀은 그 adapter 안에서 씁니다) |
+| typed array 버퍼·시간·렌더러 정책      | 소유하지 않습니다                                                                       |
+
+## 상세
+
 Rally의 `ReusableObjectPool`에서 추출한 독립 ESM 객체 재사용 코어입니다. 게임별 VFX, 시간, 렌더러, 이력, typed buffer 정책은 소유하지 않습니다.
 
 ```js

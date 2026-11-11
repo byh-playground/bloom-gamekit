@@ -2,6 +2,33 @@
 
 **HTML 실행 프리뷰:** [navigation](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/navigation.html)
 
+## 언제 쓰나
+
+- 화면 전환을 **해시 주소(`#/화면/항목?옵션`)와 브라우저 뒤로 가기**에 맞추고 싶을 때. 직접 주소로 안쪽 화면을 열고, 새로고침해도 같은 화면이 열립니다.
+
+## 쓰는 모양
+
+```js
+// meow-tumble/src/main.js (줄임)
+const navigation = createNavigation({
+    normalize: (route) => ({ screen: SCREENS.includes(route.screen) ? route.screen : 'main' }),
+});
+navigation.subscribe(renderMenu); // (route, { previous, source })
+button.addEventListener('click', () => navigation.navigate({ screen: button.dataset.route })); // 이력 추가
+navigation.replace({ screen: 'play' }); // 이력 없이 교체
+navigation.snapshot().screen;
+```
+
+## 쓰지 말아야 할 때
+
+| 이런 일                         | 대신                                                       |
+| ------------------------------- | ---------------------------------------------------------- |
+| 임의 깊이의 URL 라우터          | 화면·항목 두 구간만 다룹니다                               |
+| 구독 안에서 구매·전투 명령 실행 | 하지 않습니다. 명령은 게임의 명령 경로로 보냅니다          |
+| 디버그 장면을 주소로 열기       | [debug-tools](../debug-tools/README.md) `installDebugHost` |
+
+## 상세
+
 독립 `navigation.js`는 해시 화면과 브라우저 이력을 소유합니다. UI·포커스·스크롤·게임 입력·구매 명령은 소비자가 소유합니다.
 
 ## API

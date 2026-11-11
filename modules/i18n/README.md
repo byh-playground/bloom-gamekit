@@ -1,5 +1,32 @@
 # i18n
 
+## 언제 쓰나
+
+- 페이지 언어를 읽을 때 한 번 정하고(`?lang=` → 저장한 선택 → 브라우저 언어 → `fallback`), 화면 문구를 여러 언어로 내고 싶을 때. 문구는 키 사전 대신 모든 언어를 한 객체에 나란히 둔 TextPair입니다.
+
+## 쓰는 모양
+
+```js
+// bloom-takraw/src/i18n/locale.js
+import { createLocale } from '@bloom-gamekit/i18n';
+const query = new URLSearchParams(location.search);
+const LOCALE = createLocale({
+    locales: ['ko', 'en'],
+    fallback: 'en',
+    storageKey: 'bloom-takraw-locale',
+    isolated: query.get('showcaseDemo') === '1' || query.has('debug'), // 시연·디버그는 저장값을 읽거나 쓰지 않음
+});
+```
+
+## 쓰지 말아야 할 때
+
+| 이런 일                       | 대신                                    |
+| ----------------------------- | --------------------------------------- |
+| 실행 중 언어를 바꿔 다시 번역 | 경로가 없습니다. 저장 후 새로고침합니다 |
+| 번역 키 사전 파일             | 쓰지 않습니다. 문구는 TextPair로 둡니다 |
+
+## 상세
+
 페이지 언어 결정과 화면 문구를 맡는 순수 ESM 모듈입니다. 문구 원본은 TextPair로, 모든 지원 언어를 한 객체에 나란히 둡니다. 번역 사전 파일과 키 문자열이 따로 없습니다. 언어는 페이지를 읽을 때 한 번 정합니다. 바꾸면 저장한 뒤 새로고침하므로 실행 중 다시 번역하는 경로가 없습니다.
 
 ```js

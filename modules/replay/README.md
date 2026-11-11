@@ -1,5 +1,30 @@
 # replay
 
+## 언제 쓰나
+
+- rollback 세션이 기록한 경기(`session.exportReplay()`)를 같은 게임 adapter로 **처음부터 다시 실행해 최종 tick·hash를 확인**하고 싶을 때.
+
+## 쓰는 모양
+
+쓰는 게임이 아직 없습니다. [rollback 브라우저 시험](../rollback/tests/browser.html)에서 줄였습니다.
+
+```js
+import { playReplay } from '../../../dist/replay.js';
+const REPLAY = session.exportReplay();
+const RESULT = playReplay({ adapter: adapterFor(new Int32Array(8)), replay: REPLAY });
+if (RESULT.hash !== REPLAY.hash) throw new Error('replay mismatch');
+```
+
+## 쓰지 말아야 할 때
+
+| 이런 일                               | 대신                                                           |
+| ------------------------------------- | -------------------------------------------------------------- |
+| 저장→불러오기 반복으로 깨지는 틱 찾기 | [deterministic](../deterministic/README.md) `runSyncTestAsync` |
+| 리플레이 탐색 UI                      | [debug-tools](../debug-tools/README.md) `ReplayTimeline`       |
+| 게임 안 시연 재생                     | [scenario](../scenario/README.md)                              |
+
+## 상세
+
 기존 replay를 같은 게임 adapter로 재생하고 최종 tick/hash를 반환합니다. 기록은 rollback session의 exportReplay()가 소유합니다.
 
 공개 API: `playReplay`. 외부 import가 없는 `dist/replay.js` 하나로 사용할 수 있습니다. 도구 설치나 다른 모듈 초기화는 필요하지 않습니다.

@@ -1,5 +1,38 @@
 # input
 
+## 언제 쓰나
+
+- 키보드·마우스·터치·펜 이벤트를 `left`·`jump` 같은 **게임 액션**으로 정리하고, 눌림 edge를 tick이 소비할 때까지 유지하고 싶을 때.
+- 포커스 상실·창 숨김 때 눌린 입력을 한 번에 해제하고 싶을 때.
+
+## 쓰는 모양
+
+```js
+// bloom-takraw/src/runtime.js (줄임)
+actions = new ActionState();
+device = createDOMInput({
+    target: ui.canvas,
+    state: actions,
+    keys: { KeyA: 'left', KeyD: 'right', KeyW: 'forward', KeyS: 'back', Space: 'jump' },
+    pointerButtons: { 0: 'kick', 2: 'cameraOrbit' },
+    touchAction: 'none',
+});
+// 틱마다
+for (const name of actionNames) actions.sampleInto(name, samples[name]);
+// 명령을 모두 수집한 뒤
+actions.consume();
+```
+
+## 쓰지 말아야 할 때
+
+| 이런 일                              | 대신                                                                    |
+| ------------------------------------ | ----------------------------------------------------------------------- |
+| 장치 이벤트에서 바로 시뮬레이션 실행 | 게임 또는 [rollback](../rollback/README.md)의 입력 제출 경계로 넘깁니다 |
+| 고정 tick 스케줄                     | [simloop](../simloop/README.md)                                         |
+| 화면 좌표 → 월드 좌표                | [camera](../camera/README.md)                                           |
+
+## 상세
+
 키보드·마우스·터치·펜 이벤트를 게임 액션으로 정리하는 독립 JavaScript ESM 모듈입니다. `ActionState`는 DOM 없이 Node에서도 사용하며 `createDOMInput`만 DOM을 사용합니다. 다른 gamekit 모듈 초기화는 필요 없습니다.
 
 게임의 명령 큐·sequence·simulation tick·월드 좌표·권위 상태·pause 정책을 소유하지 않습니다. 장치 이벤트에서 바로 시뮬레이션을 실행하지 마세요. 게임 또는 rollback SDK가 정한 입력 제출 경계로 넘깁니다.

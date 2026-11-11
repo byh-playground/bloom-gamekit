@@ -2,6 +2,44 @@
 
 **HTML 실행 프리뷰:** [pixel-physics](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/pixel-physics.html) · [pixel-physics-open-world](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/pixel-physics-open-world.html) · [pixel-physics-side-battle](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/pixel-physics-side-battle.html)
 
+## 언제 쓰나
+
+- 모래·물·돌 같은 **픽셀 셀 재료**가 흐르고 무너지는 월드에, 플레이어·몬스터 같은 엔티티와 Matter.js 강체를 함께 돌리고 싶을 때.
+- 그 월드를 저장·불러오기 하고 싶을 때(`savePixelWorld`·`loadPixelWorld`).
+
+## 쓰는 모양
+
+쓰는 게임이 아직 없습니다. [플랫포머 예제](./examples/index.html)에서 줄였습니다.
+
+```js
+import { PixelWorld, Body, MatterBridge, PixelRenderer } from '/dist/pixel-physics.js';
+const WORLD = new PixelWorld(200, 120, { seed: 7 });
+WORLD.define({ name: 'bedrock', kind: 'solid', color: [60, 62, 70], indestructible: true });
+const R = new PixelRenderer(canvas, WORLD, { overlay: document.getElementById('o') });
+const DT = 1000 / 60; // 고정 틱 + 렌더 보간
+function frame(t) {
+    acc += Math.min(100, t - last);
+    last = t;
+    while (acc >= DT) {
+        update(); // 게임 규칙 뒤 WORLD.tick()
+        acc -= DT;
+    }
+    R.draw(drawActor, drawOverlay);
+    requestAnimationFrame(frame);
+}
+```
+
+고정 시나리오: `npm run test:pixel-physics`.
+
+## 쓰지 말아야 할 때
+
+| 이런 일                                | 대신                                          |
+| -------------------------------------- | --------------------------------------------- |
+| 원형 유닛 무리의 결정론 충돌           | [contact-solver](../contact-solver/README.md) |
+| 게임 규칙·재료 구성·플레이어·실행 루프 | 예제에만 있습니다. 게임이 갖습니다            |
+
+## 상세
+
 사용자가 제공한 단일 HTML의 픽셀 셀 물리·엔티티·Matter.js 강체 연동을 독립 ESM으로 이전했습니다. [원본과 변경 범위](./docs/provenance/README.md), [플랫포머 예제 소스](./examples/index.html)를 함께 보세요. 게임 규칙·재료·플레이어·몬스터·입력과 실행 루프는 예제에만 있습니다.
 
 ```js

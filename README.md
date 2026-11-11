@@ -1,51 +1,122 @@
 # bloom-gamekit
 
-**SVG vector and authored yarn/sketch style example:** [vector-assets](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/vector-assets.html)
-
-**HTML 실행 프리뷰:** [pixel-physics](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/pixel-physics.html) · [pixel-physics-open-world](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/pixel-physics-open-world.html) · [interpolation](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/interpolation.html) · [interpolation-frame](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/interpolation-frame.html) · [simloop-input-preview](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/simloop-input-preview.html) · [audio](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/audio.html) · [navigation](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/navigation.html) · [rendering](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rendering.html) · [rollback-availability](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rollback-availability.html) · [rollback-reference](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rollback-reference.html) · [scenario](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/scenario.html) · [work-scheduler](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/work-scheduler.html) · [bm](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/bm.html) · [pixel-physics-side-battle](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/pixel-physics-side-battle.html)
-
 브라우저 게임에서 공통으로 쓰는 보간·렌더링·입력·실행·결정론·전송·리플레이·롤백 기능을 독립 모듈로 개발하는 저장소입니다. 필요한 기능만 골라 조합하며, 게임 전체를 소유하는 범용 엔진 클래스는 만들지 않습니다.
 
 **모든 공개 기능은 plain JavaScript ESM입니다.** 소비자는 필요한 파일만 가져갑니다. `pixel-physics`는 소유 모듈에서 정의한 Matter 웹 URL을 import하며 엔진 소스를 포함하지 않습니다. 그 외 모듈은 외부 runtime import나 공유 chunk를 요구하지 않습니다. 보간은 pose, WebGL renderer/device는 GPU 제출·자원, input은 장치 이벤트/action, simloop는 실행 스케줄, camera는 투영·충돌 boom 거리 표현, presentation-events는 표현 자원, hud는 화면 anchor, debug-tools는 진단, audio는 실제 오디오 자원과 재생 예산을 소유합니다. 결정론·전송·리플레이·rollback은 기존 SDK 구현을 책임별로 분리했으며, 이전 후 수정 이력은 SDK 출처 문서에 구분해 기록합니다.
 
-## 시작하기
+## 하려는 일 → 모듈
 
-- [픽셀 재료·강체 물리와 플랫포머 예제](./modules/pixel-physics/README.md) · `npm run test:pixel-physics`
+기능이나 검증·측정 수단(장면 재현·캡처·리플레이·계측)을 새로 만들기 전에 이 표를 먼저 봅니다. 맞는 모듈이 모자라면 게임에서 우회하지 않고 모듈을 고칩니다([공통 규칙 AI-021·AI-009](https://github.com/byh-playground/bloom-reference/blob/main/rules/ai-development.html#module-first)). 사용법의 원본은 각 모듈 README 첫머리(언제 쓰나 · 쓰는 모양 · 쓰지 말아야 할 때)이고, 게임별 실제 사용은 각 게임의 AGENTS.md에 있습니다. 새 모듈을 추가하면 이 표에 행을 넣습니다(`npm run check`가 빠진 모듈을 잡습니다).
 
-- [해시 화면과 브라우저 이력](./modules/navigation/README.md) · [격리 시나리오 재생](./modules/scenario/README.md) · `npm run test:execution`
+"쓰는 게임"은 저장소 이름입니다. 쌀콩팡 = `rally-frontier`, 발배구 = `bloom-takraw`. 비어 있으면 아직 쓰는 게임이 없습니다.
 
-- [보간 API·시간·생명주기 계약](./modules/interpolation/README.md)
-- [WebGL 2 렌더링 API·texture·생명주기](./modules/rendering/README.md)
-- [SVG 원본의 브라우저 시작 시점 검증·컴파일·캐시](./modules/vector-assets/README.md#build-and-runtime)
-- [Web Audio 재생·음량·confirmed SFX adapter](./modules/audio/README.md) · [실제 합성·출력 예제](./modules/audio/examples/index.html) · `npm run test:audio`
-- [객체 풀 API·단일 소유권·반납 계약](./modules/object-pool/README.md)
-- [2D 기하 수학과 원형 이동체의 접촉 해소(지형·길찾기 정책 없음)](./modules/geometry/README.md) · [기하 탭 바로 보기](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/work-scheduler.html#tab=geometry) · `node modules/geometry/tests/geometry.e2e.mjs`
-- [예산 기반 접촉 해소: 지형은 항상 풀고 몸끼리는 스텝 예산만큼, 넘친 쌍은 겹침 풀기로](./modules/contact-solver/README.md) · [접촉 탭 바로 보기](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/work-scheduler.html#tab=contacts) · `node modules/contact-solver/tests/contact-solver.e2e.mjs`
-- [입력 action·DOM·tick 소비 계약](./modules/input/README.md)
-- [고정 실행과 선택적 detached local input preview](./modules/simloop/README.md) · [카메라·표현 이벤트](./modules/presentation-events/README.md) · [HUD](./modules/hud/README.md) · [진단](./modules/debug-tools/README.md) · [카메라](./modules/camera/README.md)
-- [비긴급 작업의 고정 tick 예산·재개 API](./modules/work-scheduler/README.md)
-- [행동 결정(행동트리)과 실행 단계(상태 기계)](./modules/behavior/README.md) · [행동 탭 바로 보기](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/work-scheduler.html#tab=behavior)
-- [결정론 균일 격자: 점 항목 후보·최근접 고리 탐색, 사각형 항목 겹침 쌍, 질의 순서 계약](./modules/spatial/README.md) · `node modules/spatial/tests/spatial.e2e.mjs`
-- [정수 비용 격자 청크 + 포털 계층 길찾기: 포털 그래프·계층 유동장·A* 경로, 통과 판정은 호출자가 줌](./modules/pathfield/README.md) · [포털 탭 바로 보기](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/work-scheduler.html#tab=portal) · `node modules/pathfield/tests/pathfield.e2e.mjs`
-- [칸 격자 시야: 높이 층·막힌 칸 위에서 관찰자가 비추는 칸을 세고 바뀐 관찰자만 다시 칠함](./modules/vision/README.md) · [시야 탭 바로 보기](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/work-scheduler.html#tab=vision) · `node modules/vision/tests/vision.e2e.mjs`
-- [얼굴 표정: 몸 SVG의 소켓 점 세 개에 같은 표정 부품을 얹고, 작게는 구운 이미지로 크게는 경로로 그리기](./modules/face/README.md) · [표정 탭 바로 보기](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rendering.html#face) · `node modules/face/tests/face.e2e.mjs`
-- [광고 어댑터 추상화·빈도 정책](./modules/bm/README.md) · [mock 어댑터](./modules/bm/adapters/mock/README.md) · [Google H5 Games Ads 어댑터와 신청 절차](./modules/bm/adapters/google-ads/README.md) · [IMA 영상 광고 어댑터(샘플 태그로 승인 없이 테스트)](./modules/bm/adapters/ima/README.md)
-- [상품·구매와 서버 확인 기준 소유 판정](./modules/store/README.md) · [mock 어댑터](./modules/store/adapters/mock/README.md)
-- [게임 저장 레코드: 이관·검증·탭 간 충돌, 저장소 어댑터](./modules/save/README.md)
-- [게임 지표 수집: 세션·플레이 시간·이벤트·경기 결정론 기록, Cloudflare Workers + D1 수집 서버](./modules/metrics/README.md) · [지표 탭 바로 보기](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/bm.html#tab=metrics) · `node modules/metrics/tests/metrics.e2e.mjs`
-- [PWA: SVG 하나에서 manifest·아이콘·공유 이미지·sw.js 생성, 새로고침마다 최신 버전과 오프라인 시작](./modules/pwa/README.md) · `node modules/pwa/tests/pwa.e2e.mjs`
-- [시작 로딩: 모듈 그래프 목록·병렬 modulepreload·단계 가중 전체 진행률](./modules/boot/README.md) · `node modules/boot/tests/boot.e2e.mjs`
-- [다국어: 페이지 언어 결정·TextPair 문구·정적 문구 적용](./modules/i18n/README.md) · `node modules/i18n/tests/i18n.e2e.mjs`
-- [성장 트리: requires만 적으면 자동 배치·상태 4종·상세·조건 칩·`#/tech/:id`·넘치면 줌/팬 패널](./modules/tech-tree/README.md) · `node modules/tech-tree/tests/tech-tree.e2e.mjs`
-- [동적 방·공개 입장·새로고침 복구](./modules/rollback/README.md) · [Nostr 디렉터리·전송](./modules/transport/README.md) · [1:1 방 연결과 재연결](./modules/transport/README.md#11-방-연결과-재연결-createnostrroom)
-- [SDK 전체/분리 API와 이전](./modules/rollback/docs/api-migration.md)
-- [비활성 참가자·가용성 정책·자동 coordinator 이관](./modules/rollback/README.md#비활성-참가자와-선택형-가용성) · [독립 deadline pump 예제](./modules/rollback/examples/availability/index.html)
-- [실제 독립 번들을 연결하는 보간 예제](./modules/interpolation/examples/index.html) · [detached 입력 preview 예제](./modules/simloop/examples/input-preview/index.html) · [렌더링 예제: 벡터·아틀라스·재질·그라디언트·표정 탭](./modules/rendering/examples/index.html)
-- [고정 브라우저 E2E](./project/tests/browser.e2e.mjs) · [별도 보간 벤치마크](./modules/interpolation/scripts/benchmark.mjs)
+### 검증·재현·계측
+
+| 하려는 일                                                                                    | 모듈                                                                                                                     | 바로 보기              | 쓰는 게임                                                |
+| -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ---------------------- | -------------------------------------------------------- |
+| 같은 장면을 주소 한 줄(`?debug=1&scene=…&tick=N`)로 열어 확인·캡처하고, 작업 전후를 비교한다 | [debug-tools](./modules/debug-tools/README.md) `installDebugHost` + 장면 실행은 [scenario](./modules/scenario/README.md) |                        | rally-frontier, bloom-takraw                             |
+| 카드·타이틀·도움말 안에서 격리된 실제 게임 실행을 재생한다                                   | [scenario](./modules/scenario/README.md) `createScenario`·`createScenarioSurface`                                        | [scenario][p-scenario] | rally-frontier, budmori-io, bloom-bounko                 |
+| 공개 게임 소개(전체 화면 iframe 시연)를 붙인다                                               | [scenario](./modules/scenario/README.md) `installShowcase`                                                               | [scenario][p-scenario] | meow-tumble, squish-born, yarn-mayhem, bloom-sketch-town |
+| 기록한 경기를 같은 결과로 다시 재생해 최종 hash를 맞춰 본다                                  | [replay](./modules/replay/README.md) `playReplay` (기록은 rollback `exportReplay`)                                       |                        |                                                          |
+| 저장→불러오기→재실행으로 결정론이 깨지는 틱을 찾는다(synctest)                               | [deterministic](./modules/deterministic/README.md) `runSyncTestAsync`                                                    |                        | rally-frontier                                           |
+| 두 상태에서 고른 필드만 비교한다                                                             | [debug-tools](./modules/debug-tools/README.md) `compareStateFields`                                                      |                        |                                                          |
+| 프레임·단계별 CPU 시간과 카운터를 잰다                                                       | [debug-tools](./modules/debug-tools/README.md) `FrameMetrics`·`PerformanceProfiler`                                      |                        | budmori-io                                               |
+| 오류를 모아 복사 가능한 진단 문서로 보여 준다                                                | [debug-tools](./modules/debug-tools/README.md) `DiagnosticRing`·`copyDiagnostic`                                         |                        | bloom-takraw                                             |
+| 리플레이를 앞뒤로 탐색·재생하는 조작을 붙인다                                                | [debug-tools](./modules/debug-tools/README.md) `ReplayTimeline`                                                          |                        | rally-frontier                                           |
+
+### 시뮬레이션
+
+| 하려는 일                                                      | 모듈                                                                           | 바로 보기                                                        | 쓰는 게임                                                    |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------- | ------------------------------------------------------------ |
+| 고정 틱으로 시뮬을 돌리고 렌더와 분리한다                      | [simloop](./modules/simloop/README.md) `createLoop`                            | [simloop-input-preview][p-simloop]                               | rally-frontier, bloom-takraw, budmori-io, yarn-mayhem 등 9개 |
+| 가까운 것만 찾는다(주변 유닛 후보, 겹치는 상자 쌍)             | [spatial](./modules/spatial/README.md) `UniformGrid`·`BoundsGrid`              |                                                                  | rally-frontier                                               |
+| 유닛끼리·벽과의 충돌을 푼다                                    | [contact-solver](./modules/contact-solver/README.md) `ContactSolver`           | [접촉 탭][p-contacts]                                            | rally-frontier                                               |
+| 원 하나를 벽에 미끄러지며 움직인다, 점·선분·다각형 거리를 잰다 | [geometry](./modules/geometry/README.md) `SurfaceMotion`·`ObstacleField`       | [기하 탭][p-geometry]                                            | rally-frontier                                               |
+| 여러 유닛이 같은 목표로 길을 찾는다                            | [pathfield](./modules/pathfield/README.md) `PortalGraph`·`FlowField`           | [포털 탭][p-portal]                                              | rally-frontier                                               |
+| 유닛 하나의 경로(웨이포인트)를 찾고 따라간다                   | [pathfield](./modules/pathfield/README.md) `RouteFinder`                       | [포털 탭][p-portal]                                              | rally-frontier                                               |
+| 시야·안개(이 자리의 대상이 보이는가)를 정한다                  | [vision](./modules/vision/README.md) `VisionMap`·`VisionField`                 | [시야 탭][p-vision]                                              | rally-frontier                                               |
+| AI가 지금 무엇을 할지 고르고, 시작한 동작의 단계를 진행한다    | [behavior](./modules/behavior/README.md) `BehaviorTree`·`StateMachine`         | [행동 탭][p-behavior]                                            | budmori-io                                                   |
+| 무거운 탐색을 틱마다 정해진 양씩 나눠 처리한다                 | [work-scheduler](./modules/work-scheduler/README.md) `createBudgetedScheduler` | [작업 예산 탭][p-budget]                                         | budmori-io                                                   |
+| 시드 난수·고정소수점·상태 직렬화를 결정론으로 한다             | [deterministic](./modules/deterministic/README.md)                             |                                                                  | rally-frontier, bloom-takraw, budmori-io, meow-tumble        |
+| 모래·물 같은 픽셀 재료와 강체를 한 월드에서 돌린다             | [pixel-physics](./modules/pixel-physics/README.md) `PixelWorld`                | [플랫포머][p-pp] · [오픈 월드][p-pp-open] · [옆 전투][p-pp-side] |                                                              |
+
+### 온라인
+
+| 하려는 일                                            | 모듈                                                                                  | 바로 보기                                                   | 쓰는 게임                                                             |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------- | ----------------------------------------------------------- | --------------------------------------------------------------------- |
+| 온라인 대전(입력 예측·롤백·복구)을 한다              | [rollback](./modules/rollback/README.md) `createSession`·`createRoomSession`          | [rollback-reference][p-rb-ref] · [availability][p-rb-avail] | rally-frontier, bloom-takraw, meow-tumble, bloom-digmori              |
+| 방을 만들고 참가해 P2P로 연결한다                    | [transport](./modules/transport/README.md) `createNostrRoom`·`createNostrDynamicRoom` |                                                             | rally-frontier, bloom-takraw, meow-tumble, yarn-mayhem, bloom-digmori |
+| 온라인 입력을 로컬에서 먼저 보여 준다(예측 미리보기) | [simloop](./modules/simloop/README.md) `LocalInputPreview`                            | [simloop-input-preview][p-simloop]                          |                                                                       |
+
+### 입력·표현
+
+| 하려는 일                                         | 모듈                                                                                                     | 바로 보기                                                  | 쓰는 게임                                                          |
+| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------ |
+| 키보드·마우스·터치를 게임 액션으로 바꾼다         | [input](./modules/input/README.md) `ActionState`·`createDOMInput`                                        | [interpolation][p-interp]                                  | rally-frontier, bloom-takraw, yarn-mayhem, meow-tumble 등 8개      |
+| 틱 사이를 부드럽게 그린다(보간)                   | [interpolation](./modules/interpolation/README.md) `PresentationRuntime`·`RenderObject`                  | [interpolation][p-interp] · [frame][p-interp-frame]        | rally-frontier, bloom-takraw, budmori-io, yarn-mayhem 등 8개       |
+| WebGL 2로 도형·스프라이트·벡터를 그린다           | [rendering](./modules/rendering/README.md) `WebGLDevice`·`VectorContext`                                 | [rendering][p-rendering]                                   | rally-frontier, budmori-io, squish-born, yarn-mayhem, bloom-bounko |
+| SVG 원본을 그대로 캐릭터·애니메이션으로 그린다    | [vector-assets](./modules/vector-assets/README.md) `createVectorActor`                                   | [vector-assets][p-vector] · [래스터 비교][p-vector-raster] | rally-frontier, budmori-io, squish-born, yarn-mayhem, bloom-bounko |
+| 게임 시작 때 SVG를 검증·컴파일해 불러온다         | [vector-assets-loader](./modules/vector-assets-loader/README.md) `createVectorAssetLoader`               |                                                            | rally-frontier, budmori-io, squish-born, yarn-mayhem, bloom-bounko |
+| 캐릭터 얼굴에 표정을 얹는다                       | [face](./modules/face/README.md) `FaceOverlay`                                                           | [표정 탭][p-face]                                          | rally-frontier                                                     |
+| 카메라 투영·추적·흔들림, 3D 카메라의 벽 충돌 거리 | [camera](./modules/camera/README.md) `CameraViewport`·`CollisionBoom`                                    |                                                            | rally-frontier, yarn-mayhem, bloom-bounko, meow-tumble             |
+| 타격 이펙트·효과음을 롤백·재확정에도 한 번만 낸다 | [presentation-events](./modules/presentation-events/README.md) `PresentationEventQueue`                  |                                                            | rally-frontier, bloom-takraw, meow-tumble, bloom-digmori           |
+| 월드 위치에 이름표·체력 같은 화면 요소를 붙인다   | [hud](./modules/hud/README.md) `resolveAnchorInto`·`DOMHud`                                              | [interpolation][p-interp]                                  | rally-frontier                                                     |
+| 프레임마다 임시 객체를 안 만들고 재사용한다       | [object-pool](./modules/object-pool/README.md) `ObjectPool`                                              |                                                            | rally-frontier, bloom-takraw, budmori-io                           |
+| 효과음·환경음을 음량·재생 예산 안에서 낸다        | [audio](./modules/audio/README.md) `AudioPlayer` · [합성·출력 예제](./modules/audio/examples/index.html) | [audio][p-audio]                                           | bloom-takraw, yarn-mayhem, bloom-bounko                            |
+
+### 화면·운영
+
+| 하려는 일                                                      | 모듈                                                                                                                                                                                             | 바로 보기                  | 쓰는 게임                                                                     |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------- | ----------------------------------------------------------------------------- |
+| 화면 전환을 주소(`#/화면/항목`)와 뒤로 가기로 다룬다           | [navigation](./modules/navigation/README.md) `createNavigation`                                                                                                                                  | [navigation][p-navigation] | rally-frontier, meow-tumble, bloom-bounko                                     |
+| 업그레이드·연구 트리 화면을 만든다                             | [tech-tree](./modules/tech-tree/README.md) `createTechTree`                                                                                                                                      | [tech-tree][p-tech-tree]   |                                                                               |
+| 저장·불러오기(이관·검증·탭 간 충돌)                            | [save](./modules/save/README.md) `createSave`                                                                                                                                                    |                            | bloom-takraw, budmori-io, squish-born, yarn-mayhem, bloom-bounko, meow-tumble |
+| 화면 문구를 여러 언어로 낸다                                   | [i18n](./modules/i18n/README.md) `createLocale`                                                                                                                                                  |                            | bloom-takraw, budmori-io                                                      |
+| 시작 로딩 진행률, 고정한 GameKit 파일을 SHA-256 확인 후 import | [boot](./modules/boot/README.md) `createBoot`·`importPinnedModules`                                                                                                                              |                            | rally-frontier, budmori-io                                                    |
+| 설치 가능한 PWA·오프라인 시작                                  | [pwa](./modules/pwa/README.md) `registerPwa`·`buildPwa`                                                                                                                                          |                            | bloom-takraw, budmori-io, squish-born, yarn-mayhem, bloom-bounko              |
+| 플레이 지표(세션·이벤트·경기 기록)를 모은다                    | [metrics](./modules/metrics/README.md) `createMetrics`                                                                                                                                           | [지표 탭][p-metrics]       | bloom-takraw                                                                  |
+| 광고를 붙이고 빈도를 제한한다                                  | [bm](./modules/bm/README.md) `createBm` · 어댑터 [mock](./modules/bm/adapters/mock/README.md)·[Google H5](./modules/bm/adapters/google-ads/README.md)·[IMA](./modules/bm/adapters/ima/README.md) | [bm][p-bm]                 | bloom-bounko(`?ads=test`만)                                                   |
+| 인앱 구매와 광고 제거 같은 보유 판정                           | [store](./modules/store/README.md) `createStore` · 어댑터 [mock](./modules/store/adapters/mock/README.md)                                                                                        | [상품 탭][p-store]         |                                                                               |
+
+`_rollback-shared`는 rollback·deterministic·transport·replay의 내부 구현이라 소비자가 직접 쓰지 않으며 표에 없습니다.
+
+[p-scenario]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/scenario.html
+[p-simloop]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/simloop-input-preview.html
+[p-contacts]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/work-scheduler.html#tab=contacts
+[p-geometry]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/work-scheduler.html#tab=geometry
+[p-portal]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/work-scheduler.html#tab=portal
+[p-vision]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/work-scheduler.html#tab=vision
+[p-behavior]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/work-scheduler.html#tab=behavior
+[p-budget]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/work-scheduler.html#tab=budget
+[p-pp]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/pixel-physics.html
+[p-pp-open]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/pixel-physics-open-world.html
+[p-pp-side]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/pixel-physics-side-battle.html
+[p-rb-ref]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rollback-reference.html
+[p-rb-avail]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rollback-availability.html
+[p-interp]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/interpolation.html
+[p-interp-frame]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/interpolation-frame.html
+[p-rendering]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rendering.html
+[p-face]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rendering.html#face
+[p-vector]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/vector-assets.html
+[p-vector-raster]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/vector-raster-comparison.html
+[p-audio]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/audio.html
+[p-navigation]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/navigation.html
+[p-tech-tree]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/tech-tree.html
+[p-metrics]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/bm.html#tab=metrics
+[p-bm]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/bm.html
+[p-store]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/bm.html#tab=store
+
+## 그 밖의 문서
+
+- [SDK 전체/분리 API와 이전](./modules/rollback/docs/api-migration.md) · [비활성 참가자·가용성 정책·자동 coordinator 이관](./modules/rollback/README.md#비활성-참가자와-선택형-가용성) · [1:1 방 연결과 재연결](./modules/transport/README.md#11-방-연결과-재연결-createnostrroom)
+- 모듈 소스 예제: [보간](./modules/interpolation/examples/index.html) · [detached 입력 preview](./modules/simloop/examples/input-preview/index.html) · [렌더링(벡터·아틀라스·재질·그라디언트·표정 탭)](./modules/rendering/examples/index.html) · [독립 deadline pump](./modules/rollback/examples/availability/index.html)
+- [고정 브라우저 E2E](./project/tests/browser.e2e.mjs) · [별도 보간 벤치마크](./modules/interpolation/scripts/benchmark.mjs) · 모듈별 고정 시나리오 명령은 각 모듈 README에 있습니다.
+
+## 저장소 구조와 명령
 
 ```text
 modules/<module>/*.js              공개 모듈 runtime 소스
-modules/<module>/README.md         API·비용·제한
+modules/<module>/README.md         언제 쓰나·쓰는 모양·쓰지 말아야 할 때, 그 아래 API·비용·제한
 modules/<module>/{docs,examples,tests,scripts}/  해당 모듈 소유 자료
 modules/_rollback-shared/          rollback 계열의 내부 공유 구현·SDK 버전 단일 원본
 modules/rollback/docs/provenance/  원본 zip·manifest·출처

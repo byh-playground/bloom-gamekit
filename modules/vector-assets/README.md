@@ -1,5 +1,31 @@
 # Vector assets
 
+## 언제 쓰나
+
+- 손으로 그린 **SVG 원본을 그대로 캐릭터·애니메이션**으로 그리고 싶을 때. 부품 포즈·클립·표정을 SVG에 적고, 런타임은 컴파일된 geometry를 `createVectorActor`로 재생합니다.
+- SVG 클립을 아틀라스 스프라이트로 구워 많은 수를 싸게 그리고 싶을 때(`createVectorSpriteAtlas`).
+
+## 쓰는 모양
+
+```js
+// yarn-mayhem/src/main.js (줄임)
+const actor = createVectorActor(context, ACTIVE_THEME_ASSETS.yarnBody); // 로더가 컴파일한 자산
+// 프레임마다
+actor.setExpression(expression);
+actor.play(clip, startedAtMs).seek(timeMs);
+context.drawVectorActor(actor, { matrix, alpha, color });
+```
+
+자산 로딩은 [vector-assets-loader](../vector-assets-loader/README.md)가 합니다. 스프라이트 굽기 예: `budmori-io`의 `createVectorSpriteAtlas`.
+
+## 쓰지 말아야 할 때
+
+| 이런 일                               | 대신                                                        |
+| ------------------------------------- | ----------------------------------------------------------- |
+| 컴파일한 메시를 배포물에 넣기         | 하지 않습니다. 원본 SVG만 두고 시작 시 컴파일합니다         |
+| 표정 부품을 몸마다 그리기             | [face](../face/README.md)                                   |
+| SVG가 아닌 스프라이트 시트 애니메이션 | [rendering](../rendering/README.md) `createSpriteAnimation` |
+
 ## Runtime part atlas comparison
 
 The same example also includes sampled sprite playback. `createVectorSpriteAtlas(context, compiledAsset, { clip, expression, sampleIntervalMs, pixelsPerUnit, padding, supersample, paintRegions })` samples an authored SVG clip at the midpoint of each interval and bakes complete poses into one region of the device's shared texture atlas (`device.textureAtlas`); `context` is the `VectorContext` whose mesh renderer owns `asset`. The atlas size bounds the sheet; a frame set that does not fit reports `atlasLimit`. Equivalent bake settings of one asset share one ref-counted region. For a once clip, the final interval uses the exact authored endpoint so the held final image keeps the terminal pose. The final interval keeps its shorter duration, so playback keeps the authored clip length. It returns a generic sprite definition and region rather than an SVG-dependent actor:
