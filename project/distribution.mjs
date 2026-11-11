@@ -28,6 +28,7 @@ export const MODULES = Object.freeze([
     'scenario',
     'object-pool',
     'geometry',
+    'contact-solver',
     'pixel-physics',
     'bm',
     'bm-mock',

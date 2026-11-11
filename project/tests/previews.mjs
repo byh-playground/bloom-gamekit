@@ -357,6 +357,82 @@ try {
             } finally {
                 await VISION_TOUCH.close();
             }
+            // 접촉 탭: 예산과 상관없이 벽 관통은 0이고, 예산 0이면 몸끼리 하나도 풀지 않아 겹치며, 무제한이면 건너뛴 쌍이 없습니다.
+            await PAGE.click('#tab-contacts');
+            await PAGE.click('#contacts-run');
+            assert.equal(await PAGE.getAttribute('#contacts-run', 'aria-pressed'), 'false', '자동 실행 멈춤');
+            const CONTACTS = () =>
+                PAGE.locator('#contacts-output').evaluate((output) => JSON.parse(output.textContent));
+            for (const [INDEX, LABEL] of [
+                [0, '0'],
+                [1, '16'],
+                [3, '무제한'],
+            ]) {
+                await PAGE.evaluate((index) => {
+                    globalThis.contactsExample.reset();
+                    globalThis.contactsExample.setBudget(index);
+                    globalThis.contactsExample.step(40);
+                }, INDEX);
+                const RUN = await CONTACTS();
+                assert.deepEqual(
+                    [RUN.tick, RUN.budget, RUN.wallPenetrations],
+                    [40, LABEL, 0],
+                    `예산 ${LABEL}: 벽 관통 0`,
+                );
+                if (INDEX === 0) {
+                    assert.equal(RUN.pairContacts, 0, '예산 0: 몸끼리 풀지 않음');
+                    assert.ok(RUN.overlapsBeforeSeparate > 0, '예산 0: 적끼리 겹친 채 끝남');
+                } else if (INDEX === 1) {
+                    assert.ok(RUN.pairContacts <= 16, '예산 16: 푼 쌍은 예산 이하');
+                } else {
+                    assert.equal(RUN.skippedPairs, 0, '무제한: 건너뛴 쌍 없음');
+                }
+            }
+            await PAGE.locator('#contacts-budget').focus();
+            await PAGE.keyboard.press('ArrowLeft');
+            assert.equal((await CONTACTS()).budget, '64', '슬라이더를 키보드로 한 칸 내림');
+            // 터치 에뮬레이션(실제 기기 검증이 아님): 탭 여섯 개가 한 줄이고, 첫 화면 안의 캔버스를 누르면 구르는 몸이 그쪽으로 굴러갑니다.
+            const CONTACTS_TOUCH = await browser.newContext({
+                hasTouch: true,
+                isMobile: true,
+                viewport: { width: 390, height: 844 },
+            });
+            try {
+                const TOUCH_PAGE = await CONTACTS_TOUCH.newPage();
+                await TOUCH_PAGE.goto(URL_LOCAL + '#tab=contacts', { waitUntil: 'domcontentloaded', timeout: 45000 });
+                await TOUCH_PAGE.waitForFunction(() => !!globalThis.contactsExample);
+                await TOUCH_PAGE.tap('#contacts-run');
+                const TOUCH_BOX = await TOUCH_PAGE.locator('#contacts-canvas').boundingBox();
+                assert.ok(TOUCH_BOX.x >= 0 && TOUCH_BOX.x + TOUCH_BOX.width <= 390, 'canvas fits the width');
+                assert.ok(TOUCH_BOX.y + TOUCH_BOX.height <= 844, 'canvas is inside the first screen');
+                assert.ok(
+                    await TOUCH_PAGE.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+                    'no horizontal scroll',
+                );
+                assert.equal(
+                    await TOUCH_PAGE.locator('[role="tab"]').evaluateAll(
+                        (tabs) => new Set(tabs.map((tab) => Math.round(tab.getBoundingClientRect().top))).size,
+                    ),
+                    1,
+                    'tabs stay on one line',
+                );
+                assert.ok(
+                    await TOUCH_PAGE.locator('#panel-contacts button, #contacts-budget').evaluateAll((controls) =>
+                        controls.every((control) => control.getBoundingClientRect().height >= 56),
+                    ),
+                    'touch controls are at least 56px tall',
+                );
+                await TOUCH_PAGE.evaluate(() => globalThis.contactsExample.reset());
+                // 첫 구르는 몸(100, 110)에 가장 가까운 오른쪽 아래(150, 250)를 누릅니다.
+                await TOUCH_PAGE.touchscreen.tap(...AT(TOUCH_BOX, 150, 250));
+                const ROLLED = await TOUCH_PAGE.evaluate(() => {
+                    const BODY = globalThis.contactsExample.state.bodies[120];
+                    return [BODY.dynamic, BODY.ivx > 0, BODY.ivy > BODY.ivx];
+                });
+                assert.deepEqual(ROLLED, [true, true, true], '누른 쪽으로 굴러감');
+            } finally {
+                await CONTACTS_TOUCH.close();
+            }
         }
         if (NAME === 'bm') {
             // 실제 광고 호출 없이 계약만 확인합니다: 광고 스크립트는 막고 adBreak와 google.ima를 가짜로 둡니다.
