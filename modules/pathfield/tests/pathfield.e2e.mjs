@@ -1,13 +1,10 @@
-// pathfield 고정 시나리오: 작은 격자에서 비용·모서리 규칙·게으른 확정·내려가기·동률 규칙을 값으로 못 박고,
-// geometry의 ObstacleField를 통과 판정으로 연결해 벽의 틈으로 도는 길을 확인한 뒤, rally-frontier가 쓰던
-// 격자 거리장(NavigationGrid)이 하던 질의 흐름을 한 판 돌려 결과의 해시가 원본으로 돌린 해시와 같은지 확인합니다.
-// 이 파일의 `createPlanner`가 곧 게임이 거리장을 쓸 때의 호출 모양입니다(목표 해석·캐시 정책·직선 광선은 게임의 몫).
+// pathfield 고정 시나리오: 작은 격자에서 비용·모서리 규칙·A* 경로·웨이포인트를 값으로 못 박고, geometry의 ObstacleField를
+// 통과 판정으로 연결해 벽의 틈으로 도는 길을 확인한 뒤, PortalGraph(국소 무효화 = 처음부터)와 FlowField(성분·엄격한 내려가기·
+// 정확 비용 이상·질의 순서와 무관)를 건물이 놓이고 지워지는 흐름으로 확인합니다. 비교 기준은 시험 안의 작은 구현(`exactCosts`·`floodMarks`)입니다.
 import assert from 'node:assert/strict';
 import { ObstacleField } from '../../../dist/geometry.js';
 import {
     DIAGONAL_COST,
-    DistanceField,
-    FieldCache,
     FlowField,
     MAX_CHANGED_RECTS,
     PathGrid,
@@ -33,6 +30,59 @@ function gridFrom(rows, counter = null) {
     });
 }
 const CELL_OF = (grid, col, row) => row * grid.cols + col;
+const CELL = 24;
+
+// 비교 기준 1: `stepCell`만 쓰는 작은 다익스트라(칸 수가 작은 격자용). 출발 칸들에서 각 칸까지의 정확한 비용, 닿지 못하면 UNREACHED.
+function exactCosts(grid, sources) {
+    const DIST = new Array(grid.size).fill(UNREACHED),
+        DONE = new Uint8Array(grid.size);
+    for (const SOURCE of sources) {
+        DIST[SOURCE] = 0;
+    }
+    for (;;) {
+        let cell = -1;
+        for (let i = 0; i < grid.size; i++) {
+            if (!DONE[i] && DIST[i] !== UNREACHED && (cell < 0 || DIST[i] < DIST[cell])) {
+                cell = i;
+            }
+        }
+        if (cell < 0) {
+            return DIST;
+        }
+        DONE[cell] = 1;
+        const COL = cell % grid.cols,
+            ROW = (cell - COL) / grid.cols;
+        for (let direction = 0; direction < 8; direction++) {
+            const NEXT = grid.stepCell(COL, ROW, direction);
+            if (NEXT >= 0) {
+                DIST[NEXT] = Math.min(DIST[NEXT], DIST[cell] + (direction < 4 ? STRAIGHT_COST : DIAGONAL_COST));
+            }
+        }
+    }
+}
+
+// 비교 기준 2: `start`에서 8방향으로 걸어 닿는 칸을 1로 표시한 Uint8Array(막힌 시작이면 모두 0).
+function floodMarks(grid, start) {
+    const MARKS = new Uint8Array(grid.size),
+        STACK = [];
+    if (grid.isOpen(start)) {
+        MARKS[start] = 1;
+        STACK.push(start);
+    }
+    while (STACK.length) {
+        const CELL_NOW = STACK.pop(),
+            COL = CELL_NOW % grid.cols,
+            ROW = (CELL_NOW - COL) / grid.cols;
+        for (let direction = 0; direction < 8; direction++) {
+            const NEXT = grid.stepCell(COL, ROW, direction);
+            if (NEXT >= 0 && !MARKS[NEXT]) {
+                MARKS[NEXT] = 1;
+                STACK.push(NEXT);
+            }
+        }
+    }
+    return MARKS;
+}
 
 // 셀 중심은 모두 열려 있어도 그 사이의 얇은 벽은 가로지를 수 없습니다.
 // 왕복 엣지 검사는 재사용하며, 지형 변경 시 새 경로를 계산합니다.
@@ -73,7 +123,7 @@ const CELL_OF = (grid, col, row) => row * grid.cols + col;
     const BEFORE = calls;
     assert.equal(GRID.stepCell(2, 2, 2), -1, '반대 방향도 같은 결과입니다');
     assert.equal(calls, BEFORE, '양방향 검사는 한번만 계산합니다');
-    const ROUTE = new DistanceField(GRID, [RIGHT]).descend(LEFT, 40);
+    const ROUTE = new RouteFinder(GRID).find(LEFT, [RIGHT]);
     assert.ok(ROUTE.length > 1, '막힌 직선 대신 벽 끝을 돌아갑니다');
     let previous = LEFT;
     for (const CELL of ROUTE) {
@@ -101,17 +151,15 @@ const CELL_OF = (grid, col, row) => row * grid.cols + col;
 // ---------- 1. 비용: 직선 10·대각 14, 모서리 가로지르기 금지 ----------
 {
     assert.deepEqual([STRAIGHT_COST, DIAGONAL_COST, UNREACHED], [10, 14, 0x7fffffff]);
-    const OPEN = gridFrom(['...', '...', '...']);
-    const FIELD = new DistanceField(OPEN, [4]);
-    FIELD.settle();
-    assert.deepEqual([...FIELD.dist], [14, 10, 14, 10, 0, 10, 14, 10, 14], '가운데에서 직선 10, 대각 14');
-    assert.equal(FIELD.done, true);
+    const OPEN = gridFrom(['...', '...', '...']),
+        OPEN_FINDER = new RouteFinder(OPEN);
+    assert.deepEqual(exactCosts(OPEN, [4]), [14, 10, 14, 10, 0, 10, 14, 10, 14], '가운데에서 직선 10, 대각 14');
+    OPEN_FINDER.find(0, [8]);
+    assert.equal(OPEN_FINDER.cost, 28, '대각 두 걸음');
 
     const CORNER = gridFrom(['.#.', '...', '...']);
-    const BENT = new DistanceField(CORNER, [0]);
-    BENT.settle();
     // (1,0)이 막혀 (0,0)→(1,1) 대각은 모서리를 가로지르므로 못 가고, (0,1)을 지나 20입니다. (1,2)는 (0,1)→(1,2) 대각 24.
-    assert.deepEqual([...BENT.dist], [0, UNREACHED, 40, 10, 20, 30, 20, 24, 34]);
+    assert.deepEqual(exactCosts(CORNER, [0]), [0, UNREACHED, 40, 10, 20, 30, 20, 24, 34]);
 }
 
 // ---------- 2. 칸 번호·좌표·통과 판정 기억 ----------
@@ -139,16 +187,14 @@ const MAZE = ['.......', '.#####.', '.....#.', '####.#.', '.......'];
     assert.equal(GRID.stepCell(4, 2, 4), -1, '(4,2)→(5,3): (5,3)이 막힘');
     assert.equal(GRID.stepCell(4, 4, 7), -1, '(4,4)→(5,3): 목표 칸이 막힘');
     assert.equal(GRID.stepCell(6, 3, 5), -1, '(6,3)→(5,4): (5,3)이 막혀 모서리를 가로지름');
-    // 판정이 바뀐 뒤: sync는 세대가 바뀔 때만 기억을 비운다.
+    // 판정이 바뀐 뒤: invalidate()를 부를 때까지는 기억이 남는다.
     let wall = true;
     const SWITCHED = new PathGrid({ width: 20, height: 10, cellSize: 10, passable: (x) => x < 10 || !wall });
-    assert.equal(SWITCHED.sync(1), true, '처음 알리는 세대는 비움');
-    assert.equal(SWITCHED.sync(1), false);
     assert.equal(SWITCHED.isOpen(1), false);
     wall = false;
     assert.equal(SWITCHED.isOpen(1), false, '기억이 남아 있어 아직 막힘');
     const REVISION = SWITCHED.revision;
-    assert.equal(SWITCHED.sync(2), true);
+    SWITCHED.invalidate();
     assert.equal(SWITCHED.isOpen(1), true);
     assert.equal(SWITCHED.revision, REVISION + 1);
     // 사각형 무효화: 그 칸만 다시 묻고, 바뀐 칸 범위를 기록 순서대로 한 번 넘겨준다.
@@ -156,7 +202,7 @@ const MAZE = ['.......', '.#####.', '.....#.', '####.#.', '.......'];
     assert.deepEqual(
         [SWITCHED.takeChangedRects(CHANGED), ...CHANGED.slice(0, 4)],
         [1, 0, 0, 1, 0],
-        'sync는 전체 한 개',
+        'invalidate는 전체 한 개',
     );
     wall = true;
     assert.equal(SWITCHED.isOpen(1), true, '기억이 남아 있어 열림');
@@ -175,47 +221,7 @@ const MAZE = ['.......', '.#####.', '.....#.', '####.#.', '.......'];
     assert.equal(SWITCHED.revision, REVISION + 3);
 }
 
-// ---------- 3. 게으른 확정·여러 출발 칸·내려가기 ----------
-{
-    const GRID = gridFrom(MAZE);
-    const FIELD = new DistanceField(GRID, [0, 0]);
-    assert.equal(FIELD.distance(CELL_OF(GRID, 4, 2)), 60, '겹친 출발 칸은 한 번');
-    assert.equal(FIELD.done, false, '필요한 칸까지만 확정');
-    assert.equal(FIELD.dist[CELL_OF(GRID, 0, 4)], UNREACHED, '아직 닿지 않은 칸은 임시값도 없음');
-    assert.equal(FIELD.distance(CELL_OF(GRID, 0, 4)), 120);
-    FIELD.settle();
-    assert.equal(FIELD.done, true);
-    assert.equal(FIELD.dist[CELL_OF(GRID, 6, 4)], 100);
-    assert.equal(FIELD.dist[CELL_OF(GRID, 1, 1)], UNREACHED, '막힌 칸');
-
-    const PATH = [];
-    const TO_CELLS = (list) => list.map((cell) => [GRID.colOf(cell), GRID.rowOf(cell)].join(','));
-    FIELD.descend(CELL_OF(GRID, 0, 4), 8, PATH);
-    assert.deepEqual(TO_CELLS(PATH), ['1,4', '2,4', '3,4', '4,4', '4,3', '4,2', '3,2', '2,2'], '틈을 돌아 위로');
-    FIELD.descend(CELL_OF(GRID, 0, 4), 99, PATH);
-    assert.deepEqual(TO_CELLS(PATH).slice(-4), ['1,2', '0,2', '0,1', '0,0'], '출발 칸에서 멈춤');
-    assert.deepEqual(FIELD.descend(0, 5, PATH), [], '출발 칸에서는 갈 곳이 없음');
-    assert.equal(PATH, FIELD.descend(0, 5, PATH), '호출자의 out을 채워 돌려줌');
-    assert.deepEqual(FIELD.descend(CELL_OF(GRID, 1, 1), 5), [], '닿지 못하는 칸');
-
-    // 여러 출발 칸: 가까운 쪽까지의 비용입니다.
-    const TWO = new DistanceField(GRID, [0, CELL_OF(GRID, 6, 4)]);
-    TWO.settle();
-    assert.deepEqual([TWO.dist[0], TWO.dist[CELL_OF(GRID, 6, 4)], TWO.dist[CELL_OF(GRID, 3, 4)]], [0, 0, 30]);
-    assert.throws(() => new DistanceField(GRID, [35]), RangeError);
-    assert.throws(() => new DistanceField(GRID, [1.5]), RangeError);
-    assert.equal(new DistanceField(GRID, []).done, true, '출발 칸이 없으면 퍼질 곳이 없음');
-}
-{
-    // 동률: 더 싼 이웃이 둘이면 방향 순서(동·남·서·북…)가 앞선 쪽. (1,1)에서 서쪽 (0,1)과 북쪽 (1,0)이 모두 0입니다.
-    const GRID = gridFrom(['...', '...', '...']);
-    const FIELD = new DistanceField(GRID, [1, 3]);
-    FIELD.settle();
-    assert.equal(FIELD.lowestNeighbor(4), 3, '서쪽이 북쪽보다 앞');
-    assert.equal(FIELD.lowestNeighbor(1), -1);
-}
-
-// ---------- 4. 가장 가까운 열린 칸·고리 안의 열린 칸·이어짐 ----------
+// ---------- 4. 가장 가까운 열린 칸·고리 안의 열린 칸 ----------
 {
     const GRID = gridFrom(['.....', '.###.', '.###.', '.###.', '.....']);
     assert.equal(GRID.nearestOpen(0), 0, '열린 칸은 자기 자신');
@@ -234,58 +240,6 @@ const MAZE = ['.......', '.#####.', '.....#.', '####.#.', '.......'];
     const OUT = [99];
     assert.equal(MAP.openCellsWithin(35, 25, 1, 0, null, OUT), OUT, 'out을 먼저 비우고 채움');
     assert.deepEqual(OUT, [17]);
-
-    const REACH = gridFrom(['..#..', '..#..', '..#..']);
-    const MARKS = new Uint8Array(REACH.size);
-    assert.equal(REACH.reachableFrom(0, MARKS), MARKS, '호출자의 out을 비우고 채움');
-    assert.deepEqual([...MARKS], [1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0]);
-    assert.deepEqual([...REACH.reachableFrom(2, MARKS)], new Array(15).fill(0), '막힌 칸에서는 아무 데도 못 감');
-    assert.deepEqual([...REACH.reachableFrom(-1, MARKS)], new Array(15).fill(0));
-    assert.deepEqual(
-        [...REACH.reachableFrom(3, MARKS)],
-        [0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1],
-        '스택을 재사용해도 같음',
-    );
-    assert.throws(() => REACH.reachableFrom(0), TypeError, 'out은 필수');
-    assert.throws(() => REACH.reachableFrom(0, new Uint8Array(4)), TypeError, '칸 수보다 짧은 out');
-}
-
-// ---------- 5. 캐시: 용량·낡음·세대 ----------
-{
-    let wall = true;
-    const GRID = new PathGrid({ width: 40, height: 10, cellSize: 10, passable: (x) => !(wall && x > 20 && x < 30) });
-    const CACHE = new FieldCache(GRID, { capacity: 2 });
-    const FIELD_OF = (source) => new DistanceField(GRID, [source]);
-    const A = CACHE.set('a', FIELD_OF(0)),
-        B = CACHE.set('b', FIELD_OF(1));
-    assert.equal(CACHE.get('a'), A, '꺼내도 순서는 그대로(LRU가 아님)');
-    CACHE.set('c', FIELD_OF(3));
-    assert.deepEqual(
-        [CACHE.has('a'), CACHE.has('b'), CACHE.has('c'), CACHE.size],
-        [false, true, true, 2],
-        '먼저 넣은 a를 버림',
-    );
-    assert.equal(CACHE.set('b', FIELD_OF(2)) === B, false);
-    CACHE.set('d', FIELD_OF(0));
-    assert.deepEqual(
-        [CACHE.has('b'), CACHE.has('c'), CACHE.has('d')],
-        [false, true, true],
-        '덮어써도 b의 순서는 그대로였음',
-    );
-    assert.equal(CACHE.sync(10), true, '처음 알리는 세대는 비움');
-    assert.equal(CACHE.size, 0);
-    CACHE.set('x', FIELD_OF(0));
-    assert.equal(CACHE.sync(10), false);
-    assert.equal(CACHE.has('x'), true);
-    assert.equal(CACHE.sync(11), true);
-    assert.equal(CACHE.has('x'), false);
-    CACHE.set('y', FIELD_OF(0));
-    wall = false;
-    GRID.invalidate();
-    assert.equal(CACHE.get('y'), undefined, '격자가 비워지면 낡은 거리장은 없음');
-    assert.throws(() => new FieldCache(GRID, { capacity: 0 }), RangeError);
-    assert.throws(() => new FieldCache({}), TypeError);
-    assert.equal(new FieldCache(GRID).capacity, Infinity);
 }
 
 // ---------- 6. 잘못된 입력은 만들 때 던짐 ----------
@@ -298,7 +252,6 @@ const MAZE = ['.......', '.#####.', '.....#.', '####.#.', '.......'];
     assert.throws(() => new PathGrid({ ...OK, originX: Infinity }), RangeError);
     assert.throws(() => new PathGrid({ ...OK, cells: 3 }), TypeError, '알 수 없는 옵션');
     assert.throws(() => new PathGrid({ ...OK, width: 1e9, height: 1e9 }), RangeError, '칸이 너무 많음');
-    assert.throws(() => new DistanceField({}, []), TypeError);
 }
 
 // ---------- 7. 원점이 0이 아닌 격자 ----------
@@ -353,9 +306,9 @@ const MAZE = ['.......', '.#####.', '.....#.', '####.#.', '.......'];
         });
     const GOAL = GRID.cellAt(180, 20),
         START = GRID.cellAt(20, 20),
-        FIELD = new DistanceField(GRID, [GOAL]);
-    assert.equal(GRID.reachableFrom(START, new Uint8Array(GRID.size))[GOAL], 1, '틈이 이어 줌');
-    const PATH = FIELD.descend(START, 100);
+        PATH = new RouteFinder(GRID).find(START, [GOAL]);
+    assert.ok(PATH, '틈이 이어 줌');
+    assert.equal(floodMarks(GRID, START)[GOAL], 1);
     assert.equal(PATH.at(-1), GOAL);
     const THROUGH_GAP = PATH.some((cell) => GRID.centerX(cell) > 85 && GRID.centerX(cell) < 115);
     assert.ok(THROUGH_GAP, '벽 옆을 지나는 칸이 있음');
@@ -370,16 +323,16 @@ const MAZE = ['.......', '.#####.', '.....#.', '####.#.', '.......'];
     );
 }
 
-// ---------- 9. A* 경로(RouteFinder): 거리장과 같은 비용·막힌 목표·모서리·여러 목표·한도·웨이포인트·재검증·결정론 ----------
+// ---------- 9. A* 경로(RouteFinder): 기준 다익스트라와 같은 비용·막힌 목표·모서리·여러 목표·한도·웨이포인트·재검증·결정론 ----------
 {
     const GRID = gridFrom(MAZE),
         FINDER = new RouteFinder(GRID),
         TO_CELLS = (list) => list.map((cell) => [GRID.colOf(cell), GRID.rowOf(cell)].join(','));
-    // 같은 격자에서 모든 출발 칸의 A* 비용이 거리장 비용과 같습니다(닿지 못하는 칸은 둘 다 실패).
-    const FIELD = new DistanceField(GRID, [0]);
+    // 같은 격자에서 모든 출발 칸의 A* 비용이 기준 다익스트라 비용과 같습니다(닿지 못하는 칸은 둘 다 실패).
+    const EXACT = exactCosts(GRID, [0]);
     for (let start = 0; start < GRID.size; start++) {
         const PATH = FINDER.find(start, [0]);
-        assert.equal(PATH === null ? UNREACHED : FINDER.cost, FIELD.distance(start), `칸 ${start}의 비용`);
+        assert.equal(PATH === null ? UNREACHED : FINDER.cost, EXACT[start], `칸 ${start}의 비용`);
     }
     const PATH = FINDER.find(CELL_OF(GRID, 0, 4), [0]);
     assert.deepEqual(
@@ -488,209 +441,8 @@ const MAZE = ['.......', '.#####.', '.....#.', '####.#.', '.......'];
     assert.deepEqual(OUT, [0]);
 }
 
-// ---------- 10. 원본 격자 거리장과 같은 질의 흐름 ----------
-// scenario begin
-// 이 구간의 코드는 rally-frontier의 NavigationGrid로 돌려도 같은 결과를 내는 어댑터입니다(`createPlanner`만 다름).
-const WORLD_SIZE = 1800;
-const CELL = 24;
-const MAX_FIXED = 6;
-const LOOKAHEAD = 8;
-const GOAL_MARGIN = CELL * 0.71;
-
-function randomSource(seed) {
-    let state = seed;
-    return () => {
-        state = (Math.imul(state, 1103515245) + 12345) >>> 0;
-        return state / 4294967296;
-    };
-}
-
-function buildTerrain(rand) {
-    const BOXES = [],
-        DISCS = [];
-    for (let i = 0; i < 12; i++) {
-        const X = rand() * WORLD_SIZE,
-            Y = rand() * WORLD_SIZE;
-        BOXES.push({ x0: X, y0: Y, x1: X + 40 + rand() * 260, y1: Y + 20 + rand() * 90 });
-    }
-    for (let i = 0; i < 14; i++) {
-        DISCS.push({ x: rand() * WORLD_SIZE, y: rand() * WORLD_SIZE, r: 30 + rand() * 90 });
-    }
-    // 사방이 막힌 방(안쪽 목표는 닿을 수 없음)과, 한쪽 끝이 열린 긴 벽(돌아가야 함)
-    BOXES.push(
-        { x0: 1400, y0: 200, x1: 1440, y1: 420 },
-        { x0: 1600, y0: 200, x1: 1640, y1: 420 },
-        { x0: 1400, y0: 200, x1: 1640, y1: 240 },
-        { x0: 1400, y0: 380, x1: 1640, y1: 420 },
-    );
-    for (let i = 0; i < 3; i++) {
-        BOXES.push({ x0: i % 2 ? 0 : 300, y0: 700 + i * 350, x1: i % 2 ? 1500 : 1800, y1: 736 + i * 350 });
-    }
-    return {
-        blocked(x, y, r) {
-            if (x < r || y < r || x > WORLD_SIZE - r || y > WORLD_SIZE - r) {
-                return true;
-            }
-            for (const B of BOXES) {
-                if (x > B.x0 - r && x < B.x1 + r && y > B.y0 - r && y < B.y1 + r) {
-                    return true;
-                }
-            }
-            for (const D of DISCS) {
-                const DX = x - D.x,
-                    DY = y - D.y,
-                    NEEDED = D.r + r;
-                if (DX * DX + DY * DY < NEEDED * NEEDED) {
-                    return true;
-                }
-            }
-            return false;
-        },
-        segmentClear(x0, y0, x1, y1, r) {
-            const STEPS = Math.max(1, Math.ceil(Math.hypot(x1 - x0, y1 - y0) / 8));
-            for (let i = 0; i <= STEPS; i++) {
-                const T = i / STEPS;
-                if (this.blocked(x0 + (x1 - x0) * T, y0 + (y1 - y0) * T, r)) {
-                    return false;
-                }
-            }
-            return true;
-        },
-    };
-}
-
-// 모듈로 만든 계획자: 목표 해석(고리 영역·여유)·캐시 정책(고정 목표는 오래, 추격 목표는 틱마다)·"직선 광선이 막히면 거리장"·
-// "내려가는 칸 중 보이는 가장 먼 칸"은 모두 게임이 정합니다.
-function createPlanner(terrain, radius) {
-    const GRID = new PathGrid({
-        width: WORLD_SIZE,
-        height: WORLD_SIZE,
-        cellSize: CELL,
-        passable: (x, y) => terrain.blocked(x, y, radius) === false,
-    });
-    const FIXED = new FieldCache(GRID, { capacity: MAX_FIXED }),
-        CHASE = new FieldCache(GRID);
-    const DESCENT = [];
-    function sources(goal) {
-        const FOUND = GRID.openCellsWithin(
-            goal.x,
-            goal.y,
-            goal.radius + GOAL_MARGIN,
-            Math.max(0, goal.innerRadius - GOAL_MARGIN),
-            goal.terrainLine ? (x, y) => terrain.segmentClear(x, y, goal.x, goal.y, 0) : null,
-        );
-        if (!FOUND.length) {
-            const NEAR = GRID.nearestOpen(GRID.cellAt(goal.x, goal.y), 24);
-            if (NEAR >= 0) {
-                FOUND.push(NEAR);
-            }
-        }
-        return FOUND;
-    }
-    return {
-        next(x, y, goal, fixed, tick) {
-            const CACHE = fixed ? FIXED : CHASE;
-            if (!fixed) {
-                CHASE.sync(tick);
-            }
-            const FIELD = CACHE.get(goal.key) ?? CACHE.set(goal.key, new DistanceField(GRID, sources(goal)));
-            const START = GRID.nearestOpen(GRID.cellAt(x, y));
-            if (START < 0 || FIELD.distance(START) === UNREACHED) {
-                return null;
-            }
-            const PATH = FIELD.descend(START, LOOKAHEAD, DESCENT);
-            if (!PATH.length) {
-                return { x: GRID.centerX(START), y: GRID.centerY(START) };
-            }
-            for (let i = PATH.length - 1; i > 0; i--) {
-                const PX = GRID.centerX(PATH[i]),
-                    PY = GRID.centerY(PATH[i]);
-                if (terrain.segmentClear(x, y, PX, PY, radius)) {
-                    return { x: PX, y: PY };
-                }
-            }
-            return { x: GRID.centerX(PATH[0]), y: GRID.centerY(PATH[0]) };
-        },
-        invalidate(version) {
-            GRID.sync(version);
-        },
-        connected(from, points) {
-            const REACHED = GRID.reachableFrom(
-                GRID.nearestOpen(GRID.cellAt(from.x, from.y), 4),
-                new Uint8Array(GRID.size),
-            );
-            return points.map((p) => {
-                const CELL_OF = GRID.nearestOpen(GRID.cellAt(p.x, p.y), 4);
-                return CELL_OF >= 0 && REACHED[CELL_OF] === 1 ? 1 : 0;
-            });
-        },
-    };
-}
-
-function runScenario(makePlanner) {
-    const RAND = randomSource(20261104),
-        TERRAIN = buildTerrain(RAND),
-        PLANNERS = [makePlanner(TERRAIN, 13.62), makePlanner(TERRAIN, 20.25)],
-        GOALS = [];
-    for (let i = 0; i < 24; i++) {
-        const X = RAND() * WORLD_SIZE,
-            Y = RAND() * WORLD_SIZE,
-            KIND = i % 4,
-            RADIUS = KIND === 0 ? 0 : 20 + RAND() * 160,
-            INNER = KIND === 3 ? RADIUS * RAND() * 0.6 : 0;
-        GOALS.push({
-            x: X,
-            y: Y,
-            radius: RADIUS,
-            innerRadius: INNER,
-            terrainLine: KIND === 3 && i % 8 === 3,
-            key: `${X}:${Y}:${RADIUS}:${INNER}`,
-        });
-    }
-    GOALS.push(
-        { x: 1520, y: 310, radius: 0, innerRadius: 0, terrainLine: false, key: 'room-point' },
-        { x: 1520, y: 310, radius: 50, innerRadius: 0, terrainLine: false, key: 'room-range' },
-    );
-    let text = '',
-        unreachable = 0;
-    for (let q = 0; q < 700; q++) {
-        const TICK = Math.floor(q / 25);
-        // 한 번 지형이 바뀌었다고 알립니다(통과 판정 기억과 거리장이 모두 낡음).
-        for (const PLANNER of PLANNERS) {
-            PLANNER.invalidate(q < 400 ? 1 : 2);
-        }
-        const GOAL = GOALS[Math.floor(RAND() * GOALS.length)],
-            POINT = PLANNERS[q % 2].next(RAND() * WORLD_SIZE, RAND() * WORLD_SIZE, GOAL, GOAL.radius === 0, TICK);
-        if (POINT === null) {
-            unreachable++;
-        }
-        text += POINT === null ? 'n;' : `${POINT.x},${POINT.y};`;
-    }
-    const POINTS = [
-        { x: 1700, y: 1700 },
-        { x: 900, y: 900 },
-        { x: 90, y: 1700 },
-        { x: 1520, y: 310 },
-        { x: 1500, y: 100 },
-    ];
-    const CONNECTED = PLANNERS.map((planner) => planner.connected({ x: 90, y: 90 }, POINTS).join(''));
-    let hash = 2166136261;
-    for (let i = 0; i < text.length; i++) {
-        hash = Math.imul(hash ^ text.charCodeAt(i), 16777619) >>> 0;
-    }
-    return { hash, length: text.length, unreachable, connected: CONNECTED.join() };
-}
-// scenario end
-
-// 원본(rally-frontier NavigationGrid, 위 어댑터와 같은 질의)으로 같은 흐름을 돌려 얻은 값입니다. 모듈을 바꿔 이 값이 달라지면
-// 게임의 이동 목표 점이 달라진다는 뜻입니다.
-const EXPECTED = { hash: 3669598282, length: 4766, unreachable: 192, connected: '01101,01101' };
-const RESULT = runScenario(createPlanner);
-assert.deepEqual(RESULT, EXPECTED);
-console.log('pathfield scenario ok', RESULT.hash.toString(16), RESULT.length, RESULT.unreachable);
-
 // PortalGraph(청크 + 포털 구조): 건물(원)을 놓고 지우는 동안 바뀐 사각형만으로 따라간 구조가 같은 배치에서 처음부터 만든 구조와
-// 노드 번호·칸·건너는 비용·청크 안 비용·성분까지 같고, 바뀐 사각형과 겹치는 청크만 다시 만들며, 성분이 실제 연결(reachableFrom)과 같습니다.
+// 노드 번호·칸·건너는 비용·청크 안 비용·성분까지 같고, 바뀐 사각형과 겹치는 청크만 다시 만들며, 성분이 실제 연결(시험 안 flood fill)과 같습니다.
 {
     const SIDE = 1800,
         RADIUS = 13.62,
@@ -788,9 +540,8 @@ console.log('pathfield scenario ok', RESULT.hash.toString(16), RESULT.length, RE
             '겹치는 청크만 다시 만듦',
         );
         assert.deepEqual(DESCRIBE(LIVE.graph), DESCRIBE(MAKE(CIRCLES).graph), '국소 무효화 = 처음부터');
-        const MARKS = new Uint8Array(LIVE.grid.size);
         for (const START of [LEFT, RIGHT, LIVE.grid.cellAt(300, 1500), LIVE.grid.cellAt(1500, 1700)]) {
-            LIVE.grid.reachableFrom(START, MARKS);
+            const MARKS = floodMarks(LIVE.grid, START);
             const OWN = LIVE.graph.component(START);
             for (let cell = 0; cell < LIVE.grid.size; cell++) {
                 assert.equal(OWN >= 0 && LIVE.graph.component(cell) === OWN, MARKS[cell] === 1, '성분 = 실제 연결');

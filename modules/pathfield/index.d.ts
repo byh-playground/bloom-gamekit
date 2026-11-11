@@ -4,7 +4,7 @@ export const STRAIGHT_COST: 10;
 export const DIAGONAL_COST: 14;
 /** `PathGrid`가 기록하는 바뀐 사각형의 최대 개수. 넘치면 하나의 바운딩 사각형으로 합칩니다. */
 export const MAX_CHANGED_RECTS: 16;
-/** 닿지 못한 칸의 `DistanceField#dist` 값. */
+/** 닿지 못한 칸의 비용 값. */
 export const UNREACHED: 0x7fffffff;
 
 export interface PathGridOptions {
@@ -26,7 +26,7 @@ export interface PathGridOptions {
     originY?: number;
 }
 
-/** 거리장이 걷는 격자. 칸 번호는 행 우선(`row * cols + col`)입니다. */
+/** 길찾기가 걷는 격자. 칸 번호는 행 우선(`row * cols + col`)입니다. */
 export class PathGrid {
     constructor(options: PathGridOptions);
     readonly cellSize: number;
@@ -36,7 +36,7 @@ export class PathGrid {
     readonly rows: number;
     /** `cols * rows`. */
     readonly size: number;
-    /** 통과 판정을 비운 횟수. 이 격자로 만든 거리장이 낡았는지 알아보는 표식입니다. */
+    /** 통과 판정을 비운 횟수. 이 격자 위에 만든 길찾기 결과가 낡았는지 알아보는 표식입니다. */
     readonly revision: number;
 
     /** 좌표가 든 칸. 격자 밖은 가장자리 칸으로 자릅니다. 좌표는 NaN이 아니어야 합니다. */
@@ -64,12 +64,10 @@ export class PathGrid {
     readonly changedRectCount: number;
     /**
      * 바뀐 칸 사각형을 `out`(Int32Array, 길이 `4 * MAX_CHANGED_RECTS` 이상)에 `[minCol, minRow, maxCol, maxRow]`(양끝 포함)
-     * 네 정수씩 기록 순서대로 쓰고 개수를 돌려준 뒤 기록을 비웁니다. `invalidate()`·`sync`는 격자 전체 한 개로 기록됩니다.
+     * 네 정수씩 기록 순서대로 쓰고 개수를 돌려준 뒤 기록을 비웁니다. `invalidate()`는 격자 전체 한 개로 기록됩니다.
      * 소비자는 하나라고 가정합니다. `out`이 맞지 않으면 TypeError.
      */
     takeChangedRects(out: Int32Array): number;
-    /** 게임의 장애물 배치 세대 번호를 알립니다. 지난번과 다르면 `invalidate()`하고 true. */
-    sync(version: unknown): boolean;
     /**
      * 가장 가까운 통과 가능한 칸(자신이 열려 있으면 자신). 정사각 고리를 `maxRing`(기본 12)까지 넓히고,
      * 같은 고리의 동률은 행 오름차순·열 오름차순에서 먼저인 칸입니다. 없으면 -1.
@@ -87,57 +85,6 @@ export class PathGrid {
         accept?: ((centerX: number, centerY: number, cell: number) => boolean) | null,
         out?: Out,
     ): Out;
-    /**
-     * `start`(열린 칸)에서 8방향으로 걸어 닿는 칸을 1로 표시해 `out`(길이 `size` 이상, 먼저 비움)에 채웁니다.
-     * `start`가 열려 있지 않으면 모두 0. `out`이 Uint8Array가 아니거나 짧으면 TypeError.
-     */
-    reachableFrom(start: number, out: Uint8Array): Uint8Array;
-}
-
-/**
- * 출발 칸(들)에서 각 칸까지의 걸음 비용입니다. 필요한 칸까지만 게으르게 확정합니다.
- * `dist`는 확정한 칸만 믿을 수 있습니다.
- */
-export class DistanceField {
-    /** @param sources 출발 칸 번호(열린 칸). 겹쳐도 됩니다. 격자 밖 번호는 `RangeError`. */
-    constructor(grid: PathGrid, sources: ArrayLike<number>);
-    readonly grid: PathGrid;
-    readonly dist: Int32Array;
-    /** 모든 칸이 확정됐는지. */
-    readonly done: boolean;
-
-    /** 비용 순서로 확정합니다. `target`이 확정되면 멈추고, 주지 않으면 닿을 수 있는 모든 칸을 확정합니다. */
-    settle(target?: number): void;
-    /** `cell`의 비용을 확정해 돌려줍니다(닿지 못하면 `UNREACHED`). */
-    distance(cell: number): number;
-    /** `cell`보다 싼 이웃 중 가장 싼 칸(동률은 방향 순서가 앞선 쪽), 없으면 -1. `cell`이 확정되어 있어야 합니다. */
-    lowestNeighbor(cell: number): number;
-    /**
-     * `start`에서 비용이 줄어드는 쪽으로 최대 `maxSteps`칸을 걸은 칸 번호를 `out`(먼저 비움)에 채웁니다. `start`는 넣지 않습니다.
-     * 닿지 못하는 `start`나 이미 출발 칸이면 빈 결과입니다.
-     */
-    descend<Out extends number[] = number[]>(start: number, maxSteps: number, out?: Out): Out;
-}
-
-export interface FieldCacheOptions {
-    /** 1 이상의 정수 또는 `Infinity`(기본). 넘으면 먼저 넣은 것부터 버립니다. */
-    capacity?: number;
-}
-
-/** 거리장을 키로 보관합니다. 키와 만들 때를 정하는 것은 호출자입니다. */
-export class FieldCache<Key = unknown> {
-    constructor(grid: PathGrid, options?: FieldCacheOptions);
-    readonly grid: PathGrid;
-    readonly capacity: number;
-    readonly size: number;
-    has(key: Key): boolean;
-    /** 키의 거리장, 없으면 `undefined`. 꺼내도 순서는 바뀌지 않습니다. */
-    get(key: Key): DistanceField | undefined;
-    /** 담고 돌려줍니다. 용량이 차 있으면 가장 먼저 넣은 것을 버립니다. */
-    set(key: Key, field: DistanceField): DistanceField;
-    clear(): void;
-    /** 세대 번호(틱 등)가 지난번과 다르면 비우고 true. */
-    sync(epoch: unknown): boolean;
 }
 
 export interface RouteFindOptions {
@@ -149,7 +96,7 @@ export interface RouteFindOptions {
 export type SegmentClear = (x0: number, y0: number, x1: number, y1: number) => boolean;
 
 /**
- * 유닛 하나가 한 번 가는 길을 찾는 A* 탐색기. 격자·비용·통과 규칙이 `DistanceField`와 같아 최단 비용이 같습니다.
+ * 유닛 하나가 한 번 가는 길을 찾는 A* 탐색기. 격자·비용·통과 규칙이 `PortalGraph`·`FlowField`와 같습니다.
  * 탐색 버퍼를 들고 있으므로 격자마다 하나 만들어 재사용합니다. 같은 입력이면 항상 같은 경로입니다.
  */
 export class RouteFinder {

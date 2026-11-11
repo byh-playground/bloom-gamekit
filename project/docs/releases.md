@@ -1,3 +1,12 @@
+## v0.53.0 (2026-11-11)
+
+호환되지 않는 변경(MINOR). pathfield에서 옛 거리장 구현을 삭제합니다. 청크 + 포털 계층 길찾기 5단계(정리)입니다. 유일한 소비자 쌀콩팡이 `PortalGraph`·`FlowField`·`RouteFinder`로 모두 옮겼습니다.
+
+- 삭제: `DistanceField`, `FieldCache`, `PathGrid.sync(version)`, `PathGrid.reachableFrom(start, out)`과 그것만 쓰던 내부 코드(`field.js`·`cache.js`, 힙, 탐색 스택, 버전 기억). 대체: 목표까지의 비용은 `PortalGraph#setGoal`·`goal`이 돌려주는 `FlowField`, 한 유닛의 길은 `RouteFinder`, 장애물 변경은 `invalidate()`·`invalidateRect()`, 연결 여부는 `PortalGraph#component`입니다.
+- `UNREACHED`는 `grid.js`로 옮겼고 공개 이름은 그대로입니다. 비용(직선 10·대각 14)·방향 순서·동률 규칙은 바뀌지 않았습니다.
+- 고정 시나리오: 삭제된 API의 시나리오(게으른 확정·캐시·`reachableFrom`·원본 `NavigationGrid` 해시 대조)를 지우고, 비교 기준이 필요한 시나리오는 시험 안의 작은 다익스트라·flood fill로 바꿨습니다.
+- 통합 예제의 "거리장" 탭을 지웠습니다. 목표로 내려가는 유닛은 "포털" 탭이 같은 `descend`·`lowestNeighbor`로 보여 줍니다.
+
 ## v0.52.3 (2026-11-11)
 
 호환되는 추가(PATCH). pathfield `PortalGraph`에 목표 보관소와 계층 유동장 `FlowField`를 더합니다. 기존 `PathGrid`·`DistanceField`·`FieldCache`·`RouteFinder`·`PortalGraph` 구조의 결과는 같습니다(고정 시나리오의 원본 대비 해시 그대로). 계층 길찾기 3단계입니다.
