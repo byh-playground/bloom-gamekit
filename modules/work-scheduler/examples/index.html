@@ -1666,7 +1666,8 @@
                 disc(X, Y, BODY.r, BODY.group === 0 ? '#3d8fb0' : '#c97a45', BODY.dynamic ? '#ffffff' : '#091117');
             }
         }
-        // 예산에 걸려 겹친 채 끝난 쌍(겹침 풀기 전 자리)을 빨갛게 둘러 이어 줍니다.
+        // 예산에 걸려 겹친 채 끝난 쌍(겹침 풀기 전 자리)을 빨갛게 둘러 이어 줍니다. 표시 시계로 깜박입니다.
+        CONTEXT.globalAlpha = 0.6 + 0.4 * Math.sin(performance.now() / 120);
         for (const [I, J, XI, YI, XJ, YJ] of state.overlaps) {
             CONTEXT.strokeStyle = '#ff4d4d';
             CONTEXT.lineWidth = 2;
@@ -1677,6 +1678,7 @@
             disc(XI / FP, YI / FP, state.bodies[I].r + 2, null, '#ff4d4d', 2);
             disc(XJ / FP, YJ / FP, state.bodies[J].r + 2, null, '#ff4d4d', 2);
         }
+        CONTEXT.globalAlpha = 1;
         const LABEL = budgetLabel(),
             MEDIAN = [...state.tickMs].sort((a, b) => a - b)[state.tickMs.length >> 1] ?? 0,
             LAST = state.last;
@@ -1765,9 +1767,64 @@
             reset();
             render();
         },
+        render,
+        setRunning(on) {
+            RUN.setAttribute('aria-pressed', String(on));
+        },
         get state() {
             return state;
         },
     };
     render();
+</script>
+
+<script type="module">
+    import { installDebugHost } from '../../../dist/debug-tools.js';
+
+    // 주소로 탭 하나를 장면으로 엽니다(?debug=1&scene=contacts&budget=1&tick=100). 주소에 debug가 없으면 아무것도 하지 않습니다.
+    installDebugHost({
+        scenes: {
+            // "접촉" 탭: budget(0~3)은 예산 칸 번호입니다. 표시는 가상 시계, 틱 시간은 실제 시계로 잽니다.
+            contacts({ budget }, { freezeClock }) {
+                if (!/^[0-3]$/.test(budget ?? '')) {
+                    throw new Error(`contacts needs budget=0..3: ${budget}`);
+                }
+                const CLOCK = freezeClock(),
+                    EXAMPLE = globalThis.contactsExample;
+                document.querySelector('#tab-contacts').click();
+                EXAMPLE.setRunning(false);
+                EXAMPLE.reset();
+                EXAMPLE.setBudget(Number(budget));
+                // 틱 시간은 기계마다 달라 화면에 두지 않고 state({ times: true })로만 냅니다.
+                document.querySelector('#contacts-output').hidden = true;
+                return {
+                    step() {
+                        CLOCK.advance(50);
+                        CLOCK.realTime(() => EXAMPLE.step());
+                    },
+                    render: EXAMPLE.render,
+                    state(options) {
+                        const STATE = EXAMPLE.state;
+                        return {
+                            exampleTick: STATE.tick,
+                            wallPenetrations: STATE.wallPenetrations,
+                            ...STATE.last,
+                            ...(options?.times ? { tickMs: STATE.tickMs } : {}),
+                        };
+                    },
+                    hash() {
+                        let hash = 0x811c9dc5;
+                        for (const BODY of EXAMPLE.state.bodies) {
+                            hash = Math.imul(hash ^ BODY.x, 0x01000193) >>> 0;
+                            hash = Math.imul(hash ^ BODY.y, 0x01000193) >>> 0;
+                        }
+                        return hash.toString(16).padStart(8, '0');
+                    },
+                    dispose() {
+                        document.querySelector('#contacts-output').hidden = false;
+                    },
+                };
+            },
+        },
+    });
 </script>

@@ -35,4 +35,4 @@ const loadedAssets = await Promise.all(
 
 ## 상세
 
-`dist/vector-assets-loader.js`는 `createVectorAssetLoader`와 `VECTOR_ASSET_QUALITY_PRESETS`만 내보내는 별도 번들입니다. 구현은 [vector-assets](../vector-assets/README.md)의 `browser-loader.js`와 공유 컴파일러이며, `loader.load(url, options)`의 옵션·캐시 키·품질 preset 계약은 [vector-assets README의 Build and runtime](../vector-assets/README.md#build-and-runtime)이 원본입니다.
+`dist/vector-assets-loader.js`는 `createVectorAssetLoader`와 `VECTOR_ASSET_QUALITY_PRESETS`만 내보내는 별도 번들입니다. 구현은 [vector-assets](../vector-assets/README.md)의 `browser-loader.js`와 공유 컴파일러이며, `loader.load(url, options)`의 옵션·캐시 키·품질 preset 계약은 [vector-assets README의 빌드와 런타임](../vector-assets/README.md#빌드와-런타임)이 원본입니다.
