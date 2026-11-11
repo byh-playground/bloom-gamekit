@@ -205,22 +205,20 @@
         <pre id="pathfield-output"></pre>
     </section>
     <section id="panel-portal" role="tabpanel" aria-labelledby="tab-portal" hidden>
-        <h1>건물을 놓으면 그 둘레의 청크만 다시 만듭니다</h1>
+        <h1>유닛이 묻는 청크만 계산해 목표로 내려갑니다</h1>
         <p>
-            캔버스를 눌러 원 건물을 놓거나, 놓은 건물을 눌러 지우세요. 격자를 청크로 나누고 청크 경계의 포털로 잇는
-            길찾기 구조가 바뀐 곳만 다시 만들어지는 것을 보여 줍니다.
+            파란 유닛들이 초록 목표로 내려갑니다. 유닛이 선 청크만 길을 계산하고, 건물을 놓으면 그 둘레 청크만 다시
+            만듭니다.
         </p>
         <ul>
             <li>
-                칸 색은 연결 성분입니다. 색이 다르면 걸어서 닿지 않습니다. 굵은 선은 청크 경계, 흰 점은 포털 노드입니다.
+                밝은 칸은 계산한 청크(밝을수록 목표에 가까움), 푸른 빗금은 이웃 경계 값만 빌려 준 청크입니다. 노란 점은
+                목표까지 거리를 확정한 포털, 흰 테두리 점은 후보로만 닿은 포털입니다.
             </li>
             <li>
-                주황으로 칠한 청크는 성분·포털을 다시 만든 청크, 노란 점선 청크는 이웃이 바뀌어 노드만 다시 모은
-                청크입니다.
-            </li>
-            <li>
-                "간선 보기"는 같은 청크 안 노드끼리 걸어서 닿는 간선(가는 선)과 경계를 건너는 짝(짧은 굵은 선)을
-                그립니다. 화살표 키로 십자 표시를 옮기고 Enter로 놓거나 지웁니다.
+                캔버스를 누르면 건물을 놓거나 지웁니다(주황 = 다시 만든 청크). "목표 정하기"를 켜면 누른 곳이 목표가
+                됩니다. "정확한 길"은 A*로 찾은 최단 경로(보라)를 겹쳐 그립니다. 화살표 키로 십자 표시를 옮기고 Enter로
+                누릅니다.
             </li>
         </ul>
         <canvas
@@ -229,10 +227,13 @@
             height="320"
             tabindex="0"
             role="img"
-            aria-label="청크 경계와 포털 노드, 다시 만든 청크가 칠해진 격자"
+            aria-label="청크로 나눈 격자에서 유닛들이 계산된 청크를 따라 목표로 내려가는 장면"
         ></canvas>
         <div>
-            <button id="portal-edges" aria-pressed="true">간선 보기</button>
+            <button id="portal-goal-mode" aria-pressed="false">목표 정하기</button>
+            <button id="portal-exact" aria-pressed="false">정확한 길</button>
+            <button id="portal-send">유닛 보내기</button>
+            <button id="portal-edges" aria-pressed="false">간선 보기</button>
             <button id="portal-gap">틈 막기</button>
             <button id="portal-reset">처음으로</button>
         </div>
@@ -1019,16 +1020,19 @@
     </script>
     <script type="module">
         import { ObstacleField } from '../../../dist/geometry.js';
-        import { PathGrid, PortalGraph } from '../../../dist/pathfield.js';
+        import { PathGrid, PortalGraph, RouteFinder, UNREACHED } from '../../../dist/pathfield.js';
 
         // 장면은 이 예제의 것입니다. 좌표는 캔버스(480×320) 그대로이고 칸은 8, 청크는 기본 16칸(128)입니다.
         const WORLD = { width: 480, height: 320 },
             CELL = 8,
             RADIUS = 3,
             BUILDING = 18,
-            // 건물 둘레에서 통과 판정이 바뀔 수 있는 범위: 건물 반지름 + 이동체 반지름 + 한 칸.
+            // 건물 둘레에서 통과 판정이 바뀔 수 있는 범위: 이동체 반지름 + 한 칸.
             PAD = RADIUS + CELL,
             GAP = { x: 240, y: 296 },
+            GOAL_RADIUS = 10,
+            SPEED = 1.6,
+            UNIT_COUNT = 24,
             OBSTACLES = new ObstacleField({
                 ...WORLD,
                 fixedPoint: 100,
@@ -1057,15 +1061,106 @@
             }),
             GRID = new PathGrid({ ...WORLD, cellSize: CELL, passable: (x, y) => OBSTACLES.pointClear(x, y, RADIUS) }),
             GRAPH = new PortalGraph(GRID),
+            FINDER = new RouteFinder(GRID),
             CANVAS = document.querySelector('#portal-canvas'),
             CONTEXT = CANVAS.getContext('2d'),
-            STATE = { circles: [], nextId: 1, edges: true, cursor: { x: 360, y: 96 }, prepareMs: 0, edited: false };
+            STATE = {
+                circles: [],
+                nextId: 1,
+                edges: false,
+                exact: false,
+                goalMode: false,
+                cursor: { x: 360, y: 96 },
+                goal: { x: 420, y: 60 },
+                units: [],
+                prepareMs: 0,
+                edited: false,
+                running: false,
+            },
+            PATH = [],
+            ROUTE = [];
 
         GRAPH.prepare();
 
         // 처음 만들 때는 모든 청크가 "다시 만듦"이므로, 건물을 한 번 바꾼 뒤부터 칠합니다.
         function changeOf(chunk) {
             return STATE.edited ? GRAPH.chunkChange(chunk) : 0;
+        }
+
+        // 목표 해석은 이 예제의 것입니다: 목표 점 둘레의 열린 칸. 키는 목표 점이 든 칸 번호(칸 단위로 묶음)와 0입니다.
+        function goalCells() {
+            const CELLS = GRID.openCellsWithin(STATE.goal.x, STATE.goal.y, GOAL_RADIUS);
+            if (!CELLS.length) {
+                const NEAR = GRID.nearestOpen(GRID.cellAt(STATE.goal.x, STATE.goal.y), 6);
+                if (NEAR >= 0) {
+                    CELLS.push(NEAR);
+                }
+            }
+            return CELLS;
+        }
+
+        // 틱마다 보관소에서 다시 꺼냅니다. 건물이 바뀌어 보관소가 비었으면 지금 배치로 목표 칸을 다시 정합니다.
+        function field() {
+            const KEY = GRID.cellAt(STATE.goal.x, STATE.goal.y);
+            return GRAPH.goal(KEY, 0) ?? GRAPH.setGoal(KEY, 0, goalCells());
+        }
+
+        function sendUnits() {
+            STATE.units = [];
+            for (let i = 0; i < UNIT_COUNT; i++) {
+                const X = 50 + (i % 6) * 30,
+                    Y = 40 + Math.floor(i / 6) * 30;
+                STATE.units.push({ x: X, y: Y, arrived: false, trail: [X, Y] });
+            }
+            STATE.running = true;
+        }
+
+        // 유닛 하나를 한 걸음: 선 칸에서 값이 더 작은 이웃 칸 중심으로 갑니다. 목표 칸이면 도착입니다.
+        function stepUnits() {
+            const FIELD = field();
+            let moving = 0;
+            for (const UNIT of STATE.units) {
+                if (UNIT.arrived) {
+                    continue;
+                }
+                const AT = GRID.nearestOpen(GRID.cellAt(UNIT.x, UNIT.y), 2);
+                const NEXT = AT < 0 ? -1 : FIELD.lowestNeighbor(AT);
+                // 더 싼 이웃이 없으면 목표 칸이거나(도착) 닿지 않는 칸입니다(멈춤).
+                if (NEXT < 0) {
+                    UNIT.arrived = true;
+                    continue;
+                }
+                const DX = GRID.centerX(NEXT) - UNIT.x,
+                    DY = GRID.centerY(NEXT) - UNIT.y,
+                    D = Math.hypot(DX, DY),
+                    T = D <= SPEED ? 1 : SPEED / D;
+                UNIT.x += DX * T;
+                UNIT.y += DY * T;
+                UNIT.trail.push(UNIT.x, UNIT.y);
+                if (UNIT.trail.length > 400) {
+                    UNIT.trail.splice(0, 2);
+                }
+                moving++;
+            }
+            STATE.running = moving > 0;
+        }
+
+        function step(count = 1) {
+            for (let i = 0; i < count; i++) {
+                stepUnits();
+            }
+            render();
+        }
+
+        // 느린 기기에서도 같은 빠르기로 보이도록 지난 화면 이후 흐른 시간만큼(1/60초당 한 걸음, 최대 12걸음) 걷습니다.
+        let lastFrame = 0;
+        function frame(time) {
+            const STEPS = lastFrame ? Math.min(12, Math.max(1, Math.round((time - lastFrame) / (1000 / 60)))) : 1;
+            lastFrame = time;
+            if (STATE.running && !document.querySelector('#panel-portal').hidden) {
+                step(STEPS);
+            }
+            requestAnimationFrame(frame);
         }
 
         // 건물 하나가 바뀌면 그 둘레 사각형만 격자에 알리고, 그래프는 그 사각형과 겹치는 청크만 다시 만듭니다.
@@ -1083,6 +1178,11 @@
             GRAPH.prepare();
             STATE.prepareMs = Math.round((performance.now() - START) * 1000) / 1000;
             STATE.edited = true;
+            // 길이 바뀌었을 수 있으니 멈춘 유닛도 다시 내려가 봅니다.
+            for (const UNIT of STATE.units) {
+                UNIT.arrived = false;
+            }
+            STATE.running = STATE.units.length > 0;
             render();
         }
 
@@ -1098,16 +1198,60 @@
             rebuild();
         }
 
+        function setGoalAt(x, y) {
+            STATE.goal = {
+                x: Math.round(Math.min(WORLD.width - 1, Math.max(0, x))),
+                y: Math.round(Math.min(WORLD.height - 1, Math.max(0, y))),
+            };
+            for (const UNIT of STATE.units) {
+                UNIT.arrived = false;
+            }
+            STATE.running = STATE.units.length > 0;
+            render();
+        }
+
+        function press(x, y) {
+            if (STATE.goalMode) {
+                setGoalAt(x, y);
+            } else {
+                toggleAt(x, y);
+            }
+        }
+
         function centerOf(cell) {
             return [GRID.centerX(cell), GRID.centerY(cell)];
         }
 
-        function draw() {
+        function polyline(cells, color, width) {
+            CONTEXT.strokeStyle = color;
+            CONTEXT.lineWidth = width;
+            CONTEXT.beginPath();
+            cells.forEach((cell, i) => (i ? CONTEXT.lineTo(...centerOf(cell)) : CONTEXT.moveTo(...centerOf(cell))));
+            CONTEXT.stroke();
+        }
+
+        function draw(flow) {
             CONTEXT.clearRect(0, 0, WORLD.width, WORLD.height);
-            // 칸: 성분마다 다른 색, 막힌 칸은 어두운 색.
+            // 칸: 계산한 청크(F1)는 목표까지 비용으로 밝기, 아닌 칸은 어둡게. 계산하지 않은 청크의 값은 묻지 않습니다(물으면 계산함).
+            let maxCost = 1;
             for (let cell = 0; cell < GRID.size; cell++) {
-                const COMPONENT = GRAPH.component(cell);
-                CONTEXT.fillStyle = COMPONENT < 0 ? '#0b151b' : `hsl(${(195 + COMPONENT * 137.5) % 360} 35% 24%)`;
+                if (flow.chunkStage(GRAPH.chunkOf(cell)) & 2) {
+                    const COST = flow.distance(cell);
+                    if (COST !== UNREACHED) {
+                        maxCost = Math.max(maxCost, COST);
+                    }
+                }
+            }
+            for (let cell = 0; cell < GRID.size; cell++) {
+                const STAGE = flow.chunkStage(GRAPH.chunkOf(cell)),
+                    COST = STAGE & 2 ? flow.distance(cell) : UNREACHED;
+                if (!GRID.isOpen(cell)) {
+                    CONTEXT.fillStyle = '#05090c';
+                } else if (COST !== UNREACHED) {
+                    CONTEXT.fillStyle = `hsl(180 45% ${Math.round(46 - (COST / maxCost) * 32)}%)`;
+                } else {
+                    CONTEXT.fillStyle = '#13212a';
+                }
                 CONTEXT.fillRect(GRID.colOf(cell) * CELL, GRID.rowOf(cell) * CELL, CELL - 1, CELL - 1);
             }
             const SPAN = GRAPH.chunkSize * CELL;
@@ -1116,7 +1260,24 @@
                     Y = Math.floor(chunk / GRAPH.chunkCols) * SPAN,
                     W = Math.min(SPAN, WORLD.width - X),
                     H = Math.min(SPAN, WORLD.height - Y),
-                    CHANGE = changeOf(chunk);
+                    CHANGE = changeOf(chunk),
+                    STAGE = flow.chunkStage(chunk);
+                if (STAGE === 1) {
+                    // F0만 만든 청크(이웃 F1에 경계 값만 빌려 줌): 빗금.
+                    CONTEXT.save();
+                    CONTEXT.beginPath();
+                    CONTEXT.rect(X, Y, W, H);
+                    CONTEXT.clip();
+                    CONTEXT.strokeStyle = 'rgba(108, 178, 232, 0.35)';
+                    CONTEXT.lineWidth = 1;
+                    CONTEXT.beginPath();
+                    for (let d = -H; d < W; d += 10) {
+                        CONTEXT.moveTo(X + d, Y + H);
+                        CONTEXT.lineTo(X + d + H, Y);
+                    }
+                    CONTEXT.stroke();
+                    CONTEXT.restore();
+                }
                 if (CHANGE === 2) {
                     CONTEXT.fillStyle = 'rgba(224, 164, 88, 0.3)';
                     CONTEXT.fillRect(X, Y, W, H);
@@ -1157,24 +1318,59 @@
                         }
                     }
                     CONTEXT.stroke();
-                    CONTEXT.strokeStyle = '#e6f1f3';
-                    CONTEXT.lineWidth = 2;
-                    CONTEXT.beginPath();
-                    for (let i = 0; i < COUNT; i++) {
-                        const NODE = GRAPH.chunkNode(chunk, i);
-                        CONTEXT.moveTo(...centerOf(GRAPH.nodeCell(NODE)));
-                        CONTEXT.lineTo(...centerOf(GRAPH.nodeCell(GRAPH.nodePeer(NODE))));
-                    }
-                    CONTEXT.stroke();
                 }
                 for (let i = 0; i < COUNT; i++) {
                     const NODE = GRAPH.chunkNode(chunk, i),
-                        [X, Y] = centerOf(GRAPH.nodeCell(NODE));
+                        [X, Y] = centerOf(GRAPH.nodeCell(NODE)),
+                        NODE_STATE = flow.nodeState(NODE);
                     CONTEXT.beginPath();
-                    CONTEXT.arc(X, Y, 2.5, 0, Math.PI * 2);
-                    CONTEXT.fillStyle = GRAPH.nodeCrossCost(NODE) === 14 ? '#7fc97f' : '#e6f1f3';
-                    CONTEXT.fill();
+                    CONTEXT.arc(X, Y, NODE_STATE === 2 ? 2.8 : 2.2, 0, Math.PI * 2);
+                    if (NODE_STATE === 2) {
+                        CONTEXT.fillStyle = '#f2d15c';
+                        CONTEXT.fill();
+                    } else if (NODE_STATE === 1) {
+                        CONTEXT.strokeStyle = '#e6f1f3';
+                        CONTEXT.lineWidth = 1.2;
+                        CONTEXT.stroke();
+                    } else {
+                        CONTEXT.fillStyle = 'rgba(230, 241, 243, 0.25)';
+                        CONTEXT.fill();
+                    }
                 }
+            }
+            // 목표
+            CONTEXT.beginPath();
+            CONTEXT.arc(STATE.goal.x, STATE.goal.y, GOAL_RADIUS, 0, Math.PI * 2);
+            CONTEXT.strokeStyle = '#7fc97f';
+            CONTEXT.lineWidth = 3;
+            CONTEXT.stroke();
+            // 유닛: 지나온 자취와 점. "정확한 길"이면 지금 칸에서의 유동장 내려가기(주황)와 A* 최단 경로(보라)를 겹칩니다.
+            const GOAL_CELLS = goalCells();
+            for (const UNIT of STATE.units) {
+                if (STATE.exact) {
+                    const AT = GRID.nearestOpen(GRID.cellAt(UNIT.x, UNIT.y), 2);
+                    if (AT >= 0 && flow.distance(AT) !== UNREACHED) {
+                        polyline([AT, ...flow.descend(AT, 400, PATH)], 'rgba(224, 164, 88, 0.9)', 2);
+                        const ROUTE_CELLS = FINDER.find(AT, GOAL_CELLS, {}, ROUTE);
+                        if (ROUTE_CELLS) {
+                            polyline(ROUTE_CELLS, 'rgba(184, 140, 232, 0.9)', 1.5);
+                        }
+                    }
+                } else {
+                    CONTEXT.strokeStyle = 'rgba(108, 178, 232, 0.45)';
+                    CONTEXT.lineWidth = 1;
+                    CONTEXT.beginPath();
+                    for (let i = 0; i < UNIT.trail.length; i += 2) {
+                        CONTEXT[i ? 'lineTo' : 'moveTo'](UNIT.trail[i], UNIT.trail[i + 1]);
+                    }
+                    CONTEXT.stroke();
+                }
+            }
+            for (const UNIT of STATE.units) {
+                CONTEXT.beginPath();
+                CONTEXT.arc(UNIT.x, UNIT.y, 3, 0, Math.PI * 2);
+                CONTEXT.fillStyle = UNIT.arrived ? '#7fc97f' : '#6cb2e8';
+                CONTEXT.fill();
             }
             // 키보드 십자 표시
             CONTEXT.strokeStyle = '#6cb2e8';
@@ -1188,23 +1384,45 @@
         }
 
         function render() {
-            draw();
+            const FIELD = field();
+            draw(FIELD);
             const REBUILT = [],
-                NODES_ONLY = [];
-            let nodes = 0,
-                edges = 0;
+                NODES_ONLY = [],
+                NEAR = [],
+                FAR = [];
+            let settled = 0,
+                open = 0,
+                nodes = 0;
             for (let chunk = 0; chunk < GRAPH.chunkCount; chunk++) {
                 const PLACE = [chunk % GRAPH.chunkCols, Math.floor(chunk / GRAPH.chunkCols)],
-                    COUNT = GRAPH.chunkNodeCount(chunk);
+                    COUNT = GRAPH.chunkNodeCount(chunk),
+                    STAGE = FIELD.chunkStage(chunk);
                 if (changeOf(chunk) === 2) {
                     REBUILT.push(PLACE);
                 } else if (changeOf(chunk) === 1) {
                     NODES_ONLY.push(PLACE);
                 }
+                if (STAGE & 2) {
+                    NEAR.push(PLACE);
+                } else if (STAGE & 1) {
+                    FAR.push(PLACE);
+                }
                 nodes += COUNT;
                 for (let i = 0; i < COUNT; i++) {
-                    for (let j = i + 1; j < COUNT; j++) {
-                        edges += GRAPH.edgeCost(chunk, i, j) > 0 ? 1 : 0;
+                    const S = FIELD.nodeState(GRAPH.chunkNode(chunk, i));
+                    settled += S === 2 ? 1 : 0;
+                    open += S === 1 ? 1 : 0;
+                }
+            }
+            // 유닛이 선 칸의 유동장 비용 ÷ A* 최단 비용(1이면 같음). "정확한 길"을 켰을 때만 A*를 돌립니다.
+            let worst = null;
+            if (STATE.exact) {
+                const GOAL_CELLS = goalCells();
+                for (const UNIT of STATE.units) {
+                    const AT = GRID.nearestOpen(GRID.cellAt(UNIT.x, UNIT.y), 2),
+                        COST = AT < 0 ? UNREACHED : FIELD.distance(AT);
+                    if (COST !== UNREACHED && COST > 0 && FINDER.find(AT, GOAL_CELLS, {}, ROUTE)) {
+                        worst = Math.max(worst ?? 1, Math.round((COST / FINDER.cost) * 1000) / 1000);
                     }
                 }
             }
@@ -1213,9 +1431,16 @@
                     circles: STATE.circles.map((c) => [c.x, c.y]),
                     rebuiltChunks: REBUILT,
                     nodeOnlyChunks: NODES_ONLY,
+                    goal: [STATE.goal.x, STATE.goal.y],
+                    nearChunks: NEAR,
+                    farOnlyChunks: FAR,
+                    settledNodes: settled,
+                    openNodes: open,
+                    units: STATE.units.length,
+                    arrived: STATE.units.filter((u) => u.arrived).length,
+                    worstRatio: worst,
                     chunks: [GRAPH.chunkCols, GRAPH.chunkRows],
                     nodes,
-                    edges,
                     components: GRAPH.componentCount,
                     // 왼쪽 위 칸과 오른쪽 위 칸이 같은 성분인가(가운데 벽의 틈을 막으면 false).
                     leftRightConnected: GRAPH.component(GRID.cellAt(12, 12)) === GRAPH.component(GRID.cellAt(468, 12)),
@@ -1226,6 +1451,8 @@
                 2,
             );
             document.querySelector('#portal-edges').setAttribute('aria-pressed', String(STATE.edges));
+            document.querySelector('#portal-exact').setAttribute('aria-pressed', String(STATE.exact));
+            document.querySelector('#portal-goal-mode').setAttribute('aria-pressed', String(STATE.goalMode));
         }
 
         // 포인터 이벤트 하나로 마우스와 터치를 함께 받습니다.
@@ -1235,7 +1462,7 @@
                 X = ((event.clientX - BOX.left) * WORLD.width) / BOX.width,
                 Y = ((event.clientY - BOX.top) * WORLD.height) / BOX.height;
             STATE.cursor = { x: Math.round(X), y: Math.round(Y) };
-            toggleAt(X, Y);
+            press(X, Y);
         });
         CANVAS.addEventListener('keydown', (event) => {
             const STEP = { ArrowLeft: [-CELL, 0], ArrowRight: [CELL, 0], ArrowUp: [0, -CELL], ArrowDown: [0, CELL] }[
@@ -1250,8 +1477,20 @@
                 render();
             } else if (event.key === 'Enter' || event.key === ' ') {
                 event.preventDefault();
-                toggleAt(STATE.cursor.x, STATE.cursor.y);
+                press(STATE.cursor.x, STATE.cursor.y);
             }
+        });
+        document.querySelector('#portal-goal-mode').addEventListener('click', () => {
+            STATE.goalMode = !STATE.goalMode;
+            render();
+        });
+        document.querySelector('#portal-exact').addEventListener('click', () => {
+            STATE.exact = !STATE.exact;
+            render();
+        });
+        document.querySelector('#portal-send').addEventListener('click', () => {
+            sendUnits();
+            render();
         });
         document.querySelector('#portal-edges').addEventListener('click', () => {
             STATE.edges = !STATE.edges;
@@ -1263,10 +1502,15 @@
             STATE.circles = [];
             OBSTACLES.setCircles([]);
             REMOVED.forEach(invalidateAround);
+            STATE.goal = { x: 420, y: 60 };
+            STATE.goalMode = false;
+            sendUnits();
             rebuild();
         });
-        window.portalExample = { toggleAt, state: STATE, graph: GRAPH, grid: GRID };
+        window.portalExample = { toggleAt, setGoalAt, sendUnits, step, state: STATE, graph: GRAPH, grid: GRID, field };
+        sendUnits();
         render();
+        requestAnimationFrame(frame);
     </script>
 </html>
 

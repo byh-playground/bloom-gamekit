@@ -249,10 +249,38 @@ try {
             // 포털 탭: 건물을 놓으면 겹치는 청크만 다시 만들고, 벽의 틈을 막으면 양쪽이 다른 성분이 되며, 지우면 다시 이어집니다.
             await PAGE.click('#tab-portal');
             const PORTAL = () => PAGE.locator('#portal-output').evaluate((output) => JSON.parse(output.textContent));
+            const ALL_ARRIVED = () =>
+                PAGE.waitForFunction(
+                    () => {
+                        const OUT = JSON.parse(document.querySelector('#portal-output').textContent);
+                        return OUT.units > 0 && OUT.arrived === OUT.units;
+                    },
+                    null,
+                    { timeout: 30000 },
+                );
+            // 유동장: 유닛들이 벽의 틈을 돌아 목표에 닿고, 유닛이 물은 청크만 계산합니다.
+            await ALL_ARRIVED();
+            let portal = await PORTAL();
+            assert.ok(portal.settledNodes > 0, '포털 노드의 추상 거리를 확정함');
+            assert.ok(
+                portal.nearChunks.length > 0 && portal.nearChunks.length < portal.chunks[0] * portal.chunks[1],
+                '유닛이 지나간 청크만 계산함',
+            );
+            await PAGE.click('#portal-send');
+            await PAGE.click('#portal-exact');
+            portal = await PORTAL();
+            assert.ok(portal.worstRatio >= 1 && portal.worstRatio <= 1.15, '유동장 값 ÷ A* 최단 비용');
+            await PAGE.click('#portal-exact');
+            await PAGE.click('#portal-goal-mode');
+            await PAGE.locator('#portal-canvas').scrollIntoViewIfNeeded();
+            await PAGE.mouse.click(...AT(await PAGE.locator('#portal-canvas').boundingBox(), 60, 290));
+            assert.deepEqual((await PORTAL()).goal, [60, 290], '목표 정하기로 누른 곳이 목표');
+            await ALL_ARRIVED();
+            await PAGE.click('#portal-goal-mode');
             await PAGE.locator('#portal-canvas').scrollIntoViewIfNeeded();
             const PORTAL_BOX = await PAGE.locator('#portal-canvas').boundingBox();
             await PAGE.mouse.click(...AT(PORTAL_BOX, 330, 140));
-            let portal = await PORTAL();
+            portal = await PORTAL();
             assert.deepEqual(
                 [portal.circles, portal.rebuiltChunks, portal.components],
                 [
@@ -330,6 +358,16 @@ try {
                         ],
                     ],
                     'tap',
+                );
+                await TOUCH_PAGE.locator('#portal-goal-mode').tap();
+                await TOUCH_PAGE.touchscreen.tap(
+                    ...AT(await TOUCH_PAGE.locator('#portal-canvas').boundingBox(), 400, 280),
+                );
+                assert.deepEqual(
+                    (await TOUCH_PAGE.locator('#portal-output').evaluate((output) => JSON.parse(output.textContent)))
+                        .goal,
+                    [400, 280],
+                    'tap goal',
                 );
             } finally {
                 await PORTAL_TOUCH.close();
