@@ -1,4 +1,5 @@
 // modules/pathfield/grid.js
+var UNREACHED = 2147483647;
 var STRAIGHT_COST = 10;
 var DIAGONAL_COST = 14;
 var DIRECTION_COUNT = 8;
@@ -43,15 +44,13 @@ var PathGrid = class {
   cols;
   rows;
   size;
-  /** 통과 판정을 비운 횟수. 이 격자에서 만든 거리장과 캐시가 낡았는지 알아보는 표식입니다. */
+  /** 통과 판정을 비운 횟수. 이 격자 위에 만든 길찾기 결과가 낡았는지 알아보는 표식입니다. */
   revision = 0;
   #passable;
   #open;
-  #version;
   #passableEdge;
   #edgeKnown;
   #edgeOpen;
-  #stack = null;
   // 마지막 takeChangedRects 이후 바뀐 사각형: 칸 좌표 [minCol, minRow, maxCol, maxRow] 네 정수씩, 기록 순서대로.
   #changed = new Int32Array(MAX_CHANGED_RECTS * 4);
   #changedCount = 0;
@@ -201,7 +200,7 @@ var PathGrid = class {
   /**
    * 마지막으로 가져간 뒤 바뀐 칸 사각형을 `out`(길이 `4 * MAX_CHANGED_RECTS` 이상의 Int32Array)에
    * `[minCol, minRow, maxCol, maxRow]`(양끝 포함) 네 정수씩 기록 순서대로 쓰고 개수를 돌려준 뒤 기록을 비웁니다.
-   * 소비자는 하나라고 가정합니다(두 곳이 가져가면 나중 쪽은 놓칩니다). `invalidate()`·`sync`가 비운 경우는 격자 전체 한 개입니다.
+   * 소비자는 하나라고 가정합니다(두 곳이 가져가면 나중 쪽은 놓칩니다). `invalidate()`가 비운 경우는 격자 전체 한 개입니다.
    * @param {Int32Array} out
    */
   takeChangedRects(out) {
@@ -242,15 +241,6 @@ var PathGrid = class {
     LIST[2] = x1;
     LIST[3] = y1;
     this.#changedCount = 1;
-  }
-  /** 게임이 가진 장애물 배치의 세대 번호를 알립니다. 지난번과 다르면 `invalidate()`하고 true를 돌려줍니다. */
-  sync(version) {
-    if (version === this.#version) {
-      return false;
-    }
-    this.#version = version;
-    this.invalidate();
-    return true;
   }
   /**
    * 가장 가까운 통과 가능한 칸. `cell` 자신이 열려 있으면 그 칸이고, 아니면 정사각 고리를 `maxRing`까지 넓히며 찾습니다.
@@ -311,260 +301,6 @@ var PathGrid = class {
       }
     }
     return out;
-  }
-  /**
-   * `start`(열린 칸)에서 8방향으로 걸어 닿는 칸을 1로 표시해 `out`(길이 `size` 이상의 Uint8Array, 먼저 비움)에 채웁니다.
-   * `start`가 열려 있지 않으면(-1 포함) 모두 0입니다. 거리장보다 가볍게 "이어져 있는가"만 알고 싶을 때 씁니다.
-   * 탐색 스택은 격자가 가진 Int32Array(칸마다 한 번만 들어감)를 재사용합니다.
-   * @param {number} start
-   * @param {Uint8Array} out
-   */
-  reachableFrom(start, out) {
-    if (!(out instanceof Uint8Array) || out.length < this.size) {
-      throw new TypeError(`PathGrid.reachableFrom needs a Uint8Array of at least ${this.size} cells.`);
-    }
-    out.fill(0, 0, this.size);
-    if (!this.isOpen(start)) {
-      return out;
-    }
-    const STACK = this.#stack ??= new Int32Array(this.size);
-    let top = 0;
-    STACK[top++] = start;
-    out[start] = 1;
-    while (top) {
-      const CELL = STACK[--top], COL = CELL % this.cols, ROW = (CELL - COL) / this.cols;
-      for (let direction = 0; direction < DIRECTION_COUNT; direction++) {
-        const NEXT = this.stepCell(COL, ROW, direction);
-        if (NEXT >= 0 && out[NEXT] === 0) {
-          out[NEXT] = 1;
-          STACK[top++] = NEXT;
-        }
-      }
-    }
-    return out;
-  }
-};
-
-// modules/pathfield/field.js
-var UNREACHED = 2147483647;
-var CellHeap = class {
-  scale;
-  keys = [];
-  constructor(scale) {
-    this.scale = scale;
-  }
-  get size() {
-    return this.keys.length;
-  }
-  push(cost, cell) {
-    const KEYS = this.keys, KEY = cost * this.scale + cell;
-    let i = KEYS.length;
-    KEYS.push(KEY);
-    while (i > 0) {
-      const PARENT = i - 1 >> 1;
-      if (KEYS[PARENT] <= KEY) {
-        break;
-      }
-      KEYS[i] = KEYS[PARENT];
-      i = PARENT;
-    }
-    KEYS[i] = KEY;
-  }
-  pop() {
-    const KEYS = this.keys, TOP = KEYS[0], LAST = KEYS.pop();
-    if (KEYS.length) {
-      let i = 0;
-      for (; ; ) {
-        let child = 2 * i + 1;
-        if (child >= KEYS.length) {
-          break;
-        }
-        if (child + 1 < KEYS.length && KEYS[child + 1] < KEYS[child]) {
-          child++;
-        }
-        if (KEYS[child] >= LAST) {
-          break;
-        }
-        KEYS[i] = KEYS[child];
-        i = child;
-      }
-      KEYS[i] = LAST;
-    }
-    return TOP;
-  }
-};
-var DistanceField = class {
-  grid;
-  /** 칸마다 비용. `settle`(또는 `distance`)로 확정한 칸만 최종값입니다. */
-  dist;
-  /** 모든 칸이 확정됐는지(힙이 비었는지). */
-  done;
-  #heap;
-  /**
-   * @param {PathGrid} grid 걸어갈 격자.
-   * @param {ArrayLike<number>} sources 출발 칸 번호. 열린 칸을 넘기세요(닫힌 칸을 넘기면 거기서 퍼집니다). 같은 칸이 겹쳐도 됩니다.
-   */
-  constructor(grid, sources) {
-    if (!(grid instanceof PathGrid)) {
-      throw new TypeError("DistanceField needs a PathGrid.");
-    }
-    this.grid = grid;
-    this.dist = new Int32Array(grid.size).fill(UNREACHED);
-    let scale = 1;
-    while (scale < grid.size) {
-      scale *= 2;
-    }
-    this.#heap = new CellHeap(scale);
-    for (let i = 0; i < sources.length; i++) {
-      const CELL = sources[i];
-      if (!Number.isInteger(CELL) || CELL < 0 || CELL >= grid.size) {
-        throw new RangeError(`DistanceField source ${CELL} is not a cell of the grid.`);
-      }
-      if (this.dist[CELL] !== 0) {
-        this.dist[CELL] = 0;
-        this.#heap.push(0, CELL);
-      }
-    }
-    this.done = this.#heap.size === 0;
-  }
-  /**
-   * 비용 순서로 칸을 확정해 갑니다. `target`을 주면 그 칸이 확정되는 즉시(자기보다 싼 칸이 힙에 없을 때) 멈추고, 주지 않으면
-   * 닿을 수 있는 모든 칸을 확정합니다. `target`이 확정되면 그보다 싸거나 같은 비용의 칸도 모두 확정입니다.
-   */
-  settle(target = -1) {
-    const GRID = this.grid, COLS = GRID.cols, DIST = this.dist, HEAP = this.#heap, SCALE = HEAP.scale;
-    while (HEAP.size) {
-      if (target >= 0 && DIST[target] < Math.floor(HEAP.keys[0] / SCALE)) {
-        return;
-      }
-      const KEY = HEAP.pop(), CELL = KEY % SCALE, COST = (KEY - CELL) / SCALE;
-      if (COST > DIST[CELL]) {
-        continue;
-      }
-      const COL = CELL % COLS, ROW = (CELL - COL) / COLS;
-      for (let direction = 0; direction < DIRECTION_COUNT; direction++) {
-        const NEXT = GRID.stepCell(COL, ROW, direction);
-        if (NEXT < 0) {
-          continue;
-        }
-        const TOTAL = COST + DIRECTION_COST[direction];
-        if (TOTAL < DIST[NEXT]) {
-          DIST[NEXT] = TOTAL;
-          HEAP.push(TOTAL, NEXT);
-        }
-      }
-    }
-    this.done = true;
-  }
-  /** `cell`의 비용을 확정해 돌려줍니다(닿지 못하면 `UNREACHED`). 지도 전체가 아니라 그 칸까지만 퍼뜨립니다. */
-  distance(cell) {
-    this.settle(cell);
-    return this.dist[cell];
-  }
-  /**
-   * `cell`에서 가장 싼 이웃 칸(`cell`보다 싼 이웃 중 최저, 같으면 방향 순서가 앞선 쪽)의 번호, 없으면 -1.
-   * `cell`의 비용이 확정되어 있어야 합니다(`descend`는 알아서 확정합니다).
-   */
-  lowestNeighbor(cell) {
-    const GRID = this.grid, DIST = this.dist, COL = cell % GRID.cols, ROW = (cell - COL) / GRID.cols;
-    let best = -1, bestCost = DIST[cell];
-    for (let direction = 0; direction < DIRECTION_COUNT; direction++) {
-      const NEXT = GRID.stepCell(COL, ROW, direction);
-      if (NEXT >= 0 && DIST[NEXT] < bestCost) {
-        best = NEXT;
-        bestCost = DIST[NEXT];
-      }
-    }
-    return best;
-  }
-  /**
-   * `start`에서 비용이 줄어드는 쪽으로 최대 `maxSteps`칸을 걸은 칸 번호를 `out`(먼저 비움)에 채웁니다. `start` 자신은 넣지 않고,
-   * 출발 칸이나 더 싼 이웃이 없는 칸에서 멈춥니다. `start`가 닿지 못하는 칸이면 빈 결과입니다. `start`까지 확정합니다.
-   * 어느 칸을 목표로 삼을지(가장 먼 보이는 칸, 첫 칸 등)는 호출자가 이 목록에서 고릅니다.
-   */
-  descend(start, maxSteps, out = []) {
-    out.length = 0;
-    if (this.distance(start) === UNREACHED) {
-      return out;
-    }
-    let cell = start;
-    for (let i = 0; i < maxSteps; i++) {
-      const NEXT = this.lowestNeighbor(cell);
-      if (NEXT < 0) {
-        break;
-      }
-      out.push(NEXT);
-      cell = NEXT;
-    }
-    return out;
-  }
-};
-
-// modules/pathfield/cache.js
-var FieldCache = class {
-  /** 거리장을 만든 격자. 이 격자가 `invalidate()`되면 담긴 거리장은 모두 버립니다. */
-  grid;
-  /** 담을 수 있는 최대 개수. 넘기려 하면 먼저 넣은 것부터 버립니다(FIFO). */
-  capacity;
-  #fields = /* @__PURE__ */ new Map();
-  #revision;
-  #epoch;
-  /**
-   * @param {PathGrid} grid
-   * @param {{ capacity?: number }} [options] `capacity`는 1 이상의 정수 또는 `Infinity`(기본).
-   */
-  constructor(grid, options = {}) {
-    if (!(grid instanceof PathGrid)) {
-      throw new TypeError("FieldCache needs a PathGrid.");
-    }
-    const CAPACITY = options.capacity ?? Infinity;
-    if (CAPACITY !== Infinity && !(Number.isInteger(CAPACITY) && CAPACITY >= 1)) {
-      throw new RangeError("FieldCache capacity must be a positive integer or Infinity.");
-    }
-    this.grid = grid;
-    this.capacity = CAPACITY;
-    this.#revision = grid.revision;
-  }
-  /** 담긴 개수. */
-  get size() {
-    this.#dropStale();
-    return this.#fields.size;
-  }
-  has(key) {
-    this.#dropStale();
-    return this.#fields.has(key);
-  }
-  /** 키의 거리장, 없으면 `undefined`. 꺼내도 순서는 바뀌지 않습니다(LRU가 아님). */
-  get(key) {
-    this.#dropStale();
-    return this.#fields.get(key);
-  }
-  /** 거리장을 담고 돌려줍니다. 용량이 차 있으면 가장 먼저 넣은 것을 버립니다. 있는 키를 덮어써도 순서는 그대로입니다. */
-  set(key, field) {
-    this.#dropStale();
-    if (!this.#fields.has(key) && this.#fields.size >= this.capacity) {
-      this.#fields.delete(this.#fields.keys().next().value);
-    }
-    this.#fields.set(key, field);
-    return field;
-  }
-  clear() {
-    this.#fields.clear();
-  }
-  /** 세대 번호(틱 등)를 알립니다. 지난번과 다르면 비우고 true를 돌려줍니다. 한 세대 안에서만 공유할 거리장에 씁니다. */
-  sync(epoch) {
-    if (epoch === this.#epoch) {
-      return false;
-    }
-    this.#epoch = epoch;
-    this.#fields.clear();
-    return true;
-  }
-  #dropStale() {
-    if (this.#revision !== this.grid.revision) {
-      this.#revision = this.grid.revision;
-      this.#fields.clear();
-    }
   }
 };
 
@@ -2285,8 +2021,6 @@ var FlowField = class {
 };
 export {
   DIAGONAL_COST,
-  DistanceField,
-  FieldCache,
   FlowField,
   MAX_CHANGED_RECTS,
   PathGrid,
