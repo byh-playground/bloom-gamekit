@@ -871,6 +871,12 @@ var RouteFinder = class {
 
 // modules/pathfield/portal.js
 var OPTIONS2 = ["chunkSize", "portalSpan", "goalCapacity"];
+var TWO_32 = 4294967296;
+var NODE_NEW = 0;
+var NODE_OPEN = 1;
+var NODE_SETTLED = 2;
+var FLOW_TOKEN = /* @__PURE__ */ Symbol("FlowField");
+var flowAccess = null;
 var MAX_CHUNK_SIZE = 64;
 var NO_COMP = 65535;
 var NO_EDGE = 65535;
@@ -902,7 +908,7 @@ var PortalGraph = class {
   chunkSize;
   /** 포털 구간을 쪼개는 칸 수(기본 4). 조각마다 중앙 칸 하나가 노드입니다. */
   portalSpan;
-  /** 목표 보관소의 용량(기본 64). 목표 보관은 다음 단계에서 이 값을 씁니다. */
+  /** 목표 보관소의 용량(기본 64). 넘으면 가장 오래 안 쓴(`goal`·`setGoal`로 마지막으로 꺼낸 때가 가장 이른) 목표를 버립니다. */
   goalCapacity;
   /** 청크의 열·행·총 수. 청크 번호는 행 우선 `chunkRow * chunkCols + chunkCol`입니다. */
   chunkCols;
@@ -912,8 +918,18 @@ var PortalGraph = class {
   nodeCapacity;
   /** 구조를 다시 만든 횟수. 처음 만들 때와, 바뀐 사각형을 소비해 청크를 다시 만들 때마다 오릅니다. */
   revision = 0;
-  /** 누적 횟수: 성분·포털을 다시 만든 청크, 노드만 다시 모은 청크, 만든 노드 간 비용 행렬. */
-  stats = { chunksRebuilt: 0, nodeChunksRebuilt: 0, matricesBuilt: 0 };
+  /**
+   * 누적 횟수: 성분·포털을 다시 만든 청크, 노드만 다시 모은 청크, 만든 노드 간 비용 행렬, `setGoal`로 넣은 목표,
+   * 만든 청크 장(F0·F1 각각 하나), 목표별 추상 거리를 확정한 노드.
+   */
+  stats = {
+    chunksRebuilt: 0,
+    nodeChunksRebuilt: 0,
+    matricesBuilt: 0,
+    goalsBuilt: 0,
+    fieldsBuilt: 0,
+    nodesSettled: 0
+  };
   #built = false;
   #componentCount = 0;
   #cellsPerChunk;
@@ -952,6 +968,41 @@ var PortalGraph = class {
   #targets;
   #heap;
   #pairs;
+  // 살아 있는 노드의 조밀 번호(노드 번호 순). 구조가 바뀔 때마다 다시 매기고, 목표별 배열은 이 번호로 씁니다.
+  #denseCount = 0;
+  #denseOf;
+  #denseNode;
+  #denseCol;
+  #denseRow;
+  #denseLabel;
+  // 추상 힙 키 = (D + h) · nodeScale + 조밀 번호. nodeScale은 nodeCapacity 이상의 2의 거듭제곱(생성자가 2^53 아래를 확인).
+  #nodeScale;
+  // 목표 보관소: 슬롯마다 GoalSlot 하나와 그 FlowField 하나(재사용). (keyA, keyB) → 슬롯은 선형 탐사 해시.
+  #slots = [];
+  #goalCount = 0;
+  #clock = 0;
+  #table;
+  #tableMask;
+  // 청크 장 블록(청크 칸 수 Int32Array) 풀. 목표가 버려지면 블록 번호가 빈 목록으로 돌아갑니다.
+  #blocks = [];
+  #freeBlocks = [];
+  #fieldHeap;
+  #fieldPos;
+  #seeds;
+  // 청크 안 칸 → 청크 왼쪽 위 칸 기준 격자 칸 차이, 방향마다 청크 안 칸 번호 차이.
+  #localOffset;
+  #localStep;
+  #scratchDist;
+  #chunkCursor;
+  static {
+    flowAccess = {
+      check: (graph, slot) => graph.#check(slot),
+      distance: (graph, slot, cell) => graph.#distance(slot, cell),
+      lowest: (graph, slot, cell) => graph.#lowestNeighbor(slot, cell),
+      stage: (graph, slot, chunk) => graph.#chunkStage(slot, chunk),
+      node: (graph, slot, node, want) => graph.#nodeOf(slot, node, want)
+    };
+  }
   /**
    * @param {PathGrid} grid
    * @param {{ chunkSize?: number, portalSpan?: number, goalCapacity?: number }} [options]
@@ -1003,24 +1054,111 @@ var PortalGraph = class {
     this.#targets = new Uint16Array(this.#cellsPerChunk);
     this.#heap = new Int32Array(this.#cellsPerChunk * DIRECTION_COUNT + 1);
     this.#pairs = new Int32Array(this.#borderCap);
+    const D_LIMIT = 14 * (this.#cellsPerChunk + 1) * (this.chunkCount * this.#portalStride + 1), VALUE_LIMIT = D_LIMIT + 14 * (2 * this.#cellsPerChunk + 1) + 14 * (grid.cols + grid.rows);
+    let scale = 1;
+    while (scale < this.nodeCapacity) {
+      scale *= 2;
+    }
+    this.#nodeScale = scale;
+    if (VALUE_LIMIT >= 2147483647 || (VALUE_LIMIT + 1) * scale > Number.MAX_SAFE_INTEGER) {
+      throw new RangeError("PortalGraph grid is too large for exact integer distances; use a larger cellSize.");
+    }
+    this.#denseOf = new Int32Array(this.nodeCapacity).fill(-1);
+    this.#denseNode = new Int32Array(this.nodeCapacity);
+    this.#denseCol = new Int32Array(this.nodeCapacity);
+    this.#denseRow = new Int32Array(this.nodeCapacity);
+    this.#denseLabel = new Int32Array(this.nodeCapacity);
+    let tableSize = 1;
+    while (tableSize < this.goalCapacity * 2) {
+      tableSize *= 2;
+    }
+    this.#table = new Int32Array(tableSize);
+    this.#tableMask = tableSize - 1;
+    this.#fieldHeap = new Int32Array(this.#cellsPerChunk);
+    this.#fieldPos = new Int32Array(this.#cellsPerChunk);
+    this.#seeds = new Int32Array(this.#cellsPerChunk);
+    this.#localOffset = new Int32Array(this.#cellsPerChunk);
+    for (let local = 0; local < this.#cellsPerChunk; local++) {
+      this.#localOffset[local] = Math.floor(local / SIZE) * grid.cols + local % SIZE;
+    }
+    this.#localStep = new Int32Array(DIRECTION_COUNT);
+    for (let direction = 0; direction < DIRECTION_COUNT; direction++) {
+      this.#localStep[direction] = DIRECTION_DX[direction] + DIRECTION_DY[direction] * SIZE;
+    }
+    this.#scratchDist = new Int32Array(this.#cellsPerChunk);
+    this.#chunkCursor = new Int32Array(this.chunkCount + 1);
   }
   /**
    * 구조를 최신으로 만듭니다. 처음이면 모든 청크를 만들고, 아니면 격자의 `takeChangedRects`를 소비해 바뀐 사각형(변 기억이
    * 비워진 바깥 한 겹 포함)과 겹치는 청크만 다시 만듭니다. 무언가 다시 만들었으면 true. 질의도 필요하면 스스로 부릅니다.
-   * 격자의 바뀐 사각형 기록을 가져가는 소비자는 이 그래프 하나여야 합니다.
+   * 격자의 바뀐 사각형 기록을 가져가는 소비자는 이 그래프 하나여야 합니다. 다시 만들었으면 목표 보관소를 모두 비웁니다
+   * (목표 칸 집합이 통과 판정에 의존하므로 남기면 답이 이력에 의존합니다).
    */
   prepare() {
     if (!this.#built) {
       this.grid.takeChangedRects(this.#rects);
       this.#buildAll();
       this.#built = true;
-      return true;
-    }
-    if (this.grid.changedRectCount === 0) {
+    } else if (this.grid.changedRectCount === 0) {
       return false;
+    } else {
+      this.#rebuildChanged(this.grid.takeChangedRects(this.#rects));
     }
-    this.#rebuildChanged(this.grid.takeChangedRects(this.#rects));
+    this.#renumber();
+    this.#discardGoals();
     return true;
+  }
+  /** 보관 중인 목표의 수. */
+  get goalCount() {
+    return this.#goalCount;
+  }
+  /**
+   * 키 (keyA, keyB)로 보관한 목표의 유동장, 없으면 null. 꺼내면 "최근에 씀"이 됩니다. 키는 안전 정수 두 개입니다(문자열 키 없음).
+   * 돌려준 FlowField는 보관소의 슬롯이라, 이 목표가 버려진 뒤(용량 초과로 밀려남)에는 다른 목표에 다시 쓰입니다. 틱마다 다시 꺼내세요.
+   */
+  goal(keyA, keyB) {
+    this.prepare();
+    checkGoalKey(keyA, keyB);
+    const SLOT = this.#lookup(keyA, keyB);
+    if (SLOT < 0) {
+      return null;
+    }
+    const GOAL = this.#slots[SLOT];
+    GOAL.use = ++this.#clock;
+    return GOAL.field;
+  }
+  /**
+   * 목표 칸 `cells`(격자 칸 번호, 겹쳐도 됨)를 키 (keyA, keyB)로 보관하고 그 유동장을 돌려줍니다. 같은 키가 있으면 칸을 바꾸고
+   * 계산을 비웁니다. 가득 찼으면 가장 오래 안 쓴 목표를 버립니다. 막힌 칸은 목표에서 빠집니다. 여기서는 칸을 정리만 하고,
+   * 계산은 첫 질의 때 합니다. 같은 키에는 같은 칸 집합을 넣어야 합니다(키가 목표의 정의이고, 칸 집합을 바꾸는 것은 호출자의 책임).
+   */
+  setGoal(keyA, keyB, cells) {
+    this.prepare();
+    checkGoalKey(keyA, keyB);
+    if (cells === null || typeof cells !== "object" || !Number.isInteger(cells.length)) {
+      throw new TypeError("PortalGraph.setGoal cells must be an array-like of cell numbers.");
+    }
+    for (let i = 0; i < cells.length; i++) {
+      const CELL = cells[i];
+      if (!Number.isInteger(CELL) || CELL < 0 || CELL >= this.grid.size) {
+        throw new RangeError(`PortalGraph.setGoal cell ${CELL} is not a cell of the grid.`);
+      }
+    }
+    let slot = this.#lookup(keyA, keyB);
+    if (slot < 0) {
+      slot = this.#freeSlot();
+      const GOAL2 = this.#slots[slot];
+      GOAL2.keyA = keyA;
+      GOAL2.keyB = keyB;
+      GOAL2.live = true;
+      this.#goalCount++;
+      this.#insert(slot);
+    }
+    const GOAL = this.#slots[slot];
+    this.#resetGoal(GOAL, cells);
+    GOAL.use = ++this.#clock;
+    this.stats.goalsBuilt++;
+    return GOAL.field;
   }
   /** 전역 연결 성분의 수. 성분 번호는 0 이상 이 값 미만입니다. */
   get componentCount() {
@@ -1495,11 +1633,661 @@ var PortalGraph = class {
     this.#matrixReady[chunk] = 1;
     this.stats.matricesBuilt++;
   }
+  // ---------- 목표 보관소 ----------
+  // 살아 있는 노드에 노드 번호 순으로 0, 1, 2…를 붙이고 칸 좌표·전역 성분을 적어 둡니다.
+  #renumber() {
+    const COLS = this.grid.cols, PER = this.#cellsPerChunk;
+    let count = 0;
+    for (let node = 0; node < this.nodeCapacity; node++) {
+      const CHUNK = this.#nodeChunk[node];
+      if (CHUNK < 0) {
+        this.#denseOf[node] = -1;
+        continue;
+      }
+      const CELL = this.#nodeCell[node], COL = CELL % COLS;
+      this.#denseOf[node] = count;
+      this.#denseNode[count] = node;
+      this.#denseCol[count] = COL;
+      this.#denseRow[count] = (CELL - COL) / COLS;
+      this.#denseLabel[count] = this.#compLabel[CHUNK * PER + this.#cellComp[CELL]];
+      count++;
+    }
+    this.#denseCount = count;
+  }
+  #discardGoals() {
+    for (const GOAL of this.#slots) {
+      if (GOAL.live) {
+        this.#releaseBlocks(GOAL);
+        GOAL.live = false;
+      }
+    }
+    this.#table.fill(0);
+    this.#goalCount = 0;
+  }
+  // (keyA, keyB)의 해시: 두 키의 하위·상위 32비트를 murmur3 fmix32 식으로 섞습니다.
+  #hash(keyA, keyB) {
+    let h = Math.imul(keyA >>> 0 ^ 2654435769, 2246822507);
+    h ^= Math.floor(keyA / TWO_32) | 0;
+    h = Math.imul(h ^ h >>> 13, 3266489909);
+    h ^= keyB >>> 0;
+    h = Math.imul(h ^ h >>> 16, 2246822507);
+    h ^= Math.floor(keyB / TWO_32) | 0;
+    h = Math.imul(h ^ h >>> 13, 3266489909);
+    return (h ^ h >>> 16) & this.#tableMask;
+  }
+  #lookup(keyA, keyB) {
+    const TABLE = this.#table, MASK = this.#tableMask;
+    for (let at = this.#hash(keyA, keyB); ; at = at + 1 & MASK) {
+      const ENTRY = TABLE[at];
+      if (ENTRY === 0) {
+        return -1;
+      }
+      const GOAL = this.#slots[ENTRY - 1];
+      if (GOAL.keyA === keyA && GOAL.keyB === keyB) {
+        return ENTRY - 1;
+      }
+    }
+  }
+  #insert(slot) {
+    const TABLE = this.#table, GOAL = this.#slots[slot];
+    let at = this.#hash(GOAL.keyA, GOAL.keyB);
+    while (TABLE[at] !== 0) {
+      at = at + 1 & this.#tableMask;
+    }
+    TABLE[at] = slot + 1;
+  }
+  // 선형 탐사의 뒤로 당기기 삭제: 빈자리 뒤의 항목 중 제 자리(해시)가 빈자리보다 앞인 것을 당겨 탐사 사슬을 유지합니다.
+  #remove(slot) {
+    const TABLE = this.#table, MASK = this.#tableMask;
+    let hole = this.#hash(this.#slots[slot].keyA, this.#slots[slot].keyB);
+    while (TABLE[hole] !== slot + 1) {
+      hole = hole + 1 & MASK;
+    }
+    TABLE[hole] = 0;
+    for (let at = hole + 1 & MASK; TABLE[at] !== 0; at = at + 1 & MASK) {
+      const GOAL = this.#slots[TABLE[at] - 1], HOME = this.#hash(GOAL.keyA, GOAL.keyB);
+      const STAYS = hole <= at ? HOME > hole && HOME <= at : HOME > hole || HOME <= at;
+      if (!STAYS) {
+        TABLE[hole] = TABLE[at];
+        TABLE[at] = 0;
+        hole = at;
+      }
+    }
+  }
+  // 빈 슬롯(번호가 가장 작은 것)이나, 가득 찼으면 가장 오래 안 쓴 슬롯을 비워 돌려줍니다.
+  #freeSlot() {
+    for (let slot = 0; slot < this.#slots.length; slot++) {
+      if (!this.#slots[slot].live) {
+        return slot;
+      }
+    }
+    if (this.#slots.length < this.goalCapacity) {
+      const GOAL = new GoalSlot(this.chunkCount);
+      GOAL.field = new FlowField(FLOW_TOKEN, this, GOAL);
+      this.#slots.push(GOAL);
+      return this.#slots.length - 1;
+    }
+    let oldest = 0;
+    for (let slot = 1; slot < this.#slots.length; slot++) {
+      if (this.#slots[slot].use < this.#slots[oldest].use) {
+        oldest = slot;
+      }
+    }
+    this.#remove(oldest);
+    this.#releaseBlocks(this.#slots[oldest]);
+    this.#slots[oldest].live = false;
+    this.#goalCount--;
+    return oldest;
+  }
+  #releaseBlocks(goal) {
+    const BLOCKS = goal.blocks;
+    for (let i = 0; i < BLOCKS.length; i++) {
+      if (BLOCKS[i] >= 0) {
+        this.#freeBlocks.push(BLOCKS[i]);
+        BLOCKS[i] = -1;
+      }
+    }
+  }
+  #allocBlock() {
+    if (this.#freeBlocks.length) {
+      return this.#freeBlocks.pop();
+    }
+    this.#blocks.push(new Int32Array(this.#cellsPerChunk));
+    return this.#blocks.length - 1;
+  }
+  // 목표 칸을 청크별로 모읍니다(청크 번호 순 계수 정렬, 청크 안은 넘긴 순서). 막힌 칸은 뺍니다. 목표 성분을 표시합니다.
+  #resetGoal(goal, cells) {
+    this.#releaseBlocks(goal);
+    const COMP = this.#cellComp, PER = this.#cellsPerChunk, START = goal.chunkStart, CURSOR = this.#chunkCursor, N = this.#denseCount;
+    START.fill(0);
+    let open = 0;
+    for (let i = 0; i < cells.length; i++) {
+      if (COMP[cells[i]] !== NO_COMP) {
+        START[this.chunkOf(cells[i]) + 1]++;
+        open++;
+      }
+    }
+    for (let chunk = 0; chunk < this.chunkCount; chunk++) {
+      START[chunk + 1] += START[chunk];
+    }
+    if (goal.cells.length < open) {
+      goal.cells = new Int32Array(open);
+    }
+    CURSOR.set(START);
+    if (goal.comps.length < this.#componentCount) {
+      goal.comps = new Uint8Array(this.#componentCount);
+    } else {
+      goal.comps.fill(0);
+    }
+    for (let i = 0; i < cells.length; i++) {
+      const CELL = cells[i];
+      if (COMP[CELL] !== NO_COMP) {
+        const CHUNK = this.chunkOf(CELL);
+        goal.cells[CURSOR[CHUNK]++] = CELL;
+        goal.comps[this.#compLabel[CHUNK * PER + COMP[CELL]]] = 1;
+      }
+    }
+    if (goal.dist.length < N) {
+      const SIZE = Math.ceil(N * 1.25);
+      goal.dist = new Int32Array(SIZE);
+      goal.state = new Uint8Array(SIZE);
+      goal.heap = new Int32Array(SIZE);
+      goal.pos = new Int32Array(SIZE);
+      goal.key = new Float64Array(SIZE);
+    } else {
+      goal.state.fill(NODE_NEW, 0, N);
+    }
+    goal.heapSize = 0;
+    goal.seeded = false;
+  }
+  // ---------- 유동장 질의 ----------
+  #check(goal) {
+    if (this.grid.changedRectCount !== 0) {
+      this.prepare();
+    }
+    if (!goal.live) {
+      throw new Error(
+        "FlowField was discarded (structure changed or evicted); get it again with goal()/setGoal()."
+      );
+    }
+  }
+  // 칸이 든 청크 안의 칸 번호(행 · chunkSize + 열).
+  #localOf(cell) {
+    const COLS = this.grid.cols, SIZE = this.chunkSize, COL = cell % COLS, ROW = (cell - COL) / COLS;
+    return ROW % SIZE * SIZE + COL % SIZE;
+  }
+  #distance(goal, cell) {
+    if (!(cell >= 0 && cell < this.grid.size)) {
+      return UNREACHED;
+    }
+    const COMP = this.#cellComp[cell];
+    if (COMP === NO_COMP) {
+      return UNREACHED;
+    }
+    const COLS = this.grid.cols, SIZE = this.chunkSize, COL = cell % COLS, ROW = (cell - COL) / COLS, LOCAL_COL = COL % SIZE, LOCAL_ROW = ROW % SIZE, CHUNK = (ROW - LOCAL_ROW) / SIZE * this.chunkCols + (COL - LOCAL_COL) / SIZE;
+    if (!goal.comps[this.#compLabel[CHUNK * this.#cellsPerChunk + COMP]]) {
+      return UNREACHED;
+    }
+    return this.#blocks[this.#ensureNear(goal, CHUNK)][LOCAL_ROW * SIZE + LOCAL_COL];
+  }
+  // 이웃이 같은 청크면 그 청크의 F1을 바로 읽고, 다른 청크로 건너는 이웃만 #distance로 묻습니다(값은 같음).
+  #lowestNeighbor(goal, cell) {
+    let best = -1, bestCost = this.#distance(goal, cell);
+    if (bestCost === UNREACHED) {
+      return -1;
+    }
+    const GRID = this.grid, SIZE = this.chunkSize, COL = cell % GRID.cols, ROW = (cell - COL) / GRID.cols, LOCAL_COL = COL % SIZE, LOCAL_ROW = ROW % SIZE, OWN = this.#blocks[goal.blocks[this.chunkOf(cell) * 2 + 1]], BITS = this.#stepMask[cell];
+    for (let direction = 0; direction < DIRECTION_COUNT; direction++) {
+      let cost;
+      const NEXT_COL = LOCAL_COL + DIRECTION_DX[direction], NEXT_ROW = LOCAL_ROW + DIRECTION_DY[direction];
+      if (NEXT_COL >= 0 && NEXT_COL < SIZE && NEXT_ROW >= 0 && NEXT_ROW < SIZE) {
+        if (!(BITS & 1 << direction)) {
+          continue;
+        }
+        cost = OWN[NEXT_ROW * SIZE + NEXT_COL];
+      } else {
+        const NEXT = GRID.stepCell(COL, ROW, direction);
+        if (NEXT < 0) {
+          continue;
+        }
+        cost = this.#distance(goal, NEXT);
+      }
+      if (cost < bestCost) {
+        best = ROW * GRID.cols + COL + DIRECTION_DX[direction] + DIRECTION_DY[direction] * GRID.cols;
+        bestCost = cost;
+      }
+    }
+    return best;
+  }
+  #chunkStage(goal, chunk) {
+    return (goal.blocks[chunk * 2] >= 0 ? 1 : 0) | (goal.blocks[chunk * 2 + 1] >= 0 ? 2 : 0);
+  }
+  // want 0: 노드 상태(0 안 닿음, 1 힙, 2 확정), 1: 확정한 추상 거리(아니면 UNREACHED).
+  #nodeOf(goal, node, want) {
+    const DENSE = node >= 0 && node < this.nodeCapacity ? this.#denseOf[node] : -1;
+    if (DENSE < 0) {
+      return want === 0 ? NODE_NEW : UNREACHED;
+    }
+    const STATE = goal.state[DENSE];
+    if (want === 0) {
+      return STATE;
+    }
+    return STATE === NODE_SETTLED ? goal.dist[DENSE] : UNREACHED;
+  }
+  // 청크 안 목표 칸을 0으로 놓고 씨앗 목록(this.#seeds) 앞에 한 번씩 적습니다. 적은 수를 돌려줍니다.
+  #seedGoalCells(goal, chunk, dist) {
+    const SEEDS = this.#seeds, START = goal.chunkStart;
+    let count = 0;
+    for (let i = START[chunk]; i < START[chunk + 1]; i++) {
+      const LOCAL = this.#localOf(goal.cells[i]);
+      if (dist[LOCAL] !== 0) {
+        dist[LOCAL] = 0;
+        SEEDS[count++] = LOCAL;
+      }
+    }
+    return count;
+  }
+  // 목표 칸에서 각 목표 청크 안으로만 퍼뜨려 그 청크 노드에 처음 값을 줍니다(첫 질의 때 한 번).
+  #seed(goal) {
+    const DIST = this.#scratchDist, START = goal.chunkStart, CAP = this.#chunkNodeCap;
+    for (let chunk = 0; chunk < this.chunkCount; chunk++) {
+      if (START[chunk + 1] === START[chunk]) {
+        continue;
+      }
+      DIST.fill(UNREACHED);
+      this.#chunkDijkstra(chunk, DIST, this.#seeds, this.#seedGoalCells(goal, chunk, DIST));
+      for (let i = 0; i < this.#chunkNodeCount[chunk]; i++) {
+        const NODE = this.#chunkNodes[chunk * CAP + i], D = DIST[this.#localOf(this.#nodeCell[NODE])];
+        if (D !== UNREACHED) {
+          this.#relax(goal, this.#denseOf[NODE], D);
+        }
+      }
+    }
+    goal.seeded = true;
+  }
+  // 휴리스틱: 노드 칸에서 목표 사각형(지금 확정하려는 청크)까지의 옥타일 거리. 간선 비용은 실제로 걷는 길의 비용이라 두 끝 칸의
+  // 옥타일 거리 이상이므로 일관(consistent)되고, 꺼낸 노드의 값은 휴리스틱과 무관하게 정확한 최단 추상 거리입니다.
+  #heuristic(goal, dense) {
+    const COL = this.#denseCol[dense], ROW = this.#denseRow[dense], DX = COL < goal.col0 ? goal.col0 - COL : COL > goal.col1 ? COL - goal.col1 : 0, DY = ROW < goal.row0 ? goal.row0 - ROW : ROW > goal.row1 ? ROW - goal.row1 : 0;
+    return DX > DY ? 10 * DX + 4 * DY : 10 * DY + 4 * DX;
+  }
+  #relax(goal, dense, cost) {
+    const STATE = goal.state[dense];
+    if (STATE === NODE_SETTLED || STATE === NODE_OPEN && cost >= goal.dist[dense]) {
+      return;
+    }
+    goal.dist[dense] = cost;
+    goal.key[dense] = (cost + this.#heuristic(goal, dense)) * this.#nodeScale + dense;
+    if (STATE === NODE_NEW) {
+      goal.state[dense] = NODE_OPEN;
+      goal.pos[dense] = goal.heapSize;
+      goal.heap[goal.heapSize++] = dense;
+    }
+    siftUp(goal, goal.pos[dense]);
+  }
+  /**
+   * 청크의 노드(목표와 같은 전역 성분인 것) 추상 거리가 모두 확정될 때까지 목표의 A*를 이어서 돌립니다. 휴리스틱 사각형이 바뀌면
+   * 힙의 키만 다시 계산합니다(확정한 노드와 임시 값은 그대로).
+   */
+  #settle(goal, chunk) {
+    const CAP = this.#chunkNodeCap, COUNT = this.#chunkNodeCount[chunk], BASE = chunk * CAP;
+    let remaining = 0;
+    for (let i = 0; i < COUNT; i++) {
+      const DENSE = this.#denseOf[this.#chunkNodes[BASE + i]];
+      if (goal.comps[this.#denseLabel[DENSE]] && goal.state[DENSE] !== NODE_SETTLED) {
+        remaining++;
+      }
+    }
+    if (remaining === 0) {
+      return;
+    }
+    const SIZE = this.chunkSize, CHUNK_COL = chunk % this.chunkCols, COL0 = CHUNK_COL * SIZE, ROW0 = (chunk - CHUNK_COL) / this.chunkCols * SIZE;
+    if (goal.col0 !== COL0 || goal.row0 !== ROW0) {
+      goal.col0 = COL0;
+      goal.row0 = ROW0;
+      goal.col1 = Math.min(this.grid.cols, COL0 + SIZE) - 1;
+      goal.row1 = Math.min(this.grid.rows, ROW0 + SIZE) - 1;
+      const HEAP = goal.heap;
+      for (let at = 0; at < goal.heapSize; at++) {
+        const DENSE = HEAP[at];
+        goal.key[DENSE] = (goal.dist[DENSE] + this.#heuristic(goal, DENSE)) * this.#nodeScale + DENSE;
+      }
+      for (let at = (goal.heapSize >> 1) - 1; at >= 0; at--) {
+        siftDown(goal, at);
+      }
+    }
+    if (!goal.seeded) {
+      this.#seed(goal);
+    }
+    const NODE_CHUNK = this.#nodeChunk, NODE_INDEX = this.#nodeIndex, NODES = this.#chunkNodes, DENSE_OF = this.#denseOf;
+    while (remaining > 0) {
+      if (goal.heapSize === 0) {
+        throw new Error("PortalGraph internal error: a goal-component node was not reached.");
+      }
+      const DENSE = goal.heap[0];
+      goal.heap[0] = goal.heap[--goal.heapSize];
+      goal.pos[goal.heap[0]] = 0;
+      if (goal.heapSize) {
+        siftDown(goal, 0);
+      }
+      goal.state[DENSE] = NODE_SETTLED;
+      this.stats.nodesSettled++;
+      const NODE = this.#denseNode[DENSE], OWN = NODE_CHUNK[NODE], D = goal.dist[DENSE];
+      if (OWN === chunk) {
+        remaining--;
+      }
+      const PEER = DENSE_OF[NODE ^ 1];
+      if (PEER >= 0) {
+        this.#relax(goal, PEER, D + this.#portalCost[NODE >> 1]);
+      }
+      if (!this.#matrixReady[OWN]) {
+        this.#buildMatrix(OWN);
+      }
+      const MATRIX = this.#matrix[OWN], N = this.#chunkNodeCount[OWN], INDEX = NODE_INDEX[NODE], ROW = INDEX * N, OWN_BASE = OWN * CAP;
+      for (let to = 0; to < N; to++) {
+        const COST = MATRIX[ROW + to];
+        if (to !== INDEX && COST !== NO_EDGE) {
+          this.#relax(goal, DENSE_OF[NODES[OWN_BASE + to]], D + COST);
+        }
+      }
+    }
+  }
+  // F0(청크): 씨앗 = 청크 안 목표 칸 0, 청크 노드 칸의 추상 거리. 청크 안으로만 퍼뜨립니다.
+  #ensureFar(goal, chunk) {
+    const HAVE = goal.blocks[chunk * 2];
+    if (HAVE >= 0) {
+      return HAVE;
+    }
+    this.#settle(goal, chunk);
+    const BLOCK = this.#allocBlock(), DIST = this.#blocks[BLOCK], CAP = this.#chunkNodeCap, SEEDS = this.#seeds;
+    DIST.fill(UNREACHED);
+    let count = this.#seedGoalCells(goal, chunk, DIST);
+    for (let i = 0; i < this.#chunkNodeCount[chunk]; i++) {
+      const NODE = this.#chunkNodes[chunk * CAP + i], DENSE = this.#denseOf[NODE];
+      if (goal.state[DENSE] === NODE_SETTLED) {
+        const LOCAL = this.#localOf(this.#nodeCell[NODE]);
+        if (DIST[LOCAL] === UNREACHED) {
+          SEEDS[count++] = LOCAL;
+        }
+        if (goal.dist[DENSE] < DIST[LOCAL]) {
+          DIST[LOCAL] = goal.dist[DENSE];
+        }
+      }
+    }
+    this.#chunkDijkstra(chunk, DIST, SEEDS, count);
+    goal.blocks[chunk * 2] = BLOCK;
+    this.stats.fieldsBuilt++;
+    return BLOCK;
+  }
+  // F1(청크): F0 값에 더해, 청크 밖으로 나가는 합법 걸음마다 건너편 청크의 F0 값 + 걸음 비용을 씨앗으로 다시 퍼뜨립니다.
+  // F1 ≤ F0이고 씨앗이 모두 실제로 걸을 수 있는 길의 비용이라 실제 최단 이상입니다.
+  #ensureNear(goal, chunk) {
+    const HAVE = goal.blocks[chunk * 2 + 1];
+    if (HAVE >= 0) {
+      return HAVE;
+    }
+    const FAR = this.#ensureFar(goal, chunk), BLOCK = this.#allocBlock(), DIST = this.#blocks[BLOCK], GRID = this.grid, COLS = GRID.cols, SIZE = this.chunkSize, PER = this.#cellsPerChunk, CHUNK_COL = chunk % this.chunkCols, COL0 = CHUNK_COL * SIZE, ROW0 = (chunk - CHUNK_COL) / this.chunkCols * SIZE, COL1 = Math.min(COLS, COL0 + SIZE) - 1, ROW1 = Math.min(GRID.rows, ROW0 + SIZE) - 1;
+    DIST.set(this.#blocks[FAR]);
+    for (let row = ROW0; row <= ROW1; row++) {
+      const STRIDE = row === ROW0 || row === ROW1 ? 1 : Math.max(1, COL1 - COL0);
+      for (let col = COL0; col <= COL1; col += STRIDE) {
+        const CELL = row * COLS + col, COMP = this.#cellComp[CELL];
+        if (COMP === NO_COMP || !goal.comps[this.#compLabel[chunk * PER + COMP]]) {
+          continue;
+        }
+        const LOCAL = (row - ROW0) * SIZE + (col - COL0);
+        for (let direction = 0; direction < DIRECTION_COUNT; direction++) {
+          const NEXT_COL = col + DIRECTION_DX[direction], NEXT_ROW = row + DIRECTION_DY[direction];
+          if (NEXT_COL >= COL0 && NEXT_COL <= COL1 && NEXT_ROW >= ROW0 && NEXT_ROW <= ROW1) {
+            continue;
+          }
+          const NEXT = GRID.stepCell(col, row, direction);
+          if (NEXT < 0) {
+            continue;
+          }
+          const VALUE = this.#blocks[this.#ensureFar(goal, this.chunkOf(NEXT))][this.#localOf(NEXT)];
+          if (VALUE !== UNREACHED && VALUE + (direction < 4 ? STRAIGHT : DIAGONAL) < DIST[LOCAL]) {
+            DIST[LOCAL] = VALUE + (direction < 4 ? STRAIGHT : DIAGONAL);
+          }
+        }
+      }
+    }
+    const SEEDS = this.#seeds, FAR_DIST = this.#blocks[FAR];
+    let count = 0;
+    for (let row = ROW0; row <= ROW1; row++) {
+      const STRIDE = row === ROW0 || row === ROW1 ? 1 : Math.max(1, COL1 - COL0);
+      for (let col = COL0; col <= COL1; col += STRIDE) {
+        const LOCAL = (row - ROW0) * SIZE + (col - COL0);
+        if (DIST[LOCAL] < FAR_DIST[LOCAL]) {
+          SEEDS[count++] = LOCAL;
+        }
+      }
+    }
+    this.#chunkDijkstra(chunk, DIST, SEEDS, count);
+    goal.blocks[chunk * 2 + 1] = BLOCK;
+    this.stats.fieldsBuilt++;
+    return BLOCK;
+  }
+  /**
+   * 청크 안 Dijkstra: `dist`(청크 안 칸 번호)에서 `seeds`의 앞 `count`칸부터 청크 안 걸음으로만 값을 줄여 퍼뜨립니다. 씨앗이 아닌
+   * 칸의 값은 이미 이웃과 맞는(닫힌) 값이어야 합니다(UNREACHED이거나 앞선 퍼뜨리기의 결과). 그러면 결과는 모든 씨앗 값의 닫힘이고
+   * 순서와 무관합니다. 힙은 청크 안 칸의 위치 색인 힙이고 (값, 칸 번호) 순으로 꺼냅니다.
+   */
+  #chunkDijkstra(chunk, dist, seeds, count) {
+    const COLS = this.grid.cols, SIZE = this.chunkSize, MASK = this.#stepMask, HEAP = this.#fieldHeap, POS = this.#fieldPos, OFFSET = this.#localOffset, STEP = this.#localStep, CHUNK_COL = chunk % this.chunkCols, BASE = (chunk - CHUNK_COL) / this.chunkCols * SIZE * COLS + CHUNK_COL * SIZE;
+    POS.fill(-1);
+    let size = 0;
+    for (let i = 0; i < count; i++) {
+      const LOCAL = seeds[i];
+      if (POS[LOCAL] < 0) {
+        POS[LOCAL] = size;
+        HEAP[size++] = LOCAL;
+      }
+      localSiftUp(HEAP, POS, dist, POS[LOCAL]);
+    }
+    while (size) {
+      const LOCAL = HEAP[0], COST = dist[LOCAL];
+      POS[LOCAL] = -2;
+      if (--size) {
+        HEAP[0] = HEAP[size];
+        POS[HEAP[0]] = 0;
+        localSiftDown(HEAP, POS, dist, size, 0);
+      }
+      const BITS = MASK[BASE + OFFSET[LOCAL]];
+      for (let direction = 0; direction < DIRECTION_COUNT; direction++) {
+        if (!(BITS & 1 << direction)) {
+          continue;
+        }
+        const NEXT = LOCAL + STEP[direction], NEXT_COST = COST + (direction < 4 ? STRAIGHT : DIAGONAL);
+        if (NEXT_COST < dist[NEXT]) {
+          dist[NEXT] = NEXT_COST;
+          if (POS[NEXT] === -1) {
+            POS[NEXT] = size;
+            HEAP[size++] = NEXT;
+          }
+          localSiftUp(HEAP, POS, dist, POS[NEXT]);
+        }
+      }
+    }
+  }
+};
+function localSiftUp(heap, pos, dist, at) {
+  const LOCAL = heap[at], VALUE = dist[LOCAL];
+  while (at > 0) {
+    const PARENT = at - 1 >> 1, OTHER = heap[PARENT], OTHER_VALUE = dist[OTHER];
+    if (OTHER_VALUE < VALUE || OTHER_VALUE === VALUE && OTHER < LOCAL) {
+      break;
+    }
+    heap[at] = OTHER;
+    pos[OTHER] = at;
+    at = PARENT;
+  }
+  heap[at] = LOCAL;
+  pos[LOCAL] = at;
+}
+function localSiftDown(heap, pos, dist, size, at) {
+  const LOCAL = heap[at], VALUE = dist[LOCAL];
+  for (; ; ) {
+    const LEFT = at * 2 + 1;
+    if (LEFT >= size) {
+      break;
+    }
+    let child = LEFT;
+    if (LEFT + 1 < size) {
+      const A = heap[LEFT], B = heap[LEFT + 1];
+      if (dist[B] < dist[A] || dist[B] === dist[A] && B < A) {
+        child = LEFT + 1;
+      }
+    }
+    const OTHER = heap[child], OTHER_VALUE = dist[OTHER];
+    if (VALUE < OTHER_VALUE || VALUE === OTHER_VALUE && LOCAL < OTHER) {
+      break;
+    }
+    heap[at] = OTHER;
+    pos[OTHER] = at;
+    at = child;
+  }
+  heap[at] = LOCAL;
+  pos[LOCAL] = at;
+}
+function checkGoalKey(keyA, keyB) {
+  if (!Number.isSafeInteger(keyA) || !Number.isSafeInteger(keyB)) {
+    throw new RangeError("PortalGraph goal keys must be safe integers.");
+  }
+}
+function siftUp(goal, at) {
+  const HEAP = goal.heap, POS = goal.pos, KEY = goal.key, DENSE = HEAP[at], VALUE = KEY[DENSE];
+  while (at > 0) {
+    const PARENT = at - 1 >> 1;
+    if (KEY[HEAP[PARENT]] <= VALUE) {
+      break;
+    }
+    HEAP[at] = HEAP[PARENT];
+    POS[HEAP[at]] = at;
+    at = PARENT;
+  }
+  HEAP[at] = DENSE;
+  POS[DENSE] = at;
+}
+function siftDown(goal, at) {
+  const HEAP = goal.heap, POS = goal.pos, KEY = goal.key, SIZE = goal.heapSize, DENSE = HEAP[at], VALUE = KEY[DENSE];
+  for (; ; ) {
+    const LEFT = at * 2 + 1;
+    if (LEFT >= SIZE) {
+      break;
+    }
+    const CHILD = LEFT + 1 < SIZE && KEY[HEAP[LEFT + 1]] < KEY[HEAP[LEFT]] ? LEFT + 1 : LEFT;
+    if (KEY[HEAP[CHILD]] >= VALUE) {
+      break;
+    }
+    HEAP[at] = HEAP[CHILD];
+    POS[HEAP[at]] = at;
+    at = CHILD;
+  }
+  HEAP[at] = DENSE;
+  POS[DENSE] = at;
+}
+var GoalSlot = class {
+  field = null;
+  live = false;
+  keyA = 0;
+  keyB = 0;
+  use = 0;
+  seeded = false;
+  // 목표 칸(청크 번호 순)과 청크마다 시작 위치(청크 수 + 1).
+  cells = new Int32Array(0);
+  chunkStart;
+  // 전역 성분마다 목표 칸이 있는지.
+  comps = new Uint8Array(0);
+  // 조밀 번호마다 추상 거리(임시 또는 확정)·상태·힙 위치·힙 키, 힙.
+  dist = new Int32Array(0);
+  state = new Uint8Array(0);
+  heap = new Int32Array(0);
+  pos = new Int32Array(0);
+  key = new Float64Array(0);
+  heapSize = 0;
+  // 휴리스틱 사각형(칸 좌표, 양끝 포함). -1은 아직 없음.
+  col0 = -1;
+  row0 = -1;
+  col1 = -1;
+  row1 = -1;
+  // 청크 장 블록 번호: 청크 · 2 + 단계(0 = F0, 1 = F1), 없으면 -1.
+  blocks;
+  constructor(chunkCount) {
+    this.chunkStart = new Int32Array(chunkCount + 1);
+    this.blocks = new Int32Array(chunkCount * 2).fill(-1);
+  }
+};
+var FlowField = class {
+  #graph;
+  #goal;
+  constructor(token, graph, goal) {
+    if (token !== FLOW_TOKEN) {
+      throw new TypeError("FlowField is made by PortalGraph.setGoal.");
+    }
+    this.#graph = graph;
+    this.#goal = goal;
+  }
+  /** 보관 키의 첫 수. */
+  get keyA() {
+    return this.#goal.keyA;
+  }
+  /** 보관 키의 둘째 수. */
+  get keyB() {
+    return this.#goal.keyB;
+  }
+  /**
+   * 칸에서 목표까지의 비용(정수, 목표 칸은 0). 닿지 않는 칸·막힌 칸·격자 밖 번호는 `UNREACHED`. 칸이 든 청크의 F1을 처음 물을 때
+   * 만들고(필요한 추상 거리·이웃 F0 포함), 다시 물으면 읽기만 합니다. 버려진 유동장이면 Error.
+   */
+  distance(cell) {
+    flowAccess.check(this.#graph, this.#goal);
+    return flowAccess.distance(this.#graph, this.#goal, cell);
+  }
+  /** `cell`보다 싼 이웃 중 가장 싼 칸(동률은 방향 순서 동·남·서·북·남동·남서·북서·북동에서 앞선 쪽), 없으면 -1. */
+  lowestNeighbor(cell) {
+    flowAccess.check(this.#graph, this.#goal);
+    return flowAccess.lowest(this.#graph, this.#goal, cell);
+  }
+  /**
+   * `start`에서 `lowestNeighbor`를 최대 `maxSteps`번 따라간 칸 번호를 `out`(먼저 비움)에 채워 돌려줍니다. `start`는 넣지 않고,
+   * 목표 칸에서 멈춥니다. 닿지 않는 `start`면 빈 결과입니다. 값이 엄격히 줄어드는 쪽으로만 가므로 반드시 목표 칸에 닿습니다.
+   */
+  descend(start, maxSteps, out = []) {
+    flowAccess.check(this.#graph, this.#goal);
+    out.length = 0;
+    if (flowAccess.distance(this.#graph, this.#goal, start) === UNREACHED) {
+      return out;
+    }
+    let cell = start;
+    for (let i = 0; i < maxSteps; i++) {
+      const NEXT = flowAccess.lowest(this.#graph, this.#goal, cell);
+      if (NEXT < 0) {
+        break;
+      }
+      out.push(NEXT);
+      cell = NEXT;
+    }
+    return out;
+  }
+  /** 청크 장을 만든 단계(관찰용): 비트 1 = F0, 비트 2 = F1. */
+  chunkStage(chunk) {
+    return flowAccess.stage(this.#graph, this.#goal, chunk);
+  }
+  /** 포털 노드의 추상 탐색 상태(관찰용): 0 안 닿음, 1 임시 값(힙), 2 확정. */
+  nodeState(node) {
+    return flowAccess.node(this.#graph, this.#goal, node, 0);
+  }
+  /** 확정한 포털 노드의 추상 거리(관찰용). 확정 전이거나 닿지 않으면 `UNREACHED`. */
+  nodeDistance(node) {
+    return flowAccess.node(this.#graph, this.#goal, node, 1);
+  }
 };
 export {
   DIAGONAL_COST,
   DistanceField,
   FieldCache,
+  FlowField,
   MAX_CHANGED_RECTS,
   PathGrid,
   PortalGraph,
