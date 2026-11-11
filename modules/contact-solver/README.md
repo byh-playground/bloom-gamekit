@@ -1,5 +1,45 @@
 # contact-solver
 
+## 언제 쓰나
+
+- 한 틱 안에서 **원형 유닛끼리, 그리고 벽·건물·맵 경계와의 충돌**을 닿는 순서대로 풀고 싶을 때. 지형은 항상 풀고, 몸끼리는 스텝 예산(`pairBudget`)만큼만 풀며 넘친 쌍은 `separate()`가 위치로 정리합니다.
+- 걷는(조향) 몸과 날아가는(동적) 몸을 같은 큐에서 풀고, 닿았을 때 응답(반사·멈춤·교환·붙기)을 게임이 고르고 싶을 때. 결정론이라 롤백 시뮬 안에서 씁니다.
+
+## 쓰는 모양
+
+```js
+// rally-frontier/src/sim/navigation.js (줄임)
+this.contacts = new ContactSolver({
+    surface: this.surface, // geometry SurfaceMotion: 이동·길찾기가 쓰는 같은 지형
+    fixedPoint: FP,
+    pairBudget: LaunchImpactRules.unitContactBudget,
+    cellSize: LaunchImpactRules.contactCellSize,
+});
+this.contacts.setRelations(3, LaunchImpactRules.contactRelations);
+this.contactEvent = new ContactEvent();
+
+// 틱마다
+const bodies = solver.begin(n, 1 / sim.tps);
+for (let i = 0; i < n; i++) this.fillBody(bodies, i, units[i], startX[i], startY[i], vertical); // x·y·steerX·radius·mass…
+while (solver.next(ev)) {
+    if (!RollingBody.respond(this, ev)) solver.resolve(ev); // 게임 규칙 응답이 먼저
+}
+solver.end();
+solver.separate();
+for (let i = 0; i < n; i++) this.commitBody(bodies, i, units[i]);
+```
+
+## 쓰지 말아야 할 때
+
+| 이런 일                                        | 대신                                                                                      |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| 회전·관절·마찰이 있는 범용 강체 물리, z축 중력 | 범용 물리 엔진이 아닙니다. 픽셀 재료 + 강체는 [pixel-physics](../pixel-physics/README.md) |
+| 원 하나를 벽에 미끄러지게 움직이기만           | [geometry](../geometry/README.md) `SurfaceMotion`                                         |
+| 피해·넉백·재타격 같은 게임 규칙                | 게임의 응답 쪽(`next(ev)` 뒤)에 둡니다                                                    |
+| 가까운 유닛 후보 찾기                          | [spatial](../spatial/README.md)                                                           |
+
+## 상세
+
 한 틱 안에서 **원형 몸이 지형과 서로에 닿는 순서대로** 접촉을 풀고, 남은 겹침을 위치로 정리하는 순수 ESM 모듈입니다(`dist/contact-solver.js`). 시간·난수·DOM을 읽지 않고 같은 입력이면 같은 부동소수 연산 순서로 같은 결과를 냅니다.
 
 메인 규칙은 하나입니다. **틀렸을 때 티가 나는 접촉부터 풉니다.**

@@ -1,5 +1,55 @@
 # debug-tools
 
+## 언제 쓰나
+
+- **같은 장면을 주소 한 줄로 열어** 확인·캡처하고, 작업 전후 수치(체크섬·틱 시간)를 비교하고 싶을 때: `installDebugHost`. `?debug=1&scene=<이름>&tick=<N>&…`이면 장면을 N틱 진행해 그린 뒤 `window.__bloomDebug`에 `ready`·`state()`·`step(n)`을 엽니다. 검증용 장면을 임시 스크립트로 새로 짜기 전에 이것부터 씁니다.
+- 프레임·단계별 CPU 시간을 재고 싶을 때(`FrameMetrics`, `PerformanceProfiler`), 오류를 모아 복사 가능한 진단으로 보여 주고 싶을 때(`DiagnosticRing`·`copyDiagnostic`).
+- 리플레이 탐색 조작(`ReplayTimeline`), 두 상태에서 고른 필드만 비교(`compareStateFields`).
+
+## 쓰는 모양
+
+```js
+// rally-frontier/src/main.js (줄임): 주소에 debug가 있을 때만 장면 모듈을 불러온다
+const { createDebugScenes } = await import('./debug-scenes.js');
+const debug = RallyGamekit.installDebugHost({
+    scenes: createDebugScenes({ createRenderer, createScenario: RallyGamekit.createScenario, createPresentationView }),
+});
+await debug.done;
+
+// rally-frontier/src/debug-scenes.js (줄임): 장면 하나가 돌려주는 것
+return {
+    step() {
+        stage.advance(1000 / run.sim.tps); // 가상 시계를 한 틱만큼
+        run.step(); // scenario의 정확한 한 tick
+    },
+    render: () => run.render(),
+    state: () => ({ simTick: run.sim.tick, checksum: run.sim.checksum(), units: { host: alive(0), guest: alive(1) } }),
+    hash: () => run.sim.checksum(),
+    dispose() {
+        run.dispose();
+        stage.dispose();
+    },
+};
+```
+
+```text
+?debug=1&scene=walnut-melee&map=artillery-basin&seed=1&units=150&mix=rice,pea&walnuts=5&tick=300
+```
+
+- 명령줄 실행기 예: `rally-frontier/scripts/debug-scene.cjs`가 Playwright로 주소를 열고 `__bloomDebug.ready || error`를 기다린 뒤 `step(n)`, `state()` JSON 출력, `--capture`(PNG)·`--compare <다른 worktree>`를 합니다.
+- 발배구 예: `bloom-takraw/src/debug-scenes.js`의 `watch`(가상 시계로 AI 경기 틱 진행)·`spike`(고정 카메라 캡처)·`match`·`club`(메모리 저장 클럽 화면) 장면.
+
+## 쓰지 말아야 할 때
+
+| 이런 일                                          | 대신                                                                                          |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------- |
+| 원격 수집(telemetry)·서버 전송                   | [metrics](../metrics/README.md). 이 모듈은 네트워크를 쓰지 않습니다                           |
+| 게임 안 격리 실행 자체(재생·반복·정확한 한 tick) | [scenario](../scenario/README.md) (장면 안에서 씁니다)                                        |
+| 전체 상태 hash로 결정론 확인                     | [deterministic](../deterministic/README.md) `runSyncTestAsync`, [replay](../replay/README.md) |
+| 장면이 쓰는 저장소·네트워크 격리                 | 게임 책임입니다. 호스트는 저장소를 건드리지 않습니다                                          |
+
+## 상세
+
 로컬 진단과 SDK replay adapter만 제공합니다. 네트워크·telemetry·storage·자동 저장파일 수집·시뮬레이션 history를 만들지 않습니다.
 
 TypeScript 공개 선언은 [index.d.ts](./index.d.ts)에 있습니다.

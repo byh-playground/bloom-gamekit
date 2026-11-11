@@ -1,5 +1,39 @@
 # work-scheduler
 
+## 언제 쓰나
+
+- 먹이 찾기·경로 후보 조사처럼 **급하지 않은 탐색을 틱마다 정해진 양씩** 나눠 처리하고 싶을 때. 우선순위 3단계가 고정 비율로 차례를 받습니다.
+
+## 쓰는 모양
+
+```js
+// budmori-io/src/model/farm-model.js · food-reservations/model.js (줄임)
+const { createBudgetedScheduler } = globalThis.BloomGamekitWorkScheduler;
+this._foodSearchScheduler = createBudgetedScheduler({
+    unitsPerTick: FOOD_RESERVATION.searchUnitsPerTick,
+    quantumUnits: 1,
+});
+this.world._foodSearchScheduler.enqueue({
+    key: FOOD_SEARCH_BROKER_KEY,
+    owner: this.world,
+    priority: 1,
+    isValid: () => this.world.scene === 'farm' && this.brokerQueued,
+    step: ({ maxUnits }) => this.step(maxUnits), // { done, unitsUsed, result? }
+    onComplete: () => (this.brokerQueued = false),
+});
+// 논리 틱마다 한 번
+this._foodSearchScheduler.tick(logicTick);
+```
+
+## 쓰지 말아야 할 때
+
+| 이런 일                 | 대신                                           |
+| ----------------------- | ---------------------------------------------- |
+| 타이머·물리 서브틱      | 만들지 않습니다. 게임의 권위 tick에서만 돕니다 |
+| AI가 무엇을 할지 고르기 | [behavior](../behavior/README.md)              |
+
+## 상세
+
 비긴급 탐색·조사 작업을 논리 게임 tick의 고정 work-unit 예산 안에서 분산하는 순수 ESM 모듈입니다. 타이머나 물리 서브틱은 만들지 않습니다. 호출 게임이 기존 권위 tick마다 tick(tickId)를 한 번 호출합니다.
 
 ## 예산과 순서

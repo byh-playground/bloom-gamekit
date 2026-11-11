@@ -2,6 +2,53 @@
 
 **HTML 실행 프리뷰:** [scenario](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/scenario.html)
 
+## 언제 쓰나
+
+- 카드 미리보기·타이틀 배경·도움말처럼 **게임 안에서 실제 게임 실행을 격리해 재생**하고 싶을 때. 고정 tick·timeline과 재생·일시정지·재시작·반복을 이 모듈이 맡습니다.
+- 주소로 연 디버그 장면을 **정확히 한 tick씩** 진행하고 싶을 때(`play({ automatic: false })` 뒤 `step()`). 주소 해석·`state()`는 [debug-tools](../debug-tools/README.md)의 `installDebugHost`가 하고, 장면 안의 실행을 이 모듈이 돌립니다.
+- 같은 문서에서 준비한 렌더러를 여러 소개 장면이 이어 쓰게 하고 싶을 때(`createScenarioSurface`), 공개 게임 소개를 전체 화면 iframe으로 붙이고 싶을 때(`installShowcase`).
+
+## 쓰는 모양
+
+```js
+// rally-frontier/src/ui/sim-scene.js (줄임): 카드 시연과 디버그 장면이 같은 경로
+const scenario = createScenario({
+    definition: { seed, tickRate: sim.tps, endTick, loop },
+    onEnd(snapshot) {
+        onEnd?.(snapshot);
+    },
+    createRun() {
+        sim.importState(initialState); // 실행마다 같은 초기 상태에서 격리해 시작
+        return {
+            step(frame) {
+                advanceTick(); // 게임의 실제 고정 업데이트 한 번
+                renderer.setSnapshot(sim.snapshot(), { liveTargets: false });
+            },
+            render,
+            isComplete,
+            dispose() {},
+        };
+    },
+});
+scenario.play(); // 카드·타이틀: 자동 재생
+// 디버그 장면: scenario.play({ automatic: false }) 뒤 scenario.step()마다 정확히 한 tick
+```
+
+- 디버그 장면 예: `rally-frontier/src/debug-scenes.js`가 장면마다 위 `prepareSimScene`(`src/ui/sim-scene.js`)을 열고 debug-tools 호스트에 `step`·`render`·`state`를 넘깁니다.
+- timeline 예: `budmori-io/src/farm-app.js`의 도움말 시연(`definition.timeline`의 명령을 `frame.events`로 받아 실행).
+- 표면 재사용 예: `rally-frontier/src/ui/showcase-host.js`의 `createScenarioSurface({ createSurface, prepare })`.
+
+## 쓰지 말아야 할 때
+
+| 이런 일                                           | 대신                                                                                               |
+| ------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| 주소 한 줄로 장면을 열고 `state()`·캡처를 뽑기    | [debug-tools](../debug-tools/README.md) `installDebugHost` (장면 안의 실행은 이 모듈)              |
+| 기록한 입력으로 같은 경기를 다시 계산해 hash 확인 | [replay](../replay/README.md) `playReplay`                                                         |
+| 저장소·입력·오디오를 본게임과 격리                | 게임 책임입니다. 이 모듈은 sandbox가 아닙니다                                                      |
+| frame-exact 결정론 재생이 필요한 소개             | `installShowcase`는 iframe을 바깥에서 조작하므로 frame-exact가 아닙니다. `createScenario`를 씁니다 |
+
+## 상세
+
 실제 게임 실행을 재사용하는 독립 `scenario.js`. 시간 누적과 RAF 취소는 기존 simloop.createLoop를 번들에 포함해 재사용합니다. LocalInputPreview(넷코드 예측), replay(기록), deterministic(PRNG/codec), presentation-events(표현 자원), audio(재생)는 다시 구현하지 않습니다.
 
 ## Definition과 실행

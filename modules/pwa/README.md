@@ -1,5 +1,34 @@
 # pwa
 
+## 언제 쓰나
+
+- 게임을 **설치 가능한 PWA**로 만들고, 새로고침마다 최신 버전·오프라인이면 마지막 버전이 열리게 하고 싶을 때.
+- SVG 하나에서 manifest·아이콘·공유 이미지·`sw.js`·`<head>` 태그를 만들고 싶을 때(`buildPwa`, Node).
+
+## 쓰는 모양
+
+```js
+// bloom-takraw/src/runtime.js (줄임): 브라우저
+pwa = registerPwa({
+    serviceWorker: './sw.js',
+    onError: (error) => pwaFailed(error),
+    onInstallable: () => ui.setInstallable(true),
+});
+await pwa.install(); // 설치 버튼에서
+```
+
+생성기 예: 아래 "게임 코드"의 `scripts/pwa.mjs`(`buildPwa({ chromium, name, icon, share, … })`).
+
+## 쓰지 말아야 할 때
+
+| 이런 일                           | 대신                                                               |
+| --------------------------------- | ------------------------------------------------------------------ |
+| 백그라운드 다운로드·업데이트 알림 | 없습니다. 새로고침마다 최신입니다                                  |
+| 시연 iframe·디버그 주소에서 등록  | 게임이 막습니다(예: `bloom-takraw`의 `window.self !== window.top`) |
+| `sw.js`를 CDN에서 가져오기        | 안 됩니다. 게임 origin에 생성한 파일을 둡니다                      |
+
+## 상세
+
 게임을 설치 가능한 PWA로 만듭니다. **페이지를 읽을 때(새로고침 포함)마다 항상 최신 버전이 열리고**, 오프라인이면 마지막으로 읽은 버전이 열립니다. 백그라운드 다운로드·대기 worker·업데이트 알림은 없습니다. 두 부분입니다.
 
 - `dist/pwa-build.mjs` (Node ESM): 게임 저장소에서 로컬로 실행하는 생성기입니다. SVG 원본과 설정 하나에서 `manifest.webmanifest`, 아이콘(192·512·maskable·apple-touch-icon), 공유 이미지(1200×630), `sw.js`, `<head>` 태그를 만듭니다. 대부분의 게임은 빌드 단계 없이 GitHub Pages로 저장소를 그대로 서비스하므로 **생성 결과를 게임 저장소에 커밋합니다.**

@@ -1,5 +1,41 @@
 # vision
 
+## 언제 쓰나
+
+- 칸 격자 위에서 **관찰자들이 비추는 칸**을 세고 "이 자리의 대상이 보이는가"를 묻고 싶을 때(시야·안개). 높이 층과 막힌 칸을 지형으로 줍니다.
+- 관찰자 목록이 틱마다 조금씩 바뀔 때 **바뀐 관찰자만 다시 칠하고** 싶을 때. 결정론이라 교전 대상 판정에 씁니다.
+
+## 쓰는 모양
+
+```js
+// rally-frontier/src/sim/terrain.js (줄임): 지형은 한 번
+this.visionMapCache = VisionMap.sample({
+    width,
+    height,
+    cellSize: VISION_CELL,
+    levelAt: (x, y) => this.surfaces.levelAt(x, y),
+    blockedAt: (x, y) => isVisionBlocked(x, y),
+});
+
+// rally-frontier/src/sim/entities.js (줄임): 진영마다 VisionField 하나
+if (field?.map !== map) field = fields[side] = new VisionField(map);
+field.begin();
+for (const u of units) field.observe(EntityKey.number(u.id) * 8 + VisibilityPolicy.UNIT, u.x, u.y, sight, level, xray);
+field.end();
+// 읽기 (strategy-sim.js)
+field.visibleAt(x, y, this.terrainLevelAt(x, y));
+```
+
+## 쓰지 말아야 할 때
+
+| 이런 일                          | 대신                                      |
+| -------------------------------- | ----------------------------------------- |
+| 여러 팀 합산(관전·공유 시야)     | 게임이 팀마다 `visibleAt`을 나눠 부릅니다 |
+| "공격하면 잠깐 드러남" 같은 규칙 | 게임이 관찰자 목록에 반영합니다           |
+| 선분 시야 검사(광선)             | 하지 않습니다. 칸 단위 판정입니다         |
+
+## 상세
+
 칸 격자 위에서 "관찰자들이 비추는 칸"을 세고 "이 자리의 대상이 보이는가"를 묻는 시야 판정입니다. 시간·난수·DOM을 읽지 않고, 선분 검사 없이 칸을 한 번씩 걸어 비춥니다. 진영·유닛 종류·정찰 효과 같은 게임 뜻은 모르고, 관찰자 목록을 게임이 만들어 넘깁니다.
 
 - `VisionMap`: 지형을 칸마다 **높이 층(level)** 과 **막힌 칸(blocked)** 으로 담은 불변 래스터입니다. 같은 지형을 보는 모든 팀이 하나를 공유합니다.

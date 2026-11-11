@@ -2,6 +2,36 @@
 
 **HTML 실행 프리뷰:** [bm 예제의 '지표' 탭](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/bm.html#tab=metrics) — 랠리·경기 끝을 누르면 운영 수집 서버(`gamekit-example` 게임 이름)에 저장되고 서버 집계(세션 수·평균 플레이 시간·경기 수)를 다시 읽어 보여 줍니다. 주소 칸을 로컬 `wrangler dev`(`http://127.0.0.1:8787`)로 바꾸면 로컬 D1에 씁니다.
 
+## 언제 쓰나
+
+- 세션·플레이 시간·이벤트와 경기마다의 결정론 기록(시드 + 입력)을 **자체 수집 서버**(Cloudflare Workers + D1)로 모으고 싶을 때.
+- 시험·시연·디버그에서는 서버로 보내지 않고 메모리에만 두고 싶을 때(`MemoryAdapter`).
+
+## 쓰는 모양
+
+```js
+// bloom-takraw/src/runtime.js (줄임)
+import { createMetrics, HttpAdapter, MemoryAdapter } from '@bloom-gamekit/metrics';
+const metrics = createMetrics({
+    game: 'bloom-takraw',
+    version: TAKRAW_VERSION,
+    locale: LOCALE.locale,
+    adapter: isolated ? new MemoryAdapter() : new HttpAdapter(TAKRAW_RUNTIME.metrics.endpoint),
+});
+metrics.track(category, target, action, { mode: mode || 'menu', ...props });
+metrics.recordMatch(recorder, { winner: state.matchWinner, ticks: state.tick, seed: state.seed });
+```
+
+## 쓰지 말아야 할 때
+
+| 이런 일                          | 대신                                                |
+| -------------------------------- | --------------------------------------------------- |
+| 프레임마다 바뀌는 고빈도 값 전송 | 보내지 않습니다. 경기 기록을 나중에 다시 계산합니다 |
+| 로컬 오류 진단·프레임 계측       | [debug-tools](../debug-tools/README.md)             |
+| 누적·최댓값 같은 계산 열 저장    | 서버는 원본 사실만 저장하고 조회 때 계산합니다      |
+
+## 상세
+
 게임 지표를 자체 수집하는 순수 ESM 모듈과 Cloudflare Workers + D1 수집 서버입니다. 이벤트 이름·요약 값의 의미는 게임이 소유합니다. 고빈도 값은 보내지 않고, 경기마다 결정론 기록(시드 + 입력)을 남겨 나중에 어떤 지표든 다시 계산합니다.
 
 ## 구성

@@ -2,6 +2,40 @@
 
 **HTML 실행 프리뷰:** [simloop-input-preview](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/simloop-input-preview.html)
 
+## 언제 쓰나
+
+- **고정 논리 tick**과 실제 시간 누적을 분리해 시뮬을 돌리고, 렌더는 rAF에서 따로 하고 싶을 때(`createLoop`). 숨김·긴 지연 뒤 backlog 정책도 맡습니다.
+- 온라인 입력을 서버 확정 전에 로컬에서 먼저 보여 주고 싶을 때(`LocalInputPreview`).
+
+## 쓰는 모양
+
+```js
+// bloom-takraw/src/runtime.js (줄임)
+loop = createLoop({
+    session,
+    rates: { baseHz, inputHz, renderHz },
+    getInput,
+    canAdvance: () => Boolean(session?.ready && !session.failure && !paused),
+    onAdvance() {
+        publish();
+        confirmEvents();
+    },
+    onInputRelease: clearDeviceState,
+    onError: (error) => simulationFailed(error),
+    render: () => renderScene(performance.now()),
+});
+```
+
+## 쓰지 말아야 할 때
+
+| 이런 일                            | 대신                                                      |
+| ---------------------------------- | --------------------------------------------------------- |
+| 카드·타이틀의 격리된 재생·반복     | [scenario](../scenario/README.md) (내부에서 이 모듈을 씀) |
+| 비긴급 작업을 tick 예산으로 나누기 | [work-scheduler](../work-scheduler/README.md)             |
+| 브라우저 freeze·OS suspend 중 실행 | 보장하지 않습니다                                         |
+
+## 상세
+
 고정 논리 tick과 실제 시간 누적을 분리합니다. session capability를 받아 poll/advance/render를 조합합니다.
 
 공개 API: `createLoop`, 선택 기능 `LocalInputPreview`. 외부 import가 없는 `dist/simloop.js` 하나로 사용할 수 있습니다. 도구 설치나 다른 모듈 초기화는 필요하지 않습니다.

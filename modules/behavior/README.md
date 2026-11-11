@@ -1,5 +1,45 @@
 # behavior
 
+## 언제 쓰나
+
+- AI 행위자가 비어 있을 때 **지금 무엇을 시작할지** 우선순위대로 하나 고르고 싶을 때(`BehaviorTree`의 `selector`·`guard`·`action`).
+- 시작한 동작의 단계(예열 → 발동 → 회복 등)를 정해진 전이로만 진행하고 싶을 때(`StateMachine`). 둘 다 시간·난수·DOM을 읽지 않아 결정론 tick 안에서 씁니다.
+
+## 쓰는 모양
+
+```js
+// budmori-io/src/model/unit-turn.js (줄임)
+const { BehaviorTree, action, guard, selector } = globalThis.BloomGamekitBehavior;
+export const UNIT_INTENT = new BehaviorTree(
+    selector('unit intent', [
+        guard(
+            'marching',
+            ({ world }) => world.farmBossEvent.phase === 'marching',
+            action('march', ({ world, unit }) => {
+                world._marchUnit(unit);
+                return true;
+            }),
+        ),
+        guard('merge material', ({ world, unit }) => world.isMergeTaskMaterial(unit), action('wait for merge', HOLD)),
+    ]),
+);
+
+// budmori-io/src/model/farm-model.js: 틱마다 재사용 context로 결정
+UNIT_INTENT.decide(this._unitIntentTurn.begin(this, unit, dt, enemy, scene));
+```
+
+상태 기계 예: `budmori-io/src/boss/boss-turn.js`.
+
+## 쓰지 말아야 할 때
+
+| 이런 일                                              | 대신                                                                             |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------- |
+| 여러 tick에 걸친 진행 중(RUNNING) 상태를 트리에 두기 | 트리에는 RUNNING이 없습니다. 단계는 `StateMachine`이나 게임 동작 객체가 갖습니다 |
+| 무거운 탐색을 여러 tick에 나눠 처리                  | [work-scheduler](../work-scheduler/README.md)                                    |
+| 길찾기                                               | [pathfield](../pathfield/README.md)                                              |
+
+## 상세
+
 행위자의 행동을 **행동트리는 결정, 상태 기계는 실행**으로 나눠 짜는 순수 ESM 모듈입니다. 시간·난수·DOM을 읽지 않으며 호출 게임의 고정 논리 tick 안에서 동기로 돕니다.
 
 - 행동트리(`BehaviorTree`)는 행위자가 비어 있을 때 "지금 무엇을 시작할지"를 우선순위 순서로 하나 고릅니다.

@@ -1,5 +1,36 @@
 # save
 
+## 언제 쓰나
+
+- 게임 저장 레코드(키 하나)를 읽고, 버전 이관·검증하고, **다른 탭과의 충돌**을 감지하고 싶을 때.
+- 시연·디버그 주소에서는 실제 저장소 대신 메모리에 저장하고 싶을 때(어댑터 교체: IndexedDB·localStorage·메모리).
+
+## 쓰는 모양
+
+```js
+// meow-tumble/src/main.js (줄임)
+const adapter = params.get('save') === 'memory' ? memoryAdapter() : localStorageAdapter({ prefix: 'meow-tumble/' });
+legacySave = createSave({ adapter, key: 'legacy', version: 1, create: defaultLegacy, validate: validateLegacy });
+try {
+    await legacySave.load();
+} catch (error) {
+    await legacySave.reset();
+}
+legacySave.update((draft) => {
+    draft.bestStage = Math.max(draft.bestStage, bestStage);
+});
+```
+
+## 쓰지 말아야 할 때
+
+| 이런 일                      | 대신                                                                              |
+| ---------------------------- | --------------------------------------------------------------------------------- |
+| 레코드 의미·기본값·이관 내용 | 게임이 `create`·`validate`·이관 함수로 줍니다                                     |
+| 경기 기록·리플레이 저장      | [rollback](../rollback/README.md) `exportReplay`, [metrics](../metrics/README.md) |
+| 픽셀 월드 저장               | [pixel-physics](../pixel-physics/README.md) `savePixelWorld`                      |
+
+## 상세
+
 게임 저장 레코드 하나(키 하나)를 읽고, 이관하고, 검증하고, 다른 탭과의 충돌을 감지하는 순수 ESM 모듈입니다. 레코드의 의미·기본값·검증 규칙·이관 내용은 게임이 소유합니다. 저장소는 어댑터로 바꿔 끼웁니다: IndexedDB, localStorage, 메모리.
 
 ```js

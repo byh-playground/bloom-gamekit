@@ -1,5 +1,41 @@
 # transport
 
+## 언제 쓰나
+
+- 온라인 대전의 **방을 만들고 참가해 P2P(WebRTC)로 연결**하고 싶을 때. 시그널링은 Nostr 릴레이를 씁니다.
+- 1:1 방과 재연결(`createNostrRoom`), 참가자가 드나드는 방(`createNostrDynamicRoom`), 공개 입장(`createNostrPublicRoom`).
+
+## 쓰는 모양
+
+```js
+// rally-frontier/src/net/rtc-transport.js (줄임)
+room = await netcode.createNostrRoom({
+    signal: controller.signal,
+    role: this.role === 'guest' ? 'join' : 'host',
+    room: String(this.roomCode),
+    namespace: RALLY_NOSTR_NAMESPACE,
+    version: PRODUCT_VERSION,
+    relays: RALLY_NOSTR_RELAYS,
+    rtcConfig: { iceServers: RALLY_ICE_SERVERS },
+    signalerFactory: local ? netcode.createLocalSignaler : undefined, // 로컬 시험은 릴레이 없이
+});
+room.subscribe((event) => this.handleRoomEvent(event));
+room.transport.subscribe((packet) => {
+    /* 게임 패킷 처리 */
+});
+```
+
+`createNostrDynamicRoom` 예: `bloom-takraw`, `meow-tumble`, `yarn-mayhem`, `bloom-digmori`.
+
+## 쓰지 말아야 할 때
+
+| 이런 일                          | 대신                                                  |
+| -------------------------------- | ----------------------------------------------------- |
+| 입력 확정·예측·롤백              | [rollback](../rollback/README.md) (`attachTransport`) |
+| 시그널링에 민감한 게임 상태 싣기 | 하지 않습니다. Nostr 메시지는 공개 서명 메시지입니다  |
+
+## 상세
+
 WebRTC 바이너리 전송과 Nostr 방·시그널링을 제공합니다. 게임 상태와 세션을 만들지 않습니다.
 
 공개 API: `WebRTCTransport, createWebRTCPeer, createNostrRoom, createLocalSignaler, createNostrGroupRoom, createNostrDynamicRoom, createNostrPublicRoom, createNostrSignaler, nostrCrypto`. 외부 import가 없는 `dist/transport.js` 하나로 사용할 수 있습니다. 도구 설치나 다른 모듈 초기화는 필요하지 않습니다.

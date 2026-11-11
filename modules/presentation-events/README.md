@@ -1,5 +1,42 @@
 # presentation-events
 
+## 언제 쓰나
+
+- 타격 이펙트·피해 숫자·효과음을 **롤백·재확정에도 한 번만** 내고 싶을 때. 이벤트 identity로 중복을 막고, 예측(speculative) 이벤트는 롤백에서 사라지면 취소합니다.
+- 효과를 보간된 위치와 **같은 표시 시각**에 맞추고 싶을 때(`display` 옵션 + `present(frame)`).
+
+## 쓰는 모양
+
+```js
+// bloom-takraw/src/runtime.js (줄임)
+journal = new PresentationEventQueue({
+    retentionTicks: TAKRAW_RUNTIME.feedback.retentionTicks,
+    adapters: {
+        contact: {
+            reversible: true,
+            start: (event) => ({ impact: view.impacts.start(event.payload) }),
+            update: (handle, ageMs) => view.impacts.update(handle.impact, ageMs),
+            stop: (handle) => view.impacts.release(handle.impact),
+        },
+    },
+});
+journal.emit({ ...identity, kind: 'contact', payload, policy: 'speculative', durationMs });
+if (tick >= journal.confirmedTick) journal.confirmThrough(tick); // 권위 확정
+journal.update(now); // 프레임마다
+```
+
+롤백 연결: 같은 파일의 `journal.beginRollback(from)` / `endRollback()`.
+
+## 쓰지 말아야 할 때
+
+| 이런 일                                 | 대신                                                     |
+| --------------------------------------- | -------------------------------------------------------- |
+| gameplay 이벤트 생성·시뮬레이션 history | 아닙니다. 이벤트는 게임 시뮬이 만듭니다                  |
+| 효과음 재생 자체                        | [audio](../audio/README.md) (adapter의 `start`에서 부름) |
+| 객체 재사용                             | [object-pool](../object-pool/README.md)                  |
+
+## 상세
+
 실제 게임의 hit/damage text·particle·SFX를 위한 자원 journal입니다. 시뮬레이션 history나 gameplay 이벤트 생성기는 아닙니다. tick은 순서, nowMs/durationMs는 표현 시간입니다.
 
 `new PresentationEventQueue({adapters,retentionTicks=120,maxPending=100000,nowMs=0})`의 adapters는 kind별 `{start(event,nowMs),reversible?,stop(handle,reason,event)?,update(handle,ageMs,event)?,reconcile(handle,newEvent,oldEvent,nowMs)?,confirm(handle,event)?}`입니다. start가 반환한 자원을 후속 hook에 전달합니다.

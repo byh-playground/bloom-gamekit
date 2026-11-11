@@ -1,5 +1,37 @@
 # spatial
 
+## 언제 쓰나
+
+- **가까운 것만** 보고 싶을 때: 유닛 중심을 칸 격자에 넣고 원·사각형 안 후보나 최근접 후보를 받습니다(`UniformGrid`).
+- 한 틱 움직임을 감싼 상자처럼 **겹치는 사각형 쌍**을 찾고 싶을 때(`BoundsGrid`). 결과 순서가 계약이라 결정론 시뮬에서 그대로 믿습니다.
+
+## 쓰는 모양
+
+```js
+// rally-frontier/src/sim/strategy-sim.js (줄임)
+sim.unitSpatial = new UniformGrid({ cellSize, width, height, outside: 'clamp', groups: 3, track: 'index' });
+// 틱마다 다시 채움
+this.unitSpatial.clear();
+for (let i = 0; i < this.units.length; i++) {
+    const u = this.units[i];
+    if (u.alive) this.unitSpatial.insert(i, u.x, u.y, StrategySim.spatialGroup(u.side));
+}
+// 진영을 걸러 원 안 후보
+const result = this.unitSpatial.queryCircle(x, y, r, out, StrategySim.spatialGroup(side));
+```
+
+`BoundsGrid` 예: `rally-frontier/src/sim/capabilities/unit-lob-attack.js`(`clear`·`insert`·`queryOverlaps`).
+
+## 쓰지 말아야 할 때
+
+| 이런 일               | 대신                                                     |
+| --------------------- | -------------------------------------------------------- |
+| 정확한 거리·겹침 판정 | 질의는 칸 단위 후보입니다. 정확한 판정은 호출자가 합니다 |
+| 충돌을 실제로 풀기    | [contact-solver](../contact-solver/README.md)            |
+| 시야 판정             | [vision](../vision/README.md)                            |
+
+## 상세
+
 결정론 시뮬레이션이 "가까운 것만 보려고" 쓰는 균일 격자(고정 칸 격자) 두 가지입니다. 시간·난수·DOM을 읽지 않고, 칸 색인은 숫자 인덱스 배열이며(질의 경로에 Map·문자열 키·정렬 없음), 질의는 호출자가 준 `out` 배열을 채웁니다. 결과 길이가 들쭉날쭉한 매 틱 질의에서 할당을 0으로 하려면 정수 배열을 채우는 `queryRectInto`를 씁니다(아래 "비용과 제한").
 
 - `UniformGrid`: 점 항목(유닛 중심 등)을 중심 칸 하나에 넣고, 사각형·원 후보와 최근접 고리 탐색을 돌려줍니다.

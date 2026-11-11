@@ -2,6 +2,33 @@
 
 **HTML 실행 프리뷰:** [bm 예제의 '상품' 탭](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/bm.html#tab=store) — 모의 결제의 구매 결과(정상·취소·대기·서버 미인정·오류)와 다른 기기 구매 복원, `suppress` 연결을 확인합니다.
 
+## 언제 쓰나
+
+- 인앱 구매를 결제사와 무관한 한 인터페이스로 부르고, **서버가 인정한 보유 상품만 소유로** 취급하고 싶을 때. 지금 범위는 한 번 사면 계속 갖는 상품(예: 광고 제거)입니다.
+
+## 쓰는 모양
+
+쓰는 게임이 아직 없습니다. 아래 상세의 예에서 줄였습니다.
+
+```js
+import { createStore } from '../../../dist/store.js';
+import { createBm } from '../../../dist/bm.js';
+const STORE = createStore({ adapter: paymentsAdapter });
+await STORE.refresh();
+const BM = createBm({ adapter: adsAdapter, suppress: (type) => type === 'interstitial' && STORE.owns('no_ads') });
+const RESULT = await STORE.purchase('no_ads');
+if (RESULT.status === 'purchased') hideAds();
+```
+
+## 쓰지 말아야 할 때
+
+| 이런 일                    | 대신                                              |
+| -------------------------- | ------------------------------------------------- |
+| 소비성 상품·구독·서버 구현 | 범위 밖입니다. 실제 결제사 어댑터도 아직 없습니다 |
+| 광고 표시                  | [bm](../bm/README.md)                             |
+
+## 상세
+
 상품 구매를 하나의 인터페이스로 감싸고, **서버가 인정한 보유 상품만 소유로 취급**하는 순수 ESM 모듈입니다. 결제사마다 어댑터를 붙이며, 광고 모듈 [bm](../bm/README.md)과는 서로를 import하지 않습니다. 이번 범위는 한 번 사면 계속 갖는 상품(non-consumable, 예: 광고 제거)뿐입니다. 소비성 상품, 구독, 서버 구현은 포함하지 않습니다.
 
 ## 구성

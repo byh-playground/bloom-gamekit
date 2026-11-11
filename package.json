@@ -9,7 +9,7 @@
         "format": "prettier --write .",
         "format:check": "prettier --check .",
         "lint": "eslint .",
-        "check": "npm run format:check && npm run lint",
+        "check": "npm run format:check && npm run lint && node project/check-module-index.mjs",
         "build": "node project/build.mjs",
         "vector-assets:compile": "node modules/vector-assets/scripts/compile.mjs",
         "test:vector-assets": "node modules/vector-assets/tests/compiler.mjs && npm run build && npm run build:previews && node modules/vector-assets/tests/run-browser.mjs",

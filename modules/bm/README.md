@@ -2,6 +2,36 @@
 
 **HTML 실행 프리뷰:** [bm](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/bm.html) — 게시자 ID를 넣으면 실제 Google 테스트 광고로 어댑터를 확인하는 하네스입니다. 승인된 도메인에서만 광고가 나옵니다. '상품' 탭에서는 [store](../store/README.md)의 모의 결제로 구매 결과별 보유 판정과 `suppress` 연결(광고 제거 보유 시 전면 광고 막힘)을 눌러 볼 수 있습니다. '지표' 탭은 [metrics](../metrics/README.md)를 실제 수집 서버에 연결합니다.
 
+## 언제 쓰나
+
+- 보상형·전면 광고를 광고사와 무관한 한 인터페이스로 부르고, 빈도 정책(간격·횟수)을 적용하고 싶을 때. 광고사는 어댑터(mock·Google H5 Games Ads·IMA)로 바꿔 끼웁니다.
+
+## 쓰는 모양
+
+```js
+// bloom-bounko/src/main.js (줄임): `?ads=test`일 때만 IMA 샘플 태그로
+const [{ createBm }, { createImaAdapter, IMA_SAMPLE_TAGS }] = await Promise.all([
+    import(KIT + 'bm.js'),
+    import(KIT + 'bm-ima.js'),
+]);
+adsBm = createBm({ adapter: createImaAdapter({ adTagUrl: IMA_SAMPLE_TAGS.linear }) });
+adsBm.on('adstart', () => {
+    loop.stop();
+    sfx.stopAll();
+});
+adsBm.on('adend', resumeMenuGame);
+adsBm.preload('revive');
+```
+
+## 쓰지 말아야 할 때
+
+| 이런 일                         | 대신                                                 |
+| ------------------------------- | ---------------------------------------------------- |
+| 결제·광고 제거 상품의 보유 판정 | [store](../store/README.md) (bm의 `suppress`에 연결) |
+| 상금·서버 정산                  | 이 모듈의 범위가 아닙니다                            |
+
+## 상세
+
 광고 SDK를 하나의 인터페이스로 감싸고 빈도 정책을 적용하는 순수 ESM 모듈입니다. 광고사마다 어댑터를 붙이며, 게임은 어댑터가 무엇이든 같은 코드를 씁니다. 결제·상금·서버 정산은 이 모듈의 범위가 아닙니다.
 
 ## 구성

@@ -1,5 +1,36 @@
 # camera
 
+## 언제 쓰나
+
+- 월드 좌표(XY 지면 + Z 높이)를 화면에 투영하고, 화면 좌표를 다시 지면으로 되돌리고 싶을 때(`OrthographicProjection`·`CameraViewport`).
+- 카메라 추적(`follow`)·줌·회전·흔들림을 `VectorContext`에 한 번에 넘기고 싶을 때(`applyToContext`).
+- 3D 카메라가 벽에 막힐 때 붐 거리를 줄였다가 부드럽게 되돌리고 싶을 때(`CollisionBoom`).
+
+## 쓰는 모양
+
+```js
+// yarn-mayhem/src/main.js (줄임)
+const camera = new CameraViewport({ width: 1, height: 1, dpr: 1 });
+// 리사이즈
+camera.setViewport({ width: box.width, height: box.height, dpr }).resizeCanvas(canvas);
+// 프레임마다
+camera.setCamera({ x: cam.x, y: cam.y, zoom, rotation: 0 });
+if (!context.beginFrame({ clearColor: [0, 0, 0, 0] })) return;
+camera.applyToContext(context);
+```
+
+다른 예: `bloom-bounko/src/main.js`(`new CameraViewport({ projection: new OrthographicProjection({ degrees: 90 }) })`), `meow-tumble/src/main.js`(`CollisionBoom`).
+
+## 쓰지 말아야 할 때
+
+| 이런 일                                 | 대신                                                             |
+| --------------------------------------- | ---------------------------------------------------------------- |
+| 시뮬레이션 좌표 수정                    | 카메라는 표현만 바꿉니다                                         |
+| 3D 카메라의 ray/sphere cast·충돌 레이어 | 게임(또는 물리 엔진)이 하고 결과 거리만 `CollisionBoom`에 줍니다 |
+| 월드 위치에 DOM 요소 붙이기             | [hud](../hud/README.md) `resolveAnchorInto`                      |
+
+## 상세
+
 Budmori의 OrthographicPitch와 공통 렌더 좌표를 분리한 독립 ESM입니다. 카메라는 표현만 바꾸며 시뮬레이션 좌표를 수정하지 않습니다.
 
 ## 충돌 boom 거리

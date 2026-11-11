@@ -1,5 +1,37 @@
 # tech-tree
 
+## 언제 쓰나
+
+- 스탯·업그레이드·연구처럼 **선행 조건이 있는 성장 트리 화면**을 만들고 싶을 때. 게임은 노드의 `requires`만 적고, 배치·연결선·상태·상세 패널·`#/tech/:id` 주소·줌/팬은 모듈이 합니다.
+
+## 쓰는 모양
+
+쓰는 게임이 아직 없습니다. [예제](./examples/index.html)에서 줄였습니다.
+
+```js
+const tree = createTechTree({
+    root: document.querySelector('#tech'),
+    navigation, // gamekit navigation 인스턴스
+    screen: 'tech',
+    nodes: TREES[tab],
+    level: (id) => LEVELS[id] ?? 0,
+    canBuy: (node) => ({ ok: STATE.points >= node.cost }),
+    onBuy(id) {
+        LEVELS[id] = (LEVELS[id] ?? 0) + 1;
+        tree.refresh();
+    },
+});
+```
+
+## 쓰지 말아야 할 때
+
+| 이런 일                    | 대신                                  |
+| -------------------------- | ------------------------------------- |
+| 구매 실행·비용·노드 규칙   | 게임이 `onBuy`·`canBuy`로 갖습니다    |
+| 트리가 아닌 일반 화면 전환 | [navigation](../navigation/README.md) |
+
+## 상세
+
 선행 조건이 있는 성장 트리 화면(스탯·업그레이드·연구)을 맡는 모듈입니다. 게임은 노드의 `requires`만 적습니다. 좌표는 적지 않습니다. 배치·연결선·상태 계산·상세 패널·조건 칩·주소 동기화·줌/팬은 모듈이 처리하고, 노드 규칙·비용·구매 실행·그림·문구는 게임이 소유합니다. 모듈은 구매를 실행하지 않으며 `onBuy`를 부를 뿐입니다.
 
 노드 지도를 가장 위에 두고, 그 아래에 분류 탭과 선택한 노드의 상세·구매 영역을 분리합니다. 모바일과 데스크톱 모두 지도를 가리는 조작 버튼은 없습니다.

@@ -1,5 +1,42 @@
 # boot
 
+## 언제 쓰나
+
+- 게임 시작 로딩에서 **실제 완료 개수 기반의 전체 진행률**을 보여 주고 싶을 때(단계·가중치만 게임이 정함).
+- 게임 모듈 그래프를 한 번에 `modulepreload`해 import waterfall을 없애고 싶을 때(`listModuleGraph` + `preloadModules`).
+- dist commit에 고정한 GameKit 파일을 받아 **SHA-256을 확인한 뒤 import**하고 싶을 때(`importPinnedModules`, Worker에서도 동작).
+
+## 쓰는 모양
+
+```js
+// rally-frontier/src/core/gamekit.js (줄임)
+RallyBoot = bootModule.createBoot({ stages: RALLY_BOOT_STAGES }); // [{ id: 'sdk', weight: 5 }, …]
+bootModule.bindBootProgress(RallyBoot, {
+    progress: document.getElementById('bootProgressBar'),
+    label: document.getElementById('bootStatus'),
+    labels: RALLY_BOOT_LABELS,
+    done: '준비 완료',
+});
+const namespaces = await RallyBoot.importPinnedModules(
+    { base, modules: { rollback: { file, sha256 } /* lock 파일의 항목들 */ } },
+    { stage: 'sdk' },
+);
+RallyBoot.begin('units', manifest.assets.length);
+RallyBoot.advance('units'); // 파일 하나 끝날 때마다
+```
+
+다른 예: `budmori-io/src/startup-loading.js`(`createBoot`·`subscribe`·`bindBootProgress`).
+
+## 쓰지 말아야 할 때
+
+| 이런 일                      | 대신                                                                                |
+| ---------------------------- | ----------------------------------------------------------------------------------- |
+| 남은 시간 추정·가짜 진행     | 하지 않습니다. 개수를 모르는 단계는 끝날 때까지 0입니다                             |
+| SVG를 검증·컴파일해 불러오기 | [vector-assets-loader](../vector-assets-loader/README.md) (진행은 `advance`로 보고) |
+| 로딩 화면의 HTML·CSS         | 게임이 갖습니다                                                                     |
+
+## 상세
+
 게임 시작 로딩의 진행률을 맡습니다. 게임은 단계와 가중치만 정하고, 각 단계의 실제 개수를 보고합니다. 전체 진행률 계산·모듈 그래프 병렬 preload·`<progress>` 표시는 이 모듈이 합니다. 두 부분입니다.
 
 - `dist/boot-build.mjs` (Node ESM): `listModuleGraph`가 진입 모듈이 불러오는 로컬 모듈 목록을 만듭니다. 게임은 결과를 runtime manifest에 **커밋**합니다.

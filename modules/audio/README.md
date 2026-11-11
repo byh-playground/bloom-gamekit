@@ -2,6 +2,35 @@
 
 **HTML 실행 프리뷰:** [audio](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/audio.html)
 
+## 언제 쓰나
+
+- 짧은 효과음을 음량·동시 재생 수·간격 예산 안에서 내고 싶을 때. 합성 음형과 등록한 버퍼, 루프 환경음(`startBed`)을 지원합니다.
+- 브라우저의 오디오 잠금(첫 제스처 전 재생 불가)과 탭 숨김 시 정지를 게임마다 다시 짜고 싶지 않을 때.
+
+## 쓰는 모양
+
+```js
+// bloom-takraw/src/runtime.js (줄임)
+import { AudioPlayer, audioSettings } from '@bloom-gamekit/audio';
+const soundSettings = createSave({ ...audioSettings(TAKRAW_RUNTIME.audio), adapter: saveAdapter('settings') });
+audio = new AudioPlayer({ ...TAKRAW_RUNTIME.audio, settings: soundSettings, onSaveError: soundSaveFailed });
+audio.unlock().then((ok) => ok && startBgm()); // 실제 제스처 안에서
+audio.startBed('bgm', { level: bgmLevel(), fadeMs: TAKRAW_RUNTIME.bgm.fadeMs });
+
+// yarn-mayhem/src/main.js (줄임)
+const audio = new AudioPlayer(soundCfg); // { volume, maxVoices, categories, sounds }
+audio.play(id, strength);
+```
+
+## 쓰지 말아야 할 때
+
+| 이런 일                                      | 대신                                                                                  |
+| -------------------------------------------- | ------------------------------------------------------------------------------------- |
+| 롤백·재확정 때 같은 효과음이 두 번 나지 않게 | [presentation-events](../presentation-events/README.md)의 confirmed 이벤트에서 `play` |
+| 음악 편곡·전투 규칙·파일 fetch/decode        | 게임 책임입니다. 이 모듈에 넣지 않습니다                                              |
+
+## 상세
+
 실제 필요가 생긴 게임의 짧은 효과음을 위한 독립 Web Audio ESM입니다. AudioPlayer는 오디오 자원·음량·재생 예산을 소유하고, 게임은 음형·이벤트·강도를 소유합니다. 음악·전투 규칙·rollback history·파일 fetch/decode는 넣지 않습니다. 합성한 환경음(관중 웅성거림 같은 루프)은 `startBed`로 지원합니다.
 
 ## 시작과 수명

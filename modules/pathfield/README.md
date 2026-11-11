@@ -1,5 +1,44 @@
 # pathfield
 
+## 언제 쓰나
+
+- **여러 유닛이 같은 목표로 길을 찾을 때**: `PortalGraph`의 목표 보관소(`goal`·`setGoal`)가 돌려주는 `FlowField` 하나를 나눠 쓰고, 유닛은 자기 칸에서 비용이 줄어드는 쪽으로 내려갑니다(`descend`).
+- **유닛 하나의 경로**(영웅 복귀처럼 목표를 혼자 쓰는 이동): `RouteFinder`(A\*)로 웨이포인트를 한 번 찾고 `advance`로 따라갑니다.
+- 장애물이 바뀌면 바뀐 칸만 다시 만들고 싶을 때(`invalidateRect`). 결정론이라 롤백 시뮬 안에서 씁니다.
+
+## 쓰는 모양
+
+```js
+// rally-frontier/src/sim/navigation-field.js (줄임)
+const { PathGrid, PortalGraph, RouteFinder, UNREACHED } = RallyGamekit;
+this.grid = new PathGrid({
+    width,
+    height,
+    cellSize: CELL,
+    passable: (x, y, cell) => nav.field.pointClearanceBand(x, y, radius, radius + GOAL_MARGIN) !== 0,
+});
+this.graph = new PortalGraph(this.grid);
+this.routes = new RouteFinder(this.grid);
+
+// 같은 목표의 여러 유닛
+let field = graph.goal(keyA, keyB) || graph.setGoal(keyA, keyB, this.goalSources(goal));
+const start = grid.nearestOpen(grid.cellAt(x, y));
+if (start >= 0 && field.distance(start) !== UNREACHED) path = field.descend(start, LOOKAHEAD, DESCENT);
+
+// 유닛 하나의 경로 (rally-frontier/src/sim/navigation-paths.js)
+index = finder.advance(route.cells, route.index, u.x, u.y, RoutePath.REACH, clear);
+```
+
+## 쓰지 말아야 할 때
+
+| 이런 일                                                       | 대신                                                                                             |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| 언제 유동장 대신 직선으로 갈지, 목표를 얼마나 둘지(이동 정책) | 게임이 정합니다. 모듈에 넣지 않습니다                                                            |
+| 칸마다 다른 지형 이동 비용                                    | 없습니다. 비용은 직선 10, 대각 14 고정입니다                                                     |
+| 벽에 미끄러지는 실제 이동·유닛끼리 충돌                       | [geometry](../geometry/README.md) `SurfaceMotion`, [contact-solver](../contact-solver/README.md) |
+
+## 상세
+
 정수 비용 격자 위의 **청크 + 포털 계층 길찾기**입니다. `PortalGraph`가 격자를 청크로 나눠 청크 경계의 포털 노드와 연결 성분을 두고, 장애물이 바뀌면 바뀐 청크만 다시 만듭니다. 그 위의 목표 보관소(`goal`·`setGoal`)가 돌려주는 `FlowField`는 목표(여러 칸일 수 있음)까지의 걸음 비용을 유닛이 물은 청크만 계산해 주고, 유닛은 자기 칸에서 비용이 줄어드는 쪽으로 걸어 내려갑니다. 유닛마다 경로를 만들거나 들고 있지 않으므로 같은 목표로 가는 유닛이 많을수록 유동장 하나를 나눠 쓰는 쪽이 싸집니다. 시간·난수·DOM을 읽지 않고 같은 호출 순서는 같은 결과를 냅니다. 외부 import가 없는 단일 번들(`dist/pathfield.js`)입니다.
 
 유닛 **하나가 한 번** 가는 길(영웅 복귀처럼 목표를 혼자 쓰는 이동)은 같은 격자 위의 A\* `RouteFinder`로 한 번 찾아 웨이포인트(칸 번호 배열)로 유닛 상태에 저장하고, 따라가기는 인덱스 하나로 합니다. 유동장과 비용·통과 규칙이 같습니다.

@@ -2,6 +2,43 @@
 
 **HTML 실행 프리뷰:** [rollback-reference](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rollback-reference.html) · [rollback-availability](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rollback-availability.html)
 
+## 언제 쓰나
+
+- **온라인 대전**에서 입력 확정·예측·동기 롤백·snapshot 복구를 맡기고 싶을 때. 2인 고정 방은 `createSession`, 참가자가 드나드는 방은 `createRoomSession`.
+- 비활성 참가자·가용성 정책·coordinator 이관이 필요할 때(`RoomSession`).
+
+## 쓰는 모양
+
+```js
+// rally-frontier/src/session/game-session.js (줄임)
+this.netcodeSession = RallyNetcode.createSession({
+    players: ['host', 'guest'],
+    localPlayerId: this.role,
+    authorityPlayerId: 'host',
+    sessionId: String(this.roomCode),
+    simulationVersion: PRODUCT_VERSION,
+    seed: seed >>> 0,
+    inputSize: 1,
+    profile: { ...RallyNetcode.profiles.rts, mode: this.netcodeMode },
+    adapter: this.simulationAdapter,
+    clock: () => this.netcodeNow,
+});
+this.netcodeSession.attachTransport(peerId, { send: (bytes) => this.transport.sendNetcode(bytes) /* … */ });
+this.netcodeLoop = RallyNetcode.createLoop({ session: this.netcodeSession, getInput: () => this.neutralInput });
+```
+
+`createRoomSession` 예: `bloom-takraw/src/runtime.js`, `meow-tumble/src/main.js`, `bloom-digmori` `src/runtime/app.js`.
+
+## 쓰지 말아야 할 때
+
+| 이런 일                           | 대신                                         |
+| --------------------------------- | -------------------------------------------- |
+| 방 찾기·P2P 연결                  | [transport](../transport/README.md)          |
+| 고정 tick 실행 스케줄             | [simloop](../simloop/README.md) `createLoop` |
+| 게임 규칙·권위 상태·snapshot 형식 | 게임 adapter가 갖습니다                      |
+
+## 상세
+
 입력 확정·예측·동기적 롤백·검증된 snapshot 복구를 소유합니다.
 
 공개 API: `createSession, RollbackSession, createRoomSession, RoomSession, createBootstrapReplay, VERSION, PROTOCOL_VERSION, CHUNK_SIZE, MAX_TICK, profiles`. 외부 import가 없는 `dist/rollback.js` 하나로 사용할 수 있습니다. 도구 설치나 다른 모듈 초기화는 필요하지 않습니다.
