@@ -1,7 +1,9 @@
-// 정수 비용 격자 위의 거리장을 만드는 데 필요한 격자입니다. 호출자가 준 통과 판정을 칸마다 한 번만 부르고 기억하며,
+// 정수 비용 격자 위의 길찾기(포털 그래프·유동장·A*)가 걷는 격자입니다. 호출자가 준 통과 판정을 칸마다 한 번만 부르고 기억하며,
 // 8방향 이동 규칙(직선 10·대각 14, 모서리 가로지르기 없음)과 칸 번호 계산의 단일 원본입니다.
 // 시간·난수·DOM을 읽지 않고 Map·문자열 키가 없습니다. 통과 판정이 순수하면 같은 호출 순서는 같은 결과를 냅니다.
 
+/** 닿지 못한 칸의 비용 값. */
+export const UNREACHED = 0x7fffffff;
 /** 직선 한 칸의 비용. */
 export const STRAIGHT_COST = 10;
 /** 대각 한 칸의 비용. */
@@ -21,7 +23,7 @@ export const DIRECTION_COST = Uint8Array.of(
     DIAGONAL_COST,
 );
 
-// 거리장의 힙 키가 cost * 2^k + 칸 번호로 정확히 표현되도록 칸 수를 제한합니다(키는 2^53 아래, 비용은 Int32 안).
+// A*의 힙 키가 cost * 2^k + 칸 번호로 정확히 표현되도록 칸 수를 제한합니다(키는 2^53 아래, 비용은 Int32 안).
 const MAX_CELLS = 1 << 22;
 const UNKNOWN = -1;
 const BLOCKED = 0;
@@ -47,8 +49,8 @@ function finiteNumber(value, name) {
 }
 
 /**
- * 거리장이 걷는 격자입니다. 칸 번호는 행 우선(`row * cols + col`)이고, 칸의 통과 여부는 칸 중심 좌표로 호출자의
- * `passable`을 한 번 불러 기억합니다. 장애물이 바뀌면 `invalidate()`(또는 `sync(version)`)로 기억을 비우거나, 바뀐 곳만 `invalidateRect()`로 비웁니다.
+ * 길찾기가 걷는 격자입니다. 칸 번호는 행 우선(`row * cols + col`)이고, 칸의 통과 여부는 칸 중심 좌표로 호출자의
+ * `passable`을 한 번 불러 기억합니다. 장애물이 바뀌면 `invalidate()`로 기억을 비우거나, 바뀐 곳만 `invalidateRect()`로 비웁니다.
  */
 export class PathGrid {
     /** 칸 한 변의 크기(좌표와 같은 단위). */
@@ -60,16 +62,14 @@ export class PathGrid {
     cols;
     rows;
     size;
-    /** 통과 판정을 비운 횟수. 이 격자에서 만든 거리장과 캐시가 낡았는지 알아보는 표식입니다. */
+    /** 통과 판정을 비운 횟수. 이 격자 위에 만든 길찾기 결과가 낡았는지 알아보는 표식입니다. */
     revision = 0;
 
     #passable;
     #open;
-    #version;
     #passableEdge;
     #edgeKnown;
     #edgeOpen;
-    #stack = null;
     // 마지막 takeChangedRects 이후 바뀐 사각형: 칸 좌표 [minCol, minRow, maxCol, maxRow] 네 정수씩, 기록 순서대로.
     #changed = new Int32Array(MAX_CHANGED_RECTS * 4);
     #changedCount = 0;
@@ -242,7 +242,7 @@ export class PathGrid {
     /**
      * 마지막으로 가져간 뒤 바뀐 칸 사각형을 `out`(길이 `4 * MAX_CHANGED_RECTS` 이상의 Int32Array)에
      * `[minCol, minRow, maxCol, maxRow]`(양끝 포함) 네 정수씩 기록 순서대로 쓰고 개수를 돌려준 뒤 기록을 비웁니다.
-     * 소비자는 하나라고 가정합니다(두 곳이 가져가면 나중 쪽은 놓칩니다). `invalidate()`·`sync`가 비운 경우는 격자 전체 한 개입니다.
+     * 소비자는 하나라고 가정합니다(두 곳이 가져가면 나중 쪽은 놓칩니다). `invalidate()`가 비운 경우는 격자 전체 한 개입니다.
      * @param {Int32Array} out
      */
     takeChangedRects(out) {
@@ -287,16 +287,6 @@ export class PathGrid {
         LIST[2] = x1;
         LIST[3] = y1;
         this.#changedCount = 1;
-    }
-
-    /** 게임이 가진 장애물 배치의 세대 번호를 알립니다. 지난번과 다르면 `invalidate()`하고 true를 돌려줍니다. */
-    sync(version) {
-        if (version === this.#version) {
-            return false;
-        }
-        this.#version = version;
-        this.invalidate();
-        return true;
     }
 
     /**
@@ -366,40 +356,6 @@ export class PathGrid {
                     continue;
                 }
                 out.push(CELL);
-            }
-        }
-        return out;
-    }
-
-    /**
-     * `start`(열린 칸)에서 8방향으로 걸어 닿는 칸을 1로 표시해 `out`(길이 `size` 이상의 Uint8Array, 먼저 비움)에 채웁니다.
-     * `start`가 열려 있지 않으면(-1 포함) 모두 0입니다. 거리장보다 가볍게 "이어져 있는가"만 알고 싶을 때 씁니다.
-     * 탐색 스택은 격자가 가진 Int32Array(칸마다 한 번만 들어감)를 재사용합니다.
-     * @param {number} start
-     * @param {Uint8Array} out
-     */
-    reachableFrom(start, out) {
-        if (!(out instanceof Uint8Array) || out.length < this.size) {
-            throw new TypeError(`PathGrid.reachableFrom needs a Uint8Array of at least ${this.size} cells.`);
-        }
-        out.fill(0, 0, this.size);
-        if (!this.isOpen(start)) {
-            return out;
-        }
-        const STACK = (this.#stack ??= new Int32Array(this.size));
-        let top = 0;
-        STACK[top++] = start;
-        out[start] = 1;
-        while (top) {
-            const CELL = STACK[--top],
-                COL = CELL % this.cols,
-                ROW = (CELL - COL) / this.cols;
-            for (let direction = 0; direction < DIRECTION_COUNT; direction++) {
-                const NEXT = this.stepCell(COL, ROW, direction);
-                if (NEXT >= 0 && out[NEXT] === 0) {
-                    out[NEXT] = 1;
-                    STACK[top++] = NEXT;
-                }
             }
         }
         return out;

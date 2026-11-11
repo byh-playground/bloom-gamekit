@@ -1,12 +1,11 @@
 // 청크 + 포털 계층 길찾기의 구조 부분입니다. 격자를 정사각 청크로 나누고, 청크 안 연결 성분·청크 경계의 포털 노드·
 // 청크 안 노드 사이 걸음 비용·전역 연결 성분을 둡니다. 장애물이 바뀌면 격자가 기록한 바뀐 사각형과 겹치는 청크만 다시 만듭니다.
-// 모든 판정은 `grid.stepCell` 하나로 하므로 칸 통과·변 통과·모서리 가로지르기 금지 규칙이 거리장·A*와 같습니다.
+// 모든 판정은 `grid.stepCell` 하나로 하므로 칸 통과·변 통과·모서리 가로지르기 금지 규칙이 A*와 같습니다.
 // 시간·난수·DOM·Map·문자열 키가 없고, 번호와 순서는 격자 상태만의 함수입니다(어떤 순서로 바뀌어 왔는지와 무관).
 // 그 위의 목표 보관소와 유동장(FlowField): 목표마다 포털 노드의 추상 거리 D를 게으르게 확정하고(질의한 청크의 노드가 확정되면
 // 멈추는 A*, 다음 질의는 이어서), 질의가 온 청크만 청크 장 F0(노드 씨앗)·F1(이웃 F0 경계 값 이어받기)을 만듭니다.
 // 모든 값은 (목표 칸 집합, 격자 상태)만의 함수라 계산 순서·캐시 폐기·질의 순서가 답을 바꾸지 않습니다.
-import { UNREACHED } from './field.js';
-import { DIRECTION_COUNT, DIRECTION_DX, DIRECTION_DY, MAX_CHANGED_RECTS, PathGrid } from './grid.js';
+import { DIRECTION_COUNT, DIRECTION_DX, DIRECTION_DY, MAX_CHANGED_RECTS, PathGrid, UNREACHED } from './grid.js';
 
 const OPTIONS = ['chunkSize', 'portalSpan', 'goalCapacity'];
 const TWO_32 = 4294967296;
