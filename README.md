@@ -20,6 +20,7 @@
 - [Web Audio 재생·음량·confirmed SFX adapter](./modules/audio/README.md) · [실제 합성·출력 예제](./modules/audio/examples/index.html) · `npm run test:audio`
 - [객체 풀 API·단일 소유권·반납 계약](./modules/object-pool/README.md)
 - [2D 기하 수학과 원형 이동체의 접촉 해소(지형·길찾기 정책 없음)](./modules/geometry/README.md) · [기하 탭 바로 보기](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/work-scheduler.html#tab=geometry) · `node modules/geometry/tests/geometry.e2e.mjs`
+- [예산 기반 접촉 해소: 지형은 항상 풀고 몸끼리는 스텝 예산만큼, 넘친 쌍은 겹침 풀기로](./modules/contact-solver/README.md) · [접촉 탭 바로 보기](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/work-scheduler.html#tab=contacts) · `node modules/contact-solver/tests/contact-solver.e2e.mjs`
 - [입력 action·DOM·tick 소비 계약](./modules/input/README.md)
 - [고정 실행과 선택적 detached local input preview](./modules/simloop/README.md) · [카메라·표현 이벤트](./modules/presentation-events/README.md) · [HUD](./modules/hud/README.md) · [진단](./modules/debug-tools/README.md) · [카메라](./modules/camera/README.md)
 - [비긴급 작업의 고정 tick 예산·재개 API](./modules/work-scheduler/README.md)

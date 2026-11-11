@@ -84,6 +84,13 @@
             border-color: #e0a458;
             color: #111c24;
         }
+        #contacts-budget {
+            display: block;
+            width: 100%;
+            min-height: 56px;
+            margin: 0.3rem 0 0;
+            accent-color: #3f8fa8;
+        }
         svg {
             width: 100%;
             height: auto;
@@ -99,6 +106,7 @@
         <button role="tab" id="tab-geometry" aria-selected="false" aria-controls="panel-geometry">기하</button>
         <button role="tab" id="tab-portal" aria-selected="false" aria-controls="panel-portal">포털</button>
         <button role="tab" id="tab-vision" aria-selected="false" aria-controls="panel-vision">시야</button>
+        <button role="tab" id="tab-contacts" aria-selected="false" aria-controls="panel-contacts">접촉</button>
     </div>
     <section id="panel-budget" role="tabpanel" aria-labelledby="tab-budget">
         <h1>비긴급 탐색 작업 분산</h1>
@@ -228,6 +236,30 @@
             <button id="vision-reset">처음으로</button>
         </div>
         <pre id="vision-output"></pre>
+    </section>
+    <section id="panel-contacts" role="tabpanel" aria-labelledby="tab-contacts" hidden>
+        <h1>벽은 언제나 막고, 몸끼리는 예산만큼만 풉니다</h1>
+        <p>두 무리가 벽 틈에서 부딪칩니다. 지형 접촉은 예산과 상관없이 모두 풀어 벽을 뚫는 몸이 없습니다.</p>
+        <ul>
+            <li>틱마다 푸는 적 쌍 수가 예산을 넘으면 그 쌍은 겹친 채 지나가고(빨강), 틱 끝 겹침 풀기가 밀어냅니다.</li>
+            <li>갈색 큰 원은 무거운 구르는 몸입니다. 캔버스를 누르면 가장 가까운 것을 그쪽으로 굴립니다.</li>
+        </ul>
+        <canvas
+            id="contacts-canvas"
+            width="480"
+            height="320"
+            tabindex="0"
+            role="img"
+            aria-label="벽 틈에서 두 무리와 무거운 구르는 몸이 부딪치는 장면"
+        ></canvas>
+        <label for="contacts-budget">몸-몸 예산: <strong id="contacts-budget-label">16</strong></label>
+        <input id="contacts-budget" type="range" min="0" max="3" step="1" value="1" />
+        <div>
+            <button id="contacts-run" aria-pressed="true">자동 실행</button>
+            <button id="contacts-step">한 틱</button>
+            <button id="contacts-reset">처음으로</button>
+        </div>
+        <pre id="contacts-output"></pre>
     </section>
     <script type="module">
         import { createBudgetedScheduler } from '../../../dist/work-scheduler.js';
@@ -1355,5 +1387,387 @@
         render();
     });
     window.visionExample = { moveTo, state: STATE };
+    render();
+</script>
+
+<script type="module">
+    import { ObstacleField, SurfaceMotion } from '../../../dist/geometry.js';
+    import {
+        ACTIVE,
+        DYNAMIC,
+        PAIRS,
+        SEPARATE,
+        SOFT,
+        SOLID,
+        ContactEvent,
+        ContactSolver,
+    } from '../../../dist/contact-solver.js';
+
+    // 장면·병사의 걸음·구르는 몸의 감속은 이 예제의 규칙입니다. 모듈은 한 틱의 접촉 풀기와 겹침 풀기만 합니다.
+    const FP = 100,
+        DT = 1 / 20,
+        WORLD = { width: 480, height: 320 },
+        BUDGETS = [0, 16, 64, Infinity],
+        SOLDIERS = 120,
+        // 가운데 벽(두께 20)에 틈 두 개(y 90~130, 190~230), 양쪽에 원 건물 하나씩
+        FIELD = new ObstacleField({
+            ...WORLD,
+            fixedPoint: FP,
+            polygons: [
+                [0, 90],
+                [130, 190],
+                [230, 320],
+            ].map(([top, bottom]) => ({
+                points: [
+                    { x: 230, y: top },
+                    { x: 250, y: top },
+                    { x: 250, y: bottom },
+                    { x: 230, y: bottom },
+                ],
+            })),
+            circles: [
+                { id: 1, x: 120, y: 250, r: 22 },
+                { id: 2, x: 360, y: 70, r: 22 },
+            ],
+        }),
+        SOLVER = new ContactSolver({
+            surface: new SurfaceMotion(FIELD),
+            fixedPoint: FP,
+            remainderScale: 10000,
+            pairBudget: 16,
+            maxZeroTimeRepeats: 32,
+            cellSize: 32,
+        }),
+        EV = new ContactEvent(),
+        SOLDIER_RADIUS = 6,
+        ROLLER_RADIUS = 14,
+        ROLLER = 2,
+        CANVAS = document.querySelector('#contacts-canvas'),
+        CONTEXT = CANVAS.getContext('2d'),
+        PANEL = document.querySelector('#panel-contacts'),
+        SLIDER = document.querySelector('#contacts-budget'),
+        RUN = document.querySelector('#contacts-run');
+    // 진영 0·1: 같은 진영끼리 SOFT(접촉 큐 밖, 겹침 풀기에서 일부만 밀어냄), 적끼리 SOLID. 구르는 몸(그룹 2)은 모두와 SOLID.
+    SOLVER.setRelations(3, Uint8Array.of(SOFT, SOLID, SOLID, SOLID, SOFT, SOLID, SOLID, SOLID, SOLID));
+
+    // 게임 엔티티 상태가 원본입니다. 틱마다 몸 열로 옮기고 결과를 되돌려 받습니다.
+    let state;
+    function reset() {
+        let seed = 20261111;
+        const RANDOM = () => (seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 4294967296,
+            BODIES = [];
+        for (let k = 0; BODIES.length < SOLDIERS; k++) {
+            const SIDE = k % 2,
+                X = Math.round(SIDE === 0 ? 20 + RANDOM() * 190 : 270 + RANDOM() * 190),
+                Y = Math.round(15 + RANDOM() * 290);
+            if (FIELD.pointClear(X, Y, SOLDIER_RADIUS + 1, null)) {
+                BODIES.push({ x: X * FP, y: Y * FP, group: SIDE, r: SOLDIER_RADIUS, m: 100, laneY: Y, back: false });
+            }
+        }
+        for (const [X, Y, VX, VY] of [
+            [100, 110, 400, 0],
+            [380, 210, -400, 0],
+            [60, 30, 300, 260],
+        ]) {
+            BODIES.push({ x: X * FP, y: Y * FP, group: ROLLER, r: ROLLER_RADIUS, m: 1600, ivx: VX * FP, ivy: VY * FP });
+        }
+        for (const BODY of BODIES) {
+            BODY.ivx ??= 0;
+            BODY.ivy ??= 0;
+            BODY.rx = 0;
+            BODY.ry = 0;
+            BODY.dynamic = BODY.group === ROLLER;
+        }
+        state = { tick: 0, bodies: BODIES, overlaps: [], last: null, wallPenetrations: 0, tickMs: [], random: RANDOM };
+    }
+
+    // 병사는 반대편으로 가려고 가까운 틈을 지나 끝까지 걷고, 끝에 닿으면 돌아서 다시 틈을 지나 돌아옵니다.
+    function steerGoal(body) {
+        const X = body.x / FP,
+            Y = body.y / FP,
+            RIGHT = (body.group === 0) !== body.back,
+            ARRIVED = RIGHT ? X > 256 : X < 224;
+        if (!ARRIVED) {
+            const GAP_Y = Math.abs(Y - 110) < Math.abs(Y - 210) ? 110 : 210;
+            // 틈 높이에 맞춰 벽 앞으로 간 뒤 틈을 지나갑니다.
+            return Math.abs(Y - GAP_Y) > 8 ? [RIGHT ? 214 : 266, GAP_Y] : [RIGHT ? 272 : 208, GAP_Y];
+        }
+        const GOAL_X = RIGHT ? 455 : 25;
+        if (Math.abs(X - GOAL_X) < 12) {
+            body.back = !body.back;
+        }
+        return [GOAL_X, body.laneY];
+    }
+
+    function launch(body, angle) {
+        body.dynamic = true;
+        body.ivx = Math.round(Math.cos(angle) * 400 * FP);
+        body.ivy = Math.round(Math.sin(angle) * 400 * FP);
+    }
+
+    function overlapping(bodies, i, j) {
+        // 반올림 한 칸을 허용합니다.
+        const LIMIT = (bodies.radius[i] + bodies.radius[j]) * FP - 1;
+        return (bodies.x[i] - bodies.x[j]) ** 2 + (bodies.y[i] - bodies.y[j]) ** 2 < LIMIT * LIMIT;
+    }
+
+    function tick() {
+        const BODIES = state.bodies,
+            START = performance.now(),
+            B = SOLVER.begin(BODIES.length, DT);
+        SOLVER.pairBudget = BUDGETS[Number(SLIDER.value)];
+        BODIES.forEach((body, i) => {
+            B.x[i] = body.x;
+            B.y[i] = body.y;
+            B.steerX[i] = body.x;
+            B.steerY[i] = body.y;
+            if (!body.dynamic) {
+                const [GX, GY] = steerGoal(body),
+                    DX = GX - body.x / FP,
+                    DY = GY - body.y / FP,
+                    LENGTH = Math.hypot(DX, DY) || 1,
+                    STEP = Math.min(LENGTH, 60 * DT);
+                B.steerX[i] += Math.round((DX / LENGTH) * STEP * FP);
+                B.steerY[i] += Math.round((DY / LENGTH) * STEP * FP);
+            }
+            B.ivx[i] = body.dynamic ? body.ivx : 0;
+            B.ivy[i] = body.dynamic ? body.ivy : 0;
+            B.rx[i] = body.rx;
+            B.ry[i] = body.ry;
+            B.radius[i] = body.r;
+            B.mass[i] = body.m;
+            B.key[i] = i;
+            B.group[i] = body.group;
+            B.z[i] = 0;
+            B.softCap[i] = Math.round(body.r * FP * 0.25);
+            B.flags[i] = ACTIVE | PAIRS | (body.dynamic ? DYNAMIC : 0) | (body.group === ROLLER ? 0 : SEPARATE);
+        });
+        // 구르는 몸의 응답은 게임 규칙입니다: 벽에 튕기고(반발 0.6), 맞은 병사는 세 배로 밀려납니다.
+        while (SOLVER.next(EV)) {
+            const ROLLER_I = B.group[EV.i] === ROLLER,
+                ROLLER_J = EV.j >= 0 && B.group[EV.j] === ROLLER;
+            if (EV.stuck || !(ROLLER_I || ROLLER_J)) {
+                SOLVER.resolve(EV);
+            } else if (EV.j < 0) {
+                SOLVER.reflect(EV, 0.6);
+            } else {
+                SOLVER.exchange(EV, 0.6, ROLLER_I ? 1 : 3, ROLLER_J ? 1 : 3);
+            }
+        }
+        SOLVER.end();
+        // 겹침 풀기 전에 예산에 걸려 겹친 채 끝난 적 쌍을 모읍니다(예제 표시용).
+        const OVERLAPS = [];
+        for (let i = 0; i < BODIES.length; i++) {
+            for (let j = i + 1; j < BODIES.length; j++) {
+                if ((B.group[i] !== B.group[j] || B.group[i] === ROLLER) && overlapping(B, i, j)) {
+                    OVERLAPS.push([i, j, B.x[i], B.y[i], B.x[j], B.y[j]]);
+                }
+            }
+        }
+        const STATS = { ...SOLVER.stats };
+        SOLVER.separate();
+        const MS = performance.now() - START;
+        // 겹침 풀기는 SEPARATE 몸만 밀어 냅니다. 구르는 몸이 낀 쌍은 남을 수 있습니다.
+        const AFTER = OVERLAPS.filter(([i, j]) => overlapping(B, i, j)).length;
+        // 벽 관통: 끝 자리가 벽·건물 안이거나 맵 밖이면(반올림 두 칸 허용), 또는 가운데 벽을 건넜는데 시작·끝을 이은 직선이
+        // 벽 가운데 선(x 240)을 지난 높이가 틈에서 반지름보다 멀면 셉니다. 한 틱 안에 벽을 따라 미끄러진 뒤 틈으로 들어간
+        // 몸은 그 직선이 틈 모서리를 스칠 수 있어, 직선과 벽의 교차만으로는 세지 않습니다.
+        BODIES.forEach((body, i) => {
+            const X0 = body.x / FP,
+                Y0 = body.y / FP,
+                X1 = B.x[i] / FP,
+                Y1 = B.y[i] / FP,
+                R = body.r - 2 / FP,
+                CROSS_Y = X0 < 240 !== X1 < 240 ? Y0 + ((Y1 - Y0) * (240 - X0)) / (X1 - X0) : 110;
+            if (
+                !FIELD.polygonCircleClear(X1, Y1, R) ||
+                FIELD.circles.some((c) => Math.hypot(X1 - c.x, Y1 - c.y) < c.r + R) ||
+                !(
+                    (CROSS_Y > 90 - body.r && CROSS_Y < 130 + body.r) ||
+                    (CROSS_Y > 190 - body.r && CROSS_Y < 230 + body.r)
+                )
+            ) {
+                state.wallPenetrations++;
+            }
+            body.x = B.x[i];
+            body.y = B.y[i];
+            body.rx = B.rx[i];
+            body.ry = B.ry[i];
+            body.dynamic = (B.flags[i] & DYNAMIC) !== 0;
+            body.ivx = B.ivx[i];
+            body.ivy = B.ivy[i];
+            const SPEED = Math.hypot(body.ivx, body.ivy) / FP;
+            if (body.group === ROLLER) {
+                // 구르는 몸은 천천히 느려지고, 너무 느려지면 정해진 난수 방향으로 다시 굴립니다.
+                body.ivx = Math.round(body.ivx * 0.99);
+                body.ivy = Math.round(body.ivy * 0.99);
+                if (SPEED < 150) {
+                    launch(body, Math.PI * 2 * state.random());
+                }
+            } else if (body.dynamic) {
+                // 맞은 병사는 빠르게 멈춘 뒤 다시 걷습니다(조향 몸으로 돌아감).
+                body.ivx = Math.round(body.ivx * 0.75);
+                body.ivy = Math.round(body.ivy * 0.75);
+                if (SPEED < 20) {
+                    body.dynamic = false;
+                    body.ivx = body.ivy = body.rx = body.ry = 0;
+                }
+            }
+        });
+        state.tick++;
+        state.overlaps = OVERLAPS;
+        state.tickMs.push(MS);
+        if (state.tickMs.length > 20) {
+            state.tickMs.shift();
+        }
+        state.last = { ...STATS, overlapsBeforeSeparate: OVERLAPS.length, overlapsAfterSeparate: AFTER };
+        render();
+    }
+
+    function disc(x, y, r, fill, stroke, width = 1.5) {
+        CONTEXT.beginPath();
+        CONTEXT.arc(x, y, r, 0, Math.PI * 2);
+        if (fill) {
+            CONTEXT.fillStyle = fill;
+            CONTEXT.fill();
+        }
+        CONTEXT.strokeStyle = stroke;
+        CONTEXT.lineWidth = width;
+        CONTEXT.stroke();
+    }
+
+    function budgetLabel() {
+        const BUDGET = BUDGETS[Number(SLIDER.value)];
+        return BUDGET === Infinity ? '무제한' : String(BUDGET);
+    }
+
+    function render() {
+        CONTEXT.clearRect(0, 0, WORLD.width, WORLD.height);
+        for (const POLYGON of FIELD.polygons.items) {
+            CONTEXT.beginPath();
+            POLYGON.points.forEach((p, i) => (i ? CONTEXT.lineTo(p.x, p.y) : CONTEXT.moveTo(p.x, p.y)));
+            CONTEXT.closePath();
+            CONTEXT.fillStyle = '#2a3d49';
+            CONTEXT.fill();
+            CONTEXT.strokeStyle = '#6b8594';
+            CONTEXT.lineWidth = 2;
+            CONTEXT.stroke();
+        }
+        for (const C of FIELD.circles) {
+            disc(C.x, C.y, C.r, '#3d3a2a', '#a39a5c', 2);
+        }
+        for (const BODY of state.bodies) {
+            const X = BODY.x / FP,
+                Y = BODY.y / FP;
+            if (BODY.group === ROLLER) {
+                disc(X, Y, BODY.r, '#7a5232', '#d19a62', 2);
+            } else {
+                // 흰 테두리 = 맞아서 밀려나는 중(동적 몸)
+                disc(X, Y, BODY.r, BODY.group === 0 ? '#3d8fb0' : '#c97a45', BODY.dynamic ? '#ffffff' : '#091117');
+            }
+        }
+        // 예산에 걸려 겹친 채 끝난 쌍(겹침 풀기 전 자리)을 빨갛게 둘러 이어 줍니다.
+        for (const [I, J, XI, YI, XJ, YJ] of state.overlaps) {
+            CONTEXT.strokeStyle = '#ff4d4d';
+            CONTEXT.lineWidth = 2;
+            CONTEXT.beginPath();
+            CONTEXT.moveTo(XI / FP, YI / FP);
+            CONTEXT.lineTo(XJ / FP, YJ / FP);
+            CONTEXT.stroke();
+            disc(XI / FP, YI / FP, state.bodies[I].r + 2, null, '#ff4d4d', 2);
+            disc(XJ / FP, YJ / FP, state.bodies[J].r + 2, null, '#ff4d4d', 2);
+        }
+        const LABEL = budgetLabel(),
+            MEDIAN = [...state.tickMs].sort((a, b) => a - b)[state.tickMs.length >> 1] ?? 0,
+            LAST = state.last;
+        document.querySelector('#contacts-budget-label').textContent = LABEL;
+        SLIDER.setAttribute('aria-valuetext', LABEL);
+        document.querySelector('#contacts-output').textContent = JSON.stringify(
+            {
+                tick: state.tick,
+                budget: LABEL,
+                wallPenetrations: state.wallPenetrations,
+                tickMs: Number(MEDIAN.toFixed(2)),
+                surfaceContacts: LAST ? LAST.surfaceContacts : 0,
+                pairContacts: LAST ? LAST.pairContacts : 0,
+                skippedPairs: LAST ? LAST.skippedPairs : 0,
+                overlapsBeforeSeparate: LAST ? LAST.overlapsBeforeSeparate : 0,
+                overlapsAfterSeparate: LAST ? LAST.overlapsAfterSeparate : 0,
+            },
+            null,
+            2,
+        );
+    }
+
+    // 누른 곳으로 가장 가까운 구르는 몸을 굴립니다. 굴린 몸 번호를 돌려줍니다.
+    function roll(x, y) {
+        let nearest = -1,
+            best = Infinity;
+        state.bodies.forEach((body, i) => {
+            const DISTANCE = Math.hypot(body.x / FP - x, body.y / FP - y);
+            if (body.group === ROLLER && DISTANCE < best) {
+                nearest = i;
+                best = DISTANCE;
+            }
+        });
+        const BODY = state.bodies[nearest];
+        launch(BODY, Math.atan2(y - BODY.y / FP, x - BODY.x / FP));
+        render();
+        return nearest;
+    }
+
+    // 자동 실행은 탭이 보일 때만 20틱/초로 돕니다.
+    setInterval(() => {
+        if (!PANEL.hidden && RUN.getAttribute('aria-pressed') === 'true') {
+            tick();
+        }
+    }, 1000 * DT);
+    RUN.addEventListener('click', () =>
+        RUN.setAttribute('aria-pressed', String(RUN.getAttribute('aria-pressed') !== 'true')),
+    );
+    document.querySelector('#contacts-step').addEventListener('click', tick);
+    document.querySelector('#contacts-reset').addEventListener('click', () => {
+        reset();
+        render();
+    });
+    SLIDER.addEventListener('input', render);
+    // 포인터 이벤트 하나로 마우스와 터치를 함께 받습니다.
+    CANVAS.addEventListener('pointerdown', (event) => {
+        const BOX = CANVAS.getBoundingClientRect();
+        CANVAS.focus({ preventScroll: true });
+        roll(
+            ((event.clientX - BOX.left) * WORLD.width) / BOX.width,
+            ((event.clientY - BOX.top) * WORLD.height) / BOX.height,
+        );
+    });
+    // 키보드: 화살표로 첫 구르는 몸을 그 방향으로 굴립니다.
+    CANVAS.addEventListener('keydown', (event) => {
+        const ANGLE = { ArrowRight: 0, ArrowDown: Math.PI / 2, ArrowLeft: Math.PI, ArrowUp: -Math.PI / 2 }[event.key];
+        if (ANGLE !== undefined) {
+            event.preventDefault();
+            launch(state.bodies[SOLDIERS], ANGLE);
+            render();
+        }
+    });
+    reset();
+    window.contactsExample = {
+        step(count = 1) {
+            for (let k = 0; k < count; k++) {
+                tick();
+            }
+        },
+        setBudget(index) {
+            SLIDER.value = String(index);
+            render();
+        },
+        roll,
+        reset() {
+            reset();
+            render();
+        },
+        get state() {
+            return state;
+        },
+    };
     render();
 </script>

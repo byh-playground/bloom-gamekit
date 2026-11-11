@@ -18,6 +18,8 @@ const SDK_DEPENDENCIES = {
     deterministic: ['_rollback-shared'],
     simloop: [],
     'pixel-physics': ['deterministic'],
+    // 지형 cast·미끄러짐(geometry)과 후보 격자(spatial)를 소스로 포함합니다. SurfaceMotion 인스턴스는 게임이 주입합니다.
+    'contact-solver': ['geometry', 'spatial'],
     transport: ['_rollback-shared', 'deterministic', 'save'],
     replay: ['_rollback-shared', 'deterministic'],
     rollback: ['_rollback-shared', 'deterministic'],

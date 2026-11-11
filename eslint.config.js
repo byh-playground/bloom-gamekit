@@ -21,6 +21,7 @@ const CORE_FILES = [
     'modules/spatial/*.js',
     'modules/pathfield/*.js',
     'modules/vision/*.js',
+    'modules/contact-solver/*.js',
     'modules/rollback/core.js',
     'modules/rollback/availability.js',
 ];
