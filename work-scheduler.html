@@ -10733,6 +10733,7 @@
         disc(X, Y, BODY.r, BODY.group === 0 ? "#3d8fb0" : "#c97a45", BODY.dynamic ? "#ffffff" : "#091117");
       }
     }
+    CONTEXT.globalAlpha = 0.6 + 0.4 * Math.sin(performance.now() / 120);
     for (const [I, J, XI, YI, XJ, YJ] of state.overlaps) {
       CONTEXT.strokeStyle = "#ff4d4d";
       CONTEXT.lineWidth = 2;
@@ -10743,6 +10744,7 @@
       disc(XI / FP, YI / FP, state.bodies[I].r + 2, null, "#ff4d4d", 2);
       disc(XJ / FP, YJ / FP, state.bodies[J].r + 2, null, "#ff4d4d", 2);
     }
+    CONTEXT.globalAlpha = 1;
     const LABEL = budgetLabel(), MEDIAN = [...state.tickMs].sort((a, b) => a - b)[state.tickMs.length >> 1] ?? 0, LAST = state.last;
     document.querySelector("#contacts-budget-label").textContent = LABEL;
     SLIDER.setAttribute("aria-valuetext", LABEL);
@@ -10823,11 +10825,213 @@
       reset();
       render();
     },
+    render,
+    setRunning(on) {
+      RUN.setAttribute("aria-pressed", String(on));
+    },
     get state() {
       return state;
     }
   };
   render();
+})();
+
+</script>
+
+<script>
+(() => {
+  // dist/debug-tools.js
+  var RESERVED = /* @__PURE__ */ new Set(["debug", "scene", "tick"]);
+  var EPOCH_MS = 1e7;
+  var TICK = (text) => {
+    const VALUE = Number(text);
+    if (text === "" || !Number.isSafeInteger(VALUE) || VALUE < 0) {
+      throw new RangeError(`tick must be a non-negative integer: ${text}`);
+    }
+    return VALUE;
+  };
+  var clockFrozen = false;
+  function freezePerformanceNow() {
+    if (clockFrozen) {
+      throw new Error("another debug scene holds the frozen clock; dispose it first");
+    }
+    const PERFORMANCE = globalThis.performance;
+    const OWN = Object.getOwnPropertyDescriptor(PERFORMANCE, "now");
+    const REAL = PERFORMANCE.now.bind(PERFORMANCE);
+    if (REAL() >= EPOCH_MS) {
+      throw new Error(`the debug clock must be frozen within ${EPOCH_MS} ms of page start`);
+    }
+    let virtual = EPOCH_MS;
+    const VIRTUAL_NOW = () => virtual;
+    const SET = (now) => Object.defineProperty(PERFORMANCE, "now", { configurable: true, writable: true, value: now });
+    SET(VIRTUAL_NOW);
+    clockFrozen = true;
+    let restored = false;
+    const LIVE = () => {
+      if (restored) {
+        throw new Error("the debug clock was restored with its scene");
+      }
+    };
+    return {
+      clock: {
+        now: VIRTUAL_NOW,
+        advance(ms) {
+          LIVE();
+          if (!Number.isFinite(ms) || ms < 0) {
+            throw new RangeError(`clock advance must be a finite non-negative number: ${ms}`);
+          }
+          virtual += ms;
+        },
+        realTime(operation) {
+          LIVE();
+          SET(REAL);
+          try {
+            return operation();
+          } finally {
+            SET(VIRTUAL_NOW);
+          }
+        }
+      },
+      restore() {
+        if (OWN) {
+          Object.defineProperty(PERFORMANCE, "now", OWN);
+        } else {
+          delete PERFORMANCE.now;
+        }
+        clockFrozen = false;
+        restored = true;
+      }
+    };
+  }
+  function installDebugHost({ scenes, search = globalThis.location?.search ?? "", target = globalThis } = {}) {
+    const QUERY = new URLSearchParams(search);
+    if (!QUERY.has("debug")) {
+      return null;
+    }
+    const PARAMS = {};
+    for (const [KEY, VALUE] of QUERY) {
+      if (!RESERVED.has(KEY)) {
+        PARAMS[KEY] = VALUE;
+      }
+    }
+    const NAME = QUERY.get("scene");
+    let handle = null, frozen = null;
+    const RESTORE_CLOCK = () => {
+      frozen?.restore();
+      frozen = null;
+    };
+    const CONTEXT = {
+      freezeClock() {
+        frozen ??= freezePerformanceNow();
+        return frozen.clock;
+      }
+    };
+    const DEBUG = {
+      ready: false,
+      error: null,
+      scene: NAME,
+      params: PARAMS,
+      tick: 0,
+      step(count = 1) {
+        if (!handle) {
+          throw new Error("scene is not open");
+        }
+        if (!Number.isSafeInteger(count) || count < 0) {
+          throw new RangeError(`step count must be a non-negative integer: ${count}`);
+        }
+        if (count && typeof handle.step !== "function") {
+          throw new TypeError(`scene ${NAME} has no step`);
+        }
+        for (let index = 0; index < count; index++) {
+          handle.step();
+          DEBUG.tick++;
+        }
+        handle.render?.();
+      },
+      /** Compact text-able view of what the screen shows. `options` reaches the scene's `state` as given. */
+      state(options) {
+        return { scene: NAME, params: PARAMS, tick: DEBUG.tick, ...handle.state?.(options) };
+      },
+      hash() {
+        return handle.hash?.();
+      },
+      dispose() {
+        try {
+          handle?.dispose?.();
+        } finally {
+          handle = null;
+          DEBUG.ready = false;
+          RESTORE_CLOCK();
+          if (target.__bloomDebug === DEBUG) {
+            delete target.__bloomDebug;
+          }
+        }
+      }
+    };
+    target.__bloomDebug = DEBUG;
+    DEBUG.done = (async () => {
+      if (typeof scenes?.[NAME] !== "function") {
+        throw new Error(`unknown scene: ${NAME}`);
+      }
+      handle = await scenes[NAME](PARAMS, CONTEXT) ?? {};
+      if (QUERY.has("tick")) {
+        DEBUG.step(TICK(QUERY.get("tick")));
+      } else {
+        handle.render?.();
+      }
+      DEBUG.ready = true;
+    })().catch((error) => {
+      RESTORE_CLOCK();
+      DEBUG.error = String(error?.stack || error);
+      console.error(error);
+    });
+    return DEBUG;
+  }
+
+  // modules/work-scheduler/examples/modules/work-scheduler/examples/index.html
+  installDebugHost({
+    scenes: {
+      // "접촉" 탭: budget(0~3)은 예산 칸 번호입니다. 표시는 가상 시계, 틱 시간은 실제 시계로 잽니다.
+      contacts({ budget }, { freezeClock }) {
+        if (!/^[0-3]$/.test(budget ?? "")) {
+          throw new Error(`contacts needs budget=0..3: ${budget}`);
+        }
+        const CLOCK = freezeClock(), EXAMPLE = globalThis.contactsExample;
+        document.querySelector("#tab-contacts").click();
+        EXAMPLE.setRunning(false);
+        EXAMPLE.reset();
+        EXAMPLE.setBudget(Number(budget));
+        document.querySelector("#contacts-output").hidden = true;
+        return {
+          step() {
+            CLOCK.advance(50);
+            CLOCK.realTime(() => EXAMPLE.step());
+          },
+          render: EXAMPLE.render,
+          state(options) {
+            const STATE = EXAMPLE.state;
+            return {
+              exampleTick: STATE.tick,
+              wallPenetrations: STATE.wallPenetrations,
+              ...STATE.last,
+              ...options?.times ? { tickMs: STATE.tickMs } : {}
+            };
+          },
+          hash() {
+            let hash = 2166136261;
+            for (const BODY of EXAMPLE.state.bodies) {
+              hash = Math.imul(hash ^ BODY.x, 16777619) >>> 0;
+              hash = Math.imul(hash ^ BODY.y, 16777619) >>> 0;
+            }
+            return hash.toString(16).padStart(8, "0");
+          },
+          dispose() {
+            document.querySelector("#contacts-output").hidden = false;
+          }
+        };
+      }
+    }
+  });
 })();
 
 </script>
