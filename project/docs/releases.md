@@ -1,3 +1,13 @@
+## v0.56.0 (2026-11-11)
+
+공개 API 추가(MINOR). 게임마다 따로 만들던 디버그 장면 보조 셋을 debug-tools로 올립니다(쌀콩팡 PR #333·발배구 `watch`·budmori `farm-bench`의 공통 부분, AI-021·AI-009). 기존 소비자의 현재 코드는 그대로 돕니다(장면 함수 두 번째 인자·`state` 인자 추가만). 쌀콩팡·발배구 적용은 다음 단계입니다.
+
+- 가상 시계: 장면 함수가 `(params, { freezeClock })`를 받습니다. `freezeClock()`은 장면이 닫히거나 열기에 실패할 때까지 `performance.now`를 고정 시작 시각(10,000,000ms)의 가상 시계로 바꾸고 `{ now, advance(ms), realTime(fn) }`를 돌려줍니다. 틱 시간은 `realTime` 안에서 실제 시계로 잽니다. 부르지 않는 장면과 `?debug`가 없는 주소는 아무것도 바뀌지 않습니다. `Date.now`·rAF는 바꾸지 않습니다.
+- `state(options)`: 호스트가 인자를 해석하지 않고 장면의 `state`로 그대로 넘깁니다(쌀콩팡의 `times=1` 주소 우회 대신 `state({ times: true })`).
+- 실행기 `dist/debug-scene.mjs` `runDebugScene`(새 Node 도구): 주소를 헤드리스 Chromium으로 열어 `step(N)`·`state(JSON)` 출력, 캡처, 두 체크아웃 또는 두 주소의 교대 비교(경로·커밋·미커밋 여부와 요약 표, 원시 JSON은 `--json`), `--heap`(표본 힙 프로파일러로 `step(N)`에서 같은 상태 `step(0)` 렌더 몫을 뺀 틱당 할당), `--gpu`(D3D11)를 합니다. Playwright `chromium`과 체크아웃을 띄우는 `serve`는 게임이 넘깁니다. 시험이 아닙니다.
+- 통합 예제의 "접촉" 탭이 장면 `contacts`로 열립니다(`?debug=1&scene=contacts&budget=1&tick=100`). 겹친 쌍 표시가 표시 시계로 깜박여 가상 시계가 그림을 고정하는지 볼 수 있습니다. 명령줄 예: `modules/debug-tools/scripts/debug-scene.mjs`.
+- 문서: debug-tools README를 새 API로, `installGlobal`이 `DiagnosticRing` 메서드임을 바로잡고, 루트 README의 낡은 문장(게임 미적용·`codex/` 브랜치만·머지 승인)과 scenario·vector-assets·rendering README의 영어 문단을 한국어로 고쳤습니다.
+
 ## v0.55.0 (2026-11-11)
 
 호환되지 않는 변경(MINOR). contact-solver의 조향(걷는) 몸 이동 손실을 고치고, 틱 경로의 할당을 없앱니다. 쌀콩팡 적용(rally-frontier PR #330, v0.101.0)에서 드러난 두 문제입니다. 조향 몸의 결과가 바뀌므로 같은 입력의 체크섬이 달라집니다. 동적 몸의 반올림 규칙과 geometry·pathfield의 결과는 그대로입니다.

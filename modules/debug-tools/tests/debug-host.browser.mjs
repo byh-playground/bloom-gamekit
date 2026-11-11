@@ -27,6 +27,36 @@ export async function exerciseDebugHost(page) {
                 broken() {
                     throw new Error('scene failed');
                 },
+                // Draws with the page clock, as a game's presentation does: only a frozen clock makes the picture repeat.
+                // Each tick advances 50 ms and measures its own time on the real clock.
+                clocked(_params, { freezeClock }) {
+                    const CLOCK = freezeClock(),
+                        TIMES = [];
+                    return {
+                        step() {
+                            CLOCK.advance(50);
+                            TIMES.push(CLOCK.realTime(() => performance.now()));
+                        },
+                        render: () => {
+                            CONTEXT.clearRect(0, 0, 64, 64);
+                            CONTEXT.fillStyle = `hsl(${performance.now() % 360} 80% 50%)`;
+                            CONTEXT.fillRect(0, 0, 64, 64);
+                        },
+                        state: (options) => ({
+                            now: performance.now(),
+                            options,
+                            // Times read inside realTime come from the real clock, far below the virtual epoch.
+                            ...(options?.times
+                                ? { times: TIMES.length, real: TIMES.every((time) => time < 10_000_000) }
+                                : {}),
+                        }),
+                    };
+                },
+                // Freezes the clock, then fails to open.
+                frozenBroken(_params, { freezeClock }) {
+                    freezeClock();
+                    throw new Error('scene failed after freezing');
+                },
             },
             OPEN = async (search) => {
                 const TARGET = {},
@@ -63,6 +93,22 @@ export async function exerciseDebugHost(page) {
         // The host does not interpret scene parameters: a wrong number reaches the scene as it is, with no default.
         const WRONG = await OPEN('?debug=1&scene=move&speed=abc&tick=2');
         RESULT.passThrough = { ready: WRONG.HOST.ready, nan: Number.isNaN(WRONG.HOST.state().x) };
+        // The virtual clock: the same address twice gives the same state and the same pixels; dispose restores the clock.
+        const OWN_NOW = () => Object.hasOwn(performance, 'now');
+        RESULT.clock = { ownBefore: OWN_NOW(), opens: [] };
+        for (let open = 0; open < 2; open++) {
+            const { HOST } = await OPEN('?debug=1&scene=clocked&tick=7');
+            RESULT.clock.opens.push({
+                ready: HOST.ready,
+                state: HOST.state({ times: true }),
+                plain: HOST.state(),
+                pixels: CANVAS.toDataURL(),
+            });
+            HOST.dispose();
+            RESULT.clock.opens[open].restored = !OWN_NOW() && performance.now() < 10_000_000;
+        }
+        const BROKEN = await OPEN('?debug=1&scene=frozenBroken');
+        RESULT.clock.failed = { ready: BROKEN.HOST.ready, restored: !OWN_NOW() };
         CANVAS.remove();
         return RESULT;
     });
@@ -79,5 +125,28 @@ export async function exerciseDebugHost(page) {
         assert.ok(FAILURE.error, `${NAME} must report its error`);
     }
     assert.deepEqual(R.passThrough, { ready: true, nan: true });
+    assert.equal(R.clock.ownBefore, false, 'the page starts on the real clock');
+    const [FIRST, SECOND] = R.clock.opens;
+    assert.equal(FIRST.ready, true);
+    // Seven ticks of 50 ms from the fixed epoch; the state options reach the scene as given.
+    assert.deepEqual(FIRST.state, {
+        scene: 'clocked',
+        params: {},
+        tick: 7,
+        now: 10_000_350,
+        options: { times: true },
+        times: 7,
+        real: true,
+    });
+    assert.equal(FIRST.plain.options, undefined, 'no options reach the scene as none');
+    assert.equal('times' in FIRST.plain, false);
+    assert.deepEqual(SECOND.state, FIRST.state, 'the same address gives the same state');
+    assert.equal(SECOND.pixels, FIRST.pixels, 'and the same picture');
+    assert.equal(FIRST.restored && SECOND.restored, true, 'dispose puts the real performance.now back');
+    assert.deepEqual(
+        R.clock.failed,
+        { ready: false, restored: true },
+        'a scene that fails to open leaves no frozen clock',
+    );
     return R;
 }

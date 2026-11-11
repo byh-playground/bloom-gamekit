@@ -48,6 +48,7 @@ export const MODULES = Object.freeze([
 export const NODE_TOOLS = Object.freeze([
     Object.freeze({ name: 'pwa-build', source: 'modules/pwa/build.js' }),
     Object.freeze({ name: 'boot-build', source: 'modules/boot/build.js' }),
+    Object.freeze({ name: 'debug-scene', source: 'modules/debug-tools/scene-runner.js' }),
 ]);
 export const BUNDLE_FILES = Object.freeze([
     ...MODULES.map((name) => `${name}.js`),

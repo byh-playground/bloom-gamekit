@@ -241,10 +241,30 @@ export interface DebugScene {
     step?(): void;
     /** Draws the current state without advancing the simulation. */
     render?(): void;
-    /** Game fields that describe what the screen shows; merged into `state()` after scene, params and tick. */
-    state?(): Record<string, unknown>;
+    /**
+     * Game fields that describe what the screen shows; merged into `state()` after scene, params and tick.
+     * `options` is whatever the caller passed to the host's `state(options)`; the host does not read it.
+     */
+    state?(options?: unknown): Record<string, unknown>;
     hash?(): unknown;
     dispose?(): void;
+}
+/** The virtual `performance.now` of one open scene. */
+export interface DebugClock {
+    /** Virtual milliseconds. Starts at the same fixed value on every open and moves only by `advance`. */
+    now(): number;
+    /** Moves the virtual clock forward (finite, non-negative ms), e.g. one fixed tick before each step. */
+    advance(ms: number): void;
+    /** Runs a synchronous operation with the real `performance.now` (tick timing) and returns its result. */
+    realTime<T>(operation: () => T): T;
+}
+export interface DebugSceneContext {
+    /**
+     * Replaces `performance.now` with the virtual clock until the scene is disposed or fails to open, so the same
+     * address draws the same picture. Repeat calls return the same clock. A scene that runs on real time does not call it.
+     * Throws if more than 10,000,000 ms of real time have passed since page start, or another scene holds the clock.
+     */
+    freezeClock(): DebugClock;
 }
 export interface DebugHost {
     /** True once the scene is open at the requested tick and rendered. Stays false when `error` is set. */
@@ -256,13 +276,20 @@ export interface DebugHost {
     tick: number;
     done: Promise<void>;
     step(count?: number): void;
-    state(): { scene: string | null; params: Record<string, string>; tick: number } & Record<string, unknown>;
+    /** `options` reaches the scene's `state` as given. */
+    state(
+        options?: unknown,
+    ): { scene: string | null; params: Record<string, string>; tick: number } & Record<string, unknown>;
     hash(): unknown;
+    /** Disposes the scene and restores `performance.now` if the scene froze it. */
     dispose(): void;
 }
-/** Installs `window.__bloomDebug` when the URL has `debug`; returns null otherwise. */
+/** Installs `window.__bloomDebug` when the URL has `debug`; returns null otherwise and replaces nothing. */
 export function installDebugHost(options: {
-    scenes: Record<string, (params: Record<string, string>) => DebugScene | void | Promise<DebugScene | void>>;
+    scenes: Record<
+        string,
+        (params: Record<string, string>, context: DebugSceneContext) => DebugScene | void | Promise<DebugScene | void>
+    >;
     search?: string;
     target?: object;
 }): DebugHost | null;
