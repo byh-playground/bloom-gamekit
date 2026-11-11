@@ -49,7 +49,17 @@ export function createNavigation({ window: host = globalThis.window, normalize =
             query: SEPARATOR < 0 ? '' : RAW.slice(SEPARATOR + 1),
         });
     };
+    // The address always shows the canonical form of the current route. Only the hash is
+    // rewritten, so search options such as `?preview=` and `?debug=1&scene=` survive.
+    function write(route, replace) {
+        const URL_LOCAL = new URL(host.location.href);
+        URL_LOCAL.hash = HASH(route);
+        if (URL_LOCAL.href !== host.location.href) {
+            host.history[replace ? 'replaceState' : 'pushState'](host.history.state, '', URL_LOCAL);
+        }
+    }
     let current = READ();
+    write(current, true);
     function publish(next, source, force = false) {
         if (disposed || (!force && HASH(next) === HASH(current))) {
             return;
@@ -73,17 +83,22 @@ export function createNavigation({ window: host = globalThis.window, normalize =
         if (disposed) {
             return;
         }
-        const NEXT = CANONICAL(route),
-            URL_LOCAL = new URL(host.location.href);
-        URL_LOCAL.hash = HASH(NEXT);
-        if (URL_LOCAL.href !== host.location.href) {
-            host.history[replace ? 'replaceState' : 'pushState'](host.history.state, '', URL_LOCAL);
-        }
+        const NEXT = CANONICAL(route);
+        write(NEXT, replace);
         publish(NEXT, replace ? 'replace' : 'navigate', force);
     }
-    // A traversal can emit both events. Canonical equality delivers it exactly once,
-    // and restoration never writes history or executes game commands.
-    const RESTORE = () => publish(READ(), 'history');
+    // A traversal can emit both events. Canonical equality delivers it exactly once.
+    // A non-canonical address is replaced (never pushed) before subscribers run, so a
+    // subscriber that navigates again still owns the final address. Restoration never
+    // executes game commands.
+    const RESTORE = () => {
+        if (disposed) {
+            return;
+        }
+        const NEXT = READ();
+        write(NEXT, true);
+        publish(NEXT, 'history');
+    };
     host.addEventListener('popstate', RESTORE);
     host.addEventListener('hashchange', RESTORE);
     return {

@@ -3,11 +3,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Navigation example</title>
 <h1>화면 이동</h1>
+<p>버튼과 뒤로 가기로 화면을 옮깁니다. 주소창에 모르는 화면(<code>#/nope</code>)을 넣으면 메인 주소로 고쳐집니다.</p>
 <button id="wiki">위키</button><button id="skill">기술</button><button id="main">메인</button
 ><button id="back">뒤로</button><output id="screen"></output>
 <script type="module">
     import { createNavigation } from '../../../dist/navigation.js';
-    const NAV = createNavigation();
+    // 모르는 화면(#/nope)은 메인으로 읽고, 주소도 정규 주소로 고쳐집니다.
+    const NAV = createNavigation({
+        normalize: (route) => (['wiki', 'tech'].includes(route.screen) ? route : { screen: 'main' }),
+    });
     window.navigationDemo = NAV;
     NAV.subscribe(
         (route) => {
