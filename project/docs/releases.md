@@ -1,3 +1,16 @@
+## v0.52.2 (2026-11-11)
+
+호환되는 추가(PATCH). pathfield에 청크 + 포털 계층 길찾기의 구조 부분인 `PortalGraph`를 더합니다. 기존 `PathGrid`·`DistanceField`·`FieldCache`·`RouteFinder`의 결과는 같습니다(고정 시나리오의 원본 대비 해시 그대로). 계층 길찾기 2단계입니다.
+
+- `new PortalGraph(grid, { chunkSize = 16, portalSpan = 4, goalCapacity = 64 })`: 격자를 정사각 청크로 나누고 청크 안 연결 성분, 청크 경계 포털 노드(직선 구간을 `portalSpan`칸씩 쪼갠 조각의 중앙 칸, 직선으로 이어지지 않는 성분 쌍만 대각 단칸 포털, 모서리 대각 포털), 청크 안 노드 사이 비용 행렬(처음 물을 때 만듦), 전역 연결 성분을 둡니다. 판정은 모두 `grid.stepCell` 하나로 합니다.
+- `prepare()`: 격자의 `takeChangedRects`를 소비해 바뀐 칸 사각형을 한 칸 넓힌 범위와 겹치는 청크만 다시 만듭니다. 이웃 청크는 노드 목록만 다시 모으고, 칸 목록이 같으면 비용 행렬을 그대로 둡니다. 질의가 필요할 때 스스로 부릅니다.
+- `component(cell)`·`componentCount`: 전역 연결 성분(`reachableFrom`과 같은 답을 O(1)로). 노드 조회 `chunkNodeCount`·`chunkNode`·`nodeCell`·`nodeChunk`·`nodePeer`·`nodeCrossCost`·`edgeCost`, 다시 만든 청크 표시 `chunkChange`, `revision`·`stats`.
+- 번호·순서는 격자 상태만의 함수라 국소 무효화로 따라간 구조와 처음부터 만든 구조가 같습니다. 키는 숫자 조합 정수(성분 열쇠 `청크 · S² + 성분`, 노드 `포털 · 2 + 쪽`, 지역 힙 `비용 · 2^12 + 청크 안 칸`)이고 문자열·Map이 없습니다. 목표 보관(`goal`·`setGoal`)과 `FlowField`는 다음 단계입니다.
+- 예제: work-scheduler 예제에 "포털" 탭을 더했습니다(건물을 놓고 지우면 다시 만든 청크를 칠함, 마우스·터치·화살표 키 + Enter). 탭 여섯 개가 좁은 화면에서도 한 줄에 들어가도록 탭 버튼의 너비 하한과 옆 여백을 줄였습니다(높이 56px 유지).
+- 시험: 고정 시나리오에 건물을 놓고 지우는 동안 국소 무효화 = 처음부터, 다시 만든 청크 = 겹치는 청크, 성분 = `reachableFrom`(변 통과 판정 포함), 잘못된 옵션을 더했습니다. 미리보기 시나리오에 포털 탭(마우스·키보드·터치 에뮬레이션)을 더했습니다.
+
+참고 측정(Node, 쌀콩팡 규모 4200×4800·칸 24 = 175×200칸·143청크, 다각형 40·원 30, 중앙값): 처음 구축 17ms(통과 판정 포함, `passableEdge`까지 쓰면 50ms)·구조만 6~8ms, 모든 청크 비용 행렬 41ms, 건물(원 반지름 60) 하나 변경 때 `prepare` 0.34ms(변 판정 포함 0.61ms) + 닿은 청크 행렬 1.5~1.7ms. 노드 2,398개(포털 1,199개)·청크 안 간선 19,774개·청크당 노드 최대 21개, 메모리 약 1MB.
+
 ## v0.52.1 (2026-11-11)
 
 호환되는 추가(PATCH). pathfield `PathGrid`에 사각형 단위 무효화와 바뀐 사각형 기록을 더합니다. 기존 `invalidate()`·`sync`·`reachableFrom`·`DistanceField`·`FieldCache`의 결과는 같습니다. 청크 + 포털 계층 길찾기 1단계입니다.

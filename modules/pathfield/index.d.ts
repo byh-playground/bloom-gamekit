@@ -201,3 +201,60 @@ export class RouteFinder {
         segmentClear: SegmentClear,
     ): boolean;
 }
+
+export interface PortalGraphOptions {
+    /** 청크 한 변의 칸 수. 2..64 정수, 기본 16. */
+    chunkSize?: number;
+    /** 포털 구간을 쪼개는 칸 수. 1..`chunkSize` 정수, 기본 4. 조각마다 중앙 칸 하나가 노드입니다. */
+    portalSpan?: number;
+    /** 목표 보관소의 용량. 1..65535 정수, 기본 64. 목표 보관은 다음 단계에서 이 값을 씁니다. */
+    goalCapacity?: number;
+}
+
+/**
+ * 격자 위의 청크 + 포털 그래프. 청크 안 연결 성분·청크 경계의 포털 노드·청크 안 노드 사이 비용·전역 연결 성분을 둡니다.
+ * 격자의 `takeChangedRects`를 소비해 바뀐 사각형과 겹치는 청크만 다시 만들고, 다시 만든 결과는 같은 배치에서 처음부터 만든
+ * 것과 같습니다. 질의는 필요하면 스스로 `prepare()`를 부릅니다. 바뀐 사각형 기록의 소비자는 이 그래프 하나여야 합니다.
+ */
+export class PortalGraph {
+    constructor(grid: PathGrid, options?: PortalGraphOptions);
+    readonly grid: PathGrid;
+    readonly chunkSize: number;
+    readonly portalSpan: number;
+    readonly goalCapacity: number;
+    /** 청크 열·행·총 수. 청크 번호는 행 우선입니다. */
+    readonly chunkCols: number;
+    readonly chunkRows: number;
+    readonly chunkCount: number;
+    /** 노드 번호의 상한(노드 번호 < 이 값). 대부분은 비어 있는 자리입니다. */
+    readonly nodeCapacity: number;
+    /** 구조를 다시 만든 횟수. */
+    readonly revision: number;
+    /** 전역 연결 성분의 수. */
+    readonly componentCount: number;
+    /** 누적 횟수: 성분·포털을 다시 만든 청크, 노드만 다시 모은 청크, 만든 청크 비용 행렬. */
+    readonly stats: { chunksRebuilt: number; nodeChunksRebuilt: number; matricesBuilt: number };
+
+    /** 구조를 최신으로 만듭니다(처음이면 전부, 아니면 바뀐 청크만). 무언가 다시 만들었으면 true. 로딩 중에 부르면 첫 질의가 가벼워집니다. */
+    prepare(): boolean;
+    /** 칸의 전역 연결 성분 번호. 막힌 칸·격자 밖은 -1. 같으면 걸어서 닿고 다르면 닿지 않습니다. */
+    component(cell: number): number;
+    /** 칸이 든 청크. */
+    chunkOf(cell: number): number;
+    /** 청크의 노드 수. 순서는 동·남·서·북 변, 남동·남서·북서·북동 모서리, 경계 안에서는 놓인 순서입니다. */
+    chunkNodeCount(chunk: number): number;
+    /** 청크 노드 목록의 `index`번째 노드 번호. 범위 밖이면 RangeError. */
+    chunkNode(chunk: number, index: number): number;
+    /** 노드의 칸. 비어 있는 자리는 -1. */
+    nodeCell(node: number): number;
+    /** 노드가 속한 청크. 비어 있는 자리는 -1. */
+    nodeChunk(node: number): number;
+    /** 경계 건너편의 짝 노드(`node ^ 1`). */
+    nodePeer(node: number): number;
+    /** 짝 노드로 건너는 비용(10 또는 14). */
+    nodeCrossCost(node: number): number;
+    /** 청크 안에서만 걸어 `from`번째 노드에서 `to`번째 노드까지의 최단 비용. 청크 안에서 이어지지 않으면 -1. 처음 물을 때 그 청크의 행렬을 만듭니다. */
+    edgeCost(chunk: number, from: number, to: number): number;
+    /** 구조를 마지막으로 바꾼 동기화에서 청크의 처리: 0 그대로, 1 노드만 다시 모음, 2 성분·포털을 다시 만듦. */
+    chunkChange(chunk: number): 0 | 1 | 2;
+}

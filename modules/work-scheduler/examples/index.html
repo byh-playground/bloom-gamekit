@@ -41,11 +41,15 @@
         }
         .tabs {
             display: flex;
-            gap: 0.5rem;
+            gap: 0.25rem;
             margin-bottom: 1rem;
         }
+        /* 탭 여섯 개가 좁은 화면에서도 한 줄에 들어가도록 너비 하한과 옆 여백을 줄입니다(높이는 56px 유지). */
         .tabs button {
             flex: 1;
+            min-width: 0;
+            padding: 0 0.2rem;
+            font-size: 0.9rem;
             margin: 0;
             background: #1b2c37;
             border-color: #40535e;
@@ -94,6 +98,7 @@
         <button role="tab" id="tab-behavior" aria-selected="false" aria-controls="panel-behavior">행동</button>
         <button role="tab" id="tab-geometry" aria-selected="false" aria-controls="panel-geometry">기하</button>
         <button role="tab" id="tab-pathfield" aria-selected="false" aria-controls="panel-pathfield">거리장</button>
+        <button role="tab" id="tab-portal" aria-selected="false" aria-controls="panel-portal">포털</button>
         <button role="tab" id="tab-vision" aria-selected="false" aria-controls="panel-vision">시야</button>
     </div>
     <section id="panel-budget" role="tabpanel" aria-labelledby="tab-budget">
@@ -198,6 +203,40 @@
             <button id="pathfield-reset">처음으로</button>
         </div>
         <pre id="pathfield-output"></pre>
+    </section>
+    <section id="panel-portal" role="tabpanel" aria-labelledby="tab-portal" hidden>
+        <h1>건물을 놓으면 그 둘레의 청크만 다시 만듭니다</h1>
+        <p>
+            캔버스를 눌러 원 건물을 놓거나, 놓은 건물을 눌러 지우세요. 격자를 청크로 나누고 청크 경계의 포털로 잇는
+            길찾기 구조가 바뀐 곳만 다시 만들어지는 것을 보여 줍니다.
+        </p>
+        <ul>
+            <li>
+                칸 색은 연결 성분입니다. 색이 다르면 걸어서 닿지 않습니다. 굵은 선은 청크 경계, 흰 점은 포털 노드입니다.
+            </li>
+            <li>
+                주황으로 칠한 청크는 성분·포털을 다시 만든 청크, 노란 점선 청크는 이웃이 바뀌어 노드만 다시 모은
+                청크입니다.
+            </li>
+            <li>
+                "간선 보기"는 같은 청크 안 노드끼리 걸어서 닿는 간선(가는 선)과 경계를 건너는 짝(짧은 굵은 선)을
+                그립니다. 화살표 키로 십자 표시를 옮기고 Enter로 놓거나 지웁니다.
+            </li>
+        </ul>
+        <canvas
+            id="portal-canvas"
+            width="480"
+            height="320"
+            tabindex="0"
+            role="img"
+            aria-label="청크 경계와 포털 노드, 다시 만든 청크가 칠해진 격자"
+        ></canvas>
+        <div>
+            <button id="portal-edges" aria-pressed="true">간선 보기</button>
+            <button id="portal-gap">틈 막기</button>
+            <button id="portal-reset">처음으로</button>
+        </div>
+        <pre id="portal-output"></pre>
     </section>
     <section id="panel-vision" role="tabpanel" aria-labelledby="tab-vision" hidden>
         <h1>관찰자는 자기보다 높은 땅과 벽 너머를 보지 못합니다</h1>
@@ -976,6 +1015,257 @@
             render();
         });
         window.pathfieldExample = { setGoal, state: STATE };
+        render();
+    </script>
+    <script type="module">
+        import { ObstacleField } from '../../../dist/geometry.js';
+        import { PathGrid, PortalGraph } from '../../../dist/pathfield.js';
+
+        // 장면은 이 예제의 것입니다. 좌표는 캔버스(480×320) 그대로이고 칸은 8, 청크는 기본 16칸(128)입니다.
+        const WORLD = { width: 480, height: 320 },
+            CELL = 8,
+            RADIUS = 3,
+            BUILDING = 18,
+            // 건물 둘레에서 통과 판정이 바뀔 수 있는 범위: 건물 반지름 + 이동체 반지름 + 한 칸.
+            PAD = RADIUS + CELL,
+            GAP = { x: 240, y: 296 },
+            OBSTACLES = new ObstacleField({
+                ...WORLD,
+                fixedPoint: 100,
+                polygons: [
+                    // 가운데 벽은 아래쪽 틈으로만 건너갑니다. "틈 막기"가 그 틈에 건물을 놓습니다.
+                    {
+                        id: 'wall-a',
+                        points: [
+                            { x: 236, y: 0 },
+                            { x: 244, y: 0 },
+                            { x: 244, y: 272 },
+                            { x: 236, y: 272 },
+                        ],
+                    },
+                    {
+                        id: 'wall-b',
+                        points: [
+                            { x: 40, y: 180 },
+                            { x: 180, y: 180 },
+                            { x: 180, y: 188 },
+                            { x: 40, y: 188 },
+                        ],
+                    },
+                ],
+                circles: [],
+            }),
+            GRID = new PathGrid({ ...WORLD, cellSize: CELL, passable: (x, y) => OBSTACLES.pointClear(x, y, RADIUS) }),
+            GRAPH = new PortalGraph(GRID),
+            CANVAS = document.querySelector('#portal-canvas'),
+            CONTEXT = CANVAS.getContext('2d'),
+            STATE = { circles: [], nextId: 1, edges: true, cursor: { x: 360, y: 96 }, prepareMs: 0, edited: false };
+
+        GRAPH.prepare();
+
+        // 처음 만들 때는 모든 청크가 "다시 만듦"이므로, 건물을 한 번 바꾼 뒤부터 칠합니다.
+        function changeOf(chunk) {
+            return STATE.edited ? GRAPH.chunkChange(chunk) : 0;
+        }
+
+        // 건물 하나가 바뀌면 그 둘레 사각형만 격자에 알리고, 그래프는 그 사각형과 겹치는 청크만 다시 만듭니다.
+        function invalidateAround(circle) {
+            GRID.invalidateRect(
+                circle.x - circle.r - PAD,
+                circle.y - circle.r - PAD,
+                circle.x + circle.r + PAD,
+                circle.y + circle.r + PAD,
+            );
+        }
+
+        function rebuild() {
+            const START = performance.now();
+            GRAPH.prepare();
+            STATE.prepareMs = Math.round((performance.now() - START) * 1000) / 1000;
+            STATE.edited = true;
+            render();
+        }
+
+        // 눌린 자리에 건물이 있으면 지우고, 없으면 놓습니다.
+        function toggleAt(x, y) {
+            const X = Math.round(Math.min(WORLD.width, Math.max(0, x))),
+                Y = Math.round(Math.min(WORLD.height, Math.max(0, y))),
+                HIT = STATE.circles.find((c) => Math.hypot(c.x - X, c.y - Y) <= c.r),
+                CIRCLE = HIT ?? { id: STATE.nextId++, x: X, y: Y, r: BUILDING };
+            STATE.circles = HIT ? STATE.circles.filter((c) => c !== HIT) : [...STATE.circles, CIRCLE];
+            OBSTACLES.setCircles(STATE.circles);
+            invalidateAround(CIRCLE);
+            rebuild();
+        }
+
+        function centerOf(cell) {
+            return [GRID.centerX(cell), GRID.centerY(cell)];
+        }
+
+        function draw() {
+            CONTEXT.clearRect(0, 0, WORLD.width, WORLD.height);
+            // 칸: 성분마다 다른 색, 막힌 칸은 어두운 색.
+            for (let cell = 0; cell < GRID.size; cell++) {
+                const COMPONENT = GRAPH.component(cell);
+                CONTEXT.fillStyle = COMPONENT < 0 ? '#0b151b' : `hsl(${(195 + COMPONENT * 137.5) % 360} 35% 24%)`;
+                CONTEXT.fillRect(GRID.colOf(cell) * CELL, GRID.rowOf(cell) * CELL, CELL - 1, CELL - 1);
+            }
+            const SPAN = GRAPH.chunkSize * CELL;
+            for (let chunk = 0; chunk < GRAPH.chunkCount; chunk++) {
+                const X = (chunk % GRAPH.chunkCols) * SPAN,
+                    Y = Math.floor(chunk / GRAPH.chunkCols) * SPAN,
+                    W = Math.min(SPAN, WORLD.width - X),
+                    H = Math.min(SPAN, WORLD.height - Y),
+                    CHANGE = changeOf(chunk);
+                if (CHANGE === 2) {
+                    CONTEXT.fillStyle = 'rgba(224, 164, 88, 0.3)';
+                    CONTEXT.fillRect(X, Y, W, H);
+                }
+                CONTEXT.setLineDash(CHANGE === 1 ? [6, 4] : []);
+                CONTEXT.strokeStyle = CHANGE === 2 ? '#e0a458' : CHANGE === 1 ? '#e6d36a' : '#5d7480';
+                CONTEXT.lineWidth = CHANGE ? 3 : 1.5;
+                CONTEXT.strokeRect(X + 1.5, Y + 1.5, W - 3, H - 3);
+                CONTEXT.setLineDash([]);
+            }
+            for (const POLYGON of OBSTACLES.polygons.items) {
+                CONTEXT.beginPath();
+                POLYGON.points.forEach((p, i) => (i ? CONTEXT.lineTo(p.x, p.y) : CONTEXT.moveTo(p.x, p.y)));
+                CONTEXT.closePath();
+                CONTEXT.strokeStyle = '#8fa6b3';
+                CONTEXT.lineWidth = 2;
+                CONTEXT.stroke();
+            }
+            for (const CIRCLE of STATE.circles) {
+                CONTEXT.beginPath();
+                CONTEXT.arc(CIRCLE.x, CIRCLE.y, CIRCLE.r, 0, Math.PI * 2);
+                CONTEXT.strokeStyle = '#c9b35c';
+                CONTEXT.lineWidth = 2;
+                CONTEXT.stroke();
+            }
+            for (let chunk = 0; chunk < GRAPH.chunkCount; chunk++) {
+                const COUNT = GRAPH.chunkNodeCount(chunk);
+                if (STATE.edges) {
+                    CONTEXT.strokeStyle = 'rgba(230, 241, 243, 0.18)';
+                    CONTEXT.lineWidth = 1;
+                    CONTEXT.beginPath();
+                    for (let i = 0; i < COUNT; i++) {
+                        for (let j = i + 1; j < COUNT; j++) {
+                            if (GRAPH.edgeCost(chunk, i, j) > 0) {
+                                CONTEXT.moveTo(...centerOf(GRAPH.nodeCell(GRAPH.chunkNode(chunk, i))));
+                                CONTEXT.lineTo(...centerOf(GRAPH.nodeCell(GRAPH.chunkNode(chunk, j))));
+                            }
+                        }
+                    }
+                    CONTEXT.stroke();
+                    CONTEXT.strokeStyle = '#e6f1f3';
+                    CONTEXT.lineWidth = 2;
+                    CONTEXT.beginPath();
+                    for (let i = 0; i < COUNT; i++) {
+                        const NODE = GRAPH.chunkNode(chunk, i);
+                        CONTEXT.moveTo(...centerOf(GRAPH.nodeCell(NODE)));
+                        CONTEXT.lineTo(...centerOf(GRAPH.nodeCell(GRAPH.nodePeer(NODE))));
+                    }
+                    CONTEXT.stroke();
+                }
+                for (let i = 0; i < COUNT; i++) {
+                    const NODE = GRAPH.chunkNode(chunk, i),
+                        [X, Y] = centerOf(GRAPH.nodeCell(NODE));
+                    CONTEXT.beginPath();
+                    CONTEXT.arc(X, Y, 2.5, 0, Math.PI * 2);
+                    CONTEXT.fillStyle = GRAPH.nodeCrossCost(NODE) === 14 ? '#7fc97f' : '#e6f1f3';
+                    CONTEXT.fill();
+                }
+            }
+            // 키보드 십자 표시
+            CONTEXT.strokeStyle = '#6cb2e8';
+            CONTEXT.lineWidth = 2;
+            CONTEXT.beginPath();
+            CONTEXT.moveTo(STATE.cursor.x - 7, STATE.cursor.y);
+            CONTEXT.lineTo(STATE.cursor.x + 7, STATE.cursor.y);
+            CONTEXT.moveTo(STATE.cursor.x, STATE.cursor.y - 7);
+            CONTEXT.lineTo(STATE.cursor.x, STATE.cursor.y + 7);
+            CONTEXT.stroke();
+        }
+
+        function render() {
+            draw();
+            const REBUILT = [],
+                NODES_ONLY = [];
+            let nodes = 0,
+                edges = 0;
+            for (let chunk = 0; chunk < GRAPH.chunkCount; chunk++) {
+                const PLACE = [chunk % GRAPH.chunkCols, Math.floor(chunk / GRAPH.chunkCols)],
+                    COUNT = GRAPH.chunkNodeCount(chunk);
+                if (changeOf(chunk) === 2) {
+                    REBUILT.push(PLACE);
+                } else if (changeOf(chunk) === 1) {
+                    NODES_ONLY.push(PLACE);
+                }
+                nodes += COUNT;
+                for (let i = 0; i < COUNT; i++) {
+                    for (let j = i + 1; j < COUNT; j++) {
+                        edges += GRAPH.edgeCost(chunk, i, j) > 0 ? 1 : 0;
+                    }
+                }
+            }
+            document.querySelector('#portal-output').textContent = JSON.stringify(
+                {
+                    circles: STATE.circles.map((c) => [c.x, c.y]),
+                    rebuiltChunks: REBUILT,
+                    nodeOnlyChunks: NODES_ONLY,
+                    chunks: [GRAPH.chunkCols, GRAPH.chunkRows],
+                    nodes,
+                    edges,
+                    components: GRAPH.componentCount,
+                    // 왼쪽 위 칸과 오른쪽 위 칸이 같은 성분인가(가운데 벽의 틈을 막으면 false).
+                    leftRightConnected: GRAPH.component(GRID.cellAt(12, 12)) === GRAPH.component(GRID.cellAt(468, 12)),
+                    prepareMs: STATE.prepareMs,
+                    stats: GRAPH.stats,
+                },
+                null,
+                2,
+            );
+            document.querySelector('#portal-edges').setAttribute('aria-pressed', String(STATE.edges));
+        }
+
+        // 포인터 이벤트 하나로 마우스와 터치를 함께 받습니다.
+        CANVAS.addEventListener('pointerdown', (event) => {
+            CANVAS.focus({ preventScroll: true });
+            const BOX = CANVAS.getBoundingClientRect(),
+                X = ((event.clientX - BOX.left) * WORLD.width) / BOX.width,
+                Y = ((event.clientY - BOX.top) * WORLD.height) / BOX.height;
+            STATE.cursor = { x: Math.round(X), y: Math.round(Y) };
+            toggleAt(X, Y);
+        });
+        CANVAS.addEventListener('keydown', (event) => {
+            const STEP = { ArrowLeft: [-CELL, 0], ArrowRight: [CELL, 0], ArrowUp: [0, -CELL], ArrowDown: [0, CELL] }[
+                event.key
+            ];
+            if (STEP) {
+                event.preventDefault();
+                STATE.cursor = {
+                    x: Math.min(WORLD.width, Math.max(0, STATE.cursor.x + STEP[0])),
+                    y: Math.min(WORLD.height, Math.max(0, STATE.cursor.y + STEP[1])),
+                };
+                render();
+            } else if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                toggleAt(STATE.cursor.x, STATE.cursor.y);
+            }
+        });
+        document.querySelector('#portal-edges').addEventListener('click', () => {
+            STATE.edges = !STATE.edges;
+            render();
+        });
+        document.querySelector('#portal-gap').addEventListener('click', () => toggleAt(GAP.x, GAP.y));
+        document.querySelector('#portal-reset').addEventListener('click', () => {
+            const REMOVED = STATE.circles;
+            STATE.circles = [];
+            OBSTACLES.setCircles([]);
+            REMOVED.forEach(invalidateAround);
+            rebuild();
+        });
+        window.portalExample = { toggleAt, state: STATE, graph: GRAPH, grid: GRID };
         render();
     </script>
 </html>
