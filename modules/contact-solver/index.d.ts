@@ -57,7 +57,7 @@ export class ContactBodies {
     /** 입력: 틱 시작 위치(FP 정수). 스텝 중: 몸의 시간 기준점 위치. `end()` 뒤: 결과 위치. */
     x: Int32Array;
     y: Int32Array;
-    /** 입력: 이번 틱 조향이 옮긴 자리(FP 정수). 조향 속도 = (steer - x) / FP / dt. 안 움직이면 x·y와 같게. */
+    /** 입력: 이번 틱 조향이 옮긴 자리(FP 정수). 조향 속도 = (steer - x) / FP / dt. 안 움직이면 x·y와 같게. 막히지 않은 조향 몸은 `end()` 뒤 정확히 이 자리입니다. */
     steerX: Int32Array;
     steerY: Int32Array;
     /** 모듈이 계산하는 궤적 속도(월드/초). 응답 중에 읽고 고칠 수 있습니다(고치면 `touched`). */

@@ -84,6 +84,27 @@ export class UniformGrid<Item = number> {
     /** Same as `queryRect(x - radius, y - radius, x + radius, y + radius, ...)`: candidates, not an exact distance test. */
     queryCircle<Out extends Item[]>(x: number, y: number, radius: number, out: Out, group?: number): Out;
     /**
+     * Same candidates and order as `queryRect`, written from the start of an integer array (`Int32Array` etc.); returns
+     * the count. For integer items (`track` false or `'index'`); does not reallocate when result sizes vary. Throws
+     * `RangeError` when `out` is too short (size it to the item count). Throws `TypeError` on `track: 'identity'`.
+     */
+    queryRectInto(
+        minX: number,
+        minY: number,
+        maxX: number,
+        maxY: number,
+        out: Int32Array | Uint32Array | number[],
+        group?: number,
+    ): number;
+    /** `queryRectInto(x - radius, y - radius, x + radius, y + radius, out, group)`. */
+    queryCircleInto(
+        x: number,
+        y: number,
+        radius: number,
+        out: Int32Array | Uint32Array | number[],
+        group?: number,
+    ): number;
+    /**
      * The items of a cell (an empty array when unused). Valid until the next change; do not modify. On a plain grid
      * ('clamp', no `track`, no `groups`) this is a shared array copied from the cell-ordered store, valid only until the
      * next `cellItems` call. To walk every cell in order, `itemsInCellOrder` is cheaper.
