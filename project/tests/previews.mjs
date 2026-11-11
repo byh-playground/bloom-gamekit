@@ -246,6 +246,94 @@ try {
             } finally {
                 await TOUCH_CONTEXT.close();
             }
+            // 포털 탭: 건물을 놓으면 겹치는 청크만 다시 만들고, 벽의 틈을 막으면 양쪽이 다른 성분이 되며, 지우면 다시 이어집니다.
+            await PAGE.click('#tab-portal');
+            const PORTAL = () => PAGE.locator('#portal-output').evaluate((output) => JSON.parse(output.textContent));
+            await PAGE.locator('#portal-canvas').scrollIntoViewIfNeeded();
+            const PORTAL_BOX = await PAGE.locator('#portal-canvas').boundingBox();
+            await PAGE.mouse.click(...AT(PORTAL_BOX, 330, 140));
+            let portal = await PORTAL();
+            assert.deepEqual(
+                [portal.circles, portal.rebuiltChunks, portal.components],
+                [
+                    [[330, 140]],
+                    [
+                        [2, 0],
+                        [2, 1],
+                    ],
+                    1,
+                ],
+                '놓은 건물과 겹치는 청크만 다시 만듦',
+            );
+            await PAGE.click('#portal-gap');
+            portal = await PORTAL();
+            assert.deepEqual(
+                [portal.rebuiltChunks, portal.leftRightConnected],
+                [
+                    [
+                        [1, 2],
+                        [2, 2],
+                    ],
+                    false,
+                ],
+                '틈을 막음',
+            );
+            // 버튼을 누르며 화면이 움직였을 수 있으므로 캔버스 위치를 다시 읽습니다.
+            await PAGE.locator('#portal-canvas').scrollIntoViewIfNeeded();
+            await PAGE.mouse.click(...AT(await PAGE.locator('#portal-canvas').boundingBox(), 240, 296));
+            portal = await PORTAL();
+            assert.equal(portal.leftRightConnected, true, '틈의 건물을 지우면 다시 이어짐');
+            await PAGE.locator('#portal-canvas').focus();
+            await PAGE.keyboard.press('ArrowLeft');
+            await PAGE.keyboard.press('Enter');
+            assert.deepEqual(
+                (await PORTAL()).circles,
+                [
+                    [330, 140],
+                    [232, 296],
+                ],
+                '화살표로 옮긴 십자 표시 자리에 Enter로 놓음',
+            );
+            const PORTAL_TOUCH = await browser.newContext({
+                hasTouch: true,
+                isMobile: true,
+                viewport: { width: 390, height: 844 },
+            });
+            try {
+                const TOUCH_PAGE = await PORTAL_TOUCH.newPage();
+                await TOUCH_PAGE.goto(URL_LOCAL + '#tab=portal', { waitUntil: 'domcontentloaded', timeout: 45000 });
+                await TOUCH_PAGE.waitForFunction(() => !!globalThis.portalExample);
+                const TOUCH_BOX = await TOUCH_PAGE.locator('#portal-canvas').boundingBox();
+                assert.ok(TOUCH_BOX.x >= 0 && TOUCH_BOX.x + TOUCH_BOX.width <= 390, 'canvas fits the width');
+                assert.ok(TOUCH_BOX.y + TOUCH_BOX.height <= 844, 'portal canvas is inside the first screen');
+                assert.ok(
+                    await TOUCH_PAGE.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+                    'no horizontal scroll',
+                );
+                assert.ok(
+                    await TOUCH_PAGE.locator('#panel-portal button').evaluateAll((buttons) =>
+                        buttons.every((button) => button.getBoundingClientRect().height >= 56),
+                    ),
+                    'portal buttons are at least 56px tall',
+                );
+                await TOUCH_PAGE.touchscreen.tap(...AT(TOUCH_BOX, 100, 80));
+                const TAPPED = await TOUCH_PAGE.locator('#portal-output').evaluate((output) =>
+                    JSON.parse(output.textContent),
+                );
+                assert.deepEqual(
+                    [TAPPED.circles, TAPPED.rebuiltChunks],
+                    [
+                        [[100, 80]],
+                        [
+                            [0, 0],
+                            [1, 0],
+                        ],
+                    ],
+                    'tap',
+                );
+            } finally {
+                await PORTAL_TOUCH.close();
+            }
             // 시야 탭: 벽 뒤 땅은 정찰(xray)로만 보이고, 벽의 틈에서는 보이며, 언덕에 오르면 언덕과 땅이 모두 보입니다.
             await PAGE.click('#tab-vision');
             const VISION = () => PAGE.locator('#vision-output').evaluate((output) => JSON.parse(output.textContent));

@@ -4,6 +4,8 @@
 
 유닛 **하나가 한 번** 가는 길(영웅 복귀처럼 목표를 혼자 쓰는 이동)은 같은 격자 위의 A\* `RouteFinder`로 한 번 찾아 웨이포인트(칸 번호 배열)로 유닛 상태에 저장하고, 따라가기는 인덱스 하나로 합니다. 거리장과 비용·통과 규칙이 같아 같은 격자에서 최단 비용이 같습니다.
 
+장애물이 자주 바뀌는 큰 격자에서는 `PortalGraph`가 격자를 청크로 나눠 청크 경계의 포털 노드와 연결 성분을 두고, 바뀐 청크만 다시 만듭니다(계층 길찾기의 구조 부분, 아래 절).
+
 이 모듈은 **격자 위의 메커니즘만** 줍니다. 다음은 담지 않습니다.
 
 - 어디로 갈지, 언제 거리장을 쓰고 언제 직선으로 갈지(가까우면 광선 등), 거리장을 얼마나 오래 둘지(고정 목표는 오래, 추격 목표는 틱마다 등), 내려가는 칸 중 무엇을 목표점으로 고를지는 게임이 정합니다. [저장소 README](../../README.md)의 "게임별로 서로 다른 공간 탐색 정책을 하나로 강제하지 않는다"는 경계를 그대로 지킵니다.
@@ -129,6 +131,62 @@ const CELL = unit.route.waypoints[unit.route.index];
 moveToward(unit, GRID.centerX(CELL), GRID.centerY(CELL));
 ```
 
+## PortalGraph (청크 + 포털 계층 구조)
+
+`new PortalGraph(grid, { chunkSize = 16, portalSpan = 4, goalCapacity = 64 })`: 격자를 `chunkSize`칸 정사각 청크로 나누고(가장자리 청크는 잘림), 청크 경계에서 걸어 건널 수 있는 곳을 포털 노드로 묶은 계층 구조입니다. 계층 길찾기(목표별 추상 거리 + 청크 장)의 구조 부분이며, 목표 보관(`goal`/`setGoal`)과 청크 장(`FlowField`)은 다음 단계에서 이 구조 위에 얹습니다. 지금 쓸 수 있는 질의는 **연결 성분**(걸어서 닿는가를 O(1)로)입니다.
+
+```js
+import { PathGrid, PortalGraph } from './pathfield.js';
+
+const GRID = new PathGrid({ width, height, cellSize: 24, passable, passableEdge });
+const GRAPH = new PortalGraph(GRID); // 청크 16칸, 포털 조각 4칸
+GRAPH.prepare(); // 로딩 중에: 모든 청크를 만듭니다(통과 판정을 모든 칸에 부름).
+
+// 건물이 생기거나 사라지면 바뀐 곳의 사각형만 격자에 알립니다. 부풀림(이동체 반지름 + 여유 + 한 칸)은 게임의 몫입니다.
+GRID.invalidateRect(minX - PAD, minY - PAD, maxX + PAD, maxY + PAD);
+
+// 질의는 필요하면 스스로 prepare()를 불러 바뀐 사각형과 겹치는 청크만 다시 만듭니다.
+const FROM = GRID.nearestOpen(GRID.cellAt(unit.x, unit.y));
+const TO = GRID.nearestOpen(GRID.cellAt(goal.x, goal.y));
+if (FROM < 0 || TO < 0 || GRAPH.component(FROM) !== GRAPH.component(TO)) {
+    return null; // 걸어서 닿지 않음: A*·거리장을 돌리지 않습니다.
+}
+```
+
+| 멤버                                                                      | 뜻                                                                                                                                                                                                                                                                                                                        |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `prepare()`                                                               | 처음이면 모든 청크를 만들고, 아니면 격자의 `takeChangedRects`를 소비해 바뀐 칸 사각형을 **한 칸 넓힌** 범위(격자가 변 기억을 비운 바깥 한 겹)와 겹치는 청크만 다시 만듭니다. 무언가 다시 만들었으면 true. 아래 질의는 모두 필요하면 이것을 먼저 부릅니다. 바뀐 사각형 기록을 가져가는 소비자는 이 그래프 하나여야 합니다. |
+| `component(cell)`·`componentCount`                                        | 전역 연결 성분 번호. 막힌 칸·격자 밖은 -1. 두 칸의 번호가 같으면 걸어서 닿고, 다르면 닿지 않습니다(`reachableFrom`과 같은 답).                                                                                                                                                                                            |
+| `chunkOf(cell)`·`chunkCols`·`chunkRows`·`chunkCount`                      | 칸이 든 청크(행 우선 `chunkRow * chunkCols + chunkCol`)와 청크 수.                                                                                                                                                                                                                                                        |
+| `chunkNodeCount(chunk)`·`chunkNode(chunk, i)`                             | 청크의 노드 목록. 순서는 동·남·서·북 변, 남동·남서·북서·북동 모서리, 경계 안에서는 놓인 순서입니다.                                                                                                                                                                                                                       |
+| `nodeCell(node)`·`nodeChunk(node)`·`nodePeer(node)`·`nodeCrossCost(node)` | 노드의 칸·청크(비어 있는 자리는 -1), 경계 건너편 짝 노드(`node ^ 1`), 짝으로 건너는 비용(직선 10, 대각 14). 노드 번호는 0 이상 `nodeCapacity` 미만입니다.                                                                                                                                                                 |
+| `edgeCost(chunk, i, j)`                                                   | 청크 안에서만 걸어 `i`번째 노드 칸에서 `j`번째 노드 칸까지의 최단 비용. 청크 안에서 이어지지 않으면 -1. 그 청크의 비용 행렬을 처음 물을 때 만듭니다.                                                                                                                                                                      |
+| `chunkChange(chunk)`·`revision`·`stats`                                   | 구조를 마지막으로 바꾼 동기화에서 청크를 어떻게 했는지(0 그대로, 1 노드만 다시 모음, 2 성분·포털을 다시 만듦), 구조를 다시 만든 횟수, 누적 횟수(`chunksRebuilt`·`nodeChunksRebuilt`·`matricesBuilt`).                                                                                                                     |
+
+만드는 규칙(모두 `grid.stepCell` 하나로 판정하므로 칸·변 통과와 모서리 가로지르기 금지가 거리장·A\*와 같습니다):
+
+- **청크 안 성분**: 청크 칸을 행 우선으로 훑어 처음 만난 열린 칸부터 청크 안으로만 퍼뜨리며 0, 1, 2…를 붙입니다.
+- **변 포털**: 청크가 동쪽·남쪽 변을 소유합니다. 변을 따라 직선 걸음이 통과되고 양쪽 칸의 성분이 같은 연속 구간을 `portalSpan`칸씩 쪼개, 조각마다 중앙 칸(짝수 길이는 앞쪽)과 그 건너편 칸을 짝 노드로 둡니다(비용 10). 그다음 변 안의 대각 걸음을 변 순서(남동 → 북동·남서)로 보며, 직선 포털로 아직 이어지지 않은 (성분, 성분) 쌍만 첫 대각 걸음 하나를 단칸 포털(비용 14)로 둡니다. `passableEdge`가 없으면 대각만 열린 쌍은 생기지 않습니다.
+- **모서리 포털**: 청크가 남동·남서 모서리를 소유합니다. 모서리 칸에서 대각 이웃 청크로의 걸음이 통과되면 포털 하나(비용 14).
+- **전역 성분**: 포털로 이어진 (청크, 청크 안 성분)을 합치고, 열쇠(`청크 · chunkSize² + 청크 안 성분`) 오름차순으로 처음 만난 묶음부터 0, 1, 2…입니다.
+- **청크 안 비용**: 노드 칸에서 청크 안으로만 도는 Dijkstra(지역 힙 키 `비용 · 2^12 + 청크 안 칸`)의 정수 비용입니다. 이웃 청크를 거쳐 가는 길은 넣지 않으므로 실제 최단보다 클 수 있습니다(상한).
+- **다시 만들기**: 바뀐 청크는 성분·포털을 다시 만들고, 그 청크에 닿는 경계(변은 두 청크, 모서리는 2×2 네 청크)의 포털을 다시 놓으며, 그 경계에 노드가 있는 청크는 노드 목록만 다시 모읍니다. 성분을 다시 만들지 않았고 노드 칸 목록이 같은 청크는 비용 행렬을 그대로 둡니다. 전역 성분은 매번 다시 묶습니다(성분·포털 수에 비례).
+
+자료 배치(칸 수 C, 청크 수 K, S = `chunkSize`, 변당 포털 상한 B = 3S − 2):
+
+| 배열                                      | 크기               | 뜻                                                                                                                           |
+| ----------------------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| `cellComp: Uint16Array`                   | C                  | 청크 안 성분(0xFFFF = 막힘). S ≤ 64라 성분은 4096개 이하                                                                     |
+| `stepMask: Uint16Array`                   | C                  | 청크 안으로 갈 수 있는 방향 비트(8비트) + 열린 칸 비트. 성분 채우기와 청크 안 Dijkstra가 `stepCell` 대신 읽음                |
+| `compParent`·`compLabel: Int32Array`      | K · S²             | 성분 합치기와 전역 번호. 열쇠 < (cols + S − 1)(rows + S − 1) < 2^31                                                          |
+| `borderPortals: Uint16Array`              | K · 4              | 청크가 소유한 경계(동·남·남동·남서)마다 포털 수                                                                              |
+| `nodeCell`·`nodeChunk: Int32Array`        | `nodeCapacity`     | 노드 n = 포털 · 2 + 쪽(0은 경계를 소유한 청크). 포털 = 청크 · (2B + 2) + 경계 시작 + 순번. `nodeCapacity` = K · (2B + 2) · 2 |
+| `portalCost: Uint8Array`                  | `nodeCapacity` / 2 | 건너는 비용 10·14                                                                                                            |
+| `chunkNodes: Int32Array`·`chunkNodeCount` | K · (4B + 4)       | 청크 노드 목록                                                                                                               |
+| 청크 비용 행렬 `Uint16Array`              | 노드 수²           | 청크마다 하나, 크기가 모자랄 때만 새로 만들고 아니면 재사용. 0xFFFF = 다른 성분. 청크 안 최장 비용 64² · 14 < 2^16           |
+
+노드 번호가 경계 자리로 정해지므로 바뀌지 않은 경계의 노드 번호는 다른 곳이 바뀌어도 그대로입니다. 다음 단계의 추상 힙 키 `D · 2^k + 노드`도 D < 14 · 2^22 < 2^26, 노드 < 2^25라 2^51 아래입니다.
+
 ## FieldCache
 
 `new FieldCache(grid, { capacity = Infinity })`: 키로 거리장을 보관합니다. 무엇을 키로 삼을지, 언제 새로 만들지는 호출자가 정하고 이 클래스는 세 가지만 맡습니다.
@@ -160,7 +218,7 @@ const GRID = new PathGrid({ width, height, cellSize: 16, passable: (x, y) => OBS
 
 ## 결정론
 
-`RouteFinder`의 동률 규칙은 위 [RouteFinder](#routefinder-a) 절에 있습니다. 시간·난수·DOM·`Map` 순회가 없습니다. 비용은 정수이고, 힙은 `(비용, 칸 번호)`를 한 수로 묶어 비용이 같으면 칸 번호가 작은 쪽을 먼저 꺼냅니다. 내려가기의 동률은 방향 순서, `nearestOpen`의 동률은 훑는 순서가 정합니다. 같은 격자·통과 판정·출발 칸이면 같은 거리장이고, 어느 칸을 먼저 물었는지와 상관없이 확정된 칸의 값은 같습니다.
+`RouteFinder`의 동률 규칙은 위 [RouteFinder](#routefinder-a) 절에 있습니다. `PortalGraph`의 성분 번호·노드 번호·노드 순서·비용은 격자 상태(칸·변 통과 판정)만의 함수입니다. 장애물이 어떤 순서로 바뀌어 왔든 국소 무효화로 따라간 구조는 같은 배치에서 처음부터 만든 구조와 같습니다(고정 시나리오가 확인). 단 `invalidateRect`의 사각형이 통과 판정이 실제로 바뀐 곳을 모두 덮어야 합니다. 모자라면 낡은 판정이 남아 피어마다 달라질 수 있습니다. 시간·난수·DOM·`Map` 순회가 없습니다. 비용은 정수이고, 힙은 `(비용, 칸 번호)`를 한 수로 묶어 비용이 같으면 칸 번호가 작은 쪽을 먼저 꺼냅니다. 내려가기의 동률은 방향 순서, `nearestOpen`의 동률은 훑는 순서가 정합니다. 같은 격자·통과 판정·출발 칸이면 같은 거리장이고, 어느 칸을 먼저 물었는지와 상관없이 확정된 칸의 값은 같습니다.
 
 ## 라이브러리 대신 쓰는 이유
 
@@ -198,4 +256,6 @@ A\*(`RouteFinder`)도 이 라이브러리들로 대신하지 않습니다. 기�
 
 "A\* 경로" 버튼을 켜면 같은 탭에서 목표가 바뀔 때만 A\*로 길을 찾아 보라색 웨이포인트로 저장하고 "한 걸음"이 `advance`로 그것을 따라갑니다(출력의 `route.cost`가 거리장 `cost`와 같습니다).
 
-work-scheduler 예제의 "거리장" 탭([바로 보기](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/work-scheduler.html#tab=pathfield))에서 캔버스를 누르거나 끌어 목표를 정하면, 곧장 가는 선이 벽에 막힌 유닛이 어느 칸으로 내려가는지(밝기 = 비용)와 "유닛 칸까지만 퍼뜨림 / 전부 계산"의 차이를 봅니다. 장애물은 geometry의 `ObstacleField`입니다. 고정 시나리오: `node modules/pathfield/tests/pathfield.e2e.mjs`(core 목록), `project/tests/previews.mjs`의 거리장 탭(마우스·화살표 키·걸음·터치 에뮬레이션).
+work-scheduler 예제의 "포털" 탭([바로 보기](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/work-scheduler.html#tab=portal))에서 캔버스를 눌러 원 건물을 놓거나 지우면, 청크 경계·포털 노드·청크 안 간선과 연결 성분(칸 색)이 그려지고 다시 만든 청크(주황)와 노드만 다시 모은 청크(노란 점선)가 표시됩니다. "틈 막기"는 가운데 벽의 틈을 막아 성분이 둘로 갈라지는 것을 보여 줍니다.
+
+work-scheduler 예제의 "거리장" 탭([바로 보기](https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/work-scheduler.html#tab=pathfield))에서 캔버스를 누르거나 끌어 목표를 정하면, 곧장 가는 선이 벽에 막힌 유닛이 어느 칸으로 내려가는지(밝기 = 비용)와 "유닛 칸까지만 퍼뜨림 / 전부 계산"의 차이를 봅니다. 장애물은 geometry의 `ObstacleField`입니다. 고정 시나리오: `node modules/pathfield/tests/pathfield.e2e.mjs`(core 목록. 포털 구조는 국소 무효화로 따라간 구조 = 처음부터 만든 구조, 성분 = `reachableFrom`), `project/tests/previews.mjs`의 거리장·포털 탭(마우스·화살표 키·걸음·터치 에뮬레이션).

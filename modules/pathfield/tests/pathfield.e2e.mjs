@@ -10,6 +10,7 @@ import {
     FieldCache,
     MAX_CHANGED_RECTS,
     PathGrid,
+    PortalGraph,
     RouteFinder,
     STRAIGHT_COST,
     UNREACHED,
@@ -686,3 +687,126 @@ const EXPECTED = { hash: 3669598282, length: 4766, unreachable: 192, connected: 
 const RESULT = runScenario(createPlanner);
 assert.deepEqual(RESULT, EXPECTED);
 console.log('pathfield scenario ok', RESULT.hash.toString(16), RESULT.length, RESULT.unreachable);
+
+// PortalGraph(청크 + 포털 구조): 건물(원)을 놓고 지우는 동안 바뀐 사각형만으로 따라간 구조가 같은 배치에서 처음부터 만든 구조와
+// 노드 번호·칸·건너는 비용·청크 안 비용·성분까지 같고, 바뀐 사각형과 겹치는 청크만 다시 만들며, 성분이 실제 연결(reachableFrom)과 같습니다.
+{
+    const SIDE = 1800,
+        RADIUS = 13.62,
+        PAD = RADIUS + CELL,
+        WALLS = [
+            // 가운데를 가르는 벽: 위쪽 틈은 원 하나로 막을 수 있습니다.
+            { x0: 880, y0: 160, x1: 920, y1: SIDE },
+            { x0: 200, y0: 600, x1: 700, y1: 640 },
+        ].map((box, i) => ({
+            id: 'wall-' + i,
+            points: [
+                { x: box.x0, y: box.y0 },
+                { x: box.x1, y: box.y0 },
+                { x: box.x1, y: box.y1 },
+                { x: box.x0, y: box.y1 },
+            ],
+        }));
+    const MAKE = (circles) => {
+        const FIELD = new ObstacleField({ width: SIDE, height: SIDE, fixedPoint: 100, polygons: WALLS, circles });
+        const GRID = new PathGrid({
+            width: SIDE,
+            height: SIDE,
+            cellSize: CELL,
+            passable: (x, y) => FIELD.pointClear(x, y, RADIUS),
+            passableEdge: (x, y, tx, ty) => FIELD.segmentClear(x, y, tx, ty, RADIUS, null, true, 0),
+        });
+        return { field: FIELD, grid: GRID, graph: new PortalGraph(GRID) };
+    };
+    const DESCRIBE = (graph) => {
+        const OUT = [graph.componentCount];
+        for (let chunk = 0; chunk < graph.chunkCount; chunk++) {
+            const COUNT = graph.chunkNodeCount(chunk);
+            OUT.push(COUNT);
+            for (let i = 0; i < COUNT; i++) {
+                const NODE = graph.chunkNode(chunk, i);
+                OUT.push(NODE, graph.nodeCell(NODE), graph.nodeCell(graph.nodePeer(NODE)), graph.nodeCrossCost(NODE));
+                for (let j = 0; j < COUNT; j++) {
+                    OUT.push(graph.edgeCost(chunk, i, j));
+                }
+            }
+        }
+        for (let cell = 0; cell < graph.grid.size; cell++) {
+            OUT.push(graph.component(cell));
+        }
+        return OUT;
+    };
+    const LIVE = MAKE([]);
+    assert.equal(LIVE.graph.chunkSize, 16, '청크 기본 16칸');
+    assert.equal(LIVE.graph.portalSpan, 4, '포털 조각 기본 4칸');
+    assert.equal(LIVE.graph.prepare(), true, '처음은 전부 만듦');
+    assert.equal(LIVE.graph.prepare(), false, '바뀐 것이 없으면 그대로');
+    const LEFT = LIVE.grid.cellAt(300, 300),
+        RIGHT = LIVE.grid.cellAt(1500, 300);
+    assert.equal(LIVE.graph.component(LEFT), LIVE.graph.component(RIGHT), '벽 위쪽 틈으로 이어짐');
+    assert.equal(LIVE.graph.component(LIVE.grid.cellAt(900, 900)), -1, '벽 안 칸은 -1');
+    const GAP = { id: 1, x: 900, y: 80, r: 90 };
+    const STEPS = [
+        [{ id: 2, x: 400, y: 1200, r: 70 }],
+        [{ id: 2, x: 400, y: 1200, r: 70 }, GAP],
+        [GAP],
+        [GAP, { id: 3, x: 1300, y: 1500, r: 40 }],
+        [{ id: 3, x: 1300, y: 1500, r: 40 }],
+    ];
+    let previous = [];
+    for (const CIRCLES of STEPS) {
+        LIVE.field.setCircles(CIRCLES);
+        const CHANGED = [
+            ...CIRCLES.filter((c) => !previous.includes(c)),
+            ...previous.filter((c) => !CIRCLES.includes(c)),
+        ];
+        const EXPECTED = new Set();
+        for (const C of CHANGED) {
+            LIVE.grid.invalidateRect(C.x - C.r - PAD, C.y - C.r - PAD, C.x + C.r + PAD, C.y + C.r + PAD);
+            // 격자가 기록한 칸 사각형을 한 칸 넓힌 범위와 겹치는 청크만 다시 만듭니다.
+            const COL0 = Math.max(0, Math.floor((C.x - C.r - PAD) / CELL) - 1),
+                COL1 = Math.min(LIVE.grid.cols - 1, Math.floor((C.x + C.r + PAD) / CELL) + 1),
+                ROW0 = Math.max(0, Math.floor((C.y - C.r - PAD) / CELL) - 1),
+                ROW1 = Math.min(LIVE.grid.rows - 1, Math.floor((C.y + C.r + PAD) / CELL) + 1);
+            for (let row = Math.floor(ROW0 / 16); row <= Math.floor(ROW1 / 16); row++) {
+                for (let col = Math.floor(COL0 / 16); col <= Math.floor(COL1 / 16); col++) {
+                    EXPECTED.add(row * LIVE.graph.chunkCols + col);
+                }
+            }
+        }
+        assert.equal(LIVE.graph.prepare(), true);
+        const REBUILT = [];
+        for (let chunk = 0; chunk < LIVE.graph.chunkCount; chunk++) {
+            if (LIVE.graph.chunkChange(chunk) === 2) {
+                REBUILT.push(chunk);
+            }
+        }
+        assert.deepEqual(
+            REBUILT,
+            [...EXPECTED].sort((a, b) => a - b),
+            '겹치는 청크만 다시 만듦',
+        );
+        assert.deepEqual(DESCRIBE(LIVE.graph), DESCRIBE(MAKE(CIRCLES).graph), '국소 무효화 = 처음부터');
+        const MARKS = new Uint8Array(LIVE.grid.size);
+        for (const START of [LEFT, RIGHT, LIVE.grid.cellAt(300, 1500), LIVE.grid.cellAt(1500, 1700)]) {
+            LIVE.grid.reachableFrom(START, MARKS);
+            const OWN = LIVE.graph.component(START);
+            for (let cell = 0; cell < LIVE.grid.size; cell++) {
+                assert.equal(OWN >= 0 && LIVE.graph.component(cell) === OWN, MARKS[cell] === 1, '성분 = 실제 연결');
+            }
+        }
+        previous = CIRCLES;
+    }
+    LIVE.field.setCircles([GAP]);
+    LIVE.grid.invalidateRect(GAP.x - GAP.r - PAD, GAP.y - GAP.r - PAD, GAP.x + GAP.r + PAD, GAP.y + GAP.r + PAD);
+    assert.notEqual(
+        LIVE.graph.component(LEFT),
+        LIVE.graph.component(RIGHT),
+        '틈을 막으면 질의가 스스로 다시 만들고 갈라짐',
+    );
+    assert.throws(() => new PortalGraph(LIVE.grid, { chunkSize: 65 }), RangeError);
+    assert.throws(() => new PortalGraph(LIVE.grid, { portalSpan: 17 }), RangeError);
+    assert.throws(() => new PortalGraph(LIVE.grid, { size: 16 }), TypeError);
+    assert.throws(() => new PortalGraph({}), TypeError);
+    console.log('pathfield portal graph ok', LIVE.graph.chunkCount, LIVE.graph.componentCount);
+}
