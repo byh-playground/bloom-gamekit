@@ -240,6 +240,20 @@ try {
                 ],
                 '화살표로 옮긴 십자 표시 자리에 Enter로 놓음',
             );
+            // 강: 칸 비용이 바뀐 띠만 다시 만들고, 유동장 값은 여전히 A* 최단(물 비용 포함) 이상 1.15배 이하입니다.
+            await PAGE.click('#portal-water');
+            await PAGE.click('#portal-send');
+            await PAGE.click('#portal-exact');
+            portal = await PORTAL();
+            assert.equal(portal.water, true, '강을 켬');
+            assert.ok(portal.rebuiltChunks.length > 0, '물이 든 청크를 다시 만듦');
+            assert.ok(
+                portal.worstRatio >= 1 && portal.worstRatio <= 1.15,
+                `물이 있어도 유동장 값 ÷ A* 최단 비용: ${portal.worstRatio}`,
+            );
+            await PAGE.click('#portal-exact');
+            await PAGE.click('#portal-water');
+            assert.equal((await PORTAL()).water, false, '강을 끔');
             const PORTAL_TOUCH = await browser.newContext({
                 hasTouch: true,
                 isMobile: true,

@@ -191,6 +191,10 @@
                 됩니다. "정확한 길"은 A*로 찾은 최단 경로(보라)를 겹쳐 그립니다. 화살표 키로 십자 표시를 옮기고 Enter로
                 누릅니다.
             </li>
+            <li>
+                "강"을 켜면 오른쪽에 물(지나는 데 두 배 걸림)이 흐릅니다. 유닛은 다리로 돌아가는 쪽이 더 빠를 때만
+                다리로 가고, 다리가 멀면 물을 건넙니다.
+            </li>
         </ul>
         <canvas
             id="portal-canvas"
@@ -206,6 +210,7 @@
             <button id="portal-send">유닛 보내기</button>
             <button id="portal-edges" aria-pressed="false">간선 보기</button>
             <button id="portal-gap">틈 막기</button>
+            <button id="portal-water" aria-pressed="false">강</button>
             <button id="portal-reset">처음으로</button>
         </div>
         <pre id="portal-output"></pre>
@@ -736,7 +741,16 @@
                 ],
                 circles: [],
             }),
-            GRID = new PathGrid({ ...WORLD, cellSize: CELL, passable: (x, y) => OBSTACLES.pointClear(x, y, RADIUS) }),
+            // "강"을 켜면 오른쪽 가로 띠가 물(칸 비용 2 = 이동 배율 0.5의 역수)이고, 오른쪽 끝의 다리는 땅입니다.
+            WATER = { x0: 248, x1: 480, y0: 104, y1: 152, bridgeX0: 448 },
+            IN_WATER = (x, y) => x > WATER.x0 && x < WATER.bridgeX0 && y > WATER.y0 && y < WATER.y1,
+            GRID = new PathGrid({
+                ...WORLD,
+                cellSize: CELL,
+                passable: (x, y) => OBSTACLES.pointClear(x, y, RADIUS),
+                cellCost: (x, y) => (STATE.water && IN_WATER(x, y) ? 2 : 1),
+                maxCellCost: 2,
+            }),
             GRAPH = new PortalGraph(GRID),
             FINDER = new RouteFinder(GRID),
             CANVAS = document.querySelector('#portal-canvas'),
@@ -753,6 +767,7 @@
                 prepareMs: 0,
                 edited: false,
                 running: false,
+                water: false,
             },
             PATH = [],
             ROUTE = [];
@@ -965,6 +980,13 @@
                 CONTEXT.strokeRect(X + 1.5, Y + 1.5, W - 3, H - 3);
                 CONTEXT.setLineDash([]);
             }
+            if (STATE.water) {
+                CONTEXT.fillStyle = 'rgba(70, 140, 230, 0.35)';
+                CONTEXT.fillRect(WATER.x0, WATER.y0, WATER.bridgeX0 - WATER.x0, WATER.y1 - WATER.y0);
+                CONTEXT.strokeStyle = '#d9c9a0';
+                CONTEXT.lineWidth = 2;
+                CONTEXT.strokeRect(WATER.bridgeX0, WATER.y0, WATER.x1 - WATER.bridgeX0 - 1, WATER.y1 - WATER.y0);
+            }
             for (const POLYGON of OBSTACLES.polygons.items) {
                 CONTEXT.beginPath();
                 POLYGON.points.forEach((p, i) => (i ? CONTEXT.lineTo(p.x, p.y) : CONTEXT.moveTo(p.x, p.y)));
@@ -1120,6 +1142,7 @@
                     nodes,
                     components: GRAPH.componentCount,
                     // 왼쪽 위 칸과 오른쪽 위 칸이 같은 성분인가(가운데 벽의 틈을 막으면 false).
+                    water: STATE.water,
                     leftRightConnected: GRAPH.component(GRID.cellAt(12, 12)) === GRAPH.component(GRID.cellAt(468, 12)),
                     prepareMs: STATE.prepareMs,
                     stats: GRAPH.stats,
@@ -1130,6 +1153,7 @@
             document.querySelector('#portal-edges').setAttribute('aria-pressed', String(STATE.edges));
             document.querySelector('#portal-exact').setAttribute('aria-pressed', String(STATE.exact));
             document.querySelector('#portal-goal-mode').setAttribute('aria-pressed', String(STATE.goalMode));
+            document.querySelector('#portal-water').setAttribute('aria-pressed', String(STATE.water));
         }
 
         // 포인터 이벤트 하나로 마우스와 터치를 함께 받습니다.
@@ -1174,6 +1198,13 @@
             render();
         });
         document.querySelector('#portal-gap').addEventListener('click', () => toggleAt(GAP.x, GAP.y));
+        // 칸 비용이 바뀐 곳도 통과 판정처럼 그 사각형만 알립니다.
+        function setWater(on) {
+            STATE.water = on;
+            GRID.invalidateRect(WATER.x0, WATER.y0, WATER.x1, WATER.y1);
+            rebuild();
+        }
+        document.querySelector('#portal-water').addEventListener('click', () => setWater(!STATE.water));
         document.querySelector('#portal-reset').addEventListener('click', () => {
             const REMOVED = STATE.circles;
             STATE.circles = [];
@@ -1181,10 +1212,22 @@
             REMOVED.forEach(invalidateAround);
             STATE.goal = { x: 420, y: 60 };
             STATE.goalMode = false;
+            STATE.water = false;
+            GRID.invalidateRect(WATER.x0, WATER.y0, WATER.x1, WATER.y1);
             sendUnits();
             rebuild();
         });
-        window.portalExample = { toggleAt, setGoalAt, sendUnits, step, state: STATE, graph: GRAPH, grid: GRID, field };
+        window.portalExample = {
+            toggleAt,
+            setGoalAt,
+            setWater,
+            sendUnits,
+            step,
+            state: STATE,
+            graph: GRAPH,
+            grid: GRID,
+            field,
+        };
         sendUnits();
         render();
         requestAnimationFrame(frame);

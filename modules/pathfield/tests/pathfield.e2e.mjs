@@ -12,6 +12,7 @@ import {
     RouteFinder,
     STRAIGHT_COST,
     UNREACHED,
+    stepCost,
 } from '../../../dist/pathfield.js';
 
 // 글자 지도(# 막힘, . 통과)로 격자를 만듭니다. 칸 크기 10, 칸 번호 = 행 * 열 수 + 열.
@@ -32,7 +33,7 @@ function gridFrom(rows, counter = null) {
 const CELL_OF = (grid, col, row) => row * grid.cols + col;
 const CELL = 24;
 
-// 비교 기준 1: `stepCell`만 쓰는 작은 다익스트라(칸 수가 작은 격자용). 출발 칸들에서 각 칸까지의 정확한 비용, 닿지 못하면 UNREACHED.
+// 비교 기준 1: `stepCell`·`stepCost`만 쓰는 작은 다익스트라(칸 수가 작은 격자용). 출발 칸들에서 각 칸까지의 정확한 비용, 닿지 못하면 UNREACHED.
 function exactCosts(grid, sources) {
     const DIST = new Array(grid.size).fill(UNREACHED),
         DONE = new Uint8Array(grid.size);
@@ -55,7 +56,10 @@ function exactCosts(grid, sources) {
         for (let direction = 0; direction < 8; direction++) {
             const NEXT = grid.stepCell(COL, ROW, direction);
             if (NEXT >= 0) {
-                DIST[NEXT] = Math.min(DIST[NEXT], DIST[cell] + (direction < 4 ? STRAIGHT_COST : DIAGONAL_COST));
+                DIST[NEXT] = Math.min(
+                    DIST[NEXT],
+                    DIST[cell] + stepCost(direction, grid.costOf(cell), grid.costOf(NEXT)),
+                );
             }
         }
     }
@@ -162,6 +166,52 @@ function floodMarks(grid, start) {
     assert.deepEqual(exactCosts(CORNER, [0]), [0, UNREACHED, 40, 10, 20, 30, 20, 24, 34]);
 }
 
+// ---------- 1b. 칸 비용: 걸음 = 기본 비용 · 두 칸 비용의 평균, 더 빨리 도착하는 길(시간 = 비용) ----------
+{
+    assert.deepEqual(
+        [stepCost(0, 1, 1), stepCost(4, 1, 1), stepCost(0, 1, 2), stepCost(5, 2, 1), stepCost(3, 2, 2)],
+        [10, 14, 15, 21, 20],
+    );
+    // 가운데 가로 띠(행 2)가 물(비용 2)이고 맨 왼쪽 열(열 0)만 다리(비용 1)입니다. ~는 물, .은 땅.
+    const RIVER = ['.......', '.......', '.~~~~~~', '.......', '.......'];
+    const WEIGHTED = (rows) =>
+        new PathGrid({
+            width: rows[0].length * 10,
+            height: rows.length * 10,
+            cellSize: 10,
+            passable: () => true,
+            cellCost: (x, y) => (rows[Math.floor(y / 10)][Math.floor(x / 10)] === '~' ? 2 : 1),
+            maxCellCost: 2,
+        });
+    const GRID = WEIGHTED(RIVER),
+        FINDER = new RouteFinder(GRID);
+    assert.equal(GRID.costOf(CELL_OF(GRID, 3, 2)), 2);
+    assert.equal(GRID.costOf(CELL_OF(GRID, 0, 2)), 1);
+    assert.equal(GRID.costOf(-1), 0, '격자 밖은 0');
+    // 다리 옆(열 1)에서 출발하면 다리로 비켜 건너는 쪽(14 + 10 + 14 + 10 = 48)이 물을 곧장 건너는 쪽(10 + 15 + 15 + 10 = 50)보다
+    // 빨라 다리를 쓰고, 다리에서 먼 열 3에서는 돌아가는 쪽이 늦어 물을 곧장 건넙니다(50). 다리 위(열 0)는 땅과 같습니다(40).
+    FINDER.find(CELL_OF(GRID, 1, 0), [CELL_OF(GRID, 1, 4)]);
+    assert.equal(FINDER.cost, 48, '가까운 다리로 비켜 감');
+    FINDER.find(CELL_OF(GRID, 3, 0), [CELL_OF(GRID, 3, 4)]);
+    assert.equal(FINDER.cost, 50, '먼 다리로 돌아가지 않고 물을 건넘');
+    FINDER.find(CELL_OF(GRID, 0, 0), [CELL_OF(GRID, 0, 4)]);
+    assert.equal(FINDER.cost, 40, '다리 위는 땅과 같음');
+    assert.deepEqual(
+        exactCosts(GRID, [CELL_OF(GRID, 6, 4)]).filter((_, cell) => cell % 7 === 6),
+        [50, 40, 25, 10, 0],
+        '물 칸으로 들고 나는 걸음은 15, 물 위의 걸음은 20',
+    );
+    // 행 1~3이 물이면 다리(열 0)로 비켜 가는 쪽이 더 빨라 다리를 씁니다.
+    const WIDE = WEIGHTED(['.......', '.~~~~~~', '.~~~~~~', '.~~~~~~', '.......']),
+        WIDE_FINDER = new RouteFinder(WIDE),
+        PATH = WIDE_FINDER.find(CELL_OF(WIDE, 1, 0), [CELL_OF(WIDE, 1, 4)]);
+    assert.equal(WIDE_FINDER.cost, 48, '넓은 물은 다리로 비켜 감(물로 곧장이면 70)');
+    assert.ok(
+        PATH.every((cell) => WIDE.costOf(cell) === 1),
+        '다리로 간 길은 물 칸을 밟지 않음',
+    );
+}
+
 // ---------- 2. 칸 번호·좌표·통과 판정 기억 ----------
 const MAZE = ['.......', '.#####.', '.....#.', '####.#.', '.......'];
 {
@@ -250,6 +300,22 @@ const MAZE = ['.......', '.#####.', '.....#.', '####.#.', '.......'];
     assert.throws(() => new PathGrid({ ...OK, cellSize: 0 }), RangeError);
     assert.throws(() => new PathGrid({ ...OK, width: NaN }), RangeError);
     assert.throws(() => new PathGrid({ ...OK, originX: Infinity }), RangeError);
+    assert.throws(() => new PathGrid({ ...OK, cellCost: () => 2 }), TypeError, 'cellCost는 maxCellCost와 함께');
+    assert.throws(() => new PathGrid({ ...OK, maxCellCost: 0 }), RangeError);
+    assert.throws(() => new PathGrid({ ...OK, maxCellCost: 1.5 }), RangeError);
+    assert.throws(() => new PathGrid({ ...OK, maxCellCost: 255 }), RangeError);
+    const OVER = new PathGrid({ ...OK, cellCost: () => 3, maxCellCost: 2 });
+    assert.throws(() => OVER.costOf(0), RangeError, '상한을 넘는 칸 비용');
+    const BIG = new PathGrid({
+        width: 1000,
+        height: 1000,
+        cellSize: 10,
+        passable: () => true,
+        cellCost: () => 1,
+        maxCellCost: 19,
+    });
+    assert.throws(() => new PortalGraph(BIG), RangeError, '청크 안 비용이 16비트를 넘음');
+    assert.ok(new PortalGraph(BIG, { chunkSize: 8 }), '청크를 줄이면 들어감');
     assert.throws(() => new PathGrid({ ...OK, cells: 3 }), TypeError, '알 수 없는 옵션');
     assert.throws(() => new PathGrid({ ...OK, width: 1e9, height: 1e9 }), RangeError, '칸이 너무 많음');
 }
@@ -724,4 +790,80 @@ const MAZE = ['.......', '.#####.', '.....#.', '####.#.', '.......'];
     assert.throws(() => LIVE.graph.setGoal(0, 0, 5), TypeError);
     assert.throws(() => new FlowField(null, LIVE.graph, null), TypeError);
     console.log('pathfield flow field ok', reachable, unreachable, worstRatio.toFixed(4));
+}
+
+// 칸 비용이 있는 FlowField·RouteFinder: 강(비용 2) 위의 유동장이 (1) 값 ≥ A* 정확 비용 = 시험 안 다익스트라, (2) 엄격한 내려가기,
+// (3) 강의 일부를 땅으로 바꾸는(비용이 바뀌는) 국소 무효화 = 처음부터. 비용이 바뀐 칸도 통과 판정처럼 invalidateRect로 알립니다.
+{
+    const SIDE = 960,
+        RIVER_Y0 = 400,
+        RIVER_Y1 = 560;
+    // 강 위의 마른 여울 [minX, maxX]: 비용 1인 구간입니다. 판정 함수가 이 객체를 읽으므로 바꾼 뒤 invalidateRect로 알립니다.
+    const MAKE = (dryMinX, dryMaxX) => {
+        const DRY = { minX: dryMinX, maxX: dryMaxX };
+        const GRID = new PathGrid({
+            width: SIDE,
+            height: SIDE,
+            cellSize: CELL,
+            passable: (x, y) => !(x > 300 && x < 340 && y < 700),
+            cellCost: (x, y) => (y > RIVER_Y0 && y < RIVER_Y1 && !(x > DRY.minX && x < DRY.maxX) ? 2 : 1),
+            maxCellCost: 2,
+        });
+        return { dry: DRY, grid: GRID, graph: new PortalGraph(GRID), finder: new RouteFinder(GRID) };
+    };
+    const GOAL_CELLS = (grid) => grid.openCellsWithin(480, 880, 40);
+    const PROBES = [];
+    for (let i = 0; i < 120; i++) {
+        PROBES.push((i * 7919 + 13) % (40 * 40));
+    }
+    const ANSWERS = (world) => {
+        const FIELD = world.graph.goal(0, 0) ?? world.graph.setGoal(0, 0, GOAL_CELLS(world.grid));
+        return PROBES.map((p) => FIELD.distance(p) + ':' + FIELD.lowestNeighbor(p)).join(',');
+    };
+    const WORLD = MAKE(700, 800),
+        CELLS = GOAL_CELLS(WORLD.grid),
+        FIELD = WORLD.graph.setGoal(0, 0, CELLS),
+        EXACT = exactCosts(WORLD.grid, CELLS);
+    let worstRatio = 1,
+        reachable = 0;
+    for (const START of PROBES) {
+        const COST = FIELD.distance(START);
+        if (COST === UNREACHED) {
+            assert.equal(EXACT[START], UNREACHED);
+            continue;
+        }
+        reachable++;
+        assert.ok(WORLD.finder.find(START, CELLS), 'A*도 닿음');
+        assert.equal(WORLD.finder.cost, EXACT[START], 'A* = 다익스트라(칸 비용 포함)');
+        assert.ok(COST >= EXACT[START], '값 ≥ 정확한 최단 비용');
+        if (EXACT[START] > 0) {
+            worstRatio = Math.max(worstRatio, COST / EXACT[START]);
+        }
+        let cell = START,
+            value = COST;
+        while (value > 0) {
+            const NEXT = FIELD.lowestNeighbor(cell);
+            assert.ok(NEXT >= 0 && FIELD.distance(NEXT) < value, '값이 엄격히 줄어듦');
+            cell = NEXT;
+            value = FIELD.distance(NEXT);
+        }
+        assert.ok(CELLS.includes(cell), '목표 칸에 닿음');
+    }
+    assert.ok(reachable > 100, '대부분 닿음');
+    assert.ok(worstRatio <= 1.15, `값 ÷ 정확 비용 ${worstRatio} ≤ 1.15`);
+    // 마른 여울을 옮기며 바뀐 곳만 국소 무효화로 알린 그래프 = 같은 여울로 처음부터 만든 그래프.
+    const LIVE = MAKE(700, 800);
+    for (const [MIN_X, MAX_X] of [
+        [100, 200],
+        [100, 900],
+        [0, 0],
+    ]) {
+        ANSWERS(LIVE);
+        const OLD = LIVE.dry;
+        LIVE.grid.invalidateRect(Math.min(OLD.minX, MIN_X), RIVER_Y0, Math.max(OLD.maxX, MAX_X), RIVER_Y1);
+        LIVE.dry.minX = MIN_X;
+        LIVE.dry.maxX = MAX_X;
+        assert.equal(ANSWERS(LIVE), ANSWERS(MAKE(MIN_X, MAX_X)), '비용 변경의 국소 무효화 = 처음부터');
+    }
+    console.log('pathfield weighted ok', reachable, worstRatio.toFixed(4));
 }

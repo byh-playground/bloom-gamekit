@@ -1,13 +1,15 @@
-// 정수 비용 격자 위의 길찾기(포털 그래프·유동장·A*)가 걷는 격자입니다. 호출자가 준 통과 판정을 칸마다 한 번만 부르고 기억하며,
-// 8방향 이동 규칙(직선 10·대각 14, 모서리 가로지르기 없음)과 칸 번호 계산의 단일 원본입니다.
+// 정수 비용 격자 위의 길찾기(포털 그래프·유동장·A*)가 걷는 격자입니다. 호출자가 준 통과 판정·칸 비용을 칸마다 한 번만 부르고
+// 기억하며, 8방향 이동 규칙(걸음 비용 `stepCost`, 모서리 가로지르기 없음)과 칸 번호 계산의 단일 원본입니다.
 // 시간·난수·DOM을 읽지 않고 Map·문자열 키가 없습니다. 통과 판정이 순수하면 같은 호출 순서는 같은 결과를 냅니다.
 
 /** 닿지 못한 칸의 비용 값. */
 export const UNREACHED = 0x7fffffff;
-/** 직선 한 칸의 비용. */
+/** 칸 비용 1인 두 칸 사이 직선 한 걸음의 비용. */
 export const STRAIGHT_COST = 10;
-/** 대각 한 칸의 비용. */
+/** 칸 비용 1인 두 칸 사이 대각 한 걸음의 비용. */
 export const DIAGONAL_COST = 14;
+/** `maxCellCost`의 상한. 칸 비용은 Uint8 기억에 들어갑니다(0은 막힘, 255는 아직 모름). */
+export const MAX_CELL_COST = 254;
 // 칸 하나에서 이웃으로 가는 8방향입니다. 순서가 곧 동률 규칙이므로 바꾸면 결과가 달라집니다.
 export const DIRECTION_COUNT = 8;
 export const DIRECTION_DX = Int8Array.of(1, 0, -1, 0, 1, -1, -1, 1);
@@ -25,14 +27,33 @@ export const DIRECTION_COST = Uint8Array.of(
 
 // A*의 힙 키가 cost * 2^k + 칸 번호로 정확히 표현되도록 칸 수를 제한합니다(키는 2^53 아래, 비용은 Int32 안).
 const MAX_CELLS = 1 << 22;
-const UNKNOWN = -1;
+// 칸 기억: 0 막힘, 1..MAX_CELL_COST 열린 칸의 비용, UNKNOWN 아직 안 물음.
+const UNKNOWN = 0xff;
 const BLOCKED = 0;
-const OPEN = 1;
-const OPTIONS = ['width', 'height', 'cellSize', 'passable', 'passableEdge', 'originX', 'originY'];
+const OPTIONS = [
+    'width',
+    'height',
+    'cellSize',
+    'passable',
+    'passableEdge',
+    'cellCost',
+    'maxCellCost',
+    'originX',
+    'originY',
+];
 const REVERSE_DIRECTION = Uint8Array.of(2, 3, 0, 1, 6, 7, 4, 5);
 
 /** 격자가 기록해 두는 바뀐 사각형의 최대 개수. 넘치면 기록 전체를 겹치는 하나의 바운딩 사각형으로 합칩니다. */
 export const MAX_CHANGED_RECTS = 16;
+
+/**
+ * 방향 `direction`으로 비용 `fromCost` 칸에서 `toCost` 칸으로 가는 한 걸음의 비용입니다. 걸음의 앞 절반은 출발 칸, 뒤 절반은
+ * 도착 칸 위를 지나므로 기본 비용(직선 10·대각 14)에 두 칸 비용의 평균을 곱합니다. 기본 비용이 짝수라 항상 정수이고, 두 방향이
+ * 같은 값이며, 두 칸 비용이 1이면 기본 비용 그대로입니다. 포털 그래프·유동장·A*가 모두 이 식 하나를 씁니다.
+ */
+export function stepCost(direction, fromCost, toCost) {
+    return (DIRECTION_COST[direction] >> 1) * (fromCost + toCost);
+}
 
 function positiveNumber(value, name) {
     if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
@@ -62,10 +83,13 @@ export class PathGrid {
     cols;
     rows;
     size;
+    /** 칸 비용의 상한(기본 1). 포털 그래프·A*가 값의 범위를 이것으로 확인합니다. */
+    maxCellCost;
     /** 통과 판정을 비운 횟수. 이 격자 위에 만든 길찾기 결과가 낡았는지 알아보는 표식입니다. */
     revision = 0;
 
     #passable;
+    #cellCost;
     #open;
     #passableEdge;
     #edgeKnown;
@@ -98,8 +122,19 @@ export class PathGrid {
         if (this.size > MAX_CELLS) {
             throw new RangeError(`PathGrid would need more than ${MAX_CELLS} cells; use a larger cellSize.`);
         }
+        if (options.cellCost != null && typeof options.cellCost !== 'function') {
+            throw new TypeError('PathGrid cellCost must be a function.');
+        }
+        this.maxCellCost = options.maxCellCost ?? 1;
+        if (!Number.isInteger(this.maxCellCost) || this.maxCellCost < 1 || this.maxCellCost > MAX_CELL_COST) {
+            throw new RangeError(`PathGrid maxCellCost must be an integer in [1, ${MAX_CELL_COST}].`);
+        }
+        if (options.cellCost != null && options.maxCellCost == null) {
+            throw new TypeError('PathGrid cellCost needs maxCellCost.');
+        }
         this.#passable = options.passable;
-        this.#open = new Int8Array(this.size).fill(UNKNOWN);
+        this.#cellCost = options.cellCost ?? null;
+        this.#open = new Uint8Array(this.size).fill(UNKNOWN);
         this.#passableEdge = options.passableEdge ?? null;
         this.#edgeKnown = this.#passableEdge ? new Uint8Array(this.size) : null;
         this.#edgeOpen = this.#passableEdge ? new Uint8Array(this.size) : null;
@@ -131,12 +166,40 @@ export class PathGrid {
 
     /** 칸이 통과 가능한지. 처음 물으면 `passable(centerX, centerY, cell)`을 한 번 부르고 기억합니다. 격자 밖 번호는 false. */
     isOpen(cell) {
-        let open = this.#open[cell];
-        if (open === UNKNOWN) {
-            open = this.#passable(this.centerX(cell), this.centerY(cell), cell) ? OPEN : BLOCKED;
-            this.#open[cell] = open;
+        let cost = this.#open[cell];
+        if (cost === UNKNOWN) {
+            cost = this.#remember(cell);
         }
-        return open === OPEN;
+        // 격자 밖 번호는 undefined라 false입니다.
+        return cost > BLOCKED;
+    }
+
+    /**
+     * 칸의 비용: 막힌 칸·격자 밖 번호는 0, 열린 칸은 1 이상 `maxCellCost` 이하의 정수. 처음 물으면 `passable`을, 열렸으면
+     * `cellCost(centerX, centerY, cell)`(없으면 1)를 한 번 부르고 기억합니다. `cellCost`가 범위 밖 값을 주면 `RangeError`.
+     */
+    costOf(cell) {
+        let cost = this.#open[cell];
+        if (cost === UNKNOWN) {
+            cost = this.#remember(cell);
+        }
+        return cost > BLOCKED ? cost : BLOCKED;
+    }
+
+    #remember(cell) {
+        const X = this.centerX(cell),
+            Y = this.centerY(cell);
+        let cost = BLOCKED;
+        if (this.#passable(X, Y, cell)) {
+            cost = this.#cellCost === null ? 1 : this.#cellCost(X, Y, cell);
+            if (!(Number.isInteger(cost) && cost >= 1 && cost <= this.maxCellCost)) {
+                throw new RangeError(
+                    `PathGrid cellCost must return an integer in [1, ${this.maxCellCost}]; got ${cost}.`,
+                );
+            }
+        }
+        this.#open[cell] = cost;
+        return cost;
     }
 
     /**
