@@ -10,3 +10,9 @@ database_name = "bloom-metrics"
 database_id = "0f0db294-6c6e-44f0-b39a-d6e297f48e0d"
 # D1 표 변경은 번호 붙은 파일로만 합니다(`wrangler d1 migrations create/apply`).
 migrations_dir = "migrations"
+
+# 공개 수집은 회선별 분당 1000회. 위치별 근사치이며 공유 NAT은 한 한도를 사용합니다.
+[[ratelimits]]
+name = "BATCH_RATE_LIMITER"
+namespace_id = "17502931"
+simple = { limit = 1000, period = 60 }

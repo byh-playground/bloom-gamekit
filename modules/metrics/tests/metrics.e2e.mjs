@@ -19,6 +19,7 @@ const SERVER_DIR = resolve(ROOT, 'modules/metrics/server');
 const WRANGLER = resolve(ROOT, 'node_modules/wrangler/bin/wrangler.js');
 const GAME = 'gamekit-example';
 const SECRET = 'e2e-secret';
+const READ_SECRET = 'e2e-read-secret';
 const STARTED = performance.now();
 // 배포물을 그대로 씁니다(npm run build 필요). dist/metrics.js는 createMetrics 전에는 document를 읽지 않습니다.
 const { reviveBytes: REVIVE_BYTES } = await import(pathToFileURL(resolve(ROOT, 'dist/metrics.js')).href);
@@ -125,10 +126,40 @@ try {
     // 운영과 같은 migrations를 먼저 적용합니다. 동시에 띄우면 두 workerd가 같은 D1 파일을 열다 SQLITE_IOERR로 가끔 실패합니다.
     await runWrangler(['d1', 'migrations', 'apply', 'bloom-metrics', '--local']);
     await runWrangler(
-        ['dev', '--port', String(WORKER_PORT), '--ip', '127.0.0.1', '--var', 'IP_KEY_SECRET:' + SECRET],
+        [
+            'dev',
+            '--port',
+            String(WORKER_PORT),
+            '--ip',
+            '127.0.0.1',
+            '--var',
+            'IP_KEY_SECRET:' + SECRET,
+            '--var',
+            'METRICS_READ_SECRET:' + READ_SECRET,
+        ],
         'Ready on',
     );
     const API = `http://127.0.0.1:${WORKER_PORT}`;
+
+    const READ = (path, options = {}) =>
+        fetch(API + path, {
+            ...options,
+            headers: { ...options.headers, Authorization: `Bearer ${READ_SECRET}` },
+        });
+    for (const PATH of ['/stats?game=test', '/daily?game=test', '/whoami']) {
+        assert.equal((await fetch(API + PATH)).status, 401, `${PATH} needs authentication`);
+        assert.equal(
+            (await fetch(API + PATH, { headers: { Authorization: 'Bearer wrong' } })).status,
+            401,
+            `${PATH} rejects a wrong key`,
+        );
+    }
+    const { default: WORKER } = await import('../server/worker.js');
+    assert.equal(
+        (await WORKER.fetch(new Request(API + '/whoami'), { IP_KEY_SECRET: SECRET })).status,
+        503,
+        'missing read secret fails closed',
+    );
 
     // 계약 밖 요청은 저장하지 않고 이유와 함께 거절합니다.
     const POST = (body) => fetch(API + '/batch', { method: 'POST', body });
@@ -138,13 +169,17 @@ try {
         'schema and JSON errors are rejected',
     );
     assert.equal((await POST('x'.repeat(1000001))).status, 413, 'a batch over 1MB is rejected');
-    assert.equal((await fetch(API + '/stats')).status, 400, 'stats needs a game name');
-    assert.equal((await fetch(`${API}/daily?game=${GAME}&days=91`)).status, 400, 'daily covers at most 90 days');
+    assert.equal((await READ('/stats')).status, 400, 'stats needs a game name');
+    assert.equal((await READ(`/daily?game=${GAME}&days=91`)).status, 400, 'daily covers at most 90 days');
     const PREFLIGHT = await fetch(API + '/batch', { method: 'OPTIONS' });
     assert.equal(PREFLIGHT.headers.get('access-control-allow-origin'), '*', 'CORS preflight answers any game page');
+    assert.match(
+        PREFLIGHT.headers.get('access-control-allow-headers'),
+        /authorization/i,
+        'authenticated reads permit preflight',
+    );
     // 운영에서는 Cloudflare가 CF-Connecting-IP를 붙입니다. 로컬 wrangler dev는 요청 헤더를 그대로 넘깁니다.
-    const KEY_OF = async (ip) =>
-        (await (await fetch(API + '/whoami', { headers: { 'CF-Connecting-IP': ip } })).json()).ipKey;
+    const KEY_OF = async (ip) => (await (await READ('/whoami', { headers: { 'CF-Connecting-IP': ip } })).json()).ipKey;
     const [V6_A, V6_B, V6_OTHER, V4] = await Promise.all(
         ['2001:db8:1:2:aaaa::1', '2001:db8:1:2:bbbb::7', '2001:db8:1:3::1', '203.0.113.9'].map(KEY_OF),
     );
@@ -204,6 +239,7 @@ try {
         assert.ok(LAYOUT.overflow <= 0, `${NAME}: no horizontal scroll`);
         assert.ok(LAYOUT.shortest >= 56, `${NAME}: buttons are at least 56px tall`);
 
+        await PAGE.fill('#metrics-read-secret', READ_SECRET);
         await PRESS('#metrics-connect');
         for (let hit = 0; hit < 3; hit++) {
             await PRESS('#metrics-hit');
@@ -342,7 +378,7 @@ try {
         body: JSON.stringify(USER_BATCH),
     });
     assert.equal(USER_POST.status, 200);
-    const BY_AUDIENCE = await (await fetch(`${API}/stats?game=${GAME}`)).json();
+    const BY_AUDIENCE = await (await READ(`/stats?game=${GAME}`)).json();
     assert.deepEqual(
         ['users', 'owner', 'dev'].map((name) => BY_AUDIENCE[name].sessions),
         [1, 0, 2],
@@ -425,7 +461,7 @@ try {
         { api: API, adapterSource: createCounterAdapter.toString() },
     );
     await MULTI_CONTEXT.close();
-    const STATS = await (await fetch(`${API}/stats?game=gamekit-e2e`)).json();
+    const STATS = await (await READ('/stats?game=gamekit-e2e')).json();
     assert.deepEqual([STATS.dev.sessions, STATS.dev.matches], [2, 1], 'two peers, one stored match');
     const ONLINE_ROW = DATABASE.prepare('SELECT mode, seed, players, replay FROM matches WHERE match_id = ?').get(
         'online-1',
@@ -446,7 +482,7 @@ try {
     const WRITER = await openDatabase(false);
     WRITER.prepare('INSERT INTO owners (ip_key, label, added_at) VALUES (?, ?, 0)').run(ownerKey, 'e2e-pc');
     WRITER.close();
-    const FINAL = await (await fetch(`${API}/stats?game=${GAME}`)).json();
+    const FINAL = await (await READ(`/stats?game=${GAME}`)).json();
     assert.deepEqual(
         ['users', 'owner', 'dev'].map((name) => [FINAL[name].sessions, FINAL[name].matches]),
         [
@@ -459,7 +495,7 @@ try {
     assert.deepEqual(FINAL.owner.keys, { 'e2e-pc': 2 }, 'owner sessions are counted per owner line');
     assert.equal(FINAL.users.avgPlayMs, 2500, 'the other line stays a user');
     // 일별 값은 첫 배치를 받은 날(KST)로 묶습니다. 이 실행의 세션은 모두 오늘입니다.
-    const DAILY = await (await fetch(`${API}/daily?game=${GAME}&days=1`)).json();
+    const DAILY = await (await READ(`/daily?game=${GAME}&days=1`)).json();
     const TODAY = new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);
     assert.deepEqual(
         DAILY.daily.map(({ day, audience, sessions, lines, newLines, medianPlayMs, avgWallMs, matches }) => [
@@ -499,7 +535,7 @@ try {
         [1, 2],
         'every session is counted under one country',
     );
-    const OWNER_WHOAMI = await (await fetch(API + '/whoami', { headers: { 'CF-Connecting-IP': '127.0.0.1' } })).json();
+    const OWNER_WHOAMI = await (await READ('/whoami', { headers: { 'CF-Connecting-IP': '127.0.0.1' } })).json();
     assert.equal(OWNER_WHOAMI.owner, 'e2e-pc', 'whoami names the owner line');
     DATABASE.close();
 
