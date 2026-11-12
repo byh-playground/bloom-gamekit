@@ -43,7 +43,7 @@
     },
     {
       "file": "pathfield.js",
-      "sha256": "cfb158b91dfa1b3bda3901d8093297e2fe0733dbdedfecb825bb231d4cf00182"
+      "sha256": "82a94a10c565853e8e639549fe49b65df14f79433c26e3977e1424fc96230580"
     },
     {
       "file": "vision.js",
@@ -59,7 +59,7 @@
     },
     {
       "file": "rollback.js",
-      "sha256": "76bf68f5f4cb0aff90ece3ca0394cda39258193718a682d1930ae45cbc8e4451"
+      "sha256": "8751138b6d4de6bbafa0542491465c5c9a0f719ba4a26a95c7e04293c0c13b62"
     },
     {
       "file": "camera.js",
