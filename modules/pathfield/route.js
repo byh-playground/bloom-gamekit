@@ -1,15 +1,13 @@
-// 유닛 하나가 한 번 가는 길을 A*로 찾는 `RouteFinder`입니다. `PortalGraph`·`FlowField`와 같은 격자·비용(직선 10·대각 14)·
+// 유닛 하나가 한 번 가는 길을 A*로 찾는 `RouteFinder`입니다. `PortalGraph`·`FlowField`와 같은 격자·걸음 비용(`stepCost`)·
 // 통과 규칙(칸·변 통과 판정, 모서리 가로지르기 금지)을 씁니다.
 // 찾은 길은 칸 번호 배열이라 유닛 상태에 그대로 저장할 수 있고, 따라가기(`advance`)와 남은 길 재검증(`remainingClear`)은
 // 저장된 웨이포인트와 인덱스 하나만 읽습니다. 탐색 버퍼는 격자 크기의 타입드 배열을 세대 번호로 재사용합니다.
-import { DIRECTION_COST, DIRECTION_COUNT, PathGrid } from './grid.js';
+import { DIAGONAL_COST, DIRECTION_COST, DIRECTION_COUNT, PathGrid, stepCost } from './grid.js';
 
 const NO_PARENT = -1;
 const MAX_STAMP = 0xffffffff;
-// 힙 키는 f * 2^26 + h 하나의 수입니다. 칸 수가 2^22 이하라 h < 10 * 2^22 < 2^26, f < 2^27이므로 키는 2^53 아래에서 정확합니다.
-const H_SCALE = 2 ** 26;
-
-// 칸 (dx, dy)만큼 떨어진 곳까지 장애물이 없을 때의 걸음 비용(옥타일 거리). 대각 14·직선 10과 같은 단위라 일관된 하한입니다.
+// 칸 (dx, dy)만큼 떨어진 곳까지 장애물이 없고 칸 비용이 모두 1일 때의 걸음 비용(옥타일 거리). 칸 비용은 1 이상이라
+// 걸음 비용이 직선 10·대각 14 이상이므로 일관된 하한입니다.
 function octile(dx, dy) {
     return dx > dy ? 10 * dx + 4 * dy : 10 * dy + 4 * dx;
 }
@@ -38,6 +36,8 @@ export class RouteFinder {
     #heap;
     #heapIndex;
     #heapSize = 0;
+    // 힙 키는 f · hScale + h 하나의 수입니다. hScale은 가장 큰 h보다 큰 2의 거듭제곱이라 키의 순서는 (f, h) 순서와 같습니다.
+    #hScale;
 
     /** @param {PathGrid} grid */
     constructor(grid) {
@@ -45,7 +45,18 @@ export class RouteFinder {
             throw new TypeError('RouteFinder needs a PathGrid.');
         }
         this.grid = grid;
-        const SIZE = grid.size;
+        const SIZE = grid.size,
+            MAX_H = DIAGONAL_COST * (grid.cols + grid.rows),
+            // 경로는 칸을 한 번씩만 지나므로 g < 칸 수 · 가장 비싼 걸음.
+            MAX_G = SIZE * stepCost(4, grid.maxCellCost, grid.maxCellCost);
+        let scale = 1;
+        while (scale <= MAX_H) {
+            scale *= 2;
+        }
+        if (MAX_G + MAX_H >= 0x7fffffff || (MAX_G + MAX_H + 1) * scale > Number.MAX_SAFE_INTEGER) {
+            throw new RangeError('RouteFinder grid is too large for exact integer costs; use a larger cellSize.');
+        }
+        this.#hScale = scale;
         this.#seen = new Uint32Array(SIZE);
         this.#closed = new Uint32Array(SIZE);
         this.#goal = new Uint32Array(SIZE);
@@ -109,7 +120,10 @@ export class RouteFinder {
             G = this.#g,
             H = this.#h,
             KEY = this.#key,
-            PARENT = this.#parent;
+            PARENT = this.#parent,
+            H_SCALE = this.#hScale,
+            // 모든 칸 비용이 1이면 걸음 비용은 방향만의 함수라(stepCost(d, 1, 1) = DIRECTION_COST[d]) 칸 비용을 읽지 않습니다.
+            UNIFORM = GRID.maxCellCost === 1;
         const HEURISTIC = (col, row) =>
             octile(
                 col < minCol ? minCol - col : col > maxCol ? col - maxCol : 0,
@@ -143,13 +157,15 @@ export class RouteFinder {
             this.expanded++;
             const COL = CELL % COLS,
                 ROW = (CELL - COL) / COLS,
-                COST = G[CELL];
+                COST = G[CELL],
+                CELL_COST = UNIFORM ? 1 : GRID.costOf(CELL);
             for (let direction = 0; direction < DIRECTION_COUNT; direction++) {
                 const NEXT = GRID.stepCell(COL, ROW, direction);
                 if (NEXT < 0 || CLOSED[NEXT] === STAMP) {
                     continue;
                 }
-                const TOTAL = COST + DIRECTION_COST[direction];
+                const TOTAL =
+                    COST + (UNIFORM ? DIRECTION_COST[direction] : stepCost(direction, CELL_COST, GRID.costOf(NEXT)));
                 if (SEEN[NEXT] !== STAMP) {
                     const NEXT_COL = NEXT % COLS;
                     SEEN[NEXT] = STAMP;

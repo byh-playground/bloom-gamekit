@@ -1,7 +1,14 @@
-/** 직선 한 칸의 비용(10). */
+/** 칸 비용 1인 두 칸 사이 직선 한 걸음의 비용(10). */
 export const STRAIGHT_COST: 10;
-/** 대각 한 칸의 비용(14). */
+/** 칸 비용 1인 두 칸 사이 대각 한 걸음의 비용(14). */
 export const DIAGONAL_COST: 14;
+/** `maxCellCost`의 상한(254). */
+export const MAX_CELL_COST: 254;
+/**
+ * 방향 `direction`(0..7)으로 비용 `fromCost` 칸에서 `toCost` 칸으로 가는 한 걸음의 비용: 기본 비용(직선 10·대각 14) × 두 칸 비용의 평균.
+ * 항상 정수이고 두 방향이 같은 값입니다. 포털 그래프·유동장·A*가 모두 이 식을 씁니다.
+ */
+export function stepCost(direction: number, fromCost: number, toCost: number): number;
 /** `PathGrid`가 기록하는 바뀐 사각형의 최대 개수. 넘치면 하나의 바운딩 사각형으로 합칩니다. */
 export const MAX_CHANGED_RECTS: 16;
 /** 닿지 못한 칸의 비용 값. */
@@ -21,6 +28,13 @@ export interface PathGridOptions {
     passable: (x: number, y: number, cell: number) => boolean;
     /** 양방향 결과가 같은 인접 셀 중심 사이의 이동 검사. 결과는 invalidate까지 캐시합니다. */
     passableEdge?: (x: number, y: number, nextX: number, nextY: number, cell: number, nextCell: number) => boolean;
+    /**
+     * 열린 칸의 비용: 그 칸을 지나는 데 걸리는 시간의 배수(1 이상 `maxCellCost` 이하의 정수, 예: 이동 배율 0.5인 물은 2).
+     * 칸마다 한 번만 불리고 통과 판정과 함께 기억됩니다. 주면 `maxCellCost`도 줘야 합니다. 생략하면 모든 칸이 1입니다.
+     */
+    cellCost?: (x: number, y: number, cell: number) => number;
+    /** 칸 비용의 상한(1..254, 기본 1). 포털 그래프·A*가 값의 범위 확인에 씁니다. */
+    maxCellCost?: number;
     /** 칸 (0, 0)의 좌표(기본 0). */
     originX?: number;
     originY?: number;
@@ -36,6 +50,8 @@ export class PathGrid {
     readonly rows: number;
     /** `cols * rows`. */
     readonly size: number;
+    /** 칸 비용의 상한. */
+    readonly maxCellCost: number;
     /** 통과 판정을 비운 횟수. 이 격자 위에 만든 길찾기 결과가 낡았는지 알아보는 표식입니다. */
     readonly revision: number;
 
@@ -48,6 +64,8 @@ export class PathGrid {
     centerY(cell: number): number;
     /** 통과 가능한지. 처음 물으면 `passable`을 한 번 부릅니다. 격자 밖 번호는 false. */
     isOpen(cell: number): boolean;
+    /** 칸의 비용. 막힌 칸·격자 밖 번호는 0. 처음 물으면 `passable`·`cellCost`를 한 번 부릅니다. 범위 밖 값이면 RangeError. */
+    costOf(cell: number): number;
     /**
      * (col, row)에서 방향 `direction`(0..7: 동·남·서·북·남동·남서·북서·북동)으로 한 걸음 갈 수 있으면 이웃 칸 번호, 아니면 -1.
      * 격자 밖·막힌 칸·모서리 가로지르기(대각인데 두 직교 이웃 중 하나가 막힘)는 -1입니다.
@@ -220,7 +238,7 @@ export class PortalGraph {
     nodeChunk(node: number): number;
     /** 경계 건너편의 짝 노드(`node ^ 1`). */
     nodePeer(node: number): number;
-    /** 짝 노드로 건너는 비용(10 또는 14). */
+    /** 짝 노드로 건너는 비용(두 노드 칸 사이 한 걸음의 `stepCost`, 칸 비용 1이면 10 또는 14). */
     nodeCrossCost(node: number): number;
     /** 청크 안에서만 걸어 `from`번째 노드에서 `to`번째 노드까지의 최단 비용. 청크 안에서 이어지지 않으면 -1. 처음 물을 때 그 청크의 행렬을 만듭니다. */
     edgeCost(chunk: number, from: number, to: number): number;

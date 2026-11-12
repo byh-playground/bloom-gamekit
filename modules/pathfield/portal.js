@@ -5,7 +5,16 @@
 // 그 위의 목표 보관소와 유동장(FlowField): 목표마다 포털 노드의 추상 거리 D를 게으르게 확정하고(질의한 청크의 노드가 확정되면
 // 멈추는 A*, 다음 질의는 이어서), 질의가 온 청크만 청크 장 F0(노드 씨앗)·F1(이웃 F0 경계 값 이어받기)을 만듭니다.
 // 모든 값은 (목표 칸 집합, 격자 상태)만의 함수라 계산 순서·캐시 폐기·질의 순서가 답을 바꾸지 않습니다.
-import { DIRECTION_COUNT, DIRECTION_DX, DIRECTION_DY, MAX_CHANGED_RECTS, PathGrid, UNREACHED } from './grid.js';
+import {
+    DIRECTION_COST,
+    DIRECTION_COUNT,
+    DIRECTION_DX,
+    DIRECTION_DY,
+    MAX_CHANGED_RECTS,
+    PathGrid,
+    UNREACHED,
+    stepCost,
+} from './grid.js';
 
 const OPTIONS = ['chunkSize', 'portalSpan', 'goalCapacity'];
 const TWO_32 = 4294967296;
@@ -16,13 +25,14 @@ const NODE_SETTLED = 2;
 const FLOW_TOKEN = Symbol('FlowField');
 // PortalGraph의 private 메서드를 FlowField가 부르는 통로(모듈 안에서만 보임). 정적 블록에서 한 번 채웁니다.
 let flowAccess = null;
-// 청크 안 최장 걸음 비용은 64² 칸 · 14 = 57344로 Uint16(0xFFFF는 "다른 성분")에 들어갑니다.
+// 청크 안 최장 걸음 비용(칸 수 · 가장 비싼 걸음)이 Uint16(0xFFFF는 "다른 성분") 아래여야 합니다. 칸 비용이 모두 1이면
+// 64² 칸 · 14 = 57344로 들어가고, 더 비싼 칸이 있으면 생성자가 확인합니다.
 const MAX_CHUNK_SIZE = 64;
 const NO_COMP = 0xffff;
 const NO_EDGE = 0xffff;
 // 칸 방향 비트의 9번째 비트: 열린 칸(갈 방향이 없어도 성분 하나).
 const OPEN_BIT = 0x100;
-// 지역 힙 키 = 비용 · 2^12 + 청크 안 칸(청크 안 칸 < 64² = 2^12, 비용 ≤ 57344라 키 < 2^28, Int32).
+// 지역 힙 키 = 비용 · 2^12 + 청크 안 칸(청크 안 칸 < 64² = 2^12, 비용 < 2^16이라 키 < 2^28, Int32).
 const LOCAL_BITS = 12;
 const LOCAL_MASK = (1 << LOCAL_BITS) - 1;
 const EAST = 0;
@@ -30,8 +40,6 @@ const SOUTH = 1;
 const SOUTH_EAST = 4;
 const SOUTH_WEST = 5;
 const NORTH_EAST = 7;
-const STRAIGHT = 10;
-const DIAGONAL = 14;
 // 청크가 소유하는 경계: 동쪽 변, 남쪽 변, 남동 모서리, 남서 모서리. 나머지 넷(서·북·북서·북동)은 이웃 청크가 소유합니다.
 const BORDER_EAST = 0;
 const BORDER_SOUTH = 1;
@@ -88,6 +96,12 @@ export class PortalGraph {
     #cellComp;
     // 칸마다 청크 안 걸음 방향 비트 + OPEN_BIT(막힌 칸은 0).
     #stepMask;
+    // 청크 안 칸마다 비용(격자의 costOf, 막힌 칸은 0), 자리 = 청크 · S² + 청크 안 칸. 성분을 만들 때 옮겨 적어 청크 안
+    // Dijkstra·비용 행렬이 청크 안 칸 번호로 바로 읽습니다.
+    #chunkCost;
+    // 모든 칸 비용이 1(maxCellCost 1)이면 걸음 비용은 방향만의 함수(stepCost(d, 1, 1) = DIRECTION_COST[d])라 청크 안
+    // Dijkstra가 칸 비용을 읽지 않습니다. 같은 값이고 읽기만 줄입니다.
+    #uniform;
     #compCount;
     // 성분 열쇠 = 청크 · chunkSize² + 청크 안 성분(< 청크 수 · S² ≤ (cols + S − 1)(rows + S − 1) < 2^31, Int32). 합치기용 부모와 전역 번호.
     #compParent;
@@ -95,7 +109,7 @@ export class PortalGraph {
     #borderCap;
     #portalStride;
     #borderPortals;
-    // 노드 n의 칸(n = 포털 · 2 + 쪽, 쪽 0은 경계를 소유한 청크), 포털의 건너는 비용(10|14).
+    // 노드 n의 칸(n = 포털 · 2 + 쪽, 쪽 0은 경계를 소유한 청크), 포털의 건너는 비용(두 칸 사이 한 걸음의 stepCost).
     #nodeCell;
     #portalCost;
     // 노드가 속한 청크와 그 청크 노드 목록에서의 순번.
@@ -188,12 +202,14 @@ export class PortalGraph {
         this.#chunkNodeCap = 4 * this.#borderCap + 4;
         this.#cellComp = new Uint16Array(grid.size).fill(NO_COMP);
         this.#stepMask = new Uint16Array(grid.size);
+        this.#chunkCost = new Uint8Array(this.chunkCount * this.#cellsPerChunk);
+        this.#uniform = grid.maxCellCost === 1;
         this.#compCount = new Uint16Array(this.chunkCount);
         this.#compParent = new Int32Array(this.chunkCount * this.#cellsPerChunk);
         this.#compLabel = new Int32Array(this.chunkCount * this.#cellsPerChunk);
         this.#borderPortals = new Uint16Array(this.chunkCount * BORDER_KINDS);
         this.#nodeCell = new Int32Array(this.nodeCapacity).fill(-1);
-        this.#portalCost = new Uint8Array(this.nodeCapacity / 2);
+        this.#portalCost = new Uint16Array(this.nodeCapacity / 2);
         this.#nodeChunk = new Int32Array(this.nodeCapacity).fill(-1);
         this.#nodeIndex = new Uint16Array(this.nodeCapacity);
         this.#chunkNodes = new Int32Array(this.chunkCount * this.#chunkNodeCap);
@@ -209,12 +225,19 @@ export class PortalGraph {
         // 지역 힙: 칸마다 이웃 8개가 한 번씩 넣을 수 있습니다.
         this.#heap = new Int32Array(this.#cellsPerChunk * DIRECTION_COUNT + 1);
         this.#pairs = new Int32Array(this.#borderCap);
-        // 값의 범위: 추상 최단 경로는 노드를 한 번씩만 지나고 청크 안 구간은 앞뒤 노드가 서로 달라, 청크를 지나는 횟수는
-        // 노드 수의 절반(≤ K · (2B + 2)) 이하입니다. 구간 하나는 청크 안 최단 경로(≤ 14 · S²) + 건너기 14, 첫 구간(목표 칸 →
-        // 노드)은 14 · S² 이하라 D ≤ 14 · (S² + 1) · (K · (2B + 2) + 1). 청크 장 값은 D + 청크 안 두 구간 + 14 이하,
+        // 값의 범위(M = 가장 비싼 걸음, 칸 비용이 모두 1이면 14): 청크 안 최단 경로는 S² · M 아래여야 비용 행렬(Uint16)에
+        // 들어갑니다. 추상 최단 경로는 노드를 한 번씩만 지나고 청크 안 구간은 앞뒤 노드가 서로 달라, 청크를 지나는 횟수는
+        // 노드 수의 절반(≤ K · (2B + 2)) 이하입니다. 구간 하나는 청크 안 최단 경로(≤ M · S²) + 건너기 M, 첫 구간(목표 칸 →
+        // 노드)은 M · S² 이하라 D ≤ M · (S² + 1) · (K · (2B + 2) + 1). 청크 장 값은 D + 청크 안 두 구간 + M 이하,
         // 휴리스틱은 14 · (cols + rows) 이하입니다. 이 합이 Int32 안이고, 추상 힙 키 (D + h) · nodeScale + 번호가 2^53 아래여야 합니다.
-        const D_LIMIT = 14 * (this.#cellsPerChunk + 1) * (this.chunkCount * this.#portalStride + 1),
-            VALUE_LIMIT = D_LIMIT + 14 * (2 * this.#cellsPerChunk + 1) + 14 * (grid.cols + grid.rows);
+        const MAX_STEP = stepCost(SOUTH_EAST, grid.maxCellCost, grid.maxCellCost);
+        if (this.#cellsPerChunk * MAX_STEP >= NO_EDGE) {
+            throw new RangeError(
+                'PortalGraph chunk path costs would not fit 16 bits; use a smaller chunkSize or maxCellCost.',
+            );
+        }
+        const D_LIMIT = MAX_STEP * (this.#cellsPerChunk + 1) * (this.chunkCount * this.#portalStride + 1),
+            VALUE_LIMIT = D_LIMIT + MAX_STEP * (2 * this.#cellsPerChunk + 1) + 14 * (grid.cols + grid.rows);
         let scale = 1;
         while (scale < this.nodeCapacity) {
             scale *= 2;
@@ -382,7 +405,7 @@ export class PortalGraph {
         return node ^ 1;
     }
 
-    /** 노드에서 짝 노드로 건너는 비용(직선 10, 대각 14). */
+    /** 노드에서 짝 노드로 건너는 비용: 두 노드 칸 사이 한 걸음의 `stepCost`(칸 비용이 모두 1이면 직선 10, 대각 14). */
     nodeCrossCost(node) {
         this.prepare();
         return this.#portalCost[node >> 1];
@@ -519,6 +542,8 @@ export class PortalGraph {
             SIZE = this.chunkSize,
             COMP = this.#cellComp,
             MASK = this.#stepMask,
+            COST = this.#chunkCost,
+            COST_BASE = chunk * this.#cellsPerChunk,
             STACK = this.#stack,
             CHUNK_COL = chunk % this.chunkCols,
             COL0 = CHUNK_COL * SIZE,
@@ -533,7 +558,9 @@ export class PortalGraph {
             for (let col = COL0; col <= COL1; col++) {
                 const CELL = row * COLS + col;
                 let mask = 0;
-                if (GRID.isOpen(CELL)) {
+                const CELL_COST = GRID.costOf(CELL);
+                COST[COST_BASE + (row - ROW0) * SIZE + (col - COL0)] = CELL_COST;
+                if (CELL_COST !== 0) {
                     for (let direction = 0; direction < DIRECTION_COUNT; direction++) {
                         const NEXT_COL = col + DIRECTION_DX[direction],
                             NEXT_ROW = row + DIRECTION_DY[direction];
@@ -625,9 +652,11 @@ export class PortalGraph {
             if (COMP[ROW1 * COLS + COL] === NO_COMP) {
                 return;
             }
-            const NEXT = GRID.stepCell(COL, ROW1, kind === BORDER_SOUTH_EAST ? SOUTH_EAST : SOUTH_WEST);
+            const DIRECTION = kind === BORDER_SOUTH_EAST ? SOUTH_EAST : SOUTH_WEST,
+                CELL = ROW1 * COLS + COL,
+                NEXT = GRID.stepCell(COL, ROW1, DIRECTION);
             if (NEXT >= 0) {
-                this.#addPortal(chunk, kind, ROW1 * COLS + COL, NEXT, DIAGONAL);
+                this.#addPortal(chunk, kind, CELL, NEXT, stepCost(DIRECTION, GRID.costOf(CELL), GRID.costOf(NEXT)));
             }
             return;
         }
@@ -657,7 +686,13 @@ export class PortalGraph {
                 for (let piece = runStart; piece < t; piece += SPAN) {
                     const MIDDLE = piece + ((Math.min(SPAN, t - piece) - 1) >> 1),
                         CENTER = EAST_SIDE ? MIDDLE * COLS + COL1 : ROW1 * COLS + MIDDLE;
-                    this.#addPortal(chunk, kind, CENTER, CENTER + STEP, STRAIGHT);
+                    this.#addPortal(
+                        chunk,
+                        kind,
+                        CENTER,
+                        CENTER + STEP,
+                        stepCost(EAST_SIDE ? EAST : SOUTH, GRID.costOf(CENTER), GRID.costOf(CENTER + STEP)),
+                    );
                 }
                 PAIRS[pairCount++] = runA * this.#cellsPerChunk + runB;
                 runStart = -1;
@@ -695,7 +730,7 @@ export class PortalGraph {
                 }
                 if (!linked) {
                     PAIRS[pairCount++] = PAIR;
-                    this.#addPortal(chunk, kind, CELL, NEXT, DIAGONAL);
+                    this.#addPortal(chunk, kind, CELL, NEXT, stepCost(DIRECTION, GRID.costOf(CELL), GRID.costOf(NEXT)));
                 }
             }
         }
@@ -819,6 +854,9 @@ export class PortalGraph {
             NODE_BASE = chunk * this.#chunkNodeCap,
             COMP = this.#cellComp,
             MASK = this.#stepMask,
+            CELL_COST = this.#chunkCost,
+            COST_BASE = chunk * this.#cellsPerChunk,
+            UNIFORM = this.#uniform,
             DIST = this.#localDist,
             CELL_OF = this.#localCells,
             TARGET = this.#targets,
@@ -884,13 +922,18 @@ export class PortalGraph {
                     remaining -= TARGET[AT];
                     TARGET[AT] = 0;
                 }
-                const BITS = MASK[CELL_OF[AT]];
+                const BITS = MASK[CELL_OF[AT]],
+                    AT_COST = CELL_COST[COST_BASE + AT];
                 for (let direction = 0; direction < DIRECTION_COUNT; direction++) {
                     if (!(BITS & (1 << direction))) {
                         continue;
                     }
                     const NEXT_AT = AT + DIRECTION_DX[direction] + DIRECTION_DY[direction] * SIZE,
-                        NEXT_COST = COST + (direction < 4 ? STRAIGHT : DIAGONAL);
+                        NEXT_COST =
+                            COST +
+                            (UNIFORM
+                                ? DIRECTION_COST[direction]
+                                : stepCost(direction, AT_COST, CELL_COST[COST_BASE + NEXT_AT]));
                     if (DIST[NEXT_AT] >= 0 && DIST[NEXT_AT] <= NEXT_COST) {
                         continue;
                     }
@@ -1426,8 +1469,16 @@ export class PortalGraph {
                         continue;
                     }
                     const VALUE = this.#blocks[this.#ensureFar(goal, this.chunkOf(NEXT))][this.#localOf(NEXT)];
-                    if (VALUE !== UNREACHED && VALUE + (direction < 4 ? STRAIGHT : DIAGONAL) < DIST[LOCAL]) {
-                        DIST[LOCAL] = VALUE + (direction < 4 ? STRAIGHT : DIAGONAL);
+                    if (VALUE === UNREACHED) {
+                        continue;
+                    }
+                    const THROUGH =
+                        VALUE +
+                        (this.#uniform
+                            ? DIRECTION_COST[direction]
+                            : stepCost(direction, GRID.costOf(CELL), GRID.costOf(NEXT)));
+                    if (THROUGH < DIST[LOCAL]) {
+                        DIST[LOCAL] = THROUGH;
                     }
                 }
             }
@@ -1460,6 +1511,9 @@ export class PortalGraph {
         const COLS = this.grid.cols,
             SIZE = this.chunkSize,
             MASK = this.#stepMask,
+            CELL_COST = this.#chunkCost,
+            COST_BASE = chunk * this.#cellsPerChunk,
+            UNIFORM = this.#uniform,
             HEAP = this.#fieldHeap,
             POS = this.#fieldPos,
             OFFSET = this.#localOffset,
@@ -1485,13 +1539,18 @@ export class PortalGraph {
                 POS[HEAP[0]] = 0;
                 localSiftDown(HEAP, POS, dist, size, 0);
             }
-            const BITS = MASK[BASE + OFFSET[LOCAL]];
+            const BITS = MASK[BASE + OFFSET[LOCAL]],
+                LOCAL_COST = CELL_COST[COST_BASE + LOCAL];
             for (let direction = 0; direction < DIRECTION_COUNT; direction++) {
                 if (!(BITS & (1 << direction))) {
                     continue;
                 }
                 const NEXT = LOCAL + STEP[direction],
-                    NEXT_COST = COST + (direction < 4 ? STRAIGHT : DIAGONAL);
+                    NEXT_COST =
+                        COST +
+                        (UNIFORM
+                            ? DIRECTION_COST[direction]
+                            : stepCost(direction, LOCAL_COST, CELL_COST[COST_BASE + NEXT]));
                 if (NEXT_COST < dist[NEXT]) {
                     dist[NEXT] = NEXT_COST;
                     if (POS[NEXT] === -1) {
