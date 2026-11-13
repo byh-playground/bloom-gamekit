@@ -3,7 +3,7 @@
 ## 언제 쓰나
 
 - three.js로 3D를 그리는 게임에서 **프레임당 드로우콜·삼각형·프로그램·텍스처 수**를 언제든 읽고 싶을 때(`RenderStats`, DEV-033).
-- 플레이 중 처음 보이는 객체 때문에 셰이더가 **경기 중에 컴파일되지 않게** 로딩 때 미리 컴파일하고 싶을 때(`warmUp`, DEV-032).
+- 플레이 중 처음 보이는 객체 때문에 셰이더 컴파일과 버퍼·텍스처 업로드가 **경기 중에 일어나지 않게** 로딩 때 미리 끝내고 싶을 때(`warmUp`, DEV-032).
 - 입자·안내 표시처럼 **인스턴스마다 투명도가 다르거나 모양이 여러 가지인** 것을 한 번에 그리고 싶을 때(`InstanceLayer`·`mergeShapes`, DEV-034).
 - 선수 부위·장식처럼 **모양이 다르고 따로 움직이는 딱딱한 물체 여럿**을 한 번에 그리고 싶을 때(`RigidBatch`·`PartList`·`mergeColored`, DEV-034).
 
@@ -21,7 +21,7 @@ renderer.render(scene, camera); // + 후처리 패스
 stats.end();
 stats.snapshot().counts.drawCalls; // { mean, p50, p95, max, ... } · 진단 한 줄은 stats.line()
 
-// 로딩 때 한 번: 숨긴 객체까지 플레이와 같은 카메라·조명으로 컴파일
+// 로딩 때 한 번: 숨긴 객체까지 플레이와 같은 카메라·조명으로 컴파일하고 버퍼·텍스처까지 올림(화면에는 남지 않음)
 warmUp(renderer, scene, camera);
 
 // 바닥 안내: 모양 여럿 × 인스턴스 투명도 = 1 draw
@@ -66,7 +66,7 @@ batch.setGlow(0, 0.4); // 이 부위만 emissive 가산(재컴파일 없음)
 | 공개 API                  | 감싸는 three.js 기능                                               | 더하는 것                                                                                   |
 | ------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------- |
 | `RenderStats`             | `renderer.info`(`autoReset = false` + 프레임 시작 `reset`)         | 최근 프레임 링과 요약(debug-tools `FrameMetrics`를 그대로 씁니다)                           |
-| `warmUp`                  | `renderer.compile(scene, camera)`                                  | 숨긴 객체·조명을 잠깐 보이게 했다가 되돌림                                                  |
+| `warmUp`                  | `renderer.compile(scene, camera)` + `renderer.render`              | 숨긴 객체·조명을 켜고 화면 1픽셀에 한 번 그려 버퍼·텍스처까지 올린 뒤 되돌림                |
 | `InstanceLayer`           | `InstancedMesh` + `MeshBasicMaterial`, 인스턴스 색                 | 인스턴스 투명도(`instanceOpacity`)·모양 고르기(`instanceShape`) 셰이더 주입, 쓴 칸만 올리기 |
 | `mergeShapes`             | `BufferGeometry`                                                   | 정점마다 모양 번호(`aShape`)                                                                |
 | `RigidBatch`              | `SkinnedMesh` + `Skeleton`(뼈 행렬 텍스처, 그림자 깊이)            | 물체마다 평평한 뼈 하나, 물체별 emissive 가산(`glowMaterial`·`setGlow`) 셰이더 주입         |
@@ -127,16 +127,33 @@ const cloud = new InstanceLayer(THREE, {
 ## API
 
 - `new RenderStats(renderer, { capacity = 240 })`: `begin()`·`end()`로 한 프레임을 감쌉니다. `snapshot()`은 debug-tools `FrameMetrics.snapshot`(느린 프레임 50ms 이상 3개), `line()`은 진단 한 줄, `metrics`는 그 `FrameMetrics`입니다. 카운터는 `drawCalls`·`triangles`·`programs`(지금까지 만든 프로그램 수)·`textures`입니다. 그림자 패스의 draw도 `drawCalls`에 들어갑니다.
-- `warmUp(renderer, scene, camera)`: 숨긴 객체를 모두 보이게 하고 `camera.updateMatrixWorld()`·`renderer.compile(scene, camera)` 뒤 `finally`에서 숨김을 되돌립니다. 숨긴 것은 플레이 중 보일 것이라고 가정합니다(숨긴 조명이 켜진 변종으로 컴파일됩니다).
-- `new InstanceLayer(THREE, { geometry, capacity, side, opaque, depthTest, order, extend })`: `mesh`(장면에 넣음)·`material`(레이어 소유)·`begin()`·`add(matrix, color, opacity, shape)`·`end()`·`dispose()`. geometry에 `aShape`가 있으면 모양 합본입니다. 넘치는 `add()`는 그리지 않고, 빈 프레임은 `visible = false`입니다. 레이어끼리 같은 geometry를 넘기면 정적 속성을 공유합니다.
+- `warmUp(renderer, scene, camera)`: 숨긴 객체를 모두 보이게 하고(화면 밖 객체도 올리려고 `frustumCulled`도 잠깐 끔) 렌더 타깃을 화면(`null`)으로 두고 scissor를 1픽셀로 줄여 `renderer.compile`·`renderer.render`·`renderer.clear` 뒤, `finally`에서 숨김·`frustumCulled`·렌더 타깃·scissor·`shadowMap.needsUpdate`·`info.render`(그리기·삼각형·점·선 수)를 되돌립니다. 숨긴 것은 플레이 중 보일 것이라고 가정합니다(숨긴 조명이 켜진 변종으로 컴파일됩니다). 소비자가 더 준비할 것(예: 화면 복사 패스)은 `warmUp` 뒤에 자기 코드로 부릅니다.
+- `new InstanceLayer(THREE, { geometry, capacity, side, opaque, depthTest, order, extend })`: `mesh`(장면에 넣음)·`material`(레이어 소유)·`begin()`·`add(matrix, color, opacity, shape)`·`end()`·`dispose()`. geometry에 `aShape`가 있으면 모양 합본입니다. 넘치는 `add()`는 그리지 않고, 빈 프레임은 `visible = false`입니다. 레이어끼리 같은 geometry를 넘기면 정적 속성을 공유합니다. 같은 `extend.key`를 쓰는 레이어끼리는 셰이더 프로그램이 하나로 공유되고, 재질 객체(`MeshBasicMaterial`)만 레이어마다 따로 생깁니다.
 - `mergeShapes(THREE, { 이름: geometry })` → `{ geometry, shapes }`: 위치만 합칩니다(법선·uv 없음, `MeshBasicMaterial` 전용).
 - `new RigidBatch(THREE)`: `root`·`add()`(첫 `mesh()` 전에만)·`bone(i)`·`mesh(geometry, material)`·`setGeometry(mesh, geometry)`·`glowMaterial(material)`·`setGlow(i, value)`·`dispose()`(geometry·뼈 텍스처 해제, 재질은 소비자 소유). `glowMaterial`의 값은 물체 4개당 uniform vec4 하나라 물체 수가 정점 셰이더 uniform 한도 안이어야 합니다.
 - `mergeColored(THREE, [{ geometry, color, matrix, body, uvRect }])`, `new PartList(THREE)`(`body`·`add(geometry, color, { position, rotation, scale, parent, body, uvRect })`·`box`·`cylinder`·`sphere`·`build()`): 정점 색·물체 번호·아틀라스 uv를 구워 합칩니다. 거울 변환(행렬식 < 0)은 감김을 뒤집어 앞면을 지킵니다. `body`·`uvRect`는 모든 도형에 있거나 모두 없어야 합니다.
 - `replaceShaderChunk(source, target, replacement)`: 위 "셰이더 주입".
 
-## warmUp이 하지 않는 것
+## warmUp이 하는 일과 하지 않는 일
 
-`renderer.compile`은 장면의 재질 프로그램만 만듭니다(r170·r180 모두 숨긴 메시도 포함, 조명은 보이는 것만 셈). 그림자 깊이 재질의 프로그램, 텍스처 GPU 업로드, 후처리 렌더 타깃은 만들지 않으므로, 그것들은 로딩 때 한 번 실제로 그려서 준비합니다(DEV-032).
+`renderer.compile`은 장면의 재질 **프로그램만** 만듭니다(r170·r180 모두 숨긴 메시도 포함, 조명은 보이는 것만 셈). geometry 속성·인스턴스 속성·재질 텍스처·뼈 텍스처는 올리지 않습니다. 이것들은 실제로 그릴 때 올라갑니다(r180 소스로 확인, r170도 같은 구조).
+
+| 올라가는 것                                                 | 올라가는 시점(`render`)                                                                                                |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| geometry 속성(인스턴스 속성 포함)·`InstancedMesh`의 행렬·색 | `projectObject` → `WebGLObjects.update` → `WebGLAttributes.update`(처음이면 `createBuffer`가 배열 전체를 `bufferData`) |
+| 인덱스·VAO                                                  | `renderBufferDirect` → `bindingStates.setup`                                                                           |
+| 재질 텍스처·뼈 텍스처                                       | `renderBufferDirect` → `setProgram` → uniform 올리기 → `WebGLTextures.setTexture2D` → `uploadTexture`                  |
+| 그림자 깊이 재질 프로그램·그림자 맵                         | `shadowMap.render`(그림자를 켠 장면)                                                                                   |
+
+`warmUp`은 컴파일 뒤에 이 그리기를 한 번 합니다. 그래서:
+
+- **프로그램 변종이 플레이와 같습니다.** 프로그램 키는 렌더 타깃이 `null`일 때만 `renderer.outputColorSpace`·`renderer.toneMapping`을 씁니다(타깃이 있으면 선형 색 공간·톤 매핑 없음, `WebGLPrograms.getParameters`). 그래서 렌더 타깃이 아니라 화면(`null`)에 그립니다.
+- **화면에 남지 않습니다.** scissor 1픽셀로 줄여 그리고 `renderer.clear()`로 그 1픽셀을 지웁니다. 숨긴 객체가 보이는 프레임이 없고, 왼쪽 아래 1픽셀만 지운 색이 됩니다.
+- **인스턴스 수 0인 `InstanceLayer`도 버퍼 전체가 올라갑니다.** 업로드는 그리기 전 `WebGLObjects.update`에서 일어나고, `count`가 0이면 마지막 `drawArraysInstanced`만 건너뜁니다(`renderInstances`의 `primcount === 0`). 레이어를 따로 준비하지 않아도 됩니다.
+- **화면 밖 객체도 올라갑니다.** 절두체 컬링에 걸리면 `objects.update`를 건너뛰므로 `frustumCulled`를 잠깐 끕니다.
+- `info.render.frame`은 되돌리지 않습니다. 되돌리면 다음 진짜 프레임이 같은 번호가 되어 geometry 갱신을 건너뜁니다(`WebGLObjects.update`의 프레임당 한 번 규칙).
+
+하지 않는 것: 화면 크기에 묶인 렌더 타깃·복사 텍스처(예: 화면 복사 후처리), `renderer.initTexture`로 따로 올려야 하는 장면 밖 텍스처. 이것들은 소비자가 `warmUp` 뒤에 자기 코드로 준비합니다(DEV-032).
 
 ## 그리기 수(DEV-034)
 
@@ -145,4 +162,4 @@ const cloud = new InstanceLayer(THREE, {
 ## 시험과 예제
 
 - 고정 시나리오 `node modules/three-kit/tests/three-kit.e2e.mjs`(core): Node에서 저장소의 three(r186)로 `PartList`·`mergeColored`의 정점 수·물체 번호·거울 감김, 실제 내장 셰이더 주입, 주입 대상 없음 오류, 칸 넘침을 봅니다. GPU를 쓰지 않습니다.
-- 예제: [렌더링 예제의 three.js 탭](../rendering/examples/index.html)(three r180을 CDN에서 받아 넘김). 미리보기 시나리오(`project/tests/previews.mjs`)가 표시 수를 늘려도 2 draw이고 미리 컴파일 뒤 새 프로그램이 없는지 봅니다.
+- 예제: [렌더링 예제의 three.js 탭](../rendering/examples/index.html)(three r180을 CDN에서 받아 넘김). 미리보기 시나리오(`project/tests/previews.mjs`)가 표시 수를 늘려도 2 draw이고 미리 컴파일 뒤 새 프로그램이 없는지, `warmUp` 뒤 숨겨 둔 레이어를 처음 그릴 때 새 버퍼·텍스처 할당이 없는지(`createBuffer`·`bufferData`·`createTexture`·`texStorage2D`·`texImage2D` 호출 수)를 봅니다.

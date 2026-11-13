@@ -48,6 +48,19 @@ function buildScene(three) {
     return { scene: SCENE, batch: BATCH, material: MATERIAL, marks: MARKS, layer: LAYER };
 }
 
+// GPU 자원 할당(버퍼·텍스처 만들기)만 센다. 내용 갱신(bufferSubData·texSubImage2D)은 매 프레임 일어나는 정상 동작이라 세지 않는다.
+function countAllocations(gl) {
+    const COUNTER = { value: 0 };
+    for (const NAME of ['createBuffer', 'bufferData', 'createTexture', 'texStorage2D', 'texImage2D']) {
+        const ORIGINAL = gl[NAME].bind(gl);
+        gl[NAME] = (...args) => {
+            COUNTER.value++;
+            return ORIGINAL(...args);
+        };
+    }
+    return COUNTER;
+}
+
 function countDraws(scene) {
     let draws = 0;
     scene.traverseVisible((object) => {
@@ -67,6 +80,8 @@ export function startThreeKit(canvas, stats) {
         expectedDrawCalls: 0,
         programsAfterWarmUp: 0,
         programs: 0,
+        allocationsAfterWarmUp: 0,
+        allocations: 0,
         instances: FEW,
         pause,
         resume,
@@ -101,12 +116,14 @@ export function startThreeKit(canvas, stats) {
         CAMERA.lookAt(0, 0, 0);
         const PARTS = buildScene(three);
         const RENDER_STATS = new RenderStats(RENDERER);
+        const ALLOCATIONS = countAllocations(RENDERER.getContext());
         warmUp(RENDERER, PARTS.scene, CAMERA);
         world = {
             three,
             renderer: RENDERER,
             camera: CAMERA,
             stats: RENDER_STATS,
+            allocationCounter: ALLOCATIONS,
             ...PARTS,
             matrix: new three.Matrix4(),
             position: new three.Vector3(),
@@ -118,6 +135,7 @@ export function startThreeKit(canvas, stats) {
             last: performance.now(),
         };
         EXAMPLE.programsAfterWarmUp = RENDERER.info.programs.length;
+        EXAMPLE.allocationsAfterWarmUp = ALLOCATIONS.value;
         EXAMPLE.renderer = RENDERER;
         EXAMPLE.ready = true;
         frame = requestAnimationFrame(tick);
@@ -166,10 +184,11 @@ export function startThreeKit(canvas, stats) {
         EXAMPLE.drawCalls = W.renderer.info.render.calls;
         EXAMPLE.expectedDrawCalls = countDraws(W.scene);
         EXAMPLE.programs = W.renderer.info.programs.length;
+        EXAMPLE.allocations = W.allocationCounter.value;
         if (now - lastText > 250) {
             lastText = now;
             EXAMPLE.recentMaxDrawCalls = W.stats.snapshot().counts.drawCalls.max;
-            stats.textContent = `드로우콜 ${EXAMPLE.drawCalls}(코드로 센 값 ${EXAMPLE.expectedDrawCalls}, 최근 최대 ${EXAMPLE.recentMaxDrawCalls}) · 물체 ${BODY_COUNT}개 · 바닥 표시 ${EXAMPLE.instances}개 · 셰이더 프로그램 ${EXAMPLE.programs}(미리 컴파일 ${EXAMPLE.programsAfterWarmUp})`;
+            stats.textContent = `드로우콜 ${EXAMPLE.drawCalls}(코드로 센 값 ${EXAMPLE.expectedDrawCalls}, 최근 최대 ${EXAMPLE.recentMaxDrawCalls}) · 물체 ${BODY_COUNT}개 · 바닥 표시 ${EXAMPLE.instances}개 · 셰이더 프로그램 ${EXAMPLE.programs}(미리 컴파일 ${EXAMPLE.programsAfterWarmUp}) · GPU 할당 ${EXAMPLE.allocations}(미리 준비 ${EXAMPLE.allocationsAfterWarmUp})`;
         }
     }
 

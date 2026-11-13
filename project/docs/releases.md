@@ -1,3 +1,12 @@
+## v0.59.1 (2026-11-13)
+
+three-kit `warmUp`이 셰이더 컴파일뿐 아니라 버퍼·텍스처 업로드까지 로딩 때 끝냅니다(PATCH, 공개 API 모양 그대로). 첫 소비자인 발배구를 모듈로 옮기다 드러났습니다(DEV-032): v0.59.0의 `warmUp`은 숨긴 객체를 켜고 `renderer.compile`만 불러, 숨겨 둔 메시(입자·표시 레이어)의 geometry·인스턴스 버퍼와 텍스처가 경기 중 처음 그려질 때 GPU에 올라갔습니다. 발배구의 옛 구현은 숨긴 객체를 켠 채 한 번 실제로 그려 이 업로드까지 끝냈습니다.
+
+- three.js 소스(GitHub 태그 r180, r170도 같은 구조)로 확인: `renderer.compile`은 프로그램만 만듭니다. 버퍼는 `render`의 `projectObject` → `WebGLObjects.update` → `WebGLAttributes.update`(처음이면 `createBuffer`가 배열 전체를 `bufferData`), 텍스처는 `setProgram`의 uniform 올리기 → `WebGLTextures.setTexture2D`에서 올라갑니다. `InstancedMesh`는 `count`가 0이어도 이 업로드를 하고 마지막 `drawArraysInstanced`만 건너뜁니다(`primcount === 0`). 프로그램 키는 렌더 타깃이 `null`일 때만 `outputColorSpace`·`toneMapping`을 씁니다.
+- `warmUp(renderer, scene, camera)`: 숨긴 객체를 켜고(`frustumCulled`도 잠깐 끔) 렌더 타깃을 화면으로 두고 scissor 1픽셀로 줄여 `compile` 뒤 `render`·`clear` 한 번. `finally`로 숨김·`frustumCulled`·렌더 타깃·scissor·`shadowMap.needsUpdate`·`info.render`의 그리기·삼각형·점·선 수를 되돌려 `RenderStats` 프레임 합계에 섞이지 않습니다. 숨긴 객체가 보이는 프레임은 없고 왼쪽 아래 1픽셀만 지운 색이 됩니다. 인스턴스 수 0인 `InstanceLayer`도 버퍼 전체가 올라가서 레이어 쪽 준비 호출은 없습니다. 옵션·갈래는 늘리지 않았습니다. 소비자 고유 준비(예: 화면 복사 패스)는 `warmUp` 뒤에 자기 코드로 부릅니다.
+- README: `warmUp`이 하는 일·하지 않는 일을 소스 근거와 함께 고치고, 같은 `extend.key`를 쓰는 `InstanceLayer`끼리는 프로그램이 공유되고 재질 객체만 레이어마다 생긴다는 한 줄을 더했습니다(동작 변경 없음).
+- 예제·시험: three.js 탭이 GPU 할당(`createBuffer`·`bufferData`·`createTexture`·`texStorage2D`·`texImage2D`) 수를 보여 주고, 미리보기 시나리오가 `warmUp` 뒤 숨겨 둔 바닥 표시를 처음 그려도(표시 수를 늘려도) 할당이 늘지 않는지 봅니다. 고정 시나리오에 `warmUp`의 상태 복구(오류가 나도)를 더했습니다.
+
 ## v0.59.0 (2026-11-13)
 
 새 모듈(MINOR). three.js로 3D를 그리는 게임(발배구 r180, 와르르냥 r170, 디그모리)이 함께 쓸 코드를 `three-kit`으로 올립니다. 발배구 v0.19.3(`6896477`)의 `render-stats.js`·`view.js`의 `warmUp` 일반 부분·`instanced-effects.js`의 일반 부분·`rigid-batch.js`·`merge-geometry.js`가 출처이고, 기존 모듈의 결과는 바뀌지 않습니다. 발배구 적용은 다음 단계입니다.
