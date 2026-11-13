@@ -180,8 +180,8 @@
                     늘려도 같습니다.
                 </li>
                 <li>
-                    three.js는 예제가 r180을 불러와 넘깁니다. 셰이더는 시작할 때 <code>warmUp</code>으로 미리
-                    컴파일합니다.
+                    three.js는 예제가 r180을 불러와 넘깁니다. 셰이더 컴파일과 버퍼·텍스처 올리기는 시작할 때
+                    <code>warmUp</code>으로 미리 끝냅니다. 처음 보이는 바닥 표시도 GPU 할당이 늘지 않습니다.
                 </li>
             </ul>
         </section>
@@ -12443,19 +12443,50 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
     }
   };
   function warmUp(renderer, scene, camera) {
-    const HIDDEN = [];
+    const UNDO = [];
     scene.traverse((object) => {
       if (!object.visible) {
-        HIDDEN.push(object);
         object.visible = true;
+        UNDO.push(() => object.visible = false);
+      }
+      if (object.frustumCulled) {
+        object.frustumCulled = false;
+        UNDO.push(() => object.frustumCulled = true);
       }
     });
+    const RENDER = renderer.info.render;
+    const COUNTS2 = { calls: RENDER.calls, triangles: RENDER.triangles, points: RENDER.points, lines: RENDER.lines };
+    const TARGET = renderer.getRenderTarget();
+    const FACE = renderer.getActiveCubeFace();
+    const LEVEL = renderer.getActiveMipmapLevel();
+    const SCISSOR = renderer.getScissor({
+      x: 0,
+      y: 0,
+      z: 0,
+      w: 0,
+      copy(box) {
+        [this.x, this.y, this.z, this.w] = [box.x, box.y, box.z, box.w];
+        return this;
+      }
+    });
+    const SCISSOR_TEST = renderer.getScissorTest();
+    const SHADOW_NEEDS_UPDATE = renderer.shadowMap.needsUpdate;
     try {
       camera.updateMatrixWorld();
+      renderer.setRenderTarget(null);
+      renderer.setScissor(0, 0, 1, 1);
+      renderer.setScissorTest(true);
       renderer.compile(scene, camera);
+      renderer.render(scene, camera);
+      renderer.clear();
     } finally {
-      for (const OBJECT of HIDDEN) {
-        OBJECT.visible = false;
+      renderer.setScissor(SCISSOR.x, SCISSOR.y, SCISSOR.z, SCISSOR.w);
+      renderer.setScissorTest(SCISSOR_TEST);
+      renderer.setRenderTarget(TARGET, FACE, LEVEL);
+      renderer.shadowMap.needsUpdate = SHADOW_NEEDS_UPDATE;
+      Object.assign(RENDER, COUNTS2);
+      for (const RESTORE of UNDO) {
+        RESTORE();
       }
     }
   }
@@ -12915,6 +12946,17 @@ ${MAIN}`),
     SCENE.add(LAYER.mesh);
     return { scene: SCENE, batch: BATCH, material: MATERIAL, marks: MARKS, layer: LAYER };
   }
+  function countAllocations(gl) {
+    const COUNTER = { value: 0 };
+    for (const NAME of ["createBuffer", "bufferData", "createTexture", "texStorage2D", "texImage2D"]) {
+      const ORIGINAL = gl[NAME].bind(gl);
+      gl[NAME] = (...args) => {
+        COUNTER.value++;
+        return ORIGINAL(...args);
+      };
+    }
+    return COUNTER;
+  }
   function countDraws(scene) {
     let draws = 0;
     scene.traverseVisible((object) => {
@@ -12933,6 +12975,8 @@ ${MAIN}`),
       expectedDrawCalls: 0,
       programsAfterWarmUp: 0,
       programs: 0,
+      allocationsAfterWarmUp: 0,
+      allocations: 0,
       instances: FEW,
       pause,
       resume,
@@ -12965,12 +13009,14 @@ ${MAIN}`),
       CAMERA.lookAt(0, 0, 0);
       const PARTS = buildScene(three);
       const RENDER_STATS = new RenderStats(RENDERER);
+      const ALLOCATIONS = countAllocations(RENDERER.getContext());
       warmUp(RENDERER, PARTS.scene, CAMERA);
       world = {
         three,
         renderer: RENDERER,
         camera: CAMERA,
         stats: RENDER_STATS,
+        allocationCounter: ALLOCATIONS,
         ...PARTS,
         matrix: new three.Matrix4(),
         position: new three.Vector3(),
@@ -12982,6 +13028,7 @@ ${MAIN}`),
         last: performance.now()
       };
       EXAMPLE.programsAfterWarmUp = RENDERER.info.programs.length;
+      EXAMPLE.allocationsAfterWarmUp = ALLOCATIONS.value;
       EXAMPLE.renderer = RENDERER;
       EXAMPLE.ready = true;
       frame = requestAnimationFrame(tick);
@@ -13028,10 +13075,11 @@ ${MAIN}`),
       EXAMPLE.drawCalls = W2.renderer.info.render.calls;
       EXAMPLE.expectedDrawCalls = countDraws(W2.scene);
       EXAMPLE.programs = W2.renderer.info.programs.length;
+      EXAMPLE.allocations = W2.allocationCounter.value;
       if (now - lastText > 250) {
         lastText = now;
         EXAMPLE.recentMaxDrawCalls = W2.stats.snapshot().counts.drawCalls.max;
-        stats.textContent = `드로우콜 ${EXAMPLE.drawCalls}(코드로 센 값 ${EXAMPLE.expectedDrawCalls}, 최근 최대 ${EXAMPLE.recentMaxDrawCalls}) · 물체 ${BODY_COUNT}개 · 바닥 표시 ${EXAMPLE.instances}개 · 셰이더 프로그램 ${EXAMPLE.programs}(미리 컴파일 ${EXAMPLE.programsAfterWarmUp})`;
+        stats.textContent = `드로우콜 ${EXAMPLE.drawCalls}(코드로 센 값 ${EXAMPLE.expectedDrawCalls}, 최근 최대 ${EXAMPLE.recentMaxDrawCalls}) · 물체 ${BODY_COUNT}개 · 바닥 표시 ${EXAMPLE.instances}개 · 셰이더 프로그램 ${EXAMPLE.programs}(미리 컴파일 ${EXAMPLE.programsAfterWarmUp}) · GPU 할당 ${EXAMPLE.allocations}(미리 준비 ${EXAMPLE.allocationsAfterWarmUp})`;
       }
     }
     function pause() {
