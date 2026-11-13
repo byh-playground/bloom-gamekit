@@ -23,6 +23,8 @@ const SDK_DEPENDENCIES = {
     transport: ['_rollback-shared', 'deterministic', 'save'],
     replay: ['_rollback-shared', 'deterministic'],
     rollback: ['_rollback-shared', 'deterministic'],
+    // RenderStats는 debug-tools FrameMetrics를 소스로 포함합니다. three.js는 게임이 인자로 넘기며 번들에 넣지 않습니다.
+    'three-kit': ['debug-tools'],
 };
 const BUNDLED_PACKAGES = {
     'vector-assets': ['node_modules/animejs/'],

@@ -1,3 +1,14 @@
+## v0.59.0 (2026-11-13)
+
+새 모듈(MINOR). three.js로 3D를 그리는 게임(발배구 r180, 와르르냥 r170, 디그모리)이 함께 쓸 코드를 `three-kit`으로 올립니다. 발배구 v0.19.3(`6896477`)의 `render-stats.js`·`view.js`의 `warmUp` 일반 부분·`instanced-effects.js`의 일반 부분·`rigid-batch.js`·`merge-geometry.js`가 출처이고, 기존 모듈의 결과는 바뀌지 않습니다. 발배구 적용은 다음 단계입니다.
+
+- `RenderStats`(렌더 제출량, debug-tools `FrameMetrics` 소스 포함)·`warmUp`(숨긴 객체 포함 미리 컴파일)·`InstanceLayer`·`mergeShapes`(인스턴스 투명도·모양 고르기)·`RigidBatch`(`SkinnedMesh` 뼈 하나 = 물체 하나)·`PartList`·`mergeColored`·`replaceShaderChunk`.
+- three.js는 import하지 않고 필요한 API의 첫 인자로 받습니다. `dist/three-kit.js`에 three가 없습니다.
+- 셰이더 주입은 `replaceShaderChunk` 하나를 거치고 대상이 없으면 오류입니다. 대상 문자열을 r170·r180(GitHub 태그 소스)·r186(devDependency)에서 확인했습니다.
+- 발배구 원본과 다른 점: `InstanceLayer`가 재질을 만들어 소유(옵션 객체, `createInstanceMaterial` 없음, 모양 합본은 geometry의 `aShape`로 판별), 공 가림 주입은 게임이 `extend: { key, inject }`로 끼움, 레이어 `warm()` 없음(`warmUp`의 `renderer.compile`이 숨긴 메시도 컴파일), `PartList.cylinder`의 x·y·z 기본값 0, 이름의 `Takraw` 접두어 제거.
+- 예제: 렌더링 예제에 "three.js" 탭(three r180을 CDN에서 받아 넘김). 물체 16개 + 바닥 표시 48·480개가 2 draw입니다.
+- 시험: 고정 시나리오 `modules/three-kit/tests/three-kit.e2e.mjs`(core, Node·three r186)와 미리보기 시나리오의 three.js 탭(2 draw, 미리 컴파일 뒤 새 프로그램 0).
+
 ## v0.58.0 (2026-11-12)
 
 공개 API 추가(MINOR). pathfield에 칸 비용을 넣습니다. 쌀콩팡 둑길 평원에서 드러난 한계입니다(AI-009): 길찾기 비용에 물이 없어 유닛이 둑길로 가지 않고 물(이동 배율 0.5)을 직선으로 건넜습니다. 칸 비용을 주지 않는 기존 소비자의 결과는 그대로입니다.

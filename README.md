@@ -50,19 +50,20 @@
 
 ### 입력·표현
 
-| 하려는 일                                         | 모듈                                                                                                     | 바로 보기                                                  | 쓰는 게임                                                          |
-| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------ |
-| 키보드·마우스·터치를 게임 액션으로 바꾼다         | [input](./modules/input/README.md) `ActionState`·`createDOMInput`                                        | [interpolation][p-interp]                                  | rally-frontier, bloom-takraw, yarn-mayhem, meow-tumble 등 8개      |
-| 틱 사이를 부드럽게 그린다(보간)                   | [interpolation](./modules/interpolation/README.md) `PresentationRuntime`·`RenderObject`                  | [interpolation][p-interp] · [frame][p-interp-frame]        | rally-frontier, bloom-takraw, budmori-io, yarn-mayhem 등 8개       |
-| WebGL 2로 도형·스프라이트·벡터를 그린다           | [rendering](./modules/rendering/README.md) `WebGLDevice`·`VectorContext`                                 | [rendering][p-rendering]                                   | rally-frontier, budmori-io, squish-born, yarn-mayhem, bloom-bounko |
-| SVG 원본을 그대로 캐릭터·애니메이션으로 그린다    | [vector-assets](./modules/vector-assets/README.md) `createVectorActor`                                   | [vector-assets][p-vector] · [래스터 비교][p-vector-raster] | rally-frontier, budmori-io, squish-born, yarn-mayhem, bloom-bounko |
-| 게임 시작 때 SVG를 검증·컴파일해 불러온다         | [vector-assets-loader](./modules/vector-assets-loader/README.md) `createVectorAssetLoader`               |                                                            | rally-frontier, budmori-io, squish-born, yarn-mayhem, bloom-bounko |
-| 캐릭터 얼굴에 표정을 얹는다                       | [face](./modules/face/README.md) `FaceOverlay`                                                           | [표정 탭][p-face]                                          | rally-frontier                                                     |
-| 카메라 투영·추적·흔들림, 3D 카메라의 벽 충돌 거리 | [camera](./modules/camera/README.md) `CameraViewport`·`CollisionBoom`                                    |                                                            | rally-frontier, yarn-mayhem, bloom-bounko, meow-tumble             |
-| 타격 이펙트·효과음을 롤백·재확정에도 한 번만 낸다 | [presentation-events](./modules/presentation-events/README.md) `PresentationEventQueue`                  |                                                            | rally-frontier, bloom-takraw, meow-tumble, bloom-digmori           |
-| 월드 위치에 이름표·체력 같은 화면 요소를 붙인다   | [hud](./modules/hud/README.md) `resolveAnchorInto`·`DOMHud`                                              | [interpolation][p-interp]                                  | rally-frontier                                                     |
-| 프레임마다 임시 객체를 안 만들고 재사용한다       | [object-pool](./modules/object-pool/README.md) `ObjectPool`                                              |                                                            | rally-frontier, bloom-takraw, budmori-io                           |
-| 효과음·환경음을 음량·재생 예산 안에서 낸다        | [audio](./modules/audio/README.md) `AudioPlayer` · [합성·출력 예제](./modules/audio/examples/index.html) | [audio][p-audio]                                           | bloom-takraw, yarn-mayhem, bloom-bounko                            |
+| 하려는 일                                                                               | 모듈                                                                                                     | 바로 보기                                                  | 쓰는 게임                                                          |
+| --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------ |
+| 키보드·마우스·터치를 게임 액션으로 바꾼다                                               | [input](./modules/input/README.md) `ActionState`·`createDOMInput`                                        | [interpolation][p-interp]                                  | rally-frontier, bloom-takraw, yarn-mayhem, meow-tumble 등 8개      |
+| 틱 사이를 부드럽게 그린다(보간)                                                         | [interpolation](./modules/interpolation/README.md) `PresentationRuntime`·`RenderObject`                  | [interpolation][p-interp] · [frame][p-interp-frame]        | rally-frontier, bloom-takraw, budmori-io, yarn-mayhem 등 8개       |
+| WebGL 2로 도형·스프라이트·벡터를 그린다                                                 | [rendering](./modules/rendering/README.md) `WebGLDevice`·`VectorContext`                                 | [rendering][p-rendering]                                   | rally-frontier, budmori-io, squish-born, yarn-mayhem, bloom-bounko |
+| SVG 원본을 그대로 캐릭터·애니메이션으로 그린다                                          | [vector-assets](./modules/vector-assets/README.md) `createVectorActor`                                   | [vector-assets][p-vector] · [래스터 비교][p-vector-raster] | rally-frontier, budmori-io, squish-born, yarn-mayhem, bloom-bounko |
+| 게임 시작 때 SVG를 검증·컴파일해 불러온다                                               | [vector-assets-loader](./modules/vector-assets-loader/README.md) `createVectorAssetLoader`               |                                                            | rally-frontier, budmori-io, squish-born, yarn-mayhem, bloom-bounko |
+| 캐릭터 얼굴에 표정을 얹는다                                                             | [face](./modules/face/README.md) `FaceOverlay`                                                           | [표정 탭][p-face]                                          | rally-frontier                                                     |
+| three.js 3D: 드로우콜 읽기·미리 컴파일·인스턴스 투명도·모양이 다른 물체 여럿을 1 draw로 | [three-kit](./modules/three-kit/README.md) `RenderStats`·`warmUp`·`InstanceLayer`·`RigidBatch`           | [three.js 탭][p-three-kit]                                 |                                                                    |
+| 카메라 투영·추적·흔들림, 3D 카메라의 벽 충돌 거리                                       | [camera](./modules/camera/README.md) `CameraViewport`·`CollisionBoom`                                    |                                                            | rally-frontier, yarn-mayhem, bloom-bounko, meow-tumble             |
+| 타격 이펙트·효과음을 롤백·재확정에도 한 번만 낸다                                       | [presentation-events](./modules/presentation-events/README.md) `PresentationEventQueue`                  |                                                            | rally-frontier, bloom-takraw, meow-tumble, bloom-digmori           |
+| 월드 위치에 이름표·체력 같은 화면 요소를 붙인다                                         | [hud](./modules/hud/README.md) `resolveAnchorInto`·`DOMHud`                                              | [interpolation][p-interp]                                  | rally-frontier                                                     |
+| 프레임마다 임시 객체를 안 만들고 재사용한다                                             | [object-pool](./modules/object-pool/README.md) `ObjectPool`                                              |                                                            | rally-frontier, bloom-takraw, budmori-io                           |
+| 효과음·환경음을 음량·재생 예산 안에서 낸다                                              | [audio](./modules/audio/README.md) `AudioPlayer` · [합성·출력 예제](./modules/audio/examples/index.html) | [audio][p-audio]                                           | bloom-takraw, yarn-mayhem, bloom-bounko                            |
 
 ### 화면·운영
 
@@ -97,6 +98,7 @@
 [p-interp-frame]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/interpolation-frame.html
 [p-rendering]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rendering.html
 [p-face]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rendering.html#face
+[p-three-kit]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/rendering.html#three
 [p-vector]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/vector-assets.html
 [p-vector-raster]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/vector-raster-comparison.html
 [p-audio]: https://htmlpreview.github.io/?https://github.com/byh-playground/bloom-gamekit/blob/previews/audio.html
@@ -109,7 +111,7 @@
 ## 그 밖의 문서
 
 - [SDK 전체/분리 API와 이전](./modules/rollback/docs/api-migration.md) · [비활성 참가자·가용성 정책·자동 coordinator 이관](./modules/rollback/README.md#비활성-참가자와-선택형-가용성) · [1:1 방 연결과 재연결](./modules/transport/README.md#11-방-연결과-재연결-createnostrroom)
-- 모듈 소스 예제: [보간](./modules/interpolation/examples/index.html) · [detached 입력 preview](./modules/simloop/examples/input-preview/index.html) · [렌더링(벡터·아틀라스·재질·그라디언트·표정 탭)](./modules/rendering/examples/index.html) · [독립 deadline pump](./modules/rollback/examples/availability/index.html)
+- 모듈 소스 예제: [보간](./modules/interpolation/examples/index.html) · [detached 입력 preview](./modules/simloop/examples/input-preview/index.html) · [렌더링(벡터·아틀라스·재질·그라디언트·표정·three.js 탭)](./modules/rendering/examples/index.html) · [독립 deadline pump](./modules/rollback/examples/availability/index.html)
 - [고정 브라우저 E2E](./project/tests/browser.e2e.mjs) · [별도 보간 벤치마크](./modules/interpolation/scripts/benchmark.mjs) · 모듈별 고정 시나리오 명령은 각 모듈 README에 있습니다.
 
 ## 저장소 구조와 명령

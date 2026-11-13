@@ -29,6 +29,7 @@ const SUITES = {
         'modules/geometry/tests/geometry.e2e.mjs',
         'modules/contact-solver/tests/contact-solver.e2e.mjs',
         'modules/face/tests/face.e2e.mjs',
+        'modules/three-kit/tests/three-kit.e2e.mjs',
         'modules/vector-assets/tests/run-gpu-poses.browser.mjs',
         'modules/vector-assets/tests/run-paint-regions.browser.mjs',
         'modules/rendering/tests/run-texture-atlas.browser.mjs',
