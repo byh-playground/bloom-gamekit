@@ -10,13 +10,14 @@ const COUNTERS = ['drawCalls', 'triangles', 'programs', 'textures'];
 export class RenderStats {
     /**
      * @param {object} renderer three.js WebGLRenderer
-     * @param {{ capacity?: number }} [options] 보관할 최근 프레임 수
+     * @param {{ capacity?: number, stages?: string[], counters?: string[], hitch?: object }} [options]
+     *   보관할 최근 프레임 수, 게임이 같은 프레임에 더 적을 stage·counter 이름(`metrics.stage`·`metrics.count`로 적음), 히치 기준
      */
-    constructor(renderer, { capacity = 240 } = {}) {
+    constructor(renderer, { capacity = 240, stages = [], counters = [], hitch } = {}) {
         this.info = renderer.info;
         this.info.autoReset = false;
-        /** 기록을 담는 debug-tools FrameMetrics. 카운터는 drawCalls·triangles·programs·textures입니다. */
-        this.metrics = new FrameMetrics({ capacity, counters: COUNTERS });
+        /** 기록을 담는 debug-tools FrameMetrics. 카운터는 drawCalls·triangles·programs·textures 뒤에 게임 counters입니다. */
+        this.metrics = new FrameMetrics({ capacity, stages, counters: [...COUNTERS, ...counters], hitch });
     }
 
     /** 프레임 시작: 제출 카운터를 0으로 되돌리고 시간 재기를 시작합니다. 앞 프레임이 end() 없이 끝났으면 먼저 닫습니다. */
@@ -38,9 +39,9 @@ export class RenderStats {
         METRICS.endFrame();
     }
 
-    /** 최근 프레임 요약: intervalMs(프레임 간격), cpuMs(begin~end 구간), counts(제출량), 가장 느린 프레임 3개(50ms 이상). */
+    /** 최근 프레임 요약: intervalMs(프레임 간격), cpuMs(begin~end 구간), counts(제출량), 보관한 히치. */
     snapshot() {
-        return this.metrics.snapshot({ slowFrameMs: 50, slowLimit: 3 });
+        return this.metrics.snapshot();
     }
 
     /** 진단 복사에 넣는 한 줄. */

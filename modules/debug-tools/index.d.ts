@@ -205,8 +205,29 @@ export interface NumericFrameSample {
     stagesMs: Record<string, number>;
     counts: Record<string, number>;
 }
+/** A frame whose interval crossed the hitch rule, copied out of the ring with the frames just before it. */
+export interface NumericFrameHitch extends NumericFrameSample {
+    /** Median of the 15 intervals before this one, or 0 while fewer than 15 were seen. */
+    medianMs: number;
+    /** min(rule.ms, medianMs * rule.medianFactor), or rule.ms without a median. */
+    thresholdMs: number;
+    /** Up to `rule.before` preceding frames, oldest first. */
+    before: NumericFrameSample[];
+}
+export interface FrameHitchRule {
+    /** Retained hitches (0 keeps none). Default 24, at most 256. */
+    capacity: number;
+    /** Absolute interval that always counts. Default 100. */
+    ms: number;
+    /** Interval / median of the last 15 intervals that counts. Default 2.5 (above one dropped frame, at two at 60 or 120 Hz). */
+    medianFactor: number;
+    /** Intervals at or above this are pauses (hidden tab), not hitches, and stay out of the median. Default 1000. */
+    maxMs: number;
+    /** Preceding frames copied with each hitch. Default 3, at most 8. */
+    before: number;
+}
 export interface NumericFrameSnapshot {
-    format: 'bloom numeric frame metrics v1';
+    format: 'bloom numeric frame metrics v2';
     capacity: number;
     retainedFrames: number;
     firstSequence: number;
@@ -217,23 +238,39 @@ export interface NumericFrameSnapshot {
     cpuMs: NumericMetricSummary;
     stagesMs: Record<string, NumericMetricSummary>;
     counts: Record<string, NumericMetricSummary>;
-    slowFrames: NumericFrameSample[];
+    /** Hitches seen since clear(), including ones pushed out of the store. */
+    hitchTotal: number;
+    hitches: NumericFrameHitch[];
     frames: NumericFrameSample[];
 }
 export class FrameMetrics {
-    constructor(options?: { capacity?: number; stages?: string[]; counters?: string[]; now?: () => number });
+    constructor(options?: {
+        capacity?: number;
+        stages?: string[];
+        counters?: string[];
+        now?: () => number;
+        hitch?: Partial<FrameHitchRule>;
+    });
     readonly capacity: number;
     readonly samples: Float64Array;
     readonly current: Float64Array;
     readonly size: number;
     readonly sequence: number;
     readonly active: boolean;
+    readonly hitchRule: Readonly<FrameHitchRule>;
+    readonly hitchTotal: number;
     beginFrame(timestampMs: number): void;
     stage(name: string, durationMs: number): boolean;
     count(name: string, amount?: number): boolean;
     endFrame(): boolean;
+    /** The next beginFrame does not link to the previous frame (hidden tab returning, resume from pause). */
+    skipInterval(): void;
     clear(): void;
-    snapshot(options?: { limit?: number; slowFrameMs?: number; slowLimit?: number }): NumericFrameSnapshot;
+    /** Retained hitches, oldest first. Allocates per call. */
+    hitches(): NumericFrameHitch[];
+    /** Header line, then per hitch one frame line and one `before` line. Zero stages and counters are left out. */
+    hitchText(options?: { limit?: number }): string;
+    snapshot(options?: { limit?: number }): NumericFrameSnapshot;
 }
 
 export interface DebugScene {

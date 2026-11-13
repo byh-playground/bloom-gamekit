@@ -1,3 +1,14 @@
+## v0.61.0 (2026-11-14)
+
+호환되지 않는 변경(MINOR). debug-tools `FrameMetrics`가 튄 프레임(히치)을 링과 따로 보관합니다. 발배구에서 "점프할 때 잠깐 멈춘다"는 제보가 코드 분석으로 확정되지 않아, 사용자 기기에서 튄 프레임의 내역을 잡아 진단 복사로 꺼내려는 것입니다. 게임 미배포라 호환 래퍼 없이 바꿉니다.
+
+- 기록: 간격이 `hitch.ms`(기본 100) 이상이거나 최근 15간격 중앙값의 `hitch.medianFactor`(기본 2.5)배 이상이면(단 `hitch.maxMs` 1000 미만) 그 프레임과 직전 `hitch.before`(기본 3)프레임의 행을 고정 Float64Array 보관함(최근 `hitch.capacity` 24건)에 복사합니다. 링이 돌아도 남습니다. 기록 경로 할당 없음. 기준 근거는 debug-tools README "튄 프레임(히치) 보관".
+- 꺼내기: `hitches()`(객체 배열), `hitchText({limit})`(진단 글용 짧은 줄, 0인 값 생략), `hitchTotal`. 탭 복귀·일시 정지 뒤에는 `skipInterval()`로 다음 간격을 끊습니다.
+- 깨지는 것: `snapshot()`의 `slowFrameMs`·`slowLimit` 옵션과 `slowFrames`를 없애고 `hitches`·`hitchTotal`을 넣었습니다(형식 `bloom numeric frame metrics v2`). 링에서 고르던 느린 프레임은 링이 돌면 사라져 히치 보관이 대신합니다.
+- three-kit `RenderStats`: `stages`·`counters`·`hitch` 옵션으로 게임이 같은 프레임에 단계 시간·입력 수를 더 적을 수 있습니다(`metrics.stage`·`metrics.count`). `snapshot()`은 위 v2 형식입니다.
+- 시험: core 고정 시나리오 `frameMetrics`에 히치 사례(링 4프레임이 여러 바퀴 돈 뒤에도 남음, 직전 3프레임 counter, `skipInterval`·`maxMs` 제외, 텍스트 0 생략)를 더했습니다.
+- 예제: debug-tools 전용 탭이 없어 예제는 바꾸지 않았습니다.
+
 ## v0.60.0 (2026-11-13)
 
 호환되지 않는 변경(MINOR). metrics의 경기 시작과 경기 기록을 한 번호(matchId)로 잇고, 수집 서버의 보내기·조회를 막습니다. 게임 미배포라 호환 래퍼 없이 API를 바로 바꿉니다. 배치 봉투는 schema 3 그대로(필드 추가 없음, 시작 이벤트의 `props.matchId`·`record`는 이벤트 props)라 공개 중인 발배구 빌드의 배치도 그대로 받습니다.
