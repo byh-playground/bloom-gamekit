@@ -101,12 +101,46 @@ CPU·보유 heap의 전후 비교와 재현 명령은 [비용 측정](./docs/cos
 프레임 경로에 객체 샘플·Map 생성·로그·JSON을 만들지 않습니다. 기존 metadata 기반 PerformanceProfiler는 그대로 유지합니다.
 CPU stage는 호출자가 실제 구간과 포함 관계를 소유합니다. 자식과 부모 시간을 합산하지 않습니다. GPU 완료 시간은 측정하지 않습니다.
 
-명시적으로 `snapshot({limit=0, slowFrameMs=50, slowLimit=3})`를 부를 때만 프레임과 mean/p95/max/total을 구성합니다.
+명시적으로 `snapshot({limit=0})`을 부를 때만 프레임과 mean/p95/max/total, 보관한 히치(`hitches`·`hitchTotal`)를 구성합니다.
 intervalMs는 실제 RAF 간격, cpuMs는 begin/end 사이 CPU wall 시간이며 둘을 더하지 않습니다. windowMs는 보유한 양의 RAF 간격 합계입니다.
-slowFrames는 같은 프레임의 stage/count를 보존합니다. 0 stage는 측정하지 않았다는 뜻이 아니므로 상세 측정 활성 여부는 소비자가 함께 표시해야 합니다.
+히치는 같은 프레임의 stage/count를 보존합니다. 0 stage는 측정하지 않았다는 뜻이 아니므로 상세 측정 활성 여부는 소비자가 함께 표시해야 합니다.
 필수 카운터와 상세 계측의 활성 정책·진단 UI·저장은 게임이 소유합니다. clear()는 새 진단 세션을 시작합니다.
 
 RAF 간격은 다음 beginFrame에서 직전 샘플에 확정하므로 느린 구간과 그 구간을 시작한 콜백의 stage/count가 일치합니다. 최신 샘플은 intervalMs=0인 미완료 간격입니다. 콜백 밖의 stage/count는 직전 RAF 구간에 기록하되 cpuMs(콜백 내부)에는 합산하지 않습니다.
+
+## 튄 프레임(히치) 보관
+
+사용자가 "가끔 멈칫한다"고 느낀 뒤 몇십 초 지나 진단을 복사해도 그 프레임이 남아 있게, 간격이 기준을 넘은 프레임만 링과 따로 보관합니다. 소비자는 아무것도 더 부르지 않습니다(위 begin/stage/count/end 그대로).
+
+```js
+// 발배구가 붙일 모양(to-be, 줄임). RenderStats는 three-kit의 FrameMetrics 감싸개입니다.
+this.renderStats = new RenderStats(this.renderer, { stages: ['sim', 'render'], counters: ['jump', 'kick'] });
+// 프레임 루프
+stats.begin();
+stats.metrics.stage('sim', simMs);
+if (jumpedThisFrame) stats.metrics.count('jump');
+stats.metrics.stage('render', renderMs);
+stats.end();
+// 탭이 숨겨졌다 돌아올 때
+document.addEventListener('visibilitychange', () => document.hidden || stats.metrics.skipInterval());
+// 진단 복사
+lines.push(view.renderStats.line(), view.renderStats.metrics.hitchText());
+```
+
+```text
+hitches 2 (kept 2/24) rule >=100ms or >=2.5x median, <1000ms; now t=78.4s
+#2210 t=41.2s 136.7ms (median 16.7) cpu=120 sim=1.1 render=118.4 drawCalls=28 triangles=51234 programs=15 textures=9
+  before #2207 16.7ms sim=1 render=2 drawCalls=28 … | #2208 … | #2209 16.6ms sim=1.2 render=2.1 jump=1 drawCalls=28 …
+```
+
+- 기준(`hitch` 옵션): 간격 ≥ `ms`(기본 100) **또는** 간격 ≥ 최근 15간격 중앙값 × `medianFactor`(기본 2.5), 단 간격 < `maxMs`(기본 1000). 중앙값은 15간격이 모인 뒤부터 씁니다.
+    - 2.5배: 프레임 하나가 빠지면 간격이 2배(60Hz 33ms, 120Hz 16.7ms), 둘이 빠지면 3배(50ms, 25ms)입니다. 그 사이에 두어 화면 주사율과 상관없이 "연속 두 프레임 이상 빠짐"부터 잡고, 흔한 한 프레임 빠짐은 보관함을 채우지 않게 했습니다.
+    - 100ms: 기기 전체가 느려 중앙값이 커진 경우(30fps면 2.5배가 83ms)에도 0.1초 넘는 멈춤은 늘 잡습니다. 절대 기준을 50ms로 두면 30fps 기기의 한 프레임 빠짐(66ms)이 모두 히치가 됩니다.
+    - 1000ms 이상은 탭 숨김·일시 정지로 보고 히치로도, 중앙값에도 넣지 않습니다. 1초보다 짧은 숨김이나 멈춤 화면은 호출 쪽이 `skipInterval()`로 다음 간격을 끊습니다.
+- 간격은 다음 `beginFrame`에서 확정되므로 히치 행은 "그 간격을 시작한 콜백"의 stage/count입니다. cpu가 간격과 비슷하면 콜백 안(게임 코드)이 오래 걸린 것이고, cpu가 작은데 간격만 크면 콜백 밖(GC·합성·GPU 대기·브라우저)입니다.
+- 히치 한 건마다 그 프레임과 직전 `before`(기본 3)프레임의 전체 행을 복사합니다. 입력이 든 프레임과 튄 프레임이 한두 프레임 어긋나도 `before`에서 보입니다. 보관함은 최근 `capacity`(기본 24)건이고 `hitchTotal`은 밀려난 것까지 셉니다. `capacity: 0`이면 보관하지 않습니다.
+- 기록 경로는 할당이 없습니다. 판정은 15칸 Float64Array 삽입 정렬, 보관은 생성 때 잡은 Float64Array에 숫자 복사입니다. `hitches()`(객체 배열)와 `hitchText({limit})`(첫 줄 기준·건수, 한 건 두 줄, 0인 stage·counter 생략)는 부를 때만 할당합니다. `clear()`가 보관함도 비웁니다.
+- 브라우저별로 갈리는 GPU 완료 시간·`PerformanceObserver`(longtask)는 넣지 않았습니다.
 
 ## 주소로 장면 열기 (디버그 호스트)
 

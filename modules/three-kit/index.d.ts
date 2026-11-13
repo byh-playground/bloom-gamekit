@@ -1,4 +1,4 @@
-import type { FrameMetrics, NumericFrameSnapshot } from '../debug-tools/index.js';
+import type { FrameHitchRule, FrameMetrics, NumericFrameSnapshot } from '../debug-tools/index.js';
 
 /** three.js 네임스페이스(`import * as THREE from 'three'`). 모듈은 three를 import하지 않고 이 값을 받습니다. */
 export type Three = any;
@@ -6,7 +6,11 @@ export type Three = any;
 type ThreeObject = any;
 
 export class RenderStats {
-    constructor(renderer: ThreeObject, options?: { capacity?: number });
+    /** `stages`·`counters`는 게임이 같은 프레임에 `metrics.stage`·`metrics.count`로 적을 이름입니다(counters는 기본 넷 뒤). */
+    constructor(
+        renderer: ThreeObject,
+        options?: { capacity?: number; stages?: string[]; counters?: string[]; hitch?: Partial<FrameHitchRule> },
+    );
     readonly metrics: FrameMetrics;
     /** 프레임 시작: renderer.info를 0으로 되돌리고 시간 재기를 시작합니다. */
     begin(): void;
