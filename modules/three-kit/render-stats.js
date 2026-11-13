@@ -57,28 +57,66 @@ export class RenderStats {
 }
 
 /**
- * 플레이 중 처음 보이는 순간에 셰이더 프로그램이 컴파일되지 않도록 로딩 때 한 번 미리 컴파일합니다(DEV-032).
- * 숨긴 객체(visible=false)를 모두 잠깐 보이게 한 뒤 `renderer.compile(scene, camera)`를 부르고, 끝나면(오류가 나도) 숨김을 되돌립니다.
- * 숨긴 조명도 켜져 조명 수가 플레이 때와 같은 변종으로 컴파일됩니다. 숨긴 것은 플레이 중 보일 것이라고 가정합니다.
- * 그림자 깊이 재질의 컴파일과 텍스처 업로드는 `renderer.compile`이 하지 않습니다(README "warmUp이 하지 않는 것").
+ * 플레이 중 처음 보이는 순간에 일어날 GPU 일(셰이더 프로그램 컴파일·링크, geometry·인스턴스 버퍼·뼈 텍스처·재질 텍스처 업로드)을
+ * 로딩 때 미리 끝냅니다(DEV-032). 숨긴 객체(visible=false)를 모두 켜고 화면의 1픽셀만 열어 한 번 실제로 그린 뒤, 그 1픽셀을 지우고
+ * 상태를 되돌립니다. 숨긴 객체가 보이는 프레임은 남지 않습니다. 끝나면(오류가 나도) 숨김·`frustumCulled`·렌더러 상태를 되돌립니다.
+ *
+ * - `renderer.compile`은 프로그램만 만듭니다. 버퍼·텍스처는 실제로 그릴 때 올라가므로 컴파일 뒤에 한 번 그립니다(README "warmUp").
+ * - 렌더 타깃을 `null`(화면)로 두고 그립니다. 타깃에 그리면 출력 색 공간·톤 매핑이 달라 프로그램 변종이 달라집니다.
+ * - 그리기 수·삼각형 수(`renderer.info.render`)는 이 호출 전 값으로 되돌려 `RenderStats` 프레임 합계에 섞이지 않습니다.
+ * - 숨긴 것은 플레이 중 보일 것이라고 가정합니다. 숨긴 조명도 켜져 조명 수가 플레이 때와 같은 변종으로 컴파일됩니다.
+ *   화면 밖 객체도 올립니다(`frustumCulled`를 잠깐 끕니다). 인스턴스 수 0인 `InstanceLayer`도 버퍼 전체가 이때 올라갑니다.
+ * - 화면 왼쪽 아래 1픽셀은 지운 색이 됩니다. 로딩 중 이미 그려 둔 화면이 있어도 다음 프레임이 덮어씁니다.
  * @param {object} renderer three.js WebGLRenderer
  * @param {object} scene three.js Scene
  * @param {object} camera 플레이에 쓰는 카메라
  */
 export function warmUp(renderer, scene, camera) {
-    const HIDDEN = [];
+    const UNDO = [];
     scene.traverse((object) => {
         if (!object.visible) {
-            HIDDEN.push(object);
             object.visible = true;
+            UNDO.push(() => (object.visible = false));
+        }
+        if (object.frustumCulled) {
+            object.frustumCulled = false;
+            UNDO.push(() => (object.frustumCulled = true));
         }
     });
+    const RENDER = renderer.info.render;
+    const COUNTS = { calls: RENDER.calls, triangles: RENDER.triangles, points: RENDER.points, lines: RENDER.lines };
+    const TARGET = renderer.getRenderTarget();
+    const FACE = renderer.getActiveCubeFace();
+    const LEVEL = renderer.getActiveMipmapLevel();
+    // three의 Vector4를 받지 않으려고 copy()만 있는 상자를 넘깁니다(getScissor는 target.copy(scissor)만 부릅니다).
+    const SCISSOR = renderer.getScissor({
+        x: 0,
+        y: 0,
+        z: 0,
+        w: 0,
+        copy(box) {
+            [this.x, this.y, this.z, this.w] = [box.x, box.y, box.z, box.w];
+            return this;
+        },
+    });
+    const SCISSOR_TEST = renderer.getScissorTest();
+    const SHADOW_NEEDS_UPDATE = renderer.shadowMap.needsUpdate;
     try {
         camera.updateMatrixWorld();
+        renderer.setRenderTarget(null);
+        renderer.setScissor(0, 0, 1, 1);
+        renderer.setScissorTest(true);
         renderer.compile(scene, camera);
+        renderer.render(scene, camera);
+        renderer.clear();
     } finally {
-        for (const OBJECT of HIDDEN) {
-            OBJECT.visible = false;
+        renderer.setScissor(SCISSOR.x, SCISSOR.y, SCISSOR.z, SCISSOR.w);
+        renderer.setScissorTest(SCISSOR_TEST);
+        renderer.setRenderTarget(TARGET, FACE, LEVEL);
+        renderer.shadowMap.needsUpdate = SHADOW_NEEDS_UPDATE;
+        Object.assign(RENDER, COUNTS);
+        for (const RESTORE of UNDO) {
+            RESTORE();
         }
     }
 }

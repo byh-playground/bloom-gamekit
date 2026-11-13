@@ -4,7 +4,7 @@
 // (4) 주입 대상이 없는 셰이더는 오류, (5) 인스턴스 레이어의 칸 넘침·빈 프레임을 확인합니다. 그리기·드로우콜은 미리보기 시나리오가 봅니다.
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { InstanceLayer, PartList, RigidBatch, mergeColored, mergeShapes } from '../../../dist/three-kit.js';
+import { InstanceLayer, PartList, RigidBatch, mergeColored, mergeShapes, warmUp } from '../../../dist/three-kit.js';
 
 const SHADER = (name) => ({
     uniforms: {},
@@ -114,4 +114,62 @@ assert.equal(LAYER.mesh.count, 0);
 assert.equal(LAYER.mesh.visible, false);
 LAYER.dispose();
 BATCH.dispose();
+
+// (6) warmUp: 그리는 동안만 숨김·절두체 컬링·scissor를 바꾸고, 오류가 나도 렌더러 상태와 그리기 수를 되돌립니다.
+const HIDDEN_MESH = new THREE.Mesh();
+HIDDEN_MESH.visible = false;
+const WARM_SCENE = new THREE.Scene().add(HIDDEN_MESH);
+const INFO = { render: { frame: 7, calls: 3, triangles: 30, points: 0, lines: 0 } };
+const SEEN = [];
+const FAKE = (fail) => ({
+    info: INFO,
+    shadowMap: { needsUpdate: true },
+    getRenderTarget: () => 'target',
+    getActiveCubeFace: () => 2,
+    getActiveMipmapLevel: () => 1,
+    getScissor: (box) => box.copy({ x: 5, y: 6, z: 7, w: 8 }),
+    getScissorTest: () => false,
+    setRenderTarget: (...args) => SEEN.push(['target', ...args]),
+    setScissor: (...args) => SEEN.push(['scissor', ...args]),
+    setScissorTest: (on) => SEEN.push(['test', on]),
+    compile: () => SEEN.push(['compile', HIDDEN_MESH.visible, HIDDEN_MESH.frustumCulled]),
+    render: () => {
+        SEEN.push(['render']);
+        INFO.render.calls += 4;
+        INFO.render.frame++;
+        if (fail) {
+            throw new Error('render 실패');
+        }
+    },
+    clear: () => SEEN.push(['clear']),
+});
+for (const FAIL of [false, true]) {
+    SEEN.length = 0;
+    const CALL = () => warmUp(FAKE(FAIL), WARM_SCENE, new THREE.PerspectiveCamera());
+    if (FAIL) {
+        assert.throws(CALL, /render 실패/);
+    } else {
+        CALL();
+    }
+    assert.deepEqual(SEEN.slice(0, 4), [
+        ['target', null],
+        ['scissor', 0, 0, 1, 1],
+        ['test', true],
+        ['compile', true, false],
+    ]);
+    assert.deepEqual(SEEN.slice(-3), [
+        ['scissor', 5, 6, 7, 8],
+        ['test', false],
+        ['target', 'target', 2, 1],
+    ]);
+    assert.equal(
+        SEEN.some(([name]) => name === 'clear'),
+        !FAIL,
+        '오류가 없으면 그린 1픽셀을 지웁니다',
+    );
+    assert.equal(HIDDEN_MESH.visible, false);
+    assert.equal(HIDDEN_MESH.frustumCulled, true);
+    assert.deepEqual([INFO.render.calls, INFO.render.triangles], [3, 30], '준비용 그리기는 통계에 남지 않습니다');
+}
+assert.equal(INFO.render.frame, 9, '프레임 번호는 되돌리지 않습니다');
 console.log(`three-kit scenario PASS (three r${THREE.REVISION})`);

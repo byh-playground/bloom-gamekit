@@ -16,7 +16,10 @@ export class RenderStats {
     line(): string;
 }
 
-/** 숨긴 객체를 잠깐 보이게 하고 renderer.compile(scene, camera)를 부른 뒤 숨김을 되돌립니다(로딩 때 한 번). */
+/**
+ * 숨긴 객체를 켜고 화면 1픽셀에 한 번 그려 셰이더 컴파일과 버퍼·텍스처 업로드를 로딩 때 끝냅니다. 숨김·frustumCulled·렌더러 상태
+ * (렌더 타깃·scissor·info.render 그리기 수)는 되돌리고 그린 1픽셀은 지웁니다(로딩 때 한 번).
+ */
 export function warmUp(renderer: ThreeObject, scene: ThreeObject, camera: ThreeObject): void;
 
 export interface InstanceLayerExtension {
