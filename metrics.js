@@ -3,6 +3,10 @@ var SCHEMA_VERSION = 3;
 var EVENT_TYPES = Object.freeze(["session_start", "heartbeat", "event", "session_end"]);
 var MAX_BATCH_BYTES = 1e6;
 var MAX_NAME_LENGTH = 64;
+var MAX_PROPS_BYTES = 2e3;
+var MAX_SUMMARY_BYTES = 8e3;
+var MAX_PLAYERS_BYTES = 4e3;
+var MAX_REPLAY_BYTES = 9e5;
 var VIEWPORT_STEPS = Object.freeze([0, 360, 480, 600, 768, 1024, 1280, 1600, 1920]);
 var MAX_UNLOAD_BYTES = 6e4;
 function isName(value) {
@@ -12,6 +16,7 @@ function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 var BYTES_KEY = "$bytes";
+var SIZE_ENCODER = new TextEncoder();
 function toBase64(bytes) {
   let text = "";
   for (let i = 0; i < bytes.length; i += 32768) {
@@ -28,6 +33,9 @@ function reviveBytes(_key, value) {
   }
   return value;
 }
+function jsonBytes(value) {
+  return SIZE_ENCODER.encode(JSON.stringify(value ?? null, encodeBytes)).byteLength;
+}
 
 // modules/metrics/index.js
 var ENCODER = new TextEncoder();
@@ -36,6 +44,12 @@ var MAX_QUEUED_BATCHES = 20;
 function checkName(value, name) {
   if (!isName(value)) {
     throw new TypeError(`metrics ${name} must be a non-empty string of at most 64 characters.`);
+  }
+}
+function checkBytes(value, limit, name) {
+  const BYTES = jsonBytes(value);
+  if (BYTES > limit) {
+    throw new RangeError(`metrics ${name} is ${BYTES} bytes as JSON; the server accepts at most ${limit}.`);
   }
 }
 function checkInterval(value, name) {
@@ -101,7 +115,7 @@ var MemoryAdapter = class extends MetricsAdapter {
 var MatchRecorder = class {
   /**
    * @param {object} [options]
-   * @param {string} [options.matchId] 멀티플레이는 모든 참가자가 같은 값을 넘깁니다. 서버는 경기당 한 행만 남깁니다.
+   * @param {string} [options.matchId] 멀티플레이는 모든 참가자가 같은 값을 넘깁니다. 서버는 경기당 한 행만 남기고 시작도 하나로 셉니다.
    * @param {string} [options.mode='solo'] 예: 'solo' | 'local' | 'online'
    * @param {unknown} [options.seed=null]
    * @param {unknown[]} [options.players=[]]
@@ -178,6 +192,7 @@ function createMetrics({
   }
   const SESSION_ID = crypto.randomUUID();
   const EVENTS = [];
+  const BEGUN = /* @__PURE__ */ new WeakMap();
   const OUTBOX = [];
   let seq = 0;
   let playedMs = 0;
@@ -198,34 +213,40 @@ function createMetrics({
   function playMs() {
     return playedMs + (visibleSince == null ? 0 : now() - visibleSince);
   }
-  function enqueue(events, matches) {
+  function serialize(events, matches) {
     const BODY = JSON.stringify(
       {
         schemaVersion: SCHEMA_VERSION,
         game,
         build: version,
         sessionId: SESSION_ID,
-        seq: seq++,
+        seq,
         playMs: playMs(),
         events,
         matches
       },
       encodeBytes
     );
-    const BYTES = ENCODER.encode(BODY).byteLength;
-    if (BYTES > MAX_BATCH_BYTES) {
-      throw new RangeError(`metrics batch is ${BYTES} bytes; the server accepts at most ${MAX_BATCH_BYTES}.`);
-    }
-    OUTBOX.push({ body: BODY, bytes: BYTES });
+    return { body: BODY, bytes: ENCODER.encode(BODY).byteLength };
+  }
+  function enqueue(batch) {
+    seq++;
+    OUTBOX.push(batch);
     if (OUTBOX.length > MAX_QUEUED_BATCHES) {
       OUTBOX.shift();
       droppedBatches++;
     }
   }
   function packEvents() {
-    if (EVENTS.length) {
-      enqueue(EVENTS.splice(0), []);
+    if (!EVENTS.length) {
+      return;
     }
+    const BATCH = serialize(EVENTS.splice(0), []);
+    if (BATCH.bytes > MAX_BATCH_BYTES) {
+      droppedBatches++;
+      return;
+    }
+    enqueue(BATCH);
   }
   function push(type, fields) {
     if (disposed) {
@@ -313,7 +334,7 @@ function createMetrics({
     get playMs() {
       return playMs();
     },
-    /** 서버가 계속 실패해 보관 상한을 넘겨 버린 배치 수 */
+    /** 보내지 못하고 버린 배치 수: 서버가 계속 실패해 보관 상한을 넘긴 것과 배치 상한을 넘긴 것 */
     get droppedBatches() {
       return droppedBatches;
     },
@@ -328,26 +349,65 @@ function createMetrics({
       if (!isRecord(props)) {
         throw new TypeError("metrics props must be a JSON object.");
       }
+      checkBytes(props, MAX_PROPS_BYTES, "props");
       push("event", { category, target, action, props });
     },
     /**
-     * 끝난 경기 하나를 바로 보냅니다. `recorder.capture()`의 결정론 기록과 게임이 요약한 summary가 한 행으로 저장됩니다.
-     * @param {MatchRecorder} recorder
+     * 경기 하나를 시작합니다. 시작 이벤트 `match:<mode>:start`(props `{ matchId }`)를 남기고, 같은 matchId로 끝을 남길
+     * recorder를 돌려줍니다. 서버 완주율은 시작을 서로 다른 matchId로 세므로 온라인 참가자 모두 같은 matchId로 부르면
+     * 시작 하나이고, 재경기는 다시 불러 새 matchId입니다.
+     * @param {object} [options] Recorder 생성 옵션(matchId·mode·seed·players, SessionReplayRecorder는 session)
+     * @param {boolean} [options.record=true] false: 끝을 기록하지 않는 모드(관전·연습). 시작은 events에 남지만 완주율에서 빠지고 recordMatch할 수 없습니다.
+     * @param {typeof MatchRecorder} [recorderClass=MatchRecorder] 경기 기록 방식(InputLogRecorder·SessionReplayRecorder 등)
+     * @returns {MatchRecorder}
+     */
+    beginMatch(options = {}, recorderClass = MatchRecorder) {
+      if (disposed) {
+        throw new Error("metrics is disposed.");
+      }
+      if (recorderClass !== MatchRecorder && !(recorderClass?.prototype instanceof MatchRecorder)) {
+        throw new TypeError("metrics beginMatch needs a MatchRecorder class.");
+      }
+      const { record: RECORD = true, ...RECORDER_OPTIONS } = options;
+      if (typeof RECORD !== "boolean") {
+        throw new TypeError("metrics record must be a boolean.");
+      }
+      const RECORDER = new recorderClass(RECORDER_OPTIONS);
+      BEGUN.set(RECORDER, RECORD);
+      push("event", {
+        category: "match",
+        target: RECORDER.mode,
+        action: "start",
+        props: RECORD ? { matchId: RECORDER.matchId } : { matchId: RECORDER.matchId, record: false }
+      });
+      return RECORDER;
+    },
+    /**
+     * `beginMatch`로 시작한 경기의 끝을 바로 보냅니다. `recorder.capture()`의 결정론 기록과 게임이 요약한 summary가
+     * 시작과 같은 matchId로 한 행이 됩니다. 경기 하나에 한 번만 부릅니다. 상한을 넘으면 아무것도 보내지 않고 던집니다.
+     * @param {MatchRecorder} recorder `beginMatch`가 돌려준 것
      * @param {object} [summary]
      */
     recordMatch(recorder, summary = {}) {
       if (disposed) {
         throw new Error("metrics is disposed.");
       }
-      if (!(recorder instanceof MatchRecorder)) {
-        throw new TypeError("metrics recordMatch needs a MatchRecorder.");
+      const RECORD = BEGUN.get(recorder);
+      if (RECORD === void 0) {
+        throw new TypeError("metrics recordMatch needs a recorder from beginMatch, once per match.");
+      }
+      if (!RECORD) {
+        throw new TypeError("metrics recordMatch: this match began with record: false.");
       }
       if (!isRecord(summary)) {
         throw new TypeError("metrics summary must be a JSON object.");
       }
       const { seed: SEED, players: PLAYERS, replay: REPLAY } = recorder.capture();
+      checkBytes(summary, MAX_SUMMARY_BYTES, "summary");
+      checkBytes(PLAYERS, MAX_PLAYERS_BYTES, "players");
+      checkBytes(REPLAY, MAX_REPLAY_BYTES, "replay");
       packEvents();
-      enqueue(
+      const BATCH = serialize(
         [],
         [
           {
@@ -361,6 +421,13 @@ function createMetrics({
           }
         ]
       );
+      if (BATCH.bytes > MAX_BATCH_BYTES) {
+        throw new RangeError(
+          `metrics match batch is ${BATCH.bytes} bytes; the server accepts at most ${MAX_BATCH_BYTES}.`
+        );
+      }
+      BEGUN.delete(recorder);
+      enqueue(BATCH);
       return flush();
     },
     flush,
@@ -383,6 +450,10 @@ function createMetrics({
 export {
   HttpAdapter,
   InputLogRecorder,
+  MAX_PLAYERS_BYTES,
+  MAX_PROPS_BYTES,
+  MAX_REPLAY_BYTES,
+  MAX_SUMMARY_BYTES,
   MatchRecorder,
   MemoryAdapter,
   MetricsAdapter,
