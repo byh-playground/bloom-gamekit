@@ -146,7 +146,8 @@
             <li>기본 주소는 운영 수집 서버입니다. 로컬 <code>npx wrangler dev</code> 주소로 바꿔도 됩니다.</li>
             <li>플레이 시간은 이 탭이 화면에 보이는 동안만 셉니다.</li>
             <li>탭을 숨기거나 페이지를 닫으면 남은 이벤트를 sendBeacon으로 보냅니다.</li>
-            <li>경기를 끝내면 시드와 랠리 입력 기록이 경기 한 행으로 저장됩니다.</li>
+            <li>첫 랠리를 치면 경기가 시작되고, 경기를 끝내면 시드와 랠리 입력 기록이 같은 경기 번호로 저장됩니다.</li>
+            <li>서버 집계는 조회 키가 있어야 읽힙니다. 키는 서버 운영자가 정한 값입니다.</li>
             <li>
                 내 접속 키를 서버의 소유자 목록에 넣으면 그 회선의 지난 세션까지 집계에서 유저가 아니라 '나'로 빠집니다.
                 로컬에서 띄운 페이지는 '개발'입니다.
@@ -159,6 +160,8 @@
             autocomplete="off"
             value="https://bloom-metrics.byh-playground.workers.dev"
         />
+        <label for="metrics-stats-key">조회 키</label>
+        <input id="metrics-stats-key" type="password" autocomplete="off" />
         <button id="metrics-connect">세션 시작</button>
         <p class="notice" id="metrics-notice"></p>
         <button id="metrics-hit" disabled>랠리 치기</button>
@@ -446,11 +449,11 @@
             );
         }
 
-        function newMatch() {
-            match = new InputLogRecorder({ mode: 'solo', seed: SEED });
-            hits = 0;
-            // 서버 /daily의 경기 완주율은 이 시작 이벤트 수 대비 저장된 경기 수입니다.
-            metrics.track('match', 'solo', 'start');
+        // 경기는 첫 랠리(또는 바로 끝내기)에서 시작합니다. beginMatch가 시작 이벤트를 보내고 같은 matchId의 recorder를 돌려줍니다.
+        // 서버 /daily의 경기 완주율은 서로 다른 matchId의 시작 수 대비 저장된 경기 수입니다.
+        function currentMatch() {
+            match ??= metrics.beginMatch({ mode: 'solo', seed: SEED }, InputLogRecorder);
+            return match;
         }
 
         function connect() {
@@ -461,7 +464,8 @@
                 locale: 'ko',
                 adapter: new LoggedHttpAdapter(SERVER.value),
             });
-            newMatch();
+            match = null;
+            hits = 0;
             matches = 0;
             stats = null;
             for (const ID of ['#metrics-hit', '#metrics-end', '#metrics-stats']) {
@@ -472,7 +476,7 @@
         }
 
         function hit() {
-            match.input(hits, { kick: 1 });
+            currentMatch().input(hits, { kick: 1 });
             hits++;
             metrics.track('match', 'rally', 'hit', { hits });
             render();
@@ -480,15 +484,19 @@
 
         async function end() {
             metrics.track('match', 'rally', 'end', { hits });
-            await metrics.recordMatch(match, { hits });
+            const FINISHED = currentMatch();
+            match = null;
+            const RALLIES = hits;
+            hits = 0;
+            await metrics.recordMatch(FINISHED, { hits: RALLIES });
             matches++;
-            newMatch();
             await showStats();
         }
 
-        async function readServer(path) {
+        // 조회(/stats·/daily)는 Authorization 헤더로 조회 키를 보냅니다. 주소에는 싣지 않습니다.
+        async function readServer(path, headers = {}) {
             try {
-                const RESPONSE = await fetch(new URL(path, SERVER.value.replace(/\/?$/, '/')));
+                const RESPONSE = await fetch(new URL(path, SERVER.value.replace(/\/?$/, '/')), { headers });
                 document.querySelector('#metrics-notice').textContent = '';
                 return await RESPONSE.json();
             } catch (error) {
@@ -499,7 +507,9 @@
 
         async function showStats() {
             await metrics.flush();
-            stats = await readServer('stats?game=gamekit-example');
+            stats = await readServer('stats?game=gamekit-example', {
+                Authorization: `Bearer ${document.querySelector('#metrics-stats-key').value}`,
+            });
             render();
         }
 

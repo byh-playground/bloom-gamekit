@@ -1,3 +1,18 @@
+## v0.60.0 (2026-11-13)
+
+호환되지 않는 변경(MINOR). metrics의 경기 시작과 경기 기록을 한 번호(matchId)로 잇고, 수집 서버의 보내기·조회를 막습니다. 게임 미배포라 호환 래퍼 없이 API를 바로 바꿉니다. 배치 봉투는 schema 3 그대로(필드 추가 없음, 시작 이벤트의 `props.matchId`·`record`는 이벤트 props)라 공개 중인 발배구 빌드의 배치도 그대로 받습니다.
+
+- 클라이언트: `metrics.beginMatch(options, Recorder = MatchRecorder)`가 시작 이벤트 `match:<mode>:start`(props `{ matchId }`)를 보내고 recorder를 돌려줍니다. `recordMatch`는 `beginMatch`가 돌려준 recorder만 경기마다 한 번 받습니다(직접 `new`한 recorder는 `TypeError`). 끝을 기록하지 않는 모드는 `beginMatch({ mode, record: false })`. 게임이 보내던 `track('match', mode, 'start')`와 `new …Recorder()`의 두 갈래가 없어집니다.
+- 크기 상한(`protocol.js` 한 곳, 서버도 같은 값): props 2000·summary 8000·players 4000·replay 900000바이트. `track`은 자동 플러시에서 던지지 않습니다(배치 상한을 넘으면 버리고 `droppedBatches`에 셈). seq는 보관함에 넣을 때만 늘어 버린 배치 때문에 구멍이 나지 않습니다.
+- 서버 완주율: 시작을 서로 다른 matchId 수로 셉니다(온라인 두 참가자 같은 경기 1, 재경기 따로, `record: false` 제외, matchId 없는 옛 시작은 하나씩).
+- 서버 보내기 방어: 허용 출처(`ALLOWED_ORIGINS`, Origin 없는 요청 거절, 로컬 개발 출처는 늘 허용)·등록된 게임(`ALLOWED_GAMES`)·회선당 횟수 제한(Workers Rate Limiting, 60초 60배치)·같은 sessionId의 다른 게임 배치 거절(409)·값 크기(400 `size`).
+- 서버 조회: `/stats`·`/daily`는 `Authorization: Bearer <STATS_KEY>`(Worker 비밀값, 일정 시간 비교)가 있어야 하고 비밀값이 없으면 500입니다. `/stats`도 `days`(1~90, 기본 30) 기간만 읽습니다(전에는 전체 기간). 집계 칸에 `bot`(user_agent 로봇 표시, 또는 한 번도 보인 적 없는 세션)을 더했습니다. 우선순위 owner → dev → bot → users.
+- D1 0003: `matches.client_ended_at`(받고도 버리던 `match.t` 원본)과 `matches(session_id)` 인덱스.
+- 문서: README "쓰는 모양"·사용·게임에 붙이는 순서를 새 API로, `index.d.ts`의 `locale` 누락, 저장 열·오류 이름 예시·heartbeat·읽기 행 설명을 바로잡고 "보내기 방어"·"조회 키" 절을 더했습니다.
+- 예제: 지표 탭이 첫 랠리에서 경기를 시작해(전에는 연결 때와 경기 끝마다 시작 이벤트를 보내 시작이 경기의 두 배로 셌음) 조회 키 칸으로 서버 집계를 읽습니다.
+- 시험: 고정 시나리오를 바뀐 흐름(Origin·게임·조회 키·bot·409·`client_ended_at`·`beginMatch` 온라인 시작 1)에 맞췄습니다. 횟수 제한(429)은 시나리오에 넣지 않았습니다.
+- 배포 순서(서버가 게임보다 먼저): `wrangler secret put STATS_KEY` → `d1 migrations apply --remote`(0003) → `wrangler deploy`. 무료 요금제에서 Rate Limiting binding이 배포되는지는 공식 문서에 요금제 제한이 적혀 있지 않아 배포 때 확인합니다.
+
 ## v0.59.1 (2026-11-13)
 
 three-kit `warmUp`이 셰이더 컴파일뿐 아니라 버퍼·텍스처 업로드까지 로딩 때 끝냅니다(PATCH, 공개 API 모양 그대로). 첫 소비자인 발배구를 모듈로 옮기다 드러났습니다(DEV-032): v0.59.0의 `warmUp`은 숨긴 객체를 켜고 `renderer.compile`만 불러, 숨겨 둔 메시(입자·표시 레이어)의 geometry·인스턴스 버퍼와 텍스처가 경기 중 처음 그려질 때 GPU에 올라갔습니다. 발배구의 옛 구현은 숨긴 객체를 켠 채 한 번 실제로 그려 이 업로드까지 끝냈습니다.

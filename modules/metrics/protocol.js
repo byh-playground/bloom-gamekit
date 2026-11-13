@@ -15,6 +15,14 @@ export const MAX_BATCH_EVENTS = 100;
 export const MAX_BATCH_MATCHES = 4;
 /** game·build·sessionId·matchId·category·target·action·mode 문자열 길이 상한 */
 export const MAX_NAME_LENGTH = 64;
+/**
+ * 값 하나의 JSON 크기 상한(UTF-8 바이트, `encodeBytes`로 바꾼 뒤). 클라이언트는 넘기는 순간 던지고 서버는 그 배치를 400으로 거절합니다.
+ * props는 이벤트 하나의 부가 값, summary는 경기 요약, players는 참가자 목록, replay는 결정론 기록입니다.
+ */
+export const MAX_PROPS_BYTES = 2000;
+export const MAX_SUMMARY_BYTES = 8000;
+export const MAX_PLAYERS_BYTES = 4000;
+export const MAX_REPLAY_BYTES = 900000;
 
 /**
  * session_start props의 화면 크기 구간(CSS px). 가로·세로를 각각 이 경계 중 아래쪽으로 내려 'WxH'로 보냅니다.
@@ -36,6 +44,7 @@ export function isRecord(value) {
 }
 
 const BYTES_KEY = '$bytes';
+const SIZE_ENCODER = new TextEncoder();
 
 function toBase64(bytes) {
     let text = '';
@@ -56,4 +65,9 @@ export function reviveBytes(_key, value) {
         return Uint8Array.from(atob(value[BYTES_KEY]), (char) => char.charCodeAt(0));
     }
     return value;
+}
+
+/** 값 하나를 배치에 넣었을 때의 JSON 크기(UTF-8 바이트). 클라이언트·서버가 같은 식으로 상한을 잽니다. undefined는 null로 셉니다. */
+export function jsonBytes(value) {
+    return SIZE_ENCODER.encode(JSON.stringify(value ?? null, encodeBytes)).byteLength;
 }

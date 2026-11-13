@@ -19,6 +19,9 @@ const SERVER_DIR = resolve(ROOT, 'modules/metrics/server');
 const WRANGLER = resolve(ROOT, 'node_modules/wrangler/bin/wrangler.js');
 const GAME = 'gamekit-example';
 const SECRET = 'e2e-secret';
+// 조회 키(운영은 Worker 비밀값 STATS_KEY). 조회는 Authorization 헤더로만 보냅니다.
+const STATS_KEY = 'e2e-stats-key';
+const AUTH = { Authorization: 'Bearer ' + STATS_KEY };
 const STARTED = performance.now();
 // 배포물을 그대로 씁니다(npm run build 필요). dist/metrics.js는 createMetrics 전에는 document를 읽지 않습니다.
 const { reviveBytes: REVIVE_BYTES } = await import(pathToFileURL(resolve(ROOT, 'dist/metrics.js')).href);
@@ -125,21 +128,65 @@ try {
     // 운영과 같은 migrations를 먼저 적용합니다. 동시에 띄우면 두 workerd가 같은 D1 파일을 열다 SQLITE_IOERR로 가끔 실패합니다.
     await runWrangler(['d1', 'migrations', 'apply', 'bloom-metrics', '--local']);
     await runWrangler(
-        ['dev', '--port', String(WORKER_PORT), '--ip', '127.0.0.1', '--var', 'IP_KEY_SECRET:' + SECRET],
+        [
+            'dev',
+            '--port',
+            String(WORKER_PORT),
+            '--ip',
+            '127.0.0.1',
+            '--var',
+            'IP_KEY_SECRET:' + SECRET,
+            '--var',
+            'STATS_KEY:' + STATS_KEY,
+            // 등록된 게임 이름만 받습니다. 시험은 예제 이름과 멀티플레이 확인용 이름을 씁니다.
+            '--var',
+            'ALLOWED_GAMES:gamekit-example,gamekit-e2e',
+        ],
         'Ready on',
     );
     const API = `http://127.0.0.1:${WORKER_PORT}`;
 
-    // 계약 밖 요청은 저장하지 않고 이유와 함께 거절합니다.
-    const POST = (body) => fetch(API + '/batch', { method: 'POST', body });
+    // 계약 밖 요청은 저장하지 않고 이유와 함께 거절합니다. 브라우저는 POST에 Origin을 붙이므로 Node 요청은 흉내 냅니다.
+    const LOCAL_ORIGIN = 'http://127.0.0.1:1';
+    const POST = (body, origin = LOCAL_ORIGIN) =>
+        fetch(API + '/batch', { method: 'POST', headers: origin ? { Origin: origin } : {}, body });
+    const READ = (path, headers = AUTH) => fetch(API + path, { headers });
     assert.deepEqual(
         [(await POST('{"schemaVersion":1}')).status, (await POST('not json')).status],
         [400, 400],
         'schema and JSON errors are rejected',
     );
     assert.equal((await POST('x'.repeat(1000001))).status, 413, 'a batch over 1MB is rejected');
-    assert.equal((await fetch(API + '/stats')).status, 400, 'stats needs a game name');
-    assert.equal((await fetch(`${API}/daily?game=${GAME}&days=91`)).status, 400, 'daily covers at most 90 days');
+    const OTHER_GAME = JSON.stringify({
+        schemaVersion: 3,
+        game: 'not-registered',
+        build: '1',
+        sessionId: 'other-game',
+        seq: 0,
+        playMs: 0,
+        events: [{ type: 'session_start', t: 0 }],
+        matches: [],
+    });
+    assert.deepEqual(
+        [
+            (await POST(OTHER_GAME, null)).status,
+            (await POST(OTHER_GAME, 'https://example.com')).status,
+            (await POST(OTHER_GAME)).status,
+        ],
+        [403, 403, 403],
+        'a request without Origin, from an unlisted origin or for an unregistered game is rejected',
+    );
+    assert.deepEqual(
+        [
+            (await READ('/stats?game=' + GAME, {})).status,
+            (await READ('/daily?game=' + GAME, { Authorization: 'Bearer x' })).status,
+        ],
+        [401, 401],
+        'reading needs the stats key',
+    );
+    assert.equal((await READ('/stats')).status, 400, 'stats needs a game name');
+    assert.equal((await READ(`/daily?game=${GAME}&days=91`)).status, 400, 'daily covers at most 90 days');
+    assert.equal((await READ(`/stats?game=${GAME}&days=0`)).status, 400, 'stats covers 1 to 90 days');
     const PREFLIGHT = await fetch(API + '/batch', { method: 'OPTIONS' });
     assert.equal(PREFLIGHT.headers.get('access-control-allow-origin'), '*', 'CORS preflight answers any game page');
     // 운영에서는 Cloudflare가 CF-Connecting-IP를 붙입니다. 로컬 wrangler dev는 요청 헤더를 그대로 넘깁니다.
@@ -204,6 +251,7 @@ try {
         assert.ok(LAYOUT.overflow <= 0, `${NAME}: no horizontal scroll`);
         assert.ok(LAYOUT.shortest >= 56, `${NAME}: buttons are at least 56px tall`);
 
+        await PAGE.fill('#metrics-stats-key', STATS_KEY);
         await PRESS('#metrics-connect');
         for (let hit = 0; hit < 3; hit++) {
             await PRESS('#metrics-hit');
@@ -217,7 +265,11 @@ try {
         }, `${NAME} match reaches the server as dev`);
         assert.equal(AFTER_MATCH.server.dev.sessions, COUNT, `${NAME}: the server counts this session as dev`);
         assert.equal(AFTER_MATCH.server.users.sessions, 0, `${NAME}: local sessions are not users`);
-        assert.equal(AFTER_MATCH.hits, 0, `${NAME}: a new match starts after the record`);
+        assert.deepEqual(
+            [AFTER_MATCH.hits, AFTER_MATCH.matchId],
+            [0, null],
+            `${NAME}: the next match starts with the next rally`,
+        );
         await PRESS('#metrics-whoami');
         const { whoami: WHOAMI } = await until(async () => {
             const STATE = await OUTPUT();
@@ -336,17 +388,30 @@ try {
         events: [{ type: 'session_start', t: 0 }],
         matches: [],
     };
-    const USER_POST = await fetch(API + '/batch', {
-        method: 'POST',
-        headers: { Origin: 'https://html-classic.itch.zone', 'CF-Connecting-IP': '203.0.113.9' },
-        body: JSON.stringify(USER_BATCH),
-    });
-    assert.equal(USER_POST.status, 200);
-    const BY_AUDIENCE = await (await fetch(`${API}/stats?game=${GAME}`)).json();
+    const SEND_AS = (batch, ip, userAgent = 'Mozilla/5.0 (Linux; Android 14) Chrome/140.0 Mobile Safari/537.36') =>
+        fetch(API + '/batch', {
+            method: 'POST',
+            headers: { Origin: 'https://html-classic.itch.zone', 'CF-Connecting-IP': ip, 'User-Agent': userAgent },
+            body: JSON.stringify(batch),
+        });
+    assert.equal((await SEND_AS(USER_BATCH, '203.0.113.9')).status, 200);
+    // 같은 sessionId로 다른 게임의 배치는 섞이지 않습니다.
+    assert.equal(
+        (await SEND_AS({ ...USER_BATCH, game: 'gamekit-e2e', seq: 1 }, '203.0.113.9')).status,
+        409,
+        'a session belongs to the game of its first batch',
+    );
+    // 로봇: 미리보기 로봇의 user_agent와 한 번도 보인 적 없는(playMs 0) 세션은 저장하되 조회 때 'bot'으로 가릅니다.
+    assert.equal(
+        (await SEND_AS({ ...USER_BATCH, sessionId: 'preview-bot' }, '203.0.113.20', 'Discordbot/2.0')).status,
+        200,
+    );
+    assert.equal((await SEND_AS({ ...USER_BATCH, sessionId: 'never-shown', playMs: 0 }, '203.0.113.21')).status, 200);
+    const BY_AUDIENCE = await (await READ(`/stats?game=${GAME}`)).json();
     assert.deepEqual(
-        ['users', 'owner', 'dev'].map((name) => BY_AUDIENCE[name].sessions),
-        [1, 0, 2],
-        'stats split users and local builds',
+        ['users', 'owner', 'dev', 'bot'].map((name) => BY_AUDIENCE[name].sessions),
+        [1, 0, 2, 2],
+        'stats split users, local builds and bots',
     );
     assert.equal(BY_AUDIENCE.users.avgPlayMs, 2500, 'user play time excludes local builds');
     assert.deepEqual(
@@ -364,7 +429,7 @@ try {
     );
     assert.equal(BY_AUDIENCE.note, 'lines are IP networks, not people');
     const SOLO = DATABASE.prepare(
-        'SELECT mode, seed, summary, replay FROM matches m JOIN sessions s USING (session_id) WHERE s.game = ?',
+        'SELECT mode, seed, summary, replay, client_ended_at FROM matches m JOIN sessions s USING (session_id) WHERE s.game = ?',
     ).all(GAME);
     assert.equal(SOLO.length, 2, 'one D1 row per finished match');
     for (const MATCH of SOLO) {
@@ -372,6 +437,11 @@ try {
         assert.equal(MATCH.mode, 'solo');
         assert.equal(JSON.parse(MATCH.seed), 7, 'the seed from the page address is stored');
         assert.deepEqual(JSON.parse(MATCH.summary), { hits: 3 });
+        assert.equal(
+            MATCH.client_ended_at,
+            Date.parse('2026-11-04T00:00:06Z'),
+            'the client time of the match end is stored',
+        );
         assert.deepEqual(
             REPLAY.frames.map((frame) => frame.tick),
             [0, 1, 2],
@@ -413,11 +483,13 @@ try {
             const PEERS = ['a', 'b'].map(() =>
                 METRICS.createMetrics({ game: 'gamekit-e2e', version: '1', adapter: new METRICS.HttpAdapter(api) }),
             );
+            // 두 참가자가 같은 matchId로 시작하고 끝냅니다. 서버에는 시작 하나·경기 한 행입니다.
             for (const PEER of PEERS) {
-                await PEER.recordMatch(
-                    new METRICS.SessionReplayRecorder({ session: SESSION, matchId: 'online-1', mode: 'online' }),
-                    { winner: 'a' },
+                const RECORDER = PEER.beginMatch(
+                    { session: SESSION, matchId: 'online-1', mode: 'online' },
+                    METRICS.SessionReplayRecorder,
                 );
+                await PEER.recordMatch(RECORDER, { winner: 'a' });
             }
             await Promise.all(PEERS.map((peer) => peer.dispose()));
             return { hash: SESSION.getStateHash(), tick: SESSION.exportReplay().tick };
@@ -425,8 +497,13 @@ try {
         { api: API, adapterSource: createCounterAdapter.toString() },
     );
     await MULTI_CONTEXT.close();
-    const STATS = await (await fetch(`${API}/stats?game=gamekit-e2e`)).json();
+    const STATS = await (await READ('/stats?game=gamekit-e2e')).json();
     assert.deepEqual([STATS.dev.sessions, STATS.dev.matches], [2, 1], 'two peers, one stored match');
+    assert.deepEqual(
+        (await (await READ('/daily?game=gamekit-e2e&days=1')).json()).completion.dev,
+        { online: { starts: 1, matches: 1, rate: 1 } },
+        'two peers starting the same matchId are one start',
+    );
     const ONLINE_ROW = DATABASE.prepare('SELECT mode, seed, players, replay FROM matches WHERE match_id = ?').get(
         'online-1',
     );
@@ -446,20 +523,21 @@ try {
     const WRITER = await openDatabase(false);
     WRITER.prepare('INSERT INTO owners (ip_key, label, added_at) VALUES (?, ?, 0)').run(ownerKey, 'e2e-pc');
     WRITER.close();
-    const FINAL = await (await fetch(`${API}/stats?game=${GAME}`)).json();
+    const FINAL = await (await READ(`/stats?game=${GAME}`)).json();
     assert.deepEqual(
-        ['users', 'owner', 'dev'].map((name) => [FINAL[name].sessions, FINAL[name].matches]),
+        ['users', 'owner', 'dev', 'bot'].map((name) => [FINAL[name].sessions, FINAL[name].matches]),
         [
             [1, 0],
             [2, 2],
             [0, 0],
+            [2, 0],
         ],
         'owner sessions and their matches leave users and dev retroactively',
     );
     assert.deepEqual(FINAL.owner.keys, { 'e2e-pc': 2 }, 'owner sessions are counted per owner line');
     assert.equal(FINAL.users.avgPlayMs, 2500, 'the other line stays a user');
     // 일별 값은 첫 배치를 받은 날(KST)로 묶습니다. 이 실행의 세션은 모두 오늘입니다.
-    const DAILY = await (await fetch(`${API}/daily?game=${GAME}&days=1`)).json();
+    const DAILY = await (await READ(`/daily?game=${GAME}&days=1`)).json();
     const TODAY = new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);
     assert.deepEqual(
         DAILY.daily.map(({ day, audience, sessions, lines, newLines, medianPlayMs, avgWallMs, matches }) => [
@@ -473,24 +551,26 @@ try {
             matches,
         ]),
         [
+            [TODAY, 'bot', 2, 2, 2, 1250, 0, 0],
             [TODAY, 'owner', 2, 1, 1, SESSIONS[0].playMs, SESSIONS[0].wallMs, 2],
             [TODAY, 'users', 1, 1, 1, 2500, 0, 0],
         ],
         'daily rows per KST day and audience',
     );
-    // 기기마다 연결 때와 경기 기록 뒤 새 경기에서 시작 이벤트를 보내고 경기는 하나씩 끝냈습니다.
+    // 기기마다 첫 랠리에서 경기를 하나 시작하고 끝냈습니다.
     assert.deepEqual(
         DAILY.events.owner,
-        { 'match:solo:start': 4, 'match:rally:hit': 6, 'match:rally:end': 2 },
+        { 'match:solo:start': 2, 'match:rally:hit': 6, 'match:rally:end': 2 },
         'event counts come from the stored event arrays',
     );
-    assert.deepEqual(DAILY.completion.owner, { solo: { starts: 4, matches: 2, rate: 0.5 } }, 'completion per mode');
+    assert.deepEqual(DAILY.completion.owner, { solo: { starts: 2, matches: 2, rate: 1 } }, 'completion per mode');
     assert.deepEqual(
         DAILY.contexts,
         {
             users: { locale: { unknown: 1 }, viewport: { unknown: 1 }, touch: { unknown: 1 } },
             owner: { locale: { ko: 2 }, viewport: { '1280x768': 1, '360x768': 1 }, touch: { false: 1, true: 1 } },
             dev: { locale: {}, viewport: {}, touch: {} },
+            bot: { locale: { unknown: 2 }, viewport: { unknown: 2 }, touch: { unknown: 2 } },
         },
         'language, screen and touch come from each session_start; a batch without them is unknown',
     );

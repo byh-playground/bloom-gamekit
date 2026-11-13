@@ -4,27 +4,44 @@ import {
     MAX_BATCH_BYTES,
     MAX_BATCH_EVENTS,
     MAX_BATCH_MATCHES,
+    MAX_PROPS_BYTES,
+    MAX_SUMMARY_BYTES,
+    MAX_PLAYERS_BYTES,
+    MAX_REPLAY_BYTES,
+    jsonBytes,
     isName,
     isRecord,
 } from '../protocol.js';
 
-// 응답에 쿠키·인증이 없으므로 어느 게임 페이지(itch.io 등)에서든 받습니다.
+// 응답에 쿠키가 없습니다. 보내기(/batch)는 허용 출처(ALLOWED_ORIGINS)만 받고, 조회(/stats·/daily)는 Authorization 헤더의 키로 가립니다.
 const CORS = Object.freeze({
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Access-Control-Max-Age': '86400',
 });
 const ENCODER = new TextEncoder();
 const MAX_TEXT_LENGTH = 200;
-// 집계 대상 구분: 소유자 목록(owners)에 있는 접속 키 → 'owner', 로컬·파일에서 띄운 개발 빌드 → 'dev', 나머지 → 'users'.
-// 소유자는 저장된 접속 키로 조회 때 가르므로, 키를 나중에 owners에 넣어도 지난 세션까지 함께 빠집니다.
+// 로컬·파일에서 띄운 개발 빌드의 출처. 보내기 허용과 집계의 'dev' 칸이 같은 규칙입니다(Origin 'null'은 file://·샌드박스 iframe).
+const DEV_HOSTS = Object.freeze(['localhost', '127.0.0.1', '[::1]']);
+// user_agent의 로봇 표시: 검색·미리보기 로봇(Googlebot/·bingbot/·Discordbot/·Slackbot-·TelegramBot (like TwitterBot)·
+// facebookexternalhit 등)과 헤드리스·스크립트 클라이언트. 'cubot'(휴대폰 기종) 같은 이름에 걸리지 않게 'bot' 뒤 구분자를 봅니다.
+const BOT_UA_SQL = ['%bot/%', '%bot-%', '%bot)%', '%crawler%', '%spider%', '%facebookexternalhit%', '%HeadlessChrome%']
+    .concat(['%Lighthouse%', '%PhantomJS%', '%curl/%', '%python%', '%Go-http-client%'])
+    .map((pattern) => `s.user_agent LIKE '${pattern}'`)
+    .join(' OR ');
+// 집계 구분(위가 먼저): 소유자 목록(owners)에 있는 접속 키 → 'owner', 개발 빌드 출처 → 'dev', 로봇 → 'bot', 나머지 → 'users'.
+// 로봇은 user_agent에 로봇 표시가 있거나 없음, 또는 한 번도 보인 적 없는 세션(playMs가 0보다 큰 배치가 없음: 미리 렌더링 등)입니다.
+// playMs는 페이지가 보이는 동안만 늘어서(heartbeat도 보일 때만) 사람이 본 세션은 늦어도 숨김·닫힘 배치에서 0보다 큽니다.
+// 모두 저장된 원본으로 조회 때 가르므로, 키를 나중에 owners에 넣거나 기준을 고쳐도 지난 세션까지 함께 바뀝니다.
 const AUDIENCE_SQL = `CASE
     WHEN o.ip_key IS NOT NULL THEN 'owner'
     WHEN s.origin IS NULL OR s.origin = 'null' OR s.origin LIKE 'http://localhost%' OR s.origin LIKE 'http://127.0.0.1%'
         OR s.origin LIKE 'http://[::1]%' THEN 'dev'
+    WHEN s.user_agent IS NULL OR ${BOT_UA_SQL}
+        OR NOT EXISTS (SELECT 1 FROM batches v WHERE v.session_id = s.session_id AND v.play_ms > 0) THEN 'bot'
     ELSE 'users' END`;
-const AUDIENCES = Object.freeze(['users', 'owner', 'dev']);
+const AUDIENCES = Object.freeze(['users', 'owner', 'dev', 'bot']);
 // 날짜 경계는 한국 시간(KST, UTC+9)입니다. 세션의 날짜는 첫 배치를 받은 날입니다.
 const DAY_SQL = `date(s.started_at / 1000, 'unixepoch', '+9 hours')`;
 const KST_OFFSET_MS = 9 * 3600000;
@@ -91,6 +108,9 @@ function findBatchError(batch) {
         ) {
             return 'event';
         }
+        if (EVENT.props !== undefined && jsonBytes(EVENT.props) > MAX_PROPS_BYTES) {
+            return 'size';
+        }
     }
     for (const MATCH of MATCHES) {
         if (
@@ -101,6 +121,13 @@ function findBatchError(batch) {
             !isRecord(MATCH.summary)
         ) {
             return 'match';
+        }
+        if (
+            jsonBytes(MATCH.summary) > MAX_SUMMARY_BYTES ||
+            jsonBytes(MATCH.players) > MAX_PLAYERS_BYTES ||
+            jsonBytes(MATCH.replay) > MAX_REPLAY_BYTES
+        ) {
+            return 'size';
         }
     }
     return null;
@@ -157,7 +184,47 @@ async function readConnection(request, env) {
     };
 }
 
+/** 쉼표로 나눈 변수 값(wrangler.toml [vars]) → 이름 집합 */
+function listOf(value) {
+    return new Set(
+        String(value ?? '')
+            .split(',')
+            .map((item) => item.trim())
+            .filter(Boolean),
+    );
+}
+
+/**
+ * 보내기를 받을 출처: ALLOWED_ORIGINS(정확한 출처 문자열)와 개발 빌드(http의 localhost·127.0.0.1·[::1], 'null').
+ * 브라우저는 POST에 Origin을 늘 붙이고(fetch·keepalive·sendBeacon 모두, Fetch 표준 "append a request Origin header")
+ * 페이지가 바꿀 수 없으므로, Origin이 없는 요청은 브라우저 밖(스크립트·봇)이라 받지 않습니다.
+ * 브라우저 밖에서는 Origin을 흉내 낼 수 있으므로 인증이 아니라 다른 사이트 페이지가 보내는 것을 막는 정도입니다.
+ */
+function isAllowedOrigin(origin, env) {
+    if (origin === null) {
+        return false;
+    }
+    if (origin === 'null' || listOf(env.ALLOWED_ORIGINS).has(origin)) {
+        return true;
+    }
+    try {
+        const URL_VALUE = new URL(origin);
+        return URL_VALUE.protocol === 'http:' && DEV_HOSTS.includes(URL_VALUE.hostname);
+    } catch {
+        return false;
+    }
+}
+
 async function receiveBatch(request, env) {
+    if (!isAllowedOrigin(request.headers.get('Origin'), env)) {
+        return reply(403, { error: 'origin' });
+    }
+    const CONNECTION = await readConnection(request, env);
+    // 회선(접속 키)마다 횟수 제한(wrangler.toml [[ratelimits]], Cloudflare 위치마다 근사치). 정상 게임은 분당 약 2배치입니다.
+    const { success: WITHIN_LIMIT } = await env.BATCH_LIMIT.limit({ key: CONNECTION.ipKey ?? 'no-ip' });
+    if (!WITHIN_LIMIT) {
+        return reply(429, { error: 'rate' });
+    }
     const DECLARED = Number(request.headers.get('Content-Length'));
     if (DECLARED > MAX_BATCH_BYTES) {
         return reply(413, { error: 'too-large' });
@@ -176,11 +243,15 @@ async function receiveBatch(request, env) {
     if (ERROR) {
         return reply(400, { error: ERROR });
     }
-    const RECEIVED_AT = Date.now();
     const { game: GAME, build: BUILD, sessionId: SESSION_ID } = batch;
-    const CONNECTION = await readConnection(request, env);
+    if (!listOf(env.ALLOWED_GAMES).has(GAME)) {
+        return reply(403, { error: 'game' });
+    }
+    const RECEIVED_AT = Date.now();
     // 받은 원본만 저장합니다(README "수집 서버"). 세션은 첫 배치의 접속 정보 1행, 배치는 이벤트가 없어도 1행,
-    // 경기마다 1행. 같은 배치를 다시 받아도 결과가 같습니다.
+    // 경기마다 1행. 같은 배치를 다시 받아도 결과가 같습니다. 배치·경기는 세션의 game이 이 배치의 game일 때만 넣고
+    // (같은 sessionId로 다른 게임이 섞이지 않게), 마지막 문장이 세션의 game을 읽어 거절 여부를 알려 줍니다. D1 batch는 한 트랜잭션입니다.
+    const SAME_GAME = `(SELECT game FROM sessions WHERE session_id = ?1) = ?2`;
     const STATEMENTS = [
         env.DB.prepare(
             `INSERT OR IGNORE INTO sessions
@@ -201,28 +272,37 @@ async function receiveBatch(request, env) {
             CONNECTION.origin,
         ),
         env.DB.prepare(
-            `INSERT OR IGNORE INTO batches (session_id, seq, received_at, play_ms, events) VALUES (?1, ?2, ?3, ?4, ?5)`,
-        ).bind(SESSION_ID, batch.seq, RECEIVED_AT, batch.playMs, JSON.stringify(batch.events)),
+            `INSERT OR IGNORE INTO batches (session_id, seq, received_at, play_ms, events)
+             SELECT ?1, ?3, ?4, ?5, ?6 WHERE ${SAME_GAME}`,
+        ).bind(SESSION_ID, GAME, batch.seq, RECEIVED_AT, batch.playMs, JSON.stringify(batch.events)),
     ];
     for (const MATCH of batch.matches) {
         // 멀티플레이는 참가자마다 같은 matchId로 보냅니다. 먼저 도착한 하나만 남깁니다.
+        // client_ended_at은 클라이언트가 recordMatch한 시각(match.t, 클라이언트 시계) 원본입니다.
         STATEMENTS.push(
             env.DB.prepare(
-                `INSERT OR IGNORE INTO matches (match_id, session_id, mode, seed, players, summary, replay, recorded_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
+                `INSERT OR IGNORE INTO matches
+                     (match_id, session_id, mode, seed, players, summary, replay, recorded_at, client_ended_at)
+                 SELECT ?3, ?1, ?4, ?5, ?6, ?7, ?8, ?9, ?10 WHERE ${SAME_GAME}`,
             ).bind(
-                MATCH.matchId,
                 SESSION_ID,
+                GAME,
+                MATCH.matchId,
                 MATCH.mode,
                 JSON.stringify(MATCH.seed ?? null),
                 JSON.stringify(MATCH.players),
                 JSON.stringify(MATCH.summary),
                 JSON.stringify(MATCH.replay ?? null),
                 RECEIVED_AT,
+                Number.isFinite(MATCH.t) ? MATCH.t : null,
             ),
         );
     }
-    await env.DB.batch(STATEMENTS);
+    STATEMENTS.push(env.DB.prepare('SELECT game FROM sessions WHERE session_id = ?1').bind(SESSION_ID));
+    const RESULTS = await env.DB.batch(STATEMENTS);
+    if (RESULTS.at(-1).results[0]?.game !== GAME) {
+        return reply(409, { error: 'session-game' });
+    }
     return reply(200, { ok: true });
 }
 
@@ -230,6 +310,30 @@ function readIdentity(url) {
     const GAME = url.searchParams.get('game');
     const BUILD = url.searchParams.get('build');
     return isName(GAME) && (BUILD === null || isName(BUILD)) ? { game: GAME, build: BUILD } : null;
+}
+
+/** 조회 기간: 최근 days일(KST, 오늘 포함, 1~90, 기본 30). 맞지 않으면 null. since는 그 첫날 0시(KST)의 epoch ms입니다. */
+function readRange(url) {
+    const DAYS = Number(url.searchParams.get('days') ?? 30);
+    if (!Number.isSafeInteger(DAYS) || DAYS < 1 || DAYS > MAX_DAYS) {
+        return null;
+    }
+    const TODAY = Math.floor((Date.now() + KST_OFFSET_MS) / DAY_MS);
+    return { days: DAYS, since: (TODAY - DAYS + 1) * DAY_MS - KST_OFFSET_MS };
+}
+
+async function digestOf(text) {
+    return crypto.subtle.digest('SHA-256', ENCODER.encode(text));
+}
+
+/** `Authorization: Bearer <STATS_KEY>`인지. 길이가 같은 해시끼리 일정 시간 비교(Workers의 timingSafeEqual)합니다. */
+async function hasStatsKey(request, env) {
+    const TOKEN = /^Bearer (.+)$/.exec(request.headers.get('Authorization') ?? '')?.[1];
+    if (TOKEN === undefined) {
+        return false;
+    }
+    const [GIVEN, EXPECTED] = await Promise.all([digestOf(TOKEN), digestOf(env.STATS_KEY)]);
+    return crypto.subtle.timingSafeEqual(GIVEN, EXPECTED);
 }
 
 /** 구분마다 그 구분의 행으로 값을 만듭니다. 행이 없는 구분도 빈 값으로 채웁니다. */
@@ -265,8 +369,12 @@ async function readStats(url, env) {
     if (!IDENTITY) {
         return reply(400, { error: 'identity' });
     }
-    // 경기는 그 경기를 처음 보낸 세션의 구분을 따릅니다. 재방문 회선은 서로 다른 날(KST) 2일 이상 온 회선입니다.
-    const [SESSIONS, LINES, MATCHES, OWNERS] = await queryInRange(env, IDENTITY, 0, [
+    const RANGE = readRange(url);
+    if (!RANGE) {
+        return reply(400, { error: 'days' });
+    }
+    // 경기는 그 경기를 처음 보낸 세션의 구분을 따릅니다. 재방문 회선은 기간 안 서로 다른 날(KST) 2일 이상 온 회선입니다.
+    const [SESSIONS, LINES, MATCHES, OWNERS] = await queryInRange(env, IDENTITY, RANGE.since, [
         ` SELECT audience, COUNT(*) AS sessions, AVG(play_ms) AS avgPlayMs, AVG(wall_ms) AS avgWallMs
          FROM per_session GROUP BY audience`,
         ` SELECT audience, COUNT(*) AS lines, SUM(days >= 2) AS returningLines FROM (
@@ -281,6 +389,8 @@ async function readStats(url, env) {
     const BODY = {
         game: IDENTITY.game,
         build: IDENTITY.build,
+        days: RANGE.days,
+        since: RANGE.since,
         note: LINES_NOTE,
         ...byAudience(SESSIONS.results, ([row]) => ({
             sessions: row?.sessions ?? 0,
@@ -302,13 +412,18 @@ async function readStats(url, env) {
     return reply(200, BODY);
 }
 
-/** 모드별 완주율: 저장된 경기 수 / 'match:<mode>:start' 이벤트 수. 시작 이벤트가 없으면 rate는 null입니다. */
-function readCompletion(events, matches) {
+/**
+ * 모드별 완주율: 저장된 경기 수 / 시작 수. 시작은 'match:<mode>:start' 이벤트의 서로 다른 props.matchId 수이고
+ * (온라인 두 참가자의 같은 경기는 1), `record: false` 시작은 빼며, matchId가 없는 옛 빌드의 시작은 하나씩 셉니다.
+ * 기록된 경기만 있고 시작이 없으면 rate는 null입니다.
+ */
+function readCompletion(rows, matches) {
     const STARTS = {};
-    for (const [NAME, COUNT] of Object.entries(events)) {
-        const MODE = NAME.match(/^match:(.+):start$/)?.[1];
-        if (MODE) {
-            STARTS[MODE] = COUNT;
+    for (const ROW of rows) {
+        const MODE = ROW.starts === null ? null : ROW.name.match(/^match:(.+):start$/)?.[1];
+        // record: false 시작만 있는 모드(관전·연습)는 시작 0이라 완주율 표에 넣지 않습니다.
+        if (MODE && ROW.starts > 0) {
+            STARTS[MODE] = ROW.starts;
         }
     }
     const MODES = [...new Set([...Object.keys(STARTS), ...Object.keys(matches)])].sort();
@@ -329,12 +444,11 @@ async function readDaily(url, env) {
     if (!IDENTITY) {
         return reply(400, { error: 'identity' });
     }
-    const DAYS = Number(url.searchParams.get('days') ?? 30);
-    if (!Number.isSafeInteger(DAYS) || DAYS < 1 || DAYS > MAX_DAYS) {
+    const RANGE = readRange(url);
+    if (!RANGE) {
         return reply(400, { error: 'days' });
     }
-    const TODAY = Math.floor((Date.now() + KST_OFFSET_MS) / DAY_MS);
-    const SINCE = (TODAY - DAYS + 1) * DAY_MS - KST_OFFSET_MS;
+    const { days: DAYS, since: SINCE } = RANGE;
     const [DAILY, COUNTRIES, EVENTS, MODES, CONTEXTS] = await queryInRange(env, IDENTITY, SINCE, [
         `, first_seen AS (
              SELECT ${AUDIENCE_SQL} AS audience, s.ip_key, MIN(${DAY_SQL}) AS day
@@ -356,10 +470,19 @@ async function readDaily(url, env) {
          FROM summary LEFT JOIN new_lines USING (day, audience) LEFT JOIN day_matches USING (day, audience)
          ORDER BY day, audience`,
         ` SELECT audience, country, COUNT(*) AS sessions FROM in_range GROUP BY audience, country`,
-        // 이벤트 하나하나를 펼쳐 셉니다. 경기 시작은 게임이 track('match', <mode>, 'start')로 보냅니다.
-        ` SELECT p.audience, ${EVENT_NAME_SQL} AS name, COUNT(*) AS count
-         FROM in_range p JOIN batches b ON b.session_id = p.session_id, json_each(b.events) e
-         WHERE json_extract(e.value, '$.type') = 'event' GROUP BY p.audience, name`,
+        // 이벤트 하나하나를 펼쳐 셉니다(json_each 한 번). 경기 시작(beginMatch가 보내는 match:<mode>:start)은 같은 줄에
+        // 완주율의 시작 수(readCompletion)를 함께 셉니다: 서로 다른 matchId + matchId 없는 옛 시작, record: false 제외.
+        `, flat AS (
+             SELECT p.audience, ${EVENT_NAME_SQL} AS name,
+                    json_extract(e.value, '$.category') = 'match' AND json_extract(e.value, '$.action') = 'start' AS is_start,
+                    json_extract(e.value, '$.props.matchId') AS match_id,
+                    json_extract(e.value, '$.props.record') IS NOT 0 AS counted
+             FROM in_range p JOIN batches b ON b.session_id = p.session_id, json_each(b.events) e
+             WHERE json_extract(e.value, '$.type') = 'event')
+         SELECT audience, name, COUNT(*) AS count,
+                CASE WHEN MAX(is_start) THEN COUNT(DISTINCT CASE WHEN counted THEN match_id END)
+                    + SUM(counted AND match_id IS NULL) END AS starts
+         FROM flat GROUP BY audience, name`,
         ` SELECT p.audience, m.mode, COUNT(*) AS matches FROM matches m JOIN in_range p ON p.session_id = m.session_id
          GROUP BY p.audience, m.mode`,
         // 세션의 첫 배치(seq 0) 첫 이벤트가 session_start입니다. 기본키로 세션마다 한 행만 읽습니다.
@@ -398,7 +521,13 @@ async function readDaily(url, env) {
         ),
         events: EVENT_COUNTS,
         completion: Object.fromEntries(
-            AUDIENCES.map((audience) => [audience, readCompletion(EVENT_COUNTS[audience], MATCH_COUNTS[audience])]),
+            AUDIENCES.map((audience) => [
+                audience,
+                readCompletion(
+                    EVENTS.results.filter((row) => row.audience === audience),
+                    MATCH_COUNTS[audience],
+                ),
+            ]),
         ),
     });
 }
@@ -432,11 +561,16 @@ export default {
         if (URL_VALUE.pathname === '/batch' && request.method === 'POST') {
             return receiveBatch(request, env);
         }
-        if (URL_VALUE.pathname === '/stats' && request.method === 'GET') {
-            return readStats(URL_VALUE, env);
-        }
-        if (URL_VALUE.pathname === '/daily' && request.method === 'GET') {
-            return readDaily(URL_VALUE, env);
+        const READ = { '/stats': readStats, '/daily': readDaily }[URL_VALUE.pathname];
+        if (READ && request.method === 'GET') {
+            // 조회 키가 설정되지 않은 배포는 열어 두지 않고 거절합니다.
+            if (!env.STATS_KEY) {
+                return reply(500, { error: 'stats-key' });
+            }
+            if (!(await hasStatsKey(request, env))) {
+                return reply(401, { error: 'unauthorized' });
+            }
+            return READ(URL_VALUE, env);
         }
         if (URL_VALUE.pathname === '/whoami' && request.method === 'GET') {
             return readWhoami(request, env);

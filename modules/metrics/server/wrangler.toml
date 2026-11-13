@@ -10,3 +10,19 @@ database_name = "bloom-metrics"
 database_id = "0f0db294-6c6e-44f0-b39a-d6e297f48e0d"
 # D1 표 변경은 번호 붙은 파일로만 합니다(`wrangler d1 migrations create/apply`).
 migrations_dir = "migrations"
+
+# 보내기(POST /batch)를 받는 조건. 쉼표로 나눈 목록이고 바꾼 뒤 deploy로 반영합니다(README "보내기 방어").
+# 출처는 정확한 문자열입니다. 로컬 개발 빌드(http의 localhost·127.0.0.1·[::1], Origin 'null')는 목록 없이 늘 받습니다.
+[vars]
+ALLOWED_ORIGINS = "https://byh-playground.github.io,https://htmlpreview.github.io,https://html-classic.itch.zone"
+ALLOWED_GAMES = "bloom-takraw,gamekit-example,gamekit-deploy-check"
+
+# 회선(접속 키)마다 60초에 60배치. 정상 게임은 분당 약 2배치(heartbeat 30초 + 이벤트 플러시)입니다.
+# Cloudflare 위치마다 따로 세는 근사치입니다. namespace_id는 이 계정 안에서 이 제한을 가리키는 번호입니다.
+[[ratelimits]]
+name = "BATCH_LIMIT"
+namespace_id = "1001"
+
+  [ratelimits.simple]
+  limit = 60
+  period = 60
