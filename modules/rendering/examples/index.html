@@ -78,6 +78,7 @@
             <button id="tab-materials" type="button" role="tab" aria-controls="panel-materials">재질</button>
             <button id="tab-paint" type="button" role="tab" aria-controls="panel-paint">그라디언트</button>
             <button id="tab-face" type="button" role="tab" aria-controls="panel-face">표정</button>
+            <button id="tab-three" type="button" role="tab" aria-controls="panel-three">three.js</button>
         </div>
 
         <section id="panel-vector" role="tabpanel" aria-labelledby="tab-vector" hidden>
@@ -159,6 +160,29 @@
                 <li>왼쪽 얼굴 13개를 눌러 오른쪽에서 크게 봅니다.</li>
                 <li>작은 얼굴은 한 번 구워 둔 이미지로, 이미지가 늘어나는 큰 얼굴은 경로로 그립니다.</li>
                 <li>몸이 눌리거나 기울면 점 세 개를 따라 얼굴이 같이 움직입니다.</li>
+            </ul>
+        </section>
+        <section id="panel-three" role="tabpanel" aria-labelledby="tab-three" hidden>
+            <p>three.js 장면에서 모양이 다른 물체 여럿과 투명도가 다른 표시 여럿을 각각 한 번에 그립니다(three-kit).</p>
+            <div class="controls">
+                <button id="three-play" type="button" aria-pressed="true">움직임</button>
+                <button id="three-more" type="button" aria-pressed="false">표시 늘리기</button>
+            </div>
+            <canvas id="canvas-three" width="720" height="400"></canvas>
+            <p id="stats-three" aria-live="polite"></p>
+            <ul>
+                <li>
+                    물체 16개는 따로 움직이고 하나씩 돌아가며 빛나지만 <code>RigidBatch</code> 하나라 그리기 호출은 한
+                    번입니다.
+                </li>
+                <li>
+                    바닥 표시는 고리·점·네모가 섞이고 투명도가 저마다 달라도 <code>InstanceLayer</code> 한 번입니다.
+                    늘려도 같습니다.
+                </li>
+                <li>
+                    three.js는 예제가 r180을 불러와 넘깁니다. 셰이더는 시작할 때 <code>warmUp</code>으로 미리
+                    컴파일합니다.
+                </li>
             </ul>
         </section>
     </main>
