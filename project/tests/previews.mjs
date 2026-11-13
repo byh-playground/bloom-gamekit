@@ -635,6 +635,25 @@ try {
             assert.equal(await PAGE.evaluate(() => renderingExamples.face.selected), 'happy');
             assert.deepEqual(await PAGE.evaluate(() => renderingExamples.face.drawn), { images: 13, paths: 1 });
             assert.equal(await PAGE.evaluate(() => renderingExamples.face.device.gl.getError()), 0);
+            // three.js 탭(three-kit, three r180을 CDN에서 받음): 물체 16개 + 바닥 표시는 표시 수와 무관하게 2 draw이고,
+            // 미리 컴파일한 뒤 플레이 중 새 프로그램이 없습니다.
+            await PAGE.click('#tab-three');
+            await PAGE.waitForFunction(() => renderingExamples.three?.drawCalls > 0, null, { timeout: 30000 });
+            const THREE_TAB = () =>
+                PAGE.evaluate(() => {
+                    const EXAMPLE = renderingExamples.three;
+                    return [
+                        EXAMPLE.drawCalls,
+                        EXAMPLE.expectedDrawCalls,
+                        EXAMPLE.programs - EXAMPLE.programsAfterWarmUp,
+                    ];
+                });
+            assert.deepEqual(await THREE_TAB(), [2, 2, 0]);
+            await PAGE.click('#three-more');
+            await PAGE.waitForFunction(() => renderingExamples.three.instances === 480);
+            await PAGE.waitForTimeout(300);
+            assert.deepEqual(await THREE_TAB(), [2, 2, 0]);
+            assert.equal(await PAGE.evaluate(() => renderingExamples.three.renderer.getContext().getError()), 0);
         }
         if (NAME === 'rollback-reference') {
             await PAGE.click('#start');

@@ -43,6 +43,7 @@ export const MODULES = Object.freeze([
     'i18n',
     'face',
     'tech-tree',
+    'three-kit',
 ]);
 // 게임이 로컬에서 실행하는 Node ESM 도구입니다. 브라우저 번들과 같은 manifest·dist commit으로 고정해 내려받습니다.
 export const NODE_TOOLS = Object.freeze([

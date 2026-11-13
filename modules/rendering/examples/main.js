@@ -2,6 +2,7 @@ import { startAtlas } from './atlas.js';
 import { startFace } from './face.js';
 import { startMaterials } from './materials.js';
 import { startPaint } from './paint.js';
+import { startThreeKit } from './three-kit.js';
 import { startVector } from './vector.js';
 
 // One page, one tab per example. A tab starts its WebGL scene the first time it is shown, so a hidden tab costs nothing.
@@ -11,6 +12,7 @@ const TABS = {
     materials: startMaterials,
     paint: startPaint,
     face: startFace,
+    three: startThreeKit,
 };
 const NAMES = Object.keys(TABS);
 const EXAMPLES = {};
