@@ -188,19 +188,50 @@ var RenderStats = class {
   }
 };
 function warmUp(renderer, scene, camera) {
-  const HIDDEN = [];
+  const UNDO = [];
   scene.traverse((object) => {
     if (!object.visible) {
-      HIDDEN.push(object);
       object.visible = true;
+      UNDO.push(() => object.visible = false);
+    }
+    if (object.frustumCulled) {
+      object.frustumCulled = false;
+      UNDO.push(() => object.frustumCulled = true);
     }
   });
+  const RENDER = renderer.info.render;
+  const COUNTS = { calls: RENDER.calls, triangles: RENDER.triangles, points: RENDER.points, lines: RENDER.lines };
+  const TARGET = renderer.getRenderTarget();
+  const FACE = renderer.getActiveCubeFace();
+  const LEVEL = renderer.getActiveMipmapLevel();
+  const SCISSOR = renderer.getScissor({
+    x: 0,
+    y: 0,
+    z: 0,
+    w: 0,
+    copy(box) {
+      [this.x, this.y, this.z, this.w] = [box.x, box.y, box.z, box.w];
+      return this;
+    }
+  });
+  const SCISSOR_TEST = renderer.getScissorTest();
+  const SHADOW_NEEDS_UPDATE = renderer.shadowMap.needsUpdate;
   try {
     camera.updateMatrixWorld();
+    renderer.setRenderTarget(null);
+    renderer.setScissor(0, 0, 1, 1);
+    renderer.setScissorTest(true);
     renderer.compile(scene, camera);
+    renderer.render(scene, camera);
+    renderer.clear();
   } finally {
-    for (const OBJECT of HIDDEN) {
-      OBJECT.visible = false;
+    renderer.setScissor(SCISSOR.x, SCISSOR.y, SCISSOR.z, SCISSOR.w);
+    renderer.setScissorTest(SCISSOR_TEST);
+    renderer.setRenderTarget(TARGET, FACE, LEVEL);
+    renderer.shadowMap.needsUpdate = SHADOW_NEEDS_UPDATE;
+    Object.assign(RENDER, COUNTS);
+    for (const RESTORE of UNDO) {
+      RESTORE();
     }
   }
 }
