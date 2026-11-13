@@ -2,14 +2,19 @@ import {
     SCHEMA_VERSION,
     MAX_BATCH_BYTES,
     MAX_UNLOAD_BYTES,
+    MAX_PROPS_BYTES,
+    MAX_SUMMARY_BYTES,
+    MAX_PLAYERS_BYTES,
+    MAX_REPLAY_BYTES,
     VIEWPORT_STEPS,
+    jsonBytes,
     encodeBytes,
     reviveBytes,
     isName,
     isRecord,
 } from './protocol.js';
 
-export { SCHEMA_VERSION, reviveBytes };
+export { SCHEMA_VERSION, MAX_PROPS_BYTES, MAX_SUMMARY_BYTES, MAX_PLAYERS_BYTES, MAX_REPLAY_BYTES, reviveBytes };
 
 const ENCODER = new TextEncoder();
 const BODY_TYPE = 'text/plain;charset=UTF-8';
@@ -19,6 +24,13 @@ const MAX_QUEUED_BATCHES = 20;
 function checkName(value, name) {
     if (!isName(value)) {
         throw new TypeError(`metrics ${name} must be a non-empty string of at most 64 characters.`);
+    }
+}
+
+function checkBytes(value, limit, name) {
+    const BYTES = jsonBytes(value);
+    if (BYTES > limit) {
+        throw new RangeError(`metrics ${name} is ${BYTES} bytes as JSON; the server accepts at most ${limit}.`);
     }
 }
 
@@ -102,11 +114,12 @@ export class MemoryAdapter extends MetricsAdapter {
 /**
  * 경기 하나의 범용 기록. 경기 식별·모드·시드·참가자만 남기고 결정론 기록(replay)은 없습니다.
  * 결정론 기록이 있는 게임은 `capture()`를 오버라이드한 구현체를 씁니다.
+ * 게임이 직접 만들지 않고 `metrics.beginMatch(options, Recorder)`가 시작 이벤트와 함께 만들어 돌려줍니다.
  */
 export class MatchRecorder {
     /**
      * @param {object} [options]
-     * @param {string} [options.matchId] 멀티플레이는 모든 참가자가 같은 값을 넘깁니다. 서버는 경기당 한 행만 남깁니다.
+     * @param {string} [options.matchId] 멀티플레이는 모든 참가자가 같은 값을 넘깁니다. 서버는 경기당 한 행만 남기고 시작도 하나로 셉니다.
      * @param {string} [options.mode='solo'] 예: 'solo' | 'local' | 'online'
      * @param {unknown} [options.seed=null]
      * @param {unknown[]} [options.players=[]]
@@ -207,6 +220,8 @@ export function createMetrics({
     }
     const SESSION_ID = crypto.randomUUID();
     const EVENTS = [];
+    // beginMatch가 만든 recorder → record 여부. recordMatch는 여기 있는 recorder만 한 번 받습니다.
+    const BEGUN = new WeakMap();
     // 직렬화를 마친 배치 { body, bytes }. 보낸 순서대로 하나씩 보내고, 실패하면 같은 seq 그대로 다시 보냅니다.
     const OUTBOX = [];
     let seq = 0;
@@ -232,35 +247,45 @@ export function createMetrics({
         return playedMs + (visibleSince == null ? 0 : now() - visibleSince);
     }
 
-    function enqueue(events, matches) {
+    // 다음 seq로 배치 하나를 직렬화합니다. seq는 보관함에 넣을 때만 늘려, 버린 배치 때문에 서버가 받는 seq에 구멍이 나지 않습니다.
+    function serialize(events, matches) {
         const BODY = JSON.stringify(
             {
                 schemaVersion: SCHEMA_VERSION,
                 game,
                 build: version,
                 sessionId: SESSION_ID,
-                seq: seq++,
+                seq,
                 playMs: playMs(),
                 events,
                 matches,
             },
             encodeBytes,
         );
-        const BYTES = ENCODER.encode(BODY).byteLength;
-        if (BYTES > MAX_BATCH_BYTES) {
-            throw new RangeError(`metrics batch is ${BYTES} bytes; the server accepts at most ${MAX_BATCH_BYTES}.`);
-        }
-        OUTBOX.push({ body: BODY, bytes: BYTES });
+        return { body: BODY, bytes: ENCODER.encode(BODY).byteLength };
+    }
+
+    function enqueue(batch) {
+        seq++;
+        OUTBOX.push(batch);
         if (OUTBOX.length > MAX_QUEUED_BATCHES) {
             OUTBOX.shift();
             droppedBatches++;
         }
     }
 
+    // 이벤트 배치는 props 상한(MAX_PROPS_BYTES) × maxBatchEvents(≤100)라 배치 상한을 넘지 않습니다. 그래도 넘으면 던지지 않고
+    // 그 이벤트들을 버려 droppedBatches에 셉니다. track·heartbeat의 자동 플러시가 게임 코드로 예외를 올리지 않습니다.
     function packEvents() {
-        if (EVENTS.length) {
-            enqueue(EVENTS.splice(0), []);
+        if (!EVENTS.length) {
+            return;
         }
+        const BATCH = serialize(EVENTS.splice(0), []);
+        if (BATCH.bytes > MAX_BATCH_BYTES) {
+            droppedBatches++;
+            return;
+        }
+        enqueue(BATCH);
     }
 
     function push(type, fields) {
@@ -364,7 +389,7 @@ export function createMetrics({
         get playMs() {
             return playMs();
         },
-        /** 서버가 계속 실패해 보관 상한을 넘겨 버린 배치 수 */
+        /** 보내지 못하고 버린 배치 수: 서버가 계속 실패해 보관 상한을 넘긴 것과 배치 상한을 넘긴 것 */
         get droppedBatches() {
             return droppedBatches;
         },
@@ -379,26 +404,65 @@ export function createMetrics({
             if (!isRecord(props)) {
                 throw new TypeError('metrics props must be a JSON object.');
             }
+            checkBytes(props, MAX_PROPS_BYTES, 'props');
             push('event', { category, target, action, props });
         },
         /**
-         * 끝난 경기 하나를 바로 보냅니다. `recorder.capture()`의 결정론 기록과 게임이 요약한 summary가 한 행으로 저장됩니다.
-         * @param {MatchRecorder} recorder
+         * 경기 하나를 시작합니다. 시작 이벤트 `match:<mode>:start`(props `{ matchId }`)를 남기고, 같은 matchId로 끝을 남길
+         * recorder를 돌려줍니다. 서버 완주율은 시작을 서로 다른 matchId로 세므로 온라인 참가자 모두 같은 matchId로 부르면
+         * 시작 하나이고, 재경기는 다시 불러 새 matchId입니다.
+         * @param {object} [options] Recorder 생성 옵션(matchId·mode·seed·players, SessionReplayRecorder는 session)
+         * @param {boolean} [options.record=true] false: 끝을 기록하지 않는 모드(관전·연습). 시작은 events에 남지만 완주율에서 빠지고 recordMatch할 수 없습니다.
+         * @param {typeof MatchRecorder} [recorderClass=MatchRecorder] 경기 기록 방식(InputLogRecorder·SessionReplayRecorder 등)
+         * @returns {MatchRecorder}
+         */
+        beginMatch(options = {}, recorderClass = MatchRecorder) {
+            if (disposed) {
+                throw new Error('metrics is disposed.');
+            }
+            if (recorderClass !== MatchRecorder && !(recorderClass?.prototype instanceof MatchRecorder)) {
+                throw new TypeError('metrics beginMatch needs a MatchRecorder class.');
+            }
+            const { record: RECORD = true, ...RECORDER_OPTIONS } = options;
+            if (typeof RECORD !== 'boolean') {
+                throw new TypeError('metrics record must be a boolean.');
+            }
+            const RECORDER = new recorderClass(RECORDER_OPTIONS);
+            BEGUN.set(RECORDER, RECORD);
+            push('event', {
+                category: 'match',
+                target: RECORDER.mode,
+                action: 'start',
+                props: RECORD ? { matchId: RECORDER.matchId } : { matchId: RECORDER.matchId, record: false },
+            });
+            return RECORDER;
+        },
+        /**
+         * `beginMatch`로 시작한 경기의 끝을 바로 보냅니다. `recorder.capture()`의 결정론 기록과 게임이 요약한 summary가
+         * 시작과 같은 matchId로 한 행이 됩니다. 경기 하나에 한 번만 부릅니다. 상한을 넘으면 아무것도 보내지 않고 던집니다.
+         * @param {MatchRecorder} recorder `beginMatch`가 돌려준 것
          * @param {object} [summary]
          */
         recordMatch(recorder, summary = {}) {
             if (disposed) {
                 throw new Error('metrics is disposed.');
             }
-            if (!(recorder instanceof MatchRecorder)) {
-                throw new TypeError('metrics recordMatch needs a MatchRecorder.');
+            const RECORD = BEGUN.get(recorder);
+            if (RECORD === undefined) {
+                throw new TypeError('metrics recordMatch needs a recorder from beginMatch, once per match.');
+            }
+            if (!RECORD) {
+                throw new TypeError('metrics recordMatch: this match began with record: false.');
             }
             if (!isRecord(summary)) {
                 throw new TypeError('metrics summary must be a JSON object.');
             }
             const { seed: SEED, players: PLAYERS, replay: REPLAY } = recorder.capture();
+            checkBytes(summary, MAX_SUMMARY_BYTES, 'summary');
+            checkBytes(PLAYERS, MAX_PLAYERS_BYTES, 'players');
+            checkBytes(REPLAY, MAX_REPLAY_BYTES, 'replay');
             packEvents();
-            enqueue(
+            const BATCH = serialize(
                 [],
                 [
                     {
@@ -412,6 +476,13 @@ export function createMetrics({
                     },
                 ],
             );
+            if (BATCH.bytes > MAX_BATCH_BYTES) {
+                throw new RangeError(
+                    `metrics match batch is ${BATCH.bytes} bytes; the server accepts at most ${MAX_BATCH_BYTES}.`,
+                );
+            }
+            BEGUN.delete(recorder);
+            enqueue(BATCH);
             return flush();
         },
         flush,

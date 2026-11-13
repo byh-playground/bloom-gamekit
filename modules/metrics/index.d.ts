@@ -20,6 +20,11 @@ export interface MatchRecorderOptions {
     seed?: unknown;
     players?: unknown[];
 }
+/** beginMatch 옵션: Recorder 생성 옵션 + 기록 여부 */
+export type BeginMatchOptions<O = MatchRecorderOptions> = O & {
+    /** false: 끝을 기록하지 않는 모드(관전·연습). 시작은 events에 남고 완주율에서 빠지며 recordMatch할 수 없습니다. */
+    record?: boolean;
+};
 export interface MatchCapture {
     seed: unknown;
     players: unknown[];
@@ -50,6 +55,11 @@ export interface MetricsEvent {
     action?: string;
     props?: Record<string, unknown>;
 }
+export const MAX_PROPS_BYTES: 2000;
+export const MAX_SUMMARY_BYTES: 8000;
+export const MAX_PLAYERS_BYTES: 4000;
+export const MAX_REPLAY_BYTES: 900000;
+
 export interface MetricsMatch {
     matchId: string;
     mode: string;
@@ -74,6 +84,8 @@ export interface MetricsOptions {
     game: string;
     version: string;
     adapter: MetricsAdapter;
+    /** 게임이 고른 화면 언어 코드(예: 'ko'). session_start props에 들어갑니다. */
+    locale?: string;
     heartbeatMs?: number;
     flushMs?: number;
     maxBatchEvents?: number;
@@ -84,6 +96,10 @@ export interface Metrics {
     readonly playMs: number;
     readonly droppedBatches: number;
     track(category: string, target: string, action: string, props?: Record<string, unknown>): void;
+    /** 시작 이벤트 match:<mode>:start({ matchId })를 남기고 같은 matchId로 끝을 남길 recorder를 돌려줍니다. */
+    beginMatch(options?: BeginMatchOptions): MatchRecorder;
+    beginMatch<R extends MatchRecorder, O>(options: BeginMatchOptions<O>, Recorder: new (options: O) => R): R;
+    /** beginMatch가 돌려준 recorder로 경기 하나에 한 번. */
     recordMatch(recorder: MatchRecorder, summary?: Record<string, unknown>): Promise<void>;
     flush(): Promise<void>;
     dispose(): Promise<void>;
