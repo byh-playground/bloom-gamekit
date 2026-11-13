@@ -23,12 +23,12 @@ const renderingStats = context.endFrame();
 
 ## 쓰지 말아야 할 때
 
-| 이런 일                     | 대신                                            |
-| --------------------------- | ----------------------------------------------- |
-| 3D 장면                     | three.js 등 3D 엔진                             |
-| 게임 정렬·시간선·권위 상태  | 넣지 않습니다. 완성된 pose를 받아 제출만 합니다 |
-| SVG를 캐릭터·애니메이션으로 | [vector-assets](../vector-assets/README.md)     |
-| 투영·카메라                 | [camera](../camera/README.md)                   |
+| 이런 일                     | 대신                                                                          |
+| --------------------------- | ----------------------------------------------------------------------------- |
+| 3D 장면                     | three.js 등 3D 엔진. three.js 공통 코드는 [three-kit](../three-kit/README.md) |
+| 게임 정렬·시간선·권위 상태  | 넣지 않습니다. 완성된 pose를 받아 제출만 합니다                               |
+| SVG를 캐릭터·애니메이션으로 | [vector-assets](../vector-assets/README.md)                                   |
+| 투영·카메라                 | [camera](../camera/README.md)                                                 |
 
 ## GPU 포즈 수치 정밀도
 
