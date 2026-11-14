@@ -434,6 +434,12 @@ function createLoop({
       onError(error);
     }
   };
+  const FRAME_STEP = (timestamp) => {
+    if (inputPreview || HAS_SUBMISSION) {
+      OBSERVE_INPUT(timestamp);
+    }
+    PULSE(timestamp);
+  };
   const START = () => {
     if (running) {
       return;
@@ -448,10 +454,7 @@ function createLoop({
       if (!running || CURRENT !== generation) {
         return;
       }
-      if (inputPreview || HAS_SUBMISSION) {
-        OBSERVE_INPUT(timestamp);
-      }
-      PULSE(timestamp);
+      FRAME_STEP(timestamp);
       if (running && CURRENT === generation) {
         handle = requestFrame(FRAME);
       }
@@ -479,6 +482,7 @@ function createLoop({
     start: START,
     stop: STOP,
     pulse: PULSE,
+    frame: FRAME_STEP,
     render: RENDER_FRAME,
     observeInput: OBSERVE_INPUT,
     flushInput: FLUSH_INPUT,

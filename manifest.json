@@ -27,7 +27,7 @@
     },
     {
       "file": "simloop.js",
-      "sha256": "c9bd2330e00f1ec964d317cbc075b42099a220cc3ed05d5bc8ca352ca5f93f76"
+      "sha256": "c7595b1beb7c56b01061393429eb73a095c1126a9832a55069bd7bfaa0d75295"
     },
     {
       "file": "work-scheduler.js",
@@ -59,7 +59,7 @@
     },
     {
       "file": "rollback.js",
-      "sha256": "8b07f612937add3cce1a1c76f35f6c10b606d5c98d19078f2343491156f535aa"
+      "sha256": "3789d59dad59aa1faa7d165612e3fe256a562acda12997e77b47a162368d1f41"
     },
     {
       "file": "camera.js",
@@ -87,7 +87,7 @@
     },
     {
       "file": "scenario.js",
-      "sha256": "68459591fe6f7a58eb4470430683413e1546f2c5816e1d529f9c72560305eb77"
+      "sha256": "44972ca8b0c410407e057385e64473fde51d98ae94819e9094011eb273830d0d"
     },
     {
       "file": "object-pool.js",
