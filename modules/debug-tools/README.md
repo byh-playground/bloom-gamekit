@@ -158,7 +158,7 @@ lines.push(view.renderStats.metrics.traceText());
 
 ```text
 traces 1 (kept 1/8) on jump,kick before 2 after 10; frame = offset intervalMs(to next frame) cpu stages counters
-#31 jump t=40.5s max 33.4ms = 2x median 16.7, >=2x 1 | fixed drawCalls=28 programs=15 textures=9
+#31 jump t=40.5s max 33.4ms = 2x median 16.7, >=1.8x 2 | fixed drawCalls=28 programs=15 textures=9
   -2 16.7 cpu=3.8 sim=1.1 render=2.3 triangles=51234 | -1 16.7 cpu=3.8 sim=1.1 render=2.3 | 0 33.3 cpu=4.1 sim=1.4 render=2.3 jump=1 | +1 16.7 cpu=4.6 sim=1.1 render=3.1 | +2 33.4 cpu=3.8 sim=1.1 render=2.3 triangles=53010 | +3 16.7 … | +10 16.7 cpu=3.8 sim=1.1 render=2.3
 ```
 
@@ -166,7 +166,7 @@ traces 1 (kept 1/8) on jump,kick before 2 after 10; frame = offset intervalMs(to
 - 프레임은 다음 `beginFrame`에서 간격이 확정될 때 추적에 들어갑니다. 그래서 행의 간격은 "그 프레임에서 다음 프레임까지"이고, 콜백 밖에서 적은 count도 들어갑니다. 표시 프레임이 오면 링에서 앞 `before`행을 복사해 추적을 열고, 뒤 `after`행은 확정될 때마다 이어 붙입니다. 링이 돌아도 남습니다.
 - 진행 중에 다시 표시가 오면(연속 점프·점프 직후 킥) 새 추적을 열지 않고 그 추적의 `marks`만 늘립니다. 토막에 `jump=1`·`kick=1`이 그대로 보입니다. 끝난 뒤 오는 표시는 새 추적입니다.
 - `skipInterval()`이 추적 중에 끼면 버리지 않고 그 프레임 간격을 `gap`으로 적고 요약에 `gap`을 붙입니다. 아직 `after`가 다 차지 않은 추적은 `open 2/10`처럼 보이며 `traces()`에도 `open: true`로 나옵니다.
-- 요약 줄: 표시 프레임 순번·표시 counter·시각, 구간 최대 간격과 중앙값 대비 배수, 중앙값 2배 이상 간격 수(`>=2x`). 중앙값은 표시 때 최근 15간격 중앙값이고, 15간격이 모이기 전이면 추적 안 간격의 중앙값입니다.
+- 요약 줄: 표시 프레임 순번·표시 counter·시각, 구간 최대 간격과 중앙값 대비 배수, 중앙값 1.8배 이상 간격 수(`>=1.8x`, 한 프레임 빠짐은 정확히 2배에서 조금 흔들리므로 1.8배부터 셉니다). 중앙값은 표시 때 최근 15간격 중앙값이고, 15간격이 모이기 전이면 추적 안 간격의 중앙값입니다.
 - 토막 줄: `상대순번 간격 cpu=…`, 0이 아닌 stage, 0보다 큰 표시 counter. 나머지 counter는 추적 안에서 값이 늘 같으면 요약 줄 `fixed`에 한 번(0이면 생략), 바뀌면 첫 프레임과 값이 바뀐 프레임에만 적습니다(위 `triangles`). 13프레임 한 건이 한 줄입니다.
 - 기록 경로는 할당이 없습니다(생성 때 잡은 Float64Array에 숫자 복사). `traces()`·`traceText({limit})`는 부를 때만 할당하고 `clear()`가 비웁니다. `traceTotal`은 밀려난 것까지 셉니다.
 

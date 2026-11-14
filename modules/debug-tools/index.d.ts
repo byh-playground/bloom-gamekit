@@ -313,7 +313,7 @@ export class FrameMetrics {
     /** Retained traces, oldest first. Allocates per call. */
     traces(): NumericFrameTrace[];
     /**
-     * Header line, then per trace a summary line (max interval, x median, intervals >= 2x median, `fixed` counters)
+     * Header line, then per trace a summary line (max interval, x median, intervals >= 1.8x median, `fixed` counters)
      * and one line of `offset intervalMs cpu=… stage=… counter=…` tokens. Zero values and fixed counters are left out of tokens.
      */
     traceText(options?: { limit?: number }): string;

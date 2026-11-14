@@ -432,7 +432,7 @@ export class FrameMetrics {
                 medianMs: MEDIAN,
                 maxIntervalMs: MAX,
                 maxFactor: MEDIAN > 0 ? MAX / MEDIAN : 0,
-                doubledIntervals: MEDIAN > 0 ? INTERVALS.filter((value) => value >= MEDIAN * 2).length : 0,
+                doubledIntervals: MEDIAN > 0 ? INTERVALS.filter((value) => value >= MEDIAN * 1.8).length : 0,
                 frames: FRAMES,
             });
         }
@@ -469,7 +469,7 @@ export class FrameMetrics {
                     FIXED_TEXT ? ` | fixed ${FIXED_TEXT}` : '',
                 ].join('');
             LINES.push(
-                `#${TRACE.sequence} ${RULE.counters.filter((name) => MARK.counts[name] > 0).join(',')} t=${(TRACE.timestampMs / 1000).toFixed(1)}s max ${ROUND_MS(TRACE.maxIntervalMs)}ms = ${ROUND_COUNT(TRACE.maxFactor)}x median ${ROUND_MS(TRACE.medianMs)}, >=2x ${TRACE.doubledIntervals}${STATE}`,
+                `#${TRACE.sequence} ${RULE.counters.filter((name) => MARK.counts[name] > 0).join(',')} t=${(TRACE.timestampMs / 1000).toFixed(1)}s max ${ROUND_MS(TRACE.maxIntervalMs)}ms = ${ROUND_COUNT(TRACE.maxFactor)}x median ${ROUND_MS(TRACE.medianMs)}, >=1.8x ${TRACE.doubledIntervals}${STATE}`,
                 '  ' +
                     TRACE.frames
                         .map((frame, index) => {
