@@ -71,6 +71,7 @@ export interface ObservingLoop {
     start(): void;
     stop(): void;
     pulse(timestamp: number, options?: { render?: boolean; input?: boolean }): void;
+    frame(timestamp: number): void;
     render(): void;
     observeInput(timestamp: number): unknown;
     flushInput(timestamp: number): unknown;

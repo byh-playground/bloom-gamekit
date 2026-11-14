@@ -451,7 +451,7 @@ function installPeer(room, tps) {
         },
     });
     publish();
-    // Timer owns input/poll/fixed work; RAF owns drawing. Both use the official loop.
+    // RAF advances the loop and draws (loop.frame); the timer keeps polling/pumping when RAF is late or hidden.
     PEER.scheduler = createDeadlineScheduler({
         getIntervalMs: () => 1000 / 60,
         pulse: (now) => {
@@ -611,7 +611,7 @@ function diagnostic() {
 function render(now) {
     try {
         CTX.clearRect(0, 0, CANVAS.width, CANVAS.height);
-        peers.forEach((p) => p.loop.render());
+        peers.forEach((p) => p.loop.frame(now));
         if (now - lastDiagnostic > 150) {
             DOLLAR('debug-state').textContent = JSON.stringify(diagnostic(), null, 2);
             DOLLAR('summary').textContent = peers

@@ -100,8 +100,7 @@ const pump = createDeadlineScheduler({
     onGap: () => loop.resetTiming(),
 });
 function frame(now) {
-    loop.observeInput(now);
-    loop.render();
+    loop.frame(now); // rAF에서도 밀린 틱을 진행합니다. 타이머는 보조입니다.
     requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

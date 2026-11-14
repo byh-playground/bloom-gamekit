@@ -130,8 +130,9 @@ async function connect(role) {
             },
             onGap: () => loop.resetTiming(),
         });
-        const RENDER = () => {
-            loop.render();
+        // rAF에서도 밀린 틱을 진행합니다. 타이머만 믿으면 터치 직후처럼 타이머가 늦어지는 때 멈춥니다.
+        const RENDER = (timestamp) => {
+            loop.frame(timestamp);
             animation = requestAnimationFrame(RENDER);
         };
         animation = requestAnimationFrame(RENDER);

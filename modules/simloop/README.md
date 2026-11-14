@@ -40,7 +40,26 @@ loop = createLoop({
 
 공개 API: `createLoop`, 선택 기능 `LocalInputPreview`. 외부 import가 없는 `dist/simloop.js` 하나로 사용할 수 있습니다. 도구 설치나 다른 모듈 초기화는 필요하지 않습니다.
 
-`loop.pulse(timestamp, {render:false})`와 `loop.render()`로 timer pump와 rAF 표현을 분리할 수 있습니다. 기존 `pulse(timestamp)`는 계속 render를 호출합니다. `loop.render()`는 poll/advance/input 제출을 실행하지 않습니다. [RoomSession 예제](../rollback/examples/availability/index.html)는 단일 deadline scheduler와 rAF를 사용합니다. 숨김은 입력 해제이며, 큰 gap 뒤 timing을 초기화하고 RoomSession이 복귀 checkpoint를 처리합니다. 브라우저 freeze·OS suspend 중 실행을 보장하지 않습니다.
+`loop.start()`는 자동 rAF로 `observeInput → 틱 진행 → 그리기`를 합니다. rAF를 게임이 소유해야 하면(표시 상한·카메라 등) 같은 본문인 `loop.frame(timestamp)`를 rAF 콜백에서 부릅니다. 한 호출이 입력 관찰, 밀린 틱 진행, 그리기를 순서대로 하고 진행이 실패하면 그리지 않습니다.
+
+```js
+function onFrame(now) {
+    loop.frame(now); // observeInput → pulse(render:false, input:false) → render를 직접 조합하지 않습니다
+    requestAnimationFrame(onFrame);
+}
+requestAnimationFrame(onFrame);
+// 선택: 탭이 숨겨지거나 rAF가 멈춘 동안의 진행·연결 정비용 보조 타이머. 같은 accumulator를 쓰므로 틱이 겹치지 않습니다.
+const pump = createDeadlineScheduler({
+    getIntervalMs: () => 1000 / session.profile.tickRate,
+    pulse: (now) => loop.pulse(now, { render: false, input: false }),
+    onGap: () => loop.resetTiming(),
+});
+pump.start();
+```
+
+타이머만으로 틱을 돌리고 rAF는 `loop.render()`만 호출하는 배선은 권하지 않습니다. 발배구 Android Chrome에서 화면을 터치한 직후 타이머 태스크가 50~150ms 실행되지 않았고(rAF는 계속 호출됨) 그동안 경기가 멈춘 채 같은 자세가 반복해 그려졌으며, 따라잡기 상한을 넘은 시간은 버려졌습니다. 내부 원인은 확인하지 않은 관찰된 현상이며, 다른 상황에서 브라우저가 타이머를 늦출 때도 같은 모양일 수 있습니다. rAF가 도는 동안 rAF에서도 밀린 틱을 진행하면 이 구간이 사라집니다.
+
+`loop.pulse(timestamp, {render:false})`와 `loop.render()`로 timer pump와 rAF 표현을 분리할 수도 있습니다(보조 타이머와 그리기만 하는 rAF가 필요할 때). 기존 `pulse(timestamp)`는 계속 render를 호출합니다. `loop.render()`는 poll/advance/input 제출을 실행하지 않습니다. [RoomSession 예제](../rollback/examples/availability/index.html)는 rAF에서 `loop.frame`을 부르고 단일 deadline scheduler를 보조로 둡니다. 숨김은 입력 해제이며, 큰 gap 뒤 timing을 초기화하고 RoomSession이 복귀 checkpoint를 처리합니다. 브라우저 freeze·OS suspend 중 실행을 보장하지 않습니다.
 
 기존 rollback-netcode의 동일 함수를 책임별로 이동했습니다. [공개 타입](./index.d.ts), [개발 계약](../rollback/CONTRACT.md), [상세 사용법과 이전](../rollback/docs/api-migration.md)을 따릅니다. 이 모듈은 게임 규칙·권위 상태를 정의하지 않습니다.
 
@@ -61,9 +80,9 @@ pulse(timestampMs)는 자동 rAF와 같은 누적·pacing·maxCatchupSteps 경�
 
 ## 선택적 로컬 입력 미리보기
 
-`loop.observeInput(timestamp)`가 권위 틱 전에 같은 `getInput()`을 관찰합니다. 자동 RAF loop는 프레임마다 이 경로를 사용하고, 외부 RAF와 deadline timer를 조합할 때는 RAF에서 observeInput, timer에서 pulse를 호출합니다. pulse는 관찰된 held bytes를 사용하며 명령을 canonical queue에 한 번만 제출합니다. 틱 사이의 held 변경은 하나의 미래 표본을 교체하고 edge 명령은 순서대로 축적합니다. `observationId`는 preview 관측 식별자입니다. submitInput 지원 session은 관측 즉시 SDK command sequence를 할당하고 매 틱 `session.localCaptureSequence`(정수)로 새 capture가 있는지 보고, 있을 때만 `session.readLocalCaptures(afterSequence, out)`로 받은 capture의 정확한 executeTick에서 확인합니다. `localInputState`는 매번 전체를 복사하는 진단용 값이라 loop는 읽지 않습니다. RoomSession의 metadata tick은 baseTick을 포함한 global tick입니다.
+`loop.observeInput(timestamp)`가 권위 틱 전에 같은 `getInput()`을 관찰합니다. 자동 RAF loop는 프레임마다 이 경로를 사용하고, 외부 RAF와 deadline timer를 조합할 때는 RAF에서 `loop.frame`(observeInput 포함), timer에서 pulse를 호출합니다. pulse는 관찰된 held bytes를 사용하며 명령을 canonical queue에 한 번만 제출합니다. 틱 사이의 held 변경은 하나의 미래 표본을 교체하고 edge 명령은 순서대로 축적합니다. `observationId`는 preview 관측 식별자입니다. submitInput 지원 session은 관측 즉시 SDK command sequence를 할당하고 매 틱 `session.localCaptureSequence`(정수)로 새 capture가 있는지 보고, 있을 때만 `session.readLocalCaptures(afterSequence, out)`로 받은 capture의 정확한 executeTick에서 확인합니다. `localInputState`는 매번 전체를 복사하는 진단용 값이라 loop는 읽지 않습니다. RoomSession의 metadata tick은 baseTick을 포함한 global tick입니다.
 
-RAF가 deadline보다 느리거나 정지해도 pulse는 관찰 cache의 나이가 한 simulation quantum(`1000/tickRate` ms) 이상이면 canonical advance 전에 같은 observeInput/getInput 경로로 갱신합니다. quantum 안의 최근 관찰과 동일 timestamp는 재사용합니다. device edge의 수집·소비도 getInput 안의 이 단일 경로에서 수행해야 하며 별도 RAF collector를 중복 호출하지 않습니다. deadline fallback은 관찰만 추가하고 authority/command를 두 번 실행하지 않습니다.
+rAF가 deadline보다 느리거나 정지해도 pulse는 관찰 cache의 나이가 한 simulation quantum(`1000/tickRate` ms) 이상이면 canonical advance 전에 같은 observeInput/getInput 경로로 갱신합니다. quantum 안의 최근 관찰과 동일 timestamp는 재사용합니다. device edge의 수집·소비도 getInput 안의 이 단일 경로에서 수행해야 하며 별도 RAF collector를 중복 호출하지 않습니다. deadline fallback은 관찰만 추가하고 authority/command를 두 번 실행하지 않습니다.
 
 `LocalInputPreview.observe()`는 별도 scope에서 같은 update로 미래 표본을 계산하고 `PresentationRuntime`는 그 표본을 schema/time으로 매 RAF 평가합니다. 동일 입력/명령 관찰은 캐시되어 fork를 실행하지 않습니다. 변경된 held 관찰은 기존 미래 한 틱을 다시 계산하며 RAF 수만큼 세계 시간을 증가시키지 않습니다. `fork.restore(snapshot)`를 제공하면 명시적 detached scope를 재사용합니다. 실제 authority에 snapshot을 설치하지 않습니다.
 
@@ -110,7 +129,7 @@ preview.reconcile({ snapshot, revision, tick, epoch, confirmedSequence, timeMs, 
 
 장치 이벤트에서 상태와 edge queue를 갱신한 뒤 `loop.observeInput(performance.now())`을 호출합니다. `submitInput` capability가 있는 session은 held input과 미제출 명령을 즉시 전송합니다. 기존 LocalInputPreview도 같은 호출에서 관측하며 ACK나 다음 tick을 기다리지 않습니다. 명시적인 observeInput은 같은 timestamp에도 새 이벤트를 읽습니다.
 
-주기적인 장치 수집·네트워크 정비는 `loop.pollInput(timestamp)`, simulation pump는 `loop.pulse(timestamp,{render:false,input:false})`, RAF는 `loop.render()`로 분리합니다. input:false는 pulse의 장치 재수집을 막으며 session.poll/advance의 기존 정비는 유지합니다. 처음에는 observeInput으로 샘플을 준비하세요. 명령은 getInput packet에서 한 번만 반환합니다.
+주기적인 장치 수집·네트워크 정비는 `loop.pollInput(timestamp)`, 보조 simulation pump는 `loop.pulse(timestamp,{render:false,input:false})`, RAF는 `loop.frame(timestamp)`로 분리합니다. input:false는 pulse의 장치 재수집을 막으며 session.poll/advance의 기존 정비는 유지합니다. 처음에는 observeInput으로 샘플을 준비하세요. 명령은 getInput packet에서 한 번만 반환합니다.
 
 flushInput은 관측·제출만 실행하며 accumulator나 simulation tick을 강제로 진행하지 않습니다. 저장 완료가 권위 실행을 요구하면 명령의 확정 경계를 기다려야 합니다. 일반 simulation capability에는 submitInput이 필요 없습니다.
 
@@ -126,7 +145,7 @@ protocol 3은 이벤트에서 명령별 불변 T를 예약합니다. 한 pump가
 
 `createLoop({rates:{baseHz:60,inputHz:60,renderHz:60},session,...})`는 session의 tickRate까지 기준 주파수의 정수 분주인지 검사합니다. 양의 정수 주파수만 허용하며 60/30/60/60은 가능하고 60/45/60/60은 RangeError입니다. `clockRates`를 별도로 호출할 수도 있습니다. 물리 디스플레이 주파수나 타이머 정확도를 요구하지 않습니다.
 
-시뮬레이션 timer는 `createDeadlineScheduler({getDeadlineMs:()=>loop.nextDeadlineMs,pulse:now=>loop.pulse(now,{render:false,input:false})})`로 연결합니다. 루프만 실제 경과시간과 다음 tick을 계산하며 timer는 별도 주기를 누적하거나 backlog를 버리지 않습니다. 초기/타이밍 reset의 null deadline은 즉시 초기화 pulse로 처리합니다. 입력 이벤트는 계속 observeInput을 즉시 호출하고 input polling/RAF는 독립 실행합니다. renderHz는 소비자의 표시 상한 설정입니다.
+보조 시뮬레이션 timer는 `createDeadlineScheduler({getDeadlineMs:()=>loop.nextDeadlineMs,pulse:now=>loop.pulse(now,{render:false,input:false})})`로 연결합니다. 루프만 실제 경과시간과 다음 tick을 계산하며 timer는 별도 주기를 누적하거나 backlog를 버리지 않습니다. 초기/타이밍 reset의 null deadline은 즉시 초기화 pulse로 처리합니다. 입력 이벤트는 계속 observeInput을 즉시 호출하고, RAF는 `loop.frame`으로 밀린 틱을 함께 진행합니다(타이머만 믿으면 터치 직후처럼 타이머가 늦어지는 때 멈춥니다). renderHz는 소비자의 표시 상한 설정입니다.
 
 `backlogPolicy:'retain'`은 긴 지연에도 누적 시간을 보존하며 maxCatchupSteps씩 나누어 실제 catch-up합니다. 명시적인 pause/reset은 별도 lifecycle입니다. preview의 표시 구간은 fork가 전진한 전체 미래 tick 길이를 사용하여 held 입력의 한 틱/두 틱 예측이 같은 1틱 길이로 압축되지 않게 합니다.
 

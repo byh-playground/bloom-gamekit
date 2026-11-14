@@ -31,8 +31,9 @@
 3. `createLoop({session,inputPreview,getInput,onAdvance,...})`를 만듭니다. held input은 byte로,
    대시·발사는 one-shot `commands`로 반환합니다. DOM edge에서 `loop.observeInput(now)`를 호출하면
    공식 `submitInput`이 즉시 예약·송신합니다. `queueCommand`로 다시 넣거나 T를 게임이 변경하지 않습니다.
-4. deadline scheduler에서 `pollInput`과 `pulse({render:false,input:false})`를 호출합니다.
-   시뮬레이션은 loop만 진행시킵니다. RAF에서는 `loop.render()`만 호출합니다.
+4. deadline scheduler에서 `pollInput`과 `pulse({render:false,input:false})`를 보조로 호출하고,
+   RAF에서는 `loop.frame(now)`로 밀린 틱을 함께 진행합니다(타이머만 믿으면 터치 직후 멈출 수 있음).
+   시뮬레이션은 loop만 진행시킵니다.
    수신 지터나 디스플레이 주파수로 dt를 바꾸지 않습니다.
 5. 완료된 authority 경계에서 full entity list를 capture한 뒤 preview checkpoint를 reconcile합니다.
    초기 명령 sequence가 `null`이면 optional 인자를 생략합니다. 이 작은 예제는 매 경계 snapshot을 사용하며
