@@ -5,6 +5,7 @@
 - 시드 난수(`SeededPRNG`·`statelessRandom`)·고정소수점·바이트 hash(`hashBytes`)를 결정론으로 쓰고 싶을 때.
 - 게임 상태를 정규 바이트로 저장·비교하고 싶을 때(`createValueCodec`).
 - **저장→불러오기→재실행**으로 결정론이 깨지는 틱을 찾고 싶을 때(`runSyncTestAsync`·`createSyncTestSession`).
+- ms로 적은 주기·지속·쿨다운을 틱에 반영하고 싶을 때(`tickTime`). 틱 수를 바꿔도 실제 시간이 그대로입니다. [아래](#ms-시간-값을-틱에-반영-ticktime)
 
 ## 쓰는 모양
 
@@ -38,9 +39,53 @@ const result = await RallyNetcode.runSyncTestAsync({
 
 순수 난수·고정소수점·값 codec 및 실제 save/load 재실행 진단을 제공합니다. 네트워크나 렌더러를 초기화하지 않습니다.
 
-공개 API: `hashBytes, statelessRandom, SeededPRNG, PseudoRandomDistribution, fixedPoint, ByteBuffer, createValueCodec, binaryCodec, jsonCodec, createSyncTestSession, SyncTestSession, runSyncTest, runSyncTestAsync, DeterminismError`. 외부 import가 없는 `dist/deterministic.js` 하나로 사용할 수 있습니다. 도구 설치나 다른 모듈 초기화는 필요하지 않습니다.
+공개 API: `hashBytes, statelessRandom, SeededPRNG, PseudoRandomDistribution, fixedPoint, ByteBuffer, createValueCodec, binaryCodec, jsonCodec, createSyncTestSession, SyncTestSession, runSyncTest, runSyncTestAsync, DeterminismError, tickTime`. 외부 import가 없는 `dist/deterministic.js` 하나로 사용할 수 있습니다. 도구 설치나 다른 모듈 초기화는 필요하지 않습니다.
 
 기존 rollback-netcode의 동일 함수를 책임별로 이동했습니다. [공개 타입](./index.d.ts), [개발 계약](../rollback/CONTRACT.md), [상세 사용법과 이전](../rollback/docs/api-migration.md)을 따릅니다. 이 모듈은 게임 규칙·권위 상태를 정의하지 않습니다.
+
+## ms 시간 값을 틱에 반영 (tickTime)
+
+시간의 뜻을 가진 값(주기·지속·지연·쿨다운·창)은 ms로 적고 틱 수는 한 곳에서만 정합니다([DEV-035](https://github.com/byh-playground/bloom-reference/blob/main/rules/development.md#time-in-ms)). **계산 자리마다 누적 코드를 직접 쓰지 말고 이 도우미를 부릅니다.** 같은 누적·이월 규칙을 자리마다 다시 짜면 반올림·0 초기화·부동소수 누적 같은 실수가 자리마다 따로 생깁니다.
+
+```js
+import { tickTime } from '@bloom-gamekit/deterministic';
+
+const time = tickTime({ tickRate: config.tickRate }); // 틱 수는 여기 한 곳(clockRates() 결과도 그대로 받음)
+
+// 시뮬레이션 틱 본문. 누적값은 모두 state 안의 정수라 스냅샷·롤백·상태 해시에 그대로 들어갑니다.
+state.thinkAcc = time.every(state.thinkAcc, ai.intervalMs, think, bot); // AI 판단 66ms마다, 나머지 이월
+state.fireAcc = time.everyOnce(state.fireAcc, aimRefreshMs, refreshAim, bot); // 여러 번 들어가도 한 번만
+
+state.dashCooldown = time.advance(state.dashCooldown); // 쿨다운 진행(0에서 멈춤)
+if (input.dash && time.done(state.dashCooldown)) {
+    dash();
+    state.dashCooldown = time.start(dashCooldownMs);
+}
+state.fuse = time.advance(state.fuse, explode, bomb); // 지연: 끝나는 틱에 한 번 explode(bomb)
+
+// 외부 API가 틱 개수를 요구하는 경계에서만 올림
+createSession({ rollbackWindowTicks: time.ceilTicks(profile.rollbackWindowMs) });
+
+// 표시용(소수 가능, 판정에 쓰지 않음)
+cooldownLabel.textContent = Math.ceil(time.remainingMs(state.dashCooldown) / 100) / 10 + 's';
+```
+
+| 쓰임              | 호출                                                                                      | 상태 값                                       |
+| ----------------- | ----------------------------------------------------------------------------------------- | --------------------------------------------- |
+| 반복 주기         | `acc = time.every(acc, periodMs, fn?, arg?)`                                              | 누적값. 처음 0, 늘 `[0, periodMs × tickRate)` |
+| 한 번만 도는 주기 | `acc = time.everyOnce(acc, periodMs, fn?, arg?)`                                          | `every`와 같은 값                             |
+| 발동 횟수만       | `n = time.fires(acc, periodMs)` 뒤 `acc = time.every(acc, periodMs)`                      | 같은 값                                       |
+| 지속·지연·쿨다운  | `r = time.start(ms)` → 매 틱 `r = time.advance(r, fn?, arg?)` → `time.done(r)`            | 남은 시간. 0이 끝남·대기                      |
+| 외부 API 경계     | `time.ceilTicks(ms)`                                                                      | 틱 개수(올림)                                 |
+| 표시·보간         | `time.stepMs`, `time.remainingMs(r)`, `time.elapsedMs(r, totalMs)`, `time.tickToMs(tick)` | 소수 가능                                     |
+
+- **단위**: 누적값의 단위는 ms × tickRate입니다. 한 틱은 이 단위로 늘 1000이라 1000/tickRate가 정수가 아니어도(30Hz면 33.3ms) 정수로만 셉니다. 저장한 누적값은 같은 tickRate에서만 뜻이 같습니다.
+- **주기 `every`**: 이번 틱에 주기가 n번 들어가면 `fn(arg)`를 n번 부르고, 0으로 지우지 않고 나머지를 남깁니다. 20Hz에서 66ms는 실행 틱이 2, 3, 4, 6…으로 흩어지고 평균은 66ms입니다. 기본이 "들어간 만큼"인 이유는 이름(66ms마다)이 약속하는 평균 횟수를 지키는 쪽이 이것뿐이라서입니다. 최신 상태만 필요한 갱신은 `everyOnce`로 명시합니다(누적값은 같고 콜백 횟수만 다름). 콜백 없이 횟수만 필요하면(발사 n발) `fires`를 같은 틱의 `every`보다 먼저 부릅니다.
+- **지속 `start`·`advance`·`done`**: "남은 시간"으로 셉니다. 0이 "끝남·시작 안 함·다시 쓸 수 있음"을 한 값으로 나타내 활성 플래그가 따로 필요 없고, 길이는 시작하는 자리에만 적습니다. 값이 틱 간격으로 나누어떨어지지 않아도 그 시간을 지난 첫 틱에 끝납니다. 넘친 부분은 버리므로 끝나자마자 다시 시작하는 반복에는 `every`를 씁니다.
+- **콜백**: `fn(arg)` 형태라 매 틱 클로저를 만들지 않고 모듈 수준 함수와 대상 객체를 넘깁니다. 콜백은 인자를 빼면 진행만 합니다.
+- **오류**: tickRate·ms는 정수여야 합니다(주기는 양수, `start`·`ceilTicks`는 0 이상). ms × tickRate가 안전 정수를 넘거나 누적값이 음수·소수면 `RangeError`입니다.
+- **경계 올림 `ceilTicks`**: 롤백 창·입력 지연처럼 틱 개수를 요구하는 외부 API에 넘기는 곳에서 한 번만 씁니다. 창이 의도보다 짧아지면 안 되므로 반올림이 아니라 올림입니다. 0번 틱(시각 0)부터 세면 ms 시각을 지난 첫 틱 번호와 같습니다.
+- `stepMs`·`remainingMs`·`elapsedMs`·`tickToMs`는 소수를 돌려주므로 화면 표시·보간에만 씁니다.
 
 ## 값 codec 형식
 

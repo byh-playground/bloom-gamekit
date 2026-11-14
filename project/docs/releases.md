@@ -1,3 +1,14 @@
+## v0.64.0 (2026-11-14)
+
+기능 추가(MINOR). deterministic `tickTime({ tickRate })`를 더했습니다. 발배구 틱을 60에서 20으로 바꾸려 했으나 AI 판단 주기·점프 유지·롤백 창이 틱 개수로 적혀 있어 설정 한 줄 변경이 되지 않았습니다([DEV-035](https://github.com/byh-playground/bloom-reference/blob/main/rules/development.md#time-in-ms)). 시간 값은 ms로 적고, 계산 자리마다 누적 코드를 짜는 대신 이 도우미 하나를 부릅니다.
+
+- 주기: `acc = time.every(acc, periodMs, fn?, arg?)`(들어간 횟수만큼 실행, 나머지 이월), `everyOnce`(많아야 한 번), `fires`(횟수만).
+- 지속·지연·쿨다운: `time.start(ms)` → 매 틱 `time.advance(r, fn?, arg?)`(0이 되는 틱에 한 번 콜백) → `time.done(r)`. "남은 시간" 하나로 통일해 0이 끝남·대기를 뜻합니다.
+- 경계·표시: `ceilTicks(ms)`(외부 API용 올림), `stepMs`·`remainingMs`·`elapsedMs`·`tickToMs`(소수 가능, 판정에 쓰지 않음).
+- 상태는 단위 ms × tickRate의 평범한 정수라 게임 상태에 넣으면 스냅샷·롤백·상태 해시에 그대로 들어갑니다. 정수 연산만 쓰고 할당하지 않습니다. 주기 누적값은 `[0, periodMs × tickRate)`, 남은 시간은 시작값 이하로 유계입니다. 정수가 아닌 ms·tickRate, 음수 누적값, 안전 정수를 넘는 ms × tickRate는 `RangeError`입니다.
+- 시험: core `modules/deterministic/tests/hash-bytes.mjs`에 사례(20Hz 66ms 1000틱 실행 횟수가 50000/66 ± 1, 60·30·20Hz 250ms가 한 틱 이내에 끝남, 누적값 유계, 잘못된 인자)를 더했습니다.
+- 예제: deterministic 전용 탭이 없어 예제는 바꾸지 않았습니다.
+
 ## v0.63.0 (2026-11-14)
 
 기능 추가(MINOR). simloop `loop.frame(timestamp)`를 더하고, 문서·예제가 권하던 "틱은 deadline 타이머만, rAF는 그리기만" 배선을 "rAF에서도 밀린 틱을 진행하고 타이머는 보조"로 바꿨습니다. 발배구 Android Chrome에서 화면을 터치한 직후 타이머 태스크가 50~150ms 실행되지 않아 경기가 멈추고 같은 자세가 반복해 그려졌습니다(rAF는 계속 돌았고, 따라잡기 상한을 넘은 시간은 버려졌습니다). 원인은 단정하지 않고 관찰된 현상으로 적습니다. 터치 에뮬레이션 재현에서 터치 뒤 0틱 연속 3~6프레임이 rAF 진행으로 0~1프레임이 되었습니다.
