@@ -59,7 +59,7 @@
     },
     {
       "file": "rollback.js",
-      "sha256": "9ab09d92a9ea19c5c07cb85dd9e97b16b00e099c60468571fd6b9e6539b610d4"
+      "sha256": "8b07f612937add3cce1a1c76f35f6c10b606d5c98d19078f2343491156f535aa"
     },
     {
       "file": "camera.js",
@@ -75,7 +75,7 @@
     },
     {
       "file": "debug-tools.js",
-      "sha256": "af9d18027217e0479035a09755011b427a0d8976b54f6cb835adfd199bc0089e"
+      "sha256": "a0856426d7602ae54cbfd98923a26a03cab39009955311b9a168d27f31019373"
     },
     {
       "file": "audio.js",
@@ -159,7 +159,7 @@
     },
     {
       "file": "three-kit.js",
-      "sha256": "065969db2d411305e2c0d2efa096efd1a44569f0877caa8baf6e647e0efc2beb"
+      "sha256": "ba9f09f2c22c31a4425611b71653f157a7408b2caf1c21a24eaf346014f4a2e4"
     },
     {
       "file": "pwa-build.mjs",
