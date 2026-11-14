@@ -226,6 +226,40 @@ export interface FrameHitchRule {
     /** Preceding frames copied with each hitch. Default 3, at most 8. */
     before: number;
 }
+export interface FrameTraceRule {
+    /** Registered counters that mark a frame when above 0 (any of them). Empty (default) turns tracing off. */
+    counters: string[];
+    /** Retained traces. Default 8, at most 64. */
+    capacity: number;
+    /** Frames copied before the marked frame. Default 2, at most 16, below the ring capacity. */
+    before: number;
+    /** Frames appended after the marked frame. Default 10, at most 120. A mark while a trace is open only bumps `marks`. */
+    after: number;
+}
+export interface NumericFrameTraceFrame extends NumericFrameSample {
+    /** Sequence relative to the marked frame (negative before, 0 the mark, positive after). */
+    offset: number;
+}
+/** Frames around a marked frame, kept regardless of the hitch rule. */
+export interface NumericFrameTrace {
+    /** Sequence of the marked frame. */
+    sequence: number;
+    timestampMs: number;
+    /** Marked frames inside this trace (1 + marks that arrived while it was open). */
+    marks: number;
+    /** Still collecting `after` frames. */
+    open: boolean;
+    /** skipInterval() cut an interval inside the trace (that frame has intervalMs 0). */
+    gap: boolean;
+    /** Median of the last 15 intervals at the mark, or of the trace's own intervals while fewer than 15 were seen. */
+    medianMs: number;
+    maxIntervalMs: number;
+    /** maxIntervalMs / medianMs. */
+    maxFactor: number;
+    /** Intervals in the trace at or above twice medianMs. */
+    doubledIntervals: number;
+    frames: NumericFrameTraceFrame[];
+}
 export interface NumericFrameSnapshot {
     format: 'bloom numeric frame metrics v2';
     capacity: number;
@@ -241,6 +275,9 @@ export interface NumericFrameSnapshot {
     /** Hitches seen since clear(), including ones pushed out of the store. */
     hitchTotal: number;
     hitches: NumericFrameHitch[];
+    /** Traces started since clear(), including ones pushed out of the store. */
+    traceTotal: number;
+    traces: NumericFrameTrace[];
     frames: NumericFrameSample[];
 }
 export class FrameMetrics {
@@ -250,6 +287,7 @@ export class FrameMetrics {
         counters?: string[];
         now?: () => number;
         hitch?: Partial<FrameHitchRule>;
+        trace?: Partial<FrameTraceRule>;
     });
     readonly capacity: number;
     readonly samples: Float64Array;
@@ -259,17 +297,26 @@ export class FrameMetrics {
     readonly active: boolean;
     readonly hitchRule: Readonly<FrameHitchRule>;
     readonly hitchTotal: number;
+    readonly traceRule: Readonly<FrameTraceRule>;
+    readonly traceTotal: number;
     beginFrame(timestampMs: number): void;
     stage(name: string, durationMs: number): boolean;
     count(name: string, amount?: number): boolean;
     endFrame(): boolean;
-    /** The next beginFrame does not link to the previous frame (hidden tab returning, resume from pause). */
+    /** The next beginFrame does not link to the previous frame (hidden tab returning, resume from pause). An open trace keeps it and is flagged `gap`. */
     skipInterval(): void;
     clear(): void;
     /** Retained hitches, oldest first. Allocates per call. */
     hitches(): NumericFrameHitch[];
     /** Header line, then per hitch one frame line and one `before` line. Zero stages and counters are left out. */
     hitchText(options?: { limit?: number }): string;
+    /** Retained traces, oldest first. Allocates per call. */
+    traces(): NumericFrameTrace[];
+    /**
+     * Header line, then per trace a summary line (max interval, x median, intervals >= 2x median, `fixed` counters)
+     * and one line of `offset intervalMs cpu=… stage=… counter=…` tokens. Zero values and fixed counters are left out of tokens.
+     */
+    traceText(options?: { limit?: number }): string;
     snapshot(options?: { limit?: number }): NumericFrameSnapshot;
 }
 

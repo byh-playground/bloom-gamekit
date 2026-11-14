@@ -10,14 +10,14 @@ const COUNTERS = ['drawCalls', 'triangles', 'programs', 'textures'];
 export class RenderStats {
     /**
      * @param {object} renderer three.js WebGLRenderer
-     * @param {{ capacity?: number, stages?: string[], counters?: string[], hitch?: object }} [options]
-     *   보관할 최근 프레임 수, 게임이 같은 프레임에 더 적을 stage·counter 이름(`metrics.stage`·`metrics.count`로 적음), 히치 기준
+     * @param {{ capacity?: number, stages?: string[], counters?: string[], hitch?: object, trace?: object }} [options]
+     *   보관할 최근 프레임 수, 게임이 같은 프레임에 더 적을 stage·counter 이름(`metrics.stage`·`metrics.count`로 적음), 히치 기준, 표시 프레임 추적(`trace.counters`는 위 counters 중 이름)
      */
-    constructor(renderer, { capacity = 240, stages = [], counters = [], hitch } = {}) {
+    constructor(renderer, { capacity = 240, stages = [], counters = [], hitch, trace } = {}) {
         this.info = renderer.info;
         this.info.autoReset = false;
         /** 기록을 담는 debug-tools FrameMetrics. 카운터는 drawCalls·triangles·programs·textures 뒤에 게임 counters입니다. */
-        this.metrics = new FrameMetrics({ capacity, stages, counters: [...COUNTERS, ...counters], hitch });
+        this.metrics = new FrameMetrics({ capacity, stages, counters: [...COUNTERS, ...counters], hitch, trace });
     }
 
     /** 프레임 시작: 제출 카운터를 0으로 되돌리고 시간 재기를 시작합니다. 앞 프레임이 end() 없이 끝났으면 먼저 닫습니다. */

@@ -101,7 +101,7 @@ CPU·보유 heap의 전후 비교와 재현 명령은 [비용 측정](./docs/cos
 프레임 경로에 객체 샘플·Map 생성·로그·JSON을 만들지 않습니다. 기존 metadata 기반 PerformanceProfiler는 그대로 유지합니다.
 CPU stage는 호출자가 실제 구간과 포함 관계를 소유합니다. 자식과 부모 시간을 합산하지 않습니다. GPU 완료 시간은 측정하지 않습니다.
 
-명시적으로 `snapshot({limit=0})`을 부를 때만 프레임과 mean/p95/max/total, 보관한 히치(`hitches`·`hitchTotal`)를 구성합니다.
+명시적으로 `snapshot({limit=0})`을 부를 때만 프레임과 mean/p95/max/total, 보관한 히치(`hitches`·`hitchTotal`)와 표시 프레임 추적(`traces`·`traceTotal`)을 구성합니다.
 intervalMs는 실제 RAF 간격, cpuMs는 begin/end 사이 CPU wall 시간이며 둘을 더하지 않습니다. windowMs는 보유한 양의 RAF 간격 합계입니다.
 히치는 같은 프레임의 stage/count를 보존합니다. 0 stage는 측정하지 않았다는 뜻이 아니므로 상세 측정 활성 여부는 소비자가 함께 표시해야 합니다.
 필수 카운터와 상세 계측의 활성 정책·진단 UI·저장은 게임이 소유합니다. clear()는 새 진단 세션을 시작합니다.
@@ -141,6 +141,34 @@ hitches 2 (kept 2/24) rule >=100ms or >=2.5x median, <1000ms; now t=78.4s
 - 히치 한 건마다 그 프레임과 직전 `before`(기본 3)프레임의 전체 행을 복사합니다. 입력이 든 프레임과 튄 프레임이 한두 프레임 어긋나도 `before`에서 보입니다. 보관함은 최근 `capacity`(기본 24)건이고 `hitchTotal`은 밀려난 것까지 셉니다. `capacity: 0`이면 보관하지 않습니다.
 - 기록 경로는 할당이 없습니다. 판정은 15칸 Float64Array 삽입 정렬, 보관은 생성 때 잡은 Float64Array에 숫자 복사입니다. `hitches()`(객체 배열)와 `hitchText({limit})`(첫 줄 기준·건수, 한 건 두 줄, 0인 stage·counter 생략)는 부를 때만 할당합니다. `clear()`가 보관함도 비웁니다.
 - 브라우저별로 갈리는 GPU 완료 시간·`PerformanceObserver`(longtask)는 넣지 않았습니다.
+
+## 표시 프레임 추적
+
+히치 기준(2.5배)에 못 미치는 한두 프레임 빠짐이 특정 입력 직후에 몰리는지 보려고, 지정한 counter가 0보다 큰 프레임(표시 프레임) 주변을 기준과 무관하게 남깁니다. 발배구에서 경기 중 히치는 0건인데 p95가 33ms(한 프레임 빠짐)였던 기록이 계기입니다.
+
+```js
+// 소비자는 옵션 한 줄과 진단 글 한 줄만 더합니다(count('jump')는 위 히치 예와 같음).
+this.renderStats = new RenderStats(this.renderer, {
+    stages: ['sim', 'render'],
+    counters: ['jump', 'kick'],
+    trace: { counters: ['jump', 'kick'] },
+});
+lines.push(view.renderStats.metrics.traceText());
+```
+
+```text
+traces 1 (kept 1/8) on jump,kick before 2 after 10; frame = offset intervalMs(to next frame) cpu stages counters
+#31 jump t=40.5s max 33.4ms = 2x median 16.7, >=2x 1 | fixed drawCalls=28 programs=15 textures=9
+  -2 16.7 cpu=3.8 sim=1.1 render=2.3 triangles=51234 | -1 16.7 cpu=3.8 sim=1.1 render=2.3 | 0 33.3 cpu=4.1 sim=1.4 render=2.3 jump=1 | +1 16.7 cpu=4.6 sim=1.1 render=3.1 | +2 33.4 cpu=3.8 sim=1.1 render=2.3 triangles=53010 | +3 16.7 … | +10 16.7 cpu=3.8 sim=1.1 render=2.3
+```
+
+- `trace` 옵션: `counters`(등록한 counter 이름, 하나라도 0보다 크면 표시. 비우면(기본) 추적 끔), `before`(기본 2, 최대 16, 추적을 켜면 링 `capacity` 미만), `after`(기본 10, 최대 120), `capacity`(최근 몇 건, 기본 8, 최대 64).
+- 프레임은 다음 `beginFrame`에서 간격이 확정될 때 추적에 들어갑니다. 그래서 행의 간격은 "그 프레임에서 다음 프레임까지"이고, 콜백 밖에서 적은 count도 들어갑니다. 표시 프레임이 오면 링에서 앞 `before`행을 복사해 추적을 열고, 뒤 `after`행은 확정될 때마다 이어 붙입니다. 링이 돌아도 남습니다.
+- 진행 중에 다시 표시가 오면(연속 점프·점프 직후 킥) 새 추적을 열지 않고 그 추적의 `marks`만 늘립니다. 토막에 `jump=1`·`kick=1`이 그대로 보입니다. 끝난 뒤 오는 표시는 새 추적입니다.
+- `skipInterval()`이 추적 중에 끼면 버리지 않고 그 프레임 간격을 `gap`으로 적고 요약에 `gap`을 붙입니다. 아직 `after`가 다 차지 않은 추적은 `open 2/10`처럼 보이며 `traces()`에도 `open: true`로 나옵니다.
+- 요약 줄: 표시 프레임 순번·표시 counter·시각, 구간 최대 간격과 중앙값 대비 배수, 중앙값 2배 이상 간격 수(`>=2x`). 중앙값은 표시 때 최근 15간격 중앙값이고, 15간격이 모이기 전이면 추적 안 간격의 중앙값입니다.
+- 토막 줄: `상대순번 간격 cpu=…`, 0이 아닌 stage, 0보다 큰 표시 counter. 나머지 counter는 추적 안에서 값이 늘 같으면 요약 줄 `fixed`에 한 번(0이면 생략), 바뀌면 첫 프레임과 값이 바뀐 프레임에만 적습니다(위 `triangles`). 13프레임 한 건이 한 줄입니다.
+- 기록 경로는 할당이 없습니다(생성 때 잡은 Float64Array에 숫자 복사). `traces()`·`traceText({limit})`는 부를 때만 할당하고 `clear()`가 비웁니다. `traceTotal`은 밀려난 것까지 셉니다.
 
 ## 주소로 장면 열기 (디버그 호스트)
 

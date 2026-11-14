@@ -98,6 +98,66 @@ export async function exerciseFrameMetrics(page) {
         ) {
             throw new Error('FrameMetrics lost the retained hitch, its preceding counters or the short text');
         }
+        // 표시 추적: 기준에 못 미치는 한 프레임 빠짐도 점프 앞 2·뒤 10프레임과 함께 남고, 진행 중 kick은 새 추적이 아니며,
+        // 탭 숨김(skipInterval)이 낀 추적은 버리지 않고 gap으로 표시한다.
+        const TRACE_METRICS = new FRAME_METRICS({
+                capacity: 4,
+                stages: ['render'],
+                counters: ['jump', 'kick', 'draws'],
+                now: () => clock,
+                trace: { counters: ['jump', 'kick'] },
+            }),
+            TRACE_FRAME = (intervalMs, { jump = 0, kick = 0 } = {}) => {
+                time += intervalMs;
+                clock = time;
+                TRACE_METRICS.beginFrame(time);
+                clock += 2;
+                TRACE_METRICS.stage('render', 2);
+                TRACE_METRICS.count('draws', 28);
+                TRACE_METRICS.count('jump', jump);
+                TRACE_METRICS.count('kick', kick);
+                TRACE_METRICS.endFrame();
+            };
+        for (let index = 0; index < 20; index++) {
+            TRACE_FRAME(16.7);
+        }
+        TRACE_FRAME(16.7, { jump: 1 });
+        TRACE_FRAME(33.4);
+        TRACE_FRAME(16.7, { kick: 1 });
+        for (let index = 0; index < 12; index++) {
+            TRACE_FRAME(16.7);
+        }
+        TRACE_FRAME(16.7, { jump: 1 });
+        TRACE_FRAME(16.7);
+        TRACE_METRICS.skipInterval();
+        TRACE_FRAME(3000);
+        TRACE_FRAME(16.7);
+        const TRACES = TRACE_METRICS.traces(),
+            TRACE_TEXT = TRACE_METRICS.traceText();
+        if (
+            TRACES.length !== 2 ||
+            TRACE_METRICS.hitchTotal !== 0 ||
+            TRACES[0].sequence !== 21 ||
+            TRACES[0].marks !== 2 ||
+            TRACES[0].open ||
+            TRACES[0].frames.map((frame) => frame.offset).join() !== '-2,-1,0,1,2,3,4,5,6,7,8,9,10' ||
+            TRACES[0].doubledIntervals !== 1 ||
+            Math.round(TRACES[0].maxFactor) !== 2 ||
+            !TRACES[1].open ||
+            !TRACES[1].gap ||
+            TRACES[1].frames.map((frame) => frame.offset).join() !== '-2,-1,0,1,2' ||
+            TRACE_TEXT.split('\n').length !== 5 ||
+            !TRACE_TEXT.includes('| fixed draws=28') ||
+            !TRACE_TEXT.includes('| 0 33.4 cpu=2 render=2 jump=1 |') ||
+            !TRACE_TEXT.includes('| +1 gap cpu=2') ||
+            TRACE_TEXT.includes('draws=28 |')
+        ) {
+            throw new Error('FrameMetrics lost the marked frame trace, its following frames or the short text');
+        }
+        TRACE_METRICS.clear();
+        if (TRACE_METRICS.traces().length || TRACE_METRICS.traceTotal) {
+            throw new Error('FrameMetrics clear() kept traces');
+        }
         return {
             retainedFrames: REPORT.retainedFrames,
             frameWindowMs: REPORT.windowMs,

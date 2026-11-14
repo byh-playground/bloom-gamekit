@@ -1,3 +1,12 @@
+## v0.62.0 (2026-11-14)
+
+기능 추가(MINOR). debug-tools `FrameMetrics`가 지정한 counter가 찍힌 프레임(표시 프레임) 주변을 히치 기준과 무관하게 보관합니다. 발배구 사용자 기기 기록에서 경기 중 히치는 0건인데 최근 240프레임 p95가 33ms(한 프레임 빠짐)여서, 점프 직후에 한두 프레임 빠짐이 몰리는지 보려는 것입니다.
+
+- 기록: `trace: { counters: ['jump', 'kick'], before: 2, after: 10, capacity: 8 }`(counters 외 기본값). 표시 프레임이 오면 링의 앞 `before`행을 복사해 추적을 열고 뒤 `after`행을 확정될 때마다 이어 붙입니다. 진행 중 표시는 새 추적 없이 `marks`만 늘리고, `skipInterval()`이 끼면 그 프레임을 `gap`으로 표시합니다. 기록 경로 할당 없음.
+- 꺼내기: `traces()`(객체 배열, 상대 순번 `offset`·최대 간격·중앙값 대비 배수·2배 이상 간격 수), `traceText({limit})`(한 건 두 줄: 요약, 프레임 토막. 값이 같은 counter는 `fixed`로 한 번, 바뀌는 counter는 바뀐 프레임에만), `traceTotal`. `snapshot()`에 `traces`·`traceTotal` 필드를 더했습니다(형식 v2 그대로).
+- three-kit `RenderStats`: `trace` 옵션을 그대로 넘깁니다.
+- 시험: core 고정 시나리오 `frameMetrics`에 추적 사례(히치 0건인 한 프레임 빠짐, 앞 2·뒤 10, 진행 중 kick, `skipInterval` gap, 열린 추적, 텍스트 `fixed`, `clear()`)를 더했습니다.
+
 ## v0.61.0 (2026-11-14)
 
 호환되지 않는 변경(MINOR). debug-tools `FrameMetrics`가 튄 프레임(히치)을 링과 따로 보관합니다. 발배구에서 "점프할 때 잠깐 멈춘다"는 제보가 코드 분석으로 확정되지 않아, 사용자 기기에서 튄 프레임의 내역을 잡아 진단 복사로 꺼내려는 것입니다. 게임 미배포라 호환 래퍼 없이 바꿉니다.
