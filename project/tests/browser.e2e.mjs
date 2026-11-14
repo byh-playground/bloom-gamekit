@@ -213,6 +213,32 @@ try {
         }
         const CAUGHT_UP = SESSION.tick >= 40;
         TIMER.stop();
+        // 타이머가 늦어도 rAF의 frame이 밀린 틱을 진행하고, 진행이 실패한 프레임은 그리지 않는다.
+        let framePaints = 0;
+        const FRAME_SESSION = { ...SESSION, tick: 0, advance: SESSION.advance };
+        const FRAME_LOOP = CREATE_LOOP({
+            session: FRAME_SESSION,
+            render: () => framePaints++,
+        });
+        FRAME_LOOP.frame(0);
+        FRAME_LOOP.frame(100);
+        const FRAME_TICKS = FRAME_SESSION.tick;
+        let failedPaints = 0;
+        const FAIL_LOOP = CREATE_LOOP({
+            session: {
+                ...SESSION,
+                tick: 0,
+                advance() {
+                    throw new Error('step');
+                },
+            },
+            render: () => failedPaints++,
+            onError() {},
+        });
+        FAIL_LOOP.frame(0);
+        const PAINTS_BEFORE_FAILURE = failedPaints;
+        FAIL_LOOP.frame(100);
+        const FRAME_PASSED = FRAME_TICKS === 2 && framePaints === 2 && failedPaints === PAINTS_BEFORE_FAILURE;
         const DEFER_SESSION = {
             inputSize: 1,
             tick: 0,
@@ -610,6 +636,7 @@ try {
             divisor: VALID.simulationDivisor,
             advances: ADVANCES,
             caughtUp: CAUGHT_UP,
+            framePassed: FRAME_PASSED,
             x: X,
             end: OUT.x,
             deferPassed: DEFER_PASSED,
@@ -630,6 +657,11 @@ try {
     assert.equal(CLOCK_CHECK.divisor, 2);
     assert.deepEqual(CLOCK_CHECK.advances, Array(12).fill(1));
     assert.equal(CLOCK_CHECK.caughtUp, true);
+    assert.equal(
+        CLOCK_CHECK.framePassed,
+        true,
+        'loop.frame advances backlog then renders; failed advance skips render',
+    );
     assert.ok(
         CLOCK_CHECK.deferPassed &&
             CLOCK_CHECK.dropCompatible &&

@@ -448,6 +448,13 @@ export function createLoop({
             onError(error);
         }
     };
+    // rAF 한 번분: 입력 관찰 → 밀린 틱 진행 → 그리기. 진행이 실패(stop·onError)하면 그리지 않습니다.
+    const FRAME_STEP = (timestamp) => {
+        if (inputPreview || HAS_SUBMISSION) {
+            OBSERVE_INPUT(timestamp);
+        }
+        PULSE(timestamp);
+    };
     const START = () => {
         if (running) {
             return;
@@ -462,10 +469,7 @@ export function createLoop({
             if (!running || CURRENT !== generation) {
                 return;
             }
-            if (inputPreview || HAS_SUBMISSION) {
-                OBSERVE_INPUT(timestamp);
-            }
-            PULSE(timestamp);
+            FRAME_STEP(timestamp);
             if (running && CURRENT === generation) {
                 handle = requestFrame(FRAME);
             }
@@ -495,6 +499,7 @@ export function createLoop({
         start: START,
         stop: STOP,
         pulse: PULSE,
+        frame: FRAME_STEP,
         render: RENDER_FRAME,
         observeInput: OBSERVE_INPUT,
         flushInput: FLUSH_INPUT,
