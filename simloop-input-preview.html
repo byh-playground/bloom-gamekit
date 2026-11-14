@@ -12940,6 +12940,12 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         onError(error);
       }
     };
+    const FRAME_STEP = (timestamp) => {
+      if (inputPreview || HAS_SUBMISSION) {
+        OBSERVE_INPUT(timestamp);
+      }
+      PULSE(timestamp);
+    };
     const START = () => {
       if (running) {
         return;
@@ -12954,10 +12960,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
         if (!running || CURRENT !== generation) {
           return;
         }
-        if (inputPreview || HAS_SUBMISSION) {
-          OBSERVE_INPUT(timestamp);
-        }
-        PULSE(timestamp);
+        FRAME_STEP(timestamp);
         if (running && CURRENT === generation) {
           handle = requestFrame(FRAME);
         }
@@ -12985,6 +12988,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       start: START,
       stop: STOP,
       pulse: PULSE,
+      frame: FRAME_STEP,
       render: RENDER_FRAME,
       observeInput: OBSERVE_INPUT,
       flushInput: FLUSH_INPUT,
@@ -14032,7 +14036,7 @@ void main(){shade();if(u_depthWrite>0.5&&gl_FragColor.a<=0.0)discard;}`;
       return SIGNED(Math.trunc(SIGNED(a) * 1024 / b) || 0);
     }
   });
-  var VERSION = "0.62.0";
+  var VERSION = "0.63.0";
   var REPLAY_FORMAT_VERSION = "0.3.0-dev";
   var PROTOCOL_VERSION = 3;
   var CHUNK_SIZE = 16384;

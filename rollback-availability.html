@@ -176,7 +176,7 @@
       return SIGNED(Math.trunc(SIGNED(a) * 1024 / b) || 0);
     }
   });
-  var VERSION = "0.62.0";
+  var VERSION = "0.63.0";
   var REPLAY_FORMAT_VERSION = "0.3.0-dev";
   var PROTOCOL_VERSION = 3;
   var CHUNK_SIZE = 16384;
@@ -10883,6 +10883,12 @@
         onError(error);
       }
     };
+    const FRAME_STEP = (timestamp) => {
+      if (inputPreview || HAS_SUBMISSION) {
+        OBSERVE_INPUT(timestamp);
+      }
+      PULSE(timestamp);
+    };
     const START = () => {
       if (running) {
         return;
@@ -10897,10 +10903,7 @@
         if (!running || CURRENT !== generation) {
           return;
         }
-        if (inputPreview || HAS_SUBMISSION) {
-          OBSERVE_INPUT(timestamp);
-        }
-        PULSE(timestamp);
+        FRAME_STEP(timestamp);
         if (running && CURRENT === generation) {
           handle = requestFrame(FRAME);
         }
@@ -10928,6 +10931,7 @@
       start: START,
       stop: STOP,
       pulse: PULSE,
+      frame: FRAME_STEP,
       render: RENDER_FRAME,
       observeInput: OBSERVE_INPUT,
       flushInput: FLUSH_INPUT,
@@ -11391,8 +11395,8 @@ ${lastEvent}`;
         },
         onGap: () => loop.resetTiming()
       });
-      const RENDER = () => {
-        loop.render();
+      const RENDER = (timestamp) => {
+        loop.frame(timestamp);
         animation = requestAnimationFrame(RENDER);
       };
       animation = requestAnimationFrame(RENDER);
