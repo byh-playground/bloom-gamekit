@@ -143,6 +143,38 @@ export class PseudoRandomDistribution {
     reset(): void;
     dispose(): void;
 }
+/**
+ * ms로 적은 시간 값을 틱에 반영하는 도우미(DEV-035). 누적값은 단위 "ms × tickRate"의 평범한 정수라
+ * 게임 상태에 넣으면 스냅샷·롤백·상태 해시에 그대로 들어갑니다. 모든 메서드는 할당하지 않습니다.
+ * ms 인자는 정수여야 하고(주기는 양수, 나머지는 0 이상) ms × tickRate가 안전 정수를 넘으면 RangeError입니다.
+ */
+export interface TickTime {
+    readonly tickRate: number;
+    /** 한 틱의 ms(1000 / tickRate, 소수 가능). 표시·보간 전용이며 시뮬레이션 판정에 쓰지 않는다. */
+    readonly stepMs: number;
+    /** 주기 누적값을 한 틱 진행해 새 값을 돌려준다. 이번 틱에 n번 들어가면 fn(arg)를 n번 부른다. 나머지는 이월. */
+    every<T>(acc: number, periodMs: number, fn?: (arg: T) => void, arg?: T): number;
+    /** every와 같은 누적값을 돌려주되 fn(arg)는 이번 틱에 많아야 한 번 부른다. */
+    everyOnce<T>(acc: number, periodMs: number, fn?: (arg: T) => void, arg?: T): number;
+    /** 이번 틱에 주기가 들어가는 횟수. 같은 틱의 every(acc, periodMs)보다 먼저 부른다. */
+    fires(acc: number, periodMs: number): number;
+    /** 지속·지연·쿨다운의 "남은 시간" 값을 만든다. 0ms는 끝난 값 0. */
+    start(ms: number): number;
+    /** 남은 시간을 한 틱 줄인다(0에서 멈춤). 이번 틱에 0이 되면 fn(arg)를 한 번 부른다. */
+    advance<T>(remaining: number, fn?: (arg: T) => void, arg?: T): number;
+    /** 끝났거나 시작하지 않은 값인지. */
+    done(remaining: number): boolean;
+    /** 남은 ms(소수 가능). 표시 전용. */
+    remainingMs(remaining: number): number;
+    /** 길이 totalMs로 시작한 값의 지난 ms(소수 가능). 표시 전용. */
+    elapsedMs(remaining: number, totalMs: number): number;
+    /** ms를 덮는 최소 틱 개수(올림). 틱 개수를 요구하는 외부 API 경계에서만 쓴다. ms 시각을 지난 첫 틱 번호와 같다. */
+    ceilTicks(ms: number): number;
+    /** 틱 번호의 경과 ms(소수 가능). 표시 전용. */
+    tickToMs(tick: number): number;
+}
+/** 틱 수는 여기 한 곳에서만 받는다. simloop clockRates() 결과도 그대로 받는다. */
+export function tickTime(options: { tickRate: number }): TickTime;
 export function statelessRandom(seed: number, eventId: number): number;
 export function hashBytes(value: Bytes, seed?: number): number;
 /** 호출마다 새 배열을 만들지 않고 이어 쓰는 재사용 버퍼. `bytes`는 자랄 때 바뀌므로 보관하지 않는다. */

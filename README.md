@@ -38,6 +38,7 @@
 | AI가 지금 무엇을 할지 고르고, 시작한 동작의 단계를 진행한다    | [behavior](./modules/behavior/README.md) `BehaviorTree`·`StateMachine`         | [행동 탭][p-behavior]                                            | budmori-io                                                   |
 | 무거운 탐색을 틱마다 정해진 양씩 나눠 처리한다                 | [work-scheduler](./modules/work-scheduler/README.md) `createBudgetedScheduler` | [작업 예산 탭][p-budget]                                         | budmori-io                                                   |
 | 시드 난수·고정소수점·상태 직렬화를 결정론으로 한다             | [deterministic](./modules/deterministic/README.md)                             |                                                                  | rally-frontier, bloom-takraw, budmori-io, meow-tumble        |
+| ms로 적은 주기·지속·쿨다운을 틱에 반영한다(틱 수는 설정 한 곳) | [deterministic](./modules/deterministic/README.md) `tickTime`                  |                                                                  |                                                              |
 | 모래·물 같은 픽셀 재료와 강체를 한 월드에서 돌린다             | [pixel-physics](./modules/pixel-physics/README.md) `PixelWorld`                | [플랫포머][p-pp] · [오픈 월드][p-pp-open] · [옆 전투][p-pp-side] |                                                              |
 
 ### 온라인
