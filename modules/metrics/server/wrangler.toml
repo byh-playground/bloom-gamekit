@@ -15,7 +15,7 @@ migrations_dir = "migrations"
 # 출처는 정확한 문자열입니다. 로컬 개발 빌드(http의 localhost·127.0.0.1·[::1], Origin 'null')는 목록 없이 늘 받습니다.
 [vars]
 ALLOWED_ORIGINS = "https://byh-playground.github.io,https://htmlpreview.github.io,https://html-classic.itch.zone"
-ALLOWED_GAMES = "bloom-takraw,gamekit-example,gamekit-deploy-check"
+ALLOWED_GAMES = "bloom-takraw,rally-frontier,gamekit-example,gamekit-deploy-check"
 
 # 회선(접속 키)마다 60초에 60배치. 정상 게임은 분당 약 2배치(heartbeat 30초 + 이벤트 플러시)입니다.
 # Cloudflare 위치마다 따로 세는 근사치입니다. namespace_id는 이 계정 안에서 이 제한을 가리키는 번호입니다.
