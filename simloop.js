@@ -1,28 +1,105 @@
 // modules/simloop/rates.js
-function clockRates({ baseHz, tickRate, inputHz, renderHz } = {}) {
-  for (const [NAME, VALUE] of Object.entries({
-    baseHz,
-    tickRate,
-    inputHz,
-    renderHz
-  })) {
+var RATE_NAMES = ["baseHz", "tickRate", "inputHz"];
+var DERIVED_NAMES = ["simulationDivisor", "inputDivisor"];
+function clockRates(rates = {}) {
+  for (const NAME of Object.keys(rates)) {
+    if (!RATE_NAMES.includes(NAME) && !DERIVED_NAMES.includes(NAME)) {
+      throw new TypeError(`unknown clock rate: ${NAME}`);
+    }
+  }
+  const BASE_HZ = rates.baseHz;
+  for (const NAME of RATE_NAMES) {
+    const VALUE = rates[NAME];
     if (!Number.isSafeInteger(VALUE) || VALUE <= 0) {
       throw new RangeError(`${NAME} must be a positive integer frequency`);
     }
-    if (NAME !== "baseHz" && baseHz % VALUE !== 0) {
-      throw new RangeError(`${NAME} (${VALUE}) must divide baseHz (${baseHz}) exactly`);
+    if (NAME !== "baseHz" && BASE_HZ % VALUE !== 0) {
+      throw new RangeError(`${NAME} (${VALUE}) must divide baseHz (${BASE_HZ}) exactly`);
     }
   }
   return Object.freeze({
-    baseHz,
-    tickRate,
-    inputHz,
-    renderHz,
-    simulationDivisor: baseHz / tickRate,
-    inputDivisor: baseHz / inputHz,
-    renderDivisor: baseHz / renderHz
+    baseHz: BASE_HZ,
+    tickRate: rates.tickRate,
+    inputHz: rates.inputHz,
+    simulationDivisor: BASE_HZ / rates.tickRate,
+    inputDivisor: BASE_HZ / rates.inputHz
   });
 }
+
+// modules/simloop/frame-pacer.js
+var REFRESH_SAMPLES = 15;
+var STRIDE_TOLERANCE = 0.05;
+var STRIDE_MARGIN = 0.05;
+var STRIDE_LEAD = 0.5;
+var TARGET_LEAD = 0.95;
+var FramePacer = class {
+  #targetMs;
+  #gaps = new Float64Array(REFRESH_SAMPLES);
+  #sorted = new Float64Array(REFRESH_SAMPLES);
+  #gapCount = 0;
+  #seenAt = null;
+  #drawnAt = -Infinity;
+  #refreshMs = 0;
+  #stride = 1;
+  /** @param {{minHz:number}} options 이 빈도 이상으로 그립니다(화면 주사율이 더 낮으면 주사율대로). */
+  constructor({ minHz } = {}) {
+    if (!Number.isFinite(minHz) || minHz <= 0) {
+      throw new RangeError("minHz must be a positive frequency");
+    }
+    this.#targetMs = 1e3 / minHz;
+  }
+  /** 추정한 화면 주사 간격(ms). 표본이 차기 전에는 0입니다. */
+  get refreshMs() {
+    return this.#refreshMs;
+  }
+  /** 화면 주사 몇 번마다 그리는지(k). */
+  get stride() {
+    return this.#stride;
+  }
+  /**
+   * 화면 프레임 하나를 받습니다. true면 이 프레임을 그리고(그린 것으로 기록), false면 건너뜁니다.
+   * RAF 콜백마다 한 번, 그 콜백의 timestamp로 부릅니다.
+   */
+  accept(timestampMs) {
+    if (!Number.isFinite(timestampMs)) {
+      throw new TypeError("frame timestamp");
+    }
+    this.#observe(timestampMs);
+    const DUE_MS = Math.min((this.#stride - STRIDE_LEAD) * this.#refreshMs, TARGET_LEAD * this.#targetMs);
+    if (timestampMs - this.#drawnAt < DUE_MS) {
+      return false;
+    }
+    this.#drawnAt = timestampMs;
+    return true;
+  }
+  /** RAF를 멈췄다 다시 시작할 때: 멈춘 동안의 간격을 표본에 넣지 않습니다. 추정과 k는 유지합니다. */
+  rebase() {
+    this.#seenAt = null;
+  }
+  // RAF 간격 하나를 표본에 넣고, 표본이 다 차 있으면 중앙값을 주사 간격으로 삼아 k를 맞춥니다.
+  #observe(timestampMs) {
+    const GAP = this.#seenAt === null ? 0 : timestampMs - this.#seenAt;
+    this.#seenAt = timestampMs;
+    if (GAP <= 0) {
+      return;
+    }
+    this.#gaps[this.#gapCount % REFRESH_SAMPLES] = GAP;
+    this.#gapCount++;
+    if (this.#gapCount < REFRESH_SAMPLES) {
+      return;
+    }
+    this.#sorted.set(this.#gaps);
+    this.#sorted.sort();
+    const DECIDED = this.#refreshMs > 0;
+    this.#refreshMs = this.#sorted[REFRESH_SAMPLES >> 1];
+    const RATIO = this.#targetMs / this.#refreshMs + STRIDE_TOLERANCE, MARGIN = DECIDED ? STRIDE_MARGIN : 0, UP = Math.floor(RATIO - MARGIN), DOWN = Math.floor(RATIO + MARGIN);
+    if (UP > this.#stride) {
+      this.#stride = UP;
+    } else if (DOWN < this.#stride) {
+      this.#stride = Math.max(1, DOWN);
+    }
+  }
+};
 
 // modules/simloop/loop.js
 var NO_CAPTURES = Object.freeze([]);
@@ -33,6 +110,7 @@ function createLoop({
   },
   inputPreview,
   rates,
+  frame,
   backlogPolicy = "drop",
   beforeFrame = () => {
   },
@@ -83,6 +161,7 @@ function createLoop({
     ...rates,
     tickRate: session.profile.tickRate
   });
+  const PACER = frame === void 0 ? null : new FramePacer(frame);
   const QUANTUM = 1e3 / session.profile.tickRate;
   const MAX_BACKLOG_MS = QUANTUM * maxBacklogTicks;
   const REPORT_BACKLOG_DROP = (elapsedMs, droppedMs, timestamp, reason) => {
@@ -103,6 +182,7 @@ function createLoop({
   let accumulator = 0;
   let generation = 0;
   let timingGeneration = 0;
+  let frameAt = null;
   if (inputPreview && typeof inputPreview.observe !== "function") {
     throw new TypeError("inputPreview observation capability");
   }
@@ -217,15 +297,25 @@ function createLoop({
     }
     handle = void 0;
     inputPreview?.clear?.();
+    PACER?.rebase();
     globalThis.removeEventListener?.("blur", RELEASE);
     globalThis.document?.removeEventListener("visibilitychange", HIDDEN);
   };
-  const RENDER_FRAME = () => render({
-    session,
-    alpha: Math.min(1, accumulator / QUANTUM),
-    resimulating: session.resimulating
-  });
-  const PULSE = (timestamp, { render: shouldRender = true, input: shouldSampleInput = true } = {}) => {
+  const RENDER_FRAME = (timestamp) => {
+    if (timestamp !== void 0) {
+      if (!Number.isFinite(timestamp)) {
+        throw new TypeError("frame timestamp");
+      }
+      frameAt = timestamp;
+    }
+    render({
+      session,
+      alpha: Math.min(1, accumulator / QUANTUM),
+      resimulating: session.resimulating,
+      frameTimeMs: frameAt
+    });
+  };
+  const PULSE = (timestamp, { render: shouldRender = true, input: shouldSampleInput = true } = {}, frameTimestamp = timestamp) => {
     const CURRENT = generation;
     try {
       if (!Number.isFinite(timestamp)) {
@@ -416,7 +506,7 @@ function createLoop({
         if (CURRENT !== generation) {
           return;
         }
-        onAdvance(RESULT, submission);
+        onAdvance(RESULT, submission, last - accumulator);
         if (CURRENT !== generation || TIMING !== timingGeneration) {
           return;
         }
@@ -425,7 +515,8 @@ function createLoop({
         }
       }
       if (shouldRender) {
-        RENDER_FRAME();
+        RENDER_FRAME(frameTimestamp);
+        return true;
       }
     } catch (error) {
       if (CURRENT === generation) {
@@ -435,10 +526,14 @@ function createLoop({
     }
   };
   const FRAME_STEP = (timestamp) => {
-    if (inputPreview || HAS_SUBMISSION) {
-      OBSERVE_INPUT(timestamp);
+    if (PACER && !PACER.accept(timestamp)) {
+      return false;
     }
-    PULSE(timestamp);
+    const TICK_AT = last !== void 0 && timestamp < last ? last : timestamp;
+    if (inputPreview || HAS_SUBMISSION) {
+      OBSERVE_INPUT(TICK_AT);
+    }
+    return PULSE(TICK_AT, void 0, timestamp) === true;
   };
   const START = () => {
     if (running) {
@@ -481,7 +576,9 @@ function createLoop({
     },
     start: START,
     stop: STOP,
-    pulse: PULSE,
+    pulse(timestamp, options) {
+      PULSE(timestamp, options);
+    },
     frame: FRAME_STEP,
     render: RENDER_FRAME,
     observeInput: OBSERVE_INPUT,
@@ -1734,6 +1831,7 @@ function ownedDeadline({ getDeadlineMs, pulse, now, setTimer, clearTimer }) {
   };
 }
 export {
+  FramePacer,
   LocalInputPreview,
   clockRates,
   createDeadlineScheduler,

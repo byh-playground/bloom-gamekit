@@ -75,6 +75,9 @@ function finite(value, label) {
   }
   return value;
 }
+function displayClock(current, nowMs) {
+  return Math.max(current, finite(nowMs, "nowMs"));
+}
 function ordinal(value, label) {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new TypeError(`${label} must be a nonnegative safe integer`);
@@ -199,6 +202,18 @@ var BoundedPlayhead = class {
     }
     return Math.min(this.terminalEnd ?? this.latest, this.time + (nowMs - this.wall) * this.rate);
   }
+  // 표본을 넣을 시각. displayMs는 지금 표시 시계(마지막으로 읽은 프레임 시각), nowMs는 표본이 나온 시각
+  // (틱 예정 시각·수신 시각, displayMs보다 과거가 아닌 값)입니다.
+  //   - 표시가 최신 표본을 향해 흐르는 중: 표시 시계에 넣습니다. 표시 시각·자세·개체 이력이 모두 같은 시각을
+  //     쓰고, 표본이 나온 시각이 다음 프레임 시각보다 뒤여도 표시는 프레임 시각이 늘어난 만큼만 흐릅니다.
+  //   - 표시가 최신 표본에 닿아 멈춰 있거나 첫 표본: 표본이 나온 시각에 넣습니다(표시 시계도 그 시각으로 갑니다).
+  //     이전 프레임 시각에 넣으면 표시가 표본 예정보다 최대 한 프레임 앞서 나중에 한 번 더 멈춥니다.
+  captureAt(displayMs, nowMs) {
+    if (!Number.isFinite(displayMs) || !Number.isFinite(this.latest)) {
+      return nowMs;
+    }
+    return this.sample(displayMs) >= this.latest ? nowMs : displayMs;
+  }
   prepare(timeMs, nowMs, newEpoch, snap) {
     if (this.terminalEnd !== null && !newEpoch) {
       throw new Error("terminal presentation requires a new revision before capture");
@@ -278,18 +293,17 @@ var InterpolationTimeline = class {
   get size() {
     return this.#tracks.size;
   }
-  #checkClock(nowMs) {
-    finite(nowMs, "nowMs");
-    if (nowMs < this.#now) {
-      throw new RangeError("presentation clock must not go backwards");
-    }
+  // 표시 시계는 이 객체가 소유하고 되돌아가지 않습니다. 과거 시각(직전 호출보다 오래된 RAF timestamp 등)은
+  // 지금 표시 시계로 읽습니다.
+  #clock(nowMs) {
+    return displayClock(this.#now, nowMs);
   }
   #displayTime(nowMs) {
     return this.#playhead ? this.#playhead.sample(nowMs) : nowMs - this.#delayMs - this.#origin;
   }
   /** Finish authority and advance the same display clock through a finite effects tail. */
   finish({ tailMs } = {}, nowMs) {
-    this.#checkClock(nowMs);
+    nowMs = this.#clock(nowMs);
     if (!this.#playhead) {
       throw new Error("terminal presentation requires a bounded clock");
     }
@@ -314,7 +328,7 @@ var InterpolationTimeline = class {
   }
   /** Change the bounded display rate after accounting for the previous rate through nowMs. */
   setRate(rate, nowMs) {
-    this.#checkClock(nowMs);
+    nowMs = this.#clock(nowMs);
     if (!this.#playhead || finite(rate, "rate") < 0) {
       throw new RangeError("setRate requires a bounded clock and nonnegative rate");
     }
@@ -328,7 +342,7 @@ var InterpolationTimeline = class {
   }
   /** Simulation time used by every sample at the supplied monotonic clock time. */
   displayTime(nowMs) {
-    this.#checkClock(nowMs);
+    nowMs = this.#clock(nowMs);
     if (!this.#delayMs) {
       throw new Error("displayTime requires delayed presentation");
     }
@@ -337,7 +351,7 @@ var InterpolationTimeline = class {
   }
   /** True only when an explicitly requested finite terminal tail has elapsed. */
   isTerminalComplete(nowMs) {
-    this.#checkClock(nowMs);
+    nowMs = this.#clock(nowMs);
     if (!this.#playhead) {
       throw new Error("terminal presentation requires a bounded clock");
     }
@@ -353,7 +367,7 @@ var InterpolationTimeline = class {
    * @param {Snapshot} packet @param {number} nowMs @returns {boolean}
    */
   accept(packet, nowMs) {
-    this.#checkClock(nowMs);
+    nowMs = this.#playhead ? this.#playhead.captureAt(this.#now, this.#clock(nowMs)) : this.#clock(nowMs);
     if (!packet || typeof packet !== "object") {
       throw new TypeError("packet must be an object");
     }
@@ -468,7 +482,7 @@ var InterpolationTimeline = class {
    * @param {Record<string,number|string|boolean|null>} out @returns {boolean}
    */
   sampleInto(id, generation, nowMs, out) {
-    this.#checkClock(nowMs);
+    nowMs = this.#clock(nowMs);
     if (!out || typeof out !== "object") {
       throw new TypeError("out must be a writable object");
     }
@@ -1241,7 +1255,7 @@ var PresentationRuntime = class {
   }
   /** Finish authority and advance the same display clock through a finite effects tail. */
   finish({ tailMs } = {}, nowMs) {
-    this.#checkClock(nowMs);
+    nowMs = this.#clock(nowMs);
     if (!this.#playhead) {
       throw new Error("terminal presentation requires a bounded clock");
     }
@@ -1263,7 +1277,7 @@ var PresentationRuntime = class {
   }
   /** Change the bounded display rate after accounting for the previous rate through nowMs. */
   setRate(rate, nowMs) {
-    this.#checkClock(nowMs);
+    nowMs = this.#clock(nowMs);
     if (!this.#playhead || finite(rate, "rate") < 0) {
       throw new RangeError("setRate requires a bounded clock and nonnegative rate");
     }
@@ -1354,7 +1368,7 @@ var PresentationRuntime = class {
     this.#previewSources = /* @__PURE__ */ new WeakMap();
   }
   releasePreview(nowMs) {
-    this.#checkClock(nowMs);
+    nowMs = this.#clock(nowMs);
     if (this.#delayMs) {
       for (const [ID, PREVIEW] of this.#preview) {
         if (PREVIEW.releaseAt !== void 0) {
@@ -1413,7 +1427,7 @@ var PresentationRuntime = class {
   capturePreview(packet, nowMs) {
     const STARTED = performance.now();
     let bytes = 0;
-    this.#checkClock(nowMs);
+    nowMs = this.#clock(nowMs);
     if (this.#playhead && this.#playhead.terminalEnd !== null) {
       throw new Error("terminal presentation cannot capture a local preview");
     }
@@ -1501,11 +1515,10 @@ var PresentationRuntime = class {
     const CURRENT = OWNER && this.#tracks.get(OWNER.id);
     return !!CURRENT && CURRENT.generation === OWNER.generation && CURRENT.model === value;
   }
-  #checkClock(now) {
-    finite(now, "nowMs");
-    if (now < this.#now) {
-      throw new RangeError("presentation clock must not go backwards");
-    }
+  // 표시 시계는 이 객체가 소유하고 되돌아가지 않습니다. 과거 시각(직전 호출보다 오래된 RAF timestamp 등)은
+  // 지금 표시 시계로 읽습니다.
+  #clock(nowMs) {
+    return displayClock(this.#now, nowMs);
   }
   /**
    * Full authoritative snapshot. timeMs/initialTimeMs/pathPoints use simulation milliseconds.
@@ -1519,7 +1532,7 @@ var PresentationRuntime = class {
    * @param {number} nowMs
    */
   capture(packet, nowMs) {
-    this.#checkClock(nowMs);
+    nowMs = this.#playhead ? this.#playhead.captureAt(this.#now, this.#clock(nowMs)) : this.#clock(nowMs);
     if (!packet || typeof packet !== "object") {
       throw new TypeError("packet must be an object");
     }
@@ -1816,7 +1829,7 @@ var PresentationRuntime = class {
   }
   /** 유효 identity가 아니면 null. 원본 fallback은 없습니다. 모델은 프레임 간 재사용됩니다. */
   sample(id, generation, nowMs) {
-    this.#checkClock(nowMs);
+    nowMs = this.#clock(nowMs);
     if (this.#pausedView) {
       const ITEM = this.#pausedView.items.get(id);
       this.#now = nowMs;
@@ -1888,7 +1901,7 @@ var PresentationRuntime = class {
   }
   /** 등록된 원본 객체나 유효한 모델만 받습니다. 삭제·세대 변경된 모델은 다시 그리지 않습니다. */
   modelFor(source, nowMs) {
-    this.#checkClock(nowMs);
+    nowMs = this.#clock(nowMs);
     if (this.#pausedView) {
       const MODEL = source && typeof source === "object" ? this.#pausedView.models.get(source) : null;
       const PREVIEW2 = source && typeof source === "object" ? this.#previewSources.get(source) : null, OWNER = PREVIEW2 && this.#previewSelection.get(PREVIEW2.id) === PREVIEW2.generation ? PREVIEW2 : source && typeof source === "object" ? this.#sources.get(source) : null;
@@ -1918,7 +1931,7 @@ var PresentationRuntime = class {
    * A new frame/capture invalidates this handle. No per-field proxy or deep copy on RAF.
    */
   frame(nowMs) {
-    this.#checkClock(nowMs);
+    nowMs = this.#clock(nowMs);
     this.#now = nowMs;
     const SERIAL = ++this.#frameSerial, DISPLAY_TIME = this.#displayTime(nowMs), CHECK = () => {
       if (SERIAL !== this.#frameSerial) {
