@@ -2,7 +2,7 @@ import { bufferInterval, intervalAt, retainRemoved } from './intervals.js';
 import { capturePath, pointAt, samplePath } from './path.js';
 import { RenderObject } from './render-object.js';
 import { compileRenderSchema, captureRenderData, writeRenderFields, writeRenderModel } from './render-schema.js';
-import { finite, ordinal } from './schema.js';
+import { displayClock, finite, ordinal } from './schema.js';
 import { evaluate } from './tracks.js';
 import { BoundedPlayhead } from './playhead.js';
 import {
@@ -429,10 +429,10 @@ export class PresentationRuntime {
         const CURRENT = OWNER && this.#tracks.get(OWNER.id);
         return !!CURRENT && CURRENT.generation === OWNER.generation && CURRENT.model === value;
     }
-    // 표시 시계는 이 객체가 소유하고 되돌아가지 않습니다. 과거 시각(직전 capture보다 오래된 RAF timestamp 등)은
+    // 표시 시계는 이 객체가 소유하고 되돌아가지 않습니다. 과거 시각(직전 호출보다 오래된 RAF timestamp 등)은
     // 지금 표시 시계로 읽습니다.
     #clock(nowMs) {
-        return Math.max(this.#now, finite(nowMs, 'nowMs'));
+        return displayClock(this.#now, nowMs);
     }
 
     /**
@@ -447,8 +447,8 @@ export class PresentationRuntime {
      * @param {number} nowMs
      */
     capture(packet, nowMs) {
-        const DISPLAY_NOW = this.#now;
-        nowMs = this.#clock(nowMs);
+        // bounded 시계는 표본을 넣을 시각을 고릅니다(BoundedPlayhead.captureAt). 표시 시계를 밀지 않는 것이 기본입니다.
+        nowMs = this.#playhead ? this.#playhead.captureAt(this.#now, this.#clock(nowMs)) : this.#clock(nowMs);
         if (!packet || typeof packet !== 'object') {
             throw new TypeError('packet must be an object');
         }
@@ -476,7 +476,7 @@ export class PresentationRuntime {
             throw new TypeError('entities must be an array');
         }
         const ORIGIN = CHANGED ? nowMs - TIME_MS : this.#origin;
-        const PLAYHEAD_PLAN = this.#playhead?.prepare(TIME_MS, nowMs, CHANGED, MODE !== 'continuous', DISPLAY_NOW);
+        const PLAYHEAD_PLAN = this.#playhead?.prepare(TIME_MS, nowMs, CHANGED, MODE !== 'continuous');
         if (PLAYHEAD_PLAN && (!Number.isFinite(ORIGIN) || !Number.isFinite(PLAYHEAD_PLAN.time))) {
             throw new RangeError('bounded presentation clock overflow');
         }
@@ -743,8 +743,7 @@ export class PresentationRuntime {
         this.#revision = REVISION;
         this.#sequence = SEQUENCE;
         this.#timeMs = TIME_MS;
-        // bounded 시계는 표시가 흐르는 중이면 표시 시계를 밀지 않습니다(BoundedPlayhead.prepare).
-        this.#now = PLAYHEAD_PLAN ? PLAYHEAD_PLAN.clock : nowMs;
+        this.#now = nowMs;
         if (this.#pausedView && CHANGED) {
             // Explicit seek/reset while paused is a new scene, not hidden live progress.
             this.#pausedView = null;

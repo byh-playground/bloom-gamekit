@@ -168,22 +168,35 @@ if (view.sampleInto('player', 0, now, pose)) {
 
 ### 시간과 순서
 
-수신과 sample에는 **같은 main-realm 시계**(performance.now()·rAF timestamp)의 ms를 넘깁니다. 표시 시계는 이 모듈이 소유하고 되돌아가지 않습니다([표시 시계](#표시-시계)). 이전 호출보다 작은 시각은 지금 표시 시계로 읽으며 throw하지 않습니다. 같은 시각에 여러 entity를 평가하거나 여러 packet을 받아도 됩니다. Worker performance.now()처럼 기준이 다른 시계는 섞지 않습니다. timeMs는 순서 검증에만 쓰며 receipt와 차감하지 않습니다.
+수신과 sample에는 **같은 main-realm 시계**(performance.now()·rAF timestamp)의 ms를 넘깁니다. 표시 시계는 이 모듈이 소유하고 되돌아가지 않습니다([표시 시계](#표시-시계)). 같은 시각에 여러 entity를 평가하거나 여러 packet을 받아도 됩니다. Worker performance.now()처럼 기준이 다른 시계는 섞지 않습니다. timeMs는 순서 검증에만 쓰며 receipt와 차감하지 않습니다.
 
 ### 표시 시계
 
+계약은 한 줄입니다: **프레임 읽기가 표시 시계를 흘리고, capture는 표본만 넣습니다.** 어떤 프레임 시각에서 읽든 표시 시각·자세·개체의 존재는 같은 한 시점의 것이고, 표시 시각은 뒤로 가지 않습니다.
+
 `PresentationRuntime`과 `InterpolationTimeline`에 넘기는 시각은 두 가지이고, 게임은 받은 값을 그대로 넘깁니다.
 
-| 호출                                        | 넘기는 시각                                                                       | simloop에서 받는 값        |
-| ------------------------------------------- | --------------------------------------------------------------------------------- | -------------------------- |
-| `capture(packet, nowMs)` · `accept`         | 표본이 나온 시각: 그 틱의 예정 시각(온라인 표본은 받은 시각)                      | `onAdvance`의 `tickTimeMs` |
-| `frame(nowMs)` · `sample` · `sampleInto` 등 | 화면 프레임 시각(rAF timestamp). 콜백이 도는 시각(`performance.now()`)이 아닙니다 | `render`의 `frameTimeMs`   |
+| 호출                                                             | 넘기는 시각                                                                       | simloop에서 받는 값        |
+| ---------------------------------------------------------------- | --------------------------------------------------------------------------------- | -------------------------- |
+| `frame(nowMs)` · `sample` · `sampleInto` · `displayTime` 등 읽기 | 화면 프레임 시각(rAF timestamp). 콜백이 도는 시각(`performance.now()`)이 아닙니다 | `render`의 `frameTimeMs`   |
+| `capture(packet, nowMs)` · `accept`                              | 표본이 나온 시각: 그 틱의 예정 시각(온라인 표본은 받은 시각)                      | `onAdvance`의 `tickTimeMs` |
 
-- 표시 시각은 프레임 시각이 늘어난 만큼만 흐릅니다. 콜백이 도는 시각은 앞선 주 스레드 작업(틱 등)만큼 늦어지므로, 그 시각으로 읽으면 표시 시각 증가가 프레임마다 흔들립니다(발배구에서 8~28 ms).
-- 프레임 시각이 직전 capture 시각보다 과거여도 됩니다. `clock: 'bounded'`에서는 표본이 자기가 나온 시각부터 유효합니다. 그보다 앞선 프레임 시각을 읽으면 이전 표본까지만 보이고, capture가 표시 시계를 밀지 않습니다. 표시가 이전 표본에 닿아 멈춰 있었다면 새 표본이 나온 시각부터 다시 흐르고(표본 예정보다 앞서 나가 나중에 한 번 더 멈추는 일이 없습니다), 닿지 않았다면 흐르던 그대로 이어집니다. 프레임 없이 capture만 이어져도(숨은 탭, 한 프레임 안의 따라잡기) 결과는 같습니다.
-- 새 revision(reset·load·rollback)과 첫 capture는 화면을 바로 바꾸므로 표시 시계를 그 시각으로 옮깁니다. 그보다 오래된 프레임 시각은 옮긴 시계로 읽습니다.
-- `clock: 'fixed'`(기본)에서는 capture 시각이 표시 시계를 밉니다(이전 동작에 단조 보정만 더함). 프레임 시각만으로 흐르는 표시가 필요하면 bounded를 씁니다.
-- 선택된 로컬 입력 preview(`capturePreview`·`releasePreview`)의 시각은 표시 시계를 밉니다. preview는 입력 즉시 반응이 목적이라 콜백 시각을 씁니다.
+`clock: 'bounded'`(지연 표시의 권장 설정):
+
+- 표시 시계는 읽기(`frame` 등)와 시각을 받는 명령(`setRate`·`finish`)으로만 앞으로 갑니다. 표시 시각은 프레임 시각이 늘어난 만큼만 흐릅니다. 콜백이 도는 시각으로 읽으면 앞선 주 스레드 작업(틱 등)만큼 늦어져 표시 시각 증가가 프레임마다 흔들립니다(발배구에서 8~28 ms).
+- `capture`는 표시 시계를 밀지 않고, 표본을 **지금 표시 시계**(마지막으로 읽은 프레임 시각)에 넣습니다. 표본이 나온 시각이 다음 프레임 시각보다 뒤여도 표시가 튀지 않습니다.
+- 예외는 하나입니다. 표시가 최신 표본에 닿아 멈춰 있을 때(또는 첫 표본) 온 표본은 그 표본이 나온 시각(`nowMs`)에 넣고 표시 시계도 그 시각으로 갑니다. 이전 프레임 시각에 넣으면 표시가 표본 예정보다 최대 한 프레임 앞서 나중에 한 번 더 멈춥니다. reset·rollback 직후는 표시가 그 표본에 닿아 있으므로 다음 표본이 이 경우입니다.
+- 따라서 **프레임을 읽지 않고 capture만 이어지면 표시 시계는 흐르지 않습니다**(숨은 탭, 프레임 없는 시험 코드). 그동안 쌓인 표본은 표시 부채 하한(`delayMs + stepMs`)만 남기고 생략되고, 다음 프레임은 그 하한에서 이어집니다. 실제 시간이 흐른 만큼 표시도 흐르게 하려면 그 시각의 프레임을 읽습니다.
+- 표본이 예정보다 늦게 나와도, 그때 표시가 아직 이전 표본에 닿지 않았으면 흐르던 그대로 이어집니다(늦은 만큼 멈추지 않습니다).
+
+`clock: 'fixed'`(기본):
+
+- capture 시각이 표시 시계를 밉니다(`origin`·즉시 retarget이 수신 시각 기준이기 때문에 이전 뜻 그대로입니다). capture 뒤에 그보다 오래된 프레임 시각을 읽으면 capture 시각으로 읽으므로, 그 프레임의 표시가 그 차이만큼 앞섭니다. 프레임 시각만으로 흐르는 표시가 필요하면 bounded를 씁니다.
+
+두 시계 공통:
+
+- 과거 시각은 예외 대신 지금 표시 시계로 읽습니다(이전에는 `RangeError`). rAF timestamp가 직전 호출보다 과거인 것은 정상입니다. 다만 표시 시계보다 10초 넘게 과거인 시각은 다른 시계를 섞은 것(단위 착오, `Date.now()` 등)으로 보고 `RangeError`를 던집니다. 10초 이내의 착오는 표시가 멈춘 것으로만 보입니다.
+- 선택된 로컬 입력 preview(`capturePreview`·`releasePreview`)의 시각은 표시 시계를 밉니다. preview는 입력 즉시 반응이 목적이라 콜백 시각을 쓰고, preview를 쓰는 화면은 그 프레임의 표시가 그만큼 앞설 수 있습니다.
 - 지금 표시 시뮬레이션 시각은 `frame(nowMs).timeMs`(`InterpolationTimeline.displayTime(nowMs)`)입니다. 게임이 "표시가 최신 틱에 닿았는지"를 직접 판단할 일은 없습니다.
 
 낮은 revision, 같은 revision의 중복/낮은 sequence, 뒤로 간 timeMs는 false로 거부합니다. sequence가 커도 timeMs가 같으면 허용합니다. 거부된 packet은 clock도 진행시키지 않습니다. malformed 신규 packet은 throw하며 전체 snapshot과 clock을 원자적으로 유지합니다. 정상 입력은 plain-data 객체여야 합니다.
@@ -215,7 +228,7 @@ E2E는 실제 Worker 이동에서 추출한 표본, 10/20/30 TPS·60Hz 위상, �
 
 ### 선택적 최신 기준 표시 시계
 
-`PresentationRuntime`과 `InterpolationTimeline`은 `clock: 'bounded'`와 양의 `delayMs`를 선택할 수 있습니다. 기본값 `clock: 'fixed'`와 기존 시간 계약은 바뀌지 않습니다. 이 모드는 수신·sample에 같은 wall clock([표시 시계](#표시-시계))을 전달하면서, 시뮬레이션 `timeMs`는 언제나 원래 틱 단위(`tick * stepMs`)로 유지합니다. replay 배속은 `setRate(rate, nowMs)`로만 바꾸고 packet의 틱 시각에 배속을 다시 곱하거나 나누지 않습니다.
+`PresentationRuntime`과 `InterpolationTimeline`은 `clock: 'bounded'`와 양의 `delayMs`를 선택할 수 있습니다. 기본값은 `clock: 'fixed'`입니다. 두 시계의 시각 계약은 [표시 시계](#표시-시계)에 있습니다. 이 모드는 수신·sample에 같은 wall clock을 전달하면서, 시뮬레이션 `timeMs`는 언제나 원래 틱 단위(`tick * stepMs`)로 유지합니다. replay 배속은 `setRate(rate, nowMs)`로만 바꾸고 packet의 틱 시각에 배속을 다시 곱하거나 나누지 않습니다.
 
 - 명시적인 reset/load/rollback은 목표를 snap하며 그 순간 `frame.timeMs`도 해당 목표의 시뮬레이션 시각에 맞춥니다. 이후 새 표본은 이전에 표시하던 위치에서 다음 목표로 부드럽게 따르므로 정상적으로 표본이 도착할 때 약 한 표본 구간 뒤에서 움직일 수 있습니다. 이는 reset 직후 이미 본 화면을 다시 되감아 `delayMs`를 채우지 않는 최신 기준 정책입니다. 최초 packet이 continuous라면 기존 생성·seed·지연 수명 규칙을 따릅니다. 표본이 늦어지면 마지막 표본에서 화면과 표시 시계가 함께 멈추고 다음 표본이 오면 그 위치에서 목표까지 이어집니다.
 - 일괄 catch-up으로 최신 표본이 표시 시각보다 `delayMs + stepMs`보다 더 앞서면 오래된 **표시** 구간만 생략하고 그 하한으로 한 번 이동합니다. 권위 시뮬레이션 틱·입력·상태는 변경하지 않습니다. 따라서 긴 중단의 과거 경로를 모두 재생하는 정책이 필요한 곳은 기본 fixed clock을 쓰세요.
