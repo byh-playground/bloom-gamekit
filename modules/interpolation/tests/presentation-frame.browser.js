@@ -253,14 +253,8 @@ export async function runFrameChecks(page) {
             HIDDEN.displayTime(0) === 1900 && HIDDEN.sampleInto('u', 0, 0, HIDDEN_OUT) && HIDDEN_OUT.x === 1900,
             'samples without frames keep only the latest buffered window and never move the display backward',
         );
-        // 다른 시계를 섞은 큰 역행(단위 착오 등)은 조용히 멈추지 않고 던집니다.
-        let regressionRejected = false;
-        try {
-            HIDDEN.displayTime(-20000);
-        } catch (error) {
-            regressionRejected = error instanceof RangeError;
-        }
-        CHECK(regressionRejected, 'a clock regression beyond the limit is an error, not a silent freeze');
+        // 과거 시각은 크기와 상관없이 지금 표시 시계로 읽습니다.
+        CHECK(HIDDEN.displayTime(-20000) === 1900, 'a far past time reads the current display clock');
         const FIXED_COMPARISON = new PRESENTATION_RUNTIME({ stepMs: 100, delayMs: 200 }),
             LATEST_COMPARISON = new PRESENTATION_RUNTIME({ stepMs: 100, delayMs: 200, clock: 'bounded' });
         for (let i = 0; i <= 10; i++) {

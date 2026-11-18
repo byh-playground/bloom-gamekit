@@ -8,11 +8,11 @@
 - interpolation 표시 시계: `PresentationRuntime`·`InterpolationTimeline`이 표시 시계를 소유합니다. 계약은 "프레임 읽기가 표시 시계를 흘리고, capture는 표본만 넣는다"입니다. bounded 시계에서 `capture(packet, tickTimeMs)`는 표시 시계를 밀지 않고 표본을 지금 표시 시계에 넣습니다. 표시가 최신 표본에 닿아 멈춰 있을 때(또는 첫 표본) 온 표본만 그 시각에 붙입니다(발배구에서 확인된 규칙). `frame(frameTimeMs)`만 넘기면 표시 시각이 프레임 시각만큼만 늘어납니다.
 - 깨지는 것:
     - `rates.renderHz`·`clockRates`의 `renderHz`·`renderDivisor`를 없앴습니다(조회만 하던 값). `rates`와 `clockRates`에 모르는 키를 넣으면 `TypeError`입니다. 표시 상한은 `frame: { minHz }`로 줍니다.
-    - 보간(fixed·bounded 모두): 과거 시각에 `RangeError('presentation clock must not go backwards')`를 던지지 않고 지금 표시 시계로 읽습니다. 표시 시계보다 10초 넘게 과거인 시각만 `RangeError`입니다. 10초 이내의 시계 오용은 예외 대신 멈춘 표시로 나타납니다.
+    - 보간(fixed·bounded 모두): 과거 시각에 `RangeError('presentation clock must not go backwards')`를 던지지 않고, 크기와 상관없이 지금 표시 시계로 읽습니다. 시계 오용(단위 착오 등)은 예외 대신 멈춘 표시로 나타나며 모듈이 검출하지 않습니다(유한한 수 검사는 유지).
     - 보간 bounded: capture 시각이 표시 시계를 밀지 않습니다. 프레임을 읽지 않고 capture만 이어 부르던 코드(숨은 탭, 시험 코드)는 그동안 표시가 흐르지 않고 표시 부채 하한만 남습니다. 실제 시간만큼 흐르게 하려면 그 시각의 프레임을 읽습니다. capture 직전에 같은 시각의 프레임을 읽는 호출 순서는 결과가 이전과 같습니다.
     - 보간 fixed·입력 preview: 뜻이 그대로입니다(capture·preview 시각이 표시 시계를 밉니다).
     - `loop.frame`의 반환값이 `undefined`에서 boolean으로 바뀌었습니다.
-- 시험: core 고정 시나리오에 프레임 제한(60·90·120·144·165 Hz의 k와 간격, 120 Hz 첫 15프레임, 1초 간격 15회 뒤 복귀, 8.53 ↔ 8.56 ms 경계, `frame.minHz` 루프의 시각 전달, 타이머 뒤 오래된 rAF timestamp)과 표시 시계(틱 예정 시각 capture + 그보다 오래된 프레임 시각에서 표시 증가가 프레임 간격과 같음, 롤백 뒤 프레임 없는 연속 capture, 먼저 받은 뒤쪽 표본이 있어도 삭제 시각 전에는 개체가 남음, 묶음 수신·프레임 없는 40표본에서 표시 시각과 자세가 같은 시점, finish가 같은 시각의 표시를 바꾸지 않음, 10초 넘는 역행 거부)를 더했습니다. 옛 계약(capture 시각이 bounded 표시 시계를 민다)을 적은 기존 시나리오 6곳은 capture 전에 그 시각의 프레임을 읽도록 고쳤고 기대값은 그대로입니다.
+- 시험: core 고정 시나리오에 프레임 제한(60·90·120·144·165 Hz의 k와 간격, 120 Hz 첫 15프레임, 1초 간격 15회 뒤 복귀, 8.53 ↔ 8.56 ms 경계, `frame.minHz` 루프의 시각 전달, 타이머 뒤 오래된 rAF timestamp)과 표시 시계(틱 예정 시각 capture + 그보다 오래된 프레임 시각에서 표시 증가가 프레임 간격과 같음, 롤백 뒤 프레임 없는 연속 capture, 먼저 받은 뒤쪽 표본이 있어도 삭제 시각 전에는 개체가 남음, 묶음 수신·프레임 없는 40표본에서 표시 시각과 자세가 같은 시점, finish가 같은 시각의 표시를 바꾸지 않음, 20초 멈춤 뒤 retain 루프가 밀린 틱을 이어 처리)를 더했습니다. 옛 계약(capture 시각이 bounded 표시 시계를 민다)을 적은 기존 시나리오 6곳은 capture 전에 그 시각의 프레임을 읽도록 고쳤고 기대값은 그대로입니다.
 - 예제: 통합 예제(work-scheduler 예제 페이지)에 "프레임 제한" 탭을 더했습니다(합성 60·90·120·144 Hz에서 그리는 프레임). 보간 통합 예제는 `tickTimeMs`·`frameTimeMs`를 그대로 넘깁니다.
 - 소비 게임이 고칠 것: `rates`에서 `renderHz` 제거 → `frame: { minHz }`. 직접 짠 rAF 간격 제한과 `Math.max`로 맞추던 capture·frame 시계 삭제 → `tickTimeMs`·`frameTimeMs` 전달.
 

@@ -25,15 +25,12 @@ export function finite(value, label) {
     }
     return value;
 }
-// 받은 시각이 표시 시계보다 이만큼 넘게 과거면 다른 시계(단위 착오, Date.now 등)를 섞은 것으로 보고 던집니다.
-// RAF timestamp가 직전 호출보다 과거인 정상 차이는 주 스레드가 막힌 시간 이내입니다.
-export const CLOCK_REGRESSION_LIMIT_MS = 10000;
-/** 표시 시계는 되돌아가지 않습니다. 과거 시각은 지금 표시 시계(current)로 읽습니다. */
+/**
+ * 표시 시계는 되돌아가지 않습니다. 과거 시각은 크기와 상관없이 지금 표시 시계(current)로 읽습니다.
+ * 틱 예정 시각은 표시 시계보다 얼마든지 과거일 수 있어(밀린 틱을 오래된 것부터 처리) 거리로 시계 오용을 가리지 않습니다.
+ */
 export function displayClock(current, nowMs) {
-    if (finite(nowMs, 'nowMs') < current - CLOCK_REGRESSION_LIMIT_MS) {
-        throw new RangeError('presentation clock went backwards by more than ' + CLOCK_REGRESSION_LIMIT_MS + ' ms');
-    }
-    return Math.max(current, nowMs);
+    return Math.max(current, finite(nowMs, 'nowMs'));
 }
 export function ordinal(value, label) {
     if (!Number.isSafeInteger(value) || value < 0) {

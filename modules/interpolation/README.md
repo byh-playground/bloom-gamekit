@@ -195,7 +195,7 @@ if (view.sampleInto('player', 0, now, pose)) {
 
 두 시계 공통:
 
-- 과거 시각은 예외 대신 지금 표시 시계로 읽습니다(이전에는 `RangeError`). rAF timestamp가 직전 호출보다 과거인 것은 정상입니다. 다만 표시 시계보다 10초 넘게 과거인 시각은 다른 시계를 섞은 것(단위 착오, `Date.now()` 등)으로 보고 `RangeError`를 던집니다. 10초 이내의 착오는 표시가 멈춘 것으로만 보입니다.
+- 과거 시각은 크기와 상관없이 예외 대신 지금 표시 시계로 읽습니다(이전에는 `RangeError`). rAF timestamp가 직전 호출보다 과거인 것도, 밀린 틱의 예정 시각이 표시 시계보다 한참 과거인 것도 정상입니다. 시계 오용(단위 착오, `Date.now()` 등)은 이 모듈이 검출하지 않습니다. 유한한 수인지만 검사하므로, 같은 main-realm 시계의 ms를 넘기는 것은 호출자 책임입니다.
 - 선택된 로컬 입력 preview(`capturePreview`·`releasePreview`)의 시각은 표시 시계를 밉니다. preview는 입력 즉시 반응이 목적이라 콜백 시각을 쓰고, preview를 쓰는 화면은 그 프레임의 표시가 그만큼 앞설 수 있습니다.
 - 지금 표시 시뮬레이션 시각은 `frame(nowMs).timeMs`(`InterpolationTimeline.displayTime(nowMs)`)입니다. 게임이 "표시가 최신 틱에 닿았는지"를 직접 판단할 일은 없습니다.
 

@@ -325,7 +325,49 @@ try {
             MIXED_LOOP.pulse(i * 20 + 3, { render: false }); // 타이머: 프레임 시각보다 3ms 뒤
             MIXED_LOOP.frame(i * 20); // RAF timestamp: 직전 타이머 시각보다 과거
         }
+        // 긴 멈춤 뒤 retain 정책이 밀린 틱을 오래된 것부터 한 프레임에 하나씩 처리합니다. 틱 예정 시각이 표시 시계보다
+        // 20초 가까이 과거여도 capture가 받아들여지고 루프가 이어집니다.
+        const RETAIN_SESSION = {
+                ...SESSION,
+                tick: 0,
+                advance: SESSION.advance,
+                profile: { tickRate: 20, maxCatchupSteps: 1 },
+            },
+            RETAIN_VIEW = new INTERPOLATION_TIMELINE({
+                schema: { x: 'number' },
+                stepMs: 50,
+                delayMs: 50,
+                clock: 'bounded',
+            }),
+            RETAIN_TICK_TIMES = [],
+            RETAIN_SHOWN = [],
+            RETAIN_ERRORS = [];
+        const RETAIN_LOOP = CREATE_LOOP({
+            session: RETAIN_SESSION,
+            backlogPolicy: 'retain',
+            onError: (error) => RETAIN_ERRORS.push(String(error)),
+            onAdvance(_result, _submission, tickTimeMs) {
+                RETAIN_TICK_TIMES.push(tickTimeMs);
+                RETAIN_VIEW.accept(
+                    {
+                        revision: 0,
+                        sequence: RETAIN_SESSION.tick,
+                        timeMs: RETAIN_SESSION.tick * 50,
+                        mode: RETAIN_SESSION.tick === 1 ? 'reset' : 'continuous',
+                        entities: [],
+                    },
+                    tickTimeMs,
+                );
+            },
+            render: ({ frameTimeMs }) => RETAIN_SHOWN.push(RETAIN_VIEW.displayTime(frameTimeMs)),
+        });
+        const RETAIN_RUNS = [0, 20000, 20016, 20032].map((at) => RETAIN_LOOP.frame(at));
         const FRAME_LIMIT = {
+            retainRuns: RETAIN_RUNS,
+            retainTicks: RETAIN_SESSION.tick,
+            retainTickTimes: RETAIN_TICK_TIMES,
+            retainShown: RETAIN_SHOWN.slice(1),
+            retainErrors: RETAIN_ERRORS,
             strides: PACER_STRIDES,
             warmup: PACER_WARMUP,
             returned: PACER_RETURN,
@@ -767,6 +809,11 @@ try {
     assert.deepEqual(
         CLOCK_CHECK.frameLimit,
         {
+            retainRuns: [true, true, true, true],
+            retainTicks: 3,
+            retainTickTimes: [50, 100, 150],
+            retainShown: [50, 66, 82],
+            retainErrors: [],
             strides: [1, 1, 2, 2, 2],
             warmup: 15,
             returned: 60 + 15 + 12,
